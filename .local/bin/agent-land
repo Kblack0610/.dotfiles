@@ -28,7 +28,7 @@
 # item's row, whatever its origin: the story `agent-queue add` filed or the board row it was
 # promoted from, done with proof "pr:<owner>/<repo>#<pr> commit:<sha>" on the final landing), plan (--plan: the one "- [ ] <phase>"
 # line becomes "- [x] <phase> (#<pr>)"; when that leaves no open phase, each row on the plan's `rows:` line
-# closes with the same proof). After the merge, one "body:" line scores the PR body
+# closes with the same proof). A row another open queue item names stays open for that item's landing (row_worker). After the merge, one "body:" line scores the PR body
 # against comms-standard (comms-lint --channel pr-body); it never fails the landing. One line per step.
 # The item is --item, else $AGENT_QUEUE_ITEM (set in a session fleet-dispatch started), else the
 # one this session added or claimed (`agent-queue mine`). No item, no landing: every merged PR
@@ -802,17 +802,30 @@ credit() {
 # Its proof is the PR, by repo when the URL names one (pr:<owner>/<repo>#N, so the graph joins it
 # with no project lookup), and, once proven, the merge commit: something checkable, not a claim.
 board_cmd() { [ -z "$row" ] || printf '%s\n' "$row" "pr:${pr_ref:-$pr}${merged:+ commit:${merged:0:12}}"; }
+# open_items -> every open queue item, one JSON object a line (agent-queue list --json, whose `row` is
+# agent-queue's one definition); rc 1 when the queue cannot be read.
+open_items() { aq_retry list --json 2>/dev/null; }
+# row_worker <board>:<id> <open items> -> the slug of another open item that names that row, else nothing.
+# A row two items name closes with the last of them to land, never under the other: agent-queue's
+# link_row and repoint_row keep the same rule (ar-1793).
+row_worker() {
+  jq -rs --arg r "${1,,}" --arg s "$item" 'first(.[] | select((.row // "" | ascii_downcase) == $r and .slug != $s) | .slug) // empty' <<<"$2"
+}
 # close_rows <id>...: each row still open on a board closes with this PR as proof, as the item's own row
-# does. The PR is merged by now, so a row it cannot close is a line with the command, never a failed landing.
+# does, unless another open item works it. The PR is merged by now, so a row it cannot close is a line
+# with the command, never a failed landing.
 close_rows() {
-  local ids feed id hit prof proj lane out flag
+  local ids feed id hit prof proj lane out flag open other
   ids=$(printf '%s\n' "$@")
   feed=$(notes board --json 2>/dev/null) || { echo "rows: notes board --json failed; close by hand: $(paste -sd' ' <<<"$ids")"; return 0; }
+  open=$(open_items) || { echo "rows: agent-queue list failed, so no row is known free of another open item; close by hand: $(paste -sd' ' <<<"$ids")"; return 0; }
   while IFS= read -r id; do
     hit=$(jq -r --arg id "$id" '[.rows[]? | select(.id == $id)] | if length == 1 then .[0] | [.profile, .project, .lane] | @tsv else empty end' <<<"$feed" 2>/dev/null) ||
       { echo "rows: notes board --json was not JSON; close by hand: $(paste -sd' ' <<<"$ids")"; return 0; }
     if [ -z "$hit" ]; then echo "rows: $id is not one open row on any board, left as is"; continue; fi
     IFS=$'\t' read -r prof proj lane <<<"$hit"
+    other=$(row_worker "$proj:$id" "$open")
+    if [ -n "$other" ]; then echo "rows: $id left open, $other still works it"; continue; fi
     flag=(); [ "$lane" = agent ] && flag=(--agent)
     if out=$(notes --profile "$prof" ptask "$proj" "${flag[@]}" done "$id" --proof "pr:${pr_ref:-$pr}${merged:+ commit:${merged:0:12}}" 2>&1); then
       echo "rows: closed $id on $proj"
@@ -1057,8 +1070,14 @@ if [ "$partial" -eq 1 ]; then
 elif [ "$done_as" = more ] || [ "$done_as" = again ]; then
   [ "${#b[@]}" -eq 0 ] || echo "board: left to its closing PR, $(jq -r '.closing_pr // (.pr | split(" ")[0])' <<<"$it") (agent-land on that one closes the row if its board step failed)"
 elif [ "${#b[@]}" -gt 0 ]; then
-  out=$(notes "${b[@]}" 2>&1) || fail board "$(lastline "$out")"
-  echo "board: closed \"${b[-3]}\" with ${b[-1]}"
+  open=$(open_items) || fail board "agent-queue list failed, so row ${b[-3]} is not known free of another open item"
+  other=$(row_worker "$(jq -r .row <<<"$it")" "$open")
+  if [ -n "$other" ]; then
+    echo "board: left \"${b[-3]}\" open, $other still works it (its landing closes it)"
+  else
+    out=$(notes "${b[@]}" 2>&1) || fail board "$(lastline "$out")"
+    echo "board: closed \"${b[-3]}\" with ${b[-1]}"
+  fi
 fi
 
 if [ -n "$plan" ]; then

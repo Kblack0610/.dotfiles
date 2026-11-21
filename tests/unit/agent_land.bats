@@ -636,6 +636,7 @@ notes ingest record --stage land --action merged --from dotfiles --item ship --i
 notes ingest record --stage queue --action item-set --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --why pr=o/r#42 merged=fedcba9876543210fedcba9876543210fedcba98 partial= open_pr= closing_pr=o/r#42 -- ship
 gh api repos/o/r/pulls/42/files --paginate --jq .[].filename
 notes ingest record --stage queue --action item-moved --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --to done --why running -> done (ok) -- ship
+notes projects --prios
 notes ptask dotfiles --agent done ship it --proof pr:o/r#42 commit:fedcba987654
 EOF
 }
@@ -1122,6 +1123,36 @@ EOF2
   assert_success
   assert_line 'plan: ticked "2. last"'
   assert_line --index -1 'landed #43'
+}
+
+@test "a row another open item still works stays open for that item's landing (ar-1793)" {
+  item twin 'board:dotfiles:ship it' agent
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'board: left "ship it" open, twin still works it (its landing closes it)'
+  assert_line --index -1 'landed #42'
+  run board_calls
+  assert_output ''
+  # NEGATIVE CONTROL: the last item on the row to land closes it.
+  printf 'OPEN\n' >"$NOTES_FIXTURE/state"
+  run "$LAND" 42 --item twin
+  assert_success
+  assert_line 'board: closed "ship it" with pr:o/r#42 commit:fedcba987654'
+  run board_calls
+  assert_output 'notes ptask dotfiles --agent done ship it --proof pr:o/r#42 commit:fedcba987654'
+}
+
+@test "a plan or phase row another open item still works stays open; the rest close (ar-1793)" {
+  printf '%s\n' '# plan' 'rows: ucp-134 ar-9' '' '## Phases' '' '- [ ] 1. only' >"$PLAN"
+  jq -n '{rows: [{profile: "bnb", project: "game", lane: "human", id: "ucp-134", state: "open"},
+    {profile: "personal", project: "agent-runtime", lane: "agent", id: "ar-9", state: "doing"}]}' >"$NOTES_FIXTURE/board.json"
+  item fixer 'board:game:UCP-134' human bnb
+  run "$LAND" 42 --item ship --plan "$PLAN" --phase "1. only"
+  assert_success
+  assert_line 'rows: ucp-134 left open, fixer still works it'
+  assert_line 'rows: closed ar-9 on agent-runtime'
+  run grep -E 'done (ucp-134|ar-9)' "$LOG"
+  assert_output 'notes --profile personal ptask agent-runtime --agent done ar-9 --proof pr:o/r#42 commit:fedcba987654'
 }
 
 @test "the plan's rows: a deferred phase leaves them open; --dry-run names them only on the last phase" {
