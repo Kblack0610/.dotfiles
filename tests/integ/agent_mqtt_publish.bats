@@ -34,6 +34,10 @@ printf '%s\t%s\n' "$t" "$m" >> "$NOTES_FIXTURE/mqtt.log"
 EOF
   chmod +x "$SANDBOX/bin/mosquitto_pub"
 
+  # This host holds the fleet lease unless a test says otherwise (FLEET_LEASE_RC).
+  printf '#!/usr/bin/env bash\n[ "$1" = held ] && exit "${FLEET_LEASE_RC:-0}"\n' > "$SANDBOX/bin/fleet-lease"
+  chmod +x "$SANDBOX/bin/fleet-lease"
+
   # Stubbed so the host's own hub never reads the host's Prometheus into a test.
   overview_stub 'exit 1'
 
@@ -130,6 +134,15 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   assert_equal "$(jq -c '[.state, .runnable_urgent]' <<< "$p")" '[3,1]'
   c="$(payload homeassistant/sensor/agent_testhost_summary_dispatch/config)"
   assert_equal "$(jq -r .name <<< "$c")" 'Dispatch queue'
+}
+
+# ar-4306: a peer that does not hold the lease (its store clone may be days stale) sends no
+# summary/dispatch, so the chip's max over hosts reads only the holder's queue.
+@test "a machine that does not hold the fleet lease sends no dispatch summary" {
+  printf '#!/usr/bin/env bash\n[ "$1" = stats ] && echo %s\n' "'{\"state\":3,\"runnable\":328}'" > "$SANDBOX/bin/fleet-dispatch"
+  chmod +x "$SANDBOX/bin/fleet-dispatch"
+  FLEET_LEASE_RC=1 run "$PUB" --quiet
+  assert_equal "$(payload agents/testhost/summary/dispatch)" ''
 }
 
 # ar-1753: run one after the other, these two readers took a --full run past its unit's 60s at

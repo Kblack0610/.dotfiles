@@ -174,7 +174,11 @@ snapshot() {
     # that send instead: hooks (watch-companion-loop on each transition, agentctl's 5s status hook)
     # fire many times a minute, and each one re-running the readers under the lock starved the --full
     # timer run past its 60s (ar-2310).
-    command -v fleet-dispatch >/dev/null 2>&1 && slow_reader dfd summary/dispatch fleet-dispatch stats
+    # summary/dispatch describes the fleet's one queue, so only the lease holder sends it: a peer
+    # whose store clone stopped syncing (cachyos-rog, frozen since 2026-11-15) sent 622 queued, and
+    # the chip's max over hosts showed it (ar-4306). fans_out in fleet-dispatch reads it the same way.
+    command -v fleet-dispatch >/dev/null 2>&1 && fleet-lease held >/dev/null 2>&1 &&
+        slow_reader dfd summary/dispatch fleet-dispatch stats
     command -v hub >/dev/null 2>&1 && slow_reader ofd summary/overview env PROM_TIMEOUT=3 hub phone --json
 
     # Runners: the roster is the conf dir, so a retired runner drops out of HA with its conf.
