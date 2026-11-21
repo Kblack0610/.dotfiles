@@ -19,8 +19,6 @@ const logShows = (sec) => st.tab === "log" && innerShown("log", homeOf("log", se
 
 const refreshAgents = coalesce(async () => {
   st.agents = await api("/api/agents");
-  const waiting = st.agents.filter((a) => a.status === "waiting").length;
-  $("wait-badge").innerHTML = waiting ? `<span class="badge">${waiting}</span>` : "";
   refreshWaiting();
   sst.render();
   if (st.tab === "home") renderHome();

@@ -74,7 +74,7 @@ const TONES: &[(&str, Level)] = &[
     ("passed", Level::Ok),
     ("on track", Level::Ok),
     ("done", Level::Ok),
-    ("done today", Level::Ok),
+    ("ended today", Level::Ok),
     ("attention", Level::Warn),
     ("needs you", Level::Warn),
     ("stalled", Level::Warn),

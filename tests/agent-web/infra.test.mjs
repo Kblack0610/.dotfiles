@@ -43,7 +43,7 @@ const tables = (ci) => ({
 // Runners' three sections as drawInfra stacks them.
 const section = (c) => {
   ist.data = { ok: true, tables: tables(c) };
-  return run(`runnersSection(${JSON.stringify(c)}) + waitingSection() + localSection({}, Date.now())`);
+  return run(`runnersSection(${JSON.stringify(c)}) + waitingSection() + localSection(${JSON.stringify({ day: { read: false }, ...c })})`);
 };
 
 test("the Runners inner tab lists no runs and no finished table: they are Runs and Pipelines (ci.js)", () => {
@@ -89,7 +89,7 @@ test("the Local Unity table lists each failed gate by branch and platform, newes
 
 const slot = (o) => ({ host: "razer", slot: "1", state: "busy", pool: "unity", job: "PlayMode", repo: "unity", pr: "412", branch: "feat", ran: 7000, usual: 600, late: true, note: "", ...o });
 const queued = (o) => ({ job: "HD tests", pool: "unity", repo: "unity", pr: "", branch: "main", n: 1, wait: 900, needs: ["unity-full", "hd-library"], can: [], missing: ["hd-library"], stuck: true, ...o });
-const ci = { hosts: 2, slots: 3, busy: 1, queued: 1, oldest: 900, local: [], rows: [slot({}), slot({ slot: "2", state: "idle", job: "", late: false, ran: null, usual: null }), slot({ host: "mini", state: "off", late: false, ran: null, usual: null })], queue: [queued({})], red: ["HD tests (unity) needs [unity-full, hd-library]: no online runner holds hd-library"] };
+const ci = { hosts: 2, slots: 3, busy: 1, queued: 1, oldest: 900, local: [], rows: [slot({}), slot({ slot: "2", state: "idle", job: "", late: false, ran: null, usual: null }), slot({ host: "mini", state: "off", late: false, ran: null, usual: null })], queue: [queued({})], red: ["HD tests (unity) needs [unity-full, hd-library]: no online runner holds hd-library"], day: { runs: 12, pass: 0.75, failed_main: 1, failed_branch: 2, cancelled: 1, local: 4, local_pass: 0.5, read: true } };
 
 test("CI runners: a job nobody can take is a red line naming the missing label, and a late run is marked", () => {
   Object.assign(ist, { open: {} });
@@ -143,11 +143,11 @@ test("Infra's strip leads the page with nothing pinned above it; each section jo
   assert.equal(els.jobs.hidden, true);
   run(`st.arg = "jobs"; renderInfra()`);
   assert.equal(els.jobs.hidden, false);
-  // "Done today" starts open like every section; a fold the reader closed stays closed.
+  // "CI runs finished today" starts open like every section; a fold the reader closed stays closed.
   // Runs, Pipelines and Tests are ci.js's elements, each in its own group.
   for (const [id, inner] of [["ci-runs", "runs"], ["ci-pipelines", "pipelines"], ["ci-tests", "tests"]]) assert.equal(els[id].dataset.in, inner, id);
   run(`st.arg = "runners"; renderInfra()`);
-  assert.match(els["infra-main"].innerHTML, /data-k="ci-more" open><summary><h3 class="sec">Done today<\/h3><\/summary>/, "the fold's summary is its head alone");
+  assert.match(els["infra-main"].innerHTML, /data-k="ci-more" open><summary><h3 class="sec">CI runs finished today<\/h3><\/summary>/, "the fold's summary is its head alone");
   ist.open["ci-more"] = false;
   run(`renderInfra()`);
   assert.match(els["infra-main"].innerHTML, /data-k="ci-more"><summary/);

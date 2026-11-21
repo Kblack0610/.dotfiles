@@ -32,8 +32,10 @@ const refreshWaiting = coalesce(async () => {
 });
 function renderBadge() {
   const w = st.waiting;
-  const b = w === undefined ? "" : w === null ? `<span class="badge" title="${NOT_READ}">?</span>` : w.count ? `<span class="badge">${w.count}</span>` : "";
-  for (const id of ["ask-badge", "menu-badge"]) $(id).innerHTML = b;
+  const badge = (n) => w === undefined ? "" : w === null ? `<span class="badge" title="${NOT_READ}">?</span>` : n ? `<span class="badge">${n}</span>` : "";
+  for (const id of ["ask-badge", "menu-badge"]) $(id).innerHTML = badge(w?.count);
+  // Sessions' tab shows its own share of that count (Waiting.sessions), not a count of /api/agents.
+  $("wait-badge").innerHTML = badge(w?.sessions);
 }
 
 // The band a Needs you card opens with: its kind label (hub_core::home::NeedKind::label, sent on
