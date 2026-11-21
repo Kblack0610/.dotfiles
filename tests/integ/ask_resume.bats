@@ -32,7 +32,7 @@ printf 'agent-queue %s | sid=%s item=%s\n' "$*" "${CLAUDE_CODE_SESSION_ID:-}" "$
 case "$1" in
   add) [ -z "${AQ_REFUSE:-}" ] || { echo "agent-queue: unknown project" >&2; exit 1; }
        while [ "$1" != --slug ]; do shift; done; echo "running $(tr A-Z a-z <<<"$2") -> /q/running/x.md" ;;
-  show) echo '{"state":"running"}' ;;
+  show) printf '{"state":"running","pr":"%s"}\n' "${AQ_PR:-}" ;;
 esac
 EOF
   chmod +x "$SANDBOX/bin/agent-queue"
@@ -295,6 +295,23 @@ EOF
   assert_output "run item=$slug"
   run grep '^agent-queue move' "$NOTES_FIXTURE/calls.log"
   assert_output --partial "agent-queue move $slug done --status ok"
+  # The run's session id is claimed on the item before it starts, and the run is that session.
+  run grep -o "agent-queue claim $slug --sid [0-9a-f-]*" "$NOTES_FIXTURE/calls.log"
+  assert_success
+  local sid="${output##* }"
+  [ -n "$sid" ]
+  run grep -F -- "--session-id $sid" "$NOTES_FIXTURE/calls.log"
+  assert_success
+}
+
+@test "a model resume that opened a PR and did not land it leaves its item in review, not done" {
+  local id slug; id="$(gate alpha)"
+  "$AGENT_ASK" answer "$id" approve >/dev/null 2>&1
+  : > "$NOTES_FIXTURE/calls.log"
+  slug="ask-resume-$(tr A-Z a-z <<<"$id")"
+  AQ_PR=o/r#9 run ask-resume "$id"
+  run grep '^agent-queue move' "$NOTES_FIXTURE/calls.log"
+  assert_output "agent-queue move $slug review | sid= item=$slug"
 }
 
 @test "a failed model resume closes its item failed" {
