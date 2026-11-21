@@ -6296,7 +6296,7 @@ cmd_headroom() {
         "  run floor: \(.floor_live) of \(.run_floor) run sessions live; under it idle does not hold a start, nor the weekly pace of an account refused for its pace alone (committed burn, the reserve and the 5h window still do)",
         "  red floor: \(.red_live) of \(if .red_floor > 0 then .red_floor + .red_watch else 0 end) red sessions live (\(.red_floor), plus \(.red_watch) for tripped watches); under it the pace target, weekly pace, idle, load and fleet-assess do not hold a red",
         "  project floor: \(.idle_projects) project(s) with light work and nothing running; up to \(.project_floor) start a pass past real idle",
-        (if .fleet_share.cap > 0 then "  fleet share: \(.fleet_share.fleet) of \(.fleet_share.total) items started in '"$DISPATCH_FLEET_SHARE_H"'h are fleet work (\(.fleet_share.projects | join(", "))), \(.fleet_share.pct // 0)% against a \(.fleet_share.cap)% cap\(if .fleet_share.full then ": full, so only interrupts start their items until nothing else can" else "" end)" else empty end),
+        (if .fleet_share.cap > 0 and (.fleet_share.projects | length) > 0 then "  fleet share: \(.fleet_share.fleet) of \(.fleet_share.total) items started in '"$DISPATCH_FLEET_SHARE_H"'h are fleet work (\(.fleet_share.projects | join(", "))), \(.fleet_share.pct // 0)% against a \(.fleet_share.cap)% cap\(if .fleet_share.full then ": full, so only reds and work the human asked for start their items until nothing else can" else "" end)" else empty end),
         (if (.focus | length) > 0 then "  focus:     \(.focus | join(" ")) first; \(.focus_runnable) runnable item(s) of it start ahead of the other projects (reds and urgent items still go first)" else empty end)'
     fi
 }
