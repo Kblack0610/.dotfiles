@@ -82,6 +82,17 @@ covered_log() {
   [[ $line != *"~/.d..." ]]
 }
 
+@test "pick cuts a long lesson where a sentence ends, never mid-rule, and skips e.g. as an end" {
+  printf -- '- **%s** **The rule is stated here, e.g. in one sentence, and it runs past a hundred characters so that the cut keeps the whole rule.** %s and a tail that goes on.\n' \
+    "$RECENT" "$(printf 'extra %.0s' $(seq 1 60))" >> "$F"
+  run "$BIN" pick -n 1 "$F"
+  line="${lines[1]}"
+  [ "${#line}" -le 300 ]
+  [[ $line == *"whole rule.**"* ]]
+  [[ $line != *"..." ]]
+  [[ $line != *"extra"* ]]
+}
+
 @test "pick on a missing file prints nothing and succeeds" {
   run "$BIN" pick "$DIR/none.md" anything
   assert_success
@@ -529,4 +540,12 @@ EOF2
   refute_line --partial "a bracketed timestamp"
   run bash -c "\"\$0\" fat --json --max 0 \"\$1\" | jq .lessons" "$BIN" "$F"
   assert_output "3"
+}
+
+@test "pick does not cut at a short title sentence: a word cut with an ellipsis instead" {
+  printf -- '- **%s** **A short title.** %s\n' "$RECENT" "$(printf 'no stop here %.0s' $(seq 1 40))" >> "$F"
+  run "$BIN" pick -n 1 "$F"
+  line="${lines[1]}"
+  [[ $line == *"..." ]]
+  [[ $line == *"no stop here"* ]]
 }

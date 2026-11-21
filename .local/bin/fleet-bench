@@ -27,9 +27,11 @@
 #                                pending asks in hub Home's order (hub needs --json), the ones
 #                                holding a live session listed first; --write also writes
 #                                asks.md and prints one line (hub needs --page pages them)
-#   fleet-bench ledger [--json|--check|--launches DIR...]
+#   fleet-bench ledger [--json|--check|--launches DIR...|--unlisted]
 #                                runners, timers, direct headless launches, verdict words,
-#                                asks, open board rows; --check fails when one may only shrink grew
+#                                asks, open board rows; --check fails when one may only shrink grew,
+#                                or on --unlisted's lines: a launch file with no row in the PIPELINES.md
+#                                launch table (LEDGER_PIPELINES), or a row whose file no longer launches
 #   fleet-bench rules [--json|--check|--scenarios|--changed SINCE]
 #                                the rule register (RULES_REGISTER): kinds, confidence, actions, and each
 #                                rule's number re-measured; --check fails when one moved against its
@@ -51,12 +53,12 @@
 #                                startup_rolling_n starts; --check exits 1 past startup_ready_ms_p50_max,
 #                                2 with no SessionStart row in startup_stale_h or a start with no ready
 #                                time (the claude-startup watch)
-#   fleet-bench pipeline [--json | --check cap|age|mix|held]
+#   fleet-bench pipeline [--json | --check cap|age|mix|held|owner]
 #                                where every item sits, inbox to done: WIP and age per step, in and out,
 #                                dwell, the bottleneck step and the record's drift from the queue folders,
 #                                the admission cap and each class of service against its share;
 #                                --check exits 1 on runnable over the cap, queued age p90 past its
-#                                bound or a starved class while the mix is on, 2 when its source cannot be read (one
+#                                bound, a starved class while the mix is on or an item no session owns, 2 when its source cannot be read (one
 #                                Sentinel watch each)
 #   fleet-bench prs [--json | --check stranded|blocked]
 #                                the fleet's open PRs (one gh GraphQL search) joined to the queue items
@@ -230,6 +232,7 @@ set -uo pipefail
 : "${LEDGER_CONF_DIR:=$HOME/.config/agentctl/agents}"
 : "${LEDGER_SRC:=$HOME/.dotfiles/.local:$HOME/.dotfiles/.config:$HOME/.dotfiles/.claude/skills:$HOME/.dotfiles-private/.local:$HOME/.dotfiles-private/.config:$HOME/.dotfiles-private/.claude/skills}"   # colon-separated
 : "${LEDGER_BASELINE:=$HOME/.config/agentctl/ledger-baseline}"
+: "${LEDGER_PIPELINES:=$HOME/.config/agentctl/PIPELINES.md}"   # its "Model calls outside agentctl-run" table: the files allowed to launch a model outside agentctl-run
 : "${RULES_REGISTER:=$HOME/.config/agentctl/rules.jsonl}"
 : "${RULES_MEASURE_TIMEOUT:=20}"      # seconds one rule's measure may run
 # rules --changed: the files a session reads as rules (instruction-homes.json kinds global, repo, skill,
@@ -1188,7 +1191,7 @@ cmd_scorecard() {
     echo
     echo "## Consolidation ledger"
     echo
-    echo "Runners, timers and direct headless launches may only shrink; the baseline is ~/.config/agentctl/ledger-baseline."
+    echo "Runners and timers may only shrink, against ~/.config/agentctl/ledger-baseline; each direct headless launch has its row in ~/.config/agentctl/PIPELINES.md."
     echo
     ledger_section "$counts"
     echo
@@ -1387,9 +1390,9 @@ ledger_section() {
   local counts="$1" over
   sed 's/^\(.*\)=\(.*\)$/- \1: \2/' <<<"$counts"
   if over=$(ledger_check "$counts" 2>&1); then
-    echo "- baseline: held"
+    echo "- check: held"
   else
-    echo "- baseline: ${over//$'\n'/; }"
+    echo "- check: ${over//$'\n'/; }"
   fi
 }
 
@@ -1706,10 +1709,11 @@ cmd_asks() {
 #
 # The consolidation ledger. Every new need used to become a new runner, timer or launch
 # path, so the fleet grew while it was being consolidated. These are counts, never a
-# grade. --check holds the three that may only shrink to the committed baseline: to add
-# one, retire one or raise the baseline in the same PR with a why.
+# grade. --check holds the two that may only shrink to the committed baseline: to add
+# one, retire one or raise the baseline in the same PR with a why. A direct launch is held
+# per file instead (launches_unlisted): launches_direct is a reading, never a gate.
 
-: "${LEDGER_GATED:=runners timers launches_direct}"
+: "${LEDGER_GATED:=runners timers}"
 
 # headless_launches DIR... -> file:line of every executable line that starts a headless
 # claude, opencode, codex or agy outside agentctl-run, or calls a model's HTTP API (an OpenAI-style chat/completions or
@@ -1728,6 +1732,36 @@ headless_launches() {
       -- . ':!*.md' ':!*.yaml' ':!*.yml' ':!tests/**' ':!**/tests/**') \
       | sed "s|^|${d%/}/|"
   done | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(#|echo )' | grep -v '/agent-run/harnesses/'
+}
+
+# launch_rows -> the file each row of PIPELINES.md's "Model calls outside agentctl-run" table
+# names (the first backticked word of its File cell), sorted; exit 2 with no such table.
+launch_rows() {
+  [ -r "$LEDGER_PIPELINES" ] || { say "no launch table: cannot read $LEDGER_PIPELINES"; return 2; }
+  awk '/^## /{ on = (index($0, "## Model calls outside agentctl-run") == 1); found = found || on; next }
+    on && /^\| `/ { split($0, c, "`"); print c[2] }
+    END { exit !found }' "$LEDGER_PIPELINES" | sort -u
+  [ "${PIPESTATUS[0]}" = 0 ] \
+    || { say "no launch table: $LEDGER_PIPELINES has no '## Model calls outside agentctl-run' section"; return 2; }
+}
+
+# launch_files -> each file under LEDGER_SRC with a headless launch line, once, sorted
+launch_files() {
+  local src
+  IFS=: read -ra src <<<"$LEDGER_SRC"
+  headless_launches "${src[@]}" | cut -d: -f1 | sort -u
+}
+
+# launches_unlisted -> one line per launch file (launch_files) with no launch_rows row (by file
+# name, as the table names them), and per row no launch file has that name; exit 1 on any, 2 with
+# no table. The rows are the per-file allowlist of launches outside agentctl-run.
+launches_unlisted() {
+  local rows
+  rows=$(launch_rows) || return 2
+  launch_files | awk 'NR == FNR { if ($0 != "") row[$0] = 1; next }
+    $0 != "" { b = $0; sub(/.*\//, "", b); seen[b] = 1; if (!(b in row)) { print "launch with no PIPELINES.md row: " $0; bad = 1 } }
+    END { for (k in row) if (!(k in seen)) { print "PIPELINES.md row with no launch: " k; bad = 1 }; exit bad }' <(printf '%s\n' "$rows") -
+  return "${PIPESTATUS[1]}"   # awk's word: an empty scan exits 1 from its grep -v, and that is no fault
 }
 
 # scheduled_runner <conf> -> the runner's name, failing for one fired by hand. fleet-liveness's
@@ -1787,7 +1821,7 @@ intake_room() {
 # counted where `agentctl reload` writes one, a switched-on oneshot with a SCHEDULE; reload
 # removes any other, so the live timer dir holds the same count once reloaded.
 ledger_roster() {
-  local c n_conf=0 n_on=0 n_bad=0 n_call=0 n_timer=0 src sd="" name
+  local c n_conf=0 n_on=0 n_bad=0 n_call=0 n_timer=0 sd="" name
   proof_lib && sd=$(proof_state_dir)
   for c in "$LEDGER_CONF_DIR"/*.conf; do
     [ -e "$c" ] || continue
@@ -1805,8 +1839,7 @@ ledger_roster() {
   echo "runners_bad=$n_bad"
   echo "agents_call=$n_call"
   echo "timers=$n_timer"
-  IFS=: read -ra src <<<"$LEDGER_SRC"
-  echo "launches_direct=$(headless_launches "${src[@]}" | cut -d: -f1 | sort -u | wc -l)"
+  echo "launches_direct=$(launch_files | wc -l)"
 }
 
 # insight_expired_share EPOCH -> the share (two decimals) of the insights dated 30 to 60 days before
@@ -2104,16 +2137,16 @@ chain_notes() {
 # counter owns its version (project_version_owner) still due a day after its cadence due date, so a
 # wave-roll pass had all day to cut it, by "cadence"; its `.release.due` already means done rows waited out
 # the cadence. drift: a project a vX.Y.Z tag owns whose sheet is neither that tag (the roll is pending) nor
-# a next open version above it (git_version_next_ok, what wave-roll may open). A game with build tags but
-# no `<game>-vX.Y.Z` family is a sheet-counter project here. A profile with `automation = false` counts in neither.
+# a next open version above it (git_version_next_ok, what wave-roll may open). A game its parent versions
+# (`version_parent`, project_version_owner `parent`) counts in neither: the parent is the one cut. A profile with `automation = false` counts in neither.
 release_kpis() {
-  local today prof name ver due_on tver ton shipped owner by ver_due
+  local today prof name ver due_on tver ton parent shipped owner by ver_due
   today=$(date -d "@$1" +%F)
   jq -r '.[] | select(.automation != false) | [.profile, .name, (.version // "-"), (if .release.due then .release.due_on // "-" else "-" end),
-      (.target_version // "-"), (.target_on // "-")] | join("|")' <<<"$2" |
-  while IFS='|' read -r prof name ver due_on tver ton; do
+      (.target_version // "-"), (.target_on // "-"), (.version_parent // "")] | join("|")' <<<"$2" |
+  while IFS='|' read -r prof name ver due_on tver ton parent; do
     shipped=$(project_release_version "$name")
-    owner=$(project_version_owner "$name" "$shipped")
+    owner=$(project_version_owner "$name" "$shipped" "$parent")
     if [ "$ton" != - ]; then by=target ver_due=$tver due_on=$ton
     elif [ "$owner" = sheet ]; then by=cadence ver_due=$ver
     else by=; fi
@@ -2269,12 +2302,13 @@ pipeline_json() {
        steps: $rows}'
 }
 
-# pipeline_check <cap|age|mix|held> -- one line and exit 1 when the queue's flow is off: runnable items over
+# pipeline_check <cap|age|mix|held|owner> -- one line and exit 1 when the queue's flow is off: runnable items over
 # the admission cap (the adds it exempts, urgent, red, board pulls and plans, can
 # carry it past), the queued step's age p90 past its bound (an empty step passes), or, while the mix
 # is on, a class of service starved (agent-queue mix; off, nothing balances the classes), or a queued item with a pending gate (hold_for, past a desk turn),
-# which belongs on its board row (QUEUE.md "Admission"). Exit 2 when
-# its source cannot be read. cap, age and mix are each one Sentinel watch (queue-over-cap, queue-age, queue-class-starved,
+# which belongs on its board row (QUEUE.md "Admission"), or an active item no session owns (ownerless, the
+# ownerless_running KPI, which reap flags). Exit 2 when
+# its source cannot be read. cap, age, mix and owner are each one Sentinel watch (queue-over-cap, queue-age, queue-class-starved, queue-ownerless,
 # in ~/.agent/watches), so one that stays red masks no other.
 pipeline_check() {
   local out
@@ -2289,12 +2323,14 @@ pipeline_check() {
     held) out=$($BENCH_ITEMS_CMD 2>/dev/null) && out=$(jq -sr '[.[] | select(.state == "queued" and (.hold // "") != ""
            and (.hold | test("^hold:[^ ]+ \\((behind |desk:auth waits)") | not)) | "\(.slug) (\(.hold))"]
            | if length == 0 then "" else "\(length) queued with a pending gate, which belongs on its board row: \(.[:5] | join(", "))" end' <<<"$out") ;;
-    *) say "usage: fleet-bench pipeline --check cap|age|mix|held"; return 2 ;;
+    owner) out=$($BENCH_ITEMS_CMD 2>/dev/null) && out=$(jq -sr "$JQ_LIB"'[.[] | ownerless | "\(.slug) (\(.state))"]
+           | if length == 0 then "" else "\(length) running, review or waiting with no session: \(.[:5] | join(", "))" end' <<<"$out") ;;
+    *) say "usage: fleet-bench pipeline --check cap|age|mix|held|owner"; return 2 ;;
   esac || { say "pipeline --check $1: its source cannot be read"; return 2; }
   [ -z "$out" ] || { printf '%s\n' "$out"; return 1; }
 }
 
-# pipeline [--json | --check cap|age|mix|held] -- pipeline_json with the admission cap and the class mix
+# pipeline [--json | --check cap|age|mix|held|owner] -- pipeline_json with the admission cap and the class mix
 # (agent-queue mix), or a table of it with the bottleneck, the steps taking in more than they let out
 # over 24h, the drift, the cap and each class's starts against its share; --check is pipeline_check.
 cmd_pipeline() {
@@ -2302,7 +2338,7 @@ cmd_pipeline() {
   case "${1:-}" in
     ""|--json) ;;
     --check) pipeline_check "${2:-}"; return ;;
-    *) say "usage: fleet-bench pipeline [--json | --check cap|age|mix|held]"; return 2 ;;
+    *) say "usage: fleet-bench pipeline [--json | --check cap|age|mix|held|owner]"; return 2 ;;
   esac
   json=$(pipeline_json "$(now)") || return 1
   adm=$($BENCH_ADMISSION_CMD 2>/dev/null | jq -ce 'objects') || adm=null
@@ -2413,7 +2449,8 @@ cmd_prs() {
   esac
 }
 
-# ledger_check <counts> -> one line per gated count over the baseline; exit 1 if any, 2 if no baseline
+# ledger_check <counts> -> one line per gated count over the baseline, then launches_unlisted's
+# lines; exit 1 if any, 2 if no baseline or no launch table
 ledger_check() {
   local k cur base bad=0
   [ -r "$LEDGER_BASELINE" ] || { say "no ledger baseline at $LEDGER_BASELINE"; return 2; }
@@ -2428,6 +2465,8 @@ ledger_check() {
       bad=1
     fi
   done
+  launches_unlisted
+  case $? in 0) ;; 1) bad=1 ;; *) return 2 ;; esac
   return "$bad"
 }
 
@@ -2436,6 +2475,7 @@ cmd_ledger() {
   case "${1:-}" in
     --launches) shift; headless_launches "$@"; return 0 ;;
     --check) ledger_check "$(ledger_roster)"; return ;;
+    --unlisted) launches_unlisted; return ;;
   esac
   counts=$(ledger_counts)
   case "${1:-}" in
@@ -4384,9 +4424,11 @@ triage_promote() {
 # triage_coverage -> each standing watch and each runner no TRIAGE_ROUTES line resolves, and each
 # runner whose SKILL names nothing (agentctl skill --dangling), one a line.
 # It builds the row each would file, so a line that stops matching the real row text counts too. A
-# watch with an expiry is a bake or a one-off: it pages and goes, so it needs no line.
+# watch with an expiry is a bake or a one-off: it pages and goes, so it needs no line. A watch counts
+# as routed only by a line that names it: each watch's fix is its own, so a generic line such as
+# `check(watch): ([a-z-]+) tripped` would read every new watch as covered (penguin P4, ar-4155).
 triage_coverage() {
-  local f n text out rows=
+  local f n text out key route re skill fix tags rows=
   # Exit 1 is the answer "some are dangling"; any other failure means the check did not run, which
   # counts too, so a missing agentctl cannot read as clean.
   out=$(AGENTCTL_CONF_DIR="$LEDGER_CONF_DIR" $BENCH_SKILL_CMD 2>&1) || [ $? -eq 1 ] || out="the SKILL check failed: $out"
@@ -4410,7 +4452,13 @@ triage_coverage() {
   [ -n "$rows" ] || return 0
   triage_shape hold ci-0
   rows+="hold"$'\t'"$text"$'\t-\n'
-  triage_route "${rows%$'\n'}" | awk -F'\t' '$4 == "-" { print $1 }'
+  triage_route "${rows%$'\n'}" | while IFS=$'\t' read -r key _ _ route _; do
+    [ "$route" != - ] || { echo "$key"; continue; }
+    [[ "$key" == 'watch '* ]] || continue
+    n=${key#watch }
+    triage_shape watch "$n"
+    triage_line "$text" && [[ "$re" =~ (^|[^a-z0-9_-])$n([^a-z0-9_-]|$) ]] || echo "$key"
+  done
 }
 
 # A cleanup item merges itself at any hour behind the red-fix gate (policy.md), so nobody is there
@@ -4455,12 +4503,15 @@ hold_memo() {
 
 # hold_failed <owner/repo> <run id> -> the bats files that failed in that run, repo-relative; rc 1
 # when its log cannot be read, or is not there yet. gh cannot read a Forgejo run's log, so one names
-# no file and counts against the merges since the last green, like any red that names none.
+# no file and counts against the merges since the last green, like any red that names none. Only a
+# TAP diagnostic line (# first, then perhaps "(from function `setup'") names a failure: a bats
+# warning (BW02) prints the same "in test file" trace without the #, and named a file that passed
+# (ar-4122).
 hold_failed() {
   local log
   [[ $(hold_ledger "$1") != forgejo:* ]] || return 0
   log=$(gh run view "$2" -R "$1" --log-failed 2>/dev/null) && [ -n "$log" ] || return 1
-  { grep -oE 'in test file [^,]+\.bats' <<<"$log" || true; } | sed -E 's#.*[ /](unit|integ|ui)/#tests/\1/#' | sort -u
+  { grep -oE '#[^,]*in test file [^,]+\.bats' <<<"$log" || true; } | sed -E 's#.*[ /](unit|integ|ui)/#tests/\1/#' | sort -u
 }
 
 # hold_test <owner/repo> <sha> <file> -> the file's text at that sha

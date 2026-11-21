@@ -4055,6 +4055,50 @@ second line of the brief
 a"
 }
 
+@test "at the cap pull-after's pull of a row an ok close cleared returns the last-ranked item; dispatch's own pull is held" {
+  # 2026-11-20 (chain-after-stuck): hc-551, ar-3027 and ar-3662 were pulled at the cap, held, and sat on
+  # the backlog tier no pass takes.
+  "$AQ" add --project game --from shepherd --slug a "a" >/dev/null
+  "$AQ" add --project game --from shepherd --priority low --slug b "b" >/dev/null
+  for s in a b; do "$AQ" set "$s" row="game:gm-$s" >/dev/null; done
+  export AGENT_QUEUE_CAP=2
+  # Negative control: the same row from dispatch's pass is held, and nothing is returned.
+  AGENT_QUEUE_PULL=dispatch run "$AQ" add --project game --priority low --from board:game:gm-9 --slug gm-9 "feat(game): the doors"
+  assert_failure 5
+  refute_output --partial "returned"
+  AGENT_QUEUE_PULL=after run "$AQ" add --project game --priority low --from board:game:gm-9 --slug gm-9 "feat(game): the doors"
+  assert_success
+  assert_output --partial "returned b to its board row to make room for low gm-9 under the cap of 2"
+  run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
+  assert_output "a,gm-9"
+  # A low pull never returns the high item a; and a sibling the same pull-after queued (AQ_ROOM_KEEP) is
+  # never returned for the next, so both are held.
+  AQ_ROOM_KEEP=" gm-9" AGENT_QUEUE_PULL=after run "$AQ" add --project game --priority low --from board:game:gm-8 --slug gm-8 "feat(game): the hinges"
+  assert_failure 5
+  refute_output --partial "returned a"
+  AQ_ROOM_KEEP=" gm-9" AGENT_QUEUE_PULL=after run "$AQ" add --project game --priority high --from board:game:gm-7 --slug gm-7 "feat(game): the locks"
+  assert_success
+  assert_output --partial "returned a to its board row"
+  AQ_ROOM_KEEP=" gm-9 gm-7" AGENT_QUEUE_PULL=after run "$AQ" add --project game --priority high --from board:game:gm-6 --slug gm-6 "feat(game): the bolts"
+  assert_failure 5
+  run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
+  assert_output "gm-7,gm-9"
+}
+
+@test "gate after/<row-id> reads a row in a queued sprint, which the board lists only under its sprint's tasks" {
+  gate_rbw
+  # 2026-11-20: after/ucp-2282 and seven more links to v0.5.5 rows read dead, though each row was open.
+  jq -n '{rows: [{id: "ar-1", state: "open", tags: ["after/ucp-5", "after/ucp-6", "after/ucp-7"]}], done: [],
+          sprints: [{tasks: [{id: "ucp-5", state: "doing"}, {id: "ucp-6", state: "done"}, {id: "ucp-7", state: "gone"}]}]}' > "$NOTES_FIXTURE/board.json"
+  run "$AQ" gate --json --all
+  assert_failure 3
+  st() { jq -r --arg t "$1" 'select(.tag == $t) | "\(.state)|\(.why)"' <<<"$output"; }
+  [ "$(st after/ucp-5)" = "pending|after ucp-5 (open)" ]
+  [ "$(st after/ucp-6)" = "clear|" ]
+  # Negative control: a task the sprint marks gone is no row, so its link is still dead.
+  [[ "$(st after/ucp-7)" == "dead|after ucp-7: no board row"* ]]
+}
+
 @test "make_room returns an item held to a clock time, moves nothing for an add the lock refuses, and never returns an item that started" {
   "$AQ" add --project game --priority low --slug h "the human's" >/dev/null
   legacy n "tags: at:23:59" --project game --from shepherd --priority low "tonight"
