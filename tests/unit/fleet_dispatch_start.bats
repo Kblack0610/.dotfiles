@@ -966,7 +966,7 @@ trainee_start_ready() {
   pane="$SANDBOX/pane" && mkdir -p "$pane"
   printf '#!/usr/bin/env bash\necho "timeout $1" >> %q\n' "$pane/log" > "$pane/timeout"
   printf '#!/usr/bin/env bash\necho "fleet-dispatch $*" >> %q; [ "$1" != run-result ] || echo "patch written, 1 file, +2 -1"\n' "$pane/log" > "$pane/fleet-dispatch"
-  printf '#!/usr/bin/env bash\necho "tmux $*" >> %q\n' "$pane/log" > "$pane/tmux"
+  tmux_script "$(printf 'echo "tmux $*" >> %q' "$pane/log")"
   printf '#!/usr/bin/env bash\necho "srt ${*: -1} pair=$AGENT_RUN_PAIR result=$AGENT_RUN_RESULT key=${LITELLM_MASTER_KEY:-none} leak=${PANE_SECRET:-none}" >> %q\n' "$pane/log" > "$pane/srt"
   chmod +x "$pane"/*
   [ -e "$run/srt-$sid.json" ] || fail "no srt settings before the pane runs"
@@ -1165,7 +1165,7 @@ trainee_start_ready() {
   git -C "$m" add menu.txt && git -C "$m" commit -qm base && git -C "$m" remote add origin "$SANDBOX/origin.git" && git -C "$m" push -q origin main
   w="$SANDBOX/wt" && git -C "$m" worktree add -q -b game-d "$w" 2>/dev/null
   base=$(git -C "$w" rev-parse HEAD)
-  stub gh 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; [ "$1 $2" != "pr create" ] || echo https://github.com/o/game/pull/77; [ "$1 $2" != "pr view" ] || echo "${PR_STATE:-OPEN}"'
+  gh_script 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; [ "$1 $2" != "pr create" ] || echo https://github.com/o/game/pull/77; [ "$1 $2" != "pr view" ] || echo "${PR_STATE:-OPEN}"'
   stub agent-land 'echo "agent-land $*" >> "$NOTES_FIXTURE/calls.log"; exit ${LAND_RC:-0}'
   land() { run bash -c "cd $(printf %q "$w") && $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") direct-land $1"; }
   # No diff: the row goes back on claude, its direct: kept so no ladder run takes it again.
@@ -1523,7 +1523,7 @@ trainee_start_ready() {
   assert_failure
   assert_output --partial 'the codex run of cx is still live'
   stub pgrep 'exit 1'
-  stub tmux 'echo "tmux $*" >> "$NOTES_FIXTURE/calls.log"; case " $* " in *" has-session "*) exit 1 ;; esac; exit 0'
+  tmux_script 'echo "tmux $*" >> "$NOTES_FIXTURE/calls.log"; case " $* " in *" has-session "*) exit 1 ;; esac; exit 0'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --resume th-4 --session cx-again --cwd "$SANDBOX/repos/game"
   assert_success
   assert_called 'new-session -d -s cx-again'
@@ -1727,7 +1727,7 @@ stacked_pair() {
   project game beta "$SANDBOX/repos/game"
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
   # gh: `pr view 7 -R Org/game --json headRefOid -q .headRefOid` and the state read answer from the fixtures.
-  stub gh 'case "$*" in *headRefOid*) cat "$NOTES_FIXTURE/pr7.head" ;; *state*) echo OPEN ;; esac'
+  gh_script 'case "$*" in *headRefOid*) cat "$NOTES_FIXTURE/pr7.head" ;; *state*) echo OPEN ;; esac'
   echo 0123456789abcdef0123456789abcdef01234567 > "$NOTES_FIXTURE/pr7.head"
   agent-queue add --project game --slug base --running "first phase"
   agent-queue set base open_pr=Org/game#7
@@ -1752,7 +1752,7 @@ stacked_pair() {
 
 @test "start --item of a stacked phase whose PR head cannot be read starts nothing and stays queued (ar-3852)" {
   stacked_pair
-  stub gh 'case "$*" in *headRefOid*) exit 1 ;; *state*) echo OPEN ;; esac'
+  gh_script 'case "$*" in *headRefOid*) exit 1 ;; *state*) echo OPEN ;; esac'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item second
   assert_failure
   assert_output --partial "could not read the head of Org/game#7"

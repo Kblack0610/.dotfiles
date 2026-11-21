@@ -371,6 +371,14 @@ fleet_field() {
   "$FLEET" --list 2>/dev/null | awk -F'\t' -v t="$1" -v n="$2" '$1==t { print $n }' | strip_ansi
 }
 
+# gh_script / tmux_script [<body>] -- this test's own `gh` / `tmux`: the shared stub (helpers/stubs) sources
+# <body> (or stdin, for a heredoc) in place of its canned answers. One stub on PATH, the behaviour a test
+# needs is data in the fixture dir; never write a second gh or tmux into $SANDBOX/bin. A later call replaces
+# the earlier body; `gh_script 'exit 1'` is "gh cannot answer". The body logs what its test asserts on.
+_stub_script() { if [ $# -gt 1 ]; then printf '%s\n' "$2" > "$NOTES_FIXTURE/$1.script"; else cat > "$NOTES_FIXTURE/$1.script"; fi; chmod +x "$NOTES_FIXTURE/$1.script"; }
+gh_script() { _stub_script gh "$@"; }
+tmux_script() { _stub_script tmux "$@"; }
+
 # The log of stub CLI invocations, one shell-quoted command per line.
 calls() { cat "$NOTES_FIXTURE/calls.log" 2>/dev/null; }
 

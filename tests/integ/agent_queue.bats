@@ -1350,8 +1350,7 @@ notes --profile bnb ptask game --agent run gm-9"
 @test "a pr: tag holds an item until gh says the PR merged, and after still holds with it" {
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
   # gh stub: the state for PR N is the file $SANDBOX/pr-N; every call is logged.
-  printf '#!/usr/bin/env bash\necho "gh $*" >> "%s/gh.log"\ncat "%s/pr-$3"\n' "$SANDBOX" "$SANDBOX" > "$SANDBOX/bin/gh"
-  chmod +x "$SANDBOX/bin/gh"
+  gh_script "echo \"gh \$*\" >> \"$SANDBOX/gh.log\"; cat \"$SANDBOX/pr-\$3\""
   echo OPEN > "$SANDBOX/pr-7"; echo OPEN > "$SANDBOX/pr-8"
   legacy blocked "tags: pr:Org/game#7" --project game --priority urgent "a"
   "$AQ" add --project game --slug base "b"
@@ -1365,7 +1364,7 @@ notes --profile bnb ptask game --agent run gm-9"
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"both\") | .hold'"
   assert_output "after base"
   # A merged PR is cached for good: once more with gh failing makes no difference.
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"
+  gh_script 'exit 1'
   [ "$("$AQ" next --json | jq -r .slug)" = blocked ]
   run "$AQ" add --project game --tags "pr:1653" "x"
   assert_failure; assert_output --partial "pr:<owner>/<repo>#<N>"
@@ -1373,7 +1372,7 @@ notes --profile bnb ptask game --agent run gm-9"
 
 @test "a pr: tag holds while gh cannot read the PR" {
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+  gh_script 'exit 1'
   legacy blocked "tags: pr:Org/game#9" --project game "a"
   run bash -c "'$AQ' list --json | jq -r '.hold'"
   assert_output "pr:Org/game#9 not merged"
@@ -1385,11 +1384,11 @@ notes --profile bnb ptask game --agent run gm-9"
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache" AGENT_QUEUE_PR_TTL=0
   mkdir -p "$REPO/.forgejo/workflows"; : > "$REPO/.forgejo/workflows/mirror-to-github.yaml"
   git -C "$REPO" remote add forgejo https://git.example.test/o/game.git
-  printf '#!/usr/bin/env bash\necho "gh $*" >> "%s/gh.log"\nexit 1\n' "$SANDBOX" > "$SANDBOX/bin/gh"
+  gh_script "echo \"gh \$*\" >> \"$SANDBOX/gh.log\"; exit 1"
   printf '#!/usr/bin/env bash\necho sekret\n' > "$SANDBOX/bin/rbw-fj"
   printf '#!/usr/bin/env bash\nurl=${*: -1}; echo "$url" >> "%s/fj.urls"\ncase "$url" in */pulls/5) cat "%s/fj.pr" ;; */status) echo "{\\"statuses\\": []}" ;; *) exit 22 ;; esac\n' \
     "$SANDBOX" "$SANDBOX" > "$SANDBOX/bin/curl-fj"
-  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/rbw-fj" "$SANDBOX/bin/curl-fj"
+  chmod +x "$SANDBOX/bin/rbw-fj" "$SANDBOX/bin/curl-fj"
   export SO_CURL=curl-fj SO_RBW=rbw-fj SO_FORGEJO_HOSTS=git.example.test
   echo '{"number": 5, "state": "open", "merged": false, "head": {"sha": "h1"}}' > "$SANDBOX/fj.pr"
   legacy blocked "tags: pr:kblack0610/game#5" --project game "a"
@@ -1406,7 +1405,7 @@ notes --profile bnb ptask game --agent run gm-9"
 
 @test "a pr: read that fails is cached for the TTL, so a pass of lists costs one call (negative control: TTL 0 asks again)" {
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
-  printf '#!/usr/bin/env bash\necho "gh $*" >> "%s/gh.log"\nexit 1\n' "$SANDBOX" > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+  gh_script "echo \"gh \$*\" >> \"$SANDBOX/gh.log\"; exit 1"
   legacy blocked "tags: pr:Org/game#9" --project game "a"
   for _ in 1 2 3; do "$AQ" list --json >/dev/null; done
   [ "$(wc -l < "$SANDBOX/gh.log")" -eq 1 ] || fail "gh asked $(wc -l < "$SANDBOX/gh.log") times"
@@ -1416,7 +1415,7 @@ notes --profile bnb ptask game --agent run gm-9"
 
 @test "a pr: tag on a PR closed unmerged holds and says it never releases" {
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
-  printf '#!/usr/bin/env bash\ncat "%s/pr-$3"\n' "$SANDBOX" > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+  gh_script "cat \"$SANDBOX/pr-\$3\""
   echo CLOSED > "$SANDBOX/pr-11"
   legacy dead "tags: pr:Org/game#11" --project game "a"
   run bash -c "'$AQ' list --json | jq -r '.hold'"
@@ -2461,7 +2460,7 @@ EOF
   "$AQ" move first done --status ok >/dev/null
   sed -i '/^from: /i tags: pr:Org/game#11' "$(item queued second)"
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
-  printf '#!/usr/bin/env bash\ncat "%s/pr-$3"\n' "$SANDBOX" > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+  gh_script "cat \"$SANDBOX/pr-\$3\""
   echo CLOSED > "$SANDBOX/pr-11"
   [[ "$("$AQ" show second --json | jq -r .hold)" == "pr:Org/game#11 closed unmerged"* ]]
   run "$AQ" bump second urgent
@@ -4427,8 +4426,7 @@ already"
   story_notes
   export AGENT_QUEUE_CAP=0 # the cap derives every hold to count runnable; this test is about the writers that do not
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
-  printf '#!/usr/bin/env bash\necho "gh $*" >> "%s/gh.log"\necho OPEN\n' "$SANDBOX" > "$SANDBOX/bin/gh"
-  chmod +x "$SANDBOX/bin/gh"
+  gh_script "echo \"gh \$*\" >> \"$SANDBOX/gh.log\"; echo OPEN"
   legacy held "tags: pr:Org/game#7" --project game "a"
   : > "$SANDBOX/gh.log"
   run "$AQ" add --project game --row lv-2 --slug by-row "feat(menu): the row's work"
@@ -4650,8 +4648,7 @@ already"
 stack_gh() {
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
   # gh stub: the state of PR N is the file $SANDBOX/pr-N.
-  printf '#!/usr/bin/env bash\ncat "%s/pr-$3"\n' "$SANDBOX" > "$SANDBOX/bin/gh"
-  chmod +x "$SANDBOX/bin/gh"
+  gh_script "cat \"$SANDBOX/pr-\$3\""
   echo OPEN > "$SANDBOX/pr-7"
 }
 

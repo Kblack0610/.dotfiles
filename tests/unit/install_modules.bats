@@ -114,7 +114,7 @@ overlay_install() {
   [ "$HOME" != "$(getent passwd "$(id -u)" | cut -d: -f6)" ]
   mkdir -p "$BATS_TEST_TMPDIR/bin"
   printf '#!/bin/sh\nexit 0\n' >"$BATS_TEST_TMPDIR/bin/stow"
-  printf '#!/bin/sh\necho "gh $*" >>"%s/calls"\n[ "$1 $2" = "repo clone" ] && git init -q "$4"\nexit 0\n' "$BATS_TEST_TMPDIR" >"$BATS_TEST_TMPDIR/bin/gh"
+  gh_script "echo \"gh \$*\" >>\"$BATS_TEST_TMPDIR/calls\"; [ \"\$1 \$2\" = \"repo clone\" ] && git init -q \"\$4\"; exit 0"
   printf '#!/bin/sh\necho "ssh $*" >>"%s/calls"\nexit 255\n' "$BATS_TEST_TMPDIR" >"$BATS_TEST_TMPDIR/bin/ssh"
   chmod +x "$BATS_TEST_TMPDIR/bin/"*
   deploy_skills() { :; }

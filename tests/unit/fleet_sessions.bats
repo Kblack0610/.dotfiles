@@ -1391,10 +1391,10 @@ landed_fixture() {
   oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
   phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout'
   panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; printf 'feat/x\t875\tMERGED\tPASS\t%s\n' "$oid" > "$LEDGER_DIR/prs.tsv"
+  gh_script 'exit 1'; printf 'feat/x\t875\tMERGED\tPASS\t%s\n' "$oid" > "$LEDGER_DIR/prs.tsv"
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-bench" # no estimates unless a test writes one
-  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess" "$SANDBOX/bin/fleet-bench"
+  chmod +x "$SANDBOX/bin/fleet-assess" "$SANDBOX/bin/fleet-bench"
 }
 
 @test "end to end: a squash-merged branch whose tree equals origin/main is not files with no PR (ar-225)" {
@@ -1449,8 +1449,8 @@ echo
 echo 'PID      THR   AGE  COMM         CLASS    SESSION                      WORKTREE                           WCHAN                OPEN'
 echo '4343       1   10m  rg           claude   s1                           dotfiles-agent-1                   -                    lab/%7'
 SH
-  printf '#!/usr/bin/env bash\necho "[]"\n' > "$SANDBOX/bin/gh"
-  chmod +x "$SANDBOX/bin/agent-panel" "$SANDBOX/bin/fleet-assess" "$SANDBOX/bin/gh"
+  gh_script 'echo "[]"'
+  chmod +x "$SANDBOX/bin/agent-panel" "$SANDBOX/bin/fleet-assess"
 
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
@@ -1608,7 +1608,7 @@ SH
   local oid old="1111111111111111111111111111111111111111"
   oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
   # gh lists newest first: #1500 went out on another head branch, #1490 is an older closed PR of this branch's name
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; printf 'all-sources-p5-scoring\t1500\tMERGED\tPASS\t%s\nfeat/x\t1490\tCLOSED\tPASS\t%s\n' "$oid" "$old" > "$LEDGER_DIR/prs.tsv"
+  gh_script 'exit 1'; printf 'all-sources-p5-scoring\t1500\tMERGED\tPASS\t%s\nfeat/x\t1490\tCLOSED\tPASS\t%s\n' "$oid" "$old" > "$LEDGER_DIR/prs.tsv"
 
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
@@ -1616,7 +1616,7 @@ SH
   [ "$(jq -r .fact <<<"$output")" = 'LANDED PR #1500 merged, tree clean, next phase: Phase 2: rollout @feat/x' ]
 
   # with no PR holding HEAD, the closed one of the same name is old: it is not the blocker
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; printf 'feat/x\t1490\tCLOSED\tPASS\t%s\n' "$old" > "$LEDGER_DIR/prs.tsv"
+  gh_script 'exit 1'; printf 'feat/x\t1490\tCLOSED\tPASS\t%s\n' "$old" > "$LEDGER_DIR/prs.tsv"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   [[ "$(jq -r .fact <<<"$output")" != *'closed without merging'* ]]
@@ -1767,9 +1767,9 @@ SH
   phases_plan '- [ ] Phase 1: fix main'
   panel "$SANDBOX/wt" "$SANDBOX/plan.md"
   ledger main "[$(r Tests success "$green" 1),$(r Tests failure "$red" 2)]"
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; printf 'feat/x\t875\tMERGED\tPASS\t%s\n' "$red" > "$LEDGER_DIR/prs.tsv"
+  gh_script 'exit 1'; printf 'feat/x\t875\tMERGED\tPASS\t%s\n' "$red" > "$LEDGER_DIR/prs.tsv"
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
-  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess"
+  chmod +x "$SANDBOX/bin/fleet-assess"
 
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
@@ -1845,7 +1845,7 @@ SH
   git -C "$DOTFILES" switch -q main
   git -C "$DOTFILES" fetch -q origin
   panel "$DOTFILES"
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+  gh_script 'exit 1'
 
   # negative control: on main there is no row
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
@@ -2032,9 +2032,9 @@ SH
   phases_plan '- [ ] Phase 1: x'
   panel "$SANDBOX/wt" "$SANDBOX/plan.md"
   ledger main "[$(r Tests success "$green" 1)]"
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; printf 'feat/x\t875\tMERGED\tPASS\t%s\n' "$green" > "$LEDGER_DIR/prs.tsv"
+  gh_script 'exit 1'; printf 'feat/x\t875\tMERGED\tPASS\t%s\n' "$green" > "$LEDGER_DIR/prs.tsv"
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
-  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess"
+  chmod +x "$SANDBOX/bin/fleet-assess"
 
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
@@ -2792,8 +2792,8 @@ empty_submodule_fixture() {
   # negative control, the plan back: one still open is the row's PR (sibling_pr), unlanded, so not finished
   PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" panel "$SANDBOX/wt" "$SANDBOX/plan.md"
   printf -- '-\t7\tOPEN\tPASS\t-\t-\n' > "$LEDGER_DIR/prs_o_one.tsv"
-  printf '#!/usr/bin/env bash\ncase "$*" in api*) echo "[]" ;; *"pr view 7 --repo o/one"*) echo %q ;; *) exit 1 ;; esac\n' \
-    '{"headRefOid":"feedface0000beef","statusCheckRollup":[{"conclusion":"SUCCESS"}]}' > "$SANDBOX/bin/gh"
+  gh_script "$(printf 'case "$*" in api*) echo "[]" ;; *"pr view 7 --repo o/one"*) echo %q ;; *) exit 1 ;; esac' \
+    '{"headRefOid":"feedface0000beef","statusCheckRollup":[{"conclusion":"SUCCESS"}]}')"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   [ "$(jq -c '[.bucket, .pr, .finished, .blockers]' <<<"$output")" = '["STALLED","7",false,["PR o/one#7 open, CI PASS"]]' ]
@@ -2803,7 +2803,7 @@ empty_submodule_fixture() {
 
 @test "end to end: edits in other worktrees block a clean cwd from reading LANDED or finished" {
   landed_fixture
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/gh"
+  gh_script 'exit 0'
   mkdir -p "$HOME/.worktrees"
   local other="$HOME/.worktrees/other work" unrelated="$HOME/.worktrees/unrelated"
   git -C "$SANDBOX/wt" worktree add -q -b other "$other" origin/main
@@ -2942,15 +2942,15 @@ empty_submodule_fixture() {
   "${g[@]}" remote set-head origin main
   panel "$SANDBOX/wt"
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
-  printf '#!/usr/bin/env bash\ncase "$1" in repo) echo develop ;; api) echo "[]" ;; esac\n' > "$SANDBOX/bin/gh"
-  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess"
+  gh_script 'case "$1" in repo) echo develop ;; api) echo "[]" ;; esac'
+  chmod +x "$SANDBOX/bin/fleet-assess"
 
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   [ "$(jq -r .reason <<<"$output")" = "clean, nothing on the branch, no plan file, no queue item: the human's conversation" ]
 
   # the name is reused for FLEET_BASE_TTL across passes: gh is not asked again (the budget ran out on these)
-  printf '#!/usr/bin/env bash\ncase "$1" in repo) exit 1 ;; api) echo "[]" ;; esac\n' > "$SANDBOX/bin/gh"
+  gh_script 'case "$1" in repo) exit 1 ;; api) echo "[]" ;; esac'
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = "clean, nothing on the branch, no plan file, no queue item: the human's conversation" ]
 
@@ -2973,7 +2973,7 @@ empty_submodule_fixture() {
   "${g[@]}" commit -q --allow-empty -m merged
   "${g[@]}" push -q forgejo HEAD:master 2>/dev/null
   "${g[@]}" fetch -q forgejo; "${g[@]}" remote set-head forgejo master; "${g[@]}" remote set-head origin master
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+  gh_script 'exit 1'
   export SO_FORGEJO_HOSTS="fj.example"
   CACHE="$SANDBOX/pass"; MAIN_CACHE="$SANDBOX/main"; mkdir -p "$CACHE"
   "${g[@]}" remote set-url forgejo "https://fj.example/o/r.git"
@@ -2994,7 +2994,7 @@ empty_submodule_fixture() {
   assert_output forgejo/master
   # GitHub's answer is kept per remote, so a clone without the forgejo remote never reads forgejo/<b>
   rm -f "$CACHE"/base_*
-  printf '#!/usr/bin/env bash\ncase "$1" in repo) echo master ;; esac\n' > "$SANDBOX/bin/gh"
+  gh_script 'case "$1" in repo) echo master ;; esac'
   run default_base "$SANDBOX/wt"
   assert_output forgejo/master
   [ "$(cat "$MAIN_CACHE"/base_*_forgejo)" = forgejo/master ]
@@ -3028,7 +3028,7 @@ empty_submodule_fixture() {
   "${g[@]}" fetch -q forgejo; "${g[@]}" fetch -q origin
   "${g[@]}" remote set-head forgejo master; "${g[@]}" remote set-head origin master
   "${g[@]}" remote set-url forgejo "https://fj.example/o/r.git"
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+  gh_script 'exit 1'
   export SO_FORGEJO_HOSTS="fj.example"
   CACHE="$SANDBOX/pass"; MAIN_CACHE="$SANDBOX/main"; mkdir -p "$CACHE"
   # the store holds the PR under its Forgejo name only; the GitHub mirror lists none
@@ -3472,7 +3472,7 @@ pr_store() {
 }
 
 @test "session_prs: a Forgejo PR (host/owner/repo) takes its state from the store under that name, never gh" {
-  printf '#!/usr/bin/env bash\necho "$*" >> "$SANDBOX/gh.log"\n' > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"; export SANDBOX
+  gh_script 'echo "$*" >> "$SANDBOX/gh.log"'; export SANDBOX
   {
     echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"curl -s -X POST -d @pr.json https://git.example.test/api/v1/repos/o/audio/pulls"}}]}}'
     echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"https://git.example.test/o/audio/pulls/12"}]}}'
@@ -3495,13 +3495,12 @@ pr_store() {
 
 @test "sibling_pr: the last open PR in another repo, its CI from one cached gh pr view; a failed view is unreadable, asked once a pass" {
   git init -q "$SANDBOX/one"; git -C "$SANDBOX/one" remote add origin git@github.com:o/One.git
-  cat > "$SANDBOX/bin/gh" <<'SH'
-#!/usr/bin/env bash
+  gh_script <<'SH'
 echo "$*" >> "$SANDBOX/gh.log"
 [ -n "${VIEW_FAIL:-}" ] && exit 1
 echo '{"headRefOid":"abc123","statusCheckRollup":[{"conclusion":"SUCCESS"},{"state":"PENDING"}]}'
 SH
-  chmod +x "$SANDBOX/bin/gh"; export SANDBOX FLEET_MAIN_TTL=300 MAIN_CACHE="$SANDBOX/cache"; CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  export SANDBOX FLEET_MAIN_TTL=300 MAIN_CACHE="$SANDBOX/cache"; CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
   local prs='[{"repo":"o/one","number":5,"state":"OPEN"},{"repo":"o/three","number":3,"state":"OPEN"},{"repo":"o/two","number":9,"state":"MERGED"}]'
   # o/one is this clone's own repo (GitHub names are case-blind), and o/two's PR is not open.
   run sibling_pr "$SANDBOX/one" "$prs"
@@ -3534,8 +3533,7 @@ SH
     > "$SANDBOX/bin/agent-panel"
   # The cwd's repo has no PR for feat/x; o/other's #42 is open with the CI in $SANDBOX/ci.
   printf -- '-\t42\tOPEN\tNONE\t-\t-\n' > "$LEDGER_DIR/prs_o_other.tsv"
-  cat > "$SANDBOX/bin/gh" <<'SH'
-#!/usr/bin/env bash
+  gh_script <<'SH'
 case "$*" in
   api*) echo "[]" ;;
   *"pr view 42 --repo o/other"*) printf '{"headRefOid":"feedface0000beef","statusCheckRollup":[{"conclusion":"%s"}]}\n' "$(cat "$SANDBOX/ci")" ;;
@@ -3543,7 +3541,7 @@ esac
 SH
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-bench"
-  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess" "$SANDBOX/bin/fleet-bench"
+  chmod +x "$SANDBOX/bin/fleet-assess" "$SANDBOX/bin/fleet-bench"
   export SANDBOX XDG_CACHE_HOME="$SANDBOX/xdg"
 
   echo FAILURE > "$SANDBOX/ci"
@@ -4133,12 +4131,10 @@ PROM
 # job's steps query answers $SANDBOX/job_<id>.json (see job).
 open_pr() {
   printf 'feat/x\t9\tOPEN\t%s\t%s\t%s\n' "$1" "$(git -C "$SANDBOX/wt" rev-parse HEAD)" "${2:--}" > "$LEDGER_DIR/prs.tsv"
-  cat > "$SANDBOX/bin/gh" <<GH
-#!/usr/bin/env bash
+  gh_script <<GH
 case "\$1 \${2:-}" in "api "*/actions/jobs/*) jq -r "\${@: -1}" "$SANDBOX/job_\${2##*/}.json"; exit ;; esac
 exit 1
 GH
-  chmod +x "$SANDBOX/bin/gh"
 }
 
 # gate <run title> <status> <conclusion> <sha> <minute> [event]: one main_runs row, for ledger feat/x
@@ -4391,8 +4387,7 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   }
   job 78 'Docs within their budgets:success' 'Merge gate line:failure'
   job 79 'Build:failure' 'Merge gate line:failure'
-  cat > "$SANDBOX/bin/gh" <<GH
-#!/usr/bin/env bash
+  gh_script <<GH
 case "\$1 \${2:-}" in "api "*/actions/jobs/*) jq -r "\${@: -1}" "$SANDBOX/job_\${2##*/}.json"; exit ;; esac
 exit 1
 GH
@@ -4545,7 +4540,7 @@ GH
 }
 
 @test "gate_ci: a branch run list the ledger cannot read keeps the rollup's answer and is named unreadable (ar-191)" {
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+  gh_script 'exit 1'
   touch "$LEDGER_DIR/FAIL"
   git init -q "$SANDBOX/one"; git -C "$SANDBOX/one" remote add origin git@github.com:o/one.git
   export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"; CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
@@ -5034,8 +5029,8 @@ verdict() {
   local since=$(( $(date +%s) - 3600 ))
   row() { printf '{"target":"lab/s1:%s","pane":"lab/%%%s","status":"idle","plan_mode":false,"session_id":"sid-%s","cwd":"%s","idle_since":%s,"context_tokens":5,"plan_file":""}' "$1" "$2" "$1" "$SANDBOX" "$since"; }
   printf '#!/usr/bin/env bash\necho %q\necho %q\n' "$(row 1 7)" "$(row 2 8)" > "$SANDBOX/bin/agent-panel"
-  printf '#!/usr/bin/env bash\necho "[]"\n' > "$SANDBOX/bin/gh"
-  chmod +x "$SANDBOX/bin/agent-panel" "$SANDBOX/bin/gh"
+  gh_script 'echo "[]"'
+  chmod +x "$SANDBOX/bin/agent-panel"
   CACHE="$(mktemp -d)"
   run collect
   assert_success
@@ -5326,11 +5321,7 @@ JSONL
   # 2026-11-14 platform#1551: a pull_request edit ran Task PR gate again, the rollup kept the failed
   # "Task line" beside the passing one, and the row read CI red while gh pr checks was all green.
   git init -q "$SANDBOX/one"; git -C "$SANDBOX/one" remote add origin git@github.com:o/one.git
-  cat > "$SANDBOX/bin/gh" <<'SH'
-#!/usr/bin/env bash
-cat "$SANDBOX/view.json"
-SH
-  chmod +x "$SANDBOX/bin/gh"; export SANDBOX MAIN_CACHE="$SANDBOX/cache"; CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  gh_script 'cat "$SANDBOX/view.json"'; export SANDBOX MAIN_CACHE="$SANDBOX/cache"; CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
   check() { printf '{"__typename":"CheckRun","name":"%s","workflowName":"%s","status":"COMPLETED","conclusion":"%s","startedAt":"%s","detailsUrl":"https://github.com/o/three/actions/runs/%s/job/%s"}' "$1" "$2" "$3" "$4" "${6:-$5}" "$5"; }   # <name> <workflow> <conclusion> <started> <job> [run, else the job id]
   view() { printf '{"headRefOid":"abc123","statusCheckRollup":[%s]}\n' "$(IFS=,; echo "$*")" > "$SANDBOX/view.json"; }
   local prs='[{"repo":"o/three","number":3,"state":"OPEN"}]'
@@ -5715,7 +5706,7 @@ notice_line() {   # <ts> <task id> <status>
   "${g[@]}" -C "$SANDBOX/wt" add External/core; "${g[@]}" -C "$SANDBOX/wt" commit -q -m 'pin the pin-merge'
   "${g[@]}" -C "$SANDBOX/wt" push -q origin HEAD:main 2>/dev/null; "${g[@]}" -C "$SANDBOX/wt" fetch -q origin
   run ahead_files "$sm" origin/master; assert_output 1                               # the old read: off master
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"; MAIN_CACHE="$SANDBOX/main"; touch "$LEDGER_DIR/prs.tsv"
+  gh_script 'exit 1'; MAIN_CACHE="$SANDBOX/main"; touch "$LEDGER_DIR/prs.tsv"
   unlanded() { git_facts "$1" | cut -d' ' -f3; }
   run submodule_pin "$sm"; assert_output "$(git -C "$sm" rev-parse HEAD)"
   [ "$(unlanded "$sm")" = 0 ]
