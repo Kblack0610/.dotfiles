@@ -2290,6 +2290,72 @@ live_post() {
   run "$AGENT_ASK" show "$id"; assert_line 'answered_by: judge'
 }
 
+# ar-4074 P1: one type, one row per level band: the grace window waits only where the reach is wider.
+@test "live answers: a type's second row waits at the wider level, the first answers at post, and critical is never armed" {
+  unset AGENT_ASK_NO_JUDGE
+  export AGENT_ASK_DELAY_RULES='engineering_design@repo=0 engineering_design@fleet=240'
+  local id l
+  for l in self repo; do
+    fake_judge "$(SCORE_LEVEL=$l score engineering_design)"
+    id="$(live_post "sid-$l" "at $l?" 2>/dev/null)"
+    run "$AGENT_ASK" show "$id"; assert_line 'answered_by: judge'; refute_line --partial 'assume_at:'
+  done
+  fake_judge "$(SCORE_LEVEL=fleet score engineering_design)"
+  id="$(live_post sid-f 'at fleet?' 2>/dev/null)"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'; assert_line 'assume_answer: fix'; assert_line --regexp '^assume_at: 20[0-9-]+T[0-9:]+[-+][0-9]{4}$'
+  # the 240 minutes are the row's: the deadline is about 4 hours out
+  local at; at="$(date -d "$(sed -n 's/^assume_at: //p' "$(ask_file "$id")")" +%s)"
+  [ "$((at - $(date +%s)))" -gt 14000 ] && [ "$((at - $(date +%s)))" -le 14400 ]
+  # negative control: an external ask in the same cell is critical, so it is never armed or answered
+  fake_judge "$(SCORE_TYPE=engineering_design SCORE_LEVEL=fleet score external)"
+  id="$(live_post sid-c 'external at fleet?' 2>/dev/null)"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'; assert_line 'judge_level: critical'; refute_line --partial 'assume_at:'
+  run "$AGENT_ASK" sweep demo
+  run "$AGENT_ASK" show "$id"; assert_line 'status: pending'; refute_line --partial 'assume_at:'
+}
+
+@test "delay: a second row for a type must reach a higher level than its first, or it is refused and the first stands" {
+  unset AGENT_ASK_NO_JUDGE
+  local rows
+  for rows in 'engineering_design@fleet=0 engineering_design@repo=240' 'engineering_design@repo=0 engineering_design@repo=240' 'engineering_design@repo=0 engineering_design@self=240'; do
+    fake_judge "$(SCORE_LEVEL=repo score engineering_design)"
+    run --separate-stderr env AGENT_ASK_DELAY_RULES="$rows" CLAUDE_CODE_SESSION_ID="sid-$rows" "$AGENT_ASK" post \
+      --project demo --options 'fix=do it|wait=leave it' --recommend fix --context "$rows is the row under test" "row $rows?"
+    assert_success
+    assert_regex "$stderr" "refuses 'engineering_design@(repo|self)=240'"
+    run "$AGENT_ASK" show "${output##*$'\n'}"
+    # the first row stands: a repo verdict is answered at post, never armed
+    assert_line 'answered_by: judge'; refute_line --partial 'assume_at:'
+  done
+}
+
+@test "the shipped DELAY_RULES: the grace-window types answer at repo and wait 240 minutes at fleet, and no row is refused" {
+  local priv="${DOTFILES_PRIVATE:-$(eval echo ~"$(id -un)")/.dotfiles-private}"
+  [ -f "$priv/.config/agentctl/agents/ask-judge.conf" ] || skip "private: no ask-judge.conf under $priv, its rows unchecked"
+  unset AGENT_ASK_NO_JUDGE
+  AGENT_ASK_DELAY_RULES="$(. "$priv/.config/agentctl/agents/ask-judge.conf"; printf '%s' "$DELAY_RULES")"
+  export AGENT_ASK_DELAY_RULES
+  local type id at
+  for type in ci_capacity_ops engineering_design accept_recommendations session_status cleanup_restructure; do
+    fake_judge "$(SCORE_TYPE=$type SCORE_LEVEL=repo score "$type")"
+    run --separate-stderr live_post "sid-$type-r" "$type at repo?"
+    assert_success
+    refute_regex "$stderr" 'refuses'
+    run "$AGENT_ASK" show "${output##*$'\n'}"; assert_line 'answered_by: judge'; refute_line --partial 'assume_at:'
+    fake_judge "$(SCORE_TYPE=$type SCORE_LEVEL=fleet score "$type")"
+    id="$(live_post "sid-$type-f" "$type at fleet?" 2>/dev/null)"
+    run "$AGENT_ASK" show "$id"; assert_line 'status: pending'; assert_line 'assume_answer: fix'
+    at="$(date -d "$(sed -n 's/^assume_at: //p' "$(ask_file "$id")")" +%s)"
+    [ "$((at - $(date +%s)))" -gt 14000 ] && [ "$((at - $(date +%s)))" -le 14400 ]
+  done
+  # negative control: ship_deploy has a repo row only, so at fleet it stays with the human, unarmed
+  fake_judge "$(SCORE_LEVEL=fleet score ship_deploy)"
+  id="$(live_post sid-ship-f 'ship_deploy at fleet?' 2>/dev/null)"
+  run "$AGENT_ASK" show "$id"; assert_line 'status: pending'; refute_line --partial 'assume_at:'
+}
+
 # ar-1766: a stop a session chose for itself goes to the judge like a question; approvals do not.
 @test "live answers: a session's gate is judged and answered under its cell's ceiling, a fleet one stays human" {
   unset AGENT_ASK_NO_JUDGE
