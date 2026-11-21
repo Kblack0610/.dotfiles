@@ -284,7 +284,6 @@ test("a machine page draws its slots, its 7 days and its recent jobs with their 
   // The negative control: a slot with no series says no data, never 0.
   assert.match(h, /ws-unity-2<\/td>[\s\S]*?(<td class="n muted">no data<\/td>){3}/);
   assert.match(h, /<td class="muted">idle<\/td>[\s\S]*?<td class="n">12\.0<\/td><td class="n"><\/td>/);
-  
   assert.match(h, /data-tip="[^"]*no data"/, "an hour with no sample says so");
   assert.match(h, /<td class="warn">now<\/td>/, "an open stretch lasts now");
   assert.match(h, /<a class="tl" href="#infra\/ci\/7">/);

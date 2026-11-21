@@ -28,8 +28,7 @@ list-price work (the snapshots' fleet_cost.by_session: account, project, origin 
 with no project, or an account with no work, goes to `unattributed`. by_project and by_lane each sum to
 total.spent exactly. `check` reads $BUDGET_JSON (the fleet-bench step writes it from --json) and exits 1
 (the fleet-budget-pace watch) on a file older than 2h, or on any of these, which --json also writes as `needs` for the Costs tab: a capped metered line or product over pace (spend over cap * elapsed share + $15,
-or over 90% of the cap), a metered line whose month projection
-passes its cap, or a line unread for 24h (unread_since is carried over from the previous
+or over 90% of the cap), a metered line whose month projection passes its cap, or a line unread for 24h (unread_since is carried over from the previous
 file, the only record of how long a reader has failed). Fixed fees are never a trigger: they are spent whole.
 """
 import argparse

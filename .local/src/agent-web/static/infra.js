@@ -1,6 +1,6 @@
 "use strict";
 // The Infra tab, as the hub's Infra tab, by inner tab: Machines (every machine with its governor
-// verdict and cloud power, then the pools; one machine's page is `#infra/machines/<host>`), Runners
+// verdict and power, then the pools; one machine's page is `#infra/machines/<host>`), Runners
 // (slots, waiting jobs, local Unity failures), Runs, Pipelines and Tests (ci.js), and Jobs (jobs.js); what is red and the health chips are on Alerts (alerts.js). /api/infra asks
 // Prometheus the board's own queries; statuses are the cc:* rules, so nothing is judged here.
 
@@ -146,7 +146,7 @@ function governorCell(g) {
 }
 
 // A cloud host's power, which the governor starts for a deep queue: its state, today's hours
-// against the cap and where its rule stands. Its buttons are on the machine's page.
+// against the cap and where its rule stands.
 const POWER_COLOR = { running: "var(--b-working)", starting: "var(--b-working)", draining: "var(--b-stalled)", stopping: "var(--b-stalled)" };
 const powerChip = (state) => `<span class="chip sm" style="--c:${POWER_COLOR[state] || "var(--c-other)"}">${esc((state || "?").toUpperCase())}</span>`;
 
@@ -260,7 +260,7 @@ const INFRA_T = {
   machines: infraTable("machines", MACH_COLS, MACH_CELLS, "search, or -state:up", "No machine reports."),
   pools: infraTable("pools", POOL_COLS, POOL_CELLS, "search", "No job kind reports."),
   runners: infraTable("runners", SLOT_COLS, SLOT_CELLS, "search, or host:razer-laptop pool:unity", "No runner reports."),
-  queued: infraTable("queued", QUEUED_COLS, QUEUED_CELLS, "search, or pool:unity can:unity-pool", "Nothing waiting."),
+  queued: infraTable("queued", QUEUED_COLS, QUEUED_CELLS, "search, or pool:unity can:razer-laptop", "Nothing waiting."),
   local: infraTable("local", LOCAL_COLS, LOCAL_CELLS, "search, or platform:android branch:feat", "No local Unity gate failed in 24h."),
 };
 
