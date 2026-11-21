@@ -4767,6 +4767,13 @@ row_item() {
   # The red goes first at its own low; lv-5 is on no open row, so it keeps its own high.
   assert_output $'red low\nretagged-up urgent\ncleanup high\ngone high\nretagged-down low'
   [ "$("$AQ" next --json | jq -r .slug)" = red ]
+  # A real board (4,700 rows on 11-21) is past the argument limit as a whole map: only the rows items
+  # work are bound, so the order still reads them.
+  jq --argjson n 9000 '.rows += [range($n) | {project: "level", id: "lv-x\(.)", state: "open", priority: "high"}]' \
+    "$NOTES_FIXTURE/board.json" > "$NOTES_FIXTURE/big.json" && mv "$NOTES_FIXTURE/big.json" "$NOTES_FIXTURE/board.json"
+  run bash -c "'$AQ' list --json | jq -r '\"\(.slug) \(.priority)\"'"
+  assert_success
+  assert_output $'red low\nretagged-up urgent\ncleanup high\ngone high\nretagged-down low'
   # NEGATIVE CONTROL: a board notes cannot read ranks every item by its own line, as before.
   rm "$NOTES_FIXTURE/board.json"
   run bash -c "'$AQ' list --json | jq -r '\"\(.slug) \(.priority)\"'"
