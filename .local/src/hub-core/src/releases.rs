@@ -1238,12 +1238,18 @@ pub struct Badge {
     pub level: Level,
 }
 
+/// True for the error of a host where no refresh has run yet, which the tab says and a project's
+/// or an app's page has no reason to.
+pub fn unrefreshed(error: &str) -> bool {
+    error.contains("no snapshot yet")
+}
+
 /// `project`'s channels, worst first; none when no refresh has run on this host yet, which the
 /// tab says and a project's page has no reason to. `project` is already a safe name.
 pub fn channels(runner: &dyn Runner, project: &str) -> Result<Vec<Release>, String> {
     match show(runner, Some(project)) {
         Ok(s) => Ok(settle(s.rows)),
-        Err(e) if e.contains("no snapshot yet") => Ok(vec![]),
+        Err(e) if unrefreshed(&e) => Ok(vec![]),
         Err(e) => Err(e),
     }
 }

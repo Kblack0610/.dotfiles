@@ -88,8 +88,6 @@ pub struct Tab {
 /// Everything known of one version before it is said.
 #[derive(Default)]
 struct Facts<'a> {
-    /// The lab version note's mark.
-    mark: Option<String>,
     progress: Option<(u64, u64)>,
     cuts: Vec<&'a Shipment>,
 }
@@ -132,8 +130,7 @@ pub fn build(project: &str, rel: &Releases, labs: &[String], roadmap: Option<&Va
     let mut facts: HashMap<String, Facts> = HashMap::new();
     for l in labs {
         for v in rel.versions.get(l).map_or(&[][..], |v| &v.list[..]) {
-            facts.entry(core(&v.version).to_string()).or_default().mark =
-                Some(v.provenance.clone()).filter(|m| !m.is_empty());
+            facts.entry(core(&v.version).to_string()).or_default();
         }
     }
     for r in roadmap.and_then(Value::as_array).into_iter().flatten() {
@@ -153,7 +150,12 @@ pub fn build(project: &str, rel: &Releases, labs: &[String], roadmap: Option<&Va
     let mut versions = vec![];
     let mut legacy_versions = vec![];
     for (v, f) in facts {
-        let verdict = version_page::verdict(f.mark.as_deref(), &f.cuts, from.is_some(), false);
+        let verdict = version_page::verdict(
+            version_page::mark_of(rel, labs, &v),
+            &f.cuts,
+            from.is_some(),
+            false,
+        );
         let (done, open) = f.progress.unwrap_or((0, 0));
         let row = Version {
             version: if key(&v).0 {
@@ -214,7 +216,15 @@ pub fn build(project: &str, rel: &Releases, labs: &[String], roadmap: Option<&Va
         legacy_versions,
         legacy_apps: unlined.into_iter().map(app_line).collect(),
         elsewhere,
-        errors: rel.errors.clone(),
+        errors: rel
+            .errors
+            .iter()
+            .cloned()
+            .chain(labs.iter().filter_map(|l| {
+                let e = rel.versions.get(l)?.error.as_ref()?;
+                Some(format!("{l} lab versions: {e}"))
+            }))
+            .collect(),
     }
 }
 
@@ -379,6 +389,42 @@ mod tests {
             t.line_text,
             "no app declares releaseFrom, so every version is legacy"
         );
+    }
+
+    #[test]
+    fn the_first_lab_that_marks_a_version_decides_and_a_lab_that_did_not_read_is_said() {
+        let p = owner();
+        let mut versions = lab(&[("v0.5.3", "legacy")]);
+        for blank in ["game-b", "game-d"] {
+            versions.extend(
+                lab(&[("v0.5.3", "")])
+                    .into_values()
+                    .map(|v| (blank.to_string(), v)),
+            );
+        }
+        versions.insert(
+            "game-c".into(),
+            Versions {
+                list: vec![],
+                error: Some("exit 1".into()),
+            },
+        );
+        let r = rel(
+            vec![app(&p, "v0.5.3", vec![ship("v0.5.3", "flow", 18, true)])],
+            versions,
+        );
+        let labs = [
+            "game-b".to_string(),
+            "game".into(),
+            "game-d".into(),
+            "game-c".into(),
+        ];
+        let t = build(&p, &r, &labs, None);
+        // NEGATIVE CONTROL: an empty mark before or after game's neither wins nor clears it, so the
+        // flow cut stays legacy.
+        assert!(t.versions.is_empty(), "{:?}", t.versions);
+        assert_eq!(t.legacy_versions[0].status, "legacy");
+        assert_eq!(t.errors, ["game-c lab versions: exit 1"]);
     }
 
     #[test]

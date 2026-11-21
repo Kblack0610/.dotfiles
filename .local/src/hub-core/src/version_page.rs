@@ -331,6 +331,17 @@ pub struct Verdict {
     pub outside: bool,
 }
 
+/// The mark the project's lab version notes give `version`: the first of its `labs` that marks
+/// it, None when none does.
+pub fn mark_of<'a>(rel: &'a Releases, labs: &[String], version: &str) -> Option<&'a str> {
+    let want = core(version);
+    labs.iter()
+        .filter_map(|l| rel.versions.get(l))
+        .flat_map(|v| &v.list)
+        .find(|v| core(&v.version) == want && !v.provenance.is_empty())
+        .map(|v| v.provenance.as_str())
+}
+
 /// The verdict on a version from its lab version's release-state mark (docs/operations/
 /// release-state.md, Provenance) when there is one, else its cuts' marks. With neither (the open
 /// version before its first cut) it is legacy only when no app of the project has a line.
@@ -379,6 +390,8 @@ pub struct Inputs<'a> {
     pub apps: &'a [&'a App],
     /// The project's own lab projects ([`labs`] with no apps): whose window the header shows.
     pub own: &'a [String],
+    /// The version's lab mark ([`mark_of`]).
+    pub mark: Option<&'a str>,
     pub runs: &'a [Run],
     pub records: &'a HashMap<RunKey, Record>,
     pub feed: Result<Feed, String>,
@@ -387,7 +400,8 @@ pub struct Inputs<'a> {
 }
 
 /// `version` of `project` as its page, or None when nothing names it: no app of the project has
-/// a cut of it and no row is aimed at it. `today` (`YYYY-MM-DD`) says whether its due day passed.
+/// a cut of it, no row is aimed at it and no lab version note marks it.
+/// `today` (`YYYY-MM-DD`) says whether its due day passed.
 pub fn build(project: &str, version: &str, today: &str, i: Inputs) -> Option<Page> {
     let want = core(version).to_string();
     let mut errors = vec![];
@@ -409,7 +423,7 @@ pub fn build(project: &str, version: &str, today: &str, i: Inputs) -> Option<Pag
         .collect();
     rows.sort_by_key(|r| state_rank(&r.state));
     let cuts: Vec<_> = i.apps.iter().flat_map(|a| cuts_of(a, &want).1).collect();
-    if cuts.is_empty() && rows.is_empty() {
+    if cuts.is_empty() && rows.is_empty() && i.mark.is_none() {
         return None;
     }
     let apps: Vec<AppRelease> = i
@@ -434,8 +448,8 @@ pub fn build(project: &str, version: &str, today: &str, i: Inputs) -> Option<Pag
     let opened = window.and_then(|w| w.opened.clone()).unwrap_or_default();
     let due = window.and_then(|w| w.due.clone()).unwrap_or_default();
     let overdue = !due.is_empty() && due.as_str() < today;
-    // A version with no cut is the project's open one, never legacy here: it has rows.
-    let v = verdict(None, &cuts, true, overdue);
+    let lined = i.apps.iter().any(|a| !a.release_from.is_empty());
+    let v = verdict(i.mark, &cuts, lined, overdue);
     let mut level = v.level;
     if !v.legacy && apps.iter().any(|a| a.level == Level::Bad) {
         level = Level::Bad;
@@ -499,6 +513,7 @@ pub fn read(
         Inputs {
             apps: &apps,
             own: &own,
+            mark: mark_of(rel, &own, version),
             runs,
             records: &records,
             feed,
@@ -596,6 +611,7 @@ mod tests {
         App {
             project: name.into(),
             repo: repo.into(),
+            release_from: "v0.5.0".into(),
             history,
             ..Default::default()
         }
@@ -661,8 +677,39 @@ mod tests {
                 items,
                 prs,
                 own: &["ucp".to_string()],
+                mark: None,
             },
         )
+    }
+
+    #[test]
+    fn a_version_only_a_lab_note_marks_opens_and_says_what_the_project_tab_says() {
+        let own = ["ucp".to_string()];
+        let unlined = App {
+            release_from: String::new(),
+            ..app("ucp", "o/ucp", vec![])
+        };
+        let at = |apps: &[&App], mark| {
+            build(
+                "ucp",
+                "0.0.1",
+                "2026-11-20",
+                Inputs {
+                    apps,
+                    runs: &[],
+                    records: &HashMap::new(),
+                    feed: Ok(Feed::default()),
+                    items: &[],
+                    prs: &[],
+                    own: &own,
+                    mark,
+                },
+            )
+        };
+        let p = at(&[&unlined], Some("legacy")).expect("a marked version has a page");
+        assert_eq!((p.status.as_str(), p.level), ("legacy", Level::Neutral));
+        // NEGATIVE CONTROL: unmarked, uncut and unaimed, nothing names it.
+        assert!(at(&[&unlined], None).is_none());
     }
 
     #[test]

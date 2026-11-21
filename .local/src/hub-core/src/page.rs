@@ -634,9 +634,11 @@ pub fn read_with(
     if let Some(v) = &roadmap {
         p.shipped = shipped(v);
     }
-    // One release-state read serves the badge, the checks, the timeline and the Releases tab,
-    // which says a failed read (`release-state show <project>` keeps the rows of that project).
-    let rel = crate::releases::read(runner, &[]);
+    // One release-state read serves the badge, the checks, the timeline and the Releases tab;
+    // a failed read is said on the page and on the tab, a host with no snapshot on neither.
+    let mut rel = crate::releases::read(runner, &[]);
+    rel.errors.retain(|e| !crate::releases::unrefreshed(e));
+    p.errors.extend(rel.errors.iter().cloned());
     let channels: Vec<_> = rel
         .rows
         .iter()
@@ -918,6 +920,47 @@ mod tests {
             ],
             seen: Mutex::new(vec![]),
         }
+    }
+
+    /// `fake(0)` whose release-state read dies with `error`.
+    struct NoRelease(Fake, &'static str);
+    impl Runner for NoRelease {
+        fn run(&self, argv: &[String]) -> Result<String, String> {
+            if argv.join(" ").starts_with("release-state show") {
+                return Err(self.1.into());
+            }
+            self.0.run(argv)
+        }
+        fn output(&self, argv: &[String]) -> Result<(i32, String), String> {
+            self.0.output(argv)
+        }
+    }
+
+    #[test]
+    fn a_failed_release_read_is_said_on_the_page_and_the_tab_and_no_snapshot_on_neither() {
+        let p = read(
+            &NoRelease(fake(0), "exit 2: jq: error"),
+            "game",
+            "alpha",
+            NOW,
+        );
+        let said = "release-state show: exit 2: jq: error";
+        assert_eq!(p.errors, [said]);
+        assert_eq!(p.release_tab.errors, [said]);
+        // NEGATIVE CONTROL: a host where no refresh has run yet is not an error on either.
+        let p = read(
+            &NoRelease(fake(0), "no snapshot yet; run: release-state refresh"),
+            "game",
+            "alpha",
+            NOW,
+        );
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(
+            p.release_tab.errors.is_empty(),
+            "{:?}",
+            p.release_tab.errors
+        );
+        assert!(p.releases.is_none());
     }
 
     #[test]
