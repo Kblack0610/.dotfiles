@@ -27,8 +27,8 @@ watch_interval_secs() {
   esac
 }
 
-# watch_severity <manifest> -> low|normal|high|urgent. Same default and mapping as
-# watch-companion-loop's notify: missing, `medium` or unknown reads as normal. A trailing
+# watch_severity <manifest> -> low|normal|high|urgent. Same default as watch-companion-loop:
+# missing, or a word `sentinel-manifest validate` refuses, reads as normal. A trailing
 # `# comment` is dropped, as the YAML parser watch-companion-loop loads manifests with drops it.
 watch_severity() {
   local s
