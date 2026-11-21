@@ -172,7 +172,7 @@ pub(crate) fn commit_of(line: &str) -> Option<String> {
 }
 
 /// The repo of the first `pr:<repo>#<n>` the row's marker names; `None` for a bare `pr:<n>`.
-fn pr_repo(line: &str) -> Option<String> {
+pub(crate) fn pr_repo(line: &str) -> Option<String> {
     md::pr_refs(line)
         .iter()
         .find_map(|r| r.split_once('#').map(|(repo, _)| repo.to_string()))

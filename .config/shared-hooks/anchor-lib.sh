@@ -27,7 +27,8 @@
 # _anchor_render <anchor> <mode> <regex>
 #   mode drop: every H2 section except those whose title matches regex.
 #   mode keep: only the H2 sections whose title matches regex.
-# In either mode a kept `## Decisions log` is replaced by one pointer line.
+# In either mode a kept `## Decisions log` is replaced by one pointer line, and a kept
+# `## Blockers` section holding only a `_(none ...)_` placeholder bullet is left out.
 _anchor_render() {
   local anchor="$1" mode="$2" re="$3"
   [ -f "$anchor" ] && [ -r "$anchor" ] || return 0
@@ -36,15 +37,28 @@ _anchor_render() {
     /^<!-- AUTO:(START|END)/ { next }
     /^## / {
       if (inlog) emit_pointer()
+      flush_blockers()
       title = substr($0, 4)
       on = (mode == "keep") ? (re != "" && title ~ re) : !(re != "" && title ~ re)
       inlog = on && title ~ /^Decisions log/
       if (inlog) { entries = 0; next }
+      blockers = on && title ~ /^Blockers/
     }
     # Entry boundaries are top-level dated bullets, the grammar regen-anchor.sh rotates on.
     inlog { if ($0 ~ /^- \*\*/) entries++; next }
+    # A Blockers section whose only content is a `- _(none ...)_` placeholder bullet says nothing: held
+    # back until the section ends, and printed only if it carries a real line.
+    on && blockers {
+      held = held $0 "\n"
+      if ($0 !~ /^## / && $0 !~ /^[[:space:]]*$/ && $0 !~ /^[-*] _\(none[^)]*\)_[[:space:]]*$/) real++
+      next
+    }
     on { print }
-    END { if (inlog) emit_pointer() }
+    END { if (inlog) emit_pointer(); flush_blockers() }
+    function flush_blockers() {
+      if (blockers && real > 0) printf "%s", held
+      blockers = 0; held = ""; real = 0
+    }
     function emit_pointer() {
       printf "## Decisions log: %d %s, newest first, not injected - read %s\n\n", \
         entries, (entries == 1 ? "entry" : "entries"), path

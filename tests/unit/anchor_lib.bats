@@ -139,3 +139,29 @@ seed_anchor() {
   assert_success
   assert_output ''
 }
+
+@test "anchor_inject: a Blockers section holding only the none-active placeholder is left out, a real one is kept" {
+  seed_anchor 2
+  sed -i 's/^- a blocker that must survive$/- _(none active)_/' "$ANCHOR"
+  run anchor_inject "$ANCHOR"
+  assert_success
+  refute_output --partial 'Blockers'
+  refute_output --partial 'none active'
+  assert_output --partial '## Key URLs & facts'
+  assert_output --partial '## Links'
+  seed_anchor 2
+  run anchor_inject "$ANCHOR"
+  assert_output --partial '## Blockers / known issues'
+  assert_output --partial '- a blocker that must survive'
+}
+
+@test "anchor_inject: a none-yet placeholder is left out, a real blocker that says none active is kept" {
+  seed_anchor 2
+  sed -i 's/^- a blocker that must survive$/- _(none yet)_/' "$ANCHOR"
+  run anchor_inject "$ANCHOR"
+  refute_output --partial 'Blockers'
+  seed_anchor 2
+  sed -i 's/^- a blocker that must survive$/- the deploy is down; none active workaround exists/' "$ANCHOR"
+  run anchor_inject "$ANCHOR"
+  assert_output --partial 'none active workaround exists'
+}

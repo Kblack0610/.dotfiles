@@ -210,6 +210,18 @@ project_slug() {
   printf '%s\n' "${name:0:8}"
 }
 
+# session_project <session name or panel target> -> the project a worktree session is named for:
+# the tmux session name with a panel target's "<world>/" prefix and ":<window>" suffix and the
+# "-agent-<N>" worktree suffix taken off (lab/demo-agent-4:1 -> demo). The one place that suffix
+# is stripped: a row whose asker gave no project is named through it, then project_slug.
+session_project() {
+  local s="$1"
+  s="${s#*/}"
+  [[ "$s" =~ ^(.+):[0-9]+$ ]] && s="${BASH_REMATCH[1]}"
+  [[ "$s" =~ ^(.+)-agent-[0-9]+$ ]] && s="${BASH_REMATCH[1]}"
+  printf '%s\n' "$s"
+}
+
 # --- the registry's THIRD relation: project -> the version it has SHIPPED ---
 #
 # project_field <project> <key> -> one scalar from `trackers.<project>`, or "".
@@ -257,8 +269,8 @@ project_release_lib() {
 # globs, space-separated), and loads git-release.sh. Returns 1 when the project has no checkout
 # or the library is missing. The one place that decides which tag family a project owns, for the
 # newest tag and for the list. `buildTags` names per-build tags (`v0.5.0-shapecity3`) that are
-# history only: they never own the version, so a game's sheet counter numbers it until its own
-# `<game>-vX.Y.Z` family exists (project_version_owner). One owner per tag: a declared tagGlob loses
+# history only: they never own the version, so a game's version is its repo's release tag
+# (project_version_owner `parent`). One owner per tag: a declared tagGlob loses
 # every other project's buildTags in the same repo (`v* !v*-shapecity*`, _gr_pats), so the
 # playground's `v*` no longer lists a game's build. A ladder glob is never that broad here.
 project_tag_scope() {
@@ -322,16 +334,20 @@ project_release_tags_since() {
   return 0
 }
 
-# project_version_owner <project> [shipped] -> what owns its version number (stages.md, "Versions"):
-#   tag    a release tag ships it, and the sheet follows the tag (agentctl-wave-roll)
-#   sheet  no release tag: the sheet's counter, cut on its stage's cadence. A game whose builds
-#          carry only per-build tags (`buildTags`) is one too, until its `<game>-vX.Y.Z` family
-#          exists, and that family's first tag takes the sheet's open version.
+# project_version_owner <project> [shipped] [parent] -> what owns its version number (stages.md, "Versions"):
+#   tag     a release tag ships it, and the sheet follows the tag (agentctl-wave-roll)
+#   parent  no release tag of its own and notes reads its version from another project: a game
+#           built from the playground whose sheet has no `Version:` line. Its version is the
+#           parent's, so nothing rolls it. [parent] is `version_parent` from
+#           `notes projects --stats --json`, the one place the rule lives (projects::version_parent_dir).
+#   sheet   no release tag: the sheet's counter, cut on its stage's cadence
 # [shipped] is project_release_version's answer when the caller has it, so tags are read once.
 project_version_owner() {
   local shipped
   if [ $# -ge 2 ]; then shipped="$2"; else shipped="$(project_release_version "$1")"; fi
-  if [ -n "$shipped" ]; then echo tag; else echo sheet; fi
+  if [ -n "$shipped" ]; then echo tag
+  elif [ -n "${3:-}" ]; then echo parent
+  else echo sheet; fi
 }
 
 # project_lab_names <repo> -> every project belonging to that repo, one per line.
