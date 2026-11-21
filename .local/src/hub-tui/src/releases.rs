@@ -261,10 +261,15 @@ impl ReleasesView {
     /// Flow's next named window (`w`), wrapping; from a day pair, the first.
     pub fn flow_next_window(&mut self) {
         let ws = &hub_core::lanes::WINDOWS;
+        // The name drawn (an empty or unknown one is the default's), or the first from a pair.
         let on = self.flow_window.trim();
-        let next = match ws.iter().position(|w| w.0 == on) {
-            Some(at) => (at + 1) % ws.len(),
-            None => 0,
+        let next = if hub_core::lanes::is_window(on) && !ws.iter().any(|w| w.0 == on) {
+            0
+        } else {
+            let on = hub_core::lanes::window(on).0;
+            ws.iter()
+                .position(|w| w.0 == on)
+                .map_or(0, |at| (at + 1) % ws.len())
         };
         self.flow_window = ws[next].0.to_string();
     }
@@ -900,7 +905,8 @@ pub fn flow_lines(f: &Flow, p: Palette, now: i64, w: usize) -> Vec<Line<'static>
         let b = if f.t1 + 60 >= now {
             "now".to_string()
         } else {
-            clock(f.t1, now)
+            // t1 is the next midnight: the axis ends on the last day's last minute.
+            clock(f.t1 - 60, now)
         };
         let a = clock(f.t0, now);
         let gap = bar.saturating_sub(a.len() + b.len());
@@ -1060,6 +1066,11 @@ mod tests {
             window: "x".into(),
             t0: AT - 3 * 86_400,
             t1: AT - 2 * 86_400,
+            ci: vec![hub_core::lanes::Lane {
+                label: "Checks".into(),
+                sub: "1 run".into(),
+                segs: vec![],
+            }],
             ..Default::default()
         };
         let lines: Vec<String> = flow_lines(&ended, Palette { no_color: true }, AT, 100)
@@ -1069,6 +1080,16 @@ mod tests {
         assert!(
             lines.iter().all(|l| !l.trim_end().ends_with("now")),
             "{lines:?}"
+        );
+        // The default (nothing set) is drawn as 7d, so w goes on to 30d; a pair starts the names over.
+        let mut d = ReleasesView::default();
+        d.flow_next_window();
+        assert_eq!(d.flow_window, "30d");
+        assert!(
+            lines.iter().any(|l| l
+                .trim_end()
+                .ends_with(&crate::fmt::clock(ended.t1 - 60, AT))),
+            "a pair ends its axis on its last minute: {lines:?}"
         );
         v.flow_next_window();
         assert_eq!(v.flow_window, "24h", "from a pair w starts the names over");

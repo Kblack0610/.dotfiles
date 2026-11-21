@@ -254,7 +254,11 @@ function relFlowBlock() {
   if (!d) return secHead("", "Flow") + `<div class="${relFlow.err ? "panel down" : "empty"}">${relFlow.err ? esc(relFlow.err) : "reading..."}</div>`;
   const pick = `<select class="rel-flow" aria-label="project">${d.projects.concat(d.projects.includes(d.project) ? [] : [d.project]).map((p) => `<option${p === d.project ? " selected" : ""}>${esc(p)}</option>`).join("")}</select>`;
   const [from, to] = relFlowDays(d.window);
-  const days = `<span class="muted">or</span> <input type="date" class="tdate" data-flow-from value="${esc(from)}" title="from day" aria-label="from day"> <span class="muted">to</span> <input type="date" class="tdate" data-flow-to value="${esc(to)}" title="to day" aria-label="to day">`;
+  // The ledger's days are the only ones with runs: the pickers reach no further back.
+  const lo = new Date(Date.now() - d.keep_days * 864e5), hi = new Date();
+  const ymd = (t) => `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
+  const lim = d.keep_days ? ` min="${ymd(lo)}" max="${ymd(hi)}"` : "";
+  const days = `<span class="muted">or</span> <input type="date" class="tdate" data-flow-from value="${esc(from)}"${lim} title="from day" aria-label="from day"> <span class="muted">to</span> <input type="date" class="tdate" data-flow-to value="${esc(to)}"${lim} title="to day" aria-label="to day">`;
   const wins = `<div class="seg fseg"><span class="muted">window</span>` + d.windows.map((w) => `<button class="${w === d.window ? "on" : ""}" data-flow-win="${esc(w)}">${esc(w)}</button>`).join("") + days + `</div>`;
   let h = `<div class="cline">${pick} ${wins} ${legend(d.keys.map(([k, l]) => [l, relFlowColor(k)]))}</div>`;
   const errs = [d.clipped, relFlow.err && `refresh failed, showing the last read: ${relFlow.err}`, ...d.errors].filter(Boolean);
@@ -444,7 +448,7 @@ $("releases").addEventListener("toggle", (e) => { if (e.target.dataset?.k) REL_O
 $("releases").addEventListener("click", (e) => {
   const t = e.target;
   const win = t.closest("[data-flow-win]");
-  if (win) { relFlow.window = win.dataset.flowWin; relFlowRefresh(); return; }
+  if (win) { relFlow.window = win.dataset.flowWin; relFlow.from = relFlow.to = ""; relFlowRefresh(); return; }
   if (t.closest("a") || t.closest("button") || t.closest("summary") || t.closest("select") || t.closest("tr.rcd")) return;
   const rh = t.closest("tr.rh");
   if (rh) { loadChangelog(rh.dataset.project, rh.dataset.tag); return; }

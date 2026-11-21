@@ -79,6 +79,8 @@ pub struct Flow {
     pub project: String,
     /// A `WINDOWS` name, or the day pair drawn (`2026-11-10..2026-11-15`).
     pub window: String,
+    /// How many days back the runs ledger reaches (`builds::KEEP_DAYS`), the day pickers' floor.
+    pub keep_days: i64,
     /// Why the window drawn is not the one asked (`the ledger keeps 30 days, drawn from
     /// 2026-10-22`); empty when it is.
     pub clipped: String,
@@ -113,11 +115,17 @@ pub fn window(name: &str) -> (&'static str, i64) {
 /// first and the one that closes the last: (from, to, t0, t1). None for anything else.
 fn day_pair(ask: &str) -> Option<(String, String, i64, i64)> {
     let (a, b) = ask.split_once("..").unwrap_or((ask, ask));
-    let (a, b) = (a.trim(), b.trim());
-    let (a, b) = if a <= b { (a, b) } else { (b, a) };
-    let (t0, _) = crate::money::day_bounds(a)?;
-    let (_, t1) = crate::money::day_bounds(b)?;
-    Some((a.to_string(), b.to_string(), t0, t1))
+    let day = |d: &str| chrono::NaiveDate::parse_from_str(d.trim(), "%Y-%m-%d").ok();
+    // Ordered and named as dates, so `2026-9-5` is `2026-09-05`, not a string that sorts oddly.
+    let (a, b) = (day(a)?, day(b)?);
+    let (a, b) = (a.min(b), a.max(b));
+    let (a, b) = (
+        a.format("%Y-%m-%d").to_string(),
+        b.format("%Y-%m-%d").to_string(),
+    );
+    let (t0, _) = crate::money::day_bounds(&a)?;
+    let (_, t1) = crate::money::day_bounds(&b)?;
+    Some((a, b, t0, t1))
 }
 
 /// Whether `ask` names a window: one of `WINDOWS` or a day pair.
@@ -449,6 +457,7 @@ pub fn build(b: &Builds, rel: &Releases, project: &str, window_name: &str, now: 
     Flow {
         project,
         window,
+        keep_days: KEEP_DAYS,
         clipped,
         t0,
         t1,
@@ -728,6 +737,16 @@ mod tests {
             NOW,
         );
         assert_eq!((today.t1, today.clipped.as_str()), (NOW, ""));
+    }
+
+    #[test]
+    fn an_unpadded_day_is_the_same_day_ordered_and_named_as_a_date() {
+        let (b, r) = reads(vec![], vec![]);
+        let from = day_before(20);
+        let f = build(&b, &r, "app", &format!("{}..{from}", day_before(10)), NOW);
+        assert_eq!(f.window, format!("{from}..{}", day_before(10)));
+        assert_eq!(day_pair("2026-10-01..2026-9-5").unwrap().0, "2026-09-05");
+        assert_eq!(day_pair("2026-10-01..2026-9-5").unwrap().1, "2026-10-01");
     }
 
     #[test]
