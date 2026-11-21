@@ -9,7 +9,8 @@ Reads the vendor registry (VENDORS_FILE, else ~/.config/agentctl/vendors), one v
 
 cred:  rbw:[<folder>/]<entry>  an rbw entry (the secret is its password)
        sops:<file>#<key>       a key of a SOPS file
-       cli:<tool>              the tool's own login; the probe runs it
+       cli:<tool>              the tool's own login; the probe runs it. A tool whose login reads rbw (an aws
+                               credential_process) names that rbw entry instead, so a locked rbw reads LOW, not EXPIRED
        none
 probe: listed                  the cred exists (a console login has no read-only API)
        login                   the rbw entry holds the parts of a console login: a password and an account
