@@ -126,6 +126,7 @@ A deny (PreToolUse) or block (Stop) reason starts with `<hook-name>: `. session-
 ## File layout
 
 - `~/.claude/hooks/` is a stow symlink to `~/.dotfiles/.claude/hooks/`.
+- `lib/injected.sh` is sourced, not a hook: `injected_since_compact` tells a UserPromptSubmit hook its block is already in context (answer-standard.sh, manual-mode-investigate.sh). The directory link above deploys it with no restow.
 - `~/.dotfiles/.config/shared-hooks/` holds hooks shared across runtimes (Claude Code + Codex).
 - Project repos should NOT have their own `pre-stop-checks.sh` — the user-global one handles all project types. If a project needs custom CI, add a case to the global hook.
 

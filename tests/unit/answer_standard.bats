@@ -35,9 +35,12 @@ record() {
   # The last rule bullet arrives, so a cut-off that drops the tail goes red.
   [[ "$ctx" == *"gets the \`catch-up\` shape"* ]]
   [[ "$ctx" == *"Full text, with how to apply each: $HOME/.claude/skills/comms-standard/SKILL.md"* ]]
-  # Only each bullet's lead sentence: the rest, the intro, the Why bullet and the next section stay out.
-  [[ "$ctx" == *"- A question gets an answer first, and the work waits."* ]]
-  [[ "$ctx" != *"Write the finding as soon as"* ]]
+  # Each bullet's first two sentences: the rule and how to apply it. The gloss rule is why this
+  # hook exists (2026-11-19: answers were bare ids and labels), so it must arrive.
+  [[ "$ctx" == *"gets a few-word gloss the first time it appears"* ]]
+  [[ "$ctx" == *"rather than more than about 5 tool calls with no text."* ]]
+  # The third sentence on, the intro, the Why bullet and the next section stay out.
+  [[ "$ctx" != *"When the finding depends on how a piece works"* ]]
   [[ "$ctx" != *"The reader built the system"* ]]
   [[ "$ctx" != *"- Why:"* ]]
   [[ "$ctx" != *"## Steps"* ]]
@@ -73,6 +76,15 @@ record() {
   [[ "$ctx" == *"- last rule"* ]]
   [[ "$ctx" != *"history"* ]]
   [[ "$ctx" != *"Steps"* ]]
+}
+
+@test "an abbreviation does not end a sentence, and a third sentence is cut" {
+  rm "$HOME/.claude/skills/comms-standard/SKILL.md"
+  printf '**Answers in chat** intro.\n- Name the lever, e.g. a flag, and why. Then stop. "Third" one.\n\n## Steps\n' > "$HOME/.claude/skills/comms-standard/SKILL.md"
+  run prompt
+  ctx=$(jq -r '.hookSpecificOutput.additionalContext' <<<"$output")
+  [[ "$ctx" == *"- Name the lever, e.g. a flag, and why. Then stop."$'\n'* ]]
+  [[ "$ctx" != *"Third"* ]]
 }
 
 @test "no transcript sends nothing rather than the block on every prompt" {

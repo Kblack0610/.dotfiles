@@ -37,6 +37,19 @@ record() {
   assert_output --partial 'investigate-only'
 }
 
+@test "back in manual mode after a prompt in another mode, the posture is injected again" {
+  TP="$BATS_TEST_TMPDIR/t.jsonl"; : > "$TP"
+  echo '{"type":"user","permissionMode":"default","message":{"role":"user","content":"why"}}' >> "$TP"
+  run bash "$HOOK" <<< "$(tp_prompt)"; record
+  # Negative control: another prompt in manual mode is not a mode change.
+  echo '{"type":"user","permissionMode":"default","message":{"role":"user","content":"and?"}}' >> "$TP"
+  run bash "$HOOK" <<< "$(tp_prompt)"
+  assert_output ''
+  echo '{"type":"user","permissionMode":"acceptEdits","message":{"role":"user","content":"fix it"}}' >> "$TP"
+  run bash "$HOOK" <<< "$(tp_prompt)"
+  assert_output --partial 'investigate-only'
+}
+
 @test "the deny still fires on every call after the posture was injected" {
   TP="$BATS_TEST_TMPDIR/t.jsonl"; : > "$TP"
   run bash "$HOOK" <<< "$(tp_prompt)"; record

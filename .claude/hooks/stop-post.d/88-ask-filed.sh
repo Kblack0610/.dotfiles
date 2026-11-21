@@ -38,9 +38,9 @@ agent-panel asks-human "$TRANSCRIPT" || exit 0
 # pass: P marks a prompt, D a dialog call, and the last P resets.
 jq -r 'select((.isSidechain // false) | not)
   | if .type == "user" and ((.isMeta // false) | not)
-       and (.message.content | if type == "array" then all(.[]; .type != "tool_result") else true end) then "P"
+       and (.message.content | if type == "array" then all(.[]; (.type? // "") != "tool_result") else true end) then "P"
     elif .type == "assistant"
-       and any(.message.content[]?; .type == "tool_use" and (.name == "AskUserQuestion" or .name == "ExitPlanMode")) then "D"
+       and any(.message.content[]?; .type? == "tool_use" and (.name == "AskUserQuestion" or .name == "ExitPlanMode")) then "D"
     else empty end' "$TRANSCRIPT" 2>/dev/null \
   | awk '$0 == "P" {f = 0} $0 == "D" {f = 1} END {exit !f}' && exit 0
 
