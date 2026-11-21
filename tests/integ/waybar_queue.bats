@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # queue.sh: the waybar queue chip, the one chip for agent work flowing. The bar is two labelled
-# totals, Q ready to start and D done today, with Q coloured by what is wrong. The hover opens with
+# totals, Q ready to start and D shipped today (merged a PR), with Q coloured by what is wrong. The hover opens with
 # one line, "Queue: flowing" or the worst exception, each exception on its own line with the command
 # that fixes it, then the Queue, Dispatch and Shepherd numbers in <tt> columns and an as-of stamp.
 # What these pin: a deep queue that is moving is green "flowing"; BLOCKED, a hold, flapping, a limit
@@ -46,7 +46,7 @@ s = {
     "summary_dispatch.reaped_1h": 7, "summary_dispatch.flapping_items": 0,
     "summary_dispatch.queued": 60, "summary_dispatch.running": 14, "summary_dispatch.review": 6, "summary_dispatch.waiting": 10,
     "summary_dispatch.done_1h": 4, "summary_dispatch.done_6h": 30,
-    "summary_dispatch.added_6h": 18, "summary_dispatch.done_24h": 40, "summary_dispatch.done_today": 12,
+    "summary_dispatch.added_6h": 18, "summary_dispatch.done_24h": 40, "summary_dispatch.shipped_today": 12, "summary_dispatch.checks_today": 9,
     "summary_dispatch.board_agent": 1522, "summary_dispatch.board_backlog": 2200,
     "summary_dispatch.room_live_runs": 16, "summary_dispatch.room_max_live": 24,
     "summary_dispatch.room_live_hand": 5, "summary_dispatch.room_total_live": 21, "summary_dispatch.room_load": 27.4,
@@ -113,7 +113,7 @@ head_is() {
 <tt>Q ready           39  32 urgent, 7 high; 60 queued in all
   oldest      12h59m  urgent $(y 12h59m)
   running         14  on a PR 6, waiting on you 10
-D done today      12
+D shipped         12  merged today; 9 checks closed with no merge
   last hour        4  started 5, failed 0
   last 24h        38  started 50, failed $(y 2)
   6h net         -12  18 added, 30 finished: $(g 'shrinking, empty in about 30h')
@@ -415,12 +415,12 @@ as of 03:43 (3m ago), the last dispatch pass, on h1-main"
   assert_line --index 8 "  board            -  agent rows, - on the backlog</tt>"
 }
 
-@test "D is the items done today; a feed without it reads -, never 0" {
-  feed summary_dispatch.done_today=-
+@test "D is the items shipped today, with the checks beside it; a feed without them reads -, never 0" {
+  feed summary_dispatch.shipped_today=- summary_dispatch.checks_today=-
   run "$MODULE"
   assert_equal "$(text)" "$(bar 39 -)"
   run tip
-  assert_line --index 4 "D done today       -"
+  assert_line --index 4 "D shipped          -  merged today; - checks closed with no merge"
 }
 
 # The labels are the theme accent, palette.css's palette_accent. Negative controls: no palette,

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Waybar module: the queue chip (custom/queue), whether agent work flows. The bar is "Q:27  D:280",
-# items ready to start next and items done today, labels in the theme accent (pango.sh). Q takes
+# Waybar module: the queue chip (custom/queue), whether agent work flows. The bar is "Q:27  D:126",
+# items ready to start next and items shipped today (merged a PR), labels in the theme accent (pango.sh). Q takes
 # the level colour: red for queue-starved, a failed runner or no pass in PASS_LATE_SECS; amber for
 # a stopped or BLOCKED dispatch, flapping, could_start, an unhandled shepherd line or a stale host.
 # A deep queue that is moving is no fault. The hover (waybar's tooltip, Noctalia's dropdown) leads
@@ -161,7 +161,7 @@ else
   stale="$(get src.stale)"
   [ -z "$stale" ] || while IFS= read -r h; do flag 1 "$(pango_esc "$h") sends a stale queue" stale; done <<< "$stale"
 
-  # Queue: Q ready and its waits, D done today and the flow behind it.
+  # Queue: Q ready and its waits, D shipped today and the flow behind it.
   uw="$(prom_dur "$urgent_s")"
   if [ "$starved" = 1 ]; then uw="$(paint "$C_RED" "$uw")"
   elif [[ "$urgent_s" =~ ^[0-9]+$ ]] && ((urgent_s > URGENT_LATE_SECS)); then uw="$(paint "$C_YEL" "$uw")"; fi
@@ -175,7 +175,7 @@ else
   [ -z "$high_s" ] || rest+=", high $(prom_dur "$high_s")"
   row "  oldest" "$(prom_dur "$oldest")" "$rest"
   row "  running" "$(d running)" "on a PR $(d review), waiting on you $(d waiting)"
-  row "D done today" "$(d done_today)"
+  row "D shipped" "$(d shipped_today)" "merged today; $(d checks_today) checks closed with no merge"
   # flow <h>: done (finished and not failed) in the last h hours, then started and failed; failed is amber.
   flow() {
     local dn fl
@@ -270,6 +270,6 @@ fi
 qn="${ready:--}"
 ((level > 0)) && qn="$(paint "${LEVEL_COLOUR[$level]}" "$qn")"
 lc="$(label_colour)"
-text="$(paint "$lc" Q:)$qn  $(paint "$lc" D:)$(d done_today)"
+text="$(paint "$lc" Q:)$qn  $(paint "$lc" D:)$(d shipped_today)"
 
 emit "$text" "$tip" "${LEVEL_CLASS[$level]}"
