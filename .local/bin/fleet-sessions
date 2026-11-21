@@ -2072,6 +2072,11 @@ collect() {
     # the phase reads as next, never as queued.
     # The plan is queued only when every open phase is held; else its first free one is next.
     # A read that fails is named unreadable, and tick logs no blink for the row (blind_row) (ar-2905).
+    # An item item_of joined to this session (own:a,b running here, or the one waiting here) is the session's
+    # own work, not a phase handed off, so it holds no phase: it is this session's next phase until it
+    # lands. dsp still names the one started item matched by the row's tmux session, review ones included
+    # (ar-475: dotfiles-agent-4 read DONE while P4 was its own running item, joined by sessions: alone).
+    local mine=""; case "$item" in own:* | here:*) mine="${item#*:}"; mine="${mine%% *}" ;; esac
     local dsp=- n=0 e=0 prun=- pwq=-
     dsp="$(awk -F'\t' -v k="${target%%/*}/$tsess" '$1 == k { print $2; exit }' <<<"$items")"
     pq="$pnext"
@@ -2095,12 +2100,12 @@ collect() {
       canon="$(realpath -q -- "$plist" 2>/dev/null)" || canon="$plist"
       IFS=$'\t' read -r ptgt pn < <(plan_pointer "$plist")
       [ -z "${ptgt:-}" ] || { canon="$ptgt"; pbase="$pn"; }
-      qd="$(jq -rs --arg p "$planf" --arg q "${canon:-$plist}" --arg own "${dsp#*: }" --arg sid "${sid:0:8}" --arg tgt "$target" \
+      qd="$(jq -rs --arg p "$planf" --arg q "${canon:-$plist}" --arg own "${dsp#*: }" --arg mine "$mine" --arg sid "${sid:0:8}" --arg tgt "$target" \
               --argjson open "$(jq -c --argjson b "$pbase" '[.[] | select(.state == "open") | {n: ((if (.n | type) == "number" then .n + $b - 1 else .n end) | tostring), name: .name}]' <<<"$plj")" \
               "$PLAN_ITEMS_JQ"' def names_me: (.task // "") as $t
                 | any($sid, $tgt; . as $w | $w != "" and (($t | split($w)) as $p
                     | any(range(1; $p | length); ($p[. - 1] | test("[0-9A-Za-z]$") | not) and ($p[.] | test("^[0-9A-Za-z]") | not))));
-              [.[] | select(.slug != $own and (names_plan($p) or names_plan($q)) and (names_me | not))
+              [.[] | select(.slug != $own and (.slug as $s | $mine | split(",") | all(. != $s)) and (names_plan($p) or names_plan($q)) and (names_me | not))
                  | {slug, st: (.state // "queued"), ph: (.phases // "" | tostring | split(" ") | map(select(. != ""))),
                     ses: (if ((.session // "") | contains(":")) then (.session | sub(":"; "/")) else null end),
                     tp: ((.task // "") | (capture("(?i)\\bphase (?<t>[^\\s:,]+) of ") | .t | ascii_downcase) // null)}] as $it
