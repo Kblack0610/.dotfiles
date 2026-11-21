@@ -9,7 +9,7 @@
 # (2026-11-17; install_modules.bats did the same on 2026-11-06).
 #
 # The XDG homes follow HOME, since a desktop session exports them pointing at the real ones (gh
-# reads XDG_CONFIG_HOME/gh). The account and tool dirs, tokens, live-state pointers and runner settings (LANE, MODEL) an agent
+# reads XDG_CONFIG_HOME/gh). The account and tool dirs, tokens and live-state pointers an agent
 # session exports are unset, as on a CI runner.
 #
 # ACCOUNT_HOME: the HOME the run started with, READ-ONLY, for the tests that pin the live overlay
@@ -23,6 +23,6 @@ setup_suite() {
   export XDG_DATA_HOME="$HOME/.local/share" XDG_STATE_HOME="$HOME/.local/state"
   unset CLAUDE_CONFIG_DIR GH_CONFIG_DIR CODEX_HOME GNUPGHOME \
     GH_TOKEN GITHUB_TOKEN GITHUB_PERSONAL_ACCESS_TOKEN \
-    AGENT_QUEUE_ITEM AGENTCTL_STATE AGENTCTL_STATE_DIR AGENTCTL_NAME AGENTCTL_INBOX PASS_TOOLS FLEET_HOSTS_JSON LANE MODEL
+    AGENT_QUEUE_ITEM AGENTCTL_STATE AGENTCTL_STATE_DIR AGENTCTL_NAME AGENTCTL_INBOX PASS_TOOLS FLEET_HOSTS_JSON
   mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
 }
