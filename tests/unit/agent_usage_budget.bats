@@ -33,7 +33,7 @@ EOF
   echo '{"usageItems":[{"product":"actions","netAmount":30},{"product":"git_lfs","netAmount":3}]}' > "$FIX/gh-usage"
   echo '[{"metric":{"kind":"actual"},"value":[0,"100"]},{"metric":{"kind":"limit"},"value":[0,"600"]},{"metric":{"kind":"forecast"},"value":[0,"350"]}]' > "$FIX/aws"
   echo '{"month_to_date_usage":"50.00"}' > "$FIX/do"
-  # the shared stub sets its own $FIX (its fixture dir), so the body names the test's dir by $HOME/fix
+  # the body is this test's own code and names its fixture dir by $HOME/fix
   gh_script <<'EOF'
 case "$*" in
   *budgets*) cat "$HOME/fix/gh-budgets" ;;
