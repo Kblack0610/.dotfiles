@@ -66,14 +66,19 @@ board_of() { project_board "$1"; }
 # file_plan <board> <project> <plan-file>: the plan's row within the run's cap, filed as fleet-dispatch's
 # reconcile_plans files one: agent-queue add --plan from a filer puts one low row on the board, "plan
 # <slug>: run its open phases", and exits 5; dispatch's promote turns it into the plan's chain. It is
-# no human's want, so it carries no #requested. Returns 1 when not filed.
+# no human's want, so it carries no #requested. Returns 1 when not filed. A plan agent-queue refuses (a
+# phase marker it cannot read, an unknown project) takes no cap slot and is counted as a fault, so the
+# run says which plan to fix.
 file_plan() {
   local board="$1" p="$2" planf="$3" out rc=0
   if [ "$FILED" -ge "$ASK_SWEEP_MAX" ]; then OVER=$((OVER + 1)); return 1; fi
-  FILED=$((FILED + 1))
-  if [ "$DRY" = 1 ]; then printf 'would file [%s] plan %s: run its open phases\n' "$board" "$(basename "$planf" .md)"; return 0; fi
-  out=$(agent-queue add --plan "$planf" --project "$p" --priority low --from auto:ask-sweep 2>&1) || rc=$?
-  [ "$rc" -eq 0 ] || [ "$rc" -eq 5 ] || { say "could not file the plan $planf: ${out##*$'\n'}"; return 1; }
+  if [ "$DRY" = 1 ]; then
+    FILED=$((FILED + 1)); printf 'would file [%s] plan %s: run its open phases\n' "$board" "$(basename "$planf" .md)"; return 0
+  fi
+  out=$(agent-queue add --plan "$planf" --project "$p" --priority low --from auto:ask-sweep 2>&1 </dev/null) || rc=$?
+  if [ "$rc" -eq 0 ] || [ "$rc" -eq 5 ]; then FILED=$((FILED + 1)); return 0; fi
+  FAULT=1; say "could not file the plan $planf: ${out##*$'\n'}"; proof_why "plan $(basename "$planf" .md) refused by agent-queue"
+  return 1
 }
 
 sweep_plans() {

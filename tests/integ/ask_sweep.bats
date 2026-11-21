@@ -314,6 +314,21 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_output --partial 'why: board: model call failed (exit 1)'
 }
 
+@test "a plan agent-queue refuses takes no cap slot, and the run records which plan" {
+  ASK_SWEEP_MAX=2   # room for both: a refusal that took a slot reads "filed 2"
+  export ASK_SWEEP_MAX
+  plan bad '1 day ago 1 hour ago' "$OPEN"; plan good '1 day ago 1 hour ago' "$OPEN"
+  stub agent-queue 'printf "agent-queue %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"
+    case "$*" in *bad.md*) echo "agent-queue: --plan bad.md: a phase marker names no result" >&2; exit 1 ;; esac; exit 5'
+  run "$SWEEP" run
+  assert_failure
+  assert_output --partial "could not file the plan $ASK_SWEEP_PLANS/bad.md: agent-queue: --plan bad.md: a phase marker names no result"
+  assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/good.md"
+  assert_output --partial 'filed 1, over the cap 0'
+  run tail -1 "$AGENTCTL_STATE_DIR/ask-sweep/activity.log"
+  assert_output --partial 'why: plan bad refused by agent-queue'
+}
+
 @test "a notes with no row types asks no model and records why" {
   message 'add a slide'
   NO_ROW_TYPES=1 stub notes 'printf "notes %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" = row ] && exit 2; exit 0'
