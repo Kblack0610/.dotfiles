@@ -2525,7 +2525,7 @@ priority: urgent
 from: fleet-bench
 agent: claude
 tags: red watch cause:ab12
-row: dotfiles:ship it
+row: dotfiles:ship red
 queued: 2026-11-03T10:00:00Z
 started: 2026-11-03T10:00:00Z
 ---
@@ -2548,7 +2548,7 @@ EOF
   run "$LAND" 42 --item red-spend
   assert_success
   assert_line 'watch: spend OK'
-  assert_line --partial 'board: closed "ship it"'
+  assert_line --partial 'board: closed "ship red"'
   assert_line 'landed #42'
   run agent-queue show red-spend --json
   assert_equal "$(jq -r '[.state, .status] | join("|")' <<<"$output")" 'done|ok'
@@ -2668,7 +2668,18 @@ EOF
   : >"$NOTES_FIXTURE/checks.failed"
   AGENT_LAND_CHECKS_POLL=0 run "$LAND" 42 --item ship
   assert_failure 1
-  assert_output --partial 'checks failed: reading the checks: gh: API rate limit exceeded (HTTP 403)'
+  assert_output --partial 'checks failed: the watch ended with no failed check to name: gh: API rate limit exceeded (HTTP 403)'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "a queued-runs answer that is not a count is a failed read, never 0 queued (ar-2235)" {
+  printf '%s\n' 'no checks reported on the pr-42 branch' >"$NOTES_FIXTURE/checks.out"
+  printf '%s\n' 'A new release of gh is available' >"$NOTES_FIXTURE/runs.queued"
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=1 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: reading the runs on the head: not a count: A new release of gh is available'
+  refute_output --partial 'checks: none reported'
   run grep -c 'pr merge' "$LOG"
   assert_output 0
 }
