@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: messaging
   tags: [report, notes, refs, inbox]
+  system: [notes]
   reviewed: "2026-11-09"
 ---
 

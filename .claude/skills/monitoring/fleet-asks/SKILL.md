@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [agent-ask, asks, agent-propose, proposals, judge, resume, stop-hook]
+  system: [sessions]
   reviewed: "2026-11-06"
 ---
 

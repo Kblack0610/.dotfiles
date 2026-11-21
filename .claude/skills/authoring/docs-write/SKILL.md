@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: authoring
   tags: [docs, documentation, writing, readme, structure]
+  system: [docs]
   reviewed: "2026-11-02"
 ---
 

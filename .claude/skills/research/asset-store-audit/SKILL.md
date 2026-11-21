@@ -8,6 +8,7 @@ paths:
 metadata:
   category: research
   tags: [unity, asset-store, audit, assets, catalog]
+  system: [look]
   reviewed: "2026-11-04"
 ---
 

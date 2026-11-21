@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: memory
   tags: [notes, journal, cli]
+  system: [notes]
   reviewed: "2026-11-05"
 ---
 

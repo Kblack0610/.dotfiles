@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: ops
   tags: [ci, flaky, quarantine, testing, unity, playground]
+  system: [ci]
   reviewed: "2026-11-10"
 ---
 

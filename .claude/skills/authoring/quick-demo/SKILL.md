@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: authoring
   tags: [binks, demo, html, game, publish]
+  system: [gameplay, deploy]
   reviewed: "2026-11-18"
 ---
 

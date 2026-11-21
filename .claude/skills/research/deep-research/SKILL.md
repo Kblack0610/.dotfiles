@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: research
   tags: [research, web, multi-agent]
+  system: [any]
   reviewed: "2026-05-31"
 ---
 

@@ -76,12 +76,30 @@ is_repo_root() {
 # No fetch here: this runs from a monitoring probe every few hours and must stay
 # cheap and offline-safe. It compares against the last-known origin/main, so it
 # reports "merged and fetched but not checked out". A stale remote ref makes it
-# quieter, never noisier — it cannot produce a false alarm.
+# quieter, never noisier.
+#
+# A commit merged within `dotfiles-autopull --lock-secs` of now is not counted: that is how long a
+# landing's `dotfiles-autopull --now` waits for the pass before it, so until then the checkout
+# moving is a pull in flight, not drift. Any session's fetch moves the shared origin/main ref the
+# moment a PR merges, and a probe landing in that window tripped the watch (2026-11-20: a 29s-old
+# merge, checked out 91s later). The age is the committer date, which is the merge time because
+# agent-land squash-merges; a merge commit's older parents still count at once. A wait autopull
+# cannot report gives no grace, so BEHIND stays as strict as it was.
+behind_grace() {
+  local secs
+  secs="$("$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/dotfiles-autopull" --lock-secs 2>/dev/null)"
+  [[ "$secs" =~ ^[0-9]+$ ]] && echo "$secs" || echo 0
+}
+GRACE="$(behind_grace)"
+
 check_behind() {
-  local repo="$1" name="$2" n head
+  local repo="$1" name="$2" n head now
   is_repo_root "$repo" || return 0
   head="$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null)" || return 0
-  n="$(git -C "$repo" rev-list --count HEAD..origin/main 2>/dev/null || echo 0)"
+  now="$(date +%s)"
+  # A commit dated past now + GRACE (clock skew) counts at once, so skew cannot hide drift.
+  n="$(git -C "$repo" log --format=%ct HEAD..origin/main 2>/dev/null \
+    | awk -v lo=$((now - GRACE)) -v hi=$((now + GRACE)) '$1 < lo || $1 > hi { n++ } END { print n + 0 }')"
   [ "${n:-0}" -gt 0 ] && add BEHIND "$name" "$head" "$n commit(s) on origin/main not in the checked-out tree"
   return 0
 }
