@@ -12,7 +12,7 @@ Every agent account runs `gh` as the same GitHub user, so the whole fleet shares
 
 Everything else stays on your token: writes (`pr create`, `pr merge`, `pr edit`, `api -X POST`), anything with `@me`, a `--watch` (it can outlive the token's hour), `gh api graphql`, `rate_limit`, a `GH_HOST` other than github.com, an owner with no installation, and a caller that set `GH_TOKEN` itself. PRs and merges keep your name.
 
-When GitHub refuses the App's token for a read (HTTP 401 or 403, or `Resource not accessible by integration`), the wrapper reruns it on your token, so a broken App slows nothing down. After a failed mint, `gh-app` skips the App for 5 minutes instead of waiting on the network for every call; `gh-app status` clears that.
+When GitHub refuses the App's token for a read (HTTP 401 or 403, or `Resource not accessible by integration`), the wrapper reruns it on your token, so a broken App slows nothing down. Only the rerun's answer reaches the caller: the refused attempt's stderr, and for `gh api` the error body it prints on stdout, are dropped. After a failed mint, `gh-app` skips the App for 5 minutes instead of waiting on the network for every call; `gh-app status` clears that.
 
 Every call, routed or not, gets one row in `~/.local/state/gh-calls/<YYYY-MM-DD>.tsv`: epoch, bucket (`user`, `app:<owner>`, `user:app-error`, `user:app-denied`, `env`), exit code, caller (the script that ran gh, `zsh` for an agent's own command), `$AGENT_QUEUE_ITEM`, and the command with bodies, fields and headers blanked (`secret`, `variable` and `auth` keep only their subcommand). The files are mode 600, and files older than 7 days are deleted. When the user budget runs LOW, `fleet-assess` names the top spenders from this log.
 
