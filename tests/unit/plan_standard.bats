@@ -82,7 +82,7 @@ prompt() { # prompt <project> <mode>
 }
 
 @test "each base section is required" {
-  for s in Context Approach Reviewed Risks Verification; do
+  for s in Changes Context Approach Reviewed Risks Verification; do
     run gate untyped "$(base | without "$s")"
     assert_output --partial 'plan-standard:'
     assert_output --partial "Missing ## $s"
@@ -121,11 +121,13 @@ prompt() { # prompt <project> <mode>
   assert_output ''
 }
 
-@test "every plan opens with a Changes ledger: no section or a missing label is denied" {
-  run gate untyped "$(base | sed '/^## Changes$/,/^Net:/d')"
-  assert_output --partial 'Missing ## Changes'
-  run gate untyped "$(base | sed '/^Files:/d')"
-  assert_output --partial '## Changes has no Files: line'
+@test "the Changes ledger needs each of its labels and cannot be n/a" {
+  for l in Adds Removes Files Net; do
+    run gate untyped "$(base | sed "/^$l:/d")"
+    assert_output --partial "## Changes has no $l: line"
+  done
+  run gate untyped "$(base | sed '/^Adds:/,/^Net:/c\n/a: a small fix')"
+  assert_output --partial '## Changes cannot be n/a'
 }
 
 @test "n/a with a reason passes" {

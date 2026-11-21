@@ -22,7 +22,7 @@ Backticked labels in `Must answer` are required in that section. In `Applies`, `
 | `## Release` | app, game | Store impact, risk lane, regulated data, critical e2e paths. A plan that cuts or uploads a build is held to the bar in `~/.claude/skills/release/SKILL.md` | Skipped lanes reach users: `release-coordinator`, `compliance`, `bnb-quality-gates`, `release` |
 | `## Playtest` | game | Which game, gate class, multiplayer proof, what only human play can judge, perf or look evidence, rating impact | 11-02: physics feel is only found by playing |
 
-Scaling: a section that does not apply says `n/a: <reason>`, except Context and Verification, which always have content. A plan with `## Phases` may not use `n/a`.
+Scaling: a section that does not apply says `n/a: <reason>`, except Changes, Context and Verification, which always have content. A plan with `## Phases` may not use `n/a`.
 
 Depth: a plan with phases or one that crosses systems runs the standards, telemetry and overlap checks as parallel Explore agents before writing, and cites what they found in `## Reviewed`.
 
