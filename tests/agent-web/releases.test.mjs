@@ -27,6 +27,7 @@ let detail = {};
 let status = {};
 let lanes = {};
 let relpage = {};
+let verpage = {};
 const loc = { pathname: "/", hash: "" };
 const ctx = vm.createContext({
   console,
@@ -40,7 +41,7 @@ const ctx = vm.createContext({
   fetch: async (url) => {
     asked.push(url);
     const text = url.startsWith("/api/builds/log");
-    const json = url.startsWith("/api/builds/detail") ? detail : url.startsWith("/api/builds") ? builds : url.startsWith("/api/releases/changelog") ? cl : url.startsWith("/api/releases/app") ? status : url.startsWith("/api/releases/lanes") ? lanes : url.startsWith("/api/releases/release") ? relpage : body;
+    const json = url.startsWith("/api/builds/detail") ? detail : url.startsWith("/api/builds") ? builds : url.startsWith("/api/releases/changelog") ? cl : url.startsWith("/api/releases/app") ? status : url.startsWith("/api/releases/lanes") ? lanes : url.startsWith("/api/releases/release") ? relpage : url.startsWith("/api/releases/version") ? verpage : body;
     return { ok: true, status: 200, headers: { get: () => (text ? "text/plain" : "application/json") }, json: async () => json, text: async () => "FAIL: step 3 exited 1" };
   },
 });
@@ -581,7 +582,7 @@ test("a release's page draws its cut as a pipeline, then every cut with each wor
   const job = (name, state, failing = "") => ({ id: 1, name, state, took_text: "1m", failing, log: "" });
   const act = (workflow, state, jobs, href) => ({ workflow, state, level: state === "red" ? "bad" : "ok", started_text: "11-05 10:00", took_text: "4m", href, url: "https://github.com/o/binks/actions/runs/9", jobs, jobs_note: "" });
   relpage = { asked: "2", errors: [], page: {
-    project: "binks", version: "2", tag: "binks-v2", sha: "abcdef0123456", at_text: "11-05", app_href: "#releases/apps/binks",
+    project: "binks", version: "2", tag: "binks-v2", sha: "abcdef0123456", at_text: "11-05", app_href: "#releases/apps/binks", version_href: "#releases/versions/binks%2F2",
     stages: [
       { label: "Started by the tag", actions: [act("Release builds", "red", [job("Steam / Upload", "red", "Upload"), job("Build", "green")], "#infra/runs/binks%2F9")] },
       { label: "Started by a run", actions: [act("iOS release", "green", [job("Ship", "green")], "#infra/runs/binks%2F10")] },
@@ -610,7 +611,45 @@ test("a release's page draws its cut as a pipeline, then every cut with each wor
   assert.match(b, /<th>Release builds<\/th><th>iOS release<\/th>/);
   assert.match(b, /<tr class="sel"><td><a href="#releases\/apps\/binks%2Fbinks-v2">binks-v2<\/a><\/td>/, "the cut on show is picked in the cuts table");
   assert.match(b, /<td class="bad">red<\/td><td class="">green<\/td>/);
+  assert.match(b, /<a href="#releases\/versions\/binks%2F2">every app's cut of 2, and its rows<\/a>/, "a release page links up to its version page");
   relpage = {};
+});
+
+test("a version's page draws its status, the rows bar and table, then each app's pipeline", async () => {
+  const pipe = { project: "dodginballs", version: "0.5.3", tag: "v0.5.3-dodginballs5", sha: "", at_text: "11-19", stages: [], channels: [], channels_note: "the app declares no channel",
+    workflows: [], cuts: [{ tag: "v0.5.3-dodginballs5", at_text: "11-19", state: "red", level: "bad", results: [], reached_text: "", prs_text: "", href: "#releases/apps/dodginballs%2Fv0.5.3-dodginballs5" }],
+    prs_text: "", rows_text: "", app_href: "#releases/apps/dodginballs", version_href: "#releases/versions/ucp%2F0.5.3", note: "" };
+  verpage = { errors: [], page: {
+    project: "ucp", version: "0.5.3", status: "cut", level: "bad", cut_text: "v0.5.3-dodginballs5 11-19", opened_text: "2026-11-18", due_text: "2026-11-19",
+    bar: { done: 1, doing: 1, open: 0, dropped: 0 }, rows_note: "", errors: ["notes: slow"], project_href: "#projects/ucp",
+    rows: [
+      { id: "ucp-3", title: "wip", priority: "low", state: "doing", level: "ok", assignee: "agent-28", assignee_state: "running", assignee_href: "#queue/ar-10", prs: [], href: "#projects/all?q=id:=ucp-3" },
+      { id: "ucp-1", title: "ship menu", priority: "high", state: "done", level: "ok", assignee: "", assignee_state: "", assignee_href: "", prs: [{ text: "#12", state: "merged", url: "https://github.com/o/ucp/pull/12" }], href: "#projects/all?q=id:=ucp-1" },
+    ],
+    apps: [
+      { app: "ucp", state: "no cut", level: "neutral", tag: "", reached_text: "", fixing: "", href: "", page: null },
+      { app: "dodginballs", state: "red", level: "bad", tag: "v0.5.3-dodginballs5", reached_text: "", fixing: "agent-31", href: "#releases/apps/dodginballs%2F0.5.3", page: pipe },
+    ],
+  } };
+  run("st.tab = 'releases'; st.arg = 'apps'; st.page = 'versions/ucp/0.5.3'");
+  asked.length = 0;
+  run("TABS.releases").show();
+  await settled();
+  await settled();
+  assert.ok(asked.includes("/api/releases/version?project=ucp&version=0.5.3"), asked.join(" "));
+  assert.ok(!asked.some((u) => u.startsWith("/api/releases/release")), "a version page reads no release page");
+  const b = box.innerHTML;
+  assert.match(b, /Releases \/ <a href="#projects\/ucp">ucp<\/a> \/ <b>0.5.3<\/b> <span class="bad">cut<\/span>/);
+  assert.match(b, /<b>Cut<\/b> v0.5.3-dodginballs5 11-19 <b>Opened<\/b> 2026-11-18 <b>Due<\/b> 2026-11-19/);
+  assert.match(b, /<div class="kbar"><i class="ok" style="flex:1" title="1 done"><\/i><i class="doing" style="flex:1" title="1 doing"><\/i><\/div>/, "an empty state draws no segment");
+  assert.match(b, /<td><a href="#queue\/ar-10">agent-28<\/a> <span class="muted">running<\/span><\/td>/, "the assignee opens its queue item");
+  assert.match(b, /<a href="https:\/\/github.com\/o\/ucp\/pull\/12" target="_blank" rel="noopener">#12<\/a> <span class="muted">merged<\/span>/);
+  assert.match(b, /<td><a href="#releases\/apps\/dodginballs%2F0.5.3">dodginballs<\/a><\/td><td>v0.5.3-dodginballs5<\/td><td class="bad">red<\/td><td class="wrap muted">-<\/td><td>agent-31<\/td>/, "a red cut names who fixes it");
+  assert.match(b, /<h2 class="sec bad">dodginballs v0.5.3-dodginballs5<\/h2><h3 class="sec">Pipeline<\/h3>/, "each cut app gets its pipeline");
+  assert.ok(!/<h2 class="sec[^"]*">ucp /.test(b), "an app with no cut draws no pipeline");
+  assert.match(b, /notes: slow/, "a rows error shows, the rest still draws");
+  verpage = {};
+  run("st.page = ''");
 });
 
 test("a legacy release's neutral level reads muted, apart from ok and from attention", () => {

@@ -84,6 +84,11 @@ impl<T> Default for PaneRead<T> {
 }
 
 impl<T> PaneRead<T> {
+    /// Nothing read yet, or the last read is `every` old.
+    pub fn due(&self, every: std::time::Duration) -> bool {
+        self.read.is_none() || self.at.is_some_and(|t| t.elapsed() >= every)
+    }
+
     /// Take the answer to the read of `want`. A late answer for a pane since reopened on
     /// another target leaves it alone: that target's own read is the one in flight.
     pub fn answer(&mut self, want: &str, r: Result<T, String>) {
@@ -109,6 +114,10 @@ pub struct ReleasesView {
     /// A release's page (`hub_core::release_page`, the web's `#releases/apps/<app>/<version>`)
     /// drawn atop the app's pane: `project` is the `<app>/<version>` a link named, empty for none.
     pub rel: PaneRead<hub_core::release_page::Page>,
+    /// A version's page (`hub_core::version_page`, the web's `#releases/versions/<project>/<version>`)
+    /// drawn atop the pane of any app the project owns: `project` is the `<project>/<version>` a
+    /// link named, empty for none.
+    pub ver: PaneRead<hub_core::version_page::Page>,
     /// The Release runs inner tab's table and pane: the builds read in `Scope::Release`.
     pub runs: crate::builds::BuildsView,
     /// The inner tab picked (a `layout::Inner` id of Releases); empty until one is.
@@ -132,6 +141,7 @@ impl Default for ReleasesView {
             cl: PaneRead::default(),
             st: PaneRead::default(),
             rel: PaneRead::default(),
+            ver: PaneRead::default(),
             runs: crate::builds::BuildsView::of(Scope::Release),
             inner: "",
             want: None,
@@ -176,7 +186,21 @@ pub(crate) fn level(l: Level, p: Palette) -> Style {
     }
 }
 
+/// A page read drawn atop the opened app's pane, for the `<id>/<version>` it was read for.
+pub enum PageRead {
+    Release(String, Result<hub_core::release_page::Page, String>),
+    Version(String, Result<hub_core::version_page::Page, String>),
+}
+
 impl ReleasesView {
+    /// Take a page read into the pane it was read for (`PaneRead::answer`).
+    pub fn answer(&mut self, r: PageRead) {
+        match r {
+            PageRead::Release(want, r) => self.rel.answer(&want, r),
+            PageRead::Version(want, r) => self.ver.answer(&want, r),
+        }
+    }
+
     /// The tab on a fresh view of `q`, nothing selected or open.
     pub fn open_view(&mut self, q: String) {
         self.table.view = hub_core::table::View {
@@ -265,6 +289,7 @@ impl ReleasesView {
         self.st.project.clear();
         self.st.at = None;
         self.rel = PaneRead::default();
+        self.ver = PaneRead::default();
         let app = match hub_core::release_page::split(id) {
             Some((app, _)) => {
                 self.rel.project = id.to_string();
@@ -276,6 +301,21 @@ impl ReleasesView {
         if let Some(s) = s {
             self.reselect(s, None);
         }
+    }
+
+    /// A version's page (`links::Kind::Version`, `<project>/<version>`): the pane of the project's
+    /// own app, else of the first app it owns, with the version's page atop it.
+    pub fn open_version(&mut self, s: Option<&Releases>, id: &str) {
+        let project = hub_core::release_page::split(id).map_or(id, |(p, _)| p);
+        let app = s
+            .and_then(|s| {
+                hub_core::version_page::owned(s, project)
+                    .first()
+                    .map(|a| a.project.clone())
+            })
+            .unwrap_or_else(|| project.to_string());
+        self.open_app(s, &app);
+        self.ver.project = id.to_string();
     }
 
     /// Move the selection to the row with this id (or the app a page link named) after a read,
@@ -482,13 +522,34 @@ pub fn release(
     p: Palette,
     w: usize,
 ) -> Vec<Line<'static>> {
+    page_lines("release", want, read, hub_core::release_page::lines, p, w)
+}
+
+/// A version's page atop the pane, as `hub_core::version_page::lines` says it, or why not.
+pub fn version(
+    want: &str,
+    read: Option<&Result<hub_core::version_page::Page, String>>,
+    p: Palette,
+    w: usize,
+) -> Vec<Line<'static>> {
+    page_lines("version", want, read, hub_core::version_page::lines, p, w)
+}
+
+fn page_lines<T>(
+    word: &str,
+    want: &str,
+    read: Option<&Result<T, String>>,
+    lines: fn(&T) -> Vec<String>,
+    p: Palette,
+    w: usize,
+) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = match read {
         None => vec![Line::styled(
-            format!("> release {want}: reading..."),
+            format!("> {word} {want}: reading..."),
             p.dim(),
         )],
-        Some(Err(e)) => vec![Line::styled(format!("> release {want}: {e}"), p.warn())],
-        Some(Ok(page)) => hub_core::release_page::lines(page)
+        Some(Err(e)) => vec![Line::styled(format!("> {word} {want}: {e}"), p.warn())],
+        Some(Ok(page)) => lines(page)
             .into_iter()
             .enumerate()
             .map(|(i, l)| {

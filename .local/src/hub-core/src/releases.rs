@@ -526,6 +526,16 @@ impl App {
     pub fn green(&self) -> bool {
         self.level.calm()
     }
+
+    /// The project whose repo holds the app's tags, else the app's own name: whose version page
+    /// (`version_page`) and whose Flow lane the app's cuts belong to.
+    pub fn owner(&self) -> String {
+        if self.repo.is_empty() {
+            self.project.clone()
+        } else {
+            project_map::canonical(&self.repo)
+        }
+    }
 }
 
 impl Row for App {

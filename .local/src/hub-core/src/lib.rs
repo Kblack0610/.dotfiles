@@ -78,6 +78,7 @@ pub mod text;
 pub mod timeline;
 pub mod tokens;
 pub mod transcript;
+pub mod version_page;
 pub mod vitals;
 pub mod vocab;
 pub mod widget_doc;

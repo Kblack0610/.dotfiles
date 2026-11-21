@@ -390,8 +390,8 @@ pub enum Msg {
     Changelog(Result<Changelog, String>),
     /// One app's checks (`hub_core::app_status`), for the project named.
     AppStatus(String, Box<Result<hub_core::app_status::AppStatus, String>>),
-    /// A release page read for `<app>/<version>` (`ReleasesView::rel`).
-    Release(String, Box<Result<hub_core::release_page::Page, String>>),
+    /// A release or version page read (`ReleasesView::answer`).
+    Page(Box<releases::PageRead>),
     Builds(Box<Builds>),
     /// The Pipelines view's sources, read with the runs on Infra.
     Pipes(Box<hub_core::pipelines::Sources>),
@@ -1160,6 +1160,7 @@ impl App {
             .at
             .is_some_and(|t| t.elapsed() >= APP_STATUS_REFRESH);
         self.sync_release(&project);
+        self.sync_version();
         if (other || due) && !self.rv.st.busy {
             self.rv.st.busy = true;
             if other {
@@ -1187,12 +1188,7 @@ impl App {
             self.rv.rel = releases::PaneRead::default();
             return;
         }
-        let due = self.rv.rel.read.is_none()
-            || self
-                .rv
-                .rel
-                .at
-                .is_some_and(|t| t.elapsed() >= APP_STATUS_REFRESH);
+        let due = self.rv.rel.due(APP_STATUS_REFRESH);
         let (Some(a), Some(b)) = (self.selected_release(), &self.builds) else {
             return;
         };
@@ -1208,7 +1204,61 @@ impl App {
             let records = hub_core::release_page::records(&jobs, &keys);
             let r = hub_core::release_page::build(&a, &runs, &records, &version)
                 .ok_or_else(|| format!("{} has no tag of version {version}", a.project));
-            let _ = tx.send(Msg::Release(want, Box::new(r)));
+            let _ = tx.send(Msg::Page(Box::new(releases::PageRead::Release(want, r))));
+        });
+    }
+
+    /// The version page a link named (`rv.ver`), while the app selected is one its project owns:
+    /// read once the runs are, and again each `APP_STATUS_REFRESH`. Selecting an app of another
+    /// project drops it.
+    fn sync_version(&mut self) {
+        let want = self.rv.ver.project.clone();
+        let Some((project, version)) = hub_core::release_page::split(&want) else {
+            return;
+        };
+        let Some(owner) = self.selected_release().map(ReleaseApp::owner) else {
+            return;
+        };
+        if owner != project {
+            self.rv.ver = releases::PaneRead::default();
+            return;
+        }
+        let due = self.rv.ver.due(APP_STATUS_REFRESH);
+        let (Some(rel), Some(b)) = (&self.releases, &self.builds) else {
+            return;
+        };
+        if !due || self.rv.ver.busy {
+            return;
+        }
+        let rel = hub_core::releases::Releases {
+            apps: hub_core::version_page::owned(rel, project)
+                .into_iter()
+                .cloned()
+                .collect(),
+            ..Default::default()
+        };
+        let (runs, items) = (b.rows.clone(), self.queue_items());
+        let (project, version) = (project.to_string(), version.to_string());
+        self.rv.ver.busy = true;
+        let (jobs, tx, runner) = (
+            self.files.builds.jobs.clone(),
+            self.tx.clone(),
+            self.runner.clone(),
+        );
+        std::thread::spawn(move || {
+            let r = hub_core::version_page::read(
+                runner.as_ref(),
+                &rel,
+                &runs,
+                &items,
+                &jobs,
+                &project,
+                &version,
+            )
+            .ok_or_else(|| {
+                format!("{project} has no cut of version {version} and no row names it")
+            });
+            let _ = tx.send(Msg::Page(Box::new(releases::PageRead::Version(want, r))));
         });
     }
 
@@ -2290,7 +2340,7 @@ impl App {
                 self.rv.st.answer(&project, *r);
                 self.sync_changelog();
             }
-            Msg::Release(want, r) => self.rv.rel.answer(&want, *r),
+            Msg::Page(r) => self.rv.answer(*r),
             Msg::Builds(b) => {
                 let key = |v: &bv::BuildsView| {
                     self.builds
@@ -2962,6 +3012,10 @@ impl App {
             }
             Kind::App => {
                 self.rv.open_app(self.releases.as_ref(), id);
+                self.sync_changelog();
+            }
+            Kind::Version => {
+                self.rv.open_version(self.releases.as_ref(), id);
                 self.sync_changelog();
             }
             Kind::Runner => self.open_runner(id),
@@ -5429,6 +5483,18 @@ impl App {
                 ),
                 _ => Vec::new(),
             };
+            if let Some((project, _)) = hub_core::release_page::split(&self.rv.ver.project) {
+                if project == r.owner() {
+                    let mut ver = releases::version(
+                        &self.rv.ver.project,
+                        self.rv.ver.read.as_ref(),
+                        self.p,
+                        area.width as usize,
+                    );
+                    ver.append(&mut lines);
+                    lines = ver;
+                }
+            }
             lines.extend(releases::detail(
                 r,
                 self.rv.others,
@@ -8308,7 +8374,7 @@ mod tests {
         a.handle(Msg::Builds(Box::default()));
         let got = loop {
             match rx.recv_timeout(Duration::from_secs(5)) {
-                Ok(m @ Msg::Release(..)) => break m,
+                Ok(m @ Msg::Page(..)) => break m,
                 Ok(m) => a.handle(m),
                 Err(_) => panic!("no release answer"),
             }
@@ -8326,6 +8392,39 @@ mod tests {
         );
         a.open_page(hub_core::links::Kind::App, "beta");
         assert!(a.rv.rel.project.is_empty() && a.rv.rel.read.is_none());
+    }
+
+    /// A version link (`releases versions/<project>/<version>`) selects the project's app and
+    /// reads the version page atop its pane once the runs are; an app of another project drops it.
+    #[test]
+    fn a_version_link_reads_its_page_atop_the_project_app_pane() {
+        let (mut a, _rel, rx) = with_releases();
+        a.open_page(hub_core::links::Kind::Version, "beta/0.1");
+        assert_eq!(a.rv.ver.project, "beta/0.1");
+        assert_eq!(
+            a.selected_release().map(|r| r.project.as_str()),
+            Some("beta")
+        );
+        assert!(
+            a.rv.rel.project.is_empty(),
+            "a version page is not a release page"
+        );
+        a.handle(Msg::Builds(Box::default()));
+        let got = loop {
+            match rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(m @ Msg::Page(..)) => break m,
+                Ok(m) => a.handle(m),
+                Err(_) => panic!("no version answer"),
+            }
+        };
+        a.handle(got);
+        let lines = releases::version(&a.rv.ver.project, a.rv.ver.read.as_ref(), a.p, 80);
+        assert_eq!(
+            lines[0].to_string(),
+            "> version beta/0.1: beta has no cut of version 0.1 and no row names it"
+        );
+        a.open_page(hub_core::links::Kind::App, "alpha");
+        assert!(a.rv.ver.project.is_empty() && a.rv.ver.read.is_none());
     }
 
     #[test]
