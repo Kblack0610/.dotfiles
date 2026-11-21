@@ -51,9 +51,10 @@ EOF
   printf '1789000000' > "$WATCH_STATE_DIR/skill-drift.since"
 }
 
-# `hub phone --json` runs the stub body; `hub cards --json --figures` prints what cards_stub wrote, else fails (any other cards call fails too).
+# The hub stub answers `hub bar --json` from $NOTES_FIXTURE/bar.json (none: it fails) and `hub cards --json --figures`
+# from what cards_stub wrote (else fails; any other cards call fails too); every other call, `hub phone --json` here, runs the body a test gives.
 overview_stub() {
-  printf '#!/usr/bin/env bash\nif [ "${1:-}" = cards ]; then [ "$*" = "cards --json --figures" ] || exit 1; cat "$NOTES_FIXTURE/cards.out" 2>/dev/null || exit 1; exit 0; fi\n%s\n' "$1" > "$SANDBOX/bin/hub"
+  printf '#!/usr/bin/env bash\nif [ "$1" = bar ]; then echo x >> "$NOTES_FIXTURE/bar.runs"; cat "$NOTES_FIXTURE/bar.json" 2>/dev/null; exit; fi\nif [ "${1:-}" = cards ]; then [ "$*" = "cards --json --figures" ] || exit 1; cat "$NOTES_FIXTURE/cards.out" 2>/dev/null || exit 1; exit 0; fi\n%s\n' "$1" > "$SANDBOX/bin/hub"
   chmod +x "$SANDBOX/bin/hub"
 }
 
@@ -562,6 +563,71 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   touch -d "2 minutes ago" "$HOME/.local/state/agent-mqtt/sent/agents%testhost%summary%dispatch"
   "$PUB" --quiet
   assert_equal "$(jq -r .runnable <<< "$(payload agents/testhost/summary/dispatch)")" 2
+}
+
+# ar-4362: `hub bar --json` rides retained on summary/bar, from the lease holder only, as the
+# chip hovers' one text source.
+seed_bar() {
+  printf '%s\n' '{"as_of":1794000000,"sessions":[{"bucket":"NEEDS","task":"t","reason":"1 pending ask(s)"}],"ready":{"total":0,"urgent":0,"high":0,"items":[]},"candidates":[],"drain":null,"errors":[]}' > "$NOTES_FIXTURE/bar.json"
+}
+
+@test "bar: the lease holder sends hub bar's document retained on summary/bar, with no HA entity" {
+  seed_bar
+  run "$PUB" --quiet
+  assert_success
+  p="$(payload agents/testhost/summary/bar)"
+  assert_equal "$(jq -r '.sessions[0].reason' <<< "$p")" '1 pending ask(s)'
+  assert_equal "$(jq -r .as_of <<< "$p")" 1794000000
+  [ -z "$(payload homeassistant/sensor/agent_testhost_summary_bar/config)" ]
+}
+
+# Negative control: a peer's state files may be days old, so only the holder sends.
+@test "bar: a machine that does not hold the fleet lease sends no summary/bar" {
+  seed_bar
+  FLEET_LEASE_RC=1 run "$PUB" --quiet
+  assert_success
+  [ -z "$(payload agents/testhost/summary/bar)" ]
+  [ ! -e "$NOTES_FIXTURE/bar.runs" ]
+}
+
+@test "bar: a machine that loses the fleet lease retracts the summary/bar it sent" {
+  seed_bar
+  "$PUB" --quiet
+  assert_equal "$(jq -r .as_of <<< "$(payload agents/testhost/summary/bar)")" 1794000000
+  : > "$PUBLOG"
+  FLEET_LEASE_RC=1 run "$PUB" --quiet
+  assert_success
+  grep -qxF "agents/testhost/summary/bar"$'\t' "$PUBLOG"
+}
+
+@test "bar: a failed hub or a document with no sessions list publishes no topic" {
+  run "$PUB" --quiet
+  assert_success
+  [ -z "$(payload agents/testhost/summary/bar)" ]
+  echo '{"as_of":1}' > "$NOTES_FIXTURE/bar.json"
+  run "$PUB" --quiet
+  assert_success
+  [ -z "$(payload agents/testhost/summary/bar)" ]
+}
+
+# A locked agent-queue store must not hold the publish lock: hub bar is bounded.
+@test "bar: a hub that hangs is cut off at its timeout and the run still publishes the rest" {
+  printf '#!/usr/bin/env bash\n[ "$1" = bar ] && exec sleep 30\nexit 1\n' > "$SANDBOX/bin/hub"
+  AGENT_MQTT_BAR_TIMEOUT=1 run "$PUB" --quiet
+  assert_success
+  [ -z "$(payload agents/testhost/summary/bar)" ]
+  [ -n "$(payload agents/testhost/runner/alpha)" ]
+}
+
+@test "bar: a run inside the TTL repeats the sent document, an older one reads hub again" {
+  seed_bar
+  "$PUB" --quiet
+  "$PUB" --full --quiet
+  assert_equal "$(wc -l < "$NOTES_FIXTURE/bar.runs")" 1
+  assert_equal "$(grep -c '^agents/testhost/summary/bar' "$PUBLOG")" 2
+  touch -d "2 minutes ago" "$HOME/.local/state/agent-mqtt/sent/agents%testhost%summary%bar"
+  "$PUB" --quiet
+  assert_equal "$(wc -l < "$NOTES_FIXTURE/bar.runs")" 2
 }
 
 # Tilecast push: each run pokes agent-web, broker or not, with the widget key on stdin. The stub

@@ -1649,6 +1649,12 @@ impl Candidates {
         self.rows.len() - self.shown().len()
     }
 
+    /// When the snapshot was written, unix seconds; None when the rows came from no file.
+    pub fn written_epoch(&self) -> Option<i64> {
+        let t = self.written?.duration_since(std::time::UNIX_EPOCH).ok()?;
+        i64::try_from(t.as_secs()).ok()
+    }
+
     /// Each blocked reason and how many rows it blocks, most first: the `blocked` facet's counts,
     /// a row counted once per reason as the facet counts it, without scanning every other facet.
     pub fn reasons(&self) -> Vec<(String, usize)> {

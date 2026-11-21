@@ -5,6 +5,7 @@
 #   agent-mqtt-publish --full     republish everything (the timer; refreshes expire_after)
 #   agent-mqtt-publish --dry-run  print `topic<TAB>payload` lines, touch nothing
 #
+# One topic is not an HA entity: agents/<host>/summary/bar, the lease holder's `hub bar --json` for the chip hovers.
 # Entities use HA MQTT discovery: runners, watches, open asks, the dispatch queue, the pager, live sessions, the fleet overview and the fleet cards (hub's widget document) appear as
 # sensors with no HA-side config, and one that disappears is deleted, not left as a ghost.
 # mqtt2prom keeps only numeric and boolean keys, so each text fact Prometheus needs has a
@@ -26,6 +27,7 @@ STATE_DIR="${AGENTCTL_STATE_DIR:-${AGENTCTL_STATE:-$HOME/.local/state/agentctl}}
 WATCHES="${WATCH_DIR:-${SENTINEL_WATCHES:-$HOME/.agent/watches}}"
 WSTATE="${WATCH_STATE_DIR:-${SENTINEL_STATE:-$HOME/.local/state/watch-companion}}"
 CACHE="${AGENT_MQTT_CACHE:-$HOME/.local/state/agent-mqtt}"
+BAR_TIMEOUT="${AGENT_MQTT_BAR_TIMEOUT:-20}" # seconds `hub bar --json` may run: it makes agent-queue calls, so a locked store must not hold the publish lock
 READER_TTL=45 # seconds: under fleet-state.timer's minute, so the slow readers render at least once a tick
 # Same staleness rule fleet.sh uses (one lib, so the two never disagree).
 _WATCH_LIB="${SENTINEL_WATCH_LIB:-$HOME/.local/lib/sentinel-watch.sh}"
@@ -171,8 +173,35 @@ slow_reader() {
 # fleet-dispatch reads the lease the same way.
 dispatch_here() { command -v fleet-dispatch >/dev/null 2>&1 && fleet-lease held >/dev/null 2>&1; }
 
+# bar_here -> rc 0 when this machine sends summary/bar: the same reason, since `hub bar --json` reads the
+# lease holder's queue, fleet state and dispatch snapshot (ar-4362).
+bar_here() { command -v hub >/dev/null 2>&1 && fleet-lease held >/dev/null 2>&1; }
+
+# overview_lines <fd> -> the HA sensor lines for `hub phone --json` read from <fd>, the phone widget's
+# rows. They ride as attributes because an HA state over 255 chars is rejected; the state is the worst
+# row. A run within READER_TTL of the last send repeats it (slow_reader), and PROM_TIMEOUT keeps a dead
+# Prometheus out of a hooked run. Closes <fd>; prints nothing when the document has no rows.
+overview_lines() {
+    local fd="$1" overview
+    overview="$(cat <&"$fd")"; exec {fd}<&-
+    jq -e '.rows | arrays' <<< "$overview" >/dev/null 2>&1 &&
+        emit summary overview mdi:view-dashboard "$overview"
+}
+
+# bar_lines <fd> -> the summary/bar line for `hub bar --json` read from <fd>, what the waybar and
+# noctalia chip hovers lay out (sessions worst first, the ready items, the top cleared candidates).
+# Retained on its own topic with no HA discovery: the chips read it with mosquitto_sub, and a hub that
+# fails or prints no sessions list sends nothing, so the chips see no topic rather than an old one.
+# Closes <fd>.
+bar_lines() {
+    local fd="$1" bar
+    bar="$(cat <&"$fd")"; exec {fd}<&-
+    jq -e '.sessions | arrays' <<< "$bar" >/dev/null 2>&1 &&
+        printf '%s\t%s\n' "agents/$HOST_ID/summary/bar" "$(jq -c . <<< "$bar")"
+}
+
 snapshot() {
-    local f name st dfd='' ofd='' cfd=''
+    local f name st dfd='' ofd='' cfd='' bfd=''
 
     # The two slow readers, fleet-dispatch stats and hub phone (2s and 4s at idle, 21s each at load 6
     # with 600 queued items), start here and run while the runner and watch loops do, so a run costs
@@ -182,6 +211,7 @@ snapshot() {
     # timer run past its 60s (ar-2310).
     dispatch_here && slow_reader dfd summary/dispatch fleet-dispatch stats
     command -v hub >/dev/null 2>&1 && slow_reader ofd summary/overview env PROM_TIMEOUT=3 hub phone --json
+    bar_here && slow_reader bfd summary/bar timeout "$BAR_TIMEOUT" hub bar --json
     # The cards read every part of Home and the chip takes only the lease host's, so only it reads them (bounded: a hung read must not starve the run, ar-2310).
     dispatch_here && command -v hub >/dev/null 2>&1 && slow_reader cfd summary/cards timeout 25 env PROM_TIMEOUT=3 hub cards --json --figures
 
@@ -288,15 +318,8 @@ snapshot() {
             emit summary pager mdi:bell-alert "$(jq -c '{state: .undelivered_24h} + .' <<< "$pstats")" '{"state_class":"measurement"}'
     fi
 
-    # Overview: `hub phone --json`, the phone widget's rows. They ride as attributes because an HA
-    # state over 255 chars is rejected; the state is the worst row. A run within READER_TTL of the
-    # last send repeats it (slow_reader), and PROM_TIMEOUT keeps a dead Prometheus out of a hooked run.
-    if [ -n "$ofd" ]; then
-        local overview
-        overview="$(cat <&"$ofd")"; exec {ofd}<&-
-        jq -e '.rows | arrays' <<< "$overview" >/dev/null 2>&1 &&
-            emit summary overview mdi:view-dashboard "$overview"
-    fi
+    [ -n "$ofd" ] && overview_lines "$ofd"
+    [ -n "$bfd" ] && bar_lines "$bfd"
 
     # Cards: `hub cards --json --figures`, Home's cards as the widget document /widget.json serves plus
     # `figures`, their whole numbers by name, so every figure on a snapshot surface is hub-core's own

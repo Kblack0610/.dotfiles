@@ -55,6 +55,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub cards --json [--figures]
        hub vitals [--json]
        hub needs --json | --page
+       hub bar --json
        hub ci [--json | --pool-match SECS]
        hub ci pass [--since WHEN] [--until WHEN] [--branch B]
        hub ci hosts [--until WHEN] [--last N]
@@ -94,6 +95,10 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
   needs   Home's NEEDS YOU as {needs, errors}, ranked, each row with the score it counted
           (fleet-bench asks reads it); --page sends one grouped page for the new rows over the
           bar in channels.toml [pager.needs] (fleet-state.service runs it after every pass)
+  bar     what the queue and sessions chip hovers lay out as {as_of, sessions, ready,
+          candidates, drain, errors} (hub_core::bar): live sessions worst first, the items ready
+          to start in start order, the top cleared board candidates; agent-mqtt-publish sends it
+          retained as summary/bar. A source it could not read is in errors and the exit is still 0
   briefing the human overview (what needs you, what landed, builds and releases, overnight,
           money) for the window from WHEN (epoch seconds or RFC 3339, default 12h ago); --md is
           the file agentctl-briefing writes as briefing.md, and --agents-md FILE writes the agent
@@ -209,6 +214,17 @@ fn main() {
     if it.peek().map(|a| a.as_str()) == Some("needs") {
         it.next();
         std::process::exit(needs(it.cloned().collect()));
+    }
+    if it.peek().map(|a| a.as_str()) == Some("bar") {
+        it.next();
+        if it.cloned().collect::<Vec<String>>() != ["--json"] {
+            die(USAGE);
+        }
+        println!(
+            "{}",
+            serde_json::to_string(&hub_core::bar::gather()).unwrap_or_default()
+        );
+        return;
     }
     if it.peek().map(|a| a.as_str()) == Some("releases") {
         it.next();
