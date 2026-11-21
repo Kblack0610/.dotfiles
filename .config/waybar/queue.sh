@@ -148,7 +148,7 @@ if [ -n "$ready" ] && { ((${held:-0} > 0)) || [ "$starved" = 1 ] || [ "$blocked"
     [.ready.items[] | select(.priority == "urgent")] + (if $starved == "1" then [.ready.items[] | select(.priority == "high")] else [] end)
     | first // empty
     | "\(.priority | ascii_upcase[:1] + .[1:]) item waiting \(.ready_min | mins): "
-      + ((if .kind == "" then "" elif .area == "" then "\(.kind): " else "\(.kind)(\(.area)): " end) + .title | clean)
+      + (what | clean)
     | fit($w) | esc' <<< "$BAR")"
   us="$(get dispatch.oldest_urgent_s)"
   [ -n "$line" ] || [ -z "$us" ] || line="Urgent item waiting $(prom_dur "$us")"
@@ -159,13 +159,7 @@ for i in "${!ex_lvl[@]}"; do
   what="${ex_what[i]}"
   tip+=$'\n'"$(paint "${LEVEL_COLOUR[${ex_lvl[i]}]}" "${what^}.") ${ex_do[i]}."
 done
-if [ -z "$BAR" ]; then
-  tip+=$'\n'"$(paint "$C_YEL" "No item detail: $(pango_esc "$BAR_WHY")")"
-else
-  while IFS= read -r e; do
-    [ -n "$e" ] && tip+=$'\n'"$(paint "$C_YEL" "Item detail incomplete: $e")"
-  done < <(jq -r --argjson w "$BAR_WIDTH" "$BAR_JQ"'.errors[] | clean | fit($w - 25) | esc' <<< "$BAR")
-fi
+while IFS= read -r l; do tip+=$'\n'"$l"; done < <(bar_detail item)
 
 if [ -n "$ready" ]; then
   # Up next: the ready count and its priorities (Q), the first items by name in start order, then the
@@ -178,13 +172,12 @@ if [ -n "$ready" ]; then
     used="$(wc -l <<< "$tip")"
     tip+="$(jq -r --argjson rows "$UP_NEXT_ROWS" --argjson lines $((BAR_LINES - used - 8)) \
       --argjson width "$BAR_WIDTH" "$BAR_JQ"'
-      ([$rows, $lines, 0] | sort | .[1]) as $n
+      ([$rows, $lines] | min | [., 0] | max) as $n
       | .ready.items[:$n] as $shown | (.candidates | length) as $c
       | ([$shown[].project | clean | length] + [0] | max | [., 13] | min) as $pw
       | ($width - 2 - 6 - 2 - $pw - 2 - 2 - 6) as $tw
       | def row: "  " + (.priority | pad(6)) + "  " + (.project | clean | fit($pw) | pad($pw)) + "  "
-          + ((if .kind == "" then "" elif .area == "" then "\(.kind): " else "\(.kind)(\(.area)): " end) + .title
-             | clean | fit($tw) | pad($tw)) + "  " + (.ready_min | mins) | sub(" +$"; "") | esc;
+          + (what | clean | fit($tw) | pad($tw)) + "  " + (.ready_min | mins) | sub(" +$"; "") | esc;
         (if ($shown | length) > 0 then ["<tt>" + ($shown | map(row) | join("\n")) + "</tt>"] else [] end)
         + (if .ready.total > ($shown | length) then ["+\(.ready.total - ($shown | length)) more ready: click for the Queue tab"] else [] end)
         + (if $c > 0 then ["Then from the board: " + (.candidates | map("\(.key) \(.title | clean)"

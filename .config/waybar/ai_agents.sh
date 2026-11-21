@@ -95,14 +95,11 @@ need="$n_need need you" stuck="$n_stalled stuck"
 tip="$title $need, $stuck, $n_work working."
 if [ -n "$BAR" ]; then
   hosts="$(jq '[.sessions[].target | if test("@") then split("@")[0] else "" end] | unique | length' <<< "$BAR")"
-  tip+=" As of $(date -d "@$(jq '.as_of | floor' <<< "$BAR")" +%H:%M), $total sessions on $hosts host$( ((hosts == 1)) || printf s)."
+  tip+=" As of $(date -d "@$BAR_AT" +%H:%M), $total sessions on $hosts host$( ((hosts == 1)) || printf s)."
 else
   tip+=" $total sessions in all."
-  why+=("$(paint "$C_YEL" "No session detail: $(pango_esc "$BAR_WHY")")")
 fi
-[ -z "$BAR" ] || while IFS= read -r e; do
-  [ -n "$e" ] && why+=("$(paint "$C_YEL" "Session detail incomplete: $e")")
-done < <(jq -r --argjson w "$BAR_WIDTH" "$BAR_JQ"'.errors[] | clean | fit($w - 28) | esc' <<< "$BAR")
+while IFS= read -r l; do why+=("$l"); done < <(bar_detail session)
 for w in "${why[@]}"; do tip+=$'\n'"$w"; done
 
 # The stage sections from summary/bar, in the lines the cap leaves: Need you, Stuck, Working, each
@@ -113,12 +110,11 @@ if [ -n "$BAR" ]; then
   [.sessions[] | . + {project: (.project | clean), task: (.task | clean),
       why: ((if .bucket == "WORKING" then .activity else .reason end) // "" | clean),
       tgt: (.target | clean | sub("^(?<h>[^@-]+)[^@]*@[^/]*/"; "\(.h)/") | sub(":1$"; ""))}] as $s
-  | [{name: "Need you", key: "need you", b: "NEEDS", c: $red}, {name: "Stuck", key: "stuck", b: "STALLED", c: $yel},
-     {name: "Working", key: "working", b: "WORKING", c: ""}]
-  | map(. as $sec | . + {rows: [$s[] | select(.bucket == $sec.b)]}) | map(select(.rows | length > 0)) as $secs
-  | ([$s[] | select(.done)] | group_by(.bucket) | map("\(length) \(.[0].bucket | ascii_downcase)")) as $done
-  | ([$s[] | select((.done | not) and (.bucket | IN("NEEDS", "STALLED", "WORKING") | not))]
-      | group_by(.bucket) | map("\(length) \(.[0].bucket | ascii_downcase)")) as $rest
+  | [{name: "Need you", b: "NEEDS", c: $red}, {name: "Stuck", b: "STALLED", c: $yel}, {name: "Working", b: "WORKING", c: ""}] as $defs
+  | ($defs | map(. as $sec | . + {rows: [$s[] | select(.bucket == $sec.b)]}) | map(select(.rows | length > 0))) as $secs
+  | def counts: group_by(.bucket) | map("\(length) \(.[0].bucket | ascii_downcase)");
+  ([$s[] | select(.done)] | counts) as $done
+  | ([$s[] | select((.done | not) and (.bucket | IN($defs[].b) | not))] | counts) as $rest
   | ((if ($done | length) > 0 then ["Ready to close \($done | map(split(" ")[0] | tonumber) | add) (\($done | join(", ")))"] else [] end)
      + (if ($rest | length) > 0 then ["also \($rest | join(", "))"] else [] end) | join("; ")) as $tail
   | ($lines - 2 * ($secs | length) - (if $tail == "" then 0 else 2 end) - 1) as $room
@@ -136,7 +132,7 @@ if [ -n "$BAR" ]; then
       + (if .bucket == "WORKING" then "" else "  " + (.tgt | lfit($gw)) end)) | sub(" +$"; "") | esc;
     [$alloc[] | "", "<b>" + (if .c == "" then .name else "<span color=\($sq)\(.c)\($sq)>\(.name)</span>" end) + "</b>  \(.rows | length)",
       (if (.shown | length) > 0 then "<tt>" + (.shown | map(row) | join("\n")) + "</tt>" else empty end)]
-    + ([$alloc[] | select(.cut > 0) | "\(.cut) more \(.key)"] | if length > 0 then ["+" + join(", ") + ": click for every session (agent-panel)"] else [] end)
+    + ([$alloc[] | select(.cut > 0) | "\(.cut) more \(.name | ascii_downcase)"] | if length > 0 then ["+" + join(", ") + ": click for every session (agent-panel)"] else [] end)
     + (if $tail == "" then [] else ["", $tail] end)
   | map("\n" + .) | join("")' <<< "$BAR")"
 fi
