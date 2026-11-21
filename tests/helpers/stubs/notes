@@ -18,7 +18,6 @@
 #   board.json                  what `notes board --json` prints
 #   ptask.added                 what `notes ptask <name> add` prints (the row, with its id)
 #   ptask.agent.added           what `notes ptask <name> --agent add` prints
-#   ptask.agent.rc              the exit of `notes ptask <name> --agent add` (default 0)
 #   playtest.<profile>.<project> what `notes ptask <name> --playtest list` prints; with none it fails
 #   stats.fail                  makes `projects --stats` fail
 #   roll.window                 the `window ...` lines `projects --release` prints after the freeze
@@ -109,8 +108,7 @@ case "${1:-}" in
                   emit "playtest.${profile:-personal}.${proj}" ;;
       add) emit ptask.added ;;     # the row the real verb prints; recorded too
       # `notes ptask <name> --agent add`: the agent row it prints, from ptask.agent.added
-      # ptask.agent.rc, when present, is its exit (3 an open twin, 4 the outbox, 5 a shortlist)
-      --agent) [ "${4:-}" != add ] || { emit ptask.agent.added; [ ! -f "$FIX/ptask.agent.rc" ] || exit "$(cat "$FIX/ptask.agent.rc")"; } ;;
+      --agent) [ "${4:-}" != add ] || emit ptask.agent.added ;;
       *) : ;;                      # done/rm: recorded only
     esac
     ;;

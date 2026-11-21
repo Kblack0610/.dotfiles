@@ -181,14 +181,14 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   local a b
   a="$(CLAUDE_CODE_SESSION_ID=sid-2 "$AGENT_ASK" post --project demo 'ship it?')"
   "$AGENT_ASK" answer "$a" now 2>/dev/null
-  echo 5 > "$NOTES_FIXTURE/ptask.agent.rc"
+  printf '#!/bin/sh\nexit 5\n' > "$SANDBOX/bin/notes"
   run "$AGENT_ASK" deliver --all
   assert_output --partial "$a not delivered"
   run "$AGENT_ASK" show "$a"
   assert_line 'delivery: failed'
   assert_line 'delivery_note: no live session, resume or held item takes it, and the demo board refused its row (notes exit 5)'
   # NEGATIVE CONTROL: exit 4 (a runner's add, sent to the outbox) is carried, as 0 and 3 are
-  echo 4 > "$NOTES_FIXTURE/ptask.agent.rc"
+  printf '#!/bin/sh\nexit 4\n' > "$SANDBOX/bin/notes"
   b="$(CLAUDE_CODE_SESSION_ID=sid-3 "$AGENT_ASK" post --project demo 'ship two?')"
   "$AGENT_ASK" answer "$b" now 2>/dev/null
   "$AGENT_ASK" deliver --all 2>/dev/null
@@ -201,7 +201,7 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   local a
   printf '{"session_id":"sid-1","pane":"lab/%%1","status":"idle"}\n' > "$NOTES_FIXTURE/agent-panel.list"
   : > "$NOTES_FIXTURE/agent-panel.unsent"
-  echo 1 > "$NOTES_FIXTURE/ptask.agent.rc"
+  printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/bin/notes"
   a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --session dotfiles 'one?')"
   "$AGENT_ASK" answer "$a" yes 2>/dev/null
   AGENT_ASK_NO_RESUME='' "$AGENT_ASK" deliver "$a" 2>/dev/null
