@@ -5,9 +5,8 @@
 #   ask-sweep run [--dry-run]   file rows for unfinished plans and missed asks
 #
 # Plans: a plan fleet-dispatch reap has not filed (reconcile_plans, its plans-filed record), with unticked
-# phases, no live session and no change for a day gets one row naming
-# its slug; an open row that names it already, or an open twin (`ptask add` exit 3), stops a second
-# one. No model. Plans older than the first run are not
+# phases, no live session and no change for a day is filed via agent-queue add --plan; an open row that names
+# its slug already stops a second one. No model. Plans older than the first run are not
 # back-filled. A plan with no checklist and no Results is only counted, since many of those landed.
 # Asks: the human's messages from quiet sessions in every repo with a board and no client (the
 # registry: project_board, project_inherited client), grouped by board, one model call per board
@@ -64,8 +63,26 @@ file_row() {
 # board_of <project> -> its board, or nothing (project-name.sh's project_board)
 board_of() { project_board "$1"; }
 
+# file_plan <board> <project> <plan-file>: the plan's row within the run's cap, filed as fleet-dispatch's
+# reconcile_plans files one: agent-queue add --plan from a filer puts one low row on the board, "plan
+# <slug>: run its open phases", and exits 5; dispatch's promote turns it into the plan's chain. It is
+# no human's want, so it carries no #requested. Returns 1 when not filed. A plan agent-queue refuses (a
+# phase marker it cannot read, an unknown project) takes no cap slot and is counted as a fault, so the
+# run says which plan to fix.
+file_plan() {
+  local board="$1" p="$2" planf="$3" out rc=0
+  if [ "$FILED" -ge "$ASK_SWEEP_MAX" ]; then OVER=$((OVER + 1)); return 1; fi
+  if [ "$DRY" = 1 ]; then
+    FILED=$((FILED + 1)); printf 'would file [%s] plan %s: run its open phases\n' "$board" "$(basename "$planf" .md)"; return 0
+  fi
+  out=$(agent-queue add --plan "$planf" --project "$p" --priority low --from auto:ask-sweep 2>&1 </dev/null) || rc=$?
+  if [ "$rc" -eq 0 ] || [ "$rc" -eq 5 ]; then FILED=$((FILED + 1)); return 0; fi
+  FAULT=1; say "could not file the plan $planf: ${out##*$'\n'}"; proof_why "plan $(basename "$planf" .md) refused by agent-queue"
+  return 1
+}
+
 sweep_plans() {
-  local first live filed f slug canon stub done_n total next project board rows
+  local first live filed f slug canon stub done_n total project board rows
   first="$ASK_SWEEP_DIR/first-run"
   [ -d "$ASK_SWEEP_PLANS" ] || { FAULT=1; say "no plans dir: $ASK_SWEEP_PLANS"; proof_why "no plans dir"; return 0; }
   # The first real run only starts the clock, and a dry run before it has nothing to report.
@@ -86,7 +103,7 @@ sweep_plans() {
     IFS=$'\t' read -r canon _ < <(plan_pointer "$f") || true
     stub="$f"; [ -z "${canon:-}" ] || f="$canon"
     plan_superseded "$f" && continue   # another plan owns its open phases now
-    IFS=$'\t' read -r done_n total next < <(plan_phases "$f")
+    IFS=$'\t' read -r done_n total _ < <(plan_phases "$f")
     slug="$(basename "$f" .md)"
     if [ "$total" = - ]; then
       grep -qi '^## results' "$f" || PLANS_UNCHECKED=$((PLANS_UNCHECKED + 1))
@@ -105,7 +122,7 @@ sweep_plans() {
     # long list and the 141 reads as "no row" (2026-11-10..14: one plan filed seven times).
     rows="$(notes ptask "$board" --agent list 2>/dev/null)" || continue   # unreadable is not "no row"
     grep -qF "$slug" <<<"$rows" && continue
-    file_row "$board" "chore(plan): finish $slug: $((total - done_n)) phases left, next: $(ascii 100 <<<"$next") #tier/2 #size/m"
+    file_plan "$board" "$(basename "$project")" "$f"
   done < <(find "$ASK_SWEEP_PLANS/" -maxdepth 1 -name '*.md' -mmin +1440 -print0 2>/dev/null)   # /: the dir is a link
 }
 

@@ -14,6 +14,6 @@ ocfree beam
 opencode-go glm
 opencode-go kimi
 opencode-go haiku
-nim minimax
+nim nemotron
 agy hydrogen
 agy flash

@@ -349,6 +349,9 @@ pub struct App {
     /// The repo its tags are in (`owner/repo`, the line's), empty with no line: what joins a
     /// game's app to its repo's project on Releases > Flow (`hub_core::lanes`).
     pub repo: String,
+    /// Where its release line starts (the registry's `releaseFrom`, [`Line::from`]); empty when
+    /// it has none, so all of its history is legacy.
+    pub release_from: String,
     /// Every tag the collector kept, newest first, each joined to the channels it reached
     /// (`hub_core::release_graph`).
     pub history: Vec<Shipment>,
@@ -525,6 +528,16 @@ impl App {
     /// Nothing about this app asks for attention.
     pub fn green(&self) -> bool {
         self.level.calm()
+    }
+
+    /// The project whose repo holds the app's tags, else the app's own name: whose version page
+    /// (`version_page`) and whose Flow lane the app's cuts belong to.
+    pub fn owner(&self) -> String {
+        if self.repo.is_empty() {
+            self.project.clone()
+        } else {
+            project_map::canonical(&self.repo)
+        }
     }
 }
 
@@ -748,6 +761,10 @@ pub struct Releases {
     pub apps: Vec<App>,
     /// Every channel, flat, for the readers that join one (the briefing).
     pub rows: Vec<Release>,
+    /// Each lab project's versions but the open one, each with its provenance mark: what a
+    /// project's Releases tab lists (`project_releases`).
+    #[serde(skip)]
+    pub versions: HashMap<String, release_graph::Versions>,
     pub errors: Vec<String>,
 }
 
@@ -1020,6 +1037,7 @@ fn app(
         released_text: released_text(line.map(|l| l.line.as_str()), &history, &[], no_release),
         line: line.map_or("none".into(), |l| l.line.clone()),
         repo: line.and_then(|l| l.repo.clone()).unwrap_or_default(),
+        release_from: line.and_then(|l| l.from.clone()).unwrap_or_default(),
         no_release,
         builds: vec![],
         coverage_text: coverage.text(since, &undeployed),
@@ -1186,6 +1204,7 @@ pub fn read(runner: &dyn Runner, items: &[Item]) -> Releases {
                 total.add(&a.coverage);
             }
             let coverage = total.text(s.links.since, "");
+            let versions = s.links.versions;
             Releases {
                 at: s.generated_epoch,
                 question,
@@ -1194,6 +1213,7 @@ pub fn read(runner: &dyn Runner, items: &[Item]) -> Releases {
                 coverage,
                 apps,
                 rows,
+                versions,
                 errors: s
                     .stages_error
                     .map(|e| format!("release-state stages: {e}"))
@@ -1218,12 +1238,18 @@ pub struct Badge {
     pub level: Level,
 }
 
+/// True for the error of a host where no refresh has run yet, which the tab says and a project's
+/// or an app's page has no reason to.
+pub fn unrefreshed(error: &str) -> bool {
+    error.contains("no snapshot yet")
+}
+
 /// `project`'s channels, worst first; none when no refresh has run on this host yet, which the
 /// tab says and a project's page has no reason to. `project` is already a safe name.
 pub fn channels(runner: &dyn Runner, project: &str) -> Result<Vec<Release>, String> {
     match show(runner, Some(project)) {
         Ok(s) => Ok(settle(s.rows)),
-        Err(e) if e.contains("no snapshot yet") => Ok(vec![]),
+        Err(e) if unrefreshed(&e) => Ok(vec![]),
         Err(e) => Err(e),
     }
 }

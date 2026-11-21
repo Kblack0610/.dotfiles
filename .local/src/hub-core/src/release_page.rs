@@ -30,7 +30,7 @@ pub fn core(v: &str) -> &str {
 
 /// The version a history tag is a cut of, from the version the collector parsed off it with the
 /// line's glob (`binks-v2` is `2`, `v0.5.3-dodginballs5` is `0.5.3`); the tag when none was parsed.
-fn cut_of(s: &Shipment) -> &str {
+pub(crate) fn cut_of(s: &Shipment) -> &str {
     core(if s.version.is_empty() {
         &s.tag
     } else {
@@ -40,7 +40,7 @@ fn cut_of(s: &Shipment) -> &str {
 
 /// The version asked (`0.5.3`, or one cut's tag, which stands for its own version) and the app's
 /// cuts of it, newest first.
-fn cuts_of<'a>(app: &'a App, asked: &str) -> (String, Vec<&'a Shipment>) {
+pub(crate) fn cuts_of<'a>(app: &'a App, asked: &str) -> (String, Vec<&'a Shipment>) {
     let asked = asked.trim();
     let named = app
         .history
@@ -134,6 +134,9 @@ pub struct Page {
     pub prs_text: String,
     pub rows_text: String,
     pub app_href: String,
+    /// The version page of the project that owns the app (`version_page`): every app's cut of it
+    /// and the rows aimed at it.
+    pub version_href: String,
     /// The runs ledger keeps `builds::KEEP_DAYS`: a cut older than it has no runs to show.
     pub note: String,
 }
@@ -153,7 +156,7 @@ fn depth(r: &Run) -> usize {
 const STAGES: [&str; 2] = ["Started by the tag", "Started by a run"];
 
 /// The newest attempt of each run joined to `tag` of `project`, oldest start first.
-fn runs_of<'a>(runs: &'a [Run], project: &str, tag: &str) -> Vec<&'a Run> {
+pub(crate) fn runs_of<'a>(runs: &'a [Run], project: &str, tag: &str) -> Vec<&'a Run> {
     let mut newest: HashMap<(&str, &str, u64), &Run> = HashMap::new();
     for r in runs.iter().filter(|r| {
         r.release
@@ -232,7 +235,7 @@ fn action(r: &Run, rec: Option<&Record>) -> Action {
 }
 
 /// The worst of a cut's runs, as the history's STATE cell says it.
-fn worst(rs: &[&Run]) -> (String, Level) {
+pub(crate) fn worst(rs: &[&Run]) -> (String, Level) {
     if rs.is_empty() {
         return ("no runs".into(), Level::default());
     }
@@ -366,6 +369,7 @@ pub fn build(
         prs_text: shown.prs_text.clone(),
         rows_text: shown.rows_text.clone(),
         app_href: Link::to(Kind::App, app.project.clone()).href(),
+        version_href: crate::version_page::link(&app.owner(), &want).href(),
         note,
     })
 }

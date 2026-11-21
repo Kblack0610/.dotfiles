@@ -56,6 +56,8 @@ pub struct ProjView {
     pub tabs: Vec<&'static str>,
     /// Overview's Needs you lists each group's items (`F`), not only its head.
     pub needs: bool,
+    /// Releases' Legacy fold lists its versions and apps (`F`), not only its count.
+    pub legacy: bool,
     /// Overview's selected system row, which Enter opens Deliverables filtered to.
     pub sys: usize,
     /// The Deliverables table's search, chip and sort, and its selected row.
@@ -84,6 +86,7 @@ impl Default for ProjView {
             inner: OVERVIEW,
             tabs: vec![],
             needs: false,
+            legacy: false,
             sys: 0,
             dv: DataTable::default(),
             bv: DataTable::default(),
@@ -124,6 +127,7 @@ impl ProjView {
         self.inner = OVERVIEW;
         self.tabs = c.map(|c| c.dept_tabs.clone()).unwrap_or_default();
         self.needs = false;
+        self.legacy = false;
         self.sys = 0;
         self.bv = DataTable::default();
     }
@@ -205,7 +209,7 @@ impl ProjView {
     /// The opened project's keys that are not the rows': Left/Right switch the inner tab, and on
     /// Overview j/k pick a system and Enter opens Deliverables filtered to it, `F` lists each
     /// Needs you group's items; on Deliverables the shared table keys, Enter opens Rows searched
-    /// to the epic. False for a key it does not take.
+    /// to the epic; on Releases `F` lists the Legacy fold. False for a key it does not take.
     pub fn page_key(
         &mut self,
         tv: &mut TaskView,
@@ -262,6 +266,10 @@ impl ProjView {
                     _ => return false,
                 }
             }
+            "releases" => match k.code {
+                KeyCode::Char('F') => self.legacy = !self.legacy,
+                _ => return false,
+            },
             _ => return false,
         }
         true
@@ -737,6 +745,95 @@ fn stage(pg: &Page, p: Palette, w: usize) -> Vec<Line<'static>> {
     out
 }
 
+/// Releases (`hub_core::project_releases`): the versions on the line newest first, the apps with
+/// a line as Releases > Apps words them, then the Legacy fold, its items listed with `F`.
+fn releases(pg: &Page, pv: &ProjView, p: Palette, w: usize) -> Vec<Line<'static>> {
+    use hub_core::project_releases::{AppLine, Version};
+    let t = &pg.release_tab;
+    let ver = |v: &Version| -> Vec<Cell> {
+        vec![
+            v.version.clone().into(),
+            cell(v.status.clone(), crate::releases::alert(v.level, p)),
+            cell(v.line_text.clone(), p.dim()),
+            v.progress_text.clone().into(),
+            cell(v.cut_text.clone(), p.dim()),
+        ]
+    };
+    let app = |a: &AppLine| -> Vec<Cell> {
+        vec![
+            a.app.clone().into(),
+            cell(a.status_text.clone(), crate::releases::alert(a.level, p)),
+            a.live_text.clone().into(),
+            cell(a.released_text.clone(), p.dim()),
+            cell(a.line_text.clone(), p.dim()),
+        ]
+    };
+    let vers = |vs: &[Version]| {
+        Table {
+            header: vec!["VERSION", "STATUS", "LINE", "ROWS", "CUT"],
+            rows: vs.iter().map(ver).collect(),
+            keep: vec![0, 1, 3, 2, 4],
+            flex: Some(4),
+            ..Default::default()
+        }
+        .fit(w, p.head())
+    };
+    let apps = |as_: &[AppLine]| {
+        Table {
+            header: vec!["APP", "STATUS", "DEPLOYED", "RELEASED", "LINE"],
+            rows: as_.iter().map(app).collect(),
+            keep: vec![0, 1, 2, 3, 4],
+            flex: Some(2),
+            ..Default::default()
+        }
+        .fit(w, p.head())
+    };
+    let mut out = vec![sec_head(
+        "VERSIONS",
+        &t.versions.len().to_string(),
+        "  hub tab releases versions/<project>/<v> opens one",
+        p,
+        w,
+    )];
+    for e in &t.errors {
+        out.extend(wrapped("  ", e, p.bad(), p, w));
+    }
+    out.extend(wrapped("  ", &t.line_text, p.dim(), p, w));
+    for e in &t.elsewhere {
+        out.extend(wrapped("  ", &e.text, Default::default(), p, w));
+    }
+    if !t.versions.is_empty() {
+        out.extend(vers(&t.versions));
+    }
+    out.push(Line::raw(""));
+    out.push(sec_head("APPS", &t.apps.len().to_string(), "", p, w));
+    if t.apps.is_empty() {
+        out.push(Line::styled("  No app on a release line.", p.dim()));
+    } else {
+        out.extend(apps(&t.apps));
+    }
+    let n = t.legacy_versions.len() + t.legacy_apps.len();
+    if n == 0 {
+        return out;
+    }
+    let keys = if pv.legacy {
+        "  F folds them"
+    } else {
+        "  F lists them"
+    };
+    out.push(Line::raw(""));
+    out.push(sec_head("LEGACY", &t.legacy_says, keys, p, w));
+    if pv.legacy {
+        if !t.legacy_versions.is_empty() {
+            out.extend(vers(&t.legacy_versions));
+        }
+        if !t.legacy_apps.is_empty() {
+            out.extend(apps(&t.legacy_apps));
+        }
+    }
+    out
+}
+
 /// Activity: the shipped versions, the dev timeline and the agent's status note.
 fn activity(c: &Card, pg: &Page, p: Palette, w: usize) -> Vec<Line<'static>> {
     let mut out = vec![sec_head("SHIPPED", &pg.shipped_says, "", p, w)];
@@ -887,6 +984,7 @@ pub fn open_lines(
             p,
             w,
         ),
+        "releases" => (releases(pg, pv, p, w), None),
         "stage" => (stage(pg, p, w), None),
         _ => (activity(c, pg, p, w), None),
     };
@@ -1212,6 +1310,7 @@ pub(crate) mod tests {
         Page {
             project: "garden".into(),
             releases: None,
+            release_tab: Default::default(),
             alerts: None,
             checks: None,
             check_groups: vec![],
@@ -1292,7 +1391,7 @@ pub(crate) mod tests {
         // An untyped project has no department tabs, so its strip has no break.
         assert_eq!(
             l[7],
-            "[Overview 1] Rows  Deliverables  Stage  Activity   <- -> switch"
+            "[Overview 1] Rows  Deliverables  Releases  Stage  Activity   <- -> switch"
         );
         let body = l[9..].join("\n");
         assert!(
@@ -1489,6 +1588,62 @@ pub(crate) mod tests {
         assert_eq!((pv.inner, pv.needs, pv.sys), (OVERVIEW, false, 0));
         pv.go(&mut tv, &pr.cards, "garden/stage");
         assert_eq!(pv.inner, "stage");
+    }
+
+    #[test]
+    fn releases_draws_the_line_first_and_f_lists_the_legacy_fold() {
+        use hub_core::project_releases::{AppLine, Version};
+        let pr = fixture();
+        let mut pg = a_page();
+        let v = |n: &str, line: &str| Version {
+            version: n.into(),
+            status: "released".into(),
+            line_text: line.into(),
+            ..Default::default()
+        };
+        let a = |n: &str, line: &str| AppLine {
+            app: n.into(),
+            status_text: "live".into(),
+            line_text: line.into(),
+            ..Default::default()
+        };
+        pg.release_tab.versions = vec![
+            v("v0.6.0", "on the line"),
+            v("v0.5.9", "cut outside the release flow"),
+        ];
+        pg.release_tab.apps = vec![a("garden-web", "from v0.5.0")];
+        pg.release_tab.legacy_versions = vec![v("v0.1.0", "before the line")];
+        pg.release_tab.legacy_apps = vec![a("garden-old", "no line")];
+        pg.release_tab.legacy_says = "1 versions, 1 apps".into();
+        pg.release_tab.line_text = "line from v0.5.0".into();
+        let (mut pv, mut tv) = (ProjView::default(), TaskView::default());
+        pv.open(&mut tv, Some(&pr.cards[0]));
+        pv.go(&mut tv, &pr.cards, "garden/releases");
+        assert_eq!(pv.inner, "releases");
+        let s = draw(&pr.cards[0], Some(&pg), &pv).join("\n");
+        let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} in {s}"));
+        assert!(at("v0.6.0") < at("v0.5.9") && at("v0.5.9") < at("APPS"));
+        assert!(s.contains("cut outside the release flow") && s.contains("line from v0.5.0"));
+        assert!(at("APPS") < at("garden-web") && at("garden-web") < at("LEGACY"));
+        assert!(s.contains("F lists them"), "{s}");
+        assert!(
+            !s.contains("v0.1.0") && !s.contains("garden-old"),
+            "the fold is shut: {s}"
+        );
+
+        let k = |c| KeyEvent::from(c);
+        assert!(pv.page_key(&mut tv, k(KeyCode::Char('F')), Some(&pg), 10));
+        let s = draw(&pr.cards[0], Some(&pg), &pv).join("\n");
+        assert!(s.contains("v0.1.0") && s.contains("garden-old") && s.contains("F folds them"));
+        pv.open(&mut tv, Some(&pr.cards[0]));
+        assert!(!pv.legacy, "a project opens with its fold shut");
+
+        // Nothing legacy: no fold at all.
+        pg.release_tab.legacy_versions.clear();
+        pg.release_tab.legacy_apps.clear();
+        pv.go(&mut tv, &pr.cards, "garden/releases");
+        let s = draw(&pr.cards[0], Some(&pg), &pv).join("\n");
+        assert!(!s.contains("LEGACY"), "{s}");
     }
 
     fn key(c: char) -> KeyEvent {
@@ -1984,14 +2139,17 @@ pub(crate) mod tests {
         let s = t.iter().position(|s| s.starts_with("[Overview]")).unwrap();
         // The work first, then the nine departments, which do not fit one 80-column line: the
         // strip wraps, and none is clipped.
-        assert_eq!(t[s], "[Overview] Rows  Deliverables  Stage  Activity ");
+        assert_eq!(
+            t[s],
+            "[Overview] Rows  Deliverables  Releases  Stage  Activity "
+        );
         assert_eq!(
             t[s + 1],
             " | Product  Engineering  Ops  Design  Analytics  Marketing  Legal  Support "
         );
         assert_eq!(t[s + 2], " Money   <- -> switch");
         let titles = layout::project_page(&pv.tabs);
-        assert_eq!(titles.len(), 14);
+        assert_eq!(titles.len(), 15);
         let strip = t[s..s + 3].join("");
         assert!(titles.iter().all(|i| strip.contains(i.title)), "{strip}");
 
@@ -2057,11 +2215,11 @@ pub(crate) mod tests {
         assert_eq!(
             t[s..s + 2],
             [
-                "[Overview] Rows  Deliverables  Stage  Activity ",
+                "[Overview] Rows  Deliverables  Releases  Stage  Activity ",
                 " | Engineering  Ops   <- -> switch"
             ]
         );
-        assert_eq!(pv.page_tabs().len(), 7);
+        assert_eq!(pv.page_tabs().len(), 8);
         pv.go(&mut tv, &pr.cards, "demo/legal");
         assert_eq!((pv.inner, pv.dept()), (OVERVIEW, None));
 

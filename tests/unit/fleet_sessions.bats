@@ -1634,6 +1634,38 @@ SH
   [ "$(jq -r '"\(.context_tokens) \(.context_window)"' <<<"$output")" = "5 null" ]
 }
 
+@test "a running local gate writing Logs/gate.txt is activity, a stale log is not (ar-42)" {
+  # 2026-11-04 agent-23: a local suite.sh gate wrote Logs/gate.txt (~80 classes done) while its transcript
+  # was silent past 120m and the row read "background shell idle over 120m".
+  landed_fixture
+  mkdir -p "$SANDBOX/wt/Logs"
+  : > "$SANDBOX/wt/Logs/gate.txt"
+  PANEL_STATUS=shell PANEL_JOB=gate PANEL_IDLE_S=$((200 * 60)) panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  # the bucket counts the log write; idle_min stays the transcript's own silence
+  [ "$(jq -r '"\(.bucket) \(.idle_min)"' <<<"$output")" = "WORKING 200" ]
+  # a session started in a subdirectory of the worktree finds the same log
+  mkdir -p "$SANDBOX/wt/sub"
+  PANEL_STATUS=shell PANEL_JOB=gate PANEL_IDLE_S=$((200 * 60)) panel "$SANDBOX/wt/sub" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = "WORKING" ]
+  PANEL_STATUS=shell PANEL_JOB=gate PANEL_IDLE_S=$((200 * 60)) panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  # negative control: the same gate whose log has not moved in 3h reads idle
+  touch -d '3 hours ago' "$SANDBOX/wt/Logs/gate.txt"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = "LANDED" ]
+  jq -r .reason <<<"$output" | grep -q 'background shell idle over 120m'
+  # negative control: a fresh log does not rescue a shell that is not a gate or test
+  touch "$SANDBOX/wt/Logs/gate.txt"
+  PANEL_STATUS=shell PANEL_JOB=jobs PANEL_IDLE_S=$((200 * 60)) panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  jq -r .reason <<<"$output" | grep -q 'not a gate or test'
+}
+
 @test "end to end: a row carries the open job its shell waits on, and null when none is known" {
   # fleet-dispatch counts no open_job queue session toward its pace target (pipeline-eval-p2).
   landed_fixture
@@ -2288,6 +2320,32 @@ research_item() {
   [ "$(jq -r .finished <<<"$output")" = true ]
   [ "$(jq -r .next_phase <<<"$output")" = 'Phase 2: rollout' ]
   [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: rollout' ]
+}
+
+@test "end to end: a running item the session owns by sessions: alone does not hold the plan's phase; another session's does (ar-475)" {
+  # 2026-11-05 dotfiles-agent-4 read DONE while P4 was its own item credit-games-p4.
+  landed_fixture
+  mkdir -p "$HOME/.agent/queue/running"
+  printf 'slug: own-p2\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsessions: sid-9\nplan: %s\nphases: 2\n---\nPhase 2 of the plan\n' \
+    "$SANDBOX/plan.md" > "$HOME/.agent/queue/running/20261103-100000-own-p2.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Phase 2: rollout' ]
+  # a second own item (own:a,b) holds nothing either; a foreign queued item holds the phase alone
+  sed 's/^slug: own-p2/slug: own-p2b/' "$HOME/.agent/queue/running/20261103-100000-own-p2.md" > "$HOME/.agent/queue/running/20261103-100001-own-p2b.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+  mkdir -p "$HOME/.agent/queue/queued"
+  printf 'slug: foreign-p2\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nplan: %s\nphases: 2\n---\nPhase 2 of the plan\n' \
+    "$SANDBOX/plan.md" > "$HOME/.agent/queue/queued/20261103-100000-foreign-p2.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its item own-p2 is still open with every phase done or queued' ]
+  # negative control: the item running in another session holds the phase
+  rm "$HOME/.agent/queue/running/20261103-100001-own-p2b.md" "$HOME/.agent/queue/queued/20261103-100000-foreign-p2.md"
+  sed -i 's/^sessions: sid-9/session: lab:other\nsessions: sid-other/' "$HOME/.agent/queue/running/20261103-100000-own-p2.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: own-p2' ]
 }
 
 @test "end to end: an item that records phases: holds only those; the next phase it does not hold is still this session's (ar-267)" {

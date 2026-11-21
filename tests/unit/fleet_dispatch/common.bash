@@ -93,6 +93,10 @@ setup() {
   export FLEET_DISPATCH_DIR="$HOME/.agent/dispatch"
   sandbox_worlds
   export DISPATCH_PROFILES=bnb
+  # The tuning these cases are written against: the code defaults of the keys the agentctl conf sets
+  # hold every start ("a key the conf sets gets a neutral default"), and the sandbox has no conf.
+  export DISPATCH_TARGET_PRESENT=50 DISPATCH_TARGET_AWAY=25 DISPATCH_MAX_LOAD=0.7 DISPATCH_MIN_IDLE=30 DISPATCH_LOW_WATER=3
+  export DISPATCH_T3_PROJECTS="agent-runtime notes-cockpit"
   export DISPATCH_REQUESTED_FLOOR=0   # its own cases below turn it on; every other case reads the board by the low water alone
   export DISPATCH_PROJECT_MAP="$SANDBOX/map.json"
   export DISPATCH_POLICY="$SANDBOX/policy.md"
@@ -893,9 +897,9 @@ case "$1" in log) echo run-9 ;; trainee) printf "%s\n" "${TRAINEE_LANE:-}" ;; cl
 
 # --- fleet workers -----------------------------------------------------------------------
 
-# worker <load cores ready mem%> [place] [first] [harnesses] [kit] -- one fleet worker, razer-laptop, in an inventory whose
+# worker <load cores ready mem% [conflict]> [place] [first] [harnesses] [kit] -- one fleet worker, razer-laptop, in an inventory whose
 # ansible_host sits in another group and that lists the workstation, state, with the game repo cloned. ssh answers its probe with those
-# four words and runs any other command here, so the tmux stub stands in for the worker's server.
+# four words (a fifth, 1, says its store is in a merge conflict) and runs any other command here, so the tmux stub stands in for the worker's server.
 # ssh.rc, when present, is ssh's own exit (255: the worker did not answer).
 # first is its fleet_first, a YAML list such as "[canary]"; harnesses its fleet_harnesses, such as "[ocfree]";
 # kit its `fleet-dispatch kit` line, default every launcher and srt ("" is an older worker with no kit verb).
@@ -957,3 +961,30 @@ focus_on() {
     sed -i '1s/$/ #prio\/focus/' "$SANDBOX/sheets/$p/README.md"
   done
 }
+
+# ocfree: a free harness whose provider may train on prompts, allowlisted to the public project only.
+ocfree_ready() {
+  printf 'sk-ocfree\n' > "$SANDBOX/ocfree.key"
+  harness_set --arg k "$SANDBOX/ocfree.key" --arg c "$SANDBOX/eval-ocfree.json" --arg d "$SANDBOX/oc-ocfree" '.harnesses.ocfree = {
+    launcher: "opencode", source: "ocfree", headless: true, config: $c, config_dir: $d, key_file: $k, projects: ["dotfiles"], timeout_min: 180, models: {beam: "litellm/opencode-free (beam-free)"}}'
+  harness_sandboxed ocfree
+}
+
+# trainee_ready -- a trainee lane (model-lane trainee, lanes.yaml trainee:) of two models on gotrain, a
+# sandboxed harness allowlisted to game whose source has room; no claude account has room (route_ready).
+# HARNESSES is the map a function the test calls directly reads (fleet-dispatch set it at load, before this map).
+trainee_ready() {
+  route_ready
+  HARNESSES=$DISPATCH_HARNESSES
+  printf 'sk-go\n' > "$SANDBOX/go.key"
+  harness_set --arg k "$SANDBOX/go.key" --arg c "$SANDBOX/eval-go.json" --arg d "$SANDBOX/oc-go" '.harnesses.gotrain = {
+    launcher: "opencode", source: "go", headless: true, max_tier: 1, config: $c, config_dir: $d, key_file: $k, projects: ["game"], timeout_min: 60,
+    models: {glm: "litellm/go (glm)", kimi: "litellm/go (kimi)"}}'
+  harness_sandboxed gotrain
+  trainee_repo "$SANDBOX/repos/game"
+  srcs go:ok:0.1 codex:ok:5
+  export TRAINEE_LANE='{"candidates":[{"harness":"gotrain","model":"glm"},{"harness":"gotrain","model":"kimi"}],"points":1,"reviewer":"opus","reviewer_model":"opus"}'
+}
+
+# gateway_up -- the gateway's /health/readiness answers healthy, as LiteLLM does with its db connected.
+gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\"status\":\"healthy\",\"db\":\"connected\"}"'; }

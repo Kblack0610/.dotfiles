@@ -79,6 +79,48 @@ row() {
   assert_output --partial 'dead measure: rules.md: under ten'
 }
 
+# gh_stub <stderr text>: a gh that fails the way the real one does, into $SANDBOX/fail/gh.
+gh_stub() {
+  mkdir -p "$SANDBOX/fail"
+  printf '#!/bin/sh\necho %q >&2\nexit 1\n' "$1" > "$SANDBOX/fail/gh"
+  chmod +x "$SANDBOX/fail/gh"
+}
+
+@test "rules --check: a rate-limited gh measure is not a dead one, and says nothing was measured" {
+  gh_stub 'gh: API rate limit already exceeded for user ID 1. (HTTP 403)'
+  row 'under ten' high "PATH='$SANDBOX/fail':\$PATH gh run list" 10
+  run "$SUBJECT" rules --check
+  assert_success
+  assert_output ''
+  run "$SUBJECT" rules --json
+  assert_equal "$(jq -c '.[0] | [.state, .limited, .dead, .holds]' <<<"$output")" '["absent",true,false,null]'
+}
+
+@test "rules --check: a gh 403 that is not a rate limit, or other tool text naming one, stays dead" {
+  gh_stub 'gh: Resource not accessible by integration (HTTP 403)'
+  row 'under ten' high "PATH='$SANDBOX/fail':\$PATH gh run list" 10
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'dead measure: rules.md: under ten'
+  : > "$RULES_REGISTER"
+  gh_stub 'gh: some tool hit its rate limit config'
+  row 'under ten' high "PATH='$SANDBOX/fail':\$PATH gh run list" 10
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'dead measure: rules.md: under ten'
+}
+
+@test "rules: a rate-limited counting measure drops its 0 and is counted as limited" {
+  gh_stub 'gh: API rate limit exceeded for user ID 1. (HTTP 403)'
+  jq -nc --arg s "$SANDBOX/rules.md" --arg m "PATH='$SANDBOX/fail':\$PATH gh run list | wc -l" \
+    '{source: $s, anchor: "under ten", kind: "provisional", confidence: "low", measure: $m, min: 5}' >> "$RULES_REGISTER"
+  run "$SUBJECT" rules --check
+  assert_success
+  run "$SUBJECT" rules
+  assert_line 'limited=1'
+  assert_line 'measured=0'
+}
+
 @test "rules --check: a bound copied from the file its measure reads restates it, whatever the number" {
   printf 'CAP=10\n' >> "$SANDBOX/rules.md"
   row 'under ten' low "sed -n 's/^CAP=//p' '$SANDBOX/rules.md'" 10

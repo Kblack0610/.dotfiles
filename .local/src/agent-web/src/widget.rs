@@ -446,7 +446,7 @@ mod tests {
     fn the_default_order_is_homes_needs_and_red_then_the_grid() {
         let home = home_cards(Err("x".into()), 0);
         let tabs: Vec<_> = home.iter().map(|c| c.tab).collect();
-        assert_eq!(tabs, ["needs", "red"]);
+        assert_eq!(tabs, cards::ORDER[..2]);
     }
 
     #[test]

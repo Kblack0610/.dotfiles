@@ -22,7 +22,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
+import { availableParallelism, homedir } from "node:os";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BIG_PROJECT, FIXTURES, NOW, RUNNER_PAGES, STACK_RULE_ROWS, WIDGET_CARDS, pageRows } from "./fixtures.mjs";
@@ -76,7 +76,7 @@ const TABS = [
 // A tab is waited on by its TABS row, an inner tab by its own shown group, a project inner tab by
 // its first section's heading.
 const INNER = JSON.parse(readFileSync(join(STATIC, "app.js"), "utf8").match(/^const INNER_TABS = (.*);$/m)[1]);
-const PAGE_HEAD = { overview: "p-needs", rows: "p-rows", deliverables: "p-build", stage: "p-stage", activity: "p-shipped" };
+const PAGE_HEAD = { overview: "p-needs", rows: "p-rows", deliverables: "p-build", releases: "p-versions", stage: "p-stage", activity: "p-shipped" };
 const TALL = [
   ...TABS.filter((t) => !t.name).flatMap((t) => INNER[t.tab]
     ? INNER[t.tab].tabs.map(([id]) => ({ name: `${t.tab}/${id}`, hash: `${t.tab}/${id}`, el: t.tab, ready: `#${t.tab} [data-in="${id}"]:not([hidden])` }))
@@ -474,20 +474,43 @@ function print(results) {
   }
 }
 
+// Every check opens its own context and reads no other's state, so they run PAGES_AT_ONCE at a time.
+// One after another they took 64 s, the slowest step of the rust job, itself the gate's critical
+// path in half its pull-request runs (ar-3036). Each list keeps its order, so the output does too.
+// Never more than the cores, so WAIT_MS stays a hang guard on a small runner; one at a time against
+// a live --api instance, which serves real reads.
+const PAGES_AT_ONCE = api ? 1 : Math.min(4, availableParallelism());
+function limiter(n) {
+  let free = n;
+  const queue = [];
+  return async (fn) => {
+    if (free) free--;
+    else await new Promise((go) => queue.push(go));
+    try {
+      return await fn();
+    } finally {
+      const go = queue.shift();
+      if (go) go();
+      else free++;
+    }
+  };
+}
+
 async function main() {
   mkdirSync(out, { recursive: true });
   const page = dumpIndex();
   const pw = playwright();
   const browser = await pw.chromium.launch({ headless: true, executablePath: chromium(pw) });
-  const results = [];
+  const slot = limiter(PAGES_AT_ONCE);
   // --control proves the overflow detector alone; the nav check has its own control, --no-kit.
-  const navErrors = control || wide ? [] : await navCheck(browser, page);
-  const cardErrors = wide || noKit ? [] : await cardsCheck(browser, page, control ? CARDS_CONTROL_CSS : null);
-  const widgetErrors = wide || noKit ? [] : await widgetCheck(browser, page, control ? WIDGET_CONTROL_CSS : null);
-  const pagerErrors = wide || noKit ? [] : await pagerCheck(browser, page, control);
-  if (!noKit) for (const spec of TABS) results.push(await renderTab(browser, spec, page));
-  const heights = [];
-  if (!noKit) for (const spec of TALL) heights.push(await heightOf(browser, spec, page));
+  const [navErrors, cardErrors, widgetErrors, pagerErrors, results, heights] = await Promise.all([
+    control || wide ? [] : slot(() => navCheck(browser, page)),
+    wide || noKit ? [] : slot(() => cardsCheck(browser, page, control ? CARDS_CONTROL_CSS : null)),
+    wide || noKit ? [] : slot(() => widgetCheck(browser, page, control ? WIDGET_CONTROL_CSS : null)),
+    wide || noKit ? [] : slot(() => pagerCheck(browser, page, control)),
+    noKit ? [] : Promise.all(TABS.map((spec) => slot(() => renderTab(browser, spec, page)))),
+    noKit ? [] : Promise.all(TALL.map((spec) => slot(() => heightOf(browser, spec, page)))),
+  ]);
   await browser.close();
   for (const e of navErrors) console.log(`NAV ${e}`);
   for (const e of cardErrors) console.log(`CARDS ${e}`);

@@ -705,6 +705,42 @@ commit_tag() {
   assert_equal "$(row game-steam-beta | jq -c '[.status, .pinned.provenance, .live.provenance, .provenance]')" '["ok","outside","outside","outside"]'
 }
 
+@test "provenance: check pages a channel a person moved, and a flow one stays quiet" {
+  store_setup
+  reply "$(node v0.5.0-g1 SUCCESS 2026-11-02T10:00:00Z "" github-actions)"
+  "$RS" refresh game >/dev/null
+  run "$RS" check
+  refute_output --partial 'OUTSIDE game game-steam-beta'
+  # Negative control: the same upload recorded by a person is outside, and check names it.
+  reply "$(node v0.5.0-g1 SUCCESS 2026-11-02T10:00:00Z "" Kblack0610)"
+  "$RS" refresh game >/dev/null
+  run "$RS" check
+  assert_failure
+  assert_output --partial 'OUTSIDE game game-steam-beta: pinned v0.5.0-g1 live v0.5.0-g1 was not released by the flow'
+  # A pin that names no version (a sha, latest) is no release by hand, so it pages nothing.
+  jq '.rows |= map(if .id == "game-steam-beta" then .pinned.value = "latest" else . end)' "$RELEASE_STATE_DIR/state.json" > "$SANDBOX/s"
+  mv "$SANDBOX/s" "$RELEASE_STATE_DIR/state.json"
+  run "$RS" check
+  refute_output --partial 'OUTSIDE game game-steam-beta'
+}
+
+@test "provenance: check pages a hand tag until a flow tag follows it" {
+  ship "start (#1)" web-v1.0.0
+  commit_tag "hand (#2)" web-v1.0.1 "Kenneth"
+  "$RS" refresh web >/dev/null
+  run "$RS" check
+  assert_failure
+  assert_output --partial 'OUTSIDE web tag web-v1.0.1: tagged by Kenneth, not by the cut workflow'
+  # The implicit release row pins this tag, so the tag line is the one page for it.
+  assert_equal "$(grep -c '^OUTSIDE web ' <<<"$output")" 1
+  # A flow cut after it makes the hand tag history: still outside, no longer paged.
+  commit_tag "cut (#3)" web-v1.1.0 cut.yml
+  "$RS" refresh web >/dev/null
+  assert_equal "$(jq -c '.releases.web.tags | map(.provenance)' "$RELEASE_STATE_DIR/state.json")" '["flow","outside","flow"]'
+  run "$RS" check
+  refute_output --partial 'web-v1.0.1'
+}
+
 @test "provenance: check skips a drift legacy on both sides, and names one whose pin is on the line" {
   push_pin v0.8.0
   export KUBE_IMAGE=reg/web:v0.9.0
@@ -1363,4 +1399,31 @@ EOF
   assert_success
   run jq -c '[.stages, .stages_error, (.rows | length > 0)]' "$RELEASE_STATE_DIR/state.json"
   assert_output '[{},"notes projects --stages printed nothing",true]'
+}
+
+@test "provenance: the subcommand lists every tag the project owns, and places a value given" {
+  ship "old (#1)" web-v0.9.0
+  ship "start (#2)" web-v1.0.0
+  commit_tag "hand (#3)" web-v1.0.1 "Kenneth"
+  commit_tag "cut (#4)" web-v1.1.0 cut.yml
+  run "$RS" provenance web
+  assert_success
+  assert_equal "$(jq -sc 'map([.tag, .tagger, .provenance])' <<<"$output")" \
+    '[["web-v1.1.0","cut.yml","flow"],["web-v1.0.1","Kenneth","outside"],["web-v1.0.0",null,"flow"],["web-v0.9.0",null,"legacy"]]'
+  run "$RS" provenance web 1.1.0 1.0.1 0.9.0 abc1234
+  assert_success
+  assert_equal "$(jq -sc 'map(.provenance)' <<<"$output")" '["flow","outside","legacy","outside"]'
+  # --fetch reads a tag the cutter pushed that this checkout has not seen yet.
+  local cutter="$SANDBOX/cutter"
+  git clone -q "$ORIGIN" "$cutter" 2>/dev/null
+  git -C "$cutter" -c user.name=cut.yml -c user.email=c@c tag -a -m cut web-v1.2.0
+  git -C "$cutter" push -q origin web-v1.2.0 2>/dev/null
+  run "$RS" provenance web
+  refute_output --partial web-v1.2.0
+  run "$RS" provenance --fetch web
+  assert_success
+  assert_equal "$(head -1 <<<"$output" | jq -c '[.tag, .provenance]')" '["web-v1.2.0","flow"]'
+  # Negative control: a project with no checkout has no tags to list.
+  run "$RS" provenance lonely
+  assert_failure 2
 }

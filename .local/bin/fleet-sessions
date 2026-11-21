@@ -90,6 +90,8 @@ set -uo pipefail
 : "${FLEET_API_ERROR_IDLE_MIN:=2}" # a turn that ended on an API Error this many minutes ago is stopped, not working
 : "${FLEET_SHELL_STALE_MIN:=120}" # a background shell this long past the last entry is not work:
                                   # a real gate wait is under an hour, a forgotten ugrep is not
+: "${FLEET_GATE_LOGS:=Logs/gate.txt}" # files under a session's worktree a running local gate writes to: a write
+                                  # within the transcript's idle minutes is activity (gate_log_idle, ar-42)
 : "${FLEET_QUEUE_GATES:=gate-and-land.sh|ci-gate.sh|gate-line.py --recheck|agent-land}" # processes that are a gate waiting for its landing turn
                                   # behind another PR or on its checks (a gate polls every 120s, gives up after 280m; agent-land
                                   # waits on a queued run with no limit, and ends itself): live, never idle, whatever the output age
@@ -281,6 +283,27 @@ queue_gate() {
 proc_snapshot() {
   ps -e -o pid=,ppid= 2>/dev/null | awk '{ print $1 "\t" $2 }' > "$1.ppid"
   ls -l /proc/[0-9]*/cwd 2>/dev/null | sed -nE 's|^.* /proc/([0-9]+)/cwd -> (.*)$|\1\t\2|p' > "$1.cwd" || :   # ls fails on a process that exits mid-read, whatever it listed
+}
+
+# gate_log_idle <host|-> <status> <open job> <cwd> <idle min> -> the idle minutes the bucket reads. For a local
+# session whose shell is a gate or test, the age of the newest FLEET_GATE_LOGS file under the worktree when it is
+# under <idle min>; otherwise <idle min>. A local suite.sh gate prints into Logs/gate.txt while the transcript sees
+# nothing (2026-11-04 agent-23 read "background shell idle over 120m" with ~80 classes done). The mtime is the
+# event; a gate that ended leaves a log whose age only grows. idle_min and the wake and close reads keep the
+# transcript's own idle.
+gate_log_idle() {
+  local idle="$5" f m age root
+  local -a logs=()
+  [ "$1" = - ] && [ "$2" = shell ] && { [ "$3" = gate ] || [ "$3" = test ]; } || { echo "$idle"; return; }
+  # The worktree root, so a session started in a subdirectory finds the same log; no glob expands.
+  root="$(git -C "$4" rev-parse --show-toplevel 2>/dev/null)" || root="$4"
+  read -ra logs <<<"$FLEET_GATE_LOGS"
+  for f in "${logs[@]}"; do
+    m="$(stat -c %Y "$root/$f" 2>/dev/null)" || continue
+    age=$(( ($(date +%s) - m) / 60 ))
+    [ "$age" -ge 0 ] && [ "$age" -lt "$idle" ] && idle="$age"
+  done
+  echo "$idle"
 }
 
 # live_wait <cwd> [<claude pid>]: queue when such a process is a FLEET_QUEUE_GATES one (a gate waiting for its
@@ -1775,6 +1798,14 @@ item_of() {
     }' <<<"$1"
 }
 
+# own_slugs <item_of's answer> -> the comma list of slugs it joined to this session (own:a,b running here, or
+# the one waiting here), else nothing. They are the session's own work, not a phase handed off, so they hold no
+# plan phase: the phase is this session's next one until it lands (ar-475: dotfiles-agent-4 read DONE while P4
+# was its own running item, joined by sessions: alone).
+own_slugs() {
+  case "$1" in own:* | here:*) local s="${1#*:}"; printf '%s' "${s%% *}" ;; esac
+}
+
 # handoff_of <items: collect's qhand, the jsonl of doc+ask items with a report and an ask> <item_of's answer> -> "<ask id>\t<doc>"
 # when the item is of a doc+ask kind (kinds.json `exit`, by the item's `type`) and has handed its work
 # over: its `report` doc exists and its `ask` is filed. That ask is the deliverable, so it is not the
@@ -1883,7 +1914,7 @@ collect() {
     # close --self reads one row: the others' git, gh and transcript reads cost a minute (54 rows).
     [ -z "${CLOSE_SELF:-}" ] || [[ "$line" == *"$CLOSE_SELF"* ]] || continue
     rm -f "$CACHE/blind_row"
-    local target pane status plan sid cwd since ctx planf tsess idle asks ownask hv bucket fact edited \
+    local target pane status plan sid cwd since ctx planf tsess idle bidle asks ownask hv bucket fact edited \
           pdone ptotal pnext phases fin started age oid askids blk transcript prs \
           work jobs human parked compactions topic doing said gate test ojob acct pq names landed live cpid host cwin
     # The separator is a unit separator, not a tab: read collapses an empty tab-separated field and
@@ -1936,7 +1967,7 @@ collect() {
     landed="$(jq -r 'if any(.state == "MERGED") and all(.state != null and .state != "OPEN")
       then map(select(.state == "MERGED") | "#\(.number)") | join(",") else "-" end' <<<"$prs")"
     tsess="${target#*/}"; tsess="${tsess%:*}"
-    idle=$(( (now - since) / 60 ))
+    idle=$(( (now - since) / 60 )); bidle="$(gate_log_idle "$host" "$status" "$ojob" "$cwd" "$idle")"
     age=-; [[ "$started" =~ ^[0-9]+$ ]] && age=$(( (now - started) / 60 ))
     # Every ask this session filed and nobody answered (ownask), the ones a queue item carries on
     # included: the session may close (bucket), and the close verdict says whether its window must
@@ -2049,7 +2080,7 @@ collect() {
     # the phase reads as next, never as queued.
     # The plan is queued only when every open phase is held; else its first free one is next.
     # A read that fails is named unreadable, and tick logs no blink for the row (blind_row) (ar-2905).
-    local dsp=- n=0 e=0 prun=- pwq=-
+    local dsp=- n=0 e=0 prun=- pwq=- mine="$(own_slugs "$item")"
     dsp="$(awk -F'\t' -v k="${target%%/*}/$tsess" '$1 == k { print $2; exit }' <<<"$items")"
     pq="$pnext"
     # With a phase open, a merged PR is a landed phase only when the plan names it: a side item's PR
@@ -2072,12 +2103,12 @@ collect() {
       canon="$(realpath -q -- "$plist" 2>/dev/null)" || canon="$plist"
       IFS=$'\t' read -r ptgt pn < <(plan_pointer "$plist")
       [ -z "${ptgt:-}" ] || { canon="$ptgt"; pbase="$pn"; }
-      qd="$(jq -rs --arg p "$planf" --arg q "${canon:-$plist}" --arg own "${dsp#*: }" --arg sid "${sid:0:8}" --arg tgt "$target" \
+      qd="$(jq -rs --arg p "$planf" --arg q "${canon:-$plist}" --arg own "${dsp#*: }" --arg mine "$mine" --arg sid "${sid:0:8}" --arg tgt "$target" \
               --argjson open "$(jq -c --argjson b "$pbase" '[.[] | select(.state == "open") | {n: ((if (.n | type) == "number" then .n + $b - 1 else .n end) | tostring), name: .name}]' <<<"$plj")" \
               "$PLAN_ITEMS_JQ"' def names_me: (.task // "") as $t
                 | any($sid, $tgt; . as $w | $w != "" and (($t | split($w)) as $p
                     | any(range(1; $p | length); ($p[. - 1] | test("[0-9A-Za-z]$") | not) and ($p[.] | test("^[0-9A-Za-z]") | not))));
-              [.[] | select(.slug != $own and (names_plan($p) or names_plan($q)) and (names_me | not))
+              [.[] | select(.slug != $own and (.slug as $s | $mine | split(",") | all(. != $s)) and (names_plan($p) or names_plan($q)) and (names_me | not))
                  | {slug, st: (.state // "queued"), ph: (.phases // "" | tostring | split(" ") | map(select(. != ""))),
                     ses: (if ((.session // "") | contains(":")) then (.session | sub(":"; "/")) else null end),
                     tp: ((.task // "") | (capture("(?i)\\bphase (?<t>[^\\s:,]+) of ") | .t | ascii_downcase) // null)}] as $it
@@ -2133,9 +2164,9 @@ collect() {
     if [ "$host" = - ] && { [ "$idle" -ge "$FLEET_IDLE_MIN" ] || [ "$sid" = "${CLOSE_SELF:-}" ]; }; then
       IFS=$'\t' read -r wake cron < <(wake_facts "$transcript" "$started" "$now" "$idle" "$phases" "$pdone" "$ptotal" "$pq")
     fi
-    bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
+    bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$bidle" "$g" "$dirty" "$ahead" \
               "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" "$cron")"
-    fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
+    fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$bidle" "$g" "$dirty" "$ahead" \
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" && fin=1
     # An idle session whose last message is an API Error line is stopped, whatever else reads WORKING
     # (idle under FLEET_IDLE_MIN, a pending CI run): nothing in it wakes without a message. A finished
@@ -2146,7 +2177,7 @@ collect() {
       apistop="$(api_error_stop "$transcript")"
       [ -z "$apistop" ] || bucket="STALLED turn ended on API Error ${apistop%%$'\t'*}"
     fi
-    blk="$(work_blockers "$askids" "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
+    blk="$(work_blockers "$askids" "$status" "$plan" "$asks" "$hv" "$bidle" "$g" "$dirty" "$ahead" \
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" - "$(merged_prs "$prs")")"
     local elsewhere=""
     [ "$host" != - ] || elsewhere="$(edited_work_blockers "$cwd" "$edited" "$sid")"

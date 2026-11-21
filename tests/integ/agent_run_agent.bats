@@ -187,6 +187,33 @@ arg_after() {
   assert_output StructuredOutput
 }
 
+@test "--context full keeps the tools and the CLAUDE.md files on a lean agent's call" {
+  printf 'CALL_CONTEXT=lean\n' >> "$AGENTCTL_CONF_DIR/judge.conf"
+  run "$RUN" --agent judge --role watcher --context full -p x
+  assert_success
+  run grep -Fx -e --tools -e --disable-slash-commands "$SANDBOX/claude.argv"
+  assert_failure
+  run grep -Fx NO_MDS= "$SANDBOX/claude.env"
+  assert_success
+}
+
+@test "--context lean trims the call of an agent whose conf sets no CALL_CONTEXT" {
+  run "$RUN" --agent judge -p x --context lean
+  assert_success
+  run arg_after --tools
+  assert_success
+  assert_output ''
+  run grep -Fx NO_MDS=1 "$SANDBOX/claude.env"
+  assert_success
+}
+
+@test "a --context that is not lean or full is refused before the harness runs (negative control)" {
+  run "$RUN" --agent judge --context bare -p x
+  assert_failure
+  assert_output --partial "--context 'bare' is not lean or full"
+  assert [ ! -e "$SANDBOX/claude.argv" ]
+}
+
 @test "a lean agent on another harness is refused (negative control)" {
   printf 'CALL_CONTEXT=lean\n' >> "$AGENTCTL_CONF_DIR/judge.conf"
   run "$RUN" --agent judge --harness codex -p x
