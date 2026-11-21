@@ -92,8 +92,8 @@ pub struct Nightly {
     pub known_tests: Option<Vec<String>>,
 }
 
-/// Ends within `SOON_DAYS` and has not ended: the one test the chip, the tab count and the
-/// `quarantine-expiry` watch share.
+/// Ends within `SOON_DAYS` and has not ended: the one test the chip, the tab count and `ending`
+/// share. The chip and the count read the report's `days_left`; `ending` counts from `ends`.
 fn is_soon(days_left: i64) -> bool {
     days_left > 0 && days_left <= SOON_DAYS
 }

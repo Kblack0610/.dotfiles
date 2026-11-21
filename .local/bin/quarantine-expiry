@@ -10,8 +10,8 @@
 #
 # Usage: quarantine-expiry [--dry-run]     --dry-run: print, note nothing
 # Prints one line per ending owner row, then the totals as the last line.
-# Exit: 0 no entry ends soon, 1 one does, 2 the quarantine or board could not be read
-# (an `unreadable:` line).
+# Exit: 0 no entry ends soon, 1 one does or an end is not a date, 2 the quarantine or board
+# could not be read (an `unreadable:` line).
 set -uo pipefail
 
 dry=0
@@ -22,23 +22,28 @@ case "${1:-}" in
   *) echo "quarantine-expiry: unknown argument: $1" >&2; exit 64 ;;
 esac
 
-if ! soon="$(hub quarantine soon 2>&1)"; then
-  echo "unreadable: hub quarantine soon: ${soon//$'\n'/; }"
+errs="$(mktemp)"; trap 'rm -f "$errs"' EXIT
+soon="$(hub quarantine soon 2>"$errs")"; rc=$?   # 1: an end that is not a date, the rest still print
+if [ "$rc" -gt 1 ]; then
+  echo "unreadable: $(paste -sd';' "$errs")"
   exit 2
 fi
-if [ -z "$soon" ]; then
+if [ -z "$soon" ] && [ "$rc" = 0 ]; then
   echo "No quarantine entry is about to end"
   exit 0
 fi
-if ! board="$(notes board --json 2>&1)" || ! jq -e '.rows | type == "array"' >/dev/null 2>&1 <<<"$board"; then
+board='{"rows":[]}'
+if [ -n "$soon" ] && { ! board="$(notes board --json 2>&1)" || ! jq -e '.rows | type == "array"' >/dev/null 2>&1 <<<"$board"; }; then
   echo "unreadable: notes board --json: ${board:0:200}"
   exit 2
 fi
 
 today="$(date +%F)"
 field() { jq -r ".$1" <<<"$r"; }   # a field of the row in hand, $r
+n_rows() { if [ "$1" = 1 ]; then echo "1 owner row"; else echo "$1 owner rows"; fi; }
 rows=0 entries=0 noted=0 closed=0 failed=0 next=""
-while IFS=$'\t' read -r repo row n ends left; do
+# Tab is IFS whitespace, so `read` would merge an empty row field into the next: split on \037
+while IFS=$'\037' read -r repo row n ends left; do
   [ -n "$repo" ] || continue
   rows=$((rows + 1)) entries=$((entries + n))
   [ -n "$next" ] || next="$ends, ${left}d"
@@ -48,7 +53,8 @@ while IFS=$'\t' read -r repo row n ends left; do
   r="$(jq -c --arg id "$row" 'first(.rows[] | select($id != "" and .id == $id)) // empty' <<<"$board")"
   if [ -z "$r" ]; then
     closed=$((closed + 1))
-    echo "$what; the row is not open on the board, so no open row owns them"
+    if [ -n "$row" ]; then echo "$what; the row is not open on the board, so no open row owns them"
+    else echo "$what; no row owns them"; fi
     continue
   fi
   key="quarantine ends $ends:"
@@ -62,19 +68,26 @@ while IFS=$'\t' read -r repo row n ends left; do
     echo "$what; would note"
     continue
   fi
-  lane_flag=()
-  [ "$(field lane)" = agent ] && lane_flag=(--agent)
-  if err="$(notes --profile "$(field profile)" ptask "$(field project)" "${lane_flag[@]}" --exact edit --detail "$note" -- "$(field raw)" 2>&1 >/dev/null </dev/null)"; then
+  agent=""
+  [ "$(field lane)" = agent ] && agent=--agent
+  if err="$(notes --profile "$(field profile)" ptask "$(field project)" ${agent:+"$agent"} --exact edit --detail "$note" -- "$(field raw)" 2>&1 >/dev/null </dev/null)"; then
     noted=$((noted + 1))
     echo "$what; noted on the row now"
   else
     failed=$((failed + 1))
     echo "$what; could not note the row: ${err//$'\n'/; }"
   fi
-done <<<"$soon"
+done < <(tr '\t' '\037' <<<"$soon")
+undated=0
+while IFS= read -r e; do
+  undated=$((undated + 1))
+  echo "${e#hub quarantine soon: }; its entries cannot be counted until the end is a date"
+done <"$errs"
 
-line="$entries quarantine entries over $rows owner rows end soon (next $next): $noted noted"
+if [ "$rows" = 0 ]; then line="No quarantine entry with a date ends soon"
+else line="$entries quarantine entries over $(n_rows "$rows") end soon (next $next): $noted noted"; fi
 [ "$closed" = 0 ] || line+=", $closed not open on the board"
 [ "$failed" = 0 ] || line+=", $failed could not be noted"
+[ "$undated" = 0 ] || line+="; $(n_rows "$undated") with an end that is not a date"
 echo "$line"
 exit 1

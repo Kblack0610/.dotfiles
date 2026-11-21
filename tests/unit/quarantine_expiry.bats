@@ -8,12 +8,14 @@ setup() {
   load '../vendor/bats-assert/load'
   load '../helpers/sandbox'
   sandbox_init basic
-  # hub answers `quarantine soon` from $SANDBOX/soon.tsv (a missing file is a parse failure);
+  # hub answers `quarantine soon` from $SANDBOX/soon.tsv (a missing file is a parse failure,
+  # exit 2) and prints $SANDBOX/undated (ends that are not dates) to stderr with exit 1;
   # notes answers `board --json` from $SANDBOX/board.json and logs each edit's arguments
   cat > "$SANDBOX/bin/hub" <<HUB
 #!/usr/bin/env bash
 [ "\$*" = "quarantine soon" ] || exit 2
-cat "$SANDBOX/soon.tsv" 2>/dev/null || { echo "quarantine.json: expected value" >&2; exit 1; }
+cat "$SANDBOX/soon.tsv" 2>/dev/null || { echo "hub quarantine soon: quarantine.json: expected value" >&2; exit 2; }
+[ ! -s "$SANDBOX/undated" ] || { cat "$SANDBOX/undated" >&2; exit 1; }
 HUB
   cat > "$SANDBOX/bin/notes" <<NOTES
 #!/usr/bin/env bash
@@ -97,4 +99,26 @@ soon() { printf '%s\n' "$@" > "$SANDBOX/soon.tsv"; }
   run "$REPO_ROOT/.local/bin/quarantine-expiry"
   assert_failure 2
   assert_output --partial 'unreadable: notes board --json'
+}
+
+@test "an owner row with no id keeps its columns and is listed as owned by no row" {
+  soon $'Org/play\t\t2\t2026-11-24\t3'
+  run "$REPO_ROOT/.local/bin/quarantine-expiry"
+  assert_failure 1
+  assert_line --index 0 'no owner row: 2 entries end 2026-11-24 (3d) in Org/play; no row owns them'
+  assert_line --index -1 '2 quarantine entries over 1 owner row end soon (next 2026-11-24, 3d): 0 noted, 1 not open on the board'
+}
+
+@test "an end that is not a date is listed and trips, and the rows that parsed are still noted" {
+  soon $'Org/play\tucp-1\t3\t2026-11-24\t3'
+  echo 'hub quarantine soon: Org/play: row ucp-5 ends "11-24", not a date' > "$SANDBOX/undated"
+  run "$REPO_ROOT/.local/bin/quarantine-expiry"
+  assert_failure 1
+  assert_line --index 0 'ucp-1: 3 entries end 2026-11-24 (3d) in Org/play; noted on the row now'
+  assert_line --index 1 'Org/play: row ucp-5 ends "11-24", not a date; its entries cannot be counted until the end is a date'
+  assert_line --index -1 '3 quarantine entries over 1 owner row end soon (next 2026-11-24, 3d): 1 noted; 1 owner row with an end that is not a date'
+  : > "$SANDBOX/soon.tsv"
+  run "$REPO_ROOT/.local/bin/quarantine-expiry"
+  assert_failure 1
+  assert_line --index -1 'No quarantine entry with a date ends soon; 1 owner row with an end that is not a date'
 }

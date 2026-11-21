@@ -122,8 +122,8 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
           each owner row whose quarantine entries end within hub_core::quarantine::SOON_DAYS
           of today and have not ended, soonest first, as repo<TAB>row<TAB>entries<TAB>ends<TAB>
           days_left (quarantine.json, which schedules-sync writes; the quarantine-expiry watch
-          reads it). No file prints nothing. Exits 1 when the file cannot be read or an end is
-          not a date
+          reads it). No file prints nothing. Exits 2 when the file cannot be read, 1 when an
+          end is not a date (the other rows still print)
   actions what the fleet's machinery did since WHEN (epoch seconds or RFC 3339): counts per
           actor and the escalations, trips and failed runs, or {actions, counts, errors} with
           --json. Exits 1 when a ledger could not be read.";
@@ -546,7 +546,8 @@ fn releases_cmd(args: Vec<String>) -> i32 {
 }
 
 /// `hub quarantine soon`: each owner row whose entries end within `SOON_DAYS`, one TSV line each.
-/// No file is no quarantine, as on Infra's Tests; a file that does not parse exits 1.
+/// No file is no quarantine, as on Infra's Tests; a file that does not parse exits 2, an end that
+/// is not a date 1, so the watch still notes the rows that parsed.
 fn quarantine_cmd(args: Vec<String>) -> i32 {
     if args != ["soon"] {
         die(USAGE);
@@ -556,13 +557,13 @@ fn quarantine_cmd(args: Vec<String>) -> i32 {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => vec![],
         Err(e) => {
             eprintln!("hub quarantine soon: {}: {e}", path.display());
-            return 1;
+            return 2;
         }
         Ok(text) => match hub_core::quarantine::parse(&text) {
             Ok(lanes) => lanes,
             Err(e) => {
                 eprintln!("hub quarantine soon: {e}");
-                return 1;
+                return 2;
             }
         },
     };
