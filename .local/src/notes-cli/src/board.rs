@@ -1798,7 +1798,13 @@ mod tests {
         let r = row("- [x] feat(a): shipped #high <!-- id:ar-1 pr:o/r#7 -->");
         assert_eq!(
             (r.id.as_deref(), r.state, r.lane, r.priority, r.prs.clone()),
-            (Some("ar-1"), "done", "agent", "high", vec!["o/r#7".to_string()])
+            (
+                Some("ar-1"),
+                "done",
+                "agent",
+                "high",
+                vec!["o/r#7".to_string()]
+            )
         );
         assert_eq!(r.text, "feat(a): shipped");
         assert_eq!(row("- [/] doing it").state, "doing");

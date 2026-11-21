@@ -235,7 +235,10 @@ fn row(r: &FeedRow, items: &[Item], home: &str, prs: &[Pr]) -> Row {
     }
     let live = item.is_some_and(|i| matches!(i.state, State::Running | State::Waiting));
     let assignee = item.map_or_else(String::new, |i| match (&i.session, live) {
-        (Some(s), true) => s.rsplit_once(':').map_or(s.as_str(), |(_, t)| t).to_string(),
+        (Some(s), true) => s
+            .rsplit_once(':')
+            .map_or(s.as_str(), |(_, t)| t)
+            .to_string(),
         _ => i.slug.clone(),
     });
     Row {
@@ -277,7 +280,10 @@ fn app_release(
     let rs = runs_of(runs, &a.project, &p.tag);
     let (state, level) = worst(&rs);
     let mut fixing: Vec<&str> = vec![];
-    for r in rs.iter().filter(|r| r.state == "red" && !r.owner.is_empty()) {
+    for r in rs
+        .iter()
+        .filter(|r| r.state == "red" && !r.owner.is_empty())
+    {
         if !fixing.contains(&r.owner.as_str()) {
             fixing.push(&r.owner);
         }
@@ -327,11 +333,7 @@ pub fn build(project: &str, version: &str, today: &str, i: Inputs) -> Option<Pag
         .map(|r| row(r, i.items, &home, i.prs))
         .collect();
     rows.sort_by_key(|r| state_rank(&r.state));
-    let cuts: Vec<_> = i
-        .apps
-        .iter()
-        .flat_map(|a| cuts_of(a, &want).1)
-        .collect();
+    let cuts: Vec<_> = i.apps.iter().flat_map(|a| cuts_of(a, &want).1).collect();
     if cuts.is_empty() && rows.is_empty() {
         return None;
     }
@@ -387,7 +389,11 @@ pub fn build(project: &str, version: &str, today: &str, i: Inputs) -> Option<Pag
         } else {
             opened
         },
-        due_text: if due.is_empty() { "no due day".into() } else { due },
+        due_text: if due.is_empty() {
+            "no due day".into()
+        } else {
+            due
+        },
         bar,
         rows_note: if !rows.is_empty() {
             String::new()
@@ -467,7 +473,11 @@ pub fn lines(p: &Page) -> Vec<String> {
             r.id,
             r.state,
             who,
-            if prs.is_empty() { "-".into() } else { prs.join(", ") },
+            if prs.is_empty() {
+                "-".into()
+            } else {
+                prs.join(", ")
+            },
             r.title
         ));
     }
@@ -477,12 +487,7 @@ pub fn lines(p: &Page) -> Vec<String> {
         } else {
             format!(", fixing: {}", a.fixing)
         };
-        out.push(format!(
-            "  {} {} {}{fixing}",
-            a.app,
-            a.tag,
-            a.state
-        ));
+        out.push(format!("  {} {} {}{fixing}", a.app, a.tag, a.state));
         if !a.reached_text.is_empty() {
             out.push(format!("    reached {}", a.reached_text));
         }
@@ -569,7 +574,13 @@ mod tests {
         }
     }
 
-    fn page(apps: &[&App], runs: &[Run], f: Result<Feed, String>, items: &[Item], prs: &[Pr]) -> Option<Page> {
+    fn page(
+        apps: &[&App],
+        runs: &[Run],
+        f: Result<Feed, String>,
+        items: &[Item],
+        prs: &[Pr],
+    ) -> Option<Page> {
         build(
             "ucp",
             "0.5.3",
@@ -604,8 +615,15 @@ mod tests {
         assert_eq!(
             feed_argv("ucp", &[&own, &dodge], "0.5.3"),
             [
-                "notes", "board", "--json", "--version", "v0.5.3", "--project", "ucp",
-                "--project", "dodginballs"
+                "notes",
+                "board",
+                "--json",
+                "--version",
+                "v0.5.3",
+                "--project",
+                "ucp",
+                "--project",
+                "dodginballs"
             ]
         );
     }
@@ -615,9 +633,21 @@ mod tests {
         let own = app("ucp", "o/ucp", vec![ship("v0.5.3", "0.5.3", 10, false)]);
         let items = [
             item("ar-9", "ucp:ucp-2", State::Done, None, None),
-            item("ar-10", "ucp:ucp-2", State::Running, Some("agent:agent-28"), Some("o/ucp#14")),
+            item(
+                "ar-10",
+                "ucp:ucp-2",
+                State::Running,
+                Some("agent:agent-28"),
+                Some("o/ucp#14"),
+            ),
             // A row id that only ends the same must not match.
-            item("ar-11", "ucp:xucp-3", State::Running, Some("agent-29"), None),
+            item(
+                "ar-11",
+                "ucp:xucp-3",
+                State::Running,
+                Some("agent-29"),
+                None,
+            ),
         ];
         let prs = [Pr {
             repo: "o/ucp".into(),
@@ -639,7 +669,10 @@ mod tests {
         let ids: Vec<&str> = p.rows.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids, ["ucp-3", "ucp-2", "ucp-1"]);
         let fix = &p.rows[1];
-        assert_eq!((fix.assignee.as_str(), fix.assignee_state.as_str()), ("agent-28", "running"));
+        assert_eq!(
+            (fix.assignee.as_str(), fix.assignee_state.as_str()),
+            ("agent-28", "running")
+        );
         assert_eq!(fix.assignee_href, "#queue/ar-10");
         assert_eq!(fix.prs[0].text, "#14");
         assert_eq!(fix.prs[0].state, "", "a PR the store lacks has no state");
@@ -649,7 +682,10 @@ mod tests {
         assert_eq!(shipped.prs[0].state, "merged");
         assert_eq!(shipped.prs[0].url, "https://github.com/o/ucp/pull/12");
         assert_eq!(shipped.href, "#projects/all?q=id:=ucp-1");
-        assert_eq!((p.opened_text.as_str(), p.due_text.as_str()), ("2026-11-18", "2026-11-19"));
+        assert_eq!(
+            (p.opened_text.as_str(), p.due_text.as_str()),
+            ("2026-11-18", "2026-11-19")
+        );
     }
 
     #[test]
@@ -676,7 +712,11 @@ mod tests {
 
         let none = app("ucp", "o/ucp", vec![ship("v0.5.2", "0.5.2", 5, true)]);
         let p = page(&[&none], &[], Ok(feed()), &[], &[]).unwrap();
-        assert_eq!((p.status.as_str(), p.level), ("unreleased", Level::Warn), "due 11-19 passed");
+        assert_eq!(
+            (p.status.as_str(), p.level),
+            ("unreleased", Level::Warn),
+            "due 11-19 passed"
+        );
         assert_eq!(p.apps[0].state, "no cut");
 
         let mut old = ship("v0.5.3", "0.5.3", 1, true);
@@ -708,7 +748,10 @@ mod tests {
             ],
             ..Default::default()
         };
-        let names: Vec<&str> = owned(&rel, "ucp").iter().map(|a| a.project.as_str()).collect();
+        let names: Vec<&str> = owned(&rel, "ucp")
+            .iter()
+            .map(|a| a.project.as_str())
+            .collect();
         assert_eq!(names, ["ucp"]);
     }
 
@@ -718,8 +761,16 @@ mod tests {
         let p = page(&[&cut], &[], Ok(feed()), &[], &[]).unwrap();
         let l = lines(&p);
         assert_eq!(l[0], "Version ucp 0.5.3: cut, v0.5.3 t10");
-        assert!(l[1].contains("1 done, 1 doing, 1 open, 0 dropped"), "{}", l[1]);
-        assert!(l.iter().any(|x| x.contains("ucp-1  done  -  #12  ship menu")), "{l:?}");
+        assert!(
+            l[1].contains("1 done, 1 doing, 1 open, 0 dropped"),
+            "{}",
+            l[1]
+        );
+        assert!(
+            l.iter()
+                .any(|x| x.contains("ucp-1  done  -  #12  ship menu")),
+            "{l:?}"
+        );
         assert!(l.iter().any(|x| x == "  ucp v0.5.3 no runs"), "{l:?}");
     }
 }
