@@ -134,7 +134,7 @@ const consumers = (o = {}) => ({
   rows: [consumer(), consumer({ consumer: "claude-reserve", kind: "key", priority: "low", budget: "lazer-pool", status: "team at cap" })],
   pools: ["team must lazer-core $0.50/$200 per 1mo", "team low lazer-pool $228/$50.00 AT CAP per 1mo"],
   routes: "aliases: fast -> gpt-oss-120b; fallbacks: gpt-oss-120b -> gemini-flash",
-  legend: [["PRI", "the priority its conf or key declares: must, low, off"]],
+  legend: [["PRI", "the priority its conf declares (must, low) or its key declares (must, low, off)"]],
   table: { q: "", state: "", sort: "", dir: "", total: 2, shown: 2, states: [], columns: CONSUMER_COLS.map((k) => col(k)), facets: [] }, ...o,
 });
 
@@ -148,7 +148,7 @@ test("Consumers start open after Burn, green or red, and the reader's fold stays
   assert.match(quiet, /<div id="costs-cons-body"><div class="panel scroll"><table class="tbl">/);
   assert.match(quiet, /<tr><td>version-summary<\/td><td>must<\/td><td>raw fast via gateway-fast<\/td><td>lazer-core \(key comms-triage\)<\/td><td>\$0\.02\/\$25\.00 30d<\/td><td>gemini-flash<\/td><td>ok<\/td><\/tr>/);
   assert.match(quiet, /<div>team low lazer-pool \$228\/\$50\.00 AT CAP per 1mo<\/div><div>aliases: fast -&gt; gpt-oss-120b; fallbacks: gpt-oss-120b -&gt; gemini-flash<\/div>/);
-  assert.match(quiet, /pri: the priority its conf or key declares/);
+  assert.match(quiet, /pri: the priority its conf declares/);
   const red = consumers({ level: "bad", head: "1 MISMATCH | 2 consumers: must 2", rows: [consumer({ consumer: "nightly-thing", budget: "lazer-pool (key claude-reserve)", status: "MISMATCH: lazer-pool is low priority", mismatch: true, level: "bad" })] });
   red.table = { ...red.table, total: 1, shown: 1, states: [{ name: "all", n: 1 }, { name: "mismatch", n: 1, tone: "warn", means: "a runner on a budget of another priority" }] };
   const h = show(board({ consumers: red }));

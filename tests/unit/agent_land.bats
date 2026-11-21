@@ -643,7 +643,6 @@ notes ingest record --stage queue --action item-set --from dotfiles --item ship 
 gh api repos/o/r/pulls/42/files --paginate --jq .[].filename
 notes ingest record --stage queue --action item-moved --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --to done --why running -> done (ok) -- ship
 notes projects --prios
-notes board --json
 notes ptask dotfiles --agent done ship it --proof pr:o/r#42 commit:fedcba987654
 EOF
 }

@@ -117,12 +117,16 @@ load_agent() {
             *) printf 'invalid EFFECT=%s (none|draft|shadow|acts)\n' "$EFFECT" >&2; exit 1 ;;
         esac
         # A runner that launches a model declares how much it matters when money is short
-        # (README, PRIORITY); list --md shows it. The budget it spends from is its route's.
+        # (README, PRIORITY): the Costs tab's Consumers (hub-core gateway.rs) lists it and calls a
+        # must runner on a low budget a MISMATCH. A conf with no ROLE launches no model, so
+        # nothing reads one there. Off is ENABLED=no, not a priority.
         if [ -n "${ROLE:-}" ]; then
             case "${PRIORITY:-}" in
-                must|low|off) ;;
-                *) printf 'invalid PRIORITY=%s on a conf with a ROLE (must|low|off)\n' "${PRIORITY:-}" >&2; exit 1 ;;
+                must|low) ;;
+                *) printf 'invalid PRIORITY=%s on a conf with a ROLE (must|low)\n' "${PRIORITY:-}" >&2; exit 1 ;;
             esac
+        elif [ -n "${PRIORITY:-}" ]; then
+            printf 'invalid PRIORITY=%s on a conf with no ROLE (it launches no model, so nothing reads it)\n' "$PRIORITY" >&2; exit 1
         fi
         : "${SCHEDULE:=}"
         : "${AUTOSTART:=no}"
