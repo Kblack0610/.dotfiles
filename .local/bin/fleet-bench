@@ -5795,11 +5795,15 @@ canary_title() { printf 'check(canary): %s %s%s' "$1" "$2" "${3:+ $3}"; }
 
 # canary_known_load -> reads the titles and slugs of the week's window into CANARY_KNOWN once (CANARY_KNOWN_ON=1),
 # so a pass forks no `show` per task and lane. Rc 1 when the queue cannot be read: queueing blind would add twice.
+# A cancelled item never ran, so it is not known and its lane queues it again in its week (148 w47 items sat
+# cancelled by the queue cap, never rerun); the one cancel kept is canary_lane_queue's own (its model could not
+# be set), which a pass would otherwise redo on every call while the fault stays.
 canary_known_load() {
   [ -z "${CANARY_KNOWN_ON:-}" ] || return 0
   local out
   out=$($BENCH_CANARY_QUEUE_CMD list --json --state all --since 10d 2>/dev/null) || return 1
-  CANARY_KNOWN=$(jq -r '.title // empty, .slug // empty' <<<"$out" 2>/dev/null) || return 1
+  CANARY_KNOWN=$(jq -r 'select(.status != "cancelled" or ((.cancel_why // "") | startswith("canary: its model and canary id")))
+    | .title // empty, .slug // empty' <<<"$out" 2>/dev/null) || return 1
   CANARY_KNOWN_ON=1
 }
 
@@ -5854,7 +5858,7 @@ canary_lane_queue() {
       -- "$(canary_brief "$t" "$slug" "$sbx")" >/dev/null || { say "canary: could not queue $slug"; return 1; }
     [ -z "$model$sbx" ] || $BENCH_CANARY_QUEUE_CMD set "$slug" ${model:+"model=$model"} ${effort:+"effort=$effort"} ${sbx:+"canary=$id"} >/dev/null ||
       { $BENCH_CANARY_QUEUE_CMD cancel "$slug" --why "canary: its model and canary id could not be set" >/dev/null 2>&1
-        say "canary: could not set the model and canary id of $slug, so it is cancelled; a cancelled item still counts as queued, so its lane runs it next week"; return 1; }
+        say "canary: could not set the model and canary id of $slug, so it is cancelled and not queued again in its week"; return 1; }
     CANARY_KNOWN+=$'\n'"$title"$'\n'"$slug"
     added=$((added + 1)); CANARY_ADDED=$added
     [ "$max" = 0 ] || [ "$added" -lt "$max" ] || break

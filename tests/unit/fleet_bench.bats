@@ -6786,6 +6786,38 @@ STUB
   assert_output ''
 }
 
+# ar-3457: 148 week-47 canaries cancelled by the queue cap were never queued again in their week.
+@test "canary queue: a cancelled canary is queued again in its week; a finished, running or model-set-failed one is not" {
+  canary_fixture
+  QLOG="$SANDBOX/q.log"; export BENCH_CANARY_QUEUE_CMD=aq-stub
+  printf '#!/usr/bin/env bash\nL=%q\n' "$QLOG" > "$SANDBOX/bin/aq-stub"
+  cat >> "$SANDBOX/bin/aq-stub" <<'STUB'
+case "$1" in
+  list) cat "$L.list" ;;
+  add) printf '%s\n' "$@" >> "$L" ;;
+esac
+STUB
+  chmod +x "$SANDBOX/bin/aq-stub"
+  week=$(date -d "@$T0" +%Gw%V)
+  title="check(canary): greet $week" slug="canary-greet-$week"
+  # Cancelled by the cap: not known, so queued again.
+  jq -nc --arg t "$title" --arg s "$slug" '{title: $t, slug: $s, state: "done", status: "cancelled", cancel_why: "queue cap plan x: canaries trickle"}' > "$QLOG.list"
+  run "$SUBJECT" canary queue
+  assert_success
+  assert_output "fleet-bench: canary: 1 queued, 0 already queued for $week"
+  run cat "$QLOG"
+  assert_line "$slug"
+  # Negative controls: finished ok, still queued, and the queue step's own model-set cancel stay known.
+  for st in '{"state":"done","status":"ok"}' '{"state":"queued"}' '{"state":"done","status":"cancelled","cancel_why":"canary: its model and canary id could not be set"}'; do
+    rm -f "$QLOG"
+    jq -nc --arg t "$title" --arg s "$slug" --argjson x "$st" '{title: $t, slug: $s} + $x' > "$QLOG.list"
+    run "$SUBJECT" canary queue
+    assert_success
+    assert_output "fleet-bench: canary: 0 queued, 1 already queued for $week"
+    [ ! -e "$QLOG" ] || fail "queued again: $(cat "$QLOG")"
+  done
+}
+
 # 2026-11-17: 22 week-46 codex canaries were still queued beside the week-47 set (ar-2774).
 @test "canary retire: cancels the queued canaries of an earlier week, keeps this week's and every other item; the top-up runs it, retro does not" {
   canary_fixture
