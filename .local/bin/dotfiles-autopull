@@ -181,9 +181,12 @@ attach_rust() {
 # ran by hand (ar-3815). It is a notes install when ~/.local/bin links notes and notes-bootstrap,
 # which owns the publish step, is there. cargo is a no-op when nothing changed.
 attach_notes() {
-  local crate="${REPOS[0]}/.local/src/notes-cli" live before out rc left
+  local crate="${REPOS[0]}/.local/src/notes-cli" live out rc left
   [ -f "$crate/Cargo.toml" ] && [ -L "$BIN_DIR/notes" ] && [ -x "$BIN_DIR/notes-bootstrap" ] || return 0
-  command -v cargo >/dev/null 2>&1 || return 0
+  if ! command -v cargo >/dev/null 2>&1; then
+    say "~: cargo not found, notes not rebuilt"
+    return 0
+  fi
   left=$(($1 - $(date +%s)))
   if [ "$left" -le 0 ]; then
     say "~: build budget of ${BUILD_SECS}s spent, notes not rebuilt"
@@ -197,14 +200,17 @@ attach_notes() {
     return 0
   fi
   live=$(readlink -f "$BIN_DIR/notes")
-  before=$(mtime "$live")
+  cmp -s "$crate/target/release/notes" "$live" && return 0
+  left=$(($1 - $(date +%s)))
+  [ "$left" -gt 0 ] || left=1
   out=$(DOTFILES_ROOT="${REPOS[0]}" capped "$left" "$BIN_DIR/notes-bootstrap" --build-only 2>&1)
   rc=$?
-  if [ "$rc" -ne 0 ] || ! cmp -s "$crate/target/release/notes" "$live"; then
-    log_report "notes-bootstrap --build-only" "$rc" "$out"
-    say "~: notes was built but not published (notes-bootstrap --build-only), the binary on disk stays; report in ${LOG/#"$HOME"/\~}"
-  elif [ "$(mtime "$live")" != "$before" ]; then
+  if [ "$rc" -ne 0 ]; then log_report "notes-bootstrap --build-only" "$rc" "$out"; fi
+  if cmp -s "$crate/target/release/notes" "$live"; then
     say "~: rebuilt notes (cargo build --release, notes-bootstrap --build-only)"
+  else
+    [ "$rc" -ne 0 ] || log_report "notes-bootstrap --build-only" "$rc" "$out"
+    say "~: notes was built but not published (notes-bootstrap --build-only exit $rc), the binary on disk stays; report in ${LOG/#"$HOME"/\~}"
   fi
 }
 

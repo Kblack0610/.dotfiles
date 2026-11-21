@@ -507,7 +507,9 @@ STUB
   notes_install same same
   run "$PULL" --now "$PUB"
   assert_success
-  refute_line --partial 'notes'
+  refute_line --partial 'notes was built'
+  refute_line --partial 'rebuilt notes'
+  assert_not_called 'notes-bootstrap'
   assert_called "cargo build --release --quiet in $PUB/.local/src/notes-cli"
   assert_equal "$(cat "$HOME/.local/lib/notes/notes")" same
 }
@@ -527,7 +529,7 @@ STUB
   touch "$SANDBOX/cargo.builds" "$SANDBOX/publish.fails"
   run "$PULL" --now "$PUB"
   assert_success
-  assert_line --partial '~: notes was built but not published (notes-bootstrap --build-only), the binary on disk stays; report in'
+  assert_line --partial '~: notes was built but not published (notes-bootstrap --build-only exit 0), the binary on disk stays; report in'
   assert_equal "$(cat "$HOME/.local/lib/notes/notes")" old
 }
 

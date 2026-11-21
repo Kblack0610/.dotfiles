@@ -21,7 +21,7 @@ visible instead of mysterious.
 notes-bootstrap --build-only
 ```
 
-It runs `cargo build --release`, copies the binary to `~/.local/lib/notes/notes` and links `~/.local/bin/notes` there. A `cargo build` alone deploys nothing, so a branch build never changes the `notes` on PATH. `agent-land`'s live step (`dotfiles-autopull`) runs it after every landing, so a merged CLI change is live without a hand run.
+It runs `cargo build --release`, copies the binary to `~/.local/lib/notes/notes` and links `~/.local/bin/notes` there. A `cargo build` alone deploys nothing, so a branch build never changes the `notes` on PATH. On a machine with this install, `agent-land`'s live step (`dotfiles-autopull`) runs it after every landing, so a merged CLI change is live without a hand run; elsewhere run it by hand from the main checkout.
 
 ## Configuration
 
