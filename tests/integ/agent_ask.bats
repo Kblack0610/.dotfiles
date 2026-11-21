@@ -2306,7 +2306,7 @@ live_post() {
   assert_line 'status: pending'; assert_line 'assume_answer: fix'; assert_line --regexp '^assume_at: 20[0-9-]+T[0-9:]+[-+][0-9]{4}$'
   # the 240 minutes are the row's: the deadline is about 4 hours out
   local at; at="$(date -d "$(sed -n 's/^assume_at: //p' "$(ask_file "$id")")" +%s)"
-  [ "$((at - $(date +%s)))" -gt 14000 ] && [ "$((at - $(date +%s)))" -le 14400 ]
+  local left=$((at - $(date +%s))); [ "$left" -gt 14000 ]; [ "$left" -le 14400 ]
   # negative control: an external ask in the same cell is critical, so it is never armed or answered
   fake_judge "$(SCORE_TYPE=engineering_design SCORE_LEVEL=fleet score external)"
   id="$(live_post sid-c 'external at fleet?' 2>/dev/null)"
@@ -2318,10 +2318,10 @@ live_post() {
 
 @test "delay: a second row for a type must reach a higher level than its first, or it is refused and the first stands" {
   unset AGENT_ASK_NO_JUDGE
-  local rows
-  for rows in 'engineering_design@fleet=0 engineering_design@repo=240' 'engineering_design@repo=0 engineering_design@repo=240' 'engineering_design@repo=0 engineering_design@self=240'; do
+  local rows n=0
+  for rows in 'engineering_design@fleet=0 engineering_design@repo=240' 'engineering_design@repo=0 engineering_design@repo=240' 'engineering_design@repo=0 engineering_design@self=240'; do n=$((n + 1))
     fake_judge "$(SCORE_LEVEL=repo score engineering_design)"
-    run --separate-stderr env AGENT_ASK_DELAY_RULES="$rows" CLAUDE_CODE_SESSION_ID="sid-$rows" "$AGENT_ASK" post \
+    run --separate-stderr env AGENT_ASK_DELAY_RULES="$rows" CLAUDE_CODE_SESSION_ID="sid-row$n" "$AGENT_ASK" post \
       --project demo --options 'fix=do it|wait=leave it' --recommend fix --context "$rows is the row under test" "row $rows?"
     assert_success
     assert_regex "$stderr" "refuses 'engineering_design@(repo|self)=240'"
@@ -2348,7 +2348,7 @@ live_post() {
     id="$(live_post "sid-$type-f" "$type at fleet?" 2>/dev/null)"
     run "$AGENT_ASK" show "$id"; assert_line 'status: pending'; assert_line 'assume_answer: fix'
     at="$(date -d "$(sed -n 's/^assume_at: //p' "$(ask_file "$id")")" +%s)"
-    [ "$((at - $(date +%s)))" -gt 14000 ] && [ "$((at - $(date +%s)))" -le 14400 ]
+    left=$((at - $(date +%s))); [ "$left" -gt 14000 ]; [ "$left" -le 14400 ]
   done
   # negative control: ship_deploy has a repo row only, so at fleet it stays with the human, unarmed
   fake_judge "$(SCORE_LEVEL=fleet score ship_deploy)"
