@@ -242,6 +242,27 @@ function etaText(p) {
   if (o) return `<span class="qlate" title="estimate ${esc(p.eta || "-")}; ${esc(o.phase || "")} open ${ageMin(o.age_min)}, expected ${ageMin(o.expected_min)}">overdue ${ageMin(o.age_min)}${eta ? ` (${eta})` : ""}</span>`;
   return eta ? `<span title="estimate ${esc(p.eta || "")}">${eta}</span>` : "";
 }
+// The running queue items (hub_core::home::Running) as one table, Home's Running and a project
+// page's In flight alike. Each row opens its session page, or its queue item when no session runs
+// it, and each cell that names a record links to that record's page (`l`: tblLinks for the row).
+// The PHASE cell is hub_core's `Phases::shown`, the next phase a muted line under the item.
+// `scoped` is a table of one project: no PROJECT column, no sortable headers (a fixed list has no
+// view to sort), and no row click (the item's link opens it).
+const RUN_COLS = { item: ["item"], project: ["project"], row: ["row"], epic: ["epic"], phase: ["phase", "n"], eta: ["eta", "n"], pr: ["pr"], ci: ["ci"], since: ["since", "n"] };
+const RUN_COLS_SCOPED = Object.fromEntries(Object.entries(RUN_COLS).filter(([k]) => k !== "project"));
+function runRow(r, l, scoped = false) {
+  const p = r.phases;
+  const pr = r.pr ? tblLink(l.pr, `${r.pr}${r.pr_state && r.pr_state !== "open" ? ` ${r.pr_state}` : ""}`) : "-";
+  const open = scoped ? "<tr>" : `<tr class="jr" data-slug="${esc(r.slug)}"${r.target ? ` data-target="${esc(r.target)}"` : ""} title="${esc(r.target || r.slug)}">`;
+  return open + `<td class="wrap">${tblLink(l.item, r.title)}${p && p.next ? `<div class="muted">next: ${esc(p.next)}</div>` : ""}</td>` +
+    (scoped ? "" : `<td>${tblLink(l.project, r.project)}</td>`) + `<td>${tblLink(l.row, r.row)}</td><td>${tblLink(l.epic, r.epic)}</td>` +
+    `<td class="n">${p ? esc(p.shown) : "-"}</td><td class="n">${etaText(p) || (r.overdue ? `<span class="qlate" title="fleet-sessions says its phase is overdue">overdue</span>` : "-")}</td><td>${pr}</td>` +
+    `<td>${r.ci ? tblLink(l.ci, r.ci, `ci ${r.ci}`) : "-"}</td><td class="n"${r.started ? ` title="${esc(r.started)}"` : ""}>${r.started ? esc(ago(r.started)) : "-"}</td></tr>`;
+}
+function runTable(t, rows, scoped = false) {
+  return `<table class="tbl">${tblHead(t, scoped ? RUN_COLS_SCOPED : RUN_COLS, scoped)}${rows.map((r, i) => runRow(r, tblLinks(t, i), scoped)).join("")}</table>`;
+}
+
 // Redraw answer cards (sel matches them) without eating a reply being typed into one: the
 // card is found again by its session target or ask id, and the text and focus go back.
 function keepTyping(sel, draw) {

@@ -261,19 +261,6 @@ function needsBody(h) {
   return `<div class="panel scroll"><table class="tbl">${tblHead(t, needCols(t))}${rows.map(needRow).join("")}</table></div>`;
 }
 
-// One running item: its row opens its session page, or its queue item when no session runs it,
-// and each cell that names a record links to that record's page (`l`: tblLinks for the row).
-function runRow(r, l) {
-  const p = r.phases;
-  const pr = r.pr ? tblLink(l.pr, `${r.pr}${r.pr_state && r.pr_state !== "open" ? ` ${r.pr_state}` : ""}`) : "-";
-  return `<tr class="jr" data-slug="${esc(r.slug)}"${r.target ? ` data-target="${esc(r.target)}"` : ""} title="${esc(r.target || r.slug)}">` +
-    `<td class="wrap">${tblLink(l.item, r.title)}${p && p.next ? `<div class="muted">next: ${esc(p.next)}</div>` : ""}</td>` +
-    `<td>${tblLink(l.project, r.project)}</td><td>${tblLink(l.row, r.row)}</td><td>${tblLink(l.epic, r.epic)}</td>` +
-    `<td class="n">${p ? `${p.done}/${p.total}` : "-"}</td><td class="n">${etaText(p) || (r.overdue ? `<span class="qlate" title="fleet-sessions says its phase is overdue">overdue</span>` : "-")}</td><td>${pr}</td>` +
-    `<td>${r.ci ? tblLink(l.ci, r.ci, `ci ${r.ci}`) : "-"}</td><td class="n"${r.started ? ` title="${esc(r.started)}"` : ""}>${r.started ? esc(ago(r.started)) : "-"}</td></tr>`;
-}
-const RUN_COLS = { item: ["item"], project: ["project"], row: ["row"], epic: ["epic"], phase: ["phase", "n"], eta: ["eta", "n"], pr: ["pr"], ci: ["ci"], since: ["since", "n"] };
-
 // The first `SHOWN` rows the server sent; past them a line links all of them on Queue, whose
 // running state lists the same items. The last line links the Sessions tab filtered to the
 // running sessions, after the fleet's session counts.
@@ -282,8 +269,7 @@ function runBody(h) {
   const foot = `<div class="cline muted">${h.sessions ? `<b>Sessions</b> ${esc(h.sessions)} ` : ""}<a href="#sessions?s=running">all running in Sessions</a></div>`;
   if (!rows.length) return `<div class="empty">${t.total ? "No running item matches." : "Nothing running from the queue."}</div>${foot}`;
   const all = t.shown > rows.length ? `<div class="cline muted"><a href="#queue?s=running">all ${t.total} on Queue</a></div>` : "";
-  return `<div class="panel scroll"><table class="tbl">${tblHead(t, RUN_COLS)}${rows.map((r, i) => runRow(r, tblLinks(t, i))).join("")}</table>` +
-    all + foot + `</div>`;
+  return `<div class="panel scroll">${runTable(t, rows)}` + all + foot + `</div>`;
 }
 
 // A table's head count: its rows, or "N of M" while a search or state narrows them.

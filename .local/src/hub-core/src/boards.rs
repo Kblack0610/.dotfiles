@@ -967,24 +967,52 @@ pub fn watch(state: &Path, log: &Path, r: &dyn Runner) -> Watch {
     }
 }
 
-/// A session's plan progress, as `fleet-sessions` read its plan's `## Phases` checklist.
-#[derive(Serialize, Debug, PartialEq, Clone)]
+/// A session's plan progress, as `fleet-sessions` read its plan's `## Phases` checklist. It
+/// serializes with `shown`, the one wording of it ([`Phases::shown`]); the In flight tables read
+/// it, and the other surfaces that still join `done` and `total` move to it as each becomes a table.
+#[derive(Debug, PartialEq, Clone)]
 pub struct Phases {
     pub done: u64,
     pub total: u64,
     /// The first unchecked phase.
     pub next: Option<String>,
     /// fleet-bench's finish estimate as fleet-sessions wrote it: `HH:MM <basis>`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub eta: Option<String>,
     /// The same estimate as epoch seconds, so a view can tell a past one from a future one.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub eta_epoch: Option<i64>,
     /// fleet-sessions' overdue verdict on this session (`overdue`: phase, name, age_min, expected_min,
     /// ...), the one rule the shepherd nudges by; None when it is not overdue. Views read it, never
     /// compare the ETA to a clock of their own.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub overdue: Option<Value>,
+}
+
+impl Phases {
+    /// The phases done of all, `3/6`: the In flight tables' PHASE cell. The next phase is its own
+    /// cell ([`Phases::next`]), never joined into a sentence with this.
+    pub fn shown(&self) -> String {
+        format!("{}/{}", self.done, self.total)
+    }
+}
+
+impl Serialize for Phases {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut m = s.serialize_map(None)?;
+        m.serialize_entry("done", &self.done)?;
+        m.serialize_entry("total", &self.total)?;
+        m.serialize_entry("shown", &self.shown())?;
+        m.serialize_entry("next", &self.next)?;
+        if let Some(e) = &self.eta {
+            m.serialize_entry("eta", e)?;
+        }
+        if let Some(e) = &self.eta_epoch {
+            m.serialize_entry("eta_epoch", e)?;
+        }
+        if let Some(o) = &self.overdue {
+            m.serialize_entry("overdue", o)?;
+        }
+        m.end()
+    }
 }
 
 /// Each session's plan progress by its tmux target, from a `state.json` document. A session
@@ -1317,6 +1345,17 @@ mod tests {
                 eta_epoch: Some(1793900000),
                 overdue: Some(serde_json::json!({"phase": "phase 4/6", "age_min": 90})),
             }
+        );
+        assert_eq!(p["lab/a:1"].shown(), "3/6");
+        let wire = serde_json::to_value(&p["lab/a:1"]).unwrap();
+        assert_eq!(
+            (wire["shown"].as_str(), wire["done"].as_u64()),
+            (Some("3/6"), Some(3))
+        );
+        let bare = serde_json::to_value(&p["lab/b:1"]).unwrap();
+        assert!(
+            bare.get("eta").is_none() && bare.get("overdue").is_none(),
+            "{bare}"
         );
         assert_eq!(p["lab/b:1"].next, None);
         assert_eq!(p["lab/b:1"].overdue, None, "a null verdict is not overdue");
