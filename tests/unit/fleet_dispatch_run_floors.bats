@@ -257,6 +257,22 @@ full_fleet() {
   assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
 }
 
+@test "sprint floor: an urgent sprint row still on the board is queued and starts past a full pace target the same pass" {
+  full_fleet
+  row game human sp-1 "- [ ] fix(game): boss soft-locks #urgent $T <!-- id:sp-1 -->"
+  verdict game human sp-1 dispatch S 1 boss
+  # Negative control: no open sprint, so the row stays on the board behind the full target.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  refute_output --partial 'on the sprint floor'
+  [ -z "$(qitem queued sp-1)" ] || fail "the row was queued with no sprint open"
+  jq -nc '[{project: "game", queued: false, tasks: [{id: "sp-1", state: "open"}]}]' > "$NOTES_FIXTURE/board.sprints"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'queued 1 dispatchable row(s) of the open sprint ahead of the queue pass'
+  assert_output --partial 'started queue item sp-1 on the sprint floor'
+}
+
 @test "sprint floor: DISPATCH_SPRINT_FLOOR live urgent sprint items fill it, and 0 turns it off" {
   full_fleet
   export DISPATCH_SPRINT_FLOOR=1

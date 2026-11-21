@@ -28,6 +28,13 @@ base() {
   cat <<EOF
 # A plan
 
+## Changes
+
+Adds: one doc row.
+Removes: nothing.
+Files: no rows.
+Net: +1 row.
+
 ## Context
 
 The ask, and what done looks like.
@@ -75,7 +82,7 @@ prompt() { # prompt <project> <mode>
 }
 
 @test "each base section is required" {
-  for s in Context Approach Reviewed Risks Verification; do
+  for s in Changes Context Approach Reviewed Risks Verification; do
     run gate untyped "$(base | without "$s")"
     assert_output --partial 'plan-standard:'
     assert_output --partial "Missing ## $s"
@@ -112,6 +119,15 @@ prompt() { # prompt <project> <mode>
   refute_output --partial 'Telemetry'
   run gate agame "$(base; printf '\n## Playtest\n\nWhich game, and how.\n\n## Release\n\nSteam beta, rollback to the previous BuildID.\n')"
   assert_output ''
+}
+
+@test "the Changes ledger needs each of its labels and cannot be n/a" {
+  for l in Adds Removes Files Net; do
+    run gate untyped "$(base | sed "/^$l:/d")"
+    assert_output --partial "## Changes has no $l: line"
+  done
+  run gate untyped "$(base | sed '/^Adds:/,/^Net:/c\n/a: a small fix')"
+  assert_output --partial '## Changes cannot be n/a'
 }
 
 @test "n/a with a reason passes" {

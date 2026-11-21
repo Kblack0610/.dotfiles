@@ -615,15 +615,27 @@ load_extras() {
 
 # SPRINT_ROW["<project>\t<id>"]: the open rows of each open sprint, from the board feed's `sprints` (a queued
 # sprint has not started), read by load_sprints from the one board read load_extras makes, or on first use.
-declare -gA SPRINT_ROW=()
+# SPRINT_PROJECT[<project>]: a project one of whose open sprint's rows nobody has started yet (`open`, not
+# `doing`), the projects the sprint floor's board scan reads (sprint_top_up).
+declare -gA SPRINT_ROW=() SPRINT_PROJECT=()
 SPRINT_LOADED=''
 load_sprints() {
-  local p i
-  SPRINT_ROW=() SPRINT_LOADED=1
-  while IFS=$'\t' read -r p i; do [ -z "$p" ] || SPRINT_ROW["$p"$'\t'"$i"]=1; done < <(jq -r '.sprints[]? | select(.queued != true) | .project as $p | .tasks[]?
-    | select((.state == "open" or .state == "doing") and .id != null) | "\($p)\t\(.id)"' <<<"$1" 2>/dev/null)
+  local p i st
+  SPRINT_ROW=() SPRINT_PROJECT=() SPRINT_LOADED=1
+  while IFS=$'\t' read -r p i st; do
+    [ -n "$p" ] || continue
+    SPRINT_ROW["$p"$'\t'"$i"]=1
+    [ "$st" != open ] || SPRINT_PROJECT["$p"]=1
+  done < <(jq -r '.sprints[]? | select(.queued != true) | .project as $p | .tasks[]?
+    | select((.state == "open" or .state == "doing") and .id != null) | "\($p)\t\(.id)\t\(.state)"' <<<"$1" 2>/dev/null)
 }
-sprint_rows_ready() { [ -n "$SPRINT_LOADED" ] || load_sprints "$(notes board --json 2>/dev/null)"; }
+# sprint_rows_ready -- load_sprints on first use; a board read that fails loads nothing, so the next use reads again.
+sprint_rows_ready() {
+  local b
+  [ -z "$SPRINT_LOADED" ] || return 0
+  b=$(notes board --json 2>/dev/null) && load_sprints "$b"
+  return 0
+}
 
 # row_sprint <project> <id> -> 0 when an open sprint holds the row (SPRINT_ROW), else 1: a candidate's
 # `sprint`, which RANK_JQ ranks first as `cleanup` ranks a cleanup row, and promote tags the item with.
@@ -1266,6 +1278,37 @@ plan_floor_start() {
 # the sprint floor's count.
 live_sprints() { live_where '((" " + (.tags // "") + " ") | contains(" sprint ")) and .priority == "urgent"'; }
 
+# sprint_top_up -- queue an open sprint's dispatchable rows (fill_day's `sprint` floor) on every run pass,
+# before the floors and the queue pass read the queue, so the queue order (agent-queue's `sprint` bucket) and
+# the sprint floor take them ahead of the queued items off the sprint. The low-water fill reads the board only
+# after the queue pass, and over the low water not for sprint rows at all, so on 2026-11-21 sprint rows that
+# turned dispatchable could wait behind queued off-sprint low items, and an urgent one the sprint floor never
+# saw (ar-3816). <room> is the pass's room: it queues up to that or DISPATCH_LOW_WATER, whichever is more,
+# as the low-water fill does, under the queue cap. Nothing to do with no unstarted open sprint row
+# (SPRINT_PROJECT), under a gate the sprint floor's start would stop at (gate under HUMAN_PASS), at the queue
+# cap, or in a dry run. Its judge call reads the sprint's rows alone and keeps its JUDGE_RC to itself, so the
+# pass's own fill still judges every new row; a judge that fails here fails rc 1 with SPRINT_JUDGE_RC and
+# SPRINT_JUDGE_WHY set, which cmd_run makes the pass's, so the pass calls a failing judge once.
+sprint_top_up() {
+  local want qroom JUDGE_RC='' JUDGE_WHY='' FILLED=0
+  [ "$DRY" = 0 ] || return 0
+  sprint_rows_ready
+  [ "${#SPRINT_PROJECT[@]}" -gt 0 ] || return 0
+  [ -z "$(HUMAN_PASS=1 gate)" ] || return 0
+  want=$DISPATCH_LOW_WATER; [ "${1:-0}" -le "$want" ] || want=$1
+  qroom=$(queue_headroom); [ "$want" -le "$qroom" ] || want=$qroom
+  [ "$want" -gt 0 ] || return 0
+  load_findings || return 0
+  if ! fill_day "$want" sprint; then
+    SPRINT_JUDGE_RC=$JUDGE_RC SPRINT_JUDGE_WHY=$JUDGE_WHY
+    say "sprint: $(judge_failed), so no sprint row was queued ahead of the queue pass"
+    return 1
+  fi
+  [ "$FILLED" = 0 ] && return 0
+  say "queued $FILLED dispatchable row(s) of the open sprint ahead of the queue pass"
+  unset NEXT_QUEUED
+}
+
 # sprint_floor_start -- start the urgent items of an open sprint (tag `sprint`, promote) past the pace
 # target and the weekly pace while fewer than DISPATCH_SPRINT_FLOOR run, at most DISPATCH_PER_PASS a
 # pass when that is set, in queue order. Load, real idle, fleet-assess, agent-hold, the reserve and the
@@ -1548,7 +1591,8 @@ judged_keys() {
 # an agent-lane row whose gates all cleared is `gated`: committed work, which picks takes with no verdict
 # (a human-lane row is still judged, since only the verdict says the human's row is agent work). When the
 # gates could not be read (GATES_FAILED) it lists no row but under suggest. CLEANUP_ONLY,
-# REQUESTED_ONLY and GATED_ONLY (fill_day's floors) read only their rows (floor_row).
+# REQUESTED_ONLY, GATED_ONLY and SPRINT_ONLY (fill_day's floors) read only their rows (floor_row), in the projects
+# that can hold one (floor_project).
 cmd_candidates() {
   local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today nobody active
   local x planned dj dsig plan off kind board gates gwait
@@ -1563,7 +1607,7 @@ cmd_candidates() {
   for prof in $DISPATCH_PROFILES; do
     while IFS=$'\t' read -r name sheet _v _; do
       [ -n "$name" ] || continue
-      [ -z "${CLEANUP_ONLY:-}" ] || [ -n "${REQUESTED_ONLY:-}${GATED_ONLY:-}" ] || [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $name "* ]] || continue
+      ! floor_pass || floor_project "$name" || continue
       stage=$(stage_of "$sheet")
       dispatchable "$stage" || continue
       pprio=$(prio_of "$sheet")
@@ -1586,7 +1630,7 @@ cmd_candidates() {
           gwait=''; [ -z "$gates" ] || gwait=$(gate_wait "$gates")
           [ -z "$gwait" ] || [ "${SUGGEST:-0}" = 1 ] || continue
           kind=$(row_kind "$text")
-          [ -z "${CLEANUP_ONLY:-}${REQUESTED_ONLY:-}${GATED_ONLY:-}" ] || floor_row "$name" "$text" "$([ "$lane" = agent ] && [ -z "$gwait" ] && printf %s "$gates")" || continue
+          ! floor_pass || floor_row "$name" "$text" "$([ "$lane" = agent ] && [ -z "$gwait" ] && printf %s "$gates")" "$key" || continue
           nobody=''
           if ! read -r rank worker tier < <(row_worker "$table" "$name" "$lane" "$text"); then
             # suggest shows the agent rows no worker takes too, after the ones one does.
@@ -6909,6 +6953,7 @@ cmd_run() {
     local before=${STARTED:-0} urc; PREEMPT_PARKED=0; start_items "$urgent" 1; urc=$?
     [ "$urc" = 0 ] && [ "${STARTED:-0}" -eq "$before" ] && [ "${PICK_FULL:-0}" = 1 ] && [ "$PREEMPT_PARKED" = 0 ] || return "$urc"
   fi
+  sprint_top_up "$room" || JUDGE_RC=$SPRINT_JUDGE_RC JUDGE_WHY=$SPRINT_JUDGE_WHY
   # The floors start past the target, in this order, before the queue order buries what they hold: canaries
   # (canary_floor_start), each trainee's row and a due batch review (trainee_floor_start, queued or promoted from
   # the board in the same step), the ready phase of each plan the human approved, one a plan (plan_floor_start),
@@ -7074,15 +7119,17 @@ row_task() {
 # <room> others and up to <cap room> in all, since its gates clearing is its start. A cleanup
 # row's item is tagged `cleanup` (the floor counts them), and every item `tier<N>` (item_tier); a
 # tier-3 PR row (worker tier3-pr) carries t3_brief. With
-# `cleanup`, `requested` or both (the floors, over the low water) every scan under it, the judge's
-# included when this pass has not judged yet, reads only those rows (floor_row). A full fleet share
+# `cleanup`, `requested`, `gated` or `sprint` (the floors: over the low water, and sprint_top_up's on every
+# pass) every scan under it, the judge's included when this pass has not judged yet, reads only those rows
+# (floor_row). A full fleet share
 # (share_full) leaves the fleet's rows out, the cleanup lane's too.
 fill_day() {
   local picked c tags CLEANUP_ONLY=${CLEANUP_ONLY:-} REQUESTED_ONLY=${REQUESTED_ONLY:-}
   [[ " ${2:-} " != *" cleanup "* ]] || CLEANUP_ONLY=1
   [[ " ${2:-} " != *" requested "* ]] || REQUESTED_ONLY=1
-  local GATED_ONLY=${GATED_ONLY:-}
+  local GATED_ONLY=${GATED_ONLY:-} SPRINT_ONLY=${SPRINT_ONLY:-}
   [[ " ${2:-} " != *" gated "* ]] || GATED_ONLY=1
+  [[ " ${2:-} " != *" sprint "* ]] || SPRINT_ONLY=1
   FILLED=0
   # Committed rows alone want no judge: a gated row is never judged (unjudged_rows).
   [ "${2:-}" = gated ] || judge_once || return 1
@@ -7122,12 +7169,27 @@ fill_day() {
 # item_tag_depth <tag> -> the runnable items carrying <tag>: what a floor (cleanup, requested) measures.
 item_tag_depth() { runnable 2>/dev/null | jq -c --arg t " $1 " 'select((" " + (.tags // "") + " ") | contains($t))' | grep -c . || true; }
 
-# floor_row <project> <row> [gates] -> 0 for a row a floor pass may read: a `#requested` row when the
-# requested floor is under, a cleanup row of DISPATCH_CLEANUP_PROJECTS when the cleanup floor is, and
-# an agent row whose gates all cleared (<gates>, cmd_candidates' `gated`) under GATED_ONLY.
+# floor_pass -> 0 when fill_day reads the board for its floors' rows alone (CLEANUP_ONLY, REQUESTED_ONLY,
+# GATED_ONLY, SPRINT_ONLY), which every scan under it then filters by floor_project and floor_row.
+floor_pass() { [ -n "${CLEANUP_ONLY:-}${REQUESTED_ONLY:-}${GATED_ONLY:-}${SPRINT_ONLY:-}" ]; }
+
+# floor_project <project> -> 0 for a project a floor pass may find a row in: any under the requested or
+# gated floor, one of DISPATCH_CLEANUP_PROJECTS under the cleanup floor, one with an unstarted open sprint
+# row (SPRINT_PROJECT) under the sprint floor.
+floor_project() {
+  [ -n "${REQUESTED_ONLY:-}${GATED_ONLY:-}" ] && return 0
+  [ -n "${CLEANUP_ONLY:-}" ] && [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $1 "* ]] && return 0
+  [ -n "${SPRINT_ONLY:-}" ] && [ -n "${SPRINT_PROJECT[$1]:-}" ]
+}
+
+# floor_row <project> <row> [gates] [id] -> 0 for a row a floor pass may read: a `#requested` row when the
+# requested floor is under, a cleanup row of DISPATCH_CLEANUP_PROJECTS when the cleanup floor is, an
+# agent row whose gates all cleared (<gates>, cmd_candidates' `gated`) under GATED_ONLY, and a row an
+# open sprint holds (row_sprint on <id>) under SPRINT_ONLY.
 floor_row() {
   [ -n "${GATED_ONLY:-}" ] && [ -n "${3:-}" ] && return 0
   [ -n "${REQUESTED_ONLY:-}" ] && [[ "${2%%<!--*}" =~ (^|[[:space:]])#requested([[:space:]]|$) ]] && return 0
+  [ -n "${SPRINT_ONLY:-}" ] && [ -n "${4:-}" ] && [ "$(row_sprint "$1" "$4")" = 0 ] && return 0
   [ -n "${CLEANUP_ONLY:-}" ] && [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $1 "* ]] && [ "$(cleanup_row "$1" "$2")" = 0 ]
 }
 
@@ -7451,6 +7513,7 @@ t3_rows() {
   [ -z "${GATES_FAILED:-}" ] || return 0
   load_kinds
   for name in $DISPATCH_T3_PROJECTS; do
+    ! floor_pass || floor_project "$name" || continue
     sheet=$(np "$DISPATCH_T3_PROFILE" projects 2>/dev/null | awk -F'\t' -v p="$name" '$1 == p { print $2; exit }')
     stage=$(stage_of "$sheet")
     dispatchable "$stage" || continue
@@ -7471,7 +7534,7 @@ t3_rows() {
       [ -z "$(row_off "$name" "$stage" "$key" "$text")" ] || continue
       gates=${GAT["$name"$'\t'agent$'\t'"$key"]:-}
       [ -z "$gates" ] || [ -z "$(gate_wait "$gates")" ] || continue
-      [ -z "${CLEANUP_ONLY:-}${REQUESTED_ONLY:-}${GATED_ONLY:-}" ] || floor_row "$name" "$text" "$gates" || continue
+      ! floor_pass || floor_row "$name" "$text" "$gates" "$key" || continue
       line=$(row_sig "$text")
       x=${DET["$name"$'\t'agent$'\t'"$key"]:-$'0\t""'}
       planned=${x%%$'\t'*} dj=${x#*$'\t'}

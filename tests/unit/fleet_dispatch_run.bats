@@ -104,6 +104,45 @@ bats_require_minimum_version 1.5.0
   assert_equal "$(outcome)" WORKED
 }
 
+@test "run over DISPATCH_LOW_WATER queues an open sprint's dispatchable row before the queue pass, which starts it ahead of queued off-sprint items" {
+  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=2 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=0
+  project game beta "$SANDBOX/repos/game"
+  row game human gm-9 "- [ ] fix(game): sprint crash #high $T <!-- id:gm-9 -->"
+  row game human gm-5 "- [ ] fix(game): off-sprint polish #high $T <!-- id:gm-5 -->"
+  verdict game human gm-9 dispatch S 1 crash
+  verdict game human gm-5 dispatch S 1 polish
+  agent-queue add --project game --slug one --priority low "one"
+  agent-queue add --project game --slug two --priority low "two"
+  agent-queue add --project game --slug three --priority low "three"
+  # Negative control: no open sprint, so the pass starts the queue's first item and reads no board row.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: game: one'
+  [ -z "$(qitem queued gm-9)" ] || fail "a row was queued with no sprint open"
+  agent-queue move one done --status cancelled --why test >/dev/null
+  rm -f "$NOTES_FIXTURE/calls.log"
+  # A done row of the sprint and a queued sprint of the off-sprint row change nothing.
+  jq -nc '[{project: "game", queued: false, tasks: [{id: "gm-9", state: "open"}, {id: "gm-8", state: "done"}]},
+           {project: "game", queued: true, tasks: [{id: "gm-5", state: "open"}]}]' > "$NOTES_FIXTURE/board.sprints"
+  # A dry run and a held pass queue no sprint row.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  refute_output --partial 'of the open sprint ahead of the queue pass'
+  [ -z "$(qitem queued gm-9)" ] || fail "a dry run queued the sprint row"
+  stub agent-hold 'exit 1'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'of the open sprint ahead of the queue pass'
+  [ -z "$(qitem queued gm-9)" ] || fail "a held pass queued the sprint row"
+  stub agent-hold 'exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'queued 1 dispatchable row(s) of the open sprint ahead of the queue pass'
+  assert_output --partial 'started game-agent-1: game: gm-9'
+  refute_output --partial 'game: two'
+  [ -n "$(qitem running gm-9)" ] || fail "the sprint row did not start: $(ls "$AGENT_QUEUE_DIR"/*/)"
+  [[ " $(qfield "$(qitem running gm-9)" tags) " == *" sprint "* ]] || fail "the item has no sprint tag"
+  [ -z "$(qitem queued gm-5)" ] || fail "the sprint floor queued a row off the sprint"
+}
+
 @test "run over DISPATCH_LOW_WATER still tops cleanup rows up to DISPATCH_CLEANUP_FLOOR, as high, and nothing else" {
   export DISPATCH_CLEANUP_PROJECTS=game DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=2
   project game beta "$SANDBOX/repos/game"
