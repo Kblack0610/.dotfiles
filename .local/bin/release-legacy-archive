@@ -8,7 +8,8 @@
 # to $RELEASE_ARCHIVE_DIR/<project>/<run-id>.zip once. Legacy is release-state's provenance, read
 # through `release-state provenance`, never recomputed. Deletes nothing. --dry-run prints the
 # ledger and writes nothing; --no-logs copies no zip. Exit 1 when a log failed for a reason other
-# than expiry, so a rerun picks it up. Rules: docs/operations/release-state.md, Legacy archive.
+# than expiry or a Deployment status was not read, so a rerun picks it up.
+# Rules: docs/operations/release-state.md, Legacy archive.
 set -uo pipefail
 
 HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
@@ -45,6 +46,7 @@ MAP="$(project_map_file)"
 [ -f "$MAP" ] || die "no project map"
 
 repo_key="$(project_repo_name "$proj")"
+[ "$repo_key" = "$proj" ] || die "$proj shares $repo_key's checkout; run it for $repo_key, which covers $proj"
 repo="$(project_repo_path "$proj")"
 [ -n "$repo" ] && [ -d "$repo/.git" ] || die "$proj has no checkout"
 slug="$(origin_repo "$repo" github.com)" || slug=""
@@ -63,16 +65,18 @@ mapfile -t projects < <(project_lab_names "$proj")
 [ "${#projects[@]}" -gt 0 ] || projects=("$proj")
 
 # Every tag each project owns, with its provenance, tagged with the project.
+fetch=--fetch
 for p in "${projects[@]}"; do
-  "$RELEASE_STATE" provenance "$p" 2>/dev/null | jq -c --arg p "$p" '. + {project: $p}' >>"$tmp/tags" \
+  "$RELEASE_STATE" provenance ${fetch:+"$fetch"} "$p" | jq -c --arg p "$p" '. + {project: $p}' >>"$tmp/tags" \
     || die "release-state provenance $p failed"
+  fetch=""
 done
 touch "$tmp/tags"
 jq -s 'map({(.tag): .}) | add // {}' "$tmp/tags" >"$tmp/tagmap"
 
 # Where the repo's line starts: the oldest flow tag of the repo's own project. A run with no tag
 # before it is legacy; with no flow tag yet, every run is.
-start="$(jq -s --arg k "$repo_key" '[.[] | select(.project == $k and .provenance == "flow") | .at] | min // empty' "$tmp/tags")"
+start="$(jq -s --arg k "$repo_key" '[.[] | select(.project == $k and .provenance == "flow") | .at | numbers] | min // empty' "$tmp/tags")"
 
 # The release workflows (see the header), each a file name the Actions API takes as an id.
 mapfile -t workflows < <(jq -r --arg k "$repo_key" '
@@ -113,7 +117,7 @@ done <"$tmp/runs" | jq -s 'map(select(.provenance == "legacy")) | sort_by(.creat
 # project owning the version's tag, else the repo's own project.
 gh_pages "repos/$slug/deployments?per_page=$GH_PAGE" \
   '.[] | {id, environment, ref, description, creator: .creator.login, created_at,
-          build: ((.payload // "") | if type == "string" then (fromjson? // {}) else . end | objects | .build // null | if . == null then null else tostring end)}' \
+          build: ((.payload // "") | if type == "string" then (fromjson? // {}) else . end | if type == "object" then .build // null else null end | if . == null then null else tostring end)}' \
   >"$tmp/deploys.raw" 2>/dev/null || die "could not list the Deployments of $slug"
 jq -c --arg k "$repo_key" --slurpfile tm "$tmp/tagmap" --argjson own "$(jq -c '
   [.trackers | to_entries[] | select(.value | type == "object") | .key as $p | .value.targets[]? | {(.id): $p}] | add // {}' "$MAP")" '
@@ -137,6 +141,7 @@ while IFS= read -r d; do
   jq -c --arg s "$st" '. + {state: $s}' <<<"$d"
 done < <(jq -c '.[]' "$tmp/legacy-deploys") | jq -s . >"$tmp/legacy-deploys.s"
 mv "$tmp/legacy-deploys.s" "$tmp/legacy-deploys"
+unread="$(jq 'map(select(.state == "not read")) | length' "$tmp/legacy-deploys")"
 
 # Copy each legacy run's log zip once. A 404 or 410 is a log GitHub no longer keeps.
 dest="$ARCHIVE_DIR/$proj"
@@ -185,7 +190,7 @@ nlogs="$(awk -F'\t' '$2 == "archived"' "$tmp/logs" | wc -l)"
   echo "| Tag | Project | Tagger | Date | Commit |"
   echo "|---|---|---|---|---|"
   jq -rs 'map(select(.provenance == "legacy")) | sort_by(.at) | reverse[]
-    | "| \(.tag) | \(.project) | \(.tagger // "lightweight") | \(.at // 0 | strftime("%Y-%m-%d")) | \(.sha // "" | .[0:10]) |"' "$tmp/tags"
+    | "| \(.tag) | \(.project) | \(.tagger // "lightweight") | \(if .at then (.at | strftime("%Y-%m-%d")) else "-" end) | \(.sha // "" | .[0:10]) |"' "$tmp/tags"
   echo
   echo "## Release runs"
   echo
@@ -207,5 +212,5 @@ else
   mkdir -p "$(dirname "$LEDGER")" && cp "$tmp/ledger" "$LEDGER" || die "cannot write $LEDGER"
   echo "wrote $LEDGER"
 fi
-echo "release-legacy-archive $proj: tags $ntags legacy of $nall, runs $nruns, logs copied $copied, already archived $kept, expired $expired, failed $failed, deployments $ndep"
-[ "$failed" = 0 ]
+echo "release-legacy-archive $proj: tags $ntags legacy of $nall, runs $nruns, logs copied $copied, already archived $kept, expired $expired, failed $failed, deployments $ndep, statuses not read $unread"
+[ "$failed" = 0 ] && [ "$unread" = 0 ]

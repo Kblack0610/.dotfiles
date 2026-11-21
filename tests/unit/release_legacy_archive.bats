@@ -16,6 +16,8 @@ setup() {
   export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh"
   export GIT_RELEASE_LIB
   export RELEASE_ARCHIVE_DIR="$SANDBOX/nas"
+  # The tag fetch must not dial out: the checkout's origin is a GitHub ssh URL.
+  export GIT_SSH_COMMAND=false
 
   CODE="$SANDBOX/repos/game"
   git init -q -b main "$CODE"
@@ -62,7 +64,7 @@ EOF
     "$(wfrun 13 main 2026-11-05T10:00:00Z)" "$(wfrun 14 main 2026-11-11T10:00:00Z)" \
     "$(wfrun 15 other-v2.0.0 2026-11-12T13:00:00Z)" "$(wfrun 16 v1.1.0-puzzle1 2026-11-12T12:00:00Z)"
   runs steam.yml "$(wfrun 21 v0.9.0-kart1 2026-11-02T11:00:00Z)" "$(wfrun 22 v1.0.0-kart1 2026-11-10T12:00:00Z)"
-  printf '%s' "[$(dep 31 kart-steam-beta v0.9.0-kart1 Kblack0610 '{"build":"777"}'),$(dep 32 kart-steam-beta v1.0.0-kart1 'github-actions[bot]' '{}'),$(dep 33 steam v1.1.0-puzzle1 Kblack0610 '"{\"build\": 88}"')]" \
+  printf '%s' "[$(dep 31 kart-steam-beta v0.9.0-kart1 Kblack0610 '{"build":"777"}'),$(dep 32 kart-steam-beta v1.0.0-kart1 'github-actions[bot]' '{}'),$(dep 33 steam v1.1.0-puzzle1 Kblack0610 '"{\"build\": 88}"'),$(dep 34 steam v0.9.0 Kenneth '[1]')]" \
     > "$SANDBOX/gh/deployments.json"
   printf '[{"state":"success"}]' > "$SANDBOX/gh/statuses.json"
   # Run 13's log GitHub no longer keeps; LOG_FAIL names a run whose download breaks.
@@ -85,7 +87,7 @@ case "$ep" in
     [ "$id" = 13 ] && { echo 'gh: Not Found (HTTP 410)' >&2; exit 1; }
     [ "$id" = "${LOG_FAIL:-}" ] && { echo 'gh: Bad Gateway (HTTP 502)' >&2; exit 1; }
     printf 'PKzip-of-%s' "$id"; exit 0 ;;
-  */deployments/*/statuses*) f="$SANDBOX/gh/statuses.json" ;;
+  */deployments/*/statuses*) [ -n "${STATUS_FAIL:-}" ] && exit 1; f="$SANDBOX/gh/statuses.json" ;;
   */deployments*) f="$SANDBOX/gh/deployments.json" ;;
   *) exit 1 ;;
 esac
@@ -111,9 +113,15 @@ section() { sed -n "/^## $1/,/^## /p" "$LAB/game/versions/legacy.md" | grep '^| 
 @test "ledger: legacy tags across the repo and its games, never a flow tag or another product's" {
   run "$ARC" unity-none 2>/dev/null
   assert_failure 2
+  # A game shares the repo's checkout and its ledger: the repo project is the one to run.
+  run "$ARC" kart
+  assert_failure 2
+  assert_output --partial 'run it for game'
   run "$ARC" game
   assert_success
   assert_output --partial 'tags 3 legacy of 6, runs 4'
+  # The remote's tags are fetched first; one that cannot be reached is named, never silent.
+  assert_output --partial 'game: tags not fetched'
   # The start of a line is flow (v1.0.0, its build), so is the cut workflow's tag; a game with
   # no line is legacy, its cut tag too; other-v2.0.0 belongs to no project here.
   assert_equal "$(section Tags | cut -d'|' -f2 | tr -d ' ' | sort | paste -sd,)" 'v0.9.0,v0.9.0-kart1,v1.1.0-puzzle1'
@@ -125,14 +133,19 @@ section() { sed -n "/^## $1/,/^## /p" "$LAB/game/versions/legacy.md" | grep '^| 
   # 11 (legacy tag), 13 (no tag, before v1.0.0), 16 (puzzle has no line), 21 (pre-line kart build).
   # 12 and 22 are flow, 14 started after the line, 15 is another product's tag.
   assert_equal "$(section 'Release runs' | sed -E 's/^\| \[([0-9]+)\].*/\1/' | sort | paste -sd,)" '11,13,16,21'
-  assert_output --partial 'deployments 2'
+  assert_output --partial 'deployments 3, statuses not read 0'
   # A hand back-fill of a pre-line build with its store build; a job environment no target names is
-  # held to the project owning its tag (puzzle: legacy), its payload's build decoded from a string.
+  # held to the project owning its tag (puzzle: legacy), its payload's build decoded from a string;
+  # a payload that is no object keeps its row, with no build.
   assert_equal "$(section Deployments | cut -d'|' -f2,3,4,7 | tr -d ' ' | sort | paste -sd,)" \
-    'kart-steam-beta|v0.9.0-kart1|Kblack0610|777,steam|v1.1.0-puzzle1|Kblack0610|88'
+    'kart-steam-beta|v0.9.0-kart1|Kblack0610|777,steam|v0.9.0|Kenneth|-,steam|v1.1.0-puzzle1|Kblack0610|88'
   # Only release workflows are read: never the gallery's or a recorder.
   run grep -c 'workflows/shots.yml\|workflows/record.yml' "$SANDBOX/gh.calls"
   assert_output 0
+  # A status that cannot be read is named and fails the run, so a rerun reads it.
+  STATUS_FAIL=1 run "$ARC" game
+  assert_failure 1
+  assert_output --partial 'statuses not read 3'
 }
 
 @test "logs: each legacy run's zip is copied once, an expired one is named, a failed one fails the run" {
