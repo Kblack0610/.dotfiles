@@ -185,10 +185,8 @@ EOF
   # model as Codex's), AGENTCTL_ACCOUNT and a Claude session's CLAUDE_CONFIG_DIR pick the account
   # (agent_run_route.bats), FLEET_SHEPHERD_HOLDER makes the lease the runner's (fleet_shepherd.bats),
   # AGENTCTL_AGENT names the caller in the call log, DIR and FILE point at live state, caps at the conf.
-  # sandbox_isolation.bats reads both launchers' exports, so a new one fails there until it is here.
-  # The runner unit also loads its conf as EnvironmentFile, which no launcher shows: LANE (the
-  # shepherd's observe) turned fleet_dispatch_run's model-lane stub, which reads ${LANE:-sonnet}.
-  # A test that wants one of these sets it after sandbox_init.
+  # sandbox_isolation.bats reads both launchers' exports, so a new one fails there until it is here; LANE comes from the
+  # unit's EnvironmentFile conf, in no launcher, and turned fleet_dispatch's model-lane stub. A test that wants one sets it after sandbox_init.
   unset LANE MODEL HARNESS ROUTE DATA_CLASS AGENTCTL_ACCOUNT AGENTCTL_INBOX AGENTCTL_EXPLAIN CLAUDE_TELEMETRY_SERVICE \
     FLEET_SHEPHERD_DIR FLEET_STATE_FILE FLEET_SHEPHERD_HOLDER FLEET_SHEPHERD_LEASE_MIN CLAUDE_CONFIG_DIR BUDGET_CALL_USD BUDGET_DAY_USD MAX_CALLS_HOUR \
     AGENTCTL_AGENT AGENT_PROMPT AGENT_PROMPT_SHA AGENT_SCHEMA AGENT_MAX_TOKENS AGENT_TEMPERATURE AGENT_CALL_CONTEXT ROUTE_FROM
