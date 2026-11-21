@@ -76,7 +76,7 @@ const TABS = [
 // A tab is waited on by its TABS row, an inner tab by its own shown group, a project inner tab by
 // its first section's heading.
 const INNER = JSON.parse(readFileSync(join(STATIC, "app.js"), "utf8").match(/^const INNER_TABS = (.*);$/m)[1]);
-const PAGE_HEAD = { overview: "p-needs", rows: "p-rows", deliverables: "p-build", stage: "p-stage", activity: "p-shipped" };
+const PAGE_HEAD = { overview: "p-needs", rows: "p-rows", deliverables: "p-build", releases: "p-versions", stage: "p-stage", activity: "p-shipped" };
 const TALL = [
   ...TABS.filter((t) => !t.name).flatMap((t) => INNER[t.tab]
     ? INNER[t.tab].tabs.map(([id]) => ({ name: `${t.tab}/${id}`, hash: `${t.tab}/${id}`, el: t.tab, ready: `#${t.tab} [data-in="${id}"]:not([hidden])` }))
