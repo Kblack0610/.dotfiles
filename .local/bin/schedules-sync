@@ -134,7 +134,9 @@ when the base has them), read through the contents API (a conditional listing, a
 unchanged; blobs re-read only when a sha moves) into a cache laid out as the repo is, and the newest finished `Tests (all)`
 run on the base that uploaded playmode-summary: its KNOWN count (summary.txt's "N known red",
 summed), the tests results.py says "known red now passes" (now_passing_tests) and the ones it
-marks KNOWN, failed (known_tests), in the test-runs-* artifacts, downloaded once per run attempt;
+marks KNOWN, failed (known_tests), in the test-runs-* artifacts, downloaded once per run attempt (a repo
+whose project-map tracker has an `artifactStore` reads them from the home artifact store through that
+lister in its `paths` clone, never from GitHub, which no longer holds them);
 a quarantined test in neither did not run. A repo without the files is listed under "absent" and asked
 again a day later. A lane whose read fails keeps its last numbers with `error` set; a quarantine
 failure never changes the exit status.
@@ -173,6 +175,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import zipfile
 from datetime import datetime, timedelta, timezone
 
@@ -1592,13 +1595,53 @@ def quarantine_report(repo, base, old, t):
     return report, etag, files
 
 
-def artifact_zip(repo, art):
-    return zipfile.ZipFile(io.BytesIO(gh_bytes(f"repos/{repo}/actions/artifacts/{art['id']}/zip")))
+def store_of(repo):
+    """The lister path of a repo whose project-map tracker declares an `artifactStore` (a path
+    inside the tracker's clone, the `paths` entry naming it), else None."""
+    pmap = read_map()
+    for name, t in (pmap.get("trackers") or {}).items():
+        if isinstance(t, dict) and t.get("artifactStore") and str(t.get("github") or "").lower() == repo.lower():
+            clone = next((p for p, n in (pmap.get("paths") or {}).items() if n == name), None)
+            rel = t["artifactStore"]
+            if not clone or os.path.isabs(rel) or ".." in rel.split("/"):
+                raise GhError(f"{repo}: artifactStore {rel}: needs a path inside a clone listed in `paths`")
+            return os.path.join(clone, rel)
+    return None
+
+
+def store_call(repo, script, *args):
+    p = subprocess.run(["env", f"GITHUB_REPOSITORY={repo}", "python3", script, *args],
+                       capture_output=True, text=True, timeout=GH_CALL_TIMEOUT_S)
+    if p.returncode != 0:
+        why = (p.stderr or p.stdout).strip().splitlines()
+        raise GhError(f"artifact store {args[0]}: {why[-1] if why else f'exit {p.returncode}'}")
+    return p.stdout
+
+
+def artifact_files(repo, art):
+    """[(member path, bytes)] of one artifact: its zip from GitHub, or its tar from the home store."""
+    if art.get("store"):
+        with tempfile.TemporaryDirectory() as d:
+            store_call(repo, art["store"], "get", art["name"], "--run", str(art["run"]), "--dir", d)
+            out = []
+            for root, _, names in os.walk(d):
+                for n in names:
+                    full = os.path.join(root, n)
+                    with open(full, "rb") as f:
+                        out.append((os.path.relpath(full, d), f.read()))
+            return out
+    with zipfile.ZipFile(io.BytesIO(gh_bytes(f"repos/{repo}/actions/artifacts/{art['id']}/zip"))) as z:
+        return [(n, z.read(n)) for n in z.namelist()]
 
 
 def run_artifacts(repo, run_id):
     """The artifacts of one run, expired ones left out, the newest of each name: a re-run's
-    attempt uploads its own under the same name, and the run's newest attempt is the one read."""
+    attempt uploads its own under the same name, and the run's newest attempt is the one read.
+    A repo with an `artifactStore` lists the home store alone, never GitHub."""
+    script = store_of(repo)
+    if script:
+        lines = (l.split() for l in store_call(repo, script, "ls", "", "--run", str(run_id)).splitlines())
+        return [{"name": f[0], "store": script, "run": run_id} for f in lines if len(f) == 4]
     newest, page = {}, 1
     while True:
         got = gh(f"repos/{repo}/actions/runs/{run_id}/artifacts?per_page=100&page={page}")
@@ -1617,19 +1660,17 @@ def night_counts(repo, run, arts):
     output) and those that failed (its "KNOWN <name> (<s>s)" lines); a test seen twice, in a
     batch and alone, counts once. A quarantined test in neither list did not run."""
     summary = next(a for a in arts if a.get("name") == NIGHT_SUMMARY)
-    with artifact_zip(repo, summary) as z:
-        text = "".join(z.read(n).decode("utf-8", "replace") for n in z.namelist() if n.endswith("summary.txt"))
+    text = "".join(b.decode("utf-8", "replace") for n, b in artifact_files(repo, summary) if n.endswith("summary.txt"))
     passing, known, logs = set(), set(), 0
     for a in arts:
         if not str(a.get("name", "")).startswith(NIGHT_LOGS):
             continue
         logs += 1
-        with artifact_zip(repo, a) as z:
-            for n in z.namelist():
-                if n.endswith(".txt"):
-                    out = z.read(n).decode("utf-8", "replace")
-                    passing.update(m.strip() for m in NOW_PASSES.findall(out))
-                    known.update(m.strip() for m in KNOWN_FAILS.findall(out))
+        for n, b in artifact_files(repo, a):
+            if n.endswith(".txt"):
+                out = b.decode("utf-8", "replace")
+                passing.update(m.strip() for m in NOW_PASSES.findall(out))
+                known.update(m.strip() for m in KNOWN_FAILS.findall(out))
     return {"run_id": run["id"], "attempt": run["attempt"], "url": run.get("url"), "sha": run.get("sha"),
             "created_at": run.get("created_at"), "conclusion": run.get("conclusion"),
             "known": sum(int(m) for m in KNOWN_RED.findall(text)),
