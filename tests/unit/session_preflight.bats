@@ -10,8 +10,7 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
 
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"
-  chmod +x "$SANDBOX/bin/gh"
+  gh_script 'exit 1'
   ln -s "$REPO_ROOT/.local/bin/lessons" "$SANDBOX/bin/lessons"
 
   REPO="$SANDBOX/repo"

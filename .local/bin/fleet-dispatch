@@ -4297,7 +4297,7 @@ settle_item() {
     echo "requeued queue item $1 ($2 ended: $3)"
   }
   case "$st" in running | waiting | review | queued) ;; *) logline "reaped $2: queue item $1 ${st:-gone}"; return 0 ;; esac
-  it=$(agent-queue show "$1" --json 2>/dev/null)
+  it=$(item_with_branch_pr "$1" "$2")
   # A partial merge proves only one repo landed, and with its session gone nobody makes the final
   # landing (ucp-162 sat in review from 2026-11-08): the next start finishes it (pr_line), once. A second
   # run that also ends without it parks in review, where the human sees it, instead of looping.
@@ -4433,6 +4433,38 @@ settle_item() {
     logline "reaped $2: session gone, queue item $1 failed: no PR${why:+, end_reason $why}"
     echo "failed queue item $1 ($2 ended without closing it${why:+, end_reason $why})"
   fi
+}
+
+# branch_pr <item json> -> `<owner>/<repo>#<N>` of the newest open or merged PR whose head is exactly the item's
+# recorded branch and sha (`branch: <name>@<sha>`, push_item), read from the project's checkout. A PR at an older
+# head (the run pushed more after it) or one closed unmerged is no proof for that work: takeover_branch owns it.
+# Fails when there is none, the item has no branch, or the checkout is a Forgejo repo (gh sees only its mirror,
+# which has no PRs). Only the project's primary checkout is read, as takeover_branch does.
+branch_pr() {
+  local br project dir
+  IFS=$'\x1f' read -r br project < <(jq -r '[.branch // "", .project // ""] | join("\u001f")' <<<"$1")
+  [[ "$br" == ?*@?* ]] || return 1
+  dir=$(repo_dir "$project")
+  [ -n "$dir" ] && ! forge_canonical "$dir" || return 1
+  (cd "$dir" && gh pr list --head "${br%@*}" --state all --json number,url,state,headRefOid 2>/dev/null) |
+    jq -er --arg sha "${br##*@}" '[.[] | select(.state != "CLOSED" and .headRefOid == $sha)] | max_by(.number)
+      | (.url | capture("github.com/(?<r>[^/]+/[^/]+)/pull/") | .r) + "#\(.number)"' 2>/dev/null
+}
+
+# item_with_branch_pr <slug> <session> -> the item's JSON as agent-queue shows it, for settle_item. An item with
+# no pr: and no report whose Stop hook pushed a branch, and whose run opened a PR from that head before its
+# session ended without recording it (agent-land never ran), gets that PR recorded first: it then settles by
+# the MERGED/OPEN/CLOSED arms, not as "no PR" and not by a takeover that starts a second copy of work already
+# in review.
+item_with_branch_pr() {
+  local it pr
+  it=$(agent-queue show "$1" --json 2>/dev/null)
+  if [ -z "$(jq -r '(.pr // "") + (.report // "")' <<<"$it" 2>/dev/null)" ] && pr=$(branch_pr "$it") &&
+    agent-queue set "$1" "pr=$pr" >/dev/null; then
+    logline "reaped $2: queue item $1 had no PR recorded; its branch's PR $pr recorded"
+    it=$(agent-queue show "$1" --json 2>/dev/null)
+  fi
+  printf '%s\n' "$it"
 }
 
 # takeover_branch <slug> <session> <item json> <state> [--end <why>] -- an item with no PR and no report

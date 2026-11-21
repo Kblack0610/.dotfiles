@@ -45,7 +45,7 @@ Every page goes through `agent-notify` to ntfy. The phone buzzes only at high an
 | normal | silent | Something the human should see today. The briefing and agent-web carry it too |
 | low | silent | The fleet handles it itself, or it recovered. Recoveries and all-clears always go low |
 
-Several act-now items within one pass go out as one page (rule 4). A self-healing condition at high trains the human to ignore the phone. Each watch's current level is listed in `~/.config/agentctl/SENTINEL.md`, "Paging".
+Several act-now items within one pass go out as one page (rule 4). A self-healing condition at high trains the human to ignore the phone. The four words mean the same on every scale: `~/.local/src/docs/priority.md`. Each watch's level is its `severity:` (`grep -h '^severity:' ~/.agent/watches/*.yaml`).
 
 ## Channel shapes
 
