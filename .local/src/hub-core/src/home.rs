@@ -758,7 +758,7 @@ pub(crate) fn day_start(day: &str) -> Option<i64> {
         .map(|t| t.timestamp())
 }
 
-/// A tier-3 PR queue item (tag `tier3`) that finished failed: it ran unattended, so its failure is the human's.
+/// A tier-3 queue item (tag `tier3`, merging behind the red-fix gate) that finished failed: it ran unattended, so its failure is the human's.
 /// A failed one needs the human for a day after it ends; after that the queue holds it.
 pub const NIGHT_WINDOW_SECS: i64 = 86_400;
 

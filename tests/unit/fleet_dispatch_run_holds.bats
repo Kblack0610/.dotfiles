@@ -388,7 +388,7 @@ load 'fleet_dispatch/common'
   [ -n "$(qitem queued now-one)" ] || fail "a dry run started the urgent item"
 }
 
-@test "tier3 lane: a run pass promotes no tier-3 row past a shut account gate or a full queue: only the day fill under the gates pulls it" {
+@test "tier3 gate: a run pass promotes no tier-3 row past a shut account gate or a full queue: only the day fill under the gates pulls it" {
   pr_lane_ready
   project game beta "$SANDBOX/repos/game"
   for n in 1 2 3 4; do agent-queue add --project game --slug "work-$n" --priority high "work $n" >/dev/null; done

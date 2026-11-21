@@ -654,14 +654,14 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app"
     'game human=unjudged/true game judged=unjudged/true game busy=unjudged/true game new=unjudged/true app row=unjudged/false'
 }
 
-@test "suggest: each row no worker takes names why: no cover, the tier-3 path's skip word or its gap, the tier ceiling, size, the judge" {
+@test "suggest: each row no worker takes names why: no cover, the tier-3 gate's skip word or its gap, a tier-3 row in any project, size, the judge" {
   echo '{"personal": {"max_tier": 2, "projects": ["game"], "lane": "agent", "untagged": true}}' > "$DISPATCH_WORKERS"
-  export DISPATCH_T3_PROJECTS="night"
   project game beta "$SANDBOX/repos/game"
   project app alpha "$SANDBOX/repos/app"
   mkdir -p "$SANDBOX/repos/night"
   project night alpha "$SANDBOX/repos/night"
   row app agent 'app row' "- [ ] app row"
+  row app agent 'app low' "- [ ] app low #tier/1"
   row night agent 'night sudo' "- [ ] chore(box): run it with sudo"
   row night agent 'night plain' "- [ ] chore(box): tidy the docs"
   row game agent 'game ci' "- [ ] ci(game): the runner pool #tier/3"
@@ -671,10 +671,13 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app"
   run cmd_suggest --json
   assert_success
   b() { jq -r --arg k "$1" 'select(.key == $k) | .blocked | join("; ")' <<<"$output"; }
-  assert_equal "$(b 'app row')" 'no worker covers app'
+  # Every project has the tier-3 gate: an untiered row where no worker reaches is the gate's if
+  # judged tier 3, a tier-1 one there has no path, and a tier-3 row of a covered project is the gate's.
+  assert_equal "$(b 'app row')" 'tier3 only: no day worker covers app'
+  assert_equal "$(b 'app low')" 'no worker covers app'
   assert_equal "$(b 'night sudo')" 'tier3 skip: sudo'
   assert_equal "$(b 'night plain')" 'tier3 only: no day worker covers night'
-  assert_equal "$(b 'game ci')" 'tier 3: past the unattended ceiling'
+  assert_equal "$(b 'game ci')" 'tier3 only: the tier-3 gate takes it'
   assert_equal "$(b 'game big')" 'size/l: too big for a pick'
   assert_equal "$(b 'game skip')" 'judge: skip, r'
   # active: no repo here has a commit, so a row nobody takes is never marked worked on today.
@@ -1916,7 +1919,7 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   assert_output 'game/wilds light'
 }
 
-@test "tier3 lane: a tier-3 agent-runtime row is promoted as a tier3 item with its brief, started on the board, no session" {
+@test "tier3 gate: a tier-3 agent-runtime row is promoted as a tier3 item that merges behind the red-fix gate, started on the board, no session" {
   pr_lane_ready
   row agent-runtime agent 'wt done never reaps' '- [ ] wt done never reaps (worktree.sh:213) #tier/3 #high'
   pr_lane_verdict 'wt done never reaps' wt
@@ -1929,17 +1932,58 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   assert_equal "$(qfield "$f" tags) $(qfield "$f" priority) $(qfield "$f" area)" 'tier3 high wt'
   assert_equal "$(qfield "$f" from)" 'board:agent-runtime:gm-1'
   [ "$(state_of 'wt done never reaps')" = '- [/]' ] || fail "row not started"
-  run agent-queue show gm-1
+  run item_brief "$(agent-queue show gm-1 --json)"
   assert_output --partial 'wt done never reaps (worktree.sh:213)'
-  assert_output --partial 'Where: worktree.sh:213'
-  assert_output --partial 'Merge gate: make -C tests test-fast'
-  assert_output --partial 'Open the PR, do not merge.'
-  assert_output --partial 'do not mark it done'
+  assert_output --partial 'This is tier 3 (harness or tooling), and it merges only behind the red-fix gate'
+  refute_output --partial -- '--pr-only'
   assert_not_called 'wt new'
   assert_not_called 'judge called'
 }
 
-@test "tier3 lane: a tier-3 row that is not cleanup never becomes a merging item, even with a dispatch verdict" {
+@test "tier3 gate: a playground fix(ci) row is queued as a merging tier3 item; a release cut or an auth row stays with the human" {
+  mkdir -p "$SANDBOX/repos/pg"
+  project unity-core-playground beta "$SANDBOX/repos/pg"
+  row unity-core-playground agent 'retry probe' '- [ ] fix(ci): retry the flaky runner probe #tier/3'
+  row unity-core-playground agent 'cut it' '- [ ] chore(build): cut the release for v2 #tier/3'
+  row unity-core-playground agent 'oauth' '- [ ] fix(build): refresh the oauth token on the runners #tier/3'
+  pr_lane_verdict 'retry probe' ci true S unity-core-playground
+  pr_lane_verdict 'cut it' release true S unity-core-playground
+  pr_lane_verdict 'oauth' runners true S unity-core-playground
+
+  run t3_rows ''
+  assert_equal "$(jq -r '"\(.project) \(.key)"' <<<"$output" | paste -sd,)" 'unity-core-playground retry probe'
+  DISPATCH_PER_PASS=5 fill
+  assert_success
+  assert_output --partial 'queued unity-core-playground:'
+  run agent-queue list --json --state queued
+  assert_equal "$(jq -r '"\(.project) \(.tags)"' <<<"$output" | paste -sd,)" 'unity-core-playground tier3'
+  run item_brief "$(agent-queue list --json --state queued | jq -c 'select(.project == "unity-core-playground")')"
+  assert_output --partial 'fix(ci): retry the flaky runner probe'
+  assert_output --partial 'agent-land refuses a tier-3 PR without that line'
+  refute_output --partial -- '--pr-only'
+}
+
+@test "tier3 gate: auth, migration and money word forms, every finance row, and an untagged gated row stay out; a tagged gated row is taken" {
+  mkdir -p "$SANDBOX/repos/pg" "$SANDBOX/repos/fin"
+  project unity-core-playground beta "$SANDBOX/repos/pg"
+  project finance beta "$SANDBOX/repos/fin"
+  row unity-core-playground agent 'authn' '- [ ] fix(build): rotate the authentication keys on the runners #tier/3'
+  row unity-core-playground agent 'schema' '- [ ] chore(ci): add a schema migration step #tier/3'
+  row unity-core-playground agent 'pay' '- [ ] fix(ci): stub the payments test server #tier/3'
+  row unity-core-playground agent 'skill' '- [ ] chore(ci): skill authoring lint step #tier/3'
+  row finance agent 'recon' '- [ ] fix(ci): reconcile the March statement #tier/3'
+  row unity-core-playground agent pg-1 '- [ ] fix(ci): the probe first <!-- id:pg-1 -->'
+  row unity-core-playground agent pg-2 '- [ ] feat(tools): then its retry #after/pg-1 <!-- id:pg-2 -->'
+  row unity-core-playground agent pg-3 '- [ ] feat(tools): then its timeout #tier/3 #after/pg-1 <!-- id:pg-3 -->'
+  notes ptask unity-core-playground --agent done pg-1
+
+  run t3_rows ''
+  assert_equal "$(jq -r '"\(.key) \(.gated)"' <<<"$output" | sort | paste -sd,)" 'pg-3 true,skill null'
+  run nobody_why '' finance agent '- [ ] fix(ci): reconcile the March statement #tier/3'
+  assert_output 'tier3 skip: finance stays with the human'
+}
+
+@test "tier3 gate: a tier-3 row is never a day pick, even with a dispatch verdict: the tier-3 gate queues it" {
   pr_lane_ready
   echo '{"board": {"max_tier": 9, "projects": ["agent-runtime"], "lane": "agent", "untagged": true}}' > "$DISPATCH_WORKERS"
   row agent-runtime agent 'add the timer panel' '- [ ] feat(timer): add a timer panel #tier/3'
@@ -1976,7 +2020,7 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   assert_failure
 }
 
-@test "tier3 lane: only rows tier 3 alone holds back; a requested row goes, decisions, devices, the human's machine and lower tiers stay out" {
+@test "tier3 gate: only rows tier 3 alone holds back; a requested row goes, decisions, devices, the human's machine and lower tiers stay out" {
   pr_lane_ready
   row agent-runtime agent 'requested row' '- [ ] fix the requested row #requested #tier/3'
   row agent-runtime agent 'decide(app): fold it' '- [ ] decide(app): fold it #tier/3'
@@ -1997,16 +2041,16 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   assert_equal "$(pr_lane_keys)" 'requested row,untagged'
 }
 
-@test "tier3 lane: a #requested row takes a slot ahead of an older #high row" {
+@test "tier3 gate: a #requested row takes a slot ahead of an older #high row" {
   pr_lane_ready
   row agent-runtime agent 'retire the hook' '- [ ] retire the dead hook #high'
   row agent-runtime agent 'route the reds' '- [ ] route the reds to owners #requested #low'
   pr_lane_verdict 'retire the hook' timers; pr_lane_verdict 'route the reds' reds
   fill --dry-run --json
-  assert_equal "$(jq -r 'select(.state == "ready" and .worker == "tier3-pr") | .key' <<<"$output" | paste -sd,)" 'route the reds,retire the hook'
+  assert_equal "$(jq -r 'select(.state == "ready" and .worker == "tier3") | .key' <<<"$output" | paste -sd,)" 'route the reds,retire the hook'
 }
 
-@test "tier3 lane: one an area, up to the pass limit: observer rows first, then #high, newest first" {
+@test "tier3 gate: one an area, up to the pass limit: observer rows first, then #high, newest first" {
   pr_lane_ready
   row agent-runtime agent 'add a panel' '- [ ] add a panel for y #high'
   row agent-runtime agent 'shorter briefs' '- [ ] shorter briefs for tier3 items #kpi/board_open #high'
@@ -2018,7 +2062,7 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   pr_lane_verdict 'retire the timer' timers; pr_lane_verdict 'retire the hook' timers; pr_lane_verdict 'add w'
 
   fill --dry-run --json
-  assert_equal "$(jq -r 'select(.state == "ready" and .worker == "tier3-pr") | .key' <<<"$output" | paste -sd,)" 'shorter briefs,add a column,add a panel,add w,retire the hook'
+  assert_equal "$(jq -r 'select(.state == "ready" and .worker == "tier3") | .key' <<<"$output" | paste -sd,)" 'shorter briefs,add a column,add a panel,add w,retire the hook'
   [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ] || fail "fill --dry-run queued an item"
   [ "$(state_of 'shorter briefs')" = '- [ ]' ] || fail "fill --dry-run started a row"
   DISPATCH_PER_PASS=3 fill
@@ -2027,7 +2071,7 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   [ "$(state_of 'retire the hook')" = '- [ ]' ] || fail "a fourth row was started"
 }
 
-@test "tier3 lane: a typed finding and a #kpi/ row rank as observer rows, the word kpi in a body does not" {
+@test "tier3 gate: a typed finding and a #kpi/ row rank as observer rows, the word kpi in a body does not" {
   pr_lane_ready
   row agent-runtime agent 'add a kpi chip' '- [ ] add a kpi: chip to the hub #high'
   row agent-runtime agent 'check kpi' '- [ ] check(kpi): board_open past threshold #low'
@@ -2036,11 +2080,11 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
 
   fill --dry-run --json
   # Both observer rows rank ahead of the #high row that only names kpi in its body.
-  assert_equal "$(jq -r 'select(.state == "ready" and .worker == "tier3-pr") | .key' <<<"$output" | tail -1)" 'add a kpi chip'
-  assert_equal "$(jq -r 'select(.state == "ready" and .worker == "tier3-pr") | .key' <<<"$output" | head -2 | sort | paste -sd,)" 'check kpi,tagged'
+  assert_equal "$(jq -r 'select(.state == "ready" and .worker == "tier3") | .key' <<<"$output" | tail -1)" 'add a kpi chip'
+  assert_equal "$(jq -r 'select(.state == "ready" and .worker == "tier3") | .key' <<<"$output" | head -2 | sort | paste -sd,)" 'check kpi,tagged'
 }
 
-@test "tier3 lane: a row agent-queue will not take is un-started again" {
+@test "tier3 gate: a row agent-queue will not take is un-started again" {
   pr_lane_ready
   row agent-runtime agent 'fix it' '- [ ] fix it #tier/3'
   pr_lane_verdict 'fix it'
@@ -2051,20 +2095,21 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   [ "$(state_of 'fix it')" = '- [ ]' ] || fail "row left started"
 }
 
-@test "tier3 lane: a cancelled tier3 item (default profile, no profile: line) hands its row back" {
+@test "tier3 gate: a cancelled tier3 item (default profile, no profile: line) hands its row back" {
   pr_lane_ready
   row agent-runtime agent 'fix it' '- [ ] fix it #tier/3'
   pr_lane_verdict 'fix it'
   fill
   [ "$(state_of 'fix it')" = '- [/]' ] || fail "row not started"
-  [ -z "$(qfield "$(qitem queued gm-1)" profile)" ] || fail "fixture should carry no profile"
+  # Every tier-3 item names its profile now; drop the line to prove the default-profile hand-back still holds.
+  sed -i "/^profile: /d" "$(qitem queued gm-1)"
   agent-queue cancel gm-1
   run cmd_reap
   assert_output --partial 'un-started agent-runtime: gm-1 (queue item gm-1 ended cancelled)'
   [ "$(state_of 'fix it')" = '- [ ]' ] || fail "row left started"
 }
 
-@test "tier3 lane: the judge is asked for tier3_only on new rows, and keeps it" {
+@test "tier3 gate: the judge is asked for tier3_only on new rows, and keeps it" {
   pr_lane_ready
   row agent-runtime agent 'fix it' '- [ ] fix it #tier/3'
   cat > "$NOTES_FIXTURE/judge.out" <<'J'
@@ -2264,7 +2309,7 @@ J
   assert_equal "$(jq -r 'select(.t == (.queued | fromdateiso8601)) | .slug' <<<"$output" | sort | tr '\n' ' ')" 'p r '
 }
 
-@test "a queue item runs /one-shot in bypass mode, a tier3 item --pr-only, a plan item in plan mode" {
+@test "a queue item runs /one-shot in bypass mode, a tier3 item behind the red-fix gate, a plan item in plan mode" {
   project game beta "$SANDBOX/repos/game"
   stub wt 'printf "%s\n" "$WT_NEW_CMD" >> "$NOTES_FIXTURE/cmds.log"; echo "game-agent-1"'
   agent-queue add --project game --slug a "do a"
@@ -2275,7 +2320,9 @@ J
   run cat "$NOTES_FIXTURE/cmds.log"
   assert_line --index 0 --partial "AGENT_QUEUE_ITEM=a ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup,Artifact --session-id SID --permission-mode bypassPermissions"
   assert_output --partial '/one-shot do a'
-  assert_output --partial '/one-shot --pr-only do n'
+  assert_output --partial '/one-shot do n'
+  refute_output --partial -- '--pr-only'
+  assert_output --partial 'This is tier 3 (harness or tooling)'
   assert_output --partial "AGENT_QUEUE_ITEM=p ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup,Artifact --session-id SID --permission-mode plan --allow-dangerously-skip-permissions"
   refute_output --partial '/one-shot plan p'
   # An item with no board row still names itself in its PR body, and names no Task line.
