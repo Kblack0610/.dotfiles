@@ -238,7 +238,7 @@ EOF
 
 @test "snapshot stores the 7d and 28d reports; line and kpi read the newest, and kpi refuses a stale one" {
   export COMMS_SNAPSHOT_DIR="$SANDBOX/comms" KPI_THRESHOLDS="$SANDBOX/kpi-thresholds"
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"   # no PR bodies reach the sandbox
+  gh_script 'exit 1'   # no PR bodies reach the sandbox
   run "$SUBJECT" kpi --json
   assert_failure 1
   assert_output --partial "no comms snapshot"
@@ -268,9 +268,7 @@ EOF
 }
 
 @test "report scores merged PR bodies from gh, and says so when gh cannot answer" {
-  mkdir -p "$SANDBOX/bin"
-  cat > "$SANDBOX/bin/gh" <<'EOF'
-#!/usr/bin/env bash
+  gh_script <<'EOF'
 printf '%s\n' "$*" >> "$SANDBOX/gh.log"
 [ -f "$SANDBOX/gh.fail" ] && { echo "gh: offline" >&2; exit 1; }
 now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -278,8 +276,7 @@ long=$(printf 'word %.0s' $(seq 1 40))
 printf '[{"body":"Bodies are scored at land.\\n\\nRemoves: nothing.","closedAt":"%s","number":1,"repository":{"name":"r"}},' "$now"
 printf '{"body":"%s","closedAt":"%s","number":2,"repository":{"name":"r"}}]\n' "$long" "$now"
 EOF
-  chmod +x "$SANDBOX/bin/gh"
-  export SANDBOX PATH="$SANDBOX/bin:$PATH"
+  export SANDBOX
   run "$SUBJECT" report --since 1d --channel pr-body --json
   assert_success
   run grep -c -- '--author=@me --merged-at >=' "$SANDBOX/gh.log"

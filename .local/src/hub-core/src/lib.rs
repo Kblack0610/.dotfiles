@@ -9,6 +9,7 @@ pub mod alerts;
 pub mod app_status;
 pub mod artifact_store;
 pub mod audit;
+pub mod bar;
 pub mod boards;
 pub mod briefing;
 pub mod budget;

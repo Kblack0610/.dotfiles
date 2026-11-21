@@ -241,7 +241,22 @@ pub struct Product {
     pub depts: Vec<Dept>,
 }
 
+impl Dept {
+    /// The needs that are not ok: the number on the department's inner tab.
+    pub fn open_needs(&self) -> usize {
+        self.needs.iter().filter(|n| n.level != Level::Ok).count()
+    }
+}
+
 impl Product {
+    /// Each department's `open_needs`, by id.
+    pub fn open_needs(&self) -> BTreeMap<String, usize> {
+        self.depts
+            .iter()
+            .map(|d| (d.id.clone(), d.open_needs()))
+            .collect()
+    }
+
     pub fn key(&self) -> String {
         format!("{}/{}", self.profile, self.name)
     }
@@ -1214,6 +1229,41 @@ mod tests {
             "red before amber, worst need first; an ok need and an empty department add no group"
         );
         assert!(Product::default().need_groups().is_empty());
+    }
+
+    #[test]
+    fn a_departments_tab_count_is_its_needs_that_are_not_ok_and_overview_adds_them_to_the_works() {
+        let need = |level| Need {
+            level,
+            says: "x".into(),
+        };
+        let p = Product {
+            depts: vec![
+                Dept {
+                    id: "legal".into(),
+                    needs: vec![need(Level::Warn), need(Level::Bad), need(Level::Ok)],
+                    ..Default::default()
+                },
+                Dept {
+                    id: "product".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(p.open_needs()["legal"], 2);
+        assert_eq!(p.open_needs()["product"], 0);
+        let mut page = crate::page::Page {
+            need_groups: vec![crate::page::NeedGroup {
+                kind: "verify".into(),
+                says: String::new(),
+                items: vec!["a".into(), "b".into(), "c".into()],
+            }],
+            ..Default::default()
+        };
+        assert_eq!(page.overview_needs(None), 3);
+        page.with_department_needs(Some(&p));
+        assert_eq!(page.need_count, 5, "three of the work, two of Legal");
     }
 
     fn tmp(name: &str) -> PathBuf {

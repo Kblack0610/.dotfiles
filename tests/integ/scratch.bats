@@ -83,16 +83,12 @@ session_file() {
   assert_called "--session paste-idea-0ca2"
 }
 
-# A tmux in front of the stub: the attach "ends" with whatever a send would have left.
+# The stub with a hook in front of it: the attach "ends" with whatever a send would have left.
 attach_ends_with() {
-  mkdir -p "$SANDBOX/front"
-  cat > "$SANDBOX/front/tmux" <<EOF
-#!/usr/bin/env bash
+  tmux_script <<EOF
 case " \$* " in *" new-session "*) [ -n "$1" ] && { mkdir -p "${SCRATCH_HANDOFF%/*}"; printf '%s\n' "$1" > "$SCRATCH_HANDOFF"; } ;; esac
-exec "$SANDBOX/bin/tmux" "\$@"
+STUB_FALLTHROUGH=1
 EOF
-  chmod +x "$SANDBOX/front/tmux"
-  PATH="$SANDBOX/front:$PATH"
 }
 
 @test "open attaches the scratch on hub, in the directory it was opened from" {

@@ -53,6 +53,7 @@ pub async fn get(Query(q): Query<Q>) -> ApiResult<Json<View>> {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Edit {
     #[serde(default)]
     t: String,
@@ -91,6 +92,7 @@ pub async fn save(Json(e): Json<Edit>) -> Response {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Ack {
     key: String,
     ack: bool,

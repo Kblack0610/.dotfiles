@@ -5,13 +5,16 @@
 setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
+  load '../helpers/sandbox'
   WAIT="$BATS_TEST_DIRNAME/../../.local/bin/gh-run-wait"
   STUB="$BATS_TEST_TMPDIR/bin"
-  mkdir -p "$STUB"
+  # No sandbox_init: only the shared gh stub, with its fixture dir, on PATH.
+  export NOTES_FIXTURE="$BATS_TEST_TMPDIR/fixture" GH_FIXTURE="$BATS_TEST_TMPDIR/fixture"
+  mkdir -p "$STUB" "$NOTES_FIXTURE"
+  cp "$TESTS_DIR/helpers/stubs/gh" "$STUB/gh"
   # gh answers each call with the next line of $replies (the last line repeats), run through the
   # caller's --jq as gh does; a line "fail" exits 1 instead.
-  cat > "$STUB/gh" <<'SH'
-#!/usr/bin/env bash
+  gh_script <<'SH'
 echo "$*" >> "$BATS_TEST_TMPDIR/gh.log"
 n=$(( $(cat "$BATS_TEST_TMPDIR/n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$BATS_TEST_TMPDIR/n"
 line=$(sed -n "${n}p" "$BATS_TEST_TMPDIR/replies"); [ -n "$line" ] || line=$(tail -n 1 "$BATS_TEST_TMPDIR/replies")

@@ -237,13 +237,15 @@ test("the page's scripts share one global scope with no top-level name declared 
 });
 
 test("the badge is the server's count, `?` when the read failed, and blank only on a true 0", () => {
-  const spots = { "ask-badge": { innerHTML: "x" }, "menu-badge": { innerHTML: "x" } };
+  const spots = { "ask-badge": { innerHTML: "x" }, "menu-badge": { innerHTML: "x" }, "wait-badge": { innerHTML: "x" } };
   const getById = doc.getElementById;
   doc.getElementById = (id) => spots[id] || getById(id);
   try {
     const badge = (w) => { run("st.waiting = input.w; renderBadge()", { w }); return spots["ask-badge"].innerHTML; };
     assert.equal(badge({ count: 2, href: "#home" }), '<span class="badge">2</span>');
     assert.equal(spots["menu-badge"].innerHTML, '<span class="badge">2</span>', "the menu badge says the same");
+    assert.equal(badge({ count: 5, sessions: 3, href: "#home" }), '<span class="badge">5</span>');
+    assert.equal(spots["wait-badge"].innerHTML, '<span class="badge">3</span>', "Sessions' tab shows Waiting.sessions, not a count of its own");
     assert.equal(badge({ count: 0, href: "#home" }), "");
     assert.match(badge(null), /^<span class="badge" title="[^"]+">\?<\/span>$/, "a failed read is never drawn as 0");
   } finally {

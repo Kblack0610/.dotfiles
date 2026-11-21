@@ -84,7 +84,7 @@ Prometheus pages re-read every 60s (`PROM_REFRESH`; Prometheus has no push). Eve
 | `W`, Enter, `/` | Log: the Work table takes `/` query, `f` state, `s` sort, `S` flips, `x` clears, `d` steps its window; Esc clears the view, then gives the keys back. Enter and `/` take the table of the inner tab shown, Work's or Actions' |
 | `A`, Enter, `/` | Log on Actions: the table takes `/` query, `f` state, `s` sort, `S` flips, `x` clears; Esc clears the view, then gives the keys back |
 | `j`/`k`, Enter, Esc | Sessions: pick a session (PgUp/PgDn, space and `g`/`G` scroll the page), open or close its detail pane; with it closed Esc clears the query, chip and sort |
-| `/`, `f`, `s`, `S` | Sessions: type a query (Enter applies, Esc drops the draft; `project:dotfiles pr:open`, `item:none`, `source:queue`, `session:agent-3`), step the chip (All, Running, Needs you, Stalled, Done today), step the sort, flip it. `x` stays Stop here, so Esc clears |
+| `/`, `f`, `s`, `S` | Sessions: type a query (Enter applies, Esc drops the draft; `project:dotfiles pr:open`, `item:none`, `source:queue`, `session:agent-3`), step the chip (All, Running, Needs you, Stalled, Ended today), step the sort, flip it. `x` stays Stop here, so Esc clears |
 | `T` | Sessions: start a stopped timer; asks first, and says so when none is stopped |
 | `i` `p` `u` `m` `x` `c` `a` | Sessions: interrupt, park, unpark, move, stop, cancel, approve the plan of the selected session; each asks first |
 | `y`/Enter, `n`/Esc, Left/Right | Sessions, confirm armed: run it, drop it, pick the account a move goes to (a move only) |

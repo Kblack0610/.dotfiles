@@ -11,11 +11,7 @@ setup() {
 
   # gh is the one network-reaching call in the hook. Stub it so this test is hermetic and
   # does not depend on a runner having credentials (or a repo having a remote).
-  cat > "$SANDBOX/bin/gh" <<'EOF'
-#!/usr/bin/env bash
-exit 1
-EOF
-  chmod +x "$SANDBOX/bin/gh"
+  gh_script 'exit 1'
   # The lessons ranker, as stow deploys it onto PATH. CI has no stow.
   ln -s "$REPO_ROOT/.local/bin/lessons" "$SANDBOX/bin/lessons"
 
