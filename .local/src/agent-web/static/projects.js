@@ -133,12 +133,6 @@ function pSplit(arg) {
 // The arg naming what is open: the project, and its inner tab unless that is Overview.
 const pArg = () => pst.open + (pst.inner === "overview" ? "" : "/" + pst.inner);
 
-// One running item: its title (two lines at most), then its phases and estimate.
-function pRunning(r) {
-  const meta = [esc(phasesText(r)), etaText(r.phases)].filter(Boolean).join(", ");
-  return `<li><span class="prt">${esc(r.title)}</span>${meta ? `<span class="prm">${meta}</span>` : ""}</li>`;
-}
-
 // The opened card's top: its name and chips, profile and prio, then the release window (a meter
 // of delivered over committed rows and hub_core's cell; neither with no window, which the summary says), and hub_core's
 // summary word for word under it, every number named.
@@ -220,7 +214,7 @@ function pOverview(c, pg) {
       (note ? `<div class="muted">${esc(note)}</div>` : "") + `</div>`;
   }
   html += secHead("p-flight", "In flight", c.running.length) +
-    `<div class="card">${c.running.length ? `<ul class="prun">${c.running.map(pRunning).join("")}</ul>` : `<div class="muted">nothing running</div>`}` +
+    `<div class="card">${c.running.length ? `<div class="panel scroll">${runTable(c.running_table, c.running, true)}</div>` : `<div class="muted">nothing running</div>`}` +
     (c.counts ? `<div class="cline muted">${esc(c.counts)}</div>` : "") + `<div class="cline"><a href="#queue?q=${encodeURIComponent("project:" + c.name)}">this project's queue</a></div></div>`;
   if (pg) html += secHead("p-systems", "Systems", pg.systems.length) + pSysTable(pg.systems);
   return html;

@@ -305,10 +305,6 @@ button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 
 .pcard .ppct { font: 600 var(--fs-sm) var(--mono); min-width: 3.5em; text-align: right; }
 .pcard .psum { font-size: var(--fs-xs); color: var(--muted); overflow-wrap: anywhere; margin-bottom: 8px; }
 .pcard .pgoal { font-size: var(--fs-md); margin-bottom: 8px; overflow-wrap: anywhere; }
-.pcard .prun { list-style: none; margin: 0 0 8px; padding: 0; }
-.pcard .prun li { display: flex; flex-direction: column; padding: 6px 0 6px 10px; border-left: 3px solid var(--b-working); margin-bottom: 4px; font-size: var(--fs-sm); }
-.pcard .prt { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
-.pcard .prm { color: var(--muted); font-size: var(--fs-xs); }
 .pcard details .cfold { margin-left: 12px; }
 .pcard .psys { margin: 8px 0; padding: 2px 0 2px 14px; font-size: var(--fs-sm); color: var(--muted); }
 .pcard .ptl { font: var(--fs-xs) var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }

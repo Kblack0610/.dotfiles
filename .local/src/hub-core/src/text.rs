@@ -1,7 +1,8 @@
 //! Free text as a title: what a board row, a queue item or an ask is, in a few words, the same
 //! on every surface that shows it. [`clean`] is the one place a title loses what is not its
 //! words (a checkbox, a `type(area):`, a leading or bracketed id, a `#tag`, a marker comment);
-//! every title on every table comes through it, by [`title`] or [`headline`]. An id it takes out
+//! every title on every table comes through it, by [`title`] or [`headline`]. A leading slash
+//! command (`/one-shot ucp-2697: ...`) and backticks go too: a session prompt is no title. An id it takes out
 //! is a column of its own (the board's `id`, the queue's `row`), never part of a title.
 
 /// The longest title a view shows, in chars.
@@ -113,6 +114,29 @@ fn kind_of(head: &str) -> Option<(String, Option<String>)> {
     KINDS.contains(&head).then(|| (head.to_string(), None))
 }
 
+/// `text` without the slash commands it leads with (`/one-shot `, `/rigor /go `): a word of
+/// lowercase letters, digits and dashes behind one `/`. A path (`/tmp/x`, `/home/a/b.md`) has
+/// another `/` or a dot in its first word and stays, and so does a title that is only the word.
+fn strip_commands(text: &str) -> &str {
+    let mut t = text.trim_start();
+    while let Some(rest) = t.strip_prefix('/') {
+        let word = rest.split(char::is_whitespace).next().unwrap_or("");
+        let is_cmd = word.starts_with(|c: char| c.is_ascii_lowercase())
+            && word
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+        if !is_cmd {
+            break;
+        }
+        t = rest[word.len()..].trim_start();
+    }
+    if t.is_empty() {
+        text.trim_start()
+    } else {
+        t
+    }
+}
+
 /// `text` without its checkbox, marker comment, leading `type(area): ` labels and id prefixes
 /// (`apo-104 P2: `, `ucp-486, ucp-526: `, in any order), bracketed id lists (`(ar-1928)`) and
 /// `#tags` (a `#` and a letter; `#1980` is a PR and stays). Lines keep their breaks. Counted
@@ -125,7 +149,8 @@ pub fn clean(text: &str) -> Clean {
             t = r[3..].trim_start();
         }
     }
-    let mut t = t.split("<!--").next().unwrap_or(t).trim().to_string();
+    let t = t.split("<!--").next().unwrap_or(t).trim();
+    let mut t = strip_commands(t).replace('`', "");
     while let Some((head, rest)) = t.split_once(": ") {
         if let Some(ids) = ids_of(head) {
             out.ids.extend(ids);
@@ -544,6 +569,45 @@ mod tests {
             ("set accent to #fff", "then #a1b2c3 (ar-9)")
         );
         assert!(is_tag("#size/s") && is_tag("#urgent") && !is_tag("#fff") && !is_tag("#1980"));
+    }
+
+    #[test]
+    fn a_leading_slash_command_and_backticks_are_not_words_but_a_path_is() {
+        // The In flight title of 2026-11-21: a whole session prompt.
+        let c =
+            clean("/one-shot ucp-2697: PerfRun.SwapTo waits for `launcher.Current.id` to match");
+        assert_eq!(
+            c.text,
+            "PerfRun.SwapTo waits for launcher.Current.id to match"
+        );
+        assert_eq!(c.ids, ["ucp-2697"]);
+        assert_eq!(clean("/rigor /one-shot fix(x): the gate").text, "the gate");
+        assert_eq!(
+            clean("/go").text,
+            "/go",
+            "a title that is only a command stays, never an empty cell"
+        );
+        // A path, a mid-text command and a fraction stay as written.
+        assert_eq!(
+            clean("/home/a/plan.md: rewrite it").text,
+            "/home/a/plan.md: rewrite it"
+        );
+        assert_eq!(clean("/tmp/x and more").text, "/tmp/x and more");
+        assert_eq!(
+            clean("/ split the work").text,
+            "/ split the work",
+            "a slash and a space is not a command"
+        );
+        assert_eq!(
+            clean("/tmp").text,
+            "/tmp",
+            "a title that is only a command word is kept"
+        );
+        assert_eq!(clean("run /one-shot later").text, "run /one-shot later");
+        assert_eq!(
+            title("/one-shot ucp-2697: PerfRun.SwapTo waits").title,
+            "PerfRun.SwapTo waits"
+        );
     }
 
     #[test]
