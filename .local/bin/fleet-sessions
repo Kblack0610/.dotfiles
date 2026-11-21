@@ -354,7 +354,9 @@ git_checkout() {
 # queue_wait_min <cwd> [<claude pid>] -> the minutes the oldest FLEET_QUEUE_GATES process live_wait would
 # find has run, or nothing: how long the session has waited its landing turn (ar-2525: 2026-11-15
 # unity-core-playground-agent-3's gate-and-land.sh sat 3.5h behind #2733 with #2726 green). One `ps` of
-# the matched pids; a pid gone since the snapshot reads nothing.
+# the matched pids; a pid gone since the snapshot reads nothing. collect asks for a session whose open job is
+# queue and for one whose PR is held by the landing queue or a train, since a gate-and-land behind another
+# PR's re-check can read as another open job (ar-3486: agent-27 #2900 behind #2539 read overdue).
 queue_wait_min() {
   local pid cmd pids="" s
   while IFS=$'\t' read -r pid cmd; do
@@ -2155,8 +2157,6 @@ collect() {
     # A session waiting its landing turn carries how long its gate has waited and how deep its repo's
     # landing queue is, so the shepherd names a multi-hour wait on its own line (ar-2525).
     local qwait=- qdepth=-
-    # A PR held by the landing queue or a train waits too when its gate's process reads as another open job
-    # (gate-and-land behind another PR's re-check, ar-3486), so the gate's age is read for it as well.
     if [ "$host" = - ] && { [ "$ojob" = queue ] || [ -n "$wait_on" ]; }; then qwait="$(queue_wait_min "$cwd" "$cpid")"; qwait="${qwait:--}"; fi
     if [ "$g" = 1 ] && [ "$gd" != - ] && [ -n "$FLEET_QUEUE_LABEL" ] && { [ "$ojob" = queue ] || [ -n "$wait_on" ]; }; then
       qdepth="$(queue_depth "$gd")"; qdepth="${qdepth:--}"
