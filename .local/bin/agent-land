@@ -133,13 +133,15 @@ CHECKS_FIRST_RUN_TRIES="${AGENT_LAND_CHECKS_FIRST_RUN_TRIES:-20}"
 # it reads again, up to CHECKS_NET_TRIES times in one wait. It hit binks #1531 three times on
 # 2026-11-13. Only the last line is classified, and on GitHub only when no check reads as failed,
 # since a check's name may hold any of these words. A rate limit is not here: retrying it spends
-# the budget it ran out of.
+# the budget it ran out of. A status read the proxy in front of Forgejo still refuses after
+# so_forgejo_get's own tries (a plain-text 403; home-config #950 failed twice on 2026-11-14) has seen
+# no check fail either.
 CHECKS_NET_TRIES="${AGENT_LAND_CHECKS_NET_TRIES:-5}"
 net_error() {
   case "$(lastline "$1")" in
   *'connection reset by peer'* | *'Connection reset by peer'* | *'connection refused'* | *'Connection refused'* | \
     *'i/o timeout'* | *'TLS handshake timeout'* | *'context deadline exceeded'* | *'unexpected EOF'* | \
-    *'HTTP 500'* | *'HTTP 502'* | *'HTTP 503'* | *'HTTP 504'*) return 0 ;;
+    *'HTTP 500'* | *'HTTP 502'* | *'HTTP 503'* | *'HTTP 504'* | *'the proxy in front of Forgejo refused'*) return 0 ;;
   esac
   return 1
 }
