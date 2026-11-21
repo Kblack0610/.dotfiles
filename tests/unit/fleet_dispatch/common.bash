@@ -96,7 +96,6 @@ setup() {
   # The tuning these cases are written against: the code defaults of the keys the agentctl conf sets
   # hold every start ("a key the conf sets gets a neutral default"), and the sandbox has no conf.
   export DISPATCH_TARGET_PRESENT=50 DISPATCH_TARGET_AWAY=25 DISPATCH_MAX_LOAD=0.7 DISPATCH_MIN_IDLE=30 DISPATCH_LOW_WATER=3
-  export DISPATCH_T3_PROJECTS="agent-runtime notes-cockpit"
   export DISPATCH_REQUESTED_FLOOR=0   # its own cases below turn it on; every other case reads the board by the low water alone
   export DISPATCH_PROJECT_MAP="$SANDBOX/map.json"
   export DISPATCH_POLICY="$SANDBOX/policy.md"
@@ -531,20 +530,19 @@ codex_run() {
   stub pgrep "[ \"\$*\" = \"-u $(id -u) -f agent-codex (run|resume)\" ] || exit 2; for p in $pids; do echo \$p; done"
 }
 
-# --- tier 3 to an open PR (t3_picks) ---
+# --- tier 3 behind the red-fix gate (t3_picks) ---
 
-# pr_lane_ready: the agent-runtime board in the default profile, every gate passing.
+# pr_lane_ready: the agent-runtime board, every gate passing.
 pr_lane_ready() {
-  export DISPATCH_T3_PROFILE='' DISPATCH_T3_PROJECTS=agent-runtime
   project agent-runtime alpha "$SANDBOX/repos/app"
 }
 
-# pr_lane_verdict <key> [area] [tier3_only] [size] -- a tier-3 skip under the current policy for the row's text
+# pr_lane_verdict <key> [area] [tier3_only] [size] [project] -- a tier-3 skip under the current policy for the row's text
 pr_lane_verdict() {
   mkdir -p "$FLEET_DISPATCH_DIR"
-  jq -cn --arg k "$1" --arg a "${2-$1}" --argjson t3 "${3:-true}" --arg s "${4:-S}" --arg sig "$(policy_sig)" \
-    --arg line "$(line_of agent-runtime agent "$1")" \
-    '{project: "agent-runtime", lane: "agent", key: $k, verdict: "skip", size: $s, tier: 3, area: $a,
+  jq -cn --arg p "${5:-agent-runtime}" --arg k "$1" --arg a "${2-$1}" --argjson t3 "${3:-true}" --arg s "${4:-S}" --arg sig "$(policy_sig)" \
+    --arg line "$(line_of "${5:-agent-runtime}" agent "$1")" \
+    '{project: $p, lane: "agent", key: $k, verdict: "skip", size: $s, tier: 3, area: $a,
       clear: true, agent_only: true, tier3_only: $t3, rule: "tier3", reason: "tier 3", policy: $sig, line: $line}' \
     >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
 }
@@ -678,7 +676,6 @@ orphan_seen() {
 # the row stays started and no active item names it. The row file and calls.log are put back after the
 # move, which now closes the row of an ok close with no PR.
 landed_item() {
-  export DISPATCH_T3_PROFILE=bnb
   pr_item "$1"
   agent-queue set fix-crash pr= >/dev/null
   cp "$NOTES_FIXTURE/rows.game.agent" "$SANDBOX/rows.kept"
