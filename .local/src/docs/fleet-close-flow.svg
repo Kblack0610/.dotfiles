@@ -157,12 +157,12 @@
   <text class="label sm" x="345" y="1157">of its own</text>
   <path class="edge" d="M560,1149 H598"/>
   <rect class="now" x="600" y="1094" width="250" height="110" rx="20"/>
-  <text class="label sm" x="725" y="1109">NOW; /wind-down auto sets each own ask</text>
-  <text class="label sm" x="725" y="1125">to reopen it, so the answer carries on</text>
-  <text class="label sm" x="725" y="1141">without the window; a session that turns</text>
-  <text class="label sm" x="725" y="1157">its close down has its window closed by</text>
-  <text class="label sm" x="725" y="1173">fleet-shepherd check an hour later, its</text>
-  <text class="label sm" x="725" y="1189">asks set the same way first</text>
+  <text class="label sm" x="725" y="1109">NOW; the teardown sets each own pending</text>
+  <text class="label sm" x="725" y="1125">ask to reopen it, so the answer carries</text>
+  <text class="label sm" x="725" y="1141">on without the window; a session that</text>
+  <text class="label sm" x="725" y="1157">turns its close down has its window</text>
+  <text class="label sm" x="725" y="1173">closed by fleet-shepherd check an hour</text>
+  <text class="label sm" x="725" y="1189">later, its asks set the same way first</text>
   <rect class="lane" x="20" y="1228" width="840" height="44" rx="10"/>
   <rect class="keep" x="40" y="1238" width="160" height="24" rx="12"/>
   <text class="label sm" x="120" y="1250">KEEP: stays open</text>
