@@ -145,10 +145,12 @@ GH_COUNT_ONLY = re.compile(r"\s(?:-q|--jq)[\s=]+['\"]?\.total_count\b")
 # is a new pod, so a range function over a raw series holds one per pod in its
 # window. `.result[0]` of that is whichever pod Prometheus lists first:
 # unity-queue-wait tripped on a dead pod's 33 min while the live pool read 25 (ar-3437).
-# A query read by `.result[0]` needs an aggregation; one passed as a shell variable
-# (`query=$1`) is not checked.
+# A query read by `.result[0]` needs an aggregation. This is a heuristic: an
+# aggregation anywhere in the query passes, and a query passed as a shell variable
+# (`query=$1`) is not checked. A query is a quoted `"query=..."`, a bare
+# `query=...` argument, or a `?query=` / `&query=` URL parameter.
 PROM_FIRST_RESULT = re.compile(r"\.result\[0\]")
-PROM_QUERY = re.compile(r"""(["'])query=((?:\\.|(?!\1).)*)\1""")
+PROM_QUERY = re.compile(r"""(["'])query=((?:\\.|(?!\1).)*)\1|[\s?&]query=([^\s"'&|;]+)""")
 PROM_AGGREGATION = re.compile(
     r"\b(?:sum|min|max|avg|count|group|stddev|stdvar|topk|bottomk|quantile|count_values)"
     r"\s*(?:(?:by|without)\s*\([^)]*\)\s*)?\("
@@ -519,7 +521,7 @@ def prom_series_errors(doc):
         f"expect_cmd reads .result[0] of the query {query!r}, which has no aggregation; "
         "with several series (one per exporter pod after a rollout) it reads an arbitrary one. "
         "Wrap it in max(...), min(...) or sum(...)"
-        for query in (m.group(2) for m in PROM_QUERY.finditer(cmd))
+        for query in (m.group(2) if m.group(1) else m.group(3) for m in PROM_QUERY.finditer(cmd))
         if not query.startswith("$") and not PROM_AGGREGATION.search(query)
     ]
 

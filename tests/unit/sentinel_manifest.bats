@@ -273,6 +273,21 @@ listprobe() {
   assert_output --partial 'min_over_time(q{pool='
 }
 
+@test "--strict finds an unquoted query argument and a query URL parameter" {
+  local c
+  for c in "curl -sf -G \$P --data-urlencode query=min_over_time(q[6h]) | jq -er .data.result[0].value[1]" \
+    "curl -sf \"\$P?query=min_over_time(q[6h])\" | jq -er .data.result[0].value[1]" \
+    "curl -sf \"\$P?time=1&query=q\" | jq -er .data.result[0].value[1]"; do
+    listprobe "$c"
+    run "$SM" validate --strict "$M"
+    assert_failure
+    assert_output --partial 'no aggregation'
+  done
+  listprobe "curl -sf \"\$P?query=max(q)&time=1\" | jq -er .data.result[0].value[1]"
+  run "$SM" validate --strict "$M"
+  assert_success
+}
+
 @test "--strict accepts .result[0] of an aggregated query, in either quote" {
   listprobe "bash -c 'curl -sf -G \$P --data-urlencode \"query=min_over_time(max(q{pool=\\\"unity\\\"})[6h:5m])\" | jq -er \".data.result[0].value[1]\"'"
   run "$SM" validate --strict "$M"
