@@ -211,7 +211,7 @@ fn head_tag(content: &str, vocab: &[&str]) -> Option<String> {
 /// The file a project declares itself on: its working sheet, else its summary. A
 /// summary-only project (a prose brief, an archived stub) still gets to carry a tag.
 pub(crate) fn front_page(dir: &Path) -> PathBuf {
-    sheet_path(dir).unwrap_or_else(|| dir.join("summary.md"))
+    editable_sheet(dir).unwrap_or_else(|| dir.join("summary.md"))
 }
 
 /// A project's declared maturity, or `None` when it has not declared one.
@@ -659,7 +659,7 @@ fn lane_line(p: &Profile, target: &Path, name: &str) -> String {
 /// `summary.md` — so the hub `## Current` lane (and thus the daily note) point at the
 /// editable sheet, not the machine cockpit.
 fn lane_target(dir: &Path) -> PathBuf {
-    sheet_path(dir).unwrap_or_else(|| dir.join("summary.md"))
+    editable_sheet(dir).unwrap_or_else(|| dir.join("summary.md"))
 }
 
 /// Real (non-placeholder) entries in a lane.
@@ -1743,6 +1743,58 @@ pub(crate) fn sheet_path(dir: &Path) -> Option<PathBuf> {
     tasks.exists().then_some(tasks)
 }
 
+/// The lab dir of the project whose open version is project `dir`'s (stages.md, "Versions": a
+/// game built from the playground has no number of its own), or `None`. The registry names the
+/// parent ([`Registry::version_parent`]), and its dir is the sibling of the same name. A sheet
+/// that still carries its own `Version:` line keeps it: one number, never two read together.
+pub(crate) fn version_parent_dir(dir: &Path) -> Option<PathBuf> {
+    version_parent_dir_in(project_map::cached().as_deref(), dir)
+}
+
+fn version_parent_dir_in(reg: Option<&Registry>, dir: &Path) -> Option<PathBuf> {
+    if has_own_version(dir) {
+        return None;
+    }
+    let parent = reg?.version_parent(dir.file_name()?.to_str()?)?;
+    // The parent keeps its own `Version:` line, so the chain is one hop and never a cycle.
+    Some(dir.parent()?.join(parent)).filter(|d| d.is_dir() && has_own_version(d))
+}
+
+/// The lab dirs whose open version is project `dir`'s ([`version_parent_dir`]): the rows its
+/// window commits and scores beside its own.
+pub(crate) fn version_child_dirs(dir: &Path) -> Vec<PathBuf> {
+    version_child_dirs_in(project_map::cached().as_deref(), dir)
+}
+
+fn version_child_dirs_in(reg: Option<&Registry>, dir: &Path) -> Vec<PathBuf> {
+    let (Some(reg), Some(name), Some(up)) =
+        (reg, dir.file_name().and_then(|n| n.to_str()), dir.parent())
+    else {
+        return Vec::new();
+    };
+    reg.version_children(name)
+        .into_iter()
+        .map(|c| up.join(c))
+        .filter(|d| d.is_dir() && !has_own_version(d))
+        .collect()
+}
+
+/// The file a person edits for project `dir`: its working sheet, else, for a project its parent
+/// versions, the README that holds its rows and head tags with no `Version:` line.
+fn editable_sheet(dir: &Path) -> Option<PathBuf> {
+    sheet_path(dir).or_else(|| {
+        version_parent_dir(dir)?;
+        Some(dir.join("README.md")).filter(|p| p.is_file())
+    })
+}
+
+/// Whether project `dir`'s sheet declares a `Version:` of its own.
+fn has_own_version(dir: &Path) -> bool {
+    sheet_path(dir)
+        .and_then(|p| fs::read_to_string(p).ok())
+        .is_some_and(|c| sheet_version(&c).is_some())
+}
+
 /// A project's current version. The sheet's `Version:` line is the source of truth; a sheet
 /// that has lost it falls back to the highest note in `versions/`.
 ///
@@ -1783,6 +1835,10 @@ pub(crate) fn open_version(dir: &Path) -> Option<(u32, u32, u32)> {
         {
             return Some(v);
         }
+    }
+    // No `Version:` line of its own: a game the playground versions has the playground's.
+    if let Some(parent) = version_parent_dir(dir) {
+        return open_version(&parent);
     }
     // No `Version:` line: everything in `versions/` is already frozen, so open the next patch.
     Some(next_version(current_version(dir), Bump::Patch))
@@ -2696,8 +2752,14 @@ pub fn commit_window(
 ) -> Result<()> {
     let dir = project_dir(p, name)?;
     let content = read_or_empty(sheet_path(&dir));
-    let cur = sheet_version(&content)
-        .ok_or_else(|| anyhow::anyhow!("{name} has no `Version:` line, so no open window"))?;
+    let cur = sheet_version(&content).ok_or_else(|| match version_parent_dir(&dir) {
+        Some(up) => anyhow::anyhow!(
+            "{name} has no version of its own: its rows are in {}'s window, so commit that",
+            up.file_name()
+                .map_or_else(Default::default, |n| n.to_string_lossy())
+        ),
+        None => anyhow::anyhow!("{name} has no `Version:` line, so no open window"),
+    })?;
     if let Some(h) = hours {
         let max = f64::from(crate::window::MAX_SPRINT_MINUTES);
         let minutes = (h * 60.0).round();
@@ -3502,6 +3564,9 @@ struct ProjectStats {
     /// TSV keeps its columns, which several scripts read by position.
     prio: String,
     version: String,
+    /// The project whose open version this is, for a game with no number of its own
+    /// ([`version_parent_dir`]); null otherwise. JSON only: `project_version_owner` reads it.
+    version_parent: Option<String>,
     open: usize,
     done: usize,
     urgent: usize,
@@ -4071,6 +4136,8 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
         stage,
         prio: prio_of(dir),
         version: version_str(dir),
+        version_parent: version_parent_dir(dir)
+            .and_then(|p| Some(p.file_name()?.to_str()?.to_string())),
         open: c.open,
         done: c.done,
         urgent: c.urgent,
