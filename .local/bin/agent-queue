@@ -108,7 +108,7 @@ AQ_PR_TTL="${AGENT_QUEUE_PR_TTL:-120}"
 # A `nightly:<repo>` item waits on the scheduled-run facts schedules-sync writes, through its `pending` verb.
 AQ_SCHEDULES="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/schedules-sync"
 # An `ask:<id>[=<option>]` item waits on that agent-ask's answer, read from its file here.
-AQ_ASKS="${AGENT_ASK_DIR:-$HOME/.agent/asks}"
+AQ_ASKS="${AGENT_ASK_ROOT:-$HOME/.agent/asks}"
 # A `hold:<resource>` item waits while this tree's agent-hold says that resource is held.
 AQ_HOLD="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/agent-hold"
 # Of the items waiting on one resource, the best `desk:<class>` (agent-hold classes) starts once it
