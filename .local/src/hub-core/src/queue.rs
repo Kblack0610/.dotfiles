@@ -322,7 +322,7 @@ impl Item {
             .filter(|(p, id)| !p.is_empty() && !id.is_empty())
     }
 
-    /// Who queued it, the first word of `from`: `human`, `board`, `shepherd`, `auto`, `canary`, `item`.
+    /// Who queued it, the first word of `from`: `human`, `session`, `board`, `shepherd`, `auto`, `canary`, `item`, `ask`.
     pub fn source(&self) -> Option<&str> {
         said(&self.from).and_then(|f| f.split(':').next())
     }

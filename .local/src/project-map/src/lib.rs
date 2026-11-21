@@ -467,6 +467,19 @@ impl Registry {
             .collect()
     }
 
+    /// The lab projects of repo `repo`: `repo` itself, then every tracker whose `repo` is it, in the
+    /// file's order (`dotfiles` -> `dotfiles`, `notes-cockpit`, `agent-runtime`). The names notes
+    /// files rows under (`notes board --project`); the shell's `project_lab_names` is the same join.
+    pub fn lab_names(&self, repo: &str) -> Vec<String> {
+        let mut out = vec![repo.to_string()];
+        for (k, t) in self.trackers() {
+            if k != repo && t.get("repo").and_then(Value::as_str) == Some(repo) {
+                out.push(k.to_string());
+            }
+        }
+        out
+    }
+
     /// `trackers.<name>.code`: the 2-4 lowercase letters that prefix the project's row ids
     /// (`ar` in `ar-142`), when it is set and well formed. `project-map-doctor` checks it is
     /// unique.
@@ -651,6 +664,18 @@ mod tests {
 
     fn fixture() -> Registry {
         Registry::from_path(Path::new(FIXTURE_JSON)).expect("fixture registry")
+    }
+
+    #[test]
+    fn a_repos_lab_names_are_itself_then_each_tracker_filed_under_it() {
+        let r = Registry::parse(
+            r#"{"trackers": {"dot": {}, "cockpit": {"repo": "dot"}, "runtime": {"repo": "dot"},
+                "other": {"repo": "elsewhere"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(r.lab_names("dot"), ["dot", "cockpit", "runtime"]);
+        // NEGATIVE CONTROL: a repo nothing is filed under is only itself.
+        assert_eq!(r.lab_names("lonely"), ["lonely"]);
     }
 
     #[test]
