@@ -409,7 +409,8 @@ impl Infra {
     }
 
     /// The runners that are down: offline or missing, unless the governor has powered their host
-    /// off (`powered_off`). A registration on a host the topology lists no slot for is stale, not down. RED
+    /// off (`powered_off`). A Forgejo seat is offline by design until the governor lends it its
+    /// slot, and a registration on a host the topology lists no slot for is stale, not down. RED
     /// NOW on every surface and the phone's CI line read this, so none of them judges a runner
     /// itself. By host, then name.
     pub fn runners_down(&self) -> Vec<&Series> {
@@ -423,6 +424,7 @@ impl Infra {
             .iter()
             .filter(|s| matches!(s.label("state"), "offline" | "missing"))
             .filter(|s| !off.contains_key(s.label("host")))
+            .filter(|s| s.label("forge") != "forgejo")
             .filter(|s| {
                 hosts
                     .as_ref()
@@ -619,26 +621,16 @@ mod tests {
                 .map(|s| s.label("name").to_string())
                 .collect()
         };
-        // A cloud host with no power series and nothing online is off; with no topology answer
-        // every other offline runner, a Forgejo seat included, is down.
+        // A cloud host with no power series and nothing online is off, and a Forgejo seat is
+        // offline until its slot is lent; with no topology answer every other one is down.
         assert_eq!(i.powered_off().get("aws-spot-1"), Some(&"off"));
-        assert_eq!(
-            names(&i),
-            [
-                "ms-a2-unity-pool-2-forgejo",
-                "ms-a2-unity-pool-3",
-                "old-box-1"
-            ]
-        );
+        assert_eq!(names(&i), ["ms-a2-unity-pool-3", "old-box-1"]);
         // A host the topology gives no slot is a stale registration, not down.
         i.instant.insert(
             "expected",
             vec![cc("github_runner_pool_expected", ("host", "ms-a2"), 4.0)],
         );
-        assert_eq!(
-            names(&i),
-            ["ms-a2-unity-pool-2-forgejo", "ms-a2-unity-pool-3"]
-        );
+        assert_eq!(names(&i), ["ms-a2-unity-pool-3"]);
         // The topology names a host by its node name; a runner registered under the hostname
         // is the same machine.
         let mut uname = runner("", "workstation", "");
@@ -656,14 +648,7 @@ mod tests {
             ("host", "workstation"),
             2.0,
         ));
-        assert_eq!(
-            names(&i),
-            [
-                "gates-1",
-                "ms-a2-unity-pool-2-forgejo",
-                "ms-a2-unity-pool-3"
-            ]
-        );
+        assert_eq!(names(&i), ["gates-1", "ms-a2-unity-pool-3"]);
     }
 
     #[test]

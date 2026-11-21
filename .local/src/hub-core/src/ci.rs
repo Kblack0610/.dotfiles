@@ -441,8 +441,7 @@ pub fn glance(infra: &Infra) -> Glance {
 }
 
 /// Each machine's busy and slots, each physical slot once: a running runner, or an idle one not
-/// withheld. A local
-/// gate is no runner, so it is no slot: the governor's local seats count it, in units. The
+/// withheld. A local gate is no runner, so it is no slot: the governor's local seats count it, in units. The
 /// machines table and every CI header add this up.
 pub fn slots_by_host(infra: &Infra) -> BTreeMap<String, (u32, u32)> {
     let off = infra.powered_off();
