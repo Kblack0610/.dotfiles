@@ -4138,6 +4138,23 @@ prs_fixture() {
   assert_failure 2
 }
 
+@test "pipeline --check owner: an active item no session owns trips it; owned and queued items pass; an unreadable list exits 2" {
+  items_stub "$(item a queued high human)" "$(item b running high human '{"session":"lab/x:1"}')" \
+    "$(item c review high human '{"sessions":"lab/y:1"}')"
+  export BENCH_ITEMS_CMD=items-stub
+  run "$SUBJECT" pipeline --check owner
+  assert_success
+  assert_output ''
+  # NEGATIVE CONTROL: a running and a waiting item that lost their sessions
+  items_stub "$(item a queued high human)" "$(item d running high human)" "$(item e waiting high human '{"session":""}')"
+  run "$SUBJECT" pipeline --check owner
+  assert_failure 1
+  assert_output '2 running, review or waiting with no session: d (running), e (waiting)'
+  export BENCH_ITEMS_CMD=false
+  run "$SUBJECT" pipeline --check owner
+  assert_failure 2
+}
+
 @test "pipeline: a step carries the record's problems, and queued says why dispatch stopped" {
   pipeline_fixture
   jq -c '(.steps[] | select(.step == "running")) += {problems_n: 1, problems: [{ts: "t", subject: "r1", kind: "failed", why: "died", n: 1}]}' "$RJSON" > "$RJSON.new"
