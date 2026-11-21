@@ -1759,3 +1759,105 @@ stacked_pair() {
   assert_not_called 'wt new'
   [ -n "$(qitem queued second)" ] || fail "second left the queue"
 }
+
+# --- trainee-rollup ---------------------------------------------------------------------------
+
+# reject <harness> <model> <why> [days ago] -- one lane trainee run in model-lane's log that a review sent back
+reject() {
+  jq -nc --arg h "$1" --arg m "$2" --arg w "$3" --arg t "$(date -u -d "${4:-0} days ago" +%FT%T+00:00)" \
+    '{id: ("r" + ($t | gsub("[^0-9]"; ""))), ts: $t, lane: "trainee", ran: $m, harness: $h, outcome: "redo", why: $w, item: "ar-x"}' >> "$DISPATCH_LANE_RUNS"
+}
+
+rollup_setup() {
+  export DISPATCH_LANE_RUNS="$SANDBOX/runs.jsonl"
+  : > "$DISPATCH_LANE_RUNS"
+  : > "$NOTES_FIXTURE/rows.agent-runtime.agent"
+}
+
+@test "trainee-rollup: three 'left no diff' rejects on one pair file one row naming the pair; the next night files none" {
+  rollup_setup
+  for i in 1 2 3; do reject nim glm 'nim:glm left no diff'; done
+  # an approved run and another lane's reject are no rejects of a trainee
+  jq -nc '{ts: "2099-01-01T00:00:00+00:00", lane: "trainee", ran: "glm", harness: "nim", outcome: "ok"}' >> "$DISPATCH_LANE_RUNS"
+  jq -nc '{ts: "2099-01-01T00:00:00+00:00", lane: "sonnet", ran: "sonnet", outcome: "redo", why: "x left no diff"}' >> "$DISPATCH_LANE_RUNS"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  assert_success
+  assert_output --partial 'filed: fix(trainee): nim:glm runs keep leaving no diff (3 since'
+  run grep -c '^notes ptask agent-runtime --agent add ' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+  run grep -F 'add fix(trainee): nim:glm runs keep leaving no diff #size/s #of/ar-3691 #low --origin fleet-dispatch --detail 3 trainee rejects since' "$NOTES_FIXTURE/calls.log"
+  assert_success
+  assert_output --partial 'nim:glm 3. Fix it in how nim:glm runs, or drop the pair'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  assert_success
+  assert_output 'trainee-rollup: no new trainee rejects since '"$(date -u -d '7 days ago' +%F)"
+  run grep -c '^notes ptask agent-runtime --agent add ' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+}
+
+@test "trainee-rollup: two rejects of a cause, or three older than the window, file nothing" {
+  rollup_setup
+  for i in 1 2; do reject nim minimax "nim:minimax's session ended on a provider refusal or error (end provider: a rate limit), with no diff"; done
+  for i in 1 2 3; do reject agy flash 'agy:flash left no diff' 9; done
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  assert_success
+  assert_output 'under the bar (2 of 3): fix(trainee): nim:minimax runs keep ending on end provider (nim:minimax 2)'
+  assert_not_called 'ptask agent-runtime --agent add'
+}
+
+@test "trainee-rollup: a cause on two pairs names the harnesses, and an open row with its title is joined, not twinned" {
+  rollup_setup
+  why=" session ended on a provider refusal or error (end provider: a rate limit), with no diff"
+  reject nim minimax "nim:minimax's$why"; reject nim minimax "nim:minimax's$why"; reject ocfree beam "ocfree:beam's$why"
+  row agent-runtime agent ar-9 '- [ ] fix(trainee): trainee runs keep ending on end provider #low <!-- id:ar-9 -->'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  assert_success
+  assert_output --partial 'joined ar-9: fix(trainee): trainee runs keep ending on end provider (3 since'
+  assert_output --partial 'nim:minimax 2, ocfree:beam 1)'
+  assert_not_called 'ptask agent-runtime --agent add'
+  # with no open row it files one, and says which harnesses to look in
+  : > "$NOTES_FIXTURE/rows.agent-runtime.agent"; rm -f "$FLEET_DISPATCH_DIR/trainee-rollup.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  assert_output --partial 'filed: fix(trainee): trainee runs keep ending on end provider'
+  run grep -F 'Fix it in the harness or source (nim, ocfree): more than one model hits it.' "$NOTES_FIXTURE/calls.log"
+  assert_success
+}
+
+@test "trainee-rollup: a board it cannot read files nothing and fails; --dry files nothing and stamps nothing" {
+  rollup_setup
+  for i in 1 2 3; do reject nim glm 'nim:glm left no diff'; done
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup --dry
+  assert_success
+  assert_output --partial 'would file: fix(trainee): nim:glm runs keep leaving no diff (3 since'
+  [ ! -e "$FLEET_DISPATCH_DIR/trainee-rollup.tsv" ] || fail "--dry stamped a title"
+  stub notes 'exit 1'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  assert_failure
+  assert_output --partial 'cannot read the agent-runtime board, so no row is filed'
+}
+
+@test "trainee-rollup: a cause that spreads keeps its pair's row; a run with no reason counts; a torn line is skipped" {
+  rollup_setup
+  for i in 1 2 3; do reject nim glm 'nim:glm left no diff'; done
+  printf '{"ts": "2099-01-01T00:00:00+00:00", "lane": "trai\n' >> "$DISPATCH_LANE_RUNS"
+  for i in 1 2 3; do
+    jq -nc --arg t "$(date -u +%FT%T+00:00)" '{ts: $t, lane: "trainee", ran: "minimax", harness: "nim", outcome: "failed"}' >> "$DISPATCH_LANE_RUNS"
+  done
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  assert_success
+  assert_output --partial 'filed: fix(trainee): nim:glm runs keep leaving no diff (3 since'
+  assert_output --partial 'filed: fix(trainee): nim:minimax runs end with no reason recorded (3 since'
+  run grep -F -- '--detail e.g. no reason recorded (outcome failed)' "$NOTES_FIXTURE/calls.log"
+  assert_success
+  run cut -f1 "$FLEET_DISPATCH_DIR/trainee-rollup.tsv"
+  assert_output --partial 'keep leaving no diff'
+  # the no-diff cause spreads to a second pair: the open row naming nim:glm is joined, not twinned by a "trainee runs" one, and a longer title that starts the same is another cause
+  row agent-runtime agent ar-8 '- [ ] fix(trainee): nim:glm runs keep leaving no diff behind a lock #low <!-- id:ar-8 -->'
+  row agent-runtime agent ar-7 '- [ ] fix(trainee): nim:glm runs keep leaving no diff #low <!-- id:ar-7 -->'
+  for i in 1 2 3; do reject agy flash "agy:flash left no diff" -1; done   # dated tomorrow: newer than the stamp, whatever second it lands in
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  assert_success
+  assert_output 'joined ar-7: fix(trainee): trainee runs keep leaving no diff (3 since '"$(date -u -d '7 days ago' +%F)"': agy:flash 3)'
+  run grep -c '^notes ptask agent-runtime --agent add ' "$NOTES_FIXTURE/calls.log"
+  assert_output 2
+}
