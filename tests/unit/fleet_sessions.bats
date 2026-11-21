@@ -4325,10 +4325,11 @@ GH
   printf 'sleep 60\n' > "$SANDBOX/wt/scripts/test/gate-and-land.sh"
   (cd "$SANDBOX/wt" && exec -a x bash scripts/test/gate-and-land.sh) >/dev/null 2>&1 3>&- &
   LIVE_PIDS="$!"
-  until grep -q gate-and-land.sh "/proc/$LIVE_PIDS/cmdline" 2>/dev/null; do :; done
+  # the process is the event: wait until /proc shows its exec, bounded so a failed start fails the test
+  timeout 20 bash -c 'until grep -q gate-and-land.sh "/proc/$1/cmdline" 2>/dev/null; do :; done' _ "$LIVE_PIDS" || fail "gate stand-in never started"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -c '[.landing_queue, (.wait_min | type)]' <<<"$output")" = '[1,"number"]' ]
-  kill "$LIVE_PIDS"; wait "$LIVE_PIDS" 2>/dev/null || true; LIVE_PIDS=""
+  pkill -P "$LIVE_PIDS" || true; kill "$LIVE_PIDS" 2>/dev/null || true; wait "$LIVE_PIDS" 2>/dev/null || true; LIVE_PIDS=""   # its sleep child too
   # one label among others counts, and a green PR waits its landing turn too
   store PASS 'rides-alone,landing-queue' landing-queue
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
