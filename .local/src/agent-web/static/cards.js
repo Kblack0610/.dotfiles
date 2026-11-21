@@ -1,6 +1,6 @@
 "use strict";
-// The card hub_core::cards::Card words, drawn the one way Home's grid and the home-screen widget
-// (/widget, widget.js) both draw it. Needs ui.js's esc and NO_DATA.
+// The card hub_core::cards::Card words, drawn the way Home's grid draws it. Needs ui.js's esc and
+// NO_DATA.
 
 // One card per tab, as hub_core::cards words it: the big number in the card's hue, the bar of
 // its counted states, the labelled counts and where to look first. The title and the arrow open
