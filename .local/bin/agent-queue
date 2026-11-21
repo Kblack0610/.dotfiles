@@ -13,7 +13,7 @@
 #       --priority defaults to high only for an add by hand: one from a session ($CLAUDE_CODE_SESSION_ID or
 #       $AGENT_QUEUE_ITEM set) names it, except --running, --want, --dry-run and --check. A session's
 #       --plan queues at high at most: urgent stays for the human's own add, a red, and dispatch's promote.
-#       An add that links a row (--row, the title's row) with an explicit --priority retags that row.
+#       The human's own add that links a row (--row, the title's row) with an explicit --priority retags that row.
 #       --after holds the item until every slug it names closed ok: a comma or space list, and it repeats.
 #       A slug whose item is live with an open PR (open_pr:, set by agent-land before its checks, or a --pr-only run's pr:) does not hold: the item is stacked on it
 #       (hold_for HOLD_STACK, `stacked_on` in list --json; gate after/<row-id> clears with stack: <slug>), fleet-dispatch starts it in a worktree cut from that PR's
@@ -1942,8 +1942,13 @@ cmd_add() {
   [ -z "$story" ] || echo "story $srow on the $sboard agent board${epic:+, under $epic}"
   [ -z "$running" ] || mark_row "$f" run
   # A row filed before this add (--row, its title's row, a re-queue's row) takes the --priority the
-  # add named, since the order reads the row (row_prios); a story row was filed at it already.
-  [ -z "$story" ] || [ -z "$priority_given" ] || row_prio_write "$f" "$priority"
+  # human's own add named, since the order reads the row (row_prios); a story row was filed at it
+  # already. A session's add leaves a linked row as it is: every session names a priority (ar-2943),
+  # and its "low" would demote the human's #urgent row. It retags on purpose with bump.
+  if [ -n "$story" ] && [ -n "$priority_given" ] && [ -z "${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}" ]; then
+    [ -n "${AQ_LOCKED-}" ] || unlock # notes writes the row and can be slow; the rest only reads
+    row_prio_write "$f" "$priority"
+  fi
   [ -z "$running" ] && [ "${AGENT_QUEUE_START:-1}" = 1 ] || return 0
   # A --plan phase starts from add_plan, once its whole chain is written.
   [ -z "${AQ_ITEM_PLAN:-}" ] || return 0

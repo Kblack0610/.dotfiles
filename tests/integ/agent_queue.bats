@@ -4796,13 +4796,16 @@ row_item() {
   assert_output 0
 }
 
-@test "ar-3011: an add that links a filed row gives it the --priority it names; one with no --priority leaves the row's" {
+@test "ar-3011: the human's add that links a filed row gives it the --priority it names; one with no --priority, or a session's, leaves the row's" {
   story_notes
   run "$AQ" add --project level --row lv-7 --priority urgent --slug linked "work lv-7"
   assert_success
   grep -q -- 'ptask level --agent tag --add urgent lv-7' "$NOTES_FIXTURE/calls.log"
   : > "$NOTES_FIXTURE/calls.log"
   run "$AQ" add --project level --row lv-8 --running --slug mine "work lv-8"
+  assert_success
+  # NEGATIVE CONTROL: a session's add names a priority every time, so its low never demotes the row.
+  CLAUDE_CODE_SESSION_ID=sid-a AGENT_QUEUE_START=0 run "$AQ" add --project level --row lv-9 --priority low --slug sess "work lv-9"
   assert_success
   run grep -c ' tag ' "$NOTES_FIXTURE/calls.log"
   assert_output 0
