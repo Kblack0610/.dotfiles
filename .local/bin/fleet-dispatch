@@ -203,6 +203,7 @@ DISPATCH_PROC="${DISPATCH_PROC:-/proc}"                                         
 CODEX_ROLLOUT_JQ="${DISPATCH_CODEX_ROLLOUT_JQ:-$HOME/.local/lib/codex-rollout.jq}"
 OC_SESSION_JQ="${DISPATCH_OPENCODE_SESSION_JQ:-$HOME/.local/lib/opencode-session.jq}"
 OC_DB="${DISPATCH_OPENCODE_DB:-$HOME/.local/share/opencode/opencode.db}"   # the shared opencode.db, where item_end reads why a go or nim run ended
+LANE_RUNS="${DISPATCH_LANE_RUNS:-$HOME/.agent/model-lane/runs.jsonl}"   # model-lane's run log: trainee_load reads which slugs a ladder run took
 AGY_RUNS="${DISPATCH_AGY_RUNS:-$HOME/.agent/agy/runs}"   # each agy run's log (agent-agy), srt settings and tmp: where item_end reads why it ended
 AGY_RESULT_JQ="${DISPATCH_AGY_RESULT_JQ:-$HOME/.local/lib/agy-result.jq}"
 HARNESSES="${DISPATCH_HARNESSES:-$HOME/.config/agentctl/harnesses.json}"   # the gateway harnesses: model map, timeout, key files
@@ -2475,6 +2476,9 @@ direct_why() {
 # trainee_load -- the trainee block of lanes.yaml (`model-lane trainee`) in TRAINEE_CONF, read once in
 # this shell so the checks route() runs in subshells reuse it; {} (no trainee lane) when it cannot be read.
 trainee_load() {
+  # The slugs a ladder run already took (lane trainee in model-lane's run log), one read a pass: a board row
+  # promoted again has a fresh queue item with no `.trainee`, so the log is the one record of the first try.
+  [ -n "${TRAINEE_TRIED+x}" ] || TRAINEE_TRIED=$(jq -rR 'fromjson? | select(.lane == "trainee") | .item // empty' "$LANE_RUNS" 2>/dev/null | sort -u)
   [ -z "${TRAINEE_CONF:-}" ] || return 0
   TRAINEE_CONF=$(model-lane trainee 2>/dev/null) && jq -e 'type == "object"' <<<"$TRAINEE_CONF" >/dev/null 2>&1 || TRAINEE_CONF='{}'
 }
@@ -2487,7 +2491,8 @@ item_points() { jq -r 'first((.points | tostring | select(test("^[0-9]+$"))), ((
 # ladder_row_why <item json> <who> [tiers] [tier3 share] -> why no sandboxed ladder run (a trainee's or
 # a direct one) takes the item, rc 1, or nothing: it takes a row whose kind opens a PR at a tier in
 # <tiers> (default 1), not a plan, a canary, a verify or review item, one that names its own model, or
-# one a ladder run took before (`trainee:` or `direct:`, so a rejected or failed row goes to claude).
+# one a ladder run took before (`trainee:` or `direct:`, or a lane trainee run in model-lane's log under its
+# slug, so a rejected or failed row goes to claude).
 # With a share N above 0, a tier-3 row tier3_pick takes is let through too. <who> names the run.
 ladder_row_why() {
   local it="$1" who="$2" tiers="${3:-1}" share="${4:-0}" tags tier kind prev
@@ -2496,6 +2501,8 @@ ladder_row_why() {
     { echo "it is a canary, verify or review item"; return 1; }
   prev=$(jq -r '.trainee // .direct // empty' <<<"$it")
   [ -z "$prev" ] || { echo "a ladder run took it once already ($prev)"; return 1; }
+  trainee_load
+  [ -z "$TRAINEE_TRIED" ] || ! grep -qxF -- "$(jq -r '.slug // "-"' <<<"$it")" <<<"$TRAINEE_TRIED" || { echo "a ladder run took it once already (model-lane's run log)"; return 1; }
   [ -z "$(claude_pin "$it")" ] || { echo "it names its own model"; return 1; }
   [ "$(jq -r .mode <<<"$it")" != plan ] || { echo "it is a plan item"; return 1; }
   tier=$(item_tier "$it")
@@ -7143,28 +7150,38 @@ cmd_promote() {
 
 # cmd_pull_after <row id> -- the open board rows gated #after/<row id>, pulled the moment that row's item
 # closed ok (agent-queue pull_after), so a plan's next phase takes the slot the closing session frees and
-# waits for no pass. Each is promoted as a pass would (its other gates and the cap still hold it: promote,
-# agent-queue admission), and an urgent or high one started at once (start --item); a low one waits for a
+# waits for no pass. Each is promoted as a pass would (its other gates still hold it: promote), its add
+# a pull of AGENT_QUEUE_PULL=after, for which agent-queue's cap makes room (make_room) rather than hold
+# it, since a held row waits for a pass and a pass never takes the backlog tier; a row it could not
+# queue gets a log line. An urgent or high one started at once (start --item); a low one waits for a
 # pass in its turn (agent-queue waits_turn). The row it waited on may still read open (an item with a PR
 # closes its row at the merge, after this move), so its after/ counts clear here: the ok close is the
 # proof. Under the dispatch hold (agent-hold) nothing is pulled; the pass after the release does it.
 cmd_pull_after() {
-  local id=${1-} board c pri
+  local id=${1-} board c pri err kept='' rc
   [ -n "$id" ] || { say "usage: fleet-dispatch pull-after <row id>"; return 2; }
   agent-hold check dispatch >/dev/null 2>&1 || { say "pull-after $id: dispatch is held, so the rows after it wait for a pass"; return 0; }
   board=$(notes board --json 2>/dev/null) || { say "pull-after $id: notes board --json failed, so a pass promotes the rows after it"; return 1; }
   load_gates
   GATE_ST[after/$id]=clear
+  err=$(mktemp) || return 1
   while IFS= read -r c; do
     [ -n "$c" ] || continue
     PROMOTED=''
+    # Its reason goes to the log too: the closing session's stderr is gone once it ends. AQ_ROOM_KEEP
+    # stops this pull's adds returning the rows it already queued to make room (agent-queue make_room).
+    rc=0; AQ_ROOM_KEEP="$kept" promote "$c" "" "$(jq -r .raw <<<"$c" | sed 's/^- \[.\] //')" 2>"$err" || rc=$?
+    cat "$err" >&2
+    [ "$rc" = 0 ] || { logline "pull-after $id: row $(jq -r .key <<<"$c") was not queued: $(tail -n 1 "$err" | sed 's/^fleet-dispatch: //')"; continue; }
     # A plan row whose chain filed every phase on its own row queued nothing to start.
-    promote "$c" "" "$(jq -r .raw <<<"$c" | sed 's/^- \[.\] //')" && [ -n "$PROMOTED" ] || continue
+    [ -n "$PROMOTED" ] || continue
+    kept="$kept $PROMOTED"
     pri=$(agent-queue show "$PROMOTED" --json 2>/dev/null | jq -r '.priority // empty')
     if [ "$pri" = low ]; then say "pull-after $id: $PROMOTED is low priority, so a pass starts it in its turn"; continue; fi
     cmd_start --item "$PROMOTED" || say "pull-after $id: $PROMOTED could not start now, so it stays queued for a pass"
   done < <(jq -c --arg g "after/$id" '.rows[]? | select(.state == "open" and .id != null and ((.tags // []) | index($g)))
     | {profile: (.profile // ""), project, lane, key: .id, raw: (.raw // .text // "")}' <<<"$board")
+  rm -f "$err"
   return 0
 }
 
@@ -7340,7 +7357,7 @@ main() {
     suggest) shift; if [ "${1:-}" = --write ]; then candidates_write; else cmd_suggest "$@"; fi ;;
     fill) shift; cmd_fill "$@" ;;
     promote) shift; PULL=$(start_pull) cmd_promote "$@" ;;
-    pull-after) shift; PULL=dispatch cmd_pull_after "$@" ;;
+    pull-after) shift; PULL=after cmd_pull_after "$@" ;;
     report) cmd_report ;;
     verdicts) cmd_verdicts ;;
     reap) cmd_reap ;;

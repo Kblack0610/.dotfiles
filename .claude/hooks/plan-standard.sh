@@ -51,8 +51,10 @@ if [ "$event" = UserPromptSubmit ]; then
   tp=$(jq -r '.transcript_path // empty' <<<"$INPUT")
   [ -n "$tp" ] && [ -r "$tp" ] && grep -qF "Plan standard for $label." "$tp" && exit 0
   sections=$(rows | awk -F'\t' '{print "- ## " $1 ": " $2}')
+  # A rule's "Why:" history is for editing the doc; the deny below names any gap.
   rules=$(grep -E '^(Scaling|Depth|Chain): ' "$DOC")
   ! epic_checked || rules+=$'\n'$(grep -E '^Epic: ' "$DOC")
+  rules=$(sed -E 's/ Why: .*//' <<<"$rules")
   jq -nc --arg c "Plan standard for $label. The plan must carry these sections, and ExitPlanMode is denied without them:
 $sections
 $rules

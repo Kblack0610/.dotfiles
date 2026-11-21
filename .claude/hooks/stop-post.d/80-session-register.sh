@@ -11,7 +11,10 @@
 #     carries the cost and the runner's name in `agentctl` (outcome rows already use
 #     `runner` as a boolean). Pure Q&A / read-only by hand -> no entry.
 #   - Upsert by session_id: exactly ONE line per session, not per turn.
-#   - Self-heals: drops lines whose transcript file no longer exists.
+#   - Self-heals: drops lines whose transcript file no longer exists, but only lines
+#     this machine wrote (`host`). store-sync shares the registry across the fleet, so
+#     another host's transcript is always missing here; a row with no `host` predates
+#     the field and is kept, since nothing says which machine holds its transcript.
 
 set -uo pipefail
 
@@ -95,11 +98,16 @@ if command -v agent-usage >/dev/null 2>&1; then
   printf '%s' "$USAGE" | jq -e . >/dev/null 2>&1 || USAGE=""
 fi
 
+# This machine's short name, from the fleet roster lib (FLEET_HOST). Unknown -> no prune.
+# shellcheck source=../../../.local/lib/fleet-hosts.sh
+. "${FLEET_HOSTS_LIB:-$HOME/.local/lib/fleet-hosts.sh}" 2>/dev/null || true
+HOST="${FLEET_HOST:-}"
+
 REG_DIR="$HOME/.agent/sessions/$PROJECT_NAME"
 REG="$REG_DIR/sessions.jsonl"
 mkdir -p "$REG_DIR" 2>/dev/null || exit 0
 
-# --- upsert + self-heal: rewrite dropping this id and any dead transcripts ---
+# --- upsert + self-heal: rewrite dropping this id and this host's dead transcripts ---
 # Under a lock: two Stops that read the same registry would each mv their copy over it, and
 # the second drops the first's row. Runner passes made that common. No flock on macOS.
 exec 9>>"$REG.lock"
@@ -110,14 +118,15 @@ TMP=$(mktemp 2>/dev/null) || exit 0
 # strings; pass 2 filters. Raw input (-R) so an unparseable line is kept verbatim, as
 # before, instead of aborting the pass and truncating the registry.
 if [ -f "$REG" ]; then
-  DEAD=$(jq -rR 'try (fromjson | .transcript // empty | strings) catch empty' "$REG" 2>/dev/null \
+  DEAD=""
+  [ -n "$HOST" ] && DEAD=$(jq -rR --arg host "$HOST" 'try (fromjson | select(.host == $host) | .transcript // empty | strings) catch empty' "$REG" 2>/dev/null \
          | sort -u | while IFS= read -r p; do [ -f "$p" ] || printf '%s\n' "$p"; done)
-  jq -nrR --arg sid "$SID" --arg dead "$DEAD" '
+  jq -nrR --arg sid "$SID" --arg dead "$DEAD" --arg host "$HOST" '
     ($dead | split("\n") | map(select(length > 0)) | INDEX(.)) as $d
     | inputs | select(length > 0) | . as $raw
     | (try fromjson catch null) as $o
     | select((try ($o.session_id // "") catch "") != $sid)
-    | select($d[(try ($o.transcript // "") catch "") | tostring] | not)
+    | select((try ($host != "" and $o.host == $host and $d[($o.transcript // "") | tostring] != null) catch false) | not)
     | $raw' "$REG" >> "$TMP" 2>/dev/null
 fi
 
@@ -134,9 +143,11 @@ jq -nc \
   --argjson usage "${USAGE:-null}" \
   --arg harness "${AGENT_HARNESS:-claude}" \
   --arg agentctl "$AGENTCTL" \
+  --arg host "$HOST" \
   '{session_id:$sid, project:$project, transcript:$transcript, resume:$resume, first_prompt:$first_prompt, edits:$edits, head_commit:$head_commit, title:$title, updated:$updated,
     harness:$harness}
    + (if $agentctl == "" then {} else {agentctl: $agentctl} end)
+   + (if $host == "" then {} else {host: $host} end)
    + (if $usage == null then {} else {
         cost_usd:      $usage.cost_usd,
         usage_source:  $usage.usage_source,
