@@ -5944,15 +5944,17 @@ cmd_starved() {
     [.[] | select((.priority == "urgent" or .priority == "high") and .t != null and .t < $cut)
       | select($max <= 0 or .priority == "urgent" or ((" " + (.tags // "") + " ") | contains(" red ")) or ($w[.project // ""] // 0) < $max)]
     | sort_by(.t) | .[] | "\(.slug) (\(.priority)\(if ((" " + (.tags // "") + " ") | contains(" red ")) then ", red" else "" end), queued \(.queued))"' <<<"$queue") || { echo "agent-queue unreadable"; return 1; }
-  board=$(board_starved "$cut")
+  # A fleet at its pace target never reaches the fill, so its unjudged rows wait (below): no scan.
+  board=''; [ -n "$TOTAL_LIVE" ] && [ "$TOTAL_LIVE" -ge "$TARGET" ] || board=$(board_starved "$cut")
   low=$(low_starved "$(( cut - DISPATCH_STARVED_MIN * 60 ))")
   [ -n "$stopped$items$board$low" ] || { [ -z "$dead" ]; return; }
   # A full fleet is working, not blocked (cmd_run): at its pace target no pass starts a high item,
-  # so one waits on sessions finishing. Only that case holds: an urgent item may preempt a runner
-  # session there, and the red and human floors go past the target, so a red item, an approved plan's
-  # ready phase, a standing hold, board or low water still trips. On 11-11 this tripped 4h at
-  # 42 of 25 live sessions. Once the fleet is under its target, a waiting item trips it at once.
-  if [ -n "$TOTAL_LIVE" ] && [ "$TOTAL_LIVE" -ge "$TARGET" ] && [ -z "$stopped$board$low$plans" ] &&
+  # so one waits on sessions finishing, and no pass reaches the fill there, so unjudged board rows
+  # wait too (board_starved is not read). Only that case holds: an urgent item may preempt a runner session there, and the red
+  # and human floors go past the target, so a red item, an approved plan's ready phase, a standing
+  # hold or low water still trips. On 11-11 this tripped 4h at 42 of 25 live sessions. Once the
+  # fleet is under its target, a waiting item trips it at once.
+  if [ -n "$TOTAL_LIVE" ] && [ "$TOTAL_LIVE" -ge "$TARGET" ] && [ -z "$stopped$low$plans" ] &&
     ! grep -qE '\(urgent, |, red, ' <<<"$items"; then
     echo "held by a full fleet ($TOTAL_LIVE live sessions, the $TARGET_WHEN pace target is $TARGET$NEEDS_NOTE), so nothing is starved"
     [ -z "$dead" ]; return
@@ -6016,16 +6018,14 @@ low_starved() {
   echo "runnable $depth under the low water $DISPATCH_LOW_WATER with no run start since $(date -d "@$1" +%H:%M), and $n board row(s) a pass would pick"
 }
 
-# board_starved <cut epoch> -> a line naming the unjudged rows when the board has some, no verdict
-# was written since <cut>, and the human has been away since before <cut> (rows judge only then);
-# else nothing. An `error` verdict counts as written, and so does a budget stop's touch: a pass whose
-# judge fails or stops already publishes FAILED or BLOCKED (settle), which fleet-liveness reads.
+# board_starved <cut epoch> -> a line naming the unjudged rows when the board has some and no verdict
+# was written since <cut>, the human here or away (a pass judges either way); else nothing. An `error`
+# verdict counts as written, and so does a budget stop's touch: a pass whose judge fails or stops
+# already publishes FAILED or BLOCKED (settle), which fleet-liveness reads.
 board_starved() {
-  local judged state mins n
+  local judged n
   judged=$(stat -c %Y "$VERDICTS" 2>/dev/null || echo 0)
   [ "$judged" -lt "$1" ] || return 0
-  read -r state mins _ < <(fleet-presence 2>/dev/null)
-  [ "$state" = away ] && [ "${mins:-0}" -ge "$DISPATCH_STARVED_MIN" ] 2>/dev/null || return 0
   n=$(unjudged_rows | grep -c . || true)
   [ "$n" -gt 0 ] || return 0
   if [ "$judged" = 0 ]; then judged=never; else judged=$(date -d "@$judged" -Iminutes); fi
