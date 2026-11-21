@@ -2953,17 +2953,18 @@ rollup_causes() {
 # cause, whichever pair it names. Each cause filed or joined is stamped in $DIR/trainee-rollup.tsv (cause
 # TAB UTC time; a stamp older than the window is dropped), so the next night counts only newer rejects.
 # fleet-dispatch is a direct filer, so the row goes on the board; it goes through the queue and review like
-# any other row, and nothing here patches anything. nightly-measure runs it.
+# any other row, and nothing here patches anything. nightly-measure runs it, so each pass declares its
+# outcome (rollup_done): WORKED when it filed or joined a row, NOOP when no cause cleared the bar, FAILED.
 cmd_trainee_rollup() {
-  local dry=0 stamps since board lines cause title n pairs hs why hit where rc out=0 now f="$DIR/trainee-rollup.tsv"
+  local dry=0 stamps since board lines cause title n pairs hs why hit where rc out=0 acted=0 now f="$DIR/trainee-rollup.tsv"
   [ "${1:-}" != --dry ] || dry=1
-  [ -r "$LANE_RUNS" ] || { say "trainee-rollup: no run log at $LANE_RUNS"; return 1; }
+  [ -r "$LANE_RUNS" ] || { say "trainee-rollup: no run log at $LANE_RUNS"; rollup_done "$dry" FAILED "no run log at $LANE_RUNS"; return; }
   stamps=$(jq -Rsc 'split("\n") | map(select(length > 0) | split("\t") | {(.[0]): .[1]}) | add // {}' "$f" 2>/dev/null) || stamps='{}'
   now=$(date -u +%FT%T)
   since=$(date -u -d "@$(( $(date +%s) - DISPATCH_ROLLUP_DAYS * 86400 ))" +%FT%T)
-  lines=$(rollup_causes "$since" "$stamps") || { say "trainee-rollup: could not read $LANE_RUNS"; return 1; }
-  [ -n "$lines" ] || { echo "trainee-rollup: no new trainee rejects since ${since%T*}"; return 0; }
-  board=$(notes ptask "$DISPATCH_ROLLUP_BOARD" --agent list 2>/dev/null) || { say "trainee-rollup: cannot read the $DISPATCH_ROLLUP_BOARD board, so no row is filed"; return 1; }
+  lines=$(rollup_causes "$since" "$stamps") || { say "trainee-rollup: could not read $LANE_RUNS"; rollup_done "$dry" FAILED "could not read $LANE_RUNS"; return; }
+  [ -n "$lines" ] || { echo "trainee-rollup: no new trainee rejects since ${since%T*}"; rollup_done "$dry" NOOP "no new trainee rejects"; return; }
+  board=$(notes ptask "$DISPATCH_ROLLUP_BOARD" --agent list 2>/dev/null) || { say "trainee-rollup: cannot read the $DISPATCH_ROLLUP_BOARD board, so no row is filed"; rollup_done "$dry" FAILED "cannot read the $DISPATCH_ROLLUP_BOARD board"; return; }
   while IFS=$'\t' read -r cause title n pairs hs why; do
     if [ "$n" -lt "$DISPATCH_ROLLUP_MIN" ]; then echo "under the bar ($n of $DISPATCH_ROLLUP_MIN): $title ($pairs)"; continue; fi
     # the whole cause, up to the row's tags or marker: a longer title that starts the same is another cause
@@ -2988,11 +2989,24 @@ cmd_trainee_rollup() {
       esac
     fi
     stamps=$(jq -c --arg c "$cause" --arg n "$now" '.[$c] = $n' <<<"$stamps")
+    acted=$((acted + 1))
   done <<<"$lines"
   [ "$dry" = 1 ] && return "$out"
   { mkdir -p "$DIR" && jq -r --arg s "$since" 'to_entries[] | select(.value >= $s) | [.key, .value] | @tsv' <<<"$stamps" > "$f.tmp" && mv -f "$f.tmp" "$f"; } ||
     { say "trainee-rollup: could not write $f"; out=1; }
-  return "$out"
+  if [ "$out" != 0 ]; then rollup_done 0 FAILED "the $DISPATCH_ROLLUP_BOARD board refused a row, or $f was not written"
+  elif [ "$acted" -gt 0 ]; then rollup_done 0 WORKED "$acted cause(s) filed or joined"
+  else rollup_done 0 NOOP "no cause reached $DISPATCH_ROLLUP_MIN rejects"; fi
+}
+
+# rollup_done <dry> <verdict> <words> -- a trainee-rollup pass's outcome under agentctl, which reads a step
+# that declares none as STALLED (agentctl-steps), and its status: 1 for FAILED, else 0. --dry declares nothing.
+rollup_done() {
+  if [ "$1" = 0 ]; then
+    # shellcheck source=/dev/null
+    . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null && proof_runner_outcome "$2" "$3" 2>/dev/null
+  fi
+  [ "$2" != FAILED ]
 }
 
 # ladder_back <slug> <note> -- a ladder run's row back to the normal queue on claude, the note saying

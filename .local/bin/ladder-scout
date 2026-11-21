@@ -5,6 +5,10 @@
 
 set -uo pipefail
 
+HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+# shellcheck source=../lib/agent-proof.sh
+. "$HERE/../lib/agent-proof.sh"
+
 SOURCES="${LADDER_SCOUT_SOURCES:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-acct/sources}"
 HARNESSES="${LADDER_SCOUT_HARNESSES:-${XDG_CONFIG_HOME:-$HOME/.config}/agentctl/harnesses.json}"
 CANARY_LANES="${LADDER_SCOUT_CANARY_LANES:-${XDG_CONFIG_HOME:-$HOME/.config}/fleet-bench/canary-lanes}"
@@ -23,12 +27,16 @@ case "${1:-}" in
     *) sed -n '3,4p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac
 
+# report VERDICT WORDS: this pass's outcome under agentctl (the nightly-measure step), which reads a
+# step that declares none as STALLED; -n declares nothing.
+report() { [[ -n "$dry" ]] || proof_runner_outcome "$@"; }
+
 mkdir -p "$STATE"
 filed="$STATE/filed.tsv"
 touch "$filed"
 
 # The roster as lanes.yaml lists it, each pair with whether `model-lane trainee` admits it now.
-listed=$("$MODEL_LANE" trainee --listed 2>/dev/null) || { echo "ladder-scout: model-lane trainee --listed failed" >&2; exit 1; }
+listed=$("$MODEL_LANE" trainee --listed 2>/dev/null) || { echo "ladder-scout: model-lane trainee --listed failed" >&2; report FAILED "model-lane trainee --listed failed"; exit 1; }
 
 # file_row <key> <title> <detail...>: one board row for the key, once per REFILE_DAYS.
 file_row() {
@@ -45,14 +53,15 @@ file_row() {
     for d in "$@"; do args+=(--detail "$d"); done
     "$NOTES" ptask agent-runtime --agent add "${args[@]}" "$title" </dev/null >/dev/null 2>&1; rc=$?
     case $rc in
-        0|3|4) printf '%s\t%s\n' "$key" "$NOW" >> "$filed"; echo "  row: $title (exit $rc)" ;;   # 3 a twin is open, 4 the outbox has it
+        0|3|4) printf '%s\t%s\n' "$key" "$NOW" >> "$filed"; sent=$((sent + 1)); echo "  row: $title (exit $rc)" ;;   # 3 a twin is open, 4 the outbox has it
         5) echo "  $key: notes wants its shortlist read first (a hand run); run from the runner to file" >&2 ;;
-        *) echo "  could not file the row for $key (notes exit $rc)" >&2; bad=1 ;;
+        *) echo "  could not file the row for $key (notes exit $rc)" >&2; bad="${bad:+$bad, }row for $key refused (notes exit $rc)" ;;
     esac
 }
 
 bad=
 rows=0
+sent=0
 while read -r source kind _ opts; do
     [[ "$source" == \#* || -z "$source" ]] && continue
     if [[ "$kind" == agy ]]; then
@@ -64,7 +73,7 @@ while read -r source kind _ opts; do
     if [[ -z "$harness" ]]; then echo "$source: no harness in harnesses.json spends it, skipped"; continue; fi
     catalog=$("$ACCT" models "$source" 2>"$STATE/acct.err"); rc=$?
     if (( rc == 3 )); then echo "$source: not a litellm-key source on this host, skipped"; continue; fi   # claude-acct filters its rows by host=
-    if (( rc != 0 )); then echo "$source: catalog unread: $(<"$STATE/acct.err")" >&2; bad=1; continue; fi
+    if (( rc != 0 )); then echo "$source: catalog unread: $(<"$STATE/acct.err")" >&2; bad="${bad:+$bad, }$source catalog unread"; continue; fi
     echo "$source ($harness): $(grep -c . <<<"$catalog") models"
     declare -A seen=()
     while IFS= read -r id; do
@@ -97,4 +106,5 @@ while read -r source kind _ opts; do
     unset seen
 done < <(grep -vE '^[[:space:]]*(#|$)' "$SOURCES")
 
-[[ -z "$bad" ]]
+if [[ -n "$bad" ]]; then report FAILED "$bad"; exit 1; fi
+if (( sent )); then report WORKED "$sent gap row(s) filed or already open"; else report NOOP "no gap row filed"; fi
