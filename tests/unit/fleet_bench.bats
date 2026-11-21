@@ -2955,9 +2955,10 @@ failed() {
   failed 2 integ/tool.bats
   printf 'fast tier\tFast tier\t2026-11-06T17:49:04Z        in test file unit/warned.bats, line 363)\n' >> "$GHD/log.2"
   printf 'fast tier\tFast tier\t2026-11-06T17:49:04Z # (in test file unit/body.bats, line 9)\n' >> "$GHD/log.2"
+  printf 'fast tier\tFast tier\t2026-11-06T17:49:04Z # (from function `setup'"'"' in test file unit/setup.bats, line 12)\n' >> "$GHD/log.2"
   run "$SUBJECT" triage --dry-run
   assert_success
-  assert_output --partial 'shell tests red at aaa11111: tests/integ/tool.bats, tests/unit/body.bats #high'
+  assert_output --partial 'shell tests red at aaa11111: tests/integ/tool.bats, tests/unit/body.bats, tests/unit/setup.bats #high'
   refute_output --partial 'warned.bats'
 }
 
