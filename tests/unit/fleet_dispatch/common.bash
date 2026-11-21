@@ -579,7 +579,7 @@ pr_item() {
   started_item fix-crash lab:game-agent-1 run '' 'board:game:fix crash'
   agent-queue set fix-crash pr=o/game#12 lane=agent >/dev/null
   printf '%s %s\n' "$1" "${2:-$OID}" > "$NOTES_FIXTURE/pr.state"
-  stub gh 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; [ -s "$NOTES_FIXTURE/pr.state" ] || exit 1; cat "$NOTES_FIXTURE/pr.state"'
+  gh_script 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; [ -s "$NOTES_FIXTURE/pr.state" ] || exit 1; cat "$NOTES_FIXTURE/pr.state"'
 }
 
 # fj_item <state> <status> [merge sha] -- pr_item's fix-crash on a checkout whose canonical forge is
@@ -594,7 +594,7 @@ fj_item() {
   git -C "$SANDBOX/repos/game" update-ref refs/remotes/forgejo/main "$OID"
   export SO_CURL=curl-fj SO_FORGEJO_HOSTS=git.example.test GIT_ALLOW_PROTOCOL=file
   printf 'sekret-token' > "$RBW_FIXTURE/forgejo_repo_admin"
-  stub gh 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; exit 1'
+  gh_script 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; exit 1'
   stub curl-fj 'url=${*: -1}; printf "%s\n" "$url" >> "$NOTES_FIXTURE/fj.urls"; printf "%s %s\n" "$url" "$(cat)" >> "$NOTES_FIXTURE/fj.auth"
 case "$url" in */pulls/12) cat "$NOTES_FIXTURE/fj.pr" ;; */commits/*/status) cat "$NOTES_FIXTURE/fj.status" ;; *) exit 22 ;; esac'
   fj_pr "$1" "${3:-}"
@@ -693,7 +693,7 @@ landed_item() {
 bare_pr() {
   landed_item MERGED 12
   jq -n --arg o "$OID" --arg b "$1" '{state: "MERGED", mergeCommit: {oid: $o}, body: $b}' > "$NOTES_FIXTURE/pr.json"
-  stub gh 'printf "gh %s in %s\n" "$(tr "\n" " " <<<"$*")" "$PWD" >> "$NOTES_FIXTURE/calls.log"; jq -r "${@: -1}" "$NOTES_FIXTURE/pr.json"'
+  gh_script 'printf "gh %s in %s\n" "$(tr "\n" " " <<<"$*")" "$PWD" >> "$NOTES_FIXTURE/calls.log"; jq -r "${@: -1}" "$NOTES_FIXTURE/pr.json"'
 }
 
 # --- starved -----------------------------------------------------------------------------
@@ -731,7 +731,7 @@ record_setup() {
   export TMUX_SERVERS_DIR="$SANDBOX/manifests"
   mkdir -p "$TMUX_SERVERS_DIR" "$HOME/.claude/sessions"
   : > "$TMUX_SERVERS_DIR/hub.conf"
-  stub tmux 'case "$*" in
+  tmux_script 'case "$*" in
     *display-message*) [ -s "$NOTES_FIXTURE/world.instance" ] || exit 1; cat "$NOTES_FIXTURE/world.instance"; echo ;;
     *list-panes*) cat "$NOTES_FIXTURE/world.panes" ;;
   esac'
@@ -803,7 +803,7 @@ harness_ready() {
       {mode: "lane-sandbox", why: "no match, so never read by route"}]}' > "$HOME/.config/fleet-bench/matrix.json"
   stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" != log ] || echo run-9'
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
-  stub tmux 'exit 0'
+  tmux_script 'exit 0'
   agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
 }
 
@@ -857,7 +857,7 @@ cloud_run_ready() {
   agent-queue add --project game --slug cloud-fix --priority high --tags cloud-ok "Fix the menu text" >/dev/null
   agent-queue move cloud-fix running >/dev/null
   stub claude 'echo "claude $*" >> "$NOTES_FIXTURE/calls.log"; echo "Session: https://claude.ai/code/session_01AbC"'
-  stub gh 'echo "gh $*" >> "$NOTES_FIXTURE/calls.log"; cat "$NOTES_FIXTURE/prs.json"'
+  gh_script 'echo "gh $*" >> "$NOTES_FIXTURE/calls.log"; cat "$NOTES_FIXTURE/prs.json"'
   export CLOUD_POLL_SEC=0 CLAUDE_BIN=claude
 }
 

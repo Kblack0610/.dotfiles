@@ -863,15 +863,11 @@ fn activity(c: &Card, pg: &Page, p: Palette, w: usize) -> Vec<Line<'static>> {
 /// a department's needs that are not ok.
 fn inner_count(pg: Option<&Page>, prod: Option<&departments::Product>, id: &str) -> usize {
     if let Some(d) = prod.and_then(|pr| pr.dept(id)) {
-        return d
-            .needs
-            .iter()
-            .filter(|n| n.level != hub_core::vocab::Level::Ok)
-            .count();
+        return d.open_needs();
     }
     let Some(pg) = pg else { return 0 };
     match id {
-        OVERVIEW => need_groups(pg, prod).iter().map(|g| g.items.len()).sum(),
+        OVERVIEW => pg.overview_needs(prod),
         "stage" => pg.gate.as_ref().map_or(0, |g| g.fail as usize),
         _ => 0,
     }
@@ -1349,6 +1345,7 @@ pub(crate) mod tests {
                 says: "1 epic landed with no live proof".into(),
                 items: vec!["Saves (4 of 4 rows landed)".into()],
             }],
+            need_count: 1,
             timeline: Some(hub_core::timeline::Timeline {
                 says: "7d: 1 commit (1 red on CI)".into(),
                 lines: vec![hub_core::timeline::Line {

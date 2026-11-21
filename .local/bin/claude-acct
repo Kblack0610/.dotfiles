@@ -22,7 +22,7 @@
 #                                 # 24h dollars, burn and sustainable points an hour, when it is back
 #                                 # on pace, and one fleet line: live, burn against what the windows carry
 #   claude-acct textfile [dir]    # write <dir>/claude_acct.prom for node_exporter (default: the collector's dir,
-#                                 # on the fleet-lease holder only; another machine removes its copy)
+#                                 # on the fleet-lease holder only; fleet-lease renew removes another's copy)
 #   claude-acct gateway [--out FILE]
 #                        # snapshot the gateway's teams, keys (never a key's secret or hash), the
 #                        # sources and the config's aliases and fallbacks into FILE (default
@@ -1426,9 +1426,9 @@ fleet_line() {
 # it is the machine's collector dir (prom-textfile.sh), and a machine with none is skipped.
 # With no dir it is also a fleet singleton: the file holds every source and the fleet sum, and
 # the hub merges the series by account, so a second host's copy overwrites the first. Only the
-# fleet-lease holder publishes; another machine removes its own copy (a fleet worker, with
-# setup tokens only, read every source unread and blanked every Burn row, 2026-11-18), and one
-# that cannot tell leaves it.
+# fleet-lease holder publishes; on another machine `fleet-lease renew` removes the copy, with the
+# other singletons' textfiles (a fleet worker, with setup tokens only, read every source unread
+# and blanked every Burn row, 2026-11-18), and one that cannot tell leaves it.
 cmd_textfile() {
     local dir tmp lease=0
     dir=$(prom_textfile_target "${1:-}") || return 0
@@ -1436,7 +1436,7 @@ cmd_textfile() {
         # the units' own path (ExecCondition=%h/.local/bin/fleet-lease): a fleet worker's systemd
         # PATH has no ~/.local/bin, and a PATH lookup's 127 kept its stale copy
         "$HOME/.local/bin/fleet-lease" claude-acct-usage >/dev/null 2>&1 || lease=$?
-        if (( lease == 1 )); then rm -f "$dir/claude_acct.prom"; return 0; fi
+        (( lease == 1 )) && return 0
         (( lease == 0 )) || { echo "claude-acct: textfile skipped, fleet-lease cannot tell who holds the lease (exit $lease)" >&2; return 0; }
     fi
     tmp=$(mktemp "$dir/.claude_acct.prom.XXXXXX") || return 1

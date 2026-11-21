@@ -758,6 +758,34 @@ pub fn waiting_total(rec: &Value) -> usize {
         .sum()
 }
 
+/// The counts a day record's tiles and head line show, so no surface counts the arrays itself:
+/// merged PRs, the repos they landed in, open PRs, and the `waiting` split (nightly reds, asks).
+#[derive(Debug, Default, PartialEq, serde::Serialize)]
+pub struct DayCounts {
+    pub merged: usize,
+    pub repos: usize,
+    pub open: usize,
+    pub nightly: usize,
+    pub asks: usize,
+}
+
+pub fn day_counts(rec: &Value) -> DayCounts {
+    let len = |v: &Value| v.as_array().map_or(0, Vec::len);
+    let repos: std::collections::BTreeSet<&str> = rec["merged"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|m| m["repo"].as_str().unwrap_or(""))
+        .collect();
+    DayCounts {
+        merged: len(&rec["merged"]),
+        repos: repos.len(),
+        open: len(&rec["open"]),
+        nightly: len(&rec["waiting"]["main"]),
+        asks: len(&rec["waiting"]["asks"]),
+    }
+}
+
 /// A day's record as the web Log reads it: every merged and open PR carries its `project`
 /// (`pr_project`, so an older record reads the same), plus `hours` (merges_by_hour) and
 /// `projects` (project_order), so the browser draws the grid and computes neither, and its
@@ -788,8 +816,13 @@ pub fn log_view<Tz: chrono::TimeZone>(mut rec: Value, tz: &Tz) -> Value {
     let grid = merges_by_hour(&rec, tz);
     let order = project_order(&rec, &grid);
     let waiting = waiting_total(&rec);
+    let counts = day_counts(&rec);
     if let Some(o) = rec.as_object_mut() {
         o.insert("waiting_total".into(), waiting.into());
+        o.insert(
+            "counts".into(),
+            serde_json::to_value(counts).unwrap_or_default(),
+        );
         o.insert(
             "hours".into(),
             serde_json::to_value(&grid).unwrap_or_default(),
@@ -1212,6 +1245,24 @@ mod tests {
         assert_eq!(waiting_total(&rec), 4);
         assert_eq!(waiting_total(&serde_json::json!({})), 0);
         assert_eq!(log_view(rec, &chrono::Utc)["waiting_total"], 4);
+    }
+
+    #[test]
+    fn the_day_counts_are_the_arrays_lengths_and_the_distinct_repos_and_a_bare_record_has_none() {
+        let rec = serde_json::json!({
+            "merged": [{"repo": "a"}, {"repo": "a"}, {"repo": "b"}],
+            "open": [{"repo": "a"}],
+            "waiting": {"main": ["x"], "needs": ["y"], "asks": ["p", "q"]}});
+        let want = DayCounts {
+            merged: 3,
+            repos: 2,
+            open: 1,
+            nightly: 1,
+            asks: 2,
+        };
+        assert_eq!(day_counts(&rec), want);
+        assert_eq!(log_view(rec, &chrono::Utc)["counts"]["repos"], 2);
+        assert_eq!(day_counts(&serde_json::json!({})), DayCounts::default());
     }
 
     #[test]

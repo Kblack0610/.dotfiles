@@ -8,11 +8,25 @@
 #   prs.<owner>-<repo>        the JSON array `gh pr list --json ...` would return
 #   auth.fail                 present => `gh auth status` exits 1
 #
+#   gh.script                 present => a test's own behaviour, written by `gh_script` (sandbox.bash):
+#                             bash, sourced here in place of everything below (a shebang first line: exec'd,
+#                             for a test that wants another language). The script logs what it needs to.
+#
 # A repo with no fixture returns `[]`, which is the real gh's answer for "no open PRs" --
 # so "this repo has none" and "this repo is not set up" stay distinguishable in a test.
 set -uo pipefail
 
-FIX="${GH_FIXTURE:?GH_FIXTURE unset - stub used outside the sandbox}"
+_dir="${GH_FIXTURE:?GH_FIXTURE unset - stub used outside the sandbox}"
+# $FIX is not set yet: a body is the test's own code, and a test may have a FIX of its own.
+if [ -f "$_dir/gh.script" ]; then
+  if [ "$(head -c2 "$_dir/gh.script")" = '#!' ]; then exec "$_dir/gh.script" "$@"; fi
+  set +u +o pipefail
+  . "$_dir/gh.script"
+  rc=$?
+  [ -n "${STUB_FALLTHROUGH:-}" ] || exit "$rc"   # a body that sets STUB_FALLTHROUGH adds to the canned answers, not replaces them
+  set -uo pipefail
+fi
+FIX="$_dir"
 printf 'gh %s\n' "$*" >> "$FIX/calls.log"
 
 case "${1:-}" in

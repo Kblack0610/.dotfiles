@@ -18,8 +18,7 @@ setup() {
   # gh: `pr view` answers from fixture files, `pr merge` flips the state to merged.state.
   printf 'OPEN\n' >"$NOTES_FIXTURE/state"
   printf 'MERGED\n' >"$NOTES_FIXTURE/merged.state"
-  cat >"$SANDBOX/bin/gh" <<'EOF'
-#!/usr/bin/env bash
+  gh_script <<'EOF'
 printf 'gh %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
 # hint: every call also writes gh 2.105's success hint to stderr
 [ ! -f "$NOTES_FIXTURE/hint" ] || printf 'hint: if you need to wait for this pull request, use this instead of polling:\n    gh event listen --resource x\n' >&2
@@ -142,7 +141,7 @@ cat >"$NOTES_FIXTURE/linted.txt"
 [ ! -f "$NOTES_FIXTURE/lint.out" ] || cat "$NOTES_FIXTURE/lint.out"
 exit "$(cat "$NOTES_FIXTURE/lint.rc" 2>/dev/null || echo 0)"
 EOF
-  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/git" "$SANDBOX/bin/comms-lint"
+  chmod +x "$SANDBOX/bin/git" "$SANDBOX/bin/comms-lint"
 
   # dotfiles-autopull: logs its call, prints autopull.out, exits autopull.rc (0 by default)
   cat >"$SANDBOX/bin/dotfiles-autopull" <<'EOF'
@@ -727,13 +726,11 @@ EOF
 }
 
 @test "item-line: a body that cannot be edited stops before the checks and the merge" {
-  mv "$SANDBOX/bin/gh" "$NOTES_FIXTURE/gh.real"
-  cat >"$SANDBOX/bin/gh" <<'EOF'
-#!/usr/bin/env bash
+  cp "$NOTES_FIXTURE/gh.script" "$NOTES_FIXTURE/gh.real"
+  gh_script <<'EOF'
 [ "$1 $2" != 'pr edit' ] || { printf 'gh %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"; echo 'HTTP 403' >&2; exit 1; }
-exec "$NOTES_FIXTURE/gh.real" "$@"
+. "$NOTES_FIXTURE/gh.real"
 EOF
-  chmod +x "$SANDBOX/bin/gh"
   run "$LAND" 42 --item ship
   assert_failure 1
   assert_output --partial 'item-line failed: gh pr edit: HTTP 403'

@@ -14,8 +14,7 @@ setup() {
 
   CHECK="$REPO_ROOT/.claude/hooks/stop-checks.d/10-git-workflow.sh"
   # No network: the open-PR lookup finds nothing.
-  printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/bin/gh"
-  chmod +x "$SANDBOX/bin/gh"
+  gh_script 'exit 1'
 
   git init -q --bare "$SANDBOX/origin.git"
   REPO="$SANDBOX/repo"

@@ -179,7 +179,7 @@ function pOpened(c) {
     html += `<div class="cline${pg.gate && pg.gate.fail ? " warn" : ""}">next stage: <a href="#" data-pgo="stage">${esc(pg.next_says)}</a></div>`;
     html += pg.errors.map((e) => `<div class="panel down">${esc(e)}</div>`).join("");
   } else if (got && got.err) html += `<div class="panel down">${esc(got.err)}</div>`;
-  const counts = { ...deptCounts(pKey(c)), ...(pg ? { overview: pNeedCount(pg, pKey(c)), stage: pg.gate ? pg.gate.fail : 0 } : {}) };
+  const counts = { ...deptCounts(pKey(c)), ...(pg ? { overview: pg.need_count, stage: pg.gate ? pg.gate.fail : 0 } : {}) };
   return html + `</div>` + stripHtml(pPage(c), pst.inner, "ptab", [], counts, pDepts(c)[0] || null);
 }
 
@@ -198,7 +198,6 @@ const pDeptNote = (c) => {
   if (got.err) return `departments not read: ${got.err}`;
   return got.data.product ? null : `departments not read: ${got.data.says || NOT_READ}`;
 };
-const pNeedCount = (pg, key) => pNeedGroups(pg, key).reduce((n, g) => n + g.items.length, 0);
 // A link that moves the page to an inner tab, `open <its title>`.
 const pGoLink = (go) => `<a href="#" data-pgo="${go.pgo}">open ${esc((PROJECT_PAGE.find((t) => t[0] === go.pgo) || [, go.pgo])[1])}</a>`;
 
@@ -208,7 +207,7 @@ const pGoLink = (go) => `<a href="#" data-pgo="${go.pgo}">open ${esc((PROJECT_PA
 function pOverview(c, pg) {
   let html = "";
   if (pg) {
-    const groups = pNeedGroups(pg, pKey(c)), n = pNeedCount(pg, pKey(c)), note = pDeptNote(c);
+    const groups = pNeedGroups(pg, pKey(c)), n = pg.need_count, note = pDeptNote(c);
     html += secHead("p-needs", "Needs you", n);
     if (groups.length || note) html += `<div class="card">` + groups.map((g) => cfold(`pg:need:${g.kind}`,
       `<b>${esc(g.says)}</b>${g.go ? ` ${pGoLink(g.go)}` : ""}`, pLines(g.items), pst.folds)).join("") +

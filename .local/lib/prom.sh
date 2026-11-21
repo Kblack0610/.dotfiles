@@ -25,6 +25,12 @@ W='max without (instance, pod, job, namespace, service, endpoint, container)'
 # runs past about an hour a bug to fix, not a wait.
 LONG_RUN_SECS=3600
 
+# prom_label_re <json array> -> its values as one PromQL `=~` alternation, each cut to [A-Za-z0-9_-] so
+# config text cannot break out of the matcher; nothing for no value or a malformed array.
+prom_label_re() {
+  jq -r 'map(tostring | gsub("[^A-Za-z0-9_-]"; "") | select(. != "")) | join("|")' <<<"$1" 2>/dev/null
+}
+
 # prom_q <promql> [epoch] -> the raw /api/v1/query JSON, or rc 1 when it did not answer success.
 # PROM_TIMEOUT: the board waits 10s; a bar module sets less, so a dead endpoint cannot
 # stall the bar.

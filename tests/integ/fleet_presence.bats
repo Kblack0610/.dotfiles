@@ -15,7 +15,7 @@ setup() {
   mkdir -p "$XDG_RUNTIME_DIR" "$TMUX_TMPDIR/tmux-$(id -u)"
   NOW="$(date +%s)"
   stub pgrep 'for p in ${STUB_PROCS:-hyprland hypridle}; do [ "${!#}" = "$p" ] && exit 0; done; exit 1'
-  stub tmux 'printf "%b" "${STUB_CLIENTS:-}"'
+  tmux_script 'printf "%b" "${STUB_CLIENTS:-}"'
 }
 
 stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "$SANDBOX/bin/$1"; }
