@@ -172,6 +172,7 @@ pub(crate) fn level(l: Level, p: Palette) -> Style {
         Level::Bad => p.bad(),
         Level::Warn => p.warn(),
         Level::Ok => p.good(),
+        Level::Neutral => p.dim(),
     }
 }
 

@@ -50,6 +50,18 @@ pub enum Level {
     Warn,
     #[default]
     Ok,
+    /// Grey: a fact with no verdict to give, such as a release from before its project's line
+    /// starts (docs/operations/release-state.md, Provenance). Ordered after Ok, so `min` over a
+    /// set reads Neutral only when every member is, and never needs attention.
+    Neutral,
+}
+
+impl Level {
+    /// Nothing to look at: green, or grey with no verdict. The test a "needs a look" filter uses,
+    /// so a neutral row never counts as one.
+    pub fn calm(self) -> bool {
+        matches!(self, Level::Ok | Level::Neutral)
+    }
 }
 
 /// Each state word with a hue on a chip or tile (dashboards.md rule 5: green ok, amber needs

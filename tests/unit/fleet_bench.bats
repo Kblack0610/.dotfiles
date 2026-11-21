@@ -19,6 +19,7 @@ setup() {
   export BENCH_TRAINEE_CMD=false   # nor the real trainee pool and floor
   export BENCH_SOURCES_CMD=false BENCH_HARNESSES="$SANDBOX/no-harnesses.json" BENCH_ROOM_CMD=false BENCH_CANARY_LANES="$SANDBOX/no-canary-lanes"   # nor the real sources, harnesses or lanes
   export BENCH_SKILL_CMD=true   # nor the real runner confs: no dangling SKILL unless a test serves one
+  export BENCH_SYSTEMS_CMD=false   # nor the real skill tree: systems_no_skill reads ? unless a test serves one
   export BENCH_ITEMS_CMD=true BENCH_QUEUE_SLOTS=3   # nor the real agent queue: empty unless a test serves one
   export BENCH_NEEDS_CMD='echo {"needs":[],"errors":[]}'   # nor the real hub: no needs unless a test serves them
   export KPI_THRESHOLDS="$SANDBOX/kpi-thresholds"
@@ -2676,6 +2677,10 @@ coverage_setup() {
   assert_line --index 1 "$(printf 'runner alpha\tagent\t-\t-')"
   assert_line --index 2 "$(printf 'watch gone\t-\t-\t')"
   assert_line --index 3 "$(printf 'nonsense x\t-\t-\t')"
+  # an unreadable table fails the read instead of answering every key with a dash
+  TRIAGE_ROUTES="$SANDBOX/no-such-routes" run "$SUBJECT" triage --route 'watch standing'
+  assert_failure 2
+  assert_output --partial 'cannot read'
 }
 
 @test "triage: a cc:red_now item another host watches gets a row; one with local state does not" {
@@ -4274,6 +4279,25 @@ prs_fixture() {
   run "$SUBJECT" improve --json
   assert_failure 1
   assert_output ''
+}
+
+@test "improve: systems_no_skill reads skill-drift --systems, is past its max in kpi, and is never picked (report-only)" {
+  kpi_setup; kpi_fixture
+  printf '%s\n' revert_rate_max=1 interrupts_per_day_max=5 systems_no_skill_max=1 > "$KPI_THRESHOLDS"
+  run "$SUBJECT" kpi --json
+  assert_equal "$(jq -r '.systems_no_skill["7d"]' <<<"$output")" null
+  printf '#!/bin/sh\necho %s\n' "'{\"no_skill\":[\"audio\",\"save\"]}'" > "$SANDBOX/bin/systems-stub"
+  chmod +x "$SANDBOX/bin/systems-stub"
+  export BENCH_SYSTEMS_CMD=systems-stub
+  run "$SUBJECT" kpi --check '^systems_no_skill$'
+  assert_failure 1
+  assert_output --partial 'systems_no_skill 2 (max 1)'
+  run "$SUBJECT" improve --json
+  assert_failure 1
+  assert_output ''
+  # outside the chain, so the board-chain watch never reads it
+  run "$SUBJECT" chain --json
+  assert_equal "$(jq -r 'has("systems_no_skill")' <<<"$output")" false
 }
 
 @test "improve file: one row tagged #kpi/<k> with its check as a detail line, its id claimed with the 7d value as the baseline" {
