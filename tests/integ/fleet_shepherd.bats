@@ -910,6 +910,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   run grep -c 'one decision closes it' "$HOME/pages"
   assert_output 2
   run grep 'lab/s-landed:1: one decision' "$HOME/pages"
+  assert_output --partial '-p normal -k decision'
   assert_output --partial "close its window; fleet-dispatch files its open phases"
   assert_output --partial 'tmux:lab/s-landed:1'
   run grep 'lab/s-green:1: one decision' "$HOME/pages"

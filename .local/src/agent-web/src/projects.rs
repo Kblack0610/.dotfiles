@@ -53,6 +53,9 @@ pub async fn get(Query(q): Query<TableQuery>) -> ApiResult<Json<Value>> {
 /// keep reads only its own few CLIs.
 pub async fn page(Path(name): Path<String>) -> ApiResult<Json<Value>> {
     let chains = tokio::spawn(crate::epics::chains());
+    // Overview's count includes the departments' needs, as the TUI's does: the Coverage read is
+    // kept, and runs beside the page's own reads.
+    let coverage = tokio::spawn(crate::departments::current());
     let rt = tokio::runtime::Handle::current();
     let p = tokio::task::spawn_blocking(move || {
         let (runner, now) = (&hub_core::session_actions::System, hub_core::jobs::now());
@@ -63,6 +66,8 @@ pub async fn page(Path(name): Path<String>) -> ApiResult<Json<Value>> {
         if let Some(groups) = p.check_read() {
             p.with_checks(&crate::releases::checks(&groups));
         }
+        let cov = rt.block_on(coverage).ok();
+        p.with_department_needs(cov.as_ref().and_then(|c| c.product(&name)));
         Ok::<_, String>(p)
     })
     .await
