@@ -5509,6 +5509,32 @@ items_stub() {
   assert_line --partial 'queue:game  q2'
 }
 
+@test "forecast reads the slot count from the pace target dispatch published, never the conf's DISPATCH_TARGET_PRESENT (ar-4200)" {
+  row a lab/game-agent-1:1 0 1 > "$SNAP"; sample_at 0
+  iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
+  items_stub \
+    '{"slug":"q1","project":"game","mode":"oneshot","state":"queued","queued":"'"$(iso "$T0")"'"}' \
+    '{"slug":"q2","project":"game","mode":"oneshot","state":"queued","queued":"'"$(iso "$T0")"'"}'
+  # the accounts carry 2 now, whatever DISPATCH_TARGET_PRESENT says: the slots are the last pass's headroom target, from stats
+  printf '#!/bin/sh\necho "{\\"room_max_live\\":2}"\n' > "$SANDBOX/bin/stats-stub"; chmod +x "$SANDBOX/bin/stats-stub"
+  unset BENCH_QUEUE_SLOTS
+  BENCH_DISPATCH_STATS_CMD=stats-stub BENCH_ITEMS_CMD=items-stub BENCH_NOW=$((T0 + 600)) run bash -c '"$0" forecast --json 2>/dev/null' "$SUBJECT"
+  assert_success
+  run jq -r '.items.slots' <<<"$output"
+  assert_output 2
+  # stats without a published headroom (stale or no pass): the count is unread, one slot, said out loud
+  printf '#!/bin/sh\necho "{}"\n' > "$SANDBOX/bin/stats-stub"
+  BENCH_DISPATCH_STATS_CMD=stats-stub BENCH_ITEMS_CMD=items-stub BENCH_NOW=$((T0 + 600)) run "$SUBJECT" forecast
+  assert_success
+  assert_line --partial "the dispatcher's slot count is unread, zero or stale"
+  # a zero target and a failing stats read the same: one slot, said out loud
+  printf '#!/bin/sh\necho "{\\"room_max_live\\":0}"\n' > "$SANDBOX/bin/stats-stub"
+  BENCH_DISPATCH_STATS_CMD=stats-stub BENCH_ITEMS_CMD=items-stub BENCH_NOW=$((T0 + 600)) run "$SUBJECT" forecast
+  assert_line --partial "the dispatcher's slot count is unread, zero or stale"
+  BENCH_DISPATCH_STATS_CMD=false BENCH_ITEMS_CMD=items-stub BENCH_NOW=$((T0 + 600)) run "$SUBJECT" forecast
+  assert_line --partial "the dispatcher's slot count is unread, zero or stale"
+}
+
 @test "forecast counts a plan item by its plan's open phases, and an unreadable queue leaves the items out" {
   row a lab/game-agent-1:1 0 1 > "$SNAP"; sample_at 0
   printf '## Phases\n\n- [x] one\n- [ ] two\n- [ ] three\n' > "$SANDBOX/plan-q.md"
