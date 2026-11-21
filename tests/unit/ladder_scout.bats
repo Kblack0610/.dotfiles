@@ -168,3 +168,24 @@ E
   [[ "$stderr" == *"shortlist"* ]] || fail "$stderr"
   [ ! -s "$LADDER_SCOUT_STATE/filed.tsv" ]
 }
+
+@test "under agentctl each pass declares its outcome: NOOP when quiet, WORKED when it files, FAILED when a source is unread; -n declares none" {
+  export AGENTCTL_NAME=ladder-scout
+  out="$AGENTCTL_STATE_DIR/ladder-scout/last-outcome"
+  run "$SCOUT"
+  assert_success
+  [ "$(cat "$out")" = NOOP ] || fail "quiet pass: $(cat "$out")"
+  echo 'free-glm (glm-5)' >> "$BATS_TEST_TMPDIR/catalog.nim"
+  rm -f "$out"
+  run "$SCOUT" -n
+  [ ! -e "$out" ] || fail "-n declared $(cat "$out")"
+  run "$SCOUT"
+  assert_success
+  [ "$(cat "$out")" = WORKED ] || fail "filing pass: $(cat "$out")"
+  rm "$BATS_TEST_TMPDIR/catalog.nim"
+  run "$SCOUT"
+  assert_failure
+  [ "$(cat "$out")" = FAILED ] || fail "unread pass: $(cat "$out")"
+  run tail -n 1 "$AGENTCTL_STATE_DIR/ladder-scout/activity.log"
+  assert_output --partial 'why: nim catalog unread'
+}
