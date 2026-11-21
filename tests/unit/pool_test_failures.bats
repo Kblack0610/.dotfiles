@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 # pool-test-failures: the runner pool's failing-test ledger, read from red Tests runs' summary
-# artifacts (ar-171). gh is a stub on PATH that serves a canned run list, artifact list and
-# artifact downloads, and logs each call, so a run read once is never downloaded again.
+# artifacts (ar-171, ucp-2536). gh is a stub on PATH that serves a canned run list; the playground's
+# summaries come from a stub of its artifactStore lister (the home store), and a project with no
+# artifactStore reads GitHub's artifacts through gh. Each call is logged, so a run is never read twice.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -18,7 +19,27 @@ setup() {
   git -C "$SANDBOX/pg" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
   git -C "$SANDBOX/pg" worktree add -q -b feat/x "$SANDBOX/pg-agent-1" 2>/dev/null
   export PROJECT_MAP_FILE="$SANDBOX/project-map.json"
-  printf '{"paths":{"%s":"unity-core-playground"}}\n' "$SANDBOX/pg" > "$PROJECT_MAP_FILE"
+  # unity-core-playground declares its artifactStore, so its summaries are read from the home store;
+  # "other" has none, so its are read from GitHub.
+  printf '{"paths":{"%s":"unity-core-playground"},"trackers":{"unity-core-playground":{"github":"Org/pg","artifactStore":".github/actions/artifact/artifact.py"},"other":{"github":"Org/other"}}}\n' "$SANDBOX/pg" > "$PROJECT_MAP_FILE"
+  mkdir -p "$SANDBOX/pg/.github/actions/artifact"
+  cat > "$SANDBOX/pg/.github/actions/artifact/artifact.py" <<'PY'
+import os, shutil, sys
+ghd, a = os.environ["GHD"], sys.argv[1:]
+open(ghd + "/calls.log", "a").write("store " + " ".join(a) + "\n")
+if os.environ.get("GITHUB_REPOSITORY") != "Org/pg":
+    sys.exit("wrong repo")
+run = a[a.index("--run") + 1]
+if a[0] == "ls":
+    if os.path.exists(ghd + "/ls.fail"):
+        sys.exit(1)
+    for n in [n for n in open(ghd + "/store." + run).read().split() if n.startswith(a[1])]:
+        print(n, run, "2026-11-28T00:00:00Z", 100)
+elif a[0] == "get":
+    if os.path.exists(ghd + "/download." + run + ".fail"):
+        sys.exit(1)
+    shutil.copy(ghd + "/" + run + "." + a[1] + ".txt", a[a.index("--dir") + 1] + "/summary.txt")
+PY
   cat > "$SANDBOX/bin/gh" <<'SH'
 #!/usr/bin/env bash
 echo "$*" >> "$GHD/calls.log"
@@ -42,9 +63,10 @@ SH
   chmod +x "$SANDBOX/bin/gh"
 }
 
-# artifacts <run id> <name>...: the run's artifact list, with an expired one that is never read.
+# artifacts <run id> <name>...: the run's artifacts, in the store (live ones only) and in GitHub's list (with an expired one that is never read).
 artifacts() {
   local id="$1"; shift
+  printf '%s\n' "$@" > "$GHD/store.$id"
   jq -n --args '{artifacts: ([$ARGS.positional[] | {name: ., expired: false}] + [{name: "playmode-shard-9", expired: true}])}' "$@" > "$GHD/artifacts.$id.json"
 }
 
@@ -79,13 +101,16 @@ artifacts() {
   assert_success
   # oldest first; a branch with no worktree here is -
   [ "$(cat "$LEDGER")" = "$(printf '%s\tpg-agent-1\tfeat/x\tP.B.One\n%s\t-\tfeat/y\tP.E.One' "$t1" "$t2")" ]
-  # only the summary artifacts are downloaded, never the logs, the plan or an expired one
-  run grep 'run download 101' "$GHD/calls.log"
-  assert_output --partial '-n playmode-shard-1 -n playmode-shard-2'
+  # only the summary artifacts are read, never the logs, the plan or an expired one; one get each, and GitHub is never asked
+  run grep 'store get' "$GHD/calls.log"
+  assert_output --partial 'get playmode-shard-1 --run 101'
+  assert_output --partial 'get playmode-shard-2 --run 101'
   refute_output --partial 'test-runs'
   refute_output --partial 'playmode-plan'
   refute_output --partial 'shard-9'
-  run grep -E 'runs/(505|606)|download (505|606)' "$GHD/calls.log"
+  run grep -E 'runs/|run download' "$GHD/calls.log"
+  assert_failure
+  run grep -E 'runs/(505|606)|run (505|606)' "$GHD/calls.log"
   assert_failure
 
   # a second sync reads no run again
@@ -93,7 +118,7 @@ artifacts() {
   run "$SUBJECT" sync
   assert_success
   [ "$(wc -l < "$LEDGER")" = 2 ]
-  run grep -c 'run download\|api ' "$GHD/calls.log"
+  run grep -c 'store \(ls\|get\)' "$GHD/calls.log"
   assert_output 0
 }
 
@@ -116,14 +141,14 @@ artifacts() {
   assert_success
   [ "$(cut -f3,4 "$LEDGER")" = "$(printf 'feat/z\tP.B.One')" ]
   # 404 left no summary, so it was marked read and is not asked about again
-  run grep -c 'runs/404' "$GHD/calls.log"
+  run grep -c 'store ls .* 404' "$GHD/calls.log"
   assert_output 0
   # 707 never downloads: its third failed read gives it up, and a fourth sync does not ask
   run "$SUBJECT" sync
   assert_output --partial 'run 707 unreadable 3 times, given up'
   : > "$GHD/calls.log"
   run "$SUBJECT" sync
-  run grep -c 'runs/707' "$GHD/calls.log"
+  run grep -c 'run 707' "$GHD/calls.log"
   assert_output 0
 }
 
@@ -136,4 +161,44 @@ artifacts() {
   POOL_FAILURES_PROJECT=nope run "$SUBJECT" sync
   assert_failure 2
   assert_output --partial 'no checkout of nope'
+}
+
+@test "sync: a project with no artifactStore reads its summaries from GitHub's artifacts, the store is never asked" {
+  local at; at="$(date -u -d '-10 min' +%FT%TZ)"
+  git init -q -b main "$SANDBOX/ot"
+  jq --arg p "$SANDBOX/ot" '.paths[$p] = "other"' "$PROJECT_MAP_FILE" > "$PROJECT_MAP_FILE.tmp" && mv "$PROJECT_MAP_FILE.tmp" "$PROJECT_MAP_FILE"
+  jq -n --arg at "$at" '[{databaseId: 808, attempt: 1, event: "workflow_dispatch", headBranch: "feat/o", updatedAt: $at}]' > "$GHD/runs.json"
+  artifacts 808 playmode-shard-1 playmode-plan
+  printf 'FAIL  BPlayTests  ==> 1/3 passed\tcases:\tP.B.One\n' > "$GHD/808.playmode-shard-1.txt"
+  POOL_FAILURES_PROJECT=other run "$SUBJECT" sync
+  assert_success
+  [ "$(cut -f3,4 "$LEDGER")" = "$(printf 'feat/o\tP.B.One')" ]
+  run grep 'run download 808' "$GHD/calls.log"
+  assert_output --partial '-n playmode-shard-1'
+  refute_output --partial 'playmode-plan'
+  run grep -c '^store ' "$GHD/calls.log"
+  assert_output 0
+}
+
+@test "sync: a failed store listing is an unreadable run, tried again; a missing lister or slug exits 2" {
+  local at; at="$(date -u -d '-10 min' +%FT%TZ)"
+  jq -n --arg at "$at" '[{databaseId: 909, attempt: 1, event: "workflow_dispatch", headBranch: "feat/s", updatedAt: $at}]' > "$GHD/runs.json"
+  artifacts 909 playmode-shard-1
+  printf 'FAIL  BPlayTests  ==> 1/3 passed\tcases:\tP.B.One\n' > "$GHD/909.playmode-shard-1.txt"
+  touch "$GHD/ls.fail"
+  run "$SUBJECT" sync
+  assert_success
+  [ ! -s "$LEDGER" ]
+  rm "$GHD/ls.fail"
+  run "$SUBJECT" sync
+  assert_success
+  [ "$(cut -f4 "$LEDGER")" = P.B.One ]
+  rm "$SANDBOX/pg/.github/actions/artifact/artifact.py"
+  run "$SUBJECT" sync
+  assert_failure 2
+  assert_output --partial 'artifact lister'
+  jq 'del(.trackers["unity-core-playground"].github)' "$PROJECT_MAP_FILE" > "$PROJECT_MAP_FILE.tmp" && mv "$PROJECT_MAP_FILE.tmp" "$PROJECT_MAP_FILE"
+  run "$SUBJECT" sync
+  assert_failure 2
+  assert_output --partial 'no github slug'
 }

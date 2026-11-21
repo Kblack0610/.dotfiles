@@ -1229,6 +1229,66 @@ nightly_runs() {
   assert_output 0
 }
 
+# A clone whose artifact.py is a stub lister: `ls "" --run N` prints run N's artifacts, `get <name> --run N --dir D`
+# copies that artifact's files into D; every call is logged. Run 50 holds the nightly, 51 nothing.
+store_artifacts() {
+  local c="$SANDBOX/clone" s="$SANDBOX/clone/store"
+  mkdir -p "$c/.github/actions/artifact" "$s/51" "$s/50/playmode-summary" "$s/50/test-runs-playmode-1/suite-1"
+  cat > "$c/.github/actions/artifact/artifact.py" <<'PY'
+import os, shutil, sys
+a = sys.argv[1:]
+here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "store")
+with open(os.path.join(here, "calls"), "a") as f:
+    f.write(os.environ["GITHUB_REPOSITORY"] + " " + " ".join(a) + "\n")
+run = a[a.index("--run") + 1]
+d = os.path.join(here, run)
+if a[0] == "ls":
+    for n in sorted(os.listdir(d)):
+        print(n, run, "2025-11-13", 100)
+elif os.path.isdir(os.path.join(d, a[1])):
+    shutil.copytree(os.path.join(d, a[1]), a[a.index("--dir") + 1], dirs_exist_ok=True)
+else:
+    sys.exit("artifact: no such artifact " + a[1])
+PY
+  printf 'ok  A  ==> 3/5 passed, 0 failed, 2 known red, 0 skipped\n' > "$s/50/playmode-summary/summary.txt"
+  printf '==> known red now passes, take it off q.txt: P.A.one\n  KNOWN    P.B.four (2.5s)\n' > "$s/50/test-runs-playmode-1/suite-1/A.txt"
+  jq --arg c "$c" '.paths = {($c): "game"} | .trackers.game.artifactStore = ".github/actions/artifact/artifact.py"' "$PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP"
+}
+
+@test "quarantine: a repo with an artifactStore reads the nightly's test-runs from the store, never GitHub's artifacts API" {
+  game_files; quarantine_files; nightly_runs
+  store_artifacts
+  TZ=UTC run "$SUBJECT"
+  assert_success
+  run jq -c '.repos[0] | [.nightly.run_id, .nightly.known, .nightly.now_passing_tests, .nightly.known_tests, .nightly.logs, .no_summary, .error]' "$QUAR"
+  assert_output '[50,2,["P.A.one"],["P.B.four"],1,["51:1"],null]'
+  run grep -c 'artifacts' "$GHD/calls"
+  assert_output 0
+  run cat "$SANDBOX/clone/store/calls"
+  assert_line 'o/game ls  --run 51'
+  assert_line --partial 'o/game get test-runs-playmode-1 --run 50 --dir '
+  # warm: the run attempt is read once, so the next pass asks the store nothing
+  : > "$SANDBOX/clone/store/calls"
+  TZ=UTC run "$SUBJECT"
+  assert_success
+  run cat "$SANDBOX/clone/store/calls"
+  assert_output ''
+  run jq -c '.repos[0] | [.nightly.run_id, .error]' "$QUAR"
+  assert_output '[50,null]'
+}
+
+@test "negative control: an artifactStore the map cannot place in a clone is the lane's error, and GitHub is not asked instead" {
+  game_files; quarantine_files; nightly_runs
+  store_artifacts
+  jq '.paths = {}' "$PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP"
+  TZ=UTC run "$SUBJECT"
+  assert_success
+  run grep -c 'artifacts' "$GHD/calls"
+  assert_output 0
+  run jq -c '.repos[0] | (.error | test("artifactStore"))' "$QUAR"
+  assert_output true
+}
+
 @test "negative control: a nightly read that fails keeps the last good lane with the error, and the pass still exits 0" {
   game_files; quarantine_files; nightly_artifacts; nightly_runs
   TZ=UTC run "$SUBJECT"
