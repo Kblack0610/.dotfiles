@@ -748,6 +748,44 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
   [ -n "$(closes)" ]
 }
 
+@test "a PARKED row with nothing left to land has its window closed, nothing typed, whatever runs in its pane (2026-11-18: agent-2 sat 6 days merged)" {
+  doc "[$(crow 1 PARKED now)]"
+  STUB_FG=bash STUB_PANE='$ ' run checked
+  run closes; assert_output 'close --server lab --pane %1 --sid 1'
+  [ -z "$(typed)" ]
+  ! grep -q '^mark ' "$HOME/sessions.calls"
+  grep -q 'close: lab/1:1: closed its window, parked: its claude is gone and nothing is left to land' "$FLEET_SHEPHERD_DIR/log.md"
+  # Held: its window shown, or a parked row whose verdict is keep (work left here).
+  : > "$HOME/wind-down.calls"; doc "[$(crow 1 PARKED now)]"
+  STUB_SHOWN="1 1" STUB_FG=bash "$SH" check >/dev/null || true
+  doc "[$(crow 2 PARKED keep)]"
+  STUB_FG=bash "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+}
+
+@test "a row whose only blocker is its own item, every phase done, quiet the close timer, has the item moved done; a busy, waking, worker or refused one is left (2026-11-18: agent-22 sat 7h on its item)" {
+  stub agent-queue 'echo "$AGENT_QUEUE_START $*" >> "$HOME/aq.calls"; [ "$2" != refused ] || { echo "agent-queue: refused has a partial landing" >&2; exit 1; }; exit 0'
+  items='{"idle_min":90,"age_min":300,"close":{"verdict":"after","why":"w","items":["fin-1"]}}'
+  doc "[$(crow 1 STALLED after "$items"),
+        $(crow 2 STALLED after "$(jq -c '.idle_min = 5' <<<"$items")"),
+        $(crow 3 STALLED after "$(jq -c '.host = "ms-a2"' <<<"$items")"),
+        $(crow 4 STALLED after "$(jq -c '.close.items = ["refused"]' <<<"$items")"),
+        $(crow 5 STALLED keep "$(jq -c '.close = {verdict: "keep", why: "work left here"}' <<<"$items")"),
+        $(crow 6 STALLED after "$(jq -c '.wake = "a recurring cron"' <<<"$items")"),
+        $(crow 7 PARKED after "$(jq -c '.age_min = null | .close.items = ["parked-1"]' <<<"$items")")]"
+  "$SH" check >/dev/null || true
+  run bash -c 'grep -h " move " "$HOME/aq.calls" | sort'
+  assert_output "0 move fin-1 done --status ok --if running
+0 move parked-1 done --status ok --if running
+0 move refused done --status ok --if running"
+  grep -q 'close: lab/1:1: closed its item fin-1' "$FLEET_SHEPHERD_DIR/log.md"
+  grep -q 'close: lab/4:1: could not close its item refused (agent-queue: refused has a partial landing)' "$FLEET_SHEPHERD_DIR/log.md"
+  # The refusal is logged once.
+  : > "$HOME/aq.calls"; "$SH" check >/dev/null || true
+  run bash -c 'grep -h " move " "$HOME/aq.calls"'; assert_output "0 move fin-1 done --status ok --if running
+0 move parked-1 done --status ok --if running"
+}
+
 @test "a session typed its close an hour ago and still due has its window closed, whatever it did since: refused it in manual mode, or worked" {
   # Manual mode refuses /wind-down auto; its prompt is empty, so it is typed like any other.
   manual="${IDLE/bypass permissions on (shift+tab to cycle)/⏸ manual mode on · ? for shortcuts}"
