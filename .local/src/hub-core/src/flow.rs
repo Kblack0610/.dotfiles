@@ -74,7 +74,7 @@ fn queue_to(state: &'static str) -> Option<Target> {
 }
 
 /// Added against finished over the last 6 hours, and whether the queue shrinks or grows. This is
-/// the waybar chip's drain rule (`.config/waybar/dispatch.sh`), which keeps its copy until that
+/// the waybar chip's drain rule (`.config/waybar/queue.sh`), which keeps its copy until that
 /// chip moves here.
 pub fn drain(r: &Recent) -> String {
     let verdict = match r.added_6h.cmp(&r.done_6h) {

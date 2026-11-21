@@ -187,13 +187,13 @@ pub fn sessions(rows: &[crate::session_table::SessionRow]) -> Card {
     let mut c = Card::new(
         "sessions",
         "Sessions",
-        "live tmux sessions by fleet-sessions bucket; done counts finished and ended rows today",
+        "live tmux sessions by fleet-sessions bucket; ended counts the sessions that finished or ended today",
     )
     .bar(ok, stalled, needs)
     .part("Working", n("WORKING"), Level::Ok)
     .part("Need you", needs, lvl(needs, Level::Red))
     .part("Stalled", stalled, lvl(stalled, Level::Warn))
-    .part("Done today", done, Level::Ok);
+    .part("Ended today", done, Level::Ok);
     c.big = live.len().to_string();
     c.unit = "live sessions".into();
     let look = ["NEEDS", "STALLED"]
@@ -592,7 +592,8 @@ pub fn projects(p: &crate::projects::Projects) -> Card {
     let mut c = Card::new(
         "projects",
         "Projects",
-        "lab projects with their board slice and queue (notes projects --stats)",
+        "lab projects with their board slice and queue (notes projects --stats); shipped today is \
+         the queue items closed ok with a merge, checks the ones closed with none, one per slug",
     )
     .bar(cards.len() - waiting, waiting, 0)
     .part(
@@ -602,7 +603,8 @@ pub fn projects(p: &crate::projects::Projects) -> Card {
     )
     .part("Waiting", sum(|c| c.waiting), lvl(waiting, Level::Warn))
     .part("Hot", sum(|c| c.hot), Level::Ok)
-    .part("Done today", sum(|c| c.done_today), Level::Ok);
+    .part("Shipped today", sum(|c| c.today.shipped), Level::Ok)
+    .part("Checks closed", sum(|c| c.today.checks), Level::Ok);
     c.big = cards.len().to_string();
     c.unit = "lab projects".into();
     if !p.errors.is_empty() {
@@ -681,7 +683,7 @@ pub fn board(f: &crate::tasks::Feed) -> Card {
     .part("Doing", n_doing, Level::Ok)
     .part("Requested", n_asked, lvl(n_asked, Level::Warn))
     .part("Late", n_late, lvl(n_late, Level::Red))
-    .part("Done today", done, Level::Ok)
+    .part("Rows closed today", done, Level::Ok)
     .part("Backlog", n_backlog, Level::Ok);
     // The tiers line's Sprint (tasks::Tiers::words), on the same rule; last, so a narrow TUI
     // card clips it before the counts it always had.
@@ -848,9 +850,6 @@ pub const ORDER: &[&str] = &[
     "projects",
 ];
 
-/// The widget's cards when its URL names none: the cards of `ORDER` that fit a 4x3, in its order.
-pub const WIDGET: &[&str] = &["needs", "red", "sessions", "alerts", "infra", "costs"];
-
 /// The cards `names` lists, in its order; a name no card has is skipped.
 pub fn pick(cards: Vec<Card>, names: &[&str]) -> Vec<Card> {
     let mut cards: Vec<Option<Card>> = cards.into_iter().map(Some).collect();
@@ -954,7 +953,7 @@ mod tests {
         assert_eq!(
             c.parts
                 .iter()
-                .find(|p| p.label == "Done today")
+                .find(|p| p.label == "Ended today")
                 .unwrap()
                 .value,
             "1"
@@ -973,7 +972,10 @@ mod tests {
         let rows = crate::session_table::rows(&state, &vocab, &Default::default(), &[]);
         let c = sessions(&rows);
         let part = |l| c.parts.iter().find(|p| p.label == l).unwrap().value.clone();
-        assert_eq!((c.big.as_str(), part("Done today")), ("2", "1".to_string()));
+        assert_eq!(
+            (c.big.as_str(), part("Ended today")),
+            ("2", "1".to_string())
+        );
         assert_eq!(
             c.bar[0],
             Seg {
@@ -999,15 +1001,6 @@ mod tests {
             ("NO DATA", Some("prometheus: timeout"))
         );
         assert!(g.iter().all(|c| c.link.href() == format!("#{}", c.tab)));
-    }
-
-    #[test]
-    fn the_widget_default_keeps_the_order_the_grid_draws() {
-        let at: Vec<usize> = WIDGET
-            .iter()
-            .map(|n| ORDER.iter().position(|o| o == n).expect(n))
-            .collect();
-        assert!(at.windows(2).all(|w| w[0] < w[1]), "{at:?}");
     }
 
     #[test]
@@ -1079,7 +1072,7 @@ mod tests {
                 ("Doing", "1"),
                 ("Requested", "1"),
                 ("Late", "1"),
-                ("Done today", "1"),
+                ("Rows closed today", "1"),
                 ("Backlog", "2")
             ]
         );

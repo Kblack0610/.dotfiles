@@ -25,6 +25,7 @@
 #   tmux.agent_glyphs           `session:index<TAB>glyph` per window, for claude-status.sh
 #   tmux.script                 present => a test's own behaviour, written by `tmux_script` (sandbox.bash):
 #                               bash, sourced here in place of everything below (a shebang first line: exec'd)
+#   tmux.new_pane               the pane id `new-window -P` prints
 #   tmux.jobs                   written: one `cwd<TAB>command` per `run-shell` call
 set -uo pipefail
 
@@ -254,7 +255,11 @@ case "$verb" in
     t="${target#=}"
     [ ! -f "$FIX/tmux.option.${t%%:*}.${*: -1}" ] || cat "$FIX/tmux.option.${t%%:*}.${*: -1}"
     ;;
+  new-window)
+    # tmux.new_pane: the pane id `new-window -P` prints (fleet-dispatch start --window).
+    [ ! -f "$FIX/tmux.new_pane" ] || cat "$FIX/tmux.new_pane"
+    ;;
   *)
-    : ;;   # new-window, display-popup, set-option, ...: recorded no-ops
+    : ;;   # display-popup, set-option, ...: recorded no-ops
 esac
 exit 0

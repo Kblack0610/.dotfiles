@@ -102,7 +102,7 @@ while IFS=$'\t' read -r name must; do
     gaps+=("## $name is empty: $must"); continue
   fi
   if grep -qiE '^[[:space:]]*n/a' <<<"${text%%$'\n'*}"; then
-    if [ "$name" = Context ] || [ "$name" = Verification ]; then
+    if [ "$name" = Changes ] || [ "$name" = Context ] || [ "$name" = Verification ]; then
       gaps+=("## $name cannot be n/a: $must")
     elif [ -n "$phased" ]; then
       gaps+=("## $name cannot be n/a in a plan with ## Phases: $must")

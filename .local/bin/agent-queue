@@ -3436,9 +3436,14 @@ cmd_stats() {
          | {("done_\($h)h"): ($fin | length), ("failed_\($h)h"): ($fin | map(select(.status == "failed")) | length),
             ("started_\($h)h"): ($all | since(.started) | length),
             ("added_\($h)h"): ($all | since(.queued) | length)}) | add
-         # Finished ok since local midnight, the day day-log keeps.
-         | . + {done_today: ($done | map(select(.status == "ok" and (.finished // "") != ""
-             and (.finished | fromdateiso8601 | strflocaltime("%F")) == (now | strflocaltime("%F")))) | length)}),
+         # Finished ok since local midnight, the day day-log keeps, one count per slug: shipped merged
+         # a commit, checks merged nothing (a watch or alert that cleared). queue::done_today in
+         # hub-core is the same rule for the cards; failed and cancelled count in neither.
+         | ($done | map(select(.status == "ok" and (.finished // "") != ""
+             and (.finished | fromdateiso8601 | strflocaltime("%F")) == (now | strflocaltime("%F"))))) as $ok
+         | ([$ok[] | select((.merged // "") != "") | .slug] | unique) as $shipped
+         | . + {shipped_today: ($shipped | length),
+                checks_today: ([$ok[].slug | select(IN($shipped[]) | not)] | unique | length)}),
        run_minutes_median: ([$done[] | mins(.started; .finished)] | median),
        to_pr_minutes_median: ($done | to_pr),
        per_day: ($done | count_by((.finished // "")[:10])),

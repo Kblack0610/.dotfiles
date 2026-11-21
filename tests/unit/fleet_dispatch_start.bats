@@ -662,6 +662,29 @@ load 'fleet_dispatch/common'
   assert_called "new-session -d -s dotfiles -n crash -c $SANDBOX/repos/game ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume abc-123"
 }
 
+# 2026-11-21: a world restore made hub:dotfiles with an agent's window first, tagged the session, and
+# Prefix+w showed every window of it [dispatch], the human's own included.
+@test "start --resume --window of an agent item tags the window it opened, never the session" {
+  project game beta "$SANDBOX/repos/game"
+  started_item fix-crash lab:game-agent-9 run '' 'board:game:fix crash'
+  : > "$NOTES_FIXTURE/tmux.sessions.default"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --server default --session dotfiles \
+    --window crash --cwd "$SANDBOX/repos/game" --resume abc-123 --item fix-crash
+  assert_success
+  assert_called 'tmux -L default set-option -w -t =dotfiles: @dispatch game: fix-crash'
+  assert_not_called 'set-option -t =dotfiles: @dispatch'
+  # Joined into the live session, the window still gets its own label.
+  : > "$NOTES_FIXTURE/calls.log"
+  printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.sessions.default"
+  printf '%%42\n' > "$NOTES_FIXTURE/tmux.new_pane"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --server default --session dotfiles \
+    --window crash --cwd "$SANDBOX/repos/game" --resume abc-123 --item fix-crash
+  assert_success
+  # The pane new-window opened, not =dotfiles: (the session's active window, maybe the human's).
+  assert_called 'tmux -L default set-option -w -t %42 @dispatch game: fix-crash'
+  assert_not_called 'set-option -t =dotfiles: @dispatch'
+}
+
 @test "--harness opencode launches a standalone run on the overlay, claims its session and logs under eval" {
   harness_ready
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness opencode --model qwen

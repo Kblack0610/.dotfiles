@@ -142,7 +142,7 @@
             "custom/fleet",
             "custom/projects",
             "custom/ai-agents",
-            "custom/dispatch",
+            "custom/queue",
             "custom/ci",
             "custom/printer"
         ]
@@ -305,13 +305,13 @@
         "on-click": "$HOME/.local/bin/machine-mode next",
         "tooltip": true
     },
-    // Queue: Q ready to start and D done today; the hover has a section
-    // per system: Queue, Dispatch, Shepherd (dispatch.sh). Click opens the hub board on Queue.
-    "custom/dispatch": {
+    // Queue: Q ready to start and D done today; the hover leads with whether work flows and
+    // what to fix, then Queue, Dispatch and Shepherd numbers (queue.sh). Click opens the hub on Queue.
+    "custom/queue": {
         "format": "{}",
         "return-type": "json",
         "interval": 60,
-        "exec": "$HOME/.config/waybar/modules.sh gate custom/dispatch $HOME/.config/waybar/dispatch.sh",
+        "exec": "$HOME/.config/waybar/modules.sh gate custom/queue $HOME/.config/waybar/queue.sh",
         "signal": 10,
         "hide-empty-text": true,
         "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab queue",

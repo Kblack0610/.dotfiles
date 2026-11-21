@@ -42,9 +42,9 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  # The PR budget is a p90 of 5 minutes (~/.local/src/docs/ci.md); timeout-minutes is the hang
-  # guard at 2x that, never a lever. tests/pick.sh lists the files, and tests/shard.sh splits them
-  # across runners, balanced by the seconds the weights job reads from the newest green main run's
+  # The PR budget is a p90 of 5 minutes (~/.local/src/docs/ci.md); each job's timeout-minutes is
+  # its hang guard (fast's is 2x the budget), never a lever. tests/pick.sh lists the files, and
+  # tests/shard.sh splits them across runners, balanced by the seconds the weights job reads from the newest green main run's
   # JUnit. A shard is bounded below by its heaviest file, so no file may weigh much past a shard's
   # share of a picked run: unit/fleet_dispatch*.bats, 40% of unit, is ten files for that. With
   # eight shards a run picking the family still read p90 6.4 min over 54 runs, its slowest shard
@@ -177,16 +177,16 @@ jobs:
       # No tmux or fzf installed on purpose. These tiers must not need either: the contract
       # tier drives the subjects through the fake tmux stub, and if a test ever starts
       # reaching for a real binary, this job is where that shows up.
-      # The lists are taken first so a failed pick or split stops the step (bash -e). An empty
-      # shard is a pick smaller than the matrix, not a failure; the first shard of each tier
-      # puts the pick line ("picked N of M" or "full: <why>") on the run's Summary page, and
-      # every shard puts its predicted seconds beside the actual ones, so a skewed split shows.
-      - name: Fast tier shard
+      # The lists are taken in their own step so a failed pick or split stops the job (bash -e)
+      # before any test runs. An empty shard is a pick smaller than the matrix, not a failure; the
+      # first shard of each tier puts the pick line ("picked N of M" or "full: <why>") on the run's
+      # Summary page, and every shard puts its predicted seconds beside the actual ones, so a
+      # skewed split shows.
+      - name: Pick the shard's files
+        id: pick
         env:
-          JUNIT: 1
           BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
           WEIGHTS_TABLE: ${{ needs.weights.outputs.table }}
-          TAG: ${{ matrix.tier }} ${{ matrix.shard }}
         run: |
           if [ -n "$WEIGHTS_TABLE" ]; then
             printf '%s\n' "$WEIGHTS_TABLE" >"$RUNNER_TEMP/weights.tsv"
@@ -195,9 +195,38 @@ jobs:
           tests/pick.sh ${{ matrix.tier }} $BASE >"$RUNNER_TEMP/picked" 2>"$RUNNER_TEMP/why"
           cat "$RUNNER_TEMP/why"
           case "${{ matrix.shard }}" in 1/*) cat "$RUNNER_TEMP/why" >>"$GITHUB_STEP_SUMMARY" ;; esac
-          files=$(tests/shard.sh ${{ matrix.tier }} ${{ matrix.shard }} "$RUNNER_TEMP/picked" 2>"$RUNNER_TEMP/split") ||
+          tests/shard.sh ${{ matrix.tier }} ${{ matrix.shard }} "$RUNNER_TEMP/picked" >"$RUNNER_TEMP/files" 2>"$RUNNER_TEMP/split" ||
             { cat "$RUNNER_TEMP/split"; exit 2; }
           cat "$RUNNER_TEMP/split"
+          # Only a shard holding a file that runs `bun test` downloads bun.
+          if [ -s "$RUNNER_TEMP/files" ] && (cd tests && grep -lq 'bun test' $(<"$RUNNER_TEMP/files")); then
+            echo bun=true >>"$GITHUB_OUTPUT"
+          fi
+      # bun runs the hunk extensions' TypeScript tests (unit/hunk_*.bats), which skip without it
+      # off CI and fail without it on CI. From the release CDN, pinned by version and the zip's
+      # sha256 (bump both), so a new bun cannot turn the gate red on a repo nobody touched; the
+      # step is capped like the apt one, so a hung download fails here by name. The retries match
+      # tests/Dockerfile's curlrc: the CDN answers a 504 now and then, and 8 x 15 s fits the cap.
+      - name: bun
+        if: steps.pick.outputs.bun == 'true'
+        timeout-minutes: 3
+        env:
+          BUN_VERSION: 1.4.5
+          BUN_SHA256: 94559b3b528995a49452f9f2404cec74f2efd7d06e0a000a8cd214b02c3666eb   # bun-linux-x64.zip
+        run: |
+          zip=$RUNNER_TEMP/bun.zip
+          curl -fsSL --retry 8 --retry-delay 15 --retry-all-errors -o "$zip" \
+            "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip"
+          echo "$BUN_SHA256  $zip" | sha256sum -c -
+          unzip -q "$zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/bun-linux-x64" >>"$GITHUB_PATH"
+          "$RUNNER_TEMP/bun-linux-x64/bun" --version
+      - name: Fast tier shard
+        env:
+          JUNIT: 1
+          TAG: ${{ matrix.tier }} ${{ matrix.shard }}
+        run: |
+          files=$(<"$RUNNER_TEMP/files")
           [ -n "$files" ] || { echo "nothing picked for $TAG"; exit 0; }
           start=$SECONDS rc=0
           make -C tests test-files FILES="$(tr '\n' ' ' <<<"$files")" || rc=$?

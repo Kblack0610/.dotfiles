@@ -20,7 +20,6 @@ mod builds;
 mod cache;
 mod cards;
 mod cli;
-mod cloud;
 mod costs;
 mod deliverables;
 mod departments;
@@ -233,7 +232,6 @@ fn router(state: Shared) -> Router {
         .route("/api/infra", get(infra_board))
         .route("/api/infra/machine", get(infra_machine))
         .route("/api/infra/pool", get(infra_pool))
-        .route("/api/cloud-runner", post(cloud::set))
         .route("/api/fleet", get(fleet_board))
         .route("/api/fleet/runner", get(fleet_runner))
         .route("/api/flow", get(flow_strip))
@@ -296,10 +294,9 @@ fn router(state: Shared) -> Router {
         .route("/oauth/callback", get(callback))
         .route("/logout", post(logout))
         .route("/healthz", get(|| async { "ok" }))
-        // The assets are this public repo's code and carry no data, so the widget page loads them
-        // with no cookie; every read of data stays behind sign-in or the widget key.
+        // The assets are this public repo's code and carry no data, so they load with no cookie;
+        // every read of data stays behind sign-in or the widget key.
         .route("/static/{name}", get(static_file))
-        .route("/widget", get(widget::page))
         .route("/widget.json", get(widget::doc))
         // A literal, not push::REGISTER, so audit's route test reads it.
         .route(

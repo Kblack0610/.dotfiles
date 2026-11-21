@@ -3147,19 +3147,22 @@ EOF
   assert_equal "$(jq -c '.recent | [.failed_1h, .failed_6h, .failed_24h, .started_1h, .started_6h, .started_24h]' <<<"$output")" '[0,1,1,1,2,3]'
 }
 
-@test "stats done_today counts ok items since local midnight, never the UTC day or a failed item" {
+@test "stats shipped_today and checks_today count ok slugs since local midnight, once each, never the UTC day or a failed item" {
   export TZ=Etc/GMT+8 # west of UTC: last night's 23:59 local is already today in UTC
   today="$(date +%F)"
   at() { date -u -d "@$(date -d "$1" +%s)" +%FT%TZ; } # -u alone would read $1 as UTC
-  for spec in "a|$today 00:00:01|ok" "b|$(date -d yesterday +%F) 23:59:59|ok" "c|$today 00:00:02|failed"; do
-    IFS='|' read -r slug when status <<<"$spec"
-    "$AQ" add --project game --slug "$slug" "$slug"
+  # a: shipped twice (a repeat run) counts once; k: a check run twice counts once; b: yesterday
+  # local; c: failed with a merge, the negative control, counts in neither.
+  for spec in "a|$today 00:00:01|ok|abc123" "a|$today 00:00:03|ok|def456" "k|$today 00:00:04|ok|" \
+    "k|$today 00:00:05|ok|" "b|$(date -d yesterday +%F) 23:59:59|ok|aaa111" "c|$today 00:00:02|failed|bbb222"; do
+    IFS='|' read -r slug when status sha <<<"$spec"
+    "$AQ" add --repeat --project game --slug "$slug" "$slug"
     "$AQ" move "$slug" done --status "$status"
-    "$AQ" set "$slug" "finished=$(at "$when")" "started=$(at "$when")"
+    "$AQ" set "$slug" "finished=$(at "$when")" "started=$(at "$when")" "merged=$sha"
   done
   run "$AQ" stats --json --since 2000-01-01
   assert_success
-  assert_equal "$(jq -c .recent.done_today <<<"$output")" 1
+  assert_equal "$(jq -c '.recent | [.shipped_today, .checks_today]' <<<"$output")" '[1,1]'
 }
 
 @test "a slug is matched exactly, never as the tail of a longer one" {

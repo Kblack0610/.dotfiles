@@ -72,7 +72,7 @@ The system's clock hours live in one file, `.config/machine-mode/hours`: each ro
 
 - Dropping a slot is not instant: the ConfigMap takes about a minute to reach the pod, the governor runs every 60 seconds, then a running job finishes. Expect minutes, and longer if a gate is running.
 - Other builds agents start are not capped. They already run at a low priority.
-- This box runs one pool runner at night (`full`) and none by day in any mode: two Unity runners pushed load to 2x the cores and Tctl to 96C (2026-11-11), so day CI goes to the AWS hosts. The governor's pool floor (1 admitted across the pool) can still pin this host on when the AWS hosts are down; the governor log says `at the pool floor` when it does.
+- This box runs one pool runner at night (`full`) and none by day in any mode: two Unity runners pushed load to 2x the cores and Tctl to 96C (2026-11-11). The governor's pool floor (1 admitted across the pool) can still pin this host on; the governor log says `at the pool floor` when it does.
 
 ## Release lane
 
