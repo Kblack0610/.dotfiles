@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # injected.sh - sourced by UserPromptSubmit hooks that inject a block once per session and again
 # after each compaction (the summary drops it): answer-standard.sh, manual-mode-investigate.sh.
 
