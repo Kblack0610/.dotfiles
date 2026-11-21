@@ -22,7 +22,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
+import { availableParallelism, homedir } from "node:os";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BIG_PROJECT, FIXTURES, NOW, RUNNER_PAGES, STACK_RULE_ROWS, WIDGET_CARDS, pageRows } from "./fixtures.mjs";
@@ -477,7 +477,9 @@ function print(results) {
 // Every check opens its own context and reads no other's state, so they run PAGES_AT_ONCE at a time.
 // One after another they took 64 s, the slowest step of the rust job, itself the gate's critical
 // path in half its pull-request runs (ar-3036). Each list keeps its order, so the output does too.
-const PAGES_AT_ONCE = 4;
+// Never more than the cores, so WAIT_MS stays a hang guard on a small runner; one at a time against
+// a live --api instance, which serves real reads.
+const PAGES_AT_ONCE = api ? 1 : Math.min(4, availableParallelism());
 function limiter(n) {
   let free = n;
   const queue = [];
@@ -500,15 +502,14 @@ async function main() {
   const pw = playwright();
   const browser = await pw.chromium.launch({ headless: true, executablePath: chromium(pw) });
   const slot = limiter(PAGES_AT_ONCE);
-  const none = [];
   // --control proves the overflow detector alone; the nav check has its own control, --no-kit.
   const [navErrors, cardErrors, widgetErrors, pagerErrors, results, heights] = await Promise.all([
-    control || wide ? none : slot(() => navCheck(browser, page)),
-    wide || noKit ? none : slot(() => cardsCheck(browser, page, control ? CARDS_CONTROL_CSS : null)),
-    wide || noKit ? none : slot(() => widgetCheck(browser, page, control ? WIDGET_CONTROL_CSS : null)),
-    wide || noKit ? none : slot(() => pagerCheck(browser, page, control)),
-    noKit ? none : Promise.all(TABS.map((spec) => slot(() => renderTab(browser, spec, page)))),
-    noKit ? none : Promise.all(TALL.map((spec) => slot(() => heightOf(browser, spec, page)))),
+    control || wide ? [] : slot(() => navCheck(browser, page)),
+    wide || noKit ? [] : slot(() => cardsCheck(browser, page, control ? CARDS_CONTROL_CSS : null)),
+    wide || noKit ? [] : slot(() => widgetCheck(browser, page, control ? WIDGET_CONTROL_CSS : null)),
+    wide || noKit ? [] : slot(() => pagerCheck(browser, page, control)),
+    noKit ? [] : Promise.all(TABS.map((spec) => slot(() => renderTab(browser, spec, page)))),
+    noKit ? [] : Promise.all(TALL.map((spec) => slot(() => heightOf(browser, spec, page)))),
   ]);
   await browser.close();
   for (const e of navErrors) console.log(`NAV ${e}`);
