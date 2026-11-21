@@ -26,7 +26,7 @@ if [ -n "${STUB_USAGE:-}" ]; then printf "%s" "$STUB_USAGE"; else printf "{\"ses
   stub hub '[ "$*" = "needs --json" ] || exit 2; if [ -n "${STUB_NEEDS:-}" ]; then printf "%s" "$STUB_NEEDS"; else echo "{\"needs\":[],\"errors\":[]}"; fi'
   stub watch-companion-loop '[ "$1" = tripped ] && printf "%b" "${STUB_TRIPPED:-}"'
   stub fleet-bench '[ -z "${STUB_BENCH_FAIL:-}" ] || exit 1; if [ "$1" = requests ]; then printf "## Your requests\n\n- ci-cleanup, 1 of 3\n"; elif [ "$1" = improve ]; then [ -n "${STUB_IMPROVE:-}" ] || exit 1; printf "%s\n" "$STUB_IMPROVE"; else printf "%b" "${STUB_FINDINGS:-}"; fi'
-  stub tmux 'echo "$*" >> "$HOME/tmux.calls"; [ -n "${STUB_TMUX_FAIL:-}" ] && [[ "$*" =~ $STUB_TMUX_FAIL ]] && exit 1
+  tmux_script 'echo "$*" >> "$HOME/tmux.calls"; [ -n "${STUB_TMUX_FAIL:-}" ] && [[ "$*" =~ $STUB_TMUX_FAIL ]] && exit 1
 case "$*" in
   *new-window*) echo %9 ;;
   *" list-panes "*) printf "%b" "${STUB_PANES:-}" ;;
@@ -2513,7 +2513,7 @@ prom_q() {
   jq -c --arg k "$kind" '{status: "success", data: {result: map(select($k == "" or .kind == $k) | {metric})}}' <<<"$STUB_RUNNERS"
 }
 STUB
-  stub gh 'echo "$*" >> "$HOME/gh.calls"; case "$1" in api) printf "%b" "${STUB_JOBS:-}" ;; esac'
+  gh_script 'echo "$*" >> "$HOME/gh.calls"; case "$1" in api) printf "%b" "${STUB_JOBS:-}" ;; esac'
   stub fleet-bench 'echo "$*" >> "$HOME/bench.calls"'
 }
 

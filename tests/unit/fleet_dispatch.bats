@@ -3047,11 +3047,11 @@ picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | 
 
 @test "claude-cloud-run names a gh failure instead of reading it as no PR yet, and never takes an older PR" {
   cloud_run_ready
-  stub gh 'echo "gh auth: not logged in" >&2; exit 1'
+  gh_script 'echo "gh auth: not logged in" >&2; exit 1'
   CLOUD_TIMEOUT_MIN=0 run "$REPO_ROOT/.local/bin/claude-cloud-run" cloud-fix acme/game "do the task"
   assert_failure
   assert_output --partial 'gh pr list failed: gh auth: not logged in'
-  stub gh 'cat "$NOTES_FIXTURE/prs.json"'
+  gh_script 'cat "$NOTES_FIXTURE/prs.json"'
   echo '[{"number": 7, "createdAt": "2000-01-01T00:00:00Z", "body": "Item: cloud-fix"}]' > "$NOTES_FIXTURE/prs.json"
   CLOUD_TIMEOUT_MIN=0 run "$REPO_ROOT/.local/bin/claude-cloud-run" cloud-fix acme/game "do the task"
   assert_failure

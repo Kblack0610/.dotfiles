@@ -56,8 +56,7 @@ EOF
   printf 'p\t1\tg-2\trow g-2\np\t2\tg-3\trow g-3\n' > "$NOTES_FIXTURE/ptask.personal.game"
 
   # gh: GitHub's answers through the real jq; the tag exists once it is in the bare repo.
-  cat > "$SANDBOX/bin/gh" <<'EOF'
-#!/usr/bin/env bash
+  gh_script <<'EOF'
 q=.; a=("$@")
 for i in "${!a[@]}"; do [ "${a[$i]}" = --jq ] && q="${a[$((i + 1))]}"; done
 case "$*" in
