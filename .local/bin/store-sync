@@ -253,7 +253,8 @@ ref_of() { g rev-parse -q --verify "refs/remotes/$1/$BRANCH" 2>/dev/null; }
 # 0 the remote holds HEAD, 1 unreachable (FETCH_ERR says why), 2 a merge conflict, 3 the push
 # failed (rejected because another machine pushed first, or a transient error).
 sync_one() {
-  local r="$1" ref files=()
+  local r="$1" ref files=() err
+  PUSH_ERR=""
   # One conflict file per remote: a clean origin merge must not clear a backup conflict.
   local cf="$CONFLICT"; [ "$r" = origin ] || cf="$CONFLICT-$r"
   # master alone: the lease branch (fleet-lease) is not the store, and its history stays off clones.
@@ -276,13 +277,32 @@ sync_one() {
     elif [ "$(cat "$cf" 2>/dev/null)" = "$(g rev-parse HEAD) $ref" ]; then
       CONFLICT_FILES=""
       return 2
-    elif ! g -c core.hooksPath=/dev/null merge -q --no-edit -m "$HOST_TAG store-sync: merge $r $(date '+%Y-%m-%d_%H:%M:%S')" "$ref" >/dev/null 2>&1; then
-      CONFLICT_FILES=$(g diff --name-only --diff-filter=U | awk 'NR<=5' | tr '\n' ' ')
-      g merge --abort >/dev/null 2>&1
-      # Page on entering the stuck state only: a notes conflict once sat unseen for two days.
-      [ -f "$cf" ] || notify high "The $STORE_NAME store on $HOST_TAG hit a merge conflict with $r in ${CONFLICT_FILES:-some files} and stopped syncing with $r; local commits are kept. Resolve it in $STORE; see $LOG"
-      printf '%s %s\n' "$(g rev-parse HEAD)" "$ref" > "$cf"
-      return 2
+    else
+      # The merge is tried in memory first (merge-tree runs the same merge drivers), so a conflict
+      # never touches the working tree. A conflicted `git merge` had to be aborted, and a queue
+      # write landing on a file it brought in made the abort fail and left MERGE_HEAD behind, which
+      # every later sync read as a person's merge (razer-laptop, 2026-11-20, ar-3439).
+      local tree trc
+      tree=$(g merge-tree --write-tree --name-only --no-messages HEAD "$ref" 2>/dev/null); trc=$?
+      # Any other non-zero exit (unrelated histories, say) cannot merge either: stuck the same way.
+      if [ "$trc" != 0 ]; then
+        CONFLICT_FILES=$(printf '%s\n' "$tree" | awk 'NR>1 && NF && NR<=6' | tr '\n' ' ')
+        [ "$trc" = 1 ] || CONFLICT_FILES="(git merge-tree exit $trc) "
+        # Page on entering the stuck state only: a notes conflict once sat unseen for two days.
+        [ -f "$cf" ] || notify high "The $STORE_NAME store on $HOST_TAG hit a merge conflict with $r in ${CONFLICT_FILES:-some files} and stopped syncing with $r; local commits are kept. Resolve it in $STORE; see $LOG"
+        printf '%s %s\n' "$(g rev-parse HEAD)" "$ref" > "$cf"
+        return 2
+      fi
+      # Clean in memory, so this merge fails when the working tree refuses it (a write here on a
+      # path it changes); the next round commits that write and tries again.
+      if ! err=$(g -c core.hooksPath=/dev/null merge -q --no-edit -m "$HOST_TAG store-sync: merge $r $(date '+%Y-%m-%d_%H:%M:%S')" "$ref" 2>&1); then
+        PUSH_ERR="merging $r: $(printf '%s' "$err" | grep -m1 -E '^(error|fatal)' | cut -c1-200)"
+        if g rev-parse -q --verify MERGE_HEAD >/dev/null && ! g merge --abort >/dev/null 2>&1; then
+          log "ERROR: store-sync's own merge of $r could not be aborted (a write landed on a file it brought in); in $STORE: git merge --abort, or finish the merge, then store-sync"
+          exit 1
+        fi
+        return 3
+      fi
     fi
   fi
   rm -f "$cf"
