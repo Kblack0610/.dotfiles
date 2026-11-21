@@ -18,6 +18,16 @@ setup() {
   assert_equal "${CLAUDE_CONFIG_DIR:-}|${GH_CONFIG_DIR:-}|${CODEX_HOME:-}|${GH_TOKEN:-}|${AGENT_QUEUE_ITEM:-}" "||||"
 }
 
+@test "setup_suite unsets the live-state exports a lane session hands its tests, PASS_TOOLS included" {
+  # fleet_shepherd.bats leaves PASS_TOOLS to this scrub alone (ar-4206): a shepherd lane exports
+  # its conf's list, and the lean start test's negative control then saw --tools. CI never sets
+  # them, so this sets each one before the scrub instead of reading the run's own environment.
+  run env PASS_TOOLS=Bash,Read AGENTCTL_NAME=x AGENTCTL_STATE_DIR=/x BATS_SUITE_TMPDIR="$BATS_TEST_TMPDIR" \
+    bash -c '. "$1/helpers/suite_home.bash"; setup_suite; echo "${PASS_TOOLS-unset}|${AGENTCTL_NAME-unset}|${AGENTCTL_STATE_DIR-unset}"' _ "$TESTS"
+  assert_success
+  assert_output 'unset|unset|unset'
+}
+
 @test "every directory holding a .bats file has a setup_suite.bash that sources suite_home" {
   # bats loads setup_suite.bash only from the first file's directory, so a tier without one runs
   # on the real HOME. A new test directory fails here until it has one.
