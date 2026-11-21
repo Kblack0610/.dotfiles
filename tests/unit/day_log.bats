@@ -151,12 +151,12 @@ sheet_commit() {
   git -C "$DAYLOG_NOTES_DIR" add -A
   GIT_COMMITTER_DATE="$1" GIT_AUTHOR_DATE="$1" git -C "$DAYLOG_NOTES_DIR" -c user.name=t -c user.email=t@t commit -qm "$1" --allow-empty
 }
-# ci_clone: a clone whose origin/trunk has a canned scripts/ci-cost.py; the checkout itself has not
+# ci_clone: a clone whose origin/trunk has a canned scripts/ci/ci-cost.py; the checkout itself has not
 ci_clone() {
   local origin="$SANDBOX/origin" script
   git init -q -b trunk "$origin"
-  mkdir -p "$origin/scripts"
-  cat > "$origin/scripts/ci-cost.py" <<EOF
+  mkdir -p "$origin/scripts/ci"
+  cat > "$origin/scripts/ci/ci-cost.py" <<EOF
 import sys
 open("$SANDBOX/cost-args", "w").write(" ".join(sys.argv[1:]))
 print('{"hours":{"pool":3.5},"gate":{"wall":{"n":4,"p50":40,"p90":70}},"queue":{"Tests":{"n":4,"p50":5,"p90":9}},"regates":{"gates":2,"branches_regated":1},"reruns":1,"quarantine":{"open":6,"ending_7d":0}}')
@@ -164,7 +164,7 @@ EOF
   git -C "$origin" add -A
   git -C "$origin" -c user.name=t -c user.email=t@t commit -qm seed
   git clone -q "$origin" "$SANDBOX/clone"
-  git -C "$SANDBOX/clone" rm -q scripts/ci-cost.py
+  git -C "$SANDBOX/clone" rm -q scripts/ci/ci-cost.py
   git -C "$SANDBOX/clone" -c user.name=t -c user.email=t@t commit -qm 'a stale checkout'
   jq -n --arg c "$SANDBOX/clone" '[{forge: "github", repo: "O/game", base: "trunk", host: null, clone: $c}]' > "$SANDBOX/ci-repos"
 }
@@ -647,9 +647,9 @@ ci pass --since $since --until $until --branch trunk"
   local origin="$SANDBOX/origin"
   mkdir -p "$origin/scripts/test"
   echo 'POOL = 3.5' > "$origin/scripts/test/train.py"
-  cat > "$origin/scripts/ci-cost.py" <<'EOF'
+  cat > "$origin/scripts/ci/ci-cost.py" <<'EOF'
 import os
-exec(open(os.path.join(os.path.dirname(__file__), "test", "train.py")).read())
+exec(open(os.path.join(os.path.dirname(__file__), "..", "test", "train.py")).read())
 print('{"hours":{"pool":%s}}' % POOL)
 EOF
   git -C "$origin" add -A

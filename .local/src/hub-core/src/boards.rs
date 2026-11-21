@@ -582,7 +582,7 @@ pub struct DayRow {
 }
 
 /// One day of CI time, summed over every repo whose `ci.repos.<repo>.cost` the record holds
-/// (`day-log` copies it from `scripts/ci-cost.py --json`); a cost with no pool hours is not a
+/// (`day-log` copies it from `scripts/ci/ci-cost.py --json`); a cost with no pool hours is not a
 /// measurement. Hours are runner-hours.
 #[derive(Serialize, Debug, PartialEq)]
 pub struct CiDay {

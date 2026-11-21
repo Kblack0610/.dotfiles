@@ -5,7 +5,7 @@ For each GitHub repo in the repo list (`schedules-sync repos`), it records every
 timeout (the longest `needs:` path of job timeouts, GitHub's 360 min where a job sets
 none), its purpose (the comment block right above `on:`, else the file's first comment
 block), its job graph, and its last SCHEDULES_RUNS scheduled runs (id, url, status,
-conclusion, start, end, failed jobs). It also records the repo's night set, scripts/night.json
+conclusion, start, end, failed jobs). It also records the repo's night set, config/ci/nightly.json
 on the base (keys are workflow files: `night` the ones the nightly runs, `held` the ones it
 holds back), as `night: {night, held, sha, etag}`, read through the contents API conditional on
 its ETag and decoded only when its sha moves; a file that is not a JSON object keeps its sha
@@ -144,7 +144,7 @@ failure never changes the exit status.
 Deterministic, no model. schedules-sync.timer runs it every 10 minutes: GitHub sends this
 machine no event when a run ends, so it samples.
 
-gh cost per GitHub repo per pass: one workflows listing, one conditional night.json read (a
+gh cost per GitHub repo per pass: one workflows listing, one conditional nightly.json read (a
 304 when unchanged; none for a day once it is missing), one blob per changed workflow file, a
 status listing per open status its stale open runs hold (paged, 100 a page, at most LIST_PAGES,
 until it has them all) plus a read by id per run that left it, and the job calls above. The last sync and the last error per
@@ -209,7 +209,7 @@ QUARANTINE_FILES = ("quarantine.py", "quarantine.txt")
 # repo-root path), cached when the base has them; an older quarantine.py needs neither.
 QUARANTINE_WITH = ("flake_patterns.py", "flake-causes.json")
 QUARANTINE_RECHECK = timedelta(days=1)  # how often a repo with no quarantine is asked again
-NIGHT_FILE = "scripts/night.json"  # the repo's night set: which workflows the nightly runs or holds
+NIGHT_FILE = "config/ci/nightly.json"  # the repo's night set: which workflows the nightly runs or holds
 # The nightly: the full run's title (playground scripts/test/last-nightly.py TITLES), its joined
 # summary, uploaded only when every shard reported (test.yml playmode-report), and each job's
 # suite output, where results.py names a quarantined test that passed.
@@ -1506,7 +1506,7 @@ def failed_jobs(repo, run, old, jobs_last):
 
 
 def night_set(repo, base, prev, t):
-    """{"night": the night.json entry, or "night_absent": when it was last found missing} for the
+    """{"night": the nightly.json entry, or "night_absent": when it was last found missing} for the
     state entry. Asked conditionally on the last ETag and decoded only when its blob sha moves; a
     repo with no file is asked again after QUARANTINE_RECHECK, like one with no quarantine."""
     prev = prev or {}
