@@ -2022,7 +2022,6 @@ collect() {
               | if . == "" then "-" else . end), (.by // "-")] | @tsv)' <<<"$qall" 2>/dev/null)
         irow="${irow:--}"; iby="${iby:--}" ;;
     esac
-    [ "$host" != - ] || planf="$(item_plan "$islugs" "$started" "$planf")"   # the item's own plan outranks the transcript's
     # A done item's merged PRs are the session's landed ones when its transcript names no merged PR, none
     # open and every state known. A landing train merges a member's commits through its own train/* PR and
     # closes the member, so the transcript names only the closed member while agent-land records the train
@@ -2069,7 +2068,7 @@ collect() {
       IFS=$'\t' read -r xr xpr xci xoid < <(sibling_pr "$cwd" "$prs")
       if [ -n "${xpr:-}" ]; then pr="$xpr" state=OPEN ci="$xci" oid="$xoid" conflicts=-; else xr=-; fi
     fi
-    IFS=$'\t' read -r pdone ptotal pnext < <(plan_phases "$planf")
+    [ "$host" != - ] || planf="$(item_plan "$islugs" "$started" "$planf")"; IFS=$'\t' read -r pdone ptotal pnext < <(plan_phases "$planf")   # the item's own plan outranks the transcript's
     # A plan the pane recorded that does not exist (every account shares ~/.claude/plans, claude-acct) is not a
     # session with no plan: its phases are unknown, so it is never read as finished (ar-2368).
     if [ "$planf" = - ]; then phases=-
