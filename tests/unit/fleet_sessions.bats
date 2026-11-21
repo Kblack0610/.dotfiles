@@ -2902,14 +2902,14 @@ empty_submodule_fixture() {
     printf '%s\n' "$1" >> "$SANDBOX/visited"
     echo '1 1 0 - - - 1 branch 0 no - - changed.txt'
   }
-  AGENT_STORE="$store" run edited_work_blockers "$cwd" "$(printf '%s\n' "$store/lessons/x.md" "$a/file")"
+  NOTES_STORE="$SANDBOX/none" AGENT_STORE="$store" run edited_work_blockers "$cwd" "$(printf '%s\n' "$store/lessons/x.md" "$a/file")"
   assert_success
   assert_output --partial "$a: 1 dirty file(s)"
   refute_output --partial "$store"
   [ "$(cat "$SANDBOX/visited")" = "$a" ]
   # Negative control: with the store pointed elsewhere, the same dirt is unlanded work.
   rm "$SANDBOX/visited"
-  AGENT_STORE="$SANDBOX/elsewhere" run edited_work_blockers "$cwd" "$store/lessons/x.md"
+  NOTES_STORE="$SANDBOX/none" AGENT_STORE="$SANDBOX/elsewhere" run edited_work_blockers "$cwd" "$store/lessons/x.md"
   assert_output --partial "$store: 1 dirty file(s)"
 }
 
