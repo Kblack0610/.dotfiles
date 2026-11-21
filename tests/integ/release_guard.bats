@@ -30,7 +30,7 @@ allowed() { assert_success; assert_output ''; }
   run at "$T/game" 'git tag v0.0.0-guard && git push origin v0.0.0-guard'
   denied
   assert_output --partial 'cut.yml'
-  assert_output --partial 'gh workflow run release.yml -f tag=<existing tag>'
+  assert_output --partial 'gh workflow run release.yml --ref <tag> -f tag=<tag>'
 }
 
 @test "every way to make or push a release tag is denied" {
@@ -68,6 +68,9 @@ allowed() { assert_success; assert_output ''; }
 
 @test "a release workflow is allowed only as a re-send of a tag already on origin" {
   run at "$T/game" 'gh workflow run release.yml -f tag=v0.5.2'
+  allowed
+  # the form the deny message and release.md give
+  run at "$T/game" 'gh workflow run release.yml --ref v0.5.2 -f tag=v0.5.2'
   allowed
   run at "$T/game" 'gh workflow run steam.yml --ref v0.5.2 -f game=dodginballs -f run-id=1'
   allowed
