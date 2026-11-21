@@ -691,6 +691,10 @@ share_history() {
   printf 'app\thigh\n' > "$NOTES_FIXTURE/prios"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
   refute_output --partial 'fleet share'
+  # A failed read turns the cap off out loud, never in silence.
+  rm -f "$NOTES_FIXTURE/prios"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
+  assert_output --partial 'fleet share: off, as `notes projects --prios` failed'
 }
 
 @test "fleet share: with only fleet work to start the cap lets go, and the board fills from other projects first" {

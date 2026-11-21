@@ -1142,9 +1142,10 @@ line_why() {
 }
 
 # SHARE_JQ: `share_held($s)` is an item the fleet share cap holds, $s being SHARE_STATE: the share is
-# full and the item is on a fleet project and is no red and none of the human's own: urgent `from:
-# human` (as human_urgent reads it) or #requested, their ask (ask XI2fDO). A canary or an agent's
-# urgent waits like the rest: 180 of the 1132 starts in the 3 days to 2026-11-21 passed the cap that
+# full and the item is on a fleet project, no red, no #requested (the human's ask, ask XI2fDO) and no
+# urgent `from: human` (human_urgent's urgent test; its fresh asks and plan phases pass on the human
+# floor, HUMAN_PASS). A canary or any other urgent waits like the rest, a board row's #urgent
+# included (`from: board:`): 180 of the 1132 starts in the 3 days to 2026-11-21 passed the cap that
 # way while the fleet held 79% of them (plan swhow-me-asll-data-modular-otter P3). The one test
 # share_why and queue_depth apply.
 # shellcheck disable=SC2016
@@ -1161,13 +1162,17 @@ SHARE_JQ='def share_held($s): (.project // "") as $p | $s.full and any($s.projec
 share_state() {
   [ -z "${SHARE_STATE:-}" ] || return 0
   SHARE_STATE='{"full":false,"fleet":0,"total":0,"projects":[]}'
-  [ -n "${DISPATCH_FLEET_PROJECTS+x}" ] ||
-    DISPATCH_FLEET_PROJECTS=$(notes projects --prios 2>/dev/null | awk -F '\t' '$2 == "low" { printf "%s%s", (n++ ? " " : ""), $1 }')
-  [ "${DISPATCH_FLEET_SHARE:-0}" -gt 0 ] 2>/dev/null && [ -n "${DISPATCH_FLEET_PROJECTS// }" ] || return 0
-  local s
+  [ "${DISPATCH_FLEET_SHARE:-0}" -gt 0 ] 2>/dev/null || return 0
+  local s prios ps=${DISPATCH_FLEET_PROJECTS-}
+  if [ -z "${DISPATCH_FLEET_PROJECTS+x}" ]; then
+    # A failed read is `unread`, which headroom names, so the cap is never off without a word.
+    prios=$(notes projects --prios 2>/dev/null) || { SHARE_STATE='{"full":false,"fleet":0,"total":0,"projects":[],"unread":true}'; return 0; }
+    ps=$(awk -F '\t' '$2 == "low" { printf "%s%s", (n++ ? " " : ""), $1 }' <<<"$prios")
+  fi
+  [ -n "${ps// }" ] || return 0
   s=$({ agent-queue list --json --state done --since "$(( (DISPATCH_FLEET_SHARE_H + 23) / 24 ))d" &&
     agent-queue list --json --state active; } 2>/dev/null |
-    jq -sc --argjson cut "$(( $(date +%s) - DISPATCH_FLEET_SHARE_H * 3600 ))" --arg p "$DISPATCH_FLEET_PROJECTS" '
+    jq -sc --argjson cut "$(( $(date +%s) - DISPATCH_FLEET_SHARE_H * 3600 ))" --arg p "$ps" '
       [$p | splits(" +") | select(. != "")] as $ps
       | [.[] | select(((.started // "") | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch 0) >= $cut)]
       | {fleet: (map(select(.project as $x | any($ps[]; . == $x))) | length), total: length, projects: $ps}') &&
@@ -6296,7 +6301,7 @@ cmd_headroom() {
         "  run floor: \(.floor_live) of \(.run_floor) run sessions live; under it idle does not hold a start, nor the weekly pace of an account refused for its pace alone (committed burn, the reserve and the 5h window still do)",
         "  red floor: \(.red_live) of \(if .red_floor > 0 then .red_floor + .red_watch else 0 end) red sessions live (\(.red_floor), plus \(.red_watch) for tripped watches); under it the pace target, weekly pace, idle, load and fleet-assess do not hold a red",
         "  project floor: \(.idle_projects) project(s) with light work and nothing running; up to \(.project_floor) start a pass past real idle",
-        (if .fleet_share.cap > 0 and (.fleet_share.projects | length) > 0 then "  fleet share: \(.fleet_share.fleet) of \(.fleet_share.total) items started in '"$DISPATCH_FLEET_SHARE_H"'h are fleet work (\(.fleet_share.projects | join(", "))), \(.fleet_share.pct // 0)% against a \(.fleet_share.cap)% cap\(if .fleet_share.full then ": full, so only reds and work the human asked for start their items until nothing else can" else "" end)" else empty end),
+        (if .fleet_share.cap > 0 and .fleet_share.unread == true then "  fleet share: off, as `notes projects --prios` failed and no #prio/low project could be read" elif .fleet_share.cap > 0 and (.fleet_share.projects | length) > 0 then "  fleet share: \(.fleet_share.fleet) of \(.fleet_share.total) items started in '"$DISPATCH_FLEET_SHARE_H"'h are fleet work (\(.fleet_share.projects | join(", "))), \(.fleet_share.pct // 0)% against a \(.fleet_share.cap)% cap\(if .fleet_share.full then ": full, so only reds and work the human asked for start their items until nothing else can" else "" end)" else empty end),
         (if (.focus | length) > 0 then "  focus:     \(.focus | join(" ")) first; \(.focus_runnable) runnable item(s) of it start ahead of the other projects (reds and urgent items still go first)" else empty end)'
     fi
 }
