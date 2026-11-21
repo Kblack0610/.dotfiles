@@ -21,14 +21,14 @@
 # checkout when this repo is ~/.dotfiles or ~/.dotfiles-private, links what it added, rebuilds the
 # Rust tools, restarts agent-web on a new binary and a persistent agentctl runner on a new script; a line, never a failure), item (the queue item gets pr:<owner>/<repo>#<pr>,
 # merged:<sha>, this Claude session in its sessions (unless --partial lands on an item another session owns), the project credited by the PR's changed
-# files (agent-queue attribute), and moves to done, status ok unless --partial keeps it open; a done ok item with no PR in this
+# files (agent-queue attribute), and moves to done, status ok unless --partial keeps it open (a red watch item resolves its watch with this PR first and refuses to close ok while its probe still trips, watch_gate); a done ok item with no PR in this
 # PR's repo adds it to its pr: and merged: lists instead, one PR per repo; an open item's earlier PR with
 # no merge recorded takes its merge commit from gh, and one not merged refuses before the merge, settle_prior;
 # a --partial landing passes one still open and leaves merged: empty for the final landing), board (the
 # item's row, whatever its origin: the story `agent-queue add` filed or the board row it was
 # promoted from, done with proof "pr:<owner>/<repo>#<pr> commit:<sha>" on the final landing), plan (--plan: the one "- [ ] <phase>"
 # line becomes "- [x] <phase> (#<pr>)"; when that leaves no open phase, each row on the plan's `rows:` line
-# closes with the same proof). After the merge, one "body:" line scores the PR body
+# closes with the same proof). A row another open queue item names stays open for that item's landing (row_worker). After the merge, one "body:" line scores the PR body
 # against comms-standard (comms-lint --channel pr-body); it never fails the landing. One line per step.
 # The item is --item, else $AGENT_QUEUE_ITEM (set in a session fleet-dispatch started), else the
 # one this session added or claimed (`agent-queue mine`). No item, no landing: every merged PR
@@ -789,6 +789,37 @@ shape_gate() {
   echo "shape: grows, split owed by $id: $list"
 }
 
+# item_watch <item json> -> the watch name when the item is a `red` item for a Sentinel watch
+# (`check(watch): <name> ...`), empty otherwise.
+item_watch() {
+  jq -r 'select(((" " + (.tags // "") + " ") | contains(" red ")))
+    | (.title // ((.task // "") | split("\n")[0]))
+    | try capture("^check\\(watch\\): (?<w>[A-Za-z0-9._-]+)").w // empty' <<<"$1" 2>/dev/null
+}
+
+# watch_gate <item json>: a red item for a Sentinel watch cannot close ok while its watch's probe
+# still trips. The PR merged (and autopull ran for dotfiles), so it resolves the watch with this PR,
+# which records the merge as the fix watermark (a windowed probe counts only events after it, fix-red
+# step 5) and rechecks; a bare #N with no repo rechecks only. Still red means the fix did not clear
+# it, or waits on a deploy: re-running agent-land once it clears closes the item and its board row.
+watch_gate() {
+  local w rc=0 out verb
+  w=$(item_watch "$1")
+  [ -n "$w" ] || return 0
+  command -v watch-companion-loop >/dev/null 2>&1 || { echo "watch: $w not checked (no watch-companion-loop on PATH)"; return 0; }
+  verb=(recheck "$w")
+  [[ "$pr_ref" != */* ]] || verb=(resolve "$w" --pr "$pr_ref")
+  out=$(watch-companion-loop "${verb[@]}" 2>&1) || rc=$?
+  # exit 2 is also a usage error (a loop with no resolve): only "no watch named" skips the check
+  case "$rc" in
+    0) echo "watch: $w OK" ;;
+    2) [[ "$out" == *"no watch named $w"* ]] || fail item "watch-companion-loop ${verb[0]} $w: $(lastline "$out")"
+       echo "watch: $w not known here (exit 2), skipping probe check" ;;
+    75) fail item "watch-companion-loop ${verb[0]} $w could not take the lock (exit 75); re-run" ;;
+    *) fail item "watch $w did not read OK on ${verb[0]} (exit $rc)${out:+: $(lastline "$out")}" ;;
+  esac
+}
+
 # credit -> ", <what agent-queue attribute recorded>" for the item line: the PR's changed files
 # credit the item to the registry project whose `path` owns most of them (a game inside the
 # playground). It never fails the landing: the PR is merged, and the item keeps the project it
@@ -805,18 +836,35 @@ credit() {
 # Its proof is the PR, by repo when the URL names one (pr:<owner>/<repo>#N, so the graph joins it
 # with no project lookup), and, once proven, the merge commit: something checkable, not a claim.
 board_cmd() { [ -z "$row" ] || printf '%s\n' "$row" "pr:${pr_ref:-$pr}${merged:+ commit:${merged:0:12}}"; }
+# read_open: queue_items <- every open queue item, one JSON object a line (agent-queue list --json, whose
+# `row` is agent-queue's one definition), read once per landing; rc 1 when the queue cannot be read.
+queue_items='' queue_read=''
+read_open() { [ -n "$queue_read" ] || { queue_items=$(aq_retry list --json 2>/dev/null) && queue_read=1; }; }
+# row_worker <board>:<id> -> the slug of another open item (read_open) that names that row, else nothing.
+# A row two items name closes with the last of them to land, never under the other: agent-queue's
+# link_row and repoint_row keep the same rule (ar-1793).
+row_worker() {
+  jq -rs --arg r "${1,,}" --arg s "$item" 'first(.[] | select((.row // "" | ascii_downcase) == $r and .slug != $s) | .slug) // empty' <<<"$queue_items"
+}
 # close_rows <id>...: each row still open on a board closes with this PR as proof, as the item's own row
-# does. The PR is merged by now, so a row it cannot close is a line with the command, never a failed landing.
+# does, unless another open item works it. The PR is merged by now, so a row it cannot close is a line
+# with the command, never a failed landing.
 close_rows() {
-  local ids feed id hit prof proj lane out flag
+  local ids feed id hit prof proj lane out flag other
   ids=$(printf '%s\n' "$@")
   feed=$(notes board --json 2>/dev/null) || { echo "rows: notes board --json failed; close by hand: $(paste -sd' ' <<<"$ids")"; return 0; }
+  read_open || { echo "rows: agent-queue list failed, so no row is known free of another open item; close by hand: $(paste -sd' ' <<<"$ids")"; return 0; }
   while IFS= read -r id; do
     hit=$(jq -r --arg id "$id" '[.rows[]? | select(.id == $id)] | if length == 1 then .[0] | [.profile, .project, .lane] | @tsv else empty end' <<<"$feed" 2>/dev/null) ||
       { echo "rows: notes board --json was not JSON; close by hand: $(paste -sd' ' <<<"$ids")"; return 0; }
     if [ -z "$hit" ]; then echo "rows: $id is not one open row on any board, left as is"; continue; fi
     IFS=$'\t' read -r prof proj lane <<<"$hit"
     flag=(); [ "$lane" = agent ] && flag=(--agent)
+    other=$(row_worker "$proj:$id")
+    if [ -n "$other" ]; then
+      echo "rows: $id left open, $other still works it (if it is dropped: notes --profile $prof ptask $proj ${flag[*]:+${flag[*]} }done $id --proof pr:${pr_ref:-$pr})"
+      continue
+    fi
     if out=$(notes --profile "$prof" ptask "$proj" "${flag[@]}" done "$id" --proof "pr:${pr_ref:-$pr}${merged:+ commit:${merged:0:12}}" 2>&1); then
       echo "rows: closed $id on $proj"
     else
@@ -882,6 +930,8 @@ if [ "$dry" -eq 1 ]; then
     echo "item: agent-queue set $item partial=yes before merging; record pr=$pr merged=<sha> beside earlier PRs, leave the item open"
     echo "board: left open until the final landing"
   else
+    dry_watch=$(item_watch "$it")
+    [ -z "$dry_watch" ] || echo "watch: watch-companion-loop resolve $dry_watch --pr <owner>/<repo>#$pr  (a red item closes ok only once its probe passes)"
     echo "item: agent-queue set $item pr=$pr merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/$pr/files | agent-queue attribute $item && agent-queue move $item done --status ok"
   fi
   mapfile -t b < <(board_cmd)
@@ -1033,6 +1083,7 @@ case "$done_as" in
   out=$(aq_retry set "$item" "pr=${refs[*]}" "merged=${oids[*]}" "partial=$marker" $clear_open "${closing[@]}" 2>&1) || fail item "$(lastline "$out")"
   credited="$(credit)${open_ref:-}"
   if [ "$partial" -eq 0 ]; then
+    watch_gate "$it"
     out=$(aq_retry move "$item" "done" --status ok 2>&1) || fail item "$(lastline "$out")"
   fi
   ;;
@@ -1060,8 +1111,16 @@ if [ "$partial" -eq 1 ]; then
 elif [ "$done_as" = more ] || [ "$done_as" = again ]; then
   [ "${#b[@]}" -eq 0 ] || echo "board: left to its closing PR, $(jq -r '.closing_pr // (.pr | split(" ")[0])' <<<"$it") (agent-land on that one closes the row if its board step failed)"
 elif [ "${#b[@]}" -gt 0 ]; then
-  out=$(notes "${b[@]}" 2>&1) || fail board "$(lastline "$out")"
-  echo "board: closed \"${b[-3]}\" with ${b[-1]}"
+  # The PR is merged and the item done, so a row this cannot check is a line with the command, as in
+  # close_rows, and the plan steps below still run.
+  if ! read_open; then
+    echo "board: agent-queue list failed, so \"${b[-3]}\" is not known free of another open item; close by hand: notes ${b[*]}"
+  elif other=$(row_worker "$(jq -r .row <<<"$it")") && [ -n "$other" ]; then
+    echo "board: left \"${b[-3]}\" open, $other still works it (its landing closes it; if it is dropped: notes ${b[*]})"
+  else
+    out=$(notes "${b[@]}" 2>&1) || fail board "$(lastline "$out")"
+    echo "board: closed \"${b[-3]}\" with ${b[-1]}"
+  fi
 fi
 
 if [ -n "$plan" ]; then

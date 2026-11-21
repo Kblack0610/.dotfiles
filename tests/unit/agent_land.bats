@@ -636,6 +636,7 @@ notes ingest record --stage land --action merged --from dotfiles --item ship --i
 notes ingest record --stage queue --action item-set --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --why pr=o/r#42 merged=fedcba9876543210fedcba9876543210fedcba98 partial= open_pr= closing_pr=o/r#42 -- ship
 gh api repos/o/r/pulls/42/files --paginate --jq .[].filename
 notes ingest record --stage queue --action item-moved --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --to done --why running -> done (ok) -- ship
+notes projects --prios
 notes ptask dotfiles --agent done ship it --proof pr:o/r#42 commit:fedcba987654
 EOF
 }
@@ -1122,6 +1123,52 @@ EOF2
   assert_success
   assert_line 'plan: ticked "2. last"'
   assert_line --index -1 'landed #43'
+}
+
+@test "a row another open item still works stays open for that item's landing (ar-1793)" {
+  item twin 'board:dotfiles:ship it' agent
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'board: left "ship it" open, twin still works it (its landing closes it; if it is dropped: notes ptask dotfiles --agent done ship it --proof pr:o/r#42 commit:fedcba987654)'
+  assert_line --index -1 'landed #42'
+  run board_calls
+  assert_output ''
+  # NEGATIVE CONTROL: the last item on the row to land closes it.
+  printf 'OPEN\n' >"$NOTES_FIXTURE/state"
+  run "$LAND" 42 --item twin
+  assert_success
+  assert_line 'board: closed "ship it" with pr:o/r#42 commit:fedcba987654'
+  run board_calls
+  assert_output 'notes ptask dotfiles --agent done ship it --proof pr:o/r#42 commit:fedcba987654'
+}
+
+@test "a plan or phase row another open item still works stays open; the rest close (ar-1793)" {
+  printf '%s\n' '# plan' 'rows: ucp-134 ar-9' '' '## Phases' '' '- [ ] 1. only' >"$PLAN"
+  jq -n '{rows: [{profile: "bnb", project: "game", lane: "human", id: "ucp-134", state: "open"},
+    {profile: "personal", project: "agent-runtime", lane: "agent", id: "ar-9", state: "doing"}]}' >"$NOTES_FIXTURE/board.json"
+  item fixer 'board:game:UCP-134' human bnb
+  run "$LAND" 42 --item ship --plan "$PLAN" --phase "1. only"
+  assert_success
+  assert_line 'rows: ucp-134 left open, fixer still works it (if it is dropped: notes --profile bnb ptask game done ucp-134 --proof pr:o/r#42)'
+  assert_line 'rows: closed ar-9 on agent-runtime'
+  run grep -E 'done (ucp-134|ar-9)' "$LOG"
+  assert_output 'notes --profile personal ptask agent-runtime --agent done ar-9 --proof pr:o/r#42 commit:fedcba987654'
+}
+
+@test "a queue that cannot be read past the merge leaves the rows open with the command, and the plan still ticks (ar-1793)" {
+  printf '%s\n' '# plan' 'rows: ar-9' '' '## Phases' '' '- [ ] 1. only' >"$PLAN"
+  jq -n '{rows: [{profile: "personal", project: "agent-runtime", lane: "agent", id: "ar-9", state: "doing"}]}' >"$NOTES_FIXTURE/board.json"
+  mv "$SANDBOX/bin/agent-queue" "$SANDBOX/bin/agent-queue.real"
+  printf '%s\n' '#!/usr/bin/env bash' '[ "$1" != list ] || exit 1' 'exec "${0%/*}/agent-queue.real" "$@"' >"$SANDBOX/bin/agent-queue"
+  chmod +x "$SANDBOX/bin/agent-queue"
+  run "$LAND" 42 --item ship --plan "$PLAN" --phase "1. only"
+  assert_success
+  assert_line 'board: agent-queue list failed, so "ship it" is not known free of another open item; close by hand: notes ptask dotfiles --agent done ship it --proof pr:o/r#42 commit:fedcba987654'
+  assert_line 'plan: ticked "1. only"'
+  assert_line 'rows: agent-queue list failed, so no row is known free of another open item; close by hand: ar-9'
+  assert_line --index -1 'landed #42'
+  run grep -c ' done ' <(board_calls)
+  assert_output 0
 }
 
 @test "the plan's rows: a deferred phase leaves them open; --dry-run names them only on the last phase" {
@@ -2456,4 +2503,142 @@ EOF2
   assert_success
   run agent-queue show headless --json
   assert_equal "$(jq -r .sessions <<<"$output")" 'sid-new'
+}
+
+@test "a red watch item cannot close ok while its watch's probe still trips; re-running once it clears closes it (ar-1605)" {
+  cat >"$SANDBOX/bin/watch-companion-loop" <<'EOF'
+#!/usr/bin/env bash
+printf 'watch-companion-loop %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
+rc=$(cat "$NOTES_FIXTURE/watch.rc" 2>/dev/null || echo 0)
+[ "$rc" -eq 0 ] || echo "TRIP: spend still over limit"
+exit "$rc"
+EOF
+  chmod +x "$SANDBOX/bin/watch-companion-loop"
+
+  cat >"$AGENT_QUEUE_DIR/running/20261103-100000-red-spend.md" <<'EOF'
+slug: red-spend
+project: dotfiles
+mode: oneshot
+priority: urgent
+from: fleet-bench
+agent: claude
+tags: red watch cause:ab12
+row: dotfiles:ship it
+queued: 2026-11-03T10:00:00Z
+started: 2026-11-03T10:00:00Z
+---
+check(watch): spend tripped since 2026-11-20, expected: spend under cap
+EOF
+
+  printf '1\n' >"$NOTES_FIXTURE/watch.rc"
+  run "$LAND" 42 --item red-spend
+  assert_failure 1
+  assert_output --partial "item failed: watch spend did not read OK on resolve (exit 1): TRIP: spend still over limit; #42 is merged and only its record is left: re-run agent-land 42 --item red-spend to finish it"
+  # The PR merged and was recorded on the item, but the item and its board row stayed open.
+  run agent-queue show red-spend --json
+  assert_equal "$(jq -r '[.state, .pr, .merged] | join("|")' <<<"$output")" 'running|o/r#42|fedcba9876543210fedcba9876543210fedcba98'
+  [ "$(grep -c '^notes.*done' "$LOG")" -eq 0 ]
+  # The probe ran after autopull.
+  [ "$(grep -n 'dotfiles-autopull' "$LOG" | cut -d: -f1)" -lt "$(grep -n 'watch-companion-loop resolve spend --pr o/r#42' "$LOG" | cut -d: -f1)" ]
+
+  # Once the probe clears, re-running agent-land finishes closing the item and its board row.
+  printf '0\n' >"$NOTES_FIXTURE/watch.rc"
+  run "$LAND" 42 --item red-spend
+  assert_success
+  assert_line 'watch: spend OK'
+  assert_line --partial 'board: closed "ship it"'
+  assert_line 'landed #42'
+  run agent-queue show red-spend --json
+  assert_equal "$(jq -r '[.state, .status] | join("|")' <<<"$output")" 'done|ok'
+}
+
+@test "a red watch item with --partial skips the probe check, and a non-red item with check(watch) in its task skips it too (ar-1605)" {
+  cat >"$SANDBOX/bin/watch-companion-loop" <<'EOF'
+#!/usr/bin/env bash
+printf 'watch-companion-loop %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
+exit 1
+EOF
+  chmod +x "$SANDBOX/bin/watch-companion-loop"
+
+  cat >"$AGENT_QUEUE_DIR/running/20261103-100000-red-spend.md" <<'EOF'
+slug: red-spend
+project: dotfiles
+mode: oneshot
+priority: urgent
+from: fleet-bench
+agent: claude
+tags: red watch cause:ab12
+queued: 2026-11-03T10:00:00Z
+started: 2026-11-03T10:00:00Z
+---
+check(watch): spend tripped since 2026-11-20
+EOF
+
+  run "$LAND" 42 --item red-spend --partial
+  assert_success
+  [ "$(grep -c 'watch-companion-loop' "$LOG")" -eq 0 ]
+
+  cat >"$AGENT_QUEUE_DIR/running/20261103-100001-non-red.md" <<'EOF'
+slug: non-red
+project: dotfiles
+mode: oneshot
+priority: low
+from: human
+agent: claude
+tags: reddish
+queued: 2026-11-03T10:00:01Z
+started: 2026-11-03T10:00:01Z
+---
+check(watch): spend tripped since 2026-11-20
+EOF
+
+  run "$LAND" 42 --item non-red
+  assert_success
+  [ "$(grep -c 'watch-companion-loop' "$LOG")" -eq 0 ]
+}
+
+@test "a red watch item whose watch is unknown (exit 2) closes ok, while lock busy (exit 75) or a usage error (exit 2) refuses (ar-1605)" {
+  cat >"$SANDBOX/bin/watch-companion-loop" <<'EOF'
+#!/usr/bin/env bash
+printf 'watch-companion-loop %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
+cat "$NOTES_FIXTURE/watch.err" >&2 2>/dev/null
+exit "$(cat "$NOTES_FIXTURE/watch.rc" 2>/dev/null || echo 0)"
+EOF
+  chmod +x "$SANDBOX/bin/watch-companion-loop"
+
+  cat >"$AGENT_QUEUE_DIR/running/20261103-100000-red-lock.md" <<'EOF'
+slug: red-lock
+project: dotfiles
+mode: oneshot
+priority: urgent
+from: fleet-bench
+agent: claude
+tags: red watch
+queued: 2026-11-03T10:00:00Z
+started: 2026-11-03T10:00:00Z
+---
+check(watch): spend tripped
+EOF
+
+  printf '75\n' >"$NOTES_FIXTURE/watch.rc"
+  run "$LAND" 42 --item red-lock
+  assert_failure 1
+  assert_output --partial 'resolve spend could not take the lock (exit 75)'
+  run agent-queue show red-lock --json
+  assert_equal "$(jq -r .state <<<"$output")" 'running'
+
+  printf '2\n' >"$NOTES_FIXTURE/watch.rc"
+  printf 'usage: watch-companion-loop {run|recheck NAME...}\n' >"$NOTES_FIXTURE/watch.err"
+  run "$LAND" 42 --item red-lock
+  assert_failure 1
+  assert_output --partial 'watch-companion-loop resolve spend: usage: watch-companion-loop {run|recheck NAME...}'
+  run agent-queue show red-lock --json
+  assert_equal "$(jq -r .state <<<"$output")" 'running'
+
+  printf 'watch-companion-loop: no watch named spend\n' >"$NOTES_FIXTURE/watch.err"
+  run "$LAND" 42 --item red-lock
+  assert_success
+  assert_line 'watch: spend not known here (exit 2), skipping probe check'
+  run agent-queue show red-lock --json
+  assert_equal "$(jq -r '[.state, .status] | join("|")' <<<"$output")" 'done|ok'
 }
