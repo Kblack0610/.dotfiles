@@ -3147,9 +3147,20 @@ start_host_checks() {
     { say "start: $host has no clone of $cwd (fleet_repos); $item stays queued"; return 2; }
 }
 
+# dispatch_tag <host> <server> <session> <window> <pane> <label> -- tag what an agent started with @dispatch.
+# set-option takes a pane target, where a bare "=name" is "no such session"; the colon makes it session:window.
+# A --window start is one window of a shared session (a world restore opens each conversation as one), so its
+# label goes on that window: a window with no option of its own falls back to the session's, so a session
+# label marked every window of a restored hub:dotfiles [dispatch] (2026-11-21). Any other start owns its session.
+dispatch_tag() {
+  local scope=() tgt="=$3:"
+  [ -z "$4" ] || { scope=(-w); tgt=${5:-=$3:}; }
+  on_host "$1" tmux -L "$2" set-option "${scope[@]}" -t "$tgt" @dispatch "$6" || say "could not tag $3${4:+:$4} with @dispatch"
+}
+
 # cmd_start -- THE way an agent starts a session, whoever it is: this runner's `run` pass, an
 # agent launching one for a board row, a reboot restore. Each comes out tagged @dispatch on its
-# server (the human reads [dispatch] as "an agent started this"), except a resume of the human's
+# server, on the session, or on the window for a --window start (the human reads [dispatch] as "an agent started this"), except a resume of the human's
 # own conversation (no item from a start, see the --resume branch), and a session doing work
 # has a queue item whose `session:` names it, which reap, fleet-sessions and agent-web read.
 # Before this, only `run` did either, and agents tagged their hand launches with set-option,
@@ -3400,10 +3411,7 @@ cmd_start() {
   [ -z "$ready" ] || start_ready "$server" "$session" "${target:-=$session:}" "$ready" "$host"
 
   label="$project: $(cut -c1-60 <<<"${item:-resumed}")"
-  # set-option takes a pane target, where a bare "=name" is "no such session"; the colon makes it session:window.
-  # A session this only joined keeps what it was: the label is for a session an agent started.
-  [ -n "$joined" ] || [ -z "$agent_work" ] || on_host "$host" tmux -L "$server" set-option -t "=$session:" @dispatch "$label" ||
-    say "could not tag $session with @dispatch"
+  [ -z "$agent_work" ] || dispatch_tag "$host" "$server" "$session" "$window" "$target" "$label"
   logline "started $session on $server${host:+ at $host} ($origin) for $project: ${item:+queue item $item}${resume:+${item:+, }resume $resume}"
   echo "started $session: $label"
 }
