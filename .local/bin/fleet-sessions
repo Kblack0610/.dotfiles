@@ -2749,6 +2749,10 @@ json_rows() {
       time: {work_min: ((.[33] // "0") | tonumber), gate_min: ((.[41] // "0") | tonumber),
              test_min: ((.[42] // "0") | tonumber), jobs_min: ((.[34] // "0") | tonumber),
              human_min: ((.[35] // "0") | tonumber), parked_min: ((.[36] // "0") | tonumber)},
+      # The one count of the work time of a session (overdue_of, the fleet-bench samples): the closed
+      # minutes of its transcript but those waiting on the human or parked, plus the open gap while a job runs.
+      active_min: (. as $c | ([$c[33], $c[41], $c[42], $c[34]] | map((. // "0") | tonumber) | add)
+        + (if ($c[56] // "-") | IN("gate", "test", "build", "checkout", "agent", "jobs") then $c[6] | tonumber else 0 end)),
       compactions: ((.[37] // "0") | tonumber),
       topic: (if (.[38] // "-") == "-" then null else .[38] end),
       doing: (if (.[39] // "-") == "-" then null else .[39] end),
@@ -2778,8 +2782,13 @@ json_rows() {
 
 # overdue_of <now epoch> <rows file> <eta file> -> {session_id: verdict}: the one overdue rule, which
 # write_state puts on each session as `overdue` and every reader takes (the shepherd's nudge, Home,
-# the phone, agent-web). A plan's open phase is overdue once it has run twice its fleet-bench estimate
-# (`fleet-bench eta --json` lines: phase_min, phase_since_epoch) and at least FLEET_OVERDUE_MIN. Not
+# the phone, agent-web). A plan's open phase is overdue once it has worked twice its fleet-bench estimate
+# (`fleet-bench eta --json` lines: phase_min, phase_since_epoch) and at least FLEET_OVERDUE_MIN. Its age
+# is work time, the running session's active_min, never wall clock: on the plan's own row, active_min
+# now less phase_active_base (fleet-bench: active_min when the phase opened), and on a runner, whose
+# session is the phase's, its whole active_min; capped at the wall-clock age. A phase paused overnight
+# on the human or parked does not age (2026-11-06 dotfiles:6 read 437m for 7h of human wait, ar-528);
+# with no base sampled yet there is no verdict. Not
 # overdue: a finished plan; a phase whose queue item has not started (phase_queued: queued, held by an
 # after: or at: gate, or a gated board row; ar-528), since nothing works it yet; a session in a landing
 # wait (wait_min: on 2026-11-15 unity-core-playground-agent-3 sat 3.5h in the landing queue with #2726
@@ -2797,12 +2806,16 @@ overdue_of() {
                 and $rows[.session_id] != null and .phases_done < .phases_total)
        | $rows[.session_id] as $o
        | select($o.wait_min == null and ($o.phase_queued | not))
-       | ([2 * .phase_min, $floor] | max) as $limit | (($now - .phase_since_epoch) / 60 | floor) as $age
-       | select($age >= $limit)
+       | ([2 * .phase_min, $floor] | max) as $limit | (($now - .phase_since_epoch) / 60 | floor) as $wall
+       | select($wall >= $limit)
        | ($o.phase_runner // null) as $run
        | (if $run == null or $run == ($o.target | split(":")[0]) or ($live | index($run) | not) then $o
           else ($r | map(select((.target | split(":")[0]) == $run))[0]) end) as $at
-       | select($at != null and $at.wait_min == null)
+       | select($at != null and $at.wait_min == null and $at.active_min != null)
+       | (if $at == $o then .phase_active_base else 0 end) as $base
+       | select($base != null)
+       | ([[$at.active_min - $base, 0] | max, $wall] | min) as $age
+       | select($age >= $limit)
        | {key: $at.session_id,
           value: {phase: "phase \(.phases_done + 1)/\(.phases_total)",
                   name: (if $at == $o then ($o.next_phase // "-")
