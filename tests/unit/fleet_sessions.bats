@@ -2487,7 +2487,7 @@ research_item() {
   [ "$(jq -r .bucket <<<"$output")" = STALLED ]
   [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its item fix-wave-save is still open with every phase done or queued' ]
   [ "$(jq -r '.blockers | join("; ")' <<<"$output")" = 'its item fix-wave-save is still open with every phase done or queued' ]
-  [ "$(jq -r '"\(.close.verdict): \(.close.why)"' <<<"$output")" = 'after: close its item fix-wave-save (agent-land its last PR without --partial, or agent-queue move <slug> done): every phase is done or queued' ]
+  [ "$(jq -r '"\(.close.verdict): \(.close.why)"' <<<"$output")" = 'after: close its item fix-wave-save (agent-land its last PR without --partial, or agent-queue move <slug> done; the shepherd moves it done once quiet): every phase is done or queued' ]
   # negative control: a phase left that no item holds is this session's work, not a close step
   phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout'
   FLEET_IDLE_CLOSE_MIN=120 run "$REPO_ROOT/.local/bin/fleet-sessions" --json
@@ -4648,8 +4648,12 @@ verdict() {
 }
 
 @test "close verdict: each step of the fleet-states.md close flow, first match wins" {
-  # Not ours to judge.
-  [ "$(verdict '{bucket: "PARKED", labels: ["manual"]}')" = "keep: parked: its claude is gone" ]
+  # Not ours to judge while work is left here; with nothing left it closes like any row, on the park's age (a parked row has no claude start, so age_min is null).
+  [ "$(verdict '{bucket: "PARKED", blockers: ["PR #9 open, CI PASS"]}')" = "keep: parked: its claude is gone, work is left here" ]
+  [ "$(verdict '{bucket: "PARKED", blockers: ["open ask Ab12"]}')" = "keep: parked: its claude is gone, work is left here" ]
+  [ "$(verdict '{bucket: "PARKED", idle_min: 9000, age_min: null}')" = "now: quiet 9000m, nothing to land" ]
+  [ "$(verdict '{bucket: "PARKED", idle_min: 5, age_min: null}')" = "after: quiet 5m of 60m" ]
+  [ "$(verdict '{bucket: "PARKED", idle_min: 9000, labels: ["manual"]}')" = "keep: manual: the human keeps it" ]
   # A headless run's replay: the shepherd never types into its opencode TUI; fleet-dispatch reap closes it.
   [ "$(verdict '{activity: "done", bucket: "DONE", idle_min: 600}')" = "keep: headless run: fleet-dispatch reap closes its replay once its item leaves review" ]
   # A worker row runs the same chain: the shepherd types its close over ssh (fleet_host_run).
@@ -4685,7 +4689,7 @@ verdict() {
   [ "$(verdict '{bucket: "LANDED", finished: false, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "now: quiet 90m, nothing to land" ]
   [ "$(SELF=s1 verdict '{bucket: "LANDED", session_id: "s1", finished: false, idle_min: 0, next_phase: "3", blockers: ["next phase: 3"]}')" = "now: quiet 0m, nothing to land" ]
   [ "$(verdict '{bucket: "STALLED", finished: false, blockers: ["next phase: 3", "its item x-1 is running here"]}')" = "keep: work left here: its item x-1 is running here" ]
-  [ "$(verdict '{bucket: "STALLED", finished: false, item: {slug: "s", is: "own", origin: "run"}, blockers: ["its item s is still open with every phase done or queued"]}')" = "after: close its item s (agent-land its last PR without --partial, or agent-queue move <slug> done): every phase is done or queued" ]
+  [ "$(verdict '{bucket: "STALLED", finished: false, item: {slug: "s", is: "own", origin: "run"}, blockers: ["its item s is still open with every phase done or queued"]}')" = "after: close its item s (agent-land its last PR without --partial, or agent-queue move <slug> done; the shepherd moves it done once quiet): every phase is done or queued" ]
   # The timer: everything else closes once quiet 60 minutes.
   [ "$(verdict '{}')" = "now: quiet 90m, nothing to land" ]
   [ "$(verdict '{idle_min: 59}')" = "after: quiet 59m of 60m" ]
@@ -4728,6 +4732,14 @@ verdict() {
   [ "$(left '{}')" = "-" ]
   [ "$(left '{idle_min: 5}')" = "-" ]
   [ "$(left '{labels: ["manual"], blockers: ["its item x-1 is running here"]}')" = "-" ]
+  # The only-item step also names the slugs the shepherd closes (close.items); no other step does.
+  items() {
+    jq -nr --argjson idle_close 60 --argjson chat_close_h 24 --arg self "" \
+      '{bucket: "STALLED", target: "lab/x-agent-1:1", idle_min: 90, age_min: 300, own_asks: 0, labels: [], item: null} + '"$1"' | '"$CLOSE_JQ"' | .close.items // [] | join(",")'
+  }
+  [ "$(items '{blockers: ["its item a is still open with every phase done or queued", "its item b is still open with every phase done or queued"]}')" = "a,b" ]
+  [ "$(items '{blockers: ["its item a is still open with every phase done or queued", "2 dirty file(s) (a, b), no PR"]}')" = "" ]
+  [ "$(items '{blockers: ["its item x-1 is running here"]}')" = "" ]
 }
 
 @test "close verdict: no keep for the human's presence or a plan's coordinator (2026-11-17)" {
