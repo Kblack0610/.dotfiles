@@ -18,12 +18,18 @@ setup() {
   assert_output batch
 }
 
-@test "a commit succeeds under the hardened settings" {
-  git init -q "$HOME/r"
-  echo x > "$HOME/r/f"
-  git -C "$HOME/r" add f
-  run git -C "$HOME/r" -c user.email=t@example.com -c user.name=t commit -qm one
-  assert_success
-  run git -C "$HOME/r" cat-file -t HEAD
-  assert_output commit
+# trace2 counts the flushes git issues; the default config (the control) issues none for a commit.
+commit_flushes() {
+  git init -q "$HOME/r-$1"
+  echo x > "$HOME/r-$1/f"
+  git -C "$HOME/r-$1" add f
+  GIT_TRACE2_EVENT="$HOME/ev-$1" git -C "$HOME/r-$1" -c user.email=t@example.com -c user.name=t commit -qm one
+  grep -c '"category":"fsync","name":"hardware-flush"' "$HOME/ev-$1" || true
+}
+
+@test "a commit flushes its objects under this config and not under the default" {
+  run commit_flushes tracked
+  assert_output 1
+  GIT_CONFIG_GLOBAL=/dev/null run commit_flushes default
+  assert_output 0
 }
