@@ -1629,6 +1629,19 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   refute_output --partial 'gm-9'
 }
 
+@test "starved names a board row gated #after a row that does not exist, and not one gated on an open row (ar-4017)" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 "- [ ] feat(game): the base $T <!-- id:gm-1 -->"
+  row game agent gm-2 "- [ ] feat(game): waits on the base $T #after/gm-1 <!-- id:gm-2 -->"
+  row game agent gm-3 "- [ ] feat(game): waits on a row nobody filed $T #after/gm-404 <!-- id:gm-3 -->"
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'board rows gated on what can never clear:'
+  assert_output --partial 'gm-3 (game, #after/gm-404: after gm-404: no board row has that id)'
+  refute_output --partial 'gm-2'
+}
+
 @test "run starts nothing when account usage cannot be read" {
   game_ready
   stub claude-acct 'exit 2'
