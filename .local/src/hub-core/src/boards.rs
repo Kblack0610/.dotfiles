@@ -245,6 +245,9 @@ pub struct Ask {
     pub previews: Vec<String>,
     /// The judge's verdict as one line (`Ask::judge_line`); empty for an ask it never judged.
     pub judge_line: String,
+    /// The id of the live judge answer this ask audits (`--audit-of`); empty for any other ask.
+    /// A review sample, so the needs pager never buzzes for it.
+    pub audit_of: String,
 }
 
 impl Ask {
@@ -296,7 +299,7 @@ impl Ask {
 /// task, answered_at, resumed_at, recommend, created, session, closed_at, closed_reason,
 /// claude_session, judge, answered_by, option_notes, context, recommend_why, judge_rule,
 /// judge_reason, answer_note, assume_at, resume, parked_until, delivery, delivery_note, answer,
-/// delivery_answer, previews. A row short of the options column is skipped.
+/// delivery_answer, previews, audit_of. A row short of the options column is skipped.
 pub fn parse_asks(tsv: &str) -> Vec<Ask> {
     let list = |v: &str| -> Vec<String> {
         v.split('|')
@@ -346,6 +349,7 @@ pub fn parse_asks(tsv: &str) -> Vec<Ask> {
                     .map(|p| p.rsplit('/').next().unwrap_or(p).to_string())
                     .collect(),
                 judge_line: String::new(),
+                audit_of: col(32),
             };
             a.judge_line = a.judge_words();
             Some(a)
