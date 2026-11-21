@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # fleet-dispatch, a `run` pass: the queue, the board top-up, the pace target and the model-lane and source routing of a start.
-# One file of seven (tests/unit/fleet_dispatch*.bats), split so CI shards can spread them;
+# One of the tests/unit/fleet_dispatch*.bats files, split so CI shards can spread them;
 # the fixtures and setup they share are in fleet_dispatch/common.bash.
 
 load 'fleet_dispatch/common'
