@@ -12,19 +12,18 @@ setup() {
   GHD="$SANDBOX/gh"; mkdir -p "$GHD"
   FJD="$SANDBOX/fj"; mkdir -p "$FJD"
   unset FORGEJO_TOKEN
-  export SCHEDULES_GH=gh-stub PROJECT_MAP="$SANDBOX/project-map.json" SCHEDULES_NOW=1762430400  # 2025-11-06T12:00Z
+  export PROJECT_MAP="$SANDBOX/project-map.json" SCHEDULES_NOW=1762430400  # 2025-11-06T12:00Z
   export SCHEDULES_CURL=curl-stub SCHEDULES_RBW=rbw-stub SCHEDULES_KUBECTL=kube-stub
   KD="$SANDBOX/kube"; mkdir -p "$KD"
   JOBS="$XDG_STATE_HOME/ci/jobs.jsonl"
   STATE="$XDG_STATE_HOME/schedules/state.json"
   LEDGER="$XDG_STATE_HOME/ci/runs.jsonl"
   PRS="$HOME/.agent/prs"
-  # gh-stub api [-i] [-H "If-None-Match: <etag>"] <path>: serves $GHD/<path with / ? & = as _>,
+  # gh api [-i] [-H "If-None-Match: <etag>"] <path>: serves $GHD/<path with / ? & = as _>,
   # with -i behind an ETag of the file's md5 (and a 304, exit 1, when the caller already has it).
   # A missing file is GitHub's 404; $GHD/fail-<owner>_<name> fails every call for that repo
   # with its content as the error, HTTP 502 when empty; $GHD/<path>.fail fails that one path.
-  cat > "$SANDBOX/bin/gh-stub" <<EOF
-#!/usr/bin/env bash
+  gh_script <<EOF
 shift; inc=; inm=
 while [ \$# -gt 1 ]; do case "\$1" in -i) inc=1 ;; -H) shift; inm="\${1#If-None-Match: }" ;; esac; shift; done
 echo "\$1\${inm:+ (conditional)}" >> "$GHD/calls"
@@ -84,7 +83,7 @@ printf '{"epoch":"e0","next":0,"more":false,"repos":%s,"forgejo_repos":%s,"windo
   "\$(cat "$KD/repos")" "\$(cat "$KD/forgejo_repos")" "\$(cat "$KD"/records-* 2>/dev/null | jq -sc 'add // []')" \
   "\$(cat "$KD"/runs-* 2>/dev/null | jq -sc 'add // []')"
 EOF
-  chmod +x "$SANDBOX/bin/gh-stub" "$SANDBOX/bin/curl-stub" "$SANDBOX/bin/rbw-stub" "$SANDBOX/bin/kube-stub"
+  chmod +x "$SANDBOX/bin/curl-stub" "$SANDBOX/bin/rbw-stub" "$SANDBOX/bin/kube-stub"
   # The repo list: the feed names the CI repos, the project map their base, host, clone and prs-only.
   echo '["o/game","o/empty"]' > "$KD/repos"; echo '[]' > "$KD/forgejo_repos"
   cat > "$PROJECT_MAP" <<'EOF'

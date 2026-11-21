@@ -112,8 +112,8 @@ const flow = {
 
 // Projects: hub_core::projects.
 const projects = {
-  table: table(6, ["project", "state", "profile", "stage", "version", "prio", "open", "doing", "hot", "done", "7d", "pts", "pts7d", "window", "due", "pace", "run", "wait", "queued", "today", "oldest"], ["all", "in flight", "waiting"], { profile: ["personal", "bnb"], stage: ["alpha", "beta"], state: ["on track", "at risk", "late"] }),
-  cards: rows(6, (i) => ({ name: `${pick(PROJECTS, i)}${i === 5 ? "-web" : ""}`, state: pick(["on track", "at risk", "late"], i), state_level: pick(["ok", "warn", "bad"], i), profile: pick(["personal", "bnb", "gigantic"], i), stage: pick(["alpha", "beta", "live"], i), version: `0.${i}.${i + 2}`, prio: i + 1, progress: { open: 40 - i * 4, done: 60 + i * 3, closed_7d: 11 - i, done_weight: 90 + i * 4, closed_weight_7d: 15 - i }, doing: 2 + i % 2, hot: i % 3, window: { version: `0.${i}.${i + 2}`, committed: 80 - i * 5, delivered: 20 + i * 3, due: "2026-11-30", days_left: 12 - i }, window_says: `${20 + i * 3}/${80 - i * 5} due 11-30`, window_cell: `${20 + i * 3}/${80 - i * 5}`, due_cell: `${12 - i}d`, pace: 1.4 + i / 10, running: [], waiting: i % 2, queued: 4 - i % 3, done_today: 3 - i % 3, oldest: iso(ago(4000 + i * 1000)), summary: TEXT[i], goal: TEXT[i + 1], counts: { open: 40 - i * 4 }, note_says: "", status: "ok" })),
+  table: table(6, ["project", "state", "profile", "stage", "version", "prio", "open", "doing", "hot", "done", "7d", "pts", "pts7d", "window", "due", "pace", "run", "wait", "queued", "shipped", "oldest"], ["all", "in flight", "waiting"], { profile: ["personal", "bnb"], stage: ["alpha", "beta"], state: ["on track", "at risk", "late"] }),
+  cards: rows(6, (i) => ({ name: `${pick(PROJECTS, i)}${i === 5 ? "-web" : ""}`, state: pick(["on track", "at risk", "late"], i), state_level: pick(["ok", "warn", "bad"], i), profile: pick(["personal", "bnb", "gigantic"], i), stage: pick(["alpha", "beta", "live"], i), version: `0.${i}.${i + 2}`, prio: i + 1, progress: { open: 40 - i * 4, done: 60 + i * 3, closed_7d: 11 - i, done_weight: 90 + i * 4, closed_weight_7d: 15 - i }, doing: 2 + i % 2, hot: i % 3, window: { version: `0.${i}.${i + 2}`, committed: 80 - i * 5, delivered: 20 + i * 3, due: "2026-11-30", days_left: 12 - i }, window_says: `${20 + i * 3}/${80 - i * 5} due 11-30`, window_cell: `${20 + i * 3}/${80 - i * 5}`, due_cell: `${12 - i}d`, pace: 1.4 + i / 10, running: [], waiting: i % 2, queued: 4 - i % 3, today: { shipped: 3 - i % 3, checks: i % 2 }, oldest: iso(ago(4000 + i * 1000)), summary: TEXT[i], goal: TEXT[i + 1], counts: { open: 40 - i * 4 }, note_says: "", status: "ok" })),
   unlinked: [], errors: [],
 };
 
@@ -501,15 +501,13 @@ const GRID_CARDS = [
   kcard("projects", "Projects", "-", "no data", "nodata", [], [], [], { error: "lab: unreadable" }),
 ];
 
-// The one order every surface draws (hub_core::cards::ORDER) and the widget's default run of it
-// (WIDGET), read from hub-core so a change there moves the fixture too.
+// The one order every surface draws (hub_core::cards::ORDER), read from hub-core so a change there
+// moves the fixture too.
 const CARDS_RS = readFileSync(new URL("../../../.local/src/hub-core/src/cards.rs", import.meta.url), "utf8");
 const ids = (name) => [...CARDS_RS.match(new RegExp(`pub const ${name}: &\\[&str\\] = &\\[([^\\]]*)\\]`))[1].matchAll(/"(\w+)"/g)].map((m) => m[1]);
 const byTab = (tab) => GRID_CARDS.find((c) => c.tab === tab) ?? (() => { throw new Error(`hub_core::cards has a card "${tab}" that fixtures.mjs GRID_CARDS lacks`); })();
 export const CARD_ORDER = ids("ORDER");
 const homeCards = CARD_ORDER.slice(2).map(byTab); // the grid: Needs you and Main red are the widgets' lead
-export const WIDGET_CARDS = ids("WIDGET").map(byTab);
-
 export const FIXTURES = {
   "/api/agents": [], "/api/asks/parked": [], "/api/home/waiting": { count: home.needs.length, href: "#home" }, "/api/session-options": { describe: {}, accounts: [] },
   "/api/home": home, "/api/home/cards": homeCards, "/api/briefing": briefing, "/api/home/proposals": { proposals: home.proposals, proposals_head: home.proposals_head, proposals_table: home.proposals_table, proposals_failed: false },

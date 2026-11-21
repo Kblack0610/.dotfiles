@@ -4,17 +4,20 @@
 setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
+  load '../helpers/sandbox'
   HOOK="$BATS_TEST_DIRNAME/../../.claude/hooks/pr-overlap.sh"
   FIX="$BATS_TEST_TMPDIR/gh"
   mkdir -p "$FIX/bin"
+  # No sandbox_init: only the shared gh stub, with $FIX as its fixture dir, on PATH.
+  export NOTES_FIXTURE="$FIX" GH_FIXTURE="$FIX"
+  cp "$TESTS_DIR/helpers/stubs/gh" "$FIX/bin/gh"
+  chmod +x "$FIX/bin/gh"
   # gh: `pr list` serves the list fixture; every call is logged.
-  cat >"$FIX/bin/gh" <<'STUB'
-#!/usr/bin/env bash
+  gh_script <<'STUB'
 printf '%s\n' "$*" >>"$FIX/calls.log"
 [ -f "$FIX/fail" ] && exit 1
 [ "$1 $2" = "pr list" ] && cat "$FIX/list"
 STUB
-  chmod +x "$FIX/bin/gh"
   export FIX PATH="$FIX/bin:$PATH"
   jq -n '[{number: 7, title: "mine", files: [{path: "a.sh"}, {path: "b.sh"}]},
           {number: 5, title: "feat(x): peer", files: [{path: "b.sh"}, {path: "c.sh"}]},
