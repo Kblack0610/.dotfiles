@@ -31,7 +31,8 @@ setup() {
   "paths": { "$REPO": "toolrepo" },
   "trackers": {
     "_comment": "a string value",
-    "toolboard": { "system": "board", "repo": "toolrepo" }
+    "toolboard": { "system": "board", "repo": "toolrepo" },
+    "otherproj": { "system": "board", "repo": "otherrepo" }
   }
 }
 EOF
@@ -78,7 +79,7 @@ EOF
   chmod +x "$SANDBOX/bin/agent-queue"
   run context
   assert_success
-  assert_output --partial 'Your queue item: my-item (board row ar-9): my-item P2: narrow the preflight'
+  assert_output --partial 'Your queue item: my-item (board row toolboard:ar-9): narrow the preflight'
 }
 
 @test "a hand session has no queue item line" {
@@ -151,7 +152,7 @@ item_stub() { # <title>
   assert_output --partial 'toolrepo-freeze since'
   refute_output --partial 'row-x-1'
   refute_output --partial 'console step'
-  assert_output --partial '+1 hold(s) on other projects'
+  assert_output --partial '+1 hold(s) for other projects or claims'
 }
 
 @test "a hold naming one of the repo's lab projects prints" {
@@ -164,7 +165,7 @@ item_stub() { # <title>
   "$REPO_ROOT/.local/bin/agent-hold" set row-y-2 --kind resource --by fleet-dispatch "held (otherproj)"
   run context
   refute_output --partial 'Active holds'
-  assert_output --partial '+1 hold(s) on other projects'
+  assert_output --partial '+1 hold(s) for other projects or claims'
 }
 
 @test "a long hold reason is one line, cut at its first sentence end" {
@@ -174,6 +175,16 @@ item_stub() { # <title>
   line=$(grep -F 'unity-slow since' <<<"$output")
   [[ $line == *'on the 19th.' ]]
   refute_output --partial 'more detail'
+}
+
+@test "a resource hold naming no project prints (a workflow pause), a claim does not" {
+  hold() { "$REPO_ROOT/.local/bin/agent-hold" set "$@"; }
+  hold dispatch --by human "paused while the cluster is rebuilt"
+  printf 'resource: row-z-3\nkind: claim\nsince: now\nby: fleet-dispatch\nreason: claimed for a session\n' > "$AGENT_HOLD_DIR/row-z-3"
+  run context
+  assert_output --partial 'dispatch since'
+  refute_output --partial 'row-z-3'
+  assert_output --partial '+1 hold(s) for other projects or claims'
 }
 
 # -- open sessions -------------------------------------------------------------------------
@@ -214,6 +225,15 @@ $1
 ## Lab
 - **toolboard** (personal) v0.1: no window
 EOF
+}
+
+@test "an empty none-yet Blockers is dropped too, and a blocker saying none active is kept" {
+  seed_anchor '- _(none yet)_'
+  run context
+  refute_output --partial 'Blockers'
+  seed_anchor '- the deploy is down; none active workaround exists'
+  run context
+  assert_output --partial 'none active workaround exists'
 }
 
 @test "the anchor drops Lab, Links and an empty Blockers, and keeps the facts" {

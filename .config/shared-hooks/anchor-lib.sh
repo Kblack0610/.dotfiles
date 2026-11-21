@@ -28,7 +28,7 @@
 #   mode drop: every H2 section except those whose title matches regex.
 #   mode keep: only the H2 sections whose title matches regex.
 # In either mode a kept `## Decisions log` is replaced by one pointer line, and a kept
-# `## Blockers` section holding only a "none active" placeholder is left out.
+# `## Blockers` section holding only a `_(none ...)_` placeholder bullet is left out.
 _anchor_render() {
   local anchor="$1" mode="$2" re="$3"
   [ -f "$anchor" ] && [ -r "$anchor" ] || return 0
@@ -46,11 +46,11 @@ _anchor_render() {
     }
     # Entry boundaries are top-level dated bullets, the grammar regen-anchor.sh rotates on.
     inlog { if ($0 ~ /^- \*\*/) entries++; next }
-    # A Blockers section whose only content is the "none active" placeholder says nothing: held
+    # A Blockers section whose only content is a `- _(none ...)_` placeholder bullet says nothing: held
     # back until the section ends, and printed only if it carries a real line.
     on && blockers {
       held = held $0 "\n"
-      if ($0 !~ /^## / && $0 !~ /^[[:space:]]*$/ && $0 !~ /none active/) real++
+      if ($0 !~ /^## / && $0 !~ /^[[:space:]]*$/ && $0 !~ /^[-*] _\(none[^)]*\)_[[:space:]]*$/) real++
       next
     }
     on { print }

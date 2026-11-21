@@ -64,9 +64,11 @@ HEADER=$(
   # Active fleet holds (agent-hold), first because they say what NOT to start. The
   # coordinator's messages only reach sessions already running; this is how one started
   # mid-hold finds out. Read directly so a missing agent-hold binary cannot hide a hold.
-  # Only the holds that bind this session: a load hold (fleet pacing, the default kind; it
-  # binds every session) and any hold whose resource or reason names this project, its repo or
-  # its lab projects. Another project's hold is one count line; `agent-hold list` is the full view.
+  # Only the holds that bind this session: a load hold (fleet pacing; it binds every session), a
+  # hold whose resource or reason names this project, its repo or its lab projects, and a
+  # resource hold that names no registered project (a workflow pause like dispatch). A hold that
+  # names another registered project, and a claim, are one count line; `agent-hold list` is the
+  # full view. Holds carry no project field, so the name match is the scope.
   HOLD_DIR="${AGENT_HOLD_DIR:-$HOME/.agent/holds}"
   if compgen -G "$HOLD_DIR/*" >/dev/null 2>&1; then
     HOLD_NAMES=("$PROJECT_NAME")
@@ -75,24 +77,39 @@ HEADER=$(
       while IFS= read -r lab_name; do [ -n "$lab_name" ] && HOLD_NAMES+=("$lab_name"); done \
         < <(project_lab_names "$PROJECT_NAME" 2>/dev/null || true)
     fi
+    HOLD_ALL=()
+    if declare -F project_map_file >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+      while IFS= read -r known; do [ -n "$known" ] && HOLD_ALL+=("$known"); done \
+        < <(jq -r '(.trackers // {} | to_entries[] | select(.value | type == "object") | .key), (.paths // {} | .[] | strings)' \
+          "$(project_map_file)" 2>/dev/null || true)
+    fi
     HOLD_SHOWN=() HOLD_OTHER=0
     for hold in "$HOLD_DIR"/*; do
       [ -f "$hold" ] || continue
       res="${hold##*/}"
+      # The default kind mirrors agent-hold's default_kind: resource for dispatch, else load.
       kind="$(sed -n 's/^kind: //p' "$hold")"
       [ -n "$kind" ] || { [ "$res" = dispatch ] && kind=resource || kind=load; }
       reason="$(sed -n 's/^reason: //p' "$hold")"
-      bind=0
-      [ "$kind" != load ] || bind=1
+      names_ours=0 names_other=0
       for hn in "${HOLD_NAMES[@]}"; do
         [ "${#hn}" -ge 4 ] || continue
-        printf '%s %s\n' "$res" "$reason" | grep -qiwF -- "$hn" && bind=1
+        printf '%s %s\n' "$res" "$reason" | grep -qiwF -- "$hn" && names_ours=1
       done
+      for hn in "${HOLD_ALL[@]}"; do
+        [ "${#hn}" -ge 4 ] || continue
+        printf '%s %s\n' "$res" "$reason" | grep -qiwF -- "$hn" && names_other=1
+      done
+      bind=0
+      if [ "$kind" = load ] || [ "$names_ours" -eq 1 ]; then bind=1
+      elif [ "$kind" != claim ] && [ "$names_other" -eq 0 ]; then bind=1; fi
       if [ "$bind" -eq 1 ]; then
-        # One line: a long reason is cut where its first sentence ends, else at a word.
+        # One line: a long reason is cut at the last sentence end within its first 300 chars
+        # (one at least 40 chars in), else at a word.
         if [ "${#reason}" -gt 200 ]; then
-          reason="${reason%%. *}."
-          [ "${#reason}" -le 300 ] || { reason="${reason:0:297}"; reason="${reason% *}..."; }
+          head300="${reason:0:300}"; pre="${head300%. *}"
+          if [ "$pre" != "$head300" ] && [ "${#pre}" -ge 39 ]; then reason="$pre."
+          else reason="${reason:0:297}"; reason="${reason% *}..."; fi
         fi
         HOLD_SHOWN+=("$(printf '  %s since %s by %s: %s' "$res" "$(sed -n 's/^since: //p' "$hold")" \
           "$(sed -n 's/^by: //p' "$hold")" "$reason")")
@@ -105,7 +122,7 @@ HEADER=$(
       printf '%s\n' "${HOLD_SHOWN[@]}"
     fi
     if [ "$HOLD_OTHER" -gt 0 ]; then
-      echo "  +$HOLD_OTHER hold(s) on other projects - \`agent-hold list\`; how to honor one: the fleet-comms skill"
+      echo "  +$HOLD_OTHER hold(s) for other projects or claims - \`agent-hold list\`; how to honor one: the fleet-comms skill"
     fi
     echo
   fi
@@ -162,7 +179,7 @@ if [ -f "$ANCHOR_FILE" ]; then
   SEC_FACTS=$(
     echo "=== Anchor: $PROJECT_NAME (project index) ==="
     if declare -F anchor_inject >/dev/null 2>&1; then
-      anchor_inject "$ANCHOR_FILE" '^(Active plans|Lab|Links)'
+      anchor_inject "$ANCHOR_FILE" '^(Active plans( [(]|$)|Lab$|Links$)'
     else
       cat "$ANCHOR_FILE"
     fi
@@ -219,13 +236,13 @@ if [ -n "${AGENT_QUEUE_ITEM:-}" ] && command -v agent-queue >/dev/null 2>&1; the
   # 10 s here (48 of 300 starts, 2026-11-17, ar-2756). A miss
   # leaves WORK_TEXT to the branch, and the first prompt adds the matched lessons.
   ITEM_JSON=$(AGENT_QUEUE_LOCK_WAIT=1 agent-queue show "$AGENT_QUEUE_ITEM" --json 2>/dev/null || true)
-  ITEM_TITLE=$(jq -r '.title // empty' <<<"$ITEM_JSON" 2>/dev/null || true)
+  ITEM_TITLE=$(jq -r '.title // empty' <<<"$ITEM_JSON" 2>/dev/null | sed -E 's/^[a-z0-9-]+ P[0-9]+: //' || true)
   # The item's own row, and only that one: its slug, its board row, its title.
   if [ -n "$ITEM_TITLE" ]; then
     ITEM_ROW=$(jq -r '.row // empty' <<<"$ITEM_JSON" 2>/dev/null || true)
-    SEC_TASK="Your queue item: $AGENT_QUEUE_ITEM${ITEM_ROW:+ (board row ${ITEM_ROW#*:})}: $ITEM_TITLE"
+    SEC_TASK="Your queue item: $AGENT_QUEUE_ITEM${ITEM_ROW:+ (board row $ITEM_ROW)}: $ITEM_TITLE"
   fi
-  WORK_TEXT=$(sed -E 's/^[a-z0-9-]+ P[0-9]+: //' <<<"$ITEM_TITLE" || true)
+  WORK_TEXT="$ITEM_TITLE"
 fi
 WORK_BRANCH=$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || true)
 case "$WORK_BRANCH" in main|master|develop|agent-[0-9]*) WORK_BRANCH="" ;; esac
