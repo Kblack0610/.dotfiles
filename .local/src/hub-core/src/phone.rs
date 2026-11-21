@@ -43,6 +43,13 @@ pub struct Phone {
     /// The worst row: ok, warn or critical.
     pub state: &'static str,
     pub rows: Vec<Row>,
+    /// When the fleet state these figures were counted from was written (its `generated_epoch`),
+    /// None when it could not be read. Every host with `hub` publishes this document, so a reader
+    /// takes the newest: a host off the fleet lease counts from a state file that stopped.
+    pub as_of: Option<i64>,
+    /// Home's Needs you card (`cards::needs`) for a chip that lays out figures, not rows: the
+    /// waybar `custom/needs` chip. None when the fleet state could not be read, as the rows.
+    pub needs: Option<crate::cards::Card>,
 }
 
 /// What `build` reads besides Home, all gathered by the caller.
@@ -439,7 +446,12 @@ pub fn build(home: &Home, i: &Inputs) -> Phone {
     } else {
         "ok"
     };
-    Phone { state, rows }
+    Phone {
+        state,
+        rows,
+        as_of: i.state["generated_epoch"].as_i64(),
+        needs: (!i.state.is_null()).then(|| crate::cards::needs(home, i.now)),
+    }
 }
 
 /// The project of each PR merged today, from the day-log record (`DAYLOG_DIR`); None when there
@@ -697,6 +709,21 @@ mod tests {
         more.needs.last_mut().unwrap().kind = Kind::Sheet;
         assert_eq!(more.waiting().count, count + 1);
         assert_eq!(crate::cards::needs(&more, NOW).big, (count + 1).to_string());
+    }
+
+    #[test]
+    fn the_needs_card_rides_the_document_with_the_state_age() {
+        let (s, q) = (state(), queue_of(vec![(State::Waiting, "w1")]));
+        let inf = infra(vec![]);
+        let home = home::build(Some(&s), Some(&q), None, Some(&inf), NOW);
+        let p = phone(&s, Some(&q), Some(&inf));
+        let card = p.needs.expect("a read state carries the needs card");
+        assert_eq!(card.big, home.waiting().count.to_string());
+        assert_eq!(p.as_of, Some(NOW));
+        // Negative control: no state read is no card and no age, never a zero.
+        let none = phone(&Value::Null, Some(&q), Some(&inf));
+        assert_eq!(none.needs, None);
+        assert_eq!(none.as_of, None);
     }
 
     #[test]
