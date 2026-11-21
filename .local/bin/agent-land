@@ -654,12 +654,15 @@ row=$(jq -r 'select((.row // "") != "") | (.row | split(":")) as $r
 body_norm() { tr -d '\r' | sed -e '/^Item: /d' -e 's/[[:space:]]*$//'; }
 # drop_body_scratch BODY: delete each *.md or *.txt file at the top of ~/.cache whose text is the
 # merged BODY (body_norm on both). The PR keeps that text, so nothing is lost; a file that differs
-# (a later edit, another PR's body) stays. Why: sessions write the body there for gh pr create, and
-# 64 sat in the ~/.cache root on 2026-11-21 (ar-3663).
+# (a later edit, another PR's body) stays, and so does every file when the body is under
+# SCRATCH_BODY_MIN chars, since a short generic one ("Fix typo.") may be another session's unsent
+# draft. It runs on a re-run of a merged PR too. Why: sessions write the body there for gh pr create,
+# and 64 sat in the ~/.cache root on 2026-11-21, the shortest 680 bytes (ar-3663).
+SCRATCH_BODY_MIN=200
 drop_body_scratch() {
   local want f
   want=$(printf '%s\n' "$1" | body_norm)
-  [ -n "$want" ] || return 0
+  [ "${#want}" -ge "$SCRATCH_BODY_MIN" ] || return 0
   while IFS= read -r -d '' f; do
     if [ "$(body_norm <"$f")" = "$want" ] && rm -f -- "$f"; then echo "scratch: deleted $f, a copy of the merged body"; fi
   done < <(find "$HOME/.cache" -maxdepth 1 -type f \( -name '*.md' -o -name '*.txt' \) -size -64k -print0 2>/dev/null)
