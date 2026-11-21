@@ -88,6 +88,17 @@ past_due() { jq -c '.expires = "2020-01-01T00:00:00Z"' "$AGENT_PROPOSE_DIR/$1.js
   assert_output --partial "its ask did not post; it stays open"
   assert_output --partial "0 asked"
   assert_equal "$(jq -r .status "$AGENT_PROPOSE_DIR/$id.json")" open
+  # still past due, so it holds no cap slot while the sweep retries it
+  AGENT_PROPOSE_MAX=1 STUB_ASK_FAIL=1 run add_queue other
+  assert_success
+}
+
+@test "a verb arg with a | cannot split the ask's options" {
+  id="$("$AP" add --stream s --project p --verb queue --arg 'a|b' t)"
+  past_due "$id"
+  "$AP" expire
+  run grep -c -- '--options accept=agent-queue add --project p --priority high -- a/b|reject=' "$CALLS"
+  assert_output 1
 }
 
 @test "answered decides an asked proposal by the ask's answer: accept runs the verb, reject does not" {
@@ -109,17 +120,34 @@ past_due() { jq -c '.expires = "2020-01-01T00:00:00Z"' "$AGENT_PROPOSE_DIR/$1.js
   assert_output 1
 }
 
-@test "answered refuses a free-text answer and an ask no proposal waits on" {
+@test "answered refuses a free-text answer, one naming both, and an ask no proposal waits on" {
   id="$(add_queue)"
   past_due "$id"
   "$AP" expire
   STUB_ANSWER='' run "$AP" answered ASK1
   assert_failure
   assert_output --partial "names neither accept nor reject"
+  STUB_ANSWER=$'reject\naccept' run "$AP" answered ASK1
+  assert_failure
+  assert_output --partial "names both accept and reject"
   assert_equal "$(jq -r .status "$AGENT_PROPOSE_DIR/$id.json")" asked
+  run grep -c '^agent-queue' "$CALLS"
+  assert_output 0
   run "$AP" answered NOPE
   assert_failure
-  assert_output --partial "no asked proposal for ask NOPE"
+  assert_output --partial "no proposal waits on ask NOPE"
+}
+
+@test "an answer to a proposal already decided by hand is a no-op" {
+  id="$(add_queue)"
+  past_due "$id"
+  "$AP" expire
+  "$AP" reject "$id"
+  STUB_ANSWER=accept run "$AP" answered ASK1
+  assert_success
+  assert_output "$id already rejected"
+  run grep -c '^agent-queue' "$CALLS"
+  assert_output 0
 }
 
 @test "a title that reads as a flag stays the title, and optional flags may be empty" {
@@ -154,7 +182,7 @@ past_due() { jq -c '.expires = "2020-01-01T00:00:00Z"' "$AGENT_PROPOSE_DIR/$1.js
   assert_output --partial "bad id"
 }
 
-@test "expire asks about what is past due and prunes old decisions and old asks" {
+@test "expire asks about what is past due, prunes old decisions, and keeps an ask until its answer" {
   id="$(add_queue)"
   old="$("$AP" add --stream s --project p --verb none old)"
   past_due "$id"
@@ -166,7 +194,7 @@ past_due() { jq -c '.expires = "2020-01-01T00:00:00Z"' "$AGENT_PROPOSE_DIR/$1.js
   [ ! -e "$AGENT_PROPOSE_DIR/$old.json" ]
   jq -c '.asked_at = "2020-01-01T00:00:00Z"' "$AGENT_PROPOSE_DIR/$id.json" > "$BATS_TEST_TMPDIR/r" && cp "$BATS_TEST_TMPDIR/r" "$AGENT_PROPOSE_DIR/$id.json"
   "$AP" expire
-  [ ! -e "$AGENT_PROPOSE_DIR/$id.json" ]
+  assert_equal "$(jq -r .status "$AGENT_PROPOSE_DIR/$id.json")" asked
 }
 
 @test "list filters by status and stream, oldest first" {
