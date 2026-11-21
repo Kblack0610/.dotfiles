@@ -159,10 +159,23 @@ newer_runs() {
   runs=$(gh run list "${R[@]}" --commit "$(git rev-parse HEAD)" --json status,workflowName 2>&1) || { printf '%s' "$runs"; return 1; }
   jq -r --argjson c "$1" '[.[] | select(.status != "completed") | .workflowName as $w | select($c | any(.workflow == $w))] | length' <<<"$runs"
 }
+# gh_read <var> <gh args...>: gh's stdout in <var> and its stderr in gh_err, so a warning gh prints
+# beside an answer is never part of it; returns gh's status.
+gh_err=''
+gh_read() {
+  local var=$1 errf rc=0 got
+  shift
+  errf=$(mktemp) || fail checks "mktemp: no scratch for a gh read"
+  got=$(gh "$@" 2>"$errf") || rc=$?
+  gh_err=$(<"$errf")
+  rm -f "$errf"
+  printf -v "$var" '%s' "$got"
+  return "$rc"
+}
 had_checks=''
 wait_checks() {
   [ -z "$fj" ] || { fj_wait_checks; return; }
-  local try out failed cancelled names queued
+  local try out failed cancelled names queued read_err
   for ((try = 1; ; try++)); do
     out=$(gh pr checks "$pr" "${R[@]}" --watch --fail-fast -i "$CHECKS_WATCH_INTERVAL" 2>&1) && {
       # gh counts a cancelled check as neither failed nor pending, so a watch whose only Checks is
@@ -199,16 +212,32 @@ wait_checks() {
     case "$out" in
     *'no checks reported'*) ;;
     *)
-      failed=$(gh pr checks "$pr" "${R[@]}" --json name,bucket -q '[.[] | select(.bucket == "fail" or .bucket == "cancel") | .name] | join(", ")' 2>/dev/null || true)
-      if [ -z "$failed" ] && net_error "$out"; then
-        net_retry "$out"
+      # A watch that died on a 403, or a names read that failed, names no red check: it stops as a
+      # read error, not a red check, so nobody goes to fix CI that is green. A names read that
+      # exits non-zero but printed names still has its answer.
+      read_err=''
+      gh_read failed pr checks "$pr" "${R[@]}" --json name,bucket -q '[.[] | select(.bucket == "fail" or .bucket == "cancel") | .name] | join(", ")' || [ -n "$failed" ] || read_err=$gh_err
+      if [ -z "$failed" ]; then
+        if ! net_error "$out" && ! net_error "$read_err"; then
+          [ -z "$read_err" ] || fail checks "reading the failed checks: $(lastline "$read_err")"
+          fail checks "the watch ended with no failed check to name: $(lastline "$out")"
+        fi
+        net_retry "${read_err:-$out}"
         try=0
         continue
       fi
-      fail checks "${failed:-$(lastline "$out")}"
+      fail checks "$failed"
       ;;
     esac
-    queued=$(gh run list "${R[@]}" --commit "$(git rev-parse HEAD)" --json status -q '[.[] | select(.status != "completed")] | length' 2>/dev/null || echo 0)
+    # A failed read is not "0 queued": it would reach no_checks and land on the local gate with a run
+    # still queued. A count that is not a number is a failed read too.
+    gh_read queued run list "${R[@]}" --commit "$(git rev-parse HEAD)" --json status -q '[.[] | select(.status != "completed")] | length' && [[ $queued =~ ^[0-9]+$ ]] || {
+      [ -n "$gh_err" ] || gh_err="not a count: $queued"
+      net_error "$gh_err" || fail checks "reading the runs on the head: $(lastline "$gh_err")"
+      net_retry "$gh_err"
+      try=0
+      continue
+    }
     if [ "${queued:-0}" -ne 0 ]; then
       try=0
       sleep "$CHECKS_QUEUED_POLL"
