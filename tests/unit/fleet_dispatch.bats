@@ -2601,7 +2601,7 @@ J
   fleet_state 3
   run cmd_starved
   assert_success
-  assert_output --partial 'held by a full fleet'
+  refute_output --partial 'unjudged'
   # Negative control: one under the target, and the same rows starve.
   fleet_state 2
   run cmd_starved

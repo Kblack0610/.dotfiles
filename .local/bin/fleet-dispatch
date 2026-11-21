@@ -5944,12 +5944,13 @@ cmd_starved() {
     [.[] | select((.priority == "urgent" or .priority == "high") and .t != null and .t < $cut)
       | select($max <= 0 or .priority == "urgent" or ((" " + (.tags // "") + " ") | contains(" red ")) or ($w[.project // ""] // 0) < $max)]
     | sort_by(.t) | .[] | "\(.slug) (\(.priority)\(if ((" " + (.tags // "") + " ") | contains(" red ")) then ", red" else "" end), queued \(.queued))"' <<<"$queue") || { echo "agent-queue unreadable"; return 1; }
-  board=$(board_starved "$cut")
+  # A fleet at its pace target never reaches the fill, so its unjudged rows wait (below): no scan.
+  board=''; [ -n "$TOTAL_LIVE" ] && [ "$TOTAL_LIVE" -ge "$TARGET" ] || board=$(board_starved "$cut")
   low=$(low_starved "$(( cut - DISPATCH_STARVED_MIN * 60 ))")
   [ -n "$stopped$items$board$low" ] || { [ -z "$dead" ]; return; }
   # A full fleet is working, not blocked (cmd_run): at its pace target no pass starts a high item,
   # so one waits on sessions finishing, and no pass reaches the fill there, so unjudged board rows
-  # wait too. Only that case holds: an urgent item may preempt a runner session there, and the red
+  # wait too (board_starved is not read). Only that case holds: an urgent item may preempt a runner session there, and the red
   # and human floors go past the target, so a red item, an approved plan's ready phase, a standing
   # hold or low water still trips. On 11-11 this tripped 4h at 42 of 25 live sessions. Once the
   # fleet is under its target, a waiting item trips it at once.
