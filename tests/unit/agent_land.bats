@@ -68,7 +68,11 @@ case "$1 $2" in
   if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else echo 0; fi ;;
 'pr checks')
   case "$*" in
-  *--json*) cat "$NOTES_FIXTURE/checks.failed" ;;
+  # checks.failed: the failed or cancelled names after a failed watch; checks.cancelled: the
+  # cancelled names after a green one, one answer per call, popped as read (none when empty)
+  *'"fail" or'*) cat "$NOTES_FIXTURE/checks.failed" ;;
+  *--json*) q="$NOTES_FIXTURE/checks.cancelled"
+    if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; fi ;;
   # checks.seq: one watch result per call (green, or the output of a failed watch), popped as read; then checks.out
   *) q="$NOTES_FIXTURE/checks.seq"
     if [ -s "$q" ]; then r=$(head -1 "$q"); sed -i 1d "$q"; [ "$r" = green ] || { echo "$r"; exit 1; }; exit 0; fi
@@ -313,7 +317,7 @@ second_wait() {
   assert_success
   assert_line 'checks: waiting on them for the pushed head'
   assert_line 'landed #42'
-  run grep -c 'pr checks' "$LOG"
+  run grep -c 'pr checks 42 --watch' "$LOG"
   assert_output 2
   [ "$(grep -n '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG" | cut -d: -f1)" -lt "$(grep -n 'pr checks' "$LOG" | tail -1 | cut -d: -f1)" ]
   [ "$(grep -n 'pr checks' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'gh pr merge 42' "$LOG" | cut -d: -f1)" ]
@@ -326,7 +330,7 @@ moved_again() {
   assert_line 'landed #42'
   run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
   assert_output "$1"
-  run grep -c 'pr checks' "$LOG"
+  run grep -c 'pr checks 42 --watch' "$LOG"
   assert_output "$2"
 }
 
@@ -508,7 +512,7 @@ moved_again() {
   assert_success
   run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
   assert_output 2
-  run grep -c 'pr checks' "$LOG"
+  run grep -c 'pr checks 42 --watch' "$LOG"
   assert_output 3
   run grep -c 'branches/main/protection' "$LOG"
   assert_output 1
@@ -596,6 +600,7 @@ git rev-list --count HEAD..origin/main
 git merge-base HEAD origin/main
 shape-grow 5eedbase5eedbase HEAD
 gh pr checks 42 --watch --fail-fast -i 30
+gh pr checks 42 --json name,bucket -q [.[] | select(.bucket == "cancel") | .name] | join(", ")
 git fetch -q origin
 git rev-list --count HEAD..origin/main
 git rev-parse HEAD
@@ -904,6 +909,35 @@ EOF
   # a queued run is re-read a minute apart, not at the no-checks cadence (ar-1345)
   run grep '^sleep' "$LOG"
   assert_output $'sleep 60\nsleep 60\nsleep 60\nsleep 0'
+}
+
+# gh's watch exits 0 when the only Checks is a cancelled run, while the newer run on the same head
+# has no check yet; GitHub then refused the merge BLOCKED (unity-core-playground#2166).
+@test "a cancelled check while a newer run on the head goes on: it waits, then lands on that run's green" {
+  printf 'green\ngreen\n' >"$NOTES_FIXTURE/checks.seq"
+  printf 'Checks\n' >"$NOTES_FIXTURE/checks.cancelled"
+  printf '1\n' >"$NOTES_FIXTURE/runs.queued"
+  printf '#!/bin/sh\necho "sleep $1" >>"$NOTES_FIXTURE/calls.log"\n' >"$SANDBOX/bin/sleep"
+  chmod +x "$SANDBOX/bin/sleep"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: cancelled: Checks; waiting on the run still going on the head'
+  assert_line 'landed #42'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 2
+  run grep '^sleep' "$LOG"
+  assert_output 'sleep 60'
+}
+
+@test "a cancelled check with no run left on the head: stops at checks naming it, never merges" {
+  printf 'green\n' >"$NOTES_FIXTURE/checks.seq"
+  printf 'Checks\n' >"$NOTES_FIXTURE/checks.cancelled"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: cancelled: Checks, and no run on the head is left to replace it'
+  refute_line 'checks: green'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
 }
 
 @test "--plan ticks exactly the named phase" {
