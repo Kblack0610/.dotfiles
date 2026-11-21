@@ -19,6 +19,9 @@ const WAKE_SECS: u64 = 60;
 /// longest real ones run about 5 hours (p99, 1782 background commands, 2026-10-30).
 const JOB_MAX_SECS: u64 = 12 * 3600;
 
+/// A session-written script bigger than this is not read for what it runs.
+const WRAPPER_MAX_BYTES: u64 = 64 * 1024;
+
 /// In the notification a resumed session gets for each job that died with the old process.
 const SESSION_ENDED: &str = "before the previous session ended";
 
@@ -116,6 +119,42 @@ fn job_wait(command: &str, patterns: &[(Wait, &str)]) -> Wait {
         .iter()
         .find(|(_, text)| runs(&command, text))
         .map_or(Wait::Jobs, |(wait, _)| *wait)
+}
+
+/// What a session-written script counts as, read by what it runs: for each command word of `command`
+/// that names a file under `cwd` (a path, or `*.sh`), `job_wait` of that file's text. So
+/// `bash Logs/gate-land.sh`, which calls `scripts/test/suite.sh`, is a gate, where its command
+/// line names none. One level: a script that runs another script of the session's own stays a job.
+/// A script gone from disk, or over WRAPPER_MAX_BYTES, is a plain job.
+fn wrapper_wait(command: &str, cwd: &str, patterns: &[(Wait, &str)]) -> Wait {
+    if cwd.is_empty() {
+        return Wait::Jobs;
+    }
+    let command = unquoted(command);
+    for segment in command.split(COMMAND_STARTS) {
+        let mut rest = segment.trim_start();
+        while let Some(next) = past_wrapper(rest) {
+            rest = next;
+        }
+        let word = next_word(rest).0;
+        if word.starts_with('-') || !(word.contains('/') || word.ends_with(".sh")) {
+            continue;
+        }
+        let path = Path::new(cwd).join(word);
+        let Ok(meta) = fs::metadata(&path) else {
+            continue;
+        };
+        if !meta.is_file() || meta.len() > WRAPPER_MAX_BYTES {
+            continue;
+        }
+        if let Ok(text) = fs::read_to_string(&path) {
+            let wait = job_wait(&text, patterns);
+            if wait != Wait::Jobs {
+                return wait;
+            }
+        }
+    }
+    Wait::Jobs
 }
 
 /// Whether `text` runs as a command in `command` (read through `unquoted`): where a command
@@ -456,11 +495,12 @@ fn track_jobs(line: &str, at: u64, patterns: &[(Wait, &str)], jobs: &mut Vec<Job
     let Ok(v) = serde_json::from_str::<Value>(line) else {
         return;
     };
+    let cwd = v.get("cwd").and_then(Value::as_str).unwrap_or("");
     match v.get("type").and_then(Value::as_str) {
         Some("assistant") => {
             for c in content_blocks(&v) {
                 if c.get("type").and_then(Value::as_str) == Some("tool_use") {
-                    open_job(c, at, patterns, jobs);
+                    open_job(c, cwd, at, patterns, jobs);
                 }
             }
         }
@@ -485,7 +525,7 @@ fn track_jobs(line: &str, at: u64, patterns: &[(Wait, &str)], jobs: &mut Vec<Job
     }
 }
 
-fn open_job(call: &Value, at: u64, patterns: &[(Wait, &str)], jobs: &mut Vec<Job>) {
+fn open_job(call: &Value, cwd: &str, at: u64, patterns: &[(Wait, &str)], jobs: &mut Vec<Job>) {
     let name = call.get("name").and_then(Value::as_str).unwrap_or("");
     let input = call.get("input");
     if name == "TaskStop" {
@@ -499,7 +539,10 @@ fn open_job(call: &Value, at: u64, patterns: &[(Wait, &str)], jobs: &mut Vec<Job
     let wait = if HUMAN_TOOLS.contains(&name) {
         Wait::Human
     } else {
-        job_wait(command, patterns)
+        match job_wait(command, patterns) {
+            Wait::Jobs => wrapper_wait(command, cwd, patterns),
+            wait => wait,
+        }
     };
     let build = wait == Wait::Build;
     let wait = if build { Wait::Jobs } else { wait };
@@ -1083,8 +1126,52 @@ mod tests {
         };
         assert_eq!(open("gh-run-wait 42349132239 'Release builds'"), "gate");
         assert_eq!(open("scripts/authoring/unity-method.sh RenderCli"), "build");
-        // A wrapper script of the session's own hides its gh run view: a plain job.
+        // A wrapper script that is not on disk names nothing: a plain job.
         assert_eq!(open("/tmp/run-wait-1106.sh 42349132239"), "jobs");
+    }
+
+    #[test]
+    fn open_job_reads_what_a_session_written_wrapper_runs() {
+        // agent-11, 2026-11-05: `bash Logs/gate-land.sh` ran scripts/test/suite.sh on the pool and read as a plain job.
+        let conf = include_str!("../../../../../.config/agent-panel/time-use.conf");
+        let dir = std::env::temp_dir().join(format!("agent-core-wrapper-{}", std::process::id()));
+        fs::create_dir_all(dir.join("Logs")).unwrap();
+        fs::write(
+            dir.join("Logs/gate-land.sh"),
+            "#!/bin/bash\n# not gh run view here\nset -e\nscripts/test/suite.sh --pr 1\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("Logs/plain.sh"),
+            "sleep 600\necho 'agent-land 1'\n",
+        )
+        .unwrap();
+        fs::write(dir.join("Logs/test.sh"), "cd x && bats tests/unit\n").unwrap();
+        let open = |cwd: &str, cmd: &str| {
+            let input = serde_json::json!({"command": cmd, "run_in_background": true});
+            let entry = at(
+                0,
+                &format!(
+                    r#""type":"assistant","cwd":{},"message":{{"content":[{{"type":"tool_use","id":"w","name":"Bash","input":{input}}}]}}"#,
+                    serde_json::json!(cwd)
+                ),
+            );
+            walk(
+                &[entry, launched(0, "w", "backgroundTaskId", "tw")].join("\n"),
+                &job_patterns(conf),
+            )
+            .1
+        };
+        let cwd = dir.to_str().unwrap();
+        assert_eq!(open(cwd, "bash Logs/gate-land.sh; echo exit=$?"), "gate");
+        assert_eq!(open(cwd, "./Logs/gate-land.sh"), "gate");
+        assert_eq!(open(cwd, &format!("{cwd}/Logs/test.sh")), "test");
+        // negative controls: a script that runs no gate or test (a quoted or sleeping mention
+        // is not a run), the same command from a directory without it, and no cwd at all.
+        assert_eq!(open(cwd, "bash Logs/plain.sh"), "jobs");
+        assert_eq!(open("/nonexistent", "bash Logs/gate-land.sh"), "jobs");
+        assert_eq!(open("", "bash Logs/gate-land.sh"), "jobs");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
