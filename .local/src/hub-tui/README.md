@@ -19,6 +19,7 @@ hub tab projects agent-runtime   the same, opening one project's rows under its 
 hub --once                       print Home, Alerts and Infra as plain text at $COLUMNS, then exit
 hub --once --tab 'projects NAME' print one project's opened card over its rows, what Enter shows (the tmux Prefix p preview)
 hub board --json                 print every sheet's head line and per-row hints (queue state, forecast day, epic rollup) as JSON, with the annotated rows; nvim draws them as virtual text on a README.md sheet
+hub cards --json [--figures]      Home's cards as the Tilecast widget document agent-web serves at /widget.json; --figures adds the cards' whole numbers as `figures` (agent-mqtt-publish sends it, the waybar queue chip reads them)
 hub ci [--json|--pool-match S]   the CI runners section plain, as JSON, or the rows fleet-bench's starved-pool match reads (jobs waiting S seconds or more)
 hub --once --tab jobs            print one tab (`jobs` is Infra's jobs table); exit 1 when Prometheus did not answer
 ```
