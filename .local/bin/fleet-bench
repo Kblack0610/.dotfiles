@@ -174,7 +174,7 @@
 # Formulas, fields and outcomes: the fleet-bench skill.
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_NEEDS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
 # BENCH_CI_MATCH_CMD, BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
-# BENCH_ITEMS_CMD, BENCH_ADMISSION_CMD, BENCH_MIX_CMD, BENCH_LESSONS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H,
+# BENCH_ITEMS_CMD, BENCH_ADMISSION_CMD, BENCH_MIX_CMD, BENCH_LESSONS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_STATS_CMD, BENCH_FORECAST_HORIZON_H,
 # BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_TRAINEE_CMD, BENCH_LANE_LOG, BENCH_LANE_VOIDS, BENCH_SOURCES_CMD, BENCH_HARNESSES, BENCH_ROOM_CMD, BENCH_CANARY_LANES, BENCH_CANARY_RETRIES, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_HUB_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, PLAN_DIRS, BENCH_DOCS_CLEANUP_DIR, BENCH_SYSTEMS_CMD, BENCH_DOCTOR_LAST, CHAIN_DAYS,
 # FLEET_STATE_FILE, FLEET_SHEPHERD_DIR, WORKTREE_GC_LOG, WORKTREE_GC_STALE_H, BENCH_FLEET_COST_CMD, BENCH_FLEET_COST_FILE, BENCH_FLEET_COST_EVERY_MIN, BENCH_FLEET_COST_TIMEOUT, BENCH_BUDGET_CMD, BENCH_BUDGET_FILE,
 #                                BENCH_BUDGET_EVERY_MIN, BENCH_BUDGET_TIMEOUT.
@@ -351,7 +351,7 @@ FIX_SINCE=0; if [[ "${SENTINEL_SINCE:-}" =~ ^[0-9]+$ ]]; then FIX_SINCE=$SENTINE
 : "${HEALTH_MANIFEST_CMD:=sentinel-manifest}"   # health: its `parts` (the fleet's parts) and `tags` (each watch's flows:) verbs
 : "${BENCH_SKILL_CMD:=agentctl skill --dangling}"   # each runner whose SKILL= names no skill, as "<runner> SKILL=<name>"
 : "${BENCH_SYSTEMS_CMD:=timeout 60 skill-drift --systems --json}"   # each system with its skills: systems_no_skill
-: "${BENCH_DISPATCH_CONF:=$HOME/.config/agentctl/agents/fleet-dispatch.conf}"   # DISPATCH_TARGET_PRESENT, the slots items run on
+: "${BENCH_DISPATCH_STATS_CMD:=fleet-dispatch stats}"   # room_max_live: the pace target, the slots items run on (the last pass's headroom; `headroom --json` itself takes about a minute)
 : "${BENCH_VERDICTS_CMD:=fleet-dispatch verdicts}"   # the judge's latest verdict per row: next_up_blocked
 : "${BENCH_RUNS_TSV:=${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
 : "${BENCH_ROADMAP_CMD:=notes projects --roadmap}"   # given <project> --json: open and closed epics, leaf rows
@@ -5424,12 +5424,13 @@ cmd_throughput() {
        end)'
 }
 
-# queue_slots -> how many sessions fleet-dispatch keeps live: BENCH_QUEUE_SLOTS, else its conf's
-# DISPATCH_TARGET_PRESENT (the pace target while the human is here, the steady state); fleet-dispatch's
-# own default is a neutral 0, so a conf without it is unread. One source, read, never restated.
+# queue_slots -> how many sessions fleet-dispatch keeps live: BENCH_QUEUE_SLOTS, else the pace target its
+# last pass published (stats room_max_live, the `target` of `headroom --json`: what the Claude accounts
+# carry, at most DISPATCH_TARGET_PRESENT or _AWAY). Unreadable or stale (stats drops it after 45 min)
+# fails. One source, read, never restated.
 queue_slots() {
   local n="${BENCH_QUEUE_SLOTS:-}"
-  [ -n "$n" ] || n=$(sed -n 's/^DISPATCH_TARGET_PRESENT=\([0-9][0-9]*\).*/\1/p' "$BENCH_DISPATCH_CONF" 2>/dev/null | tail -1)
+  [ -n "$n" ] || n=$($BENCH_DISPATCH_STATS_CMD 2>/dev/null | jq -r '.room_max_live // empty' 2>/dev/null)
   [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -gt 0 ] && printf '%s' "$n"
 }
 
