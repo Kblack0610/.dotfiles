@@ -7,9 +7,10 @@
 # you (NEEDS, red above 0), each shown at 0 so the bar keeps its shape. The rest (STALLED, CHAT, the
 # human's own conversation, PARKED) is in the total only; the robot's colour carries STALLED.
 # The robot is the fleet's health:
-#   red    a host's fleet_sessions.prom is older than STATE_LATE_SECS, so the numbers are a lie
-#   amber  a session is STALLED, or Prometheus has no session numbers: a session wants
-#          a look, which is not a broken fleet
+#   red    every fleet_sessions.prom is older than STATE_LATE_SECS, so the numbers are a lie
+#   amber  a session is STALLED, Prometheus has no session numbers, or one host's
+#          fleet_sessions.prom is stale beside a fresh one (a host that once held the lease and
+#          left its file behind): a session or a file wants a look, which is not a broken fleet
 #   green  otherwise
 # The hover is the stage counts, then one section per tmux world (hub, lab: the part of the target
 # before the slash) with its own counts and a row per session, worst first, with how long it has
@@ -18,6 +19,11 @@
 # cannot scroll, so at most HOVER_MAX_ROWS rows show, the ATTENTION ones taken first (so one is cut
 # only past HOVER_MAX_ROWS of them), and a last line counts the rest and points at the click,
 # agent-panel, which lists every session.
+#
+# Session series join only to a fleet_sessions.prom fresher than STATE_LATE_SECS (`and on (instance)`),
+# so a stale file's sessions never show; the file itself is read apart, to name it once.
+# One selector reads age and idle: `a or b` drops b's series whose labels match a's, and
+# fleet-sessions writes both with the same labels.
 #
 # Read from Prometheus (agent_session_why, the reason fleet-sessions gives a NEEDS or STALLED
 # session, agent_session_age_minutes, one series per session that `fleet-sessions
@@ -49,7 +55,9 @@ REASON_MAX=70
 
 now="${AGENTS_NOW:-$(date +%s)}"
 title="<b>Sessions</b>"
-q='agent_session_age_minutes or agent_session_idle_minutes or agent_session_bucket or agent_session_why or node_textfile_mtime_seconds{file=~".*/fleet_sessions.prom"}'
+MTIME='node_textfile_mtime_seconds{file=~".*/fleet_sessions.prom"}'
+q='{__name__=~"agent_session_(age|idle)_minutes|agent_session_bucket|agent_session_why"} and on (instance) (time() - '"$MTIME < $STATE_LATE_SECS)"
+q+=" or $MTIME"
 
 if ! raw="$(prom_q "$q")"; then
   emit "$ICON $(paint "$C_YEL" '?')" "$title"$'\n'"cannot read $PROM_URL" warn
@@ -59,12 +67,20 @@ fi
 level=0 why=()
 flag() { ((level < $1)) && level=$1; why+=("$(paint "${LEVEL_COLOUR[$1]}" "$2")"); }
 
+# A host with no host label (a textfile dir the k3s node-exporter scrapes) is named by its instance.
+fresh=0 stale=()
 while IFS=$'\t' read -r host age; do
-  [ -n "$host" ] && flag 2 "fleet_sessions.prom on $host is $(prom_dur "$age") old; is fleet-state.timer running?"
-done < <(jq -r --argjson now "$now" --argjson late "$STATE_LATE_SECS" '[.data.result[]
+  [ -n "$host" ] || continue
+  if ((age > STATE_LATE_SECS)); then stale+=("$host"$'\t'"$age"); else fresh=1; fi
+done < <(jq -r --argjson now "$now" '[.data.result[]
     | select(.metric.__name__ == "node_textfile_mtime_seconds")
-    | {h: (.metric.host // "?"), a: ($now - (.value[1] | tonumber | floor))}]
-  | group_by(.h) | map({h: .[0].h, a: (map(.a) | min)})[] | select(.a > $late) | [.h, .a] | @tsv' <<< "$raw")
+    | {h: (.metric.host // .metric.instance // "?"), a: ($now - (.value[1] | tonumber | floor))}]
+  | group_by(.h)[] | [.[0].h, (map(.a) | min)] | @tsv' <<< "$raw")
+# A stale file beside a fresh one is a leftover (amber); with no fresh one the tick stopped (red).
+for s in "${stale[@]}"; do
+  IFS=$'\t' read -r host age <<< "$s"
+  flag $((fresh ? 1 : 2)) "fleet_sessions.prom on $host is $(prom_dur "$age") old; is fleet-state.timer running there, or is it a leftover to delete?"
+done
 
 # The bucket vocabulary fleet-sessions publishes: its order (ORDER), and the flags on each bucket.
 declare -A IN_PROGRESS=() FINISHED=()
