@@ -215,7 +215,7 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
 @test "reap: a Codex run that hit its usage limit with its PR open goes back to the queue, not to review, and keeps the PR" {
   codex_end_item th-lim '{"type":"task_complete","error":{"message":"x","codex_error_info":"usage_limit_exceeded"}}'
   agent-queue set cx pr=o/game#12 >/dev/null
-  stub gh 'echo OPEN'
+  gh_script 'echo OPEN'
   run cmd_reap
   assert_success
   assert_output --partial "requeued queue item cx (game-agent-1 ended: the plan's usage limit, with PR o/game#12 open)"
@@ -378,7 +378,7 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
 @test "reap: an item moved while reap reads its PR is left as it is, no note written" {
   pr_item OPEN
   # gh answers after a human requeued the item: the move reap planned is from a state it no longer has.
-  stub gh 'agent-queue move fix-crash queued >/dev/null; cat "$NOTES_FIXTURE/pr.state"'
+  gh_script 'agent-queue move fix-crash queued >/dev/null; cat "$NOTES_FIXTURE/pr.state"'
   run cmd_reap
   assert_success
   refute_output --partial 'waiting queue item'
@@ -835,7 +835,7 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
 @test "restore keeps the record when a reopen fails, so a rerun finishes it" {
   restore_setup
   lost_pane one "$SANDBOX/repos/game" conv-1
-  stub tmux 'case "$*" in *new-window*) exit 1 ;; *has-session*) exit 0 ;; esac'
+  tmux_script 'case "$*" in *new-window*) exit 1 ;; *has-session*) exit 0 ;; esac'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
   assert_failure
   assert_output --partial 'hub: reopened 0, failed 1'
@@ -1138,7 +1138,7 @@ lost_host_item() {
   lost_host_item
   agent-queue set fix-crash pr=o/game#12 >/dev/null
   printf "OPEN -\n" > "$NOTES_FIXTURE/pr.state"
-  stub gh 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; cat "$NOTES_FIXTURE/pr.state"'
+  gh_script 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; cat "$NOTES_FIXTURE/pr.state"'
   run cmd_reap
   echo $(( $(date +%s) - 700 )) > "$MISS"
   run cmd_reap

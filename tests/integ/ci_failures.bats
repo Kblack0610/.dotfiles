@@ -17,8 +17,6 @@ setup() {
   cp -r "$REPO_ROOT/tests/fixtures/ci-failures" "$CACHE"
   export SCHEDULES_SYNC="$REPO_ROOT/.local/bin/schedules-sync" SCHEDULES_RUNS_LEDGER="$CACHE/runs.jsonl" SCHEDULES_JOBS_LEDGER="$CACHE/jobs.jsonl"
   export SCHEDULES_NOW=1793750700 # 2026-11-04T00:05Z, the fixture's sync.json synced_at
-  export GH_FIXTURE="$SANDBOX/gh"
-  mkdir -p "$GH_FIXTURE"
 }
 
 count() { python3 "$SCRIPT" --repo o/r --cache "$CACHE" --offline --until 2026-11-04T00:00:00Z --days 3 "$@"; }
@@ -34,7 +32,7 @@ sig() { field "[s for s in d['signatures'] if '$1' in s['signature']][0]['$2']";
 @test "offline makes no gh call" {
   run count
   assert_success
-  assert [ ! -e "$GH_FIXTURE/calls.log" ]
+  assert_not_called "gh "
 }
 
 @test "a cancelled run is not red, and a run before the window is not read (107, 108)" {
@@ -156,12 +154,10 @@ sig() { field "[s for s in d['signatures'] if '$1' in s['signature']][0]['$2']";
 
 # online <gh stderr>: a run that reaches gh, whose `run view` (a job's log) fails with that message
 online() {
-  mkdir -p "$SANDBOX/ghbin"
-  printf '%s\n' "$1" > "$SANDBOX/ghbin/err"
-  printf '#!/bin/sh\n[ "$1 $2" = "run view" ] && { cat "%s" >&2; exit 1; }\necho "[]"\n' "$SANDBOX/ghbin/err" > "$SANDBOX/ghbin/gh"
-  chmod +x "$SANDBOX/ghbin/gh"
+  printf '%s\n' "$1" > "$GH_FIXTURE/err"
+  gh_script '[ "$1 $2" = "run view" ] && { cat "$GH_FIXTURE/err" >&2; exit 1; }; echo "[]"'
   rm -f "$CACHE/log-1061.txt"
-  PATH="$SANDBOX/ghbin:$PATH" python3 "$SCRIPT" --repo o/r --cache "$CACHE" --until 2026-11-04T00:00:00Z --days 3 --json
+  python3 "$SCRIPT" --repo o/r --cache "$CACHE" --until 2026-11-04T00:00:00Z --days 3 --json
 }
 
 @test "a job GitHub stored no log for is read from its annotations and listed, not PARTIAL (106)" {
@@ -179,10 +175,9 @@ online() {
 
 @test "a poisoned run-log zip in gh's shared cache is never read: gh gets a private cache, removed at exit, and no temp entry is left" {
   # gh as it behaves: an entry under XDG_CACHE_HOME/gh that exists is trusted, and a 0-byte one fails every read
-  mkdir -p "$SANDBOX/ghbin" "$SANDBOX/xdg/gh"
+  mkdir -p "$SANDBOX/xdg/gh"
   : > "$SANDBOX/xdg/gh/run-log-1061-1.zip"
-  cat > "$SANDBOX/ghbin/gh" <<'SH'
-#!/bin/sh
+  gh_script <<'SH'
 if [ "$1 $2" = "run view" ]; then
   echo "$XDG_CACHE_HOME" >> "$GH_FIXTURE/cache-dirs"
   [ -e "$XDG_CACHE_HOME/gh/run-log-1061-1.zip" ] && { echo "failed to get run log: opening cache entry: zip: not a valid zip file" >&2; exit 1; }
@@ -191,9 +186,8 @@ if [ "$1 $2" = "run view" ]; then
 fi
 echo "[]"
 SH
-  chmod +x "$SANDBOX/ghbin/gh"
   rm -f "$CACHE/log-1061.txt"
-  XDG_CACHE_HOME="$SANDBOX/xdg" PATH="$SANDBOX/ghbin:$PATH" run --separate-stderr python3 "$SCRIPT" --repo o/r --cache "$CACHE" --until 2026-11-04T00:00:00Z --days 3 --json
+  XDG_CACHE_HOME="$SANDBOX/xdg" run --separate-stderr python3 "$SCRIPT" --repo o/r --cache "$CACHE" --until 2026-11-04T00:00:00Z --days 3 --json
   assert_success
   assert_equal "$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['partial'])" "$output")" "False"
   grep -q 'killed by the stub' "$CACHE/log-1061.txt"

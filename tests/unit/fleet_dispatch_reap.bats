@@ -1032,3 +1032,62 @@ takeover_item() {
   assert_output --partial 'failed queue item gone'
   refute_output --partial 'takeover queue item'
 }
+
+# branch_item <state> [head] -- takeover_item's item `tk`, whose session pushed branch `work` and opened PR
+# o/game#7 from it without recording it; the gh stub lists PRs 3 (closed) and 7 (<state>, at <head>, default the
+# pushed sha) by that head and reads #7 as <state>.
+branch_item() {
+  takeover_item
+  printf '%s %s\n' "$1" "$WORK" > "$NOTES_FIXTURE/pr.state"
+  stub gh 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"
+case "$*" in
+"pr list --head work --state all --json number,url,state,headRefOid") echo "[{\"number\":3,\"url\":\"https://github.com/o/game/pull/3\",\"state\":\"CLOSED\",\"headRefOid\":\"'"$WORK"'\"},{\"number\":7,\"url\":\"https://github.com/o/game/pull/7\",\"state\":\"'"$1"'\",\"headRefOid\":\"'"${2:-$WORK}"'\"}]" ;;
+"pr list"*) echo "[]" ;;
+*) [ -s "$NOTES_FIXTURE/pr.state" ] && cat "$NOTES_FIXTURE/pr.state" ;;
+esac'
+}
+
+@test "reap: a session that opened a PR from its pushed branch and never recorded it settles by that PR, not by a takeover" {
+  branch_item OPEN
+  run cmd_reap
+  assert_success
+  assert_output --partial 'review queue item tk (PR o/game#7 open'
+  refute_output --partial 'takeover queue item'
+  assert_equal "$(agent-queue show tk --json | jq -r '[.state, .pr] | join("|")')" "review|o/game#7"
+  grep -qF "its branch's PR o/game#7 recorded" "$FLEET_DISPATCH_DIR"/log.md || fail "recorded PR not logged"
+  assert_equal "$(grep -c 'action reaped --from game --item tk' "$NOTES_FIXTURE/calls.log")" 1
+}
+
+@test "reap: the branch's merged PR closes the item ok with merged:" {
+  branch_item MERGED
+  git -C "$SANDBOX/repos/game" push -q origin "$WORK:refs/heads/main"
+  run cmd_reap
+  assert_equal "$(agent-queue show tk --json | jq -r '[.state, .status, .pr, .merged] | join("|")')" "done|ok|o/game#7|$WORK"
+}
+
+@test "reap: a PR at an older head than the branch's pushed work is no proof for it: the work is taken over" {
+  branch_item MERGED 0123456789abcdef0123456789abcdef01234567
+  run cmd_reap
+  assert_output --partial "takeover queue item tk (branch work at ${WORK:0:12}"
+  assert_equal "$(agent-queue show tk --json | jq -r '.pr // ""')" ""
+}
+
+@test "reap: a PR closed unmerged is no proof for the branch's work either: it is taken over, not failed" {
+  branch_item CLOSED
+  run cmd_reap
+  assert_output --partial "takeover queue item tk (branch work at ${WORK:0:12}"
+  assert_equal "$(agent-queue show tk --json | jq -r '.pr // ""')" ""
+}
+
+@test "reap: a branch no PR was opened from still takes over, and a Forgejo checkout is not read through gh" {
+  branch_item OPEN
+  stub gh 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; echo "[]"'
+  run cmd_reap
+  assert_output --partial "takeover queue item tk (branch work at ${WORK:0:12}"
+  assert_equal "$(agent-queue show tk --json | jq -r '.pr // ""')" ""
+  mkdir -p "$SANDBOX/repos/game/.forgejo/workflows"; : > "$SANDBOX/repos/game/.forgejo/workflows/mirror-to-github.yaml"
+  : > "$NOTES_FIXTURE/calls.log"
+  run branch_pr "$(agent-queue show tk --json)"
+  assert_failure
+  assert_not_called 'gh pr list'
+}

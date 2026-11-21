@@ -4,6 +4,7 @@
 setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
+  load '../helpers/sandbox'
   HOOK="$BATS_TEST_DIRNAME/../../.claude/hooks/hosted-runner-guard.py"
   export PROJECT_MAP_FILE="$BATS_TEST_TMPDIR/project-map.json"
   jq -n '{github_runners: {self_hosted_only: ["acme-personal"], allow: {"acme-personal/app:.github/workflows/mac.yml": "needs a hosted macOS image"}}}' >"$PROJECT_MAP_FILE"
@@ -15,9 +16,12 @@ setup() {
   mkrepo app git@github.com:acme-personal/app.git
   mkrepo pub git@github.com:acme-personal/pub.git
   # gh stub: acme-personal/pub is public; every other lookup fails, which reads as private.
-  mkdir -p "$BATS_TEST_TMPDIR/bin"
-  printf '#!/bin/sh\n[ "$3" = acme-personal/pub ] && { echo PUBLIC; exit 0; }\nexit 1\n' >"$BATS_TEST_TMPDIR/bin/gh"
+  # No sandbox_init: only the shared gh stub, with its fixture dir, on PATH.
+  export NOTES_FIXTURE="$BATS_TEST_TMPDIR/fixture" GH_FIXTURE="$BATS_TEST_TMPDIR/fixture"
+  mkdir -p "$BATS_TEST_TMPDIR/bin" "$NOTES_FIXTURE"
+  cp "$TESTS_DIR/helpers/stubs/gh" "$BATS_TEST_TMPDIR/bin/gh"
   chmod +x "$BATS_TEST_TMPDIR/bin/gh"
+  gh_script '[ "$3" = acme-personal/pub ] && { echo PUBLIC; exit 0; }; exit 1'
   export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
   mkrepo work https://github.com/acme-work/svc.git
   mkrepo forge git@git.example.org:acme-personal/forged.git
@@ -95,7 +99,7 @@ decision() {
 }
 
 @test "a failed visibility lookup counts as private, so the deny stands" {
-  printf '#!/bin/sh\nexit 1\n' >"$BATS_TEST_TMPDIR/bin/gh"
+  gh_script 'exit 1'
   run decision Write "$BATS_TEST_TMPDIR/app/.github/workflows/ci.yml" 'runs-on: ubuntu-latest'
   assert_output --partial 'hosted-runner-guard: acme-personal/app'
 }

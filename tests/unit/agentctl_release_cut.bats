@@ -35,8 +35,7 @@ case "$*" in
   *) exit 1 ;;
 esac
 EOF
-  cat > "$SANDBOX/bin/gh" <<'EOF'
-#!/usr/bin/env bash
+  gh_script <<'EOF'
 q=.; a=("$@")
 for i in "${!a[@]}"; do [ "${a[$i]}" = --jq ] && q="${a[$((i + 1))]}"; done
 case "$*" in
@@ -74,7 +73,7 @@ rc="$(cat "$FX/runend" 2>/dev/null || echo 0)"
 [ "$rc" != 0 ] || [ -e "$FX/notag" ] || echo 1 > "$FX/tag"
 exit "$rc"
 EOF
-  chmod +x "$SANDBOX/bin/notes" "$SANDBOX/bin/gh" "$SANDBOX/bin/agent-queue" "$SANDBOX/bin/agent-notify" "$SANDBOX/bin/gh-run-wait"
+  chmod +x "$SANDBOX/bin/notes" "$SANDBOX/bin/agent-queue" "$SANDBOX/bin/agent-notify" "$SANDBOX/bin/gh-run-wait"
 }
 
 # board CUT TASK...: the game's v1.2.0 sprint, due 2026-11-20, with `cut=` CUT (- for none) and

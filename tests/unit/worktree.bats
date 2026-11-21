@@ -1064,9 +1064,9 @@ EOF
   echo '81 10' > "$SANDBOX/panes.hub"
   printf '#!/bin/sh\ncat %q\n' "$SANDBOX/scopes" > "$SANDBOX/fakes/systemctl"
   # list-panes for the socket after -S, from panes.<socket>; no such file is a server that is silent
-  printf '#!/bin/sh\ncat %q/panes.$(basename "$2")\n' "$SANDBOX" > "$SANDBOX/fakes/tmux"
-  chmod +x "$SANDBOX/fakes/systemctl" "$SANDBOX/fakes/tmux"
-  WT_SYSTEMCTL="$SANDBOX/fakes/systemctl" WT_TMUX="$SANDBOX/fakes/tmux"
+  tmux_script "$(printf 'cat %q/panes.$(basename "$2")' "$SANDBOX")"
+  chmod +x "$SANDBOX/fakes/systemctl"
+  WT_SYSTEMCTL="$SANDBOX/fakes/systemctl" WT_TMUX="$SANDBOX/bin/tmux"
   # kill.ignored: every signal is ignored; term.ignored: only SIGTERM (what respawns faster than it ends)
   kill() {
     printf '%s\n' "$*" >> "$SANDBOX/kill.log"

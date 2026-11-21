@@ -204,7 +204,7 @@ ask_fixture() {
   assert_line '[["row three","failed"],["row two","done/failed"]]'
 }
 
-@test "dispatch-judge: an unrated end, or a failed line a later cleared released, is not wrong" {
+@test "dispatch-judge: an unrated end is not wrong; a failed line is, though a later cleared restarted its count" {
   local at; at="$(date -Iseconds)"
   v() { jq -cn --arg v "$1" --arg k "$2" --arg at "${3:-$at}" '{verdict: $v, project: "p", key: $k, at: $at, rule: "fits", judge_call: "d1"}'; }
   {
@@ -220,9 +220,9 @@ ask_fixture() {
   run "$JUDGE_EVAL" dispatch-judge --json
   assert_success
   run jq -c '.agents[0] | [.total | .tp, .fp, .pending], (.misses | map([.id, .answer]) | sort)' <<<"$output"
-  # negative control: row three's timeout is the model's, so it stays wrong; row four landed
-  assert_line '[1,1,2]'
-  assert_line '[["row three","done/failed"]]'
+  # negative control: row three's timeout is the model's, so it stays wrong; row four landed; row two failed
+  assert_line '[1,2,1]'
+  assert_line '[["row three","done/failed"],["row two","failed"]]'
 }
 
 @test "kpi --json: the judge KPIs over 7 and 28 days, every prompt, and no ask false-defer KPI" {

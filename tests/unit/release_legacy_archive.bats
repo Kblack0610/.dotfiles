@@ -68,8 +68,7 @@ EOF
     > "$SANDBOX/gh/deployments.json"
   printf '[{"state":"success"}]' > "$SANDBOX/gh/statuses.json"
   # Run 13's log GitHub no longer keeps; LOG_FAIL names a run whose download breaks.
-  cat > "$SANDBOX/bin/gh" <<'EOF'
-#!/usr/bin/env bash
+  gh_script <<'EOF'
 printf '%s\n' "$*" >> "$SANDBOX/gh.calls"
 ep="" q="."
 while [ $# -gt 0 ]; do
@@ -94,7 +93,6 @@ esac
 [ -f "$f" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
 jq -rc "$q" "$f"
 EOF
-  chmod +x "$SANDBOX/bin/gh"
   export SANDBOX
 }
 
