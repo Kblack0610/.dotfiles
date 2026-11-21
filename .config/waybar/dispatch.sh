@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Waybar module: the queue chip (custom/dispatch), the one chip for agent work flowing. The bar is
-# two totals, "Q:27  D:280": the items ready to start next (running work is the agents chip beside
-# it) and the items done today. Sprints are per project, so the projects chip carries the running
+# two totals, "Q:27  D:126": the items ready to start next (running work is the agents chip beside
+# it) and the items shipped today (closed ok with a merge, one per slug; the checks that closed
+# with no merge are on the hover, `agent-queue stats` .recent). Sprints are per project, so the projects chip carries the running
 # ones (projects.sh). The agent board's own count and the backlog tier are on the hover only.
 # Each label and its colon are the theme accent (pango.sh `label_colour`), and two
 # spaces part the totals: a | would read as the line the bar draws between chips (layout.css). All
@@ -207,9 +208,9 @@ fi
 qn="${ready:--}"
 ((level > 0)) && qn="$(paint "${LEVEL_COLOUR[$level]}" "$qn")"
 lc="$(label_colour)"
-text="$(paint "$lc" Q:)$qn  $(paint "$lc" D:)$(d done_today)"
+text="$(paint "$lc" Q:)$qn  $(paint "$lc" D:)$(d shipped_today)"
 
-tip="Q ready to start next, D done today"$'\n'"$qhead"
+tip="Q ready to start next, D shipped today (merged a PR); $(d checks_today) checks closed with no merge"$'\n'"$qhead"
 for w in "${why[@]}"; do tip+=$'\n'"$w"; done
 [ -n "$queue" ] && tip+=$'\n'"$queue"
 for sec in "$disp" "$shep"; do [ -n "$sec" ] && tip+=$'\n\n'"$sec"; done

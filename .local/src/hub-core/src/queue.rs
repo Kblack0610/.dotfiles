@@ -293,6 +293,19 @@ impl Item {
         said(&self.finished).and_then(stamp)
     }
 
+    /// What a finished item counts as: shipped when it closed ok with a merge, a check when it
+    /// closed ok with none (a watch or alert that cleared); failed, cancelled or unfinished is None.
+    pub fn closed_as(&self) -> Option<Closed> {
+        if self.state != State::Done || said(&self.status) != Some("ok") {
+            return None;
+        }
+        Some(if said(&self.merged).is_some() {
+            Closed::Shipped
+        } else {
+            Closed::Check
+        })
+    }
+
     /// Minutes it has been ready at `now`: from `ready` (its hold's release), else `queued`,
     /// the start `timing`'s wait measures from. None for an item with neither stamp.
     pub fn ready_min(&self, now: chrono::DateTime<chrono::Utc>) -> Option<i64> {
@@ -692,7 +705,7 @@ pub struct Stats {
 }
 
 /// `stats.recent`: items added (by `queued`), started, done and failed (by `finished`) in the
-/// last 1, 6 and 24 hours, and the ok items done since local midnight. Added against done over a
+/// last 1, 6 and 24 hours, and the items shipped and the checks closed since local midnight (`DoneToday`). Added against done over a
 /// window is the drain: whether the queue shrinks or grows.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -709,7 +722,8 @@ pub struct Recent {
     pub started_24h: u64,
     pub done_24h: u64,
     pub failed_24h: u64,
-    pub done_today: u64,
+    pub shipped_today: u64,
+    pub checks_today: u64,
 }
 
 /// Minutes as the views print them: `-` for none, hours from two hours up.
@@ -828,6 +842,40 @@ pub fn day_of(at: &str) -> Option<String> {
             .format("%Y-%m-%d")
             .to_string(),
     )
+}
+
+/// What a finished item counts as, by [`Item::closed_as`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Closed {
+    Shipped,
+    Check,
+}
+
+/// The items closed since a local midnight, one count per slug: a slug that shipped once is
+/// shipped however many runs it took. `agent-queue stats` .recent `shipped_today` and
+/// `checks_today` count by the same rule, for the waybar chip.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct DoneToday {
+    pub shipped: usize,
+    pub checks: usize,
+}
+
+/// [`DoneToday`] over `items`, counting the ones that finished at or after `midnight` (epoch seconds).
+pub fn done_today<'a>(items: impl IntoIterator<Item = &'a Item>, midnight: i64) -> DoneToday {
+    let mut shipped: HashMap<&str, bool> = HashMap::new();
+    for i in items {
+        if !i.finished_at().is_some_and(|f| f.timestamp() >= midnight) {
+            continue;
+        }
+        if let Some(c) = i.closed_as() {
+            *shipped.entry(i.slug.as_str()).or_default() |= c == Closed::Shipped;
+        }
+    }
+    let n = shipped.values().filter(|s| **s).count();
+    DoneToday {
+        shipped: n,
+        checks: shipped.len() - n,
+    }
 }
 
 /// A day (`YYYY-MM-DD`) as the Queue headings word it, by the same clock `day_of` uses: Today,
@@ -2682,13 +2730,19 @@ mod tests {
     #[test]
     fn stats_reads_recent_and_an_older_agent_queue_without_it() {
         let s: Stats = serde_json::from_str(
-            r#"{"since":"2026-10-30","recent":{"added_6h":80,"done_6h":84,"failed_24h":5,"done_today":280}}"#,
+            r#"{"since":"2026-10-30","recent":{"added_6h":80,"done_6h":84,"failed_24h":5,"shipped_today":126,"checks_today":125}}"#,
         )
         .unwrap();
         let r = s.recent.unwrap();
         assert_eq!(
-            (r.added_6h, r.done_6h, r.failed_24h, r.done_today),
-            (80, 84, 5, 280)
+            (
+                r.added_6h,
+                r.done_6h,
+                r.failed_24h,
+                r.shipped_today,
+                r.checks_today
+            ),
+            (80, 84, 5, 126, 125)
         );
         let old: Stats = serde_json::from_str(r#"{"since":"2026-10-30"}"#).unwrap();
         assert_eq!(old.recent, None);
