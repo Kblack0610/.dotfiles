@@ -6999,13 +6999,12 @@ cancel c-old-lane --why canary: superseded by the $week set"
   run grep -c -- --agent "$CQ/add.log"
   assert_output 1
   grep -q 'in any other harness, end the session' "$CQ/add.log"
-  # A lane that spends a Claude account queues at high and another harness's at low: at low the claude
-  # run sat behind every runnable item and never started.
+  # Every lane queues at low, a Claude one too: a canary is a check, never high work (ar-4349).
   run "$SUBJECT" canary queue --harness claude --model haiku --effort max
   assert_success
   assert_equal "$(jq -r .priority "$CQ/canary-greet-$week-codex-sol.json")" low
-  assert_equal "$(jq -r .priority "$CQ/canary-greet-$week.json")" high
-  assert_equal "$(jq -r .priority "$CQ/canary-greet-$week-haiku-ma.json")" high
+  assert_equal "$(jq -r .priority "$CQ/canary-greet-$week.json")" low
+  assert_equal "$(jq -r .priority "$CQ/canary-greet-$week-haiku-ma.json")" low
   # A long id still fits: agent-queue cuts slugs at 40, so the id is shortened, ends in a hash of the
   # whole id, and the lane is kept whole.
   jq '.id = "dispatch-requested-night"' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/long.json"
