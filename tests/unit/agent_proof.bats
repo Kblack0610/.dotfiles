@@ -12,12 +12,12 @@ setup() {
   . "$REPO_ROOT/.local/lib/agent-proof.sh"
   ART="$SANDBOX/artifact"; LOG="$SANDBOX/run.log"
   : > "$ART"; : > "$LOG"
-  export AGENT_PROOF_ASKS="$HOME/.agent/asks" AGENTCTL_NAME=demo-runner
+  export AGENT_ASK_ROOT="$HOME/.agent/asks" AGENTCTL_NAME=demo-runner
 }
 
 _ask() {  # _ask <agent> <status>
-  mkdir -p "$AGENT_PROOF_ASKS/demo"
-  printf 'id: X\nagent: %s\nstatus: %s\n' "$1" "$2" > "$AGENT_PROOF_ASKS/demo/$RANDOM.md"
+  mkdir -p "$AGENT_ASK_ROOT/demo"
+  printf 'id: X\nagent: %s\nstatus: %s\n' "$1" "$2" > "$AGENT_ASK_ROOT/demo/$RANDOM.md"
 }
 
 @test "a non-zero exit is FAILED even when the artifact changed" {
