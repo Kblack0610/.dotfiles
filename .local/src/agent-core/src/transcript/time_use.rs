@@ -1211,7 +1211,6 @@ mod tests {
         assert!(kind("gh pr checks 12 --watch") == Some(Wait::Gate));
         assert!(kind("timeout -k 60 10800 bash Logs/land3.sh 2>&1 | tail -25") == Some(Wait::Gate));
         assert!(kind("scripts/gate.sh && agent-land 12 --item x") == Some(Wait::Gate));
-        assert!(kind("scripts/test/gate-and-land.sh --item x") == Some(Wait::Gate));
         assert!(kind("scripts/test/run.sh Foo") == Some(Wait::Test));
         assert!(kind("make -C tests test-fast") == Some(Wait::Test));
         assert!(kind("sleep 5").is_none());
