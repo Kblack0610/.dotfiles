@@ -148,7 +148,9 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 # pass left unhandled is as urgent as the line itself: on 2026-11-09 any leftover skipped the debounce,
 # which started 59 passes a day. An answered ask has no line: ask-resume hands the answer to its session.
 # A critical: line is urgent too: its #high row has already waited FLEET_SHEPHERD_CRITICAL_MIN (ar-3761).
-: "${FLEET_SHEPHERD_URGENT_RE:=^(unhandled: )?(nightly red|shared red|infra:|watch:|limit:|nudge STALLED|critical:)}"
+# A pace: machine reads HOLD line is urgent too: an overloaded machine (fleet-assess HOLD) with no hold set
+# should not wait the debounce for a pass to set one (ar-3285).
+: "${FLEET_SHEPHERD_URGENT_RE:=^(unhandled: )?(nightly red|shared red|infra:|watch:|limit:|nudge STALLED|critical:|pace: machine reads HOLD)}"
 # An urgent line starts a pass within a run or two, so 60 is a fault; only a line the debounce can
 # hold gets DEBOUNCE_MIN on top (stuck_min).
 : "${FLEET_SHEPHERD_STUCK_MIN:=60}" # lines due and no pass started this long: stuck

@@ -1022,6 +1022,12 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   assert_output --partial 'nightly red: r1'
   assert_output --partial 'started pass'
   assert_equal "$(starts)" 5
+  live "$(pass_id)" idle; idle_pass
+  doc "[]"
+  STUB_VERDICT=HOLD run "$SH" run
+  assert_output --partial 'pace: machine reads HOLD with no hold set'
+  assert_output --partial 'started pass'
+  assert_equal "$(starts)" 6
 }
 
 @test "a settled fleet pages once, and work coming back re-arms the page" {
