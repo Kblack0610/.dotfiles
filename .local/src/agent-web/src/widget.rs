@@ -388,7 +388,10 @@ mod tests {
 
     #[test]
     fn a_cards_list_reads_its_names_and_an_empty_one_reads_every_card() {
-        assert_eq!(listed(Some("alerts, needs,,")), Some(vec!["alerts", "needs"]));
+        assert_eq!(
+            listed(Some("alerts, needs,,")),
+            Some(vec!["alerts", "needs"])
+        );
         // No default list: None reads every card.
         assert_eq!(listed(Some(" , ")), None);
         assert_eq!(listed(None), None);
