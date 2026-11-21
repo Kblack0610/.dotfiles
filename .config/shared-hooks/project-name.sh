@@ -210,6 +210,18 @@ project_slug() {
   printf '%s\n' "${name:0:8}"
 }
 
+# session_project <session name or panel target> -> the project a worktree session is named for:
+# the tmux session name with a panel target's "<world>/" prefix and ":<window>" suffix and the
+# "-agent-<N>" worktree suffix taken off (lab/demo-agent-4:1 -> demo). The one place that suffix
+# is stripped: a row whose asker gave no project is named through it, then project_slug.
+session_project() {
+  local s="$1"
+  s="${s#*/}"
+  [[ "$s" =~ ^(.+):[0-9]+$ ]] && s="${BASH_REMATCH[1]}"
+  [[ "$s" =~ ^(.+)-agent-[0-9]+$ ]] && s="${BASH_REMATCH[1]}"
+  printf '%s\n' "$s"
+}
+
 # --- the registry's THIRD relation: project -> the version it has SHIPPED ---
 #
 # project_field <project> <key> -> one scalar from `trackers.<project>`, or "".

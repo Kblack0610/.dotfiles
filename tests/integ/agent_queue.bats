@@ -3733,6 +3733,24 @@ notes --profile work ptask level run lv-8'
   assert_output 0
 }
 
+@test "--tags interrupt puts #interrupt on the row it files and on an open twin it links; other tags do not" {
+  story_notes
+  "$AQ" add --project level --slug hot --tags "research interrupt" "feat(menu): hot" >/dev/null
+  run grep -c -- '-- feat(menu): hot #high #interrupt$' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+  echo 3 > "$NOTES_FIXTURE/story.rc"
+  echo 'already open on /x/agent/README.md: - [ ] feat(menu): twin <!-- id:lv-4 -->' > "$NOTES_FIXTURE/story.out"
+  "$AQ" add --project level --slug twin --tags "#interrupt" "feat(menu): twin" >/dev/null
+  run grep -c -- '--agent tag --add interrupt lv-4' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+  # NEGATIVE CONTROL: a row without the tag gets no interrupt
+  : > "$NOTES_FIXTURE/calls.log"
+  rm "$NOTES_FIXTURE/story.rc"
+  "$AQ" add --project level --slug cold --tags research "feat(menu): cold" >/dev/null
+  run grep -c -- 'interrupt' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
 @test "a re-queue links its last item's open row by id, whatever its words; a closed one gets a new row" {
   story_notes
   "$AQ" add --project level --slug again "feat(menu): first words" >/dev/null

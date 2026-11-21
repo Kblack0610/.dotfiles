@@ -274,7 +274,7 @@ impl Entry {
         match self.level {
             Level::Bad => "ended",
             Level::Warn => "ending",
-            Level::Ok => "held",
+            Level::Ok | Level::Neutral => "held",
         }
     }
 }

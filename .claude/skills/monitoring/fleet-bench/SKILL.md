@@ -127,6 +127,7 @@ Windows count human sessions by `updated_epoch` in session-outcomes; a line with
 | `points_per_pr` (now) | Claude weekly points over Claude landed PRs, from `sources` over `BENCH_QUEUE_DAYS`; a source with unread points stays out, none read is `?` |
 | `lesson_held_share` (now) | lessons with a sig that held / those that held or recurred (`agentctl-session-outcomes lessons --cached --json`); `?` until one has a verdict |
 | `insight_expired_share` (now) | dream insights dated 30 to 60 days back (their window closed in the last 30 days) whose last status is expired / all of them, over every `~/.agent/dreams/*/insights.md`; `?` when none is dated there |
+| `systems_no_skill` (now) | registry systems (systems.md Systems plus project-map own ids) no skill names in `metadata.system`: the length of `no_skill` in `skill-drift --systems --json` (`BENCH_SYSTEMS_CMD`), `?` when it cannot run. Report-only: outside the chain, and `improve` never picks it |
 | `ledger_coverage` (now) | PRs merged in the last `CHAIN_DAYS` (7) in `pr-ci.jsonl` that an active or done item's `pr` names (`owner/repo#N` or a forge URL by repo, a bare `N` by number) / all of them |
 | `untracked_merged_prs` (now) | those same PRs no item names |
 | `board_orphan_started` (now) | started (`[/]`) agent rows in `notes board --json` that no active item's `row` names |
