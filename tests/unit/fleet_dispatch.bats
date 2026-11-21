@@ -2586,23 +2586,28 @@ J
 }
 
 # 2026-11-05: 220 rows sat unjudged since 11-02 while every pass stopped at held queue items.
-@test "starved: board rows nobody judged while the human was away that long trip it; a recent judge or a short absence does not" {
+@test "starved: board rows nobody judged that long trip it, the human here or away; a recent judge or a full fleet does not" {
   game_ready
   rm -f "$FLEET_DISPATCH_DIR/verdicts.jsonl"
-  stub fleet-presence 'echo "away 90 tmux"'
+  local p; for p in 'away 90 tmux' 'away 10 tmux' 'here 0 tmux'; do
+    stub fleet-presence "echo '$p'"
+    run cmd_starved
+    assert_failure
+    assert_output --partial '1 board rows unjudged, none judged since never'
+  done
+  # A fleet at its pace target never reaches the fill, so the rows wait on sessions finishing.
+  acct main:pace
+  export DISPATCH_TARGET_PRESENT=3 DISPATCH_TARGET_AWAY=3
+  fleet_state 3
+  run cmd_starved
+  assert_success
+  assert_output --partial 'held by a full fleet'
+  # Negative control: one under the target, and the same rows starve.
+  fleet_state 2
   run cmd_starved
   assert_failure
-  assert_output --partial '1 board rows unjudged, none judged since never'
-  # Away for less than the window: the first pass has not had its turn yet.
-  stub fleet-presence 'echo "away 10 tmux"'
-  run cmd_starved
-  assert_success
-  # The human is here: the board waits for them to leave, by design.
-  stub fleet-presence 'echo "here 0 tmux"'
-  run cmd_starved
-  assert_success
+  assert_output --partial '1 board rows unjudged'
   # A judge inside the window: the board is turning.
-  stub fleet-presence 'echo "away 90 tmux"'
   verdict game human 'fix crash on load' dispatch
   rm -f "$FLEET_DISPATCH_DIR/verdicts.jsonl"; mkdir -p "$FLEET_DISPATCH_DIR"; : > "$FLEET_DISPATCH_DIR/verdicts.jsonl"
   run cmd_starved
