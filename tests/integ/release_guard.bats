@@ -69,6 +69,9 @@ allowed() { assert_success; assert_output ''; }
 @test "a release workflow is allowed only as a re-send of a tag already on origin" {
   run at "$T/game" 'gh workflow run release.yml -f tag=v0.5.2'
   allowed
+  # the form the deny message and release.md give
+  run at "$T/game" 'gh workflow run release.yml --ref v0.5.2 -f tag=v0.5.2'
+  allowed
   run at "$T/game" 'gh workflow run steam.yml --ref v0.5.2 -f game=dodginballs -f run-id=1'
   allowed
   run at "$T/game" 'gh -R o/game workflow run release.yml -f tag=v0.5.2 -f game=x'
