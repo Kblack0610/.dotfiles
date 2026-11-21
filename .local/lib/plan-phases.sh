@@ -80,7 +80,15 @@ plan_phase_key() {
 # `plan:` field (agent-queue add --plan), or a task that names the plan's file (queued by hand).
 # shellcheck disable=SC2016,SC2034  # literal jq; read by the scripts that source this file
 PLAN_ITEMS_JQ='def names_plan($p): ($p | split("/") | last) as $b
-  | (((.plan // "") | split("/") | last) == $b) or ((.task // "") | contains("/" + $b));'
+  | (((.plan // "") | split("/") | last) == $b) or ((.task // "") | contains("/" + $b));
+  def holds_plan($p): ($p | split("/") | last) as $b
+  | (((.plan // "") | split("/") | last) == $b)
+    or (names_plan($p) and ((.task // "") | test("(?i)\\bphases? [^\\s:,]+( and [^\\s:,]+)* of ")));'
+# holds_plan (above): does the item hold phases of plan $p for a session reading its own plan's open
+# phases? Its `plan:` field, or a task that cites the file AND names a phase ("Phase 3 of <plan>.md",
+# "Phases 2 and 3 of ..."). A task that only cites the path (a bug report quoting it, "start from the
+# running plan") holds none: 2026-11-05 hub/dotfiles:5 read DONE with P7a and P7c open because such an
+# item cited its plan (ar-288).
 
 # plan_gated_rows -> each open board row that waits on a gate (after/, at/, ask/, pr/, hold/, rbw/, nightly/), one
 # queue-item-shaped JSON line ({slug: the row id, task: its brief}) for PLAN_ITEMS_JQ: agent-queue add --plan

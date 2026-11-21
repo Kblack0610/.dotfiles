@@ -5237,9 +5237,16 @@ JSONL
   phases_plan '- [x] Provision (#875)' '- [ ] Phase 2: Tailnet joined' '- [ ] Seeding: rsync the data'
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Seeding: rsync the data' ]
-  # negative control: a task that names the plan and no phase still holds them all
+  # a task that only cites the plan's path and names no phase holds none: the session keeps its next
+  # phase (ar-288: "Start from the running plan" made hub/dotfiles:5 read DONE with P7a, P7c open)
   rm "$HOME/.agent/queue/queued/20261103-100000-seed.md"
   task_item tailnet "Execute $SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Phase 2: Tailnet joined' ]
+  # negative control: the same task with a plan: field is the plan's item and holds every open phase
+  printf 'slug: tailnet\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nplan: %s\n---\nExecute it\n' \
+    "$SANDBOX/plan.md" > "$HOME/.agent/queue/queued/20261103-100000-tailnet.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
 }
@@ -5256,16 +5263,16 @@ JSONL
   # by session id, or by its target, after a non-ASCII character too: the phase is still the session's next one
   for who in 'session sid-9' 'coordinator lab/s1:1,' 'caf\xc3\xa9 \xe2\x80\x94 lab/s1:1'; do
     who="$(printf '%b' "$who")"
-    report "fix(fleet-sessions): $who reads finished while its plan $SANDBOX/plan.md has Phase 2 unchecked"
+    report "fix(fleet-sessions): $who reads finished while Phase 2 of $SANDBOX/plan.md is unchecked"
     run "$REPO_ROOT/.local/bin/fleet-sessions" --json
     [ "$(jq -r .bucket <<<"$output")" = LANDED ]
     [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Phase 2: rollout' ]
     [ "$(jq -r .finished <<<"$output")" = false ]
   done
   # negative controls: another session's target (lab/s1:12, xlab/s1:1) or id (xsid-9) is not this
-  # one, so the item still holds the plan
+  # one, so the item still holds the phase it names
   for other in lab/s1:12 xlab/s1:1 xsid-9; do
-    report "fix(fleet-sessions): $other misreads $SANDBOX/plan.md"
+    report "fix(fleet-sessions): $other misreads Phase 2 of $SANDBOX/plan.md"
     run "$REPO_ROOT/.local/bin/fleet-sessions" --json
     [ "$(jq -r .bucket <<<"$output")" = DONE ]
   done

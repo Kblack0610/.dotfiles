@@ -2116,7 +2116,7 @@ collect() {
               "$PLAN_ITEMS_JQ"' def names_me: (.task // "") as $t
                 | any($sid, $tgt; . as $w | $w != "" and (($t | split($w)) as $p
                     | any(range(1; $p | length); ($p[. - 1] | test("[0-9A-Za-z]$") | not) and ($p[.] | test("^[0-9A-Za-z]") | not))));
-              [.[] | select(.slug != $own and (.slug as $s | $mine | split(",") | all(. != $s)) and (names_plan($p) or names_plan($q)) and (names_me | not))
+              [.[] | select(.slug != $own and (.slug as $s | $mine | split(",") | all(. != $s)) and (holds_plan($p) or holds_plan($q)) and (names_me | not))
                  | {slug, st: (.state // "queued"), ph: (.phases // "" | tostring | split(" ") | map(select(. != ""))),
                     ses: (if ((.session // "") | contains(":")) then (.session | sub(":"; "/")) else null end),
                     tp: ((.task // "") | (capture("(?i)\\bphase (?<t>[^\\s:,]+) of ") | .t | ascii_downcase) // null)}] as $it
