@@ -2253,6 +2253,42 @@ J
   grep -q '^tags:.*sprint' "$(qitem queued gm-9)" || fail "the item has no sprint tag: $(cat "$(qitem queued gm-9)")"
 }
 
+# pool_prom -- a curl that answers prom_q as Prometheus would: the unity pool's 14 slots with
+# $NOTES_FIXTURE/busy of them busy, and github_pool_workflow putting repo `game`'s workflows on it.
+pool_prom() {
+  stub curl 'case "$*" in
+  *github_pool_workflow*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"pool\":\"unity\",\"repo\":\"game\"},\"value\":[0,\"3\"]}]}}" ;;
+  *) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"__name__\":\"cc:pool_slots\",\"pool\":\"unity\"},\"value\":[0,\"14\"]},{\"metric\":{\"__name__\":\"cc:pool_busy\",\"pool\":\"unity\"},\"value\":[0,\"$(cat "$NOTES_FIXTURE/busy")\"]}]}}" ;;
+esac'
+}
+
+@test "idle pool rank: a row whose repo gates on an idle pool is picked ahead of another project's, below an urgent row; a busy pool or no knob gives no boost" {
+  export DISPATCH_PROFILES=bnb DISPATCH_CLASSES="$SANDBOX/classes.json"
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  # app sorts before game on a tie, so only the idle-pool term can put game's row first.
+  row app human ap-1 "- [ ] fix(app): menu text #high $T <!-- id:ap-1 -->"
+  row game human gm-9 "- [ ] fix(game): crash on load #high $T <!-- id:gm-9 -->"
+  verdict app human ap-1 dispatch S 1 menu
+  verdict game human gm-9 dispatch S 1 crash
+  pool_prom
+  echo '{"idle_pool": {"pools": ["unity"], "busy_below": 0.5}}' > "$DISPATCH_CLASSES"
+  # Negative controls: a busy pool (12 of 14), then an idle one with no knob, leave app's row next.
+  echo 12 > "$NOTES_FIXTURE/busy"
+  [[ "$(DRY=1 JUDGE_RC='' fill_day 1)" == *ap-1* ]] || fail "busy pool: ap-1 should be next: $(DRY=1 JUDGE_RC='' fill_day 1)"
+  echo 3 > "$NOTES_FIXTURE/busy"
+  [[ "$(DISPATCH_CLASSES=/dev/null DRY=1 JUDGE_RC='' fill_day 1)" == *ap-1* ]] || fail "no knob: ap-1 should be next"
+  [[ "$(DRY=1 JUDGE_RC='' fill_day 1)" == *"would queue: game"*"gm-9 [idle pool unity,"* ]] || fail "idle pool: gm-9 should be next, its why naming the pool: $(DRY=1 JUDGE_RC='' fill_day 1)"
+  # An urgent row still goes first while the pool idles.
+  row app human ap-2 "- [ ] fix(app): login fails #urgent $T <!-- id:ap-2 -->"
+  verdict app human ap-2 dispatch S 1 login
+  [[ "$(DRY=1 JUDGE_RC='' fill_day 1)" == *ap-2* ]] || fail "urgent: ap-2 should be next: $(DRY=1 JUDGE_RC='' fill_day 1)"
+  # A real pick logs the term.
+  DRY=0 JUDGE_RC='' fill_day 2
+  [ -n "$(qitem queued gm-9)" ] || fail "gm-9 was not queued: $(ls "$AGENT_QUEUE_DIR/queued")"
+  grep -q 'rank term idle pool unity: game human row gm-9' "$FLEET_DISPATCH_DIR/log.md" || fail "no rank-term log line: $(cat "$FLEET_DISPATCH_DIR/log.md")"
+}
+
 @test "runnable: a board item is runnable while the human is here, red or plain, and counts from when it was queued" {
   project game beta "$SANDBOX/repos/game"
   agent-queue add --project game --slug p --from board:game:p "plain"

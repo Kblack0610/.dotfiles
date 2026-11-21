@@ -41,7 +41,7 @@
 #                                or removed, read from GitHub, one tab-separated line each (the briefing's list)
 #   fleet-bench kpi [--json] [--vitals | --at T | --trend DAYS | --check [ERE]]
 #                                KPIs over 7d and 28d of human sessions (the token ones from the
-#                                nightly token-usage snapshots, sandboxed_lane_pct from BENCH_CALLS),
+#                                nightly token-usage snapshots, sandboxed_lane_pct from BENCH_CALLS, pool_busy_share from Prometheus),
 #                                against KPI_THRESHOLDS;
 #                                --vitals the BENCH_VITALS rows, the front page every view reads,
 #                                --at as of a past time, --trend one row a day of the 7d values,
@@ -174,7 +174,7 @@
 # Formulas, fields and outcomes: the fleet-bench skill.
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_NEEDS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
 # BENCH_CI_MATCH_CMD, BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
-# BENCH_ITEMS_CMD, BENCH_ADMISSION_CMD, BENCH_MIX_CMD, BENCH_LESSONS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_STATS_CMD, BENCH_FORECAST_HORIZON_H,
+# BENCH_ITEMS_CMD, BENCH_ADMISSION_CMD, BENCH_MIX_CMD, BENCH_CLASSES, BENCH_LESSONS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_STATS_CMD, BENCH_FORECAST_HORIZON_H,
 # BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_TRAINEE_CMD, BENCH_LANE_LOG, BENCH_LANE_VOIDS, BENCH_SOURCES_CMD, BENCH_HARNESSES, BENCH_ROOM_CMD, BENCH_CANARY_LANES, BENCH_CANARY_RETRIES, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_HUB_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, PLAN_DIRS, BENCH_DOCS_CLEANUP_DIR, BENCH_SYSTEMS_CMD, BENCH_DOCTOR_LAST, CHAIN_DAYS,
 # FLEET_STATE_FILE, FLEET_SHEPHERD_DIR, WORKTREE_GC_LOG, WORKTREE_GC_STALE_H, BENCH_FLEET_COST_CMD, BENCH_FLEET_COST_FILE, BENCH_FLEET_COST_EVERY_MIN, BENCH_FLEET_COST_TIMEOUT, BENCH_BUDGET_CMD, BENCH_BUDGET_FILE,
 #                                BENCH_BUDGET_EVERY_MIN, BENCH_BUDGET_TIMEOUT.
@@ -299,6 +299,7 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${WORKTREE_GC_STALE_H:=48}"                                   # a last row older than this reads ?, a dead runner is not a flat count
 : "${CLAUDE_STARTUP_LOG:=$HOME/.agent/telemetry/claude-startup.jsonl}"   # one row per SessionStart (startup-telemetry.sh)
 : "${BENCH_CALLS:=${AGENTCTL_CALLS:-${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/calls.jsonl}}"   # one row per agent call (agent-run lib/calls.sh)
+: "${BENCH_CLASSES:=$HOME/.config/fleet-dispatch/classes.json}"   # its idle_pool.pools: the pools pool_busy_share reads (pool_kpi)
 : "${BENCH_TOKENS_DIR:=$HOME/.agent/token-usage}"  # the nightly token-usage snapshots: the token KPIs' days
 : "${BENCH_WEEK_CMD:=day-log week --line}"         # the newest stored week: what moved, against the week before
 : "${BENCH_COMMS_CMD:=comms-lint}"                 # the newest nightly comms snapshot: `line` and `kpi --json`
@@ -2661,6 +2662,7 @@ KPI_JUDGE="judge_errors judge_precision ask_answered_pct ask_unclear_pct judge_c
 KPI_ASKS="human_answered_per_day ask_wait_p90_min"
 KPI_STARTUP="startup_ready_ms_p50"
 KPI_SANDBOX="sandboxed_lane_pct"
+KPI_POOL="pool_busy_share"
 # Each scored runner's runner_score_<name> is judge-eval's too, listed from its output and the
 # thresholds rather than here: the runner confs' SCORE= is the one list of lanes.
 
@@ -2724,6 +2726,23 @@ sandbox_kpi() {
     | def w($d): [$c[] | select(.e > $t - $d * 86400 and .e <= $t)] | group_by(.agent) | map(max_by(.e).sb)
         | if length == 0 then null else (map(select(.)) | length) * 100 / length | round1 end;
     {sandboxed_lane_pct: {"7d": w(7), "28d": w(28)}}' "$BENCH_CALLS" 2>/dev/null || echo '{}'
+}
+
+# pool_kpi <now> -> the pool KPI object, the same shape as comms_kpi. pool_busy_share: the time average
+# of cc:pool_busy over cc:pool_slots, summed over the pools fleet-dispatch's idle-pool rank term watches
+# (BENCH_CLASSES `idle_pool.pools`), sampled every 10m, the measure of that term (plan
+# can-we-wget-more-linked-pony P5; 2026-11-21 baseline about 0.2-0.25 on unity). No knob, or Prometheus
+# unread (a replay has no range answer), is no value.
+pool_kpi() {
+  local re q w7 w28
+  re=$(jq -r '.idle_pool.pools // [] | map(tostring | gsub("[^A-Za-z0-9_-]"; "")) | join("|")' "$BENCH_CLASSES" 2>/dev/null)
+  [ -n "$re" ] || { echo '{}'; return 0; }
+  q="(sum(cc:pool_busy{pool=~\"$re\"}) / sum(cc:pool_slots{pool=~\"$re\"}))"
+  w7=$(prom_map - "avg_over_time(${q}[7d:10m])" "$1") || w7='{}'
+  w28=$(prom_map - "avg_over_time(${q}[28d:10m])" "$1") || w28='{}'
+  jq -nc --argjson a "$w7" --argjson b "$w28" '
+    def v: .["-"] | if type == "number" and (isnan | not) and (isinfinite | not) then (. * 1000 | round) / 1000 else null end;
+    {pool_busy_share: {"7d": ($a | v), "28d": ($b | v)}}' 2>/dev/null || echo '{}'
 }
 
 # KPI_DEFS: the windowed KPIs as jq, shared by kpi, its --trend and effect. win($t; $d) is every
@@ -2805,10 +2824,10 @@ kpi_tokens() {
 kpi_json() {
   local lim='{}' cm='{}'
   [ -r "$KPI_THRESHOLDS" ] && lim=$(grep -E '^[a-z0-9_]+=' "$KPI_THRESHOLDS" | kv_json)
-  [ "${3:-0}" = 1 ] || cm=$(jq -sc 'add' <(comms_kpi) <(judge_kpi) <(ask_kpi "$1") <(startup_kpi "$1") <(sandbox_kpi "$1"))
+  [ "${3:-0}" = 1 ] || cm=$(jq -sc 'add' <(comms_kpi) <(judge_kpi) <(ask_kpi "$1") <(startup_kpi "$1") <(sandbox_kpi "$1") <(pool_kpi "$1"))
   jq -n --argjson t "$1" --slurpfile o <(outcomes_newest) --slurpfile c <(ci_claimed) --slurpfile k "$(kpi_canary)" --slurpfile tk <(kpi_tokens) \
      --argjson pit "$(kv_json <<<"$2")" --argjson lim "$lim" --arg nowkeys "$KPI_NOW" \
-     --argjson cm "$cm" --arg commskeys "$KPI_COMMS $KPI_JUDGE $KPI_ASKS $KPI_STARTUP $KPI_SANDBOX" "$KPI_DEFS"'
+     --argjson cm "$cm" --arg commskeys "$KPI_COMMS $KPI_JUDGE $KPI_ASKS $KPI_STARTUP $KPI_SANDBOX $KPI_POOL" "$KPI_DEFS"'
     win($t; 7) as $w7 | win($t; 28) as $w28
     | [($w7 | keys_unsorted[] | {key: ., value: {"7d": $w7[.], "28d": $w28[.], now: false}}),
        ((($commskeys | split(" ")) + ([$cm, $lim | keys[] | select(startswith("runner_score_")) | sub("_(min|max)$"; "")] | unique))[]
