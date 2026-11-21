@@ -3,7 +3,8 @@
 # ready to start next and the items done today (the agent board and backlog counts are hover only; sprints are the projects chip's), with Q coloured by what is wrong; the hover has a section per system (Queue, Dispatch, Shepherd); sessions are the agents chip's
 # (waybar_ai_agents.bats). What these pin: a deep queue that is moving stays neutral; BLOCKED,
 # flapping and an unhandled shepherd line are amber; queue-starved, a failed runner and a stopped
-# pass are red; each number takes its own colour; a second host's series count once; Prometheus
+# pass are red; each number takes its own colour; the host whose pass ran last is the source and any
+# other sender is named stale in amber (ar-4306); Prometheus
 # down reads ? and no dispatch numbers read -, never a blank chip.
 
 setup() {
@@ -103,10 +104,11 @@ bar() {
   assert_line --index 5 "last 24h: 50 started, 38 done, <span color='$Y'>2</span> failed"
   assert_line --index 6 "drain 6h: 18 added, 30 finished, net -12: <span color='$G'>shrinking, empty in about 30h at that rate</span>"
   assert_line --index 7 "today: 1522 agent rows (2200 more on the backlog)"
-  assert_line --index 8 "<b>Dispatch</b>  a pass every 15 minutes"
-  assert_line --index 9 "capacity: sessions 21 of a 24 target; run units <span color='$G'>16/24</span>, +5 by hand; load <span color='$G'>27 of 36</span>; idle <span color='$G'>45% (floor 30%)</span>"
-  assert_line --index 10 "can start now: - more; last pass 3m ago, last start 12m ago"
-  assert_line --index 11 "self-heal last hour: reaped 7, flapping 0"
+  assert_line --index 8 "from h1-main, the machine whose dispatch ran last"
+  assert_line --index 9 "<b>Dispatch</b>  a pass every 15 minutes"
+  assert_line --index 10 "capacity: sessions 21 of a 24 target; run units <span color='$G'>16/24</span>, +5 by hand; load <span color='$G'>27 of 36</span>; idle <span color='$G'>45% (floor 30%)</span>"
+  assert_line --index 11 "can start now: - more; last pass 3m ago, last start 12m ago"
+  assert_line --index 12 "self-heal last hour: reaped 7, flapping 0"
   refute_output --partial "<b>Sessions</b>"
   refute_output --partial "<b>Shepherd</b>"
 }
@@ -278,10 +280,52 @@ bar() {
   assert_output --partial "no pass in 46m; is fleet-dispatch.timer running?"
 }
 
-@test "a second host's queue series count once, by their max" {
-  feed h2:summary_dispatch.runnable=3 h2:watch_queue_starved.tripped=0 dup:summary_dispatch.runnable=39
+@test "a second scrape of the source host counts once, and the hover names the source" {
+  feed dup:summary_dispatch.runnable=39
   run "$MODULE"
   assert_equal "$(text)" "$(bar 39 12)"
+  assert_equal "$(class)" ok
+  tip | grep -qxF "from h1-main, the machine whose dispatch ran last"
+}
+
+# ar-4306: cachyos-rog woke with a store frozen since 2026-11-15 and sent 328 ready; the max over
+# hosts showed it. The host whose pass ran last is the source, and the other one is named stale.
+@test "a stale host's bigger queue is ignored and named in amber; its failed runner is not ours" {
+  feed h2:summary_dispatch.runnable=328 h2:summary_dispatch.last_pass_epoch=$((100000 - 600000)) \
+    h2:runner_fleet_dispatch.failed=1 h2:watch_queue_starved.tripped=1
+  run "$MODULE"
+  assert_equal "$(text)" "$(bar "<span color='$Y'>39</span>" 12)"
+  assert_equal "$(class)" warn
+  run tip
+  assert_output --partial "stale: h2-main (328 ready) still sends a queue, ignored"
+  refute_output --partial "queue-starved is tripped"
+  refute_output --partial "runner failed"
+}
+
+@test "a key the source lacks is never filled from a stale host" {
+  feed runner_fleet_dispatch.failed=- watch_queue_starved.tripped=- \
+    h2:summary_dispatch.runnable=328 h2:summary_dispatch.last_pass_epoch=$((100000 - 600000)) \
+    h2:runner_fleet_dispatch.failed=1 h2:watch_queue_starved.tripped=1
+  run "$MODULE"
+  assert_equal "$(class)" warn
+  run tip
+  refute_output --partial "runner failed"
+  refute_output --partial "queue-starved is tripped"
+}
+
+@test "negative control: the host whose pass ran last is the source, even with the smaller queue" {
+  feed h2:summary_dispatch.runnable=3 h2:summary_dispatch.last_pass_epoch=$((100000 - 60))
+  run "$MODULE"
+  assert_equal "$(text)" "$(bar "<span color='$Y'>3</span>" -)"
+  tip | grep -qF "stale: h1-main (39 ready)"
+}
+
+@test "a host with no pass on record is still counted, by the max, when no host has one" {
+  feed summary_dispatch.last_pass_epoch=- h2:summary_dispatch.runnable=5
+  run "$MODULE"
+  assert_equal "$(jq -r .text <<< "$output" | grep -c 39)" 1
+  run tip
+  refute_output --partial "stale:"
 }
 
 @test "the shepherd section shows its last pass and 24h; an unhandled due line is amber; off the feed it is left out" {
@@ -290,9 +334,9 @@ bar() {
   run "$MODULE"
   assert_equal "$(class)" ok
   run tip
-  assert_line --index 12 "<b>Shepherd</b>  moves sessions through their plans"
-  assert_line --index 13 "last pass: 6 due, 0 unhandled, 12 skipped; 15m ago"
-  assert_line --index 14 "last 24h: 40 nudges, 45 escalations, 3 passes"
+  assert_line --index 13 "<b>Shepherd</b>  moves sessions through their plans"
+  assert_line --index 14 "last pass: 6 due, 0 unhandled, 12 skipped; 15m ago"
+  assert_line --index 15 "last 24h: 40 nudges, 45 escalations, 3 passes"
   feed summary_shepherd.due=6 summary_shepherd.unhandled=2
   run "$MODULE"
   assert_equal "$(class)" warn

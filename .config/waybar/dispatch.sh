@@ -9,8 +9,8 @@
 #   red    queue-starved is tripped, the fleet-dispatch runner failed, or no pass in
 #          PASS_LATE_SECS
 #   amber  dispatch is stopped (held_s) or the last pass left ready work waiting (BLOCKED), an item is flapping, more could
-#          start than the limits let the last pass (could_start), or a shepherd due line went
-#          unhandled
+#          start than the limits let the last pass (could_start), a shepherd due line went
+#          unhandled, or a host other than the source still sends summary/dispatch (stale)
 #   neutral otherwise: a deep queue that is moving, or full units on a full machine, is no fault
 # The hover has one section per system: Queue (items, oldest, 1h and 24h flow, drain), Dispatch
 # (capacity, what paused the last pass, self-heal) and Shepherd (its last pass and the last 24h).
@@ -48,12 +48,24 @@ if ! raw="$(prom_q "$q")"; then
   exit 0
 fi
 
-# One object: kind.key -> value, kind being dispatch, runner, watch or shepherd; max over hosts.
+# One object: kind.key -> value, kind being dispatch, runner, watch or shepherd. The source is the
+# host whose dispatch pass ran last: only the lease holder runs a pass (`fleet-lease fleet-dispatch`)
+# and, since #2971, only it sends summary/dispatch. Its series alone count; with no pass on record
+# anywhere, every host's count by their max. A peer with a frozen store clone sent 622 queued and
+# the old max over hosts showed it (ar-4306), so src.host names the source and src.stale each
+# other host still sending summary/dispatch.
 # Every value is a count, a 0/1 or an epoch, so it is floored: Prometheus may write 1 as 1.0.
-v="$(jq -c '[.data.result[] | select(.metric.topic) | {k: ((.metric.topic
-      | capture("_(?<k>summary_dispatch|summary_shepherd|runner|watch)(_|$)") | .k | sub("summary_"; ""))
-      + "." + (.metric.__name__ | ltrimstr("mqtt_"))), v: (.value[1] | tonumber | floor)}]
-    | group_by(.k) | map({key: .[0].k, value: (map(.v) | max)}) | from_entries' <<< "$raw")"
+v="$(jq -c '{summary_dispatch: "dispatch", summary_shepherd: "shepherd", runner_fleet_dispatch: "runner",
+      watch_queue_starved: "watch"} as $kind
+    | [.data.result[] | select(.metric.topic) | (.metric.topic | capture("^agents_(?<h>.+)_(?<t>"
+        + ($kind | keys | join("|")) + ")$")) as $c
+      | {h: $c.h, k: ($kind[$c.t] + "." + (.metric.__name__ | ltrimstr("mqtt_"))), v: (.value[1] | tonumber | floor)}] as $all
+    | ([$all[] | select(.k == "dispatch.last_pass_epoch")] | max_by(.v) | .h) as $src
+    | ($all | map(select($src == null or .h == $src)) | group_by(.k)
+        | map({key: .[0].k, value: (map(.v) | max)}) | from_entries)
+    + {"src.host": ($src // "" | gsub("_"; "-")),
+       "src.stale": ([$all[] | select(.k == "dispatch.runnable" and $src != null and .h != $src)]
+         | unique_by(.h) | map("\(.h | gsub("_"; "-")) (\(.v) ready)") | join(", "))}' <<< "$raw")"
 get() { jq -r --arg k "$1" '.[$k] // empty' <<< "$v"; }
 d() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:--}"; }
 n0() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:-0}"; }
@@ -98,6 +110,8 @@ else
   ((${flapping:-0} > 0)) && flag 1 "$flapping item(s) flapping: reap made the same move twice, so another writer undid it"
   ((${could:-0} > 0)) && flag 1 "$could more could start now: a limit, not the machine, holds them (fleet-dispatch headroom)"
   [ "$(get watch.tripped)" = 1 ] && flag 2 "queue-starved is tripped"
+  stale="$(get src.stale)"
+  [ -z "$stale" ] || flag 1 "stale: $stale still sends a queue, ignored (only the lease holder should)"
   [ "$(get runner.failed)" = 1 ] && flag 2 "the fleet-dispatch runner failed"
   ((pass_age > PASS_LATE_SECS)) && flag 2 "no pass in $(prom_dur "$pass_age"); is fleet-dispatch.timer running?"
 
@@ -144,6 +158,8 @@ else
   queue+=$'\n'"last 24h: $(flow 24)"
   queue+=$'\n'"drain 6h: $drain"
   queue+=$'\n'"today: $(d board_agent) agent rows ($(d board_backlog) more on the backlog)"
+  src="$(get src.host)"
+  [ -z "$src" ] || queue+=$'\n'"from $src, the machine whose dispatch ran last"
 
   disp="<b>Dispatch</b>  a pass every 15 minutes"
   if [ -n "$(get dispatch.room_max_live)" ]; then
