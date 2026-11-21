@@ -474,6 +474,34 @@ EOF
   done
 }
 
+@test "fire sets this session's own pending asks to reopen it on the answer, and no other ask" {
+  # 2026-11-18: a session closed over its pending ask with resume empty, so the answer reopened nothing.
+  local asks="$HOME/.agent/asks/demo"
+  mkdir -p "$asks"
+  printf 'id: mine\nstatus: pending\nclaude_session: %s\n' "$SID_A" > "$asks/mine.md"
+  printf 'id: joined\nstatus: pending\nclaude_session: %s\nclaude_session: %s\n' "$SID_B" "$SID_A" > "$asks/joined.md"
+  printf 'id: other\nstatus: pending\nclaude_session: %s\n' "$SID_B" > "$asks/other.md"
+  printf 'id: done\nstatus: answered\nclaude_session: %s\n' "$SID_A" > "$asks/done.md"
+  printf 'id: own\nstatus: pending\nclaude_session: %s\nresume: run: elsewhere\n' "$SID_A" > "$asks/own.md"
+  mk_sentinel <<EOF
+scope=window
+target=@7
+session=cockpit
+sid=$SID_A
+EOF
+  printf '@7\n' > "$NOTES_FIXTURE/tmux.window_ids"
+  run bash "$WIND_DOWN" fire "$SENTINEL"
+  assert_success
+  grep -qx 'resume: run: agent-ask reopen' "$asks/mine.md"
+  grep -qxF "reopen: $SID_A" "$asks/joined.md"
+  run grep -E '^(resume|reopen):' "$asks/other.md" "$asks/done.md"
+  assert_failure
+  run grep '^resume:' "$asks/own.md"
+  assert_output 'resume: run: elsewhere'
+  run grep 'run-shell' "$NOTES_FIXTURE/calls.log"
+  assert_output --partial "window '@7'"
+}
+
 # -- disarm (the UserPromptSubmit hook) --
 # A new prompt means the work is not over, so a teardown that failing Stop checks
 # deferred must not fire at the next clean Stop.
