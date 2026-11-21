@@ -106,9 +106,9 @@ pub struct Row {
     pub due: Option<String>,
     /// The id its `#of/<id>` names.
     pub parent: Option<String>,
-    /// What a board leads the row with, a few words ([`crate::text::title`]); set by [`feed`].
+    /// What a board leads the row with, a few words (`row_title`); set by [`feed`].
     pub title: String,
-    /// What the title leaves out of the text ([`crate::text::title`]); set by [`feed`].
+    /// What the title leaves out of the text (`row_title`); set by [`feed`].
     pub summary: String,
     /// The title of the epic `parent` names, when that row is on the board; set by [`feed`].
     pub epic: Option<String>,
@@ -461,7 +461,12 @@ pub struct SprintLine {
 #[serde(default)]
 pub struct SprintTask {
     pub id: Option<String>,
+    /// The row's whole line, as the opened task shows it.
     pub text: String,
+    /// What a reader leads the task with, as the Board titles its row; set by `Feed::titles`.
+    pub title: String,
+    /// What the title leaves out, the muted second line; set by `Feed::titles`.
+    pub summary: String,
     /// `open`, `doing`, `done`, `dropped`, `deferred` or `gone`.
     pub state: String,
     pub weight: u32,
@@ -731,14 +736,14 @@ impl Feed {
         rows
     }
 
-    /// Give every row its [`crate::text::title`], and each row under an epic that epic's title.
-    pub fn titles(&mut self) {
+    /// Give every row and sprint task its [`row_title`] (plan files under `home`), and each row
+    /// under an epic that epic's title.
+    pub fn titles(&mut self, home: &str) {
         for r in self.rows.iter_mut().chain(&mut self.done) {
-            let t = crate::text::title(&r.text);
-            (r.title, r.summary) = (t.title, t.summary);
-            if r.title.is_empty() {
-                r.title = r.text.trim().to_string();
-            }
+            (r.title, r.summary) = row_title(home, &r.text);
+        }
+        for t in self.sprints.iter_mut().flat_map(|s| &mut s.tasks) {
+            (t.title, t.summary) = row_title(home, &t.text);
         }
         let by: std::collections::HashMap<(String, String), String> = self
             .rows
@@ -820,6 +825,27 @@ impl Feed {
     }
 }
 
+/// A board line's (title, summary). A plan phase (`<plan-file> P2: <words>`, its plan file under
+/// `home`) is titled by its words over its plan and phase ([`crate::plans::split_title`]), so a
+/// row reads as the Queue tab's item does; any other line by [`crate::text::title`], the whole
+/// line when that is empty. The ids either one takes out stay readable in the summary.
+fn row_title(home: &str, text: &str) -> (String, String) {
+    let c = crate::text::clean(text);
+    if let Some((label, words)) = crate::plans::split_title(home, &c.text, None) {
+        let summary = match c.ids.is_empty() {
+            true => label,
+            false => format!("{label} ({})", c.ids.join(", ")),
+        };
+        return (words, summary);
+    }
+    let t = crate::text::title(text);
+    let title = match t.title.is_empty() {
+        true => text.trim().to_string(),
+        false => t.title,
+    };
+    (title, t.summary)
+}
+
 /// A window's tasks as a reader shows them: open before closed, most urgent first within each (the window's own order within a
 /// priority), each with the link to its Board row.
 fn sprint_tasks(tasks: &[SprintTask]) -> Vec<SprintTask> {
@@ -859,7 +885,7 @@ pub fn feed(runner: &dyn Runner) -> Result<Feed, String> {
     for r in &mut f.rows {
         r.filed_today = r.filed.as_deref() == Some(f.today.as_str());
     }
-    f.titles();
+    f.titles(&crate::plans::home());
     for r in focus {
         match f.focus.iter_mut().find(|c| c.profile == r.profile) {
             Some(c) => c.open += 1,
@@ -1707,6 +1733,77 @@ mod tests {
         ] {
             assert_eq!(title(text).1, rest, "{text}");
         }
+    }
+
+    #[test]
+    fn a_plan_phase_row_is_titled_by_its_words_and_no_board_text_carries_its_brief() {
+        let home = std::env::temp_dir().join(format!("tasks-plan-{}", std::process::id()));
+        let plans = home.join(".claude/plans");
+        std::fs::create_dir_all(&plans).unwrap();
+        std::fs::write(
+            plans.join("can-we-add-more-jaunty-moonbeam.md"),
+            "# Structured UI text by default, on every surface\n",
+        )
+        .unwrap();
+        // The row `agent-queue add --plan` filed for ar-4379 and its brief, as notes sends them.
+        let phase = "feat(agent-runtime): can-we-add-more-jaunty-moonbeam P2: Board titles vs agent briefs, and sprint #of/ar-4377";
+        let brief = "Phase 2 of the plan /x/can-we-add-more-jaunty-moonbeam.md: Board titles vs agent briefs, and sprint rows. Read the plan whole, then do ONLY this phase, to merged. When it lands, tick its box in the plan's Phases checklist with the PR number and add a Results line.";
+        let row = |id: &str, text: &str| serde_json::json!({"project": "agent-runtime", "lane": "agent", "id": id, "text": text, "details": [brief]});
+        let mut f: Feed = serde_json::from_value(serde_json::json!({
+            "today": "2026-11-21",
+            "rows": [
+                row("ar-4379", phase),
+                row("ar-4380", "feat(hub): can-we-add-more-jaunty-moonbeam P4+5: Briefing, then STATUS (ar-3865)"),
+                row("ar-4381", "feat(hub): no-such-plan-file P3: Words, then more"),
+            ],
+            "sprints": [{"project": "agent-runtime", "tasks": [{"id": "ar-4379", "text": phase, "state": "doing"}]}],
+        }))
+        .unwrap();
+        f.titles(home.to_str().unwrap());
+        fn got(r: &Row) -> (&str, &str) {
+            (&r.title, &r.summary)
+        }
+        assert_eq!(
+            got(&f.rows[0]),
+            (
+                "Board titles vs agent briefs, and sprint",
+                "Structured UI text by default P2"
+            ),
+            "the phase's words are the title, its plan and phase the second line"
+        );
+        assert_eq!(
+            got(&f.rows[1]),
+            (
+                "Briefing, then STATUS",
+                "Structured UI text by default P4+5 (ar-3865)"
+            ),
+            "a joined phase keeps both numbers and the ids the words named"
+        );
+        // NEGATIVE CONTROL: a slug with no plan file is not read as a plan.
+        assert_eq!(
+            got(&f.rows[2]),
+            ("no-such-plan-file P3", "Words, then more")
+        );
+        let t = &f.sprints[0].tasks[0];
+        assert_eq!(
+            (t.title.as_str(), t.summary.as_str()),
+            got(&f.rows[0]),
+            "a sprint task reads as its Board row"
+        );
+        let sent = serde_json::to_string(&f).unwrap();
+        for said in [
+            "of the plan",
+            "Read the plan",
+            "do ONLY",
+            "tick its box",
+            "Results line",
+        ] {
+            assert!(
+                !sent.contains(said),
+                "the brief stays off the board: {said}"
+            );
+        }
+        std::fs::remove_dir_all(&home).ok();
     }
 
     #[test]
