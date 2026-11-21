@@ -20,7 +20,7 @@ setup() {
   skill rigor '[any]'
   skill typo '[cii]'
   watch gate-budget 'system: ci'
-  watch runners 'system: [ci]   # the pool'
+  watch runners 'system: ["ci"]   # the pool'
   watch loose ''
   # The route table's one reader: gate-budget routes to ci-cost, runners to no skill.
   printf '#!/bin/sh\nfor k; do case "$k" in "watch gate-budget") printf "%%s\\tagent\\tci-cost\\t\\n" "$k" ;; *) printf "%%s\\t-\\t-\\t\\n" "$k" ;; esac; done\n' > "$SKILL_FLEET_BENCH"

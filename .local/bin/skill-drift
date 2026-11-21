@@ -154,7 +154,7 @@
 #                                watches, from fleet-bench triage --route, else fix-red); none is a
 #                                gap. [any] skills, watches naming no system and ids outside the
 #                                registry are listed apart. Report-only: exit 0 with gaps, 2 when no
-#                                registry or no skill was read. no_skill lists the systems with no
+#                                registry, no skill or no route table was read. no_skill lists the systems with no
 #                                skill; its length is fleet-bench's systems_no_skill KPI.
 #   skill-drift --docs [--json]  DEADPATH, NOCMD, ADMIT, KNOB and LINEREF over the GLOBAL docs instead of
 #                                the skills: both CLAUDE.md layers, AGENTS.md,
@@ -1170,7 +1170,7 @@ if [ "$MODE" = systems ]; then
   for f in "$WATCHES"/*.yaml; do
     [ -f "$f" ] || continue
     w=$(basename "$f" .yaml)
-    ids=$(sed -n 's/^system:[[:space:]]*//p' "$f" | awk 'NR==1' | sed 's/[[:space:]]*#.*$//' | tr -d '[],')
+    ids=$(sed -n 's/^system:[[:space:]]*//p' "$f" | awk 'NR==1' | sed 's/[[:space:]]*#.*$//' | tr -d "[],\"'")
     rows+=("watch"$'\t'"$w"$'\t'"$ids"$'\t'0)
     [ -z "${ids// /}" ] || keys+=("watch $w")
   done

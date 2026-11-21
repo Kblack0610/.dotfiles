@@ -101,7 +101,7 @@
 #                                each one goes, and an agent route or any watch route but a human's
 #                                queues a red fix. --route prints
 #                                each key (watch X, runner X, unit X) with its route, skill and
-#                                tags, filing nothing; --causes prints, for each red it would queue, the
+#                                tags, filing nothing, and exits 2 when TRIAGE_ROUTES cannot be read; --causes prints, for each red it would queue, the
 #                                tags it files the fix with and its key (fix-red step 5 tags a fix
 #                                queued by hand with them)
 #   fleet-bench health [--coverage] [--json]
@@ -341,7 +341,7 @@ FIX_SINCE=0; if [[ "${SENTINEL_SINCE:-}" =~ ^[0-9]+$ ]]; then FIX_SINCE=$SENTINE
 : "${BENCH_LEAD_TRUST=ledger_coverage epic_linked_share}"   # request_to_live_h reads ? until each is inside its kpi-thresholds bound; set empty, no gate
 : "${HEALTH_MANIFEST_CMD:=sentinel-manifest}"   # health: its `parts` (the fleet's parts) and `tags` (each watch's flows:) verbs
 : "${BENCH_SKILL_CMD:=agentctl skill --dangling}"   # each runner whose SKILL= names no skill, as "<runner> SKILL=<name>"
-: "${BENCH_SYSTEMS_CMD:=skill-drift --systems --json}"   # each system with its skills: systems_no_skill
+: "${BENCH_SYSTEMS_CMD:=timeout 60 skill-drift --systems --json}"   # each system with its skills: systems_no_skill
 : "${BENCH_DISPATCH_CONF:=$HOME/.config/agentctl/agents/fleet-dispatch.conf}"   # DISPATCH_TARGET_PRESENT, the slots items run on
 : "${BENCH_VERDICTS_CMD:=fleet-dispatch verdicts}"   # the judge's latest verdict per row: next_up_blocked
 : "${BENCH_RUNS_TSV:=${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
@@ -4794,6 +4794,8 @@ cmd_triage() {
     --route)
       # The route table as a query, one row key an argument: the Schedules tab's triage column.
       shift
+      # An unreadable table is a failed read, not a table with no route for any key.
+      [ -r "$TRIAGE_ROUTES" ] || { say "triage --route: cannot read $TRIAGE_ROUTES"; return 2; }
       for key in "$@"; do
         triage_shape "${key%% *}" "${key#* }"
         if triage_line "$text"; then

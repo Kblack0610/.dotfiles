@@ -2657,6 +2657,10 @@ coverage_setup() {
   assert_line --index 1 "$(printf 'runner alpha\tagent\t-\t-')"
   assert_line --index 2 "$(printf 'watch gone\t-\t-\t')"
   assert_line --index 3 "$(printf 'nonsense x\t-\t-\t')"
+  # an unreadable table fails the read instead of answering every key with a dash
+  TRIAGE_ROUTES="$SANDBOX/no-such-routes" run "$SUBJECT" triage --route 'watch standing'
+  assert_failure 2
+  assert_output --partial 'cannot read'
 }
 
 @test "triage: a cc:red_now item another host watches gets a row; one with local state does not" {
