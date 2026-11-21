@@ -19,7 +19,7 @@
 # for a landing train whose member PRs read MERGED only while their heads stay reachable; --admin adds gh's --admin, which skips a required approving review on a repo whose owner allows it, never the checks step above; --match-head-commit HEAD, then gh pr view must say MERGED), proof (the PR's merge commit is
 # on origin/<base>, by agent-merge-proof.sh), live (dotfiles-autopull --now fast-forwards the stowed
 # checkout when this repo is ~/.dotfiles or ~/.dotfiles-private, links what it added, rebuilds the
-# Rust tools, restarts agent-web on a new binary and a persistent agentctl runner on a new script; a line, never a failure), item (the queue item gets pr:<owner>/<repo>#<pr>,
+# Rust tools (notes through notes-bootstrap), restarts agent-web on a new binary and a persistent agentctl runner on a new script; a line, never a failure), item (the queue item gets pr:<owner>/<repo>#<pr>,
 # merged:<sha>, this Claude session in its sessions (unless --partial lands on an item another session owns), the project credited by the PR's changed
 # files (agent-queue attribute), and moves to done, status ok unless --partial keeps it open (a red watch item resolves its watch with this PR first and refuses to close ok while its probe still trips, watch_gate); a done ok item with no PR in this
 # PR's repo adds it to its pr: and merged: lists instead, one PR per repo; an open item's earlier PR with
@@ -1003,7 +1003,7 @@ if [ "$dry" -eq 1 ]; then
   echo "merge: gh pr merge $pr${repo:+ -R $repo} $method${admin[*]:+ ${admin[*]}} --match-head-commit \$(git rev-parse HEAD) && gh pr view $pr${repo:+ -R $repo} --json state  (must be MERGED)"
   echo "body: gh pr view $pr${repo:+ -R $repo} --json body | comms-lint --channel pr-body -  (a score, never a gate; first a ~/.cache/*.md or *.txt whose text is the body is deleted)"
   echo "proof: gh pr view $pr${repo:+ -R $repo} --json mergeCommit, then merge_proof: an ancestor of origin/<base>"
-  echo "live: dotfiles-autopull --now .  (fast-forwards ~/.dotfiles or ~/.dotfiles-private when this is that repo, rebuilds the Rust tools, restarts agent-web on a new binary and a persistent agentctl runner on a new script; never fails the landing)"
+  echo "live: dotfiles-autopull --now .  (fast-forwards ~/.dotfiles or ~/.dotfiles-private when this is that repo, rebuilds the Rust tools (notes through notes-bootstrap), restarts agent-web on a new binary and a persistent agentctl runner on a new script; never fails the landing)"
   echo "prs: schedules-sync sync-prs <owner>/<repo>  (the PR store reads the merge now, not at its next poll; never fails the landing)"
   if [ "$partial" -eq 1 ]; then
     echo "item: agent-queue set $item partial=yes before merging; record pr=$pr merged=<sha> beside earlier PRs, leave the item open"
