@@ -342,7 +342,7 @@ pub struct Rule {
     pub number: String,
     pub confidence: String,
     /// fleet-bench's one verdict: `ok`, `stale` (its anchor is gone from its source), `absent`
-    /// (the source is not on this machine), `dead` (its measure printed no number), `restates`
+    /// (the source is not on this machine, or its gh measure was rate limited), `dead` (its measure printed no number), `restates`
     /// (its bound is a copy of the number its measure reads) or `moved` (its measured number
     /// disagrees with its recorded confidence).
     pub state: String,
@@ -393,7 +393,7 @@ impl Row for Rule {
         (DEAD, "its measure printed no number"),
         (
             ABSENT,
-            "its source file is not on this machine, so nothing here checked it",
+            "its source file is not on this machine, or its measure was rate limited, so nothing here checked it",
         ),
     ];
 
