@@ -119,17 +119,23 @@ load 'fleet_dispatch/common'
   row game agent 'retagged' "- [ ] retagged $T"
   row game agent 'current' "- [ ] current $T"
   row game agent 'died' "- [ ] died $T"
+  row game agent 'died twice' "- [ ] died twice $T"
   verdict game agent 'stale policy' dispatch
   verdict game agent 'current' skip
   echo 'policy v2' > "$DISPATCH_POLICY"
   verdict game agent 'current' skip
   jq -cn --arg sig "$(policy_sig)" '{project: "game", lane: "agent", key: "retagged", verdict: "skip", rule: "fits", policy: $sig, line: "old"}' \
     >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  # One failure expires the row's verdict, so it is judged again; DISPATCH_FIX_TRIES (2) hold it.
+  verdict game agent 'died' dispatch
+  verdict game agent 'died twice' dispatch
   jq -cn '{project: "game", lane: "agent", key: "died", verdict: "failed"}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  jq -cn '{project: "game", lane: "agent", key: "died twice", verdict: "failed"}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  jq -cn '{project: "game", lane: "agent", key: "died twice", verdict: "failed"}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
 
   run cmd_candidates
   assert_success
-  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'stale policy,retagged'
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'stale policy,retagged,died'
 }
 
 @test "candidates: an edit that adds #of/, a priority tag or a comment field keeps the verdict; a scope or title edit re-judges" {
@@ -1289,15 +1295,22 @@ EOF
   assert_equal "$(unrated_json)" '["refused","limit","provider","cut"]'
 }
 
-@test "judged_keys: of a row's failed and cleared verdicts the newest wins" {
+@test "judged_keys: a failure expires the row's verdicts; DISPATCH_FIX_TRIES since its last cleared hold it" {
   mkdir -p "$FLEET_DISPATCH_DIR"
   v() { jq -cn --arg k "$1" --arg v "$2" '{project: "game", lane: "human", key: $k, verdict: $v, reason: "t", at: "2026-11-10T00:00:00Z"}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"; }
-  v a failed; v a cleared       # released
-  v b cleared; v b failed       # a real failure after a release holds again
-  v c failed                    # negative control: a plain failed end still holds
+  verdict game human a dispatch; v a failed   # one failure: no hold, and the dispatch before it is gone
+  verdict game human b dispatch; v b failed; verdict game human b dispatch   # judged again after it: that verdict stands
+  v c failed; v c failed                       # at the limit: held
+  v d failed; v d failed; v d cleared          # the ask's cleared starts the count again
+  v e failed; v e failed; v e cleared; v e failed; v e failed   # and two more failures hold again
   echo '{"project": "game", "lane": "hu' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"   # a torn append
-  v d failed                    # a line after it is still read
-  assert_equal "$(judged_keys | cut -f3,4 | paste -sd' ')" "$(printf 'b\t* c\t* d\t*')"
+  v f failed; v f failed                       # a line after it is still read
+  assert_equal "$(judged_keys | cut -f3,4 | paste -sd' ')" "$(printf 'b\t%s c\t* e\t* f\t*' "$(line_of game human b)")"
+  # latest_verdicts agrees: a held row reads failed, an expired one reads nothing, a re-judged one its new verdict
+  assert_equal "$(latest_verdicts | jq -r '"\(.key)=\(.verdict)"' | paste -sd' ')" 'b=dispatch c=failed e=failed f=failed'
+  # DISPATCH_FIX_TRIES=1 is the old rule: one failure holds
+  DISPATCH_FIX_TRIES=1
+  assert_equal "$(judged_keys | awk -F'\t' '$4 == "*" { print $3 }' | paste -sd' ')" 'a b c e f'
 }
 
 @test "run claims a row at the top of a board too big for one pipe buffer" {
@@ -1358,6 +1371,8 @@ EOF
   assert_output --partial 'row un-started, recorded failed: gm-7 already finished ok'
   grep -qF -- '- [ ] landed one' "$NOTES_FIXTURE/rows.game.human" || fail "human row left started"
   assert_equal "$(tail -1 "$FLEET_DISPATCH_DIR/verdicts.jsonl" | jq -r '.key + " " + .verdict')" "gm-7 failed"
+  # a retry cannot change it, so this one failure holds the row (hold, in_force)
+  assert_equal "$(judged_keys | awk -F'\t' '$4 == "*" { print $3 }')" gm-7
   # An agent row stays started for the orphan pass, which closes it on its item's merge proof.
   run promote "$(jq -cn '{profile: "bnb", project: "game", lane: "agent", key: "gm-8"}')" "" task
   assert_failure
