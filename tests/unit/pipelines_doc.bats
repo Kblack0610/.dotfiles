@@ -26,19 +26,6 @@ doc_units() {
   grep -oE '^\| `[a-z0-9@.-]+\.(timer|path)`' "$DOC" | grep -oE '[a-z0-9@.-]+\.(timer|path)' | sort -u
 }
 
-# Out-of-band model call sites, from the same scanner the ledger counts (fleet-bench).
-launch_files() {
-  local d=()
-  for r in "$PUB" "$PRIV"; do d+=("$r/.local/bin" "$r/.local/src" "$r/.claude" "$r/.config"); done
-  "$PUB/.local/bin/fleet-bench" ledger --launches "${d[@]}" | cut -d: -f1 | xargs -n1 basename | sort -u
-}
-
-# First-column files of the "Model calls outside agentctl-run" table.
-doc_launch_files() {
-  awk '/^## Model calls outside agentctl-run/{f=1; next} /^## /{f=0} f' "$DOC" \
-    | grep -oE '^\| `[^`]+`' | sed 's/^| `//; s/`$//' | sort -u
-}
-
 @test "every tracked timer and path unit has a row in PIPELINES.md" {
   run comm -23 <(tracked_units) <(doc_units)
   assert_success
@@ -51,8 +38,12 @@ doc_launch_files() {
   assert_output ''
 }
 
+# Out-of-band model call sites, through the one scan and allowlist `fleet-bench ledger --check`
+# holds CI to (launches_unlisted), over both repos.
 @test "every model call outside agentctl-run has a row, and every row is still one" {
-  run comm -3 <(launch_files) <(doc_launch_files)
+  local d=() r
+  for r in "$PUB" "$PRIV"; do d+=("$r/.local" "$r/.claude" "$r/.config"); done
+  LEDGER_PIPELINES="$DOC" LEDGER_SRC="$(IFS=:; echo "${d[*]}")" run "$PUB/.local/bin/fleet-bench" ledger --unlisted
   assert_success
   assert_output ''
 }
