@@ -1835,3 +1835,29 @@ rollup_setup() {
   assert_failure
   assert_output --partial 'cannot read the agent-runtime board, so no row is filed'
 }
+
+@test "trainee-rollup: a cause that spreads keeps its pair's row; a run with no reason counts; a torn line is skipped" {
+  rollup_setup
+  for i in 1 2 3; do reject nim glm 'nim:glm left no diff'; done
+  printf '{"ts": "2099-01-01T00:00:00+00:00", "lane": "trai\n' >> "$DISPATCH_LANE_RUNS"
+  for i in 1 2 3; do
+    jq -nc --arg t "$(date -u +%FT%T+00:00)" '{ts: $t, lane: "trainee", ran: "minimax", harness: "nim", outcome: "failed"}' >> "$DISPATCH_LANE_RUNS"
+  done
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  assert_success
+  assert_output --partial 'filed: fix(trainee): nim:glm runs keep leaving no diff (3 since'
+  assert_output --partial 'filed: fix(trainee): nim:minimax runs end with no reason recorded (3 since'
+  run grep -F -- '--detail e.g. no reason recorded (outcome failed)' "$NOTES_FIXTURE/calls.log"
+  assert_success
+  run cut -f1 "$FLEET_DISPATCH_DIR/trainee-rollup.tsv"
+  assert_output --partial 'keep leaving no diff'
+  # the no-diff cause spreads to a second pair: the open row naming nim:glm is joined, not twinned by a "trainee runs" one, and a longer title that starts the same is another cause
+  row agent-runtime agent ar-8 '- [ ] fix(trainee): nim:glm runs keep leaving no diff behind a lock #low <!-- id:ar-8 -->'
+  row agent-runtime agent ar-7 '- [ ] fix(trainee): nim:glm runs keep leaving no diff #low <!-- id:ar-7 -->'
+  for i in 1 2 3; do reject agy flash "agy:flash left no diff" -1; done   # dated tomorrow: newer than the stamp, whatever second it lands in
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  assert_success
+  assert_output 'joined ar-7: fix(trainee): trainee runs keep leaving no diff (3 since '"$(date -u -d '7 days ago' +%F)"': agy:flash 3)'
+  run grep -c '^notes ptask agent-runtime --agent add ' "$NOTES_FIXTURE/calls.log"
+  assert_output 2
+}

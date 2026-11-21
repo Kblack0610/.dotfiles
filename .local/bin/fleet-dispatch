@@ -24,7 +24,7 @@
 #   fleet-dispatch trainee-pool [--json]  the board rows a trainee takes, how many each refusal turns away, and the floor open or shut
 #   fleet-dispatch trainee-review SLUG  a trainee run's tail, in its worktree: its diff to a patch that waits for a batch review
 #   fleet-dispatch trainee-reject SLUG --why TEXT  send a trainee's row back to the normal queue, on claude
-#   fleet-dispatch trainee-rollup [--dry]  each trainee reject cause seen DISPATCH_ROLLUP_MIN times in DISPATCH_ROLLUP_DAYS: one fix row on the board, joined night to night by its title (nightly-measure runs it)
+#   fleet-dispatch trainee-rollup [--dry]  each trainee reject cause seen DISPATCH_ROLLUP_MIN times in DISPATCH_ROLLUP_DAYS: one fix row on the board, joined night to night by its cause (nightly-measure runs it)
 #   fleet-dispatch direct-land SLUG [--rc N]  a direct run's tail, in its worktree: a clean run's diff committed, a PR opened and landed on CI
 #   fleet-dispatch start --project P [--profile X] [--agent] [--model M] [--harness H]
 #       (--item SLUG | --brief FILE --row KEY [--mode plan] [--now] [--cwd REPO]
@@ -98,7 +98,7 @@ unset _k _v
 : "${DISPATCH_FLEET_SHARE_H:=24}"   # hours of starts the share reads. Provisional: a day, so a week over the cap holds fleet work about a day, not a week (the human's "elastic, no rigidness", ask EF60vp), low confidence; revisit when the 7-day done split with the cap on still shows the fleet over 30%, or fleet reds wait (stale_urgent_d)
 : "${DISPATCH_SOURCE_FLOOR:=1}"   # starts a pass may make past a full pace target on a flat-plan source its week is leaving unused (claude-acct check underuse): the target counts every harness, so Codex sat 18% used at 71% of its week while the fleet held 26 of 25 (ar-2433); 0 is off
 : "${DISPATCH_TRAINEE_REPOS:=$HOME/.dotfiles}"   # the checkouts a trainee may work in, space-separated: its provider is a free one that sees the row and the repo, so public repos only (trainee_public_why)
-: "${DISPATCH_ROLLUP_DAYS:=7}"   # days of trainee reject reasons trainee-rollup reads from LANE_RUNS
+: "${DISPATCH_ROLLUP_DAYS:=7}"   # days of trainee reject reasons trainee-rollup reads from LANE_RUNS. Provisional: a week is the plan's pick (2026-11-20), long enough for a slow pair's runs to add up, low confidence; revisit when a cause's row is filed only after its pair already left the roster, or a stale cause keeps a row open
 : "${DISPATCH_ROLLUP_MIN:=3}"   # rejects of one cause in that window that make one fix row (cmd_trainee_rollup). The plan's pick (why-are-more-trainees-twinkling P4, 2026-11-20): three is a cause, two may be chance. Provisional, low confidence; revisit when its rows are mostly dropped as noise, or a cause seen twice a week keeps costing runs
 : "${DISPATCH_ROLLUP_BOARD:=agent-runtime}"   # the agent board a trainee-rollup fix row goes on, and where its open twin is looked for
 : "${DISPATCH_ROLLUP_TAGS:=#size/s #of/ar-3691 #low}"   # a trainee-rollup fix row's tags: the ladder epic, and low, as an agent's follow-up is
@@ -2902,42 +2902,47 @@ cmd_trainee_reject() {
 }
 
 # rollup_causes <since> <stamps json> -> one TSV line per trainee reject cause in LANE_RUNS since <since>
-# (UTC, YYYY-MM-DDTHH:MM:SS): its row title, its count, the per-pair counts, the harnesses, and one reason
-# as written. A reject is a lane trainee run with an outcome of redo or failed and a `why`. Its cause is
-# the `(end <reason>)` trainee_empty_why writes, "no diff" for "left no diff", else the reviewer's words
-# cut to six. One cause on one pair names that pair; on two or more it names no model, since a cause
-# every model hits is the harness's or the source's. The title is the key a later night joins, so it
-# carries no count and fits the board's 80-character title as it is. A reject no newer than its key's
-# stamp (the last night that key was filed or found open) is not counted again, so a cause whose row
-# closed starts from nothing.
+# (UTC, YYYY-MM-DDTHH:MM:SS): the cause, its row title, its count, the per-pair counts, the harnesses, and
+# one reason as written. A reject is a lane trainee run with an outcome of redo or failed. Its cause is
+# the `(end <reason>)` trainee_empty_why writes, "no diff" for "left no diff", "no reason recorded" for a
+# run with no `why`, else the reviewer's first four words; at most 40 characters, so the title fits the
+# board's 80. One cause on one pair names that pair; on two or more it names no model, since a cause
+# every model hits is the harness's or the source's. The cause is the key, so a cause that spreads to a
+# second pair keeps its count and its row: a reject no newer than its cause's stamp (the last night that
+# cause was filed or found open) is not counted again, and a cause whose row closed starts from nothing.
+# A line of the log that is no JSON (a torn append) is skipped.
 rollup_causes() {
-  jq -rs --arg since "$1" --argjson stamps "$2" '
-    def words: ascii_downcase | gsub("[^a-z0-9]+"; " ") | ltrimstr(" ") | rtrimstr(" ") | split(" ") | .[0:6] | join(" ");
-    def fit: if length <= 80 then . else .[0:80] | sub(" [^ ]*$"; "") end;
-    [.[] | select(.lane == "trainee" and (.outcome == "redo" or .outcome == "failed") and ((.why // "") != "") and ((.ts // "")[0:19] >= $since))
+  jq -Rnr --arg since "$1" --argjson stamps "$2" '
+    def words: ascii_downcase | gsub("[^a-z0-9]+"; " ") | ltrimstr(" ") | rtrimstr(" ") | split(" ") | .[0:4] | join(" ");
+    def fit: if length <= 40 then . else .[0:40] | sub(" [^ ]*$"; "") end;
+    [inputs | fromjson? // empty
+      | select(type == "object" and .lane == "trainee" and (.outcome == "redo" or .outcome == "failed") and ((.ts // "")[0:19] >= $since))
       | ((.harness // "claude") + ":" + (.ran // "-")) as $pair
-      | (.why | ltrimstr($pair + "'"'"'s ") | ltrimstr($pair + " ")) as $w
+      | ((.why // "") | ltrimstr($pair + "'"'"'s ") | ltrimstr($pair + " ")) as $w
       | ([$w | capture("\\(end (?<e>[a-z-]+)").e] | first) as $e
-      | {pair: $pair, harness: (.harness // "claude"), ts: .ts[0:19], why: .why,
-         cause: (if $e then "keep ending on end " + $e elif $w == "left no diff" then "keep leaving no diff" else "are rejected for " + ($w | words) end)}]
+      | {pair: $pair, harness: (.harness // "claude"), ts: .ts[0:19], why: (.why // "no reason recorded (outcome \(.outcome))"),
+         cause: (if $e then "keep ending on end " + $e elif $w == "left no diff" then "keep leaving no diff"
+                 elif $w == "" then "end with no reason recorded" else "are rejected for " + ($w | words) end | fit)}]
     | group_by(.cause)[]
-    | . as $all | ($all | map(.pair) | unique) as $pairs
-    | ("fix(trainee): " + (if ($pairs | length) == 1 then $pairs[0] else "trainee" end) + " runs " + $all[0].cause | fit) as $title
-    | [$all[] | select(.ts > ($stamps[$title] // ""))] as $new
+    | . as $all | $all[0].cause as $c
+    | [$all[] | select(.ts > ($stamps[$c] // ""))] as $new
     | select($new | length > 0)
-    | [$title, ($new | length), ($new | group_by(.pair) | map("\(.[0].pair) \(length)") | join(", ")),
+    | ($all | map(.pair) | unique) as $pairs
+    | [$c, "fix(trainee): " + (if ($pairs | length) == 1 then $pairs[0] else "trainee" end) + " runs " + $c,
+       ($new | length), ($new | group_by(.pair) | map("\(.[0].pair) \(length)") | join(", ")),
        ($new | map(.harness) | unique | join(", ")), ($new | last | .why)] | @tsv' "$LANE_RUNS"
 }
 
 # cmd_trainee_rollup [--dry] -- each recurring cause of trainee rejects made one fix row, so the ladder
 # stops paying for the same failure night after night (why-are-more-trainees-twinkling P4): rollup_causes
 # over the last DISPATCH_ROLLUP_DAYS, and a cause seen DISPATCH_ROLLUP_MIN times or more files one row on
-# the DISPATCH_ROLLUP_BOARD agent board, or joins the open row there that carries its title. Each title
-# filed or joined is stamped in $DIR/trainee-rollup.tsv (title TAB UTC time), so the next night counts only
-# newer rejects. fleet-dispatch is a direct filer, so the row goes on the board; it goes through the queue
-# and review like any other row, and nothing here patches anything. nightly-measure runs it.
+# the DISPATCH_ROLLUP_BOARD agent board, or joins the open fix(trainee) row there whose title ends in that
+# cause, whichever pair it names. Each cause filed or joined is stamped in $DIR/trainee-rollup.tsv (cause
+# TAB UTC time; a stamp older than the window is dropped), so the next night counts only newer rejects.
+# fleet-dispatch is a direct filer, so the row goes on the board; it goes through the queue and review like
+# any other row, and nothing here patches anything. nightly-measure runs it.
 cmd_trainee_rollup() {
-  local dry=0 stamps since board lines title n pairs hs why hit where rc out=0 now f="$DIR/trainee-rollup.tsv"
+  local dry=0 stamps since board lines cause title n pairs hs why hit where rc out=0 now f="$DIR/trainee-rollup.tsv"
   [ "${1:-}" != --dry ] || dry=1
   [ -r "$LANE_RUNS" ] || { say "trainee-rollup: no run log at $LANE_RUNS"; return 1; }
   stamps=$(jq -Rsc 'split("\n") | map(select(length > 0) | split("\t") | {(.[0]): .[1]}) | add // {}' "$f" 2>/dev/null) || stamps='{}'
@@ -2946,9 +2951,10 @@ cmd_trainee_rollup() {
   lines=$(rollup_causes "$since" "$stamps") || { say "trainee-rollup: could not read $LANE_RUNS"; return 1; }
   [ -n "$lines" ] || { echo "trainee-rollup: no new trainee rejects since ${since%T*}"; return 0; }
   board=$(notes ptask "$DISPATCH_ROLLUP_BOARD" --agent list 2>/dev/null) || { say "trainee-rollup: cannot read the $DISPATCH_ROLLUP_BOARD board, so no row is filed"; return 1; }
-  while IFS=$'\t' read -r title n pairs hs why; do
+  while IFS=$'\t' read -r cause title n pairs hs why; do
     if [ "$n" -lt "$DISPATCH_ROLLUP_MIN" ]; then echo "under the bar ($n of $DISPATCH_ROLLUP_MIN): $title ($pairs)"; continue; fi
-    hit=$(cut -f4 <<<"$board" | grep -iF -m1 -- "] $title")
+    # the whole cause, up to the row's tags or marker: a longer title that starts the same is another cause
+    hit=$(cut -f4 <<<"$board" | grep -iE -m1 -- "^- \[[ /]\] fix\(trainee\): [^ ]+ runs $cause( #| <!--|$)")
     if [ -n "$hit" ]; then
       echo "joined $(sed -n 's/.*<!-- id:\([^ ]*\).*/\1/p' <<<"$hit" | grep . || echo 'its open row'): $title ($n since ${since%T*}: $pairs)"
     elif [ "$dry" = 1 ]; then
@@ -2960,7 +2966,7 @@ cmd_trainee_rollup() {
       notes ptask "$DISPATCH_ROLLUP_BOARD" --agent add "$title $DISPATCH_ROLLUP_TAGS" --origin fleet-dispatch \
         --detail "$n trainee rejects since ${since%T*}: $pairs. Fix it in $where." \
         --detail "e.g. $why" \
-        --detail "evidence: jq -c 'select(.lane == \"trainee\" and .why)' ~/.agent/model-lane/runs.jsonl; filed by fleet-dispatch trainee-rollup" \
+        --detail "evidence: jq -c 'select(.lane == \"trainee\" and (.outcome == \"redo\" or .outcome == \"failed\"))' ~/.agent/model-lane/runs.jsonl; filed by fleet-dispatch trainee-rollup" \
         >/dev/null 2>&1 || rc=$?
       case "$rc" in
         0|4) echo "filed: $title ($n since ${since%T*}: $pairs)"; logline "trainee-rollup: filed $title ($n: $pairs)" ;;
@@ -2968,10 +2974,11 @@ cmd_trainee_rollup() {
         *) say "trainee-rollup: the $DISPATCH_ROLLUP_BOARD board refused $title (notes exit $rc)"; out=1; continue ;;
       esac
     fi
-    stamps=$(jq -c --arg t "$title" --arg n "$now" '.[$t] = $n' <<<"$stamps")
+    stamps=$(jq -c --arg c "$cause" --arg n "$now" '.[$c] = $n' <<<"$stamps")
   done <<<"$lines"
   [ "$dry" = 1 ] && return "$out"
-  { mkdir -p "$DIR" && jq -r 'to_entries[] | [.key, .value] | @tsv' <<<"$stamps" > "$f.tmp" && mv -f "$f.tmp" "$f"; } || { say "trainee-rollup: could not write $f"; out=1; }
+  { mkdir -p "$DIR" && jq -r --arg s "$since" 'to_entries[] | select(.value >= $s) | [.key, .value] | @tsv' <<<"$stamps" > "$f.tmp" && mv -f "$f.tmp" "$f"; } ||
+    { say "trainee-rollup: could not write $f"; out=1; }
   return "$out"
 }
 
