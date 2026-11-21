@@ -964,16 +964,19 @@ cmd_check() {
         | "DRIFT \(.project) \(.id): pinned \(.pinned.value)\(if .pinned.build then " build \(.pinned.build)" else "" end) live \(.live.value)\(if .live.build then " build \(.live.build)" else "" end) for \((($now - .drift_since) / 60) | floor)m"),
        (select(.status == "floating" and .channel == "prod")
         | "FLOATING \(.project) \(.id): prod runs an unpinned image"),
-       # Not made by the flow: a channel a person moved or recorded. A drifting row is left to its
-       # DRIFT line, since a live that lags a fresh upload also reads outside until it catches up.
-       (select(.provenance == "outside" and .status != "drift")
-        | "OUTSIDE \(.project) \(.id): pinned \(.pinned.value // "?") live \(.live.value // "?") was not released by the flow")),
-    # A tag cut by hand after the line started, newer than the line'"'"'s newest flow tag. A later flow
-    # cut makes it history: it stays outside on the Releases tab and stops paging, so a tag the
-    # ruleset forbids moving does not page for ever.
-    ((.releases // {}) | to_entries[] | .key as $p | .value.tags // []
-     | (map(select(.provenance == "flow") | .at // 0) | max // 0) as $flow
-     | .[] | select(.provenance == "outside" and (.at // 0) > $flow)
+       # Not made by the flow: a channel whose recorded pin is a version a person put there. Only a
+       # settled row with a version pinned pages: a drifting one has its DRIFT line (its live may
+       # only lag a fresh upload), a sha or `latest` names no release, and one with nothing recorded
+       # yet is the workflow still writing. The implicit release row is its newest tag, named below.
+       (select(.provenance == "outside" and (.status == "ok" or .status == "released") and (.implicit | not)
+               and (.pinned.value // "" | test("[0-9]+[.][0-9]+[.][0-9]+")))
+        | "OUTSIDE \(.project) \(.id): pinned \(.pinned.value) live \(.live.value // "?") was not released by the flow")),
+    # A tag cut by hand after the line started: one listed (newest first) before the line'"'"'s newest
+    # flow tag. A later flow cut makes it history: it stays outside on the Releases tab and stops
+    # paging, so a tag the ruleset forbids moving does not page for ever.
+    ((.releases // {}) | to_entries[] | .key as $p | (.value.tags // [])
+     | (map(.provenance == "flow") | index(true) // length) as $n
+     | .[:$n][] | select(.provenance == "outside")
      | "OUTSIDE \($p) tag \(.tag): tagged by \(.tagger // "someone"), not by the cut workflow")
   ' "$STATE")"
   [ -z "$out" ] && { echo "ok"; return 0; }

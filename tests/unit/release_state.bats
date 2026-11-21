@@ -717,23 +717,25 @@ commit_tag() {
   run "$RS" check
   assert_failure
   assert_output --partial 'OUTSIDE game game-steam-beta: pinned v0.5.0-g1 live v0.5.0-g1 was not released by the flow'
+  # A pin that names no version (a sha, latest) is no release by hand, so it pages nothing.
+  jq '.rows |= map(if .id == "game-steam-beta" then .pinned.value = "latest" else . end)' "$RELEASE_STATE_DIR/state.json" > "$SANDBOX/s"
+  mv "$SANDBOX/s" "$RELEASE_STATE_DIR/state.json"
+  run "$RS" check
+  refute_output --partial 'OUTSIDE game game-steam-beta'
 }
 
 @test "provenance: check pages a hand tag until a flow tag follows it" {
   ship "start (#1)" web-v1.0.0
   commit_tag "hand (#2)" web-v1.0.1 "Kenneth"
   "$RS" refresh web >/dev/null
-  # Tags made in one second share a time, so fix the order the check reads.
-  jq '.releases.web.tags |= map(.at = (if .tag == "web-v1.0.1" then 200 else 100 end))' "$RELEASE_STATE_DIR/state.json" > "$SANDBOX/s"
-  mv "$SANDBOX/s" "$RELEASE_STATE_DIR/state.json"
   run "$RS" check
   assert_failure
   assert_output --partial 'OUTSIDE web tag web-v1.0.1: tagged by Kenneth, not by the cut workflow'
+  # The implicit release row pins this tag, so the tag line is the one page for it.
+  assert_equal "$(grep -c '^OUTSIDE web ' <<<"$output")" 1
   # A flow cut after it makes the hand tag history: still outside, no longer paged.
   commit_tag "cut (#3)" web-v1.1.0 cut.yml
   "$RS" refresh web >/dev/null
-  jq '.releases.web.tags |= map(.at = (if .tag == "web-v1.1.0" then 300 elif .tag == "web-v1.0.1" then 200 else 100 end))' "$RELEASE_STATE_DIR/state.json" > "$SANDBOX/s"
-  mv "$SANDBOX/s" "$RELEASE_STATE_DIR/state.json"
   assert_equal "$(jq -c '.releases.web.tags | map(.provenance)' "$RELEASE_STATE_DIR/state.json")" '["flow","outside","flow"]'
   run "$RS" check
   refute_output --partial 'web-v1.0.1'
