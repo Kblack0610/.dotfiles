@@ -590,6 +590,8 @@ fn scan_start(line: &str) -> usize {
 /// A backtick opens a code span only when another one closes it later on the line; an unpaired
 /// one is a literal character. Read as an open span, it hid every tag after it: ar-3263's title
 /// had one, so its `#urgent` and `#low` went past the one-priority writer and the doctor.
+/// Backticks pair left to right, as in CommonMark, so with an odd count the last one is the
+/// literal.
 fn for_each_tag(line: &str, mut f: impl FnMut(usize, usize, usize, usize)) {
     let bytes = line.as_bytes();
     let start = scan_start(line);

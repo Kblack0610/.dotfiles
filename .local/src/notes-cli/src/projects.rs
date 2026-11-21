@@ -1145,13 +1145,24 @@ fn summary_findings(content: &str) -> Vec<String> {
 /// word looks meaningful and is not.
 const RETIRED_PRIORITIES: &[&str] = &["normal", "medium", "p0", "p1", "p2", "p3"];
 
-/// The first [`RETIRED_PRIORITIES`] word a row line carries before its marker, as `#word`.
-pub(crate) fn retired_priority(line: &str) -> Option<String> {
-    let head = line.find("<!--").map_or(line, |i| &line[..i]);
-    md::find_hashtags(head)
-        .into_iter()
-        .find(|t| RETIRED_PRIORITIES.contains(&t.as_str()))
-        .map(|t| format!("#{t}"))
+/// Why an edit from `old` to `new` is refused: `new` carries a [`RETIRED_PRIORITIES`] word,
+/// before its marker, that `old` did not. A row that already had one still takes an edit, so
+/// it can be fixed or closed.
+pub(crate) fn refuse_retired_priority(old: &str, new: &str) -> anyhow::Result<()> {
+    let retired = |line: &str| -> Vec<String> {
+        let head = line.find("<!--").map_or(line, |i| &line[..i]);
+        md::find_hashtags(head)
+            .into_iter()
+            .filter(|t| RETIRED_PRIORITIES.contains(&t.as_str()))
+            .collect()
+    };
+    let had = retired(old);
+    match retired(new).into_iter().find(|t| !had.contains(t)) {
+        Some(t) => anyhow::bail!(
+            "#{t} is not a priority (urgent, high or low; quote it in backticks to mean the word), so nothing was written"
+        ),
+        None => Ok(()),
+    }
 }
 
 /// Tags nothing reads any more. Each looks meaningful on a row and changes nothing.

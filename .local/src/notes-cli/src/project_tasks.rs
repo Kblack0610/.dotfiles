@@ -2686,10 +2686,12 @@ pub fn retext(
                     |l| Some(l.into()),
                 )
             });
-            if found.is_none() {
+            let Some((_, row)) = found else {
                 eprintln!("no open task matches '{pick}' in {name}");
                 return Ok(1);
-            }
+            };
+            // Refused here too, before the epic is filed, for the same reason.
+            projects::refuse_retired_priority(&row, t)?;
             let proj_dir = projects::project_dir(p, name)?;
             linked = link_standing(p, log, name, &proj_dir, &[t.to_string()], bin)?;
             match &linked {
@@ -3605,16 +3607,9 @@ where
             Ok((0, Some(matched)))
         }
         Some((new, matched)) => {
-            // No edit writes a priority word no reader knows (`tag --add p1`, `edit --text "... #p1"`);
-            // a row that already carries one can still be closed or retagged.
-            if let Some(t) = after
-                .borrow()
-                .as_deref()
-                .and_then(projects::retired_priority)
-            {
-                if projects::retired_priority(&matched).is_none() {
-                    bail!("{t} is not a priority (urgent, high or low), so nothing was {verb}");
-                }
+            // No edit writes a priority word no reader knows (`tag --add p1`, `edit --text "... #p1"`).
+            if let Some(line) = after.borrow().as_deref() {
+                projects::refuse_retired_priority(&matched, line)?;
             }
             write_sheet(&sheet, &new)?;
             log.info("ptask", &format!("{verb} in {} ({name})", sheet.display()));
@@ -5448,6 +5443,26 @@ mod inbox_tests {
         .expect_err("refused")
         .to_string();
         assert!(e.contains("#medium is not a priority"), "{e}");
+        let e = tag_as(&id("sc-2"), "p2").expect_err("refused").to_string();
+        assert!(e.contains("#p2 is not a priority"), "{e}");
+        // With a systems list the refusal comes before the standing epic is filed: a missing
+        // systems binary would fail later, so this error proves nothing reached it.
+        let e = retext(
+            &v.p,
+            &v.log,
+            "scratch",
+            &id("sc-1"),
+            Some("fix(a): clean row #p3"),
+            None,
+            &[],
+            false,
+            Some("/nonexistent/systems"),
+            Lane::Human,
+            &w,
+        )
+        .expect_err("refused")
+        .to_string();
+        assert!(e.contains("#p3 is not a priority"), "{e}");
         assert_eq!(v.read(), before, "a refusal writes nothing");
         // NEGATIVE CONTROL: the row that already had #p1 still takes a tag.
         assert_eq!(tag_as(&id("sc-2"), "size/s").unwrap(), 0);
