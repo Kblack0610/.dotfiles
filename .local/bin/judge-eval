@@ -178,7 +178,7 @@ JQ_EVAL="$JQ_EPOCH"'
        elif ($a.recommend // "") == "" then "no recommendation" else null end) as $why
     | {agent: $by["ask-answers"], id: $a.id, project: $a.project, question: $a.question, rule: ($a.judge_rule // ""),
        # An ask judged before the human-only flag (ar-4352, 2026-11-21) recorded it as level
-       # `critical`, the judge's own level lost; it reads as human-only with no level. The clause
+       # `critical`, with the level the judge gave lost; it reads as human-only with no level. The clause
        # goes once those asks age out of the 28-day KPI window, 2026-12-19.
        type: ($a.judge_type // ""), level: (($a.judge_level // "") | if . == "critical" then "" else . end),
        level_raised: ($a.judge_level_raised == "true"),
@@ -437,7 +437,7 @@ kpi_json() {
               | select(.tp + .fp >= $min) | .precision] | min),
             ask_answered_pct: (.agents[] | select(.score == "ask-answers") | .total.live_pct),
             # The share of human-only verdicts the judge answered itself: never, by the rule and
-            # live_answer's flag check, so any one is a trip.
+            # the flag check in live_answer, so any one is a trip.
             judge_human_only_live_pct: (.agents[] | select(.score == "ask-answers") | .total
               | if .human_only > 0 then (.human_only_live * 1000 / .human_only | round) / 10 else null end),
             # The share of judged asks a human-stop rule sent to the human; read, no bar of its own.
