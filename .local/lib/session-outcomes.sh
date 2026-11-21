@@ -583,6 +583,7 @@ so_forgejo_get() {
     try=$((try + 1)) wait=$((wait * 2))
   done
   rm -f "$err"
+  # agent-land's net_error matches "the proxy in front of Forgejo refused": reword both together.
   printf '%s: the proxy in front of Forgejo refused %s %d times with a plain-text 403 "Forbidden", not Forgejo'"'"'s (the CrowdSec bouncer in home-config apps/crowdsec fails closed when its LAPI is slow)\n' "${repo%%/*}" "${path%%\?*}" "$try" >&2
   return 1
 }

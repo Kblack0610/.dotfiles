@@ -271,6 +271,7 @@ fj_wait_checks() {
       try=0
       continue
     }
+    net=0 # a read that answered ends the run of lost ones: a long wait meets several separate bursts
     case "$(jq -r "$CI_JQ"' {statusCheckRollup: .} | ci' <<<"$st")" in
     PASS)
       echo "checks: green"
