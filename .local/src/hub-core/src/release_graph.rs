@@ -74,6 +74,9 @@ pub struct Line {
     pub repo: Option<String>,
     pub error: Option<String>,
     pub tags: Vec<Tag>,
+    /// The registry's `releaseFrom` as the collector read it: where the line starts. None: the
+    /// project has no line, and all of its history is legacy.
+    pub from: Option<String>,
 }
 
 /// One channel a release reached: a successful Deployment of it, or the gitops pin that names it.
