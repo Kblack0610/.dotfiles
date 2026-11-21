@@ -240,13 +240,16 @@ commit_paths() {
   g -c core.hooksPath=/dev/null commit -q -m "$msg" >/dev/null
 }
 
-# clear_stale_lock: remove the index.lock or branch ref lock a killed git left; a crash mid-commit
-# leaves the ref lock, and every commit after it fails on "cannot lock ref" (~/.notes, 2026-11-20,
-# ar-2940). Run under the sync lock, so no other store-sync is in git here; a lock younger than
-# STALE_LOCK_MIN or held open stays, and so does every lock on a machine with no fuser to ask.
+# clear_stale_lock: remove the index.lock or ref lock a killed git left; a crash mid-commit leaves
+# HEAD.lock or the branch's, mid-fetch a remote branch's, and every commit or fetch after it fails
+# on "cannot lock ref" (~/.notes, 2026-11-20, ar-2940). Run under the sync lock, so no other
+# store-sync is in git here; a lock younger than STALE_LOCK_MIN or held open stays, and so does
+# every lock on a machine with no fuser to ask. git closes a ref lock before renaming it, so for
+# those the age is the guard.
 clear_stale_lock() {
-  local lk at
-  for lk in "$STORE/.git/index.lock" "$STORE/.git/refs/heads/$BRANCH.lock"; do
+  local lk at r locks=("$STORE/.git/index.lock" "$STORE/.git/HEAD.lock" "$STORE/.git/refs/heads/$BRANCH.lock")
+  for r in $(remotes); do locks+=("$STORE/.git/refs/remotes/$r/$BRANCH.lock"); done
+  for lk in "${locks[@]}"; do
     [ -e "$lk" ] && [ -n "$(find "$lk" -maxdepth 0 -mmin +"$STALE_LOCK_MIN" 2>/dev/null)" ] || continue
     command -v fuser >/dev/null 2>&1 \
       || { log "WARN: $lk is over ${STALE_LOCK_MIN}m old, and with no fuser to check for a holder it stays"; continue; }
