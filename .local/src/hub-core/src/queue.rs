@@ -1746,6 +1746,7 @@ pub const MODES: [&str; 2] = ["oneshot", "plan"];
 /// A task to queue from the human (agent-web's Add and both Homes' "Queue a fix"): an empty
 /// mode or priority is a high oneshot.
 #[derive(Clone, Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Add {
     pub project: String,
     #[serde(default)]
