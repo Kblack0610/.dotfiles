@@ -116,11 +116,11 @@ fn kind_of(head: &str) -> Option<(String, Option<String>)> {
 
 /// `text` without the slash commands it leads with (`/one-shot `, `/rigor /go `): a word of
 /// lowercase letters, digits and dashes behind one `/`. A path (`/tmp/x`, `/home/a/b.md`) has
-/// another `/` or a dot in its first word and stays.
+/// another `/` or a dot in its first word and stays, and so does a title that is only the word.
 fn strip_commands(text: &str) -> &str {
     let mut t = text.trim_start();
     while let Some(rest) = t.strip_prefix('/') {
-        let word = rest.split_whitespace().next().unwrap_or("");
+        let word = rest.split(char::is_whitespace).next().unwrap_or("");
         let is_cmd = word.starts_with(|c: char| c.is_ascii_lowercase())
             && word
                 .bytes()
@@ -130,7 +130,11 @@ fn strip_commands(text: &str) -> &str {
         }
         t = rest[word.len()..].trim_start();
     }
-    t
+    if t.is_empty() {
+        text.trim_start()
+    } else {
+        t
+    }
 }
 
 /// `text` without its checkbox, marker comment, leading `type(area): ` labels and id prefixes
@@ -578,13 +582,27 @@ mod tests {
         );
         assert_eq!(c.ids, ["ucp-2697"]);
         assert_eq!(clean("/rigor /one-shot fix(x): the gate").text, "the gate");
-        assert_eq!(clean("/go").text, "");
+        assert_eq!(
+            clean("/go").text,
+            "/go",
+            "a title that is only a command stays, never an empty cell"
+        );
         // A path, a mid-text command and a fraction stay as written.
         assert_eq!(
             clean("/home/a/plan.md: rewrite it").text,
             "/home/a/plan.md: rewrite it"
         );
         assert_eq!(clean("/tmp/x and more").text, "/tmp/x and more");
+        assert_eq!(
+            clean("/ split the work").text,
+            "/ split the work",
+            "a slash and a space is not a command"
+        );
+        assert_eq!(
+            clean("/tmp").text,
+            "/tmp",
+            "a title that is only a command word is kept"
+        );
         assert_eq!(clean("run /one-shot later").text, "run /one-shot later");
         assert_eq!(
             title("/one-shot ucp-2697: PerfRun.SwapTo waits").title,
