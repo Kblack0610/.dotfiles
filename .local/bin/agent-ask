@@ -848,7 +848,7 @@ cmd_list() {
   #      resumed_at, recommend, created, session, closed_at, closed_reason, claude_session,
   #      judge, answered_by, option_notes, context, recommend_why, judge_rule, judge_reason,
   #      answer_note, assume_at, resume, parked_until, delivery, delivery_note, answer,
-  #      delivery_answer, previews  (append new columns at the end only; parked_until is filled only while
+  #      delivery_answer, previews, audit_of  (append new columns at the end only; parked_until is filled only while
   #      the ask is parked, so no reader compares it with the clock)
   # --undelivered adds the answered asks whose delivery has not gone out (queued, delivering) or
   # failed unread, to the rows another filter picks, or alone lists just those.
@@ -859,7 +859,7 @@ cmd_list() {
   [ "${#files[@]}" -gt 0 ] || return 0
   awk -v want="$want" -v undelivered="$undelivered" -v cutoff="$cutoff" -v now="$(now_utc)" '
     BEGIN {
-      n = split("id project profile status kind question options task answered_at resumed_at recommend created session closed_at closed_reason claude_session judge answered_by option_notes context recommend_why judge_rule judge_reason answer_note assume_at resume parked_until delivery delivery_note answer delivery_answer previews", K, " ")
+      n = split("id project profile status kind question options task answered_at resumed_at recommend created session closed_at closed_reason claude_session judge answered_by option_notes context recommend_why judge_rule judge_reason answer_note assume_at resume parked_until delivery delivery_note answer delivery_answer previews audit_of", K, " ")
     }
     function flush(   i, d, p, row, parked, und) {
       if (cur == "") return
