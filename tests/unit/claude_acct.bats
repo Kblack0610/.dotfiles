@@ -2712,7 +2712,7 @@ EOS
   [ ! -e "$ws" ]
 }
 
-@test "textfile: with no dir only the fleet-lease holder publishes; another machine removes its copy, one that cannot tell keeps it" {
+@test "textfile: with no dir only the fleet-lease holder publishes; another machine or one that cannot tell writes nothing" {
   # a fleet worker's copy read every source unread and, merged by account, blanked every Burn row
   export CLAUDE_ACCT_NOW=$NOW
   week main 30 84
@@ -2732,7 +2732,9 @@ EOS
   lease 1
   run env PATH="$SANDBOX/bin:/usr/bin:/bin" "$ACCT" textfile
   assert_success
-  [ ! -e "$PROM_TEXTFILE_DIR/claude_acct.prom" ]
+  # not written; `fleet-lease renew` removes the copy (fleet_lease.bats)
+  run cat "$PROM_TEXTFILE_DIR/claude_acct.prom"
+  assert_output 'old 1'
   # an explicit dir is not the collector's, so it publishes on any machine
   mkdir -p "$SANDBOX/own"
   run "$ACCT" textfile "$SANDBOX/own"
