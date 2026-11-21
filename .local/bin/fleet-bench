@@ -261,7 +261,11 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${TRIAGE_ROUTES:=$HOME/.config/agentctl/triage-routes}"   # triage: where each red goes; the format is in the file
 : "${TRIAGE_FIX_CAP:=4}"            # triage: red fixes queued a day, every route together but a tripped watch's (one item a watch at a time bounds those)
 : "${TRIAGE_FIX_DAYS:=7}"           # triage: the window a cause's fix items are counted in
-: "${TRIAGE_FIX_TRIES:=2}"          # triage: fix items a cause gets in the window before it goes to the human
+: "${TRIAGE_FIX_TRIES:=2}"          # triage: fix items a cause gets in the window; past them one escalation, then it is spent (reds_spent)
+: "${TRIAGE_ESCALATE_MODEL:=opus}"  # triage: the model the escalation item, a fix-red root-cause pass, is pinned to
+: "${TRIAGE_ASK_CMD:=agent-ask}"   # triage: posts the one ask a spent cause gets, and cancels it once the cause leaves
+: "${TRIAGE_SPENT_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/triage-spent}"   # triage: the spent causes, cause TAB row key TAB ask id, rewritten every pass
+: "${TRIAGE_SPENT_STALE_MIN:=60}"   # reds_spent reads ? past this: four fleet-dispatch passes (*:12/15) with no triage
 : "${REDS_DAYS:=7}"                 # reds: days of red fixes the report and its KPIs read
 : "${HOLD_HOURS:=24}"               # reds: hours after a cleanup merge that a new red counts against it
 : "${REDS_ETA_SAMPLES:=5}"          # reds: merged fixes in the window before a fix in hand gets a due time (their p90 minutes)
@@ -1930,6 +1934,7 @@ ledger_counts() {
 # carry #requested), the share that carry no #requested. A `want` event was stamped by the writer.
 # A runner's own row is not a channel: `notes` names its writer (AGENTCTL_NAME) since #1688.
 # routes_unresolved: standing watches, runners and the hold row no triage-routes line resolves, and runners whose SKILL= names nothing (triage_coverage).
+# reds_spent: causes red now whose TRIAGE_FIX_TRIES and escalation are spent (triage_spent_write), each carried by one ask, so a red no try is left for shows on the scorecard.
 # reds_unfixed: red fixes merged in the last REDS_DAYS whose red is still or again red (reds_json),
 # leaving out a red TRIAGE_ROUTES sends to alert, which no merge can clear.
 # admission_held: adds the queue cap held in the last 7 days (agent-queue admit).
@@ -1940,7 +1945,7 @@ ledger_counts() {
 # release_overdue and version_tag_drift are the release link (release_kpis): a project a day past its
 # target date with that version uncut, else a sheet-counter project a day past its cadence due date with
 # done rows and no cut; and a tagged project whose sheet is not its tag plus one patch.
-KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified release_overdue version_tag_drift doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed requested_unstarted_h orphan_request_rows next_up_blocked stale_urgent_d urgent_per_board playtest_waiting_d done_inline_old request_to_live_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_review step_age_p90_waiting queue_net_24h estimated_token_share"
+KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified release_overdue version_tag_drift doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed reds_spent requested_unstarted_h orphan_request_rows next_up_blocked stale_urgent_d urgent_per_board playtest_waiting_d done_inline_old request_to_live_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_review step_age_p90_waiting queue_net_24h estimated_token_share"
 
 # wants_stats <now> -> {total, unstamped, by_project: {<from>: {total, unstamped}}} over the last
 # CHAIN_DAYS of the notes ingest record; nothing and a failure when the record cannot be read.
@@ -2228,6 +2233,7 @@ chain_counts() {
   held=$($BENCH_ADMISSION_CMD 2>/dev/null | jq -er '.held_7d | numbers' 2>/dev/null) || held='?'
   echo "admission_held=$held"
   reds_counts "$1"
+  reds_spent
   pipeline_json "$t" | jq -r 'def n: if . == null then "?" else . end;
     "chain_drift=\(.drift | n)",
     (.steps[] | select(.step | IN("backlog", "queued", "running", "review", "waiting")) | "step_age_p90_\(.step)=\(.age_p90_min | n)"),
@@ -4362,7 +4368,7 @@ cause_tries() {
 # watch_trip <key> -> the epoch a watch row's watch tripped at, on any route; nothing for any other
 # row. 2026-11-20 (ar-4064): tries were counted over the whole window, so a watch that cleared and
 # tripped again found its tries spent by an earlier trip, and 12 of 22 tripped watches had no owner.
-# A watch that flaps gets TRIAGE_FIX_TRIES items a trip by design (every trip has an owner, ar-1531);
+# A watch that flaps gets TRIAGE_FIX_TRIES items and one escalation a trip by design (every trip has an owner, ar-1531);
 # only a trip that outlasts watch_after is a red, which bounds how often that can be.
 watch_trip() {
   [[ "$1" == 'check(watch): '* ]] || return 0
@@ -4388,37 +4394,93 @@ triage_kind() { case "$1" in 'check(watch): '*) echo ' watch' ;; 'check(alert): 
 # triage_promote <rows> -> how many rows triage_queues were queued as red fixes. A red fix opens its PR at
 # any hour and stops there (policy 2026-11-06), so each guard here keeps that from running away: a
 # dispatch hold or an unreadable queue queues nothing, TRIAGE_FIX_CAP bounds the day's other reds, an
-# item in hand stands for its cause (cause_tries), and a cause gets at most TRIAGE_FIX_TRIES items in
+# item in hand stands for its cause (cause_tries), and a cause gets at most TRIAGE_FIX_TRIES items and one escalation in
 # the window, a watch's in its current trip. A tripped watch's item is tagged `watch` and is outside the cap: each watch is one cause,
 # so the watches bound it, and fleet-dispatch widens its red floor by one for each. Outside
 # TRIAGE_FIX_CAP is not outside the queue cap: the promote is a dispatch pull (--dispatch), so at the cap it makes
 # room or leaves its row on the board for a pass (agent-queue make_room, admit).
-# A later try is tagged `retry:<earlier slugs>` so its session starts from what did not hold; a cause
-# whose tries are spent stays on its agent row, which Alerts > Fixes and the reds_unfixed KPI show;
-# Needs you holds only what the human can do, and fix-red files an ask when the fix is a decision.
+# A later try is tagged `retry:<earlier slugs>` so its session starts from what did not hold. Once its
+# TRIAGE_FIX_TRIES did not hold, a cause gets one escalation: an item tagged `escalate`, pinned to
+# TRIAGE_ESCALATE_MODEL, whose brief is fix-red's root-cause pass. Only when that did not hold either is
+# the cause spent: it stays on its agent row, counted by the reds_spent KPI, and one ask carries it
+# (triage_spent_ask), so Needs you holds a red only once the agent system has nothing left to try
+# (ask UfRZaR, 2026-11-20, on the human's "needs me should only be what needs me").
 triage_promote() {
-  local board key raw route cause tags items used trip tries more kind n=0 capped=0 seen=' '
+  local board key raw route cause tags items used trip tries more kind n=0 capped=0 seen=' ' model
   $TRIAGE_HOLD_CMD >/dev/null 2>&1 || { echo 0; return 0; }
   items=$(triage_items) || { echo 0; return 0; }
   used=$(jq --arg d "$(date -u -d "@$(now)" +%F)" \
     "$JQ_LIB"'[.[] | select(tagged("red") and (tagged("watch") | not) and (tagged("alert") | not) and (.queued // "" | startswith($d)))] | length' <<<"$items")
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { echo 0; return 0; }
+  local spent=''
   while IFS=$'\t' read -r key _ _ route cause tags; do
     triage_queues "$key" "$route" || continue
     kind=$(triage_kind "$key")
+    trip=$(watch_trip "$key")
+    tries=$(cause_tries "$items" "$cause" "$trip" "$route")
+    # Spent is counted before the day's cap, which says nothing about a cause's own tries; an
+    # unreadable count is neither spent nor a try.
+    [[ "$tries" =~ ^-?[0-9]+$ ]] || continue
+    if [ "$tries" -gt "$TRIAGE_FIX_TRIES" ]; then
+      [[ $'\n'"$spent" != *$'\n'"$cause"$'\t'* ]] || continue   # one ask a cause, however many rows it has
+      spent+="$cause"$'\t'"$key"$'\t'"$(triage_spent_ask "$cause" "$key" "$(cause_slugs "$items" "$cause" "$trip")")"$'\n'
+      continue
+    fi
     [ -n "$kind" ] || [ $((used + capped)) -lt "$TRIAGE_FIX_CAP" ] || continue
     [[ "$seen" != *" $cause "* ]] || continue
     seen+="$cause "
-    trip=$(watch_trip "$key")
-    tries=$(cause_tries "$items" "$cause" "$trip" "$route")
-    [ "$tries" -ge 0 ] && [ "$tries" -lt "$TRIAGE_FIX_TRIES" ] || continue
+    [ "$tries" -ge 0 ] || continue
     more=''; [ "$tries" -eq 0 ] || more=" retry:$(cause_slugs "$items" "$cause" "$trip")"
+    model=(); [ "$tries" -lt "$TRIAGE_FIX_TRIES" ] || { more=" escalate$more"; model=(--model "$TRIAGE_ESCALATE_MODEL"); }
     raw=$(awk -F'\t' -v p="${key,,}" 'index($3, p) == 1 { print $4; exit }' <<<"$board")
     [[ "$raw" == '- [ ]'* ]] || continue
-    $TRIAGE_PROMOTE_CMD --agent --dispatch --project "$KPI_BOARD" --tags "red$kind cause:$cause$more${tags:+ $tags}" --raw "$raw" >/dev/null 2>&1 || continue
+    $TRIAGE_PROMOTE_CMD --agent --dispatch --project "$KPI_BOARD" "${model[@]}" --tags "red$kind cause:$cause$more${tags:+ $tags}" --raw "$raw" >/dev/null 2>&1 || continue
     n=$((n + 1)); [ -n "$kind" ] || capped=$((capped + 1))
   done <<<"$1"
+  triage_spent_write "$spent"
   echo "$n"
+}
+
+# triage_spent_ask <cause> <key> <slugs> -> the id of the one ask a spent cause gets: the one the last
+# pass recorded in TRIAGE_SPENT_FILE, else one posted now; nothing when the post failed, so the next
+# pass posts it. A cause that clears leaves the file, so its next spell of red is asked again. An ask
+# the human closed is not posted again while the cause stays: its answer went to a board row, its owner.
+triage_spent_ask() {
+  local id
+  id=$(awk -F'\t' -v c="$1" '$1 == c && $3 != "" { print $3; exit }' "$TRIAGE_SPENT_FILE" 2>/dev/null)
+  if [ -z "$id" ]; then
+    # No session owns it: a triage run by hand from a session would otherwise tie it to that session.
+    id=$(env -u CLAUDE_CODE_SESSION_ID $TRIAGE_ASK_CMD post --project "$KPI_BOARD" \
+      --context "A red is a check the fleet reads as failing; this one is \"$2\". Triage (fleet-bench, which queues a fix item for each red) queued $3 for it, the last a root-cause pass on $TRIAGE_ESCALATE_MODEL, and none held, so it queues no more. What each found is on its item (agent-queue show <slug>)." \
+      "Red \"${2:0:70}\" outlasted every fix tried: what should the next fix do?" 2>/dev/null </dev/null | tail -n 1)
+    [[ "$id" =~ ^[A-Za-z0-9]+$ ]] || { say "triage: could not ask about the spent red $2"; id=''; }
+  fi
+  printf '%s' "$id"
+}
+
+# triage_spent_write <cause TAB key TAB ask lines>: the causes red now whose tries and escalation are
+# spent, one a cause, as TRIAGE_SPENT_FILE; the reds_spent KPI counts it. Every triage pass that reads
+# the queue rewrites it, so a cause that cleared or got a try back leaves it.
+triage_spent_write() {
+  mkdir -p "$(dirname "$TRIAGE_SPENT_FILE")" || return 0
+  # The ask of a cause that left (it cleared, or its tries aged out so agents try again) needs the human
+  # no longer: cancel it while it is still pending, so Needs you never holds a red that needs nobody.
+  local id
+  while IFS= read -r id; do
+    $TRIAGE_ASK_CMD show "$id" 2>/dev/null | grep -q '^status: pending' || continue
+    $TRIAGE_ASK_CMD cancel "$id" "the red cleared or agents are trying it again (fleet-bench triage)" >/dev/null 2>&1 ||
+      say "triage: could not cancel the ask $id of a red that left"
+  done < <(awk -F'\t' 'NR == FNR { if (NF) now[$1] = 1; next } $3 != "" && !($1 in now) { print $3 }' <(printf '%s\n' "$1") "$TRIAGE_SPENT_FILE" 2>/dev/null)
+  # A failed write says so and leaves no temp file; the old file then ages into reds_spent=?.
+  printf '%s' "$1" | awk -F'\t' 'NF && !seen[$1]++' > "$TRIAGE_SPENT_FILE.$$" && mv "$TRIAGE_SPENT_FILE.$$" "$TRIAGE_SPENT_FILE" \
+    || { rm -f "$TRIAGE_SPENT_FILE.$$"; say "triage: could not write $TRIAGE_SPENT_FILE"; }
+}
+
+# reds_spent -> the count of TRIAGE_SPENT_FILE, ? when no triage pass wrote it in TRIAGE_SPENT_STALE_MIN
+reds_spent() {
+  if [ -n "$(find "$TRIAGE_SPENT_FILE" -mmin "-$TRIAGE_SPENT_STALE_MIN" 2>/dev/null)" ]; then
+    echo "reds_spent=$(grep -c . "$TRIAGE_SPENT_FILE")"
+  else echo "reds_spent=?"; fi
 }
 
 # triage_coverage -> each standing watch and each runner no TRIAGE_ROUTES line resolves, and each
@@ -4916,6 +4978,7 @@ cmd_triage() {
   triage_retire 0
   did=$(printf '%s' "$([ "$TRIAGE_RETIRED" -gt 0 ] && echo "$TRIAGE_RETIRED recovered rows closed")$([ "$gone" -gt 0 ] && echo " $gone gone units reset")" | sed 's/^ //')
   if [ -z "$rows" ]; then
+    triage_spent_write ''
     say "no runner, unit, watch or log error at fault"
     if [ -n "$did" ]; then report_outcome WORKED "$did"
     else report_outcome NOOP "no runner, unit, watch or log error at fault"; fi

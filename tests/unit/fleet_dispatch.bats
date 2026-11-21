@@ -2140,6 +2140,28 @@ J
   refute_output --partial '--pr-only'
   assert_output --partial 'read ~/.claude/skills/fix-red/SKILL.md first'
   assert_output --partial 'Merge with agent-land <N>'
+  refute_output --partial 'this is its escalation'
+  # reflective-penguin P2: triage's escalation of a red whose fixes did not hold is the root-cause pass
+  : > "$NOTES_FIXTURE/cmds.log"
+  agent-queue add --project game --slug r2 --tags 'red cause:cd34 escalate retry:r' "fix r again" >/dev/null
+  cmd_start --item r2 >/dev/null || fail "start r2"
+  run cat "$NOTES_FIXTURE/cmds.log"
+  assert_output --partial 'this is its escalation: before any fix, do the root-cause pass of fix-red section 3'
+}
+
+@test "promote: --model pins the item's model, as triage's escalation does; without it the item names none" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'deep one' '- [ ] deep one <!-- id:gm-8 -->'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --agent --project game --profile bnb --model opus --raw '- [ ] deep one <!-- id:gm-8 -->'
+  assert_success
+  run agent-queue show gm-8
+  assert_line 'model: opus'
+  # NEGATIVE CONTROL: a plain promote leaves the model to the lane
+  row game agent 'plain one' '- [ ] plain one <!-- id:gm-9 -->'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --agent --project game --profile bnb --raw '- [ ] plain one <!-- id:gm-9 -->'
+  assert_success
+  run agent-queue show gm-9
+  refute_line --partial 'model:'
 }
 
 @test "canary: a canary item starts on its task as written: no /one-shot and no PR or landing lines" {

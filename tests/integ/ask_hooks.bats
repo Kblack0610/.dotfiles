@@ -223,6 +223,41 @@ text_entry() { echo '{"type":"assistant","message":{"role":"assistant","content"
   assert_not_called '#it'
 }
 
+# reflective-penguin P2: a refused row was swallowed (|| true), so the answer reached nobody and
+# the delivery read done.
+@test "a board that refuses the answer's row fails the delivery and says so; a twin or the outbox carries it" {
+  local a b
+  a="$(CLAUDE_CODE_SESSION_ID=sid-2 "$AGENT_ASK" post --project demo 'ship it?')"
+  "$AGENT_ASK" answer "$a" now 2>/dev/null
+  printf '#!/bin/sh\nexit 5\n' > "$SANDBOX/bin/notes"
+  run "$AGENT_ASK" deliver --all
+  assert_output --partial "$a not delivered"
+  run "$AGENT_ASK" show "$a"
+  assert_line 'delivery: failed'
+  assert_line 'delivery_note: no live session, resume or held item takes it, and the demo board refused its row (notes exit 5)'
+  # NEGATIVE CONTROL: exit 4 (a runner's add, sent to the outbox) is carried, as 0 and 3 are
+  printf '#!/bin/sh\nexit 4\n' > "$SANDBOX/bin/notes"
+  b="$(CLAUDE_CODE_SESSION_ID=sid-3 "$AGENT_ASK" post --project demo 'ship two?')"
+  "$AGENT_ASK" answer "$b" now 2>/dev/null
+  "$AGENT_ASK" deliver --all 2>/dev/null
+  run "$AGENT_ASK" show "$b"
+  assert_line 'delivery: done'
+  assert_line 'delivery_note: a board row: no live session, resume or held item takes it'
+}
+
+@test "an answer the pane did not take and the board refused names both" {
+  local a
+  printf '{"session_id":"sid-1","pane":"lab/%%1","status":"idle"}\n' > "$NOTES_FIXTURE/agent-panel.list"
+  : > "$NOTES_FIXTURE/agent-panel.unsent"
+  printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/bin/notes"
+  a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --session dotfiles 'one?')"
+  "$AGENT_ASK" answer "$a" yes 2>/dev/null
+  AGENT_ASK_NO_RESUME='' "$AGENT_ASK" deliver "$a" 2>/dev/null
+  run "$AGENT_ASK" show "$a"
+  assert_line 'delivery: failed'
+  assert_line "delivery_note: it did not submit in dotfiles; the answer is in that session's input box; the demo board refused its row (notes exit 1)"
+}
+
 @test "an answer a live session takes or a resume consumes files no row, and neither does a cancel" {
   local live resumed dropped
   printf '{"session_id":"sid-1","pane":"lab/%%1","status":"idle"}\n' > "$NOTES_FIXTURE/agent-panel.list"
