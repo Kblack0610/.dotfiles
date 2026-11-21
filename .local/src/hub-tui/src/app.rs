@@ -390,10 +390,8 @@ pub enum Msg {
     Changelog(Result<Changelog, String>),
     /// One app's checks (`hub_core::app_status`), for the project named.
     AppStatus(String, Box<Result<hub_core::app_status::AppStatus, String>>),
-    /// A release page read for `<app>/<version>` (`ReleasesView::rel`).
-    Release(String, Box<Result<hub_core::release_page::Page, String>>),
-    /// A version's page (`rv.ver`), for the `<project>/<version>` it was read for.
-    Version(String, Box<Result<hub_core::version_page::Page, String>>),
+    /// A release or version page read (`ReleasesView::answer`).
+    Page(Box<releases::PageRead>),
     Builds(Box<Builds>),
     /// The Pipelines view's sources, read with the runs on Infra.
     Pipes(Box<hub_core::pipelines::Sources>),
@@ -1211,7 +1209,7 @@ impl App {
             let records = hub_core::release_page::records(&jobs, &keys);
             let r = hub_core::release_page::build(&a, &runs, &records, &version)
                 .ok_or_else(|| format!("{} has no tag of version {version}", a.project));
-            let _ = tx.send(Msg::Release(want, Box::new(r)));
+            let _ = tx.send(Msg::Page(Box::new(releases::PageRead::Release(want, r))));
         });
     }
 
@@ -1260,8 +1258,10 @@ impl App {
                 &project,
                 &version,
             )
-            .ok_or_else(|| format!("{project} has no cut of version {version} and no row names it"));
-            let _ = tx.send(Msg::Version(want, Box::new(r)));
+            .ok_or_else(|| {
+                format!("{project} has no cut of version {version} and no row names it")
+            });
+            let _ = tx.send(Msg::Page(Box::new(releases::PageRead::Version(want, r))));
         });
     }
 
@@ -2343,8 +2343,7 @@ impl App {
                 self.rv.st.answer(&project, *r);
                 self.sync_changelog();
             }
-            Msg::Release(want, r) => self.rv.rel.answer(&want, *r),
-            Msg::Version(want, r) => self.rv.ver.answer(&want, *r),
+            Msg::Page(r) => self.rv.answer(*r),
             Msg::Builds(b) => {
                 let key = |v: &bv::BuildsView| {
                     self.builds
@@ -8378,7 +8377,7 @@ mod tests {
         a.handle(Msg::Builds(Box::default()));
         let got = loop {
             match rx.recv_timeout(Duration::from_secs(5)) {
-                Ok(m @ Msg::Release(..)) => break m,
+                Ok(m @ Msg::Page(..)) => break m,
                 Ok(m) => a.handle(m),
                 Err(_) => panic!("no release answer"),
             }
@@ -8405,12 +8404,18 @@ mod tests {
         let (mut a, _rel, rx) = with_releases();
         a.open_page(hub_core::links::Kind::Version, "beta/0.1");
         assert_eq!(a.rv.ver.project, "beta/0.1");
-        assert_eq!(a.selected_release().map(|r| r.project.as_str()), Some("beta"));
-        assert!(a.rv.rel.project.is_empty(), "a version page is not a release page");
+        assert_eq!(
+            a.selected_release().map(|r| r.project.as_str()),
+            Some("beta")
+        );
+        assert!(
+            a.rv.rel.project.is_empty(),
+            "a version page is not a release page"
+        );
         a.handle(Msg::Builds(Box::default()));
         let got = loop {
             match rx.recv_timeout(Duration::from_secs(5)) {
-                Ok(m @ Msg::Version(..)) => break m,
+                Ok(m @ Msg::Page(..)) => break m,
                 Ok(m) => a.handle(m),
                 Err(_) => panic!("no version answer"),
             }

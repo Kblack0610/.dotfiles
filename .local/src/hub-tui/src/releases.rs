@@ -137,7 +137,7 @@ impl Default for ReleasesView {
             st: PaneRead::default(),
             rel: PaneRead::default(),
             ver: PaneRead::default(),
-            runs:crate::builds::BuildsView::of(Scope::Release),
+            runs: crate::builds::BuildsView::of(Scope::Release),
             inner: "",
             want: None,
             flow_project: String::new(),
@@ -181,7 +181,21 @@ pub(crate) fn level(l: Level, p: Palette) -> Style {
     }
 }
 
+/// A page read drawn atop the opened app's pane, for the `<id>/<version>` it was read for.
+pub enum PageRead {
+    Release(String, Result<hub_core::release_page::Page, String>),
+    Version(String, Result<hub_core::version_page::Page, String>),
+}
+
 impl ReleasesView {
+    /// Take a page read into the pane it was read for (`PaneRead::answer`).
+    pub fn answer(&mut self, r: PageRead) {
+        match r {
+            PageRead::Release(want, r) => self.rel.answer(&want, r),
+            PageRead::Version(want, r) => self.ver.answer(&want, r),
+        }
+    }
+
     /// The tab on a fresh view of `q`, nothing selected or open.
     pub fn open_view(&mut self, q: String) {
         self.table.view = hub_core::table::View {
@@ -289,7 +303,11 @@ impl ReleasesView {
     pub fn open_version(&mut self, s: Option<&Releases>, id: &str) {
         let project = id.split_once('/').map_or(id, |(p, _)| p.trim());
         let app = s
-            .and_then(|s| hub_core::version_page::owned(s, project).first().map(|a| a.project.clone()))
+            .and_then(|s| {
+                hub_core::version_page::owned(s, project)
+                    .first()
+                    .map(|a| a.project.clone())
+            })
             .unwrap_or_else(|| project.to_string());
         self.open_app(s, &app);
         self.ver.project = id.to_string();
