@@ -105,7 +105,9 @@ rev-list)
   # behind.seq: one count per call, popped as read; then behind
   q="$NOTES_FIXTURE/behind.seq"
   if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else cat "$NOTES_FIXTURE/behind"; fi ;;
-rev-parse) case "$2" in --show-toplevel) cat "$NOTES_FIXTURE/toplevel" 2>/dev/null || echo /nowhere ;; *) echo 0123456789abcdef ;; esac ;;
+# no.checkout: run outside a checkout, where rev-parse --show-toplevel fails
+rev-parse) case "$2" in --show-toplevel) [ ! -f "$NOTES_FIXTURE/no.checkout" ] || { echo 'fatal: not a git repository' >&2; exit 128; }
+  cat "$NOTES_FIXTURE/toplevel" 2>/dev/null || echo /nowhere ;; *) echo 0123456789abcdef ;; esac ;;
 # remotes: what `git remote` lists (origin by default); <name>.url: that remote's URL, and
 # origin.url this checkout's origin (o/r over ssh by default)
 remote) case "$2" in
@@ -605,6 +607,7 @@ landed #42
 EOF
   run cat "$LOG"
   assert_output - <<'EOF'
+git rev-parse --show-toplevel
 git -C . rev-parse --show-toplevel
 gh pr view 42 --json state,baseRefName,url,headRefOid,isCrossRepository,headRefName -q .state + " " + .baseRefName + " " + .url + " " + .headRefOid + " " + (.isCrossRepository | tostring) + " " + .headRefName
 git -C . remote get-url origin
@@ -1483,6 +1486,20 @@ repo_map() {
   run grep -E '^gh (pr|run) ' "$LOG"
   refute_output --regexp '^gh (pr [a-z]+ 42|run list) (--[a-z]|$)'
   assert_output --partial 'gh pr merge 42 -R o/p --squash'
+}
+
+@test "--repo outside a checkout is refused up front, before any gh call (ar-2371)" {
+  touch "$NOTES_FIXTURE/no.checkout"
+  printf 'MERGED\n' >"$NOTES_FIXTURE/state"
+  run "$LAND" 42 --repo o/r --item ship
+  assert_failure 2
+  assert_output --partial 'is not a git checkout'
+  assert_output --partial 'Run it from a checkout of o/r'
+  run grep -c '^gh \|^agent-queue\|^notes' "$LOG"
+  assert_output 0
+  # a dry run reads no checkout, so it still prints its steps
+  run "$LAND" 42 --repo o/r --item ship --dry-run
+  assert_success
 }
 
 @test "--repo takes <owner>/<repo> only" {

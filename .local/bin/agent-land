@@ -506,6 +506,10 @@ case "$(jq -r 'if .state == "done" and .status == "ok" and (.pr // "") != "" the
 running | waiting | review | queued | done-ok) ;;
 *) die "queue item $item is $(jq -r '.state + " " + (.status // "")' <<<"$it"), not open" ;;
 esac
+# Every real step reads this checkout (head, forge remote, merge proof); --repo only redirects gh.
+# Outside a checkout a merged PR got through repo, merge and body, then failed proof (ar-2371).
+[ "$dry" -eq 1 ] || git rev-parse --show-toplevel >/dev/null 2>&1 ||
+  die "$PWD is not a git checkout: agent-land reads the checkout for the head, the forge remote and the merge proof, and --repo only picks the repo gh reads. Run it from a checkout of ${repo:-the PR repo}"
 # With no --repo, the item's own pr:<owner>/<repo>#<pr> names the repo: the bare number alone would
 # be read against this checkout's repo, whatever repo the item's PR is in.
 if [ -z "$repo" ]; then
