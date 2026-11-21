@@ -163,7 +163,7 @@ apply_merge_drivers() {
   # queue/done/*/*.md merge=close (ar-4091): two hosts closing one item. The attribute goes in this
   # clone's info/attributes, not the tracked .gitattributes: each peer sets it itself, so no peer waits
   # on another's commit, and a clone gets it with the driver. Both conflict pairs are retried on a change.
-  attrs=$(g rev-parse --git-path info/attributes) && mkdir -p "$(dirname "$attrs")"
+  attrs=$(g rev-parse --path-format=absolute --git-path info/attributes) && mkdir -p "$(dirname "$attrs")"
   grep -qxF 'queue/done/*/*.md merge=close' "$attrs" 2>/dev/null ||
     { printf 'queue/done/*/*.md merge=close\n' >> "$attrs" && rm -f "$CONFLICT" "$CONFLICT"-*; }
   [ "$(g config --get merge.close.driver)" = "$me merge-close %O %A %B %P" ] ||
