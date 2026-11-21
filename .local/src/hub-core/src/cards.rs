@@ -848,9 +848,6 @@ pub const ORDER: &[&str] = &[
     "projects",
 ];
 
-/// The widget's cards when its URL names none: the cards of `ORDER` that fit a 4x3, in its order.
-pub const WIDGET: &[&str] = &["needs", "red", "sessions", "alerts", "infra", "costs"];
-
 /// The cards `names` lists, in its order; a name no card has is skipped.
 pub fn pick(cards: Vec<Card>, names: &[&str]) -> Vec<Card> {
     let mut cards: Vec<Option<Card>> = cards.into_iter().map(Some).collect();
@@ -999,15 +996,6 @@ mod tests {
             ("NO DATA", Some("prometheus: timeout"))
         );
         assert!(g.iter().all(|c| c.link.href() == format!("#{}", c.tab)));
-    }
-
-    #[test]
-    fn the_widget_default_keeps_the_order_the_grid_draws() {
-        let at: Vec<usize> = WIDGET
-            .iter()
-            .map(|n| ORDER.iter().position(|o| o == n).expect(n))
-            .collect();
-        assert!(at.windows(2).all(|w| w[0] < w[1]), "{at:?}");
     }
 
     #[test]
