@@ -558,6 +558,20 @@ pages() { grep -c '^agent-notify' "$NOTES_FIXTURE/calls.log" 2>/dev/null || true
   assert_equal "$(show "$ORIGIN" queue/item.md)" "state: done"
 }
 
+@test "a branch ref lock a crash left mid-commit is removed, and the write lands (ar-2940)" {
+  command -v fuser >/dev/null || skip "no fuser"
+  peer a
+  local lk="$SANDBOX/a/.git/refs/heads/master.lock"
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  git -C "$SANDBOX/a" rev-parse HEAD > "$lk"
+  touch -d '20 minutes ago' "$lk"
+  run on a
+  assert_success
+  assert_output --partial "WARN: removed $lk"
+  [ ! -e "$lk" ]
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: done"
+}
+
 @test "a held or young index.lock stays, and the commit it blocks fails the unit with 3" {
   peer a
   local lk="$SANDBOX/a/.git/index.lock" fd
