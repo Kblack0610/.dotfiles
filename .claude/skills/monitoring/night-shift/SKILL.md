@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [monitoring, overnight, observe-only, sentinel]
+  system: [telemetry]
   reviewed: "2026-11-09"
 ---
 
@@ -36,7 +37,7 @@ One file per night, and it is also the morning's inbox report: `$(notes path ref
    - A probe or signal asks the code the system decides with: call a read-only function or subcommand of the script the system decides with, from main (fetched by `gh api -H "Accept: application/vnd.github.raw"`, as `playground-main-checks` runs `release-ready.py checks`). Read the function first and use it only when it makes GET calls and writes nothing. With no such code, read the state directly and say in `what:` which proxy it uses. Why: a label or status re-derived by hand can disagree with the code that decides, so the watch trips on a healthy system.
    - Every night watch gets `severity: normal`, so nothing buzzes the phone overnight; the human reads it in the morning. Set `high` only when the human said to wake them for it.
    - Set `expiry:` to `<M>T12:00` local, after the morning run, which removes it. Expiry is only the fallback for a morning that never runs.
-   - Also required: `what`, `why`, `where`, `action` (`--strict` refuses a manifest without them), `created: $(date -Iseconds)` (expiry and the age column count from it), `source: night-shift`, and `subject`, `trip`, `next` for a readable page.
+   - Also required: `what`, `why`, `where`, `action` and `system` (an id of `systems.md`, usually `dispatch` or `telemetry`; `--strict` refuses a manifest without them), `created: $(date -Iseconds)` (expiry and the age column count from it), `source: night-shift`, and `subject`, `trip`, `next` for a readable page.
    - Validate with `sentinel-manifest validate --strict <file>`, then `watch-companion-loop list night-<slug>`. An agent watch runs its first check-in within a minute, so read its first verdict before the human sleeps: `awk '$(2)=="night-<slug>"' ~/.local/state/agentctl/sentinel/activity.log | tail -1`.
 3. **Queue the morning**, unless its board row shows it already (`notes board --json | jq -r '.rows[] | select(any(.tags[]?; . == "at/<M>/0830")) | .text' | grep -q night-shift`): `agent-queue add --project dotfiles --priority high --weight light --tags "at:<M>T08:30" --slug night-shift-morning-<M> "check(night-shift): run /night-shift morning (observe-only: write the report, change nothing else)"`. `at:` is a not-before gate: the add files it on the item's board row as `#at/<M>/0830` and exits 5 (held; `~/.config/agentctl/QUEUE.md`, "Admission"), and dispatch pulls the row from 08:30, so the run can start late; the 12:00 expiry leaves it room. Why: the report is waiting when the human wakes, with nothing for them to remember.
 4. **Tell the human** in three lines: what is armed and how often it checks, which standing watches cover the rest, and that only high and urgent standing watches can page them overnight.

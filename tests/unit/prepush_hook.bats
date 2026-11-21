@@ -101,6 +101,26 @@ hook() { (cd "$W" && .githooks/pre-push </dev/null); }
   [[ "$stderr" == *"lint FAILED"* && "$stderr" == *"a.sh: the finding"* && "$stderr" == *"refused"* ]]
 }
 
+@test "ledger: a launch with no row in the private launch table refuses the push; no overlay or no scanned path skips it" {
+  mkrepo; stubs
+  stub .local/bin/fleet-bench 'echo "fleet-bench $* $LEDGER_PIPELINES" >>"$CALLS"; echo "launch with no PIPELINES.md row: x"; exit 1'
+  export DOTFILES_PRIVATE="$BATS_TEST_TMPDIR/priv"
+  PREPUSH_CHANGED=README run --separate-stderr hook
+  assert_success
+  mkdir -p "$DOTFILES_PRIVATE/.config/agentctl"
+  PREPUSH_CHANGED=.local/bin/x run --separate-stderr hook
+  assert_success
+  ! grep -q fleet-bench "$CALLS"
+  : >"$DOTFILES_PRIVATE/.config/agentctl/PIPELINES.md"
+  PREPUSH_CHANGED=README run --separate-stderr hook
+  assert_success
+  PREPUSH_CHANGED=.local/bin/x run --separate-stderr hook
+  assert_failure 1
+  [[ "$stderr" == *"ledger (launch table: $DOTFILES_PRIVATE) FAILED"* && "$stderr" == *"launch with no PIPELINES.md row: x"* ]]
+  run cat "$CALLS"
+  assert_line "fleet-bench ledger --unlisted $DOTFILES_PRIVATE/.config/agentctl/PIPELINES.md"
+}
+
 @test "the push range is read from stdin: a new branch is checked against main, a delete and another ref are not" {
   mkrepo; stubs
   printf 'y\n' >"$W/a.sh" && git -C "$W" add a.sh && git -C "$W" commit -qm a

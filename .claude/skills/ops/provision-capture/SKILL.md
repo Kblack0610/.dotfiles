@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: ops
   tags: [provisioning, dotfiles, installer]
+  system: [recovery]
   reviewed: "2026-06-23"
 ---
 

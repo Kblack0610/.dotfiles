@@ -107,13 +107,30 @@ pub struct Shipment {
     /// The ROWS cell: `ar-1655, ar-1660`; `none merged` with no PRs, `before 2026-11-11` for a
     /// release before the links were held, `not recorded` after.
     pub rows_text: String,
+    /// Its release page (`release_page::link`), set where the app is known.
+    pub href: String,
 }
 
-/// The release a run made or ran for.
-#[derive(Serialize, Debug, Default, Clone, PartialEq)]
+/// The release a run made or ran for. It serializes with the `href` of its release page
+/// (`release_page::link`), so every surface that shows the tag links it the same way.
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct RunRelease {
     pub project: String,
     pub tag: String,
+}
+
+impl Serialize for RunRelease {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut m = s.serialize_struct("RunRelease", 3)?;
+        m.serialize_field("project", &self.project)?;
+        m.serialize_field("tag", &self.tag)?;
+        m.serialize_field(
+            "href",
+            &crate::release_page::link(&self.project, &self.tag).href(),
+        )?;
+        m.end()
+    }
 }
 
 /// One PR as the PR store (`schedules-sync prs`, ~/.agent/prs) keeps it.
@@ -1009,7 +1026,7 @@ impl<'a> Graph<'a> {
                 let records = deploys_to
                     .get(&(key.to_string(), r.path.as_str()))
                     .is_some_and(|ids| ids.iter().any(|id| recording(id)));
-                if records && self.release(r).is_none() {
+                if records && self.release(r).is_none() && !proof_tag(&r.branch) {
                     out.push(format!(
                         "{} run {} ({}) deployed and resolves to no release",
                         r.repo, r.id, r.path
@@ -1126,6 +1143,15 @@ pub fn link_errors(links: &Links) -> Vec<String> {
         .collect();
     out.sort();
     out
+}
+
+/// `v0.0.0-test`: the cut workflow's proof tag, version 0.0.0, which `agentctl-release-cut`
+/// never cuts as a release (its `0.0.0*` match, mirrored here) and the playground's cut.yml
+/// tags to prove the door. The deploy-runs check skips a run on it that resolves to no release:
+/// `release()` is Some for every run a Deployment names (`deployed_by` falls back to its
+/// version), so that run recorded none and built nothing.
+fn proof_tag(tag: &str) -> bool {
+    tag.strip_prefix('v').unwrap_or(tag).starts_with("0.0.0")
 }
 
 /// `1.19.0`: the versions a lab version note is named for. A build or pre-release tag's version
@@ -1348,6 +1374,7 @@ pub fn history(line: &Line, channels: &[Release]) -> Vec<Shipment> {
                 },
                 rows: vec![],
                 rows_text: "not recorded".into(),
+                href: String::new(),
             }
         })
         .collect()
@@ -2307,5 +2334,82 @@ mod tests {
         };
         assert_eq!(merged.landed_at(), Some("m"));
         assert_eq!(Pr::default().landed_at(), None);
+    }
+
+    #[test]
+    fn a_deploy_run_on_the_proof_tag_that_recorded_no_deployment_is_no_red() {
+        let since = 1_794_384_000;
+        let ts = chrono::DateTime::from_timestamp(since + 20, 0)
+            .unwrap()
+            .to_rfc3339();
+        let reg = Registry::parse(
+            r#"{"trackers": {"app": {"github": "Acme/app", "type": "app",
+                "targets": [{"id": "app-prod", "pinned": {"deployed": true}}],
+                "deployWorkflows": {".github/workflows/deploy.yml": ["app-prod"]}}}}"#,
+        )
+        .unwrap();
+        let mut links = Links {
+            since,
+            ..Default::default()
+        };
+        links.workflows.insert(
+            "app".into(),
+            Workflows {
+                branch: "main".into(),
+                files: vec![Workflow {
+                    path: ".github/workflows/deploy.yml".into(),
+                    deploy: true,
+                }],
+                error: None,
+            },
+        );
+        let deploy_run = |id, branch: &str| Run {
+            path: ".github/workflows/deploy.yml".into(),
+            conclusion: Some("success".into()),
+            ..run("Acme/app", id, branch, "s", &ts)
+        };
+        let runs = vec![deploy_run(70, "main"), deploy_run(72, "v0.0.0-test")];
+        let (lines, live) = (HashMap::new(), HashMap::new());
+        let g = Graph::new(Inputs {
+            lines: &lines,
+            channels: &[],
+            items: &[],
+            prs: &[],
+            live: &live,
+            registry: Some(&reg),
+            since,
+            run_tags: &[],
+        });
+        let facts = Facts {
+            runs: Some(&runs),
+            links: Some(&links),
+            ..Default::default()
+        };
+        let reds: Vec<String> = g
+            .check(&facts, since + 5000)
+            .into_iter()
+            .filter(|l| l.contains(" run "))
+            .collect();
+        assert_eq!(
+            reds,
+            ["Acme/app run 70 (.github/workflows/deploy.yml) deployed and resolves to no release"]
+        );
+    }
+
+    #[test]
+    fn the_proof_tag_is_version_0_0_0_only() {
+        for t in ["v0.0.0-test", "v0.0.0", "0.0.0-test"] {
+            assert!(proof_tag(t), "{t}");
+        }
+        for t in [
+            "v0.0.1",
+            "v1.0.0",
+            "v10.0.0",
+            "v0.5.3-dodginballs5",
+            "main",
+            "",
+        ] {
+            assert!(!proof_tag(t), "{t}");
+        }
     }
 }

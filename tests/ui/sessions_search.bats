@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
 # Tier 3: the prefix R window through real fzf on a real tmux server. The list gets the
-# whole width, so a title reads in full at a normal client and wraps at a narrow one.
+# whole width, so a title reads in full at a normal client and wraps at a narrow one; the
+# session card sits below it, and ctrl-t opens the highlighted session's prompts.
 # Container only, like every ui test.
 
 setup() {
@@ -15,19 +16,31 @@ setup() {
   export CLAUDE_RECALL="$SANDBOX/bin/claude-recall"
   printf '#!/usr/bin/env bash\nexit 0\n' > "$CLAUDE_RECALL"; chmod +x "$CLAUDE_RECALL"
   TITLE='Waybar right-side overflow and agent chips across both monitors, wrapped'
-  mkdir -p "$HOME/.agent/sessions"
+  T="$HOME/.claude/projects/-w/aaaaaaaa-1.jsonl"
+  mkdir -p "$HOME/.agent/sessions/dotfiles" "$(dirname "$T")"
   printf '%s\t' aaaaaaaa-1 dotfiles - 200 /w main "$TITLE" "$TITLE" first last f.sh - hand \
     | sed 's/\t$/\n/' > "$HOME/.agent/sessions/index.tsv"
+  printf '%s\n' '{"type":"user","timestamp":"2026-11-20T09:12:00.000Z","message":{"role":"user","content":"move the agent chips left"}}' > "$T"
+  jq -nc --arg t "$T" '{session_id:"aaaaaaaa-1", transcript:$t, project:"dotfiles", edits:3, updated:1}' \
+    > "$HOME/.agent/sessions/dotfiles/sessions.jsonl"
 }
 
 teardown() { ui_teardown; }
 
-@test "at a normal width a title reads whole on one row, with no preview pane" {
-  TM_WIDTH=130 TM_HEIGHT=20 tmux_start "$REPO_ROOT/.local/bin/sessions" search
+@test "at a normal width a title reads whole on one row, with the session card below" {
+  TM_WIDTH=130 TM_HEIGHT=24 tmux_start "$REPO_ROOT/.local/bin/sessions" search
   wait_until 'screen_has "$TITLE"'
-  screen_has 'enter resume | ctrl-g full-text | --all shows dispatched'
-  screen_lacks '? preview'
+  screen_has 'enter resume | ctrl-t prompts | ctrl-g full-text | --all shows dispatched'
+  wait_until 'screen_has "EDITS 3"'
   screen_lacks '│'
+}
+
+@test "ctrl-t lists the highlighted session's prompts" {
+  TM_WIDTH=130 TM_HEIGHT=24 tmux_start "$REPO_ROOT/.local/bin/sessions" search
+  wait_until 'screen_has "$TITLE"'
+  tmux_keys C-t
+  wait_until 'screen_has "move the agent chips left"'
+  screen_has 'enter read from here | esc back'
 }
 
 @test "at a narrow width the title wraps instead of being cut" {

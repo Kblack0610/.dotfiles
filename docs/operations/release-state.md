@@ -118,7 +118,7 @@ An opened app on the Releases tab lists its releases newest first with when each
 |---|---|
 | environments | an environment holding recorded Deployments that no target is named |
 | deploy workflows | an unmapped deploy file, a mapped path that is not a file, an unknown target id (`deployWorkflows` above) |
-| deploy runs | a successful run since the date, of a workflow mapped to a `deployed: true` target, that resolves to no release |
+| deploy runs | a successful run since the date, of a workflow mapped to a `deployed: true` target, that resolves to no release; a run on the cut workflow's proof tag (version 0.0.0, `v0.0.0-test`) that recorded no Deployment built nothing and is skipped |
 | tag globs | a `tagGlob` that matches no tag while the lab has shipped versions |
 | tags | a release tag since the date with no lab version of its number, and a PR in it (not a bot's, merged since the date, or a train member closed since it) with no board row, read from the queue items done since the date: the item that names the PR, else the one its body's `Item:` line names (a train or hand merge records none) |
 | versions | a version rolled since the date with no tag of the line, and a row whose PR shipped in another tag or in none |

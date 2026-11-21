@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: memory
   tags: [session, reboot, upgrade, inventory]
+  system: [sessions, recovery]
   reviewed: "2026-11-11"
 ---
 

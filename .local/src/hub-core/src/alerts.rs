@@ -18,6 +18,7 @@ use serde::Serialize;
 
 use crate::actions::{self, Action};
 use crate::alertmanager::Firing;
+use crate::fix_owner::fix_owner;
 use crate::fleet::runner::{self, Watch};
 use crate::home::{Chip, Level};
 use crate::infra::Infra;
@@ -61,6 +62,11 @@ pub struct Alert {
     /// The fix item's slug, for a link to its queue record.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub slug: String,
+    /// Who is fixing it while its fix is in hand and not past its due time: the item's tmux
+    /// session, else its slug while it waits to start. Empty when it has no owner, its fix
+    /// did not hold, it waits on someone or is late: the rows `needs_you` keeps.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub fixing_by: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pr_url: Option<String>,
     /// What a row opens to: the watch's `what:`, `where:`, `action:` and last probe output.
@@ -94,6 +100,13 @@ impl Alert {
             "normal" => Level::Warn,
             _ => Level::Ok,
         }
+    }
+
+    /// True when the overview (Home's Alerts card, and the phone widget's with it) shows this
+    /// row to the human: it has a hue and nobody is fixing it on time. A row with an owner in
+    /// hand reads "being fixed by <fixing_by>" there instead; the Alerts tab lists every row.
+    pub fn needs_you(&self) -> bool {
+        self.hue() != Level::Ok && self.fixing_by.is_empty()
     }
 }
 
@@ -263,6 +276,10 @@ pub struct Counts {
     pub tripped: usize,
     pub errors: usize,
     pub no_owner: usize,
+    /// Rows the overviews show the human (`Alert::needs_you`), and the rows with a fix in hand
+    /// on time that they read as "being fixed by <session>".
+    pub need_you: usize,
+    pub being_fixed: usize,
     pub fixes_open: usize,
     pub fixes_settled: usize,
     pub history: usize,
@@ -395,9 +412,10 @@ fn red_key(item: &str, items: &[String]) -> Option<String> {
     }
 }
 
-/// The owner and state of a red from its fix: the first open row filed under `key` (open rows
-/// are worst first), or none.
-fn owner(a: &mut Alert, key: Option<&str>, fixes: Option<&[Red]>) {
+/// The owner and state of a red from its fix filed under `key` ([`fix_owner`], the shared join);
+/// no key (a shared first word) has no owner. It sets `owner`, `fixing_by` and, unless the alert
+/// is an error, `state` outright, so an alert's owner fields are this call's alone.
+fn owner(a: &mut Alert, key: Option<&str>, fixes: Option<&[Red]>, now: i64) {
     let Some(fixes) = fixes else {
         a.owner = "-".into();
         if !a.error() {
@@ -405,27 +423,19 @@ fn owner(a: &mut Alert, key: Option<&str>, fixes: Option<&[Red]>) {
         }
         return;
     };
-    let fix = key.and_then(|k| fixes.iter().find(|r| r.red == k));
-    a.owner = fix.map_or("-".into(), |r| format!("{} {}", r.slug, r.outcome));
-    if let Some(r) = fix {
+    let o = fix_owner(fixes, |r| key == Some(r.red.as_str()), now);
+    a.owner = o.owner;
+    a.fixing_by = o.fixing_by;
+    if let Some(r) = o.fix {
         if a.project.is_empty() {
             a.project = r.project.clone();
         }
         a.slug = r.slug.clone();
         a.pr_url = r.pr_url.clone();
     }
-    if a.error() {
-        return;
+    if !a.error() {
+        a.state = o.state.into();
     }
-    // A fix row whose fix did not hold (came back, still red, no fix) has an owner to ask, so
-    // it is "unfixed"; "no owner" is only a red with no fix row at all.
-    a.state = match fix.map(|r| r.outcome.as_str()) {
-        Some("fixing" | "needs merge") => "fixing",
-        Some("queued") => "queued",
-        Some(_) => "unfixed",
-        None => "no owner",
-    }
-    .into();
 }
 
 /// Firing's order: tripped watches, error watches, `cc:red_now`, the machinery, Alertmanager
@@ -543,6 +553,30 @@ fn am_rows(list: &[Firing]) -> Vec<Alert> {
         .collect()
 }
 
+/// The counts of the firing rows, the fixes and the watches; the history's are the caller's.
+fn counted(firing: &[Alert], fixes: Option<&Reds>, watches: &[Watch]) -> Counts {
+    let n = |s: &str| watches.iter().filter(|w| w.state == s).count();
+    let am = || firing.iter().filter(|a| a.in_state(ALERTMANAGER));
+    Counts {
+        firing: firing.len(),
+        tripped: firing.iter().filter(|a| a.in_state("trip")).count(),
+        errors: firing.iter().filter(|a| a.error()).count(),
+        no_owner: firing.iter().filter(|a| a.in_state("no owner")).count(),
+        need_you: firing.iter().filter(|a| a.needs_you()).count(),
+        being_fixed: firing.iter().filter(|a| !a.fixing_by.is_empty()).count(),
+        fixes_open: fixes.map_or(0, |r| r.open.len()),
+        fixes_settled: fixes.map_or(0, |r| r.settled.len()),
+        watches: watches.len(),
+        watches_tripped: n("TRIP"),
+        watches_error: n("ERROR"),
+        watches_ok: n("OK"),
+        watches_new: n("new"),
+        alertmanager: am().count(),
+        alertmanager_alerts: am().map(|a| a.pages.len()).sum(),
+        ..Default::default()
+    }
+}
+
 /// The tab from what each source returned; `read` gathers them.
 pub fn join(
     infra: &Infra,
@@ -591,6 +625,7 @@ pub fn join(
             &mut a,
             Some(&format!("watch {}", w.name.replace('_', "-"))),
             open,
+            now,
         );
         firing.push(a);
     }
@@ -615,7 +650,7 @@ pub fn join(
                 source: "red_now".into(),
                 ..Default::default()
             };
-            owner(&mut a, red_key(item, &items).as_deref(), open);
+            owner(&mut a, red_key(item, &items).as_deref(), open, now);
             firing.push(a);
         }
         for item in machinery(infra) {
@@ -626,7 +661,7 @@ pub fn join(
                 ..Default::default()
             };
             // Nothing files a fix for the machinery's own reds.
-            owner(&mut a, None, open);
+            owner(&mut a, None, open, now);
             firing.push(a);
         }
     }
@@ -653,24 +688,10 @@ pub fn join(
     history.truncate(FOLD_ROWS);
 
     let watches = watches.unwrap_or_default();
-    let n = |s: &str| watches.iter().filter(|w| w.state == s).count();
-    let am = || firing.iter().filter(|a| a.in_state(ALERTMANAGER));
     let counts = Counts {
-        firing: firing.len(),
-        tripped: firing.iter().filter(|a| a.in_state("trip")).count(),
-        errors: firing.iter().filter(|a| a.error()).count(),
-        no_owner: firing.iter().filter(|a| a.in_state("no owner")).count(),
-        fixes_open: fixes.as_ref().map_or(0, |r| r.open.len()),
-        fixes_settled: fixes.as_ref().map_or(0, |r| r.settled.len()),
         history: history.len(),
         history_older,
-        watches: watches.len(),
-        watches_tripped: n("TRIP"),
-        watches_error: n("ERROR"),
-        watches_ok: n("OK"),
-        watches_new: n("new"),
-        alertmanager: am().count(),
-        alertmanager_alerts: am().map(|a| a.pages.len()).sum(),
+        ..counted(&firing, fixes.as_ref(), &watches)
     };
     let strip = BTreeMap::from([
         ("firing", counts.firing),
@@ -1007,6 +1028,90 @@ mod tests {
         assert_eq!(a.firing[0].slug, "ar-1");
         assert_eq!((a.counts.fixes_open, a.counts.fixes_settled), (3, 1));
         assert_eq!(a.counts.no_owner, 3);
+    }
+
+    #[test]
+    fn a_red_is_being_fixed_only_while_its_fix_is_in_hand_and_on_time() {
+        let fix = |slug: &str,
+                   w: &str,
+                   outcome: &str,
+                   state: &str,
+                   session: Option<&str>,
+                   due: Option<i64>| Red {
+            state: state.into(),
+            session: session.map(String::from),
+            due,
+            ..red(slug, &format!("watch {w}"), outcome)
+        };
+        let names = [
+            "on-time", "queued", "no-due", "waits", "late", "unheld", "retried", "orphan",
+        ];
+        let ws = names
+            .iter()
+            .map(|n| watch(n, "TRIP", "high", Some(NOW - 60)))
+            .collect();
+        let fixes = reds::split(vec![
+            fix(
+                "ar-1",
+                "on-time",
+                "fixing",
+                "running",
+                Some("lab:dotfiles-agent-7"),
+                Some(NOW + 60),
+            ),
+            // Queued with no session yet: its slug holds it.
+            fix("ar-8", "queued", "queued", "queued", None, Some(NOW + 60)),
+            // Too few merged fixes for a due time: nothing says it is on time.
+            fix("ar-2", "no-due", "queued", "queued", None, None),
+            // Waiting on an ask or another item: the human may be what it waits on.
+            fix(
+                "ar-3",
+                "waits",
+                "fixing",
+                "waiting",
+                Some("lab:dotfiles-agent-8"),
+                Some(NOW + 60),
+            ),
+            fix(
+                "ar-4",
+                "late",
+                "fixing",
+                "running",
+                Some("lab:dotfiles-agent-9"),
+                Some(NOW - 1),
+            ),
+            fix("ar-5", "unheld", "came back", "done", None, None),
+            // A fix that did not hold and the new one in hand: the new one owns it.
+            fix("ar-6", "retried", "still red", "done", None, None),
+            fix(
+                "ar-7",
+                "retried",
+                "fixing",
+                "running",
+                Some("lab:dotfiles-agent-10"),
+                Some(NOW + 60),
+            ),
+        ]);
+        let a = join(&infra(&[]), Ok(ws), Ok(fixes), Ok(String::new()), NOW);
+        let by = |w: &str| {
+            let r = a.firing.iter().find(|r| r.what == w).unwrap();
+            (r.fixing_by.as_str(), r.needs_you())
+        };
+        assert_eq!(by("on-time"), ("dotfiles-agent-7", false));
+        assert_eq!(by("queued"), ("ar-8", false));
+        assert_eq!(by("no-due"), ("", true));
+        assert_eq!(by("waits"), ("", true));
+        assert_eq!(by("late"), ("", true));
+        assert_eq!(by("unheld"), ("", true));
+        assert_eq!(by("retried"), ("dotfiles-agent-10", false));
+        assert_eq!(by("orphan"), ("", true));
+        assert_eq!(
+            a.firing.iter().find(|r| r.what == "retried").unwrap().owner,
+            "ar-7 fixing"
+        );
+        assert_eq!((a.counts.need_you, a.counts.being_fixed), (5, 3));
+        // The tab still lists and hues every one: only the overviews read `needs_you`.
+        assert_eq!((a.counts.tripped, a.level), (8, Level::Red));
     }
 
     #[test]

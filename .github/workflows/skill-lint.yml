@@ -44,7 +44,7 @@ jobs:
         if: runner.environment == 'self-hosted'
         run: ci-fresh-workspace
       # All history, for the ratchet's merge base, but no old file contents, and only the
-      # two paths the lint reads: a game repo's tree would not fit this job's timeout.
+      # paths the lint reads: a game repo's tree would not fit this job's timeout.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -53,9 +53,12 @@ jobs:
           sparse-checkout: |
             /.claude/
             /tests/skill-lint.baseline
+            /.config/shared-hooks/project-map.json
       # The linter comes from the public repo: its own commit when that repo is the caller,
       # so a PR is tested with the linter it changes, and main for everyone else. .claude/hooks
-      # holds hand_methods.py, which owns what a valid metadata.replaces row is (BADMETA).
+      # holds hand_methods.py, which owns what a valid metadata.replaces row is (BADMETA), and
+      # .local/src/docs the systems.md registry metadata.system is checked against (SYSTEM).
+      # The caller's project map, when it has one (the private repo), adds the own system ids.
       - uses: actions/checkout@v4
         with:
           repository: Kblack0610/.dotfiles
@@ -64,6 +67,7 @@ jobs:
           sparse-checkout: |
             .local/bin
             .claude/hooks
+            .local/src/docs
       # Exits 2 if it finds nothing at all, so a path change that silently empties the
       # input list fails the job instead of reporting success. allow-empty is the one exception.
       - name: Lint skills, commands and agents

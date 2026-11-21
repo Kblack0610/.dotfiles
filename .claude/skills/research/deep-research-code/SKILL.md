@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: research
   tags: [research, codebase, infrastructure, multi-agent]
+  system: [any]
   reviewed: "2026-06-01"
 ---
 

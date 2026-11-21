@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: authoring
   tags: [skills, maintenance, drift]
+  system: [notes]
   reviewed: "2026-08-11"
 ---
 
@@ -41,7 +42,7 @@ Four layers, in order. The first is ground truth; the rest are judgment.
 skill-drift --json
 ```
 
-**Environmental** (need a real machine, so they are yours alone to act on): `DEADPATH` (a `~/` path in a SKILL.md that does not exist), `NOCMD` (a command it tells you to run that is not on PATH), `UNDEPLOYED` (a skill dir in a repo with no link in `~/.claude/skills/`), `GHOST` (bulleted in CLAUDE.md, absent from disk), `STALE` (`metadata.reviewed` older than 180d), `UNUSED` (never invoked in 90d of transcripts), `LISTBUDGET` (the whole listing over its budget).
+**Environmental** (need a real machine, so they are yours alone to act on): `DEADPATH` (a `~/` path in a SKILL.md that does not exist), `NOCMD` (a command it tells you to run that is not on PATH), `UNDEPLOYED` (a skill dir in a repo with no link in `~/.claude/skills/`), `GHOST` (bulleted in CLAUDE.md, absent from disk), `STALE` (`metadata.reviewed` older than 180d), `UNUSED` (never invoked in 90d of transcripts), `PROMOTE` (a `status: draft` skill used past the toggle's bar: propose listing it), `LISTBUDGET` (the whole listing over its budget).
 
 **Static** (`skill-drift --lint .`, the checks `~/.local/src/docs/skills.md` names): CI gates every PR on these, so a finding here is debt frozen in `tests/skill-lint.baseline` or something that landed before the gate existed.
 
@@ -99,7 +100,7 @@ Rank by blast radius: a skill invoked constantly with a dead path outranks a rar
 Turn a recurring workflow into a new skill, per the skill-candidate rule in CLAUDE.md (same multi-step manual workflow 3+ times).
 
 1. Name the evidence: which sessions/lessons show the repetition.
-2. Confirm scope and name with the user. **Never auto-create a skill file.**
+2. Confirm scope and name with the user. **Never auto-create a skill file.** The name takes the prefix its system's skills already share, and `metadata.system` names that system (`~/.local/src/docs/skills.md`).
 3. Copy `~/.dotfiles/.claude/skills/SKILL-TEMPLATE.md` to `.claude/skills/{category}/{name}/SKILL.md`. `dotfiles-land` decides which repo.
 4. Landing it links it: `dotfiles-autopull` runs `skill-deploy` after every fast-forward. Never hand-write the symlink. Its description is its index entry; CLAUDE.md names it only when it collides with or replaces an existing skill (`update-rules`, "A new skill and CLAUDE.md"), and a skill it replaces is deleted in the same PR.
 5. `skill-drift --lint .` before opening the PR. CI runs the same command, so a miss here is a red PR rather than a bad skill.

@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [monitoring, watches, observe-only, agentctl]
+  system: [telemetry]
   reviewed: "2026-11-04"
 ---
 
@@ -97,7 +98,7 @@ renders and what a page carries, and a watch nobody can read is a watch nobody a
 
 `who` is the existing `source:` field - don't add another.
 
-Add `project: <canonical name>` (project-map.json) when the watch belongs to one project: it is the Alerts tab's project facet and the "N watches, M firing" line on that project's card. Leave it out for fleet machinery (spend, dispatch, liveness), which is fleet-wide. `validate` refuses a name the registry does not hold.
+Add `system: <id>` (an id of `~/.local/src/docs/systems.md`, or a project's own in project-map.json): what the watch is about, so its red loads fix-red plus that system's skills. Add `project: <canonical name>` (project-map.json) when the watch belongs to one project: it is the Alerts tab's project facet and the "N watches, M firing" line on that project's card. Leave it out for fleet machinery (spend, dispatch, liveness), which is fleet-wide. `validate` refuses a name the registry does not hold.
 
 ```yaml
 name: prod-api
@@ -111,6 +112,7 @@ target: https://api.myapp.com/health
 expect_status: 200
 interval: 5m
 expiry: null
+system: telemetry
 severity: high
 created: 2026-06-18T11:00:00-07:00
 source: user
@@ -123,7 +125,7 @@ sentinel-manifest validate --strict ~/.agent/watches/<name>.yaml
 fleet-bench triage --coverage    # standing watch: no `watch <name>` line once its route is in
 ```
 
-`--strict` is the write-time lint that requires the four fields, an explicit `expiry`, and `--paginate` on a `gh api` read of a list endpoint in `expect_cmd` (one page is 30 items: ar-2393); plain `validate` (what the daemon
+`--strict` is the write-time lint that requires the four fields, a `system:` (the system the watch is about, ids of `systems.md`; its red loads that system's skills), an explicit `expiry`, and `--paginate` on a `gh api` read of a list endpoint in `expect_cmd` (one page is 30 items: ar-2393); plain `validate` (what the daemon
 runs every pass) does not, so a manifest missing them fails here and NOT at runtime - deliberately,
 because a runtime failure notifies, and a documentation gap must never page. Use a folded scalar
 (`>-`) for a long value, never `|-`: the value must stay one line.

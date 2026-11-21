@@ -9,6 +9,7 @@ paths:
 metadata:
   category: monitoring
   tags: [agentctl, runners, verdicts, budgets, systemd]
+  system: [dispatch]
   reviewed: "2026-11-06"
 ---
 
