@@ -208,7 +208,7 @@ DISPATCH_PROC="${DISPATCH_PROC:-/proc}"                                         
 CODEX_ROLLOUT_JQ="${DISPATCH_CODEX_ROLLOUT_JQ:-$HOME/.local/lib/codex-rollout.jq}"
 OC_SESSION_JQ="${DISPATCH_OPENCODE_SESSION_JQ:-$HOME/.local/lib/opencode-session.jq}"
 OC_DB="${DISPATCH_OPENCODE_DB:-$HOME/.local/share/opencode/opencode.db}"   # the shared opencode.db, where item_end reads why a go or nim run ended
-LANE_RUNS="${DISPATCH_LANE_RUNS:-$HOME/.agent/model-lane/runs.jsonl}"   # model-lane's run log: trainee-rollup reads its trainee reject reasons
+LANE_RUNS="${DISPATCH_LANE_RUNS:-$HOME/.agent/model-lane/runs.jsonl}"   # model-lane's run log: trainee_load reads which slugs a ladder run took, trainee-rollup its trainee reject reasons
 AGY_RUNS="${DISPATCH_AGY_RUNS:-$HOME/.agent/agy/runs}"   # each agy run's log (agent-agy), srt settings and tmp: where item_end reads why it ended
 AGY_RESULT_JQ="${DISPATCH_AGY_RESULT_JQ:-$HOME/.local/lib/agy-result.jq}"
 HARNESSES="${DISPATCH_HARNESSES:-$HOME/.config/agentctl/harnesses.json}"   # the gateway harnesses: model map, timeout, key files
@@ -2481,6 +2481,9 @@ direct_why() {
 # trainee_load -- the trainee block of lanes.yaml (`model-lane trainee`) in TRAINEE_CONF, read once in
 # this shell so the checks route() runs in subshells reuse it; {} (no trainee lane) when it cannot be read.
 trainee_load() {
+  # The slugs a ladder run already took (lane trainee in model-lane's run log), one read a pass: a board row
+  # promoted again has a fresh queue item with no `.trainee`, so the log is the one record of the first try.
+  [ -n "${TRAINEE_TRIED+x}" ] || TRAINEE_TRIED=$(jq -rR 'fromjson? | select(.lane == "trainee") | .item // empty' "$LANE_RUNS" 2>/dev/null | sort -u)
   [ -z "${TRAINEE_CONF:-}" ] || return 0
   TRAINEE_CONF=$(model-lane trainee 2>/dev/null) && jq -e 'type == "object"' <<<"$TRAINEE_CONF" >/dev/null 2>&1 || TRAINEE_CONF='{}'
 }
@@ -2493,7 +2496,8 @@ item_points() { jq -r 'first((.points | tostring | select(test("^[0-9]+$"))), ((
 # ladder_row_why <item json> <who> [tiers] [tier3 share] -> why no sandboxed ladder run (a trainee's or
 # a direct one) takes the item, rc 1, or nothing: it takes a row whose kind opens a PR at a tier in
 # <tiers> (default 1), not a plan, a canary, a verify or review item, one that names its own model, or
-# one a ladder run took before (`trainee:` or `direct:`, so a rejected or failed row goes to claude).
+# one a ladder run took before (`trainee:` or `direct:`, or a lane trainee run in model-lane's log under its
+# slug, so a rejected or failed row goes to claude).
 # With a share N above 0, a tier-3 row tier3_pick takes is let through too. <who> names the run.
 ladder_row_why() {
   local it="$1" who="$2" tiers="${3:-1}" share="${4:-0}" tags tier kind prev
@@ -2502,6 +2506,8 @@ ladder_row_why() {
     { echo "it is a canary, verify or review item"; return 1; }
   prev=$(jq -r '.trainee // .direct // empty' <<<"$it")
   [ -z "$prev" ] || { echo "a ladder run took it once already ($prev)"; return 1; }
+  trainee_load
+  [ -z "$TRAINEE_TRIED" ] || ! grep -qxF -- "$(jq -r '.slug // "-"' <<<"$it")" <<<"$TRAINEE_TRIED" || { echo "a ladder run took it once already (model-lane's run log)"; return 1; }
   [ -z "$(claude_pin "$it")" ] || { echo "it names its own model"; return 1; }
   [ "$(jq -r .mode <<<"$it")" != plan ] || { echo "it is a plan item"; return 1; }
   tier=$(item_tier "$it")

@@ -22,6 +22,9 @@ setup() {
   printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/bin/agent-usage"
   chmod +x "$SANDBOX/bin/agent-usage"
 
+  # This machine is "here"; store-sync shares the registry with every other host.
+  export FLEET_HOSTS_LIB="$REPO_ROOT/.local/lib/fleet-hosts.sh" FLEET_HOST=here
+
   PROJECT="$SANDBOX/alpha"
   mkdir -p "$PROJECT"
   export CLAUDE_PROJECT_DIR="$PROJECT"
@@ -40,10 +43,10 @@ run_hook() {
   jq -nc --arg t "$TRANSCRIPT" '{session_id:"self", transcript_path:$t}' | bash "$HOOK"
 }
 
-@test "drops this session's old line and dead transcripts, keeps the rest verbatim" {
+@test "drops this session's old line and this host's dead transcripts, keeps the rest verbatim" {
   {
-    jq -nc --arg t "$LIVE" '{session_id:"keep", transcript:$t, title:"kept"}'
-    jq -nc '{session_id:"gone", transcript:"/nonexistent/x.jsonl"}'
+    jq -nc --arg t "$LIVE" '{session_id:"keep", transcript:$t, title:"kept", host:"here"}'
+    jq -nc '{session_id:"gone", transcript:"/nonexistent/x.jsonl", host:"here"}'
     jq -nc --arg t "$TRANSCRIPT" '{session_id:"self", transcript:$t, title:"stale"}'
     echo '{"session_id":"nots", "title":"no transcript field"}'
   } > "$REG"
@@ -52,6 +55,30 @@ run_hook() {
   assert_output "$(printf 'keep\nnots\nself')"
   run grep -c '"title":"stale"' "$REG"
   assert_output 0
+}
+
+@test "another host's rows and rows with no host survive though their transcript is not here" {
+  {
+    jq -nc '{session_id:"razer", transcript:"/nonexistent/r.jsonl", host:"razer"}'
+    jq -nc '{session_id:"legacy", transcript:"/nonexistent/l.jsonl"}'
+    jq -nc '{session_id:"mine", transcript:"/nonexistent/m.jsonl", host:"here"}'
+  } > "$REG"
+  run_hook
+  run jq -r '.session_id' "$REG"
+  assert_output "$(printf 'razer\nlegacy\nself')"
+}
+
+@test "a host the roster lib cannot name prunes nothing and stamps no host" {
+  jq -nc '{session_id:"mine", transcript:"/nonexistent/m.jsonl", host:"here"}' > "$REG"
+  FLEET_HOSTS_LIB=/nonexistent FLEET_HOST= HOSTNAME= run_hook
+  run jq -c '[.session_id, has("host")]' "$REG"
+  assert_output "$(printf '["mine",true]\n["self",false]')"
+}
+
+@test "a Stop stamps this machine's host on its row" {
+  run_hook
+  run jq -r .host "$REG"
+  assert_output here
 }
 
 @test "an unparseable line survives and does not truncate the registry" {
