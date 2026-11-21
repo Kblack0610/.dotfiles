@@ -867,14 +867,9 @@ pub(crate) mod tests {
         let ws = machine(&ms, "workstation");
         assert_eq!(ws.running, ["[unity]"], "a lent slot says nothing");
         assert_eq!((ws.busy, ws.slots), (1, 1));
-        // Lent to a Forgejo seat that is up, the slot is that seat's: it says nothing here, and
-        // the seat's job says forgejo, the kind the exporter gives a busy Forgejo seat.
+        // A standing Forgejo seat is a slot of its own; its job says forgejo, the kind the
+        // exporter gives a busy Forgejo seat.
         let mut f = fleet();
-        f.instant.insert(
-            "lent",
-            series(vec![json!({"name": "ws-unity-2", "to": "forgejo",
-                "seat": "ws-unity-2-forgejo", "v": "1"})]),
-        );
         let mut rows = f.get("runners").to_vec();
         rows.extend(series(vec![json!({"__name__": "github_runner_state",
             "host": "cachyos-x8664-main", "name": "ws-unity-2-forgejo", "state": "running",
