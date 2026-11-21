@@ -30,7 +30,8 @@ setup() {
   unset CLAUDE_CODE_SESSION_ID
 }
 
-field() { awk -v k="$2: " '$0 == "---" { exit } index($0, k) == 1 { print substr($0, length(k) + 1) }' "$1"; }
+# The file is a redirect, not an operand: awk reads stdin for an empty one, which hangs a local run (ar-3455).
+field() { awk -v k="$2: " '$0 == "---" { exit } index($0, k) == 1 { print substr($0, length(k) + 1) }' <"$1"; }
 item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
 
 @test "add writes one queued item with the defaults and the task as typed" {
@@ -4665,4 +4666,12 @@ stack_gh() {
   legacy second "after: base-a base-b" --project game "c"
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | \"\\(.hold) \\(.stacked_on // \"none\")\"'"
   assert_output "after base-a base-b none"
+}
+
+@test "fm_get and fm_body given no file return at once, never reading the caller's stdin (ar-3455)" {
+  # An awk operand of "" reads stdin, and a tool shell's stdin never closes: a lookup that came back empty hung a local run.
+  fns="$(sed -n '/^fm_get() {/,/^}/p; /^fm_body() {/p' "$AQ")"
+  [ -n "$fns" ]
+  run timeout 10 bash -c "$fns"'; [ -z "$(fm_get "" slug)" ] && [ -z "$(fm_body "")" ]' < <(sleep 30)
+  assert_success
 }

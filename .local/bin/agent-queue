@@ -186,9 +186,11 @@ TMUX_CLOSE="${TMUX_CLOSE:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/tmux-clos
 # `key: value` lines, a `---` line, then the task as typed.
 fm_get() { # file key
   awk -v k="$2" '$0 == "---" { exit }
-    index($0, k ":") == 1 { v = substr($0, length(k) + 2); sub(/^ +/, "", v); print v; exit }' "$1" 2>/dev/null
+    index($0, k ":") == 1 { v = substr($0, length(k) + 2); sub(/^ +/, "", v); print v; exit }' 2>/dev/null <"$1"
 }
-fm_body() { awk 'f { print } $0 == "---" { f = 1 }' "$1" 2>/dev/null; }
+# The file is read by redirect, never as an awk operand: awk reads stdin for an empty operand, and a
+# caller whose item lookup came back empty hung on the tool shell's open stdin (ar-3455).
+fm_body() { awk 'f { print } $0 == "---" { f = 1 }' 2>/dev/null <"$1"; }
 # one_line <text> -> the text on one line, each run of newlines, tabs or spaces as one space,
 # trimmed: a title as add --title and set title= write it.
 one_line() { printf '%s' "$1" | tr -s '\n\t' '  ' | sed 's/^ *//; s/ *$//'; }
