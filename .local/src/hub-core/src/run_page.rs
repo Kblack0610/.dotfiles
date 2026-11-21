@@ -16,11 +16,12 @@
 //! hands it canned answers.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use project_map::Registry;
 use serde::{Deserialize, Serialize};
 
+use crate::artifact_store;
 use crate::builds::{timed_as, Builds, Paths, Run};
 use crate::junit::{self, Loaded, PickRun};
 use crate::links::{Kind, Link};
@@ -206,18 +207,7 @@ fn is_hex(s: &str) -> bool {
 }
 
 fn clone_of(o: &Env, run: &Run) -> Result<std::path::PathBuf, String> {
-    let reg = o.registry.ok_or("no project map")?;
-    // `paths` maps a checkout to a project key, while a run names its forge slug (`owner/repo`).
-    // Only a key whose own slugs name the run's repo counts, so another owner's repo of the same
-    // name never reads this machine's clone.
-    reg.lookup(&run.repo)
-        .filter(|k| {
-            reg.repos(k)
-                .iter()
-                .any(|s| s.eq_ignore_ascii_case(&run.repo))
-        })
-        .and_then(|k| reg.checkout(k))
-        .ok_or_else(|| format!("no clone of {} on this machine", run.repo))
+    artifact_store::clone_of(o.registry.ok_or("no project map")?, &run.repo)
 }
 
 #[derive(Default, Debug, Clone, PartialEq)]
@@ -729,6 +719,7 @@ fn pick(reg: &Registry, r: &Run) -> PickRun {
         prs: r.prs.clone(),
         url: r.url.clone(),
         artifacts: reg.test_artifacts(&r.repo),
+        store: artifact_store::lister(reg, &r.repo),
     }
 }
 
@@ -775,7 +766,7 @@ fn tests(o: &Env, run: &Run) -> TestsPart {
     if run.state == "other" {
         return note("cancelled or skipped: it uploaded no results".into());
     }
-    let loaded = match junit::load(o.cache, &pick(reg, run)) {
+    let loaded = match junit::load(o.cache, &pick(reg, run), o.runner) {
         Ok(l) => l,
         Err(e) => return note(format!("results not read: {e}")),
     };
@@ -820,7 +811,7 @@ fn tests(o: &Env, run: &Run) -> TestsPart {
             None => {
                 compared = "new failures not marked: no earlier green run on main to compare".into()
             }
-            Some(b) => match junit::load(o.cache, &pick(reg, b)) {
+            Some(b) => match junit::load(o.cache, &pick(reg, b), o.runner) {
                 Err(e) => compared = format!("new failures not marked: #{} not read ({e})", b.id),
                 Ok(bl) if bl.suites.is_empty() => {
                     compared = format!("new failures not marked: #{} has no results", b.id)
@@ -930,45 +921,23 @@ fn github_artifacts(o: &Env, run: &Run) -> Result<Vec<Artifact>, String> {
     Ok(out)
 }
 
-/// The run's artifacts in the home store, from the repo's declared lister (`artifact_store`), run
-/// from the clone's own path so the script is the one at hand and never one this tree guesses.
-fn store_artifacts(o: &Env, run: &Run, script: &str) -> Result<Vec<Artifact>, String> {
-    let rel = Path::new(script);
-    if rel.is_absolute() || rel.components().any(|c| c.as_os_str() == "..") {
-        return Err(format!("artifactStore {script}: a path inside the clone"));
-    }
-    let path = clone_of(o, run)?.join(rel);
-    let out = o.runner.run(&argv(&[
-        "env",
-        &format!("GITHUB_REPOSITORY={}", run.repo),
-        "python3",
-        &path.to_string_lossy(),
-        "ls",
-        "",
-        "--run",
-        &run.id.to_string(),
-    ]))?;
-    let mut items = vec![];
-    let mut unread = 0;
-    for l in out.lines().filter(|l| !l.trim().is_empty()) {
-        let f: Vec<&str> = l.split_whitespace().collect();
-        match f[..] {
-            [name, _run, expires, size] if size.parse::<u64>().is_ok() => items.push(Artifact {
-                name: name.into(),
-                size: size.parse().unwrap_or_default(),
-                expires: expires.into(),
-                place: "store".into(),
-                ..Default::default()
-            }),
-            _ => unread += 1,
-        }
-    }
-    if unread > 0 && items.is_empty() {
-        return Err(format!(
-            "{unread} lines of the lister's answer are not `<name> <run> <expires> <bytes>`"
-        ));
-    }
-    Ok(items)
+/// The run's artifacts in the home store, from the repo's declared lister (`artifact_store`).
+fn store_artifacts(
+    o: &Env,
+    run: &Run,
+    script: Result<PathBuf, String>,
+) -> Result<Vec<Artifact>, String> {
+    let listed = artifact_store::ls(o.runner, &run.repo, &script?, "", run.id)?;
+    Ok(listed
+        .into_iter()
+        .map(|l| Artifact {
+            name: l.name,
+            size: l.size,
+            expires: l.expires,
+            place: "store".into(),
+            ..Default::default()
+        })
+        .collect())
 }
 
 /// What the run built: its artifacts on GitHub and, for a repo with an `artifactStore`, in the home
@@ -1011,8 +980,8 @@ fn artifacts(o: &Env, run: &Run) -> Artifacts {
                 Ok(a) => items.extend(a),
                 Err(e) => errors.push(format!("GitHub: {e}")),
             }
-            if let Some(script) = reg.artifact_store(&run.repo) {
-                match store_artifacts(o, run, &script) {
+            if let Some(script) = artifact_store::lister(reg, &run.repo) {
+                match store_artifacts(o, run, script) {
                     Ok(a) => items.extend(a),
                     Err(e) => errors.push(format!("store: {e}")),
                 }
