@@ -2322,6 +2322,32 @@ research_item() {
   [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: rollout' ]
 }
 
+@test "end to end: a running item the session owns by sessions: alone does not hold the plan's phase; another session's does (ar-475)" {
+  # 2026-11-05 dotfiles-agent-4 read DONE while P4 was its own item credit-games-p4.
+  landed_fixture
+  mkdir -p "$HOME/.agent/queue/running"
+  printf 'slug: own-p2\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsessions: sid-9\nplan: %s\nphases: 2\n---\nPhase 2 of the plan\n' \
+    "$SANDBOX/plan.md" > "$HOME/.agent/queue/running/20261103-100000-own-p2.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Phase 2: rollout' ]
+  # a second own item (own:a,b) holds nothing either; a foreign queued item holds the phase alone
+  sed 's/^slug: own-p2/slug: own-p2b/' "$HOME/.agent/queue/running/20261103-100000-own-p2.md" > "$HOME/.agent/queue/running/20261103-100001-own-p2b.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+  mkdir -p "$HOME/.agent/queue/queued"
+  printf 'slug: foreign-p2\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nplan: %s\nphases: 2\n---\nPhase 2 of the plan\n' \
+    "$SANDBOX/plan.md" > "$HOME/.agent/queue/queued/20261103-100000-foreign-p2.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its item own-p2 is still open with every phase done or queued' ]
+  # negative control: the item running in another session holds the phase
+  rm "$HOME/.agent/queue/running/20261103-100001-own-p2b.md" "$HOME/.agent/queue/queued/20261103-100000-foreign-p2.md"
+  sed -i 's/^sessions: sid-9/session: lab:other\nsessions: sid-other/' "$HOME/.agent/queue/running/20261103-100000-own-p2.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: own-p2' ]
+}
+
 @test "end to end: an item that records phases: holds only those; the next phase it does not hold is still this session's (ar-267)" {
   # 2026-11-04 agent-2 read DONE mid-phase 3 because phases 4 and on were queue items.
   landed_fixture
