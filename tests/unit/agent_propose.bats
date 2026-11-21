@@ -11,6 +11,9 @@ setup() {
     printf '#!/usr/bin/env bash\necho "%s $*" >> "$CALLS"\n[ -z "${STUB_FAIL:-}" ] || { echo boom; exit 1; }\necho done\n' "$c" > "$BATS_TEST_TMPDIR/bin/$c"
     chmod +x "$BATS_TEST_TMPDIR/bin/$c"
   done
+  # agent-ask: post logs its argv and prints an id (or fails on STUB_ASK_FAIL); answer-names prints STUB_ANSWER
+  printf '#!/usr/bin/env bash\necho "agent-ask $*" >> "$CALLS"\ncase "$1" in post) [ -z "${STUB_ASK_FAIL:-}" ] || exit 2; echo ASK1 ;; answer-names) printf "%%s\\n" "${STUB_ANSWER:-}" ;; esac\n' > "$BATS_TEST_TMPDIR/bin/agent-ask"
+  chmod +x "$BATS_TEST_TMPDIR/bin/agent-ask"
   PATH="$BATS_TEST_TMPDIR/bin:$PATH"
   AP="$BATS_TEST_DIRNAME/../../.local/bin/agent-propose"
 }
@@ -58,16 +61,65 @@ add_queue() { "$AP" add --stream usage-cleanup --project dotfiles --verb queue -
   assert_equal "$("$AP" count)" 0
 }
 
-@test "an expired proposal may come back, and a past-due one stops counting against the cap" {
+past_due() { jq -c '.expires = "2020-01-01T00:00:00Z"' "$AGENT_PROPOSE_DIR/$1.json" > "$BATS_TEST_TMPDIR/r" && cp "$BATS_TEST_TMPDIR/r" "$AGENT_PROPOSE_DIR/$1.json"; }
+
+@test "a past-due proposal is asked, stops counting against the cap, and a repeat waits on its ask (ar-4155)" {
   export AGENT_PROPOSE_MAX=1
   id="$(add_queue)"
-  jq -c '.expires = "2020-01-01T00:00:00Z"' "$AGENT_PROPOSE_DIR/$id.json" > "$BATS_TEST_TMPDIR/r" && cp "$BATS_TEST_TMPDIR/r" "$AGENT_PROPOSE_DIR/$id.json"
+  past_due "$id"
   run add_queue other
   assert_success
-  "$AP" reject "$output"
+  assert_equal "$(jq -r '.status + " " + .ask' "$AGENT_PROPOSE_DIR/$id.json")" "asked ASK1"
+  run grep -c '^agent-ask post --kind approval --project dotfiles --options accept=agent-queue add --project dotfiles --priority high -- fix it|reject=' "$CALLS"
+  assert_output 1
+  run grep -c -- "--resume run: agent-propose answered -- An unread proposal expires today: Cap gh polling?" "$CALLS"
+  assert_output 1
   run add_queue
   assert_success
+  assert_output "$id"
+  run grep -c '^agent-ask post' "$CALLS"
+  assert_output 1
+}
+
+@test "an ask that does not post leaves the proposal open and says so (negative control)" {
+  id="$(add_queue)"
+  past_due "$id"
+  STUB_ASK_FAIL=1 run "$AP" expire
+  assert_output --partial "its ask did not post; it stays open"
+  assert_output --partial "0 asked"
   assert_equal "$(jq -r .status "$AGENT_PROPOSE_DIR/$id.json")" open
+}
+
+@test "answered decides an asked proposal by the ask's answer: accept runs the verb, reject does not" {
+  id="$(add_queue)"
+  past_due "$id"
+  "$AP" expire
+  STUB_ANSWER=accept run "$AP" answered ASK1
+  assert_success
+  assert_output "$id accepted"
+  run grep -c '^agent-queue add --project dotfiles --priority high -- fix it$' "$CALLS"
+  assert_output 1
+  assert_equal "$(jq -r .decided_by "$AGENT_PROPOSE_DIR/$id.json")" human
+  other="$(add_queue other)"
+  past_due "$other"
+  "$AP" expire
+  STUB_ANSWER=reject run "$AP" answered ASK1
+  assert_output "$other rejected"
+  run grep -c '^agent-queue' "$CALLS"
+  assert_output 1
+}
+
+@test "answered refuses a free-text answer and an ask no proposal waits on" {
+  id="$(add_queue)"
+  past_due "$id"
+  "$AP" expire
+  STUB_ANSWER='' run "$AP" answered ASK1
+  assert_failure
+  assert_output --partial "names neither accept nor reject"
+  assert_equal "$(jq -r .status "$AGENT_PROPOSE_DIR/$id.json")" asked
+  run "$AP" answered NOPE
+  assert_failure
+  assert_output --partial "no asked proposal for ask NOPE"
 }
 
 @test "a title that reads as a flag stays the title, and optional flags may be empty" {
@@ -102,16 +154,19 @@ add_queue() { "$AP" add --stream usage-cleanup --project dotfiles --verb queue -
   assert_output --partial "bad id"
 }
 
-@test "expire closes what is past due and prunes old decisions" {
+@test "expire asks about what is past due and prunes old decisions and old asks" {
   id="$(add_queue)"
   old="$("$AP" add --stream s --project p --verb none old)"
-  jq -c '.expires = "2020-01-01T00:00:00Z"' "$AGENT_PROPOSE_DIR/$id.json" > "$BATS_TEST_TMPDIR/r" && cp "$BATS_TEST_TMPDIR/r" "$AGENT_PROPOSE_DIR/$id.json"
+  past_due "$id"
   "$AP" reject "$old"
   jq -c '.decided_at = "2020-01-01T00:00:00Z"' "$AGENT_PROPOSE_DIR/$old.json" > "$BATS_TEST_TMPDIR/r" && cp "$BATS_TEST_TMPDIR/r" "$AGENT_PROPOSE_DIR/$old.json"
   run "$AP" expire
-  assert_output "1 expired"
-  assert_equal "$(jq -r .status "$AGENT_PROPOSE_DIR/$id.json")" expired
+  assert_output "1 asked"
+  assert_equal "$(jq -r .status "$AGENT_PROPOSE_DIR/$id.json")" asked
   [ ! -e "$AGENT_PROPOSE_DIR/$old.json" ]
+  jq -c '.asked_at = "2020-01-01T00:00:00Z"' "$AGENT_PROPOSE_DIR/$id.json" > "$BATS_TEST_TMPDIR/r" && cp "$BATS_TEST_TMPDIR/r" "$AGENT_PROPOSE_DIR/$id.json"
+  "$AP" expire
+  [ ! -e "$AGENT_PROPOSE_DIR/$id.json" ]
 }
 
 @test "list filters by status and stream, oldest first" {
