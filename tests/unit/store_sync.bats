@@ -641,3 +641,73 @@ close_item() {
   assert_failure
   assert_output --partial "conflicts in queue/done/2026-11-20/x.md"
 }
+
+@test "a close cancelled on one machine and failed by a stale reaper on another keeps the cancel (ar-3439)" {
+  peer a; peer b
+  close_item a cancelled
+  close_item b failed
+  on a --now
+  run on b --now
+  assert_success
+  run show "$ORIGIN" queue/done/2026-11-20/x.md
+  assert_line 'status: cancelled'
+  refute_line 'status: failed'
+}
+
+# lose_head_tree <machine>: what a crash did to the fleet home (ar-3439): HEAD stays, its loose tree is gone.
+lose_head_tree() {
+  local t
+  t=$(git -C "$SANDBOX/$1" rev-parse 'HEAD^{tree}')
+  rm "$SANDBOX/$1/.git/objects/${t:0:2}/${t:2}"
+  run git -C "$SANDBOX/$1" ls-tree HEAD
+  assert_failure
+}
+
+@test "a HEAD whose tree an unclean shutdown lost is refetched from the remote that took it, and the write lands (ar-3439)" {
+  peer a
+  echo 'state: running' > "$SANDBOX/a/queue/item.md"
+  on a >/dev/null
+  lose_head_tree a
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  run on a
+  assert_success
+  assert_output --partial "WARN: HEAD"
+  assert_output --partial "refetched them from origin"
+  assert_output --partial "COMPLETE: origin at"
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: done"
+}
+
+@test "a lost HEAD tree no remote holds stops the sync with 3 and names it, never a bare commit error (ar-3439)" {
+  peer a
+  echo 'state: running' > "$SANDBOX/a/queue/item.md"
+  git -C "$SANDBOX/a" commit -q -am local
+  lose_head_tree a
+  # Offline first: no remote answered, so it says so and leaves the refetch to the next sync.
+  conf "$SANDBOX/nowhere.git"; mv "$BACKUP" "$BACKUP.off"
+  run on a
+  assert_failure 3
+  assert_output --partial "no remote answered to refetch them"
+  conf "$ORIGIN"; mv "$BACKUP.off" "$BACKUP"
+  run on a
+  assert_failure 3
+  assert_output --partial "names trees missing here and no remote has them"
+  refute_output --partial "could not commit"
+  # The refetch that reached a remote is not repeated for this HEAD: an unreachable origin now
+  # changes nothing, since no fetch runs.
+  conf "$SANDBOX/nowhere.git"
+  run on a
+  assert_failure 3
+  assert_output --partial "no remote has them"
+  refute_output --partial "no remote answered"
+}
+
+@test "a store with no commit yet makes its first one, with no refetch (ar-3439)" {
+  git init -q -b master "$SANDBOX/a"
+  git -C "$SANDBOX/a" remote add origin "$ORIGIN"
+  mkdir -p "$SANDBOX/a/.sync"; : > "$SANDBOX/a/.sync/peer"
+  printf '.sync/\n' > "$SANDBOX/a/.gitignore"
+  echo 'state: new' > "$SANDBOX/a/new.md"
+  run on a
+  refute_output --partial "trees missing"
+  git -C "$SANDBOX/a" cat-file -e 'HEAD:new.md'
+}
