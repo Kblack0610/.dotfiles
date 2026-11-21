@@ -584,14 +584,15 @@ SH
     ev filed t-moved "$(ago '-4 days')" by=human; ev rehomed t-moved "$(ago '-4 days +1 hour')"
     ev filed t-young "$(ago '-1 hour')"
     ev filed t-session "$(ago '-3 days')" by=ab12cd34
+    ev filed t-sized "$(ago '-3 days')"; ev tagged t-sized "$(ago '-3 days +1 hour')" by=inbox-size 'why=+#pts/3'
     ev filed t-planned "$(ago '-3 days')"; ev tagged t-planned "$(ago '-3 days +10 min')" 'why=+#size/m'
     ev planned t-planned "$(ago '-3 days +10 min +20 sec')"
   } > "$INGEST"
   run "$JUDGE_EVAL" inbox-triage --json
   assert_success
-  # tp: t-kept, t-late (dropped after the window), t-planned; fp: t-edited, t-moved; pending: t-young
+  # tp: t-kept, t-late (dropped after the window), t-planned, t-sized (a sizing re-tag is no correction); fp: t-edited, t-moved; pending: t-young
   run jq -c '.agents[0] | [.total | .verdicts, .tp, .fp, .pending, .scored, .precision], (.misses | map([.id, .answer]) | sort)' <<<"$output"
-  assert_line '[6,3,2,1,5,60]'
+  assert_line '[7,4,2,1,6,66.7]'
   assert_line '[["t-edited","edited by ab12cd34"],["t-moved","rehomed"]]'
 }
 

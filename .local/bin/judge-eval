@@ -222,7 +222,11 @@ JQ_EVAL="$JQ_EPOCH"'
    | def prios: (.why // "") | split(" ") | map(select(test("^[+-]#(urgent|high|low)$")));
    def prio_only: .action == "tagged" and (((.why // "") | split(" ") | map(select(length > 0))) as $w
        | ($w | length) > 0 and ($w | length) == (prios | length));
-   ($ev | map(select((.action | IN("edited", "dropped", "rehomed", "tagged", "dup")) and (prio_only | not))) | bykey(.id)) as $touch
+   # Likewise a re-tag of only priority, size, plan, hold or after words (#pts/N from inbox-size, #plan #go from dispatch, a hold or an ordering)
+   # is another pass gating or sizing the row, not a correction of what the triager filed.
+   def pass_only: .action == "tagged" and (((.why // "") | split(" ") | map(select(length > 0))) as $w
+       | ($w | length) > 0 and ($w | all(test("^[+-]#(urgent|high|low|pts/[0-9]+|size/[sml]|plan|go|hold/[^ ]+|after/[^ ]+)$"))));
+   ($ev | map(select((.action | IN("edited", "dropped", "rehomed", "tagged", "dup")) and (pass_only | not))) | bykey(.id)) as $touch
    # Priority: each priority the priority pass set (`by` inbox-priority, or inbox-triage on a
    # priority-only re-tag from before the pass named itself), right when nobody else changes the
    # priority of the row for the settle window. A later pass on the row inside the window supersedes
