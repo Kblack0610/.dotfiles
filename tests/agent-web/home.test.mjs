@@ -265,7 +265,7 @@ test("Running is the shared table: its own bar and keys, and each row opens the 
   const html = draw(home({
     running: [
       { slug: "ar-1", title: "Queue cards", project: "agent-runtime", target: "lab/dotfiles-agent-2:1", started: "2026-11-11T10:00:00Z",
-        phases: { done: 3, total: 4, next: "docs", eta_epoch: due, overdue: { phase: "phase 4/4", age_min: 125, expected_min: 40 } }, overdue: true, row: "ar-1494", epic: "ar-1292",
+        phases: { done: 3, total: 4, shown: "3/4", next: "docs", eta_epoch: due, overdue: { phase: "phase 4/4", age_min: 125, expected_min: 40 } }, overdue: true, row: "ar-1494", epic: "ar-1292",
         pr: "#1871", pr_url: "https://github.com/o/r/pull/1871", pr_state: "open", ci: "fail", ci_url: "https://github.com/o/r/pull/1871/checks" },
       { slug: "q-2", title: "No session yet", project: "trader" },
     ],

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Waybar module: the agents chip (custom/ai-agents), the one overview of live agent sessions.
-# The bar is the robot, the fleet total and three counts, "<robot> 34  ~:22  <check>:1  !:9": ~ working
-# (amber), the check mark ready (LANDED or DONE, green), ! needs you (red above 0), each shown at 0 so
-# the bar keeps its shape. The robot is the fleet's health: red when every fleet_sessions.prom is older
-# than STATE_LATE_SECS, amber with a STALLED session, no session numbers or a stale file beside a fresh
-# one (a former lease holder's leftover), green otherwise.
-# The hover opens with one sentence (need you, stuck, working), then any warning, then a section per
+# The bar is the robot, the fleet total and two counts, "<robot> 34  ~:22  <check>:1": ~ working (amber)
+# and the check mark ready (LANDED or DONE, green), each shown at 0 so the bar keeps its shape. What
+# needs the human is custom/needs (needs.sh), Home's one count, so a NEEDS session here is "waiting"
+# and has no number on the bar. The robot is the fleet's health: red when every fleet_sessions.prom is
+# older than STATE_LATE_SECS, amber with a STALLED session, no session numbers or a stale file beside a
+# fresh one (a former lease holder's leftover), green otherwise.
+# The hover opens with one sentence (waiting, stuck, working), then any warning, then a section per
 # stage, worst first, filled to the bar channel's line cap (summary_bar.sh); a last line counts what
 # was cut and points at the click (agent-panel, every session).
 # Counts are fleet-sessions on Prometheus, so the laptop thin client reads the same; rows are
@@ -69,13 +70,13 @@ done < <(jq -r '[.data.result[] | select(.metric.__name__ == "agent_session_buck
     | {b: .metric.bucket, i: .metric.in_progress, f: .metric.finished}] | unique_by(.b)[] | [.b, .i, .f] | @tsv' <<< "$raw")
 
 # Each session's bucket, once however many scrapes or series carry it.
-total=0 in_progress=0 n_work=0 n_ready=0 n_need=0 n_stalled=0
+total=0 in_progress=0 n_work=0 n_ready=0 n_wait=0 n_stalled=0
 while read -r b; do
   [ -n "$b" ] || continue
   total=$((total + 1))
   [ -n "${IN_PROGRESS[$b]:-}" ] && in_progress=$((in_progress + 1))
   [ -n "${FINISHED[$b]:-}" ] && n_ready=$((n_ready + 1))
-  case $b in WORKING) n_work=$((n_work + 1)) ;; NEEDS) n_need=$((n_need + 1)) ;; STALLED) n_stalled=$((n_stalled + 1)) ;; esac
+  case $b in WORKING) n_work=$((n_work + 1)) ;; NEEDS) n_wait=$((n_wait + 1)) ;; STALLED) n_stalled=$((n_stalled + 1)) ;; esac
 done < <(jq -r '[.data.result[] | select(.metric.target) | {t: .metric.target, b: (.metric.bucket // "?")}]
   | unique_by(.t)[] | .b' <<< "$raw")
 
@@ -89,10 +90,10 @@ fi
 
 bar_caps
 bar_read "$now"
-need="$n_need need you" stuck="$n_stalled stuck"
-((n_need > 0)) && need="$(paint "$C_RED" "$need")"
+waiting="$n_wait waiting" stuck="$n_stalled stuck"
+((n_wait > 0)) && waiting="$(paint "$C_YEL" "$waiting")"
 ((n_stalled > 0)) && stuck="$(paint "$C_YEL" "$stuck")"
-tip="$title $need, $stuck, $n_work working."
+tip="$title $waiting, $stuck, $n_work working."
 if [ -n "$BAR" ]; then
   hosts="$(jq '[.sessions[].target | if test("@") then split("@")[0] else "" end] | unique | length' <<< "$BAR")"
   tip+=" As of $(date -d "@$BAR_AT" +%H:%M), $total sessions on $hosts host$( ((hosts == 1)) || printf s)."
@@ -102,15 +103,15 @@ fi
 while IFS= read -r l; do why+=("$l"); done < <(bar_detail session)
 for w in "${why[@]}"; do tip+=$'\n'"$w"; done
 
-# The stage sections from summary/bar, in the lines the cap leaves: Need you, Stuck, Working, each
+# The stage sections from summary/bar, in the lines the cap leaves: Waiting, Stuck, Working, each
 # worst first as hub-core sorts them, then a line for what was cut and one for the rest.
 if [ -n "$BAR" ]; then
   tip+="$(jq -r --argjson lines $((BAR_LINES - 1 - ${#why[@]})) --argjson width "$BAR_WIDTH" \
-    --arg red "$C_RED" --arg yel "$C_YEL" --arg sq "'" "$BAR_JQ"'
+    --arg yel "$C_YEL" --arg sq "'" "$BAR_JQ"'
   [.sessions[] | . + {project: (.project | clean), task: (.task | clean),
       why: ((if .bucket == "WORKING" then .activity else .reason end) // "" | clean),
       tgt: (.target | clean | sub("^(?<h>[^@-]+)[^@]*@[^/]*/"; "\(.h)/") | sub(":1$"; ""))}] as $s
-  | [{name: "Need you", b: "NEEDS", c: $red}, {name: "Stuck", b: "STALLED", c: $yel}, {name: "Working", b: "WORKING", c: ""}] as $defs
+  | [{name: "Waiting", b: "NEEDS", c: $yel}, {name: "Stuck", b: "STALLED", c: $yel}, {name: "Working", b: "WORKING", c: ""}] as $defs
   | ($defs | map(. as $sec | . + {rows: [$s[] | select(.bucket == $sec.b)]}) | map(select(.rows | length > 0))) as $secs
   | def counts: group_by(.bucket) | map("\(length) \(.[0].bucket | ascii_downcase)");
   ([$s[] | select(.done)] | counts) as $done
@@ -137,9 +138,7 @@ if [ -n "$BAR" ]; then
   | map("\n" + .) | join("")' <<< "$BAR")"
 fi
 
-need="!:$n_need"
-((n_need == 0)) || need="$(paint "$C_RED" "$need")"
-text="$(paint "${LEVEL_COLOUR[$level]}" "$ICON") $total  $(paint "$C_YEL" "~:$n_work")  $(paint "$C_GRN" "$READY:$n_ready")  $need"
+text="$(paint "${LEVEL_COLOUR[$level]}" "$ICON") $total  $(paint "$C_YEL" "~:$n_work")  $(paint "$C_GRN" "$READY:$n_ready")"
 class="${LEVEL_CLASS[$level]}"
 ((level == 0 && in_progress == 0)) && class=inactive
 emit "$text" "$tip" "$class"

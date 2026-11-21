@@ -8,7 +8,8 @@
 # line each. Then Up next (the ready items by name, then the board rows dispatch takes after them), In
 # flight, Today and Room. Gate internals (low water, self-heal, the shepherd, pass ages, the source
 # host) show only as an exception; their homes are listed in .local/src/docs/dashboards.md.
-# Counts are summary/dispatch, the fleet_dispatch runner, the queue-starved watch and summary/shepherd on
+# Counts are summary/dispatch, summary/cards (Q, D and the Today figures, `hub cards --json --figures`),
+# the fleet_dispatch runner, the queue-starved watch and summary/shepherd on
 # Prometheus (live topics only), so the laptop thin client reads the same; item names, the board rows
 # and the drain are `hub bar --json` from the summary/bar topic (summary_bar.sh). A missing topic is one
 # amber line and the counts still show; Prometheus unreadable reads ? in amber, a missing number -.
@@ -52,7 +53,7 @@ now="${DISPATCH_NOW:-$(date +%s)}"
 head="<b>Queue:</b>"
 # The accounts' room verdicts (claude-acct textfile) ride the same query, only from a textfile
 # written lately: they name which account refuses and why when the account gate holds dispatch.
-q='({__name__=~"mqtt_.+", topic=~"agents_.+_(summary_dispatch|runner_fleet_dispatch|watch_queue_starved|summary_shepherd)"} and on (topic) cc:agents_topic_live)'
+q='({__name__=~"mqtt_.+", topic=~"agents_.+_(summary_dispatch|summary_cards|runner_fleet_dispatch|watch_queue_starved|summary_shepherd)"} and on (topic) cc:agents_topic_live)'
 q+=" or (claude_account_room_reason and on (instance) (time() - node_textfile_mtime_seconds{file=~\".*/claude_acct.prom\"} < $ROOM_LATE_SECS))"
 
 if ! raw="$(prom_q "$q")"; then
@@ -65,7 +66,7 @@ fi
 # its series alone count; with no pass on record anywhere, every host's count by their max. A peer with
 # a frozen store clone once sent 622 queued (ar-4306), so src.stale names each other host still sending.
 # Every value is a count, a 0/1 or an epoch, so it is floored: Prometheus may write 1 as 1.0.
-v="$(jq -c '{summary_dispatch: "dispatch", summary_shepherd: "shepherd", runner_fleet_dispatch: "runner",
+v="$(jq -c '{summary_dispatch: "dispatch", summary_cards: "cards", summary_shepherd: "shepherd", runner_fleet_dispatch: "runner",
       watch_queue_starved: "watch"} as $kind
     | [.data.result[] | select(.metric.topic) | (.metric.topic | capture("^agents_(?<h>.+)_(?<t>"
         + ($kind | keys | join("|")) + ")$")) as $c
@@ -78,6 +79,8 @@ v="$(jq -c '{summary_dispatch: "dispatch", summary_shepherd: "shepherd", runner_
 get() { jq -r --arg k "$1" '.[$k] // empty' <<< "$v"; }
 d() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:--}"; }
 n0() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:-0}"; }
+# cf <figure>: a hub-core card figure (`hub cards --json --figures`, sent as summary/cards), - when absent.
+cf() { local x; x="$(get "cards.figures_$1")"; printf '%s' "${x:--}"; }
 
 # flag <level> <what> <do key>: an exception. It raises the chip to its level; the worst one is the
 # head sentence, the rest follow it, each with its knob.
@@ -167,7 +170,7 @@ if [ -n "$ready" ]; then
   rest="$(d runnable_urgent) urgent, $(d runnable_high) high"
   fn="$(get dispatch.focus_projects)"
   ((${fn:-0} > 0)) && rest+="; $(paint "$C_YEL" "$fn focus project(s) first")"
-  tip+=$'\n\n'"<b>Up next</b>  $ready ready ($rest)"
+  tip+=$'\n\n'"<b>Up next</b>  $(cf queue_on_deck) ready ($rest)"
   if [ -n "$BAR" ]; then
     # The rows get the cap less what is above them and the lines below: +N more, the board, In flight,
     # Today and its blank, Room, Paused, one spare, and a line per account with no room.
@@ -192,7 +195,7 @@ if [ -n "$ready" ]; then
   # hub-core's verdict (flow::drain) from summary/bar: shrinking green, growing amber.
   fl="$(d failed_24h)"
   [[ "$fl" =~ ^[0-9]+$ ]] && ((fl > 0)) && fl="$(paint "$C_YEL" "$fl")"
-  today="$(d shipped_today) shipped (merged a PR), $(d checks_today) checks closed with no merge, $fl failed in 24h"
+  today="$(cf projects_shipped_today) shipped (merged a PR), $(cf projects_checks_closed) checks closed with no merge, $fl failed in 24h"
   drain="$([ -z "$BAR" ] || jq -r '.drain // empty' <<< "$BAR")"
   case "$drain" in
     *shrinking) drain="$(paint "$C_GRN" "$drain")" ;;
@@ -223,10 +226,11 @@ if [ -n "$ready" ]; then
 fi
 
 # The bar: two totals behind their labels, and only Q takes the chip's level colour; a number the
-# feed lacks reads -.
-qn="${ready:--}"
+# feed lacks reads -. Both are hub-core's own figures (`hub cards --json --figures`, sent as
+# summary/cards): Q the queue card's On deck part, D the projects card's shipped today.
+qn="$(cf queue_on_deck)"
 ((level > 0)) && qn="$(paint "${LEVEL_COLOUR[$level]}" "$qn")"
 lc="$(label_colour)"
-text="$(paint "$lc" Q:)$qn  $(paint "$lc" D:)$(d shipped_today)"
+text="$(paint "$lc" Q:)$qn  $(paint "$lc" D:)$(cf projects_shipped_today)"
 
 emit "$text" "$tip" "${LEVEL_CLASS[$level]}"

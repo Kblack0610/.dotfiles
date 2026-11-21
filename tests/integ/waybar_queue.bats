@@ -52,6 +52,7 @@ s = {
     "summary_dispatch.queued": 60, "summary_dispatch.running": 14, "summary_dispatch.review": 6, "summary_dispatch.waiting": 10,
     "summary_dispatch.done_1h": 4, "summary_dispatch.done_6h": 30,
     "summary_dispatch.added_6h": 18, "summary_dispatch.done_24h": 40, "summary_dispatch.shipped_today": 12, "summary_dispatch.checks_today": 9,
+    "summary_cards.figures_queue_on_deck": 39, "summary_cards.figures_projects_shipped_today": 12, "summary_cards.figures_projects_checks_closed": 9,
     "summary_dispatch.board_agent": 1522, "summary_dispatch.board_backlog": 2200,
     "summary_dispatch.room_live_runs": 16, "summary_dispatch.room_max_live": 24,
     "summary_dispatch.room_live_hand": 5, "summary_dispatch.room_total_live": 21, "summary_dispatch.room_load": 27.4,
@@ -426,7 +427,7 @@ $(y 'No item detail: no summary/bar on mqtt.test')
 }
 
 @test "a feed without the room numbers reads - and says no headroom, never 0" {
-  feed summary_dispatch.room_max_live=- summary_dispatch.running=- summary_dispatch.shipped_today=-
+  feed summary_dispatch.room_max_live=- summary_dispatch.running=- summary_cards.figures_projects_shipped_today=-
   run "$MODULE"
   assert_equal "$(text)" "$(bar 39 -)"
   run tip
@@ -445,7 +446,7 @@ $(y 'No item detail: no summary/bar on mqtt.test')
 # ar-4306: cachyos-rog woke with a store frozen since 2026-11-15 and sent 328 ready; the max over
 # hosts showed it. The host whose pass ran last is the source, and the other one is named stale.
 @test "a stale host's bigger queue is ignored and named in amber; its failed runner is not ours" {
-  feed h2:summary_dispatch.runnable=328 h2:summary_dispatch.last_pass_epoch=$((100000 - 600000)) \
+  feed h2:summary_dispatch.runnable=328 h2:summary_dispatch.last_pass_epoch=$((100000 - 600000)) h2:summary_cards.figures_queue_on_deck=328 \
     h2:runner_fleet_dispatch.failed=1 h2:watch_queue_starved.tripped=1
   run "$MODULE"
   assert_equal "$(text)" "$(bar "$(y 39)" 12)"
@@ -467,7 +468,7 @@ $(y 'No item detail: no summary/bar on mqtt.test')
 }
 
 @test "negative control: the host whose pass ran last is the source, even with the smaller queue" {
-  feed h2:summary_dispatch.runnable=3 h2:summary_dispatch.last_pass_epoch=$((100000 - 60))
+  feed h2:summary_dispatch.runnable=3 h2:summary_dispatch.last_pass_epoch=$((100000 - 60)) h2:summary_cards.figures_queue_on_deck=3
   run "$MODULE"
   assert_equal "$(text)" "$(bar "$(y 3)" -)"
   run tip
@@ -491,6 +492,17 @@ $(y 'No item detail: no summary/bar on mqtt.test')
   refute_output --partial "stale queue"
 }
 
+@test "Q, D, Up next and Today are hub cards figures; a feed without them reads -, never 0" {
+  feed summary_cards.figures_queue_on_deck=- summary_cards.figures_projects_shipped_today=- summary_cards.figures_projects_checks_closed=-
+  run "$MODULE"
+  assert_equal "$(text)" "$(bar - -)"
+  run tip
+  assert_line --partial "<b>Up next</b>  - ready ("
+  assert_line --partial "<b>Today</b>  - shipped (merged a PR), - checks closed with no merge,"
+  # Negative control: the dispatch figures beside them are not what the chip reads.
+  refute_output --partial "<b>Today</b>  12 shipped"
+}
+
 # The labels are the theme accent, palette.css's palette_accent. Negative controls: no palette,
 # and an accent that is a level colour (Jackie Brown's warn amber), keep C_DIM.
 @test "the labels take the palette accent; no palette or a level-colour accent keeps the dim grey" {
@@ -508,7 +520,8 @@ $(y 'No item detail: no summary/bar on mqtt.test')
 @test "no summary/dispatch on the feed reads - in amber with the publisher to check, never 0" {
   feed summary_dispatch.runnable=-
   run "$MODULE"
-  assert_equal "$(text)" "$(bar "$(y -)" 12)"
+  # The bar reads the cards figures, so the amber and the head line say dispatch is missing.
+  assert_equal "$(text)" "$(bar "$(y 39)" 12)"
   assert_equal "$(class)" warn
   head_is "$(y 'no dispatch numbers on the feed.')" "Run systemctl --user status agent-mqtt-publish.timer"
 }

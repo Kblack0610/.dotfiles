@@ -125,6 +125,70 @@ pub struct Ci {
     pub red: Vec<String>,
     /// The view every CI surface opens on (`glance`), filled once the machines are built.
     pub glance: Glance,
+    /// CI runs and local Unity gates that finished since local midnight: the Runners "CI runs
+    /// finished today" tiles, counted here so the browser draws them and adds nothing.
+    pub day: Day,
+}
+
+/// CI runs and local Unity gate runs finished since local midnight. A run that ended neither
+/// passed, failed nor was cancelled (skipped, neutral) is in no field; `pass` is passed of
+/// passed and failed (a cancel is neither), None with none of either.
+#[derive(Serialize, Default, Clone, Debug, PartialEq)]
+pub struct Day {
+    /// Passed, failed and cancelled CI runs.
+    pub runs: u32,
+    pub pass: Option<f64>,
+    pub failed_main: u32,
+    pub failed_branch: u32,
+    pub cancelled: u32,
+    pub local: u32,
+    pub local_pass: Option<f64>,
+    /// Whether either hourly series answered; false reads "No hourly data yet".
+    pub read: bool,
+}
+
+/// `Day` from the two hourly series (`github_runs_by_hour`, `fleet_local_gate_by_hour`), each
+/// row's `hour` label the epoch second its hour began; only hours from `midnight` count.
+pub fn day(infra: &Infra, midnight: i64) -> Day {
+    let rows = |name: &str| -> Vec<(&Series, u32)> {
+        infra
+            .get(name)
+            .iter()
+            .filter(|s| s.label("hour").parse::<i64>().is_ok_and(|h| h >= midnight))
+            .map(|s| (s, s.value.unwrap_or(0.0).max(0.0).round() as u32))
+            .collect()
+    };
+    let (ci, local) = (rows("hourly"), rows("local_hourly"));
+    let sum = |v: &[(&Series, u32)], keep: &dyn Fn(&Series) -> bool| {
+        v.iter()
+            .filter(|(s, _)| keep(s))
+            .map(|(_, n)| n)
+            .sum::<u32>()
+    };
+    let conc = |c: &'static str| move |s: &Series| s.label("conclusion") == c;
+    let ok = sum(&ci, &conc("success"));
+    let bad_of = |scope: Option<&str>| {
+        sum(&ci, &|s| {
+            matches!(s.label("conclusion"), "failure" | "timed_out")
+                && scope.is_none_or(|sc| s.label("scope") == sc)
+        })
+    };
+    let (bad, cancelled) = (bad_of(None), sum(&ci, &conc("cancelled")));
+    let (lok, lbad) = (
+        sum(&local, &|s| s.label("result") == "pass"),
+        sum(&local, &|s| s.label("result") != "pass"),
+    );
+    let share = |ok: u32, bad: u32| (ok + bad > 0).then(|| f64::from(ok) / f64::from(ok + bad));
+    Day {
+        runs: ok + bad + cancelled,
+        pass: share(ok, bad),
+        failed_main: bad_of(Some("main")),
+        failed_branch: bad_of(Some("branch")),
+        cancelled,
+        local: lok + lbad,
+        local_pass: share(lok, lbad),
+        read: !infra.get("hourly").is_empty() || !infra.get("local_hourly").is_empty(),
+    }
 }
 
 /// One kind of CI job: unity, unity-build, light, heavy, forgejo, macos, gates (the local Unity
@@ -885,6 +949,7 @@ pub fn build(infra: &Infra) -> Ci {
     ci.oldest = ci.queue.iter().map(|q| q.wait).max().unwrap_or(0);
     ci.red = ci.red_lines();
     ci.local = local(infra);
+    ci.day = day(infra, crate::text::local_day_start(infra.at as i64));
     ci
 }
 
@@ -2138,6 +2203,46 @@ mod tests {
         assert!(
             hosts.contains(&"aws-burst-1") && hosts.contains(&"mac-mini"),
             "{hosts:?}"
+        );
+    }
+
+    #[test]
+    fn the_day_counts_runs_since_midnight_by_outcome_and_a_cancel_or_skip_is_no_pass_or_fail() {
+        let mut i = Infra::default();
+        let h = |hour: i64, conc: &str, scope: &str| json!({"hour": hour.to_string(), "conclusion": conc, "scope": scope});
+        i.instant.insert(
+            "hourly",
+            series(vec![
+                (h(1000, "success", "main"), "6"),
+                (h(1000, "failure", "main"), "1"),
+                (h(1000, "timed_out", "branch"), "2"),
+                (h(1000, "cancelled", "branch"), "3"),
+                (h(1000, "skipped", "branch"), "9"),
+                (h(900, "success", "main"), "50"),
+            ]),
+        );
+        i.instant.insert(
+            "local_hourly",
+            series(vec![
+                (json!({"hour": "1000", "result": "pass"}), "1"),
+                (json!({"hour": "1000", "result": "fail"}), "1"),
+            ]),
+        );
+        let d = day(&i, 1000);
+        assert_eq!(
+            (d.runs, d.failed_main, d.failed_branch, d.cancelled),
+            (12, 1, 2, 3)
+        );
+        assert_eq!(
+            d.pass,
+            Some(6.0 / 9.0),
+            "passed of passed and failed; a cancel is neither"
+        );
+        assert_eq!((d.local, d.local_pass, d.read), (2, Some(0.5), true));
+        assert_eq!(
+            day(&Infra::default(), 1000),
+            Day::default(),
+            "nothing read is not a zero day"
         );
     }
 }

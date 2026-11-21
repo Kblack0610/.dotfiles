@@ -37,7 +37,7 @@ widget_spacing = 10
 
 [[bar.default.capsule_group]]
 id = "fleet"
-members = ["health", "fleet", "projects", "ai-agents", "queue", "ci"]
+members = ["needs", "health", "fleet", "projects", "ai-agents", "queue", "ci"]
 fill = "surface_container_high"
 border = "on_surface_variant"
 padding = 10.0
@@ -109,6 +109,11 @@ module = "custom/timebox"
 [widget.health]
 type = "dotfiles/chips:chip"
 module = "custom/health"
+divider = "after"
+
+[widget.needs]
+type = "dotfiles/chips:chip"
+module = "custom/needs"
 divider = "after"
 
 [widget.fleet]

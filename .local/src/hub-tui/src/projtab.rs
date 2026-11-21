@@ -10,6 +10,7 @@
 
 use hub_core::deliverables::{Deliverable, Deliverables};
 use hub_core::departments::{self, Coverage};
+use hub_core::home::Running;
 use hub_core::layout::{self, Inner, Tab};
 use hub_core::page::{NeedGroup, Page, System};
 use hub_core::projects::{self, Card, Projects, Stats};
@@ -682,16 +683,11 @@ fn overview(
     }
     out.push(Line::raw(""));
     out.push(sec_head("IN FLIGHT", &projects::counts(c), "", p, w));
-    for r in &c.running {
-        let mut t = r.title.clone();
-        if let Some(ph) = &r.phases {
-            t += &format!(" (phase {} of {}", ph.done + 1, ph.total);
-            if let Some(n) = &ph.next {
-                t += &format!(": {n}");
-            }
-            t += ")";
-        }
-        out.extend(wrapped("  running  ", &t, p.good(), p, w));
+    if !c.running.is_empty() {
+        // Home's Running table scoped to the project, so a phase reads the same in both.
+        let rows: Vec<&Running> = c.running.iter().collect();
+        let t = crate::hometab::running_table(&rows, p, hub_core::jobs::now(), None, true);
+        out.extend(t.fit_wrapped(w, p.dim()).0);
     }
     out.push(Line::raw(""));
     out.push(sec_head(
@@ -867,15 +863,11 @@ fn activity(c: &Card, pg: &Page, p: Palette, w: usize) -> Vec<Line<'static>> {
 /// a department's needs that are not ok.
 fn inner_count(pg: Option<&Page>, prod: Option<&departments::Product>, id: &str) -> usize {
     if let Some(d) = prod.and_then(|pr| pr.dept(id)) {
-        return d
-            .needs
-            .iter()
-            .filter(|n| n.level != hub_core::vocab::Level::Ok)
-            .count();
+        return d.open_needs();
     }
     let Some(pg) = pg else { return 0 };
     match id {
-        OVERVIEW => need_groups(pg, prod).iter().map(|g| g.items.len()).sum(),
+        OVERVIEW => pg.overview_needs(prod),
         "stage" => pg.gate.as_ref().map_or(0, |g| g.fail as usize),
         _ => 0,
     }
@@ -1353,6 +1345,7 @@ pub(crate) mod tests {
                 says: "1 epic landed with no live proof".into(),
                 items: vec!["Saves (4 of 4 rows landed)".into()],
             }],
+            need_count: 1,
             timeline: Some(hub_core::timeline::Timeline {
                 says: "7d: 1 commit (1 red on CI)".into(),
                 lines: vec![hub_core::timeline::Line {
@@ -1422,6 +1415,38 @@ pub(crate) mod tests {
         assert!(
             t.contains("IN FLIGHT  0 running, 0 waiting, 0 queued; 0 rows #requested, 0 in the inbox; Sprint 12/71 | Today 75 | Backlog 12 | Epics 2 | Epic backlog 5"),
             "{t}"
+        );
+        // In flight is Home's Running table scoped to the project: the phase as `Phases::shown`
+        // words it, the next phase its own column, and no PROJECT column or sentence.
+        let mut busy = pr.cards[0].clone();
+        busy.running = vec![hub_core::home::Running {
+            slug: "s1".into(),
+            title: "wire the bar".into(),
+            project: busy.name.clone(),
+            phases: Some(hub_core::boards::Phases {
+                done: 1,
+                total: 3,
+                next: Some("web".into()),
+                eta: None,
+                eta_epoch: None,
+                overdue: None,
+            }),
+            ..Default::default()
+        }];
+        let flight = draw(&busy, Some(&pg), &pv).join("\n");
+        assert!(
+            flight.contains("wire the bar") && flight.contains("PHASE"),
+            "{flight}"
+        );
+        assert!(
+            flight
+                .lines()
+                .any(|l| l.contains("1/3") && l.contains("web")),
+            "{flight}"
+        );
+        assert!(
+            !flight.contains("PROJECT") && !flight.contains("phase 2 of"),
+            "{flight}"
         );
         assert!(
             !body.contains("Menus"),

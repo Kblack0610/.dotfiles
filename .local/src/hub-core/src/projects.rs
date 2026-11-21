@@ -940,6 +940,16 @@ fn queue(c: &Card) -> String {
     )
 }
 
+/// The card's In flight as Home's Running table draws it, scoped to the project: the same
+/// [`Running`] row type, so the same columns and each cell's links. It is a fixed list on the
+/// project page (no query, sort or filter to give), so it sends no facets or state chips.
+pub fn running_table(c: &Card) -> crate::table::Summary {
+    let (_, mut t) = crate::table::View::default().summary(&c.running);
+    t.facets.clear();
+    t.states.clear();
+    t
+}
+
 /// The opened card's In flight counts: the queue, then rows #requested and the inbox, then its
 /// agent board, backlog and feature epic counts once the feed joined in.
 pub fn counts(c: &Card) -> String {
@@ -1018,6 +1028,9 @@ pub fn to_json(p: &Projects) -> Value {
             j["in_flight"] = c.in_flight().into();
             j["pace"] = c.pace().into();
             j["oldest"] = wait_word(c.oldest_ready_min).into();
+            if !c.running.is_empty() {
+                j["running_table"] = serde_json::to_value(running_table(c)).unwrap_or_default();
+            }
         }
     }
     v
@@ -1094,6 +1107,46 @@ mod tests {
             "v0.10.0 is newer than v0.2.0"
         );
         assert_eq!(names("", "", "pace", "")[0], "low");
+    }
+
+    #[test]
+    fn a_card_sends_its_in_flight_as_homes_running_table_in_the_rows_order() {
+        let run = |slug: &str| Running {
+            slug: slug.into(),
+            title: format!("work {slug}"),
+            project: "focus".into(),
+            row: Some("ar-1".into()),
+            ..Default::default()
+        };
+        let mut c = Card {
+            name: "focus".into(),
+            running: vec![run("b"), run("a")],
+            ..Default::default()
+        };
+        let t = running_table(&c);
+        assert_eq!((t.total, t.shown), (2, 2));
+        assert!(
+            t.facets.is_empty() && t.states.is_empty(),
+            "a fixed list has no controls"
+        );
+        assert_eq!(
+            t.links.len(),
+            2,
+            "one links map per row, in the rows' order"
+        );
+        assert_eq!(t.links[0]["item"], "#queue/b");
+        let wire = to_json(&Projects {
+            cards: vec![c.clone()],
+            ..Default::default()
+        });
+        assert_eq!(wire["cards"][0]["running_table"]["shown"], 2);
+        assert_eq!(wire["cards"][0]["running"][0]["slug"], "b");
+        c.running.clear();
+        let none = to_json(&Projects {
+            cards: vec![c],
+            ..Default::default()
+        });
+        assert!(none["cards"][0].get("running_table").is_none());
     }
 
     #[test]

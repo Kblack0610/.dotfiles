@@ -141,6 +141,7 @@ Only the default moves. An app set to Default follows it mid-call (WirePlumber `
 - `config.pin-min`   - minimal bar
 - `config.pin-full`  - bigger bar
 - `pin.sh`           - toggle / resize state machine (`/tmp/waybar-pin.state`)
+- `needs.sh`         - `custom/needs`, Needs you: Home's count from the retained `agents/+/summary/overview` card, `?` when unread or stale
 - `webcam.sh`        - `custom/webcam`, the red CAM pill while a process holds the webcam
 - `audio_input.sh`   - `custom/audio-input`, the input apps hear and the switch between them (Noctalia only)
 - `printer.sh`       - `custom/printer`, `N 21% B`: N is the Neptune (heat, err, a check when done; ? wrong address, ! Klipper not ready), B the A1 while on; an idle or off printer is hidden

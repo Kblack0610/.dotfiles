@@ -21,7 +21,7 @@ use crate::text::headline;
 use crate::vocab::Vocab;
 
 /// How far back `agentctl-session-outcomes ended` reads. It covers today whatever the hour, and
-/// `feed` keeps only the rows that ended since local midnight, so "done today" means today.
+/// `feed` keeps only the rows that ended since local midnight, so "ended today" means today.
 pub const ENDED_DAYS: u32 = 1;
 
 /// The shepherd's session and the NIGHTLY and SHARED rows: the fleet's own, not anyone's task.
@@ -145,7 +145,7 @@ impl Row for SessionRow {
     ];
     /// `all` comes first because the first chip keeps every row.
     const STATES: &'static [&'static str] =
-        &["all", "running", "needs you", "stalled", "done today"];
+        &["all", "running", "needs you", "stalled", "ended today"];
     const FACETS: &'static [&'static str] =
         &["bucket", "project", "by", "acct", "harness", "close"];
     const LEAD: &'static str = "task";
@@ -194,7 +194,7 @@ impl Row for SessionRow {
             }
             "needs you" => self.bucket == "NEEDS",
             "stalled" => self.bucket == "STALLED",
-            "done today" => self.done,
+            "ended today" => self.done,
             _ => false,
         }
     }
@@ -926,7 +926,7 @@ mod tests {
                 ("running", 2),
                 ("needs you", 1),
                 ("stalled", 0),
-                ("done today", 3)
+                ("ended today", 3)
             ]
         );
         let tone = |name| v.states(&r).iter().find(|c| c.name == name).map(|c| c.tone);
@@ -946,7 +946,7 @@ mod tests {
         let r = rows(&s, &vocab(), &feed(), &[]);
         let v = View::new::<SessionRow>("", "", "", "");
         let n = |name| v.states(&r).iter().find(|c| c.name == name).map(|c| c.n);
-        assert_eq!((n("running"), n("done today")), (Some(2), Some(4)));
+        assert_eq!((n("running"), n("ended today")), (Some(2), Some(4)));
     }
 
     #[test]
