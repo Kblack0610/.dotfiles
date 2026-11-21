@@ -42,7 +42,7 @@ function code(s,    i, n, c, out) {
   return out
 }
 
-FNR == 1 { Q = ""; TAG = ""; IN = 0; DEPTH = 0 }
+FNR == 1 { Q = ""; TAG = ""; IN = 0; DEPTH = 0; CONT = 0 }
 
 # Inside a heredoc: nothing is code until its closing tag.
 TAG != "" {
@@ -60,17 +60,37 @@ Q == "" && /^@test / { IN = 1; DEPTH = 0 }
   cl = code(raw)
 }
 
+# A sleep is a command at the start of a statement: after ; & | ( { ), after then/else/elif, or
+# behind bats' `run`. Every such sleep on the line is judged on its own.
 IN && openq == "" {
-  if (match(cl, /(^|[;&|({])[[:space:]]*sleep[[:space:]]+[0-9$'"]/)) {
-    prefix = substr(cl, 1, RSTART - 1)
-    rest = substr(cl, RSTART + RLENGTH)
-    gsub(/[0-9]*>&[0-9-]/, "", rest)
-    bg = (rest ~ /(^|[^&])&([^&]|$)/)
+  rem = cl; off = 0
+  while (match(rem, /(^|[;&|({)]|[[:space:]](then|else|elif)[[:space:]])[[:space:]]*(run[[:space:]]+)?sleep[[:space:]]+[0-9$'"]/)) {
+    ms = RSTART; ml = RLENGTH
+    at = off + ms
+    prefix = substr(cl, 1, at - 1)
+    # The sleep's own statement: what follows it up to the next ; && or ||, minus redirections.
+    own = substr(rem, ms + ml)
+    if (match(own, /;|&&|\|\|/)) own = substr(own, 1, RSTART - 1)
+    gsub(/[0-9]*>&[0-9-]/, "", own)
+    gsub(/&>>?/, "", own)
+    bg = (own ~ /(^|[^&])&([^&]|$)/)
+    # Inside a `{ ...; }` or `( ... )` group, the group's own trailing `&` backgrounds it.
+    grp = substr(cl, 1, at)
+    if (!bg && gsub(/[{(]/, "&", grp) > gsub(/[})]/, "&", grp)) {
+      tail = substr(rem, ms + ml)
+      gsub(/[0-9]*>&[0-9-]/, "", tail); gsub(/&>>?/, "", tail)
+      bg = (tail ~ /(^|[^&])&[[:space:]]*$/)
+    }
     looped = (DEPTH + cnt(prefix, "do") - cnt(prefix, "done") > 0)
-    if (!bg && !looped) {
+    # The first line of a `\` continuation is arguments, not a new statement.
+    argline = (CONT && at == 1 && substr(cl, 1, 1) !~ /[;&|({)]/)
+    if (!bg && !looped && !argline) {
       t = raw; sub(/^[[:space:]]+/, "", t)
       print FILENAME ":" FNR ":" t
+      break
     }
+    off += ms + ml - 1
+    rem = substr(rem, ms + ml)
   }
   DEPTH += cnt(cl, "do") - cnt(cl, "done")
   if (DEPTH < 0) DEPTH = 0
@@ -89,3 +109,6 @@ openq == "" && index(cl, "<<") {
 }
 
 IN && openq == "" && Q == "" && /^}/ { IN = 0; DEPTH = 0 }
+
+# Whether the next line continues this one with a trailing backslash.
+{ CONT = (openq == "" && Q == "" && raw ~ /\\$/) }

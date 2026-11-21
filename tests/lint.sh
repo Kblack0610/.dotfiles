@@ -140,11 +140,18 @@ fi
 # The planted test below is the negative control: if the matcher stops firing, the gate says so
 # instead of reporting a clean tree it never read.
 planted=$'@test "planted" {\n  sleep 1\n}'
+# The scan's own status is read before its output: a matcher that failed to run prints nothing,
+# and nothing must not read as a clean tree.
+sleep_hits=$(find tests -name '*.bats' -not -path 'tests/vendor/*' -print0 \
+  | xargs -0 awk -f tests/lint-bare-sleep.awk)
+sleep_rc=$?
 if ! awk -f tests/lint-bare-sleep.awk <<<"$planted" | grep -q .; then
   echo "house-rules: FAILED - the bare-sleep matcher missed its planted sleep (tests/lint-bare-sleep.awk is broken)" >&2
   rc=1
-elif sleep_hits=$(find tests -name '*.bats' -not -path 'tests/vendor/*' -print0 \
-    | xargs -0 awk -f tests/lint-bare-sleep.awk) && [ -n "$sleep_hits" ]; then
+elif [ "$sleep_rc" -ne 0 ]; then
+  echo "house-rules: FAILED - the bare-sleep scan did not run cleanly (status $sleep_rc)" >&2
+  rc=1
+elif [ -n "$sleep_hits" ]; then
   echo "house-rules: FAILED - bare sleep in a bats test body (wait on the event, or touch -d the clock):" >&2
   printf '%s\n' "$sleep_hits" | sed 's/^/  /' >&2
   echo "  Use wait_until, or backdate the file or state the subject reads. See tests/lint.sh." >&2

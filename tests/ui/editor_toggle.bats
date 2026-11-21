@@ -61,7 +61,7 @@ ed() {
 sync_pane() {
   local m="SYNC${RANDOM}${RANDOM}"
   _tm send-keys -t "$1" -l "$m"
-  wait_until "_tm capture-pane -p -t '$1' | grep -qF '$m'"
+  wait_until "_tm capture-pane -p -J -t '$1' | grep -qF '$m'"
 }
 
 win_count()   { _tm list-windows -t work: -F '#{window_id}' | grep -c .; }
