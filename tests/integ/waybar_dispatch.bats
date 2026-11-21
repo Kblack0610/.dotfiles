@@ -45,7 +45,7 @@ s = {
     "summary_dispatch.reaped_1h": 7, "summary_dispatch.flapping_items": 0,
     "summary_dispatch.queued": 60, "summary_dispatch.running": 14, "summary_dispatch.review": 6, "summary_dispatch.waiting": 10,
     "summary_dispatch.done_1h": 4, "summary_dispatch.done_6h": 30,
-    "summary_dispatch.added_6h": 18, "summary_dispatch.done_24h": 40, "summary_dispatch.done_today": 12,
+    "summary_dispatch.added_6h": 18, "summary_dispatch.done_24h": 40, "summary_dispatch.shipped_today": 12, "summary_dispatch.checks_today": 9,
     "summary_dispatch.board_agent": 1522, "summary_dispatch.board_backlog": 2200,
     "summary_dispatch.room_live_runs": 16, "summary_dispatch.room_max_live": 24,
     "summary_dispatch.room_live_hand": 5, "summary_dispatch.room_total_live": 21, "summary_dispatch.room_load": 27.4,
@@ -366,16 +366,18 @@ bar() {
   assert_line --index 7 "today: - agent rows (- more on the backlog)"
 }
 
-@test "D is the items done today; a feed without it reads -, never 0" {
-  feed summary_dispatch.done_today=-
+@test "D is the items shipped today; a feed without it reads -, never 0" {
+  feed summary_dispatch.shipped_today=- summary_dispatch.checks_today=-
   run "$MODULE"
   assert_equal "$(text)" "$(bar 39 -)"
+  run tip
+  assert_line --index 0 "Q ready to start next, D shipped today (merged a PR); - checks closed with no merge"
 }
 
-@test "the hover opens by saying what each letter counts" {
+@test "the hover opens by saying what each letter counts, checks beside D" {
   run "$MODULE"
   run tip
-  assert_line --index 0 "Q ready to start next, D done today"
+  assert_line --index 0 "Q ready to start next, D shipped today (merged a PR); 9 checks closed with no merge"
 }
 
 # The labels are the theme accent, palette.css's palette_accent. Negative controls: no palette,
