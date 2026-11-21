@@ -341,8 +341,8 @@ test("the board's Sprints table has one row per window, opens to its tasks, and 
   for (const f of box("b-root").on.click) f({ type: "click", target });
   const open = read().rows;
   assert.match(open, /data-spr="bnb\/demo\/v0\.3\.0">.*<tr class="bopen">.*<tr class="jr" data-stask="bnb\/demo\/v0\.3\.0\/de-1"><td><code>de-1<\/code><\/td><td class="btitle"><div class="bt">&lt;b&gt;fix&lt;\/b&gt; it<\/div><div class="bsum muted">Demo plan P2<\/div><\/td><td><span class="qprio urgent">urgent<\/span><\/td><td><b>running<\/b><\/td>/s, "the queue's word wins, escaped; a task leads with its title over its plan and phase, as its Board row does");
-  assert.match(open, /<tr class="jr" data-stask="bnb\/demo\/v0\.3\.0\/1"><td><code>-<\/code><\/td><td class="btitle"><div class="bt">ship <span class="qtag">interrupt<\/span><\/div><\/td><td><span class="qprio low">low<\/span><\/td><td>done<\/td>/, "a task with no id opens by its place; no summary, no second line");
-  assert.doesNotMatch(open, /ship it|#size|Open its Board row/, "a task starts shut: its whole line is the opened task's");
+  assert.match(open, /<tr class="jr" data-stask="bnb\/demo\/v0\.3\.0\/ship it"><td><code>-<\/code><\/td><td class="btitle"><div class="bt">ship <span class="qtag">interrupt<\/span><\/div><\/td><td><span class="qprio low">low<\/span><\/td><td>done<\/td>/, "a task with no id opens by its line; no summary, no second line");
+  assert.doesNotMatch(open, /class="q"|#size|Open its Board row/, "a task starts shut: its whole line is the opened task's");
   // A click opens the task in place, with and without a Board row to link to, and never navigates away.
   ctx.location = { hash: "" };
   const click = (k) => { for (const f of box("b-root").on.click) f({ type: "click", target: { id: "", dataset: {}, closest: (sel) => (sel === "tr[data-stask]" ? { dataset: { stask: k } } : null) } }); };
@@ -351,12 +351,12 @@ test("the board's Sprints table has one row per window, opens to its tasks, and 
   assert.match(task, /data-stask="bnb\/demo\/v0\.3\.0\/de-1">.*?<\/tr><tr class="bopen"><td colspan="4"><div class="card qitem brow"><div class="q">feat\(ui\): demo-plan P2: &lt;b&gt;fix&lt;\/b&gt; it, then ship #size\/s<\/div><div class="opts"><a class="btn sm" href="#projects\/all\?q=id:=de-1">Open its Board row<\/a><\/div><\/div>/s, "the opened task has its whole line and the link to its Board row");
   assert.match(task, /class="jr sel" data-stask="bnb\/demo\/v0\.3\.0\/de-1"/);
   assert.equal(ctx.location.hash, "", "a click on a task opens it in place");
-  click("bnb/demo/v0.3.0/1");
+  click("bnb/demo/v0.3.0/ship it");
   const bare = read().rows;
   assert.match(bare, /<div class="q">ship it<\/div><\/div>/, "a task with no Board row opens to its line alone");
   assert.doesNotMatch(bare, /Open its Board row|then ship/, "one task opens at a time; no link where there is no row");
-  click("bnb/demo/v0.3.0/1");
-  assert.doesNotMatch(read().rows, /ship it/, "a second click shuts the task");
+  click("bnb/demo/v0.3.0/ship it");
+  assert.doesNotMatch(read().rows, /<div class="q">ship it/, "a second click shuts the task");
   assert.doesNotMatch(open, /de-9/, "the same project's queued sprint stays shut: each row opens on its own");
   for (const f of box("b-root").on.click) f({ type: "click", target });
   assert.doesNotMatch(read().rows, /de-1/, "a second click shuts it");

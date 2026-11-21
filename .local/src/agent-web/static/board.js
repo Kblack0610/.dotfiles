@@ -29,7 +29,7 @@ const bst = tblTab({
     form: null, controlsKey: "",
     // `spr` is the opened Sprints row, `<profile>/<project>/<version>` (bSprKey): a project can show its open and its queued sprint.
     spr: null,
-    // `stask` is the opened sprint task, `<sprint key>/<id or place>` (bTaskKey).
+    // `stask` is the opened sprint task, `<sprint key>/<id, else its line>` (bTaskKey): a place would move as states re-sort the list.
     stask: null,
   },
   body: () => bBody(),
@@ -184,7 +184,7 @@ function bLine(r, i) {
 // what the title leaves out, as its Board row does (hub_core::tasks::row_title), and opens in place
 // to its whole line and, when it has one, the link to its Board row. Under one project its tasks show.
 const bSprKey = (s) => `${s.profile}/${s.project}/${s.version}`;
-const bTaskKey = (s, t, j) => `${bSprKey(s)}/${t.id || j}`;
+const bTaskKey = (s, t) => `${bSprKey(s)}/${t.id || t.text}`;
 const SPR_TASK_COLS = [["id", "ID", "lead"], ["title", "TASK", ""], ["priority", "PRIORITY", "glance"], ["state", "STATE", "glance"]];
 const bTask = (t) => `<div class="card qitem brow"><div class="q">${esc(t.text)}</div>` +
   (t.href ? `<div class="opts"><a class="btn sm" href="${esc(t.href)}">Open its Board row</a></div>` : "") + `</div>`;
@@ -204,8 +204,8 @@ function bSprints() {
   };
   const tasks = (s) => !s.tasks.length ? `<div class="muted">No task in this window.</div>` :
     `<table class="tbl"><tr>${SPR_TASK_COLS.map(([, h, r]) => `<th data-role="${r}" data-label="${h}">${h}</th>`).join("")}</tr>` +
-    s.tasks.map((t, j) => {
-      const st = t.queue || t.state, k = bTaskKey(s, t, j), open = bst.stask === k;
+    s.tasks.map((t) => {
+      const st = t.queue || t.state, k = bTaskKey(s, t), open = bst.stask === k;
       const sum = t.summary ? `<div class="bsum muted">${esc(t.summary)}</div>` : "";
       const line = `<tr class="jr${open ? " sel" : ""}" data-stask="${esc(k)}"><td><code>${bDash(t.id)}</code></td>` +
         `<td class="btitle"><div class="bt">${esc(t.title)}${t.interrupt ? ` <span class="qtag">interrupt</span>` : ""}</div>${sum}</td>` +

@@ -828,13 +828,18 @@ impl Feed {
 /// A board line's (title, summary). A plan phase (`<plan-file> P2: <words>`, its plan file under
 /// `home`) is titled by its words over its plan and phase ([`crate::plans::split_title`]), so a
 /// row reads as the Queue tab's item does; any other line by [`crate::text::title`], the whole
-/// line when that is empty. The ids either one takes out stay readable in the summary.
+/// line when that is empty, as is a phase whose words are all tags. The ids either one takes out
+/// stay readable in the summary. The phase shape is read before [`crate::text::clean`], which
+/// would take a plan named like an id (`ucp-145 P2: `) out as one.
 fn row_title(home: &str, text: &str) -> (String, String) {
-    let c = crate::text::clean(text);
-    if let Some((label, words)) = crate::plans::split_title(home, &c.text, None) {
-        let summary = match c.ids.is_empty() {
+    let line = crate::text::unlabelled(text);
+    let phase = crate::plans::split_title(home, line, None).filter(|(_, w)| !w.is_empty());
+    if let Some((label, words)) = phase {
+        let ids =
+            crate::plans::legacy(line).map_or_else(Vec::new, |(.., w)| crate::text::clean(w).ids);
+        let summary = match ids.is_empty() {
             true => label,
-            false => format!("{label} ({})", c.ids.join(", ")),
+            false => format!("{label} ({})", ids.join(", ")),
         };
         return (words, summary);
     }
@@ -1745,6 +1750,7 @@ mod tests {
             "# Structured UI text by default, on every surface\n",
         )
         .unwrap();
+        std::fs::write(plans.join("ucp-145.md"), "# Look pass\n").unwrap();
         // The row `agent-queue add --plan` filed for ar-4379 and its brief, as notes sends them.
         let phase = "feat(agent-runtime): can-we-add-more-jaunty-moonbeam P2: Board titles vs agent briefs, and sprint #of/ar-4377";
         let brief = "Phase 2 of the plan /x/can-we-add-more-jaunty-moonbeam.md: Board titles vs agent briefs, and sprint rows. Read the plan whole, then do ONLY this phase, to merged. When it lands, tick its box in the plan's Phases checklist with the PR number and add a Results line.";
@@ -1755,6 +1761,8 @@ mod tests {
                 row("ar-4379", phase),
                 row("ar-4380", "feat(hub): can-we-add-more-jaunty-moonbeam P4+5: Briefing, then STATUS (ar-3865)"),
                 row("ar-4381", "feat(hub): no-such-plan-file P3: Words, then more"),
+                row("ar-4382", "feat(look): ucp-145 P2: Menus, then maps"),
+                row("ar-4383", "feat(hub): can-we-add-more-jaunty-moonbeam P3: #size/s"),
             ],
             "sprints": [{"project": "agent-runtime", "tasks": [{"id": "ar-4379", "text": phase, "state": "doing"}]}],
         }))
@@ -1783,6 +1791,16 @@ mod tests {
         assert_eq!(
             got(&f.rows[2]),
             ("no-such-plan-file P3", "Words, then more")
+        );
+        assert_eq!(
+            got(&f.rows[3]),
+            ("Menus, then maps", "Look pass P2"),
+            "a plan named like an id is still a plan, not an id the cleaner drops"
+        );
+        assert_eq!(
+            got(&f.rows[4]).0,
+            "can-we-add-more-jaunty-moonbeam P3",
+            "a phase with no words is never a blank title"
         );
         let t = &f.sprints[0].tasks[0];
         assert_eq!(
