@@ -106,6 +106,9 @@ bucket() { tail -n 1 "$GH_CALLS_DIR"/*.tsv | cut -f2; }
   REAL_RC=1 REAL_OUT='{"message":"Not Found"}' run --separate-stderr "$WRAP" api repos/acme/x/nope
   assert_failure 1
   assert_output '{"message":"Not Found"}'
+  mkdir "$BATS_TEST_TMPDIR/t"
+  TMPDIR="$BATS_TEST_TMPDIR/t" DENY=x "$WRAP" api repos/acme/x/runners >/dev/null
+  assert_equal "$(ls -A "$BATS_TEST_TMPDIR/t")" ""
 }
 
 @test "the log blanks bodies, fields and headers, keeps only the subcommand of secret, and is yours only" {
