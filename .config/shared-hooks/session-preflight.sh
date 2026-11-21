@@ -64,17 +64,49 @@ HEADER=$(
   # Active fleet holds (agent-hold), first because they say what NOT to start. The
   # coordinator's messages only reach sessions already running; this is how one started
   # mid-hold finds out. Read directly so a missing agent-hold binary cannot hide a hold.
+  # Only the holds that bind this session: a load hold (fleet pacing, the default kind; it
+  # binds every session) and any hold whose resource or reason names this project, its repo or
+  # its lab projects. Another project's hold is one count line; `agent-hold list` is the full view.
   HOLD_DIR="${AGENT_HOLD_DIR:-$HOME/.agent/holds}"
   if compgen -G "$HOLD_DIR/*" >/dev/null 2>&1; then
-    echo "⛔ Active holds - do not start work on these until released (GO):"
+    HOLD_NAMES=("$PROJECT_NAME")
+    [ -z "$PARENT_NAME" ] || HOLD_NAMES+=("$PARENT_NAME")
+    if declare -F project_lab_names >/dev/null 2>&1; then
+      while IFS= read -r lab_name; do [ -n "$lab_name" ] && HOLD_NAMES+=("$lab_name"); done \
+        < <(project_lab_names "$PROJECT_NAME" 2>/dev/null || true)
+    fi
+    HOLD_SHOWN=() HOLD_OTHER=0
     for hold in "$HOLD_DIR"/*; do
       [ -f "$hold" ] || continue
-      cls="$(sed -n 's/^class: //p' "$hold")"
-      printf '  %s%s since %s by %s: %s\n' "${hold##*/}" "${cls:+ ($cls)}" \
-        "$(sed -n 's/^since: //p' "$hold")" "$(sed -n 's/^by: //p' "$hold")" \
-        "$(sed -n 's/^reason: //p' "$hold")"
+      res="${hold##*/}"
+      kind="$(sed -n 's/^kind: //p' "$hold")"
+      [ -n "$kind" ] || { [ "$res" = dispatch ] && kind=resource || kind=load; }
+      reason="$(sed -n 's/^reason: //p' "$hold")"
+      bind=0
+      [ "$kind" != load ] || bind=1
+      for hn in "${HOLD_NAMES[@]}"; do
+        [ "${#hn}" -ge 4 ] || continue
+        printf '%s %s\n' "$res" "$reason" | grep -qiwF -- "$hn" && bind=1
+      done
+      if [ "$bind" -eq 1 ]; then
+        # One line: a long reason is cut where its first sentence ends, else at a word.
+        if [ "${#reason}" -gt 200 ]; then
+          reason="${reason%%. *}."
+          [ "${#reason}" -le 300 ] || { reason="${reason:0:297}"; reason="${reason% *}..."; }
+        fi
+        HOLD_SHOWN+=("$(printf '  %s since %s by %s: %s' "$res" "$(sed -n 's/^since: //p' "$hold")" \
+          "$(sed -n 's/^by: //p' "$hold")" "$reason")")
+      else
+        HOLD_OTHER=$((HOLD_OTHER + 1))
+      fi
     done
-    echo "  (\`agent-hold list\`; how to honor one: the fleet-comms skill)"
+    if [ "${#HOLD_SHOWN[@]}" -gt 0 ]; then
+      echo "⛔ Active holds - do not start work on these until released (GO):"
+      printf '%s\n' "${HOLD_SHOWN[@]}"
+    fi
+    if [ "$HOLD_OTHER" -gt 0 ]; then
+      echo "  +$HOLD_OTHER hold(s) on other projects - \`agent-hold list\`; how to honor one: the fleet-comms skill"
+    fi
     echo
   fi
 
@@ -130,7 +162,7 @@ if [ -f "$ANCHOR_FILE" ]; then
   SEC_FACTS=$(
     echo "=== Anchor: $PROJECT_NAME (project index) ==="
     if declare -F anchor_inject >/dev/null 2>&1; then
-      anchor_inject "$ANCHOR_FILE" '^Active plans'
+      anchor_inject "$ANCHOR_FILE" '^(Active plans|Lab|Links)'
     else
       cat "$ANCHOR_FILE"
     fi
@@ -139,108 +171,32 @@ if [ -f "$ANCHOR_FILE" ]; then
 fi
 startup_mark facts
 
-# The agent board - what a previous session left IN FLIGHT on this repo, at turn 1.
-#
-# Not the human's sheet: this is `<project>/agent/README.md`, the agent's own backlog, so a
-# fresh session can resume work instead of restarting it.
-#
-# THE JOIN IS `trackers.<project>.repo`, NOT THE DIRECTORY NAME. The two namespaces are
-# deliberately different and only agreed by coincidence: a session in ~/.dotfiles
-# resolves to `dotfiles`, whose board projects are `notes-cockpit` and `agent-runtime`.
-# Matching on the directory name gave an EMPTY intersection for every session anyone
-# actually opens -- ~/.dotfiles looked for `current/dotfiles/summary.md`, which has
-# never existed. project_lab_names owns that join, and owns the jq type guard the
-# registry's string-valued comment key requires (an unguarded `.value.repo` exits 5 and,
-# under this script's `set -e`, takes the entire turn-1 context with it).
-#
-# Three independent reasons this cannot lose a turn, which is the bar this file sets:
-# `command -v notes` guards the call, `timeout` bounds it, and `|| true` swallows any
-# nonzero. `notes board --agent` is read-only and never rewrites board.md.
-#
-# 6 rows, asks first (at most 3, so asks never hide every in-flight row), then the
-# "+N more" line, each row cut to BOARD_WIDTH characters: the title is what a resuming session
-# needs, and `notes board` has the rest. At 15 rows the board alone was 2.6 KB of turn 1.
-BOARD_MAX=6
-BOARD_WIDTH=160
-BOARD_ASKS=3
-SEC_BOARD=""
-if command -v notes >/dev/null 2>&1 && declare -F project_lab_names >/dev/null 2>&1; then
-  AGENT_ARGS=()
-  while IFS= read -r lab_name; do
-    [ -n "$lab_name" ] && AGENT_ARGS+=(--project "$lab_name")
-  done < <(project_lab_names "$PROJECT_NAME" 2>/dev/null || true)
-  if [ "${#AGENT_ARGS[@]}" -gt 0 ]; then
-    SEC_BOARD=$(
-      # Keep the exit status. Three outcomes that must NOT render alike: rows, a clean
-      # empty board, and a query that failed. Collapsing the last two would let "the
-      # tooling is broken" print as "nothing to do", which is the failure this block is
-      # here to avoid, not commit.
-      AGENT_RC=0
-      AGENT_ALL=$(timeout 5 notes board --agent "${AGENT_ARGS[@]}" 2>/dev/null) || AGENT_RC=$?
-      if [ -n "$AGENT_ALL" ]; then
-        agent_total=$(printf '%s\n' "$AGENT_ALL" | grep -c . || true)
-        echo "📥 Left in flight on this repo's agent board:"
-        # The human's asks first, so a backlog of them is seen; capped so they never hide
-        # the in-flight rows a session needs to resume. Sheet order otherwise; spare room
-        # goes to the asks left over.
-        printf '%s\n' "$AGENT_ALL" | awk -F'\t' -v max="$BOARD_MAX" -v asks="$BOARD_ASKS" '
-          $2 ~ /(^| )#requested( |$)/ { if (shown < asks) { print; shown++ } else extra[++e] = $0; next }
-          { rest[++r] = $0 }
-          END {
-            for (i = 1; i <= r && shown < max; i++) { print rest[i]; shown++ }
-            for (i = 1; i <= e && shown < max; i++) { print extra[i]; shown++ }
-          }' | while IFS=$'\t' read -r proj text; do
-          # Cut in bash: it counts characters in a UTF-8 locale, where mawk and BSD awk count bytes.
-          [ "${#text}" -le "$BOARD_WIDTH" ] || text="${text:0:BOARD_WIDTH-3}..."
-          printf '  [%s] %s\n' "$proj" "$text"
-        done
-        # Say what was dropped. A silent truncation reads as "that is all of it", which is
-        # the same failure as an empty channel reporting nothing to report.
-        if [ "${agent_total:-0}" -gt "$BOARD_MAX" ]; then
-          echo "  +$((agent_total - BOARD_MAX)) more - \`notes board\` for the rest"
-        fi
-      elif [ "$AGENT_RC" -eq 0 ]; then
-        echo "📥 Agent board clear for this repo — nothing left in flight."
-      else
-        echo "📥 Agent board unavailable (\`notes board --agent\` exited $AGENT_RC)."
-        echo "  Nothing is known about what is in flight — this is not \"nothing to do\"."
-      fi
-    )
-  fi
-fi
-startup_mark board
+# No board block: the backlog is `notes board`, a session never needs a pile of other rows at turn 1,
+# and the ones it printed were other projects' (the dotfiles repo joins to two lab projects).
+# A dispatched session gets its own queue item's row, read below with the lessons' work text.
 
-# Other sessions still open in this checkout, read from the fleet state file that
-# `fleet-sessions --write` keeps (one writer; this only reads it). Without it a new session
-# starts blind to a conversation the human is still having in another window (2026-11-19:
-# the Pi power session was open and mid-answer). Only this host's sessions in this
-# checkout or below it; the document's own `vocab` decides which buckets are finished and
-# orders the rest (what needs the human first), so no bucket list is kept here; PARKED is
-# left out too, as its claude is gone. A state file older than OPEN_MAX_AGE seconds shows
-# nothing, since a stopped writer would list sessions long closed. Running fleet-sessions
-# itself took 16.5 s, too slow for SessionStart. No session id (a manual run): no block,
-# since the session could not leave itself out.
-OPEN_MAX=8
+# One count line for the other sessions still open in this checkout, read from the fleet state
+# file that `fleet-sessions --write` keeps (one writer; this only reads it). A new session
+# should know it is not alone (2026-11-19: the Pi power session was open and mid-answer), but a
+# list of up to 8 topics was paid on every start; `fleet-sessions` has the list. Only this host's
+# sessions in this checkout or below it; the document's own `vocab` says which buckets are
+# finished, and PARKED is left out too, as its claude is gone. A state file older than
+# OPEN_MAX_AGE seconds shows nothing, since a stopped writer would count sessions long closed.
+# No session id (a manual run): no line, since the session could not leave itself out.
 OPEN_MAX_AGE=600
-OPEN_TOPIC=70
 FLEET_STATE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 SEC_OPEN=""
 if [ -n "$HOOK_SID" ] && [ -f "$FLEET_STATE" ] && command -v jq >/dev/null 2>&1; then
   SEC_OPEN=$(jq -r --arg cwd "$(realpath "$PROJECT_DIR" 2>/dev/null || printf '%s' "$PROJECT_DIR")" \
-    --arg me "$HOOK_SID" --argjson now "$(date +%s)" --argjson max "$OPEN_MAX" \
-    --argjson age "$OPEN_MAX_AGE" --argjson topic "$OPEN_TOPIC" '
+    --arg me "$HOOK_SID" --argjson now "$(date +%s)" --argjson age "$OPEN_MAX_AGE" '
     select($now - (.generated_epoch // 0) <= $age)
     | ((.vocab.finished // []) + ["PARKED"]) as $gone
-    | (.vocab.buckets // []) as $order
     | [.sessions[]? | select((.session_id | type) == "string" and .session_id != $me
                              and .host == null
                              and (.cwd == $cwd or ((.cwd // "") | startswith($cwd + "/")))
                              and ((.bucket // "") as $b | $gone | index($b) | not))]
-    | sort_by(((.bucket as $b | $order | index($b)) // 99), (.idle_min // 1e9))
     | select(length > 0)
-    | "Open sessions in this checkout (\(length)); `sessions show <id>` reads one:",
-      (.[:$max][] | "  \(.session_id[0:8]) \(.bucket) idle \(.idle_min // "?")m: \((.topic // "-") | gsub("\\s+"; " ") | .[0:$topic])"),
-      (if length > $max then "  +\(length - $max) more - `fleet-sessions` for the rest" else empty end)
+    | "\(length) other session(s) open in this checkout - `fleet-sessions` lists them."
     ' "$FLEET_STATE" 2>/dev/null) || SEC_OPEN=""
 fi
 startup_mark open
@@ -249,21 +205,27 @@ startup_mark open
 # 850 chars of turn 1 (629 of 630 sessions, 2026-11-05) to be told it was not theirs.
 # Where an agent's own task goes is CLAUDE.md's rule ("Track your work in the queue").
 
-# Lessons by relevance: `lessons pick` ranks the project's lessons against the work this
-# session is on and fills the rest with the newest. SessionStart sees only the cwd, so the
-# work is the queue item's title for a dispatched session (about half of them), plus the
-# branch and the cwd's place in the repo; a hand session on main gets the newest. The
-# first prompt says more: first-prompt-lessons.sh adds the lessons it matches, less these.
-# Plans come from the anchor's AUTO block, which stop-post.d/87-regen-anchor.sh rewrites.
+# Lessons by relevance: `lessons pick --matched` ranks the project's lessons against the work this
+# session is on and hands out only the ones that match (a session with no match gets none: the
+# newest five were unrelated to the work 68% of the time). SessionStart sees only the cwd, so the
+# work is the queue item's title for a dispatched session, plus the branch and the cwd's place in
+# the repo; the first prompt says more: first-prompt-lessons.sh adds the lessons it matches, less
+# these. Plans come from the anchor's AUTO block, which stop-post.d/87-regen-anchor.sh rewrites.
 # An app in a monorepo also gets its repo's lessons: CI, release plumbing and k8s still bind it.
-WORK_TEXT=""
+WORK_TEXT="" SEC_TASK=""
 if [ -n "${AGENT_QUEUE_ITEM:-}" ] && command -v agent-queue >/dev/null 2>&1; then
   # A 1 s wait on the queue lock (about 2 s worst case: the gate and the lock each get it),
   # not 10: `show` queues behind writers, and a dispatched start under load spent about
   # 10 s here (48 of 300 starts, 2026-11-17, ar-2756). A miss
   # leaves WORK_TEXT to the branch, and the first prompt adds the matched lessons.
-  WORK_TEXT=$(AGENT_QUEUE_LOCK_WAIT=1 agent-queue show "$AGENT_QUEUE_ITEM" --json 2>/dev/null | jq -r '.title // empty' 2>/dev/null |
-    sed -E 's/^[a-z0-9-]+ P[0-9]+: //' || true)
+  ITEM_JSON=$(AGENT_QUEUE_LOCK_WAIT=1 agent-queue show "$AGENT_QUEUE_ITEM" --json 2>/dev/null || true)
+  ITEM_TITLE=$(jq -r '.title // empty' <<<"$ITEM_JSON" 2>/dev/null || true)
+  # The item's own row, and only that one: its slug, its board row, its title.
+  if [ -n "$ITEM_TITLE" ]; then
+    ITEM_ROW=$(jq -r '.row // empty' <<<"$ITEM_JSON" 2>/dev/null || true)
+    SEC_TASK="Your queue item: $AGENT_QUEUE_ITEM${ITEM_ROW:+ (board row ${ITEM_ROW#*:})}: $ITEM_TITLE"
+  fi
+  WORK_TEXT=$(sed -E 's/^[a-z0-9-]+ P[0-9]+: //' <<<"$ITEM_TITLE" || true)
 fi
 WORK_BRANCH=$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || true)
 case "$WORK_BRANCH" in main|master|develop|agent-[0-9]*) WORK_BRANCH="" ;; esac
@@ -272,8 +234,8 @@ PARENT_LESSONS="$HOME/.agent/lessons/${PARENT_NAME}.md"
 [ -n "$PARENT_NAME" ] && [ -f "$PARENT_LESSONS" ] || PARENT_LESSONS=""
 PICK="" PARENT_PICK=""
 if command -v lessons >/dev/null 2>&1; then
-  PICK=$(lessons pick "$LESSONS_FILE" "$WORK_TEXT" 2>/dev/null || true)
-  [ -z "$PARENT_LESSONS" ] || PARENT_PICK=$(lessons pick "$PARENT_LESSONS" "$WORK_TEXT" 2>/dev/null || true)
+  PICK=$(lessons pick --matched "$LESSONS_FILE" "$WORK_TEXT" 2>/dev/null || true)
+  [ -z "$PARENT_LESSONS" ] || PARENT_PICK=$(lessons pick --matched "$PARENT_LESSONS" "$WORK_TEXT" 2>/dev/null || true)
 fi
 SEC_LESSONS="$PICK" PARENT_BODY="${PARENT_PICK#*$'\n'}"
 [ -z "$PARENT_PICK" ] ||
@@ -321,7 +283,7 @@ add_section() { # <name> <where to read it> <body>
   fi
 }
 add_section "key facts" "$ANCHOR_FILE" "$SEC_FACTS"
-add_section "agent board" "notes board --agent" "$SEC_BOARD"
+add_section "queue item" "agent-queue show ${AGENT_QUEUE_ITEM:-}" "$SEC_TASK"
 add_section "lessons digest" "$LESSONS_FILE" "$SEC_LESSONS"
 # A lesson counts as delivered only once it is in the context; the archive reads the log.
 if [ -n "$SEC_LESSONS" ] && [[ ", $OMITTED" != *", lessons digest ("* ]]; then

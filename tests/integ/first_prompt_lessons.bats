@@ -74,6 +74,11 @@ prompt() { # SID PROMPT
   DEPLOY="$SANDBOX/deploy"; mkdir -p "$DEPLOY"
   cp "$REPO_ROOT/.config/shared-hooks/"{session-preflight.sh,project-name.sh,stop-session-changes.py,first-prompt-lessons.sh} "$DEPLOY/"
   git -C "$REPO" init -q .
+  # The preflight hands out only the lessons that match the work, which for a dispatched session is its item's title.
+  printf '#!/usr/bin/env bash\n[ "$1" = show ] && echo %s\n' \
+    "'{\"title\":\"x P2: waybar chip click target\"}'" > "$SANDBOX/bin/agent-queue"
+  chmod +x "$SANDBOX/bin/agent-queue"
+  export AGENT_QUEUE_ITEM=x-p2
   bash "$DEPLOY/session-preflight.sh" <<<'{"source":"startup","session_id":"s5"}' >/dev/null
   run cat "$SANDBOX/run/lessons-shown/s5"
   assert_success

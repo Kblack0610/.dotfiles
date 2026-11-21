@@ -82,6 +82,17 @@ covered_log() {
   [[ $line != *"~/.d..." ]]
 }
 
+@test "pick cuts a long lesson where a sentence ends, never mid-rule, and skips e.g. as an end" {
+  printf -- '- **%s** **The rule is stated here, e.g. in one sentence.** %s Past the cap now: %s and a tail that goes on.\n' \
+    "$RECENT" "$(printf 'Detail %.0s' $(seq 1 12))" "$(printf 'extra %.0s' $(seq 1 40))" >> "$F"
+  run "$BIN" pick -n 1 "$F"
+  line="${lines[1]}"
+  [ "${#line}" -le 300 ]
+  [[ $line == *"in one sentence.**"* ]]
+  [[ $line != *"..." ]]
+  [[ $line != *"extra"* ]]
+}
+
 @test "pick on a missing file prints nothing and succeeds" {
   run "$BIN" pick "$DIR/none.md" anything
   assert_success
