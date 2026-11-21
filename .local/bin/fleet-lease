@@ -3,7 +3,8 @@
 #
 #   fleet-lease <lane>           exit 0 when this machine may run <lane> now: the units' ExecCondition
 #   fleet-lease renew            renew the lease when held, take it when free, and start or stop the
-#                                persistent singleton units to match (fleet-lease.timer, every machine)
+#                                persistent singleton units to match (fleet-lease.timer, every machine);
+#                                a machine another holds it from removes the singletons' textfiles
 #   fleet-lease held             what this machine last read, no network: exit 0 it holds the lease,
 #                                1 another machine does (or this one never may), 2 no holder known
 #   fleet-lease status [--json]  who holds it, until when, on which remote
@@ -18,6 +19,8 @@ set -uo pipefail
 STORE="${AGENT_STORE_DIR:-$HOME/.agent}"
 # shellcheck source=../lib/store-remote.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/store-remote.sh"
+# shellcheck source=../lib/prom-textfile.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
 CONF_DIR="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}"
 ME="${FLEET_HOST:-$(uname -n | cut -d. -f1)}"
 NAME=fleet
@@ -31,6 +34,12 @@ LOCK_WAIT_S=30
 # The persistent singleton units the renewer starts on the holder and stops elsewhere, besides each
 # KIND=persistent singleton agentctl lane (agentctl@<name>.service). Only an enabled one is started.
 UNITS="${FLEET_LEASE_UNITS:-agent-web.service}"
+# The textfiles the singleton lanes publish (prom-textfile.sh): fleet-bench, fleet-state,
+# claude-acct, mkt-metrics and product-metrics. A machine another holds the lease from removes
+# them: its lanes no longer run, and a copy left behind is a second, frozen reading of each fleet
+# gauge (razer's fleet_bench.prom from the 2026-11-19 handover, ar-4358). A new singleton writer
+# adds its file here.
+TEXTFILES="${FLEET_LEASE_TEXTFILES:-fleet_bench.prom fleet_projects.prom fleet_sessions.prom claude_acct.prom mkt_metrics.prom store_reviews.prom store_sales.prom sentry_issues.prom playtest_feedback.prom}"
 SYNC_DIR="$STORE/.sync"
 PEER="$SYNC_DIR/peer"
 # A peer that must never hold the lease: one without what the holder runs (agent-web, hub, notes).
@@ -201,17 +210,30 @@ follow() {
   return 0
 }
 
+# unpublish: remove this machine's copy of each singleton textfile. Only a machine that knows
+# another holds the lease, or that never may, calls it: one that cannot tell keeps its copy, as
+# its lanes' gate does.
+unpublish() {
+  local d f
+  d=$(prom_textfile_target) || return 0
+  # shellcheck disable=SC2086 # a word list
+  for f in $TEXTFILES; do
+    [ -e "$d/$f" ] && rm -f "$d/$f" && echo "fleet-lease: removed $f: $ME does not hold the fleet lease"
+  done
+  return 0
+}
+
 cmd_renew() {
   local rc h=0
   # Not a peer, or never a holder: this machine runs none of the holder's units.
-  [ -f "$PEER" ] && [ ! -f "$NOLEASE" ] || { follow 0; exit 0; }
+  [ -f "$PEER" ] && [ ! -f "$NOLEASE" ] || { follow 0; unpublish; exit 0; }
   lock || exit 0
   if held $(( TTL_S / 2 )); then h=1
   else
     take; rc=$?
     case "$rc" in
       0) h=1 ;;
-      1) h=0 ;;
+      1) h=0; unpublish ;;
       # No remote answered: keep what the last write says until it lapses.
       *) held && h=1 ;;
     esac

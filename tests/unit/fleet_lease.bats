@@ -234,6 +234,41 @@ EOS
   refute_output --partial started
 }
 
+@test "renew removes the singletons' textfiles on a machine another holds the lease from; the holder and one that cannot tell keep theirs" {
+  # razer held the lease until 2026-11-19 and its fleet_bench.prom stayed a second, frozen
+  # agent_bench_vital reading for two days after (ar-4358).
+  systemctl_stub
+  export FLEET_LEASE_TEXTFILES="fleet_bench.prom fleet_sessions.prom"
+  local d="$PROM_TEXTFILE_DIR"
+  mkdir -p "$d"
+  echo 'agent_bench_vital 1' > "$d/fleet_bench.prom"
+  echo 'fleet_local 1' > "$d/fleet_local.prom"
+  run on a renew
+  assert_success
+  refute_output --partial removed
+  [ -e "$d/fleet_bench.prom" ]
+  run on b renew
+  assert_success
+  assert_line "fleet-lease: removed fleet_bench.prom: b does not hold the fleet lease"
+  refute_output --partial fleet_sessions
+  [ ! -e "$d/fleet_bench.prom" ]
+  # An every-node file stays.
+  [ -e "$d/fleet_local.prom" ]
+  # No remote answers and a's lease has lapsed: b cannot tell, so it keeps the copy.
+  echo 'agent_bench_vital 1' > "$d/fleet_bench.prom"
+  printf 'STORE_PRIMARY_URL="%s"\nSTORE_BACKUP_URL="%s"\n' "$R/gone.git" "$R/gone2.git" > "$STORE_SYNC_CONF"
+  export FLEET_LEASE_NOW=$((T0 + 600))
+  run on b renew
+  assert_success
+  refute_output --partial removed
+  [ -e "$d/fleet_bench.prom" ]
+  # A machine that never holds it removes its copy with no remote at all.
+  : > "$SANDBOX/b/.sync/no-lease"
+  run on b renew
+  assert_success
+  assert_line "fleet-lease: removed fleet_bench.prom: b does not hold the fleet lease"
+}
+
 @test "status names the holder on each remote" {
   on a fleet-dispatch 2>/dev/null
   run on b status
