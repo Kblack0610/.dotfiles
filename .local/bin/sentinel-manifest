@@ -158,6 +158,9 @@ PROM_AGGREGATION = re.compile(
 
 PROBES = ("http", "metric", "kubectl", "command", "agent")
 METRIC_OPS = ("<", "<=", ">", ">=", "==", "!=")
+# The four page levels (~/.local/src/docs/priority.md). The loop read any other word as normal with
+# only a log line to say so; `medium` sat in two manifests that way.
+LEVELS = ("low", "normal", "high", "urgent")
 
 # The four legibility axes a reader needs to act on a page at 3am.
 #
@@ -615,6 +618,12 @@ def cmd_validate(path, strict=False):
         errors.append(
             f"renotify_after {renotify!r} is not a duration (e.g. 12h 2d) or null"
         )
+
+    # In plain validate, not --strict: a level the loop cannot read pages at a level nobody chose.
+    for field in ("severity", "notify_priority"):
+        level = scalar(doc.get(field))
+        if field in doc and level not in LEVELS:
+            errors.append(f"{field} {level!r} is not one of {' '.join(LEVELS)} (~/.local/src/docs/priority.md)")
 
     # How many consecutive probes must agree before a state change. The loop's
     # `[ "$confirm" -gt 1 ] 2>/dev/null` reads anything non-numeric as 1, so a typo
