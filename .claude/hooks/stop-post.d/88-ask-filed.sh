@@ -30,7 +30,7 @@ TRANSCRIPT=$(jq -r '.transcript_path // empty' <<<"$PAYLOAD" 2>/dev/null)
 agent-panel asks-human "$TRANSCRIPT" || exit 0
 
 # Already filed: a pending ask this session owns (the same match fleet-sessions' asks_for makes).
-ASKS_ROOT="$HOME/.agent/asks"
+ASKS_ROOT="${AGENT_ASK_ROOT:-$HOME/.agent/asks}"
 while IFS= read -r f; do
   grep -qx 'status: pending' "$f" && exit 0
 done < <(grep -lx "claude_session: $SID" "$ASKS_ROOT"/*/*.md 2>/dev/null)

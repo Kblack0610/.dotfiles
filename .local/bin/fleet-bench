@@ -250,6 +250,7 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${TRIAGE_SYSTEMCTL:=systemctl}"     # triage: failed user units
 : "${TRIAGE_WATCH_STATE:=$HOME/.local/state/watch-companion}"   # triage: Sentinel's <watch>.state and .since
 : "${TRIAGE_WATCHES:=$HOME/.agent/watches}"   # triage: each watch's manifest, for its severity and what
+: "${TRIAGE_SYSTEM_SKILLS:=6}"   # triage: skills of a watch's system named in its red item, at most
 : "${TRIAGE_ALERT_WATCH:=alertmanager-fleet}"   # triage: the aggregate watch whose evidence is one firing alert a line: each is its own row (triage_alerts)
 : "${TRIAGE_PINS_CMD:=kubectl --context ${CC_KUBE_CONTEXT:-home-k3s} -n monitoring --request-timeout=10s get configmap ci-runner-governor-override -o json}"   # triage: the governor's host pins, which say a host is being moved on purpose
 : "${TRIAGE_LOG_HOURS:=24}"        # triage: the runs whose stderr is read for error signatures
@@ -3893,6 +3894,30 @@ upsert_report() {
 watch_sev() { watch_severity "$TRIAGE_WATCHES/$1.yaml"; }
 watch_after() { case "$1" in high|urgent) echo "$TRIAGE_WATCH_HIGH_AFTER" ;; *) echo "$TRIAGE_WATCH_AFTER" ;; esac; }
 
+# system_note <watch> <route skill> -> "; system <ids>: load fix-red and <skills>" for a watch whose
+# manifest names a `system:`, else nothing. The skills are the ones whose metadata.system names one
+# of its ids (one pass over BENCH_SKILLS_DIR), less fix-red and the route's own skill, at most
+# TRIAGE_SYSTEM_SKILLS of them, so the red's session loads fix-red plus its system's domain skills.
+system_note() {
+  local ids skills
+  # one line, `system: ci` or `system: [ci, tests]` (the forms SENTINEL.md shows), quotes and a comment dropped
+  ids=$(awk '/^system:/ { sub(/^system:[[:space:]]*/, ""); sub(/[[:space:]]#.*/, ""); gsub(/["'"'"'\[\],]/, " "); print; exit }' "$TRIAGE_WATCHES/$1.yaml" 2>/dev/null)
+  ids=$(echo $ids)
+  [ -n "$ids" ] || return 0
+  skills=$(find -L "$BENCH_SKILLS_DIR" -mindepth 2 -maxdepth 2 -name SKILL.md -print0 2>/dev/null | sort -z \
+    | xargs -0 awk -v ids=" $ids " '
+        FNR == 1 { fm = 0; done = 0 }
+        /^---[[:space:]]*$/ { fm++; next }
+        fm == 1 && !done && /^[[:space:]]+system:/ {
+          line = $0; sub(/^[[:space:]]*system:[[:space:]]*/, "", line); gsub(/[][,]/, " ", line)
+          n = split(line, a, " ")
+          for (i = 1; i <= n; i++) if (index(ids, " " a[i] " ")) {
+            m = split(FILENAME, p, "/"); print p[m - 1]; done = 1; break }
+        }' 2>/dev/null \
+    | awk -v skip="${2:--}" -v max="$TRIAGE_SYSTEM_SKILLS" '$0 != "fix-red" && $0 != skip && ++c <= max' | paste -sd, - | sed 's/,/, /g')
+  printf '; system %s: load fix-red%s' "$ids" "${skills:+ and $skills}"
+}
+
 # watch_paused <name> -> 0 when the watch is paused (`<name>.yaml.paused`). Its state is kept for when
 # it resumes, but it is no live red: `watch-companion-loop list` shows it PAUSED, and triage neither
 # files nor keeps a row for it.
@@ -4161,7 +4186,7 @@ triage_shape() {
 # counted 0 again and a red two fixes did not hold was retried past the cap
 # (board-chain and runner-score, 2026-11-07).
 triage_route() {
-  local key text pri re route skill fix tags t note hit cause extra
+  local n key text pri re route skill fix tags t note hit cause extra
   while IFS=$'\t' read -r key text pri; do
     hit=0 cause=- extra=
     triage_line "$text" && hit=1
@@ -4195,6 +4220,9 @@ triage_route() {
       esac
     fi
     text+="${note:+; $note}"
+    case "$route" in agent | alert | owned:?*)
+      if [[ "$key" == 'check(watch): '* ]]; then n=${key#'check(watch): '}; text+=$(system_note "${n%% *}" "${skill:--}"); fi ;;
+    esac
     for t in ${tags:-}; do
       case "$t" in -) ;; \#*) text+=" $t" ;; *) extra+="${extra:+ }$t" ;; esac
     done

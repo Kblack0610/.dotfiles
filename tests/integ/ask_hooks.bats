@@ -35,6 +35,16 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   assert_output ''
 }
 
+@test "one AGENT_ASK_ROOT moves the check with agent-ask: an ask filed under the override counts" {
+  : > "$NOTES_FIXTURE/agent-panel.asks"
+  export AGENT_ASK_ROOT="$SANDBOX/elsewhere/asks"
+  CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo 'merge it?' >/dev/null
+  assert [ -z "$(find "$HOME/.agent/asks" -name '*.md' 2>/dev/null)" ]
+  run env CLAUDE_CODE_SESSION_ATTENDED=1 bash "$CHECK" <<<"$(stop_payload)"
+  assert_success
+  assert_output ''
+}
+
 @test "the check stays quiet when nothing asks, headless, on re-entry, or skipped" {
   run env CLAUDE_CODE_SESSION_ATTENDED=1 bash "$CHECK" <<<"$(stop_payload)"
   assert_output ''

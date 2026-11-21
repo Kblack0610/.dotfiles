@@ -6,7 +6,7 @@ and stop. This is the shared data source behind the `prefix g` agent-bridge surf
 agent-web's asks list.
 
 - CLI: `~/.dotfiles/.local/bin/agent-ask` (public, symlinked into `~/.local/bin`).
-- Store: `~/.agent/asks/{project}/{id}.md`, one flat `key: value` file per ask.
+- Store: `~/.agent/asks/{project}/{id}.md`, one flat `key: value` file per ask. `AGENT_ASK_ROOT` moves the store for every script and binary that reads it (agent-ask, fleet-sessions, agent-queue, agent-proof, session-outcomes, the 88-ask-filed hook, agent-core, hub-core). The systemd path units (`fleet-state.path`, `agent-ask-deliver.path`), the comms-lint channel glob and agent-web's file watch name `~/.agent/asks` literally and stay on the default.
 - `{project}` is ALWAYS the canonical name (resolved via `shared-hooks/project-name.sh`),
   so an ask lines up with `sessions.jsonl` and the queue.
 
