@@ -4773,6 +4773,17 @@ row_item() {
   assert_output $'red low\nretagged-down high\ncleanup high\ngone high\nretagged-up low'
 }
 
+@test "ar-4416: a board whose row priorities pass 128 KiB still lists, and its rows still rank the items" {
+  story_notes
+  row_item up level:lv-2 low
+  row_item plain level:lv-6 high
+  jq -n '{rows: ([range(8000) | {project: "level", id: "lv-x\(.)", state: "open", priority: "low"}]
+                 + [{project: "level", id: "lv-2", state: "open", priority: "urgent"}])}' > "$NOTES_FIXTURE/board.json"
+  run bash -c "'$AQ' list --json | jq -r '\"\(.slug) \(.priority)\"'"
+  assert_success
+  assert_output $'up urgent\nplain high'
+}
+
 @test "ar-3011: bump and set priority= write the item's row, which the order reads; an item with no row writes none" {
   story_notes
   row_item rowed level:lv-1 high

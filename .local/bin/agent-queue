@@ -1169,12 +1169,14 @@ item_side() {
 # carries its header keys, state, file and task alone, for a writer that reads only those (collect_rows).
 # A listing reads every header in the queue once (index_load) and the listed files once
 # (item_recs), and asks each hold once (memo), never a fork per file or per `after:` slug.
+# The board's row priorities (ROWPRIO, set by collect) reach jq as data in $rowprio_in, never in the
+# program: on a full board the map passes 128 KiB, one argument's limit, and jq cannot parse it as code.
 items_json() {
   local rows="" filter f a w p mo ph s afin
   [ "$1" != --rows ] || { rows=1; shift; }
   filter="$1"
   shift
-  [ $# -gt 0 ] || { unlock_read; jq -nc "[] | $filter"; return; }
+  [ $# -gt 0 ] || { unlock_read; jq -nc --slurpfile rowprio_in <(printf '%s' "${ROWPRIO:-null}") "[] | $filter"; return; }
   local -A LIST_MEMO=() QI_LIVE=() QI_ST=() QI_FIN=() QI_AFTER=() QI_TAGS=() QI_WMETA=()
   local LIST_MEMO_ON=1 recs
   [ -n "$rows" ] || index_load "$@"
@@ -1188,7 +1190,7 @@ items_json() {
       item_side "$f" "$a" "${QI_TAGS[$f]-}" "$w" "$p" "$mo" "$ph" "$afin"
     done
     printf '\x1d%s' "$recs"
-  } | jq -Rsc "$ITEM_JQ | $filter"
+  } | jq -Rsc --slurpfile rowprio_in <(printf '%s' "${ROWPRIO:-null}") "$ITEM_JQ | $filter"
 }
 
 # item_json <file> -> that item as one JSON object. One item asks the store for its own `after:` items
@@ -1355,9 +1357,7 @@ order_filter() {
   rank="$(prios_read | jq -Rsc 'split("\n") | map(select(. != "") | split("\t")
     | {(.[0]): ({"focus": 0, "high": 1, "low": 3}[.[1]] // 2)}) | add // {}' 2>/dev/null)" || rank='{}'
   [[ " $* " != *" queued "* ]] || mix="$(mix_json)"
-  local rows=null
-  [[ " $* " != *" queued "* && " $* " != *" running "* ]] || rows="$(row_prios)"
-  printf '%s %s %s as $rank | %s as $mix | %s as $rowprio | %s' "$CLASS_JQ" "$MIX_JQ" "$rank" "${mix:-null}" "${rows:-null}" "$ORDER"
+  printf '%s %s %s as $rank | %s as $mix | $rowprio_in[0] as $rowprio | %s' "$CLASS_JQ" "$MIX_JQ" "$rank" "${mix:-null}" "$ORDER"
 }
 
 # row_prios -> {"<board>:<id>": priority} of every open board row, one `notes board --json` read, or
@@ -1431,7 +1431,12 @@ snap_json() {
 }
 
 # collect <states...> [--date D] [--since D] -> a JSON array of items, in queue order.
-collect() { snap_json "$(order_filter "$@")" "$@"; }
+# A listing of queued or running items reads the board's row priorities once (ROWPRIO, items_json).
+collect() {
+  local ROWPRIO=null
+  [[ " $* " != *" queued "* && " $* " != *" running "* ]] || ROWPRIO="$(row_prios)"
+  snap_json "$(order_filter "$@")" "$@"
+}
 
 # collect_rows <states...> -> collect for a writer that reads only an item's slug, row and plan
 # under the exclusive lock (link_row, repoint_row, add_plan): no hold, weight, ready or order is
