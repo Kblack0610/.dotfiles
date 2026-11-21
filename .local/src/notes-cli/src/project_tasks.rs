@@ -755,8 +755,8 @@ fn share(a: &Words, b: &Words) -> usize {
 
 /// The open rows of `content` closest to `text`, best first, at most `top`, each with its
 /// [`share`] (under [`MIN_SIMILAR`] is no match: one shared `the` makes none). A tie goes to the row of the
-/// same `type(area)`, then to the one higher on the sheet. The same scoring as [`near_twin`], so
-/// what a reader is shown is what the writer would refuse.
+/// same `type(area)`, then to the one higher on the sheet. The same share as [`near_twin`], so
+/// a row the writer would refuse is listed; only this tie-break reads the area.
 fn similar<'a>(content: &'a str, text: &str, top: usize) -> Vec<(usize, &'a str)> {
     let (kind, want) = title_words(&format!("- [ ] {text}"));
     let mut hits: Vec<(usize, bool, &str)> = content
@@ -4631,7 +4631,7 @@ Version: v1.2.0
             near_twin(board, "fix(menu): the pause menu crashes on load #size/s").is_none(),
             "another area and other words file"
         );
-        let kpi ="## Tasks\n- [ ] check(kpi): no_pr_rate past threshold: 7d 0.3 (28d 0.2, max 0.1) #size/s\n";
+        let kpi = "## Tasks\n- [ ] check(kpi): no_pr_rate past threshold: 7d 0.3 (28d 0.2, max 0.1) #size/s\n";
         assert!(
             near_twin(
                 kpi,
