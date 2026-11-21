@@ -13,7 +13,7 @@ fleet-agent down        # remove the container; volumes and logins stay
 
 Each Claude account signs in with its setup token, pushed from a machine with rbw unlocked: `claude-acct token push <host>`, where `<host>` is an ssh alias for the container's port. No `/login` runs in the container.
 
-Then add the box to `fleet_workers` in home-config's inventory with `ansible_port: 2223`. `fleet-dispatch hosts` reads it ready once `wt` is on PATH and `~/.agent` is a peer store (`store-sync join`), and lists `claude` in its kit once `fleet-node ready` passes inside.
+Then add the box to `fleet_workers` in home-config's inventory with `ansible_port: 2223`. `fleet-dispatch hosts` reads it ready once `wt` is on PATH and `~/.agent` is a peer store (`store-sync join`) and `~/.notes` is a clone (`notes-sync-bootstrap.sh`), and lists `claude` in its kit once `fleet-node ready` passes inside.
 
 ## Build and test it
 
@@ -42,6 +42,7 @@ HOME is one volume because Claude rewrites `~/.claude.json` by rename, so a moun
 | --- | --- | --- |
 | `fleet-dispatch hosts` lists no claude in the worker's kit | an account has no token in the container | `fleet-agent status` names it; `claude-acct token push <host>` from a machine with rbw |
 | `fleet-dispatch hosts` reads the worker not ready | no peer store (`~/.agent/.sync/peer`) | `fleet-agent shell`, then `store-sync join` |
+| `fleet-dispatch hosts` says the worker has no `~/.notes` clone | the vault was never cloned there | run `.local/src/git/notes-sync-bootstrap.sh` in the container |
 | Every account signed out after a `docker volume rm` | the logins were in that volume | sign in again; `fleet-agent down` never removes volumes |
 | `nproc` inside reads the whole box | started without `fleet-agent` | `fleet-agent down && fleet-agent up`; it sets a cpuset |
 | `fleet-agent up` says it could not pull and there is no local copy | the GHCR package is private and this box is not logged in | `docker login ghcr.io` with a token that can read packages, or make the package public |
