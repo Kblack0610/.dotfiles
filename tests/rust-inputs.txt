@@ -12,7 +12,9 @@
 .local/src/hub-core    .config/fleet-sessions/state.conf
 .local/src/hub-core    .config/comms-lint/
 .local/src/hub-core    .local/bin/comms-lint
-.local/src/hub-core    .local/src/agent-web/static/infra.js
+.local/src/hub-core    .local/src/agent-web/src/
+.local/src/hub-core    .local/src/agent-web/static/
+.local/src/hub-core    .local/src/hub-tui/src/
 .local/src/hub-core    .local/src/docs/stages.md
 .local/src/hub-core    tests/agent-web/tilecast-schema.sh
 .local/src/project-map .config/shared-hooks/project-name.sh
