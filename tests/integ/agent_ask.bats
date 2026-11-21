@@ -1338,11 +1338,18 @@ days_ahead() { echo $(( ($(date -d "$1" +%s) - $(date +%s) + 43200) / 86400 )); 
   run "$AGENT_ASK" reopen "$failed"
   assert_failure
   assert_called 'and this? -> answered: yes; its session ended and did not reopen: claude --resume sid-8'
-  # Refused: an ask that already resumes some other way, one with no session, one not pending.
+  # An ask that already resumes some other way keeps its resume and succeeds: ask-resume runs it
+  # headless on the answer, so a close over it loses nothing (ar-4271: the shepherd kept that window).
   other="$(CLAUDE_CODE_SESSION_ID=sid-8 "$AGENT_ASK" post --project demo --resume '/captain resume' 'other?')"
   run "$AGENT_ASK" reopen-on-answer "$other"
-  assert_failure
-  assert_output --partial 'already resumes with: /captain resume'
+  assert_success
+  assert_output --partial 'already resumes with: /captain resume; the answer runs that'
+  grep -qx 'resume: /captain resume' "$(ask_file "$other")"
+  run grep -c '^reopen: ' "$(ask_file "$other")"
+  assert_output 0
+  run "$AGENT_ASK" reopen-on-answer "$("$AGENT_ASK" post --project demo --resume 'run: elsewhere' 'loose with resume?')"
+  assert_success
+  # Refused: one with no session, one not pending.
   loose="$(post demo 'loose?')"
   run "$AGENT_ASK" reopen-on-answer "$loose"
   assert_failure
