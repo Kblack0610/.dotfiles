@@ -58,7 +58,8 @@ while [ $# -gt 0 ]; do
     --data-class) cli_class="${2:?--data-class needs a value}"; shift 2 ;;
     --harness) cli_harness="${2:?--harness needs a value}"; harness="$cli_harness"; shift 2 ;;
     --schema)  cli_schema="${2:?--schema needs a value}"; shift 2 ;;
-    --context) cli_context="${2:?--context needs a value}"; shift 2 ;;
+    --context) cli_context="${2:?--context needs a value}"; shift 2
+               case "$cli_context" in lean|full) ;; *) role_die "--context '$cli_context' is not lean or full" ;; esac ;;
     --explain) AGENTCTL_EXPLAIN=1; [ -n "${2:-}" ] && [ "${2:0:1}" != "-" ] && { cli_role="$2"; shift; }; shift ;;
     *)         args+=("$1"); shift ;;
   esac
@@ -116,10 +117,9 @@ case "$cli_context" in
   '') ;;
   lean) AGENT_CALL_CONTEXT=lean; export AGENT_CALL_CONTEXT ;;
   full) unset AGENT_CALL_CONTEXT ;;
-  *) role_die "--context '$cli_context' is not lean or full" ;;
 esac
 # CALL_CONTEXT=lean is expressed only as claude flags (harnesses/claude.sh).
-[ "$harness" = claude ] || [ -z "${AGENT_CALL_CONTEXT:-}" ] || role_die "agent '$agent' has CALL_CONTEXT=$AGENT_CALL_CONTEXT, which needs the claude harness, not '$harness'"
+[ "$harness" = claude ] || [ -z "${AGENT_CALL_CONTEXT:-}" ] || role_die "${agent:+agent '$agent' }CALL_CONTEXT=$AGENT_CALL_CONTEXT (its conf or --context) needs the claude harness, not '$harness'"
 
 # Every caller of this script is a runner on a timer with no human attached — that
 # is the premise the whole role contract rests on (see harnesses/claude.sh, which
