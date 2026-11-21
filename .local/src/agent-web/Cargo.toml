@@ -29,4 +29,5 @@ opt-level = "z"
 lto = true
 
 [dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
 tokio = { version = "1", features = ["test-util"] }
