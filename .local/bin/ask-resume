@@ -45,13 +45,31 @@ command -v agent-ask >/dev/null 2>&1 || { echo "ask-resume: agent-ask not on PAT
 # budget, never the answering runner's). agentctl-run
 # scrubs the inherited transport env and applies the route, so a resume never runs on
 # whatever gateway its caller happened to export.
+# A model resume is work, so it runs as a queue item, `from: ask:<id>` and origin `ask`, which
+# its session works under ($AGENT_QUEUE_ITEM: its agent-land closes it, and its own adds go to the
+# board as an unattended session's do). The item is filed before the ask is marked, so an add
+# agent-queue refuses leaves the ask resumable for `--all`; when the run ends with the item still
+# running, its exit closes it. A `run:` command is the asking script's own step, not a session.
 run_resume() { # $1=id $2=project $3=command
-  local id="$1" project="$2" cmd="$3"
+  local id="$1" project="$2" cmd="$3" slug="ask-resume-$1" sid=''
   if [ "$DRY" = 1 ]; then
-    if [[ "$cmd" == run:* ]]; then echo "would run: ${cmd#run:} $id   (ask $id)"; else echo "would run: agentctl-run --agent ask-resume -p '$cmd'   (ask $id)"; fi
+    if [[ "$cmd" == run:* ]]; then echo "would run: ${cmd#run:} $id   (ask $id)"; else echo "would run: agentctl-run --agent ask-resume -p '$cmd'   (ask $id, item $slug)"; fi
     return 0
   fi
-  [[ "$cmd" == run:* ]] || command -v agentctl-run >/dev/null 2>&1 || { echo "ask-resume: agentctl-run not on PATH" >&2; return 1; }
+  if [[ "$cmd" != run:* ]]; then
+    command -v agentctl-run >/dev/null 2>&1 || { echo "ask-resume: agentctl-run not on PATH" >&2; return 1; }
+    # The caller's session, item and pane are not this run's, so none of them is recorded on it
+    # (agent-queue reads an empty one as unset).
+    slug="$(CLAUDE_CODE_SESSION_ID='' AGENT_QUEUE_ITEM='' TMUX='' agent-queue add --running --repeat \
+      --project "$project" --from "ask:$id" --slug "$slug" --title "chore(asks): resume answered ask $id" "$cmd" |
+      sed -n 's/^running \([^ ]*\) -> .*/\1/p')"
+    [ -n "$slug" ] || { echo "ask-resume: $id not resumed: agent-queue did not file its item (above); ask-resume --all retries it" >&2; return 1; }
+    agent-queue set "$slug" origin=ask >/dev/null || echo "ask-resume: $slug has no origin: agent-queue set $slug origin=ask" >&2
+    # The run's Claude session id is chosen here and claimed, as fleet-dispatch start claims its own, so
+    # reap and fleet-bench see a witnessed item, not an ownerless one.
+    sid="$(uuidgen | tr "[:upper:]" "[:lower:]")"
+    agent-queue claim "$slug" --sid "$sid" >/dev/null || echo "ask-resume: $slug has no session: agent-queue claim $slug --sid $sid" >&2
+  fi
   agent-ask mark-resumed "$id" >/dev/null 2>&1
   echo "ask-resume: $id ($project) -> $cmd" >&2
   local log="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/ask-resume"
@@ -65,8 +83,18 @@ run_resume() { # $1=id $2=project $3=command
     "${detach[@]}" bash -c "${cmd#run:}"' "$1"' ask-resume "$id" >>"$log/${project}.log" 2>&1 </dev/null
     return 0
   fi
-  "${detach[@]}" agentctl-run --agent ask-resume -p "$cmd" \
-    --max-turns "${ASK_RESUME_MAX_TURNS:-60}" \
+  # A run that opened a PR and did not land it leaves the item in review, where reap settles it by
+  # that PR; done refuses an item whose PR has not merged.
+  # shellcheck disable=SC2016 # the inner shell's $1..$4: the prompt, max turns, the item and its session id
+  "${detach[@]}" env AGENT_QUEUE_ITEM="$slug" bash -c '
+    agentctl-run --agent ask-resume -p "$1" --max-turns "$2" ${4:+--session-id "$4"}; rc=$?
+    it="$(agent-queue show "$3" --json 2>/dev/null)"
+    [ "$(jq -r .state <<<"$it")" = running ] || exit "$rc"
+    if [ -n "$(jq -r ".pr // empty" <<<"$it")" ]; then to=(review)
+    elif [ "$rc" = 0 ]; then to=(done --status ok)
+    else to=(done --status failed); fi
+    agent-queue move "$3" "${to[@]}" >/dev/null || echo "ask-resume: $3 is left open: agent-queue move $3 ${to[*]}" >&2
+    exit "$rc"' ask-resume "$cmd" "${ASK_RESUME_MAX_TURNS:-60}" "$slug" "$sid" \
     >>"$log/${project}.log" 2>&1 </dev/null
 }
 

@@ -38,6 +38,9 @@ pub enum Kind {
     Schedule,
     /// An app on the Releases tab, by its project name: its channels, releases, builds, changelog.
     App,
+    /// One version of a project across its apps (`hub_core::version_page`), by `<project>/<version>`:
+    /// its rows, their state and who works them, then each app's cut of it as a pipeline.
+    Version,
     /// A skill, by its name: Stack's Skills filtered to exactly that name, whose row opens it.
     Skill,
     /// Home's Needs you filtered to one kind, by its state label (`Question`), as its tile does.
@@ -84,6 +87,12 @@ pub const PAGES: &[Page] = &[
         kind: Kind::App,
         tab: "releases",
         word: "apps",
+        inner: "apps",
+    },
+    Page {
+        kind: Kind::Version,
+        tab: "releases",
+        word: "versions",
         inner: "apps",
     },
     Page {
@@ -194,6 +203,7 @@ impl Link {
             | Kind::CiRun
             | Kind::Job
             | Kind::App
+            | Kind::Version
             | Kind::Runner
             | Kind::Session => {
                 unreachable!("in PAGES")
@@ -231,6 +241,7 @@ impl Link {
             | Kind::CiRun
             | Kind::Job
             | Kind::App
+            | Kind::Version
             | Kind::Runner
             | Kind::Session => {
                 unreachable!("in PAGES")

@@ -248,6 +248,7 @@ fn router(state: Shared) -> Router {
         .route("/api/releases/app", get(releases_app))
         .route("/api/releases/lanes", get(releases_lanes))
         .route("/api/releases/release", get(releases_release))
+        .route("/api/releases/version", get(releases_version))
         .route("/api/builds", get(builds_list))
         .route("/api/builds/log", get(build_log))
         .route("/api/builds/detail", get(build_detail))
@@ -1765,6 +1766,17 @@ async fn releases_release(
     Query(q): Query<releases::ReleaseQuery>,
 ) -> Response {
     match releases::release(q, s.queue.items().await).await {
+        Ok(body) => ([(header::CONTENT_TYPE, "application/json")], body).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// One version's page (`hub_core::version_page`), read when `#releases/versions/<project>/<version>` opens.
+async fn releases_version(
+    State(s): State<Shared>,
+    Query(q): Query<releases::VersionQuery>,
+) -> Response {
+    match releases::version(q, s.queue.items().await).await {
         Ok(body) => ([(header::CONTENT_TYPE, "application/json")], body).into_response(),
         Err(e) => e.into_response(),
     }

@@ -189,6 +189,7 @@ details.cfold[open] > summary { margin-bottom: 6px; }
 .kbar { display: flex; gap: 2px; height: 6px; margin: 4px 0; }
 .kbar i { flex: 1; border-radius: 3px; background: var(--line); }
 .kbar i.ok { background: var(--b-done); } .kbar i.warn { background: var(--b-stalled); } .kbar i.bad { background: var(--b-needs); }
+.kbar i.doing { background: var(--b-working); } .kbar i.dropped { background: var(--b-parked); }
 .kparts { display: flex; flex-wrap: wrap; gap: 2px 14px; }
 .kp { display: flex; align-items: baseline; gap: 5px; text-decoration: none; color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
 .kp b { font-size: var(--fs-sm); color: var(--ink); font-variant-numeric: tabular-nums; }
