@@ -174,7 +174,7 @@ watch() {
 
 @test "validate --strict rejects a flows name that is not a part and accepts one that is" {
   base="$BATS_TEST_TMPDIR/w.yaml"
-  printf 'what: a\nwhy: b\nwhere: c\naction: d\nprobe: command\nexpect_cmd: "true"\nexpiry: null\nflows: [Runners, Not A Part]\n' > "$base"
+  printf 'what: a\nwhy: b\nwhere: c\naction: d\nprobe: command\nexpect_cmd: "true"\nexpiry: null\nsystem: telemetry\nflows: [Runners, Not A Part]\n' > "$base"
   run "$SM" validate --strict "$base"
   assert_failure
   assert_output --partial "'Not A Part', which is not a part of the fleet"

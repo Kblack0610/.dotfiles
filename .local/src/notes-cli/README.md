@@ -95,6 +95,7 @@ This section is the one description of the lab. `~/.notes/lab/README.md`, the `l
   projects/{current,archived}/<name>/        the personal profile
   <org>/projects/{current,archived}/<name>/  an org profile, with its area files beside it (backlogs/, log/, schedule.md)
   <org>/practices/<facet>/                   studio-wide procedures a person follows, indexed by practices/README.md
+  <org>/accounts/<vendor>/                   one folder per vendor account: its log, each agreement with counsel's verdict, its evidence; register in accounts/README.md (skill vendor-accounts)
 ~/.notes/employment/jobs/<job>/projects/{current,archived}/<name>/   a client profile
 ```
 

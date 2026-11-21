@@ -18,7 +18,12 @@ setup() {
 printf '%s|%s\n' "${GH_TOKEN:-none}" "$*" >> "$BATS_TEST_TMPDIR/real.log"
 case "$*" in *--body-file\ -*) cat >> "$BATS_TEST_TMPDIR/stdin.log" ;; esac
 case "$*" in 'api rate_limit'*) [ -f "$BATS_TEST_TMPDIR/rate" ] && cat "$BATS_TEST_TMPDIR/rate"; exit 0 ;; esac
-if [ -n "${DENY:-}" ] && [ "${GH_TOKEN:-}" = tok-acme ]; then echo "HTTP 401: $DENY" >&2; exit 1; fi
+# A refusal: `gh api` prints the error body on stdout, unterminated, and the status on stderr.
+if [ -n "${DENY:-}" ] && [ "${GH_TOKEN:-}" = tok-acme ]; then
+  [ "$1" != api ] || printf '{"message":"%s"}' "$DENY"
+  echo "HTTP 401: $DENY" >&2; exit 1
+fi
+[ -z "${REAL_OUT:-}" ] || echo "$REAL_OUT"
 exit "${REAL_RC:-0}"
 SH
   # gh-app: acme has an installation, broken fails to mint, anyone else has none.
@@ -88,6 +93,22 @@ bucket() { tail -n 1 "$GH_CALLS_DIR"/*.tsv | cut -f2; }
   assert_failure 1
   assert_equal "$(grep -c 'run view 6' "$BATS_TEST_TMPDIR/real.log")" 1
   assert_equal "$(bucket)" app:acme
+}
+
+@test "an api read the App is refused prints only the user's answer, not the refusal's body (ar-4139)" {
+  DENY='Resource not accessible by integration' REAL_OUT=1 run --separate-stderr "$WRAP" api repos/acme/x/actions/runners -q length
+  assert_success
+  assert_output 1
+  assert_equal "$(bucket)" user:app-denied
+  REAL_OUT=2 run --separate-stderr "$WRAP" api repos/acme/x/actions/runners -q length
+  assert_output 2
+  assert_equal "$(bucket)" app:acme
+  REAL_RC=1 REAL_OUT='{"message":"Not Found"}' run --separate-stderr "$WRAP" api repos/acme/x/nope
+  assert_failure 1
+  assert_output '{"message":"Not Found"}'
+  mkdir "$BATS_TEST_TMPDIR/t"
+  TMPDIR="$BATS_TEST_TMPDIR/t" DENY=x "$WRAP" api repos/acme/x/runners >/dev/null
+  assert_equal "$(ls -A "$BATS_TEST_TMPDIR/t")" ""
 }
 
 @test "the log blanks bodies, fields and headers, keeps only the subcommand of secret, and is yours only" {
