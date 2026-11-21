@@ -21,6 +21,11 @@
 # core.hooksPath still wins. See .config/git/hooks/dispatch. Rollback: delete this line.
 [core]
 	hooksPath = ~/.config/git/hooks
+# Harden committed objects. Git's default skips loose objects, and /home is btrfs with commit=120,
+# so a crash (2026-11-20, 14:36) left a ref pointing at a zero-length object in ~/.notes and
+# store-sync failed for two hours. batch costs one fsync per command. Test: tests/unit/gitconfig.bats.
+	fsync = committed
+	fsyncMethod = batch
 [fetch]
 	prune = true
 [credential "https://github.com"]
