@@ -152,7 +152,7 @@ function judgeCells(j) {
   const prec = (c) => c.precision == null ? "-" : `${c.precision}% <span class="muted">[${c.precision_lo}-${c.precision_hi}]</span>`;
   const rows = j.cells.map((c) => `<tr><td>${esc(c.type || "(no type)")}</td><td>${esc(c.level || "-")}</td><td class="n">${c.verdicts}</td><td class="n">${c.scored}</td>` +
     `<td class="n">${prec(c)}</td><td class="n">${c.pending}</td><td class="${c.live ? "" : "muted"}">${c.live ? "yes" : "no"}</td><td class="n">${c.audited}</td><td class="n">${share(c.level_raised_pct)}</td></tr>`).join("");
-  return `<div class="muted">By type and level (self, repo, fleet, critical), under the current prompt</div>` +
+  return `<div class="muted">By type and level (self, repo, fleet), under the current prompt</div>` +
     `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">type</th><th data-role="glance">level</th><th class="n">verdicts</th><th class="n">scored</th>` +
     `<th class="n" data-role="glance" data-named>precision [95%]</th><th class="n">pending</th><th data-role="glance" data-named>live</th><th class="n">audited</th><th class="n">raised</th></tr>${rows ||
     `<tr><td colspan="9" class="muted">no verdicts under prompt ${esc(j.prompt || "none")}</td></tr>`}</table></div>`;

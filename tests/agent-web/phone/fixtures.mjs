@@ -310,7 +310,7 @@ const ingest = { kind: "ingest", partial: false, counts_7d: { moved: 40, filed: 
 // the answer judge's 8 cells and its newest RUNNER_ROWS verdicts, cut by Judge::view and counted in `table`.
 const dispatchVerdicts = { kind: "dispatch-verdicts", dispatch: { ...fleet.dispatch, recent: fleet.dispatch.recent.slice(0, 10) } };
 const askJudge = { kind: "ask-judge", judge: { ...fleet.judge, verdicts: fleet.judge.verdicts.slice(0, RUNNER_ROWS),
-  cells: rows(8, (i) => ({ type: pick(["credential_or_account", "agent_policy", "scope", ""], i), level: pick(["self", "repo", "fleet", "critical"], i), verdicts: 4 + i, scored: i, pending: 1, precision: i ? 66.7 : null, precision_lo: i ? 20.8 : null, precision_hi: i ? 93.9 : null, live: i % 2 === 0, audited: i, level_raised_pct: i % 3 ? 25 : null })),
+  cells: rows(8, (i) => ({ type: pick(["credential_or_account", "agent_policy", "scope", ""], i), level: pick(["self", "repo", "fleet"], i), verdicts: 4 + i, scored: i, pending: 1, precision: i ? 66.7 : null, precision_lo: i ? 20.8 : null, precision_hi: i ? 93.9 : null, live: i % 2 === 0, audited: i, level_raised_pct: i % 3 ? 25 : null })),
   table: table(200, ["when", "project", "type", "said", "question", "why", "you"], ["all", "answered", "would answer", "passed", "wrong"]) } };
 // The runner pages render.mjs measures, each `#sessions/runners/<name>`.
 export const RUNNER_PAGES = {

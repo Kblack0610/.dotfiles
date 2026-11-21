@@ -481,7 +481,7 @@ fn share(x: Option<f64>) -> String {
 fn judge_cells(j: &Judge, p: Palette, w: usize) -> Vec<Line<'static>> {
     let mut out = vec![clip_line(
         Line::styled(
-            "  By type and level (self, repo, fleet, critical), under the current prompt:",
+            "  By type and level (self, repo, fleet), under the current prompt:",
             p.dim(),
         ),
         w,
