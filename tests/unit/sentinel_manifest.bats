@@ -99,6 +99,7 @@ what: The prod API answers 200 on /health.
 why: It is the whole product surface and nothing else pages when it stops answering.
 where: prod api.example.invalid (some cluster)
 action: Check the rollout, then the ingress.
+system: telemetry
 EOF
 }
 
@@ -289,6 +290,7 @@ why: >-
 where: ~/.dotfiles and the ~/.dotfiles-private overlay, on this workstation
 action: >-
   Run `dotfiles-drift` for the itemised report; it prints the remedy per finding.
+system: [deploy, tests]
 EOF
   run "$SM" validate --strict "$M"
   assert_success
@@ -417,4 +419,58 @@ EOF2
   assert_success
   assert_line 'W_signal_count=3'
   assert_line 'W_signal_2=three'
+}
+
+# -- --strict: a watch names its system (ar-4081) ------------------------------
+# The ids are the vocabulary a skill's metadata.system uses, so a red's fix item can load that
+# system's skills. Like flows: names, they are a write-time lint, never a runtime requirement.
+
+@test "--strict refuses a watch with no system, which plain validate accepts" {
+  legible; without system
+  run "$SM" validate "$M"
+  assert_success
+  run "$SM" validate --strict "$M"
+  assert_failure
+  assert_output --partial "missing 'system'"
+}
+
+# a project map that holds one project's own system id
+own_map() { printf '{"paths":{},"trackers":{"agent-runtime":{"systems":{"dispatch":{}}}}}' > "$BATS_TEST_TMPDIR/map.json"; export AGENT_QUEUE_PROJECT_MAP="$BATS_TEST_TMPDIR/map.json"; }
+
+@test "--strict refuses a system id that is not in the registry, and names the known ones" {
+  own_map
+  legible; without system; echo 'system: not-a-system' >> "$M"
+  run "$SM" validate --strict "$M"
+  assert_failure
+  assert_output --partial "system 'not-a-system' is not a system id"
+  assert_output --partial 'telemetry'
+  assert_output --partial 'dispatch'
+  run "$SM" validate "$M"
+  assert_success
+}
+
+@test "system takes one id or a list, and a project's own id from the map" {
+  legible; without system; echo 'system: [ci, tests]' >> "$M"
+  run "$SM" validate --strict "$M"
+  assert_success
+  without system; echo 'system: dispatch' >> "$M"
+  printf '{"paths":{},"trackers":{}}' > "$BATS_TEST_TMPDIR/empty.json"
+  AGENT_QUEUE_PROJECT_MAP="$BATS_TEST_TMPDIR/empty.json" run "$SM" validate --strict "$M"
+  assert_failure
+  own_map
+  run "$SM" validate --strict "$M"
+  assert_success
+}
+
+@test "with no project map on the host, --strict checks the form of a system id only" {
+  legible; without system; echo 'system: dispatch' >> "$M"
+  AGENT_QUEUE_PROJECT_MAP="$BATS_TEST_TMPDIR/none.json" run "$SM" validate --strict "$M"
+  assert_success
+}
+
+@test "a malformed system fails plain validate too" {
+  legible; without system; printf 'system: []\n' >> "$M"
+  run "$SM" validate "$M"
+  assert_failure
+  assert_output --partial 'system must be a system id or a list'
 }

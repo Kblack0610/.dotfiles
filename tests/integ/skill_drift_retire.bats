@@ -56,3 +56,30 @@ findings() { "$DRIFT" 2>&1 | grep -E '^ *(RETIRE|UNUSED|BYPASSED) +[a-z]' || tru
   run findings
   refute_line --partial 'BYPASSED'
 }
+
+# PROMOTE: a `status: draft` skill used past the toggle's bar (more than 5 sessions in 30 days).
+# The fake recall answers every window the same, so only the reading of skill_sessions is tested.
+promote_recall() {
+  printf '#!/bin/sh\ncat <<'"'"'J'"'"'\n{"skill_sessions":%s,"rows":[]}\nJ\n' "$1" > "$CLAUDE_RECALL"
+  chmod +x "$CLAUDE_RECALL"
+}
+promote_findings() { "$DRIFT" 2>&1 | grep -E '^ *PROMOTE +[a-z]' || true; }
+
+@test "PROMOTE: a draft used in more than 5 sessions is reported, a listed skill and a quiet draft are not" {
+  mkdir -p "$CLAUDE_SKILLS/drafty" "$CLAUDE_SKILLS/quiet"
+  printf -- '---\nname: drafty\ndescription: d\nstatus: draft\ndisable-model-invocation: true\n---\nbody\n' > "$CLAUDE_SKILLS/drafty/SKILL.md"
+  printf -- '---\nname: quiet\ndescription: d\nstatus: draft\ndisable-model-invocation: true\n---\nbody\n' > "$CLAUDE_SKILLS/quiet/SKILL.md"
+  promote_recall '{"drafty":6,"quiet":5,"plain":9}'
+  run promote_findings
+  assert_line --regexp 'PROMOTE +drafty .*6 sessions'
+  refute_line --regexp 'PROMOTE +quiet'
+  refute_line --regexp 'PROMOTE +plain'
+}
+
+@test "PROMOTE: no counted use at all is not read as a draft with none" {
+  mkdir -p "$CLAUDE_SKILLS/drafty"
+  printf -- '---\nname: drafty\ndescription: d\nstatus: draft\n---\nbody\n' > "$CLAUDE_SKILLS/drafty/SKILL.md"
+  promote_recall '{}'
+  run promote_findings
+  refute_output --partial 'PROMOTE'
+}
