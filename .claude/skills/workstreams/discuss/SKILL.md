@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: workstreams
   tags: [conversation, plan-mode, explanation, modifier]
+  system: [any]
   reviewed: "2026-08-28"
 ---
 

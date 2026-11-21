@@ -283,24 +283,45 @@ pub fn queue(
     c
 }
 
-/// Alerts: what fires now, by the hue the Alerts tab gives each row.
+/// Alerts: what fires now that needs the human (no owner, a fix that did not hold, a fix that
+/// waits or is past its due), by the hue the Alerts tab gives each row; a red with its fix in
+/// hand on time counts as being fixed, in the bar's green and as its own part, never as red.
 pub fn alerts(a: &crate::alerts::Alerts) -> Card {
-    let by = |l: Level| a.firing.iter().filter(|x| x.hue() == l).count();
+    let by = |l: Level| {
+        a.firing
+            .iter()
+            .filter(|x| x.needs_you() && x.hue() == l)
+            .count()
+    };
     let k = &a.counts;
+    let (red, warn) = (by(Level::Red), by(Level::Warn));
+    let need = if red > 0 {
+        Level::Red
+    } else {
+        lvl(warn, Level::Warn)
+    };
     let mut c = Card::new(
         "alerts",
         "Alerts",
-        "tripped watches, cc:red_now, the machinery and Alertmanager",
+        "tripped watches, cc:red_now, the machinery and Alertmanager; a red whose fix item is in hand and not past its due is being fixed",
     )
-    .bar(0, by(Level::Warn), by(Level::Red))
-    .part("Tripped", k.tripped, lvl(k.tripped, Level::Red))
-    .part("Errors", k.errors, lvl(k.errors, Level::Warn))
+    .bar(k.being_fixed, warn, red)
+    .part("Need you", k.need_you, need)
+    .part("Being fixed", k.being_fixed, Level::Ok)
     .part("No owner", k.no_owner, lvl(k.no_owner, Level::Warn))
     .part("Fixes open", k.fixes_open, Level::Ok);
-    // Nothing firing is green when every source answered; the tab's own level says which.
-    c.level = a.level;
-    c.big = k.firing.to_string();
-    c.unit = format!("firing, {} with no owner", k.no_owner);
+    // Nothing needing the human is green when every source answered; the tab's own level says
+    // which, and a tab that is red only for rows being fixed is green here.
+    c.level = if need == Level::Ok && a.level == Level::Nodata {
+        Level::Nodata
+    } else {
+        need
+    };
+    c.big = k.need_you.to_string();
+    c.unit = format!(
+        "need you, {} being fixed, {} firing",
+        k.being_fixed, k.firing
+    );
     if a.firing.is_empty() && a.level == Level::Ok {
         c.bar = vec![Seg {
             level: Level::Ok,
@@ -310,13 +331,15 @@ pub fn alerts(a: &crate::alerts::Alerts) -> Card {
     if !a.errors.is_empty() {
         c.error = Some(a.errors.join("; "));
     }
-    c.first(a.firing.iter().map(|x| {
-        row(
-            x.what.clone(),
-            format!("{} - {}", x.owner, x.state),
-            x.hue(),
-            None,
-        )
+    // The rows that need the human lead, in the tab's order; a row being fixed says by whom.
+    let mut rows: Vec<_> = a.firing.iter().collect();
+    rows.sort_by_key(|x| !x.fixing_by.is_empty());
+    c.first(rows.into_iter().map(|x| {
+        let (sub, hue) = match x.fixing_by.as_str() {
+            "" => (format!("{} - {}", x.owner, x.state), x.hue()),
+            by => (format!("being fixed by {by}"), Level::Ok),
+        };
+        row(x.what.clone(), sub, hue, None)
     }))
 }
 
@@ -1186,6 +1209,69 @@ mod tests {
             vec![Seg {
                 level: Level::Ok,
                 n: 9
+            }]
+        );
+    }
+
+    #[test]
+    fn an_owned_red_on_time_is_being_fixed_and_only_the_rest_turn_the_card_red() {
+        let trip = |what: &str, by: &str| crate::alerts::Alert {
+            what: what.into(),
+            source: "sentinel".into(),
+            owner: if by.is_empty() {
+                "-".into()
+            } else {
+                "ar-1 fixing".into()
+            },
+            state: if by.is_empty() {
+                "no owner".into()
+            } else {
+                "fixing".into()
+            },
+            fixing_by: by.into(),
+            ..Default::default()
+        };
+        let mut a = crate::alerts::Alerts {
+            level: Level::Red,
+            firing: vec![
+                trip("release-links", "dotfiles-agent-7"),
+                trip("pr-blocked", ""),
+            ],
+            ..Default::default()
+        };
+        a.counts.firing = 2;
+        a.counts.need_you = 1;
+        a.counts.being_fixed = 1;
+        let c = alerts(&a);
+        assert_eq!((c.level, c.big.as_str()), (Level::Red, "1"));
+        assert_eq!(c.unit, "need you, 1 being fixed, 2 firing");
+        let first: Vec<(&str, &str, Level)> = c
+            .first
+            .iter()
+            .map(|f| (f.text.as_str(), f.sub.as_str(), f.level))
+            .collect();
+        assert_eq!(
+            first,
+            [
+                ("pr-blocked", "- - no owner", Level::Red),
+                (
+                    "release-links",
+                    "being fixed by dotfiles-agent-7",
+                    Level::Ok
+                ),
+            ]
+        );
+        // Every red being fixed: nothing needs the human, so the card is green though the tab is red.
+        a.firing.pop();
+        a.counts.firing = 1;
+        a.counts.need_you = 0;
+        let c = alerts(&a);
+        assert_eq!((c.level, c.big.as_str()), (Level::Ok, "0"));
+        assert_eq!(
+            c.bar,
+            vec![Seg {
+                level: Level::Ok,
+                n: 1
             }]
         );
     }

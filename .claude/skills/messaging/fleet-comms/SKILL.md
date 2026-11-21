@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: messaging
   tags: [agents, coordination, sendmessage, hold]
+  system: [sessions]
   reviewed: "2026-10-28"
 ---
 

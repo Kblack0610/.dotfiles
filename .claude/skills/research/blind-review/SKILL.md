@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: research
   tags: [research, review, planning, subagent]
+  system: [any]
   reviewed: "2026-11-11"
 ---
 

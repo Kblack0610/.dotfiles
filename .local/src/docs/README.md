@@ -7,10 +7,12 @@ The front door to the agentic system is `~/.config/agentctl/ARCHITECTURE.md`: th
 | Doc | Its one job |
 | --- | --- |
 | [analysis-streams.md](analysis-streams.md) | The method every analysis stream and cleanup pass follows: baseline, finding, fix at the cause, re-measure, report |
+| [api-clients.md](api-clients.md) | How every repo calls a third-party API: one paced client per provider, shared budget, backoff, bounded retries |
 | [ci.md](ci.md) | CI doctrine for every repo: tiers, the merge gate's budget, what a red gets |
 | [dashboards.md](dashboards.md) | What a dashboard shows and how to add or change a tab, section or tile (hub, agent-web, waybar, Grafana) |
 | [fleet-states.md](fleet-states.md) | The fleet state document and its words: buckets, activity, the close verdict ([fleet-close-flow.svg](fleet-close-flow.svg) is its picture) |
 | [judges.md](judges.md) | How a judge or scored runner is graded against each lane's ground truth |
+| [layout.md](layout.md) | Where code, tooling, config, tests and docs go in a repo; `repo-layout-check` checks it |
 | [lifecycle.md](lifecycle.md) | Which step a piece of work is at, from idea to verified, and each step's template and check |
 | [machine-mode.md](machine-mode.md) | How much of the workstation background work may use, in four modes |
 | [planning.md](planning.md) | What every plan answers, per project type; `plan-standard.sh` checks it |

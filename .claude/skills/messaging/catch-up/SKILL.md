@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: messaging
   tags: [conversation, summary, explanation, asks]
+  system: [sessions]
   reviewed: "2026-11-09"
 ---
 

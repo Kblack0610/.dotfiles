@@ -10,9 +10,9 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// `$AGENT_ASK_DIR`, else `~/.agent/asks`, as fleet-sessions resolves it.
+/// `$AGENT_ASK_ROOT`, else `~/.agent/asks`, as fleet-sessions resolves it.
 pub fn root() -> PathBuf {
-    std::env::var_os("AGENT_ASK_DIR")
+    std::env::var_os("AGENT_ASK_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| crate::session::home().join(".agent").join("asks"))
 }

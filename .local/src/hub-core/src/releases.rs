@@ -950,11 +950,7 @@ fn app(
         .max_by_key(|(at, _)| *at)
         .map(|(_, r)| r);
     // The sort keeps an env's channels together, so each run of one env is one entry.
-    let history = match (graph, line) {
-        (Some(g), _) => g.history(project, &channels),
-        (None, Some(l)) => release_graph::history(l, &channels),
-        (None, None) => vec![],
-    };
+    let history = history(project, graph, line, &channels);
     let others: Vec<String> = channels[lead..]
         .chunk_by(|a, b| a.channel == b.channel)
         .map(|env| {
@@ -1053,6 +1049,24 @@ fn apps(
 
 /// `9 channels not read: steam GetAppBetas failed (6), no rbw entry release_state_play (3)`, the
 /// biggest cause first; empty when the collector read every channel.
+/// The app's release history, each shipment linked to its release page.
+fn history(
+    project: &str,
+    graph: Option<&Graph>,
+    line: Option<&Line>,
+    channels: &[Release],
+) -> Vec<Shipment> {
+    let mut history = match (graph, line) {
+        (Some(g), _) => g.history(project, channels),
+        (None, Some(l)) => release_graph::history(l, channels),
+        (None, None) => vec![],
+    };
+    for s in &mut history {
+        s.href = crate::release_page::link(project, &s.tag).href();
+    }
+    history
+}
+
 fn gaps(rows: &[Release]) -> String {
     let mut n: Vec<(String, usize)> = vec![];
     for r in rows.iter().filter(|r| r.unread()) {

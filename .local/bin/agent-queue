@@ -110,7 +110,7 @@ AQ_PR_TTL="${AGENT_QUEUE_PR_TTL:-120}"
 # A `nightly:<repo>` item waits on the scheduled-run facts schedules-sync writes, through its `pending` verb.
 AQ_SCHEDULES="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/schedules-sync"
 # An `ask:<id>[=<option>]` item waits on that agent-ask's answer, read from its file here.
-AQ_ASKS="${AGENT_ASK_DIR:-$HOME/.agent/asks}"
+AQ_ASKS="${AGENT_ASK_ROOT:-$HOME/.agent/asks}"
 # A `hold:<resource>` item waits while this tree's agent-hold says that resource is held.
 AQ_HOLD="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/agent-hold"
 # Of the items waiting on one resource, the best `desk:<class>` (agent-hold classes) starts once it
@@ -401,7 +401,8 @@ finished_row_ok() {
 # and auto:epics verify adds (its board fill stops at the cap, queue_headroom), a --plan (an approved
 # plan) and the pull of a phase it filed on its board row (plan_phase_task), cap 0. Urgent and `red`
 # respect the cap too (the human, 2026-11-18): at it, make_room first returns the last-ranked item
-# that has a row to its board, so they go in without the queue growing.
+# that has a row to its board, so they go in without the queue growing; so does pull-after's pull of a
+# row an ok close cleared (AGENT_QUEUE_PULL=after).
 # Provisional, confidence low (rules.jsonl): 50 is about 7h of wait at the 180 starts a day of
 # 2026-11-17, inside the 12h queued bound; revisit when queued age p90 stays over 12h at the cap.
 AQ_EX_HELD=5
@@ -417,25 +418,32 @@ admission_now() {
   printf '%s %s\n' "$runnable" "$AQ_CAP"
 }
 
-# make_room <priority> <tags> <slug> -> at the cap, an urgent or `red` add returns the last-ranked
-# runnable item to its board row (cmd_return: lossless, the row is un-started and dispatch promotes it
+# make_room <priority> <tags> <slug> -> at the cap, an urgent or `red` add, or the pull of a row whose
+# #after/ an ok close just cleared (AGENT_QUEUE_PULL=after, fleet-dispatch pull-after: held, that row
+# waited for a pass, and a pass never takes the backlog tier; 2026-11-20, chain-after-stuck), returns
+# the last-ranked runnable item to its board row (cmd_return: lossless, the row is un-started and dispatch promotes it
 # again), so the add goes in under the cap. Never chosen: urgent or red work, the human's (human_work),
 # an item with no row to return to, a chain's head. No such item: nothing moves, and admit holds the add
 # like any other. Runs before the add takes the lock, since the return takes it: an add the lock would
 # refuse (already queued, finished ok, its cause: owned) moves nothing, and a victim that starts
-# meanwhile is not returned.
+# meanwhile is not returned. A pull-after's pull returns only an item it does not outrank, and never one
+# that the same pull-after already queued (AQ_ROOM_KEEP, its slugs), so rows behind one close do not
+# push each other out.
 make_room() {
-  local now r l victim
-  [ "$AQ_CAP" != 0 ] && { [ "$1" = urgent ] || [[ " $2 " == *" red "* ]]; } || return 0
+  local now r l victim pr=0
+  [ "$AQ_CAP" != 0 ] && { [ "$1" = urgent ] || [[ " $2 " == *" red "* ]] || [ "${AGENT_QUEUE_PULL:-}" = after ]; } || return 0
+  [ "$1" = urgent ] || [[ " $2 " == *" red "* ]] || pr="$(prio_rank "$1" || echo 1)"
   [ -z "$(find_item "$3")" ] || return 0
   ( cause_owner "$2" ) >/dev/null 2>&1 || return 0
   [ -n "${repeat:-}" ] || [ -z "$(finished_ok "$3" "${slug_from_text:+$text}")$(finished_row_ok "${from:-}")" ] || return 0
   now="$(admission_now)" && read -r r l <<<"$now" && [[ "$r" =~ ^[0-9]+$ ]] && [ "$r" -ge "$l" ] || return 0
-  victim="$(collect queued | jq -r '
+  victim="$(collect queued | jq -r --argjson pr "$pr" --arg keep " ${AQ_ROOM_KEEP:-} " '
     ([.[] | (.after // "") | splits("[ ,]+") | select(. != "")]) as $heads
     | [.[] | select(.priority != "urgent" and (.row // "") != "")
         | select((" " + (.tags // "") + " ") | test(" (red|requested|#requested) ") | not)
         | select(.from != "human")
+        | select(({"urgent":0,"high":1,"low":2}[.priority] // 1) >= $pr)
+        | select(.slug as $s | $keep | contains(" \($s) ") | not)
         | select(.slug as $s | $heads | index($s) | not)] | last | .slug // empty')" || return 0
   [ -n "$victim" ] || return 0
   # Returned once it is no longer active, its row un-started or not (cmd_return says which).
@@ -661,7 +669,7 @@ hold_for() {
         [ -z "$HOLD" ] || return 0 ;;
       rbw:*)
         # A tag edited past check_tags into the wrong shape holds rather than starting before its key.
-        [[ "$tag" =~ ^rbw:[^/[:space:]]+/[^[:space:]]+$ ]] || { HOLD_DEAD=1 HOLD="$tag (not rbw:<folder>/<name>, never releases)"; return; }
+        [[ "$tag" =~ ^rbw:[^/[:space:]]*/[^[:space:]]+$ ]] || { HOLD_DEAD=1 HOLD="$tag (not rbw:<folder>/<name>, never releases)"; return; }
         # One rbw list a listing or gate call, however many rbw: tags it reads.
         memo rbw rbw_listing
         MEMO_V="$(rbw_pending "${tag#rbw:}" "$MEMO_V")"
@@ -690,7 +698,7 @@ gate_queue_tag() {
   case "$t" in
     at/[0-9][0-9][0-9][0-9]) GQ="at:${t:3:2}:${t:5:2}" ;;
     at/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/[0-9][0-9][0-9][0-9]) GQ="at:${t:3:10}T${t:14:2}:${t:16:2}" ;;
-    rbw/?*/?*) GQ="rbw:${t#rbw/}" ;;
+    rbw/?*/?* | rbw//?*) GQ="rbw:${t#rbw/}" ;;
     ask/?*/?*) rest="${t#ask/}"; opt="${rest#*/}"; GQ="ask:${rest%%/*}=${opt//\//+}" ;;
     ask/?*)
       GQ="ask:${t#ask/}"
@@ -785,7 +793,10 @@ cmd_gate() {
       for pass in open closed; do
         if [ "$brd" = 1 ] && [ -z "$rsl" ]; then
           rsl=1
-          while IFS=$'\t' read -r r st; do RS[$r]=$st; done < <(jq -r '(.rows // [])[], (.done // [])[]
+          # A row in a queued sprint is listed only under .sprints[].tasks (2026-11-20: eight after/ links
+          # to v0.5.5 rows read dead), so those come first and a rows or done entry for the same id wins.
+          while IFS=$'\t' read -r r st; do RS[$r]=$st; done < <(jq -r '((.sprints // [])[] | (.tasks // [])[]
+              | select(.state != "gone")), (.rows // [])[], (.done // [])[]
             | select(.id != null) | "\(.id)\t\(if .state == "done" then (if ((.marker // "") | test("(^| )dropped")) then "dropped" else "done" end) else "open" end)"' <<<"$board")
         fi
         [ "$brd" = 1 ] && [ -z "$full" ] && [ -z "${RS[$id]-}" ] || break
@@ -3125,7 +3136,7 @@ check_tags() {
       hold:*) hold_resource "${tag#hold:}" || die "a hold tag is hold:<resource>, an agent-hold name (letters, digits, . _ -), not $tag" ;;
       desk:*) "$AQ_HOLD" classes | cut -f1 | grep -qx -- "${tag#desk:}" ||
         die "a desk tag is desk:<class>, one of: $("$AQ_HOLD" classes | cut -f1 | paste -sd' '), not $tag" ;;
-      rbw:*) [[ "$tag" =~ ^rbw:[^/[:space:]]+/[^[:space:]]+$ ]] || die "an rbw tag is rbw:<folder>/<name>: a top-level folder, then the entry name after the first /, no spaces in either, not $tag" ;;
+      rbw:*) [[ "$tag" =~ ^rbw:[^/[:space:]]*/[^[:space:]]+$ ]] || die "an rbw tag is rbw:<folder>/<name>: a top-level folder (empty for an entry in no folder: rbw:/<name>), then the entry name after the first /, no spaces in either, not $tag" ;;
     esac
   done
 }

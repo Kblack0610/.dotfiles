@@ -738,8 +738,8 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
 }
 
 @test "an ask: tag holds an item until that agent-ask is answered, with that option when one is named (ar-455)" {
-  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
-  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_DIR/game/$1.md"; }
+  export AGENT_ASK_ROOT="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_ROOT/game"
+  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_ROOT/game/$1.md"; }
   # add refuses a malformed tag and an id no ask file has, so the gate is never silently open or shut.
   for t in "ask:" "ask:../x" "ask:a1=" "ask:a1"; do
     run "$AQ" add --project game --slug nope --tags "$t" "x"
@@ -775,8 +775,8 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
 # upwork-p2..p5 behind one later cancelled; neither ask could ever release them.
 # 2026-11-08: upwork-p2 sat behind a bare tag on an ask whose option c meant stop, so c would have started it.
 @test "an ask: tag may list several releasing options, and must name them when the ask offers options" {
-  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
-  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\noptions: a|b|c\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_DIR/game/$1.md"; }
+  export AGENT_ASK_ROOT="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_ROOT/game"
+  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\noptions: a|b|c\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_ROOT/game/$1.md"; }
   ask o1 pending
   run "$AQ" add --project game --slug bare --tags "ask:o1" "x"
   assert_failure
@@ -804,8 +804,8 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
 # agent-ask reads holds on every card and answer through ask-holds, which reads the header lines
 # alone: it must name exactly what list --json's tags do, and nothing from a done item.
 @test "ask-holds lists each active item held on an ask, as list --json's tags have them" {
-  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
-  for i in h1 h2; do printf 'id: %s\nstatus: pending\noptions: a|b\n' "$i" > "$AGENT_ASK_DIR/game/$i.md"; done
+  export AGENT_ASK_ROOT="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_ROOT/game"
+  for i in h1 h2; do printf 'id: %s\nstatus: pending\noptions: a|b\n' "$i" > "$AGENT_ASK_ROOT/game/$i.md"; done
   legacy one "tags: ui ask:h1=a+b" --project game "one"
   legacy two "tags: ask:h1=a ask:h2=b" --project game "two"
   "$AQ" add --project game --slug free "no ask"
@@ -824,8 +824,8 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
 }
 
 @test "an ask: tag refuses an option the ask does not offer, which could never match an answer" {
-  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
-  printf 'id: o2\nstatus: pending\noptions: go|stop-burst+do-bridge|steps done, verify it\n' > "$AGENT_ASK_DIR/game/o2.md"
+  export AGENT_ASK_ROOT="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_ROOT/game"
+  printf 'id: o2\nstatus: pending\noptions: go|stop-burst+do-bridge|steps done, verify it\n' > "$AGENT_ASK_ROOT/game/o2.md"
   for t in ask:o2=goo ask:o2=go+ ask:o2=go++steps ask:o2=do-bridge; do
     run "$AQ" add --project game --slug nope --tags "$t" "x"
     assert_failure; assert_output --partial 'that ask offers go,stop-burst+do-bridge,steps done, verify it'
@@ -835,13 +835,13 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   legacy two "tags: ask:o2=stop-burst+do-bridge+go" --project game "x"
   legacy three "tags: ask:o2=steps" --project game "x"
   # An ask with no options has nothing to check a name against.
-  printf 'id: o3\nstatus: pending\n' > "$AGENT_ASK_DIR/game/o3.md"
+  printf 'id: o3\nstatus: pending\n' > "$AGENT_ASK_ROOT/game/o3.md"
   legacy four "tags: ask:o3=anything" --project game "x"
 }
 
 @test "add and set tags= refuse an ask that can never release the item: cancelled, the judge's answer, another option" {
-  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
-  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_DIR/game/$1.md"; }
+  export AGENT_ASK_ROOT="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_ROOT/game"
+  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_ROOT/game/$1.md"; }
   ask dead cancelled
   ask judged answered a judge
   ask other answered 'b, stay' human
@@ -898,7 +898,7 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   chmod +x "$SANDBOX/rbw-fake"
   export AGENT_QUEUE_RBW="$SANDBOX/rbw-fake"
   printf 'trading\tkalshi-key\nother\tmanifold-key\n' > "$SANDBOX/rbw.list"
-  for t in "rbw:" "rbw:trading" "rbw:trading/" "rbw:/manifold-key"; do
+  for t in "rbw:" "rbw:trading" "rbw:trading/" "rbw:/"; do
     run "$AQ" add --project game --slug nope --tags "$t" "x"
     assert_failure; assert_output --partial "rbw:<folder>/<name>"
   done
@@ -937,6 +937,22 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   assert_output 0
 }
 
+# ar-2474: an entry in no folder is rbw:/<name> (rbw lists it with an empty folder).
+@test "an rbw:/<name> tag names a folderless entry: held until rbw lists it with no folder, a foldered twin does not release it" {
+  printf '#!/usr/bin/env bash\ncase "$1" in\n  unlocked) exit 0 ;;\n  list) cat "%s/rbw.list" ;;\n  *) exit 9 ;;\nesac\n' "$SANDBOX" > "$SANDBOX/rbw-fake"
+  chmod +x "$SANDBOX/rbw-fake"
+  export AGENT_QUEUE_RBW="$SANDBOX/rbw-fake"
+  printf 'trading\tfreellmapi-key\n' > "$SANDBOX/rbw.list"
+  legacy llm-key "tags: rbw:/freellmapi-key" --project game "deploy the freellmapi key"
+  run "$AQ" list --state queued
+  assert_output --partial "rbw:/freellmapi-key (not in rbw yet)"
+  run "$AQ" next --json
+  assert_failure
+  printf '\tfreellmapi-key\n' >> "$SANDBOX/rbw.list"
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = llm-key ]
+}
+
 # A fake rbw for the gate tests: unlocked, list prints rbw.list, every call logged. Never the real one.
 gate_rbw() {
   printf '#!/usr/bin/env bash\necho "rbw $*" >> "%s/rbw.calls"\ncase "$1" in unlocked) ;; list) cat "%s/rbw.list" ;; *) exit 9 ;; esac\n' \
@@ -950,8 +966,8 @@ gate_rbw() {
 # hold_for read through each board form, plus the row lookup for after/.
 @test "gate answers each board form clear, pending or dead in hold_for's words, one rbw list for every rbw tag" {
   gate_rbw
-  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
-  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\noptions: a|b\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_DIR/game/$1.md"; }
+  export AGENT_ASK_ROOT="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_ROOT/game"
+  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\noptions: a|b\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_ROOT/game/$1.md"; }
   ask a1 pending
   ask a2 answered 'a' judge
   ask a3 answered 'b, sure' human
@@ -985,8 +1001,8 @@ gate_rbw() {
   gate_rbw
   # .tags is what notes lower-cases for grouping; .tags_cased is as written. A gate reads tags_cased, so
   # the ask id keeps its case (2026-11-18: every #ask/ gate on the board read "no agent-ask has that id").
-  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
-  printf 'id: AbC12x\nstatus: pending\noptions: a|b\n' > "$AGENT_ASK_DIR/game/AbC12x.md"
+  export AGENT_ASK_ROOT="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_ROOT/game"
+  printf 'id: AbC12x\nstatus: pending\noptions: a|b\n' > "$AGENT_ASK_ROOT/game/AbC12x.md"
   jq -n '{rows: ([{id: "ar-1", state: "open", tags: ["after/ar-2", "size/s"]}, {id: "ar-2", state: "doing", tags: ["rbw/infra/x"]},
                  {id: "ar-9", state: "open", tags: ["after/ar-4"]},
                  {id: "ar-7", state: "open", tags: ["ask/abc12x/a"], tags_cased: ["ask/AbC12x/a"]}]),
@@ -1033,8 +1049,8 @@ gate_rbw() {
 
 @test "return writes what the item still waits on onto its row as gate tags before un-starting it" {
   gate_rbw
-  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
-  printf 'id: a1\nstatus: pending\noptions: a|b\n' > "$AGENT_ASK_DIR/game/a1.md"
+  export AGENT_ASK_ROOT="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_ROOT/game"
+  printf 'id: a1\nstatus: pending\noptions: a|b\n' > "$AGENT_ASK_ROOT/game/a1.md"
   "$AQ" add --project game --running --from shepherd --slug up "upstream" >/dev/null
   "$AQ" set up row=game:gm-9 >/dev/null
   legacy gt "after: up\ntags: rbw:infra/y at:11:00 at:13:00 ask:a1=a" --project game --from shepherd "gated"
@@ -1207,8 +1223,8 @@ gate_rbw() {
 }
 
 @test "requeue --ask returns a headless run that needs the human to its row behind the ask" {
-  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
-  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_DIR/game/$1.md"; }
+  export AGENT_ASK_ROOT="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_ROOT/game"
+  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_ROOT/game/$1.md"; }
   "$AQ" add --project game --running --slug codexrun "pick a palette" >/dev/null
   "$AQ" set codexrun "lane_run=r-codex" row=game:gm-9 >/dev/null
   run "$AQ" requeue codexrun --ask q9
@@ -2629,8 +2645,8 @@ EOF
 }
 
 @test "a session drops the human's work only on an ask the human answered that names the whole chain, and closes nothing otherwise" {
-  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
-  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n%s\n' "$1" "$2" "${3:-}" "${4:-}" "${5:-}" > "$AGENT_ASK_DIR/game/$1.md"; }
+  export AGENT_ASK_ROOT="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_ROOT/game"
+  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n%s\n' "$1" "$2" "${3:-}" "${4:-}" "${5:-}" > "$AGENT_ASK_ROOT/game/$1.md"; }
   "$AQ" add --project game --from shepherd --slug ga "a"
   legacy gb "after: ga" --project game "b"
   "$AQ" set gb row=game:gm-8
@@ -2743,8 +2759,8 @@ chain_plan() {  # <name>: a four-phase plan, each phase after the one before
 # 2026-11-12: a cleanup cancelled 220 from: human items, one batch on an ask the judge answered in 20 s,
 # the next by looping a dead chain (mkt-17 after mkt-16, then 18, 19, 20).
 @test "a session cancels the human's work only on an ask the human answered; the human and other work are not held" {
-  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
-  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_DIR/game/$1.md"; }
+  export AGENT_ASK_ROOT="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_ROOT/game"
+  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_ROOT/game/$1.md"; }
   "$AQ" add --project game --slug mkt-16 "mkt-16" >/dev/null
   for n in 17 18 19 20; do legacy "mkt-$n" "after: mkt-$((n - 1))" --project game "mkt-$n"; done
   "$AQ" add --project game --from board:game:g2-9 --tags requested --slug asked "row the human asked for" >/dev/null
@@ -2782,7 +2798,7 @@ chain_plan() {  # <name>: a four-phase plan, each phase after the one before
   [ "$status" -eq 3 ]
   # The human's answer to an ask naming the items lets them go, and the item names the ask.
   ask h1 answered a human
-  echo "question: drop mkt-17, mkt-18? both wait on mkt-16, which you cancelled" >> "$AGENT_ASK_DIR/game/h1.md"
+  echo "question: drop mkt-17, mkt-18? both wait on mkt-16, which you cancelled" >> "$AGENT_ASK_ROOT/game/h1.md"
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask h1
   assert_success
   f="$(ls "$AGENT_QUEUE_DIR"/done/*/*-mkt-17.md)"
@@ -4055,6 +4071,50 @@ second line of the brief
   run jq -r 'select(.why == "returned") | .slug' "$AGENT_QUEUE_DIR/admission.jsonl"
   assert_output "b
 a"
+}
+
+@test "at the cap pull-after's pull of a row an ok close cleared returns the last-ranked item; dispatch's own pull is held" {
+  # 2026-11-20 (chain-after-stuck): hc-551, ar-3027 and ar-3662 were pulled at the cap, held, and sat on
+  # the backlog tier no pass takes.
+  "$AQ" add --project game --from shepherd --slug a "a" >/dev/null
+  "$AQ" add --project game --from shepherd --priority low --slug b "b" >/dev/null
+  for s in a b; do "$AQ" set "$s" row="game:gm-$s" >/dev/null; done
+  export AGENT_QUEUE_CAP=2
+  # Negative control: the same row from dispatch's pass is held, and nothing is returned.
+  AGENT_QUEUE_PULL=dispatch run "$AQ" add --project game --priority low --from board:game:gm-9 --slug gm-9 "feat(game): the doors"
+  assert_failure 5
+  refute_output --partial "returned"
+  AGENT_QUEUE_PULL=after run "$AQ" add --project game --priority low --from board:game:gm-9 --slug gm-9 "feat(game): the doors"
+  assert_success
+  assert_output --partial "returned b to its board row to make room for low gm-9 under the cap of 2"
+  run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
+  assert_output "a,gm-9"
+  # A low pull never returns the high item a; and a sibling the same pull-after queued (AQ_ROOM_KEEP) is
+  # never returned for the next, so both are held.
+  AQ_ROOM_KEEP=" gm-9" AGENT_QUEUE_PULL=after run "$AQ" add --project game --priority low --from board:game:gm-8 --slug gm-8 "feat(game): the hinges"
+  assert_failure 5
+  refute_output --partial "returned a"
+  AQ_ROOM_KEEP=" gm-9" AGENT_QUEUE_PULL=after run "$AQ" add --project game --priority high --from board:game:gm-7 --slug gm-7 "feat(game): the locks"
+  assert_success
+  assert_output --partial "returned a to its board row"
+  AQ_ROOM_KEEP=" gm-9 gm-7" AGENT_QUEUE_PULL=after run "$AQ" add --project game --priority high --from board:game:gm-6 --slug gm-6 "feat(game): the bolts"
+  assert_failure 5
+  run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
+  assert_output "gm-7,gm-9"
+}
+
+@test "gate after/<row-id> reads a row in a queued sprint, which the board lists only under its sprint's tasks" {
+  gate_rbw
+  # 2026-11-20: after/ucp-2282 and seven more links to v0.5.5 rows read dead, though each row was open.
+  jq -n '{rows: [{id: "ar-1", state: "open", tags: ["after/ucp-5", "after/ucp-6", "after/ucp-7"]}], done: [],
+          sprints: [{tasks: [{id: "ucp-5", state: "doing"}, {id: "ucp-6", state: "done"}, {id: "ucp-7", state: "gone"}]}]}' > "$NOTES_FIXTURE/board.json"
+  run "$AQ" gate --json --all
+  assert_failure 3
+  st() { jq -r --arg t "$1" 'select(.tag == $t) | "\(.state)|\(.why)"' <<<"$output"; }
+  [ "$(st after/ucp-5)" = "pending|after ucp-5 (open)" ]
+  [ "$(st after/ucp-6)" = "clear|" ]
+  # Negative control: a task the sprint marks gone is no row, so its link is still dead.
+  [[ "$(st after/ucp-7)" == "dead|after ucp-7: no board row"* ]]
 }
 
 @test "make_room returns an item held to a clock time, moves nothing for an add the lock refuses, and never returns an item that started" {

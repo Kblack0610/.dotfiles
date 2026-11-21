@@ -27,9 +27,11 @@
 #                                pending asks in hub Home's order (hub needs --json), the ones
 #                                holding a live session listed first; --write also writes
 #                                asks.md and prints one line (hub needs --page pages them)
-#   fleet-bench ledger [--json|--check|--launches DIR...]
+#   fleet-bench ledger [--json|--check|--launches DIR...|--unlisted]
 #                                runners, timers, direct headless launches, verdict words,
-#                                asks, open board rows; --check fails when one may only shrink grew
+#                                asks, open board rows; --check fails when one may only shrink grew,
+#                                or on --unlisted's lines: a launch file with no row in the PIPELINES.md
+#                                launch table (LEDGER_PIPELINES), or a row whose file no longer launches
 #   fleet-bench rules [--json|--check|--scenarios|--changed SINCE]
 #                                the rule register (RULES_REGISTER): kinds, confidence, actions, and each
 #                                rule's number re-measured; --check fails when one moved against its
@@ -51,12 +53,12 @@
 #                                startup_rolling_n starts; --check exits 1 past startup_ready_ms_p50_max,
 #                                2 with no SessionStart row in startup_stale_h or a start with no ready
 #                                time (the claude-startup watch)
-#   fleet-bench pipeline [--json | --check cap|age|mix|held]
+#   fleet-bench pipeline [--json | --check cap|age|mix|held|owner]
 #                                where every item sits, inbox to done: WIP and age per step, in and out,
 #                                dwell, the bottleneck step and the record's drift from the queue folders,
 #                                the admission cap and each class of service against its share;
 #                                --check exits 1 on runnable over the cap, queued age p90 past its
-#                                bound or a starved class while the mix is on, 2 when its source cannot be read (one
+#                                bound, a starved class while the mix is on or an item no session owns, 2 when its source cannot be read (one
 #                                Sentinel watch each)
 #   fleet-bench prs [--json | --check stranded|blocked]
 #                                the fleet's open PRs (one gh GraphQL search) joined to the queue items
@@ -230,6 +232,7 @@ set -uo pipefail
 : "${LEDGER_CONF_DIR:=$HOME/.config/agentctl/agents}"
 : "${LEDGER_SRC:=$HOME/.dotfiles/.local:$HOME/.dotfiles/.config:$HOME/.dotfiles/.claude/skills:$HOME/.dotfiles-private/.local:$HOME/.dotfiles-private/.config:$HOME/.dotfiles-private/.claude/skills}"   # colon-separated
 : "${LEDGER_BASELINE:=$HOME/.config/agentctl/ledger-baseline}"
+: "${LEDGER_PIPELINES:=$HOME/.config/agentctl/PIPELINES.md}"   # its "Model calls outside agentctl-run" table: the files allowed to launch a model outside agentctl-run
 : "${RULES_REGISTER:=$HOME/.config/agentctl/rules.jsonl}"
 : "${RULES_MEASURE_TIMEOUT:=20}"      # seconds one rule's measure may run
 # rules --changed: the files a session reads as rules (instruction-homes.json kinds global, repo, skill,
@@ -250,6 +253,9 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${TRIAGE_SYSTEMCTL:=systemctl}"     # triage: failed user units
 : "${TRIAGE_WATCH_STATE:=$HOME/.local/state/watch-companion}"   # triage: Sentinel's <watch>.state and .since
 : "${TRIAGE_WATCHES:=$HOME/.agent/watches}"   # triage: each watch's manifest, for its severity and what
+: "${TRIAGE_SYSTEM_SKILLS:=6}"   # triage: skills of a watch's system named in its red item, at most
+: "${TRIAGE_ALERT_WATCH:=alertmanager-fleet}"   # triage: the aggregate watch whose evidence is one firing alert a line: each is its own row (triage_alerts)
+: "${TRIAGE_PINS_CMD:=kubectl --context ${CC_KUBE_CONTEXT:-home-k3s} -n monitoring --request-timeout=10s get configmap ci-runner-governor-override -o json}"   # triage: the governor's host pins, which say a host is being moved on purpose
 : "${TRIAGE_LOG_HOURS:=24}"        # triage: the runs whose stderr is read for error signatures
 : "${TRIAGE_ERR_RE:=error|fatal|traceback|failed}"   # triage: a stderr line that may be an error (case-blind)
 : "${TRIAGE_ROUTES:=$HOME/.config/agentctl/triage-routes}"   # triage: where each red goes; the format is in the file
@@ -258,6 +264,7 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${TRIAGE_FIX_TRIES:=2}"          # triage: fix items a cause gets in the window before it goes to the human
 : "${REDS_DAYS:=7}"                 # reds: days of red fixes the report and its KPIs read
 : "${HOLD_HOURS:=24}"               # reds: hours after a cleanup merge that a new red counts against it
+: "${REDS_ETA_SAMPLES:=5}"          # reds: merged fixes in the window before a fix in hand gets a due time (their p90 minutes)
 : "${TRIAGE_HOLD_CMD:=agent-hold check dispatch}"   # triage: a dispatch hold stops queueing, never filing
 : "${TRIAGE_ITEMS_CMD:=agent-queue list --json --state all}"   # triage: given --since <date>
 : "${TRIAGE_RED_CMD:=red_items}"    # triage: given the epoch, the cc:red_now items that stayed red
@@ -1183,7 +1190,7 @@ cmd_scorecard() {
     echo
     echo "## Consolidation ledger"
     echo
-    echo "Runners, timers and direct headless launches may only shrink; the baseline is ~/.config/agentctl/ledger-baseline."
+    echo "Runners and timers may only shrink, against ~/.config/agentctl/ledger-baseline; each direct headless launch has its row in ~/.config/agentctl/PIPELINES.md."
     echo
     ledger_section "$counts"
     echo
@@ -1382,9 +1389,9 @@ ledger_section() {
   local counts="$1" over
   sed 's/^\(.*\)=\(.*\)$/- \1: \2/' <<<"$counts"
   if over=$(ledger_check "$counts" 2>&1); then
-    echo "- baseline: held"
+    echo "- check: held"
   else
-    echo "- baseline: ${over//$'\n'/; }"
+    echo "- check: ${over//$'\n'/; }"
   fi
 }
 
@@ -1701,10 +1708,11 @@ cmd_asks() {
 #
 # The consolidation ledger. Every new need used to become a new runner, timer or launch
 # path, so the fleet grew while it was being consolidated. These are counts, never a
-# grade. --check holds the three that may only shrink to the committed baseline: to add
-# one, retire one or raise the baseline in the same PR with a why.
+# grade. --check holds the two that may only shrink to the committed baseline: to add
+# one, retire one or raise the baseline in the same PR with a why. A direct launch is held
+# per file instead (launches_unlisted): launches_direct is a reading, never a gate.
 
-: "${LEDGER_GATED:=runners timers launches_direct}"
+: "${LEDGER_GATED:=runners timers}"
 
 # headless_launches DIR... -> file:line of every executable line that starts a headless
 # claude, opencode, codex or agy outside agentctl-run, or calls a model's HTTP API (an OpenAI-style chat/completions or
@@ -1723,6 +1731,36 @@ headless_launches() {
       -- . ':!*.md' ':!*.yaml' ':!*.yml' ':!tests/**' ':!**/tests/**') \
       | sed "s|^|${d%/}/|"
   done | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(#|echo )' | grep -v '/agent-run/harnesses/'
+}
+
+# launch_rows -> the file each row of PIPELINES.md's "Model calls outside agentctl-run" table
+# names (the first backticked word of its File cell), sorted; exit 2 with no such table.
+launch_rows() {
+  [ -r "$LEDGER_PIPELINES" ] || { say "no launch table: cannot read $LEDGER_PIPELINES"; return 2; }
+  awk '/^## /{ on = (index($0, "## Model calls outside agentctl-run") == 1); found = found || on; next }
+    on && /^\| `/ { split($0, c, "`"); print c[2] }
+    END { exit !found }' "$LEDGER_PIPELINES" | sort -u
+  [ "${PIPESTATUS[0]}" = 0 ] \
+    || { say "no launch table: $LEDGER_PIPELINES has no '## Model calls outside agentctl-run' section"; return 2; }
+}
+
+# launch_files -> each file under LEDGER_SRC with a headless launch line, once, sorted
+launch_files() {
+  local src
+  IFS=: read -ra src <<<"$LEDGER_SRC"
+  headless_launches "${src[@]}" | cut -d: -f1 | sort -u
+}
+
+# launches_unlisted -> one line per launch file (launch_files) with no launch_rows row (by file
+# name, as the table names them), and per row no launch file has that name; exit 1 on any, 2 with
+# no table. The rows are the per-file allowlist of launches outside agentctl-run.
+launches_unlisted() {
+  local rows
+  rows=$(launch_rows) || return 2
+  launch_files | awk 'NR == FNR { if ($0 != "") row[$0] = 1; next }
+    $0 != "" { b = $0; sub(/.*\//, "", b); seen[b] = 1; if (!(b in row)) { print "launch with no PIPELINES.md row: " $0; bad = 1 } }
+    END { for (k in row) if (!(k in seen)) { print "PIPELINES.md row with no launch: " k; bad = 1 }; exit bad }' <(printf '%s\n' "$rows") -
+  return "${PIPESTATUS[1]}"   # awk's word: an empty scan exits 1 from its grep -v, and that is no fault
 }
 
 # scheduled_runner <conf> -> the runner's name, failing for one fired by hand. fleet-liveness's
@@ -1782,7 +1820,7 @@ intake_room() {
 # counted where `agentctl reload` writes one, a switched-on oneshot with a SCHEDULE; reload
 # removes any other, so the live timer dir holds the same count once reloaded.
 ledger_roster() {
-  local c n_conf=0 n_on=0 n_bad=0 n_call=0 n_timer=0 src sd="" name
+  local c n_conf=0 n_on=0 n_bad=0 n_call=0 n_timer=0 sd="" name
   proof_lib && sd=$(proof_state_dir)
   for c in "$LEDGER_CONF_DIR"/*.conf; do
     [ -e "$c" ] || continue
@@ -1800,8 +1838,7 @@ ledger_roster() {
   echo "runners_bad=$n_bad"
   echo "agents_call=$n_call"
   echo "timers=$n_timer"
-  IFS=: read -ra src <<<"$LEDGER_SRC"
-  echo "launches_direct=$(headless_launches "${src[@]}" | cut -d: -f1 | sort -u | wc -l)"
+  echo "launches_direct=$(launch_files | wc -l)"
 }
 
 # insight_expired_share EPOCH -> the share (two decimals) of the insights dated 30 to 60 days before
@@ -2261,12 +2298,13 @@ pipeline_json() {
        steps: $rows}'
 }
 
-# pipeline_check <cap|age|mix|held> -- one line and exit 1 when the queue's flow is off: runnable items over
+# pipeline_check <cap|age|mix|held|owner> -- one line and exit 1 when the queue's flow is off: runnable items over
 # the admission cap (the adds it exempts, urgent, red, board pulls and plans, can
 # carry it past), the queued step's age p90 past its bound (an empty step passes), or, while the mix
 # is on, a class of service starved (agent-queue mix; off, nothing balances the classes), or a queued item with a pending gate (hold_for, past a desk turn),
-# which belongs on its board row (QUEUE.md "Admission"). Exit 2 when
-# its source cannot be read. cap, age and mix are each one Sentinel watch (queue-over-cap, queue-age, queue-class-starved,
+# which belongs on its board row (QUEUE.md "Admission"), or an active item no session owns (ownerless, the
+# ownerless_running KPI, which reap flags). Exit 2 when
+# its source cannot be read. cap, age, mix and owner are each one Sentinel watch (queue-over-cap, queue-age, queue-class-starved, queue-ownerless,
 # in ~/.agent/watches), so one that stays red masks no other.
 pipeline_check() {
   local out
@@ -2281,12 +2319,14 @@ pipeline_check() {
     held) out=$($BENCH_ITEMS_CMD 2>/dev/null) && out=$(jq -sr '[.[] | select(.state == "queued" and (.hold // "") != ""
            and (.hold | test("^hold:[^ ]+ \\((behind |desk:auth waits)") | not)) | "\(.slug) (\(.hold))"]
            | if length == 0 then "" else "\(length) queued with a pending gate, which belongs on its board row: \(.[:5] | join(", "))" end' <<<"$out") ;;
-    *) say "usage: fleet-bench pipeline --check cap|age|mix|held"; return 2 ;;
+    owner) out=$($BENCH_ITEMS_CMD 2>/dev/null) && out=$(jq -sr "$JQ_LIB"'[.[] | ownerless | "\(.slug) (\(.state))"]
+           | if length == 0 then "" else "\(length) running, review or waiting with no session: \(.[:5] | join(", "))" end' <<<"$out") ;;
+    *) say "usage: fleet-bench pipeline --check cap|age|mix|held|owner"; return 2 ;;
   esac || { say "pipeline --check $1: its source cannot be read"; return 2; }
   [ -z "$out" ] || { printf '%s\n' "$out"; return 1; }
 }
 
-# pipeline [--json | --check cap|age|mix|held] -- pipeline_json with the admission cap and the class mix
+# pipeline [--json | --check cap|age|mix|held|owner] -- pipeline_json with the admission cap and the class mix
 # (agent-queue mix), or a table of it with the bottleneck, the steps taking in more than they let out
 # over 24h, the drift, the cap and each class's starts against its share; --check is pipeline_check.
 cmd_pipeline() {
@@ -2294,7 +2334,7 @@ cmd_pipeline() {
   case "${1:-}" in
     ""|--json) ;;
     --check) pipeline_check "${2:-}"; return ;;
-    *) say "usage: fleet-bench pipeline [--json | --check cap|age|mix|held]"; return 2 ;;
+    *) say "usage: fleet-bench pipeline [--json | --check cap|age|mix|held|owner]"; return 2 ;;
   esac
   json=$(pipeline_json "$(now)") || return 1
   adm=$($BENCH_ADMISSION_CMD 2>/dev/null | jq -ce 'objects') || adm=null
@@ -2405,7 +2445,8 @@ cmd_prs() {
   esac
 }
 
-# ledger_check <counts> -> one line per gated count over the baseline; exit 1 if any, 2 if no baseline
+# ledger_check <counts> -> one line per gated count over the baseline, then launches_unlisted's
+# lines; exit 1 if any, 2 if no baseline or no launch table
 ledger_check() {
   local k cur base bad=0
   [ -r "$LEDGER_BASELINE" ] || { say "no ledger baseline at $LEDGER_BASELINE"; return 2; }
@@ -2420,6 +2461,8 @@ ledger_check() {
       bad=1
     fi
   done
+  launches_unlisted
+  case $? in 0) ;; 1) bad=1 ;; *) return 2 ;; esac
   return "$bad"
 }
 
@@ -2428,6 +2471,7 @@ cmd_ledger() {
   case "${1:-}" in
     --launches) shift; headless_launches "$@"; return 0 ;;
     --check) ledger_check "$(ledger_roster)"; return ;;
+    --unlisted) launches_unlisted; return ;;
   esac
   counts=$(ledger_counts)
   case "${1:-}" in
@@ -3808,11 +3852,14 @@ cmd_retro() {
 # (upsert_closed) has that row reopened and its text refreshed, never a new row: a cause that is red
 # again is the same work (alertmanager-fleet was filed 27 times in 7 days, 2026-11-18). A row whose
 # condition cleared is triage_retire's. Every row is #size/s. A reopen that fails is said and the key
-# is filed as a new row, so one stuck row never stops the pass. Leaves the counts in UPSERT_ADDED,
-# UPSERT_EDITED and UPSERT_REOPENED; FAILED is reported here.
+# is filed as a new row, and a row whose add or edit fails is said and skipped, so one stuck row never
+# stops the pass (ar-4064: one failed add skipped every red fix promotion after it). Leaves the
+# counts in UPSERT_ADDED, UPSERT_EDITED and UPSERT_REOPENED and the failed keys in UPSERT_FAILED,
+# which upsert_report reports FAILED, so every caller ends with upsert_report; status 1 only when the
+# board cannot be read.
 board_upsert() {
-  local board closed p text pri have id rc added=0 edited=0 reopened=0
-  UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0
+  local board closed p text pri have id rc added=0 edited=0 reopened=0 failed=()
+  UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_FAILED=
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
   closed=$(upsert_closed)
   while IFS=$'\t' read -r p text pri; do
@@ -3821,9 +3868,11 @@ board_upsert() {
     id=; [ -n "$have" ] || id=$(awk -F'\t' -v p="${p,,}" 'index($2, p) == 1 { print $1; exit }' <<<"$closed")
     if [ -n "$id" ]; then
       if $BENCH_NOTES_CMD ptask "$KPI_BOARD" reopen "$id" --why "fleet-bench: $p red again" >/dev/null; then
-        $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent edit "$p" --text "$text" >/dev/null \
-          || { report_outcome FAILED "edit failed for reopened $p ($id)"; return 1; }
-        reopened=$((reopened + 1))
+        if $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent edit "$p" --text "$text" >/dev/null; then
+          reopened=$((reopened + 1))
+        else
+          say "edit failed for reopened $p ($id)"; failed+=("$p")
+        fi
         continue
       fi
       say "could not reopen $id for $p: filing a new row"
@@ -3834,15 +3883,18 @@ board_upsert() {
       case $rc in
         0) added=$((added + 1)) ;;
         3) ;;
-        *) report_outcome FAILED "add failed for $p"; return 1 ;;
+        *) say "add failed for $p"; failed+=("$p") ;;
       esac
     elif [ "$have" != "${text,,}" ]; then
-      $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent edit "$p" --text "$text" >/dev/null \
-        || { report_outcome FAILED "edit failed for $p"; return 1; }
-      edited=$((edited + 1))
+      if $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent edit "$p" --text "$text" >/dev/null; then
+        edited=$((edited + 1))
+      else
+        say "edit failed for $p"; failed+=("$p")
+      fi
     fi
   done <<<"$1"
   UPSERT_ADDED=$added; UPSERT_EDITED=$edited; UPSERT_REOPENED=$reopened
+  UPSERT_FAILED=$(IFS=';'; echo "${failed[*]}")
 }
 
 # upsert_closed -> "id TAB lowercased text" for each KPI_BOARD agent row of the active profile
@@ -3856,13 +3908,17 @@ upsert_closed() {
     | sort_by(.closed // "") | reverse | .[] | [.id, (.text | ascii_downcase)] | @tsv' 2>/dev/null
 }
 
-# upsert_report <rows> [more]: the one line and the outcome after board_upsert; NOOP when it wrote nothing
+# upsert_report <rows> [more]: the one line and the outcome after board_upsert; NOOP when it wrote
+# nothing, FAILED and status 1 when a row's write failed (UPSERT_FAILED)
 upsert_report() {
   local did="$UPSERT_ADDED added, $UPSERT_EDITED refreshed"
   [ "${UPSERT_REOPENED:-0}" -eq 0 ] || did+=", $UPSERT_REOPENED reopened"
   did+="${2:+, $2}"
   say "$(grep -c . <<<"$1") rows due: $did"
-  if [ $((UPSERT_ADDED + UPSERT_EDITED + ${UPSERT_REOPENED:-0})) -eq 0 ] && [ -z "${2:-}" ]; then
+  if [ -n "${UPSERT_FAILED:-}" ]; then
+    report_outcome FAILED "board write failed for $UPSERT_FAILED; $did"
+    return 1
+  elif [ $((UPSERT_ADDED + UPSERT_EDITED + ${UPSERT_REOPENED:-0})) -eq 0 ] && [ -z "${2:-}" ]; then
     report_outcome NOOP "every row already current"
   else
     report_outcome WORKED "$did"
@@ -3873,6 +3929,30 @@ upsert_report() {
 # watch_after <severity> -> seconds it must stay at TRIP before it is a red.
 watch_sev() { watch_severity "$TRIAGE_WATCHES/$1.yaml"; }
 watch_after() { case "$1" in high|urgent) echo "$TRIAGE_WATCH_HIGH_AFTER" ;; *) echo "$TRIAGE_WATCH_AFTER" ;; esac; }
+
+# system_note <watch> <route skill> -> "; system <ids>: load fix-red and <skills>" for a watch whose
+# manifest names a `system:`, else nothing. The skills are the ones whose metadata.system names one
+# of its ids (one pass over BENCH_SKILLS_DIR), less fix-red and the route's own skill, at most
+# TRIAGE_SYSTEM_SKILLS of them, so the red's session loads fix-red plus its system's domain skills.
+system_note() {
+  local ids skills
+  # one line, `system: ci` or `system: [ci, tests]` (the forms SENTINEL.md shows), quotes and a comment dropped
+  ids=$(awk '/^system:/ { sub(/^system:[[:space:]]*/, ""); sub(/[[:space:]]#.*/, ""); gsub(/["'"'"'\[\],]/, " "); print; exit }' "$TRIAGE_WATCHES/$1.yaml" 2>/dev/null)
+  ids=$(echo $ids)
+  [ -n "$ids" ] || return 0
+  skills=$(find -L "$BENCH_SKILLS_DIR" -mindepth 2 -maxdepth 2 -name SKILL.md -print0 2>/dev/null | sort -z \
+    | xargs -0 awk -v ids=" $ids " '
+        FNR == 1 { fm = 0; done = 0 }
+        /^---[[:space:]]*$/ { fm++; next }
+        fm == 1 && !done && /^[[:space:]]+system:/ {
+          line = $0; sub(/^[[:space:]]*system:[[:space:]]*/, "", line); gsub(/[][,]/, " ", line)
+          n = split(line, a, " ")
+          for (i = 1; i <= n; i++) if (index(ids, " " a[i] " ")) {
+            m = split(FILENAME, p, "/"); print p[m - 1]; done = 1; break }
+        }' 2>/dev/null \
+    | awk -v skip="${2:--}" -v max="$TRIAGE_SYSTEM_SKILLS" '$0 != "fix-red" && $0 != skip && ++c <= max' | paste -sd, - | sed 's/,/, /g')
+  printf '; system %s: load fix-red%s' "$ids" "${skills:+ and $skills}"
+}
 
 # watch_paused <name> -> 0 when the watch is paused (`<name>.yaml.paused`). Its state is kept for when
 # it resumes, but it is no live red: `watch-companion-loop list` shows it PAUSED, and triage neither
@@ -3918,6 +3998,49 @@ triage_reset_gone() {
   done
 }
 
+# triage_alerts -> "<alertname> TAB <id>" for each alert the aggregate watch (TRIAGE_ALERT_WATCH) lists
+# in its evidence, one probe line each: the alert name, then its host or other label, then an optional
+# kind (joined to the id with "/"). Nothing unless the watch is TRIP and its evidence names an alert.
+# The id is cut to a token a board title can carry.
+triage_alerts() {
+  local o="$TRIAGE_WATCH_STATE/$TRIAGE_ALERT_WATCH.out" name id rest
+  [ "$(cat "$TRIAGE_WATCH_STATE/$TRIAGE_ALERT_WATCH.state" 2>/dev/null)" = TRIP ] && [ -r "$o" ] || return 0
+  # the first line is the verdict, the "fleet=fix firing:" line the probe's own summary
+  sed '1d; /^fleet=fix firing: /,$d' "$o" | while read -r name id rest; do
+    [[ "$name" =~ ^[A-Za-z][A-Za-z0-9_]*$ && -n "$id" ]] || continue
+    id=${id}${rest:+/${rest// //}}
+    printf '%s\t%s\n' "$name" "${id//[^A-Za-z0-9._\/-]/_}"
+  done | sort -u
+}
+
+# triage_pinned -> each host a human pinned out of service in the governor's override ConfigMap
+# (`<host>.slots` whose `by` says "human: ..."), one a line: that host's alerts are the move the
+# human asked for, not a fault. Machine-mode's own daily pins say nothing about one host. Unreadable
+# is no pin, so an alert stays red rather than being hidden.
+triage_pinned() {
+  $TRIAGE_PINS_CMD 2>/dev/null | jq -r '(.data // {}) | to_entries[] | select(.key | endswith(".slots"))
+    | select(((.value | fromjson? // {}).by // "") | startswith("human:")) | .key | sub("\\.slots$"; "")'
+}
+
+# triage_alert_rows <since epoch> <severity> -> key, text and priority for each alert the aggregate
+# watch lists that no human pin explains, so each firing alert (name and host) has a row, a cause and
+# a red item of its own, and the row closes when that alert clears (triage_retire). Rc 1 when the
+# evidence lists no alert: the watch's own row then stands, so unreadable evidence hides nothing.
+# An explained alert is said, never filed.
+triage_alert_rows() {
+  local alerts name id pinned pri
+  alerts=$(triage_alerts)
+  [ -n "$alerts" ] || return 1
+  pinned=$(triage_pinned)
+  pri=$(case "$2" in high|urgent) echo '#high' ;; *) echo '#low' ;; esac)
+  while IFS=$'\t' read -r name id; do
+    if grep -qxF -- "${id%%/*}" <<<"$pinned"; then say "triage: $name $id is intended: ${id%%/*} is pinned by a human"; continue; fi
+    printf 'check(alert): %s %s firing\tcheck(alert): %s %s firing, %s tripped since %s, expected: no fleet=fix alert, evidence: watch-companion-loop list --long %s\t%s\n' \
+      "$name" "$id" "$name" "$id" "$TRIAGE_ALERT_WATCH" "$(date -d "@$1" +%Y-%m-%d)" "$TRIAGE_ALERT_WATCH" "$pri"
+  done <<<"$alerts"
+  return 0
+}
+
 # triage_rows -> key, text and priority (tab-separated) for each runtime fault that persists: a
 # scheduled runner whose last-outcome is FAILED or STALLED, a failed user unit, and a Sentinel
 # watch held at TRIP past TRIAGE_WATCH_AFTER, or TRIAGE_WATCH_HIGH_AFTER when high or urgent.
@@ -3954,6 +4077,8 @@ triage_rows() {
     qu=; [ -r "$TRIAGE_WATCH_STATE/$n.quarantine" ] && read -r qu _ < "$TRIAGE_WATCH_STATE/$n.quarantine"
     [[ "$qu" =~ ^[0-9]+$ ]] && [ "$qu" -gt "$t" ] && continue
     sev=$(watch_sev "$n")
+    # The aggregate Alertmanager watch files one row a firing alert instead of its own.
+    if [ "$n" = "$TRIAGE_ALERT_WATCH" ] && triage_alert_rows "$since" "$sev"; then continue; fi
     # `what:` is one line or a folded block whose first sentence is the healthy state
     what=$(awk '/^what:/ { sub(/^what:[[:space:]]*(>-?|\|-?)?[[:space:]]*/, ""); on = 1; if ($0 != "") print; next }
                 on && /^[[:space:]]/ { sub(/^[[:space:]]+/, ""); print; next } on { exit }' "$TRIAGE_WATCHES/$n.yaml" 2>/dev/null \
@@ -4080,6 +4205,7 @@ triage_line() {
 triage_shape() {
   case "$1" in
     watch) text="check(watch): $2 tripped since 2026-01-01, expected: -" ;;
+    alert) text="check(alert): $2 firing, $TRIAGE_ALERT_WATCH tripped since 2026-01-01, expected: -" ;;
     runner) text="fix(runner): $2 is FAILED: -" ;;
     unit) text="fix(unit): $2 failed: failed" ;;
     hold) text="fix(hold): $2 went red after cleanup merge -: -" ;;
@@ -4096,7 +4222,7 @@ triage_shape() {
 # counted 0 again and a red two fixes did not hold was retried past the cap
 # (board-chain and runner-score, 2026-11-07).
 triage_route() {
-  local key text pri re route skill fix tags t note hit cause extra
+  local n key text pri re route skill fix tags t note hit cause extra
   while IFS=$'\t' read -r key text pri; do
     hit=0 cause=- extra=
     triage_line "$text" && hit=1
@@ -4130,6 +4256,9 @@ triage_route() {
       esac
     fi
     text+="${note:+; $note}"
+    case "$route" in agent | alert | owned:?*)
+      if [[ "$key" == 'check(watch): '* ]]; then n=${key#'check(watch): '}; text+=$(system_note "${n%% *}" "${skill:--}"); fi ;;
+    esac
     for t in ${tags:-}; do
       case "$t" in -) ;; \#*) text+=" $t" ;; *) extra+="${extra:+ }$t" ;; esac
     done
@@ -4199,40 +4328,46 @@ triage_human() {
   echo "$n"
 }
 
-# cause_tries <items> <cause> [trip] -> -1 while an item stands for the cause: queued, running or
-# waiting, or closed with a PR that is not merged (it waits on a merge, and a second session would
-# only repeat it), or, given the epoch an alert or owned watch tripped at, closed ok since then (its
-# job was the ask or the owner, not the red, so a PR it merged fixed something beside the red; the
-# TRIAGE_FIX_DAYS window bounds it, and the watch re-pages on its own), or merged under TRIAGE_WATCH_AFTER
-# ago: the patience a low red gets before it is filed, given to a merge to deploy and age out of the
-# probe's window. Else how many items the window queued for it.
+# cause_tries <items> <cause> [trip] [route] -> -1 while an item stands for the cause: queued,
+# running or waiting, or closed with a PR that is not merged (it waits on a merge, and a second
+# session would only repeat it), or merged under TRIAGE_WATCH_AFTER ago (the patience a low red gets
+# before it is filed, given to a merge to deploy and age out of the probe's window), or, on an alert
+# or owned route, closed ok since the trip (its job was the ask or the owner, not the red, so a PR it
+# merged fixed something beside the red; the watch re-pages on its own). Else how many tries the
+# cause had: given the epoch its watch tripped at, the items queued at or after it, so each trip gets
+# its own TRIAGE_FIX_TRIES (ar-4064); else every item in the TRIAGE_FIX_DAYS window.
 # Every row triage reads is red now, so an item that closed cancelled or failed, or merged with its
-# red still here on an agent route or before the trip, did not hold.
+# red still here on an agent route, did not hold.
+# CAUSE_JQ: the cause's items ($c, its " cause:<id> " tag) and of those its tries ($trip, or "" for
+# the whole window), shared so cause_slugs names exactly what cause_tries counts.
+CAUSE_JQ='def cause_items: [.[] | select((" " + (.tags // "") + " ") | contains($c))];
+def trip_tries: [.[] | select($trip == "" or ((.queued | ep) // 0) >= ($trip | tonumber))];'
 cause_tries() {
-  jq --arg c " cause:$2 " --arg trip "${3:-}" --argjson settle "$(($(now) - TRIAGE_WATCH_AFTER))" \
-    "$JQ_LIB"'[.[] | select((" " + (.tags // "") + " ") | contains($c))]
+  local owned=false
+  case "${4:-}" in alert | owned:?*) owned=true ;; esac
+  jq --arg c " cause:$2 " --arg trip "${3:-}" --argjson owned "$owned" --argjson settle "$(($(now) - TRIAGE_WATCH_AFTER))" \
+    "$JQ_LIB$CAUSE_JQ"'cause_items | trip_tries as $tries
     | if any(.[]; .state == "queued" or .state == "running" or .state == "review" or .state == "waiting"
                 or (.state == "done" and .pr != null and (.merged // "") == "" and .status != "cancelled")
-                or (.state == "done" and (.merged // "") != "" and ((.finished | ep) // 0) >= $settle)
-                or ($trip != "" and .state == "done" and .status == "ok"
-                    and ((.queued | ep) // 0) >= ($trip | tonumber)))
-      then -1 else length end' <<<"$1"
+                or (.state == "done" and (.merged // "") != "" and ((.finished | ep) // 0) >= $settle))
+         or ($owned and any($tries[]; .state == "done" and .status == "ok"))
+      then -1 else ($tries | length) end' <<<"$1"
 }
 
-# watch_trip <key> <route> -> the epoch an alert or owned watch row's watch tripped at; nothing for
-# any other row. 2026-11-11: playground-release-ready's alert item closed ok with the watch still
-# red, triage queued a second 4 minutes later, and the third pass would page "red fixes that did
-# not hold" for a red no session was asked to clear.
+# watch_trip <key> -> the epoch a watch row's watch tripped at, on any route; nothing for any other
+# row. 2026-11-20 (ar-4064): tries were counted over the whole window, so a watch that cleared and
+# tripped again found its tries spent by an earlier trip, and 12 of 22 tripped watches had no owner.
+# A watch that flaps gets TRIAGE_FIX_TRIES items a trip by design (every trip has an owner, ar-1531);
+# only a trip that outlasts watch_after is a red, which bounds how often that can be.
 watch_trip() {
   [[ "$1" == 'check(watch): '* ]] || return 0
-  case "$2" in alert | owned:?*) ;; *) return 0 ;; esac
   local n=${1#'check(watch): '}
   sed -n '1{/^[0-9][0-9]*$/p}' "$TRIAGE_WATCH_STATE/${n%% *}.since" 2>/dev/null
 }
 
-# cause_slugs <items> <cause> -> the slugs of the window's items for the cause, oldest first, comma-joined
+# cause_slugs <items> <cause> [trip] -> the slugs of the tries cause_tries counts, oldest first, comma-joined
 cause_slugs() {
-  jq -r --arg c " cause:$2 " '[.[] | select((" " + (.tags // "") + " ") | contains($c))] | sort_by(.queued // "") | map(.slug) | join(",")' <<<"$1"
+  jq -r --arg c " cause:$2 " --arg trip "${3:-}" "$JQ_LIB$CAUSE_JQ"'cause_items | trip_tries | sort_by((.queued | ep) // 0) | map(.slug) | join(",")' <<<"$1"
 }
 
 # triage_items -> the queue items of the last TRIAGE_FIX_DAYS as one array; rc 1 when unreadable
@@ -4240,15 +4375,16 @@ triage_items() {
   $TRIAGE_ITEMS_CMD --since "$(date -d "@$(( $(now) - TRIAGE_FIX_DAYS * 86400 ))" +%F)" 2>/dev/null | jq -cs .
 }
 
-# triage_kind <key> -> " watch" for a tripped watch's own red, which triage tags `watch` (below); nothing
-# for any other red.
-triage_kind() { [[ "$1" != 'check(watch): '* ]] || echo ' watch'; }
+# triage_kind <key> -> " watch" for a tripped watch's own red, which triage tags `watch` (below), and " alert"
+# for one firing alert's red, tagged `alert`: both are outside the daily cap, bounded by what is red (a
+# watch, an alert), and only a watch's widens the red floor. Nothing for any other red.
+triage_kind() { case "$1" in 'check(watch): '*) echo ' watch' ;; 'check(alert): '*) echo ' alert' ;; esac; }
 
 # triage_promote <rows> -> how many rows triage_queues were queued as red fixes. A red fix opens its PR at
 # any hour and stops there (policy 2026-11-06), so each guard here keeps that from running away: a
 # dispatch hold or an unreadable queue queues nothing, TRIAGE_FIX_CAP bounds the day's other reds, an
 # item in hand stands for its cause (cause_tries), and a cause gets at most TRIAGE_FIX_TRIES items in
-# the window. A tripped watch's item is tagged `watch` and is outside the cap: each watch is one cause,
+# the window, a watch's in its current trip. A tripped watch's item is tagged `watch` and is outside the cap: each watch is one cause,
 # so the watches bound it, and fleet-dispatch widens its red floor by one for each. Outside
 # TRIAGE_FIX_CAP is not outside the queue cap: the promote is a dispatch pull (--dispatch), so at the cap it makes
 # room or leaves its row on the board for a pass (agent-queue make_room, admit).
@@ -4256,11 +4392,11 @@ triage_kind() { [[ "$1" != 'check(watch): '* ]] || echo ' watch'; }
 # whose tries are spent stays on its agent row, which Alerts > Fixes and the reds_unfixed KPI show;
 # Needs you holds only what the human can do, and fix-red files an ask when the fix is a decision.
 triage_promote() {
-  local board key raw route cause tags items used tries more kind n=0 capped=0 seen=' '
+  local board key raw route cause tags items used trip tries more kind n=0 capped=0 seen=' '
   $TRIAGE_HOLD_CMD >/dev/null 2>&1 || { echo 0; return 0; }
   items=$(triage_items) || { echo 0; return 0; }
   used=$(jq --arg d "$(date -u -d "@$(now)" +%F)" \
-    "$JQ_LIB"'[.[] | select(tagged("red") and (tagged("watch") | not) and (.queued // "" | startswith($d)))] | length' <<<"$items")
+    "$JQ_LIB"'[.[] | select(tagged("red") and (tagged("watch") | not) and (tagged("alert") | not) and (.queued // "" | startswith($d)))] | length' <<<"$items")
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { echo 0; return 0; }
   while IFS=$'\t' read -r key _ _ route cause tags; do
     triage_queues "$key" "$route" || continue
@@ -4268,9 +4404,10 @@ triage_promote() {
     [ -n "$kind" ] || [ $((used + capped)) -lt "$TRIAGE_FIX_CAP" ] || continue
     [[ "$seen" != *" $cause "* ]] || continue
     seen+="$cause "
-    tries=$(cause_tries "$items" "$cause" "$(watch_trip "$key" "$route")")
+    trip=$(watch_trip "$key")
+    tries=$(cause_tries "$items" "$cause" "$trip" "$route")
     [ "$tries" -ge 0 ] && [ "$tries" -lt "$TRIAGE_FIX_TRIES" ] || continue
-    more=''; [ "$tries" -eq 0 ] || more=" retry:$(cause_slugs "$items" "$cause")"
+    more=''; [ "$tries" -eq 0 ] || more=" retry:$(cause_slugs "$items" "$cause" "$trip")"
     raw=$(awk -F'\t' -v p="${key,,}" 'index($3, p) == 1 { print $4; exit }' <<<"$board")
     [[ "$raw" == '- [ ]'* ]] || continue
     $TRIAGE_PROMOTE_CMD --agent --dispatch --project "$KPI_BOARD" --tags "red$kind cause:$cause$more${tags:+ $tags}" --raw "$raw" >/dev/null 2>&1 || continue
@@ -4295,6 +4432,9 @@ triage_coverage() {
     n=${f##*/} n=${n%.yaml}
     triage_shape watch "$n"
     rows+="watch $n"$'\t'"$text"$'\t-\n'
+    [ "$n" = "$TRIAGE_ALERT_WATCH" ] || continue
+    triage_shape alert "Alertname host"
+    rows+="alert $n"$'\t'"$text"$'\t-\n'
   done
   for f in "$LEDGER_CONF_DIR"/*.conf; do
     [ -e "$f" ] || continue
@@ -4350,12 +4490,15 @@ hold_memo() {
 
 # hold_failed <owner/repo> <run id> -> the bats files that failed in that run, repo-relative; rc 1
 # when its log cannot be read, or is not there yet. gh cannot read a Forgejo run's log, so one names
-# no file and counts against the merges since the last green, like any red that names none.
+# no file and counts against the merges since the last green, like any red that names none. Only a
+# TAP diagnostic line (# first, then perhaps "(from function `setup'") names a failure: a bats
+# warning (BW02) prints the same "in test file" trace without the #, and named a file that passed
+# (ar-4122).
 hold_failed() {
   local log
   [[ $(hold_ledger "$1") != forgejo:* ]] || return 0
   log=$(gh run view "$2" -R "$1" --log-failed 2>/dev/null) && [ -n "$log" ] || return 1
-  { grep -oE 'in test file [^,]+\.bats' <<<"$log" || true; } | sed -E 's#.*[ /](unit|integ|ui)/#tests/\1/#' | sort -u
+  { grep -oE '#[^,]*in test file [^,]+\.bats' <<<"$log" || true; } | sed -E 's#.*[ /](unit|integ|ui)/#tests/\1/#' | sort -u
 }
 
 # hold_test <owner/repo> <sha> <file> -> the file's text at that sha
@@ -4523,6 +4666,8 @@ watch_keys() {
     [ -e "$f" ] && [ "$(cat "$f")" = "$1" ] || continue
     f=${f##*/}
     ! watch_paused "${f%.state}" || continue
+    # its alerts are its rows (triage_alert_rows), so its own row is no live red while they are listed
+    [ "$1" = TRIP ] && [ "${f%.state}" = "$TRIAGE_ALERT_WATCH" ] && [ -n "$(triage_alerts)" ] && continue
     printf 'check(watch): %s tripped since\n' "${f%.state}"
   done
 }
@@ -4557,7 +4702,8 @@ alert_titles() {
 # fix is "fixed" only while nothing it was queued for is red now; red again with the watch's trip
 # after the merge is "came back", red the whole time is "still red", and red now with its row routed
 # to alert is "alert route" (its watch pages, and the KPI it trips on is not a merge's to clear).
-# Counted, never judged.
+# Each red row also names its item's session, and a fix in hand (queued or fixing) its due epoch,
+# which the overviews read as past its ETA (hub_core::alerts). Counted, never judged.
 reds_json() {
   local t="$1" items holds live watches='{}' f n parsed alerted
   items=$(reds_items "$t") || { say "reds: cannot read the queue ($TRIAGE_ITEMS_CMD)"; return 1; }
@@ -4571,7 +4717,7 @@ reds_json() {
     watches=$(jq -c --arg n "$n" --arg s "$(cat "$f")" '. + {($n): ($s | tonumber? // 0)}' <<<"$watches")
   done
   jq -c --argjson live "$live" --argjson w "$watches" --argjson holds "$holds" --argjson clock "$t" \
-    --argjson parsed "$parsed" --argjson alerted "$alerted" --argjson h "$((HOLD_HOURS * 3600))" "$JQ_LIB"'
+    --argjson parsed "$parsed" --argjson alerted "$alerted" --argjson h "$((HOLD_HOURS * 3600))" --argjson n "$REDS_ETA_SAMPLES" "$JQ_LIB"'
     def title: .title // .task // "";
     ([$holds[].merges[].slug]) as $went
     | ([.[] | select(tagged("red")) | title | select(startswith("fix(hold): "))]) as $held
@@ -4581,13 +4727,13 @@ reds_json() {
            outcome: (.slug as $s | if $s | IN($went[]) then "went red"
                      elif any($held[]; contains(" \($s) (")) then "recovered"
                      elif $clock - ((.finished | ep) // 0) < $h then "holding" else "held" end)}]) as $cleanups
-    | (.[] | select(tagged("red")) | title as $t
+    | [.[] | select(tagged("red")) | title as $t
     | ($parsed[$t | gsub("\n"; " ")] // {}) as $r
     | ((" " + (.tags // "") + " ") | capture(" cause:(?<c>[^ ]+) ").c // null) as $cause
     | ([$live[] as $k | select($t | startswith($k))] | length > 0) as $red
     | (.finished | ep) as $fin
     | {slug, project: (.project // ""), red: (if $r.name then "\($r.area) \($r.name)" else $t[0:60] end), cause: $cause, state,
-       queued, finished, pr, merged,
+       session, queued, finished, pr, merged,
        fix_min: (if .merged != null and $fin != null and (.queued | ep) != null then ((($fin - (.queued | ep)) / 60) | floor) else null end),
        outcome: (
          if .state == "queued" then "queued"
@@ -4600,7 +4746,13 @@ reds_json() {
          elif .status == "cancelled" then "cancelled"
          elif .pr != null then "needs merge"
          elif .status == "ok" then "cleared"
-         else "no fix" end)}), $cleanups[]' <<<"$items"
+         else "no fix" end)}] as $reds
+    # A fix in hand is due once it has taken as long as 9 in 10 of the window'"'"'s merged fixes did
+    # (nearest rank), counted from when it was queued; fewer than $n merged fixes give no due time.
+    | ([$reds[] | .fix_min // empty] | sort) as $m
+    | (if ($m | length) >= $n then $m[((($m | length) * 0.9) | ceil) - 1] else null end) as $p90
+    | ($reds[] | . + {due: (if $p90 != null and (.outcome == "queued" or .outcome == "fixing") and (.queued | ep) != null
+                             then (.queued | ep) + $p90 * 60 else null end)}), $cleanups[]' <<<"$items"
 }
 
 # reds_counts <now> -> the KPI lines: merged fixes whose red is back or never went (reds_unfixed),
@@ -4636,18 +4788,28 @@ cmd_reds() {
     (.[] | "| \(.slug) | \(.red) | \(.outcome) | \(.queued // "-" | .[0:16]) | \(.fix_min // "-") | \(.pr // "-") |")' <<<"$rows"
 }
 
+# alerts_readable -> 1 when the alert watch says what is firing: it is not paused and is OK (nothing
+# fires) or TRIP with alerts listed; 0 for ERROR (Alertmanager unreachable), a pause or missing
+# evidence, where an open check(alert) row stays rather than reading as recovered.
+alerts_readable() {
+  local s
+  ! watch_paused "$TRIAGE_ALERT_WATCH" || { echo 0; return; }
+  s=$(cat "$TRIAGE_WATCH_STATE/$TRIAGE_ALERT_WATCH.state" 2>/dev/null)
+  if [ "$s" = OK ] || { [ "$s" = TRIP ] && [ -n "$(triage_alerts)" ]; }; then echo 1; else echo 0; fi
+}
+
 # triage_retire <dry> -> closes each check(watch), fix(hold), fix(logs) or fix(unit) row nobody started whose
 # key left reds_live, so a recovered fault stops reading as a red; if it comes back, triage files it
 # again. Only a reading that says "not red" closes a row. These stay open: every row when the queue or the
 # board cannot be read, a watch whose probe could not run (ERROR), a log row log_recent does not read
 # as recovered (its error in a newest run, too few runs, no ledger), every hold row when a repo's runs
-# could not be read, every unit row when systemctl cannot list the failed units, and a ci- hold whose
+# could not be read, every unit row when systemctl cannot list the failed units, every alert row unless the alert watch is read (alerts_readable), and a ci- hold whose
 # merge has left the REDS_DAYS window hold_reds reads. A row
 # that fails to close is said and tried again next pass: retiring never stops new reds being filed.
 # Leaves the count in TRIAGE_RETIRED.
 triage_retire() {
-  local dry=$1 scope sheet t items holds holds_read=1 live board slugs title raw key recent logs_read=1 runner units_read=1
-  local shape='^(check\(watch\): [^ ]+ tripped since|fix\(hold\): [^ ]+ went red|fix\(logs\): ([^ ]+) error [0-9a-f]{8}:|fix\(unit\): [^ ]+ failed)'
+  local dry=$1 scope sheet t items holds holds_read=1 live board slugs title raw key recent logs_read=1 runner units_read=1 alerts_read
+  local shape='^(check\(watch\): [^ ]+ tripped since|check\(alert\): [^ ]+ [^ ]+ firing|fix\(hold\): [^ ]+ went red|fix\(logs\): ([^ ]+) error [0-9a-f]{8}:|fix\(unit\): [^ ]+ failed)'
   local merge='after cleanup merges? ([^ ]+) \('
   TRIAGE_RETIRED=0
   [ -d "$TRIAGE_WATCH_STATE" ] || return 0
@@ -4663,11 +4825,13 @@ triage_retire() {
   # the same way once its red is gone. An unreadable sheet is skipped, never a reason to keep the agent rows.
   sheet=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" list 2>/dev/null </dev/null) && board+=$'\n'$(sed 's/^/-\t/' <<<"$sheet")
   slugs=$(jq -r '.[].slug' <<<"$items")
+  alerts_read=$(alerts_readable)
   while IFS=$'\t' read -r scope _ _ title raw; do
     [[ $title =~ $shape ]] || continue
     [ "$scope" != - ] || scope=
     key=${BASH_REMATCH[1]} runner=${BASH_REMATCH[2]}
     [[ $raw == '- [ ]'* ]] && ! grep -qxF -- "$key" <<<"$live" || continue
+    [[ $key == 'check(alert): '* ]] && [ "$alerts_read" = 0 ] && continue
     if [[ $key == 'fix(logs): '* ]]; then
       [ "$logs_read" = 1 ] && grep -qxF -- "runner $runner" <<<"$recent" && ! grep -qxF -- "$key" <<<"$recent" || continue
     fi
@@ -4743,7 +4907,7 @@ cmd_triage() {
     return 0
   fi
   filed=$(triage_filed "$rows")
-  if [ -n "$filed" ]; then board_upsert "$(cut -f1-3 <<<"$filed")" || return 1; else UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; fi
+  if [ -n "$filed" ]; then board_upsert "$(cut -f1-3 <<<"$filed")" || return 1; else UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_FAILED=; fi
   h=$(triage_human "$rows")
   triage_twins "$rows" "$(cut -f1 <<<"$filed")"
   q=$(triage_promote "$rows")
