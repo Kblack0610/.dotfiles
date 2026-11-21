@@ -17,7 +17,8 @@
 # (capacity, what paused the last pass, self-heal) and Shepherd (its last pass and the last 24h).
 # Exceptions lead it. Sessions and their stages are the agents chip (ai_agents.sh).
 #
-# Everything is read from Prometheus (summary/dispatch from `fleet-dispatch stats`, the
+# Everything is read from Prometheus (summary/dispatch from `fleet-dispatch stats`, summary/cards
+# from `hub cards --json --figures` for the bar's two totals, the
 # fleet_dispatch runner, the queue-starved watch and summary/shepherd from `fleet-shepherd
 # stats`), so the chip reads the same on the laptop thin client. Only live feed topics count (cc:agents_topic_live), so a host
 # that stopped publishing cannot hold it red. Prometheus unreadable reads ? in amber and no
@@ -41,7 +42,7 @@ title="<b>Queue</b>"
 ROOM_LATE_SECS=2700
 # The accounts' room verdicts (claude-acct textfile) ride the same query, only from a textfile
 # written lately: they name which account refuses and why when the account gate holds dispatch.
-q='({__name__=~"mqtt_.+", topic=~"agents_.+_(summary_dispatch|runner_fleet_dispatch|watch_queue_starved|summary_shepherd)"} and on (topic) cc:agents_topic_live)'
+q='({__name__=~"mqtt_.+", topic=~"agents_.+_(summary_dispatch|summary_cards|runner_fleet_dispatch|watch_queue_starved|summary_shepherd)"} and on (topic) cc:agents_topic_live)'
 q+=" or (claude_account_room_reason and on (instance) (time() - node_textfile_mtime_seconds{file=~\".*/claude_acct.prom\"} < $ROOM_LATE_SECS))"
 
 if ! raw="$(prom_q "$q")"; then
@@ -49,14 +50,14 @@ if ! raw="$(prom_q "$q")"; then
   exit 0
 fi
 
-# One object: kind.key -> value, kind being dispatch, runner, watch or shepherd. The source is the
+# One object: kind.key -> value, kind being dispatch, cards, runner, watch or shepherd. The source is the
 # host whose dispatch pass ran last: only the lease holder runs a pass (`fleet-lease fleet-dispatch`)
 # and, since #2971, only it sends summary/dispatch. Its series alone count; with no pass on record
 # anywhere, every host's count by their max. A peer with a frozen store clone sent 622 queued and
 # the old max over hosts showed it (ar-4306), so src.host names the source and src.stale each
 # other host still sending summary/dispatch.
 # Every value is a count, a 0/1 or an epoch, so it is floored: Prometheus may write 1 as 1.0.
-v="$(jq -c '{summary_dispatch: "dispatch", summary_shepherd: "shepherd", runner_fleet_dispatch: "runner",
+v="$(jq -c '{summary_dispatch: "dispatch", summary_cards: "cards", summary_shepherd: "shepherd", runner_fleet_dispatch: "runner",
       watch_queue_starved: "watch"} as $kind
     | [.data.result[] | select(.metric.topic) | (.metric.topic | capture("^agents_(?<h>.+)_(?<t>"
         + ($kind | keys | join("|")) + ")$")) as $c
@@ -204,13 +205,15 @@ if [ -n "$(get shepherd.due)" ]; then
 fi
 
 # The bar: two totals behind their labels, and only Q takes the chip's level colour; a number the
-# feed lacks reads -.
-qn="${ready:--}"
+# feed lacks reads -. Both are hub-core's own figures (`hub cards --json --figures`, sent as
+# summary/cards): Q the queue card's headline (on deck), D the projects card's shipped today.
+cf() { local x; x="$(get "cards.figures_$1")"; printf '%s' "${x:--}"; }
+qn="$(cf queue_headline)"
 ((level > 0)) && qn="$(paint "${LEVEL_COLOUR[$level]}" "$qn")"
 lc="$(label_colour)"
-text="$(paint "$lc" Q:)$qn  $(paint "$lc" D:)$(d shipped_today)"
+text="$(paint "$lc" Q:)$qn  $(paint "$lc" D:)$(cf projects_shipped_today)"
 
-tip="Q ready to start next, D shipped today (merged a PR); $(d checks_today) checks closed with no merge"$'\n'"$qhead"
+tip="Q ready to start next, D shipped today (merged a PR); $(cf projects_checks_closed) checks closed with no merge"$'\n'"$qhead"
 for w in "${why[@]}"; do tip+=$'\n'"$w"; done
 [ -n "$queue" ] && tip+=$'\n'"$queue"
 for sec in "$disp" "$shep"; do [ -n "$sec" ] && tip+=$'\n\n'"$sec"; done

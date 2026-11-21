@@ -52,6 +52,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub tab sessions [runners/RUNNER | sessions/ID | INNER]
        hub actions --since WHEN [--json | --records]
        hub phone --json
+       hub cards --json [--figures]
        hub vitals [--json]
        hub needs --json | --page
        hub ci [--json | --pool-match SECS]
@@ -87,6 +88,8 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
           aws-burst-1-unity-pool) last N (default 50) jobs that completed before WHEN (default
           now) in the job archive, GitHub-hosted left out, as JSON keyed by the group: runs,
           green, pass (0..1). day-log reads it. Exits 1 when the archive cannot be read
+  cards   Home's cards as the Tilecast widget document agent-web serves at /widget.json:
+          every card, one section each, with `updated_at`; --figures adds `figures`, the whole numbers by name; agent-mqtt-publish sends it
   phone   the phone widget's rows as {state, rows}: what agent-mqtt-publish sends Home Assistant
   needs   Home's NEEDS YOU as {needs, errors}, ranked, each row with the score it counted
           (fleet-bench asks reads it); --page sends one grouped page for the new rows over the
@@ -182,6 +185,10 @@ fn main() {
         }
         println!("{}", hub_core::sheet_view::gather());
         return;
+    }
+    if it.peek().map(|a| a.as_str()) == Some("cards") {
+        it.next();
+        std::process::exit(cards(it.cloned().collect()));
     }
     if it.peek().map(|a| a.as_str()) == Some("phone") {
         it.next();
@@ -452,6 +459,40 @@ fn briefing(args: Vec<String>) -> i32 {
         println!("{}", serde_json::to_string(&b).unwrap_or_default());
     }
     i32::from(!b.errors.is_empty())
+}
+
+/// `hub cards --json`: the document agent-web serves at `/widget.json` (`hub_core::widget_doc`),
+/// over the reads `--once` makes for Home, so a card is the same on every surface. Taps carry
+/// `AGENT_WEB_BASE_URL` as they do there; a card whose read failed says NO DATA in the document.
+/// `--figures` adds a `figures` object, the cards' whole numbers (`widget_doc::figures`), for the
+/// readers that keep numbers and drop text (mqtt2prom, so the waybar chips).
+fn cards(args: Vec<String>) -> i32 {
+    let figures = args == ["--json", "--figures"];
+    if args != ["--json"] && !figures {
+        die(USAGE);
+    }
+    let (tx, _rx) = mpsc::channel();
+    let mut a = App::new(Tab::Home, tx);
+    a.proposals = Some(hub_core::proposals::read(
+        &hub_core::session_actions::System,
+    ));
+    a.pipeline = Some(hub_core::pipeline::read());
+    a.boards = Some(app::Boards::read(&a.files, None));
+    a.queue = Some(hub_core::queue::Queue::read(
+        &hub_core::session_actions::System,
+    ));
+    a.infra = Some(hub_core::infra::gather());
+    a.tasks = Some(hub_core::tasks::feed(&hub_core::session_actions::System));
+    a.read_home_cards_now();
+    let base = std::env::var("AGENT_WEB_BASE_URL").ok();
+    let cards = a.widget_cards();
+    let doc = hub_core::widget_doc::document(&cards, &[], hub_core::jobs::now(), base.as_deref());
+    let mut out = serde_json::to_value(&doc).unwrap_or_default();
+    if figures {
+        out["figures"] = serde_json::json!(hub_core::widget_doc::figures(&cards));
+    }
+    println!("{out}");
+    0
 }
 
 /// `hub phone --json`: the same join Home draws, reduced to the phone's rows.

@@ -46,6 +46,7 @@ s = {
     "summary_dispatch.queued": 60, "summary_dispatch.running": 14, "summary_dispatch.review": 6, "summary_dispatch.waiting": 10,
     "summary_dispatch.done_1h": 4, "summary_dispatch.done_6h": 30,
     "summary_dispatch.added_6h": 18, "summary_dispatch.done_24h": 40, "summary_dispatch.shipped_today": 12, "summary_dispatch.checks_today": 9,
+    "summary_cards.figures_queue_headline": 39, "summary_cards.figures_projects_shipped_today": 12, "summary_cards.figures_projects_checks_closed": 9,
     "summary_dispatch.board_agent": 1522, "summary_dispatch.board_backlog": 2200,
     "summary_dispatch.room_live_runs": 16, "summary_dispatch.room_max_live": 24,
     "summary_dispatch.room_live_hand": 5, "summary_dispatch.room_total_live": 21, "summary_dispatch.room_load": 27.4,
@@ -291,7 +292,7 @@ bar() {
 # ar-4306: cachyos-rog woke with a store frozen since 2026-11-15 and sent 328 ready; the max over
 # hosts showed it. The host whose pass ran last is the source, and the other one is named stale.
 @test "a stale host's bigger queue is ignored and named in amber; its failed runner is not ours" {
-  feed h2:summary_dispatch.runnable=328 h2:summary_dispatch.last_pass_epoch=$((100000 - 600000)) \
+  feed h2:summary_dispatch.runnable=328 h2:summary_dispatch.last_pass_epoch=$((100000 - 600000)) h2:summary_cards.figures_queue_headline=328 \
     h2:runner_fleet_dispatch.failed=1 h2:watch_queue_starved.tripped=1
   run "$MODULE"
   assert_equal "$(text)" "$(bar "<span color='$Y'>39</span>" 12)"
@@ -314,7 +315,7 @@ bar() {
 }
 
 @test "negative control: the host whose pass ran last is the source, even with the smaller queue" {
-  feed h2:summary_dispatch.runnable=3 h2:summary_dispatch.last_pass_epoch=$((100000 - 60))
+  feed h2:summary_dispatch.runnable=3 h2:summary_dispatch.last_pass_epoch=$((100000 - 60)) h2:summary_cards.figures_queue_headline=3
   run "$MODULE"
   assert_equal "$(text)" "$(bar "<span color='$Y'>3</span>" -)"
   tip | grep -qF "stale: h1-main (39 ready)"
@@ -366,10 +367,10 @@ bar() {
   assert_line --index 7 "today: - agent rows (- more on the backlog)"
 }
 
-@test "D is the items shipped today; a feed without it reads -, never 0" {
-  feed summary_dispatch.shipped_today=- summary_dispatch.checks_today=-
+@test "Q and D are hub cards figures; a feed without them reads -, never 0" {
+  feed summary_cards.figures_queue_headline=- summary_cards.figures_projects_shipped_today=- summary_cards.figures_projects_checks_closed=-
   run "$MODULE"
-  assert_equal "$(text)" "$(bar 39 -)"
+  assert_equal "$(text)" "$(bar - -)"
   run tip
   assert_line --index 0 "Q ready to start next, D shipped today (merged a PR); - checks closed with no merge"
 }
@@ -397,7 +398,8 @@ bar() {
 @test "no summary/dispatch on the feed reads - in amber, never 0" {
   feed summary_dispatch.runnable=-
   run "$MODULE"
-  assert_equal "$(text)" "$(bar "<span color='$Y'>-</span>" 12)"
+  # The bar reads the cards figures, so only the flag and the amber say dispatch is missing.
+  assert_equal "$(text)" "$(bar "<span color='$Y'>39</span>" 12)"
   assert_equal "$(class)" warn
   run tip
   assert_output --partial "no dispatch numbers on the feed"

@@ -51,10 +51,13 @@ EOF
   printf '1789000000' > "$WATCH_STATE_DIR/skill-drift.since"
 }
 
+# `hub phone --json` runs the stub body; `hub cards --json --figures` prints what cards_stub wrote, else fails (any other cards call fails too).
 overview_stub() {
-  printf '#!/usr/bin/env bash\n%s\n' "$1" > "$SANDBOX/bin/hub"
+  printf '#!/usr/bin/env bash\nif [ "${1:-}" = cards ]; then [ "$*" = "cards --json --figures" ] || exit 1; cat "$NOTES_FIXTURE/cards.out" 2>/dev/null || exit 1; exit 0; fi\n%s\n' "$1" > "$SANDBOX/bin/hub"
   chmod +x "$SANDBOX/bin/hub"
 }
+
+cards_stub() { printf '%s' "$1" > "$NOTES_FIXTURE/cards.out"; }
 
 payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:-$PUBLOG}" | tail -1; }
 
@@ -479,6 +482,32 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   c="$(payload homeassistant/sensor/agent_testhost_summary_overview/config)"
   assert_equal "$(jq -r .name <<< "$c")" "Fleet overview"
   assert_equal "$(jq -r .json_attributes_topic <<< "$c")" agents/testhost/summary/overview
+}
+
+@test "cards: hub's widget document rides as an attribute and its state is the worst card's level" {
+  cards_stub '{"version":0,"title":"Fleet","updated_at":"2026-11-21T20:00:00Z","state":"bad","figures":{"queue_headline":13,"projects_shipped_today":12},"sections":[{"id":"queue","items":[{"kind":"metric","value":"13","unit":"on deck, 1..."},{"kind":"pill","label":"Held","value":"4"}]}]}'
+  run "$PUB" --quiet
+  assert_success
+  p="$(payload agents/testhost/summary/cards)"
+  assert_equal "$(jq -r .state <<< "$p")" bad
+  assert_equal "$(jq -r .updated_at <<< "$p")" 2026-11-21T20:00:00Z
+  assert_equal "$(jq -r '.sections[0].items[1].label' <<< "$p")" Held
+  assert_equal "$(jq -r .figures.queue_headline <<< "$p")" 13
+  c="$(payload homeassistant/sensor/agent_testhost_summary_cards/config)"
+  assert_equal "$(jq -r .name <<< "$c")" "Fleet cards"
+  assert_equal "$(jq -r .json_attributes_topic <<< "$c")" agents/testhost/summary/cards
+}
+
+# Negative control: a failed hub, or output that is not a document, publishes no cards topic; the
+# phone overview's rows are not a document either.
+@test "cards: a failed run or output with no sections publishes no topic" {
+  run "$PUB" --quiet
+  assert_success
+  [ -z "$(payload agents/testhost/summary/cards)" ]
+  cards_stub '{"state": "ok", "rows": []}'
+  run "$PUB" --quiet
+  assert_success
+  [ -z "$(payload agents/testhost/summary/cards)" ]
 }
 
 # Negative control: a failed or hollow overview publishes nothing rather than a blank widget.
