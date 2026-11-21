@@ -47,7 +47,7 @@ role="${ROLE:-${AGENTCTL_ROLE:-}}"
 AGENTCTL_MODEL="${AGENTCTL_MODEL:-${MODEL:-}}"
 harness="${HARNESS:-${AGENTCTL_HARNESS:-claude}}"
 args=()
-agent="" cli_role="" cli_route="" cli_class="" cli_harness="" cli_schema=""
+agent="" cli_role="" cli_route="" cli_class="" cli_harness="" cli_schema="" cli_context=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -57,6 +57,7 @@ while [ $# -gt 0 ]; do
     --data-class) cli_class="${2:?--data-class needs a value}"; shift 2 ;;
     --harness) cli_harness="${2:?--harness needs a value}"; harness="$cli_harness"; shift 2 ;;
     --schema)  cli_schema="${2:?--schema needs a value}"; shift 2 ;;
+    --context) cli_context="${2:?--context needs a value}"; shift 2 ;;
     --explain) AGENTCTL_EXPLAIN=1; [ -n "${2:-}" ] && [ "${2:0:1}" != "-" ] && { cli_role="$2"; shift; }; shift ;;
     *)         args+=("$1"); shift ;;
   esac
@@ -108,6 +109,14 @@ if [ -n "$cli_schema" ]; then
   AGENT_SCHEMA="$cli_schema"
   export AGENT_SCHEMA
 fi
+# --context lean|full: this call's context, over the conf's CALL_CONTEXT. A lean agent's call that
+# overrides its role to one that looks things up (inbox-triage's #ask) says full to keep its tools.
+case "$cli_context" in
+  '') ;;
+  lean) AGENT_CALL_CONTEXT=lean; export AGENT_CALL_CONTEXT ;;
+  full) unset AGENT_CALL_CONTEXT ;;
+  *) role_die "--context '$cli_context' is not lean or full" ;;
+esac
 # CALL_CONTEXT=lean is expressed only as claude flags (harnesses/claude.sh).
 [ "$harness" = claude ] || [ -z "${AGENT_CALL_CONTEXT:-}" ] || role_die "agent '$agent' has CALL_CONTEXT=$AGENT_CALL_CONTEXT, which needs the claude harness, not '$harness'"
 
