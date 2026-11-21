@@ -105,6 +105,13 @@ tip() { jq -r .tooltip <<< "$output"; }
   refute_output --partial "more: click"
 }
 
+@test "a long reason ends in ... so its row stays one line" {
+  feed hub/a:1=NEEDS:30:12:"$(printf 'x%.0s' $(seq 1 100))"
+  run "$MODULE"
+  run tip
+  assert_output --partial "idle 12m    $(printf 'x%.0s' $(seq 1 67))...</tt>"
+}
+
 @test "a working, done or landed row is the session and its idle time, no reason column" {
   feed lab/uc-agent-1:1=WORKING:10 lab/uc-agent-2:1=LANDED:300 lab/uc-agent-3:1=DONE:400
   run "$MODULE"

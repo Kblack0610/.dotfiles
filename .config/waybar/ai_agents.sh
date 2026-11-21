@@ -13,10 +13,11 @@
 #   green  otherwise
 # The hover is the stage counts, then one section per tmux world (hub, lab: the part of the target
 # before the slash) with its own counts and a row per session, worst first, with how long it has
-# been idle; a session that needs the human or is stalled (ATTENTION) adds why. A GTK tooltip
-# cannot scroll, so at most HOVER_MAX_ROWS rows show, the ATTENTION ones kept first (dashboards.md
-# rule 3: the critical lines are never the ones cut), and a last line counts the rest and points
-# at the click, agent-panel, which lists every session.
+# been idle; a session that needs the human or is stalled (ATTENTION) adds why, cut to REASON_MAX
+# characters. Every session, not only ATTENTION, at the human's ask (2026-11-20). A GTK tooltip
+# cannot scroll, so at most HOVER_MAX_ROWS rows show, the ATTENTION ones taken first (so one is cut
+# only past HOVER_MAX_ROWS of them), and a last line counts the rest and points at the click,
+# agent-panel, which lists every session.
 #
 # Read from Prometheus (agent_session_why, the reason fleet-sessions gives a NEEDS or STALLED
 # session, agent_session_age_minutes, one series per session that `fleet-sessions
@@ -43,6 +44,8 @@ ATTENTION=" NEEDS STALLED "
 # lines, less the head, warnings, world heads and the more line. A tooltip taller than the screen
 # is cut at its edge with nothing to say so.
 HOVER_MAX_ROWS=30
+# A reason longer than this ends in "...", so a row stays one line and the cap holds the height.
+REASON_MAX=70
 
 now="${AGENTS_NOW:-$(date +%s)}"
 title="<b>Sessions</b>"
@@ -168,6 +171,7 @@ for i in "${!rows[@]}"; do
   [ -n "${shown[$i]:-}" ] || continue
   if [[ "$ATTENTION" == *" $b "* ]]; then
     [ "$reason" = - ] && reason="no reason published"
+    ((${#reason} > REASON_MAX)) && reason="${reason:0:REASON_MAX-3}..."
   else
     reason=''
   fi
