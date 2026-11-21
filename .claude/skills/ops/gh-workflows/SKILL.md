@@ -11,7 +11,7 @@ metadata:
       use: "a PR: `agent-land <N>` waits for its checks (start it with run_in_background). Any other run: `gh-run-wait <run-id> [label]` with run_in_background; do not write your own waiter"
       mode: deny
       why: gh run watch polls the GitHub API for the whole wait and blocks the turn (337 playground sessions tried it in 30 days to 2026-11-09)
-    - match: '(?:^|[;&|(){}\s])gh\s+(?:run\s+rerun|api\s[^;&|]*/rerun(?:-failed-jobs)?)(?=[;&|(){}\s]|$)'
+    - match: '(?:^|[;&|(){}\s/])gh\s+(?:run\s+rerun(?![\w-])|api\s(?:[^;&|\n]*actions/(?:runs|jobs)/[^/\s]+/rerun(?:-failed-jobs)?(?![\w-])|\s*Q\s[^;&|\n]*(?:-X\s+|--method[\s=]+)(?i:POST)(?![\w-])|[^;&|\n]*(?:-X\s+|--method[\s=]+)(?i:POST)\s+Q\s))'
       use: "diagnose the red first (`fix-ci`; a runner slot fault across runs: `ci-failures`). Rerun only for an infra fault the log names (runner lost, registry 5xx, rate limit), once per PR tip, and name it on the command: `gh run rerun <id> --failed  # infra: <fault>`"
       mode: deny
       unless: '#\s*infra:\s*[A-Za-z]'
