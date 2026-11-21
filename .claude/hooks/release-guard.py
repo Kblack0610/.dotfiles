@@ -62,7 +62,8 @@ WF_OPT_ARG = {"-R", "--repo", "-r", "--ref", "--json"} | WF_FIELD
 
 WHY = ("No agent cuts a release: cut.yml cuts it when the sprint's window says so (ucp-2709, the "
        "human 2026-11-19). An agent fixes an environment cause and re-sends a cut that exists: "
-       "`gh run rerun <id> --failed` or `gh workflow run release.yml --ref <tag> -f tag=<tag>`; "
+       "`gh run rerun <id> --failed  # infra: <fault>` (hand-methods denies a rerun that names no "
+       "fault) or `gh workflow run release.yml --ref <tag> -f tag=<tag>`; "
        "a workflow fix on main rides the next cut. The `release` skill says how.")
 MSG = "release-guard: {what} would {does}. " + WHY
 
