@@ -241,17 +241,35 @@ pub fn queue(
         q.count(State::Review),
         q.count(State::Queued),
     );
+    // On deck is the queued items nothing holds, as waybar's Q: counts them; the rest are held.
+    // With no stats read the card says "queued" and counts them all, never a runnable number.
+    let (on_deck, held) = (q.on_deck(), q.held());
     let mut c = Card::new(
         "queue",
         "Queue",
         "agent-queue items by state (agent-queue list)",
     )
-    .bar(running + review + queued, 0, waiting)
+    .bar(
+        running + review + on_deck.map_or(queued, |n| n as usize),
+        0,
+        waiting,
+    )
     .part("Running", running, Level::Ok)
     .part("On a PR", review, Level::Ok);
-    // The queue is the waiting: every queued item can start, and gated work is a board row.
-    c.big = queued.to_string();
-    c.unit = "on deck".into();
+    // The On deck part is the figure waybar's Q: reads, so with no stats it is absent and Q: says -,
+    // never the queued count the headline falls back to.
+    if let (Some(d), Some(h)) = (on_deck, held) {
+        c = c
+            .part("On deck", d as usize, Level::Ok)
+            .part("Held", h as usize, Level::Ok);
+    }
+    c.big = on_deck.map_or(queued, |n| n as usize).to_string();
+    c.unit = if on_deck.is_some() {
+        "on deck"
+    } else {
+        "queued"
+    }
+    .into();
     c.first_head = "Bottleneck";
     let read = pipeline.map(Result::as_ref);
     let bottleneck = match read {
@@ -1122,9 +1140,23 @@ mod tests {
     #[test]
     fn queue_names_the_bottleneck_step_and_else_what_waits_on_you() {
         use crate::flow::tests::{pipe, queue as q};
+        // No stats read: every queued item is counted and the unit says queued, never on deck.
         let c = queue(&q(), Some(&Ok(Some(pipe(2.25)))));
-        // The big number is the queue itself: both queued items, the one with an old hold line too.
-        assert_eq!((c.big.as_str(), c.unit.as_str()), ("2", "on deck"));
+        assert_eq!((c.big.as_str(), c.unit.as_str()), ("2", "queued"));
+        assert!(c
+            .parts
+            .iter()
+            .all(|p| p.label != "Held" && p.label != "On deck"));
+        // The stats say how many of the two queued items nothing holds: that is on deck, the
+        // rest is Held, and a held item is no segment of the bar.
+        let mut held = q();
+        held.stats.as_mut().unwrap().sitting = Some(crate::queue::Sitting {
+            queued: 2,
+            runnable: 1,
+            ..Default::default()
+        });
+        let c = queue(&held, Some(&Ok(Some(pipe(2.25)))));
+        assert_eq!((c.big.as_str(), c.unit.as_str()), ("1", "on deck"));
         let parts: Vec<_> = c
             .parts
             .iter()
@@ -1132,22 +1164,22 @@ mod tests {
             .collect();
         assert_eq!(
             parts,
-            [("Running", "1"), ("On a PR", "1")],
-            "no Ready or Held: the queue is what waits"
+            [
+                ("Running", "1"),
+                ("On a PR", "1"),
+                ("On deck", "1"),
+                ("Held", "1")
+            ]
         );
         let bar: Vec<_> = c.bar.iter().map(|s| (s.level, s.n)).collect();
-        assert_eq!(
-            bar,
-            [(Level::Ok, 4), (Level::Red, 1)],
-            "no amber held segment"
-        );
+        assert_eq!(bar, [(Level::Ok, 3), (Level::Red, 1)]);
         assert_eq!(c.first_head, "Bottleneck");
         assert_eq!(
             (c.first[0].text.as_str(), c.first[0].sub.as_str()),
             ("needs you", "age p90 9h (bound 4h)")
         );
         // A snapshot that could not be read is said on the card, beside what waits on you.
-        let c = queue(&q(), Some(&Err("state.json: bad json".into())));
+        let c = queue(&held, Some(&Err("state.json: bad json".into())));
         assert_eq!(c.first_head, "Waiting on you");
         assert_eq!(c.error.as_deref(), Some("pipeline: state.json: bad json"));
         // No snapshot read: the item that waits on the human is where to look.
