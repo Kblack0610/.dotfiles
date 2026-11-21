@@ -75,11 +75,12 @@ EOF
 @test "md_splice: identical content is NOT written (mtime and git stay stable)" {
   # The guard regen-lab-feed.sh and regen-anchor.sh both lacked.
   seed
+  # Backdate the file so a rewrite would move its mtime even at 1-second granularity.
+  touch -d '1 minute ago' "$FILE"
   local before after
   before=$(stat -c %Y "$FILE")
   local snapshot="$BATS_TEST_TMPDIR/snapshot"
   cp "$FILE" "$snapshot"
-  sleep 1.1   # coarse enough for a 1-second mtime granularity
 
   # Called directly, NOT through `run`: `run` executes in a subshell, so an
   # out-variable set inside it never reaches the assertion.
