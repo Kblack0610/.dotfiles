@@ -270,6 +270,30 @@ trainee_ready() {
   assert_output --partial 'started queue item t-one-b on codex (sol), routed by model-lane'
 }
 
+@test "trainee: a slug with a lane trainee run in model-lane's log is refused, though its fresh item carries no trainee stamp" {
+  trainee_ready
+  agent-queue add --project game --slug t-again --priority low --tags tier1 "Fix the save header #pts/1" >/dev/null
+  agent-queue add --project game --slug t-fresh --priority low --tags tier1 "Fix the save footer #pts/1" >/dev/null
+  # Negative control: no run on record, so both rows are taken.
+  run trainee_why "$(agent-queue show t-again --json)" gotrain
+  assert_success
+  # A trainee run of t-again (a board row promoted again is a new item, so the log is its only record); a
+  # canary or claude run of t-fresh is no ladder run, and a line that is no json is skipped.
+  mkdir -p "$HOME/.agent/model-lane"
+  {
+    echo '{"lane":"trainee","item":"t-again","harness":"nim","outcome":"redo"}'
+    echo '{"lane":"agent","item":"t-fresh"}'
+    echo 'not json'
+  } > "$HOME/.agent/model-lane/runs.jsonl"
+  run trainee_why "$(agent-queue show t-again --json)" gotrain
+  assert_failure; assert_output "a ladder run took it once already (model-lane's run log)"
+  run trainee_why "$(agent-queue show t-fresh --json)" gotrain
+  assert_success
+  # A direct run takes the same refusal.
+  run direct_why "$(agent-queue show t-again --json)" gotrain glm '{"direct":["gotrain:glm"]}'
+  assert_failure; assert_output "a ladder run took it once already (model-lane's run log)"
+}
+
 @test "trainee: an item's points are its board row's now, which next_items --points joins; with neither row points nor #pts/N it is still refused" {
   trainee_ready
   agent-queue add --project game --slug t-row --priority low --tags tier1 "Fix the save title" >/dev/null
