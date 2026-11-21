@@ -30,7 +30,7 @@ allowed() { assert_success; assert_output ''; }
   run at "$T/game" 'git tag v0.0.0-guard && git push origin v0.0.0-guard'
   denied
   assert_output --partial 'cut.yml'
-  assert_output --partial 'gh workflow run release.yml -f tag=<existing tag>'
+  assert_output --partial 'gh workflow run release.yml --ref <tag> -f tag=<tag>'
 }
 
 @test "every way to make or push a release tag is denied" {
