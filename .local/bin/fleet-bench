@@ -4490,12 +4490,15 @@ hold_memo() {
 
 # hold_failed <owner/repo> <run id> -> the bats files that failed in that run, repo-relative; rc 1
 # when its log cannot be read, or is not there yet. gh cannot read a Forgejo run's log, so one names
-# no file and counts against the merges since the last green, like any red that names none.
+# no file and counts against the merges since the last green, like any red that names none. Only a
+# TAP diagnostic line (# first, then perhaps "(from function `setup'") names a failure: a bats
+# warning (BW02) prints the same "in test file" trace without the #, and named a file that passed
+# (ar-4122).
 hold_failed() {
   local log
   [[ $(hold_ledger "$1") != forgejo:* ]] || return 0
   log=$(gh run view "$2" -R "$1" --log-failed 2>/dev/null) && [ -n "$log" ] || return 1
-  { grep -oE 'in test file [^,]+\.bats' <<<"$log" || true; } | sed -E 's#.*[ /](unit|integ|ui)/#tests/\1/#' | sort -u
+  { grep -oE '#[^,]*in test file [^,]+\.bats' <<<"$log" || true; } | sed -E 's#.*[ /](unit|integ|ui)/#tests/\1/#' | sort -u
 }
 
 # hold_test <owner/repo> <sha> <file> -> the file's text at that sha
