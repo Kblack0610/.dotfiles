@@ -641,6 +641,7 @@ impl From<crate::vocab::Level> for Level {
             crate::vocab::Level::Bad => Level::Red,
             crate::vocab::Level::Warn => Level::Warn,
             crate::vocab::Level::Ok => Level::Ok,
+            crate::vocab::Level::Neutral => Level::Nodata,
         }
     }
 }

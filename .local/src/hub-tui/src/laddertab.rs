@@ -76,6 +76,7 @@ pub(crate) fn tone(l: Level, p: Palette) -> Style {
         Level::Bad => p.bad(),
         Level::Warn => p.warn(),
         Level::Ok => Style::default(),
+        Level::Neutral => p.dim(),
     }
 }
 

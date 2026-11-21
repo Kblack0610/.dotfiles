@@ -8,6 +8,8 @@
 #       other Claude session, and from human only at a terminal; a hand session records the human's own want with --want human.
 #       --want names the channel a human's want came in by (`notes ptask add --want`): its story row gets #requested from
 #       the notes writer. Without it the row carries no stamp, as a session's own add does not.
+#       --tags interrupt puts #interrupt on its story row (or an open twin), so a locked sprint takes it (notes' interrupt
+#       lane, window.rs): for a bounded machine filer whose row must start under any sprint (research-pick, one a night).
 #       --priority defaults to high only for an add by hand: one from a session ($CLAUDE_CODE_SESSION_ID or
 #       $AGENT_QUEUE_ITEM set) names it, except --running, --want, --dry-run and --check.
 #       --after holds the item until every slug it names closed ok: a comma or space list, and it repeats.
@@ -557,6 +559,8 @@ prios_read() { notes projects --prios 2>/dev/null || true; }
 # requested_tag <tags> -> whether the item came from a row the human asked for (#requested; dispatch
 # copies it onto the item as `requested`).
 requested_tag() { [[ " $1 " == *" requested "* || " $1 " == *" #requested "* ]]; }
+# interrupt_tag <tags> -> whether the item's story row goes through a locked sprint's interrupt lane.
+interrupt_tag() { [[ " $1 " == *" interrupt "* || " $1 " == *" #interrupt "* ]]; }
 # human_work <from> <tags> -> whether the human asked for this work: added --from human, or a #requested row.
 human_work() { [ "$1" = human ] || requested_tag "$2"; }
 
@@ -1495,7 +1499,7 @@ row_brief() {
   if [ "$(bare_words <<<"$first")" = "$(bare_words <<<"$1")" ]; then printf '%s' "$rest"; else printf '%s' "$body"; fi
 }
 
-# overflow_row <project> <title> <priority> <epic> <want> <task> <gates> <name> -- an add the queue does
+# overflow_row <project> <title> <priority> <epic> <want> <task> <gates> <name> [<tags>] -- an add the queue does
 # not take leaves its board row un-started, ranked as filed (`#requested` first) with the whole task under
 # it as its brief, carrying <gates> (board gate tags, no #) when it waits on any, and says so on stderr, and
 # prints `held <name> -> <board>:<id>` on stdout, the line every caller reads the row from (never stderr). A project
@@ -1503,7 +1507,7 @@ row_brief() {
 # the task, and nothing was written.
 overflow_row() {
   local kept board prof id gates="${7:-}"
-  kept="$(file_story "$1" "$2" "$3" "$4" "$5" "$6" keep "$gates")"
+  kept="$(file_story "$1" "$2" "$3" "$4" "$5" "$6" keep "$gates" "${9:-}")"
   if [ "$kept" = inbox ]; then
     echo "agent-queue: a session's follow-up is no board row: it is in the outbox, and inbox-triage files it or joins its twin" >&2
     echo "inboxed $8 -> inbox"
@@ -1521,7 +1525,7 @@ overflow_row() {
   fi
 }
 
-# file_story <project> <title> <priority> <epic> <want> <body> [<keep>] -> "<board><TAB><profile><TAB><id>" of the story row
+# file_story <project> <title> <priority> <epic> <want> <body> [<keep>] [<gates>] [<tags>] -> "<board><TAB><profile><TAB><id>" of the story row
 # the item closes on merge, or nothing. An item not promoted from the board is still a story on its
 # project's agent board, so a task shows under its feature the moment it is added: one `[/]` row
 # through `notes ptask` (the rows' one writer), `#of/<epic>` when the item names an epic of this
@@ -1534,7 +1538,8 @@ overflow_row() {
 # <body> is its brief (row_brief), and the item keeps a snapshot of it beside the run.
 # <want> is the channel of a human's want, or empty: the notes writer then stamps #requested.
 # <keep> non-empty files the row un-started (an add over the cap, see overflow_row). <gates>, board gate
-# tags with no #, go on the row it files, and onto an open twin it links (gate_row).
+# tags with no #, go on the row it files, and onto an open twin it links (gate_row). <tags>, the item's,
+# add `interrupt` to those when they hold it (interrupt_tag), so a twin left in tier:backlog joins too.
 # Who files it, for `notes ptask add --origin`: a plan's phases (AQ_ITEM_PLAN, or AQ_FILE_ORIGIN=plan
 # for the plan's own row) file directly, and so does the row of an item being worked (<keep> empty:
 # its own record, not a follow-up). A kept row from a queue item or runner is its follow-up: notes sends
@@ -1544,6 +1549,7 @@ overflow_row() {
 # out of backlog intake; a want or a plan phase is intake, so its row keeps its own origin.
 file_story() {
   local project text="$2" prio="$3" of="" lab code row out rc=0 id brief detail=() want=() origin=() keep="${7:-}" gates="${8:-}" g gt=""
+  ! interrupt_tag "${9:-}" || gates+="${gates:+ }interrupt"
   for g in $gates; do gt+=" #$g"; done
   [ -z "${5:-}" ] || want=(--want "$5")
   if [ -n "${5:-}" ]; then :
@@ -1805,8 +1811,8 @@ cmd_add() {
       :board:*) [ -z "$GATES" ] || die "$slug waits on #${GATES// / #}, so row ${from#board:} stays on the board until that clears"
         echo "agent-queue: its row ${from#board:} is left where it is: dispatch promotes it" >&2 ;;
       :canary | :trainee) [ -z "$GATES" ] || die "a $from item waits on no gate: add it once #${GATES// / #} clears"
-        overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "" "$slug" || exit 1 ;;
-      :*) overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "$GATES" "$slug" || exit 1 ;;
+        overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "" "$slug" "$tags" || exit 1 ;;
+      :*) overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "$GATES" "$slug" "$tags" || exit 1 ;;
       *) if [ -n "$GATES" ]; then
            local rboard rlab
            IFS=$'\t' read -r rboard rlab _ < <(project_board "$project")
@@ -1823,7 +1829,7 @@ cmd_add() {
   if [ -n "$capped" ] && ! admit "$from" "$priority" "$tags" "$project" "$slug" "$hold_title"; then
     unlock # the board write is notes' and can be slow: the lock covers only the count
     if [ -n "$row" ]; then echo "agent-queue: row $row is left un-started where it is: dispatch promotes it as the queue drains" >&2
-    else overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "" "$slug"; fi
+    else overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "" "$slug" "$tags"; fi
     exit "$AQ_EX_HELD"
   fi
   check_after "$after" "$slug"
@@ -1863,7 +1869,7 @@ cmd_add() {
            project="$named_project"
            echo "agent-queue: $slug works row $named, which its title names; it closes that row when it lands" >&2
          fi
-         [ -n "$story" ] || story="$(file_story "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$epic" "$want" "$text")"
+         [ -n "$story" ] || story="$(file_story "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$epic" "$want" "$text" "" "" "$tags")"
        fi ;;
   esac
   [ -z "$story" ] || IFS=$'\t' read -r sboard sprof srow <<<"$story"

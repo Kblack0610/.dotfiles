@@ -460,7 +460,11 @@ train_land() {
   at() { GIT_COMMITTER_DATE="@$1 +0000" git -C "$REPO" tag -a -m "$2" "$2"; }
   commit a; at 86400 v1.0.0
   run git_tag_at "$REPO" v1.0.0
-  assert_output "$(git -C "$REPO" rev-parse HEAD) 86400"
+  assert_output "$(git -C "$REPO" rev-parse HEAD) 86400 $(git -C "$REPO" config user.name)"
+  # A lightweight tag has no tagger: the line ends at the date
+  git -C "$REPO" tag v1.0.1
+  run git_tag_at "$REPO" v1.0.1
+  assert_output "$(git -C "$REPO" rev-parse HEAD) $(git -C "$REPO" log -1 --format=%ct)"
   run git_tag_date "$REPO" v1.0.0
   assert_output '1970-01-02'
   # NEGATIVE CONTROL: a missing tag is empty, never a date
