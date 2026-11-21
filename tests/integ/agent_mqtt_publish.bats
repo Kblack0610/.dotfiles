@@ -57,7 +57,11 @@ overview_stub() {
   chmod +x "$SANDBOX/bin/hub"
 }
 
-cards_stub() { printf '%s' "$1" > "$NOTES_FIXTURE/cards.out"; }
+cards_stub() {
+  printf '%s' "$1" > "$NOTES_FIXTURE/cards.out"
+  # The cards are read on the lease host only, as summary/dispatch is: fleet-dispatch here, lease held.
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/fleet-dispatch"; chmod +x "$SANDBOX/bin/fleet-dispatch"
+}
 
 payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:-$PUBLOG}" | tail -1; }
 
@@ -485,22 +489,32 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
 }
 
 @test "cards: hub's widget document rides as an attribute and its state is the worst card's level" {
-  cards_stub '{"version":0,"title":"Fleet","updated_at":"2026-11-21T20:00:00Z","state":"bad","figures":{"queue_headline":13,"projects_shipped_today":12},"sections":[{"id":"queue","items":[{"kind":"metric","value":"13","unit":"on deck, 1..."},{"kind":"pill","label":"Held","value":"4"}]}]}'
+  cards_stub '{"version":0,"title":"Fleet","updated_at":"2026-11-21T20:00:00Z","state":"bad","figures":{"queue_on_deck":13,"projects_shipped_today":12},"sections":[{"id":"queue","items":[{"kind":"metric","value":"13","unit":"on deck, 1..."},{"kind":"pill","label":"Held","value":"4"}]}]}'
   run "$PUB" --quiet
   assert_success
   p="$(payload agents/testhost/summary/cards)"
   assert_equal "$(jq -r .state <<< "$p")" bad
   assert_equal "$(jq -r .updated_at <<< "$p")" 2026-11-21T20:00:00Z
   assert_equal "$(jq -r '.sections[0].items[1].label' <<< "$p")" Held
-  assert_equal "$(jq -r .figures.queue_headline <<< "$p")" 13
+  assert_equal "$(jq -r .figures.queue_on_deck <<< "$p")" 13
   c="$(payload homeassistant/sensor/agent_testhost_summary_cards/config)"
   assert_equal "$(jq -r .name <<< "$c")" "Fleet cards"
   assert_equal "$(jq -r .json_attributes_topic <<< "$c")" agents/testhost/summary/cards
 }
 
+# Negative control: a host that does not hold the dispatch lease never reads the cards, so a peer's
+# stale clone cannot publish a second set of figures.
+@test "cards: a host without the lease publishes no cards topic" {
+  cards_stub '{"version":0,"state":"ok","figures":{"queue_on_deck":13},"sections":[]}'
+  FLEET_LEASE_RC=1 run "$PUB" --quiet
+  assert_success
+  [ -z "$(payload agents/testhost/summary/cards)" ]
+}
+
 # Negative control: a failed hub, or output that is not a document, publishes no cards topic; the
 # phone overview's rows are not a document either.
 @test "cards: a failed run or output with no sections publishes no topic" {
+  cards_stub x; rm "$NOTES_FIXTURE/cards.out"   # lease host, hub fails
   run "$PUB" --quiet
   assert_success
   [ -z "$(payload agents/testhost/summary/cards)" ]

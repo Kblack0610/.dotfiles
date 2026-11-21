@@ -182,7 +182,8 @@ snapshot() {
     # timer run past its 60s (ar-2310).
     dispatch_here && slow_reader dfd summary/dispatch fleet-dispatch stats
     command -v hub >/dev/null 2>&1 && slow_reader ofd summary/overview env PROM_TIMEOUT=3 hub phone --json
-    command -v hub >/dev/null 2>&1 && slow_reader cfd summary/cards env PROM_TIMEOUT=3 hub cards --json --figures
+    # The cards read every part of Home and the chip takes only the lease host's, so only it reads them (bounded: a hung read must not starve the run, ar-2310).
+    dispatch_here && command -v hub >/dev/null 2>&1 && slow_reader cfd summary/cards timeout 25 env PROM_TIMEOUT=3 hub cards --json --figures
 
     # Runners: the roster is the conf dir, so a retired runner drops out of HA with its conf.
     for f in "$CONFIG_DIR"/*.conf; do

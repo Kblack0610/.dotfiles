@@ -467,8 +467,9 @@ fn briefing(args: Vec<String>) -> i32 {
 /// `--figures` adds a `figures` object, the cards' whole numbers (`widget_doc::figures`), for the
 /// readers that keep numbers and drop text (mqtt2prom, so the waybar chips).
 fn cards(args: Vec<String>) -> i32 {
-    let figures = args == ["--json", "--figures"];
-    if args != ["--json"] && !figures {
+    let figures = args.iter().any(|a| a == "--figures");
+    if !args.iter().any(|a| a == "--json") || args.iter().any(|a| a != "--json" && a != "--figures")
+    {
         die(USAGE);
     }
     let (tx, _rx) = mpsc::channel();

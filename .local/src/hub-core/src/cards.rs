@@ -255,8 +255,12 @@ pub fn queue(
     )
     .part("Running", running, Level::Ok)
     .part("On a PR", review, Level::Ok);
-    if let Some(h) = held {
-        c = c.part("Held", h as usize, Level::Ok);
+    // The On deck part is the figure waybar's Q: reads, so with no stats it is absent and Q: says -,
+    // never the queued count the headline falls back to.
+    if let (Some(d), Some(h)) = (on_deck, held) {
+        c = c
+            .part("On deck", d as usize, Level::Ok)
+            .part("Held", h as usize, Level::Ok);
     }
     c.big = on_deck.map_or(queued, |n| n as usize).to_string();
     c.unit = format!(
@@ -1159,14 +1163,16 @@ mod tests {
             (c.big.as_str(), c.unit.as_str()),
             ("2", "queued, 1 running")
         );
-        assert!(c.parts.iter().all(|p| p.label != "Held"));
+        assert!(c
+            .parts
+            .iter()
+            .all(|p| p.label != "Held" && p.label != "On deck"));
         // The stats say how many of the two queued items nothing holds: that is on deck, the
         // rest is Held, and a held item is no segment of the bar.
         let mut held = q();
         held.stats.as_mut().unwrap().sitting = Some(crate::queue::Sitting {
             queued: 2,
             runnable: 1,
-            held: 1,
             ..Default::default()
         });
         let c = queue(&held, Some(&Ok(Some(pipe(2.25)))));
@@ -1179,7 +1185,15 @@ mod tests {
             .iter()
             .map(|p| (p.label.as_str(), p.value.as_str()))
             .collect();
-        assert_eq!(parts, [("Running", "1"), ("On a PR", "1"), ("Held", "1")]);
+        assert_eq!(
+            parts,
+            [
+                ("Running", "1"),
+                ("On a PR", "1"),
+                ("On deck", "1"),
+                ("Held", "1")
+            ]
+        );
         let bar: Vec<_> = c.bar.iter().map(|s| (s.level, s.n)).collect();
         assert_eq!(bar, [(Level::Ok, 3), (Level::Red, 1)]);
         assert_eq!(c.first_head, "Bottleneck");

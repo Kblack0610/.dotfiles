@@ -735,7 +735,6 @@ mod tests {
                 // Two queued, one of them held: the line counts what is on deck.
                 queued: 2,
                 runnable: 1,
-                held: 1,
                 oldest_runnable: vec![crate::queue::Waiter {
                     minutes: 37 * 60,
                     ..Default::default()

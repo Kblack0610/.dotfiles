@@ -206,9 +206,9 @@ fi
 
 # The bar: two totals behind their labels, and only Q takes the chip's level colour; a number the
 # feed lacks reads -. Both are hub-core's own figures (`hub cards --json --figures`, sent as
-# summary/cards): Q the queue card's headline (on deck), D the projects card's shipped today.
+# summary/cards): Q the queue card's On deck part, D the projects card's shipped today.
 cf() { local x; x="$(get "cards.figures_$1")"; printf '%s' "${x:--}"; }
-qn="$(cf queue_headline)"
+qn="$(cf queue_on_deck)"
 ((level > 0)) && qn="$(paint "${LEVEL_COLOUR[$level]}" "$qn")"
 lc="$(label_colour)"
 text="$(paint "$lc" Q:)$qn  $(paint "$lc" D:)$(cf projects_shipped_today)"

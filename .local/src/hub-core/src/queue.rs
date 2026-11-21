@@ -674,8 +674,6 @@ pub struct Sitting {
     pub queued: u64,
     /// Queued items nothing holds (agent-queue's `hold` rule): on deck.
     pub runnable: u64,
-    /// Queued items a gate holds (`after:`, a tag window, an ask, a PR): `queued - runnable`.
-    pub held: u64,
     pub runnable_age_minutes_median: Option<i64>,
     /// The three runnable items that have sat longest, oldest first.
     pub oldest_runnable: Vec<Waiter>,
@@ -1128,9 +1126,10 @@ impl Queue {
         Some(self.stats.as_ref()?.sitting.as_ref()?.runnable)
     }
 
-    /// The queued items a gate holds (`stats.sitting.held`), the part of the queue that is not on deck.
+    /// The queued items a gate holds (`queued - runnable`), the part of the queue that is not on deck.
     pub fn held(&self) -> Option<u64> {
-        Some(self.stats.as_ref()?.sitting.as_ref()?.held)
+        let s = self.stats.as_ref()?.sitting.as_ref()?;
+        Some(s.queued.saturating_sub(s.runnable))
     }
 
     /// `1 running, 2 on deck`: the phone widget's queue line, on deck as the Queue card counts it.
