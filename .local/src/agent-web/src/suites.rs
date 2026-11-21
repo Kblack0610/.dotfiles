@@ -23,6 +23,7 @@ use hub_core::layout;
 use hub_core::quarantine::{self, Entry, Lane};
 use hub_core::queue::Item;
 use hub_core::releases::Level;
+use hub_core::session_actions::System;
 use hub_core::table::{self, Summary, View};
 use serde::{Deserialize, Serialize};
 
@@ -245,7 +246,7 @@ async fn loaded(run: &PickRun, runs: &[PickRun]) -> Result<Arc<Loaded>, String> 
         .is_some_and(|n| (n.id, n.attempt) == (run.id, run.attempt));
     (if newest { &NEWEST } else { &LOADED })
         .get((run.id, run.attempt), async move {
-            off(move || junit::load(&jobs::Paths::from_env().cache, &r))
+            off(move || junit::load(&jobs::Paths::from_env().cache, &r, &System))
                 .await
                 .and_then(|l| l)
         })
@@ -360,6 +361,7 @@ mod tests {
             prs: vec![],
             url: String::new(),
             artifacts: vec![],
+            store: None,
         }
     }
 
