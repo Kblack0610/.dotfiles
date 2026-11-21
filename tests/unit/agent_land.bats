@@ -2399,11 +2399,35 @@ EOF2
 }
 
 @test "a partial landing on an item owned via tmux session does not claim the item (ar-3368)" {
+  printf 'dotfiles-agent-9\n' >"$NOTES_FIXTURE/tmux.session"
+  export TMUX="$SANDBOX/tmp/tmux-1000/default,123,0"
   item foreign
   agent-queue set foreign session=lab:foreign-sess >/dev/null
+  agent-queue claim foreign --sid sid-old >/dev/null
   CLAUDE_CODE_SESSION_ID=sid-lander run "$LAND" 42 --item foreign --partial
   assert_success
   assert_line --partial 'item: foreign partial with pr:o/r#42'
   run agent-queue show foreign --json
-  assert_equal "$(jq -r '[.state, .partial, .pr, (.sessions // "")] | join("|")' <<<"$output")" 'running|yes|o/r#42|'
+  assert_equal "$(jq -r '[.state, .partial, .pr, .sessions] | join("|")' <<<"$output")" 'running|yes|o/r#42|sid-old'
+}
+
+@test "a partial landing from the item's own tmux session under a new id claims it, as does one with no tmux to compare (ar-3368)" {
+  printf 'dotfiles-agent-9\n' >"$NOTES_FIXTURE/tmux.session"
+  export TMUX="$SANDBOX/tmp/tmux-1000/default,123,0"
+  item resumed
+  agent-queue set resumed session=default:dotfiles-agent-9 >/dev/null
+  agent-queue claim resumed --sid sid-old >/dev/null
+  CLAUDE_CODE_SESSION_ID=sid-new run "$LAND" 42 --item resumed --partial
+  assert_success
+  run agent-queue show resumed --json
+  assert_equal "$(jq -r .sessions <<<"$output")" 'sid-old sid-new'
+
+  unset TMUX
+  item headless
+  agent-queue set headless session=lab:somewhere >/dev/null
+  echo https://github.com/o/r/pull/43 >"$NOTES_FIXTURE/url"
+  CLAUDE_CODE_SESSION_ID=sid-new run "$LAND" 43 --item headless --partial
+  assert_success
+  run agent-queue show headless --json
+  assert_equal "$(jq -r .sessions <<<"$output")" 'sid-new'
 }

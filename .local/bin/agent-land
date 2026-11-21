@@ -680,31 +680,23 @@ own_merged() {
   fail match "#$pr ($pr_ref, from $head_ref) is merged, and nothing ties it to $item: its body has no \"Item: $item\" line, its head ${head_oid:0:8} is not in this checkout's HEAD, and the item records ${it_pr:-no PR}. A PR in another repo: run from a checkout of it, with --repo <owner>/<repo>"
 }
 
-# other_session: exit 0 when another session owns this queue item (it records another Claude
-# session in sessions:, or another tmux session in session:), so a --partial landing does not
+# other_session: exit 0 when another session owns this queue item (its session: names another
+# tmux session, or it has none and sessions: lists only other Claude sessions), so a --partial landing does not
 # claim it and tie this session to it while it is still running (tilecast 2026-11-18, ar-3368).
 other_session() {
-  local sid="${CLAUDE_CODE_SESSION_ID:-}" cur id tsess me="" n
+  local sid="${CLAUDE_CODE_SESSION_ID:-}" cur tsess n
   [ -n "$sid" ] || return 1
   [ -z "${AGENT_QUEUE_ITEM:-}" ] || [ "$item" != "$AGENT_QUEUE_ITEM" ] || return 1
   [ -z "$implied" ] || return 1
   cur=$(jq -r '.sessions // ""' <<<"$it")
-  if [ -n "$cur" ]; then
-    for id in $cur; do
-      [ "$id" = "$sid" ] && return 1
-    done
-    return 0
-  fi
-  # session: is <server>:<session>, the form agent-queue's own_session records.
+  [[ " $cur " != *" $sid "* ]] || return 1
+  # session: is <server>:<session>, the form agent-queue's own_session records. Its own tmux
+  # session is this one (a resumed session has a new id), and one this landing cannot name
+  # (no tmux) is not known to be another's, so it claims as before.
   tsess=$(jq -r '.session // ""' <<<"$it")
-  if [ -n "$tsess" ]; then
-    if [ -n "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then
-      n=$(tmux display-message -p '#{session_name}' 2>/dev/null) || n=""
-      [ -z "$n" ] || me="$(basename "${TMUX%%,*}"):$n"
-    fi
-    [ "$tsess" != "$me" ] && return 0
-  fi
-  return 1
+  [ -n "$tsess" ] || { [ -n "$cur" ]; return; }
+  [ -n "${TMUX:-}" ] && n=$(tmux display-message -p '#{session_name}' 2>/dev/null) && [ -n "$n" ] || return 1
+  [ "$tsess" != "$(basename "${TMUX%%,*}"):$n" ]
 }
 
 # stamp_item: the PR body names its work item on one "Item: <slug>" line. A body that already has it
