@@ -245,7 +245,7 @@ const relFlowRefresh = coalesce(async () => {
   try { data = await api("/api/releases/lanes?" + asked); } catch (e) { err = e.message; }
   if (asked !== relFlowAsked()) return;
   const missing = data ? REL_FLOW_LISTS.filter((k) => !Array.isArray(data[k])) : [];
-  if (missing.length) { data = null; err = `Flow lanes ${NOT_READ}: the answer has no ${missing.join(", ")}. Retry, or check the agent-web log.`; }
+  if (missing.length) { data = null; err = `${NOT_READ}: the Flow lanes, the answer has no ${missing.join(", ")}. Retry, or check the agent-web log.`; }
   if (data) { relFlow.data = data; relFlow.project = data.project; relFlow.window = data.window; [relFlow.from, relFlow.to] = relFlowDays(data.window); }
   relFlow.err = err;
   relst.render();
