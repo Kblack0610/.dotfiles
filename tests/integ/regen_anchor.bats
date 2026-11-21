@@ -156,9 +156,10 @@ seed_anchor() {
   # The cmp guard. Without it every Stop dirties ~/.agent.
   seed_anchor
   bash "$REGEN" proj >/dev/null
+  # Backdate it so a rewrite would move the mtime even at 1-second granularity.
+  touch -d '1 minute ago' "$ANCHOR"
   local mtime_before
   mtime_before=$(stat -c %Y "$ANCHOR")
-  sleep 1.1
 
   run bash "$REGEN" proj
   assert_success

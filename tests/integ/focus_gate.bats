@@ -50,6 +50,16 @@ focus() {
   { echo '# today'; echo; echo '## Focus'; printf '%s\n' "$@"; } > "$NOTE"
 }
 
+# age_last_run -- backdate the gate's last_run mark 10 s. The gate compares a log line's epoch
+# (1 s resolution) against that mark with a strict greater-than, so a line written right after
+# `gate s1` ties with it; moving the mark back puts the line after it without waiting a second.
+age_last_run() {
+  local f
+  for f in "$HOME"/.local/state/claude-focus-gate/*.state; do
+    sed -i "s/^last_run=.*/last_run=$(( $(date +%s) - 10 ))/" "$f"
+  done
+}
+
 dirty()  { echo more >> "$REPO/a.txt"; }
 commit() { git -C "$REPO" add -A; git -C "$REPO" commit -qm next; }
 
@@ -113,7 +123,7 @@ refute_blocks()  { [[ "$1" != *'"block"'* ]] || { echo "unexpected block: $1" >&
   dirty
   gate s1 >/dev/null                       # first run stamps last_run
   focus '- [ ] open thing (2d)' '- [ ] freshly added (0d)'
-  sleep 1
+  age_last_run
   printf '[%s] [INFO] focus: added "freshly added"\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
   assert_blocks "$(gate s2)"
 }
@@ -125,7 +135,7 @@ refute_blocks()  { [[ "$1" != *'"block"'* ]] || { echo "unexpected block: $1" >&
   # tracked on the project's `## Tasks` must count, or the note keeps getting crowded out.
   dirty
   gate s1 >/dev/null                       # stamp last_run
-  sleep 1
+  age_last_run
   printf '[%s] [INFO] ptask: added to /p/README.md (notes-cockpit)\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
   refute_blocks "$(gate s2)"
 }
@@ -136,7 +146,7 @@ refute_blocks()  { [[ "$1" != *'"block"'* ]] || { echo "unexpected block: $1" >&
   # nothing would ever be tracked again -- a gate that always passes is not a gate.
   dirty
   gate s1 >/dev/null
-  sleep 1
+  age_last_run
   printf '[%s] [INFO] today: exists /p/2026-08-05.md\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
   assert_blocks "$(gate s2)"
 }
@@ -179,7 +189,6 @@ refute_blocks()  { [[ "$1" != *'"block"'* ]] || { echo "unexpected block: $1" >&
 @test "a ptask write from before the last run does not count" {
   dirty
   gate s0 >/dev/null                       # establish a last_run mark
-  sleep 1
   printf '[%s] [INFO] ptask: added "ancient"\n' "$(date -d '2 hours ago' +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
   assert_blocks "$(gate s1)"
 }
@@ -205,7 +214,6 @@ refute_blocks()  { [[ "$1" != *'"block"'* ]] || { echo "unexpected block: $1" >&
   # Only `ptask:` lines count. `today:` refreshes Watches/Comms on its own schedule and
   # would otherwise satisfy the gate without anyone tracking anything.
   dirty
-  sleep 1
   printf '[%s] [INFO] today: refreshed ## Comms (1 item(s))\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
   assert_blocks "$(gate s1)"
 }
@@ -313,7 +321,6 @@ gate_t() {
   tcall s1 Edit
   tcall s1 Bash 'notes ptask notes-cockpit --agent done "lab harpoon" --proof pr:369'
   printf '[%s] [INFO] ptask: done in /p/README.md (notes-cockpit)\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" >> "$NOTES_LOG"
-  sleep 1
   gate_t s2 >/dev/null                     # the other session's Stop
   refute_blocks "$(gate_t s1)"
 }
