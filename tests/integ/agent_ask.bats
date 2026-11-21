@@ -924,17 +924,24 @@ outcomes_cli() {
 
 # ── list: the TSV the cockpit's factory view consumes ────────────────────────
 
-@test "list emits 32 tab-separated fields per ask, delivery and its answers after parked_until, previews last" {
+@test "list emits 33 tab-separated fields per ask, delivery and its answers after parked_until, previews, then audit_of last" {
   post demo 'ship it?' >/dev/null
   run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print NF; exit}"'
-  assert_output '32'
+  assert_output '33'
   local f; f="$(ls "$HOME"/.agent/asks/demo/*.md | head -1)"
   printf 'assume_at: 2026-11-06T14:30:00-0800\n' >> "$f"
   run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print \$25; exit}"'
   assert_output '2026-11-06T14:30:00-0800'
 }
 
-@test "--preview stores each image's full path, |-joined, as the last list field, and refuses a missing file" {
+@test "list carries an audit's audit_of as its last field and leaves it empty on any other ask" {
+  "$AGENT_ASK" post --project demo --kind approval --audit-of q1 --options 'yes=keep|no=override' 'The judge answered "a?" with "yes"; your pick?' >/dev/null
+  post demo 'plain?' >/dev/null
+  run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print \$33}" | sort | paste -sd,'
+  assert_output ',q1'
+}
+
+@test "--preview stores each image's full path, |-joined, as list field 32, and refuses a missing file" {
   mkdir -p "$SANDBOX/img"; : >"$SANDBOX/img/a.png"; : >"$SANDBOX/img/b.png"
   "$AGENT_ASK" post --project demo --preview "$SANDBOX/img/a.png" --preview "$SANDBOX/img/b.png" 'ship it?' >/dev/null
   run bash -c '"$AGENT_ASK" list demo | cut -f32'

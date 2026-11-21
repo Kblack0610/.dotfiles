@@ -3928,6 +3928,20 @@ explain_state() {
   assert_output ''
 }
 
+@test "--write: an audit ask carries audit_of into the state document, any other ask carries none" {
+  landed_fixture
+  PANEL_STATUS=shell panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" post --project demo --session s1 'plain?' >/dev/null
+  env -u CLAUDE_CODE_SESSION_ID "$AGENT_ASK" post --project demo --kind approval --audit-of q1 \
+    --options 'yes=keep|no=override' 'The judge answered "a?" with "yes"; your pick?' >/dev/null
+  local doc="$XDG_STATE_HOME/fleet/state.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  [ "$(jq -r '.asks | length' "$doc")" = 2 ]
+  [ "$(jq -r '[.asks[] | select(.audit_of == "q1")] | length' "$doc")" = 1 ]
+  [ "$(jq -r '[.asks[] | select(has("audit_of") | not)] | length' "$doc")" = 1 ]
+}
+
 @test "--write: the state document holds the --json rows, their activity, and pending asks" {
   landed_fixture
   PANEL_STATUS=shell panel "$SANDBOX/wt" "$SANDBOX/plan.md"
