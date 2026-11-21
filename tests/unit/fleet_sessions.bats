@@ -1815,6 +1815,17 @@ SH
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   [ -z "$(jq -c 'select(.bucket == "NIGHTLY")' <<<"$output")" ]
+
+  # a red smoke that probes a deployment, not the branch, is still the repo's NIGHTLY row but blames no merge (ar-3072)
+  ledger main "[$(r 'Binks Production Smoke' success "$green" 1),$(r 'Binks Production Smoke' failure "$red" 2)]"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r 'select(.bucket != "NIGHTLY") | .bucket' <<<"$output")" = LANDED ]
+  [ "$(jq -r 'select(.bucket == "NIGHTLY") | .fact' <<<"$output")" = "NIGHTLY origin red: Binks Production Smoke @${red:0:8} (probes a deployment)" ]
+  [ "$(jq -r 'select(.bucket == "NIGHTLY") | .owners | length' <<<"$output")" = 0 ]
+  # negative control: with the probe list off, the same red blames #875 again
+  FLEET_DEPLOY_PROBES= run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r 'select(.bucket != "NIGHTLY") | .reason' <<<"$output")" = "nightly red after PR #875: Binks Production Smoke @${red:0:8} (#875)" ]
 }
 
 @test "end to end: a deployed checkout off main is one CHECKOUT row naming its actor, not a STALLED row per session" {

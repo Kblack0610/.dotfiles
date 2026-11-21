@@ -134,6 +134,11 @@ set -uo pipefail
 # nothing about main's health (main_state): unity-core-playground titles its scope in run-name, and
 # a hand `Multi (named)` passing a few classes does not clear the nightly `Multi (all)` red before it.
 : "${FLEET_PARTIAL_RUNS:=\((named|affected)\)$}"
+# Workflow titles (ERE) of default-branch runs that probe a deployment, not the branch's code: the platform's
+# hourly `Binks Production Smoke` runs on develop but tests live binks.chat from binks-v* tags, so a red one
+# names no PR in its range as suspect (main_health; ar-3072: platform #1602 was nudged for a red that
+# predated it). The red still reads as the repo's NIGHTLY row. Empty: off.
+: "${FLEET_DEPLOY_PROBES=Production Smoke}"
 # The gates' per-test failures, one line each: epoch, worktree, branch (- when detached), test. The
 # local gate writes the first; pool-test-failures sync writes the runner pool's from its artifacts.
 TEST_FAILURES="${UNITY_TEST_FAILURES:-${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/test-failures.tsv}"
@@ -1387,7 +1392,7 @@ prs_cell() {
 # main_health <dir> -> "RED \t <detail> \t <red sha> \t <suspect PRs, space-separated>", "OK"
 # or "UNKNOWN", cached per repo per pass. A red workflow's range is last-green..red on this
 # clone, and its (#N) squash subjects are suspects only when there are FLEET_SUSPECTS_MAX or
-# fewer. No green in the window, or a range the clone lacks, names nobody.
+# fewer. No green in the window, a range the clone lacks, or a FLEET_DEPLOY_PROBES workflow names nobody.
 main_health() {
   local dir="$1" url key base b runs st wf red green wfs="" sha="" prs="" range
   url="$(git -C "$dir" remote get-url origin 2>/dev/null)" || { echo OK; return; }
@@ -1404,7 +1409,8 @@ main_health() {
     while IFS=$'\t' read -r wf red green; do
       [ -n "$wf" ] || continue
       [ -n "$sha" ] || sha="$red"
-      if [ "$green" = - ]; then range="no green in window"
+      if [ -n "$FLEET_DEPLOY_PROBES" ] && [[ $wf =~ $FLEET_DEPLOY_PROBES ]]; then range="probes a deployment"
+      elif [ "$green" = - ]; then range="no green in window"
       elif ! git -C "$dir" cat-file -e "$red^{commit}" 2>/dev/null \
            || ! git -C "$dir" cat-file -e "$green^{commit}" 2>/dev/null; then range="range not in clone"
       else
