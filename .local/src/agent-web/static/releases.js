@@ -237,11 +237,15 @@ const relFlowColor = (k) => REL_FLOW_COLOR[k] || OTHER;
 const relFlowAsked = () => new URLSearchParams({ project: relFlow.project, window: relFlow.window }).toString();
 const relFlowOn = () => st.tab === "releases" && !relDetail() && innerOf("releases", st.arg)[0] === "flow";
 // A read for a project or window picked since it started is dropped; a failed one keeps the last up.
+// An answer missing a list relFlowBlock draws is a failed read, never drawn: drawing it throws.
+const REL_FLOW_LISTS = ["projects", "windows", "keys", "ci", "release", "errors"];
 const relFlowRefresh = coalesce(async () => {
   const asked = relFlowAsked();
   let data = null, err = null;
   try { data = await api("/api/releases/lanes?" + asked); } catch (e) { err = e.message; }
   if (asked !== relFlowAsked()) return;
+  const missing = data ? REL_FLOW_LISTS.filter((k) => !Array.isArray(data[k])) : [];
+  if (missing.length) { data = null; err = `Could not read the Flow lanes: the answer has no ${missing.join(", ")}. Retry, or check the agent-web log.`; }
   if (data) { relFlow.data = data; relFlow.project = data.project; relFlow.window = data.window; [relFlow.from, relFlow.to] = relFlowDays(data.window); }
   relFlow.err = err;
   relst.render();

@@ -259,13 +259,15 @@ async function renderTab(browser, spec, page0) {
   await page.screenshot({ path: join(out, `${spec.name || spec.tab}.png`) }).catch((e) => seen.errors.push(`screenshot: ${e.message}`));
   await context.close();
   seen.errors.push(...seen.drift);
-  return { ...result, errors: seen.errors, unfixtured: [...seen.unfixtured] };
+  if (seen.unfixtured.size) seen.errors.push(`no fixture, answered {}: ${[...seen.unfixtured].join(", ")}`);
+  return { ...result, errors: seen.errors };
 }
 
 // One page's height at a desktop size: the document's, or its tab element's when that scrolls
 // inside its own box. Under --control every fold is opened and every inner tab shown first.
-// A drifted fixture fails it, and so does a project read the big project page makes with no
-// fixture: a page answered {} draws short and would pass the budget for the wrong reason.
+// A drifted fixture fails it, and so does any read the page makes with no fixture (renderTab
+// likewise): a page answered {} draws short and passes the budget for the wrong reason, or throws
+// in a coalesced refresh that only warns, and then draws or not by which read lands first.
 async function heightOf(browser, spec, page0) {
   const { context, page, seen } = await openPage(browser, page0, DESK, false);
   const result = { page: spec.name, big: !!spec.big, height: null, errors: seen.errors };
@@ -285,9 +287,7 @@ async function heightOf(browser, spec, page0) {
   await page.screenshot({ path: join(out, `tall-${spec.name.replace("/", "-")}.png`) }).catch((e) => seen.errors.push(`screenshot: ${e.message}`));
   await context.close();
   seen.errors.push(...seen.drift);
-  const own = [...seen.unfixtured].filter((p) => p.startsWith("/api/projects"));
-  if (spec.big && own.length) seen.errors.push(`no fixture, answered {}: ${own.join(", ")}`);
-  result.unfixtured = [...seen.unfixtured];
+  if (seen.unfixtured.size) seen.errors.push(`no fixture, answered {}: ${[...seen.unfixtured].join(", ")}`);
   return result;
 }
 
@@ -468,10 +468,7 @@ function print(results) {
   const cells = [cols, ...results.map((r) => cols.map((c) => String(r[c])))];
   const widths = cols.map((_, i) => Math.max(...cells.map((row) => row[i].length)));
   for (const row of cells) console.log(row.map((c, i) => c.padEnd(widths[i])).join("  "));
-  for (const r of results) {
-    for (const e of r.errors) console.log(`ERROR ${r.tab}: ${e}`);
-    if (r.unfixtured.length) console.log(`note ${r.tab}: no fixture, answered {}: ${r.unfixtured.join(", ")}`);
-  }
+  for (const r of results) for (const e of r.errors) console.log(`ERROR ${r.tab}: ${e}`);
 }
 
 // Every check opens its own context and reads no other's state, so they run PAGES_AT_ONCE at a time.
@@ -538,7 +535,7 @@ async function main() {
   console.log(`screenshots and numbers.json: ${out}`);
   const budget = BUDGET_SCREENS * DESK.height;
   console.log(`\nheight at ${DESK.width}x${DESK.height}, budget ${budget}px${control ? " (control: every fold open, every inner tab shown)" : ""}`);
-  for (const h of heights) console.log(`${h.page.padEnd(20)}${String(h.height).padStart(7)}${h.height > budget ? "  over" : ""}${h.errors.map((e) => `  ERROR ${e}`).join("")}${h.unfixtured.length ? `  note: no fixture for ${h.unfixtured.join(", ")}` : ""}`);
+  for (const h of heights) console.log(`${h.page.padEnd(20)}${String(h.height).padStart(7)}${h.height > budget ? "  over" : ""}${h.errors.map((e) => `  ERROR ${e}`).join("")}`);
   const unmeasured = heights.filter((h) => h.errors.length || h.height == null);
   if (unmeasured.length) fail.push(`height not measured on ${unmeasured.map((h) => h.page).join(", ")}`);
   const tall = heights.filter((h) => h.height > budget);

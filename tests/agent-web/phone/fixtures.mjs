@@ -449,6 +449,19 @@ const builds = {
   more: 0, summary: "6 builds, 1 red", at: NOW, stale_after: 3600, errors: [],
   counts: { total: 6, running: 2, queued: 0, red: 2, recent_red: 2 }, look: true,
 };
+// Releases > Flow: hub_core::lanes::Flow over a 7d window; `keys` and `windows` copy lanes.rs KEYS
+// and WINDOWS, which a change there must follow.
+const LANE_KEYS = ["green", "red", "running", "queued", "other"];
+const seg = (i, key, a, b) => ({ a, b, key, title: `${key} ${TEXT[i % TEXT.length].slice(0, 40)}`, link: "#infra/runs", n: 1 + (i % 3) });
+const flowLane = (label, sub, n, keyOf) => ({ label, sub, segs: rows(n, (i) => { const a = NOW - 7 * 86400 + Math.round(((i + 0.5) * 7 * 86400) / n); return seg(i, keyOf(i), a, a + 1200); }) });
+const lanes = {
+  project: PROJECTS[0], window: "7d", keep_days: 30, clipped: "", t0: NOW - 7 * 86400, t1: NOW,
+  projects: [...new Set(PROJECTS)].sort(), windows: ["24h", "7d", "30d"],
+  keys: [["red", "failed"], ["running", "running"], ["queued", "queued"], ["reached", "reached the channel"], ["tag", "tagged"], ["green", "passed"], ["other", "cancelled or skipped"]],
+  ci: rows(6, (i) => flowLane(pick(["tests", "lint", "rust", "release", "nightly", "other workflows"], i), `${8 + i} runs, ${i % 3} red`, 8 + i, (j) => pick(LANE_KEYS, i + j))),
+  release: [flowLane("agent-web", "", 3, (j) => pick(["tag", "green", "reached"], j)), flowLane("agent-web", "beta", 2, () => "reached")],
+  ci_empty: "", release_empty: "", errors: [],
+};
 // Pipelines: hub_core::pipelines rows, one per workflow of each repo.
 const PIPE_STATE = ["red", "amber", "ok", "off"];
 const pipeline = (i) => ({ state: pick(PIPE_STATE, i), why: `${pick(["last run on main failed", "late for its 02:00 start", "last run on main passed", "held from the night"], i)} 11-11 22:04`, forge: "github", repo: pick(REPOS, i), project: pick(PROJECTS, i), pipeline: pick(["Tests (all)", "Multi (all)", "Checks", "Vuln scan", "Nightly build", "Release"], i), file: `.github/workflows/${pick(["test", "multi", "checks", "vuln-scan", "nightly", "release"], i)}.yml`, trigger: pick(["dispatch, cron", "pr, push", "cron"], i), nightly: pick(["on", "held", ""], i), schedule: pick(["02:00 daily", "09:00 Mon", ""], i), next: i % 3 === 2 ? null : NOW + 3600 * (i + 1), runner: i % 3 === 0 ? "playground-night" : null, last: ago(60 + i * 200), last_id: 42000 + i, last_result: pick(["failure", "success"], i), pass: 40 + i * 10, runs: 12 + i, usual: 1500 + i * 60, p90: 2400 + i * 60, running: i % 2 });
@@ -505,7 +518,7 @@ export const FIXTURES = {
   "/api/sessions/table": sessions, "/api/sessions/capacity": capacity, "/api/watch": watch, "/api/shepherd": shepherd, "/api/outcomes": [],
   "/api/alerts": alerts, "/api/infra": infra, "/api/jobs": jobs,
   "/api/log": log, "/api/log/work": logWork, "/api/log/history": logHistory, "/api/actions": actions,
-  "/api/fleet": fleet, "/api/schedules": schedules, "/api/stack": stack, "/api/stack?rpg=2": stackPage(2), "/api/costs": costs, "/api/releases": releases, "/api/builds": builds,
+  "/api/fleet": fleet, "/api/schedules": schedules, "/api/stack": stack, "/api/stack?rpg=2": stackPage(2), "/api/costs": costs, "/api/releases": releases, "/api/releases/lanes": lanes, "/api/builds": builds,
   "/api/pipelines": pipelines, "/api/tests": tests,
   ...Object.fromEntries(Object.entries(RUNNER_PAGES).map(([name, r]) => [`/api/fleet/runner?name=${name}`, r])),
 };
