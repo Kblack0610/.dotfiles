@@ -1092,13 +1092,13 @@ fake_sleep() {
 
 # The edit that adds the gate line re-runs Checks; a watch read seconds later still saw the old red,
 # and unity-core-playground#2492 gave its landing slot back (2026-11-21, ar-3447).
-STALE='[{"name":"Checks","bucket":"fail","workflow":"Checks","completedAt":"2026-11-21T15:05:34Z"}]'
-@test "a failed check with a run of its workflow started after it: it waits, then lands on that run's green" {
+STALE='[{"name":"Checks","bucket":"fail","workflow":"Checks","event":"pull_request","completedAt":"2026-11-21T15:05:34Z"}]'
+@test "a failed check with a run of its workflow and event created after it (startedAt still zero): it waits, then lands on that run's green" {
   printf 'Checks\tfail\t1m\n' >"$NOTES_FIXTURE/checks.seq"
   echo green >>"$NOTES_FIXTURE/checks.seq"
   printf 'Checks\n' >"$NOTES_FIXTURE/checks.failed"
   printf '%s\n' "$STALE" >"$NOTES_FIXTURE/checks.stale"
-  printf '%s\n' '[{"status":"queued","workflowName":"Checks","startedAt":"2026-11-21T15:32:03Z"}]' >"$NOTES_FIXTURE/runs.open"
+  printf '%s\n' '[{"status":"queued","workflowName":"Checks","event":"pull_request","createdAt":"2026-11-21T15:32:03Z","startedAt":"0001-01-01T00:00:00Z"}]' >"$NOTES_FIXTURE/runs.open"
   fake_sleep
   run "$LAND" 42 --item ship
   assert_success
@@ -1110,11 +1110,11 @@ STALE='[{"name":"Checks","bucket":"fail","workflow":"Checks","completedAt":"2026
   assert_output 'sleep 60'
 }
 
-@test "a failed check whose only open run is the one it failed in, or another workflow's: it stops at checks, never merges" {
+@test "a failed check whose open runs are the one it failed in, another event's or another workflow's: it stops at checks, never merges" {
   printf 'Checks\tfail\t1m\n' >"$NOTES_FIXTURE/checks.out"
   printf 'Checks\n' >"$NOTES_FIXTURE/checks.failed"
   printf '%s\n' "$STALE" >"$NOTES_FIXTURE/checks.stale"
-  printf '%s\n' '[{"status":"in_progress","workflowName":"Checks","startedAt":"2026-11-21T15:02:38Z"},{"status":"queued","workflowName":"Tests","startedAt":"2026-11-21T15:32:03Z"}]' >"$NOTES_FIXTURE/runs.open"
+  printf '%s\n' '[{"status":"in_progress","workflowName":"Checks","event":"pull_request","createdAt":"2026-11-21T15:02:38Z","startedAt":"2026-11-21T15:02:38Z"},{"status":"queued","workflowName":"Checks","event":"schedule","createdAt":"2026-11-21T15:10:00Z","startedAt":"2026-11-21T15:10:00Z"},{"status":"queued","workflowName":"Tests","event":"pull_request","createdAt":"2026-11-21T15:32:03Z","startedAt":"2026-11-21T15:32:03Z"}]' >"$NOTES_FIXTURE/runs.open"
   fake_sleep
   run "$LAND" 42 --item ship
   assert_failure 1
@@ -1122,6 +1122,28 @@ STALE='[{"name":"Checks","bucket":"fail","workflow":"Checks","completedAt":"2026
   refute_output --partial 'waiting on the newer run'
   run grep -c 'pr checks 42 --watch' "$LOG"
   assert_output 1
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "a failed read of the head's runs behind a failed check: a lost connection reads again, any other error stops at checks" {
+  printf 'Checks\tfail\t1m\n' >"$NOTES_FIXTURE/checks.seq"
+  echo green >>"$NOTES_FIXTURE/checks.seq"
+  printf 'Checks\n' >"$NOTES_FIXTURE/checks.failed"
+  printf '%s\n' "$STALE" >"$NOTES_FIXTURE/checks.stale"
+  printf '%s\n' 'ERR gh: Server Error (HTTP 502)' >"$NOTES_FIXTURE/runs.open"
+  fake_sleep
+  AGENT_LAND_CHECKS_POLL=0 run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: lost the connection to the API (1 of 5 retries), reading again'
+  assert_line 'landed #42'
+  : >"$LOG"
+  printf 'OPEN\n' >"$NOTES_FIXTURE/state"
+  printf 'Checks\tfail\t1m\n' >"$NOTES_FIXTURE/checks.out"
+  printf '%s\n' 'ERR gh: API rate limit exceeded (HTTP 403)' >"$NOTES_FIXTURE/runs.open"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: Checks (reading the runs on the head: gh: API rate limit exceeded (HTTP 403))'
   run grep -c 'pr merge' "$LOG"
   assert_output 0
 }
