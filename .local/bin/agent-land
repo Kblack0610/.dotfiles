@@ -141,31 +141,48 @@ net_retry() {
   echo "checks: lost the connection to the API ($net of $CHECKS_NET_TRIES retries), reading again"
   sleep "$CHECKS_POLL"
 }
-# open_runs: how many Actions runs for HEAD have not completed (0 when the read fails).
-open_runs() {
-  gh run list "${R[@]}" --commit "$(git rev-parse HEAD)" --json status -q '[.[] | select(.status != "completed")] | length' 2>/dev/null || echo 0
+# newer_runs <cancelled checks json>: how many runs on HEAD of a cancelled check's workflow have not
+# completed, the newer run it gave way to; on a failed read, the read's output and status 1.
+newer_runs() {
+  local runs
+  runs=$(gh run list "${R[@]}" --commit "$(git rev-parse HEAD)" --json status,workflowName 2>&1) || { printf '%s' "$runs"; return 1; }
+  jq -r --argjson c "$1" '[.[] | select(.status != "completed") | .workflowName as $w | select($c | any(.workflow == $w))] | length' <<<"$runs"
 }
 had_checks=''
 wait_checks() {
   [ -z "$fj" ] || { fj_wait_checks; return; }
-  local try out failed cancelled queued
+  local try out failed cancelled names queued
   for ((try = 1; ; try++)); do
     out=$(gh pr checks "$pr" "${R[@]}" --watch --fail-fast -i "$CHECKS_WATCH_INTERVAL" 2>&1) && {
       # gh counts a cancelled check as neither failed nor pending, so a watch whose only Checks is
       # a cancelled run exits 0 while the newer run on the head has no check yet, and GitHub then
-      # refuses the merge (unity-core-playground#2166). A run on HEAD still going is that newer
-      # run: wait on it at the queued cadence; with none, the cancelled check is the verdict.
-      cancelled=$(gh pr checks "$pr" "${R[@]}" --json name,bucket -q '[.[] | select(.bucket == "cancel") | .name] | join(", ")' 2>/dev/null || true)
-      if [ -z "$cancelled" ]; then
+      # refuses the merge (unity-core-playground#2166). An open run of its workflow on HEAD is that
+      # newer run: wait on it at the queued cadence. With none, GitHub may not have registered the
+      # replacement yet, so it is read CHECKS_TRIES times before the cancelled check is the verdict.
+      cancelled=$(gh pr checks "$pr" "${R[@]}" --json name,bucket,workflow -q 'map(select(.bucket == "cancel"))' 2>&1) || {
+        net_error "$cancelled" || fail checks "reading the cancelled checks: $(lastline "$cancelled")"
+        net_retry "$cancelled"
+        continue
+      }
+      if [ "$cancelled" = '[]' ]; then
         echo "checks: green"
         had_checks=yes
         return 0
       fi
-      queued=$(open_runs)
-      [ "${queued:-0}" -ne 0 ] || fail checks "cancelled: $cancelled, and no run on the head is left to replace it: gh run rerun it, then re-run"
-      echo "checks: cancelled: $cancelled; waiting on the run still going on the head"
-      try=0
-      sleep "$CHECKS_QUEUED_POLL"
+      names=$(jq -r 'map(.name) | join(", ")' <<<"$cancelled")
+      queued=$(newer_runs "$cancelled") || {
+        net_error "$queued" || fail checks "reading the runs on the head: $(lastline "$queued")"
+        net_retry "$queued"
+        continue
+      }
+      if [ "$queued" -ne 0 ]; then
+        echo "checks: cancelled: $names; waiting on the newer run of its workflow on the head"
+        try=0
+        sleep "$CHECKS_QUEUED_POLL"
+        continue
+      fi
+      [ "$try" -lt "$CHECKS_TRIES" ] || fail checks "cancelled: $names, and no run of its workflow is left on the head to replace it: gh run rerun it, then re-run"
+      sleep "$CHECKS_POLL"
       continue
     }
     case "$out" in
@@ -180,7 +197,7 @@ wait_checks() {
       fail checks "${failed:-$(lastline "$out")}"
       ;;
     esac
-    queued=$(open_runs)
+    queued=$(gh run list "${R[@]}" --commit "$(git rev-parse HEAD)" --json status -q '[.[] | select(.status != "completed")] | length' 2>/dev/null || echo 0)
     if [ "${queued:-0}" -ne 0 ]; then
       try=0
       sleep "$CHECKS_QUEUED_POLL"

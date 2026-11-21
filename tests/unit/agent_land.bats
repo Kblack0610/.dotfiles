@@ -63,16 +63,27 @@ case "$1 $2" in
 # pr edit --body-file -: the new body becomes the body
 'pr edit') cat >"$NOTES_FIXTURE/body" ;;
 'run list')
+  case "$*" in
+  # runs.open: the head's runs as JSON, one answer per read, popped as read; [] once empty.
+  # A line "ERR <text>": that read fails with <text>
+  *workflowName*) q="$NOTES_FIXTURE/runs.open" r='[]'
+    if [ -s "$q" ]; then r=$(head -1 "$q"); sed -i 1d "$q"; fi
+    case "$r" in 'ERR '*) echo "${r#ERR }" >&2; exit 1 ;; esac
+    echo "$r" ;;
   # runs.queued: one count per poll, popped as read; 0 once empty
-  q="$NOTES_FIXTURE/runs.queued"
-  if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else echo 0; fi ;;
+  *) q="$NOTES_FIXTURE/runs.queued"
+    if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else echo 0; fi ;;
+  esac ;;
 'pr checks')
   case "$*" in
-  # checks.failed: the failed or cancelled names after a failed watch; checks.cancelled: the
-  # cancelled names after a green one, one answer per call, popped as read (none when empty)
+  # checks.failed: the failed or cancelled names after a failed watch
   *'"fail" or'*) cat "$NOTES_FIXTURE/checks.failed" ;;
-  *--json*) q="$NOTES_FIXTURE/checks.cancelled"
-    if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; fi ;;
+  # checks.cancelled: the cancelled checks as JSON after a green watch, one answer per read,
+  # popped as read; [] once empty. A line "ERR <text>": that read fails with <text>
+  *--json*) q="$NOTES_FIXTURE/checks.cancelled" r='[]'
+    if [ -s "$q" ]; then r=$(head -1 "$q"); sed -i 1d "$q"; fi
+    case "$r" in 'ERR '*) echo "${r#ERR }" >&2; exit 1 ;; esac
+    echo "$r" ;;
   # checks.seq: one watch result per call (green, or the output of a failed watch), popped as read; then checks.out
   *) q="$NOTES_FIXTURE/checks.seq"
     if [ -s "$q" ]; then r=$(head -1 "$q"); sed -i 1d "$q"; [ "$r" = green ] || { echo "$r"; exit 1; }; exit 0; fi
@@ -600,7 +611,7 @@ git rev-list --count HEAD..origin/main
 git merge-base HEAD origin/main
 shape-grow 5eedbase5eedbase HEAD
 gh pr checks 42 --watch --fail-fast -i 30
-gh pr checks 42 --json name,bucket -q [.[] | select(.bucket == "cancel") | .name] | join(", ")
+gh pr checks 42 --json name,bucket,workflow -q map(select(.bucket == "cancel"))
 git fetch -q origin
 git rev-list --count HEAD..origin/main
 git rev-parse HEAD
@@ -913,15 +924,20 @@ EOF
 
 # gh's watch exits 0 when the only Checks is a cancelled run, while the newer run on the same head
 # has no check yet; GitHub then refused the merge BLOCKED (unity-core-playground#2166).
-@test "a cancelled check while a newer run on the head goes on: it waits, then lands on that run's green" {
-  printf 'green\ngreen\n' >"$NOTES_FIXTURE/checks.seq"
-  printf 'Checks\n' >"$NOTES_FIXTURE/checks.cancelled"
-  printf '1\n' >"$NOTES_FIXTURE/runs.queued"
+CANCELLED='[{"name":"Checks","bucket":"cancel","workflow":"Checks"}]'
+fake_sleep() {
   printf '#!/bin/sh\necho "sleep $1" >>"$NOTES_FIXTURE/calls.log"\n' >"$SANDBOX/bin/sleep"
   chmod +x "$SANDBOX/bin/sleep"
+}
+
+@test "a cancelled check while a newer run of its workflow goes on: it waits, then lands on that run's green" {
+  printf '%s\n' "$CANCELLED" >"$NOTES_FIXTURE/checks.cancelled"
+  printf '%s\n' '[{"status":"in_progress","workflowName":"Checks"}]' >"$NOTES_FIXTURE/runs.open"
+  fake_sleep
   run "$LAND" 42 --item ship
   assert_success
-  assert_line 'checks: cancelled: Checks; waiting on the run still going on the head'
+  assert_line 'checks: cancelled: Checks; waiting on the newer run of its workflow on the head'
+  assert_line 'checks: green'
   assert_line 'landed #42'
   run grep -c 'pr checks 42 --watch' "$LOG"
   assert_output 2
@@ -929,12 +945,44 @@ EOF
   assert_output 'sleep 60'
 }
 
-@test "a cancelled check with no run left on the head: stops at checks naming it, never merges" {
-  printf 'green\n' >"$NOTES_FIXTURE/checks.seq"
-  printf 'Checks\n' >"$NOTES_FIXTURE/checks.cancelled"
+@test "a cancelled check with no run of its workflow left: read a bounded number of times, then stops at checks, never merges" {
+  printf '%s\n' "$CANCELLED" "$CANCELLED" >"$NOTES_FIXTURE/checks.cancelled"
+  # an open run of another workflow is not the cancelled check's replacement
+  printf '%s\n' '[{"status":"queued","workflowName":"Deploy"}]' '[{"status":"queued","workflowName":"Deploy"}]' >"$NOTES_FIXTURE/runs.open"
+  fake_sleep
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=2 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: cancelled: Checks, and no run of its workflow is left on the head to replace it'
+  refute_line 'checks: green'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 2
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "a cancelled check whose replacement registers during the bounded reads: it lands on that run's green" {
+  printf '%s\n' "$CANCELLED" >"$NOTES_FIXTURE/checks.cancelled"
+  fake_sleep
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=3 run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'landed #42'
+  run grep '^sleep' "$LOG"
+  assert_output 'sleep 0'
+}
+
+@test "a failed read of the cancelled checks is never green: a lost connection reads again, any other error stops at checks" {
+  printf '%s\n' 'ERR gh: Server Error (HTTP 502)' >"$NOTES_FIXTURE/checks.cancelled"
+  fake_sleep
+  AGENT_LAND_CHECKS_POLL=0 run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: lost the connection to the API (1 of 5 retries), reading again'
+  assert_line 'landed #42'
+  : >"$LOG"
+  printf 'OPEN\n' >"$NOTES_FIXTURE/state"
+  printf '%s\n' 'ERR gh: API rate limit exceeded (HTTP 403)' >"$NOTES_FIXTURE/checks.cancelled"
   run "$LAND" 42 --item ship
   assert_failure 1
-  assert_output --partial 'checks failed: cancelled: Checks, and no run on the head is left to replace it'
+  assert_output --partial 'checks failed: reading the cancelled checks: gh: API rate limit exceeded (HTTP 403)'
   refute_line 'checks: green'
   run grep -c 'pr merge' "$LOG"
   assert_output 0
