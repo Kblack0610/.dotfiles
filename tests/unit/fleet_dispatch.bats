@@ -2268,37 +2268,40 @@ esac'
 # picks_order -> the row ids a dry fill of 4 would queue, in order.
 picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | tr -d ':[ ' | paste -sd' '; }
 
-@test "idle pool rank: a row on an idle pool is picked ahead of another project's at the same human rank, never ahead of a higher one; a busy pool or no knob gives no boost" {
+@test "idle pool rank: fill reads the pool from prometheus and picks a row on an idle pool ahead of another project's on a tie, naming and logging it; a busy pool or no knob gives no boost" {
   export DISPATCH_PROFILES=bnb DISPATCH_CLASSES="$SANDBOX/classes.json"
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
-  # app sorts before game on a tie, so only the idle-pool term can put game's row first.
+  # These fixture rows carry no feed rank, so they tie, and app sorts before game: only the term puts game's first.
   row app human ap-1 "- [ ] fix(app): menu text #high $T <!-- id:ap-1 -->"
   row game human gm-9 "- [ ] fix(game): crash on load #high $T <!-- id:gm-9 -->"
-  row game human gm-7 "- [ ] fix(game): save slot name #low $T <!-- id:gm-7 -->"
   verdict app human ap-1 dispatch S 1 menu
   verdict game human gm-9 dispatch S 1 crash
-  verdict game human gm-7 dispatch S 1 save
   pool_prom
   echo '{"idle_pool": {"pools": ["unity"], "busy_below": 0.5}}' > "$DISPATCH_CLASSES"
   # Negative controls: a busy pool (12 of 14), then an idle one with no knob, leave app's row first.
   echo 12 > "$NOTES_FIXTURE/busy"
-  [ "$(picks_order)" = "ap-1 gm-9 gm-7" ] || fail "busy pool: $(picks_order)"
+  [ "$(picks_order)" = "ap-1 gm-9" ] || fail "busy pool: $(picks_order)"
   grep -q 'cc:pool_busy{pool=~"unity"} / cc:pool_slots{pool=~"unity"} < 0.5' "$NOTES_FIXTURE/curl.log" || fail "idle query: $(cat "$NOTES_FIXTURE/curl.log")"
   echo 3 > "$NOTES_FIXTURE/busy"
-  [ "$(DISPATCH_CLASSES=/dev/null picks_order)" = "ap-1 gm-9 gm-7" ] || fail "no knob: $(DISPATCH_CLASSES=/dev/null picks_order)"
-  # Idle: gm-9 goes ahead of ap-1 at the same #high, and its why names the pool; ap-1's #high still
-  # beats gm-7, a #low row on the idle pool.
-  [ "$(picks_order)" = "gm-9 ap-1 gm-7" ] || fail "idle pool: $(picks_order)"
+  [ "$(DISPATCH_CLASSES=/dev/null picks_order)" = "ap-1 gm-9" ] || fail "no knob: $(DISPATCH_CLASSES=/dev/null picks_order)"
+  [ "$(picks_order)" = "gm-9 ap-1" ] || fail "idle pool: $(picks_order)"
   [[ "$(DRY=1 JUDGE_RC='' fill_day 1)" == *"gm-9 [idle pool unity,"* ]] || fail "why: $(DRY=1 JUDGE_RC='' fill_day 1)"
-  # An urgent row still goes first while the pool idles.
-  row app human ap-2 "- [ ] fix(app): login fails #urgent $T <!-- id:ap-2 -->"
-  verdict app human ap-2 dispatch S 1 login
-  [ "$(picks_order)" = "ap-2 gm-9 ap-1 gm-7" ] || fail "urgent: $(picks_order)"
   # A real pick logs the term.
-  DRY=0 JUDGE_RC='' fill_day 2
+  DRY=0 JUDGE_RC='' fill_day 1
   [ -n "$(qitem queued gm-9)" ] || fail "gm-9 was not queued: $(ls "$AGENT_QUEUE_DIR/queued")"
   grep -q 'rank term idle pool unity: game human row gm-9' "$FLEET_DISPATCH_DIR/log.md" || fail "no rank-term log line: $(cat "$FLEET_DISPATCH_DIR/log.md")"
+}
+
+@test "idle pool rank: the term breaks ties inside one head of the feed rank (due, priority, #requested), above age, and moves no row past another head; with no pool idle the feed order stands" {
+  # frank is head * 1e6 + created day (notes-cli Rank::key): head 19 #urgent, 21 #high, 23 #low, no due date.
+  r() { jq -cn --arg k "$1" --arg p "$2" --argjson fr "$3" --arg pi "$4" \
+        '{project: $p, stage: "beta", lane: "human", key: $k, frank: $fr} + (if $pi != "" then {pool_idle: $pi} else {} end)'; }
+  rows=$(r ap-1 app 21020000 ''; r gm-9 game 21020010 unity; r gm-7 game 23019000 unity; r ap-2 app 19020020 ''; r ap-3 app 21020005 '')
+  order() { jq -sr "$RANK_JQ"'rank | map(.key) | join(" ")'; }
+  assert_equal "$(order <<<"$rows")" "ap-2 gm-9 ap-1 ap-3 gm-7"
+  # Negative control: no row on an idle pool, so the feed's own order.
+  assert_equal "$(jq -c 'del(.pool_idle)' <<<"$rows" | order)" "ap-2 ap-1 ap-3 gm-9 gm-7"
 }
 
 @test "runnable: a board item is runnable while the human is here, red or plain, and counts from when it was queued" {

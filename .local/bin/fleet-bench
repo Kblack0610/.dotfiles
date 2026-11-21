@@ -299,7 +299,7 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${WORKTREE_GC_STALE_H:=48}"                                   # a last row older than this reads ?, a dead runner is not a flat count
 : "${CLAUDE_STARTUP_LOG:=$HOME/.agent/telemetry/claude-startup.jsonl}"   # one row per SessionStart (startup-telemetry.sh)
 : "${BENCH_CALLS:=${AGENTCTL_CALLS:-${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/calls.jsonl}}"   # one row per agent call (agent-run lib/calls.sh)
-: "${BENCH_CLASSES:=$HOME/.config/fleet-dispatch/classes.json}"   # its idle_pool.pools: the pools pool_busy_share reads (pool_kpi)
+: "${BENCH_CLASSES:=${DISPATCH_CLASSES:-$HOME/.config/fleet-dispatch/classes.json}}"   # the file fleet-dispatch reads; its idle_pool.pools: the pools pool_busy_share reads (pool_kpi)
 : "${BENCH_TOKENS_DIR:=$HOME/.agent/token-usage}"  # the nightly token-usage snapshots: the token KPIs' days
 : "${BENCH_WEEK_CMD:=day-log week --line}"         # the newest stored week: what moved, against the week before
 : "${BENCH_COMMS_CMD:=comms-lint}"                 # the newest nightly comms snapshot: `line` and `kpi --json`
@@ -2738,8 +2738,8 @@ pool_kpi() {
   re=$(prom_label_re "$(jq -c '.idle_pool.pools' "$BENCH_CLASSES" 2>/dev/null)")
   [ -n "$re" ] || { echo '{}'; return 0; }
   q="(sum(cc:pool_busy{pool=~\"$re\"}) / sum(cc:pool_slots{pool=~\"$re\"}))"
-  w7=$(prom_map - "avg_over_time(${q}[7d:10m])" "$1") || w7='{}'
-  w28=$(prom_map - "avg_over_time(${q}[28d:10m])" "$1") || w28='{}'
+  w7=$(prom_map - "avg_over_time(${q}[7d:10m])" "$1") && [ -n "$w7" ] || w7='{}'
+  w28=$(prom_map - "avg_over_time(${q}[28d:10m])" "$1") && [ -n "$w28" ] || w28='{}'
   jq -nc --argjson a "$w7" --argjson b "$w28" '
     def v: .["-"] | if type == "number" and (isnan | not) and (isinfinite | not) then (. * 1000 | round) / 1000 else null end;
     {pool_busy_share: {"7d": ($a | v), "28d": ($b | v)}}' 2>/dev/null || echo '{}'

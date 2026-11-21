@@ -279,9 +279,10 @@ prio_of() {
 
 # The one rank every caller sorts by (the judge's cap, picks, fill --dry-run): a row an open sprint holds
 # (`sprint` 0, row_sprint), then cleanup of an AI system (cleanup_row), then the project's #prio, then, while
-# any row's repo gates on an idle pool (`pool_idle`, load_pool_idle), the feed's human ranks (due bucket,
-# priority, #requested) and then such a row (pool_term, a tie-breaker below every human rank; with no pool
-# idle it orders nothing), then the row's feed rank (`frank`, the `rank` of
+# any row's repo gates on an idle pool (`pool_idle`, load_pool_idle), the head of the feed rank (frank's
+# millions: due bucket, priority, #requested, notes-cli Rank::key) and then such a row (pool_term, a
+# tie-breaker below every human rank and above age; with no pool idle it orders nothing), then the row's
+# feed rank (`frank`, the `rank` of
 # `notes board --json`: due date, priority, #requested, then oldest, notes-cli src/rank.rs, so the
 # order within a project is the board's own and dispatch derives none of it; a row the feed does not
 # rank goes after every ranked one), then worker order, then its kind (kinds.json `rank`: a bug
@@ -323,7 +324,7 @@ def rank_fields($today; $pprio):
                 (if .age > 0 then "\(.age)d old" else empty end)] | join(", "))};
 # area_key: the area picks holds one row to; a gated row has no verdict to name one, so it is its own.
 def area_key: if (.area // "") == "" then "row:\(.key)" else .area end;
-def pool_term($pi): if $pi then [(.due // 3), (.prio // 2), (.req // 1), (if (.pool_idle // "") != "" then 0 else 1 end)] else [] end;
+def pool_term($pi): if $pi then [((.frank // 1e15) / 1000000 | floor), (if (.pool_idle // "") != "" then 0 else 1 end)] else [] end;
 def rank: any(.[]; (.pool_idle // "") != "") as $pi
   | sort_by((.sprint // 1), (.cleanup // 1), (.pprio // 2), pool_term($pi), (.frank // 1e15), (.wrank // 0), (.krank // 1), ({"prod": 0, "beta": 1}[.stage] // 2), (.t3rank // []));
 '
@@ -1591,7 +1592,6 @@ cmd_candidates() {
   load_extras
   [ -z "${GATES_FAILED:-}" ] || [ "${SUGGEST:-0}" = 1 ] || return 0
   load_kinds
-  load_pool_idle
   for prof in $DISPATCH_PROFILES; do
     while IFS=$'\t' read -r name sheet _v _; do
       [ -n "$name" ] || continue
@@ -7441,7 +7441,6 @@ t3_rows() {
   load_extras
   [ -z "${GATES_FAILED:-}" ] || return 0
   load_kinds
-  load_pool_idle
   for name in $DISPATCH_T3_PROJECTS; do
     sheet=$(np "$DISPATCH_T3_PROFILE" projects 2>/dev/null | awk -F'\t' -v p="$name" '$1 == p { print $2; exit }')
     stage=$(stage_of "$sheet")
@@ -7567,7 +7566,7 @@ main() {
       # read every board a second time beside the one running.
       [ "$DRY" = 1 ] || ! flock -n 9 2>/dev/null || candidates_write || true
       return "$rc" ;;
-    candidates) cmd_candidates ;;
+    candidates) load_pool_idle; cmd_candidates ;;
     suggest) shift; if [ "${1:-}" = --write ]; then candidates_write; else cmd_suggest "$@"; fi ;;
     fill) shift; cmd_fill "$@" ;;
     promote) shift; PULL=$(start_pull) cmd_promote "$@" ;;
