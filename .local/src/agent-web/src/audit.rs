@@ -137,13 +137,6 @@ pub const ROUTES: &[Route] = &[
         &["id"],
         &[],
     ),
-    route(
-        "POST",
-        "/api/cloud-runner",
-        |_| "runner.power-set".into(),
-        &["host"],
-        &["action", "hours"],
-    ),
     own("POST", "/api/board", crate::board::audit_entry),
     route(
         "POST",
