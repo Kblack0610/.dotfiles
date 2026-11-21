@@ -2,8 +2,9 @@
 # custom/webcam: the red CAM pill while a process holds a /dev/video* node open. What these pin:
 # the module is wired ungated beside custom/gungan on both profiles and drawn as the red pill;
 # webcam.sh shows on an open fd, names the holder, hides on the close; a camera plugged in after
-# start is watched too; and stopping it leaves no inotifywait behind. The device directory is a
-# temp dir (WEBCAM_DEV_DIR): inotify reports opens and closes of a plain file the same way.
+# start is watched too; stopping it leaves no inotifywait behind, and neither does a run killed past
+# its traps (ar-1870). The device directory is a temp dir (WEBCAM_DEV_DIR): inotify reports opens
+# and closes of a plain file the same way.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -19,8 +20,10 @@ setup() {
 teardown() {
   [[ -n ${HOLDER:-} ]] && kill "$HOLDER" 2>/dev/null
   [[ -n ${MOD:-} ]] && kill "$MOD" 2>/dev/null
-  # A failed assertion can leave a module running: the temp dir path is unique to this test.
-  pkill -f "inotifywait.*$DEV" 2>/dev/null
+  [[ -n ${RUN:-} ]] && kill -KILL "$RUN" 2>/dev/null
+  # A failed assertion can leave a watcher running: the temp dir path is unique to this test, and
+  # an empty DEV (setup failed early) would match every inotifywait the user owns.
+  [[ -n ${DEV:-} ]] && pkill -f "inotifywait.*$DEV" 2>/dev/null
   true
 }
 
@@ -31,9 +34,14 @@ teardown() {
 # A prefix, not a function: a function would fork, and $! must be the command itself.
 DIE_WITH_RUN=(setpriv --pdeathsig TERM)
 
+need_tools() {
+  command -v inotifywait >/dev/null || skip "inotify-tools not installed"
+  command -v setpriv >/dev/null || skip "setpriv (util-linux) not installed"
+}
+
 # start: run webcam.sh on $DEV, its lines into fd 4. fd 3 is closed so bats does not wait on it.
 start() {
-  command -v inotifywait >/dev/null || skip "inotify-tools not installed"
+  need_tools
   mkfifo "$BATS_TEST_TMPDIR/out"
   WEBCAM_DEV_DIR="$DEV" "${DIE_WITH_RUN[@]}" "$W/webcam.sh" > "$BATS_TEST_TMPDIR/out" 3>&- &
   MOD=$!
@@ -108,7 +116,7 @@ hold() { # hold <node>: a process with the node open, like a camera app
 }
 
 @test "a run killed past its traps takes the module and its inotifywait with it" {
-  command -v inotifywait >/dev/null || skip "inotify-tools not installed"
+  need_tools
   mkfifo "$BATS_TEST_TMPDIR/out"
   # A stand-in for the bats test process: it starts the module as start does, then is KILLed.
   export DIE_WITH_RUN_CMD="${DIE_WITH_RUN[*]}"
@@ -119,6 +127,7 @@ hold() { # hold <node>: a process with the node open, like a camera app
   next_line # the module is up and its watchers are armed
   assert_equal "$LINE" '{"text":""}'
   MODPID=$(< "$BATS_TEST_TMPDIR/mod.pid")
+  MOD=$MODPID # for teardown, should an assertion fail before the KILL
   run pgrep -f "inotifywait.*$DEV"
   assert_success
   kill -KILL "$RUN"
