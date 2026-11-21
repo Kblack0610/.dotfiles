@@ -189,6 +189,39 @@ show() { git -C "$1" show "master:$2"; }
   assert_output --partial "the same files as last time"
 }
 
+@test "a conflict never starts a merge in the working tree, so a queue write mid-sync cannot strand one" {
+  peer a; peer b
+  echo 'state: a' > "$SANDBOX/a/queue/item.md"
+  echo 'state: new' > "$SANDBOX/a/queue/new.md"
+  echo 'state: b' > "$SANDBOX/b/queue/item.md"
+  on a --now
+  # A git whose working-tree merge is followed at once by a queue write to the file it brought in,
+  # as agent-queue did on razer-laptop between store-sync's merge and its abort (ar-3439).
+  local real; real=$(command -v git)
+  mkdir -p "$SANDBOX/bin"
+  cat > "$SANDBOX/bin/git" <<EOF
+#!/usr/bin/env bash
+"$real" "\$@"; rc=\$?
+for a in "\$@"; do case "\$a" in merge) [ -f "$SANDBOX/b/queue/new.md" ] && echo 'state: written' >> "$SANDBOX/b/queue/new.md"; break ;; merge-tree|merge-base|--abort) break ;; esac; done
+exit \$rc
+EOF
+  chmod +x "$SANDBOX/bin/git"
+  PATH="$SANDBOX/bin:$PATH" run on b --now
+  assert_failure
+  assert_output --partial "conflicts in queue/item.md"
+  run git -C "$SANDBOX/b" rev-parse -q --verify MERGE_HEAD
+  assert_failure
+  [ ! -e "$SANDBOX/b/queue/new.md" ]
+  # Once origin moves on, the next sync tries again instead of reading a stranded merge as hand work.
+  echo 'state: b2' > "$SANDBOX/b/queue/item.md"
+  git -C "$SANDBOX/b" commit -q -am b2
+  echo 'state: b2' > "$SANDBOX/a/queue/item.md"
+  on a --now
+  PATH="$SANDBOX/bin:$PATH" run on b
+  assert_success
+  assert_output --partial "COMPLETE: origin at"
+}
+
 @test "a merge being resolved by hand is left alone: no sync stages its conflicted files" {
   peer a; peer b
   echo 'state: a' > "$SANDBOX/a/queue/item.md"
