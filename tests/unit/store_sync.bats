@@ -592,3 +592,48 @@ pages() { grep -c '^agent-notify' "$NOTES_FIXTURE/calls.log" 2>/dev/null || true
   assert_failure
   assert_output --partial "store sync stale"
 }
+
+# close_item <machine> <status> -- the machine closes queue item x: queue/done/<day>/x.md, as agent-queue
+# writes it, with a merged: line for an ok close that had a PR.
+close_item() {
+  local d="$SANDBOX/$1/queue/done/2026-11-20"
+  mkdir -p "$d"
+  { printf 'slug: x\nstatus: %s\n' "$2"
+    [ "$2" != ok ] || printf 'merged: abc123\n'
+    printf 'note: closed on %s\n---\ntask\n' "$1"; } > "$d/x.md"
+}
+
+@test "an item closed ok with a merge on one machine and failed on another keeps the ok close, whichever syncs first (ar-4091)" {
+  peer a; peer b
+  close_item a ok
+  close_item b failed
+  on a --now
+  run on b --now
+  assert_success
+  run show "$ORIGIN" queue/done/2026-11-20/x.md
+  assert_line 'status: ok'
+  assert_line 'merged: abc123'
+  refute_line 'status: failed'
+  refute_output --partial '<<<<<<<'
+  # the other order: the failed close pushed first, the ok close merges over it
+  peer c; peer d
+  rm -rf "$SANDBOX/c/queue/done" "$SANDBOX/d/queue/done"
+  mkdir -p "$SANDBOX/c/queue/done/2026-11-22" "$SANDBOX/d/queue/done/2026-11-22"
+  printf 'slug: y\nstatus: failed\nnote: c\n---\n' > "$SANDBOX/c/queue/done/2026-11-22/y.md"
+  printf 'slug: y\nstatus: ok\nnote: d\n---\n' > "$SANDBOX/d/queue/done/2026-11-22/y.md"
+  on c --now
+  run on d --now
+  assert_success
+  run show "$ORIGIN" queue/done/2026-11-22/y.md
+  assert_line 'status: ok'
+}
+
+@test "two closes that are both failed, or both ok, on one item still conflict" {
+  peer a; peer b
+  close_item a failed
+  close_item b failed
+  on a --now
+  run on b --now
+  assert_failure
+  assert_output --partial "conflicts in queue/done/2026-11-20/x.md"
+}
