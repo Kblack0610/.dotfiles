@@ -676,10 +676,12 @@ load 'fleet_dispatch/common'
   # Joined into the live session, the window still gets its own label.
   : > "$NOTES_FIXTURE/calls.log"
   printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.sessions.default"
+  printf '%%42\n' > "$NOTES_FIXTURE/tmux.new_pane"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --server default --session dotfiles \
     --window crash --cwd "$SANDBOX/repos/game" --resume abc-123 --item fix-crash
   assert_success
-  assert_called 'set-option -w -t'
+  # The pane new-window opened, not =dotfiles: (the session's active window, maybe the human's).
+  assert_called 'tmux -L default set-option -w -t %42 @dispatch game: fix-crash'
   assert_not_called 'set-option -t =dotfiles: @dispatch'
 }
 

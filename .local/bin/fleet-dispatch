@@ -3149,7 +3149,7 @@ start_host_checks() {
 
 # cmd_start -- THE way an agent starts a session, whoever it is: this runner's `run` pass, an
 # agent launching one for a board row, a reboot restore. Each comes out tagged @dispatch on its
-# server (the human reads [dispatch] as "an agent started this"), except a resume of the human's
+# server, on the session, or on the window for a --window start (the human reads [dispatch] as "an agent started this"), except a resume of the human's
 # own conversation (no item from a start, see the --resume branch), and a session doing work
 # has a queue item whose `session:` names it, which reap, fleet-sessions and agent-web read.
 # Before this, only `run` did either, and agents tagged their hand launches with set-option,
@@ -3402,8 +3402,8 @@ cmd_start() {
   label="$project: $(cut -c1-60 <<<"${item:-resumed}")"
   # set-option takes a pane target, where a bare "=name" is "no such session"; the colon makes it session:window.
   # A --window start is one window of a shared session (a world restore opens each conversation as one), so
-  # its label goes on that window: tmux reads a window's option through its session, and a session label
-  # marked every window of a restored hub:dotfiles [dispatch] (2026-11-21). Any other start owns its session.
+  # its label goes on that window: a window with no option of its own falls back to the session's, so a
+  # session label marked every window of a restored hub:dotfiles [dispatch] (2026-11-21). Any other start owns its session.
   local scope=() tgt="=$session:"
   [ -z "$window" ] || { scope=(-w); tgt=${target:-=$session:}; }
   [ -z "$agent_work" ] || on_host "$host" tmux -L "$server" set-option "${scope[@]}" -t "$tgt" @dispatch "$label" ||
