@@ -523,9 +523,7 @@ pub struct Running {
 impl Running {
     /// `2/4`, or empty with no checklist.
     pub fn phase(&self) -> String {
-        self.phases
-            .as_ref()
-            .map_or(String::new(), |p| format!("{}/{}", p.done, p.total))
+        self.phases.as_ref().map_or(String::new(), |p| p.shown())
     }
 
     /// fleet-sessions writes the PR's CI as `PASS`, `FAIL`, `PENDING` or `NONE` (fleet-states.md).
