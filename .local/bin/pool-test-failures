@@ -15,7 +15,8 @@
 # is read once (its id and attempt go to pool-runs.seen), so a minute with no new red costs one call.
 # Summaries come from the home artifact store when the project's project-map.json tracker declares an
 # artifactStore (its lister in the clone, run as hub-core run_page does), else from GitHub's artifacts API.
-# Exit: 0 read (or another sync holds the lock), 1 gh could not list the runs, 2 usage or no checkout.
+# Exit: 0 read (or another sync holds the lock), 1 gh could not list the runs, 2 usage, no checkout, or a
+# declared artifactStore lister missing from it.
 set -uo pipefail
 
 : "${POOL_FAILURES_PROJECT:=unity-core-playground}" # project-map.json name; its checkout's origin is the repo read
@@ -70,7 +71,9 @@ store_t() {
 fetch_summaries() {
   local id="$1" dir="$2" names n args=()
   if [ -n "$STORE_CMD" ]; then
-    names="$(store_t ls "" --run "$id" | awk '{ print $1 }')" || return 1
+    # only the two name prefixes read, so the listing skips the logs, plans and test-runs objects
+    names="$(store_t ls playmode- --run "$id" && store_t ls editmode- --run "$id")" || return 1
+    names="$(awk '{ print $1 }' <<<"$names")"
   else
     names="$(gh_t api "repos/{owner}/{repo}/actions/runs/$id/artifacts?per_page=100" \
       --jq '.artifacts[] | select(.expired | not) | .name')" || return 1
@@ -80,7 +83,7 @@ fetch_summaries() {
   [ -n "$names" ] || return 0
   if [ -n "$STORE_CMD" ]; then
     while IFS= read -r n; do
-      mkdir -p "$dir/$n" && store_t get "$n" --run "$id" --dir "$dir/$n" >/dev/null 2>&1 || return 1
+      mkdir -p "$dir/$n" && store_t get "$n" --run "$id" --dir "$dir/$n" >/dev/null || return 1 # its stderr (no credentials, store down) goes to the journal
     done <<<"$names"
   else
     while IFS= read -r n; do args+=(-n "$n"); done <<<"$names"

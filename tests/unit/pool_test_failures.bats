@@ -31,7 +31,9 @@ if os.environ.get("GITHUB_REPOSITORY") != "Org/pg":
     sys.exit("wrong repo")
 run = a[a.index("--run") + 1]
 if a[0] == "ls":
-    for n in open(ghd + "/store." + run).read().split():
+    if os.path.exists(ghd + "/ls.fail"):
+        sys.exit(1)
+    for n in [n for n in open(ghd + "/store." + run).read().split() if n.startswith(a[1])]:
         print(n, run, "2026-11-28T00:00:00Z", 100)
 elif a[0] == "get":
     if os.path.exists(ghd + "/download." + run + ".fail"):
@@ -176,4 +178,27 @@ artifacts() {
   refute_output --partial 'playmode-plan'
   run grep -c '^store ' "$GHD/calls.log"
   assert_output 0
+}
+
+@test "sync: a failed store listing is an unreadable run, tried again; a missing lister or slug exits 2" {
+  local at; at="$(date -u -d '-10 min' +%FT%TZ)"
+  jq -n --arg at "$at" '[{databaseId: 909, attempt: 1, event: "workflow_dispatch", headBranch: "feat/s", updatedAt: $at}]' > "$GHD/runs.json"
+  artifacts 909 playmode-shard-1
+  printf 'FAIL  BPlayTests  ==> 1/3 passed\tcases:\tP.B.One\n' > "$GHD/909.playmode-shard-1.txt"
+  touch "$GHD/ls.fail"
+  run "$SUBJECT" sync
+  assert_success
+  [ ! -s "$LEDGER" ]
+  rm "$GHD/ls.fail"
+  run "$SUBJECT" sync
+  assert_success
+  [ "$(cut -f4 "$LEDGER")" = P.B.One ]
+  rm "$SANDBOX/pg/.github/actions/artifact/artifact.py"
+  run "$SUBJECT" sync
+  assert_failure 2
+  assert_output --partial 'artifact lister'
+  jq 'del(.trackers["unity-core-playground"].github)' "$PROJECT_MAP_FILE" > "$PROJECT_MAP_FILE.tmp" && mv "$PROJECT_MAP_FILE.tmp" "$PROJECT_MAP_FILE"
+  run "$SUBJECT" sync
+  assert_failure 2
+  assert_output --partial 'no github slug'
 }
