@@ -2627,6 +2627,26 @@ coverage_setup() {
   assert_output 'hold'
 }
 
+@test "triage --coverage: a generic watch line routes the row but covers no watch it does not name (ar-4155)" {
+  coverage_setup
+  sed -i '/standing/d' "$TRIAGE_ROUTES"
+  printf '^check.watch.: ([a-z0-9-]+) tripped\tagent\t-\tdo the action\t-\n' >> "$TRIAGE_ROUTES"
+  run "$SUBJECT" triage --coverage
+  assert_failure
+  assert_output 'watch standing'
+  run "$SUBJECT" triage --route 'watch standing'
+  assert_output --partial "$(printf 'watch standing\tagent')"
+  # naming it covers it, in an alternation too; a name that only contains it does not
+  printf '^check.watch.: (outstanding|standing-by) tripped\tagent\t-\tdo it\t-\n' > "$SANDBOX/named"
+  cat "$TRIAGE_ROUTES" >> "$SANDBOX/named"; mv "$SANDBOX/named" "$TRIAGE_ROUTES"
+  run "$SUBJECT" triage --coverage
+  assert_output 'watch standing'
+  sed -i '1s/(outstanding|standing-by)/(outstanding|standing)/' "$TRIAGE_ROUTES"
+  run "$SUBJECT" triage --coverage
+  assert_success
+  assert_output ''
+}
+
 @test "triage --coverage: a runner whose SKILL resolves to nothing fails and names it (negative control)" {
   coverage_setup
   printf '#!/usr/bin/env bash\nexec "%s" skill --dangling\n' "$REPO_ROOT/.local/bin/agentctl" > "$SANDBOX/bin/skill-stub"
@@ -2944,6 +2964,22 @@ failed() {
   run "$SUBJECT" triage --dry-run
   assert_success
   assert_output 'fix(hold): ci-aaa11111-shell-tests went red after cleanup merge hit (PR 5 at aaa11111): shell tests red at aaa11111: tests/integ/tool.bats #high'
+}
+
+@test "hold: a bats warning's trace names no failed file, only a TAP diagnostic does (ar-4122)" {
+  # NEGATIVE CONTROL: any "in test file" counted, so a BW02 warning put a passing file on the row.
+  hold_setup
+  cleanup hit -7200 5 aaa11111 .local/bin/tool
+  echo 'run tool' > "$GHD/tool.bats"
+  ci 1 success zzz00000 -7300; ci 2 failure aaa11111 -7201
+  failed 2 integ/tool.bats
+  printf 'fast tier\tFast tier\t2026-11-06T17:49:04Z        in test file unit/warned.bats, line 363)\n' >> "$GHD/log.2"
+  printf 'fast tier\tFast tier\t2026-11-06T17:49:04Z # (in test file unit/body.bats, line 9)\n' >> "$GHD/log.2"
+  printf 'fast tier\tFast tier\t2026-11-06T17:49:04Z # (from function `setup'"'"' in test file unit/setup.bats, line 12)\n' >> "$GHD/log.2"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_output --partial 'shell tests red at aaa11111: tests/integ/tool.bats, tests/unit/body.bats, tests/unit/setup.bats #high'
+  refute_output --partial 'warned.bats'
 }
 
 @test "hold: a run ledger past the 128 KB argument limit still reads (ar-1619)" {
@@ -4119,6 +4155,23 @@ prs_fixture() {
   assert_output '2 queued with a pending gate, which belongs on its board row: f (after up), g (rbw:infra/key (not in rbw))'
   export BENCH_ITEMS_CMD=false
   run "$SUBJECT" pipeline --check held
+  assert_failure 2
+}
+
+@test "pipeline --check owner: an active item no session owns trips it; owned and queued items pass; an unreadable list exits 2" {
+  items_stub "$(item a queued high human)" "$(item b running high human '{"session":"lab/x:1"}')" \
+    "$(item c review high human '{"sessions":"lab/y:1"}')"
+  export BENCH_ITEMS_CMD=items-stub
+  run "$SUBJECT" pipeline --check owner
+  assert_success
+  assert_output ''
+  # NEGATIVE CONTROL: a running and a waiting item that lost their sessions
+  items_stub "$(item a queued high human)" "$(item d running high human)" "$(item e waiting high human '{"session":""}')"
+  run "$SUBJECT" pipeline --check owner
+  assert_failure 1
+  assert_output '2 running, review or waiting with no session: d (running), e (waiting)'
+  export BENCH_ITEMS_CMD=false
+  run "$SUBJECT" pipeline --check owner
   assert_failure 2
 }
 

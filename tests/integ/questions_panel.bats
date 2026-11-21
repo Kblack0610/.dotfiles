@@ -792,3 +792,11 @@ transcript() {
   # desk, so the gate is 1 s; the old agent-ask list took 2.4 s for this many on a desk.
   [ $(((t1 - t0) / 1000000)) -lt 1000 ] || fail "rows took $(((t1 - t0) / 1000000)) ms"
 }
+
+@test "a prompt with no project is named for its session, not the -agent-N worktree" {
+  printf '{"target":"lab/unity-core-playground-agent-4:1","status":"waiting","idle_since":%s,"doing":"Bash","summary":"No cwd"}\n' \
+    "$(($(date +%s) - 600))" >"$NOTES_FIXTURE/agent-panel.list.json"
+  run rows
+  assert_success
+  assert_output --regexp $'\tLIVE ucp:4 +[0-9]+m  prompt waiting'
+}
