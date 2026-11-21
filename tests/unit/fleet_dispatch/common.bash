@@ -898,9 +898,9 @@ case "$1" in log) echo run-9 ;; trainee) printf "%s\n" "${TRAINEE_LANE:-}" ;; cl
 
 # --- fleet workers -----------------------------------------------------------------------
 
-# worker <load cores ready mem% [conflict]> [place] [first] [harnesses] [kit] -- one fleet worker, razer-laptop, in an inventory whose
+# worker <load cores ready mem% [conflict [notes]]> [place] [first] [harnesses] [kit] -- one fleet worker, razer-laptop, in an inventory whose
 # ansible_host sits in another group and that lists the workstation, state, with the game repo cloned. ssh answers its probe with those
-# four words (a fifth, 1, says its store is in a merge conflict) and runs any other command here, so the tmux stub stands in for the worker's server.
+# four words (a fifth, 1, says its store is in a merge conflict; a sixth, 0, that it has no ~/.notes clone) and runs any other command here, so the tmux stub stands in for the worker's server.
 # ssh.rc, when present, is ssh's own exit (255: the worker did not answer).
 # first is its fleet_first, a YAML list such as "[canary]"; harnesses its fleet_harnesses, such as "[ocfree]";
 # kit its `fleet-dispatch kit` line, default every launcher and srt ("" is an older worker with no kit verb).
