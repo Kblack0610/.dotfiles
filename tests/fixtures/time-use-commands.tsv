@@ -5,6 +5,8 @@
 gate	scripts/test/ci-gate.sh --pr 12
 gate	cd ~/.worktrees/x && scripts/test/ci-gate.sh --pr 1
 gate	agent-land 2591 --item foo
+gate	scripts/test/gate-and-land.sh --title t --item s --partial
+gate	cd ~/.worktrees/x && scripts/test/gate-and-land.sh --item s
 gate	timeout 1500 agent-land 2591 --item foo
 gate	git push -q && gh-run-wait 43445198879 checks && agent-land 2 --item x
 gate	gh pr checks 2446 --watch --interval 30
@@ -38,6 +40,7 @@ test	xargs timeout 590 ./run-bats.sh --jobs 8
 test	tests/docker.sh test-ui-inner
 build	scripts/unity-method.sh Foo.Bar
 jobs	/tmp/run-wait-1106.sh
+jobs	sed -n 1p scripts/test/gate-and-land.sh
 jobs	sed -n 1,40p tests/unit/x.bats
 jobs	ls tests/vendor/bats-core
 jobs	grep -n "BATS\|bats" tests/Makefile

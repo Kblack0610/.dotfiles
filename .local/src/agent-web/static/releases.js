@@ -226,10 +226,12 @@ const relRuns = runsTable({
   none: "No run tied to a release in 30 days.", render: () => relst.render(),
 });
 // The Flow inner tab: one project's CI lanes (its runs tied to no release, one lane a workflow)
-// and Release lanes (each app's tags, build runs and the channels a tag reached) over 24h or 7d,
+// and Release lanes (each app's tags, build runs and the channels a tag reached) over 24h, 7d, 30d
+// or a from-to day pair (`2026-11-10..2026-11-15`, clipped to the runs ledger's 30 days, the read
+// says when it is),
 // from /api/releases/lanes (hub_core::lanes). A segment opens its run's record or its app's page.
 // The project and window are this page's; the read is its own, made only while Flow shows.
-const relFlow = { project: "", window: "", data: null, err: null };
+const relFlow = { project: "", window: "", from: "", to: "", data: null, err: null };
 const REL_FLOW_COLOR = { green: "var(--idle)", red: "var(--wait)", running: "var(--accent)", queued: "var(--busy)", tag: "var(--c5)", reached: "var(--c6)" };
 const relFlowColor = (k) => REL_FLOW_COLOR[k] || OTHER;
 const relFlowAsked = () => new URLSearchParams({ project: relFlow.project, window: relFlow.window }).toString();
@@ -240,18 +242,26 @@ const relFlowRefresh = coalesce(async () => {
   let data = null, err = null;
   try { data = await api("/api/releases/lanes?" + asked); } catch (e) { err = e.message; }
   if (asked !== relFlowAsked()) return;
-  if (data) { relFlow.data = data; relFlow.project = data.project; relFlow.window = data.window; }
+  if (data) { relFlow.data = data; relFlow.project = data.project; relFlow.window = data.window; [relFlow.from, relFlow.to] = relFlowDays(data.window); }
   relFlow.err = err;
   relst.render();
 });
 const relFlowLanes = (d, lanes) => swimlanes(lanes.map((l) => ({ ...l, segs: l.segs.map((s) => ({ ...s, a: s.a * 1e3, b: s.b * 1e3 })) })), d.t0 * 1e3, d.t1 * 1e3, relFlowColor);
+// The day pair a window names (`2026-11-10..2026-11-12`, or one day), else two empty days.
+const relFlowDays = (w) => (/^\d{4}-\d{2}-\d{2}(\.\.\d{4}-\d{2}-\d{2})?$/.test(w) ? [w.slice(0, 10), w.slice(-10)] : ["", ""]);
 function relFlowBlock() {
   const d = relFlow.data;
   if (!d) return secHead("", "Flow") + `<div class="${relFlow.err ? "panel down" : "empty"}">${relFlow.err ? esc(relFlow.err) : "reading..."}</div>`;
   const pick = `<select class="rel-flow" aria-label="project">${d.projects.concat(d.projects.includes(d.project) ? [] : [d.project]).map((p) => `<option${p === d.project ? " selected" : ""}>${esc(p)}</option>`).join("")}</select>`;
-  const wins = `<div class="seg fseg"><span class="muted">window</span>` + d.windows.map((w) => `<button class="${w === d.window ? "on" : ""}" data-flow-win="${esc(w)}">${esc(w)}</button>`).join("") + `</div>`;
+  const [from, to] = relFlowDays(d.window);
+  // The ledger's days are the only ones with runs: the pickers reach no further back.
+  const lo = new Date(Date.now() - d.keep_days * 864e5), hi = new Date();
+  const ymd = (t) => `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
+  const lim = d.keep_days ? ` min="${ymd(lo)}" max="${ymd(hi)}"` : "";
+  const days = `<span class="muted">or</span> <input type="date" class="tdate" data-flow-from value="${esc(from)}"${lim} title="from day" aria-label="from day"> <span class="muted">to</span> <input type="date" class="tdate" data-flow-to value="${esc(to)}"${lim} title="to day" aria-label="to day">`;
+  const wins = `<div class="seg fseg"><span class="muted">window</span>` + d.windows.map((w) => `<button class="${w === d.window ? "on" : ""}" data-flow-win="${esc(w)}">${esc(w)}</button>`).join("") + days + `</div>`;
   let h = `<div class="cline">${pick} ${wins} ${legend(d.keys.map(([k, l]) => [l, relFlowColor(k)]))}</div>`;
-  const errs = [relFlow.err && `refresh failed, showing the last read: ${relFlow.err}`, ...d.errors].filter(Boolean);
+  const errs = [d.clipped, relFlow.err && `refresh failed, showing the last read: ${relFlow.err}`, ...d.errors].filter(Boolean);
   if (errs.length) h += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   const part = (title, lanes, empty) => secHead("", title, lanes.length || null) + (lanes.length ? `<div class="panel">${relFlowLanes(d, lanes)}</div>` : `<div class="panel muted">${esc(empty)}</div>`);
   return h + part("CI", d.ci, d.ci_empty) + part("Release", d.release, d.release_empty);
@@ -438,7 +448,7 @@ $("releases").addEventListener("toggle", (e) => { if (e.target.dataset?.k) REL_O
 $("releases").addEventListener("click", (e) => {
   const t = e.target;
   const win = t.closest("[data-flow-win]");
-  if (win) { relFlow.window = win.dataset.flowWin; relFlowRefresh(); return; }
+  if (win) { relFlow.window = win.dataset.flowWin; relFlow.from = relFlow.to = ""; relFlowRefresh(); return; }
   if (t.closest("a") || t.closest("button") || t.closest("summary") || t.closest("select") || t.closest("tr.rcd")) return;
   const rh = t.closest("tr.rh");
   if (rh) { loadChangelog(rh.dataset.project, rh.dataset.tag); return; }
@@ -457,6 +467,15 @@ $("releases").addEventListener("change", (e) => {
   if (pick) loadChangelog(pick.dataset.project, pick.value);
   const flow = e.target.closest("select.rel-flow");
   if (flow) { relFlow.project = flow.value; relFlowRefresh(); }
+  // Either day picked draws from that day to the other, or that one day; both cleared is the default.
+  const from = e.target.closest("[data-flow-from]"), to = e.target.closest("[data-flow-to]");
+  if (from || to) {
+    if (from) relFlow.from = from.value;
+    if (to) relFlow.to = to.value;
+    const [a, b] = [relFlow.from, relFlow.to];
+    relFlow.window = a || b ? `${a || b}..${b || a}` : "";
+    relFlowRefresh();
+  }
 });
 
 // A ledger write also refreshes the apps: their Builds and the RELEASED cell's `building`.

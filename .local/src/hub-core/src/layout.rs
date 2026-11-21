@@ -527,7 +527,7 @@ pub fn moved_chip(tab: &str, sec: &str) -> Option<(&'static str, &'static str)> 
 /// its rows, its epics, the next stage's checklist and what happened, then the project's
 /// departments (`hub_core::departments`). Overview is the default; a section id opens the inner
 /// tab holding it.
-pub const PROJECT_PAGE: [Inner; 14] = [
+pub const PROJECT_PAGE: [Inner; 15] = [
     Inner {
         id: "overview",
         title: "Overview",
@@ -543,6 +543,13 @@ pub const PROJECT_PAGE: [Inner; 14] = [
         id: "deliverables",
         title: "Deliverables",
         sections: &["p-build"],
+    },
+    // The project's versions on its release line, its apps' words, then the Legacy fold
+    // (`hub_core::project_releases`).
+    Inner {
+        id: "releases",
+        title: "Releases",
+        sections: &["p-versions", "p-apps", "p-legacy"],
     },
     Inner {
         id: "stage",
@@ -1120,7 +1127,14 @@ mod tests {
         assert_eq!(dept_tabs(Some("game")), nine);
         assert_eq!(dept_tabs(Some("infra")), ["engineering", "ops"]);
         assert!(dept_tabs(None).is_empty());
-        let mut page = vec!["overview", "rows", "deliverables", "stage", "activity"];
+        let mut page = vec![
+            "overview",
+            "rows",
+            "deliverables",
+            "releases",
+            "stage",
+            "activity",
+        ];
         page.extend(&nine);
         assert_eq!(ids(project_page(&dept_tabs(Some("app")))), page);
         assert_eq!(
@@ -1129,6 +1143,7 @@ mod tests {
                 "overview",
                 "rows",
                 "deliverables",
+                "releases",
                 "stage",
                 "activity",
                 "engineering",
@@ -1137,7 +1152,14 @@ mod tests {
         );
         assert_eq!(
             ids(project_page::<&str>(&[])),
-            ["overview", "rows", "deliverables", "stage", "activity"]
+            [
+                "overview",
+                "rows",
+                "deliverables",
+                "releases",
+                "stage",
+                "activity"
+            ]
         );
         // every department tab is a stages.md department, titled as it titles it
         let doc = crate::stages::stages_md_departments();

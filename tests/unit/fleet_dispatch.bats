@@ -1629,6 +1629,22 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   refute_output --partial 'gm-9'
 }
 
+@test "starved names a board row gated #after a row that does not exist, and not one gated on an open row (ar-4017)" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 "- [ ] feat(game): the base $T <!-- id:gm-1 -->"
+  row game agent gm-2 "- [ ] feat(game): waits on the base $T #after/gm-1 <!-- id:gm-2 -->"
+  row game agent gm-3 "- [ ] feat(game): waits on a row nobody filed $T #after/gm-404 <!-- id:gm-3 -->"
+  row game agent gm-5 "- [x] feat(game): a row that was dropped $T <!-- id:gm-5 dropped -->"
+  row game agent gm-4 "- [ ] feat(game): waits on a dropped row $T #after/gm-5 <!-- id:gm-4 -->"
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'board rows gated on what can never clear:'
+  assert_output --partial 'gm-3 (game, #after/gm-404: after gm-404: no board row has that id)'
+  assert_output --partial 'gm-4 (game, #after/gm-5: after gm-5: that row was dropped'
+  refute_output --partial 'gm-2 ('
+}
+
 @test "run starts nothing when account usage cannot be read" {
   game_ready
   stub claude-acct 'exit 2'
@@ -2140,6 +2156,28 @@ J
   refute_output --partial '--pr-only'
   assert_output --partial 'read ~/.claude/skills/fix-red/SKILL.md first'
   assert_output --partial 'Merge with agent-land <N>'
+  refute_output --partial 'this is its escalation'
+  # reflective-penguin P2: triage's escalation of a red whose fixes did not hold is the root-cause pass
+  : > "$NOTES_FIXTURE/cmds.log"
+  agent-queue add --project game --slug r2 --tags 'red cause:cd34 escalate retry:r' "fix r again" >/dev/null
+  cmd_start --item r2 >/dev/null || fail "start r2"
+  run cat "$NOTES_FIXTURE/cmds.log"
+  assert_output --partial 'this is its escalation: before any fix, do the root-cause pass of fix-red section 3'
+}
+
+@test "promote: --model pins the item's model, as triage's escalation does; without it the item names none" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'deep one' '- [ ] deep one <!-- id:gm-8 -->'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --agent --project game --profile bnb --model opus --raw '- [ ] deep one <!-- id:gm-8 -->'
+  assert_success
+  run agent-queue show gm-8
+  assert_line 'model: opus'
+  # NEGATIVE CONTROL: a plain promote leaves the model to the lane
+  row game agent 'plain one' '- [ ] plain one <!-- id:gm-9 -->'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --agent --project game --profile bnb --raw '- [ ] plain one <!-- id:gm-9 -->'
+  assert_success
+  run agent-queue show gm-9
+  refute_line --partial 'model:'
 }
 
 @test "canary: a canary item starts on its task as written: no /one-shot and no PR or landing lines" {
@@ -2564,23 +2602,28 @@ J
 }
 
 # 2026-11-05: 220 rows sat unjudged since 11-02 while every pass stopped at held queue items.
-@test "starved: board rows nobody judged while the human was away that long trip it; a recent judge or a short absence does not" {
+@test "starved: board rows nobody judged that long trip it, the human here or away; a recent judge or a full fleet does not" {
   game_ready
   rm -f "$FLEET_DISPATCH_DIR/verdicts.jsonl"
-  stub fleet-presence 'echo "away 90 tmux"'
+  local p; for p in 'away 90 tmux' 'away 10 tmux' 'here 0 tmux'; do
+    stub fleet-presence "echo '$p'"
+    run cmd_starved
+    assert_failure
+    assert_output --partial '1 board rows unjudged, none judged since never'
+  done
+  # A fleet at its pace target never reaches the fill, so the rows wait on sessions finishing.
+  acct main:pace
+  export DISPATCH_TARGET_PRESENT=3 DISPATCH_TARGET_AWAY=3
+  fleet_state 3
+  run cmd_starved
+  assert_success
+  refute_output --partial 'unjudged'
+  # Negative control: one under the target, and the same rows starve.
+  fleet_state 2
   run cmd_starved
   assert_failure
-  assert_output --partial '1 board rows unjudged, none judged since never'
-  # Away for less than the window: the first pass has not had its turn yet.
-  stub fleet-presence 'echo "away 10 tmux"'
-  run cmd_starved
-  assert_success
-  # The human is here: the board waits for them to leave, by design.
-  stub fleet-presence 'echo "here 0 tmux"'
-  run cmd_starved
-  assert_success
+  assert_output --partial '1 board rows unjudged'
   # A judge inside the window: the board is turning.
-  stub fleet-presence 'echo "away 90 tmux"'
   verdict game human 'fix crash on load' dispatch
   rm -f "$FLEET_DISPATCH_DIR/verdicts.jsonl"; mkdir -p "$FLEET_DISPATCH_DIR"; : > "$FLEET_DISPATCH_DIR/verdicts.jsonl"
   run cmd_starved

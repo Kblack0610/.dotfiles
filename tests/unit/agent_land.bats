@@ -12,6 +12,8 @@ setup() {
   sandbox_init basic
   LAND="$REPO_ROOT/.local/bin/agent-land"
   LOG="$NOTES_FIXTURE/calls.log"
+  # No first-run wait before a "none reported" refusal; the cases for that wait set it themselves.
+  export AGENT_LAND_CHECKS_FIRST_RUN_TRIES=0
 
   # gh: `pr view` answers from fixture files, `pr merge` flips the state to merged.state.
   printf 'OPEN\n' >"$NOTES_FIXTURE/state"
@@ -63,12 +65,27 @@ case "$1 $2" in
 # pr edit --body-file -: the new body becomes the body
 'pr edit') cat >"$NOTES_FIXTURE/body" ;;
 'run list')
+  case "$*" in
+  # runs.open: the head's runs as JSON, one answer per read, popped as read; [] once empty.
+  # A line "ERR <text>": that read fails with <text>
+  *workflowName*) q="$NOTES_FIXTURE/runs.open" r='[]'
+    if [ -s "$q" ]; then r=$(head -1 "$q"); sed -i 1d "$q"; fi
+    case "$r" in 'ERR '*) echo "${r#ERR }" >&2; exit 1 ;; esac
+    echo "$r" ;;
   # runs.queued: one count per poll, popped as read; 0 once empty
-  q="$NOTES_FIXTURE/runs.queued"
-  if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else echo 0; fi ;;
+  *) q="$NOTES_FIXTURE/runs.queued"
+    if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else echo 0; fi ;;
+  esac ;;
 'pr checks')
   case "$*" in
-  *--json*) cat "$NOTES_FIXTURE/checks.failed" ;;
+  # checks.failed: the failed or cancelled names after a failed watch
+  *'"fail" or'*) cat "$NOTES_FIXTURE/checks.failed" ;;
+  # checks.cancelled: the cancelled checks as JSON after a green watch, one answer per read,
+  # popped as read; [] once empty. A line "ERR <text>": that read fails with <text>
+  *--json*) q="$NOTES_FIXTURE/checks.cancelled" r='[]'
+    if [ -s "$q" ]; then r=$(head -1 "$q"); sed -i 1d "$q"; fi
+    case "$r" in 'ERR '*) echo "${r#ERR }" >&2; exit 1 ;; esac
+    echo "$r" ;;
   # checks.seq: one watch result per call (green, or the output of a failed watch), popped as read; then checks.out
   *) q="$NOTES_FIXTURE/checks.seq"
     if [ -s "$q" ]; then r=$(head -1 "$q"); sed -i 1d "$q"; [ "$r" = green ] || { echo "$r"; exit 1; }; exit 0; fi
@@ -106,6 +123,8 @@ merge-base) if [ "$2" != --is-ancestor ]; then echo 5eedbase5eedbase; elif [ "${
 merge) [ "$2" = --abort ] || [ ! -f "$NOTES_FIXTURE/merge.conflicts" ] || { echo 'CONFLICT (content)'; exit 1; } ;;
 # tree.conflicts: a trial merge of the base (merge-tree) conflicts, and the real merge does too from then on
 merge-tree) [ ! -f "$NOTES_FIXTURE/tree.conflicts" ] || { : >"$NOTES_FIXTURE/merge.conflicts"; exit 1; } ;;
+# no.workflows: the head has no Actions workflow dir (it has .github/workflows by default)
+ls-tree) [ -f "$NOTES_FIXTURE/no.workflows" ] || echo .github/workflows ;;
 esac
 EOF
   # comms-lint: keeps what it was given in linted.txt, prints lint.out and exits lint.rc (0 by default)
@@ -313,7 +332,7 @@ second_wait() {
   assert_success
   assert_line 'checks: waiting on them for the pushed head'
   assert_line 'landed #42'
-  run grep -c 'pr checks' "$LOG"
+  run grep -c 'pr checks 42 --watch' "$LOG"
   assert_output 2
   [ "$(grep -n '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG" | cut -d: -f1)" -lt "$(grep -n 'pr checks' "$LOG" | tail -1 | cut -d: -f1)" ]
   [ "$(grep -n 'pr checks' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'gh pr merge 42' "$LOG" | cut -d: -f1)" ]
@@ -326,7 +345,7 @@ moved_again() {
   assert_line 'landed #42'
   run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
   assert_output "$1"
-  run grep -c 'pr checks' "$LOG"
+  run grep -c 'pr checks 42 --watch' "$LOG"
   assert_output "$2"
 }
 
@@ -508,7 +527,7 @@ moved_again() {
   assert_success
   run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
   assert_output 2
-  run grep -c 'pr checks' "$LOG"
+  run grep -c 'pr checks 42 --watch' "$LOG"
   assert_output 3
   run grep -c 'branches/main/protection' "$LOG"
   assert_output 1
@@ -596,6 +615,7 @@ git rev-list --count HEAD..origin/main
 git merge-base HEAD origin/main
 shape-grow 5eedbase5eedbase HEAD
 gh pr checks 42 --watch --fail-fast -i 30
+gh pr checks 42 --json name,bucket,workflow -q map(select(.bucket == "cancel"))
 git fetch -q origin
 git rev-list --count HEAD..origin/main
 git rev-parse HEAD
@@ -719,11 +739,80 @@ EOF
 
 @test "no checks reported: polled a bounded number of times, then it lands" {
   printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
-  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=3 run "$LAND" 42 --item ship
+  # A land that lands on the local gate does not take the first-run wait.
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=3 AGENT_LAND_CHECKS_FIRST_RUN_TRIES=5 run "$LAND" 42 --item ship
   assert_success
   assert_line --index 2 'checks: none reported'
   run grep -c 'pr checks 42 --watch' "$LOG"
   assert_output 3
+}
+
+# ar-1375: #1710's first run came 213s after gh pr create, past the CHECKS_TRIES reads, and a tier-3
+# land refused "none reported" for a run that did not exist yet.
+@test "no checks reported yet on a land that would refuse: it waits for the head's first run, then lands on its green" {
+  for _ in 1 2 3 4; do printf "no checks reported on the 'x' branch\n"; done >"$NOTES_FIXTURE/checks.seq"
+  echo green >>"$NOTES_FIXTURE/checks.seq"
+  fake_sleep
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_QUEUED_POLL=7 AGENT_LAND_CHECKS_TRIES=2 AGENT_LAND_CHECKS_FIRST_RUN_TRIES=5 run "$LAND" 42 --item ship --ran-checks
+  assert_success
+  assert_line 'checks: none reported yet, which this land would refuse; waiting up to 5 x 7s for the head'"'"'s first run'
+  assert_line 'landed #42'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 5
+  # One CHECKS_POLL sleep inside CHECKS_TRIES, then the queued cadence.
+  run grep '^sleep' "$LOG"
+  assert_output "$(printf 'sleep 0\nsleep 7\nsleep 7\nsleep 7')"
+}
+
+@test "no first run within the first-run wait: stops at checks after CHECKS_TRIES plus that many reads" {
+  printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
+  fake_sleep
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_QUEUED_POLL=7 AGENT_LAND_CHECKS_TRIES=2 AGENT_LAND_CHECKS_FIRST_RUN_TRIES=3 run "$LAND" 42 --item ship --ran-checks
+  assert_failure 1
+  assert_output --partial 'checks failed: none reported, and --ran-checks lands only on checks that ran green'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 5
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "the #1710 case: a tier-3 land whose PR's first run registers late waits for it and lands on its green" {
+  ITEM_PROJECT=agent-runtime item prune 'human'
+  printf 'The change.\n\nReview: /code-review high, 2 findings fixed\n' >"$NOTES_FIXTURE/body"
+  for _ in 1 2 3; do printf "no checks reported on the 'x' branch\n"; done >"$NOTES_FIXTURE/checks.seq"
+  echo green >>"$NOTES_FIXTURE/checks.seq"
+  fake_sleep
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_QUEUED_POLL=7 AGENT_LAND_CHECKS_TRIES=2 AGENT_LAND_CHECKS_FIRST_RUN_TRIES=5 run "$LAND" 42 --item prune
+  assert_success
+  assert_line --partial 'checks: none reported yet, which this land would refuse'
+  assert_line 'landed #42'
+}
+
+@test "a head with no workflow files gets no first-run wait: a land that refuses none refuses after CHECKS_TRIES" {
+  printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
+  touch "$NOTES_FIXTURE/no.workflows"
+  fake_sleep
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_QUEUED_POLL=7 AGENT_LAND_CHECKS_TRIES=2 AGENT_LAND_CHECKS_FIRST_RUN_TRIES=5 run "$LAND" 42 --item ship --ran-checks
+  assert_failure 1
+  assert_output --partial 'checks failed: none reported, and --ran-checks lands only on checks that ran green'
+  refute_output --partial 'none reported yet'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 2
+}
+
+@test "Forgejo: a land that would refuse none waits for the head's first status, then stops at checks" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  echo '{"state":"","statuses":[]}' >"$NOTES_FIXTURE/fj.status"
+  fake_sleep
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_QUEUED_POLL=7 AGENT_LAND_CHECKS_TRIES=2 AGENT_LAND_CHECKS_FIRST_RUN_TRIES=2 run "$LAND" 42 --item ship --ran-checks
+  assert_failure 1
+  assert_output --partial 'checks: none reported yet, which this land would refuse'
+  assert_output --partial 'checks failed: none reported, and --ran-checks lands only on checks that ran green'
+  run grep -c '^curl GET commits/.*/status' "$LOG"
+  assert_output 4
+  run grep '^sleep' "$LOG"
+  assert_output "$(printf 'sleep 0\nsleep 7\nsleep 7')"
 }
 
 @test "no checks reported with --ran-checks (a direct run's landing, which no review backs): stops at checks, as tier 3 does" {
@@ -904,6 +993,72 @@ EOF
   # a queued run is re-read a minute apart, not at the no-checks cadence (ar-1345)
   run grep '^sleep' "$LOG"
   assert_output $'sleep 60\nsleep 60\nsleep 60\nsleep 0'
+}
+
+# gh's watch exits 0 when the only Checks is a cancelled run, while the newer run on the same head
+# has no check yet; GitHub then refused the merge BLOCKED (unity-core-playground#2166).
+CANCELLED='[{"name":"Checks","bucket":"cancel","workflow":"Checks"}]'
+fake_sleep() {
+  printf '#!/bin/sh\necho "sleep $1" >>"$NOTES_FIXTURE/calls.log"\n' >"$SANDBOX/bin/sleep"
+  chmod +x "$SANDBOX/bin/sleep"
+}
+
+@test "a cancelled check while a newer run of its workflow goes on: it waits, then lands on that run's green" {
+  printf '%s\n' "$CANCELLED" >"$NOTES_FIXTURE/checks.cancelled"
+  printf '%s\n' '[{"status":"in_progress","workflowName":"Checks"}]' >"$NOTES_FIXTURE/runs.open"
+  fake_sleep
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: cancelled: Checks; waiting on the newer run of its workflow on the head'
+  assert_line 'checks: green'
+  assert_line 'landed #42'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 2
+  run grep '^sleep' "$LOG"
+  assert_output 'sleep 60'
+}
+
+@test "a cancelled check with no run of its workflow left: read a bounded number of times, then stops at checks, never merges" {
+  printf '%s\n' "$CANCELLED" "$CANCELLED" >"$NOTES_FIXTURE/checks.cancelled"
+  # an open run of another workflow is not the cancelled check's replacement
+  printf '%s\n' '[{"status":"queued","workflowName":"Deploy"}]' '[{"status":"queued","workflowName":"Deploy"}]' >"$NOTES_FIXTURE/runs.open"
+  fake_sleep
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=2 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: cancelled: Checks, and no run of its workflow is left on the head to replace it'
+  refute_line 'checks: green'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 2
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "a cancelled check whose replacement registers during the bounded reads: it lands on that run's green" {
+  printf '%s\n' "$CANCELLED" >"$NOTES_FIXTURE/checks.cancelled"
+  fake_sleep
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=3 run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'landed #42'
+  run grep '^sleep' "$LOG"
+  assert_output 'sleep 0'
+}
+
+@test "a failed read of the cancelled checks is never green: a lost connection reads again, any other error stops at checks" {
+  printf '%s\n' 'ERR gh: Server Error (HTTP 502)' >"$NOTES_FIXTURE/checks.cancelled"
+  fake_sleep
+  AGENT_LAND_CHECKS_POLL=0 run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: lost the connection to the API (1 of 5 retries), reading again'
+  assert_line 'landed #42'
+  : >"$LOG"
+  printf 'OPEN\n' >"$NOTES_FIXTURE/state"
+  printf '%s\n' 'ERR gh: API rate limit exceeded (HTTP 403)' >"$NOTES_FIXTURE/checks.cancelled"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: reading the cancelled checks: gh: API rate limit exceeded (HTTP 403)'
+  refute_line 'checks: green'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
 }
 
 @test "--plan ticks exactly the named phase" {
@@ -2217,4 +2372,62 @@ EOF2
   assert_success
   run agent-queue show tidy-loader --json
   assert_equal "$(jq -r '.open_pr // "gone"' <<<"$output")" 'o/r#42'
+}
+
+@test "a partial landing on an item another session owns records the PR without claiming the item (ar-3368)" {
+  item ship
+  agent-queue claim ship --sid sid-owner >/dev/null
+  run agent-queue show ship --json
+  assert_equal "$(jq -r .sessions <<<"$output")" 'sid-owner'
+
+  # A partial landing from a different session records the PR but does not claim the item.
+  CLAUDE_CODE_SESSION_ID=sid-lander run "$LAND" 42 --item ship --partial
+  assert_success
+  assert_line --partial 'item: ship partial with pr:o/r#42'
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '[.state, .partial, .pr, .sessions] | join("|")' <<<"$output")" 'running|yes|o/r#42|sid-owner'
+
+  # Negative control: landing without --partial claims the item on its final landing.
+  echo '{"state":"MERGED","mergeCommit":{"oid":"abcdef0123456789abcdef0123456789abcdef01"}}' >"$NOTES_FIXTURE/prior.json"
+  echo OPEN >"$NOTES_FIXTURE/state"
+  echo https://github.com/o/p/pull/43 >"$NOTES_FIXTURE/url"
+  echo git@github.com:o/p.git >"$NOTES_FIXTURE/origin.url"
+  CLAUDE_CODE_SESSION_ID=sid-lander run "$LAND" 43 --item ship
+  assert_success
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '[.state, .sessions] | join("|")' <<<"$output")" 'done|sid-owner sid-lander'
+}
+
+@test "a partial landing on an item owned via tmux session does not claim the item (ar-3368)" {
+  printf 'dotfiles-agent-9\n' >"$NOTES_FIXTURE/tmux.session"
+  export TMUX="$SANDBOX/tmp/tmux-1000/default,123,0"
+  item foreign
+  agent-queue set foreign session=lab:foreign-sess >/dev/null
+  agent-queue claim foreign --sid sid-old >/dev/null
+  CLAUDE_CODE_SESSION_ID=sid-lander run "$LAND" 42 --item foreign --partial
+  assert_success
+  assert_line --partial 'item: foreign partial with pr:o/r#42'
+  run agent-queue show foreign --json
+  assert_equal "$(jq -r '[.state, .partial, .pr, .sessions] | join("|")' <<<"$output")" 'running|yes|o/r#42|sid-old'
+}
+
+@test "a partial landing from the item's own tmux session under a new id claims it, as does one with no tmux to compare (ar-3368)" {
+  printf 'dotfiles-agent-9\n' >"$NOTES_FIXTURE/tmux.session"
+  export TMUX="$SANDBOX/tmp/tmux-1000/default,123,0"
+  item resumed
+  agent-queue set resumed session=default:dotfiles-agent-9 >/dev/null
+  agent-queue claim resumed --sid sid-old >/dev/null
+  CLAUDE_CODE_SESSION_ID=sid-new run "$LAND" 42 --item resumed --partial
+  assert_success
+  run agent-queue show resumed --json
+  assert_equal "$(jq -r .sessions <<<"$output")" 'sid-old sid-new'
+
+  unset TMUX
+  item headless
+  agent-queue set headless session=lab:somewhere >/dev/null
+  echo https://github.com/o/r/pull/43 >"$NOTES_FIXTURE/url"
+  CLAUDE_CODE_SESSION_ID=sid-new run "$LAND" 43 --item headless --partial
+  assert_success
+  run agent-queue show headless --json
+  assert_equal "$(jq -r .sessions <<<"$output")" 'sid-new'
 }

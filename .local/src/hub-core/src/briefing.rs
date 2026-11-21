@@ -153,7 +153,7 @@ pub struct Inputs {
     pub errors: Vec<String>,
 }
 
-fn plural(n: usize, one: &str, many: &str) -> String {
+pub(crate) fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 

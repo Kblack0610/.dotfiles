@@ -124,6 +124,8 @@ pub struct Page {
     pub shipped: Vec<String>,
     /// The channels' one-line badge, linking to the Releases tab; None with no channels.
     pub releases: Option<crate::releases::Badge>,
+    /// The Releases inner tab: the project's versions, its apps and the Legacy fold.
+    pub release_tab: crate::project_releases::Tab,
     /// `3 watches, 1 firing` over the watches that name this project, linking to the Alerts tab
     /// filtered to it; None when no watch does.
     pub alerts: Option<crate::releases::Badge>,
@@ -632,11 +634,25 @@ pub fn read_with(
     if let Some(v) = &roadmap {
         p.shipped = shipped(v);
     }
-    let channels = crate::releases::channels(runner, name).unwrap_or_else(|e| {
-        p.errors.push(e);
-        vec![]
-    });
+    // One release-state read serves the badge, the checks, the timeline and the Releases tab;
+    // a failed read is said on the page and on the tab, a host with no snapshot on neither.
+    let mut rel = crate::releases::read(runner, &[]);
+    rel.errors.retain(|e| !crate::releases::unrefreshed(e));
+    p.errors.extend(rel.errors.iter().cloned());
+    let channels: Vec<_> = rel
+        .rows
+        .iter()
+        .filter(|r| r.project == name)
+        .cloned()
+        .collect();
     p.releases = crate::releases::badge(&channels);
+    let reg = project_map::cached();
+    p.release_tab = crate::project_releases::build(
+        name,
+        &rel,
+        &crate::version_page::labs(reg.as_deref(), name, &[]),
+        roadmap.as_ref(),
+    );
     p.alerts = crate::alerts::project_badge_here(name);
     if !channels.is_empty() {
         p.check_groups = crate::app_status::groups(name, &channels);
@@ -892,7 +908,7 @@ mod tests {
                 ),
                 ("notes projects --roadmap game", 0, roadmap.into()),
                 (
-                    "release-state show --json game",
+                    "release-state show --json",
                     0,
                     r#"{"rows":[{"project":"game","id":"game-prod","status":"drift"}]}"#.into(),
                 ),
@@ -904,6 +920,47 @@ mod tests {
             ],
             seen: Mutex::new(vec![]),
         }
+    }
+
+    /// `fake(0)` whose release-state read dies with `error`.
+    struct NoRelease(Fake, &'static str);
+    impl Runner for NoRelease {
+        fn run(&self, argv: &[String]) -> Result<String, String> {
+            if argv.join(" ").starts_with("release-state show") {
+                return Err(self.1.into());
+            }
+            self.0.run(argv)
+        }
+        fn output(&self, argv: &[String]) -> Result<(i32, String), String> {
+            self.0.output(argv)
+        }
+    }
+
+    #[test]
+    fn a_failed_release_read_is_said_on_the_page_and_the_tab_and_no_snapshot_on_neither() {
+        let p = read(
+            &NoRelease(fake(0), "exit 2: jq: error"),
+            "game",
+            "alpha",
+            NOW,
+        );
+        let said = "release-state show: exit 2: jq: error";
+        assert_eq!(p.errors, [said]);
+        assert_eq!(p.release_tab.errors, [said]);
+        // NEGATIVE CONTROL: a host where no refresh has run yet is not an error on either.
+        let p = read(
+            &NoRelease(fake(0), "no snapshot yet; run: release-state refresh"),
+            "game",
+            "alpha",
+            NOW,
+        );
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert!(
+            p.release_tab.errors.is_empty(),
+            "{:?}",
+            p.release_tab.errors
+        );
+        assert!(p.releases.is_none());
     }
 
     #[test]

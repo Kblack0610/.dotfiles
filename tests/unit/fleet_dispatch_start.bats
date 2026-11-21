@@ -1861,3 +1861,31 @@ rollup_setup() {
   run grep -c '^notes ptask agent-runtime --agent add ' "$NOTES_FIXTURE/calls.log"
   assert_output 2
 }
+
+@test "trainee-rollup: under agentctl each pass declares its outcome (WORKED filed, NOOP quiet, FAILED unread board); --dry declares none" {
+  rollup_setup
+  export AGENTCTL_NAME=trainee-rollup
+  out="$AGENTCTL_STATE_DIR/trainee-rollup/last-outcome"
+  for i in 1 2 3; do reject nim glm 'nim:glm left no diff'; done
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup --dry
+  assert_success
+  [ ! -e "$out" ] || fail "--dry declared $(cat "$out")"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  assert_success
+  [ "$(cat "$out")" = WORKED ] || fail "filing pass: $(cat "$out")"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  assert_success
+  [ "$(cat "$out")" = NOOP ] || fail "quiet pass: $(cat "$out")"
+  # a fresh log, so these rejects are not read as counted by the stamp written in the same second
+  rollup_setup; rm -f "$FLEET_DISPATCH_DIR/trainee-rollup.tsv"
+  for i in 1 2; do reject nim beam 'nim:beam left no diff'; done
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  assert_success
+  assert_output --partial 'under the bar (2 of 3)'
+  [ "$(cat "$out")" = NOOP ] || fail "under the bar: $(cat "$out")"
+  reject nim beam 'nim:beam left no diff'
+  stub notes 'exit 1'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  assert_failure
+  [ "$(cat "$out")" = FAILED ] || fail "unread board: $(cat "$out")"
+}

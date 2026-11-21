@@ -2,7 +2,7 @@
 //! surfaces): its commits, PRs, CI runs, release tags and deploys of the last `DAYS` days, newest
 //! first. Read when the record opens (docs/dashboards.md rule 10), never for every card.
 //! `project-timeline` resolves the project and fetches the facts (`Facts`); the deploys are the
-//! channels `releases::channels` read for the page's badge. This module only joins them and says
+//! project's channels from the page's one `releases::read`. This module only joins them and says
 //! the words.
 //!
 //! A run belongs to a path- or filter-scoped project when it ran on one of its commits or on one of

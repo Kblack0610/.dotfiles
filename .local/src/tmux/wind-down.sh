@@ -246,6 +246,21 @@ cmd_fire() {
     fi
   fi
 
+  # Each pending ask this session posted or joined is set to reopen it on the answer, so the answer
+  # carries on without the window: a `/wind-down` the human typed skips the skill's close check, where
+  # the model ran this. An ask that already resumes some other way keeps that resume; a refusal goes
+  # to fire.log and never holds the close (fleet-shepherd's close sets them first and keeps a window
+  # whose asks it cannot set). Set before the kill is scheduled, so the kill cannot cut a write short.
+  # Asks are read where agent-ask keeps them, <root>/<project>/<id>.md.
+  if is_session_id "$sid"; then
+    local af err
+    while IFS= read -r af; do
+      err="$(CLAUDE_CODE_SESSION_ID="$sid" "$SCRIPT_DIR/../../bin/agent-ask" reopen-on-answer "$(basename "$af" .md)" 2>&1 >/dev/null)" ||
+        printf '[%s] fire: ask %s not set to reopen: %s\n' "$(date '+%F %T' 2>/dev/null)" "$(basename "$af" .md)" "${err##*$'\n'}" >> "$logf" 2>/dev/null || true
+    done < <(grep -lxF "claude_session: $sid" "${AGENT_ASK_ROOT:-$HOME/.agent/asks}"/*/*.md 2>/dev/null |
+      xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null)
+  fi
+
   # Resolve the window's CURRENT session:index from its stable id, only to name the saved history.
   label=$("${TM[@]}" list-windows -a -F '#{window_id} #{session_name}:#{window_index}' 2>/dev/null \
     | awk -v w="$target" '$1==w{print $2; exit}')

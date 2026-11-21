@@ -15,6 +15,8 @@ setup() {
   export FLEET_STATE_FILE="$HOME/state.json" FLEET_SHEPHERD_DIR="$HOME/.agent/shepherd"
   # every run may start a pass; the debounce has its own test
   export FLEET_SHEPHERD_DEBOUNCE_MIN=0
+  # a session a lane started inherits the live shepherd.conf PASS_TOOLS; a test sets its own
+  unset PASS_TOOLS
   mkdir -p "$FLEET_SHEPHERD_DIR"
   stub fleet-sessions 'echo "$*" >> "$HOME/sessions.calls"'
   stub fleet-assess 'if [ "${1:-}" = --blocked ]; then printf "%b" "${STUB_BLOCKED:-}"; elif [ "${1:-}" = --fleet ]; then printf "%b" "${STUB_FLEET:-}"; ! printf "%b" "${STUB_FLEET:-}" | grep -qE "^fleet: OVER|NOT live"; else echo "verdict: ${STUB_VERDICT:-CLEAR} load 0.5x"; fi'
@@ -748,6 +750,44 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
   [ -n "$(closes)" ]
 }
 
+@test "a PARKED row with nothing left to land has its window closed, nothing typed, whatever runs in its pane (2026-11-18: agent-2 sat 6 days merged)" {
+  doc "[$(crow 1 PARKED now)]"
+  STUB_FG=bash STUB_PANE='$ ' run checked
+  run closes; assert_output 'close --server lab --pane %1 --sid 1'
+  [ -z "$(typed)" ]
+  ! grep -q '^mark ' "$HOME/sessions.calls"
+  grep -q 'close: lab/1:1: closed its window, parked: its claude is gone and nothing is left to land' "$FLEET_SHEPHERD_DIR/log.md"
+  # Held: its window shown, or a parked row whose verdict is keep (work left here).
+  : > "$HOME/wind-down.calls"; doc "[$(crow 1 PARKED now)]"
+  STUB_SHOWN="1 1" STUB_FG=bash "$SH" check >/dev/null || true
+  doc "[$(crow 2 PARKED keep)]"
+  STUB_FG=bash "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+}
+
+@test "a row whose only blocker is its own item, every phase done, quiet the close timer, has the item moved done; a busy, waking, worker or refused one is left (2026-11-18: agent-22 sat 7h on its item)" {
+  stub agent-queue 'echo "$AGENT_QUEUE_START $*" >> "$HOME/aq.calls"; [ "$2" != refused ] || { echo "agent-queue: refused has a partial landing" >&2; exit 1; }; exit 0'
+  items='{"idle_min":90,"age_min":300,"close":{"verdict":"after","why":"w","items":["fin-1"]}}'
+  doc "[$(crow 1 STALLED after "$items"),
+        $(crow 2 STALLED after "$(jq -c '.idle_min = 5' <<<"$items")"),
+        $(crow 3 STALLED after "$(jq -c '.host = "ms-a2"' <<<"$items")"),
+        $(crow 4 STALLED after "$(jq -c '.close.items = ["refused"]' <<<"$items")"),
+        $(crow 5 STALLED keep "$(jq -c '.close = {verdict: "keep", why: "work left here"}' <<<"$items")"),
+        $(crow 6 STALLED after "$(jq -c '.wake = "a recurring cron"' <<<"$items")"),
+        $(crow 7 PARKED after "$(jq -c '.age_min = null | .close.items = ["parked-1"]' <<<"$items")")]"
+  "$SH" check >/dev/null || true
+  run bash -c 'grep -h " move " "$HOME/aq.calls" | sort'
+  assert_output "0 move fin-1 done --status ok --if running
+0 move parked-1 done --status ok --if running
+0 move refused done --status ok --if running"
+  grep -q 'close: lab/1:1: closed its item fin-1' "$FLEET_SHEPHERD_DIR/log.md"
+  grep -q 'close: lab/4:1: could not close its item refused (agent-queue: refused has a partial landing)' "$FLEET_SHEPHERD_DIR/log.md"
+  # The refusal is logged once.
+  : > "$HOME/aq.calls"; "$SH" check >/dev/null || true
+  run bash -c 'grep -h " move " "$HOME/aq.calls"'; assert_output "0 move fin-1 done --status ok --if running
+0 move parked-1 done --status ok --if running"
+}
+
 @test "a session typed its close an hour ago and still due has its window closed, whatever it did since: refused it in manual mode, or worked" {
   # Manual mode refuses /wind-down auto; its prompt is empty, so it is typed like any other.
   manual="${IDLE/bypass permissions on (shift+tab to cycle)/⏸ manual mode on · ? for shortcuts}"
@@ -984,6 +1024,18 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   assert_output --partial 'nightly red: r1'
   assert_output --partial 'started pass'
   assert_equal "$(starts)" 5
+  live "$(pass_id)" idle; idle_pass
+  doc "[]"
+  STUB_VERDICT=HOLD run "$SH" run
+  assert_output --partial 'pace: machine reads HOLD with no hold set'
+  assert_output --partial 'started pass'
+  assert_equal "$(starts)" 6
+  # Negative control: another pace: line (a hold left set on a CLEAR machine) still waits for the debounce
+  live "$(pass_id)" idle; idle_pass
+  STUB_HOLDS=$'unity\tx' run "$SH" run
+  assert_output --partial 'pace: hold unity while the machine reads CLEAR'
+  assert_output --partial 'none urgent'
+  assert_equal "$(starts)" 6
 }
 
 @test "a settled fleet pages once, and work coming back re-arms the page" {
@@ -1093,9 +1145,18 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   grep -q -- "-L hub new-window -d -P -F #{pane_id} -t =hub: -n shepherd -c $HOME/.dotfiles bash" "$HOME/tmux.calls"
   [ ! -e "$HOME/systemd-run.calls" ]
   rm "$FLEET_SHEPHERD_DIR/.pass"
-  STUB_TMUX_FAIL='has-session|list-sessions' run "$SH" run
+  # The server starts on the user manager's environment, not the runner's, so no session it makes
+  # reads as the shepherd; a value systemd prints escaped is left out.
+  stub systemctl "printf '%s\n' HOME=/h PATH=/p \"ESC=\\\$'a\\\\nb'\""
+  STUB_TMUX_FAIL='has-session|list-sessions' AGENTCTL_NAME=shepherd run "$SH" run
   assert_success
-  assert_equal "$(cat "$HOME/systemd-run.calls")" '--user --scope --quiet tmx ensure hub hub'
+  assert_equal "$(cat "$HOME/systemd-run.calls")" "--user --scope --quiet env -i HOME=/h PATH=/p $SANDBOX/bin/tmx ensure hub hub"
+  # With no user manager to read, it says so and starts nothing, never a server on the runner's env
+  rm "$HOME/systemd-run.calls" "$FLEET_SHEPHERD_DIR/.pass"
+  stub systemctl 'exit 1'
+  STUB_TMUX_FAIL='has-session|list-sessions' run "$SH" run
+  assert_output --partial 'no user manager environment'
+  [ ! -e "$HOME/systemd-run.calls" ]
 }
 
 @test "a pass recorded in a window of session dotfiles, with no pane on record, is found by the registry and closed there" {
@@ -1613,9 +1674,21 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   export STUB_BLOCKED="$WALK"
   run "$SH" run
   refute_output --partial 'blocked:'
+  touch -d '12 minutes ago' "$FLEET_SHEPHERD_DIR/.blocked"
   run "$SH" run
-  assert_output --partial 'blocked: pid 3546209 bfs, 7 threads on I/O for 38m, claude session unity-core-playground-agent-28'
+  assert_output --partial 'blocked: pid 3546209 bfs, 7 threads on I/O at two samples 12m apart, claude session unity-core-playground-agent-28'
+  refute_output --partial '38m'
   grep -q 'open /mnt/nas/private/immich/upload/thumbs' "$FLEET_SHEPHERD_DIR/.pass.sh"
+}
+
+@test "a daemon up for hours caught in D at two samples reads the sample gap, not its age" {
+  doc "[$(row d WORKING false false)]"
+  export STUB_BLOCKED='1038\t1\t1092m\tananicy-cpp\tother\t-\t-\tfuse_dir_open\t-\tananicy-cpp\n'
+  run "$SH" run
+  touch -d '10 minutes ago' "$FLEET_SHEPHERD_DIR/.blocked"
+  run "$SH" run
+  assert_output --partial 'blocked: pid 1038 ananicy-cpp, 1 threads on I/O at two samples 10m apart'
+  refute_output --partial '1092m'
 }
 
 @test "a process blocked in one pass only is not due" {

@@ -125,7 +125,7 @@ sentinel-manifest validate --strict ~/.agent/watches/<name>.yaml
 fleet-bench triage --coverage    # standing watch: no `watch <name>` line once its route is in
 ```
 
-`--strict` is the write-time lint that requires the four fields, a `system:` (the system the watch is about, ids of `systems.md`; its red loads that system's skills), an explicit `expiry`, and `--paginate` on a `gh api` read of a list endpoint in `expect_cmd` (one page is 30 items: ar-2393); plain `validate` (what the daemon
+`--strict` is the write-time lint that requires the four fields, a `system:` (the system the watch is about, ids of `systems.md`; its red loads that system's skills), an explicit `expiry`, `--paginate` on a `gh api` read of a list endpoint in `expect_cmd` (one page is 30 items: ar-2393), and an aggregation (`max(...)`, `sum(...)`) on a Prometheus query it reads by `.result[0]` (one series per exporter pod after a rollout: ar-3437); plain `validate` (what the daemon
 runs every pass) does not, so a manifest missing them fails here and NOT at runtime - deliberately,
 because a runtime failure notifies, and a documentation gap must never page. Use a folded scalar
 (`>-`) for a long value, never `|-`: the value must stay one line.

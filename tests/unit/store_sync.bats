@@ -11,7 +11,7 @@ setup() {
   sandbox_init
   BIN="$REPO_ROOT/.local/bin/store-sync"
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
-  export STORE_SYNC_SSH_KEY=/nonexistent STORE_SYNC_FG=1
+  export STORE_SYNC_SSH_KEY=/nonexistent
   R="$SANDBOX/remotes"
   ORIGIN="$R/origin.git" BACKUP="$R/backup.git"
   mkdir -p "$R"
@@ -364,6 +364,10 @@ EOF
   AGENT_QUEUE_DIR="$SANDBOX/elsewhere/queue" PATH="$SANDBOX/bin:$PATH" "$REPO_ROOT/.local/bin/agent-queue" list >/dev/null 2>&1 || true
   AGENT_ASK_ROOT="$SANDBOX/elsewhere/asks" PATH="$SANDBOX/bin:$PATH" "$REPO_ROOT/.local/bin/agent-ask" list >/dev/null 2>&1 || true
   assert_equal "$(cat "$SANDBOX/hook.log")" ""
+  # Run under the hook's own sync (AGENT_STORE_HOOK), neither starts another one (ar-4050).
+  AGENT_STORE_HOOK=1 PATH="$SANDBOX/bin:$PATH" "$REPO_ROOT/.local/bin/agent-queue" list >/dev/null 2>&1 || true
+  AGENT_STORE_HOOK=1 PATH="$SANDBOX/bin:$PATH" "$REPO_ROOT/.local/bin/agent-ask" list >/dev/null 2>&1 || true
+  assert_equal "$(cat "$SANDBOX/hook.log")" ""
 }
 
 @test "the background sync drops its caller's descriptors, so it holds no caller's lock" {
@@ -554,6 +558,37 @@ pages() { grep -c '^agent-notify' "$NOTES_FIXTURE/calls.log" 2>/dev/null || true
   assert_equal "$(show "$ORIGIN" queue/item.md)" "state: done"
 }
 
+@test "ref locks a crash left mid-commit or mid-fetch are removed, and the write lands (ar-2940)" {
+  command -v fuser >/dev/null || skip "no fuser"
+  peer a
+  local lk locks=("$SANDBOX/a/.git/HEAD.lock" "$SANDBOX/a/.git/refs/heads/master.lock"
+    "$SANDBOX/a/.git/refs/remotes/origin/master.lock")
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  for lk in "${locks[@]}"; do
+    git -C "$SANDBOX/a" rev-parse HEAD > "$lk"
+    touch -d '20 minutes ago' "$lk"
+  done
+  run on a
+  assert_success
+  for lk in "${locks[@]}"; do
+    assert_output --partial "WARN: removed $lk"
+    [ ! -e "$lk" ]
+  done
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: done"
+}
+
+@test "a young branch ref lock stays, as a git may still be renaming it (ar-2940)" {
+  peer a
+  local lk="$SANDBOX/a/.git/refs/heads/master.lock"
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  git -C "$SANDBOX/a" rev-parse HEAD > "$lk"
+  run on a
+  assert_failure 3
+  refute_output --partial "removed"
+  [ -e "$lk" ]
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: open"
+}
+
 @test "a held or young index.lock stays, and the commit it blocks fails the unit with 3" {
   peer a
   local lk="$SANDBOX/a/.git/index.lock" fd
@@ -591,4 +626,189 @@ pages() { grep -c '^agent-notify' "$NOTES_FIXTURE/calls.log" 2>/dev/null || true
   run env AGENT_SYNC_LOG="$log" "$REPO_ROOT/.local/bin/store-sync-age"
   assert_failure
   assert_output --partial "store sync stale"
+}
+
+# close_item <machine> <status> -- the machine closes queue item x: queue/done/<day>/x.md, as agent-queue
+# writes it, with a merged: line for an ok close that had a PR.
+close_item() {
+  local d="$SANDBOX/$1/queue/done/2026-11-20"
+  mkdir -p "$d"
+  { printf 'slug: x\nstatus: %s\n' "$2"
+    [ "$2" != ok ] || printf 'merged: abc123\n'
+    printf 'note: closed on %s\n---\ntask\n' "$1"; } > "$d/x.md"
+}
+
+@test "an item closed ok with a merge on one machine and failed on another keeps the ok close, whichever syncs first (ar-4091)" {
+  peer a; peer b
+  close_item a ok
+  close_item b failed
+  on a --now
+  run on b --now
+  assert_success
+  run show "$ORIGIN" queue/done/2026-11-20/x.md
+  assert_line 'status: ok'
+  assert_line 'merged: abc123'
+  refute_line 'status: failed'
+  refute_output --partial '<<<<<<<'
+  # the other order: the failed close pushed first, the ok close merges over it
+  peer c; peer d
+  rm -rf "$SANDBOX/c/queue/done" "$SANDBOX/d/queue/done"
+  mkdir -p "$SANDBOX/c/queue/done/2026-11-22" "$SANDBOX/d/queue/done/2026-11-22"
+  printf 'slug: y\nstatus: failed\nnote: c\n---\n' > "$SANDBOX/c/queue/done/2026-11-22/y.md"
+  printf 'slug: y\nstatus: ok\nnote: d\n---\n' > "$SANDBOX/d/queue/done/2026-11-22/y.md"
+  on c --now
+  run on d --now
+  assert_success
+  run show "$ORIGIN" queue/done/2026-11-22/y.md
+  assert_line 'status: ok'
+}
+
+@test "two closes that are both failed, or both ok, on one item still conflict" {
+  peer a; peer b
+  close_item a failed
+  close_item b failed
+  on a --now
+  run on b --now
+  assert_failure
+  assert_output --partial "conflicts in queue/done/2026-11-20/x.md"
+}
+
+@test "a close cancelled on one machine and failed by a stale reaper on another keeps the cancel (ar-3439)" {
+  peer a; peer b
+  close_item a cancelled
+  close_item b failed
+  on a --now
+  run on b --now
+  assert_success
+  run show "$ORIGIN" queue/done/2026-11-20/x.md
+  assert_line 'status: cancelled'
+  refute_line 'status: failed'
+}
+
+# queue_item <machine>: a queued item $ITEM (x) long enough that git pairs each move of it as a
+# rename, on origin.
+queue_item() {
+  local q="$SANDBOX/$1/queue/queued" i
+  mkdir -p "$q"
+  { printf -- '---\nslug: %s\n' "${ITEM:-x}"; for i in $(seq 1 20); do printf 'k%s: v%s\n' "$i" "$i"; done; printf -- '---\ntask\n'; } > "$q/${ITEM:-x}.md"
+  on "$1" --now >/dev/null
+}
+
+# move_item <machine> <dir under queue/> <line>: what agent-queue move does to $ITEM, plus one frontmatter line.
+move_item() {
+  mkdir -p "$SANDBOX/$1/queue/$2"
+  sed "s/^k20: v20$/k20: v20\n$3/" "$SANDBOX/$1/queue/queued/${ITEM:-x}.md" > "$SANDBOX/$1/queue/$2/${ITEM:-x}.md"
+  rm "$SANDBOX/$1/queue/queued/${ITEM:-x}.md"
+}
+
+@test "an item a worker closed while another machine moved it to running keeps the close, whichever syncs first (ar-3439)" {
+  peer a; queue_item a; peer b
+  move_item a done/2026-11-21 'status: ok'
+  move_item b running 'host: a'
+  on b --now
+  run on a --now
+  assert_success
+  assert_output --partial COMPLETE
+  run show "$ORIGIN" queue/done/2026-11-21/x.md
+  assert_line 'status: ok'
+  refute_output --partial '<<<<<<<'
+  run git -C "$ORIGIN" ls-tree -r --name-only master -- queue/queued queue/running
+  assert_output ''
+  assert_equal "$(git -C "$ORIGIN" log -1 --format=%s master)" "$(git -C "$SANDBOX/a" log -1 --format=%s)"
+  assert_equal "$(git -C "$ORIGIN" rev-list --parents -1 master | wc -w)" 3
+  [ -z "$(git -C "$SANDBOX/a" status --porcelain)" ]
+  # the other order: the close pushed first, the running move merges over it
+  ITEM=y
+  peer c; queue_item c; peer d
+  move_item c done/2026-11-21 'status: ok'
+  move_item d running 'host: c'
+  on c --now
+  run on d --now
+  assert_success
+  run git -C "$ORIGIN" ls-tree -r --name-only master -- queue/queued queue/running
+  assert_output ''
+  run show "$ORIGIN" queue/done/2026-11-21/y.md
+  assert_line 'status: ok'
+  assert_equal "$(cat "$SANDBOX/d/queue/done/2026-11-21/y.md")" "$(show "$ORIGIN" queue/done/2026-11-21/y.md)"
+  [ ! -e "$SANDBOX/d/queue/running/y.md" ]
+}
+
+@test "an item moved to two open states, or a close beside another conflict, still conflicts" {
+  peer a; queue_item a; peer b
+  move_item a running 'host: a'
+  move_item b waiting 'ask: 1'
+  on a --now
+  run on b --now
+  assert_failure
+  assert_output --partial 'conflicts in queue/'
+  [ -e "$SANDBOX/b/queue/waiting/x.md" ]
+  ITEM=y
+  peer c; queue_item c; peer d
+  move_item c done/2026-11-21 'status: ok'
+  move_item d running 'host: c'
+  echo 'state: c' > "$SANDBOX/c/queue/item.md"
+  echo 'state: d' > "$SANDBOX/d/queue/item.md"
+  on c --now
+  run on d --now
+  assert_failure
+  assert_output --partial 'queue/item.md'
+  [ -e "$SANDBOX/d/queue/running/y.md" ]
+}
+
+# lose_head_tree <machine>: what a crash did to the fleet home (ar-3439): HEAD stays, its loose tree is gone.
+lose_head_tree() {
+  local t
+  t=$(git -C "$SANDBOX/$1" rev-parse 'HEAD^{tree}')
+  rm "$SANDBOX/$1/.git/objects/${t:0:2}/${t:2}"
+  run git -C "$SANDBOX/$1" ls-tree HEAD
+  assert_failure
+}
+
+@test "a HEAD whose tree an unclean shutdown lost is refetched from the remote that took it, and the write lands (ar-3439)" {
+  peer a
+  echo 'state: running' > "$SANDBOX/a/queue/item.md"
+  on a >/dev/null
+  lose_head_tree a
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  run on a
+  assert_success
+  assert_output --partial "WARN: HEAD"
+  assert_output --partial "refetched them from origin"
+  assert_output --partial "COMPLETE: origin at"
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: done"
+}
+
+@test "a lost HEAD tree no remote holds stops the sync with 3 and names it, never a bare commit error (ar-3439)" {
+  peer a
+  echo 'state: running' > "$SANDBOX/a/queue/item.md"
+  git -C "$SANDBOX/a" commit -q -am local
+  lose_head_tree a
+  # Offline first: no remote answered, so it says so and leaves the refetch to the next sync.
+  conf "$SANDBOX/nowhere.git"; mv "$BACKUP" "$BACKUP.off"
+  run on a
+  assert_failure 3
+  assert_output --partial "no remote answered to refetch them"
+  conf "$ORIGIN"; mv "$BACKUP.off" "$BACKUP"
+  run on a
+  assert_failure 3
+  assert_output --partial "names trees missing here and no remote has them"
+  refute_output --partial "could not commit"
+  # The refetch that reached a remote is not repeated for this HEAD: an unreachable origin now
+  # changes nothing, since no fetch runs.
+  conf "$SANDBOX/nowhere.git"
+  run on a
+  assert_failure 3
+  assert_output --partial "no remote has them"
+  refute_output --partial "no remote answered"
+}
+
+@test "a store with no commit yet makes its first one, with no refetch (ar-3439)" {
+  git init -q -b master "$SANDBOX/a"
+  git -C "$SANDBOX/a" remote add origin "$ORIGIN"
+  mkdir -p "$SANDBOX/a/.sync"; : > "$SANDBOX/a/.sync/peer"
+  printf '.sync/\n' > "$SANDBOX/a/.gitignore"
+  echo 'state: new' > "$SANDBOX/a/new.md"
+  run on a
+  refute_output --partial "trees missing"
+  git -C "$SANDBOX/a" cat-file -e 'HEAD:new.md'
 }

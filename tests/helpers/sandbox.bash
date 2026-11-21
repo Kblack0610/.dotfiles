@@ -47,6 +47,12 @@ FLEET_INVENTORY=/nonexistent/fleet-inventory.yml
 unset FLEET_HOSTS_JSON
 export FLEET NOTES_ROLL STATUS_SH EDITOR_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN LAB_FEED_LIB MD_RENDER_LIB MERGE_PROOF_LIB GIT_RELEASE_LIB MD_SPLICE_LIB CHAIN_EVENT_LIB PLAN_PHASES_LIB FLEET_HOSTS_LIB FLEET_INVENTORY
 
+# store-sync --bg forks with setsid, out of the test's process tree, so a fork outlives its bats run
+# (ar-4050): every sync runs in the foreground, and store_sync.bats tests the fork with =0. A suite
+# started under a write hook's sync must still start the hook it tests.
+export STORE_SYNC_FG=1
+unset AGENT_STORE_HOOK
+
 # sandbox_init [fixture-name]
 # Builds $SANDBOX with an isolated HOME/TMPDIR, puts stubs first on PATH, and seeds
 # fixture data by copy (never by running the real tool).
@@ -179,9 +185,9 @@ EOF
   # model as Codex's), AGENTCTL_ACCOUNT and a Claude session's CLAUDE_CONFIG_DIR pick the account
   # (agent_run_route.bats), FLEET_SHEPHERD_HOLDER makes the lease the runner's (fleet_shepherd.bats),
   # AGENTCTL_AGENT names the caller in the call log, DIR and FILE point at live state, caps at the conf.
-  # sandbox_isolation.bats reads both launchers' exports, so a new one fails there until it is here.
-  # A test that wants one of these sets it after sandbox_init.
-  unset MODEL HARNESS ROUTE DATA_CLASS AGENTCTL_ACCOUNT AGENTCTL_INBOX AGENTCTL_EXPLAIN CLAUDE_TELEMETRY_SERVICE \
+  # sandbox_isolation.bats reads both launchers' exports, so a new one fails there until it is here; LANE comes from the
+  # unit's EnvironmentFile conf, in no launcher, and turned fleet_dispatch's model-lane stub. A test that wants one sets it after sandbox_init.
+  unset LANE MODEL HARNESS ROUTE DATA_CLASS AGENTCTL_ACCOUNT AGENTCTL_INBOX AGENTCTL_EXPLAIN CLAUDE_TELEMETRY_SERVICE \
     FLEET_SHEPHERD_DIR FLEET_STATE_FILE FLEET_SHEPHERD_HOLDER FLEET_SHEPHERD_LEASE_MIN CLAUDE_CONFIG_DIR BUDGET_CALL_USD BUDGET_DAY_USD MAX_CALLS_HOUR \
     AGENTCTL_AGENT AGENT_PROMPT AGENT_PROMPT_SHA AGENT_SCHEMA AGENT_MAX_TOKENS AGENT_TEMPERATURE AGENT_CALL_CONTEXT ROUTE_FROM
 

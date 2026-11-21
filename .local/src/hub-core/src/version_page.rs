@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use crate::builds::{Run, RunKey};
 use crate::links::{Kind, Link};
 use crate::queue::{Item, State};
-use crate::release_graph::{pr_ref, repo_key, Pr};
+use crate::release_graph::{self, pr_ref, repo_key, Pr, Shipment};
 use crate::release_page::{self, core, cuts_of, runs_of, worst};
 use crate::releases::{App, Level, Releases};
 use crate::run_detail::Record;
@@ -318,11 +318,80 @@ fn app_release(
     }
 }
 
+/// What a version is, the one rule the version page and a project's Releases tab
+/// (`project_releases`) both say.
+pub struct Verdict {
+    /// `legacy`, `released` (a cut reached a channel), `cut` (tagged, nowhere yet) or
+    /// `unreleased` (no tag).
+    pub status: &'static str,
+    /// Grey when legacy; amber once its due day passed with nothing released, or when a cut of
+    /// it went outside the release flow.
+    pub level: Level,
+    pub legacy: bool,
+    pub outside: bool,
+}
+
+/// The mark the project's lab version notes give `version`: the first of its `labs` that marks
+/// it, None when none does.
+pub fn mark_of<'a>(rel: &'a Releases, labs: &[String], version: &str) -> Option<&'a str> {
+    let want = core(version);
+    labs.iter()
+        .filter_map(|l| rel.versions.get(l))
+        .flat_map(|v| &v.list)
+        .find(|v| core(&v.version) == want && !v.provenance.is_empty())
+        .map(|v| v.provenance.as_str())
+}
+
+/// The verdict on a version from its lab version's release-state mark (docs/operations/
+/// release-state.md, Provenance) when there is one, else its cuts' marks. With neither (the open
+/// version before its first cut) it is legacy only when no app of the project has a line.
+pub fn verdict(mark: Option<&str>, cuts: &[&Shipment], lined: bool, overdue: bool) -> Verdict {
+    let legacy = match (mark, cuts.is_empty()) {
+        (Some(m), _) => release_graph::legacy(m),
+        (None, false) => cuts.iter().all(|s| release_graph::legacy(&s.provenance)),
+        (None, true) => !lined,
+    };
+    let outside =
+        !legacy && (mark == Some("outside") || cuts.iter().any(|s| s.provenance == "outside"));
+    let released = cuts.iter().any(|s| !s.reached.is_empty());
+    let (status, level) = if legacy {
+        ("legacy", Level::Neutral)
+    } else if released {
+        ("released", Level::Ok)
+    } else if !cuts.is_empty() {
+        ("cut", if overdue { Level::Warn } else { Level::Ok })
+    } else if overdue {
+        ("unreleased", Level::Warn)
+    } else {
+        ("unreleased", Level::Neutral)
+    };
+    Verdict {
+        status,
+        level: if outside {
+            level.min(Level::Warn)
+        } else {
+            level
+        },
+        legacy,
+        outside,
+    }
+}
+
+/// The newest cut and its day, `v0.5.3-dodginballs5 11-19 14:02`, or `no cut`.
+pub fn cut_text(cuts: &[&Shipment]) -> String {
+    cuts.iter().max_by_key(|s| s.at).map_or_else(
+        || "no cut".into(),
+        |s| format!("{} {}", s.tag, s.at_text).trim().to_string(),
+    )
+}
+
 /// The inputs [`build`] joins, each read by the caller.
 pub struct Inputs<'a> {
     pub apps: &'a [&'a App],
     /// The project's own lab projects ([`labs`] with no apps): whose window the header shows.
     pub own: &'a [String],
+    /// The version's lab mark ([`mark_of`]).
+    pub mark: Option<&'a str>,
     pub runs: &'a [Run],
     pub records: &'a HashMap<RunKey, Record>,
     pub feed: Result<Feed, String>,
@@ -331,7 +400,8 @@ pub struct Inputs<'a> {
 }
 
 /// `version` of `project` as its page, or None when nothing names it: no app of the project has
-/// a cut of it and no row is aimed at it. `today` (`YYYY-MM-DD`) says whether its due day passed.
+/// a cut of it, no row is aimed at it and no lab version note marks it.
+/// `today` (`YYYY-MM-DD`) says whether its due day passed.
 pub fn build(project: &str, version: &str, today: &str, i: Inputs) -> Option<Page> {
     let want = core(version).to_string();
     let mut errors = vec![];
@@ -353,7 +423,7 @@ pub fn build(project: &str, version: &str, today: &str, i: Inputs) -> Option<Pag
         .collect();
     rows.sort_by_key(|r| state_rank(&r.state));
     let cuts: Vec<_> = i.apps.iter().flat_map(|a| cuts_of(a, &want).1).collect();
-    if cuts.is_empty() && rows.is_empty() {
+    if cuts.is_empty() && rows.is_empty() && i.mark.is_none() {
         return None;
     }
     let apps: Vec<AppRelease> = i
@@ -377,36 +447,19 @@ pub fn build(project: &str, version: &str, today: &str, i: Inputs) -> Option<Pag
     });
     let opened = window.and_then(|w| w.opened.clone()).unwrap_or_default();
     let due = window.and_then(|w| w.due.clone()).unwrap_or_default();
-    let released = cuts.iter().any(|s| !s.reached.is_empty());
     let overdue = !due.is_empty() && due.as_str() < today;
-    let legacy = !cuts.is_empty()
-        && cuts
-            .iter()
-            .all(|s| crate::release_graph::legacy(&s.provenance));
-    let (status, mut level) = if legacy {
-        ("legacy", Level::Neutral)
-    } else if released {
-        ("released", Level::Ok)
-    } else if !cuts.is_empty() {
-        ("cut", if overdue { Level::Warn } else { Level::Ok })
-    } else if overdue {
-        ("unreleased", Level::Warn)
-    } else {
-        ("unreleased", Level::Neutral)
-    };
-    if !legacy && apps.iter().any(|a| a.level == Level::Bad) {
+    let lined = i.apps.iter().any(|a| !a.release_from.is_empty());
+    let v = verdict(i.mark, &cuts, lined, overdue);
+    let mut level = v.level;
+    if !v.legacy && apps.iter().any(|a| a.level == Level::Bad) {
         level = Level::Bad;
     }
-    let newest = cuts.iter().max_by_key(|s| s.at);
     Some(Page {
         project: project.to_string(),
         version: want,
-        status: status.into(),
+        status: v.status.into(),
         level,
-        cut_text: newest.map_or_else(
-            || "no cut".into(),
-            |s| format!("{} {}", s.tag, s.at_text).trim().to_string(),
-        ),
+        cut_text: cut_text(&cuts),
         opened_text: if opened.is_empty() {
             "not opened".into()
         } else {
@@ -460,6 +513,7 @@ pub fn read(
         Inputs {
             apps: &apps,
             own: &own,
+            mark: mark_of(rel, &own, version),
             runs,
             records: &records,
             feed,
@@ -530,7 +584,7 @@ pub fn lines(p: &Page) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::release_graph::{Reached, RunRelease, Shipment};
+    use crate::release_graph::{Reached, RunRelease};
 
     fn ship(tag: &str, version: &str, at: i64, reached: bool) -> Shipment {
         Shipment {
@@ -557,6 +611,7 @@ mod tests {
         App {
             project: name.into(),
             repo: repo.into(),
+            release_from: "v0.5.0".into(),
             history,
             ..Default::default()
         }
@@ -622,8 +677,67 @@ mod tests {
                 items,
                 prs,
                 own: &["ucp".to_string()],
+                mark: None,
             },
         )
+    }
+
+    #[test]
+    fn a_version_only_a_lab_note_marks_opens_and_says_what_the_project_tab_says() {
+        let own = ["ucp".to_string()];
+        let unlined = App {
+            release_from: String::new(),
+            ..app("ucp", "o/ucp", vec![])
+        };
+        let at = |apps: &[&App], mark| {
+            build(
+                "ucp",
+                "0.0.1",
+                "2026-11-20",
+                Inputs {
+                    apps,
+                    runs: &[],
+                    records: &HashMap::new(),
+                    feed: Ok(Feed::default()),
+                    items: &[],
+                    prs: &[],
+                    own: &own,
+                    mark,
+                },
+            )
+        };
+        let p = at(&[&unlined], Some("legacy")).expect("a marked version has a page");
+        assert_eq!((p.status.as_str(), p.level), ("legacy", Level::Neutral));
+        // NEGATIVE CONTROL: unmarked, uncut and unaimed, nothing names it.
+        assert!(at(&[&unlined], None).is_none());
+    }
+
+    #[test]
+    fn the_verdict_greys_legacy_and_ambers_an_outside_cut_whatever_reached() {
+        let flow = ship("v1.0.0-a1", "1.0.0", 5, true);
+        let mut out = ship("v1.0.0-a2", "1.0.0", 6, true);
+        out.provenance = "outside".into();
+        let v = verdict(None, &[&flow], true, false);
+        assert_eq!(
+            (v.status, v.level, v.legacy, v.outside),
+            ("released", Level::Ok, false, false)
+        );
+        let v = verdict(None, &[&flow, &out], true, false);
+        assert_eq!(
+            (v.status, v.level, v.outside),
+            ("released", Level::Warn, true)
+        );
+        // A lab mark wins over the cuts', and legacy is never outside.
+        let v = verdict(Some("legacy"), &[&out], true, false);
+        assert_eq!(
+            (v.status, v.level, v.outside),
+            ("legacy", Level::Neutral, false)
+        );
+        // NEGATIVE CONTROL: with no mark and no cut, only a project with no line is legacy.
+        assert!(!verdict(None, &[], true, true).legacy);
+        assert!(verdict(None, &[], false, true).legacy);
+        assert_eq!(cut_text(&[&flow, &out]), "v1.0.0-a2 t6");
+        assert_eq!(cut_text(&[]), "no cut");
     }
 
     #[test]

@@ -30,7 +30,7 @@ pub fn core(v: &str) -> &str {
 
 /// The version a history tag is a cut of, from the version the collector parsed off it with the
 /// line's glob (`binks-v2` is `2`, `v0.5.3-dodginballs5` is `0.5.3`); the tag when none was parsed.
-fn cut_of(s: &Shipment) -> &str {
+pub(crate) fn cut_of(s: &Shipment) -> &str {
     core(if s.version.is_empty() {
         &s.tag
     } else {

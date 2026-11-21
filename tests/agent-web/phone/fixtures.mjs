@@ -157,6 +157,14 @@ const stageReqs = {
 export const BIG_PROJECT = { profile: "personal", name: "agent-runtime" };
 const SYSTEMS = ["gameplay", "ci", "ui", "save", "netcode", "audio", "input", "render", "tools", "build", "perf", "art", "levels", "ai", "store", "docs"];
 const needs = (kind, n, says) => ({ kind, says: `${n} ${says}`, items: rows(n, (i) => `ep-${i + 1}: ${TEXT[i % TEXT.length]}`) });
+// Its Releases tab (hub_core::project_releases): a long line, its apps, and a Legacy fold of 60.
+const bigVer = (n, status, line) => ({ version: `v0.${Math.floor(n / 10)}.${n % 10}`, status, level: status === "legacy" ? "neutral" : "ok", line_text: line, done: 20, total: 24, progress_text: "20 of 24 rows done", cut_text: `v0.${Math.floor(n / 10)}.${n % 10} 11-12 14:02`, href: `#releases/versions/agent-runtime%2F0.${Math.floor(n / 10)}.${n % 10}` });
+const bigApp = (i, line) => ({ app: `agent-runtime-${i}`, status_text: "ok", level: "ok", live_text: "v0.4.0 prod", released_text: "11-10", line_text: line, href: `#releases/apps/agent-runtime-${i}` });
+const bigReleases = {
+  versions: rows(30, (i) => bigVer(99 - i, pick(["released", "cut", "unreleased"], i), "on the line")), apps: rows(6, (i) => bigApp(i, "line from v0.4.0")),
+  legacy_versions: rows(60, (i) => bigVer(59 - i, "legacy", "before the line")), legacy_apps: rows(4, (i) => bigApp(i + 6, "no line (no releaseFrom)")),
+  line_text: "line from v0.4.0", legacy_says: "60 versions, 4 apps from before the release line", elsewhere: [], errors: [],
+};
 const bigPage = {
   project: BIG_PROJECT.name, flow_line: "plan 12, building 30, landed 37, verified 4",
   releases: { level: "ok", says: "0.4.0 prod ok" }, alerts: { level: "warn", says: "1 firing of 9 watches" },
@@ -167,6 +175,7 @@ const bigPage = {
   systems: SYSTEMS.map((id, i) => ({ id, percent: 5 + i * 6, features: 2 + i % 3, features_done: i % 2, standing: 1, open_rows: 40 + i * 7, behind: i % 3, criteria_met: i % 5, criteria_total: 5, wave: { title: TEXT[i % TEXT.length], percent: 30 + i, more: i % 4 } })),
   shipped_says: "3 versions", shipped: ["0.4.0 (Nov 10)", "0.3.2 (Oct 28)", "0.3.1 (Oct 14)"],
   timeline: { says: "40 events in 14 days", notes: [], lines: rows(40, (i) => ({ line: `11-${String(12 - (i % 12)).padStart(2, "0")} ${TEXT[i % TEXT.length]}`, url: "", level: pick(["ok", "ok", "warn"], i) })), older: 160 },
+  release_tab: bigReleases,
 };
 
 // Board: hub_core::tasks.
@@ -464,7 +473,10 @@ const kcard = (tab, title, big, unit, level, bar, parts, first = [], o = {}) => 
   bar: bar.map(([l, n]) => ({ level: l, n })), parts: parts.map(([label, value, l = "ok"]) => ({ label, value, level: l })),
   first_head: "Where to look first", first: first.map(([text, sub, l = "warn"]) => ({ text, sub, level: l, link: null })),
   counted: `counted by the ${title} tab`, error: null, link: `#${tab}`, ...o });
-const homeCards = [
+const GRID_CARDS = [
+  kcard("needs", "Needs you", "5", "waiting on you", "warn", [["warn", 5]], [["Asks", "3", "warn"], ["Sessions", "1", "warn"], ["Queue", "1", "warn"]],
+    [["Which model should settings.json pin for every account, opus or opus[1m]?", "2d dotfiles", "warn"], ["agent-web review", "3h dotfiles", "warn"]], { first_head: "Oldest" }),
+  kcard("red", "Main red", "2", "repos red on main", "red", [["red", 2]], [], [["unity-core-playground", "nightly", "red"], ["trader", "nightly", "red"]], { first_head: "Red" }),
   kcard("sessions", "Sessions", "39", "live sessions", "warn", [["ok", 34], ["warn", 3], ["red", 2]], [["Working", "34"], ["Need you", "3", "warn"], ["Stalled", "2", "red"]], [["trader-x", "stalled 3h", "red"], ["binks", "ask 40m"]]),
   kcard("board", "Board", "4115", "open rows, 277 doing", "red", [["ok", 3882], ["warn", 232], ["red", 1]], [["Doing", "277"], ["Requested", "232", "warn"], ["Late", "1", "red"], ["Done today", "90"]], [["submit Shape City", "shape-city - backlog, due 11-17", "red"], ["one tag table for intake lines", "agent-runtime - next up"]]),
   kcard("queue", "Queue", "12", "queued, 7 running", "warn", [["ok", 7], ["warn", 5]], [["Ready", "9"], ["Held", "3", "warn"], ["Done 24h", "41"]], [["review", "5 waiting 2h"]], { first_head: "Bottleneck" }),
@@ -476,14 +488,14 @@ const homeCards = [
   kcard("projects", "Projects", "-", "no data", "nodata", [], [], [], { error: "lab: unreadable" }),
 ];
 
-// The widget's default six (hub_core::cards::WIDGET), in its order: Home's two cards, then the grid's.
-const card = (tab) => homeCards.find((c) => c.tab === tab);
-export const WIDGET_CARDS = [
-  kcard("needs", "Needs you", "5", "waiting on you", "warn", [["warn", 5]], [["Asks", "3", "warn"], ["Sessions", "1", "warn"], ["Queue", "1", "warn"]],
-    [["Which model should settings.json pin for every account, opus or opus[1m]?", "2d dotfiles", "warn"], ["agent-web review", "3h dotfiles", "warn"]], { first_head: "Oldest" }),
-  kcard("red", "Main red", "2", "repos red on main", "red", [["red", 2]], [], [["unity-core-playground", "nightly", "red"], ["trader", "nightly", "red"]], { first_head: "Red" }),
-  card("alerts"), card("sessions"), card("costs"), card("infra"),
-];
+// The one order every surface draws (hub_core::cards::ORDER) and the widget's default run of it
+// (WIDGET), read from hub-core so a change there moves the fixture too.
+const CARDS_RS = readFileSync(new URL("../../../.local/src/hub-core/src/cards.rs", import.meta.url), "utf8");
+const ids = (name) => [...CARDS_RS.match(new RegExp(`pub const ${name}: &\\[&str\\] = &\\[([^\\]]*)\\]`))[1].matchAll(/"(\w+)"/g)].map((m) => m[1]);
+const byTab = (tab) => GRID_CARDS.find((c) => c.tab === tab) ?? (() => { throw new Error(`hub_core::cards has a card "${tab}" that fixtures.mjs GRID_CARDS lacks`); })();
+export const CARD_ORDER = ids("ORDER");
+const homeCards = CARD_ORDER.slice(2).map(byTab); // the grid: Needs you and Main red are the widgets' lead
+export const WIDGET_CARDS = ids("WIDGET").map(byTab);
 
 export const FIXTURES = {
   "/api/agents": [], "/api/asks/parked": [], "/api/home/waiting": { count: home.needs.length, href: "#home" }, "/api/session-options": { describe: {}, accounts: [] },

@@ -37,7 +37,7 @@ teardown() {
 }
 
 sessions_of() { "$REAL_TMUX" -L "$1" list-sessions -F '#{session_name}' 2>/dev/null; }
-field() { awk -v k="$2: " '$0 == "---" { exit } index($0, k) == 1 { print substr($0, length(k) + 1) }' "$1"; }
+field() { awk -v k="$2: " '$0 == "---" { exit } index($0, k) == 1 { print substr($0, length(k) + 1) }' <"$1"; }
 
 # in_pane <world> <session> <script> -- run a script inside a real pane of that session, and
 # return when it is done: the pane signals a wait-for channel, so nothing here sleeps.

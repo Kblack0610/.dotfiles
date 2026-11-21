@@ -2953,17 +2953,18 @@ rollup_causes() {
 # cause, whichever pair it names. Each cause filed or joined is stamped in $DIR/trainee-rollup.tsv (cause
 # TAB UTC time; a stamp older than the window is dropped), so the next night counts only newer rejects.
 # fleet-dispatch is a direct filer, so the row goes on the board; it goes through the queue and review like
-# any other row, and nothing here patches anything. nightly-measure runs it.
+# any other row, and nothing here patches anything. nightly-measure runs it, so each pass declares its
+# outcome (rollup_done): WORKED when it filed or joined a row, NOOP when no cause cleared the bar, FAILED.
 cmd_trainee_rollup() {
-  local dry=0 stamps since board lines cause title n pairs hs why hit where rc out=0 now f="$DIR/trainee-rollup.tsv"
+  local dry=0 stamps since board lines cause title n pairs hs why hit where rc out=0 acted=0 now f="$DIR/trainee-rollup.tsv"
   [ "${1:-}" != --dry ] || dry=1
-  [ -r "$LANE_RUNS" ] || { say "trainee-rollup: no run log at $LANE_RUNS"; return 1; }
+  [ -r "$LANE_RUNS" ] || { say "trainee-rollup: no run log at $LANE_RUNS"; rollup_done "$dry" FAILED "no run log at $LANE_RUNS"; return; }
   stamps=$(jq -Rsc 'split("\n") | map(select(length > 0) | split("\t") | {(.[0]): .[1]}) | add // {}' "$f" 2>/dev/null) || stamps='{}'
   now=$(date -u +%FT%T)
   since=$(date -u -d "@$(( $(date +%s) - DISPATCH_ROLLUP_DAYS * 86400 ))" +%FT%T)
-  lines=$(rollup_causes "$since" "$stamps") || { say "trainee-rollup: could not read $LANE_RUNS"; return 1; }
-  [ -n "$lines" ] || { echo "trainee-rollup: no new trainee rejects since ${since%T*}"; return 0; }
-  board=$(notes ptask "$DISPATCH_ROLLUP_BOARD" --agent list 2>/dev/null) || { say "trainee-rollup: cannot read the $DISPATCH_ROLLUP_BOARD board, so no row is filed"; return 1; }
+  lines=$(rollup_causes "$since" "$stamps") || { say "trainee-rollup: could not read $LANE_RUNS"; rollup_done "$dry" FAILED "could not read $LANE_RUNS"; return; }
+  [ -n "$lines" ] || { echo "trainee-rollup: no new trainee rejects since ${since%T*}"; rollup_done "$dry" NOOP "no new trainee rejects"; return; }
+  board=$(notes ptask "$DISPATCH_ROLLUP_BOARD" --agent list 2>/dev/null) || { say "trainee-rollup: cannot read the $DISPATCH_ROLLUP_BOARD board, so no row is filed"; rollup_done "$dry" FAILED "cannot read the $DISPATCH_ROLLUP_BOARD board"; return; }
   while IFS=$'\t' read -r cause title n pairs hs why; do
     if [ "$n" -lt "$DISPATCH_ROLLUP_MIN" ]; then echo "under the bar ($n of $DISPATCH_ROLLUP_MIN): $title ($pairs)"; continue; fi
     # the whole cause, up to the row's tags or marker: a longer title that starts the same is another cause
@@ -2988,11 +2989,24 @@ cmd_trainee_rollup() {
       esac
     fi
     stamps=$(jq -c --arg c "$cause" --arg n "$now" '.[$c] = $n' <<<"$stamps")
+    acted=$((acted + 1))
   done <<<"$lines"
   [ "$dry" = 1 ] && return "$out"
   { mkdir -p "$DIR" && jq -r --arg s "$since" 'to_entries[] | select(.value >= $s) | [.key, .value] | @tsv' <<<"$stamps" > "$f.tmp" && mv -f "$f.tmp" "$f"; } ||
     { say "trainee-rollup: could not write $f"; out=1; }
-  return "$out"
+  if [ "$out" != 0 ]; then rollup_done 0 FAILED "the $DISPATCH_ROLLUP_BOARD board refused a row, or $f was not written"
+  elif [ "$acted" -gt 0 ]; then rollup_done 0 WORKED "$acted cause(s) filed or joined"
+  else rollup_done 0 NOOP "no cause reached $DISPATCH_ROLLUP_MIN rejects"; fi
+}
+
+# rollup_done <dry> <verdict> <words> -- a trainee-rollup pass's outcome under agentctl, which reads a step
+# that declares none as STALLED (agentctl-steps), and its status: 1 for FAILED, else 0. --dry declares nothing.
+rollup_done() {
+  if [ "$1" = 0 ]; then
+    # shellcheck source=/dev/null
+    . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null && proof_runner_outcome "$2" "$3" 2>/dev/null
+  fi
+  [ "$2" != FAILED ]
 }
 
 # ladder_back <slug> <note> -- a ladder run's row back to the normal queue on claude, the note saying
@@ -3777,6 +3791,7 @@ item_brief() {
   lost_line "$it"
   pr_line "$it"
   [[ "$tags" != *" red "* ]] || echo "This is a red: read ~/.claude/skills/fix-red/SKILL.md first and work to it."
+  [[ "$tags" != *" escalate "* ]] || echo "Its earlier fixes did not hold (retry: names them), so this is its escalation: before any fix, do the root-cause pass of fix-red section 3 through debug, and say on the item why each earlier try did not hold. If this one does not hold either, triage asks the human once, pointing at what this item found."
   [[ "$tags" == *" red "* || -n "$pr_only" || -n "$nopr" || "$(item_tier "$it")" != 3 ]] || echo "This is tier 3 (harness or tooling), and it merges only behind the red-fix gate: step 5 of ~/.claude/skills/fix-red/SKILL.md (/code-review high, each finding fixed or answered in the PR, the line \"Review: /code-review high, <what it found and what you did>\" in the PR body). agent-land refuses a tier-3 PR without that line or without checks that ran green. Before agent-land, run the bats files the Stop hook picks for the files you changed and put the result in the PR body."
   row=$(item_row "$it")
   key=$(cut -d$'\x1f' -f4 <<<"$row")
@@ -4407,8 +4422,8 @@ takeover_branch() {
 # queued/ (--if review) as a oneshot stamped `<fix|land>_tries: <n> <head>[ conflict]` and `pr_owner`, which
 # item_brief reads, and the next pass starts it behind every gate a queued item waits on (agent-hold,
 # the weekly pace, load, the run gate); while the agent-queue cap holds adds it waits in
-# review/. DISPATCH_FIX_TRIES tries of each, then one human-sheet row and a page, as fleet-bench
-# triage_human does once TRIAGE_FIX_TRIES are spent, stamped `fix_human: <head> <owner>...`; a head that
+# review/. DISPATCH_FIX_TRIES tries of each, then one human-sheet row and a page (fleet-bench triage instead
+# escalates a red, then asks once), stamped `fix_human: <head> <owner>...`; a head that
 # moves after that row (the human pushed) starts the count again. The stamp quiets only the owners it
 # names, so a head whose fix-ci row went to the human and that later reads green still gets a lander,
 # and the reverse (#2182 sat in review green with nobody on it). A lander that asks the human is held
@@ -5308,9 +5323,11 @@ unpark_preempted() {
 
 # probe_hosts <live_runs> -- one ssh to each placed worker (fleet_place) for its load, its cores,
 # whether wt is on its PATH and its agent-queue forwards (an older one would write the queue on the
-# worker), its MemAvailable as a whole percent of MemTotal, and after a "kit" line its
+# worker), its MemAvailable as a whole percent of MemTotal (-1 when it cannot say, so no later field shifts
+# into its place), whether its store is in a merge conflict with origin (.sync/conflict: a session
+# there cannot push its queue writes), and after a "kit" line its
 # `fleet-dispatch kit` (claude, codex, opencode, srt), so a worker with no claude still takes an item
-# on a harness it has: HOST_PROBE[<name>] is "<load> <cores> <ready 0|1> <mem %>", or "unreachable",
+# on a harness it has: HOST_PROBE[<name>] is "<load> <cores> <ready 0|1> <mem %> <conflict 0|1>", or "unreachable",
 # and HOST_KIT[<name>] the kit, empty from an older fleet-dispatch there (no kit verb). HOST_FREE[<name>] is its fleet_max_live less the run units its live sessions hold,
 # and start_items takes each start there off it; HOST_RUNS is the runs that count, the given ones and
 # each gateway run on a worker (live_runs --gateway). For a worker that lists fleet_harnesses, the same ssh runs
@@ -5328,7 +5345,7 @@ probe_hosts() {
     [ "$place" = true ] || continue
     HOST_FREE[$name]=$(( max - $(units_on "$name" <<<"$HOST_RUNS") ))
     # shellcheck disable=SC2016,SC2086 # the worker's shell expands these, not this one; listed splits into names
-    if out=$(fleet_host_run "$name" sh -c 'cut -d" " -f1 /proc/loadavg; nproc; command -v wt >/dev/null && test -f "$HOME/.agent/.sync/peer" && echo 1 || echo 0; awk '\''/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {if (t) print int(a * 100 / t)}'\'' /proc/meminfo; echo kit; fleet-dispatch kit 2>/dev/null || :; [ $# -eq 0 ] || { echo harnesses; fleet-dispatch harness-ready "$@" 2>/dev/null || :; }' _ $listed 2>/dev/null); then
+    if out=$(fleet_host_run "$name" sh -c 'cut -d" " -f1 /proc/loadavg; nproc; command -v wt >/dev/null && test -f "$HOME/.agent/.sync/peer" && echo 1 || echo 0; awk '\''/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {print t ? int(a * 100 / t) : -1}'\'' /proc/meminfo; test -e "$HOME/.agent/.sync/conflict" && echo 1 || echo 0; echo kit; fleet-dispatch kit 2>/dev/null || :; [ $# -eq 0 ] || { echo harnesses; fleet-dispatch harness-ready "$@" 2>/dev/null || :; }' _ $listed 2>/dev/null); then
       HOST_PROBE[$name]=$(sed '/^kit$/,$d; /^harnesses$/,$d' <<<"$out" | tr '\n' ' ')
       HOST_KIT[$name]=$(sed '1,/^kit$/d; /^harnesses$/,$d' <<<"$out" | tr '\n' ' ')
       ready='' why=${bad:+"$bad: not a harness name ([a-z0-9-]), so its probe never asks"} answers=$'\n'"$(sed '1,/^harnesses$/d' <<<"$out")"$'\n'
@@ -5360,15 +5377,16 @@ host_runs() {
 # host_why <name> -> why that worker takes no session now, or nothing. Its pace is this runner's
 # (MAX_LOAD) over its own load and cores; its units are its own fleet_max_live.
 host_why() {
-  local p="${HOST_PROBE[$1]:-}" load cores ready mem
+  local p="${HOST_PROBE[$1]:-}" load cores ready mem conflict
   [ -n "$p" ] || { echo "$1 is not placed (fleet_place false, or not in $FLEET_HOSTS_GROUP)"; return; }
   if [ "$p" = unreachable ]; then
     echo "$1 did not answer over ssh"
     return
   fi
   [ "${HOST_FREE[$1]:-0}" -gt 0 ] || { echo "$1 is at its fleet_max_live"; return; }
-  read -r load cores ready mem <<<"$p"
+  read -r load cores ready mem conflict <<<"$p"
   [ "$ready" = 1 ] || { echo "$1 has no wt, or a store that is not a peer clone (store-sync join)"; return; }
+  [ "${conflict:-0}" = 0 ] || { echo "$1: its store is in a merge conflict with origin (~/.agent/.sync/conflict), so a session's queue writes cannot reach origin: resolve it there (QUEUE.md, Troubleshooting)"; return; }
   [ -n "${HOST_KIT[$1]// /}" ] || { echo "$1 reports no harness it runs (fleet-dispatch kit there: claude with every account signed in, codex, opencode; an older fleet-dispatch has no kit verb: pull its ~/.dotfiles; an unsigned account: fleet-node signin there)"; return; }
   [[ "$mem" =~ ^[0-9]+$ ]] || { echo "$1 did not report its free memory (/proc/meminfo)"; return; }
   [ "$mem" -ge "$DISPATCH_HOST_MEM_MIN_PCT" ] || { echo "$1: ${mem}% memory free is under the ${DISPATCH_HOST_MEM_MIN_PCT}% floor"; return; }
@@ -5940,15 +5958,17 @@ cmd_starved() {
     [.[] | select((.priority == "urgent" or .priority == "high") and .t != null and .t < $cut)
       | select($max <= 0 or .priority == "urgent" or ((" " + (.tags // "") + " ") | contains(" red ")) or ($w[.project // ""] // 0) < $max)]
     | sort_by(.t) | .[] | "\(.slug) (\(.priority)\(if ((" " + (.tags // "") + " ") | contains(" red ")) then ", red" else "" end), queued \(.queued))"' <<<"$queue") || { echo "agent-queue unreadable"; return 1; }
-  board=$(board_starved "$cut")
+  # A fleet at its pace target never reaches the fill, so its unjudged rows wait (below): no scan.
+  board=''; [ -n "$TOTAL_LIVE" ] && [ "$TOTAL_LIVE" -ge "$TARGET" ] || board=$(board_starved "$cut")
   low=$(low_starved "$(( cut - DISPATCH_STARVED_MIN * 60 ))")
   [ -n "$stopped$items$board$low" ] || { [ -z "$dead" ]; return; }
   # A full fleet is working, not blocked (cmd_run): at its pace target no pass starts a high item,
-  # so one waits on sessions finishing. Only that case holds: an urgent item may preempt a runner
-  # session there, and the red and human floors go past the target, so a red item, an approved plan's
-  # ready phase, a standing hold, board or low water still trips. On 11-11 this tripped 4h at
-  # 42 of 25 live sessions. Once the fleet is under its target, a waiting item trips it at once.
-  if [ -n "$TOTAL_LIVE" ] && [ "$TOTAL_LIVE" -ge "$TARGET" ] && [ -z "$stopped$board$low$plans" ] &&
+  # so one waits on sessions finishing, and no pass reaches the fill there, so unjudged board rows
+  # wait too (board_starved is not read). Only that case holds: an urgent item may preempt a runner session there, and the red
+  # and human floors go past the target, so a red item, an approved plan's ready phase, a standing
+  # hold or low water still trips. On 11-11 this tripped 4h at 42 of 25 live sessions. Once the
+  # fleet is under its target, a waiting item trips it at once.
+  if [ -n "$TOTAL_LIVE" ] && [ "$TOTAL_LIVE" -ge "$TARGET" ] && [ -z "$stopped$low$plans" ] &&
     ! grep -qE '\(urgent, |, red, ' <<<"$items"; then
     echo "held by a full fleet ($TOTAL_LIVE live sessions, the $TARGET_WHEN pace target is $TARGET$NEEDS_NOTE), so nothing is starved"
     [ -z "$dead" ]; return
@@ -6012,16 +6032,14 @@ low_starved() {
   echo "runnable $depth under the low water $DISPATCH_LOW_WATER with no run start since $(date -d "@$1" +%H:%M), and $n board row(s) a pass would pick"
 }
 
-# board_starved <cut epoch> -> a line naming the unjudged rows when the board has some, no verdict
-# was written since <cut>, and the human has been away since before <cut> (rows judge only then);
-# else nothing. An `error` verdict counts as written, and so does a budget stop's touch: a pass whose
-# judge fails or stops already publishes FAILED or BLOCKED (settle), which fleet-liveness reads.
+# board_starved <cut epoch> -> a line naming the unjudged rows when the board has some and no verdict
+# was written since <cut>, the human here or away (a pass judges either way); else nothing. An `error`
+# verdict counts as written, and so does a budget stop's touch: a pass whose judge fails or stops
+# already publishes FAILED or BLOCKED (settle), which fleet-liveness reads.
 board_starved() {
-  local judged state mins n
+  local judged n
   judged=$(stat -c %Y "$VERDICTS" 2>/dev/null || echo 0)
   [ "$judged" -lt "$1" ] || return 0
-  read -r state mins _ < <(fleet-presence 2>/dev/null)
-  [ "$state" = away ] && [ "${mins:-0}" -ge "$DISPATCH_STARVED_MIN" ] 2>/dev/null || return 0
   n=$(unjudged_rows | grep -c . || true)
   [ "$n" -gt 0 ] || return 0
   if [ "$judged" = 0 ]; then judged=never; else judged=$(date -d "@$judged" -Iminutes); fi
@@ -6266,9 +6284,26 @@ reap_replays() {
   done
 }
 
+# store_fresh -- this machine's store holds origin as of now, once a reap: an item a peer host's
+# session closed ok reads closed here, not running. A worker's session closes its item in its own
+# clone and pushes it; this clone lags that by up to a sync, and a reap that fails the stale running
+# copy makes a second close of the same item, a merge conflict that stops the peer's sync
+# (razer-laptop, 2026-11-20: 5 items closed ok, each failed here 1 to 24 minutes later, ar-4091).
+# The check, not store-sync's exit code, is the verdict (worker_store_pull): a SKIP or BACKUP exits 0.
+store_fresh() {
+  if [ -z "${REAP_FRESH:-}" ]; then
+    if timeout "$WORKER_PULL_SECS" store-sync --now </dev/null >/dev/null 2>&1 && store-sync-age --max-min 2 </dev/null >/dev/null 2>&1; then
+      REAP_FRESH=yes
+    else
+      REAP_FRESH=no
+    fi
+  fi
+  [ "$REAP_FRESH" = yes ]
+}
+
 cmd_reap() {
   local s d slug server sess _by project area state _weight agent started sids host want waits='' seen='' gone live lost active=()
-  unset REAP_PANEL REAP_LOST; REAP_HOST=()
+  unset REAP_PANEL REAP_LOST REAP_FRESH; REAP_HOST=()
   fleet_hosts >/dev/null   # once, so each session_live subshell inherits the roster
   # A board item cancelled or failed with no session of its own (cancelled while queued, say).
   for d in "$(date +%F)" "$(date -d yesterday +%F 2>/dev/null)"; do
@@ -6303,6 +6338,9 @@ cmd_reap() {
     else reap_seen "$slug"
     fi
     if [ -n "$gone" ]; then
+      # A peer host's item is closed by its session in that host's clone: read origin before reading it
+      # as unclosed, or this failed close conflicts with the peer's ok (ar-4091).
+      [ -z "$host" ] || store_fresh || { logline "reaped $sess: queue item $slug left for the next pass: this store could not be brought up to origin"; continue; }
       settle_item "$slug" "${sess:-${sids##* }}" "$lost"
       settle_row "$slug"
       # Closed, its mark goes at once: an item put back (agent-queue reopen) starts with no miss on record.
@@ -7208,7 +7246,7 @@ promote() {
   # queued phase is what was promoted, and it works its own story row, not this one.
   slug=$(awk '$1 == "queued" && $3 == "->" { print $2; exit }' <<<"$out"); PROMOTED=$slug
   candidates_drop "$project" "$lane" "$key"
-  [ -n "$plan" ] || agent-queue set "$slug" "lane=$lane" ${prof:+"profile=$prof"} ${area:+"area=$area"} ${asked:+"asked=$asked"} >/dev/null
+  [ -n "$plan" ] || agent-queue set "$slug" "lane=$lane" ${prof:+"profile=$prof"} ${area:+"area=$area"} ${asked:+"asked=$asked"} ${PROMOTE_MODEL:+"model=$PROMOTE_MODEL"} >/dev/null
   [ "${#rm[@]}" = 0 ] || np "$prof" ptask "$project" "${flag[@]}" tag "${rm[@]}" "$id" >/dev/null 2>&1 ||
     say "promote $id: queued, but its cleared gates (${gates[*]}) are still on its row"
   if [ -n "$plan" ]; then logline "filed the chain of $(basename "$plan") from $project $lane row${tags:+ ($tags)}: $id${slug:+, first item $slug}"
@@ -7216,21 +7254,22 @@ promote() {
   echo "queued $project: $id"
 }
 
-# cmd_promote --project P [--profile X] [--agent] [--dispatch] [--tags T] --raw LINE -- queue one row as the
+# cmd_promote --project P [--profile X] [--agent] [--dispatch] [--model M] [--tags T] --raw LINE -- queue one row as the
 # human saw it: the Board tab's Start. A row that changed since, or is already started, is refused. No load
 # gate: the item starts like any board item (a row gate not yet clear refuses it, promote). --dispatch is a
 # machine caller's pull, capped like dispatch's own (fleet-bench triage's reds, which as a hand start went
 # past the cap with no make_room); without it a caller with no queue item is the human's hand start.
+# --model pins the item's model (claude_pin), as triage pins its escalation of a red to Opus.
 cmd_promote() {
-  local project='' prof='' lane=human raw='' tags='' board key
+  local project='' prof='' lane=human raw='' tags='' board key PROMOTE_MODEL=''   # promote() reads it; local, so it holds for this call alone
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
       --dispatch) PULL=dispatch; shift; continue ;;
-      --project | --profile | --raw | --tags) [ $# -ge 2 ] || { say "promote: $1 needs a value"; return 2; } ;;
+      --project | --profile | --raw | --tags | --model) [ $# -ge 2 ] || { say "promote: $1 needs a value"; return 2; } ;;
       *) say "promote: unknown argument: $1"; return 2 ;;
     esac
-    case "$1" in --project) project=$2 ;; --profile) prof=$2 ;; --raw) raw=$2 ;; --tags) tags=$2 ;; esac
+    case "$1" in --project) project=$2 ;; --profile) prof=$2 ;; --raw) raw=$2 ;; --tags) tags=$2 ;; --model) PROMOTE_MODEL=$2 ;; esac
     shift 2
   done
   [ -n "$project" ] && [ -n "$raw" ] || { say "promote: --project and --raw are required"; return 2; }

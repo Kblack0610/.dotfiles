@@ -1634,6 +1634,38 @@ SH
   [ "$(jq -r '"\(.context_tokens) \(.context_window)"' <<<"$output")" = "5 null" ]
 }
 
+@test "a running local gate writing Logs/gate.txt is activity, a stale log is not (ar-42)" {
+  # 2026-11-04 agent-23: a local suite.sh gate wrote Logs/gate.txt (~80 classes done) while its transcript
+  # was silent past 120m and the row read "background shell idle over 120m".
+  landed_fixture
+  mkdir -p "$SANDBOX/wt/Logs"
+  : > "$SANDBOX/wt/Logs/gate.txt"
+  PANEL_STATUS=shell PANEL_JOB=gate PANEL_IDLE_S=$((200 * 60)) panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  # the bucket counts the log write; idle_min stays the transcript's own silence
+  [ "$(jq -r '"\(.bucket) \(.idle_min)"' <<<"$output")" = "WORKING 200" ]
+  # a session started in a subdirectory of the worktree finds the same log
+  mkdir -p "$SANDBOX/wt/sub"
+  PANEL_STATUS=shell PANEL_JOB=gate PANEL_IDLE_S=$((200 * 60)) panel "$SANDBOX/wt/sub" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = "WORKING" ]
+  PANEL_STATUS=shell PANEL_JOB=gate PANEL_IDLE_S=$((200 * 60)) panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  # negative control: the same gate whose log has not moved in 3h reads idle
+  touch -d '3 hours ago' "$SANDBOX/wt/Logs/gate.txt"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = "LANDED" ]
+  jq -r .reason <<<"$output" | grep -q 'background shell idle over 120m'
+  # negative control: a fresh log does not rescue a shell that is not a gate or test
+  touch "$SANDBOX/wt/Logs/gate.txt"
+  PANEL_STATUS=shell PANEL_JOB=jobs PANEL_IDLE_S=$((200 * 60)) panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  jq -r .reason <<<"$output" | grep -q 'not a gate or test'
+}
+
 @test "end to end: a row carries the open job its shell waits on, and null when none is known" {
   # fleet-dispatch counts no open_job queue session toward its pace target (pipeline-eval-p2).
   landed_fixture
@@ -1783,6 +1815,17 @@ SH
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   [ -z "$(jq -c 'select(.bucket == "NIGHTLY")' <<<"$output")" ]
+
+  # a red smoke that probes a deployment, not the branch, is still the repo's NIGHTLY row but blames no merge (ar-3072)
+  ledger main "[$(r 'Binks Production Smoke' success "$green" 1),$(r 'Binks Production Smoke' failure "$red" 2)]"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r 'select(.bucket != "NIGHTLY") | .bucket' <<<"$output")" = LANDED ]
+  [ "$(jq -r 'select(.bucket == "NIGHTLY") | .fact' <<<"$output")" = "NIGHTLY origin red: Binks Production Smoke @${red:0:8} (probes a deployment)" ]
+  [ "$(jq -r 'select(.bucket == "NIGHTLY") | .owners | length' <<<"$output")" = 0 ]
+  # negative control: with the probe list off, the same red blames #875 again
+  FLEET_DEPLOY_PROBES= run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r 'select(.bucket != "NIGHTLY") | .reason' <<<"$output")" = "nightly red after PR #875: Binks Production Smoke @${red:0:8} (#875)" ]
 }
 
 @test "end to end: a deployed checkout off main is one CHECKOUT row naming its actor, not a STALLED row per session" {
@@ -2290,6 +2333,32 @@ research_item() {
   [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: rollout' ]
 }
 
+@test "end to end: a running item the session owns by sessions: alone does not hold the plan's phase; another session's does (ar-475)" {
+  # 2026-11-05 dotfiles-agent-4 read DONE while P4 was its own item credit-games-p4.
+  landed_fixture
+  mkdir -p "$HOME/.agent/queue/running"
+  printf 'slug: own-p2\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsessions: sid-9\nplan: %s\nphases: 2\n---\nPhase 2 of the plan\n' \
+    "$SANDBOX/plan.md" > "$HOME/.agent/queue/running/20261103-100000-own-p2.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Phase 2: rollout' ]
+  # a second own item (own:a,b) holds nothing either; a foreign queued item holds the phase alone
+  sed 's/^slug: own-p2/slug: own-p2b/' "$HOME/.agent/queue/running/20261103-100000-own-p2.md" > "$HOME/.agent/queue/running/20261103-100001-own-p2b.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+  mkdir -p "$HOME/.agent/queue/queued"
+  printf 'slug: foreign-p2\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nplan: %s\nphases: 2\n---\nPhase 2 of the plan\n' \
+    "$SANDBOX/plan.md" > "$HOME/.agent/queue/queued/20261103-100000-foreign-p2.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its item own-p2 is still open with every phase done or queued' ]
+  # negative control: the item running in another session holds the phase
+  rm "$HOME/.agent/queue/running/20261103-100001-own-p2b.md" "$HOME/.agent/queue/queued/20261103-100000-foreign-p2.md"
+  sed -i 's/^sessions: sid-9/session: lab:other\nsessions: sid-other/' "$HOME/.agent/queue/running/20261103-100000-own-p2.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: own-p2' ]
+}
+
 @test "end to end: an item that records phases: holds only those; the next phase it does not hold is still this session's (ar-267)" {
   # 2026-11-04 agent-2 read DONE mid-phase 3 because phases 4 and on were queue items.
   landed_fixture
@@ -2455,7 +2524,7 @@ research_item() {
   [ "$(jq -r .bucket <<<"$output")" = STALLED ]
   [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its item fix-wave-save is still open with every phase done or queued' ]
   [ "$(jq -r '.blockers | join("; ")' <<<"$output")" = 'its item fix-wave-save is still open with every phase done or queued' ]
-  [ "$(jq -r '"\(.close.verdict): \(.close.why)"' <<<"$output")" = 'after: close its item fix-wave-save (agent-land its last PR without --partial, or agent-queue move <slug> done): every phase is done or queued' ]
+  [ "$(jq -r '"\(.close.verdict): \(.close.why)"' <<<"$output")" = 'after: close its item fix-wave-save (agent-land its last PR without --partial, or agent-queue move <slug> done; the shepherd moves it done once quiet): every phase is done or queued' ]
   # negative control: a phase left that no item holds is this session's work, not a close step
   phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout'
   FLEET_IDLE_CLOSE_MIN=120 run "$REPO_ROOT/.local/bin/fleet-sessions" --json
@@ -2695,6 +2764,40 @@ empty_submodule_fixture() {
   git -C "$EMPTY_WT" add 'External/asset library'
   run dirty_paths "$EMPTY_WT" ''
   assert_output 'External/asset library'
+}
+
+@test "end to end: a session on main whose PRs in two repos merged from worktrees reads them merged and finished (ar-291)" {
+  # 2026-11-05 hub/dotfiles:8 sat on main with #920 and private #402 merged, and its row read
+  # nothing merged: no branch PR, finished false, LANDED, so /wind-down auto would have refused.
+  landed_fixture
+  export XDG_CACHE_HOME="$SANDBOX/xdg" # the sibling PR view cache stays in the sandbox
+  git -C "$SANDBOX/wt" checkout -q -B main origin/main
+  : > "$LEDGER_DIR/prs.tsv"
+  pr_transcript "$SANDBOX/t.jsonl"
+  printf -- '-\t7\tMERGED\tPASS\t-\t-\t2026-11-05T15:30:00Z\n' > "$LEDGER_DIR/prs_o_one.tsv"
+  printf -- '-\t9\tMERGED\tPASS\t-\t-\t2026-11-05T15:37:35Z\n' > "$LEDGER_DIR/prs_o_two.tsv"
+  phases_plan '- [x] Phase 1: queue cards (#7)' '- [x] Phase 2: docs (o/two #9)'
+  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -c '[.bucket, .branch, .pr, .finished, .blockers, .close.verdict]' <<<"$output")" = '["DONE","main","-",true,[],"now"]' ]
+  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, its PRs #7,#9 merged, all 2 phases done' ]
+  # with no plan file the merged PRs alone decide: DONE, never the human's CHAT
+  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" panel "$SANDBOX/wt"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -c '[.bucket, .finished, .blockers, .close.verdict]' <<<"$output")" = '["DONE",true,[],"now"]' ]
+  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, its PRs #7,#9 merged, no plan file, its PR landed' ]
+  # negative control, the plan back: one still open is the row's PR (sibling_pr), unlanded, so not finished
+  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  printf -- '-\t7\tOPEN\tPASS\t-\t-\n' > "$LEDGER_DIR/prs_o_one.tsv"
+  printf '#!/usr/bin/env bash\ncase "$*" in api*) echo "[]" ;; *"pr view 7 --repo o/one"*) echo %q ;; *) exit 1 ;; esac\n' \
+    '{"headRefOid":"feedface0000beef","statusCheckRollup":[{"conclusion":"SUCCESS"}]}' > "$SANDBOX/bin/gh"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -c '[.bucket, .pr, .finished, .blockers]' <<<"$output")" = '["STALLED","7",false,["PR o/one#7 open, CI PASS"]]' ]
+  [ "$(jq -r .close.verdict <<<"$output")" = keep ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR o/one#7 green, not merged' ]
 }
 
 @test "end to end: edits in other worktrees block a clean cwd from reading LANDED or finished" {
@@ -4261,6 +4364,17 @@ GH
   jq -e '.blockers | index("PR #2149 open, waiting on the landing queue")' <<<"$output" >/dev/null
   # the row carries its repo's landing-queue depth, and no wait minutes with no live gate (ar-2525)
   [ "$(jq -c '[.landing_queue, .wait_min]' <<<"$output")" = '[1,null]' ]
+  # a gate-and-land.sh running in its worktree gives the wait its minutes while the PR is held, whatever the
+  # transcript's open job reads (ar-3486: agent-27 #2900 behind #2539 read overdue with wait_min null)
+  mkdir -p "$SANDBOX/wt/scripts/test"
+  printf 'sleep 60\n' > "$SANDBOX/wt/scripts/test/gate-and-land.sh"
+  (cd "$SANDBOX/wt" && exec -a x bash scripts/test/gate-and-land.sh) >/dev/null 2>&1 3>&- &
+  LIVE_PIDS="$!"
+  # the process is the event: wait until /proc shows its exec, bounded so a failed start fails the test
+  timeout 20 bash -c 'until grep -q gate-and-land.sh "/proc/$1/cmdline" 2>/dev/null; do :; done' _ "$LIVE_PIDS" || fail "gate stand-in never started"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -c '[.landing_queue, (.wait_min | type)]' <<<"$output")" = '[1,"number"]' ]
+  pkill -P "$LIVE_PIDS" || true; kill "$LIVE_PIDS" 2>/dev/null || true; wait "$LIVE_PIDS" 2>/dev/null || true; LIVE_PIDS=""   # its sleep child too
   # one label among others counts, and a green PR waits its landing turn too
   store PASS 'rides-alone,landing-queue' landing-queue
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
@@ -4616,8 +4730,16 @@ verdict() {
 }
 
 @test "close verdict: each step of the fleet-states.md close flow, first match wins" {
-  # Not ours to judge.
-  [ "$(verdict '{bucket: "PARKED", labels: ["manual"]}')" = "keep: parked: its claude is gone" ]
+  # Not ours to judge while work is left here; with nothing left it closes like any row, on the park's age (a parked row has no claude start, so age_min is null).
+  [ "$(verdict '{bucket: "PARKED", blockers: ["PR #9 open, CI PASS"]}')" = "keep: parked: its claude is gone, work is left here" ]
+  [ "$(verdict '{bucket: "PARKED", blockers: ["open ask Ab12"]}')" = "keep: parked: its claude is gone, work is left here" ]
+  [ "$(verdict '{bucket: "PARKED", idle_min: 9000, age_min: null}')" = "now: quiet 9000m, nothing to land" ]
+  [ "$(verdict '{bucket: "PARKED", idle_min: 5, age_min: null}')" = "after: quiet 5m of 60m" ]
+  [ "$(verdict '{bucket: "PARKED", idle_min: 9000, labels: ["manual"]}')" = "keep: manual: the human keeps it" ]
+  # An open plan phase holds nothing, as for a live row; only the item to close is left: after, for the shepherd to close.
+  [ "$(verdict '{bucket: "PARKED", idle_min: 9000, blockers: ["next phase: 3"]}')" = "now: quiet 9000m, nothing to land" ]
+  [ "$(verdict '{bucket: "PARKED", idle_min: 9000, blockers: ["its item s is still open with every phase done or queued"]}')" = "after: close its item s (agent-land its last PR without --partial, or agent-queue move <slug> done; the shepherd moves it done once quiet): every phase is done or queued" ]
+  [ "$(verdict '{bucket: "PARKED", blockers: ["its item s is running here"]}')" = "keep: parked: its claude is gone, work is left here" ]
   # A headless run's replay: the shepherd never types into its opencode TUI; fleet-dispatch reap closes it.
   [ "$(verdict '{activity: "done", bucket: "DONE", idle_min: 600}')" = "keep: headless run: fleet-dispatch reap closes its replay once its item leaves review" ]
   # A worker row runs the same chain: the shepherd types its close over ssh (fleet_host_run).
@@ -4653,7 +4775,7 @@ verdict() {
   [ "$(verdict '{bucket: "LANDED", finished: false, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "now: quiet 90m, nothing to land" ]
   [ "$(SELF=s1 verdict '{bucket: "LANDED", session_id: "s1", finished: false, idle_min: 0, next_phase: "3", blockers: ["next phase: 3"]}')" = "now: quiet 0m, nothing to land" ]
   [ "$(verdict '{bucket: "STALLED", finished: false, blockers: ["next phase: 3", "its item x-1 is running here"]}')" = "keep: work left here: its item x-1 is running here" ]
-  [ "$(verdict '{bucket: "STALLED", finished: false, item: {slug: "s", is: "own", origin: "run"}, blockers: ["its item s is still open with every phase done or queued"]}')" = "after: close its item s (agent-land its last PR without --partial, or agent-queue move <slug> done): every phase is done or queued" ]
+  [ "$(verdict '{bucket: "STALLED", finished: false, item: {slug: "s", is: "own", origin: "run"}, blockers: ["its item s is still open with every phase done or queued"]}')" = "after: close its item s (agent-land its last PR without --partial, or agent-queue move <slug> done; the shepherd moves it done once quiet): every phase is done or queued" ]
   # The timer: everything else closes once quiet 60 minutes.
   [ "$(verdict '{}')" = "now: quiet 90m, nothing to land" ]
   [ "$(verdict '{idle_min: 59}')" = "after: quiet 59m of 60m" ]
@@ -4696,6 +4818,14 @@ verdict() {
   [ "$(left '{}')" = "-" ]
   [ "$(left '{idle_min: 5}')" = "-" ]
   [ "$(left '{labels: ["manual"], blockers: ["its item x-1 is running here"]}')" = "-" ]
+  # The only-item step also names the slugs the shepherd closes (close.items); no other step does.
+  items() {
+    jq -nr --argjson idle_close 60 --argjson chat_close_h 24 --arg self "" \
+      '{bucket: "STALLED", target: "lab/x-agent-1:1", idle_min: 90, age_min: 300, own_asks: 0, labels: [], item: null} + '"$1"' | '"$CLOSE_JQ"' | .close.items // [] | join(",")'
+  }
+  [ "$(items '{blockers: ["its item a is still open with every phase done or queued", "its item b is still open with every phase done or queued"]}')" = "a,b" ]
+  [ "$(items '{blockers: ["its item a is still open with every phase done or queued", "2 dirty file(s) (a, b), no PR"]}')" = "" ]
+  [ "$(items '{blockers: ["its item x-1 is running here"]}')" = "" ]
 }
 
 @test "close verdict: no keep for the human's presence or a plan's coordinator (2026-11-17)" {

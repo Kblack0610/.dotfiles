@@ -1074,7 +1074,7 @@ deliver_one() {
   # (agent-queue ask_pending), so its row stays the human's way to override.
   [ "$by" != human ] || held="$(released_by "$id" "$answer")"
   # went: where the answer went, each place named only when it was used.
-  local went=() resume=""
+  local went=() resume="" why
   [ -n "$beside" ] || resume="$(field "$f" resume)"
   if [ -n "$row" ]; then
     local n unsent=0
@@ -1085,14 +1085,15 @@ deliver_one() {
     # only on a board's "not sent" while the session never reads it (2026-11-20: fVKDIo sat unsent
     # in a prompt until its window closed), so it is filed as work, as an answer with no session is.
     if [ "$unsent" = "${#rows[@]}" ] && { [ -n "$beside" ] || { [ -z "$resume" ] && [ -z "$held" ]; }; }; then
-      answer_row "$f" "$answer" "$by"; note+="; a board row carries it"
+      if why="$(answer_row "$f" "$answer" "$by")"; then note+="; a board row carries it"; else note+="; $why"; fi
     fi
     if [ "${#rows[@]}" -gt 1 ]; then went+=("typed into the ${#rows[@]} live sessions waiting on its blocker")
     elif [ "$(jq -r .session_id <<< "$row")" = "$(field "$f" claude_session)" ]; then
       went+=("typed into $(field "$f" session)$(jq -r '.host // empty | " on " + .' <<< "$row")")
     else went+=("typed into $(jq -r '(.target // .session_id) + (.host // "" | if . == "" then "" else " on " + . end)' <<< "$row"), waiting on its blocker"); fi
   elif [ -n "$beside" ] || { [ -z "$resume" ] && [ -z "$held" ]; }; then
-    answer_row "$f" "$answer" "$by"; went+=("a board row: no live session, resume or held item takes it")
+    if why="$(answer_row "$f" "$answer" "$by")"; then went+=("a board row: no live session, resume or held item takes it")
+    else note+="no live session, resume or held item takes it, and $why"; fi
   fi
   [ -n "$beside" ] || start_resume "$id"
   [ -z "$resume" ] || went+=("its resume")
@@ -1532,21 +1533,24 @@ reopen_session() {
 # REOPEN_RESUME: the `resume` reopen-on-answer sets; ask-resume runs it as `agent-ask reopen <id>`.
 REOPEN_RESUME='run: agent-ask reopen'
 
-# cmd_reopen_on_answer <id>: a session closing over its own pending ask (the close step "only its own
-# ask is open") has the answer reopen it, so the answer carries on without the window. Refuses an
-# ask that is not pending, has no session, or already resumes some other way.
+# cmd_reopen_on_answer <id>: a session closing over its own pending ask has the answer reopen it, so
+# the answer carries on without the window; the teardown (wind-down.sh fire) and fleet-shepherd's
+# close run it for each of the closing session's pending asks. Refuses an
+# ask that is not pending or has no session. An ask that already resumes some other way is left
+# as it is and succeeds: ask-resume runs any resume headless on the answer, so it carries on
+# without the window too.
 cmd_reopen_on_answer() {
   local id="${1:-}"; [ -n "$id" ] || { echo "usage: agent-ask reopen-on-answer <id>" >&2; return 2; }
   local f r; f="$(find_ask "$id")"
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
   load_ask "$f"
   [ "${ASK[status]:-}" = pending ] || { echo "agent-ask: $id is ${ASK[status]:-}, not pending" >&2; return 1; }
+  r="${ASK[resume]:-}"
+  [ -z "$r" ] || [ "$r" = "$REOPEN_RESUME" ] || { echo "$id already resumes with: $r; the answer runs that, not this session" >&2; return 0; }
   [ -n "${ASK[claude_session]:-}" ] || { echo "agent-ask: $id names no session to reopen" >&2; return 1; }
   # The closing session is the caller; one not on the ask (a hand run) means the asker.
   local sid="${CLAUDE_CODE_SESSION_ID:-}"
   grep -qxF "claude_session: $sid" "$f" || sid="${ASK[claude_session]}"
-  r="${ASK[resume]:-}"
-  [ -z "$r" ] || [ "$r" = "$REOPEN_RESUME" ] || { echo "agent-ask: $id already resumes with: $r" >&2; return 1; }
   (
     command -v flock >/dev/null 2>&1 && flock 9
     add_reopen "$f" "$sid"
@@ -1588,7 +1592,7 @@ cmd_reopen() {
   done < <(reopen_sessions "$f")
   [ "${#failed[@]}" -gt 0 ] || return 0
   local word="its session ended"; [ "${#failed[@]}" -eq 1 ] || word="${#failed[@]} of its sessions ended"
-  answer_row "$f" "$answer" "$by" "$word and did not reopen: $(printf 'claude --resume %s, ' "${failed[@]}" | sed 's/, $//')"
+  answer_row "$f" "$answer" "$by" "$word and did not reopen: $(printf 'claude --resume %s, ' "${failed[@]}" | sed 's/, $//')" >&2
   return 1
 }
 
@@ -1660,17 +1664,22 @@ deliver_to_session() {
 }
 
 # file_board_row <ask file> <text>: an answer nobody is left to act on, as one typed, sized agent
-# board row in the ask's project. The answer is already recorded, so a board that refuses the row
-# fails nothing.
+# board row in the ask's project. notes exit 3 (an open twin) and 4 (the outbox took it for
+# inbox-triage) carry it too. Any other exit, or no project to file on, prints why and fails, so
+# deliver_one records the delivery failed and a board shows it "not sent"; swallowed, the answer
+# reached nobody and nothing said so (reflective-penguin P2, 2026-11-20).
 file_board_row() {
-  local f="$1" text="$2" project profile board q
+  local f="$1" text="$2" project profile board q rc=0
   project="$(field "$f" project)"; profile="$(field "$f" profile)"
-  [ -n "$project" ] || return 0
+  [ -n "$project" ] || { echo "it names no project, so no board row carries it"; return 1; }
   board="$(project_lab_names "$project" 2>/dev/null | awk 'NR==1')"
   # Boards are plain ASCII, and a # in the question would read as a tag.
   q="$(printf '%s' "$text" | tr -cd ' -~' | tr -d '#' | cut -c1-240)"
   notes ptask ${profile:+--profile "$profile"} "${board:-$project}" --agent add \
-    "chore(ask): $q (ask $(field "$f" id)) #size/s" --origin agent-ask >/dev/null 2>&1 || true
+    "chore(ask): $q (ask $(field "$f" id)) #size/s" --origin agent-ask >/dev/null 2>&1 || rc=$?
+  case "$rc" in 0|3|4) return 0 ;; esac
+  echo "the ${board:-$project} board refused its row (notes exit $rc)"
+  return 1
 }
 
 cmd_card() {
@@ -2683,8 +2692,10 @@ usage() {
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
 
 # A write here reaches the other machines at once: store-sync pushes the queue and asks (it does
-# nothing when they are clean, or when these asks are not the store's).
-[[ "$ASKS_ROOT/" != "${AGENT_STORE_DIR:-$HOME/.agent}/"* ]] || trap 'store-sync --now --bg 2>/dev/null' EXIT
+# nothing when they are clean, or when these asks are not the store's). AGENT_STORE_HOOK: as in
+# agent-queue, a write under the hook's own sync starts none.
+[[ "$ASKS_ROOT/" != "${AGENT_STORE_DIR:-$HOME/.agent}/"* ]] || [ -n "${AGENT_STORE_HOOK:-}" ] ||
+  trap 'AGENT_STORE_HOOK=1 store-sync --now --bg 2>/dev/null' EXIT
 sub="${1:-list}"; shift 2>/dev/null || true
 case "$sub" in
   post)   cmd_post "$@" ;;

@@ -33,8 +33,9 @@ Verbs
   validate --strict FILE
                  the above, plus the four legibility fields (what/why/where/
                  action), an explicit expiry (`null` for a standing
-                 watch), and --paginate on a `gh api` read of a list
-                 endpoint in expect_cmd. This is a LINT, deliberately not part of plain
+                 watch), --paginate on a `gh api` read of a list
+                 endpoint in expect_cmd, and an aggregation on a Prometheus
+                 query it reads by `.result[0]`. This is a LINT, deliberately not part of plain
                  `validate`: the loop runs `validate` on every pass and sends a
                  manifest that fails it to ERROR *and notifies*, so promoting a
                  documentation gap to a runtime fault would have paged eleven
@@ -139,6 +140,21 @@ GH_LIST_PATH = re.compile(
 GH_METHOD = re.compile(r"\s(?:-X|--method)[\s=]*['\"]?([A-Za-z]+)")
 GH_FIELD = re.compile(r"\s(?:-f|-F|--field|--raw-field|--input)\b")
 GH_COUNT_ONLY = re.compile(r"\s(?:-q|--jq)[\s=]+['\"]?\.total_count\b")
+
+# A Prometheus query returns one series per label set, and every exporter rollout
+# is a new pod, so a range function over a raw series holds one per pod in its
+# window. `.result[0]` of that is whichever pod Prometheus lists first:
+# unity-queue-wait tripped on a dead pod's 33 min while the live pool read 25 (ar-3437).
+# A query read by `.result[0]` needs an aggregation. This is a heuristic: an
+# aggregation anywhere in the query passes, and a query passed as a shell variable
+# (`query=$1`) is not checked. A query is a quoted `"query=..."`, a bare
+# `query=...` argument, or a `?query=` / `&query=` URL parameter.
+PROM_FIRST_RESULT = re.compile(r"\.result\[0\]")
+PROM_QUERY = re.compile(r"""(["'])query=((?:\\.|(?!\1).)*)\1|[\s?&]query=([^\s"'&|;]+)""")
+PROM_AGGREGATION = re.compile(
+    r"\b(?:sum|min|max|avg|count|group|stddev|stdvar|topk|bottomk|quantile|count_values)"
+    r"\s*(?:(?:by|without)\s*\([^)]*\)\s*)?\("
+)
 
 PROBES = ("http", "metric", "kubectl", "command", "agent")
 METRIC_OPS = ("<", "<=", ">", ">=", "==", "!=")
@@ -496,6 +512,20 @@ def pagination_errors(doc):
     return errors
 
 
+def prom_series_errors(doc):
+    """--strict only: a Prometheus query read by `.result[0]` must aggregate to one series."""
+    cmd = scalar(doc.get("expect_cmd"))
+    if not PROM_FIRST_RESULT.search(cmd):
+        return []
+    return [
+        f"expect_cmd reads .result[0] of the query {query!r}, which has no aggregation; "
+        "with several series (one per exporter pod after a rollout) it reads an arbitrary one. "
+        "Wrap it in max(...), min(...) or sum(...)"
+        for query in (m.group(2) if m.group(1) else m.group(3) for m in PROM_QUERY.finditer(cmd))
+        if not query.startswith("$") and not PROM_AGGREGATION.search(query)
+    ]
+
+
 def cmd_validate(path, strict=False):
     try:
         doc = load(path)
@@ -508,6 +538,7 @@ def cmd_validate(path, strict=False):
         errors.extend(legibility_errors(doc))
         errors.extend(expiry_errors(path, doc))
         errors.extend(pagination_errors(doc))
+        errors.extend(prom_series_errors(doc))
         errors.extend(flows_name_errors(doc))
         if not system_shape_errors(doc):
             errors.extend(system_name_errors(doc))

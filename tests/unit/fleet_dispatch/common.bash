@@ -116,6 +116,8 @@ setup() {
   : > "$NOTES_FIXTURE/tmux.sessions.lab"
   stub_notes
   stub agent-hold 'exit 0'
+  stub store-sync 'exit 0'   # reap reads a peer host's items from origin (store_fresh); this one is current
+  stub store-sync-age 'exit 0'
   stub fleet-assess '[ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
   stub fleet-presence 'echo "away 45 tmux"'
   # A fresh fleet state document with no session in it: the pace target counts none unless a test adds them.
@@ -208,6 +210,7 @@ case "${args[0]}" in
             tags_cased: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0]],
             tags: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0] | ascii_downcase],
             since: ((.[1] | capture("since:(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2})") | .d) // null),
+            marker: ((.[1] | capture("<!--.* (?<m>dropped)") | .m) // ""),
             state: (if (.[1] | startswith("- [/]")) then "doing" elif (.[1] | startswith("- [x]")) then "done" else "open" end)}' < "$f"
       done | jq -sc '{rows: map(select(.state != "done")), done: map(select(.state == "done"))}'
     fi; } | if [ -f "$F/board.sprints" ]; then jq -c --slurpfile s "$F/board.sprints" '. + {sprints: $s[0]}'; else cat; fi ;;
@@ -895,9 +898,9 @@ case "$1" in log) echo run-9 ;; trainee) printf "%s\n" "${TRAINEE_LANE:-}" ;; cl
 
 # --- fleet workers -----------------------------------------------------------------------
 
-# worker <load cores ready mem%> [place] [first] [harnesses] [kit] -- one fleet worker, razer-laptop, in an inventory whose
+# worker <load cores ready mem% [conflict]> [place] [first] [harnesses] [kit] -- one fleet worker, razer-laptop, in an inventory whose
 # ansible_host sits in another group and that lists the workstation, state, with the game repo cloned. ssh answers its probe with those
-# four words and runs any other command here, so the tmux stub stands in for the worker's server.
+# four words (a fifth, 1, says its store is in a merge conflict) and runs any other command here, so the tmux stub stands in for the worker's server.
 # ssh.rc, when present, is ssh's own exit (255: the worker did not answer).
 # first is its fleet_first, a YAML list such as "[canary]"; harnesses its fleet_harnesses, such as "[ocfree]";
 # kit its `fleet-dispatch kit` line, default every launcher and srt ("" is an older worker with no kit verb).

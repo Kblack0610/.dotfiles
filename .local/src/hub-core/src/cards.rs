@@ -832,8 +832,24 @@ pub fn main_red(home: &crate::home::Home) -> Card {
     c.first(red.iter().map(|r| row(*r, "nightly", Level::Red, None)))
 }
 
-/// The widget's cards when its URL names none: what needs the human, then fleet health.
-pub const WIDGET: &[&str] = &["needs", "red", "alerts", "sessions", "costs", "infra"];
+/// Home's card order on every surface. Needs you and Main red lead the widgets; on the web and the TUI
+/// Home they are the Needs you list under the grid, so those draw `grid`, the rest of this list.
+pub const ORDER: &[&str] = &[
+    "needs",
+    "red",
+    "sessions",
+    "queue",
+    "board",
+    "alerts",
+    "infra",
+    "costs",
+    "releases",
+    "schedules",
+    "projects",
+];
+
+/// The widget's cards when its URL names none: the cards of `ORDER` that fit a 4x3, in its order.
+pub const WIDGET: &[&str] = &["needs", "red", "sessions", "alerts", "infra", "costs"];
 
 /// The cards `names` lists, in its order; a name no card has is skipped.
 pub fn pick(cards: Vec<Card>, names: &[&str]) -> Vec<Card> {
@@ -849,7 +865,7 @@ pub fn pick(cards: Vec<Card>, names: &[&str]) -> Vec<Card> {
         .collect()
 }
 
-/// The grid, in the order both surfaces draw it: a card per tab, `reading` until its read
+/// The grid, `ORDER` after Needs you and Main red, on both surfaces: a card per tab, `reading` until its read
 /// answers and `failed` when it could not.
 pub fn grid(r: &Reads) -> Vec<Card> {
     fn one<T: ?Sized>(
@@ -975,20 +991,7 @@ mod tests {
             costs: Some(Err("prometheus: timeout")),
             ..Default::default()
         });
-        assert_eq!(
-            g.iter().map(|c| c.tab).collect::<Vec<_>>(),
-            [
-                "sessions",
-                "queue",
-                "board",
-                "alerts",
-                "infra",
-                "costs",
-                "releases",
-                "schedules",
-                "projects"
-            ]
-        );
+        assert_eq!(g.iter().map(|c| c.tab).collect::<Vec<_>>(), ORDER[2..]);
         assert_eq!((g[0].big.as_str(), g[0].unit.as_str()), ("-", "reading"));
         assert_eq!(g[0].level, Level::Nodata);
         assert_eq!(
@@ -996,6 +999,15 @@ mod tests {
             ("NO DATA", Some("prometheus: timeout"))
         );
         assert!(g.iter().all(|c| c.link.href() == format!("#{}", c.tab)));
+    }
+
+    #[test]
+    fn the_widget_default_keeps_the_order_the_grid_draws() {
+        let at: Vec<usize> = WIDGET
+            .iter()
+            .map(|n| ORDER.iter().position(|o| o == n).expect(n))
+            .collect();
+        assert!(at.windows(2).all(|w| w[0] < w[1]), "{at:?}");
     }
 
     #[test]

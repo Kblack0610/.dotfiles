@@ -30,7 +30,8 @@ setup() {
   unset CLAUDE_CODE_SESSION_ID
 }
 
-field() { awk -v k="$2: " '$0 == "---" { exit } index($0, k) == 1 { print substr($0, length(k) + 1) }' "$1"; }
+# The file is a redirect, not an operand: awk reads stdin for an empty one, which hangs a local run (ar-3455).
+field() { awk -v k="$2: " '$0 == "---" { exit } index($0, k) == 1 { print substr($0, length(k) + 1) }' <"$1"; }
 item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
 
 @test "add writes one queued item with the defaults and the task as typed" {
@@ -4568,6 +4569,16 @@ already"
   refute_output --partial "store-sync fd8=open"
 }
 
+@test "a queue call made under the write hook's own sync starts no second sync (ar-4050)" {
+  # A store-sync stub that called agent-queue started the hook again from that call, and again,
+  # ~600 processes that outlived their bats run. The stub stops itself at 3, so a miss fails here, not forever.
+  printf '#!/usr/bin/env bash\necho "store-sync $*" >> "$NOTES_FIXTURE/sync.log"\n[ "$(wc -l < "$NOTES_FIXTURE/sync.log")" -ge 3 ] || %q list >/dev/null 2>&1\nexit 0\n' "$AQ" > "$SANDBOX/bin/store-sync"
+  chmod +x "$SANDBOX/bin/store-sync"
+  run "$AQ" add --project game "Menu: pick sides"
+  assert_success
+  assert_equal "$(cat "$NOTES_FIXTURE/sync.log")" "store-sync --now --bg"
+}
+
 @test "lag_places: a class with only held items sets no floor for the bound, as it starts nothing" {
   export AGENT_QUEUE_CLASSES="$SANDBOX/classes.json"
   today="$(date +%F)"
@@ -4693,4 +4704,15 @@ stack_gh() {
   legacy second "after: base-a base-b" --project game "c"
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | \"\\(.hold) \\(.stacked_on // \"none\")\"'"
   assert_output "after base-a base-b none"
+}
+
+@test "fm_get and fm_body given no file return at once, never reading the caller's stdin (ar-3455)" {
+  # An awk operand of "" reads stdin, and a tool shell's stdin never closes: a lookup that came back empty hung a local run.
+  # The stand-in is a fifo held open for read and write on fd 4: no writer process to outlive the test or hold bats' fd 3.
+  fns="$(sed -n '/^fm_get() {/,/^}/p; /^fm_body() {/p' "$AQ")"
+  mkfifo "$BATS_TEST_TMPDIR/open-stdin"
+  exec 4<>"$BATS_TEST_TMPDIR/open-stdin"
+  run timeout 10 bash -c "$fns"'; declare -F fm_get fm_body >/dev/null && [ -z "$(fm_get "" slug)" ] && [ -z "$(fm_body "")" ]' <&4
+  exec 4>&-
+  assert_success
 }
