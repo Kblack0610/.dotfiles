@@ -867,7 +867,7 @@ reap_seen() { [ ! -e "$DIR/reap-miss/$1" ] || rm -f "$DIR/reap-miss/$1"; }
 # cannot read, a row with no merge proof. The reason is logged when the title changes, never on every
 # pass (2026-11-16 to 11-18: 526 identical lines from 6 sessions and 2 items; the title, not the reason,
 # so a new session name in the reason is no change), and once it has stood <hours> (0: at once) one
-# human-sheet row says what to do, or one page when the sheet refuses it, then nothing more while it
+# human-sheet row says what to do, or one page when the sheet refuses it (keyed needs:dispatch:stuck:<slug>:<title hash>, so agent-notify drops a repeat of one fact for a day), then nothing more while it
 # stands. $DIR/stuck/<slug> holds "<first epoch> <filed 0|1>" and the title; each pass rewrites it, so
 # a marker no pass has seen in a day is pruned by cmd_reap. reap_unstuck clears it once the item settles.
 reap_stuck() {
@@ -878,7 +878,7 @@ reap_stuck() {
   if [ "$filed" != 1 ] && [ $(( now - first )) -ge $(( $3 * 3600 )) ]; then
     filed=1 where=$(human_sheet_row "$2" "$5 (queue item $1) #size/s")
     logline "queue item $1: $where: $5"
-    case "$where" in "not filed"*) agent-notify -t 'Needs you' "$5 (queue item $1; $where)" >/dev/null 2>&1 ;; esac
+    case "$where" in "not filed"*) agent-notify -t 'Needs you' -d "needs:dispatch:stuck:$1:$(printf %s "$5" | cksum | cut -d" " -f1)" "$5 (queue item $1; $where)" >/dev/null 2>&1 ;; esac
     echo "human row for queue item $1 ($where)"
   fi
   mkdir -p "${f%/*}" && printf '%s %s\n%s\n' "$first" "$filed" "$5" > "$f"
@@ -4430,7 +4430,7 @@ takeover_branch() {
 # queued/ (--if review) as a oneshot stamped `<fix|land>_tries: <n> <head>[ conflict]` and `pr_owner`, which
 # item_brief reads, and the next pass starts it behind every gate a queued item waits on (agent-hold,
 # the weekly pace, load, the run gate); while the agent-queue cap holds adds it waits in
-# review/. DISPATCH_FIX_TRIES tries of each, then one human-sheet row and a page (fleet-bench triage instead
+# review/. DISPATCH_FIX_TRIES tries of each, then one human-sheet row and a page keyed needs:dispatch:pr:<pr>:<owner>:<head> (a new head is a new fact; agent-notify drops a repeat within a day) (fleet-bench triage instead
 # escalates a red, then asks once), stamped `fix_human: <head> <owner>...`; a head that
 # moves after that row (the human pushed) starts the count again. The stamp quiets only the owners it
 # names, so a head whose fix-ci row went to the human and that later reads green still gets a lander,
@@ -4485,7 +4485,7 @@ own_parked_pr() {
   [ "$owner" = fix ] || title="chore(review): PR $pr is $color at ${head:0:12} after $tries land tries; land it"
   where=$(human_sheet_row "$it" "$title or close it (queue item $slug) #size/s")
   agent-queue set "$slug" "note=PR $pr $color at ${head:0:12} after $tries $verb tries; $where" >/dev/null
-  agent-notify -t 'Needs you' "PR $pr $color after $tries $verb tries ($where)" >/dev/null 2>&1
+  agent-notify -t 'Needs you' -d "needs:dispatch:pr:$pr:$owner:${head:0:12}" "PR $pr $color after $tries $verb tries ($where)" >/dev/null 2>&1
   logline "queue item $slug: PR $pr $color at ${head:0:12} after $tries $verb tries, $where"
   echo "human row for queue item $slug (PR $pr $color after $tries $verb tries, $where)"
 }
