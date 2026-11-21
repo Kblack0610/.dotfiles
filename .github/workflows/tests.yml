@@ -50,16 +50,17 @@ jobs:
   # eight shards a run picking the family still read p90 6.4 min over 54 runs, its slowest shard
   # one file of 450-750 s (run_floors, run_harness, reap: about 300 s of wall each), so those
   # three were split in half (ar-3036). The shard counts are sized so a full run fits the budget
-  # on a 4-core runner: the files are CPU-bound, so past an even split only more shards cut the
-  # wall. Unit's shard steps add up to 870-1000 s of wall, a split leaves the heaviest shard
-  # 10-20% over the mean, and about 60 s of each run is fixed (start, weights, setup, report), so
-  # four unit shards ran a full run in 5.3-5.6 min and six fit it (#1812). Eight now: a run that
-  # picks the fleet_dispatch family (six files of 280-590 s of bats time each) put 800 s of bats
-  # time, summed over --jobs, in one six-way shard, 300-320 s of wall against 170-250 s for its
-  # siblings, and the gate's p90 read 6.0 min (ar-3036). The fixed cost per shard (checkout, bats,
-  # cached debs, about 25 s) is small beside that tail, so splitting wins over trimming it. Hosted
-  # minutes are free on this public repo and jobs start within seconds of their run, so a shard
-  # costs neither. unit/shard.bats checks that the matrix lists every shard of each tier.
+  # on a slow runner: the files are CPU-bound, so past an even split only more shards cut the
+  # wall, and a full run (any tests/helpers change, as sandbox.bash loads in every file) puts a
+  # shard or two on a runner that runs every file about 1.7x slower. In the 24 PR runs after
+  # #2920 those were the runners naming an Azure region (westus, eastus...): their shards took up
+  # to 373 s against at most 276 s on "Region: us" ones, with an even predicted split of 542 s of
+  # bats time per unit shard, and the gate read p90 6.3 min (ar-3036). Twelve unit shards put
+  # about 360 s of bats time in each, and four integ shards about 310 s, about 250 s of wall on
+  # a slow runner. The fixed cost per shard (checkout, bats, cached debs, about 10 s) is small
+  # beside that, so splitting wins over trimming it. Hosted minutes are free on this public repo
+  # and jobs start within seconds of their run (43 ran at once on 2026-11-21, queued under a
+  # minute), so a shard costs neither. unit/shard.bats checks that the matrix lists every shard of each tier.
   #
   # The table is computed once, here, because two shards splitting by two tables can each leave
   # a file out. No table (no green main run within the artifacts' 14 days, an API error) means
@@ -109,17 +110,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {tier: unit, shard: 1/8}
-          - {tier: unit, shard: 2/8}
-          - {tier: unit, shard: 3/8}
-          - {tier: unit, shard: 4/8}
-          - {tier: unit, shard: 5/8}
-          - {tier: unit, shard: 6/8}
-          - {tier: unit, shard: 7/8}
-          - {tier: unit, shard: 8/8}
-          - {tier: integ, shard: 1/3}
-          - {tier: integ, shard: 2/3}
-          - {tier: integ, shard: 3/3}
+          - {tier: unit, shard: 1/12}
+          - {tier: unit, shard: 2/12}
+          - {tier: unit, shard: 3/12}
+          - {tier: unit, shard: 4/12}
+          - {tier: unit, shard: 5/12}
+          - {tier: unit, shard: 6/12}
+          - {tier: unit, shard: 7/12}
+          - {tier: unit, shard: 8/12}
+          - {tier: unit, shard: 9/12}
+          - {tier: unit, shard: 10/12}
+          - {tier: unit, shard: 11/12}
+          - {tier: unit, shard: 12/12}
+          - {tier: integ, shard: 1/4}
+          - {tier: integ, shard: 2/4}
+          - {tier: integ, shard: 3/4}
+          - {tier: integ, shard: 4/4}
     steps:
       # A pull request checks out its merge commit; depth 2 brings its first parent, the base
       # tip, so HEAD^1..HEAD is exactly the change.
