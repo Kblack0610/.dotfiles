@@ -3605,6 +3605,17 @@ where
             Ok((0, Some(matched)))
         }
         Some((new, matched)) => {
+            // No edit writes a priority word no reader knows (`tag --add p1`, `edit --text "... #p1"`);
+            // a row that already carries one can still be closed or retagged.
+            if let Some(t) = after
+                .borrow()
+                .as_deref()
+                .and_then(projects::retired_priority)
+            {
+                if projects::retired_priority(&matched).is_none() {
+                    bail!("{t} is not a priority (urgent, high or low), so nothing was {verb}");
+                }
+            }
             write_sheet(&sheet, &new)?;
             log.info("ptask", &format!("{verb} in {} ({name})", sheet.display()));
             let mut ev = crate::ingest::Event::row(verb, name, "", lane.name(), &matched);
@@ -5393,6 +5404,54 @@ mod inbox_tests {
                 details: Vec::new(),
             },
         }
+    }
+
+    // A `#p1` survived on a sheet (2026-11-21): no edit writes a priority word no reader knows.
+    // A row that already carries one still takes an edit, so it can be fixed or closed.
+    #[test]
+    fn an_edit_refuses_a_retired_priority_word() {
+        let v = vault(
+            "retired",
+            "",
+            "- [ ] fix(a): clean row #low <!-- id:sc-1 -->\n- [ ] fix(a): old row #p1 <!-- id:sc-2 -->\n",
+        );
+        let w = Writer::human();
+        let id = |i: &str| Pick::Id(i.to_string());
+        let tag_as = |pick: &Pick, t: &str| {
+            tag(
+                &v.p,
+                &v.log,
+                "scratch",
+                pick,
+                &[t.to_string()],
+                &[],
+                Lane::Human,
+                &w,
+            )
+        };
+        let before = v.read();
+        let e = tag_as(&id("sc-1"), "p1").expect_err("refused").to_string();
+        assert!(e.contains("#p1 is not a priority"), "{e}");
+        let e = retext(
+            &v.p,
+            &v.log,
+            "scratch",
+            &id("sc-1"),
+            Some("fix(a): clean row #medium"),
+            None,
+            &[],
+            false,
+            None,
+            Lane::Human,
+            &w,
+        )
+        .expect_err("refused")
+        .to_string();
+        assert!(e.contains("#medium is not a priority"), "{e}");
+        assert_eq!(v.read(), before, "a refusal writes nothing");
+        // NEGATIVE CONTROL: the row that already had #p1 still takes a tag.
+        assert_eq!(tag_as(&id("sc-2"), "size/s").unwrap(), 0);
+        assert!(v.read().contains("#size/s"));
     }
 
     #[test]

@@ -586,6 +586,10 @@ fn scan_start(line: &str) -> usize {
 /// THE one tag walker, so the glue rule and the code-span rule have a single definition. Three
 /// readers need it (`find_hashtags`, `split_priority`, `split_version`) and a rule applied to two
 /// of them would put the third quietly out of step.
+///
+/// A backtick opens a code span only when another one closes it later on the line; an unpaired
+/// one is a literal character. Read as an open span, it hid every tag after it: ar-3263's title
+/// had one, so its `#urgent` and `#low` went past the one-priority writer and the doctor.
 fn for_each_tag(line: &str, mut f: impl FnMut(usize, usize, usize, usize)) {
     let bytes = line.as_bytes();
     let start = scan_start(line);
@@ -593,7 +597,9 @@ fn for_each_tag(line: &str, mut f: impl FnMut(usize, usize, usize, usize)) {
     let mut i = start;
     while i < bytes.len() {
         if bytes[i] == b'`' {
-            in_code = !in_code;
+            if in_code || bytes[i + 1..].contains(&b'`') {
+                in_code = !in_code;
+            }
             i += 1;
             continue;
         }
@@ -2937,6 +2943,20 @@ after
         assert_eq!(
             find_hashtags("(#wedding, #house)"),
             vec!["wedding", "house"]
+        );
+    }
+
+    // ar-3263's row: an unpaired backtick in the title hid every tag after it, so the row kept
+    // two priorities. A paired span still hides its tags (the negative control).
+    #[test]
+    fn an_unpaired_backtick_hides_no_tag() {
+        let row = "- [ ] feat(dispatch): metric in `agent-queue #urgent #of/ar-2943 #low <!-- id:ar-3263 -->";
+        assert_eq!(find_hashtags(row), vec!["urgent", "of/ar-2943", "low"]);
+        assert_eq!(task_priority(&one_priority(row)), Some("#urgent"));
+        assert_eq!(
+            find_hashtags("`a #x` then `b #y"),
+            vec!["y"],
+            "the first pair hides #x, the unpaired one after it hides nothing"
         );
     }
 

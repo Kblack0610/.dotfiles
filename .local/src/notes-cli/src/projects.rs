@@ -1145,6 +1145,15 @@ fn summary_findings(content: &str) -> Vec<String> {
 /// word looks meaningful and is not.
 const RETIRED_PRIORITIES: &[&str] = &["normal", "medium", "p0", "p1", "p2", "p3"];
 
+/// The first [`RETIRED_PRIORITIES`] word a row line carries before its marker, as `#word`.
+pub(crate) fn retired_priority(line: &str) -> Option<String> {
+    let head = line.find("<!--").map_or(line, |i| &line[..i]);
+    md::find_hashtags(head)
+        .into_iter()
+        .find(|t| RETIRED_PRIORITIES.contains(&t.as_str()))
+        .map(|t| format!("#{t}"))
+}
+
 /// Tags nothing reads any more. Each looks meaningful on a row and changes nothing.
 /// `#ci` work is the `ci(<area>):` type; `#oneshot`, `#ai` and `#high-priority` have no reader.
 const RETIRED_TAGS: &[&str] = &["oneshot", "ci", "ai", "high-priority"];
