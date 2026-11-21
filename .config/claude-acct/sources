@@ -31,7 +31,8 @@
 # run_rpm=13: fleet-nim's busiest minute over the 3 days to 2026-11-20 was 12.6 requests (p90 of busy minutes 4, mean 1.9;
 # litellm_proxy_total_requests_metric_total), so 3 runs at once.
 # `ocfree` is the gateway key fleet-ocfree on OpenCode's free models (no team, a $1 tripwire budget; the routes
-# are priced 0; OpenCode publishes no limit for them). Those providers may train on prompts, so its harness takes public projects only (harnesses.json `projects`).
+# are priced 0; OpenCode publishes no limit for them, but beam-free 429s past about 2,000 requests a UTC day, home-config
+# apps/litellm/README.md; room --model refuses a route the gateway sheds on a 429, route_shed). Those providers may train on prompts, so its harness takes public projects only (harnesses.json `projects`).
 # go and ocfree max_live, nim run_rpm and go run_usd: provisional, low confidence, revisit on a 429 or a provider hold (rules.jsonl).
 # host=<hostname,...>: the row exists only on those hosts (CLAUDE_ACCT_HOST overrides the name). Codex runs on the
 # workstation only (the human, 2026-11-19), so its two rows are not razer's: a host with no codex row has no Codex source to read.

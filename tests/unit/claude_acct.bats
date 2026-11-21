@@ -1397,6 +1397,7 @@ case "$url" in
   */v1/messages/count_tokens) if [[ -f "$SANDBOX/gw/refused.$key" ]]; then cat "$SANDBOX/gw/refused.$key"; else echo '{"input_tokens":1}'; fi ;;
   */v1/model/info) cat "$SANDBOX/gw/model-info.json" 2>/dev/null || exit 22 ;;
   */v1/chat/completions) if [[ -f "$SANDBOX/gw/route-spent" ]]; then cat "$SANDBOX/gw/route-spent"; else echo '{"choices":[{"message":{"content":"x"}}]}'; fi ;;
+  query=*litellm_deployment_state*) cat "$SANDBOX/gw/shed.json" 2>/dev/null || exit 22 ;;
   *) exit 22 ;;
 esac
 EOS
@@ -2403,7 +2404,7 @@ refused() { printf '{"error":{"message":"%s","type":"budget_exceeded"}}\n' "$2" 
 # route_info -- the gateway's model info: "m1 (glm)" has a 5h deployment budget of $2.85, "m1 (kimi)" none
 route_info() {
   echo '{"data":[{"model_name":"m1 (glm)","litellm_params":{"max_budget":2.85,"budget_duration":"5h"}},
-    {"model_name":"m1 (kimi)","litellm_params":{}}]}' > "$SANDBOX/gw/model-info.json"
+    {"model_name":"m1 (kimi)","litellm_params":{},"model_info":{"id":"kimi-id"}}]}' > "$SANDBOX/gw/model-info.json"
 }
 
 @test "sources: room --source --model refuses a route past its deployment budget the key budget admits" {
@@ -2459,6 +2460,39 @@ route_info() {
   : > "$SANDBOX/curl.argv"
   run --separate-stderr "$ACCT" room --source res --model "m1 (glm)"
   assert_failure 1
+  ! grep -q 'chat/completions' "$SANDBOX/curl.argv"
+}
+
+@test "sources: room --source --model refuses a route with no budget the gateway sheds on an upstream 429" {
+  src_setup
+  route_info
+  budget sk-res key 5 20
+  budget sk-lazer key 40 100
+  budget team team 40 100
+  # The upstream's refusal, in the live shape of 2026-11-21 (ocfree beam-free past its daily quota).
+  echo '{"error":{"message":"litellm.RateLimitError: RateLimitError: OpenAIException - Rate limit exceeded. Please try again later.","code":"429"}}' > "$SANDBOX/gw/route-spent"
+  # Healthy in Prometheus: no probe is sent, and the route is room.
+  echo '{"status":"success","data":{"resultType":"vector","result":[]}}' > "$SANDBOX/gw/shed.json"
+  run --separate-stderr "$ACCT" room --source res --model "m1 (kimi)"
+  assert_success
+  ! grep -q 'chat/completions' "$SANDBOX/curl.argv"
+  grep -qF 'model_id="kimi-id"' "$SANDBOX/curl.argv"
+  # Shed: the probe is sent and its 429 refuses the start.
+  echo '{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[0,"1"]}]}}' > "$SANDBOX/gw/shed.json"
+  rm -f "$XDG_CACHE_HOME/claude-acct/route-"*
+  run --separate-stderr "$ACCT" room --source res --model "m1 (kimi)"
+  assert_failure 1
+  assert_output 'res: the upstream refuses m1 (kimi): it answers 429, a rate limit or a spent quota'
+  grep -q 'chat/completions' "$SANDBOX/curl.argv"
+  # Shed but the upstream answers again: room (the probe's 200 is what clears the shed state).
+  rm -f "$XDG_CACHE_HOME/claude-acct/route-"* "$SANDBOX/gw/route-spent"
+  run --separate-stderr "$ACCT" room --source res --model "m1 (kimi)"
+  assert_success
+  # Prometheus unreadable: read as not shed, no probe.
+  rm -f "$XDG_CACHE_HOME/claude-acct/route-"* "$SANDBOX/gw/shed.json"
+  : > "$SANDBOX/curl.argv"
+  run --separate-stderr "$ACCT" room --source res --model "m1 (kimi)"
+  assert_success
   ! grep -q 'chat/completions' "$SANDBOX/curl.argv"
 }
 
