@@ -29,8 +29,8 @@
 #   list [--json [--points]] [--state queued|running|waiting|review|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD|Nd|N]
 #       list joins each item's board row (`notes board --json`, one read of the whole board): the text list ends in a
 #       `<band>/<points>` column (`m/5`, the band alone when the row is unscored, `-` with none); --json joins
-#       only with --points, which adds `points` and the row's current `size`. Ordering queued or running items reads the
-#       board once more for each row's priority (row_prios, ar-3011); other states pay no board read
+#       only with --points, which adds `points` and the row's current `size`. Ordering items that work a row reads the
+#       board once more for those rows' priority (row_prios, ar-3011); done items and rowless ones pay no board read
 #   next [--json] | show <slug> [--json [--points]] (the board join list --points does) | cancel <slug> [--why <text>] [--ask <id>] | bump <slug> <priority>
 #       cancel records cancelled_by: (the session id, else the item slug the caller works) and cancel_why:;
 #       --why is required from a session or script ($CLAUDE_CODE_SESSION_ID or $AGENT_QUEUE_ITEM set)
@@ -1355,20 +1355,25 @@ order_filter() {
   rank="$(prios_read | jq -Rsc 'split("\n") | map(select(. != "") | split("\t")
     | {(.[0]): ({"focus": 0, "high": 1, "low": 3}[.[1]] // 2)}) | add // {}' 2>/dev/null)" || rank='{}'
   [[ " $* " != *" queued "* ]] || mix="$(mix_json)"
-  local rows=null
-  [[ " $* " != *" queued "* && " $* " != *" running "* ]] || rows="$(row_prios)"
+  local rows
+  rows="$(row_prios "$@")"
   printf '%s %s %s as $rank | %s as $mix | %s as $rowprio | %s' "$CLASS_JQ" "$MIX_JQ" "$rank" "${mix:-null}" "${rows:-null}" "$ORDER"
 }
 
-# row_prios -> {"<board>:<id>": priority} of each open board row a queued or running item works (its
-# row:, else its from: board:, as ITEM_JQ's .row), one `notes board --json` read, or nothing when no
-# item works a row or notes cannot answer (each item then keeps its own line). The row is where an
-# item's priority lives (ar-3011): ORDER's row_prio reads it, so a retag re-ranks the item. Only the
-# rows items work: the map is bound into the jq program text, and the whole board's (4,700 rows) was
-# past the kernel's argument limit, so every ordered list failed.
+# row_prios <states...> -> {"<board>:<id>": priority} of each open board row an item in those states
+# (done aside) works (its row: or from: board: header, ITEM_JQ's .row), one `notes board --json` read,
+# or nothing when no item works a row or notes cannot answer (each item then keeps its own line). The
+# row is where an item's priority lives (ar-3011): ORDER's row_prio reads it, so a retag re-ranks the
+# item. Only the rows items work: the map is bound into the jq program text, and the whole board's
+# (4,700 rows) was past the kernel's argument limit, so every ordered list failed.
 row_prios() {
-  local keys
-  keys="$(sed -n -e 's/^row: //p' -e 's/^from: board://p' "$AQ_DIR"/queued/*.md "$AQ_DIR"/running/*.md 2>/dev/null | sort -u)"
+  local keys s f files=()
+  for s in "$@"; do
+    case "$s" in queued | running | waiting | review) for f in "$AQ_DIR/$s"/*.md; do [ ! -e "$f" ] || files+=("$f"); done ;; esac
+  done
+  [ "${#files[@]}" -gt 0 ] || return 0
+  keys="$(awk 'FNR == 1 { fm = 1 } /^---$/ { fm = 0 } fm && sub(/^(row|from): *(board:)?/, "") { sub(/[ \t\r]+$/, ""); if (index($0, ":")) print }' \
+    "${files[@]}" /dev/null 2>/dev/null | sort -u)"
   [ -n "$keys" ] || return 0
   notes board --json 2>/dev/null | jq -c --arg keys "$keys" '($keys | split("\n") | map({(.): true}) | add) as $want
     | [.rows[]? | select((.state == "open" or .state == "doing") and .project != null and .id != null
