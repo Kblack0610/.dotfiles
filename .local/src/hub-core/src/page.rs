@@ -634,15 +634,20 @@ pub fn read_with(
     if let Some(v) = &roadmap {
         p.shipped = shipped(v);
     }
-    let channels = crate::releases::channels(runner, name).unwrap_or_else(|e| {
-        p.errors.push(e);
-        vec![]
-    });
+    // One release-state read serves the badge, the checks, the timeline and the Releases tab,
+    // which says a failed read (`release-state show <project>` keeps the rows of that project).
+    let rel = crate::releases::read(runner, &[]);
+    let channels: Vec<_> = rel
+        .rows
+        .iter()
+        .filter(|r| r.project == name)
+        .cloned()
+        .collect();
     p.releases = crate::releases::badge(&channels);
     let reg = project_map::cached();
     p.release_tab = crate::project_releases::build(
         name,
-        &crate::releases::read(runner, &[]),
+        &rel,
         &crate::version_page::labs(reg.as_deref(), name, &[]),
         roadmap.as_ref(),
     );
@@ -901,7 +906,7 @@ mod tests {
                 ),
                 ("notes projects --roadmap game", 0, roadmap.into()),
                 (
-                    "release-state show --json game",
+                    "release-state show --json",
                     0,
                     r#"{"rows":[{"project":"game","id":"game-prod","status":"drift"}]}"#.into(),
                 ),

@@ -812,28 +812,28 @@ test("Coverage is one row per typed project, a cell its department's word linked
 });
 
 test("Releases lists the line's versions newest first, the apps with a line, and folds the legacy shut", async () => {
-  const ver = (version, provenance, o = {}) => ({ version, status: "released", level: "ok", provenance, done: 2, total: 4, progress_text: "2 of 4 rows", cut_text: `${version}-web 11-19`, href: `#releases/versions/demo%2F${version.slice(1)}`, ...o });
+  const ver = (version, line_text, o = {}) => ({ version, status: "released", level: "ok", line_text, done: 2, total: 4, progress_text: "2 of 4 rows", cut_text: `${version}-web 11-19`, href: `#releases/versions/demo%2F${version.slice(1)}`, ...o });
   const app = (name, line) => ({ app: name, status_text: "live", level: "ok", live_text: "prod 11-19", released_text: "v0.6.0", line_text: line, href: `#releases/apps/${name}` });
   const release_tab = {
-    versions: [ver("v0.6.0", "flow"), ver("v0.5.9", "outside", { level: "warn", status: "unreleased" })],
+    versions: [ver("v0.6.0", "on the line"), ver("v0.5.9", "cut outside the release flow", { level: "warn", status: "unreleased" })],
     apps: [app("demo-web", "from v0.5.0")],
-    legacy_versions: [ver("v0.1.0", "legacy", { level: "neutral", status: "legacy" })],
+    legacy_versions: [ver("v0.1.0", "before the line", { level: "neutral", status: "legacy" })],
     legacy_apps: [app("demo-<old>", "no line")],
-    line_text: "line from v0.5.0", legacy_says: "1 versions, 1 apps",
-    elsewhere: [{ app: "demo-cli", owner: "tools", href: "#projects/tools/releases" }], errors: ["release-state: stale"],
+    line_text: "line from v0.5.0", legacy_says: "1 version, 1 app from before the release line",
+    elsewhere: [{ text: "demo-cli releases under tools", href: "#projects/tools/releases" }], errors: ["release-state: stale"],
   };
   ctx.answers = { "/api/projects/demo/page": { ...page, release_tab }, "/api/projects": list() };
   await drawn(list(), "bnb/demo");
   vm.runInContext(`pInner("releases")`, ctx);
   assert.equal(vm.runInContext(`st.arg`, ctx), "bnb/demo/releases", "Releases has its own link");
   const rel = pinOf(read().pane, "releases");
-  assert.match(rel, /id="sec-p-versions">Versions <span class="n">2<\/span><\/h2><div class="panel down"><div>release-state: stale<\/div><\/div><div class="cline muted">line from v0\.5\.0<\/div><div class="cline">demo-cli releases under <a href="#projects\/tools\/releases">tools<\/a><\/div>/);
-  assert.match(rel, /<td><a href="#releases\/versions\/demo%2F0\.6\.0">v0\.6\.0<\/a><\/td><td class="">released<\/td><td class="muted">flow<\/td>.*<td><a href="#releases\/versions\/demo%2F0\.5\.9">v0\.5\.9<\/a><\/td><td class="warn">unreleased<\/td><td class="warn">cut outside the release flow<\/td>/s, "newest first, an outside cut warned");
+  assert.match(rel, /id="sec-p-versions">Versions <span class="n">2<\/span><\/h2><div class="panel down"><div>release-state: stale<\/div><\/div><div class="cline muted">line from v0\.5\.0<\/div><div class="cline"><a href="#projects\/tools\/releases">demo-cli releases under tools<\/a><\/div>/);
+  assert.match(rel, /<td><a href="#releases\/versions\/demo%2F0\.6\.0">v0\.6\.0<\/a><\/td><td class="">released<\/td><td class="muted">on the line<\/td>.*<td><a href="#releases\/versions\/demo%2F0\.5\.9">v0\.5\.9<\/a><\/td><td class="warn">unreleased<\/td><td class="muted">cut outside the release flow<\/td>/s, "newest first, an outside cut warned");
   assert.match(rel, /id="sec-p-apps">Apps <span class="n">1<\/span><\/h2>.*<a href="#releases\/apps\/demo-web">demo-web<\/a>.*from v0\.5\.0/s);
-  assert.match(rel, /id="sec-p-legacy">Legacy <span class="n">2<\/span><\/h2><div class="card"><details class="cfold" data-k="pg:legacy"><summary><span class="muted">1 versions, 1 apps, from before the release line<\/span><\/summary>/);
+  assert.match(rel, /id="sec-p-legacy">Legacy <span class="n">2<\/span><\/h2><div class="card"><details class="cfold" data-k="pg:legacy"><summary><span class="muted">1 version, 1 app from before the release line<\/span><\/summary>/);
   assert.doesNotMatch(rel, /<details[^>]* open/, "the fold starts shut");
   const fold = rel.slice(rel.indexOf('data-k="pg:legacy"'));
-  assert.match(fold, /v0\.1\.0.*<td class="muted">legacy<\/td>.*demo-&lt;old&gt;/s, "the legacy versions and apps sit inside the fold, escaped");
+  assert.match(fold, /v0\.1\.0.*<td class="muted">before the line<\/td>.*demo-&lt;old&gt;/s, "the legacy versions and apps sit inside the fold, escaped");
   // NEGATIVE CONTROL: a legacy version is never in the line's table.
   assert.doesNotMatch(rel.slice(0, rel.indexOf('id="sec-p-legacy"')), /v0\.1\.0/);
 });

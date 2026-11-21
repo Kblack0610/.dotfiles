@@ -1,23 +1,23 @@
 //! An opened project's Releases inner tab (docs/dashboards.md row 6), both surfaces: the project's
-//! versions newest first, each with its status (the version page's rule, `version_page::status`),
+//! versions newest first, each with its status (the version page's rule, `version_page::verdict`),
 //! its place on the release line, its rows done and its newest cut, linked to its version page;
 //! then the apps whose cuts are the project's (`version_page::owned`) with the words Releases >
 //! Apps gives them; then one shut Legacy fold holding every version from before the line starts
 //! and every app with no line (the registry's `releaseFrom`). Nothing legacy is dropped.
 //!
-//! The marks are release-state's (docs/operations/release-state.md, Provenance): a lab version's
-//! own mark, else its cuts'. The open version has no lab note yet, so with no cut of it it is
-//! legacy only when no app of the project has a line. Rows done are `notes projects --roadmap`'s
+//! Which versions are legacy or outside is `version_page::verdict`'s, from release-state's marks:
+//! a lab version's own, else its cuts'. Rows done are `notes projects --roadmap`'s
 //! count of the project's own rows aimed at the version. Built by [`build`] from the project
 //! page's reads (`page::read`), so both surfaces draw the same words.
 
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::briefing::plural;
 use crate::links::{Kind, Link};
-use crate::release_graph::{legacy, Shipment};
+use crate::release_graph::Shipment;
 use crate::release_page::{core, cut_of};
 use crate::releases::{App, Level, Releases};
 use crate::version_page;
@@ -27,11 +27,12 @@ use crate::version_page;
 pub struct Version {
     /// `v0.5.3`.
     pub version: String,
-    /// `released`, `cut`, `unreleased` or `legacy` (`version_page::status`).
+    /// `released`, `cut`, `unreleased` or `legacy` (`version_page::verdict`).
     pub status: String,
     pub level: Level,
-    /// `flow`, `outside` (cut outside the release flow: amber) or `legacy`.
-    pub provenance: String,
+    /// Its place on the release line: `on the line`, `cut outside the release flow` (amber) or
+    /// `before the line`.
+    pub line_text: String,
     pub done: u64,
     pub total: u64,
     /// `26 of 26 rows done`, or `no rows` when none is aimed at it.
@@ -46,7 +47,7 @@ pub struct Version {
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
 pub struct AppLine {
     pub app: String,
-    /// Its word on Releases > Apps; `legacy` for an app with no line.
+    /// Its word on Releases > Apps.
     pub status_text: String,
     pub level: Level,
     pub live_text: String,
@@ -61,8 +62,8 @@ pub struct AppLine {
 /// `unity-core-playground`): its versions are listed on that project's tab.
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
 pub struct Elsewhere {
-    pub app: String,
-    pub owner: String,
+    /// `dodginballs releases under unity-core-playground`.
+    pub text: String,
     /// The owner's Releases tab.
     pub href: String,
 }
@@ -78,7 +79,7 @@ pub struct Tab {
     pub legacy_apps: Vec<AppLine>,
     /// `line from v0.5.3`, or why every version is legacy.
     pub line_text: String,
-    /// The Legacy fold's head: `8 versions, 2 apps`.
+    /// The Legacy fold's head: `8 versions, 2 apps from before the release line`.
     pub legacy_says: String,
     pub elsewhere: Vec<Elsewhere>,
     pub errors: Vec<String>,
@@ -99,26 +100,22 @@ fn key(v: &str) -> (bool, Vec<u64>, String) {
     (nums.is_some(), nums.unwrap_or_default(), v.to_string())
 }
 
-fn plural(n: usize, one: &str) -> String {
-    format!("{n} {one}{}", if n == 1 { "" } else { "s" })
+fn line_from(from: &str) -> String {
+    format!("line from {from}")
 }
 
+/// An app as Releases > Apps words it, with its line.
 fn app_line(a: &App) -> AppLine {
-    let lined = !a.release_from.is_empty();
     AppLine {
         app: a.project.clone(),
-        status_text: if lined {
-            a.status_text.clone()
-        } else {
-            "legacy".into()
-        },
-        level: if lined { a.level } else { Level::Neutral },
+        status_text: a.status_text.clone(),
+        level: a.level,
         live_text: a.live_text.clone(),
         released_text: a.released_text.clone(),
-        line_text: if lined {
-            format!("line from {}", a.release_from)
-        } else {
+        line_text: if a.release_from.is_empty() {
             "no line (no releaseFrom)".into()
+        } else {
+            line_from(&a.release_from)
         },
         href: Link::to(Kind::App, a.project.clone()).href(),
     }
@@ -132,7 +129,7 @@ pub fn build(project: &str, rel: &Releases, labs: &[String], roadmap: Option<&Va
         .iter()
         .map(|a| a.release_from.as_str())
         .find(|f| !f.is_empty());
-    let mut facts: BTreeMap<String, Facts> = BTreeMap::new();
+    let mut facts: HashMap<String, Facts> = HashMap::new();
     for l in labs {
         for v in rel.versions.get(l).map_or(&[][..], |v| &v.list[..]) {
             facts.entry(core(&v.version).to_string()).or_default().mark =
@@ -151,39 +148,27 @@ pub fn build(project: &str, rel: &Releases, labs: &[String], roadmap: Option<&Va
             facts.entry(cut_of(s).to_string()).or_default().cuts.push(s);
         }
     }
+    let mut facts: Vec<(String, Facts)> = facts.into_iter().collect();
+    facts.sort_by_cached_key(|(v, _)| std::cmp::Reverse(key(v)));
     let mut versions = vec![];
     let mut legacy_versions = vec![];
     for (v, f) in facts {
-        let is_legacy = match (&f.mark, f.cuts.is_empty()) {
-            (Some(m), _) => legacy(m),
-            (None, false) => f.cuts.iter().all(|s| legacy(&s.provenance)),
-            (None, true) => from.is_none(),
-        };
-        let outside = !is_legacy
-            && (f.mark.as_deref() == Some("outside")
-                || f.cuts.iter().any(|s| s.provenance == "outside"));
-        let released = f.cuts.iter().any(|s| !s.reached.is_empty());
-        let (status, mut level) =
-            version_page::status(is_legacy, released, !f.cuts.is_empty(), false);
-        if outside {
-            level = level.min(Level::Warn);
-        }
+        let verdict = version_page::verdict(f.mark.as_deref(), &f.cuts, from.is_some(), false);
         let (done, open) = f.progress.unwrap_or((0, 0));
-        let newest = f.cuts.iter().max_by_key(|s| s.at);
         let row = Version {
             version: if key(&v).0 {
                 format!("v{v}")
             } else {
                 v.clone()
             },
-            status: status.into(),
-            level,
-            provenance: if is_legacy {
-                "legacy"
-            } else if outside {
-                "outside"
+            status: verdict.status.into(),
+            level: verdict.level,
+            line_text: if verdict.legacy {
+                "before the line"
+            } else if verdict.outside {
+                "cut outside the release flow"
             } else {
-                "flow"
+                "on the line"
             }
             .into(),
             done,
@@ -193,21 +178,15 @@ pub fn build(project: &str, rel: &Releases, labs: &[String], roadmap: Option<&Va
             } else {
                 format!("{done} of {} rows done", done + open)
             },
-            cut_text: newest.map_or_else(
-                || "no cut".into(),
-                |s| format!("{} {}", s.tag, s.at_text).trim().to_string(),
-            ),
+            cut_text: version_page::cut_text(&f.cuts),
             href: version_page::link(project, &v).href(),
         };
-        if is_legacy {
+        if verdict.legacy {
             legacy_versions.push(row);
         } else {
             versions.push(row);
         }
     }
-    let newest_first = |a: &Version, b: &Version| key(core(&b.version)).cmp(&key(core(&a.version)));
-    versions.sort_by(newest_first);
-    legacy_versions.sort_by(newest_first);
     let (lined, unlined): (Vec<&App>, Vec<&App>) =
         apps.iter().partition(|a| !a.release_from.is_empty());
     let elsewhere = rel
@@ -215,27 +194,25 @@ pub fn build(project: &str, rel: &Releases, labs: &[String], roadmap: Option<&Va
         .iter()
         .filter(|a| a.project == project && a.owner() != project)
         .map(|a| Elsewhere {
-            app: a.project.clone(),
-            owner: a.owner(),
+            text: format!("{} releases under {}", a.project, a.owner()),
             href: format!("{}/releases", Link::to(Kind::Project, a.owner()).href()),
         })
         .collect();
-    let legacy_apps: Vec<AppLine> = unlined.into_iter().map(app_line).collect();
     Tab {
         line_text: match from {
-            Some(f) => format!("line from {f}"),
+            Some(f) => line_from(f),
             None if apps.is_empty() => "no app releases under this project, so no line".into(),
             None => "no app declares releaseFrom, so every version is legacy".into(),
         },
         legacy_says: format!(
-            "{}, {}",
-            plural(legacy_versions.len(), "version"),
-            plural(legacy_apps.len(), "app")
+            "{}, {} from before the release line",
+            plural(legacy_versions.len(), "version", "versions"),
+            plural(unlined.len(), "app", "apps")
         ),
         versions,
         apps: lined.into_iter().map(app_line).collect(),
         legacy_versions,
-        legacy_apps,
+        legacy_apps: unlined.into_iter().map(app_line).collect(),
         elsewhere,
         errors: rel.errors.clone(),
     }
@@ -245,7 +222,6 @@ pub fn build(project: &str, rel: &Releases, labs: &[String], roadmap: Option<&Va
 mod tests {
     use super::*;
     use crate::release_graph::{LabVersion, Reached, Versions};
-    use std::collections::HashMap;
 
     fn ship(tag: &str, prov: &str, at: i64, reached: bool) -> Shipment {
         Shipment {
@@ -345,14 +321,14 @@ mod tests {
         let vs: Vec<(&str, &str, &str)> = t
             .versions
             .iter()
-            .map(|v| (v.version.as_str(), v.status.as_str(), v.provenance.as_str()))
+            .map(|v| (v.version.as_str(), v.status.as_str(), v.line_text.as_str()))
             .collect();
         assert_eq!(
             vs,
             [
-                ("v0.5.5", "unreleased", "flow"),
-                ("v0.5.4", "cut", "outside"),
-                ("v0.5.3", "released", "flow"),
+                ("v0.5.5", "unreleased", "on the line"),
+                ("v0.5.4", "cut", "cut outside the release flow"),
+                ("v0.5.3", "released", "on the line"),
             ]
         );
         // A cut outside the flow is amber, never green.
@@ -375,9 +351,15 @@ mod tests {
         let apps: Vec<&str> = t.apps.iter().map(|a| a.app.as_str()).collect();
         assert_eq!(apps, [p.as_str(), "game-dodge"]);
         assert_eq!(t.legacy_apps.len(), 1);
-        assert_eq!(t.legacy_apps[0].status_text, "legacy");
+        assert_eq!(
+            t.legacy_apps[0].status_text, "ok",
+            "its own word on Releases > Apps"
+        );
         assert_eq!(t.legacy_apps[0].line_text, "no line (no releaseFrom)");
-        assert_eq!(t.legacy_says, "2 versions, 1 app");
+        assert_eq!(
+            t.legacy_says,
+            "2 versions, 1 app from before the release line"
+        );
         assert_eq!(t.line_text, "line from v0.5.3");
     }
 
@@ -405,7 +387,10 @@ mod tests {
         let t = build("game-dodge", &rel(vec![dodge], HashMap::new()), &[], None);
         assert!(t.apps.is_empty() && t.versions.is_empty());
         assert_eq!(t.elsewhere.len(), 1);
-        assert_eq!(t.elsewhere[0].owner, owner());
+        assert_eq!(
+            t.elsewhere[0].text,
+            format!("game-dodge releases under {}", owner())
+        );
         assert_eq!(
             t.elsewhere[0].href,
             format!("#projects/{}/releases", owner())

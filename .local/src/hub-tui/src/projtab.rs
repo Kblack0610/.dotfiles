@@ -751,15 +751,10 @@ fn releases(pg: &Page, pv: &ProjView, p: Palette, w: usize) -> Vec<Line<'static>
     use hub_core::project_releases::{AppLine, Version};
     let t = &pg.release_tab;
     let ver = |v: &Version| -> Vec<Cell> {
-        let line = if v.provenance == "outside" {
-            cell("outside the flow", p.warn())
-        } else {
-            v.provenance.clone().into()
-        };
         vec![
             v.version.clone().into(),
             cell(v.status.clone(), crate::releases::alert(v.level, p)),
-            line,
+            cell(v.line_text.clone(), p.dim()),
             v.progress_text.clone().into(),
             cell(v.cut_text.clone(), p.dim()),
         ]
@@ -805,8 +800,7 @@ fn releases(pg: &Page, pv: &ProjView, p: Palette, w: usize) -> Vec<Line<'static>
     }
     out.extend(wrapped("  ", &t.line_text, p.dim(), p, w));
     for e in &t.elsewhere {
-        let s = format!("{} releases under {}", e.app, e.owner);
-        out.extend(wrapped("  ", &s, Default::default(), p, w));
+        out.extend(wrapped("  ", &e.text, Default::default(), p, w));
     }
     if !t.versions.is_empty() {
         out.extend(vers(&t.versions));
@@ -1601,10 +1595,10 @@ pub(crate) mod tests {
         use hub_core::project_releases::{AppLine, Version};
         let pr = fixture();
         let mut pg = a_page();
-        let v = |n: &str, prov: &str| Version {
+        let v = |n: &str, line: &str| Version {
             version: n.into(),
             status: "released".into(),
-            provenance: prov.into(),
+            line_text: line.into(),
             ..Default::default()
         };
         let a = |n: &str, line: &str| AppLine {
@@ -1613,9 +1607,12 @@ pub(crate) mod tests {
             line_text: line.into(),
             ..Default::default()
         };
-        pg.release_tab.versions = vec![v("v0.6.0", "flow"), v("v0.5.9", "outside")];
+        pg.release_tab.versions = vec![
+            v("v0.6.0", "on the line"),
+            v("v0.5.9", "cut outside the release flow"),
+        ];
         pg.release_tab.apps = vec![a("garden-web", "from v0.5.0")];
-        pg.release_tab.legacy_versions = vec![v("v0.1.0", "legacy")];
+        pg.release_tab.legacy_versions = vec![v("v0.1.0", "before the line")];
         pg.release_tab.legacy_apps = vec![a("garden-old", "no line")];
         pg.release_tab.legacy_says = "1 versions, 1 apps".into();
         pg.release_tab.line_text = "line from v0.5.0".into();
@@ -1626,7 +1623,7 @@ pub(crate) mod tests {
         let s = draw(&pr.cards[0], Some(&pg), &pv).join("\n");
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} in {s}"));
         assert!(at("v0.6.0") < at("v0.5.9") && at("v0.5.9") < at("APPS"));
-        assert!(s.contains("outside the flow") && s.contains("line from v0.5.0"));
+        assert!(s.contains("cut outside the release flow") && s.contains("line from v0.5.0"));
         assert!(at("APPS") < at("garden-web") && at("garden-web") < at("LEGACY"));
         assert!(s.contains("F lists them"), "{s}");
         assert!(

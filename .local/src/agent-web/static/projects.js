@@ -255,7 +255,7 @@ function pStage(pg) {
 // them, then one shut Legacy fold holding the versions before the line and the apps with none.
 const P_VER_HEAD = `<tr><th data-role="lead">version</th><th data-role="glance">status</th><th>line</th><th>rows</th><th>cut</th></tr>`;
 const pVerRow = (v) => `<tr><td><a href="${esc(v.href)}">${esc(v.version)}</a></td><td class="${levelClass(v.level)}">${esc(v.status)}</td>` +
-  `<td class="${v.provenance === "outside" ? "warn" : "muted"}">${esc(v.provenance === "outside" ? "cut outside the release flow" : v.provenance)}</td>` +
+  `<td class="muted">${esc(v.line_text)}</td>` +
   `<td>${v.total ? meter(v.done / v.total) : ""}<span class="muted">${esc(v.progress_text)}</span></td><td class="wrap muted">${esc(v.cut_text)}</td></tr>`;
 const P_APP_HEAD = `<tr><th data-role="lead">app</th><th data-role="glance">status</th><th>deployed</th><th>released</th><th>line</th></tr>`;
 const pAppRow = (a) => `<tr><td><a href="${esc(a.href)}">${esc(a.app)}</a></td><td class="${levelClass(a.level)}">${esc(a.status_text)}</td>` +
@@ -264,14 +264,14 @@ const pTbl = (head, rows) => `<div class="panel scroll"><table class="tbl">${hea
 function pReleases(pg) {
   const t = pg.release_tab;
   const errs = t.errors.length ? `<div class="panel down">${t.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>` : "";
-  const away = t.elsewhere.map((e) => `<div class="cline">${esc(e.app)} releases under <a href="${esc(e.href)}">${esc(e.owner)}</a></div>`).join("");
+  const away = t.elsewhere.map((e) => `<div class="cline"><a href="${esc(e.href)}">${esc(e.text)}</a></div>`).join("");
   let html = secHead("p-versions", "Versions", t.versions.length) + errs + `<div class="cline muted">${esc(t.line_text)}</div>` + away +
     (t.versions.length ? pTbl(P_VER_HEAD, t.versions.map(pVerRow)) : "") +
     secHead("p-apps", "Apps", t.apps.length) + (t.apps.length ? pTbl(P_APP_HEAD, t.apps.map(pAppRow)) : `<div class="card muted">No app on a release line.</div>`);
   const legacy = (t.legacy_versions.length ? pTbl(P_VER_HEAD, t.legacy_versions.map(pVerRow)) : "") +
     (t.legacy_apps.length ? pTbl(P_APP_HEAD, t.legacy_apps.map(pAppRow)) : "");
   html += secHead("p-legacy", "Legacy", t.legacy_versions.length + t.legacy_apps.length) +
-    (legacy ? `<div class="card">${cfold("pg:legacy", `<span class="muted">${esc(t.legacy_says)}, from before the release line</span>`, legacy, pst.folds)}</div>` : "");
+    (legacy ? `<div class="card">${cfold("pg:legacy", `<span class="muted">${esc(t.legacy_says)}</span>`, legacy, pst.folds)}</div>` : "");
   return html;
 }
 
