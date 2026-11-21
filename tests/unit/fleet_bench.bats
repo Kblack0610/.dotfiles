@@ -5526,7 +5526,13 @@ items_stub() {
   printf '#!/bin/sh\necho "{}"\n' > "$SANDBOX/bin/stats-stub"
   BENCH_DISPATCH_STATS_CMD=stats-stub BENCH_ITEMS_CMD=items-stub BENCH_NOW=$((T0 + 600)) run "$SUBJECT" forecast
   assert_success
-  assert_line --partial "the dispatcher's slot count could not be read; placing queue items on 1 slot"
+  assert_line --partial "the dispatcher's slot count is unread, zero or stale"
+  # a zero target and a failing stats read the same: one slot, said out loud
+  printf '#!/bin/sh\necho "{\\"room_max_live\\":0}"\n' > "$SANDBOX/bin/stats-stub"
+  BENCH_DISPATCH_STATS_CMD=stats-stub BENCH_ITEMS_CMD=items-stub BENCH_NOW=$((T0 + 600)) run "$SUBJECT" forecast
+  assert_line --partial "the dispatcher's slot count is unread, zero or stale"
+  BENCH_DISPATCH_STATS_CMD=false BENCH_ITEMS_CMD=items-stub BENCH_NOW=$((T0 + 600)) run "$SUBJECT" forecast
+  assert_line --partial "the dispatcher's slot count is unread, zero or stale"
 }
 
 @test "forecast counts a plan item by its plan's open phases, and an unreadable queue leaves the items out" {

@@ -351,7 +351,7 @@ FIX_SINCE=0; if [[ "${SENTINEL_SINCE:-}" =~ ^[0-9]+$ ]]; then FIX_SINCE=$SENTINE
 : "${HEALTH_MANIFEST_CMD:=sentinel-manifest}"   # health: its `parts` (the fleet's parts) and `tags` (each watch's flows:) verbs
 : "${BENCH_SKILL_CMD:=agentctl skill --dangling}"   # each runner whose SKILL= names no skill, as "<runner> SKILL=<name>"
 : "${BENCH_SYSTEMS_CMD:=timeout 60 skill-drift --systems --json}"   # each system with its skills: systems_no_skill
-: "${BENCH_DISPATCH_STATS_CMD:=fleet-dispatch stats}"   # room_max_live: the pace target, the slots items run on (the last pass's headroom; `headroom --json` itself takes about a minute)
+: "${BENCH_DISPATCH_STATS_CMD:=timeout 60 fleet-dispatch stats}"   # room_max_live: the pace target, the slots items run on (the last pass's headroom; `headroom --json` itself takes about a minute)
 : "${BENCH_VERDICTS_CMD:=fleet-dispatch verdicts}"   # the judge's latest verdict per row: next_up_blocked
 : "${BENCH_RUNS_TSV:=${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
 : "${BENCH_ROADMAP_CMD:=notes projects --roadmap}"   # given <project> --json: open and closed epics, leaf rows
@@ -5543,8 +5543,8 @@ cmd_forecast() {
   t=$(now)
   [ "$withq" = 0 ] || queue=$($BENCH_QUEUE_CMD 2>/dev/null) || { say "the dispatch queue could not be read; forecast without it"; queue=''; }
   items=$($BENCH_ITEMS_CMD 2>/dev/null) || { say "the agent queue could not be read; forecast without its items"; items='!'; }
-  [ -z "$items" ] || [ "$items" = "!" ] || queue_slots >/dev/null || say "the dispatcher's slot count could not be read; placing queue items on 1 slot"
   fc=$(forecast_json "$t" "$queue" "$items") || return 1
+  [ -z "$items" ] || [ "$items" = "!" ] || jq -e ".items.slots_known != false" <<<"$fc" >/dev/null || say "the dispatcher's slot count is unread, zero or stale (stats drops the last pass's headroom after 45 min); placing queue items on 1 slot"
   if [ -n "$label" ]; then
     mkdir -p "$DIR"
     jq -c --arg l "$label" '{label: $l} + .' <<<"$fc" >> "$FORECASTS"
