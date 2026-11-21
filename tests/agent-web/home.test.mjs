@@ -391,7 +391,7 @@ test("the cards lead Home, one per tab, each title opening its tab with what it 
   const html = drawCards(cards());
   for (const t of TABS) assert.match(html, new RegExp(`<section class="kcard" data-card="${t}"><a class="kt" href="#${t}" title="counted on ${t}">`));
   assert.ok(html.indexOf("kgrid") < html.indexOf("Needs you"), html);
-  assert.deepEqual([...html.matchAll(/data-card="(\w+)"/g)].map((m) => m[1]), TABS, "the page draws the cards in the one order");
+  assert.deepEqual([...html.matchAll(/data-card="(\w+)"/g)].map((m) => m[1]), TABS, "the page keeps the list order it is sent (the server order is held by hub_core::cards tests)");
   assert.doesNotMatch(html, /Flow|Spend|cchip warn">ci/, "the cards replace the Flow, Health and Spend lines");
   assert.match(html, /<div class="kbig ok">3<span class="ku">live<\/span><\/div>/);
   assert.match(html, /<div class="kbar"[^>]*><i class="ok" style="flex:2"><\/i><i class="bad" style="flex:1"><\/i><\/div>/);

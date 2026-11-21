@@ -492,7 +492,7 @@ const GRID_CARDS = [
 // (WIDGET), read from hub-core so a change there moves the fixture too.
 const CARDS_RS = readFileSync(new URL("../../../.local/src/hub-core/src/cards.rs", import.meta.url), "utf8");
 const ids = (name) => [...CARDS_RS.match(new RegExp(`pub const ${name}: &\\[&str\\] = &\\[([^\\]]*)\\]`))[1].matchAll(/"(\w+)"/g)].map((m) => m[1]);
-const byTab = (tab) => GRID_CARDS.find((c) => c.tab === tab);
+const byTab = (tab) => GRID_CARDS.find((c) => c.tab === tab) ?? (() => { throw new Error(`hub_core::cards has a card "${tab}" that fixtures.mjs GRID_CARDS lacks`); })();
 export const CARD_ORDER = ids("ORDER");
 const homeCards = CARD_ORDER.slice(2).map(byTab); // the grid: Needs you and Main red are the widgets' lead
 export const WIDGET_CARDS = ids("WIDGET").map(byTab);
