@@ -1225,7 +1225,13 @@ mod tests {
             "merged": [{"repo": "a"}, {"repo": "a"}, {"repo": "b"}],
             "open": [{"repo": "a"}],
             "waiting": {"main": ["x"], "needs": ["y"], "asks": ["p", "q"]}});
-        let want = DayCounts { merged: 3, repos: 2, open: 1, nightly: 1, asks: 2 };
+        let want = DayCounts {
+            merged: 3,
+            repos: 2,
+            open: 1,
+            nightly: 1,
+            asks: 2,
+        };
         assert_eq!(day_counts(&rec), want);
         assert_eq!(log_view(rec, &chrono::Utc)["counts"]["repos"], 2);
         assert_eq!(day_counts(&serde_json::json!({})), DayCounts::default());

@@ -160,7 +160,10 @@ pub fn day(infra: &Infra, midnight: i64) -> Day {
     };
     let (ci, local) = (rows("hourly"), rows("local_hourly"));
     let sum = |v: &[(&Series, u32)], keep: &dyn Fn(&Series) -> bool| {
-        v.iter().filter(|(s, _)| keep(s)).map(|(_, n)| n).sum::<u32>()
+        v.iter()
+            .filter(|(s, _)| keep(s))
+            .map(|(_, n)| n)
+            .sum::<u32>()
     };
     let conc = |c: &'static str| move |s: &Series| s.label("conclusion") == c;
     let ok = sum(&ci, &conc("success"));
@@ -2226,9 +2229,20 @@ mod tests {
             ]),
         );
         let d = day(&i, 1000);
-        assert_eq!((d.runs, d.failed_main, d.failed_branch, d.cancelled), (12, 1, 2, 3));
-        assert_eq!(d.pass, Some(6.0 / 9.0), "passed of passed and failed; a cancel is neither");
+        assert_eq!(
+            (d.runs, d.failed_main, d.failed_branch, d.cancelled),
+            (12, 1, 2, 3)
+        );
+        assert_eq!(
+            d.pass,
+            Some(6.0 / 9.0),
+            "passed of passed and failed; a cancel is neither"
+        );
         assert_eq!((d.local, d.local_pass, d.read), (2, Some(0.5), true));
-        assert_eq!(day(&Infra::default(), 1000), Day::default(), "nothing read is not a zero day");
+        assert_eq!(
+            day(&Infra::default(), 1000),
+            Day::default(),
+            "nothing read is not a zero day"
+        );
     }
 }
