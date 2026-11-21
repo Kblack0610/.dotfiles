@@ -209,6 +209,18 @@ Then from the board: ar-4400 retire the CI governor
   assert [ "$(printf '%s\n' "$output" | wc -l)" -le 14 ]
 }
 
+@test "a line per account with no room comes out of the Up next rows, so the cap still holds" {
+  printf '[channel.bar]\nmax_lines = 14\nmax_line = 120\n' > "$BATS_TEST_TMPDIR/channels.toml"
+  local rows=() i
+  for i in $(seq 1 8); do rows+=("low|dotfiles|chore||item $i|$i"); done
+  barfeed total=8 "${rows[@]}"
+  feed summary_dispatch.room_held_account=1 acct:a1.pace=1 acct:a2.pace=1 acct:a3.pace=1 acct:a4.pace=1
+  COMMS_CHANNELS="$BATS_TEST_TMPDIR/channels.toml" run "$MODULE"
+  run tip
+  assert_line "  a4: no room, pace"
+  assert [ "$(printf '%s\n' "$output" | wc -l)" -le 14 ]
+}
+
 @test "no summary/bar is one amber line, and every count still shows" {
   barfeed -
   run "$MODULE"
@@ -305,7 +317,7 @@ $(y 'No item detail: no summary/bar on mqtt.test')
   run "$MODULE"
   assert_equal "$(text)" "$(bar "$(y 39)" 12)"
   assert_equal "$(class)" warn
-  head_is "$(y 'the last pass started nothing. Load 27 is over its cap of 36, so ready work waits.')" "See the fleet-pace skill"
+  head_is "$(y 'the last pass started nothing: load 27 is over its cap of 36.')" "See the fleet-pace skill"
   refute_output --partial "Paused"
   assert_line --index 1 "$(y 'Urgent item waiting 20m: fix(waybar): both hovers rewritten')"
 }
@@ -314,12 +326,35 @@ $(y 'No item detail: no summary/bar on mqtt.test')
   feed runner_fleet_dispatch.blocked=1 summary_dispatch.held_s=7380 summary_dispatch.room_held_account=1
   run "$MODULE"
   assert_equal "$(class)" warn
-  head_is "$(y 'dispatch paused 2h03m. No account has room, so nothing new starts.')" "Run claude-acct status"
+  head_is "$(y 'dispatch paused 2h03m: no account has room.')" "Run claude-acct status"
   refute_output --partial "started nothing"
   refute_output --partial "Paused"
   feed summary_dispatch.held_s=600
   run "$MODULE"
-  head_is "$(y 'dispatch paused 10m. The last pass left ready work waiting, so nothing new starts.')" "Run fleet-dispatch run --dry-run"
+  head_is "$(y 'dispatch paused 10m: the last pass left ready work waiting.')" "Run fleet-dispatch run --dry-run"
+}
+
+@test "a BLOCKED pass with no gate on record says so in one clean sentence" {
+  feed runner_fleet_dispatch.blocked=1
+  run "$MODULE"
+  head_is "$(y 'the last pass started nothing.')" "Run fleet-dispatch run --dry-run"
+  refute_output --partial ". ."
+}
+
+@test "every head sentence fits the bar channel's width, whichever gate holds the longest pause" {
+  local k
+  for k in slots load idle account assess other; do
+    feed summary_dispatch.held_s=8639999 "summary_dispatch.room_held_$k=1" summary_dispatch.room_max_live=1000 \
+      summary_dispatch.room_load=1000 summary_dispatch.room_load_cap=1000 summary_dispatch.room_idle=100 summary_dispatch.room_min_idle=100
+    run "$MODULE"
+    run plain
+    assert_equal "$k: $(head -n 1 <<< "$output" | awk 'length > 120')" "$k: "
+    feed runner_fleet_dispatch.blocked=1 "summary_dispatch.room_held_$k=1" summary_dispatch.room_max_live=1000 \
+      summary_dispatch.room_load=1000 summary_dispatch.room_load_cap=1000 summary_dispatch.room_idle=100 summary_dispatch.room_min_idle=100
+    run "$MODULE"
+    run plain
+    assert_equal "$k: $(head -n 1 <<< "$output" | awk 'length > 120')" "$k: "
+  done
 }
 
 # queue-starved trips on a hold (its watch reads the runner's held_since): one cause, one red sentence.
@@ -327,7 +362,7 @@ $(y 'No item detail: no summary/bar on mqtt.test')
   feed summary_dispatch.held_s=7380 summary_dispatch.room_held_load=1 summary_dispatch.room_load=40 watch_queue_starved.tripped=1
   run "$MODULE"
   assert_equal "$(class)" critical
-  head_is "$(r 'dispatch paused 2h03m. Load 40 is over its cap of 36, so nothing new starts.')" "See the fleet-pace skill"
+  head_is "$(r 'dispatch paused 2h03m: load 40 is over its cap of 36.')" "See the fleet-pace skill"
   assert_line --index 1 "$(r 'Urgent item waiting 20m: fix(waybar): both hovers rewritten')"
   refute_output --partial "sat ready too long"
 }

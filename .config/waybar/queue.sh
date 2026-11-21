@@ -112,11 +112,11 @@ else
   # runner's held_since), so while one stands the starve is the same cause: one red sentence.
   if ((${held:-0} > 0)); then
     p="${paused:-the last pass left ready work waiting}"
-    flag $(( starved == 1 ? 2 : 1 )) "dispatch paused $(prom_dur "$held"). ${p^}, so nothing new starts" "${gate:-blocked}"
+    flag $(( starved == 1 ? 2 : 1 )) "dispatch paused $(prom_dur "$held"): $p" "${gate:-blocked}"
   elif [ "$starved" = 1 ]; then
     flag 2 "an urgent or high item sat ready too long, and nothing started it" starved
   elif [ "$blocked" = 1 ]; then
-    flag 1 "the last pass started nothing. ${paused:+${paused^}, so ready work waits}" "${gate:-blocked}"
+    flag 1 "the last pass started nothing${paused:+: $paused}" "${gate:-blocked}"
   fi
   [ "$(get runner.failed)" = 1 ] && flag 2 "the fleet-dispatch runner failed" failed
   pass="$(get dispatch.last_pass_epoch)"
@@ -169,8 +169,10 @@ if [ -n "$ready" ]; then
   ((${fn:-0} > 0)) && rest+="; $(paint "$C_YEL" "$fn focus project(s) first")"
   tip+=$'\n\n'"<b>Up next</b>  $ready ready ($rest)"
   if [ -n "$BAR" ]; then
+    # The rows get the cap less what is above them and the lines below: +N more, the board, In flight,
+    # Today and its blank, Room, Paused, one spare, and a line per account with no room.
     used="$(wc -l <<< "$tip")"
-    tip+="$(jq -r --argjson rows "$UP_NEXT_ROWS" --argjson lines $((BAR_LINES - used - 8)) \
+    tip+="$(jq -r --argjson rows "$UP_NEXT_ROWS" --argjson lines $((BAR_LINES - used - 8 - $(grep -c . <<< "$reasons"))) \
       --argjson width "$BAR_WIDTH" "$BAR_JQ"'
       ([$rows, $lines] | min | [., 0] | max) as $n
       | .ready.items[:$n] as $shown | (.candidates | length) as $c

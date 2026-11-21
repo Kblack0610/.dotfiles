@@ -201,14 +201,37 @@ Ready to close 1 (1 done); also 1 chat"
 }
 
 # Negative control for the read: the same message fresh lists its row.
-@test "a fresh summary/bar is read once from the broker agent-mqtt-publish uses" {
+@test "a fresh summary/bar is read from the broker agent-mqtt-publish uses" {
   feed hub/dotfiles:2=NEEDS:90:20
   barfeed 'NEEDS|dotfiles|fresh task|ask|20|hub/dotfiles:2'
   run "$MODULE"
   run tip
   assert_output --partial "fresh task"
   refute_output --partial "No session detail"
-  assert_equal "$(cat "$MQTT_SUB_FIXTURE.args")" "-h mqtt.test -p 1883 -t agents/+/summary/bar -C 1 -W 3"
+  assert_equal "$(cat "$MQTT_SUB_FIXTURE.args")" "-h mqtt.test -p 1883 -t agents/+/summary/bar -W 1"
+}
+
+# A former lease holder that is switched off keeps its retained copy, and the broker may send it first.
+@test "of every retained copy the newest as_of wins, whichever arrives first" {
+  feed hub/dotfiles:2=NEEDS:90:20
+  barfeed 'NEEDS|dotfiles|fresh task|ask|20|hub/dotfiles:2'
+  local fresh; fresh="$(cat "$MQTT_SUB_FIXTURE")"
+  barfeed age=259200 'NEEDS|dotfiles|old holder task|ask|20|hub/dotfiles:2'
+  printf '\nnot json\n%s\n' "$fresh" >> "$MQTT_SUB_FIXTURE"
+  run "$MODULE"
+  run tip
+  assert_output --partial "fresh task"
+  refute_output --partial "old holder task"
+  refute_output --partial "No session detail"
+}
+
+@test "a broker it cannot reach is said as such, not as a missing topic" {
+  feed hub/dotfiles:2=NEEDS:90:20
+  barfeed -
+  MQTT_SUB_RC=1 run "$MODULE"
+  run tip
+  assert_line --index 1 "<span color='$Y'>No session detail: cannot reach the broker mqtt.test:1883</span>"
+  refute_output --partial "no summary/bar"
 }
 
 @test "a source summary/bar could not read is an amber line beside the rows it has" {
