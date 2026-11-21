@@ -1806,18 +1806,19 @@ item_of() {
     }' <<<"$1"
 }
 
-# item_plan <islugs: the comma list of this session's item slugs, or -> <started epoch> -> the plan this session wrote
-# for its item (one-shot step 1: ~/.claude/plans/<slug>.md), the first slug's that exists, else nothing. A file older than
-# this claude is an earlier run's of a reused slug. It outranks the plan the transcript last landed against or ticked
-# (collect), so a session that ticked a phase in another plan reads its own (ar-379).
+# item_plan <islugs: the comma list of this session's item slugs, or -> <started epoch> <fallback plan> -> the plan this
+# session wrote for its item (one-shot step 1: ~/.claude/plans/<slug>.md), the first slug's that exists, else the fallback.
+# A file older than this claude is an earlier run's of a reused slug. It outranks the plan the transcript last landed against
+# or ticked (collect), so a session that ticked a phase in another plan reads its own (ar-379).
 item_plan() {
   local sl f
-  [[ "${2:-}" =~ ^[0-9]+$ ]] || return 0
-  while IFS= read -r sl; do
-    f="$HOME/.claude/plans/$sl.md"
-    [ -f "$f" ] && [ "$(stat -c %Y "$f")" -ge "$2" ] && { printf '%s\n' "$f"; return 0; }
-  done < <(tr ',' '\n' <<<"${1#-}" | grep .)
-  return 0
+  if [[ "${2:-}" =~ ^[0-9]+$ ]]; then
+    while IFS= read -r sl; do
+      f="$HOME/.claude/plans/$sl.md"
+      [ -f "$f" ] && [ "$(stat -c %Y "$f")" -ge "$2" ] && { printf '%s\n' "$f"; return 0; }
+    done < <(tr ',' '\n' <<<"${1#-}" | grep .)
+  fi
+  printf '%s\n' "${3:--}"
 }
 
 # own_slugs <item_of's answer> -> the comma list of slugs it joined to this session (own:a,b running here, or
@@ -2021,8 +2022,7 @@ collect() {
               | if . == "" then "-" else . end), (.by // "-")] | @tsv)' <<<"$qall" 2>/dev/null)
         irow="${irow:--}"; iby="${iby:--}" ;;
     esac
-    # The plan written for the item outranks the transcript's (item_plan).
-    local ip; [ "$host" != - ] || { ip="$(item_plan "$islugs" "$started")"; planf="${ip:-$planf}"; }
+    [ "$host" != - ] || planf="$(item_plan "$islugs" "$started" "$planf")"   # the item's own plan outranks the transcript's
     # A done item's merged PRs are the session's landed ones when its transcript names no merged PR, none
     # open and every state known. A landing train merges a member's commits through its own train/* PR and
     # closes the member, so the transcript names only the closed member while agent-land records the train
