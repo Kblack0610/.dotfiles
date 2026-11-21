@@ -502,15 +502,13 @@ const GRID_CARDS = [
   kcard("projects", "Projects", "-", "no data", "nodata", [], [], [], { error: "lab: unreadable" }),
 ];
 
-// The one order every surface draws (hub_core::cards::ORDER) and the widget's default run of it
-// (WIDGET), read from hub-core so a change there moves the fixture too.
+// The one order every surface draws (hub_core::cards::ORDER), read from hub-core so a change there
+// moves the fixture too.
 const CARDS_RS = readFileSync(new URL("../../../.local/src/hub-core/src/cards.rs", import.meta.url), "utf8");
 const ids = (name) => [...CARDS_RS.match(new RegExp(`pub const ${name}: &\\[&str\\] = &\\[([^\\]]*)\\]`))[1].matchAll(/"(\w+)"/g)].map((m) => m[1]);
 const byTab = (tab) => GRID_CARDS.find((c) => c.tab === tab) ?? (() => { throw new Error(`hub_core::cards has a card "${tab}" that fixtures.mjs GRID_CARDS lacks`); })();
 export const CARD_ORDER = ids("ORDER");
 const homeCards = CARD_ORDER.slice(2).map(byTab); // the grid: Needs you and Main red are the widgets' lead
-export const WIDGET_CARDS = ids("WIDGET").map(byTab);
-
 export const FIXTURES = {
   "/api/agents": [], "/api/asks/parked": [], "/api/home/waiting": { count: home.needs.length, sessions: 0, href: "#home" }, "/api/session-options": { describe: {}, accounts: [] },
   "/api/home": home, "/api/home/cards": homeCards, "/api/briefing": briefing, "/api/home/proposals": { proposals: home.proposals, proposals_head: home.proposals_head, proposals_table: home.proposals_table, proposals_failed: false },
