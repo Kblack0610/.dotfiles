@@ -1921,14 +1921,14 @@ candidates_write() {
 # the snapshot that no reason blocks, in rank order (the order a pass pulls them), one labelled series
 # each, plus how many are cleared in all. The chip reads Prometheus, which holds numbers only (mqtt2prom
 # drops a string attribute), so the key, project and title travel as labels on a textfile, as
-# claude-acct's room reasons do. A title loses its #tags and comments and is cut at 70 characters.
+# claude-acct's room reasons do. A title loses its checkbox, trailing #tags and comment, and is cut at 70 characters.
 next_prom() {
   jq -rs --argjson n "$DISPATCH_NEXT_SHOWN" "$PROM_JQ"'
     [.[] | select((.blocked // []) | length == 0)] as $c
     | gauge("fleet_dispatch_next_cleared"; "Candidate rows no gate or judge blocks."; [{}, ($c | length)]),
       gauge("fleet_dispatch_next"; "The next rows dispatch will pull, in rank order; the labels name each.";
         $c[:$n] | to_entries[] | [{rank: (.key + 1), project: .value.project, key: .value.key,
-          title: (.value.text // "" | gsub("<!--.*?-->"; "") | gsub(" ?#[^ ]+"; "") | gsub("^ +| +$"; "") | .[0:70])}, 1])' "$CANDIDATES"
+          title: (.value.text // "" | gsub("<!--.*?-->"; "") | gsub("^ *- \\[.\\] +| +$"; "") | gsub("( +#[^ ]+)+$"; "") | .[0:70])}, 1])' "$CANDIDATES"
 }
 
 # next_publish -- put next_prom in the collector's textfile. Dispatch is a singleton, so only the lease
@@ -1950,7 +1950,7 @@ candidates_drop() {
   [ -s "$CANDIDATES" ] || return 0
   jq -c --arg p "$1" --arg l "$2" --arg k "$3" 'select(.project != $p or .lane != $l or .key != $k)' \
     "$CANDIDATES" > "$CANDIDATES.$$" 2>/dev/null && touch -r "$CANDIDATES" "$CANDIDATES.$$" \
-    && mv -f "$CANDIDATES.$$" "$CANDIDATES" || rm -f "$CANDIDATES.$$"
+    && mv -f "$CANDIDATES.$$" "$CANDIDATES" && next_publish || rm -f "$CANDIDATES.$$"
 }
 
 # latest verdict per row, as JSON lines, of those in force (in_force): a row its failures hold reads

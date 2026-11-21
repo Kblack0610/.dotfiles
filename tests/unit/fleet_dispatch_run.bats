@@ -963,7 +963,7 @@ add_sessions() {
   mkdir -p "${CANDIDATES%/*}"
   {
     echo '{"project":"game","key":"gm-1","text":"blocked row","blocked":["area held by a queue item"]}'
-    echo '{"project":"dotfiles","key":"ar-1","text":"first \"row\" #high #size/s <!-- id:ar-1 -->","blocked":[]}'
+    echo '{"project":"dotfiles","key":"ar-1","text":"- [ ] first \"row\" for #12 now #high #size/s <!-- id:ar-1 -->","blocked":[]}'
     echo '{"project":"game","key":"gm-2","text":"second row","blocked":[]}'
     echo '{"project":"game","key":"gm-3","text":"third row","blocked":[]}'
     echo '{"project":"game","key":"gm-4","text":"fourth row","blocked":[]}'
@@ -972,7 +972,7 @@ add_sessions() {
   assert_success
   run cat "$out"
   assert_line 'fleet_dispatch_next_cleared 4'
-  assert_line 'fleet_dispatch_next{rank="1",project="dotfiles",key="ar-1",title="first \"row\""} 1'
+  assert_line 'fleet_dispatch_next{rank="1",project="dotfiles",key="ar-1",title="first \"row\" for #12 now"} 1'
   assert_line 'fleet_dispatch_next{rank="3",project="game",key="gm-3",title="third row"} 1'
   refute_output --partial 'gm-1'
   refute_output --partial 'gm-4'

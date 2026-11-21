@@ -72,7 +72,7 @@ for k, v in s.items():
             res.append({"metric": {"__name__": "fleet_dispatch_next", "instance": "i1", "rank": p[0], "key": p[1],
                                    "project": p[2], "title": p[3]}, "value": [0, str(v)]})
         continue
-    pre =k.split(":")[0] if ":" in k else ""
+    pre = k.split(":")[0] if ":" in k else ""
     if pre not in ("", "dup", "acct"): host, inst, k = pre, "i-" + pre, k[len(pre) + 1:]
     if k.startswith("dup:"): inst, k = "i9", k[4:]
     if k.startswith("acct:"):

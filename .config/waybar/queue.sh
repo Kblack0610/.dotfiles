@@ -57,8 +57,9 @@ head="<b>Queue:</b>"
 q='({__name__=~"mqtt_.+", topic=~"agents_.+_(summary_dispatch|runner_fleet_dispatch|watch_queue_starved|summary_shepherd)"} and on (topic) cc:agents_topic_live)'
 q+=" or (claude_account_room_reason and on (instance) (time() - node_textfile_mtime_seconds{file=~\".*/claude_acct.prom\"} < $ROOM_LATE_SECS))"
 # Up next: the lease holder's fleet_dispatch_next.prom (fleet-dispatch next_prom), labels only, read
-# while it is younger than the passes that rewrite it; an older one is no answer.
-q+=" or ({__name__=~\"fleet_dispatch_next(_cleared)?\"} and on (instance) (time() - node_textfile_mtime_seconds{file=~\".*/fleet_dispatch_next.prom\"} < $PASS_LATE_SECS))"
+# from the one host that wrote it last (bottomk: after a lease move the old holder's file lingers),
+# and only while it is younger than the passes that rewrite it; an older one is no answer.
+q+=" or ({__name__=~\"fleet_dispatch_next(_cleared)?\"} and on (instance) (bottomk(1, time() - node_textfile_mtime_seconds{file=~\".*/fleet_dispatch_next.prom\"}) < $PASS_LATE_SECS))"
 
 if ! raw="$(prom_q "$q")"; then
   emit "$(paint "$C_YEL" 'Q?')" "$head $(paint "$C_YEL" "cannot read $PROM_URL")" warn
