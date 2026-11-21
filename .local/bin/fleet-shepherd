@@ -567,8 +567,10 @@ blocked_sample() {
 # sample alone is not enough: an editor reading a font is in D for a moment. Fifteen minutes
 # stuck is a walk of a network share or a hung mount (2026-10-29, three searches from `/`).
 # The time on the line is the gap between the two samples (a file's mtime: mv keeps the older
-# one), the only D time known. The process age in fleet-assess's row is not it: a daemon up 18h
-# caught in D twice read "1092m" (ar-3070).
+# one), the most D time that is known: a process could be in D at both and in S between them, so
+# the line says "at two samples", never "for". The process age in fleet-assess's row is not it: a
+# daemon up 18h caught in D twice read "for 1092m" (ar-3070). Whether to act is the skill's call
+# on what the process is (fleet-pace: kill a recursive search, report anything else).
 blocked_due() {
   [ -s "$BLOCKED" ] && [ -s "$BLOCKED.prev" ] || return 0
   local gap=$(( ($(stat -c %Y "$BLOCKED" 2>/dev/null || echo 0) - $(stat -c %Y "$BLOCKED.prev" 2>/dev/null || echo 0)) / 60 ))
