@@ -53,6 +53,14 @@ pub struct Tag {
     pub prev: Option<String>,
     /// The PRs merged in prev..tag, by number in the line's `repo`.
     pub prs: Vec<u64>,
+    /// `flow`, `legacy` or `outside` (docs/operations/release-state.md, Provenance); empty in a
+    /// snapshot written before provenance, which every check still reads.
+    pub provenance: String,
+}
+
+/// From before its project's line starts, or a project with none: never a red.
+fn legacy(provenance: &str) -> bool {
+    provenance == "legacy"
 }
 
 /// A project's tag history: `release` is its own release family, `build` its per-build tags
@@ -251,6 +259,8 @@ pub struct LabVersion {
     pub state: String,
     pub rolled: Option<i64>,
     pub prs: Vec<u64>,
+    /// Its place on the line, as [`Tag::provenance`].
+    pub provenance: String,
 }
 
 /// What [`Graph::check`] holds the graph to beyond the stores it joins. A field left empty
@@ -1058,7 +1068,7 @@ impl<'a> Graph<'a> {
             for t in line
                 .tags
                 .iter()
-                .filter(|t| t.at.is_some_and(|a| a >= links.since))
+                .filter(|t| t.at.is_some_and(|a| a >= links.since) && !legacy(&t.provenance))
             {
                 if plain_version(&t.version)
                     && t.at.is_some_and(|a| now - a >= ROLL_GRACE_SECS)
@@ -1094,6 +1104,7 @@ impl<'a> Graph<'a> {
             for v in versions
                 .iter()
                 .filter(|v| v.rolled.is_some_and(|r| r >= links.since))
+                .filter(|v| !legacy(&v.provenance))
             {
                 let bare = v.version.trim_start_matches('v');
                 if !line.tags.iter().any(|t| t.version == bare) {
@@ -2096,6 +2107,7 @@ mod tests {
             state: "shipped".into(),
             rolled: Some(rolled),
             prs,
+            ..Default::default()
         };
         let mut links = Links {
             since,
@@ -2296,6 +2308,83 @@ mod tests {
             .filter(|l| l.contains("board row"))
             .collect();
         assert_eq!(rows, ["app app-v1.3.0: acme/app#17 has no board row"]);
+    }
+
+    #[test]
+    fn the_link_checks_skip_what_came_before_the_line_starts() {
+        let since = 1_794_384_000; // 2026-11-11
+        let now = since + 5000;
+        let mut before = tag("app-v0.9.0", "0.9.0", since + 10);
+        before.provenance = "legacy".into();
+        let mut hand = tag("app-v1.3.0", "1.3.0", since + 20);
+        hand.provenance = "outside".into();
+        let mut line = Line {
+            line: "release".into(),
+            repo: Some("Acme/app".into()),
+            tags: vec![hand, before],
+            ..Default::default()
+        };
+        let v = |version: &str, provenance: &str| LabVersion {
+            version: version.into(),
+            state: "shipped".into(),
+            rolled: Some(since + 5),
+            prs: vec![],
+            provenance: provenance.into(),
+        };
+        let links = |list: Vec<LabVersion>| Links {
+            since,
+            versions: HashMap::from([("app".to_string(), Versions { list, error: None })]),
+            ..Default::default()
+        };
+        let check = |line: &Line, links: &Links| {
+            let lines = HashMap::from([("app".to_string(), line.clone())]);
+            let live = HashMap::new();
+            let g = Graph::new(Inputs {
+                lines: &lines,
+                channels: &[],
+                items: &[],
+                prs: &[],
+                live: &live,
+                registry: None,
+                since,
+                run_tags: &[],
+            });
+            let facts = Facts {
+                links: Some(links),
+                ..Default::default()
+            };
+            g.check(&facts, now)
+                .into_iter()
+                .filter(|l| l.starts_with("app "))
+                .collect::<Vec<_>>()
+        };
+        // release-state marked the tag and lab version below the start legacy, so they ask
+        // nothing; the tag cut by hand after it is outside, still a release of the line.
+        let marked = links(vec![
+            v("v0.9.5", "legacy"),
+            v("v1.4.0", "outside"),
+            v("next", "legacy"),
+        ]);
+        assert_eq!(
+            check(&line, &marked),
+            [
+                "app app-v1.3.0: no lab version v1.3.0",
+                "app lab v1.4.0: no tag of the line",
+            ]
+        );
+        // Negative control: a snapshot from before provenance marks nothing, so all is checked.
+        line.tags[1].provenance = String::new();
+        let unmarked = links(vec![v("v0.9.5", ""), v("v1.4.0", ""), v("next", "")]);
+        assert_eq!(
+            check(&line, &unmarked),
+            [
+                "app app-v0.9.0: no lab version v0.9.0",
+                "app app-v1.3.0: no lab version v1.3.0",
+                "app lab next: no tag of the line",
+                "app lab v0.9.5: no tag of the line",
+                "app lab v1.4.0: no tag of the line",
+            ]
+        );
     }
 
     #[test]
