@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
-# session-preflight.sh: the turn-1 context injection. Most of these pin the agent board
-# lane and the byte budget; the first ones pin what turn 1 no longer carries (the human's
-# Focus list, a second copy of the commits Claude Code's gitStatus already shows).
+# session-preflight.sh: the turn-1 context injection. Most of these pin the byte budget and the
+# lessons lane; the first ones pin what turn 1 no longer carries (the human's Focus list, a second
+# copy of the commits Claude Code's gitStatus already shows).
 
 setup() {
   load '../vendor/bats-support/load'
@@ -79,6 +79,7 @@ EOF
   git -C "$REPO" add -A
   git -C "$REPO" commit -qm "shop commit"
   export CLAUDE_PROJECT_DIR="$REPO/apps/shop"
+  item_stub 'x P2: repo wide lesson'
   run context
   assert_output --partial 'Recent commits (last 5, apps/shop)'
   assert_output --partial 'shop commit'
@@ -86,27 +87,7 @@ EOF
   refute_output --partial 'first commit'
 }
 
-# -- the agent board lane: the channel that replaced "## -> For the agents" ------
-
-# seed_agent_stub -- a `notes` stub that emits <project>\t<text> rows for --agent, and records
-# the projects it was asked for so the JOIN can be asserted, not just the output.
-seed_agent_stub() {
-  cat > "$SANDBOX/bin/notes" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$NOTES_FIXTURE/calls.log"
-if [ "${1:-}" = "board" ] && [ "${2:-}" = "--agent" ]; then
-  for a in "$@"; do
-    case "$a" in
-      notes-cockpit) printf 'notes-cockpit\tcockpit row one\n' ;;
-      agent-runtime) printf 'agent-runtime\truntime row one\n' ;;
-    esac
-  done
-  exit 0
-fi
-exit 0
-EOF
-  chmod +x "$SANDBOX/bin/notes"
-}
+# -- the tracker registry and the one size budget ----------------------------------
 
 # A registry whose repo hop matches this test's project, INCLUDING the string-valued
 # comment key that lives in the real one.
@@ -124,99 +105,6 @@ seed_tracker_map() {
 EOF
 }
 
-@test "the agent board surfaces the in-flight rows for THIS repo's lab projects" {
-  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
-     "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
-  seed_tracker_map
-  seed_agent_stub
-
-  run context
-  assert_success
-  assert_output --partial 'Left in flight'
-  assert_output --partial '[notes-cockpit] cockpit row one'
-  assert_output --partial '[agent-runtime] runtime row one'
-}
-
-# board_stub <asks> <others>: a notes stub whose agent board holds follow-up rows first, then asks.
-board_stub() {
-  cat > "$SANDBOX/bin/notes" <<EOF
-#!/usr/bin/env bash
-if [ "\$1 \$2" = "board --agent" ]; then
-  for i in \$(seq 1 $2); do printf 'notes-cockpit\tfollow-up %s\n' "\$i"; done
-  for i in \$(seq 1 $1); do printf 'notes-cockpit\tthe ask %s #requested #tier/2\n' "\$i"; done
-fi
-exit 0
-EOF
-  chmod +x "$SANDBOX/bin/notes"
-}
-
-@test "asks lead the agent board, at most 3 of its 6 rows, so in-flight rows still show" {
-  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
-     "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
-  seed_tracker_map
-  board_stub 20 12
-
-  run context
-  assert_success
-  [ "$(grep -c 'the ask ' <<<"$output")" -eq 3 ]
-  [ "$(grep -c 'follow-up ' <<<"$output")" -eq 3 ]
-  [ "$(grep -m1 -n 'the ask 1 ' <<<"$output" | cut -d: -f1)" -lt "$(grep -m1 -n 'follow-up 1$' <<<"$output" | cut -d: -f1)" ]
-  assert_output --partial '+26 more'
-}
-
-@test "spare room on the agent board goes to the asks left over" {
-  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
-     "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
-  seed_tracker_map
-  board_stub 20 2
-
-  run context
-  assert_success
-  [ "$(grep -c 'the ask ' <<<"$output")" -eq 4 ]
-  [ "$(grep -c 'follow-up ' <<<"$output")" -eq 2 ]
-}
-
-@test "an agent board row longer than 160 characters is cut to 160, a row of 160 is kept whole" {
-  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
-     "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
-  seed_tracker_map
-  # 168 characters, one of them a 3-byte em dash inside the kept part, and exactly 160.
-  long="long\u2014$(printf 'a%.0s' $(seq 1 155))TAILMARK"
-  edge="edge$(printf 'b%.0s' $(seq 1 156))"
-  cat > "$SANDBOX/bin/notes" <<EOF
-#!/usr/bin/env bash
-[ "\$1 \$2" = "board --agent" ] && printf 'notes-cockpit\t%b\nnotes-cockpit\t%s\n' "$long" "$edge"
-exit 0
-EOF
-  chmod +x "$SANDBOX/bin/notes"
-
-  LC_ALL=C.UTF-8 run context
-  assert_success
-  row=$(grep -F '[notes-cockpit] long' <<<"$output")
-  text=${row#  \[notes-cockpit\] }
-  [ "$(LC_ALL=C.UTF-8 bash -c 'echo ${#1}' _ "$text")" -eq 160 ]
-  [[ "$text" == *aaa... ]]
-  refute_output --partial 'TAILMARK'
-  assert_output --partial "[notes-cockpit] $edge"
-}
-
-@test "the agent lane joins through trackers.repo, NOT the directory name" {
-  # The whole point. The project resolves to `toolrepo`; its board projects are named
-  # something else entirely. A directory-name join asks for the wrong thing and finds
-  # nothing -- which is what the replaced lab readback did for every real session.
-  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
-     "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
-  seed_tracker_map
-  seed_agent_stub
-
-  context >/dev/null
-  assert_called '--project notes-cockpit'
-  assert_called '--project agent-runtime'
-  # It must NOT have asked for the repo's own name, which has no board.
-  run grep -c -- '--project toolrepo' "$NOTES_FIXTURE/calls.log"
-  assert_output '0'
-}
-
 @test "a registry with a STRING-valued trackers key still emits a full context" {
   # The direct negative control for the jq trap. `.trackers` holds a documentation key
   # whose value is a string; an unguarded `.value.repo` over it exits 5, and under this
@@ -224,12 +112,14 @@ EOF
   cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
      "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
   seed_tracker_map
-  seed_agent_stub
+  # The hold scoping joins through project_lab_names, the other reader of the registry.
+  export AGENT_HOLD_DIR="$HOME/.agent/holds"
+  "$REPO_ROOT/.local/bin/agent-hold" set pause --kind resource --by human "pause the agent-runtime lanes"
 
   run context
   assert_success
   assert_output --partial 'Session Preflight'
-  assert_output --partial 'runtime row one'
+  assert_output --partial 'pause since'
   refute_output --partial 'Cannot index string'
 }
 
@@ -249,61 +139,15 @@ EOF
 EOF
   mkdir -p "$REPO/apps/shop" "$HOME/.agent/lessons"
   echo "- a repo-wide lesson" > "$HOME/.agent/lessons/toolrepo.md"
-  echo "- a ticket-parent lesson" > "$HOME/.agent/lessons/ticket-parent.md"
+  echo "- a repo wide ticket-parent lesson" > "$HOME/.agent/lessons/ticket-parent.md"
   export CLAUDE_PROJECT_DIR="$REPO/apps/shop"
+  item_stub 'x P2: repo wide lesson'
 
   run context
   assert_success
   assert_output --partial 'Session Preflight: shop'
   assert_output --partial 'a repo-wide lesson'
-  refute_output --partial 'a ticket-parent lesson'
-}
-
-@test "the retired '-> For the agents' channel is gone" {
-  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
-     "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
-  seed_tracker_map
-  seed_agent_stub
-  run context
-  assert_success
-  refute_output --partial 'For the agents'
-  refute_output --partial 'via lab'
-}
-
-@test "no notes binary means no agent block, and the rest of the context survives" {
-  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
-     "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
-  seed_tracker_map
-  # Removing the stub is not enough: sandbox.bash PREPENDS $SANDBOX/bin to the real PATH,
-  # so the hook fell through to the machine's own `notes`. That made this test pass on the
-  # real binary erroring against the sandboxed HOME rather than on the binary being gone.
-  rm -f "$SANDBOX/bin/notes"
-  PATH="$SANDBOX/bin:/usr/bin:/bin"
-
-  run context
-  assert_success
-  assert_output --partial 'Session Preflight'
-  refute_output --partial 'Left in flight'
-  refute_output --partial 'Agent board clear'
-  refute_output --partial 'Agent board unavailable'
-}
-
-# The third outcome, and the reason the exit status is kept: a notes that FAILS must not
-# render as a clean board. "Nothing to do" and "I could not find out" are different facts.
-@test "a failing notes reports the query failed, not that the board is clear" {
-  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
-     "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
-  seed_tracker_map
-  cat > "$SANDBOX/bin/notes" <<'EOF'
-#!/usr/bin/env bash
-exit 3
-EOF
-  chmod +x "$SANDBOX/bin/notes"
-
-  run context
-  assert_success
-  assert_output --partial 'Agent board unavailable'
-  refute_output --partial 'Agent board clear'
+  refute_output --partial 'ticket-parent lesson'
 }
 
 # -- the one size budget -------------------------------------------------------------
@@ -338,30 +182,24 @@ seed_anchor_sized() {
   } > "$HOME/.agent/lessons/toolrepo.md"
 }
 
-# fat_board_stub <rows> <bytes-per-row>
-fat_board_stub() {
-  cat > "$SANDBOX/bin/notes" <<EOF
-#!/usr/bin/env bash
-if [ "\$1 \$2" = "board --agent" ]; then
-  for i in \$(seq 1 $1); do printf 'notes-cockpit\trow %s %s\n' "\$i" "\$(printf 'y%.0s' \$(seq 1 $2))"; done
-fi
-exit 0
-EOF
-  chmod +x "$SANDBOX/bin/notes"
+# item_stub <title>: an agent-queue whose item has that title, so the lessons are matched to it.
+item_stub() {
+  printf '#!/usr/bin/env bash\n[ "$1" = show ] && echo %s\n' "'{\"title\":\"$1\"}'" > "$SANDBOX/bin/agent-queue"
+  chmod +x "$SANDBOX/bin/agent-queue"
+  export AGENT_QUEUE_ITEM=some-plan-p2
 }
 
-@test "a large anchor and a 40-row board stay under 9,000 B and keep the board" {
+@test "a large anchor stays under 9,000 B: the lessons digest is left out and named" {
   cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
      "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
   seed_tracker_map
-  seed_anchor_sized 30 10
-  fat_board_stub 40 200
+  seed_anchor_sized 40 10
+  item_stub 'some-plan P2: digest lesson words'
 
   local out n
   out=$(context)
   n=$(printf '%s' "$out" | wc -c)
   [ "$n" -lt 9000 ] || { echo "turn-1 context is $n bytes, over 9,000" >&2; return 1; }
-  [[ "$out" == *"Left in flight"* ]]
   [[ "$out" == *"a fact that must survive"* ]]
   [[ "$out" == *"Decisions log: 40 entries"* ]]
   [[ "$out" == *"+ omitted to fit the 9000 B turn-1 budget:"* ]]
@@ -370,18 +208,17 @@ EOF
   [ ! -e "$HOME/.agent/lessons/_delivered" ]
 }
 
-@test "small inputs omit nothing, and the lessons digest and plans arrive" {
+@test "small inputs omit nothing, and the matched lessons and plans arrive" {
   cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
      "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
   seed_tracker_map
-  seed_anchor_sized 1 1
-  seed_agent_stub
+  seed_anchor_sized 1 2
+  item_stub 'some-plan P2: digest lesson words'
 
   run context
   assert_success
   refute_output --partial 'omitted to fit'
-  assert_output --partial 'Left in flight'
-  assert_output --partial '## Lessons (newest 1; nothing matched this work)'
+  assert_output --partial '## Lessons for this work ('
   assert_output --partial 'a digest lesson'
   assert_output --partial 'a-plan.md'
   [ "$(grep -c 'a-plan.md' <<<"$output")" -eq 1 ]
@@ -402,9 +239,9 @@ EOF
 
   run context
   assert_success
-  assert_output --partial '## Lessons for this work (1 matched on: waybar, chip; 4 newest)'
+  assert_output --partial '## Lessons for this work (1 matched on: waybar, chip)'
   [ "$(grep -A1 '## Lessons for this work' <<<"$output" | tail -1)" = "- **2026-01-01** A waybar chip costs width on the bar." ]
-  refute_output --partial 'unrelated lesson number 1.'
+  refute_output --partial 'unrelated lesson'
   run cat "$HOME/.agent/lessons/_delivered/$(date +%Y-%m).tsv"
   assert_output --regexp "^$(date +%F)	toolrepo	[0-9a-f]{8}$"
 }

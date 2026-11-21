@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
-# QUEUE.md (private overlay, ~/.config/agentctl/) defines five rows of ARCHITECTURE.md's Flows
-# table: Work intake, Queue states, Admission, Dispatch and the Fleet lease. Each test here reads
+# QUEUE.md (private overlay, ~/.config/agentctl/) defines ten rows of ARCHITECTURE.md's Flows
+# table: Work intake, Queue states, Admission, Dispatch, the Fleet lease, Intake channels, Outbox to
+# board, Red triage, Alert ownership and Proposals. Each test here reads
 # one section's enumerable facts (a state, a source, a verb, a default, a lane) and the code that
 # implements it, from the files as text, so the section cannot drift from agent-queue,
 # fleet-dispatch or fleet-lease unseen. Change the code and its section together.
@@ -134,4 +135,70 @@ doc_states() {
   [ -n "$doc" ] || { echo "QUEUE.md 'The fleet lease' lost its 'the persistent singletons (...)' list"; return 1; }
   run diff <(echo "$doc") <(echo "$code")
   assert_success
+}
+
+# Intake channels: the table is the one list of doors into the fleet (ar-4152). The scanner is
+# tests/helpers/intake_callers.pl; both repos' checkouts are read, the private one being $PRIV.
+
+# intake_files: the files the table's first column names, one path a line. A path starts with a dot
+# and has a slash, so a command in a backtick (`agent-queue add`) and a route (`/api/send`) are not one.
+intake_files() {
+  section 'Intake channels' | grep -E '^\| ' | awk -F' [|] ' '{print $1}' | grep -oE '`\.[A-Za-z0-9_./-]+/[A-Za-z0-9_./-]+`' | tr -d '`' | sort -u
+}
+
+@test "Intake channels: every file that runs agent-queue add or notes ptask add is a row of the table" {
+  local found f
+  found=$({ perl "$PUB/tests/helpers/intake_callers.pl" "$PUB"; perl "$PUB/tests/helpers/intake_callers.pl" "$PRIV"; } | sort -u)
+  [ -n "$found" ]
+  for f in $found; do
+    intake_files | grep -qxF "$f" || { echo "not in QUEUE.md Intake channels: $f (add its row: entry, writer, from or origin, owner, checked by)"; return 1; }
+  done
+}
+
+@test "Intake channels: every file the table names exists in one of the repos" {
+  local f
+  [ -n "$(intake_files)" ]
+  for f in $(intake_files); do
+    [ -e "$PUB/$f" ] || [ -e "$PRIV/$f" ] || { echo "QUEUE.md Intake channels names a file that is gone: $f"; return 1; }
+  done
+}
+
+@test "Intake channels negative control: a new caller shows up, and a comment, a message and a hint do not" {
+  local root="$BATS_TEST_TMPDIR/scan"
+  mkdir -p "$root/.local/bin" "$root/.claude/hooks"
+  printf '#!/usr/bin/env bash\nout="$(agent-queue add --project x "y")"\n' > "$root/.local/bin/new-filer"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$t" | agent-queue add --project x\n' > "$root/.local/bin/piped-filer"
+  printf '#!/usr/bin/env bash\nAGENT_QUEUE_PULL=dispatch agent-queue add --plan p\n' > "$root/.local/bin/env-filer"
+  printf '#!/usr/bin/env bash\nnotes ptask "$p" --agent add -- "$row"\n' > "$root/.claude/hooks/ptask-filer"
+  printf '#!/usr/bin/env bash\n# agent-queue add --project x\ndie "no item: run agent-queue add --running first"\necho "notes ptask <project> --agent add"\n' > "$root/.local/bin/hint-only"
+  printf 'import subprocess\nsubprocess.run(["agent-queue", "add", "--project", p])\n' > "$root/.local/bin/list-filer.py"
+  printf '#!/usr/bin/env bash\nnotes focus add "x"\nagent-queue list --add\n' > "$root/.local/bin/other-notes"
+  run perl "$PUB/tests/helpers/intake_callers.pl" "$root"
+  assert_success
+  assert_output $'.claude/hooks/ptask-filer\n.local/bin/env-filer\n.local/bin/list-filer.py\n.local/bin/new-filer\n.local/bin/piped-filer'
+}
+
+@test "Intake channels: the writer classes name the environment notes-cli reads, and the section is the one that says it" {
+  local body v
+  body=$(section 'Intake channels')
+  for v in CLAUDE_CODE_SESSION_ID AGENT_QUEUE_ITEM AGENTCTL_NAME; do
+    grep -qF "\`$v\`" <<<"$body" || { echo "Intake channels does not name $v"; return 1; }
+    grep -rqF "\"$v\"" "$PUB/.local/src/notes-cli/src" || { echo "notes-cli no longer reads $v"; return 1; }
+  done
+  grep -qF 'agent_direct_filers' <<<"$body" || { echo "Intake channels does not name agent_direct_filers"; return 1; }
+}
+
+@test "Flows: every ARCHITECTURE.md row defined in QUEUE.md names a heading that exists" {
+  local arch="$PRIV/.config/agentctl/ARCHITECTURE.md" a slugs
+  slugs=$(grep -E '^#{2,4} ' "$DOC" | sed -E 's/^#+ //' | tr 'A-Z' 'a-z' | sed -E 's/[^a-z0-9 _-]//g; s/ /-/g')
+  for a in $(grep -oE 'QUEUE\.md#[a-z0-9_-]+' "$arch" | sed 's/.*#//' | sort -u); do
+    grep -qxF "$a" <<<"$slugs" || { echo "ARCHITECTURE.md Flows names QUEUE.md#$a, which is no heading"; return 1; }
+  done
+}
+
+@test "Flows: the intake rows are in ARCHITECTURE.md, each at the heading that defines it" {
+  local arch="$PRIV/.config/agentctl/ARCHITECTURE.md" a
+  for a in intake-channels outbox-to-board red-triage alert-ownership proposals; do
+    grep -qF "QUEUE.md#$a" "$arch" || { echo "ARCHITECTURE.md has no Flows row for QUEUE.md#$a"; return 1; }
+  done
 }
