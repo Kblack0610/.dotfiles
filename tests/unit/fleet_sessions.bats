@@ -4654,6 +4654,10 @@ verdict() {
   [ "$(verdict '{bucket: "PARKED", idle_min: 9000, age_min: null}')" = "now: quiet 9000m, nothing to land" ]
   [ "$(verdict '{bucket: "PARKED", idle_min: 5, age_min: null}')" = "after: quiet 5m of 60m" ]
   [ "$(verdict '{bucket: "PARKED", idle_min: 9000, labels: ["manual"]}')" = "keep: manual: the human keeps it" ]
+  # An open plan phase holds nothing, as for a live row; only the item to close is left: after, for the shepherd to close.
+  [ "$(verdict '{bucket: "PARKED", idle_min: 9000, blockers: ["next phase: 3"]}')" = "now: quiet 9000m, nothing to land" ]
+  [ "$(verdict '{bucket: "PARKED", idle_min: 9000, blockers: ["its item s is still open with every phase done or queued"]}')" = "after: close its item s (agent-land its last PR without --partial, or agent-queue move <slug> done; the shepherd moves it done once quiet): every phase is done or queued" ]
+  [ "$(verdict '{bucket: "PARKED", blockers: ["its item s is running here"]}')" = "keep: parked: its claude is gone, work is left here" ]
   # A headless run's replay: the shepherd never types into its opencode TUI; fleet-dispatch reap closes it.
   [ "$(verdict '{activity: "done", bucket: "DONE", idle_min: 600}')" = "keep: headless run: fleet-dispatch reap closes its replay once its item leaves review" ]
   # A worker row runs the same chain: the shepherd types its close over ssh (fleet_host_run).

@@ -2540,7 +2540,7 @@ CLOSE_JQ='
     | ([$other[] | capture("^its item (?<s>[^ ]+) is still open with every phase done or queued$").s]) as $open_items
     | (($open_items | length) > 0 and ($open_items | length) == ($other | length)) as $only_item
     | (if .bucket == "PARKED" then (.idle_min // 0) else $quiet end) as $quiet
-    | if .bucket == "PARKED" and ((.blockers // []) | length) > 0 then {verdict: "keep", why: "parked: its claude is gone, work is left here"} # step:parked
+    | if .bucket == "PARKED" and ($unlanded or $held or ((.blockers // []) | any(test("^(open ask |[0-9]+ open ask)")))) then {verdict: "keep", why: "parked: its claude is gone, work is left here"} # step:parked
       elif .activity == "done" then {verdict: "keep", why: "headless run: fleet-dispatch reap closes its replay once its item leaves review"} # step:headless
       elif ((.labels // []) | index("manual")) then {verdict: "keep", why: "manual: the human keeps it"} # step:manual
       elif ((.labels // []) | index("chat")) and ($me | not) and $quiet < $chat_close_h * 60 # step:chat

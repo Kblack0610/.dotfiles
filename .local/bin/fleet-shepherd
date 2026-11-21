@@ -828,22 +828,28 @@ takeover_sample() {
 # reads now and close_sample closes it in the same pass (2026-11-18: agent-22 sat 7h on its item, nudged
 # and never closed). Not manual (its verdict is keep), not a worker's row (its queue is on its machine),
 # AGENT_QUEUE_START=0 (the shepherd starts nothing). agent-queue refuses an item with a partial landing or
-# an open PR: that refusal is logged once in .item-close-failed and left to the nudge and escalation.
+# an open PR: that refusal is logged and left to the nudge and escalation, and tried again after FLEET_IDLE_CLOSE_MIN
+# (a marker file in .item-close-failed/). A row that wakes itself (`wake`) keeps its item: its wake needs it.
 close_items_sample() {
   local sid target slug out rc acted="" failed="$LEDGER/.item-close-failed"
+  mkdir -p "$failed" 2>/dev/null
   while IFS=$'\t' read -r sid target slug; do
-    case "$sid$slug" in */*|*..*|"") continue ;; esac
-    grep -qxF "$sid $slug" "$failed" 2>/dev/null && continue
+    case "$sid.$slug" in */*|*..*|.*|*.) continue ;; esac
+    # A refused or failed move waits FLEET_IDLE_CLOSE_MIN before the next try: a lock held for a moment is
+    # retried, and a refusal is logged once an hour, not at every check.
+    [ -z "$(find "$failed/$sid.$slug" -mmin "-${FLEET_IDLE_CLOSE_MIN:-60}" 2>/dev/null)" ] || continue
     rc=0; out="$(AGENT_QUEUE_START=0 agent-queue move "$slug" done --status ok --if running 2>&1)" || rc=$?
     case "$rc" in
       0) acted=1; cmd_log "close: $target: closed its item $slug, every phase is done or queued" >/dev/null ;;
       3) ;;   # the item left running meanwhile: nothing to close
-      *) printf '%s %s\n' "$sid" "$slug" >> "$failed"
+      *) : > "$failed/$sid.$slug"
          cmd_log "close: $target: could not close its item $slug ($(tail -n 1 <<<"$out" | cut -c1-200)); the nudge carries it" >/dev/null ;;
     esac
   done < <(jq -r --argjson idle "${FLEET_IDLE_CLOSE_MIN:-60}" '(.sessions // [])[]
-    | select(.host == null and ((.close.items // []) | length) > 0 and ([.idle_min // 0, .age_min // 0] | min) >= $idle)
-    | . as $r | $r.close.items[] | [$r.session_id, $r.target, .] | map(tostring) | @tsv' "$STATE_FILE" 2>/dev/null)
+    | select(.host == null and ((.close.items // []) | length) > 0 and .wake == null
+        and ((if .bucket == "PARKED" then (.idle_min // 0) else ([.idle_min // 0, .age_min // 0] | min) end) >= $idle)
+        and all(.session_id, .target; type == "string" and . != "" and (test("[\t\n]") | not)))
+    | . as $r | $r.close.items[] | [$r.session_id, $r.target, .] | @tsv' "$STATE_FILE" 2>/dev/null)
   [ -z "$acted" ] || fleet-sessions --write >/dev/null || true
 }
 
