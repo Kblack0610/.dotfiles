@@ -4,8 +4,10 @@
 //! the app drops the last ones first when it runs out of room.
 //!
 //! The mapping: `big` and `unit` are a `metric`, `bar` a `bar`, `parts` `pill`s, `first` `row`s
-//! (a part or row with a link carries an `open` action to it), and a card whose reader failed a
-//! `bad` section saying NO DATA with the reason, never green.
+//! (a part or row with a link carries an `open` action to it), `first_head` a `text` over the rows
+//! and `counted` a `text` last, the card's (i) (dashboards.md rule 6). A card whose reader answered
+//! nothing is a `bad` section saying NO DATA with the reason, never green; one that answered in part
+//! keeps what it read, at warn or worse, with the reason as a `warn` row (as the web's card does).
 //! Every string is capped (`text::cap`) at the schema's limit, since a reader skips an item over it.
 
 use chrono::{DateTime, SecondsFormat};
@@ -31,7 +33,7 @@ pub const TITLE: &str = "Fleet";
 // The schema's caps (maxLength, in characters).
 const TITLE_MAX: usize = 80;
 const VALUE_MAX: usize = 16;
-const UNIT_MAX: usize = 16;
+pub(crate) const UNIT_MAX: usize = 16;
 const LABEL_MAX: usize = 40;
 const ROW_MAX: usize = 200;
 const TEXT_MAX: usize = 500;
@@ -185,10 +187,15 @@ fn section(c: &Card, base: Option<&str>) -> Section {
         actions: actions.clone(),
         items,
     };
-    if let Some(why) = &c.error {
-        let items = vec![
+    let counted = (!c.counted.is_empty()).then(|| Item::Text {
+        text: cap(&c.counted, TEXT_MAX),
+    });
+    // `Card::failed`'s big word: the reader answered nothing at all.
+    let no_data = NO_DATA.to_uppercase();
+    if let Some(why) = c.error.as_ref().filter(|_| c.big == no_data) {
+        let mut items = vec![
             Item::Metric {
-                value: NO_DATA.to_uppercase(),
+                value: no_data,
                 unit: String::new(),
                 level: Level::Bad,
             },
@@ -196,9 +203,14 @@ fn section(c: &Card, base: Option<&str>) -> Section {
                 text: cap(why, TEXT_MAX),
             },
         ];
+        items.extend(counted);
         return head(Level::Bad, items);
     }
-    let level = Level::from(c.level);
+    // A partial read is never green.
+    let level = match c.error {
+        Some(_) => Level::from(c.level).max(Level::Warn),
+        None => Level::from(c.level),
+    };
     let mut items = vec![];
     if !c.big.is_empty() {
         items.push(Item::Metric {
@@ -225,12 +237,26 @@ fn section(c: &Card, base: Option<&str>) -> Section {
         level: p.level.into(),
         actions: p.link.as_ref().map_or(vec![], |l| open(l, base)),
     }));
+    if let Some(why) = &c.error {
+        items.push(Item::Row {
+            text: cap(why, ROW_MAX),
+            sub: String::new(),
+            level: Level::Warn,
+            actions: vec![],
+        });
+    }
+    if !c.first.is_empty() && !c.first_head.is_empty() {
+        items.push(Item::Text {
+            text: cap(c.first_head, TEXT_MAX),
+        });
+    }
     items.extend(c.first.iter().map(|f| Item::Row {
         text: cap(&f.text, ROW_MAX),
         sub: cap(&f.sub, ROW_MAX),
         level: f.level.into(),
         actions: f.link.as_ref().map_or(vec![], |l| open(l, base)),
     }));
+    items.extend(counted);
     head(level, items)
 }
 
@@ -270,6 +296,7 @@ mod tests {
         c.big = "3".into();
         c.unit = "firing".into();
         c.level = HubLevel::Red;
+        c.counted = "tripped watches".into();
         c.bar = vec![
             Seg {
                 level: HubLevel::Ok,
@@ -324,8 +351,11 @@ mod tests {
                 { "kind": "pill", "label": "Offline", "value": "2", "level": "warn" },
                 { "kind": "pill", "label": "Question", "value": "1", "level": "warn",
                   "actions": [{ "type": "open", "url": "https://agents.example.com/#home?ns=Question" }] },
+                // The rows go under the card's heading, and what it counted closes the section.
+                { "kind": "text", "text": "Where to look first" },
                 { "kind": "row", "text": "dotfiles: unit tests", "level": "bad",
                   "actions": [{ "type": "open", "url": "https://agents.example.com/#alerts/ci-red" }] },
+                { "kind": "text", "text": "tripped watches" },
             ])
         );
     }
@@ -341,6 +371,80 @@ mod tests {
             matches!(&s.items[0], Item::Metric { value, level: Level::Bad, .. } if value == "NO DATA")
         );
         assert!(matches!(&s.items[1], Item::Text { text } if text == "ccusage: timed out"));
+    }
+
+    #[test]
+    fn a_partial_read_keeps_its_data_at_warn_with_the_reason() {
+        let mut c = card();
+        c.level = HubLevel::Ok;
+        c.error = Some("pipeline: timed out".into());
+        let d = document(&[c], &[], 0, None);
+        let s = &d.sections[0];
+        assert_eq!(s.level, Level::Warn);
+        assert!(
+            matches!(&s.items[0], Item::Metric { value, level: Level::Warn, .. } if value == "3")
+        );
+        assert!(s.items.iter().any(|i| matches!(i, Item::Bar { .. })));
+        assert!(s.items.iter().any(|i| matches!(i, Item::Pill { .. })));
+        assert!(s.items.iter().any(
+            |i| matches!(i, Item::Row { text, level: Level::Warn, .. } if text == "pipeline: timed out")
+        ));
+        // A card with nothing to look at sends no heading, but still what it counted.
+        let mut calm = card();
+        calm.first.clear();
+        let items = &document(&[calm], &[], 0, None).sections[0].items;
+        assert!(!items
+            .iter()
+            .any(|i| matches!(i, Item::Text { text } if text == "Where to look first")));
+        assert!(matches!(items.last(), Some(Item::Text { text }) if text == "tripped watches"));
+    }
+
+    /// Every real card's unit fits the schema whole: a cap that clips it ("on deck, 24...") loses
+    /// what the number counts, so a count beside the word is a part instead.
+    #[test]
+    fn every_card_unit_fits_the_widget_whole() {
+        use crate::cards::{self, Reads};
+        let sessions: Vec<crate::session_table::SessionRow> = vec![];
+        let board = crate::tasks::Feed {
+            totals: Some(Default::default()),
+            ..Default::default()
+        };
+        let infra = crate::infra::Infra {
+            ok: true,
+            ..Default::default()
+        };
+        let (queue, alerts, costs) = (Default::default(), Default::default(), Default::default());
+        let (releases, schedules, projects) =
+            (Default::default(), Default::default(), Default::default());
+        let reads = Reads {
+            sessions: Some(Ok(&sessions[..])),
+            board: Some(Ok(&board)),
+            queue: Some(Ok(&queue)),
+            pipeline: None,
+            alerts: Some(Ok(&alerts)),
+            infra: Some(Ok(&infra)),
+            costs: Some(Ok(&costs)),
+            releases: Some(Ok(&releases)),
+            schedules: Some(Ok(&schedules)),
+            projects: Some(Ok(&projects)),
+        };
+        let home = crate::home::Home::default();
+        let mut all = vec![cards::needs(&home, 0), cards::main_red(&home)];
+        all.extend(cards::grid(&reads));
+        all.push(Card::reading("infra", "Infra"));
+        assert_eq!(all.len(), cards::ORDER.len() + 1);
+        let d = document(&all, &[], 0, None);
+        for (c, s) in all.iter().zip(&d.sections) {
+            assert!(
+                c.unit.chars().count() <= UNIT_MAX,
+                "{}: {:?} is over {UNIT_MAX}",
+                c.tab,
+                c.unit
+            );
+            if let Some(Item::Metric { unit, .. }) = s.items.first() {
+                assert_eq!(unit, &c.unit, "{}", c.tab);
+            }
+        }
     }
 
     #[test]
@@ -404,9 +508,12 @@ mod tests {
         let mut long = card();
         long.big = "9".repeat(40);
         long.first[0].text = "y".repeat(400);
+        let mut partial = card();
+        partial.error = Some("pipeline: timed out".into());
         let cards = [
             card(),
             long,
+            partial,
             Card::failed("costs", "Costs", "", "ccusage: timed out"),
             Card::reading("infra", "Infra"),
         ];
