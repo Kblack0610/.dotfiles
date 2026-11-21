@@ -125,7 +125,7 @@ D done today      12
   idle           $(g 45%)  floor 30%
   self-heal        7  reaped last hour, 0 flapping</tt>
 
-as of 03:43, the last dispatch pass, on h1-main"
+as of 03:43 (3m ago), the last dispatch pass, on h1-main"
 }
 
 # Retired lines (dashboards.md Retired names): the legend, the items total, the cadence and
@@ -257,7 +257,7 @@ as of 03:43, the last dispatch pass, on h1-main"
   run "$MODULE"
   assert_equal "$(text)" "$(bar "$(r 39)" 12)"
   assert_equal "$(class)" critical
-  head_is "$(r 'queue-starved: an urgent or high item sat ready over 60m')" "fleet-dispatch run --dry-run"
+  head_is "$(r 'queue-starved: an urgent or high item sat ready too long')" "fleet-dispatch run --dry-run"
   feed runner_fleet_dispatch.failed=1
   run "$MODULE"
   assert_equal "$(class)" critical
@@ -312,6 +312,14 @@ as of 03:43, the last dispatch pass, on h1-main"
   assert_line --index 1 "<tt>Q ready           39  32 urgent, 7 high"
   assert_line --index 7 "  6h net           -"
   assert_output --partial "  capacity         -  no headroom from a pass in the last 45m"
+  feed summary_dispatch.room_held_slots=1 summary_dispatch.room_max_live=- summary_dispatch.room_load=- summary_dispatch.room_load_cap=-
+  run "$MODULE"
+  run tip
+  assert_output --partial "$(y 'the fleet is at its session target of -')"
+  feed summary_dispatch.room_held_load=1 summary_dispatch.room_load=- summary_dispatch.room_load_cap=-
+  run "$MODULE"
+  run tip
+  assert_output --partial "$(y 'load - is over its cap of -')"
 }
 
 @test "a second scrape of the source host counts once, and the as-of stamp names the source" {
@@ -319,7 +327,7 @@ as of 03:43, the last dispatch pass, on h1-main"
   run "$MODULE"
   assert_equal "$(text)" "$(bar 39 12)"
   assert_equal "$(class)" ok
-  tip | grep -qxF "as of 03:43, the last dispatch pass, on h1-main"
+  tip | grep -qxF "as of 03:43 (3m ago), the last dispatch pass, on h1-main"
 }
 
 # ar-4306: cachyos-rog woke with a store frozen since 2026-11-15 and sent 328 ready; the max over
@@ -466,8 +474,25 @@ as of 03:43, the last dispatch pass, on h1-main"
     acct:main.pace=1 acct:main.five_hour=1 acct:alt.reserve=1 acct:bnb.weekly=1 \
     summary_dispatch.focus_projects=3 summary_dispatch.low_water=3 summary_dispatch.oldest_high_s=90000 \
     cachyos-x8664:summary_dispatch.runnable=328 cachyos-x8664:summary_dispatch.last_pass_epoch=1000 \
+    cachyos-rog:summary_dispatch.runnable=622 cachyos-rog:summary_dispatch.last_pass_epoch=2000 \
     summary_shepherd.due=6 summary_shepherd.unhandled=2 summary_shepherd.last_pass_epoch=99100
   run "$MODULE"
   run tip
   assert_equal "$(sed 's/<[^>]*>//g' <<< "$output" | awk 'length > 90')" ""
+}
+
+@test "each stale host is its own amber line with its command, never one joined sentence" {
+  feed h2:summary_dispatch.runnable=328 h2:summary_dispatch.last_pass_epoch=1000 \
+    h3:summary_dispatch.runnable=5 h3:summary_dispatch.last_pass_epoch=2000
+  run "$MODULE"
+  head_is "$(y 'h2-main (328 ready) sends a stale queue')" "stop agent-mqtt-publish there"
+  assert_line --index 2 "  $(y 'h3-main (5 ready) sends a stale queue'). Do: stop agent-mqtt-publish there"
+}
+
+# Account names and reasons come from a textfile: escaped, so one odd name cannot void the markup.
+@test "an account name with markup characters is escaped in its Dispatch row" {
+  feed summary_dispatch.room_held_account=1 'acct:r&d.pace=1'
+  run "$MODULE"
+  run tip
+  assert_output --partial "  r&amp;d$(printf "%17s" "")no room: pace"
 }

@@ -76,7 +76,7 @@ v="$(jq -c '{summary_dispatch: "dispatch", summary_shepherd: "shepherd", runner_
         | map({key: .[0].k, value: (map(.v) | max)}) | from_entries)
     + {"src.host": ($src // "" | gsub("_"; "-")),
        "src.stale": ([$all[] | select(.k == "dispatch.runnable" and $src != null and .h != $src)]
-         | unique_by(.h) | map("\(.h | gsub("_"; "-")) (\(.v) ready)") | join(", "))}' <<< "$raw")"
+         | unique_by(.h) | map("\(.h | gsub("_"; "-")) (\(.v) ready)") | join("\n"))}' <<< "$raw")"
 get() { jq -r --arg k "$1" '.[$k] // empty' <<< "$v"; }
 d() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:--}"; }
 n0() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:-0}"; }
@@ -86,14 +86,21 @@ n0() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:-0}"; }
 level=0 ex_lvl=() ex_what=() ex_do=()
 flag() { ((level < $1)) && level=$1; ex_lvl+=("$1"); ex_what+=("$2"); ex_do+=("${DO[$3]}"); }
 
+# vis <markup>: how many characters it shows, tags dropped and an entity counted as one.
+vis() {
+  local s="$1"
+  while [[ $s =~ ^(.*)\<[^\>]*\>(.*)$ ]]; do s="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"; done
+  while [[ $s =~ ^(.*)\&[a-z]+\;(.*)$ ]]; do s="${BASH_REMATCH[1]}_${BASH_REMATCH[2]}"; done
+  printf '%s' "${#s}"
+}
 # row <label> <value> [rest]: one line of a number table, the value right-aligned whatever markup
 # paints it. rows collects them until `table <var>` closes the block into <var>.
 rows=''
 row() {
-  local s="$2" line pad
-  while [[ $s =~ ^(.*)\<[^\>]*\>(.*)$ ]]; do s="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"; done
-  pad=$((VALUE_W - ${#s})); ((pad < 0)) && pad=0
-  printf -v line '%-*s%*s%s' "$LABEL_W" "$1" "$pad" '' "$2"
+  local line lpad vpad
+  lpad=$((LABEL_W - $(vis "$1"))) vpad=$((VALUE_W - $(vis "$2")))
+  ((lpad < 0)) && lpad=0; ((vpad < 0)) && vpad=0
+  printf -v line '%s%*s%*s%s' "$1" "$lpad" '' "$vpad" '' "$2"
   [ -z "${3:-}" ] || line+="  $3"
   rows+="${rows:+$'\n'}$line"
 }
@@ -101,15 +108,15 @@ table() { printf -v "$1" '<tt>%s</tt>' "$rows"; rows=''; }
 
 qtab='' dtab='' dhead='' stab='' shead=''
 ready="$(get dispatch.runnable)"
-pass="$(get dispatch.last_pass_epoch)"
+pass="$(get dispatch.last_pass_epoch)" pass_age='' pass_ago=-
+[ -n "$pass" ] && pass_age=$((now - pass)) pass_ago="$(prom_dur "$pass_age")"
 if [ -z "$ready" ]; then
   flag 1 "no dispatch numbers on the feed" nofeed
 else
   start="$(get dispatch.last_run_start_epoch)"
   reaped="$(get dispatch.reaped_1h)" flapping="$(get dispatch.flapping_items)" could="$(get dispatch.could_start)"
   oldest="$(get dispatch.oldest_runnable_s)" urgent_s="$(get dispatch.oldest_urgent_s)" high_s="$(get dispatch.oldest_high_s)"
-  pass_age='' pass_ago=- start_age=-
-  [ -n "$pass" ] && pass_age=$((now - pass)) pass_ago="$(prom_dur "$pass_age")"
+  start_age=-
   [ -n "$start" ] && start_age="$(prom_dur $((now - start)))"
   units=$(n0 room_live_runs) cap=$(n0 room_max_live) load=$(n0 room_load) lcap=$(n0 room_load_cap)
   idle=$(n0 room_idle) floor=$(n0 room_min_idle)
@@ -120,9 +127,9 @@ else
     [ "$(get "dispatch.room_held_$k")" = 1 ] || continue
     gate=$k
     case $k in
-      slots) paused="the fleet is at its session target of $cap" ;;
-      load) paused="load $load is over its cap of $lcap" ;;
-      idle) paused="idle $idle% is under its floor of $floor%" ;;
+      slots) paused="the fleet is at its session target of $(d room_max_live)" ;;
+      load) paused="load $(d room_load) is over its cap of $(d room_load_cap)" ;;
+      idle) paused="idle $(d room_idle)% is under its floor of $(d room_min_idle)%" ;;
       assess) paused="fleet-assess says the machine is too busy" ;;
       account)
         # Each account's published reasons, one "<account> <reason+reason>" line per account; they are
@@ -143,7 +150,7 @@ else
     [ "$starved" = 1 ] && hl=2 what+=" (queue-starved)"
     flag "$hl" "$what" "${gate:-blocked}"; gate_said=1
   else
-    [ "$starved" = 1 ] && flag 2 "queue-starved: an urgent or high item sat ready over 60m" starved
+    [ "$starved" = 1 ] && flag 2 "queue-starved: an urgent or high item sat ready too long" starved
     [ "$(get runner.blocked)" = 1 ] && { flag 1 "the last pass started nothing: ${paused:-ready work waited}" "${gate:-blocked}"; gate_said=1; }
   fi
   [ "$(get runner.failed)" = 1 ] && flag 2 "the fleet-dispatch runner failed" failed
@@ -152,7 +159,7 @@ else
   ((${flapping:-0} > 0)) && flag 1 "$flapping item(s) flapping: a writer undoes reap's moves" flapping
   ((${could:-0} > 0)) && flag 1 "$could more could start: a limit holds them, not the machine" could
   stale="$(get src.stale)"
-  [ -z "$stale" ] || flag 1 "$stale sends a stale queue" stale
+  [ -z "$stale" ] || while IFS= read -r h; do flag 1 "$(pango_esc "$h") sends a stale queue" stale; done <<< "$stale"
 
   # Queue: Q ready and its waits, D done today and the flow behind it.
   uw="$(prom_dur "$urgent_s")"
@@ -217,7 +224,7 @@ else
   fi
   # A gate that paused the pass with no exception saying so (no hold, not BLOCKED).
   [ -n "$paused" ] && [ -z "$gate_said" ] && row "  paused" "" "$(paint "$C_YEL" "$paused")"
-  [ -z "$reasons" ] || while read -r acct why; do row "  $acct" "" "no room: $why"; done <<< "$reasons"
+  [ -z "$reasons" ] || while read -r acct why; do row "  $(pango_esc "$acct")" "" "no room: $(pango_esc "$why")"; done <<< "$reasons"
   # The human's #prio/focus projects: names are on the hub Projects tab and in `fleet-dispatch headroom`.
   fn="$(get dispatch.focus_projects)"
   ((${fn:-0} > 0)) && row "  focus" "$(paint "$C_YEL" "$fn")" "project(s) first; reds and urgent items still go first"
@@ -255,7 +262,7 @@ fi
 [ -n "$stab" ] && tip+=$'\n\n'"$shead"$'\n'"$stab"
 src="$(get src.host)"
 if [ -n "$pass" ]; then
-  tip+=$'\n\n'"as of $(date -d "@$pass" +%H:%M), the last dispatch pass${src:+, on $src}"
+  tip+=$'\n\n'"as of $(date -d "@$pass" +%H:%M) ($pass_ago ago), the last dispatch pass${src:+, on $src}"
 fi
 
 # The bar: two totals behind their labels, and only Q takes the chip's level colour; a number the

@@ -214,7 +214,7 @@ Old tab names that still resolve, and where they land. Each phase adds its rows.
 | `build` (an opened project's inner tab, `#projects/<profile>/<name>/build`) | That project's Deliverables inner tab, from `hub_core::layout::PROJECT_RETIRED` (the web's copy in `static/app.js`) | P2 of `can-we-add-aspsecae-hashed-cloud.md` |
 | Pools (the Infra section title; `#infra/pools`, `hub tab 'infra pools'` unchanged) | Job kinds, same section id `pools` and pool pages `#infra/pools/<kind>` | ar-3326 |
 | `unity-local` (the workstation gates pool page, `#infra/pools/unity-local`) | `gates`, the same page (`pool_page::find` keeps the old name) | ar-3326 |
-| `custom/dispatch`, `dispatch.sh` (the waybar queue chip's module id and script; the `dispatch` key in `modules.registry` and the noctalia `[widget.dispatch]`) | `custom/queue`, `queue.sh`, registry key `queue`, `[widget.queue]`; the leader key stays `d` | ar-325 |
+| `custom/dispatch`, `dispatch.sh` (the waybar queue chip's module id and script; the `dispatch` key in `modules.registry` and the noctalia `[widget.dispatch]`) | `custom/queue`, `queue.sh`, registry key `queue`, `[widget.queue]`; the leader key stays `d`. A machine that hid the chip as `custom/dispatch` (`modules.off`) shows it again: `modules.sh disable queue` | ar-325 |
 
 ### Log
 
