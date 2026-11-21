@@ -1103,8 +1103,7 @@ impl<'a> Graph<'a> {
             }
             for v in versions
                 .iter()
-                .filter(|v| v.rolled.is_some_and(|r| r >= links.since))
-                .filter(|v| !legacy(&v.provenance))
+                .filter(|v| v.rolled.is_some_and(|r| r >= links.since) && !legacy(&v.provenance))
             {
                 let bare = v.version.trim_start_matches('v');
                 if !line.tags.iter().any(|t| t.version == bare) {
@@ -2104,7 +2103,6 @@ mod tests {
         items[0].finished = Some(ts(now - 10));
         let v = |version: &str, rolled: i64, prs: Vec<u64>| LabVersion {
             version: version.into(),
-            state: "shipped".into(),
             rolled: Some(rolled),
             prs,
             ..Default::default()
