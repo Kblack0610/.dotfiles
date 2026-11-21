@@ -35,11 +35,11 @@ LOCK_WAIT_S=30
 # KIND=persistent singleton agentctl lane (agentctl@<name>.service). Only an enabled one is started.
 UNITS="${FLEET_LEASE_UNITS:-agent-web.service}"
 # The textfiles the singleton lanes publish (prom-textfile.sh): fleet-bench, fleet-state,
-# claude-acct, mkt-metrics and product-metrics. A machine another holds the lease from removes
-# them: its lanes no longer run, and a copy left behind is a second, frozen reading of each fleet
-# gauge (razer's fleet_bench.prom from the 2026-11-19 handover, ar-4358). A new singleton writer
-# adds its file here.
-TEXTFILES="${FLEET_LEASE_TEXTFILES:-fleet_bench.prom fleet_projects.prom fleet_sessions.prom claude_acct.prom mkt_metrics.prom store_reviews.prom store_sales.prom sentry_issues.prom playtest_feedback.prom}"
+# claude-acct, mkt-metrics, product-metrics and nightly-measure. A machine another holds the lease
+# from removes them: its lanes no longer run, and a copy left behind is a second, frozen reading
+# of each fleet gauge (razer's fleet_bench.prom from the 2026-11-19 handover, ar-4358). A new
+# writer goes here or in fleet_lease.bats's every-node list, which fails until it is in one.
+TEXTFILES="${FLEET_LEASE_TEXTFILES:-fleet_bench.prom fleet_projects.prom fleet_sessions.prom claude_acct.prom mkt_metrics.prom store_reviews.prom store_sales.prom sentry_issues.prom playtest_feedback.prom day_log_rollup.prom}"
 SYNC_DIR="$STORE/.sync"
 PEER="$SYNC_DIR/peer"
 # A peer that must never hold the lease: one without what the holder runs (agent-web, hub, notes).
@@ -210,9 +210,9 @@ follow() {
   return 0
 }
 
-# unpublish: remove this machine's copy of each singleton textfile. Only a machine that knows
-# another holds the lease, or that never may, calls it: one that cannot tell keeps its copy, as
-# its lanes' gate does.
+# unpublish: remove this machine's copy of each singleton textfile. renew calls it where it stops
+# the holder's units: another machine holds the lease, or this one never takes it (not a peer, or
+# no-lease). A peer that cannot tell (no remote answered) keeps its copy until one answers.
 unpublish() {
   local d f
   d=$(prom_textfile_target) || return 0

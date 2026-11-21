@@ -262,11 +262,26 @@ EOS
   assert_success
   refute_output --partial removed
   [ -e "$d/fleet_bench.prom" ]
-  # A machine that never holds it removes its copy with no remote at all.
+  # A machine that never holds it, marked no-lease or not a peer, removes its copy with no remote.
   : > "$SANDBOX/b/.sync/no-lease"
   run on b renew
   assert_success
   assert_line "fleet-lease: removed fleet_bench.prom: b does not hold the fleet lease"
+  echo 'agent_bench_vital 1' > "$d/fleet_bench.prom"
+  rm "$SANDBOX/b/.sync/no-lease" "$SANDBOX/b/.sync/peer"
+  run on b renew
+  assert_success
+  assert_line "fleet-lease: removed fleet_bench.prom: b does not hold the fleet lease"
+}
+
+@test "every textfile a tool here publishes is a singleton's, which renew removes off the holder, or every node's" {
+  # A new writer left out of both would leave a frozen copy behind on each lease handover.
+  local every_node=" day_log.prom " singletons f
+  singletons=" $(sed -n 's/^TEXTFILES="${FLEET_LEASE_TEXTFILES:-\(.*\)}"$/\1/p' "$BIN") "
+  [ "$singletons" != "  " ] || fail "no TEXTFILES default in fleet-lease"
+  for f in $(grep -ohE 'prom_textfile [a-z_]+\.prom' "$REPO_ROOT"/.local/bin/* | awk '{print $2}' | sort -u); do
+    [[ "$singletons$every_node" == *" $f "* ]] || fail "$f is in neither fleet-lease TEXTFILES nor this test's every-node list"
+  done
 }
 
 @test "status names the holder on each remote" {
