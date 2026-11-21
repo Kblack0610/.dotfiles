@@ -12,6 +12,8 @@ setup() {
   sandbox_init basic
   LAND="$REPO_ROOT/.local/bin/agent-land"
   LOG="$NOTES_FIXTURE/calls.log"
+  # No first-run wait before a "none reported" refusal; the cases for that wait set it themselves.
+  export AGENT_LAND_CHECKS_FIRST_RUN_TRIES=0
 
   # gh: `pr view` answers from fixture files, `pr merge` flips the state to merged.state.
   printf 'OPEN\n' >"$NOTES_FIXTURE/state"
@@ -121,6 +123,8 @@ merge-base) if [ "$2" != --is-ancestor ]; then echo 5eedbase5eedbase; elif [ "${
 merge) [ "$2" = --abort ] || [ ! -f "$NOTES_FIXTURE/merge.conflicts" ] || { echo 'CONFLICT (content)'; exit 1; } ;;
 # tree.conflicts: a trial merge of the base (merge-tree) conflicts, and the real merge does too from then on
 merge-tree) [ ! -f "$NOTES_FIXTURE/tree.conflicts" ] || { : >"$NOTES_FIXTURE/merge.conflicts"; exit 1; } ;;
+# no.workflows: the head has no Actions workflow dir (it has .github/workflows by default)
+ls-tree) [ -f "$NOTES_FIXTURE/no.workflows" ] || echo .github/workflows ;;
 esac
 EOF
   # comms-lint: keeps what it was given in linted.txt, prints lint.out and exits lint.rc (0 by default)
@@ -735,11 +739,80 @@ EOF
 
 @test "no checks reported: polled a bounded number of times, then it lands" {
   printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
-  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=3 run "$LAND" 42 --item ship
+  # A land that lands on the local gate does not take the first-run wait.
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=3 AGENT_LAND_CHECKS_FIRST_RUN_TRIES=5 run "$LAND" 42 --item ship
   assert_success
   assert_line --index 2 'checks: none reported'
   run grep -c 'pr checks 42 --watch' "$LOG"
   assert_output 3
+}
+
+# ar-1375: #1710's first run came 213s after gh pr create, past the CHECKS_TRIES reads, and a tier-3
+# land refused "none reported" for a run that did not exist yet.
+@test "no checks reported yet on a land that would refuse: it waits for the head's first run, then lands on its green" {
+  for _ in 1 2 3 4; do printf "no checks reported on the 'x' branch\n"; done >"$NOTES_FIXTURE/checks.seq"
+  echo green >>"$NOTES_FIXTURE/checks.seq"
+  fake_sleep
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_QUEUED_POLL=7 AGENT_LAND_CHECKS_TRIES=2 AGENT_LAND_CHECKS_FIRST_RUN_TRIES=5 run "$LAND" 42 --item ship --ran-checks
+  assert_success
+  assert_line 'checks: none reported yet, which this land would refuse; waiting up to 5 x 7s for the head'"'"'s first run'
+  assert_line 'landed #42'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 5
+  # One CHECKS_POLL sleep inside CHECKS_TRIES, then the queued cadence.
+  run grep '^sleep' "$LOG"
+  assert_output "$(printf 'sleep 0\nsleep 7\nsleep 7\nsleep 7')"
+}
+
+@test "no first run within the first-run wait: stops at checks after CHECKS_TRIES plus that many reads" {
+  printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
+  fake_sleep
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_QUEUED_POLL=7 AGENT_LAND_CHECKS_TRIES=2 AGENT_LAND_CHECKS_FIRST_RUN_TRIES=3 run "$LAND" 42 --item ship --ran-checks
+  assert_failure 1
+  assert_output --partial 'checks failed: none reported, and --ran-checks lands only on checks that ran green'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 5
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "the #1710 case: a tier-3 land whose PR's first run registers late waits for it and lands on its green" {
+  ITEM_PROJECT=agent-runtime item prune 'human'
+  printf 'The change.\n\nReview: /code-review high, 2 findings fixed\n' >"$NOTES_FIXTURE/body"
+  for _ in 1 2 3; do printf "no checks reported on the 'x' branch\n"; done >"$NOTES_FIXTURE/checks.seq"
+  echo green >>"$NOTES_FIXTURE/checks.seq"
+  fake_sleep
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_QUEUED_POLL=7 AGENT_LAND_CHECKS_TRIES=2 AGENT_LAND_CHECKS_FIRST_RUN_TRIES=5 run "$LAND" 42 --item prune
+  assert_success
+  assert_line --partial 'checks: none reported yet, which this land would refuse'
+  assert_line 'landed #42'
+}
+
+@test "a head with no workflow files gets no first-run wait: a land that refuses none refuses after CHECKS_TRIES" {
+  printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
+  touch "$NOTES_FIXTURE/no.workflows"
+  fake_sleep
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_QUEUED_POLL=7 AGENT_LAND_CHECKS_TRIES=2 AGENT_LAND_CHECKS_FIRST_RUN_TRIES=5 run "$LAND" 42 --item ship --ran-checks
+  assert_failure 1
+  assert_output --partial 'checks failed: none reported, and --ran-checks lands only on checks that ran green'
+  refute_output --partial 'none reported yet'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 2
+}
+
+@test "Forgejo: a land that would refuse none waits for the head's first status, then stops at checks" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  echo '{"state":"","statuses":[]}' >"$NOTES_FIXTURE/fj.status"
+  fake_sleep
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_QUEUED_POLL=7 AGENT_LAND_CHECKS_TRIES=2 AGENT_LAND_CHECKS_FIRST_RUN_TRIES=2 run "$LAND" 42 --item ship --ran-checks
+  assert_failure 1
+  assert_output --partial 'checks: none reported yet, which this land would refuse'
+  assert_output --partial 'checks failed: none reported, and --ran-checks lands only on checks that ran green'
+  run grep -c '^curl GET commits/.*/status' "$LOG"
+  assert_output 4
+  run grep '^sleep' "$LOG"
+  assert_output "$(printf 'sleep 0\nsleep 7\nsleep 7')"
 }
 
 @test "no checks reported with --ran-checks (a direct run's landing, which no review backs): stops at checks, as tier 3 does" {
