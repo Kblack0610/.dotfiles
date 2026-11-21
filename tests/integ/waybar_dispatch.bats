@@ -3,7 +3,8 @@
 # ready to start next and the items done today (the agent board and backlog counts are hover only; sprints are the projects chip's), with Q coloured by what is wrong; the hover has a section per system (Queue, Dispatch, Shepherd); sessions are the agents chip's
 # (waybar_ai_agents.bats). What these pin: a deep queue that is moving stays neutral; BLOCKED,
 # flapping and an unhandled shepherd line are amber; queue-starved, a failed runner and a stopped
-# pass are red; each number takes its own colour; a second host's series count once; Prometheus
+# pass are red; each number takes its own colour; the host whose pass ran last is the source and any
+# other sender is named stale in amber (ar-4306); Prometheus
 # down reads ? and no dispatch numbers read -, never a blank chip.
 
 setup() {
@@ -295,15 +296,27 @@ bar() {
   run "$MODULE"
   assert_equal "$(text)" "$(bar "<span color='$Y'>39</span>" 12)"
   assert_equal "$(class)" warn
-  tip | grep -qF "stale: h2-main (328 ready) still sends a queue, ignored"
-  ! tip | grep -qF "queue-starved is tripped"
-  ! tip | grep -qF "runner failed"
+  run tip
+  assert_output --partial "stale: h2-main (328 ready) still sends a queue, ignored"
+  refute_output --partial "queue-starved is tripped"
+  refute_output --partial "runner failed"
+}
+
+@test "a key the source lacks is never filled from a stale host" {
+  feed runner_fleet_dispatch.failed=- watch_queue_starved.tripped=- \
+    h2:summary_dispatch.runnable=328 h2:summary_dispatch.last_pass_epoch=$((100000 - 600000)) \
+    h2:runner_fleet_dispatch.failed=1 h2:watch_queue_starved.tripped=1
+  run "$MODULE"
+  assert_equal "$(class)" warn
+  run tip
+  refute_output --partial "runner failed"
+  refute_output --partial "queue-starved is tripped"
 }
 
 @test "negative control: the host whose pass ran last is the source, even with the smaller queue" {
   feed h2:summary_dispatch.runnable=3 h2:summary_dispatch.last_pass_epoch=$((100000 - 60))
   run "$MODULE"
-  assert_equal "$(text)" "$(bar "<span color='$Y'>3</span>" 12)"
+  assert_equal "$(text)" "$(bar "<span color='$Y'>3</span>" -)"
   tip | grep -qF "stale: h1-main (39 ready)"
 }
 
@@ -311,7 +324,8 @@ bar() {
   feed summary_dispatch.last_pass_epoch=- h2:summary_dispatch.runnable=5
   run "$MODULE"
   assert_equal "$(jq -r .text <<< "$output" | grep -c 39)" 1
-  ! tip | grep -qF "stale:"
+  run tip
+  refute_output --partial "stale:"
 }
 
 @test "the shepherd section shows its last pass and 24h; an unhandled due line is amber; off the feed it is left out" {

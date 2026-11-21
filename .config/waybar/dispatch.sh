@@ -9,8 +9,8 @@
 #   red    queue-starved is tripped, the fleet-dispatch runner failed, or no pass in
 #          PASS_LATE_SECS
 #   amber  dispatch is stopped (held_s) or the last pass left ready work waiting (BLOCKED), an item is flapping, more could
-#          start than the limits let the last pass (could_start), or a shepherd due line went
-#          unhandled
+#          start than the limits let the last pass (could_start), a shepherd due line went
+#          unhandled, or a host other than the source still sends summary/dispatch (stale)
 #   neutral otherwise: a deep queue that is moving, or full units on a full machine, is no fault
 # The hover has one section per system: Queue (items, oldest, 1h and 24h flow, drain), Dispatch
 # (capacity, what paused the last pass, self-heal) and Shepherd (its last pass and the last 24h).
@@ -49,9 +49,11 @@ if ! raw="$(prom_q "$q")"; then
 fi
 
 # One object: kind.key -> value, kind being dispatch, runner, watch or shepherd. The source is the
-# host whose dispatch pass ran last (the lease holder); a key it lacks takes the max over hosts.
-# A peer with a frozen store clone sent 622 queued and the old max over hosts showed it (ar-4306),
-# so src.host names the source and src.stale each other host still sending summary/dispatch.
+# host whose dispatch pass ran last: only the lease holder runs a pass (`fleet-lease fleet-dispatch`)
+# and, since #2971, only it sends summary/dispatch. Its series alone count; with no pass on record
+# anywhere, every host's count by their max. A peer with a frozen store clone sent 622 queued and
+# the old max over hosts showed it (ar-4306), so src.host names the source and src.stale each
+# other host still sending summary/dispatch.
 # Every value is a count, a 0/1 or an epoch, so it is floored: Prometheus may write 1 as 1.0.
 v="$(jq -c '{summary_dispatch: "dispatch", summary_shepherd: "shepherd", runner_fleet_dispatch: "runner",
       watch_queue_starved: "watch"} as $kind
@@ -59,8 +61,8 @@ v="$(jq -c '{summary_dispatch: "dispatch", summary_shepherd: "shepherd", runner_
         + ($kind | keys | join("|")) + ")$")) as $c
       | {h: $c.h, k: ($kind[$c.t] + "." + (.metric.__name__ | ltrimstr("mqtt_"))), v: (.value[1] | tonumber | floor)}] as $all
     | ([$all[] | select(.k == "dispatch.last_pass_epoch")] | max_by(.v) | .h) as $src
-    | ($all | group_by(.k) | map(. as $g | ($g | map(select(.h == $src))) as $s
-        | {key: $g[0].k, value: ((if ($s | length) > 0 then $s else $g end) | map(.v) | max)}) | from_entries)
+    | ($all | map(select($src == null or .h == $src)) | group_by(.k)
+        | map({key: .[0].k, value: (map(.v) | max)}) | from_entries)
     + {"src.host": ($src // "" | gsub("_"; "-")),
        "src.stale": ([$all[] | select(.k == "dispatch.runnable" and $src != null and .h != $src)]
          | unique_by(.h) | map("\(.h | gsub("_"; "-")) (\(.v) ready)") | join(", "))}' <<< "$raw")"
