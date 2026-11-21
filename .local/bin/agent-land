@@ -21,9 +21,7 @@
 # checkout when this repo is ~/.dotfiles or ~/.dotfiles-private, links what it added, rebuilds the
 # Rust tools, restarts agent-web on a new binary and a persistent agentctl runner on a new script; a line, never a failure), item (the queue item gets pr:<owner>/<repo>#<pr>,
 # merged:<sha>, this Claude session in its sessions (unless --partial lands on an item another session owns), the project credited by the PR's changed
-# files (agent-queue attribute), and moves to done, status ok unless --partial keeps it open (a red
-# watch item runs `watch-companion-loop resolve <name> --pr <owner>/<repo>#<pr>` first (watch_gate) and refuses to close ok while its
-# probe still trips); a done ok item with no PR in this
+# files (agent-queue attribute), and moves to done, status ok unless --partial keeps it open (a red watch item resolves its watch with this PR first and refuses to close ok while its probe still trips, watch_gate); a done ok item with no PR in this
 # PR's repo adds it to its pr: and merged: lists instead, one PR per repo; an open item's earlier PR with
 # no merge recorded takes its merge commit from gh, and one not merged refuses before the merge, settle_prior;
 # a --partial landing passes one still open and leaves merged: empty for the final landing), board (the
@@ -793,7 +791,7 @@ shape_gate() {
 item_watch() {
   jq -r 'select(((" " + (.tags // "") + " ") | contains(" red ")))
     | (.title // ((.task // "") | split("\n")[0]))
-    | try capture("^check\\(watch\\): (?<w>[^ ]+)").w // empty' <<<"$1" 2>/dev/null
+    | try capture("^check\\(watch\\): (?<w>[A-Za-z0-9._-]+)").w // empty' <<<"$1" 2>/dev/null
 }
 
 # watch_gate <item json>: a red item for a Sentinel watch cannot close ok while its watch's probe
@@ -809,11 +807,13 @@ watch_gate() {
   verb=(recheck "$w")
   [[ "$pr_ref" != */* ]] || verb=(resolve "$w" --pr "$pr_ref")
   out=$(watch-companion-loop "${verb[@]}" 2>&1) || rc=$?
+  # exit 2 is also a usage error (a loop with no resolve): only "no watch named" skips the check
   case "$rc" in
     0) echo "watch: $w OK" ;;
-    2) echo "watch: $w not known here (exit 2), skipping probe check" ;;
+    2) [[ "$out" == *"no watch named $w"* ]] || fail item "watch-companion-loop ${verb[0]} $w: $(lastline "$out")"
+       echo "watch: $w not known here (exit 2), skipping probe check" ;;
     75) fail item "watch-companion-loop ${verb[0]} $w could not take the lock (exit 75); re-run" ;;
-    *) fail item "watch $w is still red after ${verb[0]} (exit $rc)${out:+: $(lastline "$out")}" ;;
+    *) fail item "watch $w did not read OK on ${verb[0]} (exit $rc)${out:+: $(lastline "$out")}" ;;
   esac
 }
 

@@ -2460,7 +2460,7 @@ EOF
   printf '1\n' >"$NOTES_FIXTURE/watch.rc"
   run "$LAND" 42 --item red-spend
   assert_failure 1
-  assert_output --partial "item failed: watch spend is still red after resolve (exit 1): TRIP: spend still over limit; #42 is merged and only its record is left: re-run agent-land 42 --item red-spend to finish it"
+  assert_output --partial "item failed: watch spend did not read OK on resolve (exit 1): TRIP: spend still over limit; #42 is merged and only its record is left: re-run agent-land 42 --item red-spend to finish it"
   # The PR merged and was recorded on the item, but the item and its board row stayed open.
   run agent-queue show red-spend --json
   assert_equal "$(jq -r '[.state, .pr, .merged] | join("|")' <<<"$output")" 'running|o/r#42|fedcba9876543210fedcba9876543210fedcba98'
@@ -2524,10 +2524,11 @@ EOF
   [ "$(grep -c 'watch-companion-loop' "$LOG")" -eq 0 ]
 }
 
-@test "a red watch item whose watch is unknown (exit 2) closes ok, while lock busy (exit 75) refuses (ar-1605)" {
+@test "a red watch item whose watch is unknown (exit 2) closes ok, while lock busy (exit 75) or a usage error (exit 2) refuses (ar-1605)" {
   cat >"$SANDBOX/bin/watch-companion-loop" <<'EOF'
 #!/usr/bin/env bash
 printf 'watch-companion-loop %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
+cat "$NOTES_FIXTURE/watch.err" >&2 2>/dev/null
 exit "$(cat "$NOTES_FIXTURE/watch.rc" 2>/dev/null || echo 0)"
 EOF
   chmod +x "$SANDBOX/bin/watch-companion-loop"
@@ -2554,6 +2555,14 @@ EOF
   assert_equal "$(jq -r .state <<<"$output")" 'running'
 
   printf '2\n' >"$NOTES_FIXTURE/watch.rc"
+  printf 'usage: watch-companion-loop {run|recheck NAME...}\n' >"$NOTES_FIXTURE/watch.err"
+  run "$LAND" 42 --item red-lock
+  assert_failure 1
+  assert_output --partial 'watch-companion-loop resolve spend: usage: watch-companion-loop {run|recheck NAME...}'
+  run agent-queue show red-lock --json
+  assert_equal "$(jq -r .state <<<"$output")" 'running'
+
+  printf 'watch-companion-loop: no watch named spend\n' >"$NOTES_FIXTURE/watch.err"
   run "$LAND" 42 --item red-lock
   assert_success
   assert_line 'watch: spend not known here (exit 2), skipping probe check'
