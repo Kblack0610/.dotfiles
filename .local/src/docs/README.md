@@ -7,6 +7,7 @@ The front door to the agentic system is `~/.config/agentctl/ARCHITECTURE.md`: th
 | Doc | Its one job |
 | --- | --- |
 | [analysis-streams.md](analysis-streams.md) | The method every analysis stream and cleanup pass follows: baseline, finding, fix at the cause, re-measure, report |
+| [api-clients.md](api-clients.md) | How every repo calls a third-party API: one paced client per provider, shared budget, backoff, bounded retries |
 | [ci.md](ci.md) | CI doctrine for every repo: tiers, the merge gate's budget, what a red gets |
 | [dashboards.md](dashboards.md) | What a dashboard shows and how to add or change a tab, section or tile (hub, agent-web, waybar, Grafana) |
 | [fleet-states.md](fleet-states.md) | The fleet state document and its words: buckets, activity, the close verdict ([fleet-close-flow.svg](fleet-close-flow.svg) is its picture) |

@@ -138,7 +138,7 @@ TEST_FAILURES="${UNITY_TEST_FAILURES:-${XDG_STATE_HOME:-$HOME/.local/state}/unit
 POOL_FAILURES="${UNITY_POOL_FAILURES:-${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/pool-failures.tsv}"
 LEDGER="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}"
 STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
-ASK_ROOT="${AGENT_ASK_DIR:-$HOME/.agent/asks}"
+ASK_ROOT="${AGENT_ASK_ROOT:-$HOME/.agent/asks}"
 # The agent store: store-sync commits and pushes it every 15 minutes, so a file a session wrote
 # there (a lesson, a plan, its wind-down note) is never unlanded work. Counting it held finished
 # sessions STALLED and kept them on the pace target (2026-11-19).

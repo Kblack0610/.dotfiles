@@ -35,6 +35,16 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   assert_output ''
 }
 
+@test "one AGENT_ASK_ROOT moves the check with agent-ask: an ask filed under the override counts" {
+  : > "$NOTES_FIXTURE/agent-panel.asks"
+  export AGENT_ASK_ROOT="$SANDBOX/elsewhere/asks"
+  CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo 'merge it?' >/dev/null
+  assert [ -z "$(find "$HOME/.agent/asks" -name '*.md' 2>/dev/null)" ]
+  run env CLAUDE_CODE_SESSION_ATTENDED=1 bash "$CHECK" <<<"$(stop_payload)"
+  assert_success
+  assert_output ''
+}
+
 @test "the check stays quiet when nothing asks, headless, on re-entry, or skipped" {
   run env CLAUDE_CODE_SESSION_ATTENDED=1 bash "$CHECK" <<<"$(stop_payload)"
   assert_output ''
@@ -45,6 +55,44 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   assert_output ''
   run env CLAUDE_CODE_SESSION_ATTENDED=1 CLAUDE_SKIP_ASK_GATE=1 bash "$CHECK" <<<"$(stop_payload)"
   assert_output ''
+}
+
+mode_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook_active":false,"permission_mode":"%s"}' "$SANDBOX/t.jsonl" "$1"; }
+prompt_entry() { echo '{"type":"user","message":{"role":"user","content":"what now"}}'; }
+dialog_entry() { printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"%s","input":{}}]}}\n' "$1"; }
+answer_entry() { echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"a"}]}}'; }
+text_entry() { echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Merge it?"}]}}'; }
+
+@test "plan and manual mode never block; the other modes still do" {
+  : > "$NOTES_FIXTURE/agent-panel.asks"
+  for m in plan default; do
+    run env CLAUDE_CODE_SESSION_ATTENDED=1 bash "$CHECK" <<<"$(mode_payload "$m")"
+    assert_success
+    assert_output ''
+  done
+  # Negative control: an edit mode that waits with no ask is still blocked.
+  for m in acceptEdits bypassPermissions; do
+    run env CLAUDE_CODE_SESSION_ATTENDED=1 bash "$CHECK" <<<"$(mode_payload "$m")"
+    [ "$(jq -r .decision <<<"$output")" = block ]
+  done
+}
+
+@test "a turn that asked through AskUserQuestion or ExitPlanMode is not blocked" {
+  : > "$NOTES_FIXTURE/agent-panel.asks"
+  for tool in AskUserQuestion ExitPlanMode; do
+    # The answer arrives as a tool result, which is not a new prompt, so the dialog still counts.
+    { prompt_entry; dialog_entry "$tool"; answer_entry; text_entry; } > "$SANDBOX/t.jsonl"
+    run env CLAUDE_CODE_SESSION_ATTENDED=1 bash "$CHECK" <<<"$(stop_payload)"
+    assert_success
+    assert_output ''
+  done
+}
+
+@test "a dialog in an earlier turn does not excuse this turn's unfiled wait" {
+  : > "$NOTES_FIXTURE/agent-panel.asks"
+  { prompt_entry; dialog_entry AskUserQuestion; answer_entry; text_entry; prompt_entry; text_entry; } > "$SANDBOX/t.jsonl"
+  run env CLAUDE_CODE_SESSION_ATTENDED=1 bash "$CHECK" <<<"$(stop_payload)"
+  [ "$(jq -r .decision <<<"$output")" = block ]
 }
 
 @test "another session's pending ask does not satisfy the check" {

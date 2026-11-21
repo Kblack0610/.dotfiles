@@ -1583,6 +1583,7 @@ TASK_DONE = re.compile(r"<tool-use-id>(toolu_\w+)</tool-use-id>")
 TASK_ID = re.compile(r"<task-id>([\w.-]+)</task-id>")
 BG_OUTPUT = re.compile(r"/tasks/([\w.-]+)\.output")
 WORD = re.compile(r"[\w./~@:-]{5,}")
+# fleet-overseer was split into fleet-lead (#771, 2026-11-03); it stays so its sessions still read as runner.
 RUNNER_COMMANDS = ("fleet-lead", "fleet-overseer")
 # A guard names itself first in its deny reason; same capture as session-outcomes.sh's guards count.
 GUARD_DENY = re.compile(r"^PreToolUse:\w+ hook error: (?:([a-z][a-z0-9-]+): )?")
