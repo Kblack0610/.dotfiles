@@ -79,7 +79,7 @@ Picking the probe (deterministic-first):
 | "run this check / exit code" | `command` | `expect_cmd`, `expect_exit` |
 | "does X *look* healthy / are payments flowing / something off" | `agent` | `agent_question`, a `signal:` list, slow `interval`, `expiry` if temporary |
 
-Always stamp `created:` (current ISO-8601) and `source: user`. Set `severity` (low/normal/high) and
+Always stamp `created:` (current ISO-8601) and `source: user`. Set `severity` (low/normal/high/urgent, meanings in `~/.local/src/docs/priority.md`) and
 `expiry`: a duration like `60m` from `created` or an ISO timestamp for a temporary ask, `null` for a standing watch (`--strict` refuses a missing, bare or `~` expiry).
 
 A standing watch's owner is its line in `~/.config/agentctl/triage-routes` (route, skill, fix), not a manifest field: add that line in the same change, and `fleet-bench triage --coverage` prints `watch <name>` for each standing watch that has none.

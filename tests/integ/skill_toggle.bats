@@ -226,12 +226,11 @@ toggle_repo() {
 
 @test "a toggle PR from an earlier night still open is BLOCKED, not FAILED" {
   toggle_repo '{"skillOverrides":{"beta":"name-only"}}'
-  printf '#!/usr/bin/env bash\necho 77\n' > "$SANDBOX/bin-gh"; mkdir -p "$SANDBOX/ghbin"
-  mv "$SANDBOX/bin-gh" "$SANDBOX/ghbin/gh"; chmod +x "$SANDBOX/ghbin/gh"
+  gh_script 'echo 77'
   # rm first: the sandbox links this file to the repo copy, and a write would go through it.
   rm -f "$HOME/.local/lib/agent-proof.sh"
   printf 'proof_outcome() { echo "verdict $2"; }\n' > "$HOME/.local/lib/agent-proof.sh"
-  PATH="$SANDBOX/ghbin:$PATH" run "$TOGGLE"
+  run "$TOGGLE"
   assert_success
   assert_output --partial 'verdict BLOCKED'
   assert_output --partial 'PR #77 is still open'
@@ -241,27 +240,25 @@ toggle_repo() {
 # runner's red named no cause.
 @test "a refused agent-queue add is FAILED with agent-queue's own reason" {
   toggle_repo '{"skillOverrides":{"beta":"name-only"}}'
-  mkdir -p "$SANDBOX/ghbin"
-  printf '#!/usr/bin/env bash\n:\n' > "$SANDBOX/ghbin/gh"
-  printf '#!/usr/bin/env bash\necho "agent-queue: the queue is locked by another writer" >&2\nexit 75\n' > "$SANDBOX/ghbin/agent-queue"
-  chmod +x "$SANDBOX"/ghbin/*
+  gh_script ':'
+  printf '#!/usr/bin/env bash\necho "agent-queue: the queue is locked by another writer" >&2\nexit 75\n' > "$SANDBOX/bin/agent-queue"
+  chmod +x "$SANDBOX/bin/agent-queue"
   rm -f "$HOME/.local/lib/agent-proof.sh"
   printf 'proof_outcome() { echo "verdict $2 $3"; }\n' > "$HOME/.local/lib/agent-proof.sh"
-  PATH="$SANDBOX/ghbin:$PATH" run "$TOGGLE"
+  run "$TOGGLE"
   assert_failure
   assert_output --partial "verdict FAILED agent-queue add skill-toggle-$(date +%F) failed: agent-queue: the queue is locked by another writer"
 }
 
 @test "a new change stops at its open PR: BLOCKED, the worktree gone, the item queued for a session, agent-land never called" {
   toggle_repo '{"skillOverrides":{"beta":"name-only"}}'
-  mkdir -p "$SANDBOX/ghbin"
-  printf '#!/usr/bin/env bash\ncase "$*" in "pr create"*) echo https://github.com/o/r/pull/88 ;; esac\n' > "$SANDBOX/ghbin/gh"
-  printf '#!/usr/bin/env bash\necho "agent-queue $*" >> %q\n' "$SANDBOX/aq.log" > "$SANDBOX/ghbin/agent-queue"
-  printf '#!/usr/bin/env bash\ntouch %q\n' "$SANDBOX/landed" > "$SANDBOX/ghbin/agent-land"
-  chmod +x "$SANDBOX"/ghbin/*
+  gh_script 'case "$*" in "pr create"*) echo https://github.com/o/r/pull/88 ;; esac'
+  printf '#!/usr/bin/env bash\necho "agent-queue $*" >> %q\n' "$SANDBOX/aq.log" > "$SANDBOX/bin/agent-queue"
+  printf '#!/usr/bin/env bash\ntouch %q\n' "$SANDBOX/landed" > "$SANDBOX/bin/agent-land"
+  chmod +x "$SANDBOX/bin/agent-queue" "$SANDBOX/bin/agent-land"
   rm -f "$HOME/.local/lib/agent-proof.sh"
   printf 'proof_outcome() { echo "verdict $2"; }\n' > "$HOME/.local/lib/agent-proof.sh"
-  GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t PATH="$SANDBOX/ghbin:$PATH" run "$TOGGLE"
+  GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t run "$TOGGLE"
   assert_success
   assert_output --partial 'verdict BLOCKED'
   assert_output --partial 'opened #88 for review'
@@ -300,13 +297,12 @@ toggle_repo() {
   SKILL_TOGGLE_HIDE_CAP=0 run "$TOGGLE" --dry-run
   assert_success
   assert_output --partial 'would open a PR for the human (hide 1 is past the cap of 0)'
-  mkdir -p "$SANDBOX/ghbin"
-  printf '#!/usr/bin/env bash\ncase "$*" in "pr create"*) printf "%%s\\n" "$*" > %q; echo https://github.com/o/r/pull/89 ;; esac\n' "$SANDBOX/pr.txt" > "$SANDBOX/ghbin/gh"
-  printf '#!/usr/bin/env bash\necho "agent-queue $*" >> %q\n' "$SANDBOX/aq.log" > "$SANDBOX/ghbin/agent-queue"
-  chmod +x "$SANDBOX"/ghbin/*
+  gh_script "$(printf 'case "$*" in "pr create"*) printf "%%s\\n" "$*" > %q; echo https://github.com/o/r/pull/89 ;; esac' "$SANDBOX/pr.txt")"
+  printf '#!/usr/bin/env bash\necho "agent-queue $*" >> %q\n' "$SANDBOX/aq.log" > "$SANDBOX/bin/agent-queue"
+  chmod +x "$SANDBOX/bin/agent-queue"
   rm -f "$HOME/.local/lib/agent-proof.sh"
   printf 'proof_outcome() { echo "verdict $2"; }\n' > "$HOME/.local/lib/agent-proof.sh"
-  SKILL_TOGGLE_HIDE_CAP=0 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t PATH="$SANDBOX/ghbin:$PATH" run "$TOGGLE"
+  SKILL_TOGGLE_HIDE_CAP=0 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t run "$TOGGLE"
   assert_success
   assert_output --partial 'verdict BLOCKED'
   assert_output --partial 'opened #89 for the human (hide 1, cap 0)'
