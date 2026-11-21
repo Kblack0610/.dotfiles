@@ -3,7 +3,7 @@
 #
 #   lessons pick [-n N] [--matched] FILE [TEXT...]
 #       N lessons (default 5) from FILE: the ones sharing the most distinctive words with TEXT
-#       first, then the newest, each cut to 200 chars. --matched: no newest, nothing if none match.
+#       first, then the newest, each cut to 200 chars (at a sentence end when one falls past 100). --matched: no newest, nothing if none match.
 #       A lesson a supersedes marker names (see chains) is never handed out.
 #   lessons dup MEMORY_FILE FILE
 #       "<cosine> <line> <first line>" of the bullet or heading in FILE the memory file restates most
@@ -48,8 +48,20 @@ usage() { sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 # shellcheck disable=SC2016
 PARSE='
 BEGIN { for (i = 1; i < 256; i++) ord[sprintf("%c", i)] = i }
-function cut(s,   c) {
+# A lesson over 200 chars is cut where a sentence ends, never mid-rule: the last sentence end (at least 100
+# chars in, so a short title is no whole cut) within 300 chars, else the first within 400, else a word boundary at 200 with "...".
+function cut(s,   c, i, j, n, p, q, pre) {
   if (length(s) <= 200) return s
+  n = length(s) < 400 ? length(s) : 400
+  for (i = 100; i <= n; i++) {
+    if (substr(s, i, 1) !~ /[.!?]/) continue
+    for (j = i + 1; substr(s, j, 1) ~ /[*)`"]/; j++) ;
+    if (j <= length(s) && substr(s, j, 1) != " ") continue
+    pre = tolower(substr(s, 1, i - 1)); sub(/^.*[[:space:]]/, "", pre)
+    if (pre ~ /^(e\.g|i\.e|vs|etc|cf)$/) continue
+    if (i <= 300) p = j - 1; else if (!q) q = j - 1
+  }
+  if (p || q) return substr(s, 1, p ? p : q)
   c = substr(s, 1, 197); sub(/[[:space:]]+[^[:space:]]*$/, "", c); return c "..."
 }
 function hash(s,   i, h) { h = 5381; for (i = 1; i <= length(s); i++) h = (h * 33 + ord[substr(s, i, 1)]) % 4294967296; return sprintf("%08x", h) }

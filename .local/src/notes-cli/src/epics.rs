@@ -219,6 +219,24 @@ impl Index {
                 texts.push((t, None, label.to_string()));
             }
         }
+        // The live sheets of the projects it versions (a game the playground numbers), whose
+        // rows its window reads. Their `versions/` notes number the game's legacy line, not this
+        // project's, so they stay out.
+        for child in projects::version_child_dirs(dir) {
+            let name = child
+                .file_name()
+                .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+            for (lane, label) in [
+                (child.clone(), "sheet"),
+                (projects::agent_dir(&child), "agent board"),
+            ] {
+                if let Some(t) =
+                    project_tasks::task_sheet(&lane).and_then(|p| fs::read_to_string(p).ok())
+                {
+                    texts.push((t, None, format!("{name} {label}")));
+                }
+            }
+        }
         for (lane, _, notes) in lanes {
             let mut found = projects::version_notes(&lane.join("versions"));
             found.sort_by_key(|a| std::cmp::Reverse(a.0));
