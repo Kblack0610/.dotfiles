@@ -442,6 +442,30 @@ impl Registry {
             .collect()
     }
 
+    /// The project whose release tag numbers `name`'s versions (stages.md, "Versions"): a key
+    /// with `buildTags` whose `repo` is another tracker declaring a `tagGlob`, a game built from
+    /// the playground. The shell twin is `project_version_parent` (project-name.sh), which asks
+    /// git for the parent's tag where this reads the `tagGlob` the doctor requires of it.
+    pub fn version_parent(&self, name: &str) -> Option<String> {
+        let t = self.tracker(name)?;
+        t.get("buildTags")?.as_array().filter(|b| !b.is_empty())?;
+        let repo = t.get("repo")?.as_str().filter(|r| *r != name)?;
+        self.tracker(repo)?
+            .get("tagGlob")?
+            .as_str()
+            .filter(|g| !g.is_empty())?;
+        Some(repo.to_string())
+    }
+
+    /// Every project [`Registry::version_parent`] gives as `name`, in the file's order.
+    pub fn version_children(&self, name: &str) -> Vec<String> {
+        self.trackers()
+            .map(|(k, _)| k)
+            .filter(|k| self.version_parent(k).as_deref() == Some(name))
+            .map(str::to_string)
+            .collect()
+    }
+
     /// `trackers.<name>.code`: the 2-4 lowercase letters that prefix the project's row ids
     /// (`ar` in `ar-142`), when it is set and well formed. `project-map-doctor` checks it is
     /// unique.
@@ -626,6 +650,25 @@ mod tests {
 
     fn fixture() -> Registry {
         Registry::from_path(Path::new(FIXTURE_JSON)).expect("fixture registry")
+    }
+
+    #[test]
+    fn a_game_with_build_tags_in_a_tagged_repo_takes_its_version_from_the_repo() {
+        let r = Registry::parse(
+            r#"{"trackers": {"play": {"tagGlob": "v*"},
+                "game": {"repo": "play", "buildTags": ["v*-game*"]},
+                "app": {"repo": "mono"}, "mono": {"tagGlob": "v*"},
+                "bare": {"repo": "untagged", "buildTags": ["v*-bare*"]}, "untagged": {}}}"#,
+        )
+        .unwrap();
+        assert_eq!(r.version_parent("game").as_deref(), Some("play"));
+        assert_eq!(r.version_children("play"), ["game"]);
+        // NEGATIVE CONTROL: an app in a tagged monorepo with no buildTags keeps its own number,
+        // and buildTags under a repo with no tagGlob name no parent.
+        assert_eq!(r.version_parent("app"), None);
+        assert_eq!(r.version_parent("bare"), None);
+        assert_eq!(r.version_parent("play"), None);
+        assert!(r.version_children("mono").is_empty());
     }
 
     #[test]

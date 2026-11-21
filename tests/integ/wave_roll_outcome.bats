@@ -281,3 +281,28 @@ tags_since() { # $1=sheet version, $2=newest tag, $3..=tags since RELEASE_NOTES_
   run cat "$OUTCOME"
   assert_output STALLED
 }
+
+@test "a game with build tags in a tagged repo is versioned by that repo, never rolled" {
+  # ar-4161: a game's version is the playground version it was cut in, so wave-roll skips it
+  # and names it in the pass line. The real project_version_parent reads this map.
+  export PROJECT_MAP_FILE="$SANDBOX/project-map.json"
+  printf '{"trackers":{"demoapp":{"repo":"pg","buildTags":["v*-demoapp*"]},"pg":{"tagGlob":"v*"}}}\n' > "$PROJECT_MAP_FILE"
+  due true false patch
+  hooks ''
+  # The repo pg ships v0.5.4; the game ships nothing of its own.
+  printf 'project_release_version() { [ "$1" = pg ] && printf v0.5.4; return 0; }\n' >> "$WAVE_ROLL_HOOKS"
+  run "$WAVE_ROLL" --dry-run demoapp
+  assert_output --partial "skip demoapp: its version is pg's tag"
+  refute_output --partial 'would roll'
+  run "$WAVE_ROLL" demoapp
+  assert_success
+  grep -q 'versioned by their parent, not rolled: demoapp' "$AGENTCTL_STATE_DIR/wave-roll/activity.log"
+  # NEGATIVE CONTROL: with no buildTags, or a repo that ships no tag, the game is cut like an app.
+  jq 'del(.trackers.demoapp.buildTags)' "$PROJECT_MAP_FILE" > "$PROJECT_MAP_FILE.t" && mv "$PROJECT_MAP_FILE.t" "$PROJECT_MAP_FILE"
+  run "$WAVE_ROLL" --dry-run demoapp
+  assert_output --partial 'would roll personal/demoapp: v1.0.0 -> v1.0.1 (cadence 7d, patch'
+  jq '.trackers.demoapp.buildTags = ["v*-demoapp*"]' "$PROJECT_MAP_FILE" > "$PROJECT_MAP_FILE.t" && mv "$PROJECT_MAP_FILE.t" "$PROJECT_MAP_FILE"
+  hooks ''
+  run "$WAVE_ROLL" --dry-run demoapp
+  assert_output --partial 'would roll personal/demoapp: v1.0.0 -> v1.0.1 (cadence 7d, patch'
+}

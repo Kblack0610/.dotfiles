@@ -22,7 +22,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// The version a directory's rows are read against: its own sheet's `Version:` line, else,
-/// for an agent board (which carries none), the human sheet's one level up.
+/// for an agent board (which carries none), the human sheet's one level up, else, for a game
+/// the playground versions, the playground's ([`projects::version_parent_dir`]).
 pub(crate) fn open_version_for(dir: &Path) -> Option<V> {
     let content = task_sheet(dir)
         .and_then(|s| fs::read_to_string(s).ok())
@@ -32,9 +33,9 @@ pub(crate) fn open_version_for(dir: &Path) -> Option<V> {
 
 /// [`open_version_for`] for a caller already holding the sheet's text.
 fn version_in(dir: &Path, content: &str) -> Option<V> {
-    projects::sheet_version(content).or_else(|| {
-        let parent = dir.parent().filter(|_| dir.ends_with("agent"))?;
-        open_version_for(parent)
+    projects::sheet_version(content).or_else(|| match dir.parent() {
+        Some(human) if dir.ends_with("agent") => open_version_for(human),
+        _ => open_version_for(&projects::version_parent_dir(dir)?),
     })
 }
 
@@ -3156,7 +3157,7 @@ pub(crate) fn sweep_ctx(
         window: (lane == Lane::Agent)
             .then_some(open)
             .flatten()
-            .and_then(|v| crate::window::read(dir, v).map(|s| (v, s.keys))),
+            .and_then(|v| crate::window::read(&crate::window::home(dir), v).map(|s| (v, s.keys))),
         aim: crate::rank::Aim::of_swept(dir, lane == Lane::Agent, content),
         open,
         rewrite,
