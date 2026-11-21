@@ -10,6 +10,7 @@ setup() {
   sandbox_init basic
   SNAP="$REPO_ROOT/.local/bin/session-snapshot"
   export AGENT_HOLD_DIR="$HOME/.agent/holds" AGENT_MAINTENANCE="$HOME/.agent/maintenance"
+  export SESSION_SNAPSHOT_LOCK="$SANDBOX/snapshot.lock"
   CALLS="$SANDBOX/calls.log"
   stub agent-hold "exec \"$REPO_ROOT/.local/bin/agent-hold\" \"\$@\""
   stub agentctl 'case $1 in
@@ -100,6 +101,30 @@ stub() {
   assert_failure 1
   [ ! -e "$AGENT_MAINTENANCE" ] || fail "marker written after a failed pause"
   ! "$REPO_ROOT/.local/bin/agent-hold" list | grep -q $'^dispatch\t' || fail "the hold was left up"
+}
+
+@test "down waits on another down or up holding the lock, and sets nothing when it times out" {
+  exec 8>"$SESSION_SNAPSHOT_LOCK"
+  flock 8
+  SESSION_SNAPSHOT_LOCK_WAIT=0 run "$SNAP" down "setup swap"
+  exec 8>&-
+  assert_failure 75
+  assert_output --partial 'still holds'
+  ! "$REPO_ROOT/.local/bin/agent-hold" list | grep -q $'^dispatch\t' || fail "dispatch held without the lock"
+  ! grep -q '^agentctl pause' "$CALLS" || fail "agentctl paused without the lock"
+  [ ! -e "$AGENT_MAINTENANCE" ] || fail "marker written without the lock"
+}
+
+@test "what down and up start gets neither the lock fd nor the skip-lock flag" {
+  stub fleet-dispatch 'echo "fds:$(ls -l /proc/$$/fd | grep -c snapshot.lock) flag:${SESSION_SNAPSHOT_LOCKED:-unset}" >> "'"$CALLS"'"
+[ "$1" != restore ] || echo "hub: reopened 2, failed 0"'
+  "$SNAP" down
+  "$SNAP" up
+  run grep '^fds:' "$CALLS"
+  assert_line --index 0 'fds:0 flag:unset'
+  assert_line --index 1 'fds:0 flag:unset'
+  # The lock is free again once up exits.
+  flock -n "$SESSION_SNAPSHOT_LOCK" true || fail "lock still held after up"
 }
 
 @test "flags parse in any order: a reason then --dry-run is still a dry run" {
