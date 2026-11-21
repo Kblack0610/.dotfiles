@@ -510,6 +510,14 @@ hand_caller() {
   case "$(fm_get "$f" origin)" in hand | resume) return 0 ;; esac
   return 1
 }
+# running_from -> the `from` of a --running record that names no --from or --want: a session's record of its own
+# work is the session's, item:<slug> in a queue item's session, and `from: human` stays for what the human typed
+# (a terminal add, --want, the hub's Add) (ar-4154).
+running_from() {
+  if [ -n "${AGENT_QUEUE_ITEM:-}" ]; then echo "item:$AGENT_QUEUE_ITEM"
+  elif [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then echo session
+  else echo human; fi
+}
 # pull_ok <running> <from> <from_given> -> true when this add may go into the queue at all.
 pull_ok() { [ -n "$1" ] || [ -n "${AGENT_QUEUE_PULL:-}" ] || hand_caller "$2" "$3"; }
 # board_only_say -> the one line every add the board takes instead prints first.
@@ -1719,12 +1727,7 @@ cmd_add() {
   case "$mode" in oneshot | plan) ;; *) die "--mode is oneshot or plan, not $mode" ;; esac
   prio_rank "$priority" >/dev/null || die "--priority is urgent, high or low, not $priority"
   case "$weight" in '' | heavy | light) ;; *) die "--weight is heavy or light, not $weight" ;; esac
-  # A session's record of its own work is the session's, not the human's: `from: human` is for what the
-  # human typed (a terminal add, --want, the hub's Add) and stays readable on older items (ar-4154).
-  if [ -n "$running" ] && [ -z "$from_given$want" ]; then
-    if [ -n "${AGENT_QUEUE_ITEM:-}" ]; then from="item:$AGENT_QUEUE_ITEM"
-    elif [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then from=session; fi
-  fi
+  [ -z "$running" ] || [ -n "$from_given$want" ] || from="$(running_from)"
   case "$from" in human | session | shepherd | canary | trainee | research:?* | auto:?* | item:?* | ask:?* | board:?*:?*) ;; *) die "--from is human, session, shepherd, canary, trainee, research:<facet>, auto:<filer>, item:<slug>, ask:<id> or board:<project>:<key>, not $from" ;; esac
   case "$agent" in *[!a-z0-9-]* | '') die "--agent is one word, not $agent" ;; esac
   local row_id='^[a-z0-9]+-[0-9]+$'
