@@ -6005,8 +6005,8 @@ cmd_starved() {
 
 # dead_holds -> one line per open board row gated on what can never clear, each gate `agent-queue gate`
 # calls dead (load_gates): an #after/ on a row that was dropped or does not exist, an #ask/ the human
-# cancelled, that no longer exists, or that was answered with another option (reap holds or drops
-# an agent row on the human's answer: settle_answered_gates). Nothing promotes such a row, so it
+# cancelled, that no longer exists, or that was answered with another option (reap holds, moves or drops
+# an agent row on the human's answer or cancel: settle_answered_gates). Nothing promotes such a row, so it
 # waits for good unless someone sees it: this is where they surface. On 2026-11-07 trader's Kalshi
 # phases sat behind cancelled ask ybXZIM and nothing named them.
 dead_holds() {
@@ -6387,7 +6387,7 @@ cmd_reap() {
 # kept held, dept-tabs-p6-posthog skipped, both rows sat in dead_holds). An answer that says to skip
 # the work (SETTLE_SKIP_RE) drops the row, the answer as its why. Any other answer only says not this
 # way or not yet, and a drop cannot be undone from here, so the row stays: its gate is swapped for
-# #hold/row-<row id>, an agent-hold the human releases to start it. A cancelled or missing ask, a
+# #hold/row-<row id>, an agent-hold the human releases to start it. A missing ask, a
 # judge's answer and a human-sheet row stay in dead_holds for a person. A cancelled ask (nobody
 # decided: agent-ask cancel has no actor) leaves its rows dead the same way (ar-3863, 2026-11-19):
 # one cancelled because it joined an older ask moves its rows' gate to that ask; any other cancel

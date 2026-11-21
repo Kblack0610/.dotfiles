@@ -1278,6 +1278,8 @@ settle_fixture() {
   printf 'closed_reason: superseded by #later\n' >> "$d/gone1.md"
   ask gone2 cancelled '' question credential_or_account ''
   printf 'closed_reason: joined hold1: the same question\n' >> "$d/gone2.md"
+  ask gone3 cancelled '' question credential_or_account ''
+  printf 'closed_reason: joined nope99: the same question\n' >> "$d/gone3.md"
   stub agent-ask '[ "$1" = show ] && cat "$HOME"/.agent/asks/*/"$2".md'
   stub agent-hold 'echo "agent-hold $*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" != show ] || [[ " ${HELD:-} " == *" $2 "* ]]'
 }
@@ -1289,6 +1291,8 @@ settle_fixture() {
   row game agent gm-3 "- [ ] feat(game): judge answered $T #ask/judge1/a <!-- id:gm-3 -->"
   row game agent gm-4 "- [ ] feat(game): cancelled ask $T #ask/gone1/a <!-- id:gm-4 -->"
   row game agent gm-9 "- [ ] feat(game): joined ask $T #ask/gone2/a <!-- id:gm-9 -->"
+  row game agent gm-10 "- [ ] feat(game): joined, no option $T #ask/gone2 <!-- id:gm-10 -->"
+  row game agent gm-11 "- [ ] feat(game): joined a missing ask $T #ask/gone3/a <!-- id:gm-11 -->"
   row game agent gm-5 "- [ ] feat(game): still waits $T #ask/hold1/a <!-- id:gm-5 -->"
   row game agent gm-6 "- [ ] feat(game): use the old key $T #ask/mint1/a <!-- id:gm-6 -->"
   row game agent gm-7 "- [ ] feat(game): approved launch $T #ask/appr1/a <!-- id:gm-7 -->"
@@ -1308,6 +1312,8 @@ settle_fixture() {
   # a cancelled ask holds its row (nobody decided); one that joined another moves the gate to it
   grep -q '^- \[ \] feat(game): cancelled ask .*#hold/row-gm-4 <!-- id:gm-4 -->' <<<"$rows"
   grep -q '^- \[ \] feat(game): joined ask .*#ask/hold1/a <!-- id:gm-9 -->' <<<"$rows"
+  grep -q '^- \[ \] feat(game): joined, no option .*#ask/hold1 <!-- id:gm-10 -->' <<<"$rows"
+  grep -q '^- \[ \] feat(game): joined a missing ask .*#hold/row-gm-11 <!-- id:gm-11 -->' <<<"$rows"
   grep -q '^agent-hold set row-gm-4 .*ask gone1 was cancelled (superseded by later), so nobody decided' "$NOTES_FIXTURE/calls.log"
   # a judge's answer, a gate the answer releases and a human-sheet row are left alone
   grep -q '^- \[ \] feat(game): judge answered .*#ask/judge1/a' <<<"$rows"
