@@ -5,6 +5,9 @@
 gate	scripts/test/ci-gate.sh --pr 12
 gate	cd ~/.worktrees/x && scripts/test/ci-gate.sh --pr 1
 gate	agent-land 2591 --item foo
+gate	scripts/test/gate-and-land.sh --title t --item s --partial
+gate	cd ~/.worktrees/x && scripts/test/gate-and-land.sh --item s
+jobs	sed -n 1p scripts/test/gate-and-land.sh
 gate	timeout 1500 agent-land 2591 --item foo
 gate	git push -q && gh-run-wait 43445198879 checks && agent-land 2 --item x
 gate	gh pr checks 2446 --watch --interval 30
