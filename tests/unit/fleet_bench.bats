@@ -2016,9 +2016,9 @@ log_triage_setup() {
   printf '#!/usr/bin/env bash\necho "$*" >> %q\n' "$NOTIFY" > "$SANDBOX/bin/notify-stub"
   chmod +x "$SANDBOX/bin/items-stub" "$SANDBOX/bin/notify-stub"
   printf '#!/usr/bin/env bash\necho "$*" >> %q\n' "$PLOG" > "$SANDBOX/bin/promote-stub"
-  # the ask stub logs each post and prints the id agent-ask would
+  # the ask stub logs each call; post prints the id agent-ask would, show the status ASKSTATUS names
   ASKLOG="$SANDBOX/ask.log"; export TRIAGE_ASK_CMD=ask-stub
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> %q\necho Ask123\n' "$ASKLOG" > "$SANDBOX/bin/ask-stub"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> %q\ncase $1 in post) echo Ask123 ;; show) echo "status: ${ASKSTATUS:-pending}" ;; esac\n' "$ASKLOG" > "$SANDBOX/bin/ask-stub"
   chmod +x "$SANDBOX/bin/promote-stub" "$SANDBOX/bin/ask-stub"
   # one error in two runs (the pid, path and stamp differ), one error in a single run, one run
   # outside the window, and a range the log rotation took away
@@ -2289,7 +2289,7 @@ fix_item() {
   run grep -c . "$ASKLOG"
   assert_output 1
   run cat "$ASKLOG"
-  assert_output --regexp '^--project agent-runtime --context .*queued ar-1,ar-2,ar-3 for it, the last a root-cause pass on opus.* Red "fix\(logs\): alpha error .*" outlasted every fix tried: what should the next fix do\?$'
+  assert_output --regexp '^post --project agent-runtime --context .*queued ar-1,ar-2,ar-3 for it, the last a root-cause pass on opus.* Red "fix\(logs\): alpha error .*" outlasted every fix tried: what should the next fix do\?$'
   run grep -c 'fix(logs): alpha error' "$BOARD"   # the agent row stands
   assert_output 1
   run cut -f1,3 "$XDG_STATE_HOME/agentctl/triage-spent"
@@ -2318,15 +2318,28 @@ fix_item() {
   run "$SUBJECT" triage
   assert_success
   [ ! -s "$BOARD.agent-runtime" ]
-  # NEGATIVE CONTROL: one more allowed try is one more item, the escalation, and nothing is spent
-  : > "$PLOG"
+  # an ask the human already closed is left as it is when its cause leaves the spent set
+  cp "$XDG_STATE_HOME/agentctl/triage-spent" "$SANDBOX/spent.keep"; : > "$ASKLOG"
+  ASKSTATUS=answered TRIAGE_FIX_TRIES=3 run "$SUBJECT" triage
+  assert_success
+  run cat "$ASKLOG"
+  assert_output 'show Ask123'
+  # NEGATIVE CONTROL: one more allowed try is one more item, the escalation, and nothing is spent;
+  # the cause left the spent set, so its still-pending ask is cancelled: it needs the human no longer
+  cp "$SANDBOX/spent.keep" "$XDG_STATE_HOME/agentctl/triage-spent"; : > "$PLOG"; : > "$ASKLOG"
   TRIAGE_FIX_TRIES=3 run "$SUBJECT" triage
   assert_success
   assert_output --partial '1 queued as red fixes'
   run cat "$PLOG"
   assert_output --regexp ' escalate retry:ar-1,ar-2,ar-3 --raw '
+  run cat "$ASKLOG"
+  assert_line --index 1 --regexp '^cancel Ask123 the red cleared or agents are trying it again'
   run "$SUBJECT" ledger
   assert_line 'reds_spent=0'
+  # the next pass has no ask left to cancel
+  : > "$ASKLOG"
+  TRIAGE_FIX_TRIES=3 run "$SUBJECT" triage
+  [ ! -s "$ASKLOG" ]
   # and a count no triage pass refreshed reads ?, never an old 0
   touch -d '-2 hours' "$XDG_STATE_HOME/agentctl/triage-spent"
   run "$SUBJECT" ledger

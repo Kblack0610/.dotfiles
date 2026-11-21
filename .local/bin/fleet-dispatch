@@ -4401,8 +4401,8 @@ takeover_branch() {
 # queued/ (--if review) as a oneshot stamped `<fix|land>_tries: <n> <head>[ conflict]` and `pr_owner`, which
 # item_brief reads, and the next pass starts it behind every gate a queued item waits on (agent-hold,
 # the weekly pace, load, the run gate); while the agent-queue cap holds adds it waits in
-# review/. DISPATCH_FIX_TRIES tries of each, then one human-sheet row and a page, as fleet-bench
-# triage_human does once TRIAGE_FIX_TRIES are spent, stamped `fix_human: <head> <owner>...`; a head that
+# review/. DISPATCH_FIX_TRIES tries of each, then one human-sheet row and a page (fleet-bench triage instead
+# escalates a red, then asks once), stamped `fix_human: <head> <owner>...`; a head that
 # moves after that row (the human pushed) starts the count again. The stamp quiets only the owners it
 # names, so a head whose fix-ci row went to the human and that later reads green still gets a lander,
 # and the reverse (#2182 sat in review green with nobody on it). A lander that asks the human is held
@@ -7217,7 +7217,7 @@ promote() {
 # past the cap with no make_room); without it a caller with no queue item is the human's hand start.
 # --model pins the item's model (claude_pin), as triage pins its escalation of a red to Opus.
 cmd_promote() {
-  local project='' prof='' lane=human raw='' tags='' board key
+  local project='' prof='' lane=human raw='' tags='' board key PROMOTE_MODEL=''   # promote() reads it; local, so it holds for this call alone
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
