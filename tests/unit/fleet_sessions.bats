@@ -2755,6 +2755,36 @@ empty_submodule_fixture() {
   assert_output 'External/asset library'
 }
 
+@test "end to end: a session on main whose PRs in two repos merged from worktrees reads them merged and finished (ar-291)" {
+  # 2026-11-05 hub/dotfiles:8 sat on main with #920 and private #402 merged, and its row read
+  # nothing merged: no branch PR, finished false, LANDED, so /wind-down auto would have refused.
+  landed_fixture
+  git -C "$SANDBOX/wt" checkout -q -B main origin/main
+  : > "$LEDGER_DIR/prs.tsv"
+  pr_transcript "$SANDBOX/t.jsonl"
+  printf -- '-\t7\tMERGED\tPASS\t-\t-\t2026-11-05T15:30:00Z\n' > "$LEDGER_DIR/prs_o_one.tsv"
+  printf -- '-\t9\tMERGED\tPASS\t-\t-\t2026-11-05T15:37:35Z\n' > "$LEDGER_DIR/prs_o_two.tsv"
+  phases_plan '- [x] Phase 1: queue cards (#7)' '- [x] Phase 2: docs (o/two #9)'
+  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -c '[.bucket, .branch, .pr, .finished, .blockers, .close.verdict]' <<<"$output")" = '["DONE","main","-",true,[],"now"]' ]
+  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, its PRs #7,#9 merged, all 2 phases done' ]
+  # with no plan file the merged PRs alone decide: DONE, never the human's CHAT
+  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" panel "$SANDBOX/wt"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -c '[.bucket, .finished, .blockers, .close.verdict]' <<<"$output")" = '["DONE",true,[],"now"]' ]
+  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, its PRs #7,#9 merged, no plan file, its PR landed' ]
+  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  # negative control: one still open is the row's PR (sibling_pr), unlanded, so not finished
+  printf -- '-\t7\tOPEN\tPASS\t-\t-\n' > "$LEDGER_DIR/prs_o_one.tsv"
+  printf '#!/usr/bin/env bash\ncase "$*" in *"pr view 7 --repo o/one"*) echo %q ;; *) exit 1 ;; esac\n' \
+    '{"headRefOid":"feedface0000beef","statusCheckRollup":[{"conclusion":"SUCCESS"}]}' > "$SANDBOX/bin/gh"
+  XDG_CACHE_HOME="$SANDBOX/xdg" run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -c '[.bucket, .pr, .finished, .blockers]' <<<"$output")" = '["STALLED","7",false,["PR o/one#7 open, CI PASS"]]' ]
+  [ "$(jq -r .close.verdict <<<"$output")" = keep ]
+}
+
 @test "end to end: edits in other worktrees block a clean cwd from reading LANDED or finished" {
   landed_fixture
   printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/gh"
