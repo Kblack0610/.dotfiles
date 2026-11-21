@@ -6999,13 +6999,12 @@ cancel c-old-lane --why canary: superseded by the $week set"
   run grep -c -- --agent "$CQ/add.log"
   assert_output 1
   grep -q 'in any other harness, end the session' "$CQ/add.log"
-  # A lane that spends a Claude account queues at high and another harness's at low: at low the claude
-  # run sat behind every runnable item and never started.
+  # Every lane queues at low, a Claude one too: a canary is a check, never high work (ar-4349).
   run "$SUBJECT" canary queue --harness claude --model haiku --effort max
   assert_success
   assert_equal "$(jq -r .priority "$CQ/canary-greet-$week-codex-sol.json")" low
-  assert_equal "$(jq -r .priority "$CQ/canary-greet-$week.json")" high
-  assert_equal "$(jq -r .priority "$CQ/canary-greet-$week-haiku-ma.json")" high
+  assert_equal "$(jq -r .priority "$CQ/canary-greet-$week.json")" low
+  assert_equal "$(jq -r .priority "$CQ/canary-greet-$week-haiku-ma.json")" low
   # A long id still fits: agent-queue cuts slugs at 40, so the id is shortened, ends in a hash of the
   # whole id, and the lane is kept whole.
   jq '.id = "dispatch-requested-night"' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/long.json"
@@ -7807,7 +7806,8 @@ alert_setup() {
   export TRIAGE_PINS_CMD=pins-stub; echo '{"data":{}}' > "$SANDBOX/pins.json"
   printf '#!/usr/bin/env bash\ncat %q\n' "$SANDBOX/pins.json" > "$SANDBOX/bin/pins-stub"; chmod +x "$SANDBOX/bin/pins-stub"
   watch alertmanager-fleet TRIP -25200 high
-  printf 'TRIP exit 1 (want 0)\nConvergenceDrift deskslim-1\nConvergenceDrift razer-laptop\nHomelabCronJobFailed nas/bark-archive\nTraderRunFailed trader-web walkforward\nfleet=fix firing: ConvergenceDrift deskslim-1; x\n' \
+  # the probe's `page:` line (its trip's level, watch-companion-loop) is not an alert row
+  printf 'TRIP exit 1 (want 0)\nConvergenceDrift deskslim-1\nConvergenceDrift razer-laptop\nHomelabCronJobFailed nas/bark-archive\nTraderRunFailed trader-web walkforward\npage: urgent\nfleet=fix firing: ConvergenceDrift deskslim-1; x\n' \
     > "$TRIAGE_WATCH_STATE/alertmanager-fleet.out"
 }
 

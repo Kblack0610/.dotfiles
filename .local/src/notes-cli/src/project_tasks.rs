@@ -703,25 +703,55 @@ fn open_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
 
 /// The open row on `content` that `text` nearly duplicates: the same type and title words
 /// (hashtags, stamps and words under 3 letters aside, order ignored) of which at least
-/// [`NEAR_DUP`] are shared, each title having 3 or more. A word is split on whitespace only and
-/// keeps its inner `_`, `-` and digits, so templated rows that differ by one name
-/// (`retry_rate` and `no_pr_rate`) stay apart. The area does not count: inbox-triage rewrites a
-/// filed row's area, so a filer that files the same words again would miss its own row
-/// (research-pick's `research(roster):` row, re-scoped to `research(notes):`, filed nightly).
-/// Deterministic, and strict on purpose: a refused near-dup exits 3, which callers read as
-/// already filed, so a false twin would drop a row.
+/// [`NEAR_DUP`] are shared, each title having 3 or more, and the same [`names`]: templated rows
+/// that differ by one unit, watch, id or date (`agentctl@inbox-plan.service` and
+/// `agentctl@nightly-measure.service` failed) are two rows however many words they share. The
+/// area does not count: inbox-triage rewrites a filed row's area, so a filer that files the same
+/// words again would miss its own row (research-pick's `research(roster):` row, re-scoped to
+/// `research(notes):`, filed nightly). Deterministic, and strict on purpose: a refused near-dup
+/// exits 3, which callers read as already filed, so a false twin would drop a row.
 fn near_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
-    let (kind, want) = title_words(&format!("- [ ] {text}"));
+    let line = format!("- [ ] {text}");
+    let (kind, want) = title_words(&line);
     if want.len() < 3 {
         return None;
     }
+    let own = names(&line);
     sheet::open_rows(content)
         .into_iter()
         .map(|(_, l)| l)
         .find(|l| {
             let (k, have) = title_words(l);
-            row_type(&k) == row_type(&kind) && have.len() >= 3 && share(&want, &have) >= NEAR_DUP
+            row_type(&k) == row_type(&kind)
+                && have.len() >= 3
+                && share(&want, &have) >= NEAR_DUP
+                && names(l) == own
         })
+}
+
+/// A row title's name-like tokens, lower-cased with edge punctuation trimmed: a word led by a
+/// letter that also holds a digit, `_`, `@`, `/`, `:`, `-` or `.` (a unit, a watch, a lane, a
+/// build), or an ISO date, so a dated template files one row per date. A token led by a digit or
+/// a sign is a count or reading (`2 checks`, `7d 0.3`, `3/5`, `-3`), so a row whose numbers moved
+/// is still the row.
+fn names(line: &str) -> Words {
+    projects::row_title(line)
+        .to_lowercase()
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| ",;:.()[]\"'`".contains(c)))
+        .filter(|w| {
+            let date = w.len() == 10
+                && w.bytes().enumerate().all(|(i, b)| match i {
+                    4 | 7 => b == b'-',
+                    _ => b.is_ascii_digit(),
+                });
+            let named = w.chars().next().is_some_and(char::is_alphabetic)
+                && w.chars()
+                    .any(|c| c.is_ascii_digit() || "_@/:-.".contains(c));
+            date || named
+        })
+        .map(str::to_string)
+        .collect()
 }
 
 /// The type half of a row's `type(area)`.
@@ -756,7 +786,8 @@ fn share(a: &Words, b: &Words) -> usize {
 /// The open rows of `content` closest to `text`, best first, at most `top`, each with its
 /// [`share`] (under [`MIN_SIMILAR`] is no match: one shared `the` makes none). A tie goes to the row of the
 /// same `type(area)`, then to the one higher on the sheet. The same share as [`near_twin`], so
-/// a row the writer would refuse is listed; only this tie-break reads the area.
+/// every row the writer would refuse is listed; the writer also needs the same [`names`], and only
+/// this tie-break reads the area.
 fn similar<'a>(content: &'a str, text: &str, top: usize) -> Vec<(usize, &'a str)> {
     let (kind, want) = title_words(&format!("- [ ] {text}"));
     let mut hits: Vec<(usize, bool, &str)> = content
@@ -4646,6 +4677,51 @@ Version: v1.2.0
             .is_none(),
             "templated rows for two KPIs are two rows"
         );
+        let unit = "## Tasks\n- [ ] fix(unit): agentctl@inbox-plan.service failed: exit 1, see the journal #size/s\n";
+        assert!(
+            near_twin(
+                unit,
+                "fix(recovery): agentctl@nightly-measure.service failed: exit 1, see the journal #size/s"
+            )
+            .is_none(),
+            "a templated row for another unit files, whatever its area"
+        );
+        assert!(
+            near_twin(
+                unit,
+                "fix(recovery): agentctl@inbox-plan.service failed: exit 1, see the journal #size/s"
+            )
+            .is_some(),
+            "the same unit re-scoped is still the row"
+        );
+        let watch = "## Tasks\n- [ ] check(recovery): watch claude-spend-hourly is red; fix: read where the red is watched, fix the cause #size/s\n";
+        assert!(
+            near_twin(
+                watch,
+                "check(telemetry): watch source-pace is red; fix: read where the red is watched, fix the cause #size/s"
+            )
+            .is_none(),
+            "a hyphenated watch name is a name"
+        );
+        let queue = "## Tasks\n- [ ] check(kpi): queue 12m old, 3 checks failing on agent-runtime; read the dispatch log and fix the oldest cause #size/s\n";
+        assert!(
+            near_twin(
+                queue,
+                "check(kpi): queue 15m old, 3 checks failing on agent-runtime; read the dispatch log and fix the oldest cause #size/s"
+            )
+            .is_some(),
+            "a row whose readings moved is still the row"
+        );
+        let names = |t: &str| {
+            let mut n: Vec<String> = names(&format!("- [ ] {t}")).into_iter().collect();
+            n.sort();
+            n
+        };
+        assert_eq!(
+            names("fix(x): 2 checks, 7d 0.3, 3/5, -3 and 12:30 on b1 via claude:sonnet 2026-11-21"),
+            ["2026-11-21", "b1", "claude:sonnet"],
+            "counts, readings, ratios, signs and times are not names; builds, lanes and dates are"
+        );
     }
 
     // Ids never come back after the row that held the highest one leaves the project.
@@ -5904,7 +5980,7 @@ mod inbox_tests {
             2
         );
         assert!(similar(board, "chore(x): zzz", 10).is_empty());
-        // what it ranks first is what the writer refuses as a near-duplicate
+        // a row the writer refuses as a near-duplicate is one it ranks
         assert!(near_twin(board, "fix(ui): pause menu flickers on resume").is_some());
     }
 

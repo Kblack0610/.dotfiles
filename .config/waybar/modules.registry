@@ -9,6 +9,7 @@
 # Adding a row is not enough - the module's exec must also be wrapped in
 # `modules.sh gate <id>` and given "signal": 10 in config.base / config.pin-full.
 
+needs|Needs you: what only you can do|custom/needs
 agents|Agent sessions by world|custom/ai-agents
 health|System health|custom/health
 projects|Projects: progress per project|custom/projects

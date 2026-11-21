@@ -314,6 +314,25 @@ real_epic_board() {
   [ -n "$(qitem review w)" ] || fail "an answered session on a PR did not go back to review"
 }
 
+# 2026-11-21 (ar-4406): an ask a past Claude left pending on a recycled lane moved each agy trainee's
+# item review -> waiting, so reap_replays kept its replay open for hours and no batch review saw its diff.
+@test "reap never moves a headless harness's item to waiting on a stale ask from its lane, and puts a stuck one back in review" {
+  project game beta "$SANDBOX/repos/game"
+  jq -n '{harnesses: {agy: {launcher: "agy", headless: true, timeout_min: 30, models: {flash: "flash"}}}}' > "$SANDBOX/harnesses.json"
+  HARNESSES="$SANDBOX/harnesses.json"
+  started_item t lab:game-agent-1 run '' human review
+  started_item u lab:game-agent-2 run '' human waiting
+  sed -i 's/^agent: claude$/agent: agy/' "$AGENT_QUEUE_DIR"/review/*-t.md "$AGENT_QUEUE_DIR"/waiting/*-u.md
+  sed -i "s/^started: .*/&\nreview: 2026-11-03T11:00:00Z/" "$AGENT_QUEUE_DIR"/waiting/*-u.md
+  printf 'game-agent-%s\n' 1 2 > "$NOTES_FIXTURE/tmux.sessions.lab"
+  stub agent-panel 'exit 0'
+  stub agent-ask 'for n in 1 2; do printf "a$n\tgame\t\tpending\tquestion\tq?\ta|b\t\t\t\tb\t2026-11-02\tgame-agent-$n\t\t\told-sid-$n\n"; done'
+  run cmd_reap
+  assert_success
+  [ -n "$(qitem review t)" ] || fail "a headless item left review on another session's ask"
+  [ -n "$(qitem review u)" ] || fail "a headless item stuck in waiting did not go back to review"
+}
+
 # 2026-11-05: about a fifth of running items were dead: a shell kept the tmux session after claude
 # exited, or a hub-window item had no session of its own, and reap read both as live forever.
 @test "reap settles an item whose claude exited though its tmux session lives; a parked pane, a live Codex run and a fresh start are kept" {
