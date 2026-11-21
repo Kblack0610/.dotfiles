@@ -200,6 +200,18 @@ bar_lines() {
         printf '%s\t%s\n' "agents/$HOST_ID/summary/bar" "$(jq -c . <<< "$bar")"
 }
 
+# cards_lines <fd> -> the summary/cards lines for `hub cards --json --figures` read from <fd>: Home's
+# cards as the widget document /widget.json serves plus `figures`, their whole numbers by name, so every
+# figure on a snapshot surface is hub-core's own and carries `updated_at`. The document rides as
+# attributes (its `state` is the worst card's level). mqtt2prom drops the text and keeps `figures` as
+# mqtt_figures_<tab>_<label>, which the waybar queue chip reads. No sections, no lines.
+cards_lines() {
+    local fd="$1" cards
+    cards="$(cat <&"$fd")"; exec {fd}<&-
+    jq -e '.sections | arrays' <<< "$cards" >/dev/null 2>&1 &&
+        emit summary cards mdi:view-grid "$cards"
+}
+
 snapshot() {
     local f name st dfd='' ofd='' cfd='' bfd=''
 
@@ -321,17 +333,7 @@ snapshot() {
     [ -n "$ofd" ] && overview_lines "$ofd"
     [ -n "$bfd" ] && bar_lines "$bfd"
 
-    # Cards: `hub cards --json --figures`, Home's cards as the widget document /widget.json serves plus
-    # `figures`, their whole numbers by name, so every figure on a snapshot surface is hub-core's own
-    # and carries `updated_at`. The document rides as attributes (its `state` is the worst card's
-    # level). mqtt2prom drops the text and keeps `figures` as mqtt_figures_<tab>_<label>, which the
-    # waybar queue chip reads.
-    if [ -n "$cfd" ]; then
-        local cards
-        cards="$(cat <&"$cfd")"; exec {cfd}<&-
-        jq -e '.sections | arrays' <<< "$cards" >/dev/null 2>&1 &&
-            emit summary cards mdi:view-grid "$cards"
-    fi
+    [ -n "$cfd" ] && cards_lines "$cfd"
 
     # Interactive sessions: live Claude panes from `agent-panel list`. Glyphs are agent-panel's
     # own: `~` working, `!` needs you, anything else idle. One summary sensor, plus one sensor
