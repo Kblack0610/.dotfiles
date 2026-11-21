@@ -9,7 +9,7 @@
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
 #   fleet-dispatch promote --project P [--profile X] [--agent] [--dispatch] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item; --dispatch makes it a capped pull like dispatch's own
 #   fleet-dispatch pull-after ID     promote, and start unless low, the open rows gated #after/ID: agent-queue runs it when ID's item closes ok
-#   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session; a row whose #ask/ gate the human answered another way is held or dropped
+#   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session; a row whose #ask/ gate the human answered another way is held or dropped, one on a cancelled ask is held (or follows the ask it joined)
 #   fleet-dispatch headroom [--json] how many more queue items could start now, and the margin under each limit
 #   fleet-dispatch idle-cap          rc 1 when live sessions are at the pace target with under DISPATCH_IDLE_CAP_PCT of them busy,
 #                                    naming the idle ones; rc 2 when the fleet state cannot be read (watch fleet-cap-mostly-idle)
@@ -6388,10 +6388,13 @@ cmd_reap() {
 # the work (SETTLE_SKIP_RE) drops the row, the answer as its why. Any other answer only says not this
 # way or not yet, and a drop cannot be undone from here, so the row stays: its gate is swapped for
 # #hold/row-<row id>, an agent-hold the human releases to start it. A cancelled or missing ask, a
-# judge's answer and a human-sheet row stay in dead_holds for a person.
+# judge's answer and a human-sheet row stay in dead_holds for a person. A cancelled ask (nobody
+# decided: agent-ask cancel has no actor) leaves its rows dead the same way (ar-3863, 2026-11-19):
+# one cancelled because it joined an older ask moves its rows' gate to that ask; any other cancel
+# holds the row as a not-yet answer does, so the human sees it in agent-hold and decides.
 SETTLE_SKIP_RE='\b(skip|skipped|drop|cancel|cancelled|abandon|scrap|not needed|no longer needed)\b'
 settle_answered_gates() {
-  local board prof p id t g aid ask st by ans why hold had
+  local board prof p id t g aid ask st by ans why hold had rsn to
   load_gates
   [ -z "$GATES_FAILED" ] || return 0
   board=$(notes board --json 2>/dev/null) || return 0
@@ -6403,11 +6406,25 @@ settle_answered_gates() {
       st=$(sed -n '/^status: */{s///p;q;}' <<<"$ask")
       by=$(sed -n '/^answered_by: */{s///p;q;}' <<<"$ask")
       # The human's answer only, as ask_pending reads it: an empty by is a legacy human answer.
-      [ "$st" = answered ] && { [ -z "$by" ] || [ "$by" = human ]; } || continue
+      if [ "$st" = cancelled ]; then
+        rsn=$(sed -n '/^closed_reason: */{s///p;q;}' <<<"$ask" | tr -cd ' -~' | tr -d '#<>' | cut -c1-160)
+        # join_ask moved the asker's sessions to the older ask: the gate follows, options and all.
+        if [[ $rsn =~ ^joined\ ([A-Za-z0-9_-]+): ]] && to=${BASH_REMATCH[1]} && agent-ask show "$to" </dev/null >/dev/null 2>&1; then
+          if np "$prof" ptask "$p" --agent tag --add "ask/$to${g#ask/$aid}" --remove "$g" "$id" </dev/null >/dev/null 2>&1; then
+            logline "moved $p row $id from #$g to ask $to: ask $aid joined it"
+          else
+            say "settle_answered_gates: could not retag $p row $id from #$g to #ask/$to"
+          fi
+          continue 2
+        fi
+        why="ask $aid was cancelled${rsn:+ ($rsn)}, so nobody decided, and #$g waited on it"
+      else
+        [ "$st" = answered ] && { [ -z "$by" ] || [ "$by" = human ]; } || continue
+      fi
       # The answer goes into a marker or a hold line: one line of plain ASCII, no # (a tag) or <> (a marker end).
       ans=$(sed -n '/^answer: */{s///p;q;}' <<<"$ask" | tr -cd ' -~' | tr -d '#<>' | cut -c1-160)
-      why="the human answered \"$ans\" to ask $aid, and #$g waited on another answer"
-      if grep -Eiq "$SETTLE_SKIP_RE" <<<"$ans"; then
+      [ "$st" = cancelled ] || why="the human answered \"$ans\" to ask $aid, and #$g waited on another answer"
+      if [ "$st" = answered ] && grep -Eiq "$SETTLE_SKIP_RE" <<<"$ans"; then
         if np "$prof" ptask "$p" --agent drop "$id" --why "$why" </dev/null >/dev/null 2>&1; then
           logline "dropped $p row $id: $why"
         else

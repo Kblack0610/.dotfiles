@@ -1275,6 +1275,9 @@ settle_fixture() {
   ask appr1 answered human approval '' 'b: not yet'
   ask judge1 answered judge question credential_or_account 'b: skip it'
   ask gone1 cancelled '' question credential_or_account ''
+  printf 'closed_reason: superseded by #later\n' >> "$d/gone1.md"
+  ask gone2 cancelled '' question credential_or_account ''
+  printf 'closed_reason: joined hold1: the same question\n' >> "$d/gone2.md"
   stub agent-ask '[ "$1" = show ] && cat "$HOME"/.agent/asks/*/"$2".md'
   stub agent-hold 'echo "agent-hold $*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" != show ] || [[ " ${HELD:-} " == *" $2 "* ]]'
 }
@@ -1285,6 +1288,7 @@ settle_fixture() {
   row game agent gm-2 "- [ ] feat(game): posthog counts $T #ask/skip1/a <!-- id:gm-2 -->"
   row game agent gm-3 "- [ ] feat(game): judge answered $T #ask/judge1/a <!-- id:gm-3 -->"
   row game agent gm-4 "- [ ] feat(game): cancelled ask $T #ask/gone1/a <!-- id:gm-4 -->"
+  row game agent gm-9 "- [ ] feat(game): joined ask $T #ask/gone2/a <!-- id:gm-9 -->"
   row game agent gm-5 "- [ ] feat(game): still waits $T #ask/hold1/a <!-- id:gm-5 -->"
   row game agent gm-6 "- [ ] feat(game): use the old key $T #ask/mint1/a <!-- id:gm-6 -->"
   row game agent gm-7 "- [ ] feat(game): approved launch $T #ask/appr1/a <!-- id:gm-7 -->"
@@ -1301,9 +1305,12 @@ settle_fixture() {
   grep -q '^agent-hold set row-gm-1 --kind resource --by fleet-dispatch the human answered "a: keep it held until I say now" to ask hold1' "$NOTES_FIXTURE/calls.log"
   # dropped, with the answer as its why
   grep -q '^- \[x\] feat(game): posthog counts .*dropped: the human answered "b: skip it for now" to ask skip1, and #ask/skip1/a waited on another answer' <<<"$rows"
-  # a judge's answer, a cancelled ask, a gate the answer releases and a human-sheet row are left alone
+  # a cancelled ask holds its row (nobody decided); one that joined another moves the gate to it
+  grep -q '^- \[ \] feat(game): cancelled ask .*#hold/row-gm-4 <!-- id:gm-4 -->' <<<"$rows"
+  grep -q '^- \[ \] feat(game): joined ask .*#ask/hold1/a <!-- id:gm-9 -->' <<<"$rows"
+  grep -q '^agent-hold set row-gm-4 .*ask gone1 was cancelled (superseded by later), so nobody decided' "$NOTES_FIXTURE/calls.log"
+  # a judge's answer, a gate the answer releases and a human-sheet row are left alone
   grep -q '^- \[ \] feat(game): judge answered .*#ask/judge1/a' <<<"$rows"
-  grep -q '^- \[ \] feat(game): cancelled ask .*#ask/gone1/a' <<<"$rows"
   grep -q '^- \[ \] feat(game): still waits .*#ask/hold1/a' <<<"$rows"
   cut -f2 "$NOTES_FIXTURE/rows.game.human" | grep -q '^- \[ \] feat(game): the human'
   grep -q 'held game row gm-1 until agent-hold release row-gm-1' "$FLEET_DISPATCH_DIR/log.md"
