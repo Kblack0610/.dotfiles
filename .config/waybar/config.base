@@ -204,8 +204,8 @@
         "on-click": "$HOME/.config/waybar/audio_input.sh next",
         "on-click-right": "$HOME/.config/waybar/audio_input.sh prev"
     },
-    // Agents: the robot coloured by fleet health, then the live total and its working, ready and need-you parts on the bar; the hover is the fleet-sessions stages, a section
-    // per tmux world (hub, lab) with a line per session, need-you first, capped to fit the screen (ai_agents.sh). 15s because fleet-sessions
+    // Agents: the robot coloured by fleet health, then the live total and its working, ready and need-you parts on the bar; the hover is one sentence, then Need you, Stuck and
+    // Working sections, a row per session from summary/bar, capped by the comms-lint bar channel (ai_agents.sh). 15s because fleet-sessions
     // ticks once a minute. Click opens agent-panel, right-click the hub board on Sessions.
     "custom/ai-agents": {
         "format": "{}",
@@ -306,7 +306,7 @@
         "tooltip": true
     },
     // Queue: Q ready to start and D done today; the hover leads with whether work flows and
-    // what to fix, then Queue, Dispatch and Shepherd numbers (queue.sh). Click opens the hub on Queue.
+    // what to fix, then Up next by name, In flight, Today and Room (queue.sh). Click opens the hub on Queue.
     "custom/queue": {
         "format": "{}",
         "return-type": "json",
