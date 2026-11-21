@@ -26,7 +26,7 @@ pub const STALE_SECS: i64 = 2 * 3600;
 pub const LEGEND: &[(&str, &str)] = &[
     (
         "PRI",
-        "the priority its conf or key declares: must, low, off",
+        "the priority its conf declares (must, low) or its key declares (must, low, off)",
     ),
     (
         "RUNS ON",

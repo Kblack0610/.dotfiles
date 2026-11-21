@@ -72,7 +72,7 @@ setup() {
   assert_output --partial 'agentctl-run --agent judge'
 }
 
-@test "a conf with a ROLE and no PRIORITY, or one outside must|low|off, is invalid; a conf with no ROLE needs none" {
+@test "a conf with a ROLE and no PRIORITY, or one outside must|low (off included), is invalid; a conf with no ROLE needs none" {
   printf 'NAME=judge\nKIND=call\nLANE=observe\nROLE=observe\nDESCRIPTION=j\nEFFECT=shadow\n' \
     > "$HOME/.config/agentctl/agents/judge.conf"
   run "$AGENTCTL_BIN" list
@@ -80,10 +80,22 @@ setup() {
   printf 'PRIORITY=high\n' >> "$HOME/.config/agentctl/agents/judge.conf"
   run "$AGENTCTL_BIN" list
   assert_line --regexp '^  judge +.*invalid PRIORITY=high'
-  sed -i 's/^PRIORITY=high$/PRIORITY=must/' "$HOME/.config/agentctl/agents/judge.conf"
+  sed -i 's/^PRIORITY=high$/PRIORITY=off/' "$HOME/.config/agentctl/agents/judge.conf"
+  run "$AGENTCTL_BIN" list
+  assert_line --regexp '^  judge +.*invalid PRIORITY=off'
+  sed -i 's/^PRIORITY=off$/PRIORITY=must/' "$HOME/.config/agentctl/agents/judge.conf"
   run "$AGENTCTL_BIN" list
   assert_success
   assert_line --regexp '^  judge +call +- +- +j$'
+}
+
+@test "a conf with no ROLE that sets a PRIORITY is invalid: it launches no model, so nothing reads it" {
+  printf 'PRIORITY=low\n' >> "$HOME/.config/agentctl/agents/alpha.conf"
+  run "$AGENTCTL_BIN" list
+  assert_line --regexp '^  alpha +.*invalid PRIORITY=low on a conf with no ROLE'
+  sed -i '/^PRIORITY=/d' "$HOME/.config/agentctl/agents/alpha.conf"
+  run "$AGENTCTL_BIN" list
+  refute_line --partial 'invalid PRIORITY'
 }
 
 @test "a KIND=call agent with a SCHEDULE or no ROLE is invalid (negative control)" {
@@ -219,8 +231,12 @@ skill_fixture() {
 }
 
 @test "list --json gives each runner its priority, route and source, and an invalid conf only its name" {
-  printf 'PRIORITY=must\nHARNESS=codex\nMODEL=gpt-x\n' >> "$HOME/.config/agentctl/agents/alpha.conf"
-  printf 'PRIORITY=low\nSOURCE=codex-core\n' >> "$HOME/.config/agentctl/agents/beta.conf"
+  # A PRIORITY needs a ROLE; this one pins nothing, so each route is its harness's default.
+  mkdir -p "$HOME/.config/agentctl/roles"
+  printf 'ROLE_WRITE=no\nROLE_TASK=no\nROLE_BASH=no\nROLE_MCP=""\nROLE_MCP_DENY=""\nROLE_APPROVE=""\n' \
+    > "$HOME/.config/agentctl/roles/plain.role"
+  printf 'ROLE=plain\nPRIORITY=must\nHARNESS=codex\nMODEL=gpt-x\n' >> "$HOME/.config/agentctl/agents/alpha.conf"
+  printf 'ROLE=plain\nPRIORITY=low\nSOURCE=codex-core\n' >> "$HOME/.config/agentctl/agents/beta.conf"
   printf 'NAME=gamma\nKIND=oneshot\n' > "$HOME/.config/agentctl/agents/gamma.conf"
   run "$AGENTCTL_BIN" list --json
   assert_success
