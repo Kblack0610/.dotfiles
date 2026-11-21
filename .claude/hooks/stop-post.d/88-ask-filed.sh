@@ -5,10 +5,13 @@
 # question left only in the conversation is invisible to all of them: 2026-10-28 a session ended
 # on a `! ssh ...` step for the human and waited unflagged until the human happened to look.
 #
-# Fires when the session has a human attached, its last word asks the human something
-# (`agent-panel asks-human`: a question, a step for them to take, or an open dialog), and it owns
-# no pending ask. Blocks once per turn with the instruction to file it (stop_hook_active guards
-# the loop), the same JSON-on-stdout protocol as 86-focus-reconcile.sh.
+# Fires when the session has a human attached and is in neither plan nor manual mode, its last
+# word asks the human something (`agent-panel asks-human`: a question, a step for them to take,
+# or an open dialog), the turn made no AskUserQuestion or ExitPlanMode call, and it owns no
+# pending ask. Plan mode asks through ExitPlanMode and manual mode forbids board writes
+# (manual-mode-investigate.sh), and a dialog call was already a question the human answered in
+# the window. Blocks once per turn with the instruction to file it (stop_hook_active guards the
+# loop), the same JSON-on-stdout protocol as 86-focus-reconcile.sh.
 #
 # Escape hatch: CLAUDE_SKIP_ASK_GATE=1.
 
@@ -23,11 +26,23 @@ PAYLOAD=""
 [ ! -t 0 ] && PAYLOAD=$(cat 2>/dev/null || true)
 [ -n "$PAYLOAD" ] || exit 0
 [ "$(jq -r '.stop_hook_active // false' <<<"$PAYLOAD" 2>/dev/null)" = true ] && exit 0
+case "$(jq -r '.permission_mode // empty' <<<"$PAYLOAD" 2>/dev/null)" in plan | default) exit 0 ;; esac
 SID=$(jq -r '.session_id // empty' <<<"$PAYLOAD" 2>/dev/null)
 TRANSCRIPT=$(jq -r '.transcript_path // empty' <<<"$PAYLOAD" 2>/dev/null)
 [ -n "$SID" ] && [ -f "$TRANSCRIPT" ] || exit 0
 
 agent-panel asks-human "$TRANSCRIPT" || exit 0
+
+# This turn asked through a dialog: an AskUserQuestion or ExitPlanMode call after the last prompt
+# the human typed (a main-thread user entry that is neither meta nor a tool result). One streaming
+# pass: P marks a prompt, D a dialog call, and the last P resets.
+jq -r 'select((.isSidechain // false) | not)
+  | if .type == "user" and ((.isMeta // false) | not)
+       and (.message.content | if type == "array" then all(.[]; .type != "tool_result") else true end) then "P"
+    elif .type == "assistant"
+       and any(.message.content[]?; .type == "tool_use" and (.name == "AskUserQuestion" or .name == "ExitPlanMode")) then "D"
+    else empty end' "$TRANSCRIPT" 2>/dev/null \
+  | awk '$0 == "P" {f = 0} $0 == "D" {f = 1} END {exit !f}' && exit 0
 
 # Already filed: a pending ask this session owns (the same match fleet-sessions' asks_for makes).
 ASKS_ROOT="${AGENT_ASK_ROOT:-$HOME/.agent/asks}"

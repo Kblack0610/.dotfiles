@@ -34,8 +34,11 @@ record() {
   [[ "$ctx" == *"End with the one lever"* ]]
   # The last rule bullet arrives, so a cut-off that drops the tail goes red.
   [[ "$ctx" == *"gets the \`catch-up\` shape"* ]]
-  [[ "$ctx" == *"Full text: $HOME/.claude/skills/comms-standard/SKILL.md"* ]]
-  # The Why bullet and the next section stay out.
+  [[ "$ctx" == *"Full text, with how to apply each: $HOME/.claude/skills/comms-standard/SKILL.md"* ]]
+  # Only each bullet's lead sentence: the rest, the intro, the Why bullet and the next section stay out.
+  [[ "$ctx" == *"- A question gets an answer first, and the work waits."* ]]
+  [[ "$ctx" != *"Write the finding as soon as"* ]]
+  [[ "$ctx" != *"The reader built the system"* ]]
   [[ "$ctx" != *"- Why:"* ]]
   [[ "$ctx" != *"## Steps"* ]]
 }
