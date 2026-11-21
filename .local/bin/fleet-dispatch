@@ -6493,12 +6493,17 @@ cmd_reap() {
       continue
     fi
     [ -n "$sess" ] || continue
-    [ -n "$seen" ] || { waits=$(waiting_sessions) && seen=1 || seen=unreadable; }
-    [ "$seen" = 1 ] || continue
-    # By the item's own Claude when it records one (claude_gone's rule), else by its tmux session.
     want=running
-    if [ -n "$sids" ] && panel_lists "$agent"; then grep -qxF -f <(printf 'sid:%s\n' $sids) <<<"$waits" && want=waiting
-    else grep -qxF -e "$server/$sess" -e "$sess" <<<"$waits" && want=waiting; fi
+    # A headless harness's run never waits on the human: it asks by requeueing its item (no_human). Its
+    # tmux name is a recycled lane, so a pending ask a past session filed there would read as this item's
+    # and hold its replay open for hours (ar-4406: two agy replays, 6 and 9 hours).
+    if ! headless "$agent"; then
+      [ -n "$seen" ] || { waits=$(waiting_sessions) && seen=1 || seen=unreadable; }
+      [ "$seen" = 1 ] || continue
+      # By the item's own Claude when it records one (claude_gone's rule), else by its tmux session.
+      if [ -n "$sids" ] && panel_lists "$agent"; then grep -qxF -f <(printf 'sid:%s\n' $sids) <<<"$waits" && want=waiting
+      else grep -qxF -e "$server/$sess" -e "$sess" <<<"$waits" && want=waiting; fi
+    fi
     # Parked on its PR and not asking the human: the session is idle at its PR, not working. One
     # that left review/ to ask the human goes back there once answered (its review: stamp says so).
     [ "$want:$state" != running:review ] || continue
