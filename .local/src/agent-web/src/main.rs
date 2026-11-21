@@ -291,7 +291,7 @@ fn router(state: Shared) -> Router {
         .layer(middleware::from_fn_with_state(state.clone(), wrote))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
-    Router::new()
+    let app = Router::new()
         .route("/", get(index))
         .route("/login", get(login))
         .route("/login/key", post(login_key))
@@ -311,12 +311,8 @@ fn router(state: Shared) -> Router {
         // Behind the session sign-in, which each handler checks: never the widget key.
         .route("/widget/setup", get(setup::page))
         .route("/widget/setup/new-key", post(setup::new_key))
-        .merge(api)
-        .layer(middleware::from_fn_with_state(
-            Arc::<str>::from(state.oauth.base()),
-            same_origin,
-        ))
-        .layer(DefaultBodyLimit::max(audit::BODY_MAX))
+        .merge(api);
+    guard_writes(app, state.oauth.base())
         .layer(middleware::from_fn_with_state(state.clone(), audit::layer))
         .layer(middleware::map_response(assets::headers))
         .layer(middleware::from_fn(reqlog::log))
@@ -726,6 +722,17 @@ async fn require_auth(
         Some(_) => next.run(req).await,
         None => (StatusCode::UNAUTHORIZED, "unauthorized").into_response(),
     }
+}
+
+/// The write guards every route sits behind: `same_origin`, and a body limit pinned to the
+/// audit buffer's (axum's own default is the same 2 MiB; this keeps the two one constant). The
+/// one place they are mounted, so the tests that drive this prove what `router` serves.
+fn guard_writes<S: Clone + Send + Sync + 'static>(app: Router<S>, base: &str) -> Router<S> {
+    app.layer(middleware::from_fn_with_state(
+        Arc::<str>::from(base),
+        same_origin,
+    ))
+    .layer(DefaultBodyLimit::max(audit::BODY_MAX))
 }
 
 /// Every write a browser makes comes from this server's own pages. A write naming another
@@ -2734,21 +2741,16 @@ mod tests {
 
     const BASE: &str = "https://agents.example";
 
-    /// One write through the `same_origin` layer and the body limit `router` puts on every route.
+    /// One write through `guard_writes`, the layers `router` puts on every route.
     async fn through_layers(method: &str, headers: &[(&str, &str)], body: &str) -> StatusCode {
         use tower::ServiceExt;
         // A path held in a variable: audit's route test reads every `.route("` literal here.
         let path = "/w";
-        let app = Router::new()
-            .route(
-                path,
-                get(|| async { "ok" }).post(|b: String| async move { b }),
-            )
-            .layer(middleware::from_fn_with_state(
-                Arc::<str>::from(BASE),
-                same_origin,
-            ))
-            .layer(DefaultBodyLimit::max(audit::BODY_MAX));
+        let app = Router::new().route(
+            path,
+            get(|| async { "ok" }).post(|b: String| async move { b }),
+        );
+        let app = guard_writes(app, BASE);
         let mut req = Request::builder().method(method).uri("/w");
         for (k, v) in headers {
             req = req.header(*k, *v);

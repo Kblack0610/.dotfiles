@@ -87,7 +87,7 @@ To recreate the OAuth app: Forgejo -> Settings -> Applications -> OAuth2, confid
 
 - Every write must come from these pages. `same_origin` in `main.rs` refuses a POST, PUT or DELETE whose `Origin` is not `AGENT_WEB_BASE_URL`, and one that carries the session cookie with no `Origin` at all. A write with neither (the Tilecast app, `agent-mqtt-publish`) goes on to its route's key check.
 - A JSON body is a `#[serde(deny_unknown_fields)]` struct, so a mistyped field gets a 422 instead of falling back to its default. Query structs stay lenient.
-- Free text that reaches a pane, an ask or a note goes through `cli::plain_text`: newlines and tabs only, no other control bytes, and a size cap (`MAX_SEND` 64 KB, `MAX_ANSWER` 8 KB, `outbox::MAX_TEXT`, `focus::MAX_NOTE`). Ids, slugs, keys and names are checked against an allowlist or the live state before any command runs, and a command gets them as argv after `--`, never through a shell. `DefaultBodyLimit` is `audit::BODY_MAX`.
+- Free text that reaches a pane, an ask or a note goes through `cli::plain_text`: newlines and tabs only, no other control bytes, and a size cap (`MAX_SEND` 64 KB, `MAX_ANSWER` 8 KB, `outbox::MAX_TEXT`, `focus::MAX_NOTE`). Ids, slugs, keys and names are checked against an allowlist or the live state before any command runs, and a command gets them as argv, never through a shell; free text goes after `--` wherever the CLI takes one. `guard_writes` pins `DefaultBodyLimit` to `audit::BODY_MAX`, the same 2 MiB as axum's default, so the two stay one constant.
 - A new field goes through the validator in the hub-core argv builder for its CLI (`tasks::argv`, `queue::add_argv`). Those validators are the pattern; there is no derive-validation crate.
 
 ## Home-screen widget
