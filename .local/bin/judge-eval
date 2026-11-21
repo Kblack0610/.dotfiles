@@ -534,7 +534,7 @@ promote_ask() {
   if [ "$demoted" = true ]; then
     approve="a session deletes the $type@$level line in the demote list, so the judge answers that cell on its own again"
   else
-    approve="a session sets the $type row in DELAY_RULES to $type@$level by PR (a new row waits 0 minutes, an existing one keeps its wait)"
+    approve="a session sets the $type row in DELAY_RULES to $type@$level by PR, or adds a row at $level above the type's existing one (a new row waits 0 minutes, an existing one keeps its wait)"
   fi
   ctx="DELAY_RULES is the table in ask-judge.conf (the private dotfiles) of the ask types the answer judge answers on its own, each up to an impact level (self: the asking session's own work; repo: one repo others rely on; a row at repo also answers self); $type is one of the policy's ask types. In shadow the judge only records what it would answer, and that cell's would-be answers matched yours on $tp of $n scored asks, a Wilson 95% lower bound of $lo%, past the $bar% bar for $level (PROMOTE_BARS in ask-judge.conf).$([ "$demoted" = true ] && printf ' The cell was demoted after overrides: its line is in %s.' "$AGENT_ASK_DEMOTED") Once live, 1 in N of its answers comes back to you as an audit (AUDIT_RATES), and enough overrides demote it again. Every answer it would have given: judge-eval log."
   ( unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED TMUX TMUX_PANE
