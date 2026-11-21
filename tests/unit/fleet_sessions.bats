@@ -5244,6 +5244,10 @@ JSONL
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = LANDED ]
   [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Phase 2: Tailnet joined' ]
+  # a phase mention that is not "Phase N of <this plan>" does not make a cited path a holder
+  task_item tailnet "fix: reads DONE when phase 2 of the rollout is open; see $SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
   # negative control: the same task with a plan: field is the plan's item and holds every open phase
   printf 'slug: tailnet\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nplan: %s\n---\nExecute it\n' \
     "$SANDBOX/plan.md" > "$HOME/.agent/queue/queued/20261103-100000-tailnet.md"

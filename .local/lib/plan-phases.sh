@@ -83,12 +83,14 @@ PLAN_ITEMS_JQ='def names_plan($p): ($p | split("/") | last) as $b
   | (((.plan // "") | split("/") | last) == $b) or ((.task // "") | contains("/" + $b));
   def holds_plan($p): ($p | split("/") | last) as $b
   | (((.plan // "") | split("/") | last) == $b)
-    or (names_plan($p) and ((.task // "") | test("(?i)\\bphases? [^\\s:,]+( and [^\\s:,]+)* of ")));'
+    or ([(.task // "") | match("(?i)\\bphase [^\\s:,]+ of (the plan )?([~/][^\\n]*)"; "g").captures[1].string
+         | (index("/" + $b)) as $i | select($i != null and (.[:$i] | test("[:;] |\\.md ") | not))] | length > 0);'
 # holds_plan (above): does the item hold phases of plan $p for a session reading its own plan's open
-# phases? Its `plan:` field, or a task that cites the file AND names a phase ("Phase 3 of <plan>.md",
-# "Phases 2 and 3 of ..."). A task that only cites the path (a bug report quoting it, "start from the
-# running plan") holds none: 2026-11-05 hub/dotfiles:5 read DONE with P7a and P7c open because such an
-# item cited its plan (ar-288).
+# phases? Its `plan:` field, or a task whose "Phase N of <plan path>" names a phase of this plan. A task
+# that only cites the path (a bug report quoting it, "Execute <plan>", "start from the running plan"), or
+# mentions a phase elsewhere in its text, holds none: 2026-11-05 hub/dotfiles:5 read DONE with P7a and
+# P7c open because such an item cited its plan (ar-288). Singular only: the plural ("Phases 2 and 3 of
+# ...") is written with a plan: field, and the phase reader (tp, in fleet-sessions) takes one phase.
 
 # plan_gated_rows -> each open board row that waits on a gate (after/, at/, ask/, pr/, hold/, rbw/, nightly/), one
 # queue-item-shaped JSON line ({slug: the row id, task: its brief}) for PLAN_ITEMS_JQ: agent-queue add --plan
