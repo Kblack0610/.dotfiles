@@ -632,6 +632,36 @@ commit_tag() {
   assert_equal "$(jq -c '.releases.web | [.from, (.tags | map(.provenance) | unique)]' "$RELEASE_STATE_DIR/state.json")" '[null,["legacy"]]'
 }
 
+@test "provenance: a pin or image of a bare version is held to the line's own prefixed tag" {
+  ship "start (#2)" web-v1.0.0
+  commit_tag "cut (#4)" web-v1.1.0 cut.yml
+  push_pin v1.1.0
+  export KUBE_IMAGE=reg/web:v1.1.0
+  run "$RS" refresh web
+  assert_success
+  assert_equal "$(row web-prod | jq -c '[.pinned.provenance, .live.provenance, .provenance]')" '["flow","flow","flow"]'
+  # Negative control: the same lookup finds a hand tag's tagger, so its version is outside.
+  commit_tag "hand (#5)" web-v1.2.0 "Kenneth"
+  push_pin v1.2.0
+  export KUBE_IMAGE=reg/web:v1.2.0
+  run "$RS" refresh web
+  assert_success
+  assert_equal "$(row web-prod | jq -c '[.pinned.provenance, .provenance]')" '["outside","outside"]'
+}
+
+@test "provenance: a started line with no cut workflow in the release-cut registry says so" {
+  ship "start (#2)" web-v1.0.0
+  export RELEASE_CUT_CONF="$SANDBOX/no-such.json"
+  run "$RS" refresh web
+  assert_success
+  assert_equal "$(jq -r '.releases.web.note' "$RELEASE_STATE_DIR/state.json")" "no cut_workflow for infra in $SANDBOX/no-such.json"
+  # Negative control: with no releaseFrom there is no line to hold, so no note.
+  jq 'del(.trackers.web.releaseFrom)' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  run "$RS" refresh web
+  assert_success
+  assert_equal "$(jq -r '.releases.web.note' "$RELEASE_STATE_DIR/state.json")" "null"
+}
+
 @test "provenance: refresh fetches the remote's tags, and says so when it cannot" {
   local tmp="$SANDBOX/cutter"
   git clone -q "$ORIGIN" "$tmp" 2>/dev/null
@@ -659,8 +689,7 @@ commit_tag() {
   local d; d="$(row shop-prod | jq -c .deploys)"
   # A hand back-fill of a flow version, a version no cut made, the start, and history before it.
   assert_equal "$(jq -c '.history | map(.provenance)' <<<"$d")" '["outside","flow","outside","flow","legacy"]'
-  assert_equal "$(jq -c '[.history[0].creator, .flow.version, .flow.creator, .flow.at]' <<<"$d")" \
-    "[\"Kblack0610\",\"v1.1.0\",\"github-actions\",$(date -d 2026-11-05T10:00:00Z +%s)]"
+  assert_equal "$(jq -c '.history[0].creator' <<<"$d")" '"Kblack0610"'
 }
 
 @test "provenance: a store channel is flow only while it serves the workflow's own upload" {
@@ -684,9 +713,12 @@ commit_tag() {
   mv "$SANDBOX/s" "$RELEASE_STATE_DIR/state.json"
   assert_equal "$(field web-prod '[.status, .pinned.provenance, .live.provenance, .provenance] | join(" ")')" 'drift legacy legacy legacy'
   run "$RS" check --grace 1
-  assert_success
-  assert_output ok
-  # Negative control: the line starts at the pin, so the same drift is a flow release not reached.
+  # web-prod is legacy on both sides, so it asks nothing; web-preview's pin is a sha, which a
+  # started line cannot place, so that drift still pages.
+  assert_failure
+  refute_output --partial 'web-prod'
+  assert_output --partial 'DRIFT web web-preview: pinned pre-abc'
+  # Negative control: the line starts at the pin, so the same drift is on the line and pages.
   jq '.trackers.web.releaseFrom = "v0.8.0"' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
   "$RS" refresh >/dev/null
   jq '.rows |= map(if .drift_since then .drift_since -= 120 else . end)' "$RELEASE_STATE_DIR/state.json" > "$SANDBOX/s"
@@ -880,10 +912,10 @@ EOF
 }
 
 @test "doctor names a releaseFrom that is not a bare vX.Y.Z" {
-  jq '.trackers.shop.releaseFrom = "latest" | .trackers.lonely.releaseFrom = 5' \
+  jq '.trackers.shop.releaseFrom = "1.0.0" | .trackers.lonely.releaseFrom = 5' \
     "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
   AGENT_DIR="$HOME/agent" run "$REPO_ROOT/.local/bin/project-map-doctor" "$PROJECT_MAP_FILE"
-  assert_output --partial 'trackers.shop.releaseFrom is "latest": give the version the line starts at'
+  assert_output --partial 'trackers.shop.releaseFrom is "1.0.0": give the version the line starts at'
   assert_output --partial 'trackers.lonely.releaseFrom is 5:'
   # Negative control: web's v1.0.0 is a line start.
   refute_output --partial 'trackers.web.releaseFrom'

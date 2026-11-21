@@ -247,7 +247,7 @@ done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "obje
 while IFS= read -r msg; do
   [ -n "$msg" ] && fail "$msg"
 done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "object") | select(.value.releaseFrom != null)
-  | .key as $p | .value.releaseFrom | select(type != "string" or (test("^v?[0-9]+\\.[0-9]+\\.[0-9]+$") | not))
+  | .key as $p | .value.releaseFrom | select(type != "string" or (test("^v[0-9]+\\.[0-9]+\\.[0-9]+$") | not))
   | "trackers.\($p).releaseFrom is \(tojson): give the version the line starts at, vX.Y.Z"' "$MAP_FILE" 2>/dev/null)
 # testWorkflows and buildWorkflows: the workflow files whose junit-* artifacts are the repo's test
 # results (Infra CI Tests, hub_core::junit, which fetches them with gh), and whose runs build what a

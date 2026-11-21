@@ -47,7 +47,6 @@ The workflow that deploys a target records one GitHub Deployment: `environment` 
 | Field | Meaning |
 |---|---|
 | `history` | The newest deployments, each `{version, state, at, url, sha, build, creator, provenance}`; `state` is `ok`, `fail` or GitHub's word for one not finished, `sha` the Deployment's commit (the recorder's `ref`, the tag it shipped), `build` the store build number its payload carried (`{"build": "..."}`), else null, `creator` the login that recorded it, `provenance` as in Provenance |
-| `flow` | The newest successful Deployment whose provenance is `flow`, the release flow's own; null when none is |
 | `last` | The newest that finished, success or not: the LAST DEPLOY column. A failure makes the row amber |
 | `prev` | The version that succeeded before the newest success: the PREV column |
 | `error` | Why the read failed; PREV and LAST DEPLOY then say `not read` |
@@ -66,7 +65,7 @@ A target nothing records under, or a project whose repo is not on GitHub, has an
 | `tags` | The newest `HISTORY_TAGS` (20) tags, each `{tag, version, sha, at, tagger, provenance, prev, prs}`: `sha` is the commit the tag points at, `tagger` an annotated tag's tagger name (null for a lightweight tag), `provenance` as in Provenance, `at` git's creatordate (the tagger date, or a lightweight tag's commit date), `prev` the tag before it by ancestry, the changelog's range start, `prs` the PRs in `prev..tag` by `git_tag_prs`: the `(#N)` subjects (the changelog's own read, at most `HISTORY_PRS`, 500) plus the merge train's members and the train itself, whose `Merge ` subjects the changelog drops |
 | `error` | Why the read failed: `no checkout` |
 | `from` | The `releaseFrom` the tags were placed against (Provenance), null when the project has none |
-| `note` | `tags not fetched` when this refresh could not fetch the checkout's tags, so a tag cut since the last fetch may be absent |
+| `note` | Why a tag may read wrong, `; `-joined: `tags not fetched` when this refresh could not fetch the checkout's tags, so a tag cut since the last fetch may be absent; `no cut_workflow for <repo> in <file>` when the line has started but the release-cut registry names no cut workflow for its repo, so every tag past the start but its own reads `outside` |
 
 `refresh` fetches each checkout's tags once, before it reads history or provenance: `git fetch --no-tags <remote> 'refs/tags/*:refs/tags/*'` from the branch's remote, bounded by the probe timeout and never forced, so a local tag is never moved. A failed fetch leaves the local tags and sets `note`.
 
@@ -82,7 +81,7 @@ Every tag, Deployment, pin, live value and row carries one `provenance`, so a re
 | `legacy` | Before `releaseFrom`, or on a project with none. Grey (`Level::Neutral`): never red, never trips a check |
 | `outside` | After the line starts and not made by the flow: a hand tag, or a value with no x.y.z (a sha, `latest`). At least amber |
 
-`releaseFrom` (`trackers.<p>.releaseFrom`, a bare `vX.Y.Z`) is where a project's line starts; `project-map-doctor` names one that is not. A Deployment is `flow` only when its version is and the release workflow's bot (`github-actions`) recorded it; a person recording a flow version makes it `outside`. A store pin (`deployed: true`) takes its Deployment's provenance, a tag or gitops pin its value's. Live takes its own value's when that is legacy; otherwise a live that equals its pin (`ok`) takes the pin's, and a store channel serving anything else is `outside`, a branch moved by hand. A manual pin takes live's. The row is the stronger side (`outside`, then `flow`, then `legacy`), so a flow pin that live has not reached still pages its drift.
+`releaseFrom` (`trackers.<p>.releaseFrom`, a bare `vX.Y.Z`) is where a project's line starts; `project-map-doctor` names one that is not. A Deployment is `flow` only when its version is and the release workflow's bot (`github-actions`) recorded it; a person recording a flow version makes it `outside`. A value (a pin, an image, a store build) is matched by version to the line's own tag, release or build, so `1.4.0` is held to the tagger of `web-v1.4.0`. A store pin (`deployed: true`) takes its Deployment's provenance, a tag or gitops pin its value's. Live takes its own value's when that is legacy; otherwise a live that equals its pin (`ok`) takes the pin's, and a store channel serving anything else is `outside`, a branch moved by hand. A manual pin takes live's. The row is the stronger side (`outside`, then `flow`, then `legacy`), so a flow pin that live has not reached still pages its drift.
 
 `release-state check` skips a row legacy on both sides, and `hub releases check` skips a legacy tag and a lab version below `releaseFrom` (every lab version, on a project with none). A tripped telemetry watch on a legacy channel still counts: the fault is in what runs, whoever released it. On the Releases tab a legacy channel is grey and counts under the card's `Legacy` part, never under a look.
 

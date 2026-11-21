@@ -43,7 +43,7 @@
 #   git_prev_tag      <repo> <name> <scoped> <glob> <tag>            -> the release before <tag>
 #   git_tag_changes   <repo> <prev> <tag> [pathfilter] [limit]       -> N subject lines
 #   git_tags_since    <repo> <name> <scoped> <glob> <YYYY-MM-DD>     -> tags created that day or later, oldest version first
-#   git_tag_at        <repo> <tag>                                   -> "<sha> <epoch>"
+#   git_tag_at        <repo> <tag>                                   -> "<sha> <epoch> [<tagger>]"
 #   git_tag_date      <repo> <tag>                                   -> YYYY-MM-DD
 #   git_version_ge    <a> <b>                                        -> 0 when a >= b
 #   git_version_max   < versions                                     -> the highest line

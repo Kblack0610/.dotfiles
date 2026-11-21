@@ -612,3 +612,8 @@ test("a release's page draws its cut as a pipeline, then every cut with each wor
   assert.match(b, /<td class="bad">red<\/td><td class="">green<\/td>/);
   relpage = {};
 });
+
+test("a legacy release's neutral level reads muted, apart from ok and from attention", () => {
+  const cls = (l) => vm.runInContext(`levelClass(${JSON.stringify(l)})`, ctx);
+  assert.deepEqual(["neutral", "ok", "warn", "bad"].map(cls), ["muted", "", "warn", "bad"]);
+});
