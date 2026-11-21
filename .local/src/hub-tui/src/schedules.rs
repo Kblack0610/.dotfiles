@@ -132,7 +132,7 @@ fn row(r: &Schedule, p: Palette, now: i64, name: usize) -> Vec<Cell> {
             _ if r.state == JobState::Off => p.dim(),
             Level::Bad => p.bad(),
             Level::Warn => p.warn(),
-            Level::Ok => Style::default(),
+            Level::Ok | Level::Neutral => Style::default(),
         },
     );
     // The day alone for an older time; the pane has the clock.

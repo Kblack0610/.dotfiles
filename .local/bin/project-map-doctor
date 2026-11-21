@@ -241,6 +241,14 @@ done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "obje
   | .key as $p | .value.buildTags
   | if type != "array" or length == 0 then "trackers.\($p).buildTags is not a list of globs"
     else .[] | select(type != "string" or . == "" or test("\\s")) | "trackers.\($p).buildTags has \(tojson): each entry is one glob, no spaces" end' "$MAP_FILE" 2>/dev/null)
+# releaseFrom: the version a project's release line starts at (release-state, Provenance). Tags
+# compare to it by version and by its x.y.z, so one that is not a bare vX.Y.Z would read every
+# tag of the line wrong without saying so.
+while IFS= read -r msg; do
+  [ -n "$msg" ] && fail "$msg"
+done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "object") | select(.value.releaseFrom != null)
+  | .key as $p | .value.releaseFrom | select(type != "string" or (test("^v[0-9]+\\.[0-9]+\\.[0-9]+$") | not))
+  | "trackers.\($p).releaseFrom is \(tojson): give the version the line starts at, vX.Y.Z"' "$MAP_FILE" 2>/dev/null)
 # testWorkflows and buildWorkflows: the workflow files whose junit-* artifacts are the repo's test
 # results (Infra CI Tests, hub_core::junit, which fetches them with gh), and whose runs build what a
 # person or a deploy takes (the run page's Artifacts, hub_core::run_page). Each is a path in the

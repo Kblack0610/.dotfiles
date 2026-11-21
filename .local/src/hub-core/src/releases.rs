@@ -222,6 +222,9 @@ pub struct Release {
     pub telemetry: Vec<Watch>,
     pub deps: Vec<String>,
     pub probed_at: Option<i64>,
+    /// The channel's provenance, the stronger of its two sides (`outside`, `flow`, `legacy`):
+    /// a legacy row is grey and never needs a look, an outside one needs one.
+    pub provenance: Option<String>,
     /// The worst of the status word, the watches and a failed last deploy: what orders the
     /// channel within its app.
     #[serde(skip_deserializing)]
@@ -270,7 +273,7 @@ impl Release {
 
     /// Nothing about this channel asks for attention.
     pub fn green(&self) -> bool {
-        self.level == Level::Ok
+        self.level.calm()
     }
 
     /// The collector could not read this channel: a probe or a credential failed.
@@ -521,7 +524,7 @@ fn app_build(r: &Run, tag: &str) -> AppBuild {
 impl App {
     /// Nothing about this app asks for attention.
     pub fn green(&self) -> bool {
-        self.level == Level::Ok
+        self.level.calm()
     }
 }
 
@@ -832,6 +835,21 @@ fn settle(mut rows: Vec<Release>) -> Vec<Release> {
             .unwrap_or_default();
         r.deploy_level = r.deploys.level();
         r.level = r.status_level.min(r.watch_level).min(r.deploy_level);
+        match r.provenance.as_deref() {
+            // Grey, never red: a release from before the line starts gives no verdict on its
+            // status or deploy. A tripped watch is a fault in what runs, so it still says.
+            Some("legacy") => {
+                r.status_level = Level::Neutral;
+                r.deploy_level = Level::Neutral;
+                r.level = if r.watch_level.calm() {
+                    Level::Neutral
+                } else {
+                    r.watch_level
+                };
+            }
+            Some("outside") => r.level = r.level.min(Level::Warn),
+            _ => {}
+        }
         r.label = if r.implicit {
             r.channel.clone()
         } else {
@@ -1410,6 +1428,58 @@ mod tests {
         let r = read(&snapshot(vec![row("a", "a", "melting")]));
         assert_eq!(r.rows[0].level, Level::Warn);
         assert!(!r.rows[0].green());
+    }
+
+    #[test]
+    fn a_legacy_drift_is_grey_and_calm_and_one_off_the_flow_is_at_least_amber() {
+        let marked = |project: &str, status: &str, provenance: &str| {
+            let mut v = row(project, project, status);
+            v["provenance"] = provenance.into();
+            v
+        };
+        let r = read(&snapshot(vec![
+            marked("old", "drift", "legacy"),
+            marked("hand", "ok", "outside"),
+            marked("handdrift", "drift", "outside"),
+            marked("cut", "drift", "flow"),
+            row("snap", "snap", "drift"),
+        ]));
+        let level = |id: &str| r.rows.iter().find(|x| x.id == id).unwrap();
+        let old = level("old");
+        assert_eq!(
+            (old.level, old.status_level, old.deploy_level),
+            (Level::Neutral, Level::Neutral, Level::Neutral)
+        );
+        assert!(old.green(), "a grey row never asks for attention");
+        // Made by hand after the line starts: amber though every fact agrees, red when they do not.
+        assert_eq!(level("hand").level, Level::Warn);
+        assert_eq!(level("handdrift").level, Level::Bad);
+        // Negative controls: the flow's own drift, and a row from before provenance, stay red.
+        assert_eq!(level("cut").level, Level::Bad);
+        assert_eq!(level("snap").level, Level::Bad);
+        let card = crate::cards::releases(&r);
+        assert_eq!(
+            card.parts
+                .iter()
+                .map(|p| (p.label.as_str(), p.value.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("Drift", "3"),
+                ("To check", "1"),
+                ("Unread", "0"),
+                ("Legacy", "1")
+            ]
+        );
+        assert!(
+            card.first.iter().all(|f| f.text != "old"),
+            "{:?}",
+            card.first
+        );
+        // A tripped watch on a legacy channel is a fault in what runs: it still shows.
+        let mut tripped = marked("old", "drift", "legacy");
+        tripped["telemetry"] = serde_json::json!([{"watch": "w", "state": "TRIP", "since": 3}]);
+        let r = read(&snapshot(vec![tripped]));
+        assert_eq!(r.rows[0].level, Level::Bad);
     }
 
     #[test]
