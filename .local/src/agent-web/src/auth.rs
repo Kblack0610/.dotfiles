@@ -52,7 +52,7 @@ pub fn random_hex(bytes: usize) -> Result<String> {
 }
 
 /// The home-screen widget's key (`widget.token` beside the sessions file, mode 600): it opens
-/// `/widget` and `/widget.json` and nothing else. Read on each request, so a rewrite rotates it
+/// `/widget.json` and the two push routes and nothing else. Read on each request, so a rewrite rotates it
 /// and a delete revokes it with no restart. None when the file is missing or empty.
 pub fn widget_token() -> Option<String> {
     read_token(&widget_token_path())
