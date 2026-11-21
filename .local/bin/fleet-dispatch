@@ -164,6 +164,8 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/end-reasons.sh"
 # shellcheck source=../lib/wake-pace.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/wake-pace.sh"
+# shellcheck source=../lib/prom-textfile.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
 LEVEL=$(machine_level)
 read -r PER_PASS MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH_PER_PASS" DISPATCH_MAX_LOAD "$DISPATCH_MAX_LOAD")
 : "${DISPATCH_T3_GATE:=make -C tests test-fast, then the shell tests CI on the PR green (the ui tier runs only in CI, never on this machine)}"
@@ -223,6 +225,8 @@ MATRIX="${BENCH_MATRIX:-$HOME/.config/fleet-bench/matrix.json}"   # fleet-bench'
 IDLE="$DIR/idle"   # "<epoch> <percent>": the last real_idle sample, which a pass's gates reuse for DISPATCH_IDLE_WINDOW seconds and cmd_starved for DISPATCH_STARVED_MIN
 HEADROOM="$DIR/headroom.json"   # the last real pass's `headroom --json`, which stats publishes
 CANDIDATES="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/candidates.jsonl"   # the last real pass's `suggest --json`, which the hub Candidates fold reads (hub_core::queue::candidates); derived, so out of the autocommitted ~/.agent
+NEXT_PROM=fleet_dispatch_next.prom   # the top DISPATCH_NEXT_SHOWN cleared candidates, as labels, for the queue chip (next_prom)
+: "${DISPATCH_NEXT_SHOWN:=3}"   # rows the queue chip's hover names as up next; the human asked for 3 (ar-4328)
 TRAINEE_DIR="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/trainee"   # <slug>.patch and <slug>.base: the diff a trainee run left and its base, which a batch review applies (cmd_trainee_review, trainee_batch_start)
 PROVIDER_ENDS="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/provider-ends.tsv"   # <slug>@<last session id> TAB <source> TAB <hold until epoch, 0 for a run that did not end on the provider>: each recent ended run provider_hold_scan classified, so a run's end is read once
 
@@ -1909,8 +1913,34 @@ candidates_write() {
   if ! cmd_suggest --json > "$CANDIDATES.$$"; then why="suggest failed"
   elif [ ! -s "$CANDIDATES.$$" ] && ! notes projects --stats --json >/dev/null 2>&1; then why="notes did not answer"
   fi
-  if [ -z "$why" ]; then mv -f "$CANDIDATES.$$" "$CANDIDATES"; return 0; fi
+  if [ -z "$why" ]; then mv -f "$CANDIDATES.$$" "$CANDIDATES"; next_publish; return 0; fi
   rm -f "$CANDIDATES.$$"; say "suggest --write: $why, the candidates snapshot is left as it was"; return 1
+}
+
+# next_prom -> the textfile lines for the queue chip's "up next": the first DISPATCH_NEXT_SHOWN rows of
+# the snapshot that no reason blocks, in rank order (the order a pass pulls them), one labelled series
+# each, plus how many are cleared in all. The chip reads Prometheus, which holds numbers only (mqtt2prom
+# drops a string attribute), so the key, project and title travel as labels on a textfile, as
+# claude-acct's room reasons do. A title loses its #tags and comments and is cut at 70 characters.
+next_prom() {
+  jq -rs --argjson n "$DISPATCH_NEXT_SHOWN" "$PROM_JQ"'
+    [.[] | select((.blocked // []) | length == 0)] as $c
+    | gauge("fleet_dispatch_next_cleared"; "Candidate rows no gate or judge blocks."; [{}, ($c | length)]),
+      gauge("fleet_dispatch_next"; "The next rows dispatch will pull, in rank order; the labels name each.";
+        $c[:$n] | to_entries[] | [{rank: (.key + 1), project: .value.project, key: .value.key,
+          title: (.value.text // "" | gsub("<!--.*?-->"; "") | gsub(" ?#[^ ]+"; "") | gsub("^ +| +$"; "") | .[0:70])}, 1])' "$CANDIDATES"
+}
+
+# next_publish -- put next_prom in the collector's textfile. Dispatch is a singleton, so only the lease
+# holder publishes: another machine removes its copy (a hand `suggest --write` there would otherwise
+# name rows the holder may not pull), and one that cannot tell leaves it. A machine with no collector
+# skips, and a failed write leaves the last file, which the chip drops when it is older than a pass.
+next_publish() {
+  local d rc=0
+  fleet-lease held >/dev/null 2>&1 || rc=$?
+  if [ "$rc" = 1 ]; then d=$(prom_textfile_target) && rm -f "$d/$NEXT_PROM"; return 0; fi
+  [ "$rc" = 0 ] || return 0
+  prom_textfile "$NEXT_PROM" next_prom || say "could not write $NEXT_PROM"
 }
 
 # candidates_drop <project> <lane> <key> -- take a promoted row out of the snapshot now, so the fold

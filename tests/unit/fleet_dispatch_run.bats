@@ -954,3 +954,37 @@ add_sessions() {
   [ -n "$(qitem running fix-menu)" ] || fail "the claude item behind it did not start"
   assert_equal "$(outcome)" WORKED
 }
+
+# The queue chip's "up next" (ar-4328): the first rows of the snapshot nothing blocks, as labels on a
+# textfile, because the feed the chip reads holds numbers only.
+@test "next_publish: the lease holder writes the top 3 cleared rows as labels; another machine removes its copy; one that cannot tell keeps it" {
+  export PROM_TEXTFILE_DIR="$SANDBOX/tf"; mkdir -p "$PROM_TEXTFILE_DIR"
+  out="$PROM_TEXTFILE_DIR/fleet_dispatch_next.prom"
+  mkdir -p "${CANDIDATES%/*}"
+  {
+    echo '{"project":"game","key":"gm-1","text":"blocked row","blocked":["area held by a queue item"]}'
+    echo '{"project":"dotfiles","key":"ar-1","text":"first \"row\" #high #size/s <!-- id:ar-1 -->","blocked":[]}'
+    echo '{"project":"game","key":"gm-2","text":"second row","blocked":[]}'
+    echo '{"project":"game","key":"gm-3","text":"third row","blocked":[]}'
+    echo '{"project":"game","key":"gm-4","text":"fourth row","blocked":[]}'
+  } > "$CANDIDATES"
+  run next_publish
+  assert_success
+  run cat "$out"
+  assert_line 'fleet_dispatch_next_cleared 4'
+  assert_line 'fleet_dispatch_next{rank="1",project="dotfiles",key="ar-1",title="first \"row\""} 1'
+  assert_line 'fleet_dispatch_next{rank="3",project="game",key="gm-3",title="third row"} 1'
+  refute_output --partial 'gm-1'
+  refute_output --partial 'gm-4'
+  # no cleared row: the count says 0 and no series is left behind
+  echo '{"project":"game","key":"gm-1","text":"blocked row","blocked":["x"]}' > "$CANDIDATES"
+  run next_publish
+  run cat "$out"
+  assert_line 'fleet_dispatch_next_cleared 0'
+  refute_output --partial 'fleet_dispatch_next{'
+  # a machine that cannot tell leaves the file; one that is not the holder removes it
+  FLEET_LEASE_STUB_RC=2 run next_publish
+  [ -s "$out" ]
+  FLEET_LEASE_STUB_RC=1 run next_publish
+  [ ! -e "$out" ]
+}

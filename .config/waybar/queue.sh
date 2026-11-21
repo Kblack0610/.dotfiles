@@ -6,7 +6,10 @@
 # A deep queue that is moving is no fault. The hover (waybar's tooltip, Noctalia's dropdown) leads
 # with the verdict, the worst exception or "flowing"; each other exception follows on one line
 # with its fix (DO below), and a gate said there is not said again. Then aligned number tables
-# (Queue, Dispatch, Shepherd) and an "as of" stamp naming the pass and host they come from.
+# (Queue, Dispatch, Shepherd) and an "as of" stamp naming the pass and host they come from. An
+# "Up next" block between Queue and Dispatch names the first 3 rows a pass pulls (key, project,
+# title): the lease holder's fleet_dispatch_next.prom, written by `fleet-dispatch` after each
+# pass (next_prom) as labels, since the feed holds numbers only. Absent until that file is fresh.
 # Everything is read from Prometheus (summary/dispatch from `fleet-dispatch stats`, the
 # fleet_dispatch runner, the queue-starved watch, summary/shepherd), live topics only
 # (cc:agents_topic_live), so the laptop thin client reads the same. Prometheus unreadable reads ?
@@ -53,6 +56,9 @@ head="<b>Queue:</b>"
 # written lately: they name which account refuses and why when the account gate holds dispatch.
 q='({__name__=~"mqtt_.+", topic=~"agents_.+_(summary_dispatch|runner_fleet_dispatch|watch_queue_starved|summary_shepherd)"} and on (topic) cc:agents_topic_live)'
 q+=" or (claude_account_room_reason and on (instance) (time() - node_textfile_mtime_seconds{file=~\".*/claude_acct.prom\"} < $ROOM_LATE_SECS))"
+# Up next: the lease holder's fleet_dispatch_next.prom (fleet-dispatch next_prom), labels only, read
+# while it is younger than the passes that rewrite it; an older one is no answer.
+q+=" or ({__name__=~\"fleet_dispatch_next(_cleared)?\"} and on (instance) (time() - node_textfile_mtime_seconds{file=~\".*/fleet_dispatch_next.prom\"} < $PASS_LATE_SECS))"
 
 if ! raw="$(prom_q "$q")"; then
   emit "$(paint "$C_YEL" 'Q?')" "$head $(paint "$C_YEL" "cannot read $PROM_URL")" warn
@@ -106,7 +112,7 @@ row() {
 }
 table() { printf -v "$1" '<tt>%s</tt>' "$rows"; rows=''; }
 
-qtab='' dtab='' dhead='' stab='' shead=''
+qtab='' dtab='' dhead='' stab='' shead='' ntab='' nhead=''
 ready="$(get dispatch.runnable)"
 pass="$(get dispatch.last_pass_epoch)" pass_age='' pass_ago=-
 [ -n "$pass" ] && pass_age=$((now - pass)) pass_ago="$(prom_dur "$pass_age")"
@@ -233,6 +239,26 @@ else
   table dtab
 fi
 
+# Up next: the first rows a pass pulls, from the holder's fleet_dispatch_next.prom. Left out when the
+# feed has no cleared count (no snapshot yet, or a stale one); "none" when nothing is cleared.
+cleared="$(jq -r '[.data.result[] | select(.metric.__name__ == "fleet_dispatch_next_cleared") | .value[1] | tonumber | floor] | max // empty' <<< "$raw")"
+if [ -n "$cleared" ]; then
+  # Rank order; a second scrape of the same rank is one row. Tab-separated: rank, key, project, title.
+  nrows="$(jq -r '[.data.result[] | select(.metric.__name__ == "fleet_dispatch_next") | .metric]
+      | unique_by(.rank) | sort_by(.rank | tonumber) | .[] | [.rank, .key, .project, .title] | @tsv' <<< "$raw")"
+  nhead="<b>Up next:</b> $([ -n "$nrows" ] && echo "$(wc -l <<< "$nrows") of $cleared cleared" || echo "none cleared")"
+  while IFS=$'\t' read -r nr nk np nt; do
+    [ -n "$nk" ] || continue
+    # The title takes what is left of the 90 characters the dropdown shows on one row.
+    room=$((88 - ${#nr} - ${#nk} - ${#np} - 6)); ((room < 12)) && room=12
+    # A character pango_esc widens to an entity counts as its entity, so cut until the escaped title fits.
+    nt="${nt:0:room}" ne="$(pango_esc "$nt")"
+    while ((${#ne} > room)) && [ -n "$nt" ]; do nt="${nt%?}" ne="$(pango_esc "$nt")"; done
+    rows+="${rows:+$'\n'}  $nr $(pango_esc "$nk")  $(pango_esc "$np")  $ne"
+  done <<< "$nrows"
+  [ -z "$rows" ] || table ntab
+fi
+
 # Shepherd: summary/shepherd, left out when it is not on the feed.
 if [ -n "$(get shepherd.due)" ]; then
   s() { local x; x="$(get "shepherd.$1")"; printf '%s' "${x:--}"; }
@@ -258,6 +284,7 @@ else
   done
 fi
 [ -n "$qtab" ] && tip+=$'\n'"$qtab"
+[ -n "$nhead" ] && tip+=$'\n\n'"$nhead${ntab:+$'\n'$ntab}"
 [ -n "$dtab" ] && tip+=$'\n\n'"$dhead"$'\n'"$dtab"
 [ -n "$stab" ] && tip+=$'\n\n'"$shead"$'\n'"$stab"
 src="$(get src.host)"

@@ -63,7 +63,16 @@ for a in sys.argv[2:]:
 res = []
 for k, v in s.items():
     host, inst = "h1", "i1"
-    pre = k.split(":")[0] if ":" in k else ""
+    if k.startswith("next:"):
+        # next:cleared is the cleared count; next:<rank>|<key>|<project>|<title> one up-next row (textfile labels)
+        p = k[5:].split("|")
+        if p[0] == "cleared":
+            res.append({"metric": {"__name__": "fleet_dispatch_next_cleared", "instance": "i1"}, "value": [0, str(v)]})
+        else:
+            res.append({"metric": {"__name__": "fleet_dispatch_next", "instance": "i1", "rank": p[0], "key": p[1],
+                                   "project": p[2], "title": p[3]}, "value": [0, str(v)]})
+        continue
+    pre =k.split(":")[0] if ":" in k else ""
     if pre not in ("", "dup", "acct"): host, inst, k = pre, "i-" + pre, k[len(pre) + 1:]
     if k.startswith("dup:"): inst, k = "i9", k[4:]
     if k.startswith("acct:"):
@@ -495,4 +504,42 @@ as of 03:43 (3m ago), the last dispatch pass, on h1-main"
   run "$MODULE"
   run tip
   assert_output --partial "  r&amp;d$(printf "%17s" "")no room: pace"
+}
+
+# Up next (ar-4328): the lease holder's fleet_dispatch_next.prom, labels on a textfile because the
+# feed carries numbers only. The query drops a file older than a pass; the stub cannot, so it is
+# pinned in the query text below.
+@test "up next lists the cleared rows in rank order under the Queue table, before Dispatch" {
+  feed 'next:cleared=126' 'next:2|ar-2|game|second row=1' 'next:1|ar-1|dotfiles|first row=1' 'next:3|ar-3|trader|third row=1'
+  run "$MODULE"
+  run tip
+  assert_line "<b>Up next:</b> 3 of 126 cleared"
+  assert_line "<tt>  1 ar-1  dotfiles  first row"
+  assert_line "  2 ar-2  game  second row"
+  assert_line "  3 ar-3  trader  third row</tt>"
+  [ "$(grep -n 'Up next' <<< "$output" | cut -d: -f1)" -lt "$(grep -n 'Dispatch:' <<< "$output" | cut -d: -f1)" ]
+}
+
+@test "up next says none cleared when the snapshot has no cleared row, and is left out with no snapshot" {
+  feed 'next:cleared=0'
+  run "$MODULE"
+  run tip
+  assert_line "<b>Up next:</b> none cleared"
+  feed
+  run "$MODULE"
+  run tip
+  refute_output --partial "Up next"
+}
+
+@test "an up next title is escaped and cut so no hover line passes 90 characters" {
+  feed 'next:cleared=9' "next:1|ar-100|agent-runtime|fix <b>&</b> $(printf 'x%.0s' {1..80})=1"
+  run "$MODULE"
+  run tip
+  assert_output --partial "fix &lt;b&gt;&amp;&lt;/b&gt;"
+  assert_equal "$(sed 's/<[^>]*>//g' <<< "$output" | awk 'length > 90')" ""
+}
+
+@test "the query reads the up next textfile only while it is younger than a pass" {
+  run grep -c 'fleet_dispatch_next.prom.*< \$PASS_LATE_SECS' "$MODULE"
+  assert_output 1
 }
