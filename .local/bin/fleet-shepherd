@@ -363,6 +363,7 @@ cmd_due() {
   if [ -n "$lift" ] && [ "$verdict" = CLEAR ]; then
     out+="${out:+$'\n'}pace: hold $lift while the machine reads CLEAR"
   elif [ -z "$holds" ] && [ "$verdict" = HOLD ]; then
+    # FLEET_SHEPHERD_URGENT_RE matches this text: reword both together.
     out+="${out:+$'\n'}pace: machine reads HOLD with no hold set"
   elif [ -z "$holds" ] && [ "$verdict" = CLEAR ]; then
     # The pace line owns only why=park parks (a missing why is a park); any other why's owner resumes it.
