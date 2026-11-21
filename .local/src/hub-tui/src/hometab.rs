@@ -746,9 +746,10 @@ mod tests {
     #[test]
     fn the_cards_lead_and_the_session_counts_head_running() {
         let out = text(&home());
-        // A card per tab leads, reading until its tab answers; no Flow, Health or Spend line.
-        assert!(out.starts_with("SESSIONS  - reading"), "{out}");
-        for gone in ["FLOW", "HEALTH", "SPEND"] {
+        // The cards lead, Done today first, reading until each read answers; no Flow or Spend
+        // line (HEALTH is now a card's title, so it is no longer a sign of the old Health line).
+        assert!(out.starts_with("DONE TODAY  - reading"), "{out}");
+        for gone in ["FLOW", "SPEND"] {
             assert!(!out.contains(gone), "{gone}: {out}");
         }
         let head =
@@ -779,16 +780,18 @@ mod tests {
     fn the_grid_is_two_across_at_eighty_and_four_from_one_sixty() {
         let all = hub_core::cards::grid(&Default::default());
         let at80 = grid_text(&all, 80);
-        // Nine cards, two across: five rows of four lines and a blank, the last card alone.
+        // Ten cards, two across: five rows of four lines and a blank.
         assert_eq!(at80.len(), 5 * 5, "{at80:#?}");
-        assert!(at80[0].starts_with("SESSIONS  - reading") && at80[0].contains("QUEUE  - reading"));
-        assert_eq!(at80[0].find("QUEUE"), Some(39 + 2), "{:?}", at80[0]);
-        assert!(at80[20].starts_with("PROJECTS"));
+        assert!(
+            at80[0].starts_with("DONE TODAY  - reading") && at80[0].contains("HEALTH  - reading")
+        );
+        assert_eq!(at80[0].find("HEALTH"), Some(39 + 2), "{:?}", at80[0]);
+        assert!(at80[20].starts_with("SCHEDULES") && at80[20].contains("PROJECTS"));
         assert!(at80.iter().all(|l| l.chars().count() <= 80));
         let at160 = grid_text(&all, 160);
         assert_eq!(at160.len(), 3 * 5);
-        assert!(at160[0].contains("ALERTS") && at160[5].contains("INFRA"));
-        assert!(at160[10].starts_with("PROJECTS"));
+        assert!(at160[0].contains("SESSIONS") && at160[5].contains("ALERTS"));
+        assert!(at160[10].starts_with("SCHEDULES"));
         assert!(at160.iter().all(|l| l.chars().count() <= 160));
     }
 

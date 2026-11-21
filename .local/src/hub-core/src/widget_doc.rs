@@ -499,6 +499,8 @@ mod tests {
             sessions: Some(Ok(&sessions[..])),
             board: Some(Ok(&board)),
             queue: Some(Ok(&queue)),
+            merged: Some(&[]),
+            now: 0,
             pipeline: None,
             alerts: Some(Ok(&alerts)),
             infra: Some(Ok(&infra)),
@@ -510,7 +512,7 @@ mod tests {
         let home = crate::home::Home::default();
         let mut all = vec![cards::needs(&home, 0), cards::main_red(&home)];
         all.extend(cards::grid(&reads));
-        all.push(Card::reading("infra", "Infra"));
+        all.push(Card::reading("health", "Health"));
         assert_eq!(all.len(), cards::ORDER.len() + 1);
         let d = document(&all, &[], 0, None);
         for (c, s) in all.iter().zip(&d.sections) {

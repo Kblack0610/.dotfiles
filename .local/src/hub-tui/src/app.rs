@@ -3680,6 +3680,8 @@ impl App {
     /// says reading until its tab's read answers.
     fn home_cards(&self, infra: Option<&Infra>) -> Vec<hub_core::cards::Card> {
         let projects = self.projects.as_ref().map(|_| self.cards());
+        // A stat while the day-log record is unchanged (`phone::merged_today` keeps its parse).
+        let merged = hub_core::phone::merged_today();
         hub_core::cards::grid(&hub_core::cards::Reads {
             sessions: self.controls.all().map(Ok),
             board: self
@@ -3687,6 +3689,8 @@ impl App {
                 .as_ref()
                 .map(|t| t.as_ref().map_err(String::as_str)),
             queue: self.queue.as_ref().map(Ok),
+            merged: merged.as_deref(),
+            now: jobs::now(),
             pipeline: self.pipeline.as_ref(),
             alerts: self.alerts.as_ref().map(Ok),
             infra: infra.map(Ok),
@@ -7528,15 +7532,12 @@ mod tests {
             "{s}"
         );
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
-        // cc:red_now is a need; the Infra card counts the machines from the same read.
+        // The Health card counts the machines from the same read.
         // cc:red_now is agent work: Home routes it to Alerts, so Needs you does not list it (ar-4018).
         assert!(!s.contains("watch gateway-errors"), "{s}");
         assert!(!s.contains("NEEDS YOU (1)"), "{s}");
-        assert!(at("INFRA") < at("NEEDS YOU"), "the cards lead: {s}");
-        assert!(
-            !s.contains("HEALTH") && !s.contains("ci NODATA"),
-            "health is Alerts': {s}"
-        );
+        assert!(at("HEALTH") < at("NEEDS YOU"), "the cards lead: {s}");
+        assert!(!s.contains("ci NODATA"), "the health chips are Alerts': {s}");
         assert!(!s.contains("MACHINES"), "the machinery is Infra's: {s}");
         assert!(s.lines().last().unwrap().contains("r refresh"));
     }

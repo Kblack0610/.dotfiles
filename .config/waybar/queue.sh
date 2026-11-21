@@ -178,7 +178,7 @@ else
   [ -z "$high_s" ] || rest+=", high $(prom_dur "$high_s")"
   row "  oldest" "$(prom_dur "$oldest")" "$rest"
   row "  running" "$(d running)" "on a PR $(d review), waiting on you $(d waiting)"
-  row "D shipped" "$(cf projects_shipped_today)" "merged today; $(cf projects_checks_closed) checks closed with no merge"
+  row "D shipped" "$(cf done_shipped)" "merged today; $(cf done_checks) checks closed with no merge"
   # flow <h>: done (finished and not failed) in the last h hours, then started and failed; failed is amber.
   flow() {
     local dn fl
@@ -270,10 +270,10 @@ fi
 
 # The bar: two totals behind their labels, and only Q takes the chip's level colour; a number the
 # feed lacks reads -. Both are hub-core's own figures (`hub cards --json --figures`, sent as
-# summary/cards): Q the queue card's On deck part, D the projects card's shipped today.
+# summary/cards): Q the queue card's On deck part, D the done card's Shipped part.
 qn="$(cf queue_on_deck)"
 ((level > 0)) && qn="$(paint "${LEVEL_COLOUR[$level]}" "$qn")"
 lc="$(label_colour)"
-text="$(paint "$lc" Q:)$qn  $(paint "$lc" D:)$(cf projects_shipped_today)"
+text="$(paint "$lc" Q:)$qn  $(paint "$lc" D:)$(cf done_shipped)"
 
 emit "$text" "$tip" "${LEVEL_CLASS[$level]}"

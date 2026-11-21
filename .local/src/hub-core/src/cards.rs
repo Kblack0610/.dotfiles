@@ -41,8 +41,8 @@ pub struct First {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Card {
-    /// The card's id: the `hub_core::layout` tab it opens, or for a Home card (`needs`, `red`)
-    /// the Home list it counts. A widget's `?cards=` names cards by it.
+    /// The card's id: the `hub_core::layout` tab it opens, or for a card with no tab of its own
+    /// what it counts (`opens` says where each leads). A widget's `?cards=` names cards by it.
     pub tab: &'static str,
     pub title: &'static str,
     /// The one big number or word, and what it counts: a fixed word of 16 characters or fewer,
@@ -77,7 +77,7 @@ impl Card {
             first: vec![],
             counted: counted.into(),
             error: None,
-            link: Link::tab(tab),
+            link: Link::tab(opens(tab)),
         }
     }
 
@@ -141,6 +141,17 @@ impl Card {
     }
 }
 
+/// The tab a card id opens: Needs you and Main red are Home's own lists, Done today is the
+/// queue's done items and Health the Infra tab; every other card is its tab's.
+fn opens(id: &str) -> &str {
+    match id {
+        "needs" | "red" => "home",
+        "done" => "queue",
+        "health" => "infra",
+        tab => tab,
+    }
+}
+
 /// Red if any is red, amber if any is amber, green when something was counted, else no data.
 fn worst(red: usize, warn: usize, total: usize) -> Level {
     if red > 0 {
@@ -178,23 +189,22 @@ pub fn sessions(rows: &[crate::session_table::SessionRow]) -> Card {
     let live: Vec<_> = rows.iter().filter(|r| r.source == Source::Live).collect();
     let n = |b: &str| live.iter().filter(|r| r.bucket == b).count();
     let (needs, stalled) = (n("NEEDS"), n("STALLED"));
-    let done = rows.iter().filter(|r| r.done).count();
     // the ok segment: live rows neither finished nor waiting, counted directly so a finished bucket
     // that is also NEEDS or STALLED cannot be taken off twice
     let ok = live
         .iter()
         .filter(|r| !r.done && r.bucket != "NEEDS" && r.bucket != "STALLED")
         .count();
+    // What got done today is the Done today card's, so this card counts no ended sessions.
     let mut c = Card::new(
         "sessions",
         "Sessions",
-        "live tmux sessions by fleet-sessions bucket; ended counts the sessions that finished or ended today",
+        "live tmux sessions by fleet-sessions bucket",
     )
     .bar(ok, stalled, needs)
     .part("Working", n("WORKING"), Level::Ok)
     .part("Need you", needs, lvl(needs, Level::Red))
-    .part("Stalled", stalled, lvl(stalled, Level::Warn))
-    .part("Ended today", done, Level::Ok);
+    .part("Stalled", stalled, lvl(stalled, Level::Warn));
     c.big = live.len().to_string();
     c.unit = "live sessions".into();
     let look = ["NEEDS", "STALLED"]
@@ -364,13 +374,72 @@ pub fn alerts(a: &crate::alerts::Alerts) -> Card {
     }))
 }
 
-/// Infra: the machines Prometheus reads, the CI pool and what is stuck.
-pub fn infra(i: &crate::infra::Infra) -> Card {
-    const COUNTED: &str = "machines with a reading, CI runners and slots from Prometheus";
+/// Done today: the PRs merged and the queue items closed since local midnight, by project,
+/// from the one count the phone's Done section shows (`phone::Done`). A source that could not be
+/// read is a dash and its reason, never a zero.
+pub fn done(d: Option<&crate::phone::Done>) -> Card {
+    const COUNTED: &str = "PRs merged today (the day-log record) and agent-queue items closed \
+         since local midnight: shipped is closed ok with a merge, checks closed with none, one \
+         per slug";
+    let Some(d) = d else {
+        return Card::failed(
+            "done",
+            "Done today",
+            COUNTED,
+            "neither agent-queue list nor today's day-log record could be read",
+        );
+    };
+    let mut c = Card::new("done", "Done today", COUNTED);
+    c.big = d.prs.map_or("-".into(), |n| n.to_string());
+    c.unit = "PRs merged".into();
+    c.level = Level::Ok;
+    let mut unread = vec![];
+    match d.items {
+        Some(t) => {
+            c = c
+                .part("Shipped", t.shipped, Level::Ok)
+                .part("Checks", t.checks, Level::Ok);
+        }
+        None => {
+            c = c
+                .part("Shipped", "-", Level::Nodata)
+                .part("Checks", "-", Level::Nodata);
+            unread.push("agent-queue list could not be read");
+            c.level = Level::Warn;
+        }
+    }
+    if d.prs.is_none() {
+        unread.push("no day-log record for today yet");
+        c.level = Level::Nodata;
+    }
+    if !unread.is_empty() {
+        c.error = Some(unread.join("; "));
+    }
+    c.first_head = "By project";
+    c.first(
+        d.by.iter()
+            .map(|(name, t, prs)| {
+                row(
+                    name.clone(),
+                    crate::phone::Done::said(t, *prs),
+                    Level::Ok,
+                    None,
+                )
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// Health: the machines Prometheus reads, the CI pool from the CI glance (the one the bar and
+/// the phone's CI row read), what is stuck, and fleet-bench's vitals head. It opens the Infra tab.
+pub fn health(i: &crate::infra::Infra) -> Card {
+    const COUNTED: &str = "machines with a reading and CI runners from Prometheus; CI busy is \
+         the slot units in use of the pool's, from the CI glance; vitals are fleet-bench's KPIs \
+         against their targets";
     if !i.ok {
         return Card::failed(
-            "infra",
-            "Infra",
+            "health",
+            "Health",
             COUNTED,
             i.error
                 .clone()
@@ -381,16 +450,26 @@ pub fn infra(i: &crate::infra::Infra) -> Card {
     let unread = i.machines.iter().filter(|m| m.state == NO_DATA).count();
     let down = i.runners_down().len();
     let stuck = i.ci.red.len();
-    let mut c = Card::new("infra", "Infra", COUNTED)
+    let g = &i.ci.glance;
+    let mut c = Card::new("health", "Health", COUNTED)
         .bar(up, i.machines.len() - up - unread, unread)
         .part("Runners down", down, lvl(down, Level::Red))
-        .part(
-            "CI busy",
-            format!("{}/{}", i.ci.busy, i.ci.slots),
-            Level::Ok,
-        )
-        .part("CI queued", i.ci.queued, Level::Ok)
+        .part("CI busy", g.units_line(), Level::Ok)
+        .part("CI queued", g.queued, Level::Ok)
         .part("Stuck", stuck, lvl(stuck, Level::Red));
+    if let Some(v) = crate::vitals::read(i) {
+        let level = if v.rows.is_empty() {
+            Level::Nodata
+        } else if v.all_ok {
+            Level::Ok
+        } else {
+            Level::Warn
+        };
+        c = c.part("Vitals", &v.head, level);
+        if level == Level::Warn && c.level == Level::Ok {
+            c.level = Level::Warn;
+        }
+    }
     if down + stuck > 0 {
         c.level = Level::Red;
     }
@@ -605,8 +684,7 @@ pub fn projects(p: &crate::projects::Projects) -> Card {
     let mut c = Card::new(
         "projects",
         "Projects",
-        "lab projects with their board slice and queue (notes projects --stats); shipped today is \
-         the queue items closed ok with a merge, checks the ones closed with none, one per slug",
+        "lab projects with their board slice and queue (notes projects --stats)",
     )
     .bar(cards.len() - waiting, waiting, 0)
     .part(
@@ -615,9 +693,7 @@ pub fn projects(p: &crate::projects::Projects) -> Card {
         Level::Ok,
     )
     .part("Waiting", sum(|c| c.waiting), lvl(waiting, Level::Warn))
-    .part("Hot", sum(|c| c.hot), Level::Ok)
-    .part("Shipped today", sum(|c| c.today.shipped), Level::Ok)
-    .part("Checks closed", sum(|c| c.today.checks), Level::Ok);
+    .part("Hot", sum(|c| c.hot), Level::Ok);
     c.big = cards.len().to_string();
     c.unit = "lab projects".into();
     if !p.errors.is_empty() {
@@ -679,11 +755,6 @@ pub fn board(f: &crate::tasks::Feed) -> Card {
     };
     let (n_open, n_doing, n_backlog) = (t.open, t.doing, t.backlog);
     let (n_late, n_asked) = (at(Level::Red), at(Level::Warn));
-    let done = f
-        .done
-        .iter()
-        .filter(|r| r.closed.as_deref() == Some(today))
-        .count();
     let mut c = Card::new(
         "board",
         "Board",
@@ -696,7 +767,6 @@ pub fn board(f: &crate::tasks::Feed) -> Card {
     .part("Doing", n_doing, Level::Ok)
     .part("Requested", n_asked, lvl(n_asked, Level::Warn))
     .part("Late", n_late, lvl(n_late, Level::Red))
-    .part("Rows closed today", done, Level::Ok)
     .part("Backlog", n_backlog, Level::Ok);
     // The tiers line's Sprint (tasks::Tiers::words), on the same rule; last, so a narrow TUI
     // card clips it before the counts it always had.
@@ -761,6 +831,10 @@ pub struct Reads<'a> {
     pub sessions: Got<'a, [crate::session_table::SessionRow]>,
     pub board: Got<'a, crate::tasks::Feed>,
     pub queue: Got<'a, crate::queue::Queue>,
+    /// The project of each PR merged today (`phone::merged_today`); None with no day-log record.
+    pub merged: Option<&'a [String]>,
+    /// When the grid is read, for the Done card's local midnight.
+    pub now: i64,
     pub pipeline: Option<&'a Result<Option<crate::pipeline::Pipeline>, String>>,
     pub alerts: Got<'a, crate::alerts::Alerts>,
     pub infra: Got<'a, crate::infra::Infra>,
@@ -779,7 +853,6 @@ pub fn needs(home: &crate::home::Home, now: i64) -> Card {
         "Needs you",
         "Home's Needs you: what only the human can do; agent work is routed, not listed",
     );
-    c.link = Link::tab("home");
     c.big = count.to_string();
     c.unit = "waiting on you".into();
     for (label, n) in home.split() {
@@ -825,7 +898,6 @@ pub fn main_red(home: &crate::home::Home) -> Card {
         "Main red",
         "Home's routed agent work: repos whose nightly on main is red",
     );
-    c.link = Link::tab("home");
     c.big = red.len().to_string();
     c.unit = "red on main".into();
     c.level = lvl(red.len(), Level::Red);
@@ -845,18 +917,32 @@ pub fn main_red(home: &crate::home::Home) -> Card {
 pub const ORDER: &[&str] = &[
     "needs",
     "red",
+    "done",
+    "health",
     "sessions",
     "queue",
     "board",
     "alerts",
-    "infra",
     "costs",
     "releases",
     "schedules",
     "projects",
 ];
 
-/// The cards `names` lists, in its order; a name no card has is skipped.
+/// Old card ids and the card each now names, so a saved `?cards=` list keeps its card
+/// (dashboards.md, Retired names).
+pub const ALIASES: &[(&str, &str)] = &[("infra", "health")];
+
+/// The card id `name` stands for: itself, or the card an old id was renamed to.
+pub fn id(name: &str) -> &str {
+    ALIASES
+        .iter()
+        .find(|(old, _)| *old == name)
+        .map_or(name, |(_, new)| new)
+}
+
+/// The cards `names` lists, in its order, an old id (`ALIASES`) naming its new card; a name no
+/// card has is skipped.
 pub fn pick(cards: Vec<Card>, names: &[&str]) -> Vec<Card> {
     let mut cards: Vec<Option<Card>> = cards.into_iter().map(Some).collect();
     names
@@ -864,7 +950,7 @@ pub fn pick(cards: Vec<Card>, names: &[&str]) -> Vec<Card> {
         .filter_map(|n| {
             cards
                 .iter_mut()
-                .find(|c| c.as_ref().is_some_and(|c| c.tab == *n))
+                .find(|c| c.as_ref().is_some_and(|c| c.tab == id(n)))
                 .and_then(Option::take)
         })
         .collect()
@@ -885,12 +971,19 @@ pub fn grid(r: &Reads) -> Vec<Card> {
             Some(Ok(v)) => f(v),
         }
     }
+    // Done counts the queue and the day-log record: reading until the queue answers, and a
+    // queue that failed leaves the PRs.
+    let done_today = match r.queue {
+        None => Card::reading("done", "Done today"),
+        Some(q) => done(crate::phone::Done::read(q.ok(), r.merged, r.now).as_ref()),
+    };
     vec![
+        done_today,
+        one(r.infra, "health", "Health", health),
         one(r.sessions, "sessions", "Sessions", sessions),
         one(r.queue, "queue", "Queue", |q| queue(q, r.pipeline)),
         one(r.board, "board", "Board", board),
         one(r.alerts, "alerts", "Alerts", alerts),
-        one(r.infra, "infra", "Infra", infra),
         one(r.costs, "costs", "Costs", costs),
         one(r.releases, "releases", "Releases", releases),
         one(r.schedules, "schedules", "Schedules", schedules),
@@ -956,14 +1049,7 @@ mod tests {
             c.first[0].link.as_ref().unwrap().href(),
             "#sessions/sessions/hub%2Fc%3A1"
         );
-        assert_eq!(
-            c.parts
-                .iter()
-                .find(|p| p.label == "Ended today")
-                .unwrap()
-                .value,
-            "1"
-        );
+        assert!(c.parts.iter().all(|p| p.label != "Ended today"));
         assert_eq!(c.link.href(), "#sessions");
     }
 
@@ -977,11 +1063,9 @@ mod tests {
         ];
         let rows = crate::session_table::rows(&state, &vocab, &Default::default(), &[]);
         let c = sessions(&rows);
-        let part = |l| c.parts.iter().find(|p| p.label == l).unwrap().value.clone();
-        assert_eq!(
-            (c.big.as_str(), part("Ended today")),
-            ("2", "1".to_string())
-        );
+        // What ended today is the Done today card's, so the card has no such part.
+        assert_eq!(c.big, "2");
+        assert!(c.parts.iter().all(|p| p.label != "Ended today"));
         assert_eq!(
             c.bar[0],
             Seg {
@@ -1000,13 +1084,23 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(g.iter().map(|c| c.tab).collect::<Vec<_>>(), ORDER[2..]);
-        assert_eq!((g[0].big.as_str(), g[0].unit.as_str()), ("-", "reading"));
+        // Done answers once the queue is read; with no day-log record its PRs are a dash, never 0.
+        assert_eq!((g[0].tab, g[0].big.as_str()), ("done", "-"));
         assert_eq!(g[0].level, Level::Nodata);
+        assert_eq!((g[1].big.as_str(), g[1].unit.as_str()), ("-", "reading"));
+        assert_eq!(g[1].level, Level::Nodata);
         assert_eq!(
-            (g[5].big.as_str(), g[5].error.as_deref()),
-            ("NO DATA", Some("prometheus: timeout"))
+            (g[6].tab, g[6].big.as_str(), g[6].error.as_deref()),
+            ("costs", "NO DATA", Some("prometheus: timeout"))
         );
-        assert!(g.iter().all(|c| c.link.href() == format!("#{}", c.tab)));
+        // Every card opens its tab: Done the Queue, Health the Infra tab.
+        assert!(g
+            .iter()
+            .all(|c| c.link.href() == format!("#{}", opens(c.tab))));
+        assert_eq!(
+            (g[0].link.href(), g[1].link.href()),
+            ("#queue".to_string(), "#infra".to_string())
+        );
     }
 
     #[test]
@@ -1075,7 +1169,6 @@ mod tests {
                 ("Doing", "1"),
                 ("Requested", "1"),
                 ("Late", "1"),
-                ("Rows closed today", "1"),
                 ("Backlog", "2")
             ]
         );
@@ -1203,13 +1296,25 @@ mod tests {
     }
 
     #[test]
-    fn infra_that_did_not_answer_is_no_data_with_why() {
+    fn the_old_infra_id_still_names_its_card_now_health() {
+        let picked = pick(grid(&Default::default()), &["infra", "nope", "queue"]);
+        assert_eq!(
+            picked.iter().map(|c| c.tab).collect::<Vec<_>>(),
+            ["health", "queue"]
+        );
+        assert_eq!((id("infra"), id("queue")), ("health", "queue"));
+        // Negative control: an alias may not shadow a live card id.
+        assert!(ALIASES.iter().all(|(old, _)| !ORDER.contains(old)));
+    }
+
+    #[test]
+    fn health_that_did_not_answer_is_no_data_with_why() {
         let i = crate::infra::Infra {
             ok: false,
             error: Some("timeout".into()),
             ..Default::default()
         };
-        let c = infra(&i);
+        let c = health(&i);
         assert_eq!(
             (c.big.as_str(), c.level, c.error.as_deref()),
             ("NO DATA", Level::Nodata, Some("timeout"))

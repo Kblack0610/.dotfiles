@@ -47,7 +47,7 @@ s = {
     "summary_dispatch.queued": 60, "summary_dispatch.running": 14, "summary_dispatch.review": 6, "summary_dispatch.waiting": 10,
     "summary_dispatch.done_1h": 4, "summary_dispatch.done_6h": 30,
     "summary_dispatch.added_6h": 18, "summary_dispatch.done_24h": 40, "summary_dispatch.shipped_today": 12, "summary_dispatch.checks_today": 9,
-    "summary_cards.figures_queue_on_deck": 39, "summary_cards.figures_projects_shipped_today": 12, "summary_cards.figures_projects_checks_closed": 9,
+    "summary_cards.figures_queue_on_deck": 39, "summary_cards.figures_done_shipped": 12, "summary_cards.figures_done_checks": 9,
     "summary_dispatch.board_agent": 1522, "summary_dispatch.board_backlog": 2200,
     "summary_dispatch.room_live_runs": 16, "summary_dispatch.room_max_live": 24,
     "summary_dispatch.room_live_hand": 5, "summary_dispatch.room_total_live": 21, "summary_dispatch.room_load": 27.4,
@@ -417,7 +417,7 @@ as of 03:43 (3m ago), the last dispatch pass, on h1-main"
 }
 
 @test "Q and D are hub cards figures, D with the checks beside it; a feed without them reads -, never 0" {
-  feed summary_cards.figures_queue_on_deck=- summary_cards.figures_projects_shipped_today=- summary_cards.figures_projects_checks_closed=-
+  feed summary_cards.figures_queue_on_deck=- summary_cards.figures_done_shipped=- summary_cards.figures_done_checks=-
   run "$MODULE"
   assert_equal "$(text)" "$(bar - -)"
   run tip
