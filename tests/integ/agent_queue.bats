@@ -4569,6 +4569,16 @@ already"
   refute_output --partial "store-sync fd8=open"
 }
 
+@test "a queue call made under the write hook's own sync starts no second sync (ar-4050)" {
+  # A store-sync stub that called agent-queue started the hook again from that call, and again,
+  # ~600 processes that outlived their bats run. The stub stops itself at 3, so a miss fails here, not forever.
+  printf '#!/usr/bin/env bash\necho "store-sync $*" >> "$NOTES_FIXTURE/sync.log"\n[ "$(wc -l < "$NOTES_FIXTURE/sync.log")" -ge 3 ] || %q list >/dev/null 2>&1\nexit 0\n' "$AQ" > "$SANDBOX/bin/store-sync"
+  chmod +x "$SANDBOX/bin/store-sync"
+  run "$AQ" add --project game "Menu: pick sides"
+  assert_success
+  assert_equal "$(cat "$NOTES_FIXTURE/sync.log")" "store-sync --now --bg"
+}
+
 @test "lag_places: a class with only held items sets no floor for the bound, as it starts nothing" {
   export AGENT_QUEUE_CLASSES="$SANDBOX/classes.json"
   today="$(date +%F)"

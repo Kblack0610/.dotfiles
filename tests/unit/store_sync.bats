@@ -11,7 +11,7 @@ setup() {
   sandbox_init
   BIN="$REPO_ROOT/.local/bin/store-sync"
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
-  export STORE_SYNC_SSH_KEY=/nonexistent STORE_SYNC_FG=1
+  export STORE_SYNC_SSH_KEY=/nonexistent
   R="$SANDBOX/remotes"
   ORIGIN="$R/origin.git" BACKUP="$R/backup.git"
   mkdir -p "$R"
@@ -363,6 +363,10 @@ EOF
   mkdir -p "$SANDBOX/elsewhere/queue"
   AGENT_QUEUE_DIR="$SANDBOX/elsewhere/queue" PATH="$SANDBOX/bin:$PATH" "$REPO_ROOT/.local/bin/agent-queue" list >/dev/null 2>&1 || true
   AGENT_ASK_ROOT="$SANDBOX/elsewhere/asks" PATH="$SANDBOX/bin:$PATH" "$REPO_ROOT/.local/bin/agent-ask" list >/dev/null 2>&1 || true
+  assert_equal "$(cat "$SANDBOX/hook.log")" ""
+  # Run under the hook's own sync (AGENT_STORE_HOOK), neither starts another one (ar-4050).
+  AGENT_STORE_HOOK=1 PATH="$SANDBOX/bin:$PATH" "$REPO_ROOT/.local/bin/agent-queue" list >/dev/null 2>&1 || true
+  AGENT_STORE_HOOK=1 PATH="$SANDBOX/bin:$PATH" "$REPO_ROOT/.local/bin/agent-ask" list >/dev/null 2>&1 || true
   assert_equal "$(cat "$SANDBOX/hook.log")" ""
 }
 

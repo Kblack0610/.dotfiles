@@ -187,7 +187,11 @@ EOF
 
   # A suite run by a systemd unit (CI, a timer) inherits its INVOCATION_ID, and ask-resume reads
   # that as "detach through systemd-run", which would start a real transient scope.
-  unset INVOCATION_ID
+  unset INVOCATION_ID AGENT_STORE_HOOK
+
+  # store-sync --bg forks with setsid, out of the test's process tree, so a fork outlives its bats
+  # run (ar-4050). Every sync runs in the foreground; store_sync.bats tests the fork with =0.
+  export STORE_SYNC_FG=1
 
   # A runner shell that exports NO_COLOR or PANEL_NO_COLOR would blank every palette the
   # colour fixtures assert on (md_render, panel_lib, questions_panel). A test that wants no

@@ -1067,15 +1067,25 @@ EOF
   printf '#!/bin/sh\ncat %q/panes.$(basename "$2")\n' "$SANDBOX" > "$SANDBOX/fakes/tmux"
   chmod +x "$SANDBOX/fakes/systemctl" "$SANDBOX/fakes/tmux"
   WT_SYSTEMCTL="$SANDBOX/fakes/systemctl" WT_TMUX="$SANDBOX/fakes/tmux"
+  # kill.ignored: every signal is ignored; term.ignored: only SIGTERM (what respawns faster than it ends)
   kill() {
     printf '%s\n' "$*" >> "$SANDBOX/kill.log"
     [ -e "$SANDBOX/kill.ignored" ] && return 0
+    [ "$1" = -TERM ] && [ -e "$SANDBOX/term.ignored" ] && return 0
     local f pid
     for f in "$WT_CGROUP_ROOT"/s/*/cgroup.procs; do
       for pid in "${@:2}"; do sed -i "/^$pid\$/d" "$f"; done
     done
   }
-  waitpid() { :; }
+  # The kernel's side of cgroup.kill: by the wait after the write, every process in that scope is gone.
+  waitpid() {
+    [ -e "$SANDBOX/kill.ignored" ] && return 0
+    local k
+    for k in "$WT_CGROUP_ROOT"/s/*/cgroup.kill; do
+      [ "$(cat "$k" 2>/dev/null)" = 1 ] && : > "${k%/*}/cgroup.procs"
+    done
+    return 0
+  }
 }
 
 @test "orphans ends what a closed pane left running, of any kind, and spares the tmux server, rbw-agent and a zombie in it" {
@@ -1106,13 +1116,27 @@ EOF
   [ ! -e "$SANDBOX/kill.log" ]
 }
 
-@test "orphans fails, naming the scope, when a closed pane's leftover outlives SIGTERM" {
+@test "orphans SIGKILLs what outlives SIGTERM: cgroup.kill for a scope with nothing kept, by pid beside a kept process (ar-4050)" {
+  pane_scopes
+  touch "$SANDBOX/term.ignored"
+  run cmd_orphans
+  assert_success
+  assert_line 'ended 21,22  gone (bats x1, chrome-headless x1) by SIGKILL'
+  assert_line 'ended 31  dead (rustc x1) by SIGKILL'
+  # gone holds rbw-agent and a tmux server, so no cgroup.kill: SIGKILL by pid, and they live
+  assert_equal "$(cat "$SANDBOX/kill.log")" $'-TERM 21 22\n-KILL 21 22\n-TERM 31'
+  [ ! -e "$WT_CGROUP_ROOT/s/gone/cgroup.kill" ]
+  assert_equal "$(cat "$WT_CGROUP_ROOT/s/gone/cgroup.procs")" $'23\n24\n25'
+  assert_equal "$(cat "$WT_CGROUP_ROOT/s/dead/cgroup.kill")" 1
+}
+
+@test "orphans fails, naming the scope, when a closed pane's leftover outlives SIGKILL" {
   pane_scopes
   touch "$SANDBOX/kill.ignored"
   run cmd_orphans
   assert_failure
-  assert_line 'failed 21,22  gone: outlived SIGTERM'
-  assert_line 'failed 31  dead: outlived SIGTERM'
+  assert_line 'failed 21,22  gone: outlived SIGKILL'
+  assert_line 'failed 31  dead: outlived SIGKILL'
 }
 
 # -- done: kill, then reap, on the server --

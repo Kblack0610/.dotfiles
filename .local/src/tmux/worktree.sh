@@ -1883,13 +1883,24 @@ wt_scope_leftovers() {
   done < "${WT_CGROUP_ROOT:-/sys/fs/cgroup}$1/cgroup.procs" 2>/dev/null
 }
 
+# wt_scope_keeps <cgroup> -- true when the scope holds a process WT_ORPHAN_KEEP spares, so
+# cgroup.kill, which ends every process in it, is off.
+wt_scope_keeps() {
+  local proc="${WT_PROC_ROOT:-/proc}" pid
+  while read -r pid; do
+    [[ "$(cat "$proc/$pid/comm" 2>/dev/null)" =~ ^($WT_ORPHAN_KEEP)$ ]] && return 0
+  done < "${WT_CGROUP_ROOT:-/sys/fs/cgroup}$1/cgroup.procs" 2>/dev/null
+  return 1
+}
+
 # cmd_orphans [-n] -- end what nobody owns any more on this node: a Unity daemon whose editor is
 # gone, in any project with ProjectSettings/ (the plugin stops its gamedev-mcp-server only on a
 # clean quit, and reap ends one only in a landed tree, ar-228), and whatever a closed tmux pane
 # left running, of any kind (wt_closed_pane_scopes; bats runs of ended sessions ran 25 hours,
-# ar-3269). Each gets SIGTERM and WT_SETTLE_SECS to exit. The orphan-gc runner runs this on a
-# cadence: nothing signals the exit of a process that is not our child, and a pane can end with
-# its whole server. rc 1 when one outlived SIGTERM, named by pid and project or scope.
+# ar-3269). Each gets SIGTERM and WT_SETTLE_SECS to exit; a closed pane's leftover that outlives
+# it gets SIGKILL. The orphan-gc runner runs this on a cadence: nothing signals the exit of a
+# process that is not our child, and a pane can end with its whole server. rc 1 when one outlived
+# its last signal, named by pid and project or scope.
 cmd_orphans() {
   local dry=0 arg root pids rc=0 n=0
   for arg in "$@"; do
@@ -1934,8 +1945,22 @@ cmd_orphans() {
     left=$(wt_scope_leftovers "$cg")
     if [ -z "$left" ]; then
       printf 'ended %s  %s (%s)\n' "$(paste -sd, - <<<"$pids")" "$unit" "$what"
+      continue
+    fi
+    # What outlives SIGTERM gets SIGKILL: bats sandboxes that respawned each other ran on past every
+    # SIGTERM pass (ar-4050). A scope that holds nothing kept takes cgroup.kill, which ends all of it
+    # at once, forks included; one with a kept process, or a kernel with no cgroup.kill, SIGKILL by pid.
+    if wt_scope_keeps "$cg" || ! { echo 1 > "${WT_CGROUP_ROOT:-/sys/fs/cgroup}$cg/cgroup.kill"; } 2>/dev/null; then
+      # shellcheck disable=SC2086
+      kill -KILL $left 2>/dev/null
+    fi
+    # shellcheck disable=SC2086
+    wt_await_exit $left
+    left=$(wt_scope_leftovers "$cg")
+    if [ -z "$left" ]; then
+      printf 'ended %s  %s (%s) by SIGKILL\n' "$(paste -sd, - <<<"$pids")" "$unit" "$what"
     else
-      printf 'failed %s  %s: outlived SIGTERM\n' "$(paste -sd, - <<<"$left")" "$unit"
+      printf 'failed %s  %s: outlived SIGKILL\n' "$(paste -sd, - <<<"$left")" "$unit"
       rc=1
     fi
   done < <(wt_closed_pane_scopes)
