@@ -4716,3 +4716,97 @@ stack_gh() {
   exec 4>&-
   assert_success
 }
+
+@test "ar-4349: a session's urgent plan queues at high; the human's own add, a red plan and dispatch's promote keep urgent" {
+  story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
+  printf '## Phases\n\n- [ ] P1 One (independent)\n- [ ] P2 Two (independent)\n' > "$SANDBOX/u.md"
+  CLAUDE_CODE_SESSION_ID=sid-a AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/u.md" --project level --priority urgent --slug sess
+  assert_success
+  assert_output --partial "a session's plan queues at high at most"
+  [ "$(field "$(item queued sess-p1)" priority)" = high ]
+  [ "$(field "$(item queued sess-p2)" priority)" = high ]
+  cp "$SANDBOX/u.md" "$SANDBOX/r.md"; cp "$SANDBOX/u.md" "$SANDBOX/h.md"
+  AGENT_QUEUE_ITEM=u1 AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/r.md" --project level --priority urgent --tags red --slug red
+  assert_success
+  [ "$(field "$(item queued red-p1)" priority)" = urgent ]
+  cp "$SANDBOX/u.md" "$SANDBOX/b.md"
+  AGENT_QUEUE_ITEM=u1 AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/b.md" --project level --priority urgent --from board:level:lv-9 --slug promo
+  assert_success
+  [ "$(field "$(item queued promo-p1)" priority)" = urgent ]
+  # NEGATIVE CONTROL: the same urgent plan with no session around it (the human's own) keeps urgent on every phase.
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/h.md" --project level --priority urgent --slug hand
+  assert_success
+  refute_output --partial "queues at high at most"
+  [ "$(field "$(item queued hand-p1)" priority)" = urgent ]
+  [ "$(field "$(item queued hand-p2)" priority)" = urgent ]
+}
+
+# row_item <slug> <row> <priority> [tags] -- a queued item that works <row>, at its own <priority>.
+row_item() {
+  mkdir -p "$AGENT_QUEUE_DIR/queued"
+  local n; n="$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)"
+  { printf 'slug: %s\nproject: level\nmode: oneshot\npriority: %s\nweight: light\n' "$1" "$3"
+    [ -z "${4:-}" ] || printf 'tags: %s\n' "$4"
+    printf 'from: session\nagent: claude\nqueued: 2026-11-07T01:00:0%sZ\nrow: %s\nlane: agent\nprofile: bnb\n---\n%s\n' "$n" "$2" "$1"
+  } > "$AGENT_QUEUE_DIR/queued/2026110701000$n-$1.md"
+}
+
+@test "ar-3011: the queue ranks an item by its open board row's priority; a red keeps its own, a cleanup item on a #low row ranks high" {
+  story_notes
+  row_item retagged-down level:lv-1 high
+  row_item retagged-up level:lv-2 low
+  row_item red level:lv-3 low "red cause:x"
+  row_item cleanup level:lv-4 high cleanup
+  row_item gone level:lv-5 high
+  jq -n '{rows: [{project: "level", id: "lv-1", state: "open", priority: "low"},
+                 {project: "level", id: "lv-2", state: "doing", priority: "urgent"},
+                 {project: "level", id: "lv-3", state: "open", priority: "low"},
+                 {project: "level", id: "lv-4", state: "open", priority: "low"}]}' > "$NOTES_FIXTURE/board.json"
+  run bash -c "'$AQ' list --json | jq -r '\"\(.slug) \(.priority)\"'"
+  assert_success
+  # The red goes first at its own low; lv-5 is on no open row, so it keeps its own high.
+  assert_output $'red low\nretagged-up urgent\ncleanup high\ngone high\nretagged-down low'
+  [ "$("$AQ" next --json | jq -r .slug)" = red ]
+  # NEGATIVE CONTROL: a board notes cannot read ranks every item by its own line, as before.
+  rm "$NOTES_FIXTURE/board.json"
+  run bash -c "'$AQ' list --json | jq -r '\"\(.slug) \(.priority)\"'"
+  assert_output $'red low\nretagged-down high\ncleanup high\ngone high\nretagged-up low'
+}
+
+@test "ar-3011: bump and set priority= write the item's row, which the order reads; an item with no row writes none" {
+  story_notes
+  row_item rowed level:lv-1 high
+  "$AQ" add --project game --slug plain "plain" >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" bump rowed urgent
+  assert_success
+  run grep -c -- '--profile bnb ptask level --agent tag --add urgent lv-1' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+  run "$AQ" set rowed priority=low
+  assert_success
+  grep -q -- 'ptask level --agent tag --add low lv-1' "$NOTES_FIXTURE/calls.log"
+  [ "$(field "$(item queued rowed)" priority)" = low ]
+  run "$AQ" set rowed priority=soon
+  assert_failure
+  assert_output --partial "urgent, high or low"
+  # NEGATIVE CONTROL: an item with no row has only its own line to change.
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" bump plain low >/dev/null
+  run grep -c ' tag ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
+@test "ar-3011: the human's add that links a filed row gives it the --priority it names; one with no --priority, or a session's, leaves the row's" {
+  story_notes
+  run "$AQ" add --project level --row lv-7 --priority urgent --slug linked "work lv-7"
+  assert_success
+  grep -q -- 'ptask level --agent tag --add urgent lv-7' "$NOTES_FIXTURE/calls.log"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" add --project level --row lv-8 --running --slug mine "work lv-8"
+  assert_success
+  # NEGATIVE CONTROL: a session's add names a priority every time, so its low never demotes the row.
+  CLAUDE_CODE_SESSION_ID=sid-a AGENT_QUEUE_START=0 run "$AQ" add --project level --row lv-9 --priority low --slug sess "work lv-9"
+  assert_success
+  run grep -c ' tag ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}

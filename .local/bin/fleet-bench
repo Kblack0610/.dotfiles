@@ -5824,9 +5824,10 @@ canary_brief() {
 # is queued again up to BENCH_CANARY_RETRIES times, so a second pass the same week queues nothing. `from: canary` files no story row. With no flags it is the weekly claude lane;
 # another lane's items are canary-<id>-<week>-<h>[-<m>] (a long id cut, see canary_slug), carrying
 # agent and model for fleet-dispatch to start them on.
-# A lane that spends a Claude account queues at high, the queue's working priority: at low it sat
-# behind every runnable item, and the week-46 claude run started none of its 14 tasks in 3 nights.
-# Another harness's lane stays low: it starts as overflow while its own source has room.
+# Every lane queues at low: a canary is a check, upkeep, never work that blocks a release or another
+# agent (ar-4349). The week-46 claude run at low started none of its 14 tasks in 3 nights (ar-845),
+# so #1948 raised it to high while most of the queue was high; on 2026-11-19..21 low items waited 0.3h at
+# the median and 11h at p90, and another harness's low lane starts as overflow on its own source.
 # canary_slug <id> <week> [lane] -> the item slug, built to survive agent-queue's slugify (lowercase,
 # a-z0-9 and single dashes, cut at 40): the lane suffix stays whole and the id is what gets shortened,
 # so lanes never collapse into one another and `show`, `set` and the brief name the item as stored.
@@ -5920,11 +5921,10 @@ canary_known() { grep -qxF -e "$1" -e "$2" <<<"$CANARY_KNOWN"; }
 # and leaves the count in CANARY_ADDED. Says its one summary line unless CANARY_QUIET is set (canary_top_up
 # says its own).
 canary_lane_queue() {
-  local tasks t id slug title week why lane="" label="" harness=$1 model=$2 effort=$3 max=$4 prio=high added=0 had=0 off=0
+  local tasks t id slug title week why lane="" label="" harness=$1 model=$2 effort=$3 max=$4 added=0 had=0 off=0
   local -A seen=()
   CANARY_ADDED=0
   [ -z "$harness" ] || { lane=$(canary_lane_name "$harness" "$model" "$effort"); label="$harness${model:+/$model}${effort:+@$effort}"; }
-  [ -z "$harness" ] || [ "$harness" = claude ] || prio=low
   if [ -n "${only_ids:-}" ]; then
     local -a ids; IFS=, read -ra ids <<<"$only_ids"
     tasks=$(canary_tasks "${ids[@]}") || return $?
@@ -5960,7 +5960,7 @@ canary_lane_queue() {
     title=$(canary_title "$id" "$week" "$label")
     if canary_known "$title" "$slug"; then had=$((had + 1)); continue; fi
     $BENCH_CANARY_QUEUE_CMD add --project "$(jq -r .project <<<"$t")" --from canary --tags canary \
-      --priority "$prio" --weight light ${harness:+--agent "$harness"} --slug "$slug" --title "$title" \
+      --priority low --weight light ${harness:+--agent "$harness"} --slug "$slug" --title "$title" \
       -- "$(canary_brief "$t" "$slug" "$sbx")" >/dev/null || { say "canary: could not queue $slug"; return 1; }
     [ -z "$model$sbx" ] || $BENCH_CANARY_QUEUE_CMD set "$slug" ${model:+"model=$model"} ${effort:+"effort=$effort"} ${sbx:+"canary=$id"} >/dev/null ||
       { $BENCH_CANARY_QUEUE_CMD cancel "$slug" --why "$CANARY_SET_CANCEL" >/dev/null 2>&1
