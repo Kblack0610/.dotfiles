@@ -196,11 +196,11 @@ JQ_EVAL="$JQ_EPOCH"'
    # Dispatch: an error line is one verdict each (the row is judged again); otherwise the newest
    # verdict per row, labelled by its queue item: done ok landed, done otherwise or a later
    # `failed` line did not. A run that ended for a cause outside the model (UNRATED_ENDS) labels
-   # nothing, and a `failed` line a later `cleared` released does not count (later in the file, as
-   # judged_keys in fleet-dispatch reads it; group_by keeps file order within a key).
-   | ($verdicts | map(select(.verdict == "failed" or .verdict == "cleared"))
+   # nothing. A `cleared` (fleet-dispatch ask_failed_rows, which restarts the failure count once it
+   # asks the human) does not undo a failure, so the newest `failed` per row counts.
+   | ($verdicts | map(select(.verdict == "failed"))
       | map({key: "\(.project)\u0000\(.key)", verdict, e: (.at | epoch)}) | group_by(.key)
-      | map(last | select(.verdict == "failed") | {(.key): .e}) | add // {}) as $failed
+      | map(last | {(.key): .e}) | add // {}) as $failed
    | ($queue | map(select((.from // "") | startswith("board:")))
       | map({key: (.from | ltrimstr("board:")),
              value: (.state + "/" + (if .status != "ok" and ((.end_reason // "") | IN($unrated[])) then "unrated" else .status // "" end))})
