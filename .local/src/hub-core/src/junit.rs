@@ -467,8 +467,6 @@ pub(crate) fn safe_repo(repo: &str) -> bool {
 }
 
 const NONE_MARK: &str = ".none";
-/// What a store read writes in `NONE_MARK`; GitHub's is empty.
-const STORE_MARK: &str = "store";
 
 fn none_note(globs: &[&str], store: bool) -> String {
     let globs = globs.join(" or ");
@@ -479,7 +477,8 @@ fn none_note(globs: &[&str], store: bool) -> String {
     }
 }
 
-/// `name` against `glob`: `*` is any run of characters, `?` any one.
+/// `name` against `glob`: `*` is any run of characters, `?` any one. A store repo's globs are
+/// matched here (`gh run download` matches a GitHub repo's), so `from_store` refuses any other syntax.
 fn matches(glob: &str, name: &str) -> bool {
     fn go(g: &[u8], n: &[u8]) -> bool {
         match (g.first(), n.first()) {
@@ -493,59 +492,96 @@ fn matches(glob: &str, name: &str) -> bool {
     go(glob.as_bytes(), name.as_bytes())
 }
 
+/// Makes each fetch's staging dir its own, so two reads of one run never share one.
+static FETCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Downloads a run's artifacts that match its globs into its directory, once, from the repo's
-/// artifact store when it declares one and from GitHub otherwise. A run with none leaves a marker
-/// so it is not asked again; any other failure leaves nothing, so the next read retries. New globs
-/// are a new dir (`run_dir`), so they fetch again. For a store repo, a run GitHub had nothing for
-/// (read before the repo moved its results to the store) is asked of the store once.
-fn fetch(dir: &Path, run: &PickRun, runner: &dyn Runner) -> Result<(), String> {
-    let github_none =
-        || std::fs::read_to_string(dir.join(NONE_MARK)).is_ok_and(|m| m.trim() != STORE_MARK);
-    if dir.is_dir() && (run.store.is_none() || !github_none()) {
-        return Ok(());
+/// artifact store when it declares one and from GitHub otherwise; false when the store holds none.
+/// GitHub's none leaves a marker so it is not asked again. The store's none is not kept, since a
+/// run read as it ends may be read before its last put; nor is any other failure, so the next read
+/// retries. New globs are a new dir (`run_dir`), so they fetch again. For a store repo, a run
+/// GitHub had nothing for (read before the repo moved its results to the store) is asked of the
+/// store.
+fn fetch(dir: &Path, run: &PickRun, runner: &dyn Runner) -> Result<bool, String> {
+    let kept = || dir.is_dir() && !(run.store.is_some() && dir.join(NONE_MARK).exists());
+    if kept() {
+        return Ok(true);
     }
     if !safe_repo(&run.repo) {
         return Err(format!("not a repository name: {}", run.repo));
     }
-    let part = part_dir(dir);
-    let _ = std::fs::remove_dir_all(&part);
+    let n = FETCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let part = PathBuf::from(format!(
+        "{}-{}-{n}",
+        part_dir(dir).display(),
+        std::process::id()
+    ));
     std::fs::create_dir_all(&part).map_err(|e| format!("{}: {e}", part.display()))?;
     let got = match &run.store {
         Some(script) => script
             .clone()
             .and_then(|s| from_store(&part, run, &s, runner)),
-        None => from_github(&part, run),
+        None => from_github(&part, run).map(|_| true),
     };
-    if let Err(e) = got {
+    if !matches!(got, Ok(true)) {
         let _ = std::fs::remove_dir_all(&part);
-        return Err(e);
+        return got;
     }
-    if dir.is_dir() {
-        std::fs::remove_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // GitHub's none, replaced by the store's results: moved aside first so a rename lands whole.
+    let old = part.with_extension("old");
+    let replaced = dir.is_dir() && std::fs::rename(dir, &old).is_ok();
+    let landed = std::fs::rename(&part, dir);
+    if replaced {
+        let _ = std::fs::remove_dir_all(&old);
     }
-    std::fs::rename(&part, dir).map_err(|e| format!("{}: {e}", dir.display()))
+    match landed {
+        Ok(()) => Ok(true),
+        // another read of the run landed it first
+        Err(_) if kept() => {
+            let _ = std::fs::remove_dir_all(&part);
+            Ok(true)
+        }
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&part);
+            Err(format!("{}: {e}", dir.display()))
+        }
+    }
 }
 
-/// The run's artifacts that match its globs, each extracted from the store into `part/<name>`.
+/// The run's artifacts that match its globs, each extracted from the store into `part/<name>`;
+/// false when there are none. The lister is asked once per glob's literal prefix, so it lists only
+/// those names and never the whole repo's store.
 fn from_store(
     part: &Path,
     run: &PickRun,
     script: &Path,
     runner: &dyn Runner,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let globs = run.globs();
-    let listed = artifact_store::ls(runner, &run.repo, script, run.id)
-        .map_err(|e| format!("artifact store: {e}"))?;
-    let mut names: Vec<String> = listed
-        .into_iter()
-        .map(|l| l.name)
-        .filter(|n| globs.iter().any(|g| matches(g, n)))
+    if let Some(g) = globs.iter().find(|g| g.contains(['[', '{'])) {
+        return Err(format!(
+            "testArtifacts {g}: a store repo's globs take only * and ?"
+        ));
+    }
+    let mut prefixes: Vec<&str> = globs
+        .iter()
+        .map(|g| g.split(['*', '?']).next().unwrap_or_default())
         .collect();
+    prefixes.sort();
+    prefixes.dedup();
+    let mut names = vec![];
+    for p in prefixes {
+        let listed = artifact_store::ls(runner, &run.repo, script, p, run.id)
+            .map_err(|e| format!("artifact store: {e}"))?;
+        names.extend(
+            listed
+                .into_iter()
+                .map(|l| l.name)
+                .filter(|n| globs.iter().any(|g| matches(g, n))),
+        );
+    }
     names.sort();
     names.dedup();
-    if names.is_empty() {
-        return std::fs::write(part.join(NONE_MARK), STORE_MARK).map_err(|e| e.to_string());
-    }
     for n in &names {
         let plain = !n.starts_with(['-', '.'])
             && n.bytes()
@@ -556,7 +592,7 @@ fn from_store(
         artifact_store::get(runner, &run.repo, script, n, run.id, &part.join(n))
             .map_err(|e| format!("artifact store get {n}: {e}"))?;
     }
-    Ok(())
+    Ok(!names.is_empty())
 }
 
 fn from_github(part: &Path, run: &PickRun) -> Result<(), String> {
@@ -614,9 +650,12 @@ fn reports(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) {
 /// or the store's lister (run by `runner`).
 pub fn load(cache: &Path, run: &PickRun, runner: &dyn Runner) -> Result<Loaded, String> {
     let dir = run_dir(cache, &run.repo, run.id, run.attempt, &run.globs());
-    fetch(&dir, run, runner)?;
     let globs = run.globs();
     let mut out = Loaded::default();
+    if !fetch(&dir, run, runner)? {
+        out.note = Some(none_note(&globs, true));
+        return Ok(out);
+    }
     let Ok(rd) = std::fs::read_dir(&dir) else {
         return Err(format!("{}: unreadable", dir.display()));
     };
@@ -643,7 +682,7 @@ pub fn load(cache: &Path, run: &PickRun, runner: &dyn Runner) -> Result<Loaded, 
     }
     if out.suites.is_empty() && out.errors.is_empty() {
         out.note = Some(if dir.join(NONE_MARK).exists() {
-            none_note(&globs, run.store.is_some())
+            none_note(&globs, false)
         } else {
             "the artifacts hold no test report".to_string()
         });
@@ -1746,7 +1785,11 @@ at line nine
         // only the names the globs match are fetched, each once, and never from gh
         assert_eq!(
             store.verbs(),
-            ["ls ", "get test-runs-editmode", "get test-runs-playmode-3"]
+            [
+                "ls test-runs-",
+                "get test-runs-editmode",
+                "get test-runs-playmode-3"
+            ]
         );
         let calls = store.calls.borrow().clone();
         assert!(calls.iter().all(|a| a[..4]
@@ -1758,14 +1801,12 @@ at line nine
             ]));
         assert_eq!(calls[0][6..], ["--run", "9"]);
         let part = part_dir(&run_dir(&d, "Org/app", 9, 1, &["test-runs-*"]));
-        assert_eq!(
-            calls[1][6..],
-            [
-                "--run".to_string(),
-                "9".into(),
-                "--dir".into(),
-                part.join("test-runs-editmode").display().to_string()
-            ]
+        assert_eq!(calls[1][6..9], ["--run", "9", "--dir"]);
+        let into = &calls[1][9];
+        assert!(
+            into.starts_with(&format!("{}-{}-", part.display(), std::process::id()))
+                && into.ends_with("/test-runs-editmode"),
+            "{into}"
         );
         // the kept download dir is keyed as before, and a second read asks nothing
         assert!(run_dir(&d, "Org/app", 9, 1, &["test-runs-*"]).is_dir());
@@ -1774,7 +1815,8 @@ at line nine
     }
 
     #[test]
-    fn a_store_with_nothing_for_the_run_says_so_once_and_a_github_none_is_asked_of_the_store() {
+    fn a_store_with_nothing_for_the_run_is_asked_again_and_a_github_none_is_replaced_by_the_store()
+    {
         let d = scratch("store-none");
         let run = store_run(&d, "tools/art.py");
         let dir = run_dir(&d, "Org/app", 9, 1, &run.globs());
@@ -1784,11 +1826,23 @@ at line nine
         let store = Store::new(Ok("playmode-shard-3 9 2026-12-05T00:00:00Z 7\n"));
         let got = load(&d, &run, &store).unwrap();
         assert_eq!(got.note, Some(none_note(&["test-runs-*"], true)));
-        assert_eq!(store.verbs(), ["ls "]);
-        // the store's own none is kept: the next read asks nothing
-        let got = load(&d, &run, &Never).unwrap();
-        assert_eq!(got.note, Some(none_note(&["test-runs-*"], true)));
+        // the store's none is not kept: a read as the run ends may precede its last put
+        load(&d, &run, &store).unwrap();
+        assert_eq!(store.verbs(), ["ls test-runs-", "ls test-runs-"]);
+        let late = Store::new(Ok(LISTED));
+        let got = load(&d, &run, &late).unwrap();
+        assert!(got.note.is_none() && !got.suites.is_empty());
+        assert!(!dir.join(NONE_MARK).exists(), "GitHub's none was replaced");
+        let siblings: Vec<_> = std::fs::read_dir(d.join("junit"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(siblings.len(), 1, "no staging dir is left: {siblings:?}");
+        load(&d, &run, &Never).unwrap();
         // negative control: a repo with no store keeps GitHub's none without asking
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(NONE_MARK), "").unwrap();
         let github = PickRun {
             store: None,
@@ -1810,10 +1864,8 @@ at line nine
             "{e}"
         );
         let dir = run_dir(&d, "Org/app", 9, 1, &run.globs());
-        assert!(
-            !dir.exists() && !part_dir(&dir).exists(),
-            "a failed read keeps nothing"
-        );
+        let left = std::fs::read_dir(d.join("junit")).map_or(0, |r| r.count());
+        assert!(!dir.exists() && left == 0, "a failed read keeps nothing");
         let odd = Store::new(Ok("a b c\n"));
         assert!(load(&d, &run, &odd).unwrap_err().contains("not `<name>"));
         let bad = Store::new(Ok(
@@ -1821,6 +1873,13 @@ at line nine
         ));
         let e = load(&d, &run, &bad).unwrap_err();
         assert!(e.contains("not an artifact name: test-runs-../x"), "{e}");
+        // a glob the store read cannot match is named, not read as a run with nothing
+        let class = PickRun {
+            artifacts: vec!["test-runs-[ep]*".into()],
+            ..run.clone()
+        };
+        let e = load(&d, &class, &Never).unwrap_err();
+        assert!(e.starts_with("testArtifacts test-runs-[ep]*"), "{e}");
         // a lister outside the clone is refused before anything runs
         let outside = store_run(&d, "../x.py");
         let e = load(&d, &outside, &Never).unwrap_err();
@@ -1829,7 +1888,7 @@ at line nine
     }
 
     #[test]
-    fn a_glob_matches_names_as_gh_run_download_does() {
+    fn a_store_glob_takes_star_and_question_mark() {
         assert!(matches("test-runs-*", "test-runs-playmode-3"));
         assert!(matches("test-runs-*", "test-runs-"));
         assert!(matches("junit-?", "junit-1"));

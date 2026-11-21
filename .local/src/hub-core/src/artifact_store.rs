@@ -56,8 +56,18 @@ fn call(repo: &str, script: &Path, args: &[&str]) -> Vec<String> {
 /// Every live artifact of run `id` of `repo`, from `<lister> ls "" --run <id>` (lines
 /// `<name> <run> <expires> <bytes>`). An answer with lines but none in that shape is an error, so a
 /// lister in a new format is named rather than read as a run with nothing.
-pub fn ls(runner: &dyn Runner, repo: &str, script: &Path, id: u64) -> Result<Vec<Listed>, String> {
-    let out = runner.run(&call(repo, script, &["ls", "", "--run", &id.to_string()]))?;
+pub fn ls(
+    runner: &dyn Runner,
+    repo: &str,
+    script: &Path,
+    prefix: &str,
+    id: u64,
+) -> Result<Vec<Listed>, String> {
+    let out = runner.run(&call(
+        repo,
+        script,
+        &["ls", prefix, "--run", &id.to_string()],
+    ))?;
     let mut items = vec![];
     let mut unread = 0;
     for l in out.lines().filter(|l| !l.trim().is_empty()) {

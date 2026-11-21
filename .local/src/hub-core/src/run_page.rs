@@ -927,7 +927,7 @@ fn store_artifacts(
     run: &Run,
     script: Result<PathBuf, String>,
 ) -> Result<Vec<Artifact>, String> {
-    let listed = artifact_store::ls(o.runner, &run.repo, &script?, run.id)?;
+    let listed = artifact_store::ls(o.runner, &run.repo, &script?, "", run.id)?;
     Ok(listed
         .into_iter()
         .map(|l| Artifact {
