@@ -145,6 +145,18 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   assert_equal "$(payload agents/testhost/summary/dispatch)" ''
 }
 
+@test "a machine that loses the fleet lease retracts the dispatch summary it sent" {
+  printf '#!/usr/bin/env bash\n[ "$1" = stats ] && echo %s\n' "'{\"state\":3,\"runnable\":4}'" > "$SANDBOX/bin/fleet-dispatch"
+  chmod +x "$SANDBOX/bin/fleet-dispatch"
+  "$PUB" --quiet
+  assert_equal "$(jq -r .runnable <<< "$(payload agents/testhost/summary/dispatch)")" 4
+  : > "$PUBLOG"
+  FLEET_LEASE_RC=1 run "$PUB" --quiet
+  assert_success
+  grep -qxF "homeassistant/sensor/agent_testhost_summary_dispatch/config"$'\t' "$PUBLOG"
+  grep -qxF "agents/testhost/summary/dispatch"$'\t' "$PUBLOG"
+}
+
 # ar-1753: run one after the other, these two readers took a --full run past its unit's 60s at
 # load 63. fleet-dispatch here blocks until hub phone has started, so a serial run gets neither.
 @test "fleet-dispatch stats and hub phone run side by side, not one after the other" {
