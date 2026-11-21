@@ -2415,19 +2415,19 @@ settle_fixture() {
 
 # gone_remote_item -- fix-crash runs on razer-laptop, which answers: its tmux session is gone, as after
 # the session closed its item there. This machine's store still reads the item running; the stubbed
-# store-sync takes the close from origin ($SANDBOX/origin-close, as razer-laptop's ok close) when it runs.
+# store-sync takes the close from origin ($NOTES_FIXTURE/origin-close, as razer-laptop's ok close) when it runs.
 gone_remote_item() {
   project game beta "$SANDBOX/repos/game"
   worker '2.0 16 1 50'
   remote_item fix-crash
   : > "$NOTES_FIXTURE/tmux.sessions.lab"
-  stub store-sync 'echo "store-sync $*" >> "$NOTES_FIXTURE/calls.log"; [ ! -e "$SANDBOX/origin-down" ] || exit 1
-[ ! -e "$SANDBOX/origin-close" ] || { agent-queue set fix-crash "merged=abc123" >/dev/null && agent-queue move fix-crash done --status ok >/dev/null; }'
+  stub store-sync 'echo "store-sync $*" >> "$NOTES_FIXTURE/calls.log"; [ ! -e "$NOTES_FIXTURE/origin-down" ] || exit 1
+[ ! -e "$NOTES_FIXTURE/origin-close" ] || { agent-queue set fix-crash "pr=o/game#12" "merged=abc123" >/dev/null && agent-queue move fix-crash done --status ok >/dev/null; }'
 }
 
 @test "reap reads a peer host's item from origin first: one its session closed ok there is not failed here (ar-4091)" {
   gone_remote_item
-  : > "$SANDBOX/origin-close"
+  : > "$NOTES_FIXTURE/origin-close"
   run cmd_reap
   assert_success
   assert_called 'store-sync --now'
@@ -2439,12 +2439,12 @@ gone_remote_item() {
 
 @test "reap leaves a peer host's item running while this store cannot reach origin, and fails it once it can" {
   gone_remote_item
-  : > "$SANDBOX/origin-down"
+  : > "$NOTES_FIXTURE/origin-down"
   run cmd_reap
   assert_success
   [ -n "$(qitem running fix-crash)" ] || fail "settled a peer host's item from a store that could not read origin"
   grep -q 'queue item fix-crash left for the next pass' "$FLEET_DISPATCH_DIR/log.md" || fail 'no log line for the skipped item'
-  rm "$SANDBOX/origin-down"
+  rm "$NOTES_FIXTURE/origin-down"
   run cmd_reap
   [ -z "$(qitem running fix-crash)" ] || fail "kept an item whose remote session is gone once origin answered"
 }
