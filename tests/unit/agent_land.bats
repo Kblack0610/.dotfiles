@@ -658,6 +658,36 @@ Item: ship
 EOF
 }
 
+@test "the scratch copy of the merged body in ~/.cache is deleted; other files stay" {
+  mkdir -p "$HOME/.cache/tool"
+  # the file gh pr create was given: no Item line (item-line added it), CRLF, a trailing blank
+  printf 'The change and why.\r\n\n' >"$HOME/.cache/ship-pr.md"
+  printf 'The change and why.\nItem: stale\n' >"$HOME/.cache/ship-pr.txt"
+  printf 'The change and why, edited later.\n' >"$HOME/.cache/other-pr.md"
+  printf 'The change and why.\n' >"$HOME/.cache/ship.log"
+  printf 'The change and why.\n' >"$HOME/.cache/tool/ship-pr.md"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "scratch: deleted $HOME/.cache/ship-pr.md, a copy of the merged body"
+  assert_line "scratch: deleted $HOME/.cache/ship-pr.txt, a copy of the merged body"
+  assert_line 'landed #42'
+  run bash -c 'find "$HOME/.cache" -type f \( -name "*ship*" -o -name "other*" \) | sort'
+  assert_output - < <(printf '%s\n' "$HOME/.cache/other-pr.md" "$HOME/.cache/ship.log" "$HOME/.cache/tool/ship-pr.md" | sort)
+}
+
+@test "an empty merged body deletes no scratch file (negative control)" {
+  # a body of only its Item line normalizes to nothing, so a blank file must not read as its copy
+  printf 'Item: ship\n' >"$NOTES_FIXTURE/body"
+  mkdir -p "$HOME/.cache"
+  printf '\n\n' >"$HOME/.cache/blank.md"
+  printf 'Item: ship\n' >"$HOME/.cache/item-only.md"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'scratch:'
+  assert [ -f "$HOME/.cache/blank.md" ]
+  assert [ -f "$HOME/.cache/item-only.md" ]
+}
+
 @test "item-line: a body that names the item is not edited" {
   printf 'The change.\n\nItem: ship\n' >"$NOTES_FIXTURE/body"
   run "$LAND" 42 --item ship
