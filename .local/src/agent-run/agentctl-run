@@ -24,6 +24,7 @@
 #   agentctl-run --role observe --harness claude -p "<prompt>"
 #   agentctl-run --agent ask-judge -p "<input>"   # a registered agent: its conf sets role, model, prompt
 #   agentctl-run --agent dispatch-judge --schema <file> -p "<rows>"   # this call's reply shape over the conf's SCHEMA
+#   agentctl-run --agent inbox-triage --role observe --context full -p "<line>"   # this call's context (lean|full) over the conf's CALL_CONTEXT
 #   agentctl-run --explain build            # print the resolved invocation, run nothing
 #
 # Roles:    ~/.config/agentctl/roles/<role>.role   (override: $AGENTCTL_ROLES)
