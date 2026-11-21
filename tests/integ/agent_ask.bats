@@ -2139,13 +2139,14 @@ ASK-JUDGE-END'
   refute_line --partial 'judge:'
 }
 
-@test "judge: impact is recorded as judge_level, a bundle takes its widest item, external or irreversible is critical" {
+@test "judge: impact is recorded as judge_level, a bundle takes its widest item, external or irreversible is human-only beside it" {
   local id
   id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes 'open the PR?')"
   fake_judge "$(SCORE_LEVEL=repo score ship_deploy)"
   "$AGENT_ASK" judge "$id"
   run "$AGENT_ASK" show "$id"
   assert_line 'judge_level: repo'; assert_line 'judge_level_evidence: q impact'; assert_line 'judge_level_raised: false'
+  refute_line --partial 'judge_human_only'
   fake_judge "$(jq -cs '{type: .[0].type, decisions: map(.decisions[0]), reason: "x", answer: ""}' \
     <(score ship_deploy) <(SCORE_LEVEL=fleet score ship_deploy))"
   "$AGENT_ASK" judge "$id"
@@ -2153,16 +2154,23 @@ ASK-JUDGE-END'
   assert_line 'judge_level: fleet'; assert_line 'judge_level_raised: false'
   assert_equal "$(grep -c '^judge_level: ' "$(ask_file "$id")")" 1
   local c; for c in external not-reversible; do
-    fake_judge "$(score "$c")"
+    fake_judge "$(SCORE_LEVEL=repo score "$c")"
     "$AGENT_ASK" judge "$id"
     run "$AGENT_ASK" show "$id"
-    # critical is derived, not a floor: raised marks only a floor name
-    assert_line 'judge_level: critical'; assert_line 'judge_level_raised: false'; assert_line 'judge: human'
+    # human-only is a flag beside the judge's own level, never a level, and no floor raised it
+    assert_line 'judge_level: repo'; assert_line 'judge_level_evidence: q impact'; assert_line 'judge_level_raised: false'
+    assert_line 'judge_human_only: true'; assert_line 'judge: human'
   done
-  assert_line 'judge_level_evidence: q not'
+  assert_line 'judge_human_only_evidence: q not'
+  assert_equal "$(grep -c '^judge_human_only: ' "$(ask_file "$id")")" 1
   run "$AGENT_ASK" trace "$id" --json
-  assert_output --partial 'level critical'
+  assert_output --partial 'level repo; human-only'
   refute_output --partial 'raised by a floor name'
+  # negative control: the next verdict with no human-stop rule drops the flag
+  fake_judge "$(score ship_deploy)"
+  "$AGENT_ASK" judge "$id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge: take-recommend'; refute_line --partial 'judge_human_only'
 }
 
 @test "judge: a reply without an impact level, or with one the judge may not give, is no verdict" {
@@ -2305,7 +2313,7 @@ live_post() {
 }
 
 # ar-4074 P1: one type, one row per level band: the grace window waits only where the reach is wider.
-@test "live answers: a type's second row waits at the wider level, the first answers at post, and critical is never armed" {
+@test "live answers: a type's second row waits at the wider level, the first answers at post, and human-only is never armed" {
   unset AGENT_ASK_NO_JUDGE
   export AGENT_ASK_DELAY_RULES='engineering_design@repo=0 engineering_design@fleet=240'
   local id l
@@ -2321,11 +2329,11 @@ live_post() {
   # the 240 minutes are the row's: the deadline is about 4 hours out
   local at; at="$(date -d "$(sed -n 's/^assume_at: //p' "$(ask_file "$id")")" +%s)"
   local left=$((at - $(date +%s))); [ "$left" -gt 14000 ]; [ "$left" -le 14400 ]
-  # negative control: an external ask in the same cell is critical, so it is never armed or answered
+  # negative control: an external ask in the same cell is human-only, so it is never armed or answered
   fake_judge "$(SCORE_TYPE=engineering_design SCORE_LEVEL=fleet score external)"
   id="$(live_post sid-c 'external at fleet?' 2>/dev/null)"
   run "$AGENT_ASK" show "$id"
-  assert_line 'status: pending'; assert_line 'judge_level: critical'; refute_line --partial 'assume_at:'
+  assert_line 'status: pending'; assert_line 'judge_level: fleet'; assert_line 'judge_human_only: true'; refute_line --partial 'assume_at:'
   run "$AGENT_ASK" sweep demo
   run "$AGENT_ASK" show "$id"; assert_line 'status: pending'; refute_line --partial 'assume_at:'
 }
@@ -2756,12 +2764,15 @@ delay_setup() {
   disarmed() { printf 'assume_disarmed: 2026-11-06T10:00:00-0800\n' >> "$1"; }
   rerecommended() { sed -i 's/^recommend: .*/recommend: wait/' "$1"; }
   unleveled() { sed -i '/^judge_level: /d' "$1"; }
+  # a human-only flag planted on a live verdict: live_answer refuses it, whatever its cell
+  humanonly() { printf 'judge_human_only: true\n' >> "$1"; }
   check errored errored
   check empty empty
   check approval approval
   check disarmed disarmed
   check rerecommended rerecommended
   check unleveled unleveled
+  check humanonly humanonly
   # a demoted type, a removed row, a hard stop in the table and malformed rows
   mkdir -p "$HOME/.local/state/agent-ask"
   demote() { printf 'ship_deploy@self\t2026-11-05T00:00:00+0000\tx\n' > "$HOME/.local/state/agent-ask/demoted"; }

@@ -1313,7 +1313,7 @@ kpi_fixture() {
   run "$SUBJECT" kpi --json
   assert_success
   run jq -c 'with_entries(select(.value.now | not) | .value |= [.["7d"], .["28d"]])' <<<"$output"
-  assert_output '{"sessions":[1,2],"merged_prs":[2,3],"revert_rate":[0.25,0.2],"interrupts_per_day":[0.286,0.071],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"first_pass_share":[null,null],"plan_gate_deny_rate":[0.25,0.5],"canary_runs":[0,0],"canary_pass_rate":[null,null],"canary_cost_per_task":[null,null],"canary_min_per_task":[null,null],"canary_turns_per_task":[null,null],"responses_per_merged_pr":[null,null],"context_per_merged_pr":[null,null],"tool_chars_per_call":[null,null],"locate_read_share":[null,null],"reread_share":[null,null],"cache_write_share":[null,null],"start_share":[null,null],"start_context_median":[null,null],"compactions_per_session":[null,null],"rework_candidate_7d":[null,null],"rework_verified_30d":[null,null],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"pages_held_per_day":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_unclear_pct":[null,null],"judge_critical_live_pct":[null,null],"dispatch_false_defer_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null],"startup_ready_ms_p50":[null,null],"sandboxed_lane_pct":[null,null],"pool_busy_share":[null,null]}'
+  assert_output '{"sessions":[1,2],"merged_prs":[2,3],"revert_rate":[0.25,0.2],"interrupts_per_day":[0.286,0.071],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"first_pass_share":[null,null],"plan_gate_deny_rate":[0.25,0.5],"canary_runs":[0,0],"canary_pass_rate":[null,null],"canary_cost_per_task":[null,null],"canary_min_per_task":[null,null],"canary_turns_per_task":[null,null],"responses_per_merged_pr":[null,null],"context_per_merged_pr":[null,null],"tool_chars_per_call":[null,null],"locate_read_share":[null,null],"reread_share":[null,null],"cache_write_share":[null,null],"start_share":[null,null],"start_context_median":[null,null],"compactions_per_session":[null,null],"rework_candidate_7d":[null,null],"rework_verified_30d":[null,null],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"pages_held_per_day":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_unclear_pct":[null,null],"judge_human_only_live_pct":[null,null],"ask_human_only_pct":[null,null],"dispatch_false_defer_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null],"startup_ready_ms_p50":[null,null],"sandboxed_lane_pct":[null,null],"pool_busy_share":[null,null]}'
   run "$SUBJECT" kpi
   assert_line '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
   assert_line '| interrupts_per_day | 0.286 | 0.071 | max 0.2 | past |'
@@ -1353,17 +1353,17 @@ kpi_fixture() {
   assert_equal "$(jq -r .kpi <<<"$output")" judge_precision
 }
 
-@test "kpi --check: judge_critical_live_pct trips the runner-score scope on any critical live answer, never on 0" {
+@test "kpi --check: judge_human_only_live_pct trips the runner-score scope on any live answer to a human-only ask, never on 0" {
   kpi_setup
-  printf '%s\n' judge_critical_live_pct_max=0 >> "$KPI_THRESHOLDS"
-  scope='^(runner_score_.*|dispatch_false_defer_pct|judge_critical_live_pct)$'
-  echo '{"judge_critical_live_pct":{"7d":0,"28d":null}}' > "$JUDGEKPI"
+  printf '%s\n' judge_human_only_live_pct_max=0 >> "$KPI_THRESHOLDS"
+  scope='^(runner_score_.*|dispatch_false_defer_pct|judge_human_only_live_pct)$'
+  echo '{"judge_human_only_live_pct":{"7d":0,"28d":null}}' > "$JUDGEKPI"
   run "$SUBJECT" kpi --check "$scope"
   assert_success
-  echo '{"judge_critical_live_pct":{"7d":4.2,"28d":null}}' > "$JUDGEKPI"
+  echo '{"judge_human_only_live_pct":{"7d":4.2,"28d":null}}' > "$JUDGEKPI"
   run "$SUBJECT" kpi --check "$scope"
   assert_failure 1
-  assert_line 'judge_critical_live_pct 4.2 (max 0)'
+  assert_line 'judge_human_only_live_pct 4.2 (max 0)'
 }
 
 @test "kpi --check: exits 1 on a KPI past its threshold only when its scope names it, and a scope matching none is an error" {
@@ -6999,13 +6999,12 @@ cancel c-old-lane --why canary: superseded by the $week set"
   run grep -c -- --agent "$CQ/add.log"
   assert_output 1
   grep -q 'in any other harness, end the session' "$CQ/add.log"
-  # A lane that spends a Claude account queues at high and another harness's at low: at low the claude
-  # run sat behind every runnable item and never started.
+  # Every lane queues at low, a Claude one too: a canary is a check, never high work (ar-4349).
   run "$SUBJECT" canary queue --harness claude --model haiku --effort max
   assert_success
   assert_equal "$(jq -r .priority "$CQ/canary-greet-$week-codex-sol.json")" low
-  assert_equal "$(jq -r .priority "$CQ/canary-greet-$week.json")" high
-  assert_equal "$(jq -r .priority "$CQ/canary-greet-$week-haiku-ma.json")" high
+  assert_equal "$(jq -r .priority "$CQ/canary-greet-$week.json")" low
+  assert_equal "$(jq -r .priority "$CQ/canary-greet-$week-haiku-ma.json")" low
   # A long id still fits: agent-queue cuts slugs at 40, so the id is shortened, ends in a hash of the
   # whole id, and the lane is kept whole.
   jq '.id = "dispatch-requested-night"' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/long.json"
