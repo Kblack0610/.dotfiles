@@ -954,7 +954,7 @@ close_sample() {
 # reopen it on the answer, as the closing session itself would (CLAUDE_CODE_SESSION_ID names it to
 # agent-ask). Fails when fewer ids were read than the row's own_asks counts, so an ask the blockers
 # do not name is never left without its session, and on the first that cannot be set: answered
-# meanwhile, no session named, or another resume.
+# meanwhile or no session named. An ask with its own resume counts as set: the answer runs it.
 reopen_own_asks() {
   local id ids=()
   [ "$2" = - ] || IFS=, read -ra ids <<<"$2"

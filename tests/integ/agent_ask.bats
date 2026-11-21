@@ -1347,6 +1347,8 @@ days_ahead() { echo $(( ($(date -d "$1" +%s) - $(date +%s) + 43200) / 86400 )); 
   grep -qx 'resume: /captain resume' "$(ask_file "$other")"
   run grep -c '^reopen: ' "$(ask_file "$other")"
   assert_output 0
+  run "$AGENT_ASK" reopen-on-answer "$("$AGENT_ASK" post --project demo --resume 'run: elsewhere' 'loose with resume?')"
+  assert_success
   # Refused: one with no session, one not pending.
   loose="$(post demo 'loose?')"
   run "$AGENT_ASK" reopen-on-answer "$loose"

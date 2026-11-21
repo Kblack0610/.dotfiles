@@ -1545,12 +1545,12 @@ cmd_reopen_on_answer() {
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
   load_ask "$f"
   [ "${ASK[status]:-}" = pending ] || { echo "agent-ask: $id is ${ASK[status]:-}, not pending" >&2; return 1; }
+  r="${ASK[resume]:-}"
+  [ -z "$r" ] || [ "$r" = "$REOPEN_RESUME" ] || { echo "$id already resumes with: $r; the answer runs that, not this session" >&2; return 0; }
   [ -n "${ASK[claude_session]:-}" ] || { echo "agent-ask: $id names no session to reopen" >&2; return 1; }
   # The closing session is the caller; one not on the ask (a hand run) means the asker.
   local sid="${CLAUDE_CODE_SESSION_ID:-}"
   grep -qxF "claude_session: $sid" "$f" || sid="${ASK[claude_session]}"
-  r="${ASK[resume]:-}"
-  [ -z "$r" ] || [ "$r" = "$REOPEN_RESUME" ] || { echo "$id already resumes with: $r; the answer runs that, not this session" >&2; return 0; }
   (
     command -v flock >/dev/null 2>&1 && flock 9
     add_reopen "$f" "$sid"
