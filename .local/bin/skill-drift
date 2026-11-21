@@ -84,6 +84,10 @@
 #              supposed to look idle.
 #   RETIRE     UNUSED, and the skill declares metadata.replaces and nobody typed any of
 #              those forms either: nobody does the work at all. Reported instead of UNUSED.
+#   PROMOTE    a `status: draft` skill used in more than TOGGLE_MAX sessions in TOGGLE_DAYS:
+#              the counterpart of the toggle's demote, over the same window and bar. A
+#              signal for a human, who lifts `status` and `disable-model-invocation`
+#              (the lifecycle is in skills.md).
 #   BYPASSED   sessions typed a form the skill's metadata.replaces names without using the
 #              skill (claude-recall's bypass kind; the rows are hand_methods.py's).
 #   LISTBUDGET every listed skill and command together are over the shared listing
@@ -867,6 +871,31 @@ check_unused() {
   return 0
 }
 
+# PROMOTE: a draft (`status: draft`, so unlisted) used in more than TOGGLE_MAX sessions in
+# TOGGLE_DAYS, the bar the toggle hides a listed skill at, so a promoted skill is not demoted the
+# next night. It counts over TOGGLE_DAYS like the toggle, so it overwrites the usage arrays with that
+# window: it runs after every check that reads the 90-day ones.
+# No transcripts at all means we cannot tell, as in check_unused.
+check_promote() {
+  local d f s n head drafts=()
+  for d in "$SKILLS"/*/; do
+    f="$d/SKILL.md"
+    [ -e "$f" ] || continue
+    head="$(fm "$f")"   # captured, so grep -q cannot SIGPIPE the reader under pipefail
+    grep -qE '^status:[[:space:]]*draft[[:space:]]*$' <<<"$head" && drafts+=("$(basename "$d")")
+  done
+  [ ${#drafts[@]} -gt 0 ] || return 0
+  USED=()
+  load_usage "$TOGGLE_DAYS"
+  [ ${#USED[@]} -gt 0 ] || return 0
+  for s in "${drafts[@]}"; do
+    n="${USED[$s]:-0}"
+    [ "$n" -gt "$TOGGLE_MAX" ] \
+      && add PROMOTE "$s" "${TOGGLE_DAYS}d" "draft used in $n sessions in the last ${TOGGLE_DAYS}d, past the toggle's bar of $TOGGLE_MAX: list it"
+  done
+  return 0
+}
+
 # BYPASSED: sessions typed a form the skill's metadata.replaces names and never used the skill.
 check_bypass() {
   local skill="$1" n="${BYPASS[$1]:-0}" cov="${BYPASS_COVERED[$1]:-0}"
@@ -1301,6 +1330,7 @@ else
     check_bypass "$s"
   done
 
+  check_promote
   check_undeployed "$PUB"  public
   check_undeployed "$PRIV" private
   check_registration
@@ -1467,6 +1497,8 @@ cat <<'EOF'
                 a skill the router never picks is the one to look at
   RETIRE     -> no use and no hand-typed form of its work: propose retiring it with
                 `/skill-refine`; the human says yes before anything is deleted
+  PROMOTE    -> a draft earned its place: remove `status: draft` and `disable-model-invocation`
+                after a read of its description (skills.md, the listing rule)
   BYPASSED   -> sessions did the skill's work by hand (`claude-recall stats --kind bypass`
                 shows one). A deny row: widen its match. A report row: script the form
                 and make the row deny, or fix the step that sends sessions around it

@@ -7549,6 +7549,28 @@ start_rows() {
   assert_output --partial '| opencode-go:glm | 2 | 1 | 1 | 1 | 0 | 1 |'
 }
 
+@test "triage: a tripped watch whose manifest names a system loads fix-red and that system's skills" {
+  log_triage_setup
+  export BENCH_SKILLS_DIR="$SANDBOX/skills"
+  mkdir -p "$BENCH_SKILLS_DIR"/{fix-red,ci-cost,k8s-ops,ci-failures}
+  printf -- '---\nname: fix-red\nmetadata:\n  system: [any]\n---\n' > "$BENCH_SKILLS_DIR/fix-red/SKILL.md"
+  printf -- '---\nname: ci-cost\nmetadata:\n  system: [ci]\n---\nsystem: [telemetry]\n' > "$BENCH_SKILLS_DIR/ci-cost/SKILL.md"
+  printf -- '---\nname: ci-failures\nmetadata:\n  system: [ci, tests]\n---\n' > "$BENCH_SKILLS_DIR/ci-failures/SKILL.md"
+  printf -- '---\nname: k8s-ops\nmetadata:\n  system: [telemetry]\n---\n' > "$BENCH_SKILLS_DIR/k8s-ops/SKILL.md"
+  route 'watch.: (gate|plain) tripped' agent ci-cost 'read the slowest run'
+  watch gate TRIP -25200 high
+  watch plain TRIP -25200 high
+  printf 'system: [ci]\n' >> "$TRIAGE_WATCHES/gate.yaml"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  # the route's own skill is not repeated, a skill naming the id only past its frontmatter is not listed
+  assert_line --regexp '^check\(watch\): gate tripped .*; fix with ci-cost: read the slowest run; system ci: load fix-red and ci-failures #high'
+  # negative control: a watch with no system: names none
+  run "$SUBJECT" triage --dry-run
+  assert_line --regexp '^check\(watch\): plain tripped .*; fix with ci-cost: read the slowest run #high'
+  refute_line --regexp '^check\(watch\): plain .*system'
+}
+
 # alert_setup: the aggregate Alertmanager watch tripped, its evidence one alert a line, no pins
 alert_setup() {
   log_triage_setup
