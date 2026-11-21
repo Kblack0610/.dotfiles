@@ -122,15 +122,23 @@ fn job_wait(command: &str, patterns: &[(Wait, &str)]) -> Wait {
 }
 
 /// What a session-written script counts as, read by what it runs: for each command word of `command`
-/// that names a file under `cwd` (a path, or `*.sh`), `job_wait` of that file's text. So
-/// `bash Logs/gate-land.sh`, which calls `scripts/test/suite.sh`, is a gate, where its command
-/// line names none. One level: a script that runs another script of the session's own stays a job.
-/// A script gone from disk, or over WRAPPER_MAX_BYTES, is a plain job.
+/// that names a file (a path or `*.sh`, joined to `cwd` as the shell would), the strongest
+/// `job_wait` of those files' text. So `bash Logs/gate-land.sh`, which calls `scripts/test/suite.sh`,
+/// is a gate, where its command line names none. One level: a script that runs another script of
+/// the session's own stays a job. A script gone from disk, over WRAPPER_MAX_BYTES, or named after
+/// a `cd` is a plain job, and the class is the file's text now, not when the command ran.
 fn wrapper_wait(command: &str, cwd: &str, patterns: &[(Wait, &str)]) -> Wait {
     if cwd.is_empty() {
         return Wait::Jobs;
     }
+    let strength = |w: Wait| match w {
+        Wait::Gate => 3,
+        Wait::Test => 2,
+        Wait::Build => 1,
+        _ => 0,
+    };
     let command = unquoted(command);
+    let mut best = Wait::Jobs;
     for segment in command.split(COMMAND_STARTS) {
         let mut rest = segment.trim_start();
         while let Some(next) = past_wrapper(rest) {
@@ -149,12 +157,12 @@ fn wrapper_wait(command: &str, cwd: &str, patterns: &[(Wait, &str)]) -> Wait {
         }
         if let Ok(text) = fs::read_to_string(&path) {
             let wait = job_wait(&text, patterns);
-            if wait != Wait::Jobs {
-                return wait;
+            if strength(wait) > strength(best) {
+                best = wait;
             }
         }
     }
-    Wait::Jobs
+    best
 }
 
 /// Whether `text` runs as a command in `command` (read through `unquoted`): where a command
@@ -1135,6 +1143,7 @@ mod tests {
         // agent-11, 2026-11-05: `bash Logs/gate-land.sh` ran scripts/test/suite.sh on the pool and read as a plain job.
         let conf = include_str!("../../../../../.config/agent-panel/time-use.conf");
         let dir = std::env::temp_dir().join(format!("agent-core-wrapper-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir); // a failed run leaves it behind
         fs::create_dir_all(dir.join("Logs")).unwrap();
         fs::write(
             dir.join("Logs/gate-land.sh"),
@@ -1165,6 +1174,11 @@ mod tests {
         let cwd = dir.to_str().unwrap();
         assert_eq!(open(cwd, "bash Logs/gate-land.sh; echo exit=$?"), "gate");
         assert_eq!(open(cwd, "./Logs/gate-land.sh"), "gate");
+        // the strongest class of a chain wins, whichever script comes first
+        assert_eq!(
+            open(cwd, "bash Logs/test.sh; bash Logs/gate-land.sh"),
+            "gate"
+        );
         assert_eq!(open(cwd, &format!("{cwd}/Logs/test.sh")), "test");
         // negative controls: a script that runs no gate or test (a quoted or sleeping mention
         // is not a run), the same command from a directory without it, and no cwd at all.
