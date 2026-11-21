@@ -4419,9 +4419,11 @@ triage_promote() {
 # triage_coverage -> each standing watch and each runner no TRIAGE_ROUTES line resolves, and each
 # runner whose SKILL names nothing (agentctl skill --dangling), one a line.
 # It builds the row each would file, so a line that stops matching the real row text counts too. A
-# watch with an expiry is a bake or a one-off: it pages and goes, so it needs no line.
+# watch with an expiry is a bake or a one-off: it pages and goes, so it needs no line. A watch counts
+# as routed only by a line that names it: each watch's fix is its own, so a generic line such as
+# `check(watch): ([a-z-]+) tripped` would read every new watch as covered (penguin P4, ar-4155).
 triage_coverage() {
-  local f n text out rows=
+  local f n text out key route re skill fix tags rows=
   # Exit 1 is the answer "some are dangling"; any other failure means the check did not run, which
   # counts too, so a missing agentctl cannot read as clean.
   out=$(AGENTCTL_CONF_DIR="$LEDGER_CONF_DIR" $BENCH_SKILL_CMD 2>&1) || [ $? -eq 1 ] || out="the SKILL check failed: $out"
@@ -4445,7 +4447,13 @@ triage_coverage() {
   [ -n "$rows" ] || return 0
   triage_shape hold ci-0
   rows+="hold"$'\t'"$text"$'\t-\n'
-  triage_route "${rows%$'\n'}" | awk -F'\t' '$4 == "-" { print $1 }'
+  triage_route "${rows%$'\n'}" | while IFS=$'\t' read -r key _ _ route _; do
+    [ "$route" != - ] || { echo "$key"; continue; }
+    [[ "$key" == 'watch '* ]] || continue
+    n=${key#watch }
+    triage_shape watch "$n"
+    triage_line "$text" && [[ "$re" =~ (^|[^a-z0-9_-])$n([^a-z0-9_-]|$) ]] || echo "$key"
+  done
 }
 
 # A cleanup item merges itself at any hour behind the red-fix gate (policy.md), so nobody is there

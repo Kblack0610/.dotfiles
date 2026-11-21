@@ -2627,6 +2627,26 @@ coverage_setup() {
   assert_output 'hold'
 }
 
+@test "triage --coverage: a generic watch line routes the row but covers no watch it does not name (ar-4155)" {
+  coverage_setup
+  sed -i '/standing/d' "$TRIAGE_ROUTES"
+  printf '^check.watch.: ([a-z0-9-]+) tripped\tagent\t-\tdo the action\t-\n' >> "$TRIAGE_ROUTES"
+  run "$SUBJECT" triage --coverage
+  assert_failure
+  assert_output 'watch standing'
+  run "$SUBJECT" triage --route 'watch standing'
+  assert_output --partial "$(printf 'watch standing\tagent')"
+  # naming it covers it, in an alternation too; a name that only contains it does not
+  printf '^check.watch.: (outstanding|standing-by) tripped\tagent\t-\tdo it\t-\n' > "$SANDBOX/named"
+  cat "$TRIAGE_ROUTES" >> "$SANDBOX/named"; mv "$SANDBOX/named" "$TRIAGE_ROUTES"
+  run "$SUBJECT" triage --coverage
+  assert_output 'watch standing'
+  sed -i '1s/(outstanding|standing-by)/(outstanding|standing)/' "$TRIAGE_ROUTES"
+  run "$SUBJECT" triage --coverage
+  assert_success
+  assert_output ''
+}
+
 @test "triage --coverage: a runner whose SKILL resolves to nothing fails and names it (negative control)" {
   coverage_setup
   printf '#!/usr/bin/env bash\nexec "%s" skill --dangling\n' "$REPO_ROOT/.local/bin/agentctl" > "$SANDBOX/bin/skill-stub"
