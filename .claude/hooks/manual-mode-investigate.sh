@@ -8,8 +8,8 @@
 # UserPromptSubmit: inject the investigate posture, which outranks the global plan-first and
 # land-changes rules while the mode lasts, once, and again after a compaction or a prompt made in
 # another mode.
-# PreToolUse (Edit|Write|MultiEdit|NotebookEdit|EnterPlanMode): deny, on every call. The settings
-# allowlist has Edit(**), so manual mode would otherwise edit without a prompt.
+# PreToolUse (Edit|Write|MultiEdit|NotebookEdit|EnterPlanMode): deny, on every call.
+# The settings allowlist has Edit(**), so manual mode would otherwise edit without a prompt.
 set -uo pipefail
 
 MARK="Manual mode is investigate-only."
