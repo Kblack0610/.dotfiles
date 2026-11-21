@@ -865,9 +865,7 @@ pub fn build(
         }
         let midnight = crate::text::local_day_start(now.timestamp());
         let mut closed: HashMap<usize, Vec<&Item>> = HashMap::new();
-        for i in q.items.iter().filter(|i| {
-            i.state == State::Done && i.finished_at().is_some_and(|f| f.timestamp() >= midnight)
-        }) {
+        for i in q.items.iter().filter(|i| i.state == State::Done) {
             if let Some(k) = owner(i, &labs).and_then(|o| at(&mut cards, &o)) {
                 closed.entry(k).or_default().push(i);
             }
