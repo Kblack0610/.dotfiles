@@ -4368,7 +4368,9 @@ triage_promote() {
     kind=$(triage_kind "$key")
     trip=$(watch_trip "$key")
     tries=$(cause_tries "$items" "$cause" "$trip" "$route")
-    # Spent is counted before the day's cap, which says nothing about a cause's own tries.
+    # Spent is counted before the day's cap, which says nothing about a cause's own tries; an
+    # unreadable count is neither spent nor a try.
+    [[ "$tries" =~ ^-?[0-9]+$ ]] || continue
     [ "$tries" -lt "$TRIAGE_FIX_TRIES" ] || { spent+="$cause"$'\t'"$key"$'\n'; continue; }
     [ -n "$kind" ] || [ $((used + capped)) -lt "$TRIAGE_FIX_CAP" ] || continue
     [[ "$seen" != *" $cause "* ]] || continue
@@ -4389,7 +4391,9 @@ triage_promote() {
 # rewrites it, so a cause that cleared or got a try back leaves it.
 triage_spent_write() {
   mkdir -p "$(dirname "$TRIAGE_SPENT_FILE")" || return 0
-  printf '%s' "$1" | awk -F'\t' 'NF && !seen[$1]++' > "$TRIAGE_SPENT_FILE.$$" && mv "$TRIAGE_SPENT_FILE.$$" "$TRIAGE_SPENT_FILE"
+  # A failed write says so and leaves no temp file; the old file then ages into reds_spent=?.
+  printf '%s' "$1" | awk -F'\t' 'NF && !seen[$1]++' > "$TRIAGE_SPENT_FILE.$$" && mv "$TRIAGE_SPENT_FILE.$$" "$TRIAGE_SPENT_FILE" \
+    || { rm -f "$TRIAGE_SPENT_FILE.$$"; say "triage: could not write $TRIAGE_SPENT_FILE"; }
 }
 
 # reds_spent -> the count of TRIAGE_SPENT_FILE, ? when no triage pass wrote it in TRIAGE_SPENT_STALE_MIN
