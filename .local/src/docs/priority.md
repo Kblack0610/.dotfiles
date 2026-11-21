@@ -32,7 +32,8 @@ Why: nine scales grew apart, so "high" meant a page on one, a default on another
 | Runner `CRITICAL` | `CRITICAL=yes` in a runner conf | yes, no | a boolean flag only | the runner's author | the runner starts while `agentctl pause` is on (a reaper whose disk or RAM cannot wait) |
 | Sentinel watch severity | `severity:` in `~/.agent/watches/<name>.yaml` (`SENTINEL.md`, "Paging") | low, normal, high, urgent; `sentinel-manifest validate` refuses any other word | identical | the watch's author | high and urgent buzz the phone and reach the shepherd as a due line; `notify_priority:` overrides the page level, and a command probe's `page: <word>` line overrides both for that trip; the red-watch item floor waits `TRIAGE_WATCH_HIGH_AFTER` at high or urgent |
 | Alertmanager severity | `severity` label on a rule (home-config `apps/monitoring/helm-values.yaml` routes) | critical, warning, info | critical is urgent, warning is normal, info is low; a critical with `category = cost` is high, as its route already pages `ntfy-high` | the rule's author | routes: critical to `ntfy-critical` hourly (a stale-backup critical once a day), info dropped; topics `homelab-alerts`, `homelab-security` (digest) and `homelab-trading`, none of them the phone's `agents` topic; the Sentinel watch `alertmanager-fleet` pages a firing `fleet=fix` alert at the level this row maps it to, the highest when several fire |
-| Ask impact | `level` of an ask (`.config/agent-ask/policy.md`, "Impact") | self, repo, fleet, critical | not a priority: it is how far a wrong answer reaches. `critical` is recorded when a human-stop rule fires (external, or not reversible) | the judge scores it; `agent-ask` adds `critical` | the judge's delay rows: a type answers itself up to its ceiling; `critical` always goes to the human |
+| Ask impact | `judge_level` of an ask (`.config/agent-ask/policy.md`, "Impact") | self, repo, fleet | not a priority: it is how far a wrong answer reaches | the judge scores it; a policy floor name raises it to fleet | the judge's delay rows: a type answers itself up to its ceiling |
+| Ask human-only | `judge_human_only: true` on an ask | true, or absent | a stop rule, not a level: a human-stop rule fired (external, or not reversible) | `agent-ask`, from the judge's criteria | the ask always goes to the human, whatever its level; `judge_human_only_live_pct` trips on one the judge answered |
 | Page priority | `agent-notify -p low\|normal\|high\|urgent` | low, normal, high, urgent | identical | the sender, by the page table in the `comms-standard` skill ("Priority") | ntfy 2, 3, 4, 5; the phone subscribes at minimum High, so only high and urgent buzz |
 
 Which scale to read for a question:
@@ -80,7 +81,6 @@ Measured 2026-11-21; each line leaves this table when its fix lands (epic ar-434
 | --- | --- |
 | Agent plan phases inherit urgent; canary items file as both high and low; the done-item high share is 68-72% | P2 |
 | The focus project runs 18% of done items and the low projects 78%: project `#prio` does not steer the fleet-share cap | P3 |
-| `critical` is a stop rule that reads as a level, so `judge_critical_live_pct` cannot trip | P5 |
 
 ## Checks
 
