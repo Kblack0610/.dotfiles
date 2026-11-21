@@ -1581,3 +1581,110 @@ fn a_hand_sessions_want_stamps_its_row_and_a_plan_phase_still_files() {
     ));
     assert_eq!(ids(&h.board()).len(), 2, "{}", h.board());
 }
+
+/// This HOME with a second project, `game`, that the registry versions from `demo` (it has
+/// `buildTags` and `demo` a `tagGlob`), one human row and one agent row; `own` is the game
+/// sheet's own `Version:` line, or "" for none.
+fn with_game(h: &Home, own: &str) -> PathBuf {
+    let game = h.0.join("notes/projects/current/game");
+    fs::create_dir_all(game.join("agent")).unwrap();
+    fs::write(
+        h.0.join("notes/projects/index.md"),
+        "## Current\n- [[projects/current/demo/summary|demo]]\n- [[projects/current/game/summary|game]]\n",
+    )
+    .unwrap();
+    fs::write(game.join("summary.md"), "# game\n").unwrap();
+    fs::write(
+        game.join("README.md"),
+        format!(
+            "# game #alpha\n{own}\n## Tasks\n- [ ] feat(ui): a game row #size/s <!-- id:gm-1 -->\n"
+        ),
+    )
+    .unwrap();
+    fs::write(
+        game.join("agent/README.md"),
+        "# game - agent board\n\n## Tasks\n- [ ] fix(ui): a game agent row #size/s <!-- id:gm-2 -->\n",
+    )
+    .unwrap();
+    fs::write(
+        h.0.join("map.json"),
+        r#"{"trackers": {"demo": {"type": "game", "code": "dm", "tagGlob": "v*"},
+            "game": {"type": "game", "code": "gm", "repo": "demo", "buildTags": ["v*-game*"]}}}"#,
+    )
+    .unwrap();
+    game
+}
+
+#[test]
+fn a_game_with_no_version_of_its_own_is_on_its_parents_version_and_window() {
+    let h = Home::new("one-version");
+    with_game(&h, "");
+    // Its open version is the parent's, and its head tags are still read off its README.
+    let out = h.run(&["projects"]);
+    ok(&out);
+    let list = String::from_utf8_lossy(&out.stdout).into_owned();
+    let game_line = list
+        .lines()
+        .find(|l| l.starts_with("game\t"))
+        .unwrap_or_default();
+    assert!(game_line.ends_with("\tv0.1.0"), "{list}");
+    let out = h.run(&["projects", "--stage", "game"]);
+    ok(&out);
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "alpha");
+    // The stats name the parent, which is how wave-roll and fleet-bench know not to cut it.
+    let out = h.run(&["projects", "--stats", "--json"]);
+    ok(&out);
+    let stats = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stats.contains(r#""version_parent":"demo""#), "{stats}");
+    // A game has no window of its own to commit.
+    let out = h.run(&["projects", "--commit", "game"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("demo's window"));
+    // The parent's window commits the game's agent row beside its own.
+    ok(&h.run(&["projects", "--commit", "demo"]));
+    let note = fs::read_to_string(h.0.join("notes/projects/current/demo/agent/versions/v0.1.0.md"))
+        .unwrap();
+    assert!(note.contains("id:gm-2"), "{note}");
+}
+
+#[test]
+fn a_game_that_keeps_its_own_version_stays_out_of_its_parents_window() {
+    // NEGATIVE CONTROL for the test above: a game sheet still carrying a `Version:` line is
+    // its own number until it is migrated, so nothing reads it twice.
+    let h = Home::new("own-version");
+    with_game(&h, "Version: v2.1.7\n");
+    let out = h.run(&["projects"]);
+    let list = String::from_utf8_lossy(&out.stdout).into_owned();
+    let game_line = list
+        .lines()
+        .find(|l| l.starts_with("game\t"))
+        .unwrap_or_default();
+    assert!(game_line.ends_with("\tv2.1.7"), "{list}");
+    let out = h.run(&["projects", "--stats", "--json"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains(r#""version_parent":null"#));
+    ok(&h.run(&["projects", "--commit", "demo"]));
+    let note = fs::read_to_string(h.0.join("notes/projects/current/demo/agent/versions/v0.1.0.md"))
+        .unwrap();
+    assert!(!note.contains("id:gm-2"), "{note}");
+}
+
+#[test]
+fn a_new_game_row_from_a_session_waits_for_the_next_window_of_a_focus_parent() {
+    let h = Home::new("game-freeze");
+    let game = with_game(&h, "");
+    fs::write(
+        h.0.join("notes/projects/current/demo/README.md"),
+        "# demo\nVersion: v0.1.0 #prio/focus\n\n## Inbox\n\n## Tasks\n",
+    )
+    .unwrap();
+    ok(&h.run(&["projects", "--commit", "demo"]));
+    let mut c = h.cmd(&["ptask", "game", "add", "fix(ui): a later game bug #low"]);
+    c.env("AGENTCTL_NAME", "inbox-triage");
+    ok(&c.output().unwrap());
+    let sheet = fs::read_to_string(game.join("README.md")).unwrap();
+    let row = sheet
+        .lines()
+        .find(|l| l.contains("a later game bug"))
+        .unwrap_or_default();
+    assert!(row.contains("#v0.1.1"), "{sheet}");
+}

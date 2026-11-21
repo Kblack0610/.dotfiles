@@ -19,7 +19,7 @@ use anyhow::Result;
 use chrono::NaiveDate;
 use std::collections::HashSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The agent note section holding a window's committed rows.
 const COMMITTED: &str = "Committed";
@@ -90,16 +90,34 @@ pub(crate) struct Rows {
     pub later: Vec<String>,
 }
 
+/// The project whose window holds project `dir`'s rows: the parent that versions it
+/// ([`projects::version_parent_dir`]), else itself. A game's new rows freeze, wait and are held
+/// by the playground's sprint.
+pub(crate) fn home(dir: &Path) -> PathBuf {
+    projects::version_parent_dir(dir).unwrap_or_else(|| dir.to_path_buf())
+}
+
+/// Project `dir` and the projects it versions ([`projects::version_child_dirs`]): the sheets one
+/// window reads, `dir` first.
+fn family(dir: &Path) -> Vec<PathBuf> {
+    std::iter::once(dir.to_path_buf())
+        .chain(projects::version_child_dirs(dir))
+        .collect()
+}
+
 fn rows_of(dir: &Path, cur: V, ix: &Index) -> Rows {
     let mut r = Rows::default();
     // A queued version holds only the rows tagged for it: every untagged row is the open one's.
     let queued = is_queued(dir, cur);
     let mine = |l: &str| !queued || sheet::target(l) == Some(cur);
-    for (i, lane) in [dir.to_path_buf(), projects::agent_dir(dir)]
+    let homes = family(dir);
+    let humans = homes.len();
+    let lanes = homes
         .iter()
-        .enumerate()
-    {
-        let content = project_tasks::task_sheet(lane)
+        .cloned()
+        .chain(homes.iter().map(|d| projects::agent_dir(d)));
+    for (i, lane) in lanes.enumerate() {
+        let content = project_tasks::task_sheet(&lane)
             .and_then(|p| fs::read_to_string(p).ok())
             .unwrap_or_default();
         r.open.extend(
@@ -108,7 +126,7 @@ fn rows_of(dir: &Path, cur: V, ix: &Index) -> Rows {
                 .map(|(_, l)| l.to_string())
                 .filter(|l| ix.counts(l) && mine(l)),
         );
-        if i == 0 {
+        if i + 1 == humans {
             r.human = r.open.len();
         }
         let lines: Vec<&str> = content.lines().collect();
@@ -125,9 +143,13 @@ fn rows_of(dir: &Path, cur: V, ix: &Index) -> Rows {
                 .filter(|l| mine(l)),
         );
     }
-    let note = fs::read_to_string(projects::agent_note_path(dir, &projects::fmt_version(cur)))
-        .unwrap_or_default();
-    r.closed.extend(project_tasks::note_done_rows(&note));
+    // A child's swept Done rows sit in its own note of this version (its agent board archives
+    // under the open version it reads, the parent's).
+    for home in &homes {
+        let note = fs::read_to_string(projects::agent_note_path(home, &projects::fmt_version(cur)))
+            .unwrap_or_default();
+        r.closed.extend(project_tasks::note_done_rows(&note));
+    }
     r.closed.retain(|l| ix.counts(l));
     r.later.retain(|l| ix.counts(l));
     r
@@ -295,9 +317,12 @@ fn day_end(d: NaiveDate) -> chrono::NaiveDateTime {
 
 /// The row ids open on either of project `dir`'s sheets: the rows an `#after/` gate still waits on.
 fn open_ids(dir: &Path) -> HashSet<String> {
-    [dir.to_path_buf(), projects::agent_dir(dir)]
+    let homes = family(dir);
+    homes
         .iter()
-        .filter_map(|lane| project_tasks::task_sheet(lane))
+        .cloned()
+        .chain(homes.iter().map(|d| projects::agent_dir(d)))
+        .filter_map(|lane| project_tasks::task_sheet(&lane))
         .filter_map(|p| fs::read_to_string(p).ok())
         .flat_map(|c| {
             c.lines()
@@ -1098,7 +1123,8 @@ pub(crate) fn runs_sprints(dir: &Path) -> bool {
 /// version has its snapshot. Only then does a new row default to the next window. One read per
 /// filing, so a caller routing many rows checks once.
 fn frozen_window(dir: &Path, cur: Option<V>) -> Option<V> {
-    cur.filter(|c| runs_sprints(dir) && read(dir, *c).is_some())
+    let home = home(dir);
+    cur.filter(|c| runs_sprints(&home) && read(&home, *c).is_some())
 }
 
 /// The rule a refused change to an open sprint names.
@@ -1121,7 +1147,7 @@ pub(crate) fn refuse_held(
     let Some(c) = frozen_window(dir, cur) else {
         return Ok(());
     };
-    let held = read(dir, c).is_some_and(|s| holds(&s.keys, line));
+    let held = read(&home(dir), c).is_some_and(|s| holds(&s.keys, line));
     anyhow::ensure!(
         !held || sheet::is_later(line, Some(c)),
         "refused: {what} '{}', a row of the open {} sprint: {FROZEN_RULE}",
@@ -1208,8 +1234,9 @@ pub(crate) fn admit(
     // What a row waits on, read once a filing: the window's end and the rows open on its sheets.
     let ends = window.map(|c| {
         let now = chrono::Local::now().naive_local();
-        let end = read(dir, c).and_then(|s| s.end()).unwrap_or(now);
-        (now.date(), end, open_ids(dir))
+        let home = home(dir);
+        let end = read(&home, c).and_then(|s| s.end()).unwrap_or(now);
+        (now.date(), end, open_ids(&home))
     });
     let none = HashSet::new();
     block
