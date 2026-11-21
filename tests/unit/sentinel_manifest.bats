@@ -374,13 +374,14 @@ EOF
   run "$SM" validate "$M"
   assert_failure
   assert_output --partial "notify_priority 'critical'"
-  base; sed -i 's/^severity: .*/severity:/' "$M"
-  run "$SM" validate "$M"
-  assert_failure
-  assert_output --partial "severity '' is not one of"
 }
 
-@test "a manifest with no severity is still valid: the loop pages it at normal" {
+@test "a manifest with no severity, or an empty or null one, is still valid: the loop pages it at normal" {
+  for v in "" " ~" " null"; do
+    base; sed -i "s/^severity: .*/severity:$v/" "$M"; echo "notify_priority:$v" >> "$M"
+    run "$SM" validate "$M"
+    assert_success
+  done
   base; sed -i '/^severity:/d' "$M"
   run "$SM" validate "$M"
   assert_success

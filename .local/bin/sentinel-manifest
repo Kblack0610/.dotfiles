@@ -620,9 +620,10 @@ def cmd_validate(path, strict=False):
         )
 
     # In plain validate, not --strict: a level the loop cannot read pages at a level nobody chose.
+    # Empty or null is unset, as the loop reads it (normal, or the severity).
     for field in ("severity", "notify_priority"):
         level = scalar(doc.get(field))
-        if field in doc and level not in LEVELS:
+        if level and level not in LEVELS:
             errors.append(f"{field} {level!r} is not one of {' '.join(LEVELS)} (~/.local/src/docs/priority.md)")
 
     # How many consecutive probes must agree before a state change. The loop's
