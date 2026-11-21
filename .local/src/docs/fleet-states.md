@@ -82,6 +82,8 @@ There is one chain, for every session whoever started it, and one timer. A sessi
 | `quiet` | F. The timer | quiet under `FLEET_IDLE_CLOSE_MIN`; not asked by `--self` | after: quiet Nm of 60m |
 | `now` | | anything else: DONE, CHAT, STALLED with nothing to land, an open ask of its own | now; `/wind-down auto` sets each own ask to reopen it (`agent-ask reopen-on-answer`), so the answer carries on without the window; a session that turns its close down has its window closed by `fleet-shepherd check` an hour later, its asks set the same way first |
 
+Who asks: a dispatched session asks itself at the end of the first turn after its queue item is done (`.claude/hooks/stop-post.d/94-self-close.sh` runs `close --self` and, on now, tells it to run `/wind-down auto` while its context is still cached). The shepherd's typed close is the backstop for one that did not, and the closer for sessions the human opened, whose last answer the human may still be reading.
+
 Quiet is the smaller of `idle_min` and `age_min`, a null `age_min` reading 0, so a row with an unknown age never closes on the timer. The human typing in a window keeps it from going quiet, so no presence fact is read. `pct` is `phases_done` of `phases_total` in percent, null with no checklist.
 
 ### Changing the close flow

@@ -65,8 +65,8 @@ jq -e '.total | numbers' "$dir/knowledge.json" >/dev/null 2>&1 \
     || fail "notes knowledge lint gave no JSON ($dir/knowledge.err)"
 knowledge_n="$(jq '.total' "$dir/knowledge.json")"
 
-# UNUSED and STALE are signals for a human, not drift a session can fix, so they do not count here.
-skills_n="$(jq '[.findings[] | select(.type != "UNUSED" and .type != "STALE")] | length' "$dir/skills.json")"
+# UNUSED, STALE and PROMOTE are signals for a human, not drift a session can fix, so they do not count here.
+skills_n="$(jq '[.findings[] | select(.type != "UNUSED" and .type != "STALE" and .type != "PROMOTE")] | length' "$dir/skills.json")"
 docs_n="$(jq '.drift' "$dir/docs.json")"
 dups_n="$(jq '.pairs' "$dir/dups.json")"
 dups_over="$(jq '.over' "$dir/dups.json")"
