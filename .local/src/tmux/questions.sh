@@ -116,8 +116,7 @@ cmd_rows() {
   # seconds like the rest. An unparked row reads @0, so every row keeps its line.
   backs="$(awk -F'\t' '{ print $27 == "" ? "@0" : $27 }' <<<"$list" | date -f - +%s 2>/dev/null)" || backs=""
   [ "$(grep -c . <<<"$backs")" = "$(grep -c . <<<"$list")" ] || backs="$(sed 's/.*//' <<<"$list")"
-  # One slug per project named (a row with no project goes by its session's name; a prompt
-  # row always does).
+  # One slug per project named, or per session for a row with no project.
   # The table is keyed by "p:<project>", or "s:<session or target>" for a row with no project,
   # which session_project names (project-name.sh owns the -agent-N strip).
   names="$({ awk -F'\t' 'NF { print $2 != "" ? "p:" $2 : "s:" $13 }' <<<"$list"
@@ -142,7 +141,7 @@ cmd_rows() {
       }
       function age(e) { return e == "" ? "" : span(now - e) }
       function slug(n,   i, r) {
-        i = index(slugs, ";" n "="); if (i == 0) return n
+        i = index(slugs, ";" n "="); if (i == 0) return substr(n, 3)
         r = substr(slugs, i + length(n) + 2); return substr(r, 1, index(r, ";") - 1)
       }
       # The files are the registry titles, "<claude session>\t<title>", then the prompts
