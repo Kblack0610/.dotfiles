@@ -211,7 +211,7 @@ Old tab names that still resolve, and where they land. Each phase adds its rows.
 | `build` (an opened project's inner tab, `#projects/<profile>/<name>/build`) | That project's Deliverables inner tab, from `hub_core::layout::PROJECT_RETIRED` (the web's copy in `static/app.js`) | P2 of `can-we-add-aspsecae-hashed-cloud.md` |
 | Pools (the Infra section title; `#infra/pools`, `hub tab 'infra pools'` unchanged) | Job kinds, same section id `pools` and pool pages `#infra/pools/<kind>` | ar-3326 |
 | `unity-local` (the workstation gates pool page, `#infra/pools/unity-local`) | `gates`, the same page (`pool_page::find` keeps the old name) | ar-3326 |
-| agent-web's `/widget` (Home's cards two across for a web-widget app's snapshot, `?t=<key>&cards=`) | The Tilecast app on `/widget.json`, or the HA Template widget. No alias: `/widget` answers 404 and logs no hit, since its one client moved to Tilecast and it had one key hit from 2026-11-17 to its retirement | tc-7, P5 of `pasted-content-id-e03d-swirling-gray.md` |
+| agent-web's `/widget` (Home's cards two across for a web-widget app's snapshot, `?t=<key>&cards=`) | The Tilecast app on `/widget.json`, or the HA Template widget. No alias: `/widget` answers 401 to the widget key and any request without a session (the key opens only `/widget.json`), 404 to a signed-in browser, and logs neither, since its one client moved to Tilecast and it had one key hit from 2026-11-17 to its retirement | tc-7, P5 of `pasted-content-id-e03d-swirling-gray.md` |
 
 ### Log
 
