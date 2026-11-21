@@ -1,7 +1,7 @@
 ---
 name: one-pager
 description: >-
-  Write a 1-2 page problem doc (Brief, One-pager or Shape Up Pitch) to a project's lab docs/briefs/. Use to frame a problem without a full PRD or tech spec. A PRD, TSD and SOW set is scope.
+  Write a 1-2 page problem doc (Brief, One-pager or Shape Up Pitch) to a project's lab docs/briefs/. Use to frame a problem without a full PRD or tech spec.
 metadata:
   category: authoring
   tags: [docs, briefs, writing]

@@ -17,6 +17,46 @@ tool() { printf '{"hook_event_name":"PreToolUse","permission_mode":"%s","tool_na
   assert_output --partial 'investigate-only'
 }
 
+tp_prompt() { jq -nc --arg tp "$TP" '{hook_event_name: "UserPromptSubmit", permission_mode: "default", transcript_path: $tp, prompt: "why"}'; }
+# Record what the hook printed the way Claude Code does: an attachment of type hook_additional_context.
+record() {
+  jq -c '{type: "attachment", attachment: {type: "hook_additional_context", hookEvent: "UserPromptSubmit",
+    content: [.hookSpecificOutput.additionalContext]}}' <<<"$output" >> "$TP"
+}
+
+@test "the posture is injected once per session, and again after a compaction" {
+  TP="$BATS_TEST_TMPDIR/t.jsonl"; : > "$TP"
+  run bash "$HOOK" <<< "$(tp_prompt)"
+  assert_output --partial 'investigate-only'
+  record
+  run bash "$HOOK" <<< "$(tp_prompt)"
+  assert_success
+  assert_output ''
+  echo '{"type":"system","subtype":"compact_boundary"}' >> "$TP"
+  run bash "$HOOK" <<< "$(tp_prompt)"
+  assert_output --partial 'investigate-only'
+}
+
+@test "back in manual mode after a prompt in another mode, the posture is injected again" {
+  TP="$BATS_TEST_TMPDIR/t.jsonl"; : > "$TP"
+  echo '{"type":"user","permissionMode":"default","message":{"role":"user","content":"why"}}' >> "$TP"
+  run bash "$HOOK" <<< "$(tp_prompt)"; record
+  # Negative control: another prompt in manual mode is not a mode change.
+  echo '{"type":"user","permissionMode":"default","message":{"role":"user","content":"and?"}}' >> "$TP"
+  run bash "$HOOK" <<< "$(tp_prompt)"
+  assert_output ''
+  echo '{"type":"user","permissionMode":"acceptEdits","message":{"role":"user","content":"fix it"}}' >> "$TP"
+  run bash "$HOOK" <<< "$(tp_prompt)"
+  assert_output --partial 'investigate-only'
+}
+
+@test "the deny still fires on every call after the posture was injected" {
+  TP="$BATS_TEST_TMPDIR/t.jsonl"; : > "$TP"
+  run bash "$HOOK" <<< "$(tp_prompt)"; record
+  run bash "$HOOK" <<< "$(tool default Write)"
+  assert_output --partial '"permissionDecision":"deny"'
+}
+
 @test "other modes get no posture" {
   for m in plan acceptEdits bypassPermissions; do
     run bash "$HOOK" <<< "$(prompt "$m")"
