@@ -270,18 +270,28 @@ fi
 export GH_WRAPPED=1 GH_REAL="$real"
 if [ -n "$tok" ]; then
   # A refused App token (uninstalled, revoked, a missing permission, its own limit spent) must
-  # not fail the read: rerun it on the user. stderr is held so only the answer that counts shows.
+  # not fail the read: rerun it on the user. stderr is held so only the answer that counts shows,
+  # and so is the stdout of `gh api`, which prints the refusal's JSON body there; a routed `gh api`
+  # read therefore arrives whole once gh exits, never streamed. Other commands print errors on
+  # stderr only, so their stdout streams as before.
   err=$(mktemp "${TMPDIR:-/tmp}/gh-err.XXXXXX")
-  GH_TOKEN="$tok" "$real" "$@" 2>"$err"
+  out=""
+  trap 'rm -f -- "$err" ${out:+"$out"}' EXIT # a caller's timeout kills this mid-call
+  if [ "${1:-}" = api ]; then
+    out=$(mktemp "${TMPDIR:-/tmp}/gh-out.XXXXXX")
+    GH_TOKEN="$tok" "$real" "$@" 2>"$err" >"$out"
+  else
+    GH_TOKEN="$tok" "$real" "$@" 2>"$err"
+  fi
   rc=$?
   if [ "$rc" -ne 0 ] && grep -qE 'HTTP 40[13]|Bad credentials|not accessible by integration' "$err"; then
     bucket="user:app-denied"
     "$real" "$@"
     rc=$?
   else
+    [ -z "$out" ] || cat "$out"
     cat "$err" >&2
   fi
-  rm -f "$err"
 else
   "$real" "$@"
   rc=$?
