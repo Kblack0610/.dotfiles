@@ -25,6 +25,7 @@ pub async fn get() -> ApiResult<Json<View>> {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Body {
     base: String,
     text: String,

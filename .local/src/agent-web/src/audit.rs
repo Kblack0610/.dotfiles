@@ -14,8 +14,9 @@ use serde_json::{Map, Value};
 
 use crate::Shared;
 
-/// The largest body read: a note save is up to 1 MB of text.
-const BODY_MAX: usize = 2 * 1024 * 1024;
+/// The largest body read, and the largest any route takes (`router`'s DefaultBodyLimit): a
+/// note save is up to 1 MB of text.
+pub const BODY_MAX: usize = 2 * 1024 * 1024;
 /// The largest failed answer whose words go into the outcome.
 const ERROR_BODY_MAX: usize = 64 * 1024;
 
