@@ -311,7 +311,7 @@ pub fn alerts(a: &crate::alerts::Alerts) -> Card {
     .part("Being fixed", k.being_fixed, Level::Ok)
     .part("No owner", k.no_owner, lvl(k.no_owner, Level::Warn))
     .part("Fixes open", k.fixes_open, Level::Ok)
-    .part("Firing", k.firing, Level::Ok);
+    .part("Firing", k.firing, Level::Nodata);
     // Nothing needing the human is green when every source answered; the tab's own level says
     // which, and a tab that is red only for rows being fixed is green here.
     c.level = if need == Level::Ok && a.level == Level::Nodata {
@@ -1408,6 +1408,8 @@ mod tests {
         let c = needs(&home, 10_000);
         assert_eq!((c.big.as_str(), c.level), ("4", Level::Warn));
         assert_eq!(c.big, home.waiting().count.to_string());
+        // A bar of one segment would only repeat the big number.
+        assert!(c.bar.is_empty());
         let parts: Vec<_> = c
             .parts
             .iter()
@@ -1459,6 +1461,7 @@ mod tests {
         };
         let c = main_red(&home);
         assert_eq!((c.big.as_str(), c.level), ("1", Level::Red));
+        assert!(c.bar.is_empty());
         assert_eq!(c.first[0].text, "dotfiles");
         assert_eq!(main_red(&Home::default()).level, Level::Ok);
         // Negative control: a Home whose reads failed is no all-clear on main.

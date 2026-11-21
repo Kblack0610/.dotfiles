@@ -206,10 +206,12 @@ fn section(c: &Card, base: Option<&str>) -> Section {
         items.extend(counted);
         return head(Level::Bad, items);
     }
-    // A partial read is never green.
-    let level = match c.error {
-        Some(_) => Level::from(c.level).max(Level::Warn),
-        None => Level::from(c.level),
+    // A partial read is never green, and one whose big number could not be read (Costs' "-") is
+    // as bad as no read at all, though the parts it did read stay.
+    let level = match (&c.error, c.level) {
+        (Some(_), HubLevel::Nodata) => Level::Bad,
+        (Some(_), l) => Level::from(l).max(Level::Warn),
+        (None, l) => Level::from(l),
     };
     let mut items = vec![];
     if !c.big.is_empty() {
@@ -397,6 +399,24 @@ mod tests {
             .iter()
             .any(|i| matches!(i, Item::Text { text } if text == "Where to look first")));
         assert!(matches!(items.last(), Some(Item::Text { text }) if text == "tripped watches"));
+    }
+
+    #[test]
+    fn a_cost_that_could_not_be_read_is_bad_and_keeps_the_bills() {
+        let mut k = crate::costs::Costs::default();
+        k.budget.spent = "$1,013".into();
+        k.fleet_cost.why = Some("fleet-cost: file missing".into());
+        let s = &document(&[crate::cards::costs(&k)], &[], 0, None).sections[0];
+        assert_eq!(s.level, Level::Bad);
+        assert!(
+            matches!(&s.items[0], Item::Metric { value, level: Level::Bad, .. } if value == "-")
+        );
+        assert!(s.items.iter().any(
+            |i| matches!(i, Item::Pill { label, value, .. } if label == "Month" && value == "$1,013")
+        ));
+        assert!(s.items.iter().any(
+            |i| matches!(i, Item::Row { text, level: Level::Warn, .. } if text.contains("file missing"))
+        ));
     }
 
     /// Every real card's unit fits the schema whole: a cap that clips it ("on deck, 24...") loses
