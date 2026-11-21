@@ -20,6 +20,7 @@ pub mod costs;
 pub mod deliverables;
 pub mod departments;
 pub mod epics;
+pub mod fix_owner;
 pub mod fleet;
 pub mod fleet_cost;
 pub mod flow;
