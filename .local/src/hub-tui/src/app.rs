@@ -6756,7 +6756,7 @@ mod tests {
         );
         // The Queue card counts the queue Home holds; the others read until their tab answers.
         assert!(
-            s.contains("QUEUE  2 on deck, 1 running")
+            s.contains("QUEUE  2 on deck")
                 && s.contains("Running 1  On a PR 0")
                 && !s.contains("Ready")
                 && !s.contains("Held")

@@ -563,9 +563,12 @@ PS
 # gh_stub <core remaining> <core reset> [<workflows remaining> <workflows reset>]: rate_limit
 # answers the first bucket, `api -i` on actions/workflows the second (no second: that call fails)
 gh_stub() {
-  printf '#!/usr/bin/env bash\ncase "$2" in\n  rate_limit) echo "%s 5000 %s" ;;\n  -i) [ -n "%s" ] || exit 1; printf "HTTP/2.0 200 OK\\r\\nX-Ratelimit-Remaining: %s\\r\\nX-Ratelimit-Reset: %s\\r\\n\\r\\n{}\\n" ;;\nesac\n' \
-    "$1" "$2" "${3:-}" "${3:-}" "${4:-}" > "$SANDBOX/bin/gh"
-  chmod +x "$SANDBOX/bin/gh"
+  gh_script <<SH
+case "\$2" in
+  rate_limit) echo "$1 5000 $2" ;;
+  -i) [ -n "${3:-}" ] || exit 1; printf "HTTP/2.0 200 OK\\r\\nX-Ratelimit-Remaining: ${3:-}\\r\\nX-Ratelimit-Reset: ${4:-}\\r\\n\\r\\n{}\\n" ;;
+esac
+SH
 }
 
 @test "gh_budget: the REST calls left, LOW only when few are left and the reset is far" {
@@ -581,7 +584,7 @@ gh_stub() {
   gh_stub 300 "$(( now + 300 ))" 4500 "$(( now + 2000 ))"
   run gh_budget
   refute_output --partial LOW
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"
+  gh_script 'exit 1'
   run gh_budget
   assert_output 'github: rate limit unreadable'
 }
@@ -627,9 +630,12 @@ gh_stub() {
 @test "wf_bucket: the actions/workflows reading is reused for the TTL, so each ask is not a call" {
   local now; now="$(date +%s)"
   FLEET_GH_PROBE_TTL_S=300
-  printf '#!/usr/bin/env bash\ncase "$2" in\n  rate_limit) echo "4200 5000 %s" ;;\n  -i) echo x >> "%s/probes"; printf "HTTP/2.0 200 OK\\r\\nX-Ratelimit-Remaining: 3000\\r\\nX-Ratelimit-Reset: %s\\r\\n\\r\\n{}\\n" ;;\nesac\n' \
-    "$(( now + 3000 ))" "$SANDBOX" "$(( now + 2000 ))" > "$SANDBOX/bin/gh"
-  chmod +x "$SANDBOX/bin/gh"
+  gh_script <<SH
+case "\$2" in
+  rate_limit) echo "4200 5000 $(( now + 3000 ))" ;;
+  -i) echo x >> "$SANDBOX/probes"; printf "HTTP/2.0 200 OK\\r\\nX-Ratelimit-Remaining: 3000\\r\\nX-Ratelimit-Reset: $(( now + 2000 ))\\r\\n\\r\\n{}\\n" ;;
+esac
+SH
   run gh_budget; assert_output --partial '3000/5000 REST calls left (actions/workflows)'
   run gh_budget; assert_output --partial '3000/5000 REST calls left (actions/workflows)'
   run gh_budget; assert_output --partial '3000/5000 REST calls left (actions/workflows)'
