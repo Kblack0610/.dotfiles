@@ -4,6 +4,7 @@
 #   store-sync [--store agent|notes] [--now] [--bg]  commit, merge the remote, push origin, then backup
 #   store-sync join [--keep-dirty]                   make this agent-store clone a peer (once per machine)
 #   store-sync merge-derived <base> <ours> <theirs> <path>   git's `derived` merge driver (below)
+#   store-sync merge-close <base> <ours> <theirs> <path>     git's `close` merge driver for queue/done (below)
 #
 # Two stores ride this one engine. agent (the default) is ~/.agent: agent-queue and agent-ask run
 # `--now --bg` after each write, which commits the coordination paths (NOW_PATHS), plus any dirty
@@ -157,10 +158,38 @@ apply_remotes() {
 # merge driver lives in each clone's config, so every sync defines it; a clone without it merges them
 # as text. A new driver config also drops the recorded conflict pair, so the stuck pair is retried.
 apply_merge_drivers() {
-  local want
-  want="$(printf '%q' "$(realpath "$0")") merge-derived %O %A %B %P"
+  local me want attrs
+  me=$(printf '%q' "$(realpath "$0")")
+  # queue/done/*/*.md merge=close (ar-4091): two hosts closing one item. The attribute goes in this
+  # clone's info/attributes, not the tracked .gitattributes: each peer sets it itself, so no peer waits
+  # on another's commit, and a clone gets it with the driver. Both conflict pairs are retried on a change.
+  attrs=$(g rev-parse --path-format=absolute --git-path info/attributes) && mkdir -p "$(dirname "$attrs")"
+  grep -qxF 'queue/done/*/*.md merge=close' "$attrs" 2>/dev/null ||
+    { printf 'queue/done/*/*.md merge=close\n' >> "$attrs" && rm -f "$CONFLICT" "$CONFLICT"-*; }
+  [ "$(g config --get merge.close.driver)" = "$me merge-close %O %A %B %P" ] ||
+    { g config merge.close.driver "$me merge-close %O %A %B %P" && rm -f "$CONFLICT" "$CONFLICT"-*; }
+  want="$me merge-derived %O %A %B %P"
   [ "$(g config --get merge.derived.driver)" = "$want" ] && return 0
   g config merge.derived.driver "$want" && rm -f "$CONFLICT" "$CONFLICT"-*
+}
+
+# cmd_merge_close <base> <ours> <theirs> <path>: the driver for a closed queue item
+# (queue/done/*/*.md), leaving the result in <ours>. Two hosts that close one item write the same
+# file twice; a text merge keeps what it can, and a conflict is settled for the close that is `status: ok`
+# over a `status: failed`, which is a reaper that read a stale copy of the item (razer-laptop,
+# 2026-11-20: 5 items closed ok there, failed here minutes later). Any other clash still conflicts (exit 1).
+cmd_merge_close() {
+  [ $# -eq 4 ] || die "merge-close needs <base> <ours> <theirs> <path>"
+  local tmp
+  tmp=$(mktemp) || return 1
+  if git merge-file -q -p "$2" "$1" "$3" > "$tmp"; then
+    cat "$tmp" > "$2"; rm -f "$tmp"; return 0
+  fi
+  rm -f "$tmp"
+  status_of() { sed -n '/^---$/q;s/^status: //p' "$1"; }
+  [ "$(status_of "$2")" = ok ] && [ "$(status_of "$3")" = failed ] && return 0
+  [ "$(status_of "$3")" = ok ] && [ "$(status_of "$2")" = failed ] && { cat "$3" > "$2"; return 0; }
+  return 1
 }
 
 # cmd_merge_derived <base> <ours> <theirs> <path>: the driver, leaving the result in <ours>. A JSON
@@ -446,6 +475,7 @@ cmd_join() {
 case "${1:-}" in
   join) shift; cmd_join "$@" ;;
   merge-derived) shift; cmd_merge_derived "$@" ;;
+  merge-close) shift; cmd_merge_close "$@" ;;
   -h | --help) usage ;;
   *) cmd_sync "$@" ;;
 esac
