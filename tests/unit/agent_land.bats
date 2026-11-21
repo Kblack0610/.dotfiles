@@ -72,9 +72,11 @@ case "$1 $2" in
     if [ -s "$q" ]; then r=$(head -1 "$q"); sed -i 1d "$q"; fi
     case "$r" in 'ERR '*) echo "${r#ERR }" >&2; exit 1 ;; esac
     echo "$r" ;;
-  # runs.queued: one count per poll, popped as read; 0 once empty
-  *) q="$NOTES_FIXTURE/runs.queued"
-    if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else echo 0; fi ;;
+  # runs.queued: one count per poll, popped as read; 0 once empty. A line "ERR <text>": that read fails with <text>
+  *) q="$NOTES_FIXTURE/runs.queued" r=0
+    if [ -s "$q" ]; then r=$(head -1 "$q"); sed -i 1d "$q"; fi
+    case "$r" in 'ERR '*) echo "${r#ERR }" >&2; exit 1 ;; esac
+    echo "$r" ;;
   esac ;;
 'pr checks')
   case "$*" in
@@ -2641,4 +2643,32 @@ EOF
   assert_line 'watch: spend not known here (exit 2), skipping probe check'
   run agent-queue show red-lock --json
   assert_equal "$(jq -r '[.state, .status] | join("|")' <<<"$output")" 'done|ok'
+}
+
+@test "a failed read of the head's queued runs is not 0 queued: a lost connection reads again, any other error stops at checks (ar-2235)" {
+  printf '%s\n' 'no checks reported on the pr-42 branch' >"$NOTES_FIXTURE/checks.out"
+  printf '%s\n' 'ERR gh: Server Error (HTTP 502)' >"$NOTES_FIXTURE/runs.queued"
+  fake_sleep
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=1 run "$LAND" 42 --item ship --ran-checks
+  assert_failure 1
+  assert_line 'checks: lost the connection to the API (1 of 5 retries), reading again'
+  refute_output --partial 'reading the runs on the head'
+  : >"$LOG"
+  printf '%s\n' 'ERR gh: API rate limit exceeded (HTTP 403)' >"$NOTES_FIXTURE/runs.queued"
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=1 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: reading the runs on the head: gh: API rate limit exceeded (HTTP 403)'
+  refute_output --partial 'checks: none reported'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "a watch that dies on a 403 with no check named stops as a read error, not a red check (ar-2235)" {
+  printf '%s\n' 'gh: API rate limit exceeded (HTTP 403)' >"$NOTES_FIXTURE/checks.seq"
+  : >"$NOTES_FIXTURE/checks.failed"
+  AGENT_LAND_CHECKS_POLL=0 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: reading the checks: gh: API rate limit exceeded (HTTP 403)'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
 }
