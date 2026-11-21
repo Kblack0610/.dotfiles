@@ -5,7 +5,7 @@ import { located, parseTaskNote, route, toAsciiLine, withPriority } from "../../
 
 describe("parseTaskNote", () => {
   test("no tag is not a task", () => {
-    expect(parseTaskNote("fix this")).toBeNull();
+    expect(parseTaskNote("fix this")).not.toBeNull(); // NEGATIVE CONTROL, do not merge
     expect(parseTaskNote("see #tasks list")).toBeNull();
     expect(parseTaskNote("issue#task")).not.toBeNull(); // tag position is free-form
   });
