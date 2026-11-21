@@ -21,7 +21,6 @@ bnb    subscription 200 ref=bnb
 codex  subscription 20  ref=codex
 lazer  litellm      -
 gh     github       -   ref=Org
-aws    aws          -   project=playground lane=ci
 do     digitalocean -
 EOF
   echo '{"trackers":{"playground":{"names":["engine"]}}}' > "$PROJECT_MAP"
@@ -31,7 +30,6 @@ EOF
   lazer 20 250 1796083200 60   # spend, budget, reset (2026-12-01), claude-acct textfile age
   echo '{"budgets":[{"budget_product_sku":"actions","budget_amount":220},{"budget_product_sku":"packages","budget_amount":0}]}' > "$FIX/gh-budgets"
   echo '{"usageItems":[{"product":"actions","netAmount":30},{"product":"git_lfs","netAmount":3}]}' > "$FIX/gh-usage"
-  echo '[{"metric":{"kind":"actual"},"value":[0,"100"]},{"metric":{"kind":"limit"},"value":[0,"600"]},{"metric":{"kind":"forecast"},"value":[0,"350"]}]' > "$FIX/aws"
   echo '{"month_to_date_usage":"50.00"}' > "$FIX/do"
   cat > "$HOME/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -47,7 +45,7 @@ cat "$FIX/do"
 EOF
   cat > "$PROM_LIB" <<'EOF'
 prom_q() {
-  local f; case "$1" in *ci_governor*) f=$FIX/aws ;; *claude_account_*) f=$FIX/lazer ;; *) return 1 ;; esac
+  local f; case "$1" in *claude_account_*) f=$FIX/lazer ;; *) return 1 ;; esac
   [ -s "$f" ] || return 1; printf '{"status":"success","data":{"result":%s}}' "$(cat "$f")"
 }
 EOF
@@ -64,9 +62,9 @@ b() { "$AU" budget --json | jq -c "$1 | walk(if type == \"number\" then . + 0 el
 @test "every bill is read from its own system, and the totals are the sum of the lines" {
   run b '[.lines[] | [.name, .cap, .spent, .projected, .status]]'
   assert_success
-  assert_output '[["main",100,100,100,"ok"],["bnb",200,200,200,"ok"],["codex",20,20,20,"ok"],["lazer",250,20,60,"ok"],["gh",220,33,99,"ok"],["aws",600,100,350,"ok"],["do",null,50,150,"ok"]]'
+  assert_output '[["main",100,100,100,"ok"],["bnb",200,200,200,"ok"],["codex",20,20,20,"ok"],["lazer",250,20,60,"ok"],["gh",220,33,99,"ok"],["do",null,50,150,"ok"]]'
   run b '[.total.spent, .total.projected, .total.caps, .partial]'
-  assert_output '[523,979,1390,[]]'
+  assert_output '[423,629,790,[]]'
 }
 
 @test "a subscription carries its account's list-price work from the month's finished days, a dot dir included, a bad snapshot skipped" {
@@ -80,13 +78,13 @@ b() { "$AU" budget --json | jq -c "$1 | walk(if type == \"number\" then . + 0 el
 }
 
 @test "an unread bill is named and left out of the total, never \$0 (negative control)" {
-  : > "$FIX/lazer"; : > "$FIX/aws"
-  run b '[(.lines[] | select(.name == "lazer" or .name == "aws") | [.status, .spent]), .partial, .total.spent]'
+  : > "$FIX/lazer"
+  run b '[(.lines[] | select(.name == "lazer") | [.status, .spent]), .partial, .total.spent]'
   assert_success
-  assert_output '[["unread",null],["unread",null],["lazer","aws"],403]'
+  assert_output '[["unread",null],["lazer"],403]'
   run "$AU" budget
   assert_success
-  assert_output --partial 'partial, not counted: lazer, aws'
+  assert_output --partial 'partial, not counted: lazer'
 }
 
 @test "a bill with no known price is unpriced, and a pool past its cap is over and ends the month at its spend" {
@@ -106,7 +104,7 @@ b() { "$AU" budget --json | jq -c "$1 | walk(if type == \"number\" then . + 0 el
   echo 'x cloud 5' >> "$BUDGET_LEDGER"
   run "$AU" budget
   assert_failure
-  assert_output --partial ':9: want `name kind usd_month'
+  assert_output --partial ':8: want `name kind usd_month'
   sed -i '$d' "$BUDGET_LEDGER"; echo 'x digitalocean five' >> "$BUDGET_LEDGER"
   run "$AU" budget
   assert_failure
@@ -137,8 +135,8 @@ b() { "$AU" budget --json | jq -c "$1 | walk(if type == \"number\" then . + 0 el
   echo '{"usageItems":[{"product":"actions","netAmount":30,"repositoryName":"engine"},{"product":"git_lfs","netAmount":3}]}' > "$FIX/gh-usage"
   run b '[.by_project, .by_lane, .total.spent]'
   assert_success
-  # main 100: dotfiles 60, unattributed 40; bnb 200 + aws 100 + gh engine 30 -> playground; codex 20 -> trader; gh 3 + do 50 + lazer 20 -> unattributed
-  assert_output '[[{"name":"playground","usd":330},{"name":"unattributed","usd":113},{"name":"dotfiles","usd":60},{"name":"trader","usd":20}],[{"name":"runner","usd":200},{"name":"ci","usd":100},{"name":"queue","usd":60},{"name":"digitalocean","usd":50},{"name":"hand","usd":40},{"name":"github","usd":33},{"name":"run","usd":20},{"name":"litellm","usd":20}],523]'
+  # main 100: dotfiles 60, unattributed 40; bnb 200 + gh engine 30 -> playground; codex 20 -> trader; gh 3 + do 50 + lazer 20 -> unattributed
+  assert_output '[[{"name":"playground","usd":230},{"name":"unattributed","usd":113},{"name":"dotfiles","usd":60},{"name":"trader","usd":20}],[{"name":"runner","usd":200},{"name":"queue","usd":60},{"name":"digitalocean","usd":50},{"name":"hand","usd":40},{"name":"github","usd":33},{"name":"run","usd":20},{"name":"litellm","usd":20}],423]'
 }
 
 @test "a bill paid_by someone else is shown and left out of our total, the split and check" {
@@ -146,7 +144,7 @@ b() { "$AU" budget --json | jq -c "$1 | walk(if type == \"number\" then . + 0 el
   lazer 228 50 1796083200 60
   run b '[(.lines[] | select(.name == "lazer") | [.status, .spent, .paid_by]), .total.spent, .total.caps, .others_pay, ([.by_project[].usd] | add)]'
   assert_success
-  assert_output '[["over",228,"lazer"],503,1140,[{"name":"lazer","paid_by":"lazer","spent":228}],503]'
+  assert_output '[["over",228,"lazer"],403,540,[{"name":"lazer","paid_by":"lazer","spent":228}],403]'
   "$AU" budget --json > "$BUDGET_JSON"
   run "$AU" budget check
   assert_success
@@ -155,23 +153,20 @@ b() { "$AU" budget --json | jq -c "$1 | walk(if type == \"number\" then . + 0 el
   assert_output --partial 'lazer is paid by lazer: shown, not in our total'
 }
 
-@test "check trips on a product over pace, a forecast past its cap, a stale file and a reader unread for a day" {
+@test "check trips on a product over pace, a stale file and a reader unread for a day" {
   echo '{"usageItems":[{"product":"actions","netAmount":100}]}' > "$FIX/gh-usage"   # 220 * 1/3 + 15 = 88
-  echo '[{"metric":{"kind":"actual"},"value":[0,"100"]},{"metric":{"kind":"limit"},"value":[0,"600"]},{"metric":{"kind":"forecast"},"value":[0,"650"]}]' > "$FIX/aws"
   "$AU" budget --json > "$BUDGET_JSON"
   run "$AU" budget check
   assert_failure
-  assert_output 'gh actions $100 is ahead of pace: past $88 of its $220 cap on day 11
-aws projects to $650 this month, past its $600 cap'
+  assert_output 'gh actions $100 is ahead of pace: past $88 of its $220 cap on day 11'
   # the file carries the same reasons as `needs`, which the Costs Budget tab shows
   run jq -r '.needs[]' "$BUDGET_JSON"
-  assert_output 'gh actions $100 is ahead of pace: past $88 of its $220 cap on day 11
-aws projects to $650 this month, past its $600 cap'
+  assert_output 'gh actions $100 is ahead of pace: past $88 of its $220 cap on day 11'
   BUDGET_NOW="2026-11-11T03:00:00-08:00" run "$AU" budget check
   assert_failure
   assert_output 'budget.json is 3.0h old (the fleet-bench budget step)'
   # the do reader fails: not a trip until it has failed for a day, its first failure carried from file to file
-  : > "$FIX/do"; echo '{"usageItems":[]}' > "$FIX/gh-usage"; echo '[{"metric":{"kind":"actual"},"value":[0,"100"]}]' > "$FIX/aws"
+  : > "$FIX/do"; echo '{"usageItems":[]}' > "$FIX/gh-usage"
   "$AU" budget --json > "$BUDGET_JSON.new" && mv "$BUDGET_JSON.new" "$BUDGET_JSON"
   run "$AU" budget check
   assert_success
@@ -210,34 +205,3 @@ aws projects to $650 this month, past its $600 cap'
   assert_failure
 }
 
-@test "an aws forecast below what is spent is no forecast, and a failed governor read is unread, not a stale ok" {
-  echo '[{"metric":{"kind":"actual"},"value":[0,"100"]},{"metric":{"kind":"limit"},"value":[0,"600"]},{"metric":{"kind":"forecast"},"value":[0,"40"]}]' > "$FIX/aws"
-  run b '.lines[] | select(.name == "aws") | [.status, .spent, .projected, .note]'
-  assert_success
-  assert_output '["ok",100,300,""]'
-  echo '[{"metric":{"__name__":"ci_governor_budget_ok"},"value":[0,"0"]},{"metric":{"__name__":"ci_governor_budget_usd","kind":"actual"},"value":[0,"100"]}]' > "$FIX/aws"
-  run b '.lines[] | select(.name == "aws") | [.status, .spent, .note]'
-  assert_output '["unread",null,"the governor'"'"'s last AWS Budgets read failed (runbook, \"budget read\")"]'
-  # negative control: a good read with the same figure is ok
-  echo '[{"metric":{"__name__":"ci_governor_budget_ok"},"value":[0,"1"]},{"metric":{"__name__":"ci_governor_budget_usd","kind":"actual"},"value":[0,"100"]}]' > "$FIX/aws"
-  run b '.lines[] | select(.name == "aws") | .status'
-  assert_output '"ok"'
-}
-
-@test "an aws budget action below the limit is the cap: AWS stops the hosts there" {
-  echo '[{"metric":{"__name__":"ci_governor_budget_usd","kind":"actual"},"value":[0,"197"]},{"metric":{"__name__":"ci_governor_budget_usd","kind":"limit"},"value":[0,"600"]},{"metric":{"__name__":"ci_governor_budget_action_usd","type":"RUN_SSM_DOCUMENTS"},"value":[0,"550"]}]' > "$FIX/aws"
-  run b '.lines[] | select(.name == "aws") | [.cap, .projected, .note]'
-  assert_output '[550,591,"AWS stops the hosts at $550"]'
-  "$AU" budget --json > "$BUDGET_JSON"
-  run "$AU" budget check
-  assert_failure
-  assert_output --partial 'aws projects to $591 this month, past its $550 cap'
-  # negative control: an action above the limit leaves the limit as the cap, and no note
-  echo '[{"metric":{"__name__":"ci_governor_budget_usd","kind":"actual"},"value":[0,"100"]},{"metric":{"__name__":"ci_governor_budget_usd","kind":"limit"},"value":[0,"600"]},{"metric":{"__name__":"ci_governor_budget_action_usd","type":"RUN_SSM_DOCUMENTS"},"value":[0,"700"]}]' > "$FIX/aws"
-  run b '.lines[] | select(.name == "aws") | [.cap, .note]'
-  assert_output '[600,""]'
-  # an action at the limit is the same cap: no stop note
-  sed -i 's/"700"/"600"/' "$FIX/aws"
-  run b '.lines[] | select(.name == "aws") | [.cap, .note]'
-  assert_output '[600,""]'
-}

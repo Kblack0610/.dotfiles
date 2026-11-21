@@ -260,7 +260,7 @@ const INFRA_T = {
   machines: infraTable("machines", MACH_COLS, MACH_CELLS, "search, or -state:up", "No machine reports."),
   pools: infraTable("pools", POOL_COLS, POOL_CELLS, "search", "No job kind reports."),
   runners: infraTable("runners", SLOT_COLS, SLOT_CELLS, "search, or host:razer-laptop pool:unity", "No runner reports."),
-  queued: infraTable("queued", QUEUED_COLS, QUEUED_CELLS, "search, or pool:unity can:aws-burst-1", "Nothing waiting."),
+  queued: infraTable("queued", QUEUED_COLS, QUEUED_CELLS, "search, or pool:unity can:unity-pool", "Nothing waiting."),
   local: infraTable("local", LOCAL_COLS, LOCAL_CELLS, "search, or platform:android branch:feat", "No local Unity gate failed in 24h."),
 };
 
@@ -321,16 +321,14 @@ function localSection(inst, t1) {
     `<details class="sec-d" data-k="ci-more"${open}><summary>${secHead("", "Done today", null, "", "h3")}</summary>${doneToday(inst, t1)}</details>`;
 }
 
-// The governor's global series: whether it is up and saw every source, its queue, and the budget
-// lines. Its per-host verdict and power are the machines table's governor and power columns.
+// The governor's global series: whether it is up and saw every source, and its queue.
+// Its per-host verdict and power are the machines table's governor and power columns.
 function governorIndex(inst) {
-  const g = { alerts: [], actions: [] };
+  const g = {};
   for (const s of inst.governor || []) {
     const l = s.labels, n = l.__name__.replace("ci_governor_", "");
     if (l.host) continue;
-    if (n === "budget_alert") g.alerts.push([l.basis, Number(l.usd)]);
-    else if (n === "budget_action_usd") g.actions.push([l.type, l.status, s.value]);
-    else g[n] = s.value;
+    g[n] = s.value;
   }
   return g;
 }
@@ -339,25 +337,7 @@ function governorLine(g) {
   if (g.up == null) return "";
   const health = g.up !== 1 ? `<span class="chip sm" style="--c:var(--b-needs)">DOWN</span>`
     : g.ok === 1 ? `<span class="chip sm" style="--c:var(--b-done)">OK</span>` : `<span class="chip sm" style="--c:var(--b-stalled)">BLIND</span> a source did not answer this cycle, so it holds every host;`;
-  return `<div class="cline">Governor ${health} <span class="muted">queue ${g.queue ?? "?"}; the cloud hosts start for a deep queue and a button overrides it</span></div>`;
-}
-
-// [150, 100, 100] -> "$100 and $150"
-const usdList = (xs) => [...new Set(xs)].sort((a, b) => a - b).map((x) => "$" + x).join(" and ");
-
-// What AWS does at each budget line; the month's dollars are Costs > Budget, beside every other bill.
-function budgetLines(g) {
-  if (g.budget_ok == null) return "";
-  const failed = g.budget_ok ? "" : ` <span class="chip sm" style="--c:var(--b-stalled)">READ FAILED</span> (runbook, "budget read")`;
-  const month = `<div class="month"><span>Month: <a href="#costs/budget">Costs, Budget</a></span><span class="muted">the governor read AWS Budgets ${when(g.budget_updated)}${failed}</span></div>`;
-  const act = g.alerts.filter(([b]) => b === "actual").map(([, v]) => v), fore = g.alerts.filter(([b]) => b === "forecasted").map(([, v]) => v);
-  const mails = act.length ? `Emails at ${usdList(act)}${usdList(fore) === usdList(act) ? " (spent or forecast)" : fore.length ? `, forecast at ${usdList(fore)}` : ""}` : "";
-  const stops = [...new Set(g.actions.map(([, , v]) => v))].map((v) => {
-    const fired = g.actions.filter(([, st, x]) => x === v && st !== "STANDBY");
-    return `at $${v} AWS stops it and blocks starts${fired.length ? ` <span class="chip sm" style="--c:var(--b-needs)">${esc(fired.map(([, st]) => st).join(", "))}</span> (undo: runbook, "Budget stop")` : ""}`;
-  });
-  const lines = [mails, ...stops].filter(Boolean).join("; ");
-  return month + (lines ? `<div class="muted">${lines}. Each day stops at its hour cap.</div>` : "");
+  return `<div class="cline">Governor ${health} <span class="muted">queue ${g.queue ?? "?"}</span></div>`;
 }
 
 // The page open in place of the tab's tables, `#infra/<word>/<name>` (hub_core::links PAGES, whose
@@ -483,20 +463,6 @@ function powerHistory(p) {
   return `${secHead("", "Power", null, "", "h3")}<div>${days || "no samples"}</div>${rows ? `<table class="tbl"><tr><th data-role="lead">from</th><th data-role="glance">state</th><th>why</th></tr>${rows}</table>` : ""}`;
 }
 
-// The governor's buttons for a host it powers: hold it on or off for a while, or hand it back.
-// POST /api/cloud-runner writes the governor's override ConfigMap; the pod sees the change within
-// about two minutes.
-const CLOUD_ACTS = [["on", 2, "On 2h"], ["off", 6, "Off 6h"], ["clear", 0, "Clear"]];
-// The button armed by a first click ("host:action") and the last answer.
-const cst = { armed: "", msg: "", host: "" };
-function cloudButtons(p) {
-  const btns = CLOUD_ACTS.map(([a, n, label]) => {
-    const k = `${p.host}:${a}`;
-    return `<button class="btn sm" data-cloud="${esc(k)}" data-hours="${n}">${cst.armed === k ? `Click again: ${label}` : label}</button>`;
-  }).join(" ");
-  return pageRow("Hold", btns) + (cst.msg && cst.host === p.host ? `<div class="err">${esc(cst.msg)}</div>` : "");
-}
-
 // Bytes as a reader says them, as hub_core::host_now::bytes does: 2.5G, 340M, 12K.
 function bytes(b) {
   if (b == null) return "-";
@@ -559,7 +525,7 @@ function liveBody(d) {
 
 function machineBody(d) {
   const colors = poolColors(d);
-  let h = `<div class="panel">${d.parts.map(pagePart).join("")}${pageRow("Read", clock(d.at * 1e3))}${d.machine.power ? cloudButtons(d.machine.power) : ""}</div>`;
+  let h = `<div class="panel">${d.parts.map(pagePart).join("")}${pageRow("Read", clock(d.at * 1e3))}</div>`;
   const hot = d.tables.devices.rows.some((r) => r.hottest >= HOT_C);
   h += secHead("", "Sensors", d.tables.devices.rows.length, hot ? "warn" : "", "h3") + (!d.live ? `<div class="empty">${NOT_READ}.</div>` : unread(d.live, "sensors") || pageTable(d.tables.devices, DEVICE_COLS, DEVICE_CELLS, "Its node exporter publishes no hwmon reading."));
   const slots = d.tables.slots;
@@ -600,26 +566,9 @@ function poolBody(d) {
   return h;
 }
 
-async function cloudAct(key, hours) {
-  const i = key.lastIndexOf(":"), host = key.slice(0, i), action = key.slice(i + 1);
-  cst.armed = "";
-  cst.host = host;
-  try { await post("/api/cloud-runner", { host, action, hours }); cst.msg = `${host}: ${action} sent; the governor reads it within about 2 minutes.`; }
-  catch (e) { cst.msg = `${host}: ${e.message}`; }
-  renderInfra();
-}
-
-// The page has no confirm dialog to lean on, so a button asks twice; the arm lapses after 4 s.
 $("infra").addEventListener("click", (e) => {
   const go = e.target.closest("[data-go]");
   if (go) { e.preventDefault(); setTab(go.dataset.go); return; }
-  const b = e.target.closest("[data-cloud]");
-  if (!b) return;
-  const k = b.dataset.cloud;
-  if (cst.armed === k) { cloudAct(k, Number(b.dataset.hours)); return; }
-  cst.armed = k;
-  renderInfra();
-  setTimeout(() => { if (cst.armed === k) { cst.armed = ""; renderInfra(); } }, 4000);
 });
 
 function drawInfra() {
@@ -649,7 +598,7 @@ function drawInfra() {
   const badge = w === null ? ` <span class="chip sm" style="--c:var(--b-needs)" title="${NOT_READ}">waiting on you: ${NOT_READ}</span>`
     : w && w.count > 0 ? ` <a href="${esc(w.href)}" class="chip sm" style="--c:var(--b-needs)">${w.count} waiting on you, on Home</a>` : "";
   let html = strip + `<div class="bhead"><span><span class="chip" style="--c:${color}">OVERALL ${word}</span>${badge} <span class="muted">read ${clock(t1)}</span></span>${pfold("infra-links", "Grafana", links)}</div>`;
-  html += innerWrap("infra", "machines", `${kpis(cc, d.ci.glance)}${spaceSection(d.space)}${secHead("machines", "Machines", infraN("machines"))}${INFRA_T.machines.html()}${governorLine(g)}${budgetLines(g)}`);
+  html += innerWrap("infra", "machines", `${kpis(cc, d.ci.glance)}${spaceSection(d.space)}${secHead("machines", "Machines", infraN("machines"))}${INFRA_T.machines.html()}${governorLine(g)}`);
   html += innerWrap("infra", "pools", secHead("pools", "Job kinds", infraN("pools")) + INFRA_T.pools.html());
   html += innerWrap("infra", "ci", runnersSection(d.ci)) + innerWrap("infra", "waiting", waitingSection()) +
     innerWrap("infra", "local", localSection(inst, t1));

@@ -223,24 +223,6 @@ test("a record's page inside an inner tab keeps its id: the route opens the inne
   delete ctx.history;
 });
 
-test("the Cloud card's month is a link to Costs, Budget; AWS's stops and emails stay", () => {
-  const g = run(`governorIndex({ governor: [
-    { labels: { __name__: "ci_governor_budget_ok" }, value: 1 },
-    { labels: { __name__: "ci_governor_budget_updated" }, value: 1700000000 },
-    { labels: { __name__: "ci_governor_budget_usd", kind: "actual" }, value: 113 },
-    { labels: { __name__: "ci_governor_budget_usd", kind: "limit" }, value: 600 },
-    { labels: { __name__: "ci_governor_budget_alert", basis: "actual", usd: "450" }, value: 1 },
-    { labels: { __name__: "ci_governor_budget_action_usd", type: "stop", status: "STANDBY" }, value: 550 },
-  ] })`);
-  const h = run(`budgetLines(${JSON.stringify(g)})`);
-  assert.match(h, /Month: <a href="#costs\/budget">Costs, Budget<\/a>/);
-  assert.doesNotMatch(h, /\$113|of \$600|forecast/, "the dollars are Costs, Budget's, not a second home");
-  assert.match(h, /Emails at \$450/);
-  assert.match(h, /at \$550 AWS stops it and blocks starts/);
-  assert.doesNotMatch(h, /READ FAILED/);
-  assert.match(run(`budgetLines(${JSON.stringify({ ...g, budget_ok: 0 })})`), /READ FAILED/);
-});
-
 // A machine page as GET /api/infra/machine sends it (hub_core::machine_page plus agent-web's
 // tables), the few fields each test reads.
 const machinePage = (o = {}) => ({
@@ -265,11 +247,10 @@ test("a machine page for a name no machine has says so, from the server's 404", 
   assert.match(h, /href="#infra\/machines">All machines<\/a>/);
 });
 
-test("a machine page with no reading says why, in amber, and holds the governor's buttons", () => {
+test("a machine page with no reading says why, in amber", () => {
   const h = drawPage("machines/aws-burst-1", machinePage());
   assert.match(h, /<span class="pgv capwarn">no reading: the governor has it stopped<\/span>/);
   assert.match(h, /href="https:\/\/g\.example\/d\/kb-fleet\?var-host=aws-burst-1" target="_blank"/);
-  assert.match(h, /data-cloud="aws-burst-1:on" data-hours="2">On 2h</);
   assert.match(h, /No runner and no core reading\./);
   assert.match(h, /Nothing firing names it\./);
 });
@@ -280,11 +261,6 @@ test("a machine page's power history lists every change of the window, newest fi
   assert.equal(h.match(/<tr><td>/g).length, 40);
   assert.ok(h.indexOf("queue") < h.indexOf("<td class=\"muted\"></td>"), "the newest change comes first");
   assert.doesNotMatch(h, /data-hist-all|older/);
-});
-
-test("the Machines table's power cell has no buttons: they are the machine page's", () => {
-  const h = run(`powerCell({ power: { host: "aws-burst-1", state: "stopped", hours: 1, max: 8, rule: "r", reason: "", usd_per_hour: null } })`);
-  assert.doesNotMatch(h, /data-cloud|7 days/);
 });
 
 test("a machine page draws its slots, its 7 days and its recent jobs with their links", () => {
@@ -308,7 +284,7 @@ test("a machine page draws its slots, its 7 days and its recent jobs with their 
   // The negative control: a slot with no series says no data, never 0.
   assert.match(h, /ws-unity-2<\/td>[\s\S]*?(<td class="n muted">no data<\/td>){3}/);
   assert.match(h, /<td class="muted">idle<\/td>[\s\S]*?<td class="n">12\.0<\/td><td class="n"><\/td>/);
-  assert.doesNotMatch(h, /data-cloud/, "no power, no buttons");
+  
   assert.match(h, /data-tip="[^"]*no data"/, "an hour with no sample says so");
   assert.match(h, /<td class="warn">now<\/td>/, "an open stretch lasts now");
   assert.match(h, /<a class="tl" href="#infra\/ci\/7">/);
@@ -345,15 +321,10 @@ test("a machine page draws its sensors hot in amber, its pods, containers, proce
   assert.doesNotMatch(failed, /Not collected|No Kubernetes pod/);
 });
 
-test("a failed refresh keeps the page on screen and says so, and a governor answer shows on its own host only", () => {
+test("a failed refresh keeps the page on screen and says so", () => {
   const h = drawPage("machines/aws-burst-1", machinePage(), "Could not read infra (HTTP 502)");
   assert.match(h, /refresh failed, showing the last read: Could not read infra \(HTTP 502\)/);
-  assert.match(h, /data-cloud="aws-burst-1:on"/, "the page is still drawn");
-  run(`Object.assign(cst, { host: "aws-burst-2", msg: "aws-burst-2: on sent" })`);
-  assert.doesNotMatch(drawPage("machines/aws-burst-1", machinePage()), /aws-burst-2: on sent/);
-  run(`cst.host = "aws-burst-1"`);
-  assert.match(drawPage("machines/aws-burst-1", machinePage()), /aws-burst-2: on sent/);
-  run(`Object.assign(cst, { host: "", msg: "" })`);
+  assert.match(h, /Sensors/, "the page is still drawn");
 });
 
 // A pool page as GET /api/infra/pool sends it (hub_core::pool_page plus agent-web's tables).
