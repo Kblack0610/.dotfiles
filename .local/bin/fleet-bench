@@ -2735,7 +2735,7 @@ sandbox_kpi() {
 # unread (a replay has no range answer), is no value.
 pool_kpi() {
   local re q w7 w28
-  re=$(jq -r '.idle_pool.pools // [] | map(tostring | gsub("[^A-Za-z0-9_-]"; "")) | join("|")' "$BENCH_CLASSES" 2>/dev/null)
+  re=$(prom_label_re "$(jq -c '.idle_pool.pools' "$BENCH_CLASSES" 2>/dev/null)")
   [ -n "$re" ] || { echo '{}'; return 0; }
   q="(sum(cc:pool_busy{pool=~\"$re\"}) / sum(cc:pool_slots{pool=~\"$re\"}))"
   w7=$(prom_map - "avg_over_time(${q}[7d:10m])" "$1") || w7='{}'

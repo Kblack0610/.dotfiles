@@ -2253,36 +2253,48 @@ J
   grep -q '^tags:.*sprint' "$(qitem queued gm-9)" || fail "the item has no sprint tag: $(cat "$(qitem queued gm-9)")"
 }
 
-# pool_prom -- a curl that answers prom_q as Prometheus would: the unity pool's 14 slots with
-# $NOTES_FIXTURE/busy of them busy, and github_pool_workflow putting repo `game`'s workflows on it.
+# pool_prom -- a curl that answers prom_q as Prometheus would: the idle comparison keeps the unity pool
+# while $NOTES_FIXTURE/busy of its 14 slots is under half, and github_pool_workflow puts repo `game`'s
+# workflows on it. Each query goes to $NOTES_FIXTURE/curl.log.
 pool_prom() {
-  stub curl 'case "$*" in
+  stub curl 'printf "%s\n" "$*" >> "$NOTES_FIXTURE/curl.log"
+case "$*" in
   *github_pool_workflow*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"pool\":\"unity\",\"repo\":\"game\"},\"value\":[0,\"3\"]}]}}" ;;
-  *) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"__name__\":\"cc:pool_slots\",\"pool\":\"unity\"},\"value\":[0,\"14\"]},{\"metric\":{\"__name__\":\"cc:pool_busy\",\"pool\":\"unity\"},\"value\":[0,\"$(cat "$NOTES_FIXTURE/busy")\"]}]}}" ;;
+  *) if [ "$(cat "$NOTES_FIXTURE/busy")" -lt 7 ]; then r="{\"metric\":{\"pool\":\"unity\"},\"value\":[0,\"0.2\"]}"; else r=""; fi
+     echo "{\"status\":\"success\",\"data\":{\"result\":[$r]}}" ;;
 esac'
 }
 
-@test "idle pool rank: a row whose repo gates on an idle pool is picked ahead of another project's, below an urgent row; a busy pool or no knob gives no boost" {
+# picks_order -> the row ids a dry fill of 4 would queue, in order.
+picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | tr -d ':[ ' | paste -sd' '; }
+
+@test "idle pool rank: a row on an idle pool is picked ahead of another project's at the same human rank, never ahead of a higher one; a busy pool or no knob gives no boost" {
   export DISPATCH_PROFILES=bnb DISPATCH_CLASSES="$SANDBOX/classes.json"
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
   # app sorts before game on a tie, so only the idle-pool term can put game's row first.
   row app human ap-1 "- [ ] fix(app): menu text #high $T <!-- id:ap-1 -->"
   row game human gm-9 "- [ ] fix(game): crash on load #high $T <!-- id:gm-9 -->"
+  row game human gm-7 "- [ ] fix(game): save slot name #low $T <!-- id:gm-7 -->"
   verdict app human ap-1 dispatch S 1 menu
   verdict game human gm-9 dispatch S 1 crash
+  verdict game human gm-7 dispatch S 1 save
   pool_prom
   echo '{"idle_pool": {"pools": ["unity"], "busy_below": 0.5}}' > "$DISPATCH_CLASSES"
-  # Negative controls: a busy pool (12 of 14), then an idle one with no knob, leave app's row next.
+  # Negative controls: a busy pool (12 of 14), then an idle one with no knob, leave app's row first.
   echo 12 > "$NOTES_FIXTURE/busy"
-  [[ "$(DRY=1 JUDGE_RC='' fill_day 1)" == *ap-1* ]] || fail "busy pool: ap-1 should be next: $(DRY=1 JUDGE_RC='' fill_day 1)"
+  [ "$(picks_order)" = "ap-1 gm-9 gm-7" ] || fail "busy pool: $(picks_order)"
+  grep -q 'cc:pool_busy{pool=~"unity"} / cc:pool_slots{pool=~"unity"} < 0.5' "$NOTES_FIXTURE/curl.log" || fail "idle query: $(cat "$NOTES_FIXTURE/curl.log")"
   echo 3 > "$NOTES_FIXTURE/busy"
-  [[ "$(DISPATCH_CLASSES=/dev/null DRY=1 JUDGE_RC='' fill_day 1)" == *ap-1* ]] || fail "no knob: ap-1 should be next"
-  [[ "$(DRY=1 JUDGE_RC='' fill_day 1)" == *"would queue: game"*"gm-9 [idle pool unity,"* ]] || fail "idle pool: gm-9 should be next, its why naming the pool: $(DRY=1 JUDGE_RC='' fill_day 1)"
+  [ "$(DISPATCH_CLASSES=/dev/null picks_order)" = "ap-1 gm-9 gm-7" ] || fail "no knob: $(DISPATCH_CLASSES=/dev/null picks_order)"
+  # Idle: gm-9 goes ahead of ap-1 at the same #high, and its why names the pool; ap-1's #high still
+  # beats gm-7, a #low row on the idle pool.
+  [ "$(picks_order)" = "gm-9 ap-1 gm-7" ] || fail "idle pool: $(picks_order)"
+  [[ "$(DRY=1 JUDGE_RC='' fill_day 1)" == *"gm-9 [idle pool unity,"* ]] || fail "why: $(DRY=1 JUDGE_RC='' fill_day 1)"
   # An urgent row still goes first while the pool idles.
   row app human ap-2 "- [ ] fix(app): login fails #urgent $T <!-- id:ap-2 -->"
   verdict app human ap-2 dispatch S 1 login
-  [[ "$(DRY=1 JUDGE_RC='' fill_day 1)" == *ap-2* ]] || fail "urgent: ap-2 should be next: $(DRY=1 JUDGE_RC='' fill_day 1)"
+  [ "$(picks_order)" = "ap-2 gm-9 ap-1 gm-7" ] || fail "urgent: $(picks_order)"
   # A real pick logs the term.
   DRY=0 JUDGE_RC='' fill_day 2
   [ -n "$(qitem queued gm-9)" ] || fail "gm-9 was not queued: $(ls "$AGENT_QUEUE_DIR/queued")"
