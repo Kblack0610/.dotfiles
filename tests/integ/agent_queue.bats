@@ -4767,6 +4767,21 @@ row_item() {
   # The red goes first at its own low; lv-5 is on no open row, so it keeps its own high.
   assert_output $'red low\nretagged-up urgent\ncleanup high\ngone high\nretagged-down low'
   [ "$("$AQ" next --json | jq -r .slug)" = red ]
+  # A real board (4,700 rows on 11-21) is past the argument limit as a whole map: only the rows items
+  # work are bound, so the order still reads them.
+  jq --argjson n 9000 '.rows += [range($n) | {project: "level", id: "lv-x\(.)", state: "open", priority: "high"}]' \
+    "$NOTES_FIXTURE/board.json" > "$NOTES_FIXTURE/big.json" && mv "$NOTES_FIXTURE/big.json" "$NOTES_FIXTURE/board.json"
+  run bash -c "'$AQ' list --json | jq -r '\"\(.slug) \(.priority)\"'"
+  assert_success
+  assert_output $'red low\nretagged-up urgent\ncleanup high\ngone high\nretagged-down low'
+  # An item on a row by its from: board: alone, and a waiting one, rank by their rows among the 9,000.
+  row_item boarded level:lv-x5 low
+  sed -i -e '/^row: /d' -e 's/^from: session$/from: board:level:lv-x5/' "$(item queued boarded)"
+  row_item parked level:lv-2 low
+  mkdir -p "$AGENT_QUEUE_DIR/waiting" && mv "$(item queued parked)" "$AGENT_QUEUE_DIR/waiting/"
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"boarded\" or .slug == \"parked\") | \"\(.slug) \(.priority)\"' | sort"
+  assert_output $'boarded high\nparked urgent'
+  rm "$(item queued boarded)" "$AGENT_QUEUE_DIR"/waiting/*parked.md
   # NEGATIVE CONTROL: a board notes cannot read ranks every item by its own line, as before.
   rm "$NOTES_FIXTURE/board.json"
   run bash -c "'$AQ' list --json | jq -r '\"\(.slug) \(.priority)\"'"
