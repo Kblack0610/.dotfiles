@@ -1634,6 +1634,38 @@ SH
   [ "$(jq -r '"\(.context_tokens) \(.context_window)"' <<<"$output")" = "5 null" ]
 }
 
+@test "a running local gate writing Logs/gate.txt is activity, a stale log is not (ar-42)" {
+  # 2026-11-04 agent-23: a local suite.sh gate wrote Logs/gate.txt (~80 classes done) while its transcript
+  # was silent past 120m and the row read "background shell idle over 120m".
+  landed_fixture
+  mkdir -p "$SANDBOX/wt/Logs"
+  : > "$SANDBOX/wt/Logs/gate.txt"
+  PANEL_STATUS=shell PANEL_JOB=gate PANEL_IDLE_S=$((200 * 60)) panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  # the bucket counts the log write; idle_min stays the transcript's own silence
+  [ "$(jq -r '"\(.bucket) \(.idle_min)"' <<<"$output")" = "WORKING 200" ]
+  # a session started in a subdirectory of the worktree finds the same log
+  mkdir -p "$SANDBOX/wt/sub"
+  PANEL_STATUS=shell PANEL_JOB=gate PANEL_IDLE_S=$((200 * 60)) panel "$SANDBOX/wt/sub" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = "WORKING" ]
+  PANEL_STATUS=shell PANEL_JOB=gate PANEL_IDLE_S=$((200 * 60)) panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  # negative control: the same gate whose log has not moved in 3h reads idle
+  touch -d '3 hours ago' "$SANDBOX/wt/Logs/gate.txt"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = "LANDED" ]
+  jq -r .reason <<<"$output" | grep -q 'background shell idle over 120m'
+  # negative control: a fresh log does not rescue a shell that is not a gate or test
+  touch "$SANDBOX/wt/Logs/gate.txt"
+  PANEL_STATUS=shell PANEL_JOB=jobs PANEL_IDLE_S=$((200 * 60)) panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  jq -r .reason <<<"$output" | grep -q 'not a gate or test'
+}
+
 @test "end to end: a row carries the open job its shell waits on, and null when none is known" {
   # fleet-dispatch counts no open_job queue session toward its pace target (pipeline-eval-p2).
   landed_fixture
