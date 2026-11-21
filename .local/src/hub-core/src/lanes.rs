@@ -1,4 +1,5 @@
-//! Releases > Flow: one project's CI and release runs as swimlanes over a window (24h or 7d),
+//! Releases > Flow: one project's CI and release runs as swimlanes over a window (24h, 7d, 30d,
+//! or a from-to day pair, `2026-11-10..2026-11-15`, clipped to the runs ledger's `KEEP_DAYS`),
 //! built once here so the hub TUI's text bars and agent-web's chart draw the same rows.
 //!
 //! The CI lanes are the project's runs the release graph tied to no release, one lane per
@@ -19,13 +20,13 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use crate::builds::{timed_as, Builds, Run};
+use crate::builds::{timed_as, Builds, Run, KEEP_DAYS};
 use crate::links::{Kind, Link};
 use crate::pipeline::dated;
 use crate::releases::{App, Releases};
 
 /// The windows a Flow can be drawn over, as the picker names them, and their length in seconds.
-pub const WINDOWS: [(&str, i64); 2] = [("24h", 86_400), ("7d", 7 * 86_400)];
+pub const WINDOWS: [(&str, i64); 3] = [("24h", 86_400), ("7d", 7 * 86_400), ("30d", 30 * 86_400)];
 /// The `WINDOWS` entry an unknown name gets, 7d: a week shows a release's path from tag to
 /// store; a day is mostly CI.
 const DEFAULT_WINDOW: usize = 1;
@@ -76,7 +77,11 @@ pub struct Lane {
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
 pub struct Flow {
     pub project: String,
-    pub window: &'static str,
+    /// A `WINDOWS` name, or the day pair drawn (`2026-11-10..2026-11-15`).
+    pub window: String,
+    /// Why the window drawn is not the one asked (`the ledger keeps 30 days, drawn from
+    /// 2026-10-22`); empty when it is.
+    pub clipped: String,
     pub t0: i64,
     pub t1: i64,
     /// Every project with a run in the window or an app: the picker, sorted.
@@ -102,6 +107,73 @@ pub fn window(name: &str) -> (&'static str, i64) {
         .find(|w| w.0 == name)
         .copied()
         .unwrap_or(WINDOWS[DEFAULT_WINDOW])
+}
+
+/// A `YYYY-MM-DD` day, or `from..to` (either order) days, as the local midnight that opens the
+/// first and the one that closes the last: (from, to, t0, t1). None for anything else.
+fn day_pair(ask: &str) -> Option<(String, String, i64, i64)> {
+    let (a, b) = ask.split_once("..").unwrap_or((ask, ask));
+    let (a, b) = (a.trim(), b.trim());
+    let (a, b) = if a <= b { (a, b) } else { (b, a) };
+    let (t0, _) = crate::money::day_bounds(a)?;
+    let (_, t1) = crate::money::day_bounds(b)?;
+    Some((a.to_string(), b.to_string(), t0, t1))
+}
+
+/// Whether `ask` names a window: one of `WINDOWS` or a day pair.
+pub fn is_window(ask: &str) -> bool {
+    let ask = ask.trim();
+    WINDOWS.iter().any(|w| w.0 == ask) || day_pair(ask).is_some()
+}
+
+/// The local day holding `t`, `2026-11-10`.
+fn local_day(t: i64) -> String {
+    use chrono::TimeZone;
+    chrono::Local
+        .timestamp_opt(t, 0)
+        .single()
+        .map_or_else(String::new, |d| d.format("%Y-%m-%d").to_string())
+}
+
+/// What `ask` draws, ending no later than `now`: (its name, from, to, why it is not what was
+/// asked). A named window ends `now`. A day pair runs from its first day's midnight to its last
+/// day's end, clipped to the ledger (`KEEP_DAYS` back, no later than `now`) and saying so; a
+/// pair wholly outside the ledger is the default window, saying so, not an empty chart.
+fn frame(ask: &str, now: i64) -> (String, i64, i64, String) {
+    let by_name = |name: &str| {
+        let (n, secs) = window(name);
+        (n.to_string(), now - secs, now)
+    };
+    let Some((from, to, t0, t1)) = day_pair(ask.trim()) else {
+        let (n, a, b) = by_name(ask);
+        return (n, a, b, String::new());
+    };
+    let floor = now - KEEP_DAYS * 86_400;
+    let (a, b) = (t0.max(floor), t1.min(now));
+    let name = if from == to {
+        from.clone()
+    } else {
+        format!("{from}..{to}")
+    };
+    if b <= a {
+        let (n, a, b) = by_name("");
+        let why = format!(
+            "{name} is outside the ledger's {KEEP_DAYS} days (from {}), showing {n}",
+            local_day(floor)
+        );
+        return (n, a, b, why);
+    }
+    let mut notes = vec![];
+    if a > t0 {
+        notes.push(format!(
+            "the ledger keeps {KEEP_DAYS} days, drawn from {}",
+            local_day(a)
+        ));
+    }
+    if to > local_day(now) {
+        notes.push("drawn to now".to_string());
+    }
+    (name, a, b, notes.join(", "))
 }
 
 /// When a run ran, clipped to nothing: its start, and its start plus what it took (a running or
@@ -286,9 +358,8 @@ fn app_lanes(
 /// and one releases read. An empty `project` is the one with the most runs in the window, else
 /// the first in the picker.
 pub fn build(b: &Builds, rel: &Releases, project: &str, window_name: &str, now: i64) -> Flow {
-    let (window, secs) = window(window_name);
-    let (t0, t1) = (now - secs, now);
-    let tol = secs / MERGE_PARTS;
+    let (window, t0, t1, clipped) = frame(window_name, now);
+    let tol = (t1 - t0) / MERGE_PARTS;
     // Each run with its project, worked out once: `canonical` takes the registry's lock.
     let runs: Vec<(&Run, String)> = b
         .rows
@@ -378,6 +449,7 @@ pub fn build(b: &Builds, rel: &Releases, project: &str, window_name: &str, now: 
     Flow {
         project,
         window,
+        clipped,
         t0,
         t1,
         projects,
@@ -565,6 +637,109 @@ mod tests {
         assert_eq!(f.release_empty, "nothing tagged, built or deployed in 7d");
     }
 
+    /// The local day `n` days before the one holding `NOW`.
+    fn day_before(n: i64) -> String {
+        local_day(NOW - n * 86_400)
+    }
+
+    #[test]
+    fn thirty_days_is_a_window_and_a_run_of_the_ledgers_oldest_week_shows_in_it_only() {
+        let (b, r) = reads(
+            vec![run(1, "Org/app", "Checks", "green", 20 * 86_400)],
+            vec![],
+        );
+        let wk = build(&b, &r, "app", "7d", NOW);
+        assert_eq!(wk.ci_empty, "no CI runs in 7d");
+        let mo = build(&b, &r, "app", "30d", NOW);
+        assert_eq!(
+            (mo.window.as_str(), mo.t0, mo.t1, labels(&mo.ci)),
+            ("30d", NOW - 30 * 86_400, NOW, vec!["Checks"])
+        );
+        assert!(mo.clipped.is_empty());
+    }
+
+    #[test]
+    fn a_day_pair_draws_those_days_whole_and_an_old_run_outside_it_is_out() {
+        let (from, to) = (day_before(12), day_before(10));
+        let (b, r) = reads(
+            vec![
+                run(1, "Org/app", "Checks", "green", 11 * 86_400),
+                run(2, "Org/app", "Checks", "red", 2 * 86_400),
+            ],
+            vec![],
+        );
+        let f = build(&b, &r, "app", &format!("{from}..{to}"), NOW);
+        assert_eq!(f.window, format!("{from}..{to}"));
+        assert_eq!(f.t0, crate::money::day_bounds(&from).unwrap().0);
+        assert_eq!(f.t1, crate::money::day_bounds(&to).unwrap().1);
+        assert!(f.clipped.is_empty(), "{}", f.clipped);
+        assert_eq!(f.ci[0].sub, "1 run", "only the run inside the days");
+        // The pair is the same either way round; one day is one day.
+        let back = build(&b, &r, "app", &format!("{to}..{from}"), NOW);
+        assert_eq!((back.t0, back.t1), (f.t0, f.t1));
+        let one = build(&b, &r, "app", &from, NOW);
+        assert_eq!(one.window, from);
+        assert_eq!((one.t0, one.t1), crate::money::day_bounds(&from).unwrap());
+    }
+
+    #[test]
+    fn a_pair_older_than_the_ledger_is_clipped_and_says_so_and_one_wholly_outside_is_the_default() {
+        let floor = NOW - KEEP_DAYS * 86_400;
+        let (b, r) = reads(vec![], vec![]);
+        let f = build(
+            &b,
+            &r,
+            "app",
+            &format!("2000-01-01..{}", day_before(5)),
+            NOW,
+        );
+        assert_eq!(f.t0, floor, "drawn from the ledger's floor");
+        assert!(
+            f.clipped
+                .starts_with("the ledger keeps 30 days, drawn from "),
+            "{}",
+            f.clipped
+        );
+        assert!(f.window.starts_with("2000-01-01.."), "{}", f.window);
+        let out = build(&b, &r, "app", "2000-01-01..2000-01-05", NOW);
+        assert_eq!(out.window, "7d");
+        assert_eq!((out.t0, out.t1), (NOW - 7 * 86_400, NOW));
+        assert!(
+            out.clipped
+                .starts_with("2000-01-01..2000-01-05 is outside the ledger's 30 days"),
+            "{}",
+            out.clipped
+        );
+        // A pair ending after today is drawn to now and says so; one ending today does not.
+        let fut = build(
+            &b,
+            &r,
+            "app",
+            &format!("{}..2999-01-01", day_before(2)),
+            NOW,
+        );
+        assert_eq!(fut.t1, NOW);
+        assert_eq!(fut.clipped, "drawn to now");
+        let today = build(
+            &b,
+            &r,
+            "app",
+            &format!("{}..{}", day_before(2), local_day(NOW)),
+            NOW,
+        );
+        assert_eq!((today.t1, today.clipped.as_str()), (NOW, ""));
+    }
+
+    #[test]
+    fn what_names_a_window_is_a_name_or_a_valid_day_pair_and_nothing_else() {
+        for yes in ["24h", "30d", " 7d ", "2026-11-10", "2026-11-10..2026-11-12"] {
+            assert!(is_window(yes), "{yes}");
+        }
+        for no in ["", "trader", "2026-13-01", "2026-11-10..x", "90d"] {
+            assert!(!is_window(no), "{no}");
+        }
+    }
+
     #[test]
     fn the_picker_holds_every_project_and_opens_on_the_busiest() {
         let ucp = "Org/unity-core-playground";
@@ -579,11 +754,11 @@ mod tests {
         );
         let f = build(&b, &r, "", "", NOW);
         assert_eq!(
-            (f.project.as_str(), f.window),
+            (f.project.as_str(), f.window.as_str()),
             ("unity-core-playground", "7d")
         );
         assert_eq!(f.projects, ["home-config", "unity-core-playground"]);
-        assert_eq!(f.windows, ["24h", "7d"]);
+        assert_eq!(f.windows, ["24h", "7d", "30d"]);
         let (b, r) = reads(vec![], vec![game()]);
         assert_eq!(
             build(&b, &r, " ", "24h", NOW).project,
