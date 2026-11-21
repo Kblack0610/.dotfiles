@@ -878,7 +878,7 @@ reap_stuck() {
   if [ "$filed" != 1 ] && [ $(( now - first )) -ge $(( $3 * 3600 )) ]; then
     filed=1 where=$(human_sheet_row "$2" "$5 (queue item $1) #size/s")
     logline "queue item $1: $where: $5"
-    case "$where" in "not filed"*) agent-notify -t 'Needs you' "$5 (queue item $1; $where)" >/dev/null 2>&1 ;; esac
+    case "$where" in "not filed"*) agent-notify -t 'Needs you' -d "needs:dispatch:stuck:$1" "$5 (queue item $1; $where)" >/dev/null 2>&1 ;; esac
     echo "human row for queue item $1 ($where)"
   fi
   mkdir -p "${f%/*}" && printf '%s %s\n%s\n' "$first" "$filed" "$5" > "$f"
@@ -4485,7 +4485,7 @@ own_parked_pr() {
   [ "$owner" = fix ] || title="chore(review): PR $pr is $color at ${head:0:12} after $tries land tries; land it"
   where=$(human_sheet_row "$it" "$title or close it (queue item $slug) #size/s")
   agent-queue set "$slug" "note=PR $pr $color at ${head:0:12} after $tries $verb tries; $where" >/dev/null
-  agent-notify -t 'Needs you' "PR $pr $color after $tries $verb tries ($where)" >/dev/null 2>&1
+  agent-notify -t 'Needs you' -d "needs:dispatch:pr:$pr" "PR $pr $color after $tries $verb tries ($where)" >/dev/null 2>&1
   logline "queue item $slug: PR $pr $color at ${head:0:12} after $tries $verb tries, $where"
   echo "human row for queue item $slug (PR $pr $color after $tries $verb tries, $where)"
 }

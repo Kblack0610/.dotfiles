@@ -1056,7 +1056,7 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   assert_output --partial 'human row for queue item fix-crash (not filed: the game sheet refused the row)'
   run cmd_reap
   refute_output --partial 'human row'
-  assert_equal "$(grep -c 'agent-notify -t Needs you chore(review): reap has not read PR o/game#12' "$NOTES_FIXTURE/calls.log")" 1
+  assert_equal "$(grep -c 'agent-notify -t Needs you -d needs:dispatch:stuck:fix-crash chore(review): reap has not read PR o/game#12' "$NOTES_FIXTURE/calls.log")" 1
 }
 
 # ar-2897: make-logical-possum-p4b's row failed merge proof on every pass: home-config has no origin, only forgejo.
