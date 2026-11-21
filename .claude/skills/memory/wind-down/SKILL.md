@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: memory
   tags: [session, teardown, tmux]
+  system: [sessions]
   reviewed: "2026-11-05"
 ---
 

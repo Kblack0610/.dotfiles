@@ -495,6 +495,12 @@ pub fn stages(jobs: &[Job], wf: Result<&Workflow, &str>, source: &str) -> Stages
     }
 }
 
+/// A run's jobs as boxes in start order, each with its state, time and first failing step: what
+/// a release page draws inside one run's box (`release_page`).
+pub(crate) fn job_boxes(jobs: &[Job]) -> Vec<StageJob> {
+    ordered(jobs.iter().collect())
+}
+
 fn ordered(mut js: Vec<&Job>) -> Vec<StageJob> {
     js.sort_by_key(|j| (ts(&j.started_at).unwrap_or(i64::MAX), j.name.clone()));
     js.into_iter().map(stage_job).collect()
@@ -1118,7 +1124,7 @@ fn chain(o: &Env, run: &Run, wf: Result<&Workflow, &str>) -> Chain {
     };
     c.release = Some(Hop {
         text: format!("{} {}", rel.project, rel.tag),
-        href: Link::to(Kind::App, rel.project.clone()).href(),
+        href: crate::release_page::link(&rel.project, &rel.tag).href(),
     });
     match crate::releases::snapshot(o.runner) {
         Err(e) => c.notes.push(format!("channels not read: {e}")),

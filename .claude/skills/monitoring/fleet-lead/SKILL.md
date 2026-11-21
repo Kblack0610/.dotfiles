@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [agents, fleet, coordination, shepherd, binks]
+  system: [sessions]
   reviewed: 2026-11-06
 ---
 

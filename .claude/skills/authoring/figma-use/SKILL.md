@@ -6,6 +6,7 @@ disable-model-invocation: false
 metadata:
   category: authoring
   tags: [design, figma, ui]
+  system: [ui]
   reviewed: "2026-06-16"
 ---
 

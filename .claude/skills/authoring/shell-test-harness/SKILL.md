@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: authoring
   tags: [testing, shell, bats, dotfiles]
+  system: [tests]
   reviewed: "2026-07-27"
 ---
 

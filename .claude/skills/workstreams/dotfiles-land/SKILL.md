@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: workstreams
   tags: [git, pull-requests, dotfiles, landing]
+  system: [dispatch, security]
   reviewed: "2026-07-22"
 ---
 

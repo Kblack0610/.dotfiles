@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: reference
   tags: [reference, regulatory, hipaa, privacy]
+  system: [security]
   reviewed: "2026-06-26"
 ---
 

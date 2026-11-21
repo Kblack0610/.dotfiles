@@ -7,6 +7,7 @@ allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, Task]
 metadata:
   category: ops
   tags: [ci, github, pr]
+  system: [ci]
   reviewed: "2026-11-12"
 ---
 
