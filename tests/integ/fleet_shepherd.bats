@@ -15,6 +15,8 @@ setup() {
   export FLEET_STATE_FILE="$HOME/state.json" FLEET_SHEPHERD_DIR="$HOME/.agent/shepherd"
   # every run may start a pass; the debounce has its own test
   export FLEET_SHEPHERD_DEBOUNCE_MIN=0
+  # a session a lane started inherits the live shepherd.conf PASS_TOOLS; a test sets its own
+  unset PASS_TOOLS
   mkdir -p "$FLEET_SHEPHERD_DIR"
   stub fleet-sessions 'echo "$*" >> "$HOME/sessions.calls"'
   stub fleet-assess 'if [ "${1:-}" = --blocked ]; then printf "%b" "${STUB_BLOCKED:-}"; elif [ "${1:-}" = --fleet ]; then printf "%b" "${STUB_FLEET:-}"; ! printf "%b" "${STUB_FLEET:-}" | grep -qE "^fleet: OVER|NOT live"; else echo "verdict: ${STUB_VERDICT:-CLEAR} load 0.5x"; fi'
@@ -1143,9 +1145,18 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   grep -q -- "-L hub new-window -d -P -F #{pane_id} -t =hub: -n shepherd -c $HOME/.dotfiles bash" "$HOME/tmux.calls"
   [ ! -e "$HOME/systemd-run.calls" ]
   rm "$FLEET_SHEPHERD_DIR/.pass"
-  STUB_TMUX_FAIL='has-session|list-sessions' run "$SH" run
+  # The server starts on the user manager's environment, not the runner's, so no session it makes
+  # reads as the shepherd; a value systemd prints escaped is left out.
+  stub systemctl "printf '%s\n' HOME=/h PATH=/p \"ESC=\\\$'a\\\\nb'\""
+  STUB_TMUX_FAIL='has-session|list-sessions' AGENTCTL_NAME=shepherd run "$SH" run
   assert_success
-  assert_equal "$(cat "$HOME/systemd-run.calls")" '--user --scope --quiet tmx ensure hub hub'
+  assert_equal "$(cat "$HOME/systemd-run.calls")" "--user --scope --quiet env -i HOME=/h PATH=/p $SANDBOX/bin/tmx ensure hub hub"
+  # With no user manager to read, it says so and starts nothing, never a server on the runner's env
+  rm "$HOME/systemd-run.calls" "$FLEET_SHEPHERD_DIR/.pass"
+  stub systemctl 'exit 1'
+  STUB_TMUX_FAIL='has-session|list-sessions' run "$SH" run
+  assert_output --partial 'no user manager environment'
+  [ ! -e "$HOME/systemd-run.calls" ]
 }
 
 @test "a pass recorded in a window of session dotfiles, with no pane on record, is found by the registry and closed there" {

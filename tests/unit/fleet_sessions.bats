@@ -2755,6 +2755,40 @@ empty_submodule_fixture() {
   assert_output 'External/asset library'
 }
 
+@test "end to end: a session on main whose PRs in two repos merged from worktrees reads them merged and finished (ar-291)" {
+  # 2026-11-05 hub/dotfiles:8 sat on main with #920 and private #402 merged, and its row read
+  # nothing merged: no branch PR, finished false, LANDED, so /wind-down auto would have refused.
+  landed_fixture
+  export XDG_CACHE_HOME="$SANDBOX/xdg" # the sibling PR view cache stays in the sandbox
+  git -C "$SANDBOX/wt" checkout -q -B main origin/main
+  : > "$LEDGER_DIR/prs.tsv"
+  pr_transcript "$SANDBOX/t.jsonl"
+  printf -- '-\t7\tMERGED\tPASS\t-\t-\t2026-11-05T15:30:00Z\n' > "$LEDGER_DIR/prs_o_one.tsv"
+  printf -- '-\t9\tMERGED\tPASS\t-\t-\t2026-11-05T15:37:35Z\n' > "$LEDGER_DIR/prs_o_two.tsv"
+  phases_plan '- [x] Phase 1: queue cards (#7)' '- [x] Phase 2: docs (o/two #9)'
+  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -c '[.bucket, .branch, .pr, .finished, .blockers, .close.verdict]' <<<"$output")" = '["DONE","main","-",true,[],"now"]' ]
+  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, its PRs #7,#9 merged, all 2 phases done' ]
+  # with no plan file the merged PRs alone decide: DONE, never the human's CHAT
+  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" panel "$SANDBOX/wt"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -c '[.bucket, .finished, .blockers, .close.verdict]' <<<"$output")" = '["DONE",true,[],"now"]' ]
+  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, its PRs #7,#9 merged, no plan file, its PR landed' ]
+  # negative control, the plan back: one still open is the row's PR (sibling_pr), unlanded, so not finished
+  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  printf -- '-\t7\tOPEN\tPASS\t-\t-\n' > "$LEDGER_DIR/prs_o_one.tsv"
+  printf '#!/usr/bin/env bash\ncase "$*" in api*) echo "[]" ;; *"pr view 7 --repo o/one"*) echo %q ;; *) exit 1 ;; esac\n' \
+    '{"headRefOid":"feedface0000beef","statusCheckRollup":[{"conclusion":"SUCCESS"}]}' > "$SANDBOX/bin/gh"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -c '[.bucket, .pr, .finished, .blockers]' <<<"$output")" = '["STALLED","7",false,["PR o/one#7 open, CI PASS"]]' ]
+  [ "$(jq -r .close.verdict <<<"$output")" = keep ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR o/one#7 green, not merged' ]
+}
+
 @test "end to end: edits in other worktrees block a clean cwd from reading LANDED or finished" {
   landed_fixture
   printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/gh"
@@ -4319,6 +4353,17 @@ GH
   jq -e '.blockers | index("PR #2149 open, waiting on the landing queue")' <<<"$output" >/dev/null
   # the row carries its repo's landing-queue depth, and no wait minutes with no live gate (ar-2525)
   [ "$(jq -c '[.landing_queue, .wait_min]' <<<"$output")" = '[1,null]' ]
+  # a gate-and-land.sh running in its worktree gives the wait its minutes while the PR is held, whatever the
+  # transcript's open job reads (ar-3486: agent-27 #2900 behind #2539 read overdue with wait_min null)
+  mkdir -p "$SANDBOX/wt/scripts/test"
+  printf 'sleep 60\n' > "$SANDBOX/wt/scripts/test/gate-and-land.sh"
+  (cd "$SANDBOX/wt" && exec -a x bash scripts/test/gate-and-land.sh) >/dev/null 2>&1 3>&- &
+  LIVE_PIDS="$!"
+  # the process is the event: wait until /proc shows its exec, bounded so a failed start fails the test
+  timeout 20 bash -c 'until grep -q gate-and-land.sh "/proc/$1/cmdline" 2>/dev/null; do :; done' _ "$LIVE_PIDS" || fail "gate stand-in never started"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -c '[.landing_queue, (.wait_min | type)]' <<<"$output")" = '[1,"number"]' ]
+  pkill -P "$LIVE_PIDS" || true; kill "$LIVE_PIDS" 2>/dev/null || true; wait "$LIVE_PIDS" 2>/dev/null || true; LIVE_PIDS=""   # its sleep child too
   # one label among others counts, and a green PR waits its landing turn too
   store PASS 'rides-alone,landing-queue' landing-queue
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json

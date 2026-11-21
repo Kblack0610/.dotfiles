@@ -954,7 +954,7 @@ close_sample() {
 # reopen it on the answer, as the closing session itself would (CLAUDE_CODE_SESSION_ID names it to
 # agent-ask). Fails when fewer ids were read than the row's own_asks counts, so an ask the blockers
 # do not name is never left without its session, and on the first that cannot be set: answered
-# meanwhile, no session named, or another resume.
+# meanwhile or no session named. An ask with its own resume counts as set: the answer runs it.
 reopen_own_asks() {
   local id ids=()
   [ "$2" = - ] || IFS=, read -ra ids <<<"$2"
@@ -1750,11 +1750,21 @@ launch_pass() {
   cmd="bash $(printf '%q' "$LEDGER/.pass.sh")"
   if ! tmux -L "$SERVER" has-session -t "=$SESSION" 2>/dev/null; then
     # The session is made from its world's manifest, as tmx makes every world. With no server,
-    # one started from the runner's unit would die with the unit, so it gets a scope.
+    # one started from the runner's unit would die with the unit, so it gets a scope. A server keeps
+    # its starter's environment and hands it to every session it makes: started from this runner's,
+    # every hub session read as the shepherd (AGENTCTL_NAME, PASS_TOOLS; 2026-11-20). So it starts
+    # with the user manager's environment, as one started at login does; a value systemd prints
+    # escaped ($'...') is left out rather than passed as a literal.
     if tmux -L "$SERVER" list-sessions >/dev/null 2>&1 || ! command -v systemd-run >/dev/null 2>&1; then
       tmx ensure "$SERVER" "$SESSION" >/dev/null 2>&1
     else
-      systemd-run --user --scope --quiet tmx ensure "$SERVER" "$SESSION" >/dev/null 2>&1
+      local -a uenv
+      mapfile -t uenv < <(systemctl --user show-environment 2>/dev/null | grep -v "^[A-Za-z_0-9]*=\\$'")
+      # No user manager to read (boot catch-up without a bus): say so rather than start a server with
+      # no HOME or PATH, or fall back to the runner's environment and leak it again.
+      printf '%s\n' "${uenv[@]}" | grep -q '^PATH=' \
+        || { echo "$NAME: no user manager environment (systemctl --user show-environment); the $SERVER server is not started" >&2; return 1; }
+      systemd-run --user --scope --quiet env -i "${uenv[@]}" "$(command -v tmx)" ensure "$SERVER" "$SESSION" >/dev/null 2>&1
     fi
   fi
   pane="${4:-}"
