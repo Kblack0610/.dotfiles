@@ -47,7 +47,7 @@ setup() {
   # Everything a fleet-shepherd pass and agentctl-run export, as a suite run from one inherits it,
   # plus the Claude session's own account dir.
   local v
-  for v in $(runner_exports) CLAUDE_CONFIG_DIR; do [ -n "${!v+x}" ] || export "$v=inherited-$v"; done
+  for v in $(runner_exports) CLAUDE_CONFIG_DIR LANE; do [ -n "${!v+x}" ] || export "$v=inherited-$v"; done
 
   load '../helpers/sandbox'
   sandbox_init basic
@@ -67,10 +67,10 @@ setup() {
 }
 
 # A shepherd pass runs the Stop-hook suite with its lane, account and state paths exported, and a
-# Claude session with its CLAUDE_CONFIG_DIR; each one turned unrelated suites red.
+# Claude session with its CLAUDE_CONFIG_DIR, and a runner unit with its conf (LANE); each one turned unrelated suites red.
 @test "sandbox_init detaches from every name a shepherd pass or agentctl-run exports" {
   local v left=()
-  for v in $(runner_exports) CLAUDE_CONFIG_DIR; do [ -z "${!v+x}" ] || left+=("$v"); done
+  for v in $(runner_exports) CLAUDE_CONFIG_DIR LANE; do [ -z "${!v+x}" ] || left+=("$v"); done
   assert_equal "${left[*]}" ""
 }
 
