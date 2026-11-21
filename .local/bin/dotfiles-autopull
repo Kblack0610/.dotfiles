@@ -18,7 +18,8 @@
 # is never replaced. Stow ignores .claude/skills, so `skill-deploy --quiet` runs beside it (one more
 # line when it changed a link or failed). A merged Rust change is live only once its binary is rebuilt,
 # so every pass also runs `cargo build --release` for each Rust tool linked into ~/.local/bin and
-# restarts a running unit named after one whose binary is newer than the unit (agent-web). A
+# restarts a running unit named after one whose binary is newer than the unit (agent-web); notes, a
+# published copy, is rebuilt and republished through notes-bootstrap --build-only. A
 # persistent agentctl runner is one long-lived process that keeps the code it parsed at start, so
 # every pass also restarts a running one whose script is newer than its unit (inbox-triage). A
 # scheduled runner fires only once `agentctl reload` writes its timer, so every pass runs one when a
@@ -170,6 +171,41 @@ attach_rust() {
     fi
     restart_stale "$bin.service" "$target" "$bin"
   done
+  attach_notes "$deadline"
+}
+
+# attach_notes <deadline> -> one line when it published a new notes binary or could not. notes is the
+# one Rust tool installed as a copy (~/.local/lib/notes/notes, so a branch build never redeploys it),
+# so no link into target/release marks it and attach_rust's loop never sees it: #2740 went live for
+# hub and agent-web and not for notes, and window.locked stayed off the bar until notes-bootstrap
+# ran by hand (ar-3815). It is a notes install when ~/.local/bin links notes and notes-bootstrap,
+# which owns the publish step, is there. cargo is a no-op when nothing changed.
+attach_notes() {
+  local crate="${REPOS[0]}/.local/src/notes-cli" live before out rc left
+  [ -f "$crate/Cargo.toml" ] && [ -L "$BIN_DIR/notes" ] && [ -x "$BIN_DIR/notes-bootstrap" ] || return 0
+  command -v cargo >/dev/null 2>&1 || return 0
+  left=$(($1 - $(date +%s)))
+  if [ "$left" -le 0 ]; then
+    say "~: build budget of ${BUILD_SECS}s spent, notes not rebuilt"
+    return 0
+  fi
+  out=$(cd "$crate" && capped "$left" cargo build --release --quiet 2>&1)
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log_report "cargo build --release (notes)" "$rc" "$out"
+    say "~: cargo build of notes failed (exit $rc), the binary on disk stays; report in ${LOG/#"$HOME"/\~}"
+    return 0
+  fi
+  live=$(readlink -f "$BIN_DIR/notes")
+  before=$(mtime "$live")
+  out=$(DOTFILES_ROOT="${REPOS[0]}" capped "$left" "$BIN_DIR/notes-bootstrap" --build-only 2>&1)
+  rc=$?
+  if [ "$rc" -ne 0 ] || ! cmp -s "$crate/target/release/notes" "$live"; then
+    log_report "notes-bootstrap --build-only" "$rc" "$out"
+    say "~: notes was built but not published (notes-bootstrap --build-only), the binary on disk stays; report in ${LOG/#"$HOME"/\~}"
+  elif [ "$(mtime "$live")" != "$before" ]; then
+    say "~: rebuilt notes (cargo build --release, notes-bootstrap --build-only)"
+  fi
 }
 
 # attach_runners -> one line per persistent agentctl runner it restarted. A KIND=persistent conf's

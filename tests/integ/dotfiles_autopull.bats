@@ -461,6 +461,89 @@ unit() {
   assert_not_called 'cargo build'
 }
 
+# notes_install <live> <built> -> notes as notes-bootstrap installs it: a built binary in the public
+# checkout's notes-cli, a published COPY under ~/.local/lib/notes, ~/.local/bin/notes linking that copy
+# (no link into target/release). `cargo` writes "new" over the built binary when $SANDBOX/cargo.builds
+# exists, else touches nothing; a notes-bootstrap stub publishes as the real one does (cp when the
+# bits differ) unless $SANDBOX/publish.fails exists, and logs the DOTFILES_ROOT it ran with.
+notes_install() {
+  local crate="$PUB/.local/src/notes-cli"
+  mkdir -p "$crate/target/release" "$HOME/.local/lib/notes" "$HOME/.local/bin"
+  : >"$crate/Cargo.toml"
+  printf '%s\n' "$2" >"$crate/target/release/notes"
+  printf '%s\n' "$1" >"$HOME/.local/lib/notes/notes"
+  touch -d @500 "$HOME/.local/lib/notes/notes"
+  ln -sfn "$HOME/.local/lib/notes/notes" "$HOME/.local/bin/notes"
+  cat >"$SANDBOX/bin/cargo" <<'STUB'
+#!/bin/sh
+printf 'cargo %s in %s\n' "$*" "$PWD" >>"$NOTES_FIXTURE/calls.log"
+[ -e "$SANDBOX/cargo.fail" ] && { echo 'error[E0425]: stub'; exit 101; }
+[ -e "$SANDBOX/cargo.builds" ] && printf 'new\n' >target/release/notes
+exit 0
+STUB
+  cat >"$HOME/.local/bin/notes-bootstrap" <<'STUB'
+#!/bin/sh
+printf 'notes-bootstrap %s root=%s\n' "$*" "$DOTFILES_ROOT" >>"$NOTES_FIXTURE/calls.log"
+[ -e "$SANDBOX/publish.fails" ] && { echo 'WARN: could not publish'; exit 0; }
+cmp -s "$DOTFILES_ROOT/.local/src/notes-cli/target/release/notes" "$HOME/.local/lib/notes/notes" ||
+  cp "$DOTFILES_ROOT/.local/src/notes-cli/target/release/notes" "$HOME/.local/lib/notes/notes"
+STUB
+  chmod +x "$SANDBOX/bin/cargo" "$HOME/.local/bin/notes-bootstrap"
+  export SANDBOX
+}
+
+@test "a pass that rebuilds notes publishes it through notes-bootstrap, the one that owns the copy" {
+  notes_install old old
+  touch "$SANDBOX/cargo.builds"
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line '~: rebuilt notes (cargo build --release, notes-bootstrap --build-only)'
+  assert_called "cargo build --release --quiet in $PUB/.local/src/notes-cli"
+  assert_called "notes-bootstrap --build-only root=$PUB"
+  assert_equal "$(cat "$HOME/.local/lib/notes/notes")" new
+}
+
+@test "a current notes is built, not republished, and says nothing" {
+  notes_install same same
+  run "$PULL" --now "$PUB"
+  assert_success
+  refute_line --partial 'notes'
+  assert_called "cargo build --release --quiet in $PUB/.local/src/notes-cli"
+  assert_equal "$(cat "$HOME/.local/lib/notes/notes")" same
+}
+
+@test "a failed notes build is named and logged, nothing is published, and the pull still succeeds" {
+  notes_install old old
+  touch "$SANDBOX/cargo.fail"
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line --partial '~: cargo build of notes failed (exit 101), the binary on disk stays; report in'
+  assert_not_called 'notes-bootstrap'
+  assert_equal "$(cat "$HOME/.local/lib/notes/notes")" old
+}
+
+@test "a notes build that does not reach the live copy is named" {
+  notes_install old old
+  touch "$SANDBOX/cargo.builds" "$SANDBOX/publish.fails"
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line --partial '~: notes was built but not published (notes-bootstrap --build-only), the binary on disk stays; report in'
+  assert_equal "$(cat "$HOME/.local/lib/notes/notes")" old
+}
+
+@test "negative control: no notes-bootstrap or no ~/.local/bin/notes link means no notes build" {
+  notes_install old old
+  rm "$HOME/.local/bin/notes-bootstrap"
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_not_called 'cargo build'
+  notes_install old old
+  rm "$HOME/.local/bin/notes"
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_not_called 'cargo build'
+}
+
 # hold_lock -> this test shell holds the pass lock on fd $held until `exec {held}>&-` (or the test's
 # process ends); skips where flock is not installed, as the script then runs unlocked
 hold_lock() {
