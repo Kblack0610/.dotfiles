@@ -1364,3 +1364,30 @@ EOF
   run jq -c '[.stages, .stages_error, (.rows | length > 0)]' "$RELEASE_STATE_DIR/state.json"
   assert_output '[{},"notes projects --stages printed nothing",true]'
 }
+
+@test "provenance: the subcommand lists every tag the project owns, and places a value given" {
+  ship "old (#1)" web-v0.9.0
+  ship "start (#2)" web-v1.0.0
+  commit_tag "hand (#3)" web-v1.0.1 "Kenneth"
+  commit_tag "cut (#4)" web-v1.1.0 cut.yml
+  run "$RS" provenance web
+  assert_success
+  assert_equal "$(jq -sc 'map([.tag, .tagger, .provenance])' <<<"$output")" \
+    '[["web-v1.1.0","cut.yml","flow"],["web-v1.0.1","Kenneth","outside"],["web-v1.0.0",null,"flow"],["web-v0.9.0",null,"legacy"]]'
+  run "$RS" provenance web 1.1.0 1.0.1 0.9.0 abc1234
+  assert_success
+  assert_equal "$(jq -sc 'map(.provenance)' <<<"$output")" '["flow","outside","legacy","outside"]'
+  # --fetch reads a tag the cutter pushed that this checkout has not seen yet.
+  local cutter="$SANDBOX/cutter"
+  git clone -q "$ORIGIN" "$cutter" 2>/dev/null
+  git -C "$cutter" -c user.name=cut.yml -c user.email=c@c tag -a -m cut web-v1.2.0
+  git -C "$cutter" push -q origin web-v1.2.0 2>/dev/null
+  run "$RS" provenance web
+  refute_output --partial web-v1.2.0
+  run "$RS" provenance --fetch web
+  assert_success
+  assert_equal "$(head -1 <<<"$output" | jq -c '[.tag, .provenance]')" '["web-v1.2.0","flow"]'
+  # Negative control: a project with no checkout has no tags to list.
+  run "$RS" provenance lonely
+  assert_failure 2
+}
