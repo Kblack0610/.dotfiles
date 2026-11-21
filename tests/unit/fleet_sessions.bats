@@ -2877,6 +2877,24 @@ empty_submodule_fixture() {
   [ "$(wc -l < "$SANDBOX/visited")" = 2 ]
 }
 
+@test "edited work blockers skip the notes vault, the other store-sync store" {
+  local a="$SANDBOX/a" notes="$SANDBOX/notes" cwd="$SANDBOX/cwd"
+  git init -q "$a"; git init -q "$notes"; git init -q "$cwd"
+  git_facts() {
+    printf '%s\n' "$1" >> "$SANDBOX/visited"
+    echo '1 1 0 - - - 1 branch 0 no - - changed.txt'
+  }
+  NOTES_STORE="$notes" run edited_work_blockers "$cwd" "$(printf '%s\n' "$notes/lab/x.md" "$a/file")"
+  assert_success
+  assert_output --partial "$a: 1 dirty file(s)"
+  refute_output --partial "$notes"
+  [ "$(cat "$SANDBOX/visited")" = "$a" ]
+  # Negative control: with the vault pointed elsewhere, the same dirt is unlanded work.
+  rm "$SANDBOX/visited"
+  NOTES_STORE="$SANDBOX/elsewhere" run edited_work_blockers "$cwd" "$notes/lab/x.md"
+  assert_output --partial "$notes: 1 dirty file(s)"
+}
+
 @test "edited work blockers skip the agent store, which store-sync lands on its own" {
   local a="$SANDBOX/a" store="$SANDBOX/store" cwd="$SANDBOX/cwd"
   git init -q "$a"; git init -q "$store"; git init -q "$cwd"
@@ -2884,14 +2902,14 @@ empty_submodule_fixture() {
     printf '%s\n' "$1" >> "$SANDBOX/visited"
     echo '1 1 0 - - - 1 branch 0 no - - changed.txt'
   }
-  AGENT_STORE="$store" run edited_work_blockers "$cwd" "$(printf '%s\n' "$store/lessons/x.md" "$a/file")"
+  NOTES_STORE="$SANDBOX/none" AGENT_STORE="$store" run edited_work_blockers "$cwd" "$(printf '%s\n' "$store/lessons/x.md" "$a/file")"
   assert_success
   assert_output --partial "$a: 1 dirty file(s)"
   refute_output --partial "$store"
   [ "$(cat "$SANDBOX/visited")" = "$a" ]
   # Negative control: with the store pointed elsewhere, the same dirt is unlanded work.
   rm "$SANDBOX/visited"
-  AGENT_STORE="$SANDBOX/elsewhere" run edited_work_blockers "$cwd" "$store/lessons/x.md"
+  NOTES_STORE="$SANDBOX/none" AGENT_STORE="$SANDBOX/elsewhere" run edited_work_blockers "$cwd" "$store/lessons/x.md"
   assert_output --partial "$store: 1 dirty file(s)"
 }
 
