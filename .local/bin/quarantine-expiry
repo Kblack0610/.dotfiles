@@ -37,7 +37,7 @@ fi
 
 today="$(date +%F)"
 field() { jq -r ".$1" <<<"$r"; }   # a field of the row in hand, $r
-rows=0 entries=0 noted=0 had=0 closed=0 failed=0 next=""
+rows=0 entries=0 noted=0 closed=0 failed=0 next=""
 while IFS=$'\t' read -r repo row n ends left; do
   [ -n "$repo" ] || continue
   rows=$((rows + 1)) entries=$((entries + n))
@@ -53,7 +53,7 @@ while IFS=$'\t' read -r repo row n ends left; do
   fi
   key="quarantine ends $ends:"
   if jq -e --arg k "$key" 'any(.details[]?; startswith($k))' >/dev/null <<<"$r"; then
-    had=$((had + 1))
+    noted=$((noted + 1))
     echo "$what; noted"
     continue
   fi
@@ -73,7 +73,7 @@ while IFS=$'\t' read -r repo row n ends left; do
   fi
 done <<<"$soon"
 
-line="$entries quarantine entries over $rows owner rows end soon (next $next): $((noted + had)) noted"
+line="$entries quarantine entries over $rows owner rows end soon (next $next): $noted noted"
 [ "$closed" = 0 ] || line+=", $closed not open on the board"
 [ "$failed" = 0 ] || line+=", $failed could not be noted"
 echo "$line"

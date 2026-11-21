@@ -92,12 +92,18 @@ pub struct Nightly {
     pub known_tests: Option<Vec<String>>,
 }
 
+/// Ends within `SOON_DAYS` and has not ended: the one test the chip, the tab count and the
+/// `quarantine-expiry` watch share.
+fn is_soon(days_left: i64) -> bool {
+    days_left > 0 && days_left <= SOON_DAYS
+}
+
 /// A day count's level: red once ended (its tests count as red again), amber within
 /// `SOON_DAYS` of its end.
 fn level_of(days_left: i64) -> Level {
     if days_left <= 0 {
         Level::Bad
-    } else if days_left <= SOON_DAYS {
+    } else if is_soon(days_left) {
         Level::Warn
     } else {
         Level::Ok
@@ -135,7 +141,7 @@ impl Lane {
 
     /// Entries ending within `SOON_DAYS`, not yet ended.
     fn soon(&self) -> u64 {
-        self.entries_where(|r| r.days_left > 0 && r.days_left <= SOON_DAYS)
+        self.entries_where(|r| is_soon(r.days_left))
     }
 
     pub fn rows(&self) -> &[OwnerRow] {
@@ -371,7 +377,7 @@ pub fn ending(lanes: &[Lane], today: chrono::NaiveDate) -> (Vec<Ending>, Vec<Str
                 continue;
             };
             let days_left = (end - today).num_days();
-            if days_left > 0 && days_left <= SOON_DAYS {
+            if is_soon(days_left) {
                 out.push(Ending {
                     repo: l.repo.clone(),
                     row: r.row.clone(),
