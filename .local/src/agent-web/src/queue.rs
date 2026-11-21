@@ -386,6 +386,7 @@ pub async fn add(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SlugBody {
     slug: String,
     #[serde(default)]

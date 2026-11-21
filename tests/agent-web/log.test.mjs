@@ -52,6 +52,7 @@ function grid(prs) {
 const rec = (o = {}) => {
   const g = grid(merged);
   return { date: "2026-11-05", live: true, merged, open: [{ ...pr("bnb-platform", "bnb-platform", 77, null), created_at: "2026-11-05T08:00:00Z", ci: "SUCCESS" }],
+    counts: { merged: merged.length, repos: new Set(merged.map((m) => m.repo)).size, open: 1, nightly: 0, asks: 0 },
     usage: [], waiting: {}, hours: g, projects: [...g.rows.map((r) => r.project), "bnb-platform"], ...o };
 };
 function draw(r) {
@@ -176,4 +177,11 @@ test("History charts CI hours per day from each day's ci, gate under the rest of
   assert.match(ci, /<\/i>Gate<\/span>.*<\/i>Rest of the pool<\/span>/);
   ctx.input.hist = ctx.input.hist.slice(0, 1);
   assert.doesNotMatch(vm.runInContext(`lst.hist = input.hist; renderLog(); $("log-day").innerHTML`, ctx), /CI hours per day/, "no measured day, no chart");
+});
+
+test("the tiles draw the server's counts, never the lengths of the arrays beside them", () => {
+  const html = draw(rec({ merged: [], open: [], waiting: {}, counts: { merged: 7, repos: 3, open: 2, nightly: 4, asks: 5 } }));
+  assert.match(html, /MERGED<\/span><span class="tv">7<\/span><span class="ts1">3 repo\(s\)/);
+  assert.match(html, /OPEN<\/span><span class="tv">2<\/span>/);
+  assert.match(html, /4 nightly, 5 asks, on Home/);
 });

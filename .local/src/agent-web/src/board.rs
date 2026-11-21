@@ -120,6 +120,7 @@ pub async fn feed(State(s): State<Shared>, Query(q): Query<BoardQuery>) -> ApiRe
 
 /// One write as the page sends it: `verb` names which of the other fields count.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WriteBody {
     verb: String,
     profile: String,

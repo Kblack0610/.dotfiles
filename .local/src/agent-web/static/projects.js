@@ -133,12 +133,6 @@ function pSplit(arg) {
 // The arg naming what is open: the project, and its inner tab unless that is Overview.
 const pArg = () => pst.open + (pst.inner === "overview" ? "" : "/" + pst.inner);
 
-// One running item: its title (two lines at most), then its phases and estimate.
-function pRunning(r) {
-  const meta = [esc(phasesText(r)), etaText(r.phases)].filter(Boolean).join(", ");
-  return `<li><span class="prt">${esc(r.title)}</span>${meta ? `<span class="prm">${meta}</span>` : ""}</li>`;
-}
-
 // The opened card's top: its name and chips, profile and prio, then the release window (a meter
 // of delivered over committed rows and hub_core's cell; neither with no window, which the summary says), and hub_core's
 // summary word for word under it, every number named.
@@ -185,7 +179,7 @@ function pOpened(c) {
     html += `<div class="cline${pg.gate && pg.gate.fail ? " warn" : ""}">next stage: <a href="#" data-pgo="stage">${esc(pg.next_says)}</a></div>`;
     html += pg.errors.map((e) => `<div class="panel down">${esc(e)}</div>`).join("");
   } else if (got && got.err) html += `<div class="panel down">${esc(got.err)}</div>`;
-  const counts = { ...deptCounts(pKey(c)), ...(pg ? { overview: pNeedCount(pg, pKey(c)), stage: pg.gate ? pg.gate.fail : 0 } : {}) };
+  const counts = { ...deptCounts(pKey(c)), ...(pg ? { overview: pg.need_count, stage: pg.gate ? pg.gate.fail : 0 } : {}) };
   return html + `</div>` + stripHtml(pPage(c), pst.inner, "ptab", [], counts, pDepts(c)[0] || null);
 }
 
@@ -204,7 +198,6 @@ const pDeptNote = (c) => {
   if (got.err) return `departments not read: ${got.err}`;
   return got.data.product ? null : `departments not read: ${got.data.says || NOT_READ}`;
 };
-const pNeedCount = (pg, key) => pNeedGroups(pg, key).reduce((n, g) => n + g.items.length, 0);
 // A link that moves the page to an inner tab, `open <its title>`.
 const pGoLink = (go) => `<a href="#" data-pgo="${go.pgo}">open ${esc((PROJECT_PAGE.find((t) => t[0] === go.pgo) || [, go.pgo])[1])}</a>`;
 
@@ -214,14 +207,14 @@ const pGoLink = (go) => `<a href="#" data-pgo="${go.pgo}">open ${esc((PROJECT_PA
 function pOverview(c, pg) {
   let html = "";
   if (pg) {
-    const groups = pNeedGroups(pg, pKey(c)), n = pNeedCount(pg, pKey(c)), note = pDeptNote(c);
+    const groups = pNeedGroups(pg, pKey(c)), n = pg.need_count, note = pDeptNote(c);
     html += secHead("p-needs", "Needs you", n);
     if (groups.length || note) html += `<div class="card">` + groups.map((g) => cfold(`pg:need:${g.kind}`,
       `<b>${esc(g.says)}</b>${g.go ? ` ${pGoLink(g.go)}` : ""}`, pLines(g.items), pst.folds)).join("") +
       (note ? `<div class="muted">${esc(note)}</div>` : "") + `</div>`;
   }
   html += secHead("p-flight", "In flight", c.running.length) +
-    `<div class="card">${c.running.length ? `<ul class="prun">${c.running.map(pRunning).join("")}</ul>` : `<div class="muted">nothing running</div>`}` +
+    `<div class="card">${c.running.length ? `<div class="panel scroll">${runTable(c.running_table, c.running, true)}</div>` : `<div class="muted">nothing running</div>`}` +
     (c.counts ? `<div class="cline muted">${esc(c.counts)}</div>` : "") + `<div class="cline"><a href="#queue?q=${encodeURIComponent("project:" + c.name)}">this project's queue</a></div></div>`;
   if (pg) html += secHead("p-systems", "Systems", pg.systems.length) + pSysTable(pg.systems);
   return html;

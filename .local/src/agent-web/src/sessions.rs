@@ -175,7 +175,7 @@ mod tests {
             ..Read::default()
         };
         let q = TableQuery {
-            s: "done today".into(),
+            s: "ended today".into(),
             ..TableQuery::default()
         };
         let v: serde_json::Value = serde_json::from_str(&render(&r, &q)).unwrap();
@@ -183,7 +183,7 @@ mod tests {
         assert_eq!(v["rows"][0]["key"], "slug");
         assert_eq!(v["rows"][0]["source"], "queue");
         assert_eq!(v["errors"][0], "session outcomes: exit 1");
-        assert_eq!(v["table"]["state"], "done today");
+        assert_eq!(v["table"]["state"], "ended today");
         assert_eq!(v["table"]["total"], 2);
         assert!(v["table"].get("pager").is_none(), "one page is unpaged");
     }
