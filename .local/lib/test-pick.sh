@@ -19,14 +19,27 @@ _test_pick_names() {
     awk '{gsub(/[][\\.*^$+?(){}|]/, "\\\\&"); o=o (o==""?"":"|") $0} END {if (o!="") printf "(^|[^A-Za-z0-9_-])(%s)($|[^A-Za-z0-9_-])", o}')"
   _TEST_PICK_PATHS="$(grep -v '^$' <<<"$1" | grep '/' | awk -F/ 'NR==FNR {d[$0]; next} ($NF in d) {print $(NF-1) "/" $NF}' \
     <(printf '%s\n' "$shared") - | sort -u)" || true
+  # The changed paths with a directory in them, as one ERE bounded like a path: the one-level read
+  # of a script a test runs (test_picked) matches only these.
+  _TEST_PICK_HOP="$(grep '/' <<<"$1" | awk '{gsub(/[][\\.*^$+?(){}|]/, "\\\\&"); o=o (o==""?"":"|") $0}
+    END {if (o!="") printf "(^|[^A-Za-z0-9._-])(%s)($|[^A-Za-z0-9._-])", o}')" || true
+}
+# _test_pick_aliases: `VAR repo-path` for each `VAR="$REPO_ROOT/<path>"` the shared helpers
+# (tests/helpers/*.bash) define, and one ERE for a use of any of those variables, built once.
+_test_pick_aliases() {
+  [ -n "${_TEST_PICK_ALIASES+x}" ] && return 0
+  _TEST_PICK_ALIASES="$(sed -nE 's/^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)="\$\{?REPO_ROOT\}?\/([^" ]+)".*/\2 \3/p' \
+    "$_TEST_PICK_REPO"/tests/helpers/*.bash 2>/dev/null)" || true
+  _TEST_PICK_ALIAS_RE="$(awk 'NF {o=o (o==""?"":"|") $1} END {if (o!="") printf "\\$\\{?(%s)([^A-Za-z0-9_]|$)", o}' <<<"$_TEST_PICK_ALIASES")"
 }
 
 # test_picked <changed paths, one a line> <test path, repo-relative>, the test's text on stdin:
 # status 0 when that test is picked. A test is picked when it or a file it loads from beside it
 # changed, or its text with what it loads names a changed file's basename (not as a stub or a
 # directory) or a directory a changed file sits under as `<dir>/` or `<dir>/*...` (a glob such as
-# `.claude/hooks/stop-post.d/*.sh`); a change to the shared harness (helpers, fixtures, vendor,
-# Makefile, run-bats.sh) picks every file.
+# `.claude/hooks/stop-post.d/*.sh`), or a script it runs as `$REPO_ROOT/<path>` (or through a
+# helper's variable for one) names a changed path in its code; a change to the shared harness
+# (helpers, fixtures, vendor, Makefile, run-bats.sh) picks every file.
 test_picked() {
   grep -qE '^tests/(helpers|fixtures|vendor)/|^tests/(Makefile|run-bats\.sh)$' <<<"$1" && return 0
   grep -qxF "$2" <<<"$1" && return 0
@@ -50,12 +63,38 @@ test_picked() {
     done < <(sed -nE "s/^[[:space:]]*load[[:space:]]+['\"]?([^'\" ]+).*/\1/p" <<<"$new")
     text+=$more new=$more
   done
+  # A script the shared helpers name for every test (sandbox.bash: AGENT_ASK="$REPO_ROOT/.local/bin/
+  # agent-ask") is named where the test's code uses its variable: questions_panel.bats runs agent-ask
+  # only as "$AGENT_ASK", so #2385's agent-ask change was not picked and went red on main (ar-4309).
+  local var ref code
+  _test_pick_aliases
+  code="$(sed -E '/^[[:space:]]*#/d' <<<"$text")"
+  if [ -n "$_TEST_PICK_ALIAS_RE" ]; then
+    while read -r var ref; do
+      code+=$'\n'"\$REPO_ROOT/$ref" text+=$'\n'"\$REPO_ROOT/$ref"
+    done < <(grep -oE "$_TEST_PICK_ALIAS_RE" <<<"$code" | sed -E 's/^\$\{?([A-Za-z0-9_]+).*/\1/' | sort -u |
+      awk 'NR==FNR {u[$1]; next} ($1 in u)' - <(printf '%s\n' "$_TEST_PICK_ALIASES"))
+  fi
+  # A repo script the test runs by path is read one level down, for the whole repo paths its code
+  # names: worktree_create_hook.bats runs worktree-remove.sh, which runs .local/src/tmux/worktree.sh
+  # by path, so #2127's worktree.sh change was not picked and went red on main (ar-4309). Only a
+  # changed path with a directory in it counts there, never a bare name, so a script that runs
+  # fifty commands by name picks no more tests than before.
+  _test_pick_names "$1"
+  if [ -n "$_TEST_PICK_HOP" ]; then
+    while read -r ref; do
+      case $ref in tests/* | '') continue ;; esac
+      [ -f "$_TEST_PICK_REPO/$ref" ] || continue
+      # Not a pipe: grep -q stops at the first match, and under the callers' pipefail sed's SIGPIPE
+      # on a large script would turn that match into a failure.
+      grep -qE "$_TEST_PICK_HOP" <(sed -E '/^[[:space:]]*#/d' "$_TEST_PICK_REPO/$ref") && return 0
+    done < <(grep -oE '\$\{?REPO_ROOT\}?/[A-Za-z0-9._/-]+' <<<"$code" | sed -E 's#^\$\{?REPO_ROOT\}?/##' | sort -u)
+  fi
   # A basename counts where it can name the file. Dropped first: comment lines and @test titles
   # (prose), `stub <name>` (a fake stands in for it), `<name>/` (a directory of that name, such
   # as ~/.config/agentctl/) and `<name>@` (a systemd unit). A shared basename (README.md,
   # SKILL.md) is matched as `<parent dir>/<name>`. Without these,
   # unit/fleet_dispatch.bats, a third of the unit tier, was picked by 33 of 40 commits on main.
-  _test_pick_names "$1"
   [ -n "$_TEST_PICK_PATHS" ] && grep -qFf <(printf '%s\n' "$_TEST_PICK_PATHS") <<<"$text" && return 0
   [ -n "$_TEST_PICK_WORDS" ] && grep -qE "$_TEST_PICK_WORDS" \
     <(sed -E '/^[[:space:]]*#/d; s/^@test[[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"')//

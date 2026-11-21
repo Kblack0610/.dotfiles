@@ -37,7 +37,7 @@ widget_spacing = 10
 
 [[bar.default.capsule_group]]
 id = "fleet"
-members = ["health", "fleet", "projects", "ai-agents", "dispatch", "ci"]
+members = ["health", "fleet", "projects", "ai-agents", "queue", "ci"]
 fill = "surface_container_high"
 border = "on_surface_variant"
 padding = 10.0
@@ -126,9 +126,9 @@ type = "dotfiles/chips:chip"
 module = "custom/ai-agents"
 divider = "after"
 
-[widget.dispatch]
+[widget.queue]
 type = "dotfiles/chips:chip"
-module = "custom/dispatch"
+module = "custom/queue"
 divider = "after"
 
 [widget.ci]
