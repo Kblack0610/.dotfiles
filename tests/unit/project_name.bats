@@ -727,3 +727,12 @@ EOF
   run resolve_project_name "$TMPDIR/tmp.AbC123xyZ"
   assert_output 'kept'
 }
+
+@test "session_project names the project of a worktree session or a panel target" {
+  assert_equal "$(session_project demo-agent-4)" demo
+  assert_equal "$(session_project unity-core-playground-agent-60)" unity-core-playground
+  assert_equal "$(session_project lab/demo-agent-4:1)" demo
+  assert_equal "$(session_project hub/demo:2)" demo
+  assert_equal "$(session_project demo)" demo
+  assert_equal "$(session_project agent-7)" agent-7
+}
