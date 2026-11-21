@@ -1880,7 +1880,7 @@ wt_scope_leftovers() {
     [[ "$comm" =~ ^($WT_ORPHAN_KEEP)$ ]] && continue
     [[ "${stat##*) }" == Z* ]] && continue
     printf '%s\n' "$pid"
-  done < "${WT_CGROUP_ROOT:-/sys/fs/cgroup}$1/cgroup.procs" 2>/dev/null
+  done 2>/dev/null < "${WT_CGROUP_ROOT:-/sys/fs/cgroup}$1/cgroup.procs"
 }
 
 # wt_scope_keeps <cgroup> -- true when the scope holds a process WT_ORPHAN_KEEP spares, so
@@ -1889,9 +1889,13 @@ wt_scope_keeps() {
   local proc="${WT_PROC_ROOT:-/proc}" pid
   while read -r pid; do
     [[ "$(cat "$proc/$pid/comm" 2>/dev/null)" =~ ^($WT_ORPHAN_KEEP)$ ]] && return 0
-  done < "${WT_CGROUP_ROOT:-/sys/fs/cgroup}$1/cgroup.procs" 2>/dev/null
+  done 2>/dev/null < "${WT_CGROUP_ROOT:-/sys/fs/cgroup}$1/cgroup.procs"
   return 1
 }
+
+# WT_KILL_ROUNDS -- how many times a scope with a kept process is read and SIGKILLed by pid: a
+# leftover that forks between the read and the kill leaves a child the next round ends.
+WT_KILL_ROUNDS="${WT_KILL_ROUNDS:-3}"
 
 # cmd_orphans [-n] -- end what nobody owns any more on this node: a Unity daemon whose editor is
 # gone, in any project with ProjectSettings/ (the plugin stops its gamedev-mcp-server only on a
@@ -1949,14 +1953,21 @@ cmd_orphans() {
     fi
     # What outlives SIGTERM gets SIGKILL: bats sandboxes that respawned each other ran on past every
     # SIGTERM pass (ar-4050). A scope that holds nothing kept takes cgroup.kill, which ends all of it
-    # at once, forks included; one with a kept process, or a kernel with no cgroup.kill, SIGKILL by pid.
-    if wt_scope_keeps "$cg" || ! { echo 1 > "${WT_CGROUP_ROOT:-/sys/fs/cgroup}$cg/cgroup.kill"; } 2>/dev/null; then
+    # at once, forks included; one with a kept process, or a kernel with no cgroup.kill, SIGKILL by
+    # pid, read again each round for what forked between the read and the kill.
+    if ! wt_scope_keeps "$cg" && { echo 1 > "${WT_CGROUP_ROOT:-/sys/fs/cgroup}$cg/cgroup.kill"; } 2>/dev/null; then
+      # shellcheck disable=SC2086
+      wt_await_exit $left
+      left=$(wt_scope_leftovers "$cg")
+    fi
+    local round=0
+    while [ -n "$left" ] && [ "$round" -lt "$WT_KILL_ROUNDS" ]; do
       # shellcheck disable=SC2086
       kill -KILL $left 2>/dev/null
-    fi
-    # shellcheck disable=SC2086
-    wt_await_exit $left
-    left=$(wt_scope_leftovers "$cg")
+      # shellcheck disable=SC2086
+      wt_await_exit $left
+      left=$(wt_scope_leftovers "$cg") round=$((round + 1))
+    done
     if [ -z "$left" ]; then
       printf 'ended %s  %s (%s) by SIGKILL\n' "$(paste -sd, - <<<"$pids")" "$unit" "$what"
     else

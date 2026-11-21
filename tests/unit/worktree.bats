@@ -1076,6 +1076,11 @@ EOF
     for f in "$WT_CGROUP_ROOT"/s/*/cgroup.procs; do
       for pid in "${@:2}"; do sed -i "/^$pid\$/d" "$f"; done
     done
+    # respawn: the first SIGKILL lands after bats forked a child, 26, which it did not reach
+    if [ "$1" = -KILL ] && [ -e "$SANDBOX/respawn" ]; then
+      rm "$SANDBOX/respawn"; mkdir -p "$WT_PROC_ROOT/26"; echo bash > "$WT_PROC_ROOT/26/comm"
+      echo 26 >> "$WT_CGROUP_ROOT/s/gone/cgroup.procs"
+    fi
   }
   # The kernel's side of cgroup.kill: by the wait after the write, every process in that scope is gone.
   waitpid() {
@@ -1128,6 +1133,16 @@ EOF
   [ ! -e "$WT_CGROUP_ROOT/s/gone/cgroup.kill" ]
   assert_equal "$(cat "$WT_CGROUP_ROOT/s/gone/cgroup.procs")" $'23\n24\n25'
   assert_equal "$(cat "$WT_CGROUP_ROOT/s/dead/cgroup.kill")" 1
+}
+
+@test "orphans reads a scope again after SIGKILL by pid, so a child forked before the kill is ended too (ar-4050)" {
+  pane_scopes
+  touch "$SANDBOX/term.ignored" "$SANDBOX/respawn"
+  run cmd_orphans
+  assert_success
+  assert_line 'ended 21,22  gone (bats x1, chrome-headless x1) by SIGKILL'
+  assert_equal "$(grep -- -KILL "$SANDBOX/kill.log")" $'-KILL 21 22\n-KILL 26'
+  assert_equal "$(cat "$WT_CGROUP_ROOT/s/gone/cgroup.procs")" $'23\n24\n25'
 }
 
 @test "orphans fails, naming the scope, when a closed pane's leftover outlives SIGKILL" {
