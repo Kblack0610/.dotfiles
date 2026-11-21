@@ -2502,44 +2502,55 @@ cmd_ledger() {
 # never move, and --check fails it (`restates`: a bounded measure naming its own source, ~ or $HOME,
 # that is not a size or count, i.e. no wc, grep -c, stat or find). A size or count is a real bound.
 # confidence low records a number known not to hold, so `moved` is a change from what the register
-# says, never a number merely being past its line. `dead` is a measure that printed no number.
+# says, never a number merely being past its line. `dead` is a measure that printed no number. A
+# measure whose stderr says it was rate limited (GitHub's HTTP 403 "API rate limit exceeded"; the
+# core budget is shared by every session) is `limited`, not dead: nothing was measured, so it reads
+# `absent` and no gate goes red until the limit resets.
 # `anchored` is the rule's text still being in its source; null when the source is not on this
-# machine. `state` is the one verdict, first of stale, absent, dead, restates, moved, else ok: --check
+# machine. `state` is the one verdict, first of stale, absent (or limited), dead, restates, moved, else ok: --check
 # fails all but absent and ok, and Stack shows it as is. A row's optional `scenario` is the hard
 # situation the rule decides: the must-keep list a context trim is checked against (context-trim skill).
 # `form` says whether a row is a rule (text a session reads, a .md source) or a mechanism (a hook,
 # script or config that enforces one); the source decides it, and a row's own `form` overrides that.
 
-# rules_states -> each register row, one JSON object a line, with form, anchored, value, holds, moved, dead, restates, state.
+# rules_states -> each register row, one JSON object a line, with form, anchored, value, limited, holds, moved, dead, restates, state.
 rules_states() {
   [ -s "$RULES_REGISTER" ] || return 0
-  local src anchor cmd value anchored
+  local src anchor cmd value anchored limited err
+  err=$(mktemp) || return 1
   while IFS=$'\x1f' read -r src anchor cmd; do
     src="${src/#\~/$HOME}"
     if [ ! -f "$src" ]; then anchored=null
     elif grep -qF -- "$anchor" "$src"; then anchored=true
     else anchored=false
     fi
-    value=""
-    [ -z "$cmd" ] || value=$(timeout "$RULES_MEASURE_TIMEOUT" bash -c "$cmd" 2>/dev/null </dev/null | tail -1)
-    printf '%s\x1f%s\n' "$anchored" "$value"
+    value="" limited=false
+    if [ -n "$cmd" ]; then
+      value=$(timeout "$RULES_MEASURE_TIMEOUT" bash -c "$cmd" 2>"$err" </dev/null | tail -1)
+      ! grep -qi 'rate limit' "$err" || limited=true
+    fi
+    printf '%s\x1f%s\x1f%s\n' "$anchored" "$value" "$limited"
   done < <(jq -r '[.source, .anchor, (.measure // "")] | map(gsub("\n"; " ")) | join("\u001f")' "$RULES_REGISTER") |
     jq -cRn --slurpfile rows "$RULES_REGISTER" '
       [inputs | split("\u001f")] as $seen
       | range($rows | length) as $i
-      | $rows[$i] + {anchored: ($seen[$i][0] | fromjson), value: ($seen[$i][1] | tonumber? // null)}
+      | $rows[$i] + {anchored: ($seen[$i][0] | fromjson), value: ($seen[$i][1] | tonumber? // null), limited: ($seen[$i][2] == "true")}
       | (.max != null or .min != null) as $bounded
       | (.source // "") as $raw | ($raw | sub("^~"; env.HOME)) as $src
       | .form = (.form // (if ($raw | test("\\.md$")) then "rule" else "mechanism" end))
-      | .dead = (.measure != null and .value == null)
+      | .limited = (.limited and .value == null)
+      | .dead = (.measure != null and .value == null and (.limited | not))
       | ((.measure // "") | gsub("\\$\\{HOME\\}|\\$HOME"; "~") | gsub("~"; env.HOME)) as $reads
       | .restates = ($bounded and $raw != "" and .measure != null
           and (.measure | test("\\bwc\\b|grep -c|\\bstat\\b|\\bfind\\b") | not) and ($reads | contains($src)))
       | .holds = (if $bounded and .value != null
           then ((.max == null or .value <= .max) and (.min == null or .value >= .min)) else null end)
       | .moved = (.holds != null and .holds != (.confidence != "low"))
-      | .state = (if .anchored == false then "stale" elif .anchored == null then "absent"
+      | .state = (if .anchored == false then "stale" elif .anchored == null or .limited then "absent"
           elif .dead then "dead" elif .restates then "restates" elif .moved then "moved" else "ok" end)'
+  local rc=$?
+  rm -f "$err"
+  return "$rc"
 }
 
 # rules_problems <states array> -> one line per row --check fails on: its `state`, which Stack shows too.

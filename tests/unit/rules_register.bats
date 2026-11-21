@@ -79,6 +79,37 @@ row() {
   assert_output --partial 'dead measure: rules.md: under ten'
 }
 
+# gh_stub <stderr text>: a gh that fails the way the real one does, into $SANDBOX/fail/gh.
+gh_stub() {
+  mkdir -p "$SANDBOX/fail"
+  printf '#!/bin/sh\necho %q >&2\nexit 1\n' "$1" > "$SANDBOX/fail/gh"
+  chmod +x "$SANDBOX/fail/gh"
+}
+
+@test "rules --check: a rate-limited gh measure is not a dead one, and says nothing was measured" {
+  gh_stub 'gh: API rate limit already exceeded for user ID 1. (HTTP 403)'
+  row 'under ten' high "PATH='$SANDBOX/fail':\$PATH gh run list" 10
+  run "$SUBJECT" rules --check
+  assert_success
+  assert_output ''
+  run "$SUBJECT" rules --json
+  assert_equal "$(jq -c '.[0] | [.state, .limited, .dead, .holds]' <<<"$output")" '["absent",true,false,null]'
+}
+
+@test "rules --check: a gh 403 that is not a rate limit, or a limit beside a number, stays what it was" {
+  gh_stub 'gh: Resource not accessible by integration (HTTP 403)'
+  row 'under ten' high "PATH='$SANDBOX/fail':\$PATH gh run list" 10
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'dead measure: rules.md: under ten'
+  : > "$RULES_REGISTER"
+  gh_stub 'gh: API rate limit exceeded (HTTP 403)'
+  row 'under ten' high "PATH='$SANDBOX/fail':\$PATH gh run list; echo 11" 10
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'moved: rules.md: under ten: 11 against max 10'
+}
+
 @test "rules --check: a bound copied from the file its measure reads restates it, whatever the number" {
   printf 'CAP=10\n' >> "$SANDBOX/rules.md"
   row 'under ten' low "sed -n 's/^CAP=//p' '$SANDBOX/rules.md'" 10
