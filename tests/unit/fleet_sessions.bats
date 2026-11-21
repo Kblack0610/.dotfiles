@@ -5386,6 +5386,28 @@ SH
   [ "$(jq -c '[.bucket, .reason]' <<<"$output")" = '["LANDED","PR #875 merged, tree clean, next phase: Phase 2: rollout"]' ]
 }
 
+@test "end to end: the plan named for the session's item slug beats the plan its transcript landed against (ar-379)" {
+  # 2026-11-10 agent-34 (item p7-leftovers-..., own plan fully ticked) ticked P7 in submit-logical-spindle.md
+  # through agent-land --plan, so its pane plan was that one and it read LANDED on that plan's P4.
+  landed_fixture   # the pane's plan: plan.md, phase 2 open
+  mkdir -p "$HOME/.claude/plans" "$HOME/.agent/queue/running"
+  printf 'slug: p7-leftovers\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsessions: sid-9\n---\nleftovers\n' \
+    > "$HOME/.agent/queue/running/20261103-100000-p7-leftovers.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -c '[.bucket, .next_phase]' <<<"$output")" = '["LANDED","Phase 2: rollout"]' ]
+  # its own plan, fully ticked, is the one the row reads
+  printf '# Own\n\n## Phases\n\n- [x] P7 leftovers (#875)\n' > "$HOME/.claude/plans/p7-leftovers.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -c '[.plan_file, .phases_done, .phases_total]' <<<"$output")" = "[\"$HOME/.claude/plans/p7-leftovers.md\",1,1]" ]
+  [ "$(jq -r .bucket <<<"$output")" != LANDED ]
+  # negative control: an item of another session names no plan
+  rm "$HOME/.agent/queue/running/20261103-100000-p7-leftovers.md"
+  printf 'slug: p7-leftovers\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsessions: sid-other\n---\nleftovers\n' \
+    > "$HOME/.agent/queue/running/20261103-100000-p7-leftovers.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .plan_file <<<"$output")" = "$SANDBOX/plan.md" ]
+}
+
 # A phase a live cron of the session runs is the session's own, in place (ar-2449: the coordinator
 # hub/dotfiles:1 read LANDED "P3 land today" and drew a wind-down nudge while its hourly cron ran P3).
 @test "a next phase a live cron runs reads WORKING, not LANDED; the same row with no cron stays LANDED (ar-2449)" {

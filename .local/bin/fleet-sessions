@@ -2007,6 +2007,13 @@ collect() {
               | if . == "" then "-" else . end), (.by // "-")] | @tsv)' <<<"$qall" 2>/dev/null)
         irow="${irow:--}"; iby="${iby:--}" ;;
     esac
+    # The plan named for the item's own slug (one-shot step 1: ~/.claude/plans/<slug>.md) is the session's plan,
+    # ahead of the one its transcript last landed against or ticked: agent-34 (item p7-leftovers-of-plan-home-
+    # kblack0610-cla, its own plan fully ticked) ticked P7 in submit-logical-spindle.md and read LANDED on that
+    # plan's P4, so wind-down auto refused (2026-11-10, ar-379).
+    if [ "$host" = - ] && [ "$islug" != - ] && [ -f "$HOME/.claude/plans/$islug.md" ]; then
+      planf="$HOME/.claude/plans/$islug.md"
+    fi
     # A done item's merged PRs are the session's landed ones when its transcript names no merged PR, none
     # open and every state known. A landing train merges a member's commits through its own train/* PR and
     # closes the member, so the transcript names only the closed member while agent-land records the train
