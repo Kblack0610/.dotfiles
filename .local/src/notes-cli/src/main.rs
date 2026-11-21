@@ -205,7 +205,7 @@ enum Cmd {
         /// vX.Y.Z, open and closed, both lanes, with the closed rows' PRs. A row's release
         /// is its `#vX.Y.Z` tag, or its sheet's `Version:` when untagged; rows already frozen
         /// into `versions/vX.Y.Z.md` are included. With --json, the same rows as JSON (id,
-        /// state, lane, priority, PRs) with each project's window days. READ-ONLY
+        /// state, priority, PRs) with each project's window days. READ-ONLY
         #[arg(long, value_name = "vX.Y.Z", conflicts_with_all = ["agent", "done_days"])]
         version: Option<String>,
         /// Limit to these projects (repeatable). Names are the LAB project names, which

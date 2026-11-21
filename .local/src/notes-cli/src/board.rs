@@ -577,8 +577,6 @@ fn release_line(lane: Lane, line: &str) -> String {
 struct VersionRow {
     id: Option<String>,
     text: String,
-    /// `human` or `agent`: the sheet it is on.
-    lane: &'static str,
     /// `open`, `doing`, `done`, or `dropped` (closed undelivered).
     state: &'static str,
     priority: &'static str,
@@ -587,11 +585,10 @@ struct VersionRow {
 }
 
 impl VersionRow {
-    fn of(lane: Lane, line: &str) -> VersionRow {
+    fn of(line: &str) -> VersionRow {
         VersionRow {
             id: md::row_id(line),
             text: md::task_text(line),
-            lane: lane.name(),
             state: if md::is_dropped(line) {
                 "dropped"
             } else if md::is_checked(line) {
@@ -631,7 +628,7 @@ impl VersionProject {
             rows: open
                 .iter()
                 .chain(&closed)
-                .map(|(l, r)| VersionRow::of(*l, r))
+                .map(|(_, r)| VersionRow::of(r))
                 .collect(),
         })
     }
@@ -1789,18 +1786,12 @@ mod tests {
     }
 
     #[test]
-    fn a_version_feed_row_carries_its_state_lane_and_prs() {
-        let row = |l: &str| VersionRow::of(Lane::Agent, l);
+    fn a_version_feed_row_carries_its_state_priority_and_prs() {
+        let row = VersionRow::of;
         let r = row("- [x] feat(a): shipped #high <!-- id:ar-1 pr:o/r#7 -->");
         assert_eq!(
-            (r.id.as_deref(), r.state, r.lane, r.priority, r.prs.clone()),
-            (
-                Some("ar-1"),
-                "done",
-                "agent",
-                "high",
-                vec!["o/r#7".to_string()]
-            )
+            (r.id.as_deref(), r.state, r.priority, r.prs.clone()),
+            (Some("ar-1"), "done", "high", vec!["o/r#7".to_string()])
         );
         assert_eq!(r.text, "feat(a): shipped");
         assert_eq!(row("- [/] doing it").state, "doing");

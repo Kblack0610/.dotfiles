@@ -12,7 +12,7 @@
 //! Nothing here reads but [`read`], which both surfaces call: agent-web's
 //! `/api/releases/version` and the hub TUI's Releases pane.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -51,7 +51,6 @@ pub struct FeedProject {
 pub struct FeedRow {
     pub id: Option<String>,
     pub text: String,
-    pub lane: String,
     /// `open`, `doing`, `done` or `dropped`.
     pub state: String,
     pub priority: String,
@@ -66,20 +65,40 @@ pub fn owned<'a>(rel: &'a Releases, project: &str) -> Vec<&'a App> {
     apps
 }
 
-/// What reads the rows: the project and each app it owns, as notes projects (one with no rows
-/// prints nothing).
-pub fn feed_argv(project: &str, apps: &[&App], version: &str) -> Vec<String> {
+/// The lab projects the rows are filed under (`project_map::Registry::lab_names`): the
+/// project's own first, then each owned app's, once each. With no registry a name is itself.
+pub fn labs(reg: Option<&project_map::Registry>, project: &str, apps: &[&App]) -> Vec<String> {
+    let names = |n: &str| reg.map_or_else(|| vec![n.to_string()], |r| r.lab_names(n));
+    let mut out: Vec<String> = vec![];
+    for n in std::iter::once(project)
+        .chain(apps.iter().map(|a| a.project.as_str()))
+        .flat_map(names)
+    {
+        if !out.contains(&n) {
+            out.push(n);
+        }
+    }
+    out
+}
+
+/// What reads the rows: notes' release view of `version` over the lab projects `labs` (one with
+/// no rows prints nothing). None for a version notes cannot tag (`#vX.Y.Z` only), which no row
+/// can be aimed at.
+pub fn feed_argv(labs: &[String], version: &str) -> Option<Vec<String>> {
+    let v = core(version);
+    let parts: Vec<&str> = v.split('.').collect();
+    let numeric = |p: &&str| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit());
+    if parts.len() != 3 || !parts.iter().all(numeric) {
+        return None;
+    }
     let mut argv: Vec<String> = ["notes", "board", "--json", "--version"]
         .map(String::from)
         .into();
-    argv.push(format!("v{}", core(version)));
-    let mut seen = HashSet::new();
-    for p in std::iter::once(project).chain(apps.iter().map(|a| a.project.as_str())) {
-        if seen.insert(p) {
-            argv.extend(["--project".to_string(), p.to_string()]);
-        }
+    argv.push(format!("v{v}"));
+    for l in labs {
+        argv.extend(["--project".to_string(), l.clone()]);
     }
-    argv
+    Some(argv)
 }
 
 pub fn parse_feed(json: &str) -> Result<Feed, String> {
@@ -185,8 +204,9 @@ fn state_word(s: State) -> &'static str {
     }
 }
 
-/// The item that works row `id`: a live one before a queued one before a done one.
-fn worker<'a>(items: &'a [Item], id: &str) -> Option<&'a Item> {
+/// The item that works row `id` of lab project `project`: a live one before a queued one before
+/// a done one.
+fn worker<'a>(items: &'a [Item], project: &str, id: &str) -> Option<&'a Item> {
     let rank = |s: State| match s {
         State::Running | State::Waiting => 0,
         State::Review => 1,
@@ -195,7 +215,10 @@ fn worker<'a>(items: &'a [Item], id: &str) -> Option<&'a Item> {
     };
     items
         .iter()
-        .filter(|i| i.board_row().is_some_and(|(_, r)| r == id))
+        .filter(|i| {
+            i.board_row()
+                .is_some_and(|(p, r)| r == id && p.eq_ignore_ascii_case(project))
+        })
         .min_by_key(|i| rank(i.state))
 }
 
@@ -217,9 +240,11 @@ fn pr_cell(r: &str, home: &str, prs: &[Pr]) -> Option<PrCell> {
     })
 }
 
-fn row(r: &FeedRow, items: &[Item], home: &str, prs: &[Pr]) -> Row {
+fn row(r: &FeedRow, project: &str, items: &[Item], home: &str, prs: &[Pr]) -> Row {
     let id = r.id.clone().unwrap_or_default();
-    let item = (!id.is_empty()).then(|| worker(items, &id)).flatten();
+    let item = (!id.is_empty())
+        .then(|| worker(items, project, &id))
+        .flatten();
     let mut refs: Vec<&str> = r.prs.iter().map(String::as_str).collect();
     refs.extend(item.into_iter().flat_map(Item::pr_refs));
     let mut cells: Vec<PrCell> = vec![];
@@ -296,6 +321,8 @@ fn app_release(
 /// The inputs [`build`] joins, each read by the caller.
 pub struct Inputs<'a> {
     pub apps: &'a [&'a App],
+    /// The project's own lab projects ([`labs`] with no apps): whose window the header shows.
+    pub own: &'a [String],
     pub runs: &'a [Run],
     pub records: &'a HashMap<RunKey, Record>,
     pub feed: Result<Feed, String>,
@@ -321,8 +348,8 @@ pub fn build(project: &str, version: &str, today: &str, i: Inputs) -> Option<Pag
     let mut rows: Vec<Row> = feed
         .projects
         .iter()
-        .flat_map(|p| &p.rows)
-        .map(|r| row(r, i.items, &home, i.prs))
+        .flat_map(|p| p.rows.iter().map(move |r| (p.project.as_str(), r)))
+        .map(|(p, r)| row(r, p, i.items, &home, i.prs))
         .collect();
     rows.sort_by_key(|r| state_rank(&r.state));
     let cuts: Vec<_> = i.apps.iter().flat_map(|a| cuts_of(a, &want).1).collect();
@@ -343,14 +370,15 @@ pub fn build(project: &str, version: &str, today: &str, i: Inputs) -> Option<Pag
             _ => bar.open += 1,
         }
     }
-    let window = feed
-        .projects
-        .iter()
-        .find(|p| p.project == project)
-        .or(feed.projects.first());
+    let window = i.own.iter().find_map(|l| {
+        feed.projects
+            .iter()
+            .find(|p| p.project.eq_ignore_ascii_case(l))
+    });
     let opened = window.and_then(|w| w.opened.clone()).unwrap_or_default();
     let due = window.and_then(|w| w.due.clone()).unwrap_or_default();
     let released = cuts.iter().any(|s| !s.reached.is_empty());
+    let overdue = !due.is_empty() && due.as_str() < today;
     let legacy = !cuts.is_empty()
         && cuts
             .iter()
@@ -360,8 +388,8 @@ pub fn build(project: &str, version: &str, today: &str, i: Inputs) -> Option<Pag
     } else if released {
         ("released", Level::Ok)
     } else if !cuts.is_empty() {
-        ("cut", Level::Ok)
-    } else if !due.is_empty() && due.as_str() < today {
+        ("cut", if overdue { Level::Warn } else { Level::Ok })
+    } else if overdue {
         ("unreleased", Level::Warn)
     } else {
         ("unreleased", Level::Neutral)
@@ -416,25 +444,31 @@ pub fn read(
     version: &str,
 ) -> Option<Page> {
     let apps = owned(rel, project);
-    let feed = runner
-        .run(&feed_argv(project, &apps, version))
-        .and_then(|j| parse_feed(&j));
+    let reg = project_map::cached();
+    let own = labs(reg.as_deref(), project, &[]);
+    let feed = match feed_argv(&labs(reg.as_deref(), project, &apps), version) {
+        Some(argv) => runner.run(&argv).and_then(|j| parse_feed(&j)),
+        None => Ok(Feed::default()),
+    };
     let records = release_page::records(jobs, &run_keys(&apps, runs, version));
-    let (prs, _) = crate::release_graph::read_prs(&crate::release_graph::prs_dir());
+    let (prs, pr_errors) = crate::release_graph::read_prs(&crate::release_graph::prs_dir());
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    build(
+    let mut page = build(
         project,
         version,
         &today,
         Inputs {
             apps: &apps,
+            own: &own,
             runs,
             records: &records,
             feed,
             items,
             prs: &prs,
         },
-    )
+    )?;
+    page.errors.extend(pr_errors);
+    Some(page)
 }
 
 /// The page as text, for the hub TUI: the header and bar, the rows, then each app's cut.
@@ -551,9 +585,9 @@ mod tests {
     fn feed() -> Feed {
         parse_feed(
             r##"{"version":"v0.5.3","projects":[{"project":"ucp","opened":"2026-11-18","due":"2026-11-19","rows":[
-            {"id":"ucp-1","text":"ship menu","lane":"human","state":"done","priority":"high","prs":["#12"]},
-            {"id":"ucp-2","text":"fix lag","lane":"agent","state":"open","priority":"med","prs":[]},
-            {"id":"ucp-3","text":"wip","lane":"agent","state":"doing","priority":"low","prs":[]}]}]}"##,
+            {"id":"ucp-1","text":"ship menu","state":"done","priority":"high","prs":["#12"]},
+            {"id":"ucp-2","text":"fix lag","state":"open","priority":"med","prs":[]},
+            {"id":"ucp-3","text":"wip","state":"doing","priority":"low","prs":[]}]}]}"##,
         )
         .unwrap()
     }
@@ -587,6 +621,7 @@ mod tests {
                 feed: f,
                 items,
                 prs,
+                own: &["ucp".to_string()],
             },
         )
     }
@@ -604,11 +639,13 @@ mod tests {
     }
 
     #[test]
-    fn feed_argv_names_the_project_and_each_app_once() {
+    fn feed_argv_names_each_lab_once_and_skips_a_version_notes_cannot_tag() {
         let own = app("ucp", "o/ucp", vec![]);
         let dodge = app("dodginballs", "o/ucp", vec![]);
+        let l = labs(None, "ucp", &[&own, &dodge]);
+        assert_eq!(l, ["ucp", "dodginballs"]);
         assert_eq!(
-            feed_argv("ucp", &[&own, &dodge], "0.5.3"),
+            feed_argv(&l, "v0.5.3-dodginballs5").unwrap(),
             [
                 "notes",
                 "board",
@@ -621,6 +658,18 @@ mod tests {
                 "dodginballs"
             ]
         );
+        assert_eq!(feed_argv(&l, "2"), None);
+        assert_eq!(feed_argv(&l, "0.5"), None);
+        assert_eq!(feed_argv(&l, "0.x.3"), None);
+    }
+
+    #[test]
+    fn labs_are_the_lab_names_the_registry_files_under_each_repo() {
+        let r = project_map::Registry::parse(
+            r#"{"trackers":{"dot":{},"cockpit":{"repo":"dot"},"else":{"repo":"x"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(labs(Some(&r), "dot", &[]), ["dot", "cockpit"]);
     }
 
     #[test]
@@ -641,6 +690,14 @@ mod tests {
                 "ucp:xucp-3",
                 State::Running,
                 Some("agent-29"),
+                None,
+            ),
+            // Nor the same id on another project's board.
+            item(
+                "ar-12",
+                "other:ucp-3",
+                State::Running,
+                Some("agent-30"),
                 None,
             ),
         ];
@@ -672,7 +729,7 @@ mod tests {
         assert_eq!(fix.prs[0].text, "#14");
         assert_eq!(fix.prs[0].state, "", "a PR the store lacks has no state");
         let wip = &p.rows[0];
-        assert_eq!(wip.assignee, "", "xucp-3 is not ucp-3");
+        assert_eq!(wip.assignee, "", "xucp-3 and other:ucp-3 are not ucp:ucp-3");
         let shipped = &p.rows[2];
         assert_eq!(shipped.prs[0].state, "merged");
         assert_eq!(shipped.prs[0].url, "https://github.com/o/ucp/pull/12");
@@ -714,6 +771,14 @@ mod tests {
         );
         assert_eq!(p.apps[0].state, "no cut");
 
+        let late = app("ucp", "o/ucp", vec![ship("v0.5.3", "0.5.3", 10, false)]);
+        let p = page(&[&late], &[], Ok(feed()), &[], &[]).unwrap();
+        assert_eq!(
+            (p.status.as_str(), p.level),
+            ("cut", Level::Warn),
+            "a cut not out by its due day"
+        );
+
         let mut old = ship("v0.5.3", "0.5.3", 1, true);
         old.provenance = "legacy".into();
         let legacy = app("ucp", "o/ucp", vec![old]);
@@ -731,6 +796,19 @@ mod tests {
         assert_eq!(p.errors, ["notes: not found"]);
         assert_eq!(p.rows_note, "the rows did not read");
         assert_eq!(p.apps.len(), 1);
+    }
+
+    #[test]
+    fn the_window_comes_only_from_the_projects_own_lab() {
+        let cut = app("ucp", "o/ucp", vec![ship("v0.5.3", "0.5.3", 10, false)]);
+        let mut f = feed();
+        f.projects[0].project = "dodginballs".into();
+        let p = page(&[&cut], &[], Ok(f.clone()), &[], &[]).unwrap();
+        assert_eq!(p.due_text, "no due day");
+        assert_eq!(p.rows.len(), 3, "its rows still count");
+        f.projects[0].project = "UCP".into();
+        let p = page(&[&cut], &[], Ok(f), &[], &[]).unwrap();
+        assert_eq!(p.due_text, "2026-11-19", "lab names match in any case");
     }
 
     #[test]
