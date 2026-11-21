@@ -173,8 +173,8 @@ slow_reader() {
 # fleet-dispatch reads the lease the same way.
 dispatch_here() { command -v fleet-dispatch >/dev/null 2>&1 && fleet-lease held >/dev/null 2>&1; }
 
-# bar_here -> rc 0 when this machine sends summary/bar: the same reason, since `hub bar --json` reads the
-# lease holder's queue, fleet state and dispatch snapshot (ar-4362).
+# bar_here -> rc 0 when this machine reads the lease holder's views, summary/bar and summary/cards: `hub bar --json`
+# reads its queue, fleet state and dispatch snapshot (ar-4362), and the cards chip takes only its figures.
 bar_here() { command -v hub >/dev/null 2>&1 && fleet-lease held >/dev/null 2>&1; }
 
 # overview_lines <fd> -> the HA sensor lines for `hub phone --json` read from <fd>, the phone widget's
@@ -215,17 +215,14 @@ cards_lines() {
 snapshot() {
     local f name st dfd='' ofd='' cfd='' bfd=''
 
-    # The two slow readers, fleet-dispatch stats and hub phone (2s and 4s at idle, 21s each at load 6
-    # with 600 queued items), start here and run while the runner and watch loops do, so a run costs
-    # the slowest part, not the sum (ar-1753). A run within READER_TTL of a reader's last send repeats
-    # that send instead: hooks (watch-companion-loop on each transition, agentctl's 5s status hook)
-    # fire many times a minute, and each one re-running the readers under the lock starved the --full
-    # timer run past its 60s (ar-2310).
+    # The slow readers (fleet-dispatch stats, hub phone, hub bar, hub cards: 2s to 21s at load) start here
+    # and run while the runner and watch loops do, so a run costs the slowest, not the sum (ar-1753). A run
+    # within READER_TTL of a reader's last send repeats that send: hooks fire many times a minute, and
+    # each re-running the readers under the lock starved the --full timer run past its 60s (ar-2310).
     dispatch_here && slow_reader dfd summary/dispatch fleet-dispatch stats
     command -v hub >/dev/null 2>&1 && slow_reader ofd summary/overview env PROM_TIMEOUT=3 hub phone --json
     bar_here && slow_reader bfd summary/bar timeout "$BAR_TIMEOUT" hub bar --json
-    # The cards read every part of Home and the chip takes only the lease host's, so only it reads them (bounded: a hung read must not starve the run, ar-2310).
-    dispatch_here && command -v hub >/dev/null 2>&1 && slow_reader cfd summary/cards timeout 25 env PROM_TIMEOUT=3 hub cards --json --figures
+    bar_here && slow_reader cfd summary/cards timeout 25 env PROM_TIMEOUT=3 hub cards --json --figures
 
     # Runners: the roster is the conf dir, so a retired runner drops out of HA with its conf.
     for f in "$CONFIG_DIR"/*.conf; do
@@ -332,7 +329,6 @@ snapshot() {
 
     [ -n "$ofd" ] && overview_lines "$ofd"
     [ -n "$bfd" ] && bar_lines "$bfd"
-
     [ -n "$cfd" ] && cards_lines "$cfd"
 
     # Interactive sessions: live Claude panes from `agent-panel list`. Glyphs are agent-panel's
