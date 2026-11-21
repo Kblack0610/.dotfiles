@@ -55,6 +55,15 @@ ed() {
   fi
 }
 
+# sync_pane <target> -- wait until everything already typed into the pane has been processed.
+# Pty input is FIFO, so once a unique marker typed now has echoed, any earlier keystroke has too:
+# a refutation read after this cannot pass just because the echo was slow.
+sync_pane() {
+  local m="SYNC${RANDOM}${RANDOM}"
+  _tm send-keys -t "$1" -l "$m"
+  wait_until "_tm capture-pane -p -J -t '$1' | grep -qF '$m'"
+}
+
 win_count()   { _tm list-windows -t work: -F '#{window_id}' | grep -c .; }
 marked()      { _tm list-windows -t work: -F '#{window_id} #{@editor}' | awk 'NF > 1 {print $1}'; }
 current_win() { _tm display-message -p -t work: '#{window_id}'; }
@@ -110,7 +119,8 @@ id_of_name()  { _tm list-windows -t work: -F '#{window_name} #{window_id}' | awk
   local first; first="$(marked)"
   ed two ensure
   ed three ensure
-  sleep 0.3   # give a wrong implementation time to actually create the extra windows
+  # run-shell returns only once the script has, and window creation is synchronous inside it,
+  # so a wrongly created window already exists here.
   assert_equal "$(win_count)" 4
   assert_equal "$(marked)" "$first"
 }
@@ -224,7 +234,7 @@ id_of_name()  { _tm list-windows -t work: -F '#{window_name} #{window_id}' | awk
   pid="$(_tm display-message -p -t "$ed_id" '#{pane_pid}')"
   wait_until "pgrep -P '$pid' -x sleep >/dev/null"
   ed three toggle 'sleep 300'
-  sleep 0.5
+  sync_pane "$ed_id"
   run _tm capture-pane -p -t "$ed_id"
   refute_output --partial 'sleep 300'
   assert_equal "$(current_win)" "$ed_id"
@@ -294,7 +304,6 @@ conf_tmux() { "$REAL_TMUX" -S "$CONF_SOCKET" "$@"; }
 
   # Still found: ensure must NOT build a second one.
   ed three ensure
-  sleep 0.3
   assert_equal "$(win_count)" 4
   assert_equal "$(marked)" "$ed_id"
 }

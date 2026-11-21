@@ -132,6 +132,33 @@ if [ "${#pipe_hits[@]}" -gt 0 ]; then
 else
   echo "house-rules: no command piped into head under pipefail"
 fi
+# RULE 4: no bare `sleep N` in a bats @test body. A fixed delay is sleep-and-hope: it flakes when
+# the machine is slow and wastes the wait when it is fast. Wait on the real event (wait_until
+# polls a condition on one bounded cadence) or set the clock the subject reads (`touch -d`, a
+# backdated state file). Stub scripts (heredocs), quoted text, a backgrounded `sleep N &` fixture
+# and a sleep inside a do...done poll are not flagged; the match is tests/lint-bare-sleep.awk.
+# The planted test below is the negative control: if the matcher stops firing, the gate says so
+# instead of reporting a clean tree it never read.
+planted=$'@test "planted" {\n  sleep 1\n}'
+# The scan's own status is read before its output: a matcher that failed to run prints nothing,
+# and nothing must not read as a clean tree.
+sleep_hits=$(find tests -name '*.bats' -not -path 'tests/vendor/*' -print0 \
+  | xargs -0 awk -f tests/lint-bare-sleep.awk)
+sleep_rc=$?
+if ! awk -f tests/lint-bare-sleep.awk <<<"$planted" | grep -q .; then
+  echo "house-rules: FAILED - the bare-sleep matcher missed its planted sleep (tests/lint-bare-sleep.awk is broken)" >&2
+  rc=1
+elif [ "$sleep_rc" -ne 0 ]; then
+  echo "house-rules: FAILED - the bare-sleep scan did not run cleanly (status $sleep_rc)" >&2
+  rc=1
+elif [ -n "$sleep_hits" ]; then
+  echo "house-rules: FAILED - bare sleep in a bats test body (wait on the event, or touch -d the clock):" >&2
+  printf '%s\n' "$sleep_hits" | sed 's/^/  /' >&2
+  echo "  Use wait_until, or backdate the file or state the subject reads. See tests/lint.sh." >&2
+  rc=1
+else
+  echo "house-rules: no bare sleep in a bats test body"
+fi
 ran+=("house-rules")
 
 if [ "${#FILES[@]}" -eq 0 ]; then

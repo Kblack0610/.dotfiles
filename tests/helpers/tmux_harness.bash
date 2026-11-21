@@ -143,8 +143,8 @@ tmux_type() { _tm send-keys -t "$TM_TARGET" -l "$*"; }
 # This is the whole anti-flake story, ported from fzf's test/lib/common.rb (10s budget,
 # 50ms poll). Demonstrated necessary: a bare capture-pane immediately after starting a pane
 # returns nothing, while the identical check passes ~100ms later. The expression is BOTH the
-# wait condition and the assertion, so there is no "wait for X, then assert X" gap and no
-# bare `sleep` anywhere in the suite.
+# wait condition and the assertion, so there is no "wait for X, then assert X" gap. The poll's own
+# `sleep` is the one bounded cadence; a bare `sleep` in an @test body is refused by tests/lint.sh.
 wait_until() {
   local expr="$1" timeout="${2:-${WAIT_TIMEOUT:-10}}"
   local deadline=$((SECONDS + timeout))
