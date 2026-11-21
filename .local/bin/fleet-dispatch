@@ -15,7 +15,7 @@
 #                                    naming the idle ones; rc 2 when the fleet state cannot be read (watch fleet-cap-mostly-idle)
 #   fleet-dispatch starved           rc 1 naming an urgent or high queue item no pass has started in DISPATCH_STARVED_MIN,
 #                                    an urgent one from the human even under a dispatch hold or load,
-#                                    or board rows no pass has judged in that time while the human was away,
+#                                    or board rows no pass has judged in that time (the human here or away; not at a full fleet),
 #                                    or a queue under DISPATCH_LOW_WATER with rows to pick and no start in twice that
 #   fleet-dispatch stopped [--json]  rc 1 and one line when a hold has stopped every pass for DISPATCH_STARVED_MIN:
 #                                    how long, why, what clears it (hub Home, the briefing, queue-starved)
@@ -5906,8 +5906,9 @@ cmd_stopped() {
 # about the pass, and on 11-04 a hand start would have hidden a gate that stopped every pass for
 # 7.5h. A NOOP pass reads healthy to fleet-liveness, so this is what pages a queue nothing starts:
 # the Sentinel watch queue-starved runs it. The board starves too: rows nobody judges never reach the
-# queue, so it trips when rows wait unjudged and no pass has judged any while the human was away that
-# long (2026-11-05: 220 rows, no judge since 11-02, every pass stopped at held queue items). And the
+# queue, so it trips when rows wait unjudged and no pass has judged any that long, the human here or
+# away (the fill judges either way; a fleet at its pace target holds them).
+# (2026-11-05, while the human was away: 220 rows, no judge since 11-02, every pass stopped at held queue items.) And the
 # low water starves: runnable under DISPATCH_LOW_WATER, rows a pass would pick, and no run start in
 # twice DISPATCH_STARVED_MIN (low_starved), which is a fill that has stopped filling.
 cmd_starved() {
