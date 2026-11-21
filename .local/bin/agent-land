@@ -15,7 +15,7 @@
 # checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (a head behind origin/<base> is merged up to it, each clean submodule checkout on its old pin moved to the merged one (submodule_follow), and pushed, before the checks and again after them if the base moved on during them; a head pushed after them waits on its own checks before it merges, and on a base without strict checks a second move lands that green head behind it, catch_up), item-line
 # (before the checks, the PR body gets the line "Item: <slug>" unless it has it, so a reader holding
 # only the PR finds its work item; a stale "Item:" line is rewritten), review (a tier-3 item's body has a
-# "Review:" line, review_gate), shape (no function over 150 lines gets longer unless the body has a "Split: <row id>" line, shape_gate), checks (the PR's checks pass: CI, a required check; a tier-3 item, or one landed with --ran-checks, needs checks that ran), merge (--squash, or with --merge-commit a merge commit,
+# "Review:" line, review_gate), shape (no function over 150 lines gets longer unless the body has a "Split: <row id>" line, shape_gate), checks (the PR's checks pass: CI, a required check; a cancelled check is no pass, waited on while a run on the head goes on; a tier-3 item, or one landed with --ran-checks, needs checks that ran), merge (--squash, or with --merge-commit a merge commit,
 # for a landing train whose member PRs read MERGED only while their heads stay reachable; --admin adds gh's --admin, which skips a required approving review on a repo whose owner allows it, never the checks step above; --match-head-commit HEAD, then gh pr view must say MERGED), proof (the PR's merge commit is
 # on origin/<base>, by agent-merge-proof.sh), live (dotfiles-autopull --now fast-forwards the stowed
 # checkout when this repo is ~/.dotfiles or ~/.dotfiles-private, links what it added, rebuilds the
@@ -141,15 +141,49 @@ net_retry() {
   echo "checks: lost the connection to the API ($net of $CHECKS_NET_TRIES retries), reading again"
   sleep "$CHECKS_POLL"
 }
+# newer_runs <cancelled checks json>: how many runs on HEAD of a cancelled check's workflow have not
+# completed, the newer run it gave way to; on a failed read, the read's output and status 1.
+newer_runs() {
+  local runs
+  runs=$(gh run list "${R[@]}" --commit "$(git rev-parse HEAD)" --json status,workflowName 2>&1) || { printf '%s' "$runs"; return 1; }
+  jq -r --argjson c "$1" '[.[] | select(.status != "completed") | .workflowName as $w | select($c | any(.workflow == $w))] | length' <<<"$runs"
+}
 had_checks=''
 wait_checks() {
   [ -z "$fj" ] || { fj_wait_checks; return; }
-  local try out failed queued
+  local try out failed cancelled names queued
   for ((try = 1; ; try++)); do
     out=$(gh pr checks "$pr" "${R[@]}" --watch --fail-fast -i "$CHECKS_WATCH_INTERVAL" 2>&1) && {
-      echo "checks: green"
-      had_checks=yes
-      return 0
+      # gh counts a cancelled check as neither failed nor pending, so a watch whose only Checks is
+      # a cancelled run exits 0 while the newer run on the head has no check yet, and GitHub then
+      # refuses the merge (unity-core-playground#2166). An open run of its workflow on HEAD is that
+      # newer run: wait on it at the queued cadence. With none, GitHub may not have registered the
+      # replacement yet, so it is read CHECKS_TRIES times before the cancelled check is the verdict.
+      cancelled=$(gh pr checks "$pr" "${R[@]}" --json name,bucket,workflow -q 'map(select(.bucket == "cancel"))' 2>&1) || {
+        net_error "$cancelled" || fail checks "reading the cancelled checks: $(lastline "$cancelled")"
+        net_retry "$cancelled"
+        continue
+      }
+      if [ "$cancelled" = '[]' ]; then
+        echo "checks: green"
+        had_checks=yes
+        return 0
+      fi
+      names=$(jq -r 'map(.name) | join(", ")' <<<"$cancelled")
+      queued=$(newer_runs "$cancelled") || {
+        net_error "$queued" || fail checks "reading the runs on the head: $(lastline "$queued")"
+        net_retry "$queued"
+        continue
+      }
+      if [ "$queued" -ne 0 ]; then
+        echo "checks: cancelled: $names; waiting on the newer run of its workflow on the head"
+        try=0
+        sleep "$CHECKS_QUEUED_POLL"
+        continue
+      fi
+      [ "$try" -lt "$CHECKS_TRIES" ] || fail checks "cancelled: $names, and no run of its workflow is left on the head to replace it: gh run rerun it, then re-run"
+      sleep "$CHECKS_POLL"
+      continue
     }
     case "$out" in
     *'no checks reported'*) ;;
