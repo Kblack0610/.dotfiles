@@ -265,9 +265,9 @@ async function renderTab(browser, spec, page0) {
 
 // One page's height at a desktop size: the document's, or its tab element's when that scrolls
 // inside its own box. Under --control every fold is opened and every inner tab shown first.
-// A drifted fixture fails it, and so does any read the page makes with no fixture: a page answered
-// {} draws short and passes the budget for the wrong reason, or throws in a coalesced refresh that
-// only warns, and then draws or not by which read lands first (releases/flow, 2026-11-21).
+// A drifted fixture fails it, and so does any read the page makes with no fixture (renderTab
+// likewise): a page answered {} draws short and passes the budget for the wrong reason, or throws
+// in a coalesced refresh that only warns, and then draws or not by which read lands first.
 async function heightOf(browser, spec, page0) {
   const { context, page, seen } = await openPage(browser, page0, DESK, false);
   const result = { page: spec.name, big: !!spec.big, height: null, errors: seen.errors };

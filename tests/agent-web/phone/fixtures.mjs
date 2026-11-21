@@ -449,9 +449,8 @@ const builds = {
   more: 0, summary: "6 builds, 1 red", at: NOW, stale_after: 3600, errors: [],
   counts: { total: 6, running: 2, queued: 0, red: 2, recent_red: 2 }, look: true,
 };
-// Releases > Flow: hub_core::lanes::Flow, a 7d window of CI lanes and release lanes. Without it the
-// read answered {} and relFlowBlock threw on the missing fields, so the page drew only when the
-// releases read landed first (the releases/flow red on main, 2026-11-21).
+// Releases > Flow: hub_core::lanes::Flow over a 7d window; `keys` and `windows` copy lanes.rs KEYS
+// and WINDOWS, which a change there must follow.
 const LANE_KEYS = ["green", "red", "running", "queued", "other"];
 const seg = (i, key, a, b) => ({ a, b, key, title: `${key} ${TEXT[i % TEXT.length].slice(0, 40)}`, link: "#infra/runs", n: 1 + (i % 3) });
 const flowLane = (label, sub, n, keyOf) => ({ label, sub, segs: rows(n, (i) => { const a = NOW - 7 * 86400 + Math.round(((i + 0.5) * 7 * 86400) / n); return seg(i, keyOf(i), a, a + 1200); }) });
