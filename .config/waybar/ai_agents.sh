@@ -21,7 +21,7 @@
 # agent-panel, which lists every session.
 #
 # Session series join only to a fleet_sessions.prom fresher than STATE_LATE_SECS (`and on (instance)`),
-# so a stale file's sessions never show; the file itself is read apart, to name it once.
+# so a stale file's sessions never show; the file itself and the bucket order (the same vocabulary from every host, and what keeps the hover's head right when every file is stale) are read unjoined.
 # One selector reads age and idle: `a or b` drops b's series whose labels match a's, and
 # fleet-sessions writes both with the same labels.
 #
@@ -56,8 +56,8 @@ REASON_MAX=70
 now="${AGENTS_NOW:-$(date +%s)}"
 title="<b>Sessions</b>"
 MTIME='node_textfile_mtime_seconds{file=~".*/fleet_sessions.prom"}'
-q='{__name__=~"agent_session_(age|idle)_minutes|agent_session_bucket|agent_session_why"} and on (instance) (time() - '"$MTIME < $STATE_LATE_SECS)"
-q+=" or $MTIME"
+q='{__name__=~"agent_session_(age|idle)_minutes|agent_session_why"} and on (instance) (time() - '"$MTIME < $STATE_LATE_SECS)"
+q+=" or agent_session_bucket or $MTIME"
 
 if ! raw="$(prom_q "$q")"; then
   emit "$ICON $(paint "$C_YEL" '?')" "$title"$'\n'"cannot read $PROM_URL" warn

@@ -209,6 +209,17 @@ tip() { jq -r .tooltip <<< "$output"; }
   assert_output --partial "fleet_sessions.prom on h1 is 15m old"
 }
 
+# With every file stale the join leaves no session rows, only the bucket order and the file's age.
+@test "every textfile stale is red with no sessions and no false bucket-order warning" {
+  feed mtime=900
+  run "$MODULE"
+  assert_equal "$(text)" "$(bar "$R" 0 0 0 0)"
+  assert_equal "$(class)" critical
+  run tip
+  assert_output --partial "fleet_sessions.prom on h1 is 15m old"
+  refute_output --partial "no agent_session_bucket"
+}
+
 # The leftover from a host that once held the lease: no host label, two days old, beside a fresh file.
 @test "a stale textfile beside a fresh one is named once by its instance in amber, and the robot is not red" {
   feed hub/dotfiles:1=WORKING:10 stale=183000
@@ -239,8 +250,10 @@ tip() { jq -r .tooltip <<< "$output"; }
   [[ "$q" == *'{__name__=~"agent_session_(age|idle)_minutes|'* ]]
   [[ "$q" != *"agent_session_age_minutes or "* ]]
   [[ "$q" == *' and on (instance) (time() - node_textfile_mtime_seconds{file=~".*/fleet_sessions.prom"} < 300)'* ]]
-  # the file itself is read unjoined, so a stale one can be named
-  [[ "$q" == *') or node_textfile_mtime_seconds{file=~".*/fleet_sessions.prom"}' ]]
+  # the bucket order and the file itself are read unjoined: a stale file can be named, and a fleet
+  # with every file stale still has its vocabulary
+  [[ "$q" != *'agent_session_bucket|'* ]]
+  [[ "$q" == *") or agent_session_bucket or node_textfile_mtime_seconds{file=~\".*/fleet_sessions.prom\"}" ]]
 }
 
 @test "a second scrape of a session counts once" {
