@@ -84,6 +84,9 @@ pub struct SessionRow {
     pub bucket: String,
     /// What a live session is doing now, fleet-sessions' `activity_line`; blank for other rows.
     pub activity: String,
+    /// Why the session is in its bucket, fleet-sessions' `reason` (`1 pending ask(s)`, `idle 18m`);
+    /// blank for other rows.
+    pub reason: String,
     pub project: String,
     /// The queue item's title, else the session's topic.
     pub task: String,
@@ -339,6 +342,7 @@ fn live_row(s: &Value, feed: &Feed, items: &HashMap<&str, &Item>) -> SessionRow 
         key: str_of(s, "target").to_string(),
         bucket: str_of(s, "bucket").to_string(),
         activity: str_of(s, "activity_line").to_string(),
+        reason: str_of(s, "reason").to_string(),
         project: item.map_or_else(|| str_of(s, "project").to_string(), |i| i.project.clone()),
         task: item.map_or_else(|| headline(topic).0, |i| i.title()),
         by: str_of(s, "by").to_string(),
