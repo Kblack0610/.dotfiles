@@ -96,18 +96,29 @@ gh_stub() {
   assert_equal "$(jq -c '.[0] | [.state, .limited, .dead, .holds]' <<<"$output")" '["absent",true,false,null]'
 }
 
-@test "rules --check: a gh 403 that is not a rate limit, or a limit beside a number, stays what it was" {
+@test "rules --check: a gh 403 that is not a rate limit, or other tool text naming one, stays dead" {
   gh_stub 'gh: Resource not accessible by integration (HTTP 403)'
   row 'under ten' high "PATH='$SANDBOX/fail':\$PATH gh run list" 10
   run "$SUBJECT" rules --check
   assert_failure 1
   assert_output --partial 'dead measure: rules.md: under ten'
   : > "$RULES_REGISTER"
-  gh_stub 'gh: API rate limit exceeded (HTTP 403)'
-  row 'under ten' high "PATH='$SANDBOX/fail':\$PATH gh run list; echo 11" 10
+  gh_stub 'gh: some tool hit its rate limit config'
+  row 'under ten' high "PATH='$SANDBOX/fail':\$PATH gh run list" 10
   run "$SUBJECT" rules --check
   assert_failure 1
-  assert_output --partial 'moved: rules.md: under ten: 11 against max 10'
+  assert_output --partial 'dead measure: rules.md: under ten'
+}
+
+@test "rules: a rate-limited counting measure drops its 0 and is counted as limited" {
+  gh_stub 'gh: API rate limit exceeded for user ID 1. (HTTP 403)'
+  jq -nc --arg s "$SANDBOX/rules.md" --arg m "PATH='$SANDBOX/fail':\$PATH gh run list | wc -l" \
+    '{source: $s, anchor: "under ten", kind: "provisional", confidence: "low", measure: $m, min: 5}' >> "$RULES_REGISTER"
+  run "$SUBJECT" rules --check
+  assert_success
+  run "$SUBJECT" rules
+  assert_line 'limited=1'
+  assert_line 'measured=0'
 }
 
 @test "rules --check: a bound copied from the file its measure reads restates it, whatever the number" {

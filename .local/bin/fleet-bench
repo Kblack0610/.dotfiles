@@ -2507,8 +2507,8 @@ cmd_ledger() {
 # core budget is shared by every session) is `limited`, not dead: nothing was measured, so it reads
 # `absent` and no gate goes red until the limit resets.
 # `anchored` is the rule's text still being in its source; null when the source is not on this
-# machine. `state` is the one verdict, first of stale, absent (or limited), dead, restates, moved, else ok: --check
-# fails all but absent and ok, and Stack shows it as is. A row's optional `scenario` is the hard
+# machine. `state` is the one verdict, first of stale, absent (source not here, or limited), dead,
+# restates, moved, else ok: --check fails all but absent and ok, and Stack shows it as is. A row's optional `scenario` is the hard
 # situation the rule decides: the must-keep list a context trim is checked against (context-trim skill).
 # `form` says whether a row is a rule (text a session reads, a .md source) or a mechanism (a hook,
 # script or config that enforces one); the source decides it, and a row's own `form` overrides that.
@@ -2527,7 +2527,8 @@ rules_states() {
     value="" limited=false
     if [ -n "$cmd" ]; then
       value=$(timeout "$RULES_MEASURE_TIMEOUT" bash -c "$cmd" 2>"$err" </dev/null | tail -1)
-      ! grep -qi 'rate limit' "$err" || limited=true
+      # GitHub's 403 or 429 on a rate limit; a counting measure prints 0 then, so its number goes too.
+      ! grep -qiE 'rate limit.*HTTP (403|429)' "$err" || { limited=true; value=; }
     fi
     printf '%s\x1f%s\x1f%s\n' "$anchored" "$value" "$limited"
   done < <(jq -r '[.source, .anchor, (.measure // "")] | map(gsub("\n"; " ")) | join("\u001f")' "$RULES_REGISTER") |
@@ -2572,6 +2573,7 @@ rules_summary() {
      "keep=\(n("action"; "keep"))", "rewrite=\(n("action"; "rewrite"))", "drop=\(n("action"; "drop"))",
      "measured=\(map(select(.holds != null)) | length)", "holds=\(n("holds"; true))", "past=\(n("holds"; false))",
      "mechanisms=\(n("form"; "mechanism"))",
+     "limited=\(map(select(.limited)) | length)",
      "scenarios=\(map(select((.scenario // "") != "")) | length)"] | .[]' <<<"$1"
 }
 
