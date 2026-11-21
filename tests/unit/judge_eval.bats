@@ -585,15 +585,18 @@ SH
     ev filed t-young "$(ago '-1 hour')"
     ev filed t-session "$(ago '-3 days')" by=ab12cd34
     ev filed t-sized "$(ago '-3 days')"; ev tagged t-sized "$(ago '-3 days +1 hour')" by=inbox-size 'why=+#pts/3'
+    ev filed t-held "$(ago '-3 days')"; ev tagged t-held "$(ago '-3 days +1 hour')" by=ab12cd34 'why=+#hold/critical +#after/ar-1 +#ask/abc +#desk/human +#plan +#go -#size/s +#size/m'
+    ev filed t-resized "$(ago '-3 days')"; ev tagged t-resized "$(ago '-3 days +1 hour')" by=human 'why=-#size/s +#size/l'
+    ev filed t-mixed "$(ago '-3 days')"; ev tagged t-mixed "$(ago '-3 days +1 hour')" by=inbox-size 'why=+#pts/3 +#of/ar-9'
     ev filed t-planned "$(ago '-3 days')"; ev tagged t-planned "$(ago '-3 days +10 min')" 'why=+#size/m'
     ev planned t-planned "$(ago '-3 days +10 min +20 sec')"
   } > "$INGEST"
   run "$JUDGE_EVAL" inbox-triage --json
   assert_success
-  # tp: t-kept, t-late (dropped after the window), t-planned, t-sized (a sizing re-tag is no correction); fp: t-edited, t-moved; pending: t-young
+  # tp: t-kept, t-late (dropped after the window), t-planned, t-sized and t-held (a pass's sizing or gating re-tag is no correction); fp: t-edited, t-moved, t-resized (a human's), t-mixed (a non-pass word); pending: t-young
   run jq -c '.agents[0] | [.total | .verdicts, .tp, .fp, .pending, .scored, .precision], (.misses | map([.id, .answer]) | sort)' <<<"$output"
-  assert_line '[7,4,2,1,6,66.7]'
-  assert_line '[["t-edited","edited by ab12cd34"],["t-moved","rehomed"]]'
+  assert_line '[10,5,4,1,9,55.6]'
+  assert_line '[["t-edited","edited by ab12cd34"],["t-mixed","tagged by inbox-size"],["t-moved","rehomed"],["t-resized","tagged by human"]]'
 }
 
 @test "inbox-priority: a priority the pass set is right when nobody else changes it for 48h; a later pass supersedes; triage ignores it" {
