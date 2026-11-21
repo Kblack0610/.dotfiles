@@ -239,7 +239,7 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   # Ahead of the one it takes: a human-lane row and a row whose session died, both naming a file it takes.
   row game human tr-human "- [ ] fix(menu): fix scripts/setup #pts/1 #high $T <!-- id:tr-human -->"
   row game agent tr-dead "- [ ] fix(menu): fix scripts/setup #pts/1 #high $T <!-- id:tr-dead -->"
-  verdict game agent tr-dead failed
+  verdict game agent tr-dead failed; verdict game agent tr-dead failed   # DISPATCH_FIX_TRIES failures hold it
   # The judge's skip holds a row too, and a tier-3 row whose skip is tier 3 alone keeps its PR-only brief.
   row game agent tr-skip "- [ ] fix(menu): fix scripts/setup #pts/1 #high $T <!-- id:tr-skip -->"
   verdict game agent tr-skip skip
@@ -267,10 +267,12 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   for k in human dead skip; do
     [ -z "$(agent-queue show "tr-$k" --json 2>/dev/null)" ] || fail "the trainee floor promoted tr-$k"
   done
-  # With its failed verdict cleared, the dead row is back in the pool.
-  jq -cn '{project: "game", lane: "agent", key: "tr-dead", verdict: "cleared"}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  # The run's reap asked the human about the dead row: it waits on that ask, not on its failures.
+  assert_output --partial 'asked about game: tr-dead (failed 2 times, ask '
+  grep -qE '#ask/[A-Za-z0-9_-]+/retry <!-- id:tr-dead -->' "$NOTES_FIXTURE/rows.game.agent" || fail "dead row not gated on the ask"
+  assert_equal "$(jq -r 'select(.key == "tr-dead") | .verdict' "$FLEET_DISPATCH_DIR/verdicts.jsonl" | tail -1)" cleared
   run trainee_rows
-  assert_output --partial '"key":"tr-dead"'
+  refute_output --partial '"key":"tr-dead"'
 }
 
 @test "trainee-pool: counts the board rows a trainee takes and each refusal of the rest, by the floor's own checks" {

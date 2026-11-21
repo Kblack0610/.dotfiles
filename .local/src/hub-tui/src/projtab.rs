@@ -39,7 +39,7 @@ pub fn load(runner: &dyn Runner) -> Loaded {
 /// The list's columns, `Card`'s `Row::COLUMNS` in order, so the sort's mark lands on its header.
 const HEADER: [&str; 21] = [
     "PROJECT", "STATE", "PROFILE", "STAGE", "VERSION", "PRIO", "OPEN", "DOING", "HOT", "DONE",
-    "7D", "PTS", "PTS7D", "WINDOW", "DUE", "PACE/WK", "RUN", "WAIT", "QUEUED", "TODAY", "OLDEST",
+    "7D", "PTS", "PTS7D", "WINDOW", "DUE", "PACE/WK", "RUN", "WAIT", "QUEUED", "SHIPPED", "OLDEST",
 ];
 
 #[derive(Debug)]
@@ -1022,7 +1022,7 @@ fn row(c: &Card, p: Palette) -> Vec<Cell> {
         lit(c.running.len(), p.good()),
         lit(c.waiting, p.warn()),
         c.queued.to_string().into(),
-        lit(c.done_today, p.good()),
+        lit(c.today.shipped, p.good()),
         projects::wait_word(c.oldest_ready_min).into(),
     ]
 }

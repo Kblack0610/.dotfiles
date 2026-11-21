@@ -25,15 +25,18 @@ setup() {
   cat > "$SANDBOX/bin/curl" <<'STUB'
 #!/usr/bin/env bash
 [ -n "${CURL_FAIL:-}" ] && exit 7
+printf '%s\n' "$*" >> "$FX/curl.args"
 cat "$FX/prom.json"
 STUB
   chmod +x "$SANDBOX/bin/curl"
 }
 
-# feed [target=BUCKET:age[:idle[:why]] ...] [mtime=<age s>|mtime=-] [dup:target=...] [p:<project>:target=...]
+# feed [target=BUCKET:age[:idle[:why]] ...] [mtime=<age s>|mtime=-] [stale=<age s>] [dup:target=...] [p:<project>:target=...]
 # -> Prometheus's answer: one agent_session_age_minutes series per session (idle adds
 # agent_session_idle_minutes, and why adds agent_session_why), and fleet_sessions.prom written 60s ago unless mtime says otherwise.
-# dup: is a second scrape; p: names the session's project, proj without it.
+# dup: is a second scrape; p: names the session's project, proj without it. stale= adds a second, host-less
+# fleet_sessions.prom of that age on another instance (the leftover on razer-laptop), with no sessions of its
+# own: Prometheus's `and on (instance)` leaves them out.
 feed() {
   python3 - "$FX/prom.json" "$@" <<'PY'
 import json, sys
@@ -44,6 +47,11 @@ for a in sys.argv[2:]:
     k, v = a.split("=", 1)
     if k == "mtime":
         mtime = None if v == "-" else int(v)
+        continue
+    if k == "stale":
+        res.append({"metric": {"__name__": "node_textfile_mtime_seconds", "instance": "10.0.0.9:9100",
+                               "file": "/var/lib/node-exporter-textfile/fleet_sessions.prom"},
+                    "value": [0, str(100000 - int(v))]})
         continue
     inst, proj = "i1", "proj"
     if k.startswith("dup:"): inst, k = "i9", k[4:]
@@ -193,12 +201,59 @@ tip() { jq -r .tooltip <<< "$output"; }
   refute_output --partial "<span color='$Y'>"
 }
 
-@test "a sessions textfile older than five minutes is red: the tick stopped" {
+@test "the only sessions textfile older than five minutes is red: the tick stopped" {
   feed hub/dotfiles:1=WORKING:10 mtime=900
   run "$MODULE"
   assert_equal "$(class)" critical
   run tip
   assert_output --partial "fleet_sessions.prom on h1 is 15m old"
+}
+
+# With every file stale the join leaves no session rows, only the bucket order and the file's age.
+@test "every textfile stale is red with no sessions and no false bucket-order warning" {
+  feed mtime=900
+  run "$MODULE"
+  assert_equal "$(text)" "$(bar "$R" 0 0 0 0)"
+  assert_equal "$(class)" critical
+  run tip
+  assert_output --partial "fleet_sessions.prom on h1 is 15m old"
+  refute_output --partial "no agent_session_bucket"
+}
+
+# The leftover from a host that once held the lease: no host label, two days old, beside a fresh file.
+@test "a stale textfile beside a fresh one is named once by its instance in amber, and the robot is not red" {
+  feed hub/dotfiles:1=WORKING:10 stale=183000
+  run "$MODULE"
+  assert_equal "$(text)" "$(bar "$Y" 1 1 0 0)"
+  assert_equal "$(class)" warn
+  run tip
+  assert_equal "$(grep -c 'fleet_sessions.prom on' <<< "$output")" 1
+  assert_line --index 1 --partial "<span color='$Y'>fleet_sessions.prom on 10.0.0.9:9100 is 2d2h old"
+  refute_output --partial "color='$R'"
+}
+
+# Negative control: the same fleet with only fresh files has no such line and a green robot.
+@test "a fresh textfile alone has no stale line and a green robot" {
+  feed hub/dotfiles:1=WORKING:10
+  run "$MODULE"
+  assert_equal "$(text)" "$(bar "$G" 1 1 0 0)"
+  run tip
+  refute_output --partial "fleet_sessions.prom on"
+}
+
+# Prometheus answers the stub's JSON whatever is asked, so the join and the selector are pinned on the query.
+@test "the query reads age and idle with one selector and joins session series only to a fresh textfile" {
+  feed hub/dotfiles:1=WORKING:10:3
+  run "$MODULE"
+  local q
+  q="$(sed -n 's/.* --data-urlencode query=//p' "$FX/curl.args")"
+  [[ "$q" == *'{__name__=~"agent_session_(age|idle)_minutes|'* ]]
+  [[ "$q" != *"agent_session_age_minutes or "* ]]
+  [[ "$q" == *' and on (instance) (time() - node_textfile_mtime_seconds{file=~".*/fleet_sessions.prom"} < 300)'* ]]
+  # the bucket order and the file itself are read unjoined: a stale file can be named, and a fleet
+  # with every file stale still has its vocabulary
+  [[ "$q" != *'agent_session_bucket|'* ]]
+  [[ "$q" == *") or agent_session_bucket or node_textfile_mtime_seconds{file=~\".*/fleet_sessions.prom\"}" ]]
 }
 
 @test "a second scrape of a session counts once" {
