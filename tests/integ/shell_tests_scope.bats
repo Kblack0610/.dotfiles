@@ -149,6 +149,49 @@ fast_files() { ls "$REPO_ROOT"/tests/unit/*.bats "$REPO_ROOT"/tests/integ/*.bats
   assert_success
 }
 
+# Two misses main paid for (ar-4309): questions_panel.bats runs agent-ask only as "$AGENT_ASK",
+# which sandbox.bash defines, and worktree_create_hook.bats runs worktree-remove.sh, which runs
+# worktree.sh by path. #2385 and #2127 changed those scripts, were not picked, and went red on main.
+@test "picker: a script a shared helper names is named where the test uses its variable" {
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  run test_picked .local/bin/agent-ask tests/x.bats <<<'run "$AGENT_ASK" list'
+  assert_success
+  run test_picked .local/bin/agent-ask tests/x.bats <<<'run "${AGENT_ASK}" list'
+  assert_success
+  # Negative controls: the variable in a comment, and a longer name it only starts.
+  run test_picked .local/bin/agent-ask tests/x.bats <<<'# "$AGENT_ASK" is the real one'
+  assert_failure
+  run test_picked .local/bin/agent-ask tests/x.bats <<<'run "$AGENT_ASK_ROOT" list'
+  assert_failure
+  run test_picked .local/bin/agent-ask tests/integ/questions_panel.bats <"$REPO_ROOT/tests/integ/questions_panel.bats"
+  assert_success
+}
+
+@test "picker: a script the test runs by path is read one level down for the repo paths it names" {
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  # A fixture repo, so the controls do not ride on what a live hook happens to say.
+  local repo="$BATS_TEST_TMPDIR/repo" hook='bash "$REPO_ROOT/hooks/remove.sh"'
+  mkdir -p "$repo/hooks"
+  cat >"$repo/hooks/remove.sh" <<'EOF'
+# .local/src/tmux/fleet.sh is only named in a comment
+jq -r . "$1"
+wt list
+"$(dirname "$0")/../.local/src/tmux/worktree.sh" remove "$1"
+EOF
+  _TEST_PICK_REPO=$repo run test_picked .local/src/tmux/worktree.sh tests/x.bats <<<"$hook"
+  assert_success
+  # Negative controls: a path only its comments name, and commands it runs by bare name.
+  _TEST_PICK_REPO=$repo run test_picked .local/src/tmux/fleet.sh tests/x.bats <<<"$hook"
+  assert_failure
+  _TEST_PICK_REPO=$repo run test_picked .local/bin/jq tests/x.bats <<<"$hook"
+  assert_failure
+  _TEST_PICK_REPO=$repo run test_picked .local/bin/wt tests/x.bats <<<"$hook"
+  assert_failure
+  # The real chain #2127 broke: worktree_create_hook.bats -> worktree-remove.sh -> worktree.sh.
+  run test_picked .local/src/tmux/worktree.sh tests/integ/worktree_create_hook.bats <"$REPO_ROOT/tests/integ/worktree_create_hook.bats"
+  assert_success
+}
+
 @test "picker: a changed test file picks itself" {
   SHELL_TESTS_CHANGED=tests/integ/shell_tests_scope.bats CLAUDE_PROJECT_DIR="$REPO_ROOT" run bash "$HOOK"
   assert_output --partial "tests/integ/shell_tests_scope.bats"
