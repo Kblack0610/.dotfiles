@@ -18,8 +18,7 @@ setup() {
   # gh: `pr view` answers from fixture files, `pr merge` flips the state to merged.state.
   printf 'OPEN\n' >"$NOTES_FIXTURE/state"
   printf 'MERGED\n' >"$NOTES_FIXTURE/merged.state"
-  cat >"$SANDBOX/bin/gh" <<'EOF'
-#!/usr/bin/env bash
+  gh_script <<'EOF'
 printf 'gh %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
 # hint: every call also writes gh 2.105's success hint to stderr
 [ ! -f "$NOTES_FIXTURE/hint" ] || printf 'hint: if you need to wait for this pull request, use this instead of polling:\n    gh event listen --resource x\n' >&2
@@ -142,7 +141,7 @@ cat >"$NOTES_FIXTURE/linted.txt"
 [ ! -f "$NOTES_FIXTURE/lint.out" ] || cat "$NOTES_FIXTURE/lint.out"
 exit "$(cat "$NOTES_FIXTURE/lint.rc" 2>/dev/null || echo 0)"
 EOF
-  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/git" "$SANDBOX/bin/comms-lint"
+  chmod +x "$SANDBOX/bin/git" "$SANDBOX/bin/comms-lint"
 
   # dotfiles-autopull: logs its call, prints autopull.out, exits autopull.rc (0 by default)
   cat >"$SANDBOX/bin/dotfiles-autopull" <<'EOF'
@@ -190,7 +189,7 @@ EOF
 }
 
 # board_calls -> the notes calls that write a board, leaving out the chain's ingest record lines
-board_calls() { grep '^notes' "$LOG" | grep -v -e '^notes ingest record ' -e '^notes projects --prios' || true; }
+board_calls() { grep '^notes' "$LOG" | grep -v -e '^notes ingest record ' -e '^notes projects --prios' -e '^notes board --json$' || true; }
 # ran -> the call log without the read that picks the forge (fj_detect), which runs before any step
 ran() { grep -v -x -E 'git( -C [^ ]+)? rev-parse --show-toplevel' "$LOG" || true; }
 # not_recorded -> the call log without the chain's record lines, which a stopped landing writes too
@@ -644,6 +643,7 @@ notes ingest record --stage queue --action item-set --from dotfiles --item ship 
 gh api repos/o/r/pulls/42/files --paginate --jq .[].filename
 notes ingest record --stage queue --action item-moved --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --to done --why running -> done (ok) -- ship
 notes projects --prios
+notes board --json
 notes ptask dotfiles --agent done ship it --proof pr:o/r#42 commit:fedcba987654
 EOF
 }
@@ -727,13 +727,11 @@ EOF
 }
 
 @test "item-line: a body that cannot be edited stops before the checks and the merge" {
-  mv "$SANDBOX/bin/gh" "$NOTES_FIXTURE/gh.real"
-  cat >"$SANDBOX/bin/gh" <<'EOF'
-#!/usr/bin/env bash
+  cp "$NOTES_FIXTURE/gh.script" "$NOTES_FIXTURE/gh.real"
+  gh_script <<'EOF'
 [ "$1 $2" != 'pr edit' ] || { printf 'gh %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"; echo 'HTTP 403' >&2; exit 1; }
-exec "$NOTES_FIXTURE/gh.real" "$@"
+. "$NOTES_FIXTURE/gh.real"
 EOF
-  chmod +x "$SANDBOX/bin/gh"
   run "$LAND" 42 --item ship
   assert_failure 1
   assert_output --partial 'item-line failed: gh pr edit: HTTP 403'

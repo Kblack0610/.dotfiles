@@ -4,6 +4,7 @@
 setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
+  load '../helpers/sandbox'
   AUDIT="$BATS_TEST_DIRNAME/../../.local/bin/gh-hosted-runner-audit"
   FIX="$BATS_TEST_TMPDIR/fix"
   export AUDIT_FIX="$FIX" PROJECT_MAP_FILE="$BATS_TEST_TMPDIR/project-map.json"
@@ -51,8 +52,11 @@ EOF
   wf acme/dorm ci.yml <<<$'jobs:\n  t:\n    runs-on: ubuntu-22.04'
   echo 2025-01-01T00:00:00Z >"$FIX/acme/dorm/last"
   # gh stub: answers the audit's calls from $AUDIT_FIX; a repo with no wf dir has no workflows (404).
-  mkdir -p "$BATS_TEST_TMPDIR/bin"
-  cat >"$BATS_TEST_TMPDIR/bin/gh" <<EOF
+  # No sandbox_init: only the shared gh stub, with its fixture dir, on PATH. The python body is exec'd, so it needs +x.
+  export NOTES_FIXTURE="$BATS_TEST_TMPDIR/fixture" GH_FIXTURE="$BATS_TEST_TMPDIR/fixture"
+  mkdir -p "$BATS_TEST_TMPDIR/bin" "$NOTES_FIXTURE"
+  cp "$TESTS_DIR/helpers/stubs/gh" "$BATS_TEST_TMPDIR/bin/gh"
+  gh_script <<EOF
 #!/usr/bin/env python3
 import base64, json, os, sys
 fix, a = os.environ["AUDIT_FIX"], sys.argv[1:]
@@ -125,7 +129,7 @@ EOF
 }
 
 @test "a gh failure other than a 404 stops the audit instead of reading clean" {
-  printf '#!/bin/sh\necho "HTTP 401: Bad credentials" >&2\nexit 1\n' >"$BATS_TEST_TMPDIR/bin/gh"
+  gh_script 'echo "HTTP 401: Bad credentials" >&2; exit 1'
   run "$AUDIT"
   assert_failure
   assert_output --partial 'Bad credentials'

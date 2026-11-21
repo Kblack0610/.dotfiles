@@ -19,8 +19,6 @@ const logShows = (sec) => st.tab === "log" && innerShown("log", homeOf("log", se
 
 const refreshAgents = coalesce(async () => {
   st.agents = await api("/api/agents");
-  const waiting = st.agents.filter((a) => a.status === "waiting").length;
-  $("wait-badge").innerHTML = waiting ? `<span class="badge">${waiting}</span>` : "";
   refreshWaiting();
   sst.render();
   if (st.tab === "home") renderHome();
@@ -32,12 +30,6 @@ const refreshAgents = coalesce(async () => {
     else if (!st.sel.paneless) { $("d-dot").className = "dot"; $("d-name").textContent = st.sel.target + " (gone)"; }
   }
 });
-
-// "3/6 phases, next: <name>", from fleet-sessions' read of the plan's ## Phases checklist.
-function phasesText(a) {
-  const p = a.phases;
-  return p ? `${p.done}/${p.total} phases${p.next ? `, next: ${p.next}` : ""}` : "";
-}
 
 // Approve a session's open plan dialog (session action approve-plan) from a Waiting card or a
 // Queue row: the first click arms an in-place confirm, the second sends it.

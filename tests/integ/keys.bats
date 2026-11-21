@@ -35,8 +35,7 @@ EOF
   export TMUX_TMPDIR="$FX/sock"
   mkdir -p "$TMUX_TMPDIR/tmux-$(id -u)"
   : > "$FX/live"
-  cat > "$SANDBOX/bin/tmux" <<'EOF'
-#!/usr/bin/env bash
+  tmux_script <<'EOF'
 printf '%s\n' "$*" >> "$FX/tmux.log"
 [ "$1" = -S ] && { sock="$2"; shift 2; }
 case "$*" in
@@ -65,7 +64,7 @@ EOF
 echo run >> "$FX/nvim.log"
 printf 'nvim\tn\t<leader>ff\tFind files\t<Lua function>\n'
 EOF
-  chmod +x "$SANDBOX/bin/hyprctl" "$SANDBOX/bin/tmux" "$SANDBOX/bin/nvim"
+  chmod +x "$SANDBOX/bin/hyprctl" "$SANDBOX/bin/nvim"
 }
 
 # live_socket <name> -- a real socket file in the tmux dir, answering list-sessions.

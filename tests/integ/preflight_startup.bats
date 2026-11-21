@@ -11,8 +11,7 @@ setup() {
   sandbox_init basic
   [ -r /proc/self/stat ] || skip "needs /proc"
 
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"
-  chmod +x "$SANDBOX/bin/gh"
+  gh_script 'exit 1'
   REPO="$SANDBOX/repo"
   mkdir -p "$REPO"
   git -C "$REPO" init -q .
@@ -42,9 +41,9 @@ start() { echo '{"source":"startup","session_id":"sid-1"}' | bash "$DEPLOY/sessi
 
 @test "the hook makes no network call and no queue write: no gh, no agent-queue claim, even for a queue item" {
   # gh was 430 ms of every start and the claim waited on the queue lock; reading the item stays.
-  printf '#!/usr/bin/env bash\necho "gh $*" >> "%s/calls.log"\nexit 1\n' "$SANDBOX" > "$SANDBOX/bin/gh"
+  gh_script 'echo "gh $*" >> "$SANDBOX/calls.log"; exit 1'
   printf '#!/usr/bin/env bash\n[ "$1" = show ] || echo "agent-queue $*" >> "%s/calls.log"\nexit 1\n' "$SANDBOX" > "$SANDBOX/bin/agent-queue"
-  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/agent-queue"
+  chmod +x "$SANDBOX/bin/agent-queue"
   AGENT_QUEUE_ITEM=some-item run start
   assert_success
   assert_output --partial 'Session Preflight: repo'

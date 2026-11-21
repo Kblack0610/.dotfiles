@@ -8,8 +8,7 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
 
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"
-  chmod +x "$SANDBOX/bin/gh"
+  gh_script 'exit 1'
   unset GH_TOKEN GITHUB_TOKEN GH_CONFIG_DIR XDG_CONFIG_HOME
 
   REPO="$SANDBOX/repo"

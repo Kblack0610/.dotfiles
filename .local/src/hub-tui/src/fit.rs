@@ -105,6 +105,41 @@ pub fn clip_line(line: Line<'static>, w: usize) -> Line<'static> {
 }
 
 impl Table {
+    /// The table without column `col`: its header, cells, keep, cap and mark entries go, and every
+    /// index after it moves up one. A table that drops the column it would only repeat (one
+    /// project's In flight has no PROJECT) is built whole, then loses it here.
+    pub fn without_col(mut self, col: usize) -> Table {
+        let shift = |i: usize| if i > col { i - 1 } else { i };
+        self.header.remove(col);
+        for r in &mut self.rows {
+            r.remove(col);
+        }
+        self.keep = self
+            .keep
+            .iter()
+            .filter(|&&i| i != col)
+            .map(|&i| shift(i))
+            .collect();
+        self.right = self
+            .right
+            .iter()
+            .filter(|&&i| i != col)
+            .map(|&i| shift(i))
+            .collect();
+        self.cap = self
+            .cap
+            .iter()
+            .filter(|(i, _)| *i != col)
+            .map(|&(i, n)| (shift(i), n))
+            .collect();
+        self.flex = self.flex.filter(|&i| i != col).map(shift);
+        self.mark = self
+            .mark
+            .filter(|&(i, _)| i != col)
+            .map(|(i, m)| (shift(i), m));
+        self
+    }
+
     /// Each header's text, the marked one with its suffix.
     fn heads(&self) -> Vec<String> {
         self.header
@@ -367,6 +402,39 @@ pub fn plain(l: &Line) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dropping_a_column_moves_every_index_after_it_up_one() {
+        let t = Table {
+            header: vec!["A", "B", "C", "D"],
+            rows: vec![vec!["a".into(), "b".into(), "c".into(), "d".into()]],
+            keep: vec![0, 3, 1, 2],
+            flex: Some(2),
+            right: vec![1, 3],
+            cap: vec![(1, 9), (3, 12)],
+            mark: Some((3, " v")),
+            ..Default::default()
+        }
+        .without_col(1);
+        assert_eq!(t.header, vec!["A", "C", "D"]);
+        assert_eq!(t.rows[0].len(), 3);
+        assert_eq!(t.keep, vec![0, 2, 1]);
+        assert_eq!((t.flex, t.right, t.cap), (Some(1), vec![2], vec![(2, 12)]));
+        assert_eq!(t.mark, Some((2, " v")));
+        let gone = Table {
+            header: vec!["A", "B"],
+            rows: vec![],
+            mark: Some((1, "^")),
+            flex: Some(1),
+            ..Default::default()
+        }
+        .without_col(1);
+        assert_eq!(
+            (gone.mark, gone.flex),
+            (None, None),
+            "a dropped column's flex and mark go with it"
+        );
+    }
 
     #[test]
     fn a_wide_character_takes_two_columns() {

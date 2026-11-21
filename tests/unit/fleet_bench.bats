@@ -674,8 +674,7 @@ docs_prs() { local n; for n in "$@"; do printf 'docs/a.md\n' > "$GHD/files-$n"; 
 drop_sections() { jq -c 'del(.sections)' "$FLEET_BENCH_DIR/pr-ci.jsonl" > "$SANDBOX/c" && mv "$SANDBOX/c" "$FLEET_BENCH_DIR/pr-ci.jsonl"; }
 stub_review() {
   GHD="$SANDBOX/gh"; mkdir -p "$GHD"
-  printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SANDBOX/bin/gh"
-  cat >> "$SANDBOX/bin/gh" <<'GH'
+  { printf 'D=%q\n' "$GHD"; cat <<'GH'
 echo "gh $*" >> "$D/calls.log"
 [ -e "$D/fail" ] && exit 1
 case "$1 $2" in
@@ -686,6 +685,7 @@ case "$1 $2" in
     esac ;;
 esac
 GH
+  } | gh_script
   printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SANDBOX/bin/agentctl-run"
   cat >> "$SANDBOX/bin/agentctl-run" <<'AR'
 echo "agentctl-run $*" >> "$D/reviewer.log"
@@ -710,7 +710,7 @@ fi
 jq -c 'map({workflow: .workflowName, path, sha: .headSha, status: "completed", conclusion,
   created_at: .createdAt, started_at: .startedAt, ended_at: .updatedAt})' "$D/runs-$4.json"
 SS
-  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/agentctl-run" "$SCHEDULES_SYNC"
+  chmod +x "$SANDBOX/bin/agentctl-run" "$SCHEDULES_SYNC"
   mkdir -p "$HOME/.agent/outcomes/game"
 }
 
@@ -1018,7 +1018,7 @@ gate_runs_of() {
   drop_sections
   # the second PR's file list kills this one review, as a timeout would; by pid, since the unit
   # tier runs other reviews beside it
-  cat >> "$SANDBOX/bin/gh" <<'GH'
+  cat >> "$NOTES_FIXTURE/gh.script" <<'GH'
 [ "$3" != 'repos/o/r/commits/sha8?per_page=100' ] || kill -TERM "$(cat "$D/pid")"
 GH
   BENCH_NOW=$T0 run bash -c 'echo $$ > "$1"; exec "$2" review' _ "$GHD/pid" "$SUBJECT"
@@ -1313,7 +1313,7 @@ kpi_fixture() {
   run "$SUBJECT" kpi --json
   assert_success
   run jq -c 'with_entries(select(.value.now | not) | .value |= [.["7d"], .["28d"]])' <<<"$output"
-  assert_output '{"sessions":[1,2],"merged_prs":[2,3],"revert_rate":[0.25,0.2],"interrupts_per_day":[0.286,0.071],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"first_pass_share":[null,null],"plan_gate_deny_rate":[0.25,0.5],"canary_runs":[0,0],"canary_pass_rate":[null,null],"canary_cost_per_task":[null,null],"canary_min_per_task":[null,null],"canary_turns_per_task":[null,null],"responses_per_merged_pr":[null,null],"context_per_merged_pr":[null,null],"tool_chars_per_call":[null,null],"locate_read_share":[null,null],"reread_share":[null,null],"cache_write_share":[null,null],"start_share":[null,null],"start_context_median":[null,null],"compactions_per_session":[null,null],"rework_candidate_7d":[null,null],"rework_verified_30d":[null,null],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"pages_held_per_day":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_unclear_pct":[null,null],"judge_critical_live_pct":[null,null],"dispatch_false_defer_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null],"startup_ready_ms_p50":[null,null],"sandboxed_lane_pct":[null,null]}'
+  assert_output '{"sessions":[1,2],"merged_prs":[2,3],"revert_rate":[0.25,0.2],"interrupts_per_day":[0.286,0.071],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"first_pass_share":[null,null],"plan_gate_deny_rate":[0.25,0.5],"canary_runs":[0,0],"canary_pass_rate":[null,null],"canary_cost_per_task":[null,null],"canary_min_per_task":[null,null],"canary_turns_per_task":[null,null],"responses_per_merged_pr":[null,null],"context_per_merged_pr":[null,null],"tool_chars_per_call":[null,null],"locate_read_share":[null,null],"reread_share":[null,null],"cache_write_share":[null,null],"start_share":[null,null],"start_context_median":[null,null],"compactions_per_session":[null,null],"rework_candidate_7d":[null,null],"rework_verified_30d":[null,null],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"pages_held_per_day":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_unclear_pct":[null,null],"judge_critical_live_pct":[null,null],"dispatch_false_defer_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null],"startup_ready_ms_p50":[null,null],"sandboxed_lane_pct":[null,null],"pool_busy_share":[null,null]}'
   run "$SUBJECT" kpi
   assert_line '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
   assert_line '| interrupts_per_day | 0.286 | 0.071 | max 0.2 | past |'
@@ -1583,7 +1583,7 @@ tok_fixture() {
   out_row game '{session_id: "b1", project: "game", updated_epoch: ($t - 2160000), prs_merged: 2, cost_usd: 10}'
   out_row game '{session_id: "a1", project: "game", updated_epoch: ($t - 1296000), prs_merged: 2, cost_usd: 2}'
   GHLOG="$SANDBOX/gh.log"; MERGED=$(date -u -d @$((T0 - 1728000)) +%FT%TZ)
-  printf '#!/usr/bin/env bash\necho "$*" >> %q\n[ "$5" = o/r ] && echo %q\nexit 0\n' "$GHLOG" "$MERGED" > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+  gh_script "$(printf 'echo "$*" >> %q\n[ "$5" = o/r ] && echo %q\nexit 0' "$GHLOG" "$MERGED")"
   run "$SUBJECT" effect 'o/r#7' --days 10 --json
   assert_success
   run jq -c '[.ref, (.kpis[] | select(.kpi == "cost_per_pr") | .verdict)]' <<<"$output"
@@ -2981,8 +2981,7 @@ hold_setup() {
 [ "$1 $3 $4" = "runs --branch main" ] || exit 2
 jq -c 'map({id, event, workflow: .name, path: "shell.yml", status, conclusion, sha: .head_sha, created_at})' "$D/runs"
 SS
-  printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SANDBOX/bin/gh"
-  cat >> "$SANDBOX/bin/gh" <<'GH'
+  { printf 'D=%q\n' "$GHD"; cat <<'GH'
 [ -e "$D/down" ] && exit 1
 case "$*" in
   "run view "*) cat "$D/log.$3" 2>/dev/null ;;
@@ -2991,7 +2990,8 @@ case "$*" in
   *) exit 1 ;;
 esac
 GH
-  chmod +x "$SANDBOX/bin/gh" "$SCHEDULES_SYNC"
+  } | gh_script
+  chmod +x "$SCHEDULES_SYNC"
 }
 
 # ci <id> <conclusion> <sha> <offset>: one run of main, appended
@@ -6999,13 +6999,12 @@ cancel c-old-lane --why canary: superseded by the $week set"
   run grep -c -- --agent "$CQ/add.log"
   assert_output 1
   grep -q 'in any other harness, end the session' "$CQ/add.log"
-  # A lane that spends a Claude account queues at high and another harness's at low: at low the claude
-  # run sat behind every runnable item and never started.
+  # Every lane queues at low, a Claude one too: a canary is a check, never high work (ar-4349).
   run "$SUBJECT" canary queue --harness claude --model haiku --effort max
   assert_success
   assert_equal "$(jq -r .priority "$CQ/canary-greet-$week-codex-sol.json")" low
-  assert_equal "$(jq -r .priority "$CQ/canary-greet-$week.json")" high
-  assert_equal "$(jq -r .priority "$CQ/canary-greet-$week-haiku-ma.json")" high
+  assert_equal "$(jq -r .priority "$CQ/canary-greet-$week.json")" low
+  assert_equal "$(jq -r .priority "$CQ/canary-greet-$week-haiku-ma.json")" low
   # A long id still fits: agent-queue cuts slugs at 40, so the id is shortened, ends in a hash of the
   # whole id, and the lane is kept whole.
   jq '.id = "dispatch-requested-night"' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/long.json"
@@ -7649,6 +7648,29 @@ start_rows() {
   assert_line '| sandboxed_lane_pct | - | - | - | - |'
 }
 
+@test "kpi: pool_busy_share is the busy share of the idle_pool pools over 7d and 28d from Prometheus; no knob reads none" {
+  kpi_setup
+  export BENCH_CLASSES="$SANDBOX/classes.json"
+  echo '{"idle_pool": {"pools": ["unity", "heavy"], "busy_below": 0.5}}' > "$BENCH_CLASSES"
+  stub_prom 'case "$*" in
+  *"[7d:10m]"*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{},\"value\":[1,\"0.21349\"]}]}}" ;;
+  *) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{},\"value\":[1,\"0.5\"]}]}}" ;;
+esac'
+  run "$SUBJECT" kpi --json
+  assert_success
+  run jq -c '.pool_busy_share | [.["7d"], .["28d"]]' <<<"$output"
+  assert_output '[0.213,0.5]'
+  run grep -c 'pool=~"unity|heavy"' "$SANDBOX/curl.log"
+  assert_output 2
+  : > "$SANDBOX/curl.log"
+  echo '{}' > "$BENCH_CLASSES"
+  run "$SUBJECT" kpi --json
+  run jq -c '.pool_busy_share | [.["7d"], .["28d"]]' <<<"$output"
+  assert_output '[null,null]'
+  run grep -c 'cc:pool_busy' "$SANDBOX/curl.log"
+  assert_output 0
+}
+
 @test "kpi: startup_ready_ms_p50 is the median start over 7d and 28d against its threshold" {
   kpi_setup
   export CLAUDE_STARTUP_LOG="$SANDBOX/startup.jsonl"
@@ -7784,7 +7806,8 @@ alert_setup() {
   export TRIAGE_PINS_CMD=pins-stub; echo '{"data":{}}' > "$SANDBOX/pins.json"
   printf '#!/usr/bin/env bash\ncat %q\n' "$SANDBOX/pins.json" > "$SANDBOX/bin/pins-stub"; chmod +x "$SANDBOX/bin/pins-stub"
   watch alertmanager-fleet TRIP -25200 high
-  printf 'TRIP exit 1 (want 0)\nConvergenceDrift deskslim-1\nConvergenceDrift razer-laptop\nHomelabCronJobFailed nas/bark-archive\nTraderRunFailed trader-web walkforward\nfleet=fix firing: ConvergenceDrift deskslim-1; x\n' \
+  # the probe's `page:` line (its trip's level, watch-companion-loop) is not an alert row
+  printf 'TRIP exit 1 (want 0)\nConvergenceDrift deskslim-1\nConvergenceDrift razer-laptop\nHomelabCronJobFailed nas/bark-archive\nTraderRunFailed trader-web walkforward\npage: urgent\nfleet=fix firing: ConvergenceDrift deskslim-1; x\n' \
     > "$TRIAGE_WATCH_STATE/alertmanager-fleet.out"
 }
 

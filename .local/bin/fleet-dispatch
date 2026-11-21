@@ -144,6 +144,7 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 . "${FLEET_HOSTS_LIB:-$HERE/../lib/fleet-hosts.sh}"
 : "${DISPATCH_WORKERS:=$HOME/.config/fleet-dispatch/workers.json}"
 : "${DISPATCH_KINDS:=$HOME/.config/fleet-dispatch/kinds.json}"   # per row type: rank, entry, rung, exit, stages, enabled, off (load_kinds)
+: "${DISPATCH_CLASSES:=$HOME/.config/fleet-dispatch/classes.json}"   # its `idle_pool` knob: the pools whose idle slots rank rows (load_pool_idle)
 : "${DISPATCH_LOADAVG:=/proc/loadavg}"
 : "${DISPATCH_START_WAIT:=120}"   # seconds a start waits for another start of a queue item to claim its own
 : "${DISPATCH_SANDBOX_PROFILE:=}"   # a lane sandbox profile (agent-run docs/contract.md "Lane sandbox") every claude start runs under; empty is off, and a start that cannot hold the profile is refused (lane_sandbox)
@@ -281,7 +282,11 @@ prio_of() {
 }
 
 # The one rank every caller sorts by (the judge's cap, picks, fill --dry-run): a row an open sprint holds
-# (`sprint` 0, row_sprint), then cleanup of an AI system (cleanup_row), then the project's #prio, then the row's feed rank (`frank`, the `rank` of
+# (`sprint` 0, row_sprint), then cleanup of an AI system (cleanup_row), then the project's #prio, then, while
+# any row's repo gates on an idle pool (`pool_idle`, load_pool_idle), the head of the feed rank (frank's
+# millions: due bucket, priority, #requested, notes-cli Rank::key) and then such a row (pool_term, a
+# tie-breaker below every human rank and above age; with no pool idle it orders nothing), then the row's
+# feed rank (`frank`, the `rank` of
 # `notes board --json`: due date, priority, #requested, then oldest, notes-cli src/rank.rs, so the
 # order within a project is the board's own and dispatch derives none of it; a row the feed does not
 # rank goes after every ranked one), then worker order, then its kind (kinds.json `rank`: a bug
@@ -312,6 +317,7 @@ def rank_fields($today; $pprio):
   | . + {why: ([(if .sprint == 0 then "open sprint" else empty end),
                 (if .cleanup == 0 then "cleanup" else empty end),
                 (if $pprio != "" then "\($pprio) project" else empty end),
+                (if (.pool_idle // "") != "" then "idle pool \(.pool_idle)" else empty end),
                 (if .due_in == null or .due_in > 3 then empty elif .due_in < 0 then "\($rel)overdue \(-.due_in)d"
                  elif .due_in == 0 then "\($rel)due today" else "\($rel)due in \(.due_in)d" end),
                 (if .req == 0 then "requested" else empty end),
@@ -322,7 +328,9 @@ def rank_fields($today; $pprio):
                 (if .age > 0 then "\(.age)d old" else empty end)] | join(", "))};
 # area_key: the area picks holds one row to; a gated row has no verdict to name one, so it is its own.
 def area_key: if (.area // "") == "" then "row:\(.key)" else .area end;
-def rank: sort_by((.sprint // 1), (.cleanup // 1), (.pprio // 2), (.frank // 1e15), (.wrank // 0), (.krank // 1), ({"prod": 0, "beta": 1}[.stage] // 2), (.t3rank // []));
+def pool_term($pi): if $pi then [((.frank // 1e15) / 1000000 | floor), (if (.pool_idle // "") != "" then 0 else 1 end)] else [] end;
+def rank: any(.[]; (.pool_idle // "") != "") as $pi
+  | sort_by((.sprint // 1), (.cleanup // 1), (.pprio // 2), pool_term($pi), (.frank // 1e15), (.wrank // 0), (.krank // 1), ({"prod": 0, "beta": 1}[.stage] // 2), (.t3rank // []));
 '
 
 # repo_dir <project> -> the checkout its code lives in; nothing for a notes-only project.
@@ -644,6 +652,42 @@ sprint_rows_ready() {
 # row_sprint <project> <id> -> 0 when an open sprint holds the row (SPRINT_ROW), else 1: a candidate's
 # `sprint`, which RANK_JQ ranks first as `cleanup` ranks a cleanup row, and promote tags the item with.
 row_sprint() { if [ -n "${SPRINT_ROW["$1"$'\t'"$2"]:-}" ]; then echo 0; else echo 1; fi; }
+
+# POOL_IDLE["<repo>"]=<pool>: each repo whose CI gates on an idle pool, read once a pass (its entry point
+# calls load_pool_idle before its subshells, as load_gates) from Prometheus, the source the starved-pool
+# hold and the hub Pools tab read. A pool is idle while cc:pool_busy is under `busy_below` of its
+# cc:pool_slots, for the pools the `idle_pool` knob of classes.json lists; a repo gates on a pool when
+# github_pool_workflow lists a workflow of it there. On 2026-11-21 14 of 15 Unity runners sat idle while
+# fleet projects took 79% of starts. No knob, or no answer, is no idle pool, so the rank term orders nothing.
+declare -gA POOL_IDLE=()
+POOL_IDLE_LOADED=''
+load_pool_idle() {
+  local cfg re below idle wf r p
+  [ -z "$POOL_IDLE_LOADED" ] || return 0
+  POOL_IDLE_LOADED=1
+  cfg=$(jq -ce '.idle_pool | select((.pools | type) == "array" and (.pools | length) > 0 and (.busy_below | type) == "number")' "$DISPATCH_CLASSES" 2>/dev/null) || return 0
+  # shellcheck source=../lib/prom.sh
+  . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom.sh"
+  re=$(prom_label_re "$(jq -c .pools <<<"$cfg")"); below=$(jq -r .busy_below <<<"$cfg")
+  [ -n "$re" ] || return 0
+  # The comparison keeps only the idle pools; one with no slots divides to NaN or +Inf, which it drops.
+  idle=$(PROM_TIMEOUT=5 prom_q "cc:pool_busy{pool=~\"$re\"} / cc:pool_slots{pool=~\"$re\"} < $below") &&
+    wf=$(PROM_TIMEOUT=5 prom_q "count by (pool, repo) (github_pool_workflow{pool=~\"$re\"})") ||
+    { say "idle pool: prometheus did not answer, so no row ranks for an idle pool"; return 0; }
+  while IFS=$'\t' read -r r p; do [ -z "$r" ] || POOL_IDLE[$r]=$p; done < <(jq -rn --argjson i "$idle" --argjson w "$wf" '
+    ($i.data.result | map(.metric.pool)) as $idle
+    | [$w.data.result[] | .metric | select(.repo and .pool and (.pool as $p | $idle | index($p)))]
+    | unique_by(.repo) | .[] | "\(.repo)\t\(.pool)"' 2>/dev/null)
+}
+
+# pool_idle_of <project> -> the idle pool its repo gates on (POOL_IDLE), nothing when none is idle;
+# the entry point ran load_pool_idle in its own shell, so a $(...) of this reads its map.
+pool_idle_of() {
+  local r
+  [ "${#POOL_IDLE[@]}" -gt 0 ] || return 0
+  r=$(item_repo "$1"); [ -n "$r" ] || return 0
+  printf '%s' "${POOL_IDLE[$r]:-}"
+}
 
 # load_focus -- FOCUS_PROJECTS: the projects the human put on `#prio/focus` (`notes projects --prio <p> --set focus`),
 # space-separated, read once per process. Only what stats and headroom report: a focus is a rank (RANK_JQ
@@ -1599,7 +1643,7 @@ judged_keys() {
 # that can hold one (floor_project).
 cmd_candidates() {
   local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today nobody active
-  local x planned dj dsig plan off kind board gates gwait
+  local x planned dj dsig plan off kind board gates gwait pidle
   local -A DET=() PLN=() PAR=() RNK=() GAT=() RLD=()
   today=${DISPATCH_TODAY:-$(date +%F)}
   judged=$(judged_keys)
@@ -1617,6 +1661,7 @@ cmd_candidates() {
       pprio=$(prio_of "$sheet")
       repo=$(repo_dir "$name")
       [ -n "$repo" ] && [ -d "$repo" ] || continue
+      pidle=$(pool_idle_of "$name")
       # suggest marks a project worked on in the last day, so a gap in worker cover shows.
       active=false
       [ "${SUGGEST:-0}" = 1 ] && [ -n "$(git -C "$repo" log -1 --since=24.hours --format=%h 2>/dev/null)" ] && active=true
@@ -1655,7 +1700,7 @@ cmd_candidates() {
             --argjson cleanup "$(cleanup_row "$name" "$text")" --argjson sprint "$(row_sprint "$name" "$key")" --arg nobody "$nobody" --argjson active "$active" \
             --arg kind "$kind" --argjson krank "${KIND_RANK[${kind:-_}]:-1}" --arg klabel "${KIND_LABEL[${kind:-_}]:-}" \
             --arg rsize "$(row_size "$text")" --arg off "$off" --argjson frank "${RNK["$name"$'\t'"$lane"$'\t'"$key"]:-null}" \
-            --arg gates "$gates" --arg gwait "$gwait" --arg rdue "${RLD["$name"$'\t'"$lane"$'\t'"$key"]:-}" \
+            --arg gates "$gates" --arg gwait "$gwait" --arg rdue "${RLD["$name"$'\t'"$lane"$'\t'"$key"]:-}" --arg pidle "$pidle" \
             "$RANK_JQ"'{profile: $profile, project: $project, stage: $stage, lane: $lane, key: $key,
               text: $text, repo: $repo, prio: $prio, priority: $priority, tier: $tier, line: $line,
               worker: $worker, wrank: $wrank, frank: $frank, cleanup: $cleanup, sprint: $sprint, details: $details, dsig: $dsig, planned: ($planned == 1),
@@ -1663,6 +1708,7 @@ cmd_candidates() {
               + (if $plan == 1 then {plan: true} else {} end)
               + (if $off != "" then {off: $off} else {} end)
               + (if $rdue != "" then {release_due: $rdue} else {} end)
+              + (if $pidle != "" then {pool_idle: $pidle} else {} end)
               + (if $gwait != "" then {gate_wait: $gwait} elif $gates != "" and $lane == "agent" then {gated: true, gates: $gates} else {} end)
               + (if $nobody != "" then {nobody: $nobody, active: $active} else {} end) | rank_fields($today; $pprio)'
         done <<<"$board"
@@ -1881,7 +1927,7 @@ cmd_suggest() {
   local profs cands
   profs=$(notes projects --stats --json 2>/dev/null | jq -r '[.[] | select(.automation != false) | .profile] | unique | join(" ")' 2>/dev/null)
   [ -n "$profs" ] || profs=$DISPATCH_PROFILES
-  load_gates
+  load_gates; load_pool_idle
   cands=$(SUGGEST=1 DISPATCH_PROFILES="$profs" VERDICTS=/dev/null cmd_candidates)
   [ -n "$cands" ] || { [ "${1:-}" = --json ] || echo "suggest: no open agent row"; return 0; }
   jq -sc --arg sig "$(policy_sig)" --argjson prules "$(policy_rules)" --slurpfile v <(latest_verdicts) \
@@ -6477,12 +6523,17 @@ cmd_reap() {
       continue
     fi
     [ -n "$sess" ] || continue
-    [ -n "$seen" ] || { waits=$(waiting_sessions) && seen=1 || seen=unreadable; }
-    [ "$seen" = 1 ] || continue
-    # By the item's own Claude when it records one (claude_gone's rule), else by its tmux session.
     want=running
-    if [ -n "$sids" ] && panel_lists "$agent"; then grep -qxF -f <(printf 'sid:%s\n' $sids) <<<"$waits" && want=waiting
-    else grep -qxF -e "$server/$sess" -e "$sess" <<<"$waits" && want=waiting; fi
+    # A headless harness's run never waits on the human: it asks by requeueing its item (no_human). Its
+    # tmux name is a recycled lane, so a pending ask a past session filed there would read as this item's
+    # and hold its replay open for hours (ar-4406: two agy replays, 6 and 9 hours).
+    if ! headless "$agent"; then
+      [ -n "$seen" ] || { waits=$(waiting_sessions) && seen=1 || seen=unreadable; }
+      [ "$seen" = 1 ] || continue
+      # By the item's own Claude when it records one (claude_gone's rule), else by its tmux session.
+      if [ -n "$sids" ] && panel_lists "$agent"; then grep -qxF -f <(printf 'sid:%s\n' $sids) <<<"$waits" && want=waiting
+      else grep -qxF -e "$server/$sess" -e "$sess" <<<"$waits" && want=waiting; fi
+    fi
     # Parked on its PR and not asking the human: the session is idle at its PR, not working. One
     # that left review/ to ask the human goes back there once answered (its review: stamp says so).
     [ "$want:$state" != running:review ] || continue
@@ -7186,7 +7237,7 @@ row_task() {
 # (floor_row). A full fleet share
 # (share_full) leaves the fleet's rows out, the cleanup lane's too.
 fill_day() {
-  local picked c tags CLEANUP_ONLY=${CLEANUP_ONLY:-} REQUESTED_ONLY=${REQUESTED_ONLY:-}
+  local picked c tags pl CLEANUP_ONLY=${CLEANUP_ONLY:-} REQUESTED_ONLY=${REQUESTED_ONLY:-}
   [[ " ${2:-} " != *" cleanup "* ]] || CLEANUP_ONLY=1
   [[ " ${2:-} " != *" requested "* ]] || REQUESTED_ONLY=1
   local GATED_ONLY=${GATED_ONLY:-} SPRINT_ONLY=${SPRINT_ONLY:-}
@@ -7194,6 +7245,7 @@ fill_day() {
   [[ " ${2:-} " != *" sprint "* ]] || SPRINT_ONLY=1
   FILLED=0
   # Committed rows alone want no judge: a gated row is never judged (unjudged_rows).
+  load_pool_idle   # once, before the judge's and the picks' subshells
   [ "${2:-}" = gated ] || judge_once || return 1
   picked=$(day_picks 999)
   # While the fleet share is full, the fill passes over fleet rows but interrupts (share_held), the cleanup
@@ -7222,6 +7274,9 @@ fill_day() {
     if [ "$DRY" = 1 ]; then echo "would queue: $(jq -r '"\(.project) (\(.stage)) \(.lane), \(.worker), \(.area), \(.priority): \(.key) [\(.why // "")]"' <<<"$c")"
     else
       tags=$(jq -r '[if .cleanup == 0 then "cleanup" else empty end, if .tier then "tier\(.tier)" else empty end] | join(" ")' <<<"$c")
+      # The idle-pool rank term, logged per pick so its effect can be counted against pool_busy_share.
+      pl=$(jq -r 'select((.pool_idle // "") != "") | "rank term idle pool \(.pool_idle): \(.project) \(.lane) row \(.key)"' <<<"$c")
+      [ -z "$pl" ] || logline "$pl"
       promote "$c" "$tags" "$(row_task "$c")"
     fi
   done <<<"$picked"
@@ -7542,7 +7597,7 @@ cmd_fill() {
     case "$1" in --dry-run) dry=1 ;; --json) json=1 ;; *) say "fill: unknown argument: $1"; return 2 ;; esac
     shift
   done
-  load_gates   # once, so each subshell of the fill reads the same gates
+  load_gates; load_pool_idle   # once, so each subshell of the fill reads the same gates and pools
   if [ "$dry" = 0 ]; then
     DRY=0; mkdir -p "$DIR"; exec 9>"$DIR/.lock"
     flock -n 9 || { say "fill: another pass is running"; return 0; }
@@ -7569,7 +7624,7 @@ cmd_fill() {
 # A row with a gate not yet clear is left out, as a #plan row is, and one whose gates all cleared is
 # `gated` (cmd_candidates); none when the gates could not be read (GATES_FAILED).
 t3_rows() {
-  local judged="$1" name sheet stage repo key text body t line n x planned dj dsig board gates
+  local judged="$1" name sheet stage repo key text body t line n x planned dj dsig board gates pidle
   local -A DET=() PLN=() PAR=() RNK=() GAT=() RLD=()
   load_extras
   [ -z "${GATES_FAILED:-}" ] || return 0
@@ -7581,6 +7636,7 @@ t3_rows() {
     dispatchable "$stage" || continue
     repo=$(repo_dir "$name")
     [ -n "$repo" ] && [ -d "$repo" ] || continue
+    pidle=$(pool_idle_of "$name")
     n=0
     board=$(rows "$DISPATCH_T3_PROFILE" "$name" agent)
     row_kinds_load <<<"$board"
@@ -7608,12 +7664,13 @@ t3_rows() {
         --arg priority "$(row_priority "$text" "$name")" --argjson order "$n" --arg obs "$DISPATCH_T3_OBSERVER" \
         --arg profile "$DISPATCH_T3_PROFILE" --arg rsize "$(row_size "$text")" --arg pprio "$(prio_of "$sheet")" \
         --argjson cleanup "$(cleanup_row "$name" "$text")" --argjson frank "${RNK["$name"$'\t'agent$'\t'"$key"]:-null}" \
-        --argjson sprint "$(row_sprint "$name" "$key")" --arg gates "$gates" \
+        --argjson sprint "$(row_sprint "$name" "$key")" --arg gates "$gates" --arg pidle "$pidle" \
         '{profile: $profile, project: $project, stage: $stage, lane: "agent", key: $key,
           text: $text, repo: $repo, prio: $prio, priority: $priority, tier: 3, line: $line, order: $order, wrank: 0, frank: $frank, row_size: $rsize,
           cleanup: $cleanup, sprint: $sprint, project_prio: $pprio,
           details: $details, dsig: $dsig, planned: ($planned == 1),
           rank: (if ($body | test("(^| )#requested( |$)")) then -1 elif ($body | test($obs; "i")) then 0 else 1 end)}
+          + (if $pidle != "" then {pool_idle: $pidle} else {} end)
           + (if $gates != "" then {gated: true, gates: $gates} else {} end)'
     done <<<"$board"
   done
@@ -7698,7 +7755,7 @@ main() {
       # read every board a second time beside the one running.
       [ "$DRY" = 1 ] || ! flock -n 9 2>/dev/null || candidates_write || true
       return "$rc" ;;
-    candidates) cmd_candidates ;;
+    candidates) load_pool_idle; cmd_candidates ;;
     suggest) shift; if [ "${1:-}" = --write ]; then candidates_write; else cmd_suggest "$@"; fi ;;
     fill) shift; cmd_fill "$@" ;;
     promote) shift; PULL=$(start_pull) cmd_promote "$@" ;;

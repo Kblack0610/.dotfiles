@@ -108,8 +108,15 @@ function tblBar(id, t, hint, tiles = "", days = "") {
 // The header row. `labels` maps a column key to [text, class, named]; a column it leaves out is not
 // drawn, and a named one is worded with its label on a phone row ("pass 84%"). A second table on a
 // tab sorts apart from the first through its block's data-tbl (tblOf), not through these buttons.
-function tblHead(t, labels) {
+// `fixed` is the head of a list that has no view to change (a project page's In flight): plain
+// labels, no sort button and no filter row.
+function tblHead(t, labels, fixed = false) {
   const cols = t.columns.filter((c) => labels[c.key]);
+  const th = (c, extra, inner) => {
+    const [label, cls, named] = labels[c.key];
+    return `<th${cls ? ` class="${cls}"` : ""}${extra} data-role="${c.role || ""}" data-label="${esc(label)}"${named ? " data-named" : ""}>${inner(label)}</th>`;
+  };
+  if (fixed) return "<tr>" + cols.map((c) => th(c, "", esc)).join("") + "</tr>";
   const facet = new Map((t.facets || []).map((f) => [f.key, f]));
   const mine = cols.filter((c) => facet.has(c.key));
   if (t.facets) tblDrawn.set(t.facets, new Set(mine.map((c) => c.key)));
@@ -118,10 +125,9 @@ function tblHead(t, labels) {
   const filters = mine.length ? `<tr class="tfilters" data-phone="filters">` +
     cols.map((c) => (facet.has(c.key) ? `<th>${tblFacet(facet.get(c.key), t.q)}</th>` : `<td></td>`)).join("") + "</tr>" : "";
   return "<tr>" + cols.map((c) => {
-    const [label, cls, named] = labels[c.key];
     const aria = c.sort ? ` aria-sort="${c.sort === "asc" ? "ascending" : "descending"}"` : "";
     const mark = c.sort ? (c.sort === "asc" ? " ^" : " v") : "";
-    return `<th${cls ? ` class="${cls}"` : ""}${aria} data-role="${c.role || ""}" data-label="${esc(label)}"${named ? " data-named" : ""}><button class="thsort" data-tsort="${esc(c.next_sort)}" data-tdir="${c.next_dir}" title="sort by ${esc(label)}">${esc(label)}${mark}</button></th>`;
+    return th(c, aria, (label) => `<button class="thsort" data-tsort="${esc(c.next_sort)}" data-tdir="${c.next_dir}" title="sort by ${esc(label)}">${esc(label)}${mark}</button>`);
   }).join("") + "</tr>" + filters;
 }
 

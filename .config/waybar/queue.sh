@@ -10,7 +10,8 @@
 # "Up next" block between Queue and Dispatch names the first 3 rows a pass pulls (key, project,
 # title): the lease holder's fleet_dispatch_next.prom, written by `fleet-dispatch` after each
 # pass (next_prom) as labels, since the feed holds numbers only. Absent until that file is fresh.
-# Everything is read from Prometheus (summary/dispatch from `fleet-dispatch stats`, the
+# Everything is read from Prometheus (summary/dispatch from `fleet-dispatch stats`, summary/cards
+# from `hub cards --json --figures` for the two bar totals, the
 # fleet_dispatch runner, the queue-starved watch, summary/shepherd), live topics only
 # (cc:agents_topic_live), so the laptop thin client reads the same. Prometheus unreadable reads ?
 # in amber, and no dispatch numbers read -, never a quiet nothing.
@@ -54,7 +55,7 @@ now="${DISPATCH_NOW:-$(date +%s)}"
 head="<b>Queue:</b>"
 # The accounts' room verdicts (claude-acct textfile) ride the same query, only from a textfile
 # written lately: they name which account refuses and why when the account gate holds dispatch.
-q='({__name__=~"mqtt_.+", topic=~"agents_.+_(summary_dispatch|runner_fleet_dispatch|watch_queue_starved|summary_shepherd)"} and on (topic) cc:agents_topic_live)'
+q='({__name__=~"mqtt_.+", topic=~"agents_.+_(summary_dispatch|summary_cards|runner_fleet_dispatch|watch_queue_starved|summary_shepherd)"} and on (topic) cc:agents_topic_live)'
 q+=" or (claude_account_room_reason and on (instance) (time() - node_textfile_mtime_seconds{file=~\".*/claude_acct.prom\"} < $ROOM_LATE_SECS))"
 # Up next: the lease holder's fleet_dispatch_next.prom (fleet-dispatch next_prom), labels only, read
 # from the one host that wrote it last (bottomk: after a lease move the old holder's file lingers),
@@ -73,7 +74,7 @@ fi
 # the old max over hosts showed it (ar-4306), so src.host names the source and src.stale each
 # other host still sending summary/dispatch.
 # Every value is a count, a 0/1 or an epoch, so it is floored: Prometheus may write 1 as 1.0.
-v="$(jq -c '{summary_dispatch: "dispatch", summary_shepherd: "shepherd", runner_fleet_dispatch: "runner",
+v="$(jq -c '{summary_dispatch: "dispatch", summary_cards: "cards", summary_shepherd: "shepherd", runner_fleet_dispatch: "runner",
       watch_queue_starved: "watch"} as $kind
     | [.data.result[] | select(.metric.topic) | (.metric.topic | capture("^agents_(?<h>.+)_(?<t>"
         + ($kind | keys | join("|")) + ")$")) as $c
@@ -87,6 +88,8 @@ v="$(jq -c '{summary_dispatch: "dispatch", summary_shepherd: "shepherd", runner_
 get() { jq -r --arg k "$1" '.[$k] // empty' <<< "$v"; }
 d() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:--}"; }
 n0() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:-0}"; }
+# cf <figure>: a hub-core card figure (`hub cards --json --figures`, sent as summary/cards), - when absent.
+cf() { local x; x="$(get "cards.figures_$1")"; printf '%s' "${x:--}"; }
 
 # flag <level> <what> <do key>: an exception. It raises the chip to its level; the worst one is the
 # head line, the rest follow it, each with what to do.
@@ -182,7 +185,7 @@ else
   [ -z "$high_s" ] || rest+=", high $(prom_dur "$high_s")"
   row "  oldest" "$(prom_dur "$oldest")" "$rest"
   row "  running" "$(d running)" "on a PR $(d review), waiting on you $(d waiting)"
-  row "D shipped" "$(d shipped_today)" "merged today; $(d checks_today) checks closed with no merge"
+  row "D shipped" "$(cf projects_shipped_today)" "merged today; $(cf projects_checks_closed) checks closed with no merge"
   # flow <h>: done (finished and not failed) in the last h hours, then started and failed; failed is amber.
   flow() {
     local dn fl
@@ -294,10 +297,11 @@ if [ -n "$pass" ]; then
 fi
 
 # The bar: two totals behind their labels, and only Q takes the chip's level colour; a number the
-# feed lacks reads -.
-qn="${ready:--}"
+# feed lacks reads -. Both are hub-core's own figures (`hub cards --json --figures`, sent as
+# summary/cards): Q the queue card's On deck part, D the projects card's shipped today.
+qn="$(cf queue_on_deck)"
 ((level > 0)) && qn="$(paint "${LEVEL_COLOUR[$level]}" "$qn")"
 lc="$(label_colour)"
-text="$(paint "$lc" Q:)$qn  $(paint "$lc" D:)$(d shipped_today)"
+text="$(paint "$lc" Q:)$qn  $(paint "$lc" D:)$(cf projects_shipped_today)"
 
 emit "$text" "$tip" "${LEVEL_CLASS[$level]}"
