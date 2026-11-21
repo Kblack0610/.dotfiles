@@ -132,7 +132,7 @@ Adding a field does not bump `schema`. Readers ignore fields they do not know.
 | --- | --- |
 | `agent-mqtt-publish` | `bucket` per session (joined to agent-panel's live list by `target`), `generated_at`, and `counts` for the bucket names, so `buckets` publishes an empty one as 0 |
 | `fleet-bench sample` | Writes the document itself and records the same rows as progress lines |
-| `session-preflight.sh` (SessionStart, "Open sessions in this checkout") | `generated_epoch` (over 10 minutes old shows nothing), `vocab` (`finished` left out, `buckets` orders the rows), and per session `session_id`, `cwd`, `host`, `bucket`, `idle_min`, `topic` |
+| `session-preflight.sh` (SessionStart, the "N other session(s) open in this checkout" line) | `generated_epoch` (over 10 minutes old shows nothing), `vocab` (`finished` left out, `buckets` orders the rows), and per session `session_id`, `cwd`, `host`, `bucket`, `idle_min`, `topic` |
 | `hub` and agent-web Sessions tab | The whole document (`vocab` orders the rows and colours the lanes, `project` names each row), plus `~/.agent/shepherd/watch.log` for the change feed |
 | agent-panel `rows --sort` (the Stage key), the phone widget (`in_progress` for its ETAs) | `vocab` |
 | `fleet-shepherd due` (the overdue lines), hub Home Running (the Overdue chip and its ETA cell), agent-web `etaText` (every ETA it draws), the phone's agents line (`N overdue`) | `overdue` per session; `unreadable` naming `fleet-bench eta` or `overdue verdicts` |
