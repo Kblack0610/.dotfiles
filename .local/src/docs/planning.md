@@ -10,6 +10,7 @@ Backticked labels in `Must answer` are required in that section. In `Applies`, `
 
 | Section | Applies | Must answer | Why it earns a place |
 | --- | --- | --- | --- |
+| `## Changes` | base | What the plan changes, read first: `Adds:` and `Removes:` one line per file or kind with an approximate size, `Files:` the board rows, queue items, alerts and epics it files, `Net:` the size in one line. Approximate: the exact diff lives in the PR | 11-21: a retire-the-band-aids plan read as more work because the 10 rows it filed sat in step 4 |
 | `## Context` | base | The ask restated, and what done looks like. A number only for capacity or performance work | Intent misreads: on 10-31 "full build" meant a release |
 | `## Approach` | base | What we will do, the claims it rests on checked at HEAD, and a `Rejected:` line for the alternatives | Unverified premises: an 11-03 audit read a checkout 6 commits behind |
 | `## Reviewed` | base | `Existing:` every reader, writer and pre-existing instance affected, and every other mechanism that already does this job: fold it, or say why it stays. `Overlap:` open rows, plans and PRs checked. `Standards:` docs read, as paths on that line. A plan with `## Phases` adds a Best practice line | 04-30: 4 of 6 PRs were redundant. 10-30: old saves had no migration. 11-07: queue_rank shipped beside #prio for the same job |

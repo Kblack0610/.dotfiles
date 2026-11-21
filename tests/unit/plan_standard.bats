@@ -28,6 +28,13 @@ base() {
   cat <<EOF
 # A plan
 
+## Changes
+
+Adds: one doc row.
+Removes: nothing.
+Files: no rows.
+Net: +1 row.
+
 ## Context
 
 The ask, and what done looks like.
@@ -112,6 +119,13 @@ prompt() { # prompt <project> <mode>
   refute_output --partial 'Telemetry'
   run gate agame "$(base; printf '\n## Playtest\n\nWhich game, and how.\n\n## Release\n\nSteam beta, rollback to the previous BuildID.\n')"
   assert_output ''
+}
+
+@test "every plan opens with a Changes ledger: no section or a missing label is denied" {
+  run gate untyped "$(base | sed '/^## Changes$/,/^Net:/d')"
+  assert_output --partial 'Missing ## Changes'
+  run gate untyped "$(base | sed '/^Files:/d')"
+  assert_output --partial '## Changes has no Files: line'
 }
 
 @test "n/a with a reason passes" {
