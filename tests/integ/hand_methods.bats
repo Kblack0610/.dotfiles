@@ -66,6 +66,50 @@ allowed() { assert_success; assert_output ""; }
   allowed
 }
 
+@test "gh run rerun and gh api .../rerun are denied unless the command names the infra fault" {
+  run run_guard 'gh run rerun 1 --failed'
+  denied
+  assert_output --partial 'fix-ci'
+  assert_output --partial '# infra: <fault>'
+  run run_guard 'gh api -X POST repos/o/r/actions/runs/1/rerun-failed-jobs'
+  denied
+  run run_guard 'gh api -X POST repos/o/r/actions/jobs/2/rerun'
+  denied
+  run run_guard 'cd x && gh run rerun 1'
+  denied
+  # a quoted endpoint, a query string and a path-qualified gh do not slip past
+  run run_guard 'gh api -X POST "repos/$R/actions/runs/$ID/rerun-failed-jobs"'
+  denied
+  run run_guard "gh api 'repos/o/r/actions/runs/1/rerun' --method POST"
+  denied
+  run run_guard 'gh api -X POST repos/o/r/actions/runs/1/rerun?x=1'
+  denied
+  run run_guard '/usr/bin/gh run rerun 1'
+  denied
+  # a bare marker with no fault, and a marker inside quotes, are not a named fault
+  run run_guard 'gh run rerun 1 --failed  # infra:'
+  denied
+  run run_guard "echo '# infra: runner lost'; gh run rerun 1"
+  denied
+}
+
+@test "a rerun that names its infra fault, and gh run view or a quoted mention, are allowed" {
+  run run_guard 'gh run rerun 1 --failed  # infra: runner lost'
+  allowed
+  run run_guard 'gh api -X POST repos/o/r/actions/runs/1/rerun-failed-jobs # infra: registry 503'
+  allowed
+  run run_guard 'gh run view 1 --log-failed | tail -n 40'
+  allowed
+  run run_guard 'gh api repos/o/r/actions/runs/1'
+  allowed
+  run run_guard 'gh api repos/o/r/contents/rerun'
+  allowed
+  run run_guard 'gh api -X POST repos/o/r/issues/1/comments -f body="rerun"'
+  allowed
+  run run_guard 'git commit -m "no blind gh run rerun"'
+  allowed
+}
+
 @test "a substitution inside single quotes is literal; one inside double quotes runs" {
   run run_guard "git commit -m 'drop \`gh run watch\` and \$(gh run watch)'"
   allowed
