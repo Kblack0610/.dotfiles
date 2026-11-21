@@ -1533,8 +1533,9 @@ reopen_session() {
 # REOPEN_RESUME: the `resume` reopen-on-answer sets; ask-resume runs it as `agent-ask reopen <id>`.
 REOPEN_RESUME='run: agent-ask reopen'
 
-# cmd_reopen_on_answer <id>: a session closing over its own pending ask (the close step "only its own
-# ask is open") has the answer reopen it, so the answer carries on without the window. Refuses an
+# cmd_reopen_on_answer <id>: a session closing over its own pending ask has the answer reopen it, so
+# the answer carries on without the window; the teardown (wind-down.sh fire) and fleet-shepherd's
+# close run it for each of the closing session's pending asks. Refuses an
 # ask that is not pending, has no session, or already resumes some other way.
 cmd_reopen_on_answer() {
   local id="${1:-}"; [ -n "$id" ] || { echo "usage: agent-ask reopen-on-answer <id>" >&2; return 2; }

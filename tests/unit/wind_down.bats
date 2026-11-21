@@ -500,6 +500,24 @@ EOF
   assert_output 'resume: run: elsewhere'
   run grep 'run-shell' "$NOTES_FIXTURE/calls.log"
   assert_output --partial "window '@7'"
+  run grep 'fire: ask own not set to reopen: agent-ask: own already resumes with: run: elsewhere' "$SPIN_DIR/fire.log"
+  assert_success
+}
+
+@test "fire sets no ask to reopen for a malformed session id" {
+  mkdir -p "$HOME/.agent/asks/demo"
+  printf 'id: mine\nstatus: pending\nclaude_session: not-a-sid\n' > "$HOME/.agent/asks/demo/mine.md"
+  mk_sentinel <<'EOF'
+scope=window
+target=@7
+session=cockpit
+sid=not-a-sid
+EOF
+  printf '@7\n' > "$NOTES_FIXTURE/tmux.window_ids"
+  run bash "$WIND_DOWN" fire "$SENTINEL"
+  assert_success
+  run grep -E '^(resume|reopen):' "$HOME/.agent/asks/demo/mine.md"
+  assert_failure
 }
 
 # -- disarm (the UserPromptSubmit hook) --

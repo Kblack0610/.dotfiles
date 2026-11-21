@@ -248,12 +248,15 @@ cmd_fire() {
 
   # Each pending ask this session posted or joined is set to reopen it on the answer, so the answer
   # carries on without the window: a `/wind-down` the human typed skips the skill's close check, where
-  # the model ran this. agent-ask refuses an ask that already resumes some other way, and a refusal
-  # never holds the close. Asks are read where agent-ask keeps them, <root>/<project>/<id>.md.
+  # the model ran this. agent-ask refuses an ask that already resumes some other way; a refusal goes
+  # to fire.log and never holds the close (fleet-shepherd's close sets them first and keeps a window
+  # whose asks it cannot set). Set before the kill is scheduled, so the kill cannot cut a write short.
+  # Asks are read where agent-ask keeps them, <root>/<project>/<id>.md.
   if is_session_id "$sid"; then
-    local af
+    local af err
     while IFS= read -r af; do
-      CLAUDE_CODE_SESSION_ID="$sid" "$SCRIPT_DIR/../../bin/agent-ask" reopen-on-answer "$(basename "$af" .md)" >/dev/null 2>&1 || true
+      err="$(CLAUDE_CODE_SESSION_ID="$sid" "$SCRIPT_DIR/../../bin/agent-ask" reopen-on-answer "$(basename "$af" .md)" 2>&1 >/dev/null)" ||
+        printf '[%s] fire: ask %s not set to reopen: %s\n' "$(date '+%F %T' 2>/dev/null)" "$(basename "$af" .md)" "${err##*$'\n'}" >> "$logf" 2>/dev/null || true
     done < <(grep -lxF "claude_session: $sid" "${AGENT_ASK_ROOT:-$HOME/.agent/asks}"/*/*.md 2>/dev/null |
       xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null)
   fi
