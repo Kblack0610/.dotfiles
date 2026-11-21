@@ -1736,7 +1736,7 @@ headless_launches() {
 # names (the first backticked word of its File cell), sorted; exit 2 with no such table.
 launch_rows() {
   [ -r "$LEDGER_PIPELINES" ] || { say "no launch table: cannot read $LEDGER_PIPELINES"; return 2; }
-  awk '/^## /{ on = ($0 == "## Model calls outside agentctl-run"); found = found || on; next }
+  awk '/^## /{ on = (index($0, "## Model calls outside agentctl-run") == 1); found = found || on; next }
     on && /^\| `/ { split($0, c, "`"); print c[2] }
     END { exit !found }' "$LEDGER_PIPELINES" | sort -u
   [ "${PIPESTATUS[0]}" = 0 ] \
