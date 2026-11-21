@@ -177,7 +177,7 @@ due() { # $1=due $2=backlog $3=bump: the project's `release` facts in `projects 
 
 @test "a game with no tag of its own is cut by the sheet cadence, like an app" {
   # ar-3450: a game's builds carry only per-build tags, and skipping it left three focus games
-  # uncut for weeks. Its first <game>-vX.Y.Z tag later takes the sheet's open version.
+  # uncut for weeks. A game that still carries its own `Version:` line is still cut this way.
   due true false patch
   for TYPE in game app; do
     hooks ''
@@ -280,4 +280,21 @@ tags_since() { # $1=sheet version, $2=newest tag, $3..=tags since RELEASE_NOTES_
   assert_output 1
   run cat "$OUTCOME"
   assert_output STALLED
+}
+
+@test "a game notes versions by its parent is never rolled, and the pass line names it" {
+  # ar-4161: a game's version is the playground version it was cut in. notes reports the parent
+  # as `version_parent` in --stats --json once the game's sheet drops its own Version: line.
+  due true false patch
+  jq '.[0].version_parent = "pg"' "$NOTES_FIXTURE/stats.json" > "$NOTES_FIXTURE/stats.t" && mv "$NOTES_FIXTURE/stats.t" "$NOTES_FIXTURE/stats.json"
+  run "$WAVE_ROLL" --dry-run demoapp
+  assert_output --partial "skip demoapp: its version is pg's"
+  refute_output --partial 'would roll'
+  run "$WAVE_ROLL" demoapp
+  assert_success
+  grep -q 'versioned by their parent, not rolled: demoapp' "$AGENTCTL_STATE_DIR/wave-roll/activity.log"
+  # NEGATIVE CONTROL: with no version_parent (the game keeps its own Version: line) it is cut like an app.
+  due true false patch
+  run "$WAVE_ROLL" --dry-run demoapp
+  assert_output --partial 'would roll personal/demoapp: v1.0.0 -> v1.0.1 (cadence 7d, patch'
 }

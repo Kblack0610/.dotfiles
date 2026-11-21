@@ -1,7 +1,6 @@
 #!/usr/bin/env bats
-# 86-focus-reconcile.sh: the end-of-turn half of the Focus loop. The preflight surfaces
-# today's `## Focus` at turn 1; this blocks once per session when a turn changed code but
-# never told the cockpit about it.
+# 86-focus-reconcile.sh: blocks once per session when a turn changed code but never told the
+# queue or the board about it. Today's `## Focus` is the human's list and stays out of it.
 #
 # The contract under test is "when does it block", and every quiet path matters as much as
 # the loud one -- a gate that fires on idle turns would be trained away within a day.
@@ -16,10 +15,9 @@ setup() {
 
   GATE="$REPO_ROOT/.claude/hooks/stop-post.d/86-focus-reconcile.sh"
 
-  # The gate sources these from the sandboxed HOME, exactly as it does on a real machine.
+  # The gate sources this from the sandboxed HOME, exactly as it does on a real machine.
   mkdir -p "$HOME/.config/shared-hooks" "$HOME/.local/state/notes"
-  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
-     "$REPO_ROOT/.config/shared-hooks/project-name.sh" "$HOME/.config/shared-hooks/"
+  cp "$REPO_ROOT/.config/shared-hooks/project-name.sh" "$HOME/.config/shared-hooks/"
 
   NOTE="$HOME/.notes/journal/daily/$(date +%F).md"
   NOTES_LOG="$HOME/.local/state/notes/journal.log"
@@ -214,17 +212,15 @@ refute_blocks()  { [[ "$1" != *'"block"'* ]] || { echo "unexpected block: $1" >&
 
 # ── the message ──────────────────────────────────────────────────────────────
 
-@test "the block reason names the three verbs and lists what is open" {
+@test "the block reason names the queue item and never the human's Focus list" {
   focus '- [ ] first open (2d)' '- [ ] second open (5d)'
   dirty
   local reason
   reason="$(gate s1 | jq -r '.reason')"
-  assert [ -n "$reason" ]
-  [[ "$reason" == *'notes focus start'* ]]
-  [[ "$reason" == *'notes focus add'* ]]
-  [[ "$reason" == *'notes focus done'* ]]
-  [[ "$reason" == *'first open (2d)'* ]]
-  [[ "$reason" == *'second open (5d)'* ]]
+  [[ "$reason" == *'agent-queue add --running'* ]]
+  [[ "$reason" != *'first open'* ]]
+  [[ "$reason" != *'notes focus'* ]]
+  [[ "$reason" != *'say what you reconciled'* ]]
 }
 
 @test "the block reason is valid JSON on stdout, and the hook still exits 0" {
@@ -232,14 +228,6 @@ refute_blocks()  { [[ "$1" != *'"block"'* ]] || { echo "unexpected block: $1" >&
   run bash -c "printf '{\"session_id\":\"s1\",\"stop_hook_active\":false}' | bash '$GATE'"
   assert_success                            # exit 2 would hand Claude the coordinator's stderr instead
   echo "$output" | jq -e '.decision == "block"' >/dev/null
-}
-
-@test "it copes with a day that has no open items at all" {
-  focus ''
-  dirty
-  local reason
-  reason="$(gate s1 | jq -r '.reason')"
-  [[ "$reason" == *'nothing open today'* ]]
 }
 
 # ── session mode: what THIS session did, read from its transcript ─────────────

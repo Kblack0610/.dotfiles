@@ -1180,10 +1180,13 @@ judge_conf() {
 # delay_rows: the live cells as `<type> <level> <minutes>`, one per line; the one reader of
 # DELAY_RULES (space or comma separated). A hard stop (JUDGE_HARD_STOPS), a row that is not
 # `<type>@<level>=<minutes>`, a level the judge may not answer at (critical, or none of
-# JUDGE_LEVELS) and a second row for one type are refused, never read as 0, and a demoted cell
-# (`<type>@<level>` in the demote list) is left out.
+# JUDGE_LEVELS) and a second row for one type that does not reach a higher level than its
+# first are refused, never read as 0, and a demoted cell (`<type>@<level>` in the demote list)
+# is left out. A type may carry one row per level band, lowest first: `t@repo=0 t@fleet=240`
+# answers self and repo at post and waits 240 minutes at fleet, so a wider reach waits longer.
 delay_rows() {
-  local row type level wait demoted l seen=" "
+  local row type level wait demoted l i top rank
+  local -A ceil=()
   demoted=" $(cut -f1 "$AGENT_ASK_DEMOTED" 2>/dev/null | tr '\n' ' ') "
   for row in $(tr ',' ' ' <<<"$(judge_conf DELAY_RULES "")"); do
     type="${row%%[@=]*}"
@@ -1197,9 +1200,14 @@ delay_rows() {
       *" $level "*) ;;
       *) echo "agent-ask: DELAY_RULES refuses '$row': the judge answers at ${JUDGE_LEVELS% critical}, never $level" >&2; continue ;;
     esac
-    case "$seen" in *" $type "*) echo "agent-ask: DELAY_RULES refuses '$row': $type has one row" >&2; continue ;; esac
-    seen+="$type "
+    rank=0; i=0
+    for l in $JUDGE_LEVELS; do i=$((i + 1)); [ "$l" = "$level" ] && rank=$i; done
+    [ "$rank" -gt "${ceil[$type]:-0}" ] ||
+      { echo "agent-ask: DELAY_RULES refuses '$row': $type has a row at $level or above already (rows for one type go up the levels)" >&2; continue; }
+    top="${ceil[$type]:-0}"; ceil[$type]="$rank"; i=0
     for l in $JUDGE_LEVELS; do
+      i=$((i + 1))
+      [ "$i" -le "$top" ] && continue
       case "$demoted" in *" $type@$l "*) ;; *) printf '%s %s %d\n' "$type" "$l" "$((10#$wait))" ;; esac
       [ "$l" = "$level" ] && break
     done

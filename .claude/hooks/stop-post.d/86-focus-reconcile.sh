@@ -1,8 +1,8 @@
 #!/bin/bash
-# Stop-post: close the Focus loop. Today's `## Focus` is the human's list (turn 1 does not carry it);
-# this checks, at the end of a turn that actually changed something, that the work got
-# tracked. Without it the turn-1 nudge is advisory and silently rots — you finish a
-# session having shipped three things the cockpit never heard about.
+# Stop-post: at the end of a turn that actually changed something, check that the work got
+# tracked on the queue or the board. Without it a session finishes having shipped three things
+# the cockpit never heard about. Today's `## Focus` is the human's list, so the block never
+# shows or asks for it.
 #
 # Fires only when ALL of these hold:
 #   1. the session did real work — an Edit/Write tool call (not to a harness plan file), or a
@@ -80,9 +80,6 @@ command -v jq >/dev/null 2>&1 || exit 0
 
 # The gate only makes sense where the cockpit exists.
 command -v notes >/dev/null 2>&1 || exit 0
-[ -r "$HOME/.config/shared-hooks/focus-lib.sh" ] || exit 0
-# shellcheck source=/dev/null
-. "$HOME/.config/shared-hooks/focus-lib.sh"
 # shellcheck source=/dev/null
 . "$HOME/.config/shared-hooks/project-name.sh"
 
@@ -244,11 +241,6 @@ elif [ -n "$SESSION_ID" ] && [ "$SESSION_ID" = "$BLOCKED_SESSION" ]; then
 fi
 
 # --- block ---
-DAILY_NOTE=$(focus_daily_note)
-FOCUS_BODY=$(focus_body "$DAILY_NOTE")
-OPEN_LIST=$(printf '%s\n' "$FOCUS_BODY" | focus_items ' ' | awk 'NR<=5' | sed 's/^- /  - /')
-[ -n "$OPEN_LIST" ] || OPEN_LIST="  (nothing open today - run \`notes today\` first)"
-
 if [ "$PR_WORK" -eq 1 ]; then
   REASON="focus-gate: this session opened or merged a PR, and no queue item records it. Every PR is a unit of work on the work ledger (the queue item), whatever else tracks it:
   agent-queue add --running --project <project> [--row <id>] \"<type(area): title>\"   the work this PR is part of
@@ -271,15 +263,9 @@ The task you are on is an agent-queue item, NOT a board row and NOT the daily no
 Only the board fills the queue, and a session never writes a board row itself: a follow-up you will not do now goes through the agent-lane add. From a queue item or runner it waits in the outbox for inbox-triage (it prints \`inboxed\`, exit 4); from a session the human opened, notes checks it and exit 5 lists similar open rows: join the one that is this work, or rerun with --checked <their ids>:
   notes ptask <project> --agent add \"<type(area): title> #size/s #high\"   (#high for a cleanup or agent-runtime fix)
 The sheet without --agent is the human's queue: human asks, human-only actions, and
-prod/PHI/security/money findings only.
+prod/PHI/security/money findings only. The daily ## Focus is the human's own list; never write to it.
 
-Use the daily ## Focus only for the HUMAN's own work on this machine:
-  notes focus start \"<couple words>\"   |  notes focus add \"<couple words>\"  |  notes focus done \"<couple words>\"
-
-Open today ($(basename "$DAILY_NOTE")):
-$OPEN_LIST
-
-Then say what you reconciled. Fires once per session; CLAUDE_SKIP_FOCUS_GATE=1 disables it."
+Fires once per session; CLAUDE_SKIP_FOCUS_GATE=1 disables it."
 
 if [ "$SESSION_MODE" -eq 1 ]; then
   mkdir -p "$MARKER_DIR" 2>/dev/null && : > "$MARKER"
