@@ -1,15 +1,11 @@
-//! `/widget`: the phone's home-screen widget, a page of a few status cards that a web-widget app
-//! snapshots. The cards are Home's own (`hub_core::cards`), put in the page as JSON, so the widget
-//! makes one request with no cookie. It opens for a signed-in browser or for `?t=` matching the
-//! widget key (`auth::widget_token`), and that key opens this page only: never `/api/*`, a write
-//! or a keystroke route. Each hit the key opens is kept in `last_hit_file` and appended to
-//! `hits_file`, since reqlog says nothing of a request that answered in time, and each refusal is
-//! logged with its reason, since reqlog says nothing of a 401 either.
-//!
-//! `/widget.json` serves the same cards as a Tilecast widget document (`hub_core::widget_doc`)
-//! for the native widget app, opened the same way, and its key hits go to the same file with
-//! `client: tilecast`. With an https `AGENT_WEB_BASE_URL` the document names `push::REGISTER`,
-//! where the app registers for pushes (`push`), the one write the key opens.
+//! `/widget.json`: Home's status cards (`hub_core::cards`) as a Tilecast widget document
+//! (`hub_core::widget_doc`) for the phone's native widget app. It opens for a signed-in browser or
+//! for the widget key (`auth::widget_token`) as `?t=` or a bearer header, and that key opens this
+//! document and the push routes only: never `/api/*`, another write or a keystroke route. Each hit
+//! the key opens is kept in `last_hit_file` and appended to `hits_file`, since reqlog says nothing
+//! of a request that answered in time, and each refusal is logged with its reason, since reqlog
+//! says nothing of a 401 either. With an https `AGENT_WEB_BASE_URL` the document names
+//! `push::REGISTER`, where the app registers for pushes (`push`), the one write the key opens.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -17,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::extract::{Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use hub_core::cards::{self, Card};
 use hub_core::widget_doc;
@@ -29,8 +25,7 @@ use crate::{auth, Shared};
 pub struct WidgetQuery {
     /// The widget key.
     pub(crate) t: Option<String>,
-    /// The cards to show, by card id, comma separated; absent, `/widget` shows `cards::WIDGET`
-    /// and `/widget.json` every card in Home's order.
+    /// The cards to show, by card id, comma separated; absent, every card in Home's order.
     cards: Option<String>,
 }
 
@@ -79,11 +74,6 @@ fn listed(list: Option<&str>) -> Option<Vec<&str>> {
         .filter(|n| !n.is_empty())
         .collect();
     (!n.is_empty()).then_some(n)
-}
-
-/// `listed`, or the HTML widget's default set.
-fn names(list: Option<&str>) -> Vec<&str> {
-    listed(list).unwrap_or_else(|| cards::WIDGET.to_vec())
 }
 
 /// The key as `?t=`, or as `Authorization: Bearer <key>`: the Tilecast app's way, which keeps
@@ -153,9 +143,9 @@ async fn read<'a>(s: &Shared, names: Option<&[&'a str]>) -> (Vec<Card>, Vec<&'a 
 /// to `hits_file`, off the request's path. Only the key's hits: the widget app holds the key, and
 /// a signed-in browser opening the widget without it would hide one that stopped refreshing. Two
 /// hits a few seconds apart may land in either order: a skew of seconds against a 2h watch.
-fn keep_hit(headers: &HeaderMap, route: &str, hit: serde_json::Value) {
+fn keep_hit(headers: &HeaderMap, hit: serde_json::Value) {
     let mut line = hit.clone();
-    line["route"] = route.into();
+    line["route"] = "/widget.json".into();
     line["ip"] = client_ip(headers).into();
     tokio::task::spawn_blocking(move || {
         let said = |f: PathBuf, wrote: std::io::Result<()>| {
@@ -171,24 +161,6 @@ fn keep_hit(headers: &HeaderMap, route: &str, hit: serde_json::Value) {
 /// Asks, titles and costs: kept by no cache, browser history included.
 pub(crate) const NO_STORE: (header::HeaderName, &str) =
     (header::CACHE_CONTROL, "no-store, private");
-
-pub async fn page(
-    State(s): State<Shared>,
-    headers: HeaderMap,
-    Query(q): Query<WidgetQuery>,
-) -> Response {
-    let Some(by_key) = opens(&s, &headers, q.t.as_deref()) else {
-        return refused();
-    };
-    let names = names(q.cards.as_deref());
-    let (shown, missing, now) = read(&s, Some(&names)).await;
-    let data = serde_json::json!({ "at": now, "cards": shown, "missing": missing });
-    if by_key {
-        let hit = serde_json::json!({ "at": now, "cards": names, "ua": user_agent(&headers) });
-        keep_hit(&headers, "/widget", hit);
-    }
-    ([NO_STORE], Html(crate::assets::widget(&data))).into_response()
-}
 
 /// `/widget.json`: the cards as a Tilecast widget document. `AGENT_WEB_BASE_URL` makes its taps
 /// open the card's tab.
@@ -213,7 +185,7 @@ pub async fn doc(
             "version": app_version(&ua),
             "ua": ua,
         });
-        keep_hit(&headers, "/widget.json", hit);
+        keep_hit(&headers, hit);
     }
     ([NO_STORE], Json(d)).into_response()
 }
@@ -334,23 +306,6 @@ mod tests {
     }
 
     #[test]
-    fn the_page_carries_the_cards_and_no_string_in_them_closes_its_script() {
-        let page = crate::assets::widget(
-            &serde_json::json!({ "at": 1, "cards": [{ "title": "</script><b>" }] }),
-        );
-        assert!(
-            page.contains(r#""title":"\u003c/script>\u003cb>""#),
-            "{page}"
-        );
-        assert_eq!(
-            page.matches("</script>").count(),
-            4,
-            "the page's own four, no more"
-        );
-        assert!(!page.contains("{{"), "every mark filled");
-    }
-
-    #[test]
     fn a_hit_makes_its_directory_and_the_next_one_replaces_it_whole() {
         let dir = std::env::temp_dir().join(format!("agent-web-widget-{}", std::process::id()));
         let f = dir.join("state/widget.json");
@@ -432,11 +387,12 @@ mod tests {
     }
 
     #[test]
-    fn names_reads_the_list_or_falls_back_to_the_default() {
-        assert_eq!(names(Some("alerts, needs,,")), ["alerts", "needs"]);
-        assert_eq!(names(Some(" , ")), cards::WIDGET);
-        assert_eq!(names(None), cards::WIDGET);
-        // The JSON route has no default list: None reads every card.
+    fn a_cards_list_reads_its_names_and_an_empty_one_reads_every_card() {
+        assert_eq!(
+            listed(Some("alerts, needs,,")),
+            Some(vec!["alerts", "needs"])
+        );
+        // No default list: None reads every card.
         assert_eq!(listed(Some(" , ")), None);
         assert_eq!(listed(None), None);
         assert_eq!(listed(Some("red")), Some(vec!["red"]));
