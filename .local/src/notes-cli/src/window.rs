@@ -850,8 +850,9 @@ pub(crate) struct Task {
     /// release-cut lane checks a green full run contains before an `#urgent` patch cut.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
-    /// The repo a closed row's `pr:<repo>#<n>` names, `None` for a bare `pr:<n>` (this repo):
-    /// the release-cut lane skips a fix merged in another repo, which no tag of this one ships.
+    /// The repo the row's first `pr:<repo>#<n>` names (`shipped::pr_repo`, the roll's rule too),
+    /// absent for a bare `pr:<n>`: a commit landed in another repo is no fix the release-cut lane
+    /// can find in its own green run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pr_repo: Option<String>,
 }
@@ -1816,7 +1817,7 @@ mod tests {
         record(&dir, "demo", (0, 2, 0), day("2026-11-19"), None, &ix).unwrap();
         fs::write(
             dir.join("agent/README.md"),
-            "## Tasks\n- [x] fix(ci): flaky #size/m <!-- id:db-5 done:2026-11-19 pr:Owner/other#7 commit:24d818eb99fc -->\n\
+            "## Tasks\n- [x] fix(ci): flaky #size/m <!-- id:db-5 done:2026-11-19 pr:Owner/tools#7 commit:24d818eb99fc -->\n\
              - [/] chore(docs): no id row\n\
              - [ ] fix(red): main red #interrupt <!-- id:db-8 -->\n\
              - [ ] feat(x): slipped in <!-- id:db-9 -->\n",
@@ -1850,10 +1851,10 @@ mod tests {
             (ts[1].commit.as_deref(), ts[3].commit.as_deref()),
             (Some("24d818eb99fc"), None)
         );
-        // A closed row carries the repo its PR names; a row with no PR carries none.
+        // It carries the repo its PR names, so release-cut skips another repo's commit.
         assert_eq!(
             (ts[1].pr_repo.as_deref(), ts[3].pr_repo.as_deref()),
-            (Some("Owner/other"), None)
+            (Some("Owner/tools"), None)
         );
         // NEGATIVE CONTROL: the plain add `db-9` is not in the window, and the count agrees
         // with the list.

@@ -44,7 +44,9 @@ case "$*" in
   *contents/.github/ci-budgets.json*) [ -e "$FX/budgets" ] || exit 1; cat "$FX/budgets"; exit 0 ;;
   # The version's tag, then $FX/gametags (a JSON array of the cut's game refs, v1.2.10 too).
   *matching-refs/tags/*) [ -e "$FX/norefs" ] && exit 1; [ "$(cat "$FX/tag")" = 1 ] && j="$(jq -c '[{ref: "refs/tags/v1.2.0"}] + .' "$FX/gametags" 2>/dev/null || echo '[{"ref":"refs/tags/v1.2.0"}]')" || j='[]' ;;
-  *compare/*) j="$(cat "$FX/compare" 2>/dev/null || echo '{"status":"behind"}')" ;;
+  # GitHub answers 404 for a commit the repo does not have ($FX/nocommit).
+  *compare/*) [ -e "$FX/nocommit" ] && { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+    j="$(cat "$FX/compare" 2>/dev/null || echo '{"status":"behind"}')" ;;
   "run list"*cut.yml*) j="$(cat "$FX/cutruns" 2>/dev/null || echo '[]')" ;;
   "run list"*test.yml*) j='[{"databaseId":7,"displayTitle":"Tests (affected)","headSha":"bbb"},{"databaseId":5,"displayTitle":"Tests (all)","headSha":"aaa"}]' ;;
   *runs/5/artifacts*) j='{"artifacts":[{"name":"tested-sha-ccc"}]}' ;;
@@ -77,7 +79,7 @@ EOF
 
 # board CUT TASK...: the game's v1.2.0 sprint, due 2026-11-20, with `cut=` CUT (- for none) and
 # each TASK as id:state[:priority[:commit[:i[:pr_repo]]]], `i` for a row that entered as an
-# interrupt, `pr_repo` the repo its `pr:<repo>#<n>` names.
+# interrupt, pr_repo the owner/name its `pr:` names.
 board() {
   local cut="$1" t id st pr cm it rp tasks=() ; shift
   for t in "$@"; do
@@ -287,6 +289,28 @@ board() {
   assert_equal "$(cat "$F/dispatched")" 'workflow run cut.yml -R acme/game --ref main -f version=1.2.0 -f sha=ccc'
 }
 
+@test "an #urgent fix whose PR landed in another repo is no patch fix: no compare, and the cut on time goes ahead (ucp-2745)" {
+  # The fix is a dotfiles merge on a game row; GitHub has no such commit in acme/game.
+  : > "$F/nocommit"
+  board 2026-11-20T21:59 g-1:open g-5:done:urgent:14e31f820667:i:Owner/tools
+  RELEASE_CUT_NOW=2026-11-21T09:00 run "$BIN"
+  assert_success
+  refute_output --partial 'FAILED'
+  assert_output --partial 'dispatched cut.yml for game v1.2.0 at ccc (on time: cut time 2026-11-20T21:59, carrying 1 open row(s))'
+  # A short-name marker for another repo is skipped the same way.
+  board 2026-11-20T21:59 g-1:open g-5:done:urgent:14e31f820667:i:tools
+  RELEASE_CUT_NOW=2026-11-21T09:00 run "$BIN"
+  refute_output --partial 'FAILED'
+  # NEGATIVE CONTROL: the same row with its PR in the cut repo (any case, any owner, or its short
+  # name) is a fix, and a commit GitHub cannot find there still fails the pass.
+  for rp in ACME/Game other-owner/game game; do
+    rm -f "$F/dispatched" && rm -rf "$AGENTCTL_INBOX"
+    board 2026-11-20T21:59 g-1:open g-5:done:urgent:14e31f820667:i:$rp
+    RELEASE_CUT_NOW=2026-11-21T09:00 run "$BIN"
+    assert_output --partial 'FAILED game v1.2.0: cannot compare #urgent fix g-5 (14e31f820667) with green ccc'
+  done
+}
+
 @test "no patch cut while the #urgent fix is not in a green run, for a plain or committed closed row, or while an #urgent row is open (negative controls)" {
   # The fix landed, but the newest green full run is behind it: it waits, naming the commit.
   board - g-1:open g-5:done:urgent:abc1234:i
@@ -303,24 +327,6 @@ board() {
   board - g-1:open:urgent g-5:done:urgent:abc1234:i
   run "$BIN"
   assert_output --partial 'not ready: 1 of 2 committed rows open (#urgent: g-1)'
-  [ ! -e "$F/dispatched" ]
-}
-
-@test "an #urgent fix merged in another repo is not compared and holds no patch cut; one in this repo is (negative control)" {
-  # ucp-2745 (2026-11-20): a playground row fixed by a dotfiles PR failed two passes on a 404 compare.
-  board - g-1:open g-5:done:urgent:abc1234:i:other/tools
-  run "$BIN"
-  assert_success
-  refute_output --partial 'cannot compare'
-  refute_output --partial 'waiting for a green full run'
-  assert_output --partial 'not ready: 1 of 2 committed rows open'
-  # NEGATIVE CONTROL: the same row with its PR in this repo, as owner/name in another case or as
-  # the bare name a `pr:game#5` marker gives, is a fix.
-  for rp in Acme/Game game; do
-    board - g-1:open g-5:done:urgent:abc1234:i:$rp
-    run "$BIN"
-    assert_output --partial 'g-5 landed, waiting for a green full run that contains abc1234'
-  done
   [ ! -e "$F/dispatched" ]
 }
 
