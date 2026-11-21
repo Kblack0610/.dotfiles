@@ -253,8 +253,8 @@ pub struct Card {
     pub waiting: usize,
     /// Every queued item; each can start, since work with a gate is a board row.
     pub queued: usize,
-    /// Items that finished since local midnight, whatever their status.
-    pub done_today: usize,
+    /// Queue items closed since local midnight, shipped and checks (`queue::done_today`).
+    pub today: crate::queue::DoneToday,
     /// Minutes the longest-waiting queued item has sat; None when none is queued.
     pub oldest_ready_min: Option<i64>,
     pub status: String,
@@ -356,7 +356,8 @@ impl Card {
 impl crate::table::Row for Card {
     const COLUMNS: &'static [&'static str] = &[
         "project", "state", "profile", "stage", "version", "prio", "open", "doing", "hot", "done",
-        "7d", "pts", "pts7d", "window", "due", "pace", "run", "wait", "queued", "today", "oldest",
+        "7d", "pts", "pts7d", "window", "due", "pace", "run", "wait", "queued", "shipped",
+        "oldest",
     ];
     const STATES: &'static [&'static str] = &["all", "in flight", "waiting"];
     const FACETS: &'static [&'static str] = &["profile", "stage", "state"];
@@ -397,7 +398,7 @@ impl crate::table::Row for Card {
             "run" => Val::Num(self.running.len() as f64),
             "wait" => Val::Num(self.waiting as f64),
             "queued" => Val::Num(self.queued as f64),
-            "today" => Val::Num(self.done_today as f64),
+            "shipped" => Val::Num(self.today.shipped as f64),
             "oldest" => self
                 .oldest_ready_min
                 .map_or(Val::None, |m| Val::Num(m as f64)),
@@ -863,13 +864,16 @@ pub fn build(
             }
         }
         let midnight = crate::text::local_day_start(now.timestamp());
-        let today = q.items.iter().filter(|i| {
+        let mut closed: HashMap<usize, Vec<&Item>> = HashMap::new();
+        for i in q.items.iter().filter(|i| {
             i.state == State::Done && i.finished_at().is_some_and(|f| f.timestamp() >= midnight)
-        });
-        for i in today {
+        }) {
             if let Some(k) = owner(i, &labs).and_then(|o| at(&mut cards, &o)) {
-                cards[k].done_today += 1;
+                closed.entry(k).or_default().push(i);
             }
+        }
+        for (k, items) in closed {
+            cards[k].today = crate::queue::done_today(items, midnight);
         }
         for i in q
             .items
@@ -1622,10 +1626,19 @@ mod tests {
                 .format("%Y-%m-%dT%H:%M")
                 .to_string(),
         );
+        today.status = Some("ok".into());
+        today.merged = Some("abc123".into());
+        // Closed today too: a check (ok, no merge) and a failed run with a merge, which counts
+        // in neither.
+        let mut check = item("k", State::Done, "trader", None);
+        (check.finished, check.status) = (Some(ago(0)), Some("ok".into()));
+        let mut failed = item("f", State::Done, "trader", None);
+        (failed.finished, failed.status) = (Some(ago(0)), Some("failed".into()));
+        failed.merged = Some("def456".into());
         let mut before = item("y", State::Done, "trader", None);
         before.finished = Some(ago(48));
         let q = Queue {
-            items: vec![ready_old, ready_new, today, before],
+            items: vec![ready_old, ready_new, today, check, failed, before],
             ..Queue::default()
         };
         let row = |state: &str, priority: &str| Row {
@@ -1660,7 +1673,16 @@ mod tests {
             (2, 2),
             "a done, playtest or later-release row counts neither"
         );
-        assert_eq!((c.queued, c.done_today), (2, 1));
+        assert_eq!(
+            (c.queued, c.today),
+            (
+                2,
+                crate::queue::DoneToday {
+                    shipped: 1,
+                    checks: 1
+                }
+            )
+        );
         assert_eq!(
             c.oldest_ready_min,
             Some(30 * 60),
