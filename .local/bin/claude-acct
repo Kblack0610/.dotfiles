@@ -463,20 +463,28 @@ gateway_refused() {
 # /v1/model/info shows the key) is the router's, not the key's: /key/info never carries it and
 # count_tokens skips the router, so a run past it retried "No deployments available - crossed budget"
 # while room said ok (ar-165, 2026-11-18: go (glm-5.3) at $3.05 of $2.85 per 5h, its key at $13.85 of
-# $68.80). Only a route with a budget_duration is probed, with one completion capped at 1 token: the
-# router refuses it before any call when the window is spent, and bills a few tokens when it is not.
+# $68.80). Only a route with a budget_duration, or one the gateway sheds now (route_shed), is probed,
+# with one completion capped at 1 token: the router refuses it before any call when the window is spent,
+# the upstream answers 429 while it rate-limits the route, and it bills a few tokens when neither.
 # The verdict is cached for TTL like a source's reading, so a pass's retries send one probe.
 route_refused() {
-    local info body cache="$CACHE/route-${2//[^A-Za-z0-9._-]/_}.txt" why='' re='crossed budget.*: ([0-9]+(\.[0-9]+)?) >= ([0-9]+[smhdw])'
+    local info='' body cache="$CACHE/route-${2//[^A-Za-z0-9._-]/_}.txt" why='' re='crossed budget.*: ([0-9]+(\.[0-9]+)?) >= ([0-9]+[smhdw])'
     if [[ -f "$cache" ]] && (( $(date +%s) - $(stat -c %Y "$cache") < TTL )); then cat "$cache"; return 0; fi
-    info=$(route_info "$1" "$2") || return 0
+    # A route with no budget that is not shed is cached as room too, so a pass asks Prometheus once a TTL.
+    if ! info=$(route_info "$1" "$2"); then
+        info=''
+        route_shed "$1" "$2" || { mkdir -p "$CACHE" && : > "$cache"; return 0; }
+    fi
     body=$(gateway_curl "$1" /v1/chat/completions -m 30 -X POST -H 'content-type: application/json' \
         -d "$(jq -nc --arg m "$2" '{model: $m, max_tokens: 1, messages: [{role: "user", content: "x"}]}')")
     if [[ "$body" =~ $re ]]; then
         why=$(printf 'the gateway refuses %s: its deployment budget of $%s per %s is spent ($%.2f)' "$2" \
-            "$(jq -r '.max_budget // "?"' <<< "$info")" "${BASH_REMATCH[3]}" "${BASH_REMATCH[1]}")
+            "$(jq -r '.max_budget // "?"' <<< "${info:-null}")" "${BASH_REMATCH[3]}" "${BASH_REMATCH[1]}")
     elif [[ "$body" == *'crossed budget'* ]]; then
         why="the gateway refuses $2: its deployment budget is spent"
+    # Only on a shed route: on a budgeted one a 429 that Prometheus does not show may be a passing one.
+    elif [[ -z "$info" && "$body" == *RateLimitError* ]]; then
+        why="the upstream refuses $2: it answers 429, a rate limit or a spent quota"
     elif [[ -z "$body" || "$body" != *'"choices"'* ]]; then
         echo "claude-acct: ${1##*/}: the route probe for $2 could not tell; its deployment budget is not read" >&2
         return 0
@@ -485,16 +493,34 @@ route_refused() {
     printf '%s' "$why"
 }
 
-# route_info <key file> <model> -> the route's litellm_params (/v1/model/info) when it has a deployment
-# budget (a budget_duration), rc 1 when it has none or the gateway does not answer. Cached for TTL, since
+# route_entry <key file> <model> -> the route's /v1/model/info entry as {params: its litellm_params, id:
+# its model_info.id}, rc 1 when the gateway lists no such route or does not answer. Cached for TTL, since
 # route_refused and route_paced both ask it on one start.
-route_info() {
-    local cache="$CACHE/route-info-${2//[^A-Za-z0-9._-]/_}.json" info
+route_entry() {
+    local cache="$CACHE/route-entry-${2//[^A-Za-z0-9._-]/_}.json" info
     if [[ -s "$cache" ]] && (( $(date +%s) - $(stat -c %Y "$cache") < TTL )); then cat "$cache"; return 0; fi
-    info=$(gateway_get "$1" /v1/model/info | jq -ce --arg m "$2" '[.data[]? | select(.model_name == $m) | .litellm_params
-        | select(.budget_duration != null)] | first // empty') || return 1
+    info=$(gateway_get "$1" /v1/model/info | jq -ce --arg m "$2" '[.data[]? | select(.model_name == $m)
+        | {params: (.litellm_params // {}), id: (.model_info.id // null)}] | first // empty') || return 1
     mkdir -p "$CACHE" && printf '%s\n' "$info" > "$cache"
     printf '%s\n' "$info"
+}
+
+# route_info <key file> <model> -> the route's litellm_params when it has a deployment budget (a
+# budget_duration), rc 1 when it has none or the gateway does not answer.
+route_info() { route_entry "$1" "$2" | jq -ce '.params | select(.budget_duration != null)'; }
+
+# route_shed <key file> <model> -> rc 0 when the gateway sheds the route now: Prometheus reads its
+# deployment (model_info.id) at litellm_deployment_state above 0, the reading LiteLLMUpstreamUnhealthy
+# fires on; rc 1 while it reads 0 or cannot be read. A free route has no budget for route_refused to
+# probe, so dispatch started runs into beam-free on 11-20 and 11-21 while OpenCode answered 429 past its
+# daily quota (ar-4229). A route that serves costs no probe; a shed one is probed, and the probe's first
+# 200 once the upstream recovers puts the deployment back at state 0.
+route_shed() {
+    local id out
+    id=$(route_entry "$1" "$2" | jq -re '.id // empty') && [[ "$id" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+    out=$(prom_q "max(litellm_deployment_state{model_id=\"$id\"}) > 0") ||
+        { echo "claude-acct: ${1##*/}: Prometheus is unreadable, so whether the gateway sheds $2 is not read" >&2; return 1; }
+    jq -e '.data.result | length > 0' <<< "$out" >/dev/null 2>&1
 }
 
 # route_paced <key file> <model> <source> <run_usd> -> why the route takes no more starts this window,
