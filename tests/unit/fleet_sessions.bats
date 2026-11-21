@@ -2759,6 +2759,7 @@ empty_submodule_fixture() {
   # 2026-11-05 hub/dotfiles:8 sat on main with #920 and private #402 merged, and its row read
   # nothing merged: no branch PR, finished false, LANDED, so /wind-down auto would have refused.
   landed_fixture
+  export XDG_CACHE_HOME="$SANDBOX/xdg" # the sibling PR view cache stays in the sandbox
   git -C "$SANDBOX/wt" checkout -q -B main origin/main
   : > "$LEDGER_DIR/prs.tsv"
   pr_transcript "$SANDBOX/t.jsonl"
@@ -2773,16 +2774,19 @@ empty_submodule_fixture() {
   # with no plan file the merged PRs alone decide: DONE, never the human's CHAT
   PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" panel "$SANDBOX/wt"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
   [ "$(jq -c '[.bucket, .finished, .blockers, .close.verdict]' <<<"$output")" = '["DONE",true,[],"now"]' ]
   [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, its PRs #7,#9 merged, no plan file, its PR landed' ]
+  # negative control, the plan back: one still open is the row's PR (sibling_pr), unlanded, so not finished
   PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  # negative control: one still open is the row's PR (sibling_pr), unlanded, so not finished
   printf -- '-\t7\tOPEN\tPASS\t-\t-\n' > "$LEDGER_DIR/prs_o_one.tsv"
-  printf '#!/usr/bin/env bash\ncase "$*" in *"pr view 7 --repo o/one"*) echo %q ;; *) exit 1 ;; esac\n' \
+  printf '#!/usr/bin/env bash\ncase "$*" in api*) echo "[]" ;; *"pr view 7 --repo o/one"*) echo %q ;; *) exit 1 ;; esac\n' \
     '{"headRefOid":"feedface0000beef","statusCheckRollup":[{"conclusion":"SUCCESS"}]}' > "$SANDBOX/bin/gh"
-  XDG_CACHE_HOME="$SANDBOX/xdg" run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
   [ "$(jq -c '[.bucket, .pr, .finished, .blockers]' <<<"$output")" = '["STALLED","7",false,["PR o/one#7 open, CI PASS"]]' ]
   [ "$(jq -r .close.verdict <<<"$output")" = keep ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR o/one#7 green, not merged' ]
 }
 
 @test "end to end: edits in other worktrees block a clean cwd from reading LANDED or finished" {
