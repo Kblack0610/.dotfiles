@@ -22,9 +22,12 @@
 [core]
 	hooksPath = ~/.config/git/hooks
 # fsync loose objects too (git's default skips them), so a crash cannot leave a ref pointing at an
-# empty object; batch costs one flush per command. Needs git 2.36+. Test: tests/unit/gitconfig.bats.
+# empty or missing object. One fsync per object: batch, which git calls safe only on macOS and
+# Windows, lost the batched trees and blob of two ~/.notes commits on btrfs in a crash on 2026-11-20
+# while their commit objects survived. The cost is one disk flush per loose object, which an add of
+# thousands of files feels and a sync commit does not. Needs git 2.36+. Test: tests/unit/gitconfig.bats.
 	fsync = committed
-	fsyncMethod = batch
+	fsyncMethod = fsync
 [fetch]
 	prune = true
 [credential "https://github.com"]

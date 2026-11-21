@@ -88,6 +88,8 @@ PEER="$SYNC_DIR/peer"
 # "<HEAD> <remote ref>" of the last merge that conflicted: retrying that pair cannot succeed.
 CONFLICT="$SYNC_DIR/conflict"
 BACKUP_FAILS="$SYNC_DIR/backup-failures"
+# The short HEAD whose missing trees a refetch that reached a remote could not restore (heal_head).
+REFETCHED="$SYNC_DIR/refetched"
 
 log() {
   mkdir -p "$SYNC_DIR"
@@ -176,8 +178,9 @@ apply_merge_drivers() {
 # cmd_merge_close <base> <ours> <theirs> <path>: the driver for a closed queue item
 # (queue/done/*/*.md), leaving the result in <ours>. Two hosts that close one item write the same
 # file twice; a text merge keeps what it can, and a conflict is settled for the close that is `status: ok`
-# over a `status: failed`, which is a reaper that read a stale copy of the item (razer-laptop,
-# 2026-11-20: 5 items closed ok there, failed here minutes later). Any other clash still conflicts (exit 1).
+# or `cancelled` over a `status: failed`, which is a reaper that read a stale copy of the item (razer-laptop,
+# 2026-11-20: 5 items closed ok there, failed here minutes later; ar-268 cancelled there, failed here
+# while this store was stuck, ar-3439). Any other clash still conflicts (exit 1).
 cmd_merge_close() {
   [ $# -eq 4 ] || die "merge-close needs <base> <ours> <theirs> <path>"
   local tmp
@@ -187,8 +190,9 @@ cmd_merge_close() {
   fi
   rm -f "$tmp"
   status_of() { sed -n '/^---$/q;s/^status: //p' "$1"; }
-  [ "$(status_of "$2")" = ok ] && [ "$(status_of "$3")" = failed ] && return 0
-  [ "$(status_of "$3")" = ok ] && [ "$(status_of "$2")" = failed ] && { cat "$3" > "$2"; return 0; }
+  settled() { case "$(status_of "$1")" in ok | cancelled) return 0 ;; esac; return 1; }
+  settled "$2" && [ "$(status_of "$3")" = failed ] && return 0
+  settled "$3" && [ "$(status_of "$2")" = failed ] && { cat "$3" > "$2"; return 0; }
   return 1
 }
 
@@ -250,6 +254,34 @@ clear_stale_lock() {
 }
 
 ref_of() { g rev-parse -q --verify "refs/remotes/$1/$BRANCH" 2>/dev/null; }
+
+# heal_head: an unclean shutdown can lose the newest loose objects while HEAD, already on disk, still
+# names them, and every commit after it fails on "bad tree object HEAD" (the fleet home, 2026-11-20:
+# six hours stuck after a crash, ar-3439). A remote that took HEAD before the crash holds them, so a
+# full refetch puts them back; with none, the sync stops and says so. A refetch that reached a remote
+# and still left HEAD broken is not repeated for that HEAD (REFETCHED), since every write starts a sync.
+heal_head() {
+  g rev-parse -q --verify HEAD >/dev/null || return 0
+  g ls-tree -r HEAD >/dev/null 2>&1 && { rm -f "$REFETCHED"; return 0; }
+  local r head reached=0 err=""
+  head=$(g rev-parse --short HEAD)
+  if [ "$(cat "$REFETCHED" 2>/dev/null)" != "$head" ]; then
+    for r in $(remotes); do
+      if ! err=$(net "$r" -C "$STORE" fetch -q --refetch "$r" "+refs/heads/$BRANCH:refs/remotes/$r/$BRANCH" 2>&1); then
+        err=$(printf '%s' "$err" | tail -n 1 | cut -c1-200)
+        continue
+      fi
+      reached=1
+      g ls-tree -r HEAD >/dev/null 2>&1 || continue
+      log "WARN: HEAD $head named trees missing here (an unclean shutdown?); refetched them from $r"
+      return 0
+    done
+    [ "$reached" = 0 ] && { log "ERROR: HEAD $head names trees missing here, and no remote answered to refetch them (${err:-no remote}); the next sync tries again"; exit "$EXIT_NO_COMMIT"; }
+    printf '%s\n' "$head" > "$REFETCHED"
+  fi
+  log "ERROR: HEAD $head names trees missing here and no remote has them; repair $STORE by hand (QUEUE.md, Troubleshooting)"
+  exit "$EXIT_NO_COMMIT"
+}
 
 
 # sync_one <remote>: fetch it, merge it into HEAD, push HEAD to it.
@@ -376,6 +408,7 @@ cmd_sync() {
   # a flapping notes remote left 4 GB of them in 21 minutes. The age floor spares a live transfer.
   find "$STORE/.git/objects/pack" -maxdepth 1 -name 'tmp_pack_*' -mmin +60 -delete 2>/dev/null
   clear_stale_lock
+  heal_head
   commit_paths "$HOST_TAG store-sync $mode $(date '+%Y-%m-%d_%H:%M:%S')" "${paths[@]}" \
     || { log "ERROR: could not commit ${paths[*]}"; exit "$EXIT_NO_COMMIT"; }
 

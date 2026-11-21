@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
-# The tracked .gitconfig: committed objects are fsynced, so an unclean shutdown cannot leave a ref
-# pointing at an empty loose object (~/.notes, 2026-11-20). HOME is the test dir, so the includes of
-# machine-local files resolve to nothing.
+# The tracked .gitconfig: committed objects are fsynced one by one, so an unclean shutdown cannot
+# leave a ref pointing at an empty or missing loose object (~/.notes, 2026-11-20 twice: an empty
+# object under git's default, then missing trees and a blob under fsyncMethod=batch on btrfs).
+# HOME is the test dir, so the includes of machine-local files resolve to nothing.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -11,25 +12,37 @@ setup() {
   mkdir -p "$HOME"
 }
 
-@test "committed objects are fsynced in batch mode" {
+@test "committed objects are fsynced one by one" {
   run git config --global core.fsync
   assert_output committed
   run git config --global core.fsyncMethod
-  assert_output batch
+  assert_output fsync
 }
 
-# trace2 counts the flushes git issues; the default config (the control) issues none for a commit.
-commit_flushes() {
-  git init -q "$HOME/r-$1"
-  echo x > "$HOME/r-$1/f"
-  git -C "$HOME/r-$1" add f
-  GIT_TRACE2_EVENT="$HOME/ev-$1" git -C "$HOME/r-$1" -c user.email=t@example.com -c user.name=t commit -qm one
-  grep -c '"category":"fsync","name":"hardware-flush"' "$HOME/ev-$1" || true
+# The trace2 fsync lines of an add and a commit of one file, of one kind: a hardware flush makes an
+# object durable; a writeout-only flush, batch mode's step for each object, does not.
+flushes() { # <name> <kind> [git -c args...]
+  local name="$1" kind="$2" r="$HOME/r-$1"
+  shift 2
+  git init -q "$r"
+  echo x > "$r/f"
+  GIT_TRACE2_EVENT="$HOME/ev-$name" git -C "$r" "$@" add f
+  GIT_TRACE2_EVENT="$HOME/ev-$name" git -C "$r" "$@" -c user.email=t@example.com -c user.name=t commit -qm one
+  grep -o "\"category\":\"fsync\",\"name\":\"$kind\",\"count\":[0-9]*" "$HOME/ev-$name" \
+    | awk -F: '{ n += $NF } END { print n + 0 }'
 }
 
-@test "a commit flushes its objects under this config and not under the default" {
-  run commit_flushes tracked
-  assert_output 1
-  GIT_CONFIG_GLOBAL=/dev/null run commit_flushes default
+# The flush total of an add plus a commit: the blob, the tree, the commit object and the ref.
+@test "an add and a commit flush their objects under this config and not under the default" {
+  run flushes tracked hardware-flush
+  assert_output 4
+  GIT_CONFIG_GLOBAL=/dev/null run flushes default hardware-flush
   assert_output 0
+}
+
+@test "no object is only written out under this config, as batch mode leaves the blob and tree" {
+  run flushes tracked writeout-only
+  assert_output 0
+  run flushes batch writeout-only -c core.fsyncMethod=batch
+  assert_output 2
 }
