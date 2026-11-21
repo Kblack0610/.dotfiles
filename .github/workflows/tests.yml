@@ -57,10 +57,11 @@ jobs:
   # to 373 s against at most 276 s on "Region: us" ones, with an even predicted split of 542 s of
   # bats time per unit shard, and the gate read p90 6.3 min (ar-3036). Twelve unit shards put
   # about 360 s of bats time in each, and four integ shards about 310 s, about 250 s of wall on
-  # a slow runner. The fixed cost per shard (checkout, bats, cached debs, about 10 s) is small
-  # beside that, so splitting wins over trimming it. Hosted minutes are free on this public repo
-  # and jobs start within seconds of their run (43 ran at once on 2026-11-21, queued under a
-  # minute), so a shard costs neither. unit/shard.bats checks that the matrix lists every shard of each tier.
+  # a slow runner. The fixed cost per shard (job start to the bats step: checkout, bats, cached
+  # debs) was 8-9 s in run 44887277102, small beside that, so splitting wins over trimming it.
+  # Hosted minutes are free on this public repo, and on 2026-11-21 the repo ran 43 jobs at once
+  # with under a minute of queue, so a shard costs neither; queue time rising is the sign to stop
+  # adding them. unit/shard.bats checks that the matrix lists every shard of each tier.
   #
   # The table is computed once, here, because two shards splitting by two tables can each leave
   # a file out. No table (no green main run within the artifacts' 14 days, an API error) means
