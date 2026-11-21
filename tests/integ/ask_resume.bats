@@ -19,8 +19,23 @@ setup() {
   cat > "$SANDBOX/bin/agentctl-run" <<'EOF'
 #!/usr/bin/env bash
 printf 'agentctl-run %s\n' "$*" >> "$NOTES_FIXTURE/calls.log"
+printf 'run item=%s\n' "${AGENT_QUEUE_ITEM:-}" >> "$NOTES_FIXTURE/calls.log"
 EOF
   chmod +x "$SANDBOX/bin/agentctl-run"
+
+  # A model resume is a queue item (agent-queue's own suite pins what add writes). The stub
+  # records each call with the session env it saw, files the item running, and AQ_REFUSE makes
+  # the add fail as an unknown project would.
+  cat > "$SANDBOX/bin/agent-queue" <<'EOF'
+#!/usr/bin/env bash
+printf 'agent-queue %s | sid=%s item=%s\n' "$*" "${CLAUDE_CODE_SESSION_ID:-}" "${AGENT_QUEUE_ITEM:-}" >> "$NOTES_FIXTURE/calls.log"
+case "$1" in
+  add) [ -z "${AQ_REFUSE:-}" ] || { echo "agent-queue: unknown project" >&2; exit 1; }
+       while [ "$1" != --slug ]; do shift; done; echo "running $(tr A-Z a-z <<<"$2") -> /q/running/x.md" ;;
+  show) echo '{"state":"running"}' ;;
+esac
+EOF
+  chmod +x "$SANDBOX/bin/agent-queue"
 
   # ask-resume detaches with `setsid -f`. Run the command in the foreground instead, so the
   # call is on disk before ask-resume returns and no test has to wait for it.
@@ -177,7 +192,7 @@ EOF
   INVOCATION_ID=abc run ask-resume "$id"
   assert_success
   run calls
-  assert_output --partial 'systemd-run --user --scope --quiet setsid -f agentctl-run --agent ask-resume -p /captain alpha go'
+  assert_output --partial 'systemd-run --user --scope --quiet setsid -f env AGENT_QUEUE_ITEM=ask-resume-'
   assert_output --partial $'\nagentctl-run --agent ask-resume -p /captain alpha go'
   # negative control: a resume started outside a unit uses setsid alone
   : > "$NOTES_FIXTURE/calls.log"
@@ -258,4 +273,65 @@ EOF
   # consumer's own calls are counted.
   run grep '^consumer ' "$NOTES_FIXTURE/calls.log"
   assert_output "consumer --answer $id"
+}
+
+# -- its queue item --
+# A model resume used to run with no queue item (QUEUE.md "Intake channels", ar-4154): its work
+# and its adds were nobody's, and a session that had answered the ask lent it its own identity.
+
+@test "a model resume runs as a queue item from ask:<id>, not as the answering session" {
+  local id slug; id="$(gate alpha)"
+  "$AGENT_ASK" answer "$id" approve >/dev/null 2>&1
+  : > "$NOTES_FIXTURE/calls.log"
+  slug="ask-resume-$(tr A-Z a-z <<<"$id")"
+  CLAUDE_CODE_SESSION_ID=answerer AGENT_QUEUE_ITEM=answerer-item run ask-resume "$id"
+  assert_success
+  run grep '^agent-queue add' "$NOTES_FIXTURE/calls.log"
+  assert_output "agent-queue add --running --repeat --project alpha --from ask:$id --slug ask-resume-$id --title chore(asks): resume answered ask $id /captain alpha go | sid= item="
+  run grep -F "agent-queue set $slug origin=ask" "$NOTES_FIXTURE/calls.log"
+  assert_success
+  # The session works under the item, and its exit closes the item it left running.
+  run grep '^run item=' "$NOTES_FIXTURE/calls.log"
+  assert_output "run item=$slug"
+  run grep '^agent-queue move' "$NOTES_FIXTURE/calls.log"
+  assert_output --partial "agent-queue move $slug done --status ok"
+}
+
+@test "a failed model resume closes its item failed" {
+  printf '#!/usr/bin/env bash\nexit 7\n' > "$SANDBOX/bin/agentctl-run"
+  local id; id="$(gate alpha)"
+  "$AGENT_ASK" answer "$id" approve >/dev/null 2>&1
+  run ask-resume "$id"  # the stub setsid runs it in the foreground, so its exit is the run's
+  run grep '^agent-queue move' "$NOTES_FIXTURE/calls.log"
+  assert_output --partial "done --status failed"
+}
+
+@test "an item agent-queue refuses leaves the ask resumable and runs no model" {
+  local id; id="$(gate alpha)"
+  "$AGENT_ASK" answer "$id" approve >/dev/null 2>&1
+  : > "$NOTES_FIXTURE/calls.log"
+  AQ_REFUSE=1 run ask-resume "$id"
+  assert_failure
+  assert_output --partial "$id not resumed: agent-queue did not file its item"
+  run calls
+  refute_output --partial 'agentctl-run'
+  run bash -c '"$AGENT_ASK" resumable alpha | cut -f1'
+  assert_output "$id"
+  # negative control: once the add goes in, the same ask resumes
+  run ask-resume "$id"
+  assert_success
+  run calls
+  assert_output --partial 'agentctl-run --agent ask-resume'
+}
+
+@test "a run: resume files no queue item: it is the asking script's own step" {
+  printf '#!/usr/bin/env bash\n:\n' >"$SANDBOX/bin/consumer"
+  chmod +x "$SANDBOX/bin/consumer"
+  local id; id="$("$AGENT_ASK" post --project alpha --kind gate \
+    --options 'alpha=file it|drop=drop it' --resume 'run:consumer' 'Which project?')"
+  "$AGENT_ASK" answer "$id" alpha >/dev/null 2>&1
+  : > "$NOTES_FIXTURE/calls.log"
+  ask-resume "$id"
+  run grep '^agent-queue add' "$NOTES_FIXTURE/calls.log"
+  assert_failure
 }

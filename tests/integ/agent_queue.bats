@@ -1775,7 +1775,7 @@ notes --profile bnb ptask game --agent run gm-9"
   "$AQ" add --project game --running --session dotfiles-71 --slug mine "this session"
   [ -z "$(field "$(item running mine)" origin)" ]
   local o
-  for o in run redispatch resume hand scratch sweep; do
+  for o in run redispatch resume hand scratch ask sweep; do
     "$AQ" add --project game --running --slug "o-$o" "started by $o" >/dev/null
     "$AQ" set "o-$o" "origin=$o" >/dev/null
   done
@@ -1783,7 +1783,35 @@ notes --profile bnb ptask game --agent run gm-9"
   run "$AQ" list --json --state active
   assert_success
   assert_equal "$(jq -sSc 'map({(.slug): .by}) | add' <<<"$output")" \
-    '{"mine":null,"o-hand":"hand","o-redispatch":"dispatch","o-resume":"resume","o-run":"dispatch","o-scratch":"hand","o-sweep":"sweep","waits":null}'
+    '{"mine":null,"o-ask":"ask","o-hand":"hand","o-redispatch":"dispatch","o-resume":"resume","o-run":"dispatch","o-scratch":"hand","o-sweep":"sweep","waits":null}'
+}
+
+# 2026-11-20: about 800 of a week's 1715 from: human items were sessions' own --running records, so
+# `human` did not mean the human asked (ar-4154).
+@test "add --running is from session in a Claude session, item:<slug> in a queue item's, human only at a terminal or with --want; an ask: item files no story row" {
+  story_notes
+  CLAUDE_CODE_SESSION_ID=s1 "$AQ" add --project level --running --slug hand-own "chore(x): its own work" >/dev/null
+  [ "$(field "$(item running hand-own)" from)" = session ]
+  CLAUDE_CODE_SESSION_ID=s2 AGENT_QUEUE_ITEM=hand-own "$AQ" add --project level --running --slug sub "chore(x): a part of it" >/dev/null
+  [ "$(field "$(item running sub)" from)" = item:hand-own ]
+  CLAUDE_CODE_SESSION_ID=s3 "$AQ" add --project level --running --want human --slug asked "feat(x): the human's want" >/dev/null
+  [ "$(field "$(item running asked)" from)" = human ]
+  CLAUDE_CODE_SESSION_ID=s4 "$AQ" add --project level --running --from shepherd --slug named "chore(x): named" >/dev/null
+  [ "$(field "$(item running named)" from)" = shepherd ]
+  "$AQ" add --project level --running --slug typed "chore(x): typed at a terminal" >/dev/null
+  [ "$(field "$(item running typed)" from)" = human ]
+  # negative control: a queued add from a session keeps its old default; only --running changed.
+  CLAUDE_CODE_SESSION_ID=s5 "$AQ" add --project level --priority low --slug later "chore(x): later" >/dev/null
+  [ "$(field "$(item queued later)" from)" = human ]
+  # The ask is an ask: item's record, so no story row is filed for it; a session's record files one.
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" add --project level --running --from ask:AbC1 --slug ask-resume-abc1 "/captain game go" >/dev/null
+  [ "$(field "$(item running ask-resume-abc1)" from)" = ask:AbC1 ]
+  run grep -c ' ptask ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  [ -n "$(field "$(item running hand-own)" row)" ]
+  run "$AQ" add --project level --from ask: --slug bad "x"
+  assert_failure; assert_output --partial "--from is human, session,"
 }
 
 @test "--running records <server>:<session> on any world; only a worktree session (<repo>-agent-N) records; a checkout session, declared or not, or no tmux, records none" {
@@ -3449,7 +3477,7 @@ no_held() {
   [ "$(field "$(item queued r1)" from)" = research:dotfiles-hooks ]
   run "$AQ" add --project game --from robot --slug c2 "x"
   assert_failure
-  assert_output --partial 'human, shepherd, canary, trainee, research:<facet>, auto:<filer> or board'
+  assert_output --partial 'human, session, shepherd, canary, trainee, research:<facet>, auto:<filer>, item:<slug>, ask:<id> or board'
   run "$AQ" add --project game --from research: --slug c3 "x"
   assert_failure
 }

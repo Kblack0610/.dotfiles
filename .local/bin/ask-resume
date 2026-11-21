@@ -45,13 +45,27 @@ command -v agent-ask >/dev/null 2>&1 || { echo "ask-resume: agent-ask not on PAT
 # budget, never the answering runner's). agentctl-run
 # scrubs the inherited transport env and applies the route, so a resume never runs on
 # whatever gateway its caller happened to export.
+# A model resume is work, so it runs as a queue item, `from: ask:<id>` and origin `ask`, which
+# its session works under ($AGENT_QUEUE_ITEM: its agent-land closes it, and its own adds go to the
+# board as an unattended session's do). The item is filed before the ask is marked, so an add
+# agent-queue refuses leaves the ask resumable for `--all`; when the run ends with the item still
+# running, its exit closes it. A `run:` command is the asking script's own step, not a session.
 run_resume() { # $1=id $2=project $3=command
-  local id="$1" project="$2" cmd="$3"
+  local id="$1" project="$2" cmd="$3" slug="ask-resume-$1"
   if [ "$DRY" = 1 ]; then
-    if [[ "$cmd" == run:* ]]; then echo "would run: ${cmd#run:} $id   (ask $id)"; else echo "would run: agentctl-run --agent ask-resume -p '$cmd'   (ask $id)"; fi
+    if [[ "$cmd" == run:* ]]; then echo "would run: ${cmd#run:} $id   (ask $id)"; else echo "would run: agentctl-run --agent ask-resume -p '$cmd'   (ask $id, item $slug)"; fi
     return 0
   fi
-  [[ "$cmd" == run:* ]] || command -v agentctl-run >/dev/null 2>&1 || { echo "ask-resume: agentctl-run not on PATH" >&2; return 1; }
+  if [[ "$cmd" != run:* ]]; then
+    command -v agentctl-run >/dev/null 2>&1 || { echo "ask-resume: agentctl-run not on PATH" >&2; return 1; }
+    # The caller's session, item and pane are not this run's, so none of them is recorded on it
+    # (agent-queue reads an empty one as unset).
+    slug="$(CLAUDE_CODE_SESSION_ID='' AGENT_QUEUE_ITEM='' TMUX='' agent-queue add --running --repeat \
+      --project "$project" --from "ask:$id" --slug "$slug" --title "chore(asks): resume answered ask $id" "$cmd" |
+      sed -n 's/^running \([^ ]*\) -> .*/\1/p')"
+    [ -n "$slug" ] || { echo "ask-resume: $id not resumed: agent-queue did not file its item (above); ask-resume --all retries it" >&2; return 1; }
+    agent-queue set "$slug" origin=ask >/dev/null || echo "ask-resume: $slug has no origin: agent-queue set $slug origin=ask" >&2
+  fi
   agent-ask mark-resumed "$id" >/dev/null 2>&1
   echo "ask-resume: $id ($project) -> $cmd" >&2
   local log="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/ask-resume"
@@ -65,8 +79,14 @@ run_resume() { # $1=id $2=project $3=command
     "${detach[@]}" bash -c "${cmd#run:}"' "$1"' ask-resume "$id" >>"$log/${project}.log" 2>&1 </dev/null
     return 0
   fi
-  "${detach[@]}" agentctl-run --agent ask-resume -p "$cmd" \
-    --max-turns "${ASK_RESUME_MAX_TURNS:-60}" \
+  # shellcheck disable=SC2016 # the inner shell's $1..$3: the prompt, max turns and the item
+  "${detach[@]}" env AGENT_QUEUE_ITEM="$slug" bash -c '
+    agentctl-run --agent ask-resume -p "$1" --max-turns "$2"; rc=$?
+    st=ok; [ "$rc" = 0 ] || st=failed
+    if [ "$(agent-queue show "$3" --json 2>/dev/null | jq -r .state)" = running ]; then
+      agent-queue move "$3" done --status "$st" >/dev/null || echo "ask-resume: $3 is left open: agent-queue move $3 done --status $st" >&2
+    fi
+    exit "$rc"' ask-resume "$cmd" "${ASK_RESUME_MAX_TURNS:-60}" "$slug" \
     >>"$log/${project}.log" 2>&1 </dev/null
 }
 

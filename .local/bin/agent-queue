@@ -2,8 +2,10 @@
 # agent-queue - the one intake for agent work, and the only writer of its store.
 #
 #   add [--project p] [--mode oneshot|plan] [--priority urgent|high|low] [--tags "t1 t2"]
-#       [--weight heavy|light] [--after slug|row-id[,...]] [--from human|shepherd|canary|trainee|research:<facet>|auto:<filer>|board:<project>:<key>] [--agent claude] [--slug s] [--title t]
+#       [--weight heavy|light] [--after slug|row-id[,...]] [--from human|session|shepherd|canary|trainee|research:<facet>|auto:<filer>|item:<slug>|ask:<id>|board:<project>:<key>] [--agent claude] [--slug s] [--title t]
 #       [--row <code>-<N>] [--epic <code>-<N>] [--want <channel>] [--running [--session s]] [--repeat] [task...]    the task from args, or stdin when there are none
+#       --running with no --from or --want is from item:<$AGENT_QUEUE_ITEM> in a queue item's session, from session in any
+#       other Claude session, and from human only at a terminal; a hand session records the human's own want with --want human.
 #       --want names the channel a human's want came in by (`notes ptask add --want`): its story row gets #requested from
 #       the notes writer. Without it the row carries no stamp, as a session's own add does not.
 #       --priority defaults to high only for an add by hand: one from a session ($CLAUDE_CODE_SESSION_ID or
@@ -1107,9 +1109,10 @@ item_recs() {
 # fleet-dispatch and judge-eval read, whatever the item's origin.
 # `by` is who started the item's session, the one answer every reader takes (fleet-states.md Owners):
 # dispatch (a dispatch run; redispatch is a retired value older items carry), resume (a restore), hand (a hand start
-# through fleet-dispatch, a scratch send). An origin this map does not name reads as written; an item with no
-# origin (a --running record) has no `by`, which every reader takes as not dispatch.
-ORIGIN_BY='{"run": "dispatch", "redispatch": "dispatch", "resume": "resume", "hand": "hand", "scratch": "hand"}'
+# through fleet-dispatch, a scratch send), ask (ask-resume's headless run of an answered ask, from: ask:<id>).
+# An origin this map does not name reads as written; an item with no origin (a --running record, from: session
+# or item:<slug>) has no `by`, which every reader takes as not dispatch.
+ORIGIN_BY='{"run": "dispatch", "redispatch": "dispatch", "resume": "resume", "hand": "hand", "scratch": "hand", "ask": "ask"}'
 ITEM_JQ='def lepoch($s): ($s + ":00Z" | fromdateiso8601) as $l | ($l - (($l | localtime | mktime) - $l)) as $e | $l - (($e | localtime | mktime) - $e);
   def at_ready($tags; $q): [$tags | split(" ")[] | select(startswith("at:")) | ltrimstr("at:")
     | try (if test("^[0-9]{4}-") then lepoch(.) else lepoch(($q | fromdateiso8601 | localtime | strftime("%Y-%m-%d")) + "T" + .) end | todate) catch empty];
@@ -1716,7 +1719,13 @@ cmd_add() {
   case "$mode" in oneshot | plan) ;; *) die "--mode is oneshot or plan, not $mode" ;; esac
   prio_rank "$priority" >/dev/null || die "--priority is urgent, high or low, not $priority"
   case "$weight" in '' | heavy | light) ;; *) die "--weight is heavy or light, not $weight" ;; esac
-  case "$from" in human | shepherd | canary | trainee | research:?* | auto:?* | board:?*:?*) ;; *) die "--from is human, shepherd, canary, trainee, research:<facet>, auto:<filer> or board:<project>:<key>, not $from" ;; esac
+  # A session's record of its own work is the session's, not the human's: `from: human` is for what the
+  # human typed (a terminal add, --want, the hub's Add) and stays readable on older items (ar-4154).
+  if [ -n "$running" ] && [ -z "$from_given$want" ]; then
+    if [ -n "${AGENT_QUEUE_ITEM:-}" ]; then from="item:$AGENT_QUEUE_ITEM"
+    elif [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then from=session; fi
+  fi
+  case "$from" in human | session | shepherd | canary | trainee | research:?* | auto:?* | item:?* | ask:?* | board:?*:?*) ;; *) die "--from is human, session, shepherd, canary, trainee, research:<facet>, auto:<filer>, item:<slug>, ask:<id> or board:<project>:<key>, not $from" ;; esac
   case "$agent" in *[!a-z0-9-]* | '') die "--agent is one word, not $agent" ;; esac
   local row_id='^[a-z0-9]+-[0-9]+$'
   [ -z "$epic" ] || [[ "$epic" =~ $row_id ]] || die "--epic is a row id, <code>-<N>, not $epic"
@@ -1832,8 +1841,9 @@ cmd_add() {
   local story='' sboard='' sprof='' srow=''
   # A canary item is an eval of the fleet, not work on the project: fleet-bench canary is its record.
   # A trainee review (fleet-dispatch trainee-review) works the trainee's item, whose row is the record.
+  # An answered ask's resume (ask-resume) works what the ask decided, and the ask is its record.
   case "$from" in
-    board:* | canary | trainee) ;;
+    board:* | canary | trainee | ask:*) ;;
     *) if [ -n "$row" ]; then
          # A row moved to another sheet keeps its id, so its code can name the sheet it left; the
          # sheet the caller named is the other one it can be open on (apo-108 on dodginballs,
