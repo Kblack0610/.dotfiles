@@ -213,7 +213,7 @@ Old tab names that still resolve, and where they land. Each phase adds its rows.
 | Pools (the Infra section title; `#infra/pools`, `hub tab 'infra pools'` unchanged) | Job kinds, same section id `pools` and pool pages `#infra/pools/<kind>` | ar-3326 |
 | `unity-local` (the workstation gates pool page, `#infra/pools/unity-local`) | `gates`, the same page (`pool_page::find` keeps the old name) | ar-3326 |
 | `custom/dispatch`, `dispatch.sh` (the waybar queue chip's module id and script; the `dispatch` key in `modules.registry` and the noctalia `[widget.dispatch]`) | `custom/queue`, `queue.sh`, registry key `queue`, `[widget.queue]`; the leader key stays `d`. A machine that hid the chip as `custom/dispatch` (`modules.off`) shows it again: `modules.sh disable queue` | ar-325 |
-| agent-web's `/widget` (Home's cards two across for a web-widget app's snapshot, `?t=<key>&cards=`) | The Tilecast app on `/widget.json`, or the HA Template widget. No alias: `/widget` answers 404 and logs no hit, since its one client moved to Tilecast and it had one key hit from 2026-11-17 to its retirement | tc-7, P5 of `pasted-content-id-e03d-swirling-gray.md` |
+| agent-web's `/widget` (Home's cards two across for a web-widget app's snapshot, `?t=<key>&cards=`) | The Tilecast app on `/widget.json`, or the HA Template widget. No alias: `/widget` answers 401 to the widget key and any request without a session (the key opens only `/widget.json`), 404 to a signed-in browser, and logs neither, since its one client moved to Tilecast and it had one key hit from 2026-11-17 to its retirement | tc-7, P5 of `pasted-content-id-e03d-swirling-gray.md` |
 
 ### Log
 
