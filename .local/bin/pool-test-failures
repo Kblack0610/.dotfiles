@@ -13,6 +13,8 @@
 #
 # fleet-state.service runs it before each tick: GitHub has no event a user unit can await. Each run
 # is read once (its id and attempt go to pool-runs.seen), so a minute with no new red costs one call.
+# Summaries come from the home artifact store when the project's project-map.json tracker declares an
+# artifactStore (its lister in the clone, run as hub-core run_page does), else from GitHub's artifacts API.
 # Exit: 0 read (or another sync holds the lock), 1 gh could not list the runs, 2 usage or no checkout.
 set -uo pipefail
 
@@ -21,6 +23,7 @@ set -uo pipefail
 : "${POOL_FAILURES_RUNS:=20}" # red runs listed per sync; a new one is read once, so this only bounds a backfill
 LEDGER="${UNITY_POOL_FAILURES:-${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/pool-failures.tsv}"
 SEEN="$(dirname "$LEDGER")/pool-runs.seen"
+STORE_CMD="" STORE_REPO="" # set by sync from project-map.json (artifactStore, github)
 ARTIFACTS='^(playmode-summary|playmode-shard-[0-9]+|editmode-summary)$'
 GH_SECS=30     # guard on each gh call
 SYNC_SECS=60   # guard on the whole sync: the unit's TimeoutStartSec of 120 must leave the tick its time
@@ -54,18 +57,43 @@ worktrees() {
     /^branch refs\/heads\// { print substr($2, 12) "\t" wt }'
 }
 
+# store_t <args>: the repo's artifact lister (STORE_CMD, set by sync) under the same guard as gh_t.
+store_t() {
+  local left=$((deadline - SECONDS))
+  [ "$left" -gt 0 ] || return 124
+  timeout "$((left < GH_SECS ? left : GH_SECS))" env GITHUB_REPOSITORY="$STORE_REPO" python3 "$STORE_CMD" "$@"
+}
+
+# fetch_summaries <id> <dir>: the run's summary artifacts, each into <dir>/<name>, from the repo's home
+# artifact store when project-map.json declares one (artifactStore), else from GitHub's artifacts API.
+# Returns 1 when they could not be read; 0 with <dir> empty when the run has no summary.
+fetch_summaries() {
+  local id="$1" dir="$2" names n args=()
+  if [ -n "$STORE_CMD" ]; then
+    names="$(store_t ls "" --run "$id" | awk '{ print $1 }')" || return 1
+  else
+    names="$(gh_t api "repos/{owner}/{repo}/actions/runs/$id/artifacts?per_page=100" \
+      --jq '.artifacts[] | select(.expired | not) | .name')" || return 1
+  fi
+  names="$(grep -E "$ARTIFACTS" <<<"$names" | sort -u)"
+  # A red with no summary (the plan failed, a runner died before reporting) names no test.
+  [ -n "$names" ] || return 0
+  if [ -n "$STORE_CMD" ]; then
+    while IFS= read -r n; do
+      mkdir -p "$dir/$n" && store_t get "$n" --run "$id" --dir "$dir/$n" >/dev/null 2>&1 || return 1
+    done <<<"$names"
+  else
+    while IFS= read -r n; do args+=(-n "$n"); done <<<"$names"
+    gh_t run download "$id" -D "$dir" "${args[@]}" >/dev/null 2>&1 || return 1
+  fi
+}
+
 # read_run <id> <ended epoch> <branch> <worktrees file>: append the run's failed cases.
 # Returns 1 when its artifacts could not be read, so the next sync tries it again.
 read_run() {
-  local id="$1" end="$2" branch="$3" names dir wt n args=()
-  names="$(gh_t api "repos/{owner}/{repo}/actions/runs/$id/artifacts?per_page=100" \
-    --jq '.artifacts[] | select(.expired | not) | .name')" || return 1
-  names="$(grep -E "$ARTIFACTS" <<<"$names")"
-  # A red with no summary (the plan failed, a runner died before reporting) names no test.
-  [ -n "$names" ] || return 0
-  while IFS= read -r n; do args+=(-n "$n"); done <<<"$names"
+  local id="$1" end="$2" branch="$3" dir wt
   dir="$(mktemp -d)"
-  if ! gh_t run download "$id" -D "$dir" "${args[@]}" >/dev/null 2>&1; then
+  if ! fetch_summaries "$id" "$dir"; then
     rm -rf "$dir"; return 1
   fi
   wt="$(awk -F'\t' -v b="$branch" '$1 == b { print $2; exit }' "$4")"
@@ -80,6 +108,15 @@ sync() {
   . "$here/../../.config/shared-hooks/project-name.sh" || die "cannot load project-name.sh"
   checkout="$(project_repo_path "$POOL_FAILURES_PROJECT")"
   [ -d "$checkout" ] || die "no checkout of $POOL_FAILURES_PROJECT in project-map.json"
+  # artifactStore: the lister's path in the clone. A repo that declares one no longer uploads these
+  # artifacts to GitHub (unity-core-playground #3063), so GitHub is not read for it.
+  STORE_CMD="$(project_field "$POOL_FAILURES_PROJECT" artifactStore)"
+  if [ -n "$STORE_CMD" ]; then
+    STORE_REPO="$(project_field "$POOL_FAILURES_PROJECT" github)"
+    [ -n "$STORE_REPO" ] || die "$POOL_FAILURES_PROJECT has an artifactStore but no github slug in project-map.json"
+    STORE_CMD="$checkout/$STORE_CMD"
+    [ -f "$STORE_CMD" ] || die "artifact lister $STORE_CMD is missing"
+  fi
   mkdir -p "$(dirname "$LEDGER")"
   exec 9>"$SEEN.lock"
   flock -n 9 || return 0 # another sync is reading the same runs
