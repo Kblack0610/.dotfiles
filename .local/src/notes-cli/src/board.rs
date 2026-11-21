@@ -572,17 +572,89 @@ fn release_line(lane: Lane, line: &str) -> String {
     s
 }
 
-/// `notes board --version vX.Y.Z [--project N]...` - print every row aimed at that release,
-/// across every profile and both lanes: open rows first, then closed ones with their PRs.
+/// One row of the release view as `--version --json` prints it: the fields a version page draws.
+#[derive(Debug, serde::Serialize, PartialEq)]
+struct VersionRow {
+    id: Option<String>,
+    text: String,
+    /// `human` or `agent`: the sheet it is on.
+    lane: &'static str,
+    /// `open`, `doing`, `done`, or `dropped` (closed undelivered).
+    state: &'static str,
+    priority: &'static str,
+    weight: u32,
+    /// The PRs its marker names, as written (`owner/repo#N`, a bare `N`).
+    prs: Vec<String>,
+}
+
+impl VersionRow {
+    fn of(lane: Lane, line: &str) -> VersionRow {
+        VersionRow {
+            id: md::row_id(line),
+            text: md::task_text(line),
+            lane: lane.name(),
+            state: if md::is_dropped(line) {
+                "dropped"
+            } else if md::is_checked(line) {
+                "done"
+            } else if md::is_in_progress(line) {
+                "doing"
+            } else {
+                "open"
+            },
+            priority: md::priority_word(line),
+            weight: crate::projects::size_weight(line),
+            prs: md::pr_refs(line),
+        }
+    }
+}
+
+/// One project's share of a release in `--version --json`: its rows, open first, and the days
+/// of the window its version committed to, when one was recorded (`window::read`).
+#[derive(Debug, serde::Serialize)]
+struct VersionProject {
+    profile: String,
+    project: String,
+    opened: Option<String>,
+    due: Option<String>,
+    rows: Vec<VersionRow>,
+}
+
+impl VersionProject {
+    fn of(profile: &str, project: &str, dir: &std::path::Path, want: V) -> Option<Self> {
+        let (open, closed) = release_view(dir, want);
+        if open.is_empty() && closed.is_empty() {
+            return None;
+        }
+        let snap = crate::window::read(dir, want);
+        Some(VersionProject {
+            profile: profile.to_string(),
+            project: project.to_string(),
+            opened: snap.as_ref().map(|s| s.opened.to_string()),
+            due: snap.and_then(|s| s.due).map(|d| d.to_string()),
+            rows: open
+                .iter()
+                .chain(&closed)
+                .map(|(l, r)| VersionRow::of(*l, r))
+                .collect(),
+        })
+    }
+}
+
+/// `notes board --version vX.Y.Z [--project N]... [--json]` - print every row aimed at that
+/// release, across every profile and both lanes: open rows first, then closed ones with their
+/// PRs. With `--json`, the same rows as `{version, projects: [VersionProject]}`, the feed the
+/// hub's version page reads (hub-core `version_page`).
 ///
 /// READ-ONLY, like `--agent`: a release is a filter over the one list, so this is a view of the
 /// sheets and the frozen notes, never a store. It shows what `notes projects --release` would
 /// gate on (the open rows) and freeze (the closed ones). Exits 0 with no rows.
-pub fn print_version(version: &str, projects: &[String]) -> Result<i32> {
+pub fn print_version(version: &str, projects: &[String], json: bool) -> Result<i32> {
     let want = crate::projects::parse_version(version.trim())
         .ok_or_else(|| anyhow::anyhow!("--version wants vX.Y.Z, got '{version}'"))?;
     let ver = crate::projects::fmt_version(want);
     let wanted: Vec<String> = projects.iter().map(|p| p.to_lowercase()).collect();
+    let mut feed: Vec<VersionProject> = Vec::new();
     let mut out = String::new();
     let (mut n_open, mut n_closed) = (0, 0);
     for name in config::all_profile_names()? {
@@ -596,6 +668,10 @@ pub fn print_version(version: &str, projects: &[String]) -> Result<i32> {
             let Some(dir) = summary.parent() else {
                 continue;
             };
+            if json {
+                feed.extend(VersionProject::of(&name, &proj, dir, want));
+                continue;
+            }
             let (open, closed) = release_view(dir, want);
             if open.is_empty() && closed.is_empty() {
                 continue;
@@ -612,6 +688,13 @@ pub fn print_version(version: &str, projects: &[String]) -> Result<i32> {
                 out.push('\n');
             }
         }
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({ "version": ver, "projects": feed })
+        );
+        return Ok(0);
     }
     println!("# {ver} - {n_open} open, {n_closed} closed");
     if out.is_empty() {
@@ -1706,6 +1789,45 @@ mod tests {
         assert!(open.is_empty());
         let closed: Vec<String> = closed.iter().map(|(l, r)| release_line(*l, r)).collect();
         assert_eq!(closed, vec!["- [x] frozen row (pr:3)"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_version_feed_row_carries_its_state_lane_and_prs() {
+        let row = |l: &str| VersionRow::of(Lane::Agent, l);
+        let r = row("- [x] feat(a): shipped #high <!-- id:ar-1 pr:o/r#7 -->");
+        assert_eq!(
+            (r.id.as_deref(), r.state, r.lane, r.priority, r.prs.clone()),
+            (Some("ar-1"), "done", "agent", "high", vec!["o/r#7".to_string()])
+        );
+        assert_eq!(r.text, "feat(a): shipped");
+        assert_eq!(row("- [/] doing it").state, "doing");
+        // Negative control: a closed row closed undelivered is dropped, never done.
+        assert_eq!(
+            row("- [x] gone <!-- dropped: superseded -->").state,
+            "dropped"
+        );
+        assert_eq!(row("- [ ] todo").state, "open");
+    }
+
+    #[test]
+    fn a_version_feed_project_has_its_rows_and_window_days_and_none_with_no_row() {
+        let dir = sheet("relfeed", RELEASE_SHEET);
+        std::fs::create_dir_all(dir.join("agent/versions")).unwrap();
+        std::fs::write(
+            dir.join("agent/versions/v1.13.0.md"),
+            "# n\n\n## Committed\n<!-- window: opened=2026-11-18 due=2026-11-19 -->\n- open now\n",
+        )
+        .unwrap();
+        let p = VersionProject::of("bnb", "demo", &dir, (1, 13, 0)).unwrap();
+        assert_eq!(
+            (p.opened.as_deref(), p.due.as_deref()),
+            (Some("2026-11-18"), Some("2026-11-19"))
+        );
+        let states: Vec<&str> = p.rows.iter().map(|r| r.state).collect();
+        assert_eq!(states, vec!["open", "done", "done"]);
+        // Negative control: a release nothing is aimed at lists no project.
+        assert!(VersionProject::of("bnb", "demo", &dir, (2, 0, 0)).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

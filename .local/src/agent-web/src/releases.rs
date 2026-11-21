@@ -226,6 +226,52 @@ pub async fn release(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
 }
 
+/// `/api/releases/version?project=&version=`, a version page's read.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct VersionQuery {
+    pub project: String,
+    pub version: String,
+}
+
+/// `#releases/versions/<project>/<version>` (`hub_core::version_page`): the rows aimed at the
+/// version, then each app's cut of it, from the same reads as the release page. A 404 when no app
+/// of the project has a cut of it and no row names it.
+pub async fn version(
+    q: VersionQuery,
+    (items, queue_error): (Vec<Item>, Option<String>),
+) -> Result<String, (StatusCode, String)> {
+    let runs = crate::builds::current((items.clone(), None)).await;
+    let read = move || {
+        let rel = releases::read(&System, &items);
+        let mut errors: Vec<String> = rel.errors.clone();
+        errors.extend(queue_error);
+        let b = runs.unwrap_or_else(|e| {
+            Arc::new(hub_core::builds::Builds {
+                errors: vec![format!("build runs: {e}")],
+                ..Default::default()
+            })
+        });
+        errors.extend(b.errors.iter().cloned());
+        let jobs = hub_core::builds::Paths::from_env().jobs;
+        let page = hub_core::version_page::read(
+            &System, &rel, &b.rows, &items, &jobs, &q.project, &q.version,
+        )
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            format!(
+                "{} has no cut of version {} and no row names it",
+                q.project, q.version
+            ),
+        ))?;
+        serde_json::to_string(&serde_json::json!({ "page": page, "errors": errors }))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    };
+    tokio::task::spawn_blocking(read)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+}
+
 impl crate::infra::Pages {
     /// `#releases/apps/<app>`'s read (`hub_core::app_status`): release-state and eight
     /// VictoriaMetrics queries, so it is kept `CACHE_SECS` like a machine's page.

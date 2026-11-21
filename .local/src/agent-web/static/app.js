@@ -349,7 +349,7 @@ const PROJECT_RETIRED = {"build":"deliverables"};
 // hub_core::links::PAGES and RETIRED_PAGES: a record's page inside an inner tab, by its
 // `#tab/<word>/<id>` word (`ci` is a run page's old word), and the inner tab it opens on.
 // assets.rs `entity_pages_are_the_links` fails when this line drifts.
-const ENTITY_PAGES = {"sessions":{"runners":"runners","sessions":"sessions"},"infra":{"machines":"machines","pools":"machines","runs":"runs","jobs":"jobs","ci":"runs"},"releases":{"apps":"apps"}};
+const ENTITY_PAGES = {"sessions":{"runners":"runners","sessions":"sessions"},"infra":{"machines":"machines","pools":"machines","runs":"runs","jobs":"jobs","ci":"runs"},"releases":{"apps":"apps","versions":"apps"}};
 // hub_core::links::RETIRED_TAB_PAGES: a retired tab whose `#tab/<id>` was a record's page, as
 // [tab, word] of that page now and the key prefix its table's view took there, so `#fleet/<runner>`
 // is `#sessions/runners/<runner>` and `#fleet?s=failed` is `#sessions/runners?rs=failed`.

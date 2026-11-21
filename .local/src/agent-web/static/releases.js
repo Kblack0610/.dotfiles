@@ -18,6 +18,12 @@ const REL_OPEN = {};
 const relPage = () => pageId("releases", "apps");
 const relApp = () => relPage().split("/")[0];
 const relVer = () => { const p = relPage(), at = p.indexOf("/"); return at < 0 ? "" : p.slice(at + 1); };
+// What the URL has open after `versions/`: a project and a version (`unity-core-playground/0.5.3`,
+// hub_core::version_page), or "".
+const relVersion = () => pageId("releases", "versions");
+const relVersionOf = () => { const p = relVersion(), at = p.indexOf("/"); return at < 0 ? [p, ""] : [p.slice(0, at), p.slice(at + 1)]; };
+// Any page in place of the table: an app's, a release's or a version's.
+const relDetail = () => relPage() || relVersion();
 const relst = tblTab({
   tab: "releases", id: "rel", el: "releases", api: "/api/releases", hint: "search, or stage:alpha channel:prod status:drift",
   open: () => REL_OPEN,
@@ -25,7 +31,7 @@ const relst = tblTab({
   // page opens (a read with no app closes it), so a reopened app shows its newest tags.
   params: (p) => { if (relApp()) p.set("app", relApp()); },
   got: (t) => { const a = t.data?.app; if (!a) relOpened = null; else if (relOpened !== a.project) { relOpened = a.project; loadChangelog(a.project); } },
-  draw: (html) => paint($("releases"), relPage() ? innerStrip("releases", relFlagged()) + innerWrap("releases", "detail", relVer() ? releasePage() : appPage(relst.data)) : html, REL_OPEN),
+  draw: (html) => paint($("releases"), relDetail() ? innerStrip("releases", relFlagged()) + innerWrap("releases", "detail", relVersion() ? versionPage() : relVer() ? releasePage() : appPage(relst.data)) : html, REL_OPEN),
   head: (t) => innerStrip("releases", relFlagged()) + innerWrap("releases", "table", releasesHead(t.data)),
   lead: () => innerStrip("releases", relFlagged()),
   body: (t) => releasesBody(t.data), tiles: (t) => releasesTiles(t.data),
@@ -225,7 +231,7 @@ const relFlow = { project: "", window: "", data: null, err: null };
 const REL_FLOW_COLOR = { green: "var(--idle)", red: "var(--wait)", running: "var(--accent)", queued: "var(--busy)", tag: "var(--c5)", reached: "var(--c6)" };
 const relFlowColor = (k) => REL_FLOW_COLOR[k] || OTHER;
 const relFlowAsked = () => new URLSearchParams({ project: relFlow.project, window: relFlow.window }).toString();
-const relFlowOn = () => st.tab === "releases" && !relPage() && innerOf("releases", st.arg)[0] === "flow";
+const relFlowOn = () => st.tab === "releases" && !relDetail() &&innerOf("releases", st.arg)[0] === "flow";
 // A read for a project or window picked since it started is dropped; a failed one keeps the last up.
 const relFlowRefresh = coalesce(async () => {
   const asked = relFlowAsked();
@@ -271,7 +277,7 @@ const refreshAppPage = coalesce(async () => {
   if (st.page === page) relst.render();
 });
 // The open app's page, or the table's CHECKS column, re-read each minute while it shows.
-const pollAppPage = poll("releases", () => (relVer() ? refreshRelease() : relPage() ? refreshAppPage() : relst.refresh()), APP_PAGE_REFRESH_MS);
+const pollAppPage = poll("releases", () => (relVersion() ? refreshVersion() : relVer() ? refreshRelease() : relPage() ? refreshAppPage() : relst.refresh()), APP_PAGE_REFRESH_MS);
 
 // A release's page, `#releases/apps/<app>/<version>` (hub_core::release_page): the cut on show as
 // a pipeline (the tag, the runs it started, the runs those started, the channels), then every cut
@@ -297,6 +303,25 @@ function relAction(a) {
     jobs.map(job).join("") + (green ? `<div class="muted">${green} job${green === 1 ? "" : "s"} green</div>` : "") +
     (a.jobs_note ? `<div class="muted">${esc(a.jobs_note)}</div>` : "") + `</div>`;
 }
+// One release_page::Page's pipeline (the cut on show: tag, runs by what started them, channels)
+// and its cuts table, under headings at `tag` (h2 on a release's page, h3 inside a version's).
+function relPipeline(p, tag = "h2") {
+  const box = `<div class="rcol"><div class="muted">Tag</div><div class="rjob"><b>${esc(p.tag)}</b><div class="muted">tagged ${esc(p.at_text)}</div>` +
+    `${p.sha ? `<div class="muted">${esc(p.sha.slice(0, 9))}</div>` : ""}</div></div>`;
+  const stages = p.stages.map((s) => `<div class="rcol"><div class="muted">${esc(s.label)}</div>${s.actions.map(relAction).join("")}</div>`).join("") ||
+    `<div class="rcol"><div class="muted">Runs</div><div class="rjob muted">no run of this cut in the ledger</div></div>`;
+  const chans = `<div class="rcol"><div class="muted">Channels</div>` + (p.channels_note ? `<div class="rjob muted">${esc(p.channels_note)}</div>` : "") +
+    p.channels.map((c) => `<div class="rjob${c.reached ? " green" : ""}"><b>${esc(c.id)}</b><div class="${c.reached ? "" : "muted"}">${esc(c.text)}</div></div>`).join("") + `</div>`;
+  const pipe = secHead("", "Pipeline", undefined, undefined, tag) + `<div class="panel"><div class="rgraph">${box}${stages}${chans}</div>` +
+    `<div class="cline"><b>PRs</b> ${esc(p.prs_text)} <b>Rows</b> ${esc(p.rows_text)}</div></div>`;
+  const wf = p.workflows.map((w) => `<th>${esc(w)}</th>`).join("");
+  const res = (r) => `<td class="${r === "red" ? "bad" : r === "green" ? "" : "muted"}">${esc(r)}</td>`;
+  const rows = p.cuts.map((c) => `<tr class="${c.tag === p.tag ? "sel" : ""}"><td><a href="${esc(c.href)}">${esc(c.tag)}</a></td><td class="n">${esc(c.at_text)}</td>` +
+    `<td class="${levelClass(c.level)}">${esc(c.state)}</td>${c.results.map(res).join("")}<td class="wrap muted">${esc(c.reached_text)}</td><td class="wrap muted">${esc(c.prs_text)}</td></tr>`).join("");
+  const cuts = secHead("", "Cuts", p.cuts.length, undefined, tag) + `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">cut</th><th class="n" data-role="glance">tagged</th>` +
+    `<th data-role="glance">state</th>${wf}<th>reached</th><th>prs</th></tr>${rows}</table>${p.note ? `<div class="cline muted">${esc(p.note)}</div>` : ""}</div>`;
+  return pipe + cuts;
+}
 function releasePage() {
   const app = relApp(), ver = relVer(), d = rlst.data, p = d?.page;
   const back = p?.app_href ? `<a class="btn sm" href="${esc(p.app_href)}">${esc(app)}</a>` : "";
@@ -306,21 +331,49 @@ function releasePage() {
   // The server echoes the version it was asked for, so an answer for another page is never drawn.
   if (!p || d.asked !== ver) return head(esc(ver)) + down + (rlst.err ? "" : `<div class="empty">reading...</div>`);
   const cut = p.cuts.find((c) => c.tag === p.tag) || {};
-  const tag = `<div class="rcol"><div class="muted">Tag</div><div class="rjob"><b>${esc(p.tag)}</b><div class="muted">tagged ${esc(p.at_text)}</div>` +
-    `${p.sha ? `<div class="muted">${esc(p.sha.slice(0, 9))}</div>` : ""}</div></div>`;
-  const stages = p.stages.map((s) => `<div class="rcol"><div class="muted">${esc(s.label)}</div>${s.actions.map(relAction).join("")}</div>`).join("") ||
-    `<div class="rcol"><div class="muted">Runs</div><div class="rjob muted">no run of this cut in the ledger</div></div>`;
-  const chans = `<div class="rcol"><div class="muted">Channels</div>` + (p.channels_note ? `<div class="rjob muted">${esc(p.channels_note)}</div>` : "") +
-    p.channels.map((c) => `<div class="rjob${c.reached ? " green" : ""}"><b>${esc(c.id)}</b><div class="${c.reached ? "" : "muted"}">${esc(c.text)}</div></div>`).join("") + `</div>`;
-  const pipe = secHead("", "Pipeline") + `<div class="panel"><div class="rgraph">${tag}${stages}${chans}</div>` +
-    `<div class="cline"><b>PRs</b> ${esc(p.prs_text)} <b>Rows</b> ${esc(p.rows_text)}</div></div>`;
-  const wf = p.workflows.map((w) => `<th>${esc(w)}</th>`).join("");
-  const res = (r) => `<td class="${r === "red" ? "bad" : r === "green" ? "" : "muted"}">${esc(r)}</td>`;
-  const rows = p.cuts.map((c) => `<tr class="${c.tag === p.tag ? "sel" : ""}"><td><a href="${esc(c.href)}">${esc(c.tag)}</a></td><td class="n">${esc(c.at_text)}</td>` +
-    `<td class="${levelClass(c.level)}">${esc(c.state)}</td>${c.results.map(res).join("")}<td class="wrap muted">${esc(c.reached_text)}</td><td class="wrap muted">${esc(c.prs_text)}</td></tr>`).join("");
-  const cuts = secHead("", "Cuts", p.cuts.length) + `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">cut</th><th class="n" data-role="glance">tagged</th>` +
-    `<th data-role="glance">state</th>${wf}<th>reached</th><th>prs</th></tr>${rows}</table>${p.note ? `<div class="cline muted">${esc(p.note)}</div>` : ""}</div>`;
-  return head(`<b>${esc(p.version)}</b> <span class="${levelClass(cut.level)}">${esc(cut.state || "")}</span>`) + down + pipe + cuts;
+  const up = p.version_href ? `<div class="cline"><a href="${esc(p.version_href)}">every app's cut of ${esc(p.version)}, and its rows</a></div>` : "";
+  return head(`<b>${esc(p.version)}</b> <span class="${levelClass(cut.level)}">${esc(cut.state || "")}</span>`) + down + up + relPipeline(p);
+}
+
+// A version's page, `#releases/versions/<project>/<version>` (hub_core::version_page): the header
+// (status, newest cut, window days), a bar of its rows by state, every row aimed at it with who
+// works it and its PRs, then each app's cut of it, linked to that app's release page.
+const vrst = { page: "", data: null, err: null };
+const refreshVersion = coalesce(async () => {
+  const page = st.page, [project, version] = relVersionOf();
+  if (!version || vrst.page !== page) return;
+  let data = null, err = null;
+  try { data = await api(`/api/releases/version?project=${encodeURIComponent(project)}&version=${encodeURIComponent(version)}`); } catch (e) { err = e.message; }
+  if (vrst.page !== page) return;
+  if (data) vrst.data = data;
+  vrst.err = err;
+  if (st.page === page) relst.render();
+});
+const VER_BAR = [["done", "ok"], ["doing", "doing"], ["open", ""], ["dropped", "dropped"]];
+function versionPage() {
+  const [project, version] = relVersionOf(), d = vrst.data, p = d?.page;
+  const head = (inner) => `<div class="bhead"><span>Releases / ${p?.project_href ? `<a href="${esc(p.project_href)}">${esc(project)}</a>` : esc(project)} / ${inner}</span></div>`;
+  const errs = [vrst.err, ...(d?.errors || []), ...(p?.errors || [])].filter(Boolean);
+  const down = errs.length ? `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>` : "";
+  if (!p) return head(esc(version)) + down + (vrst.err ? "" : `<div class="empty">reading...</div>`);
+  const b = p.bar, total = b.done + b.doing + b.open + b.dropped;
+  const bar = total ? `<div class="kbar">${VER_BAR.map(([k, c]) => (b[k] ? `<i class="${c}" style="flex:${b[k]}" title="${b[k]} ${k}"></i>` : "")).join("")}</div>` : "";
+  const facts = `<div class="panel"><div class="cline"><b>Cut</b> ${esc(p.cut_text)} <b>Opened</b> ${esc(p.opened_text)} <b>Due</b> ${esc(p.due_text)}</div>${bar}` +
+    `<div class="cline muted">${VER_BAR.map(([k]) => `${b[k]} ${k}`).join(", ")}</div></div>`;
+  const pr = (c) => (c.url ? `<a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.text)}</a>` : esc(c.text)) + (c.state ? ` <span class="muted">${esc(c.state)}</span>` : "");
+  const who = (r) => (r.assignee ? `<a href="${esc(r.assignee_href)}">${esc(r.assignee)}</a> <span class="muted">${esc(r.assignee_state)}</span>` : `<span class="muted">-</span>`);
+  const rows = p.rows.map((r) => `<tr><td>${r.href ? `<a href="${esc(r.href)}">${esc(r.id)}</a>` : "-"}</td><td class="wrap">${esc(r.title)}</td>` +
+    `<td class="${levelClass(r.level)}">${esc(r.state)}</td><td>${esc(r.priority)}</td><td>${who(r)}</td><td class="wrap">${r.prs.map(pr).join(", ") || `<span class="muted">-</span>`}</td></tr>`).join("");
+  const table = secHead("", "Rows", p.rows.length) + `<div class="panel scroll">` + (p.rows_note ? `<div class="cline muted">${esc(p.rows_note)}</div>` : "") +
+    (rows ? `<table class="tbl"><tr><th data-role="lead">row</th><th>title</th><th data-role="glance">state</th><th>priority</th><th>assignee</th><th>prs</th></tr>${rows}</table>` : "") + `</div>`;
+  const app = (a) => `<tr><td>${a.href ? `<a href="${esc(a.href)}">${esc(a.app)}</a>` : esc(a.app)}</td><td>${esc(a.tag || "-")}</td>` +
+    `<td class="${levelClass(a.level)}">${esc(a.state)}</td><td class="wrap muted">${esc(a.reached_text || "-")}</td><td>${a.fixing ? esc(a.fixing) : `<span class="muted">-</span>`}</td>` +
+    `<td class="n">${a.page ? a.page.cuts.length : 0}</td></tr>`;
+  const apps = secHead("", "Apps", p.apps.length) + `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">app</th><th>cut</th><th data-role="glance">state</th>` +
+    `<th>reached</th><th>fixing</th><th class="n">cuts</th></tr>${p.apps.map(app).join("")}</table></div>`;
+  // Each app's cut as its release page draws it: the pipeline, then every cut of the version.
+  const pipes = p.apps.filter((a) => a.page).map((a) => secHead("", `${a.app} ${a.tag}`, undefined, a.level) + relPipeline(a.page, "h3")).join("");
+  return head(`<b>${esc(p.version)}</b> <span class="${levelClass(p.level)}">${esc(p.status)}</span>`) + down + facts + table + apps + pipes;
 }
 // A day's bar colour: no results grey, no failure green, under 1% failed amber, more red.
 function dayColor(d) {
@@ -414,9 +467,10 @@ const ageReleases = poll("releases", () => relst.render(), RELEASES_AGE_MS);
 TABS.releases = {
   // Always read: a link from a Projects card arrives here with a new view in the URL.
   show() {
-    const page = relPage() ? st.page : "";
+    const page = relDetail() ? st.page : "";
     if (page !== apst.page) Object.assign(apst, { page, data: null, err: null });
     if (page !== rlst.page) { Object.assign(rlst, { page, data: null, err: null }); if (relVer()) refreshRelease(); }
+    if (page !== vrst.page) { Object.assign(vrst, { page, data: null, err: null }); if (relVersion()) refreshVersion(); }
     relFeed.show(true); relRunsFeed.show(true); ageReleases(); pollAppPage();
     if (relFlowOn()) relFlowFeed.show(!relFlow.data);
   },

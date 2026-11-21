@@ -204,8 +204,9 @@ enum Cmd {
         /// Print the release view instead of writing the board: every row aimed at
         /// vX.Y.Z, open and closed, both lanes, with the closed rows' PRs. A row's release
         /// is its `#vX.Y.Z` tag, or its sheet's `Version:` when untagged; rows already frozen
-        /// into `versions/vX.Y.Z.md` are included. READ-ONLY
-        #[arg(long, value_name = "vX.Y.Z", conflicts_with_all = ["json", "agent"])]
+        /// into `versions/vX.Y.Z.md` are included. With --json, the same rows as JSON (id,
+        /// state, lane, priority, PRs) with each project's window days. READ-ONLY
+        #[arg(long, value_name = "vX.Y.Z", conflicts_with_all = ["agent", "done_days"])]
         version: Option<String>,
         /// Limit to these projects (repeatable). Names are the LAB project names, which
         /// are not the same namespace as the agent-side project name: a session in
@@ -1755,7 +1756,7 @@ fn main() -> Result<()> {
             projects,
         } => {
             if let Some(v) = version {
-                board::print_version(&v, &projects)?
+                board::print_version(&v, &projects, json)?
             } else if json {
                 board::print_json(done_days)?
             } else if agent {

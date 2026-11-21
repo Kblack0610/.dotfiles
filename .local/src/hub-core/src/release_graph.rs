@@ -117,6 +117,8 @@ pub struct Shipment {
     pub rows_text: String,
     /// Its release page (`release_page::link`), set where the app is known.
     pub href: String,
+    /// Its tag's [`Tag::provenance`]: `flow`, `legacy`, `outside`, or empty before provenance.
+    pub provenance: String,
 }
 
 /// The release a run made or ran for. It serializes with the `href` of its release page
@@ -1385,6 +1387,7 @@ pub fn history(line: &Line, channels: &[Release]) -> Vec<Shipment> {
                 rows: vec![],
                 rows_text: "not recorded".into(),
                 href: String::new(),
+                provenance: t.provenance.clone(),
             }
         })
         .collect()
