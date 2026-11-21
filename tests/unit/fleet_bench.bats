@@ -7807,7 +7807,8 @@ alert_setup() {
   export TRIAGE_PINS_CMD=pins-stub; echo '{"data":{}}' > "$SANDBOX/pins.json"
   printf '#!/usr/bin/env bash\ncat %q\n' "$SANDBOX/pins.json" > "$SANDBOX/bin/pins-stub"; chmod +x "$SANDBOX/bin/pins-stub"
   watch alertmanager-fleet TRIP -25200 high
-  printf 'TRIP exit 1 (want 0)\nConvergenceDrift deskslim-1\nConvergenceDrift razer-laptop\nHomelabCronJobFailed nas/bark-archive\nTraderRunFailed trader-web walkforward\nfleet=fix firing: ConvergenceDrift deskslim-1; x\n' \
+  # the probe's `page:` line (its trip's level, watch-companion-loop) is not an alert row
+  printf 'TRIP exit 1 (want 0)\nConvergenceDrift deskslim-1\nConvergenceDrift razer-laptop\nHomelabCronJobFailed nas/bark-archive\nTraderRunFailed trader-web walkforward\npage: urgent\nfleet=fix firing: ConvergenceDrift deskslim-1; x\n' \
     > "$TRIAGE_WATCH_STATE/alertmanager-fleet.out"
 }
 
