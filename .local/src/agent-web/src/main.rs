@@ -20,7 +20,6 @@ mod builds;
 mod cache;
 mod cards;
 mod cli;
-mod cloud;
 mod costs;
 mod deliverables;
 mod departments;
@@ -233,7 +232,6 @@ fn router(state: Shared) -> Router {
         .route("/api/infra", get(infra_board))
         .route("/api/infra/machine", get(infra_machine))
         .route("/api/infra/pool", get(infra_pool))
-        .route("/api/cloud-runner", post(cloud::set))
         .route("/api/fleet", get(fleet_board))
         .route("/api/fleet/runner", get(fleet_runner))
         .route("/api/flow", get(flow_strip))
