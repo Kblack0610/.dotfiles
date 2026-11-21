@@ -1,9 +1,9 @@
 #!/usr/bin/env bats
 # ai_agents.sh: the waybar agents chip, the one overview of live agent sessions. The bar is the
-# fleet total and three counts within it from fleet-sessions on Prometheus, ~ working in amber, a check mark ready (LANDED or DONE)
-# in green and ! need you in red, after a robot coloured by fleet health; the hover has the stage counts, then a section per tmux world
-# with its counts and a row per session with its idle time, plus why for one that needs you or is stalled; past HOVER_MAX_ROWS the
-# need-you and stalled rows are kept first and a last line counts the rest (dashboards.md rule 3). What these pin: the bar is four
+# fleet total and two counts within it from fleet-sessions on Prometheus, ~ working in amber and a check mark ready (LANDED or DONE)
+# in green, after a robot coloured by fleet health (what needs you is custom/needs, not this chip); the hover has the stage counts, then a section per tmux world
+# with its counts and a row per session with its idle time, plus why for one that is waiting or stalled; past HOVER_MAX_ROWS the
+# waiting and stalled rows are kept first and a last line counts the rest (dashboards.md rule 3). What these pin: the bar is three
 # numbers whatever the fleet's size (a group per project pushed the clock off the bar); the total is every session on every host,
 # chat, stalled and parked included, so it reads as the whole fleet; sessions group by world, not repo; a long fleet is capped,
 # never cut by the screen edge; a stalled session or a stale textfile turns the robot red, an unclear
@@ -18,9 +18,8 @@ setup() {
   MODULE="$REPO_ROOT/.config/waybar/ai_agents.sh"
   ICON=$'\U000f06a9' CK=$'\u2713' # as escapes so no editor can strip them
   G="#a6e34a" Y="#ffcc2f" R="#ef5734"
-  # bar <health colour> <total> <working> <ready> <need>: the chip text.
-  bar() { printf "<span color='%s'>%s</span> %s  <span color='$Y'>~:%s</span>  <span color='$G'>%s:%s</span>  %s" "$1" "$ICON" "$2" "$3" "$CK" "$4" "$(need "$5")"; }
-  need() { if [ "$1" = 0 ]; then printf '!:0'; else printf "<span color='$R'>!:%s</span>" "$1"; fi; }
+  # bar <health colour> <total> <working> <ready>: the chip text.
+  bar() { printf "<span color='%s'>%s</span> %s  <span color='$Y'>~:%s</span>  <span color='$G'>%s:%s</span>" "$1" "$ICON" "$2" "$3" "$CK" "$4"; }
   export CC_PROM_URL=http://prom.test FX="$BATS_TEST_TMPDIR" AGENTS_NOW=100000
   cat > "$SANDBOX/bin/curl" <<'STUB'
 #!/usr/bin/env bash
@@ -82,18 +81,20 @@ text() { jq -r .text <<< "$output"; }
 class() { jq -r .class <<< "$output"; }
 tip() { jq -r .tooltip <<< "$output"; }
 
-@test "the bar is a green robot and amber working, green ready and red need-you totals, however many" {
+@test "the bar is a green robot and amber working and green ready totals, however many, and no need-you count" {
   feed hub/dotfiles:1=WORKING:30 hub/dotfiles:2=NEEDS:90:20 lab/uc-agent-1:1=WORKING:10 \
     lab/uc-agent-2:1=LANDED:300 lab/uc-agent-3:1=DONE:400 lab/uc-agent-4:1=PARKED:50
   run "$MODULE"
   assert_success
-  assert_equal "$(text)" "$(bar "$G" 6 2 2 1)"
+  assert_equal "$(text)" "$(bar "$G" 6 2 2)"
+  # Negative control: a NEEDS session is on the bar only through custom/needs, Home's one count.
+  [[ "$(text)" != *'!:'* ]]
   assert_equal "$(class)" ok
   local args=() i
   for i in $(seq 1 40); do args+=("lab/uc-agent-1$i:1=WORKING:5"); done
   feed "${args[@]}"
   run "$MODULE"
-  assert_equal "$(text)" "$(bar "$G" 40 40 0 0)"
+  assert_equal "$(text)" "$(bar "$G" 40 40 0)"
 }
 
 @test "the hover groups by world, not repo, and lists every session worst first, why only on what wants you" {
@@ -101,8 +102,8 @@ tip() { jq -r .tooltip <<< "$output"; }
     lab/uc-agent-1:1=WORKING:10 lab/uc-agent-2:1=DONE:400 lab/uc-agent-9:1=STALLED:200:80:"PR #7 CI red"
   run "$MODULE"
   run tip
-  assert_line --index 0 "<b>Sessions</b>  6 total, 5 in progress: <span color='$Y'>1</span> need you, <span color='$Y'>1</span> stalled, 1 done, 3 working"
-  assert_line --index 2 "<b>hub</b>  2 in progress: <span color='$Y'>1</span> need you, 1 working"
+  assert_line --index 0 "<b>Sessions</b>  6 total, 5 in progress: <span color='$Y'>1</span> waiting, <span color='$Y'>1</span> stalled, 1 done, 3 working"
+  assert_line --index 2 "<b>hub</b>  2 in progress: <span color='$Y'>1</span> waiting, 1 working"
   assert_line --index 3 "<tt>NEEDS    shepherd:2         idle 20m    1 pending ask(s)"
   assert_line --index 4 "WORKING  dotfiles:1         idle 3m</tt>"
   assert_line --index 5 "<b>lab</b>  3 in progress: <span color='$Y'>1</span> stalled, 1 done, 2 working"
@@ -164,7 +165,7 @@ tip() { jq -r .tooltip <<< "$output"; }
 @test "a stalled session turns the robot amber, leads the hover and heads its world" {
   feed lab/uc-agent-1:1=WORKING:10 lab/uc-agent-9:1=STALLED:200:80:"PR #9 conflicts"
   run "$MODULE"
-  assert_equal "$(text)" "$(bar "$Y" 2 1 0 0)"
+  assert_equal "$(text)" "$(bar "$Y" 2 1 0)"
   assert_equal "$(class)" warn
   run tip
   assert_line --index 1 "<span color='$Y'>1 session(s) STALLED: unlanded work and idle, or a ready PR that conflicts</span>"
@@ -193,7 +194,7 @@ tip() { jq -r .tooltip <<< "$output"; }
 @test "a CHAT session is counted, has a plain row and leaves the robot green: the human's conversation is not attention" {
   feed hub/dotfiles:1=CHAT:10
   run "$MODULE"
-  assert_equal "$(text)" "$(bar "$G" 1 0 0 0)"
+  assert_equal "$(text)" "$(bar "$G" 1 0 0)"
   assert_equal "$(class)" inactive
   run tip
   assert_output --partial "1 total, 0 in progress: 1 chat"
@@ -213,7 +214,7 @@ tip() { jq -r .tooltip <<< "$output"; }
 @test "every textfile stale is red with no sessions and no false bucket-order warning" {
   feed mtime=900
   run "$MODULE"
-  assert_equal "$(text)" "$(bar "$R" 0 0 0 0)"
+  assert_equal "$(text)" "$(bar "$R" 0 0 0)"
   assert_equal "$(class)" critical
   run tip
   assert_output --partial "fleet_sessions.prom on h1 is 15m old"
@@ -224,7 +225,7 @@ tip() { jq -r .tooltip <<< "$output"; }
 @test "a stale textfile beside a fresh one is named once by its instance in amber, and the robot is not red" {
   feed hub/dotfiles:1=WORKING:10 stale=183000
   run "$MODULE"
-  assert_equal "$(text)" "$(bar "$Y" 1 1 0 0)"
+  assert_equal "$(text)" "$(bar "$Y" 1 1 0)"
   assert_equal "$(class)" warn
   run tip
   assert_equal "$(grep -c 'fleet_sessions.prom on' <<< "$output")" 1
@@ -236,7 +237,7 @@ tip() { jq -r .tooltip <<< "$output"; }
 @test "a fresh textfile alone has no stale line and a green robot" {
   feed hub/dotfiles:1=WORKING:10
   run "$MODULE"
-  assert_equal "$(text)" "$(bar "$G" 1 1 0 0)"
+  assert_equal "$(text)" "$(bar "$G" 1 1 0)"
   run tip
   refute_output --partial "fleet_sessions.prom on"
 }
@@ -259,7 +260,7 @@ tip() { jq -r .tooltip <<< "$output"; }
 @test "a second scrape of a session counts once" {
   feed hub/dotfiles:1=WORKING:10 dup:hub/dotfiles:1=WORKING:10
   run "$MODULE"
-  assert_equal "$(text)" "$(bar "$G" 1 1 0 0)"
+  assert_equal "$(text)" "$(bar "$G" 1 1 0)"
 }
 
 @test "the total is the whole fleet: chat, stalled and parked sessions, a worker's too, are in it" {
@@ -267,7 +268,7 @@ tip() { jq -r .tooltip <<< "$output"; }
     lab/uc-agent-3:1=STALLED:200:80 razer@lab/dotfiles-agent-4:1=CHAT:300 \
     razer@lab/dotfiles-agent-5:1=CHAT:300 lab/uc-agent-6:1=PARKED:50
   run "$MODULE"
-  assert_equal "$(text)" "$(bar "$Y" 7 1 1 1)"
+  assert_equal "$(text)" "$(bar "$Y" 7 1 1)"
   run tip
   assert_line --index 0 --partial "<b>Sessions</b>  7 total, 3 in progress: "
 }
@@ -275,7 +276,7 @@ tip() { jq -r .tooltip <<< "$output"; }
 @test "no sessions with a fresh textfile is inactive zeros" {
   feed
   run "$MODULE"
-  assert_equal "$(text)" "$(bar "$G" 0 0 0 0)"
+  assert_equal "$(text)" "$(bar "$G" 0 0 0)"
   assert_equal "$(class)" inactive
 }
 

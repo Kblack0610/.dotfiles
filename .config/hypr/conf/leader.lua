@@ -51,6 +51,7 @@ local function paused(script) return float("sh -c '" .. script .. " ; echo ; rea
 -- dropdown, anything else is a Noctalia panel id and its context. While the submap is open
 -- each of these chips shows its key in the bar.
 local PANELS = {
+    { "u", "needs you", "custom/needs" },
     { "h", "health", "custom/health" }, { "f", "fleet", "custom/fleet" },
     { "p", "projects", "custom/projects" }, { "a", "agents", "custom/ai-agents" },
     { "d", "queue", "custom/queue" }, { "c", "ci", "custom/ci" },
