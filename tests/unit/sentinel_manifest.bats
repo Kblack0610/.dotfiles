@@ -260,6 +260,37 @@ listprobe() {
   assert_failure
 }
 
+# -- --strict: a Prometheus .result[0] read aggregates (ar-3437) --------------
+
+@test "--strict rejects .result[0] of a raw series, the unity-queue-wait shape" {
+  # One series per exporter pod: result[0] was a dead pod's 33 min, the live pool 25.
+  listprobe "bash -c 'v=\$(curl -sf -G \$P --data-urlencode \"query=min_over_time(q{pool=\\\"unity\\\"}[6h])\" | jq -er \".data.result[0].value[1]\"); [ \"\$v\" -le 30 ]'"
+  run "$SM" validate "$M"
+  assert_success
+  run "$SM" validate --strict "$M"
+  assert_failure
+  assert_output --partial 'no aggregation'
+  assert_output --partial 'min_over_time(q{pool='
+}
+
+@test "--strict accepts .result[0] of an aggregated query, in either quote" {
+  listprobe "bash -c 'curl -sf -G \$P --data-urlencode \"query=min_over_time(max(q{pool=\\\"unity\\\"})[6h:5m])\" | jq -er \".data.result[0].value[1]\"'"
+  run "$SM" validate --strict "$M"
+  assert_success
+  listprobe "curl -sf -G \$P --data-urlencode 'query=sum by (pool) (q{pool=\"unity\"})' | jq -er '.data.result[0].value[1]'"
+  run "$SM" validate --strict "$M"
+  assert_success
+}
+
+@test "--strict leaves a raw query alone when nothing reads .result[0], and a query in a variable" {
+  listprobe "curl -sf -G \$P --data-urlencode 'query=up{job=\"x\"}' | jq -e '[.data.result[].value[1]] | all(. == \"1\")'"
+  run "$SM" validate --strict "$M"
+  assert_success
+  listprobe "q() { curl -sf -G \$P --data-urlencode \"query=\$1\"; }; q 'up' | jq -er '.data.result[0].value[1]'"
+  run "$SM" validate --strict "$M"
+  assert_success
+}
+
 @test "--strict still enforces the ordinary schema" {
   # It is additive, not a different validator. A manifest that is legible but broken is
   # still broken.
