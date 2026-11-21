@@ -89,9 +89,13 @@ prompt_rows() {
   } | awk -F'\t' '$1 != ""'
 }
 prompt_list() {
-  local t cwd rest
+  local line t cwd rest
+  # Split on the tab by hand: `read` with a tab IFS collapses an empty cwd (a worker's session,
+  # or one agent-panel could not place) and shifts every later field one left.
   prompt_rows |
-    while IFS=$'\t' read -r t cwd rest; do
+    while IFS= read -r line; do
+      t="${line%%$'\t'*}"; rest="${line#*$'\t'}"
+      cwd="${rest%%$'\t'*}"; rest="${rest#*$'\t'}"
       printf '%s\t%s\t%s\n' "$t" "$( [ -n "$cwd" ] && resolve_project_name "$cwd" 2>/dev/null)" "$rest"
     done
 }
@@ -114,10 +118,19 @@ cmd_rows() {
   [ "$(grep -c . <<<"$backs")" = "$(grep -c . <<<"$list")" ] || backs="$(sed 's/.*//' <<<"$list")"
   # One slug per project named (a row with no project goes by its session's name; a prompt
   # row always does).
-  names="$({ awk -F'\t' 'NF { n = $2; if (n == "") { n = $13; sub(/-agent-[0-9]+$/, "", n) } print n }' <<<"$list"
-    awk -F'\t' 'NF { n = $2; if (n == "") { n = $1; sub(/^[^\/]*\//, "", n); sub(/(-agent-[0-9]+)?:[0-9]+$/, "", n) } print n }' <<<"$prompts"; } | sort -u)"
-  while IFS= read -r name; do [ -n "$name" ] && slugs+="$name=$(project_slug "$name");"; done <<<"$names"
-  { [ -n "$list" ] && paste <(printf '%s\n' "$list") <(printf '%s\n' "$epochs") <(printf '%s\n' "$backs"); } |
+  # The table is keyed by "p:<project>", or "s:<session or target>" for a row with no project,
+  # which session_project names (project-name.sh owns the -agent-N strip).
+  names="$({ awk -F'\t' 'NF { print $2 != "" ? "p:" $2 : "s:" $13 }' <<<"$list"
+    awk -F'\t' 'NF { print $2 != "" ? "p:" $2 : "s:" $1 }' <<<"$prompts"; } | sort -u)"
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    case "$name" in
+    p:*) slugs+="$name=$(project_slug "${name#p:}");" ;;
+    *) slugs+="$name=$(project_slug "$(session_project "${name#s:}")");" ;;
+    esac
+  done <<<"$names"
+  # `[ -z ] ||`, not `[ -n ] &&`: under pipefail an empty ask list (only dialogs open) failed the whole build.
+  { [ -z "$list" ] || paste <(printf '%s\n' "$list") <(printf '%s\n' "$epochs") <(printf '%s\n' "$backs"); } |
     awk -F'\t' -v here="$here" -v live=" $live" -v now="$(date +%s)" -v slugs=";$slugs" \
       -v bold="$C_BOLD" -v faint="$C_FAINT" -v off="$C_OFF" \
       -v c_live="$C_INP" -v c_sending="$C_SEL" -v c_failed="$C_ERR" '
@@ -139,8 +152,7 @@ cmd_rows() {
       part == 2 {
         if ($1 == "") next
         s = $1; sub(/^[^\/]*\//, "", s); sub(/:[0-9]+$/, "", s)
-        n = $2; if (n == "") { n = s; sub(/-agent-[0-9]+$/, "", n) }
-        who = slug(n)
+        who = slug($2 != "" ? "p:" $2 : "s:" $1)
         # The agent number, or on a hub session the window, since a hub session holds several.
         if (match(s, /agent-[0-9]+$/)) who = who ":" substr(s, RSTART + 6)
         else if (match($1, /:[0-9]+$/)) who = who substr($1, RSTART)
@@ -155,8 +167,7 @@ cmd_rows() {
         next
       }
       {
-        n = $2; if (n == "") { n = $13; sub(/-agent-[0-9]+$/, "", n) }
-        who = slug(n)
+        who = slug($2 != "" ? "p:" $2 : "s:" $13)
         if (match($13, /agent-[0-9]+$/)) who = who ":" substr($13, RSTART + 6)
         W[NR] = who; if (length(who) > w) w = length(who)
         M[NR] = ($16 == "") ? 1 : (index(live, " " $16 " ") > 0) ? 2 : 0
@@ -291,7 +302,7 @@ ask_load() {
     esac
   done < <("$QUESTIONS_ASK" show "$1" 2>/dev/null)
   # Who asked, as the rows name it: the project's slug and the session's agent number.
-  A_WHO="$(project_slug "${project:-${session%-agent-*}}")"
+  A_WHO="$(project_slug "${project:-$(session_project "$session")}")"
   [[ "$session" =~ agent-([0-9]+)$ ]] && A_WHO+=":${BASH_REMATCH[1]}"
 }
 
