@@ -106,6 +106,9 @@ stub() {
 @test "down waits on another down or up holding the lock, and sets nothing when it times out" {
   exec 8>"$SESSION_SNAPSHOT_LOCK"
   flock 8
+  SESSION_SNAPSHOT_LOCK_WAIT=0 run "$SNAP" down --dry-run
+  assert_success
+  assert_output --partial 'would hold dispatch'
   SESSION_SNAPSHOT_LOCK_WAIT=0 run "$SNAP" down "setup swap"
   exec 8>&-
   assert_failure 75

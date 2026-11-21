@@ -15,8 +15,9 @@ set -uo pipefail
 MARKER="${AGENT_MAINTENANCE:-$HOME/.agent/maintenance}"
 # One down or up at a time on this machine. down reads the levers and writes the marker last, so
 # two overlapping downs each took the other's dispatch hold for somebody else's, and up never lifted
-# it (ar-3600). Machine-local like the levers, not beside the marker in the synced ~/.agent.
-LOCK="${SESSION_SNAPSHOT_LOCK:-${XDG_RUNTIME_DIR:-/tmp}/session-snapshot.lock}"
+# it (ar-3600). Machine-local like the levers, not beside the marker in the synced ~/.agent, and not
+# read from XDG_RUNTIME_DIR: a caller with a stripped env (ssh, cron) would lock a different file.
+LOCK="${SESSION_SNAPSHOT_LOCK:-/run/user/$(id -u)/session-snapshot.lock}"
 LOCK_WAIT="${SESSION_SNAPSHOT_LOCK_WAIT:-300}"
 
 say() { printf 'session-snapshot: %s\n' "$*"; }
@@ -53,7 +54,7 @@ write_marker() {
 # process up starts (a reopened session) cannot keep holding it after up exits.
 locked() {
   local rc
-  SESSION_SNAPSHOT_LOCKED=1 flock -o -E 75 -w "$LOCK_WAIT" "$LOCK" "${BASH_SOURCE[0]}" "$@"
+  SESSION_SNAPSHOT_LOCKED=1 flock -o -E 75 -w "$LOCK_WAIT" "$LOCK" "$BASH" "$(realpath "${BASH_SOURCE[0]}")" "$@"
   rc=$?
   [ "$rc" != 75 ] || say "another session-snapshot down or up still holds $LOCK after ${LOCK_WAIT}s; nothing changed"
   return "$rc"
@@ -159,7 +160,8 @@ cmd_up() {
 
 case "${1:-}" in
   down | up)
-    [ -n "${SESSION_SNAPSHOT_LOCKED:-}" ] || { locked "$@"; exit; }
+    # A dry run changes nothing, so it previews without waiting on a running down or up.
+    case " $* " in *" --dry-run "*) ;; *) [ -n "${SESSION_SNAPSHOT_LOCKED:-}" ] || { locked "$@"; exit; } ;; esac
     # Not passed on: a session up reopens would otherwise skip the lock on its own down.
     unset SESSION_SNAPSHOT_LOCKED
     verb=$1; shift; "cmd_$verb" "$@" ;;
