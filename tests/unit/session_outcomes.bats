@@ -1099,16 +1099,16 @@ queue_stub() {
 # Judge verdicts: an ask file's judge_* fields and dispatch's verdicts.jsonl, each linked by
 # judge_call to its line in calls.jsonl, whose session_id is the trace the score lands on.
 judge_fixture() {
-  export SO_ASKS="$HOME/.agent/asks" SO_VERDICTS="$HOME/.agent/dispatch/verdicts.jsonl"
+  export AGENT_ASK_ROOT="$HOME/.agent/asks" SO_VERDICTS="$HOME/.agent/dispatch/verdicts.jsonl"
   export AGENTCTL_CALLS="$HOME/.local/state/agentctl/calls.jsonl"
-  mkdir -p "$SO_ASKS/demo" "${SO_VERDICTS%/*}" "${AGENTCTL_CALLS%/*}"
+  mkdir -p "$AGENT_ASK_ROOT/demo" "${SO_VERDICTS%/*}" "${AGENTCTL_CALLS%/*}"
   # judged_at as agent-ask writes it (fmt.sh now_iso): a basic offset, no colon
   printf '%s\n' 'id: ask-1' 'project: demo' 'question: open the PR?' 'judge: take-recommend' \
     'judge_rule: ship_deploy' 'judge_reason: landing is standing authorization' 'judge_level: repo' \
-    'judge_call: c1' 'judged_at: 2026-10-19T10:00:00-0700' > "$SO_ASKS/demo/ask-1.md"
+    'judge_call: c1' 'judged_at: 2026-10-19T10:00:00-0700' > "$AGENT_ASK_ROOT/demo/ask-1.md"
   # a gate: never sent to the model, so no call and no score
   printf '%s\n' 'id: ask-2' 'project: demo' 'judge: human' 'judge_rule: gate' \
-    'judged_at: 2026-10-19T10:00:00-07:00' > "$SO_ASKS/demo/ask-2.md"
+    'judged_at: 2026-10-19T10:00:00-07:00' > "$AGENT_ASK_ROOT/demo/ask-2.md"
   printf '%s\n' \
     '{"project":"p","lane":"agent","key":"k1","verdict":"skip","rule":"tier3","reason":"tier 3","tier":3,"judge_call":"c2","at":"2026-10-19T11:00:00-07:00"}' \
     '{"project":"p","lane":"agent","key":"k2","verdict":"error","reason":"call failed (exit 7): x","judge_call":"c3","at":"2026-10-19T11:00:00-07:00"}' \
