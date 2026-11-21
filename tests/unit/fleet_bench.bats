@@ -12,7 +12,7 @@ setup() {
   export BENCH_LIB_DIR="$REPO_ROOT/.local/lib"
   export BENCH_SESSIONS_CMD=sessions-stub   # on PATH: the sandbox path has a space
   export BENCH_DEFAULT_PHASE_MIN=60
-  export TRIAGE_ITEMS_CMD=true TRIAGE_WATCH_STATE="$SANDBOX/no-wc" TRIAGE_PROMOTE_CMD=false   # nor the real queue, watch state or dispatcher for reds
+  export TRIAGE_ITEMS_CMD=true TRIAGE_WATCH_STATE="$SANDBOX/no-wc" TRIAGE_PROMOTE_CMD=false TRIAGE_ASK_CMD=false   # nor the real queue, watch state, dispatcher or asks for reds
   export BENCH_BASIS_MIN_N=1   # most fixtures measure one phase; the minimum has its own tests
   export BENCH_PROM_TSV=/dev/null BENCH_MERGES_TSV=/dev/null   # no test here reaches Prometheus or a remote
   export BENCH_QUEUE_CMD=false   # nor the real dispatch queue
@@ -2016,7 +2016,10 @@ log_triage_setup() {
   printf '#!/usr/bin/env bash\necho "$*" >> %q\n' "$NOTIFY" > "$SANDBOX/bin/notify-stub"
   chmod +x "$SANDBOX/bin/items-stub" "$SANDBOX/bin/notify-stub"
   printf '#!/usr/bin/env bash\necho "$*" >> %q\n' "$PLOG" > "$SANDBOX/bin/promote-stub"
-  chmod +x "$SANDBOX/bin/promote-stub"
+  # the ask stub logs each call; post prints the id agent-ask would, show the status ASKSTATUS names
+  ASKLOG="$SANDBOX/ask.log"; export TRIAGE_ASK_CMD=ask-stub
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> %q\ncase $1 in post) echo Ask123 ;; show) echo "status: ${ASKSTATUS:-pending}" ;; esac\n' "$ASKLOG" > "$SANDBOX/bin/ask-stub"
+  chmod +x "$SANDBOX/bin/promote-stub" "$SANDBOX/bin/ask-stub"
   # one error in two runs (the pid, path and stamp differ), one error in a single run, one run
   # outside the window, and a range the log rotation took away
   errlog alpha -7200 '[2026-11-05T01:00:00-08:00] error: lock /run/a/1.lock held by pid 4411' 'just noise'
@@ -2257,30 +2260,90 @@ fix_item() {
 }
 
 # ar-4018: Needs you holds only what the human can do. A red whose fixes did not hold is the agent
-# system's still: it stays on its agent row, files no human row and pages no one.
-@test "triage: a cause whose two fixes did not hold files no human row and no page, and queues no third item" {
+# system's still: it files no human row and pages no one. reflective-penguin P2 (ask UfRZaR): it gets one
+# escalation, a root-cause pass pinned to Opus, and only when that did not hold either one ask.
+@test "triage: two fixes that did not hold get one escalation on Opus; when it fails too, one ask and reds_spent, never a human row" {
   log_triage_setup
   lock_route
   fix_item ar-1 done cancelled
   fix_item ar-2 done ok o/r#5 2020-01-02T00:00:00Z
   run "$SUBJECT" triage
   assert_success
+  assert_output --partial '1 queued as red fixes'
   refute_output --partial 'for the human'
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --model opus --tags red cause:$(cause_of) escalate retry:ar-1,ar-2 --raw "
+  [ ! -s "$BOARD.agent-runtime" ]
+  [ ! -s "$NOTIFY" ]
+  [ ! -s "$ASKLOG" ]
+  run "$SUBJECT" ledger
+  assert_line 'reds_spent=0'
+  # the escalation did not hold either: no fourth item, one ask, and the KPI counts the cause once
+  : > "$PLOG"; fix_item ar-3 done failed
+  run "$SUBJECT" triage
+  assert_success
+  refute_output --partial 'queued as red fixes'
   [ ! -s "$PLOG" ]
   [ ! -s "$BOARD.agent-runtime" ]
   [ ! -s "$NOTIFY" ]
+  run grep -c . "$ASKLOG"
+  assert_output 1
+  run cat "$ASKLOG"
+  assert_output --regexp '^post --project agent-runtime --context .*queued ar-1,ar-2,ar-3 for it, the last a root-cause pass on opus.* Red "fix\(logs\): alpha error .*" outlasted every fix tried: what should the next fix do\?$'
   run grep -c 'fix(logs): alpha error' "$BOARD"   # the agent row stands
+  assert_output 1
+  run cut -f1,3 "$XDG_STATE_HOME/agentctl/triage-spent"
+  assert_output "$(cause_of)"$'\t'Ask123
+  run "$SUBJECT" ledger
+  assert_line 'reds_spent=1'
+  # the next pass keeps the ask it has and posts no second one
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c . "$ASKLOG"
+  assert_output 1
+  run cut -f3 "$XDG_STATE_HOME/agentctl/triage-spent"
+  assert_output Ask123
+  # a post that failed records no ask, and the next pass posts it
+  : > "$ASKLOG"; rm "$XDG_STATE_HOME/agentctl/triage-spent"
+  TRIAGE_ASK_CMD=false run "$SUBJECT" triage
+  assert_success
+  assert_output --partial 'could not ask about the spent red'
+  run cut -f3 "$XDG_STATE_HOME/agentctl/triage-spent"
+  assert_output ''
+  run "$SUBJECT" triage
+  run grep -c . "$ASKLOG"
   assert_output 1
   # a row an earlier triage wrote to the human sheet is closed as the twin it is
   grep 'fix(logs): alpha error' "$BOARD" > "$BOARD.agent-runtime"
   run "$SUBJECT" triage
   assert_success
   [ ! -s "$BOARD.agent-runtime" ]
-  # NEGATIVE CONTROL: one more allowed try is one more item
-  : > "$PLOG"
+  # an ask the human already closed is left as it is when its cause leaves the spent set
+  cp "$XDG_STATE_HOME/agentctl/triage-spent" "$SANDBOX/spent.keep"; : > "$ASKLOG"
+  ASKSTATUS=answered TRIAGE_FIX_TRIES=3 run "$SUBJECT" triage
+  assert_success
+  run cat "$ASKLOG"
+  assert_output 'show Ask123'
+  # NEGATIVE CONTROL: one more allowed try is one more item, the escalation, and nothing is spent;
+  # the cause left the spent set, so its still-pending ask is cancelled: it needs the human no longer
+  cp "$SANDBOX/spent.keep" "$XDG_STATE_HOME/agentctl/triage-spent"; : > "$PLOG"; : > "$ASKLOG"
   TRIAGE_FIX_TRIES=3 run "$SUBJECT" triage
   assert_success
   assert_output --partial '1 queued as red fixes'
+  run cat "$PLOG"
+  assert_output --regexp ' escalate retry:ar-1,ar-2,ar-3 --raw '
+  run cat "$ASKLOG"
+  assert_line --index 1 --regexp '^cancel Ask123 the red cleared or agents are trying it again'
+  run "$SUBJECT" ledger
+  assert_line 'reds_spent=0'
+  # the next pass has no ask left to cancel
+  : > "$ASKLOG"
+  TRIAGE_FIX_TRIES=3 run "$SUBJECT" triage
+  [ ! -s "$ASKLOG" ]
+  # and a count no triage pass refreshed reads ?, never an old 0
+  touch -d '-2 hours' "$XDG_STATE_HOME/agentctl/triage-spent"
+  run "$SUBJECT" ledger
+  assert_line 'reds_spent=?'
 }
 
 # 2026-11-11 (ar-1587): playground-release-ready's alert item closed ok with the watch still red,
@@ -2371,9 +2434,15 @@ fix_item() {
   assert_success
   run cat "$PLOG"
   assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red watch cause:$want retry:ar-3 --raw "
-  # NEGATIVE CONTROL: two tries this trip that did not hold are spent: no third item, and the red
-  # stays its agent row (ar-4018), never a human row
+  # two tries this trip that did not hold get the escalation, this trip's own slugs named
   : > "$PLOG"; watch_item ar-4 cancelled "${this%Z}.5Z"
+  run "$SUBJECT" triage
+  assert_success
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --model opus --tags red watch cause:$want escalate retry:ar-3,ar-4 --raw "
+  # NEGATIVE CONTROL: the escalation failed too, so the trip is spent: no fourth item, and the red
+  # stays its agent row (ar-4018), never a human row
+  : > "$PLOG"; watch_item ar-5 cancelled "${this%Z}.7Z"
   run "$SUBJECT" triage
   assert_success
   refute_output --partial 'queued as red fixes'
@@ -3515,7 +3584,7 @@ chain_fixture() {
   run "$SUBJECT" chain --json
   assert_success
   run jq -c 'with_entries(.value |= [.["7d"], .status])' <<<"$output"
-  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"release_overdue":[0,"ok"],"version_tag_drift":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"requested_unstarted_h":[0,"-"],"orphan_request_rows":[0,"ok"],"next_up_blocked":[0,"ok"],"stale_urgent_d":[0,"ok"],"urgent_per_board":[0,"ok"],"playtest_waiting_d":[0,"ok"],"done_inline_old":[0,"ok"],"request_to_live_h":[null,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_review":[null,"-"],"step_age_p90_waiting":[null,"-"],"queue_net_24h":[null,"-"],"estimated_token_share":[null,"-"]}'
+  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"release_overdue":[0,"ok"],"version_tag_drift":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"reds_spent":[null,"-"],"requested_unstarted_h":[0,"-"],"orphan_request_rows":[0,"ok"],"next_up_blocked":[0,"ok"],"stale_urgent_d":[0,"ok"],"urgent_per_board":[0,"ok"],"playtest_waiting_d":[0,"ok"],"done_inline_old":[0,"ok"],"request_to_live_h":[null,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_review":[null,"-"],"step_age_p90_waiting":[null,"-"],"queue_net_24h":[null,"-"],"estimated_token_share":[null,"-"]}'
   # the done items are read back a day past the window (8 days before T0, a local date), so an item
   # done before its PR merged counts; the pipeline reads the last day's
   run sort -u "$DONE.calls"
