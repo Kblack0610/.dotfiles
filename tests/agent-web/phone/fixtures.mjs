@@ -222,7 +222,7 @@ const jobs = {
 };
 // Runners: hub_core::ci's head and its tables, each under its view as infra.rs renders them.
 const localFail = (i) => ({ repo: "game-core-playground", branch: `feat/${SLUGS[i]}`, platform: pick(["android", "windows", "ios"], i), result: pick(["failure", "cancelled"], i), n: 3 - i, last: ago(30 + i * 90) });
-infra.ci = { hosts: 3, slots: 6, busy: 4, queued: 1, oldest: ago(25), red: [] };
+infra.ci = { hosts: 3, slots: 6, busy: 4, queued: 1, oldest: ago(25), red: [], day: { runs: 40, pass: 0.9, failed_main: 1, failed_branch: 3, cancelled: 2, local: 5, local_pass: 0.8, read: true } };
 infra.tables = {
   machines: { rows: [], table: table(0, ["machine", "state", "taken", "cpu", "6h", "load", "mem", "temp", "disk", "running", "next", "governor", "power", "up"]) },
   pools: { rows: [], table: table(0, ["pool", "weight", "running", "waiting", "oldest", "done", "pass", "machines"]) },
@@ -237,6 +237,7 @@ const log = {
   merged: rows(6, (i) => ({ repo: pick(REPOS, i), project: pick(PROJECTS, i), number: 1580 + i, url: "https://github.com/Kblack0610/.dotfiles/pull/1", title: TEXT[i], merged_at: iso(ago(30 + i * 40)), area: pick(["agent-web", "hub", "ci"], i), group: pick(["agent-web", "hub", "ci"], i), scope: pick(["agent-web", "hub"], i), by: "agent" })),
   open: rows(3, (i) => ({ repo: pick(REPOS, i), project: pick(PROJECTS, i), number: 1600 + i, url: "https://github.com/Kblack0610/.dotfiles/pull/2", title: TEXT[i + 2], created_at: iso(ago(90)), draft: false, ci: "green", by: "agent" })),
   projects: [], hours: { hours: [], rows: [] }, usage: [{ project: "TOTAL", sessions: 42 }], waiting: { main: [], needs: [], asks: [] },
+  counts: { merged: 6, repos: 4, open: 3, nightly: 0, asks: 0 },
   bench: { headline: "212 merged this week, 52% first try", sessions: rows(3, (i) => ({ target: `lab/unity-core-playground-agent-${i}:1`, plan: SLUGS[i], name: TEXT[i].slice(0, 48), phase: "2/4", working_h: 1.5, waiting_h: 0.2, stalled_h: 0, prs_merged: 2, ci_reds: 1, peak_k: 310, cost_usd: 12.5 })) },
   timeline: [], unreadable: [],
 };
