@@ -348,17 +348,45 @@ pub fn machinery(infra: &Infra) -> Vec<String> {
             s.label("state")
         ));
     }
+    // One row per repo and branch, its oldest age and its runs' workflows: the exporter has a
+    // series per workflow run, and a push starts several, so one row each read as one run listed
+    // 2-4 times (ar-4358).
+    let mut stuck: Vec<(&str, &str, Vec<&str>, Option<f64>)> = vec![];
     for s in infra.get("waiting") {
-        if s.label("stuck") == "true" {
-            items.push(format!(
-                "stuck run: {} {}, {}, no jobs",
-                label(s.label("repo")),
-                label(s.label("branch")),
-                s.value
-                    .filter(|v| v.is_finite())
-                    .map_or("-".into(), |v| crate::text::age(v as i64))
-            ));
+        if s.label("stuck") != "true" {
+            continue;
         }
+        let (repo, branch) = (s.label("repo"), s.label("branch"));
+        let age = s.value.filter(|v| v.is_finite());
+        match stuck.iter_mut().find(|e| (e.0, e.1) == (repo, branch)) {
+            Some(e) => {
+                e.2.push(s.label("workflow"));
+                e.3 = match (e.3, age) {
+                    (Some(a), Some(b)) => Some(a.max(b)),
+                    (a, b) => a.or(b),
+                };
+            }
+            None => stuck.push((repo, branch, vec![s.label("workflow")], age)),
+        }
+    }
+    for (repo, branch, workflows, age) in stuck {
+        let runs = if workflows.len() > 1 {
+            let mut names: Vec<&str> = vec![];
+            for w in workflows.iter().copied().map(label) {
+                if !names.contains(&w) {
+                    names.push(w);
+                }
+            }
+            format!(" ({} runs: {})", workflows.len(), names.join(", "))
+        } else {
+            String::new()
+        };
+        items.push(format!(
+            "stuck run: {} {}, {}, no jobs{runs}",
+            label(repo),
+            label(branch),
+            age.map_or("-".into(), |v| crate::text::age(v as i64)),
+        ));
     }
     if let Some(why) = infra.feed() {
         items.insert(0, why.into());
@@ -1146,6 +1174,42 @@ mod tests {
                     "infra"
                 ),
                 ("stuck run: app main, 2h, no jobs", "infra"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_branch_with_several_stuck_runs_is_one_row_with_its_oldest_age_and_run_count() {
+        let mut i = infra(&[]);
+        let run = |branch, wf, age| {
+            series(
+                &[
+                    ("repo", "app"),
+                    ("branch", branch),
+                    ("workflow", wf),
+                    ("stuck", "true"),
+                ],
+                age,
+            )
+        };
+        i.instant.insert(
+            "waiting",
+            vec![
+                run("main", "CI", 3600.0),
+                run("feat", "CI", 600.0),
+                run("main", "Checks", 7200.0),
+                run("main", "E2E", 1800.0),
+            ],
+        );
+        let stuck: Vec<String> = machinery(&i)
+            .into_iter()
+            .filter(|l| l.starts_with("stuck run"))
+            .collect();
+        assert_eq!(
+            stuck,
+            [
+                "stuck run: app main, 2h, no jobs (3 runs: CI, Checks, E2E)",
+                "stuck run: app feat, 10m, no jobs",
             ]
         );
     }

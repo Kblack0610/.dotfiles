@@ -65,6 +65,7 @@ Choose by what the thing under test *is*:
 
 - **Pure logic** (parse a row, map a tag to an option, classify a pane) -> `unit`. Needs a source guard in the subject: `[[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0` above the dispatch. Add it if missing.
 - **A verb's output shape** (`--list` emits 7 tab-separated fields; `--task-op done` shells out to the right command) -> `integ`, using the stubs in `tests/helpers/stubs/`.
+- **A test needs its own `gh` or `tmux` answers** -> `gh_script` / `tmux_script` (`tests/helpers/sandbox.bash`): the body is sourced by the shared stub in place of its canned answers. In the unit and integ tiers never write a second `gh` or `tmux` into `$SANDBOX/bin` (the ui tier's `tmux_harness.bash` shim is the one exception).
 - **State that IS tmux state** (a window option, a session's existence, what a keypress renders) -> `ui`. There is nothing to assert against a stub here: faking `set-option`/`show-options` only tests the fake.
 
 Prefer the cheapest tier that can actually fail. The suite caught a real routing bug in a 40ms unit test.

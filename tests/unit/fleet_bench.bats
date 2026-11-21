@@ -674,8 +674,7 @@ docs_prs() { local n; for n in "$@"; do printf 'docs/a.md\n' > "$GHD/files-$n"; 
 drop_sections() { jq -c 'del(.sections)' "$FLEET_BENCH_DIR/pr-ci.jsonl" > "$SANDBOX/c" && mv "$SANDBOX/c" "$FLEET_BENCH_DIR/pr-ci.jsonl"; }
 stub_review() {
   GHD="$SANDBOX/gh"; mkdir -p "$GHD"
-  printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SANDBOX/bin/gh"
-  cat >> "$SANDBOX/bin/gh" <<'GH'
+  { printf 'D=%q\n' "$GHD"; cat <<'GH'
 echo "gh $*" >> "$D/calls.log"
 [ -e "$D/fail" ] && exit 1
 case "$1 $2" in
@@ -686,6 +685,7 @@ case "$1 $2" in
     esac ;;
 esac
 GH
+  } | gh_script
   printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SANDBOX/bin/agentctl-run"
   cat >> "$SANDBOX/bin/agentctl-run" <<'AR'
 echo "agentctl-run $*" >> "$D/reviewer.log"
@@ -710,7 +710,7 @@ fi
 jq -c 'map({workflow: .workflowName, path, sha: .headSha, status: "completed", conclusion,
   created_at: .createdAt, started_at: .startedAt, ended_at: .updatedAt})' "$D/runs-$4.json"
 SS
-  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/agentctl-run" "$SCHEDULES_SYNC"
+  chmod +x "$SANDBOX/bin/agentctl-run" "$SCHEDULES_SYNC"
   mkdir -p "$HOME/.agent/outcomes/game"
 }
 
@@ -1018,7 +1018,7 @@ gate_runs_of() {
   drop_sections
   # the second PR's file list kills this one review, as a timeout would; by pid, since the unit
   # tier runs other reviews beside it
-  cat >> "$SANDBOX/bin/gh" <<'GH'
+  cat >> "$NOTES_FIXTURE/gh.script" <<'GH'
 [ "$3" != 'repos/o/r/commits/sha8?per_page=100' ] || kill -TERM "$(cat "$D/pid")"
 GH
   BENCH_NOW=$T0 run bash -c 'echo $$ > "$1"; exec "$2" review' _ "$GHD/pid" "$SUBJECT"
@@ -1583,7 +1583,7 @@ tok_fixture() {
   out_row game '{session_id: "b1", project: "game", updated_epoch: ($t - 2160000), prs_merged: 2, cost_usd: 10}'
   out_row game '{session_id: "a1", project: "game", updated_epoch: ($t - 1296000), prs_merged: 2, cost_usd: 2}'
   GHLOG="$SANDBOX/gh.log"; MERGED=$(date -u -d @$((T0 - 1728000)) +%FT%TZ)
-  printf '#!/usr/bin/env bash\necho "$*" >> %q\n[ "$5" = o/r ] && echo %q\nexit 0\n' "$GHLOG" "$MERGED" > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+  gh_script "$(printf 'echo "$*" >> %q\n[ "$5" = o/r ] && echo %q\nexit 0' "$GHLOG" "$MERGED")"
   run "$SUBJECT" effect 'o/r#7' --days 10 --json
   assert_success
   run jq -c '[.ref, (.kpis[] | select(.kpi == "cost_per_pr") | .verdict)]' <<<"$output"
@@ -2981,8 +2981,7 @@ hold_setup() {
 [ "$1 $3 $4" = "runs --branch main" ] || exit 2
 jq -c 'map({id, event, workflow: .name, path: "shell.yml", status, conclusion, sha: .head_sha, created_at})' "$D/runs"
 SS
-  printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SANDBOX/bin/gh"
-  cat >> "$SANDBOX/bin/gh" <<'GH'
+  { printf 'D=%q\n' "$GHD"; cat <<'GH'
 [ -e "$D/down" ] && exit 1
 case "$*" in
   "run view "*) cat "$D/log.$3" 2>/dev/null ;;
@@ -2991,7 +2990,8 @@ case "$*" in
   *) exit 1 ;;
 esac
 GH
-  chmod +x "$SANDBOX/bin/gh" "$SCHEDULES_SYNC"
+  } | gh_script
+  chmod +x "$SCHEDULES_SYNC"
 }
 
 # ci <id> <conclusion> <sha> <offset>: one run of main, appended
