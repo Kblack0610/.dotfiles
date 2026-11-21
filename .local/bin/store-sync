@@ -88,6 +88,8 @@ PEER="$SYNC_DIR/peer"
 # "<HEAD> <remote ref>" of the last merge that conflicted: retrying that pair cannot succeed.
 CONFLICT="$SYNC_DIR/conflict"
 BACKUP_FAILS="$SYNC_DIR/backup-failures"
+# The short HEAD whose missing trees a refetch that reached a remote could not restore (heal_head).
+REFETCHED="$SYNC_DIR/refetched"
 
 log() {
   mkdir -p "$SYNC_DIR"
@@ -256,17 +258,27 @@ ref_of() { g rev-parse -q --verify "refs/remotes/$1/$BRANCH" 2>/dev/null; }
 # heal_head: an unclean shutdown can lose the newest loose objects while HEAD, already on disk, still
 # names them, and every commit after it fails on "bad tree object HEAD" (the fleet home, 2026-11-20:
 # six hours stuck after a crash, ar-3439). A remote that took HEAD before the crash holds them, so a
-# full refetch puts them back; with none, the sync stops and says so.
+# full refetch puts them back; with none, the sync stops and says so. A refetch that reached a remote
+# and still left HEAD broken is not repeated for that HEAD (REFETCHED), since every write starts a sync.
 heal_head() {
-  g ls-tree -r HEAD >/dev/null 2>&1 && return 0
-  local r head
+  g rev-parse -q --verify HEAD >/dev/null || return 0
+  g ls-tree -r HEAD >/dev/null 2>&1 && { rm -f "$REFETCHED"; return 0; }
+  local r head reached=0 err=""
   head=$(g rev-parse --short HEAD)
-  for r in $(remotes); do
-    net "$r" -C "$STORE" fetch -q --refetch "$r" "+refs/heads/$BRANCH:refs/remotes/$r/$BRANCH" >/dev/null 2>&1 || continue
-    g ls-tree -r HEAD >/dev/null 2>&1 || continue
-    log "WARN: HEAD $head named trees missing here (an unclean shutdown?); refetched them from $r"
-    return 0
-  done
+  if [ "$(cat "$REFETCHED" 2>/dev/null)" != "$head" ]; then
+    for r in $(remotes); do
+      if ! err=$(net "$r" -C "$STORE" fetch -q --refetch "$r" "+refs/heads/$BRANCH:refs/remotes/$r/$BRANCH" 2>&1); then
+        err=$(printf '%s' "$err" | tail -n 1 | cut -c1-200)
+        continue
+      fi
+      reached=1
+      g ls-tree -r HEAD >/dev/null 2>&1 || continue
+      log "WARN: HEAD $head named trees missing here (an unclean shutdown?); refetched them from $r"
+      return 0
+    done
+    [ "$reached" = 0 ] && { log "ERROR: HEAD $head names trees missing here, and no remote answered to refetch them (${err:-no remote}); the next sync tries again"; exit "$EXIT_NO_COMMIT"; }
+    printf '%s\n' "$head" > "$REFETCHED"
+  fi
   log "ERROR: HEAD $head names trees missing here and no remote has them; repair $STORE by hand (QUEUE.md, Troubleshooting)"
   exit "$EXIT_NO_COMMIT"
 }
