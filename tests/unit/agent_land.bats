@@ -1129,7 +1129,7 @@ EOF2
   item twin 'board:dotfiles:ship it' agent
   run "$LAND" 42 --item ship
   assert_success
-  assert_line 'board: left "ship it" open, twin still works it (its landing closes it)'
+  assert_line 'board: left "ship it" open, twin still works it (its landing closes it; if it is dropped: notes ptask dotfiles --agent done ship it --proof pr:o/r#42 commit:fedcba987654)'
   assert_line --index -1 'landed #42'
   run board_calls
   assert_output ''
@@ -1149,10 +1149,26 @@ EOF2
   item fixer 'board:game:UCP-134' human bnb
   run "$LAND" 42 --item ship --plan "$PLAN" --phase "1. only"
   assert_success
-  assert_line 'rows: ucp-134 left open, fixer still works it'
+  assert_line 'rows: ucp-134 left open, fixer still works it (if it is dropped: notes --profile bnb ptask game done ucp-134 --proof pr:o/r#42)'
   assert_line 'rows: closed ar-9 on agent-runtime'
   run grep -E 'done (ucp-134|ar-9)' "$LOG"
   assert_output 'notes --profile personal ptask agent-runtime --agent done ar-9 --proof pr:o/r#42 commit:fedcba987654'
+}
+
+@test "a queue that cannot be read past the merge leaves the rows open with the command, and the plan still ticks (ar-1793)" {
+  printf '%s\n' '# plan' 'rows: ar-9' '' '## Phases' '' '- [ ] 1. only' >"$PLAN"
+  jq -n '{rows: [{profile: "personal", project: "agent-runtime", lane: "agent", id: "ar-9", state: "doing"}]}' >"$NOTES_FIXTURE/board.json"
+  mv "$SANDBOX/bin/agent-queue" "$SANDBOX/bin/agent-queue.real"
+  printf '%s\n' '#!/usr/bin/env bash' '[ "$1" != list ] || exit 1' 'exec "${0%/*}/agent-queue.real" "$@"' >"$SANDBOX/bin/agent-queue"
+  chmod +x "$SANDBOX/bin/agent-queue"
+  run "$LAND" 42 --item ship --plan "$PLAN" --phase "1. only"
+  assert_success
+  assert_line 'board: agent-queue list failed, so "ship it" is not known free of another open item; close by hand: notes ptask dotfiles --agent done ship it --proof pr:o/r#42 commit:fedcba987654'
+  assert_line 'plan: ticked "1. only"'
+  assert_line 'rows: agent-queue list failed, so no row is known free of another open item; close by hand: ar-9'
+  assert_line --index -1 'landed #42'
+  run grep -c ' done ' <(board_calls)
+  assert_output 0
 }
 
 @test "the plan's rows: a deferred phase leaves them open; --dry-run names them only on the last phase" {
