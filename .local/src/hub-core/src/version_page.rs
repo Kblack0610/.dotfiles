@@ -195,12 +195,7 @@ fn worker<'a>(items: &'a [Item], id: &str) -> Option<&'a Item> {
     };
     items
         .iter()
-        .filter(|i| {
-            i.row
-                .as_deref()
-                .and_then(|r| r.rsplit_once(':'))
-                .is_some_and(|(_, r)| r == id)
-        })
+        .filter(|i| i.board_row().is_some_and(|(_, r)| r == id))
         .min_by_key(|i| rank(i.state))
 }
 
@@ -235,10 +230,7 @@ fn row(r: &FeedRow, items: &[Item], home: &str, prs: &[Pr]) -> Row {
     }
     let live = item.is_some_and(|i| matches!(i.state, State::Running | State::Waiting));
     let assignee = item.map_or_else(String::new, |i| match (&i.session, live) {
-        (Some(s), true) => s
-            .rsplit_once(':')
-            .map_or(s.as_str(), |(_, t)| t)
-            .to_string(),
+        (Some(s), true) => crate::home::tmux_name(s).to_string(),
         _ => i.slug.clone(),
     });
     Row {
@@ -359,7 +351,10 @@ pub fn build(project: &str, version: &str, today: &str, i: Inputs) -> Option<Pag
     let opened = window.and_then(|w| w.opened.clone()).unwrap_or_default();
     let due = window.and_then(|w| w.due.clone()).unwrap_or_default();
     let released = cuts.iter().any(|s| !s.reached.is_empty());
-    let legacy = !cuts.is_empty() && cuts.iter().all(|s| s.provenance == "legacy");
+    let legacy = !cuts.is_empty()
+        && cuts
+            .iter()
+            .all(|s| crate::release_graph::legacy(&s.provenance));
     let (status, mut level) = if legacy {
         ("legacy", Level::Neutral)
     } else if released {
@@ -555,10 +550,10 @@ mod tests {
 
     fn feed() -> Feed {
         parse_feed(
-            r##"{"version":"v0.5.3","projects":[{"profile":"home","project":"ucp","opened":"2026-11-18","due":"2026-11-19","rows":[
-            {"id":"ucp-1","text":"ship menu","lane":"human","state":"done","priority":"high","weight":3,"prs":["#12"]},
-            {"id":"ucp-2","text":"fix lag","lane":"agent","state":"open","priority":"med","weight":1,"prs":[]},
-            {"id":"ucp-3","text":"wip","lane":"agent","state":"doing","priority":"low","weight":1,"prs":[]}]}]}"##,
+            r##"{"version":"v0.5.3","projects":[{"project":"ucp","opened":"2026-11-18","due":"2026-11-19","rows":[
+            {"id":"ucp-1","text":"ship menu","lane":"human","state":"done","priority":"high","prs":["#12"]},
+            {"id":"ucp-2","text":"fix lag","lane":"agent","state":"open","priority":"med","prs":[]},
+            {"id":"ucp-3","text":"wip","lane":"agent","state":"doing","priority":"low","prs":[]}]}]}"##,
         )
         .unwrap()
     }

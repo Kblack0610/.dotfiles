@@ -17,11 +17,13 @@ const REL_OPEN = {};
 // release's page, hub_core::release_page), or "" on the table.
 const relPage = () => pageId("releases", "apps");
 const relApp = () => relPage().split("/")[0];
-const relVer = () => { const p = relPage(), at = p.indexOf("/"); return at < 0 ? "" : p.slice(at + 1); };
+// A `<name>/<version>` id split at its first slash: [name, version], version "" when it has none.
+const splitId = (p) => { const at = p.indexOf("/"); return at < 0 ? [p, ""] : [p.slice(0, at), p.slice(at + 1)]; };
+const relVer = () => splitId(relPage())[1];
 // What the URL has open after `versions/`: a project and a version (`unity-core-playground/0.5.3`,
 // hub_core::version_page), or "".
 const relVersion = () => pageId("releases", "versions");
-const relVersionOf = () => { const p = relVersion(), at = p.indexOf("/"); return at < 0 ? [p, ""] : [p.slice(0, at), p.slice(at + 1)]; };
+const relVersionOf = () => splitId(relVersion());
 // Any page in place of the table: an app's, a release's or a version's.
 const relDetail = () => relPage() || relVersion();
 const relst = tblTab({
@@ -231,7 +233,7 @@ const relFlow = { project: "", window: "", data: null, err: null };
 const REL_FLOW_COLOR = { green: "var(--idle)", red: "var(--wait)", running: "var(--accent)", queued: "var(--busy)", tag: "var(--c5)", reached: "var(--c6)" };
 const relFlowColor = (k) => REL_FLOW_COLOR[k] || OTHER;
 const relFlowAsked = () => new URLSearchParams({ project: relFlow.project, window: relFlow.window }).toString();
-const relFlowOn = () => st.tab === "releases" && !relDetail() &&innerOf("releases", st.arg)[0] === "flow";
+const relFlowOn = () => st.tab === "releases" && !relDetail() && innerOf("releases", st.arg)[0] === "flow";
 // A read for a project or window picked since it started is dropped; a failed one keeps the last up.
 const relFlowRefresh = coalesce(async () => {
   const asked = relFlowAsked();

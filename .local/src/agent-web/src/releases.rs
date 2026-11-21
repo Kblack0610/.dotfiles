@@ -179,6 +179,26 @@ pub struct ReleaseQuery {
     pub version: String,
 }
 
+/// A page's reads: the releases snapshot, the build runs (an empty read naming why when they
+/// failed), and every error either read, or the queue, gave.
+fn page_reads(
+    items: &[Item],
+    queue_error: Option<String>,
+    runs: Result<Arc<hub_core::builds::Builds>, String>,
+) -> (Releases, Arc<hub_core::builds::Builds>, Vec<String>) {
+    let rel = releases::read(&System, items);
+    let mut errors: Vec<String> = rel.errors.clone();
+    errors.extend(queue_error);
+    let b = runs.unwrap_or_else(|e| {
+        Arc::new(hub_core::builds::Builds {
+            errors: vec![format!("build runs: {e}")],
+            ..Default::default()
+        })
+    });
+    errors.extend(b.errors.iter().cloned());
+    (rel, b, errors)
+}
+
 /// `#releases/apps/<app>/<version>` (`hub_core::release_page`): the app's cuts of the version,
 /// their runs from the builds read Release runs shares, and those runs' jobs from the archive. An
 /// unknown app or a version with no cut is a 404.
@@ -188,16 +208,7 @@ pub async fn release(
 ) -> Result<String, (StatusCode, String)> {
     let runs = crate::builds::current((items.clone(), None)).await;
     let read = move || {
-        let rel = releases::read(&System, &items);
-        let mut errors: Vec<String> = rel.errors.clone();
-        errors.extend(queue_error);
-        let b = runs.unwrap_or_else(|e| {
-            Arc::new(hub_core::builds::Builds {
-                errors: vec![format!("build runs: {e}")],
-                ..Default::default()
-            })
-        });
-        errors.extend(b.errors.iter().cloned());
+        let (rel, b, errors) = page_reads(&items, queue_error, runs);
         let app = rel
             .apps
             .iter()
@@ -243,16 +254,7 @@ pub async fn version(
 ) -> Result<String, (StatusCode, String)> {
     let runs = crate::builds::current((items.clone(), None)).await;
     let read = move || {
-        let rel = releases::read(&System, &items);
-        let mut errors: Vec<String> = rel.errors.clone();
-        errors.extend(queue_error);
-        let b = runs.unwrap_or_else(|e| {
-            Arc::new(hub_core::builds::Builds {
-                errors: vec![format!("build runs: {e}")],
-                ..Default::default()
-            })
-        });
-        errors.extend(b.errors.iter().cloned());
+        let (rel, b, errors) = page_reads(&items, queue_error, runs);
         let jobs = hub_core::builds::Paths::from_env().jobs;
         let page = hub_core::version_page::read(
             &System, &rel, &b.rows, &items, &jobs, &q.project, &q.version,

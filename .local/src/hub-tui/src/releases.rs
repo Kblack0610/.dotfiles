@@ -84,6 +84,11 @@ impl<T> Default for PaneRead<T> {
 }
 
 impl<T> PaneRead<T> {
+    /// Nothing read yet, or the last read is `every` old.
+    pub fn due(&self, every: std::time::Duration) -> bool {
+        self.read.is_none() || self.at.is_some_and(|t| t.elapsed() >= every)
+    }
+
     /// Take the answer to the read of `want`. A late answer for a pane since reopened on
     /// another target leaves it alone: that target's own read is the one in flight.
     pub fn answer(&mut self, want: &str, r: Result<T, String>) {
@@ -301,7 +306,7 @@ impl ReleasesView {
     /// A version's page (`links::Kind::Version`, `<project>/<version>`): the pane of the project's
     /// own app, else of the first app it owns, with the version's page atop it.
     pub fn open_version(&mut self, s: Option<&Releases>, id: &str) {
-        let project = id.split_once('/').map_or(id, |(p, _)| p.trim());
+        let project = hub_core::release_page::split(id).map_or(id, |(p, _)| p);
         let app = s
             .and_then(|s| {
                 hub_core::version_page::owned(s, project)

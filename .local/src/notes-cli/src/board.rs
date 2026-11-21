@@ -582,7 +582,6 @@ struct VersionRow {
     /// `open`, `doing`, `done`, or `dropped` (closed undelivered).
     state: &'static str,
     priority: &'static str,
-    weight: u32,
     /// The PRs its marker names, as written (`owner/repo#N`, a bare `N`).
     prs: Vec<String>,
 }
@@ -603,7 +602,6 @@ impl VersionRow {
                 "open"
             },
             priority: md::priority_word(line),
-            weight: crate::projects::size_weight(line),
             prs: md::pr_refs(line),
         }
     }
@@ -613,7 +611,6 @@ impl VersionRow {
 /// of the window its version committed to, when one was recorded (`window::read`).
 #[derive(Debug, serde::Serialize)]
 struct VersionProject {
-    profile: String,
     project: String,
     opened: Option<String>,
     due: Option<String>,
@@ -621,14 +618,13 @@ struct VersionProject {
 }
 
 impl VersionProject {
-    fn of(profile: &str, project: &str, dir: &std::path::Path, want: V) -> Option<Self> {
+    fn of(project: &str, dir: &std::path::Path, want: V) -> Option<Self> {
         let (open, closed) = release_view(dir, want);
         if open.is_empty() && closed.is_empty() {
             return None;
         }
         let snap = crate::window::read(dir, want);
         Some(VersionProject {
-            profile: profile.to_string(),
             project: project.to_string(),
             opened: snap.as_ref().map(|s| s.opened.to_string()),
             due: snap.and_then(|s| s.due).map(|d| d.to_string()),
@@ -669,7 +665,7 @@ pub fn print_version(version: &str, projects: &[String], json: bool) -> Result<i
                 continue;
             };
             if json {
-                feed.extend(VersionProject::of(&name, &proj, dir, want));
+                feed.extend(VersionProject::of(&proj, dir, want));
                 continue;
             }
             let (open, closed) = release_view(dir, want);
@@ -1825,7 +1821,7 @@ mod tests {
             "# n\n\n## Committed\n<!-- window: opened=2026-11-18 due=2026-11-19 -->\n- open now\n",
         )
         .unwrap();
-        let p = VersionProject::of("bnb", "demo", &dir, (1, 13, 0)).unwrap();
+        let p = VersionProject::of("demo", &dir, (1, 13, 0)).unwrap();
         assert_eq!(
             (p.opened.as_deref(), p.due.as_deref()),
             (Some("2026-11-18"), Some("2026-11-19"))
@@ -1833,7 +1829,7 @@ mod tests {
         let states: Vec<&str> = p.rows.iter().map(|r| r.state).collect();
         assert_eq!(states, vec!["open", "done", "done"]);
         // Negative control: a release nothing is aimed at lists no project.
-        assert!(VersionProject::of("bnb", "demo", &dir, (2, 0, 0)).is_none());
+        assert!(VersionProject::of("demo", &dir, (2, 0, 0)).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

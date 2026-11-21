@@ -1188,12 +1188,7 @@ impl App {
             self.rv.rel = releases::PaneRead::default();
             return;
         }
-        let due = self.rv.rel.read.is_none()
-            || self
-                .rv
-                .rel
-                .at
-                .is_some_and(|t| t.elapsed() >= APP_STATUS_REFRESH);
+        let due = self.rv.rel.due(APP_STATUS_REFRESH);
         let (Some(a), Some(b)) = (self.selected_release(), &self.builds) else {
             return;
         };
@@ -1228,19 +1223,21 @@ impl App {
             self.rv.ver = releases::PaneRead::default();
             return;
         }
-        let due = self.rv.ver.read.is_none()
-            || self
-                .rv
-                .ver
-                .at
-                .is_some_and(|t| t.elapsed() >= APP_STATUS_REFRESH);
+        let due = self.rv.ver.due(APP_STATUS_REFRESH);
         let (Some(rel), Some(b)) = (&self.releases, &self.builds) else {
             return;
         };
         if !due || self.rv.ver.busy {
             return;
         }
-        let (rel, runs, items) = (rel.clone(), b.rows.clone(), self.queue_items());
+        let rel = hub_core::releases::Releases {
+            apps: hub_core::version_page::owned(rel, project)
+                .into_iter()
+                .cloned()
+                .collect(),
+            ..Default::default()
+        };
+        let (runs, items) = (b.rows.clone(), self.queue_items());
         let (project, version) = (project.to_string(), version.to_string());
         self.rv.ver.busy = true;
         let (jobs, tx, runner) = (

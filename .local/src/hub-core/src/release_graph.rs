@@ -59,7 +59,7 @@ pub struct Tag {
 }
 
 /// From before its project's line starts, or a project with none: never a red.
-fn legacy(provenance: &str) -> bool {
+pub(crate) fn legacy(provenance: &str) -> bool {
     provenance == "legacy"
 }
 
