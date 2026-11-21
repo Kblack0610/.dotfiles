@@ -2477,6 +2477,14 @@ route_info() {
   assert_success
   ! grep -q 'chat/completions' "$SANDBOX/curl.argv"
   grep -qF 'model_id="kimi-id"' "$SANDBOX/curl.argv"
+  # The healthy reading is cached for TTL: a second ask reads Prometheus no second time.
+  : > "$SANDBOX/curl.argv"
+  run --separate-stderr "$ACCT" room --source res --model "m1 (kimi)"
+  assert_success
+  ! grep -q 'litellm_deployment_state' "$SANDBOX/curl.argv"
+  # A budgeted route's 429 that Prometheus does not show is no refusal: it may be a passing one.
+  run --separate-stderr "$ACCT" room --source res --model "m1 (glm)"
+  assert_success
   # Shed: the probe is sent and its 429 refuses the start.
   echo '{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[0,"1"]}]}}' > "$SANDBOX/gw/shed.json"
   rm -f "$XDG_CACHE_HOME/claude-acct/route-"*
@@ -2488,12 +2496,13 @@ route_info() {
   rm -f "$XDG_CACHE_HOME/claude-acct/route-"* "$SANDBOX/gw/route-spent"
   run --separate-stderr "$ACCT" room --source res --model "m1 (kimi)"
   assert_success
-  # Prometheus unreadable: read as not shed, no probe.
+  # Prometheus unreadable: read as not shed, no probe, and said on stderr.
   rm -f "$XDG_CACHE_HOME/claude-acct/route-"* "$SANDBOX/gw/shed.json"
   : > "$SANDBOX/curl.argv"
   run --separate-stderr "$ACCT" room --source res --model "m1 (kimi)"
   assert_success
   ! grep -q 'chat/completions' "$SANDBOX/curl.argv"
+  [[ "$stderr" == *'Prometheus is unreadable, so whether the gateway sheds m1 (kimi) is not read'* ]] || fail "$stderr"
 }
 
 # queue_items <item json>... -- agent-queue answers source_live (--state running) and route_paced
