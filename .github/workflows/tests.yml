@@ -205,7 +205,8 @@ jobs:
       # bun runs the hunk extensions' TypeScript tests (unit/hunk_*.bats), which skip without it
       # off CI and fail without it on CI. From the release CDN, pinned by version and the zip's
       # sha256 (bump both), so a new bun cannot turn the gate red on a repo nobody touched; the
-      # step is capped like the apt one, so a hung download fails here by name.
+      # step is capped like the apt one, so a hung download fails here by name. The retries match
+      # tests/Dockerfile's curlrc: the CDN answers a 504 now and then, and 8 x 15 s fits the cap.
       - name: bun
         if: steps.pick.outputs.bun == 'true'
         timeout-minutes: 3
@@ -214,7 +215,7 @@ jobs:
           BUN_SHA256: 94559b3b528995a49452f9f2404cec74f2efd7d06e0a000a8cd214b02c3666eb   # bun-linux-x64.zip
         run: |
           zip=$RUNNER_TEMP/bun.zip
-          curl -fsSL --retry 4 --retry-delay 5 --retry-all-errors -o "$zip" \
+          curl -fsSL --retry 8 --retry-delay 15 --retry-all-errors -o "$zip" \
             "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip"
           echo "$BUN_SHA256  $zip" | sha256sum -c -
           unzip -q "$zip" -d "$RUNNER_TEMP"
