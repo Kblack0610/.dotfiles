@@ -27,6 +27,7 @@ STATE_DIR="${AGENTCTL_STATE_DIR:-${AGENTCTL_STATE:-$HOME/.local/state/agentctl}}
 WATCHES="${WATCH_DIR:-${SENTINEL_WATCHES:-$HOME/.agent/watches}}"
 WSTATE="${WATCH_STATE_DIR:-${SENTINEL_STATE:-$HOME/.local/state/watch-companion}}"
 CACHE="${AGENT_MQTT_CACHE:-$HOME/.local/state/agent-mqtt}"
+BAR_TIMEOUT="${AGENT_MQTT_BAR_TIMEOUT:-20}" # seconds `hub bar --json` may run: it makes agent-queue calls, so a locked store must not hold the publish lock
 READER_TTL=45 # seconds: under fleet-state.timer's minute, so the slow readers render at least once a tick
 # Same staleness rule fleet.sh uses (one lib, so the two never disagree).
 _WATCH_LIB="${SENTINEL_WATCH_LIB:-$HOME/.local/lib/sentinel-watch.sh}"
@@ -187,7 +188,7 @@ snapshot() {
     # timer run past its 60s (ar-2310).
     dispatch_here && slow_reader dfd summary/dispatch fleet-dispatch stats
     command -v hub >/dev/null 2>&1 && slow_reader ofd summary/overview env PROM_TIMEOUT=3 hub phone --json
-    bar_here && slow_reader bfd summary/bar hub bar --json
+    bar_here && slow_reader bfd summary/bar timeout "$BAR_TIMEOUT" hub bar --json
 
     # Runners: the roster is the conf dir, so a retired runner drops out of HA with its conf.
     for f in "$CONFIG_DIR"/*.conf; do

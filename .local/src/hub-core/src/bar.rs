@@ -18,6 +18,11 @@ use crate::vocab::Vocab;
 /// The ready items sent, from the front of the start order; `ready.total` counts them all.
 pub const READY_SENT: usize = 12;
 
+/// How old the dispatch snapshot may be before its candidates are dropped and named stale. Provisional
+/// (2026-11-21): a pass writes it every few minutes (7 min old when measured), so an hour of silence
+/// is a stopped dispatch, not a quiet one; revisit when a held dispatch shows this line wrongly.
+pub const CANDIDATES_STALE_SECS: i64 = 3600;
+
 /// The cleared board candidates sent: what dispatch would promote after the ready items.
 pub const CANDIDATES_SENT: usize = 3;
 
@@ -75,7 +80,9 @@ pub struct BarItem {
     pub ready_min: Option<i64>,
 }
 
-/// The ready queue: every item that could start now, the first `READY_SENT` of them.
+/// The queued items in agent-queue's start order, the first `READY_SENT` of them. They are the
+/// items the store says can start; dispatch may still pass one over (a held area, load, a lane's
+/// tier), which this does not model.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Ready {
     pub total: usize,
@@ -96,7 +103,9 @@ pub struct BarCandidate {
 /// `hub bar --json`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Bar {
-    /// Epoch seconds the document was built at; a reader says how old it is from this.
+    /// Epoch seconds the document was built at; a reader says how old it is from this. It changes on
+    /// every build, so the publisher resends the topic each time it reads, which is the heartbeat the
+    /// chips' "N old" check needs.
     pub as_of: i64,
     /// Live sessions, worst bucket first, then the longest idle first. The shepherd's pane and
     /// the NIGHTLY and SHARED rows are the fleet's own, not anyone's task, and are left out.
@@ -146,6 +155,10 @@ pub fn build(
 
     bar.ready = ready(&queue, now);
     match candidates {
+        Ok(c) if stale(&c, now) => bar.errors.push(format!(
+            "dispatch candidates: the snapshot was written {} ago, so its rows are not shown",
+            crate::text::age(now - c.written_epoch().unwrap_or(0))
+        )),
         Ok(c) => {
             bar.candidates = c
                 .rows
@@ -163,6 +176,13 @@ pub fn build(
         Err(e) => bar.errors.push(format!("dispatch candidates: {e}")),
     }
     bar
+}
+
+/// A snapshot older than `CANDIDATES_STALE_SECS` at `now`; one with no mtime counts as current, since
+/// its rows came from no file.
+fn stale(c: &Candidates, now: i64) -> bool {
+    c.written_epoch()
+        .is_some_and(|t| now - t > CANDIDATES_STALE_SECS)
 }
 
 fn sessions(state: &Value, queue: &Queue) -> Vec<BarSession> {
@@ -431,6 +451,31 @@ mod tests {
         let keys: Vec<&str> = bar.candidates.iter().map(|c| c.key.as_str()).collect();
         assert_eq!(keys, ["clear-1", "clear-2", "clear-3"]);
         assert_eq!(bar.candidates[0].title, "clear-1");
+    }
+
+    #[test]
+    fn a_stale_candidates_snapshot_is_named_and_its_rows_are_not_shown() {
+        let at = |age: i64| {
+            let mut c = queue::parse_candidates(&cand("clear-1", &[]));
+            c.written =
+                Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs((NOW - age) as u64));
+            c
+        };
+        let st = state(json!([]));
+        let run = |c| build(&st, Ok(vec![]), Ok(Stats::default()), Ok(c), NOW);
+        let old = run(at(2 * CANDIDATES_STALE_SECS));
+        assert!(old.candidates.is_empty());
+        assert!(
+            old.errors
+                .iter()
+                .any(|e| e.contains("snapshot was written")),
+            "{:?}",
+            old.errors
+        );
+        // Negative control: a fresh snapshot shows its rows and says nothing.
+        let fresh = run(at(60));
+        assert_eq!(fresh.candidates.len(), 1);
+        assert!(fresh.errors.is_empty(), "{:?}", fresh.errors);
     }
 
     #[test]

@@ -568,6 +568,15 @@ seed_bar() {
   [ -z "$(payload agents/testhost/summary/bar)" ]
 }
 
+# A locked agent-queue store must not hold the publish lock: hub bar is bounded.
+@test "bar: a hub that hangs is cut off at its timeout and the run still publishes the rest" {
+  printf '#!/usr/bin/env bash\n[ "$1" = bar ] && exec sleep 30\nexit 1\n' > "$SANDBOX/bin/hub"
+  AGENT_MQTT_BAR_TIMEOUT=1 run "$PUB" --quiet
+  assert_success
+  [ -z "$(payload agents/testhost/summary/bar)" ]
+  [ -n "$(payload agents/testhost/runner/alpha)" ]
+}
+
 @test "bar: a run inside the TTL repeats the sent document, an older one reads hub again" {
   seed_bar
   "$PUB" --quiet
