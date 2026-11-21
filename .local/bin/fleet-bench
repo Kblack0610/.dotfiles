@@ -1736,24 +1736,30 @@ headless_launches() {
 # names (the first backticked word of its File cell), sorted; exit 2 with no such table.
 launch_rows() {
   [ -r "$LEDGER_PIPELINES" ] || { say "no launch table: cannot read $LEDGER_PIPELINES"; return 2; }
-  grep -qx '## Model calls outside agentctl-run' "$LEDGER_PIPELINES" \
+  awk '/^## /{ on = ($0 == "## Model calls outside agentctl-run"); found = found || on; next }
+    on && /^\| `/ { split($0, c, "`"); print c[2] }
+    END { exit !found }' "$LEDGER_PIPELINES" | sort -u
+  [ "${PIPESTATUS[0]}" = 0 ] \
     || { say "no launch table: $LEDGER_PIPELINES has no '## Model calls outside agentctl-run' section"; return 2; }
-  awk '/^## /{ on = ($0 == "## Model calls outside agentctl-run"); next }
-    on && /^\| `/ { split($0, c, "`"); print c[2] }' "$LEDGER_PIPELINES" | sort -u
 }
 
-# launches_unlisted -> one line per launch file the scan of LEDGER_SRC finds with no launch_rows
-# row (by file name, as the table names them), and per row no scanned file has that name; exit 1
-# on any, 2 with no table. The rows are the per-file allowlist of launches outside agentctl-run.
-launches_unlisted() {
-  local rows files src
-  rows=$(launch_rows) || return 2
+# launch_files -> each file under LEDGER_SRC with a headless launch line, once, sorted
+launch_files() {
+  local src
   IFS=: read -ra src <<<"$LEDGER_SRC"
-  files=$(headless_launches "${src[@]}" | cut -d: -f1 | sort -u)
-  awk -v rows="$rows" '
-    BEGIN { n = split(rows, r, "\n"); for (i = 1; i <= n; i++) if (r[i] != "") row[r[i]] = 1 }
+  headless_launches "${src[@]}" | cut -d: -f1 | sort -u
+}
+
+# launches_unlisted -> one line per launch file (launch_files) with no launch_rows row (by file
+# name, as the table names them), and per row no launch file has that name; exit 1 on any, 2 with
+# no table. The rows are the per-file allowlist of launches outside agentctl-run.
+launches_unlisted() {
+  local rows
+  rows=$(launch_rows) || return 2
+  launch_files | awk 'NR == FNR { if ($0 != "") row[$0] = 1; next }
     $0 != "" { b = $0; sub(/.*\//, "", b); seen[b] = 1; if (!(b in row)) { print "launch with no PIPELINES.md row: " $0; bad = 1 } }
-    END { for (k in row) if (!(k in seen)) { print "PIPELINES.md row with no launch: " k; bad = 1 }; exit bad }' <<<"$files"
+    END { for (k in row) if (!(k in seen)) { print "PIPELINES.md row with no launch: " k; bad = 1 }; exit bad }' <(printf '%s\n' "$rows") -
+  return "${PIPESTATUS[1]}"   # awk's word: an empty scan exits 1 from its grep -v, and that is no fault
 }
 
 # scheduled_runner <conf> -> the runner's name, failing for one fired by hand. fleet-liveness's
@@ -1813,7 +1819,7 @@ intake_room() {
 # counted where `agentctl reload` writes one, a switched-on oneshot with a SCHEDULE; reload
 # removes any other, so the live timer dir holds the same count once reloaded.
 ledger_roster() {
-  local c n_conf=0 n_on=0 n_bad=0 n_call=0 n_timer=0 src sd="" name
+  local c n_conf=0 n_on=0 n_bad=0 n_call=0 n_timer=0 sd="" name
   proof_lib && sd=$(proof_state_dir)
   for c in "$LEDGER_CONF_DIR"/*.conf; do
     [ -e "$c" ] || continue
@@ -1831,8 +1837,7 @@ ledger_roster() {
   echo "runners_bad=$n_bad"
   echo "agents_call=$n_call"
   echo "timers=$n_timer"
-  IFS=: read -ra src <<<"$LEDGER_SRC"
-  echo "launches_direct=$(headless_launches "${src[@]}" | cut -d: -f1 | sort -u | wc -l)"
+  echo "launches_direct=$(launch_files | wc -l)"
 }
 
 # insight_expired_share EPOCH -> the share (two decimals) of the insights dated 30 to 60 days before
@@ -2442,10 +2447,8 @@ cmd_prs() {
 # ledger_check <counts> -> one line per gated count over the baseline, then launches_unlisted's
 # lines; exit 1 if any, 2 if no baseline or no launch table
 ledger_check() {
-  local k cur base bad=0 unlisted rc=0
+  local k cur base bad=0
   [ -r "$LEDGER_BASELINE" ] || { say "no ledger baseline at $LEDGER_BASELINE"; return 2; }
-  unlisted=$(launches_unlisted) || rc=$?
-  [ "$rc" = 2 ] && return 2
   for k in $LEDGER_GATED; do
     cur=$(sed -n "s/^$k=//p" <<<"$1"); cur=${cur//[[:blank:]]/}   # BSD wc pads its count
     base=$(sed -n "s/^$k=//p" "$LEDGER_BASELINE" | tail -1)
@@ -2457,7 +2460,8 @@ ledger_check() {
       bad=1
     fi
   done
-  [ "$rc" = 0 ] || { echo "$unlisted"; bad=1; }
+  launches_unlisted
+  case $? in 0) ;; 1) bad=1 ;; *) return 2 ;; esac
   return "$bad"
 }
 

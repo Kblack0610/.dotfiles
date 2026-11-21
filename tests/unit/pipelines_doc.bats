@@ -42,7 +42,7 @@ doc_units() {
 # holds CI to (launches_unlisted), over both repos.
 @test "every model call outside agentctl-run has a row, and every row is still one" {
   local d=() r
-  for r in "$PUB" "$PRIV"; do d+=("$r/.local" "$r/.claude" "$r/.config"); done
+  for r in "$PUB" "$PRIV"; do d+=("$r/.local" "$r/.config" "$r/.claude/skills"); done   # the roots ledger.yml scans
   LEDGER_PIPELINES="$DOC" LEDGER_SRC="$(IFS=:; echo "${d[*]}")" run "$PUB/.local/bin/fleet-bench" ledger --unlisted
   assert_success
   assert_output ''
