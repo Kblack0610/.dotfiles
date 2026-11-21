@@ -519,6 +519,13 @@ if [ -z "$repo" ]; then
 fi
 R=()
 [ -z "$repo" ] || R=(-R "$repo")
+# Every real step reads this checkout (head, forge remote, merge proof); --repo only redirects gh.
+# Outside a checkout a merged PR got through repo, merge and body, then failed proof (ar-2371).
+# A dry run reads no PR and stays the way to preview from anywhere.
+if [ "$dry" -eq 0 ]; then
+  git_err=$(git rev-parse --show-toplevel 2>&1 >/dev/null) ||
+    die "$PWD is not a usable git checkout ($(lastline "$git_err")): agent-land reads the checkout for the head, the forge remote and the merge proof, and --repo only picks the repo gh reads. Run it from a checkout of ${repo:-the PR repo}"
+fi
 
 # The forge the PR is on: gh's, or Forgejo's API through so_forgejo_* (session-outcomes.sh, which
 # also brings origin-repo.sh). fj is its host/owner/repo and remote the git remote that carries it;
