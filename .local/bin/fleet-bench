@@ -175,7 +175,7 @@
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_NEEDS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
 # BENCH_CI_MATCH_CMD, BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
 # BENCH_ITEMS_CMD, BENCH_ADMISSION_CMD, BENCH_MIX_CMD, BENCH_LESSONS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H,
-# BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_TRAINEE_CMD, BENCH_LANE_LOG, BENCH_LANE_VOIDS, BENCH_SOURCES_CMD, BENCH_HARNESSES, BENCH_ROOM_CMD, BENCH_CANARY_LANES, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_HUB_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, PLAN_DIRS, BENCH_DOCS_CLEANUP_DIR, BENCH_SYSTEMS_CMD, BENCH_DOCTOR_LAST, CHAIN_DAYS,
+# BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_TRAINEE_CMD, BENCH_LANE_LOG, BENCH_LANE_VOIDS, BENCH_SOURCES_CMD, BENCH_HARNESSES, BENCH_ROOM_CMD, BENCH_CANARY_LANES, BENCH_CANARY_RETRIES, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_HUB_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, PLAN_DIRS, BENCH_DOCS_CLEANUP_DIR, BENCH_SYSTEMS_CMD, BENCH_DOCTOR_LAST, CHAIN_DAYS,
 # FLEET_STATE_FILE, FLEET_SHEPHERD_DIR, WORKTREE_GC_LOG, WORKTREE_GC_STALE_H, BENCH_FLEET_COST_CMD, BENCH_FLEET_COST_FILE, BENCH_FLEET_COST_EVERY_MIN, BENCH_FLEET_COST_TIMEOUT, BENCH_BUDGET_CMD, BENCH_BUDGET_FILE,
 #                                BENCH_BUDGET_EVERY_MIN, BENCH_BUDGET_TIMEOUT.
 
@@ -280,6 +280,7 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${BENCH_CANARY_ORACLES:=$BENCH_CANARY_DIR/../canary-oracles}"   # canary: the answer-key scripts a task's oracle.script and oracle.answer.script name (content as data)
 : "${BENCH_CANARY_QUEUE_CMD:=agent-queue}"   # canary queue: show and add
 : "${BENCH_CANARY_TIMEOUT:=900}"   # canary: seconds an oracle may run
+: "${BENCH_CANARY_RETRIES:=1}"   # canary queue: times a canary a session cancelled is queued again in its week (a cancel by hand stays cancelled)
 : "${BENCH_CANARY_WRAP:=}"   # canary score: a shell prefix the oracle command runs inside (fleet-dispatch: a sandboxed lane's srt line)
 : "${BENCH_CANARY_CONFIG_REPOS:=$HOME/.dotfiles:$HOME/.dotfiles-private}"   # canary score: the config a run ran under, by HEAD (colon-separated)
 : "${BENCH_CANARY_LANES:=$HOME/.config/fleet-bench/canary-lanes}"   # the lanes canary_top_up fills beside claude, `harness model [effort]` a line (content as data)
@@ -5719,8 +5720,8 @@ canary_brief() {
 }
 
 # canary queue [--harness h [--model m]]: one canary item per task for this ISO week, none for a
-# task whose item exists in any state (by its title or slug, canary_known), so a second pass the same
-# week queues nothing. `from: canary` files no story row. With no flags it is the weekly claude lane;
+# task whose item exists (by its title or slug, canary_known) in any state but a cancel by a session, which
+# is queued again up to BENCH_CANARY_RETRIES times, so a second pass the same week queues nothing. `from: canary` files no story row. With no flags it is the weekly claude lane;
 # another lane's items are canary-<id>-<week>-<h>[-<m>] (a long id cut, see canary_slug), carrying
 # agent and model for fleet-dispatch to start them on.
 # A lane that spends a Claude account queues at high, the queue's working priority: at low it sat
@@ -5795,19 +5796,24 @@ canary_title() { printf 'check(canary): %s %s%s' "$1" "$2" "${3:+ $3}"; }
 
 # canary_known_load -> reads the titles and slugs of the week's window into CANARY_KNOWN once (CANARY_KNOWN_ON=1),
 # so a pass forks no `show` per task and lane. Rc 1 when the queue cannot be read: queueing blind would add twice.
-# A cancelled item never ran, so it is not known and its lane queues it again in its week (148 w47 items sat
-# cancelled by the queue cap, never rerun); the one cancel kept is canary_lane_queue's own (its model could not
-# be set), which a pass would otherwise redo on every call while the fault stays.
+# A cancelled item never ran, so a session's cancel of one (cancelled_by set) leaves it unknown and its lane queues
+# it again in its week, up to BENCH_CANARY_RETRIES times (148 w47 items sat cancelled by a queue-cap plan, never
+# rerun). Kept known: a cancel by hand (no cancelled_by), canary_lane_queue's own (CANARY_SET_CANCEL, so a model
+# that cannot be set does not redo on every pass), and a slug already queued again that many times.
+CANARY_SET_CANCEL="canary: its model and canary id could not be set"
 canary_known_load() {
   [ -z "${CANARY_KNOWN_ON:-}" ] || return 0
   local out
   out=$($BENCH_CANARY_QUEUE_CMD list --json --state all --since 10d 2>/dev/null) || return 1
-  CANARY_KNOWN=$(jq -r 'select(.status != "cancelled" or ((.cancel_why // "") | startswith("canary: its model and canary id")))
+  CANARY_KNOWN=$(jq -rs --argjson r "$BENCH_CANARY_RETRIES" --arg own "$CANARY_SET_CANCEL" '
+    def retryable: .status == "cancelled" and ((.cancelled_by // "") != "") and ((.cancel_why // "") | startswith($own) | not);
+    (map(select(retryable)) | group_by(.slug) | map(select(length > $r) | .[0].slug)) as $spent
+    | .[] | select((retryable | not) or (.slug | IN($spent[])))
     | .title // empty, .slug // empty' <<<"$out" 2>/dev/null) || return 1
   CANARY_KNOWN_ON=1
 }
 
-# canary_known <title> <slug> -> true when an item of that title or slug exists in any state (canary_known_load read them)
+# canary_known <title> <slug> -> true when an item of that title or slug is held against queueing (canary_known_load)
 canary_known() { grep -qxF -e "$1" -e "$2" <<<"$CANARY_KNOWN"; }
 
 # canary_lane_queue <harness> <model> <effort> <max> -> queues the lane's missing tasks, at most <max> (0: all),
@@ -5857,7 +5863,7 @@ canary_lane_queue() {
       --priority "$prio" --weight light ${harness:+--agent "$harness"} --slug "$slug" --title "$title" \
       -- "$(canary_brief "$t" "$slug" "$sbx")" >/dev/null || { say "canary: could not queue $slug"; return 1; }
     [ -z "$model$sbx" ] || $BENCH_CANARY_QUEUE_CMD set "$slug" ${model:+"model=$model"} ${effort:+"effort=$effort"} ${sbx:+"canary=$id"} >/dev/null ||
-      { $BENCH_CANARY_QUEUE_CMD cancel "$slug" --why "canary: its model and canary id could not be set" >/dev/null 2>&1
+      { $BENCH_CANARY_QUEUE_CMD cancel "$slug" --why "$CANARY_SET_CANCEL" >/dev/null 2>&1
         say "canary: could not set the model and canary id of $slug, so it is cancelled and not queued again in its week"; return 1; }
     CANARY_KNOWN+=$'\n'"$title"$'\n'"$slug"
     added=$((added + 1)); CANARY_ADDED=$added
