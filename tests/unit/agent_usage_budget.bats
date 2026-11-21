@@ -31,11 +31,11 @@ EOF
   echo '{"budgets":[{"budget_product_sku":"actions","budget_amount":220},{"budget_product_sku":"packages","budget_amount":0}]}' > "$FIX/gh-budgets"
   echo '{"usageItems":[{"product":"actions","netAmount":30},{"product":"git_lfs","netAmount":3}]}' > "$FIX/gh-usage"
   echo '{"month_to_date_usage":"50.00"}' > "$FIX/do"
-  cat > "$HOME/bin/gh" <<'EOF'
-#!/usr/bin/env bash
+  # the body is this test's own code and names its fixture dir by $HOME/fix
+  gh_script <<'EOF'
 case "$*" in
-  *budgets*) cat "$FIX/gh-budgets" ;;
-  *"usage?year=2026&month=11"*) cat "$FIX/gh-usage" ;;
+  *budgets*) cat "$HOME/fix/gh-budgets" ;;
+  *"usage?year=2026&month=11"*) cat "$HOME/fix/gh-usage" ;;
   *) exit 1 ;;
 esac
 EOF
