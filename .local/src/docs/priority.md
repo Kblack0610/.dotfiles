@@ -27,7 +27,7 @@ Why: nine scales grew apart, so "high" meant a page on one, a default on another
 | Board row tag | `#urgent`, `#high` or `#low` on a row, exactly one (`notes-cli` README, "Row format") | urgent, high, low; untagged is untriaged and ranks as high | as the queue | the writer of the row; `agentctl-inbox-triage --backlog --priority` tags the rest | `notes-cli/src/rank.rs`: the one order rows are worked in, after a row due soon and before `#requested` |
 | Retired row words | `#normal`, `#medium`, `#p0`..`#p3` | none | none | nobody | no reader: a row carrying one ranks as untagged (`RETIRED_PRIORITIES` in `projects.rs`) |
 | Epic row | the same row tag on an epic row | as the board row | as the board row | as the board row | as the board row; no separate epic field exists |
-| Project `#prio` | `#prio/<word>` on a project's `Version:` line | focus, high, normal (no tag), low | not a level of work: an ordering key for projects, so it maps to none | the human, `notes projects --prio <name> --set` | `agent-queue` order: ranks above an item's high or low, below red, urgent and sprint (focus, high, normal, low) |
+| Project `#prio` | `#prio/<word>` on a project's `Version:` line | focus, high, normal (no tag), low | not a level of work: an ordering key for projects, so it maps to none | the human, `notes projects --prio <name> --set` | `agent-queue` order: ranks above an item's high or low, below red, urgent and sprint (focus, high, normal, low); `low` names the projects the fleet share cap holds to `DISPATCH_FLEET_SHARE` of starts (`fleet-dispatch`), past which only a red or the human's own work (urgent from them, `#requested`, their floors) starts |
 | Runner `PRIORITY` | `PRIORITY=` in a runner conf (`~/.config/agentctl/README.md`) | must, low, off | must is high, low is low; off means disabled | the runner's author | declaration only: `agentctl list --md` shows it and nothing throttles on it (a consumer with its own gateway key declares `metadata.priority` on the key instead) |
 | Runner `CRITICAL` | `CRITICAL=yes` in a runner conf | yes, no | a boolean flag only | the runner's author | the runner starts while `agentctl pause` is on (a reaper whose disk or RAM cannot wait) |
 | Sentinel watch severity | `severity:` in `~/.agent/watches/<name>.yaml` (`SENTINEL.md`, "Paging") | low, normal, high, urgent; `sentinel-manifest validate` refuses any other word | identical | the watch's author | high and urgent buzz the phone and reach the shepherd as a due line; `notify_priority:` overrides the page level, and a command probe's `page: <word>` line overrides both for that trip; the red-watch item floor waits `TRIAGE_WATCH_HIGH_AFTER` at high or urgent |
@@ -79,7 +79,6 @@ Measured 2026-11-21; each line leaves this table when its fix lands (epic ar-434
 | Gap | Phase |
 | --- | --- |
 | Agent plan phases inherit urgent; canary items file as both high and low; the done-item high share is 68-72% | P2 |
-| The focus project runs 18% of done items and the low projects 78%: project `#prio` does not steer the fleet-share cap | P3 |
 | `critical` is a stop rule that reads as a level, so `judge_critical_live_pct` cannot trip | P5 |
 | 23 of 45 runners have no `PRIORITY` and `off` has no user; a row may carry two priority tags or a retired word | P6 |
 
