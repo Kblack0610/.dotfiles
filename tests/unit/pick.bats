@@ -67,6 +67,13 @@ setup() {
   [ "$output" = .local/src/timebox ]
   PICK_CHANGED=.local/src/web-kit/shell.css run --separate-stderr "$SUBJECT" rust HEAD
   [ "$output" = .local/src/agent-web ]
+  # hub-core's reading test scans agent-web and hub-tui sources by a join("..") the
+  # rust-inputs guard cannot see: #2981 changed releases.js, ran agent-web only, and went red
+  # on main in hub-core (ar-4309).
+  PICK_CHANGED=.local/src/agent-web/static/releases.js run --separate-stderr "$SUBJECT" rust HEAD
+  assert_line .local/src/hub-core
+  PICK_CHANGED=.local/src/hub-tui/src/main.rs run --separate-stderr "$SUBJECT" rust HEAD
+  assert_line .local/src/hub-core
   PICK_CHANGED=$'.local/bin/agent-land\ntests/helpers/sandbox.bash' run --separate-stderr "$SUBJECT" rust HEAD
   assert_success
   [ -z "$output" ]
