@@ -216,12 +216,10 @@ in_pane() { # <session> <window index> <windows in the session>
   export TMUX="$SANDBOX/tmp/hub,1,0" TMUX_PANE=%5 STUB_PANE=%5 STUB_S="$1" STUB_W="$2" STUB_N="$3"
 }
 tmux_stub() {
-  cat > "$SANDBOX/bin/tmux" <<'STUB'
-#!/usr/bin/env bash
+  tmux_script <<'STUB'
 [ "$1 $2 $3" = "display-message -p -t" ] && [ "$4" = "$STUB_PANE" ] || exit 1
 printf '%s\t%s\t%s\n' "$STUB_S" "$STUB_W" "$STUB_N"
 STUB
-  chmod +x "$SANDBOX/bin/tmux"
 }
 
 @test "a grant names one window of a many-window session; its bare name matches none of them (ar-2836)" {

@@ -82,6 +82,7 @@ pub async fn list(Query(q): Query<ViewQuery>) -> ApiResult<Json<ProposalsPage>> 
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IdBody {
     id: String,
 }
