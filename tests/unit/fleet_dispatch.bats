@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # fleet-dispatch, which rows and queue items are candidates, how the judge rules on them, and how picks rank.
-# One file of seven (tests/unit/fleet_dispatch*.bats), split so CI shards can spread them;
+# One of the tests/unit/fleet_dispatch*.bats files, split so CI shards can spread them;
 # the fixtures and setup they share are in fleet_dispatch/common.bash.
 
 load 'fleet_dispatch/common'

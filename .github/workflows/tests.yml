@@ -43,10 +43,13 @@ concurrency:
 
 jobs:
   # The PR budget is a p90 of 5 minutes (~/.local/src/docs/ci.md); timeout-minutes is the hang
-  # guard at 2x that, never a lever. tests/pick.sh lists the files, and tests/shard.sh splits
-  # them across runners, balanced by the seconds the weights job reads from the newest green
-  # main run's JUnit. A shard is bounded below by its heaviest file; unit/fleet_dispatch.bats,
-  # 40% of unit, is six files for that. The shard counts are sized so a full run fits the budget
+  # guard at 2x that, never a lever. tests/pick.sh lists the files, and tests/shard.sh splits them
+  # across runners, balanced by the seconds the weights job reads from the newest green main run's
+  # JUnit. A shard is bounded below by its heaviest file, so no file may weigh much past a shard's
+  # share of a picked run: unit/fleet_dispatch*.bats, 40% of unit, is ten files for that. With
+  # eight shards a run picking the family still read p90 6.4 min over 54 runs, its slowest shard
+  # one file of 450-750 s (run_floors, run_harness, reap: about 300 s of wall each), so those
+  # three were split in half (ar-3036). The shard counts are sized so a full run fits the budget
   # on a 4-core runner: the files are CPU-bound, so past an even split only more shards cut the
   # wall. Unit's shard steps add up to 870-1000 s of wall, a split leaves the heaviest shard
   # 10-20% over the mean, and about 60 s of each run is fixed (start, weights, setup, report), so
@@ -56,8 +59,7 @@ jobs:
   # siblings, and the gate's p90 read 6.0 min (ar-3036). The fixed cost per shard (checkout, bats,
   # cached debs, about 25 s) is small beside that tail, so splitting wins over trimming it. Hosted
   # minutes are free on this public repo and jobs start within seconds of their run, so a shard
-  # costs neither.
-  # unit/shard.bats checks that the matrix lists every shard of each tier.
+  # costs neither. unit/shard.bats checks that the matrix lists every shard of each tier.
   #
   # The table is computed once, here, because two shards splitting by two tables can each leave
   # a file out. No table (no green main run within the artifacts' 14 days, an API error) means
