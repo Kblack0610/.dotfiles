@@ -474,20 +474,42 @@ function print(results) {
   }
 }
 
+// Every check opens its own context and reads no other's state, so they run PAGES_AT_ONCE at a time.
+// One after another they took 64 s, the slowest step of the rust job, itself the gate's critical
+// path in half its pull-request runs (ar-3036). Each list keeps its order, so the output does too.
+const PAGES_AT_ONCE = 4;
+function limiter(n) {
+  let free = n;
+  const queue = [];
+  return async (fn) => {
+    if (free) free--;
+    else await new Promise((go) => queue.push(go));
+    try {
+      return await fn();
+    } finally {
+      const go = queue.shift();
+      if (go) go();
+      else free++;
+    }
+  };
+}
+
 async function main() {
   mkdirSync(out, { recursive: true });
   const page = dumpIndex();
   const pw = playwright();
   const browser = await pw.chromium.launch({ headless: true, executablePath: chromium(pw) });
-  const results = [];
+  const slot = limiter(PAGES_AT_ONCE);
+  const none = [];
   // --control proves the overflow detector alone; the nav check has its own control, --no-kit.
-  const navErrors = control || wide ? [] : await navCheck(browser, page);
-  const cardErrors = wide || noKit ? [] : await cardsCheck(browser, page, control ? CARDS_CONTROL_CSS : null);
-  const widgetErrors = wide || noKit ? [] : await widgetCheck(browser, page, control ? WIDGET_CONTROL_CSS : null);
-  const pagerErrors = wide || noKit ? [] : await pagerCheck(browser, page, control);
-  if (!noKit) for (const spec of TABS) results.push(await renderTab(browser, spec, page));
-  const heights = [];
-  if (!noKit) for (const spec of TALL) heights.push(await heightOf(browser, spec, page));
+  const [navErrors, cardErrors, widgetErrors, pagerErrors, results, heights] = await Promise.all([
+    control || wide ? none : slot(() => navCheck(browser, page)),
+    wide || noKit ? none : slot(() => cardsCheck(browser, page, control ? CARDS_CONTROL_CSS : null)),
+    wide || noKit ? none : slot(() => widgetCheck(browser, page, control ? WIDGET_CONTROL_CSS : null)),
+    wide || noKit ? none : slot(() => pagerCheck(browser, page, control)),
+    noKit ? none : Promise.all(TABS.map((spec) => slot(() => renderTab(browser, spec, page)))),
+    noKit ? none : Promise.all(TALL.map((spec) => slot(() => heightOf(browser, spec, page)))),
+  ]);
   await browser.close();
   for (const e of navErrors) console.log(`NAV ${e}`);
   for (const e of cardErrors) console.log(`CARDS ${e}`);
