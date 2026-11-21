@@ -76,8 +76,8 @@ project_of_target() { local p="${1#*/}"; p="${p%%:*}"; printf '%s' "${p%-agent-*
 
 # row <session> <target> <done> <total> [finished]
 row() {
-  printf '{"session_id":"%s","target":"%s","project":"%s","bucket":"WORKING","phases_done":%s,"phases_total":%s,"finished":%s}\n' \
-    "$1" "$2" "$(project_of_target "$2")" "$3" "$4" "${5:-false}"
+  printf '{"session_id":"%s","target":"%s","project":"%s","bucket":"WORKING","phases_done":%s,"phases_total":%s,"finished":%s,"active_min":%s}\n' \
+    "$1" "$2" "$(project_of_target "$2")" "$3" "$4" "${5:-false}" "${ROW_ACTIVE:-null}"
 }
 
 # sample_at <offset-seconds>: one sample of whatever $SNAP holds
@@ -439,6 +439,18 @@ PROM
   { row a lab/game-agent-1:1 2 3; row b lab/game-agent-2:1 0 2; } > "$SNAP"; sample_at 2400
   run jq -sc 'map({target, phase_since_epoch, phase_min})' < <("$SUBJECT" eta --json)
   assert_output "[{\"target\":\"lab/game-agent-1:1\",\"phase_since_epoch\":$((T0 + 600)),\"phase_min\":60},{\"target\":\"lab/game-agent-2:1\",\"phase_since_epoch\":$((T0 + 1800)),\"phase_min\":60}]"
+}
+
+@test "eta --json gives the open phase's work-time base: active_min at its first sample that has one (ar-528)" {
+  ROW_ACTIVE=10 row a lab/game-agent-1:1 1 3 > "$SNAP"; sample_at 0
+  row a lab/game-agent-1:1 2 3 > "$SNAP"; sample_at 600     # sampled before samples carried active_min
+  ROW_ACTIVE=40 row a lab/game-agent-1:1 2 3 > "$SNAP"; sample_at 1200
+  ROW_ACTIVE=55 row a lab/game-agent-1:1 2 3 > "$SNAP"; sample_at 1800
+  run jq -c '[.phase_since_epoch, .phase_active_base]' < <("$SUBJECT" eta --json)
+  assert_output "[$((T0 + 600)),40]"
+  row b lab/game-agent-2:1 0 2 > "$SNAP"; sample_at 2400  # none sampled yet: no base, so no verdict
+  run jq -c 'select(.session_id == "b") | .phase_active_base' < <("$SUBJECT" eta --json)
+  assert_output null
 }
 
 @test "report prints the live table and the accuracy line" {

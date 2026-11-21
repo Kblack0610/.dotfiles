@@ -649,7 +649,7 @@ sample_rows() {
   $BENCH_SESSIONS_CMD | jq -c --argjson t "$t" "$JQ_LIB"'
     select(type == "object" and (.session_id // "") != "" and (.bucket | IN("NIGHTLY", "CHECKOUT", "SHARED") | not))
     | {epoch: $t, at: ($t | iso), session_id, target, project, bucket,
-       phases_done, phases_total, next_phase, finished: (.finished // false), idle_min,
+       phases_done, phases_total, next_phase, finished: (.finished // false), idle_min, active_min,
        context_tokens, nudged, escalated, pr, plan_file}'
 }
 
@@ -800,7 +800,9 @@ epics_step() {
 # latest_live -> the newest sample's rows joined with each session's newest estimate, and
 # late_min when the ETA it shows is already behind that sample. The estimate is not redone:
 # it is scored as it was made. phase_since_epoch is the first sample at the session's current
-# phases_done: when its open phase started, as near as the sample cadence can say.
+# phases_done: when its open phase started, as near as the sample cadence can say. phase_active_base is
+# the session's active_min (fleet-sessions' work time) at the first sample in that phase that has one,
+# which fleet-sessions' overdue_of subtracts so a phase ages by work, not wall clock.
 latest_live() {
   [ -s "$PROGRESS" ] || return 0
   local est="$ESTIMATES"
@@ -811,11 +813,13 @@ latest_live() {
         | from_entries) as $eta
     | ($p | map(select(.epoch == $last) | .session_id)) as $live
     | ($p | map(select(.session_id | IN($live[]))) | group_by(.session_id)
-        | map({key: .[0].session_id, value: map({epoch, phases_done})}) | from_entries) as $hist
+        | map({key: .[0].session_id, value: map({epoch, phases_done, active_min})}) | from_entries) as $hist
     | $p[] | select(.epoch == $last)
     | . as $r
     | ([$hist[$r.session_id][] | select(.phases_done != $r.phases_done) | .epoch] | max) as $moved
-    | . + {phase_since_epoch: ([$hist[$r.session_id][] | select($moved == null or .epoch > $moved) | .epoch] | min)}
+    | [$hist[$r.session_id][] | select($moved == null or .epoch > $moved)] as $phase
+    | . + {phase_since_epoch: ($phase | map(.epoch) | min),
+           phase_active_base: ($phase | map(select(.active_min != null)) | min_by(.epoch) | .active_min // null)}
     | . + {eta: (if .finished then null else $eta[.session_id] end)}
     | . + {late_min: ((.eta | shown_eta) as $s
                       | if $s != null and $s < $last then (($last - $s) / 60 | floor) else null end)}'
@@ -826,7 +830,7 @@ cmd_eta() {
     latest_live | jq -c "$JQ_LIB"'{target, session_id, phases_done, phases_total, finished,
       eta: (.eta.cal_eta // .eta.eta // null), eta_epoch: (.eta | shown_eta),
       raw_eta_epoch: (.eta.eta_epoch // null), factor: (.eta.factor // null), late_min,
-      phase_since_epoch,
+      phase_since_epoch, phase_active_base,
       phase_min: (if .eta.per_phase_min == null then null else .eta.per_phase_min * (.eta.factor // 1) | floor end),
       basis: (.eta | basis_label)}'
     return
