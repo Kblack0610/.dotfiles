@@ -412,8 +412,9 @@ fn red_key(item: &str, items: &[String]) -> Option<String> {
     }
 }
 
-/// The owner and state of a red from its fix filed under `key` ([`fix_owner`], the join Releases
-/// draws too); no key (a shared first word) has no owner.
+/// The owner and state of a red from its fix filed under `key` ([`fix_owner`], the shared join);
+/// no key (a shared first word) has no owner. It sets `owner`, `fixing_by` and, unless the alert
+/// is an error, `state` outright, so an alert's owner fields are this call's alone.
 fn owner(a: &mut Alert, key: Option<&str>, fixes: Option<&[Red]>, now: i64) {
     let Some(fixes) = fixes else {
         a.owner = "-".into();

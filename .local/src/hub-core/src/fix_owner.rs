@@ -1,5 +1,6 @@
-//! Who owns a red, from its fix rows (`fleet-bench reds`, [`crate::reds`]): the one join Alerts
-//! and Releases both draw, so a red reads the same owner on every surface.
+//! Who owns a red, from its fix rows (`fleet-bench reds`, [`crate::reds`]): the one join a
+//! surface draws a red's owner by, so a red reads the same owner on every surface. Alerts calls
+//! it today; Releases > Apps' owner cell is next (plan pasted-content-id-7aea-prancy-muffin P1).
 
 use crate::reds::Red;
 
