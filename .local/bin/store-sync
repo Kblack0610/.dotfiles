@@ -252,7 +252,8 @@ settle_closes() {
     done
   done
   for p in "${paths[@]}"; do [ -n "${done_at[${p##*/}]:-}" ] || return 1; done
-  idx=$(mktemp) || return 1
+  # A name only: read-tree writes the index, and an empty file is not one.
+  idx=$(mktemp) && rm -f "$idx" || return 1
   # Every copy of the item goes, then the closed one comes back from the side that closed it.
   GIT_INDEX_FILE=$idx g read-tree "$tree" &&
     GIT_INDEX_FILE=$idx g update-index --force-remove -- "${paths[@]}" || rc=1
