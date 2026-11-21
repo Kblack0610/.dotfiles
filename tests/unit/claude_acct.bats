@@ -3103,3 +3103,12 @@ STUB
   assert_failure 1
   [[ "$stderr" == *"could not read res's models"* ]] || fail "$stderr"
 }
+
+@test "models: a key the gateway lists no models for is an empty catalog, exit 0" {
+  src_setup
+  sed -i 's|\*/team/info\*) cat|*/v1/models) cat "$SANDBOX/gw/models.$key.json" ;;\n  */team/info*) cat|' "$SANDBOX/bin/curl"
+  echo '{"data":[]}' > "$SANDBOX/gw/models.sk-res.json"
+  run --separate-stderr "$ACCT" models res
+  assert_success
+  assert_output ""
+}

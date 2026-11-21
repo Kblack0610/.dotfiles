@@ -127,3 +127,44 @@ E
   refute_output --partial "reserve"
   [ ! -s "$BATS_TEST_TMPDIR/notes.log" ]
 }
+
+@test "a source claude-acct does not carry on this host (exit 3) is skipped, not unread" {
+  printf '#!/usr/bin/env bash\necho "not here" >&2; exit 3\n' > "$LADDER_SCOUT_ACCT"
+  run --separate-stderr "$SCOUT"
+  assert_success
+  [[ "$output" == *"nim: not a litellm-key source on this host, skipped"* ]] || fail "$output"
+}
+
+@test "a warning claude-acct prints on stderr is not read as a model id" {
+  printf '#!/usr/bin/env bash\ncat "$BATS_TEST_TMPDIR/catalog.$2"; echo "claude-acct: warning" >&2\n' > "$LADDER_SCOUT_ACCT"
+  run --separate-stderr "$SCOUT"
+  assert_success
+  refute_output --partial "warning"
+  [ ! -s "$BATS_TEST_TMPDIR/notes.log" ]
+}
+
+@test "a short name with regex characters matches its canary line literally, never as a pattern" {
+  echo 'free-x (foo.bar+1)' >> "$BATS_TEST_TMPDIR/catalog.nim"
+  printf 'nim fooXbar1\n' >> "$LADDER_SCOUT_CANARY_LANES"
+  run "$SCOUT"
+  assert_output --partial "free-x (foo.bar+1): missing a models entry in harnesses.json, a line in canary-lanes"
+  printf 'nim foo.bar+1\n' >> "$LADDER_SCOUT_CANARY_LANES"
+  run "$SCOUT"
+  refute_output --partial "free-x (foo.bar+1): missing a models entry in harnesses.json, a line in canary-lanes"
+}
+
+@test "a long catalog files at most MAX_ROWS rows a run and leaves the rest for the next" {
+  for i in 1 2 3; do echo "free-m$i (m$i)" >> "$BATS_TEST_TMPDIR/catalog.nim"; done
+  LADDER_SCOUT_MAX_ROWS=2 run "$SCOUT"
+  assert_success
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/notes.log")" = 2 ]
+  assert_output --partial "held to the next run"
+}
+
+@test "notes exit 5 (a hand run's shortlist) files nothing and does not fail the run" {
+  echo 'free-gpt-oss (gpt-oss-120b)' >> "$BATS_TEST_TMPDIR/catalog.nim"
+  FAKE_NOTES_RC=5 run --separate-stderr "$SCOUT"
+  assert_success
+  [[ "$stderr" == *"shortlist"* ]] || fail "$stderr"
+  [ ! -s "$LADDER_SCOUT_STATE/filed.tsv" ]
+}

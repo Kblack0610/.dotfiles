@@ -1640,14 +1640,14 @@ cmd_models() {
     local name="${1:?usage: claude-acct models <source>}" kind='' ref='' out
     IFS=$'\037' read -r _ kind ref _ < <(sources 2>/dev/null | awk -F'\037' -v n="$name" '$1 == n')
     if [[ "$kind" != litellm-key ]]; then
-        echo "claude-acct: no litellm-key source '$name' in $SRC_CONF" >&2
+        echo "claude-acct: no litellm-key source '$name' in $SRC_CONF for this host" >&2
         return 3
     fi
-    out=$(gateway_get "$ref" /v1/models | jq -er '.data | map(.id) | .[]') || {
+    out=$(gateway_get "$ref" /v1/models | jq -r '.data | map(.id) | .[]') || {
         echo "claude-acct: could not read $name's models from the gateway" >&2
         return 1
     }
-    printf '%s\n' "$out"
+    [[ -z "$out" ]] || printf '%s\n' "$out"
 }
 
 # check usage: can every account be read? A failed read sends every start to the default account
