@@ -2155,7 +2155,9 @@ collect() {
     # A session waiting its landing turn carries how long its gate has waited and how deep its repo's
     # landing queue is, so the shepherd names a multi-hour wait on its own line (ar-2525).
     local qwait=- qdepth=-
-    if [ "$host" = - ] && [ "$ojob" = queue ]; then qwait="$(queue_wait_min "$cwd" "$cpid")"; qwait="${qwait:--}"; fi
+    # A PR held by the landing queue or a train waits too when its gate's process reads as another open job
+    # (gate-and-land behind another PR's re-check, ar-3486), so the gate's age is read for it as well.
+    if [ "$host" = - ] && { [ "$ojob" = queue ] || [ -n "$wait_on" ]; }; then qwait="$(queue_wait_min "$cwd" "$cpid")"; qwait="${qwait:--}"; fi
     if [ "$g" = 1 ] && [ "$gd" != - ] && [ -n "$FLEET_QUEUE_LABEL" ] && { [ "$ojob" = queue ] || [ -n "$wait_on" ]; }; then
       qdepth="$(queue_depth "$gd")"; qdepth="${qdepth:--}"
     fi

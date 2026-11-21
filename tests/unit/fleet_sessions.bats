@@ -4319,6 +4319,16 @@ GH
   jq -e '.blockers | index("PR #2149 open, waiting on the landing queue")' <<<"$output" >/dev/null
   # the row carries its repo's landing-queue depth, and no wait minutes with no live gate (ar-2525)
   [ "$(jq -c '[.landing_queue, .wait_min]' <<<"$output")" = '[1,null]' ]
+  # a gate-and-land.sh running in its worktree gives the wait its minutes while the PR is held, whatever the
+  # transcript's open job reads (ar-3486: agent-27 #2900 behind #2539 read overdue with wait_min null)
+  mkdir -p "$SANDBOX/wt/scripts/test"
+  printf 'sleep 60\n' > "$SANDBOX/wt/scripts/test/gate-and-land.sh"
+  (cd "$SANDBOX/wt" && exec -a x bash scripts/test/gate-and-land.sh) >/dev/null 2>&1 3>&- &
+  LIVE_PIDS="$!"
+  until grep -q gate-and-land.sh "/proc/$LIVE_PIDS/cmdline" 2>/dev/null; do :; done
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -c '[.landing_queue, (.wait_min | type)]' <<<"$output")" = '[1,"number"]' ]
+  kill "$LIVE_PIDS"; wait "$LIVE_PIDS" 2>/dev/null || true; LIVE_PIDS=""
   # one label among others counts, and a green PR waits its landing turn too
   store PASS 'rides-alone,landing-queue' landing-queue
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
