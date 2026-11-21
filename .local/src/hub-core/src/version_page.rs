@@ -318,6 +318,24 @@ fn app_release(
     }
 }
 
+/// A version's status word and its level, the one rule the version page and a project's
+/// Releases tab (`project_releases`) both say: `legacy` (every cut, or its lab version, predates
+/// the line), `released` (a cut reached a channel), `cut` (tagged, nowhere yet) or `unreleased`
+/// (no tag); amber once its due day passed with nothing released.
+pub fn status(legacy: bool, released: bool, cut: bool, overdue: bool) -> (&'static str, Level) {
+    if legacy {
+        ("legacy", Level::Neutral)
+    } else if released {
+        ("released", Level::Ok)
+    } else if cut {
+        ("cut", if overdue { Level::Warn } else { Level::Ok })
+    } else if overdue {
+        ("unreleased", Level::Warn)
+    } else {
+        ("unreleased", Level::Neutral)
+    }
+}
+
 /// The inputs [`build`] joins, each read by the caller.
 pub struct Inputs<'a> {
     pub apps: &'a [&'a App],
@@ -383,17 +401,7 @@ pub fn build(project: &str, version: &str, today: &str, i: Inputs) -> Option<Pag
         && cuts
             .iter()
             .all(|s| crate::release_graph::legacy(&s.provenance));
-    let (status, mut level) = if legacy {
-        ("legacy", Level::Neutral)
-    } else if released {
-        ("released", Level::Ok)
-    } else if !cuts.is_empty() {
-        ("cut", if overdue { Level::Warn } else { Level::Ok })
-    } else if overdue {
-        ("unreleased", Level::Warn)
-    } else {
-        ("unreleased", Level::Neutral)
-    };
+    let (status, mut level) = status(legacy, released, !cuts.is_empty(), overdue);
     if !legacy && apps.iter().any(|a| a.level == Level::Bad) {
         level = Level::Bad;
     }

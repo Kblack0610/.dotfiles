@@ -124,6 +124,8 @@ pub struct Page {
     pub shipped: Vec<String>,
     /// The channels' one-line badge, linking to the Releases tab; None with no channels.
     pub releases: Option<crate::releases::Badge>,
+    /// The Releases inner tab: the project's versions, its apps and the Legacy fold.
+    pub release_tab: crate::project_releases::Tab,
     /// `3 watches, 1 firing` over the watches that name this project, linking to the Alerts tab
     /// filtered to it; None when no watch does.
     pub alerts: Option<crate::releases::Badge>,
@@ -637,6 +639,13 @@ pub fn read_with(
         vec![]
     });
     p.releases = crate::releases::badge(&channels);
+    let reg = project_map::cached();
+    p.release_tab = crate::project_releases::build(
+        name,
+        &crate::releases::read(runner, &[]),
+        &crate::version_page::labs(reg.as_deref(), name, &[]),
+        roadmap.as_ref(),
+    );
     p.alerts = crate::alerts::project_badge_here(name);
     if !channels.is_empty() {
         p.check_groups = crate::app_status::groups(name, &channels);

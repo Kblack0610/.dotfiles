@@ -185,6 +185,7 @@ const page = {
   gate: { stage: "beta", met: 4, total: 12, fail: 1, human: 1 },
   next_rows: [{ stage: "beta", result: "TODO", requirement: "a playtest" }, { stage: "beta", result: "HUMAN", requirement: "sign off" }, { stage: "beta", result: "FAIL", requirement: "a soak test" }],
   shipped_says: "none yet", shipped: [], errors: [],
+  release_tab: { versions: [], apps: [], legacy_versions: [], legacy_apps: [], line_text: "no app releases under this project, so no line", legacy_says: "0 versions, 0 apps", elsewhere: [], errors: [] },
   timeline: { says: "7d: 1 commit (1 red on CI), 1 PR", older: 3, notes: ["PRs: the origin is not GitHub"], lines: [
     { line: "2h  commit  fix the menu  CI red", level: "bad", url: "https://ci.example/run/1" },
     { line: "3h  PR      #7 opened: <menu>", level: "ok", url: "javascript:alert(1)" },
@@ -210,10 +211,10 @@ test("an opened project is a header and an inner tab strip over Overview, never 
   assert.match(head, /<div class="cline">checks: <a class="bad" href="#releases\/apps\/demo">Partial outage: api<\/a><\/div><div class="cline">alerts:/);
   assert.match(head, /<div class="cline warn">next stage: <a href="#" data-pgo="stage">beta  4 of 12 met, 1 failing/);
   // The strip: Overview open, its count what needs the human (1 verify, 2 plans, 2 checks), Stage's the failing checks.
-  assert.match(head, /role="tablist"><button role="tab" data-ptab="overview" class="on" aria-selected="true" tabindex="0">Overview <span class="pill warn">5<\/span><\/button><button role="tab" data-ptab="rows" class="" aria-selected="false" tabindex="-1">Rows<\/button><button role="tab" data-ptab="deliverables"[^>]*>Deliverables<\/button><button role="tab" data-ptab="stage"[^>]*>Stage <span class="pill warn">1<\/span><\/button><button role="tab" data-ptab="activity"[^>]*>Activity<\/button><\/div>$/);
+  assert.match(head, /role="tablist"><button role="tab" data-ptab="overview" class="on" aria-selected="true" tabindex="0">Overview <span class="pill warn">5<\/span><\/button><button role="tab" data-ptab="rows" class="" aria-selected="false" tabindex="-1">Rows<\/button><button role="tab" data-ptab="deliverables"[^>]*>Deliverables<\/button><button role="tab" data-ptab="releases"[^>]*>Releases<\/button><button role="tab" data-ptab="stage"[^>]*>Stage <span class="pill warn">1<\/span><\/button><button role="tab" data-ptab="activity"[^>]*>Activity<\/button><\/div>$/);
   const over = pinOf(pane, "overview");
   assert.match(over, /^<div data-pin="overview">/, "Overview shows");
-  for (const id of ["rows", "stage", "activity"]) assert.match(pinOf(pane, id), new RegExp(`^<div data-pin="${id}" hidden>`), `${id} is hidden`);
+  for (const id of ["rows", "releases", "stage", "activity"]) assert.match(pinOf(pane, id), new RegExp(`^<div data-pin="${id}" hidden>`), `${id} is hidden`);
   // Needs you: each kind a shut fold with the inner tab that acts on it.
   assert.match(over, /id="sec-p-needs">Needs you <span class="n">5<\/span><\/h2>/);
   assert.match(over, /<details class="cfold" data-k="pg:need:verify"><summary><b>1 epic landed with no live proof<\/b><\/summary><div>verify: Saves/);
@@ -808,4 +809,31 @@ test("Coverage is one row per typed project, a cell its department's word linked
   vm.runInContext(`st.arg = ""; renderProjects(); pRead();`, ctx);
   await settle();
   assert.ok(!ctx.sent.some((s) => s.u.startsWith("/api/coverage")));
+});
+
+test("Releases lists the line's versions newest first, the apps with a line, and folds the legacy shut", async () => {
+  const ver = (version, provenance, o = {}) => ({ version, status: "released", level: "ok", provenance, done: 2, total: 4, progress_text: "2 of 4 rows", cut_text: `${version}-web 11-19`, href: `#releases/versions/demo%2F${version.slice(1)}`, ...o });
+  const app = (name, line) => ({ app: name, status_text: "live", level: "ok", live_text: "prod 11-19", released_text: "v0.6.0", line_text: line, href: `#releases/apps/${name}` });
+  const release_tab = {
+    versions: [ver("v0.6.0", "flow"), ver("v0.5.9", "outside", { level: "warn", status: "unreleased" })],
+    apps: [app("demo-web", "from v0.5.0")],
+    legacy_versions: [ver("v0.1.0", "legacy", { level: "neutral", status: "legacy" })],
+    legacy_apps: [app("demo-<old>", "no line")],
+    line_text: "line from v0.5.0", legacy_says: "1 versions, 1 apps",
+    elsewhere: [{ app: "demo-cli", owner: "tools", href: "#projects/tools/releases" }], errors: ["release-state: stale"],
+  };
+  ctx.answers = { "/api/projects/demo/page": { ...page, release_tab }, "/api/projects": list() };
+  await drawn(list(), "bnb/demo");
+  vm.runInContext(`pInner("releases")`, ctx);
+  assert.equal(vm.runInContext(`st.arg`, ctx), "bnb/demo/releases", "Releases has its own link");
+  const rel = pinOf(read().pane, "releases");
+  assert.match(rel, /id="sec-p-versions">Versions <span class="n">2<\/span><\/h2><div class="panel down"><div>release-state: stale<\/div><\/div><div class="cline muted">line from v0\.5\.0<\/div><div class="cline">demo-cli releases under <a href="#projects\/tools\/releases">tools<\/a><\/div>/);
+  assert.match(rel, /<td><a href="#releases\/versions\/demo%2F0\.6\.0">v0\.6\.0<\/a><\/td><td class="">released<\/td><td class="muted">flow<\/td>.*<td><a href="#releases\/versions\/demo%2F0\.5\.9">v0\.5\.9<\/a><\/td><td class="warn">unreleased<\/td><td class="warn">cut outside the release flow<\/td>/s, "newest first, an outside cut warned");
+  assert.match(rel, /id="sec-p-apps">Apps <span class="n">1<\/span><\/h2>.*<a href="#releases\/apps\/demo-web">demo-web<\/a>.*from v0\.5\.0/s);
+  assert.match(rel, /id="sec-p-legacy">Legacy <span class="n">2<\/span><\/h2><div class="card"><details class="cfold" data-k="pg:legacy"><summary><span class="muted">1 versions, 1 apps, from before the release line<\/span><\/summary>/);
+  assert.doesNotMatch(rel, /<details[^>]* open/, "the fold starts shut");
+  const fold = rel.slice(rel.indexOf('data-k="pg:legacy"'));
+  assert.match(fold, /v0\.1\.0.*<td class="muted">legacy<\/td>.*demo-&lt;old&gt;/s, "the legacy versions and apps sit inside the fold, escaped");
+  // NEGATIVE CONTROL: a legacy version is never in the line's table.
+  assert.doesNotMatch(rel.slice(0, rel.indexOf('id="sec-p-legacy"')), /v0\.1\.0/);
 });

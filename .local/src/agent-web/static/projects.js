@@ -5,7 +5,7 @@
 // the project: its header, then its page (/api/projects/{name}/page, hub_core::page, read only
 // then) as inner tabs (PROJECT_PAGE, `#projects/<profile>/<name>/<inner>`): Overview, a product's
 // department tabs (departments.js), its Rows with every row action board.js has, Deliverables
-// (scoped to it), Stage and Activity. Its inner tabs (INNER_TABS.projects) are this list, Board
+// (scoped to it), Releases (its versions, apps and Legacy fold), Stage and Activity. Its inner tabs (INNER_TABS.projects) are this list, Board
 // (every project's rows, board.js scoped to all), Deliverables, Coverage (departments.js) and
 // Ladder (ladder.js), each read only while it shows; an opened
 // project's page sits under the list's. The numbers are counted, never judged: every line is hub_core's, word for
@@ -250,6 +250,31 @@ function pStage(pg) {
     : "");
 }
 
+// Releases (hub_core::project_releases, the page read's release_tab): the versions on the line
+// newest first, each linked to its version page, the apps with a line as Releases > Apps words
+// them, then one shut Legacy fold holding the versions before the line and the apps with none.
+const P_VER_HEAD = `<tr><th data-role="lead">version</th><th data-role="glance">status</th><th>line</th><th>rows</th><th>cut</th></tr>`;
+const pVerRow = (v) => `<tr><td><a href="${esc(v.href)}">${esc(v.version)}</a></td><td class="${levelClass(v.level)}">${esc(v.status)}</td>` +
+  `<td class="${v.provenance === "outside" ? "warn" : "muted"}">${esc(v.provenance === "outside" ? "cut outside the release flow" : v.provenance)}</td>` +
+  `<td>${v.total ? meter(v.done / v.total) : ""}<span class="muted">${esc(v.progress_text)}</span></td><td class="wrap muted">${esc(v.cut_text)}</td></tr>`;
+const P_APP_HEAD = `<tr><th data-role="lead">app</th><th data-role="glance">status</th><th>deployed</th><th>released</th><th>line</th></tr>`;
+const pAppRow = (a) => `<tr><td><a href="${esc(a.href)}">${esc(a.app)}</a></td><td class="${levelClass(a.level)}">${esc(a.status_text)}</td>` +
+  `<td class="wrap">${esc(a.live_text)}</td><td class="wrap muted">${esc(a.released_text)}</td><td class="muted">${esc(a.line_text)}</td></tr>`;
+const pTbl = (head, rows) => `<div class="panel scroll"><table class="tbl">${head}${rows.join("")}</table></div>`;
+function pReleases(pg) {
+  const t = pg.release_tab;
+  const errs = t.errors.length ? `<div class="panel down">${t.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>` : "";
+  const away = t.elsewhere.map((e) => `<div class="cline">${esc(e.app)} releases under <a href="${esc(e.href)}">${esc(e.owner)}</a></div>`).join("");
+  let html = secHead("p-versions", "Versions", t.versions.length) + errs + `<div class="cline muted">${esc(t.line_text)}</div>` + away +
+    (t.versions.length ? pTbl(P_VER_HEAD, t.versions.map(pVerRow)) : "") +
+    secHead("p-apps", "Apps", t.apps.length) + (t.apps.length ? pTbl(P_APP_HEAD, t.apps.map(pAppRow)) : `<div class="card muted">No app on a release line.</div>`);
+  const legacy = (t.legacy_versions.length ? pTbl(P_VER_HEAD, t.legacy_versions.map(pVerRow)) : "") +
+    (t.legacy_apps.length ? pTbl(P_APP_HEAD, t.legacy_apps.map(pAppRow)) : "");
+  html += secHead("p-legacy", "Legacy", t.legacy_versions.length + t.legacy_apps.length) +
+    (legacy ? `<div class="card">${cfold("pg:legacy", `<span class="muted">${esc(t.legacy_says)}, from before the release line</span>`, legacy, pst.folds)}</div>` : "");
+  return html;
+}
+
 // Activity: shipped versions, the dev timeline and the agent's status note.
 function pActivity(c, pg) {
   let html = "";
@@ -265,7 +290,7 @@ function pActivity(c, pg) {
 
 // The inner tabs' own panes, each in its data-pin group, around the board's (Rows) and
 // Deliverables' elements, in the strip's order: `p-pane` holds Overview,
-// a product's departments and the Rows head, `p-pane2` Stage and Activity. One that needs the page
+// a product's departments and the Rows head, `p-pane2` Releases, Stage and Activity. One that needs the page
 // says it is reading or why it failed.
 function pPanes(c) {
   const got = pst.page[c.name], pg = got && got.data;
@@ -275,7 +300,7 @@ function pPanes(c) {
   const depts = pDepts(c).map((id) => pin(id, deptPane(pKey(c), id))).join("");
   return [pin("overview", pOverview(c, pg) + (pg ? "" : wait)) + depts +
     pin("rows", secHead("p-rows", "Rows", c.progress.open)),
-  pin("stage", pg ? pStage(pg) : wait) + pin("activity", pActivity(c, pg) + (pg ? "" : wait))];
+  pin("releases", pg ? pReleases(pg) : wait) + pin("stage", pg ? pStage(pg) : wait) + pin("activity", pActivity(c, pg) + (pg ? "" : wait))];
 }
 
 // Read the opened card's page, once per open (it runs fleet-bench and the stage check).
