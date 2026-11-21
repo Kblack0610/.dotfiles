@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Waybar module: the agents chip (custom/ai-agents), the one overview of live agent sessions.
-# The bar is the robot, the fleet total and three counts within it, "<robot> 34  ~:22  <check>:1  !:9", each count after its symbol and a colon (the robot is wide enough to cover one).
+# The bar is the robot, the fleet total and two counts within it, "<robot> 34  ~:22  <check>:1", each count after its symbol and a colon (the robot is wide enough to cover one).
 # Two spaces part the counts, as on the queue chip; a | would read as the line between chips.
-# The total is every session on every host, though the hover lists only those that want you, so it reads as the whole fleet; then
-# ~ working (WORKING, amber), the check mark ready for its next step (LANDED or DONE, green), ! needs
-# you (NEEDS, red above 0), each shown at 0 so the bar keeps its shape. The rest (STALLED, CHAT, the
-# human's own conversation, PARKED) is in the total only; the robot's colour carries STALLED.
+# The total is every session on every host, so it reads as the whole fleet; then ~ working (WORKING, amber) and the check
+# mark ready for its next step (LANDED or DONE, green), each shown at 0 so the bar keeps its shape. What needs the human
+# is custom/needs (needs.sh), Home's one count; a session in NEEDS is one kind of it, so this chip words it "waiting" and
+# puts no number for it on the bar. The rest (NEEDS, STALLED, CHAT, the human's own conversation, PARKED) is in the
+# total only; the robot's colour carries STALLED.
 # The robot is the fleet's health:
 #   red    every fleet_sessions.prom is older than STATE_LATE_SECS, so the numbers are a lie
 #   amber  a session is STALLED, Prometheus has no session numbers, or one host's
@@ -121,7 +122,7 @@ stage_paint() {
   esac
 }
 
-# counts <rows...>: "N in progress: 3 working, 2 need you, ..." for those rows in the vocabulary's
+# counts <rows...>: "N in progress: 3 working, 2 waiting, ..." for those rows in the vocabulary's
 # order, zeros left out.
 counts() {
   local -A c=()
@@ -129,19 +130,19 @@ counts() {
   for r in "$@"; do IFS='|' read -r _ b _ <<< "$r"; c[$b]=$((${c[$b]:-0} + 1)); [ -n "${IN_PROGRESS[$b]:-}" ] && n=$((n + 1)); done
   for k in "${ORDER[@]}"; do
     ((${c[$k]:-0} > 0)) || continue
-    label="${k,,}"; [ "$k" = NEEDS ] && label='need you'
+    label="${k,,}"; [ "$k" = NEEDS ] && label=waiting
     out+=", $(stage_paint "$k" "${c[$k]}") $label"
   done
   printf '%s in progress' "$n"
   [ -n "$out" ] && printf ': %s' "${out#, }"
 }
 
-in_progress=0 n_work=0 n_ready=0 n_need=0 n_stalled=0 width=8
+in_progress=0 n_work=0 n_ready=0 n_stalled=0 width=8
 for r in "${rows[@]}"; do
   IFS='|' read -r _ b t _ <<< "$r"
   [ -n "${IN_PROGRESS[$b]:-}" ] && in_progress=$((in_progress + 1))
   [ -n "${FINISHED[$b]:-}" ] && n_ready=$((n_ready + 1))
-  case $b in WORKING) n_work=$((n_work + 1)) ;; NEEDS) n_need=$((n_need + 1)) ;; esac
+  [ "$b" = WORKING ] && n_work=$((n_work + 1))
   [ "$b" = STALLED ] && n_stalled=$((n_stalled + 1))
 done
 
@@ -203,9 +204,7 @@ done
 flush
 ((hidden > 0)) && tip+=$'\n\n'"+$hidden more: click for every session (agent-panel)"
 
-need="!:$n_need"
-((n_need == 0)) || need="$(paint "$C_RED" "$need")"
-text="$(paint "${LEVEL_COLOUR[$level]}" "$ICON") ${#rows[@]}  $(paint "$C_YEL" "~:$n_work")  $(paint "$C_GRN" "$READY:$n_ready")  $need"
+text="$(paint "${LEVEL_COLOUR[$level]}" "$ICON") ${#rows[@]}  $(paint "$C_YEL" "~:$n_work")  $(paint "$C_GRN" "$READY:$n_ready")"
 class="${LEVEL_CLASS[$level]}"
 ((level == 0 && in_progress == 0)) && class=inactive
 emit "$text" "$tip" "$class"

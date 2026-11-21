@@ -3697,6 +3697,22 @@ impl App {
         })
     }
 
+    /// Every card a widget can name, in Home's order: Needs you and Main red from Home's own
+    /// read, then the grid (what agent-web's `/widget.json` serves, and `hub cards --json` prints).
+    pub fn widget_cards(&self) -> Vec<hub_core::cards::Card> {
+        let mut home = self.home_build();
+        match &self.proposals {
+            Some(open) => home.set_proposals(open),
+            None => home.proposals_unread = true,
+        }
+        let mut all = vec![
+            hub_core::cards::needs(&home, jobs::now()),
+            hub_core::cards::main_red(&home),
+        ];
+        all.extend(self.home_cards(self.infra.as_ref()));
+        all
+    }
+
     /// The reads Home's cards map beside its own, each its tab's: on entering Home and on `r`.
     /// A tab's tick cadence stays its own; the grid shows the last read until then.
     fn read_home_cards(&mut self) {
@@ -6742,6 +6758,49 @@ mod tests {
     }
 
     #[test]
+    fn hub_cards_is_the_widget_document_over_every_card_in_homes_order() {
+        let mut a = app(Tab::Home);
+        a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
+        let doc = hub_core::widget_doc::document(&a.widget_cards(), &[], 0, None);
+        let v = serde_json::to_value(&doc).unwrap();
+        let ids: Vec<_> = v["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["id"].as_str().unwrap().to_string())
+            .collect();
+        let mut want: Vec<_> = ["needs", "red"].map(String::from).to_vec();
+        want.extend(
+            hub_core::cards::grid(&Default::default())
+                .iter()
+                .map(|c| c.tab.to_string()),
+        );
+        assert_eq!(ids, want);
+        // The queue read is in the document with the Home card's unit.
+        let queue = v["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == "queue")
+            .unwrap();
+        assert!(
+            queue["items"][0]["unit"]
+                .as_str()
+                .unwrap()
+                .starts_with("queued"),
+            "{queue}"
+        );
+        // A card whose read has not come back says reading, never a number.
+        let sessions = v["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == "sessions")
+            .unwrap();
+        assert_eq!(sessions["items"][0]["unit"], "reading", "{sessions}");
+    }
+
+    #[test]
     fn three_opens_the_queue_tab_and_home_counts_the_queue() {
         let mut a = app(Tab::Home);
         assert!(screen(&mut a, 140, 30).contains("Prometheus: reading"));
@@ -6756,7 +6815,7 @@ mod tests {
         );
         // The Queue card counts the queue Home holds; the others read until their tab answers.
         assert!(
-            s.contains("QUEUE  2 on deck")
+            s.contains("QUEUE  2 queued")
                 && s.contains("Running 1  On a PR 0")
                 && !s.contains("Ready")
                 && !s.contains("Held")

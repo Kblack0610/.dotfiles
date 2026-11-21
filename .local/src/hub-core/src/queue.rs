@@ -672,6 +672,7 @@ pub struct Waiter {
 #[serde(default)]
 pub struct Sitting {
     pub queued: u64,
+    /// Queued items nothing holds (agent-queue's `hold` rule): on deck.
     pub runnable: u64,
     pub runnable_age_minutes_median: Option<i64>,
     /// The three runnable items that have sat longest, oldest first.
@@ -1119,14 +1120,26 @@ impl Queue {
         self.in_state(s).count()
     }
 
-    /// `1 running, 2 on deck`: the phone widget's queue line. Every queued item can start; work
-    /// that waits on a gate is a board row.
+    /// The queued items that could start now, agent-queue's own count (`stats.sitting.runnable`);
+    /// None from an agent-queue older than the field, so a caller says nothing, not zero.
+    pub fn on_deck(&self) -> Option<u64> {
+        Some(self.stats.as_ref()?.sitting.as_ref()?.runnable)
+    }
+
+    /// The queued items a gate holds (`queued - runnable`), the part of the queue that is not on deck.
+    pub fn held(&self) -> Option<u64> {
+        let s = self.stats.as_ref()?.sitting.as_ref()?;
+        Some(s.queued.saturating_sub(s.runnable))
+    }
+
+    /// `1 running, 2 on deck`: the phone widget's queue line, on deck as the Queue card counts it.
+    /// Without the stats it says `queued` and the item count, so the label never claims a runnable count.
     pub fn counts_line(&self) -> String {
-        format!(
-            "{} running, {} on deck",
-            self.count(State::Running),
-            self.count(State::Queued)
-        )
+        let running = self.count(State::Running);
+        match self.on_deck() {
+            Some(n) => format!("{running} running, {n} on deck"),
+            None => format!("{running} running, {} queued", self.count(State::Queued)),
+        }
     }
 }
 
@@ -1634,6 +1647,12 @@ impl Candidates {
 
     pub fn more(&self) -> usize {
         self.rows.len() - self.shown().len()
+    }
+
+    /// When the snapshot was written, unix seconds; None when the rows came from no file.
+    pub fn written_epoch(&self) -> Option<i64> {
+        let t = self.written?.duration_since(std::time::UNIX_EPOCH).ok()?;
+        i64::try_from(t.as_secs()).ok()
     }
 
     /// Each blocked reason and how many rows it blocks, most first: the `blocked` facet's counts,

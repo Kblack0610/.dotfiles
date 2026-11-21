@@ -9,5 +9,6 @@
     {"name": "cleanup", "share": 10, "tags": ["canary"], "kinds": ["chore", "refactor", "check"]},
     {"name": "research", "share": 5, "kinds": ["research", "design", "legal", "market", "decide"]},
     {"name": "feature", "share": 10, "default": true}
-  ]
+  ],
+  "idle_pool": {"pools": ["unity"], "busy_below": 0.5}
 }
