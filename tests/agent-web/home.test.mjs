@@ -378,7 +378,8 @@ test("Vitals folds to its head when all are on target, and shows nothing until i
 // Cards as hub_core::cards serializes them: a link is its href.
 const card = (tab, o = {}) => ({ tab, title: tab[0].toUpperCase() + tab.slice(1), big: "3", unit: "live", level: "ok", bar: [{ level: "ok", n: 2 }, { level: "red", n: 1 }],
   parts: [{ label: "Working", value: "2", level: "ok" }], first_head: "Where to look first", first: [], counted: `counted on ${tab}`, error: null, link: `#${tab}`, ...o });
-const TABS = ["sessions", "queue", "board", "alerts", "infra", "costs", "releases", "schedules", "projects"];
+// The grid's order, read from hub-core (hub_core::cards::ORDER after its two widget-led cards), so the page draws what the widgets and the TUI draw.
+const TABS = [...readFileSync(new URL("../../.local/src/hub-core/src/cards.rs", import.meta.url), "utf8").match(/pub const ORDER: &\[&str\] = &\[([^\]]*)\]/)[1].matchAll(/"(\w+)"/g)].map((m) => m[1]).slice(2);
 const cards = () => TABS.map((t) => card(t));
 function drawCards(list, o = {}) {
   ctx.list = list;
@@ -390,6 +391,7 @@ test("the cards lead Home, one per tab, each title opening its tab with what it 
   const html = drawCards(cards());
   for (const t of TABS) assert.match(html, new RegExp(`<section class="kcard" data-card="${t}"><a class="kt" href="#${t}" title="counted on ${t}">`));
   assert.ok(html.indexOf("kgrid") < html.indexOf("Needs you"), html);
+  assert.deepEqual([...html.matchAll(/data-card="(\w+)"/g)].map((m) => m[1]), TABS, "the page draws the cards in the one order");
   assert.doesNotMatch(html, /Flow|Spend|cchip warn">ci/, "the cards replace the Flow, Health and Spend lines");
   assert.match(html, /<div class="kbig ok">3<span class="ku">live<\/span><\/div>/);
   assert.match(html, /<div class="kbar"[^>]*><i class="ok" style="flex:2"><\/i><i class="bad" style="flex:1"><\/i><\/div>/);
