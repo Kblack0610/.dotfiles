@@ -705,6 +705,42 @@ commit_tag() {
   assert_equal "$(row game-steam-beta | jq -c '[.status, .pinned.provenance, .live.provenance, .provenance]')" '["ok","outside","outside","outside"]'
 }
 
+@test "provenance: check pages a channel a person moved, and a flow one stays quiet" {
+  store_setup
+  reply "$(node v0.5.0-g1 SUCCESS 2026-11-02T10:00:00Z "" github-actions)"
+  "$RS" refresh game >/dev/null
+  run "$RS" check
+  refute_output --partial 'OUTSIDE game game-steam-beta'
+  # Negative control: the same upload recorded by a person is outside, and check names it.
+  reply "$(node v0.5.0-g1 SUCCESS 2026-11-02T10:00:00Z "" Kblack0610)"
+  "$RS" refresh game >/dev/null
+  run "$RS" check
+  assert_failure
+  assert_output --partial 'OUTSIDE game game-steam-beta: pinned v0.5.0-g1 live v0.5.0-g1 was not released by the flow'
+  # A pin that names no version (a sha, latest) is no release by hand, so it pages nothing.
+  jq '.rows |= map(if .id == "game-steam-beta" then .pinned.value = "latest" else . end)' "$RELEASE_STATE_DIR/state.json" > "$SANDBOX/s"
+  mv "$SANDBOX/s" "$RELEASE_STATE_DIR/state.json"
+  run "$RS" check
+  refute_output --partial 'OUTSIDE game game-steam-beta'
+}
+
+@test "provenance: check pages a hand tag until a flow tag follows it" {
+  ship "start (#1)" web-v1.0.0
+  commit_tag "hand (#2)" web-v1.0.1 "Kenneth"
+  "$RS" refresh web >/dev/null
+  run "$RS" check
+  assert_failure
+  assert_output --partial 'OUTSIDE web tag web-v1.0.1: tagged by Kenneth, not by the cut workflow'
+  # The implicit release row pins this tag, so the tag line is the one page for it.
+  assert_equal "$(grep -c '^OUTSIDE web ' <<<"$output")" 1
+  # A flow cut after it makes the hand tag history: still outside, no longer paged.
+  commit_tag "cut (#3)" web-v1.1.0 cut.yml
+  "$RS" refresh web >/dev/null
+  assert_equal "$(jq -c '.releases.web.tags | map(.provenance)' "$RELEASE_STATE_DIR/state.json")" '["flow","outside","flow"]'
+  run "$RS" check
+  refute_output --partial 'web-v1.0.1'
+}
+
 @test "provenance: check skips a drift legacy on both sides, and names one whose pin is on the line" {
   push_pin v0.8.0
   export KUBE_IMAGE=reg/web:v0.9.0
