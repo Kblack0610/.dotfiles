@@ -76,12 +76,13 @@ EOF
 }
 
 # board CUT TASK...: the game's v1.2.0 sprint, due 2026-11-20, with `cut=` CUT (- for none) and
-# each TASK as id:state[:priority[:commit[:i]]], `i` for a row that entered as an interrupt.
+# each TASK as id:state[:priority[:commit[:i[:pr_repo]]]], `i` for a row that entered as an
+# interrupt, `pr_repo` the repo its `pr:<repo>#<n>` names.
 board() {
-  local cut="$1" t id st pr cm it tasks=() ; shift
+  local cut="$1" t id st pr cm it rp tasks=() ; shift
   for t in "$@"; do
-    IFS=: read -r id st pr cm it <<<"$t"
-    tasks+=("{\"id\":\"$id\",\"text\":\"row $id\",\"state\":\"$st\",\"interrupt\":$([ "$it" = i ] && echo true || echo false)${pr:+,\"priority\":\"$pr\"}${cm:+,\"commit\":\"$cm\"}}")
+    IFS=: read -r id st pr cm it rp <<<"$t"
+    tasks+=("{\"id\":\"$id\",\"text\":\"row $id\",\"state\":\"$st\",\"interrupt\":$([ "$it" = i ] && echo true || echo false)${pr:+,\"priority\":\"$pr\"}${cm:+,\"commit\":\"$cm\"}${rp:+,\"pr_repo\":\"$rp\"}}")
   done
   local c=""; [ "$cut" = - ] || c="\"cut\":\"$cut\","
   printf '{"sprints":[{"profile":"p","project":"game","version":"v1.2.0","due":"2026-11-20",%s"tasks":[%s]}]}\n' \
@@ -302,6 +303,24 @@ board() {
   board - g-1:open:urgent g-5:done:urgent:abc1234:i
   run "$BIN"
   assert_output --partial 'not ready: 1 of 2 committed rows open (#urgent: g-1)'
+  [ ! -e "$F/dispatched" ]
+}
+
+@test "an #urgent fix merged in another repo is not compared and holds no patch cut; one in this repo is (negative control)" {
+  # ucp-2745 (2026-11-20): a playground row fixed by a dotfiles PR failed two passes on a 404 compare.
+  board - g-1:open g-5:done:urgent:abc1234:i:other/tools
+  run "$BIN"
+  assert_success
+  refute_output --partial 'cannot compare'
+  refute_output --partial 'waiting for a green full run'
+  assert_output --partial 'not ready: 1 of 2 committed rows open'
+  # NEGATIVE CONTROL: the same row with its PR in this repo, as owner/name in another case or as
+  # the bare name a `pr:game#5` marker gives, is a fix.
+  for rp in Acme/Game game; do
+    board - g-1:open g-5:done:urgent:abc1234:i:$rp
+    run "$BIN"
+    assert_output --partial 'g-5 landed, waiting for a green full run that contains abc1234'
+  done
   [ ! -e "$F/dispatched" ]
 }
 

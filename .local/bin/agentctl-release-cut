@@ -294,8 +294,11 @@ while IFS= read -r name; do
   urgent="$(jq -r '[.tasks[] | select((.state == "open" or .state == "doing") and .priority == "urgent") | .id // .text] | join(", ")' <<<"$sp")"
   n_open="$(jq '[.tasks[] | select(.state == "open" or .state == "doing")] | length' <<<"$sp")"
   # Closed #urgent rows that entered after the window opened, with the merge commit agent-land
-  # stamped: the fixes a patch cut ships (`id=commit`, space-separated).
-  fixes="$(jq -r '[.tasks[] | select(.state == "done" and .interrupt == true and .priority == "urgent" and ((.commit // "") | test("^[0-9a-f]{7,}$"))) | "\(.id // "-")=\(.commit)"] | join(" ")' <<<"$sp")"
+  # stamped: the fixes a patch cut ships (`id=commit`, space-separated). A fix whose PR merged in
+  # another repo (`pr_repo`, bare `name` or `owner/name`, matched by name as the roll's shipped.rs
+  # does) ships in no tag of this one, and its commit is not in this repo.
+  fixes="$(jq -r --arg r "$repo" 'def nm: ascii_downcase | split("/") | last;
+    [.tasks[] | select(.state == "done" and .interrupt == true and .priority == "urgent" and ((.commit // "") | test("^[0-9a-f]{7,}$")) and ((.pr_repo // $r) | nm) == ($r | nm)) | "\(.id // "-")=\(.commit)"] | join(" ")' <<<"$sp")"
   # Epic rows closed on landed work alone, not on proof of their outcome, keep an early cut off.
   unverified="$(jq -r --argjson st "$STATS" --arg pr "$profile" --arg p "$name" '
     ([$st[] | select(.profile == $pr and .name == $p) | .epics[]? | {key: .id, value: .verified}] | from_entries) as $ep
