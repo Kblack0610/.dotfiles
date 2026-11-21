@@ -2270,6 +2270,11 @@ fix_item() {
   [ ! -s "$NOTIFY" ]
   run grep -c 'fix(logs): alpha error' "$BOARD"   # the agent row stands
   assert_output 1
+  # reflective-penguin P2: the spent cause is not silent; the reds_spent KPI counts it once
+  run cut -f1 "$XDG_STATE_HOME/agentctl/triage-spent"
+  assert_output "$(cause_of)"
+  run "$SUBJECT" ledger
+  assert_line 'reds_spent=1'
   # a row an earlier triage wrote to the human sheet is closed as the twin it is
   grep 'fix(logs): alpha error' "$BOARD" > "$BOARD.agent-runtime"
   run "$SUBJECT" triage
@@ -2280,6 +2285,12 @@ fix_item() {
   TRIAGE_FIX_TRIES=3 run "$SUBJECT" triage
   assert_success
   assert_output --partial '1 queued as red fixes'
+  run "$SUBJECT" ledger
+  assert_line 'reds_spent=0'
+  # and a count no triage pass refreshed reads ?, never an old 0
+  touch -d '-2 hours' "$XDG_STATE_HOME/agentctl/triage-spent"
+  run "$SUBJECT" ledger
+  assert_line 'reds_spent=?'
 }
 
 # 2026-11-11 (ar-1587): playground-release-ready's alert item closed ok with the watch still red,
