@@ -2421,8 +2421,12 @@ gone_remote_item() {
   worker '2.0 16 1 50'
   remote_item fix-crash
   : > "$NOTES_FIXTURE/tmux.sessions.lab"
-  stub store-sync 'echo "store-sync $*" >> "$NOTES_FIXTURE/calls.log"; [ ! -e "$NOTES_FIXTURE/origin-down" ] || exit 1
-[ ! -e "$NOTES_FIXTURE/origin-close" ] || { agent-queue set fix-crash "pr=o/game#12" "merged=abc123" >/dev/null && agent-queue move fix-crash done --status ok >/dev/null; }'
+  # agent-queue syncs in the background (--bg) on every read and write; only the reap's own foreground sync reads origin here.
+  stub store-sync 'echo "store-sync $*" >> "$NOTES_FIXTURE/calls.log"; case " $* " in *" --bg "*) exit 0 ;; esac
+[ ! -e "$NOTES_FIXTURE/origin-down" ] || exit 1
+[ -e "$NOTES_FIXTURE/origin-close" ] || exit 0
+# the flag goes first: agent-queue syncs after a write, which would run this stub again
+rm "$NOTES_FIXTURE/origin-close"; agent-queue set fix-crash "pr=o/game#12" "merged=abc123" >/dev/null && agent-queue move fix-crash done --status ok >/dev/null'
 }
 
 @test "reap reads a peer host's item from origin first: one its session closed ok there is not failed here (ar-4091)" {
@@ -2430,7 +2434,7 @@ gone_remote_item() {
   : > "$NOTES_FIXTURE/origin-close"
   run cmd_reap
   assert_success
-  assert_called 'store-sync --now'
+  grep -qx 'store-sync --now' "$NOTES_FIXTURE/calls.log" || fail "reap did not sync in the foreground before settling"
   refute_output --partial 'failed queue item fix-crash'
   f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)
   assert_equal "$(qfield "$f" status)" ok
