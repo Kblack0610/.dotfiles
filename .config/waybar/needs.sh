@@ -14,12 +14,14 @@ here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 # shellcheck source=pango.sh
 . "$here/pango.sh"
 
-# The broker agent-mqtt-publish sends to (its env file names it).
+# The broker agent-mqtt-publish sends to, from the same env file it reads.
+CONF="${AGENT_MQTT_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/agent-mqtt.env}"
 # shellcheck disable=SC1090
-[ -r "${AGENT_MQTT_ENV:-$HOME/.config/agent-mqtt.env}" ] && . "${AGENT_MQTT_ENV:-$HOME/.config/agent-mqtt.env}"
+[ -r "$CONF" ] && . "$CONF"
 MQTT_HOST="${AGENT_MQTT_HOST:-}" MQTT_PORT="${AGENT_MQTT_PORT:-1883}"
-# The retained messages arrive at once; this is how long mosquitto_sub waits for a straggler.
-MQTT_WAIT_SECS=1
+# How long mosquitto_sub reads after connecting. The retained messages arrive on connect (about
+# 1s over the LAN); 2 leaves a slow tick a margin before it reads as "?".
+MQTT_WAIT_SECS=2
 # fleet-state.timer writes the state every minute and the publisher's full run is every 5 minutes,
 # so a count 15 minutes old is a stopped publisher, not a slow one.
 STALE_SECS=900
@@ -31,7 +33,9 @@ unread() { emit "$(paint "$C_YEL" '!:?')" "<b>Needs you</b>  not read: $1" warn;
 msgs="$(timeout $((MQTT_WAIT_SECS + 3)) mosquitto_sub -h "$MQTT_HOST" -p "$MQTT_PORT" \
   -t 'agents/+/summary/overview' --retained-only -W "$MQTT_WAIT_SECS" \
   -F '{"topic":"%t","doc":%p}' 2>/dev/null)"
-best="$(jq -cs 'map(select(.doc.needs != null)) | max_by(.doc.as_of // 0) // empty' <<< "$msgs" 2>/dev/null)"
+# Each line parsed alone, so one host's unreadable payload does not hide another's card.
+best="$(jq -Rcn '[inputs | fromjson? | select(type == "object" and (.doc | type) == "object" and .doc.needs != null)]
+  | max_by(.doc.as_of // 0) // empty' <<< "$msgs" 2>/dev/null)"
 
 [ -n "$best" ] || unread "no host sent a Needs you card on agents/+/summary/overview (agent-mqtt-publish sends hub phone --json)"
 
@@ -40,8 +44,10 @@ as_of="$(jq -r '.doc.as_of // 0' <<< "$best")"
 age=$((NOW - as_of))
 ((age > STALE_SECS)) && unread "the newest count is $((age / 60))m old (from $host): agent-mqtt-publish or fleet-state.timer stopped"
 
-IFS=$'\t' read -r count level split error < <(jq -r '.doc.needs
-  | [.big, .level, ([.parts[] | "\(.label) \(.value)"] | join(", ")), (.error // "")] | @tsv' <<< "$best")
+# Joined on the unit separator: it is not IFS whitespace, so an empty split (count 0) keeps its place.
+IFS=$'\x1f' read -r count level split error < <(jq -r '.doc.needs
+  | [.big, .level, ([.parts[] | "\(.label) \(.value)"] | join(", ")), (.error // "")]
+  | map(tostring | gsub("[\u001f\n]"; " ")) | join("\u001f")' <<< "$best")
 case "$level" in ok) lv=0 ;; red) lv=2 ;; *) lv=1 ;; esac
 
 tip="<b>Needs you</b>  $count waiting on you"

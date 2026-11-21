@@ -11,7 +11,7 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
   MODULE="$REPO_ROOT/.config/waybar/needs.sh"
-  export PANGO_PALETTE="$BATS_TEST_TMPDIR/palette.css" AGENT_MQTT_ENV=/nonexistent AGENT_MQTT_HOST=broker.test
+  export PANGO_PALETTE="$BATS_TEST_TMPDIR/palette.css" AGENT_MQTT_CONF=/nonexistent AGENT_MQTT_HOST=broker.test
   G="#a6e34a" Y="#ffcc2f"
   export FX="$BATS_TEST_TMPDIR" NEEDS_NOW=100000 TZ=UTC
   : > "$FX/msgs"
@@ -95,4 +95,20 @@ send() {
   assert_equal "$(text)" "<span color='$Y'>!:?</span>"
   assert_output --partial "AGENT_MQTT_HOST is unset"
   [ ! -e "$FX/sub.args" ]
+}
+
+@test "nothing waiting with a source unread still says what, in amber" {
+  printf 'agents/main/summary/overview\t{"as_of":99940,"needs":{"big":"0","level":"warn","error":"agent-ask could not be read","parts":[],"first":[]}}\n' > "$FX/msgs"
+  run "$MODULE"
+  assert_equal "$(text)" "<span color='$Y'>!:0</span>"
+  run tip
+  assert_line --index 0 "<b>Needs you</b>  0 waiting on you"
+  assert_line --index 1 "<span color='$Y'>not all read: agent-ask could not be read</span>"
+}
+
+@test "one host's unreadable payload does not hide another host's card" {
+  printf 'agents/razer_laptop/summary/overview\tnot json\n' > "$FX/msgs"
+  send main 99940 55 warn
+  run "$MODULE"
+  assert_equal "$(text)" "<span color='$Y'>!:55</span>"
 }
