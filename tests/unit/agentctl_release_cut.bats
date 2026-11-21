@@ -13,6 +13,9 @@ setup() {
   mkdir -p "$F"
   export AGENTCTL_INBOX="$SANDBOX/state" FX="$F" RELEASE_CUT_CONF="$F/conf.json" RELEASE_CUT_HOOKS="$F/hooks.sh"
   export AGENT_PROOF_LIB=/nonexistent
+  # The fixture sprint is due 2026-11-20 22:00: a test that reads the real clock goes red once that passes.
+  # A test that needs another time sets RELEASE_CUT_NOW on its own run.
+  export RELEASE_CUT_NOW=2026-11-19T08:00
   unset AGENTCTL_NAME
   git init -q "$F/repo" && git -C "$F/repo" remote add origin git@github.com:acme/game.git
   printf 'project_repo_path() { [ "$1" = game ] && echo "%s"; }\n' "$F/repo" > "$F/hooks.sh"
