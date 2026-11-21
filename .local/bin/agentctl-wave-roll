@@ -14,8 +14,9 @@
 #          last cut and the version has closed rows (`release` in `notes projects --stats --json`),
 #          at the bump notes derives, carrying open rows. A project never cut, or one a cadence and
 #          at least a week behind, waits for the backfill that splits its history by week.
-#   parent a game built from the playground: its version is the playground's tag, so this never
-#          rolls it, and the pass-done line names each one it skipped.
+#   parent a game built from the playground with no `Version:` line of its own: notes reads the
+#          playground's (`version_parent` in the stats), so this never rolls it, and the
+#          pass-done line names each one it skipped.
 #
 # A timer, not a git hook: tags are pushed from CI, other machines and while this box is off,
 # and an event hook sees none of those. Comparing sheet to tags every pass catches them all.
@@ -177,10 +178,11 @@ while read -r profile; do
     [ "$(jq -r '.automation != false' <<<"$st")" = true ] || continue
     fetch_tags "$name"
     shipped="$(project_release_version "$name" 2>/dev/null)"
-    owner="$(project_version_owner "$name" "$shipped")"
+    parent="$(jq -r '.version_parent // empty' <<<"$st")"
+    owner="$(project_version_owner "$name" "$shipped" "$parent")"
     if [ "$owner" = parent ]; then
       parented+=("$name")
-      [ "$DRY" = 0 ] || printf 'skip %s: its version is %s'"'"'s tag\n' "$name" "$(project_version_parent "$name")"
+      [ "$DRY" = 0 ] || printf 'skip %s: its version is %s'"'"'s\n' "$name" "$parent"
       continue
     fi
     if ! is_ver "$ver" || ! has_sheet "${sheet:+$(dirname "$sheet")}"; then

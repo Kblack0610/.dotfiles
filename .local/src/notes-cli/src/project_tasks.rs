@@ -3419,7 +3419,7 @@ fn rehome_rows(dir: &Path, name: &str, dry_run: bool) -> Result<usize> {
     let Some(cur) = open_version_for(dir).filter(|c| *c != (0, 0, 1)) else {
         return Ok(0);
     };
-    let Some(opened) = crate::window::read(dir, cur).map(|s| s.opened) else {
+    let Some(opened) = crate::window::read(&crate::window::home(dir), cur).map(|s| s.opened) else {
         return Ok(0);
     };
     let from = projects::agent_note_path(dir, &projects::version_or_default(None));

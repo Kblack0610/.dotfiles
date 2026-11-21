@@ -444,8 +444,9 @@ impl Registry {
 
     /// The project whose release tag numbers `name`'s versions (stages.md, "Versions"): a key
     /// with `buildTags` whose `repo` is another tracker declaring a `tagGlob`, a game built from
-    /// the playground. The shell twin is `project_version_parent` (project-name.sh), which asks
-    /// git for the parent's tag where this reads the `tagGlob` the doctor requires of it.
+    /// the playground. The one definition: notes applies it (`projects::version_parent_dir`, only
+    /// for a sheet with no `Version:` line) and reports it as `version_parent` in
+    /// `projects --stats --json`, which the shell (`project_version_owner`) reads.
     pub fn version_parent(&self, name: &str) -> Option<String> {
         let t = self.tracker(name)?;
         t.get("buildTags")?.as_array().filter(|b| !b.is_empty())?;

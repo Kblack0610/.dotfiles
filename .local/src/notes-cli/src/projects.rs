@@ -1756,7 +1756,8 @@ fn version_parent_dir_in(reg: Option<&Registry>, dir: &Path) -> Option<PathBuf> 
         return None;
     }
     let parent = reg?.version_parent(dir.file_name()?.to_str()?)?;
-    Some(dir.parent()?.join(parent)).filter(|d| d.is_dir())
+    // The parent keeps its own `Version:` line, so the chain is one hop and never a cycle.
+    Some(dir.parent()?.join(parent)).filter(|d| d.is_dir() && has_own_version(d))
 }
 
 /// The lab dirs whose open version is project `dir`'s ([`version_parent_dir`]): the rows its
@@ -2751,8 +2752,14 @@ pub fn commit_window(
 ) -> Result<()> {
     let dir = project_dir(p, name)?;
     let content = read_or_empty(sheet_path(&dir));
-    let cur = sheet_version(&content)
-        .ok_or_else(|| anyhow::anyhow!("{name} has no `Version:` line, so no open window"))?;
+    let cur = sheet_version(&content).ok_or_else(|| match version_parent_dir(&dir) {
+        Some(up) => anyhow::anyhow!(
+            "{name} has no version of its own: its rows are in {}'s window, so commit that",
+            up.file_name()
+                .map_or_else(Default::default, |n| n.to_string_lossy())
+        ),
+        None => anyhow::anyhow!("{name} has no `Version:` line, so no open window"),
+    })?;
     if let Some(h) = hours {
         let max = f64::from(crate::window::MAX_SPRINT_MINUTES);
         let minutes = (h * 60.0).round();
@@ -3557,6 +3564,9 @@ struct ProjectStats {
     /// TSV keeps its columns, which several scripts read by position.
     prio: String,
     version: String,
+    /// The project whose open version this is, for a game with no number of its own
+    /// ([`version_parent_dir`]); null otherwise. JSON only: `project_version_owner` reads it.
+    version_parent: Option<String>,
     open: usize,
     done: usize,
     urgent: usize,
@@ -4126,6 +4136,8 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
         stage,
         prio: prio_of(dir),
         version: version_str(dir),
+        version_parent: version_parent_dir(dir)
+            .and_then(|p| Some(p.file_name()?.to_str()?.to_string())),
         open: c.open,
         done: c.done,
         urgent: c.urgent,

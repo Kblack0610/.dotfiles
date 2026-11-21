@@ -322,34 +322,20 @@ project_release_tags_since() {
   return 0
 }
 
-# project_version_owner <project> [shipped] -> what owns its version number (stages.md, "Versions"):
+# project_version_owner <project> [shipped] [parent] -> what owns its version number (stages.md, "Versions"):
 #   tag     a release tag ships it, and the sheet follows the tag (agentctl-wave-roll)
-#   parent  no release tag of its own, but it declares `buildTags` and its repo's project owns a
-#           release tag: a game built from the playground. Its version is the parent's tag, so it
-#           has no number of its own and nothing rolls it (project_version_parent names the parent)
+#   parent  no release tag of its own and notes reads its version from another project: a game
+#           built from the playground whose sheet has no `Version:` line. Its version is the
+#           parent's, so nothing rolls it. [parent] is `version_parent` from
+#           `notes projects --stats --json`, the one place the rule lives (projects::version_parent_dir).
 #   sheet   no release tag: the sheet's counter, cut on its stage's cadence
 # [shipped] is project_release_version's answer when the caller has it, so tags are read once.
 project_version_owner() {
   local shipped
   if [ $# -ge 2 ]; then shipped="$2"; else shipped="$(project_release_version "$1")"; fi
   if [ -n "$shipped" ]; then echo tag
-  elif [ -n "$(project_version_parent "$1")" ]; then echo parent
+  elif [ -n "${3:-}" ]; then echo parent
   else echo sheet; fi
-}
-
-# project_version_parent <project> -> the project whose release tag numbers its versions, or ""
-# (project_version_owner `parent`): a key with `buildTags` whose registry `repo` is another project
-# with a release tag. Without the `buildTags` clause every untagged app in a tagged monorepo
-# (bnb-studios in bnb-platform) would lose its sheet counter to the monorepo's tag.
-project_version_parent() {
-  local map_file repo
-  map_file="$(project_map_file)"
-  [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 0
-  jq -e --arg n "$1" '.trackers[$n].buildTags | arrays | length > 0' "$map_file" >/dev/null 2>&1 || return 0
-  repo="$(project_repo_name "$1")"
-  [ -n "$repo" ] && [ "$repo" != "$1" ] || return 0
-  [ -n "$(project_release_version "$repo")" ] && printf '%s' "$repo"
-  return 0
 }
 
 # project_lab_names <repo> -> every project belonging to that repo, one per line.

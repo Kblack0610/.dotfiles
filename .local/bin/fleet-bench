@@ -2099,16 +2099,16 @@ chain_notes() {
 # counter owns its version (project_version_owner) still due a day after its cadence due date, so a
 # wave-roll pass had all day to cut it, by "cadence"; its `.release.due` already means done rows waited out
 # the cadence. drift: a project a vX.Y.Z tag owns whose sheet is neither that tag (the roll is pending) nor
-# a next open version above it (git_version_next_ok, what wave-roll may open). A game with build tags but
-# no `<game>-vX.Y.Z` family is a sheet-counter project here. A profile with `automation = false` counts in neither.
+# a next open version above it (git_version_next_ok, what wave-roll may open). A game its parent versions
+# (`version_parent`, project_version_owner `parent`) counts in neither: the parent is the one cut. A profile with `automation = false` counts in neither.
 release_kpis() {
-  local today prof name ver due_on tver ton shipped owner by ver_due
+  local today prof name ver due_on tver ton parent shipped owner by ver_due
   today=$(date -d "@$1" +%F)
   jq -r '.[] | select(.automation != false) | [.profile, .name, (.version // "-"), (if .release.due then .release.due_on // "-" else "-" end),
-      (.target_version // "-"), (.target_on // "-")] | join("|")' <<<"$2" |
-  while IFS='|' read -r prof name ver due_on tver ton; do
+      (.target_version // "-"), (.target_on // "-"), (.version_parent // "")] | join("|")' <<<"$2" |
+  while IFS='|' read -r prof name ver due_on tver ton parent; do
     shipped=$(project_release_version "$name")
-    owner=$(project_version_owner "$name" "$shipped")
+    owner=$(project_version_owner "$name" "$shipped" "$parent")
     if [ "$ton" != - ]; then by=target ver_due=$tver due_on=$ton
     elif [ "$owner" = sheet ]; then by=cadence ver_due=$ver
     else by=; fi

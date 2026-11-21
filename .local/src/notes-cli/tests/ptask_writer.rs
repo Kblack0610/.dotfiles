@@ -1631,6 +1631,15 @@ fn a_game_with_no_version_of_its_own_is_on_its_parents_version_and_window() {
     let out = h.run(&["projects", "--stage", "game"]);
     ok(&out);
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "alpha");
+    // The stats name the parent, which is how wave-roll and fleet-bench know not to cut it.
+    let out = h.run(&["projects", "--stats", "--json"]);
+    ok(&out);
+    let stats = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stats.contains(r#""version_parent":"demo""#), "{stats}");
+    // A game has no window of its own to commit.
+    let out = h.run(&["projects", "--commit", "game"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("demo's window"));
     // The parent's window commits the game's agent row beside its own.
     ok(&h.run(&["projects", "--commit", "demo"]));
     let note = fs::read_to_string(h.0.join("notes/projects/current/demo/agent/versions/v0.1.0.md"))
@@ -1651,6 +1660,8 @@ fn a_game_that_keeps_its_own_version_stays_out_of_its_parents_window() {
         .find(|l| l.starts_with("game\t"))
         .unwrap_or_default();
     assert!(game_line.ends_with("\tv2.1.7"), "{list}");
+    let out = h.run(&["projects", "--stats", "--json"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains(r#""version_parent":null"#));
     ok(&h.run(&["projects", "--commit", "demo"]));
     let note = fs::read_to_string(h.0.join("notes/projects/current/demo/agent/versions/v0.1.0.md"))
         .unwrap();
