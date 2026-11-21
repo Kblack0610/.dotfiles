@@ -297,12 +297,18 @@ board() {
   assert_success
   refute_output --partial 'FAILED'
   assert_output --partial 'dispatched cut.yml for game v1.2.0 at ccc (on time: cut time 2026-11-20T21:59, carrying 1 open row(s))'
-  # NEGATIVE CONTROL: the same row with its PR in the cut repo (any case) is a fix, and a commit
-  # GitHub cannot find there still fails the pass.
-  rm -f "$F/dispatched" && rm -rf "$AGENTCTL_INBOX"
-  board 2026-11-20T21:59 g-1:open g-5:done:urgent:14e31f820667:i:ACME/Game
+  # A short-name marker for another repo is skipped the same way.
+  board 2026-11-20T21:59 g-1:open g-5:done:urgent:14e31f820667:i:tools
   RELEASE_CUT_NOW=2026-11-21T09:00 run "$BIN"
-  assert_output --partial 'FAILED game v1.2.0: cannot compare #urgent fix g-5 (14e31f820667) with green ccc'
+  refute_output --partial 'FAILED'
+  # NEGATIVE CONTROL: the same row with its PR in the cut repo (any case, any owner, or its short
+  # name) is a fix, and a commit GitHub cannot find there still fails the pass.
+  for rp in ACME/Game other-owner/game game; do
+    rm -f "$F/dispatched" && rm -rf "$AGENTCTL_INBOX"
+    board 2026-11-20T21:59 g-1:open g-5:done:urgent:14e31f820667:i:$rp
+    RELEASE_CUT_NOW=2026-11-21T09:00 run "$BIN"
+    assert_output --partial 'FAILED game v1.2.0: cannot compare #urgent fix g-5 (14e31f820667) with green ccc'
+  done
 }
 
 @test "no patch cut while the #urgent fix is not in a green run, for a plain or committed closed row, or while an #urgent row is open (negative controls)" {

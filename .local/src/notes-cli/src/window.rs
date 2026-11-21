@@ -850,8 +850,9 @@ pub(crate) struct Task {
     /// release-cut lane checks a green full run contains before an `#urgent` patch cut.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
-    /// The repo the row's `pr:<repo>#<n>` names, absent for a bare `pr:<n>`: a commit landed in
-    /// another repo is no fix the release-cut lane can find in its own green run.
+    /// The repo the row's first `pr:<repo>#<n>` names (`shipped::pr_repo`, the roll's rule too),
+    /// absent for a bare `pr:<n>`: a commit landed in another repo is no fix the release-cut lane
+    /// can find in its own green run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pr_repo: Option<String>,
 }
