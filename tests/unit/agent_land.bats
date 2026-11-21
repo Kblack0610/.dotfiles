@@ -2431,3 +2431,132 @@ EOF2
   run agent-queue show headless --json
   assert_equal "$(jq -r .sessions <<<"$output")" 'sid-new'
 }
+
+@test "a red watch item cannot close ok while its watch's probe still trips; re-running once it clears closes it (ar-1605)" {
+  cat >"$SANDBOX/bin/watch-companion-loop" <<'EOF'
+#!/usr/bin/env bash
+printf 'watch-companion-loop %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
+rc=$(cat "$NOTES_FIXTURE/watch.rc" 2>/dev/null || echo 0)
+[ "$rc" -eq 0 ] || echo "TRIP: spend still over limit"
+exit "$rc"
+EOF
+  chmod +x "$SANDBOX/bin/watch-companion-loop"
+
+  cat >"$AGENT_QUEUE_DIR/running/20261103-100000-red-spend.md" <<'EOF'
+slug: red-spend
+project: dotfiles
+mode: oneshot
+priority: urgent
+from: fleet-bench
+agent: claude
+tags: red watch cause:ab12
+row: dotfiles:ship it
+queued: 2026-11-03T10:00:00Z
+started: 2026-11-03T10:00:00Z
+---
+check(watch): spend tripped since 2026-11-20, expected: spend under cap
+EOF
+
+  printf '1\n' >"$NOTES_FIXTURE/watch.rc"
+  run "$LAND" 42 --item red-spend
+  assert_failure 1
+  assert_output --partial "item failed: watch spend is still red after resolve (exit 1): TRIP: spend still over limit; #42 is merged and only its record is left: re-run agent-land 42 --item red-spend to finish it"
+  # The PR merged and was recorded on the item, but the item and its board row stayed open.
+  run agent-queue show red-spend --json
+  assert_equal "$(jq -r '[.state, .pr, .merged] | join("|")' <<<"$output")" 'running|o/r#42|fedcba9876543210fedcba9876543210fedcba98'
+  [ "$(grep -c '^notes.*done' "$LOG")" -eq 0 ]
+  # The probe ran after autopull.
+  [ "$(grep -n 'dotfiles-autopull' "$LOG" | cut -d: -f1)" -lt "$(grep -n 'watch-companion-loop resolve spend --pr o/r#42' "$LOG" | cut -d: -f1)" ]
+
+  # Once the probe clears, re-running agent-land finishes closing the item and its board row.
+  printf '0\n' >"$NOTES_FIXTURE/watch.rc"
+  run "$LAND" 42 --item red-spend
+  assert_success
+  assert_line 'watch: spend OK'
+  assert_line --partial 'board: closed "ship it"'
+  assert_line 'landed #42'
+  run agent-queue show red-spend --json
+  assert_equal "$(jq -r '[.state, .status] | join("|")' <<<"$output")" 'done|ok'
+}
+
+@test "a red watch item with --partial skips the probe check, and a non-red item with check(watch) in its task skips it too (ar-1605)" {
+  cat >"$SANDBOX/bin/watch-companion-loop" <<'EOF'
+#!/usr/bin/env bash
+printf 'watch-companion-loop %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
+exit 1
+EOF
+  chmod +x "$SANDBOX/bin/watch-companion-loop"
+
+  cat >"$AGENT_QUEUE_DIR/running/20261103-100000-red-spend.md" <<'EOF'
+slug: red-spend
+project: dotfiles
+mode: oneshot
+priority: urgent
+from: fleet-bench
+agent: claude
+tags: red watch cause:ab12
+queued: 2026-11-03T10:00:00Z
+started: 2026-11-03T10:00:00Z
+---
+check(watch): spend tripped since 2026-11-20
+EOF
+
+  run "$LAND" 42 --item red-spend --partial
+  assert_success
+  [ "$(grep -c 'watch-companion-loop' "$LOG")" -eq 0 ]
+
+  cat >"$AGENT_QUEUE_DIR/running/20261103-100001-non-red.md" <<'EOF'
+slug: non-red
+project: dotfiles
+mode: oneshot
+priority: low
+from: human
+agent: claude
+tags: reddish
+queued: 2026-11-03T10:00:01Z
+started: 2026-11-03T10:00:01Z
+---
+check(watch): spend tripped since 2026-11-20
+EOF
+
+  run "$LAND" 42 --item non-red
+  assert_success
+  [ "$(grep -c 'watch-companion-loop' "$LOG")" -eq 0 ]
+}
+
+@test "a red watch item whose watch is unknown (exit 2) closes ok, while lock busy (exit 75) refuses (ar-1605)" {
+  cat >"$SANDBOX/bin/watch-companion-loop" <<'EOF'
+#!/usr/bin/env bash
+printf 'watch-companion-loop %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
+exit "$(cat "$NOTES_FIXTURE/watch.rc" 2>/dev/null || echo 0)"
+EOF
+  chmod +x "$SANDBOX/bin/watch-companion-loop"
+
+  cat >"$AGENT_QUEUE_DIR/running/20261103-100000-red-lock.md" <<'EOF'
+slug: red-lock
+project: dotfiles
+mode: oneshot
+priority: urgent
+from: fleet-bench
+agent: claude
+tags: red watch
+queued: 2026-11-03T10:00:00Z
+started: 2026-11-03T10:00:00Z
+---
+check(watch): spend tripped
+EOF
+
+  printf '75\n' >"$NOTES_FIXTURE/watch.rc"
+  run "$LAND" 42 --item red-lock
+  assert_failure 1
+  assert_output --partial 'resolve spend could not take the lock (exit 75)'
+  run agent-queue show red-lock --json
+  assert_equal "$(jq -r .state <<<"$output")" 'running'
+
+  printf '2\n' >"$NOTES_FIXTURE/watch.rc"
+  run "$LAND" 42 --item red-lock
+  assert_success
+  assert_line 'watch: spend not known here (exit 2), skipping probe check'
+  run agent-queue show red-lock --json
+  assert_equal "$(jq -r '[.state, .status] | join("|")' <<<"$output")" 'done|ok'
+}
