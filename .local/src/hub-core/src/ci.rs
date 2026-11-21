@@ -155,7 +155,7 @@ pub fn day(infra: &Infra, midnight: i64) -> Day {
             .get(name)
             .iter()
             .filter(|s| s.label("hour").parse::<i64>().is_ok_and(|h| h >= midnight))
-            .map(|s| (s, s.value.unwrap_or(0.0).max(0.0) as u32))
+            .map(|s| (s, s.value.unwrap_or(0.0).max(0.0).round() as u32))
             .collect()
     };
     let (ci, local) = (rows("hourly"), rows("local_hourly"));
