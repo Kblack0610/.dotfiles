@@ -51,11 +51,17 @@ EOF
   printf '1789000000' > "$WATCH_STATE_DIR/skill-drift.since"
 }
 
-# The hub stub answers `hub bar --json` from $NOTES_FIXTURE/bar.json (none: it fails), and every
-# other call, `hub phone --json` here, with the body a test gives.
+# The hub stub answers `hub bar --json` from $NOTES_FIXTURE/bar.json (none: it fails) and `hub cards --json --figures`
+# from what cards_stub wrote (else fails; any other cards call fails too); every other call, `hub phone --json` here, runs the body a test gives.
 overview_stub() {
-  printf '#!/usr/bin/env bash\nif [ "$1" = bar ]; then echo x >> "$NOTES_FIXTURE/bar.runs"; cat "$NOTES_FIXTURE/bar.json" 2>/dev/null; exit; fi\n%s\n' "$1" > "$SANDBOX/bin/hub"
+  printf '#!/usr/bin/env bash\nif [ "$1" = bar ]; then echo x >> "$NOTES_FIXTURE/bar.runs"; cat "$NOTES_FIXTURE/bar.json" 2>/dev/null; exit; fi\nif [ "${1:-}" = cards ]; then [ "$*" = "cards --json --figures" ] || exit 1; cat "$NOTES_FIXTURE/cards.out" 2>/dev/null || exit 1; exit 0; fi\n%s\n' "$1" > "$SANDBOX/bin/hub"
   chmod +x "$SANDBOX/bin/hub"
+}
+
+cards_stub() {
+  printf '%s' "$1" > "$NOTES_FIXTURE/cards.out"
+  # The cards are read on the lease host only, as summary/dispatch is: fleet-dispatch here, lease held.
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/fleet-dispatch"; chmod +x "$SANDBOX/bin/fleet-dispatch"
 }
 
 payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:-$PUBLOG}" | tail -1; }
@@ -481,6 +487,42 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   c="$(payload homeassistant/sensor/agent_testhost_summary_overview/config)"
   assert_equal "$(jq -r .name <<< "$c")" "Fleet overview"
   assert_equal "$(jq -r .json_attributes_topic <<< "$c")" agents/testhost/summary/overview
+}
+
+@test "cards: hub's widget document rides as an attribute and its state is the worst card's level" {
+  cards_stub '{"version":0,"title":"Fleet","updated_at":"2026-11-21T20:00:00Z","state":"bad","figures":{"queue_on_deck":13,"projects_shipped_today":12},"sections":[{"id":"queue","items":[{"kind":"metric","value":"13","unit":"on deck, 1..."},{"kind":"pill","label":"Held","value":"4"}]}]}'
+  run "$PUB" --quiet
+  assert_success
+  p="$(payload agents/testhost/summary/cards)"
+  assert_equal "$(jq -r .state <<< "$p")" bad
+  assert_equal "$(jq -r .updated_at <<< "$p")" 2026-11-21T20:00:00Z
+  assert_equal "$(jq -r '.sections[0].items[1].label' <<< "$p")" Held
+  assert_equal "$(jq -r .figures.queue_on_deck <<< "$p")" 13
+  c="$(payload homeassistant/sensor/agent_testhost_summary_cards/config)"
+  assert_equal "$(jq -r .name <<< "$c")" "Fleet cards"
+  assert_equal "$(jq -r .json_attributes_topic <<< "$c")" agents/testhost/summary/cards
+}
+
+# Negative control: a host that does not hold the dispatch lease never reads the cards, so a peer's
+# stale clone cannot publish a second set of figures.
+@test "cards: a host without the lease publishes no cards topic" {
+  cards_stub '{"version":0,"state":"ok","figures":{"queue_on_deck":13},"sections":[]}'
+  FLEET_LEASE_RC=1 run "$PUB" --quiet
+  assert_success
+  [ -z "$(payload agents/testhost/summary/cards)" ]
+}
+
+# Negative control: a failed hub, or output that is not a document, publishes no cards topic; the
+# phone overview's rows are not a document either.
+@test "cards: a failed run or output with no sections publishes no topic" {
+  cards_stub x; rm "$NOTES_FIXTURE/cards.out"   # lease host, hub fails
+  run "$PUB" --quiet
+  assert_success
+  [ -z "$(payload agents/testhost/summary/cards)" ]
+  cards_stub '{"state": "ok", "rows": []}'
+  run "$PUB" --quiet
+  assert_success
+  [ -z "$(payload agents/testhost/summary/cards)" ]
 }
 
 # Negative control: a failed or hollow overview publishes nothing rather than a blank widget.

@@ -10,6 +10,8 @@
 //! keeps what it read, at warn or worse, with the reason as a `warn` row (as the web's card does).
 //! Every string is capped (`text::cap`) at the schema's limit, since a reader skips an item over it.
 
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, SecondsFormat};
 use serde::Serialize;
 
@@ -176,6 +178,36 @@ pub fn document(cards: &[Card], missing: &[&str], now: i64, base: Option<&str>) 
         sections,
         push: None,
     }
+}
+
+/// The cards' whole numbers by name, for a reader that keeps numbers and drops text (mqtt2prom,
+/// so Prometheus and the waybar chips): a card's `big` is `<tab>_headline` and each part is
+/// `<tab>_<label>` (lowercase, other characters `_`). A figure that is not a whole number, or
+/// belongs to a card whose reader failed, is absent: no figure is better than a made-up zero.
+pub fn figures(cards: &[Card]) -> BTreeMap<String, i64> {
+    let slug = |s: &str| {
+        s.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>()
+    };
+    let mut m = BTreeMap::new();
+    for c in cards.iter().filter(|c| c.error.is_none()) {
+        if let Ok(n) = c.big.parse::<i64>() {
+            m.insert(format!("{}_headline", c.tab), n);
+        }
+        for p in &c.parts {
+            if let Ok(n) = p.value.parse::<i64>() {
+                m.insert(format!("{}_{}", c.tab, slug(&p.label)), n);
+            }
+        }
+    }
+    m
 }
 
 fn section(c: &Card, base: Option<&str>) -> Section {
@@ -373,6 +405,33 @@ mod tests {
             matches!(&s.items[0], Item::Metric { value, level: Level::Bad, .. } if value == "NO DATA")
         );
         assert!(matches!(&s.items[1], Item::Text { text } if text == "ccusage: timed out"));
+    }
+
+    #[test]
+    fn figures_are_the_whole_numbers_by_card_and_label_and_never_a_failed_cards() {
+        let mut c = card();
+        c.big = "7".into();
+        c.parts.truncate(1);
+        c.parts[0].label = "Shipped today".into();
+        c.parts[0].value = "12".into();
+        c.parts.push(Part {
+            label: "Pass".into(),
+            value: "3/5".into(),
+            level: HubLevel::Ok,
+            link: None,
+        });
+        let f = figures(&[
+            c,
+            Card::failed("costs", "Costs", "", "timed out"),
+            Card::reading("infra", "Infra"),
+        ]);
+        assert_eq!(
+            f.into_iter().collect::<Vec<_>>(),
+            vec![
+                ("alerts_headline".to_string(), 7),
+                ("alerts_shipped_today".to_string(), 12)
+            ]
+        );
     }
 
     #[test]

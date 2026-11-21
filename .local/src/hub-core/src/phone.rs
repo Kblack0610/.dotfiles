@@ -732,6 +732,9 @@ mod tests {
         ]);
         q.stats = Some(crate::queue::Stats {
             sitting: Some(crate::queue::Sitting {
+                // Two queued, one of them held: the line counts what is on deck.
+                queued: 2,
+                runnable: 1,
                 oldest_runnable: vec![crate::queue::Waiter {
                     minutes: 37 * 60,
                     ..Default::default()
@@ -744,7 +747,7 @@ mod tests {
         assert_eq!(
             texts(&p, "queue"),
             [
-                "Queue: 1 running, 2 on deck",
+                "Queue: 1 running, 1 on deck",
                 "oldest waited 37h, $6.54 per PR (28d $7.00)",
             ]
         );
@@ -890,7 +893,7 @@ mod tests {
                 "unity-core-playground 57 PRs",
                 "dotfiles 28 PRs",
                 "Agents: 2 working",
-                "Queue: 1 running, 0 on deck",
+                "Queue: 1 running, 0 queued",
                 "CI: 6.0/20 busy, 80% passed",
             ]
         );
