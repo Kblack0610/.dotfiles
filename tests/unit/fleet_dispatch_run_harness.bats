@@ -474,7 +474,7 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   refute_output --partial 'fleet lease'
 }
 
-@test "a worker not placed, one at its fleet_max_live, or one without wt, a peer store, or a store free of a merge conflict takes nothing" {
+@test "a worker not placed, one at its fleet_max_live, or one without wt, a peer store, a notes clone, or a store free of a merge conflict takes nothing" {
   game_ready
   echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
@@ -495,6 +495,14 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   worker '2.0 16 1 50 0'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
   refute_output --partial 'merge conflict'
+  worker '2.0 16 1 50 0 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'razer-laptop has no ~/.notes clone'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_not_called 'wt new'
+  worker '2.0 16 1 50 0 1'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  refute_output --partial 'no ~/.notes clone'
   worker '2.0 16 1 50'
   remote_item busy
   printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
