@@ -6166,9 +6166,26 @@ reap_replays() {
   done
 }
 
+# store_fresh -- this machine's store holds origin as of now, once a reap: an item a peer host's
+# session closed ok reads closed here, not running. A worker's session closes its item in its own
+# clone and pushes it; this clone lags that by up to a sync, and a reap that fails the stale running
+# copy makes a second close of the same item, a merge conflict that stops the peer's sync
+# (razer-laptop, 2026-11-20: 5 items closed ok, each failed here 1 to 24 minutes later, ar-4091).
+# The check, not store-sync's exit code, is the verdict (worker_store_pull): a SKIP or BACKUP exits 0.
+store_fresh() {
+  if [ -z "${REAP_FRESH:-}" ]; then
+    if timeout "$WORKER_PULL_SECS" store-sync --now >/dev/null 2>&1 && store-sync-age --max-min 2 >/dev/null 2>&1; then
+      REAP_FRESH=yes
+    else
+      REAP_FRESH=no
+    fi
+  fi
+  [ "$REAP_FRESH" = yes ]
+}
+
 cmd_reap() {
   local s d slug server sess _by project area state _weight agent started sids host want waits='' seen='' gone live lost active=()
-  unset REAP_PANEL REAP_LOST; REAP_HOST=()
+  unset REAP_PANEL REAP_LOST REAP_FRESH; REAP_HOST=()
   fleet_hosts >/dev/null   # once, so each session_live subshell inherits the roster
   # A board item cancelled or failed with no session of its own (cancelled while queued, say).
   for d in "$(date +%F)" "$(date -d yesterday +%F 2>/dev/null)"; do
@@ -6203,6 +6220,9 @@ cmd_reap() {
     else reap_seen "$slug"
     fi
     if [ -n "$gone" ]; then
+      # A peer host's item is closed by its session in that host's clone: read origin before reading it
+      # as unclosed, or this failed close conflicts with the peer's ok (ar-4091).
+      [ -z "$host" ] || store_fresh || { logline "reaped $sess: queue item $slug left for the next pass: this store could not be brought up to origin"; continue; }
       settle_item "$slug" "${sess:-${sids##* }}" "$lost"
       settle_row "$slug"
       # Closed, its mark goes at once: an item put back (agent-queue reopen) starts with no miss on record.

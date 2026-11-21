@@ -112,6 +112,8 @@ setup() {
   : > "$NOTES_FIXTURE/tmux.sessions.lab"
   stub_notes
   stub agent-hold 'exit 0'
+  stub store-sync 'exit 0'   # reap reads a peer host's items from origin (store_fresh); this one is current
+  stub store-sync-age 'exit 0'
   stub fleet-assess '[ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
   stub fleet-presence 'echo "away 45 tmux"'
   # A fresh fleet state document with no session in it: the pace target counts none unless a test adds them.
