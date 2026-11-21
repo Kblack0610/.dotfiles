@@ -685,6 +685,76 @@ close_item() {
   refute_line 'status: failed'
 }
 
+# queue_item <machine>: a queued item $ITEM (x) long enough that git pairs each move of it as a
+# rename, on origin.
+queue_item() {
+  local q="$SANDBOX/$1/queue/queued" i
+  mkdir -p "$q"
+  { printf -- '---\nslug: %s\n' "${ITEM:-x}"; for i in $(seq 1 20); do printf 'k%s: v%s\n' "$i" "$i"; done; printf -- '---\ntask\n'; } > "$q/${ITEM:-x}.md"
+  on "$1" --now >/dev/null
+}
+
+# move_item <machine> <dir under queue/> <line>: what agent-queue move does to $ITEM, plus one frontmatter line.
+move_item() {
+  mkdir -p "$SANDBOX/$1/queue/$2"
+  sed "s/^k20: v20$/k20: v20\n$3/" "$SANDBOX/$1/queue/queued/${ITEM:-x}.md" > "$SANDBOX/$1/queue/$2/${ITEM:-x}.md"
+  rm "$SANDBOX/$1/queue/queued/${ITEM:-x}.md"
+}
+
+@test "an item a worker closed while another machine moved it to running keeps the close, whichever syncs first (ar-3439)" {
+  peer a; queue_item a; peer b
+  move_item a done/2026-11-21 'status: ok'
+  move_item b running 'host: a'
+  on b --now
+  run on a --now
+  assert_success
+  assert_output --partial COMPLETE
+  run show "$ORIGIN" queue/done/2026-11-21/x.md
+  assert_line 'status: ok'
+  refute_output --partial '<<<<<<<'
+  run git -C "$ORIGIN" ls-tree -r --name-only master -- queue/queued queue/running
+  assert_output ''
+  assert_equal "$(git -C "$ORIGIN" log -1 --format=%s master)" "$(git -C "$SANDBOX/a" log -1 --format=%s)"
+  assert_equal "$(git -C "$ORIGIN" rev-list --parents -1 master | wc -w)" 3
+  [ -z "$(git -C "$SANDBOX/a" status --porcelain)" ]
+  # the other order: the close pushed first, the running move merges over it
+  ITEM=y
+  peer c; queue_item c; peer d
+  move_item c done/2026-11-21 'status: ok'
+  move_item d running 'host: c'
+  on c --now
+  run on d --now
+  assert_success
+  run git -C "$ORIGIN" ls-tree -r --name-only master -- queue/queued queue/running
+  assert_output ''
+  run show "$ORIGIN" queue/done/2026-11-21/y.md
+  assert_line 'status: ok'
+  assert_equal "$(cat "$SANDBOX/d/queue/done/2026-11-21/y.md")" "$(show "$ORIGIN" queue/done/2026-11-21/y.md)"
+  [ ! -e "$SANDBOX/d/queue/running/y.md" ]
+}
+
+@test "an item moved to two open states, or a close beside another conflict, still conflicts" {
+  peer a; queue_item a; peer b
+  move_item a running 'host: a'
+  move_item b waiting 'ask: 1'
+  on a --now
+  run on b --now
+  assert_failure
+  assert_output --partial 'conflicts in queue/'
+  [ -e "$SANDBOX/b/queue/waiting/x.md" ]
+  ITEM=y
+  peer c; queue_item c; peer d
+  move_item c done/2026-11-21 'status: ok'
+  move_item d running 'host: c'
+  echo 'state: c' > "$SANDBOX/c/queue/item.md"
+  echo 'state: d' > "$SANDBOX/d/queue/item.md"
+  on c --now
+  run on d --now
+  assert_failure
+  assert_output --partial 'queue/item.md'
+  [ -e "$SANDBOX/d/queue/running/y.md" ]
+}
+
 # lose_head_tree <machine>: what a crash did to the fleet home (ar-3439): HEAD stays, its loose tree is gone.
 lose_head_tree() {
   local t
