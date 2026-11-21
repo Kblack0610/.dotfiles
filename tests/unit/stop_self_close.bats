@@ -9,7 +9,7 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
   CHECK="$REPO_ROOT/.claude/hooks/stop-post.d/94-self-close.sh"
-  export AGENT_QUEUE_ITEM=item-1 AGENT_SPIN_DOWN_DIR="$SANDBOX/spin" CALLS="$SANDBOX/calls"
+  export CLAUDE_CODE_SESSION_ATTENDED=1 AGENT_QUEUE_ITEM=item-1 AGENT_SPIN_DOWN_DIR="$SANDBOX/spin" XDG_STATE_HOME="$SANDBOX/state" CALLS="$SANDBOX/calls"
   mkdir -p "$AGENT_SPIN_DOWN_DIR" "$SANDBOX/bin"
   : > "$CALLS"
   # agent-queue show <slug> --json: the item's state and sessions, from $ITEM_STATE and $ITEM_SESSIONS.
@@ -49,11 +49,31 @@ stop_payload() { printf '{"session_id":"%s","stop_hook_active":%s}' "${1:-sid-1}
   [ ! -s "$CALLS" ]
 }
 
-@test "an item still running passes without the slow close check" {
+@test "an item still running, or in review, passes without the slow close check" {
   ITEM_STATE=running run bash "$CHECK" <<<"$(stop_payload)"
   assert_success
   assert_output ''
+  ITEM_STATE=review run bash "$CHECK" <<<"$(stop_payload)"
+  assert_success
+  assert_output ''
   ! grep -q fleet-sessions "$CALLS"
+}
+
+@test "it blocks once per session: a resumed finished session is not told again" {
+  run bash "$CHECK" <<<"$(stop_payload)"
+  [ "$(jq -r .decision <<<"$output")" = block ]
+  : > "$CALLS"
+  run bash "$CHECK" <<<"$(stop_payload)"
+  assert_success
+  assert_output ''
+  [ ! -s "$CALLS" ]
+}
+
+@test "an unattended (headless) run passes and reads nothing" {
+  CLAUDE_CODE_SESSION_ATTENDED=0 run bash "$CHECK" <<<"$(stop_payload)"
+  assert_success
+  assert_output ''
+  [ ! -s "$CALLS" ]
 }
 
 @test "an item that does not name this session (an inherited env) passes without the close check" {
