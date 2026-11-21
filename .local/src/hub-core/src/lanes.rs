@@ -104,15 +104,6 @@ pub fn window(name: &str) -> (&'static str, i64) {
         .unwrap_or(WINDOWS[DEFAULT_WINDOW])
 }
 
-/// The project whose repo holds the app's tags, else the app's own name.
-fn owner(a: &App) -> String {
-    if a.repo.is_empty() {
-        a.project.clone()
-    } else {
-        project_map::canonical(&a.repo)
-    }
-}
-
 /// When a run ran, clipped to nothing: its start, and its start plus what it took (a running or
 /// queued run's time so far).
 fn span(r: &Run) -> (i64, i64) {
@@ -312,7 +303,7 @@ pub fn build(b: &Builds, rel: &Releases, project: &str, window_name: &str, now: 
     let mut projects: Vec<String> = busy
         .keys()
         .map(|p| p.to_string())
-        .chain(rel.apps.iter().map(owner))
+        .chain(rel.apps.iter().map(App::owner))
         .collect();
     projects.sort();
     projects.dedup();
@@ -327,7 +318,7 @@ pub fn build(b: &Builds, rel: &Releases, project: &str, window_name: &str, now: 
         // Another spelling (`unity-playground`) is its key, so its stages and apps are found.
         p => project_map::canonical(p),
     };
-    let apps: Vec<&App> = rel.apps.iter().filter(|a| owner(a) == project).collect();
+    let apps: Vec<&App> = rel.apps.iter().filter(|a| a.owner() == project).collect();
     let is_app = |name: &str| apps.iter().any(|a| a.project == name);
     let mut ci: BTreeMap<String, Vec<Seg>> = BTreeMap::new();
     // App -> tag -> its build runs.

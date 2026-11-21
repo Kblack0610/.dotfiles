@@ -711,7 +711,7 @@ pub fn failed_runs(text: &str) -> (Vec<Action>, usize) {
     (failed, bad)
 }
 
-/// Who queued an item: `human`, `shepherd`, or `board` for any `board:<project>:<key>`.
+/// Who queued an item: `board` for any `board:<project>:<key>`, else its `from` as written (`human`, `session`, `ask:<id>`, ...).
 fn source_of(i: &Item) -> String {
     match i.from.as_deref() {
         None | Some("") => "human".into(),
