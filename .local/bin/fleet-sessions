@@ -2080,8 +2080,6 @@ collect() {
     # the phase reads as next, never as queued.
     # The plan is queued only when every open phase is held; else its first free one is next.
     # A read that fails is named unreadable, and tick logs no blink for the row (blind_row) (ar-2905).
-    # mine: the items item_of joined here, which hold no phase (own_slugs). dsp still names the one started
-    # item matched by the row's tmux session, review ones included.
     local dsp=- n=0 e=0 prun=- pwq=- mine="$(own_slugs "$item")"
     dsp="$(awk -F'\t' -v k="${target%%/*}/$tsess" '$1 == k { print $2; exit }' <<<"$items")"
     pq="$pnext"
