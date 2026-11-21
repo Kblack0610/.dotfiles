@@ -82,6 +82,8 @@ There is one chain, for every session whoever started it, and one timer. A sessi
 | `quiet` | F. The timer | quiet under `FLEET_IDLE_CLOSE_MIN`; not asked by `--self` | after: quiet Nm of 60m |
 | `now` | | anything else: DONE, CHAT, STALLED with nothing to land, an open ask of its own | now; `/wind-down auto` sets each own ask to reopen it (`agent-ask reopen-on-answer`), so the answer carries on without the window; a session that turns its close down has its window closed by `fleet-shepherd check` an hour later, its asks set the same way first |
 
+Who asks: a dispatched session asks itself at the end of the first turn after its queue item is done (`.claude/hooks/stop-post.d/94-self-close.sh` runs `close --self` and, on now, tells it to run `/wind-down auto` while its context is still cached). The shepherd's typed close is the backstop for one that did not, and the closer for sessions the human opened, whose last answer the human may still be reading.
+
 Quiet is the smaller of `idle_min` and `age_min`, a null `age_min` reading 0, so a row with an unknown age never closes on the timer. The human typing in a window keeps it from going quiet, so no presence fact is read. `pct` is `phases_done` of `phases_total` in percent, null with no checklist.
 
 ### Changing the close flow
@@ -138,7 +140,7 @@ Adding a field does not bump `schema`. Readers ignore fields they do not know.
 | tmux status line (`.local/src/tmux/claude-status.sh`) | `!N` is `questions.sh count`, the Prefix y panel's own number: every pending ask file (live or dead) plus every session with a dialog open, fleet-wide whatever session the bar is in. `~` working and the check mark idle count the current session's rows of `agent-panel list` by glyph. The same refresh copies each row's glyph onto its window as `@agent_glyph` (`project_glyphs`), which the window list draws before the window number: `!` red, `~` amber, the check green; two agents in one window show `!` over `~` over the check. It reads no pane text and not the document |
 | tmux fleet view (`.local/src/tmux/fleet.sh`, agents section) | agent-panel's glyph and `bucket` by `target`, the same join |
 | tmux window names | `bucket` and `labels` per session, copied each tick onto the session's window as `@fleet_stage` and `@fleet_labels` (`tmux_project`); `.tmux.conf`'s `@fleet_fmt` draws them |
-| waybar `custom/ai-agents` (`.config/waybar/ai_agents.sh`) | `bucket`, `target`, `project`, `age_min` and `idle_min` per session by way of the `fleet_sessions.prom` textfile on Prometheus (`agent_session_age_minutes`, `agent_session_idle_minutes`), `reason` of a NEEDS or STALLED session as `agent_session_why` (the hover's only per-session rows), the bucket order and its in-progress and finished flags from `vocab` as `agent_session_bucket`, and the file's age |
+| waybar `custom/ai-agents` (`.config/waybar/ai_agents.sh`) | `bucket`, `target`, `project`, `age_min` and `idle_min` per session by way of the `fleet_sessions.prom` textfile on Prometheus (`agent_session_age_minutes`, `agent_session_idle_minutes`), `reason` of a NEEDS or STALLED session as `agent_session_why` (the why on the hover's need-you and stalled rows), the bucket order and its in-progress and finished flags from `vocab` as `agent_session_bucket`, and the file's age |
 
 Runner and watch state are not in the document: each already has one contract file (`~/.local/state/agentctl/<name>/last-outcome`, `~/.local/state/watch-companion/<name>.state`).
 

@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: memory
   tags: [memory, recall, session]
+  system: [sessions, telemetry]
   reviewed: "2026-11-04"
 ---
 
@@ -105,7 +106,7 @@ gitBranch), `--since YYYY-MM-DD`, `--role user|assistant`, `--regex`, `-i`,
 
 `tool-calls` prices calls instead of output. Every response re-sends the context, so a call's `ctx` is the context of the response after it, and a pattern's `ctx` is the responses it caused. It answers how calls are used per session kind and project; a merged-PR count is `agent-usage burn`'s.
 
-- Session kinds: `subagent` (under `subagents/`), `runner` (`sdk-cli`, or a first command of fleet-lead or fleet-overseer), `dispatched` (a first command of one-shot), `hand` (the rest).
+- Session kinds: `subagent` (under `subagents/`), `runner` (`sdk-cli`, or a first command of fleet-lead), `dispatched` (a first command of one-shot), `hand` (the rest).
 - `serial` is an upper bound: two adjacent read-only responses, no failure in the first, and the second asks for nothing the first's results showed.
 - `repeat` is an exact call in the same compaction stretch; `repeat_unchanged` has no mutating call between.
 - `fail` classes the error text; `retry` says whether the next response reran the same input. `exit` is mostly a failed test or grep doing its job, so read `denied`, `hook` and `zsh` for waste.

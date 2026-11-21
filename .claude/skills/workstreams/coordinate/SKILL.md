@@ -6,6 +6,7 @@ argument-hint: "[plan file, goal, or sprint <project>]"
 metadata:
   category: workstreams
   tags: [coordinator, session, close-flow, follow-through]
+  system: [sessions]
   reviewed: "2026-11-19"
 ---
 

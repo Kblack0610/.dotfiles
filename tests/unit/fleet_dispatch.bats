@@ -301,6 +301,11 @@ item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
   assert_equal "$(cat "$NOTES_FIXTURE/started")" "start --item ga-2"
   assert_equal "$(agent-queue list --state queued --json | jq -r .slug | sort | paste -sd,)" "ga-2,ga-3"
   assert_output --partial "skip game: ga-4 waits on rbw infra/x"
+  # The row it could not queue is in the log, which outlives the closing session's stderr; ga-2 is not.
+  run grep -c 'pull-after ga-1: row ga-4 was not queued: skip game: ga-4 waits on rbw infra/x' "$LOG"
+  assert_output 1
+  run grep -c 'row ga-2 was not queued' "$LOG"
+  assert_output 0
   run grep -c 'ptask game --agent tag --remove after/ga-1 ga-2' "$NOTES_FIXTURE/calls.log"
   assert_output 1
   # Negative controls: no id is usage, and under the dispatch hold nothing is pulled.

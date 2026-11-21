@@ -223,9 +223,11 @@ phases() { printf '\n## Phases\n\n- [x] P1 done (#1)\n'; for i in $(seq "$1"); d
   assert_output --partial 'additionalContext'
   assert_output --partial '## Target'
   assert_output --partial 'Depth:'
-  assert_output --partial 'Chain:'
+  assert_output --partial 'Chain: a plan with more than one'
   refute_output --partial 'Epic:'
   refute_output --partial '## Playtest'
+  # The rule lines arrive without their Why: history.
+  refute_output --partial 'Why:'
 }
 
 # A project with a board must name an epic( row; one without (every project above) is exempt.
@@ -273,6 +275,7 @@ labbed() {
   labbed
   run prompt labbed plan
   assert_output --partial 'Epic:'
+  refute_output --partial 'Why:'
   rm -rf "$HOME/.notes/lab"
   run prompt labbed plan
   refute_output --partial 'Epic:'

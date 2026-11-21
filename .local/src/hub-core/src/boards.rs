@@ -53,7 +53,7 @@ pub fn budget() -> PathBuf {
 
 /// agent-ask's store, one `<project>/<id>.md` per ask, by the variable agent-ask resolves.
 pub fn asks_dir() -> PathBuf {
-    env("AGENT_ASK_DIR").unwrap_or_else(|| home().join(".agent/asks"))
+    env("AGENT_ASK_ROOT").unwrap_or_else(|| home().join(".agent/asks"))
 }
 
 /// agent-propose's store.

@@ -2313,14 +2313,15 @@ fix_item() {
   run "$SUBJECT" triage
   assert_success
   [ ! -s "$PLOG" ]
-  # NEGATIVE CONTROL: the same items from before this trip did not see it, so it is queued again
+  # NEGATIVE CONTROL: the same items from before this trip did not see it, so it is queued again,
+  # as this trip's first try (ar-4064)
   : > "$ITEMS"; watch_item ar-1 ok "$before"
   run "$SUBJECT" triage --causes
   assert_line --regexp "^red watch cause:$want"$'\t''check\(watch\): '
   run "$SUBJECT" triage
   assert_success
   run cat "$PLOG"
-  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red watch cause:$want retry:ar-1 --raw "
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red watch cause:$want --raw "
   # ... and so is one that merged a PR before this trip
   : > "$ITEMS"; : > "$PLOG"; watch_item ar-1 ok "$before" o/r#5
   run "$SUBJECT" triage
@@ -2338,6 +2339,68 @@ fix_item() {
   run "$SUBJECT" triage
   assert_success
   assert_output --partial '1 queued as red fixes'
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red watch cause:$want retry:ar-1 --raw "
+}
+
+# 2026-11-20 (ar-4064): tries were counted over the whole TRIAGE_FIX_DAYS window, so a watch that
+# cleared and tripped again found both tries spent by the last trip: 12 of 22 tripped watches,
+# release-links and alertmanager-fleet among them, had no owner.
+@test "triage: a watch's tries count per trip, so a re-trip gets an owner and two misses in one trip are spent" {
+  log_triage_setup
+  watch links TRIP -25200 high
+  route 'watch.: (links) tripped' agent fix-red 'fix the source each line names'
+  local want this before
+  want=$(printf '%s' 'check(watch):links' | sha256sum | cut -c1-8)
+  this=$(date -u -d "@$((T0 - 3600))" +%FT%TZ); before=$(date -u -d "@$((T0 - 90000))" +%FT%TZ)
+  watch_item() { jq -cn --arg t "red watch cause:$want" --arg slug "$1" --arg st "$2" --arg q "$3" \
+    '{slug: $slug, tags: $t, state: "done", status: $st, queued: $q, pr: null, merged: null}' >> "$ITEMS"; }
+  # two tries that did not hold an earlier trip: this trip still gets its first, with no retry:
+  watch_item ar-1 failed "$before"; watch_item ar-2 cancelled "$before"
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 queued as red fixes'
+  refute_output --partial 'for the human'
+  [ ! -s "$BOARD.agent-runtime" ]
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red watch cause:$want --raw "
+  # one try this trip: the retry names it, not the earlier trip's
+  : > "$PLOG"; watch_item ar-3 failed "$this"
+  run "$SUBJECT" triage
+  assert_success
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red watch cause:$want retry:ar-3 --raw "
+  # NEGATIVE CONTROL: two tries this trip that did not hold are spent: no third item, and the red
+  # stays its agent row (ar-4018), never a human row
+  : > "$PLOG"; watch_item ar-4 cancelled "${this%Z}.5Z"
+  run "$SUBJECT" triage
+  assert_success
+  refute_output --partial 'queued as red fixes'
+  refute_output --partial 'for the human'
+  [ ! -s "$PLOG" ]
+  [ ! -s "$BOARD.agent-runtime" ]
+  run grep -c 'check(watch): links tripped' "$BOARD"
+  assert_output 1
+}
+
+# ar-4064: one row whose board add failed returned from board_upsert, so the pass queued no red fix.
+@test "triage: a row whose board write fails is skipped alone, and the pass still queues its red fixes" {
+  log_triage_setup
+  lock_route
+  watch links TRIP -25200 high
+  route 'watch.: (links) tripped' agent fix-red 'fix the links'
+  printf '#!/usr/bin/env bash\n[ "$4" = add ] && [[ "$5" == *"check(watch): links"* ]] && exit 1\nexec notes "$@"\n' > "$SANDBOX/bin/notes-flaky"
+  chmod +x "$SANDBOX/bin/notes-flaky"
+  BENCH_NOTES_CMD=notes-flaky run "$SUBJECT" triage
+  assert_failure
+  assert_output --partial 'add failed for check(watch): links'
+  assert_output --partial '1 queued as red fixes'
+  run grep -c 'fix(logs): alpha error' "$BOARD"
+  assert_output 1
+  run cat "$PLOG"
+  assert_output --regexp "--tags red cause:$(cause_of) --raw "
+  run outcome
+  assert_output --partial FAILED
 }
 
 @test "triage: a dispatch hold or an unreadable queue queues nothing, and the row still files" {
@@ -7464,4 +7527,119 @@ start_rows() {
   run sed -n '/^## Trainee/,/^## Sources/p' "$BENCH_SCORECARD_DIR/latest.md"
   assert_output --partial '- Pool and floor: ? (fleet-dispatch trainee-pool unreadable)'
   assert_output --partial '| opencode-go:glm | 2 | 1 | 1 | 1 | 0 | 1 |'
+}
+
+@test "triage: a tripped watch whose manifest names a system loads fix-red and that system's skills" {
+  log_triage_setup
+  export BENCH_SKILLS_DIR="$SANDBOX/skills"
+  mkdir -p "$BENCH_SKILLS_DIR"/{fix-red,ci-cost,k8s-ops,ci-failures}
+  printf -- '---\nname: fix-red\nmetadata:\n  system: [any]\n---\n' > "$BENCH_SKILLS_DIR/fix-red/SKILL.md"
+  printf -- '---\nname: ci-cost\nmetadata:\n  system: [ci]\n---\nsystem: [telemetry]\n' > "$BENCH_SKILLS_DIR/ci-cost/SKILL.md"
+  printf -- '---\nname: ci-failures\nmetadata:\n  system: [ci, tests]\n---\n' > "$BENCH_SKILLS_DIR/ci-failures/SKILL.md"
+  printf -- '---\nname: k8s-ops\nmetadata:\n  system: [telemetry]\n---\n' > "$BENCH_SKILLS_DIR/k8s-ops/SKILL.md"
+  route 'watch.: (gate|plain) tripped' agent ci-cost 'read the slowest run'
+  watch gate TRIP -25200 high
+  watch plain TRIP -25200 high
+  printf 'system: [ci]\n' >> "$TRIAGE_WATCHES/gate.yaml"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  # the route's own skill is not repeated, a skill naming the id only past its frontmatter is not listed
+  assert_line --regexp '^check\(watch\): gate tripped .*; fix with ci-cost: read the slowest run; system ci: load fix-red and ci-failures #high'
+  # negative control: a watch with no system: names none
+  run "$SUBJECT" triage --dry-run
+  assert_line --regexp '^check\(watch\): plain tripped .*; fix with ci-cost: read the slowest run #high'
+  refute_line --regexp '^check\(watch\): plain .*system'
+}
+
+# alert_setup: the aggregate Alertmanager watch tripped, its evidence one alert a line, no pins
+alert_setup() {
+  log_triage_setup
+  : > "$TRIAGE_ROUTES"; route '^check\(alert\): ([^ ]+ [^ ]+) firing' agent fix-red 'fix this alert' -
+  route '^check\(watch\): alertmanager-fleet tripped' agent fix-red 'fallback' -
+  export TRIAGE_PINS_CMD=pins-stub; echo '{"data":{}}' > "$SANDBOX/pins.json"
+  printf '#!/usr/bin/env bash\ncat %q\n' "$SANDBOX/pins.json" > "$SANDBOX/bin/pins-stub"; chmod +x "$SANDBOX/bin/pins-stub"
+  watch alertmanager-fleet TRIP -25200 high
+  printf 'TRIP exit 1 (want 0)\nConvergenceDrift deskslim-1\nConvergenceDrift razer-laptop\nHomelabCronJobFailed nas/bark-archive\nTraderRunFailed trader-web walkforward\nfleet=fix firing: ConvergenceDrift deskslim-1; x\n' \
+    > "$TRIAGE_WATCH_STATE/alertmanager-fleet.out"
+}
+
+@test "triage: each firing alert is a row and a red item of its own, and the aggregate watch files none" {
+  alert_setup
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^check\(alert\): ConvergenceDrift deskslim-1 firing, alertmanager-fleet tripped since .*#high \(agent\)$'
+  assert_line --regexp '^check\(alert\): ConvergenceDrift razer-laptop firing, '
+  assert_line --regexp '^check\(alert\): HomelabCronJobFailed nas/bark-archive firing, '
+  assert_line --regexp '^check\(alert\): TraderRunFailed trader-web/walkforward firing, '
+  refute_output --partial 'check(watch): alertmanager-fleet'
+  # one cause, so one item, for each of the four alerts
+  run bash -c "'$SUBJECT' triage --causes | grep -c '^red alert cause:'"
+  assert_output 4
+  export TRIAGE_FIX_CAP=1   # an alert red is outside the daily cap, bounded by the alerts firing
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '4 queued as red fixes'
+}
+
+@test "triage: an alert a human's pin explains is intended, not a row; its old row closes" {
+  alert_setup
+  echo '{"data":{"deskslim-1.slots":"{\"slots\":0,\"by\":\"human: moving the deskslims\"}","razer-laptop.slots":"{\"slots\":0,\"by\":\"machine-mode open\"}"}}' > "$SANDBOX/pins.json"
+  printf 'board.md\t1\tcheck(alert): convergencedrift deskslim-1 firing, x\t- [ ] check(alert): ConvergenceDrift deskslim-1 firing, x #high\n' >> "$BOARD"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'ConvergenceDrift deskslim-1 firing, alertmanager'
+  assert_output --partial 'ConvergenceDrift deskslim-1 is intended'
+  assert_output --partial 'retire: check(alert): convergencedrift deskslim-1 firing'
+  # a machine-mode pin says nothing about one host: its alert stays red
+  assert_line --regexp '^check\(alert\): ConvergenceDrift razer-laptop firing, '
+}
+
+@test "triage: a cleared alert's row closes while the others stay; an unreadable pin list hides nothing" {
+  alert_setup
+  printf 'board.md\t1\tcheck(alert): nodedown windows-media-ci firing, x\t- [ ] check(alert): NodeDown windows-media-ci firing, x #high\nboard.md\t2\tcheck(alert): convergencedrift razer-laptop firing, x\t- [ ] check(alert): ConvergenceDrift razer-laptop firing, x #high\n' >> "$BOARD"
+  export TRIAGE_PINS_CMD=false
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_output --partial 'retire: check(alert): nodedown windows-media-ci firing'
+  refute_output --partial 'retire: check(alert): convergencedrift razer-laptop'
+  assert_line --regexp '^check\(alert\): ConvergenceDrift deskslim-1 firing, '
+}
+
+@test "triage: evidence that lists no alert leaves the aggregate watch's own row" {
+  alert_setup
+  printf 'TRIP exit 1 (want 0)\nalertmanager.example unreachable\n' > "$TRIAGE_WATCH_STATE/alertmanager-fleet.out"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^check\(watch\): alertmanager-fleet tripped since '
+  refute_output --partial 'check(alert)'
+}
+
+@test "triage: an open alert row stays when the alert watch is unreadable (ERROR or paused), and closes when it is OK" {
+  alert_setup
+  printf 'board.md\t1\tcheck(alert): nodedown windows-media-ci firing, x\t- [ ] check(alert): NodeDown windows-media-ci firing, x #high\n' >> "$BOARD"
+  printf 'ERROR exit 2\nalertmanager.example unreachable\n' > "$TRIAGE_WATCH_STATE/alertmanager-fleet.out"
+  echo ERROR > "$TRIAGE_WATCH_STATE/alertmanager-fleet.state"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'retire: check(alert)'
+  # a paused watch reads nothing either
+  echo TRIP > "$TRIAGE_WATCH_STATE/alertmanager-fleet.state"; : > "$TRIAGE_WATCHES/alertmanager-fleet.yaml.paused"
+  run "$SUBJECT" triage --dry-run
+  refute_output --partial 'retire: check(alert)'
+  # OK says nothing fires: the row closes
+  rm "$TRIAGE_WATCHES/alertmanager-fleet.yaml.paused"; echo OK > "$TRIAGE_WATCH_STATE/alertmanager-fleet.state"
+  run "$SUBJECT" triage --dry-run
+  assert_output --partial 'retire: check(alert): nodedown windows-media-ci firing'
+}
+
+@test "triage --coverage: the alert watch needs a check(alert) line as well as its watch line" {
+  coverage_setup
+  printf 'name: alertmanager-fleet\n' > "$TRIAGE_WATCHES/alertmanager-fleet.yaml"
+  route '^check\(watch\): alertmanager-fleet tripped' agent fix-red 'fallback' -
+  run "$SUBJECT" triage --coverage
+  assert_failure
+  assert_output 'alert alertmanager-fleet'
+  route '^check\(alert\): ([^ ]+ [^ ]+) firing' agent fix-red 'fix this alert' -
+  run "$SUBJECT" triage --coverage
+  assert_success
 }

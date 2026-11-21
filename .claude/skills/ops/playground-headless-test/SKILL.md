@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: ops
   tags: [unity, testing, ci, playground, headless]
+  system: [tests]
   reviewed: 2026-11-12
   # The hand-typed forms this skill's scripts replace; hand_methods.py denies them.
   replaces:

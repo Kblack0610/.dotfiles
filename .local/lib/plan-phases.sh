@@ -34,7 +34,7 @@ plan_phases() {
 }
 
 # plan_superseded <plan file> -> succeeds when the first line under its `# ` title says `Superseded by`
-# (global CLAUDE.md, Plan Lifecycle), in any case: its open phases are another plan's now.
+# (`~/.local/src/docs/planning.md`, Phases), in any case: its open phases are another plan's now.
 plan_superseded() {
   [ -f "$1" ] && awk '!t { t = /^# /; next } /^[[:space:]]*$/ { next } { s = tolower($0) ~ /^[>*_ ]*superseded by/; exit } END { exit !s }' "$1"
 }

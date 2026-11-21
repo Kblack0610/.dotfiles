@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: messaging
   tags: [writing, notifications, briefing, status, standards]
+  system: [any]
   reviewed: "2026-11-19"
 ---
 
