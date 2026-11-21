@@ -1363,11 +1363,12 @@ MD
 # panel <cwd> [plan file] [edited_files JSON array]: agent-panel answering one session
 # s1 (sid-9, pane %7), open for three hours and idle for one, with status $PANEL_STATUS
 # (default idle), context window $PANEL_WINDOW (default null, a model agent-panel does not know) and
-# open job $PANEL_JOB (default none known), idle $PANEL_IDLE_S seconds (default 3600).
+# open job $PANEL_JOB (default none known), idle $PANEL_IDLE_S seconds (default 3600), time use
+# $PANEL_TIME (a time_use object, default none).
 panel() {
   local since=$(( $(date +%s) - ${PANEL_IDLE_S:-3600} )) started=$(( $(date +%s) - 3 * 3600 - 300 ))
   printf '#!/usr/bin/env bash\necho %q\n' \
-    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":${PANEL_PLAN_MODE:-false},\"doing\":\"${PANEL_DOING:-}\",\"session_id\":\"${PANEL_SID:-sid-9}\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"context_window\":${PANEL_WINDOW:-null},\"plan_file\":\"${2:-}\",\"transcript\":\"${PANEL_TRANSCRIPT:-}\",\"edited_files\":${3:-[]},\"account\":\"${PANEL_ACCOUNT:-main}\",\"open_job\":\"${PANEL_JOB:-}\"}" \
+    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":${PANEL_PLAN_MODE:-false},\"doing\":\"${PANEL_DOING:-}\",\"session_id\":\"${PANEL_SID:-sid-9}\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"context_window\":${PANEL_WINDOW:-null},\"plan_file\":\"${2:-}\",\"transcript\":\"${PANEL_TRANSCRIPT:-}\",\"edited_files\":${3:-[]},\"account\":\"${PANEL_ACCOUNT:-main}\",\"open_job\":\"${PANEL_JOB:-}\",\"time_use\":${PANEL_TIME:-null}}" \
     > "$SANDBOX/bin/agent-panel"
   chmod +x "$SANDBOX/bin/agent-panel"
 }
@@ -3307,31 +3308,36 @@ time_row() {
   assert_output --regexp $'^a\t[0-9]{2}:[0-9]{2} p34\t[0-9]+$'
 }
 
-@test "overdue_of: a phase open twice its estimate and the floor is overdue, on the session running it; a queued phase or a landing wait is not (ar-528)" {
+@test "overdue_of: a phase worked twice its estimate and the floor is overdue, on the session running it; a queued phase, a landing wait or a night on the human is not (ar-528)" {
   local now=1800000000
   cat > "$SANDBOX/rows" <<'J'
-{"session_id":"a","target":"lab/a:1","next_phase":"P2 build"}
-{"session_id":"young","target":"lab/young:1","next_phase":"P2"}
-{"session_id":"floor","target":"lab/floor:1","next_phase":"P2"}
-{"session_id":"done","target":"lab/done:1","next_phase":null}
-{"session_id":"q","target":"lab/q:1","next_phase":"P2","phase_queued":true}
-{"session_id":"w","target":"lab/w:1","next_phase":"P2","wait_min":12}
-{"session_id":"plan","target":"lab/plan:1","next_phase":"P2","phase_runner":"lab/run","phases":[{"state":"done","name":"P1"},{"state":"open","name":"P2 held item"}]}
-{"session_id":"run","target":"lab/run:1"}
+{"session_id":"a","target":"lab/a:1","next_phase":"P2 build","active_min":131}
+{"session_id":"young","target":"lab/young:1","next_phase":"P2","active_min":500}
+{"session_id":"floor","target":"lab/floor:1","next_phase":"P2","active_min":500}
+{"session_id":"done","target":"lab/done:1","next_phase":null,"active_min":500}
+{"session_id":"q","target":"lab/q:1","next_phase":"P2","phase_queued":true,"active_min":500}
+{"session_id":"w","target":"lab/w:1","next_phase":"P2","wait_min":12,"active_min":500}
+{"session_id":"night","target":"lab/night:1","next_phase":"P2","active_min":79}
+{"session_id":"nobase","target":"lab/nobase:1","next_phase":"P2","active_min":500}
+{"session_id":"plan","target":"lab/plan:1","next_phase":"P2","phase_runner":"lab/run","active_min":0,"phases":[{"state":"done","name":"P1"},{"state":"open","name":"P2 held item"}]}
+{"session_id":"run","target":"lab/run:1","active_min":95}
 J
-  line() { printf '{"session_id":"%s","phases_done":%s,"phases_total":4,"finished":%s,"phase_min":%s,"phase_since_epoch":%s,"basis":"b"}\n' "$@"; }
-  { line a 1 false 40 $((now - 81 * 60 - 30))
-    line young 1 false 40 $((now - 79 * 60))   # under 2x its estimate
-    line floor 1 false 20 $((now - 59 * 60))   # 2x is 40m, the floor 60m
-    line done 4 true 40 $((now - 500 * 60))    # every box ticked
-    line q 1 false 40 $((now - 500 * 60))      # its item waits on a gate: nothing works it yet
-    line w 1 false 40 $((now - 500 * 60))      # waiting its landing turn
-    line plan 1 false 40 $((now - 90 * 60)); } > "$SANDBOX/eta"
+  line() { printf '{"session_id":"%s","phases_done":%s,"phases_total":4,"finished":%s,"phase_min":%s,"phase_since_epoch":%s,"phase_active_base":%s,"basis":"b"}\n' "$@"; }
+  { line a 1 false 40 $((now - 200 * 60)) 50        # 81m worked of 200m open
+    line young 1 false 40 $((now - 79 * 60)) 0      # under 2x its estimate, even counting it all
+    line floor 1 false 20 $((now - 59 * 60)) 0      # 2x is 40m, the floor 60m
+    line done 4 true 40 $((now - 500 * 60)) 0       # every box ticked
+    line q 1 false 40 $((now - 500 * 60)) 0         # its item waits on a gate: nothing works it yet
+    line w 1 false 40 $((now - 500 * 60)) 0         # waiting its landing turn
+    line night 1 false 40 $((now - 600 * 60)) 0     # 10h open, 79m of it worked: the rest was the human's night
+    line nobase 1 false 40 $((now - 500 * 60)) null # no sample of its work time yet
+    line plan 1 false 40 $((now - 90 * 60)) 0; } > "$SANDBOX/eta"
   run overdue_of "$now" "$SANDBOX/rows" "$SANDBOX/eta"
   assert_success
   assert_equal "$(jq -c keys <<<"$output")" '["a","run"]'
   assert_equal "$(jq -c .a <<<"$output")" '{"phase":"phase 2/4","name":"P2 build","age_min":81,"expected_min":40,"limit_min":80,"escalate_min":60,"basis":"b","plan_target":"lab/a:1"}'
-  # the plan's open phase is an item running in another session: the verdict is that session's (ar-1497)
+  # the plan's open phase is an item running in another session: the verdict is that session's (ar-1497),
+  # aged by its whole work time but never past the phase's wall-clock age
   assert_equal "$(jq -c '.run | [.name, .plan_target, .age_min]' <<<"$output")" '["P2 held item","lab/plan:1",90]'
   : > "$SANDBOX/eta"
   run overdue_of "$now" "$SANDBOX/rows" "$SANDBOX/eta"
@@ -3361,7 +3367,8 @@ J
 @test "--write: a session says who started it (by, its item's origin) and carries its overdue verdict; an unread fleet-bench eta is named unreadable" {
   landed_fixture
   local doc="$XDG_STATE_HOME/fleet/state.json" since=$(( $(date +%s) - 200 * 60 ))
-  bench_eta "{\"session_id\":\"sid-9\",\"phases_done\":1,\"phases_total\":2,\"finished\":false,\"phase_min\":40,\"phase_since_epoch\":$since,\"basis\":\"b\"}"
+  bench_eta "{\"session_id\":\"sid-9\",\"phases_done\":1,\"phases_total\":2,\"finished\":false,\"phase_min\":40,\"phase_since_epoch\":$since,\"phase_active_base\":0,\"basis\":\"b\"}"
+  PANEL_TIME='{"work_min":150,"jobs_min":60,"human_min":600,"parked_min":90}' panel "$SANDBOX/wt" "$SANDBOX/plan.md"   # 210m worked
   "$REPO_ROOT/.local/bin/fleet-sessions" --write >/dev/null
   [ "$(jq -r '.sessions[0].by' "$doc")" = hand ]   # no item: the human's
   queue_item running lab:s1
@@ -3370,11 +3377,26 @@ J
   [ "$(jq -r '.sessions[0].by' "$doc")" = dispatch ]
   [ "$(jq -r '.sessions[0].item.origin' "$doc")" = null ]   # one field: the item's raw origin is not copied
   [ "$(jq -r '.sessions[0].overdue | "\(.phase) \(.expected_min) \(.age_min >= 200)"' "$doc")" = 'phase 2/2 40 true' ]
+  [ "$(jq -r '.sessions[0].active_min' "$doc")" = 210 ]   # the human's 600m and 90m parked never count
   jq -e '(.unreadable // []) | index("fleet-bench eta") | not' "$doc" >/dev/null
   printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/fleet-bench"
   "$REPO_ROOT/.local/bin/fleet-sessions" --write >/dev/null
   jq -e '.unreadable | index("fleet-bench eta")' "$doc" >/dev/null
   [ "$(jq -r '.sessions[0].overdue' "$doc")" = null ]
+}
+
+@test "active_min: the open gap counts while a job runs, not while it waits on the human or nothing (ar-528)" {
+  landed_fixture
+  local t='{"work_min":20,"gate_min":5,"test_min":5,"jobs_min":10,"human_min":300}'
+  PANEL_TIME="$t" PANEL_JOB=gate panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_equal "$(jq -r .active_min <<<"$output")" 100   # 40m closed plus the hour the gate has run
+  PANEL_TIME="$t" PANEL_JOB=human panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_equal "$(jq -r .active_min <<<"$output")" 40
+  PANEL_TIME="$t" panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_equal "$(jq -r .active_min <<<"$output")" 40
 }
 
 @test "prs_cell: merged over total, ? while a state is unknown, - with none" {
