@@ -5907,7 +5907,8 @@ cmd_stopped() {
 # 7.5h. A NOOP pass reads healthy to fleet-liveness, so this is what pages a queue nothing starts:
 # the Sentinel watch queue-starved runs it. The board starves too: rows nobody judges never reach the
 # queue, so it trips when rows wait unjudged and no pass has judged any that long, the human here or
-# away (the fill judges either way; a fleet at its pace target holds them) (2026-11-05: 220 rows, no judge since 11-02, every pass stopped at held queue items). And the
+# away (the fill judges either way; a fleet at its pace target holds them).
+# (2026-11-05, while the human was away: 220 rows, no judge since 11-02, every pass stopped at held queue items.) And the
 # low water starves: runnable under DISPATCH_LOW_WATER, rows a pass would pick, and no run start in
 # twice DISPATCH_STARVED_MIN (low_starved), which is a fill that has stopped filling.
 cmd_starved() {
