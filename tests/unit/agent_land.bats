@@ -1989,8 +1989,11 @@ case "$method $path" in
 'PATCH pulls/42') n=$(cat "$F/fj.gate" 2>/dev/null || echo 0)
   [ "$n" -eq 0 ] || { echo $((n - 1)) >"$F/fj.gate"; echo Forbidden; echo 'curl: (22) The requested URL returned error: 403' >&2; exit 22; }
   jq -j .body <<<"$data" >"$F/body" && echo '{}' ;;
+# fj.status.gate: the next N status reads are refused by the bouncer, a plain "Forbidden"
 # fj.status.reset: the next status read loses its connection, once
-'GET commits/'*'/status') [ ! -f "$F/fj.status.reset" ] || { rm "$F/fj.status.reset"; echo 'curl: (56) Recv failure: Connection reset by peer' >&2; exit 56; }
+'GET commits/'*'/status') n=$(cat "$F/fj.status.gate" 2>/dev/null || echo 0)
+  [ "$n" -eq 0 ] || { echo $((n - 1)) >"$F/fj.status.gate"; echo Forbidden; echo 'curl: (22) The requested URL returned error: 403' >&2; exit 22; }
+  [ ! -f "$F/fj.status.reset" ] || { rm "$F/fj.status.reset"; echo 'curl: (56) Recv failure: Connection reset by peer' >&2; exit 56; }
   cat "$F/fj.status" 2>/dev/null || echo '{"state":"success","statuses":[{"status":"success","context":"checks / test"}]}' ;;
 # fj.refuse: the merge is refused, its JSON reason on stdout as --fail-with-body prints it
 'POST pulls/42/merge') [ ! -f "$F/fj.refuse" ] || { cat "$F/fj.refuse"; echo 'curl: (22) The requested URL returned error: 405' >&2; exit 22; }
@@ -2067,6 +2070,29 @@ EOF
   assert_output --partial 'checks: lost the connection to the API (1 of 5 retries), reading again'
   run grep -c 'POST pulls/42/merge' "$LOG"
   assert_output 1
+}
+
+@test "a Forgejo status read the bouncer refuses (a plain Forbidden) is sent again, and again after its tries run out, then lands" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  echo 6 >"$NOTES_FIXTURE/fj.status.gate"
+  SO_FORGEJO_GATE_WAIT=0 AGENT_LAND_CHECKS_POLL=0 run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'checks: lost the connection to the API (1 of 5 retries), reading again'
+  assert_line 'checks: green'
+  run grep -c 'POST pulls/42/merge' "$LOG"
+  assert_output 1
+}
+
+@test "a Forgejo status read the bouncer refuses every time stops at checks naming the proxy; nothing merged" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  echo 999 >"$NOTES_FIXTURE/fj.status.gate"
+  SO_FORGEJO_GATE_WAIT=0 AGENT_LAND_CHECKS_POLL=0 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'lost the connection to the API 6 times: forgejo.example: the proxy in front of Forgejo refused'
+  run grep -c 'pulls/42/merge' "$LOG"
+  assert_output 0
 }
 
 @test "a Forgejo base whose protection rule requires statuses refuses a head with none; with no rule it lands" {
