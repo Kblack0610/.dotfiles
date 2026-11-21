@@ -280,6 +280,12 @@ pub fn epic_line(e: &Epic, now: i64) -> String {
     s
 }
 
+/// The stage group joins the work groups, then `need_count` is taken over all of them.
+fn close_needs(p: &mut Page) {
+    p.need_groups.extend(stage_group(p));
+    p.need_count = need_count(&p.need_groups);
+}
+
 /// The items a set of Needs you groups lists.
 pub fn need_count(groups: &[NeedGroup]) -> usize {
     groups.iter().map(|g| g.items.len()).sum()
@@ -689,8 +695,7 @@ pub fn read_with(
         let in_open = roadmap.as_ref().map(closed_in_open).unwrap_or_default();
         p.systems = systems(c, &criteria, &in_open, now);
     }
-    p.need_groups.extend(stage_group(&p));
-    p.need_count = need_count(&p.need_groups);
+    close_needs(&mut p);
     let open_epics: usize = p.systems.iter().map(|s| s.epics.len()).sum();
     p.systems_says = format!("{} systems, {open_epics} open epics", p.systems.len());
     if let Some(n) = chain
