@@ -1704,6 +1704,36 @@ prior_story() {
 }
 
 # --- verbs ---
+# add_priority <priority> <named> <plan> <tags> <from> -> the priority an add files at. <named> is
+# non-empty when the caller named one (or adds --running, --want, --dry-run, --check). The high default
+# is the human's add by hand. A session decides: high is for what blocks a release or a red on main,
+# and a default high from sessions made most of the queue high (ar-2943). A session's plan is
+# agent-authored, so its phases are next in line (high) at most; urgent stays for the human's own add
+# (no session around it), a red, and dispatch's promote of a row (the row is the source), and a phase
+# that takes an urgent row still rises to it (plan_takes_rank). 63 of 85 urgent items in 3 days were
+# session plan phases that inherited urgent (ar-4349).
+add_priority() {
+  local session="${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}"
+  [ -n "$2" ] || [ -z "$session" ] ||
+    die "a session's add passes --priority: urgent for what the human needs now, high when it blocks a release or a red on main, else low"
+  if [ -n "$3" ] && [ "$1" = urgent ] && [ -n "$session" ] && [[ " $4 " != *" red "* && "$5" != board:* ]]; then
+    echo "agent-queue: a session's plan queues at high at most; urgent is the human's own add or a red" >&2
+    echo high
+  else
+    echo "$1"
+  fi
+}
+
+# add_row_prio <file> <priority> -- a row filed before this add (--row, its title's row, a re-queue's
+# row) takes the --priority the human's own add named, since the order reads the row (row_prios); a
+# story row was filed at it already. A session's add leaves a linked row as it is: every session names
+# a priority (ar-2943), and its "low" would demote the human's #urgent row. It retags with bump.
+add_row_prio() {
+  [ -z "${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}" ] || return 0
+  [ -n "${AQ_LOCKED-}" ] || unlock # notes writes the row and can be slow; the rest of add only reads
+  row_prio_write "$1" "$2"
+}
+
 cmd_add() {
   local project="" mode=oneshot priority=high tags="" after="" from=human agent=claude slug=""
   local running="" session="" task=() tag planf="" dry="" check="" weight="" title="" epic="" repeat="" from_given="" want="" row="" priority_given=""
@@ -1733,19 +1763,7 @@ cmd_add() {
     esac
   done
   after="$(word_list "$after")"
-  # The high default is the human's add by hand. A session decides: high is for what blocks a
-  # release or a red on main, and a default high from sessions made most of the queue high (ar-2943).
-  [ -n "$priority_given$running$want$dry" ] || [ -z "${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}" ] ||
-    die "a session's add passes --priority: urgent for what the human needs now, high when it blocks a release or a red on main, else low"
-  # A session's plan is agent-authored: its phases are next in line (high) at most. Urgent stays for
-  # the human's own add (no session around it), a red, and dispatch's promote of a row (the row is the
-  # source); a phase that takes an urgent row still rises to it (plan_takes_rank). 63 of 85 urgent
-  # items in 3 days were session plan phases that inherited urgent (ar-4349).
-  if [ -n "$planf" ] && [ "$priority" = urgent ] && [ -n "${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}" ] &&
-    [[ " $tags " != *" red "* && "$from" != board:* ]]; then
-    priority=high
-    echo "agent-queue: a session's plan queues at high at most; urgent is the human's own add or a red" >&2
-  fi
+  priority="$(add_priority "$priority" "$priority_given$running$want$dry" "$planf" "$tags" "$from")" || exit 1
   if [ -n "$planf" ]; then
     [ "${#task[@]}" -eq 0 ] || die "--plan writes its own tasks; pass no task with it"
     [ -z "$want" ] || die "--want names a human's channel; --plan items are agent-made and carry none"
@@ -1942,14 +1960,7 @@ cmd_add() {
   echo "$state $slug -> $f"
   [ -z "$story" ] || echo "story $srow on the $sboard agent board${epic:+, under $epic}"
   [ -z "$running" ] || mark_row "$f" run
-  # A row filed before this add (--row, its title's row, a re-queue's row) takes the --priority the
-  # human's own add named, since the order reads the row (row_prios); a story row was filed at it
-  # already. A session's add leaves a linked row as it is: every session names a priority (ar-2943),
-  # and its "low" would demote the human's #urgent row. It retags on purpose with bump.
-  if [ -n "$story" ] && [ -n "$priority_given" ] && [ -z "${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}" ]; then
-    [ -n "${AQ_LOCKED-}" ] || unlock # notes writes the row and can be slow; the rest only reads
-    row_prio_write "$f" "$priority"
-  fi
+  [ -z "$story" ] || [ -z "$priority_given" ] || add_row_prio "$f" "$priority"
   [ -z "$running" ] && [ "${AGENT_QUEUE_START:-1}" = 1 ] || return 0
   # A --plan phase starts from add_plan, once its whole chain is written.
   [ -z "${AQ_ITEM_PLAN:-}" ] || return 0
