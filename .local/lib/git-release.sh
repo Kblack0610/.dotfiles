@@ -391,14 +391,16 @@ git_tags_since() {
   return 0
 }
 
-# git_tag_at <repo> <tag> -> "<sha> <epoch>": the commit the tag names (peeled through an
-# annotated tag) and git's creatordate, the tagger date of an annotated tag or the commit date
-# of a lightweight one (a lower bound). The one reader of when a tag was cut. Empty when the
+# git_tag_at <repo> <tag> -> "<sha> <epoch> [<tagger>]": the commit the tag names (peeled
+# through an annotated tag), git's creatordate (the tagger date of an annotated tag or the
+# commit date of a lightweight one, a lower bound), and the annotated tag's tagger name, which
+# may hold spaces and is absent on a lightweight tag. The one reader of when a tag was cut and
+# who cut it (cut.yml tags as `cut.yml`; release-state's provenance reads it). Empty when the
 # tag does not exist.
 git_tag_at() {
   [ -n "$1" ] && [ -d "$1/.git" ] && [ -n "$2" ] && command -v git >/dev/null 2>&1 || return 0
   git -C "$1" for-each-ref --count=1 \
-    --format='%(if)%(*objectname)%(then)%(*objectname)%(else)%(objectname)%(end) %(creatordate:unix)' \
+    --format='%(if)%(*objectname)%(then)%(*objectname)%(else)%(objectname)%(end) %(creatordate:unix)%(if)%(taggername)%(then) %(taggername)%(end)' \
     "refs/tags/$2" 2>/dev/null || true
 }
 

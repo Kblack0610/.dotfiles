@@ -53,6 +53,8 @@ printf '%s' "${GH_REPLY:-$empty}"
 EOF
   chmod +x "$SANDBOX/bin/gh"
   export SANDBOX
+  # The tag fetch on a refresh must not dial out: CODE's origin is a GitHub ssh URL.
+  export GIT_SSH_COMMAND=false
 
   # Never fetched: only its origin URL is read, to name the repo the history lives in.
   CODE="$SANDBOX/repos/code"
@@ -61,6 +63,9 @@ EOF
 
   export PROJECT_MAP_FILE="$HOME/project-map.json"
   write_map '"telemetry": []'
+  # The release-cut lane's registry: who cuts each repo's tags, what provenance holds a tag to.
+  export RELEASE_CUT_CONF="$HOME/release-cut.json"
+  printf '{"infra": {"cut_workflow": "cut.yml"}, "code": {"cut_workflow": "cut.yml"}}' > "$RELEASE_CUT_CONF"
 }
 
 # manifest <tag> - the Flux-style pin in the working tree (not committed).
@@ -83,7 +88,7 @@ write_map() {
   "trackers": {
     "_comment": "a string value",
     "infra": { "system": "none" },
-    "web": { "repo": "infra", "type": "app", "targets": [
+    "web": { "repo": "infra", "type": "app", "releaseFrom": "v1.0.0", "targets": [
       {"id": "web-prod", "channel": "prod", "pinned": {"repo": "infra", "branch": "main", "path": "apps/web/helmrelease.yaml"}, "live": {"k8s": {"context": "c", "namespace": "n", "deployment": "web"}}, $1},
       {"id": "web-preview", "channel": "preview", "pinned": {"repo": "infra", "path": "apps/web/kustomization.yaml", "image": "reg/web"}, "live": {"k8s": {"context": "c", "namespace": "n", "deployment": "webp"}}, "telemetry": []}
     ]},
@@ -227,6 +232,31 @@ EOF
   assert_success
   assert_equal "$(jq -c '.links.versions | to_entries | map([.key, .value.error]) | sort' "$RELEASE_STATE_DIR/state.json")" \
     '[["back",null],["gone","notes projects --roadmap did not answer"],["web",null]]'
+}
+
+@test "provenance: link facts mark each lab version, so the link checks skip a legacy one" {
+  mkdir -p "$SANDBOX/lab/current/web"
+  jq '.trackers.web.lab = "bnb"' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  cat > "$SANDBOX/bin/notes" <<EOF2
+#!/usr/bin/env bash
+case "\$*" in
+  "--profile bnb path projects") echo "$SANDBOX/lab/current/" ;;
+  "--profile bnb projects --roadmap web --json")
+    echo '[{"version":"v0.9.0","state":"shipped"},{"version":"v1.0.0","state":"shipped"},{"version":"v1.1.0","state":"shipped"},{"version":"v1.2.0","state":"current"}]' ;;
+  *) exit 1 ;;
+esac
+EOF2
+  chmod +x "$SANDBOX/bin/notes"
+  run "$RS" refresh
+  assert_success
+  # web's line starts at v1.0.0: below it legacy, its own core flow, a later one with no tagger outside.
+  assert_equal "$(jq -c '[.links.versions.web.list[] | [.version, .provenance]]' "$RELEASE_STATE_DIR/state.json")" \
+    '[["v0.9.0","legacy"],["v1.0.0","flow"],["v1.1.0","outside"]]'
+  # Negative control: with no releaseFrom every lab version is legacy.
+  jq 'del(.trackers.web.releaseFrom)' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  run "$RS" refresh
+  assert_success
+  assert_equal "$(jq -c '[.links.versions.web.list[].provenance] | unique' "$RELEASE_STATE_DIR/state.json")" '["legacy"]'
 }
 
 @test "drift_since carries across refreshes while the same drift holds" {
@@ -580,6 +610,93 @@ land() { echo "$RANDOM" >> "$CLONE/log.txt"; git -C "$CLONE" add -A; git -C "$CL
   assert_output ''
 }
 
+# commit_tag <msg> <tag> <tagger> - a commit and an annotated tag in CLONE by that tagger.
+commit_tag() {
+  echo "$1" >> "$CLONE/log.txt"
+  git -C "$CLONE" commit -qam "$1"
+  git -C "$CLONE" -c user.name="$3" tag -a -m "$1" "$2"
+}
+
+@test "provenance: a tag is flow at the line start or by the cut workflow, legacy before, outside by hand after" {
+  ship "old (#1)" web-v0.9.0
+  ship "start (#2)" web-v1.0.0
+  commit_tag "hand (#3)" web-v1.0.1 "Kenneth"
+  commit_tag "cut (#4)" web-v1.1.0 cut.yml
+  run "$RS" refresh web
+  assert_success
+  assert_equal "$(jq -c '.releases.web | [.from, (.tags | map([.tag, .tagger, .provenance]))]' "$RELEASE_STATE_DIR/state.json")" \
+    '["v1.0.0",[["web-v1.1.0","cut.yml","flow"],["web-v1.0.1","Kenneth","outside"],["web-v1.0.0",null,"flow"],["web-v0.9.0",null,"legacy"]]]'
+  # Negative control: with no releaseFrom the whole line is legacy, the cut workflow's tag too.
+  jq 'del(.trackers.web.releaseFrom)' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  "$RS" refresh web >/dev/null
+  assert_equal "$(jq -c '.releases.web | [.from, (.tags | map(.provenance) | unique)]' "$RELEASE_STATE_DIR/state.json")" '[null,["legacy"]]'
+}
+
+@test "provenance: refresh fetches the remote's tags, and says so when it cannot" {
+  local tmp="$SANDBOX/cutter"
+  git clone -q "$ORIGIN" "$tmp" 2>/dev/null
+  git -C "$tmp" -c user.name=cut.yml -c user.email=c@c tag -a -m cut web-v1.2.0
+  git -C "$tmp" push -q origin web-v1.2.0 2>/dev/null
+  run "$RS" refresh web
+  assert_success
+  assert_equal "$(jq -c '.releases.web | [.tags[0].tag, .tags[0].provenance, .note]' "$RELEASE_STATE_DIR/state.json")" '["web-v1.2.0","flow",null]'
+  # Negative control: a remote that cannot be reached keeps the local tags and names it.
+  git -C "$CLONE" remote set-url origin "$SANDBOX/nowhere.git"
+  run "$RS" refresh web
+  assert_success
+  assert_equal "$(jq -c '.releases.web | [.tags[0].tag, .note]' "$RELEASE_STATE_DIR/state.json")" '["web-v1.2.0","tags not fetched"]'
+}
+
+@test "provenance: a Deployment is flow only when the workflow's bot recorded a flow version" {
+  jq '.trackers.shop.releaseFrom = "v1.0.0"' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  git -C "$CODE" -c user.name=t -c user.email=t@t commit -q --allow-empty -m c
+  git -C "$CODE" -c user.name=cut.yml -c user.email=t@t tag -a -m cut v1.1.0
+  reply "$(node v1.1.0 SUCCESS 2026-11-06T10:00:00Z "" Kblack0610)" "$(node v1.1.0 SUCCESS 2026-11-05T10:00:00Z "" github-actions)" \
+    "$(node v1.2.0 SUCCESS 2026-11-04T10:00:00Z "" github-actions)" "$(node v1.0.0 SUCCESS 2026-11-03T10:00:00Z "" 'github-actions[bot]')" \
+    "$(node v0.9.0 SUCCESS 2026-11-02T10:00:00Z "" github-actions)"
+  run "$RS" refresh shop
+  assert_success
+  local d; d="$(row shop-prod | jq -c .deploys)"
+  # A hand back-fill of a flow version, a version no cut made, the start, and history before it.
+  assert_equal "$(jq -c '.history | map(.provenance)' <<<"$d")" '["outside","flow","outside","flow","legacy"]'
+  assert_equal "$(jq -c '[.history[0].creator, .flow.version, .flow.creator, .flow.at]' <<<"$d")" \
+    "[\"Kblack0610\",\"v1.1.0\",\"github-actions\",$(date -d 2026-11-05T10:00:00Z +%s)]"
+}
+
+@test "provenance: a store channel is flow only while it serves the workflow's own upload" {
+  store_setup
+  reply "$(node v0.5.0-g1 SUCCESS 2026-11-02T10:00:00Z "" github-actions)"
+  run "$RS" refresh game
+  assert_success
+  assert_equal "$(row game-steam-beta | jq -c '[.status, .pinned.provenance, .live.provenance, .provenance]')" '["ok","flow","flow","flow"]'
+  # Negative control: the same upload recorded by a person is outside, and so is what it serves.
+  reply "$(node v0.5.0-g1 SUCCESS 2026-11-02T10:00:00Z "" Kblack0610)"
+  run "$RS" refresh game
+  assert_success
+  assert_equal "$(row game-steam-beta | jq -c '[.status, .pinned.provenance, .live.provenance, .provenance]')" '["ok","outside","outside","outside"]'
+}
+
+@test "provenance: check skips a drift legacy on both sides, and names one whose pin is on the line" {
+  push_pin v0.8.0
+  export KUBE_IMAGE=reg/web:v0.9.0
+  "$RS" refresh >/dev/null
+  jq '.rows |= map(if .drift_since then .drift_since -= 120 else . end)' "$RELEASE_STATE_DIR/state.json" > "$SANDBOX/s"
+  mv "$SANDBOX/s" "$RELEASE_STATE_DIR/state.json"
+  assert_equal "$(field web-prod '[.status, .pinned.provenance, .live.provenance, .provenance] | join(" ")')" 'drift legacy legacy legacy'
+  run "$RS" check --grace 1
+  assert_success
+  assert_output ok
+  # Negative control: the line starts at the pin, so the same drift is a flow release not reached.
+  jq '.trackers.web.releaseFrom = "v0.8.0"' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  "$RS" refresh >/dev/null
+  jq '.rows |= map(if .drift_since then .drift_since -= 120 else . end)' "$RELEASE_STATE_DIR/state.json" > "$SANDBOX/s"
+  mv "$SANDBOX/s" "$RELEASE_STATE_DIR/state.json"
+  assert_equal "$(field web-prod .provenance)" outside
+  run "$RS" check --grace 1
+  assert_failure
+  assert_output --partial 'DRIFT web web-prod: pinned v0.8.0 live v0.9.0'
+}
+
 @test "project_tag_scope: a repo's own tagGlob loses a sibling's buildTags, so a build sits in one history" {
   ship "release (#1)" v1.0.0
   ship "game build (#2)" v0.5.0-web1
@@ -706,9 +823,10 @@ land() { echo "$RANDOM" >> "$CLONE/log.txt"; git -C "$CLONE" add -A; git -C "$CL
 # goes in the payload, which GraphQL returns JSON-encoded twice (a string holding a JSON string),
 # as platform's pmp-android-prod answered on 2026-11-19.
 node() {
-  local payload='""'
+  local payload='""' creator=null
   [ -z "${4:-}" ] || payload="$(jq -nc --arg b "$4" '{build: $b} | tojson | tojson')"
-  printf '{"createdAt":"%s","description":"%s","commitOid":"abcdef1234","payload":%s,"ref":{"name":"main"},"latestStatus":{"state":"%s","logUrl":"https://example.test/run/%s","createdAt":"%s"}}' "$3" "$1" "$payload" "$2" "$1" "$3"
+  [ -z "${5:-}" ] || creator="{\"login\":\"$5\"}"
+  printf '{"createdAt":"%s","description":"%s","commitOid":"abcdef1234","payload":%s,"ref":{"name":"main"},"creator":%s,"latestStatus":{"state":"%s","logUrl":"https://example.test/run/%s","createdAt":"%s"}}' "$3" "$1" "$payload" "$creator" "$2" "$1" "$3"
 }
 reply() { local IFS=,; GH_REPLY="{\"data\":{\"repository\":{\"deployments\":{\"nodes\":[$*]}}}}"; export GH_REPLY; }
 
@@ -759,6 +877,16 @@ EOF
   assert_output --partial 'trackers.shop.buildTags has "":'
   assert_output --partial 'trackers.lonely.buildTags is not a list of globs'
   refute_output --partial 'trackers.web.buildTags'
+}
+
+@test "doctor names a releaseFrom that is not a bare vX.Y.Z" {
+  jq '.trackers.shop.releaseFrom = "latest" | .trackers.lonely.releaseFrom = 5' \
+    "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  AGENT_DIR="$HOME/agent" run "$REPO_ROOT/.local/bin/project-map-doctor" "$PROJECT_MAP_FILE"
+  assert_output --partial 'trackers.shop.releaseFrom is "latest": give the version the line starts at'
+  assert_output --partial 'trackers.lonely.releaseFrom is 5:'
+  # Negative control: web's v1.0.0 is a line start.
+  refute_output --partial 'trackers.web.releaseFrom'
 }
 
 @test "deploys: the target id names the environment in the project's github repo" {
@@ -846,10 +974,10 @@ ROUTE
   "paths": { "$CODE": "code", "$CLONE": "infra" },
   "trackers": {
     "infra": { "system": "none" },
-    "web": { "repo": "infra", "type": "app", "targets": [
+    "web": { "repo": "infra", "type": "app", "releaseFrom": "v1.0.0", "targets": [
       {"id": "web-prod", "channel": "prod", "pinned": {"repo": "infra", "branch": "main", "path": "apps/web/helmrelease.yaml"}, "live": {"k8s": {"context": "c", "namespace": "n", "deployment": "web"}}}
     ]},
-    "game": { "repo": "code", "targets": [
+    "game": { "repo": "code", "releaseFrom": "v0.5.0", "targets": [
       {"id": "game-steam-beta", "channel": "beta", "pinned": {"deployed": true}, "live": {"steam": {"app": "111", "branch": "beta"}}},
       {"id": "game-play-internal", "channel": "internal", "pinned": {"deployed": true}, "live": {"play": {"package": "com.acme.game", "track": "internal"}}},
       {"id": "game-testflight", "channel": "beta", "pinned": {"deployed": true}, "live": {"testflight": {"app": "222"}}}
