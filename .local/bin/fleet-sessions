@@ -90,6 +90,8 @@ set -uo pipefail
 : "${FLEET_API_ERROR_IDLE_MIN:=2}" # a turn that ended on an API Error this many minutes ago is stopped, not working
 : "${FLEET_SHELL_STALE_MIN:=120}" # a background shell this long past the last entry is not work:
                                   # a real gate wait is under an hour, a forgotten ugrep is not
+: "${FLEET_GATE_LOGS:=Logs/gate.txt}" # files under a session's worktree a running local gate writes to: a write
+                                  # within the transcript's idle minutes is activity (gate_log_idle, ar-42)
 : "${FLEET_QUEUE_GATES:=gate-and-land.sh|ci-gate.sh|gate-line.py --recheck|agent-land}" # processes that are a gate waiting for its landing turn
                                   # behind another PR or on its checks (a gate polls every 120s, gives up after 280m; agent-land
                                   # waits on a queued run with no limit, and ends itself): live, never idle, whatever the output age
@@ -281,6 +283,20 @@ queue_gate() {
 proc_snapshot() {
   ps -e -o pid=,ppid= 2>/dev/null | awk '{ print $1 "\t" $2 }' > "$1.ppid"
   ls -l /proc/[0-9]*/cwd 2>/dev/null | sed -nE 's|^.* /proc/([0-9]+)/cwd -> (.*)$|\1\t\2|p' > "$1.cwd" || :   # ls fails on a process that exits mid-read, whatever it listed
+}
+
+# gate_log_idle <cwd> <idle min> -> the idle minutes after counting FLEET_GATE_LOGS: the age of the newest
+# of those files under <cwd> when it is under <idle min>, else <idle min>. A local suite.sh gate prints into
+# Logs/gate.txt while the transcript sees nothing (2026-11-04 agent-23 read "background shell idle over 120m"
+# with ~80 classes done). Its mtime is the event; a gate that ended leaves a log whose age only grows.
+gate_log_idle() {
+  local cwd="$1" idle="$2" f m age
+  for f in $FLEET_GATE_LOGS; do
+    m="$(stat -c %Y "$cwd/$f" 2>/dev/null)" || continue
+    age=$(( ($(date +%s) - m) / 60 ))
+    [ "$age" -ge 0 ] && [ "$age" -lt "$idle" ] && idle="$age"
+  done
+  echo "$idle"
 }
 
 # live_wait <cwd> [<claude pid>]: queue when such a process is a FLEET_QUEUE_GATES one (a gate waiting for its
@@ -1937,6 +1953,10 @@ collect() {
       then map(select(.state == "MERGED") | "#\(.number)") | join(",") else "-" end' <<<"$prs")"
     tsess="${target#*/}"; tsess="${tsess%:*}"
     idle=$(( (now - since) / 60 ))
+    # A running local gate or test writes its log while the transcript is silent: that write is activity.
+    if [ "$host" = - ] && [ "$status" = shell ]; then
+      case "$ojob" in gate | test) idle="$(gate_log_idle "$cwd" "$idle")" ;; esac
+    fi
     age=-; [[ "$started" =~ ^[0-9]+$ ]] && age=$(( (now - started) / 60 ))
     # Every ask this session filed and nobody answered (ownask), the ones a queue item carries on
     # included: the session may close (bucket), and the close verdict says whether its window must
