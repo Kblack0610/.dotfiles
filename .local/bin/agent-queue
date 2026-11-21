@@ -3597,7 +3597,11 @@ cmd_backfill_briefs() {
 # nothing when they are clean, or when this queue is not the store's). 8>&-: the sync must not
 # inherit the queue lock (fd 8): it would keep .lock held for as long as it waits on its own sync
 # lock (store-sync LOCK_WAIT_S), and every queue writer timed out behind it (2026-11-18).
-[[ "$AQ_DIR/" != "${AGENT_STORE_DIR:-$HOME/.agent}/"* ]] || trap 'store-sync --now --bg 8>&- 2>/dev/null' EXIT
+# AGENT_STORE_HOOK: a write made under the hook's own sync starts none, so a sync that writes the
+# queue cannot start itself again; a bats stub of store-sync that called agent-queue did, ~600
+# processes that outlived their run and orphan-gc's SIGTERM (ar-4050).
+[[ "$AQ_DIR/" != "${AGENT_STORE_DIR:-$HOME/.agent}/"* ]] || [ -n "${AGENT_STORE_HOOK:-}" ] ||
+  trap 'AGENT_STORE_HOOK=1 store-sync --now --bg 8>&- 2>/dev/null' EXIT
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
   add | list | next | show | mine | claim | cancel | return | bump | set | retask | attribute | move | requeue | reopen | stats | admission | mix | gate) v="$1"; shift; "cmd_$v" "$@" ;;
