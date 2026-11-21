@@ -1887,18 +1887,19 @@ finding() {
   assert_output --partial 'improve: revert_rate past max 0.1'
 }
 
-# phase <sid> <reason> <phase_min> <age_min> [done/total] [bucket] [activity]: a state row (WORKING,
+# phase <sid> <reason> <phase_min> <age_min> [done/total] [bucket] [activity] [runner] [work_min]: a state row
+# (WORKING, work_min worked, default all of its age,
 # activity the reason's first word, unless given) and its `fleet-bench eta --json` row
 phase() {
   local d="${5:-1/4}"
   jq -cn --arg s "$1" --arg r "$2" --arg b "${6:-WORKING}" --arg a "${7:-${2%% *}}" \
-    --arg pr "${8:-}" \
+    --arg pr "${8:-}" --argjson w "${9:-$4}" \
     '{target:"t-\($s)", session_id:$s, bucket:$b, reason:$r, activity:$a, nudged:false,
-    escalated:false, labels:[], next_phase:"P2 the thing", fact:"f", idle_min:0,
+    escalated:false, labels:[], next_phase:"P2 the thing", fact:"f", idle_min:0, active_min:$w,
     phases:[{state:"open", name:"P2 the held item"}], phase_runner:(if $pr == "" then null else $pr end)}' >> "$HOME/rows"
   jq -cn --arg s "$1" --argjson m "$3" --argjson a "$4" --argjson d "${d%/*}" --argjson n "${d#*/}" \
     '{target:"t-\($s)", session_id:$s, phases_done:$d, phases_total:$n, finished:false, phase_min:$m,
-      phase_since_epoch:(now - $a * 60 - 30 | floor), basis:"b"}' >> "$HOME/eta"
+      phase_since_epoch:(now - $a * 60 - 30 | floor), phase_active_base:0, basis:"b"}' >> "$HOME/eta"
 }
 # verdicts: put fleet-sessions' own overdue_of verdict on each session of the state doc, from its rows
 # as they stand and $HOME/eta, as write_state does; the shepherd reads only the verdict.
@@ -1929,7 +1930,7 @@ phases_doc() { doc "$(jq -s . "$HOME/rows")"; verdicts; }
 @test "an overdue line names the session running the open phase's item, once, not every session on the plan (ar-1497)" {
   phase s1 shell 40 81 1/4 WORKING shell t-s2   # plan owner: P2 is an item running in s2
   phase s3 shell 40 81 1/4 WORKING shell t-s2   # a second session on the same plan file
-  phase s2 shell 40 10 1/1                      # the runner: its own phase is young
+  phase s2 shell 40 10 1/1 WORKING shell "" 90   # the runner: its own phase is young, its session 90m of work
   phase s4 shell 40 81 1/4 WORKING shell t-gone # a stale session: on the item, no row at all: the plan row keeps its line
   phase s5 shell 40 81 1/4 WORKING shell t-s5   # it runs its own phase: unchanged
   phase s6 shell 40 81 1/4 WORKING shell t-s7   # the runner is mid-turn: left to finish, nobody named
