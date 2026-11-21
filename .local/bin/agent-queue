@@ -11,7 +11,9 @@
 #       --tags interrupt puts #interrupt on its story row (or an open twin), so a locked sprint takes it (notes' interrupt
 #       lane, window.rs): for a bounded machine filer whose row must start under any sprint (research-pick, one a night).
 #       --priority defaults to high only for an add by hand: one from a session ($CLAUDE_CODE_SESSION_ID or
-#       $AGENT_QUEUE_ITEM set) names it, except --running, --want, --dry-run and --check.
+#       $AGENT_QUEUE_ITEM set) names it, except --running, --want, --dry-run and --check. A session's
+#       --plan queues at high at most: urgent stays for the human's own add, a red, and dispatch's promote.
+#       An add that links a row (--row, the title's row) with an explicit --priority retags that row.
 #       --after holds the item until every slug it names closed ok: a comma or space list, and it repeats.
 #       A slug whose item is live with an open PR (open_pr:, set by agent-land before its checks, or a --pr-only run's pr:) does not hold: the item is stacked on it
 #       (hold_for HOLD_STACK, `stacked_on` in list --json; gate after/<row-id> clears with stack: <slug>), fleet-dispatch starts it in a worktree cut from that PR's
@@ -36,6 +38,7 @@
 #       cancel of an item whose after: closed dead also records cancel_cause: (that item's own cause, else who closed it and why)
 #       cancel of a slug with no file but still active in the chain record closes it in the record
 #       bump to urgent never lifts an after: hold; it names the hold and the `set <slug> after=` that does
+#       bump (and set priority=) of an item with a board row retags the row, which the order reads (ar-3011)
 #   return <slug> --why <text> [--ask <id>] [--drop]    send an item back to its board: closed cancelled with end_reason: returned, its row un-started
 #       (--drop: dropped), and every queued item after: it (transitively) goes back with it, cancel_cause: "returned with <slug>", never left dead;
 #       the chain record's item-cancelled event says "returned: <why>"; exit 1 when a row stayed started.
@@ -1209,14 +1212,23 @@ item_json() {
 # fleet-dispatch next_items) takes it as is, so a lower tier starts only when no item of a higher one
 # can: a pass takes the first it can place. Nothing is held for a focus (the human, 2026-11-13).
 # `after` and other tags hold, not reorder. Cleanup gets its turns from the mix's cleanup share.
+# An item that works an open board row ranks by that row's priority (row_prio, from row_prios), so a
+# retag re-ranks it and the item's own line is only the fallback when notes cannot answer (ar-3011).
+# Two keep their own: a red, whose priority its filer set, and a cleanup item on a #low row, which
+# dispatch promotes at high (fleet-dispatch row_priority) and so still ranks high.
 # A red outranks urgent on purpose: the human's rule is that anything broken goes first. Urgent sits
 # above the project rank, so a row-level #urgent jumps every tier; the rank sits above high, normal
 # and low, so a focus project's work is not queued behind another project's (the human: games go first).
 ORDER='def untagged($t): ((.tags // "") | if type == "array" then join(" ") else tostring end
     | [splits("\\s+")] | index([$t])) == null;
+  def row_prio: ($rowprio[.row // ""]) as $r
+    | if $r == null or (untagged("red") | not) then .
+      elif $r == "low" and (untagged("cleanup") | not) then .priority = "high"
+      else .priority = $r end;
   def bucket: [untagged("red"), (.priority != "urgent"), untagged("sprint"), ($rank[.project // ""] // 2),
     ({"urgent":0,"high":1,"low":2}[.priority] // 1)];
-  if $mix == null then sort_by(bucket, .queued) else mix($mix; bucket) end'
+  (if $rowprio == null then . else map(row_prio) end)
+  | if $mix == null then sort_by(bucket, .queued) else mix($mix; bucket) end'
 
 # Classes of service (AQ_CLASSES, plan can-we-move-our-mellow-sphinx P3): an item is in the first class
 # whose `tags` it carries, else whose `from` it came from, else whose `kinds` holds its row type
@@ -1342,7 +1354,29 @@ order_filter() {
   rank="$(prios_read | jq -Rsc 'split("\n") | map(select(. != "") | split("\t")
     | {(.[0]): ({"focus": 0, "high": 1, "low": 3}[.[1]] // 2)}) | add // {}' 2>/dev/null)" || rank='{}'
   [[ " $* " != *" queued "* ]] || mix="$(mix_json)"
-  printf '%s %s %s as $rank | %s as $mix | %s' "$CLASS_JQ" "$MIX_JQ" "$rank" "${mix:-null}" "$ORDER"
+  local rows=null
+  [[ " $* " != *" queued "* && " $* " != *" running "* ]] || rows="$(row_prios)"
+  printf '%s %s %s as $rank | %s as $mix | %s as $rowprio | %s' "$CLASS_JQ" "$MIX_JQ" "$rank" "${mix:-null}" "${rows:-null}" "$ORDER"
+}
+
+# row_prios -> {"<board>:<id>": priority} of every open board row, one `notes board --json` read, or
+# nothing when notes cannot answer (each item then keeps its own line). The row is where an item's
+# priority lives (ar-3011): ORDER's row_prio reads it, so a retag re-ranks the item.
+row_prios() {
+  notes board --json 2>/dev/null | jq -c '[.rows[]? | select((.state == "open" or .state == "doing") and .project != null and .id != null
+    and (.priority == "urgent" or .priority == "high" or .priority == "low")) | {key: "\(.project):\(.id)", value: .priority}] | from_entries' 2>/dev/null
+}
+
+# row_prio_write <file> <priority> -- put the item's new priority on its board row through notes (`ptask
+# tag --add`, which replaces the row's one priority tag), as gate_row writes a tag, so the row the
+# queue order reads (row_prios) says it too. An item with no row has only its own line. Says the
+# command to run by hand when notes fails.
+row_prio_write() {
+  local row prof
+  row="$(item_row "$1")" prof="$(fm_get "$1" profile)"
+  [ -n "$row" ] || return 0
+  gate_row "$row" "$prof" "$(fm_get "$1" lane)" "$2" ||
+    echo "agent-queue: board row ${row#*:} still has its old priority, which the queue order reads: $GATE_HINT" >&2
 }
 
 # since_day <value> -> the local day a --since names: YYYY-MM-DD as given, Nd or N that many days
@@ -1702,6 +1736,15 @@ cmd_add() {
   # release or a red on main, and a default high from sessions made most of the queue high (ar-2943).
   [ -n "$priority_given$running$want$dry" ] || [ -z "${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}" ] ||
     die "a session's add passes --priority: urgent for what the human needs now, high when it blocks a release or a red on main, else low"
+  # A session's plan is agent-authored: its phases are next in line (high) at most. Urgent stays for
+  # the human's own add (no session around it), a red, and dispatch's promote of a row (the row is the
+  # source); a phase that takes an urgent row still rises to it (plan_takes_rank). 63 of 85 urgent
+  # items in 3 days were session plan phases that inherited urgent (ar-4349).
+  if [ -n "$planf" ] && [ "$priority" = urgent ] && [ -n "${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}" ] &&
+    [[ " $tags " != *" red "* && "$from" != board:* ]]; then
+    priority=high
+    echo "agent-queue: a session's plan queues at high at most; urgent is the human's own add or a red" >&2
+  fi
   if [ -n "$planf" ]; then
     [ "${#task[@]}" -eq 0 ] || die "--plan writes its own tasks; pass no task with it"
     [ -z "$want" ] || die "--want names a human's channel; --plan items are agent-made and carry none"
@@ -1871,7 +1914,7 @@ cmd_add() {
            project="$named_project"
            echo "agent-queue: $slug works row $named, which its title names; it closes that row when it lands" >&2
          fi
-         [ -n "$story" ] || story="$(file_story "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$epic" "$want" "$text" "" "" "$tags")"
+         [ -n "$story" ] || { story="$(file_story "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$epic" "$want" "$text" "" "" "$tags")"; priority_given=''; }
        fi ;;
   esac
   [ -z "$story" ] || IFS=$'\t' read -r sboard sprof srow <<<"$story"
@@ -1898,6 +1941,9 @@ cmd_add() {
   echo "$state $slug -> $f"
   [ -z "$story" ] || echo "story $srow on the $sboard agent board${epic:+, under $epic}"
   [ -z "$running" ] || mark_row "$f" run
+  # A row filed before this add (--row, its title's row, a re-queue's row) takes the --priority the
+  # add named, since the order reads the row (row_prios); a story row was filed at it already.
+  [ -z "$story" ] || [ -z "$priority_given" ] || row_prio_write "$f" "$priority"
   [ -z "$running" ] && [ "${AGENT_QUEUE_START:-1}" = 1 ] || return 0
   # A --plan phase starts from add_plan, once its whole chain is written.
   [ -z "${AQ_ITEM_PLAN:-}" ] || return 0
@@ -2616,6 +2662,9 @@ cmd_bump() {
   header_set "$f" priority "$prio"
   item_event item-set "$f" --why "priority=$prio"
   echo "$slug -> $prio"
+  # The row is where the order reads it (row_prios); notes writes it, so the lock goes first.
+  unlock
+  row_prio_write "$f" "$prio"
   # Priority never overrides an after: (a dependency claim), so an urgent item it holds says so.
   local after hold
   after="$(fm_get "$f" after)"
@@ -2643,6 +2692,7 @@ cmd_set() {
     [ "$k" != "$kv" ] || die "not key=value: $kv"
     case "$SETTABLE" in *" $k "*) ;; *) die "not a settable field: $k" ;; esac
     [ "$k" != tags ] || check_tags "${kv#*=}"
+    [ "$k" != priority ] || prio_rank "${kv#*=}" >/dev/null || die "priority is urgent, high or low, not ${kv#*=}"
     [ "$k" != after ] || check_after "$(word_list "${kv#*=}")" "$slug"
     # phases: the plan checklist numbers the item holds, as add --plan writes them (ar-2905).
     [ "$k" != phases ] || [[ "$(word_list "${kv#*=}")" =~ ^([0-9]+( [0-9]+)*)?$ ]] || die "phases is plan checklist numbers such as 3 4, not ${kv#*=}"
@@ -2695,6 +2745,12 @@ cmd_set() {
   done
   item_event item-set "$f" --why "${set_kv[*]}"
   echo "$slug: $*"
+  # priority= goes on the row too, as bump writes it: the order reads the row (row_prios).
+  for kv in "$@"; do
+    [ "${kv%%=*}" = priority ] && [ "$(state_of "$f")" != done ] || continue
+    [ -n "${AQ_LOCKED-}" ] || unlock
+    row_prio_write "$f" "${kv#*=}"
+  done
   [ -z "$left_row" ] || [ "$left_row" = "$(item_row "$f")" ] || repoint_row "$slug" "$f" "$left_row" "$left_prof" "$left_lane"
   # A queued item the set gave a gate waits on its board row, not in the queue (cmd_add): it goes back
   # there carrying it (return_gates).
