@@ -7549,6 +7549,7 @@ start_rows() {
   run "$SUBJECT" triage --dry-run
   assert_line --regexp '^check\(watch\): plain tripped .*; fix with ci-cost: read the slowest run #high'
   refute_line --regexp '^check\(watch\): plain .*system'
+}
 
 # alert_setup: the aggregate Alertmanager watch tripped, its evidence one alert a line, no pins
 alert_setup() {
