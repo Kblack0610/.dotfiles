@@ -28,6 +28,17 @@ setup() {
   # list prints the open rows.
   stub notes 'printf "notes %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; rows="$NOTES_FIXTURE/rows.$2"
     case "$4" in add) grep -qxF -- "${@: -1}" "$rows" 2>/dev/null && exit 3; echo "${@: -1}" >> "$rows" ;; list) cat "$rows" 2>/dev/null ;; esac; exit 0'
+  stub agent-queue 'printf "agent-queue %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"
+    planf="" prj=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --plan) planf="$2"; shift 2 ;;
+        --project) prj="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    [ -n "$planf" ] && [ -n "$prj" ] && echo "plan $(basename "$planf" .md): run its open phases" >> "$NOTES_FIXTURE/rows.$prj"
+    exit 5'
 }
 
 # stub <name> <body>; a notes stub answers `notes row types` too, unless NO_ROW_TYPES is set.
@@ -62,22 +73,22 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   plan stale '1 day ago 1 hour ago' "$OPEN"
   run "$SWEEP" run
   assert_success
-  assert_called 'ptask board --agent add --want ask chore(plan): finish stale: 2 phases left, next: two #tier/2 #size/m'
+  assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/stale.md --project board --priority low --from auto:ask-sweep"
   : > "$NOTES_FIXTURE/calls.log"
   run "$SWEEP" run
   assert_success
-  assert_not_called 'finish stale'
+  assert_not_called 'stale'
 }
 
-@test "the board is the only memory: an open twin (exit 3) is refused on every run, and nothing is kept on the side" {
+@test "the board is the only memory: a plan row agent-queue held (exit 5) is filed again on every run, and nothing is kept on the side" {
   plan twin '1 day ago 1 hour ago' "$OPEN"
-  stub notes 'printf "notes %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; [ "$4" = add ] && exit 3; exit 0'
+  stub agent-queue 'printf "agent-queue %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; exit 5'
   run "$SWEEP" run
   assert_success
   : > "$NOTES_FIXTURE/calls.log"
   run "$SWEEP" run
   assert_success
-  assert_called 'ptask board --agent add --want ask chore(plan): finish twin'
+  assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/twin.md"
   run ls "$ASK_SWEEP_DIR"
   assert_output 'first-run'
 }
@@ -95,7 +106,7 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_success
   run "$SWEEP" run
   assert_success
-  run grep -c 'finish bigplan' "$rows"
+  run grep -c 'bigplan' "$rows"
   assert_output 1
 }
 
@@ -134,10 +145,10 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   jq -cn --arg f "$SANDBOX/acct-plans/live.md" '[{plan_file: $f}]' > "$NOTES_FIXTURE/live.json"
   run "$SWEEP" run
   assert_success
-  assert_called 'finish open:'
-  assert_not_called 'finish live:'
-  assert_not_called 'finish storeonly:'
-  assert_not_called 'ptask _live'
+  assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/open.md --project board --priority low --from auto:ask-sweep"
+  assert_not_called 'live.md'
+  assert_not_called 'storeonly.md'
+  assert_not_called '--project _live'
 }
 
 @test "a plan fleet-dispatch reap filed gets no row, by its own name or its pointer stub's; one reap did not file gets its row" {
@@ -150,9 +161,9 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   printf '%s\n' "$SANDBOX/acct/plans/filed.md" "$SANDBOX/acct/plans/random-name.md" > "$FLEET_DISPATCH_DIR/plans-filed"
   run "$SWEEP" run
   assert_success
-  assert_not_called 'finish filed'
-  assert_not_called 'finish real'
-  assert_called 'ptask board --agent add --want ask chore(plan): finish unfiled'
+  assert_not_called '/filed.md'
+  assert_not_called 'real.md'
+  assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/unfiled.md --project board --priority low --from auto:ask-sweep"
 }
 
 @test "a plan with no checklist files no row and is only counted" {
@@ -170,8 +181,8 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   plan homed '1 day ago 1 hour ago' "$OPEN"
   run "$SWEEP" run
   assert_success
-  assert_called 'ptask board --agent add --want ask chore(plan): finish homed'
-  assert_not_called 'finish orphan'
+  assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/homed.md --project board --priority low --from auto:ask-sweep"
+  assert_not_called 'orphan'
   assert_output --partial 'open plans 2'
   assert_output --partial 'no cache copy 1'
 }
@@ -274,7 +285,7 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   plan slug-a '1 day ago 1 hour ago' "$OPEN"; plan slug-b '1 day ago 1 hour ago' "$OPEN"; plan slug-c '1 day ago 1 hour ago' "$OPEN"
   run "$SWEEP" run
   assert_success
-  [ "$(grep -c ' add --want ask chore(plan): finish ' "$NOTES_FIXTURE/calls.log")" -eq 2 ]
+  [ "$(grep -c 'agent-queue add --plan' "$NOTES_FIXTURE/calls.log")" -eq 2 ]
   assert_output --partial 'over the cap 1'
 }
 
@@ -297,7 +308,7 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   run "$SWEEP" run
   assert_failure
   assert_output --partial 'board: model call failed (exit 1)'
-  assert_called 'finish stale'
+  assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/stale.md --project board --priority low --from auto:ask-sweep"
   assert_equal "$(cat "$AGENTCTL_STATE_DIR/ask-sweep/last-outcome")" FAILED
   run tail -1 "$AGENTCTL_STATE_DIR/ask-sweep/activity.log"
   assert_output --partial 'why: board: model call failed (exit 1)'
@@ -423,7 +434,7 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   plan stale '1 day ago 1 hour ago' "$OPEN"
   run "$SWEEP" run --dry-run
   assert_success
-  assert_output --partial 'would file [board] chore(plan): finish stale'
+  assert_output --partial 'would file [board] plan stale: run its open phases'
   assert_not_called ' add '
 }
 
@@ -432,13 +443,13 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   plan stub '1 day ago 1 hour ago' "Phase 3 of $ASK_SWEEP_PLANS/canon.md\n\n## Phases\n\n- [ ] three\n"
   run "$SWEEP" run
   assert_success
-  [ "$(grep -c 'finish canon' "$NOTES_FIXTURE/rows.board")" = 1 ]
-  run grep -q 'finish stub' "$NOTES_FIXTURE/rows.board"
+  [ "$(grep -c 'plan canon' "$NOTES_FIXTURE/rows.board")" = 1 ]
+  run grep -q 'plan stub' "$NOTES_FIXTURE/rows.board"
   [ "$status" -ne 0 ]
   # negative control: the same stub pointing nowhere is a plan of its own and files its row
   plan stub '1 day ago 1 hour ago' "Phase 3 of $ASK_SWEEP_PLANS/nowhere.md\n\n## Phases\n\n- [ ] three\n"
   run "$SWEEP" run
   assert_success
-  grep -q 'finish canon' "$NOTES_FIXTURE/rows.board"
-  grep -q 'finish stub' "$NOTES_FIXTURE/rows.board"
+  grep -q 'plan canon' "$NOTES_FIXTURE/rows.board"
+  grep -q 'plan stub' "$NOTES_FIXTURE/rows.board"
 }
