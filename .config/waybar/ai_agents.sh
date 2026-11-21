@@ -11,11 +11,12 @@
 #   amber  a session is STALLED, or Prometheus has no session numbers: a session wants
 #          a look, which is not a broken fleet
 #   green  otherwise
-# The hover is the critical lines only (dashboards.md rule 3): the stage counts, then one section
-# per tmux world (hub, lab: the part of the target before the slash) with its own counts, and a
-# row only for the sessions that need the human or are stalled (ATTENTION), worst first, each
-# with how long it has been idle and why. Working, done, landed, chat and parked sessions are
-# in the counts and have no row; the hub Sessions tab lists them.
+# The hover is the stage counts, then one section per tmux world (hub, lab: the part of the target
+# before the slash) with its own counts and a row per session, worst first, with how long it has
+# been idle; a session that needs the human or is stalled (ATTENTION) adds why. A GTK tooltip
+# cannot scroll, so at most HOVER_MAX_ROWS rows show, the ATTENTION ones kept first (dashboards.md
+# rule 3: the critical lines are never the ones cut), and a last line counts the rest and points
+# at the click, agent-panel, which lists every session.
 #
 # Read from Prometheus (agent_session_why, the reason fleet-sessions gives a NEEDS or STALLED
 # session, agent_session_age_minutes, one series per session that `fleet-sessions
@@ -35,9 +36,13 @@ here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 ICON=$'\U000f06a9' READY=$'\u2713'
 # fleet-state.timer ticks every minute; five missed ticks is a stopped timer, not a slow one.
 STATE_LATE_SECS=300
-# The buckets that get a row in the hover: the two that want the human. fleet-sessions publishes
+# The buckets that want the human: their rows are kept first and say why. fleet-sessions publishes
 # a reason (agent_session_why) for exactly these.
 ATTENTION=" NEEDS STALLED "
+# Session rows the hover holds: about 20 px a line on the workstation's 1080 px screen is about 50
+# lines, less the head, warnings, world heads and the more line. A tooltip taller than the screen
+# is cut at its edge with nothing to say so.
+HOVER_MAX_ROWS=30
 
 now="${AGENTS_NOW:-$(date +%s)}"
 title="<b>Sessions</b>"
@@ -119,8 +124,23 @@ for r in "${rows[@]}"; do
   [ -n "${FINISHED[$b]:-}" ] && n_ready=$((n_ready + 1))
   case $b in WORKING) n_work=$((n_work + 1)) ;; NEEDS) n_need=$((n_need + 1)) ;; esac
   [ "$b" = STALLED ] && n_stalled=$((n_stalled + 1))
-  [[ "$ATTENTION" == *" $b "* ]] && ((${#t} > width)) && width=${#t}
 done
+
+# The rows the hover holds (shown[index]): every ATTENTION row first, then the rest in order, up
+# to HOVER_MAX_ROWS; hidden counts the rest.
+declare -A shown=()
+n_shown=0
+for pass in attention rest; do
+  for i in "${!rows[@]}"; do
+    ((n_shown < HOVER_MAX_ROWS)) || break 2
+    IFS='|' read -r _ b t _ <<< "${rows[$i]}"
+    want=rest; [[ "$ATTENTION" == *" $b "* ]] && want=attention
+    [ "$want" = "$pass" ] || continue
+    shown[$i]=1 n_shown=$((n_shown + 1))
+    ((${#t} > width)) && width=${#t}
+  done
+done
+hidden=$((${#rows[@]} - n_shown))
 
 # No textfile on Prometheus at all is a missing feed, not an empty fleet.
 if ! jq -e 'any(.data.result[]; .metric.__name__ == "node_textfile_mtime_seconds")' <<< "$raw" >/dev/null; then
@@ -133,21 +153,27 @@ head="$title  ${#rows[@]} total, $(counts "${rows[@]}")"
 tip="$head"
 for w in "${why[@]}"; do tip+=$'\n'"$w"; done
 
-# A section per world: its counts, then a line per session that wants the human.
+# A section per world: its counts, then a line per session the hover holds.
 world='' section=() body=''
 flush() {
   [ -n "$world" ] || return 0
   tip+=$'\n\n'"<b>$(pango_esc "$world")</b>  $(counts "${section[@]}")"
   [ -n "$body" ] && tip+=$'\n'"<tt>${body#$'\n'}</tt>"
 }
-for r in "${rows[@]}"; do
+for i in "${!rows[@]}"; do
+  r="${rows[$i]}"
   IFS='|' read -r w b t idle reason <<< "$r"
   if [ "$w" != "$world" ]; then flush; world="$w" section=() body=''; fi
   section+=("$r")
-  [[ "$ATTENTION" == *" $b "* ]] || continue
-  [ "$reason" = - ] && reason="no reason published"
+  [ -n "${shown[$i]:-}" ] || continue
+  if [[ "$ATTENTION" == *" $b "* ]]; then
+    [ "$reason" = - ] && reason="no reason published"
+  else
+    reason=''
+  fi
   idle_for=-; [ "$idle" != - ] && idle_for="$(prom_dur $((idle * 60)))"
   printf -v line "%-8s %-${width}s idle %-6s %s" "$b" "$t" "$idle_for" "$reason"
+  line="${line%"${line##*[! ]}"}"
   line="$(pango_esc "$line")"
   case "$b" in
     STALLED) line="$(paint "$C_YEL" "$line")" ;;
@@ -155,6 +181,7 @@ for r in "${rows[@]}"; do
   body+=$'\n'"$line"
 done
 flush
+((hidden > 0)) && tip+=$'\n\n'"+$hidden more: click for every session (agent-panel)"
 
 need="!:$n_need"
 ((n_need == 0)) || need="$(paint "$C_RED" "$need")"

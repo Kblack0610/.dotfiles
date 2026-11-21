@@ -2,11 +2,11 @@
 # ai_agents.sh: the waybar agents chip, the one overview of live agent sessions. The bar is the
 # fleet total and three counts within it from fleet-sessions on Prometheus, ~ working in amber, a check mark ready (LANDED or DONE)
 # in green and ! need you in red, after a robot coloured by fleet health; the hover has the stage counts, then a section per tmux world
-# with its counts and a row, with its idle time and why, only for a session that needs you or is stalled (working, done, landed,
-# chat and parked are counts, never rows; dashboards.md rule 3). What these pin: the bar is four numbers whatever the fleet's size (a
-# group per project pushed the clock off the bar); the total is every session on every host,
-# chat, stalled and parked included, so it reads as the whole fleet; sessions group by world, not repo; parked is
-# listed and in the total only; a stalled session or a stale textfile turns the robot red, an unclear
+# with its counts and a row per session with its idle time, plus why for one that needs you or is stalled; past HOVER_MAX_ROWS the
+# need-you and stalled rows are kept first and a last line counts the rest (dashboards.md rule 3). What these pin: the bar is four
+# numbers whatever the fleet's size (a group per project pushed the clock off the bar); the total is every session on every host,
+# chat, stalled and parked included, so it reads as the whole fleet; sessions group by world, not repo; a long fleet is capped,
+# never cut by the screen edge; a stalled session or a stale textfile turns the robot red, an unclear
 # one amber; a second scrape counts once; Prometheus down reads ? and no textfile reads amber,
 # never a quiet 0.
 
@@ -88,27 +88,47 @@ tip() { jq -r .tooltip <<< "$output"; }
   assert_equal "$(text)" "$(bar "$G" 40 40 0 0)"
 }
 
-@test "the hover groups by world, not repo, and lists only what wants you: working and done are counts" {
-  feed hub/dotfiles:1=WORKING:30 hub/shepherd:2=NEEDS:90:20:"1 pending ask(s)" lab/dotfiles-agent-2:1=WORKING:5 \
+@test "the hover groups by world, not repo, and lists every session worst first, why only on what wants you" {
+  feed hub/dotfiles:1=WORKING:30:3 hub/shepherd:2=NEEDS:90:20:"1 pending ask(s)" lab/dotfiles-agent-2:1=WORKING:5 \
     lab/uc-agent-1:1=WORKING:10 lab/uc-agent-2:1=DONE:400 lab/uc-agent-9:1=STALLED:200:80:"PR #7 CI red"
   run "$MODULE"
   run tip
   assert_line --index 0 "<b>Sessions</b>  6 total, 5 in progress: <span color='$Y'>1</span> need you, <span color='$Y'>1</span> stalled, 1 done, 3 working"
   assert_line --index 2 "<b>hub</b>  2 in progress: <span color='$Y'>1</span> need you, 1 working"
-  assert_line --index 3 "<tt>NEEDS    shepherd:2   idle 20m    1 pending ask(s)</tt>"
-  assert_line --index 4 "<b>lab</b>  3 in progress: <span color='$Y'>1</span> stalled, 1 done, 2 working"
-  assert_line --index 5 "<tt><span color='$Y'>STALLED  uc-agent-9:1 idle 1h20m  PR #7 CI red</span></tt>"
-  refute_output --partial "WORKING"
-  refute_output --partial "DONE "
-  refute_output --partial "uc-agent-1:1"
+  assert_line --index 3 "<tt>NEEDS    shepherd:2         idle 20m    1 pending ask(s)"
+  assert_line --index 4 "WORKING  dotfiles:1         idle 3m</tt>"
+  assert_line --index 5 "<b>lab</b>  3 in progress: <span color='$Y'>1</span> stalled, 1 done, 2 working"
+  assert_line --index 6 "<tt><span color='$Y'>STALLED  uc-agent-9:1       idle 1h20m  PR #7 CI red</span>"
+  assert_line --index 7 "DONE     uc-agent-2:1       idle -"
+  assert_output --partial "WORKING  uc-agent-1:1       idle -"
+  assert_output --partial "WORKING  dotfiles-agent-2:1 idle -</tt>"
+  refute_output --partial "more: click"
 }
 
-@test "a world with nothing waiting is its counts line alone" {
+@test "a working, done or landed row is the session and its idle time, no reason column" {
   feed lab/uc-agent-1:1=WORKING:10 lab/uc-agent-2:1=LANDED:300 lab/uc-agent-3:1=DONE:400
   run "$MODULE"
   run tip
   assert_line "<b>lab</b>  1 in progress: 1 done, 1 landed, 1 working"
-  refute_output --partial "<tt>"
+  assert_line "<tt>DONE     uc-agent-3:1 idle -"
+  assert_line "LANDED   uc-agent-2:1 idle -"
+  assert_line "WORKING  uc-agent-1:1 idle -</tt>"
+  refute_output --partial "no reason published"
+}
+
+@test "a fleet past HOVER_MAX_ROWS shows 30 rows, every need-you and stalled one among them, and counts the rest" {
+  local args=() i
+  for i in $(seq 1 40); do args+=("hub/w$i:1=WORKING:5"); done
+  args+=("lab/n1:1=NEEDS:30:9:ask" "lab/s1:1=STALLED:200:80:conflict")
+  feed "${args[@]}"
+  run "$MODULE"
+  run tip
+  assert_equal "$(grep -cE '^(<tt>)?(<span[^>]*>)?(NEEDS|STALLED|WORKING) ' <<< "$output")" 30
+  assert_output --partial "NEEDS    n1:1     idle 9m     ask"
+  assert_output --partial "STALLED  s1:1     idle 1h20m  conflict"
+  assert_line --index 0 --partial "42 total"
+  assert_line "<b>hub</b>  40 in progress: 40 working"
+  assert_equal "${lines[-1]}" "+12 more: click for every session (agent-panel)"
 }
 
 @test "a need-you or stalled row says why, and says so when no reason was published" {
@@ -134,7 +154,7 @@ tip() { jq -r .tooltip <<< "$output"; }
   run tip
   assert_line --index 1 "<span color='$Y'>1 session(s) STALLED: unlanded work and idle, or a ready PR that conflicts</span>"
   assert_line --index 2 "<b>lab</b>  2 in progress: <span color='$Y'>1</span> stalled, 1 working"
-  assert_line --index 3 "<tt><span color='$Y'>STALLED  uc-agent-9:1 idle 1h20m  PR #9 conflicts</span></tt>"
+  assert_line --index 3 "<tt><span color='$Y'>STALLED  uc-agent-9:1 idle 1h20m  PR #9 conflicts</span>"
 }
 
 @test "the hover's order is the published bucket order: a need-you line leads a stalled one" {
@@ -155,15 +175,15 @@ tip() { jq -r .tooltip <<< "$output"; }
   assert_output --partial "no agent_session_bucket on Prometheus"
 }
 
-@test "a CHAT session is counted, has no row and leaves the robot green: the human's conversation is not attention" {
+@test "a CHAT session is counted, has a plain row and leaves the robot green: the human's conversation is not attention" {
   feed hub/dotfiles:1=CHAT:10
   run "$MODULE"
   assert_equal "$(text)" "$(bar "$G" 1 0 0 0)"
   assert_equal "$(class)" inactive
   run tip
   assert_output --partial "1 total, 0 in progress: 1 chat"
+  assert_line "<tt>CHAT     dotfiles:1 idle -</tt>"
   refute_output --partial "<span color='$Y'>"
-  refute_output --partial "<tt>"
 }
 
 @test "a sessions textfile older than five minutes is red: the tick stopped" {
