@@ -500,8 +500,9 @@ EOF
   assert_output 'resume: run: elsewhere'
   run grep 'run-shell' "$NOTES_FIXTURE/calls.log"
   assert_output --partial "window '@7'"
-  run grep 'fire: ask own not set to reopen: agent-ask: own already resumes with: run: elsewhere' "$SPIN_DIR/fire.log"
-  assert_success
+  # An ask with its own resume keeps it, and that is no refusal: the answer runs it headless.
+  run grep -s 'fire: ask own not set to reopen' "$SPIN_DIR/fire.log"
+  assert_failure
 }
 
 @test "fire sets no ask to reopen for a malformed session id" {

@@ -248,7 +248,7 @@ cmd_fire() {
 
   # Each pending ask this session posted or joined is set to reopen it on the answer, so the answer
   # carries on without the window: a `/wind-down` the human typed skips the skill's close check, where
-  # the model ran this. agent-ask refuses an ask that already resumes some other way; a refusal goes
+  # the model ran this. An ask that already resumes some other way keeps that resume; a refusal goes
   # to fire.log and never holds the close (fleet-shepherd's close sets them first and keeps a window
   # whose asks it cannot set). Set before the kill is scheduled, so the kill cannot cut a write short.
   # Asks are read where agent-ask keeps them, <root>/<project>/<id>.md.
