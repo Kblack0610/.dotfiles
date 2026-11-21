@@ -1613,9 +1613,21 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   export STUB_BLOCKED="$WALK"
   run "$SH" run
   refute_output --partial 'blocked:'
+  touch -d '12 minutes ago' "$FLEET_SHEPHERD_DIR/.blocked"
   run "$SH" run
-  assert_output --partial 'blocked: pid 3546209 bfs, 7 threads on I/O for 38m, claude session unity-core-playground-agent-28'
+  assert_output --partial 'blocked: pid 3546209 bfs, 7 threads on I/O at two samples 12m apart, claude session unity-core-playground-agent-28'
+  refute_output --partial '38m'
   grep -q 'open /mnt/nas/private/immich/upload/thumbs' "$FLEET_SHEPHERD_DIR/.pass.sh"
+}
+
+@test "a daemon up for hours caught in D at two samples reads the sample gap, not its age" {
+  doc "[$(row d WORKING false false)]"
+  export STUB_BLOCKED='1038\t1\t1092m\tananicy-cpp\tother\t-\t-\tfuse_dir_open\t-\tananicy-cpp\n'
+  run "$SH" run
+  touch -d '10 minutes ago' "$FLEET_SHEPHERD_DIR/.blocked"
+  run "$SH" run
+  assert_output --partial 'blocked: pid 1038 ananicy-cpp, 1 threads on I/O at two samples 10m apart'
+  refute_output --partial '1092m'
 }
 
 @test "a process blocked in one pass only is not due" {

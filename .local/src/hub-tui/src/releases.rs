@@ -231,13 +231,14 @@ impl ReleasesView {
         hub_core::lanes::build(b, s, &self.flow_project, &self.flow_window, now)
     }
 
-    /// `flow [project] [24h|7d]` (`hub tab 'releases flow trader 24h'`): Flow, on the project
-    /// and window it names; a word that is a window is the window, any other the project.
+    /// `flow [project] [24h|7d|30d|from..to]` (`hub tab 'releases flow trader 24h'`, `... trader
+    /// 2026-11-10..2026-11-15`): Flow, on the project and window it names; a word that is a
+    /// window (a name or a day pair) is the window, any other the project.
     pub fn flow_ask(&mut self, words: &str) {
         self.show("flow");
         self.flow_down = 0;
         for w in words.split_whitespace() {
-            if hub_core::lanes::WINDOWS.iter().any(|x| x.0 == w) {
+            if hub_core::lanes::is_window(w) {
                 self.flow_window = w.to_string();
             } else {
                 self.flow_project = w.to_string();
@@ -257,12 +258,20 @@ impl ReleasesView {
         self.flow_down = 0;
     }
 
-    /// Flow's next window (`w`), wrapping.
+    /// Flow's next named window (`w`), wrapping; from a day pair, the first.
     pub fn flow_next_window(&mut self) {
         let ws = &hub_core::lanes::WINDOWS;
-        let on = hub_core::lanes::window(&self.flow_window).0;
-        let at = ws.iter().position(|w| w.0 == on).unwrap_or(0);
-        self.flow_window = ws[(at + 1) % ws.len()].0.to_string();
+        // The name drawn (an empty or unknown one is the default's), or the first from a pair.
+        let on = self.flow_window.trim();
+        let next = if hub_core::lanes::is_window(on) && !ws.iter().any(|w| w.0 == on) {
+            0
+        } else {
+            let on = hub_core::lanes::window(on).0;
+            ws.iter()
+                .position(|w| w.0 == on)
+                .map_or(0, |at| (at + 1) % ws.len())
+        };
+        self.flow_window = ws[next].0.to_string();
     }
 
     /// The tag `by` places along the picker from the one on show (positive is older), if any.
@@ -885,11 +894,21 @@ pub fn flow_lines(f: &Flow, p: Palette, now: i64, w: usize) -> Vec<Line<'static>
         key.push(Span::styled(format!(" {says}  "), p.dim()));
     }
     out.push(clip_line(Line::from(key), w));
+    if !f.clipped.is_empty() {
+        out.push(clip_line(Line::styled(f.clipped.clone(), p.warn()), w));
+    }
     for e in &f.errors {
         out.push(clip_line(Line::styled(e.clone(), p.warn()), w));
     }
     let axis = {
-        let (a, b) = (clock(f.t0, now), "now");
+        // A day pair that ended before now ends the axis on its own clock.
+        let b = if f.t1 + 60 >= now {
+            "now".to_string()
+        } else {
+            // t1 is the next midnight: the axis ends on the last day's last minute.
+            clock(f.t1 - 60, now)
+        };
+        let a = clock(f.t0, now);
         let gap = bar.saturating_sub(a.len() + b.len());
         Line::styled(
             format!("{:lw$} {a}{:gap$}{b}", "", "", lw = lw, gap = gap),
@@ -1020,6 +1039,64 @@ mod tests {
             out.iter().any(|l| l.trim_end().ends_with("now")),
             "an axis: {out:?}"
         );
+    }
+
+    #[test]
+    fn flow_takes_a_day_pair_says_what_it_clipped_ends_its_axis_there_and_w_leaves_it_for_the_names(
+    ) {
+        let mut v = ReleasesView::default();
+        // A word that is a day pair is the window, in either order with the project.
+        v.flow_ask("2000-01-01..2000-01-05 flowprobe");
+        assert_eq!(
+            (v.flow_project.as_str(), v.flow_window.as_str()),
+            ("flowprobe", "2000-01-01..2000-01-05")
+        );
+        let f = v.flow(&Default::default(), &Releases::default(), AT);
+        let out: Vec<String> = flow_lines(&f, Palette { no_color: true }, AT, 100)
+            .iter()
+            .map(text)
+            .collect();
+        assert!(
+            out.iter()
+                .any(|l| l.starts_with("2000-01-01..2000-01-05 is outside the ledger's 30 days")),
+            "{out:?}"
+        );
+        // An old pair is the default window, so the axis ends now; a pair ending before now ends on its own day.
+        let ended = Flow {
+            window: "x".into(),
+            t0: AT - 3 * 86_400,
+            t1: AT - 2 * 86_400,
+            ci: vec![hub_core::lanes::Lane {
+                label: "Checks".into(),
+                sub: "1 run".into(),
+                segs: vec![],
+            }],
+            ..Default::default()
+        };
+        let lines: Vec<String> = flow_lines(&ended, Palette { no_color: true }, AT, 100)
+            .iter()
+            .map(text)
+            .collect();
+        assert!(
+            lines.iter().all(|l| !l.trim_end().ends_with("now")),
+            "{lines:?}"
+        );
+        // The default (nothing set) is drawn as 7d, so w goes on to 30d; a pair starts the names over.
+        let mut d = ReleasesView::default();
+        d.flow_next_window();
+        assert_eq!(d.flow_window, "30d");
+        assert!(
+            lines.iter().any(|l| l
+                .trim_end()
+                .ends_with(&crate::fmt::clock(ended.t1 - 60, AT))),
+            "a pair ends its axis on its last minute: {lines:?}"
+        );
+        v.flow_next_window();
+        assert_eq!(v.flow_window, "24h", "from a pair w starts the names over");
+        v.flow_next_window();
+        v.flow_next_window();
+        v.flow_next_window();
+        assert_eq!(v.flow_window, "24h", "24h, 7d, 30d, then round");
     }
 
     #[test]
