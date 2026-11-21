@@ -37,6 +37,9 @@
 #                        # the verdict of one source (a Claude account or a row of the sources file)
 #                        # as one sentence (--json: its row); exit 0 room, 1 refused, 2 unread, 3 no such source;
 #                        # --model also asks the gateway whether that model's route is past its deployment budget
+#   claude-acct models <source>
+#                        # the model ids a litellm-key source's key may call (the gateway's /v1/models), one a line;
+#                        # exit 1 when the gateway cannot be read, 3 when the source is none or not a litellm-key row
 #   claude-acct check tokens # one line, exit 1 when a token is missing, expired or inside TOKEN_WARN_DAYS (pace.conf), 2 when rbw cannot be read
 #   claude-acct check usage  # one line, exit 1 when an account cannot be read live, cache or not (the Sentinel watch probes)
 #   claude-acct check pace   # one line, exit 1 when a source is past its pace line or in its reserve (one marked alert=off only when unread)
@@ -1632,6 +1635,21 @@ cmd_room() {
     return 1
 }
 
+# models <source>: the ids the source's key may call, one a line, from the gateway's /v1/models (ladder-scout's catalog).
+cmd_models() {
+    local name="${1:?usage: claude-acct models <source>}" kind='' ref='' out
+    IFS=$'\037' read -r _ kind ref _ < <(sources 2>/dev/null | awk -F'\037' -v n="$name" '$1 == n')
+    if [[ "$kind" != litellm-key ]]; then
+        echo "claude-acct: no litellm-key source '$name' in $SRC_CONF for this host" >&2
+        return 3
+    fi
+    out=$(gateway_get "$ref" /v1/models | jq -r '.data | map(.id) | .[]') || {
+        echo "claude-acct: could not read $name's models from the gateway" >&2
+        return 1
+    }
+    [[ -z "$out" ]] || printf '%s\n' "$out"
+}
+
 # check usage: can every account be read? A failed read sends every start to the default account
 # without a word, which is how the 2026-10-30 API change went two days unseen.
 cmd_check() {
@@ -2504,6 +2522,7 @@ case "${1:-}" in
     gateway) shift; cmd_gateway "$@" ;;
     room)   shift; cmd_room "$@" ;;
     check)  shift; cmd_check "$@" ;;
+    models) shift; cmd_models "$@" ;;
     setup-token) shift; cmd_setup_token "$@" ;;
     token)  shift; if [[ "${1:-}" == push ]]; then shift; cmd_token_push "$@"; else cmd_token "$@"; fi ;;
     token-prefix) shift; cmd_token_prefix "$@" ;;

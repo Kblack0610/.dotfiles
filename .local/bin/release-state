@@ -19,6 +19,11 @@
 #   release-state released <project> <sha>...
 #                                         per commit, one JSON line: the first tag of the project's
 #                                         line that holds it and when that tag was made
+#   release-state provenance [--fetch] <project> [value...]
+#                                         one JSON line per tag the project owns (release and
+#                                         build tags, newest first) with its tagger and provenance,
+#                                         or per value given, the provenance of that version;
+#                                         --fetch reads the remote's tags first
 #
 # Declared targets live in project-map.json `trackers.<p>.targets`; pinned is read from the
 # fetched remote branch or, for a store channel, the newest recorded deploy; live from the
@@ -98,7 +103,7 @@ die() {
   [ -n "${REFRESH_WHY:-}" ] && [ ! -s "$REFRESH_WHY" ] && printf '%s' "$*" > "$REFRESH_WHY"
   exit 2
 }
-usage() { sed -n '4,20p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+usage() { sed -n '4,25p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 now_epoch() { date +%s; }
 
 command -v jq >/dev/null 2>&1 || die "jq is not installed"
@@ -1134,7 +1139,40 @@ cmd_released() {
   done
 }
 
+# cmd_provenance <project> [value...] -> with no value, every tag the project owns (its release
+# family and its buildTags), newest first, one {tag, version, sha, at, tagger, provenance} a line;
+# with values, one {value, provenance} each. The door to the rule for a reader outside this
+# script (release-legacy-archive), so the rule has no second copy.
+cmd_provenance() {
+  local fetch=0 proj t sa who
+  [ "${1:-}" = --fetch ] && { fetch=1; shift; }
+  proj="${1:-}"
+  [ -n "$proj" ] || usage
+  shift
+  if [ "$fetch" = 1 ]; then
+    fetch_tags "$(jq -nc --arg p "$proj" '{project: $p}')"
+    [ "${TAGS_FETCHED[$(project_repo_path "$proj")]:-}" = ok ] || echo "release-state: $proj: tags not fetched, reading the local ones" >&2
+  fi
+  if [ $# -gt 0 ]; then
+    for t in "$@"; do jq -nc --arg v "$t" --arg p "$(value_provenance "$proj" "$t")" '{value: $v, provenance: $p}'; done
+    return 0
+  fi
+  project_tag_scope "$proj" || die "$proj has no checkout, so no tags to read"
+  prov_load "$proj"
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    sa="$(git_tag_at "$_PTS_REPO" "$t")"
+    who="$(cut -s -d' ' -f3- <<<"$sa")"
+    jq -nc --arg t "$t" --arg v "$(git_tag_version "$t")" --arg sa "$sa" --arg who "$who" \
+      --arg p "$(provenance "$proj" "$t" "$who")" '($sa | split(" ")) as $f
+      | {tag: $t, version: $v, sha: ($f[0] // null), at: ($f[1] // "" | tonumber? // null),
+         tagger: (if $who == "" then null else $who end), provenance: $p}'
+  done < <(git_tags "$_PTS_REPO" "$proj" "$_PTS_SCOPED" \
+    "$(_gr_glob "$_PTS_REPO" "$proj" "$_PTS_SCOPED" "$_PTS_GLOB") $_PTS_BUILDS")
+}
+
 case "${1:-}" in
+  provenance) shift; cmd_provenance "$@" ;;
   changelog) shift; cmd_changelog "$@" ;;
   released) shift; cmd_released "$@" ;;
   merged) shift; cmd_merged "$@" ;;
