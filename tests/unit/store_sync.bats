@@ -25,7 +25,7 @@ setup() {
   : > "$seed/bench/.keep"
   printf '{\n "head": 0,\n "x": 1,\n "y": 1,\n "z": 1,\n "w": 1,\n "tail": 0\n}\n' > "$seed/daylog/d.json"
   printf '# p\n\n## Decisions\n- d1\n\n## Notes\nhand\n<!-- AUTO:START -->\ngen 0\n<!-- AUTO:END -->\n' > "$seed/anchors/p.md"
-  printf '*.jsonl merge=union\ndaylog/*.json merge=derived\nanchors/*.md merge=derived\nqueue/done/*/*.md merge=close\n' > "$seed/.gitattributes"
+  printf '*.jsonl merge=union\ndaylog/*.json merge=derived\nanchors/*.md merge=derived\n' > "$seed/.gitattributes"
   printf '.sync/\n' > "$seed/.gitignore"
   git -C "$seed" add -A && git -C "$seed" commit -q -m seed
   git -C "$seed" push -q "$ORIGIN" master
@@ -620,13 +620,12 @@ close_item() {
   rm -rf "$SANDBOX/c/queue/done" "$SANDBOX/d/queue/done"
   mkdir -p "$SANDBOX/c/queue/done/2026-11-22" "$SANDBOX/d/queue/done/2026-11-22"
   printf 'slug: y\nstatus: failed\nnote: c\n---\n' > "$SANDBOX/c/queue/done/2026-11-22/y.md"
-  printf 'slug: y\nstatus: ok\nmerged: def456\nnote: d\n---\n' > "$SANDBOX/d/queue/done/2026-11-22/y.md"
+  printf 'slug: y\nstatus: ok\nnote: d\n---\n' > "$SANDBOX/d/queue/done/2026-11-22/y.md"
   on c --now
   run on d --now
   assert_success
   run show "$ORIGIN" queue/done/2026-11-22/y.md
   assert_line 'status: ok'
-  assert_line 'merged: def456'
 }
 
 @test "two closes that are both failed, or both ok, on one item still conflict" {

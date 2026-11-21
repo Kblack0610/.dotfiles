@@ -6267,7 +6267,7 @@ reap_replays() {
 # The check, not store-sync's exit code, is the verdict (worker_store_pull): a SKIP or BACKUP exits 0.
 store_fresh() {
   if [ -z "${REAP_FRESH:-}" ]; then
-    if timeout "$WORKER_PULL_SECS" store-sync --now >/dev/null 2>&1 && store-sync-age --max-min 2 >/dev/null 2>&1; then
+    if timeout "$WORKER_PULL_SECS" store-sync --now </dev/null >/dev/null 2>&1 && store-sync-age --max-min 2 </dev/null >/dev/null 2>&1; then
       REAP_FRESH=yes
     else
       REAP_FRESH=no
