@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# ladder-scout [-n]: list the models each litellm-key source's key may call (`claude-acct models`, one call a run),
+# check each against harnesses.json models, canary-lanes and lanes.yaml trainee.candidates, and file one board row
+# per gap. Edits no tracked file; -n files nothing; exit 1 when a source is unread. Method: fleet-bench skill.
+
+set -uo pipefail
+
+SOURCES="${LADDER_SCOUT_SOURCES:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-acct/sources}"
+HARNESSES="${LADDER_SCOUT_HARNESSES:-${XDG_CONFIG_HOME:-$HOME/.config}/agentctl/harnesses.json}"
+CANARY_LANES="${LADDER_SCOUT_CANARY_LANES:-${XDG_CONFIG_HOME:-$HOME/.config}/fleet-bench/canary-lanes}"
+ACCT="${LADDER_SCOUT_ACCT:-claude-acct}"
+MODEL_LANE="${LADDER_SCOUT_MODEL_LANE:-model-lane}"
+NOTES="${LADDER_SCOUT_NOTES:-notes}"
+STATE="${LADDER_SCOUT_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/ladder-scout}"
+REFILE_DAYS="${LADDER_SCOUT_REFILE_DAYS:-7}"   # an open row is the board's to keep; a dropped one is asked again after this
+NOW="${LADDER_SCOUT_NOW:-$(date +%s)}"
+
+dry=
+case "${1:-}" in
+    -n) dry=1 ;;
+    "") ;;
+    *) sed -n '3,4p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+esac
+
+mkdir -p "$STATE"
+filed="$STATE/filed.tsv"
+touch "$filed"
+
+# The roster as lanes.yaml lists it, each pair with whether `model-lane trainee` admits it now.
+listed=$("$MODEL_LANE" trainee --listed 2>/dev/null) || { echo "ladder-scout: model-lane trainee --listed failed" >&2; exit 1; }
+
+# file_row <key> <title> <detail...>: one board row for the key, once per REFILE_DAYS.
+file_row() {
+    local key=$1 title=$2 last rc; shift 2
+    last=$(awk -F'\t' -v k="$key" '$1 == k {t = $2} END {print t + 0}' "$filed")
+    if (( NOW - last < REFILE_DAYS * 86400 )) && (( last > 0 )); then
+        echo "  row for $key: filed $(( (NOW - last) / 86400 )) days ago, kept"
+        return 0
+    fi
+    if [[ -n "$dry" ]]; then echo "  would file: $title"; return 0; fi
+    local args=() d
+    for d in "$@"; do args+=(--detail "$d"); done
+    "$NOTES" ptask agent-runtime --agent add "${args[@]}" "$title" >/dev/null 2>&1; rc=$?
+    case $rc in
+        0|3|4) printf '%s\t%s\n' "$key" "$NOW" >> "$filed"; echo "  row: $title (exit $rc)" ;;   # 3 a twin is open, 4 the outbox has it
+        *) echo "  could not file the row for $key (notes exit $rc)" >&2; bad=1 ;;
+    esac
+}
+
+bad=
+while read -r source kind _ opts; do
+    [[ "$source" == \#* || -z "$source" ]] && continue
+    if [[ "$kind" == agy ]]; then
+        echo "$source: no gateway catalog, its models are hand-added (harnesses.json models, canary-lanes, lanes.yaml)"
+        continue
+    fi
+    [[ "$kind" == litellm-key && " $opts " == *" priority=low "* ]] || continue   # a free fleet key; a must or unlabeled key (reserve, eval) serves the human's own work
+    harness=$(jq -r --arg s "$source" '.harnesses | to_entries | map(select(.value.source == $s)) | first | .key // empty' "$HARNESSES")
+    if [[ -z "$harness" ]]; then echo "$source: no harness in harnesses.json spends it, skipped"; continue; fi
+    if ! catalog=$("$ACCT" models "$source" 2>&1); then
+        echo "$source: catalog unread: $catalog" >&2; bad=1; continue
+    fi
+    echo "$source ($harness): $(grep -c . <<<"$catalog") models"
+    declare -A seen=()
+    while IFS= read -r id; do
+        [[ -n "$id" ]] || continue
+        # The harness's own short name for the id: its models value is `<provider>/<id>`.
+        short=$(jq -r --arg h "$harness" --arg id "$id" '.harnesses[$h].models // {} | to_entries | map(select(.value | sub("^[^/]*/"; "") == $id)) | first | .key // empty' "$HARNESSES")
+        inner=${id##*(}; inner=${inner%)}
+        guess=${inner%-free}
+        gaps=()
+        [[ -n "$short" ]] || { gaps+=("a models entry in harnesses.json"); short=$guess; }
+        seen[$short]=1
+        grep -qE "^$harness[[:space:]]+$short([[:space:]]|\$)" "$CANARY_LANES" || gaps+=("a line in canary-lanes")
+        pair=$(jq -c --arg p "$harness:$short" 'select(.pair == $p)' <<<"$listed")
+        [[ -n "$pair" ]] || gaps+=("a lanes.yaml trainee candidate")
+        if (( ${#gaps[@]} )); then
+            need=$(IFS=,; echo "${gaps[*]}" | sed 's/,/, /g')
+            echo "  $id: missing $need"
+            file_row "$harness:$id" "feat(model-lane): onboard $harness $short as a trainee candidate #ladder-scout" \
+                "The gateway lists \"$id\" for source $source; ladder-scout found it missing: $need." \
+                "Add \"$short\": \"<provider>/$id\" to harnesses.json models (private repo, beside the harness's other models), \"$harness $short\" to .config/fleet-bench/canary-lanes (public repo) and $harness:$short to lanes.yaml trainee.candidates (private repo)." \
+                "model-lane trainee holds a listed pair back until a canary passed (trainee.admit), so the candidate may land with the canary line; no row reaches the model before then. Key: ladder-scout:$harness:$id"
+        elif [[ "$(jq -r '.admitted' <<<"$pair")" != true ]]; then
+            echo "  $id: $harness:$short waits on its canary ($(jq -r '.why' <<<"$pair"))"
+        fi
+    done <<<"$catalog"
+    # A canary line for a model the gateway stopped listing for this key.
+    while read -r h m _; do
+        [[ "$h" == "$harness" && -n "$m" && -z "${seen[$m]:-}" ]] && echo "  gone: canary-lanes names $h $m, which the gateway no longer lists for $source"
+    done < <(grep -vE '^[[:space:]]*(#|$)' "$CANARY_LANES")
+    unset seen
+done < <(grep -vE '^[[:space:]]*(#|$)' "$SOURCES")
+
+[[ -z "$bad" ]]

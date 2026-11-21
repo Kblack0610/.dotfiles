@@ -3078,3 +3078,28 @@ STUB
   assert_success
   [[ "$(readlink "$ALT/plans")" == "$HOME/.agent/plans/_live" ]]
 }
+
+# --- models: the catalog a litellm key may call (ladder-scout) --------------------------
+
+@test "models: a litellm-key source lists the ids its key may call, one a line" {
+  src_setup
+  sed -i 's|\*/team/info\*) cat|*/v1/models) cat "$SANDBOX/gw/models.$key.json" ;;\n  */team/info*) cat|' "$SANDBOX/bin/curl"
+  echo '{"data":[{"id":"m1 (glm)"},{"id":"m1 (kimi)"}]}' > "$SANDBOX/gw/models.sk-res.json"
+  run --separate-stderr "$ACCT" models res
+  assert_success
+  assert_output $'m1 (glm)\nm1 (kimi)'
+  # The key went in on stdin, never on the command line.
+  run grep -c 'sk-res' "$SANDBOX/curl.argv"
+  assert_output 0
+}
+
+@test "models: a source that is no litellm-key row exits 3, and an unreadable gateway exits 1" {
+  src_setup
+  run --separate-stderr "$ACCT" models codex
+  assert_failure 3
+  run --separate-stderr "$ACCT" models nosuch
+  assert_failure 3
+  run --separate-stderr "$ACCT" models res
+  assert_failure 1
+  [[ "$stderr" == *"could not read res's models"* ]] || fail "$stderr"
+}
