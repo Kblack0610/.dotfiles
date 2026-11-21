@@ -210,6 +210,7 @@ case "${args[0]}" in
             tags_cased: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0]],
             tags: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0] | ascii_downcase],
             since: ((.[1] | capture("since:(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2})") | .d) // null),
+            marker: ((.[1] | capture("<!--.* (?<m>dropped)") | .m) // ""),
             state: (if (.[1] | startswith("- [/]")) then "doing" elif (.[1] | startswith("- [x]")) then "done" else "open" end)}' < "$f"
       done | jq -sc '{rows: map(select(.state != "done")), done: map(select(.state == "done"))}'
     fi; } | if [ -f "$F/board.sprints" ]; then jq -c --slurpfile s "$F/board.sprints" '. + {sprints: $s[0]}'; else cat; fi ;;

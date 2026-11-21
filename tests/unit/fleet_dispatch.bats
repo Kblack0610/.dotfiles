@@ -1634,12 +1634,15 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   row game agent gm-1 "- [ ] feat(game): the base $T <!-- id:gm-1 -->"
   row game agent gm-2 "- [ ] feat(game): waits on the base $T #after/gm-1 <!-- id:gm-2 -->"
   row game agent gm-3 "- [ ] feat(game): waits on a row nobody filed $T #after/gm-404 <!-- id:gm-3 -->"
+  row game agent gm-5 "- [x] feat(game): a row that was dropped $T <!-- id:gm-5 dropped -->"
+  row game agent gm-4 "- [ ] feat(game): waits on a dropped row $T #after/gm-5 <!-- id:gm-4 -->"
   echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   run cmd_starved
   assert_failure
   assert_output --partial 'board rows gated on what can never clear:'
   assert_output --partial 'gm-3 (game, #after/gm-404: after gm-404: no board row has that id)'
-  refute_output --partial 'gm-2'
+  assert_output --partial 'gm-4 (game, #after/gm-5: after gm-5: that row was dropped'
+  refute_output --partial 'gm-2 ('
 }
 
 @test "run starts nothing when account usage cannot be read" {
