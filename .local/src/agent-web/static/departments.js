@@ -43,7 +43,7 @@ async function deptRead(key) {
 }
 const deptOf = (key, id) => deptGot[key]?.data?.product?.depts?.find((d) => d.id === id) || null;
 // The strip's count on a department: what needs the human there, as the TUI counts it.
-const deptCounts = (key) => Object.fromEntries((deptGot[key]?.data?.product?.depts || []).map((d) => [d.id, d.needs.filter((n) => n.level !== "ok").length]));
+const deptCounts = (key) => deptGot[key]?.data?.dept_needs || {};
 
 const D_PART = {
   "-needs": (d, sec) => secHead(sec, "Needs you", d.needs.length, d.needs[0]?.level) + (d.needs.length

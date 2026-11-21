@@ -168,6 +168,7 @@ test("with a project open every card is read, and an answer for a list no longer
 
 const page = {
   project: "demo", flow_line: "ideas 3 | briefs 1 | plans 1 | epics 2 | rows 5 | landed 1 | verified 0",
+  need_count: 5,
   need_groups: [
     { kind: "verify", says: "1 epic landed with no live proof", items: ["verify: Saves (4 of 4 rows landed, no live proof)"] },
     { kind: "plan", says: "2 plans with no epic", items: ["plan with no epic: a", "plan with no epic: <b>"] },
@@ -691,6 +692,8 @@ const depts = () => ({
       }),
       dept("support", "Support"), dept("money", "Money")],
   },
+  // Product::open_needs: each department's needs that are not ok.
+  dept_needs: { marketing: 1, legal: 1 },
   // Product::need_groups over the depts above: red first.
   need_groups: [
     { kind: "dept:legal", says: "Legal: 1", items: ["privacy policy: no privacyUrl in game.json"] },
@@ -702,7 +705,7 @@ const DEPT_API = "/api/projects/bnb%2Fdemo/departments";
 test("a project's page has the work tabs, then the department tabs its card names, their needs on Overview, and Legal says what is missing", async () => {
   // A list read an earlier test left in flight lands first, so it cannot replace this card.
   await settle(); await settle();
-  ctx.answers = { "/api/projects/demo/page": page, [DEPT_API]: depts() };
+  ctx.answers = { "/api/projects/demo/page": { ...page, need_count: 7 }, [DEPT_API]: depts() };
   draw(list([card({ dept_tabs: ["analytics", "marketing", "legal", "support", "money"] })]), "bnb/demo");
   await settle(); await settle();
   const { head, pane } = read();

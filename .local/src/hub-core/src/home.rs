@@ -704,6 +704,11 @@ impl Home {
     pub fn waiting(&self) -> Waiting {
         Waiting {
             count: self.needs.len(),
+            sessions: self
+                .needs
+                .iter()
+                .filter(|n| n.kind == Kind::Session)
+                .count(),
             href: crate::links::Link::tab("home").href(),
         }
     }
@@ -728,6 +733,8 @@ impl Home {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Waiting {
     pub count: usize,
+    /// How many of those rows are sessions waiting on a dialog: the number on Sessions' tab.
+    pub sessions: usize,
     pub href: String,
 }
 
@@ -1609,6 +1616,14 @@ mod tests {
         let h = build(Some(&state()), None, None, None, NOW);
         let w = h.waiting();
         assert_eq!(w.count, h.needs.len());
+        assert_eq!(
+            w.sessions,
+            h.needs.iter().filter(|n| n.kind == Kind::Session).count()
+        );
+        assert!(
+            w.sessions > 0 && w.sessions < w.count,
+            "the split is a part of the count"
+        );
         assert_eq!(w.href, crate::links::Link::tab("home").href());
         assert_eq!(build(None, None, None, None, NOW).waiting().count, 0);
     }
