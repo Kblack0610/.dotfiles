@@ -11,7 +11,8 @@
 | `release-state changelog [--json\|--list] <project> [tag]` | One tag's changelog (the newest release when no tag): that version's `CHANGELOG.md` section, else the merged PRs between it and the previous tag of the line. `--list` prints the project's tags, newest first; `--json` carries `at`, the tag date as epoch seconds |
 | `release-state merged [--days N] <project>` | The user-facing PRs merged on the project's branch in the last N days (7), one `#N subject` a line; `mkt-drafts` reads it for the weekly post |
 | `release-state released <project> <sha>...` | One JSON line per commit: `{sha, tag, at}`, the oldest tag of the project's line that holds it and that tag's creatordate epoch (a lightweight tag records none, so it is the tagged commit's date, a lower bound), `null` when no tag does yet, and an `error` when the checkout lacks the commit. `fleet-bench`'s `request_to_live_h` reads it |
-| `release-state check [--grace 30] [--max-age 60]` | Exit 1 naming each drift older than grace minutes, each floating prod target, and a snapshot older than max-age minutes. The `release-drift` Sentinel watch runs it; the links between stores are `hub releases check` (Relationships) |
+| `release-state provenance [--fetch] <project> [value...]` | `--fetch` first fetches the remote's tags (a failure warns and reads the local ones). With no value, one JSON line per tag the project owns (its release family and its `buildTags`), newest first: `{tag, version, sha, at, tagger, provenance}`; with values, one `{value, provenance}` each, a value matched to its tag as a pin is. The door to Provenance for a reader outside release-state, so the rule has no copy: `release-legacy-archive` reads it |
+| `release-state check [--grace 30] [--max-age 60]` | Exit 1 naming each drift older than grace minutes, each floating prod target, and a snapshot older than max-age minutes; a row legacy on both sides is skipped (Provenance). The `release-drift` Sentinel watch runs it; the links between stores are `hub releases check` (Relationships) |
 
 The agentctl runner `release-state` refreshes every 15 minutes. Clusters and stores offer no event we can subscribe to, so this is a poll. A release skill runs `release-state refresh <project>` at the end of a cut.
 
@@ -46,7 +47,7 @@ The workflow that deploys a target records one GitHub Deployment: `environment` 
 
 | Field | Meaning |
 |---|---|
-| `history` | The newest deployments, each `{version, state, at, url, sha, build}`; `state` is `ok`, `fail` or GitHub's word for one not finished, `sha` the Deployment's commit (the recorder's `ref`, the tag it shipped), `build` the store build number its payload carried (`{"build": "..."}`), else null |
+| `history` | The newest deployments, each `{version, state, at, url, sha, build, creator, provenance}`; `state` is `ok`, `fail` or GitHub's word for one not finished, `sha` the Deployment's commit (the recorder's `ref`, the tag it shipped), `build` the store build number its payload carried (`{"build": "..."}`), else null, `creator` the login that recorded it, `provenance` as in Provenance |
 | `last` | The newest that finished, success or not: the LAST DEPLOY column. A failure makes the row amber |
 | `prev` | The version that succeeded before the newest success: the PREV column |
 | `error` | Why the read failed; PREV and LAST DEPLOY then say `not read` |
@@ -62,10 +63,36 @@ A target nothing records under, or a project whose repo is not on GitHub, has an
 | `line` | `release` (the project's own release family: its `tagGlob`, else the monorepo `name-v*` ladder or `v*`), `build` (the registry's `buildTags` globs, read only while the project has no release tag), or `none` |
 | `glob` | The glob or globs the tags were listed with |
 | `repo` | The checkout's origin as the PR store names it: `owner/repo`, a non-GitHub host as `host/owner/repo`; null with no checkout or origin |
-| `tags` | The newest `HISTORY_TAGS` (20) tags, each `{tag, version, sha, at, prev, prs}`: `sha` is the commit the tag points at, `at` git's creatordate (the tagger date, or a lightweight tag's commit date), `prev` the tag before it by ancestry, the changelog's range start, `prs` the PRs in `prev..tag` by `git_tag_prs`: the `(#N)` subjects (the changelog's own read, at most `HISTORY_PRS`, 500) plus the merge train's members and the train itself, whose `Merge ` subjects the changelog drops |
-| `error` | Why the read failed: `no checkout`. History reads the local tags and never fetches, so a tag the checkout has not fetched is simply absent |
+| `tags` | The newest `HISTORY_TAGS` (20) tags, each `{tag, version, sha, at, tagger, provenance, prev, prs}`: `sha` is the commit the tag points at, `tagger` an annotated tag's tagger name (null for a lightweight tag), `provenance` as in Provenance, `at` git's creatordate (the tagger date, or a lightweight tag's commit date), `prev` the tag before it by ancestry, the changelog's range start, `prs` the PRs in `prev..tag` by `git_tag_prs`: the `(#N)` subjects (the changelog's own read, at most `HISTORY_PRS`, 500) plus the merge train's members and the train itself, whose `Merge ` subjects the changelog drops |
+| `error` | Why the read failed: `no checkout` |
+| `from` | The `releaseFrom` the tags were placed against (Provenance), null when the project has none |
+| `note` | Why a tag may read wrong, `; `-joined: `tags not fetched` when this refresh could not fetch the checkout's tags, so a tag cut since the last fetch may be absent; `no cut_workflow for <repo> in <file>` when the line has started but the release-cut registry names no cut workflow for its repo, so every tag past the start but its own reads `outside` |
+
+`refresh` fetches each checkout's tags once, before it reads history or provenance: `git fetch --no-tags <remote> 'refs/tags/*:refs/tags/*'` from the branch's remote, bounded by the probe timeout and never forced, so a local tag is never moved. A failed fetch leaves the local tags and sets `note`.
 
 `buildTags` (`trackers.<p>.buildTags`, a list of globs such as `["v*-shapecity*", "v*-barrage*"]`) names the per-build tags of a project with no release family, a game built from the playground. They feed only this history and the changelog, so a build tag never becomes a version: declaring them makes the game a `parent`-owned project (`project_version_owner`), versioned by the playground's tag with no number of its own (`stages.md`, "Versions"; see "A game shows no row"). `project-map-doctor` check 4c names a `buildTags` that is not a list of single globs.
+
+## Provenance
+
+Every tag, Deployment, pin, live value and row carries one `provenance`, so a release the flow made reads apart from one made by hand and from history before the flow existed:
+
+| Value | When |
+|---|---|
+| `flow` | At or after the project's `releaseFrom`, and either tagged by its cut workflow (the tagger is the repo's `cut_workflow` in the release-cut registry, `~/.config/release-cut/projects.json`) or of the `releaseFrom` version's own x.y.z, which keeps the line's first release and its builds (`v0.5.3`, `v0.5.3-dodginballs5`) |
+| `legacy` | Before `releaseFrom`, or on a project with none. Grey (`Level::Neutral`): never red, never trips a check |
+| `outside` | After the line starts and not made by the flow: a hand tag, or a value with no x.y.z (a sha, `latest`). At least amber |
+
+`releaseFrom` (`trackers.<p>.releaseFrom`, a bare `vX.Y.Z`) is where a project's line starts; `project-map-doctor` names one that is not. A Deployment is `flow` only when its version is and the release workflow's bot (`github-actions`) recorded it; a person recording a flow version makes it `outside`. A value (a pin, an image, a store build) is matched by version to the line's own tag, release or build, so `1.4.0` is held to the tagger of `web-v1.4.0`. A store pin (`deployed: true`) takes its Deployment's provenance, a tag or gitops pin its value's. Live takes its own value's when that is legacy; otherwise a live that equals its pin (`ok`) takes the pin's, and a store channel serving anything else is `outside`, a branch moved by hand. A manual pin takes live's. The row is the stronger side (`outside`, then `flow`, then `legacy`), so a flow pin that live has not reached still pages its drift.
+
+`release-state check` skips a row legacy on both sides, and `hub releases check` skips a legacy tag and a lab version below `releaseFrom` (every lab version, on a project with none). A tripped telemetry watch on a legacy channel still counts: the fault is in what runs, whoever released it. On the Releases tab a legacy channel is grey and counts under the card's `Legacy` part, never under a look.
+
+### Legacy archive
+
+`release-legacy-archive [--dry-run] [--no-logs] <project>` keeps the history that is `legacy`, deleting nothing from GitHub or git. It covers the project and the projects whose `repo` is it (the playground and its games); given one of those games it refuses and names the repo project, so a repo keeps one ledger. It fetches the remote's tags first (`release-state provenance --fetch`), and writes, whole each run, the lab project's `versions/legacy.md`: every legacy tag (project, tagger, date), every legacy release run (workflow, result, log) and every legacy Deployment (creator, state, store build such as a Steam BuildID). It copies each legacy run's log zip once to `$RELEASE_ARCHIVE_DIR/<project>/<run-id>.zip` (default `/mnt/nas/private/releases/legacy`), since GitHub keeps run logs 90 days; a log already gone reads `expired`.
+
+- Provenance comes from `release-state provenance`, per owning project: a run takes its tag's (its head branch, when one of the projects owns it), a run with no tag is legacy when it started before the repo project's oldest `flow` tag, and a Deployment is held to the project whose target it records, else the project owning its version's tag, else the repo project.
+- Release runs are the runs of the repo's `buildWorkflows` and of each `deployWorkflows` file mapped to a `deployed: true` target (a store upload); the gallery's screenshots and the test runs are not releases.
+- Rerun it after `releaseFrom` moves: the ledger is rewritten from the rule. A zip already on the NAS is kept, so one copied while its run was legacy stays there. It exits 1 when a log failed for a reason other than expiry or a Deployment status could not be read; a rerun copies only what is missing.
 
 ## Stage facts
 
@@ -112,7 +139,7 @@ An opened app on the Releases tab lists its releases newest first with when each
 
 ### Link facts
 
-`refresh` writes `links` into the snapshot, the raw facts the link checks read: per app repo the GitHub environments that hold a recorded Deployment and each workflow file on the default branch with its deploy flag, per lab project its versions (the roll stamp of each `versions/<v>.md` and the PRs of its frozen rows; a project whose profile has `automation = false` has no roll and carries none), the stage ladder, and `since`, the enforcement date (`RELEASE_NOTES_SINCE`, 2026-11-11). A part that could not be read carries `error`, which the check prints as a store it could not read.
+`refresh` writes `links` into the snapshot, the raw facts the link checks read: per app repo the GitHub environments that hold a recorded Deployment and each workflow file on the default branch with its deploy flag, per lab project its versions (the roll stamp of each `versions/<v>.md`, the PRs of its frozen rows and its provenance (Provenance); a project whose profile has `automation = false` has no roll and carries none), the stage ladder, and `since`, the enforcement date (`RELEASE_NOTES_SINCE`, 2026-11-11). A part that could not be read carries `error`, which the check prints as a store it could not read.
 
 | Check | Fails on |
 |---|---|
@@ -120,8 +147,8 @@ An opened app on the Releases tab lists its releases newest first with when each
 | deploy workflows | an unmapped deploy file, a mapped path that is not a file, an unknown target id (`deployWorkflows` above) |
 | deploy runs | a successful run since the date, of a workflow mapped to a `deployed: true` target, that resolves to no release; a run on the cut workflow's proof tag (version 0.0.0, `v0.0.0-test`) that recorded no Deployment built nothing and is skipped |
 | tag globs | a `tagGlob` that matches no tag while the lab has shipped versions |
-| tags | a release tag since the date with no lab version of its number, and a PR in it (not a bot's, merged since the date, or a train member closed since it) with no board row, read from the queue items done since the date: the item that names the PR, else the one its body's `Item:` line names (a train or hand merge records none) |
-| versions | a version rolled since the date with no tag of the line, and a row whose PR shipped in another tag or in none |
+| tags | a release tag since the date that is flow or outside (Provenance) with no lab version of its number, and a PR in it (not a bot's, merged since the date, or a train member closed since it) with no board row, read from the queue items done since the date: the item that names the PR, else the one its body's `Item:` line names (a train or hand merge records none) |
+| versions | a version rolled since the date, at or above `releaseFrom`, with no tag of the line, and a row whose PR shipped in another tag or in none |
 
 A gap older than the date is history nobody recorded: it is never a red, and the Releases tab says `before 2026-11-11` where its rows would be.
 

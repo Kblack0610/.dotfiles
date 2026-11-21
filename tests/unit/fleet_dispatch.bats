@@ -1745,14 +1745,36 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   assert_equal "$(jq -r .max_live <<<"$output")" 2
 }
 
+@test "a run with no conf starts nothing on its own: the keys the conf sets default to neutral" {
+  two_items
+  run env -u DISPATCH_LOW_WATER -u DISPATCH_CANARY_FLOOR -u DISPATCH_RUN_FLOOR -u DISPATCH_T3_PROFILE -u DISPATCH_TARGET_PRESENT -u DISPATCH_TARGET_AWAY -u DISPATCH_MAX_LOAD -u DISPATCH_MIN_IDLE -u DISPATCH_PROFILES -u DISPATCH_T3_PROJECTS \
+    "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.could_start, .max_live, .load_cap, .min_idle] | @tsv' <<<"$output")" $'0\t0\t0\t100'
+  assert_equal "$(jq -r .held <<<"$output")" "load 0.10 on $(nproc) cores is over the 0 pace; real idle 90.0% is under 100%"
+}
+
+@test "each DISPATCH_* key the private conf sets has a neutral code default (empty, 0, or 100 for an idle floor), never a second number" {
+  load '../helpers/private'
+  PRIVATE="${DOTFILES_PRIVATE:-${ACCOUNT_HOME:-}/.dotfiles-private}"   # read-only: the account home suite_home kept
+  has_private || skip "no private checkout at $PRIVATE: the conf's keys are unchecked"
+  conf="$PRIVATE/.config/agentctl/agents/fleet-dispatch.conf"
+  [ -f "$conf" ]
+  bad=
+  while IFS='=' read -r k v; do
+    d=$(grep -oE "^: \"\\\$\\{$k:?=[^}]*" "$REPO_ROOT/.local/bin/fleet-dispatch" | sed -E "s/^: \"\\\$\\{$k:?=//")
+    case "$d" in ''|0|100) ;; *) bad+="$k: code $d, conf $v; " ;; esac
+  done < <(sed -n "s/^\(DISPATCH_[A-Z_]*\)=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}[[:space:]]*$/\1=\2/p" "$conf")
+  assert_equal "$bad" ""
+}
+
 @test "the machine-mode level scales the start limits where they are read; mid is the conf's own" {
   mkdir -p "$HOME/.config/agentctl/agents"
   printf "NAME=fleet-dispatch\nDISPATCH_TARGET_AWAY=24\nDISPATCH_MAX_LOAD='1.5'\nDISPATCH_PER_PASS=3\n" > "$HOME/.config/agentctl/agents/fleet-dispatch.conf"
   two_items
-  run env -u DISPATCH_MAX_LOAD -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  run env -u DISPATCH_TARGET_AWAY -u DISPATCH_MAX_LOAD -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r '[.level, .per_pass, .load_cap / '"$(nproc)"'] | @tsv' <<<"$output")" $'mid\t3\t1.5'
   mkdir -p "$HOME/.agent"; echo MACHINE_MODE=full > "$HOME/.agent/machine-mode.env"
-  run env -u DISPATCH_MAX_LOAD -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  run env -u DISPATCH_TARGET_AWAY -u DISPATCH_MAX_LOAD -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   # Rounded: 1.65 x 28 cores / 28 reads 1.6500000000000001 in jq.
   assert_equal "$(jq -r '[.level, .per_pass, (.load_cap / '"$(nproc)"' * 100 | round / 100), .max_live] | @tsv' <<<"$output")" $'high\t6\t1.65\t24'
   # The exported DISPATCH_* a child reads stay the conf's.

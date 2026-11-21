@@ -64,26 +64,33 @@ set -uo pipefail
 
 # The agentctl conf is the one home of the DISPATCH_* tuning. The runner exports it; a run from a
 # shell (headroom, a hand start) reads it here, so both see the limits the timer pass uses. A value
-# already in the environment wins (the runner, tests).
+# already in the environment wins (the runner, tests). A key the conf sets gets a neutral default
+# below, never a second number: no board, no tier-3 lane, low water, targets and floors 0, a load cap
+# of 0 and an idle floor of 100, so a run with no conf starts nothing on its own (headroom names the
+# load cap and idle floor as its hold).
 : "${DISPATCH_CONF:=$HOME/.config/agentctl/agents/fleet-dispatch.conf}"
-while IFS='=' read -r _k _v; do
-  [ -n "${!_k+x}" ] || printf -v "$_k" '%s' "$_v"
-done < <(sed -n "s/^\(DISPATCH_[A-Z_]*\)=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}[[:space:]]*$/\1=\2/p" "$DISPATCH_CONF" 2>/dev/null)
-unset _k _v
+# dispatch_conf_load -- set each DISPATCH_* the conf names that the environment does not
+dispatch_conf_load() {
+  local k v
+  while IFS='=' read -r k v; do
+    [ -n "${!k+x}" ] || printf -v "$k" '%s' "$v"
+  done < <(sed -n "s/^\(DISPATCH_[A-Z_]*\)=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}[[:space:]]*$/\1=\2/p" "$DISPATCH_CONF" 2>/dev/null)
+}
+dispatch_conf_load
 
-: "${DISPATCH_PROFILES:=bnb}"
+: "${DISPATCH_PROFILES:=}"   # the notes profiles whose boards fill reads; empty reads none
 : "${DISPATCH_PER_PASS:=0}"   # most new sessions a pass; 0 is no cap: each start after the first reads the gate again, and the load it charges recent starts (DISPATCH_START_LOAD) ends the pass. A fixed 3 held a pass to 3 while headroom showed 36 free (2026-11-07)
-: "${DISPATCH_LOW_WATER:=3}"   # runnable queue items under which a pass tops the queue up from the board; 0: only an empty queue
+: "${DISPATCH_LOW_WATER:=0}"   # runnable queue items under which a pass tops the queue up from the board; 0: only an empty queue
 : "${DISPATCH_ORPHAN_HOURS:=72}"   # hours an agent row stays started with no queue item before reap un-starts it, and a gone item stays stuck on a PR reap cannot read or a merge it cannot prove before reap files it on the human sheet (reap_stuck)
-: "${DISPATCH_TARGET_PRESENT:=50}"   # the most live Claude sessions, hand starts included, a pass fills the fleet to while the human is here: the target is the live sessions plus the Opus sessions the Claude accounts' spend has spare at their weekly pace (claude-acct room --json .fleet.spare) under this cap, never under DISPATCH_RUN_FLOOR; the runner's own sessions also hold at most this many run units (a heavy item 2, a light one 1). The bigger target: the human's own work and the agents beside it get the room the away pace saved
-: "${DISPATCH_TARGET_AWAY:=25}"   # the same cap while the human is away (fleet-presence), so a night does not spend the week ahead of its line
+: "${DISPATCH_TARGET_PRESENT:=0}"   # the most live Claude sessions, hand starts included, a pass fills the fleet to while the human is here: the target is the live sessions plus the Opus sessions the Claude accounts' spend has spare at their weekly pace (claude-acct room --json .fleet.spare) under this cap, never under DISPATCH_RUN_FLOOR; the runner's own sessions also hold at most this many run units (a heavy item 2, a light one 1). The bigger target: the human's own work and the agents beside it get the room the away pace saved
+: "${DISPATCH_TARGET_AWAY:=0}"   # the same cap while the human is away (fleet-presence), so a night does not spend the week ahead of its line
 : "${DISPATCH_STATE_FRESH_MIN:=10}"   # minutes old the fleet state document (fleet-sessions --write, every minute) may be before the live count is unreadable, which holds every start
 : "${FLEET_STATE_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
-: "${DISPATCH_MAX_LOAD:=0.7}"   # 1-min load per core; the fleet-pace target
+: "${DISPATCH_MAX_LOAD:=0}"   # 1-min load per core over which a start waits; 0 holds every start
 : "${DISPATCH_HOST_MEM_MIN_PCT:=20}"   # a fleet worker whose MemAvailable is under this percent of MemTotal takes no session (host_why): load was the only worker gate, and a 32 GB laptop holding 10 GB of pods could OOM at a cap that suits its load. Provisional, medium confidence: home-config scripts/host-headroom.py mem_min (NodeMemoryLow fires at 15), set 2026-11-18; revisit when a worker OOMs above it, or one it refuses never reaches NodeMemoryLow
 : "${DISPATCH_START_LOAD:=2.5}"   # 1-min load one session started in the last DISPATCH_START_LOAD_MIN minutes will still add; 0 is off. Provisional: 2.8 measured over 21 starts on 24 cores (2026-11-07), medium confidence; re-measure when the session mix changes
 : "${DISPATCH_START_LOAD_MIN:=5}"   # minutes a start counts as not yet in the load
-: "${DISPATCH_MIN_IDLE:=30}"    # percent of the machine free, idle plus nice time, over the real idle sample (real_idle); the conf holds the human's floor
+: "${DISPATCH_MIN_IDLE:=100}"    # percent of the machine free, idle plus nice time, over the real idle sample (real_idle), under which a start waits; 100 holds every start
 : "${DISPATCH_IDLE_WINDOW:=60}"   # seconds the real idle sample spans: one 2 s top frame swung 17-41% on one busy hour (human, ask bo20dU, 2026-11-07)
 : "${DISPATCH_PROC_STAT:=/proc/stat}"
 : "${DISPATCH_RED_FLOOR:=2}"   # red items that may start past the pace target, the weekly pace, real idle, load and the fleet-assess HOLD, apart from the run floor: a fix held behind a busy machine keeps the fleet red (human, 2026-11-06). Each tripped watch's red item (tag `watch`) adds one, so every tripped watch has a running owner the hour it trips (human, 2026-11-10, ar-1531); 0 is off for both
@@ -103,7 +110,7 @@ unset _k _v
 : "${DISPATCH_ROLLUP_BOARD:=agent-runtime}"   # the agent board a trainee-rollup fix row goes on, and where its open twin is looked for
 : "${DISPATCH_ROLLUP_TAGS:=#size/s #of/ar-3691 #low}"   # a trainee-rollup fix row's tags: the ladder epic, and low, as an agent's follow-up is
 : "${DISPATCH_PROVIDER_HOLD_MIN:=60}"   # Provisional, low confidence (the gateway reports no reset time; revisit when it does): minutes a source takes no start after a run on it ended on a provider refusal (provider_hold_scan), unless its harness sets provider_hold_min in harnesses.json: the gateway publishes no reset time for a refused 5h budget, so the hold is the window's length, and the start after it is the probe
-: "${DISPATCH_CANARY_FLOOR:=3}"   # canary items (tag `canary`) kept queued or running (canary_top_up queues the missing ones, a few at a time, never a week's set at once), and a pass keeps running past a full pace target and the merge line, each lane in turn (canary_floor_start): a canary sat at position 222 of 606 queued while every pass ran over the target, so no week's set started after 11-14 (ar-2774). Provisional: a week is about 150 canaries over five 5h nights at about 40 min each, low confidence; revisit when a week's set is still queued at week end with the floor met; 0 is off
+: "${DISPATCH_CANARY_FLOOR:=0}"   # canary items (tag `canary`) kept queued or running (canary_top_up queues the missing ones, a few at a time, never a week's set at once), and a pass keeps running past a full pace target and the merge line, each lane in turn (canary_floor_start): a canary sat at position 222 of 606 queued while every pass ran over the target, so no week's set started after 11-14 (ar-2774). Provisional: a week is about 150 canaries over five 5h nights at about 40 min each, low confidence; revisit when a week's set is still queued at week end with the floor met; 0 is off
 : "${DISPATCH_PLAN_FLOOR:=8}"   # live approved plan phases (plan: set, from: human, runner-started) the human floor keeps running past a full pace target and the weekly pace, one phase a plan a pass (plan_floor_start): 8 ready unity-core-playground phases sat 4 days behind a full target that only urgent items passed (ar-2832). Provisional: 8 is the approved plans with a ready phase on the live queue on 2026-11-17, low confidence; revisit when a plan phase still pages queue-starved with the floor met, or plan sessions crowd the target out; 0 is off
 : "${DISPATCH_SPRINT_FLOOR:=3}"   # live urgent rows of an open sprint (tag `sprint`, which promote puts on an item whose board row the project's open window holds) the sprint floor keeps running past a full pace target and the weekly pace (sprint_floor_start): urgent playground v0.5.4 sprint rows sat hours with no session while dispatch ran at its pace target on agent-runtime items (ar-3816). Provisional: 3 is a guess at the urgent rows one sprint holds at once, low confidence; revisit when an urgent sprint row still pages queue-starved with the floor met; 0 is off
 : "${DISPATCH_SOURCE_PICKS:=codex:sol}"   # the <harness>:<model> pairs that floor may start; a pick whose source is not under-used starts nothing
@@ -148,7 +155,7 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 : "${DISPATCH_PREEMPT:=1}"   # 1: an urgent item or fresh ask (runs_now) waiting only on run units parks the lowest-priority runner session for them at its next turn end (preempt_for), and a pass resumes it once units free (unpark_preempted); 0 is off. Provisional: the human's rule (2026-11-10), no thrash measured yet; revisit when one victim is parked twice in an hour
 # Tier-3 PR rows: the default notes profile's agent lanes of the dotfiles boards.
 : "${DISPATCH_T3_PROFILE:=}"   # empty: notes' own default profile, where those boards live
-: "${DISPATCH_T3_PROJECTS:=agent-runtime notes-cockpit}"
+: "${DISPATCH_T3_PROJECTS:=}"   # the projects whose agent lanes run as tier-3 PR rows; empty is none
 # The machine-mode level scales the limits that bind starts; the conf holds the mid numbers.
 # Scaled into names of their own, never back into the exported DISPATCH_* a child would scale again.
 # shellcheck source=../lib/machine-mode.sh

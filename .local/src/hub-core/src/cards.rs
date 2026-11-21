@@ -507,6 +507,15 @@ pub fn releases(r: &crate::releases::Releases) -> Card {
     .part("Drift", n(R::Bad), lvl(n(R::Bad), Level::Red))
     .part("To check", n(R::Warn), lvl(n(R::Warn), Level::Warn))
     .part("Unread", unread, lvl(unread, Level::Warn));
+    // A legacy app (no release through the flow yet) is a grey segment, never a look.
+    let legacy = n(R::Neutral);
+    if legacy > 0 {
+        c.bar.push(Seg {
+            level: Level::Nodata,
+            n: legacy,
+        });
+        c = c.part("Legacy", legacy, Level::Nodata);
+    }
     c.big = r.apps.len().to_string();
     c.unit = "apps tracked".into();
     c.counted = format!("release-state show: {}", r.summary);
@@ -517,8 +526,9 @@ pub fn releases(r: &crate::releases::Releases) -> Card {
         R::Bad => Level::Red,
         R::Warn => Level::Warn,
         R::Ok => Level::Ok,
+        R::Neutral => Level::Nodata,
     };
-    c.first(r.apps.iter().filter(|a| a.level != R::Ok).map(|a| {
+    c.first(r.apps.iter().filter(|a| !a.level.calm()).map(|a| {
         row(
             a.project.clone(),
             a.status_text.clone(),
