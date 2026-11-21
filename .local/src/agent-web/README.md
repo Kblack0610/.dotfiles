@@ -83,6 +83,13 @@ The OAuth button needs Forgejo up, so the sign-in key is the way in when it is d
 
 To recreate the OAuth app: Forgejo -> Settings -> Applications -> OAuth2, confidential client, redirect URI `<base>/oauth/callback`, then write `{"client_id": ..., "client_secret": ...}` to `oauth.json`.
 
+### Input at the boundary
+
+- Every write must come from these pages. `same_origin` in `main.rs` refuses a POST, PUT or DELETE whose `Origin` is not `AGENT_WEB_BASE_URL`, and one that carries the session cookie with no `Origin` at all. A write with neither (the Tilecast app, `agent-mqtt-publish`) goes on to its route's key check.
+- A JSON body is a `#[serde(deny_unknown_fields)]` struct, so a mistyped field gets a 422 instead of falling back to its default. Query structs stay lenient.
+- Free text that reaches a pane, an ask or a note goes through `cli::plain_text`: newlines and tabs only, no other control bytes, and a size cap (`MAX_SEND` 64 KB, `MAX_ANSWER` 8 KB, `outbox::MAX_TEXT`, `focus::MAX_NOTE`). Ids, slugs, keys and names are checked against an allowlist or the live state before any command runs, and a command gets them as argv after `--`, never through a shell. `DefaultBodyLimit` is `audit::BODY_MAX`.
+- A new field goes through the validator in the hub-core argv builder for its CLI (`tasks::argv`, `queue::add_argv`). Those validators are the pattern; there is no derive-validation crate.
+
 ## Home-screen widget
 
 The phone's home-screen widget is the Tilecast app, which reads `/widget.json`; the HA Companion Template widget (dashboards.md, Phone widget) is the maintained second option.
@@ -145,6 +152,7 @@ To see it, `agent-web-shot --base http://127.0.0.1:8799 --out <dir> releases rel
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
+| Every save or action fails with `cross-origin request refused` (403); the journal has `agent-web: POST /api/... refused: origin ...` | The page was opened at a URL other than `AGENT_WEB_BASE_URL` (a LAN address, another hostname), or a proxy rewrote `Origin` | Open it at the base URL, or set `AGENT_WEB_BASE_URL` to the URL it is served at and restart |
 | The sign-in page has no key form | `login.key` is missing, empty or under 32 characters | Mint it as in the Auth table; no restart |
 | A tab says `agent-web did not answer /api/...` | No answer came back: agent-web was restarting or down, or the connection broke | `journalctl --user -u agent-web -n 200 \| grep 'agent-web: '`: a `dropped before it answered` line with the browser's `ua` says the request was cut, a `failed` line carries the handler's error, a `slow` line the time; no line at all means the request never reached agent-web (check the ingress logs in home-config `apps/agents`) |
 | A tab sits on "Loading..." for seconds; the journal has `GET /api/<path> ... slow` lines (the `agent-web-slow` watch trips) | That handler runs a CLI on every request instead of a kept read: on 2026-11-18 `/api/board` ran agent-queue twice (14 to 19 s) and `/api/fleet` ran judge-eval (6 to 12 s) | Put the read behind `src/cache.rs` (a `ReadCache`, or an `EventCache` its file events outdate) and add it to `warm`; prove it with `agent-web-shot --time --budget 1000 --every-tab` on a dev instance of the old and the new binary |
