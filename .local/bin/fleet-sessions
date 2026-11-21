@@ -285,15 +285,18 @@ proc_snapshot() {
   ls -l /proc/[0-9]*/cwd 2>/dev/null | sed -nE 's|^.* /proc/([0-9]+)/cwd -> (.*)$|\1\t\2|p' > "$1.cwd" || :   # ls fails on a process that exits mid-read, whatever it listed
 }
 
-# gate_log_idle <cwd> <idle min> -> the idle minutes after counting FLEET_GATE_LOGS: the age of the newest
-# of those files under <cwd> when it is under <idle min>, else <idle min>. A local suite.sh gate prints into
-# Logs/gate.txt while the transcript sees nothing (2026-11-04 agent-23 read "background shell idle over 120m"
-# with ~80 classes done). Its mtime is the event; a gate that ended leaves a log whose age only grows.
+# gate_log_idle <host|-> <status> <open job> <cwd> <idle min> -> the idle minutes the bucket reads. For a local
+# session whose shell is a gate or test, the age of the newest FLEET_GATE_LOGS file under the worktree when it is
+# under <idle min>; otherwise <idle min>. A local suite.sh gate prints into Logs/gate.txt while the transcript sees
+# nothing (2026-11-04 agent-23 read "background shell idle over 120m" with ~80 classes done). The mtime is the
+# event; a gate that ended leaves a log whose age only grows. idle_min and the wake and close reads keep the
+# transcript's own idle.
 gate_log_idle() {
-  local cwd="$1" idle="$2" f m age root
+  local idle="$5" f m age root
   local -a logs=()
+  [ "$1" = - ] && [ "$2" = shell ] && { [ "$3" = gate ] || [ "$3" = test ]; } || { echo "$idle"; return; }
   # The worktree root, so a session started in a subdirectory finds the same log; no glob expands.
-  root="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)" || root="$cwd"
+  root="$(git -C "$4" rev-parse --show-toplevel 2>/dev/null)" || root="$4"
   read -ra logs <<<"$FLEET_GATE_LOGS"
   for f in "${logs[@]}"; do
     m="$(stat -c %Y "$root/$f" 2>/dev/null)" || continue
@@ -1956,13 +1959,7 @@ collect() {
     landed="$(jq -r 'if any(.state == "MERGED") and all(.state != null and .state != "OPEN")
       then map(select(.state == "MERGED") | "#\(.number)") | join(",") else "-" end' <<<"$prs")"
     tsess="${target#*/}"; tsess="${tsess%:*}"
-    idle=$(( (now - since) / 60 ))
-    # A running local gate or test writes its log while the transcript is silent: that write is activity
-    # for the bucket (bidle); idle_min and the wake and close reads keep the transcript's own idle.
-    bidle="$idle"
-    if [ "$host" = - ] && [ "$status" = shell ]; then
-      case "$ojob" in gate | test) bidle="$(gate_log_idle "$cwd" "$idle")" ;; esac
-    fi
+    idle=$(( (now - since) / 60 )); bidle="$(gate_log_idle "$host" "$status" "$ojob" "$cwd" "$idle")"
     age=-; [[ "$started" =~ ^[0-9]+$ ]] && age=$(( (now - started) / 60 ))
     # Every ask this session filed and nobody answered (ownask), the ones a queue item carries on
     # included: the session may close (bucket), and the close verdict says whether its window must
