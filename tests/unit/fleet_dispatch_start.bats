@@ -72,10 +72,13 @@ load 'fleet_dispatch/common'
   assert_output --partial 'unjudged  game (beta) human: gm-1'
 }
 
-@test "a usage-limit end leaves a hold an earlier real failure set" {
+@test "a usage-limit end leaves a hold earlier real failures set" {
   game_ready
-  jq -cn '{project: "game", lane: "human", key: "gm-1", verdict: "failed", reason: "queue item ended failed", at: "2026-11-10T00:00:00Z"}' \
-    >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  local i
+  for i in 1 2; do
+    jq -cn '{project: "game", lane: "human", key: "gm-1", verdict: "failed", reason: "queue item ended failed", at: "2026-11-10T00:00:00Z"}' \
+      >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  done
   run "$REPO_ROOT/.local/bin/fleet-dispatch" fill
   agent-queue move gm-1 done --status failed --end limit
   run cmd_reap
@@ -83,15 +86,75 @@ load 'fleet_dispatch/common'
   assert_equal "$(judged_keys | awk -F'\t' '$4 == "*" { print $3 }')" 'gm-1'
 }
 
-@test "a row whose failed hold a later cleared releases is picked again on its dispatch verdict" {
+@test "a failed row goes back to the judge; DISPATCH_FIX_TRIES failures hold it, and a cleared sends it back again" {
   game_ready
   f() { jq -cn --arg v "$1" '{project: "game", lane: "human", key: "fix crash on load", verdict: $v, reason: "t", at: "2026-11-10T00:00:00Z"}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"; }
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" fill --dry-run
+  assert_output --partial 'ready'   # control: its dispatch verdict picks it
   f failed
   run "$REPO_ROOT/.local/bin/fleet-dispatch" fill --dry-run
-  refute_output --partial 'ready'   # negative control: a failed hold keeps it
+  refute_output --partial 'ready'   # the failure expired that verdict
+  assert_output --partial 'unjudged  game (beta) human: fix crash on load'
+  f failed
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" fill --dry-run
+  refute_output --partial 'ready'
+  refute_output --partial 'unjudged  game (beta) human: fix crash on load'   # held at the limit
   f cleared
   run "$REPO_ROOT/.local/bin/fleet-dispatch" fill --dry-run
-  assert_output --partial 'ready'
+  assert_output --partial 'unjudged  game (beta) human: fix crash on load'
+}
+
+@test "ask_failed_rows: a row at DISPATCH_FIX_TRIES failures gets one ask with their reasons, is gated on it, and its hold ends" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 "- [ ] fix(game): crash on load $T <!-- id:gm-1 -->"
+  row game agent gm-2 "- [ ] fix(game): one failure $T <!-- id:gm-2 -->"
+  row game agent gm-3 "- [/] fix(game): started again $T <!-- id:gm-3 -->"
+  f() { jq -cn --arg k "$1" --arg r "$2" '{project: "game", lane: "agent", key: $k, verdict: "failed", reason: $r, at: "2026-11-10T00:00:00Z"}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"; }
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  f gm-1 'queue item gm-1 ended failed, timeout'; f gm-1 'started 72h with no queue item'
+  f gm-2 'queue item gm-2 ended failed'
+  f gm-3 'x'; f gm-3 'y'
+  stub agent-ask 'printf "%s\n" "agent-ask $*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" = post ] && echo ask1; exit 0'
+  run ask_failed_rows
+  assert_success
+  assert_output 'asked about game: gm-1 (failed 2 times, ask ask1)'
+  # the ask carries both reasons and is the human's (approval), with retry and drop
+  local post; post=$(grep '^agent-ask post' "$NOTES_FIXTURE/calls.log")
+  [[ $post == *'--kind approval --project game'* ]] || fail "not an approval for game: $post"
+  [[ $post == *'retry=judge the row again and start it, with 2 more tries|drop=drop the row from the board'* ]] || fail "options: $post"
+  [[ $post == *'queue item gm-1 ended failed, timeout; started 72h with no queue item'* ]] || fail "reasons: $post"
+  [[ $post == *'Start board row gm-1 again after its last 2 runs failed?'* ]] || fail "question: $post"
+  [ "$(grep -c '^agent-ask post' "$NOTES_FIXTURE/calls.log")" = 1 ] || fail "asked about a row under the limit or started"
+  grep -q '#ask/ask1/retry <!-- id:gm-1 -->' "$NOTES_FIXTURE/rows.game.agent" || fail "row not gated on the ask"
+  assert_equal "$(tail -1 "$FLEET_DISPATCH_DIR/verdicts.jsonl" | jq -r '"\(.key) \(.verdict) \(.ask)"')" 'gm-1 cleared ask1'
+  # the gate holds it now, not the failures, and a second pass asks nothing
+  assert_equal "$(judged_keys | awk -F'\t' '$4 == "*" { print $3 }')" 'gm-3'
+  : > "$NOTES_FIXTURE/calls.log"
+  run ask_failed_rows
+  assert_output ''
+  run grep -c '^agent-ask post' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
+@test "ask_failed_rows: an ask that does not post leaves the hold; a gate that fails cancels the ask and the row is judged again" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 "- [ ] fix(game): crash on load $T <!-- id:gm-1 -->"
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  local i
+  for i in 1 2; do jq -cn '{project: "game", lane: "agent", key: "gm-1", verdict: "failed", reason: "r", at: "2026-11-10T00:00:00Z"}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"; done
+  stub agent-ask 'printf "%s\n" "agent-ask $*" >> "$NOTES_FIXTURE/calls.log"; exit 1'
+  run ask_failed_rows
+  assert_success
+  assert_equal "$(judged_keys | awk -F'\t' '$4 == "*" { print $3 }')" 'gm-1'
+  grep -q 'the ask for game agent row gm-1 did not post' "$FLEET_DISPATCH_DIR/log.md" || fail "no log line"
+  # a board that will not take the tag: the ask is cancelled, and the row goes back to the judge
+  stub agent-ask 'printf "%s\n" "agent-ask $*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" = post ] && echo ask2; exit 0'
+  mv "$SANDBOX/bin/notes" "$SANDBOX/bin/notes-real"
+  stub notes '[[ " $* " == *" tag "* ]] && exit 1; exec notes-real "$@"'
+  run ask_failed_rows
+  assert_success
+  grep -q '^agent-ask cancel ask2' "$NOTES_FIXTURE/calls.log" || fail "ask not cancelled"
+  assert_equal "$(judged_keys | awk -F'\t' '$4 == "*" { print $3 }')" ''
 }
 
 @test "fill --dry-run keys a row by its id and shows the priority it would queue at" {

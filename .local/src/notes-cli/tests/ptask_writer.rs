@@ -291,6 +291,20 @@ fn the_agent_board_refuses_untyped_and_near_duplicate_rows_and_takes_an_unsized_
         String::from_utf8_lossy(&twin.stderr)
     );
     assert_eq!(ids(&h.board()), ["dm-1"]);
+    // inbox-triage rewrites a filed row's area; the filer's same words again are still that row.
+    let rescoped = agent(
+        &h,
+        &[
+            "add",
+            "fix(menu): the pause menu flickers on resume #size/s",
+        ],
+    );
+    assert_eq!(
+        rescoped.status.code(),
+        Some(3),
+        "the area does not make it a new row"
+    );
+    assert_eq!(ids(&h.board()), ["dm-1"]);
 
     ok(&agent(
         &h,
