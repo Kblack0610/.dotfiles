@@ -18,7 +18,8 @@ setup() {
 printf '%s|%s\n' "${GH_TOKEN:-none}" "$*" >> "$BATS_TEST_TMPDIR/real.log"
 case "$*" in *--body-file\ -*) cat >> "$BATS_TEST_TMPDIR/stdin.log" ;; esac
 case "$*" in 'api rate_limit'*) [ -f "$BATS_TEST_TMPDIR/rate" ] && cat "$BATS_TEST_TMPDIR/rate"; exit 0 ;; esac
-if [ -n "${DENY:-}" ] && [ "${GH_TOKEN:-}" = tok-acme ]; then echo "HTTP 401: $DENY" >&2; exit 1; fi
+if [ -n "${DENY:-}" ] && [ "${GH_TOKEN:-}" = tok-acme ]; then echo "{\"message\":\"$DENY\"}"; echo "HTTP 403: $DENY" >&2; exit 1; fi
+[ -z "${ANSWER:-}" ] || echo "$ANSWER"
 exit "${REAL_RC:-0}"
 SH
   # gh-app: acme has an installation, broken fails to mint, anyone else has none.
@@ -87,6 +88,16 @@ bucket() { tail -n 1 "$GH_CALLS_DIR"/*.tsv | cut -f2; }
   REAL_RC=1 run "$WRAP" run view 6 -R acme/x
   assert_failure 1
   assert_equal "$(grep -c 'run view 6' "$BATS_TEST_TMPDIR/real.log")" 1
+  assert_equal "$(bucket)" app:acme
+}
+
+@test "a refused App read shows only the user rerun's stdout, never the refusal's body" {
+  DENY='Resource not accessible by integration' ANSWER=1 run "$WRAP" api repos/acme/x/actions/runners -q length
+  assert_success
+  assert_output 1
+  assert_equal "$(bucket)" user:app-denied
+  ANSWER=2 run "$WRAP" api repos/acme/x/actions/runners -q length
+  assert_output 2
   assert_equal "$(bucket)" app:acme
 }
 
