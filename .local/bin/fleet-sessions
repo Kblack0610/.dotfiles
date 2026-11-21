@@ -290,9 +290,13 @@ proc_snapshot() {
 # Logs/gate.txt while the transcript sees nothing (2026-11-04 agent-23 read "background shell idle over 120m"
 # with ~80 classes done). Its mtime is the event; a gate that ended leaves a log whose age only grows.
 gate_log_idle() {
-  local cwd="$1" idle="$2" f m age
-  for f in $FLEET_GATE_LOGS; do
-    m="$(stat -c %Y "$cwd/$f" 2>/dev/null)" || continue
+  local cwd="$1" idle="$2" f m age root
+  local -a logs=()
+  # The worktree root, so a session started in a subdirectory finds the same log; no glob expands.
+  root="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)" || root="$cwd"
+  read -ra logs <<<"$FLEET_GATE_LOGS"
+  for f in "${logs[@]}"; do
+    m="$(stat -c %Y "$root/$f" 2>/dev/null)" || continue
     age=$(( ($(date +%s) - m) / 60 ))
     [ "$age" -ge 0 ] && [ "$age" -lt "$idle" ] && idle="$age"
   done
@@ -1899,7 +1903,7 @@ collect() {
     # close --self reads one row: the others' git, gh and transcript reads cost a minute (54 rows).
     [ -z "${CLOSE_SELF:-}" ] || [[ "$line" == *"$CLOSE_SELF"* ]] || continue
     rm -f "$CACHE/blind_row"
-    local target pane status plan sid cwd since ctx planf tsess idle asks ownask hv bucket fact edited \
+    local target pane status plan sid cwd since ctx planf tsess idle bidle asks ownask hv bucket fact edited \
           pdone ptotal pnext phases fin started age oid askids blk transcript prs \
           work jobs human parked compactions topic doing said gate test ojob acct pq names landed live cpid host cwin
     # The separator is a unit separator, not a tab: read collapses an empty tab-separated field and
@@ -1953,9 +1957,11 @@ collect() {
       then map(select(.state == "MERGED") | "#\(.number)") | join(",") else "-" end' <<<"$prs")"
     tsess="${target#*/}"; tsess="${tsess%:*}"
     idle=$(( (now - since) / 60 ))
-    # A running local gate or test writes its log while the transcript is silent: that write is activity.
+    # A running local gate or test writes its log while the transcript is silent: that write is activity
+    # for the bucket (bidle); idle_min and the wake and close reads keep the transcript's own idle.
+    bidle="$idle"
     if [ "$host" = - ] && [ "$status" = shell ]; then
-      case "$ojob" in gate | test) idle="$(gate_log_idle "$cwd" "$idle")" ;; esac
+      case "$ojob" in gate | test) bidle="$(gate_log_idle "$cwd" "$idle")" ;; esac
     fi
     age=-; [[ "$started" =~ ^[0-9]+$ ]] && age=$(( (now - started) / 60 ))
     # Every ask this session filed and nobody answered (ownask), the ones a queue item carries on
@@ -2153,9 +2159,9 @@ collect() {
     if [ "$host" = - ] && { [ "$idle" -ge "$FLEET_IDLE_MIN" ] || [ "$sid" = "${CLOSE_SELF:-}" ]; }; then
       IFS=$'\t' read -r wake cron < <(wake_facts "$transcript" "$started" "$now" "$idle" "$phases" "$pdone" "$ptotal" "$pq")
     fi
-    bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
+    bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$bidle" "$g" "$dirty" "$ahead" \
               "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" "$cron")"
-    fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
+    fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$bidle" "$g" "$dirty" "$ahead" \
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" && fin=1
     # An idle session whose last message is an API Error line is stopped, whatever else reads WORKING
     # (idle under FLEET_IDLE_MIN, a pending CI run): nothing in it wakes without a message. A finished
@@ -2166,7 +2172,7 @@ collect() {
       apistop="$(api_error_stop "$transcript")"
       [ -z "$apistop" ] || bucket="STALLED turn ended on API Error ${apistop%%$'\t'*}"
     fi
-    blk="$(work_blockers "$askids" "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
+    blk="$(work_blockers "$askids" "$status" "$plan" "$asks" "$hv" "$bidle" "$g" "$dirty" "$ahead" \
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" - "$(merged_prs "$prs")")"
     local elsewhere=""
     [ "$host" != - ] || elsewhere="$(edited_work_blockers "$cwd" "$edited" "$sid")"

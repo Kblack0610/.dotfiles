@@ -1643,7 +1643,15 @@ SH
   PANEL_STATUS=shell PANEL_JOB=gate PANEL_IDLE_S=$((200 * 60)) panel "$SANDBOX/wt" "$SANDBOX/plan.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
-  [ "$(jq -r '"\(.bucket) \(.idle_min)"' <<<"$output")" = "WORKING 0" ]
+  # the bucket counts the log write; idle_min stays the transcript's own silence
+  [ "$(jq -r '"\(.bucket) \(.idle_min)"' <<<"$output")" = "WORKING 200" ]
+  # a session started in a subdirectory of the worktree finds the same log
+  mkdir -p "$SANDBOX/wt/sub"
+  PANEL_STATUS=shell PANEL_JOB=gate PANEL_IDLE_S=$((200 * 60)) panel "$SANDBOX/wt/sub" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = "WORKING" ]
+  PANEL_STATUS=shell PANEL_JOB=gate PANEL_IDLE_S=$((200 * 60)) panel "$SANDBOX/wt" "$SANDBOX/plan.md"
   # negative control: the same gate whose log has not moved in 3h reads idle
   touch -d '3 hours ago' "$SANDBOX/wt/Logs/gate.txt"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
@@ -1654,6 +1662,7 @@ SH
   touch "$SANDBOX/wt/Logs/gate.txt"
   PANEL_STATUS=shell PANEL_JOB=jobs PANEL_IDLE_S=$((200 * 60)) panel "$SANDBOX/wt" "$SANDBOX/plan.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
   jq -r .reason <<<"$output" | grep -q 'not a gate or test'
 }
 
