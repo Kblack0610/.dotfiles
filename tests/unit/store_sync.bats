@@ -755,6 +755,70 @@ move_item() {
   [ -e "$SANDBOX/d/queue/running/y.md" ]
 }
 
+# running_item <machine>: a running item r on origin, its header as agent-queue writes it (no leading ---).
+running_item() {
+  mkdir -p "$SANDBOX/$1/queue/running"
+  printf 'slug: r\nhost: b\npartial: yes\nopen_pr: o#1\n---\ntask\n' > "$SANDBOX/$1/queue/running/r.md"
+  on "$1" --now >/dev/null
+}
+
+# set_key <machine> <key> <value>: agent-queue's header_set on item r, a new key just above the ---.
+set_key() {
+  local f="$SANDBOX/$1/queue/running/r.md"
+  awk -v k="$2" -v v="$3" '!d && $0 == "---" {if (!s) print k ": " v; d = 1; print; next}
+    !d && index($0, k ":") == 1 {print k ": " v; s = 1; next} {print}' "$f" > "$f.t" && mv "$f.t" "$f"
+}
+
+@test "two machines setting different keys on one item's adjacent header lines both keep theirs (ar-3439)" {
+  peer a; running_item a; peer b
+  # the fleet home records a merged partial PR while the worker's session moves on to its next PR
+  set_key a pr o#1; set_key a merged abc
+  set_key b open_pr o#2; set_key b branch br@1
+  on a --now
+  run on b --now
+  assert_success
+  assert_output --partial COMPLETE
+  run show "$ORIGIN" queue/running/r.md
+  assert_line 'open_pr: o#2'
+  assert_line 'branch: br@1'
+  assert_line 'pr: o#1'
+  assert_line 'merged: abc'
+  assert_line 'task'
+  refute_output --partial '<<<<<<<'
+}
+
+@test "one key set two ways on one item, or a repeated key, still conflicts" {
+  peer a; running_item a; peer b
+  set_key a open_pr o#2; set_key a pr o#1
+  set_key b open_pr o#3
+  on a --now
+  run on b --now
+  assert_failure
+  assert_output --partial 'conflicts in queue/running/r.md'
+  peer c; peer d
+  # each side adds its own key at one spot; only the repeat on c's side stops the merge
+  sed -i 's/^---$/note: c\nnote: c\n---/' "$SANDBOX/c/queue/running/r.md"
+  set_key d branch br@2
+  on c --now
+  run on d --now
+  assert_failure
+  assert_output --partial 'conflicts in queue/running/r.md'
+}
+
+@test "a clone set up with the old close driver moves to the item driver" {
+  peer a
+  printf 'queue/done/*/*.md merge=close\n' > "$SANDBOX/a/.git/info/attributes"
+  git -C "$SANDBOX/a" config merge.close.driver 'store-sync merge-close %O %A %B %P'
+  echo 'state: x' > "$SANDBOX/a/queue/item.md"
+  on a --now >/dev/null
+  run cat "$SANDBOX/a/.git/info/attributes"
+  assert_output $'queue/*/*.md merge=item\nqueue/done/*/*.md merge=item'
+  run git -C "$SANDBOX/a" config --get merge.close.driver
+  assert_failure
+  run git -C "$SANDBOX/a" config --get merge.item.driver
+  assert_output --partial 'merge-item %O %A %B %P'
+}
+
 # lose_head_tree <machine>: what a crash did to the fleet home (ar-3439): HEAD stays, its loose tree is gone.
 lose_head_tree() {
   local t
