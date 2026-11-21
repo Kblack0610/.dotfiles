@@ -42,7 +42,7 @@ pub struct Who {
     /// Why it is deployed: its conf `DESCRIPTION`.
     #[serde(rename = "for")]
     pub purpose: String,
-    /// What it is doing, or its last run; `(N failed 24h)` when any run failed in the day.
+    /// What it is doing, or its last run; `(N failed 24h)` when a run before its last one failed in the day.
     pub doing: String,
     /// `called by <caller>`, or for a lead `N sessions`, the live sessions it oversees.
     pub under: String,
@@ -148,9 +148,18 @@ fn runner(w: &Worker, at: i64) -> Who {
         (None, None, Some(n)) if n > at => format!("next {}", clock(n)),
         _ => String::new(),
     };
-    let doing = match w.failed_24h {
-        0 => doing,
-        n => format!("{doing} ({n} failed 24h)").trim().to_string(),
+    // A failed activity line is one of the day's failures and DOING already says FAILED, so the
+    // count rides along only when an older failure exists. A hold, a call or a running line shows
+    // no run word, so there the count stays.
+    let shows_failed = w.held_since.is_none()
+        && call.is_none()
+        && w.why.as_ref().is_some_and(|o| o.ok == Some(false));
+    let doing = if w.failed_24h > u32::from(shows_failed) {
+        format!("{doing} ({} failed 24h)", w.failed_24h)
+            .trim()
+            .to_string()
+    } else {
+        doing
     };
     let tier = if w.tier == 0 { 2 } else { w.tier };
     Who {
@@ -396,6 +405,17 @@ mod tests {
         let r = build(&[ran("briefing", "FAILED", false, 3)], &json!({}), 1000);
         assert_eq!(r[0].state, "failed");
         assert_eq!(r[0].doing, "FAILED 6 need you (3 failed 24h)");
+        // A last run that is the day's only failure is not counted again.
+        let r = build(&[ran("briefing", "FAILED", false, 1)], &json!({}), 1000);
+        assert_eq!(r[0].state, "failed");
+        assert_eq!(r[0].doing, "FAILED 6 need you");
+        // Held: DOING is the hold's text, which names no failure, so the count stays.
+        let mut held = ran("briefing", "FAILED", false, 1);
+        held.held_since = Some(800);
+        held.held_why = "over budget".into();
+        held.why = None;
+        let r = build(&[held], &json!({}), 1000);
+        assert_eq!(r[0].doing, "over budget (1 failed 24h)");
         // A day with no failure adds nothing.
         let r = build(&[ran("briefing", "WORKED", true, 0)], &json!({}), 1000);
         assert_eq!(r[0].doing, "WORKED 6 need you");
