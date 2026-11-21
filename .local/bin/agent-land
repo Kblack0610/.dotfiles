@@ -20,7 +20,7 @@
 # on origin/<base>, by agent-merge-proof.sh), live (dotfiles-autopull --now fast-forwards the stowed
 # checkout when this repo is ~/.dotfiles or ~/.dotfiles-private, links what it added, rebuilds the
 # Rust tools, restarts agent-web on a new binary and a persistent agentctl runner on a new script; a line, never a failure), item (the queue item gets pr:<owner>/<repo>#<pr>,
-# merged:<sha>, this Claude session in its sessions, the project credited by the PR's changed
+# merged:<sha>, this Claude session in its sessions (unless --partial lands on an item another session owns), the project credited by the PR's changed
 # files (agent-queue attribute), and moves to done, status ok unless --partial keeps it open; a done ok item with no PR in this
 # PR's repo adds it to its pr: and merged: lists instead, one PR per repo; an open item's earlier PR with
 # no merge recorded takes its merge commit from gh, and one not merged refuses before the merge, settle_prior;
@@ -40,7 +40,9 @@
 # doc says it needs one.
 # An already MERGED PR skips checks, fetch and merge, so a re-run finishes a failed record step.
 # --partial records a merged PR with partial: yes and leaves the item and row open, for a final
-# agent-land without --partial, which clears the marker and closes the item. An item carries at most
+# agent-land without --partial, which clears the marker and closes the item. A partial landing on
+# an item another session owns records the PR without claiming the item, so self-close is not
+# held up by the other session's open item. An item carries at most
 # one PR per repo unless --partial lifts that limit, so a brief asking for two PRs in one repo is one
 # item (land the first with --partial, the last without). If the session ends first, reap requeues the
 # item and the next run makes that final landing.
@@ -678,6 +680,25 @@ own_merged() {
   fail match "#$pr ($pr_ref, from $head_ref) is merged, and nothing ties it to $item: its body has no \"Item: $item\" line, its head ${head_oid:0:8} is not in this checkout's HEAD, and the item records ${it_pr:-no PR}. A PR in another repo: run from a checkout of it, with --repo <owner>/<repo>"
 }
 
+# other_session: exit 0 when another session owns this queue item (its session: names another
+# tmux session, or it has none and sessions: lists only other Claude sessions), so a --partial landing does not
+# claim it and tie this session to it while it is still running (tilecast 2026-11-18, ar-3368).
+other_session() {
+  local sid="${CLAUDE_CODE_SESSION_ID:-}" cur tsess n
+  [ -n "$sid" ] || return 1
+  [ -z "${AGENT_QUEUE_ITEM:-}" ] || [ "$item" != "$AGENT_QUEUE_ITEM" ] || return 1
+  [ -z "$implied" ] || return 1
+  cur=$(jq -r '.sessions // ""' <<<"$it")
+  [[ " $cur " != *" $sid "* ]] || return 1
+  # session: is <server>:<session>, the form agent-queue's own_session records. Its own tmux
+  # session is this one (a resumed session has a new id), and one this landing cannot name
+  # (no tmux) is not known to be another's, so it claims as before.
+  tsess=$(jq -r '.session // ""' <<<"$it")
+  [ -n "$tsess" ] || { [ -n "$cur" ]; return; }
+  [ -n "${TMUX:-}" ] && n=$(tmux display-message -p '#{session_name}' 2>/dev/null) && [ -n "$n" ] || return 1
+  [ "$tsess" != "$(basename "${TMUX%%,*}"):$n" ]
+}
+
 # stamp_item: the PR body names its work item on one "Item: <slug>" line. A body that already has it
 # is left alone; any other "Item:" line is replaced, else the line is appended. Before the checks,
 # so a CI job that reads the body runs on the stamped one.
@@ -977,7 +998,9 @@ chain_event land merged "$(jq -r .project <<<"$it")" "$(jq -r '.title // ((.task
 
 case "$done_as" in
 '')
-  [ -z "${CLAUDE_CODE_SESSION_ID:-}" ] || aq_retry claim "$item" >/dev/null 2>&1 || echo "item: could not record this session on $item (agent-queue claim)" >&2
+  if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && ! { [ "$partial" -eq 1 ] && other_session; }; then
+    aq_retry claim "$item" >/dev/null 2>&1 || echo "item: could not record this session on $item (agent-queue claim)" >&2
+  fi
   # Re-read so earlier partial landings survive, including a re-run of this PR.
   # closing_pr owns a failed board step even when it is the second PR in the list.
   it=$(aq_retry show "$item" --json 2>&1) || fail item "agent-queue show: $(lastline "$it")"
