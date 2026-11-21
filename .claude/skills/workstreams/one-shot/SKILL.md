@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: workstreams
   tags: [delivery, landing, autonomy, session]
+  system: [dispatch]
   reviewed: "2026-11-05"
 ---
 

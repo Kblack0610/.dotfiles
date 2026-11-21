@@ -26,8 +26,13 @@
 #   DUPNAME    the same skill name defined twice. ~/.claude/skills is ONE flat
 #              namespace across both repos, so a duplicate is ambiguous.
 #   BADMETA    metadata.category / tags / reviewed missing or malformed, a
-#              category outside the known set, or a category that disagrees with
-#              the parent directory.
+#              category outside the known set, a category that disagrees with
+#              the parent directory, or a skill with no category directory.
+#   SYSTEM     metadata.system missing, not an inline list, an id outside the systems
+#              registry, or `any` beside another id. The registry is the Systems table
+#              of systems.md plus each project's own ids in project-map.json; where no
+#              project map is readable (the public repo's CI) an id outside the table is
+#              checked for form only, and the lint says so.
 #   CATCOLLIDE a category sharing a name with a skill. `comms/comms/` makes
 #              `git mv` refuse, and the first attempt at the category migration
 #              silently moved two sibling skills INSIDE the comms skill.
@@ -200,6 +205,13 @@ HAND_METHODS="$(dirname "$(readlink -f "$0")")/../../.claude/hooks/hand_methods.
 # conversation, not a silent new directory.
 CATEGORIES=" authoring memory messaging monitoring ops reference research tickets workstreams "
 
+# metadata.system names what a skill works on, where category names the kind of work. The ids are
+# the one systems registry: the Systems table of systems.md, read beside this script so a worktree
+# or CI run reads its own copy, plus the ids a project declares under `systems` in its
+# project-map.json entry (an entry named after a table id only adds aliases). `any` alone marks a
+# skill every system uses (de-ai-writing, rigor).
+SYSTEMS_DOC="${SKILL_SYSTEMS_DOC:-$(dirname "$(readlink -f "$0")")/../src/docs/systems.md}"
+
 # The per-skill description budget, in bytes. Measured 2026-11-02: the listing
 # shares about 30 KB across 129 skills and commands, and with descriptions
 # totalling 72 KB, 88 of them arrived as a bare name. 300 B each keeps the
@@ -262,6 +274,24 @@ case "$MODE" in lint|write_lint_baseline|ratchet)
 esac
 
 LINT_BASELINE="${SKILL_LINT_BASELINE:-$LINT_DIR/tests/skill-lint.baseline}"
+
+# The system vocabulary. SYSTEM_IDS from the doc; OWN_IDS from the first project map found:
+# SKILL_PROJECT_MAP when set (alone, so a test can say "no map"), else the linted checkout's own
+# (the private repo carries it), else the private overlay's. MAP_READ=0 means none was readable.
+SYSTEM_IDS=" $(awk '/^## / { t = ($0 == "## Systems"); next }
+  t && /^\| *[a-z][a-z-]* *\|/ { split($0, c, "|"); gsub(/ /, "", c[2]); print c[2] }' "$SYSTEMS_DOC" 2>/dev/null | tr '\n' ' ')"
+OWN_IDS=" " MAP_READ=0 MAP_BAD=""
+if [ -n "${SKILL_PROJECT_MAP+x}" ]; then MAPS=("$SKILL_PROJECT_MAP")
+else MAPS=("${LINT_DIR:+$LINT_DIR/.config/shared-hooks/project-map.json}" "$PRIV/.config/shared-hooks/project-map.json"); fi
+for m in "${MAPS[@]}"; do
+  [ -n "$m" ] && [ -f "$m" ] || continue
+  if own=$(jq -r '[.trackers[]? | objects | .systems | objects | keys[]] | unique | join(" ")' "$m" 2>/dev/null); then
+    OWN_IDS=" $own " MAP_READ=1
+  else
+    MAP_BAD="$m"
+  fi
+  break
+done
 
 FINDINGS=()   # "TYPE|skill|item|detail"
 add() { FINDINGS+=("$1|$2|$3|$4"); }
@@ -366,9 +396,13 @@ check_meta() {
       *" $cat "*) : ;;
       *) add BADMETA "$skill" "$cat" "category is not one of:$CATEGORIES" ;;
     esac
-    # The directory IS the category. Two places to read it means one can be wrong.
-    [ -z "$parent" ] || [ "$cat" = "$parent" ] \
-      || add BADMETA "$skill" "$cat" "category disagrees with the parent directory ($parent)"
+    # The directory IS the category. Two places to read it means one can be wrong, and a flat
+    # skill has only one of them: a category nothing on disk agrees with.
+    if [ -z "$parent" ]; then
+      add BADMETA "$skill" "$cat" "a skill sits in its category directory, .claude/skills/$cat/$skill/"
+    elif [ "$cat" != "$parent" ]; then
+      add BADMETA "$skill" "$cat" "category disagrees with the parent directory ($parent)"
+    fi
   fi
 
   [ -n "$tags" ] || add BADMETA "$skill" tags "missing metadata.tags"
@@ -382,6 +416,38 @@ check_meta() {
   elif ! printf '%s' "$rev" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'; then
     add BADMETA "$skill" "$rev" "reviewed must be a quoted YYYY-MM-DD date"
   fi
+  return 0
+}
+
+# metadata.system: an inline list of registry ids, or [any] alone. A red's fix item and the
+# systems report find a system's skills by it, so a typo hides a skill from its system.
+check_system() {
+  local skill="$1" f="$2" raw id ids=() any=0
+  raw=$(fm "$f" | sed -n 's/^  system:[[:space:]]*//p' | awk 'NR==1')
+  # A trailing comment is YAML's, not the list's.
+  raw=$(printf '%s' "$raw" | sed 's/[[:space:]]*#.*$//')
+  case "$raw" in
+    "") if fm "$f" | grep -q '^  system:'; then
+          add SYSTEM "$skill" system "system must be an inline list, e.g. [ci, tests]"
+        else
+          add SYSTEM "$skill" system "missing metadata.system: the systems it works on, or [any]"
+        fi
+        return 0 ;;
+    \[*\]) ;;
+    *) add SYSTEM "$skill" system "system must be an inline list, e.g. [ci, tests]"; return 0 ;;
+  esac
+  raw=${raw#[}; raw=${raw%]}
+  IFS=', ' read -ra ids <<< "$raw"
+  [ "${#ids[@]}" -gt 0 ] || { add SYSTEM "$skill" system "metadata.system is empty: name a system, or [any]"; return 0; }
+  for id in "${ids[@]}"; do
+    [ "$id" = any ] && { any=1; continue; }
+    [ -n "${SYSTEM_IDS// /}" ] || continue   # no registry read: reported once, by run_static
+    case "$SYSTEM_IDS$OWN_IDS" in *" $id "*) continue ;; esac
+    # With no project map an own id cannot be told from a typo, so only its form is checked.
+    [ "$MAP_READ" = 0 ] && printf '%s' "$id" | grep -qE '^[a-z][a-z-]*$' && continue
+    add SYSTEM "$skill" "$id" "not a system id (systems.md Systems, a project's own systems in project-map.json, or any)"
+  done
+  [ "$any" = 0 ] || [ "${#ids[@]}" -eq 1 ] || add SYSTEM "$skill" any "any stands alone: a skill every system uses names no other"
   return 0
 }
 
@@ -917,7 +983,7 @@ run_static() {
       check_frontmatter "$s" "$m" name description
       check_yaml        "$s" "$m"
       check_name        "$s" "$m"
-      [ "$contract" = full ] && check_meta "$s" "$m" "$parent"
+      [ "$contract" = full ] && check_meta "$s" "$m" "$parent" && check_system "$s" "$m"
       check_desc_len "$s" "$m"
       check_ascii    "$s" "$m"
       check_heading  "$s" "$m"
@@ -933,6 +999,8 @@ run_static() {
   # that test every skill in the flat layout counts as a category colliding with
   # itself, which reported 68 findings for a corpus that had none.
   [ "$contract" = full ] || return 0
+  [ -n "${SYSTEM_IDS// /}" ] || add SYSTEM registry "$SYSTEMS_DOC" "no Systems table read, so no metadata.system id was checked"
+  [ -z "$MAP_BAD" ] || add SYSTEM registry "$MAP_BAD" "the project map does not parse, so no own system id was checked"
   for root in "$@"; do
     [ -d "$root" ] || continue
     for d in "$root"/*/; do
@@ -1299,6 +1367,9 @@ if [ "$MODE" = lint ]; then
     [ -z "$line" ] || [ -n "${CURRENT[$line]:-}" ] && continue
     printf '%sskill-lint: stale baseline line, delete it: %s\n' "$warn" "$line"
   done < <(cat "$LINT_BASELINE" 2>/dev/null)
+  # Said on every run, so a pass in the public repo's CI is not read as the whole SYSTEM check.
+  [ "$PROFILE" = full ] && [ "$MAP_READ" = 0 ] && [ -z "$MAP_BAD" ] \
+    && printf '%sskill-lint: no project map readable, so a metadata.system id outside the systems.md table was checked for form only\n' "${GITHUB_ACTIONS:+::notice::}"
   scanned=$(find_skills "$LINT_DIR/.claude/skills" | wc -l)
   entries=$( { find_commands "$LINT_DIR"; find_agents "$LINT_DIR"; } | wc -l)
   # An empty input list is a FAILURE, not a clean run. Every tooling failure in
@@ -1375,6 +1446,8 @@ cat <<'EOF'
   BADNAME    -> rename the directory or the frontmatter so the two agree
   DUPNAME    -> one flat namespace across both repos; rename one of them
   BADMETA    -> fix the metadata block (see ~/.local/src/docs/skills.md)
+  SYSTEM     -> name the systems the skill works on (`project-system-check <project> --list`
+                prints a project's ids), or [any] for a skill every system uses
   BADYAML    -> use a `description: >-` block; a bare `: ` in the value breaks the parse
   CATCOLLIDE -> rename the category; it cannot share a name with a skill
   LONGDESC   -> cut the description to a trigger line (what it is, the main

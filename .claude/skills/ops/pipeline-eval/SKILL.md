@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: ops
   tags: [pipeline, fleet, queue, dispatch, shepherd, sessions, flow, throughput, bottleneck]
+  system: [dispatch]
   reviewed: "2026-11-16"
 ---
 

@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: ops
   tags: [ci, github-actions, failures, flaky, triage]
+  system: [ci]
   reviewed: "2026-11-19"
 ---
 

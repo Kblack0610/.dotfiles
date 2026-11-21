@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [agents, fleet, dispatch, queue, board]
+  system: [dispatch]
   reviewed: 2026-11-18
 ---
 

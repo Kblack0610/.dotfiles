@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: ops
   tags: [reaper, audio, reascript, music, pipewire, midi]
+  system: [audio]
   reviewed: "2026-10-19"
 ---
 

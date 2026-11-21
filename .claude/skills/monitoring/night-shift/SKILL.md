@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [monitoring, overnight, observe-only, sentinel]
+  system: [telemetry]
   reviewed: "2026-11-09"
 ---
 

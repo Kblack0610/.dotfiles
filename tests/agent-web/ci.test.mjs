@@ -83,13 +83,13 @@ const brow = (key) => ({ dataset: { bkey: key }, closest: (sel) => (sel === "tr.
 const BKEY = "github.com|binks|77|2";
 
 test("the CI runs section lists each run's state, owner and the release it ran on", () => {
-  showBuilds(bdata({ rows: [red, { ...red, id: 78, release: { project: "binks", tag: "v1.2.0" } }] }));
+  showBuilds(bdata({ rows: [red, { ...red, id: 78, release: { project: "binks", tag: "v1.2.0", href: "#releases/apps/binks%2Fv1.2.0" } }] }));
   const b = runs.innerHTML;
   assert.match(b, /<div data-tbl="b"><div id="bld-head"><h2 class="sec" id="sec-runs">Runs <span class="n">1 of 2<\/span><\/h2>/, "the head is its title and the view's count");
   assert.doesNotMatch(b, /ledger older/, "a fresh ledger draws no warn line");
   assert.match(b, /<td class="bad">red<\/td><td>binks<\/td><td class="wrap">Tests<\/td>/);
   assert.match(b, /<td class="muted">agent-3<\/td><td class="muted">-<\/td><\/tr>/, "no release draws a dash");
-  assert.match(b, /<td class="muted">v1.2.0<\/td><\/tr>/);
+  assert.match(b, /<td class="muted"><a href="#releases\/apps\/binks%2Fv1.2.0" title="this release as a pipeline">v1.2.0<\/a><\/td><\/tr>/, "the release links its page");
 });
 
 test("a run with no owning session draws a dash, and an empty ledger says so", () => {
@@ -122,7 +122,7 @@ test("the runs draw only while Infra is the open tab", () => {
 });
 
 test("opening a run reads its log then, and only then; clicking again closes it", async () => {
-  showBuilds(bdata({ rows: [{ ...red, release: { project: "binks", tag: "v1.2.0" } }] }));
+  showBuilds(bdata({ rows: [{ ...red, release: { project: "binks", tag: "v1.2.0", href: "#releases/apps/binks%2Fv1.2.0" } }] }));
   asked.length = 0;
   fire(runs, "click", { type: "click", target: brow(BKEY) });
   await settled();
@@ -132,7 +132,7 @@ test("opening a run reads its log then, and only then; clicking again closes it"
   assert.match(b, /<pre class="joblog">FAIL: step 3 exited 1<\/pre>/);
   assert.match(b, /<b>Run<\/b> github.com binks #77 attempt 2/);
   assert.match(b, /<b>PRs<\/b> #12/);
-  assert.match(b, /<b>Release<\/b> binks v1.2.0/);
+  assert.match(b, /<b>Release<\/b> <a href="#releases\/apps\/binks%2Fv1.2.0">binks v1.2.0<\/a>/);
   assert.match(b, /<td colspan="10">/, "the detail spans every column, release included");
   fire(runs, "click", { type: "click", target: brow(BKEY) });
   assert.doesNotMatch(runs.innerHTML, /joblog/);

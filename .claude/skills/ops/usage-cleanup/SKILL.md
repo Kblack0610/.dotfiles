@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: ops
   tags: [tokens, cost, usage, agents, fleet, context]
+  system: [telemetry]
   reviewed: "2026-11-07"
 ---
 

@@ -4,6 +4,7 @@ description: GitHub operations via the gh CLI - pull requests, issues, CI checks
 metadata:
   category: ops
   tags: [git, github, pull-requests, ci]
+  system: [ci]
   reviewed: "2026-11-03"
   replaces:
     - match: '(?:^|[;&|(){}\s])gh\s+run\s+watch(?=[;&|(){}\s]|$)'

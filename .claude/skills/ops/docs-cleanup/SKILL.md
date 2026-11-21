@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: ops
   tags: [docs, drift, lessons, memory, skills, knowledge, nightly]
+  system: [docs, notes]
   reviewed: "2026-11-19"
 ---
 
