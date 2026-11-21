@@ -281,9 +281,9 @@ trainee_ready() {
   # canary or claude run of t-fresh is no ladder run, and a line that is no json is skipped.
   mkdir -p "$HOME/.agent/model-lane"
   {
+    echo 'not json'
     echo '{"lane":"trainee","item":"t-again","harness":"nim","outcome":"redo"}'
     echo '{"lane":"agent","item":"t-fresh"}'
-    echo 'not json'
   } > "$HOME/.agent/model-lane/runs.jsonl"
   run trainee_why "$(agent-queue show t-again --json)" gotrain
   assert_failure; assert_output "a ladder run took it once already (model-lane's run log)"

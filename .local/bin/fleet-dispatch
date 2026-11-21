@@ -2478,7 +2478,7 @@ direct_why() {
 trainee_load() {
   # The slugs a ladder run already took (lane trainee in model-lane's run log), one read a pass: a board row
   # promoted again has a fresh queue item with no `.trainee`, so the log is the one record of the first try.
-  [ -n "${TRAINEE_TRIED+x}" ] || TRAINEE_TRIED=$(jq -r 'select(.lane == "trainee") | .item // empty' "$LANE_RUNS" 2>/dev/null | sort -u)
+  [ -n "${TRAINEE_TRIED+x}" ] || TRAINEE_TRIED=$(jq -rR 'fromjson? | select(.lane == "trainee") | .item // empty' "$LANE_RUNS" 2>/dev/null | sort -u)
   [ -z "${TRAINEE_CONF:-}" ] || return 0
   TRAINEE_CONF=$(model-lane trainee 2>/dev/null) && jq -e 'type == "object"' <<<"$TRAINEE_CONF" >/dev/null 2>&1 || TRAINEE_CONF='{}'
 }
@@ -2502,7 +2502,7 @@ ladder_row_why() {
   prev=$(jq -r '.trainee // .direct // empty' <<<"$it")
   [ -z "$prev" ] || { echo "a ladder run took it once already ($prev)"; return 1; }
   trainee_load
-  ! grep -qxF -- "$(jq -r .slug <<<"$it")" <<<"$TRAINEE_TRIED" || { echo "a ladder run took it once already (model-lane's run log)"; return 1; }
+  [ -z "$TRAINEE_TRIED" ] || ! grep -qxF -- "$(jq -r '.slug // "-"' <<<"$it")" <<<"$TRAINEE_TRIED" || { echo "a ladder run took it once already (model-lane's run log)"; return 1; }
   [ -z "$(claude_pin "$it")" ] || { echo "it names its own model"; return 1; }
   [ "$(jq -r .mode <<<"$it")" != plan ] || { echo "it is a plan item"; return 1; }
   tier=$(item_tier "$it")
