@@ -4333,8 +4333,8 @@ a"
   run "$AQ" add --project game --slug now --priority urgent "urgent for the human"
   assert_failure 5
   assert_output --partial "against a cap of 1 (item:parent)"
-  # Only a capped add is from the item; the rest keep human, as the readers of from expect.
-  [ "$(field "$(item running own)" from)" = human ]
+  # The session's record of its own work is from its item too (ar-4154), never the human's.
+  [ "$(field "$(item running own)" from)" = item:parent ]
 }
 
 @test "AGENT_QUEUE_CAP=0 is the negative control: the same adds overflow past the cap, and admission --json counts the holds of 7 days" {
