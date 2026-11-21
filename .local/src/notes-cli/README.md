@@ -152,7 +152,7 @@ The repo docs stay in the repo (the code cites them and PRs change them with it)
 
 A repo doc has one home, the repo, and the sheet's `Docs:` list opens it (read-only). To change one, put the rough lines in the project's lab `ideas.md` under a `Doc notes` heading, one bullet per point and the doc it belongs to; an agent folds them into the repo doc (a PR, written by `docs-write`) and clears them from `ideas.md`; no job does this on a schedule, so ask for it. A doc is never edited in the export.
 
-The session preflight reads the anchor and the agent board, not `summary.md`. The `## -> For the agents` section and the `<!-- canonical: -->`, `<!-- cockpit: -->` and `<!-- tagglob: -->` markers are retired (wiring is the registry entry); to ask an agent for something, add a row to the board.
+The session preflight reads the anchor, not `summary.md` or the board (a dispatched session gets its own queue item's row). The `## -> For the agents` section and the `<!-- canonical: -->`, `<!-- cockpit: -->` and `<!-- tagglob: -->` markers are retired (wiring is the registry entry); to ask an agent for something, add a row to the board.
 
 After creating, staging, releasing or archiving a project, moving rows between projects, or editing a summary or index, run `lab-refresh`: it regenerates every feed, every index and both boards in about 12 s. The CLI runs it in the background after its own project verbs; failures land in `~/.local/log/lab-refresh.log`.
 

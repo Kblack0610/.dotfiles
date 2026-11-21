@@ -19,6 +19,7 @@ setup() {
   export BENCH_TRAINEE_CMD=false   # nor the real trainee pool and floor
   export BENCH_SOURCES_CMD=false BENCH_HARNESSES="$SANDBOX/no-harnesses.json" BENCH_ROOM_CMD=false BENCH_CANARY_LANES="$SANDBOX/no-canary-lanes"   # nor the real sources, harnesses or lanes
   export BENCH_SKILL_CMD=true   # nor the real runner confs: no dangling SKILL unless a test serves one
+  export BENCH_SYSTEMS_CMD=false   # nor the real skill tree: systems_no_skill reads ? unless a test serves one
   export BENCH_ITEMS_CMD=true BENCH_QUEUE_SLOTS=3   # nor the real agent queue: empty unless a test serves one
   export BENCH_NEEDS_CMD='echo {"needs":[],"errors":[]}'   # nor the real hub: no needs unless a test serves them
   export KPI_THRESHOLDS="$SANDBOX/kpi-thresholds"
@@ -2627,6 +2628,26 @@ coverage_setup() {
   assert_output 'hold'
 }
 
+@test "triage --coverage: a generic watch line routes the row but covers no watch it does not name (ar-4155)" {
+  coverage_setup
+  sed -i '/standing/d' "$TRIAGE_ROUTES"
+  printf '^check.watch.: ([a-z0-9-]+) tripped\tagent\t-\tdo the action\t-\n' >> "$TRIAGE_ROUTES"
+  run "$SUBJECT" triage --coverage
+  assert_failure
+  assert_output 'watch standing'
+  run "$SUBJECT" triage --route 'watch standing'
+  assert_output --partial "$(printf 'watch standing\tagent')"
+  # naming it covers it, in an alternation too; a name that only contains it does not
+  printf '^check.watch.: (outstanding|standing-by) tripped\tagent\t-\tdo it\t-\n' > "$SANDBOX/named"
+  cat "$TRIAGE_ROUTES" >> "$SANDBOX/named"; mv "$SANDBOX/named" "$TRIAGE_ROUTES"
+  run "$SUBJECT" triage --coverage
+  assert_output 'watch standing'
+  sed -i '1s/(outstanding|standing-by)/(outstanding|standing)/' "$TRIAGE_ROUTES"
+  run "$SUBJECT" triage --coverage
+  assert_success
+  assert_output ''
+}
+
 @test "triage --coverage: a runner whose SKILL resolves to nothing fails and names it (negative control)" {
   coverage_setup
   printf '#!/usr/bin/env bash\nexec "%s" skill --dangling\n' "$REPO_ROOT/.local/bin/agentctl" > "$SANDBOX/bin/skill-stub"
@@ -2656,6 +2677,10 @@ coverage_setup() {
   assert_line --index 1 "$(printf 'runner alpha\tagent\t-\t-')"
   assert_line --index 2 "$(printf 'watch gone\t-\t-\t')"
   assert_line --index 3 "$(printf 'nonsense x\t-\t-\t')"
+  # an unreadable table fails the read instead of answering every key with a dash
+  TRIAGE_ROUTES="$SANDBOX/no-such-routes" run "$SUBJECT" triage --route 'watch standing'
+  assert_failure 2
+  assert_output --partial 'cannot read'
 }
 
 @test "triage: a cc:red_now item another host watches gets a row; one with local state does not" {
@@ -2944,6 +2969,22 @@ failed() {
   run "$SUBJECT" triage --dry-run
   assert_success
   assert_output 'fix(hold): ci-aaa11111-shell-tests went red after cleanup merge hit (PR 5 at aaa11111): shell tests red at aaa11111: tests/integ/tool.bats #high'
+}
+
+@test "hold: a bats warning's trace names no failed file, only a TAP diagnostic does (ar-4122)" {
+  # NEGATIVE CONTROL: any "in test file" counted, so a BW02 warning put a passing file on the row.
+  hold_setup
+  cleanup hit -7200 5 aaa11111 .local/bin/tool
+  echo 'run tool' > "$GHD/tool.bats"
+  ci 1 success zzz00000 -7300; ci 2 failure aaa11111 -7201
+  failed 2 integ/tool.bats
+  printf 'fast tier\tFast tier\t2026-11-06T17:49:04Z        in test file unit/warned.bats, line 363)\n' >> "$GHD/log.2"
+  printf 'fast tier\tFast tier\t2026-11-06T17:49:04Z # (in test file unit/body.bats, line 9)\n' >> "$GHD/log.2"
+  printf 'fast tier\tFast tier\t2026-11-06T17:49:04Z # (from function `setup'"'"' in test file unit/setup.bats, line 12)\n' >> "$GHD/log.2"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_output --partial 'shell tests red at aaa11111: tests/integ/tool.bats, tests/unit/body.bats, tests/unit/setup.bats #high'
+  refute_output --partial 'warned.bats'
 }
 
 @test "hold: a run ledger past the 128 KB argument limit still reads (ar-1619)" {
@@ -4122,6 +4163,23 @@ prs_fixture() {
   assert_failure 2
 }
 
+@test "pipeline --check owner: an active item no session owns trips it; owned and queued items pass; an unreadable list exits 2" {
+  items_stub "$(item a queued high human)" "$(item b running high human '{"session":"lab/x:1"}')" \
+    "$(item c review high human '{"sessions":"lab/y:1"}')"
+  export BENCH_ITEMS_CMD=items-stub
+  run "$SUBJECT" pipeline --check owner
+  assert_success
+  assert_output ''
+  # NEGATIVE CONTROL: a running and a waiting item that lost their sessions
+  items_stub "$(item a queued high human)" "$(item d running high human)" "$(item e waiting high human '{"session":""}')"
+  run "$SUBJECT" pipeline --check owner
+  assert_failure 1
+  assert_output '2 running, review or waiting with no session: d (running), e (waiting)'
+  export BENCH_ITEMS_CMD=false
+  run "$SUBJECT" pipeline --check owner
+  assert_failure 2
+}
+
 @test "pipeline: a step carries the record's problems, and queued says why dispatch stopped" {
   pipeline_fixture
   jq -c '(.steps[] | select(.step == "running")) += {problems_n: 1, problems: [{ts: "t", subject: "r1", kind: "failed", why: "died", n: 1}]}' "$RJSON" > "$RJSON.new"
@@ -4221,6 +4279,25 @@ prs_fixture() {
   run "$SUBJECT" improve --json
   assert_failure 1
   assert_output ''
+}
+
+@test "improve: systems_no_skill reads skill-drift --systems, is past its max in kpi, and is never picked (report-only)" {
+  kpi_setup; kpi_fixture
+  printf '%s\n' revert_rate_max=1 interrupts_per_day_max=5 systems_no_skill_max=1 > "$KPI_THRESHOLDS"
+  run "$SUBJECT" kpi --json
+  assert_equal "$(jq -r '.systems_no_skill["7d"]' <<<"$output")" null
+  printf '#!/bin/sh\necho %s\n' "'{\"no_skill\":[\"audio\",\"save\"]}'" > "$SANDBOX/bin/systems-stub"
+  chmod +x "$SANDBOX/bin/systems-stub"
+  export BENCH_SYSTEMS_CMD=systems-stub
+  run "$SUBJECT" kpi --check '^systems_no_skill$'
+  assert_failure 1
+  assert_output --partial 'systems_no_skill 2 (max 1)'
+  run "$SUBJECT" improve --json
+  assert_failure 1
+  assert_output ''
+  # outside the chain, so the board-chain watch never reads it
+  run "$SUBJECT" chain --json
+  assert_equal "$(jq -r 'has("systems_no_skill")' <<<"$output")" false
 }
 
 @test "improve file: one row tagged #kpi/<k> with its check as a detail line, its id claimed with the 7d value as the baseline" {

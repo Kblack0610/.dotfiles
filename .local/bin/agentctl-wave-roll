@@ -12,9 +12,11 @@
 #          version, and only this roll moves it.
 #   sheet  no release tag, so the sheet counter: cut when its stage's cadence has passed since the
 #          last cut and the version has closed rows (`release` in `notes projects --stats --json`),
-#          at the bump notes derives, carrying open rows. A game whose builds carry only per-build
-#          tags is cut this way too. A project never cut, or one a cadence and at least a week behind, waits for
-#          the backfill that splits its history by week.
+#          at the bump notes derives, carrying open rows. A project never cut, or one a cadence and
+#          at least a week behind, waits for the backfill that splits its history by week.
+#   parent a game built from the playground with no `Version:` line of its own: notes reads the
+#          playground's (`version_parent` in the stats), so this never rolls it, and the
+#          pass-done line names each one it skipped.
 #
 # A timer, not a git hook: tags are pushed from CI, other machines and while this box is off,
 # and an event hook sees none of those. Comparing sheet to tags every pass catches them all.
@@ -91,6 +93,7 @@ fetch_tags() { # $1=project
 # at LEVEL (`auto` lets notes derive it), expected to open NEXT; logged, paged and counted.
 # A dry run only says what it would do. 0 rolled (or would), 1 the roll failed.
 rolled=0 recorded=0 failed=0
+parented=()
 roll() {
   local profile="$1" name="$2" level="$3" next="$4" why="$5" tag="${6:-}" open out opened stale
   open="$(notes --profile "$profile" ptask "$name" list 2>/dev/null | grep -c . || true)"
@@ -175,7 +178,13 @@ while read -r profile; do
     [ "$(jq -r '.automation != false' <<<"$st")" = true ] || continue
     fetch_tags "$name"
     shipped="$(project_release_version "$name" 2>/dev/null)"
-    owner="$(project_version_owner "$name" "$shipped")"
+    parent="$(jq -r '.version_parent // empty' <<<"$st")"
+    owner="$(project_version_owner "$name" "$shipped" "$parent")"
+    if [ "$owner" = parent ]; then
+      parented+=("$name")
+      [ "$DRY" = 0 ] || printf 'skip %s: its version is %s'"'"'s\n' "$name" "$parent"
+      continue
+    fi
     if ! is_ver "$ver" || ! has_sheet "${sheet:+$(dirname "$sheet")}"; then
       [ "$owner" = sheet ] || log "skip $name: no versioned sheet (shipped $shipped)"
       continue
@@ -204,7 +213,7 @@ while read -r profile; do
 done < <(notes config --profiles 2>/dev/null)
 
 [ "$DRY" = 1 ] && exit 0
-log "pass done: $rolled rolled, $recorded tag notes recorded, $failed failed, $fetch_failed of $fetched tag fetches failed"
+log "pass done: $rolled rolled, $recorded tag notes recorded, $failed failed, $fetch_failed of $fetched tag fetches failed${parented[*]:+; versioned by their parent, not rolled: ${parented[*]}}"
 
 # Publish a verdict, or the unit's PENDING is promoted to STALLED on stop and fleet-liveness
 # reads every quiet pass as a stall. Every fetch failing is a stall in its own right: the pass

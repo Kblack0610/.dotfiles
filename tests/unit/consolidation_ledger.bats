@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
 # fleet-bench ledger: the counts that say whether the fleet is consolidating or growing.
 #
-# Runners, timers and direct headless launches may only shrink. `ledger --check` holds
-# them to a committed baseline; every fixture here is a sandbox directory, because the
+# Runners and timers may only shrink, and a direct headless launch needs its PIPELINES.md row.
+# `ledger --check` holds them to a committed baseline and that table; every fixture here is a sandbox directory, because the
 # live roster lives in the private overlay that CI cannot see.
 
 setup() {
@@ -23,7 +23,10 @@ setup() {
     printf "NAME=%s\nKIND=oneshot\nSCHEDULE='*-*-* 03:00'\n" "$n" > "$LEDGER_CONF_DIR/$n.conf"
   done
   printf 'exec claude "${flags[@]}" "$@"\n' > "$LEDGER_SRC/harness.sh"
-  printf 'runners=2\ntimers=2\nlaunches_direct=0\n' > "$LEDGER_BASELINE"
+  printf 'runners=2\ntimers=2\n' > "$LEDGER_BASELINE"
+  # The launch allowlist: PIPELINES.md's table, with no row yet
+  export LEDGER_PIPELINES="$SANDBOX/PIPELINES.md"
+  printf '# P\n\n## Model calls outside agentctl-run\n\n| File | Pipeline |\n| --- | --- |\n\n## Other\n\n| `runner` | not this table |\n' > "$LEDGER_PIPELINES"
   # One ask filed 20 days before BENCH_NOW, one filed 1 day before.
   # hub needs --json: two asks, 20 days and one day old, and a session row that is no ask
   cat > "$SANDBOX/bin/needs-stub" <<'NS'
@@ -138,14 +141,43 @@ NS
   printf '#!/bin/sh\ncurl -s "$URL/chat/completions" -d @q\n' > "$LEDGER_SRC/runner"
   run "$SUBJECT" ledger --check
   assert_failure
-  assert_output 'launches_direct grew: 1 > baseline 0'
+  assert_output "launch with no PIPELINES.md row: $LEDGER_SRC/runner"
 }
 
-@test "a direct claude -p fails the check" {
+@test "a direct claude -p fails the check until its file has a row in the launch table" {
   printf '#!/bin/sh\nclaude -p "do it"\n' > "$LEDGER_SRC/runner"
   run "$SUBJECT" ledger --check
   assert_failure
-  assert_output 'launches_direct grew: 1 > baseline 0'
+  assert_output "launch with no PIPELINES.md row: $LEDGER_SRC/runner"
+  # a row in another section is no allowlist row; one in the launch table is, with any note after the name
+  sed -i 's/^| --- | --- |$/&\n| `runner` (its probe) | a hand run |/' "$LEDGER_PIPELINES"
+  run "$SUBJECT" ledger --check
+  assert_success
+  assert_output ''
+  # the count stays a reading
+  run "$SUBJECT" ledger
+  assert_line 'launches_direct=1'
+}
+
+@test "a launch table row whose file no longer launches fails the check (negative control)" {
+  sed -i 's/^| --- | --- |$/&\n| `gone.sh` | retired |/' "$LEDGER_PIPELINES"
+  run "$SUBJECT" ledger --check
+  assert_failure
+  assert_output 'PIPELINES.md row with no launch: gone.sh'
+  run "$SUBJECT" ledger --unlisted
+  assert_failure
+  assert_output 'PIPELINES.md row with no launch: gone.sh'
+}
+
+@test "no launch table fails rather than reading as held" {
+  rm "$LEDGER_PIPELINES"
+  run "$SUBJECT" ledger --check
+  assert_equal "$status" 2
+  assert_output --partial 'no launch table'
+  printf '# P\n\n## Timers\n' > "$LEDGER_PIPELINES"
+  run "$SUBJECT" ledger --check
+  assert_equal "$status" 2
+  assert_output --partial "no '## Model calls outside agentctl-run' section"
 }
 
 @test "the default scan reaches a launch owned by a skill in either repo" {
