@@ -2373,3 +2373,61 @@ EOF2
   run agent-queue show tidy-loader --json
   assert_equal "$(jq -r '.open_pr // "gone"' <<<"$output")" 'o/r#42'
 }
+
+@test "a partial landing on an item another session owns records the PR without claiming the item (ar-3368)" {
+  item ship
+  agent-queue claim ship --sid sid-owner >/dev/null
+  run agent-queue show ship --json
+  assert_equal "$(jq -r .sessions <<<"$output")" 'sid-owner'
+
+  # A partial landing from a different session records the PR but does not claim the item.
+  CLAUDE_CODE_SESSION_ID=sid-lander run "$LAND" 42 --item ship --partial
+  assert_success
+  assert_line --partial 'item: ship partial with pr:o/r#42'
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '[.state, .partial, .pr, .sessions] | join("|")' <<<"$output")" 'running|yes|o/r#42|sid-owner'
+
+  # Negative control: landing without --partial claims the item on its final landing.
+  echo '{"state":"MERGED","mergeCommit":{"oid":"abcdef0123456789abcdef0123456789abcdef01"}}' >"$NOTES_FIXTURE/prior.json"
+  echo OPEN >"$NOTES_FIXTURE/state"
+  echo https://github.com/o/p/pull/43 >"$NOTES_FIXTURE/url"
+  echo git@github.com:o/p.git >"$NOTES_FIXTURE/origin.url"
+  CLAUDE_CODE_SESSION_ID=sid-lander run "$LAND" 43 --item ship
+  assert_success
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '[.state, .sessions] | join("|")' <<<"$output")" 'done|sid-owner sid-lander'
+}
+
+@test "a partial landing on an item owned via tmux session does not claim the item (ar-3368)" {
+  printf 'dotfiles-agent-9\n' >"$NOTES_FIXTURE/tmux.session"
+  export TMUX="$SANDBOX/tmp/tmux-1000/default,123,0"
+  item foreign
+  agent-queue set foreign session=lab:foreign-sess >/dev/null
+  agent-queue claim foreign --sid sid-old >/dev/null
+  CLAUDE_CODE_SESSION_ID=sid-lander run "$LAND" 42 --item foreign --partial
+  assert_success
+  assert_line --partial 'item: foreign partial with pr:o/r#42'
+  run agent-queue show foreign --json
+  assert_equal "$(jq -r '[.state, .partial, .pr, .sessions] | join("|")' <<<"$output")" 'running|yes|o/r#42|sid-old'
+}
+
+@test "a partial landing from the item's own tmux session under a new id claims it, as does one with no tmux to compare (ar-3368)" {
+  printf 'dotfiles-agent-9\n' >"$NOTES_FIXTURE/tmux.session"
+  export TMUX="$SANDBOX/tmp/tmux-1000/default,123,0"
+  item resumed
+  agent-queue set resumed session=default:dotfiles-agent-9 >/dev/null
+  agent-queue claim resumed --sid sid-old >/dev/null
+  CLAUDE_CODE_SESSION_ID=sid-new run "$LAND" 42 --item resumed --partial
+  assert_success
+  run agent-queue show resumed --json
+  assert_equal "$(jq -r .sessions <<<"$output")" 'sid-old sid-new'
+
+  unset TMUX
+  item headless
+  agent-queue set headless session=lab:somewhere >/dev/null
+  echo https://github.com/o/r/pull/43 >"$NOTES_FIXTURE/url"
+  CLAUDE_CODE_SESSION_ID=sid-new run "$LAND" 43 --item headless --partial
+  assert_success
+  run agent-queue show headless --json
+  assert_equal "$(jq -r .sessions <<<"$output")" 'sid-new'
+}
