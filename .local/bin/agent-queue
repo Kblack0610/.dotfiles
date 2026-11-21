@@ -1842,9 +1842,7 @@ cmd_add() {
   # would charge that session's cost and revert count to this item.
   [ -z "$running" ] || sid="$(claude_sid)" || sid=
   local story='' sboard='' sprof='' srow=''
-  # A canary item is an eval of the fleet, not work on the project: fleet-bench canary is its record.
-  # A trainee review (fleet-dispatch trainee-review) works the trainee's item, whose row is the record.
-  # An answered ask's resume (ask-resume) works what the ask decided, and the ask is its record.
+  # No story row for work with its own record: a canary (fleet-bench canary), a trainee review (the trainee's row), an ask's resume (the ask).
   case "$from" in
     board:* | canary | trainee | ask:*) ;;
     *) if [ -n "$row" ]; then
