@@ -82,6 +82,8 @@ case "$1 $2" in
   case "$*" in
   # checks.failed: the failed or cancelled names after a failed watch
   *'"fail" or'*) cat "$NOTES_FIXTURE/checks.failed" ;;
+  # checks.stale: the failed checks as JSON after a failed watch ([] when absent)
+  *'"fail"))'*) cat "$NOTES_FIXTURE/checks.stale" 2>/dev/null || echo '[]' ;;
   # checks.cancelled: the cancelled checks as JSON after a green watch, one answer per read,
   # popped as read; [] once empty. A line "ERR <text>": that read fails with <text>
   *--json*) q="$NOTES_FIXTURE/checks.cancelled" r='[]'
@@ -1086,6 +1088,42 @@ fake_sleep() {
   assert_line 'landed #42'
   run grep '^sleep' "$LOG"
   assert_output 'sleep 0'
+}
+
+# The edit that adds the gate line re-runs Checks; a watch read seconds later still saw the old red,
+# and unity-core-playground#2492 gave its landing slot back (2026-11-21, ar-3447).
+STALE='[{"name":"Checks","bucket":"fail","workflow":"Checks","completedAt":"2026-11-21T15:05:34Z"}]'
+@test "a failed check with a run of its workflow started after it: it waits, then lands on that run's green" {
+  printf 'Checks\tfail\t1m\n' >"$NOTES_FIXTURE/checks.seq"
+  echo green >>"$NOTES_FIXTURE/checks.seq"
+  printf 'Checks\n' >"$NOTES_FIXTURE/checks.failed"
+  printf '%s\n' "$STALE" >"$NOTES_FIXTURE/checks.stale"
+  printf '%s\n' '[{"status":"queued","workflowName":"Checks","startedAt":"2026-11-21T15:32:03Z"}]' >"$NOTES_FIXTURE/runs.open"
+  fake_sleep
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: failed: Checks; waiting on the newer run of its workflow on the head'
+  assert_line 'landed #42'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 2
+  run grep '^sleep' "$LOG"
+  assert_output 'sleep 60'
+}
+
+@test "a failed check whose only open run is the one it failed in, or another workflow's: it stops at checks, never merges" {
+  printf 'Checks\tfail\t1m\n' >"$NOTES_FIXTURE/checks.out"
+  printf 'Checks\n' >"$NOTES_FIXTURE/checks.failed"
+  printf '%s\n' "$STALE" >"$NOTES_FIXTURE/checks.stale"
+  printf '%s\n' '[{"status":"in_progress","workflowName":"Checks","startedAt":"2026-11-21T15:02:38Z"},{"status":"queued","workflowName":"Tests","startedAt":"2026-11-21T15:32:03Z"}]' >"$NOTES_FIXTURE/runs.open"
+  fake_sleep
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: Checks'
+  refute_output --partial 'waiting on the newer run'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 1
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
 }
 
 @test "a failed read of the cancelled checks is never green: a lost connection reads again, any other error stops at checks" {
