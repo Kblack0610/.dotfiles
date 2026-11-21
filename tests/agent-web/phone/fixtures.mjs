@@ -169,6 +169,7 @@ const bigPage = {
   project: BIG_PROJECT.name, flow_line: "plan 12, building 30, landed 37, verified 4",
   releases: { level: "ok", says: "0.4.0 prod ok" }, alerts: { level: "warn", says: "1 firing of 9 watches" },
   gate: { stage: "beta", fail: 4, human: 2 }, next_says: "beta: 9 of 29 met, 4 failing", errors: [],
+  need_count: 1000,
   need_groups: [needs("verify", 600, "epics landed with no live proof"), needs("ask", 250, "asks waiting on you"), needs("red", 150, "red watches on this project")],
   next_rows: rows(29, (i) => ({ result: pick(["FAIL", "HUMAN", "PASS", "PASS", "PASS"], i), requirement: TEXT[i % TEXT.length], stage: "beta" })),
   systems_says: "16 systems, 30 open epics",
@@ -191,7 +192,7 @@ const board = {
 const BUCKET = ["WORKING", "STALLED", "NEEDS", "WORKING", "LANDED", "DONE"];
 const SESSION_ROWS = 342;
 const sessions = {
-  table: table(SESSION_ROWS, ["bucket", "activity", "project", "task", "by", "pr", "phases", "idle", "ctx", "cost", "acct", "harness", "close", "item", "source", "session"], ["all", "running", "needs you", "stalled", "done today"], { project: PROJECTS.slice(0, 3), harness: ["claude", "codex"] }),
+  table: table(SESSION_ROWS, ["bucket", "activity", "project", "task", "by", "pr", "phases", "idle", "ctx", "cost", "acct", "harness", "close", "item", "source", "session"], ["all", "running", "needs you", "stalled", "ended today"], { project: PROJECTS.slice(0, 3), harness: ["claude", "codex"] }),
   rows: rows(SESSION_ROWS, (i) => ({ key: `s-${i}`, target: `agent-${i}`, session_id: `${String(i).padStart(8, "0")}-aaaa-bbbb-cccc-000000000000`, bucket: pick(BUCKET, i), activity: pick(["editing", "gate", "review"], i), project: pick(PROJECTS, i), task: qTitle(i), by: pick(["dispatch", "hand", "resume"], i), pr: i > 2 ? `#${1590 + i}` : "", pr_state: i > 2 ? "open" : "", ci: i > 2 ? "green" : "", phases_done: i % 6, phases_total: 5, idle_min: 2 + i * 6, ended: null, context_tokens: i % 4 ? 40000 + i * 900 : null, context_window: i % 4 ? 200000 : null, context_pct: i % 4 ? Math.round((40000 + i * 900) / 2000) : null, cost_usd: 1.5 + i * 2.25, account: pick(["main", "bnb", "alt"], i), harness: pick(["claude", "codex"], i), source: pick(["queue", "hand"], i) })),
   spend_usd: 41.5, buckets: ["NEEDS", "STALLED", "WORKING", "LANDED", "DONE"], errors: [],
 };
@@ -491,7 +492,7 @@ const GRID_CARDS = [
     [["Which model should settings.json pin for every account, opus or opus[1m]?", "2d dotfiles", "warn"], ["agent-web review", "3h dotfiles", "warn"]], { first_head: "Oldest" }),
   kcard("red", "Main red", "2", "repos red on main", "red", [["red", 2]], [], [["unity-core-playground", "nightly", "red"], ["trader", "nightly", "red"]], { first_head: "Red" }),
   kcard("sessions", "Sessions", "39", "live sessions", "warn", [["ok", 34], ["warn", 3], ["red", 2]], [["Working", "34"], ["Need you", "3", "warn"], ["Stalled", "2", "red"]], [["trader-x", "stalled 3h", "red"], ["binks", "ask 40m"]]),
-  kcard("board", "Board", "4115", "open rows, 277 doing", "red", [["ok", 3882], ["warn", 232], ["red", 1]], [["Doing", "277"], ["Requested", "232", "warn"], ["Late", "1", "red"], ["Done today", "90"]], [["submit Shape City", "shape-city - backlog, due 11-17", "red"], ["one tag table for intake lines", "agent-runtime - next up"]]),
+  kcard("board", "Board", "4115", "open rows, 277 doing", "red", [["ok", 3882], ["warn", 232], ["red", 1]], [["Doing", "277"], ["Requested", "232", "warn"], ["Late", "1", "red"], ["Rows closed", "90"]], [["submit Shape City", "shape-city - backlog, due 11-17", "red"], ["one tag table for intake lines", "agent-runtime - next up"]]),
   kcard("queue", "Queue", "12", "queued, 7 running", "warn", [["ok", 7], ["warn", 5]], [["Ready", "9"], ["Held", "3", "warn"], ["Done 24h", "41"]], [["review", "5 waiting 2h"]], { first_head: "Bottleneck" }),
   kcard("alerts", "Alerts", "3", "firing", "red", [["red", 1], ["warn", 2]], [["Red", "1", "red"], ["Amber", "2", "warn"], ["Owned", "1"]], [["gateway 5xx", "home-k3s", "red"], ["board-chain", "stale 2h"]]),
   kcard("infra", "Infra", "11 of 12", "machines up", "red", [["ok", 11], ["red", 1]], [["Down", "1", "red"], ["Pools", "4/4"], ["CI red", "2", "warn"]], [["mac-mini", "down 2h", "red"]]),
@@ -511,7 +512,7 @@ const homeCards = CARD_ORDER.slice(2).map(byTab); // the grid: Needs you and Mai
 export const WIDGET_CARDS = ids("WIDGET").map(byTab);
 
 export const FIXTURES = {
-  "/api/agents": [], "/api/asks/parked": [], "/api/home/waiting": { count: home.needs.length, href: "#home" }, "/api/session-options": { describe: {}, accounts: [] },
+  "/api/agents": [], "/api/asks/parked": [], "/api/home/waiting": { count: home.needs.length, sessions: 0, href: "#home" }, "/api/session-options": { describe: {}, accounts: [] },
   "/api/home": home, "/api/home/cards": homeCards, "/api/briefing": briefing, "/api/home/proposals": { proposals: home.proposals, proposals_head: home.proposals_head, proposals_table: home.proposals_table, proposals_failed: false },
   "/api/queue": queue, "/api/queue/stats": queueStats, "/api/flow": flow, "/api/queue/candidates": candidates, "/api/queue/candidates?counts=1": candCounts, "/api/queue/projects": PROJECTS.slice(0, 5),
   "/api/projects": projects, "/api/deliverables": deliverables, "/api/coverage": coverage, "/api/stages": stages, "/api/stages/requirements": stageReqs, "/api/board": board, [`/api/projects/${BIG_PROJECT.name}/page`]: bigPage,
