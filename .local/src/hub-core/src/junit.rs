@@ -2,15 +2,18 @@
 //! by suite and test by test, from the artifacts the workflow uploads its results in (a tier's
 //! shards each upload one). A repo declares its workflows and the artifact names in the registry
 //! (`testWorkflows` and `testArtifacts` on its tracker); a repo that declares no workflow lists no
-//! runs. The runs come from the builds ledger; an artifact is fetched with `gh run download` only
-//! when its run is read (docs/dashboards.md rule 10) and kept under the hub cache, since a finished
-//! run's artifacts never change and GitHub drops them after the workflow's retention.
+//! runs. The runs come from the builds ledger; an artifact is fetched only when its run is read
+//! (docs/dashboards.md rule 10) and kept under the hub cache, since a finished run's artifacts never
+//! change and their source drops them after its retention. A repo that declares an `artifactStore`
+//! keeps them in the home store and is read from it alone (`artifact_store::get`); any other repo
+//! is read from GitHub with `gh run download`.
 //!
 //! | fact                    | home                                                              |
 //! |-------------------------|-------------------------------------------------------------------|
 //! | which runs have results | the builds ledger: finished runs of a workflow the repo declares    |
 //! | which workflows count   | the registry: `trackers.<repo>.testWorkflows`                      |
 //! | which artifacts         | the registry: `trackers.<repo>.testArtifacts`, else `junit-*`      |
+//! | where they are          | the registry: `trackers.<repo>.artifactStore`'s lister, else GitHub |
 //! | a suite or a test       | `<cache>/junit/<repo>-<run>-<attempt>/<artifact>/**/{report,results}.xml` |
 //! | the tier                | the artifact's name after the glob's prefix: `junit-ui-tmux-3.8` is `ui`, `test-runs-playmode-3` is `playmode` |
 //! | a quarantined test      | a failure whose full name the repo's quarantine holds (`quarantine::Lane::held`) |
@@ -27,8 +30,10 @@ use std::process::Command;
 use project_map::Registry;
 use serde::Serialize;
 
+use crate::artifact_store;
 use crate::builds::{Builds, Run};
 use crate::releases::Level;
+use crate::session_actions::Runner;
 use crate::table::{Row, Summary, Val, View};
 
 /// How many runs of each repo the picker offers, newest first.
@@ -55,6 +60,10 @@ pub struct PickRun {
     /// The artifact name globs its results are in (`project_map::Registry::test_artifacts`).
     #[serde(skip)]
     pub artifacts: Vec<String>,
+    /// The repo's store lister (`artifact_store::lister`): None reads GitHub, an error is the
+    /// run's error and never a fall back to GitHub.
+    #[serde(skip)]
+    pub store: Option<Result<PathBuf, String>>,
 }
 
 impl PickRun {
@@ -72,6 +81,7 @@ impl PickRun {
             prs: r.prs.clone(),
             url: r.url.clone(),
             artifacts: vec![],
+            store: None,
         }
     }
 
@@ -119,6 +129,7 @@ pub fn pickable(b: &Builds, registry: Option<&Registry>) -> Vec<PickRun> {
         })
         .map(|r| PickRun {
             artifacts: reg.test_artifacts(&r.repo),
+            store: crate::artifact_store::lister(reg, &r.repo),
             ..PickRun::of(r)
         })
         .collect()
@@ -457,42 +468,149 @@ pub(crate) fn safe_repo(repo: &str) -> bool {
 
 const NONE_MARK: &str = ".none";
 
-fn none_note(globs: &[&str]) -> String {
-    format!(
-        "this run uploaded no {} artifact (it ran before the workflow did, or GitHub's retention has dropped them)",
-        globs.join(" or ")
-    )
+fn none_note(globs: &[&str], store: bool) -> String {
+    let globs = globs.join(" or ");
+    if store {
+        format!("the artifact store holds no {globs} artifact of this run (it ran before the workflow put them there, or the store's retention has dropped them)")
+    } else {
+        format!("this run uploaded no {globs} artifact (it ran before the workflow did, or GitHub's retention has dropped them)")
+    }
 }
 
-/// Downloads a run's artifacts that match its globs into its directory, once. A run with none
-/// leaves a marker so it is not asked again; any other failure leaves nothing, so the next read
-/// retries. New globs are a new dir (`run_dir`), so they fetch again.
-fn fetch(dir: &Path, run: &PickRun) -> Result<(), String> {
-    if dir.is_dir() {
-        return Ok(());
+/// `name` against `glob`: `*` is any run of characters, `?` any one. A store repo's globs are
+/// matched here (`gh run download` matches a GitHub repo's), so `from_store` refuses any other syntax.
+fn matches(glob: &str, name: &str) -> bool {
+    fn go(g: &[u8], n: &[u8]) -> bool {
+        match (g.first(), n.first()) {
+            (None, None) => true,
+            (Some(b'*'), _) => go(&g[1..], n) || (!n.is_empty() && go(g, &n[1..])),
+            (Some(b'?'), Some(_)) => go(&g[1..], &n[1..]),
+            (Some(a), Some(b)) if a == b => go(&g[1..], &n[1..]),
+            _ => false,
+        }
+    }
+    go(glob.as_bytes(), name.as_bytes())
+}
+
+/// Makes each fetch's staging dir its own, so two reads of one run never share one.
+static FETCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Downloads a run's artifacts that match its globs into its directory, once, from the repo's
+/// artifact store when it declares one and from GitHub otherwise; false when the store holds none.
+/// GitHub's none leaves a marker so it is not asked again. The store's none is not kept, since a
+/// run read as it ends may be read before its last put; nor is any other failure, so the next read
+/// retries. New globs are a new dir (`run_dir`), so they fetch again. For a store repo, a run
+/// GitHub had nothing for (read before the repo moved its results to the store) is asked of the
+/// store.
+fn fetch(dir: &Path, run: &PickRun, runner: &dyn Runner) -> Result<bool, String> {
+    let kept = || dir.is_dir() && !(run.store.is_some() && dir.join(NONE_MARK).exists());
+    if kept() {
+        return Ok(true);
     }
     if !safe_repo(&run.repo) {
         return Err(format!("not a repository name: {}", run.repo));
     }
-    let part = part_dir(dir);
-    let _ = std::fs::remove_dir_all(&part);
+    let n = FETCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let part = PathBuf::from(format!(
+        "{}-{}-{n}",
+        part_dir(dir).display(),
+        std::process::id()
+    ));
     std::fs::create_dir_all(&part).map_err(|e| format!("{}: {e}", part.display()))?;
+    let got = match &run.store {
+        Some(script) => script
+            .clone()
+            .and_then(|s| from_store(&part, run, &s, runner)),
+        None => from_github(&part, run).map(|_| true),
+    };
+    if !matches!(got, Ok(true)) {
+        let _ = std::fs::remove_dir_all(&part);
+        return got;
+    }
+    // GitHub's none, replaced by the store's results: moved aside first so a rename lands whole.
+    let old = part.with_extension("old");
+    let replaced = dir.is_dir() && std::fs::rename(dir, &old).is_ok();
+    let landed = std::fs::rename(&part, dir);
+    if replaced {
+        let _ = std::fs::remove_dir_all(&old);
+    }
+    match landed {
+        Ok(()) => Ok(true),
+        // another read of the run landed it first
+        Err(_) if kept() => {
+            let _ = std::fs::remove_dir_all(&part);
+            Ok(true)
+        }
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&part);
+            Err(format!("{}: {e}", dir.display()))
+        }
+    }
+}
+
+/// The run's artifacts that match its globs, each extracted from the store into `part/<name>`;
+/// false when there are none. The lister is asked once per glob's literal prefix, so it lists only
+/// those names and never the whole repo's store.
+fn from_store(
+    part: &Path,
+    run: &PickRun,
+    script: &Path,
+    runner: &dyn Runner,
+) -> Result<bool, String> {
+    let globs = run.globs();
+    if let Some(g) = globs.iter().find(|g| g.contains(['[', '{'])) {
+        return Err(format!(
+            "testArtifacts {g}: a store repo's globs take only * and ?"
+        ));
+    }
+    let mut prefixes: Vec<&str> = globs
+        .iter()
+        .map(|g| g.split(['*', '?']).next().unwrap_or_default())
+        .collect();
+    prefixes.sort();
+    prefixes.dedup();
+    let mut names = vec![];
+    for p in prefixes {
+        let listed = artifact_store::ls(runner, &run.repo, script, p, run.id)
+            .map_err(|e| format!("artifact store: {e}"))?;
+        names.extend(
+            listed
+                .into_iter()
+                .map(|l| l.name)
+                .filter(|n| globs.iter().any(|g| matches(g, n))),
+        );
+    }
+    names.sort();
+    names.dedup();
+    for n in &names {
+        let plain = !n.starts_with(['-', '.'])
+            && n.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b));
+        if !plain {
+            return Err(format!("artifact store: not an artifact name: {n}"));
+        }
+        artifact_store::get(runner, &run.repo, script, n, run.id, &part.join(n))
+            .map_err(|e| format!("artifact store get {n}: {e}"))?;
+    }
+    Ok(!names.is_empty())
+}
+
+fn from_github(part: &Path, run: &PickRun) -> Result<(), String> {
     let out = Command::new("gh")
         .args(["run", "download", &run.id.to_string(), "-R", &run.repo])
         .args(run.globs().iter().flat_map(|g| ["-p", *g]))
         .arg("-D")
-        .arg(&part)
+        .arg(part)
         .output()
         .map_err(|e| format!("gh: {e}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
         if !err.contains("no valid artifacts") {
-            let _ = std::fs::remove_dir_all(&part);
             return Err(format!("gh run download: {err}"));
         }
         std::fs::write(part.join(NONE_MARK), "").map_err(|e| e.to_string())?;
     }
-    std::fs::rename(&part, dir).map_err(|e| format!("{}: {e}", dir.display()))
+    Ok(())
 }
 
 /// The tier an artifact's name says: its first word after the literal prefix of the glob it
@@ -528,12 +646,16 @@ fn reports(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The results of `run`: downloaded on first read, then read from the kept files. Blocks on `gh`.
-pub fn load(cache: &Path, run: &PickRun) -> Result<Loaded, String> {
+/// The results of `run`: downloaded on first read, then read from the kept files. Blocks on `gh`
+/// or the store's lister (run by `runner`).
+pub fn load(cache: &Path, run: &PickRun, runner: &dyn Runner) -> Result<Loaded, String> {
     let dir = run_dir(cache, &run.repo, run.id, run.attempt, &run.globs());
-    fetch(&dir, run)?;
     let globs = run.globs();
     let mut out = Loaded::default();
+    if !fetch(&dir, run, runner)? {
+        out.note = Some(none_note(&globs, true));
+        return Ok(out);
+    }
     let Ok(rd) = std::fs::read_dir(&dir) else {
         return Err(format!("{}: unreadable", dir.display()));
     };
@@ -560,7 +682,7 @@ pub fn load(cache: &Path, run: &PickRun) -> Result<Loaded, String> {
     }
     if out.suites.is_empty() && out.errors.is_empty() {
         out.note = Some(if dir.join(NONE_MARK).exists() {
-            none_note(&globs)
+            none_note(&globs, false)
         } else {
             "the artifacts hold no test report".to_string()
         });
@@ -1462,7 +1584,7 @@ at line nine
             );
             std::fs::write(dir.join(art).join(sub).join("report.xml"), x).unwrap();
         }
-        let got = load(&cache, &pick()).unwrap();
+        let got = load(&cache, &pick(), &Never).unwrap();
         let names: Vec<(&str, &str)> = got
             .suites
             .iter()
@@ -1509,7 +1631,7 @@ at line nine
         std::fs::write(shard.join("results.xml"), NUNIT).unwrap();
         // Unity's own copy of the same file is not read twice
         std::fs::write(shard.join("xdg/TestResults.xml"), NUNIT).unwrap();
-        let got = load(&cache, &run).unwrap();
+        let got = load(&cache, &run, &Never).unwrap();
         let _ = std::fs::remove_dir_all(&cache);
         assert!(got.errors.is_empty(), "{:?}", got.errors);
         let t = totals(&got.suites);
@@ -1526,8 +1648,8 @@ at line nine
         let dir = run_dir(&cache, "Org/app", 9, 1, &["junit-*"]);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(NONE_MARK), "").unwrap();
-        let got = load(&cache, &pick()).unwrap();
-        assert_eq!(got.note, Some(none_note(&["junit-*"])));
+        let got = load(&cache, &pick(), &Never).unwrap();
+        assert_eq!(got.note, Some(none_note(&["junit-*"], false)));
         assert!(got.suites.is_empty());
         std::fs::create_dir_all(dir.join("junit-integ-0")).unwrap();
         std::fs::write(
@@ -1535,7 +1657,7 @@ at line nine
             "<testsuite name=\"x\"",
         )
         .unwrap();
-        let got = load(&cache, &pick()).unwrap();
+        let got = load(&cache, &pick(), &Never).unwrap();
         assert_eq!(got.errors.len(), 1);
         assert!(got.errors[0].starts_with("junit-integ-0: "));
         let _ = std::fs::remove_dir_all(&cache);
@@ -1582,5 +1704,196 @@ at line nine
         assert_eq!((m[0].tests, m[0].failed, m[0].passed), (2, 1, 1));
         assert_eq!(m[0].state, "failed");
         assert_eq!(m[0].time, 2.0);
+    }
+
+    /// A runner a test that never leaves the cache hands `load`: any call fails the test.
+    struct Never;
+
+    impl Runner for Never {
+        fn run(&self, argv: &[String]) -> Result<String, String> {
+            panic!("ran {argv:?}")
+        }
+    }
+
+    /// The store's lister: `ls` prints `listed` (or fails with it), `get` writes an NUnit file into
+    /// its `--dir`, the way `artifact.py get` extracts a tar.
+    struct Store {
+        listed: Result<String, String>,
+        calls: std::cell::RefCell<Vec<Vec<String>>>,
+    }
+
+    impl Store {
+        fn new(listed: Result<&str, &str>) -> Store {
+            Store {
+                listed: listed.map(str::to_string).map_err(str::to_string),
+                calls: Default::default(),
+            }
+        }
+
+        fn verbs(&self) -> Vec<String> {
+            let calls = self.calls.borrow();
+            calls.iter().map(|a| a[4..6].join(" ")).collect()
+        }
+    }
+
+    impl Runner for Store {
+        fn run(&self, argv: &[String]) -> Result<String, String> {
+            self.calls.borrow_mut().push(argv.to_vec());
+            match argv[4].as_str() {
+                "ls" => self.listed.clone(),
+                "get" => {
+                    let at = argv.iter().position(|a| a == "--dir").unwrap();
+                    let dir = Path::new(&argv[at + 1]).join("20261121T000000Z-PlayMode");
+                    std::fs::create_dir_all(&dir).unwrap();
+                    std::fs::write(dir.join("results.xml"), NUNIT).unwrap();
+                    Ok(String::new())
+                }
+                v => panic!("lister verb {v}"),
+            }
+        }
+    }
+
+    fn store_run(d: &Path, script: &str) -> PickRun {
+        let reg = Registry::parse(&format!(
+            r#"{{"paths": {{"{}": "ucp"}}, "trackers": {{"ucp": {{"github": "Org/app", "testWorkflows": ["{TESTS}"],
+                "testArtifacts": ["test-runs-*"], "artifactStore": "{script}"}}}}}}"#,
+            d.display()
+        ))
+        .unwrap();
+        let b = Builds {
+            rows: vec![ledger_run(9, 1, TESTS, "red")],
+            ..Default::default()
+        };
+        pickable(&b, Some(&reg)).remove(0)
+    }
+
+    const LISTED: &str = "test-runs-playmode-3 9 2026-12-05T00:00:00Z 100\n\
+        playmode-shard-3 9 2026-12-05T00:00:00Z 7\n\
+        test-runs-editmode 9 2026-12-05T00:00:00Z 50\n\
+        test-runs-editmode 9 2026-11-24T00:00:00Z 50\n";
+
+    #[test]
+    fn a_store_repos_results_come_from_its_store_alone_and_are_kept() {
+        let d = scratch("store");
+        let run = store_run(&d, "tools/art.py");
+        assert_eq!(run.store, Some(Ok(d.join("tools/art.py"))));
+        let store = Store::new(Ok(LISTED));
+        let got = load(&d, &run, &store).unwrap();
+        assert!(got.errors.is_empty(), "{:?}", got.errors);
+        let tiers: HashSet<&str> = got.suites.iter().map(|s| s.tier.as_str()).collect();
+        assert_eq!(tiers, ["playmode", "editmode"].into());
+        // only the names the globs match are fetched, each once, and never from gh
+        assert_eq!(
+            store.verbs(),
+            [
+                "ls test-runs-",
+                "get test-runs-editmode",
+                "get test-runs-playmode-3"
+            ]
+        );
+        let calls = store.calls.borrow().clone();
+        assert!(calls.iter().all(|a| a[..4]
+            == [
+                "env".to_string(),
+                "GITHUB_REPOSITORY=Org/app".into(),
+                "python3".into(),
+                d.join("tools/art.py").display().to_string()
+            ]));
+        assert_eq!(calls[0][6..], ["--run", "9"]);
+        let part = part_dir(&run_dir(&d, "Org/app", 9, 1, &["test-runs-*"]));
+        assert_eq!(calls[1][6..9], ["--run", "9", "--dir"]);
+        let into = &calls[1][9];
+        assert!(
+            into.starts_with(&format!("{}-{}-", part.display(), std::process::id()))
+                && into.ends_with("/test-runs-editmode"),
+            "{into}"
+        );
+        // the kept download dir is keyed as before, and a second read asks nothing
+        assert!(run_dir(&d, "Org/app", 9, 1, &["test-runs-*"]).is_dir());
+        load(&d, &run, &Never).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_store_with_nothing_for_the_run_is_asked_again_and_a_github_none_is_replaced_by_the_store()
+    {
+        let d = scratch("store-none");
+        let run = store_run(&d, "tools/art.py");
+        let dir = run_dir(&d, "Org/app", 9, 1, &run.globs());
+        // read from GitHub before the repo moved its results: GitHub had none
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(NONE_MARK), "").unwrap();
+        let store = Store::new(Ok("playmode-shard-3 9 2026-12-05T00:00:00Z 7\n"));
+        let got = load(&d, &run, &store).unwrap();
+        assert_eq!(got.note, Some(none_note(&["test-runs-*"], true)));
+        // the store's none is not kept: a read as the run ends may precede its last put
+        load(&d, &run, &store).unwrap();
+        assert_eq!(store.verbs(), ["ls test-runs-", "ls test-runs-"]);
+        let late = Store::new(Ok(LISTED));
+        let got = load(&d, &run, &late).unwrap();
+        assert!(got.note.is_none() && !got.suites.is_empty());
+        assert!(!dir.join(NONE_MARK).exists(), "GitHub's none was replaced");
+        let siblings: Vec<_> = std::fs::read_dir(d.join("junit"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(siblings.len(), 1, "no staging dir is left: {siblings:?}");
+        load(&d, &run, &Never).unwrap();
+        // negative control: a repo with no store keeps GitHub's none without asking
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(NONE_MARK), "").unwrap();
+        let github = PickRun {
+            store: None,
+            ..run.clone()
+        };
+        let got = load(&d, &github, &Never).unwrap();
+        assert_eq!(got.note, Some(none_note(&["test-runs-*"], false)));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_store_that_fails_is_the_runs_error_and_never_a_read_of_github() {
+        let d = scratch("store-down");
+        let run = store_run(&d, "tools/art.py");
+        let down = Store::new(Err("artifact: no artifact store answered its health check"));
+        let e = load(&d, &run, &down).unwrap_err();
+        assert!(
+            e.starts_with("artifact store: artifact: no artifact store"),
+            "{e}"
+        );
+        let dir = run_dir(&d, "Org/app", 9, 1, &run.globs());
+        let left = std::fs::read_dir(d.join("junit")).map_or(0, |r| r.count());
+        assert!(!dir.exists() && left == 0, "a failed read keeps nothing");
+        let odd = Store::new(Ok("a b c\n"));
+        assert!(load(&d, &run, &odd).unwrap_err().contains("not `<name>"));
+        let bad = Store::new(Ok(
+            "test-runs--x 9 2026-12-05T00:00:00Z 1\ntest-runs-../x 9 2026-12-05T00:00:00Z 1\n",
+        ));
+        let e = load(&d, &run, &bad).unwrap_err();
+        assert!(e.contains("not an artifact name: test-runs-../x"), "{e}");
+        // a glob the store read cannot match is named, not read as a run with nothing
+        let class = PickRun {
+            artifacts: vec!["test-runs-[ep]*".into()],
+            ..run.clone()
+        };
+        let e = load(&d, &class, &Never).unwrap_err();
+        assert!(e.starts_with("testArtifacts test-runs-[ep]*"), "{e}");
+        // a lister outside the clone is refused before anything runs
+        let outside = store_run(&d, "../x.py");
+        let e = load(&d, &outside, &Never).unwrap_err();
+        assert!(e.starts_with("artifactStore ../x.py"), "{e}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_store_glob_takes_star_and_question_mark() {
+        assert!(matches("test-runs-*", "test-runs-playmode-3"));
+        assert!(matches("test-runs-*", "test-runs-"));
+        assert!(matches("junit-?", "junit-1"));
+        assert!(matches("*-logs", "soak-logs"));
+        assert!(!matches("test-runs-*", "hd-test-runs"));
+        assert!(!matches("junit-?", "junit-12"));
     }
 }

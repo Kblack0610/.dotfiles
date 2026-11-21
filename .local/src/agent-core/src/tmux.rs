@@ -33,7 +33,7 @@ pub struct Pane {
     /// onto the window by each `fleet-sessions` tick. A display copy: the source is fleet-sessions.
     pub stage: String,
     pub labels: String,
-    /// fleet-dispatch started its session: `@dispatch` is set (fleet-dispatch tags the session).
+    /// fleet-dispatch started its session or window: `@dispatch` is set on the session, or on the window for one opened in a shared session.
     pub dispatched: bool,
 }
 

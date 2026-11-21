@@ -1358,6 +1358,15 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn an_ask_row_keeps_the_state_documents_audit_of_for_the_pager() {
+        let row = |a: Value| ask_need(&a, None, None, Score::new(true, true, 0, 0, 120));
+        let audit = row(json!({"id": "au", "project": "p", "question": "q?", "audit_of": "q1"}));
+        assert_eq!(audit.ask.unwrap().audit_of, "q1");
+        let plain = row(json!({"id": "a1", "project": "p", "question": "q?"}));
+        assert_eq!(plain.ask.unwrap().audit_of, "");
+    }
+
     /// `build` with every kind in `needs`, for the tests of the ranking and the rows themselves;
     /// `build` alone moves the agent kinds to `routed` (`Kind::owner`).
     fn build_all(

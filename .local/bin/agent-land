@@ -15,11 +15,11 @@
 # checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (a head behind origin/<base> is merged up to it, each clean submodule checkout on its old pin moved to the merged one (submodule_follow), and pushed, before the checks and again after them if the base moved on during them; a head pushed after them waits on its own checks before it merges, and on a base without strict checks a second move lands that green head behind it, catch_up), item-line
 # (before the checks, the PR body gets the line "Item: <slug>" unless it has it, so a reader holding
 # only the PR finds its work item; a stale "Item:" line is rewritten), review (a tier-3 item's body has a
-# "Review:" line, review_gate), shape (no function over 150 lines gets longer unless the body has a "Split: <row id>" line, shape_gate), checks (the PR's checks pass: CI, a required check; a cancelled check is no pass, waited on while a run on the head goes on; a tier-3 item, or one landed with --ran-checks, needs checks that ran), merge (--squash, or with --merge-commit a merge commit,
+# "Review:" line, review_gate), shape (no function over 150 lines gets longer unless the body has a "Split: <row id>" line, shape_gate), checks (the PR's checks pass: CI, a required check; a cancelled check is no pass, waited on while a run on the head goes on, and on GitHub so is a failed one while a run of its workflow and event started after it goes on; a tier-3 item, or one landed with --ran-checks, needs checks that ran), merge (--squash, or with --merge-commit a merge commit,
 # for a landing train whose member PRs read MERGED only while their heads stay reachable; --admin adds gh's --admin, which skips a required approving review on a repo whose owner allows it, never the checks step above; --match-head-commit HEAD, then gh pr view must say MERGED), proof (the PR's merge commit is
 # on origin/<base>, by agent-merge-proof.sh), live (dotfiles-autopull --now fast-forwards the stowed
 # checkout when this repo is ~/.dotfiles or ~/.dotfiles-private, links what it added, rebuilds the
-# Rust tools, restarts agent-web on a new binary and a persistent agentctl runner on a new script; a line, never a failure), item (the queue item gets pr:<owner>/<repo>#<pr>,
+# Rust tools (notes through notes-bootstrap), restarts agent-web on a new binary and a persistent agentctl runner on a new script; a line, never a failure), item (the queue item gets pr:<owner>/<repo>#<pr>,
 # merged:<sha>, this Claude session in its sessions (unless --partial lands on an item another session owns), the project credited by the PR's changed
 # files (agent-queue attribute), and moves to done, status ok unless --partial keeps it open (a red watch item resolves its watch with this PR first and refuses to close ok while its probe still trips, watch_gate); a done ok item with no PR in this
 # PR's repo adds it to its pr: and merged: lists instead, one PR per repo; an open item's earlier PR with
@@ -153,12 +153,17 @@ net_retry() {
   echo "checks: lost the connection to the API ($net of $CHECKS_NET_TRIES retries), reading again"
   sleep "$CHECKS_POLL"
 }
-# newer_runs <cancelled checks json>: how many runs on HEAD of a cancelled check's workflow have not
-# completed, the newer run it gave way to; on a failed read, the read's output and status 1.
+# newer_runs <checks json>: how many runs on HEAD of a check's workflow have not completed, the newer
+# run it gave way to; on a failed read, the read's output and status 1. A cancelled check's
+# replacement can start before the cancel lands, so any open run of its workflow counts. A failed
+# check counts only a run of its own event created or (re-)started after it completed, never the open
+# run it failed in; a queued run's startedAt can be empty or zero, so createdAt counts too.
 newer_runs() {
   local runs
-  runs=$(gh run list "${R[@]}" --commit "$(git rev-parse HEAD)" --json status,workflowName 2>&1) || { printf '%s' "$runs"; return 1; }
-  jq -r --argjson c "$1" '[.[] | select(.status != "completed") | .workflowName as $w | select($c | any(.workflow == $w))] | length' <<<"$runs"
+  runs=$(gh run list "${R[@]}" --commit "$(git rev-parse HEAD)" --json status,workflowName,event,createdAt,startedAt 2>&1) || { printf '%s' "$runs"; return 1; }
+  jq -r --argjson c "$1" '[.[] | select(.status != "completed") | . as $r
+    | select($c | any(.workflow == $r.workflowName and (.bucket != "fail" or
+        (((.event // "") == "" or .event == $r.event) and ([$r.createdAt, $r.startedAt] | map(. // "") | max) > (.completedAt // "~")))))] | length' <<<"$runs"
 }
 # gh_read <var> <gh args...>: gh's stdout in <var> and its stderr in gh_err, so a warning gh prints
 # beside an answer is never part of it; returns gh's status.
@@ -176,7 +181,7 @@ gh_read() {
 had_checks=''
 wait_checks() {
   [ -z "$fj" ] || { fj_wait_checks; return; }
-  local try out failed cancelled names queued read_err
+  local try out failed cancelled names queued read_err stale
   for ((try = 1; ; try++)); do
     out=$(gh pr checks "$pr" "${R[@]}" --watch --fail-fast -i "$CHECKS_WATCH_INTERVAL" 2>&1) && {
       # gh counts a cancelled check as neither failed nor pending, so a watch whose only Checks is
@@ -226,6 +231,25 @@ wait_checks() {
         net_retry "${read_err:-$out}"
         try=0
         continue
+      fi
+      # A failed check whose workflow has a run on HEAD started after it is superseded: the edit
+      # that adds the gate line re-runs Checks, and a watch read seconds later still sees the old
+      # red (unity-core-playground#2492 lost the landing slot that way, 2026-11-21). Wait on the
+      # newer run; a failed or unreadable look leaves the red as the verdict.
+      # gh exits non-zero while a check fails, so a read that printed JSON still has its answer.
+      gh_read stale pr checks "$pr" "${R[@]}" --json name,bucket,workflow,event,completedAt -q 'map(select(.bucket == "fail"))' || true
+      if [ -n "$stale" ] && [ "$stale" != '[]' ]; then
+        queued=$(newer_runs "$stale") || {
+          net_error "$queued" || fail checks "$failed (reading the runs on the head: $(lastline "$queued"))"
+          net_retry "$queued"
+          continue
+        }
+        if [[ $queued =~ ^[1-9][0-9]*$ ]]; then
+          echo "checks: failed: $(jq -r 'map(.name) | join(", ")' <<<"$stale"); waiting on the newer run of its workflow on the head"
+          try=0
+          sleep "$CHECKS_QUEUED_POLL"
+          continue
+        fi
       fi
       fail checks "$failed"
       ;;
@@ -979,7 +1003,7 @@ if [ "$dry" -eq 1 ]; then
   echo "merge: gh pr merge $pr${repo:+ -R $repo} $method${admin[*]:+ ${admin[*]}} --match-head-commit \$(git rev-parse HEAD) && gh pr view $pr${repo:+ -R $repo} --json state  (must be MERGED)"
   echo "body: gh pr view $pr${repo:+ -R $repo} --json body | comms-lint --channel pr-body -  (a score, never a gate; first a ~/.cache/*.md or *.txt whose text is the body is deleted)"
   echo "proof: gh pr view $pr${repo:+ -R $repo} --json mergeCommit, then merge_proof: an ancestor of origin/<base>"
-  echo "live: dotfiles-autopull --now .  (fast-forwards ~/.dotfiles or ~/.dotfiles-private when this is that repo, rebuilds the Rust tools, restarts agent-web on a new binary and a persistent agentctl runner on a new script; never fails the landing)"
+  echo "live: dotfiles-autopull --now .  (fast-forwards ~/.dotfiles or ~/.dotfiles-private when this is that repo, rebuilds the Rust tools (notes through notes-bootstrap), restarts agent-web on a new binary and a persistent agentctl runner on a new script; never fails the landing)"
   echo "prs: schedules-sync sync-prs <owner>/<repo>  (the PR store reads the merge now, not at its next poll; never fails the landing)"
   if [ "$partial" -eq 1 ]; then
     echo "item: agent-queue set $item partial=yes before merging; record pr=$pr merged=<sha> beside earlier PRs, leave the item open"

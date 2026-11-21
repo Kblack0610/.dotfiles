@@ -9,7 +9,7 @@
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
 #   fleet-dispatch promote --project P [--profile X] [--agent] [--dispatch] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item; --dispatch makes it a capped pull like dispatch's own
 #   fleet-dispatch pull-after ID     promote, and start unless low, the open rows gated #after/ID: agent-queue runs it when ID's item closes ok
-#   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session; a row whose #ask/ gate the human answered another way is held or dropped
+#   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session; a row whose #ask/ gate the human answered another way is held or dropped, one on a cancelled ask is held (or follows the ask it joined)
 #   fleet-dispatch headroom [--json] how many more queue items could start now, and the margin under each limit
 #   fleet-dispatch idle-cap          rc 1 when live sessions are at the pace target with under DISPATCH_IDLE_CAP_PCT of them busy,
 #                                    naming the idle ones; rc 2 when the fleet state cannot be read (watch fleet-cap-mostly-idle)
@@ -867,7 +867,7 @@ reap_seen() { [ ! -e "$DIR/reap-miss/$1" ] || rm -f "$DIR/reap-miss/$1"; }
 # cannot read, a row with no merge proof. The reason is logged when the title changes, never on every
 # pass (2026-11-16 to 11-18: 526 identical lines from 6 sessions and 2 items; the title, not the reason,
 # so a new session name in the reason is no change), and once it has stood <hours> (0: at once) one
-# human-sheet row says what to do, or one page when the sheet refuses it, then nothing more while it
+# human-sheet row says what to do, or one page when the sheet refuses it (keyed needs:dispatch:stuck:<slug>:<title hash>, so agent-notify drops a repeat of one fact for a day), then nothing more while it
 # stands. $DIR/stuck/<slug> holds "<first epoch> <filed 0|1>" and the title; each pass rewrites it, so
 # a marker no pass has seen in a day is pruned by cmd_reap. reap_unstuck clears it once the item settles.
 reap_stuck() {
@@ -878,7 +878,7 @@ reap_stuck() {
   if [ "$filed" != 1 ] && [ $(( now - first )) -ge $(( $3 * 3600 )) ]; then
     filed=1 where=$(human_sheet_row "$2" "$5 (queue item $1) #size/s")
     logline "queue item $1: $where: $5"
-    case "$where" in "not filed"*) agent-notify -t 'Needs you' "$5 (queue item $1; $where)" >/dev/null 2>&1 ;; esac
+    case "$where" in "not filed"*) agent-notify -t 'Needs you' -d "needs:dispatch:stuck:$1:$(printf %s "$5" | cksum | cut -d" " -f1)" "$5 (queue item $1; $where)" >/dev/null 2>&1 ;; esac
     echo "human row for queue item $1 ($where)"
   fi
   mkdir -p "${f%/*}" && printf '%s %s\n%s\n' "$first" "$filed" "$5" > "$f"
@@ -3147,9 +3147,20 @@ start_host_checks() {
     { say "start: $host has no clone of $cwd (fleet_repos); $item stays queued"; return 2; }
 }
 
+# dispatch_tag <host> <server> <session> <window> <pane> <label> -- tag what an agent started with @dispatch.
+# set-option takes a pane target, where a bare "=name" is "no such session"; the colon makes it session:window.
+# A --window start is one window of a shared session (a world restore opens each conversation as one), so its
+# label goes on that window: a window with no option of its own falls back to the session's, so a session
+# label marked every window of a restored hub:dotfiles [dispatch] (2026-11-21). Any other start owns its session.
+dispatch_tag() {
+  local scope=() tgt="=$3:"
+  [ -z "$4" ] || { scope=(-w); tgt=${5:-=$3:}; }
+  on_host "$1" tmux -L "$2" set-option "${scope[@]}" -t "$tgt" @dispatch "$6" || say "could not tag $3${4:+:$4} with @dispatch"
+}
+
 # cmd_start -- THE way an agent starts a session, whoever it is: this runner's `run` pass, an
 # agent launching one for a board row, a reboot restore. Each comes out tagged @dispatch on its
-# server (the human reads [dispatch] as "an agent started this"), except a resume of the human's
+# server, on the session, or on the window for a --window start (the human reads [dispatch] as "an agent started this"), except a resume of the human's
 # own conversation (no item from a start, see the --resume branch), and a session doing work
 # has a queue item whose `session:` names it, which reap, fleet-sessions and agent-web read.
 # Before this, only `run` did either, and agents tagged their hand launches with set-option,
@@ -3400,10 +3411,7 @@ cmd_start() {
   [ -z "$ready" ] || start_ready "$server" "$session" "${target:-=$session:}" "$ready" "$host"
 
   label="$project: $(cut -c1-60 <<<"${item:-resumed}")"
-  # set-option takes a pane target, where a bare "=name" is "no such session"; the colon makes it session:window.
-  # A session this only joined keeps what it was: the label is for a session an agent started.
-  [ -n "$joined" ] || [ -z "$agent_work" ] || on_host "$host" tmux -L "$server" set-option -t "=$session:" @dispatch "$label" ||
-    say "could not tag $session with @dispatch"
+  [ -z "$agent_work" ] || dispatch_tag "$host" "$server" "$session" "$window" "$target" "$label"
   logline "started $session on $server${host:+ at $host} ($origin) for $project: ${item:+queue item $item}${resume:+${item:+, }resume $resume}"
   echo "started $session: $label"
 }
@@ -4422,7 +4430,7 @@ takeover_branch() {
 # queued/ (--if review) as a oneshot stamped `<fix|land>_tries: <n> <head>[ conflict]` and `pr_owner`, which
 # item_brief reads, and the next pass starts it behind every gate a queued item waits on (agent-hold,
 # the weekly pace, load, the run gate); while the agent-queue cap holds adds it waits in
-# review/. DISPATCH_FIX_TRIES tries of each, then one human-sheet row and a page (fleet-bench triage instead
+# review/. DISPATCH_FIX_TRIES tries of each, then one human-sheet row and a page keyed needs:dispatch:pr:<pr>:<owner>:<head> (a new head is a new fact; agent-notify drops a repeat within a day) (fleet-bench triage instead
 # escalates a red, then asks once), stamped `fix_human: <head> <owner>...`; a head that
 # moves after that row (the human pushed) starts the count again. The stamp quiets only the owners it
 # names, so a head whose fix-ci row went to the human and that later reads green still gets a lander,
@@ -4477,7 +4485,7 @@ own_parked_pr() {
   [ "$owner" = fix ] || title="chore(review): PR $pr is $color at ${head:0:12} after $tries land tries; land it"
   where=$(human_sheet_row "$it" "$title or close it (queue item $slug) #size/s")
   agent-queue set "$slug" "note=PR $pr $color at ${head:0:12} after $tries $verb tries; $where" >/dev/null
-  agent-notify -t 'Needs you' "PR $pr $color after $tries $verb tries ($where)" >/dev/null 2>&1
+  agent-notify -t 'Needs you' -d "needs:dispatch:pr:$pr:$owner:${head:0:12}" "PR $pr $color after $tries $verb tries ($where)" >/dev/null 2>&1
   logline "queue item $slug: PR $pr $color at ${head:0:12} after $tries $verb tries, $where"
   echo "human row for queue item $slug (PR $pr $color after $tries $verb tries, $where)"
 }
@@ -6005,8 +6013,8 @@ cmd_starved() {
 
 # dead_holds -> one line per open board row gated on what can never clear, each gate `agent-queue gate`
 # calls dead (load_gates): an #after/ on a row that was dropped or does not exist, an #ask/ the human
-# cancelled, that no longer exists, or that was answered with another option (reap holds or drops
-# an agent row on the human's answer: settle_answered_gates). Nothing promotes such a row, so it
+# cancelled, that no longer exists, or that was answered with another option (reap holds, moves or drops
+# an agent row on the human's answer or cancel: settle_answered_gates). Nothing promotes such a row, so it
 # waits for good unless someone sees it: this is where they surface. On 2026-11-07 trader's Kalshi
 # phases sat behind cancelled ask ybXZIM and nothing named them.
 dead_holds() {
@@ -6387,11 +6395,14 @@ cmd_reap() {
 # kept held, dept-tabs-p6-posthog skipped, both rows sat in dead_holds). An answer that says to skip
 # the work (SETTLE_SKIP_RE) drops the row, the answer as its why. Any other answer only says not this
 # way or not yet, and a drop cannot be undone from here, so the row stays: its gate is swapped for
-# #hold/row-<row id>, an agent-hold the human releases to start it. A cancelled or missing ask, a
-# judge's answer and a human-sheet row stay in dead_holds for a person.
+# #hold/row-<row id>, an agent-hold the human releases to start it. A missing ask, a
+# judge's answer and a human-sheet row stay in dead_holds for a person. A cancelled ask (nobody
+# decided: agent-ask cancel has no actor) leaves its rows dead the same way (ar-3863, 2026-11-19):
+# one cancelled because it joined an older ask moves its rows' gate to that ask; any other cancel
+# holds the row as a not-yet answer does, so the human sees it in agent-hold and decides.
 SETTLE_SKIP_RE='\b(skip|skipped|drop|cancel|cancelled|abandon|scrap|not needed|no longer needed)\b'
 settle_answered_gates() {
-  local board prof p id t g aid ask st by ans why hold had
+  local board prof p id t g aid ask st by ans why hold had rsn to
   load_gates
   [ -z "$GATES_FAILED" ] || return 0
   board=$(notes board --json 2>/dev/null) || return 0
@@ -6403,11 +6414,25 @@ settle_answered_gates() {
       st=$(sed -n '/^status: */{s///p;q;}' <<<"$ask")
       by=$(sed -n '/^answered_by: */{s///p;q;}' <<<"$ask")
       # The human's answer only, as ask_pending reads it: an empty by is a legacy human answer.
-      [ "$st" = answered ] && { [ -z "$by" ] || [ "$by" = human ]; } || continue
+      if [ "$st" = cancelled ]; then
+        rsn=$(sed -n '/^closed_reason: */{s///p;q;}' <<<"$ask" | tr -cd ' -~' | tr -d '#<>' | cut -c1-160)
+        # join_ask moved the asker's sessions to the older ask: the gate follows, options and all.
+        if [[ $rsn =~ ^joined\ ([A-Za-z0-9_-]+): ]] && to=${BASH_REMATCH[1]} && agent-ask show "$to" </dev/null >/dev/null 2>&1; then
+          if np "$prof" ptask "$p" --agent tag --add "ask/$to${g#ask/$aid}" --remove "$g" "$id" </dev/null >/dev/null 2>&1; then
+            logline "moved $p row $id from #$g to ask $to: ask $aid joined it"
+          else
+            say "settle_answered_gates: could not retag $p row $id from #$g to #ask/$to"
+          fi
+          continue 2
+        fi
+        why="ask $aid was cancelled${rsn:+ ($rsn)}, so nobody decided, and #$g waited on it"
+      else
+        [ "$st" = answered ] && { [ -z "$by" ] || [ "$by" = human ]; } || continue
+      fi
       # The answer goes into a marker or a hold line: one line of plain ASCII, no # (a tag) or <> (a marker end).
       ans=$(sed -n '/^answer: */{s///p;q;}' <<<"$ask" | tr -cd ' -~' | tr -d '#<>' | cut -c1-160)
-      why="the human answered \"$ans\" to ask $aid, and #$g waited on another answer"
-      if grep -Eiq "$SETTLE_SKIP_RE" <<<"$ans"; then
+      [ "$st" = cancelled ] || why="the human answered \"$ans\" to ask $aid, and #$g waited on another answer"
+      if [ "$st" = answered ] && grep -Eiq "$SETTLE_SKIP_RE" <<<"$ans"; then
         if np "$prof" ptask "$p" --agent drop "$id" --why "$why" </dev/null >/dev/null 2>&1; then
           logline "dropped $p row $id: $why"
         else

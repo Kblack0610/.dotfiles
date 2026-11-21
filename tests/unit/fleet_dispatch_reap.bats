@@ -856,7 +856,7 @@ OUT
   run cmd_reap
   refute_output --partial 'fix-crash'
   assert_equal "$(grep -c 'ptask game add fix(ci)' "$NOTES_FIXTURE/calls.log")" 1
-  assert_equal "$(grep -c "agent-notify .*PR o/game#12 red" "$NOTES_FIXTURE/calls.log")" 1
+  assert_equal "$(grep -c "agent-notify -t Needs you -d needs:dispatch:pr:o/game#12:fix:${h2:0:12} PR o/game#12 red" "$NOTES_FIXTURE/calls.log")" 1
   # the human pushed a new head and it is red: the count starts again
   fix_ended "$h1" FAIL
   run cmd_reap
