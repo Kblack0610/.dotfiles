@@ -2863,13 +2863,15 @@ write_state() {
                      | {repo: .target, id: .session_id, reason, fact, nudged, escalated, owners})),
          shared: ($r | map(select(.bucket == "SHARED")
                      | {test: .target, id: .session_id, reason, fact, nudged, escalated, owners})),
-         asks: [$asks | split("\n")[] | select(length > 0) | split("\t")
+         asks: [$asks | split("\n")[] | select(length > 0) | split("\t") | . as $c
                 | {id: .[0], project: .[1], kind: .[4], question: (.[5] // "" | .[0:160]),
                    task: (if (.[7] // "") == "" then null else .[7] end), created: .[11],
                    session: (if (.[12] // "") == "" then null else .[12] end),
                    claude_session: (if (.[15] // "") == "" then null else .[15] end),
                    recommend: (if (.[10] // "") == "" then null else .[10] end),
-                   judge: (if (.[16] // "") == "" then null else .[16] end)}],
+                   judge: (if (.[16] // "") == "" then null else .[16] end)}
+                  # audit_of is set only on an audit: the hub-core pager keeps those off the phone
+                  | if ($c[32] // "") != "" then . + {audit_of: $c[32]} else . end],
          stopped: [$stopped | split("\n")[] | fromjson? | objects]}
       # Every bucket with its count, zeros included: a reader that keys on the buckets present
       # would keep the last non-zero count of a bucket after it empties (agent-mqtt-publish did).
