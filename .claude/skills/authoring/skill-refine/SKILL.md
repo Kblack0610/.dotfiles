@@ -42,7 +42,7 @@ Four layers, in order. The first is ground truth; the rest are judgment.
 skill-drift --json
 ```
 
-**Environmental** (need a real machine, so they are yours alone to act on): `DEADPATH` (a `~/` path in a SKILL.md that does not exist), `NOCMD` (a command it tells you to run that is not on PATH), `UNDEPLOYED` (a skill dir in a repo with no link in `~/.claude/skills/`), `GHOST` (bulleted in CLAUDE.md, absent from disk), `STALE` (`metadata.reviewed` older than 180d), `UNUSED` (never invoked in 90d of transcripts), `LISTBUDGET` (the whole listing over its budget).
+**Environmental** (need a real machine, so they are yours alone to act on): `DEADPATH` (a `~/` path in a SKILL.md that does not exist), `NOCMD` (a command it tells you to run that is not on PATH), `UNDEPLOYED` (a skill dir in a repo with no link in `~/.claude/skills/`), `GHOST` (bulleted in CLAUDE.md, absent from disk), `STALE` (`metadata.reviewed` older than 180d), `UNUSED` (never invoked in 90d of transcripts), `PROMOTE` (a `status: draft` skill used past the toggle's bar: propose listing it), `LISTBUDGET` (the whole listing over its budget).
 
 **Static** (`skill-drift --lint .`, the checks `~/.local/src/docs/skills.md` names): CI gates every PR on these, so a finding here is debt frozen in `tests/skill-lint.baseline` or something that landed before the gate existed.
 
