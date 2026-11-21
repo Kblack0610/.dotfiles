@@ -22,6 +22,7 @@ pub mod departments;
 pub mod epics;
 pub mod fleet;
 pub mod fleet_cost;
+pub mod fix_owner;
 pub mod flow;
 pub mod focus;
 pub mod gateway;

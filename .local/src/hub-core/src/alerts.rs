@@ -18,6 +18,7 @@ use serde::Serialize;
 
 use crate::actions::{self, Action};
 use crate::alertmanager::Firing;
+use crate::fix_owner::fix_owner;
 use crate::fleet::runner::{self, Watch};
 use crate::home::{Chip, Level};
 use crate::infra::Infra;
@@ -411,11 +412,8 @@ fn red_key(item: &str, items: &[String]) -> Option<String> {
     }
 }
 
-/// The owner and state of a red from its fix: the open row filed under `key` that is in hand
-/// (queued or fixing), else the first open one (open rows are worst first), or none. A fix in
-/// hand that is not waiting and has a `due` not past at `now` sets `fixing_by`; no `due` (too few
-/// merged fixes to judge by) is not on time. A `needs merge` fix is not in hand: its session ended
-/// with the PR open, so someone has to land it.
+/// The owner and state of a red from its fix filed under `key` ([`fix_owner`], the join Releases
+/// draws too); no key (a shared first word) has no owner.
 fn owner(a: &mut Alert, key: Option<&str>, fixes: Option<&[Red]>, now: i64) {
     let Some(fixes) = fixes else {
         a.owner = "-".into();
@@ -424,44 +422,19 @@ fn owner(a: &mut Alert, key: Option<&str>, fixes: Option<&[Red]>, now: i64) {
         }
         return;
     };
-    let in_hand = |r: &&Red| matches!(r.outcome.as_str(), "queued" | "fixing");
-    let filed = || {
-        key.into_iter()
-            .flat_map(|k| fixes.iter().filter(move |r| r.red == k))
-    };
-    let fix = filed().find(in_hand).or_else(|| filed().next());
-    a.owner = fix.map_or("-".into(), |r| format!("{} {}", r.slug, r.outcome));
-    if let Some(r) = fix {
+    let o = fix_owner(fixes, |r| key == Some(r.red.as_str()), now);
+    a.owner = o.owner;
+    a.fixing_by = o.fixing_by;
+    if let Some(r) = o.fix {
         if a.project.is_empty() {
             a.project = r.project.clone();
         }
         a.slug = r.slug.clone();
         a.pr_url = r.pr_url.clone();
-        // A waiting item waits on an ask or another item and one in review on a merge: either
-        // may be waiting on the human.
-        if in_hand(&r)
-            && !matches!(r.state.as_str(), "waiting" | "review")
-            && r.due.is_some_and(|d| now <= d)
-        {
-            a.fixing_by = r
-                .session
-                .as_deref()
-                .map_or(r.slug.as_str(), crate::home::tmux_name)
-                .to_string();
-        }
     }
-    if a.error() {
-        return;
+    if !a.error() {
+        a.state = o.state.into();
     }
-    // A fix row whose fix did not hold (came back, still red, no fix) has an owner to ask, so
-    // it is "unfixed"; "no owner" is only a red with no fix row at all.
-    a.state = match fix.map(|r| r.outcome.as_str()) {
-        Some("fixing" | "needs merge") => "fixing",
-        Some("queued") => "queued",
-        Some(_) => "unfixed",
-        None => "no owner",
-    }
-    .into();
 }
 
 /// Firing's order: tripped watches, error watches, `cc:red_now`, the machinery, Alertmanager
