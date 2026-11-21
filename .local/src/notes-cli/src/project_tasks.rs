@@ -703,25 +703,48 @@ fn open_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
 
 /// The open row on `content` that `text` nearly duplicates: the same type and title words
 /// (hashtags, stamps and words under 3 letters aside, order ignored) of which at least
-/// [`NEAR_DUP`] are shared, each title having 3 or more. A word is split on whitespace only and
-/// keeps its inner `_`, `-` and digits, so templated rows that differ by one name
-/// (`retry_rate` and `no_pr_rate`) stay apart. The area does not count: inbox-triage rewrites a
-/// filed row's area, so a filer that files the same words again would miss its own row
-/// (research-pick's `research(roster):` row, re-scoped to `research(notes):`, filed nightly).
-/// Deterministic, and strict on purpose: a refused near-dup exits 3, which callers read as
-/// already filed, so a false twin would drop a row.
+/// [`NEAR_DUP`] are shared, each title having 3 or more, and the same [`names`]: templated rows
+/// that differ by one unit, watch, id or date (`agentctl@inbox-plan.service` and
+/// `agentctl@nightly-measure.service` failed) are two rows however many words they share. The
+/// area does not count: inbox-triage rewrites a filed row's area, so a filer that files the same
+/// words again would miss its own row (research-pick's `research(roster):` row, re-scoped to
+/// `research(notes):`, filed nightly). Deterministic, and strict on purpose: a refused near-dup
+/// exits 3, which callers read as already filed, so a false twin would drop a row.
 fn near_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
-    let (kind, want) = title_words(&format!("- [ ] {text}"));
+    let line = format!("- [ ] {text}");
+    let (kind, want) = title_words(&line);
     if want.len() < 3 {
         return None;
     }
+    let own = names(&line);
     sheet::open_rows(content)
         .into_iter()
         .map(|(_, l)| l)
         .find(|l| {
             let (k, have) = title_words(l);
-            row_type(&k) == row_type(&kind) && have.len() >= 3 && share(&want, &have) >= NEAR_DUP
+            row_type(&k) == row_type(&kind)
+                && have.len() >= 3
+                && share(&want, &have) >= NEAR_DUP
+                && names(l) == own
         })
+}
+
+/// A row title's name-like tokens, lower-cased with edge punctuation trimmed: each one holding
+/// `_`, `@`, `/`, `:` or `-`, or a letter with a digit or `.` (a unit, a watch, a lane, a date, a
+/// build). A bare count or reading (`2 checks`, `7d 0.3`) is not a name, so a row whose numbers
+/// moved is still the row.
+fn names(line: &str) -> Words {
+    projects::row_title(line)
+        .to_lowercase()
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| ",;:.()[]\"'`".contains(c)))
+        .filter(|w| {
+            let letter = w.chars().any(|c| c.is_alphabetic());
+            w.chars().any(|c| "_@/:-".contains(c))
+                || letter && w.chars().any(|c| c.is_ascii_digit() || c == '.')
+        })
+        .map(str::to_string)
+        .collect()
 }
 
 /// The type half of a row's `type(area)`.
@@ -4639,6 +4662,32 @@ Version: v1.2.0
             )
             .is_none(),
             "templated rows for two KPIs are two rows"
+        );
+        let unit = "## Tasks\n- [ ] fix(unit): agentctl@inbox-plan.service failed: exit 1, see the journal #size/s\n";
+        assert!(
+            near_twin(
+                unit,
+                "fix(recovery): agentctl@nightly-measure.service failed: exit 1, see the journal #size/s"
+            )
+            .is_none(),
+            "a templated row for another unit files, whatever its area"
+        );
+        assert!(
+            near_twin(
+                unit,
+                "fix(recovery): agentctl@inbox-plan.service failed: exit 1, see the journal #size/s"
+            )
+            .is_some(),
+            "the same unit re-scoped is still the row"
+        );
+        let watch = "## Tasks\n- [ ] check(recovery): watch claude-spend-hourly is red; fix: read where the red is watched, fix the cause #size/s\n";
+        assert!(
+            near_twin(
+                watch,
+                "check(telemetry): watch source-pace is red; fix: read where the red is watched, fix the cause #size/s"
+            )
+            .is_none(),
+            "a hyphenated watch name is a name"
         );
     }
 
