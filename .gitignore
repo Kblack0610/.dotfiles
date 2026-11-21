@@ -27,6 +27,7 @@ src/
 # default http/https handler - so every link on every box opened that instead
 # of the browser. Generated, machine-local, never tracked.
 .local/share/applications/mimeinfo.cache
+.local/share/applications/intent.cache
 
 .fonts/.uuid
 
@@ -305,6 +306,8 @@ test_notifications.sh
 .config/systemd/user/*snapclient*
 .config/systemd/user/*/*snapclient*
 # personal notes/agent systemd units (+ their .target.wants symlinks), both levels
+.config/systemd/user/*phone-adb-wifi*
+.config/systemd/user/*/*phone-adb-wifi*
 .config/systemd/user/*notes*
 .config/systemd/user/*agentctl*
 .config/systemd/user/*git-sync*
