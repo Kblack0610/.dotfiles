@@ -959,3 +959,30 @@ focus_on() {
     sed -i '1s/$/ #prio\/focus/' "$SANDBOX/sheets/$p/README.md"
   done
 }
+
+# ocfree: a free harness whose provider may train on prompts, allowlisted to the public project only.
+ocfree_ready() {
+  printf 'sk-ocfree\n' > "$SANDBOX/ocfree.key"
+  harness_set --arg k "$SANDBOX/ocfree.key" --arg c "$SANDBOX/eval-ocfree.json" --arg d "$SANDBOX/oc-ocfree" '.harnesses.ocfree = {
+    launcher: "opencode", source: "ocfree", headless: true, config: $c, config_dir: $d, key_file: $k, projects: ["dotfiles"], timeout_min: 180, models: {beam: "litellm/opencode-free (beam-free)"}}'
+  harness_sandboxed ocfree
+}
+
+# trainee_ready -- a trainee lane (model-lane trainee, lanes.yaml trainee:) of two models on gotrain, a
+# sandboxed harness allowlisted to game whose source has room; no claude account has room (route_ready).
+# HARNESSES is the map a function the test calls directly reads (fleet-dispatch set it at load, before this map).
+trainee_ready() {
+  route_ready
+  HARNESSES=$DISPATCH_HARNESSES
+  printf 'sk-go\n' > "$SANDBOX/go.key"
+  harness_set --arg k "$SANDBOX/go.key" --arg c "$SANDBOX/eval-go.json" --arg d "$SANDBOX/oc-go" '.harnesses.gotrain = {
+    launcher: "opencode", source: "go", headless: true, max_tier: 1, config: $c, config_dir: $d, key_file: $k, projects: ["game"], timeout_min: 60,
+    models: {glm: "litellm/go (glm)", kimi: "litellm/go (kimi)"}}'
+  harness_sandboxed gotrain
+  trainee_repo "$SANDBOX/repos/game"
+  srcs go:ok:0.1 codex:ok:5
+  export TRAINEE_LANE='{"candidates":[{"harness":"gotrain","model":"glm"},{"harness":"gotrain","model":"kimi"}],"points":1,"reviewer":"opus","reviewer_model":"opus"}'
+}
+
+# gateway_up -- the gateway's /health/readiness answers healthy, as LiteLLM does with its db connected.
+gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\"status\":\"healthy\",\"db\":\"connected\"}"'; }
