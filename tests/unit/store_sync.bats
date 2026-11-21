@@ -222,6 +222,22 @@ EOF
   assert_output --partial "COMPLETE: origin at"
 }
 
+@test "an origin with unrelated history stops the sync like a conflict, never a silent retry" {
+  peer b
+  local other="$SANDBOX/other"
+  git init -q -b master "$other"
+  echo x > "$other/x.md"
+  git -C "$other" add -A && git -C "$other" commit -q -m other
+  git init -q --bare -b master "$R/other.git"
+  git -C "$other" push -q "$R/other.git" master
+  conf "$R/other.git"
+  echo 'state: b' > "$SANDBOX/b/queue/item.md"
+  run on b
+  assert_failure
+  assert_output --partial "merging origin conflicts in (git merge-tree exit"
+  [ -f "$SANDBOX/b/.sync/conflict" ]
+}
+
 @test "a merge being resolved by hand is left alone: no sync stages its conflicted files" {
   peer a; peer b
   echo 'state: a' > "$SANDBOX/a/queue/item.md"
