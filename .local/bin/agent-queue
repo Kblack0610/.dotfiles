@@ -1843,7 +1843,7 @@ cmd_add() {
       --slug) slug="${2:?}"; shift 2 ;;
       --title) title="$(one_line "${2:?}")"; shift 2 ;;
       --epic) epic="${2:?}"; shift 2 ;;
-      --want) want="${2:?}"; shift 2 ;;
+      --want) want="${2:?}"; ! headless || die "--want names a human's channel; a headless Claude run ($CLAUDE_CODE_ENTRYPOINT) has no human at hand, so its add carries none"; shift 2 ;;
       --row) row="${2:?}"; shift 2 ;;
       --running) running=1; shift ;;
       --session) session="${2:?}"; shift 2 ;;
@@ -1856,7 +1856,6 @@ cmd_add() {
     esac
   done
   after="$(word_list "$after")"
-  [ -z "$want" ] || ! headless || die "--want names a human's channel; a headless Claude run ($CLAUDE_CODE_ENTRYPOINT) has no human at hand, so its add carries none"
   priority="$(add_priority "$priority" "$priority_given$running$want$dry" "$planf" "$tags" "$from")" || exit 1
   if [ -n "$planf" ]; then
     [ "${#task[@]}" -eq 0 ] || die "--plan writes its own tasks; pass no task with it"
