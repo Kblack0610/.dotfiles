@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # notes-mobile: one-tap entry into today's daily note.
 #
-# Pull latest, open today's `~/.notes` daily note in neovim inside a persistent
-# tmux session, then push on exit. Designed for the Termux:Widget home-screen
-# shortcut (~/.shortcuts/notes) but works on any machine for testing.
+# With a PC named in ~/.config/notes-mobile/host, a tap opens that PC's hub on today's
+# daily note (`tmx root hub`, what Prefix+N does there): one note, one editor, nothing to
+# sync. Without one, or when the PC cannot be reached, it pulls, opens today's `~/.notes`
+# daily note in neovim inside a persistent tmux session here, then pushes on exit.
+# Designed for the Termux:Widget home-screen shortcut (~/.shortcuts/notes) but works on
+# any machine for testing.
 #
 # The persistent `notes` tmux session is what makes it "stay there": reopening
 # the phone reattaches to the same nvim, switched to today's note once the day
@@ -16,6 +19,7 @@
 #   NOTES_SYNC_CMD              sync command (default: ~/.local/bin/notes-sync)
 #   NOTES_MIRROR_CMD            widget mirror command (default: ~/.local/bin/notes-mirror-shared)
 #   NOTES_MOBILE_TMUX_SESSION   tmux session name (default: notes)
+#   NOTES_MOBILE_HOST_FILE      file naming the hub PC (default: ~/.config/notes-mobile/host)
 
 set -uo pipefail
 
@@ -43,6 +47,24 @@ resolve_daily() {
     fi
     printf '%s' "$daily"
 }
+
+# 0. The hub PC, when one is named: its first word is an ssh destination (an alias or a
+#    LAN address). BatchMode so a missing key fails at once instead of asking for a password;
+#    accept-new so the first tap trusts the PC instead of failing on an unknown host key.
+#    ssh exits 255 only when it cannot connect, and then the phone copy opens, with a line
+#    saying why. Any other exit is the hub session ending, and the tap is done.
+HOST_FILE="${NOTES_MOBILE_HOST_FILE:-$HOME/.config/notes-mobile/host}"
+HUB_HOST=""
+[ -r "$HOST_FILE" ] && HUB_HOST="$(awk '!/^[[:space:]]*#/ && NF {print $1; exit}' "$HOST_FILE")"
+if [ -n "$HUB_HOST" ]; then
+    # shellcheck disable=SC2088 # the ~ is the PC's home, expanded by its shell
+    ssh -t -o ConnectTimeout=4 -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$HUB_HOST" '~/.local/bin/tmx root hub'
+    rc=$?
+    [ "$rc" -eq 255 ] || exit "$rc"
+    printf 'hub unreachable (%s): opening the phone copy\n' "$HUB_HOST" >&2
+    # A UI timer, not a wait on work: the editor would cover the line at once.
+    [ -t 0 ] && read -r -t 3 _ 2>/dev/null
+fi
 
 # 1. Pull latest before opening.
 sync

@@ -137,6 +137,29 @@ exec "$BIN/notes-mobile"
 EOF
 chmod +x "$HOME/.shortcuts/notes"
 
+# 6b. The hub PC the icon opens (notes-mobile reads this file). Env -> existing file ->
+#     prompt; an empty answer keeps the icon on the phone copy. The key is the human's to
+#     authorize on the PC, so a refused key prints the one line to run there, nothing more.
+HUB_FILE="$HOME/.config/notes-mobile/host"
+if [ -z "${NOTES_HUB_HOST:-}" ] && [ -r "$HUB_FILE" ]; then
+    NOTES_HUB_HOST="$(awk '!/^[[:space:]]*#/ && NF {print $1; exit}' "$HUB_FILE")"
+fi
+if [ -z "${NOTES_HUB_HOST:-}" ] && [ -t 0 ]; then
+    printf 'PC whose hub the icon opens, as ssh sees it (e.g. user@<LAN address>; Enter for none): '
+    read -r NOTES_HUB_HOST
+fi
+if [ -n "${NOTES_HUB_HOST:-}" ]; then
+    mkdir -p "${HUB_FILE%/*}"
+    printf '%s\n' "$NOTES_HUB_HOST" > "$HUB_FILE"
+    [ -f "$HOME/.ssh/id_ed25519" ] || ssh-keygen -q -t ed25519 -N '' -f "$HOME/.ssh/id_ed25519"
+    if ssh -o ConnectTimeout=4 -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$NOTES_HUB_HOST" true </dev/null >/dev/null 2>&1; then
+        say "Hub: $NOTES_HUB_HOST answers; the icon opens its hub."
+    else
+        warn "Hub: $NOTES_HUB_HOST did not take this phone's key, so the icon opens the phone copy. On the PC, add this line to ~/.ssh/authorized_keys:"
+        cat "$HOME/.ssh/id_ed25519.pub" >&2
+    fi
+fi
+
 # 7. Background sync: crond (a termux-services service) runs it hourly while Termux is
 #    alive, and the Termux:Boot hook starts crond and syncs once after each boot.
 say "Setting up boot + hourly sync..."
@@ -185,7 +208,8 @@ Last steps (once):
          Grant KWGT storage access; if blank try \$wg("file:///sdcard/notes/today.md", raw)\$.
          Note: KWGT shows plain text -- markdown is not rendered.
 
-Now tapping the icon pulls, opens today's note in nvim (tmux 'notes' session), and pushes on exit.
+Now tapping the icon opens the hub PC's daily note when ~/.config/notes-mobile/host names one;
+otherwise it pulls, opens today's note in nvim (tmux 'notes' session), and pushes on exit.
 Background sync + the widget mirror refresh hourly while Termux runs, and at boot
 once Termux:Boot (same source as Termux) is installed and opened once.
 Test it now:  ~/.shortcuts/notes

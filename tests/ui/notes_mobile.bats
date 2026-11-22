@@ -63,3 +63,34 @@ notes_shows() { _tm capture-pane -p -t '=notes:' 2>/dev/null | grep -q "$1"; }
   tmux_start "$TAP"
   wait_until 'notes_shows DAY-TWO'
 }
+
+# A stub ssh in the sandbox PATH: records its arguments, then exits with $SANDBOX/ssh_rc.
+ssh_stub() {
+  printf '%s' "$1" >"$SANDBOX/ssh_rc"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$@" >"%s/ssh_args"\nexit "$(cat "%s/ssh_rc")"\n' "$SANDBOX" "$SANDBOX" >"$SANDBOX/bin/ssh"
+  chmod +x "$SANDBOX/bin/ssh"
+  mkdir -p "$HOME/.config/notes-mobile"
+  echo 'pc-test' >"$HOME/.config/notes-mobile/host"
+}
+
+@test "with a hub PC named, a tap opens that PC's hub and starts no phone copy" {
+  ssh_stub 0
+  printf '%s' "$SANDBOX/day1.md" >"$SANDBOX/today"
+  run env -u TMUX NOTES_SYNC_CMD=/bin/false NOTES_MIRROR_CMD=/bin/false "$REPO_ROOT/.local/bin/notes-mobile"
+  assert_success
+  run cat "$SANDBOX/ssh_args"
+  assert_line --index 0 -- -t
+  assert_line 'pc-test'
+  assert_line '~/.local/bin/tmx root hub'
+  run _tm has-session -t '=notes'
+  assert_failure
+}
+
+@test "a hub PC that cannot be reached opens the phone copy and says so" {
+  ssh_stub 255
+  printf '%s' "$SANDBOX/day1.md" >"$SANDBOX/today"
+  tmux_start "$TAP 2>'$SANDBOX/tap.err'"
+  wait_until 'notes_shows DAY-ONE'
+  run cat "$SANDBOX/tap.err"
+  assert_output 'hub unreachable (pc-test): opening the phone copy'
+}
