@@ -91,8 +91,9 @@
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/panel-lib.sh" || exit 1
 . "${SELF%/*}/worlds.sh" || exit 1
-# shellcheck source=../../lib/origin-repo.sh
-. "${SELF%/*}/../../lib/origin-repo.sh" || exit 1
+# origin-repo.sh, and the one Forgejo client (so_forge_remote, so_forgejo_*).
+# shellcheck source=../../lib/session-outcomes.sh
+. "${SELF%/*}/../../lib/session-outcomes.sh" || exit 1
 # shellcheck source=../../lib/agent-merge-proof.sh
 . "${SELF%/*}/../../lib/agent-merge-proof.sh" || exit 1   # merge_proof_branch, for wt_default_branch
 # shellcheck source=../../../.config/shared-hooks/project-name.sh
@@ -278,10 +279,13 @@ wt_submodule_pushed() {
 # that is only ever pushed would never be reapable under the first test alone, and waiting
 # for the merge to land locally would keep worktrees alive for days after they are done.
 #
-# A third: a PR from this branch was MERGED at exactly this HEAD. A squash merge puts a new
-# commit on the trunk, so HEAD is never its ancestor, and the forge deletes the branch, so
-# there is no upstream left either. Without this every squash-merged worktree was held as
-# "not merged" forever (2026-10-23: unity-core-playground had several of those at 15-20 GB each).
+# A third: a PR from this branch was MERGED (wt_merged_pr_heads: GitHub, or Forgejo for a
+# Forgejo-canonical repo), and HEAD is that PR's head, or has moved on from it by clean merges
+# of the trunk only (wt_nothing_only_here). A squash merge puts a new commit on the trunk, so
+# HEAD is never its ancestor, and the forge deletes the branch, so there is no upstream left
+# either. Without this every squash-merged worktree was held as "not merged" forever
+# (2026-10-23: unity-core-playground had several of those at 15-20 GB each; 2026-11-18: 4 of
+# 55 home-config trees after the prune, whose PRs are on Forgejo, not the GitHub mirror).
 #
 # A fourth: HEAD is on any remote branch, whatever the local branch tracks. A tree cut with
 # `worktree add -b <b> origin/main` tracks origin/main, and a plain `git push origin <b>` never
@@ -300,7 +304,31 @@ wt_landed() {
     wt_submodule_pushed "$1"; then
     return 0
   fi
-  wt_pr_merged_at_head "$1"
+  local branch heads
+  branch=$(git -C "$1" symbolic-ref --short -q HEAD) || return 1
+  heads=$(wt_merged_pr_heads "$1" "$branch") && [ -n "$heads" ] || return 1
+  # shellcheck disable=SC2086 # one oid a word, each checked to be hex
+  wt_nothing_only_here "$1" $heads
+}
+
+# wt_nothing_only_here <path> <rev>... -- true when every commit HEAD reaches past the remote
+# refs and the <rev>s is a merge whose combined diff is empty. A clean merge adds nothing; a
+# conflict resolution or an edit made in the merge does, and `--cc` shows it. A <rev> this repo
+# lacks is ignored, which only keeps the tree. With HEAD at a <rev> the walk is empty: landed.
+wt_nothing_only_here() {
+  local dir="$1" out c parents diff
+  shift
+  # --ignore-missing would drop an unborn HEAD too, and an empty walk reads as landed.
+  git -C "$dir" rev-parse --verify --quiet HEAD >/dev/null || return 1
+  out=$(git -C "$dir" rev-list --ignore-missing --parents HEAD --not --remotes "$@" 2>/dev/null) || return 1
+  while read -r c parents; do
+    [ -n "$c" ] || continue
+    [[ "$parents" == *' '* ]] || return 1
+    # A failed diff-tree prints nothing too, so its status is read apart from its output.
+    diff=$(git -C "$dir" diff-tree --no-commit-id --cc "$c" 2>/dev/null) || return 1
+    [ -z "$diff" ] || return 1
+  done <<<"$out"
+  return 0
 }
 
 # wt_fetch_pruned <main>... -- fetch every remote of each repo with --prune, at most once per run:
@@ -340,25 +368,38 @@ wt_work_reason_fetched() {
   return "$rc"
 }
 
-# wt_pr_merged_at_head <path> -- true when GitHub has a MERGED PR whose head is this HEAD.
-# Fails closed: no gh, no jq, a non-GitHub origin, a detached HEAD or a network error all
-# answer "not landed", which only ever keeps a worktree.
-wt_pr_merged_at_head() {
-  local branch head
-  branch=$(git -C "$1" symbolic-ref --short -q HEAD) || return 1
-  head=$(git -C "$1" rev-parse HEAD 2>/dev/null) || return 1
-  wt_pr_merged_at "$1" "$branch" "$head"
+# wt_merged_pr_heads <dir> <branch> -- the head oid of each MERGED PR from <branch>, one a line,
+# read from the forge <dir> lands on (so_forge_remote, the rule agent-land uses): Forgejo through
+# its API, else GitHub through gh. home-config's origin is the GitHub mirror, which has no PRs,
+# so asking gh held its trees merged on Forgejo (2026-11-18). Fails closed: no jq, gh or token,
+# an unlisted host, a network error or an oid that is not hex print nothing, which keeps a tree.
+wt_merged_pr_heads() {
+  local fj rc main def slug
+  panel_have jq || return 1
+  fj=$(so_forge_remote "$1")
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    main=$(wt_main_repo "$1") && def=$(wt_default_branch "$main") || return 1
+    so_forgejo_auth "${fj#* }" || return 1
+    # One PR for the base/head pair, found after its branch is deleted too (a branch with more
+    # than one may read as not merged, which only keeps it). Base and branch are percent-encoded;
+    # the branch keeps its slashes, which the API reads as part of the head.
+    so_forgejo_get "${fj#* }" "pulls/$(jq -rn --arg x "$def" '$x|@uri')/$(jq -rn --arg x "$2" '$x|@uri|gsub("%2F";"/")')" 2>/dev/null |
+      jq -r 'select(.merged == true) | .head.sha // empty' 2>/dev/null | grep -E '^[0-9a-f]{40,64}$'
+    return 0
+  fi
+  [ "$rc" -eq 1 ] || return 1
+  slug=$(origin_repo "$1" github.com) && panel_have gh || return 1
+  timeout 20 gh pr list -R "$slug" --head "$2" --state merged --json headRefName,headRefOid,state 2>/dev/null |
+    jq -r --arg b "$2" '.[] | select(.state == "MERGED" and .headRefName == $b) | .headRefOid' 2>/dev/null |
+    grep -E '^[0-9a-f]{40,64}$'
+  return 0
 }
 
-# wt_pr_merged_at <dir> <branch> <head> -- true when GitHub has a MERGED PR on <branch> whose head
-# is <head>, for the repo <dir>'s origin names. The same fail-closed answer as above.
+# wt_pr_merged_at <dir> <branch> <head> -- true when a MERGED PR on <branch> has <head> as its
+# head, by wt_merged_pr_heads' fail-closed answer.
 wt_pr_merged_at() {
-  local slug
-  slug=$(origin_repo "$1" github.com) || return 1
-  panel_have gh && panel_have jq || return 1
-  timeout 20 gh pr list -R "$slug" --head "$2" --state merged --json headRefName,headRefOid,state 2>/dev/null |
-    jq -e --arg b "$2" --arg h "$3" \
-      'any(.[]; .state == "MERGED" and .headRefName == $b and .headRefOid == $h)' >/dev/null 2>&1
+  wt_merged_pr_heads "$1" "$2" | grep -qxF "$3"
 }
 
 # wt_submodule_list <path> -- `<name><TAB><path>` for each submodule in <path>'s .gitmodules.
