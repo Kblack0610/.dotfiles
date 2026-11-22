@@ -2272,6 +2272,34 @@ fix_item() {
   assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$(cause_of) retry:ar-1 --raw "
 }
 
+# 2026-11-22 (ar-4215): a CronJob alert clears only on its next run, 3 h away; the fix merged at 09:07Z
+# and triage escalated it at 09:48Z as one that did not hold.
+@test "triage: a merged fix stands for its cause until its proves_at, at most TRIAGE_PROVES_MAX past the merge" {
+  log_triage_setup
+  lock_route
+  fix_item ar-1 done ok o/r#5 abc
+  local f; f=$(tail -1 "$ITEMS"); : > "$ITEMS"
+  at() { date -u -d "@$((T0 + $1))" +%FT%TZ; }
+  jq -c --arg f "$(at -3600)" --arg p "$(at 3600)" '.finished = $f | .proves_at = $p' <<<"$f" >> "$ITEMS"
+  run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  # NEGATIVE CONTROL: its proves_at passed with the red still here, so it did not hold
+  : > "$ITEMS"
+  jq -c --arg f "$(at -3600)" --arg p "$(at -60)" '.finished = $f | .proves_at = $p' <<<"$f" >> "$ITEMS"
+  run "$SUBJECT" triage
+  assert_success
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$(cause_of) retry:ar-1 --raw "
+  # a proves_at past TRIAGE_PROVES_MAX holds only that long after the merge
+  : > "$ITEMS"; : > "$PLOG"; : > "$BOARD"
+  jq -c --arg f "$(at -7200)" --arg p "$(at 86400)" '.finished = $f | .proves_at = $p' <<<"$f" >> "$ITEMS"
+  TRIAGE_PROVES_MAX=3600 run "$SUBJECT" triage
+  assert_success
+  run cat "$PLOG"
+  assert_output --regexp " retry:ar-1 --raw "
+}
+
 # ar-4018: Needs you holds only what the human can do. A red whose fixes did not hold is the agent
 # system's still: it files no human row and pages no one. reflective-penguin P2 (ask UfRZaR): it gets one
 # escalation, a root-cause pass pinned to Opus, and only when that did not hold either one ask.

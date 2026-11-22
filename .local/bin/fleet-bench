@@ -281,6 +281,7 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${TRIAGE_NOTIFY_CMD:=agent-notify}"   # triage: pages a human route once, when its row lands
 : "${TRIAGE_PROMOTE_CMD:=fleet-dispatch promote}"   # triage: queue one board row as it stands
 : "${TRIAGE_WATCH_AFTER:=1800}"      # triage: seconds a watch must stay TRIP before it is a row and a red item: two dispatch passes, so its owner runs the hour it trips (human, 2026-11-10, ar-1531)
+: "${TRIAGE_PROVES_MAX:=86400}"     # triage: the longest a red fix's proves_at (agent-queue set) holds its cause after the item closed: a daily CronJob's next run (ar-4215)
 : "${TRIAGE_WATCH_HIGH_AFTER:=900}" # triage: the same for a high or urgent watch: one dispatch pass, so one flap is not a row
 : "${BENCH_GUARD_RECUR:=2}"         # retro: sessions a lesson must recur in before it wants a guard
 : "${BENCH_GUARD_SEEN:=3}"          # retro: dream sweeps that found a lesson again (its seen marker) before it wants a guard (provisional, rules.jsonl)
@@ -4471,11 +4472,14 @@ triage_human() {
   echo "$n"
 }
 
-# cause_tries <items> <cause> [trip] [route] -> -1 while an item stands for the cause: queued,
-# running or waiting, or closed with a PR that is not merged (it waits on a merge, and a second
-# session would only repeat it), or merged under TRIAGE_WATCH_AFTER ago (the patience a low red gets
-# before it is filed, given to a merge to deploy and age out of the probe's window), or, on an alert
-# or owned route, closed ok since the trip (its job was the ask or the owner, not the red, so a PR it
+# cause_tries <items> <cause> [trip] [route] -> -1 while an item stands for the cause:
+# - queued, running or waiting;
+# - closed with a PR that is not merged (it waits on a merge, and a second session would only repeat it);
+# - merged and closed under TRIAGE_WATCH_AFTER ago (the patience a low red gets before it is filed,
+#   given to a merge to deploy and age out of the probe's window);
+# - merged and before its proves_at, the time its fixer said the probe can first read it (a CronJob
+#   alert clears only on its next run), at most TRIAGE_PROVES_MAX after it closed (ar-4215);
+# - on an alert or owned route, closed ok since the trip (its job was the ask or the owner, not the red, so a PR it
 # merged fixed something beside the red; the watch re-pages on its own). Else how many tries the
 # cause had: given the epoch its watch tripped at, the items queued at or after it, so each trip gets
 # its own TRIAGE_FIX_TRIES (ar-4064); else every item in the TRIAGE_FIX_DAYS window.
@@ -4488,11 +4492,13 @@ def trip_tries: [.[] | select($trip == "" or ((.queued | ep) // 0) >= ($trip | t
 cause_tries() {
   local owned=false
   case "${4:-}" in alert | owned:?*) owned=true ;; esac
-  jq --arg c " cause:$2 " --arg trip "${3:-}" --argjson owned "$owned" --argjson settle "$(($(now) - TRIAGE_WATCH_AFTER))" \
-    "$JQ_LIB$CAUSE_JQ"'cause_items | trip_tries as $tries
+  jq --arg c " cause:$2 " --arg trip "${3:-}" --argjson owned "$owned" --argjson now "$(now)" \
+    --argjson after "$TRIAGE_WATCH_AFTER" --argjson most "$TRIAGE_PROVES_MAX" \
+    "$JQ_LIB$CAUSE_JQ"'def settles: ((.finished | ep) // 0) as $f | [$f + $after, ([(.proves_at | ep) // 0, $f + $most] | min)] | max;
+    cause_items | trip_tries as $tries
     | if any(.[]; .state == "queued" or .state == "running" or .state == "review" or .state == "waiting"
                 or (.state == "done" and .pr != null and (.merged // "") == "" and .status != "cancelled")
-                or (.state == "done" and (.merged // "") != "" and ((.finished | ep) // 0) >= $settle))
+                or (.state == "done" and (.merged // "") != "" and settles >= $now))
          or ($owned and any($tries[]; .state == "done" and .status == "ok"))
       then -1 else ($tries | length) end' <<<"$1"
 }
