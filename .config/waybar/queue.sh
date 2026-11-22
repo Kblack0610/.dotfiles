@@ -34,7 +34,6 @@ UP_NEXT_ROWS=5
 declare -A DO=(
   [slots]="Run fleet-dispatch headroom"
   [load]="See the fleet-pace skill"
-  [idle]="See the fleet-pace skill"
   [assess]="Run fleet-assess"
   [account]="Run claude-acct status"
   [other]="Run fleet-dispatch headroom"

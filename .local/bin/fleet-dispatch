@@ -4765,9 +4765,9 @@ red_floor_start() {
 }
 
 # project_floor_start <item json lines> <room> <why> -- start the light items of idle projects among
-# them on the project floor, past <why>, the gates that held the pass; the hold stands (start_item).
-# Rc FLOOR_SHUT when the floor is not due (off, spent, no idle project's item, or a gate it does not
-# lift), so the caller settles the pass as it would have. FLOOR_QUIET=1 (the full fleet) leaves a
+# them on the project floor, past <why>, the full pace target; the hold stands (start_item). Every
+# other gate must be clear. Rc FLOOR_SHUT when the floor is not due (off, spent, no idle project's
+# item, or a closed gate), so the caller settles the pass as it would have. FLOOR_QUIET=1 (the full fleet) leaves a
 # pass that picks nothing to the caller's NOOP: a full fleet is working, not blocked.
 FLOOR_SHUT=10
 project_floor_start() {
@@ -7788,8 +7788,8 @@ t3_ready() {
 # t3_picks <rows> -> the t3_ready rows a session may take, in RANK_JQ order with the project's #prio
 # (t3_rows' project_prio), as picks ranks the day rows they merge with (cleanup first). Each (worker
 # tier3) merges behind the red-fix gate (policy.md "Tier"), which item_brief names and agent-land
-# enforces. No area holds a tier-3 row: the one-an-area cap had no number on record (register row
-# "One tier 3 item is in flight per area", low confidence, action rewrite; plan vast-soaring-prism P4).
+# enforces. No area holds a tier-3 row: the one-an-area cap had no number on record (plan
+# vast-soaring-prism P4, ar-4446).
 t3_picks() {
   t3_ready "$1" | jq -sc --arg today "${DISPATCH_TODAY:-$(date +%F)}" "$RANK_JQ"'
     map(. + {worker: "tier3", t3rank: [.rank, .prio, (0 - .order)]} | rank_fields($today; .project_prio // ""))

@@ -497,9 +497,10 @@ full_fleet() {
   route_ready
   acct main:ok
   srcs codex:ok:5
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PROJECT_FLOOR=0 DISPATCH_PER_PASS=3
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PROJECT_FLOOR=0 DISPATCH_PER_PASS=3 LANE=haiku
   fleet_state 8
-  # Negative control: codex is on pace for its week, so the full fleet starts nothing.
+  # Negative control: codex is on pace for its week and model-lane fits the item to Claude alone, so the
+  # full fleet starts nothing (an item it fits to codex starts past the target: "other sources").
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
   assert_not_called 'agent-codex'

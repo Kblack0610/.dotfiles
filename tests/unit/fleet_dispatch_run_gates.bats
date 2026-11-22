@@ -89,12 +89,16 @@ load 'fleet_dispatch/common'
   acct alt:ok:/home/u/.claude-personal
   echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'is over the'
+  assert_output --partial 'starting nothing'
   assert_not_called 'wt new'
   echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
   stub agent-hold '[ "$2" = dispatch ] && exit 1; exit 0'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_not_called 'wt new'
+  # Negative control: the hold lifted, the same full fleet starts it on the floor.
+  stub agent-hold 'exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item a1 on the project floor'
 }
 
 # 2026-11-07: a floor pass whose 2 unity items a starved pool held said "every queue item waits",
