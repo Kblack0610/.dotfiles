@@ -485,7 +485,7 @@ def window_args(start, end):
 
 
 def ci_failures(repo, base, start, end):
-    reader = ENV.get("DAYLOG_CI_FAILURES_CMD", "python3 " + str(Path.home() / ".claude/skills/ci-failures/ci-failures.py"))
+    reader = ENV.get("DAYLOG_CI_FAILURES_CMD", "python3 " + str(Path.home() / ".claude/skills/ci-cleanup/ci-failures.py"))
     got, err = run_json(shlex.split(reader) + ["--repo", repo, "--base", base] + window_args(start, end), ok=(0, 3))  # 3: partial
     if got is None:
         return None, err

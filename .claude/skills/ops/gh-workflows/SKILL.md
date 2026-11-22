@@ -12,7 +12,7 @@ metadata:
       mode: deny
       why: gh run watch polls the GitHub API for the whole wait and blocks the turn (337 playground sessions tried it in 30 days to 2026-11-09)
     - match: '(?:^|[;&|(){}\s/])gh\s+(?:run\s+rerun(?![\w-])|api\s(?:[^;&|\n]*actions/(?:runs|jobs)/[^/\s]+/rerun(?:-failed-jobs)?(?![\w-])|\s*Q\s[^;&|\n]*(?:-X\s+|--method[\s=]+)(?i:POST)(?![\w-])|[^;&|\n]*(?:-X\s+|--method[\s=]+)(?i:POST)\s+Q\s))'
-      use: "diagnose the red first (`fix-ci`; a runner slot fault across runs: `ci-failures`). Rerun only for an infra fault the log names (runner lost, registry 5xx, rate limit), once per PR tip, and name it on the command: `gh run rerun <id> --failed  # infra: <fault>`"
+      use: "diagnose the red first (`fix-ci`; a runner slot fault across runs: `ci-cleanup`). Rerun only for an infra fault the log names (runner lost, registry 5xx, rate limit), once per PR tip, and name it on the command: `gh run rerun <id> --failed  # infra: <fault>`"
       mode: deny
       unless: '#\s*infra:\s*[A-Za-z]'
       why: a blind rerun hides a real red or a broken runner slot (PR #2095 reran twice on a slot missing its job-end hook, 2026-11-18)
@@ -87,7 +87,7 @@ gh workflow list
 gh workflow run <workflow.yml> -f key=value
 ```
 
-Wait on a run with `--watch` / `--exit-status`, never a sleep loop. A red check is diagnosed, not rerun: diff `--log-failed` against the last green run of the same workflow. `gh run rerun <run-id> --failed` (or `gh api .../rerun`) is only for an infra fault the log names (runner lost, registry 5xx, rate limit), once per PR tip, and the command carries `# infra: <fault>` or the hook denies it; a test failure is never rerun. Fixing reds: `fix-ci`; red patterns across many runs: `ci-failures`. Landing a gated PR and recording it: `agent-land`.
+Wait on a run with `--watch` / `--exit-status`, never a sleep loop. A red check is diagnosed, not rerun: diff `--log-failed` against the last green run of the same workflow. `gh run rerun <run-id> --failed` (or `gh api .../rerun`) is only for an infra fault the log names (runner lost, registry 5xx, rate limit), once per PR tip, and the command carries `# infra: <fault>` or the hook denies it; a test failure is never rerun. Fixing reds: `fix-ci`; red patterns across many runs: `ci-cleanup`. Landing a gated PR and recording it: `agent-land`.
 
 ## Search
 

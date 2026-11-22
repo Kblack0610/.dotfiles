@@ -334,7 +334,7 @@ fn row(r: &Alert, p: Palette, now: i64) -> Vec<Cell> {
         cell(dash(&r.project), p.dim()),
         cell(r.source.clone(), p.dim()),
         r.since
-            .map_or("-".into(), |t| hub_core::text::age(now - t))
+            .map_or("-".into(), |t| hub_core::display::fmt::age(now - t))
             .into(),
         r.owner.clone().into(),
         cell(r.state.clone(), state),
@@ -406,7 +406,9 @@ fn pages(r: &Alert, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
         }
     }
     for x in &r.pages {
-        let since = x.since.map_or("-".into(), |t| hub_core::text::age(now - t));
+        let since = x
+            .since
+            .map_or("-".into(), |t| hub_core::display::fmt::age(now - t));
         out.push(clip_line(
             Line::from(vec![
                 Span::styled(format!("      {:<8} {:>4}  ", x.sev, since), p.dim()),

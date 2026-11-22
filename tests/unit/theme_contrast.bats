@@ -72,7 +72,7 @@ PY
   # shellcheck source=/dev/null
   source "$THEME/palettes/batman.sh"
   DRY_RUN=false DOTFILES="$BATS_TEST_TMPDIR" SCRIPT_DIR="$THEME"
-  info() { :; }; warn() { echo "$*"; }; pgrep() { return 1; }
+  info() { :; }; warn() { echo "$*"; }; pgrep() { return 1; }; link_generated() { :; }
   eval "$fn"
   apply_kitty
   local out="$BATS_TEST_TMPDIR/.config/kitty/current-theme.conf"

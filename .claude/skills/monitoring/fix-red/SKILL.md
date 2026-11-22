@@ -1,7 +1,7 @@
 ---
 name: fix-red
 description: >-
-  Take one red to a fix: evidence, reproduce, fix the cause, re-run the probe, review, merge; or coordinate every red: shared cause, owner, ETA, why the system tripped it. Use for "fix this red", "why did this watch trip", "take care of the reds", a `red` item. CI reds: ci-failures.
+  Take one red to a fix: evidence, reproduce, fix the cause, re-run the probe, review, merge; or coordinate every red: shared cause, owner, ETA, why the system tripped it. Use for "fix this red", "why did this watch trip", "take care of the reds", a `red` item. CI reds: ci-cleanup.
 metadata:
   category: monitoring
   tags: [fleet, triage, watches, runners, reds]
@@ -17,7 +17,7 @@ A red is a watch tripped, a runner failed, a unit failed, or an error signature 
 
 Use it for one red, from evidence to a merged fix or a stated reason there is no fix. Started by a `red` queue item, or by a human asking why something tripped. A session with no red item of its own, asked about many tripped watches at once, coordinates them instead (section 7); a session holding a `red` item fixes that one red.
 
-Out of scope: why CI keeps failing across runs (`ci-failures`), the red checks on one PR (`fix-ci`), the playground nightly (`playground-nightly-fix`, named by its route), adding or changing a watch (`sentinel`), and spend or pace trips, which are the human's decision (`alert` route).
+Out of scope: why CI keeps failing across runs (`ci-cleanup`), the red checks on one PR (`fix-ci`), the playground nightly (`playground-nightly-fix`, named by its route), adding or changing a watch (`sentinel`), and spend or pace trips, which are the human's decision (`alert` route).
 
 ## 1. Read the evidence
 
