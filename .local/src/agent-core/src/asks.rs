@@ -3,12 +3,13 @@
 //! An ask is a file `<root>/<project>/<id>.md`
 //! carrying a `status: pending` line, and it belongs to the session named on its
 //! `claude_session: <id>` line. Only the asking session owns an ask; the tmux
-//! session name is not a fallback. agent-ask decides what is pending and skips a parked ask
-//! (fleet-states.md Owners, "Whether an ask is pending"); this read does not skip one yet.
+//! session name is not a fallback. A parked ask (`parked_until` still ahead) is not pending,
+//! the test of `agent-ask:is_parked` (fleet-states.md Owners, "Whether an ask is pending").
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// `$AGENT_ASK_ROOT`, else `~/.agent/asks`, as fleet-sessions resolves it.
 pub fn root() -> PathBuf {
@@ -32,9 +33,22 @@ pub fn question(id: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Every pending ask under `root` as (its id, the Claude sessions it names): the `id:` line,
+/// A pending ask is parked while its `parked_until` (UTC, `agent-ask`'s format) is after `now`
+/// (epoch seconds). `agent-ask park` writes only that exact `YYYY-MM-DDTHH:MM:SSZ` form; unlike
+/// the shell's string compare, a hand-edited value in another shape reads as not parked.
+fn parked(text: &str, now: u64) -> bool {
+    text.lines()
+        .find_map(|l| l.strip_prefix("parked_until: "))
+        .and_then(crate::transcript::iso_epoch)
+        .is_some_and(|until| until > now)
+}
+
+/// Every pending, unparked ask under `root` as (its id, the Claude sessions it names): the `id:` line,
 /// else the file name.
 fn pending(root: &Path) -> Vec<(String, Vec<String>)> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
     let mut out = Vec::new();
     let Ok(projects) = fs::read_dir(root) else {
         return out;
@@ -51,7 +65,7 @@ fn pending(root: &Path) -> Vec<(String, Vec<String>)> {
             let Ok(text) = fs::read_to_string(&path) else {
                 continue;
             };
-            if !text.lines().any(|l| l == "status: pending") {
+            if !text.lines().any(|l| l == "status: pending") || parked(&text, now) {
                 continue;
             }
             let id = text
@@ -131,6 +145,15 @@ mod tests {
         .unwrap();
         // A headless job's ask names no session: it marks none, but it is still pending.
         ask(&root, "other", "a7", "pending", "");
+        // A parked ask (date ahead) is not pending; one whose date has passed is again.
+        let parked = |id: &str, session: &str, until: &str| {
+            ask(&root, "other", id, "pending", session);
+            let p = root.join("other").join(format!("{id}.md"));
+            let t = fs::read_to_string(&p).unwrap();
+            fs::write(&p, format!("{t}parked_until: {until}\n")).unwrap();
+        };
+        parked("a8", "sid-parked", "2999-01-01T00:00:00Z");
+        parked("a9", "sid-lapsed", "2000-01-01T00:00:00Z");
 
         let got = pending_sessions(&root);
         let none_live = without_live_owner(&root, &HashSet::new());
@@ -138,10 +161,13 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         assert_eq!(
             got,
-            HashMap::from([("sid-pending".to_string(), "a1".to_string())])
+            HashMap::from([
+                ("sid-pending".to_string(), "a1".to_string()),
+                ("sid-lapsed".to_string(), "a9".to_string()),
+            ])
         );
-        // a1 and a7 are the pending ones; a1 drops out once its session is live.
-        assert_eq!((none_live, a1_live), (2, 1));
+        // a1, a7 and a9 are the pending ones; a1 drops out once its session is live.
+        assert_eq!((none_live, a1_live), (3, 2));
     }
 
     #[test]
