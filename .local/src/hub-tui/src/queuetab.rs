@@ -609,9 +609,11 @@ pub fn page(
     if let Some(l) = q.stats.as_ref().and_then(|s| s.sitting_line()) {
         out.push(clip_line(Line::raw(l), w));
     }
-    if let Some(d) = &q.dispatch {
-        let style = if d.warn() { p.warn() } else { p.dim() };
-        out.push(clip_line(Line::styled(d.line(), style), w));
+    if let Some(v) = &q.verdict {
+        for l in v.lines(|| hub_core::bar::ready(q, now)) {
+            let style = crate::hometab::level_style(l.level, p);
+            out.push(clip_line(Line::styled(l.said(), style), w));
+        }
     }
     out.push(status_line(v, p, w));
     let all = q.rows(at(now));
@@ -814,7 +816,9 @@ fn status_line(v: &QueueView, p: Palette, w: usize) -> Line<'static> {
 pub(crate) mod tests {
     use super::*;
     use crate::fit::plain;
+    use hub_core::home::Level;
     use hub_core::queue::Stats;
+    use hub_core::queue_verdict::{Line as VerdictLine, Verdict};
     use hub_core::table::Row;
 
     pub fn fixture() -> Queue {
@@ -841,9 +845,12 @@ pub(crate) mod tests {
                 to_pr_minutes_median: Some(95),
                 ..Default::default()
             }),
-            dispatch: Some(hub_core::capacity::Dispatch {
-                held: Some("load 31.31 on 24 cores is over the 0.9 pace".into()),
-                runnable: 1,
+            verdict: Some(Verdict {
+                exceptions: vec![VerdictLine {
+                    level: Level::Warn,
+                    text: "Dispatch paused 2h00m: load 31 is over its cap of 24".into(),
+                    act: "See the fleet-pace skill".into(),
+                }],
                 ..Default::default()
             }),
             errors: vec![],
@@ -977,7 +984,9 @@ pub(crate) mod tests {
             "{s}"
         );
         assert!(
-            s.contains("Dispatch held: load 31.31 on 24 cores is over the 0.9 pace. It could start 0 of 1 runnable."),
+            s.contains(
+                "Dispatch paused 2h00m: load 31 is over its cap of 24. See the fleet-pace skill."
+            ),
             "{s}"
         );
         let open = text(&q, &QueueView::default(), 160);
@@ -994,9 +1003,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_dispatch_line_is_amber_when_held_and_dim_when_running() {
+    fn the_flow_verdict_lines_wear_their_level() {
         let p = Palette { no_color: false };
-        let fg = |q: &Queue| {
+        let fg = |q: &Queue, head: &str| {
             let lines = page(
                 q,
                 &all(),
@@ -1010,20 +1019,16 @@ pub(crate) mod tests {
             .0;
             let l = lines
                 .iter()
-                .find(|l| plain(l).starts_with("Dispatch "))
-                .expect("a dispatch line");
+                .find(|l| plain(l).starts_with(head))
+                .expect("a verdict line");
             l.style.patch(l.spans[0].style).fg
         };
         let mut q = fixture();
-        assert_eq!(fg(&q), p.warn().fg, "held reads amber");
-        // NEGATIVE CONTROL: a running dispatch is dim, not amber.
-        q.dispatch = Some(hub_core::capacity::Dispatch {
-            could_start: 2,
-            runnable: 3,
-            ..Default::default()
-        });
-        assert_eq!(fg(&q), p.dim().fg);
-        assert_ne!(p.dim().fg, p.warn().fg);
+        assert_eq!(fg(&q, "Dispatch "), p.warn().fg, "a pause reads amber");
+        // NEGATIVE CONTROL: with no exception the one line is Flowing, green, not amber.
+        q.verdict = Some(Verdict::default());
+        assert_eq!(fg(&q, "Flowing."), p.good().fg);
+        assert_ne!(p.good().fg, p.warn().fg);
     }
 
     #[test]

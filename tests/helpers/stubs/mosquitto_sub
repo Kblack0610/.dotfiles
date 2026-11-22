@@ -1,17 +1,40 @@
 #!/usr/bin/env bash
-# Stub for `mosquitto_sub`, the MQTT reader the waybar chips use for agents/+/summary/bar.
+# Stub for `mosquitto_sub`, the MQTT reader the waybar chips use for agents/+/summary/<topic>.
 #
 # On PATH ahead of the real one so no test reads the live broker. It logs its arguments to
-# $MQTT_SUB_FIXTURE.args and prints $MQTT_SUB_FIXTURE, one retained message a line, when that file
-# exists; otherwise it exits $MQTT_SUB_RC: 27 by default, as the real one does when -W passes with no
-# message, or 1 to play a broker it cannot reach. -C <n> stops after n messages, as the real one does.
+# $MQTT_SUB_FIXTURE.args and prints the retained messages in $MQTT_SUB_FIXTURE, one a line, when that
+# file exists; otherwise it exits $MQTT_SUB_RC: 27 by default, as the real one does when -W passes with
+# no message, or 1 to play a broker it cannot reach. A line is "<topic> <payload>", or a bare payload on
+# agents/h1/summary/bar. Only messages on a -t filter (+ one level) print, with their topic first under
+# -v, as the real one does. -C <n> stops after n messages.
 set -uo pipefail
 
 fix="${MQTT_SUB_FIXTURE:-}"
 [ -n "$fix" ] || exit "${MQTT_SUB_RC:-27}"
 printf '%s\n' "$*" >> "$fix.args"
 [ -f "$fix" ] || exit "${MQTT_SUB_RC:-27}"
-count=0 prev=""
-for a in "$@"; do [ "$prev" = -C ] && count="$a"; prev="$a"; done
-if [ "$count" -gt 0 ]; then grep -v -m "$count" "^$" "$fix"; else cat "$fix"; fi
+count=0 prev="" verbose=0 subs=()
+for a in "$@"; do
+  case "$prev" in -C) count="$a" ;; -t) subs+=("$a") ;; esac
+  [ "$a" = -v ] && verbose=1
+  prev="$a"
+done
+on() {
+  local s
+  for s in "${subs[@]}"; do
+    # shellcheck disable=SC2053  # the filter is a glob: + is one level
+    [[ "$1" == ${s//+/*} && "${1//[!\/]/}" == "${s//[!\/]/}" ]] && return 0
+  done
+  return 1
+}
+n=0
+while IFS= read -r line || [ -n "$line" ]; do
+  [ -n "$line" ] || continue
+  topic=agents/h1/summary/bar msg="$line"
+  [[ "$line" == agents/* ]] && topic="${line%% *}" msg="${line#* }"
+  on "$topic" || continue
+  if ((verbose)); then printf '%s %s\n' "$topic" "$msg"; else printf '%s\n' "$msg"; fi
+  n=$((n + 1))
+  ((count > 0 && n >= count)) && break
+done < "$fix"
 exit 27

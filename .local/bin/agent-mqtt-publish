@@ -204,7 +204,8 @@ bar_lines() {
 # cards as the widget document /widget.json serves plus `figures`, their whole numbers by name, so every
 # figure on a snapshot surface is hub-core's own and carries `updated_at`. The document rides as
 # attributes (its `state` is the worst card's level). mqtt2prom drops the text and keeps `figures` as
-# mqtt_figures_<tab>_<label>, which the waybar queue chip reads. No sections, no lines.
+# mqtt_figures_<tab>_<label>, which the waybar agents and health chips read; the queue chip reads the
+# document itself. No sections, no lines.
 cards_lines() {
     local fd="$1" cards
     cards="$(cat <&"$fd")"; exec {fd}<&-

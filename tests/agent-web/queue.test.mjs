@@ -744,13 +744,13 @@ test("an opened item links its session, project, row, PR and the PR's CI runs; t
   fire("click", { type: "click", target: target({}, "w1") });
 });
 
-test("a row carries its start place, hold, source and board row, and the head says what dispatch is doing", () => {
+test("a row carries its start place, hold, source and board row, and the head carries the flow verdict lines in their hues", () => {
   const rows = [
     item("q1", { priority: "urgent", start: 1, source: "board", row_id: "apo-120", timing: { in_state: 10 } }),
     item("q2", { priority: "low", state: "waiting", waits_for: "ask OBAJTo", source: "human" }),
   ];
   const links = [{ row: "#board/apo-120" }, {}];
-  load({ ...data, items: rows, table: { ...table, links } }, { dispatch: { line: "Dispatch held: load 31 is over the pace. It could start 0 of 1 runnable.", warn: true } });
+  load({ ...data, items: rows, table: { ...table, links } }, { flow: [{ line: "Dispatch paused 2h00m: load 31 is over its cap of 24. See the fleet-pace skill.", level: "warn" }, { line: "Dispatch hold 3h00m: urgent work waits on it. Run fleet-dispatch run --dry-run.", level: "red" }] });
   const h = draw();
   assert.match(h, /<tr class="qr" data-slug="q1"><td class="n">1<\/td><td class="btitle"><div class="c1" title="title q1"><span class="bt">title q1<\/span><\/div><div class="c1 muted" title="q1">q1<\/div><\/td>/, "# then the title over its slug");
   assert.match(h, /data-slug="q1">.*?<td class="warn">urgent<\/td>/, "urgent reads amber");
@@ -759,9 +759,9 @@ test("a row carries its start place, hold, source and board row, and the head sa
   // NEGATIVE CONTROL: a waiting item has no start place, and its hold cell says its wait.
   assert.match(h, /<tr class="qr" data-slug="q2"><td class="n"><\/td>/);
   assert.match(h, /<td title="ask OBAJTo">ask OBAJTo<\/td>/);
-  assert.match(h, /<div class="cline qdispatch warn">Dispatch held: load 31 is over the pace\. It could start 0 of 1 runnable\.<\/div>/);
-  load({ ...data, items: rows }, { dispatch: { line: "Dispatch running: it could start 2 of 3 runnable.", warn: false } });
-  assert.match(draw(), /<div class="cline qdispatch">Dispatch running/);
+  assert.match(h, /<div class="cline qverdict warn">Dispatch paused 2h00m: load 31 is over its cap of 24\. See the fleet-pace skill\.<\/div><div class="cline qverdict bad">Dispatch hold/);
+  load({ ...data, items: rows }, { flow: [{ line: "Flowing.", level: "ok" }] });
+  assert.match(draw(), /<div class="cline qverdict ">Flowing\.<\/div>/, "a flowing line wears no warn hue");
 });
 
 // A page opened on a linked Queue view reads /api/queue once, with that view; any other tab still

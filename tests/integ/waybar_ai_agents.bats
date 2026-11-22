@@ -211,7 +211,7 @@ Ready to close 1 (1 done); also 1 chat"
   run tip
   assert_output --partial "fresh task"
   refute_output --partial "No session detail"
-  assert_equal "$(cat "$MQTT_SUB_FIXTURE.args")" "-h mqtt.test -p 1883 -t agents/+/summary/bar -W 1"
+  assert_equal "$(cat "$MQTT_SUB_FIXTURE.args")" "-h mqtt.test -p 1883 -v -t agents/+/summary/bar -W 1"
 }
 
 # A former lease holder that is switched off keeps its retained copy, and the broker may send it first.

@@ -212,7 +212,7 @@ fn sessions(state: &Value, queue: &Queue) -> Vec<BarSession> {
     rows.into_iter().map(BarSession::from).collect()
 }
 
-fn ready(queue: &Queue, now: i64) -> Ready {
+pub fn ready(queue: &Queue, now: i64) -> Ready {
     let at = chrono::DateTime::from_timestamp(now, 0).unwrap_or_default();
     let ready: Vec<&queue::Item> = queue
         .rows(at)
