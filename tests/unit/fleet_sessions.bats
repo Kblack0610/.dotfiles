@@ -5824,6 +5824,15 @@ JSONL
   [ -z "$(plan_pointer "$SANDBOX/long.md")" ]
 }
 
+@test "phases_word: no plan, a missing recorded plan, plan mode before the plan is written, no checklist, a count (ar-2368, ar-3918)" {
+  printf '# Plan\n' > "$SANDBOX/p.md"
+  [ "$(phases_word - 0 - -)" = - ]
+  [ "$(phases_word "$SANDBOX/nowhere.md" 0 - -)" = missing ]
+  [ "$(phases_word "$SANDBOX/nowhere.md" 1 - -)" = - ]
+  [ "$(phases_word "$SANDBOX/p.md" 1 - -)" = none ]
+  [ "$(phases_word "$SANDBOX/p.md" 0 1 3)" = 1/3 ]
+}
+
 @test "a recorded plan file that is missing is its own verdict: STALLED, never DONE, unless its item moved on (ar-2368)" {
   run b idle 0 0 0 30 1 0 0 875 MERGED PASS 1 - missing -
   assert_output 'STALLED PR #875 merged, tree clean, its plan file is missing'
