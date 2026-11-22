@@ -9,6 +9,7 @@
 #                                     eta from `fleet-bench eta`, and fleet_sessions.prom (lease holder only)
 #   fleet-sessions mark <sid> <fact>  record that <fact> was nudged, so it is nudged once
 #   fleet-sessions mark --close <sid>  record that the session was typed its close, once for good
+#                                     (each claim either takes is also appended to nudges.jsonl)
 #   fleet-sessions escalate <sid> <fact>  record that <fact> went to the human, so it pages once
 #                                     (both refuse, exit 3, outside the pass holding the
 #                                     shepherd lease: fleet-shepherd holds)
@@ -1028,13 +1029,29 @@ ledger_write() {
 # The row's `close_sent` reads the claim, and a DONE or CHAT row with one reads nudged (collect),
 # so it is escalated once if it stays.
 CLOSED="$LEDGER/.closed"
+# Every claim mark takes, one JSON line each, never rewritten: the ledger keeps only a session's
+# last fact and watch.log is keyed by tmux window, so whether a nudge moved its session (judge-eval,
+# judges.md) needs this. A `*.jsonl` in the store, so store-sync merges two machines' lines as a union.
+NUDGES="$LEDGER/nudges.jsonl"
+# nudge_log <sid> <nudge|close> <fact>: append one claim, with the row's target, project and bucket
+# from the state document the pass acted on (null for a row it no longer lists). Called under
+# mark.lock. A failed append is reported and leaves the claim standing: the message still goes out.
+nudge_log() {
+  local row
+  row="$(jq -c --arg s "$1" '[(.sessions // [])[] | select(.session_id == $s)][0] // {}
+    | {target, project, bucket}' "$STATE_FILE" 2>/dev/null)" || row=""
+  [ -n "$row" ] || row='{"target":null,"project":null,"bucket":null}'
+  jq -nc --arg at "$(date -Iseconds)" --arg sid "$1" --arg kind "$2" --arg fact "$3" --argjson row "$row" \
+    '{at: $at, sid: $sid, kind: $kind, fact: (if $fact == "" then null else $fact end)} + $row' >> "$NUDGES" \
+    || echo "fleet-sessions: could not append the $2 for $1 to $NUDGES" >&2
+}
 mark() {
   if [ "${1:-}" = --close ]; then
     case "${2:-}" in ''|*/*|.|..) echo "fleet-sessions: bad session id" >&2; return 2 ;; esac
     mkdir -p "$CLOSED"
     ( flock 8
       [ ! -e "$CLOSED/$2" ] || { echo "fleet-sessions: $2 already sent its close nudge" >&2; exit 1; }
-      : > "$CLOSED/$2" ) 8>"$LEDGER/mark.lock"
+      : > "$CLOSED/$2" && nudge_log "$2" close "" ) 8>"$LEDGER/mark.lock"
     return
   fi
   case "$1" in ''|*/*|.|..) echo "fleet-sessions: bad session id" >&2; return 2 ;; esac
@@ -1043,6 +1060,7 @@ mark() {
     flock 8
     nudged "$1" "$2" && { echo "fleet-sessions: $1 already nudged for this fact" >&2; exit 1; }
     ledger_write "$1" fact "$2" || exit 1
+    nudge_log "$1" nudge "$2"
   ) 8>"$LEDGER/mark.lock"
 }
 

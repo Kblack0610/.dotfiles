@@ -1526,6 +1526,29 @@ MD
   assert_output --partial 'already sent its close nudge'
 }
 
+@test "each claim mark takes is appended to nudges.jsonl, keyed by session, and a refused one is not (ar-461)" {
+  mkdir -p "$(dirname "$STATE_FILE")"
+  jq -n '{sessions: [{session_id: "sid-1", target: "lab/dotfiles-agent-3:1", project: "dotfiles", bucket: "STALLED"}]}' > "$STATE_FILE"
+  mark sid-1 'STALLED PR #9 CI red @feat/x'
+  run mark sid-1 'STALLED PR #9 CI red @feat/x'
+  assert_failure 1
+  mark sid-1 'LANDED PR #9 merged, tree clean @feat/x'
+  mark --close sid-1
+  run mark --close sid-1
+  assert_failure 1
+  # a row the document no longer lists is still logged, with no row fields
+  mark sid-gone 'DONE clean, no plan file'
+  run jq -sc 'map([.sid, .kind, .fact, .target, .project, .bucket])' "$FLEET_SHEPHERD_DIR/nudges.jsonl"
+  assert_output '[["sid-1","nudge","STALLED PR #9 CI red @feat/x","lab/dotfiles-agent-3:1","dotfiles","STALLED"],["sid-1","nudge","LANDED PR #9 merged, tree clean @feat/x","lab/dotfiles-agent-3:1","dotfiles","STALLED"],["sid-1","close",null,"lab/dotfiles-agent-3:1","dotfiles","STALLED"],["sid-gone","nudge","DONE clean, no plan file",null,null,null]]'
+  run jq -se 'all(.at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}([+-][0-9]{2}:[0-9]{2}|Z)$"))' "$FLEET_SHEPHERD_DIR/nudges.jsonl"
+  assert_success
+  # an unreadable document is not a lost nudge
+  rm -f "$STATE_FILE"
+  mark sid-2 'STALLED PR #10 CI red @feat/y'
+  run jq -c 'select(.sid == "sid-2") | [.kind, .target]' "$FLEET_SHEPHERD_DIR/nudges.jsonl"
+  assert_output '["nudge",null]'
+}
+
 @test "a NEEDS fact is one key across branch and head, and leaving NEEDS releases its escalation (ar-233)" {
   # an escalation written in the old shape, with the branch and head, still matches
   escalate sid-7 'NEEDS 1 pending ask(s) @feat/x@0123456789ab'
