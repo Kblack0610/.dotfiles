@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # agentctl-release-cut - dispatch a project's cut workflow when its sprint says so, so no agent
-# or person cuts a release. The rules (early, on time, the #urgent hold and patch, carry,
+# or person cuts a release. The rules (early, on time, the #urgent patch, carry,
 # promotion) are in `~/.local/src/docs/stages.md` "Release windows", Cut; the projects in
 # release-cut/projects.json.
 # A timer, not an event: a sheet edit and a clock reaching the cut time have no event to wait on.
@@ -318,13 +318,10 @@ while IFS= read -r name; do
     cut_release "$name" "$ver" "$repo" "$cfg" "patch: #urgent fix(es) $(sed -E "s/=[^ ]+//g" <<<"$fixes") on a green full run, carrying $n_open open row(s)"
     [ "$n_open" = 0 ] || printf 'carried to the next sprint:\n%s\n' "$open_rows"
   elif [ -n "$at" ] && [[ ! "$NOW" < "$at" ]]; then
-    if [ -n "$urgent" ]; then
-      log "$name $ver: past its cut time $at, held by open #urgent row(s): $urgent"
-      notify "held-$name@$ver" "release held: $name $ver" "$name $ver passed its cut time $at; open #urgent row(s) hold it: $urgent."
-    else
-      cut_release "$name" "$ver" "$repo" "$cfg" "on time: cut time $at, carrying $n_open open row(s)"
-      [ "$n_open" = 0 ] || printf 'carried to the next sprint:\n%s\n' "$open_rows"
-    fi
+    # On time no row holds the cut, an #urgent one included: it carries, and ships in the next
+    # cut. Why: an #urgent row stuck in review held v0.5.5 for a day and parked the board (2026-11-22).
+    cut_release "$name" "$ver" "$repo" "$cfg" "on time: cut time $at, carrying $n_open open row(s)${urgent:+ (#urgent: $urgent)}"
+    [ "$n_open" = 0 ] || printf 'carried to the next sprint:\n%s\n' "$open_rows"
   elif [ "$n_open" = 0 ]; then
     say "$name $ver: not ready: every row closed, but epic(s) $unverified closed without proof of the outcome; cuts at ${at:-no cut time}"
   else

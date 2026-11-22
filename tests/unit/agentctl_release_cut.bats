@@ -104,20 +104,19 @@ board() {
   assert_equal "$(wc -l < "$F/dispatched")" 1
 }
 
-@test "an open #urgent row holds the cut past its time, and pages under one dedupe key" {
+@test "an open #urgent row holds no cut: past its time the window cuts and carries it" {
   board 2026-11-20T21:59 g-1:done g-2:open:urgent g-3:open
   RELEASE_CUT_NOW=2026-11-21T09:00 run "$BIN"
   assert_success
-  assert_output --partial 'held by open #urgent row(s): g-2'
-  [ ! -e "$F/dispatched" ]
-  # agent-notify sends one page per key; every pass names the same one.
-  RELEASE_CUT_NOW=2026-11-21T09:30 run "$BIN"
-  assert_equal "$(sort -u "$F/paged" | cut -d' ' -f1-4)" '-p high -d release-cut:held-game@v1.2.0'
-  # NEGATIVE CONTROL: the same row closed, the window cuts and carries g-3.
-  board 2026-11-20T21:59 g-1:done g-2:done:urgent g-3:open
-  RELEASE_CUT_NOW=2026-11-21T09:00 run "$BIN"
-  assert_output --partial 'carrying 1 open row(s)'
+  assert_output --partial 'carrying 2 open row(s) (#urgent: g-2)'
+  assert_output --partial 'g-2 [open]'
   assert [ -e "$F/dispatched" ]
+  refute_output --partial 'held by'
+  # NEGATIVE CONTROL: before its cut time the same open #urgent row leaves the window not ready.
+  rm -f "$F/dispatched"
+  RELEASE_CUT_NOW=2026-11-20T09:00 run "$BIN"
+  assert_output --partial 'not ready: 2 of 3 committed rows open (#urgent: g-2)'
+  [ ! -e "$F/dispatched" ]
 }
 
 @test "every committed row closed cuts early, before its time; an unverified epic row keeps it off until the cut time" {
