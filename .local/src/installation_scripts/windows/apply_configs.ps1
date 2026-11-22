@@ -215,11 +215,19 @@ Write-Step 'opencode config'
 # not %APPDATA%. Same for auth.json under ~/.local/share/opencode.
 Copy-ConfigDir (Join-Path $XConfig 'opencode') (Join-Path $env:USERPROFILE '.config\opencode') -Exclude 'node_modules'
 
+# starship and lazygit are theme-switch renders (gitignored, ar-4528): copy the
+# render when this clone has one, else the template it is patched from.
+$ThemeTemplates = Join-Path $DotfilesDir '.local\src\theme\templates'
+function Resolve-Render($render, $template) {
+    if (Test-Path $render) { return $render }
+    return (Join-Path $ThemeTemplates $template)
+}
+
 Write-Step 'starship.toml'
-Copy-Config (Join-Path $XConfig 'starship.toml') (Join-Path $env:USERPROFILE '.config\starship.toml')
+Copy-Config (Resolve-Render (Join-Path $XConfig 'starship.toml') 'starship\starship.toml') (Join-Path $env:USERPROFILE '.config\starship.toml')
 
 Write-Step 'lazygit config'
-Copy-Config (Join-Path $XConfig 'jesseduffield\lazygit\config.yml') (Join-Path $env:APPDATA 'lazygit\config.yml')
+Copy-Config (Resolve-Render (Join-Path $XConfig 'jesseduffield\lazygit\config.yml') 'lazygit\config.yml') (Join-Path $env:APPDATA 'lazygit\config.yml')
 
 # --- Firefox / Floorp ------------------------------------------------------
 # Two layers:
