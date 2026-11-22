@@ -119,6 +119,14 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   run "$MODULE"
   assert_equal "$(jq -r .class <<< "$output")" critical
   assert_equal "$(bar)" "<span color='#ef5734'>CI</span> 2 run q2 <span color='#ef5734'>2/3</span>"
+  # A job no online runner can take is red too, with every runner up: the count stays plain and
+  # the hover says which label nobody holds.
+  glance '{"alert": "red"}'
+  jq '.red = ["Build desktop (game) needs [unity-build]: no online runner holds unity-build"]' "$FX/ci.json" > "$FX/x" && mv "$FX/x" "$FX/ci.json"
+  run "$MODULE"
+  assert_equal "$(jq -r .class <<< "$output")" critical
+  assert_equal "$(bar)" "<span color='#ef5734'>CI</span> 2 run q2 3/3"
+  assert_equal "$(tip | sed -n 4p)" "<span color='#ef5734'>Build desktop (game) needs [unity-build]: no online runner holds unity-build</span>"
   # A red domain with every runner up is the health chip's to say, not this bar's.
   glance '{"level": "red"}'
   run "$MODULE"

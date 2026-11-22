@@ -7,7 +7,8 @@
 # no runner read. The CI label and the class take glance.alert, red only while a runner is down
 # or a queued job has no runner that can take it; queue depth, drain and pass rate never colour
 # the bar (the health chip keeps cc:domain_status{domain="ci"}, queue waits and pass rate
-# included). No slot cells on the bar: one per slot ran ~40 wide and pushed the right-side
+# included); the up count is red only while a runner is down, and a job no online runner can take
+# (hub ci's red lines) is the hover's first line under the parts. No slot cells on the bar: one per slot ran ~40 wide and pushed the right-side
 # modules into each other. A unit in the hover is one slot a machine really has (a Unity slot, a
 # gate slot, a macos runner), never a runner registration.
 # Hover: the title with each machine's cells, a group per machine (a whole busy unit full, the
@@ -87,6 +88,7 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
   def u1: if . == null then "-" else (. * 10 | round) as $t | "\($t / 10 | floor).\($t % 10)" end;
   def u0: if . == null then "-" else round | tostring end;
   [$grn, $yel, $red] as $colour
+  | (.red // []) as $nobody
   | .glance as $g
   | ($g.alert | lvl) as $lv
   # Glance::up_line: runners up of the roster, -/- with no runner read.
@@ -150,8 +152,10 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
   | ([$ms[] | ubar(.units_busy; .units) | select(. != "")] | join(" ")) as $cells
   | {
       text: ((if $lv > 0 then "CI" | paint($colour[$lv]) else "CI" end) + " \($g.busy) run q\($g.queued) "
-        + ($up | if $lv == 2 then paint($red) else . end)),
-      tooltip: ("<b>CI runners</b>" + (if $cells == "" then "" else "  " + $cells end) + "\n\($head)\nci: \($parts | join(", "))\n<tt>\($body | join("\n"))</tt>"),
+        + ($up | if ($g.down | length) > 0 then paint($red) else . end)),
+      tooltip: ("<b>CI runners</b>" + (if $cells == "" then "" else "  " + $cells end) + "\n\($head)\nci: \($parts | join(", "))\n"
+        + ([$nobody[] | esc | paint($red) | . + "\n"] | join(""))
+        + "<tt>\($body | join("\n"))</tt>"),
       class: (["ok", "warn", "critical"][$lv])
     }
 ' <<< "$raw" || fail "hub ci: unreadable glance"

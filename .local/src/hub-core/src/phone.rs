@@ -411,7 +411,7 @@ fn projects(p: &Projects) -> Vec<Row> {
     out
 }
 
-/// "CI: 4 running, 3 queued, 12/12 up, aws-burst-1 offline": the glance the bar and the Infra
+/// "CI: 4 running, 3 queued, 12/12 up, aws-burst-1 offline, 1 no runner": the glance the bar and the Infra
 /// tab read, red only while a runner is down or a queued job has no runner (`Glance::alert`),
 /// naming what is down; no row with no runner read.
 fn ci(infra: &Infra) -> Option<Row> {
@@ -433,6 +433,10 @@ fn ci(infra: &Infra) -> Option<Row> {
     down.dedup();
     if !down.is_empty() {
         said.push(format!("{} offline", down.join(", ")));
+    }
+    // The other red: a queued kind no online runner holds the label for (`Ci::red`).
+    if !infra.ci.red.is_empty() {
+        said.push(format!("{} no runner", infra.ci.red.len()));
     }
     let level = g.alert;
     Some(row(level, "ci", said.join(", ")))
@@ -1266,6 +1270,12 @@ mod tests {
         let inf = infra(vec![("runners", runners), ("power", vec![stopped])]);
         let p = phone(&state(), None, Some(&inf));
         assert_eq!(texts(&p, "ci"), ["CI: 6 running, 1/1 up"]);
+        // Every runner up and a job nobody can take: red, and the row says so.
+        let mut inf = inf;
+        inf.ci.red = vec!["Build desktop needs [unity-build]".into()];
+        inf.ci.glance.alert = Level::Red;
+        let p = phone(&state(), None, Some(&inf));
+        assert_eq!(texts(&p, "ci"), ["CI: 6 running, 1/1 up, 1 no runner"]);
     }
 
     #[test]
