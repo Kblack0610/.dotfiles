@@ -94,6 +94,12 @@ link_generated() {
     # shellcheck source=../../lib/stow-link.sh
     . "$SCRIPT_DIR/../../lib/stow-link.sh"
     mkdir -p "$(dirname "$dst")"
+    # A replaced plain file is kept, in case it was a hand edit and not a stale render.
+    if [[ -f "$dst" ]]; then
+        local bak="${XDG_CACHE_HOME:-$HOME/.cache}/theme-switch/replaced/$rel"
+        mkdir -p "$(dirname "$bak")" && cp -p -- "$dst" "$bak" || return 0
+        info "kept the replaced ~/$rel as ${bak/#"$HOME"/\~}"
+    fi
     # ${DOTFILES}: a link in $HOME, not a write into the repo (theme_generated.bats greps those).
     stow_link "$dst" "${DOTFILES}/$rel"
     info "linked ~/$rel"

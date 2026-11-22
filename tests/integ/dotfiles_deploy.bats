@@ -693,6 +693,19 @@ systemd_fold() {
   assert_failure 2
 }
 
+@test "--only below a fold repairs that fold, and an absolute or dot path is refused" {
+  systemd_fold
+  run "$DEPLOY" --apply --only .config/systemd/user
+  assert_success
+  assert_output --partial 'unfolded  ~/.config/systemd'
+  [ ! -L "$HOME/.config/systemd" ] || fail 'the fold above the named directory was not unfolded'
+  for bad in "$HOME/.config" . ..; do
+    run "$DEPLOY" --check --only "$bad"
+    assert_failure 2
+    assert_output --partial 'takes a path under ~, relative'
+  done
+}
+
 # -- STALE: a dangling link into a checkout --
 
 @test "a dangling link into a checkout is STALE, --apply --missing prunes it, a foreign one stays" {

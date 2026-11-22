@@ -259,6 +259,7 @@ hypr_read_keys() {
   assert_success
   assert [ -L "$HOME/.config/swaync/style.css" ]
   assert_equal "$(readlink -f "$HOME/.config/swaync/style.css")" "$(readlink -f "$root/.config/swaync/style.css")"
+  assert_equal "$(cat "$XDG_CACHE_HOME/theme-switch/replaced/.config/swaync/style.css")" stale
   # Folded: ~/.config/noctalia is the repo dir itself, so the render is already in place.
   mkdir -p "$root/.config/noctalia"
   ln -s "$root/.config/noctalia" "$HOME/.config/noctalia"

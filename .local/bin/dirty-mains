@@ -36,12 +36,14 @@ cut_stash=$((now - STASH_DAYS * 86400))
 found=0
 
 # old_entries <repo> - each NUL-separated path on stdin that is older than the age limit, or
-# gone (a deletion has no mtime and counts), printed one per line.
+# gone (a deletion has no mtime and counts), printed one per line. A collapsed untracked
+# directory is young while anything under it is.
 old_entries() {
   local repo="$1" p t
   while IFS= read -r -d '' p; do
     p="${p%/}"
     t="$(mtime "$repo/$p")"
+    [ -d "$repo/$p" ] && [ -n "$(find "$repo/$p" -mmin -"$AGE_MIN" -print -quit 2>/dev/null)" ] && continue
     [ -z "$t" ] || [ "$t" -le "$cut_change" ] && printf '%s\n' "$p"
   done
   return 0

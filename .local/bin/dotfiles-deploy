@@ -87,7 +87,8 @@
 #                              so a newly tracked file is linked however its checkout was pulled,
 #                              and setup_dotfiles_private runs it after the overlay's first stow.
 #   dotfiles-deploy --only <dir>  with any of the above, repeatable: only findings at or under
-#                              <dir> (relative to $HOME), e.g. one fold while its app is closed.
+#                              <dir> (relative to $HOME), or the fold above it, e.g. one fold
+#                              while its app is closed.
 #
 # Exit codes:  0 clean   1 work to do / did not converge   2 refused (see below)
 #
@@ -977,7 +978,7 @@ report_json() {
 # ── run ──────────────────────────────────────────────────────────────────────
 
 # classify - classify_all, narrowed to the MISSING and STALE findings under --missing, and to
-# the paths under an --only directory.
+# the paths under an --only directory, or the fold above one (a fold is repaired whole).
 classify() {
   classify_all
   local rec status path p keep=() hit
@@ -986,7 +987,7 @@ classify() {
     [ "$ONLY_MISSING" = 1 ] && [ "$status" != MISSING ] && [ "$status" != STALE ] && continue
     if [ "${#ONLY_PATHS[@]}" -gt 0 ]; then
       hit=0
-      for p in "${ONLY_PATHS[@]}"; do [ "$path" = "$p" ] || [[ "$path" == "$p"/* ]] && hit=1; done
+      for p in "${ONLY_PATHS[@]}"; do [ "$path" = "$p" ] || [[ "$path" == "$p"/* ]] || [[ "$p" == "$path"/* ]] && hit=1; done
       [ "$hit" = 1 ] || continue
     fi
     keep+=("$rec")
@@ -1005,6 +1006,7 @@ main() {
       --missing) ONLY_MISSING=1 ;;
       --only)
         [ $# -ge 2 ] || { printf 'dotfiles-deploy: --only needs a directory\n' >&2; exit 2; }
+        case "$2" in /*|.|./|..|../*) printf 'dotfiles-deploy: --only takes a path under ~, relative: %s\n' "$2" >&2; exit 2 ;; esac
         ONLY_PATHS+=("${2%/}"); shift ;;
       -h|--help)
         # Print the header block, stopping at the first line that is not a comment.

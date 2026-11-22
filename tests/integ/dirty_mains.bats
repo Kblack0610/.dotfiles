@@ -70,6 +70,19 @@ setup() {
   assert_success
 }
 
+@test "an untracked directory counts as young while anything under it is" {
+  mkdir -p "$REPO/draft/deep"
+  echo x > "$REPO/draft/old.md"
+  echo y > "$REPO/draft/deep/new.md"
+  touch -d '2 hours ago' "$REPO/draft/old.md" "$REPO/draft" "$REPO/draft/deep"
+  run "$DIRTY"
+  assert_success
+  touch -d '2 hours ago' "$REPO/draft/deep/new.md"
+  run "$DIRTY"
+  assert_failure 1
+  assert_output --partial 'untracked older than 60m: 1 (draft)'
+}
+
 @test "a stash older than the limit trips it, a recent one does not" {
   echo two > "$REPO/a.txt"
   git -C "$REPO" stash push -q -m recent

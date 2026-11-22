@@ -77,20 +77,24 @@ log_report() {
   printf '%s\n' "$3" | tail -n 40 | sed 's/^/    /' >>"$LOG" 2>/dev/null
 }
 
-# attach_missing -> one line when it linked anything or failed, nothing otherwise. A move can add a
+# attach_missing -> one line when it linked or pruned anything or failed, nothing otherwise. A move can add a
 # tracked file and stow never runs on pull, so link every deploy path (both checkouts) that resolves
 # to nothing. Runs once per pass, moved or not. A failure's report goes to the log.
 attach_missing() {
-  local out rc n
+  local out rc n m what
   [ -x "$DEPLOY" ] || return 0
   out=$(DOTFILES="${REPOS[0]}" DOTFILES_PRIVATE="${REPOS[1]}" capped "$DEPLOY_SECS" "$DEPLOY" --apply --missing 2>&1)
   rc=$?
   n=$(printf '%s\n' "$out" | grep -c '^  linked ')
+  m=$(printf '%s\n' "$out" | grep -c '^  pruned ')
+  what=""
+  [ "$n" -gt 0 ] && what="linked $n missing file(s) into \$HOME"
+  [ "$m" -gt 0 ] && what="${what:+$what, }pruned $m dangling link(s)"
   if [ "$rc" -ne 0 ]; then
     log_report 'dotfiles-deploy --apply --missing' "$rc" "$out"
     say "~: linked $n missing file(s), then dotfiles-deploy --apply --missing failed (exit $rc); report in ${LOG/#"$HOME"/\~}"
-  elif [ "$n" -gt 0 ]; then
-    say "~: linked $n missing file(s) into \$HOME (dotfiles-deploy --apply --missing)"
+  elif [ "$n" -gt 0 ] || [ "$m" -gt 0 ]; then
+    say "~: $what (dotfiles-deploy --apply --missing)"
   fi
 }
 
