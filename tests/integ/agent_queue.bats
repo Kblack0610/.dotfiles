@@ -1661,6 +1661,8 @@ notes --profile bnb ptask game --agent run gm-9"
   run "$AQ" set p proves_at=tomorrow
   assert_failure
   assert_output --partial 'proves_at is a UTC time'
+  run "$AQ" set p proves_at=2026-11-31T12:00:00Z   # the right shape, no such day
+  assert_failure
   run "$AQ" set p proves_at=2026-11-22T12:05:00Z
   assert_success
   [ "$(field "$(item running p)" proves_at)" = 2026-11-22T12:05:00Z ]
