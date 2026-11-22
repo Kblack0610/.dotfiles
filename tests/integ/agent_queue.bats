@@ -1672,7 +1672,7 @@ handoff_repo() {
   [ -n "$(item running h)" ]
   run "$AQ" handoff h --note "$NOTE" --dir "$WT"
   assert_success
-  assert_output --partial "h: handed off (1 of 2); end this session now (/wind-down): the next start reads $NOTE"
+  assert_output --partial "h: handed off (1 of 2); end this session now (/wind-down auto): the next start reads $NOTE"
   it=$("$AQ" show h --json)
   assert_equal "$(jq -r '[.state, .salvage, .handoff, .handoffs, .end_reason] | join("|")' <<<"$it")" "queued|feat@$(git -C "$WT" rev-parse HEAD)|$NOTE|1|handoff"
   # Unrated: the run did not fail, so model-lane hears nothing (a plain move to queued files a redo).

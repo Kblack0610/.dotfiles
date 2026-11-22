@@ -3433,7 +3433,7 @@ cmd_handoff() {
   header_set "$f" handoffs "$((n + 1))"
   item_event item-set "$f" --why "handoff $((n + 1)) of $max: $note${sv:+, from $sv}"
   AQ_LOCKED=1 cmd_move "$slug" queued --end handoff --if running || return
-  echo "$slug: handed off ($((n + 1)) of $max); end this session now (/wind-down): the next start reads $note"
+  echo "$slug: handed off ($((n + 1)) of $max); end this session now (/wind-down auto): the next start reads $note"
 }
 
 # ask-holds [<id>] -- each active item held on an ask, `<slug><TAB><ask id><TAB><options>` (options

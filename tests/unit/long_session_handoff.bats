@@ -55,7 +55,7 @@ payload() { jq -nc --arg c "${1:-$WT}" --arg t "$T" --arg a "${2:-}" '{session_i
   [ "$(jq -r .hookSpecificOutput.hookEventName <<<"$output")" = PostToolUse ]
   [[ "$ctx" == *"has run 3 responses"* ]]
   [[ "$ctx" == *"agent-queue handoff item-1 --note"* ]]
-  [[ "$ctx" == *"/wind-down"* ]]
+  [[ "$ctx" == *"/wind-down auto"* ]]
   # Once: the next call says nothing and asks the queue nothing.
   : > "$CALLS"
   run bash "$HOOK" <<<"$(payload)"
