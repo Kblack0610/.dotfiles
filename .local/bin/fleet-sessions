@@ -2426,11 +2426,30 @@ collect() {
   shared_rows
 }
 
+# nightly_item_owners -> "<repo slug>\t<session>" per running nightly-green-* or nightly-fix-* item
+# (the owner and fix items of playground-nightly-fix, steps 1 and 6), its repo its project's checkout
+# (project_repo_path), its session the Claude session it last ran in, else its tmux session. An item
+# with no session recorded owns nothing; one whose session is gone is moved off running by
+# `fleet-dispatch reap`, which each shepherd pass runs first. Why: 2026-11-15 unity-core-playground read owners [] while two
+# nightly-fix items ran, so a covered red read as the human's (ar-2467).
+nightly_item_owners() {
+  local proj who dir slug
+  while IFS=$'\t' read -r proj who; do
+    dir="$(project_repo_path "$proj")"
+    [ -n "$dir" ] && [ -n "$who" ] && slug="$(repo_slug "$dir")" || continue
+    printf '%s\t%s\n' "$slug" "$who"
+  done < <(jq -r 'select(.state == "running" and (.slug // "" | test("^nightly-(green|fix)-")))
+      | [.project // "", (((.sessions // "") | split(" ") | map(select(. != "")) | last) // .session // "")]
+      | @tsv' <<<"${qjson:-}" 2>/dev/null)
+}
+
 # One NIGHTLY row per red repo seen this pass. Its ledger id is main-<repo slug>, so the shepherd
 # escalates a nightly red once per fact; owners are the live sessions whose merge is a suspect, nudged
-# on their own STALLED rows. Its nudged and escalated cells read that ledger, as every row's do.
+# on their own STALLED rows, and the sessions running a nightly item for that repo (nightly_item_owners).
+# Its nudged and escalated cells read that ledger, as every row's do.
 main_rows() {
   local f slug st wfs sha prs repo sid reason owners nu e
+  nightly_item_owners >> "$CACHE/owners"
   for f in "$CACHE"/main_*; do
     [ -f "$f" ] || continue
     IFS=$'\t' read -r st wfs sha prs repo < "$f"
@@ -2440,7 +2459,9 @@ main_rows() {
       UNKNOWN) reason="$repo main CI unreadable (the run ledger has no fresh sync of it)" ;;
       *) continue ;;
     esac
-    owners="$(awk -F'\t' -v s="$slug" '$1 == s { print $2 }' "$CACHE/owners" 2>/dev/null | paste -sd, -)"
+    owners="$(awk -F'\t' -v s="$slug" '$1 == s && !seen[$2]++ { print $2 }' "$CACHE/owners" 2>/dev/null | paste -sd, -)"
+    # A failed queue read lost the item owners: the row keeps its last cells (keep_blind).
+    [ -z "${qblind:-}" ] || echo "$sid" >> "$CACHE/blind"
     nu=0; nudged "$sid" "NIGHTLY $reason" && nu=1; e=0; escalated "$sid" "NIGHTLY $reason" && e=1
     printf 'NIGHTLY\t%s\t%s\t-\t-\t-\t0\t0\t-\t%s\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\tNIGHTLY %s\t-\t[]\t-\t0\t0\t0\t0\t0\t-\t-\t-\t0\t0\n' "$repo" "$sid" "$nu" "$reason" "$e" "${owners:--}" "$reason"
   done

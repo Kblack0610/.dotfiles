@@ -318,7 +318,8 @@ cmd_due() {
   [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
   local out
   out="$(jq -r --argjson items "$(shared_items)" "$CLOSE_NUDGE_JQ$PANE_TAG_JQ$HELD_JQ"'
-    ( (.main // [])[] | select(.escalated | not) | "nightly red: \(.repo) (\(.reason // "-"))" )
+    ( (.main // [])[] | select((.escalated | not) and ((.owners // []) | length) == 0)
+      | "nightly red: \(.repo) (\(.reason // "-"))" )
   , ( (.shared // [])[] | select(.escalated | not) | . as $r
       | ($items[$r.fact] // null) as $item
       | if $item == null then
