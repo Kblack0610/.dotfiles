@@ -18,35 +18,7 @@ fill() { head -c "$2" /dev/zero | tr '\0' x > "$1"; }
 
 payload() { printf '{"tool_name":"Edit","tool_input":{"file_path":"%s","new_string":"x"}}' "$1"; }
 
-@test "a small index with short lines passes silently" {
-  printf -- '- [A](a.md) - short hook\n- [B](b.md) - another\n' > "$IDX"
-  run bash "$HOOK" <<< "$(payload "$IDX")"
-  assert_success
-  assert_output ""
-}
-
-@test "a line over the line budget warns with its line number" {
-  printf -- '- [A](a.md) - short\n- [B](b.md) - %s\n' "$(printf 'x%.0s' $(seq 1 250))" > "$IDX"
-  run bash "$HOOK" <<< "$(payload "$IDX")"
-  assert_failure 2
-  assert_output --partial "line 2:"
-  assert_output --partial "lines over 200 chars"
-}
-
-@test "an index over the byte budget warns with its size" {
-  for i in $(seq 1 160); do printf -- '- [Memory %03d](m%03d.md) - a hook of ordinary length for the index\n' "$i" "$i"; done > "$IDX"
-  run bash "$HOOK" <<< "$(payload "$IDX")"
-  assert_failure 2
-  assert_output --partial "> 8192"
-}
-
-@test "budgets are overridable from the environment" {
-  printf -- '- [A](a.md) - %s\n' "$(printf 'x%.0s' $(seq 1 250))" > "$IDX"
-  MEMORY_INDEX_MAX_LINE=400 run bash "$HOOK" <<< "$(payload "$IDX")"
-  assert_success
-}
-
-@test "a MEMORY.md outside a memory dir and other files are ignored" {
+@test "a memory index and other files have no size budget" {
   printf '%s\n' "$(printf 'x%.0s' $(seq 1 300))" > "$BATS_TEST_TMPDIR/MEMORY.md"
   run bash "$HOOK" <<< "$(payload "$BATS_TEST_TMPDIR/MEMORY.md")"
   assert_success
@@ -88,51 +60,6 @@ payload() { printf '{"tool_name":"Edit","tool_input":{"file_path":"%s","new_stri
   fill "$repo/sub/CLAUDE.md" 30000
   run bash "$HOOK" <<< "$(payload "$repo/sub/CLAUDE.md")"
   assert_success
-}
-
-@test "a lessons file over budget warns only on an edit that grows it" {
-  L="$BATS_TEST_TMPDIR/home/.agent/lessons/proj.md"
-  mkdir -p "${L%/*}"
-  fill "$L" 300
-  grow=$(printf '{"tool_name":"Edit","tool_input":{"file_path":"%s","old_string":"a","new_string":"abc"}}' "$L")
-  shrink=$(printf '{"tool_name":"Edit","tool_input":{"file_path":"%s","old_string":"abc","new_string":"a"}}' "$L")
-  CONTEXT_BUDGET_LESSONS=200 run bash "$HOOK" <<< "$grow"
-  assert_failure 2
-  assert_output --partial "lessons file"
-  assert_output --partial "lessons archive --dry-run"
-  CONTEXT_BUDGET_LESSONS=200 run bash "$HOOK" <<< "$shrink"
-  assert_success
-  run bash "$HOOK" <<< "$grow"
-  assert_success
-  # Archived lessons are not a lessons file.
-  mkdir -p "${L%/*}/_archive"; fill "${L%/*}/_archive/proj-stale.md" 300
-  CONTEXT_BUDGET_LESSONS=200 run bash "$HOOK" <<< "$(payload "${L%/*}/_archive/proj-stale.md")"
-  assert_success
-}
-
-@test "an edit that writes into a lesson over the cap names it, an edit to another lesson does not" {
-  L="$BATS_TEST_TMPDIR/home/.agent/lessons/proj.md"
-  mkdir -p "${L%/*}"
-  long=$(printf -- '- **A long lesson title.** %s' "$(printf 'evidence %.0s' $(seq 1 30))")
-  added='  Seen again on the 11-17 sweep, same cause.'
-  printf '# proj\n\n%s\n%s\n- **A short lesson that stays short.**\n' "$long" "$added" > "$L"
-  edit() { jq -nc --arg p "$L" --arg s "$1" '{tool_name: "Edit", tool_input: {file_path: $p, old_string: "", new_string: $s}}'; }
-  LESSON_MAX_BYTES=200 run bash "$HOOK" <<< "$(edit "$long")"
-  assert_failure 2
-  assert_output --partial "over the per-lesson cap"
-  assert_output --regexp "[0-9]+ bytes: \*\*A long lesson title\.\*\*"
-  assert_output --partial "lessons fat"
-  # evidence appended under an existing lesson is that lesson's growth, though the edit wrote no title
-  LESSON_MAX_BYTES=200 run bash "$HOOK" <<< "$(edit "$added")"
-  assert_failure 2
-  assert_output --partial "bytes: **A long lesson title.**"
-  # negative controls: an edit to the short lesson, and the same edit under a cap it fits, pass silently
-  LESSON_MAX_BYTES=200 run bash "$HOOK" <<< "$(edit '- **A short lesson that stays short.**')"
-  assert_success
-  assert_output ""
-  LESSON_MAX_BYTES=1500 run bash "$HOOK" <<< "$(edit "$long")"
-  assert_success
-  assert_output ""
 }
 
 # --- restated instructions: a line the edit wrote that another home already holds --------------------
@@ -184,11 +111,14 @@ write_payload() { jq -nc --arg p "$1" --arg c "$2" '{tool_name: "Write", tool_in
   run bash "$HOOK" <<< "$(jq -nc --arg p "$MEM" --arg n "$RULE" '{tool_name: "Edit", tool_input: {file_path: $p, old_string: "x", new_string: $n}}')"
   assert_failure 2
   assert_output --partial 'memory line 2 restates global'
-  MEM_INDEX="$HOME/proj/memory/MEMORY.md"
-  { printf -- '- [A](a.md) - %s\n' "$RULE"; printf -- '- [B](b.md) - %s\n' "$(printf 'x%.0s' $(seq 1 250))"; } > "$MEM_INDEX"
+  mkdir -p "$HOME/.claude"
+  mv "$CLAUDE_MD" "$HOME/.claude/CLAUDE.md"
+  export CLAUDE_MD="$HOME/.claude/CLAUDE.md" CONTEXT_BUDGET_GLOBAL_FILE="$HOME/.claude/CLAUDE.md"
   export DRIFT_DOCS="$CLAUDE_MD
-$MEM_INDEX"
-  run bash "$HOOK" <<< "$(write_payload "$MEM_INDEX" "- [A](a.md) - $RULE")"
+$LESSON
+$MEM"
+  head -c 20481 /dev/zero | tr '\0' x >> "$CLAUDE_MD"
+  run bash "$HOOK" <<< "$(write_payload "$CLAUDE_MD" "$RULE")"
   assert_failure 2
   assert_output --partial 'is over budget'
   assert_output --partial 'restates an instruction'

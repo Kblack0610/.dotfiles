@@ -92,12 +92,18 @@ pub struct Nightly {
     pub known_tests: Option<Vec<String>>,
 }
 
+/// Ends within `SOON_DAYS` and has not ended: the one test the chip, the tab count and `ending`
+/// share. The chip and the count read the report's `days_left`; `ending` counts from `ends`.
+fn is_soon(days_left: i64) -> bool {
+    days_left > 0 && days_left <= SOON_DAYS
+}
+
 /// A day count's level: red once ended (its tests count as red again), amber within
 /// `SOON_DAYS` of its end.
 fn level_of(days_left: i64) -> Level {
     if days_left <= 0 {
         Level::Bad
-    } else if days_left <= SOON_DAYS {
+    } else if is_soon(days_left) {
         Level::Warn
     } else {
         Level::Ok
@@ -135,7 +141,7 @@ impl Lane {
 
     /// Entries ending within `SOON_DAYS`, not yet ended.
     fn soon(&self) -> u64 {
-        self.entries_where(|r| r.days_left > 0 && r.days_left <= SOON_DAYS)
+        self.entries_where(|r| is_soon(r.days_left))
     }
 
     pub fn rows(&self) -> &[OwnerRow] {
@@ -345,6 +351,47 @@ pub fn entries(lanes: &[Lane]) -> Vec<Entry> {
     out
 }
 
+/// An owner row whose entries end within `SOON_DAYS` of a day: what the `quarantine-expiry` watch
+/// notes on that row (`hub quarantine soon`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ending {
+    pub repo: String,
+    pub row: String,
+    pub entries: u64,
+    pub ends: String,
+    pub days_left: i64,
+}
+
+/// Every owner row whose entries end within `SOON_DAYS` of `today` and have not ended, the
+/// soonest first, with each `ends` that is not an ISO date as an error. Days count from `ends`,
+/// not the report's `days_left`, so a file synced days ago still warns on the right day.
+pub fn ending(lanes: &[Lane], today: chrono::NaiveDate) -> (Vec<Ending>, Vec<String>) {
+    let (mut out, mut errors) = (vec![], vec![]);
+    for l in lanes {
+        for r in l.rows() {
+            let Ok(end) = chrono::NaiveDate::parse_from_str(&r.ends, "%Y-%m-%d") else {
+                errors.push(format!(
+                    "{}: row {} ends {:?}, not a date",
+                    l.repo, r.row, r.ends
+                ));
+                continue;
+            };
+            let days_left = (end - today).num_days();
+            if is_soon(days_left) {
+                out.push(Ending {
+                    repo: l.repo.clone(),
+                    row: r.row.clone(),
+                    entries: r.entries,
+                    ends: r.ends.clone(),
+                    days_left,
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| (a.days_left, &a.repo, &a.row).cmp(&(b.days_left, &b.repo, &b.row)));
+    (out, errors)
+}
+
 /// The lanes in `text`, or why the file did not parse.
 pub fn parse(text: &str) -> Result<Vec<Lane>, String> {
     serde_json::from_str::<File>(text)
@@ -544,6 +591,35 @@ mod tests {
         assert!(entries(std::slice::from_ref(&l)).is_empty());
         assert!(l.held().is_empty());
         assert!(l.says().contains("4 quarantined"));
+    }
+
+    #[test]
+    fn a_row_ending_within_soon_days_is_ending_and_one_further_out_or_ended_is_not() {
+        let day = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        // the report's days_left is stale on purpose: days count from `ends`
+        let l = lane(vec![
+            row("ucp-1", 2, "2026-11-20", 9),
+            row("ucp-2", 3, "2026-11-24", 9),
+            row("ucp-3", 4, "2026-12-01", 9),
+            row("ucp-4", 1, "2026-11-22", 9),
+            row("ucp-5", 1, "11-24", 3),
+        ]);
+        let (out, errors) = ending(std::slice::from_ref(&l), day("2026-11-21"));
+        let got: Vec<(&str, u64, i64)> = out
+            .iter()
+            .map(|e| (e.row.as_str(), e.entries, e.days_left))
+            .collect();
+        assert_eq!(got, [("ucp-4", 1, 1), ("ucp-2", 3, 3)], "soonest first");
+        assert_eq!(out[1].repo, "Org/playground");
+        assert_eq!(
+            errors,
+            ["Org/playground: row ucp-5 ends \"11-24\", not a date"]
+        );
+        // negative control: 10 days out stays quiet, and so does the day it ends
+        let (far, _) = ending(std::slice::from_ref(&l), day("2026-11-14"));
+        assert!(far.iter().all(|e| e.row != "ucp-2"), "{far:?}");
+        let (gone, _) = ending(&[l], day("2026-11-24"));
+        assert!(gone.iter().all(|e| e.row != "ucp-2"), "{gone:?}");
     }
 
     #[test]

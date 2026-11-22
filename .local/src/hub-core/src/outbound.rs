@@ -45,7 +45,7 @@ pub struct Item {
     pub sent: Option<i64>,
     /// draft, review, approved, revise, skipped or sent: the last step it reached.
     pub state: &'static str,
-    /// What mkt-metrics last measured for a sent item (docs/operations/mkt.md "Metrics"), one line
+    /// What `mkt metrics` last recorded for a sent item (docs/operations/mkt.md "Verbs"), one line
     /// for the web and the TUI: "4 search clicks 7d, 9 wishlist adds 7d", "so far" until its week is read.
     pub results: String,
 }
