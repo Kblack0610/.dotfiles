@@ -45,6 +45,16 @@ setup() {
   refute_line 'learn'
 }
 
+@test "a runner on the coordinate lane is listed under it, not invalid" {
+  sed -i 's/^LANE=observe/LANE=coordinate/' "$HOME/.config/agentctl/agents/beta.conf"
+  run "$AGENTCTL_BIN" list
+  assert_success
+  assert_line --index 1 'coordinate'
+  assert_line --index 2 --regexp '^  beta +idle '
+  assert_line --index 3 'observe'
+  refute_line 'invalid (reload skips these)'
+}
+
 @test "a conf with no LANE, or one outside the lanes, is listed as invalid with the reason (negative control)" {
   sed -i '/^LANE=/d' "$HOME/.config/agentctl/agents/alpha.conf"
   sed -i 's/^LANE=observe/LANE=misc/' "$HOME/.config/agentctl/agents/beta.conf"

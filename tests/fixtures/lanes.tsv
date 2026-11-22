@@ -1,7 +1,7 @@
 # kind	meaning	writes	lane
 # The lanes every bats sandbox runs on (tests/helpers/sandbox.bash), in the shape of the private agentctl lanes.tsv: agentctl takes the lane yes rows as the values LANE= may name. agentctl_list.bats checks a new row is accepted.
 lead	runs the sessions	-	-
-coordinate	moves, parks and nudges live sessions	nudges	yes
+coordinate	moves, parks and nudges live sessions	nudges, parks, session moves	yes
 deliver	ships work	code	yes
 observe	reports on state	reports	yes
 learn	turns activity into knowledge	lessons	yes
