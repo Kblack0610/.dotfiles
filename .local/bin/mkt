@@ -15,7 +15,7 @@
 #   mkt show <id>                one item as JSON
 #   mkt scorecard [--project P] [--json]          per channel and kind: sent, hand vs adapter, review time
 #   mkt metrics <id> <json>      how a sent item did: {metrics: {name: n}, window: {from, to, final}}
-#                                (mkt-metrics publish writes it; the same numbers again write nothing)
+#                                (the same numbers again write nothing)
 #   mkt costs <costs.csv> [--max-age-days N]      the rows older than N days (183) or not verified; exit 1 when any
 set -uo pipefail
 
@@ -340,9 +340,8 @@ cmd_skip() {
 
 cmd_show() { [ -n "${1:-}" ] || usage; item "$1" | jq .; }
 
-# How a sent item did in the days after its send: mkt-metrics' joins (docs/operations/mkt.md,
-# "Metrics"). The latest event wins in the fold, so a window that grows day by day is one event per
-# change, and the same numbers again write nothing.
+# How a sent item did in the days after its send (docs/operations/mkt.md, "Ledger"). The latest event wins in the fold, so a window that grows
+# day by day is one event per change, and the same numbers again write nothing.
 cmd_metrics() {
   local id="${1:-}" doc="${2:-}" it st
   [ -n "$id" ] && [ -n "$doc" ] || usage
