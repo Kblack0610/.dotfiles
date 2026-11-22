@@ -1,0 +1,28 @@
+name: bats vendor
+description: >-
+  Vendor bats into tests/vendor from the Actions cache, cloning from GitHub only on a miss. One refused
+  clone (403, runs 44982853251 and 44987294024, 2026-11-22 UTC) no longer fails a job before any test
+  runs. The key is the three pinned refs, not the whole Makefile, so an unrelated Makefile edit still
+  hits. main saves the cache and every PR reads main's copy. Every job that runs bats uses this.
+runs:
+  using: composite
+  steps:
+    - name: Bats refs
+      id: bats-refs
+      shell: bash
+      run: echo "key=$(grep -E '^(BATS|SUPPORT|ASSERT)_REF' tests/Makefile | tr -d ' ' | sha256sum | cut -c1-16)" >>"$GITHUB_OUTPUT"
+    - name: Restore bats vendor
+      id: bats-vendor
+      uses: actions/cache/restore@v4
+      with:
+        path: tests/vendor
+        key: bats-vendor-${{ steps.bats-refs.outputs.key }}
+    - name: Bootstrap bats
+      shell: bash
+      run: make -C tests bootstrap
+    - name: Save bats vendor
+      if: github.event_name != 'pull_request' && steps.bats-vendor.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: tests/vendor
+        key: ${{ steps.bats-vendor.outputs.cache-primary-key }}
