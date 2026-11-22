@@ -2555,9 +2555,12 @@ explain() {
 # of its table row (tests/unit/fleet_states_doc.bats keeps the two in order): a session stays
 # only while closing it would lose something (its claude is elsewhere, the human labelled it
 # manual or chat and quiet under FLEET_CHAT_CLOSE_H, a prompt in its pane, a turn under way, unlanded
-# work) or until one named step (close its item); otherwise it closes once quiet FLEET_IDLE_CLOSE_MIN. The three work-left steps also set `left`, the blocker that holds the session,
-# which fleet-shepherd nudges a DONE or LANDED row on. Open plan phases hold nothing: once the window is gone, fleet-dispatch reap files
-# them (reconcile_plans), the one filer of a plan.
+# work) or until one named step (close its item); otherwise it closes once quiet FLEET_IDLE_CLOSE_MIN.
+# The three work-left steps also set `left`, the blocker that holds the session, which fleet-shepherd
+# nudges a DONE or LANDED row on. Open plan phases hold nothing: once the window is gone,
+# fleet-dispatch reap files them (reconcile_plans), the one filer of a plan. A manual row asked by
+# `--self` reads quiet 0 mid-turn and keeps, so past the timer the shepherd's typed close is declined
+# and its window is closed by close_sample an hour later, never by the session itself.
 # Unlanded work reads from `blockers` (work_blockers), not raw git counts: a squash-merged branch
 # stays `ahead` of main with nothing left to land. A null age_min reads 0. The row of the session
 # named by `--arg self` (close --self, run mid-turn by /wind-down auto) skips the turn and the
