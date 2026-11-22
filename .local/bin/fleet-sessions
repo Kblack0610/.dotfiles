@@ -1907,9 +1907,9 @@ pr_holding_head() {
 # One session's facts as the session_bucket arguments after status/plan/asks/heavy/idle,
 # plus branch, sync, the PR head and the dirty names (last: they may hold spaces):
 # "git dirty ahead pr state ci in_pr branch behind conflicts fork oid names". <shell job> is the
-# open job of the session's background shell, for gate_ci (- when it has none).
+# open job of the session's background shell, for gate_ci (- when it has none); <chain> is chain_hold's answer.
 git_facts() {
-  local d="$1" edited="${2:-}" shell="${3:--}" branch dirty=0 paths ahead pahead pin base prb pr state ci oid red inpr=1 head
+  local d="$1" edited="${2:-}" shell="${3:--}" chain="${4:-}" branch dirty=0 paths ahead pahead pin base prb pr state ci oid red inpr=1 head
   [ -d "$d" ] || { echo "gone 0 0 - - - 1 - - - - - -"; return; }
   git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo "0 0 0 - - - 1 - - - - - -"; return; }
   branch="$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)"
@@ -1927,7 +1927,7 @@ git_facts() {
     [ "$pahead" -lt "$ahead" ] && ahead="$pahead"
   fi
   IFS=$'\t' read -r prb pr state ci oid red < <(pr_for_head "$d" "$branch" "$ahead")
-  [ "${state:-}" = OPEN ] && ci="$(open_pr_ci "$d" "$prb" "$pr" "$oid" "$ci" "$red" "$shell")"
+  [ "${state:-}" = OPEN ] && ci="$(open_pr_ci "$d" "$prb" "$pr" "$oid" "$ci" "$red" "$shell" "$chain")"
   if [ -n "${oid:-}" ]; then
     head="$(git -C "$d" rev-parse HEAD)"
     # HEAD is in the PR when it is the PR head or behind it; an unknown oid means the
@@ -1941,13 +1941,16 @@ git_facts() {
   echo "1 $dirty $ahead ${pr:--} ${state:--} ${ci:--} $inpr ${branch:--} $(sync_facts "$d" "$base") ${oid:--} $(dirty_names "$paths")"
 }
 
-# open_pr_ci <dir> <PR head branch> <pr> <head oid> <store ci> <red job ids> <shell job> -> an open PR's ci.
+# open_pr_ci <dir> <PR head branch> <pr> <head oid> <store ci> <red job ids> <shell job> [<chain>] -> an open PR's ci.
 # The gate runs are on the PR's head branch, which a reused slot or a stacked branch does not share.
 # A PR queued for the landing slot (queued_in) waits as a queued gate shell does: a red that is only the gate line is
-# the slot refusing it, and any other red is the PR's own (ar-1285). A red whose jobs ran no steps is NOSTART.
+# the slot refusing it, and any other red is the PR's own (ar-1285). A PR whose item waits on a live `after:` item
+# (<chain>, chain_hold) waits the same way: its gate is not dispatched until that item lands (ar-4314). A red whose
+# jobs ran no steps is NOSTART.
 open_pr_ci() {
-  local d="$1" prb="$2" pr="$3" oid="$4" ci="$5" red="$6" shell="$7"
+  local d="$1" prb="$2" pr="$3" oid="$4" ci="$5" red="$6" shell="$7" chain="${8:-}"
   [ -z "$FLEET_QUEUE_LABEL" ] || ! queued_in "$d" "$pr" || shell=queue
+  [ -z "$chain" ] || [ "$shell" = gate ] || shell=queue
   ci="$(gate_ci "$d" "$prb" "$oid" "$ci" "$red" "$shell")"
   [ "$ci" = FAIL ] && jobs_unstarted "$d" "$red" && ci=NOSTART
   printf '%s\n' "$ci"
@@ -1966,7 +1969,7 @@ worker_clone() {
   return 0
 }
 
-# worker_git_facts <worker row> <clone here|-> <shell job> -> git_facts' line for a session on a fleet worker,
+# worker_git_facts <worker row> <clone here|-> <shell job> [<chain>] -> git_facts' line for a session on a fleet worker,
 # from the `git` the worker read (fleet-worker-panel.sh), its PR looked up in <clone>'s PR store by its head
 # and branch as pr_of_head does; a checkout with no commit has no PR. HEAD is in the PR as git_facts reads
 # it when this clone has HEAD (it was pushed); a HEAD only the worker has is in it unless it carries
@@ -1974,7 +1977,7 @@ worker_clone() {
 # or a repo with no clone here, is a read with a gap: named unreadable and blind_row, so tick keeps the
 # row's last cells.
 worker_git_facts() {
-  local d="$2" shell="${3:--}" f g branch head up unpushed ahead paths dirty prb pr state ci oid red inpr=1
+  local d="$2" shell="${3:--}" chain="${4:-}" f g branch head up unpushed ahead paths dirty prb pr state ci oid red inpr=1
   # One jq: host, in, origin, branch, head, upstream, unpushed, ahead, then each dirty path on its own line.
   mapfile -t f < <(jq -r '.host // "a worker", (.git // {} | (.in // "-"), .origin // "-", .branch // "-", .head // "",
     .upstream // "", .unpushed // 0, .ahead // 0, (.dirty // [])[])' <<<"$1" 2>/dev/null)
@@ -1990,7 +1993,7 @@ worker_git_facts() {
     unreadable "PR store for ${f[2]} (no clone here)"; blind_row
   elif [ -n "$head" ]; then
     IFS=$'\t' read -r prb pr state ci oid red < <(pr_for_head "$d" "$branch" "$ahead" "$head" "$up")
-    [ "${state:-}" = OPEN ] && ci="$(open_pr_ci "$d" "$prb" "$pr" "$oid" "$ci" "$red" "$shell")"
+    [ "${state:-}" = OPEN ] && ci="$(open_pr_ci "$d" "$prb" "$pr" "$oid" "$ci" "$red" "$shell" "$chain")"
   fi
   if [ "${oid:--}" != - ] && [ "$head" != "$oid" ]; then
     if git -C "$d" cat-file -e "$head^{commit}" 2>/dev/null; then
@@ -2142,6 +2145,21 @@ item_plan() {
 # was its own running item, joined by sessions: alone).
 own_slugs() {
   case "$1" in own:* | here:*) local s="${1#*:}"; printf '%s' "${s%% *}" ;; esac
+}
+
+# chain_hold <all items, jsonl> <comma list of a session's item slugs> -> the slug of another session's live item
+# (running, waiting or review, the states agent-queue stack_pr stacks on) that one of the session's live items is
+# `after:`, else nothing. Such an item was started stacked on that item's open PR and agent-land holds its landing
+# (stack_gate, exit 4) before any gate runs, so its Checks stays red in the Merge gate line step (ar-4314:
+# unity-core-playground #3076 and #3083 read STALLED CI red, 2026-11-21). A dependency that is done, ok or not, is
+# no wait: ok releases it, and any other close never does, which is the session's to resolve. One of the session's
+# own slugs is no wait either: it holds nothing back that the session is not itself doing.
+chain_hold() {
+  [ -n "${2:-}" ] && [ "${2:--}" != - ] || return 0
+  jq -rn --arg own ",$2," '[inputs] as $all
+    | [$all[] | select(.state != "done" and (.slug as $s | $own | contains("," + $s + ",")))
+        | (.after // "") | split(" ")[] | select(. != "" and (. as $d | $own | contains("," + $d + ",") | not))] as $deps
+    | first($all[] | select((.state | IN("running", "waiting", "review")) and (.slug as $s | $deps | any(. == $s))) | .slug) // empty' <<<"$1" 2>/dev/null
 }
 
 # dispatch_tag <collect's items: "<slug>\t<project>: <slug>" lines> <item_of's relation> <its comma list of slugs>
@@ -2374,15 +2392,16 @@ collect() {
         | if length == 0 then "-" else join(",") end' <<<"$qall" 2>/dev/null)"
       landed="${landed:--}"
     fi
-    local sjob=-; [ "$status" = shell ] && sjob="$ojob"
+    local sjob=- chain=; [ "$status" = shell ] && sjob="$ojob"
+    case "$item" in own:* | review:* | here:*) chain="$(chain_hold "$qall" "$islugs")" ;; esac
     # gd is the clone repo-wide reads go through: the cwd here, this machine's clone of a worker's repo
     # (worker_clone), - when there is none. whead is a worker's HEAD, for activity_line.
     local gd="$cwd" whead=- wmain worigin
-    if [ "$host" = - ]; then read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names < <(git_facts "$cwd" "$edited" "$sjob")
+    if [ "$host" = - ]; then read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names < <(git_facts "$cwd" "$edited" "$sjob" "$chain")
     else
       IFS=$'\x1f' read -r wmain worigin whead < <(jq -r '.git // {} | [.main // "", .origin // "", .head // ""] | join("\u001f")' <<<"$line" 2>/dev/null)
       gd="$(worker_clone "${wmain:-}" "${worigin:-}")"; gd="${gd:--}"; whead="${whead:--}"
-      read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names < <(worker_git_facts "$line" "$gd" "$sjob")
+      read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names < <(worker_git_facts "$line" "$gd" "$sjob" "$chain")
     fi
     # What a deployed checkout off its default branch holds is one fault, its CHECKOUT row, and no
     # session's work: 2026-11-06 it read 9 files ahead on all 16 sessions there, each one STALLED.
