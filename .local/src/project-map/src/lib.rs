@@ -412,7 +412,7 @@ impl Registry {
     }
 
     /// `nightRunner` on the tracker whose `github` slug is `slug`: the agentctl runner that
-    /// starts the repo's night set (`scripts/night.json`), so a night member's next start is
+    /// starts the repo's night set (`config/ci/nightly.json`), so a night member's next start is
     /// that runner's. None when the tracker names none.
     pub fn night_runner(&self, slug: &str) -> Option<String> {
         let trackers = self.raw.get("trackers")?.as_object()?;

@@ -447,9 +447,9 @@ fn sprints(
                 .map(|t| {
                     let st = t.shown_state();
                     let text = if t.interrupt {
-                        format!("{} (interrupt)", t.text)
+                        format!("{} (interrupt)", t.title)
                     } else {
-                        t.text.clone()
+                        t.title.clone()
                     };
                     vec![
                         t.id.clone().unwrap_or_else(|| "-".into()).into(),
@@ -1166,6 +1166,7 @@ pub(crate) mod tests {
         let task = |id: &str, text: &str, state: &str| tasks::SprintTask {
             id: Some(id.into()),
             text: text.into(),
+            title: text.into(),
             state: state.into(),
             weight: 1,
             ..Default::default()
