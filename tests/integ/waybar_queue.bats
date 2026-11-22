@@ -57,8 +57,7 @@ s = {
     "summary_dispatch.board_agent": 1522, "summary_dispatch.board_backlog": 2200,
     "summary_dispatch.room_live_runs": 16, "summary_dispatch.room_max_live": 24,
     "summary_dispatch.room_live_hand": 5, "summary_dispatch.room_total_live": 21, "summary_dispatch.room_load": 27.4,
-    "summary_dispatch.room_load_cap": 36, "summary_dispatch.room_idle": 45.2,
-    "summary_dispatch.room_min_idle": 30, "summary_dispatch.room_held_slots": 0,
+    "summary_dispatch.room_load_cap": 36, "summary_dispatch.room_held_slots": 0,
     "summary_dispatch.room_held_account": 0,
     "runner_fleet_dispatch.failed": 0, "runner_fleet_dispatch.blocked": 0,
     "watch_queue_starved.tripped": 0,
@@ -164,7 +163,7 @@ Then from the board: ar-4400 retire the CI governor
 <b>In flight</b>  14 running, 6 on a PR, 10 waiting on you (sessions chip)
 
 <b>Today</b>  12 shipped (merged a PR), 9 checks closed with no merge, $(y 2) failed in 24h; queue $(g '6h +18/-30 shrinking')
-<b>Room</b>  $(g 21) of 24 sessions, load $(g 27) of 36, idle $(g 45%) (floor 30%)"
+<b>Room</b>  $(g 21) of 24 sessions, load $(g 27) of 36"
 }
 
 # Moved to their homes (dashboards.md, What moves): the legend, low water, self-heal, the Shepherd
@@ -235,7 +234,7 @@ $(y 'No item detail: no summary/bar on mqtt.test')
 <b>In flight</b>  14 running, 6 on a PR, 10 waiting on you (sessions chip)
 
 <b>Today</b>  12 shipped (merged a PR), 9 checks closed with no merge, $(y 2) failed in 24h
-<b>Room</b>  $(g 21) of 24 sessions, load $(g 27) of 36, idle $(g 45%) (floor 30%)"
+<b>Room</b>  $(g 21) of 24 sessions, load $(g 27) of 36"
 }
 
 @test "an old summary/bar says how old in amber and names no item from it" {
@@ -278,14 +277,14 @@ $(y 'No item detail: no summary/bar on mqtt.test')
 }
 
 @test "each Room number takes its own colour: green with room, amber near its limit, red past it" {
-  feed summary_dispatch.room_live_runs=24 summary_dispatch.room_load=30 summary_dispatch.room_idle=35
+  feed summary_dispatch.room_live_runs=24 summary_dispatch.room_load=30
   run "$MODULE"
   run tip
-  assert_line "<b>Room</b>  $(y 21) of 24 sessions, load $(y 30) of 36, idle $(y 35%) (floor 30%)"
-  feed summary_dispatch.room_load=40 summary_dispatch.room_idle=20
+  assert_line "<b>Room</b>  $(y 21) of 24 sessions, load $(y 30) of 36"
+  feed summary_dispatch.room_load=40
   run "$MODULE"
   run tip
-  assert_line "<b>Room</b>  $(g 21) of 24 sessions, load $(r 40) of 36, idle $(r 20%) (floor 30%)"
+  assert_line "<b>Room</b>  $(g 21) of 24 sessions, load $(r 40) of 36"
 }
 
 @test "a gate that paused a pass with work still flowing is an amber Paused row; each account names its reasons" {
@@ -345,14 +344,14 @@ $(y 'No item detail: no summary/bar on mqtt.test')
 
 @test "every head sentence fits the bar channel's width, whichever gate holds the longest pause" {
   local k
-  for k in slots load idle account assess other; do
+  for k in slots load account assess other; do
     feed summary_dispatch.held_s=8639999 "summary_dispatch.room_held_$k=1" summary_dispatch.room_max_live=1000 \
-      summary_dispatch.room_load=1000 summary_dispatch.room_load_cap=1000 summary_dispatch.room_idle=100 summary_dispatch.room_min_idle=100
+      summary_dispatch.room_load=1000 summary_dispatch.room_load_cap=1000
     run "$MODULE"
     run plain
     assert_equal "$k: $(head -n 1 <<< "$output" | awk 'length > 120')" "$k: "
     feed runner_fleet_dispatch.blocked=1 "summary_dispatch.room_held_$k=1" summary_dispatch.room_max_live=1000 \
-      summary_dispatch.room_load=1000 summary_dispatch.room_load_cap=1000 summary_dispatch.room_idle=100 summary_dispatch.room_min_idle=100
+      summary_dispatch.room_load=1000 summary_dispatch.room_load_cap=1000
     run "$MODULE"
     run plain
     assert_equal "$k: $(head -n 1 <<< "$output" | awk 'length > 120')" "$k: "
