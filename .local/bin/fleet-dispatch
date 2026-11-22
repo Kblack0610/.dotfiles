@@ -4358,6 +4358,14 @@ item_rollout() {
   done
 }
 
+# restart_human_item <slug> <item json> <end reason> -- the human's own requeued item keeps its start-now
+# lane (agent-queue start: add's guards, no new bypass), except after a usage limit: a hand start would
+# launch into the same limit, so a pass starts it when there is room. stdin and fd 3 are closed, so the
+# launch cannot read the reap loop's pipe.
+restart_human_item() {
+  [ "$3" = limit ] || [ "$(jq -r '.from // ""' <<<"$2")" != human ] || agent-queue start "$1" </dev/null 3<&- || true
+}
+
 # settle_item <slug> <session> -- its session is gone. Closed by the session: nothing to do.
 # Still open, it goes by its PR's state (merged: when the item has one, else item_pr_state): MERGED records merged: and is done ok (and
 # a board row still started closes on merge proof, close_row), OPEN waits in review/ for the merge
@@ -4384,10 +4392,7 @@ settle_item() {
     agent-queue move "$1" queued ${end[@]+"${end[@]}"} --if "$st" >/dev/null || return 0
     note_add "$1" "$it" "session $2 ended: $3; requeued${why:+ (end_reason: $why)}"
     logline "reaped $2: session gone, queue item $1 requeued: $3"
-    echo "requeued queue item $1 ($2 ended: $3)"
-    # The human's own item keeps its start-now lane (agent-queue start: add's guards, no new bypass), except
-    # after a usage limit: a hand start would launch into the same limit, so a pass starts it when there is room.
-    [ "$why" = limit ] || [ "$(jq -r '.from // ""' <<<"$it")" != human ] || agent-queue start "$1" </dev/null 3<&- || true
+    echo "requeued queue item $1 ($2 ended: $3)"; restart_human_item "$1" "$it" "$why"
   }
   case "$st" in running | waiting | review | queued) ;; *) logline "reaped $2: queue item $1 ${st:-gone}"; return 0 ;; esac
   it=$(item_with_branch_pr "$1" "$2")
