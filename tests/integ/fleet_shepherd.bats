@@ -25,7 +25,7 @@ if [ -n "${STUB_USAGE:-}" ]; then printf "%s" "$STUB_USAGE"; else printf "{\"ses
   stub agent-notify 'echo "$*" >> "$HOME/pages"'
   # hub-core's figures: Only you (STUB_ONLY_YOU) and the Sessions card's Working part (STUB_WORKING, else the state document's WORKING rows, as the fixture's card), each "unread" for one hub could not give
   stub hub-figure 'case "$*" in "--fresh needs_only_you") v="${STUB_ONLY_YOU:-0}" ;; "--fresh sessions_working") v="${STUB_WORKING:-$(jq "[.sessions[] | select(.bucket == \"WORKING\")] | length" "$FLEET_STATE_FILE")}" ;; *) exit 2 ;; esac; [ "$v" = unread ] && exit 1; echo "$v"'
-  stub watch-companion-loop '[ "$1" = tripped ] && printf "%b" "${STUB_TRIPPED:-}"'
+  stub watch-companion-loop 'case "$1" in tripped) printf "%b" "${STUB_TRIPPED:-}" ;; quarantined) printf "%b" "${STUB_QUARANTINED:-}" ;; esac'
   stub fleet-bench '[ -z "${STUB_BENCH_FAIL:-}" ] || exit 1; if [ "$1" = requests ]; then printf "## Your requests\n\n- ci-cleanup, 1 of 3\n"; elif [ "$1" = improve ]; then [ -n "${STUB_IMPROVE:-}" ] || exit 1; printf "%s\n" "$STUB_IMPROVE"; else printf "%b" "${STUB_FINDINGS:-}"; fi'
   tmux_script 'echo "$*" >> "$HOME/tmux.calls"; [ -n "${STUB_TMUX_FAIL:-}" ] && [[ "$*" =~ $STUB_TMUX_FAIL ]] && exit 1
 case "$*" in
@@ -1740,6 +1740,16 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   assert_output --partial 'watch: home-k3s-node-disk tripped (urgent)'
   refute_output --partial 'watch: fleet-thermal'
   refute_output --partial 'watch: neptune-health'
+}
+
+@test "a watch with an unexpired quarantine raises no line; one the quarantine does not name still does (ar-4585)" {
+  doc "[$(row a STALLED false false)]"
+  export STUB_TRIPPED='fleet-budget-pace\thigh\nqueue-starved\thigh\nhome-k3s-node-disk\turgent\n' STUB_K3S='[]'
+  export STUB_QUARANTINED='fleet-budget-pace\t2026-11-28T00:00:00-08:00\task:fQgFbo\tthe cap stands\nalert:dc9f31da\t2026-11-23T02:00:00.000Z\tar-4229\tsilence\n'
+  run "$SH" run
+  refute_output --partial 'watch: fleet-budget-pace'
+  assert_output --partial 'watch: queue-starved tripped (high)'
+  assert_output --partial 'watch: home-k3s-node-disk tripped (urgent)'
 }
 
 @test "a high or urgent trip and a red cluster lead the due lines, ahead of sessions" {
