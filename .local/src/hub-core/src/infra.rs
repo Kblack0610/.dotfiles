@@ -488,20 +488,37 @@ impl Infra {
         v
     }
 
-    /// The health chips (`cc:domain_status`) in strip order, for Home's HEALTH line and
-    /// Infra's health section; the ALWAYS domains show even with no status, as no data.
+    /// The health chips (`cc:domain_status`) in strip order, for Home's HEALTH line, Infra's
+    /// health section and the Domains figures; the ALWAYS domains show even with no status, as
+    /// no data, and a domain DOMAINS does not name (a new rule's, printer's) follows by name, so
+    /// every domain Prometheus has is a chip.
     pub fn health(&self) -> Vec<Chip> {
         let v = self.cc_values();
-        DOMAINS
+        let chip = |d: &str, s: Option<f64>| Chip {
+            name: d.into(),
+            level: Level::of(s),
+        };
+        let known = DOMAINS.iter().filter_map(|d| {
+            let s = v.get(&format!("cc:domain_status/{d}")).copied();
+            (s.is_some() || ALWAYS.contains(d)).then(|| chip(d, s))
+        });
+        let mut new: Vec<(&str, f64)> = v
             .iter()
-            .filter_map(|d| {
-                let s = v.get(&format!("cc:domain_status/{d}")).copied();
-                (s.is_some() || ALWAYS.contains(d)).then(|| Chip {
-                    name: (*d).into(),
-                    level: Level::of(s),
-                })
-            })
+            .filter_map(|(k, x)| Some((k.strip_prefix("cc:domain_status/")?, *x)))
+            .filter(|(d, _)| !DOMAINS.contains(d))
+            .collect();
+        new.sort_by(|a, b| a.0.cmp(b.0));
+        known
+            .chain(new.into_iter().map(|(d, x)| chip(d, Some(x))))
             .collect()
+    }
+
+    /// The domains down, warn and up (`cc:domain_status` 2, 1, 0), the System figures; an
+    /// ALWAYS domain with no status is none of them.
+    pub fn domains(&self) -> (usize, usize, usize) {
+        let h = self.health();
+        let n = |l: Level| h.iter().filter(|c| c.level == l).count();
+        (n(Level::Red), n(Level::Warn), n(Level::Ok))
     }
 }
 
@@ -529,11 +546,19 @@ mod tests {
                 cc("cc:domain_status", ("domain", "prod"), 1.0),
                 cc("cc:domain_status", ("domain", "ci"), 2.0),
                 cc("cc:pool_status", ("pool", "unity"), 1.0),
+                cc("cc:domain_status", ("domain", "printer"), 0.0),
             ],
         );
         let h = i.health();
         let names: Vec<_> = h.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(names, ["k3s", "ci", "projects", "prod"]);
+        // printer is no DOMAINS entry: it follows the strip rather than going missing.
+        assert_eq!(names, ["k3s", "ci", "projects", "prod", "printer"]);
+        assert_eq!(h[4].level, Level::Ok);
+        assert_eq!(
+            i.domains(),
+            (1, 1, 1),
+            "no data is neither down, warn nor up"
+        );
         assert_eq!(h[0].level, Level::Nodata);
         assert_eq!(h[1].level, Level::Red);
         assert_eq!(h[2].level, Level::Nodata);

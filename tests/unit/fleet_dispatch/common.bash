@@ -71,13 +71,6 @@ srcs() {
   printf '%s\n' "$rows" > "$NOTES_FIXTURE/sources.json"
 }
 
-# cpu <us> <sy> <ni> <id> -> each real idle sample window adds these jiffies to /proc/stat, and the
-# last sample is gone, so the next gate reads (ni + id) of the four as free. sleep is the window.
-cpu() {
-  echo "$1 $3 $2 $4" > "$DISPATCH_PROC_STAT.step"
-  rm -f "$FLEET_DISPATCH_DIR/idle"
-}
-
 setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
@@ -88,7 +81,7 @@ setup() {
   export DISPATCH_PROFILES=bnb
   # The tuning these cases are written against: the code defaults of the keys the agentctl conf sets
   # hold every start ("a key the conf sets gets a neutral default"), and the sandbox has no conf.
-  export DISPATCH_TARGET_PRESENT=50 DISPATCH_TARGET_AWAY=25 DISPATCH_MAX_LOAD=0.7 DISPATCH_MIN_IDLE=30 DISPATCH_LOW_WATER=3
+  export DISPATCH_TARGET_PRESENT=50 DISPATCH_TARGET_AWAY=25 DISPATCH_MAX_LOAD=0.7 DISPATCH_LOW_WATER=3
   export DISPATCH_REQUESTED_FLOOR=0   # its own cases below turn it on; every other case reads the board by the low water alone
   export DISPATCH_PROJECT_MAP="$SANDBOX/map.json"
   export DISPATCH_POLICY="$SANDBOX/policy.md"
@@ -115,12 +108,6 @@ setup() {
   export FLEET_STATE_FILE="$SANDBOX/state.json"
   fleet_state 0
   stub fleet-bench 'exit 0'
-  # Since boot the machine was 98% idle; the window is what the gate reads.
-  export DISPATCH_PROC_STAT="$SANDBOX/stat"
-  echo 'cpu  1000 0 1000 98000 0 0 0 0 0 0' > "$DISPATCH_PROC_STAT"
-  stub sleep 'echo "sleep $*" >> "$NOTES_FIXTURE/calls.log"; read -r a b c d < "$DISPATCH_PROC_STAT.step"; read -r _ u n s i _ < "$DISPATCH_PROC_STAT"
-echo "cpu  $((u + a)) $((n + b)) $((s + c)) $((i + d)) 0 0 0 0 0 0" > "$DISPATCH_PROC_STAT"'
-  cpu 5 5 0 90
   stub fleet-shepherd 'exit 1'
   acct main:ok   # main account with room; a test that wants the alt one restubs it
   stub model-lane 'echo "{\"dispatch_model\":\"opus\"}"'
@@ -390,7 +377,6 @@ refuses() {
 # a floor lifts the pace reason.
 room_on_floor() {
   acct alt:pace:/home/u/.claude-personal
-  cpu 60 30 0 10
 }
 
 # 2026-11-06: reds sat queued behind a machine held by Unity CI (load 1.4x, 96.5 C), which the run

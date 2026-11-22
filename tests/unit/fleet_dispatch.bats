@@ -1835,7 +1835,7 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   export DISPATCH_PER_PASS=1 DISPATCH_TARGET_AWAY=6
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_success
-  assert_equal "$(jq -r '[.could_start, .per_pass_limited, .runnable, .slots_free, .idle_room, .held] | @tsv' <<<"$output")" $'2\ttrue\t2\t6\t60\t'
+  assert_equal "$(jq -r '[.could_start, .per_pass_limited, .runnable, .slots_free, .held] | @tsv' <<<"$output")" $'2\ttrue\t2\t6\t'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
   assert_output --partial 'could start now: 2 of 2 runnable (a pass starts up to 1, level mid)'
   assert_not_called 'wt new'
@@ -1915,13 +1915,13 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
 
 @test "a run with no conf starts nothing on its own: the keys the conf sets default to neutral" {
   two_items
-  run env -u DISPATCH_LOW_WATER -u DISPATCH_CANARY_KEEP -u DISPATCH_RUN_FLOOR -u DISPATCH_TARGET_PRESENT -u DISPATCH_TARGET_AWAY -u DISPATCH_MAX_LOAD -u DISPATCH_MIN_IDLE -u DISPATCH_PROFILES \
+  run env -u DISPATCH_LOW_WATER -u DISPATCH_CANARY_KEEP -u DISPATCH_RUN_FLOOR -u DISPATCH_TARGET_PRESENT -u DISPATCH_TARGET_AWAY -u DISPATCH_MAX_LOAD -u DISPATCH_PROFILES \
     "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
-  assert_equal "$(jq -r '[.could_start, .max_live, .load_cap, .min_idle] | @tsv' <<<"$output")" $'0\t0\t0\t100'
-  assert_equal "$(jq -r .held <<<"$output")" "load 0.10 on $(nproc) cores is over the 0 pace; real idle 90.0% is under 100%"
+  assert_equal "$(jq -r '[.could_start, .max_live, .load_cap] | @tsv' <<<"$output")" $'0\t0\t0'
+  assert_equal "$(jq -r .held <<<"$output")" "load 0.10 on $(nproc) cores is over the 0 pace"
 }
 
-@test "each DISPATCH_* key the private conf sets has a neutral code default (empty, 0, or 100 for an idle floor), never a second number" {
+@test "each DISPATCH_* key the private conf sets has a neutral code default (empty or 0), never a second number" {
   load '../helpers/private'
   PRIVATE="${DOTFILES_PRIVATE:-${ACCOUNT_HOME:-}/.dotfiles-private}"   # read-only: the account home suite_home kept
   has_private || skip "no private checkout at $PRIVATE: the conf's keys are unchecked"
@@ -1930,7 +1930,7 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   bad=
   while IFS='=' read -r k v; do
     d=$(grep -oE "^: \"\\\$\\{$k:?=[^}]*" "$REPO_ROOT/.local/bin/fleet-dispatch" | sed -E "s/^: \"\\\$\\{$k:?=//")
-    case "$d" in ''|0|100) ;; *) bad+="$k: code $d, conf $v; " ;; esac
+    case "$d" in ''|0) ;; *) bad+="$k: code $d, conf $v; " ;; esac
   done < <(sed -n "s/^\(DISPATCH_[A-Z_]*\)=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}[[:space:]]*$/\1=\2/p" "$conf")
   assert_equal "$bad" ""
 }
@@ -1967,64 +1967,6 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   refuses 'github budget unreadable'
   stub fleet-assess 'exit 0'
   refuses 'github budget unreadable'
-}
-
-# 2026-11-07 (ar-34, ar-5): one 2 s top frame swung 17-41%, and nice-19 Unity work counted as busy.
-@test "real idle is the window's /proc/stat delta with nice counted free, not the since-boot total" {
-  game_ready
-  cpu 60 5 25 10
-  export DISPATCH_MIN_IDLE=40
-  refuses 'real idle 35.0% is under 40%'
-  assert_called "sleep $DISPATCH_IDLE_WINDOW"
-}
-
-@test "headroom: a high-nice sample opens the idle gate; a forced 5% idle still holds" {
-  two_items
-  export DISPATCH_MIN_IDLE=20
-  cpu 30 5 55 10
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
-  assert_success
-  assert_equal "$(jq -r '[.could_start, .idle, .min_idle, .held] | @tsv' <<<"$output")" $'2\t65.0\t20\t'
-  # Negative control: the same sample with the nice time busy is under the floor.
-  cpu 85 5 0 10
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
-  assert_equal "$(jq -r .held <<<"$output")" 'real idle 10.0% is under 20%'
-  cpu 90 5 0 5
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
-  assert_equal "$(jq -r '[.could_start, .held] | @tsv' <<<"$output")" $'0\treal idle 5.0% is under 20%'
-}
-
-@test "one real idle sample serves every gate for a window, then the next read samples again" {
-  game_ready
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
-  assert_equal "$(grep -c '^sleep ' "$NOTES_FIXTURE/calls.log")" 1
-  echo "$(( $(date +%s) - DISPATCH_IDLE_WINDOW )) 90.0" > "$FLEET_DISPATCH_DIR/idle"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
-  assert_equal "$(grep -c '^sleep ' "$NOTES_FIXTURE/calls.log")" 2
-}
-
-@test "real idle: a sample from the future is no sample, and a floor start takes none" {
-  game_ready
-  echo "$(( $(date +%s) + 3600 )) 99.0" > "$FLEET_DISPATCH_DIR/idle"
-  cpu 85 5 0 10
-  run real_idle
-  assert_output '10.0'
-  # Negative control: the same gate off every floor waits out a sample.
-  rm -f "$FLEET_DISPATCH_DIR/idle" "$NOTES_FIXTURE/calls.log"
-  floor_open() { return 0; }
-  run gate
-  assert_not_called 'sleep'
-  floor_open() { return 1; }
-  run gate
-  assert_output --partial 'real idle 10.0% is under 30%'
-  assert_called "sleep $DISPATCH_IDLE_WINDOW"
-}
-
-@test "run starts nothing while real idle cannot be read" {
-  game_ready
-  rm -f "$DISPATCH_PROC_STAT"
-  refuses 'real idle unreadable'
 }
 
 @test "preempt: a parked runner session holds no run unit" {
@@ -2199,7 +2141,7 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   assert_equal "$(jq -r 'select(.state == "ready" and .worker == "tier3") | .key' <<<"$output" | paste -sd,)" 'route the reds,retire the hook'
 }
 
-@test "tier3 gate: one an area, up to the pass limit: observer rows first, then #high, newest first" {
+@test "tier3 gate: no area holds a row (two share timers), up to the pass limit: observer rows first, then #high, newest first" {
   pr_lane_ready
   row agent-runtime agent 'add a panel' '- [ ] add a panel for y #high'
   row agent-runtime agent 'shorter briefs' '- [ ] shorter briefs for tier3 items #kpi/board_open #high'
@@ -2211,7 +2153,7 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   pr_lane_verdict 'retire the timer' timers; pr_lane_verdict 'retire the hook' timers; pr_lane_verdict 'add w'
 
   fill --dry-run --json
-  assert_equal "$(jq -r 'select(.state == "ready" and .worker == "tier3") | .key' <<<"$output" | paste -sd,)" 'shorter briefs,add a column,add a panel,add w,retire the hook'
+  assert_equal "$(jq -r 'select(.state == "ready" and .worker == "tier3") | .key' <<<"$output" | paste -sd,)" 'shorter briefs,add a column,add a panel,add w,retire the hook,retire the timer'
   [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ] || fail "fill --dry-run queued an item"
   [ "$(state_of 'shorter briefs')" = '- [ ]' ] || fail "fill --dry-run started a row"
   DISPATCH_PER_PASS=3 fill
@@ -2817,34 +2759,6 @@ picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | 
   assert_output --partial 'hot (urgent'
 }
 
-@test "starved: a high item its project's full merge line holds is not starved; an urgent one, or the line under its cap, is" {
-  local old; old=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)
-  queued_item stuck high "$old"
-  acct main:pace
-  export DISPATCH_TARGET_PRESENT=10 DISPATCH_TARGET_AWAY=10 DISPATCH_LINE_MAX=6
-  line_state 2 6 game
-  run cmd_starved
-  assert_success
-  refute_output --partial 'stuck (high'
-  # Negative control: one waiter under the cap, the same item starves.
-  line_state 2 5 game
-  run cmd_starved
-  assert_failure
-  assert_output --partial 'stuck (high'
-  # An urgent item of a full line is never held there, so it starves.
-  line_state 2 6 game
-  queued_item hot urgent "$old"
-  run cmd_starved
-  assert_failure
-  assert_output --partial 'hot (urgent'
-  # An item with no project reads no line, never an unreadable queue.
-  queued_item loose high "$old"
-  sed -i '/^project:/d' "$AGENT_QUEUE_DIR/queued/20261103-100000-loose.md"
-  run cmd_starved
-  refute_output --partial 'agent-queue unreadable'
-  assert_output --partial 'loose (high'
-}
-
 @test "starved: a hold standing the limit trips it, led by the Stopped line, and a run start does not clear it; a younger hold or none does not" {
   queued_item fresh low "$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
   acct main:pace
@@ -2927,35 +2841,6 @@ picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | 
   run cmd_starved
   assert_success
   assert_output --partial 'held by load (fleet-assess says HOLD)'
-}
-
-# 2026-11-07: the queue-starved watch's cmd_starved slept out a 60s idle sample under its probe timeout.
-@test "starved reads the last pass's idle sample and never waits out a new one" {
-  queued_item stuck high "$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)"
-  cpu 85 5 0 10
-  rm -f "$FLEET_DISPATCH_DIR/idle" "$NOTES_FIXTURE/calls.log"
-  # No sample in the window: idle names no hold, so the queue reads starved.
-  run cmd_starved
-  assert_failure
-  assert_output --partial 'stuck (high'
-  refute_output --partial 'real idle'
-  assert_not_called 'sleep'
-  # A pass's sample ten minutes old is still the verdict's: under the floor, it holds by load.
-  mkdir -p "$FLEET_DISPATCH_DIR"; echo "$(( $(date +%s) - 600 )) 10.0" > "$FLEET_DISPATCH_DIR/idle"
-  run cmd_starved
-  assert_success
-  assert_output --partial 'held by load (real idle 10.0% is under 30%)'
-  assert_not_called 'sleep'
-  # One older than the verdict's window is no sample: starved again, still without waiting.
-  echo "$(( $(date +%s) - DISPATCH_STARVED_MIN * 60 )) 10.0" > "$FLEET_DISPATCH_DIR/idle"
-  run cmd_starved
-  assert_failure
-  refute_output --partial 'real idle'
-  assert_not_called 'sleep'
-  # Negative control: a pass's gate with the same ten-minute sample samples anew.
-  run gate
-  assert_output --partial 'real idle 10.0% is under 30%'
-  assert_called "sleep $DISPATCH_IDLE_WINDOW"
 }
 
 @test "stats: held_s is how long the hold has stood, 0 with none" {

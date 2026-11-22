@@ -131,7 +131,7 @@ test("negative control: a new chip that counts, or an extra count in an allowed 
   const real = files();
   const chip = [".config/waybar/new.sh", "n=$(jq '[.rows[] | select(.done)] | length' <<< \"$raw\")"];
   assert.deepEqual(check([...real, chip]), [".config/waybar/new.sh fn main: 1 site(s) at 1, none allowed"]);
-  const more = real.map(([f, t]) => [f, f === ".config/waybar/health.sh" ? t + "\nx=$(wc -l < f)" : t]);
+  const more = real.map(([f, t]) => [f, f === ".config/waybar/ci_runners.sh" ? t + "\nx=$(wc -l < f)" : t]);
   assert.equal(check(more).length, 1);
 });
 
