@@ -399,9 +399,11 @@ ledger() {
 {"slug":"fix-5","state":"running","from":"item:coord-other","sessions":"sidE"}
 {"slug":"fix-6","state":"running","from":"item:coord","sessions":"sidA"}
 {"slug":"fix-7","state":"running","from":"board:p:x","sessions":"sidF"}'
-  run carried_by "$q" sidA coord lab:me
+  run carried_by "$q" sidA own:coord lab:me
   assert_output 'fix-1,fix-8'
-  run carried_by "$q" sidA other lab:me
+  run carried_by "$q" sidA own:other lab:me
+  [ "$output" = - ]
+  run carried_by "$q" sidA 'moved:coord moved on (done)' lab:me
   [ "$output" = - ]
 }
 
