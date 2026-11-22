@@ -80,7 +80,7 @@ agent-ask post [opts] "question"          create a pending ask; print its id
   --wait          SECONDARY: block until answered, print the answer to stdout
 
 agent-ask list [project|--all] [--pending|--parked|--open|--answered] [--undelivered]  TSV: id project profile status kind question options task answered_at resumed_at recommend created session closed_at closed_reason claude_session judge answered_by option_notes context recommend_why judge_rule judge_reason answer_note assume_at resume parked_until (parked_until is filled only while the ask is parked; new columns only ever go at the end; option_notes is the `--options` meanings joined by `|`)
-agent-ask count [project|--all]             number of pending asks, parked ones left out
+agent-ask count [project|--all]             a project's pending asks, parked ones left out; --all is Home's Question count (needs-figure), ? when it cannot be read
 agent-ask show <id>                          print the ask file
 agent-ask card <id>                          print the question card
 agent-ask decision <id>                      the human's answer on one line, for the brief of the item it released

@@ -13,7 +13,7 @@ setup() {
   export DAYLOG_STATE="$SANDBOX/state.json" DAYLOG_WATCH_LOG="$SANDBOX/watch.log"
   export DAYLOG_GROUPS="$SANDBOX/groups" DAYLOG_OUTCOMES_DIR="$HOME/.agent/outcomes"
   export SCHEDULES_SYNC=ss-stub DAYLOG_AUTHOR=Kblack0610 DAYLOG_BENCH_CMD=bench-stub DAYLOG_USAGE_CMD=usage-stub
-  export DAYLOG_HOLD_CMD=hold-stub DAYLOG_UNITY_CMD="echo 2"
+  export DAYLOG_HOLD_CMD=hold-stub DAYLOG_UNITY_CMD="echo 2" DAYLOG_NEEDS_CMD=needs-stub
   GHD="$SANDBOX/gh"; mkdir -p "$GHD"
   # ss-stub: the PR store, logging every call; `prs all --state merged` serves $GHD/merged and
   # --state open $GHD/open as store rows (author kblack0610 unless a row names one), unfiltered by
@@ -49,6 +49,8 @@ EOF
 printf "game\\t3\\t10\\t2000000\\t12.5\\t0\\n"
 EOF
   printf '#!/usr/bin/env bash\nprintf "unity\\t2026-10-28T15:49:30-0700\\tshepherd\\thot\\n"\n' > "$SANDBOX/bin/hold-stub"
+  # needs-stub: needs-figure needs_question serves $SANDBOX/needq (0 when none), "?" and exit 1 when it holds "?"
+  printf '#!/usr/bin/env bash\n[ "$1" = needs_question ] || exit 2\nn=$(cat "%s" 2>/dev/null || echo 0); echo "$n"; [ "$n" = "?" ] && exit 1; exit 0\n' "$SANDBOX/needq" > "$SANDBOX/bin/needs-stub"
   # queue-stub: agent-queue list serves $SANDBOX/items (the work ledger), stats serves $SANDBOX/queue;
   # each fails while its file is missing
   export DAYLOG_QUEUE_CMD=queue-stub
@@ -380,15 +382,25 @@ status_day() {
   assert_output "$(printf '%s\n' '### trader' '- Backtest (freqtrade_trading_attempt-agent-1, 0 of 2 done)')"
 }
 
-@test "Needs you groups sessions by why, and asks are a count, the newest three and where to see all" {
+@test "Needs you groups sessions by why, and the question count is Home's figure, then the newest three rows and where to see all" {
   status_day
+  echo 6 > "$SANDBOX/needq"   # Home counts 6; the status file lists 4 rows: the count is Home's
   run "$SUBJECT" show
   run bash -c "sed -n '/^## Needs you/,/^## Sessions/p' <<<\"\$1\" | grep '^- '" _ "$output"
   assert_output "$(printf '%s\n' '- Nightly red in game: Tests (no green in window)' \
     '- Questions hold up 2 sessions: game-agent-3, game-agent-4.' \
     '- 1 session is waiting on a prompt or permission: game-agent-5.' \
-    '- 4 questions wait on you. List: fleet-bench asks.' \
+    '- 6 questions wait on you. List: fleet-bench asks.' \
     '- Question: Question 3? (game, 13:00)' '- Question: Question 2? (game, 12:00)' '- Question: Question 1? (game, 11:00)')"
+}
+
+@test "a question count Home cannot give reads ?, never the rows listed or 0" {
+  status_day
+  echo '?' > "$SANDBOX/needq"
+  run "$SUBJECT" show
+  run bash -c "sed -n '/^## Needs you/,/^## Sessions/p' <<<\"\$1\"" _ "$output"
+  assert_line '- Questions waiting on you could not be counted. List: fleet-bench asks.'
+  refute_line --partial '- Nothing.'
 }
 
 @test "a quiet day says so in each section instead of leaving it empty" {

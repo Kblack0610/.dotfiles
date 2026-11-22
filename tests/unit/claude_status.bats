@@ -24,7 +24,7 @@ setup() {
 agent() {
   printf '%s/%s:%s\t%s\tproj\tsummary\n' "$1" "$2" "$3" "$4" >> "$NOTES_FIXTURE/agent-panel.list"
 }
-# questions <n> -- what the panel counts: pending asks plus open dialogs
+# questions <n> -- what `questions.sh count` prints: Home's Needs you count, or ? when unread
 questions() { echo "$1" > "$NOTES_FIXTURE/questions.count"; }
 
 # ── no agents ────────────────────────────────────────────────────────────────
@@ -59,7 +59,14 @@ questions() { echo "$1" > "$NOTES_FIXTURE/questions.count"; }
   assert_output '!1'
 }
 
-@test "the number is the panel's, not the agents': held asks with no live session count" {
+@test "a count that could not be read is !?, never none (dashboards rule 6)" {
+  agent hub work 0 '~'
+  questions '?'
+  run get_session_status work
+  assert_output '!?'
+}
+
+@test "the number is Home's Needs you count, not the agents': held asks with no live session count" {
   agent hub work 0 '✓'
   questions 30
   run get_session_status work

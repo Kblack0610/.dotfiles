@@ -329,7 +329,7 @@ pub fn alerts(a: &crate::alerts::Alerts) -> Card {
     let by = |l: Level| {
         a.firing
             .iter()
-            .filter(|x| x.needs_you() && x.hue() == l)
+            .filter(|x| x.unfixed() && x.hue() == l)
             .count()
     };
     let k = &a.counts;
@@ -345,12 +345,12 @@ pub fn alerts(a: &crate::alerts::Alerts) -> Card {
         "tripped watches, cc:red_now, the machinery and Alertmanager; a red whose fix item is in hand and not past its due is being fixed",
     )
     .bar(k.being_fixed, warn, red)
-    .part("Need you", k.need_you, need)
+    .part("Unfixed", k.unfixed, need)
     .part("Being fixed", k.being_fixed, Level::Ok)
     .part("No owner", k.no_owner, lvl(k.no_owner, Level::Warn))
     .part("Fixes open", k.fixes_open, Level::Ok)
     .part("Firing", k.firing, Level::Nodata)
-    // Uncoloured like Firing: Need you and Being fixed say whether a red waits on the human. A
+    // Uncoloured like Firing: Unfixed and Being fixed say whether a red waits on the human. A
     // source that did not answer reads not read, never 0 (rule 6).
     .part("Red now", read_or(a, "prometheus:", k.red_now), Level::Nodata)
     .part(
@@ -365,8 +365,8 @@ pub fn alerts(a: &crate::alerts::Alerts) -> Card {
     } else {
         need
     };
-    c.big = k.need_you.to_string();
-    c.unit = "need you".into();
+    c.big = k.unfixed.to_string();
+    c.unit = "unfixed".into();
     if a.firing.is_empty() && a.level == Level::Ok {
         c.bar = vec![Seg {
             level: Level::Ok,
@@ -887,9 +887,14 @@ pub fn needs(home: &crate::home::Home, now: i64) -> Card {
     );
     c.big = count.to_string();
     c.unit = "waiting on you".into();
-    for (label, n) in home.split() {
-        let to = Link::to(crate::links::Kind::Needs, label);
-        c = c.part_to(label, n, lvl(n, Level::Warn), Some(to));
+    for (label, n) in home.parts() {
+        c = if label == crate::home::ONLY_YOU {
+            // Not a kind, so no list to filter to: a count of the rows already listed.
+            c.part(label, n, Level::Nodata)
+        } else {
+            let to = Link::to(crate::links::Kind::Needs, label);
+            c.part_to(label, n, lvl(n, Level::Warn), Some(to))
+        };
     }
     // Nothing waiting is a green zero, never no data: Home answered.
     c.level = lvl(count, Level::Warn);
@@ -1424,11 +1429,11 @@ mod tests {
             ..Default::default()
         };
         a.counts.firing = 2;
-        a.counts.need_you = 1;
+        a.counts.unfixed = 1;
         a.counts.being_fixed = 1;
         let c = alerts(&a);
         assert_eq!((c.level, c.big.as_str()), (Level::Red, "1"));
-        assert_eq!(c.unit, "need you");
+        assert_eq!(c.unit, "unfixed");
         let part = |l: &str| c.parts.iter().find(|p| p.label == l).unwrap().value.clone();
         assert_eq!(
             (part("Being fixed"), part("Firing")),
@@ -1453,7 +1458,7 @@ mod tests {
         // Every red being fixed: nothing needs the human, so the card is green though the tab is red.
         a.firing.pop();
         a.counts.firing = 1;
-        a.counts.need_you = 0;
+        a.counts.unfixed = 0;
         let c = alerts(&a);
         assert_eq!((c.level, c.big.as_str()), (Level::Ok, "0"));
         assert_eq!(
@@ -1595,7 +1600,7 @@ mod tests {
             .iter()
             .map(|p| (p.label.as_str(), p.value.as_str()))
             .collect();
-        assert_eq!(parts, [("Your turn", "4")]);
+        assert_eq!(parts, [("Your turn", "4"), ("Only you", "4")]);
         let first: Vec<_> = c.first.iter().map(|f| f.text.as_str()).collect();
         assert_eq!(first, ["old session", "budget", "new ask"]);
         assert_eq!(c.first[0].sub, "2h dotfiles");
