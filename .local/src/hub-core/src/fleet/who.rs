@@ -219,7 +219,7 @@ pub fn build(workers: &[Worker], state: &Value, at: i64) -> Vec<Who> {
 
 /// `1 session`, `N sessions`.
 fn sessions(n: usize) -> String {
-    format!("{n} session{}", if n == 1 { "" } else { "s" })
+    crate::display::fmt::counted(n, "session")
 }
 
 /// The line over the Runners table when some live sessions have no lead (a hand-started one

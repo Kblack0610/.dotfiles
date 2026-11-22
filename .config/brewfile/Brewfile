@@ -71,9 +71,6 @@ brew "cloudflared"      # Cloudflare tunnel daemon / DNS-over-HTTPS client
 brew "marp-cli"         # Marp slide deck renderer (marp-slide skill)
 brew "mermaid-cli"      # Mermaid diagram renderer / mmdc (deck CLI: .mmd -> svg)
 
-# --- Skills support ---
-brew "imagesnap"        # webcam capture CLI — webcam-ops / brightsign-visual-check skills
-
 # --- Status Bar (Waybar analog for macOS) ---
 brew "felixkratz/formulae/sketchybar"
 cask "font-sketchybar-app-font"
