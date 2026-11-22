@@ -209,6 +209,8 @@ set -uo pipefail
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/origin-repo.sh"   # forge_canonical, for the matrix
 # shellcheck source=../lib/agent-merge-proof.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-merge-proof.sh"   # merge_proof_ref, the branch merge_rows reads
+# shellcheck source=../lib/board-keys.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/board-keys.sh"   # BOARD_KEY_ERE: the row keys triage_retire closes by
 # shellcheck source=../lib/sentinel-watch.sh
 . "${BENCH_LIB_DIR:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib}/sentinel-watch.sh" ||   # watch_severity, watch_is_stale: the rule every watch reader shares
   { echo "fleet-bench: cannot read sentinel-watch.sh" >&2; exit 1; }
@@ -3995,7 +3997,8 @@ cmd_retro() {
 }
 
 # board_upsert <rows: key TAB text TAB priority, one a line> keeps exactly one open agent-board
-# row per key, matched as a lowercase title prefix: a row whose text moved is edited in place, one
+# row per key, matched as a lowercase title prefix (each key's shape is in lib/board-keys.sh, so
+# the backlog triager leaves the row's prefix alone): a row whose text moved is edited in place, one
 # that matches writes nothing, and an add that exits 3 found its twin already open (a near-dup), so
 # it counts as filed. A key with no open row but one closed in the board feed's window
 # (upsert_closed) has that row reopened and its text refreshed, never a new row: a cause that is red
@@ -5027,7 +5030,6 @@ alerts_readable() {
 # Leaves the count in TRIAGE_RETIRED.
 triage_retire() {
   local dry=$1 scope sheet t items holds holds_read=1 live board slugs title raw key recent logs_read=1 runner units_read=1 alerts_read
-  local shape='^(check\(watch\): [^ ]+ tripped since|check\(alert\): [^ ]+ [^ ]+ firing|fix\(hold\): [^ ]+ went red|fix\(logs\): ([^ ]+) error [0-9a-f]{8}:|fix\(unit\): [^ ]+ failed)'
   local merge='after cleanup merges? ([^ ]+) \('
   TRIAGE_RETIRED=0
   [ -d "$TRIAGE_WATCH_STATE" ] || return 0
@@ -5045,9 +5047,12 @@ triage_retire() {
   slugs=$(jq -r '.[].slug' <<<"$items")
   alerts_read=$(alerts_readable)
   while IFS=$'\t' read -r scope _ _ title raw; do
-    [[ $title =~ $shape ]] || continue
+    [[ $title =~ $BOARD_KEY_ERE ]] || continue
+    key=${BASH_REMATCH[1]}
+    # a runner's row and a lesson guard's are board_upsert's to refresh, never closed here
+    case $key in 'fix(runner): '* | 'check(lesson): '*) continue ;; esac
+    runner=; [[ $key =~ ^fix\(logs\):\ ([^ ]+) ]] && runner=${BASH_REMATCH[1]}
     [ "$scope" != - ] || scope=
-    key=${BASH_REMATCH[1]} runner=${BASH_REMATCH[2]}
     [[ $raw == '- [ ]'* ]] && ! grep -qxF -- "$key" <<<"$live" || continue
     [[ $key == 'check(alert): '* ]] && [ "$alerts_read" = 0 ] && continue
     if [[ $key == 'fix(logs): '* ]]; then

@@ -473,6 +473,43 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_output --partial 'finish gamma_plan.v2: 3 phases left'
 }
 
+# keyed_row_left <row text>: a row fleet-bench keys by its prefix (lib/board-keys.sh) is never
+# listed to the model, so it keeps its words. It sorts first, so the answer for row 1, were it
+# listed, would rewrite it: the menu row taking that answer shows it was not (ar-2482).
+keyed_row_left() {
+  sheet '' "- [ ] $1 <!-- id:sc-1 -->\n- [ ] the menu flickers <!-- id:sc-2 -->\n"
+  answer '{"n": 1, "action": "rewrite", "row": "fix(ui): the menu flickers #size/s"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_success
+  assert_output --partial 'rewrote 1, moved 0, dropped 0, kept 0'
+  grep -qF -- "$1" "$NOTES_FIXTURE/prompt.txt" && fail "the keyed row reached the model"
+  run tasks
+  assert_output --partial "- [ ] $1 <!-- id:sc-1 -->"
+  assert_output --partial 'fix(ui): the menu flickers'
+}
+
+@test "--backlog: a check(watch) row fleet-bench keys is left as it is" {
+  keyed_row_left 'check(watch): disk-free tripped since 2026-11-01, expected: disk-free is healthy.'
+}
+@test "--backlog: a check(alert) row fleet-bench keys is left as it is" {
+  keyed_row_left 'check(alert): NodeDown hp-victus firing, alertmanager-fleet tripped since 2026-11-01, expected: -'
+}
+@test "--backlog: a check(lesson) guard row fleet-bench keys is left as it is" {
+  keyed_row_left 'check(lesson): guard 0a1b2c3d: lesson "x" (a.md, last 2026-11-01) was found again in 4 dream sweeps'
+}
+@test "--backlog: a fix(hold) row fleet-bench keys is left as it is" {
+  keyed_row_left 'fix(hold): ci-lint went red after cleanup merge ar-1 (pr 12): -'
+}
+@test "--backlog: a fix(logs) row fleet-bench keys is left as it is" {
+  keyed_row_left 'fix(logs): dream error 0a1b2c3d: Traceback in the sweep'
+}
+@test "--backlog: a fix(unit) row fleet-bench keys is left as it is" {
+  keyed_row_left 'fix(unit): foo.service failed: exit-code'
+}
+@test "--backlog: a fix(runner) row fleet-bench keys is left as it is" {
+  keyed_row_left 'fix(runner): dream is FAILED: no detail'
+}
+
 @test "--backlog: an untyped rewrite, a dup of itself, a dup of no listed row and a drop of a heading change nothing" {
   sheet '' '- [ ] the menu flickers <!-- id:sc-4 -->\n- [ ] the save is slow <!-- id:sc-5 -->\n- [ ] the jump is floaty <!-- id:sc-6 -->\n'
   # sorted by text: jump (sc-6), menu (sc-4), save (sc-5)

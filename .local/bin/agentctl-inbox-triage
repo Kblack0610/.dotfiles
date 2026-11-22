@@ -35,7 +35,8 @@
 # The plain --backlog and the --link passes' --dry-run keep their answers, so the apply writes
 # what it printed and a dry run stopped at its budget picks up where it stopped. The plain pass
 # judges each row by priority_rule too: raise a fault filed too low, send an agent row that is a
-# nice-to-have to improvements.md, close one that says it is done. --backlog --report prints the
+# nice-to-have to improvements.md, close one that says it is done. It never lists a row fleet-bench
+# keys by its prefix (lib/board-keys.sh), which fleet-bench alone rewrites and closes. --backlog --report prints the
 # kept answers of every board by verdict, with no model call, for a person to confirm before the apply.
 # How it all fits: notes-cli README, "Intake".
 
@@ -70,6 +71,8 @@ LIB="$HERE/../lib"
 . "$LIB/inbox-epics.sh"
 # shellcheck source=../lib/chain-event.sh
 . "$LIB/chain-event.sh"
+# shellcheck source=../lib/board-keys.sh
+. "$LIB/board-keys.sh"   # BOARD_KEY_ERE: the rows fleet-bench finds by their prefix, which --backlog leaves alone
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-name.sh}"
 
@@ -750,10 +753,12 @@ backlog() {
   local raw own state kids action id dest row why epic prio
   epics="$(epics_open "$board")"
   # Each row with its child rows (the indented open rows under it on the sheet), which the
-  # model sees as context and which go wherever the row goes.
+  # model sees as context and which go wherever the row goes. A row fleet-bench filed by its key
+  # (BOARD_KEY_ERE) is never asked about: a rewrite loses the prefix fleet-bench refreshes and
+  # closes it by, and its next pass writes the row's text back anyway.
   # shellcheck disable=SC2016 # jq source, not shell
-  rows="$(jq -c --arg p "$p" --arg l "$lane" '[.rows[] | select(.project == $p and .lane == $l and .state != "done")] | sort_by(.line) as $all
-    | [$all | to_entries[] | select(.value.id != null and (.value.state == "open" or .value.state == "doing")) | .key as $k
+  rows="$(jq -c --arg p "$p" --arg l "$lane" --arg keys "$BOARD_KEY_ERE" '[.rows[] | select(.project == $p and .lane == $l and .state != "done")] | sort_by(.line) as $all
+    | [$all | to_entries[] | select(.value.id != null and (.value.state == "open" or .value.state == "doing") and (.value.text | test($keys) | not)) | .key as $k
        | .value + {kids: ($all[$k + 1:] | (map(.raw | test("^\\s") | not) | index(true)) as $stop
                          | (if $stop == null then . else .[:$stop] end) | map(.text))}]
     | sort_by(.text | ascii_downcase)' <<<"$board")"
