@@ -1991,7 +1991,7 @@ git_facts() {
 # open_pr_ci <dir> <PR head branch> <pr> <head oid> <store ci> <red job ids> <shell job> [<chain>] -> an open PR's ci.
 # The gate runs are on the PR's head branch, which a reused slot or a stacked branch does not share.
 # A PR queued for the landing slot (queued_in) waits as a queued gate shell does: a red that is only the gate line is
-# the slot refusing it, and any other red is the PR's own (ar-1285). A PR whose item waits on a live `after:` item
+# the slot refusing it, and any other red is the PR's own (ar-1285). A PR whose item waits on an `after:` item that is not done
 # (<chain>, chain_hold) waits the same way: its gate is not dispatched until that item lands (ar-4314). A red whose
 # jobs ran no steps is NOSTART.
 open_pr_ci() {
@@ -2194,20 +2194,39 @@ own_slugs() {
   case "$1" in own:* | here:*) local s="${1#*:}"; printf '%s' "${s%% *}" ;; esac
 }
 
-# chain_hold <all items, jsonl> <comma list of a session's item slugs> <item_of's relation> -> the slug of another session's live item
-# (running, waiting or review, the states agent-queue stack_pr stacks on) that one of the session's live items is
-# `after:`, else nothing. Such an item was started stacked on that item's open PR and agent-land holds its landing
-# (stack_gate, exit 4) before any gate runs, so its Checks stays red in the Merge gate line step (ar-4314:
-# unity-core-playground #3076 and #3083 read STALLED CI red, 2026-11-21). A dependency that is done, ok or not, is
-# no wait: ok releases it, and any other close never does, which is the session's to resolve. One of the session's
-# own slugs is no wait either: it holds nothing back that the session is not itself doing.
+# chain_hold <all items, jsonl> <comma list of a session's item slugs> <item_of's relation> -> the slug of another session's item
+# that one of the session's live items is `after:` and that is not done, else nothing. agent-land's stack_gate refuses to
+# merge (exit 4) while any `after:` item has not closed ok, before any gate runs: a red Merge gate line is that refusal,
+# not the PR's own red (ar-4314: unity-core-playground #3076 and #3083 read STALLED CI red, 2026-11-21), and a green PR
+# is held, not stalled (ar-4420: %305 and %312 read STALLED green, not merged, 2026-11-21). A queued dependency holds it
+# too. A dependency that is done, ok or not, is no wait: ok releases it, and any other close never does, which is the
+# session's to resolve. One of the session's own slugs is no wait either: it holds nothing back that the session is not
+# itself doing.
 chain_hold() {
   case "${3:-}" in own | review | here) ;; *) return 0 ;; esac
   [ -n "${2:-}" ] && [ "${2:--}" != - ] || return 0
   jq -rn --arg own ",$2," '[inputs] as $all
     | [$all[] | select(.state != "done" and (.slug as $s | $own | contains("," + $s + ",")))
         | (.after // "") | split(" ")[] | select(. != "" and (. as $d | $own | contains("," + $d + ",") | not))] as $deps
-    | first($all[] | select((.state | IN("running", "waiting", "review")) and (.slug as $s | $deps | any(. == $s))) | .slug) // empty' <<<"$1" 2>/dev/null
+    | first($all[] | select(.state != "done" and (.slug as $s | $deps | any(. == $s))) | .slug) // empty' <<<"$1" 2>/dev/null
+}
+
+# pr_wait <git> <pr state> <sibling repo> <clone> <ci> <pr> <head oid> <chain> -> two lines: the landing-slot wait, then
+# the wait the bucket reads (empty when none). A PR of this clone's repo riding an open landing train waits on that
+# train's gate, and one queued for the landing slot waits its turn, unless its own Checks are red past the slot's
+# refusal (git_facts left ci FAIL). A green or unknown-CI PR whose item is `after:` an item that is not done (<chain>,
+# chain_hold) waits on it, not STALLED green, not merged (ar-4420); its red gate line is open_pr_ci's.
+pr_wait() {
+  local g="$1" state="$2" xr="$3" gd="$4" ci="$5" pr="$6" oid="$7" chain="$8" tn="" land="" w
+  [ "$g" = 1 ] && [ "$state" = OPEN ] && [ "$xr" = - ] || { printf '\n\n'; return 0; }
+  if [ "$gd" != - ]; then
+    [ "$oid" = - ] || tn="$(train_of "$gd" "$pr" "$oid")"
+    if [ -n "$tn" ]; then land="train #$tn"
+    elif [ "$ci" != FAIL ] && [ -n "$FLEET_QUEUE_LABEL" ] && queued_in "$gd" "$pr"; then land="the landing queue"; fi
+  fi
+  w="$land"
+  if [ -z "$w" ] && [ -n "$chain" ]; then case "$ci" in FAIL | PENDING | NOSTART) ;; *) w="after: $chain" ;; esac; fi
+  printf '%s\n%s\n' "$land" "$w"
 }
 
 # dispatch_tag <collect's items: "<slug>\t<project>: <slug>" lines> <item_of's relation> <its comma list of slugs>
@@ -2567,19 +2586,14 @@ collect() {
     if [ "$g" = 1 ] && [ "$branch" != - ] && [ "$gd" != - ]; then dbase="$(default_base "$gd")"; [ "$branch" = "${dbase#*/}" ] || act_dir="$gd"; fi
     local act_sha="$oid"; [ "$oid" != - ] || act_sha="$whead"
     act="$(activity_line "${status:--}" "$ojob" "$doing" "$act_dir" "$branch" "$act_sha" "$now")"
-    # A PR of this clone's repo riding an open landing train waits on that train's gate, and one queued for the
-    # landing slot waits its turn, unless its own Checks are red past the slot's refusal (git_facts left ci FAIL).
-    local wait_on="" tn
-    if [ "$g" = 1 ] && [ "$state" = OPEN ] && [ "$xr" = - ] && [ "$gd" != - ]; then
-      tn=""; [ "$oid" = - ] || tn="$(train_of "$gd" "$pr" "$oid")"
-      if [ -n "$tn" ]; then wait_on="train #$tn"
-      elif [ "$ci" != FAIL ] && [ -n "$FLEET_QUEUE_LABEL" ] && queued_in "$gd" "$pr"; then wait_on="the landing queue"; fi
-    fi
+    # What an open PR waits on (pr_wait); only a landing-slot wait carries the slot's wait, depth and critical path.
+    local wait_on="" land_wait=""
+    { IFS= read -r land_wait; IFS= read -r wait_on; } < <(pr_wait "$g" "$state" "$xr" "$gd" "$ci" "$pr" "$oid" "$chain")
     # A session waiting its landing turn carries how long its gate has waited and how deep its repo's
     # landing queue is, so the shepherd names a multi-hour wait on its own line (ar-2525).
     local qwait=- qdepth=- qrepo=- qpr=-
-    if [ "$host" = - ] && { [ "$ojob" = queue ] || [ -n "$wait_on" ]; }; then IFS=$'\t' read -r qwait qrepo qpr < <(queue_wait_of "$cwd" "$cpid" "$gd"); fi
-    if [ "$g" = 1 ] && [ "$gd" != - ] && [ -n "$FLEET_QUEUE_LABEL" ] && { [ "$ojob" = queue ] || [ -n "$wait_on" ]; }; then
+    if [ "$host" = - ] && { [ "$ojob" = queue ] || [ -n "$land_wait" ]; }; then IFS=$'\t' read -r qwait qrepo qpr < <(queue_wait_of "$cwd" "$cpid" "$gd"); fi
+    if [ "$g" = 1 ] && [ "$gd" != - ] && [ -n "$FLEET_QUEUE_LABEL" ] && { [ "$ojob" = queue ] || [ -n "$land_wait" ]; }; then
       qdepth="$(queue_depth "$gd")"; qdepth="${qdepth:--}"
     fi
     # The transcript can be 40 MB, so it is read only for an idle session, or the one asking about itself (wake_facts).
@@ -2629,7 +2643,7 @@ collect() {
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
       "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}" \
       "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test" "$mh" \
-      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iby" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "$qwait" "$qdepth" "$prun" "$pwq" "$wake" "$(critical_of "$wait_on" "$irow" "$gd" "$pr")" "${shown:-0}" "${mman:-0}" "$(quiet_before "$restored" "$host" "${target%%/*}/$pane" "$since")" "$qrepo" "$qpr"
+      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iby" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "$qwait" "$qdepth" "$prun" "$pwq" "$wake" "$(critical_of "$land_wait" "$irow" "$gd" "$pr")" "${shown:-0}" "${mman:-0}" "$(quiet_before "$restored" "$host" "${target%%/*}/$pane" "$since")" "$qrepo" "$qpr"
     [ ! -f "$CACHE/blind_row" ] || echo "$sid" >> "$CACHE/blind"
   done
   [ -z "${CLOSE_SELF:-}" ] || return 0

@@ -5012,7 +5012,7 @@ chained_item() {
     "$2" > "$HOME/.agent/queue/$1/20261103-090000-$2.md"
 }
 
-@test "end to end: a red gate line is CI running while its item is after: a live item, red once that item is done (ar-4314)" {
+@test "end to end: a red gate line is CI running while its item is after: an open item, red once that item is done (ar-4314)" {
   # 2026-11-21 unity-core-playground #3076 and #3083 read STALLED CI red: each item was stacked on an open
   # item, so agent-land held it (exit 4) before a gate was dispatched and Checks' Merge gate line stayed red.
   landed_fixture
@@ -5036,10 +5036,11 @@ chained_item() {
   ledger feat/x '[]'; open_pr FAIL 78
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
-  # a dependency that is only queued has no PR to stack on
+  # a queued dependency holds it too: stack_gate refuses any after: item not closed ok (ar-4420)
   rm -r "$HOME/.agent/queue/review" "$HOME/.agent/queue/running"; chained_item queued dep-item
+  ledger feat/x '[]'; open_pr FAIL 77
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
   # a dependency that is the session's own item waits on nobody else
   rm -r "$HOME/.agent/queue/queued"; chained_item running dep-item
   sed -i 's/^session: lab:s2$/session: lab:s1/' "$HOME/.agent/queue/running/20261103-090000-dep-item.md"
@@ -5049,6 +5050,40 @@ chained_item() {
   ledger feat/x '[]'; open_pr FAIL 77
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+}
+
+@test "end to end: a green PR whose item is after: an open prereq is WORKING waiting on it, not STALLED green-not-merged (ar-4420)" {
+  landed_fixture
+  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"
+  ledger feat/x '[]'; open_pr PASS
+  chained_item review dep-item
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 waiting on after: dep-item' ]
+  jq -e '.blockers | index("PR #9 open, waiting on after: dep-item")' <<<"$output" >/dev/null
+  [ "$(jq -r .landing_queue <<<"$output")" = null ]
+
+  # a queued after: prereq also blocks agent-land's stack_gate
+  rm -r "$HOME/.agent/queue/review"; chained_item queued dep-item
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 waiting on after: dep-item' ]
+
+  # negative controls: prereq is done, prereq is the session's own item, or no after:
+  rm -r "$HOME/.agent/queue/queued"; chained_item done dep-item
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+  rm -r "$HOME/.agent/queue/done"; chained_item running dep-item
+  sed -i 's/^session: lab:s2$/session: lab:s1/' "$HOME/.agent/queue/running/20261103-090000-dep-item.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+  rm -rf "$HOME/.agent/queue/running"; queue_item running lab:s1
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
 }
 
 @test "end to end: a PR riding an open landing train is WORKING waiting on the train, not CI red (ar-2160)" {
