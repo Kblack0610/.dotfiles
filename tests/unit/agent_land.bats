@@ -1458,6 +1458,7 @@ EOF2
   export TMUX="$SANDBOX/tmp/tmux-1000/default,123,0"
   item by-hand
   agent-queue set by-hand session=default:dotfiles-agent-9
+  printf 'The change.\n\nItem: by-hand\n' >"$NOTES_FIXTURE/body"
   run "$LAND" 42
   assert_success
   assert_line --index 7 'item: by-hand done with pr:o/r#42'
@@ -1482,6 +1483,7 @@ EOF2
 
 @test "AGENT_QUEUE_ITEM is the default item; a board item closes its own row with lane and profile" {
   item fix-crash 'board:game:fix crash: on load' human bnb
+  printf 'The change.\n\nItem: fix-crash\n' >"$NOTES_FIXTURE/body"
   AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42
   assert_success
   assert_line --index 8 'board: closed "fix crash: on load" with pr:o/r#42 commit:fedcba987654'
@@ -1518,7 +1520,7 @@ repo_map() {
   printf 'https://github.com/o/r/pull/43\n' >"$NOTES_FIXTURE/url"
   printf 'OPEN\n' >"$NOTES_FIXTURE/state"
   # #43 is another PR, with its own body: #42's carries "Item: store" now.
-  printf 'The change and why.\n' >"$NOTES_FIXTURE/body"
+  printf 'The change and why.\n\nItem: tool\n' >"$NOTES_FIXTURE/body"
   AGENT_QUEUE_ITEM=tool run "$LAND" 43
   assert_success
   assert_output --partial 'item: tool done with pr:o/r#43'
@@ -1536,7 +1538,7 @@ untouched() {
   assert_output 0
 }
 
-@test "a sibling subagent's item that agent-queue mine returns refuses this PR while its own PR is open (ar-3047)" {
+@test "a sibling subagent's item that agent-queue mine returns refuses this PR, which its body does not name (ar-3047)" {
   # home-config #1195, 2026-11-18: two subagents of one coordinator share its session id; one added
   # its item and started agent-land on its PR, and the other's bare agent-land took that item.
   item qualify
@@ -1544,7 +1546,7 @@ untouched() {
   agent-queue set qualify open_pr=o/r#41 >/dev/null
   CLAUDE_CODE_SESSION_ID=sid-coord run "$LAND" 42
   assert_failure 2
-  assert_output --partial "#42 (o/r#42) is not qualify's work, taken from agent-queue mine: qualify's own PR o/r#41 is open. Pass --item <slug>"
+  assert_output --partial "#42 (o/r#42) may be a side fix, not qualify's work, taken from agent-queue mine: its body has no \"Item: qualify\" line and qualify does not record it."
   untouched qualify
   # NEGATIVE CONTROL: named by --item, the same PR lands on it.
   CLAUDE_CODE_SESSION_ID=sid-coord run "$LAND" 42 --item qualify --partial
@@ -1568,16 +1570,31 @@ untouched() {
   assert_output --partial 'item: fix-crash done with pr:o/r#42'
 }
 
-@test "an item taken from the session lands past a placeholder Item: line or an open_pr that closed (ar-3047)" {
-  item fix-crash
-  agent-queue set fix-crash open_pr=o/r#41 >/dev/null
-  printf 'closed\n' >"$NOTES_FIXTURE/pr41.state"
-  printf 'The change.\n\nItem: <slug>\n' >"$NOTES_FIXTURE/body"
-  AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42
+@test "a side fix in the item's own repo, its body naming no item, does not close the session's item (ar-3970)" {
+  # unity-core-playground#2985, 2026-11-20: a coordinator's bare agent-land on an iOS side fix took
+  # its overnight release watch from agent-queue mine, stamped "Item:" on the body and closed it.
+  item watch-beta 'board:dotfiles:watch the beta cut'
+  agent-queue claim watch-beta --sid sid-coord >/dev/null
+  printf 'The iOS export fix.\n' >"$NOTES_FIXTURE/body"
+  CLAUDE_CODE_SESSION_ID=sid-coord run "$LAND" 42
+  assert_failure 2
+  assert_output --partial "#42 (o/r#42) may be a side fix, not watch-beta's work, taken from agent-queue mine: its body has no \"Item: watch-beta\" line"
+  assert_output --partial 'add that line to the body or pass --item watch-beta; else give it its own item'
+  untouched watch-beta
+  # A placeholder names no item either.
+  printf 'The iOS export fix.\n\nItem: <slug>\n' >"$NOTES_FIXTURE/body"
+  AGENT_QUEUE_ITEM=watch-beta run "$LAND" 42
+  assert_failure 2
+  assert_output --partial 'taken from $AGENT_QUEUE_ITEM: its body has no "Item: watch-beta" line'
+  # NEGATIVE CONTROL: the side fix's own item, named by --item, takes it and the placeholder is rewritten.
+  item ios-export
+  AGENT_QUEUE_ITEM=watch-beta run "$LAND" 42 --item ios-export
   assert_success
-  assert_output --partial 'item: fix-crash done with pr:o/r#42'
-  run grep -cx 'Item: fix-crash' "$NOTES_FIXTURE/body"
+  assert_output --partial 'item: ios-export done with pr:o/r#42'
+  run grep -cx 'Item: ios-export' "$NOTES_FIXTURE/body"
   assert_output 1
+  run agent-queue show watch-beta --json
+  assert_equal "$(jq -r '.state + " " + (.pr // "")' <<<"$output")" 'running '
 }
 
 @test "a re-run on the PR the item records as open lands with no Item: line (ar-3047)" {
