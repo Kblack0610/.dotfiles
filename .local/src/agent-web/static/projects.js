@@ -313,8 +313,8 @@ function pList() {
     ? `<div class="panel scroll"><table class="tbl">${tblHead(t, P_COLS)}${d.cards.map((c, i) => pLine(c, i, t)).join("")}</table></div>`
     : `<div class="card muted">${t.total ? "No project matches." : "No projects."}</div>`;
   if (d.unlinked && d.unlinked.length) {
-    html += `<details data-k="unlinked"${pst.unlinked ? " open" : ""}><summary>${secHead("", "Not on a card", d.unlinked.length)}</summary>` +
-      `<div class="card">${d.unlinked.map((u) => `<div>${esc(u)}</div>`).join("")}</div></details>`;
+    html += fold("", secHead("", "Not on a card", d.unlinked.length), `<div class="card">${d.unlinked.map((u) => `<div>${esc(u)}</div>`).join("")}</div>`,
+      { k: "unlinked", open: pst.unlinked });
   }
   return html;
 }
