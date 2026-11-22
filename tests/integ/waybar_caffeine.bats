@@ -3,7 +3,8 @@
 # registry, and both profiles carry it in place of the built-in idle_inhibitor; with no hold it reads
 # off; a toggle starts the hold as its own user unit (not a child of the bar, which desk.service kills
 # with its cgroup) running systemd-inhibit --what=idle, and the chip reads on; a second toggle stops
-# that unit and the chip reads off.
+# that unit and the chip reads off, and signals the bar so Noctalia redraws too; Noctalia shows the
+# same gated chip, so `modules.sh off caffeine` hides it on either bar.
 # systemctl and systemd-run are stubs over one state file: present means the unit is active.
 
 setup() {
@@ -30,11 +31,11 @@ STUB
 
 chip() { run "$W/caffeine.sh"; assert_success; CLASS="$(jq -r .class <<< "$output")"; }
 
-@test "the module is gated, polled, on signal 10, in the registry, and replaces idle_inhibitor in both profiles" {
+@test "the module is gated, polled, on its own signal 12, in the registry, and replaces idle_inhibitor in both profiles" {
   run grep -A9 '"custom/caffeine": {' "$W/config.base"
   assert_line --partial '"exec": "$HOME/.config/waybar/modules.sh gate custom/caffeine $HOME/.config/waybar/caffeine.sh",'
   assert_line --partial '"interval": 10,'
-  assert_line --partial '"signal": 10,'
+  assert_line --partial '"signal": 12,'
   run grep -c '^caffeine|.*|custom/caffeine$' "$W/modules.registry"
   assert_output 1
   for p in config.desktop config.laptop; do
@@ -72,4 +73,26 @@ chip() { run "$W/caffeine.sh"; assert_success; CLASS="$(jq -r .class <<< "$outpu
   run "$W/caffeine.sh" bogus
   assert_failure 2
   assert_output --partial usage
+}
+
+@test "a toggle refreshes the caffeine chip alone on Noctalia, through the real desk" {
+  mkdir -p "$HOME/.local/bin" "$HOME/.local/state/desk"
+  ln -s "$REPO_ROOT/.local/bin/desk" "$HOME/.local/bin/desk"
+  echo "bar=noctalia" > "$HOME/.local/state/desk/parts"
+  printf '#!/usr/bin/env bash\necho "noctalia $*" >> "%s/calls.log"\n' "$BATS_TEST_TMPDIR" > "$SANDBOX/bin/noctalia"
+  chmod +x "$SANDBOX/bin/noctalia"
+  run "$W/caffeine.sh" toggle
+  assert_success
+  run cat "$BATS_TEST_TMPDIR/calls.log"
+  assert_output 'noctalia msg plugin dotfiles/chips:chip all refresh 12'
+}
+
+@test "Noctalia's caffeine is the same gated chip, its click acting rather than opening a hover" {
+  # The whole [widget.caffeine] table, up to the next header, whatever its key order.
+  run awk '/^\[/{in_t = ($0 == "[widget.caffeine]")} in_t' "$REPO_ROOT/.config/noctalia/config.toml"
+  assert_success
+  assert_line "[widget.caffeine]"
+  assert_line 'type = "dotfiles/chips:chip"'
+  assert_line 'module = "custom/caffeine"'
+  assert_line 'dropdown = false'
 }

@@ -25,6 +25,8 @@ case "${1:-}" in
             systemd-run --user --quiet --collect --unit="$UNIT" \
                 systemd-inhibit --what=idle --who=caffeine --why="waybar caffeine chip" sleep infinity
         fi
+        # Waybar re-runs the chip after its own click; Noctalia's chip plugin does not, so redraw it now.
+        "$HOME/.local/bin/desk" signal custom/caffeine 2>/dev/null || true
         ;;
     "")
         if holding; then
