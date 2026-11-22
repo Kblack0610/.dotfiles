@@ -583,7 +583,7 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
 @test "trainee floor: past the pace target a trainee with a free slot starts a queued row it takes, then stops when its source has no room; candidates [] is off" {
   trainee_ready
   srcs go:ok:0.1 codex:reserve:5   # codex without room: an item routed to it would start past the target (other_source_start)
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0
   fleet_state 8
   agent-queue add --project game --slug p --priority high "plain p" >/dev/null
   agent-queue add --project game --slug t-one --priority low --tags tier1 "Fix the menu title #pts/1" >/dev/null
@@ -614,7 +614,7 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
 @test "trainee floor: a red k3s domain does not shut it while the gateway answers; a down gateway does; a plain start still waits on k3s" {
   trainee_ready
   srcs go:ok:0.1 codex:reserve:5
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0
   fleet_state 8
   stub fleet-shepherd 'echo "infra: k3s domain red"'
   agent-queue add --project game --slug t-one --priority low --tags tier1 "Fix the menu title #pts/1" >/dev/null
