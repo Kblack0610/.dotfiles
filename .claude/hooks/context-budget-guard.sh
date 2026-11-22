@@ -1,25 +1,16 @@
 #!/usr/bin/env bash
 # context-budget-guard.sh - PostToolUse guard for Edit/Write on a file that loads into
-# every session: an auto-memory MEMORY.md, the global CLAUDE.md, or a repo root CLAUDE.md
-# or AGENTS.md. Their size is paid on every turn, and budgets kept only as prompt text
-# drifted: five memory indexes reached 11-18 KB, the global file sat 5 bytes under 20 KB.
-# Also a lessons file (~/.agent/lessons/<project>.md), which the preflight ranks on every
-# start; it warns only on an edit that grows one already over budget (five sat at 2.5x), or
-# that leaves a lesson it wrote in over the per-lesson cap (`lessons fat`, LESSON_MAX_BYTES), since
-# pick shows a lesson by its first 200 characters and a long one costs the file budget for nothing.
+# every session: the global CLAUDE.md or a repo root CLAUDE.md or AGENTS.md, whose size is
+# paid on every turn. Memory indexes and lessons files have no size branch (`lessons fat`
+# and dream cover them).
 #
-# Every one of those but a CLAUDE.md or AGENTS.md below a repo root, plus any memory file or SKILL.md,
-# also gets a restated-instruction check (only when the edit wrote a line of 90+ characters): a line
-# the edit wrote that shares its wording with a line in another home (skill-drift --dups --file) is
-# named with both homes and the winner, so the writer deletes the loser's copy in the same turn.
-# SKILL_DRIFT_BIN names the scorer (default: skill-drift on PATH, else the one in this repo).
+# A memory file, lessons file or SKILL.md also gets a restated-instruction check (only when
+# the edit wrote a line of 90+ chars): a line sharing wording with another home
+# (skill-drift --dups --file) is named with both homes and the winner. SKILL_DRIFT_BIN
+# names the scorer (default: skill-drift on PATH, else this repo's).
 #
-# WARNS, does not block: exit 2 feeds stderr back to the writer so it can delete or merge
-# in the same turn (global CLAUDE.md "Subtract First").
-#
-# Budgets (bytes): CONTEXT_BUDGET_MEMORY (8192), CONTEXT_BUDGET_GLOBAL (20480),
-# CONTEXT_BUDGET_REPO (12288), CONTEXT_BUDGET_LESSONS (262144);
-# MEMORY_INDEX_MAX_LINE (200).
+# WARNS, does not block: exit 2 feeds stderr back to the writer.
+# Budgets (bytes): CONTEXT_BUDGET_GLOBAL (20480), CONTEXT_BUDGET_REPO (12288);
 # CONTEXT_BUDGET_GLOBAL_FILE names the global file (default ~/.claude/CLAUDE.md).
 
 set -uo pipefail
@@ -34,59 +25,27 @@ path=$(jq -r '.tool_input.file_path // empty' <<<"$payload" 2>/dev/null)
 
 real=$(realpath "$path")
 global=$(realpath "${CONTEXT_BUDGET_GLOBAL_FILE:-$HOME/.claude/CLAUDE.md}" 2>/dev/null)
-max_line=""
 
-if [[ $path == */memory/MEMORY.md ]]; then
-  kind="memory index"
-  max_bytes="${CONTEXT_BUDGET_MEMORY:-8192}"
-  max_line="${MEMORY_INDEX_MAX_LINE:-200}"
-elif [[ $real == "$global" || $real == */*dotfiles-private*/.claude/CLAUDE.md ]]; then
+if [[ $real == "$global" || $real == */*dotfiles-private*/.claude/CLAUDE.md ]]; then
   kind="global CLAUDE.md"
   max_bytes="${CONTEXT_BUDGET_GLOBAL:-20480}"
-elif [[ ${path%/*} == */.agent/lessons && $path == *.md ]]; then
-  kind="lessons file"
-  max_bytes="${CONTEXT_BUDGET_LESSONS:-262144}"
-  # A file already over budget is only flagged by a write that makes it bigger.
-  grew=$(jq -r '.tool_name as $t | .tool_input | if $t == "Edit"
-    then ((.new_string // "") | length) > ((.old_string // "") | length) else true end' <<<"$payload" 2>/dev/null)
-  [[ $grew == false ]] && exit 0
 elif [[ ${path##*/} == CLAUDE.md || ${path##*/} == AGENTS.md ]] &&
   [[ $(git -C "$(dirname "$real")" rev-parse --show-toplevel 2>/dev/null) == "$(dirname "$real")" ]]; then
   kind="repo root ${path##*/}"
   max_bytes="${CONTEXT_BUDGET_REPO:-12288}"
 else
-  [[ $path == */memory/*.md || ${path##*/} == SKILL.md ]] || exit 0
+  [[ $path == */memory/*.md || ${path##*/} == SKILL.md || ( ${path%/*} == */.agent/lessons && $path == *.md ) ]] || exit 0
   kind=""
 fi
 
 written=$(jq -r '.tool_input | (.content // .new_string // ([.edits[]?.new_string] | join("\n")) // "")' <<<"$payload" 2>/dev/null)
 here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../.."
 
-bytes=0 long="" fat=""
+bytes=0 over_budget=0
 if [[ -n $kind ]]; then
   bytes=$(wc -c <"$path")
-  [[ -n $max_line ]] &&
-    long=$(awk -v m="$max_line" 'length($0) > m { printf "    line %d: %d chars: %s...\n", NR, length($0), substr($0, 1, 70) }' "$path")
+  [[ $bytes -gt $max_bytes ]] && over_budget=1
 fi
-# A lesson over the per-lesson cap that holds a line this edit wrote. The file is parsed whole,
-# so evidence appended to an existing lesson counts; `lessons fat` owns the cap and the parse.
-# A written line of 20+ chars is located in the file, then mapped to the last lesson starting
-# at or above it (`fat --max 0` lists every lesson's start line).
-if [[ $kind == "lessons file" && -n $written ]]; then
-  lessons_bin="$here/.local/bin/lessons"
-  over=$("$lessons_bin" fat "$path" 2>/dev/null)
-  if [[ -n $over ]]; then
-    lines=$(awk 'length($0) >= 20' <<<"$written" | grep -nxFf - "$path" | cut -d: -f1)
-    [[ -n $lines ]] && fat=$(awk -F'\t' '
-      function at(s) { sub(/.*:/, "", s); return s + 0 }
-      FILENAME == ARGV[1] { st[++ns] = at($1); next }
-      FILENAME == ARGV[2] { for (i = ns; i > 0 && st[i] > $1; i--); if (i) hit[st[i]] = 1; next }
-      hit[at($1)] { printf "    %d bytes: %s\n", $2, substr($3, 1, 80) }' \
-      <("$lessons_bin" fat --max 0 "$path" 2>/dev/null) <(printf '%s\n' "$lines") <(printf '%s\n' "$over"))
-  fi
-fi
-over_budget=0
-[[ -n $kind && ( $bytes -gt $max_bytes || -n $long || -n $fat ) ]] && over_budget=1
 
 # The pairs of this file whose line on this side is text the edit just wrote.
 dups=""
@@ -103,15 +62,10 @@ fi
 {
   if [[ $over_budget == 1 ]]; then
     echo "context-budget-guard: $path ($kind) is over budget."
-    [[ $bytes -gt $max_bytes ]] && echo "  size $bytes bytes > $max_bytes"
-    [[ -n $long ]] && { echo "  lines over $max_line chars:"; printf '%s\n' "$long" | awk 'NR<=8'; }
-    [[ -n $fat ]] && { echo "  lessons holding text this edit wrote, over the per-lesson cap (\`lessons fat\`):"; printf '%s\n' "$fat" | awk 'NR<=8'; }
+    echo "  size $bytes bytes > $max_bytes"
     echo
     echo "Make room by deleting, not by squeezing: remove what the new text supersedes, merge"
     echo "overlapping lines, move detail or history to the doc or memory file it belongs in."
-    [[ -n $max_line ]] && echo "Each index line is '- [Label](file.md) - one clause'."
-    [[ $kind == "lessons file" ]] &&
-      echo "For lessons: a lesson is the rule, why, and one evidence pointer; \`lessons fat\` lists the long ones, \`lessons compact\` swaps in a short text and archives the rest, \`lessons archive --dry-run\` lists the stale ones."
   fi
   if [[ -n $dups ]]; then
     echo "context-budget-guard: $path restates an instruction another home already holds."

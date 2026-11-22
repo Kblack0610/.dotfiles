@@ -225,9 +225,10 @@ fn agents(i: &Inputs) -> Vec<Row> {
 
 /// "Done today: 40 shipped, 12 checks, 33 PRs merged", then one line per project, busiest first:
 /// "unity-core-playground 30 shipped, 2 checks, 25 PRs", the last ending ", +3 more" when there are
-/// others. Shipped and checks are the queue items closed since local midnight by
-/// `queue::done_today`, the rule the Projects card and the waybar chip count by; PRs come from the
-/// day-log, so each source counts only when it could be read; with neither there is no section.
+/// others. The head's shipped and checks are `Queue::done_today`, the figure the Projects card and
+/// the waybar chip show. Each project's line applies the same rule to that project's items alone,
+/// so a slug closed under two project names counts once in the head and once in each line. PRs come
+/// from the day-log. Each source counts only when it could be read; with neither there is no section.
 fn done(i: &Inputs) -> Vec<Row> {
     let midnight = crate::text::local_day_start(i.now);
     // A failed `agent-queue list` leaves no items, which is not the same as none done today.
@@ -253,16 +254,10 @@ fn done(i: &Inputs) -> Vec<Row> {
     let plural =
         |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
     let mut head = vec![];
-    if let Some(v) = &items {
-        head.push(format!(
-            "{} shipped",
-            v.values().map(|d| d.shipped).sum::<usize>()
-        ));
-        head.push(plural(
-            v.values().map(|d| d.checks).sum(),
-            "check",
-            "checks",
-        ));
+    // The head is the Projects card's figure (`Queue::done_today`), not a sum of the rows below.
+    if let Some(d) = i.queue.and_then(|q| q.done_today(i.now)) {
+        head.push(format!("{} shipped", d.shipped));
+        head.push(plural(d.checks, "check", "checks"));
     }
     if let Some(v) = prs {
         head.push(plural(v.len(), "PR merged", "PRs merged"));
@@ -680,35 +675,278 @@ mod tests {
         assert!(needs[1].starts_with("dotfiles 1"), "{}", needs[1]);
     }
 
+    /// Where the cards, the widget document, the published `figures` and the phone's heads say
+    /// different numbers for one card figure, one line each; empty when every surface agrees.
+    fn disagree(
+        cards: &[crate::cards::Card],
+        doc: &crate::widget_doc::Document,
+        figs: &BTreeMap<String, i64>,
+        p: &Phone,
+    ) -> Vec<String> {
+        use crate::widget_doc::Item as W;
+        let mut bad = vec![];
+        let mut want = BTreeMap::new();
+        for c in cards {
+            let Some(sec) = doc.sections.iter().find(|x| x.id == c.tab) else {
+                bad.push(format!("{}: no section in the document", c.tab));
+                continue;
+            };
+            let metric = sec.items.iter().find_map(|i| match i {
+                W::Metric { value, .. } => Some(value.as_str()),
+                _ => None,
+            });
+            // An empty big (Costs with nothing read) is no metric at all.
+            if metric != Some(c.big.as_str()).filter(|b| !b.is_empty()) {
+                bad.push(format!("{}: card {} but document {metric:?}", c.tab, c.big));
+            }
+            let pills: Vec<(&str, &str)> = sec
+                .items
+                .iter()
+                .filter_map(|i| match i {
+                    W::Pill { label, value, .. } => Some((label.as_str(), value.as_str())),
+                    _ => None,
+                })
+                .collect();
+            let parts: Vec<(&str, &str)> = c
+                .parts
+                .iter()
+                .map(|x| (x.label.as_str(), x.value.as_str()))
+                .collect();
+            if pills != parts {
+                bad.push(format!(
+                    "{}: card parts {parts:?} but document {pills:?}",
+                    c.tab
+                ));
+            }
+            if let Ok(n) = c.big.parse::<i64>() {
+                want.insert(format!("{}_headline", c.tab), n);
+            }
+            for (l, v) in parts {
+                if let Ok(n) = v.parse::<i64>() {
+                    want.insert(crate::widget_doc::figure_name(c.tab, l), n);
+                }
+            }
+        }
+        if *figs != want {
+            bad.push(format!("figures {figs:?} but the cards say {want:?}"));
+        }
+        let card = |tab: &str| cards.iter().find(|c| c.tab == tab);
+        let part = |tab: &str, label: &str| {
+            card(tab)
+                .and_then(|c| c.parts.iter().find(|x| x.label == label))
+                .map_or("?", |x| x.value.as_str())
+        };
+        let head = |h: &str| texts(p, h).first().cloned().unwrap_or_default();
+        let mut says = |what: &str, got: String, want: String| {
+            // The figures lead the head; what may follow is more text, never more digits, so
+            // "of 2" does not pass for "of 20".
+            let rest = got.strip_prefix(&want);
+            if !rest.is_some_and(|r| !r.starts_with(|ch: char| ch.is_ascii_digit())) {
+                bad.push(format!("phone {what}: {got:?}, the cards say {want:?}"));
+            }
+        };
+        if let Some(n) = card("needs") {
+            let split: Vec<String> = n
+                .parts
+                .iter()
+                .map(|x| format!("{} {}", x.label, x.value))
+                .collect();
+            says(
+                "needs",
+                head("needs"),
+                format!("Needs you: {} ({})", n.big, split.join(", ")),
+            );
+        }
+        says(
+            "queue",
+            head("queue"),
+            format!(
+                "Queue: {} running, {} on deck",
+                part("queue", "Running"),
+                part("queue", "On deck")
+            ),
+        );
+        let checks = part("projects", "Checks closed");
+        says(
+            "done",
+            head("done"),
+            format!(
+                "Done today: {} shipped, {checks} {}",
+                part("projects", "Shipped today"),
+                if checks == "1" { "check" } else { "checks" }
+            ),
+        );
+        if let Some(c) = card("projects") {
+            says(
+                "projects",
+                head("projects"),
+                format!(
+                    "Projects: {} in flight of {}",
+                    part("projects", "In flight"),
+                    c.big
+                ),
+            );
+        }
+        // Not checked: the phone's Agents head counts fleet-sessions' `counts` while the Sessions
+        // card counts the live rows; one source for both is the outbox item "sessions figures
+        // from one source" (plan ar-4329).
+        bad
+    }
+
+    /// Every card figure from one fixture, on every surface that shows it: the card (the hub and
+    /// agent-web draw it as is), the widget document (`/widget.json`, Tilecast), `figures` (the
+    /// publisher's summary/cards, so the waybar chips and Home Assistant) and the phone's heads
+    /// (`hub phone --json`). The publisher sends the document unchanged (agent_mqtt_publish.bats).
     #[test]
-    fn every_surface_counts_what_home_lists() {
-        let (s, q) = (state(), queue_of(vec![(State::Waiting, "w1")]));
+    fn every_card_figure_reads_the_same_on_every_surface() {
+        let s = state();
+        let mut q = queue_of(vec![
+            (State::Waiting, "w1"),
+            (State::Running, "r1"),
+            (State::Queued, "q1"),
+            (State::Queued, "q2"),
+        ]);
+        q.stats = Some(crate::queue::Stats {
+            sitting: Some(crate::queue::Sitting {
+                queued: 2,
+                runnable: 1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        q.items[1].project = "agent-runtime".into();
+        let mut shipped = done_item("a", "agent-runtime", NOW);
+        shipped.merged = Some("abc123".into());
+        q.items.push(shipped);
+        q.items.push(done_item("b", "agent-runtime", NOW));
+        // An item whose project is no lab project still counts: one figure for the whole queue.
+        let mut stray = done_item("c", "scratch", NOW);
+        stray.merged = Some("def456".into());
+        q.items.push(stray);
         let inf = infra(vec![]);
+        let stats: Vec<crate::projects::Stats> = ["agent-runtime", "unity-core-playground"]
+            .iter()
+            .map(|n| crate::projects::Stats {
+                name: n.to_string(),
+                ..Default::default()
+            })
+            .collect();
+        let at = chrono::DateTime::from_timestamp(NOW, 0).unwrap();
+        let projects = crate::projects::build(&stats, None, &s, Some(&q), at);
         let home = home::build(Some(&s), Some(&q), None, Some(&inf), NOW);
-        let count = home.waiting().count;
-        assert!(count > 0);
-        let split: Vec<String> = home
-            .split()
-            .iter()
-            .map(|(l, n)| format!("{l} {n}"))
-            .collect();
-        let head = &texts(&phone(&s, Some(&q), Some(&inf)), "needs")[0];
-        assert_eq!(*head, format!("Needs you: {count} ({})", split.join(", ")));
-        let card = crate::cards::needs(&home, NOW);
-        assert_eq!(card.big, count.to_string());
-        let parts: Vec<String> = card
-            .parts
-            .iter()
-            .map(|p| format!("{} {}", p.label, p.value))
-            .collect();
-        assert_eq!(parts, split);
-        // Negative control: the old phone subset (asks, sessions, queue items) is no longer the
-        // count, so a Home row of any other kind moves every surface together.
+        let vocab = Vocab::from_state(&s);
+        let sessions = crate::session_table::rows(
+            s["sessions"].as_array().unwrap(),
+            &vocab,
+            &Default::default(),
+            &[],
+        );
+        let board = crate::tasks::Feed::default();
+        let alerts = crate::alerts::Alerts::default();
+        let costs = crate::costs::Costs::default();
+        let releases = crate::releases::Releases::default();
+        let schedules = crate::schedules::Schedules::default();
+        let mut cards = vec![
+            crate::cards::needs(&home, NOW),
+            crate::cards::main_red(&home),
+        ];
+        cards.extend(crate::cards::grid(&crate::cards::Reads {
+            sessions: Some(Ok(&sessions)),
+            board: Some(Ok(&board)),
+            queue: Some(Ok(&q)),
+            pipeline: None,
+            alerts: Some(Ok(&alerts)),
+            infra: Some(Ok(&inf)),
+            costs: Some(Ok(&costs)),
+            releases: Some(Ok(&releases)),
+            schedules: Some(Ok(&schedules)),
+            projects: Some(Ok(&projects)),
+        }));
+        assert_eq!(
+            cards.iter().map(|c| c.tab).collect::<Vec<_>>(),
+            crate::cards::ORDER,
+            "every card is in the check"
+        );
+        let doc = crate::widget_doc::document(&cards, &[], NOW, None);
+        let figs = crate::widget_doc::figures(&cards);
+        let p = build(
+            &home,
+            &Inputs {
+                state: &s,
+                queue: Some(&q),
+                infra: Some(&inf),
+                projects: Some(&projects),
+                merged: None,
+                now: NOW,
+            },
+        );
+        assert_eq!(disagree(&cards, &doc, &figs, &p), Vec::<String>::new());
+        // The fixture reaches the figures the phone shares: shipped counts the stray project's
+        // item, and on deck is the runnable count, not every queued item.
+        assert_eq!(figs["projects_shipped_today"], 2);
+        assert_eq!(figs["projects_checks_closed"], 1);
+        assert_eq!(figs["queue_on_deck"], 1);
+        assert!(figs["needs_headline"] > 0);
+
+        // Negative controls: a surface that counts a figure itself fails the check.
+        let mut d = doc.clone();
+        let queue = d.sections.iter_mut().find(|x| x.id == "queue").unwrap();
+        for i in &mut queue.items {
+            if let crate::widget_doc::Item::Pill { label, value, .. } = i {
+                if label == "On deck" {
+                    *value = "2".into();
+                }
+            }
+        }
+        assert_eq!(
+            disagree(&cards, &d, &figs, &p).len(),
+            1,
+            "a document that recounts on deck"
+        );
+        let mut f = figs.clone();
+        f.insert("projects_shipped_today".into(), 3);
+        assert_eq!(
+            disagree(&cards, &doc, &f, &p).len(),
+            1,
+            "a figure that recounts shipped"
+        );
+        let mut ph = p.clone();
+        let done = ph.rows.iter_mut().find(|r| r.head == "done").unwrap();
+        // The old Projects card's count: shipped over the lab projects only.
+        done.text = "Done today: 1 shipped, 1 check".into();
+        assert_eq!(
+            disagree(&cards, &doc, &figs, &ph).len(),
+            1,
+            "a phone that recounts shipped"
+        );
+        let mut ph = p.clone();
+        let proj = ph.rows.iter_mut().find(|r| r.head == "projects").unwrap();
+        let of = format!("of {}", projects.cards.len());
+        proj.text = proj.text.replacen(&of, &format!("{of}0"), 1);
+        assert_eq!(
+            disagree(&cards, &doc, &figs, &ph).len(),
+            1,
+            "a longer number behind the card's"
+        );
+        // An unread queue says so on the card and leaves no figure, never a zero (rule 6).
+        let unread = crate::cards::projects(&crate::projects::Projects {
+            today: None,
+            ..projects.clone()
+        });
+        let shipped = unread.parts.iter().find(|x| x.label == "Shipped today");
+        assert_eq!(
+            shipped.map(|x| x.value.as_str()),
+            Some(crate::reading::NOT_READ)
+        );
+        assert!(!crate::widget_doc::figures(&[unread]).contains_key("projects_shipped_today"));
+        // A Home row of any kind moves the needs figure on every surface together.
         let mut more = home.clone();
         more.needs.push(more.needs[0].clone());
         more.needs.last_mut().unwrap().kind = Kind::Sheet;
-        assert_eq!(more.waiting().count, count + 1);
-        assert_eq!(crate::cards::needs(&more, NOW).big, (count + 1).to_string());
+        assert_eq!(
+            crate::cards::needs(&more, NOW).big,
+            (home.waiting().count + 1).to_string()
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """PreToolUse(Bash) guard: a python file write that Edit or Write would make one-for-one is denied.
 
-The Edit/Write guards (manual-mode-investigate before, ai-comment-guard and context-budget-guard
+The Edit/Write guards (manual-mode-investigate before, context-budget-guard
 after) match those tools only, and settings.json allows all of Bash, so a python heredoc that
 patches a file skips every one of them. Usage-cleanup pass 6 (7 days to 2026-11-09) counted 11.2k
 of 15k python3 calls as `open().read().replace()` patches (ar-2018).
