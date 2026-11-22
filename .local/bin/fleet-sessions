@@ -16,7 +16,8 @@
 #                                     session's labels; each change also lands on its tmux window
 #   fleet-sessions tick               --write after a fetch, plus the stage changes since the
 #                                     last tick appended to watch.log (fleet-state.service, every
-#                                     minute and on each ask change); the hub Sessions tab
+#                                     minute and on each ask change); the hub Sessions tab. Only
+#                                     the fleet lease holder ticks; elsewhere it skips, exit 0
 #   fleet-sessions explain <who>      one session from the state document: its task, plan, PRs,
 #                                     where its time went, and what it is doing
 #   fleet-sessions close [--json]     the close analysis from the state document: each session's
@@ -2496,7 +2497,7 @@ end_pass() {
 # compare, and writes the state document with each session's eta.
 tick() {
   export FLEET_FETCH=1
-  local rows cur new now t0
+  local rows cur new now t0 rc=0
   t0="$(date +%s)"
   pass; rows="$PASS_ROWS"
   eta_cells "$CACHE/eta.json" > "$CACHE/eta"
@@ -2505,6 +2506,9 @@ tick() {
   mkdir -p "$LEDGER"
   (
     flock 9
+    # Read again at the write: a pass takes up to two minutes, and a holder whose lease lapsed
+    # in it must not write over the next holder's ledger (ar-3439).
+    lease_held || { echo "fleet-sessions: tick skipped: the fleet lease moved during this pass" >&2; exit 3; }
     # What a source could not read did not change: those rows keep their last good cells.
     if [ -f "$LEDGER/watch.state" ]; then
       # keep_blind failing keeps the whole last state: a blink must never become the baseline.
@@ -2514,7 +2518,8 @@ tick() {
       [ -n "$new" ] && sed "s/^/$now  /" <<<"$new" >> "$LEDGER/watch.log"
     fi
     cp "$cur" "$LEDGER/watch.state"
-  ) 9>"$LEDGER/watch.lock"
+  ) 9>"$LEDGER/watch.lock" || rc=$?
+  [ "$rc" != 3 ] || return 0
   release_left "$rows"
   write_state "$t0" "$rows" > /dev/null
 }
@@ -2663,7 +2668,7 @@ holder_state_file() { echo "$(dirname "$STATE_FILE")/holder-state.json"; }
 # it a state file, or the roster lists it. Its own pass reads no PR store and no run ledger, so a row it
 # builds is blind and close --self would never approve.
 on_worker() {
-  ! "${FLEET_LEASE:-fleet-lease}" held >/dev/null 2>&1 || return 1
+  ! lease_held || return 1
   [ -e "$(holder_state_file)" ] && return 0
   fleet_hosts 2>/dev/null | jq -e --arg me "$FLEET_HOST" 'select(.name == $me)' >/dev/null 2>&1
 }
@@ -2709,7 +2714,7 @@ close_self_held() {
 # path, so close --self there answers from the holder's reads (close_self_held). A worker that does not answer
 # keeps its last file, which ages out.
 worker_state_push() {
-  "${FLEET_LEASE:-fleet-lease}" held >/dev/null 2>&1 || return 0
+  lease_held || return 0
   local h pids=()
   fleet_hosts >/dev/null 2>&1
   while IFS= read -r h; do
@@ -2935,13 +2940,23 @@ sessions_prom() {
 # holds: the sibling fleet-shepherd's lease check, by path, so a test runs this checkout's.
 holds() { "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/fleet-shepherd" holds; }
 
+# lease_held: this machine holds the fleet lease, as it last read it (no network).
+lease_held() { "${FLEET_LEASE:-fleet-lease}" held >/dev/null 2>&1; }
+
 main() {
   case "${1:-}" in
     # A ledger write is the shepherd acting: only the pass holding its lease may (fleet-shepherd holds).
     mark) holds || return; shift; mark "$@"; return ;;
     escalate) holds || return; shift; escalate "$@"; return ;;
     label) shift; label "$@"; return ;;
-    tick) tick; return ;;
+    # The unit's ExecCondition gates the scheduled tick; this gates a hand run. The ledger is the
+    # fleet's one copy (shepherd/ in the ~/.agent store) and fleet_sessions.prom a singleton: a hand
+    # tick on razer-laptop wrote its rows over the holder's watch.state, logged every fleet-home
+    # session gone, and the store merge stuck on it (2026-11-21, ar-3439).
+    tick)
+      lease_held ||
+        { echo "fleet-sessions: tick skipped: this machine does not hold the fleet lease (fleet-lease status)" >&2; return 0; }
+      tick; return ;;
     explain) shift; explain "$@"; return ;;
     stages) shift; python3 "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-stages.py" --log "$LEDGER/watch.log" --state "$STATE_FILE" "$@"; return ;;
     close)
