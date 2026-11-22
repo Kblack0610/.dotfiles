@@ -6577,18 +6577,12 @@ epics_fixture() {
   assert_line 'lesson_held_share=?'
 }
 
-@test "ledger: insight_expired_share is the expired share of insights dated 30 to 60 days back, by last status; ? with none there" {
+@test "ledger: the dropped insight_expired_share KPI is gone (dream writes no insights.md, ar-4460)" {
   kpi_setup
-  export BENCH_DREAMS_DIR="$SANDBOX/dreams"; mkdir -p "$BENCH_DREAMS_DIR/a" "$BENCH_DREAMS_DIR/b"
-  d40=$(date -d "@$((T0 - 40 * 86400))" +%F); d10=$(date -d "@$((T0 - 10 * 86400))" +%F); d90=$(date -d "@$((T0 - 90 * 86400))" +%F)
-  printf '## %s - q1\n**Status:** open\n**Status:** expired\n\n## %s - q2\n**Status:** confirmed\n\n## Notes\n**Status:** expired\n' "$d40" "$d40" > "$BENCH_DREAMS_DIR/a/insights.md"
-  printf '## %s - q3\nStatus: expired\n\n## %s - q4\n**Status:** routed\n\n## %s - recent\n**Status:** expired\n\n## %s - old\n**Status:** expired\n' "$d40" "$d40" "$d10" "$d90" > "$BENCH_DREAMS_DIR/b/insights.md"
   run "$SUBJECT" ledger
   assert_success
-  assert_line 'insight_expired_share=0.50'
-  rm -r "$BENCH_DREAMS_DIR"
-  run "$SUBJECT" ledger
-  assert_line 'insight_expired_share=?'
+  assert_line 'lesson_held_share=?'
+  refute_output --partial insight_expired_share
 }
 
 @test "chain: plans_unqueued counts an approved plan with open phases and no session or item; unreadable sessions read ?" {

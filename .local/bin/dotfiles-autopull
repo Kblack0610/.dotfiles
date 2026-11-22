@@ -77,20 +77,24 @@ log_report() {
   printf '%s\n' "$3" | tail -n 40 | sed 's/^/    /' >>"$LOG" 2>/dev/null
 }
 
-# attach_missing -> one line when it linked anything or failed, nothing otherwise. A move can add a
+# attach_missing -> one line when it linked or pruned anything or failed, nothing otherwise. A move can add a
 # tracked file and stow never runs on pull, so link every deploy path (both checkouts) that resolves
 # to nothing. Runs once per pass, moved or not. A failure's report goes to the log.
 attach_missing() {
-  local out rc n
+  local out rc n m what
   [ -x "$DEPLOY" ] || return 0
   out=$(DOTFILES="${REPOS[0]}" DOTFILES_PRIVATE="${REPOS[1]}" capped "$DEPLOY_SECS" "$DEPLOY" --apply --missing 2>&1)
   rc=$?
   n=$(printf '%s\n' "$out" | grep -c '^  linked ')
+  m=$(printf '%s\n' "$out" | grep -c '^  pruned ')
+  what=""
+  [ "$n" -gt 0 ] && what="linked $n missing file(s) into \$HOME"
+  [ "$m" -gt 0 ] && what="${what:+$what, }pruned $m dangling link(s)"
   if [ "$rc" -ne 0 ]; then
     log_report 'dotfiles-deploy --apply --missing' "$rc" "$out"
     say "~: linked $n missing file(s), then dotfiles-deploy --apply --missing failed (exit $rc); report in ${LOG/#"$HOME"/\~}"
-  elif [ "$n" -gt 0 ]; then
-    say "~: linked $n missing file(s) into \$HOME (dotfiles-deploy --apply --missing)"
+  elif [ "$n" -gt 0 ] || [ "$m" -gt 0 ]; then
+    say "~: $what (dotfiles-deploy --apply --missing)"
   fi
 }
 
@@ -299,10 +303,12 @@ run_locked() {
 # restore_reordered <checkout> <name> <refused merge output> -> succeeds when it restored every file
 # in the way, one line each. Claude Code rewrites ~/.claude/settings.json (a stow link into the
 # checkout) with its keys in its own order, so the checkout reads dirty with no change in it, and
-# every pull that touches the file is refused (ar-2453). A tracked .json file with nothing staged,
-# whose working copy parses equal to HEAD's (jq -S), holds no value. Only when every file in the way
-# is one does it restore them from HEAD, so a pull that stays refused reverts nothing; each copy is
-# kept under $CACHE_DIR/restored first, and one whose bytes changed since the check stays put.
+# every pull that touches the file is refused (ar-2453). Since #2876 settings.json is committed in
+# that order, so a restore logged for it means an edit added a key out of the harness's order.
+# A tracked .json file with nothing staged, whose working copy parses equal to HEAD's (jq -S),
+# holds no value. Only when every file in the way is one does it restore them from HEAD, so a pull
+# that stays refused reverts nothing; each copy is kept under $CACHE_DIR/restored first, and one
+# whose bytes changed since the check stays put.
 restore_reordered() {
   local repo=$1 name=$2 f keep mine
   local -a files=()
