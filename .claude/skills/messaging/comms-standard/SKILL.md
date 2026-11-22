@@ -55,7 +55,7 @@ Several act-now items within one pass go out as one page (rule 4). A self-healin
 
 **Morning block.** The briefing's headline and Needs you items, copied as they are (notes-cli re-cuts nothing), plus the knowledge line. Eight lines at most.
 
-**Status shape** (rundowns, wind-down notes, lab status, day summaries, client EODs). Group by project, then:
+**Status shape** (rundowns, wind-down notes, lab status, day summaries, client EODs). Group by project, then (a lab STATUS block puts each label on its own line, `--channel lab-status`):
 - Done: what landed, one plain line each, with the link at the end.
 - Doing: what is in progress and how far along it is.
 - Next: what comes next, in order.
