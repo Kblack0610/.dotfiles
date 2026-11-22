@@ -182,21 +182,41 @@ pub fn document(cards: &[Card], missing: &[&str], now: i64, base: Option<&str>) 
 
 /// The cards' whole numbers by name, for a reader that keeps numbers and drops text (mqtt2prom,
 /// so Prometheus and the waybar chips): a card's `big` is `<tab>_headline` and each part is
-/// `<tab>_<label>` (lowercase, other characters `_`). A figure that is not a whole number, or
-/// belongs to a card whose reader failed, is absent: no figure is better than a made-up zero.
+/// `<tab>_<label>` (lowercase, other characters `_`). A figure that is not a number
+/// (`figure_value`), or belongs to a card whose reader failed, is absent: no figure is better than
+/// a made-up zero.
 pub fn figures(cards: &[Card]) -> BTreeMap<String, i64> {
     let mut m = BTreeMap::new();
     for c in cards.iter().filter(|c| c.error.is_none()) {
-        if let Ok(n) = c.big.parse::<i64>() {
+        if let Some(n) = figure_value(&c.big) {
             m.insert(format!("{}_headline", c.tab), n);
         }
         for p in &c.parts {
-            if let Ok(n) = p.value.parse::<i64>() {
+            if let Some(n) = figure_value(&p.value) {
                 m.insert(figure_name(c.tab, &p.label), n);
             }
         }
     }
     m
+}
+
+/// The whole number a card shows: a count (`12`), or dollars as the Costs card writes them
+/// (`usd_est`: `$573`, `$1,303`, `$5.23`; `about $573` for an estimate, `~$1,303` for a
+/// projection), rounded to whole dollars. Anything else (`3/5`, `-`, a word) is no figure.
+pub fn figure_value(v: &str) -> Option<i64> {
+    if let Ok(n) = v.parse::<i64>() {
+        return Some(n);
+    }
+    let usd = v
+        .strip_prefix("about ")
+        .or_else(|| v.strip_prefix('~'))
+        .unwrap_or(v)
+        .strip_prefix('$')?
+        .replace(',', "");
+    if usd.is_empty() || !usd.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+        return None;
+    }
+    usd.parse::<f64>().ok().map(|d| d.round() as i64)
 }
 
 /// A part's figure name: `<tab>_<label>`, the label lowercase with every other character `_`.
@@ -436,6 +456,42 @@ mod tests {
                 ("alerts_shipped_today".to_string(), 12)
             ]
         );
+    }
+
+    #[test]
+    fn a_dollar_figure_is_whole_dollars_and_anything_else_is_no_figure() {
+        for (v, want) in [
+            ("12", Some(12)),
+            ("$573", Some(573)),
+            ("about $1,303", Some(1303)),
+            ("~$1,303", Some(1303)),
+            ("$5.49", Some(5)),
+            ("$0.50", Some(1)),
+            // Negative controls: a ratio, an unread value, a word and a bare sign are not numbers.
+            ("3/5", None),
+            ("-", None),
+            ("about", None),
+            ("$", None),
+            ("$1.2k", None),
+            ("about 5", None),
+        ] {
+            assert_eq!(figure_value(v), want, "{v}");
+        }
+    }
+
+    #[test]
+    fn the_costs_card_publishes_the_fleet_cost_and_its_named_parts_in_whole_dollars() {
+        let mut k = crate::costs::Costs::default();
+        k.fleet_cost.usd = "about $1,203".into();
+        k.fleet_cost.measured = "$403".into();
+        k.fleet_cost.estimated = "$800".into();
+        let figs = figures(&[crate::cards::costs(&k)]);
+        let got =
+            ["costs_headline", "costs_measured", "costs_estimated"].map(|n| figs.get(n).copied());
+        assert_eq!(got, [Some(1203), Some(403), Some(800)]);
+        // Negative control: an unread fleet cost publishes no dollars, never a $0.
+        let figs = figures(&[crate::cards::costs(&crate::costs::Costs::default())]);
+        assert_eq!(figs.get("costs_headline"), None);
     }
 
     #[test]

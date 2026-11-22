@@ -61,12 +61,15 @@ snap() { jq -c "$1" "$TOKENS_DIR/2026-01-01.json"; }
 #!/bin/sh
 echo '{"totals":{"turns":2,"calls":3},"rows":{"project":[],"command":[],"session,tool":[{"key":["a","Bash"],"calls":2,"chars":8,"carried":300},{"key":["a","Read"],"calls":1,"chars":4,"carried":100},{"key":["b","Read"],"calls":1,"chars":4,"carried":0}]}}'
 EOS
-  echo "#!/bin/sh
-echo '{\"registry\":{\"sessions\":2,\"cost_usd\":10,\"cost_by_session\":{\"a\":8,\"b\":2}}}'" > "$stub/burn"
+  cat > "$stub/burn" <<'EOS'
+#!/bin/sh
+echo '{"fleet_cost":{"total":{"usd":11,"unattributed":1,"sessions":2},"by_session":[{"sid":"a","usd":8},{"sid":"b","usd":2}]},"registry":{"sessions":1,"cost_usd":3}}'
+EOS
   chmod +x "$stub"/*
   TOKENS_RECALL_CMD="$stub/recall" TOKENS_BURN_CMD="$stub/burn" "$AU" tokens snapshot >/dev/null
-  # a: $8 over Bash 300 and Read 100 carried; b: $2 with nothing carried stays unallocated
-  assert_equal "$(snap '[.by_tool[] | [.tool, .allocated_cost_usd]], .by_tool_unallocated_usd')" $'[["Bash",6.0],["Read",2.0]]\n2.0'
+  # a: $8 over Bash 300 and Read 100 carried; b: $2 with nothing carried, and the $1 no session row
+  # carries (the gateway), stay unallocated. The registry's billed $3 is not the base (negative control).
+  assert_equal "$(snap '[.by_tool[] | [.tool, .allocated_cost_usd]], .by_tool_unallocated_usd, .totals.cost_usd')" $'[["Bash",6.0],["Read",2.0]]\n3.0\n11'
 }
 
 @test "snapshot: by skill splits each session's cost over its skill spans by weighted tokens; one with no response allocates nothing" {
@@ -75,8 +78,10 @@ echo '{\"registry\":{\"sessions\":2,\"cost_usd\":10,\"cost_by_session\":{\"a\":8
 #!/bin/sh
 echo '{"totals":{"turns":5},"rows":{"session,skill":[{"key":["a","one-shot"],"turns":3,"spans":1,"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":1000,"output_tokens":20},{"key":["a","(no skill)"],"turns":2,"spans":0,"input_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":500,"output_tokens":0}]}}'
 EOS
-  echo "#!/bin/sh
-echo '{\"registry\":{\"sessions\":2,\"cost_usd\":10,\"cost_by_session\":{\"a\":9,\"b\":1}}}'" > "$stub/burn"
+  cat > "$stub/burn" <<'EOS'
+#!/bin/sh
+echo '{"fleet_cost":{"total":{"usd":10,"unattributed":0,"sessions":2},"by_session":[{"sid":"a","usd":9},{"sid":"b","usd":1}]}}'
+EOS
   chmod +x "$stub"/*
   TOKENS_RECALL_CMD="$stub/recall" TOKENS_BURN_CMD="$stub/burn" "$AU" tokens snapshot >/dev/null
   # a: one-shot weighs 1000*0.1 + 20*5 = 200, no skill 50 + 500*0.1 = 100, so $9 splits 6 and 3; b ($1) had no response

@@ -39,15 +39,19 @@ case "$1" in
   flow) echo '{"ticked":5,"added":2,"removed":1,"started":3,"hours":24}' ;;
 esac
 EOF
-  # usage-stub: rollup rows; `tokens line --date D` serves $SANDBOX/tokens-D and `tokens json --date D`
-  # $SANDBOX/tokjson-D, failing like no snapshot without it; `tokens snapshot` exits $SANDBOX/snap-rc, else 0
+  # usage-stub: `fleet-cost` logs its args to $SANDBOX/fleet-cost-args and serves $SANDBOX/fleet-cost,
+  # failing like an unreadable fleet cost without it; rollup rows; `tokens line --date D` serves
+  # $SANDBOX/tokens-D and `tokens json --date D` $SANDBOX/tokjson-D, failing like no snapshot without
+  # it; `tokens snapshot` exits $SANDBOX/snap-rc, else 0
   cat > "$SANDBOX/bin/usage-stub" <<EOF
 #!/usr/bin/env bash
+[ "\$1" = fleet-cost ] && { echo "\$*" >> "$SANDBOX/fleet-cost-args"; exec cat "$SANDBOX/fleet-cost" 2>/dev/null; }
 [ "\$1 \$2" = "tokens snapshot" ] && exit "\$(cat "$SANDBOX/snap-rc" 2>/dev/null || echo 0)"
 [ "\$1 \$2" = "tokens json" ] && exec cat "$SANDBOX/tokjson-\$4" 2>/dev/null
 [ "\$1" = tokens ] && exec cat "$SANDBOX/tokens-\$4" 2>/dev/null
 printf "game\\t3\\t10\\t2000000\\t12.5\\t0\\n"
 EOF
+  fleet_cost 10 2.5 game:5:1000000 game:5:500000 game:2.5:500000
   printf '#!/usr/bin/env bash\nprintf "unity\\t2026-10-28T15:49:30-0700\\tshepherd\\thot\\n"\n' > "$SANDBOX/bin/hold-stub"
   local f; for f in headline working need_you stalled ready_to_close; do echo 0 > "$SANDBOX/sessions.$f"; done
   for f in shipped checks; do echo 0 > "$SANDBOX/done.$f"; done
@@ -176,6 +180,20 @@ EOF
 }
 # day_record <day> <jq filter over {merged: []}>: a stored record, for the week
 day_record() { jq -n "{schema: 2, date: \"$1\", merged: []} | $2" > "$DAYLOG_DIR/$1.json"; }
+
+# fleet_cost <measured> <estimated> <project:usd:tokens>...: the agent-usage fleet-cost answer the
+# usage-stub serves, one session row per argument grouped into by_project as fleet_cost does; the total
+# is measured plus estimated, and what the rows do not carry is its unattributed part.
+fleet_cost() {
+  local m="$1" e="$2"; shift 2
+  printf '%s\n' "$@" | jq -Rn --argjson m "$m" --argjson e "$e" '[inputs | split(":")
+    | {sid: "s\(input_line_number)", project: .[0], usd: (.[1] | tonumber), tokens: (.[2] | tonumber)}] as $s
+    | {total: {usd: ($m + $e), measured: $m, estimated: $e, sessions: ($s | length), tokens: ($s | map(.tokens) | add),
+               unattributed: ($m + $e - ($s | map(.usd) | add))},
+       by_project: ($s | group_by(.project) | map({key: .[0].project,
+         value: {usd: (map(.usd) | add), sessions: length, tokens: (map(.tokens) | add)}}) | from_entries),
+       by_session: $s}' > "$SANDBOX/fleet-cost"
+}
 
 @test "the day is the LOCAL day: 2026-10-28 in PDT is 07:00Z to 06:59:59Z next day, read from the PR store" {
   { pr game 1 'feat: before' 2026-10-28T06:59:59Z; pr game 2 'feat: first' 2026-10-28T07:00:00Z
@@ -351,18 +369,38 @@ day_record() { jq -n "{schema: 2, date: \"$1\", merged: []} | $2" > "$DAYLOG_DIR
   assert_output 1
 }
 
-@test "spend is the rollup's TOTAL row, not the sum of every row with it" {
-  printf '#!/usr/bin/env bash\nprintf "game\\t3\\t10\\t2000000\\t12.5\\t0\\ntools\\t1\\t2\\t1000000\\t2.5\\t0\\nTOTAL\\t4\\t12\\t3000000\\t15\\t0\\n"\n' > "$SANDBOX/bin/usage-stub"
+@test "spend is the fleet cost: a row a project, the dollars no session carries, and the total with its parts" {
+  fleet_cost 12 4 game:5:1000000 game:5:500000 game:2.5:500000 tools:2.5:1000000
   run "$SUBJECT" show
   assert_success
-  assert_output --partial '4 sessions spent $15.'
-  assert_output --partial '| TOTAL | 4 | 3M | $15 |'
+  assert_output --partial '4 sessions spent about $16.'
+  assert_output --partial '- The fleet cost, about $16: $12 measured, $4 estimated (agent-usage fleet-cost).'
+  assert_output --partial '| game | 3 | 2M | $12.5 |'
+  assert_output --partial '| (no session) | 0 | 0 | $1 |'
+  assert_output --partial '| TOTAL | 4 | 3M | $16 |'
+  # the live day is read from its midnight up to now, never to a midnight still to come
+  run cat "$SANDBOX/fleet-cost-args"
+  assert_output --partial "--since $(date -d '2026-10-28 00:00' -Iseconds) --json"
+  refute_output --partial -- '--before'
 }
 
-@test "negative control: a rollup with no TOTAL row is summed" {
+@test "a past day's fleet cost is read up to its own midnight, and no residual row when the sessions carry it all" {
+  fleet_cost 3 0 game:3:10
+  run "$SUBJECT" snapshot --date 2026-10-27
+  assert_success
+  run cat "$SANDBOX/fleet-cost-args"
+  assert_output "fleet-cost --since $(date -d '2026-10-27 00:00' -Iseconds) --before $(date -d '2026-10-28 00:00' -Iseconds) --json"
+  run jq -c '[.usage[] | .project]' "$DAYLOG_DIR/2026-10-27.json"
+  assert_output '["game","TOTAL"]'
+}
+
+@test "negative control: an unreadable fleet cost says so, never \$0" {
+  rm "$SANDBOX/fleet-cost"
   run "$SUBJECT" show
   assert_success
-  assert_output --partial '3 sessions spent $12.5.'
+  assert_output --partial 'the fleet cost was unreadable.'
+  assert_output --partial '| - | - | - | the fleet cost was unreadable |'
+  refute_output --partial 'spent $0'
 }
 
 # status_day: a live day with one of each kind of line the status shape prints
@@ -468,8 +506,7 @@ status_day() {
   pr game 2 'fix(ci): two' 2026-10-28T18:00:00Z > "$SANDBOX/p2"
   pr web 3 'docs: three' 2026-10-28T19:00:00Z > "$SANDBOX/p3"
   cat "$SANDBOX/p1" "$SANDBOX/p2" "$SANDBOX/p3" | merged
-  printf '#!/usr/bin/env bash\nprintf "game\\t3\\t10\\t2000000\\t12.5\\t0\\nweb\\t1\\t1\\t10\\t0.25\\t0\\nTOTAL\\t4\\t11\\t2000010\\t12.75\\t0\\n"\n' \
-    > "$SANDBOX/bin/usage-stub"
+  fleet_cost 12 0.75 game:12.5:2000000 web:0.25:10
   run "$SUBJECT" snapshot
   assert_success
   run cat "$PROM_TEXTFILE_DIR/day_log.prom"
@@ -776,21 +813,22 @@ EOF
 week_fixture() {
   mkdir -p "$DAYLOG_DIR"
   for d in 14 15 16 17 18 19 20; do
-    day_record 2026-10-$d '.merged = [{}] | .agents.merged_prs = 1 | .work.queue = {done: 1, lead_minutes: {p50: 10}} | .work.board = {opened: 1, closed: 0, open_end: 3}
+    day_record 2026-10-$d '.merged = [{}] | .agents.merged_prs = 1 | .agents.cost_usd = 5 | .work.queue = {done: 1, lead_minutes: {p50: 10}} | .work.board = {opened: 1, closed: 0, open_end: 3}
       | .ci.repos["O/game"] = {runs: 10, red: 5, pass: {runs: 10, green: 5}, workflows: {Tests: {runs: 10, green: 5}}}'
   done
   for d in 21 22 23 24 25 26 27; do
-    day_record 2026-10-$d ".merged = [{}, {}] | .agents.merged_prs = 2 | .work.queue = {done: 2, lead_minutes: {p50: ($d - 20)}} | .work.board = {opened: 2, closed: 1, open_end: $d}
+    day_record 2026-10-$d ".merged = [{}, {}] | .agents.merged_prs = 2 | .agents.cost_usd = 10 | .work.queue = {done: 2, lead_minutes: {p50: ($d - 20)}} | .work.board = {opened: 2, closed: 1, open_end: $d}
       | .work.stages = {stages: {\"NEEDS:ask\": {minutes: 10}}, prs: {open_to_merged: {p50: $d}}}
       | .ci.repos[\"O/game\"] = {runs: 10, red: 1, pass: {runs: 10, green: 9}, workflows: {Tests: {runs: 10, green: 9}}}"
   done
+  # the rollup answers sessions; its $999 cost is never the week's (negative control)
   cat > "$SANDBOX/bin/usage-stub" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >> "$SANDBOX/rollup-args"
 [ "\$1" = rollup ] || exit 0
 case "\$3" in
-  $(date -d 2026-10-21 +%s)) printf 'game\t3\t1\t1\t70\t0\nTOTAL\t3\t1\t1\t70.00\t0\n' ;;
-  *) printf 'TOTAL\t2\t1\t1\t35.00\t0\n' ;;
+  $(date -d 2026-10-21 +%s)) printf 'game\t3\t1\t1\t999\t0\nTOTAL\t3\t1\t1\t999.00\t0\n' ;;
+  *) printf 'TOTAL\t2\t1\t1\t999.00\t0\n' ;;
 esac
 EOF
 }
@@ -813,7 +851,7 @@ EOF
   assert_output --partial 'dotfiles pass 75%'
 }
 
-@test "week: cost and sessions come from one read of the whole window, so a session is not counted once per day" {
+@test "week: sessions come from one read of the whole window, so a session is not counted once per day; cost is the days' fleet cost summed" {
   week_fixture
   mkdir -p "$DAYLOG_OUTCOMES_DIR/game"
   mon=$(date -d '2026-10-26 12:00' +%s); tue=$(date -d '2026-10-27 12:00' +%s)
@@ -825,7 +863,7 @@ EOF
   run "$SUBJECT" week --date 2026-10-27 --json
   assert_equal "$(jq -c '.metrics["sessions.total"] | [.value, .prev, .delta]' <<<"$output")" '[3,2,1]'
   assert_equal "$(jq -c '.metrics["sessions.no_pr"].value' <<<"$output")" 1
-  assert_equal "$(jq -c '.metrics.cost_usd | [.value, .prev, .delta]' <<<"$output")" '[70.0,35.0,35.0]'
+  assert_equal "$(jq -c '.metrics.cost_usd | [.value, .prev, .delta]' <<<"$output")" '[70,35,35]'
   assert_equal "$(jq -c '.metrics.cost_per_merged_pr | [.value, .prev]' <<<"$output")" '[5.0,5.0]'
   assert_equal "$(grep -c '^rollup' "$SANDBOX/rollup-args")" 2
   jq 'del(.agents)' "$DAYLOG_DIR/2026-10-27.json" > "$SANDBOX/r"; mv "$SANDBOX/r" "$DAYLOG_DIR/2026-10-27.json"

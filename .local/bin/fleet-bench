@@ -182,7 +182,7 @@
 # BENCH_CI_MATCH_CMD, BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
 # BENCH_ITEMS_CMD, BENCH_ADMISSION_CMD, BENCH_MIX_CMD, BENCH_CLASSES, BENCH_LESSONS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_STATS_CMD, BENCH_FORECAST_HORIZON_H,
 # BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_TRAINEE_CMD, BENCH_LANE_LOG, BENCH_LANE_VOIDS, BENCH_SOURCES_CMD, BENCH_HARNESSES, BENCH_ROOM_CMD, BENCH_CANARY_LANES, BENCH_CANARY_RETRIES, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_HUB_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, PLAN_DIRS, BENCH_DOCS_CLEANUP_DIR, BENCH_SYSTEMS_CMD, BENCH_DOCTOR_LAST, CHAIN_DAYS,
-# FLEET_STATE_FILE, FLEET_SHEPHERD_DIR, WORKTREE_GC_LOG, WORKTREE_GC_STALE_H, BENCH_FLEET_COST_CMD, BENCH_FLEET_COST_FILE, BENCH_FLEET_COST_EVERY_MIN, BENCH_FLEET_COST_TIMEOUT, BENCH_BUDGET_CMD, BENCH_BUDGET_FILE,
+# FLEET_STATE_FILE, FLEET_SHEPHERD_DIR, WORKTREE_GC_LOG, WORKTREE_GC_STALE_H, BENCH_FLEET_COST_CMD, BENCH_FLEET_COST_FILE, BENCH_FLEET_COST_EVERY_MIN, BENCH_FLEET_COST_TIMEOUT, BENCH_HUB_FIGURE_CMD, BENCH_BUDGET_CMD, BENCH_BUDGET_FILE,
 #                                BENCH_BUDGET_EVERY_MIN, BENCH_BUDGET_TIMEOUT.
 
 set -uo pipefail
@@ -348,6 +348,7 @@ FIX_SINCE=0; if [[ "${SENTINEL_SINCE:-}" =~ ^[0-9]+$ ]]; then FIX_SINCE=$SENTINE
 : "${BENCH_FLEET_COST_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/fleet-cost.json}"
 : "${BENCH_FLEET_COST_EVERY_MIN:=30}"
 : "${BENCH_FLEET_COST_TIMEOUT:=240}"
+: "${BENCH_HUB_FIGURE_CMD:=hub-figure}"   # the hub Costs card's figures (costs_headline, costs_measured, costs_estimated): the fleet's 24h dollars
 : "${BENCH_BUDGET_CMD:=agent-usage budget --json}"   # this month's cash, by bill: the Costs Budget tab and fleet-budget-pace read the file
 : "${BENCH_BUDGET_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/budget.json}"
 : "${BENCH_BUDGET_EVERY_MIN:=30}"
@@ -1073,9 +1074,30 @@ prom_map() {
   prom_q "$2" "$3" | jq -c --arg l "$1" '[.data.result[] | {key: (.metric[$l] // "-"), value: (.value[1] | tonumber)}] | from_entries'
 }
 
-# spend_by_session <now> -> {session id: dollars in the window}, from the counter Claude Code exports
+# spend_by_session <now> -> {session id: dollars in the window}, the fleet cost's session rows (billed
+# where a session reports cost, priced from tokens otherwise). The 24h window reads BENCH_FLEET_COST_FILE,
+# the file the hub's Costs card reads, unless it is older than four of the sampler's tries
+# (BENCH_FLEET_COST_EVERY_MIN); any other window asks BENCH_FLEET_COST_CMD for its own range. rc 1 when
+# it cannot answer: a replay, or a cost that cannot be read.
 spend_by_session() {
-  prom_map session_id "sum by (session_id) (increase(claude_code_cost_usage_USD_total[${BENCH_WINDOW_H}h]))" "$1"
+  [ -z "${BENCH_PROM_TSV:-}" ] || return 1
+  local rows='(.by_session // []) | map({key: .sid, value: .usd}) | from_entries'
+  if [ "$BENCH_WINDOW_H" = 24 ]; then
+    jq -ce --argjson oldest "$(($1 - BENCH_FLEET_COST_EVERY_MIN * 240))" "select((.as_of_epoch // 0) >= \$oldest) | $rows" \
+      "$BENCH_FLEET_COST_FILE" 2>/dev/null
+  else
+    $BENCH_FLEET_COST_CMD --since "$(date -d "@$(($1 - BENCH_WINDOW_H * 3600))" -Iseconds)" --before "$(date -d "@$1" -Iseconds)" 2>/dev/null |
+      jq -ce "$rows" 2>/dev/null
+  fi
+}
+
+# fleet_cost_figure -> {usd, measured, estimated}: the hub Costs card's figures (whole dollars, the
+# last 24h); rc 1 when hub-figure cannot read one.
+fleet_cost_figure() {
+  local u m e
+  u=$($BENCH_HUB_FIGURE_CMD costs_headline 2>/dev/null) && m=$($BENCH_HUB_FIGURE_CMD costs_measured 2>/dev/null) &&
+    e=$($BENCH_HUB_FIGURE_CMD costs_estimated 2>/dev/null) || return 1
+  jq -cen --arg u "$u" --arg m "$m" --arg e "$e" '{usd: ($u | tonumber), measured: ($m | tonumber), estimated: ($e | tonumber)}' 2>/dev/null
 }
 
 # session_rows <now> -> one JSON object per session in the window, most working time first:
@@ -1332,12 +1354,13 @@ bottleneck_section() {
 # time_section <now>: where the window went per project and per plan, for reading against what the
 # human said matters. There is no join yet from a hand-launched session to a row's priority.
 time_section() {
-  local t="$1" since=$((t - BENCH_WINDOW_H * 3600)) spend merges
+  local t="$1" since=$((t - BENCH_WINDOW_H * 3600)) spend fig merges
   spend=$(spend_by_session "$t") || spend=null
+  fig=$(fleet_cost_figure) || fig=null
   merges=$(merge_rows "$t" "$since")
   echo "## Where the time went"
   echo
-  jq -rn --argjson since "$since" --argjson t "$t" --argjson spend "$spend" --rawfile m <(printf '%s\n' "$merges") --arg win "${BENCH_WINDOW_H}h" \
+  jq -rn --argjson since "$since" --argjson t "$t" --argjson spend "$spend" --argjson fig "$fig" --rawfile m <(printf '%s\n' "$merges") \
       --slurpfile w <(window_stats "$t") --rawfile r <(runs_between "$since" "$t") "$JQ_LIB"'
     def hours($k): map(.[$k]) | add // 0 | . / 60 | round1;
     def cost: if $spend == null then "-" else "$\(map($spend[.session_id] // 0) | add // 0 | round2)" end;
@@ -1346,9 +1369,9 @@ time_section() {
     | [$rows[] | select(.[0] | startswith("!")) | .[0][1:]] as $unread
     | ($rows | map(select((.[0] | startswith("!") | not) and (.[1] | tonumber) > $since and (.[1] | tonumber) <= $t)) | group_by(.[0])
        | map({key: .[0][0], value: length}) | from_entries) as $merged
-    | (if $spend == null then "Agent spend: prometheus unreadable."
-       else "Agent spend over \($win): $\($spend | add // 0 | round2) by the Prometheus counter, not checked against a bill; "
-         + "$\(($spend | add // 0) - ($w | map($spend[.session_id] // 0) | add // 0) | round2) of it on sessions no sample saw." end),
+    | (if $fig == null then "Agent spend: the hub Costs figure is unreadable."
+       else "Agent spend over 24h: about $\($fig.usd) (measured $\($fig.measured), estimated $\($fig.estimated)), the hub Costs figure"
+         + (if $spend == null then "." else "; $\([$fig.usd - ($w | map($spend[.session_id] // 0) | add // 0), 0] | max | round) of it on sessions no sample saw, the gateway and helper calls." end) end),
       "",
       "| Project | Sessions | Working h | Waiting h | Stalled h | Spend | Editor h | Editor h not passed | Commits on main |",
       "|---|---|---|---|---|---|---|---|---|",
