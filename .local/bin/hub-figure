@@ -9,7 +9,9 @@
 # needs_blocked, needs_to_do, needs_your_turn. A kind with no rows reads 0 (the card leaves a zero
 # kind out). Any other name is read from `hub cards --json --figures`: sessions_headline (live
 # sessions, every host, less the fleet's own), sessions_working, sessions_need_you, sessions_stalled,
-# sessions_ready_to_close. A card figure absent from the answer is a card whose reader failed.
+# sessions_ready_to_close; done_shipped and done_checks (queue items closed today with and without a
+# merge; done_headline is the day-log record's PRs merged). A card figure absent from the answer is a
+# card whose reader failed.
 # Prints "?" and exits 1 when the count cannot be read, and for a Needs you 0 counted while a read
 # failed (`errors` in `hub needs --json`): never a made-up 0 (dashboards.md rule 6).
 #

@@ -1059,7 +1059,7 @@ cmd_headline() {
          + ($s | map(.cal_ratio // empty) | if length == 0 then ""
             else " (\(length) calibrated, median \(median | round2)x)" end) end)
     + (if ($c | length) == 0 then ""
-       else ", \($c | map(.ci_red) | add) failed CI runs before merge in \($c | length) PRs" end)'
+       else ", \($c | map(.ci_red) | add) failed CI runs before merge in \($c | length) merged PRs" end)'
 }
 
 # runs_between <from> <to> -> the run ledger's rows that ended in that time
@@ -1349,7 +1349,7 @@ time_section() {
        else "Agent spend over \($win): $\($spend | add // 0 | round2) by the Prometheus counter, not checked against a bill; "
          + "$\(($spend | add // 0) - ($w | map($spend[.session_id] // 0) | add // 0) | round2) of it on sessions no sample saw." end),
       "",
-      "| Project | Sessions | Working h | Waiting h | Stalled h | Spend | Editor h | Editor h not passed | Merges |",
+      "| Project | Sessions | Working h | Waiting h | Stalled h | Spend | Editor h | Editor h not passed | Commits on main |",
       "|---|---|---|---|---|---|---|---|---|",
       ((($w | map(.project)) + ($runs | map(.repo)) + ($merged | keys) | unique | map(select(. != null))) as $ps
        | $ps[] | . as $p | ($w | map(select(.project == $p))) as $g | ($runs | map(select(.repo == $p))) as $e
