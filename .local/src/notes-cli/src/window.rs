@@ -223,7 +223,14 @@ pub(crate) fn record(
     let human: Vec<&str> = human.iter().filter(landing).map(String::as_str).collect();
     let agent: Vec<&str> = agent.iter().filter(landing).map(String::as_str).collect();
     let fitted = |lines: &[&str], budget: u32, floor: usize| -> Vec<String> {
-        let fits = project_sweep::fit(lines, budget, floor, opened, Some(cur), false);
+        let fits = project_sweep::fit(
+            lines,
+            budget,
+            floor,
+            opened,
+            Some(cur),
+            project_sweep::Asked::First,
+        );
         lines
             .iter()
             .zip(fits)
@@ -1413,6 +1420,27 @@ mod tests {
         let mut keys: Vec<String> = read(&dir, (0, 2, 0)).unwrap().keys.into_iter().collect();
         keys.sort();
         assert_eq!(keys, ["db-11", "db-12", "db-13", "db-17"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The board pins every `#requested` row, but a window commits only the asks its capacity
+    /// (here the board floor) holds, ahead of the rest, so a pile of asks never inflates a sprint.
+    #[test]
+    fn a_window_commits_only_the_requested_rows_that_fit() {
+        let board = "- [ ] fix(a): plain <!-- id:db-40 -->\n\
+                     - [ ] fix(a): one #requested <!-- id:db-41 -->\n\
+                     - [ ] fix(a): two #requested <!-- id:db-42 -->\n\
+                     - [ ] fix(a): three #requested <!-- id:db-43 -->\n\
+                     - [ ] fix(a): four #requested <!-- id:db-44 -->\n\
+                     - [ ] fix(a): hot #urgent <!-- id:db-46 -->\n";
+        let dir = project("asks", "", "", board);
+        let ix = Index::of(&dir, Some((0, 2, 0)));
+        let n = record(&dir, "demo", (0, 2, 0), day("2026-11-19"), None, &ix).unwrap();
+        // NEGATIVE CONTROL: with the board's pin all four asks and the floor's row were committed.
+        assert_eq!(n, Some(4));
+        let mut keys: Vec<String> = read(&dir, (0, 2, 0)).unwrap().keys.into_iter().collect();
+        keys.sort();
+        assert_eq!(keys, ["db-41", "db-42", "db-43", "db-46"]);
         let _ = fs::remove_dir_all(&dir);
     }
 
