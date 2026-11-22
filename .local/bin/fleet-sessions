@@ -91,7 +91,7 @@ set -uo pipefail
 : "${FLEET_API_ERROR_IDLE_MIN:=2}" # a turn that ended on an API Error this many minutes ago is stopped, not working
 : "${FLEET_SHELL_STALE_MIN:=120}" # a background shell this long past the last entry is not work:
                                   # a real gate wait is under an hour, a forgotten ugrep is not
-: "${FLEET_GATE_LOGS:=Logs/gate.txt}" # files under a session's worktree a running local gate writes to: a write
+: "${FLEET_GATE_LOGS:=Logs/gate.txt Logs/gate-and-land.out}" # files under a session's worktree a running local gate writes to: a write
                                   # within the transcript's idle minutes is activity (gate_log_idle, ar-42)
 : "${FLEET_QUEUE_GATES:=gate-and-land.sh|ci-gate.sh|gate-line.py --recheck|agent-land}" # processes that are a gate waiting for its landing turn
                                   # behind another PR or on its checks (a gate polls every 120s, gives up after 280m; agent-land
@@ -293,12 +293,13 @@ proc_snapshot() {
   ls -l /proc/[0-9]*/cwd 2>/dev/null | sed -nE 's|^.* /proc/([0-9]+)/cwd -> (.*)$|\1\t\2|p' > "$1.cwd" || :   # ls fails on a process that exits mid-read, whatever it listed
 }
 
-# gate_log_idle <host|-> <status> <open job> <cwd> <idle min> -> the idle minutes the bucket reads. For a local
-# session whose shell is a gate or test, the age of the newest FLEET_GATE_LOGS file under the worktree when it is
-# under <idle min>; otherwise <idle min>. A local suite.sh gate prints into Logs/gate.txt while the transcript sees
-# nothing (2026-11-04 agent-23 read "background shell idle over 120m" with ~80 classes done). The mtime is the
-# event; a gate that ended leaves a log whose age only grows. idle_min and the wake and close reads keep the
-# transcript's own idle.
+# gate_log_idle <host|-> <status> <open job> <cwd> <idle min> [<transcript>] -> the idle minutes the bucket reads. For
+# a local session whose shell is a gate or test, the age of the newest FLEET_GATE_LOGS file under the worktree, or of
+# an open background task's output file (open_outputs), when it is under <idle min>; otherwise <idle min>. A local
+# suite.sh gate prints into Logs/gate.txt while the transcript sees nothing (2026-11-04 agent-23 read "background
+# shell idle over 120m" with ~80 classes done), and a gate in the landing-slot wait prints a line a minute
+# (2026-11-10 agent-92's gate-and-land.sh, 2h behind #2103, read STALLED CI red, ar-1334). The mtime is the event; a
+# gate that ended leaves a log whose age only grows. idle_min and the wake and close reads keep the transcript's own idle.
 gate_log_idle() {
   local idle="$5" f m age root
   local -a logs=()
@@ -306,12 +307,43 @@ gate_log_idle() {
   # The worktree root, so a session started in a subdirectory finds the same log; no glob expands.
   root="$(git -C "$4" rev-parse --show-toplevel 2>/dev/null)" || root="$4"
   read -ra logs <<<"$FLEET_GATE_LOGS"
+  logs=("${logs[@]/#/$root/}")
+  [ -z "${6:-}" ] || mapfile -t -O "${#logs[@]}" logs < <(open_outputs "$6")
   for f in "${logs[@]}"; do
-    m="$(stat -c %Y "$root/$f" 2>/dev/null)" || continue
+    m="$(stat -c %Y "$f" 2>/dev/null)" || continue
     age=$(( ($(date +%s) - m) / 60 ))
     [ "$age" -ge 0 ] && [ "$age" -lt "$idle" ] && idle="$age"
   done
   echo "$idle"
+}
+
+# open_outputs <transcript> -> the output file of each background Bash task the transcript started whose command
+# matches a `gate` or `test` line of agent-panel's time-use.conf and that no <task-notification> closed, one a line.
+# Claude writes a background Bash's output there, so its mtime is the gate's last line; a dev server or poll loop
+# beside a hung gate is not the gate (ar-1334 review). It reads Claude Code's own wording: a tool result's "Output is
+# being written to: <path>.output" (run_in_background, or a call moved to the background at its timeout) and a
+# notification's <output-file>, so a reworded transcript reads no file and the bucket falls back to transcript idle
+# (pinned by "a gate shell whose open output file is still being written ..." in tests/unit/fleet_sessions.bats).
+# Only the lines holding those strings, then the open tasks' own tool_use lines, reach jq: a transcript runs to 100 MB.
+open_outputs() {
+  local conf="${FLEET_TIME_USE_CONF:-$HOME/.config/agent-panel/time-use.conf}" id path cmd kind text
+  [ -r "$1" ] && [ -r "$conf" ] || return 0
+  while IFS=$'\t' read -r id path; do
+    cmd="$(grep -F "\"id\":\"$id\"" "$1" | jq -r --arg id "$id" 'select(.type == "assistant")
+      | .message.content[]? | select(.type? == "tool_use" and .id == $id and .name == "Bash") | .input.command // empty' 2>/dev/null)"
+    [ -n "$cmd" ] || continue
+    while read -r kind text; do
+      { [ "$kind" = gate ] || [ "$kind" = test ]; } && [ -n "$text" ] || continue
+      case "$cmd" in *"$text"*) printf '%s\n' "$path"; break ;; esac
+    done < "$conf"
+  done < <(grep -F -e 'Output is being written to: ' -e '<output-file>' "$1" | jq -R -r '
+      fromjson? | select(type == "object")
+      | (select(.type == "user") | .message.content | arrays | .[] | select(.type? == "tool_result") | . as $t
+         | $t.content | tostring | capture("Output is being written to: (?<p>[^\"\\\\]+?\\.output)")
+         | "O\t\($t.tool_use_id)\t\(.p)"),
+        (tostring | scan("<output-file>([^<]+)</output-file>") | "D\t-\t\(.[0])")' 2>/dev/null \
+    | awk -F'\t' '$1 == "O" && !($3 in seen) { seen[$3] = 1; id[++n] = $2; p[n] = $3 } $1 == "D" { closed[$3] = 1 }
+        END { for (i = 1; i <= n; i++) if (!(p[i] in closed)) print id[i] "\t" p[i] }')
 }
 
 # live_wait <cwd> [<claude pid>]: queue when such a process is a FLEET_QUEUE_GATES one (a gate waiting for its
@@ -2029,7 +2061,7 @@ collect() {
     landed="$(jq -r 'if any(.state == "MERGED") and all(.state != null and .state != "OPEN")
       then map(select(.state == "MERGED") | "#\(.number)") | join(",") else "-" end' <<<"$prs")"
     tsess="${target#*/}"; tsess="${tsess%:*}"
-    idle=$(( (now - since) / 60 )); bidle="$(gate_log_idle "$host" "$status" "$ojob" "$cwd" "$idle")"
+    idle=$(( (now - since) / 60 )); bidle="$(gate_log_idle "$host" "$status" "$ojob" "$cwd" "$idle" "$transcript")"
     age=-; [[ "$started" =~ ^[0-9]+$ ]] && age=$(( (now - started) / 60 ))
     # Every ask this session filed and nobody answered (ownask), the ones a queue item carries on
     # included: the session may close (bucket), and the close verdict says whether its window must
