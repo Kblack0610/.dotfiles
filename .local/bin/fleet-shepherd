@@ -302,12 +302,10 @@ TAKEOVER_JQ='def takeover_row:
 # the line by it, and the target stays for a reader to act on. A row with no pane gets no tag.
 PANE_TAG_JQ='def ptag: if (.pane // "") != "" then " [\(.pane)]" else "" end;'
 # HELD_JQ: held -> true for a DONE or LANDED row the close flow keeps for work left here
-# (`close.left`, set by CLOSE_JQ's unlanded, only-item and held steps); why_held -> what holds a
-# row, for the escalation: that blocker, else the row's reason. Its bucket reason
-# names the plan, not the item that keeps it open (2026-11-19: agent-29 sat LANDED on its running
-# item, never nudged).
-HELD_JQ='def held: (.bucket | IN("DONE","LANDED")) and (.close.left // null) != null;
-  def why_held: if held then .close.left else (.reason // "") end;'
+# (`close.left`, set by CLOSE_JQ's unlanded, only-item and held steps), so it is nudged though its
+# bucket reason names the plan, not the item that keeps it open (2026-11-19: agent-29 sat LANDED on
+# its running item, never nudged).
+HELD_JQ='def held: (.bucket | IN("DONE","LANDED")) and (.close.left // null) != null;'
 
 cmd_due() {
   [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
@@ -335,7 +333,7 @@ cmd_due() {
           if ($ask | not) and (.bucket == "STALLED" or held)
           then "nudge \(.bucket): \(.target)\(ptag) \(.fact // "")" else empty end
         elif .bucket == "NEEDS" and (.escalated | not) then
-          "escalate \(.bucket): \(.target)\(ptag) \(why_held); then: fleet-sessions escalate \(.session_id) \"\(.fact)\""
+          "escalate \(.bucket): \(.target)\(ptag) \(.reason // ""); then: fleet-sessions escalate \(.session_id) \"\(.fact)\""
         else empty end )
   ' "$STATE_FILE")" || die "unreadable state document $STATE_FILE"
   # A hold the machine no longer needs is a GO decision, and a machine over budget with no
