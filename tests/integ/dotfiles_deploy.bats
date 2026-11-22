@@ -627,21 +627,22 @@ systemd_fold() {
   assert_equal "$(readlink "$HOME/.config/systemd/user/p.service.d/override.conf")" \
     '../../../../.dotfiles-private/.config/systemd/user/p.service.d/override.conf'
   assert_equal "$(cat "$HOME/.config/systemd/user/default.target.wants/a.service")" 'a'
-  assert_equal "$(git -C "$PUB" status --porcelain --ignored -- .config)" ''
+  assert_equal "$(git -C "$PUB" ls-files --others -- .config)" ''
   run "$DEPLOY" --check
   assert_success
   # The point of it: an enable now lands in $HOME and leaves the checkout clean.
   mkdir -p "$HOME/.config/systemd/user/timers.target.wants"
   ln -s ../a.service "$HOME/.config/systemd/user/timers.target.wants/new.timer"
-  assert_equal "$(git -C "$PUB" status --porcelain --ignored -- .config)" ''
+  assert_equal "$(git -C "$PUB" ls-files --others -- .config)" ''
 }
 
 @test "an unfold keeps a tracked absolute enable that stow ignores" {
   systemd_fold
-  # Stow refuses an absolute link into /usr/lib, so the repo ignores it; the fold served it.
+  # Stow refuses an absolute link into /usr/lib, so the repo ignores it (git and stow) and force-adds it; the fold served it.
   printf '%s\n' '^/\.config/systemd/user/default\.target\.wants/ydo\.service$' >> "$PUB/.stow-local-ignore"
   mkdir -p "$PUB/.config/systemd/user/default.target.wants"
-  track_symlink "$PUB" .config/systemd/user/default.target.wants/ydo.service /usr/lib/systemd/user/ydo.service
+  ln -s /usr/lib/systemd/user/ydo.service "$PUB/.config/systemd/user/default.target.wants/ydo.service"
+  git -C "$PUB" add -f -- .config/systemd/user/default.target.wants/ydo.service
   run "$DEPLOY" --apply
   assert_success
   assert_output --partial 'unfolded  ~/.config/systemd: 5 link(s)'
@@ -879,7 +880,9 @@ runtime_dir() {
   radd "$PUB"  .config/waybar/style.css    'the public tracked css'
   radd "$PRIV" .config/waybar/style.css    'the private tracked css'
   link .local/bin/pubtool "$PUB"
-  ln -sfn "$PUB/.config/waybar" "$HOME/.config/waybar"
+  # A file link, not a fold: under a fold the unfold refuses first (its blocker test).
+  mkdir -p "$HOME/.config/waybar"
+  stow_link "$HOME/.config/waybar/style.css" "$PUB/.config/waybar/style.css"
   run "$DEPLOY" --apply
   assert_failure
   assert_output --partial 'TRACKED'
@@ -972,7 +975,9 @@ runtime_dir() {
   radd "$PUB"  .config/waybar/style.css    'the public tracked css'
   radd "$PRIV" .config/waybar/style.css    'the private tracked css'
   link .local/bin/pubtool "$PUB"
-  ln -sfn "$PUB/.config/waybar" "$HOME/.config/waybar"
+  # A file link, not a fold: under a fold the unfold refuses first (its blocker test).
+  mkdir -p "$HOME/.config/waybar"
+  stow_link "$HOME/.config/waybar/style.css" "$PUB/.config/waybar/style.css"
 
   run "$DEPLOY" --apply
   assert_failure
