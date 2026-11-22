@@ -42,7 +42,7 @@ NEEDS = (("plan_approval", ("plan awaiting approval",)), ("ask", ("pending ask",
          ("question", ("question to the human",)), ("prompt", ("prompt or permission",)))
 STALLED = (("main_red", ("nightly red after", "main red after")), ("plan_missing", ("plan file is missing",)),
            ("merged_dirty", ("merged, ",)),
-           ("after_merge", ("commits after merged PR",)), ("ci_red", ("CI red",)),
+           ("after_merge", ("commits after merged PR",)), ("ci_red", ("CI red",)), ("ci_unknown", ("CI unknown",)),
            ("green_unmerged", ("green, not merged",)), ("conflict", ("conflicts with",)),
            ("ahead", ("not on the default branch",)), ("dirty", ("dirty file",)),
            ("pr_closed", ("closed without merging",)), ("item_running", ("is running here",)),
