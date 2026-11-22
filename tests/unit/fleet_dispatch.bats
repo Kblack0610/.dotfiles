@@ -2374,7 +2374,7 @@ age_sightings() {
   assert_failure
   refute_output --partial '  gm-1 ('
   assert_line --index -1 '1 open sprint row(s) stalled: gm-3 (fleet-dispatch suggest says why each waits)'
-  # NEGATIVE CONTROL: a row that leaves the sprint and comes back counts from its new sighting.
+  # A row that leaves the sprint and comes back counts from its new sighting.
   jq -nc '[{project: "game", queued: false, tasks: [], uncommitted: []}]' > "$NOTES_FIXTURE/board.sprints"
   run cmd_sprint_stalled
   assert_success
@@ -2398,7 +2398,6 @@ age_sightings() {
   run cmd_sprint_stalled
   assert_failure 2
   assert_output --partial 'unreadable: agent-queue gate --all failed'
-  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
   unset GATES_LOADED
   stub_list='case "$1" in list) exit 1 ;; *) exec "'"$SANDBOX"'/bin/aq-real" "$@" ;; esac'
   cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/aq-real"
@@ -2406,6 +2405,27 @@ age_sightings() {
   run cmd_sprint_stalled
   assert_failure 2
   assert_output --partial 'unreadable: agent-queue list --json failed'
+  # An empty worker table or a board feed with no sprints reads as no rows to cmd_candidates: rc 2, and
+  # an hour of sightings that would trip survives it.
+  stub agent-queue 'exec "'"$SANDBOX"'/bin/aq-real" "$@"'
+  printf 'game\tgm-1\t%s\n' "$(( $(date +%s) - 61 * 60 ))" > "$FLEET_DISPATCH_DIR/sprint-stalled.tsv"
+  cp "$DISPATCH_WORKERS" "$SANDBOX/workers.keep"
+  echo '{}' > "$DISPATCH_WORKERS"
+  run cmd_sprint_stalled
+  assert_failure 2
+  assert_output --partial 'unreadable: no workers in'
+  cp "$SANDBOX/workers.keep" "$DISPATCH_WORKERS"
+  cp "$SANDBOX/bin/notes" "$SANDBOX/notes.keep"
+  stub notes 'case "$1" in board) echo "{\"rows\": []}" ;; *) exit 1 ;; esac'
+  run cmd_sprint_stalled
+  assert_failure 2
+  assert_output --partial 'unreadable: notes board --json failed or has no sprints'
+  grep -q "^game$(printf '\t')gm-1$(printf '\t')" "$FLEET_DISPATCH_DIR/sprint-stalled.tsv" || fail "an unreadable pass wiped the sightings"
+  # Control: with both reads restored the same sightings trip.
+  cp "$SANDBOX/notes.keep" "$SANDBOX/bin/notes"
+  run cmd_sprint_stalled
+  assert_failure 1
+  assert_output --partial '  gm-1 (game, 61 min)'
 }
 
 # pool_prom -- a curl that answers prom_q as Prometheus would: the idle comparison keeps the unity pool

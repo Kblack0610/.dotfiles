@@ -6240,7 +6240,9 @@ cmd_sprint_stalled() {
   [ -z "${GATES_FAILED:-}" ] || { echo "unreadable: $GATES_FAILED"; return 2; }
   linked=$(agent-queue list --json 2>/dev/null) || { echo "unreadable: agent-queue list --json failed"; return 2; }
   linked=$(jq -r 'select(.state != "done" and (.row // "") != "") | .row | sub(":"; "\t")' <<<"$linked")
-  notes board --json >/dev/null 2>&1 || { echo "unreadable: notes board --json failed"; return 2; }
+  # cmd_candidates reads an empty board or worker table as no rows, which would wipe the sightings.
+  notes board --json 2>/dev/null | jq -e 'has("sprints")' >/dev/null || { echo "unreadable: notes board --json failed or has no sprints"; return 2; }
+  [ -n "$(workers)" ] || { echo "unreadable: no workers in $DISPATCH_WORKERS"; return 2; }
   cands=$(VERDICTS=/dev/null SUGGEST=1 SPRINT_ONLY=1 cmd_candidates | jq -c 'select(.lane == "agent"
     and (.gate_wait // "") == "" and (.off // "") == "")')
   now=$(date +%s)
