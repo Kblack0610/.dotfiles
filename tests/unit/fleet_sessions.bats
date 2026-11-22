@@ -2135,6 +2135,21 @@ queue_item() {
   rm -r "$HOME/.agent/queue/waiting"; queue_item running default:s1
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .dispatch <<<"$output")" = null ]
+
+  # A recycled lane: an item that records sessions: tags only the Claude whose id it holds, not the next Claude on that tmux session.
+  rm -r "$HOME/.agent/queue/running"; queue_item running lab:s1
+  sed -i '/^---$/i sessions: sid-1' "$HOME/.agent/queue/running/20261103-100000-fix-wave-save.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .dispatch <<<"$output")" = null ]
+  run "$REPO_ROOT/.local/bin/fleet-sessions"
+  refute_output --partial '[dispatch:'
+
+  # When the item's sessions: includes this Claude's id, it carries the dispatch tag again.
+  sed -i 's/^sessions: sid-1$/sessions: sid-1 sid-9/' "$HOME/.agent/queue/running/20261103-100000-fix-wave-save.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .dispatch <<<"$output")" = 'apociseum: fix-wave-save' ]
+  run "$REPO_ROOT/.local/bin/fleet-sessions"
+  assert_line --index 1 --partial '[dispatch: apociseum: fix-wave-save]'
 }
 
 @test "a Codex run's row (AGENT_PANEL_CODEX) reads WORKING busy and joins its queue item by thread id" {
