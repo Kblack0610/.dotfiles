@@ -735,6 +735,29 @@ ledger() {
   done
 }
 
+@test "live_wait reads a background agentctl-playground-night as a test, by the repo's own time-use.conf (ar-1846)" {
+  # 2026-11-22 agent-3 read "background shell is not a gate or test" while its shell ran the human's night run
+  # (agentctl-playground-night --sha <commit>), and the nudge would have told it to stop the night. Reads the shipped
+  # conf, not a copy, so dropping the `test agentctl-playground-night` line fails here.
+  mkdir -p "$SANDBOX/wt" "$SANDBOX/bin"
+  printf 'sleep 60\n' > "$SANDBOX/bin/agentctl-playground-night"
+  export FLEET_TIME_USE_CONF="$BATS_TEST_DIRNAME/../../.config/agent-panel/time-use.conf"
+  # root stands in for the session's claude; the night run sits below it, outside the session's worktree
+  (cd "$SANDBOX/bin" && exec setsid bash -c 'bash agentctl-playground-night --sha a99a6eb5b; :') >/dev/null 2>&1 3>&- &
+  local root=$!; LIVE_PIDS="-$root"
+  # the process is the event: wait until /proc shows the script's own exec (the anchor skips the wrapper's `bash -c`)
+  until pgrep -s "$root" -f '^bash agentctl-playground-night' >/dev/null; do
+    kill -0 "$root" 2>/dev/null || fail "the night stand-in exited before it started"
+  done
+  run live_wait "$SANDBOX/wt" "$root"
+  assert_output 'test'
+  # negative control: a conf without the line reads nothing
+  printf 'gate agent-land\ntest bats\n' > "$SANDBOX/other.conf"
+  FLEET_TIME_USE_CONF="$SANDBOX/other.conf" run live_wait "$SANDBOX/wt" "$root"
+  assert_output ''
+  pkill -KILL -s "$root" || true; wait "$root" 2>/dev/null || true
+}
+
 @test "live_wait finds a gate or test process running in the session worktree, and only there" {
   # 2026-11-07 unity-core-playground-agent-30: a gate detached with & left only its until-loop in the
   # transcript (open job jobs), so a Tests run in progress read STALLED.
