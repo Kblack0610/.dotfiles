@@ -20,6 +20,8 @@
 | `max_title` | characters in a page title, when `--title` is given |
 | `source` | where `comms-lint report` finds past messages (below) |
 | `group` | `messages` (default) or `rows`: rows grade as `rows_pass_pct`, apart from the messages' `pass_pct` |
+| `roles` | `{role = [max chars, max words], ...}`: a UI text fills one role (`--role`, or the record's `role`), whose caps replace `max_chars` and add `too-many-words`; hub-core's `display.rs` reads the same table for its constructors (the `ui` channel) |
+| `run_on` | `[label, ...]`: a text holding two or more of these labels is a paragraph that wants fields, `run-on` (the `ui` channel) |
 | `refs` | true: the text must cite a reference from `[ids] refs` (a PR, a sha, a URL), else `no-ref` (board proofs) |
 
 Source kinds:

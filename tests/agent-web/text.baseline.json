@@ -1,0 +1,41 @@
+{
+ "err": {
+  "actions.js": 1,
+  "app.js": 2,
+  "board.js": 1,
+  "fleet.js": 1,
+  "focus.js": 1,
+  "home.js": 2,
+  "infra.js": 1,
+  "outbox.js": 1,
+  "queue.js": 2,
+  "releases.js": 2,
+  "sessions.js": 2,
+  "shepherd.js": 2,
+  "table.js": 1,
+  "waiting.js": 4,
+  "watch.js": 1,
+  "work.js": 1
+ },
+ "fold": {
+  "alerts.js": 2,
+  "convo.js": 1,
+  "costs.js": 8,
+  "focus.js": 1,
+  "infra.js": 1,
+  "log.js": 1,
+  "outbox.js": 1,
+  "projects.js": 1,
+  "queue.js": 1,
+  "schedules.js": 1,
+  "shepherd.js": 1,
+  "table.js": 1,
+  "ui.js": 3,
+  "watch.js": 4
+ },
+ "list": {
+  "md.js": 3,
+  "outbox.js": 3,
+  "watch.js": 4
+ }
+}

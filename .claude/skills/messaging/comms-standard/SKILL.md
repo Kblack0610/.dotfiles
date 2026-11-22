@@ -51,9 +51,9 @@ Several act-now items within one pass go out as one page (rule 4). A self-healin
 
 **Page.** The title is a subject of 40 characters or less. The body leads with the state in plain words, then one action, then an id if one helps. A page about a fact another caller may page too passes its key, `-d <key>`, so the fact pages once; the key forms are in the header of `agent-notify`. Example: "Nightly tests red for 5 days, no session owns it. Pick an owner on the agent board (playground-nightly)."
 
-**Briefing** (`refs/<date>/briefing.md`, the human overview `hub briefing --md` renders). A headline that opens "As of" ("As of Fri 06:45: 3 things need you. Yesterday 246 PRs, 12 urgent, 89 fixes."), then `## Needs you`, no more than 5 items of one line each, a group of one kind folded into one. Then `## Landed yesterday` (product changes, urgent and high first, then fixes; the fleet's own tooling is one count line), `## Builds and releases`, `## Overnight`, `## Money`, and one `## Agents` line that links `agents.md`. Each section is required (`require`), the first four capped. **Agent briefing** (`refs/<date>/agents.md`, channel `briefing-agents`): the briefing as it was before the split: `## Needs you`, `## Areas` (one line per area: Infra, Sessions, Workers overnight, Nightly, Delivery, Costs, its level, then one sentence), and everything else under `## Details`, where only the page-wide checks apply.
+**Briefing** (`refs/<date>/briefing.md`, the human overview `hub briefing --md` renders). A headline that opens "As of" ("As of Fri 06:45: 3 things need you. Yesterday 246 PRs, 12 urgent, 89 fixes."), then `## Needs you`, no more than 5 items of one line each, a group of one kind folded into one. An item leads with the action, then the place, and ends with the id ("Answer this ask: Send the post (dotfiles, 9h, ask dNreTJ)"; a kind with no action of its own, such as mail, says its text); it is a `next` text (`hub_core::briefing::next_line`), cut in its words so the id is never the part that goes. Then `## Landed yesterday` (product changes, urgent and high first, then fixes; the fleet's own tooling is one count line), `## Builds and releases`, `## Overnight`, `## Money`, and one `## Agents` line that links `agents.md`. Each section is required (`require`), the first four capped. **Agent briefing** (`refs/<date>/agents.md`, channel `briefing-agents`): the briefing as it was before the split: `## Needs you`, `## Areas` (one line per area: Infra, Sessions, Workers overnight, Nightly, Delivery, Costs, its level, then one sentence), and everything else under `## Details`, where only the page-wide checks apply.
 
-**Morning block.** The briefing's headline and Needs you items, copied as they are, plus the knowledge line. Eight lines at most.
+**Morning block.** The briefing's headline and Needs you items, copied as they are (notes-cli re-cuts nothing), plus the knowledge line. Eight lines at most.
 
 **Status shape** (rundowns, wind-down notes, lab status, day summaries, client EODs). Group by project, then:
 - Done: what landed, one plain line each, with the link at the end.
@@ -65,9 +65,9 @@ A client update adds what the job config asks for, such as a greeting, a heads-u
 
 **PR body.** The change and why it was made, in the first line. What it removed (or why nothing could be removed). How it was verified.
 
-**UI text** (agent-web, the hub TUI, trader, any page the human reads):
+**UI text** (agent-web, the hub TUI, trader, any page the human reads). In hub-core it is a role (`hub_core::display`: title, sub, chip, next, note), whose caps are `[channel.ui]` in channels.toml (`ui.md` rule 16); `comms-lint --channel ui --role <role> -` checks one text, and `hub ui-text --json` is what the report grades. The bullets are what each role says:
 - A label or heading is a noun the human already uses ("Queue", "Questions for you"). Internal terms ("ptask", "oneshot", "lane") stay out of it.
-- A chip is a state in one or two words ("running", "waiting on you").
+- A chip is a state in one or two words ("running", "needs you").
 - A button is the verb for what happens ("Approve", "Restart session").
 - An error says what failed and what to do next ("Could not load the queue. Reload, or check agent-web's log.").
 - A summary line is a sentence that starts with its subject ("Queue: nothing can start now."), and an id comes after the point (rule 3).
