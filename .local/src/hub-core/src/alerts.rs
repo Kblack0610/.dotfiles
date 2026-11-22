@@ -274,6 +274,9 @@ pub fn components(infra: &Infra) -> Vec<Component> {
 pub struct Counts {
     pub firing: usize,
     pub tripped: usize,
+    /// Every `cc:red_now` item, a red watch's included though its row is the watch's: the
+    /// Red now figure, the count over the phone's RED lines.
+    pub red_now: usize,
     pub errors: usize,
     pub no_owner: usize,
     /// Rows the overviews show the human (`Alert::needs_you`), and the rows with a fix in hand
@@ -385,7 +388,7 @@ pub fn machinery(infra: &Infra) -> Vec<String> {
             "stuck run: {} {}, {}, no jobs{runs}",
             label(repo),
             label(branch),
-            age.map_or("-".into(), |v| crate::text::age(v as i64)),
+            age.map_or("-".into(), |v| crate::display::fmt::age(v as i64)),
         ));
     }
     if let Some(why) = infra.feed() {
@@ -581,6 +584,24 @@ fn am_rows(list: &[Firing]) -> Vec<Alert> {
         .collect()
 }
 
+/// One firing row per red of the infra machinery itself (`machinery`), with no owner: nothing
+/// files a fix for the machinery's own reds.
+fn machinery_rows(infra: &Infra, open: Option<&[Red]>, now: i64) -> Vec<Alert> {
+    machinery(infra)
+        .into_iter()
+        .map(|item| {
+            let mut a = Alert {
+                sev: "high".into(),
+                what: item,
+                source: "infra".into(),
+                ..Default::default()
+            };
+            owner(&mut a, None, open, now);
+            a
+        })
+        .collect()
+}
+
 /// The counts of the firing rows, the fixes and the watches; the history's are the caller's.
 fn counted(firing: &[Alert], fixes: Option<&Reds>, watches: &[Watch]) -> Counts {
     let n = |s: &str| watches.iter().filter(|w| w.state == s).count();
@@ -595,7 +616,7 @@ fn counted(firing: &[Alert], fixes: Option<&Reds>, watches: &[Watch]) -> Counts 
         fixes_open: fixes.map_or(0, |r| r.open.len()),
         fixes_settled: fixes.map_or(0, |r| r.settled.len()),
         watches: watches.len(),
-        watches_tripped: n("TRIP"),
+        watches_tripped: runner::tripped(watches),
         watches_error: n("ERROR"),
         watches_ok: n("OK"),
         watches_new: n("new"),
@@ -681,17 +702,7 @@ pub fn join(
             owner(&mut a, red_key(item, &items).as_deref(), open, now);
             firing.push(a);
         }
-        for item in machinery(infra) {
-            let mut a = Alert {
-                sev: "high".into(),
-                what: item,
-                source: "infra".into(),
-                ..Default::default()
-            };
-            // Nothing files a fix for the machinery's own reds.
-            owner(&mut a, None, open, now);
-            firing.push(a);
-        }
+        firing.extend(machinery_rows(infra, open, now));
     }
     match &infra.alertmanager {
         Some(Ok(list)) => firing.extend(am_rows(list)),
@@ -719,6 +730,7 @@ pub fn join(
     let counts = Counts {
         history: history.len(),
         history_older,
+        red_now: if infra_ok { red_now(infra).len() } else { 0 },
         ..counted(&firing, fixes.as_ref(), &watches)
     };
     let strip = BTreeMap::from([

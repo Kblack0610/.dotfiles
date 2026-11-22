@@ -10,11 +10,12 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::display::fmt::{age, plural};
 use crate::home::{Home, Kind, Level};
 use crate::infra::Infra;
 use crate::projects::{Card, Projects};
 use crate::queue::{done_today, DoneToday, Item, Queue};
-use crate::text::{age, cap};
+use crate::text::cap;
 use crate::vocab::Vocab;
 
 /// How much of an ask the oldest row keeps: "oldest 13h: " plus this fills one line at 4x4.
@@ -251,8 +252,6 @@ fn done(i: &Inputs) -> Vec<Row> {
     if items.is_none() && prs.is_none() {
         return vec![];
     }
-    let plural =
-        |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
     let mut head = vec![];
     // The head is the Projects card's figure (`Queue::done_today`), not a sum of the rows below.
     if let Some(d) = i.queue.and_then(|q| q.done_today(i.now)) {
@@ -506,6 +505,48 @@ mod tests {
             ..Default::default()
         };
         inf
+    }
+
+    /// System domains (printer is no DOMAINS entry), two cc:red_now items, one a watch whose state
+    /// file also trips, and a quiet watch: the Infra and Alerts figures the waybar health chip and
+    /// the phone's System and RED lines read.
+    fn reds() -> (
+        Infra,
+        crate::alerts::Alerts,
+        Vec<crate::fleet::runner::Watch>,
+    ) {
+        let inf = infra(vec![
+            (
+                "cc",
+                vec![
+                    metric("cc:overall_status", json!({}), "2"),
+                    metric("cc:domain_status", json!({"domain": "ci"}), "2"),
+                    metric("cc:domain_status", json!({"domain": "prod"}), "1"),
+                    metric("cc:domain_status", json!({"domain": "printer"}), "0"),
+                ],
+            ),
+            (
+                "red",
+                vec![
+                    metric("cc:red_now", json!({"item": "watch dot_drift"}), "1"),
+                    metric("cc:red_now", json!({"item": "node n1 NotReady"}), "1"),
+                ],
+            ),
+        ]);
+        let watch = |name: &str, state: &str| crate::fleet::runner::Watch {
+            name: name.into(),
+            state: state.into(),
+            ..Default::default()
+        };
+        let watches = vec![watch("dot_drift", "TRIP"), watch("quiet", "OK")];
+        let alerts = crate::alerts::join(
+            &inf,
+            Ok(watches.clone()),
+            Ok(Default::default()),
+            Ok(String::new()),
+            NOW,
+        );
+        (inf, alerts, watches)
     }
 
     fn bench() -> Vec<Value> {
@@ -823,7 +864,7 @@ mod tests {
         let mut stray = done_item("c", "scratch", NOW);
         stray.merged = Some("def456".into());
         q.items.push(stray);
-        let inf = infra(vec![]);
+        let (inf, alerts, _) = reds();
         let stats: Vec<crate::projects::Stats> = ["agent-runtime", "unity-core-playground"]
             .iter()
             .map(|n| crate::projects::Stats {
@@ -842,7 +883,6 @@ mod tests {
             &[],
         );
         let board = crate::tasks::Feed::default();
-        let alerts = crate::alerts::Alerts::default();
         let costs = crate::costs::Costs::default();
         let releases = crate::releases::Releases::default();
         let schedules = crate::schedules::Schedules::default();
@@ -947,6 +987,26 @@ mod tests {
             crate::cards::needs(&more, NOW).big,
             (home.waiting().count + 1).to_string()
         );
+    }
+
+    /// The System and red figures: every domain Prometheus has, both cc:red_now items (the watch's
+    /// too, though its row is the watch's), the TRIP watch, and one count for tripped on every
+    /// surface (the runner page's count is the Alerts card's).
+    #[test]
+    fn the_system_and_red_figures_count_what_prometheus_and_the_watches_say() {
+        let (inf, alerts, watches) = reds();
+        let figs =
+            crate::widget_doc::figures(&[crate::cards::infra(&inf), crate::cards::alerts(&alerts)]);
+        let sys = ["down", "warn", "up"].map(|l| figs[&format!("infra_domains_{l}")]);
+        assert_eq!(sys, [1, 1, 1]);
+        assert_eq!(figs["alerts_red_now"], 2);
+        assert_eq!(figs["alerts_watches_tripped"], 1);
+        let crate::fleet::runner::Extras::SentinelWatches { tripped, .. } =
+            crate::fleet::runner::Extras::sentinel(watches)
+        else {
+            unreachable!()
+        };
+        assert_eq!(tripped as i64, figs["alerts_watches_tripped"]);
     }
 
     #[test]

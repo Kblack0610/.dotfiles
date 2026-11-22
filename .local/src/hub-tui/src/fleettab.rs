@@ -13,12 +13,9 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
 use crate::fit::{cell, clip_line, len, wrap, Table};
-use crate::fmt::{clock, dur, kilo, older, pct, Palette};
+use crate::fmt::{clock, older, pct, Palette};
+use hub_core::display::fmt::{dur_secs, tokens, usd_opt};
 use hub_core::layout::FOLD_ROWS;
-
-fn usd(v: Option<f64>) -> String {
-    v.map_or("-".into(), |v| format!("${v:.2}"))
-}
 
 fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
     Line::from(vec![
@@ -139,10 +136,12 @@ fn who_table(
                 format!(
                     "{}{}",
                     if r.cost_estimated { "~" } else { "" },
-                    usd(r.cost_24h)
+                    usd_opt(r.cost_24h)
                 )
                 .into(),
-                r.since.map_or("-".into(), |s| dur((now - s) as f64)).into(),
+                r.since
+                    .map_or("-".into(), |s| dur_secs((now - s) as f64))
+                    .into(),
                 r.purpose.clone().into(),
                 r.doing.clone().into(),
                 cell(r.under.clone(), p.dim()),
@@ -174,7 +173,10 @@ fn who_table(
 /// left it unhandled. The pass's rundowns are Log's Rundowns.
 pub fn shepherd_page(d: &Due, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     let lease = match (&d.lease_holder, d.lease_at) {
-        (Some(h), Some(at)) => format!("lease {h}, taken {} ago", dur((now - at as i64) as f64)),
+        (Some(h), Some(at)) => format!(
+            "lease {h}, taken {} ago",
+            dur_secs((now - at as i64) as f64)
+        ),
         (Some(h), None) => format!("lease {h}"),
         _ => "no pass holds the lease".into(),
     };
@@ -200,7 +202,7 @@ pub fn shepherd_page(d: &Due, p: Palette, now: i64, w: usize) -> Vec<Line<'stati
                     ),
                     match l.first_seen {
                         0 => "-".into(),
-                        t => dur((now - t as i64) as f64).into(),
+                        t => dur_secs((now - t as i64) as f64).into(),
                     },
                     if l.unhandled {
                         cell(format!("unhandled: {}", l.line), p.warn())
@@ -243,7 +245,7 @@ pub fn verdicts(f: &Fleet, filter: &str, p: Palette, now: i64, w: usize) -> Vec<
 }
 
 fn secs(ms: Option<u64>) -> String {
-    ms.map_or("-".into(), |ms| dur(ms as f64 / 1000.0))
+    ms.map_or("-".into(), |ms| dur_secs(ms as f64 / 1000.0))
 }
 
 const PAD: &str = "    ";
@@ -300,8 +302,8 @@ fn registry(r: &Registry, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> 
             ),
             Span::raw(format!(
                 ", {}, {} tokens, p95 {}",
-                usd(c.cost_24h),
-                kilo(c.tokens_24h),
+                usd_opt(c.cost_24h),
+                tokens(Some(c.tokens_24h as f64)),
                 secs(c.p95_ms)
             )),
         ]),
@@ -706,7 +708,7 @@ pub fn runner_page(
                 " | 24h: {} calls, {} errors, {}",
                 d.calls,
                 d.errors,
-                usd(d.cost)
+                usd_opt(d.cost)
             )),
         ]),
         w,
@@ -773,7 +775,7 @@ pub fn runner_page(
                 };
                 vec![
                     j.started.map_or("-".into(), |t| clock(t, now)).into(),
-                    j.secs.map_or("-".into(), |x| dur(x as f64)).into(),
+                    j.secs.map_or("-".into(), |x| dur_secs(x as f64)).into(),
                     cell(result, style),
                     cell(j.detail.clone(), p.dim()),
                 ]
@@ -838,8 +840,8 @@ pub fn runner_page(
                     Default::default()
                 },
             ),
-            format!("{}{f}", kilo(t.tokens)).into(),
-            usd(t.cost).into(),
+            format!("{}{f}", tokens(Some(t.tokens as f64))).into(),
+            usd_opt(t.cost).into(),
             secs(t.p50_ms).into(),
         ]
     };
@@ -936,9 +938,9 @@ fn extras(x: &Extras, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
             }
         }
         // Every watch with what it checks, where and what to do is Alerts' Watches; here only
-        // the count and the way there.
-        Extras::SentinelWatches { watches } => {
-            let trip = watches.iter().filter(|x| x.state == "TRIP").count();
+        // the count and the way there; `tripped` is hub-core's (runner::tripped).
+        Extras::SentinelWatches { watches, tripped } => {
+            let trip = *tripped;
             let alerts = hub_core::layout::bar_label("alerts");
             out.push(clip_line(
                 heading(
@@ -1615,9 +1617,7 @@ pub mod tests {
             state: state.into(),
             ..Default::default()
         };
-        r.extras = Extras::SentinelWatches {
-            watches: vec![watch("TRIP"), watch("OK")],
-        };
+        r.extras = Extras::sentinel(vec![watch("TRIP"), watch("OK")]);
         let lines = page_text(Some(&Ok(r)), 120);
         assert!(
             lines.contains(&"WATCHES  2 watches, 1 tripped: 7 Alerts, Watches".to_string()),
@@ -1697,15 +1697,13 @@ pub mod tests {
             Extras::AskJudge {
                 judge: Box::new(fixture().judge),
             },
-            Extras::SentinelWatches {
-                watches: vec![hub_core::fleet::runner::Watch {
-                    name: "claude-spend-hourly".into(),
-                    state: "TRIP".into(),
-                    severity: "high".into(),
-                    since: Some(NOW - 600),
-                    ..Default::default()
-                }],
-            },
+            Extras::sentinel(vec![hub_core::fleet::runner::Watch {
+                name: "claude-spend-hourly".into(),
+                state: "TRIP".into(),
+                severity: "high".into(),
+                since: Some(NOW - 600),
+                ..Default::default()
+            }]),
             Extras::Ingest {
                 counts_7d: [("filed".to_string(), 3)].into(),
                 steps: vec![hub_core::outbox::Step {

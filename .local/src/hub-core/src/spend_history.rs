@@ -3,7 +3,7 @@
 //! writer). Rolled up here on read and never stored, so the hub TUI, `hub --once` and agent-web
 //! show the same rows (dashboards rule 8). A day with no figure is missing, never $0.
 
-use crate::fleet_cost::dollars;
+use crate::display::fmt::usd_est;
 use crate::table::{Row, Summary, Val, View};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -240,9 +240,9 @@ fn chart(all: &[Day], newest: &str) -> Vec<Bar> {
                 Some(d) => Bar {
                     tip: format!(
                         "{date}: {} ({} billed, {} estimated){}",
-                        dollars(d.usd),
-                        dollars(d.usd - d.estimated),
-                        dollars(d.estimated),
+                        usd_est(d.usd),
+                        usd_est(d.usd - d.estimated),
+                        usd_est(d.estimated),
                         if d.sessions.is_empty() {
                             String::new()
                         } else {
@@ -298,8 +298,8 @@ fn month_bars(days: &[Day]) -> Vec<Bar> {
             b.tip = format!(
                 "{}: {} over {n} priced days, {}/day",
                 b.key,
-                dollars(usd),
-                dollars(usd / n as f64)
+                usd_est(usd),
+                usd_est(usd / n as f64)
             );
             b
         })
@@ -602,7 +602,7 @@ pub fn day_view(all: &[Day], live: Option<&Day>, pick: &Pick) -> DayView {
     let outside = if gap >= 0.5 {
         format!(
             "+{} not in a session row{}",
-            dollars(gap),
+            usd_est(gap),
             if d.date == LIVE {
                 " (helper calls and the gateway)"
             } else {
@@ -626,8 +626,8 @@ pub fn day_view(all: &[Day], live: Option<&Day>, pick: &Pick) -> DayView {
         head: format!(
             "{label}: {} sessions, {} of the day's {}",
             d.sessions.len(),
-            dollars(sum),
-            dollars(d.usd)
+            usd_est(sum),
+            usd_est(d.usd)
         ),
         group: group.to_string(),
         cuts: &GROUPS,
@@ -676,7 +676,7 @@ pub fn day_view(all: &[Day], live: Option<&Day>, pick: &Pick) -> DayView {
     let v = View::new::<SessRow>("", "", sort, dir);
     let (kept, table) = v.summary(&all_rows);
     view.more = kept.len().saturating_sub(SESSION_ROWS);
-    view.shown_usd = dollars(kept.iter().map(|r| r.cost).sum());
+    view.shown_usd = usd_est(kept.iter().map(|r| r.cost).sum());
     view.rows = kept.into_iter().take(SESSION_ROWS).cloned().collect();
     view.table = Some(table);
     // The opened session is named as the picked day's row names it, else as its newest day does.
@@ -698,7 +698,7 @@ pub fn day_view(all: &[Day], live: Option<&Day>, pick: &Pick) -> DayView {
                     b.usd = Some(h.usd);
                     b.measured = h.measured;
                     b.estimated = (h.usd - h.measured).max(0.0);
-                    b.tip = format!("{}: {}", b.key, dollars(h.usd));
+                    b.tip = format!("{}: {}", b.key, usd_est(h.usd));
                 } else {
                     b.tip = format!("{}: nothing", b.key);
                 }
@@ -706,7 +706,7 @@ pub fn day_view(all: &[Day], live: Option<&Day>, pick: &Pick) -> DayView {
             Series {
                 sid: sid.to_string(),
                 session: name(s),
-                total: dollars(total),
+                total: usd_est(total),
                 bars,
             }
         });
@@ -792,13 +792,13 @@ fn period(kind: &'static str, key: &str, s: Sums, prev_per_day: Option<f64>) -> 
     Period {
         kind,
         period: key.to_string(),
-        total: dollars(s.usd),
+        total: usd_est(s.usd),
         days: s.days,
-        per_day: dollars(per_day),
+        per_day: usd_est(per_day),
         per_session: if s.sess_n == 0 {
             "-".into()
         } else {
-            dollars(s.sess_usd / s.sess_n as f64)
+            usd_est(s.sess_usd / s.sess_n as f64)
         },
         vs_prev: prev_per_day.map_or("-".into(), |p| change(per_day, p)),
         est: format!("{:.0}%", (s.est / s.usd * 100.0).clamp(0.0, 100.0)),
@@ -822,7 +822,7 @@ fn headline(days: &[Day]) -> (String, String) {
         let mut s = format!(
             "{} {}",
             last.date.get(5..).unwrap_or(&last.date),
-            dollars(last.usd)
+            usd_est(last.usd)
         );
         let since = day_number(&last.date) - MEDIAN_DAYS as i64;
         let mut prior: Vec<f64> = before
@@ -840,7 +840,7 @@ fn headline(days: &[Day]) -> (String, String) {
             };
             s += &format!(
                 " vs {m}d median {} ({})",
-                dollars(med),
+                usd_est(med),
                 change(last.usd, med)
             );
         }

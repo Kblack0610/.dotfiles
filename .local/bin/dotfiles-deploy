@@ -51,6 +51,14 @@
 #   5. A MISSING path gets a link per file, as `stow --no-folding` writes it, except where
 #      that cannot work or would litter the other repo: there one finding names the directory,
 #      and one link serves it. See fold_point.
+#   6. A FOLDED directory (a directory link into a repo that tools write through) is unfolded
+#      the way `stow --no-folding` lays it out: a link per deploy path, the ignored runtime
+#      entries moved out of the checkout into $HOME, the other repo's twins removed. A tracked
+#      absolute link stow ignores (an enable into /usr/lib) is kept as it is; any other
+#      tracked path stow ignores blocks it. Only a full --apply does it, never --missing. See unfold.
+#   7. A STALE link (dangling, into a repo) is removed; --missing does that too.
+#   8. A RUNTIME directory (a link to a checkout directory no repo tracks) moves out of the
+#      checkout whole, under a full --apply only.
 #
 # The tracked source always wins. When the physical copy differs it is backed up first,
 # under $XDG_STATE_HOME/dotfiles-deploy/backup/<stamp>/, because its content exists in no
@@ -72,11 +80,15 @@
 #   dotfiles-deploy --apply    do the repair, then re-check; exit 1 if it did not converge
 #   dotfiles-deploy --quiet    print nothing; exit 1 if there is work to do (for a watch)
 #   dotfiles-deploy --json     machine-readable report
-#   dotfiles-deploy --missing  with any of the above: only MISSING paths, so --apply attaches a
-#                              link where nothing resolves and never converts a copy. Safe to run
+#   dotfiles-deploy --missing  with any of the above: only MISSING and STALE paths, so --apply
+#                              attaches a link where nothing resolves, prunes a dangling one, and
+#                              never converts a copy or unfolds a directory. Safe to run
 #                              unattended; every dotfiles-autopull pass runs `--apply --missing`,
 #                              so a newly tracked file is linked however its checkout was pulled,
 #                              and setup_dotfiles_private runs it after the overlay's first stow.
+#   dotfiles-deploy --only <dir>  with any of the above, repeatable: only findings at or under
+#                              <dir> (relative to $HOME), or the fold above it, e.g. one fold
+#                              while its app is closed.
 #
 # Exit codes:  0 clean   1 work to do / did not converge   2 refused (see below)
 #
@@ -99,6 +111,7 @@ BACKUP_ROOT="$HOME/.local/state/dotfiles-deploy/backup"
 MODE=check
 FORMAT=text
 ONLY_MISSING=0
+ONLY_PATHS=()
 
 # Field separator for the internal record arrays. A unit separator rather than the `|` a
 # reader might expect, because these records carry filesystem paths and `|` is a legal
@@ -225,6 +238,8 @@ is_repo_root() {
 
 declare -A OWNER_OF=()
 declare -A HOLDS_IGNORED=()
+# REPO_NAME maps each repo dir that enumerated to its name (public, private).
+declare -A REPO_NAME=()
 MANIFEST=()
 CONFLICTS=()
 SKIPPED_REPOS=()
@@ -236,6 +251,7 @@ add_repo() {
     SKIPPED_REPOS+=("$name${SEP}$dir")
     return 0
   fi
+  REPO_NAME["$dir"]="$name"
   load_ignore "$dir"
   while IFS= read -r -d '' rest; do
     mode="${rest%% *}"
@@ -313,11 +329,20 @@ EOF
 #   ABSLINK  the first link on $HOME/<path> (its own, or a folded directory's) is ABSOLUTE
 #            and resolves to the same path in the owning repo. It serves the right file, but
 #            stow does not own it, so `stow .` aborts and no new file in that repo deploys.
+#   FOLDED   $HOME/<dir> is one directory link to the same <dir> in a repo (stow without
+#            --no-folding), and that repo dir holds paths it does not track: whatever a tool
+#            writes under it (a `systemctl --user enable` wants link, a game's saves, the
+#            other repo's files attached as links) lands in the checkout. Paths under it are
+#            not classified one by one; the unfold lays every one of them out.
+#   STALE    a dangling link in a real directory of $HOME that points into a repo: the file
+#            it served was deleted or moved. A folded directory dropped such a file with it;
+#            a per-file link stays behind, and a hook runner or systemd meets a dead entry.
+#   RUNTIME  a link in a real directory of $HOME to the same directory in a repo that tracks
+#            nothing there (a tool's state dir that was once folded with tracked files).
 #
 # The comparison is on the RESOLVED path, not on whether $HOME/<path> is itself a symlink.
-# The public repo is stowed folded - ~/.config/systemd is a single directory link - so most
-# correctly-deployed files are not individually symlinked and asserting that they are would
-# flag the entire tree.
+# A folded directory link serves its files correctly, so OK does not assert per-file links;
+# FOLDED reports the fold itself, and only when something is written through it.
 
 FINDINGS=()
 
@@ -352,15 +377,164 @@ fold_point() {
   done
 }
 
-# first_link <path> - the shortest prefix of <path> that is a symlink under $HOME, or nothing.
+# first_link <path> - set FIRST_LINK to the shortest prefix of <path> that is a symlink under $HOME,
+# or to nothing. A variable, not output: it runs per deploy path, and a subshell each is seconds.
+FIRST_LINK=""
 first_link() {
   local rest="$1" prefix="" comp
+  FIRST_LINK=""
   while [ -n "$rest" ]; do
     comp="${rest%%/*}"
     prefix="${prefix:+$prefix/}$comp"
-    [ -L "$HOME/$prefix" ] && { printf '%s\n' "$prefix"; return 0; }
+    [ -L "$HOME/$prefix" ] && { FIRST_LINK="$prefix"; return 0; }
     if [ "$rest" = "$comp" ]; then rest=""; else rest="${rest#*/}"; fi
   done
+  return 0
+}
+
+# dev_of <path> - the device number of <path>, GNU stat then BSD stat.
+dev_of() {
+  stat -c %d -- "$1" 2>/dev/null || stat -f %d -- "$1" 2>/dev/null
+}
+
+# find_folds - fill FOLD_REPO: each directory link $HOME/<dir> -> <repo>/<dir> on the way to a
+# deploy path, mapped to the repo it points into. A link to a different path (a skill linked from
+# its category dir, an account dir's commands) is not a fold: stow never writes one.
+declare -A FOLD_REPO=() FOLD_OTHER=()
+find_folds() {
+  local rec path dir lp real r
+  declare -A seen=()
+  local -a under=()
+  FOLD_REPO=(); FOLD_OTHER=()
+  for rec in "${MANIFEST[@]}"; do
+    IFS="$SEP" read -r path _ dir _ <<< "$rec"
+    first_link "$path"; lp="$FIRST_LINK"
+    [ -n "$lp" ] && [ "$lp" != "$path" ] || continue
+    under+=("$lp${SEP}$dir")
+    [ -z "${seen[$lp]:-}" ] || continue
+    seen["$lp"]=1
+    real="$(readlink -f -- "$HOME/$lp")"
+    [ -d "$real" ] || continue
+    for r in "${!REPO_NAME[@]}"; do
+      [ "$real" = "$(readlink -f -- "$r/$lp")" ] && FOLD_REPO["$lp"]="$r"
+    done
+  done
+  # How many deploy paths of the OTHER repo each fold covers.
+  for rec in ${under[@]+"${under[@]}"}; do
+    IFS="$SEP" read -r lp dir <<< "$rec"
+    [ -n "${FOLD_REPO[$lp]:-}" ] && [ "${FOLD_REPO[$lp]}" != "$dir" ] &&
+      FOLD_OTHER["$lp"]=$(( ${FOLD_OTHER[$lp]:-0} + 1 ))
+  done
+  return 0
+}
+
+# fold_findings - one FOLDED finding per fold that something is written through: an untracked
+# path in its repo dir (ignored ones included), or a deploy path of the other repo under it,
+# which can only attach as a link inside this checkout. FOLDED_AT names each, for under_folded.
+# untracked_under <repo-dir> <dir> - the untracked entries under <dir>, NUL-separated; `--directory`
+# collapses a wholly untracked directory to one entry.
+untracked_under() {
+  git -C "$1" ls-files -z --others --directory -- ":(literal)$2" 2>/dev/null
+}
+
+declare -A FOLDED_AT=()
+fold_findings() {
+  local lp repo n o
+  FOLDED_AT=()
+  while IFS= read -r lp; do
+    [ -n "$lp" ] || continue
+    repo="${FOLD_REPO[$lp]}"
+    n="$(untracked_under "$repo" "$lp" | tr -cd '\0' | wc -c | tr -d ' ')"
+    o="${FOLD_OTHER[$lp]:-0}"
+    [ "$n" -gt 0 ] || [ "$o" -gt 0 ] || continue
+    FOLDED_AT["$lp"]=1
+    FINDINGS+=("FOLDED${SEP}${REPO_NAME[$repo]}${SEP}$lp${SEP}$HOME/$lp${SEP}directory link: $n untracked and $o other-repo path(s) under it sit in the checkout")
+  done < <(printf '%s\n' "${!FOLD_REPO[@]}" | sort)
+  return 0
+}
+
+# under_folded <path> - is <path> under a fold that fold_findings reported?
+under_folded() {
+  local rest="$1" prefix=""
+  while [ "$rest" != "${rest#*/}" ]; do
+    prefix="${prefix:+$prefix/}${rest%%/*}"
+    rest="${rest#*/}"
+    [ -n "${FOLDED_AT[$prefix]:-}" ] && return 0
+  done
+  return 1
+}
+
+# repo_of_target <link> - the repo dir a link's text points into, or nothing. The target is
+# missing for a dangling link, so its deepest existing directory is resolved instead.
+repo_of_target() {
+  local text d phys r
+  text="$(readlink -- "$1")" || return 0
+  case "$text" in /*) d="$text" ;; *) d="$(dirname -- "$1")/$text" ;; esac
+  d="${d%/*}"
+  while [ -n "$d" ] && ! phys="$(cd -P -- "$d" 2>/dev/null && pwd -P)"; do d="${d%/*}"; done
+  [ -n "$d" ] || return 0
+  for r in "${!REPO_NAME[@]}"; do
+    case "$phys/" in "$(readlink -f -- "$r")"/*) printf '%s\n' "$r"; return 0 ;; esac
+  done
+  return 0
+}
+
+# tracked_anywhere <rel> - true when any repo tracks a path at or under <rel>.
+tracked_anywhere() {
+  local r
+  for r in "${!REPO_NAME[@]}"; do
+    [ -n "$(git -C "$r" ls-files -- ":(literal)$1" 2>/dev/null)" ] && return 0
+  done
+  return 1
+}
+
+# link_findings - the links in each real directory of $HOME that holds a deploy path, which no
+# deploy path accounts for: a STALE finding per dangling one into a repo, and a RUNTIME finding
+# per directory link to the same path in a repo that tracks nothing there. A directory a repo
+# deleted whole is not looked in: its parent is.
+link_findings() {
+  local rec path d l r rel real
+  declare -A dirs=() deploys=()
+  local -a starts=()
+  for rec in "${MANIFEST[@]}"; do
+    IFS="$SEP" read -r path _ _ _ <<< "$rec"
+    deploys["$path"]=1
+    d=""; [ "$path" != "${path%/*}" ] && d="${path%/*}"
+    while :; do
+      dirs["/$d"]=1
+      [ -n "$d" ] || break
+      if [ "$d" != "${d%/*}" ]; then d="${d%/*}"; else d=""; fi
+    done
+  done
+  # Keyed "/<dir>", so $HOME itself is "/": bash refuses an empty key.
+  for d in "${!dirs[@]}"; do
+    d="${d#/}"
+    [ -z "$d" ] || { [ -d "$HOME/$d" ] && first_link "$d" && [ -z "$FIRST_LINK" ]; } || continue
+    starts+=("$HOME${d:+/$d}")
+  done
+  [ "${#starts[@]}" -gt 0 ] || return 0
+  while IFS= read -r -d '' l; do
+    rel="${l#"$HOME"/}"
+    if [ -e "$l" ]; then
+      # --missing drops RUNTIME, so the unattended pass does not pay for it.
+      [ "$ONLY_MISSING" = 0 ] && [ -d "$l" ] && [ -z "${dirs[/$rel]:-}" ] || continue
+      real="$(readlink -f -- "$l")"
+      for r in "${!REPO_NAME[@]}"; do
+        [ "$real" = "$(readlink -f -- "$r/$rel")" ] || continue
+        # A nested clone kept in the checkout (a project of its own) is not runtime.
+        [ -e "$r/$rel/.git" ] && continue
+        # Either repo: a directory one tracks (stow-ignored on this OS, say) is not runtime.
+        tracked_anywhere "$rel" && continue
+        FINDINGS+=("RUNTIME${SEP}${REPO_NAME[$r]}${SEP}$rel${SEP}$l${SEP}directory link to a checkout directory no repo tracks: all of it is runtime")
+      done
+      continue
+    fi
+    # A deploy path that dangles is MISSING, and its repair replaces the link.
+    [ -n "${deploys[$rel]:-}" ] && continue
+    r="$(repo_of_target "$l")"
+    [ -n "$r" ] || continue
+    FINDINGS+=("STALE${SEP}${REPO_NAME[$r]}${SEP}${l#"$HOME"/}${SEP}$l${SEP}dangling link into the checkout: the file it served was deleted or moved")
+  done < <(find "${starts[@]}" -mindepth 1 -maxdepth 1 -type l -print0 2>/dev/null | sort -z)
   return 0
 }
 
@@ -368,8 +542,14 @@ classify_all() {
   FINDINGS=()
   local rec path owner dir mode src tgt real_src real_tgt lp fold
   declare -A SEEN_ABS=() SEEN_FOLD=()
+  # --missing leaves folds alone: an unfold moves files, and that run is unattended.
+  if [ "$ONLY_MISSING" = 1 ]; then FOLDED_AT=(); else find_folds; fold_findings; fi
+  # Before the per-path findings: a pruned dangling directory link lets a MISSING path under it
+  # attach per file in the same run.
+  link_findings
   for rec in "${MANIFEST[@]}"; do
     IFS="$SEP" read -r path owner dir mode <<< "$rec"
+    under_folded "$path" && continue
     src="$dir/$path"
     tgt="$HOME/$path"
     real_src="$(readlink -f -- "$src" 2>/dev/null)"
@@ -396,7 +576,7 @@ classify_all() {
     if [ -n "$real_src" ] && [ "$real_tgt" = "$real_src" ]; then
       # The first link on the path is the one stow meets: the file's own, or a folded
       # directory's. Absolute and pointing at this repo's copy of that same path: ABSLINK.
-      lp="$(first_link "$path")"
+      first_link "$path"; lp="$FIRST_LINK"
       if [ -n "$lp" ] && [ -z "${SEEN_ABS[$lp]:-}" ] && [[ "$(readlink -- "$HOME/$lp")" == /* ]] \
          && [ "$(readlink -f -- "$HOME/$lp")" = "$(readlink -f -- "$dir/$lp")" ]; then
         SEEN_ABS["$lp"]=1
@@ -494,6 +674,193 @@ attach() {
   FAILED=$((FAILED + 1)); return 1
 }
 
+# mode_of <path> - the permission bits of <path>, GNU stat then BSD stat.
+mode_of() {
+  stat -c %a -- "$1" 2>/dev/null || stat -f %Lp -- "$1" 2>/dev/null
+}
+
+# UNFOLD_OTHER maps each deploy path of the other repo under the directory being unfolded to
+# that repo's dir; other_under <entry> says whether any of them sits below <entry>.
+declare -A UNFOLD_OTHER=()
+other_under() {
+  local p
+  for p in "${!UNFOLD_OTHER[@]}"; do [[ "$p" == "$1"/* ]] && return 0; done
+  return 1
+}
+
+# move_entry <from> <to> - rename one runtime entry out of the checkout. A relative symlink is
+# re-pointed at what it served, since the same text resolves elsewhere one level up.
+move_entry() {
+  local from="$1" to="$2" t=""
+  [ -e "$to" ] || [ -L "$to" ] && return 1
+  mkdir -p -- "$(dirname -- "$to")" || return 1
+  if [ -L "$from" ] && [[ "$(readlink -- "$from")" != /* ]]; then t="$(readlink -f -- "$from")"; fi
+  mv -- "$from" "$to" || return 1
+  if [ -n "$t" ] && [ -e "$t" ] && [ "$(readlink -f -- "$to")" != "$t" ]; then ln -sfn -- "$t" "$to"; fi
+  return 0
+}
+
+# unfold <dir> <repo-dir> - the FOLDED repair: lay $HOME/<dir> out the way `stow --no-folding`
+# does. A sibling real directory gets a stow link per deploy path of either repo under <dir>, the
+# ignored runtime entries tools wrote through the fold move into it, and a rename swaps it in.
+# The other repo's links and copies left in the checkout (twins) go last. An untracked entry git
+# does not ignore may be work in progress, so it blocks the directory and nothing moves.
+unfold() {
+  local lp="$1" repo="$2" new="$HOME/$1.unfold-$STAMP" old="$HOME/$1.folded-$STAMP"
+  local rec path dir e c i src backup ndone=0
+  local -a links=() queue=() twins=() moves=() blockers=() expanded=() moved=() keeps=()
+  UNFOLD_OTHER=()
+  for rec in "${MANIFEST[@]}"; do
+    IFS="$SEP" read -r path _ dir _ <<< "$rec"
+    [[ "$path" == "$lp"/* ]] || continue
+    links+=("$path$SEP$dir")
+    [ "$dir" != "$repo" ] && UNFOLD_OTHER["$path"]="$dir"
+  done
+  while IFS= read -r -d '' e; do queue+=("${e%/}"); done \
+    < <(untracked_under "$repo" "$lp")
+  # `--directory` collapses a wholly untracked directory to one entry, so each is judged here:
+  # git's own ignored listing omits ignored files inside an untracked directory.
+  while [ "${#queue[@]}" -gt 0 ]; do
+    e="${queue[0]}"; queue=("${queue[@]:1}")
+    if [ -n "${UNFOLD_OTHER[$e]:-}" ]; then
+      twins+=("$e")
+    elif [ -L "$repo/$e" ] && other_under "$e"; then
+      twins+=("$e")
+    elif [ -e "$repo/$e/.git" ]; then
+      blockers+=("$e/ (a clone)")
+    elif [ "$e" = "$lp" ] || { [ -d "$repo/$e" ] && [ ! -L "$repo/$e" ] && other_under "$e"; }; then
+      expanded+=("$e")
+      while IFS= read -r -d '' c; do queue+=("${c#"$repo"/}"); done \
+        < <(find "$repo/$e" -mindepth 1 -maxdepth 1 -print0 | sort -z)
+    elif [ -d "$repo/$e" ] && [ ! -L "$repo/$e" ]; then
+      if [ -z "$(git -C "$repo" ls-files --others --exclude-standard -- ":(literal)$e/" 2>/dev/null)" ]; then
+        moves+=("$e")
+      else
+        blockers+=("$e/")
+      fi
+    elif git -C "$repo" check-ignore -q -- "$e" 2>/dev/null; then
+      moves+=("$e")
+    else
+      blockers+=("$e")
+    fi
+  done
+  if [ "${#blockers[@]}" -gt 0 ]; then
+    printf '  SKIP  %s - %s untracked path(s) git does not ignore, maybe work in progress: %s\n' \
+      "$lp" "${#blockers[@]}" "${blockers[*]:0:5}" >&2
+    FAILED=$((FAILED + 1)); return 1
+  fi
+  # A tracked path stow ignores reaches $HOME only through the fold. An absolute link (an enable
+  # into /usr/lib) is kept as it is; a file would vanish from $HOME, so it blocks the directory.
+  load_ignore "$repo"
+  while IFS= read -r -d '' e; do
+    stow_ignored "$e" || continue
+    if [ -L "$repo/$e" ] && [[ "$(readlink -- "$repo/$e")" == /* ]]; then keeps+=("$e"); else blockers+=("$e"); fi
+  done < <(git -C "$repo" ls-files -z -- ":(literal)$lp" 2>/dev/null)
+  if [ "${#blockers[@]}" -gt 0 ]; then
+    printf '  SKIP  %s - %s tracked path(s) stow ignores would leave $HOME: %s\n' \
+      "$lp" "${#blockers[@]}" "${blockers[*]:0:5}" >&2
+    FAILED=$((FAILED + 1)); return 1
+  fi
+  if [ -e "$new" ] || [ -L "$new" ] || [ -e "$old" ] || [ -L "$old" ]; then
+    printf '  SKIP  %s - %s or %s already exists\n' "$lp" "$new" "$old" >&2
+    FAILED=$((FAILED + 1)); return 1
+  fi
+  # Same filesystem, or every move below is a copy and the swap is not a rename.
+  if [ "$(dev_of "$repo/$lp")" != "$(dev_of "$(dirname -- "$HOME/$lp")")" ]; then
+    printf '  SKIP  %s - the checkout and $HOME are on different filesystems\n' "$lp" >&2
+    FAILED=$((FAILED + 1)); return 1
+  fi
+
+  mkdir -m "$(mode_of "$repo/$lp")" -- "$new" || { FAILED=$((FAILED + 1)); return 1; }
+  for rec in "${links[@]}"; do
+    IFS="$SEP" read -r path dir <<< "$rec"
+    c="$new/${path#"$lp"/}"
+    mkdir -p -- "$(dirname -- "$c")" && stow_link "$c" "$dir/$path" || { ndone=-1; break; }
+  done
+  for e in ${keeps[@]+"${keeps[@]}"}; do
+    [ "$ndone" -eq 0 ] || break
+    c="$new/${e#"$lp"/}"
+    mkdir -p -- "$(dirname -- "$c")" && ln -s -- "$(readlink -- "$repo/$e")" "$c" || ndone=-1
+  done
+  if [ "$ndone" -eq 0 ]; then
+    for e in ${moves[@]+"${moves[@]}"}; do
+      move_entry "$repo/$e" "$new/${e#"$lp"/}" || { ndone=-1; break; }
+      moved+=("$e")
+    done
+  fi
+  if [ "$ndone" -eq 0 ] && mv -- "$HOME/$lp" "$old"; then
+    if mv -- "$new" "$HOME/$lp"; then
+      rm -f -- "$old"
+    else
+      mv -- "$old" "$HOME/$lp"; ndone=-1
+    fi
+  else
+    ndone=-1
+  fi
+  if [ "$ndone" -ne 0 ]; then
+    # Roll back: every moved entry returns to the checkout, then only links and the empty
+    # directories this run made are removed.
+    for e in ${moved[@]+"${moved[@]}"}; do mv -- "$new/${e#"$lp"/}" "$repo/$e"; done
+    find "$new" -depth \( -type l -o -type d -empty \) -delete 2>/dev/null
+    printf '  FAIL  %s - unfold rolled back, the directory link is unchanged\n' "$lp" >&2
+    FAILED=$((FAILED + 1)); return 1
+  fi
+
+  for e in ${twins[@]+"${twins[@]}"}; do
+    src="${UNFOLD_OTHER[$e]:-}"
+    if [ -n "$src" ] && [ -f "$repo/$e" ] && [ ! -L "$repo/$e" ] && ! cmp -s -- "$src/$e" "$repo/$e"; then
+      backup="$BACKUP_ROOT/$STAMP/$e"
+      mkdir -p -- "$(dirname -- "$backup")" && cp -p -- "$repo/$e" "$backup" || { FAILED=$((FAILED + 1)); continue; }
+      printf '  backed up %s -> %s\n' "$e" "$backup"
+    fi
+    rm -f -- "$repo/$e"
+  done
+  for (( i=${#expanded[@]}-1; i>=0; i-- )); do rmdir -- "$repo/${expanded[$i]}" 2>/dev/null; done
+  # A tool that wrote through the old link during the swap left its entry in the checkout.
+  while IFS= read -r -d '' e; do
+    e="${e%/}"
+    [ -z "${UNFOLD_OTHER[$e]:-}" ] && git -C "$repo" check-ignore -q -- "$e" 2>/dev/null &&
+      move_entry "$repo/$e" "$HOME/$e" && moved+=("$e")
+  done < <(untracked_under "$repo" "$lp")
+  printf '  unfolded  ~/%s: %s link(s), %s runtime entr(ies) moved out of the checkout, %s twin(s) removed\n' \
+    "$lp" "$(( ${#links[@]} + ${#keeps[@]} ))" "${#moved[@]}" "${#twins[@]}"
+  APPLIED=$((APPLIED + 1)); return 0
+}
+
+# prune <link> <path> - the STALE case: a dangling link into a checkout serves nothing.
+prune() {
+  [ -L "$1" ] && [ ! -e "$1" ] || return 0
+  if rm -f -- "$1"; then
+    printf '  pruned    ~/%s (dangling)\n' "$2"
+    APPLIED=$((APPLIED + 1)); return 0
+  fi
+  FAILED=$((FAILED + 1)); return 1
+}
+
+# move_runtime <dir> <repo-dir> - the RUNTIME case: the directory holds nothing any repo tracks,
+# so all of it moves out of the checkout to where the link stood, in one rename. An entry git does
+# not ignore may be work in progress, and a .git inside is a clone; either blocks it.
+move_runtime() {
+  local lp="$1" repo="$2" text
+  if [ -n "$(git -C "$repo" ls-files --others --exclude-standard -- ":(literal)$lp" 2>/dev/null)" ] ||
+     [ -n "$(find "$repo/$lp" -name .git -print -quit 2>/dev/null)" ]; then
+    printf '  SKIP  %s - it holds an untracked path git does not ignore, or a clone\n' "$lp" >&2
+    FAILED=$((FAILED + 1)); return 1
+  fi
+  if [ "$(dev_of "$repo/$lp")" != "$(dev_of "$(dirname -- "$HOME/$lp")")" ]; then
+    printf '  SKIP  %s - the checkout and $HOME are on different filesystems\n' "$lp" >&2
+    FAILED=$((FAILED + 1)); return 1
+  fi
+  text="$(readlink -- "$HOME/$lp")" || { FAILED=$((FAILED + 1)); return 1; }
+  if rm -f -- "$HOME/$lp" && mv -- "$repo/$lp" "$HOME/$lp"; then
+    printf '  moved     ~/%s out of the checkout (runtime only)\n' "$lp"
+    APPLIED=$((APPLIED + 1)); return 0
+  fi
+  [ -e "$HOME/$lp" ] || [ -L "$HOME/$lp" ] || ln -s -- "$text" "$HOME/$lp"
+  printf '  FAIL  %s - not moved, the directory link is restored\n' "$lp" >&2
+  FAILED=$((FAILED + 1)); return 1
+}
+
 # relink <link> <tracked-source> <path> - the ABSLINK case: same file, stow's relative form.
 # Nothing to back up, the link text is all that changes.
 relink() {
@@ -511,9 +878,12 @@ apply_all() {
     IFS="$SEP" read -r status owner path phys _ <<< "$rec"
     dir="$PUB"; [ "$owner" = private ] && dir="$PRIV"
     case "$status" in
+      FOLDED)  unfold  "$path" "${FOLD_REPO[$path]}" ;;
       MIRROR)  convert "$phys" "$dir/$path" "$path" ;;
       MISSING) attach  "$phys" "$dir/$path" "$path" ;;
       ABSLINK) relink  "$phys" "$dir/$path" "$path" ;;
+      STALE)   prune   "$phys" "$path" ;;
+      RUNTIME) move_runtime "$path" "$dir" ;;
     esac
   done
   return 0
@@ -573,6 +943,11 @@ report_text() {
   MISSING -> stow has not attached it. --apply links it; `stow --no-folding .` also works.
   ABSLINK -> --apply rewrites the absolute link as the relative one stow writes, so
              `stow --no-folding .` stops aborting on it.
+  FOLDED  -> --apply unfolds it: a link per file, runtime entries moved out of the checkout
+             into $HOME. An untracked file git does not ignore blocks it; commit, ignore or
+             move that file. Close an app whose state lives there first, or use --only.
+  STALE   -> --apply (and --missing) removes the dangling link.
+  RUNTIME -> --apply moves the directory out of the checkout to where its link stood.
 
   A path listed here that SHOULD NOT deploy at all belongs in the owning repo's
   .stow-local-ignore. Do not add a skip list to this script - a second place that decides
@@ -602,13 +977,20 @@ report_json() {
 
 # ── run ──────────────────────────────────────────────────────────────────────
 
-# classify - classify_all, narrowed to the MISSING findings under --missing.
+# classify - classify_all, narrowed to the MISSING and STALE findings under --missing, and to
+# the paths under an --only directory, or the fold above one (a fold is repaired whole).
 classify() {
   classify_all
-  [ "$ONLY_MISSING" = 1 ] || return 0
-  local rec keep=()
-  for rec in "${FINDINGS[@]:-}"; do
-    [[ "$rec" == "MISSING$SEP"* ]] && keep+=("$rec")
+  local rec status path p keep=() hit
+  for rec in ${FINDINGS[@]+"${FINDINGS[@]}"}; do
+    IFS="$SEP" read -r status _ path _ <<< "$rec"
+    [ "$ONLY_MISSING" = 1 ] && [ "$status" != MISSING ] && [ "$status" != STALE ] && continue
+    if [ "${#ONLY_PATHS[@]}" -gt 0 ]; then
+      hit=0
+      for p in "${ONLY_PATHS[@]}"; do [ "$path" = "$p" ] || [[ "$path" == "$p"/* ]] || [[ "$p" == "$path"/* ]] && hit=1; done
+      [ "$hit" = 1 ] || continue
+    fi
+    keep+=("$rec")
   done
   FINDINGS=(${keep[@]+"${keep[@]}"})
   return 0
@@ -622,6 +1004,10 @@ main() {
       --quiet) FORMAT=quiet ;;
       --json)  FORMAT=json ;;
       --missing) ONLY_MISSING=1 ;;
+      --only)
+        [ $# -ge 2 ] || { printf 'dotfiles-deploy: --only needs a directory\n' >&2; exit 2; }
+        case "$2" in /*|.|./|..|../*) printf 'dotfiles-deploy: --only takes a path under ~, relative: %s\n' "$2" >&2; exit 2 ;; esac
+        ONLY_PATHS+=("${2%/}"); shift ;;
       -h|--help)
         # Print the header block, stopping at the first line that is not a comment.
         awk 'NR==1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0"
@@ -656,7 +1042,7 @@ main() {
     classify
     if [ "${#FINDINGS[@]}" -eq 0 ] && [ "$FAILED" -eq 0 ]; then
       if [ "$ONLY_MISSING" = 1 ]; then
-        printf '\ndotfiles-deploy: converged - %s path(s) linked, none missing now (copies not checked: --missing)\n' "$APPLIED"
+        printf '\ndotfiles-deploy: converged - %s path(s) linked or pruned, none missing now (copies not checked: --missing)\n' "$APPLIED"
       else
         printf '\ndotfiles-deploy: converged - %s path(s) repaired, re-check is clean\n' "$APPLIED"
       fi

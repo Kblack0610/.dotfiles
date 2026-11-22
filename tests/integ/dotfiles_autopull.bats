@@ -86,6 +86,14 @@ head_of() { git -C "$1" rev-parse HEAD; }
   assert_equal "$(cat "$HOME/f")" local
 }
 
+@test "a pass that pruned dangling links says how many" {
+  printf '#!/bin/sh\necho "  pruned    ~/.local/bin/gone (dangling)"\n' >"$SANDBOX/deploy-stub" && chmod +x "$SANDBOX/deploy-stub"
+  export DOTFILES_DEPLOY="$SANDBOX/deploy-stub"
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line '~: pruned 1 dangling link(s) (dotfiles-deploy --apply --missing)'
+}
+
 @test "a failed attach after a fast-forward is named on the line, and the pull still succeeds" {
   printf '#!/bin/sh\necho refused: stub\nexit 2\n' >"$SANDBOX/deploy-stub" && chmod +x "$SANDBOX/deploy-stub"
   export DOTFILES_DEPLOY="$SANDBOX/deploy-stub"

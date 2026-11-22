@@ -145,8 +145,23 @@ pub enum Extras {
         steps: Vec<Step>,
         partial: bool,
     },
-    /// Every Sentinel watch, TRIP and ERROR first.
-    SentinelWatches { watches: Vec<Watch> },
+    /// Every Sentinel watch, TRIP and ERROR first, and how many trip (`tripped`, the Alerts
+    /// card's Watches tripped figure), so the page prints the count rather than making it.
+    SentinelWatches { watches: Vec<Watch>, tripped: usize },
+}
+
+impl Extras {
+    pub fn sentinel(watches: Vec<Watch>) -> Extras {
+        Extras::SentinelWatches {
+            tripped: tripped(&watches),
+            watches,
+        }
+    }
+}
+
+/// The watches whose state file says TRIP: the one count of tripped watches.
+pub fn tripped(watches: &[Watch]) -> usize {
+    watches.iter().filter(|w| w.state == "TRIP").count()
 }
 
 /// The page for `name`, timers read from systemd.
@@ -288,7 +303,7 @@ fn runner_with(
         "sentinel-watches" => {
             let (dir, state) = watch_dirs(&home, key);
             match watches(&dir, &state) {
-                Ok(watches) => Extras::SentinelWatches { watches },
+                Ok(watches) => Extras::sentinel(watches),
                 Err(e) => {
                     errors.push(format!("sentinel: {e}"));
                     Extras::None
@@ -1044,7 +1059,8 @@ mod tests {
         write(&s.join("charlie.state"), "ERROR\n");
         let r = runner(&paths, "sentinel", T, &HashMap::new()).unwrap();
         match &r.extras {
-            Extras::SentinelWatches { watches } => {
+            Extras::SentinelWatches { watches, tripped } => {
+                assert_eq!(*tripped, 1, "bravo trips; charlie's ERROR is no trip");
                 let got: Vec<(&str, &str)> = watches
                     .iter()
                     .map(|w| (w.name.as_str(), w.state.as_str()))

@@ -88,8 +88,8 @@ impl Section {
             "gate_min_per_pr" => f(self.gate_min_per_pr, 0),
             "gate_h" => f(self.gate_h, 0),
             "green_lost" => self.green_lost.to_string(),
-            "cost_per_pr" => crate::costs::usd(self.cost_per_pr),
-            "tokens_per_pr" => crate::costs::tokens(self.tokens_per_pr),
+            "cost_per_pr" => crate::display::fmt::usd_opt(self.cost_per_pr),
+            "tokens_per_pr" => crate::display::fmt::tokens(self.tokens_per_pr),
             "work_min_per_pr" => f(self.work_min_per_pr, 0),
             _ => "-".into(),
         }

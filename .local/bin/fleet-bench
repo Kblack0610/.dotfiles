@@ -62,12 +62,16 @@
 #                                high chain whose handoff p90 over 24h (agent-queue stats chain.h24, ready to
 #                                started) is past chain_handoff_p90_max, 2 when its source cannot be read (one
 #                                Sentinel watch each)
-#   fleet-bench prs [--json | --check stranded|blocked]
-#                                the fleet's open PRs (one gh GraphQL search) joined to the queue items
-#                                that own them: stranded (no running, waiting or queued item, idle past
-#                                pr_idle_h_max) and blocked (red, conflicting or pending checks, idle past
-#                                pr_blocked_h_max); --check exits 1 on any in that class, 2 unreadable
-#                                (the pr-stranded and pr-blocked watches)
+#   fleet-bench prs [--json | --check stranded|blocked|aged|branches]
+#                                the fleet's open PRs (one gh GraphQL search, plus every open PR of the
+#                                Forgejo repos in the PR store) joined to the queue items that own them,
+#                                idle counted from the last commit: stranded (no running, waiting or
+#                                queued item, idle past pr_idle_h_max), blocked (red, conflicting or
+#                                pending checks, idle past pr_blocked_h_max) and aged (a draft, or one
+#                                opened before pr_window_d, that no live item works), then the pushed
+#                                branches no PR owns, salvage/* included (land, open a PR or delete);
+#                                --check exits 1 on any in that class, 2 unreadable (stranded and
+#                                blocked are the pr-stranded and pr-blocked watches)
 #   fleet-bench effect <T | owner/repo#N> [--days N] [--compare C] [--json]
 #                                each windowed KPI over N days before a change landed against N after,
 #                                beside the same split at C (default N days earlier) as a control
@@ -280,7 +284,6 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${TRIAGE_WATCH_HIGH_AFTER:=900}" # triage: the same for a high or urgent watch: one dispatch pass, so one flap is not a row
 : "${BENCH_GUARD_RECUR:=2}"         # retro: sessions a lesson must recur in before it wants a guard
 : "${BENCH_GUARD_SEEN:=3}"          # retro: dream sweeps that found a lesson again (its seen marker) before it wants a guard (provisional, rules.jsonl)
-: "${BENCH_DREAMS_DIR:=$HOME/.agent/dreams}"   # insight_expired_share: <project>/insights.md, dream the writer
 : "${BENCH_SO_LIB:=$HOME/.local/lib/session-outcomes.sh}"   # so_lesson_sigs, so_lesson_seen, so_forgejo_pr
 : "${BENCH_CANARY_DIR:=$HOME/.config/fleet-bench/canary}"   # canary: one <id>.json per task (content as data)
 : "${BENCH_CANARY_ORACLES:=$BENCH_CANARY_DIR/../canary-oracles}"   # canary: the answer-key scripts a task's oracle.script and oracle.answer.script name (content as data)
@@ -1854,20 +1857,6 @@ ledger_roster() {
   echo "launches_direct=$(launch_files | wc -l)"
 }
 
-# insight_expired_share EPOCH -> the share (two decimals) of the insights dated 30 to 60 days before
-# EPOCH whose last status reads expired, over every project's insights.md; ? when none is dated there.
-# A record is a dated level-two heading up to the next one, as agentctl-dream's maintain_insights reads it.
-insight_expired_share() {
-  local files=("$BENCH_DREAMS_DIR"/*/insights.md)
-  [ -f "${files[0]}" ] || { echo '?'; return 0; }
-  LC_ALL=C awk -v lo="$(date -d "@$(($1 - 60 * 86400))" +%F)" -v hi="$(date -d "@$(($1 - 30 * 86400))" +%F)" '
-    function close_rec() { if (d != "" && d > lo && d <= hi) { n++; if (st ~ /^expired/) x++ } d = ""; st = "" }
-    FNR == 1 { close_rec() }
-    /^## / { close_rec(); if (match($0, /^## [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]([ \t]|$)/)) d = substr($0, 4, 10); next }
-    /^(\*\*Status:\*\*|Status:)/ { st = $0; sub(/^(\*\*Status:\*\*|Status:)[ \t]*/, "", st); st = tolower(st) }
-    END { close_rec(); if (n) printf "%.2f\n", x / n; else print "?" }' "${files[@]}"
-}
-
 # ledger_counts -> key=value lines: the roster, then the fleet's live counts
 ledger_counts() {
   local t rows sd=""
@@ -1902,9 +1891,6 @@ ledger_counts() {
   # that held (session-outcomes lessons); ? when none has a verdict yet or the cache cannot be read
   echo "lesson_held_share=$($BENCH_LESSONS_CMD 2>/dev/null | jq -er '(.held + .recurring) as $n
     | if $n > 0 then .held / $n * 100 | round / 100 else "?" end' 2>/dev/null || echo '?')"
-  # insight_expired_share: of the dream insights whose 30-day window closed in the last 30 days (heading
-  # dated 30 to 60 days ago), the share whose last status is expired: questions nobody answered or routed
-  echo "insight_expired_share=$(insight_expired_share "$t")"
   # worktrees_held, worktrees_held_over_7d: trees held with nobody in them, and those idle past 7 days, from
   # the newest worktree-gc row; ? with no row, one older than WORKTREE_GC_STALE_H, or one dated in the future
   jq -nrR --argjson t "$t" --argjson h "$WORKTREE_GC_STALE_H" '
@@ -2388,41 +2374,99 @@ cmd_pipeline() {
 # The open PRs the fleet authored, one GraphQL search (paginated, 100 a page) per call: the last
 # commit's check rollup and GitHub's mergeable verdict ride along, so a check costs one request,
 # not one per PR. Search leaves mergeable UNKNOWN until GitHub computes it; UNKNOWN never trips.
-# Scope: GitHub PRs authored by the login gh runs as (every fleet session's); Forgejo PRs are not read.
+# Scope: GitHub PRs authored by the login gh runs as (every fleet session's), plus every open PR of
+# the Forgejo repos `schedules-sync repos` lists (gh sees none of them: home-config's 20 open PRs, 11 of
+# them Renovate's, sat unread, ar-4470).
 : "${BENCH_PRS_QUERY:=is:pr is:open author:@me archived:false}"
-: "${BENCH_PRS_CMD:=prs_search}"   # prints one JSON object per open PR (prs_search's shape)
+: "${BENCH_PRS_CMD:=prs_all}"   # prints one JSON object per open PR (prs_search's shape)
+: "${BENCH_BRANCHES_CMD:=prs_branches}"   # prints one JSON object per pushed branch (prs_branches' shape)
 PRS_GRAPHQL='query($q: String!, $endCursor: String) {
   search(query: $q, type: ISSUE, first: 100, after: $endCursor) {
     pageInfo { hasNextPage endCursor }
-    nodes { ... on PullRequest { number title isDraft createdAt updatedAt mergeable url
-      repository { nameWithOwner } commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } } }
+    nodes { ... on PullRequest { number title isDraft createdAt updatedAt mergeable url headRefName
+      repository { nameWithOwner } commits(last: 1) { nodes { commit { committedDate statusCheckRollup { state } } } } } }
   }
 }'
 
-# prs_search -> one {ref, title, draft, created, updated, mergeable, checks, url} per open PR;
-# checks is the rollup state (SUCCESS, FAILURE, ERROR, PENDING, EXPECTED) or NONE with no checks
+# prs_search -> one {ref, branch, title, draft, created, updated, commit, mergeable, checks, url} per
+# open PR; commit is the last commit's date, which idle is measured from (updated moves on a comment, a
+# label or CI churn); checks is the rollup state (SUCCESS, FAILURE, ERROR, PENDING, EXPECTED) or NONE
 prs_search() {
   timeout 60 gh api graphql --paginate -F q="$BENCH_PRS_QUERY" -f query="$PRS_GRAPHQL" \
-    --jq '.data.search.nodes[] | select(.number) | {ref: "\(.repository.nameWithOwner)#\(.number)", title, draft: .isDraft,
-      created: .createdAt, updated: .updatedAt, mergeable, url,
+    --jq '.data.search.nodes[] | select(.number) | {ref: "\(.repository.nameWithOwner)#\(.number)", branch: .headRefName, title, draft: .isDraft,
+      created: .createdAt, updated: .updatedAt, commit: .commits.nodes[0].commit.committedDate, mergeable, url,
       checks: (.commits.nodes[0].commit.statusCheckRollup.state // "NONE")}'
 }
 
-# prs_json <now> -> {as_of, bounds, prs}: each open PR with idle_h (since its last update: a push, a
-# comment, a label), its owner (the live queue item naming it in pr: or open_pr:, where agent-land
-# records a PR until it merges; of several, the one furthest along: running, queued, waiting), and
-# its class, at most one each: stranded (no running, waiting or queued item owns it, so nobody will
-# land it; a review item's session has ended, so review counts as no owner) once idle past
-# pr_idle_h_max; else blocked once idle past pr_blocked_h_max: checks still pending (CI that never
-# started or hung, whoever owns it), or red checks or a conflict with no running or queued item on
-# it (a running one's stall is the shepherd's, a queued one is the fix waiting its turn); else none. A draft, or a PR opened
-# before the last pr_window_d days (a backlog the human decides on, not a fresh stall), is none.
+# prs_forgejo -> prs_search's shape for every open PR of each Forgejo repo in the repo list, read from
+# the PR store (`schedules-sync prs`, the one reader of it). The store holds no commit date and no
+# mergeable verdict: commit is the PR's last update, so on Forgejo a comment or label does reset idle,
+# and mergeable is UNKNOWN, which never trips. Only the PRs the repo owner's login authored count, as
+# author:@me limits the GitHub side: a bot's (Renovate) are not the fleet's to land. A repo whose store cannot be read fails the whole read: nothing is left silently out.
+prs_forgejo() {
+  local repos r
+  repos=$("$SCHEDULES_SYNC" repos 2>/dev/null | jq -r '.[] | select(.forge == "forgejo") | "\(.host)/\(.repo)"') || return 1
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    "$SCHEDULES_SYNC" prs "$r" --state open --checks | jq -c --arg r "${r#*/}" '($r | split("/")[0]) as $o | .[] | select(.author == $o) | {ref: "\($r)#\(.number)", branch, title, draft,
+      created: .created_at, updated: .updated_at, commit: .updated_at, mergeable: "UNKNOWN", url,
+      checks: ({NONE: "NONE", PENDING: "PENDING", FAIL: "FAILURE", PASS: "SUCCESS"}[.ci // "NONE"] // "NONE")}' || return 1
+  done <<<"$repos"
+}
+
+# prs_all -> every open PR, GitHub's then Forgejo's
+prs_all() { prs_search && prs_forgejo; }
+
+# prs_branches -> one {repo, branch, sha, commit, kind} per branch pushed to origin that no open PR
+# names and whose work has not landed, from each project-map checkout's remote refs as last fetched
+# (no fetch here: a check that waits on the network is its own outage). Landed: merged into the trunk,
+# or the head of a merged PR in the PR store (a squash merge leaves the commits unmerged). kind is
+# salvage for a salvage/* branch, else pushed. A repo the PR store does not sync is skipped: without
+# its PRs every branch would read unowned.
+prs_branches() {
+  local dir repo key base seen=' ' prs repos
+  repos=$("$SCHEDULES_SYNC" repos 2>/dev/null) || return 1
+  while IFS= read -r dir; do
+    [ -e "$dir/.git" ] || continue
+    repo=$(origin_repo "$dir") || continue
+    case "$seen" in *" $repo "*) continue ;; esac
+    seen+="$repo "
+    base=$(merge_proof_ref "$dir") || continue
+    # The store names a Forgejo repo host/owner/repo, a GitHub one owner/repo.
+    key=$(jq -r --arg r "$repo" 'first(.[] | select(.forge == "forgejo" and .repo == $r) | "\(.host)/\(.repo)") // $r' <<<"$repos") || continue
+    prs=$("$SCHEDULES_SYNC" prs "$key" --state all 2>/dev/null) || continue
+    # One jq over the whole branch list: a clone holds thousands of branches, a process each is minutes.
+    # commit is UTC with a Z (jq's date parser takes no offset). Owned: an open PR names the branch, or a
+    # merged PR's head is this very commit.
+    git -C "$dir" for-each-ref --no-merged "$base" --format='%(refname:lstrip=3)%09%(objectname)%09%(committerdate:unix)' refs/remotes/origin |
+      jq -Rnc --arg r "$repo" --arg base "${base#*/}" --slurpfile prs <(printf '%s' "$prs") '
+        ($prs[0] | {open: (map(select(.state == "OPEN") | {key: .branch, value: 1}) | from_entries),
+                    merged: (map(select(.state == "MERGED") | {key: "\(.branch) \(.head_sha)", value: 1}) | from_entries) }) as $p
+        | inputs | split("\t") | {b: .[0], sha: .[1], t: (.[2] | tonumber)}
+        | select(.b != $base and .b != "HEAD" and ($p.open[.b] | not) and ($p.merged["\(.b) \(.sha)"] | not))
+        | {repo: $r, branch: .b, sha: .sha, commit: (.t | todate), kind: (if .b | startswith("salvage/") then "salvage" else "pushed" end)}'
+  done < <(jq -r '.paths | keys[]' "$BENCH_PROJECT_MAP" 2>/dev/null)
+}
+
+# prs_json <now> -> {as_of, bounds, prs, branches}: each open PR with idle_h (since its last commit,
+# else its last update: a comment, a label or CI churn never resets it), its owner (the live queue item
+# naming it in pr: or open_pr:, where agent-land records a PR until it merges; of several, the one
+# furthest along: running, queued, waiting), and its class, at most one each: stranded (no running,
+# waiting or queued item owns it, so nobody will land it; a review item's session has ended, so review
+# counts as no owner) once idle past pr_idle_h_max; else blocked once idle past pr_blocked_h_max: checks
+# still pending (CI that never started or hung, whoever owns it), or red checks or a conflict with no
+# running or queued item on it (a running one's stall is the shepherd's, a queued one is the fix waiting
+# its turn); else aged: a draft, or a PR opened before the last pr_window_d days, that no running or
+# queued item works (a backlog the human decides on, not a fresh stall, but never unlisted); else none.
+# branches: pushed branches no open PR names and no merged PR landed (prs_branches), idle past
+# pr_idle_h_max, each one to land, open a PR for or delete.
 prs_json() {
-  local t=$1 prs items lim='{}'
+  local t=$1 prs items branches lim='{}'
   prs=$($BENCH_PRS_CMD | jq -sc .) || return 1
+  branches=$($BENCH_BRANCHES_CMD | jq -sc .) || return 1
   items=$($BENCH_ITEMS_CMD 2>/dev/null | jq -sc 'map(select(.pr or .open_pr) | {slug, state, refs: "\(.pr // "") \(.open_pr // "")"})') || return 1
   [ -r "$KPI_THRESHOLDS" ] && lim=$(grep -E '^[a-z0-9_]+=' "$KPI_THRESHOLDS" | kv_json)
-  jq -cn --argjson t "$t" --slurpfile p <(printf '%s' "$prs") --slurpfile i <(printf '%s' "$items") --argjson lim "$lim" '
+  jq -cn --argjson t "$t" --slurpfile p <(printf '%s' "$prs") --slurpfile i <(printf '%s' "$items") --slurpfile br <(printf '%s' "$branches") --argjson lim "$lim" '
     def epoch: sub("\\.[0-9]+"; "") | fromdateiso8601;
     $p[0] as $prs | $i[0] as $items
     | {idle_h: ($lim.pr_idle_h_max // 24), blocked_h: ($lim.pr_blocked_h_max // 4), window_d: ($lim.pr_window_d // 30)} as $b
@@ -2430,42 +2474,51 @@ prs_json() {
        | group_by(.ref) | map({key: .[0].ref, value: (min_by(.state | {running: 0, queued: 1, waiting: 2}[.] // 3) | {slug, state})})
        | from_entries) as $own
     | {as_of: $t, bounds: $b,
-       prs: [$prs[] | . + {idle_h: (($t - (.updated | epoch)) / 3600 | floor), owner: $own[.ref]}
+       prs: [$prs[] | . + {idle_h: (($t - ((.commit // .updated) | epoch)) / 3600 | floor), owner: $own[.ref]}
          | ((.owner.state // "review") | IN("running", "waiting", "queued") | not) as $orphan
          | ((.owner.state // "") | IN("running", "queued")) as $worked
          | ((.checks | IN("PENDING", "EXPECTED")) or ($worked | not) and ((.checks | IN("FAILURE", "ERROR")) or .mergeable == "CONFLICTING")) as $stuck
-         | . + {class: (if .draft or ($t - (.created | epoch)) > $b.window_d * 86400 then "none"
+         | (.draft or ($t - (.created | epoch)) > $b.window_d * 86400) as $old
+         | . + {class: (if $old then (if $worked then "none" else "aged" end)
                         elif $orphan and .idle_h >= $b.idle_h then "stranded"
                         elif $stuck and .idle_h >= $b.blocked_h then "blocked"
-                        else "none" end)}]}'
+                        else "none" end)}],
+       branches: [$br[0][] | . + {idle_h: (($t - (.commit | epoch)) / 3600 | floor)} | select(.idle_h >= $b.idle_h)]}'
 }
 
 # prs_line <pr> (jq def): one line naming the PR and why it is in its class
 PRS_LINE='def why: [(if .checks | IN("FAILURE", "ERROR") then "checks red" elif .checks | IN("PENDING", "EXPECTED") then "checks pending" else empty end),
     (if .mergeable == "CONFLICTING" then "conflicts" else empty end)] | join(", ");
+  def branch_line: "\(.repo) \(.branch) (\(.kind)) idle \(.idle_h)h";
   def line: "\(.ref) idle \(.idle_h)h\(if .owner then ", item \(.owner.slug) (\(.owner.state))" else ", no item" end)\(why | if . == "" then "" else ", \(.)" end): \(.title[:70])";'
 
-# cmd_prs [--json | --check stranded|blocked] -- the fleet's open PRs and which ones stall: stranded
-# (nobody owns it) or blocked (cannot land and nobody pushed). --check prints one line per PR in that
-# class and exits 1 when any is (each class is one Sentinel watch, pr-stranded and pr-blocked, so
-# one that stays red masks no other); 2 when GitHub or the queue cannot be read.
+# cmd_prs [--json | --check stranded|blocked|aged|branches] -- the fleet's open PRs and which ones stall:
+# stranded (nobody owns it), blocked (cannot land and nobody pushed), aged (a draft or a PR past the window
+# that no live item works), and the pushed branches no PR owns (salvage/* included): land, open a PR or
+# delete. --check prints one line per PR or branch in that class and exits 1 when any is (stranded and
+# blocked are Sentinel watches, pr-stranded and pr-blocked, so one that stays red masks no other); 2 when
+# GitHub, Forgejo or the queue cannot be read.
 cmd_prs() {
-  local json out
+  local json out usage="usage: fleet-bench prs [--json | --check stranded|blocked|aged|branches]"
   case "${1:-}" in
     ""|--json) ;;
-    --check) case "${2:-}" in stranded|blocked) ;; *) say "usage: fleet-bench prs --check stranded|blocked"; return 2 ;; esac ;;
-    *) say "usage: fleet-bench prs [--json | --check stranded|blocked]"; return 2 ;;
+    --check) case "${2:-}" in stranded|blocked|aged|branches) ;; *) say "$usage"; return 2 ;; esac ;;
+    *) say "$usage"; return 2 ;;
   esac
-  json=$(prs_json "$(now)") || { echo "unreadable: the open PRs (gh) or the queue items"; return 2; }
+  json=$(prs_json "$(now)") || { echo "unreadable: the open PRs (gh, the Forgejo PR store), the branches or the queue items"; return 2; }
   case "${1:-}" in
     --json) printf '%s\n' "$json" ;;
-    --check) out=$(jq -r --arg c "$2" "$PRS_LINE"'[.prs[] | select(.class == $c)] | sort_by(-.idle_h) | if length == 0 then empty
-        else "\(length) \($c) PR\(if length > 1 then "s" else "" end)", (.[] | line) end' <<<"$json") \
+    --check) out=$(jq -r --arg c "$2" "$PRS_LINE"'
+        (if $c == "branches" then .branches | sort_by(-.idle_h)
+           | if length == 0 then empty else "\(length) unowned branch\(if length > 1 then "es" else "" end)", (.[] | branch_line) end
+         else [.prs[] | select(.class == $c)] | sort_by(-.idle_h)
+           | if length == 0 then empty else "\(length) \($c) PR\(if length > 1 then "s" else "" end)", (.[] | line) end end)' <<<"$json") \
         || { echo "unreadable: fleet-bench prs could not class the PRs"; return 2; }
       [ -z "$out" ] || { printf '%s\n' "$out"; return 1; } ;;
-    *) jq -r "$PRS_LINE"'"open PRs: \(.prs | length), stranded after \(.bounds.idle_h)h with no live item, blocked after \(.bounds.blocked_h)h idle, opened in the last \(.bounds.window_d)d",
-        (["stranded", "blocked"][] as $c | [.prs[] | select(.class == $c)] | sort_by(-.idle_h)
-          | "", "\($c): \(length)", (.[] | "  " + line))' <<<"$json" ;;
+    *) jq -r "$PRS_LINE"'"open PRs: \(.prs | length), stranded after \(.bounds.idle_h)h with no live item, blocked after \(.bounds.blocked_h)h idle, aged past \(.bounds.window_d)d or a draft; idle counts from the last commit",
+        (["stranded", "blocked", "aged"][] as $c | [.prs[] | select(.class == $c)] | sort_by(-.idle_h)
+          | "", "\($c): \(length)", (.[] | "  " + line)),
+        "", "unowned branches (land, open a PR or delete): \(.branches | length)", (.branches | sort_by(-.idle_h) | (.[:20][] | "  " + branch_line), if length > 20 then "  and \(length - 20) more: fleet-bench prs --check branches" else empty end)' <<<"$json" ;;
   esac
 }
 
@@ -2680,7 +2733,7 @@ cmd_rules() {
 # judges' from judge-eval (it owns those; ~/.local/src/docs/judges.md), plus counts taken now. Headless runs are left out: they have no human to interrupt and their
 # cost is the fleet's, not a session's. Each threshold is <kpi>_max or <kpi>_min.
 
-KPI_NOW="runners_bad failed_unexplained board_open board_days points_per_pr loop_dark loop_dark_7d $KPI_CHAIN cost_per_merged_item red_fix_min_p50 lesson_held_share insight_expired_share worktrees_held worktrees_held_over_7d systems_no_skill"
+KPI_NOW="runners_bad failed_unexplained board_open board_days points_per_pr loop_dark loop_dark_7d $KPI_CHAIN cost_per_merged_item red_fix_min_p50 lesson_held_share worktrees_held worktrees_held_over_7d systems_no_skill"
 KPI_COMMS="buzzes_per_day comms_pass_pct rows_pass_pct pages_held_per_day"
 KPI_JUDGE="judge_errors judge_precision ask_answered_pct ask_unclear_pct judge_human_only_live_pct ask_human_only_pct dispatch_false_defer_pct"
 KPI_ASKS="human_answered_per_day ask_wait_p90_min"
@@ -3898,7 +3951,7 @@ retro_guard_rows() {
 }
 
 # retro reads each live improvement claim (improve_check), queues no canary (fleet-dispatch
-# tops the canary floor up, canary_top_up), and keeps exactly one open agent-board row per lesson that keeps recurring
+# keeps DISPATCH_CANARY_KEEP canaries queued, canary_top_up), and keeps exactly one open agent-board row per lesson that keeps recurring
 # (`check(lesson): guard <hash>:`). A KPI past its threshold gets
 # no row here: `fleet-bench improve` names one at a time, and its row carries the check.
 cmd_retro() {
@@ -6021,7 +6074,7 @@ canary_retire() {
 # comments) that has room, so the few queued at once run across lanes together instead of one lane's whole
 # set first. A lane has room when the source its harness spends from (harnesses.json `source`) does by
 # BENCH_ROOM_CMD, as a claude lane does when any Claude account does; a lane with none, no source or a
-# repeated slug is said and skipped. fleet-dispatch calls it (canary_top_up) to hold the canary floor; the
+# repeated slug is said and skipped. fleet-dispatch calls it (canary_top_up) to keep DISPATCH_CANARY_KEEP canaries queued; the
 # weekly retro queues none. Says one line a lane that queued, and returns 1 when a lane could not be queued.
 canary_top_up() {
   local left=$1 h m e src why label lane entry got rc=0 round
