@@ -4,7 +4,7 @@
 //! carrying a `status: pending` line, and it belongs to the session named on its
 //! `claude_session: <id>` line. Only the asking session owns an ask; the tmux
 //! session name is not a fallback. A parked ask (`parked_until` still ahead) is not pending,
-//! the same test as `agent-ask:is_parked` (fleet-states.md Owners, "Whether an ask is pending").
+//! the test of `agent-ask:is_parked` (fleet-states.md Owners, "Whether an ask is pending").
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -34,7 +34,8 @@ pub fn question(id: &str) -> String {
 }
 
 /// A pending ask is parked while its `parked_until` (UTC, `agent-ask`'s format) is after `now`
-/// (epoch seconds). An empty or unreadable date is not parked.
+/// (epoch seconds). `agent-ask park` writes only that exact `YYYY-MM-DDTHH:MM:SSZ` form; unlike
+/// the shell's string compare, a hand-edited value in another shape reads as not parked.
 fn parked(text: &str, now: u64) -> bool {
     text.lines()
         .find_map(|l| l.strip_prefix("parked_until: "))
