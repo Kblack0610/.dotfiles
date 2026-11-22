@@ -219,6 +219,8 @@ pub fn note_says(c: &Card) -> String {
         "none".into()
     } else {
         format!("model-written, {}", c.status_date)
+            .trim_end_matches([',', ' '])
+            .to_string()
     }
 }
 

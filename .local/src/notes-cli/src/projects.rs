@@ -185,16 +185,31 @@ fn status_note(content: &str) -> StatusNote {
         }
         body.push_str(&t.replace('\t', " "));
     }
+    // The old shape is one line, its labels inline after a space; the new one opens each label
+    // at the start of its own line, so a label word inside a value is only a word.
+    let legacy = !body.contains('\n');
     let at = |text: &str, label: &str| {
-        text.match_indices(label)
-            .map(|(i, _)| i)
-            .find(|&i| i == 0 || text[..i].ends_with(char::is_whitespace))
+        text.match_indices(label).map(|(i, _)| i).find(|&i| {
+            i == 0
+                || text[..i].ends_with(if legacy {
+                    char::is_whitespace
+                } else {
+                    |c| c == '\n'
+                })
+        })
     };
-    let end = STATUS_NUMBERS
-        .iter()
-        .filter_map(|n| at(&body, n))
-        .min()
-        .unwrap_or(body.len());
+    // The pasted numbers only ever followed `Needs you:` on the old line.
+    let end = if legacy {
+        at(&body, "Needs you:").and_then(|n| {
+            STATUS_NUMBERS
+                .iter()
+                .filter_map(|l| at(&body[n..], l).map(|i| i + n))
+                .min()
+        })
+    } else {
+        None
+    }
+    .unwrap_or(body.len());
     let body = &body[..end];
     let mut marks: Vec<(usize, usize)> = STATUS_LABELS
         .iter()
@@ -6898,6 +6913,16 @@ mod stats_tests {
         assert_eq!(n.headline, "_2026-11-09_ - shipped");
         assert_eq!(n.parts(), StatusParts::default());
         assert_eq!(status_line(&block("_(no status yet)_")), None);
+    }
+
+    #[test]
+    fn a_label_word_inside_a_value_of_the_new_shape_is_only_a_word() {
+        let n = status_note(&block(
+            "Headline.\nDoing: State: machine rewrite\nDone: wired the Next: button\nNext: X\nNeeds you: approve Y",
+        ));
+        assert_eq!(n.doing, "State: machine rewrite");
+        assert_eq!(n.done, "wired the Next: button");
+        assert_eq!((n.next.as_str(), n.needs.as_str()), ("X", "approve Y"));
     }
 
     #[test]
