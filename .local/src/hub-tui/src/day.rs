@@ -53,6 +53,36 @@ fn recent(pr: &Value, now: i64) -> bool {
         .is_ok_and(|t| t.timestamp() >= now - OPEN_DAYS * 86400)
 }
 
+/// The fleet line's session counts: the Sessions card's figures (`fleet.sessions`, written since
+/// ar-4475), each "?" when it could not be read; a stored day from before has the bucket counts.
+fn fleet_counts(f: &serde_json::Map<String, Value>) -> Vec<String> {
+    if let Some(fig) = f.get("sessions").and_then(Value::as_object) {
+        return [
+            ("working", "working"),
+            ("need_you", "need you"),
+            ("stalled", "stalled"),
+            ("ready_to_close", "ready"),
+        ]
+        .iter()
+        .map(|(key, label)| match fig.get(*key) {
+            Some(Value::Number(n)) => format!("{label} {n}"),
+            _ => format!("{label} ?"),
+        })
+        .collect();
+    }
+    let mut b: Vec<(&String, i64)> = f
+        .get("buckets")
+        .and_then(Value::as_object)
+        .map(|m| {
+            m.iter()
+                .map(|(k, v)| (k, v.as_i64().unwrap_or(0)))
+                .collect()
+        })
+        .unwrap_or_default();
+    b.sort_by(|x, y| y.1.cmp(&x.1).then(x.0.cmp(y.0)));
+    b.iter().map(|(k, v)| format!("{k} {v}")).collect()
+}
+
 /// The day's sessions: the `TOTAL` usage row, or the rows summed when there is none. What they
 /// cost is on the Costs tab.
 fn sessions(rec: &Value) -> Option<u64> {
@@ -171,35 +201,7 @@ pub fn today(rec: Option<&Value>, p: Palette, now: i64, w: usize) -> Page {
     ));
     items.push(hub_core::costs::spend_badge());
     if let Some(f) = rec["fleet"].as_object() {
-        // The Sessions card's figures (`fleet.sessions`, written since ar-4475), each "?" when it
-        // could not be read; a stored day from before has the bucket counts instead.
-        let mut fl: Vec<String> = Vec::new();
-        if let Some(fig) = f.get("sessions").and_then(Value::as_object) {
-            for (key, label) in [
-                ("working", "working"),
-                ("need_you", "need you"),
-                ("stalled", "stalled"),
-                ("ready_to_close", "ready"),
-            ] {
-                let v = match fig.get(key) {
-                    Some(Value::Number(n)) => n.to_string(),
-                    _ => "?".into(),
-                };
-                fl.push(format!("{label} {v}"));
-            }
-        } else {
-            let mut b: Vec<(&String, i64)> = f
-                .get("buckets")
-                .and_then(Value::as_object)
-                .map(|m| {
-                    m.iter()
-                        .map(|(k, v)| (k, v.as_i64().unwrap_or(0)))
-                        .collect()
-                })
-                .unwrap_or_default();
-            b.sort_by(|x, y| y.1.cmp(&x.1).then(x.0.cmp(y.0)));
-            fl = b.iter().map(|(k, v)| format!("{k} {v}")).collect();
-        }
+        let mut fl = fleet_counts(f);
         fl.push(format!(
             "unity runs {}",
             f.get("unity_runs").and_then(Value::as_i64).unwrap_or(0)
