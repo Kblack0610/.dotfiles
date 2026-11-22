@@ -890,15 +890,19 @@ work_blockers() {
 # slugs. A waiting or review item is blocked on someone, not working, so it carries nothing (`from: item:<slug>`, which
 # agent-queue records for an add made inside an item's session), else -. A coordinator's own item is open while the
 # fix items it filed do the work, so its idle pane is not a stall (ar-4015: nightly-green-ucp-2823 on
-# hub/unity-core-playground:2, 2026-11-20).
+# hub/unity-core-playground:2, 2026-11-20). A queued `<slug>-close` item (held by its at: tag) carries
+# the item too: the session kept it open on purpose and the close item ends it, so it is not STALLED
+# (ar-4582: agent-21 kept ar-4554 open after agent-land refused at watch_gate, 2026-11-22).
 carried_by() {
   local out
   [[ "$3" == own:* ]] || { printf -- -; return; }
   out="$(jq -rn --arg sid "$2" --arg own ",${3#own:}," --arg me "$4" '
-    [inputs | select(.state == "running" and (.session // "") != $me
+    [inputs | select((.state == "running" and (.session // "") != $me
         and ((.from // "") | startswith("item:"))
         and ((.from | sub("^item:"; "")) as $f | $own | contains("," + $f + ","))
         and (((.sessions // "") | split(" ") | any(. == $sid)) | not))
+        or (.state == "queued" and (.slug | endswith("-close"))
+        and ((.slug | sub("-close$"; "")) as $f | $own | contains("," + $f + ","))))
       | .slug] | unique | join(",")' <<<"$1" 2>/dev/null)"
   printf '%s' "${out:--}"
 }

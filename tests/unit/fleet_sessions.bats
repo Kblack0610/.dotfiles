@@ -407,6 +407,21 @@ ledger() {
   [ "$output" = - ]
 }
 
+@test "a queued <slug>-close item carries the open item, so the session is not STALLED (ar-4582)" {
+  local q
+  q='{"slug":"ar-4554","state":"running","sessions":"sidA"}
+{"slug":"ar-4554-close","state":"queued"}
+{"slug":"ar-4555-close","state":"queued"}
+{"slug":"ar-4556-close","state":"done"}'
+  run carried_by "$q" sidA own:ar-4554 lab:me
+  assert_output 'ar-4554-close'
+  run carried_by "$q" sidA own:ar-4556 lab:me
+  [ "$output" = - ]
+  # every phase done or queued, a merged PR, and the close item queued: WORKING, not the nudged STALLED
+  run b idle 0 0 0 30 1 0 0 7 MERGED PASS 1 - 2/2 - - - - - 'own:ar-4554' - - - ar-4554-close
+  assert_output 'WORKING PR #7 merged, tree clean, its item ar-4554 is carried by live items: ar-4554-close'
+}
+
 @test "a merged side PR is not DONE while an item still runs here: every running item names the session" {
   # 2026-11-06: unity-core-playground-agent-6 merged #1922 for steam-untested-reason, read DONE and
   # was told to wind down while its own steam-beta-cut-1106 was running (three release.yml runs).
