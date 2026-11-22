@@ -1373,6 +1373,40 @@ esac'
   assert_failure
 }
 
+@test "reap moves an #after/ gate on a row sent to the human sheet to the sheet row, in either lane, and leaves every other gate (ar-3172)" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 "- [ ] feat(game): the base $T <!-- id:gm-1 -->"
+  row game human hm-1 "- [ ] feat(game): a copy of an open row (agent row gm-1) <!-- id:hm-1 -->"
+  row game agent gm-2 "- [ ] feat(game): waits on an open row $T #after/gm-1 <!-- id:gm-2 -->"
+  row game agent gm-5 "- [x] feat(game): pin bump $T <!-- id:gm-5 dropped: on the game sheet: dispatch skipped it (waits) -->"
+  row game human hm-5 "- [ ] feat(game): pin bump (agent row gm-5) <!-- id:hm-5 -->"
+  row game agent gm-4 "- [ ] feat(game): play tests $T #after/gm-5 <!-- id:gm-4 -->"
+  row game human hm-7 "- [ ] feat(game): rolled augments (agent row gm-7) <!-- id:hm-7 -->"
+  row game human hm-8 "- [ ] feat(game): augments in the bag #after/gm-7 (agent row gm-8) <!-- id:hm-8 -->"
+  row game agent gm-3 "- [ ] feat(game): waits on a row nobody filed $T #after/gm-404 <!-- id:gm-3 -->"
+  # a copy on another project's sheet, and a copy the human already closed, are not where the work went
+  row app human ap-9 "- [ ] feat(app): same words (agent row gm-9) <!-- id:ap-9 -->"
+  row game agent gm-10 "- [ ] feat(game): waits on gm-9 $T #after/gm-9 <!-- id:gm-10 -->"
+  row game human hm-11 "- [x] feat(game): closed copy (agent row gm-11) <!-- id:hm-11 -->"
+  row game agent gm-12 "- [ ] feat(game): waits on gm-11 $T #after/gm-11 <!-- id:gm-12 -->"
+  run follow_moved_gates
+  assert_success
+  local agent human; agent=$(cut -f2 "$NOTES_FIXTURE/rows.game.agent") human=$(cut -f2 "$NOTES_FIXTURE/rows.game.human")
+  # dropped onto the sheet (agent lane), and gone from the board with its copy there (human lane)
+  grep -q '^- \[ \] feat(game): play tests .*#after/hm-5 <!-- id:gm-4 -->' <<<"$agent"
+  grep -q '^- \[ \] feat(game): augments in the bag (agent row gm-8) #after/hm-7 <!-- id:hm-8 -->' <<<"$human"
+  [[ $agent != *'#after/gm-5'* && $human != *'#after/gm-7'* ]]
+  # an open gate stays though a copy names it; a dead one with no copy stays for dead_holds
+  grep -q '^- \[ \] feat(game): waits on an open row .*#after/gm-1 <!-- id:gm-2 -->' <<<"$agent"
+  grep -q '^- \[ \] feat(game): waits on a row nobody filed .*#after/gm-404 <!-- id:gm-3 -->' <<<"$agent"
+  grep -q '^- \[ \] feat(game): waits on gm-9 .*#after/gm-9 <!-- id:gm-10 -->' <<<"$agent"
+  grep -q '^- \[ \] feat(game): waits on gm-11 .*#after/gm-11 <!-- id:gm-12 -->' <<<"$agent"
+  run cmd_starved
+  assert_output --partial 'gm-3 (game, #after/gm-404: '
+  refute_output --partial 'gm-4 ('
+  refute_output --partial 'hm-8 ('
+}
+
 @test "reap settle: a cancelled ask on a row whose done item's PR merged closes the row on merge proof, with no hold and no new ask" {
   landed_item MERGED
   settle_fixture
