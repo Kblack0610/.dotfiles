@@ -1175,6 +1175,16 @@ heavy_panes() {
   "$fa" 2>/dev/null | awk 'f && NF == 0 { exit } f && $8 != "" && $8 != "-" { print $8 } /^PID /{ f = 1 }' | sort -u
 }
 
+# restored_panes <agent-panel rows> -> <server>/<pane id> of each pane fleet-dispatch restore reopened
+# (its @fleet_restored pane option), one per line, one tmux call per server the local rows name. The
+# option dies with the pane, so a later hand resume of the same conversation is a new pane without it.
+restored_panes() {
+  local srv
+  for srv in $(jq -r 'select((.host // "") == "") | .pane // "" | select(contains("/")) | sub("/.*"; "")' <<<"$1" 2>/dev/null | sort -u); do
+    tmux -L "$srv" list-panes -a -f '#{@fleet_restored}' -F '#{pane_id}' 2>/dev/null | sed "s|^|$srv/|"
+  done
+}
+
 # repo_slug <dir> -> the origin URL as a file-name-safe key (cache files, NIGHTLY ledger ids).
 repo_slug() {
   local LC_ALL=C url f="${CACHE:+$CACHE/slug_${1//\//%}}"   # C: one _ per byte, as tr -c gave
@@ -2243,6 +2253,8 @@ collect() {
     unreadable agent-panel
     if [ "$prc" -eq 3 ] && [ -n "$panel" ]; then echo + >> "$CACHE/blind"; else echo '*' >> "$CACHE/blind"; fi
   fi
+  # A restored pane's quiet is its transcript's alone (CLOSE_JQ): its claude is new, its conversation is not.
+  local restored; restored="$(restored_panes "$panel")"
   local PENDING_ASKS
   PENDING_ASKS="$(pending_asks)" || { unreadable agent-ask; echo "*" >> "$CACHE/blind"; }
   { [ -n "$panel" ] && printf '%s\n' "$panel"; parked_lines "$panel"; remote_panel_lines; } | while IFS= read -r line; do
@@ -2250,7 +2262,7 @@ collect() {
     # close --self reads one row: the others' git, gh and transcript reads cost a minute (54 rows).
     [ -z "${CLOSE_SELF:-}" ] || [[ "$line" == *"$CLOSE_SELF"* ]] || continue
     rm -f "$CACHE/blind_row"
-    local target pane status plan sid cwd since ctx planf tsess idle bidle asks ownask hv bucket fact edited \
+    local target pane status plan sid cwd since ctx planf tsess idle bidle asks ownask hv rs bucket fact edited \
           pdone ptotal pnext phases fin started age oid askids blk transcript prs \
           work jobs human parked compactions topic doing said gate test ojob acct pq names landed live cpid host cwin shown mman
     # The separator is a unit separator, not a tab: read collapses an empty tab-separated field and
@@ -2313,6 +2325,7 @@ collect() {
     askids="$(grep . <<<"$ownids" | { if [ -n "$qheld" ]; then grep -vxF "$qheld"; else cat; fi; } | paste -sd, -)"
     asks=0; [ -n "$askids" ] && asks="$(tr ',' '\n' <<<"$askids" | wc -l)"
     hv=0; [ "$host" = - ] && [ -n "$pane" ] && grep -qxF "${target%%/*}/$pane" <<<"$heavy" && hv=1
+    rs=0; [ "$host" = - ] && [ -n "$pane" ] && grep -qxF "${target%%/*}/$pane" <<<"$restored" && rs=1
     local solo item
     solo="$(jq -r --arg k "${target%:*}" 'select((.target | sub(":[^:]*$"; "")) == $k) | .target' <<<"$panel" 2>/dev/null | wc -l)"
     item="$(item_of "$qitems" "$sid" "${target%%/*}:$tsess" "$solo" "$started")"
@@ -2536,12 +2549,12 @@ collect() {
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
     nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
     [ ! -e "$CLOSED/$sid" ] || n=1
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
       "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}" \
       "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test" "$mh" \
-      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iby" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "$qwait" "$qdepth" "$prun" "$pwq" "$wake" "$(critical_of "$wait_on" "$irow" "$gd" "$pr")" "${shown:-0}" "${mman:-0}"
+      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iby" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "$qwait" "$qdepth" "$prun" "$pwq" "$wake" "$(critical_of "$wait_on" "$irow" "$gd" "$pr")" "${shown:-0}" "${mman:-0}" "$rs"
     [ ! -f "$CACHE/blind_row" ] || echo "$sid" >> "$CACHE/blind"
   done
   [ -z "${CLOSE_SELF:-}" ] || return 0
@@ -2895,13 +2908,15 @@ explain() {
 # `--self` reads quiet 0 mid-turn and keeps, so past the timer the shepherd's typed close is declined
 # and its window is closed by close_sample an hour later, never by the session itself.
 # Unlanded work reads from `blockers` (work_blockers), not raw git counts: a squash-merged branch
-# stays `ahead` of main with nothing left to land. A null age_min reads 0. The row of the session
+# stays `ahead` of main with nothing left to land. A null age_min reads 0. A row fleet-dispatch restore
+# reopened is quiet for its idle alone: its claude is new, but the conversation was as quiet before the
+# reboot, and the age floor would hold a finished window open another hour (ar-4141). The row of the session
 # named by `--arg self` (close --self, run mid-turn by /wind-down auto) skips the turn and the
 # quiet steps: the shepherd's nudge came after the quiet time, and the session is always mid-turn.
 CLOSE_JQ='
   def close_verdict($idle_close; $chat_close_h):
     ((($ARGS.named.self // "") != "") and .session_id == $ARGS.named.self) as $me
-    | ([.idle_min // 0, .age_min // 0] | min) as $quiet
+    | (if .restored then (.idle_min // 0) else ([.idle_min // 0, .age_min // 0] | min) end) as $quiet
     | ((.blockers // []) | map(select(test("^(open ask |[0-9]+ open ask)") | not))) as $other
     | ($other | map(select(test("dirty file|not on the default branch|(^|: )PR ([^ /]+/[^ /]+)?#[0-9]+ open|commits after merged PR")))[0])
       as $unlanded
@@ -3122,7 +3137,9 @@ json_rows() {
       # window on screen, so session-close-overdue skips a row with it.
       attached: ((.[64] // "0") == "1"),
       # The manual (default) permission mode is investigate-only, so the session cannot write a wind-down note.
-      in_manual_mode: ((.[65] // "0") == "1")} | '"$CLOSE_JQ"
+      in_manual_mode: ((.[65] // "0") == "1"),
+      # fleet-dispatch restore reopened it (its pane carries @fleet_restored): quiet is idle alone (CLOSE_JQ).
+      restored: ((.[66] // "0") == "1")} | '"$CLOSE_JQ"
 }
 
 # overdue_of <now epoch> <rows file> <eta file> -> {session_id: verdict}: the one overdue rule, which

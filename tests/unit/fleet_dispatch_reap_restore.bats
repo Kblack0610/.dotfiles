@@ -814,6 +814,30 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   assert_equal "$(qfield "$f" session)" ''
 }
 
+@test "restore tags each pane it reopens @fleet_restored, joined window or new session, so its close timer runs on (ar-4141)" {
+  restore_setup
+  G="$SANDBOX/repos/game"
+  lost_pane mine "$G" conv-human
+  echo %42 > "$NOTES_FIXTURE/tmux.new_pane"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_success
+  assert_called 'tmux -L hub set-option -pq -t %42 @fleet_restored 1'
+  # A session the server no longer has comes back as a new session, whose pane new-session -P names.
+  : > "$NOTES_FIXTURE/tmux.sessions.hub"
+  : > "$NOTES_FIXTURE/calls.log"
+  tmux_script 'case " $* " in *" new-session "*) echo %43 ;; esac; STUB_FALLTHROUGH=1'
+  lost_pane mine "$G" conv-human
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_success
+  assert_called 'new-session -d -P -F #{pane_id} -s dotfiles'
+  assert_called 'tmux -L hub set-option -pq -t %43 @fleet_restored 1'
+  # A hand resume tags nothing: the human just opened it, so its age floor stands (negative control).
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server hub --session other --cwd "$G" --resume conv-human
+  assert_success
+  assert_not_called '@fleet_restored'
+}
+
 @test "restore prompts no conversation whose item waits, nor one with no item" {
   restore_setup
   G="$SANDBOX/repos/game"

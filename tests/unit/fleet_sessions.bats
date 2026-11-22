@@ -1521,9 +1521,9 @@ MD
 # s1 (sid-9, pane %7), open for three hours and idle for one, with status $PANEL_STATUS
 # (default idle), context window $PANEL_WINDOW (default null, a model agent-panel does not know) and
 # open job $PANEL_JOB (default none known), idle $PANEL_IDLE_S seconds (default 3600), time use
-# $PANEL_TIME (a time_use object, default none).
+# $PANEL_TIME (a time_use object, default none), its claude started $PANEL_AGE_S seconds ago (default 3h05m).
 panel() {
-  local since=$(( $(date +%s) - ${PANEL_IDLE_S:-3600} )) started=$(( $(date +%s) - 3 * 3600 - 300 ))
+  local since=$(( $(date +%s) - ${PANEL_IDLE_S:-3600} )) started=$(( $(date +%s) - ${PANEL_AGE_S:-11100} ))
   printf '#!/usr/bin/env bash\necho %q\n' \
     "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":${PANEL_PLAN_MODE:-false},\"doing\":\"${PANEL_DOING:-}\",\"session_id\":\"${PANEL_SID:-sid-9}\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"context_window\":${PANEL_WINDOW:-null},\"plan_file\":\"${2:-}\",\"transcript\":\"${PANEL_TRANSCRIPT:-}\",\"edited_files\":${3:-[]},\"account\":\"${PANEL_ACCOUNT:-main}\",\"open_job\":\"${PANEL_JOB:-}\",\"time_use\":${PANEL_TIME:-null},\"attached\":${PANEL_ATTACHED:-false},\"manual_mode\":${PANEL_MANUAL:-false}}" \
     > "$SANDBOX/bin/agent-panel"
@@ -1990,6 +1990,24 @@ SH
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   [ "$(jq -r .in_manual_mode <<<"$output")" = false ]
+}
+
+@test "end to end: a pane fleet-dispatch restore reopened is quiet for its idle alone, not its new claude's age (ar-4141)" {
+  landed_fixture
+  # A claude started 10 minutes ago on a conversation quiet an hour: the age floor holds it.
+  PANEL_AGE_S=600 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  rm -f "$NOTES_FIXTURE/tmux.panes"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .restored <<<"$output")" = false ]
+  [ "$(jq -r .close.why <<<"$output")" = "quiet 10m of 60m" ]
+  # The same pane carries @fleet_restored (the stub's list-panes on lab answers it): the hour counts.
+  printf '%s\n' %7 > "$NOTES_FIXTURE/tmux.panes.lab"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .restored <<<"$output")" = true ]
+  [ "$(jq -r '"\(.close.verdict): \(.close.why)"' <<<"$output")" = "now: quiet 60m, nothing to land" ]
+  assert_called "tmux -L lab list-panes -a -f #{@fleet_restored} -F #{pane_id}"
 }
 
 @test "end to end: plan mode with no approval dialog open is not NEEDS plan awaiting approval" {
@@ -5478,6 +5496,10 @@ verdict() {
   # A headless run's replay: the shepherd never types into its opencode TUI; fleet-dispatch reap closes it.
   [ "$(verdict '{activity: "done", bucket: "DONE", idle_min: 600}')" = "keep: headless run: fleet-dispatch reap closes its replay once its item leaves review" ]
   # A worker row runs the same chain: the shepherd types its close over ssh (fleet_host_run).
+  # A pane restore reopened: its new claude's age is no floor, the conversation's idle is its quiet (ar-4141).
+  [ "$(verdict '{idle_min: 90, age_min: 10}')" = "after: quiet 10m of 60m" ]
+  [ "$(verdict '{idle_min: 90, age_min: 10, restored: true}')" = "now: quiet 90m, nothing to land" ]
+  [ "$(verdict '{idle_min: 5, age_min: 10, restored: true}')" = "after: quiet 5m of 60m" ]
   [ "$(verdict '{host: "ms-a2"}')" = "now: quiet 90m, nothing to land" ]
   [ "$(verdict '{host: "ms-a2", idle_min: 5}')" = "after: quiet 5m of 60m" ]
   [ "$(SELF=s1 verdict '{host: "ms-a2", session_id: "s1", idle_min: 5}')" = "now: quiet 5m, nothing to land" ]
