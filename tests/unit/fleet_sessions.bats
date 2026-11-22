@@ -365,6 +365,48 @@ ledger() {
   assert_output 'WORKING idle 5m'
 }
 
+@test "an item whose filed items run elsewhere is WORKING, not STALLED, and still keeps its window (ar-4015)" {
+  # 2026-11-20: the coordinator hub/unity-core-playground:2 read STALLED "its item nightly-green-ucp-2823
+  # is running here" while two fix sessions it filed carried the work.
+  run b idle 0 0 0 30 1 0 0 - - - 1 - - - - - - - 'own:coord' - - - ucp-1,ucp-2
+  assert_output 'WORKING clean, nothing on the branch, no plan file, its item coord is carried by live items: ucp-1,ucp-2'
+  # the item is still its own running work: not finished, and the blocker stays for the close chain
+  ! session_finished idle 0 0 0 30 1 0 0 - - - 1 - - - - - - - 'own:coord' - - - ucp-1
+  run work_blockers '' idle 0 0 0 30 1 0 0 - - - 1 - - - - - - - 'own:coord'
+  assert_output 'no plan file and nothing merged; its item coord is running here'
+  # a merged PR with no plan, or a single-phase plan, the same
+  run b idle 0 0 0 30 1 0 0 7 MERGED PASS 1 - - - - - - - 'own:coord' - - - ucp-1
+  assert_output 'WORKING PR #7 merged, tree clean, its item coord is carried by live items: ucp-1'
+  # every phase done or queued, and a merged PR: the same
+  run b idle 0 0 0 30 1 0 0 7 MERGED PASS 1 - 2/2 - - - - - 'own:coord' - - - ucp-1
+  assert_output 'WORKING PR #7 merged, tree clean, its item coord is carried by live items: ucp-1'
+  # no carried items is the old read, and unlanded work still wins
+  run b idle 0 0 0 30 1 0 0 - - - 1 - - - - - - - 'own:coord' - - - -
+  assert_output 'STALLED clean, nothing on the branch, no plan file, its item coord is running here'
+  run b idle 0 0 0 30 1 3 0 - - - 1 - - - - - - - 'own:coord' - - - ucp-1
+  assert_output 'STALLED 3 dirty file(s), no PR'
+}
+
+@test "carried_by names the live items filed from a running item, only running ones in other sessions (ar-4015)" {
+  local q
+  q='{"slug":"coord","state":"running","sessions":"sidA"}
+{"slug":"fix-1","state":"running","from":"item:coord","sessions":"sidB"}
+{"slug":"fix-2","state":"waiting","from":"item:coord","sessions":"sidC"}
+{"slug":"fix-8","state":"running","from":"item:coord","session":"lab:other"}
+{"slug":"fix-9","state":"running","from":"item:coord","session":"lab:me"}
+{"slug":"fix-3","state":"done","from":"item:coord","sessions":"sidD"}
+{"slug":"fix-4","state":"queued","from":"item:coord"}
+{"slug":"fix-5","state":"running","from":"item:coord-other","sessions":"sidE"}
+{"slug":"fix-6","state":"running","from":"item:coord","sessions":"sidA"}
+{"slug":"fix-7","state":"running","from":"board:p:x","sessions":"sidF"}'
+  run carried_by "$q" sidA own:coord lab:me
+  assert_output 'fix-1,fix-8'
+  run carried_by "$q" sidA own:other lab:me
+  [ "$output" = - ]
+  run carried_by "$q" sidA 'moved:coord moved on (done)' lab:me
+  [ "$output" = - ]
+}
+
 @test "a merged side PR is not DONE while an item still runs here: every running item names the session" {
   # 2026-11-06: unity-core-playground-agent-6 merged #1922 for steam-untested-reason, read DONE and
   # was told to wind down while its own steam-beta-cut-1106 was running (three release.yml runs).
