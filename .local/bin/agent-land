@@ -20,7 +20,7 @@
 # on origin/<base>, by agent-merge-proof.sh), live (dotfiles-autopull --now --bg fast-forwards, in the background, the stowed
 # checkout when this repo is ~/.dotfiles or ~/.dotfiles-private, links what it added, rebuilds the
 # Rust tools (notes through notes-bootstrap), restarts agent-web on a new binary and a persistent agentctl runner on a new script; it logs its result to autopull.log, and the landing prints a line, never a failure), item (the queue item gets pr:<owner>/<repo>#<pr>,
-# merged:<sha>, this Claude session in its sessions (unless --partial lands on an item another session owns), the project credited by the PR's changed
+# merged:<sha>, this Claude session in its sessions (unless --partial lands on an item another session owns) and "<session>=<pr>" in its landed_by, the project credited by the PR's changed
 # files (agent-queue attribute), and moves to done, status ok unless --partial keeps it open (a red watch item resolves its watch with this PR first and refuses to close ok while its probe still trips, watch_gate); a done ok item with no PR in this
 # PR's repo adds it to its pr: and merged: lists instead, one PR per repo; an open item's earlier PR with
 # no merge recorded takes its merge commit from gh, and one not merged refuses before the merge, settle_prior;
@@ -766,6 +766,19 @@ own_merged() {
   fail match "#$pr ($pr_ref, from $head_ref) is merged, and nothing ties it to $item: its body has no \"Item: $item\" line, its head ${head_oid:0:8} is not in this checkout's HEAD, and the item records ${it_pr:-no PR}. A PR in another repo: run from a checkout of it, with --repo <owner>/<repo>"
 }
 
+# landed_by: sets lb to the set argument that adds "<this session>=<pr_ref>" to the item's landed_by:
+# pairs, read from $it, or to nothing with no session id or no repo in pr_ref. The nightly outcomes pass credits each session
+# with the PRs it landed from these pairs (queue_index); sessions: alone cannot say which one did (ar-2779).
+landed_by() {
+  local sid="${CLAUDE_CODE_SESSION_ID:-}" cur
+  lb=()
+  # A pr_ref that fell back to the bare argument names no repo, which agent-queue set refuses after the merge.
+  [ -n "$sid" ] && [[ "$pr_ref" =~ ^[^/]+/[^/#]+#[0-9]+$ ]] || return 0
+  cur=$(jq -r '.landed_by // ""' <<<"$it")
+  [[ " $cur " == *" $sid=$pr_ref "* ]] || cur="${cur:+$cur }$sid=$pr_ref"
+  lb=("landed_by=$cur")
+}
+
 # other_session: exit 0 when another session owns this queue item (its session: names another
 # tmux session, or it has none and sessions: lists only other Claude sessions), so a --partial landing does not
 # claim it and tie this session to it while it is still running (tilecast 2026-11-18, ar-3368).
@@ -1164,7 +1177,8 @@ case "$done_as" in
   [ "$partial" -eq 1 ] || closing=("closing_pr=$pr_ref")
   # A full landing ends the item's open PR; a partial one leaves the item's other PRs open (stack_pr reads it).
   clear_open=open_pr=; [ -z "$marker" ] || clear_open=
-  out=$(aq_retry set "$item" "pr=${refs[*]}" "merged=${oids[*]}" "partial=$marker" $clear_open "${closing[@]}" 2>&1) || fail item "$(lastline "$out")"
+  landed_by
+  out=$(aq_retry set "$item" "pr=${refs[*]}" "merged=${oids[*]}" "partial=$marker" $clear_open "${closing[@]}" "${lb[@]}" 2>&1) || fail item "$(lastline "$out")"
   credited="$(credit)${open_ref:-}"
   if [ "$partial" -eq 0 ]; then
     watch_gate "$it"
@@ -1178,7 +1192,8 @@ more)
     echo "item: could not record this session on $item: $(lastline "$out")" >&2
   fi
   it=$(aq_retry show "$item" --json 2>&1) || fail item "agent-queue show: $(lastline "$it")"
-  out=$(aq_retry set "$item" "pr=$(jq -r .pr <<<"$it") $pr_ref" "merged=$(jq -r '.merged // ""' <<<"$it") $merged" 2>&1) ||
+  landed_by
+  out=$(aq_retry set "$item" "pr=$(jq -r .pr <<<"$it") $pr_ref" "merged=$(jq -r '.merged // ""' <<<"$it") $merged" "${lb[@]}" 2>&1) ||
     fail item "$(lastline "$out")"
   credited=", beside $(jq -r .pr <<<"$it")"
   ;;

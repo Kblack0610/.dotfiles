@@ -1263,7 +1263,35 @@ EOF
   assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs 'map(select(.session_id == "ses_root")) | last | [.prs[].number] | join(" ")')" '10 11'
 }
 
-@test "class: the size and kind of the item's roadmap row go on its session's row; the item's type stands in for a row off the roadmap; no item, no class" {
+@test "a session gets the item PRs it landed: its landed_by pairs, or all of an item it alone worked; another session's landing is not its (ar-2779)" {
+  # NEGATIVE CONTROL: before ar-2779 a claude session got only the PRs its transcript printed, so sess-c read zero-merge.
+  queue_stub
+  {
+    jq -cn '{slug: "solo", sessions: "sess-c", pr: "o/r#12"}'
+    jq -cn '{slug: "pair", sessions: "sess-a sess-b", pr: "o/r#99", landed_by: "sess-b=o/r#99"}'
+    jq -cn '{slug: "pair-old", sessions: "sess-a sess-c", pr: "o/r#11"}'
+  } > "$SANDBOX/items.jsonl"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(field a '[.prs[].number] | join(" ")')" '10'
+  assert_equal "$(field b '[.prs[].number] | join(" ")')" '11 99'
+  assert_equal "$(field c '[.prs[] | "\(.number) \(.state)"] | join(",")')" '12 MERGED'
+}
+
+@test "an item's host-less ref in a repo the map keeps on Forgejo is read from the PR store under host/owner/repo (ar-2779)" {
+  # NEGATIVE CONTROL: keyed o/audio as the item writes it, the claim was dropped as not in the PR store.
+  fj_setup
+  jq -n '{forges: {forgejo: "git.example.test"}, trackers: {audio: {forgejo: "o/audio"}}}' > "$SANDBOX/map.json"
+  export SO_PROJECT_MAP="$SANDBOX/map.json"
+  queue_stub
+  jq -cn '{slug: "fj", sessions: "sess-c", pr: "o/audio#12"}' > "$SANDBOX/items.jsonl"
+  run "$SUBJECT" run
+  assert_success
+  refute_output --partial "claims dropped"
+  assert_equal "$(field c '[.prs[] | "\(.repo)#\(.number) \(.state)"] | join(",")')" "git.example.test/o/audio#12 MERGED"
+}
+
+@test "class:the size and kind of the item's roadmap row go on its session's row; the item's type stands in for a row off the roadmap; no item, no class" {
   queue_stub
   export SO_ROADMAP=roadmap-stub
   printf '#!/usr/bin/env bash\n[ "$*" = "proj --json" ] || exit 9\necho %s\n' \

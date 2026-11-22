@@ -1745,6 +1745,17 @@ handoff_repo() {
   [ "$("$AQ" list --json --state all | jq -r 'select(.slug == "p") | .proves_at')" = 2026-11-22T12:05:00Z ]
 }
 
+# ar-2779: the outcomes pass reads landed_by as <session>=<owner>/<repo>#<N> pairs; any other shape credits nothing.
+@test "set landed_by takes <session>=<owner>/<repo>#<N> pairs and refuses any other shape" {
+  "$AQ" add --project game --running --slug lb "lb" >/dev/null
+  run "$AQ" set lb landed_by=sid-a
+  assert_failure
+  assert_output --partial 'landed_by is <session id>=<owner>/<repo>#<N> per PR'
+  run "$AQ" set lb "landed_by=sid-a=o/r#4 sid-b=o/p#55"
+  assert_success
+  [ "$("$AQ" list --json --state all | jq -r 'select(.slug == "lb") | .landed_by')" = 'sid-a=o/r#4 sid-b=o/p#55' ]
+}
+
 @test "stats counts finished items by end reason, and leaves out the ones that name none" {
   "$AQ" add --project game --running --slug a "a" >/dev/null
   "$AQ" add --project game --running --slug b "b" >/dev/null

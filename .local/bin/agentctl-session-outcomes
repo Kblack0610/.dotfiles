@@ -102,17 +102,25 @@ SCHEDULES="${SCHEDULES_SYNC:-$LIB_DIR/../bin/schedules-sync}"
 # shellcheck source=/dev/null
 . "$LIB_DIR/harness-projects.sh"   # harness_run_dbs: a sandboxed harness's own opencode.db
 
-# queue_index FILE - what the queue knows of each session, {"<sid>": {agent, pr, items, iprojects, refs}}: the
+# queue_index FILE - what the queue knows of each session, {"<sid>": {agent, pr, items, iprojects, refs, landed}}: the
 # work items whose `sessions:` list it (the ledger join every reader of a row uses; a session can work
 # several), their projects (the queue's project_credit, so a session in the dotfiles checkout that ran
-# an agent-runtime item counts for agent-runtime), the harness it ran on and, for a headless harness
-# (opencode, codex), the PR the brief set. An unreadable queue writes {} and returns 1.
+# an agent-runtime item counts for agent-runtime), the harness it ran on, for a headless harness
+# (opencode, codex), the PR the brief set, and `landed`, the item PRs it landed: its agent-land
+# `landed_by:` pairs, or every PR of an item it is the only session on when the item has no landed_by
+# (one landed before ar-2779). A transcript that ran agent-land in the background, or cut the PR URL
+# with `| tail`, names no PR (SO_PR_JQ), so before this its merge went uncredited.
+# An unreadable queue writes {} and returns 1.
 queue_index() {
   "$QUEUE" list --json --state all 2>/dev/null | jq -cn 'reduce (inputs | select(.sessions) | . as $i
       | (.sessions | split(" "))[] | {s: ., i: $i}) as $x ({};
         .[$x.s] = {agent: $x.i.agent, pr: $x.i.pr, items: ((.[$x.s].items // []) + [$x.i.slug]),
                    iprojects: ((.[$x.s].iprojects // []) + [$x.i.project // empty | select(. != "")] | unique),
-                   refs: ((.[$x.s].refs // []) + [{row: ($x.i.row // ""), type: ($x.i.type // "")}])})' > "$1" && return 0
+                   refs: ((.[$x.s].refs // []) + [{row: ($x.i.row // ""), type: ($x.i.type // "")}]),
+                   landed: ((.[$x.s].landed // []) + (($x.s + "=") as $k
+                     | if ($x.i.landed_by // "") != "" then [$x.i.landed_by | split(" ")[] | select(startswith($k)) | ltrimstr($k)]
+                       elif ($x.i.sessions | split(" ") | unique | length) == 1 then ($x.i.pr // "" | tostring | split(" "))
+                       else [] end))})' > "$1" && return 0
   printf '{}' > "$1"
   return 1
 }
@@ -186,6 +194,31 @@ null_metrics() { printf 'null\n' | tee "$1/m.$2.json" > "$1/t.$2.json"; }
 # clone_of CLONES_TSV REPO - the local clone of an owner/name repo (so_rework_repos), or nothing.
 clone_of() { awk -F'\t' -v r="${2,,}" 'tolower($1) == r { print $2; exit }' "$1"; }
 
+# forgejo_mapped MAP - the host/owner/repo names the project map keeps on Forgejo, as a JSON array; [] with no map.
+forgejo_mapped() {
+  [ -e "$1" ] || { echo '[]'; return 0; }
+  so_mapped_repos "$1" | jq -Rsc 'split("\n") | map(select(. != ""))'
+}
+
+# queue_join QUEUE_FILE ROADMAP_FILE MAPPED - stdin: due rows; stdout: each with its items, class, harness and
+# the item PRs it is credited with added to .prs. A queue ref names no host (agent-land writes <owner>/<repo>#<N>
+# for a Forgejo PR too), so one in a repo MAPPED lists is keyed host/owner/repo, as the PR store holds it.
+# so_canon_init must have run first, for SO_CANON_STORE.
+queue_join() {
+  jq -c --slurpfile q "$1" --slurpfile rm "$2" --argjson hm "$(harness_map)" \
+      --arg store "$SO_CANON_STORE" --argjson mapped "$3" "$HARNESS_DEF"'($q[0][.session_id] // {}) as $i
+      | .items = ($i.items // [])
+      | .item_projects = ($i.iprojects // [])
+      | .class = (([($i.refs // [])[] | ($rm[0][.row] // {}) as $r
+                   | {size: ($r.size // null), kind: ((($r.kind // "") | select(. != "")) // (.type | select(. != "")) // null)}
+                   | select(.size != null or .kind != null)] | first) // .prior_class)
+      | .harness = harness_of($i)
+      | (if .harness | IN("opencode", "codex", "agy") then $i.pr // "" | tostring | split(" ") else [] end) as $brief
+      | .prs = (((.prs // []) + [($brief + ($i.landed // []))[] | capture("^(?<repo>[^#]+/[^#]+)#(?<n>[0-9]+)$")
+            | {repo: (if $store != "" and (.repo | test("^[^/]+/[^/]+$")) and ("\($store)/\(.repo)" | ascii_downcase | IN($mapped[]))
+                      then "\($store)/\(.repo)" else .repo end), number: (.n | tonumber)}]) | unique)'
+}
+
 cmd_run() {
   local work all=false
   case "${1:-}" in
@@ -230,18 +263,11 @@ cmd_run() {
   local queue_note=""
   queue_index "$work/queue.json" || queue_note="; queue unreadable, harness read as claude, items unknown"
   roadmap_index "$work/queue.json" "$work/due.jsonl" "$work/roadmap.json"
-  jq -c --slurpfile q "$work/queue.json" --slurpfile rm "$work/roadmap.json" --argjson hm "$(harness_map)" "$HARNESS_DEF"'($q[0][.session_id] // {}) as $i
-      | .items = ($i.items // [])
-      | .item_projects = ($i.iprojects // [])
-      | .class = (([($i.refs // [])[] | ($rm[0][.row] // {}) as $r
-                   | {size: ($r.size // null), kind: ((($r.kind // "") | select(. != "")) // (.type | select(. != "")) // null)}
-                   | select(.size != null or .kind != null)] | first) // .prior_class)
-      | .harness = harness_of($i)
-      | if .harness | IN("opencode", "codex", "agy") then
-          .prs = (((.prs // []) + [$i.pr // "" | tostring | split(" ")[] | capture("^(?<repo>[^#]+/[^#]+)#(?<n>[0-9]+)$") | {repo, number: (.n | tonumber)}]) | unique)
-        else . end' "$work/due.jsonl" > "$work/due.next" && mv "$work/due.next" "$work/due.jsonl" ||
-    die_stalled "could not join the due sessions to the queue"
   so_canon_init "$PROJECT_MAP" || die_stalled "could not read the Forgejo host and aliases from $PROJECT_MAP"
+  local mapped
+  mapped=$(forgejo_mapped "$PROJECT_MAP") || die_stalled "could not read the repos $PROJECT_MAP lists"
+  queue_join "$work/queue.json" "$work/roadmap.json" "$mapped" < "$work/due.jsonl" > "$work/due.next" && mv "$work/due.next" "$work/due.jsonl" ||
+    die_stalled "could not join the due sessions to the queue"
   so_canon_claims "$PROJECT_MAP" < "$work/due.jsonl" > "$work/due.next" && mv "$work/due.next" "$work/due.jsonl" ||
     die_stalled "could not key the due sessions' Forgejo claims to the PR store's host"
 
