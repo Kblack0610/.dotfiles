@@ -1891,7 +1891,7 @@ collect() {
   . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh" || return 1
   now="$(date +%s)"
   heavy="$(heavy_panes)"
-  local panel qjson qall qitems off qheld qhand
+  local panel items qjson qall qitems off qheld qhand
   PROC_SNAP="$CACHE/procs"   # live_wait reads /proc into it on its first call
   off="$(off_default_checkouts)"
   # A week of done items too: a session whose item finished, was requeued or moved to another
@@ -1916,6 +1916,10 @@ collect() {
       (.sessions // "" | if . == "" then "-" else . end), .slug,
       (.finished // "" | fromdateiso8601? // 0),
       (.pr // "" | tostring | sub(".*#"; "") | if . == "" then "-" else . end)] | map(tostring) | @tsv' <<<"$qall" 2>/dev/null)"
+  # "<slug>\t<project>: <slug>" for each item dispatch started in a tmux session: the [dispatch:] tag.
+  items="$(jq -r <<<"$qjson" '
+    select(.state != "queued" and ((.session // "") | contains(":")))
+    | "\(.slug)\t\(.project): \(.slug[:60])"' 2>/dev/null)"
   # A pass that could not read a source says so in $CACHE/unreadable, and marks the rows it feeds
   # in $CACHE/blind (keep_blind), so tick never logs a blink (a session "gone", a PR "-") as a change.
   # The local agent-panel feeds every row, parked ones included (parked_lines reads it): a failure
@@ -2108,10 +2112,7 @@ collect() {
     # a recycled lane would show the previous Claude's item (ar-860).
     case "$irel" in
       own | here | review)
-        dsp="$(jq -rn --arg sl "$islugs" 'first(inputs
-          | select(.state != "queued" and ((.session // "") | contains(":"))
-                   and (.slug as $s | ($sl | split(",")) | index($s) != null))
-          | "\(.project): \(.slug[:60])")' <<<"$qjson" 2>/dev/null)"
+        dsp="$(awk -F'\t' -v sl=",$islugs," 'index(sl, "," $1 ",") { print $2; exit }' <<<"$items")"
         dsp="${dsp:--}" ;;
     esac
     pq="$pnext"

@@ -2150,6 +2150,12 @@ queue_item() {
   [ "$(jq -r .dispatch <<<"$output")" = 'apociseum: fix-wave-save' ]
   run "$REPO_ROOT/.local/bin/fleet-sessions"
   assert_line --index 1 --partial '[dispatch: apociseum: fix-wave-save]'
+
+  # An item waiting here (item_of's here:) carries its tag too.
+  mkdir -p "$HOME/.agent/queue/waiting"
+  mv "$HOME/.agent/queue/running/20261103-100000-fix-wave-save.md" "$HOME/.agent/queue/waiting/"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .dispatch <<<"$output")" = 'apociseum: fix-wave-save' ]
 }
 
 @test "a Codex run's row (AGENT_PANEL_CODEX) reads WORKING busy and joins its queue item by thread id" {
