@@ -36,7 +36,7 @@
     "untagged": true
   },
   "infra": {
-    "what": "/one-shot on an agent-board row of the AI systems and the home cluster, no tags needed; tier 3 rows (harness, CI, runners) still run only to an open PR, under the unattended ceiling",
+    "what": "/one-shot on an agent-board row of the AI systems and the home cluster, no tags needed; tier 3 rows (harness, CI, runners) go to the tier-3 gate and merge behind the red-fix gate (policy.md \"Tier\")",
     "max_tier": 2,
     "projects": [
       "agent-runtime",

@@ -36,9 +36,9 @@ JUDGE_HARD_STOPS="$JUDGE_HUMAN_CRITERIA $JUDGE_NEEDED_CRITERIA gate grounded oth
 # judge_rules <policy>: its rule ids, one per line.
 judge_rules() { sed -n 's/^- (\([a-z][a-z0-9-]*\)) .*/\1/p' "$1" 2>/dev/null; }
 
-# The impact levels, narrowest first. The judge picks one of the first three per decision;
-# judge_derive alone gives `critical`.
-JUDGE_LEVELS='self repo fleet critical'
+# The impact levels, narrowest first: the judge picks one per decision. A human-stop rule is not
+# a level: judge_derive flags it apart as `human_only` (docs/priority.md, "Ask impact").
+JUDGE_LEVELS='self repo fleet'
 
 # judge_floor <policy> <heading>: the names its `### <heading>` lists as `- \`name\``, one per line.
 # No policy lists none: awk given an empty file name reads stdin, which hangs a post on an open pipe.
@@ -68,8 +68,9 @@ judge_floor_hit() {
 # `grounded` is noted, never a stop: the human took 43 of 45 asks it deferred in the live types.
 # Nothing on any other reply, so a criterion left out can never read as answerable. A bundle
 # counts its worst item: a human criterion on any decision, a needed one missing on any decision,
-# and the widest impact. `level` is that, or `critical` when external holds or reversible fails
-# on any decision, both hard stops already; `level_evidence` the quote behind it.
+# and the widest impact. `level` is that widest impact, `level_evidence` the quote behind it;
+# `human_only` is true when external holds or reversible fails on any decision (both hard stops
+# already), and `human_only_evidence` is the quote behind it.
 judge_derive() {
   jq -cn --arg human "$JUDGE_HUMAN_CRITERIA" --arg needed "$JUDGE_NEEDED_CRITERIA" --arg levels "$JUDGE_LEVELS" '
     first(inputs | ($human | split(" ")) as $human
@@ -79,20 +80,21 @@ judge_derive() {
     | select(type == "object" and (.type | type) == "string" and .type != ""
         and (.decisions | type) == "array" and (.decisions | length) > 0
         and all(.decisions[]; . as $d | all($all[]; ($d[.].met | type) == "boolean")
-              and ((.impact.level | type) == "string") and ($levels[0:3] | index($d.impact.level)) != null))
+              and ((.impact.level | type) == "string") and ($levels | index($d.impact.level)) != null))
     | .decisions as $d
     | def holds($c): if ($human | index($c)) then any($d[]; .[$c].met) else all($d[]; .[$c].met) end;
       first(($human[] | select(holds(.))), ($needed[] | select(holds(.) | not)), null) as $by
     | ($d | max_by(.impact.level as $l | $levels | index($l))) as $top
-    | (holds("external") or (holds("reversible") | not)) as $critical
+    | (holds("external") or (holds("reversible") | not)) as $human_only
     | {rule: ($by // .type), answerable: ($by == null), type, met: ([$all[] | select(holds(.))] | join(" ")),
        evidence: ([$d[] | select($by == null or (.[$by].met == (($human | index($by)) != null)))
                    | .[$by // "grounded"].evidence | select(. != "")] | first // ""),
-       level: (if $critical then "critical" else $top.impact.level end),
-       level_evidence: (if $critical then
+       level: $top.impact.level, level_evidence: ($top.impact.evidence // ""),
+       human_only: $human_only,
+       human_only_evidence: (if $human_only then
            ([$d[] | (select(.external.met) | .external.evidence), (select(.reversible.met | not) | .reversible.evidence)
              | select(. != "")] | first // "")
-         else ($top.impact.evidence // "") end),
+         else "" end),
        reason: (.reason // ""), answer: (.answer // ""), settled_by: (.settled_by // "")})' 2>/dev/null
 }
 
