@@ -2864,14 +2864,24 @@ cmd_set() {
   case " $* " in *" row="* | *" from="*)
     left_row="$(item_row "$f")" left_prof="$(fm_get "$f" profile)" left_lane="$(fm_get "$f" lane)" ;;
   esac
-  # merged: is the merge of the PR in pr:, so a new pr: drops an old merged: unless this set names
-  # one too (agent-land sets both), or done ok would pass on the last PR's merge (cmd_move).
-  case " $* " in
-    *" merged="*) ;;
-    *" pr="*) for kv in "$@"; do
-        [ "${kv%%=*}" = pr ] && [ "${kv#*=}" != "$(fm_get "$f" pr)" ] && header_del "$f" merged
-      done ;;
-  esac
+  # merged: is the merge of each PR in pr:, so a new pr: drops an old merged: unless this set names
+  # one too (agent-land sets both), or done ok would pass on the last PR's merge (cmd_move). A done ok
+  # item has passed that check, so its merged: is the proof it shipped: a pr: fixed or cleared after
+  # the PR record is gone keeps it, unless the new pr: lists a different number of PRs, which would
+  # put the lists out of step for reopen --unland (ar-3899, seen 2026-11-19 on the audio items).
+  # Keys are matched per argument: a title= or note= value holding " merged=" names no merged:.
+  local new_pr="" set_pr="" set_merged=""
+  for kv in "$@"; do
+    case "${kv%%=*}" in pr) set_pr=1 new_pr="${kv#*=}" ;; merged) set_merged=1 ;; esac
+  done
+  if [ -n "$set_pr" ] && [ -z "$set_merged" ] && [ "$new_pr" != "$(fm_get "$f" pr)" ]; then
+    local -a new_refs old_oids
+    read -ra new_refs <<<"$new_pr"
+    read -ra old_oids <<<"$(fm_get "$f" merged)"
+    [ "$(state_of "$f")" = done ] && [ "$(fm_get "$f" status)" = ok ] &&
+      { [ "${#new_refs[@]}" -eq 0 ] || [ "${#new_refs[@]}" -eq "${#old_oids[@]}" ]; } ||
+      header_del "$f" merged
+  fi
   for kv in "$@"; do
     case "$kv" in
       session=*) kv="session=$(qualified "${kv#*=}")" || exit 1 ;;
