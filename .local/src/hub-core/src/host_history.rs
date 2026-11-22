@@ -1,9 +1,10 @@
 //! One machine's last days, for its page (`#infra/machines/<host>`, `machine_page`): its CPU
-//! busy share and the cores each CI pool's jobs used, folded to one bucket an hour; the stretches
-//! it gave no reading (`Down`, the downtime list); and, for a host the governor powers, each start
-//! and stop with its reason and the hours it ran per UTC day. Read from Prometheus with range
-//! queries only when a page is opened, never on the board's cadence, all at one step (`STEP`) over
-//! `DAYS` days, which is what Prometheus keeps (home-config `helm-values.yaml` retention).
+//! busy share and the cores each CI pool's jobs used, folded to one bucket an hour; its downtime
+//! records (`Down`, the downtime list); and, for a host the governor powers, each start and stop
+//! with its reason and the hours it ran per UTC day. Read only when a page is opened, never on
+//! the board's cadence: the series from Prometheus with range queries at one step (`STEP`) over
+//! `DAYS` days, which is what Prometheus keeps (home-config `helm-values.yaml` retention), the
+//! records from Loki over the same days.
 //!
 //! | part   | series                                                                            |
 //! |--------|-----------------------------------------------------------------------------------|
@@ -11,11 +12,13 @@
 //! | temp   | `cc:host_temp_c{host}`: its hottest CPU sensor, the hour's largest sample              |
 //! | pools  | `cc:job_kind_cores{host,runner,kind}`: a busy runner's cores by its job's kind, summed by kind |
 //! | power  | the governor's own `ci_governor_power_state{host}` (home-config apps/ci-runner-governor); hours counted from the samples, not from its `hours_today` gauge (that gauge restarted at 0 on an override start, 2026-11-10) |
+//! | down   | Loki `{job="host-downtime", host}`: one JSON record per boot or Ready drop with its cause, written by home-config's cluster-janitor (`docs/host-tiers.md` "Downtime records"), through `kube_proxy` (`CC_KUBE_CONTEXT`, `CC_LOKI_SERVICE`) |
 
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
+use crate::kube_proxy::{self, encode};
 use crate::prom::{self, Series};
 use crate::reading::NO_DATA;
 use crate::table::{Row, Val};
@@ -88,48 +91,119 @@ pub struct Hour {
     pub temp: Option<f64>,
 }
 
-/// A stretch with no CPU reading: the host down, asleep, powered off or not scraped.
+/// One downtime record: a boot or Ready drop of the host, with the scrape loss around it, and
+/// its cause. The cluster-janitor writes it once the downtime has been over 5 minutes, so one
+/// still going has none yet (NodeDown pages while it lasts).
 #[derive(Serialize, Debug, PartialEq, Clone, Default)]
 pub struct Down {
-    /// Unix seconds of the last reading before it, else the window's start.
+    /// `<host>@<start>`, the same on every janitor run; a taint reason names it.
+    pub id: String,
+    /// Unix seconds it started.
     pub from: u64,
-    /// The first reading after it, else now while it lasts.
+    /// Unix seconds it ended.
     pub to: u64,
-    /// It lasts now.
-    pub open: bool,
-    /// `powered off by the governor` when its power state said so, else `NO_DATA`.
+    /// planned, power, control-plane, network, kernel, host or unknown.
+    pub cause: String,
+    /// The evidence for the cause, `; ` between lines.
     pub why: String,
 }
 
 /// The downtime list on both surfaces, newest first.
 impl Row for Down {
-    const COLUMNS: &'static [&'static str] = &["from", "to", "took", "why"];
-    const STATES: &'static [&'static str] = &["all", "now", "powered off"];
-    const FACETS: &'static [&'static str] = &["why"];
+    const COLUMNS: &'static [&'static str] = &["from", "to", "took", "cause", "why"];
+    const STATES: &'static [&'static str] = &["all", "unexplained"];
+    const FACETS: &'static [&'static str] = &["cause"];
     const LEAD: &'static str = "from";
-    const GLANCE: &'static [&'static str] = &["took"];
+    const GLANCE: &'static [&'static str] = &["took", "cause"];
 
     fn val(&self, col: &str) -> Val {
         match col {
             "from" => Val::Num(self.from as f64),
-            "to" if self.open => Val::None,
             "to" => Val::Num(self.to as f64),
             "took" => Val::Num(self.to.saturating_sub(self.from) as f64),
+            "cause" => Val::Text(self.cause.clone()),
             "why" => Val::Text(self.why.clone()),
             _ => Val::None,
         }
     }
+    /// `unexplained`: the janitor found no cause, the records HostDownUnexplained pages on.
     fn in_state(&self, s: &str) -> bool {
-        match s {
-            "now" => self.open,
-            "powered off" => self.why == POWERED_OFF,
-            _ => false,
-        }
+        s == "unexplained" && self.cause == "unknown"
     }
 }
 
-/// Why a stretch had no reading, when the governor had the host powered off then.
-pub const POWERED_OFF: &str = "powered off by the governor";
+/// The Loki stream the records are on, and the most asked of it for one machine: a week of one
+/// host is a few dozen records.
+const RECORDS: &str = "host-downtime";
+const RECORD_LIMIT: usize = 1000;
+
+/// A record as the janitor writes it (home-config `apps/cluster-janitor/downtime.py` `records`).
+#[derive(Deserialize)]
+struct Record {
+    id: String,
+    start: String,
+    end: String,
+    cause: String,
+    evidence: Vec<String>,
+}
+
+/// The API server path that asks Loki for the records of the hosts `alt` matches (an
+/// `alternation`), written between `from` and `to`.
+fn records_path(alt: &str, from: u64, to: u64) -> String {
+    let q = format!(r#"{{job="{RECORDS}", host=~"{alt}"}}"#);
+    format!(
+        "/loki/api/v1/query_range?query={}&start={}&end={}&limit={RECORD_LIMIT}&direction=backward",
+        encode(&q),
+        from * 1_000_000_000,
+        to * 1_000_000_000,
+    )
+}
+
+/// Loki's answer as the records of downtimes that ended at or after `from`, newest first, each
+/// id once. A line that is no record is an error: the writer and this reader disagree.
+pub fn records(body: &str, from: u64) -> Result<Vec<Down>, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| format!("Loki answer: {e}"))?;
+    let streams = v["data"]["result"]
+        .as_array()
+        .ok_or("Loki answer has no data.result")?;
+    let unix = |s: &str| {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .map(|t| t.timestamp() as u64)
+            .map_err(|e| format!("record time {s:?}: {e}"))
+    };
+    let mut out = vec![];
+    for line in streams
+        .iter()
+        .flat_map(|s| s["values"].as_array().into_iter().flatten())
+        .filter_map(|e| e[1].as_str())
+    {
+        let r: Record = serde_json::from_str(line).map_err(|e| format!("record {line:?}: {e}"))?;
+        let d = Down {
+            from: unix(&r.start)?,
+            to: unix(&r.end)?,
+            id: r.id,
+            cause: r.cause,
+            why: r.evidence.join("; "),
+        };
+        if d.to >= from {
+            out.push(d);
+        }
+    }
+    out.sort_by(|a, b| b.from.cmp(&a.from).then_with(|| a.id.cmp(&b.id)));
+    out.dedup_by(|a, b| a.id == b.id);
+    Ok(out)
+}
+
+/// Ask Loki for the records of the hosts `alt` matches since `from`.
+fn downtime(alt: &str, from: u64, now: u64) -> Result<Vec<Down>, String> {
+    let body = kube_proxy::get(
+        &crate::session_actions::System,
+        "CC_LOKI_SERVICE",
+        &records_path(alt, from, now),
+    )?;
+    records(&body, from)
+}
 
 /// A machine's last `DAYS` days.
 #[derive(Serialize, Debug, PartialEq, Clone, Default)]
@@ -141,8 +215,10 @@ pub struct HostHistory {
     pub bucket: u64,
     /// Oldest first, one per `BUCKET` from `from`.
     pub hours: Vec<Hour>,
-    /// Newest first.
+    /// Its downtime records, newest first (`read` fills them from Loki).
     pub down: Vec<Down>,
+    /// Why the records could not be read: an unread list never reads as an empty one.
+    pub down_unread: Option<String>,
     /// How many CPU samples it gave: 0 is a host with no node exporter reading in the window.
     pub readings: usize,
     /// The governor's power history, for a host it powers.
@@ -188,31 +264,34 @@ fn pools_query(m: &str) -> String {
     format!("sum by (kind) (cc:job_kind_cores{{{m}}})")
 }
 
-/// Ask Prometheus for a machine's last `DAYS` days: `names` are every name it goes by (its host
-/// label first), `powered` the governor's name for it when the governor powers it. A part that
-/// fails is an error line; the rest still read.
+/// Ask Prometheus and Loki for a machine's last `DAYS` days: `names` are every name it goes by
+/// (its host label first), `powered` the governor's name for it when the governor powers it. A
+/// part that fails is an error line; the rest still read.
 pub fn read(names: &[String], powered: Option<&str>, now: u64) -> Result<HostHistory, String> {
     let host = names.first().ok_or("no host name")?.clone();
     let m = hosts_matcher(names)?;
+    let alt = alternation(names)?;
     if let Some(p) = powered.filter(|p| !valid_host(p)) {
         return Err(format!("{p:?} is not a host name"));
     }
     let base = prom::base()?;
     let from = now.saturating_sub(DAYS * 86_400);
     let pools_q = pools_query(&m);
-    // Each range query reads 7 days; they run at once (power on this thread), so the page waits
-    // for the slowest only.
+    // Each query reads 7 days; they run at once (power on this thread), so the page waits for
+    // the slowest only.
     let base = base.as_str();
-    let (cpu, temp, pools, power) = std::thread::scope(|s| {
+    let (cpu, temp, pools, down, power) = std::thread::scope(|s| {
         let q = |q: String| s.spawn(move || range(base, q, from, now));
         let cpu = q(format!("max(cc:host_cpu_busy_ratio{{{m}}})"));
         let temp = q(format!("max(cc:host_temp_c{{{m}}})"));
         let pools = q(pools_q);
+        let down = s.spawn(|| downtime(&alt, from, now));
         let power = powered.map(|p| power(base, p, from, now));
+        let down = down.join().unwrap_or_else(|_| Err("panicked".to_string()));
         let join = |h: std::thread::ScopedJoinHandle<'_, _>| {
             h.join().unwrap_or_else(|_| Err("panicked".to_string()))
         };
-        (join(cpu), join(temp), join(pools), power)
+        (join(cpu), join(temp), join(pools), down, power)
     });
     let mut errors = vec![];
     let mut part = |name: &str, r: Result<Vec<Series>, String>| {
@@ -222,6 +301,10 @@ pub fn read(names: &[String], powered: Option<&str>, now: u64) -> Result<HostHis
     let (cpu, temp, pools) = (part("cpu", cpu), part("temp", temp), part("pools", pools));
     let power = power.and_then(|r| r.map_err(|e| errors.push(format!("power: {e}"))).ok());
     let mut h = history(&host, &cpu, &temp, &pools, power, from, now);
+    match down {
+        Ok(d) => h.down = d,
+        Err(e) => h.down_unread = Some(e),
+    }
     h.errors = errors;
     Ok(h)
 }
@@ -345,14 +428,6 @@ pub fn history(
             }
         }
     }
-    let mut down = gaps(&times, from, to);
-    for d in &mut down {
-        d.why = match &power {
-            Some(p) if off_at(p, d.from + STEP) => POWERED_OFF.into(),
-            _ => NO_DATA.into(),
-        };
-    }
-    down.reverse();
     HostHistory {
         host: host.to_string(),
         from,
@@ -361,58 +436,11 @@ pub fn history(
         bucket: BUCKET,
         hours,
         readings: times.len(),
-        down,
+        down: vec![],
+        down_unread: None,
         power,
         errors: vec![],
     }
-}
-
-/// The stretches between readings more than two steps apart (one missed scrape is no stretch), and an open one from the last
-/// reading to now when the readings stop. None at all is one open stretch over the whole window.
-fn gaps(times: &[u64], from: u64, to: u64) -> Vec<Down> {
-    let mut out = vec![];
-    let (Some(first), Some(last)) = (times.first(), times.last()) else {
-        return vec![Down {
-            from,
-            to,
-            open: true,
-            ..Default::default()
-        }];
-    };
-    if *first > from + 2 * STEP {
-        out.push(Down {
-            from,
-            to: *first,
-            ..Default::default()
-        });
-    }
-    for w in times.windows(2) {
-        if w[1] > w[0] + 2 * STEP {
-            out.push(Down {
-                from: w[0],
-                to: w[1],
-                ..Default::default()
-            });
-        }
-    }
-    if to > last + 2 * STEP {
-        out.push(Down {
-            from: *last,
-            to,
-            open: true,
-            ..Default::default()
-        });
-    }
-    out
-}
-
-/// The governor had it stopped (or stopping) at `t`: its last change at or before then says so.
-fn off_at(p: &PowerHistory, t: u64) -> bool {
-    p.changes
-        .iter()
-        .rev()
-        .find(|c| c.at <= t)
-        .is_some_and(|c| matches!(c.state.as_str(), "stopped" | "stopping"))
 }
 
 /// Ask Prometheus for the governor's power samples of `host` (its own name for it) since `from`.
@@ -637,69 +665,98 @@ mod tests {
     }
 
     #[test]
-    fn a_gap_in_the_readings_is_a_downtime_and_a_stop_at_the_end_is_open() {
-        let mut t: Vec<u64> = (0..10).map(|i| T + i * STEP).collect();
-        t.extend((20..25).map(|i| T + i * STEP));
-        let h = history("razer-laptop", &[cpu(&t)], &[], &[], None, T, T + 40 * STEP);
-        let got: Vec<_> = h.down.iter().map(|d| (d.from, d.to, d.open)).collect();
-        assert_eq!(
-            got,
-            vec![
-                (T + 24 * STEP, T + 40 * STEP, true),
-                (T + 9 * STEP, T + 20 * STEP, false),
-            ],
-            "newest first"
-        );
-        assert!(h.down.iter().all(|d| d.why == NO_DATA));
-        assert_eq!(h.readings, 15);
-    }
-
-    #[test]
-    fn one_missed_scrape_is_no_downtime() {
-        let t: Vec<u64> = (0..10).filter(|i| *i != 4).map(|i| T + i * STEP).collect();
-        let h = history("razer-laptop", &[cpu(&t)], &[], &[], None, T, T + 9 * STEP);
-        assert!(h.down.is_empty(), "{:?}", h.down);
-    }
-
-    #[test]
-    fn a_host_with_no_reading_at_all_is_one_open_stretch_and_says_so() {
+    fn a_host_with_no_reading_at_all_has_no_reading_in_any_hour() {
         let h = history("aws-burst-1", &[], &[], &[], None, T, T + 7200);
         assert_eq!(h.readings, 0);
-        assert_eq!(
-            h.down,
-            vec![Down {
-                from: T,
-                to: T + 7200,
-                open: true,
-                why: NO_DATA.into()
-            }]
+        assert!(
+            h.down.is_empty(),
+            "the downtime list is the records, not the gaps"
         );
         assert!(h.hours.iter().all(|x| x.cpu.is_none() && x.seen == 0.0));
     }
 
+    /// A Loki answer holding `lines` as the values of two streams, the way Loki splits a host's
+    /// records by their `cause` label.
+    fn loki(lines: &[&str]) -> String {
+        let (a, b) = lines.split_at(lines.len() / 2);
+        let values = |ls: &[&str]| -> Vec<serde_json::Value> {
+            ls.iter()
+                .enumerate()
+                .map(|(i, l)| {
+                    serde_json::json!([format!("{}", 1_800_000_000_000_000_000u64 + i as u64), l])
+                })
+                .collect()
+        };
+        serde_json::json!({"status": "success", "data": {"resultType": "streams", "result": [
+            {"stream": {"job": "host-downtime", "host": "asus-laptop", "cause": "kernel"}, "values": values(a)},
+            {"stream": {"job": "host-downtime", "host": "asus-laptop", "cause": "unknown"}, "values": values(b)},
+        ]}})
+        .to_string()
+    }
+
+    // Lines as home-config's cluster-janitor writes them (test_downtime.RecordTests).
+    const NVME: &str = r#"{"id": "asus-laptop@2026-11-20T14:02:12Z", "host": "asus-laptop", "start": "2026-11-20T14:02:12Z", "end": "2026-11-20T14:02:48Z", "cause": "kernel", "hosts": 1, "evidence": ["HostNvmeReset 14:10Z"]}"#;
+    const LATER: &str = r#"{"id": "asus-laptop@2026-11-20T17:15:33Z", "host": "asus-laptop", "start": "2026-11-20T17:15:33Z", "end": "2026-11-20T17:15:48Z", "cause": "unknown", "hosts": 2, "evidence": ["shared with deskslim-1, fewer than 3 hosts", "no kernel line"]}"#;
+    // 2026-11-20T14:00:00Z.
+    const DAY: u64 = 1_795_183_200;
+
     #[test]
-    fn a_stretch_the_governor_had_it_stopped_says_powered_off() {
-        let p = fold(
-            "aws-burst-1",
-            &[
-                series("running", "queue", &[T]),
-                series("stopped", "idle", &[T + STEP]),
-            ],
-            T,
-            T + 30 * STEP,
+    fn records_read_newest_first_with_their_cause_and_evidence() {
+        let got = records(&loki(&[NVME, LATER]), DAY).unwrap();
+        assert_eq!(
+            got,
+            vec![
+                Down {
+                    id: "asus-laptop@2026-11-20T17:15:33Z".into(),
+                    from: DAY + 3 * 3600 + 15 * 60 + 33,
+                    to: DAY + 3 * 3600 + 15 * 60 + 48,
+                    cause: "unknown".into(),
+                    why: "shared with deskslim-1, fewer than 3 hosts; no kernel line".into(),
+                },
+                Down {
+                    id: "asus-laptop@2026-11-20T14:02:12Z".into(),
+                    from: DAY + 132,
+                    to: DAY + 168,
+                    cause: "kernel".into(),
+                    why: "HostNvmeReset 14:10Z".into(),
+                },
+            ]
         );
-        let h = history(
-            "aws-burst-1",
-            &[cpu(&[T, T + 20 * STEP])],
-            &[],
-            &[],
-            Some(p),
-            T,
-            T + 20 * STEP,
+        assert!(got[0].in_state("unexplained") && !got[1].in_state("unexplained"));
+        assert_eq!(got[1].val("took"), Val::Num(36.0));
+    }
+
+    #[test]
+    fn a_record_twice_reads_once_and_one_ended_before_the_window_not_at_all() {
+        let got = records(&loki(&[NVME, LATER, LATER]), DAY).unwrap();
+        assert_eq!(got.len(), 2, "{got:?}");
+        let got = records(&loki(&[NVME, LATER]), DAY + 3600).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].cause, "unknown");
+        assert_eq!(records(&loki(&[]), DAY).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn a_line_that_is_no_record_is_an_error_not_a_shorter_list() {
+        let e = records(&loki(&[NVME, r#"{"id": "x"}"#]), DAY).unwrap_err();
+        assert!(e.starts_with("record "), "{e}");
+        assert!(records("<html>", DAY)
+            .unwrap_err()
+            .starts_with("Loki answer"));
+    }
+
+    #[test]
+    fn the_records_query_names_only_the_stream_and_this_machines_hosts() {
+        let alt = alternation(&["workstation".into(), "a.lan".into()]).unwrap();
+        let p = records_path(&alt, 10, 20);
+        let q = r#"{job="host-downtime", host=~"workstation|a\\.lan"}"#;
+        assert_eq!(
+            p,
+            format!(
+                "/loki/api/v1/query_range?query={}&start=10000000000&end=20000000000&limit=1000&direction=backward",
+                encode(q)
+            )
         );
-        assert_eq!(h.down.len(), 1);
-        assert_eq!(h.down[0].why, POWERED_OFF);
-        assert!(h.down[0].in_state("powered off"));
     }
 
     #[test]
