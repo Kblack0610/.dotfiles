@@ -37,7 +37,7 @@ const ctx = vm.createContext({
 // The document listeners table.js adds (the facet menus' open, tick, outside click and Escape),
 // kept apart from the other scripts' so a test fires only these.
 const docOn = {};
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "table.js"]) {
+for (const f of ["../../web-kit/kb-ui.js", "ui.js", "md.js", "charts.js", "app.js", "table.js"]) {
   doc.addEventListener = f === "table.js" ? (ev, fn) => { (docOn[ev] ||= []).push(fn); } : () => {};
   vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 }
