@@ -120,7 +120,7 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   b="$(post demo 'run it again?')"
   run env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer --by human "$b" go
   assert_failure 2
-  assert_output --partial 'cannot answer as the human'
+  assert_output --partial 'answers as agent, not human'
   run "$AGENT_ASK" show "$b"; assert_line 'status: pending'
   run env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer --by agent "$b" later
   assert_success
@@ -2893,6 +2893,7 @@ delay_setup() {
   done
 }
 
+# A board answers outside the asking session, so the stub below strips its variables.
 @test "delay: a human answer during the judge's call stands; the judge writes nothing over it" {
   unset AGENT_ASK_NO_JUDGE
   export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0
@@ -2900,7 +2901,7 @@ delay_setup() {
   cat > "$BATS_TEST_TMPDIR/judge" <<SH
 #!/usr/bin/env bash
 grep -l '^question: race' "$HOME"/.agent/asks/demo/*.md | while IFS= read -r f; do
-  grep -qx 'status: pending' "\$f" && "$AGENT_ASK" answer "\$(sed -n 's/^id: //p' "\$f")" wait >/dev/null 2>&1
+  grep -qx 'status: pending' "\$f" && env -u CLAUDE_CODE_SESSION_ID -u AGENT_QUEUE_ITEM "$AGENT_ASK" answer "\$(sed -n 's/^id: //p' "\$f")" wait >/dev/null 2>&1
 done
 printf '%s\n' '$(score ship_deploy)'
 SH
