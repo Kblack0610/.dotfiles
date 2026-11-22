@@ -2458,8 +2458,8 @@ prs_branches() {
     # merged PR's head is this very commit.
     git -C "$dir" for-each-ref --no-merged "$base" --format='%(refname:lstrip=3)%09%(objectname)%09%(committerdate:unix)' refs/remotes/origin |
       jq -Rnc --arg r "$repo" --arg base "${base#*/}" --slurpfile prs <(printf '%s' "$prs") '
-        ($prs[0] | {open: (map(select(.state == "OPEN") | {(.branch): 1}) | add // {}),
-                    merged: (map(select(.state == "MERGED") | {"\(.branch) \(.head_sha)": 1}) | add // {}) }) as $p
+        ($prs[0] | {open: (map(select(.state == "OPEN") | {key: .branch, value: 1}) | from_entries),
+                    merged: (map(select(.state == "MERGED") | {key: "\(.branch) \(.head_sha)", value: 1}) | from_entries) }) as $p
         | inputs | split("\t") | {b: .[0], sha: .[1], t: (.[2] | tonumber)}
         | select(.b != $base and .b != "HEAD" and ($p.open[.b] | not) and ($p.merged["\(.b) \(.sha)"] | not))
         | {repo: $r, branch: .b, sha: .sha, commit: (.t | todate), kind: (if .b | startswith("salvage/") then "salvage" else "pushed" end)}'
