@@ -7,7 +7,7 @@
 # Only custom modules can be listed here: the toggle works by making a module's
 # exec print nothing, which built-in modules (cpu, clock, tray...) cannot do.
 # Adding a row is not enough - the module's exec must also be wrapped in
-# `modules.sh gate <id>` and given "signal": 10 in config.base / config.pin-full.
+# `modules.sh gate <id>` and given a "signal" in config.base / config.pin-full (10, unless it owns one).
 
 needs|Needs you: what only you can do|custom/needs
 agents|Agent sessions by world|custom/ai-agents
