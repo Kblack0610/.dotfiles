@@ -178,56 +178,67 @@ b() { "$AU" budget --json | jq -c "$1 | walk(if type == \"number\" then . + 0 el
   assert_output --partial 'do unread since 2026-11-11T00:00'
 }
 
-# aws_budget <type> <unit> <limit> <actual> [forecast]: one entry of describe-budgets' Budgets list
+# aws_budget <type> <time unit> <limit> <actual> [forecast] [currency]: describe-budget's answer
 aws_budget() {
-  local fc=""
-  [ -n "${5:-}" ] && fc=",\"ForecastedSpend\":{\"Amount\":\"$5\"}"
-  printf '{"BudgetType":"%s","TimeUnit":"%s","BudgetLimit":{"Amount":"%s"},"CalculatedSpend":{"ActualSpend":{"Amount":"%s"}%s}}' \
-    "$1" "$2" "$3" "$4" "$fc"
+  local u="${6:-USD}" fc=""
+  [ -n "${5:-}" ] && fc=",\"ForecastedSpend\":{\"Amount\":\"$5\",\"Unit\":\"$u\"}"
+  printf '{"Budget":{"BudgetType":"%s","TimeUnit":"%s","BudgetLimit":{"Amount":"%s","Unit":"%s"},"CalculatedSpend":{"ActualSpend":{"Amount":"%s","Unit":"%s"}%s}}}' \
+    "$1" "$2" "$3" "$u" "$4" "$u" "$fc"
 }
 
-@test "aws reads the profile's one monthly cost budget from AWS Budgets, its forecast the projection" {
-  echo 'aws    aws          -   ref=prof project=playground lane=ci' >> "$BUDGET_LEDGER"
+@test "aws reads the budget its line names from AWS Budgets in one call, AWS's forecast the projection" {
+  echo 'aws    aws          -   ref=prof account=111122223333 budget=ci-month project=playground lane=ci' >> "$BUDGET_LEDGER"
   cat > "$HOME/bin/aws" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >> "$FIX/aws-calls"
-case "$1 $2" in
-  "sts get-caller-identity") echo '{"Account":"111122223333"}' ;;
-  "budgets describe-budgets") [ -s "$FIX/aws" ] || { echo 'AccessDenied' >&2; exit 254; }; cat "$FIX/aws" ;;
-  *) exit 2 ;;
-esac
+[ "$1 $2" = "budgets describe-budget" ] || exit 2
+[ -s "$FIX/aws" ] || { echo 'Error when retrieving credentials from custom-process' >&2; exit 255; }
+cat "$FIX/aws"
 EOF
   chmod +x "$HOME/bin/aws"
-  echo "{\"Budgets\":[$(aws_budget COST MONTHLY 600 100 650),$(aws_budget COST ANNUALLY 9000 5000)]}" > "$FIX/aws"
+  aws_budget COST MONTHLY 600 100 650 > "$FIX/aws"
   run b '.lines[] | select(.name == "aws") | [.status, .cap, .spent, .projected, .note]'
   assert_success
-  assert_output '["ok",600,100,650,"AWS'"'"'s own forecast"]'
-  run grep -c -- '--profile prof' "$FIX/aws-calls"
-  assert_output 2
-  run grep -c -- '--account-id 111122223333' "$FIX/aws-calls"
-  assert_output 1
+  assert_output '["ok",600,100,650,"projected by AWS'"'"'s forecast"]'
+  run cat "$FIX/aws-calls"
+  assert_output 'budgets describe-budget --account-id 111122223333 --budget-name ci-month --profile prof --output json'
   "$AU" budget --json > "$BUDGET_JSON"
   run "$AU" budget check
   assert_failure
   assert_output 'aws projects to $650 this month, past its $600 cap'
-  # a forecast below what is spent is no forecast: the line paces itself
-  echo "{\"Budgets\":[$(aws_budget COST MONTHLY 600 100 40)]}" > "$FIX/aws"
+  # a forecast below what is spent, or none, is no forecast: the line paces itself
+  aws_budget COST MONTHLY 600 100 40 > "$FIX/aws"
   run b '.lines[] | select(.name == "aws") | [.status, .projected, .note]'
   assert_output '["ok",300,""]'
+  aws_budget COST MONTHLY 600 100 > "$FIX/aws"
+  run b '.lines[] | select(.name == "aws") | [.status, .projected]'
+  assert_output '["ok",300]'
   # past the cap is over, whatever the forecast
-  echo "{\"Budgets\":[$(aws_budget COST MONTHLY 900 1011 1105)]}" > "$FIX/aws"
+  aws_budget COST MONTHLY 900 1011 1105 > "$FIX/aws"
   run b '.lines[] | select(.name == "aws") | [.status, .note]'
-  assert_output '["over","past its $900 cap; AWS'"'"'s own forecast"]'
-  # no monthly cost budget, two of them, or a failed call: unread, never $0
-  echo "{\"Budgets\":[$(aws_budget USAGE MONTHLY 10 1)]}" > "$FIX/aws"
+  assert_output '["over","past its $900 cap; projected by AWS'"'"'s forecast"]'
+  # not monthly, not cost, not USD, no spend block, or a failed credential: unread, never $0
+  aws_budget COST ANNUALLY 9000 100 > "$FIX/aws"
   run b '.lines[] | select(.name == "aws") | [.status, .spent, .note]'
-  assert_output '["unread",null,"want one monthly cost budget on aws profile prof, found 0"]'
-  echo "{\"Budgets\":[$(aws_budget COST MONTHLY 600 100),$(aws_budget COST MONTHLY 50 1)]}" > "$FIX/aws"
+  assert_output '["unread",null,"aws budget ci-month is not a monthly cost budget"]'
+  aws_budget USAGE MONTHLY 10 1 > "$FIX/aws"
   run b '.lines[] | select(.name == "aws") | .note'
-  assert_output '"want one monthly cost budget on aws profile prof, found 2"'
+  assert_output '"aws budget ci-month is not a monthly cost budget"'
+  aws_budget COST MONTHLY 600 100 650 EUR > "$FIX/aws"
+  run b '.lines[] | select(.name == "aws") | .note'
+  assert_output '"aws budget ci-month is not in USD"'
+  echo '{"Budget":{"BudgetType":"COST","TimeUnit":"MONTHLY","BudgetLimit":{"Amount":"600","Unit":"USD"}}}' > "$FIX/aws"
+  run b '.lines[] | select(.name == "aws") | [.status, .note]'
+  assert_output '["unread","unexpected answer: '"'"'CalculatedSpend'"'"'"]'
   : > "$FIX/aws"
   run b '[(.lines[] | select(.name == "aws") | [.status, .note]), .partial]'
-  assert_output '[["unread","aws failed: AccessDenied"],["aws"]]'
+  assert_output '[["unread","aws failed: Error when retrieving credentials from custom-process"],["aws"]]'
+  # a line that does not name its budget is unread, with no call made
+  sed -i 's/ account=111122223333 budget=ci-month//' "$BUDGET_LEDGER"; : > "$FIX/aws-calls"
+  run b '.lines[] | select(.name == "aws") | [.status, .note]'
+  assert_output '["unread","an aws line names its account= and budget="]'
+  run cat "$FIX/aws-calls"
+  assert_output ''
 }
 
 @test "check with no budget file says so and exits 1" {

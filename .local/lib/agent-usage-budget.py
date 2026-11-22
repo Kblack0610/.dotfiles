@@ -14,8 +14,8 @@ the system that bills it wherever that system says it:
                 and a budget window that does not reset on the 1st is named on the line.
   github        org billing (ref = the org): net month-to-date spend on every product; the cap is the
                 sum of the product budgets, and each capped product is kept on the line for `check`.
-  aws           AWS Budgets through the aws CLI (ref = the CLI profile): the account's one monthly cost
-                budget, its limit the cap and AWS's own forecast the projection.
+  aws           AWS Budgets through the aws CLI (ref = the CLI profile): the monthly USD cost budget the
+                line names (account=, budget=), its limit the cap and AWS's own forecast the projection.
   digitalocean  month-to-date usage from doctl; there is no cap.
 usd_month is `-` on a metered line (its system holds the cap) and `?` on a bill whose price is not known.
 A reader that fails makes its line `unread`, and an unknown price makes it `unpriced`: both leave the
@@ -120,7 +120,8 @@ def parse_ledger(path):
                 if not re.fullmatch(r"[A-Za-z0-9_.-]+", v):
                     sys.exit(f"agent-usage budget: {path}:{n}: {k}={v!r}: letters, digits, _ . - only")
             bills.append({"name": line[0], "kind": line[1], "usd_month": usd, "ref": opts.get("ref", line[0]),
-                          "paid_by": opts.get("paid_by"), "project": opts.get("project"), "lane": opts.get("lane")})
+                          "paid_by": opts.get("paid_by"), "project": opts.get("project"), "lane": opts.get("lane"),
+                          "account": opts.get("account"), "budget": opts.get("budget")})
     return bills
 
 
@@ -303,20 +304,23 @@ def read_bill(b, frac, work, month):
                         products={k: {"cap": v, "spent": round(by_sku.get(k, 0), 2)} for k, v in sorted(caps.items())},
                         by_repo=by_repo)
         elif b["kind"] == "aws":
-            cli = ["--profile", b["ref"], "--output", "json"]
-            acct = run_json(["aws", "sts", "get-caller-identity", *cli])["Account"]
-            got = run_json(["aws", "budgets", "describe-budgets", "--account-id", acct, *cli]).get("Budgets", [])
-            monthly = [x for x in got if x.get("BudgetType") == "COST" and x.get("TimeUnit") == "MONTHLY"]
-            if len(monthly) != 1:
-                raise Unread(f"want one monthly cost budget on aws profile {b['ref']}, found {len(monthly)}")
-            spend = monthly[0].get("CalculatedSpend", {})
-            spent = float(spend["ActualSpend"]["Amount"])
+            if not (b["account"] and b["budget"]):
+                raise Unread("an aws line names its account= and budget=")
+            # One call, so one credential fetch: the profile's key comes through rbw.
+            got = run_json(["aws", "budgets", "describe-budget", "--account-id", b["account"],
+                            "--budget-name", b["budget"], "--profile", b["ref"], "--output", "json"])["Budget"]
+            if got.get("BudgetType") != "COST" or got.get("TimeUnit") != "MONTHLY":
+                raise Unread(f"aws budget {b['budget']} is not a monthly cost budget")
+            limit, spend = got["BudgetLimit"], got["CalculatedSpend"]
             fc = spend.get("ForecastedSpend")
+            if any(x["Unit"] != "USD" for x in (limit, spend["ActualSpend"], fc or {"Unit": "USD"})):
+                raise Unread(f"aws budget {b['budget']} is not in USD")
+            spent = float(spend["ActualSpend"]["Amount"])
             # AWS forecasts from history; early in a month it can sit below what is already spent.
             fc = float(fc["Amount"]) if fc and float(fc["Amount"]) >= spent else None
-            line.update(cap=float(monthly[0]["BudgetLimit"]["Amount"]), spent=spent,
+            line.update(cap=float(limit["Amount"]), spent=spent,
                         projected=pace(spent, frac) if fc is None else fc,
-                        note="AWS's own forecast" if fc is not None else "")
+                        note="projected by AWS's forecast" if fc is not None else "")
         elif b["kind"] == "digitalocean":
             spent = float(run_json(["doctl", "balance", "get", "-o", "json"])["month_to_date_usage"])
             line.update(spent=spent, projected=pace(spent, frac))
