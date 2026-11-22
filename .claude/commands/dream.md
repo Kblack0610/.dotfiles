@@ -1,5 +1,5 @@
 ---
-description: Dreaming - run the nightly memory-consolidation sweep now for one project (outcomes/lessons/sessions -> lessons, memory/, mem0 proposals on Home, and a DREAMS.md diary)
+description: Dreaming - run the nightly memory-consolidation sweep now for one project (outcomes/lessons/sessions -> lessons, memory/, and mem0 proposals on Home)
 allowed-tools: Bash, Read
 ---
 
@@ -14,8 +14,7 @@ This command holds no procedure. The sweep, Mnemosyne's voice and every gate liv
 `$ARGUMENTS` may contain:
 
 - `--project <name>`: the project to sweep. Default: the current one, from `$PWD`.
-- `--dry-run`: stage candidates and write the diary, promote nothing.
-- `--weekly`: also append the worst-5-sessions table to `DREAMS.md` (automatic on Mondays).
+- `--dry-run`: stage candidates, promote nothing.
 
 ## Run
 
@@ -35,8 +34,7 @@ A sweep runs a headless model and takes several minutes: start it with `run_in_b
 
 Under `~/.agent/dreams/<project>/`:
 
-- `DREAMS.md`: the diary, one dated Light / REM / Deep Sleep entry per sweep.
-- `insights.md`: cited question-and-answer pairs and Lane B hypotheses, re-read by the next sweep.
+- `staging.json` and `checkpoint.json`: the night's candidates and the last-swept time. No diary and no insights file (dropped, ar-4460).
 
 Outside it, a live sweep files each fact about you as a proposal (`agent-propose add --stream dream --verb mem0`), which waits on Home until you accept it, the one step that posts it to mem0. It may also edit or append to `~/.agent/lessons/<project>.md` (a lesson that supersedes another ends with `<!-- supersedes:KEY -->`, so `lessons pick` stops handing out the old one) and add files to the project's Claude memory dir. A one-line summary per sweep goes to `~/.local/state/agentctl/dream/activity.log`.
 
@@ -44,7 +42,7 @@ Outside it, a live sweep files each fact about you as a proposal (`agent-propose
 
 ```bash
 state="$HOME/.agent/dreams/<project>"
-awk '/^# [0-9]{4}-[0-9]{2}-[0-9]{2}/{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}' "$state/DREAMS.md"
+cat "$state/checkpoint.json"
 agent-propose list --stream dream
 tail -3 ~/.local/state/agentctl/dream/activity.log
 ```

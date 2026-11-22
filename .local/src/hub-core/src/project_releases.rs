@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::briefing::plural;
+use crate::display::fmt::plural;
 use crate::links::{Kind, Link};
 use crate::release_graph::Shipment;
 use crate::release_page::{core, cut_of};

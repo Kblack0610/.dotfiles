@@ -8,7 +8,7 @@ The tracked files here are this README and `prompts/`. (The directory keeps its 
 
 ### `prompts/` - what the model is told (tracked)
 
-`version-summary.md` and `version-rewrite.md` are the system prompts of the two registered agents that write the summaries, `version-summary` and `version-rewrite`. Their confs (`~/.config/agentctl/agents/<name>.conf`, private overlay) name the route, the model, the token budget and `DATA_CLASS=personal`, so `agentctl-run` refuses any route not safe for the personal vault. Each call is a line in `~/.local/state/agentctl/calls.jsonl`, and a prompt edit starts a new `prompt_sha` there. What an agent is: `~/.config/agentctl/README.md`, "What an agent is".
+`version-summary.md` is the system prompt of the registered agent that writes the summaries, `version-summary`. Its conf (`~/.config/agentctl/agents/version-summary.conf`, private overlay) names the route, the model, the token budget and `DATA_CLASS=personal`, so `agentctl-run` refuses any route not safe for the personal vault. Each call is a line in `~/.local/state/agentctl/calls.jsonl`, and a prompt edit starts a new `prompt_sha` there. What an agent is: `~/.config/agentctl/README.md`, "What an agent is".
 
 There is no `llm.env` and no fallback model any more: the route decides where the call goes, and a down origin fails the summary instead of answering from somewhere else. An old `llm.env` left here is not read.
 
@@ -21,12 +21,6 @@ There is no `llm.env` and no fallback model any more: the route decides where th
 - Backfill existing versions: `notes-version-summary --backfill <profile> <project>` (add `--all` for
   every project, `--dry-run` to preview, `--force` to regenerate). The block sits between markers and
   is regenerable; the original note body is never touched.
-- Rewrite the bodies too: add `--rewrite` to also regenerate the changelog BODY into clean, legible
-  ASCII prose (grouped Added/Changed/Fixed), then summarize from the clean version -
-  `notes-version-summary --backfill --rewrite <profile> <project>`. This preserves every real fact and
-  ticket/PR ref but reshapes the prose, so it DRIFTS from the upstream product-repo CHANGELOG. Safe
-  because the vault is git-tracked (recoverable) and the product repo stays the source of truth; use
-  `--dry-run --rewrite` to preview first.
 
 ## What is next
 

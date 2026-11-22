@@ -1,7 +1,7 @@
 ---
 name: docs-write
 description: >-
-  Add or change a repo's docs without bloat: edit the one home, link instead of copying, keep the index. Use for "document this", "update the README", "where should this go in the docs". Checking docs against code: docs-audit.
+  Add or change a repo's docs without bloat: edit the one home, link instead of copying, keep the index. Use for "document this", "update the README", "where should this go in the docs". Checking docs against code: docs-cleanup.
 metadata:
   category: authoring
   tags: [docs, documentation, writing, readme, structure]
@@ -15,13 +15,13 @@ Docs grow by addition: every session adds the paragraph its change needed, with 
 
 ## Scope and triggers
 
-Add or change a repo's documentation the right way, so it does not bloat: find the repo's own doc rules and the one home for the subject, edit that home (a new doc only when nothing covers it), write what is true now with no history, link instead of copying, keep the doc inside its budget, put it in the index, then run the prose check and the repo's doc check. Use whenever a change needs docs: "document this", "write docs for X", "add this to the docs", "update the README", "where should this go in the docs", "write up how X works", or after a feature, fix or harness change whose behaviour a doc describes. Works in any repo; uses the repo's own standard when it has one, and the BNB standard (unity-core docs/writing-docs.md) as the default. Not for checking existing docs against the code (docs-audit), prose voice alone (de-ai-writing, which this skill runs as a step), colleague messages (work-comms), problem briefs (one-pager), or agent rules in CLAUDE.md and AGENTS.md (update-rules).
+Add or change a repo's documentation the right way, so it does not bloat: find the repo's own doc rules and the one home for the subject, edit that home (a new doc only when nothing covers it), write what is true now with no history, link instead of copying, keep the doc inside its budget, put it in the index, then run the prose check and the repo's doc check. Use whenever a change needs docs: "document this", "write docs for X", "add this to the docs", "update the README", "where should this go in the docs", "write up how X works", or after a feature, fix or harness change whose behaviour a doc describes. Works in any repo; uses the repo's own standard when it has one, and the BNB standard (unity-core docs/writing-docs.md) as the default. Not for checking existing docs against the code (docs-cleanup), prose voice alone (de-ai-writing, which this skill runs as a step), colleague messages (work-comms), problem briefs (one-pager), or agent rules in CLAUDE.md and AGENTS.md (update-rules).
 
 - A change adds or alters behaviour a doc describes, or a feature, system or fix needs documenting.
 - Someone asks where something should be documented, or to update a README or guide.
 - A doc grew past its budget in your change and needs trimming or splitting.
 
-Not for auditing whether existing docs match the code (`docs-audit`), or for rules that load into agent sessions (`update-rules`).
+Not for auditing whether existing docs match the code (`docs-cleanup`, Repo), or for rules that load into agent sessions (`update-rules`).
 
 ## Steps
 

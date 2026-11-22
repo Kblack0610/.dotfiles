@@ -35,7 +35,7 @@ pub struct Ranked {
 impl Ranked {
     /// The row as the TUI prints it: friction, id, project, wall time, cost, PRs, then why.
     pub fn line(&self) -> String {
-        let wall = crate::queue::dur(self.duration_s.map(|s| (s / 60.0) as i64));
+        let wall = crate::display::fmt::dur_min(self.duration_s.map(|s| (s / 60.0) as i64));
         let cost = self.cost_usd.map_or("-".into(), |c| format!("${c:.2}"));
         let prs = self.prs_merged + self.prs_open + self.prs_closed_unmerged;
         format!(
@@ -158,7 +158,7 @@ mod tests {
         assert_eq!(rows[1].cost_usd, None);
         assert_eq!(
             rows[0].line(),
-            " 11  6f296b73  dotfiles         6h   $41.20  24/25 PRs  fix the gate  2 x 1 closed unmerged + 9 nudges"
+            " 11  6f296b73  dotfiles      6h10m   $41.20  24/25 PRs  fix the gate  2 x 1 closed unmerged + 9 nudges"
         );
     }
 

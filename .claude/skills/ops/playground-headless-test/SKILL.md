@@ -1,7 +1,7 @@
 ---
 name: playground-headless-test
 description: >-
-  Run unity-core-playground tests safely: one class locally, gate a merge on the runner pool, read the nightly. Use for "run the tests", "gate this PR", "is this green". Why CI keeps going red: ci-failures. Not for a live editor.
+  Run unity-core-playground tests safely: one class locally, gate a merge on the runner pool, read the nightly. Use for "run the tests", "gate this PR", "is this green". Why CI keeps going red: ci-cleanup. Not for a live editor.
 metadata:
   category: ops
   tags: [unity, testing, ci, playground, headless]
@@ -34,7 +34,7 @@ Runs the playground's tests without hurting the workstation, which is the human'
 - When gating and landing a playground PR.
 - When a `Tests (all)` run on main is red and you need to read it.
 
-Not for MCP-driven play in an editor: CLAUDE.md "Driving the sandbox over MCP". Not for why reds recur across many runs, or what a nightly red belongs to - that is `ci-failures`. Taking a red nightly to green: `playground-nightly-fix`.
+Not for MCP-driven play in an editor: CLAUDE.md "Driving the sandbox over MCP". Not for why reds recur across many runs, or what a nightly red belongs to - that is `ci-cleanup`. Taking a red nightly to green: `playground-nightly-fix`.
 
 ## Steps
 

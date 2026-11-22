@@ -268,14 +268,6 @@ fn state(results: &[(i64, u64, u64)]) -> (&'static str, Runs) {
     (s, runs)
 }
 
-fn span(secs: i64) -> String {
-    match secs {
-        s if s < 3600 => format!("{}m", (s / 60).max(1)),
-        s if s < 86_400 => format!("{}h{}m", s / 3600, s % 3600 / 60),
-        s => format!("{}d{}h", s / 86_400, s % 86_400 / 3600),
-    }
-}
-
 /// The banner over every check: unknown is never up, and a silent monitor is said before what
 /// its last results claim.
 pub fn banner(checks: &[Check], newest: Option<i64>, now: i64) -> (String, Level) {
@@ -457,7 +449,11 @@ pub fn build(
                 to,
                 fails,
                 text: match to {
-                    Some(to) => format!("{}  down {}", hm(from), span(to - from)),
+                    Some(to) => format!(
+                        "{}  down {}",
+                        hm(from),
+                        crate::display::fmt::dur_secs((to - from) as f64)
+                    ),
                     None => format!("{}  down, ongoing", hm(from)),
                 },
             });

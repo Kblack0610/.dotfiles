@@ -2,16 +2,12 @@
 //! agent-web's Costs tab draws): where the tokens go (`u`, `U` the window) and what Langfuse sees
 //! (`l`): what the fleet costs, not who is working.
 
-use hub_core::costs::tokens as count;
 use hub_core::tokens::{Count, Langfuse, Share, Split, Tokens};
 use ratatui::text::{Line, Span};
 
 use crate::fit::{clip_line, Cell, Table};
-use crate::fmt::{clock, dur, kilo, pct, Palette};
-
-fn usd(v: Option<f64>) -> String {
-    v.map_or("-".into(), |v| format!("${v:.2}"))
-}
+use crate::fmt::{clock, pct, Palette};
+use hub_core::display::fmt::{dur_secs, usd_opt};
 
 /// The tokens fold: `u` folds or opens it, `U` switches its window, `i` opens the next row that
 /// has parts, at any depth, and past the last closes it. None is the default, open (dashboards
@@ -93,7 +89,7 @@ pub fn tokens(
     let (mark, verb) = if open { ("-", "folds") } else { ("+", "opens") };
     let week = format!(
         "  7d {}, tool output {}",
-        count(Some(t.week.context as f64)),
+        hub_core::display::fmt::tokens(Some(t.week.context as f64)),
         pct(Some(t.week.carried_share))
     );
     let mut head = vec![
@@ -122,8 +118,8 @@ pub fn tokens(
         Line::styled(
             format!(
                 "  {label}: {} context, {}/response, tool output {}  ({}, {read}{partial})",
-                count(Some(s.context as f64)),
-                count(Some(s.per_response as f64)),
+                hub_core::display::fmt::tokens(Some(s.context as f64)),
+                hub_core::display::fmt::tokens(Some(s.per_response as f64)),
                 pct(Some(s.carried_share)),
                 t.date.get(5..).unwrap_or(&t.date),
             ),
@@ -178,7 +174,7 @@ pub fn langfuse(
                     "{lead}{tool} {}, {gw} {}, {}",
                     pct(f.tool_error_share),
                     pct(f.gateway_error_share),
-                    usd(Some(f.gateway_cost_usd)),
+                    usd_opt(Some(f.gateway_cost_usd)),
                 ),
                 style,
             ));
@@ -225,7 +221,7 @@ pub fn langfuse(
     let models = f
         .gateway_models
         .iter()
-        .map(|m| format!("{} {}", m.model, usd(Some(m.cost_usd))))
+        .map(|m| format!("{} {}", m.model, usd_opt(Some(m.cost_usd))))
         .chain((f.gateway_other_models > 0).then(|| format!("{} more", f.gateway_other_models)))
         .collect::<Vec<_>>()
         .join(", ");
@@ -236,7 +232,7 @@ pub fn langfuse(
                 f.gateway_calls,
                 f.gateway_errors,
                 classes(&f.gateway_error_classes),
-                kilo(f.gateway_tokens),
+                hub_core::display::fmt::tokens(Some(f.gateway_tokens as f64)),
             ),
             p.dim(),
         ),
@@ -281,7 +277,7 @@ fn langfuse_tools(f: &Langfuse, p: Palette, w: usize) -> Vec<Line<'static>> {
                 t.calls.to_string().into(),
                 ms(t.p50_ms).into(),
                 ms(t.p95_ms).into(),
-                dur(t.total_s as f64).into(),
+                dur_secs(t.total_s as f64).into(),
             ]
         })
         .collect();
@@ -310,13 +306,17 @@ fn token_table(tools: &[Share], part: &[String], p: Palette, w: usize) -> Vec<Li
             rows.push(vec![
                 format!("{}{mark}{}", "    ".repeat(depth), r.name).into(),
                 r.calls.to_string().into(),
-                format!("{} ch", count(Some(r.chars as f64))).into(),
+                format!(
+                    "{} ch",
+                    hub_core::display::fmt::tokens(Some(r.chars as f64))
+                )
+                .into(),
                 format!("{:.1}%", r.share * 100.0).into(),
-                count(Some(r.carried_tokens as f64)).into(),
+                hub_core::display::fmt::tokens(Some(r.carried_tokens as f64)).into(),
                 match (r.timed, r.ms) {
                     (0, _) => "-".into(),
                     (_, 0..1000) => ms(r.ms),
-                    _ => dur(r.ms as f64 / 1000.0),
+                    _ => dur_secs(r.ms as f64 / 1000.0),
                 }
                 .into(),
                 r.ms.checked_div(r.timed).map_or("-".into(), ms).into(),
