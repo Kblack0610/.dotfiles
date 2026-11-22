@@ -3239,10 +3239,18 @@ empty_submodule_fixture() {
   "${g[@]}" checkout -q -B main origin/main 2>/dev/null
   echo x > "$SANDBOX/wt/synced"; "${g[@]}" add synced; "${g[@]}" commit -q -m 'store-sync, not pushed yet'
   echo y >> "$SANDBOX/wt/synced"
-  NOTES_DIR="$SANDBOX/none" AGENT_STORE_DIR="$SANDBOX/wt" run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_success
-  [ "$(jq -r .bucket <<<"$output")" = DONE ]
-  [ "$(jq -r .finished <<<"$output")" = true ]
+  local store
+  for store in AGENT_STORE_DIR NOTES_DIR; do
+    run env NOTES_DIR="$SANDBOX/none" AGENT_STORE_DIR="$SANDBOX/none" "$store=$SANDBOX/wt" "$REPO_ROOT/.local/bin/fleet-sessions" --json
+    assert_success
+    [ "$(jq -r .bucket <<<"$output")" = DONE ]
+    [ "$(jq -r .finished <<<"$output")" = true ]
+    [ "$(jq -c .blockers <<<"$output")" = '[]' ]
+  done
+  # A store inside a bigger checkout is not that checkout: its work is still the session's.
+  mkdir -p "$SANDBOX/wt/sub"
+  NOTES_DIR="$SANDBOX/none" AGENT_STORE_DIR="$SANDBOX/wt/sub" run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
   # Negative control: the same checkout outside the store is this session's unlanded work.
   NOTES_DIR="$SANDBOX/none" AGENT_STORE_DIR="$SANDBOX/none" run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = STALLED ]

@@ -1568,14 +1568,20 @@ main_health() {
 
 # store_landed <toplevel> -> exit 0 when <toplevel> is the agent store (AGENT_STORE) or the notes vault
 # (NOTES_STORE). store-sync commits and pushes both on its own and many writers share them, so nothing in
-# either is a session's to land by PR: as a repo it edited (#2719) or as its own cwd (ar-3883).
+# either is a session's to land by PR: as a repo it edited (#2719) or as its own cwd (ar-3883). A store
+# is only a repo root: one inside a bigger checkout must not make that whole checkout unlandable. Their
+# roots are read once per process (STORE_TOPS), as this runs per session and per edited repo.
+STORE_TOPS=""
 store_landed() {
-  local s
+  local s t
   [ -n "$1" ] || return 1
-  for s in "$AGENT_STORE" "$NOTES_STORE"; do
-    [ "$1" = "$(git -C "$s" rev-parse --show-toplevel 2>/dev/null)" ] && return 0
-  done
-  return 1
+  if [ -z "$STORE_TOPS" ]; then
+    STORE_TOPS=:
+    for s in "$AGENT_STORE" "$NOTES_STORE"; do
+      t="$(git -C "$s" rev-parse --show-toplevel 2>/dev/null)" && [ "$t" = "$(cd "$s" && pwd -P)" ] && STORE_TOPS="$STORE_TOPS$t:"
+    done
+  fi
+  [[ "$STORE_TOPS" == *":$1:"* ]]
 }
 
 # edited_work_blockers <cwd> <edited paths>: unlanded work in other repositories this
