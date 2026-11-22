@@ -120,10 +120,12 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
 
 @test "due lists unnudged DONE/LANDED/STALLED, unescalated NEEDS rows for the human, and nightly red; no other bucket escalates" {
   doc "[$(row a DONE false false), $(row b LANDED true false), $(row c NEEDS false false), $(row d WORKING false false), $(row e STALLED true true)]" \
-      '[{"repo":"r1","reason":"ci red","escalated":false},{"repo":"r2","escalated":true}]'
+      '[{"repo":"r1","reason":"ci red","escalated":false},{"repo":"r2","escalated":true},{"repo":"r3","reason":"ci red","escalated":false,"owners":["sid-8"]}]'
   run "$SH" due
   assert_success
   assert_line 'nightly red: r1 (ci red)'
+  # a red with owners is theirs (their STALLED nudge, or the nightly item they run), not the human's (ar-2467)
+  refute_output --partial 'nightly red: r3'
   # A close-now row is close_sample's: a pass gets no line for it.
   refute_output --partial ' a '
   refute_output --partial 'escalate LANDED'
