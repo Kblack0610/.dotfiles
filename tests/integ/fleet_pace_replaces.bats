@@ -43,7 +43,7 @@ reason() {
   assert_output --partial 'hand-methods: '
   assert_output --partial 'fleet-pace'
   assert_output --partial 'kill a PID you hold'
-  assert_output --partial 'never node'
+  assert_output --partial 'never an interpreter'
 }
 
 @test "a pgrep -f whose matches get killed is denied, with the kill before or after it" {
@@ -59,7 +59,8 @@ reason() {
            'pkill -x java' 'pkill java' 'pkill -x sh' 'pkill sh' \
            'sudo pkill -x node' '/usr/bin/pkill -x node' 'pkill -u me -x node' \
            'bash -c "pkill -x node"' 'sleep 1; pkill -x node' 'xargs -r pkill -x node' \
-           'killall node' 'killall -9 python3' 'killall -x ruby' 'killall java' 'killall -x sh'; do
+           'killall node' 'killall -9 python3' 'killall -x ruby' 'killall java' 'killall -x sh' \
+           'pkill -x nodejs' 'pkill -x bun' 'pkill -x deno' 'pkill -x perl'; do
     run decision "$c"
     assert_output deny
   done
@@ -67,8 +68,22 @@ reason() {
   assert_output --partial 'hand-methods: '
   assert_output --partial 'fleet-pace'
   assert_output --partial 'PID you hold'
-  for c in 'pkill -x nodemon' 'pkill -x nodejs' 'pkill -x node_exporter' \
+  for c in 'pkill -x nodemon' 'pkill -x node_exporter' 'pkill -x perlbrew' \
            'pkill -x fish' 'pkill -x bash' 'pkill -x zsh'; do
+    run decision "$c"
+    assert_output allow
+  done
+}
+
+@test "a pgrep or pidof of an interpreter whose PIDs get killed is denied; one that is only read passes" {
+  for c in 'kill $(pgrep -x node)' 'pgrep -x node | xargs kill' 'kill $(pidof node)' 'pidof python3 | xargs -r sudo kill -9' \
+           $'pgrep -x ruby\nkill $x'; do
+    run decision "$c"
+    assert_output deny
+  done
+  run reason 'kill $(pgrep -x node)'
+  assert_output --partial 'PID you hold'
+  for c in 'pgrep -x node' 'pidof node' 'kill $(pgrep -x mything)' 'pgrep -x nodemon | xargs kill'; do
     run decision "$c"
     assert_output allow
   done
