@@ -370,22 +370,25 @@ EOF
   assert_equal "$(cat "$SANDBOX/hook.log")" ""
 }
 
-@test "a store-sync that writes the queue runs once per write, never starting itself again (ar-4241)" {
+@test "a store-sync that writes the queue or the asks runs once per write, never starting itself again (ar-4241)" {
   # The loop a bats fixture's stub made (ar-4050, ar-4241): a sync that calls agent-queue started the
-  # hook again, and ~300 to ~2,000 processes outlived their run. The stub here calls agent-queue on
+  # hook again, and ~300 to ~2,000 processes outlived their run. The stub calls its writer back on
   # every run; the cap of 5 turns a regression into a count of 5, not a hang.
   export AGENT_STORE_DIR="$HOME/.agent"
   mkdir -p "$HOME/.agent/queue" "$SANDBOX/bin"
   cat > "$SANDBOX/bin/store-sync" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >> "$SANDBOX/hook.log"
-[ "\$(wc -l < "$SANDBOX/hook.log")" -ge 5 ] || "$REPO_ROOT/.local/bin/agent-queue" list >/dev/null 2>&1
+[ "\$(wc -l < "$SANDBOX/hook.log")" -ge 5 ] || "\$WRITER" list >/dev/null 2>&1
 EOF
   chmod +x "$SANDBOX/bin/store-sync"
-  PATH="$SANDBOX/bin:$PATH" "$REPO_ROOT/.local/bin/agent-queue" list >/dev/null 2>&1 || true
-  run cat "$SANDBOX/hook.log"
-  assert_equal "${#lines[@]}" 1
-  assert_line --index 0 "--now --bg"
+  for w in agent-queue agent-ask; do
+    : > "$SANDBOX/hook.log"
+    WRITER="$REPO_ROOT/.local/bin/$w" PATH="$SANDBOX/bin:$PATH" "$REPO_ROOT/.local/bin/$w" list >/dev/null 2>&1 || true
+    run cat "$SANDBOX/hook.log"
+    assert_equal "$w ${#lines[@]}" "$w 1"
+    assert_line --index 0 "--now --bg"
+  done
 }
 
 @test "the background sync drops its caller's descriptors, so it holds no caller's lock" {
