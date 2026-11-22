@@ -830,20 +830,22 @@ close_items_sample() {
 #   /wind-down for CHAT. Typing is the one model-free way in; a SendMessage to another permission mode
 #   waits unseen. A pane another send holds (exit 75) gives its claim back.
 # - Prompt not typeable (a draft, a dialog, copy mode), nothing typed yet: close its window.
+# - Manual (investigate-only) permission mode, nothing typed yet: its hook denies every write, so a
+#   typed /wind-down auto is wasted (ar-4046); close its window the same way, no keystrokes.
 # - Typed FLEET_IDLE_CLOSE_MIN ago and still due (WINDOW, CLOSE_REFUSED_JQ): whatever it did with the
-#   close (manual mode refused it, a red stopped it), it is quiet again with nothing to land: close it.
+#   close (a red stopped it), it is quiet again with nothing to land: close it.
 # A window closes only unshown, with Claude in front (an editor's buffer is not in the scrollback) and
 # no turn running in its footer, by wind-down.sh close (scrollback, window, a reap that refuses a dirty
 # tree), its own open asks set to reopen it first (logged once in .reopen-failed when one cannot be).
 # A failed close is logged once in .close-failed and left to the escalation. A worker's pane goes over
 # ssh (pane_run). Having acted, it refreshes the document so cmd_due reads it.
 close_sample() {
-  local sid target pane close fact asks nasks host server cmd when now rc wdc how st mode att wa fg screen
+  local sid target pane close fact asks nasks man host server cmd when now rc wdc how st mode att wa fg screen
   local acted="" failed="$LEDGER/.close-failed"
   local wd="${FLEET_WIND_DOWN:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/wind-down.sh}"
   now="$(date +%s)"
   close_items_sample
-  while IFS=$'\t' read -r sid target pane close fact asks nasks; do
+  while IFS=$'\t' read -r sid target pane close fact asks nasks man; do
     case "$sid" in */*|.|..) continue ;; esac
     host="$(pane_host "$target")"; server="$(pane_server "$target")"
     [ -n "$server" ] && [[ "$pane" == %* ]] || continue
@@ -859,6 +861,8 @@ close_sample() {
       when="$(stat -c %Y "$LEDGER/.closed/$sid" 2>/dev/null)" || continue
       [ $((now - when)) -ge $(( ${FLEET_IDLE_CLOSE_MIN:-60} * 60 )) ] || continue
       how="still due ${FLEET_IDLE_CLOSE_MIN:-60}m after its close was typed"
+    elif [ "$man" = 1 ]; then
+      how="manual (investigate-only) mode: it cannot write a wind-down note, so no close is typed into it"
     elif [ "${mode:-1}" != 0 ] || ! idle_prompt "$screen"; then
       how="its prompt not idle (a draft, a dialog, tmux mode or an unreadable screen), kept in its saved scrollback"
     fi
@@ -914,7 +918,7 @@ close_sample() {
     | select(all(.session_id, .target, .pane; type == "string" and . != "" and (test("[\t\n]") | not)))
     | [.session_id, .target, .pane, $close, ((.fact // "-") | tostring | gsub("[\t\n]"; " ")),
        ([(.blockers // [])[] | strings | capture("^open ask (?<id>[A-Za-z0-9_-]+)$").id] | join(",") | if . == "" then "-" else . end),
-       ((.own_asks // 0) | floor)]
+       ((.own_asks // 0) | floor), (if .in_manual_mode then 1 else 0 end)]
     | @tsv' "$STATE_FILE" 2>/dev/null)
   [ -z "$acted" ] || fleet-sessions --write >/dev/null || true
 }

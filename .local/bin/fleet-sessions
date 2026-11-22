@@ -2222,18 +2222,18 @@ collect() {
     rm -f "$CACHE/blind_row"
     local target pane status plan sid cwd since ctx planf tsess idle bidle asks ownask hv bucket fact edited \
           pdone ptotal pnext phases fin started age oid askids blk transcript prs \
-          work jobs human parked compactions topic doing said gate test ojob acct pq names landed live cpid host cwin shown
+          work jobs human parked compactions topic doing said gate test ojob acct pq names landed live cpid host cwin shown mman
     # The separator is a unit separator, not a tab: read collapses an empty tab-separated field and
     # shifts every later one left, so a park ledger with no cwd put plan_file's "-" in ctx and
     # json_rows died on it (ar-1500). A number a source left empty or null is 0.
-    IFS=$'\x1f' read -r target pane status plan sid cwd since ctx planf started cpid host cwin shown < <(jq -r '
+    IFS=$'\x1f' read -r target pane status plan sid cwd since ctx planf started cpid host cwin shown mman < <(jq -r '
       def s: (. // "") | tostring | gsub("[\n\u001f]"; " ");
       def n: tonumber? // 0;
       [(.target | s), ((.pane // "") | sub(".*/"; "") | s), (.status | s),
       (if .plan_mode then 1 else 0 end), (.session_id | s), (.cwd | s), (.idle_since | n), (.context_tokens | n),
       (.plan_file | s | if . == "" then "-" else . end), (.started_at | s | if . == "" then "-" else . end), (.pid | n),
       (.host | s | if . == "" then "-" else . end),
-      (.context_window | n), (if .attached then 1 else 0 end)] | join("\u001f")' <<<"$line")
+      (.context_window | n), (if .attached then 1 else 0 end), (if .manual_mode then 1 else 0 end)] | join("\u001f")' <<<"$line")
     # A worker's session: its cwd, pid, plan file and panes are paths and ids on that machine, so
     # nothing here reads them (a worktree of the same name here is another session's). Its row says
     # what its agent-panel says; its PR is its queue item's.
@@ -2506,12 +2506,12 @@ collect() {
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
     nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
     [ ! -e "$CLOSED/$sid" ] || n=1
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
       "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}" \
       "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test" "$mh" \
-      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iby" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "$qwait" "$qdepth" "$prun" "$pwq" "$wake" "$(critical_of "$wait_on" "$irow" "$gd" "$pr")" "${shown:-0}"
+      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iby" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "$qwait" "$qdepth" "$prun" "$pwq" "$wake" "$(critical_of "$wait_on" "$irow" "$gd" "$pr")" "${shown:-0}" "${mman:-0}"
     [ ! -f "$CACHE/blind_row" ] || echo "$sid" >> "$CACHE/blind"
   done
   [ -z "${CLOSE_SELF:-}" ] || return 0
@@ -3089,7 +3089,9 @@ json_rows() {
       # The human is looking at it (attached in agent-panel: the active window of an attached tmux
       # session). Not a close step (no presence keeps, fleet-states.md): close_sample never closes a
       # window on screen, so session-close-overdue skips a row with it.
-      attached: ((.[64] // "0") == "1")} | '"$CLOSE_JQ"
+      attached: ((.[64] // "0") == "1"),
+      # The manual (default) permission mode is investigate-only, so the session cannot write a wind-down note.
+      in_manual_mode: ((.[65] // "0") == "1")} | '"$CLOSE_JQ"
 }
 
 # overdue_of <now epoch> <rows file> <eta file> -> {session_id: verdict}: the one overdue rule, which
