@@ -280,7 +280,6 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${TRIAGE_WATCH_HIGH_AFTER:=900}" # triage: the same for a high or urgent watch: one dispatch pass, so one flap is not a row
 : "${BENCH_GUARD_RECUR:=2}"         # retro: sessions a lesson must recur in before it wants a guard
 : "${BENCH_GUARD_SEEN:=3}"          # retro: dream sweeps that found a lesson again (its seen marker) before it wants a guard (provisional, rules.jsonl)
-: "${BENCH_DREAMS_DIR:=$HOME/.agent/dreams}"   # insight_expired_share: <project>/insights.md, dream the writer
 : "${BENCH_SO_LIB:=$HOME/.local/lib/session-outcomes.sh}"   # so_lesson_sigs, so_lesson_seen, so_forgejo_pr
 : "${BENCH_CANARY_DIR:=$HOME/.config/fleet-bench/canary}"   # canary: one <id>.json per task (content as data)
 : "${BENCH_CANARY_ORACLES:=$BENCH_CANARY_DIR/../canary-oracles}"   # canary: the answer-key scripts a task's oracle.script and oracle.answer.script name (content as data)
@@ -1854,20 +1853,6 @@ ledger_roster() {
   echo "launches_direct=$(launch_files | wc -l)"
 }
 
-# insight_expired_share EPOCH -> the share (two decimals) of the insights dated 30 to 60 days before
-# EPOCH whose last status reads expired, over every project's insights.md; ? when none is dated there.
-# A record is a dated level-two heading up to the next one, as agentctl-dream's maintain_insights reads it.
-insight_expired_share() {
-  local files=("$BENCH_DREAMS_DIR"/*/insights.md)
-  [ -f "${files[0]}" ] || { echo '?'; return 0; }
-  LC_ALL=C awk -v lo="$(date -d "@$(($1 - 60 * 86400))" +%F)" -v hi="$(date -d "@$(($1 - 30 * 86400))" +%F)" '
-    function close_rec() { if (d != "" && d > lo && d <= hi) { n++; if (st ~ /^expired/) x++ } d = ""; st = "" }
-    FNR == 1 { close_rec() }
-    /^## / { close_rec(); if (match($0, /^## [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]([ \t]|$)/)) d = substr($0, 4, 10); next }
-    /^(\*\*Status:\*\*|Status:)/ { st = $0; sub(/^(\*\*Status:\*\*|Status:)[ \t]*/, "", st); st = tolower(st) }
-    END { close_rec(); if (n) printf "%.2f\n", x / n; else print "?" }' "${files[@]}"
-}
-
 # ledger_counts -> key=value lines: the roster, then the fleet's live counts
 ledger_counts() {
   local t rows sd=""
@@ -1902,9 +1887,6 @@ ledger_counts() {
   # that held (session-outcomes lessons); ? when none has a verdict yet or the cache cannot be read
   echo "lesson_held_share=$($BENCH_LESSONS_CMD 2>/dev/null | jq -er '(.held + .recurring) as $n
     | if $n > 0 then .held / $n * 100 | round / 100 else "?" end' 2>/dev/null || echo '?')"
-  # insight_expired_share: of the dream insights whose 30-day window closed in the last 30 days (heading
-  # dated 30 to 60 days ago), the share whose last status is expired: questions nobody answered or routed
-  echo "insight_expired_share=$(insight_expired_share "$t")"
   # worktrees_held, worktrees_held_over_7d: trees held with nobody in them, and those idle past 7 days, from
   # the newest worktree-gc row; ? with no row, one older than WORKTREE_GC_STALE_H, or one dated in the future
   jq -nrR --argjson t "$t" --argjson h "$WORKTREE_GC_STALE_H" '
@@ -2664,7 +2646,7 @@ cmd_rules() {
 # judges' from judge-eval (it owns those; ~/.local/src/docs/judges.md), plus counts taken now. Headless runs are left out: they have no human to interrupt and their
 # cost is the fleet's, not a session's. Each threshold is <kpi>_max or <kpi>_min.
 
-KPI_NOW="runners_bad failed_unexplained board_open board_days points_per_pr loop_dark loop_dark_7d $KPI_CHAIN cost_per_merged_item red_fix_min_p50 lesson_held_share insight_expired_share worktrees_held worktrees_held_over_7d systems_no_skill"
+KPI_NOW="runners_bad failed_unexplained board_open board_days points_per_pr loop_dark loop_dark_7d $KPI_CHAIN cost_per_merged_item red_fix_min_p50 lesson_held_share worktrees_held worktrees_held_over_7d systems_no_skill"
 KPI_COMMS="buzzes_per_day comms_pass_pct rows_pass_pct pages_held_per_day"
 KPI_JUDGE="judge_errors judge_precision ask_answered_pct ask_unclear_pct judge_human_only_live_pct ask_human_only_pct dispatch_false_defer_pct"
 KPI_ASKS="human_answered_per_day ask_wait_p90_min"

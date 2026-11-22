@@ -36,7 +36,7 @@ Not for a correction to file (that goes in `~/.agent/lessons/{project}.md`), for
 
 ## Verbs
 
-- Did it run: `agentctl status dream`, `systemctl --user list-timers | grep -E 'dream|nightly'`; the diary is `~/.agent/dreams/{project}/DREAMS.md`.
+- Did it run: `agentctl status dream`, `systemctl --user list-timers | grep -E 'dream|nightly'`; its log is `~/.local/state/agentctl/dream/activity.log` (no diary since ar-4460).
 - Sweep one project now: `agentctl-dream --project <name>` in the background; it is a headless model call, and `--dry-run` only skips promotion, it still costs one. Interactive: `/dream --project <name>`.
 - Open mem0 proposals: `agent-propose list --stream dream`; going over them is `fleet-asks`, "Review proposals".
 - A lesson that landed twice or a `memory/` file a lesson already covers: DREAMING.md "Safety" (the dedupe check moves it to `memory-refused/`).
