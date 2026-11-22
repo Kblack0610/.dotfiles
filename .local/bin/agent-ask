@@ -891,10 +891,10 @@ cmd_list() {
 
 cmd_count() {
   local key="${1:-}"; [ -n "$key" ] || key="$(resolve_project)"
-  # --all is the fleet figure: Home's Question count (needs-figure), the one every surface shows,
+  # --all is the fleet figure: Home's Question count (hub-figure), the one every surface shows,
   # "?" when it cannot be read (ar-4395). One project's count stays its own pending files.
   if [ "$key" = "--all" ]; then
-    local n; n="$(needs-figure needs_question 2>/dev/null)"; echo "${n:-?}"; return 0
+    local n; n="$(hub-figure needs_question 2>/dev/null)"; echo "${n:-?}"; return 0
   fi
   cmd_list "$key" --pending | grep -c . || true
 }

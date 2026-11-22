@@ -38,7 +38,7 @@ SNAPSHOTS="$HERE/../lib/day-log-snapshots.py"
 : "${DAYLOG_USAGE_CMD:=agent-usage}"
 : "${DAYLOG_HOLD_CMD:=agent-hold}"
 : "${DAYLOG_UNITY_CMD:=pgrep -cx Unity}"
-: "${DAYLOG_NEEDS_CMD:=needs-figure}"   # Home's Needs you figures (hub-core); the Question count is its needs_question
+: "${DAYLOG_NEEDS_CMD:=hub-figure}"   # Home's Needs you figures (hub-core); the Question count is its needs_question
 : "${DAYLOG_OUTCOMES_DIR:=$HOME/.agent/outcomes}"
 : "${DAYLOG_REFS_DIR:=$HOME/.notes/journal/refs}"
 : "${DAYLOG_OPEN_DAYS:=7}"    # an open PR untouched longer than this is counted, not listed
@@ -127,6 +127,13 @@ gather() {
     $DAYLOG_UNITY_CMD > "$tmp/unity" 2>/dev/null || echo 0 > "$tmp/unity"
     # "?" when Home cannot be read, never a count made up from the rows listed below it (dashboards rule 6)
     n="$($DAYLOG_NEEDS_CMD needs_question 2>/dev/null)"; echo "${n:-?}" > "$tmp/needs"
+    # The Sessions card's figures, every host and less the fleet's own (hub-core); one that cannot be
+    # read is left out, never counted from the state document here.
+    sessfig='{}'
+    for n in headline working need_you stalled ready_to_close; do
+      v="$($DAYLOG_NEEDS_CMD "sessions_$n" 2>/dev/null)" && sessfig="$(jq -c --arg k "$n" --argjson v "$v" '.[$k] = $v' <<< "$sessfig")"
+    done
+    echo "$sessfig" > "$tmp/sessions"
   fi
   { grep -F "$day " "$DAYLOG_WATCH_LOG" 2>/dev/null | grep "^$day " | tail -n 50; } | jq -Rn '[inputs]' > "$tmp/timeline"
   usage_json "$s" "$e" > "$tmp/usage"
@@ -147,6 +154,7 @@ gather() {
      --slurpfile holds <(cat "$tmp/holds" 2>/dev/null || echo null) \
      --arg unity "$(cat "$tmp/unity" 2>/dev/null)" \
      --arg needq "$(cat "$tmp/needs" 2>/dev/null)" \
+     --slurpfile sessfig <(cat "$tmp/sessions" 2>/dev/null || echo '{}') \
      --slurpfile timeline "$tmp/timeline" --slurpfile usage "$tmp/usage" \
      --slurpfile ledger <(cat "$tmp/ledger" 2>/dev/null || echo null) --slurpfile groups "$tmp/groups" --slurpfile tokens "$tmp/tokens" \
      --slurpfile projects "$tmp/projects" \
@@ -166,7 +174,8 @@ gather() {
                      if $ledger[0] == null then "queue ledger" else empty end,
                      if $live and $open[0] == null then "PR store open" else empty end,
                      if $live and $st == null then "fleet state" else empty end,
-                     if $live and $needq == "?" then "Needs you figure" else empty end]),
+                     if $live and $needq == "?" then "Needs you figure" else empty end,
+                     if $live and (($sessfig[0] // {}) | length) < 5 then "Sessions figure" else empty end]),
        merged: (if $m == null then ($p.merged // [])
          else ($stale | split(",") | map(sub("^.*/"; ""))) as $sb
            | [$m[] | .repository.name as $r | ($by["\($r)#\(.number)"] // {}) as $i
@@ -195,8 +204,8 @@ gather() {
             asks: [$st.asks[]? | {id, project, kind, question, created}] | sort_by(.created) | reverse,
             questions: $needq}
          else ($p.waiting // null) end),
-       fleet: (if $live and $st != null then
-           {sessions: ($st.sessions | length), buckets: ($st.sessions | group_by(.bucket) | map({key: (.[0].bucket // "?"), value: length}) | from_entries),
+       fleet: (if $live then
+           {sessions: ($sessfig[0] // {}),
             holds: ($holds[0] // []), unity_runs: ($unity | tonumber? // 0)}
          else ($p.fleet // null) end),
        bench: (if $live and $headline[0] != null then {headline: $headline[0], sessions: ($bench[0] // [])}

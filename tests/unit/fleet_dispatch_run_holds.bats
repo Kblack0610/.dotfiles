@@ -755,6 +755,71 @@ share_history() {
   [ -z "$(agent-queue list --json --state active 2>/dev/null | jq -r 'select(.project == "game") | .slug')" ] || fail "the #urgent fleet row was promoted past the cap"
 }
 
+# 2026-11-21 (ar-4554): five fleet rows a let-go fill promoted waited 9h in queued/ behind every other
+# project's fresh row, and the queued age p90 read 494m against its 420m bound (watch queue-age).
+@test "fleet share: a board item the cap has held DISPATCH_STARVED_MIN goes back to its row; a fresh one stays" {
+  project game beta "$SANDBOX/repos/game"
+  row game human 'fix crash on load' "- [ ] fix crash on load #high $T"
+  verdict game human 'fix crash on load' dispatch
+  row game human 'fix crash on save' "- [ ] fix crash on save #high $T"
+  verdict game human 'fix crash on save' dispatch
+  row game human 'fix crash on quit' "- [ ] fix crash on quit #high $T"
+  verdict game human 'fix crash on quit' dispatch
+  DISPATCH_PER_PASS=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" fill
+  assert_success
+  local old fresh sprint
+  old=$(agent-queue list --json --state queued 2>/dev/null | jq -r 'select(.title | test("load")) | .slug')
+  fresh=$(agent-queue list --json --state queued 2>/dev/null | jq -r 'select(.title | test("save")) | .slug')
+  sprint=$(agent-queue list --json --state queued 2>/dev/null | jq -r 'select(.title | test("quit")) | .slug')
+  [ -n "$old" ] && [ -n "$fresh" ] && [ -n "$sprint" ] || fail "the fill queued no item for each row"
+  agent-queue set "$sprint" tags=sprint >/dev/null
+  sed -i 's/^queued: .*/queued: 2026-01-01T00:00:00Z/' "$(qitem queued "$old")" "$(qitem queued "$sprint")"
+  export DISPATCH_STARVED_MIN=60 DISPATCH_TARGET_AWAY=0
+  # The negative control: with the share under its cap nothing goes back.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'to its board row'
+  [ -n "$(qitem queued "$old")" ] || fail "an item went back with the share off"
+  share_history 1 0
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial "returned queue item $old to its board row: the fleet share: "
+  [ -z "$(agent-queue list --json --state active 2>/dev/null | jq -r --arg s "$old" 'select(.slug == $s) | .slug')" ] || fail "the held item stayed in the queue"
+  [ -n "$(qitem queued "$fresh")" ] || fail "the item held under DISPATCH_STARVED_MIN left the queue"
+  # A sprint row is its floor's to start.
+  [ -n "$(qitem queued "$sprint")" ] || fail "the sprint item went back to its row"
+}
+
+@test "fleet share: while the share is full the canary top-up asks for no Claude lane" {
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_CANARY_KEEP=2
+  stub fleet-bench "[ \"\$1\" = canary ] || exit 0; echo \"\$*\" >> '$SANDBOX/bench.calls'; echo 'canary: 1 queued'"
+  # A Claude canary the cap holds keeps no lane busy, so it is not counted.
+  agent-queue add --project game --slug ca-held --tags canary "a claude canary" >/dev/null
+  share_history 1 0
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'canary top-up (keep 2, 0 queued, 2 wanted, the fleet share full: no Claude lane): canary: 1 queued'
+  assert_equal "$(cat "$SANDBOX/bench.calls")" 'canary queue --max 2 --off-claude'
+  # The negative control: the cap off, the same pass asks for every lane.
+  rm "$SANDBOX/bench.calls"
+  DISPATCH_FLEET_SHARE=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_equal "$(cat "$SANDBOX/bench.calls")" 'canary queue --max 2'
+}
+
+# Ask GDUmQQ (ar-4554): a canary on a harness with its own source spends no Claude session, as a trainee start does not.
+@test "fleet share: a canary pinned to a harness with its own source passes the cap; a Claude one waits" {
+  local full sourced claude plain
+  share_state() { :; }
+  SHARE_STATE='{"full":true,"fleet":2,"total":2,"projects":["game"],"sourced":["codex"]}'
+  sourced='{"slug":"ca-cx","project":"game","agent":"codex","tags":"canary"}'
+  claude='{"slug":"ca-cl","project":"game","agent":"claude","tags":"canary"}'
+  plain='{"slug":"fix-cx","project":"game","agent":"codex","tags":""}'
+  [ -z "$(share_why "$sourced")" ] || fail "the sourced canary was held: $(share_why "$sourced")"
+  [[ "$(share_why "$claude")" == "fleet share: "* ]] || fail "the Claude canary passed the cap"
+  [[ "$(share_why "$plain")" == "fleet share: "* ]] || fail "a plain item on a sourced harness passed the cap"
+  # queue_depth applies the same test.
+  runnable() { printf '%s\n' "$sourced" "$claude" "$plain"; }
+  assert_equal "$(queue_depth)" 1
+}
+
 # classes.json min_live (ar-3943): a class under its minimum of live sessions has its first item ranked
 # ahead inside its bucket (agent-queue marks it `short`), and when that item waits only on run units it
 # keeps the free ones like an urgent one, so light work of a class over its minimum cannot starve it.

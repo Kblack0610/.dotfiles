@@ -1,14 +1,15 @@
 #!/usr/bin/env bats
 # ai_agents.sh: the waybar agents chip, the one overview of live agent sessions. The bar is the fleet
-# total and two counts from fleet-sessions on Prometheus (~ working amber, a check mark ready green)
+# total and two counts, hub-core's Sessions card figures (~ working amber, a check mark ready green)
 # after a robot coloured by fleet health; what needs you is custom/needs, not this chip. The hover opens
 # with one sentence (waiting, stuck, working, as of when, on how many hosts), then any warning, then
 # Waiting, Stuck and Working sections from the summary/bar topic (`hub bar --json`), each row named by
 # project and task, filled to the bar channel's line cap in that order, a line counting what was cut, and
 # one for what is ready to close. What these pin: the bar is three numbers whatever the fleet's size;
-# counts come from Prometheus and names from summary/bar; a missing or old topic is one amber line with
-# the counts still shown; a stale textfile never counts its sessions and is named once (red only when
-# every file is stale); the hover fits the bar channel and comms-lint fails one that does not.
+# counts are the published card figures and names come from summary/bar; counts nobody publishes read ?
+# and a missing or old topic is one amber line with the counts still shown; a stale textfile is named
+# once (red only when every file is stale); the hover fits the bar channel and comms-lint fails one that
+# does not.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -32,18 +33,23 @@ STUB
   chmod +x "$SANDBOX/bin/curl"
 }
 
-# feed [target=BUCKET:age[:idle] ...] [mtime=<age s>|mtime=-] [stale=<age s>] [dup:target=...] [novocab]
-# -> Prometheus's answer: one agent_session_age_minutes series per session (idle adds
-# agent_session_idle_minutes with the same labels), the bucket order, and fleet_sessions.prom written
-# 60s ago unless mtime says otherwise. dup: is a second scrape. stale= adds a second, host-less
-# fleet_sessions.prom of that age on another instance (the leftover on razer-laptop), with no sessions
-# of its own: Prometheus's `and on (instance)` leaves them out.
+# feed [target=BUCKET:age[:idle] ...] [mtime=<age s>|mtime=-] [stale=<age s>] [nofigs] [conflict]
+# -> Prometheus's answer: hub-core's Sessions card figures as summary/cards carries them (the fixture's
+# card: one session per target, so headline, working, need_you, stalled and ready_to_close are the
+# targets' buckets counted here, the card's own arithmetic, which hub-core's tests pin), and
+# fleet_sessions.prom written 60s ago unless mtime says otherwise. nofigs publishes no figure, conflict a
+# second live topic that disagrees. stale= adds a second, host-less fleet_sessions.prom of that age on
+# another instance (the leftover on razer-laptop).
 feed() {
   python3 - "$FX/prom.json" "$@" <<'PY'
 import json, sys
-res, mtime = [], 60
+res, mtime, figs, conflict = [], 60, {"headline": 0, "working": 0, "need_you": 0, "stalled": 0, "ready_to_close": 0}, False
 for a in sys.argv[2:]:
-    if a == "novocab":
+    if a == "nofigs":
+        figs = None
+        continue
+    if a == "conflict":
+        conflict = True
         continue
     k, v = a.split("=", 1)
     if k == "mtime":
@@ -54,20 +60,16 @@ for a in sys.argv[2:]:
                                "file": "/var/lib/node-exporter-textfile/fleet_sessions.prom"},
                     "value": [0, str(100000 - int(v))]})
         continue
-    inst = "i1"
-    if k.startswith("dup:"): inst, k = "i9", k[4:]
-    b, age, *idle = v.split(":", 2)
-    base = {"target": k, "bucket": b, "project": "proj", "host": "h1", "instance": inst}
-    res.append({"metric": dict(base, __name__="agent_session_age_minutes"), "value": [0, age]})
-    if idle:
-        res.append({"metric": dict(base, __name__="agent_session_idle_minutes"), "value": [0, idle[0]]})
-if "novocab" not in sys.argv:
-    for i, b in enumerate(["NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED"]):
-        for inst in ("i1", "i9"):
-            res.append({"metric": {"__name__": "agent_session_bucket", "bucket": b, "host": "h1", "instance": inst,
-                                   "finished": "1" if b in ("DONE", "LANDED") else "0",
-                                   "in_progress": "1" if b in ("WORKING", "NEEDS", "STALLED") else "0"},
-                        "value": [0, str(i)]})
+    b = v.split(":")[0]
+    if figs is not None:
+        figs["headline"] += 1
+        key = {"WORKING": "working", "NEEDS": "need_you", "STALLED": "stalled", "DONE": "ready_to_close", "LANDED": "ready_to_close"}.get(b)
+        if key:
+            figs[key] += 1
+for n, v in (figs or {}).items():
+    for topic in ("agents_h_summary_cards",) + (("agents_i_summary_cards",) if conflict else ()):
+        res.append({"metric": {"__name__": "mqtt_figures_sessions_" + n, "topic": topic},
+                    "value": [0, str(v + (1 if topic.startswith("agents_i") else 0))]})
 if mtime is not None:
     res.append({"metric": {"__name__": "node_textfile_mtime_seconds", "host": "h1",
                            "file": "/var/lib/node_exporter/textfile/fleet_sessions.prom"},
@@ -290,12 +292,21 @@ Ready to close 1 (1 done); also 1 chat"
   assert_line --index 1 "<b><span color='$Y'>Stuck</span></b>  1"
 }
 
-@test "no published bucket order reads amber and says so, never a built-in list" {
-  feed lab/uc-agent-1:1=WORKING:10 novocab
+# Negative control: no published count is ? in amber, never a count made from anything else here.
+@test "no published session counts read ? in amber and say so" {
+  feed lab/uc-agent-1:1=WORKING:10 nofigs
   run "$MODULE"
+  assert_equal "$(text)" "<span color='$Y'>$ICON</span> ?  <span color='$Y'>~:?</span>  <span color='$G'>$CK:?</span>"
   assert_equal "$(class)" warn
   run tip
-  assert_output --partial "no agent_session_bucket on Prometheus"
+  assert_output --partial "no published session counts (summary/cards)"
+}
+
+@test "two live summary/cards topics that disagree read ? in amber, since Prometheus does not say which is newer" {
+  feed lab/uc-agent-1:1=WORKING:10 conflict
+  run "$MODULE"
+  assert_equal "$(class)" warn
+  assert_equal "$(jq -r .text <<< "$output" | grep -c '?')" 1
 }
 
 @test "a CHAT session is counted and leaves the robot green: the human's conversation is not attention" {
@@ -317,14 +328,14 @@ Ready to close 1 (1 done); also 1 chat"
 }
 
 # With every file stale the join leaves no session series, only the bucket order and the file's age.
-@test "every textfile stale is red with no sessions and no false bucket-order warning" {
+@test "every textfile stale is red, and the published counts are not blamed" {
   feed mtime=900
   run "$MODULE"
   assert_equal "$(text)" "$(bar "$R" 0 0 0)"
   assert_equal "$(class)" critical
   run tip
   assert_output --partial "fleet_sessions.prom on h1 is 15m old"
-  refute_output --partial "no agent_session_bucket"
+  refute_output --partial "no published session counts"
 }
 
 # The leftover from a host that once held the lease: no host label, two days old, beside a fresh file.
@@ -348,23 +359,14 @@ Ready to close 1 (1 done); also 1 chat"
   refute_output --partial "fleet_sessions.prom on"
 }
 
-# Prometheus answers the stub's JSON whatever is asked, so the join and the selector are pinned on the query.
-@test "the query reads age and idle with one selector and joins session series only to a fresh textfile" {
+# Prometheus answers the stub's JSON whatever is asked, so what is asked is pinned on the query.
+@test "the query reads the sessions figures of a live summary/cards topic and the textfile's age, and nothing per session" {
   feed hub/dotfiles:1=WORKING:10:3
   run "$MODULE"
   local q
   q="$(sed -n 's/.* --data-urlencode query=//p' "$FX/curl.args")"
-  [[ "$q" == '{__name__=~"agent_session_(age|idle)_minutes"} and on (instance) (time() - node_textfile_mtime_seconds{file=~".*/fleet_sessions.prom"} < 300)'* ]]
-  [[ "$q" != *"agent_session_age_minutes or "* ]]
-  # the bucket order and the file itself are read unjoined: a stale file can be named, and a fleet
-  # with every file stale still has its vocabulary
-  [[ "$q" == *") or agent_session_bucket or node_textfile_mtime_seconds{file=~\".*/fleet_sessions.prom\"}" ]]
-}
-
-@test "a second scrape of a session counts once" {
-  feed hub/dotfiles:1=WORKING:10 dup:hub/dotfiles:1=WORKING:10
-  run "$MODULE"
-  assert_equal "$(text)" "$(bar "$G" 1 1 0)"
+  [[ "$q" == 'node_textfile_mtime_seconds{file=~".*/fleet_sessions.prom"} or ({__name__=~"mqtt_figures_sessions_(headline|working|need_you|stalled|ready_to_close)", topic=~"agents_.+_summary_cards"} and on (topic) cc:agents_topic_live)' ]]
+  [[ "$q" != *agent_session_* ]]
 }
 
 @test "the total is the whole fleet: chat, stalled and parked sessions, a worker's too, are in it" {

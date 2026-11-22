@@ -5383,6 +5383,31 @@ live_merges() {
   assert_output --partial 'merges/h: platform 0.1'
 }
 
+@test "throughput: a repo with no clone on this machine reads unread, never merges: none (nc-56)" {
+  live_merges
+  rm -rf "$SANDBOX/plat"
+  BENCH_NOW=$T0 run "$SUBJECT" throughput
+  assert_success
+  assert_line 'merges: none in the repos read'
+  refute_line 'merges: none'
+  assert_line 'merges unread (no mapped repo, or no clone here that fetches): platform'
+}
+
+@test "throughput: a readable repo keeps its merges/h beside an unmapped project's unread line (nc-56)" {
+  live_merges
+  printf '{"epoch":%s,"project":"unmapped","bucket":"WORKING"}\n' $((T0 - 600)) >> "$FLEET_BENCH_DIR/progress.jsonl"
+  BENCH_NOW=$T0 run "$SUBJECT" throughput
+  assert_line 'merges/h: platform 0.5'
+  assert_line 'merges unread (no mapped repo, or no clone here that fetches): unmapped'
+}
+
+@test "throughput: an unreadable project map is named as such, never as a project (nc-56)" {
+  live_merges
+  export BENCH_PROJECT_MAP="$SANDBOX/gone.json"
+  BENCH_NOW=$T0 run "$SUBJECT" throughput
+  assert_line 'merges unread: the project map is unreadable'
+}
+
 @test "findings: a repo that cannot be fetched is blind, its old refs are not read as no merges" {
   live_merges
   git -C "$SANDBOX/plat" remote set-url origin "$SANDBOX/gone.git"
@@ -7342,6 +7367,27 @@ cancel c-old-lane --why canary: superseded by the $week set"
   run "$SUBJECT" canary queue --max 0
   assert_failure 2
   run "$SUBJECT" canary queue --max two
+  assert_failure 2
+}
+
+# ar-4554: fleet-dispatch passes --off-claude while its fleet share is full, which holds a Claude lane's canary.
+@test "canary top-up: --off-claude queues only the lanes on their own source, never the claude baseline or a claude lane" {
+  kpi_setup; kpi_fixture; canary_fixture
+  week=$(date -d "@$T0" +%Gw%V)
+  export BENCH_CANARY_LANES="$SANDBOX/canary-lanes" BENCH_HARNESSES="$SANDBOX/harnesses.json" BENCH_ROOM_CMD=room-stub
+  printf 'codex sol\nclaude haiku max\n' > "$BENCH_CANARY_LANES"
+  echo '{"harnesses":{"codex":{"source":"codex"}}}' > "$BENCH_HARNESSES"
+  printf '#!/usr/bin/env bash\necho room\n' > "$SANDBOX/bin/room-stub"; chmod +x "$SANDBOX/bin/room-stub"
+  run "$SUBJECT" canary queue --max 9 --off-claude
+  assert_success
+  assert_output "fleet-bench: canary: 1 queued for $week (codex/sol)"
+  assert_equal "$(ls "$CQ"/*.json)" "$CQ/canary-greet-$week-codex-sol.json"
+  # The positive control: without it the claude baseline and the claude lane queue too.
+  run "$SUBJECT" canary queue --max 9
+  assert_success
+  assert_equal "$(ls "$CQ"/*.json | wc -l)" 3
+  # It names the top-up alone.
+  run "$SUBJECT" canary queue --harness codex --model sol --off-claude
   assert_failure 2
 }
 
