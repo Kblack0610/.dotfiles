@@ -2083,6 +2083,21 @@ SH
   # negative control: with the probe list off, the same red blames #875 again
   FLEET_DEPLOY_PROBES= run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r 'select(.bucket != "NIGHTLY") | .reason' <<<"$output")" = "nightly red after PR #875: Binks Production Smoke @${red:0:8} (#875)" ]
+
+  # a merge is blamed only for the reds whose range names it: Release builds broke after #876 and
+  # Phone release has no green in view, so both stay on the NIGHTLY row and out of #875's reason (ar-3985)
+  red2="$(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit-tree -p "$red" -m 'fix: y (#876)' "$red^{tree}")"
+  ledger main "[$(r Tests success "$green" 1),$(r Tests failure "$red" 2),$(r 'Release builds' success "$red" 3),$(r 'Release builds' failure "$red2" 4),$(r 'Phone release' failure "$red2" 5)]"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r 'select(.bucket != "NIGHTLY") | .reason' <<<"$output")" = "nightly red after PR #875: Tests @${red:0:8} (#875)" ]
+  [ "$(jq -r 'select(.bucket == "NIGHTLY") | .fact' <<<"$output")" = "NIGHTLY origin red: Phone release (no green in window), Release builds @${red2:0:8} (#876), Tests @${red:0:8} (#875)" ]
+  [ "$(jq -r 'select(.bucket == "NIGHTLY") | .owners | join(",")' <<<"$output")" = sid-9 ]
+  # with Tests green again, the reds left name no merge of this session's, so it has landed
+  ledger main "[$(r Tests success "$red" 2),$(r 'Release builds' success "$red" 3),$(r 'Release builds' failure "$red2" 4)]"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r 'select(.bucket != "NIGHTLY") | .bucket' <<<"$output")" = LANDED ]
+  [ "$(jq -r 'select(.bucket == "NIGHTLY") | .owners | length' <<<"$output")" = 0 ]
 }
 
 # nightly_item <state> <slug> <sessions line> -- a project demo queue item; demo's checkout is $SANDBOX/wt
@@ -3243,11 +3258,17 @@ empty_submodule_fixture() {
 @test "a merged edited worktree suspected of turning main red blocks completion" {
   git init -q "$SANDBOX/other"
   git_facts() { echo '1 0 0 9 MERGED PASS 1 branch 0 no - - -'; }
-  main_health() { printf 'RED\tTests (#9)\tdeadbeef\t9\n'; }
+  main_health() { printf 'RED\tTests (#9), Release builds (#8)\tdeadbeef\n'; }
+  main_blame() { [ "$2" = 9 ] && echo 'Tests (#9)'; }
   run edited_work_blockers "$SANDBOX" "$SANDBOX/other/file"
   assert_success
   assert_output --partial 'STALLED unlanded work in'
-  assert_output --partial 'nightly red after PR #9'
+  assert_output --partial 'nightly red after PR #9: Tests (#9)'
+  refute_output --partial 'Release builds'
+  # a red whose range does not name the merged PR blames nothing on it (ar-3985)
+  main_blame() { return 1; }
+  run edited_work_blockers "$SANDBOX" "$SANDBOX/other/file"
+  refute_output --partial 'nightly red'
 }
 
 @test "edited work waiting for CI stays WORKING, but a stalled sibling takes priority" {
