@@ -1623,8 +1623,8 @@ in_checkout() {
 # A PR whose head commit is HEAD wins whatever its head branch is: a slot branch is reused and its
 # work can go out on another branch (2026-11-07: agent-20 landed as #1500 via all-sources-p5-scoring,
 # and the older closed #1490 of the same name was named the blocker). Else an open PR of the local or
-# upstream branch name, else the newest of them, except a closed one that does not hold HEAD: that is an
-# old PR. Open first: slot branch `agent-69` with upstream refactor/ar-88-delete-batch-rerun read the
+# upstream branch name whose head holds HEAD, else the newest of them, except a closed one that does not hold
+# HEAD: that is an old PR. Open first: slot branch `agent-69` with upstream refactor/ar-88-delete-batch-rerun read the
 # bare name's old merged #2125, not the open #2014 its upstream heads, and its row "no PR" (ar-1582).
 # A worker's checkout passes its <head> and <upstream branch> (worker_git_facts); <dir> is then this
 # machine's clone of its repo, which may not have that head.
@@ -1640,11 +1640,15 @@ pr_of_head() {
   [ -n "$prs" ] || return 0
   hit="$(awk -F'\t' -v h="$head" '$5 == h { print; exit }' <<<"$prs")"
   [ -z "$hit" ] || { printf '%s\n' "$hit"; return; }
+  # A branch cut from the default branch tracks it: that name is no PR of its own.
+  if [ -n "$up" ]; then hit="$(default_base "$d")"; [ "$up" != "${hit#*/}" ] || up=""; fi
   # Names go in by ENVIRON, not -v, which would read a backslash in a branch name as an escape.
   named="$(PR_BRANCH="$branch" PR_UP="$up" awk -F'\t' 'BEGIN { b = ENVIRON["PR_BRANCH"]; u = ENVIRON["PR_UP"] } $1 == b || (u != "" && $1 == u)' <<<"$prs")"
   [ -n "$named" ] || return 0
-  hit="$(awk -F'\t' '$3 == "OPEN" { print; exit }' <<<"$named")"
-  [ -z "$hit" ] || { printf '%s\n' "$hit"; return; }
+  while IFS= read -r row; do
+    IFS=$'\t' read -r _ _ s _ o _ <<<"$row"
+    [ "$s" = OPEN ] && git -C "$d" merge-base --is-ancestor "$head" "$o" 2>/dev/null && { printf '%s\n' "$row"; return; }
+  done <<<"$named"
   while IFS= read -r row; do
     IFS=$'\t' read -r _ _ s _ o _ <<<"$row"
     if [ "$s" = CLOSED ] && ! git -C "$d" merge-base --is-ancestor "$head" "$o" 2>/dev/null; then continue; fi
@@ -1655,13 +1659,16 @@ pr_of_head() {
 # pr_for_head <dir> <branch> <ahead> [<head> <upstream branch>] -> the PR row git_facts reads: pr_of_head's,
 # unless HEAD has files the base lacks and that PR is missing, or finished without holding HEAD; then the
 # open PR whose head holds HEAD (pr_holding_head) when there is one. Work that went out on another head
-# branch is found by HEAD, not by the slot name's old PR (ar-1582). A worker's checkout passes <head> and <upstream>.
+# branch is found by HEAD, not by the slot name's old PR (ar-1582). A finished PR whose head this clone
+# lacks stays: nothing says it does not hold HEAD. A HEAD this clone lacks (a worker's unpushed one)
+# is held by no PR here, so it scans none. A worker's checkout passes <head> and <upstream>.
 pr_for_head() {
-  local d="$1" branch="$2" ahead="$3" head="${4:-}" up="${5:-}" row s o held
-  row="$(pr_of_head "$d" "$branch" "$head" "$up")"
+  local d="$1" branch="$2" ahead="$3" head="${4:-HEAD}" up="${5:-}" row s o held
+  row="$(pr_of_head "$d" "$branch" "${4:-}" "$up")"
   IFS=$'\t' read -r _ _ s _ o _ <<<"$row"
-  if [ "$ahead" -gt 0 ] && { [ -z "$row" ] \
-       || { [ "$s" != OPEN ] && ! git -C "$d" merge-base --is-ancestor "${head:-HEAD}" "$o" 2>/dev/null; }; }; then
+  [ "$ahead" -gt 0 ] && git -C "$d" cat-file -e "$head^{commit}" 2>/dev/null || { [ -z "$row" ] || printf '%s\n' "$row"; return 0; }
+  if [ -z "$row" ] || { [ "$s" != OPEN ] && git -C "$d" cat-file -e "$o^{commit}" 2>/dev/null \
+       && ! git -C "$d" merge-base --is-ancestor "$head" "$o" 2>/dev/null; }; then
     held="$(pr_holding_head "$d" "$head")"
     [ -z "$held" ] || row="$held"
   fi

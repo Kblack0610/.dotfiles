@@ -841,13 +841,20 @@ ledger() {
   printf 'main\t4\tMERGED\tPASS\t2222\t-\nother\t3\tOPEN\tPASS\t3333\t-\n' > "$LEDGER_DIR/prs_o_c.tsv"
   run pr_of_head "$SANDBOX/c" other
   assert_output "$(printf 'other\t3\tOPEN\tPASS\t3333\t-')"
-  # an open PR of the upstream outranks a newer finished one of the local slot name (ar-1582)
+  # an open PR of the upstream whose head holds HEAD outranks a newer finished one of the slot name (ar-1582)
+  local top; git -C "$SANDBOX/c" -c user.name=t -c user.email=t@t commit -q --allow-empty -m two
+  top="$(git -C "$SANDBOX/c" rev-parse HEAD)"; git -C "$SANDBOX/c" reset -q --hard "$head"
   CACHE="$SANDBOX/pass4"; mkdir -p "$CACHE"
+  printf 'agent-69\t9\tMERGED\tPASS\t9999\t-\nfeat/y\t3\tOPEN\tPASS\t%s\t-\nmain\t2\tOPEN\tPASS\t%s\t-\n' "$top" "$top" > "$LEDGER_DIR/prs_o_c.tsv"
+  run pr_of_head "$SANDBOX/c" agent-69 "$head" feat/y
+  assert_output "$(printf 'feat/y\t3\tOPEN\tPASS\t%s\t-' "$top")"
+  # negative controls: an upstream that is the default branch names no PR, and with no open one holding
+  # HEAD the newest of the names is still it
+  run pr_of_head "$SANDBOX/c" agent-69 "$head" main
+  assert_output "$(printf 'agent-69\t9\tMERGED\tPASS\t9999\t-')"
+  CACHE="$SANDBOX/pass5"; mkdir -p "$CACHE"
   printf 'agent-69\t9\tMERGED\tPASS\t9999\t-\nfeat/y\t3\tOPEN\tPASS\t3333\t-\n' > "$LEDGER_DIR/prs_o_c.tsv"
-  run pr_of_head "$SANDBOX/c" agent-69 "$(printf '%040d' 0)" feat/y
-  assert_output "$(printf 'feat/y\t3\tOPEN\tPASS\t3333\t-')"
-  # negative control: with no open one, the newest of the names is still it
-  run pr_of_head "$SANDBOX/c" agent-69 "$(printf '%040d' 0)" feat/z
+  run pr_of_head "$SANDBOX/c" agent-69 "$head" feat/y
   assert_output "$(printf 'agent-69\t9\tMERGED\tPASS\t9999\t-')"
   # a detached HEAD (no branch name) matches no row, and an empty store prints nothing at all
   run pr_of_head "$SANDBOX/c" ''
@@ -855,6 +862,36 @@ ledger() {
   CACHE="$SANDBOX/pass3"; mkdir -p "$CACHE"; : > "$LEDGER_DIR/prs_o_c.tsv"
   run pr_of_head "$SANDBOX/c" ''
   assert_output ''
+}
+
+@test "pr_for_head: with files ahead, a finished PR that does not hold HEAD yields to the open PR that does; one that holds it stays (ar-1582)" {
+  git init -q "$SANDBOX/c"; git -C "$SANDBOX/c" remote add origin 'git@github.com:o/c.git'
+  local g=(git -C "$SANDBOX/c" -c user.name=t -c user.email=t@t) head top side unk
+  "${g[@]}" commit -q --allow-empty -m one; head="$("${g[@]}" rev-parse HEAD)"
+  "${g[@]}" commit -q --allow-empty -m two; top="$("${g[@]}" rev-parse HEAD)"; "${g[@]}" reset -q --hard "$head"
+  side="$("${g[@]}" commit-tree "$head^{tree}" -m side)"; unk="$(printf '%040d' 7)"
+  # store <by-name merged head>: the slot name's merged PR, newest, then an open PR on another branch holding HEAD
+  store() { CACHE="$SANDBOX/pass$RANDOM"; mkdir -p "$CACHE"
+    printf 'agent-69\t9\tMERGED\tPASS\t%s\t-\nfeat/y\t3\tOPEN\tPASS\t%s\t-\n' "$1" "$top" > "$LEDGER_DIR/prs_o_c.tsv"; }
+  store "$side"
+  run pr_for_head "$SANDBOX/c" agent-69 1
+  assert_output "$(printf 'feat/y\t3\tOPEN\tPASS\t%s\t-' "$top")"
+  # a worker's checkout passes its head: the same answer
+  run pr_for_head "$SANDBOX/c" agent-69 1 "$head" ''
+  assert_output "$(printf 'feat/y\t3\tOPEN\tPASS\t%s\t-' "$top")"
+  # negative controls: the merged PR holds HEAD, its head is unknown here, nothing is ahead, or the
+  # worker's HEAD is not in this clone: the by-name row stays
+  store "$top"
+  run pr_for_head "$SANDBOX/c" agent-69 1
+  assert_output "$(printf 'agent-69\t9\tMERGED\tPASS\t%s\t-' "$top")"
+  store "$unk"
+  run pr_for_head "$SANDBOX/c" agent-69 1
+  assert_output "$(printf 'agent-69\t9\tMERGED\tPASS\t%s\t-' "$unk")"
+  store "$side"
+  run pr_for_head "$SANDBOX/c" agent-69 0
+  assert_output "$(printf 'agent-69\t9\tMERGED\tPASS\t%s\t-' "$side")"
+  run pr_for_head "$SANDBOX/c" agent-69 1 "$unk" ''
+  assert_output "$(printf 'agent-69\t9\tMERGED\tPASS\t%s\t-' "$side")"
 }
 
 @test "a silent agent-land waiting on its checks or the landing slot is a queue gate, whatever its output age (ar-2244)" {
