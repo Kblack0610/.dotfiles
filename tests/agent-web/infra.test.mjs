@@ -276,7 +276,7 @@ test("a machine page draws its slots, its 7 days and its recent jobs with their 
   ], ["slot", "takes", "now", "job", "cores", "mem", "disk"]);
   const d = machinePage({ cores: 24, head: "workstation, local, up", machine: {},
     history: { step: 120, readings: 1, hours, down: [], power: null },
-    tables: { slots, down: tbl([{ from: 1700003600, to: 1700007200, open: true, why: "no data" }], ["from", "to", "took", "why"]), recent, alerts: tbl([], ["what"]), ...liveTables() } });
+    tables: { slots, down: tbl([{ id: "workstation@2023-11-14T23:13:20Z", from: 1700003600, to: 1700007200, cause: "unknown", why: "no sibling dropped" }], ["from", "to", "took", "cause", "why"]), recent, alerts: tbl([], ["what"]), ...liveTables() } });
   const h = drawPage("machines/workstation", d);
   assert.match(h, /Slots <span class="n">1 of 2 busy<\/span>/);
   assert.match(h, /<a class="tl" href="#infra\/pools\/unity">unity<\/a> <a class="tl" href="#infra\/pools\/light">light<\/a>/);
@@ -285,7 +285,7 @@ test("a machine page draws its slots, its 7 days and its recent jobs with their 
   assert.match(h, /ws-unity-2<\/td>[\s\S]*?(<td class="n muted">no data<\/td>){3}/);
   assert.match(h, /<td class="muted">idle<\/td>[\s\S]*?<td class="n">12\.0<\/td><td class="n"><\/td>/);
   assert.match(h, /data-tip="[^"]*no data"/, "an hour with no sample says so");
-  assert.match(h, /<td class="warn">now<\/td>/, "an open stretch lasts now");
+  assert.match(h, /<td class="warn">unknown<\/td><td class="muted">no sibling dropped<\/td>/, "an unexplained downtime reads amber, with its evidence");
   assert.match(h, /<a class="tl" href="#infra\/ci\/7">/);
   assert.match(h, /<td class="bad">failure<\/td>/);
 });

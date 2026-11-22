@@ -404,11 +404,12 @@ function historyChart(h, cores, colors) {
   return `${columns(cols, { height: 120, yfmt: pct })}<div class="muted">${key} hourly means of ${h.step / 60}-minute samples</div>`;
 }
 
-const DOWN_COLS = { from: ["from"], to: ["to"], took: ["took", "n"], why: ["why"] };
+const DOWN_COLS = { from: ["from"], to: ["to"], took: ["took", "n"], cause: ["cause"], why: ["why"] };
 const DOWN_CELLS = {
   from: (r) => td("", stamp(r.from)),
-  to: (r) => td(r.open ? "warn" : "", r.open ? "now" : stamp(r.to)),
+  to: (r) => td("", stamp(r.to)),
   took: (r) => td("n", secs(r.to - r.from)),
+  cause: (r) => td(r.cause === "unknown" ? "warn" : "", esc(r.cause)),
   why: (r) => td("muted", esc(r.why)),
 };
 const RECENT_COLS = { started: ["started"], repo: ["repo"], job: ["job"], runner: ["runner"], conclusion: ["conclusion"], took: ["took", "n"] };
@@ -519,7 +520,7 @@ function machineBody(d) {
   const hist = d.history;
   if (hist) {
     h += secHead("", "7 days", `${hist.readings} reading${hist.readings === 1 ? "" : "s"}`, "", "h3") + historyChart(hist, d.cores, colors) + tempChart(hist);
-    h += secHead("", "Downtime", d.tables.down?.rows.length, "", "h3") + pageTable(d.tables.down, DOWN_COLS, DOWN_CELLS, "No gap in the readings.");
+    h += secHead("", "Downtime", d.tables.down?.rows.length, "", "h3") + pageTable(d.tables.down, DOWN_COLS, DOWN_CELLS, "No downtime record in the window.");
     if (hist.power) h += powerHistory(hist.power);
   }
   h += `${secHead("", "Recent CI jobs", d.tables.recent.rows.length, "", "h3")}${pageTable(d.tables.recent, RECENT_COLS, RECENT_CELLS, "No CI job in the archive ran there.")}`;
