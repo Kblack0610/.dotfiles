@@ -124,6 +124,8 @@ aq_retry() {
 CHECKS_POLL="${AGENT_LAND_CHECKS_POLL:-10}"
 CHECKS_QUEUED_POLL="${AGENT_LAND_CHECKS_QUEUED_POLL:-60}"
 CHECKS_WATCH_INTERVAL=30 # gh's default is 10s; a check takes minutes
+CHECKS_WATCH_TIMEOUT="${AGENT_LAND_CHECKS_WATCH_TIMEOUT:-600}" # bound one gh pr checks --watch (a check left IN_PROGRESS with conclusion SUCCESS never exits)
+CHECKS_WAIT_TIMEOUT="${AGENT_LAND_CHECKS_WAIT_TIMEOUT:-3600}"  # bound the whole checks wait (wait_checks / fj_wait_checks)
 CHECKS_TRIES="${AGENT_LAND_CHECKS_TRIES:-12}"
 # GitHub opens a PR's pull_request run only once it has built the merge ref: seconds on most PRs,
 # minutes on some (80 dotfiles PRs to 2026-11-21: p90 5s, then 111s, 192s, 949s). #1710's came 213s
@@ -163,9 +165,9 @@ net_retry() {
 # cancels fails its aggregate check, so it predates that red (train #3108, 2026-11-21 22:25 local, 06:25Z, ar-2940).
 newer_runs() {
   local runs
-  runs=$(gh run list "${R[@]}" --commit "$(git rev-parse HEAD)" --json databaseId,status,workflowName,event,createdAt,startedAt 2>&1) || { printf '%s' "$runs"; return 1; }
+  runs=$(gh run list "${R[@]}" --commit "$(git rev-parse HEAD)" --json databaseId,status,conclusion,workflowName,event,createdAt,startedAt 2>&1) || { printf '%s' "$runs"; return 1; }
   jq -r --argjson c "$1" 'def run_id: ((.link // "") | capture("/actions/runs/(?<id>[0-9]+)") | .id | tonumber) // 0;
-    [.[] | select(.status != "completed") | . as $r
+    [.[] | select(.status != "completed" and (.conclusion // "") == "") | . as $r
     | select($c | any(.workflow == $r.workflowName and (.bucket != "fail" or
         (((.event // "") == "" or .event == $r.event) and (([$r.createdAt, $r.startedAt] | map(. // "") | max) > (.completedAt // "~")
           or (run_id > 0 and ($r.databaseId // 0) > run_id))))))] | length' <<<"$runs"
@@ -183,12 +185,48 @@ gh_read() {
   printf -v "$var" '%s' "$got"
   return "$rc"
 }
+# checks_by_conclusion: when `gh pr checks --watch` times out (rc 124), e.g. a check run left
+# IN_PROGRESS with a conclusion set (unity-core-playground#3115), judge the PR's statusCheckRollup
+# by each check's conclusion via pr-ci.sh's ci. Returns 0 when green (sets had_checks=yes),
+# 1 when still pending or retried on a network error, 2 when NONE (sets out='no checks reported'),
+# or fails checks when a check has a failing/cancelled conclusion.
+checks_by_conclusion() {
+  local rollup verdict failed
+  gh_read rollup pr view "$pr" "${R[@]}" --json statusCheckRollup || {
+    net_error "$gh_err" || fail checks "reading checks after watch timeout: $(lastline "$gh_err")"
+    net_retry "$gh_err"
+    return 1
+  }
+  verdict=$(jq -r "$CI_JQ"' ci' <<<"$rollup")
+  case "$verdict" in
+  PASS)
+    echo "checks: green"
+    had_checks=yes
+    return 0
+    ;;
+  FAIL)
+    failed=$(jq -r "$CI_JQ"' [checks | .[] | select((.conclusion // .state // "") | test(red_re)) | (.name // .context // "check")] | join(", ")' <<<"$rollup")
+    fail checks "${failed:-a check failed}"
+    ;;
+  PENDING)
+    echo "checks: watch timed out after ${CHECKS_WATCH_TIMEOUT}s with checks still pending; continuing"
+    return 1
+    ;;
+  NONE)
+    out='no checks reported'
+    return 2
+    ;;
+  esac
+}
 had_checks=''
 wait_checks() {
   [ -z "$fj" ] || { fj_wait_checks; return; }
-  local try out failed cancelled names queued read_err stale
+  local try out rc failed cancelled names queued read_err stale deadline=$((SECONDS + CHECKS_WAIT_TIMEOUT))
   for ((try = 1; ; try++)); do
-    out=$(gh pr checks "$pr" "${R[@]}" --watch --fail-fast -i "$CHECKS_WATCH_INTERVAL" 2>&1) && {
+    [ "$SECONDS" -lt "$deadline" ] || fail checks "timed out waiting for checks after ${CHECKS_WAIT_TIMEOUT}s"
+    rc=0
+    out=$(timeout "$CHECKS_WATCH_TIMEOUT" gh pr checks "$pr" "${R[@]}" --watch --fail-fast -i "$CHECKS_WATCH_INTERVAL" 2>&1) || rc=$?
+    if [ "$rc" -eq 0 ]; then
       # gh counts a cancelled check as neither failed nor pending, so a watch whose only Checks is
       # a cancelled run exits 0 while the newer run on the head has no check yet, and GitHub then
       # refuses the merge (unity-core-playground#2166). An open run of its workflow on HEAD is that
@@ -219,7 +257,15 @@ wait_checks() {
       [ "$try" -lt "$CHECKS_TRIES" ] || fail checks "cancelled: $names, and no run of its workflow is left on the head to replace it: gh run rerun it, then re-run"
       sleep "$CHECKS_POLL"
       continue
-    }
+    fi
+    if [ "$rc" -eq 124 ]; then
+      rc=0
+      checks_by_conclusion && return 0 || rc=$?
+      if [ "$rc" -eq 1 ]; then
+        try=0
+        continue
+      fi
+    fi
     case "$out" in
     *'no checks reported'*) ;;
     *)
@@ -261,7 +307,7 @@ wait_checks() {
     esac
     # A failed read is not "0 queued": it would reach no_checks and land on the local gate with a run
     # still queued. A count that is not a number is a failed read too.
-    gh_read queued run list "${R[@]}" --commit "$(git rev-parse HEAD)" --json status -q '[.[] | select(.status != "completed")] | length' && [[ $queued =~ ^[0-9]+$ ]] || {
+    gh_read queued run list "${R[@]}" --commit "$(git rev-parse HEAD)" --json status,conclusion -q '[.[] | select(.status != "completed" and (.conclusion // "") == "")] | length' && [[ $queued =~ ^[0-9]+$ ]] || {
       [ -n "$gh_err" ] || gh_err="not a count: $queued"
       net_error "$gh_err" || fail checks "reading the runs on the head: $(lastline "$gh_err")"
       net_retry "$gh_err"
@@ -321,9 +367,10 @@ first_run_wait() {
 # commit status is read once per CHECKS_WATCH_INTERVAL while a status is pending, and CHECKS_POLL
 # apart while none is reported yet, through so_forgejo_checks and pr-ci.sh's ci (warning passes).
 fj_wait_checks() {
-  local try st head
+  local try st head deadline=$((SECONDS + CHECKS_WAIT_TIMEOUT))
   head=$(git rev-parse HEAD)
   for ((try = 1; ; try++)); do
+    [ "$SECONDS" -lt "$deadline" ] || fail checks "timed out waiting for checks after ${CHECKS_WAIT_TIMEOUT}s"
     st=$(so_forgejo_checks "$fj" "$head" 2>&1) || {
       net_error "$st" || fail checks "Forgejo status read: $(lastline "$st")"
       net_retry "$st"
