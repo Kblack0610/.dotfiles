@@ -115,4 +115,4 @@ End on one line saying the hold is dropped. The normal quiet timer closes the wi
 
 ## Talking to it
 
-The human types in this window at any time; another session reaches it over SendMessage (`fleet-comms`). A new ask from the human joins the ledger as a line. An analysis ask ("are we on time", "why is CI red", "what merged today") is answered here by the skill that owns it (`release-coordinator`, `ci-failures`, `day-log`, `fleet-bench`); the answer does not join the ledger unless it files work. The human ends the mode early with `/wind-down`, or by asking you to stop coordinating (run step 7's label removal and say so).
+The human types in this window at any time; another session reaches it over SendMessage (`fleet-comms`). A new ask from the human joins the ledger as a line. An analysis ask ("are we on time", "why is CI red", "what merged today") is answered here by the skill that owns it (`release-coordinator`, `ci-cleanup`, `day-log`, `fleet-bench`); the answer does not join the ledger unless it files work. The human ends the mode early with `/wind-down`, or by asking you to stop coordinating (run step 7's label removal and say so).
