@@ -29,7 +29,7 @@ setup() {
   export BENCH_PROFILE=personal BENCH_ADMISSION_CMD=false BENCH_LESSONS_CMD=false BENCH_DONE_ITEMS_CMD=false BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_HUB_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/doctor.last" BENCH_DOCS_CLEANUP_DIR="$SANDBOX/docs-cleanup" BENCH_INGEST="$SANDBOX/ingest.jsonl"
   export BENCH_STEPS_CMD=false BENCH_INBOX_CMD=false BENCH_MIX_CMD=false   # nor the real ingest record, inboxes or class mix
   export BENCH_STOPPED_CMD=false PIPELINE_SNAPSHOT="$SANDBOX/pipeline/pipeline.json"   # nor the real dispatch or snapshot
-  export BENCH_FLEET_COST_CMD=false BENCH_FLEET_COST_FILE="$SANDBOX/fleet-cost.json"   # nor the real estimator
+  export BENCH_FLEET_COST_CMD=false BENCH_FLEET_COST_FILE="$SANDBOX/fleet-cost.json" BENCH_HUB_FIGURE_CMD=false   # nor the real estimator or hub
   export BENCH_BUDGET_CMD=false BENCH_BUDGET_FILE="$SANDBOX/budget.json"   # nor the real budget readers
   export BENCH_RELEASES_CMD=false BENCH_RELEASED_CMD=false   # nor the real release-state: request_to_live_h reads ?
   # nor the real roadmaps, the whole queue or the real plans (fleet-bench epics)
@@ -5501,9 +5501,20 @@ stub_breakdown() {
   *pool_waiting*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"pool\":\"unity\"},\"value\":[1,\"300\"]},{\"metric\":{\"pool\":\"macos\"},\"value\":[1,\"0\"]}]}}" ;;
   *backlog_units*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"kind\":\"local\"},\"value\":[1,\"96\"]}]}}" ;;
   *under_low_water*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"topic\":\"agents_w_summary_dispatch\"},\"value\":[1,\"4.5\"]}]}}" ;;
-  *claude_code_cost*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"session_id\":\"s1\"},\"value\":[1,\"12.345\"]},{\"metric\":{\"session_id\":\"nosample\"},\"value\":[1,\"5\"]}]}}" ;;
   *) exit 7 ;;
 esac'
+  stub_fleet_cost
+}
+
+# stub_fleet_cost [as_of]: the sampler's fleet-cost.json (sessions s1 $12.345 and nosample $5), and the
+# hub Costs figures hub-figure prints from it: about $18, $13 measured, $5 estimated
+stub_fleet_cost() {
+  jq -cn --argjson at "${1:-$((T0 + 3000))}" '{as_of_epoch: $at, total: {usd: 18.2, measured: 13.1, estimated: 5.1},
+    by_session: [{sid: "s1", usd: 12.345}, {sid: "nosample", usd: 5}]}' > "$BENCH_FLEET_COST_FILE"
+  printf '#!/usr/bin/env bash\ncase "$1" in costs_headline) echo 18 ;; costs_measured) echo 13 ;; costs_estimated) echo 5 ;; *) echo "?"; exit 1 ;; esac\n' \
+    > "$SANDBOX/bin/fig-stub"
+  chmod +x "$SANDBOX/bin/fig-stub"
+  export BENCH_HUB_FIGURE_CMD=fig-stub
 }
 
 # scorecard_with_data: one session, a stall and a wait on you, runs on two branches, two merges
@@ -5539,12 +5550,35 @@ scorecard_with_data() {
   stub_breakdown
   scorecard_with_data
   run sed -n '/^## Where/,/^## Sessions/p' "$BENCH_SCORECARD_DIR/latest.md"
-  assert_output --partial 'Agent spend over 24h: $17.35'
-  assert_output --partial '$5 of it on sessions no sample saw'
+  assert_output --partial 'Agent spend over 24h: about $18 (measured $13, estimated $5), the hub Costs figure; $6 of it on sessions no sample saw, the gateway and helper calls.'
   assert_output --partial '| game | 1 | 0.2 | 0.2 | 0.2 | $12.35 | 3.5 | 2.5 | 2 |'
   run sed -n '/^## Sessions/,+6p' "$BENCH_SCORECARD_DIR/latest.md"
   assert_output --partial 'Cost 24h'
   assert_output --partial '$12.35'
+}
+
+@test "breakdown negative controls: a stale fleet-cost file prices no session, and an unreadable hub figure says so" {
+  stub_breakdown
+  stub_fleet_cost $((T0 + 3600 - 7201))   # past four of the 30-minute sampler's tries
+  scorecard_with_data
+  run sed -n '/^## Where/,/^## Sessions/p' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output --partial 'Agent spend over 24h: about $18 (measured $13, estimated $5), the hub Costs figure.'
+  refute_output --partial 'no sample saw'
+  assert_output --partial '| game | 1 | 0.2 | 0.2 | 0.2 | - |'
+  BENCH_HUB_FIGURE_CMD=false BENCH_NOW=$((T0 + 3600)) "$SUBJECT" scorecard >/dev/null
+  run grep '^Agent spend' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output 'Agent spend: the hub Costs figure is unreadable.'
+}
+
+@test "breakdown: a window other than 24h prices its sessions from the fleet cost of its own range, not the 24h file" {
+  stub_breakdown
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s/fc-args"\necho %s\n' "$SANDBOX" "'{\"by_session\":[{\"sid\":\"s1\",\"usd\":7.5}]}'" > "$SANDBOX/bin/fc-stub"
+  chmod +x "$SANDBOX/bin/fc-stub"
+  BENCH_WINDOW_H=48 BENCH_FLEET_COST_CMD=fc-stub scorecard_with_data
+  run sed -n '/^## Where/,/^## Sessions/p' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output --partial '| game | 1 | 0.2 | 0.2 | 0.2 | $7.5 |'
+  run cat "$SANDBOX/fc-args"
+  assert_output --partial "--since $(date -d "@$((T0 + 3600 - 48 * 3600))" -Iseconds) --before $(date -d "@$((T0 + 3600))" -Iseconds)"
 }
 
 @test "breakdown: a project with unreadable merges shows a question mark, never zero" {
@@ -5561,7 +5595,7 @@ scorecard_with_data() {
   scorecard_with_data
   run cat "$BENCH_SCORECARD_DIR/latest.md"
   assert_output --partial '| Pool queues | ? | job-hours | prometheus unreadable |'
-  assert_output --partial 'Agent spend: prometheus unreadable.'
+  assert_output --partial 'Agent spend: the hub Costs figure is unreadable.'
   assert_output --partial '| Local runs not passed | 2.5 |'
   assert_output --partial '## ETA accuracy'
 }

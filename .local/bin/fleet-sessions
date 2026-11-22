@@ -88,10 +88,11 @@ set -uo pipefail
 # asked for 24h on a chat and 60m on everything else, hand-opened sessions included; revisit if a
 # chat closes while the human still means to come back to it, or chats pile up overnight).
 : "${FLEET_CHAT_CLOSE_H:=24}"
-: "${FLEET_API_ERROR_IDLE_MIN:=2}" # a turn that ended on an API Error this many minutes ago is stopped, not working
+: "${FLEET_API_ERROR_IDLE_MIN:=2}" # an idle session this many minutes past its own stop line (an API Error, a resume that killed its gate) is stopped, not working
+: "${FLEET_TIME_USE_CONF:=$HOME/.config/agent-panel/time-use.conf}" # agent-panel's gate, test and build texts (gate_text, live_wait)
 : "${FLEET_SHELL_STALE_MIN:=120}" # a background shell this long past the last entry is not work:
                                   # a real gate wait is under an hour, a forgotten ugrep is not
-: "${FLEET_GATE_LOGS:=Logs/gate.txt}" # files under a session's worktree a running local gate writes to: a write
+: "${FLEET_GATE_LOGS:=Logs/gate.txt Logs/gate-and-land.out}" # files under a session's worktree a running local gate writes to: a write
                                   # within the transcript's idle minutes is activity (gate_log_idle, ar-42)
 : "${FLEET_QUEUE_GATES:=gate-and-land.sh|ci-gate.sh|gate-line.py --recheck|agent-land}" # processes that are a gate waiting for its landing turn
                                   # behind another PR or on its checks (a gate polls every 120s, gives up after 280m; agent-land
@@ -293,12 +294,13 @@ proc_snapshot() {
   ls -l /proc/[0-9]*/cwd 2>/dev/null | sed -nE 's|^.* /proc/([0-9]+)/cwd -> (.*)$|\1\t\2|p' > "$1.cwd" || :   # ls fails on a process that exits mid-read, whatever it listed
 }
 
-# gate_log_idle <host|-> <status> <open job> <cwd> <idle min> -> the idle minutes the bucket reads. For a local
-# session whose shell is a gate or test, the age of the newest FLEET_GATE_LOGS file under the worktree when it is
-# under <idle min>; otherwise <idle min>. A local suite.sh gate prints into Logs/gate.txt while the transcript sees
-# nothing (2026-11-04 agent-23 read "background shell idle over 120m" with ~80 classes done). The mtime is the
-# event; a gate that ended leaves a log whose age only grows. idle_min and the wake and close reads keep the
-# transcript's own idle.
+# gate_log_idle <host|-> <status> <open job> <cwd> <idle min> [<transcript>] -> the idle minutes the bucket reads. For
+# a local session whose shell is a gate or test, the age of the newest FLEET_GATE_LOGS file under the worktree, or of
+# an open background task's output file (open_outputs), when it is under <idle min>; otherwise <idle min>. A local
+# suite.sh gate prints into Logs/gate.txt while the transcript sees nothing (2026-11-04 agent-23 read "background
+# shell idle over 120m" with ~80 classes done), and a gate in the landing-slot wait prints a line a minute
+# (2026-11-10 agent-92's gate-and-land.sh, 2h behind #2103, read STALLED CI red, ar-1334). The mtime is the event; a
+# gate that ended leaves a log whose age only grows. idle_min and the wake and close reads keep the transcript's own idle.
 gate_log_idle() {
   local idle="$5" f m age root
   local -a logs=()
@@ -306,12 +308,55 @@ gate_log_idle() {
   # The worktree root, so a session started in a subdirectory finds the same log; no glob expands.
   root="$(git -C "$4" rev-parse --show-toplevel 2>/dev/null)" || root="$4"
   read -ra logs <<<"$FLEET_GATE_LOGS"
+  logs=("${logs[@]/#/$root/}")
+  [ -z "${6:-}" ] || mapfile -t -O "${#logs[@]}" logs < <(open_outputs "$6")
   for f in "${logs[@]}"; do
-    m="$(stat -c %Y "$root/$f" 2>/dev/null)" || continue
+    m="$(stat -c %Y "$f" 2>/dev/null)" || continue
     age=$(( ($(date +%s) - m) / 60 ))
     [ "$age" -ge 0 ] && [ "$age" -lt "$idle" ] && idle="$age"
   done
   echo "$idle"
+}
+
+# bash_command <transcript> <tool_use id> -> the command of the Bash call with that id, or nothing. Only the lines
+# naming the id reach jq: a transcript runs to 100 MB.
+bash_command() {
+  grep -F "\"id\":\"$2\"" "$1" 2>/dev/null | jq -r --arg id "$2" 'select(.type == "assistant")
+    | .message.content[]? | select(.type? == "tool_use" and .id == $id and .name == "Bash") | .input.command // empty' 2>/dev/null
+}
+
+# gate_text <command> -> "<kind> <text>" of the first `gate` or `test` line of agent-panel's time-use.conf whose text is
+# in <command>, or nothing (no command, no conf, no match).
+gate_text() {
+  local conf="$FLEET_TIME_USE_CONF" kind text
+  [ -n "$1" ] && [ -r "$conf" ] || return 0
+  while read -r kind text; do
+    { [ "$kind" = gate ] || [ "$kind" = test ]; } && [ -n "$text" ] || continue
+    case "$1" in *"$text"*) printf '%s %s\n' "$kind" "$text"; return 0 ;; esac
+  done < "$conf"
+}
+
+# open_outputs <transcript> -> the output file of each background Bash task the transcript started whose command
+# matches a `gate` or `test` line of agent-panel's time-use.conf and that no <task-notification> closed, one a line.
+# Claude writes a background Bash's output there, so its mtime is the gate's last line; a dev server or poll loop
+# beside a hung gate is not the gate (ar-1334 review). It reads Claude Code's own wording: a tool result's "Output is
+# being written to: <path>.output" (run_in_background, or a call moved to the background at its timeout) and a
+# notification's <output-file>, so a reworded transcript reads no file and the bucket falls back to transcript idle
+# (pinned by "a gate shell whose open output file is still being written ..." in tests/unit/fleet_sessions.bats).
+# Only the lines holding those strings, then the open tasks' own tool_use lines, reach jq: a transcript runs to 100 MB.
+open_outputs() {
+  local id path
+  [ -r "$1" ] && [ -r "$FLEET_TIME_USE_CONF" ] || return 0
+  while IFS=$'\t' read -r id path; do
+    [ -z "$(gate_text "$(bash_command "$1" "$id")")" ] || printf '%s\n' "$path"
+  done < <(grep -F -e 'Output is being written to: ' -e '<output-file>' "$1" | jq -R -r '
+      fromjson? | select(type == "object")
+      | (select(.type == "user") | .message.content | arrays | .[] | select(.type? == "tool_result") | . as $t
+         | $t.content | tostring | capture("Output is being written to: (?<p>[^\"\\\\]+?\\.output)")
+         | "O\t\($t.tool_use_id)\t\(.p)"),
+        (tostring | scan("<output-file>([^<]+)</output-file>") | "D\t-\t\(.[0])")' 2>/dev/null \
+    | awk -F'\t' '$1 == "O" && !($3 in seen) { seen[$3] = 1; id[++n] = $2; p[n] = $3 } $1 == "D" { closed[$3] = 1 }
+        END { for (i = 1; i <= n; i++) if (!(p[i] in closed)) print id[i] "\t" p[i] }')
 }
 
 # live_wait <cwd> [<claude pid>]: queue when such a process is a FLEET_QUEUE_GATES one (a gate waiting for its
@@ -328,7 +373,7 @@ gate_log_idle() {
 # which names agent-land), and this pass's own ancestors. With no claude pid (an agent-panel row
 # without .pid) only the worktree is read.
 live_wait() {
-  local conf="${FLEET_TIME_USE_CONF:-$HOME/.config/agent-panel/time-use.conf}" want kind text pid cmd
+  local conf="$FLEET_TIME_USE_CONF" want kind text pid cmd
   local -a cmds=()
   while IFS=$'\t' read -r pid cmd; do [ -z "$pid" ] || cmds+=("$cmd"); done < <(wait_procs "$@")
   [ "${#cmds[@]}" -gt 0 ] || return 0
@@ -462,6 +507,54 @@ api_error_stop() {
             | capture("API Error: (?<c>[0-9]+)")? // {c: ""}).c as $c
           | if $c == "" then "" else "\($c)\t\((.timestamp // "-")[:16])" end
         else "" end' 2>/dev/null | tail -n 1 | grep . || true
+}
+
+# resume_killed_gate <transcript> -> "<kind> <text>\t<timestamp to the minute>" when the newest notice that a resume
+# ended a background shell (Claude Code's <task-notification>, status stopped, "Background shell command didn't finish
+# before the previous session ended", written as the resumed claude starts) whose ids include a Bash call that was a gate
+# or test (gate_text) has no gate or test Bash call after it; else nothing. Any later gate or test counts, not only the
+# killed one's text: a session that went on to gate or land another way is past it (ar-1902 review). The notice wakes no turn:
+# 2026-11-12 07:41 a planned reboot took the lab tmux server down, fleet-dispatch restore reopened its 22 conversations
+# at 07:43 with no prompt, and agent-3, -5, -7 and -10 had each lost a gate-and-land, a local run or a train wait; they
+# sat idle until they read STALLED at 08:07 (ar-1902). Only the notices' lines, then the lines after one, reach jq.
+resume_killed_gate() {
+  [ -s "${1:-}" ] || return 0
+  local n at ids id g
+  while IFS=$'\t' read -r n at ids; do
+    for id in $ids; do
+      g="$(gate_text "$(bash_command "$1" "$id")")"
+      [ -n "$g" ] || continue
+      [ -z "$(gate_text "$(tail -n "+$((n + 1))" "$1" | grep -a -F '"name":"Bash"' | jq -r 'select(.type == "assistant")
+          | .message.content[]? | select(.type? == "tool_use" and .name == "Bash") | .input.command // empty' 2>/dev/null)")" ] \
+        && printf '%s\t%s\n' "$g" "$at"
+      return 0
+    done
+  done < <(grep -a -n -F 'finish before the previous session ended' "$1" 2>/dev/null | jq -R -r '
+      capture("^(?<n>[0-9]+):(?<j>.*)$") | .n as $n | .j | fromjson? | select(type == "object" and .type == "user")
+      | (.message.content | if type == "string" then . else (map(.text? // "") | join(" ")) end) as $c
+      | select(($c | test("<status>stopped</status>")) and ($c | test("[Bb]ackground shell commands? didn.t finish before the previous session ended")))
+      | [$n, (.timestamp // "-")[:16], ([$c | scan("<tool-use-id>([^<]+)</tool-use-id>") | .[0]] | join(" "))] | @tsv' 2>/dev/null | tac)
+}
+
+# stopped_bucket <transcript> <bucket> <main red|-> -> "<bucket>\t<stop minute>" when an idle session's transcript ends on
+# its own stop line, else nothing: nothing in such a session wakes without a message. An API Error (api_error_stop) replaces
+# a WORKING row (idle under FLEET_IDLE_MIN, a pending CI run). A resume that killed a background gate or test
+# (resume_killed_gate) replaces a WORKING or STALLED one, since rerunning it is the next step whatever the tree reads, but
+# not a nightly-red suspect, a PR conflict or a red CI run, whose own nudge comes first (ar-1902 review).
+stopped_bucket() {
+  local s k at
+  if [[ "$2" == WORKING* ]]; then
+    s="$(api_error_stop "$1")"
+    [ -z "$s" ] || { printf 'STALLED turn ended on API Error %s\n' "$s"; return 0; }
+  fi
+  case "$2" in
+    WORKING*) ;;
+    "STALLED PR #"*" conflicts with the default branch" | "STALLED PR #"*" CI red") return 0 ;;
+    STALLED*) [ "$3" = - ] || return 0 ;;
+    *) return 0 ;;
+  esac
+  IFS=$'\t' read -r k at < <(resume_killed_gate "$1")
+  [ -z "${k:-}" ] || printf 'STALLED resume killed its background %s (%s) before it finished\t%s\n' "${k%% *}" "${k#* }" "$at"
 }
 
 # pending_wakes <transcript> <claude start epoch|-> <now epoch> -> one "<kind>\t<id>\t<at epoch|->" line, soonest
@@ -609,6 +702,16 @@ bucket_facts() {
 # (own_parked_pr gives a red one a fix-ci session and a green one a lander), so it is no longer the session's to finish.
 handed_off() {
   [[ "$1" == review:*" pr "* ]] && [ "${1##* pr }" = "${2##*#}" ] && [ "$3" = 0 ] && [ "$4" = 1 ]
+}
+
+# salvaged_here <qall> <slug> <dir> -> exit 0 when the item that moved on from this session carries this
+# checkout's HEAD in its `salvage:` (`<branch>@<sha>`): that sha, or one built on it by a later run's handoff.
+# agent-queue handoff writes it only once that head is on origin, and the item's next start begins from it,
+# so the branch is not this session's to land (ar-2777). A sha this clone lacks holds nothing.
+salvaged_here() {
+  local sv
+  sv="$(jq -nr --arg s "$2" 'first(inputs | select(.slug == $s) | .salvage // empty)' <<<"$1" 2>/dev/null)"
+  [ -n "$sv" ] && git -C "$3" merge-base --is-ancestor HEAD "${sv##*@}" 2>/dev/null
 }
 
 # session_finished: session_bucket's arguments -> exit 0 when the work half of DONE holds
@@ -1580,12 +1683,14 @@ in_checkout() {
 # pr_of_head <dir> <branch> -> prs_for's row for the PR that holds this clone's HEAD, or nothing.
 # A PR whose head commit is HEAD wins whatever its head branch is: a slot branch is reused and its
 # work can go out on another branch (2026-11-07: agent-20 landed as #1500 via all-sources-p5-scoring,
-# and the older closed #1490 of the same name was named the blocker). Else the newest PR of the
-# local or upstream branch name, except a closed one that does not hold HEAD: that is an old PR.
+# and the older closed #1490 of the same name was named the blocker). Else an open PR of the local or
+# upstream branch name whose head holds HEAD, else the newest of them, except a closed one that does not hold
+# HEAD: that is an old PR. Open first: slot branch `agent-69` with upstream refactor/ar-88-delete-batch-rerun read the
+# bare name's old merged #2125, not the open #2014 its upstream heads, and its row "no PR" (ar-1582).
 # A worker's checkout passes its <head> and <upstream branch> (worker_git_facts); <dir> is then this
 # machine's clone of its repo, which may not have that head.
 pr_of_head() {
-  local d="$1" branch="$2" head="${3:-}" up="${4:-}" row s o hit prs
+  local d="$1" branch="$2" head="${3:-}" up="${4:-}" row s o hit prs named
   if [ -z "$head" ]; then
     head="$(git -C "$d" rev-parse HEAD 2>/dev/null)" || return 0
     up="$(git -C "$d" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)"; up="${up#*/}"
@@ -1596,17 +1701,44 @@ pr_of_head() {
   [ -n "$prs" ] || return 0
   hit="$(awk -F'\t' -v h="$head" '$5 == h { print; exit }' <<<"$prs")"
   [ -z "$hit" ] || { printf '%s\n' "$hit"; return; }
+  # A branch cut from the default branch tracks it: that name is no PR of its own.
+  if [ -n "$up" ]; then hit="$(default_base "$d")"; [ "$up" != "${hit#*/}" ] || up=""; fi
   # Names go in by ENVIRON, not -v, which would read a backslash in a branch name as an escape.
+  named="$(PR_BRANCH="$branch" PR_UP="$up" awk -F'\t' 'BEGIN { b = ENVIRON["PR_BRANCH"]; u = ENVIRON["PR_UP"] } $1 == b || (u != "" && $1 == u)' <<<"$prs")"
+  [ -n "$named" ] || return 0
+  while IFS= read -r row; do
+    IFS=$'\t' read -r _ _ s _ o _ <<<"$row"
+    [ "$s" = OPEN ] && git -C "$d" merge-base --is-ancestor "$head" "$o" 2>/dev/null && { printf '%s\n' "$row"; return; }
+  done <<<"$named"
   while IFS= read -r row; do
     IFS=$'\t' read -r _ _ s _ o _ <<<"$row"
     if [ "$s" = CLOSED ] && ! git -C "$d" merge-base --is-ancestor "$head" "$o" 2>/dev/null; then continue; fi
     printf '%s\n' "$row"; return
-  done < <(PR_BRANCH="$branch" PR_UP="$up" awk -F'\t' 'BEGIN { b = ENVIRON["PR_BRANCH"]; u = ENVIRON["PR_UP"] } $1 == b || (u != "" && $1 == u)' <<<"$prs")
+  done <<<"$named"
+}
+
+# pr_for_head <dir> <branch> <ahead> [<head> <upstream branch>] -> the PR row git_facts reads: pr_of_head's,
+# unless HEAD has files the base lacks and that PR is missing, or finished without holding HEAD; then the
+# open PR whose head holds HEAD (pr_holding_head) when there is one. Work that went out on another head
+# branch is found by HEAD, not by the slot name's old PR (ar-1582). A finished PR whose head this clone
+# lacks stays: nothing says it does not hold HEAD. A HEAD this clone lacks (a worker's unpushed one)
+# is held by no PR here, so it scans none. A worker's checkout passes <head> and <upstream>.
+pr_for_head() {
+  local d="$1" branch="$2" ahead="$3" head="${4:-HEAD}" up="${5:-}" row s o held
+  row="$(pr_of_head "$d" "$branch" "${4:-}" "$up")"
+  IFS=$'\t' read -r _ _ s _ o _ <<<"$row"
+  [ "$ahead" -gt 0 ] && git -C "$d" cat-file -e "$head^{commit}" 2>/dev/null || { [ -z "$row" ] || printf '%s\n' "$row"; return 0; }
+  if [ -z "$row" ] || { [ "$s" != OPEN ] && git -C "$d" cat-file -e "$o^{commit}" 2>/dev/null \
+       && ! git -C "$d" merge-base --is-ancestor "$head" "$o" 2>/dev/null; }; then
+    held="$(pr_holding_head "$d" "$head")"
+    [ -z "$held" ] || row="$held"
+  fi
+  [ -z "$row" ] || printf '%s\n' "$row"
 }
 
 # pr_holding_head <dir> -> prs_for's row for the oldest OPEN PR whose head holds this clone's HEAD
 # (the nearest of a stack, which lands it first), or nothing. A stacked branch has no PR of its own when its commits went out inside the PR of the
-# branch built on it (ar-82: agent-51 feat/tourney-daily-cap inside #1674). git_facts asks only
+# branch built on it (ar-82: agent-51 feat/tourney-daily-cap inside #1674). pr_for_head asks only
 # when HEAD has files the base lacks, so a HEAD still on the base, held by every PR, never asks.
 # A worker's checkout passes its <head>, as pr_of_head.
 pr_holding_head() {
@@ -1639,8 +1771,7 @@ git_facts() {
     pahead="$(ahead_files "$d" "$pin")"
     [ "$pahead" -lt "$ahead" ] && ahead="$pahead"
   fi
-  IFS=$'\t' read -r prb pr state ci oid red < <(pr_of_head "$d" "$branch")
-  [ -z "${pr:-}" ] && [ "$ahead" -gt 0 ] && IFS=$'\t' read -r prb pr state ci oid red < <(pr_holding_head "$d")
+  IFS=$'\t' read -r prb pr state ci oid red < <(pr_for_head "$d" "$branch" "$ahead")
   [ "${state:-}" = OPEN ] && ci="$(open_pr_ci "$d" "$prb" "$pr" "$oid" "$ci" "$red" "$shell")"
   if [ -n "${oid:-}" ]; then
     head="$(git -C "$d" rev-parse HEAD)"
@@ -1703,8 +1834,7 @@ worker_git_facts() {
   if [ "$d" = - ]; then
     unreadable "PR store for ${f[2]} (no clone here)"; blind_row
   elif [ -n "$head" ]; then
-    IFS=$'\t' read -r prb pr state ci oid red < <(pr_of_head "$d" "$branch" "$head" "$up")
-    [ -z "${pr:-}" ] && [ "$ahead" -gt 0 ] && IFS=$'\t' read -r prb pr state ci oid red < <(pr_holding_head "$d" "$head")
+    IFS=$'\t' read -r prb pr state ci oid red < <(pr_for_head "$d" "$branch" "$ahead" "$head" "$up")
     [ "${state:-}" = OPEN ] && ci="$(open_pr_ci "$d" "$prb" "$pr" "$oid" "$ci" "$red" "$shell")"
   fi
   if [ "${oid:--}" != - ] && [ "$head" != "$oid" ]; then
@@ -2029,7 +2159,7 @@ collect() {
     landed="$(jq -r 'if any(.state == "MERGED") and all(.state != null and .state != "OPEN")
       then map(select(.state == "MERGED") | "#\(.number)") | join(",") else "-" end' <<<"$prs")"
     tsess="${target#*/}"; tsess="${tsess%:*}"
-    idle=$(( (now - since) / 60 )); bidle="$(gate_log_idle "$host" "$status" "$ojob" "$cwd" "$idle")"
+    idle=$(( (now - since) / 60 )); bidle="$(gate_log_idle "$host" "$status" "$ojob" "$cwd" "$idle" "$transcript")"
     age=-; [[ "$started" =~ ^[0-9]+$ ]] && age=$(( (now - started) / 60 ))
     # Every ask this session filed and nobody answered (ownask), the ones a queue item carries on
     # included: the session may close (bucket), and the close verdict says whether its window must
@@ -2091,6 +2221,10 @@ collect() {
     # What a deployed checkout off its default branch holds is one fault, its CHECKOUT row, and no
     # session's work: 2026-11-06 it read 9 files ahead on all 16 sessions there, each one STALLED.
     if [ "$host" = - ] && [ "$g" = 1 ] && in_checkout "$cwd" "$off"; then ahead=0 pr=- state=- ci=- oid=- inpr=1; fi
+    # A run that handed its item off left its pushed branch to the item's next start: a clean tree whose
+    # HEAD is that item's salvage: has nothing left here to land.
+    if [ "$host" = - ] && [ "$g" = 1 ] && [ "$irel" = moved ] && [ "$dirty" = 0 ] && [ "$ahead" -gt 0 ] && [ "$pr" = - ] \
+       && salvaged_here "$qall" "$islug" "$cwd"; then ahead=0; fi
     # A finished branch PR this session did not make is another session's (pr_made_here): drop it,
     # and the commits it holds with it. An open one stays: it is unlanded work in this tree either way.
     if [ "$host" = - ] && [ "$g" = 1 ] && { [ "$state" = MERGED ] || [ "$state" = CLOSED ]; } && [ -s "$transcript" ] \
@@ -2230,14 +2364,12 @@ collect() {
               "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" "$cron")"
     fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$bidle" "$g" "$dirty" "$ahead" \
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" && fin=1
-    # An idle session whose last message is an API Error line is stopped, whatever else reads WORKING
-    # (idle under FLEET_IDLE_MIN, a pending CI run): nothing in it wakes without a message. A finished
-    # one is left to DONE.
-    local apistop=""
+    # An idle session whose transcript ends on its own stop line is stopped (stopped_bucket); a finished one is left to DONE.
+    local stopped="" stopat=""
     if [ "$host" = - ] && [ "$status" = idle ] && [ "$hv" = 0 ] && [ "$ojob" != agent ] && [ "$fin" = 0 ] \
-       && [ "${bucket%% *}" = WORKING ] && [ "$idle" -ge "$FLEET_API_ERROR_IDLE_MIN" ]; then
-      apistop="$(api_error_stop "$transcript")"
-      [ -z "$apistop" ] || bucket="STALLED turn ended on API Error ${apistop%%$'\t'*}"
+       && [ "$idle" -ge "$FLEET_API_ERROR_IDLE_MIN" ]; then
+      IFS=$'\t' read -r stopped stopat < <(stopped_bucket "$transcript" "$bucket" "$red")
+      [ -z "$stopped" ] || bucket="$stopped"
     fi
     blk="$(work_blockers "$askids" "$status" "$plan" "$asks" "$hv" "$bidle" "$g" "$dirty" "$ahead" \
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" - "$(merged_prs "$prs")")"
@@ -2259,7 +2391,7 @@ collect() {
     # Carrying on is activity, not a fact: a session flipping between busy and idle must never page twice.
     fact="${bucket%, carrying on}"; [ "$pr" != - ] && fact="$fact @$branch"
     # One error is one fact (its minute), so a second one after a nudge restarted the session is nudged again.
-    [ -z "$apistop" ] || fact="$fact at ${apistop#*$'\t'}"
+    [ -z "$stopat" ] || fact="$fact at $stopat"
     if [ "$bucket" = "STALLED PR #$pr conflicts with the default branch" ]; then
       fact="$fact base ${fork:0:12}"
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi

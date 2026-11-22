@@ -327,6 +327,19 @@ burn() {
   assert_equal "$(burn '[.registry.sessions, .registry.cost_usd, .by_account["claude-personal"].cost_usd, .by_account.claude.cost_usd] == [2, 5, 4, 1]')" 'true'
 }
 
+@test "burn: by account and by project dollars are the fleet cost, the registry's billed sum beside them" {
+  burn_home
+  reg="$HOME/.agent/sessions/demo/sessions.jsonl"
+  sed -i 's/"cost_usd":4.0/"cost_usd":40.0/' "$reg"   # the registry now disagrees with the billed counter
+  out=$(TZ=UTC "$AU" burn --days 2 --before 2026-01-02T00:00:00+00:00 --json)
+  assert_equal "$(jq -c '.by_account["claude-personal"] | [.cost_usd, .measured, .estimated, .billed_usd, .sessions]' <<<"$out")" '[4.0,4.0,0.0,40.0,1]'
+  assert_equal "$(jq -c '.by_project.demo | [.cost_usd, .billed_usd, .sessions, .cache_read]' <<<"$out")" '[5.0,41.0,2,50000]'
+  # negative control: with no fleet cost the dollars are null, never the registry's
+  printf 'prom_q() { return 7; }\n' > "$HOME/prom-down.sh"
+  out=$(PROM_LIB="$HOME/prom-down.sh" TZ=UTC "$AU" burn --days 2 --before 2026-01-02T00:00:00+00:00 --json)
+  assert_equal "$(jq -c '.by_project.demo | [.cost_usd, .billed_usd, .sessions]' <<<"$out")" '[null,41.0,2]'
+}
+
 @test "burn: a PR merged in the window counts once however many sessions name it" {
   assert_equal "$(burn '[.merged_prs, .per_merged_pr.cost_usd]')" '[2,2.5]'
 }
@@ -372,7 +385,7 @@ burn_sorted() {
   burn_home
   run env TZ=UTC "$AU" burn --days 2 --before 2026-01-02T00:00:00+00:00
   assert_success
-  assert_output --partial 'by account (registry)'
+  assert_output --partial 'by account (fleet cost; billed_usd is the registry)'
   assert_output --partial 'wakes after an idle gap over 1h, by trigger'
   assert_output --partial 'dream runs by night: 2026-01-01 1'
 }

@@ -201,6 +201,9 @@ PY
   assert_output '[[["unbilled",24,0,"claude"],["billed",10,10,"claude"],["x",9,0,"codex"],["ghost",2,2,"claude"]],true]'
   run cost '[.by_session[] | select(.sid == "billed" or .sid == "x") | [.origin, .agent, .account, .project, .title]]'
   assert_output '[["runner","dream","claude-bnb",null,null],["interactive",null,null,"p","t"]]'
+  # by_project groups the same rows, and total.unattributed is what no row carries: gateway, helper, the $3 line
+  run cost '[(.by_project | map_values([.usd, .sessions, .tokens])), .total.sessions, (.total.unattributed * 100 | round) == ((.other_harness.gateway.usd + .total.helper_usd + 3) * 100 | round)]'
+  assert_output '[{"?":[36,3,2000004],"p":[9,1,0]},4,true]'
 }
 
 @test "a session that cost nothing has no row, never a \$0 one" {

@@ -1503,9 +1503,10 @@ EOF
 @test "end-reasons.sh: the ends that say nothing about the model, one list for every reader" {
   . "$REPO_ROOT/.local/lib/end-reasons.sh"
   unrated_end limit || fail "limit is unrated"
+  unrated_end handoff || fail "a handoff (agent-queue handoff) is unrated"
   ! unrated_end timeout || fail "a timeout rates the model"   # negative control
   ! unrated_end "" || fail "no end is not unrated"
-  assert_equal "$(unrated_json)" '["refused","limit","provider","cut"]'
+  assert_equal "$(unrated_json)" '["refused","limit","provider","cut","handoff"]'
 }
 
 @test "judged_keys: a failure expires the row's verdicts; DISPATCH_FIX_TRIES since its last cleared hold it" {

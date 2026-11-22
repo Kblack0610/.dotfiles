@@ -19,7 +19,7 @@ joins them. Who owns which number:
   claude-recall tool-calls   read discipline and read triggers (reads), hot_targets
   agent-usage langfuse       tool latency, tool errors by class, gateway calls, cost and errors;
                              null when Langfuse cannot answer
-  agent-usage burn           cost (registry), merged PRs and cost per merged PR, start context
+  agent-usage burn           cost (fleet_cost), merged PRs and cost per merged PR, start context
                              (first-turn median), compactions, tokens by model
 A day is the local calendar day, the window both tools are given exactly.
 
@@ -130,8 +130,14 @@ def snapshot(day):
     per_pr = burn.get("per_merged_pr") or {}
     by_project = {r["key"]: usage(r) for r in proj.get("rows") or []}
     for k, v in (burn.get("by_project") or {}).items():
-        by_project.setdefault(k, {}).update(sessions=v.get("sessions"), cost_usd=round(v.get("cost_usd") or 0, 2))
+        c = v.get("cost_usd")   # None when the fleet cost could not be read, never a $0
+        by_project.setdefault(k, {}).update(sessions=v.get("sessions"), cost_usd=None if c is None else round(c, 2))
     long_runs = proj.get("long_runs") or {}
+    fc = burn.get("fleet_cost")
+    # Each session's fleet-cost spend in the day, and the dollars no session row carries (fleet_cost's
+    # total.unattributed): the by_tool and by_skill split inputs.
+    costs = {r["sid"]: r["usd"] for r in fc.get("by_session") or []} if fc else None
+    rest = fc["total"]["unattributed"] if fc else 0.0
     rd = (calls.get("buckets") or {}).get("all") or {}
     reads = {k: rd.get(k, 0) for k in ("reads", "locate_then_read", "reread_same_lines",
                                        "locate_then_read_ctx", "reread_same_lines_ctx",
@@ -142,11 +148,11 @@ def snapshot(day):
         "window": {"start": s, "end": e},
         "generated_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "errors": errors,
-        "fleet_cost": burn.get("fleet_cost"),
+        "fleet_cost": fc,
         "totals": {**tu, "input": t.get("input_tokens"), "cache_write": t.get("cache_creation_input_tokens"),
                    "cache_read": t.get("cache_read_input_tokens"), "tool_calls": t.get("calls"),
-                   "cost_usd": (burn.get("registry") or {}).get("cost_usd"),
-                   "sessions": (burn.get("registry") or {}).get("sessions")} if t else None,
+                   "cost_usd": fc["total"]["usd"] if fc else None,
+                   "sessions": fc["total"]["sessions"] if fc else None} if t else None,
         "context_per_response": ctx // turns if turns else None,
         "carried_share": round(tu["carried_tokens"] / ctx, 4) if ctx else None,
         "carried_x": t.get("carried", 0) // t["chars"] if t.get("chars") else None,
@@ -167,8 +173,8 @@ def snapshot(day):
         "responses_per_session": proj.get("sessions"),
         "hook_turns": proj.get("hook_turns"),
         "by_project": dict(sorted(by_project.items(), key=lambda kv: -(kv[1].get("context") or 0))),
-        **by_tool(tool, (burn.get("registry") or {}).get("cost_by_session")),
-        **by_skill(skill, (burn.get("registry") or {}).get("cost_by_session")),
+        **by_tool(tool, costs, rest),
+        **by_skill(skill, costs, rest),
         "by_command": split(cmd, "head"),
         "by_tool_filetype": by_tool_filetype(ftype),
         "by_model": burn.get("by_model"),
@@ -216,10 +222,11 @@ def by_tool_filetype(recall):
     return {t: sorted(rs, key=lambda x: -x["chars"])[:TOP_FILETYPES] for t, rs in sorted(out.items())}
 
 
-def split_cost(costs, per):
-    """Each session's registry cost split over its keys by their weight in per[session]: the
-    allocation per key, and the cost of sessions with no weight. by_tool and by_skill share it."""
-    alloc, unallocated = {}, 0.0
+def split_cost(costs, per, rest=0.0):
+    """Each session's fleet-cost spend split over its keys by their weight in per[session]: the
+    allocation per key, and the unallocated dollars: the sessions with no weight plus rest, the
+    fleet dollars no session carries. by_tool and by_skill share it."""
+    alloc, unallocated = {}, float(rest)
     for sess, cost in costs.items():
         weight = per.get(sess) or {}
         whole = sum(weight.values())
@@ -231,13 +238,12 @@ def split_cost(costs, per):
     return alloc, round(unallocated, 4)
 
 
-def by_tool(recall, costs):
-    """by_tool from a recall --by session,tool result, and each session's registry cost split over
-    its tools by their share of its carried tokens: an allocation, never a metered figure. A session
-    with no carried tool output in the day allocates nothing; its cost is by_tool_unallocated_usd,
-    so the allocations and it sum to totals.cost_usd. The registry books a session's whole cost on the
-    day it was last updated, so the split uses that day's carried output: a multi-day session's
-    earlier days carry no weight. No cost per session leaves both fields null."""
+def by_tool(recall, costs, rest=0.0):
+    """by_tool from a recall --by session,tool result, and each session's fleet-cost spend in the day
+    split over its tools by their share of its carried tokens: an allocation, never a metered figure.
+    A session with no carried tool output in the day allocates nothing; its cost, and rest (the
+    gateway and helper dollars no session carries), is by_tool_unallocated_usd, so the allocations
+    and it sum to totals.cost_usd. No cost per session leaves both fields null."""
     tools, per = {}, {}
     for r in recall.get("rows") or []:
         sess, name = r["key"]
@@ -252,7 +258,7 @@ def by_tool(recall, costs):
     for t in tools.values():
         t["allocated_cost_usd"] = None
     if costs is not None:
-        alloc, unallocated = split_cost(costs, per)
+        alloc, unallocated = split_cost(costs, per, rest)
         for name, t in tools.items():
             t["allocated_cost_usd"] = round(alloc.get(name, 0.0), 4)
     for t in tools.values():
@@ -264,17 +270,17 @@ def by_tool(recall, costs):
 # How a response's tokens weigh against each other when one session's reported cost is split over
 # its skill spans: input 1, cache write 1.25, cache read 0.1, output 5, the ratios Anthropic's
 # list prices share across models. A split weight only, never a price: the dollars are the
-# registry's reported cost (agent-usage keeps no price table, see its header).
+# fleet cost (agent-usage fleet-cost).
 SPLIT_WEIGHT = {"input_tokens": 1, "cache_creation_input_tokens": 1.25, "cache_read_input_tokens": 0.1,
                 "output_tokens": 5}
 
 
-def by_skill(recall, costs):
+def by_skill(recall, costs, rest=0.0):
     """by_skill from a recall --by session,skill result: per skill its spans, sessions, responses,
-    context and output, and each session's registry cost split over its skills (the "(no skill)" row
-    included) by SPLIT_WEIGHT. Like by_tool, an allocation: a session with no response in the day
-    allocates nothing and its cost is by_skill_unallocated_usd, so the rows and it sum to
-    totals.cost_usd. No cost per session leaves the cost fields null."""
+    context and output, and each session's fleet-cost spend in the day split over its skills (the
+    "(no skill)" row included) by SPLIT_WEIGHT. Like by_tool, an allocation: a session with no
+    response in the day allocates nothing and its cost, with rest, is by_skill_unallocated_usd, so
+    the rows and it sum to totals.cost_usd. No cost per session leaves the cost fields null."""
     skills, per = {}, {}
     for r in recall.get("rows") or []:
         sess, name = r["key"]
@@ -291,7 +297,7 @@ def by_skill(recall, costs):
     for k in skills.values():
         k["allocated_cost_usd"] = None
     if costs is not None:
-        alloc, unallocated = split_cost(costs, per)
+        alloc, unallocated = split_cost(costs, per, rest)
         for name, k in skills.items():
             k["allocated_cost_usd"] = round(alloc.get(name, 0.0), 4)
     rows = sorted(skills.values(), key=lambda k: (-(k["allocated_cost_usd"] or 0), -k["context"]))

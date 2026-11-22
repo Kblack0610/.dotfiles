@@ -735,6 +735,29 @@ ledger() {
   done
 }
 
+@test "live_wait reads a background agentctl-playground-night as a test, by the repo's own time-use.conf (ar-1846)" {
+  # 2026-11-22 agent-3 read "background shell is not a gate or test" while its shell ran the human's night run
+  # (agentctl-playground-night --sha <commit>), and the nudge would have told it to stop the night. Reads the shipped
+  # conf, not a copy, so dropping the `test agentctl-playground-night` line fails here.
+  mkdir -p "$SANDBOX/wt" "$SANDBOX/bin"
+  printf 'sleep 60\n' > "$SANDBOX/bin/agentctl-playground-night"
+  export FLEET_TIME_USE_CONF="$BATS_TEST_DIRNAME/../../.config/agent-panel/time-use.conf"
+  # root stands in for the session's claude; the night run sits below it, outside the session's worktree
+  (cd "$SANDBOX/bin" && exec setsid bash -c 'bash agentctl-playground-night --sha a99a6eb5b; :') >/dev/null 2>&1 3>&- &
+  local root=$!; LIVE_PIDS="-$root"
+  # the process is the event: wait until /proc shows the script's own exec (the anchor skips the wrapper's `bash -c`)
+  until pgrep -s "$root" -f '^bash agentctl-playground-night' >/dev/null; do
+    kill -0 "$root" 2>/dev/null || fail "the night stand-in exited before it started"
+  done
+  run live_wait "$SANDBOX/wt" "$root"
+  assert_output 'test'
+  # negative control: a conf without the line reads nothing
+  printf 'gate agent-land\ntest bats\n' > "$SANDBOX/other.conf"
+  FLEET_TIME_USE_CONF="$SANDBOX/other.conf" run live_wait "$SANDBOX/wt" "$root"
+  assert_output ''
+  pkill -KILL -s "$root" || true; wait "$root" 2>/dev/null || true
+}
+
 @test "live_wait finds a gate or test process running in the session worktree, and only there" {
   # 2026-11-07 unity-core-playground-agent-30: a gate detached with & left only its until-loop in the
   # transcript (open job jobs), so a Tests run in progress read STALLED.
@@ -818,12 +841,57 @@ ledger() {
   printf 'main\t4\tMERGED\tPASS\t2222\t-\nother\t3\tOPEN\tPASS\t3333\t-\n' > "$LEDGER_DIR/prs_o_c.tsv"
   run pr_of_head "$SANDBOX/c" other
   assert_output "$(printf 'other\t3\tOPEN\tPASS\t3333\t-')"
+  # an open PR of the upstream whose head holds HEAD outranks a newer finished one of the slot name (ar-1582)
+  local top; git -C "$SANDBOX/c" -c user.name=t -c user.email=t@t commit -q --allow-empty -m two
+  top="$(git -C "$SANDBOX/c" rev-parse HEAD)"; git -C "$SANDBOX/c" reset -q --hard "$head"
+  CACHE="$SANDBOX/pass4"; mkdir -p "$CACHE"
+  printf 'agent-69\t9\tMERGED\tPASS\t9999\t-\nfeat/y\t3\tOPEN\tPASS\t%s\t-\nmain\t2\tOPEN\tPASS\t%s\t-\n' "$top" "$top" > "$LEDGER_DIR/prs_o_c.tsv"
+  run pr_of_head "$SANDBOX/c" agent-69 "$head" feat/y
+  assert_output "$(printf 'feat/y\t3\tOPEN\tPASS\t%s\t-' "$top")"
+  # negative controls: an upstream that is the default branch names no PR, and with no open one holding
+  # HEAD the newest of the names is still it
+  run pr_of_head "$SANDBOX/c" agent-69 "$head" main
+  assert_output "$(printf 'agent-69\t9\tMERGED\tPASS\t9999\t-')"
+  CACHE="$SANDBOX/pass5"; mkdir -p "$CACHE"
+  printf 'agent-69\t9\tMERGED\tPASS\t9999\t-\nfeat/y\t3\tOPEN\tPASS\t3333\t-\n' > "$LEDGER_DIR/prs_o_c.tsv"
+  run pr_of_head "$SANDBOX/c" agent-69 "$head" feat/y
+  assert_output "$(printf 'agent-69\t9\tMERGED\tPASS\t9999\t-')"
   # a detached HEAD (no branch name) matches no row, and an empty store prints nothing at all
   run pr_of_head "$SANDBOX/c" ''
   assert_output ''
   CACHE="$SANDBOX/pass3"; mkdir -p "$CACHE"; : > "$LEDGER_DIR/prs_o_c.tsv"
   run pr_of_head "$SANDBOX/c" ''
   assert_output ''
+}
+
+@test "pr_for_head: with files ahead, a finished PR that does not hold HEAD yields to the open PR that does; one that holds it stays (ar-1582)" {
+  git init -q "$SANDBOX/c"; git -C "$SANDBOX/c" remote add origin 'git@github.com:o/c.git'
+  local g=(git -C "$SANDBOX/c" -c user.name=t -c user.email=t@t) head top side unk
+  "${g[@]}" commit -q --allow-empty -m one; head="$("${g[@]}" rev-parse HEAD)"
+  "${g[@]}" commit -q --allow-empty -m two; top="$("${g[@]}" rev-parse HEAD)"; "${g[@]}" reset -q --hard "$head"
+  side="$("${g[@]}" commit-tree "$head^{tree}" -m side)"; unk="$(printf '%040d' 7)"
+  # store <by-name merged head>: the slot name's merged PR, newest, then an open PR on another branch holding HEAD
+  store() { CACHE="$SANDBOX/pass$RANDOM"; mkdir -p "$CACHE"
+    printf 'agent-69\t9\tMERGED\tPASS\t%s\t-\nfeat/y\t3\tOPEN\tPASS\t%s\t-\n' "$1" "$top" > "$LEDGER_DIR/prs_o_c.tsv"; }
+  store "$side"
+  run pr_for_head "$SANDBOX/c" agent-69 1
+  assert_output "$(printf 'feat/y\t3\tOPEN\tPASS\t%s\t-' "$top")"
+  # a worker's checkout passes its head: the same answer
+  run pr_for_head "$SANDBOX/c" agent-69 1 "$head" ''
+  assert_output "$(printf 'feat/y\t3\tOPEN\tPASS\t%s\t-' "$top")"
+  # negative controls: the merged PR holds HEAD, its head is unknown here, nothing is ahead, or the
+  # worker's HEAD is not in this clone: the by-name row stays
+  store "$top"
+  run pr_for_head "$SANDBOX/c" agent-69 1
+  assert_output "$(printf 'agent-69\t9\tMERGED\tPASS\t%s\t-' "$top")"
+  store "$unk"
+  run pr_for_head "$SANDBOX/c" agent-69 1
+  assert_output "$(printf 'agent-69\t9\tMERGED\tPASS\t%s\t-' "$unk")"
+  store "$side"
+  run pr_for_head "$SANDBOX/c" agent-69 0
+  assert_output "$(printf 'agent-69\t9\tMERGED\tPASS\t%s\t-' "$side")"
+  run pr_for_head "$SANDBOX/c" agent-69 1 "$unk" ''
+  assert_output "$(printf 'agent-69\t9\tMERGED\tPASS\t%s\t-' "$side")"
 }
 
 @test "a silent agent-land waiting on its checks or the landing slot is a queue gate, whatever its output age (ar-2244)" {
@@ -1705,6 +1773,53 @@ SH
   jq -r .reason <<<"$output" | grep -q 'not a gate or test'
 }
 
+@test "a gate shell whose open output file is still being written is WORKING past FLEET_SHELL_STALE_MIN (ar-1334)" {
+  # 2026-11-10 agent-92: gate-and-land.sh sat 2h in the landing-slot wait behind #2103, printing a line a minute,
+  # and the row read STALLED by the transcript's idle minutes.
+  landed_fixture
+  local out="$SANDBOX/tasks/b1.output" done="$SANDBOX/tasks/b0.output" srv="$SANDBOX/tasks/b2.output"
+  mkdir -p "$SANDBOX/tasks"
+  export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
+  printf 'gate gate-and-land.sh\ntest bats\n' > "$FLEET_TIME_USE_CONF"
+  printf '==> landing slot: #2103 holds main\n' > "$out"; : > "$done"; : > "$srv"
+  # launch <tool id> <command> <output file> <result text>: a Bash call and the result naming its output file,
+  # in Claude Code's own wording (a run_in_background call, or one moved to the background at its timeout)
+  launch() {
+    printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"%s","name":"Bash","input":{"command":"%s"}}]}}\n' "$1" "$2"
+    printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"%s","content":"%s Output is being written to: %s. You will be notified"}]}}\n' "$1" "$4" "$3"
+  }
+  {
+    launch t0 'bats tests/unit' "$done" 'Command running in background with ID: b0.'
+    printf '{"type":"user","message":{"content":"<task-notification>\\n<task-id>b0</task-id>\\n<output-file>%s</output-file>\\n<status>completed</status>"}}\n' "$done"
+    launch t1 'scripts/git/gate-and-land.sh 2182' "$out" 'Command did not complete within its 120s timeout and was moved to the background (ID: b1).'
+    launch t2 'npm run dev' "$srv" 'Command running in background with ID: b2.'
+  } > "$SANDBOX/t.jsonl"
+  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" PANEL_STATUS=shell PANEL_JOB=gate PANEL_IDLE_S=$((200 * 60)) panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  # the bucket counts the output write; idle_min stays the transcript's own silence
+  [ "$(jq -r '"\(.bucket) \(.idle_min)"' <<<"$output")" = "WORKING 200" ]
+  # negative control: the same gate whose output has not moved in 3h reads idle
+  touch -d '3 hours ago' "$out"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = "LANDED" ]
+  jq -r .reason <<<"$output" | grep -q 'background shell idle over 120m'
+  # negative controls: a fresh file of a task the transcript saw finish, or of an open task that is not a gate
+  # or test (a dev server beside a hung gate), does not count
+  touch "$done" "$srv"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = "LANDED" ]
+  run open_outputs "$SANDBOX/t.jsonl"
+  assert_output "$out"
+  # a gate that redirects into Logs/gate-and-land.out (a FLEET_GATE_LOGS default) counts the same way
+  mkdir -p "$SANDBOX/wt/Logs"; : > "$SANDBOX/wt/Logs/gate-and-land.out"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = "WORKING" ]
+}
+
 @test "end to end: a row carries the open job its shell waits on, and null when none is known" {
   # fleet-dispatch counts no open_job queue session toward its pace target (pipeline-eval-p2).
   landed_fixture
@@ -2269,6 +2384,24 @@ clean_fixture() {
   run "$S" --json
   [ "$(jq -r .nudged <<<"$output")" = false ]
   [ "$(jq -r .close_sent <<<"$output")" = false ]
+}
+
+@test "end to end: a session whose item handed off its pushed branch (salvage: its HEAD) has nothing to land; another head still does (ar-2777)" {
+  clean_fixture
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
+  echo 1 > "$SANDBOX/wt/f"; "${g[@]}" add f; "${g[@]}" commit -q -m 'add f'
+  "${g[@]}" push -q origin feat/x 2>/dev/null
+  queue_item queued lab:s1
+  local f="$HOME/.agent/queue/queued/20261103-100000-fix-wave-save.md"
+  sed -i "s|^session: .*|&\nsalvage: feat/x@$("${g[@]}" rev-parse HEAD)\nhandoff: $HOME/.claude/plans/fix-wave-save.md\nhandoffs: 1|" "$f"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, no plan file, its item fix-wave-save moved on (queued)' ]
+  # negative control: a commit past the salvaged head is this session's own, unlanded
+  echo 2 > "$SANDBOX/wt/g"; "${g[@]}" add g; "${g[@]}" commit -q -m 'add g'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = '2 file(s) not on the default branch, no PR' ]
 }
 
 @test "end to end: a clean session reads its queue item from any state, and a removed worktree is DONE" {
@@ -4719,6 +4852,35 @@ GH
   [ "$(jq -r .pr_state <<<"$output")" = null ]
 }
 
+@test "end to end: a slot branch whose work heads an open PR on another branch reads that PR, not its name's old one (ar-1582)" {
+  # A reused slot name `agent-69` has an old merged PR of its own (#2125 in the ucp store); its work went out
+  # as the open #2014 on another branch, whose head is past this HEAD. The row read "N file(s) not on the
+  # default branch, no PR": the name's merged PR is another session's, so pr_made_here dropped it.
+  landed_fixture
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t) old here top
+  "${g[@]}" checkout -q -b agent-69 origin/main
+  echo o > "$SANDBOX/wt/o.txt"; "${g[@]}" add o.txt; "${g[@]}" commit -q -m old; old="$("${g[@]}" rev-parse HEAD)"
+  "${g[@]}" checkout -q -B agent-69 origin/main
+  echo a > "$SANDBOX/wt/a.txt"; "${g[@]}" add a.txt; "${g[@]}" commit -q -m a; here="$("${g[@]}" rev-parse HEAD)"
+  echo b > "$SANDBOX/wt/b.txt"; "${g[@]}" add b.txt; "${g[@]}" commit -q -m b; top="$("${g[@]}" rev-parse HEAD)"
+  "${g[@]}" reset -q --hard "$here"   # the PR's head moved on past this clone's HEAD (a fix pushed elsewhere)
+  printf 'agent-69\t2125\tMERGED\tPASS\t%s\t-\nfeat/beach\t2014\tOPEN\tPASS\t%s\t-\n' "$old" "$top" > "$LEDGER_DIR/prs.tsv"
+  # no upstream: the open PR whose head holds HEAD is found by HEAD
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r '"\(.pr) \(.pr_state)"' <<<"$output")" = '2014 OPEN' ]
+  # an upstream that names it: found by name, open before the slot name's merged one
+  "${g[@]}" push -q origin "$top:refs/heads/feat/beach" 2>/dev/null
+  "${g[@]}" fetch -q origin; "${g[@]}" branch -q -u origin/feat/beach
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r '"\(.pr) \(.pr_state)"' <<<"$output")" = '2014 OPEN' ]
+  "${g[@]}" branch -q --unset-upstream
+
+  # negative control: an open PR whose head does not hold HEAD is not it
+  printf 'agent-69\t2125\tMERGED\tPASS\t%s\t-\nfeat/beach\t2014\tOPEN\tPASS\t%s\t-\n' "$old" "$old" > "$LEDGER_DIR/prs.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .pr <<<"$output")" != 2014 ]
+}
+
 @test "gate_ci: a branch run list the ledger cannot read keeps the rollup's answer and is named unreadable (ar-191)" {
   gh_script 'exit 1'
   touch "$LEDGER_DIR/FAIL"
@@ -5362,6 +5524,105 @@ JSONL
   phases_plan '- [x] Phase 1: fleet-sessions (#875)'
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+}
+
+# killed_gate_transcript <file> [<killed command>]: the tail of a session a reboot stopped mid-gate and fleet-dispatch
+# restore resumed (2026-11-12 07:43 PST, unity-core-playground-agent-10 d43a2bc6), as Claude Code writes it: the
+# background Bash call, its kill as the old claude exited, then the resumed claude's own notice, also on its queue line.
+killed_gate_transcript() {
+  local cmd="${2:-scripts/test/gate-and-land.sh --item ucp-634 > Logs/gate-and-land.out 2>&1}"
+  jq -cn --arg c "$cmd" '{type: "assistant", timestamp: "2026-11-12T15:32:18.206Z", message: {content: [{type: "tool_use",
+    id: "toolu_g", name: "Bash", input: {command: $c, run_in_background: true}}]}}' > "$1"
+  cat >> "$1" <<'JSONL'
+{"type":"user","timestamp":"2026-11-12T15:32:18.900Z","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_g","content":"Command running in background with ID: bsf8othhu. Output is being written to: /tmp/claude-1000/x/tasks/bsf8othhu.output"}]}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-12T15:40:56.082Z","content":"<task-notification>\n<task-id>bsf8othhu</task-id>\n<tool-use-id>toolu_g</tool-use-id>\n<status>killed</status>\n<summary>Background command was stopped</summary>\n</task-notification>"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-12T15:43:34.340Z","content":"<task-notification>\n<task-id>bsf8othhu</task-id>\n<tool-use-id>toolu_g</tool-use-id>\n<status>stopped</status>\n<summary>Background shell command didn't finish before the previous session ended</summary>\n</task-notification>"}
+{"type":"user","timestamp":"2026-11-12T15:43:34.357Z","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>\n<task-id>bsf8othhu</task-id>\n<tool-use-id>toolu_g</tool-use-id>\n<status>stopped</status>\n<summary>Background shell command didn't finish before the previous session ended</summary>\n<note>No completion record was found for it in the previous session.</note>\n</task-notification>"}}
+JSONL
+}
+
+@test "a resume that killed its background gate is STALLED with its own fact until the gate runs again (ar-1902)" {
+  landed_fixture
+  export FLEET_TIME_USE_CONF="$BATS_TEST_DIRNAME/../../.config/agent-panel/time-use.conf"
+  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl"
+  killed_gate_transcript "$SANDBOX/t.jsonl"
+  # idle 5m is under FLEET_IDLE_MIN, so before this the row read WORKING idle 5m
+  PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = 'resume killed its background gate (gate-and-land.sh) before it finished' ]
+  [ "$(jq -r .fact <<<"$output")" = 'STALLED resume killed its background gate (gate-and-land.sh) before it finished @feat/x at 2026-11-12T15:43' ]
+  # a row already STALLED for its branch (commits after the merged PR) reads the lost gate instead: rerunning it is the next step
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m more
+  PANEL_IDLE_S=1800 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'resume killed its background gate (gate-and-land.sh) before it finished' ]
+  git -C "$SANDBOX/wt" reset -q --hard HEAD~1
+  # Negative controls: the gate ran again after the notice, just resumed (under the grace), a busy row, a killed
+  # command that is no gate or test, and the background-agent notice (the subagent's own row covers that).
+  jq -cn '{type: "assistant", timestamp: "2026-11-12T15:50:00.000Z", message: {content: [{type: "tool_use", id: "toolu_r",
+    name: "Bash", input: {command: "scripts/test/gate-and-land.sh --item ucp-634 > Logs/gate-and-land.out 2>&1"}}]}}' >> "$SANDBOX/t.jsonl"
+  PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  killed_gate_transcript "$SANDBOX/t.jsonl"
+  PANEL_IDLE_S=60 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  PANEL_STATUS=busy PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = busy ]
+  killed_gate_transcript "$SANDBOX/t.jsonl" 'sleep 600'
+  PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  killed_gate_transcript "$SANDBOX/t.jsonl"
+  sed -i "s/Background shell command didn't finish/1 background agent didn't finish/" "$SANDBOX/t.jsonl"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+}
+
+@test "resume_killed_gate names the newest notice's first killed gate or test until any gate runs, and a finished session is left to DONE (ar-1902)" {
+  export FLEET_TIME_USE_CONF="$BATS_TEST_DIRNAME/../../.config/agent-panel/time-use.conf"
+  killed_gate_transcript "$SANDBOX/t.jsonl" 'scripts/test/run.sh --filter Playground.PlayTests.OutfitsPlayTests'
+  run resume_killed_gate "$SANDBOX/t.jsonl"
+  assert_output "$(printf 'test scripts/test/run.sh\t2026-11-12T15:43')"
+  # two shells in one notice: a dev server first, then a train wait
+  jq -cn '{type: "assistant", message: {content: [{type: "tool_use", id: "toolu_s", name: "Bash", input: {command: "pnpm dev"}},
+    {type: "tool_use", id: "toolu_w", name: "Bash", input: {command: "gh-run-wait 4321"}}]}}' > "$SANDBOX/t2.jsonl"
+  jq -cn '{type: "user", timestamp: "2026-11-12T15:43:35.000Z", message: {content: "<task-notification>\n<task-id>a</task-id>\n<tool-use-id>toolu_s</tool-use-id>\n<task-id>b</task-id>\n<tool-use-id>toolu_w</tool-use-id>\n<status>stopped</status>\n<summary>2 Background shell commands didn'"'"'t finish before the previous session ended</summary>\n</task-notification>"}}' >> "$SANDBOX/t2.jsonl"
+  run resume_killed_gate "$SANDBOX/t2.jsonl"
+  assert_output "$(printf 'gate gh-run-wait\t2026-11-12T15:43')"
+  run resume_killed_gate "$SANDBOX/missing.jsonl"
+  assert_output ''
+  # any later gate or test clears it (the session landed another way), and a newer notice that killed no gate leaves
+  # the older one standing (ar-1902 review)
+  killed_gate_transcript "$SANDBOX/t.jsonl"
+  cp "$SANDBOX/t.jsonl" "$SANDBOX/t3.jsonl"
+  jq -cn '{type: "assistant", message: {content: [{type: "tool_use", id: "toolu_l", name: "Bash", input: {command: "agent-land 12 --item ucp-634"}}]}}' >> "$SANDBOX/t.jsonl"
+  run resume_killed_gate "$SANDBOX/t.jsonl"
+  assert_output ''
+  jq -cn '{type: "assistant", message: {content: [{type: "tool_use", id: "toolu_x", name: "Bash", input: {command: "sleep 600"}}]}}' >> "$SANDBOX/t3.jsonl"
+  jq -cn '{type: "user", timestamp: "2026-11-13T09:00:00.000Z", message: {content: "<task-notification>\n<tool-use-id>toolu_x</tool-use-id>\n<status>stopped</status>\n<summary>Background shell command didn'"'"'t finish before the previous session ended</summary>\n</task-notification>"}}' >> "$SANDBOX/t3.jsonl"
+  run resume_killed_gate "$SANDBOX/t3.jsonl"
+  assert_output "$(printf 'gate gate-and-land.sh\t2026-11-12T15:43')"
+  # stopped_bucket: a nightly-red suspect, a PR conflict and a red CI run keep their own row; another STALLED row does not
+  run stopped_bucket "$SANDBOX/t3.jsonl" 'STALLED nightly red after PR #12: Tests (all)' 'Tests (all)'
+  assert_output ''
+  run stopped_bucket "$SANDBOX/t3.jsonl" 'STALLED PR #12 conflicts with the default branch' -
+  assert_output ''
+  run stopped_bucket "$SANDBOX/t3.jsonl" 'STALLED PR #12 CI red' -
+  assert_output ''
+  run stopped_bucket "$SANDBOX/t3.jsonl" 'STALLED 2 dirty file(s), no PR' -
+  assert_output "$(printf 'STALLED resume killed its background gate (gate-and-land.sh) before it finished\t2026-11-12T15:43')"
+  # every phase ticked and the PR merged: finished, so not this row's
+  landed_fixture
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)'
+  killed_gate_transcript "$SANDBOX/t.jsonl"
+  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" != STALLED ]
 }
 
 @test "end to end: a session plan that is a pointer stub reads the canonical plan's queued phases as queued (ar-2421)" {
