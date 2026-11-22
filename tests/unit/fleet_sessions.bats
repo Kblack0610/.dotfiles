@@ -697,9 +697,10 @@ ledger() {
   assert_output ''
 }
 
-@test "live_wait finds run.sh or a slot-queued unity-method.sh anywhere in the claude's process tree (ar-41)" {
+@test "live_wait finds run.sh under timeout and a pipe, and unity-method.sh under derive.sh, below the claude (ar-41)" {
   # 2026-11-04 agent-29: scripts/test/run.sh under `timeout -k .. | tail | cut` waited on a slot flock and read
   # "background shell is not a gate or test"; agent-36: derive.sh's scripts/authoring/unity-method.sh queued on slots.sh.
+  # The stand-ins sleep instead of queuing: live_wait reads the command line, not what the process waits on.
   mkdir -p "$SANDBOX/wt" "$SANDBOX/sub/scripts/test" "$SANDBOX/sub/scripts/authoring"
   printf 'sleep 60\n' > "$SANDBOX/sub/scripts/test/run.sh"
   printf 'sleep 60\n' > "$SANDBOX/sub/scripts/authoring/unity-method.sh"
@@ -709,24 +710,26 @@ ledger() {
   local want cmd root script
   for want in test build; do
     case "$want" in
-      test) cmd='timeout -k 5 600 bash scripts/test/run.sh 2>&1 | tail -n 40 | cut -c1-300; :'; script=scripts/test/run.sh ;;
-      build) cmd='bash derive.sh; :'; script=unity-method.sh ;;
+      test) cmd='timeout -k 5 600 bash scripts/test/run.sh 2>&1 | tail -n 40 | cut -c1-300; :'; script='^bash scripts/test/run\.sh' ;;
+      build) cmd='bash derive.sh; :'; script='^bash scripts/authoring/unity-method\.sh' ;;
     esac
     # root stands in for the session's claude; the job sits below a wrapper shell, outside the session's worktree
     (cd "$SANDBOX/sub" && exec setsid bash -c "$cmd") >/dev/null 2>&1 3>&- &
-    root=$!; LIVE_PIDS="${LIVE_PIDS:-} -$root"
-    # the process is the event: wait until /proc shows the script's exec, not for a delay
-    until pgrep -f "bash .*$script" >/dev/null; do
+    root=$!; LIVE_PIDS="-$root"   # teardown kills the group, pass or fail
+    # the process is the event: wait until /proc shows the script's own exec in this stand-in's session (timeout moves its child to its own process group)
+    # (the anchor skips the wrapper's `bash -c` line, which holds the same text), not for a delay
+    until pgrep -s "$root" -f "$script" >/dev/null; do
       kill -0 "$root" 2>/dev/null || fail "the $want stand-in exited before it started"
     done
     run live_wait "$SANDBOX/wt" "$root"
     assert_output "$want"
-    # negative controls: no claude pid, and a conf that names neither script
+    # negative controls: no claude pid, and a conf with neither a test nor a build line
     run live_wait "$SANDBOX/wt"
     assert_output ''
-    FLEET_TIME_USE_CONF="$SANDBOX/missing" run live_wait "$SANDBOX/wt" "$root"
+    printf 'gate agent-land\ntest bats\n' > "$SANDBOX/other.conf"
+    FLEET_TIME_USE_CONF="$SANDBOX/other.conf" run live_wait "$SANDBOX/wt" "$root"
     assert_output ''
-    kill -- "-$root" 2>/dev/null || true; wait "$root" 2>/dev/null || true
+    pkill -KILL -s "$root" || true; wait "$root" 2>/dev/null || true
   done
 }
 
