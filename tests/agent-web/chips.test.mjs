@@ -32,14 +32,18 @@ const SITES = [
   {
     file: ".config/waybar/ai_agents.sh",
     fn: "main",
-    n: 7,
-    by: "outbox: sessions figures from one source; the Sessions card counts fleet-sessions state and the chip reads it (one site is textfile freshness per host)",
+    n: 10,
+    by: "outbox: sessions figures from one source; the Sessions card counts fleet-sessions state and the chip and its hover read it (of the 10, one is textfile freshness per host, one a column width, one an empty-section check)",
   },
-  { file: ".config/waybar/ai_agents.sh", fn: "counts", n: 1, by: "outbox: sessions figures from one source" },
   { file: ".config/waybar/ci_runners.sh", fn: "main", n: 1, by: "keeps: whether the weight footnote prints over `hub ci --json`, no figure" },
   { file: ".config/waybar/health.sh", fn: "main", n: 1, by: "outbox: a card figure for the red count and System domains up/down (from ar-4336)" },
   { file: ".config/waybar/projects.sh", fn: "main", n: 2, by: "outbox: the waybar projects chip reads in flight, the project count and sprints from the Projects card figures" },
-  { file: ".config/waybar/queue.sh", fn: "main", n: 2, by: "keeps: joins Prometheus series per key and lists room reasons per account, no figure" },
+  {
+    file: ".config/waybar/queue.sh",
+    fn: "main",
+    n: 4,
+    by: "keeps: joins Prometheus series per key, lists room reasons per account and counts hover lines against the bar's line budget, no figure",
+  },
   { file: ".local/bin/agent-mqtt-publish", fn: "snapshot", n: 6, by: "outbox: publisher drops asks_open and sensor.agent_sessions (from ar-4336)" },
   { file: ".local/bin/agent-mqtt-publish", fn: "main", n: 2, by: "keeps: the messages it sent, for its own log line" },
 ];
