@@ -45,11 +45,14 @@ buzz = ["high", "urgent"]       # priorities that make the phone buzz (SENTINEL.
 # last page. A score is (1 + session + plan phases left + queued items after it) x minutes
 # waited, so 60 is an hour alone or 15 minutes holding a session and 2 phases. Past
 # max_buzz_day high pages a day the page still goes out, at normal. top is how many rows one
-# page names before "+N more".
+# page names before "+N more". An ask already paged pages once more, under the same cap,
+# once it has waited repage_after_min minutes and while under repage_before_min: a day, 14 days.
 [pager.needs]
 min_score = 60
 max_buzz_day = 6
 top = 3
+repage_after_min = 1440
+repage_before_min = 20160
 
 # A push to the phone. The lock screen shows the title and about two lines.
 [channel.page]
