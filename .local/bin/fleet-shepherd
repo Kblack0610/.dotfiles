@@ -9,7 +9,7 @@
 #                          human is talking to the pass and it is answering or under
 #                          FLEET_SHEPHERD_PASS_MAX_MIN old. With nothing due it starts none, and
 #                          with only lines FLEET_SHEPHERD_URGENT_RE does not match it waits until
-#                          FLEET_SHEPHERD_DEBOUNCE_MIN after the last pass started (the check costs
+#                          FLEET_SHEPHERD_DEBOUNCE_MIN (less FLEET_SHEPHERD_TICK_SLACK_MIN) after the last pass started (the check costs
 #                          no model; a fresh pass does). The pass starts lean (PASS_TOOLS, skills
 #                          outside the routing table by name only) and every CANARY_EVERY-th one
 #                          runs on CANARY_MODEL: `fleet-bench canary shepherd` compares the lanes
@@ -143,6 +143,10 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 # started, unless a due line is urgent. Measured 2026-11-07: a median pass cost $0.89, $0.54 of it
 # the fresh start's 68K cache-write tokens, and 40 of 275 scored passes were given nothing.
 : "${FLEET_SHEPHERD_DEBOUNCE_MIN:=60}"
+# The pass start lands about a minute after its runner tick (measured 2026-11-08: 7 of 18 debounced
+# runs read one minute short), so the run DEBOUNCE_MIN later would read DEBOUNCE_MIN-1 and wait one more
+# tick. The age counts this much extra, so the debounce lands on the tick it names (ar-1082).
+: "${FLEET_SHEPHERD_TICK_SLACK_MIN:=2}"
 # Urgent lines start a pass on the next run: a red (nightly, shared, infra, a tripped watch), a
 # STALLED row (past fleet-sessions' stall threshold already) and a usage-limit stop. A line the last
 # pass left unhandled is as urgent as the line itself: on 2026-11-09 any leftover skipped the debounce,
@@ -1865,8 +1869,8 @@ stuck_min() {
 }
 
 # no_pass_why <due> -> why this run starts no pass; exit 1 when it should start one. Nothing due
-# starts none; something due starts one once FLEET_SHEPHERD_DEBOUNCE_MIN has passed since the last
-# pass started, or at once for a line FLEET_SHEPHERD_URGENT_RE matches.
+# starts none; something due starts one once FLEET_SHEPHERD_DEBOUNCE_MIN (less the tick slack) has
+# passed since the last pass started, or at once for a line FLEET_SHEPHERD_URGENT_RE matches.
 no_pass_why() {
   local start="" age
   [ -n "$1" ] || { echo "nothing due"; return 0; }
@@ -1874,7 +1878,7 @@ no_pass_why() {
   { read -r _ start _; } 2>/dev/null < "$PASS" || true
   [ -n "$start" ] || return 1
   age=$(( ($(date +%s) - start) / 60 ))
-  [ "$age" -lt "$FLEET_SHEPHERD_DEBOUNCE_MIN" ] || return 1
+  [ $(( age + FLEET_SHEPHERD_TICK_SLACK_MIN )) -lt "$FLEET_SHEPHERD_DEBOUNCE_MIN" ] || return 1
   echo "$(grep -c . <<<"$1") due, none urgent, last pass ${age}m ago"
 }
 
