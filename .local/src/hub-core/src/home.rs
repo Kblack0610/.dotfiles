@@ -439,10 +439,7 @@ impl Score {
             words.push("session".to_string());
         }
         if phases > 0 {
-            words.push(format!(
-                "{phases} phase{}",
-                if phases == 1 { "" } else { "s" }
-            ));
+            words.push(crate::display::fmt::counted(phases as usize, "phase"));
         }
         if dependents > 0 {
             words.push(format!("{dependents} queued"));

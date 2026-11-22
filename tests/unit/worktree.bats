@@ -2018,3 +2018,71 @@ make_unity_tree() {
   assert_output --partial "no commit in"
   [ ! -d "$WT_ROOT/platform-agent-3" ] || fail "cut a worktree off a commit that is not there"
 }
+
+# ── bundle-state: the prune never deletes the only copy of unlanded commits (ar-4470) ──
+
+archived_bundle() { # <branch> -> archives repo-agent-1 holding one local commit on <branch>; sets BUNDLE and HEAD_OID
+  make_repo
+  export WT_ARCHIVE_DIR="$SANDBOX/archive"
+  printf '{"paths":{"%s":"repo"}}\n' "$MAIN" > "$WT_PROJECT_MAP"
+  local wt="$WT_ROOT/repo-agent-1"
+  git -C "$MAIN" worktree add --quiet --no-track "$wt" -b "$1" origin/main
+  printf 'work\n' > "$wt/file.txt"
+  git -C "$wt" commit --quiet -am work
+  HEAD_OID=$(git -C "$wt" rev-parse HEAD)
+  run cmd_archive "$wt"
+  assert_success
+  BUNDLE=$(ls "$SANDBOX"/archive/repo/repo-agent-1@*.bundle)
+  export BUNDLE HEAD_OID
+}
+
+@test "bundle-state names a bundle whose commit is on no remote and no merged PR unlanded, and leaves no ref behind" {
+  archived_bundle feat/x
+  run cmd_bundle_state "$BUNDLE"
+  assert_failure 1
+  assert_output $'unlanded\t1 commits\tfeat/x'
+  assert_equal "$(git -C "$MAIN" for-each-ref refs/wt-archive)" ''
+  [ -f "$BUNDLE" ]
+}
+
+@test "bundle-state reads landed once the commit is pushed, or a merged PR names its head, but not for a later commit" {
+  archived_bundle feat/x
+  # NEGATIVE CONTROL: a merged PR at another head does not land it
+  git -C "$MAIN" remote set-url origin https://github.com/me/repo.git
+  printf '[{"headRefName":"feat/x","headRefOid":"%s","state":"MERGED"}]\n' "0000000000000000000000000000000000000000" > "$GH_FIXTURE/prs.me-repo"
+  run cmd_bundle_state "$BUNDLE"
+  assert_failure 1
+  # a squash-merged PR whose head is the archived commit lands it
+  printf '[{"headRefName":"feat/x","headRefOid":"%s","state":"MERGED"}]\n' "$HEAD_OID" > "$GH_FIXTURE/prs.me-repo"
+  run cmd_bundle_state "$BUNDLE"
+  assert_success
+  assert_output 'landed'
+  # a push of the commit to any remote branch lands it too
+  rm -f "$GH_FIXTURE/prs.me-repo"
+  git -C "$MAIN" remote set-url origin "$ORIGIN"
+  run cmd_bundle_state "$BUNDLE"
+  assert_failure 1
+  git -C "$MAIN" push --quiet origin "$HEAD_OID:refs/heads/feat/x"
+  run cmd_bundle_state "$BUNDLE"
+  assert_success
+  assert_output 'landed'
+}
+
+@test "bundle-state keeps a bundle holding uncommitted work even when its HEAD has landed, and reads a file that is no archive as unknown" {
+  make_repo
+  export WT_ARCHIVE_DIR="$SANDBOX/archive"
+  printf '{"paths":{"%s":"repo"}}\n' "$MAIN" > "$WT_PROJECT_MAP"
+  git -C "$MAIN" worktree add --quiet --detach "$WT_ROOT/repo-agent-1" origin/main
+  printf 'edited\n' > "$WT_ROOT/repo-agent-1/file.txt"
+  run cmd_archive "$WT_ROOT/repo-agent-1"
+  assert_success
+  run cmd_bundle_state "$(ls "$SANDBOX"/archive/repo/repo-agent-1@*.bundle)"
+  assert_failure 1
+  assert_output $'unlanded\tuncommitted work\tdetached'
+  printf 'junk\n' > "$SANDBOX/archive/repo/repo-agent-2@1.bundle"
+  run cmd_bundle_state "$SANDBOX/archive/repo/repo-agent-2@1.bundle"
+  assert_failure 2
+  assert_output --partial 'unknown'
+  run cmd_bundle_state "$SANDBOX/archive/repo/nope@1.bundle"
+  assert_failure 2
+}

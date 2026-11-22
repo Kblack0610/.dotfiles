@@ -20,7 +20,7 @@ Takes one task from description to landed and wound down with no check-ins; `--p
 - The user hands over one well-scoped task and wants it landed without being asked anything.
 - The user wants the session to close itself once the work is merged.
 
-Not for a pile of tasks (`/captain`), a release (the system cuts it; `release` fixes and re-sends one), or landing a tree that is already dirty (`ingest-worktree`).
+Not for a pile of tasks (`fleet-queue`), a release (the system cuts it; `release` fixes and re-sends one), or landing a tree that is already dirty (`ingest-worktree`).
 
 ## Steps
 
