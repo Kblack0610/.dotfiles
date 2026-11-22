@@ -389,6 +389,7 @@ bats_require_minimum_version 1.5.0
   assert_output --partial 'started queue item a1'
   refute_output --partial 'merge line'
   local log="$HOME/.local/state/agentctl/fleet-dispatch/activity.log"
+  grep -q 'started queue item a1' "$log" || fail "$(cat "$log")"
   if grep 'started queue item a1' "$log" | grep -q 'passed'; then fail "$(cat "$log")"; fi
 }
 
