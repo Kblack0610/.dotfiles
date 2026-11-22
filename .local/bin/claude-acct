@@ -117,8 +117,13 @@ NUM_RE='^[0-9]*\.?[0-9]+$'   # a sources-file number: rpm, run_rpm, run_usd, and
 MAIN_DIR="$HOME/.claude"
 USAGE_URL="https://api.anthropic.com/api/oauth/usage"   # refuses a setup token; setup-token records that
 MESSAGES_URL="https://api.anthropic.com/v1/messages"
-# fetch's 1-token call: its answer's headers carry the plan's windows
-USAGE_PROBE='{"model":"claude-haiku-5-5","max_tokens":1,"system":"You are Claude Code, Anthropic'"'"'s official CLI for Claude.","messages":[{"role":"user","content":"hi"}]}'
+# usage_probe -> fetch's 1-token call, whose answer's headers carry the plan's windows. Its model is
+# harnesses.json models.claude.haiku, the one home of the model ids; a file without it is no call.
+usage_probe() {
+    jq -ce '.models.claude.haiku | strings | {model: ., max_tokens: 1,
+        system: "You are Claude Code, Anthropic'"'"'s official CLI for Claude.", messages: [{role: "user", content: "hi"}]}' \
+        "$HARNESSES" 2>/dev/null
+}
 # rbw entry per account: the token is the password, the notes carry email, minted, expires.
 TOKEN_ENTRY="claude-oauth-"
 # A machine with no unlocked rbw (a fleet worker: headless, rebooted with nobody to unlock it) reads
@@ -255,12 +260,16 @@ usage_wants() { [[ -z "${USAGE_ONLY:-}" ]] || [[ " $USAGE_ONLY " == *" $1 "* ]];
 # No token is no call: acct_token's own line (rbw locked) passes through, so a failed read names its
 # fix and is not taken for a refused probe (2026-11-19: `rbw config set` stopped the agent).
 fetch() {
-    local name="$1" cache="$CACHE/$1.json" token ver tmp hdrs
+    local name="$1" cache="$CACHE/$1.json" token ver tmp hdrs probe
     if [[ -s "$cache" ]] && (( $(date +%s) - $(stat -c %Y "$cache") < TTL )); then
         cat "$cache"
         return 0
     fi
     token=$(acct_token "$name") || return 1
+    probe=$(usage_probe) || {
+        printf 'claude-acct: %s usage read failed: %s names no models.claude.haiku for the probe\n' "$name" "$HARNESSES" >&2
+        return 1
+    }
     ver=$(claude --version 2>/dev/null | awk '{print $1}')
     mkdir -p "$CACHE"
     tmp=$(mktemp "$CACHE/.$name.XXXXXX")
@@ -269,7 +278,7 @@ fetch() {
         curl -sS -m 10 -K - -D - -o /dev/null "$MESSAGES_URL" \
             -H "anthropic-version: 2023-06-01" -H "anthropic-beta: oauth-2025-04-20" \
             -H "User-Agent: claude-cli/${ver:-2} (external, cli)" -H "x-app: cli" \
-            -H "content-type: application/json" -d "$USAGE_PROBE" 2>/dev/null)
+            -H "content-type: application/json" -d "$probe" 2>/dev/null)
     if ratelimit_usage <<<"$hdrs" > "$tmp"; then
         mv "$tmp" "$cache"
         cat "$cache"

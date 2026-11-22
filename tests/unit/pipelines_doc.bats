@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # PIPELINES.md (private overlay, ~/.config/agentctl/) is the one list of what runs outside
-# agentctl's confs: tracked systemd timers and path units, and model calls that skip
+# agentctl's confs: tracked systemd timers, path units and services, and model calls that skip
 # agentctl-run. Nothing made it change when one was added, so both directions are checked
 # here, from the files as text. The confs themselves are checked by `agentctl list --md`.
 # Skipped where the private overlay is absent (public CI); it runs in the Stop fast tier.
@@ -14,22 +14,40 @@ setup() {
   [ -f "$DOC" ] || skip "no private overlay at $PRIV"
 }
 
-# Tracked timers and path units in both repos, by unit name. timers.target.wants/ holds links.
+# tracked_units [repo...]: the tracked timers, path units and services in each repo (default both
+# repos), by unit name. A service with a timer or path unit of its own name is that unit's row, so
+# it is left out; the .wants/ dirs hold links.
 tracked_units() {
-  for r in "$PUB" "$PRIV"; do
-    git -C "$r" ls-files '.config/systemd/user/*.timer' '.config/systemd/user/*.path'
-  done | grep -v '/timers.target.wants/' | xargs -n1 basename | sort -u
+  [ $# -gt 0 ] || set -- "$PUB" "$PRIV"
+  local r
+  for r in "$@"; do
+    git -C "$r" ls-files '.config/systemd/user/*.timer' '.config/systemd/user/*.path' '.config/systemd/user/*.service'
+  done | grep -v '\.wants/' | xargs -n1 basename | sort -u |
+    awk '{ n = $0; sub(/\.[a-z]+$/, "", n) }
+         /\.service$/ { svc[n] = $0; next }
+         { has[n] = 1; print }
+         END { for (n in svc) if (!(n in has)) print svc[n] }' | sort
 }
 
-# Units the doc names, as `name.timer` or `name.path` in a table's first column.
+# Units the doc names, as `name.timer`, `name.path` or `name.service` in a table's first column.
 doc_units() {
-  grep -oE '^\| `[a-z0-9@.-]+\.(timer|path)`' "$DOC" | grep -oE '[a-z0-9@.-]+\.(timer|path)' | sort -u
+  grep -oE '^\| `[a-z0-9@.-]+\.(timer|path|service)`' "$DOC" | grep -oE '[a-z0-9@.-]+\.(timer|path|service)' | sort -u
 }
 
-@test "every tracked timer and path unit has a row in PIPELINES.md" {
+@test "every tracked timer, path unit and service has a row in PIPELINES.md" {
   run comm -23 <(tracked_units) <(doc_units)
   assert_success
   assert_output ''
+}
+
+@test "a tracked service with no row is reported; one its timer covers and a .wants link are not (negative control)" {
+  local fx="$BATS_TEST_TMPDIR/repo" u="$BATS_TEST_TMPDIR/repo/.config/systemd/user"
+  mkdir -p "$u/default.target.wants"
+  touch "$u/zz-unlisted.service" "$u/zz-paired.service" "$u/zz-paired.timer" "$u/default.target.wants/zz-link.service"
+  git -C "$fx" init -q && git -C "$fx" add .
+  run comm -23 <(tracked_units "$fx") <(doc_units)
+  assert_success
+  assert_output $'zz-paired.timer\nzz-unlisted.service'
 }
 
 @test "every unit PIPELINES.md lists is still tracked" {
@@ -53,7 +71,7 @@ doc_units() {
   local h; h=$(mktemp -d)
   mkdir -p "$h/.config/agentctl"
   ln -s "$PRIV/.config/agentctl/agents" "$h/.config/agentctl/agents"
-  HOME="$h" AGENTCTL_STATE_DIR="$h/state" run "$PUB/.local/bin/agentctl" list --md
+  HOME="$h" AGENTCTL_STATE_DIR="$h/state" AGENTCTL_LANES_FILE="$PRIV/.config/agentctl/lanes.tsv" run "$PUB/.local/bin/agentctl" list --md
   rm -rf "$h"
   assert_success
   refute_output --partial 'Invalid'

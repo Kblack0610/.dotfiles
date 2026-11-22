@@ -107,6 +107,11 @@ ratelimit_curl() {
     printf '\n'; } > "$SANDBOX/bin/curl"
   chmod +x "$SANDBOX/bin/curl"
   export SANDBOX
+  # The probe's model is harnesses.json models.claude.haiku (private, so a fixture here).
+  [ -n "${CLAUDE_ACCT_HARNESSES:-}" ] || {
+    export CLAUDE_ACCT_HARNESSES="$SANDBOX/harnesses.json"
+    echo '{"models":{"claude":{"haiku":"claude-probe-test"}},"harnesses":{}}' > "$CLAUDE_ACCT_HARNESSES"
+  }
 }
 
 @test "usage read: the setup token's rate-limit headers give the week and the 5h window" {
@@ -122,6 +127,18 @@ ratelimit_curl() {
   grep -qF "$TOK_MAIN" "$SANDBOX/curl.stdin"
   ! grep -qF "$TOK_MAIN" "$SANDBOX/curl.argv"
   grep -qF 'v1/messages' "$SANDBOX/curl.argv"
+  grep -qF '"model":"claude-probe-test"' "$SANDBOX/curl.argv"
+}
+
+@test "usage read: a harnesses.json that names no models.claude.haiku makes no call and says so (negative control)" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  ratelimit_curl 'anthropic-ratelimit-unified-7d-utilization: 0.65' 'anthropic-ratelimit-unified-7d-reset: 1795208400'
+  echo '{"harnesses":{}}' > "$CLAUDE_ACCT_HARNESSES"
+  run --separate-stderr "$ACCT" status
+  assert_line --regexp '^main .*fetch failed'
+  [[ "$stderr" == *"$CLAUDE_ACCT_HARNESSES names no models.claude.haiku for the probe"* ]]
+  ! grep -qF 'v1/messages' "$SANDBOX/curl.argv" 2>/dev/null
 }
 
 @test "usage read: a week header alone is a fresh answer, with no 5h window, its fraction read to the point" {
