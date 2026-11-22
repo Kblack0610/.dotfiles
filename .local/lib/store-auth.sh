@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # store-auth.sh - read-only store credentials from rbw, and the signed tokens the store APIs take.
-# Sourced by release-state, store-sales, store-reviews, sentry-issues and mkt-metrics. A credential
+# Sourced by release-state, store-sales, store-reviews and sentry-issues. A credential
 # or token only ever reaches curl on stdin and openssl through a process substitution: never argv,
 # never a file on disk.
 #

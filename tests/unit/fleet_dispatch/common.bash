@@ -47,10 +47,6 @@ acct() {
     [ -e "$NOTES_FIXTURE/route.$r" ] && { cat "$NOTES_FIXTURE/route.$r"; exit 1; }; fi
   echo "$3: room"; exit 0
 fi
-if [ "$1 ${2:-}" = "check underuse" ]; then
-  [ -e "$NOTES_FIXTURE/under.$3" ] || { echo "no source under-used near its reset (1 sources)"; exit 0; }
-  cat "$NOTES_FIXTURE/under.$3"; exit 1
-fi
 [ "$1 ${2:-}" = "room --json" ] || exit 0
 n=$(cat "$NOTES_FIXTURE/room.n" 2>/dev/null || echo 0); echo $((n + 1)) > "$NOTES_FIXTURE/room.n"
 f="$NOTES_FIXTURE/acct.json"; [ ! -e "$NOTES_FIXTURE/acct.$n.json" ] || f="$NOTES_FIXTURE/acct.$n.json"
@@ -74,9 +70,6 @@ srcs() {
   done
   printf '%s\n' "$rows" > "$NOTES_FIXTURE/sources.json"
 }
-
-# under_used <source> -> claude-acct check underuse names it: its week is going unused near the reset.
-under_used() { echo "under-used near its reset: $1 18% used, 72% of its week gone, resets in 46h" > "$NOTES_FIXTURE/under.$1"; }
 
 # cpu <us> <sy> <ni> <id> -> each real idle sample window adds these jiffies to /proc/stat, and the
 # last sample is gone, so the next gate reads (ni + id) of the four as free. sleep is the window.
@@ -105,8 +98,7 @@ setup() {
   export DISPATCH_LOADAVG="$SANDBOX/loadavg"
   export DISPATCH_JUDGE_CMD=judge-stub   # on PATH: the command is a word list, and the sandbox path has a space
   echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
-  export DISPATCH_PROJECT_FLOOR=0   # off unless a test is about it ("project floor:"), so an idle-held machine stays held
-  export DISPATCH_CANARY_FLOOR=0   # off unless a test is about it ("canary floor:"), so a canary starts in queue order
+  export DISPATCH_CANARY_KEEP=0   # off unless a test is about it ("canary top-up:"), so no pass asks fleet-bench for canaries
   export DISPATCH_FLEET_SHARE=0   # off unless a test is about it ("fleet share:"), so a fleet project's item starts in queue order
   export DISPATCH_START_LOAD=0   # a start adds no pending load unless a test is about it, whatever the runner's cores
   export DISPATCH_PER_PASS=1   # one start a pass unless a test is about it; the shipped default, 0, is no cap
@@ -409,17 +401,6 @@ red_held_machine() {
   stub fleet-assess '[ "$1" = --watch-probe ] && exit 1; [ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
   echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   export DISPATCH_RUN_FLOOR=0 DISPATCH_PER_PASS=3 DISPATCH_RED_FLOOR=2
-}
-
-# 2026-11-07: Unity and fleet work held every slot while trader's requested plans waited 5h behind
-# real idle; no floor lifted it for a project nothing was working on.
-idle_held_machine() {
-  project game beta "$SANDBOX/repos/game"
-  project app beta "$SANDBOX/repos/app"
-  room_on_floor
-  acct alt:ok:/home/u/.claude-personal
-  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
-  export DISPATCH_RUN_FLOOR=0 DISPATCH_RED_FLOOR=0 DISPATCH_PER_PASS=3
 }
 
 # finding <rule> <scope> [repos json] -- one finding row fleet-bench reports as firing now

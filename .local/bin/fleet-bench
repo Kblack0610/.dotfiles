@@ -3864,7 +3864,7 @@ retro_guard_rows() {
 }
 
 # retro reads each live improvement claim (improve_check), queues no canary (fleet-dispatch
-# tops the canary floor up, canary_top_up), and keeps exactly one open agent-board row per lesson that keeps recurring
+# keeps DISPATCH_CANARY_KEEP canaries queued, canary_top_up), and keeps exactly one open agent-board row per lesson that keeps recurring
 # (`check(lesson): guard <hash>:`). A KPI past its threshold gets
 # no row here: `fleet-bench improve` names one at a time, and its row carries the check.
 cmd_retro() {
@@ -5987,7 +5987,7 @@ canary_retire() {
 # comments) that has room, so the few queued at once run across lanes together instead of one lane's whole
 # set first. A lane has room when the source its harness spends from (harnesses.json `source`) does by
 # BENCH_ROOM_CMD, as a claude lane does when any Claude account does; a lane with none, no source or a
-# repeated slug is said and skipped. fleet-dispatch calls it (canary_top_up) to hold the canary floor; the
+# repeated slug is said and skipped. fleet-dispatch calls it (canary_top_up) to keep DISPATCH_CANARY_KEEP canaries queued; the
 # weekly retro queues none. Says one line a lane that queued, and returns 1 when a lane could not be queued.
 canary_top_up() {
   local left=$1 h m e src why label lane entry got rc=0 round

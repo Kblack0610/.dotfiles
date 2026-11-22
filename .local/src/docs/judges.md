@@ -34,10 +34,6 @@ A judge is a model call that decides something a human would otherwise decide: t
 
 - Every answer verdict is listed, not only the misses, with its impact level and call: `judge-eval log` (`--level` keeps one), and `verdicts` in `--json`, which Log's Judges' verdicts section shows on both surfaces. The list and its 7-day line take any prompt, because they say what happened rather than score a policy. Why: the human could only see where the judge disagreed, never what it said yes to or why it passed (2026-11-05). `judge-eval cells` scores each type at each impact level, so a type is proven where a wrong answer reaches least before it answers where it reaches most. The answer judge's runner page draws those cells under its current prompt as one table on both surfaces (`#sessions/runners/ask-judge`, `hub tab 'sessions runners/ask-judge'`), and each verdict's Langfuse score carries its level as `metadata.level` (a dispatch verdict's is its tier, `tier 2`), since a score takes no tags. Tests: `judge_eval.bats` "the verdict list", "cells:"; hub-tui `the_answer_judges_page_tables_each_type_at_each_level_as_judge_eval_scores_it`; `tests/agent-web/fleet.test.mjs` "a judge page carries"; `session_outcomes.bats` "langfuse: each judge verdict".
 
-## Replay
-
-`judge-eval replay` scores a changed policy before it earns live labels: the real `agent-ask judge` over blind copies of the asks the human answered with an option, as the agent `ask-judge-replay`, whose own budget keeps it off `ask-judge`'s. The copies are then scored like any other verdicts, so its numbers are a replay's, never counted into the KPIs, and a run that would leak an answer sends nothing. `--ids` backfills a named set instead, in any state (answered, cancelled, parked): one row per ask with the judge's call, its type and level, whether `live_answer` would have let it act, and what the human did. Test: `judge_eval.bats` "replay".
-
 ## How the numbers are computed
 
 Each verdict is one of: TP (answered, right), FP (answered, wrong), FN (deferred, but the human took the recommendation), TN (deferred, rightly), pending, unscorable, or an error.
