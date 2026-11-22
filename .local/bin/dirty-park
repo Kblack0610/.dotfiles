@@ -43,7 +43,7 @@ park_stashes() {
     [ -n "$sha" ] && [ "$ct" -le "$cut" ] || continue
     ref="refs/parked/stash/$(date -d "@$ct" +%F 2>/dev/null || date -r "$ct" +%F)-${sha:0:7}"
     g update-ref "$ref" "$sha" || die "cannot write $ref"
-    idx="$(g stash list --format='%H' | grep -n -x -F "$sha" | head -n1 | cut -d: -f1)"
+    idx="$(g stash list --format='%H' | grep -m1 -n -x -F "$sha" | cut -d: -f1)"
     [ -n "$idx" ] || continue
     g stash drop -q "stash@{$((idx - 1))}" || die "parked $ref but could not drop it from the stash list"
     printf '%s  %s\n' "$ref" "$subj"
