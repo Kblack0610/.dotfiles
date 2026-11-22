@@ -2469,6 +2469,24 @@ cmd_prs() {
   esac
 }
 
+# ledger_base <key> -> the baseline count for <key>: its last `key=N` line plus each `key+=N` or
+# `key-=N` line after it. A delta line names its date and what changed (`runners+=1 2026-11-21
+# lfs-store: why`), so two PRs that each add one in the same spot merge as both lines (the private
+# repo's .gitattributes marks the file merge=union) and no two lines read alike for union to fold;
+# two PRs that each rewrote `runners=34` to 35 conflicted, or under union kept one 35 for two adds
+# (ar-4471). Prints the raw value when the absolute line is not a number, and `bad delta: <line>`
+# for a delta with no date, so the caller fails either.
+ledger_base() {
+  awk -v k="$1" '
+    index($0, k "=") == 1 { base = substr($0, length(k) + 2); sum = 0; next }
+    $0 ~ ("^" k "[+-]=") {
+      if ($0 !~ ("^" k "[+-]=[0-9]+ [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [^ ]")) { print "bad delta: " $0; bad = 1; exit }
+      n = substr($1, length(k) + 3) + 0
+      sum += (substr($1, length(k) + 1, 1) == "+") ? n : -n
+    }
+    END { if (bad) exit; if (base ~ /^[0-9]+$/) print base + sum; else print base }' "$LEDGER_BASELINE"
+}
+
 # ledger_check <counts> -> one line per gated count over the baseline, then launches_unlisted's
 # lines; exit 1 if any, 2 if no baseline or no launch table
 ledger_check() {
@@ -2476,7 +2494,7 @@ ledger_check() {
   [ -r "$LEDGER_BASELINE" ] || { say "no ledger baseline at $LEDGER_BASELINE"; return 2; }
   for k in $LEDGER_GATED; do
     cur=$(sed -n "s/^$k=//p" <<<"$1"); cur=${cur//[[:blank:]]/}   # BSD wc pads its count
-    base=$(sed -n "s/^$k=//p" "$LEDGER_BASELINE" | tail -1)
+    base=$(ledger_base "$k")
     # A missing or non-numeric value fails: `[ "" -gt 8 ]` errors and reads as not grown.
     [[ $base =~ ^[0-9]+$ ]] || { say "baseline has no number for $k: '$base'"; bad=1; continue; }
     [[ $cur =~ ^[0-9]+$ ]] || { say "no single count for $k: '$cur'"; bad=1; continue; }
