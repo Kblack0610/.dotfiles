@@ -20,7 +20,7 @@
 # Route fixtures are written INLINE. The real routes live in the private overlay,
 # which CI cannot see, and reading the deployed ~/.config copy would assert this
 # machine's provisioning rather than the contract -- the same reasoning
-# agent_run_headless.bats spells out for roles.
+# agent_run_family.bats spells out for roles.
 
 bats_require_minimum_version 1.5.0
 

@@ -11,7 +11,7 @@
 # pending ask. Plan mode asks through ExitPlanMode and manual mode forbids board writes
 # (manual-mode-investigate.sh), and a dialog call was already a question the human answered in
 # the window. Blocks once per turn with the instruction to file it (stop_hook_active guards the
-# loop), the same JSON-on-stdout protocol as 86-focus-reconcile.sh.
+# loop), the JSON-on-stdout protocol pre-stop-checks.sh documents.
 #
 # Escape hatch: CLAUDE_SKIP_ASK_GATE=1.
 

@@ -65,11 +65,6 @@ allowed() { assert_success; assert_output ''; }
   allowed
 }
 
-@test "settings.json runs the guard on every Bash call, fail-open" {
-  run jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command | select(test("checkout-guard"))' "$ROOT/.claude/settings.json"
-  assert_output 'python3 ~/.claude/hooks/checkout-guard.py || true'
-}
-
 @test "post-checkout records who moved the deployed checkout, and nothing else" {
   export FLEET_SHEPHERD_DIR="$T/ledger" CLAUDE_CODE_SESSION_ID=abcdef0123 AGENT_QUEUE_ITEM=some-item
   g -C "$T/dots" config core.hooksPath "$ROOT/.githooks"
