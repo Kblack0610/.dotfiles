@@ -2,12 +2,13 @@
 # Waybar module: the queue chip (custom/queue), whether agent work flows. The bar is "Q:27  D:126",
 # items ready to start next and items shipped today (merged a PR), labels in the theme accent (pango.sh).
 # Q takes the level colour: red for queue-starved, a failed runner or no pass in PASS_LATE_SECS; amber
-# for a hold, a BLOCKED pass, flapping, could_start, an unhandled shepherd line or a stale host.
+# for a hold, a BLOCKED pass, flapping, could_start or an unhandled shepherd line.
 # The hover opens with one sentence, "flowing" or the worst exception and what it blocks, with its knob
 # after the point (DO below); the urgent item a hold keeps waiting and each other exception follow, one
 # line each. Then Up next (the ready items by name, then the board rows dispatch takes after them), In
-# flight, Today and Room. Gate internals (low water, self-heal, the shepherd, pass ages, the source
-# host) show only as an exception; their homes are listed in .local/src/docs/dashboards.md.
+# flight, Today and Room. Gate internals (low water, self-heal, the shepherd, pass ages) show only as
+# an exception; their homes are listed in .local/src/docs/dashboards.md. A second machine sending
+# summary/dispatch is the health chip's agents queue_senders row (home-config), not a line here.
 # Counts are summary/dispatch, summary/cards (Q, D and the Today figures, `hub cards --json --figures`),
 # the fleet_dispatch runner, the queue-starved watch and summary/shepherd on
 # Prometheus (live topics only), so the laptop thin client reads the same; item names, the board rows
@@ -41,7 +42,6 @@ declare -A DO=(
   [starved]="Run fleet-dispatch run --dry-run"
   [flapping]="Run agentctl logs fleet-dispatch"
   [could]="Run fleet-dispatch headroom"
-  [stale]="Stop agent-mqtt-publish there"
   [failed]="Run agentctl logs fleet-dispatch"
   [late]="Run systemctl --user status agentctl-fleet-dispatch.timer"
   [shepherd]="Use the shepherd skill, triage"
@@ -63,7 +63,7 @@ fi
 # One object: kind.key -> value, kind being dispatch, runner, watch or shepherd. The source is the
 # host whose dispatch pass ran last: only the lease holder runs a pass and sends summary/dispatch, so
 # its series alone count; with no pass on record anywhere, every host's count by their max. A peer with
-# a frozen store clone once sent 622 queued (ar-4306), so src.stale names each other host still sending.
+# a frozen store clone once sent 622 queued (ar-4306); its series are ignored here.
 # Every value is a count, a 0/1 or an epoch, so it is floored: Prometheus may write 1 as 1.0.
 v="$(jq -c '{summary_dispatch: "dispatch", summary_cards: "cards", summary_shepherd: "shepherd", runner_fleet_dispatch: "runner",
       watch_queue_starved: "watch"} as $kind
@@ -72,9 +72,7 @@ v="$(jq -c '{summary_dispatch: "dispatch", summary_cards: "cards", summary_sheph
       | {h: $c.h, k: ($kind[$c.t] + "." + (.metric.__name__ | ltrimstr("mqtt_"))), v: (.value[1] | tonumber | floor)}] as $all
     | ([$all[] | select(.k == "dispatch.last_pass_epoch")] | max_by(.v) | .h) as $src
     | ($all | map(select($src == null or .h == $src)) | group_by(.k)
-        | map({key: .[0].k, value: (map(.v) | max)}) | from_entries)
-    + {"src.stale": ([$all[] | select(.k == "dispatch.runnable" and $src != null and .h != $src)]
-         | unique_by(.h) | map("\(.h | gsub("_"; "-")) (\(.v) ready)") | join("\n"))}' <<< "$raw")"
+        | map({key: .[0].k, value: (map(.v) | max)}) | from_entries)' <<< "$raw")"
 get() { jq -r --arg k "$1" '.[$k] // empty' <<< "$v"; }
 d() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:--}"; }
 n0() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:-0}"; }
@@ -126,8 +124,6 @@ else
   flapping="$(n0 flapping_items)" could="$(n0 could_start)"
   ((flapping > 0)) && flag 1 "$flapping item(s) flapping: a writer undoes reap's moves" flapping
   ((could > 0)) && flag 1 "$could more could start: a limit holds them, not the machine" could
-  stale="$(get src.stale)"
-  [ -z "$stale" ] || while IFS= read -r h; do flag 1 "$(pango_esc "$h") sends a stale queue" stale; done <<< "$stale"
 fi
 s_unh="$(get shepherd.unhandled)"
 ((${s_unh:-0} > 0)) && flag 1 "$s_unh shepherd due line(s) unhandled" shepherd

@@ -5,9 +5,10 @@
 # keeps waiting and each other exception, then Up next (the ready items by name from summary/bar, then
 # the board rows after them), In flight, Today and Room.
 # What these pin: a moving queue is green "flowing"; BLOCKED, a hold, flapping, a limit, an unhandled
-# shepherd line and a stale host are amber; queue-starved, a failed runner and a stopped pass are red; a
-# hold that trips queue-starved is one red sentence; a gate is said once; the host whose pass ran last is
-# the source and any other sender is named stale (ar-4306); counts are Prometheus and names summary/bar,
+# shepherd line are amber; queue-starved, a failed runner and a stopped pass are red; a hold that trips
+# queue-starved is one red sentence; a gate is said once; the host whose pass ran last is the source and
+# any other sender is ignored and named nowhere here (ar-4306; home-config's command-center rules
+# raise it as the agents queue_senders row on the health chip); counts are Prometheus and names summary/bar,
 # so a missing topic is one amber line with the counts kept; Prometheus down reads ?, and a number the
 # feed lacks reads -, never 0; the hover fits the bar channel and comms-lint fails one that does not.
 setup() {
@@ -443,14 +444,19 @@ $(y 'No item detail: no summary/bar on mqtt.test')
 }
 
 # ar-4306: cachyos-rog woke with a store frozen since 2026-11-15 and sent 328 ready; the max over
-# hosts showed it. The host whose pass ran last is the source, and the other one is named stale.
-@test "a stale host's bigger queue is ignored and named in amber; its failed runner is not ours" {
+# hosts showed it. The host whose pass ran last is the source; the other is the health chip's to name.
+@test "a stale host's bigger queue is ignored and named nowhere; its failed runner is not ours" {
   feed h2:summary_dispatch.runnable=328 h2:summary_dispatch.last_pass_epoch=$((100000 - 600000)) h2:summary_cards.figures_queue_on_deck=328 \
-    h2:runner_fleet_dispatch.failed=1 h2:watch_queue_starved.tripped=1
+    h2:runner_fleet_dispatch.failed=1 h2:watch_queue_starved.tripped=1 \
+    h3:summary_dispatch.runnable=5 h3:summary_dispatch.last_pass_epoch=2000
   run "$MODULE"
-  assert_equal "$(text)" "$(bar "$(y 39)" 12)"
-  assert_equal "$(class)" warn
-  head_is "$(y 'h2-main (328 ready) sends a stale queue.')" "Stop agent-mqtt-publish there"
+  assert_equal "$(text)" "$(bar 39 12)"
+  assert_equal "$(class)" ok
+  run tip
+  assert_line --index 0 "<b>Queue:</b> $(g flowing)."
+  refute_output --partial "h2-main"
+  refute_output --partial "h3-main"
+  refute_output --partial "stale"
   refute_output --partial "sat ready too long"
   refute_output --partial "runner failed"
 }
@@ -460,7 +466,7 @@ $(y 'No item detail: no summary/bar on mqtt.test')
     h2:summary_dispatch.runnable=328 h2:summary_dispatch.last_pass_epoch=$((100000 - 600000)) \
     h2:runner_fleet_dispatch.failed=1 h2:watch_queue_starved.tripped=1
   run "$MODULE"
-  assert_equal "$(class)" warn
+  assert_equal "$(class)" ok
   run tip
   refute_output --partial "runner failed"
   refute_output --partial "sat ready too long"
@@ -469,17 +475,11 @@ $(y 'No item detail: no summary/bar on mqtt.test')
 @test "negative control: the host whose pass ran last is the source, even with the smaller queue" {
   feed h2:summary_dispatch.runnable=3 h2:summary_dispatch.last_pass_epoch=$((100000 - 60)) h2:summary_cards.figures_queue_on_deck=3
   run "$MODULE"
-  assert_equal "$(text)" "$(bar "$(y 3)" -)"
+  assert_equal "$(text)" "$(bar 3 -)"
   run tip
-  assert_output --partial "h1-main (39 ready) sends a stale queue"
-}
-
-@test "each stale host is its own amber line with its knob, never one joined sentence" {
-  feed h2:summary_dispatch.runnable=328 h2:summary_dispatch.last_pass_epoch=1000 \
-    h3:summary_dispatch.runnable=5 h3:summary_dispatch.last_pass_epoch=2000
-  run "$MODULE"
-  head_is "$(y 'h2-main (328 ready) sends a stale queue.')" "Stop agent-mqtt-publish there"
-  assert_line --index 1 "$(y 'H3-main (5 ready) sends a stale queue.') Stop agent-mqtt-publish there."
+  assert_output --partial "3 ready"
+  refute_output --partial "39 ready"
+  refute_output --partial "h1-main"
 }
 
 @test "with no pass on record anywhere every host counts by the max, and the head says no pass is on record" {
