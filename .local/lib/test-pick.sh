@@ -17,6 +17,10 @@ _test_pick_names() {
   # part of the name, so agentctl is not a word of agentctl-run.
   _TEST_PICK_WORDS="$(grep -v '^$' <<<"$1" | sed 's#.*/##' | sort -u | { grep -vxFf <(printf '%s\n' "$shared") || true; } |
     awk '{gsub(/[][\\.*^$+?(){}|]/, "\\\\&"); o=o (o==""?"":"|") $0} END {if (o!="") printf "(^|[^A-Za-z0-9_-])(%s)($|[^A-Za-z0-9_-])", o}')"
+  # Each of those words with the directory its changed file sits in, `<word><TAB><dir>` (an empty
+  # dir at the root), for _test_pick_otherdir.
+  _TEST_PICK_PARENTS="$(grep -v '^$' <<<"$1" | awk -F/ 'NR==FNR {s[$0]; next} !($NF in s) {print $NF "\t" (NF > 1 ? $(NF-1) : "")}' \
+    <(printf '%s\n' "$shared") - | sort -u)" || true
   _TEST_PICK_PATHS="$(grep -v '^$' <<<"$1" | grep '/' | awk -F/ 'NR==FNR {d[$0]; next} ($NF in d) {print $(NF-1) "/" $NF}' \
     <(printf '%s\n' "$shared") - | sort -u)" || true
   _TEST_PICK_PATHS_RE="$(awk '{gsub(/[][\\.*^$+?(){}|]/, "\\\\&"); o=o (o==""?"":"|") $0} END {printf "%s", o}' <<<"$_TEST_PICK_PATHS")"
@@ -77,6 +81,40 @@ _test_pick_unstub() {
   }'
 }
 
+# _test_pick_uncomment: stdin to stdout without comments: whole comment lines, and the tail of a
+# line from a `#` that starts a word. fleet_dispatch/common.bash ends a code line with "so no pass
+# asks fleet-bench for canaries", which picked all ten fleet_dispatch*.bats files (~3,500 s of the
+# unit tier) for a fleet-bench change although common.bash stubs fleet-bench (#3104, ar-3036).
+_test_pick_uncomment() { sed -E '/^[[:space:]]*#/d; s/[[:space:]]#.*$//'; }
+
+# _test_pick_otherdir: stdin to stdout without each changed word that ends a path in another
+# directory: `<dir>/<word>` where <dir> is a literal name (not a variable, `.` or `..`) other than
+# the one its changed file sits in. `mkdir -p "$HOME/.config/fleet-bench"` names a config
+# directory, not .local/bin/fleet-bench (ar-3036); `$REPO_ROOT/.local/bin/fleet-bench` and
+# `"$BIN/fleet-bench"` stay.
+_test_pick_otherdir() {
+  [ -n "$_TEST_PICK_PARENTS" ] || { cat; return 0; }
+  awk -v pairs="$_TEST_PICK_PARENTS" 'BEGIN {
+      n = split(pairs, l, "\n")
+      for (i = 1; i <= n; i++) { split(l[i], f, "\t"); if (!(f[1] in dirs)) names[++k] = f[1]; dirs[f[1]] = dirs[f[1]] " " f[2] " " }
+    }
+    {
+      for (i = 1; i <= k; i++) {
+        name = names[i]; s = $0; out = ""
+        while ((j = index(s, "/" name)) > 0) {
+          pre = substr(s, 1, j - 1); post = substr(s, j + 1 + length(name), 1); keep = 1
+          if (post !~ /[A-Za-z0-9_-]/ && match(pre, /[A-Za-z0-9._-]+$/)) {
+            dir = substr(pre, RSTART); before = substr(pre, RSTART - 1, 1)
+            if (dir != "." && dir != ".." && before != "$" && before != "{" && index(dirs[name], " " dir " ") == 0) keep = 0
+          }
+          out = out substr(s, 1, j) (keep ? name : ""); s = substr(s, j + 1 + length(name))
+        }
+        $0 = out s
+      }
+      print
+    }'
+}
+
 # _test_pick_path_named <changed> <text>: status 0 when the text names a changed shared basename as
 # `<parent>/<name>`, other than as the tail of a longer path that is a tracked file which did not
 # change. fleet_dispatch/common.bash reads .local/src/notes-cli/src/projects.rs, so a change to
@@ -126,7 +164,7 @@ test_picked() {
   # only as "$AGENT_ASK", so #2385's agent-ask change was not picked and went red on main (ar-4309).
   local var ref code
   _test_pick_aliases
-  code="$(sed -E '/^[[:space:]]*#/d' <<<"$text")"
+  code="$(_test_pick_uncomment <<<"$text")"
   if [ -n "$_TEST_PICK_ALIAS_RE" ]; then
     while read -r var ref; do
       code+=$'\n'"\$REPO_ROOT/$ref" text+=$'\n'"\$REPO_ROOT/$ref"
@@ -145,19 +183,20 @@ test_picked() {
       [ -f "$_TEST_PICK_REPO/$ref" ] || continue
       # Not a pipe: grep -q stops at the first match, and under the callers' pipefail sed's SIGPIPE
       # on a large script would turn that match into a failure.
-      grep -qE "$_TEST_PICK_HOP" <(sed -E '/^[[:space:]]*#/d' "$_TEST_PICK_REPO/$ref") && return 0
+      grep -qE "$_TEST_PICK_HOP" <(_test_pick_uncomment <"$_TEST_PICK_REPO/$ref") && return 0
     done < <(grep -oE '\$\{?REPO_ROOT\}?/[A-Za-z0-9._/-]+' <<<"$code" | sed -E 's#^\$\{?REPO_ROOT\}?/##' | sort -u)
   fi
   # A basename counts where it can name the file. A shared basename (README.md, SKILL.md) is
   # matched as `<parent dir>/<name>` (_test_pick_path_named). For any other, dropped first:
-  # comment lines and @test titles (prose), `stub <name>` and the fake's own quoted body (a fake
-  # stands in for it), `<name>/` (a directory of that name, such as ~/.config/agentctl/) and
+  # comments (_test_pick_uncomment) and @test titles (prose), `stub <name>` and the fake's own quoted body (a fake
+  # stands in for it), `<name>/` (a directory of that name, such as ~/.config/agentctl/), a path
+  # in another directory that ends in it (_test_pick_otherdir) and
   # `<name>@` (a systemd unit). Without these, unit/fleet_dispatch.bats, a third of the unit tier,
   # was picked by 33 of 40 commits on main, and `stub store-sync 'echo "store-sync $*" >>calls.log'`
   # picked every fleet_dispatch*.bats file on a store-sync change (ar-3036).
   [ -n "$_TEST_PICK_PATHS" ] && _test_pick_path_named "$1" "$text" && return 0
   [ -n "$_TEST_PICK_WORDS" ] && grep -qE "$_TEST_PICK_WORDS" \
-    <(_test_pick_unstub <<<"$text" | sed -E '/^[[:space:]]*#/d; s/^@test[[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"')//
+    <(_test_pick_unstub <<<"$text" | _test_pick_uncomment | _test_pick_otherdir | sed -E 's/^@test[[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"')//
       s/(^|[[:space:];&|(])stub[[:space:]]+[^[:space:]]+/\1stub/g; s#[A-Za-z0-9._-]+[/@]#/#g') && return 0
   # A fixture is data for the tests that name it, so a change under tests/fixtures/<top> picks
   # those, not the whole tier: a comms-lint fixture ran every file of both tiers (#3040, 6.3 min).
