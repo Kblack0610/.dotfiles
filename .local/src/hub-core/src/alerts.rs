@@ -770,7 +770,7 @@ pub fn join(
     }
 }
 
-/// The tab over the caller's `infra` and `fixes` (`reds::read`, about 2s: each surface keeps
+/// The tab over the caller's `infra` and `fixes` (`reds::read`, about 6s: each surface keeps
 /// both cached), with the watches and the agent-notify ledger read now, since a file read is
 /// cheap and a trip must show on the push that announced it.
 pub fn read(infra: &Infra, fixes: Result<Reds, String>, now: i64) -> Alerts {
