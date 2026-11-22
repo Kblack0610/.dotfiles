@@ -7,8 +7,9 @@
 # in flight first, then by stage, and one line for the projects with nothing open.
 #
 # It computes nothing: `hub projects --json` is hub-core's join (projects::gather), the same cards
-# the hub Projects tab, agent-web and the phone read, with the open window already scored. hub
-# unreadable reads ? in amber.
+# the hub Projects tab, agent-web and the phone read, with the open window already scored, and
+# its `figures` are the Projects card's (in flight, the project count, sprints), which hub drops
+# on a partial read, so those then read ? and -. hub unreadable reads ? in amber.
 
 set -u
 here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
@@ -66,12 +67,19 @@ body="$(jq -r --arg g "$C_GRN" --arg y "$C_YEL" --arg r "$C_RED" --arg d "$C_DIM
 # (sprint_says implies the window), an at-risk or late one first and then amber, and +N past one
 # (only #prio/focus projects run sprints, so one is the normal case).
 sprints="$(jq -r '.cards[] | select(.sprint_says != null) | "\(.name) \(.sprint_says)"' <<< "$raw")"
-read -r flying total errors running < <(jq -r '[([.cards[] | select(.in_flight)] | length), (.cards | length), (.errors | length),
-  ([.cards[] | select(.sprint_says != null)] | length)] | @tsv' <<< "$raw")
+read -r flying total running errors < <(jq -r '[(.figures.projects_in_flight // "-"), (.figures.projects_headline // "-"),
+  (.figures.projects_sprints // "-"), (.errors | length)] | @tsv' <<< "$raw")
 head="$title  $flying in flight, $total total"
 text="$ICON"
-((flying == 0)) || text+=" $flying"
-if ((running > 0)); then
+if [ "$flying" = - ]; then
+  text+=" $(paint "$C_YEL" ?)"
+elif ((flying > 0)); then
+  text+=" $flying"
+fi
+# With no Sprints figure the bar's sprint is ? while the cards still name one.
+if [ "$running" = - ] && [ -n "$sprints" ]; then
+  text+="  $(paint "$(label_colour)" S:)$(paint "$C_YEL" ?)"
+elif [ "$running" != - ] && ((running > 0)); then
   read -r risky sprint < <(jq -r '[.cards[] | select(.sprint_says != null)
     | {risky: (.state_level == "warn" or .state_level == "bad"), w: .window}]
     | (map(select(.risky)) + map(select(.risky | not)))[0]
@@ -80,6 +88,8 @@ if ((running > 0)); then
   ((running == 1)) || sprint+=" +$((running - 1))"
   [[ "$risky" == false ]] || sprint="$(paint "$C_YEL" "$sprint")"
   text+="  $(paint "$(label_colour)" S:)$sprint"
+fi
+if [ -n "$sprints" ]; then
   head+=$'\n'"running sprints:"
   while IFS= read -r line; do head+=$'\n'"  $(pango_esc "$line")"; done <<< "$sprints"
 fi
