@@ -386,13 +386,14 @@ configure_macos_defaults() {
     fi
 }
 
-# Render theme-switch's generated output. sketchybar's colors.sh is NOT tracked
-# -- it is a heredoc built from the tracked palette, and tracking it meant the
+# Render theme-switch's generated output. sketchybar's colors.sh, kitty's theme,
+# nvim's kennethblack/theme.lua, starship.toml and lazygit's config.yml are NOT tracked
+# -- they are rendered from the tracked palette and templates, and tracking them meant the
 # theme timers dirtied the repo twice a day. sketchybarrc hard-`source`s it, so
 # on macOS a fresh clone without this step leaves sketchybar unable to start.
 #
-# --only the generated targets: every other tool theme-switch touches is a
-# TRACKED file that already ships correct, and re-patching those here would
+# --only the generated targets: termux is the one TRACKED render (the phone
+# reads it over git), it already ships correct, and re-rendering it here would
 # leave a fresh install with a dirty tree before first login.
 setup_theme() {
     log_section "Rendering theme (generated config)"
@@ -400,7 +401,7 @@ setup_theme() {
     local theme_switch="$HOME/.local/bin/theme-switch"
     if [[ ! -x "$theme_switch" ]]; then
         log_warning "theme-switch not found at $theme_switch — skipping"
-        log_info "Render later with:  theme-switch <theme> --only kitty,sketchybar"
+        log_info "Render later with:  theme-switch <theme> --only kitty,sketchybar,nvim,starship,lazygit"
         return 0
     fi
 
@@ -409,7 +410,7 @@ setup_theme() {
     [[ -r "$state" ]] && theme="$(<"$state")"
 
     log_info "Rendering generated theme files for: $theme"
-    "$theme_switch" "$theme" --only kitty,sketchybar
+    "$theme_switch" "$theme" --only kitty,sketchybar,nvim,starship,lazygit
 }
 
 # Firefox profile files, policies (Tab Keeper, Karakeep) and autoconfig. On a

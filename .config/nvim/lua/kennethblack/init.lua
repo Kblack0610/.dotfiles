@@ -34,6 +34,6 @@ require("lazy").setup("kennethblack.plugins", {
   },
 })
 
--- colorscheme — kept on its own line; theme-switch sed-rewrites the quoted name
-vim.cmd.colorscheme "batman"
+-- colorscheme: kennethblack/theme.lua is theme-switch's render (gitignored), never edited here
+vim.cmd.colorscheme(require("kennethblack.theme").colorscheme)
 
