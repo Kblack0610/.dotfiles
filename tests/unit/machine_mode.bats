@@ -7,8 +7,9 @@
 # (ci_governor_effective_slots), not what was asked. The
 # clock: the real hours file covers the day once and names real modes; a new part's mode applies
 # once; a hand mode holds inside its part, and past a boundary while the human is here; a quiet
-# tick exits 0 and a failed pin exits 1 (the unit's result); machine-clock.timer fires at the
-# start of each part of the shipped hours file and is enabled.
+# tick exits 0, a held hand mode 75, a failed pin 1 and an unreadable hours file 2 (the unit's
+# result, and which it retries); machine-clock.timer fires at the start of each part of the shipped
+# hours file and is enabled.
 # agent-hold is the real one against a sandbox hold dir, so its list format is pinned too.
 
 # The governor whose override.schema.json each write is checked against; the test skips without it.
@@ -334,7 +335,7 @@ hours_fixture() {
   MACHINE_MODE_NOW=22:45 run "$MM" clock
   assert_output ""
   MACHINE_MODE_NOW=23:00 run "$MM" clock
-  assert_success
+  assert_failure 75   # the unit retries a held tick every 15 minutes
   assert_output --partial "reserved was set by hand and you are here"
   assert_equal "$(state MACHINE_MODE)" reserved
   PRESENCE="away 40 tmux" MACHINE_MODE_NOW=23:30 run "$MM" clock
@@ -393,7 +394,24 @@ hours_fixture() {
   assert_output ""
   MACHINE_MODE_NOW=12:00 "$MM" auto >/dev/null
   KUBE_FAIL=1 MACHINE_MODE_NOW=23:00 run "$MM" clock
-  assert_failure
+  assert_failure 1
+}
+
+@test "an unreadable hours file exits 2, the one status machine-clock.service does not retry" {
+  export MACHINE_MODE_HOURS="$FX/hours"
+  printf 'all|00:00-24:00|turbo|x\n' > "$MACHINE_MODE_HOURS"
+  MACHINE_MODE_NOW=12:00 run "$MM" clock
+  assert_failure 2
+  grep -q '^RestartPreventExitStatus=2$' "$REPO_ROOT/.config/systemd/user/machine-clock.service"
+  grep -q '^Restart=on-failure$' "$REPO_ROOT/.config/systemd/user/machine-clock.service"
+}
+
+@test "machine-clock.service and .timer pass systemd-analyze verify" {
+  command -v systemd-analyze >/dev/null || skip "no systemd-analyze"
+  # %h is the sandbox home here, which holds no machine-mode, so that one finding is not the unit's fault.
+  run bash -c 'systemd-analyze verify --user "$@" 2>&1 | grep -v "is not executable"' _ \
+    "$REPO_ROOT/.config/systemd/user/machine-clock.service" "$REPO_ROOT/.config/systemd/user/machine-clock.timer"
+  assert_output ""
 }
 
 # The release lane: `release-lane` writes only "<host>.reserve" {"until": <epoch>}, which the governor

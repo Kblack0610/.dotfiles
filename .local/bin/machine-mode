@@ -19,8 +19,9 @@
 #
 # The clock hours, .config/machine-mode/hours, name the day's parts. When a part begins, `clock`
 # switches to its mode, except that a mode set by hand holds while the human is here
-# (fleet-presence), and then stands until the next part begins or `machine-mode auto`. The tick is
-# machine-clock.timer, at each part's start, so a hold is not re-read inside a part.
+# (fleet-presence): the tick then exits 75 and machine-clock.service retries it every 15 minutes, so
+# the part's mode applies at the first retry after they are away. Inside a part nothing else runs,
+# so a hand switch stands until the next part begins.
 #
 # A mode sets two things, its numbers in .config/machine-mode/modes:
 #   runners and unity_slots
@@ -225,11 +226,14 @@ clock_target() {
   printf '%s %s\n' "$part" "$want"
 }
 
-# clock: the tick of machine-clock.timer. Its exit code is the unit's result: a quiet tick exits 0.
+# clock: the tick of machine-clock.timer, at each part's start. Its exit code is the unit's result:
+# 0 done or nothing to do; 75 a hand mode held while the human is here; 1 a pin that did not reach
+# the cluster; 2 an hours file that cannot be read. The unit retries 75 and 1 every 15 minutes and
+# never 2, so a held part still applies once the human is away, as the old runner's tick did.
 clock() {
   local part want by rc=0
   read -r part want <<< "$(clock_target)"
-  [ -n "$part" ] || exit 1   # clock_target said why
+  [ -n "$part" ] || exit 2   # clock_target said why
   by="$(state_value MODE_BY)"
   # A state file from before the clock names no setter: its mode was set by hand.
   [ -z "$by" ] && [ -n "$(state_value MACHINE_MODE)" ] && by=hand
@@ -237,8 +241,8 @@ clock() {
     # Applied this part already; retry only a runner pin that never reached the cluster.
     [ "$(state_value RUNNERS_PINNED)" = no ] && [ "$by" = clock ] || return 0
   elif [ "$by" = hand ] && [ "$(current_mode)" != "$want" ] && human_here; then
-    echo "machine-mode: $part began; $(current_mode) was set by hand and you are here, so it holds until the next part begins (machine-mode auto hands it back)"
-    return 0
+    echo "machine-mode: $part began; $(current_mode) was set by hand and you are here, so it holds until you are away (machine-mode auto hands it back)"
+    return 75
   fi
   switch "$want" clock "$part" || rc=$?
   return "$rc"
