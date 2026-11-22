@@ -614,7 +614,8 @@ stopped_bucket() {
 #   wakeup   the last ScheduleWakeup call (its tool_use input; a stop:true one ends it), until ts + delaySeconds
 #   monitor  an armed Monitor ("Monitor started (task <id>", toolUseResult.timeoutMs; a persistent one holds 7 days, as a
 #            recurring cron) until it expires or a
-#            <task-notification> for its task id reports a status other than running (its stream ended, TaskStop);
+#            <task-notification> for its task id reports a status other than running (its stream ended), or a TaskStop
+#            result ("Successfully stopped task: <id>", a tool_result with no notification, ar-4158) names it;
 #            the notice can be written before the "Monitor started" line, so an ended id counts in any order
 # A CronDelete ("Cancelled job <id>") ends a cron; a "Running scheduled task" row (scheduled_task_fire, taskId = the
 # job id) ends a one-shot and carries a recurring job over a --resume (hub/dotfiles:1, ar-2604). A session-only one
@@ -626,7 +627,7 @@ stopped_bucket() {
 pending_wakes() {
   [ -s "${1:-}" ] || return 0
   local since="${2:--}"; [[ "$since" =~ ^[0-9]+$ ]] || since=9999999999
-  { grep -a -E 'Scheduled recurring job|Scheduled one-shot task|Cancelled job|scheduled_task_fire|Monitor started \(task|<task-id>|"name":"ScheduleWakeup","input"' "$1" 2>/dev/null || :; } \
+  { grep -a -E 'Scheduled recurring job|Scheduled one-shot task|Cancelled job|scheduled_task_fire|Monitor started \(task|Successfully stopped task|<task-id>|"name":"ScheduleWakeup","input"' "$1" 2>/dev/null || :; } \
     | { grep -a -v '^{"type":"api-request' || :; } | jq -Rrn --argjson since "$since" --argjson now "$3" '
     def text: if type == "array" then map(.text? // "") | join(" ") else tostring end;
     def epoch: (. // "") | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601? // 0;
@@ -646,6 +647,8 @@ pending_wakes() {
       elif $e.wake then
         (if $e.wake.stop == true then del(.wakeup)
          else .wakeup = {kind: "wakeup", ts: $e.ts, at: ($e.ts + ([[($e.wake.delaySeconds | secs), 60] | max, 3600] | min))} end)
+      elif ($e.c | test("^(\\{\"message\":\")?Successfully stopped task: [0-9a-z]+")) then
+        .ended[$e.c | capture("Successfully stopped task: (?<i>[0-9a-z]+)").i] = true
       elif ($e.c | test("^Scheduled recurring job [0-9a-f]+")) then
         .[$e.c | capture("^Scheduled recurring job (?<i>[0-9a-f]+)").i] = {kind: "cron", ts: $e.ts, fired: 0, durable: ($e.c | test("Session-only") | not)}
       elif ($e.c | test("^Scheduled one-shot task [0-9a-f]+")) then
