@@ -8,7 +8,8 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
 use crate::fit::{cell, Cell, Table};
-use crate::fmt::{clock, dur, Palette};
+use crate::fmt::{clock, Palette};
+use hub_core::display::fmt::dur_secs;
 
 /// `Job::COLUMNS` in capitals, in its order: the sort mark is placed by that index.
 const HEADER: [&str; 8] = [
@@ -86,7 +87,7 @@ impl JobsView {
                 "    {} of {} (last {})",
                 self.shown(jobs).len(),
                 jobs.jobs.len(),
-                dur(jobs.window_secs as f64)
+                dur_secs(jobs.window_secs as f64)
             ),
             p.dim(),
         ));
@@ -149,13 +150,13 @@ fn job_row(j: &Job, p: Palette, now: i64) -> Vec<Cell> {
     let took = match j.state {
         State::Queued => j
             .secs
-            .map_or("-".into(), |s| format!("wait {}", dur(s as f64))),
+            .map_or("-".into(), |s| format!("wait {}", dur_secs(s as f64))),
         State::Running => j
             .started
             .map(|s| now - s)
             .or(j.secs)
-            .map_or("-".into(), |s| dur(s as f64)),
-        State::Done => j.secs.map_or("-".into(), |s| dur(s as f64)),
+            .map_or("-".into(), |s| dur_secs(s as f64)),
+        State::Done => j.secs.map_or("-".into(), |s| dur_secs(s as f64)),
     };
     let result = match j.ok {
         Some(false) => cell(j.result.clone(), p.bad()),

@@ -399,7 +399,7 @@ fn parts(m: &Machine, split: Option<&HostSplit>, grafana: Option<&str>, at: u64)
             t = format!("{t}: {}", m.running.join(", "));
         }
         if let Some(n) = &m.next {
-            t = format!("{t}; next {}", n.line(crate::text::age));
+            t = format!("{t}; next {}", n.line(crate::display::fmt::age));
         }
         if m.off > 0 {
             t = format!("{t}; {} off", m.off);
@@ -438,7 +438,7 @@ fn parts(m: &Machine, split: Option<&HostSplit>, grafana: Option<&str>, at: u64)
         out.push(Part::new("Power", t).warn(!p.hold.is_empty()));
     }
     if let Some(b) = m.boot {
-        let up = crate::text::age(at as i64 - b as i64);
+        let up = crate::display::fmt::age(at as i64 - b as i64);
         out.push(Part::new(
             "Up since",
             format!("{}, up {up}", when(b as i64)),

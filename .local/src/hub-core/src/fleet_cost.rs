@@ -3,6 +3,7 @@
 //! coverage words; the file's session rows are the live day of `spend_history`, the one builder of
 //! every per-session cut, so the hub TUI and agent-web only draw them (dashboards rule 8).
 
+use crate::display::{fmt::usd_est, Count};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -105,35 +106,15 @@ pub struct FleetCost {
     pub foot: &'static str,
 }
 
-/// Dollars at a size that does not claim more than an estimate knows: cents only under $10.
-pub fn dollars(v: f64) -> String {
-    if v < 10.0 {
-        return format!("${v:.2}");
-    }
-    let digits = format!("{v:.0}");
-    let mut out = String::new();
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    format!("${out}")
-}
-
-fn count(n: u64, noun: &str) -> String {
-    format!("{n} {noun}{}", if n == 1 { "" } else { "s" })
-}
-
 /// The block from the file.
 pub fn build(f: &File, now: i64) -> FleetCost {
     let t = &f.total;
     let c = &f.coverage;
     FleetCost {
         why: None,
-        usd: format!("about {}", dollars(t.usd)),
-        measured: dollars(t.measured),
-        estimated: dollars(t.estimated),
+        usd: format!("about {}", usd_est(t.usd)),
+        measured: usd_est(t.measured),
+        estimated: usd_est(t.estimated),
         as_of: Some(f.as_of_epoch),
         stale: f.stale(now),
         coverage: c.estimated_token_share.map_or_else(
@@ -143,7 +124,7 @@ pub fn build(f: &File, now: i64) -> FleetCost {
                     "{:.0}% of tokens estimated: {} of {} have no cost telemetry",
                     share * 100.0,
                     c.sessions_estimated,
-                    count(c.sessions, "session"),
+                    Count::of(c.sessions, "session").shown(),
                 )
             },
         ),
@@ -153,8 +134,8 @@ pub fn build(f: &File, now: i64) -> FleetCost {
             .map(|(m, u)| {
                 format!(
                     "{m}: {} tokens in {} not in the total, {}",
-                    crate::costs::tokens(Some(u.tokens)),
-                    count(u.sessions, "session"),
+                    crate::display::fmt::tokens(Some(u.tokens)),
+                    Count::of(u.sessions, "session").shown(),
                     u.why
                 )
             })

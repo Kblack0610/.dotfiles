@@ -21,15 +21,16 @@ use serde_json::Value;
 use crate::burn::Account;
 use crate::capacity::clock;
 use crate::costs::Call;
+use crate::display::fmt::usd;
+use crate::display::fmt::{age, plural};
 use crate::display::{Role, Shown};
 use crate::fleet::runner::Watch;
 use crate::home::{self, Home, Kind, Need};
 use crate::jobs::{self, Job};
-use crate::queue::money;
 use crate::queue::{self, Item, Queue, State};
 use crate::reading::State as Reading;
 use crate::releases::Release;
-use crate::text::{age, cap};
+use crate::text::cap;
 
 /// Needs you holds at most this many items; past it, one less and a "more" line
 /// (`channels.toml [channel.briefing]`).
@@ -153,10 +154,6 @@ pub struct Inputs {
     /// renders no Money section.
     pub trader: Option<Vec<crate::money::Source>>,
     pub errors: Vec<String>,
-}
-
-pub(crate) fn plural(n: usize, one: &str, many: &str) -> String {
-    format!("{n} {}", if n == 1 { one } else { many })
 }
 
 /// The local date `days` before the one holding `t`, `YYYY-MM-DD`.
@@ -513,7 +510,7 @@ fn workers(i: &Inputs) -> Area {
     };
     if let Some(calls) = &i.calls {
         let spent: f64 = spent_in(calls);
-        line += &format!(", {}", money(spent));
+        line += &format!(", {}", usd(spent));
     }
     let mut level = Level::Ok;
     if !failed.is_empty() {
@@ -716,10 +713,10 @@ fn costs(i: &Inputs) -> Area {
     match yesterday_and_avg(i, spent) {
         Some((rec, avg)) if spent(rec).is_some() => {
             let y = spent(rec).unwrap_or(0.0);
-            let mut s = format!("{} yesterday", money(y));
+            let mut s = format!("{} yesterday", usd(y));
             if let Some(a) = avg.filter(|a| *a > 0.0) {
                 let pct = (y / a - 1.0) * 100.0;
-                s += &format!(" (avg {}, {pct:+.0}%)", money(a));
+                s += &format!(" (avg {}, {pct:+.0}%)", usd(a));
                 if y > a * BAD_RATIO {
                     level = Level::Bad;
                 } else if y > a * WARN_RATIO {
@@ -735,7 +732,7 @@ fn costs(i: &Inputs) -> Area {
     }
     if let Some(calls) = &i.calls {
         let r: f64 = spent_in(calls);
-        parts.push(format!("runners {} since {}", money(r), clock(i.since)));
+        parts.push(format!("runners {} since {}", usd(r), clock(i.since)));
     }
     // Each dollar-capped source as the Burn rows read it; the windowed ones are the Burn section's.
     match &i.sources {
@@ -751,7 +748,7 @@ fn costs(i: &Inputs) -> Area {
                 if b > 0.0 && s >= b * SPEND_WARN {
                     level = level.max(Level::Warn);
                 }
-                parts.push(format!("{} {} of {}", a.name, money(s), money(b)));
+                parts.push(format!("{} {} of {}", a.name, usd(s), usd(b)));
             }
         }
         None => parts.push("sources unknown".into()),
@@ -1112,9 +1109,9 @@ fn money_lines(i: &Inputs) -> Vec<String> {
     let mut out = vec![];
     match yesterday_and_avg(i, spent) {
         Some((rec, avg)) if spent(rec).is_some() => {
-            let mut s = format!("Spent yesterday {}", money(spent(rec).unwrap_or(0.0)));
+            let mut s = format!("Spent yesterday {}", usd(spent(rec).unwrap_or(0.0)));
             if let Some(a) = avg {
-                s += &format!(" ({AVG_DAYS}-day avg {})", money(a));
+                s += &format!(" ({AVG_DAYS}-day avg {})", usd(a));
             }
             out.push(s + ".");
         }
@@ -1175,9 +1172,9 @@ fn headline(i: &Inputs, n: usize) -> String {
             plural(row.repos, "repo", "repos")
         );
         if let Some(y) = spent(rec) {
-            s += &format!(", {} spent", money(y));
+            s += &format!(", {} spent", usd(y));
             if let Some(a) = avg {
-                s += &format!(" ({AVG_DAYS}-day avg {})", money(a));
+                s += &format!(" ({AVG_DAYS}-day avg {})", usd(a));
             }
         }
         s.push('.');
@@ -1223,7 +1220,7 @@ fn details(i: &Inputs, areas: &[Area]) -> Vec<String> {
                     count[name],
                     j.finished.map(clock).unwrap_or_default(),
                     j.result,
-                    cost.get(name).map_or_else(|| "-".into(), |c| money(*c))
+                    cost.get(name).map_or_else(|| "-".into(), |c| usd(*c))
                 ));
             }
             out.push(String::new());
