@@ -1126,6 +1126,35 @@ STALE='[{"name":"Checks","bucket":"fail","workflow":"Checks","event":"pull_reque
   assert_output 'sleep 60'
 }
 
+# A cancelled run's always() Checks job fails after the run that cancelled it was created, so only
+# the run id says that run is newer (unity-core-playground trains #3102 and #3108, 2026-11-22).
+@test "a failed check in a run its replacement cancelled (replacement created before the red completed): it waits, then lands" {
+  printf 'Checks\tfail\t1m\n' >"$NOTES_FIXTURE/checks.seq"
+  echo green >>"$NOTES_FIXTURE/checks.seq"
+  printf 'Checks\n' >"$NOTES_FIXTURE/checks.failed"
+  printf '%s\n' '[{"name":"Checks","bucket":"fail","workflow":"Checks","event":"pull_request","completedAt":"2026-11-22T06:26:15Z","link":"https://github.com/o/r/actions/runs/44993658091/job/137120075783"}]' >"$NOTES_FIXTURE/checks.stale"
+  printf '%s\n' '[{"databaseId":44993676563,"status":"in_progress","workflowName":"Checks","event":"pull_request","createdAt":"2026-11-22T06:25:44Z","startedAt":"2026-11-22T06:25:44Z"}]' >"$NOTES_FIXTURE/runs.open"
+  fake_sleep
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: failed: Checks; waiting on the newer run of its workflow on the head'
+  assert_line 'landed #42'
+}
+
+@test "a failed check whose only open run is its own (same run id, created before it completed): it stops at checks, never merges" {
+  printf 'Checks\tfail\t1m\n' >"$NOTES_FIXTURE/checks.out"
+  printf 'Checks\n' >"$NOTES_FIXTURE/checks.failed"
+  printf '%s\n' '[{"name":"Checks","bucket":"fail","workflow":"Checks","event":"pull_request","completedAt":"2026-11-22T06:26:15Z","link":"https://github.com/o/r/actions/runs/44993658091/job/137120075783"}]' >"$NOTES_FIXTURE/checks.stale"
+  printf '%s\n' '[{"databaseId":44993658091,"status":"in_progress","workflowName":"Checks","event":"pull_request","createdAt":"2026-11-22T06:25:30Z","startedAt":"2026-11-22T06:25:30Z"}]' >"$NOTES_FIXTURE/runs.open"
+  fake_sleep
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: Checks'
+  refute_output --partial 'waiting on the newer run'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
 @test "a failed check whose open runs are the one it failed in, another event's or another workflow's: it stops at checks, never merges" {
   printf 'Checks\tfail\t1m\n' >"$NOTES_FIXTURE/checks.out"
   printf 'Checks\n' >"$NOTES_FIXTURE/checks.failed"
