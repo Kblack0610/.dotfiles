@@ -322,6 +322,7 @@ echo "OK load 2.0x cores"'
 
 @test "sprint floor: an urgent sprint item starts past a full pace target, a plain one of the sprint and an urgent one off it wait" {
   full_fleet
+  jq -nc '[{project: "game", queued: false, tasks: [{id: "sp-high", state: "open"}, {id: "sp-urg", state: "open"}]}]' > "$NOTES_FIXTURE/board.sprints"
   agent-queue add --project game --slug off --priority urgent --from board:game:off "urgent, not in a sprint" >/dev/null
   agent-queue add --project game --slug sp-high --priority high --tags sprint --from board:game:sp-high "sprint, high" >/dev/null
   agent-queue add --project game --slug sp-urg --priority urgent --tags sprint --from board:game:sp-urg "sprint, urgent" >/dev/null
@@ -355,6 +356,7 @@ echo "OK load 2.0x cores"'
   sed -i "/^mode:/a tags: sprint" "$AGENT_QUEUE_DIR"/running/*-l1.md
   sed -i 's/^priority: .*/priority: urgent/; s/^agent: claude/agent: claude\nby: dispatch/' "$AGENT_QUEUE_DIR"/running/*-l1.md
   printf 'game-agent-l1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  jq -nc '[{project: "game", queued: false, tasks: [{id: "sp-urg", state: "open"}]}]' > "$NOTES_FIXTURE/board.sprints"
   agent-queue add --project game --slug sp-urg --priority urgent --tags sprint --from board:game:sp-urg "sprint, urgent" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   refute_output --partial 'on the sprint floor'
@@ -364,6 +366,27 @@ echo "OK load 2.0x cores"'
   : > "$NOTES_FIXTURE/tmux.sessions.lab"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item sp-urg on the sprint floor'
+}
+
+@test "sprint tag sync: a queued item loses sprint when its row leaves the sprint or it closes, gains sprint when it joins, and keeps tags if the board read fails" {
+  full_fleet
+  agent-queue add --project game --slug sp-left --priority urgent --tags "sprint foo" --from board:game:sp-left "left sprint" >/dev/null
+  agent-queue add --project game --slug sp-closed --priority high --tags sprint --from board:game:sp-closed "sprint closed" >/dev/null
+  agent-queue add --project game --slug sp-joined --priority urgent --from board:game:sp-joined "joined sprint" >/dev/null
+  # sp-joined is in the open sprint; sp-left and sp-closed are not.
+  jq -nc '[{project: "game", queued: false, tasks: [{id: "sp-joined", state: "open"}]}]' > "$NOTES_FIXTURE/board.sprints"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item sp-joined on the sprint floor'
+  refute_output --partial 'started queue item sp-left'
+  assert_equal "$(qfield "$(qitem queued sp-left)" tags)" "foo"
+  assert_equal "$(qfield "$(qitem queued sp-closed)" tags)" ""
+  # When the board read fails, sync_sprint_tags leaves existing sprint tags untouched.
+  agent-queue set sp-closed tags=sprint >/dev/null
+  stub notes 'exit 1'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_equal "$(qfield "$(qitem queued sp-closed)" tags)" "sprint"
 }
 
 @test "starved: an approved plan's ready phase behind a full fleet is held like a plain high one, not starved" {

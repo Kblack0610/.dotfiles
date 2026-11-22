@@ -564,8 +564,8 @@ gate_wait() {
 load_extras() {
   local board p l i r t g d rd
   load_gates
-  board=$(notes board --json 2>/dev/null)
-  load_sprints "$board"
+  # A failed read loads no sprints (sprint_rows_ready reads again), so sync_sprint_tags never strips on it.
+  board=$(notes board --json 2>/dev/null) && load_sprints "$board"
   while IFS=$'\t' read -r p l i r rd t g d; do
     DET["$p"$'\t'"$l"$'\t'"$i"]="$g"$'\t'"$d"
     [ "$rd" = - ] || RLD["$p"$'\t'"$l"$'\t'"$i"]=$rd
@@ -1314,6 +1314,41 @@ human_plan_phases() {
 # the sprint floor's count.
 live_sprints() { live_where '((" " + (.tags // "") + " ") | contains(" sprint ")) and .priority == "urgent"'; }
 
+# sync_sprint_tags -- keep each queued board item's `sprint` tag in step with row_sprint so an item
+# promoted during an open sprint loses `sprint` when the sprint closes or its row leaves it, and one
+# queued before its row joined an open sprint gains it. Skips when the board read failed (SPRINT_LOADED
+# empty) so an unreadable feed never strips sprint tags.
+sync_sprint_tags() {
+  local slug row tags project key has in_sprint new_tags t why
+  [ "$DRY" = 0 ] || return 0
+  sprint_rows_ready
+  [ -n "$SPRINT_LOADED" ] || return 0
+  while IFS=$'\t' read -r slug row tags; do
+    [ -n "$slug" ] && [ -n "$row" ] || continue
+    project=${row%%:*} key=${row#*:}
+    [ "$project" != "$row" ] && [ -n "$project" ] && [ -n "$key" ] || continue
+    has=0; [[ " $tags " != *" sprint "* ]] || has=1
+    in_sprint=0; [ "$(row_sprint "$project" "$key")" = 0 ] && in_sprint=1
+    [ "$has" != "$in_sprint" ] || continue
+    if [ "$in_sprint" = 1 ]; then
+      new_tags="${tags:+$tags }sprint"
+      why="added sprint tag ($row is in an open sprint)"
+    else
+      new_tags=''
+      for t in $tags; do
+        [ "$t" = sprint ] || new_tags="${new_tags:+$new_tags }$t"
+      done
+      why="removed sprint tag ($row left the open sprint)"
+    fi
+    if agent-queue set "$slug" "tags=$new_tags" >/dev/null 2>&1; then
+      say "queue item $slug: $why"
+      unset NEXT_QUEUED
+    fi
+  done < <(agent-queue list --json --state queued 2>/dev/null |
+    jq -r 'select((.row // "") != "") | [(.slug // ""), (.row // ""), (.tags // "")] | @tsv' 2>/dev/null)
+  return 0
+}
+
 # sprint_top_up -- queue an open sprint's dispatchable rows (fill_day's `sprint` floor) on every run pass,
 # before the floors and the queue pass read the queue, so the queue order (agent-queue's `sprint` bucket) and
 # the sprint floor take them ahead of the queued items off the sprint. The low-water fill reads the board only
@@ -1329,6 +1364,7 @@ sprint_top_up() {
   local want qroom JUDGE_RC='' JUDGE_WHY='' FILLED=0
   [ "$DRY" = 0 ] || return 0
   sprint_rows_ready
+  sync_sprint_tags
   [ "${#SPRINT_PROJECT[@]}" -gt 0 ] || return 0
   [ -z "$(HUMAN_PASS=1 gate)" ] || return 0
   want=$DISPATCH_LOW_WATER; [ "${1:-0}" -le "$want" ] || want=$1

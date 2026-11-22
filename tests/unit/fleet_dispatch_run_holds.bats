@@ -772,6 +772,8 @@ share_history() {
   fresh=$(agent-queue list --json --state queued 2>/dev/null | jq -r 'select(.title | test("save")) | .slug')
   sprint=$(agent-queue list --json --state queued 2>/dev/null | jq -r 'select(.title | test("quit")) | .slug')
   [ -n "$old" ] && [ -n "$fresh" ] && [ -n "$sprint" ] || fail "the fill queued no item for each row"
+  local srow; srow=$(qfield "$(qitem queued "$sprint")" from); srow=${srow#board:game:}
+  jq -nc --arg id "$srow" '[{project: "game", queued: false, tasks: [{id: $id, state: "open"}]}]' > "$NOTES_FIXTURE/board.sprints"
   agent-queue set "$sprint" tags=sprint >/dev/null
   sed -i 's/^queued: .*/queued: 2026-01-01T00:00:00Z/' "$(qitem queued "$old")" "$(qitem queued "$sprint")"
   export DISPATCH_STARVED_MIN=60 DISPATCH_TARGET_AWAY=0
