@@ -324,7 +324,7 @@ function qCompose() {
     `<select id="q-priority">${opt(Q_PRIORITIES, d.priority)}</select>` +
     `<input id="q-tags" placeholder="tags: ui, at:02:30" value="${esc(d.tags)}">` +
     `<button class="btn primary" id="q-add"${qst.busy ? " disabled" : ""}>${qst.busy ? "Adding..." : "Add to queue"}</button>` +
-    `</div><div class="err" id="q-msg">${esc(qst.msg)}</div>` +
+    `</div>${errPanel(qst.msg, { id: "q-msg" })}` +
     `<div class="muted qhint">Run to PR starts when a slot frees, by priority, and ends at a PR; Plan first opens a planning session now. ` +
     `at:HH:MM waits for that time.</div></div>`;
 }
@@ -375,7 +375,7 @@ function qCandHead(t) {
   const d = t.data, gap = d.uncovered || [];
   return (t.err ? `<div class="panel down">No candidates: ${esc(t.err)}</div>` : "") +
     (d.urgent_blocked ? `<div class="cline warn">${d.urgent_blocked} urgent blocked</div>` : "") +
-    (t.msg ? `<div class="err">${esc(t.msg)}</div>` : "") +
+    (t.msg ? errPanel(t.msg) : "") +
     (gap.length ? `<div class="cline warn">Worked on today, and no worker covers a row: ${gap.map(esc).join(", ")}</div>` : "") +
     `<div class="cline muted"><b>auto</b> ${d.auto}${d.as_of ? `, <b>as of</b> ${esc(d.as_of)}` : ""}</div>`;
 }
@@ -395,8 +395,8 @@ function qCandFold() {
   return qst.candErr ? "" : `<div class="card muted">Reading candidates...</div>`;
 }
 function qCandidates() {
-  return `<details class="csec" id="sec-candidates" data-k="${CAND_K}"${qCandOpen() ? " open" : ""}><summary id="qc-sum">${qCandSum()}</summary>` +
-    `<div id="qc-fold">${qCandFold()}</div></details>`;
+  return fold("csec", qCandSum(), `<div id="qc-fold">${qCandFold()}</div>`,
+    { k: CAND_K, id: "sec-candidates", open: qCandOpen(), sum: ' id="qc-sum"' });
 }
 
 // A read of the candidates repaints their fold alone, so the queue's search box and a reply half

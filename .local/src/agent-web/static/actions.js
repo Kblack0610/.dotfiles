@@ -54,7 +54,7 @@ function triageLine(t) {
 // Log's Actions fold carries the title (index.html); the window buttons and the state chips count
 // the rows, so the head is only what could not be read.
 function actionsHead(d) {
-  return [ast.err, ...d.errors.map((e) => `unread: ${e}`)].filter(Boolean).map((e) => `<div class="card err">${esc(e)}</div>`).join("");
+  return [ast.err, ...d.errors.map((e) => `unread: ${e}`)].filter(Boolean).map((e) => errPanel(e, { card: true })).join("");
 }
 
 function actionsBody(d) {

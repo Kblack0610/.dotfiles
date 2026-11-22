@@ -135,6 +135,8 @@ require = [['(?m)^Done:', 'Done: line'], ['(?m)^Doing:', 'Doing: line'], ['(?m)^
 forbid = [
   ['(?m)\S.*[ \t](?:Done|Doing|Next|Needs you):', 'a label inside a line: each label opens its own line'],
   ['(?m)^\s*(?:State|Waves|On time|Gate to beta|Playtests waiting|Upkeep only):', 'a number the page already shows: it is never pasted into the note'],
+  ['\A[^\n]*\n(?!(?:Done|Doing|Next|Needs you):)', 'a second headline line: the headline is line 1 and line 2 opens with a label'],
+  ['\A(?:_\d{4}-\d\d-\d\d_ - [^\n]{141}|(?!_\d{4}-\d\d-\d\d_ )[^\n]{141})', 'a headline over 140 characters (its date not counted): notes projects shows line 1'],
 ]
 
 # A pull request body.
