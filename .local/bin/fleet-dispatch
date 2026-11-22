@@ -1289,9 +1289,9 @@ runs_now() {
 runs_now_label() { if [ "$(jq -r .priority <<<"$1")" = urgent ]; then echo urgent; else echo ask; fi; }
 
 # human_urgent <item json lines> -> the human's own work among them, which their standing rule keeps
-# clear of every limit (dotfiles CLAUDE.md, "Hard limits on budgets"): the items they queued as
-# urgent, their fresh asks (ASK_JQ), and the ready phases of the plans they approved
-# (human_plan_phases), in queue order.
+# clear of the weekly pace (dotfiles CLAUDE.md, "Hard limits on budgets"; the human floor): the items they
+# queued as urgent, their fresh asks (ASK_JQ), and the ready phases of the plans they approved
+# (human_plan_phases), in queue order. Past a full pace target they wait in queue order like any item.
 human_urgent() {
   jq -sc --argjson plan "$(human_plan_phases "$1" | jq -sc 'map(.slug)')" \
     --argjson now "$(date +%s)" --argjson h "$DISPATCH_ASK_FRESH_H" "$ASK_JQ"'
@@ -4719,7 +4719,7 @@ FLOOR_SHUT=10
 # to a non-Claude source with room: the target is Claude's budget (pace_target), so codex, go, ocfree and
 # the gateway teams wait on their own room (max_live, reserve and budget, in claude-acct room --json), never on it.
 # CLAUDE_FULL=1 makes route refuse claude, so an item starts only on another candidate. Tried: an item pinned
-# to a harness whose source has room, one whose cached verdict (lane_cached) names such a harness, and at
+# to a harness whose source has room (a non-Claude lane's canary among them), one whose cached verdict (lane_cached) names such a harness, and at
 # most one unclassified item a slot (its verdict is cached when it routes nowhere, so a pass asks
 # model-lane little). Bound: the free slots of the sources with room (their cap less live: room --json max_live is max_live or rpm over run_rpm; 1 a pass for one
 # with no cap), at most DISPATCH_PER_PASS when set; start_items reads the gate again each start.
@@ -4744,7 +4744,7 @@ other_source_start() {
     if [ -n "$v" ]; then
       jq -e --argjson o "${open:-[]}" 'any(.candidates[]?; .harness as $h | $h != "claude" and any($o[]; . == $h))' <<<"$v" >/dev/null 2>&1 && printf '%s\n' "$s"
     elif [ "$fresh" -lt "$slots" ]; then fresh=$((fresh + 1)); printf '%s\n' "$s"; fi
-  done < <(jq -c 'select(((" " + (.tags // "") + " ") | (contains(" red ") or contains(" canary "))) | not)' <<<"$1"))
+  done < <(jq -c 'select(((" " + (.tags // "") + " ") | contains(" red ")) | not)' <<<"$1"))
   [ -n "$items" ] || return "$FLOOR_SHUT"
   [ -z "$(gate)" ] || return "$FLOOR_SHUT"
   say "$2; $slots slot(s) free on other sources, so items routed off Claude start past it"
@@ -4762,12 +4762,12 @@ other_source_start() {
 canary_top_up() {
   local live have want out rc=0 note='' FLOOR_WHY GATEWAY_ONLY
   [ "$DRY" = 0 ] && [ "${DISPATCH_CANARY_KEEP:-0}" -gt 0 ] 2>/dev/null || return 0
-  floor_gate; [ -z "$FLOOR_WHY" ] || return 0
   have=$(agent-queue list --json --state queued 2>/dev/null | jq -s '[.[] | select((" " + (.tags // "") + " ") | contains(" canary "))] | length') || have=
   [[ "$have" =~ ^[0-9]+$ ]] || { say "canary top-up: the queue is unreadable, so none is queued"; return 0; }
   live=$(live_tagged canary | grep -c . || true)
   want=$(( DISPATCH_CANARY_KEEP - have - live ))
   [ "$want" -gt 0 ] || return 0
+  floor_gate; [ -z "$FLOOR_WHY" ] || return 0   # only when canaries are missing: it reads gate and the cluster
   out=$(AGENT_QUEUE_PULL=dispatch fleet-bench canary queue --max "$want" 2>&1) || rc=$?
   [ "$rc" = 0 ] || note=", not every lane queued"
   [ -n "$out" ] || [ "$rc" = 0 ] || out="fleet-bench exited $rc"
@@ -4792,7 +4792,7 @@ trainee_floor_why() {
 # row it takes (trainee_queued_pick), else the top-ranked board row it takes (trainee_board_pick),
 # promoted and started in the same step, so no promoted row waits in the queue. The gate still holds
 # it, route still needs the trainee's source room, and each pass says why the floor is shut when it
-# is: a silent starved floor is how the canary floor went unseen. Rc FLOOR_SHUT when nothing started.
+# is: a silent starved floor goes unseen. Rc FLOOR_SHUT when nothing started.
 # Off with lanes.yaml trainee `candidates: []`.
 trainee_floor_start() {
   local before=${STARTED:-0} why h hs=() shut=() queued board='' bread=0 it c key rc

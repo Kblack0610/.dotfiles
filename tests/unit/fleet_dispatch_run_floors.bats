@@ -509,3 +509,25 @@ pace_shut() {
   assert_equal "$(qfield "$(qitem running fix-menu)" agent)" codex
   assert_equal "$(outcome)" WORKED
 }
+
+# Plan vast-soaring-prism P3: with the canary floor gone, a non-Claude lane's canary goes the other-source way.
+@test "other sources: past a full Claude pace target, a canary pinned to another source with room starts there" {
+  route_ready
+  acct main:ok
+  cpu 10 5 0 85
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PER_PASS=3
+  fleet_state 8
+  agent-queue move fix-menu done --status ok >/dev/null   # route_ready's claude item would only wait
+  agent-queue add --project game --slug ca-cx --agent codex --priority high --tags canary "check(canary): a 2026w47" >/dev/null
+  agent-queue set ca-cx model=sol canary=a >/dev/null
+  # Negative control: codex has no room, so the canary waits like any item.
+  srcs codex:reserve:5
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'agent-codex'
+  [ -n "$(qitem queued ca-cx)" ] || fail "the canary left the queue with no source room"
+  srcs codex:ok:5
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item ca-cx on codex (sol)'
+}
