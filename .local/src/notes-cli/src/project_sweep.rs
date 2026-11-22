@@ -136,7 +136,8 @@ pub(crate) fn at_dated(line: &str) -> Option<NaiveDateTime> {
 /// parent another open row names with `#of/<id>`, a plan-chain phase whose `#after/<id>` gate is
 /// open (dispatch skips backlog rows, so a chain's next phase pushed there stalls the chain), a
 /// row whose `#at/` gate opens within the soon window, or one the rank puts first (`#urgent`,
-/// due within the rank's soon window). A `#requested` row is not pinned: it fills the budget first.
+/// due within the rank's soon window). The agent board's budget fill also pins a `#requested` row
+/// ([`fit`] with [`Asked::Pinned`]); that is not here, so a release window does not commit every one.
 fn pinned(
     line: &str,
     parents: &HashSet<String>,
@@ -157,24 +158,48 @@ fn pinned(
 /// started, queued or gated open is never sent where dispatch does not look.
 fn pins(rows: &[&str], today: NaiveDate) -> Vec<bool> {
     let parents: HashSet<String> = rows.iter().filter_map(|l| epics::parent_of(l)).collect();
-    let waiting: HashSet<String> = rows
-        .iter()
-        .filter(|l| !md::is_in_progress(l))
-        .filter_map(|l| md::row_id(l))
-        .collect();
+    let waiting = waiting(rows);
     rows.iter()
         .map(|l| pinned(l, &parents, &waiting, today))
         .collect()
 }
 
+/// The ids of `rows` not yet started: what an `#after/<id>` gate on the same sheet waits on.
+fn waiting(rows: &[&str]) -> HashSet<String> {
+    rows.iter()
+        .filter(|l| !md::is_in_progress(l))
+        .filter_map(|l| md::row_id(l))
+        .collect()
+}
+
+/// Is the row held by a gate that is not open: an `#after/<id>` whose phase has not started, or
+/// an `#at/` that does not open within the soon window. Such a row takes a slot like any row,
+/// `#requested` or not ([`fit`]).
+fn held(line: &str, waiting: &HashSet<String>, today: NaiveDate) -> bool {
+    let head = line.find("<!--").map_or(line, |i| &line[..i]);
+    (head.contains("#after/") && !gate_open(line, waiting))
+        || (at_gates(line).next().is_some() && !at_soon(line, today))
+}
+
+/// How [`fit`] treats a `#requested` row.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Asked {
+    /// Pinned: it stays whatever the budget, its weight spent first (the agent board).
+    Pinned,
+    /// First in the fill, ahead of the other free rows, while its weight fits (a release
+    /// window's commit, so a sprint commits only the asks its capacity holds).
+    First,
+}
+
 /// Mark `open`, already in sheet order, by the project's release window when it has one: the
 /// pinned rows, its committed rows still open and the rows that entered through the interrupt
 /// lane stay, every other row takes [`BACKLOG`], so the board holds the sprint and nothing
-/// refills it with new work until the cut.
+/// refills it with new work until the cut; a `#requested` row the window did not commit waits too.
 ///
-/// Otherwise by the board budget, which is a weight (the Today tier). The pinned rows
-/// stay and their weight is spent first; then the `#requested` rows aimed at the open version,
-/// then the others, each in sheet order, stay while their weight fits what is left (a row too heavy
+/// Otherwise by the board budget, which is a weight (the Today tier). The pinned rows and the
+/// `#requested` rows aimed at the open version and held by no gate ([`held`]) stay and their
+/// weight is spent first; then the
+/// others, each in sheet order, stay while their weight fits what is left (a row too heavy
 /// for it goes to the backlog and lighter rows after it can still fit), and at least `agent_board_floor`
 /// of them stay whatever they weigh, so a project that shipped nothing still has rows to pull.
 /// Every other row takes [`BACKLOG`], and a row back inside the budget loses it. A row aimed
@@ -200,6 +225,7 @@ fn tier(open: Vec<Block>, ctx: &Ctx) -> Vec<Block> {
             ctx.shape.agent_board_floor,
             ctx.today,
             ctx.open,
+            Asked::Pinned,
         ),
     };
     open.into_iter()
@@ -212,22 +238,36 @@ fn tier(open: Vec<Block>, ctx: &Ctx) -> Vec<Block> {
 }
 
 /// Which of `rows`, in sheet order, fit `budget` (a weight): the pinned rows whatever they weigh,
-/// then the `#requested` rows, then the others, each in sheet order while its weight fits what is
-/// left, and at least `floor` of those whatever they weigh. A row aimed later than `open` takes no
-/// slot. The one fill the agent board's tier ([`tier`]) and a release window's committed rows
-/// (`window::record`) share.
+/// then the others, each in sheet order while its weight fits what is left, and at least `floor`
+/// of those whatever they weigh. A row aimed later than `open` takes no slot. `asked` says where
+/// a `#requested` row goes: [`Asked::Pinned`] (the agent board's tier, [`tier`]) pins one not
+/// aimed later and held by no gate ([`held`]), since the human asked for it and no budget should
+/// send it to the backlog; [`Asked::First`] (a release window's committed rows, `window::record`)
+/// fills with them ahead of the others.
 pub(crate) fn fit(
     rows: &[&str],
     budget: u32,
     floor: usize,
     today: NaiveDate,
     open: Option<V>,
+    asked_rows: Asked,
 ) -> Vec<bool> {
-    let pins = pins(rows, today);
+    let asked = |i: usize| rank::of(rows[i], today).req == 0;
+    let waiting = waiting(rows);
+    let pin_asked = |i: usize| {
+        asked_rows == Asked::Pinned
+            && asked(i)
+            && !sheet::is_later(rows[i], open)
+            && !held(rows[i], &waiting, today)
+    };
+    let pins: Vec<bool> = pins(rows, today)
+        .into_iter()
+        .enumerate()
+        .map(|(i, p)| p || pin_asked(i))
+        .collect();
     let weight = |i: usize| projects::size_weight(rows[i]);
     let pinned_weight: u32 = (0..rows.len()).filter(|&i| pins[i]).map(weight).sum();
     let mut room = budget.saturating_sub(pinned_weight);
-    let asked = |i: usize| rank::of(rows[i], today).req == 0;
     let free = |i: usize| !pins[i] && !sheet::is_later(rows[i], open);
     let mut stays = pins.clone();
     let mut kept = 0;
@@ -961,8 +1001,8 @@ Version: v0.12.1
     }
 
     // Pinned: started or queued, urgent, due within 3 days, an epic, a parent an open row names,
-    // an `#at/` gate that opens within 3 days.
-    // The budget here is nothing, so only they stay; a `#requested` row is not one of them.
+    // an `#at/` gate that opens within 3 days, and on the agent board a `#requested` row, so the
+    // human's asks never wait on the backlog. The budget here is nothing, so only they stay.
     #[test]
     fn a_pinned_row_stays_on_the_board_whatever_the_budget() {
         let s = "# d\n\n## Tasks\n\
@@ -989,6 +1029,7 @@ Version: v0.12.1
         assert_eq!(
             board,
             [
+                "asked",
                 "dated",
                 "due",
                 "epic(look):",
@@ -1005,7 +1046,7 @@ Version: v0.12.1
         backlog.sort();
         assert_eq!(
             backlog,
-            ["asked", "badtime", "behind", "child", "far", "later", "orphan", "plain"],
+            ["badtime", "behind", "child", "far", "later", "orphan", "plain"],
             "{out}"
         );
     }
@@ -1111,26 +1152,43 @@ Version: v0.12.1
         assert_eq!(tiered(&out, true), ["big"], "{out}");
     }
 
-    // A `#requested` row fills the budget before a `#high` row the human did not ask for, and
-    // costs the same weight; it no longer sits outside the budget.
+    // A `#requested` row is pinned: every one stays past the budget, its weight is spent first,
+    // so a `#high` row the human did not ask for goes to the backlog. One aimed at a later
+    // version takes no slot, pinned or not, and one held by a gate (an `#after/` phase not
+    // started, an `#at/` more than 3 days off) takes a slot like any row.
     #[test]
-    fn a_requested_row_fills_the_budget_before_a_higher_priority_row() {
+    fn a_requested_row_past_the_budget_stays_on_the_board() {
+        // The test context's open version is v0.12.1 and today is 2026-11-09.
         let s = "# d\n\n## Tasks\n\
-- [ ] first #high #c1001\n- [ ] asked #low #requested #c1002\n- [ ] plain #high #c1003\n";
+- [ ] first #high #c1001 <!-- id:dd-1 -->\n- [ ] asked #low #requested #c1002\n\
+- [ ] again #low #requested #size/l #c1003\n- [ ] plain #high #c1004\n\
+- [ ] soon #low #requested #v0.13.0 #c1005\n\
+- [ ] gated #low #requested #after/dd-1 #c1006\n\
+- [ ] dated #low #requested #at/2026-12-30/0900 #c1007\n";
         let out = sweep_sheet(s, &agent(1)).unwrap().0;
-        assert_eq!(tiered(&out, false), ["asked"], "{out}");
-        assert_eq!(tiered(&out, true), ["first", "plain"], "{out}");
+        assert_eq!(tiered(&out, false), ["asked", "again"], "{out}");
+        let mut backlog = tiered(&out, true);
+        backlog.sort();
+        assert_eq!(
+            backlog,
+            ["dated", "first", "gated", "plain", "soon"],
+            "{out}"
+        );
+        // Its gate open (the phase it waits on started), the held row is pinned again.
+        let started = s.replace("- [ ] first", "- [/] first");
+        let out = sweep_sheet(&started, &agent(1)).unwrap().0;
+        assert!(tiered(&out, false).contains(&"gated".to_string()), "{out}");
     }
 
-    // The floor keeps the top rows of a project that shipped nothing (budget 0), asked ones
-    // first, and no more than the floor.
+    // The floor keeps the top unpinned rows of a project that shipped nothing (budget 0), and no
+    // more than the floor; a `#requested` row is pinned, so it takes no floor slot.
     #[test]
     fn the_floor_keeps_rows_on_a_board_with_no_budget() {
         let s = "# d\n\n## Tasks\n\
 - [ ] a #high #c1001\n- [ ] b #low #requested #c1002\n- [ ] c #low #c1003\n- [ ] d #low #c1004\n";
         let out = sweep_sheet(s, &agent_floor(0, 2)).unwrap().0;
-        assert_eq!(tiered(&out, false), ["a", "b"], "{out}");
-        assert_eq!(tiered(&out, true), ["c", "d"], "{out}");
+        assert_eq!(tiered(&out, false), ["a", "b", "c"], "{out}");
+        assert_eq!(tiered(&out, true), ["d"], "{out}");
     }
 
     // A plan-chain phase (`#after/<id>`) stays on the board at budget 0: dispatch skips the
