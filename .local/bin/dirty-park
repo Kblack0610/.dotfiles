@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# dirty-park - set old state in a checkout aside under refs/parked/, where git keeps it but
+# the stash list and the work tree no longer show it. The clean-up step for what dirty-mains
+# names: nothing is deleted, and every parked entry comes back with one git command.
+#
+# Usage: dirty-park stashes <repo> [--days N]   each stash older than N days (default
+#                                               DIRTY_MAINS_STASH_DAYS, 30) to
+#                                               refs/parked/stash/<date>-<sha7>, then dropped
+#        dirty-park paths <repo> <path>...      the paths as they are now (tracked changes and
+#                                               untracked files) committed to
+#                                               refs/parked/tree/<today>-<sha7>, then reset to HEAD
+#        dirty-park list <repo>                 each parked ref with its date and subject
+# Restore: a stash: git stash store -m "<subject>" <ref>; a path: git checkout <ref> -- <path>
+# Exit:  0 done, 1 nothing to park, 2 usage or git error
+set -uo pipefail
+
+die() { printf 'dirty-park: %s\n' "$*" >&2; exit 2; }
+usage() { awk 'NR==1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0"; }
+
+cmd="${1:-}"
+case "$cmd" in
+  -h|--help) usage; exit 0 ;;
+  stashes|paths|list) ;;
+  *) usage >&2; exit 2 ;;
+esac
+repo="${2:-}"
+[ -n "$repo" ] || die "$cmd needs a repo"
+git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not a git checkout: $repo"
+shift 2
+g() { git -C "$repo" "$@"; }
+
+park_stashes() {
+  local days="${DIRTY_MAINS_STASH_DAYS:-30}" cut sha ct subj ref idx n=0
+  case "${1:-}" in
+    --days) [[ "${2:-}" =~ ^[0-9]+$ ]] || die "--days needs a number"; days="$2" ;;
+    "") ;;
+    *) die "unknown argument: $1" ;;
+  esac
+  cut=$(( $(date +%s) - days * 86400 ))
+  # Read the list once, then drop each entry by its SHA: other worktrees share this stash
+  # list, so an index read now can point at another entry by the time it is dropped.
+  while IFS=' ' read -r sha ct subj; do
+    [ -n "$sha" ] && [ "$ct" -le "$cut" ] || continue
+    ref="refs/parked/stash/$(date -d "@$ct" +%F 2>/dev/null || date -r "$ct" +%F)-${sha:0:7}"
+    g update-ref "$ref" "$sha" || die "cannot write $ref"
+    idx="$(g stash list --format='%H' | grep -n -x -F "$sha" | head -n1 | cut -d: -f1)"
+    [ -n "$idx" ] || continue
+    g stash drop -q "stash@{$((idx - 1))}" || die "parked $ref but could not drop it from the stash list"
+    printf '%s  %s\n' "$ref" "$subj"
+    n=$((n + 1))
+  done < <(g stash list --format='%H %ct %gs')
+  [ "$n" -gt 0 ] || { printf 'dirty-park: no stash older than %sd in %s\n' "$days" "$repo" >&2; return 1; }
+}
+
+park_paths() {
+  [ "$#" -gt 0 ] || die "paths needs at least one path"
+  local idx tree commit ref branch
+  idx="$(mktemp)" || die "mktemp failed"
+  # A scratch index built from HEAD, so the checkout's own index is not touched until the
+  # parked commit exists.
+  if ! { GIT_INDEX_FILE="$idx" g read-tree HEAD && GIT_INDEX_FILE="$idx" g add -A -- "$@"; }; then
+    rm -f "$idx"; die "cannot stage $* in $repo"
+  fi
+  tree="$(GIT_INDEX_FILE="$idx" g write-tree)"
+  rm -f "$idx"
+  [ -n "$tree" ] || die "cannot write the tree"
+  if [ "$tree" = "$(g rev-parse 'HEAD^{tree}')" ]; then
+    printf 'dirty-park: %s holds no change under %s\n' "$repo" "$*" >&2; return 1
+  fi
+  branch="$(g symbolic-ref -q --short HEAD || echo detached)"
+  commit="$(printf 'dirty-park: %s on %s\n\n%s\n' "$*" "$branch" "$(g rev-parse --show-toplevel)" | g commit-tree "$tree" -p HEAD)" || die "cannot write the commit"
+  ref="refs/parked/tree/$(date +%F)-${commit:0:7}"
+  g update-ref "$ref" "$commit" || die "cannot write $ref"
+  # Back to HEAD: unstage, restore what HEAD tracks, remove what it does not (untracked and
+  # newly added files; ignored ones were not parked and stay).
+  local -a tracked
+  g reset -q HEAD -- "$@" 2>/dev/null
+  mapfile -d '' -t tracked < <(g ls-tree -r -z --name-only HEAD -- "$@")
+  if [ "${#tracked[@]}" -gt 0 ]; then
+    g checkout HEAD -- "${tracked[@]}" || die "parked $ref but could not restore $*"
+  fi
+  g clean -fdq -- "$@" || die "parked $ref but could not remove the untracked files under $*"
+  printf '%s  %s\n' "$ref" "$*"
+}
+
+case "$cmd" in
+  stashes) park_stashes "$@" ;;
+  paths) park_paths "$@" ;;
+  list) g for-each-ref --format='%(refname)  %(creatordate:short)  %(subject)' refs/parked/ ;;
+esac
