@@ -4,7 +4,7 @@
 #   store-sync [--store agent|notes] [--now] [--bg]  commit, merge the remote, push origin, then backup
 #   store-sync join [--keep-dirty]                   make this agent-store clone a peer (once per machine)
 #   store-sync merge-derived <base> <ours> <theirs> <path>   git's `derived` merge driver (below)
-#   store-sync merge-close <base> <ours> <theirs> <path>     git's `close` merge driver for queue/done (below)
+#   store-sync merge-item <base> <ours> <theirs> <path>      git's `item` merge driver for queue items (below)
 #
 # Two stores ride this one engine. agent (the default) is ~/.agent: agent-queue and agent-ask run
 # `--now --bg` after each write, which commits the coordination paths (NOW_PATHS), plus any dirty
@@ -160,39 +160,71 @@ apply_remotes() {
 # merge driver lives in each clone's config, so every sync defines it; a clone without it merges them
 # as text. A new driver config also drops the recorded conflict pair, so the stuck pair is retried.
 apply_merge_drivers() {
-  local me want attrs
+  local me want attrs a
   me=$(printf '%q' "$(realpath "$0")")
-  # queue/done/*/*.md merge=close (ar-4091): two hosts closing one item. The attribute goes in this
-  # clone's info/attributes, not the tracked .gitattributes: each peer sets it itself, so no peer waits
-  # on another's commit, and a clone gets it with the driver. Both conflict pairs are retried on a change.
+  # Queue items merge=item (ar-4091, ar-3439): two hosts writing one item's header, or closing it. The
+  # attributes go in this clone's info/attributes, not the tracked .gitattributes: each peer sets them
+  # itself, so no peer waits on another's commit, and a clone gets them with the driver. The `close`
+  # driver it replaced is dropped. Both conflict pairs are retried on a change.
   attrs=$(g rev-parse --path-format=absolute --git-path info/attributes) && mkdir -p "$(dirname "$attrs")"
-  grep -qxF 'queue/done/*/*.md merge=close' "$attrs" 2>/dev/null ||
-    { printf 'queue/done/*/*.md merge=close\n' >> "$attrs" && rm -f "$CONFLICT" "$CONFLICT"-*; }
-  [ "$(g config --get merge.close.driver)" = "$me merge-close %O %A %B %P" ] ||
-    { g config merge.close.driver "$me merge-close %O %A %B %P" && rm -f "$CONFLICT" "$CONFLICT"-*; }
+  a='queue/done/*/*.md merge=close'
+  if grep -qxF "$a" "$attrs" 2>/dev/null; then
+    grep -vxF "$a" "$attrs" > "$attrs.new"; mv -f "$attrs.new" "$attrs"
+    g config --unset merge.close.driver
+  fi
+  for a in 'queue/*/*.md merge=item' 'queue/done/*/*.md merge=item'; do
+    grep -qxF "$a" "$attrs" 2>/dev/null || { printf '%s\n' "$a" >> "$attrs" && rm -f "$CONFLICT" "$CONFLICT"-*; }
+  done
+  [ "$(g config --get merge.item.driver)" = "$me merge-item %O %A %B %P" ] ||
+    { g config merge.item.driver "$me merge-item %O %A %B %P" && rm -f "$CONFLICT" "$CONFLICT"-*; }
   want="$me merge-derived %O %A %B %P"
   [ "$(g config --get merge.derived.driver)" = "$want" ] && return 0
   g config merge.derived.driver "$want" && rm -f "$CONFLICT" "$CONFLICT"-*
 }
 
-# cmd_merge_close <base> <ours> <theirs> <path>: the driver for a closed queue item
-# (queue/done/*/*.md), leaving the result in <ours>. Two hosts that close one item write the same
-# file twice; a text merge keeps what it can, and a conflict is settled for the close that is `status: ok`
-# or `cancelled` over a `status: failed`, which is a reaper that read a stale copy of the item (razer-laptop,
-# 2026-11-20: 5 items closed ok there, failed here minutes later; ar-268 cancelled there, failed here
-# while this store was stuck, ar-3439). Any other clash still conflicts (exit 1).
-cmd_merge_close() {
-  [ $# -eq 4 ] || die "merge-close needs <base> <ours> <theirs> <path>"
-  local tmp
-  tmp=$(mktemp) || return 1
-  if git merge-file -q -p "$2" "$1" "$3" > "$tmp"; then
-    cat "$tmp" > "$2"; rm -f "$tmp"; return 0
+# cmd_merge_item <base> <ours> <theirs> <path>: the driver for a queue item, leaving the result in
+# <ours>. A clean text merge stands. Otherwise, for two closes of one item, the close that is
+# `status: ok` or `cancelled` wins whole over a `status: failed`, which is a reaper that read a stale
+# copy of the item (razer-laptop, 2026-11-20: 5 items closed ok there, failed here minutes later; ar-268
+# cancelled there, failed here while this store was stuck; ar-4091). Otherwise the header (each
+# `key: value` line before the first `---`, as agent-queue's header_set writes it) merges key by key
+# and the rest as text, so two hosts that set different keys both keep theirs: the fleet home recorded
+# pr: and merged: on a running item while razer-laptop's session set open_pr: and branch: on the next
+# lines, and the text merge stuck that store 35 minutes (2026-11-21, ar-3439). A key both sides set
+# differently still conflicts, and so does a repeated key, a line that is not `key: value`, or a side
+# with no `---` (an empty base, both sides adding the item, is fine). Any other clash exits 1.
+cmd_merge_item() {
+  [ $# -eq 4 ] || die "merge-item needs <base> <ours> <theirs> <path>"
+  local tmp f
+  tmp=$(mktemp -d) || return 1
+  if git merge-file -q -p "$2" "$1" "$3" > "$tmp/out"; then
+    cat "$tmp/out" > "$2"; rm -rf "$tmp"; return 0
   fi
-  rm -f "$tmp"
   status_of() { sed -n '/^---$/q;s/^status: //p' "$1"; }
   settled() { case "$(status_of "$1")" in ok | cancelled) return 0 ;; esac; return 1; }
-  settled "$2" && [ "$(status_of "$3")" = failed ] && return 0
-  settled "$3" && [ "$(status_of "$2")" = failed ] && { cat "$3" > "$2"; return 0; }
+  settled "$2" && [ "$(status_of "$3")" = failed ] && { rm -rf "$tmp"; return 0; }
+  settled "$3" && [ "$(status_of "$2")" = failed ] && { cat "$3" > "$2"; rm -rf "$tmp"; return 0; }
+  grep -qx -- '---' "$2" && grep -qx -- '---' "$3" && { [ ! -s "$1" ] || grep -qx -- '---' "$1"; } ||
+    { rm -rf "$tmp"; return 1; }
+  for f in 1 2 3; do sed -n '/^---$/,$p' "${!f}" > "$tmp/rest$f"; done
+  # An empty base has no lines, so each file is told by its name.
+  if awk 'FILENAME == ARGV[1] {s = 1} FILENAME == ARGV[2] {s = 2} FILENAME == ARGV[3] {s = 3}
+          end[s] { next }
+          $0 == "---" { end[s] = 1; next }
+          { i = index($0, ":"); k = substr($0, 1, i - 1)
+            if (i < 2 || k ~ /[[:space:]]/ || (s, k) in v) { bad = 1; exit }
+            v[s, k] = $0
+            if (s > 1 && !(k in seen)) { seen[k] = 1; order[++n] = k } }
+          END { if (bad) exit 1
+                for (j = 1; j <= n; j++) {
+                  k = order[j]; b = (1, k) in v ? v[1, k] : SUBSEP
+                  o = (2, k) in v ? v[2, k] : SUBSEP; t = (3, k) in v ? v[3, k] : SUBSEP
+                  if (o == t || t == b) r = o; else if (o == b) r = t; else exit 1
+                  if (r != SUBSEP) print r } }' "$1" "$2" "$3" > "$tmp/out" &&
+     git merge-file -q -p "$tmp/rest2" "$tmp/rest1" "$tmp/rest3" >> "$tmp/out"; then
+    cat "$tmp/out" > "$2"; rm -rf "$tmp"; return 0
+  fi
+  rm -rf "$tmp"
   return 1
 }
 
@@ -233,7 +265,7 @@ remotes() { local r; for r in origin backup; do g remote get-url "$r" >/dev/null
 # a queue item one side closed (queue/done/) and the other moved to another open state, as a rename/
 # rename no merge driver sees: a worker's session closed its item before the dispatcher's running move
 # reached it (razer-laptop, 2026-11-21, canary-flee-3be2; ar-268 and ar-1801 on 11-20, ar-3439). The
-# close wins whole, the rule merge-close applies to two closes. Prints the merge commit; rc 1, and
+# close wins whole, the rule merge-item applies to two closes. Prints the merge commit; rc 1, and
 # nothing written but objects, when any conflict is another kind.
 settle_closes() {
   local ref="$1" tree p side base at idx t rc=0 paths=() keep=()
@@ -246,7 +278,7 @@ settle_closes() {
     [[ "$p" = queue/done/* ]] || continue
     for side in HEAD "$ref"; do
       g cat-file -e "$side:$p" 2>/dev/null || continue
-      # Two closes of one item are merge-close's call, made already: one it refused stays a conflict.
+      # Two closes of one item are merge-item's call, made already: one it refused stays a conflict.
       [ -z "${done_at[${p##*/}]:-}" ] || return 1
       done_at[${p##*/}]="$side $p"
     done
@@ -562,7 +594,7 @@ cmd_join() {
 case "${1:-}" in
   join) shift; cmd_join "$@" ;;
   merge-derived) shift; cmd_merge_derived "$@" ;;
-  merge-close) shift; cmd_merge_close "$@" ;;
+  merge-item) shift; cmd_merge_item "$@" ;;
   -h | --help) usage ;;
   *) cmd_sync "$@" ;;
 esac

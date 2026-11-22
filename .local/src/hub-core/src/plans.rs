@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::SystemTime;
 
-use crate::text::cap;
+use crate::text::{cap, clean, TITLE_MAX};
 
 /// The longest plan name a row shows.
 pub const NAME_MAX: usize = 48;
@@ -72,14 +72,22 @@ pub fn own_label(words: &str) -> Option<(String, &str)> {
 /// A plan's file: `plan` itself when it is a path, else where the planner writes one by that
 /// name (`ucp-145` in fleet-sessions' rows, `<plan file>` in an old title).
 pub fn path(plan: &str) -> String {
+    path_in(&home(), plan)
+}
+
+/// The home directory the planner's files are under, `""` when `HOME` is unset.
+pub fn home() -> String {
+    std::env::var("HOME").unwrap_or_default()
+}
+
+/// [`path`] under `home`.
+fn path_in(home: &str, plan: &str) -> String {
     if plan.contains('/') {
         return plan.to_string();
     }
-    format!(
-        "{}/.claude/plans/{plan}.md",
-        std::env::var("HOME").unwrap_or_default()
-    )
+    format!("{home}/.claude/plans/{plan}.md")
 }
+
 /// The plan file, phase tag and words of a title `agent-queue add --plan` built before titles
 /// were the phase's own words: `<plan-file> P4+5: <words>`. None for any other title.
 pub fn legacy(title: &str) -> Option<(&str, &str, &str)> {
@@ -92,6 +100,42 @@ pub fn legacy(title: &str) -> Option<(&str, &str, &str)> {
             .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
     let plain = base.contains('-') && !base.contains([':', '/']);
     (plain && numbered).then_some((base, tag, words.trim_start()))
+}
+
+/// A plan phase's title as every view says it: (`<plan name> P5`, `<phase words>`), the plan
+/// by its heading ([`named`]) in place of the file name `agent-queue add --plan` titles it with,
+/// the words [`clean`] and capped at [`TITLE_MAX`]. `plan` is the plan file and phase numbers
+/// (`4 5`) a queue item records; without them a title in the [`legacy`] shape (a board row, an
+/// item promoted from one) is split when its plan file exists under `home` ([`home`]). A
+/// one-phase title takes the label its words lead with (`P9 live stage`) over its checklist
+/// place. None for any other title. The Queue tab and the Board both title a phase by it, so
+/// the two never differ.
+pub fn split_title(
+    home: &str,
+    title: &str,
+    plan: Option<(&str, &str)>,
+) -> Option<(String, String)> {
+    let path = |b: &str| path_in(home, b);
+    let (plan, tag, words, one) = match (plan, legacy(title)) {
+        (Some((plan, phases)), old) => {
+            let words = old
+                .filter(|(b, ..)| *b == base(plan))
+                .map_or(title, |(.., w)| w);
+            let phases: Vec<&str> = phases.split_whitespace().collect();
+            let tag = format!("P{}", phases.join("+"));
+            (plan.to_string(), tag, words, phases.len() == 1)
+        }
+        (None, Some((b, tag, words))) if Path::new(&path(b)).is_file() => {
+            (path(b), tag.to_string(), words, !tag.contains('+'))
+        }
+        _ => return None,
+    };
+    let (label, words) = one
+        .then(|| own_label(words))
+        .flatten()
+        .unwrap_or((tag, words));
+    let words = cap(&clean(words).text, TITLE_MAX);
+    Some((format!("{} {label}", named(&plan)), words))
 }
 
 /// The plan's name, else its file name when it cannot be read or has no heading.

@@ -40,7 +40,7 @@ Answer this one too, on every decision: how far a wrong answer would reach. It n
 - repo: one repo's behaviour that other sessions or the human rely on, such as its main branch, tests, CI or docs.
 - fleet: the shared runtime, the rules or every lane, such as a runner conf, a budget, a hook, a skill, a rule file or anything every session loads.
 
-Pick the widest level the decision reaches, and quote the words that show it. There is no fourth level to pick: `agent-ask` records `critical` when external is met or reversible is not, and an ask naming a floor below is `fleet` at least, whatever you score.
+Pick the widest level the decision reaches, and quote the words that show it. There is no fourth level to pick: `agent-ask` flags the ask human-only, apart from its level, when external is met or reversible is not, and an ask naming a floor below is `fleet` at least, whatever you score.
 
 ### Judge authority
 

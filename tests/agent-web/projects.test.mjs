@@ -326,8 +326,8 @@ test("the board's Sprints table has one row per window, opens to its tasks, and 
   assert.doesNotMatch(read().rows, /Sprints/, "an older notes sends no windows: no table, never a 0");
   const cols = ["project", "version", "started", "cut", "left", "done", "finish", "build"].map((key) => ({ key, role: key === "project" ? "lead" : "" }));
   const heads = { project: "PROJECT", version: "VERSION", started: "STARTED", cut: "CUT", left: "LEFT", done: "DONE", finish: "FINISH (7d rate)", build: "BUILD" };
-  const row = (o) => ({ profile: "bnb", project: "demo", version: "v0.3.0", started: "11-19 14:25", cut: "11-19 15:59", left: "49m", done: "0/2", finish: "~15:40", late: false, build: "none", tasks: [{ id: "de-1", text: "<b>fix</b> it", state: "open", queue: "running", interrupt: false, priority: "urgent", href: "#projects/all?q=id:=de-1" }, { id: null, text: "ship", state: "done", queue: null, interrupt: true, priority: "low", href: null }], ...o });
-  const queued = row({ version: "v0.3.1", started: "11-19 15:59", cut: "11-20 15:59", left: "queued", done: "0/1", tasks: [{ id: "de-9", text: "later", state: "open", queue: null, interrupt: false }] });
+  const row = (o) => ({ profile: "bnb", project: "demo", version: "v0.3.0", started: "11-19 14:25", cut: "11-19 15:59", left: "49m", done: "0/2", finish: "~15:40", late: false, build: "none", tasks: [{ id: "de-1", text: "feat(ui): demo-plan P2: <b>fix</b> it, then ship #size/s", title: "<b>fix</b> it", summary: "Demo plan P2", state: "open", queue: "running", interrupt: false, priority: "urgent", href: "#projects/all?q=id:=de-1" }, { id: null, text: "ship it", title: "ship", summary: "", state: "done", queue: null, interrupt: true, priority: "low", href: null }], ...o });
+  const queued = row({ version: "v0.3.1", started: "11-19 15:59", cut: "11-20 15:59", left: "queued", done: "0/1", tasks: [{ id: "de-9", text: "later", title: "later", summary: "", state: "open", queue: null, interrupt: false }] });
   const sprints = { rows: [row({}), row({ project: "late", left: "over", finish: "~11-20 09:00", late: true }), queued], table: { columns: cols }, heads };
   vm.runInContext(`bst.feed = { ...bst.feed, sprints: ${JSON.stringify(sprints)} }; bst.render();`, ctx);
   const html = read().rows;
@@ -340,13 +340,23 @@ test("the board's Sprints table has one row per window, opens to its tasks, and 
   const target = { id: "", dataset: {}, closest: (sel) => (sel === "tr[data-spr]" ? { dataset: { spr: "bnb/demo/v0.3.0" } } : null) };
   for (const f of box("b-root").on.click) f({ type: "click", target });
   const open = read().rows;
-  assert.match(open, /data-spr="bnb\/demo\/v0\.3\.0">.*<tr class="bopen">.*<tr class="jr" data-href="#projects\/all\?q=id:=de-1"><td><code>de-1<\/code><\/td><td class="wrap"><a class="tl" href="#projects\/all\?q=id:=de-1">&lt;b&gt;fix&lt;\/b&gt; it<\/a><\/td><td><span class="qprio urgent">urgent<\/span><\/td><td><b>running<\/b><\/td>/s, "the queue's word wins, escaped; a task links to its Board row; a long task wraps so STATE stays on screen");
-  // NEGATIVE CONTROL: a task with no id has no row to open.
-  assert.match(open, /<tr><td><code>-<\/code><\/td><td class="wrap">ship <span class="qtag">interrupt<\/span><\/td><td><span class="qprio low">low<\/span><\/td><td>done<\/td>/);
+  assert.match(open, /data-spr="bnb\/demo\/v0\.3\.0">.*<tr class="bopen">.*<tr class="jr" data-stask="bnb\/demo\/v0\.3\.0\/de-1"><td><code>de-1<\/code><\/td><td class="btitle"><div class="bt">&lt;b&gt;fix&lt;\/b&gt; it<\/div><div class="bsum muted">Demo plan P2<\/div><\/td><td><span class="qprio urgent">urgent<\/span><\/td><td><b>running<\/b><\/td>/s, "the queue's word wins, escaped; a task leads with its title over its plan and phase, as its Board row does");
+  assert.match(open, /<tr class="jr" data-stask="bnb\/demo\/v0\.3\.0\/ship it"><td><code>-<\/code><\/td><td class="btitle"><div class="bt">ship <span class="qtag">interrupt<\/span><\/div><\/td><td><span class="qprio low">low<\/span><\/td><td>done<\/td>/, "a task with no id opens by its line; no summary, no second line");
+  assert.doesNotMatch(open, /class="q"|#size|Open its Board row/, "a task starts shut: its whole line is the opened task's");
+  // A click opens the task in place, with and without a Board row to link to, and never navigates away.
   ctx.location = { hash: "" };
-  const task = { id: "", dataset: {}, closest: (sel) => (sel === "tr[data-href]" ? { dataset: { href: "#projects/all?q=id:=de-1" } } : null) };
-  for (const f of box("b-root").on.click) f({ type: "click", target: task });
-  assert.equal(ctx.location.hash, "projects/all?q=id:=de-1", "a click anywhere on a task row opens its Board row");
+  const click = (k) => { for (const f of box("b-root").on.click) f({ type: "click", target: { id: "", dataset: {}, closest: (sel) => (sel === "tr[data-stask]" ? { dataset: { stask: k } } : null) } }); };
+  click("bnb/demo/v0.3.0/de-1");
+  const task = read().rows;
+  assert.match(task, /data-stask="bnb\/demo\/v0\.3\.0\/de-1">.*?<\/tr><tr class="bopen"><td colspan="4"><div class="card qitem brow"><div class="q">feat\(ui\): demo-plan P2: &lt;b&gt;fix&lt;\/b&gt; it, then ship #size\/s<\/div><div class="opts"><a class="btn sm" href="#projects\/all\?q=id:=de-1">Open its Board row<\/a><\/div><\/div>/s, "the opened task has its whole line and the link to its Board row");
+  assert.match(task, /class="jr sel" data-stask="bnb\/demo\/v0\.3\.0\/de-1"/);
+  assert.equal(ctx.location.hash, "", "a click on a task opens it in place");
+  click("bnb/demo/v0.3.0/ship it");
+  const bare = read().rows;
+  assert.match(bare, /<div class="q">ship it<\/div><\/div>/, "a task with no Board row opens to its line alone");
+  assert.doesNotMatch(bare, /Open its Board row|then ship/, "one task opens at a time; no link where there is no row");
+  click("bnb/demo/v0.3.0/ship it");
+  assert.doesNotMatch(read().rows, /<div class="q">ship it/, "a second click shuts the task");
   assert.doesNotMatch(open, /de-9/, "the same project's queued sprint stays shut: each row opens on its own");
   for (const f of box("b-root").on.click) f({ type: "click", target });
   assert.doesNotMatch(read().rows, /de-1/, "a second click shuts it");

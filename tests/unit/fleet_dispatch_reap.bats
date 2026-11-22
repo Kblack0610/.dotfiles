@@ -651,7 +651,7 @@ real_epic_board() {
   [ -z "$(qitem running hub-work)" ] || fail "kept a gone hub conversation after restore finished"
 }
 
-@test "cleanup lane: a tier-3 cleanup row S or M is a merging item at noon behind the red-fix gate; feat, a deps bump, L and tier-3 PR rows are not" {
+@test "tier3 gate: a cleanup row ranks first and promotes high, a feat or a deps bump merges behind the same gate, an L row goes to inbox-plan" {
   pr_lane_ready
   row agent-runtime agent 'drop the dead timer' '- [ ] chore(timer): drop the dead timer #tier/3 #low'
   row agent-runtime agent 'prune the hooks' '- [ ] refactor(hooks): prune the dead hooks #tier/3'
@@ -661,8 +661,8 @@ real_epic_board() {
   pr_lane_verdict 'drop the dead timer' timer; pr_lane_verdict 'prune the hooks' hooks true L; pr_lane_verdict 'add a panel' panel; pr_lane_verdict 'bump jq' jq
 
   fill --dry-run --json
-  assert_equal "$(jq -r 'select(.state == "ready" and .worker == "tier3-cleanup") | "\(.key) \(.worker)"' <<<"$output")" 'drop the dead timer tier3-cleanup'
-  assert_equal "$(jq -r 'select(.state == "ready" and .worker == "tier3-pr") | .key' <<<"$output" | sort | paste -sd, -)" 'add a panel,bump jq'
+  # Cleanup ranks first (its #low lifted to high); every S or M tier-3 row is the one gate's.
+  assert_equal "$(jq -r 'select(.state == "ready" and .worker == "tier3") | .key' <<<"$output" | paste -sd, -)" 'drop the dead timer,bump jq,add a panel'
   DISPATCH_PER_PASS=5 fill
   assert_success
   f=$(agent-queue list --json --state queued | jq -r 'select(.title | test("drop the dead timer")) | .slug')
@@ -673,19 +673,23 @@ real_epic_board() {
   refute_output --partial -- '--pr-only'
   assert_output --partial 'agent-land refuses a tier-3 PR without that line'
   assert_output --partial 'Merge with agent-land'
-  # The L cleanup row is neither merging nor a PR row: plan_skips sends it to inbox-plan.
+  # The L row is neither started nor queued: plan_skips sends it to inbox-plan.
   [ "$(state_of 'prune the hooks')" = '- [ ]' ] || fail "an L cleanup row was started"
   assert_equal "$(pr_lane_keys)" 'add a panel,bump jq'
+  g=$(agent-queue list --json --state queued | jq -r 'select(.title | test("add a timer panel")) | .slug')
+  run item_brief "$(agent-queue show "$g" --json)"
+  refute_output --partial -- '--pr-only'
+  assert_output --partial 'agent-land refuses a tier-3 PR without that line'
 }
 
-@test "cleanup lane: a tier-3 cleanup pick ranks with its project's #prio, as a day pick does" {
+@test "tier3 gate: a tier-3 cleanup pick ranks with its project's #prio, as a day pick does" {
   pr_lane_ready
   sed -i '1s/$/ #prio\/focus/' "$SANDBOX/sheets/agent-runtime/README.md"
   row agent-runtime agent 'drop the dead timer' '- [ ] chore(timer): drop the dead timer #tier/3'
   pr_lane_verdict 'drop the dead timer' timer
   run t3_picks "$(t3_rows '')"
   assert_success
-  assert_equal "$(jq -r '"\(.pprio) \(.why)"' <<<"$output")" '0 cleanup, focus project, tier3-cleanup, #high, alpha'
+  assert_equal "$(jq -r '"\(.pprio) \(.why)"' <<<"$output")" '0 cleanup, focus project, tier3, #high, alpha'
 }
 
 @test "reap closes a queue item whose session ended: ok with a PR, failed without; a closed one is left alone" {

@@ -114,6 +114,20 @@ fn kind_of(head: &str) -> Option<(String, Option<String>)> {
     KINDS.contains(&head).then(|| (head.to_string(), None))
 }
 
+/// `text` without the `type(area): ` labels it leads with, nothing else taken out: what a
+/// reader of the words after them needs when an id there is part of them (a plan file named
+/// `ucp-145` in `feat(x): ucp-145 P2: words`), which [`clean`] would take out.
+pub fn unlabelled(text: &str) -> &str {
+    let mut t = text.trim();
+    while let Some((head, rest)) = t.split_once(": ") {
+        if kind_of(head).is_none() {
+            break;
+        }
+        t = rest.trim_start();
+    }
+    t
+}
+
 /// `text` without the slash commands it leads with (`/one-shot `, `/rigor /go `): a word of
 /// lowercase letters, digits and dashes behind one `/`. A path (`/tmp/x`, `/home/a/b.md`) has
 /// another `/` or a dot in its first word and stays, and so does a title that is only the word.
