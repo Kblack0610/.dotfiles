@@ -4449,6 +4449,9 @@ settle_item() {
     note_add "$1" "$it" "session $2 ended: $3; requeued${why:+ (end_reason: $why)}"
     logline "reaped $2: session gone, queue item $1 requeued: $3"
     echo "requeued queue item $1 ($2 ended: $3)"
+    # The human's own item keeps its start-now lane (agent-queue start: add's guards, no new bypass), except
+    # after a usage limit: a hand start would launch into the same limit, so a pass starts it when there is room.
+    [ "$why" = limit ] || [ "$(jq -r '.from // ""' <<<"$it")" != human ] || agent-queue start "$1" </dev/null 3<&- || true
   }
   case "$st" in running | waiting | review | queued) ;; *) logline "reaped $2: queue item $1 ${st:-gone}"; return 0 ;; esac
   it=$(item_with_branch_pr "$1" "$2")
