@@ -298,6 +298,7 @@ pub fn build(
     let history = history
         .map(|mut h| {
             errors.append(&mut h.errors);
+            errors.extend(h.down_unread.iter().map(|why| format!("down: {why}")));
             h
         })
         .map_err(|e| errors.push(format!("history: {e}")))
@@ -727,6 +728,29 @@ mod tests {
             p.errors,
             ["history: prometheus down", "now: prometheus down"]
         );
+    }
+
+    #[test]
+    fn downtime_records_not_read_are_a_page_error_and_stay_on_the_history() {
+        let i = infra();
+        let m = find(&i, "workstation").unwrap();
+        let h = HostHistory {
+            down_unread: Some("Loki answer 503".into()),
+            ..HostHistory::default()
+        };
+        let p = build(
+            &i,
+            m,
+            names(&i, &m.host),
+            Ok(h),
+            Err("prometheus down".into()),
+            Ok(String::new()),
+            Ok(&[]),
+            1000,
+        );
+        assert_eq!(p.errors, ["down: Loki answer 503", "now: prometheus down"]);
+        let h = p.history.unwrap();
+        assert_eq!(h.down_unread.as_deref(), Some("Loki answer 503"));
     }
 
     const G: f64 = GIB;

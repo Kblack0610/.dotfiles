@@ -520,7 +520,8 @@ function machineBody(d) {
   const hist = d.history;
   if (hist) {
     h += secHead("", "7 days", `${hist.readings} reading${hist.readings === 1 ? "" : "s"}`, "", "h3") + historyChart(hist, d.cores, colors) + tempChart(hist);
-    h += secHead("", "Downtime", d.tables.down?.rows.length, "", "h3") + pageTable(d.tables.down, DOWN_COLS, DOWN_CELLS, "No downtime record in the window.");
+    // An unread list says not read and why, never the empty text; a record lands once its downtime ends.
+    h += secHead("", "Downtime", hist.down_unread == null ? d.tables.down?.rows.length : null, "", "h3") + (hist.down_unread != null ? `<div class="empty">${NOT_READ}: ${esc(hist.down_unread)}</div>` : pageTable(d.tables.down, DOWN_COLS, DOWN_CELLS, "No downtime record in the window. One is written once a downtime ends."));
     if (hist.power) h += powerHistory(hist.power);
   }
   h += `${secHead("", "Recent CI jobs", d.tables.recent.rows.length, "", "h3")}${pageTable(d.tables.recent, RECENT_COLS, RECENT_CELLS, "No CI job in the archive ran there.")}`;

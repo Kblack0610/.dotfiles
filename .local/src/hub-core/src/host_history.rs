@@ -217,6 +217,8 @@ pub struct HostHistory {
     pub hours: Vec<Hour>,
     /// Its downtime records, newest first (`read` fills them from Loki).
     pub down: Vec<Down>,
+    /// Why the records could not be read: an unread list never reads as an empty one.
+    pub down_unread: Option<String>,
     /// How many CPU samples it gave: 0 is a host with no node exporter reading in the window.
     pub readings: usize,
     /// The governor's power history, for a host it powers.
@@ -298,11 +300,11 @@ pub fn read(names: &[String], powered: Option<&str>, now: u64) -> Result<HostHis
     };
     let (cpu, temp, pools) = (part("cpu", cpu), part("temp", temp), part("pools", pools));
     let power = power.and_then(|r| r.map_err(|e| errors.push(format!("power: {e}"))).ok());
-    let down = down
-        .map_err(|e| errors.push(format!("down: {e}")))
-        .unwrap_or_default();
     let mut h = history(&host, &cpu, &temp, &pools, power, from, now);
-    h.down = down;
+    match down {
+        Ok(d) => h.down = d,
+        Err(e) => h.down_unread = Some(e),
+    }
     h.errors = errors;
     Ok(h)
 }
@@ -435,6 +437,7 @@ pub fn history(
         hours,
         readings: times.len(),
         down: vec![],
+        down_unread: None,
         power,
         errors: vec![],
     }

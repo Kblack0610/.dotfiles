@@ -301,6 +301,11 @@ test("a machine page draws its sensors hot in amber, its pods, containers, proce
     live: { services: ["nfs-server", "tailscaled"], processes_total: 612, inventory: true, unread: {} },
     tables: { slots: tbl([], ["slot"]), down: tbl([], ["from"]), recent: tbl([], ["job"]), alerts: tbl([], ["what"]), ...liveTables({ devices, pods, containers, processes }) } });
   const h = drawPage("machines/workstation", d);
+  assert.match(h, /No downtime record in the window\. One is written once a downtime ends\./);
+  // The negative control: a records read that failed says not read and why, never the empty text.
+  const unread = drawPage("machines/workstation", { ...d, history: { ...d.history, down_unread: "Loki answer 503" } });
+  assert.match(unread, /Downtime<\/h3><div class="empty">not read: Loki answer 503<\/div>/);
+  assert.doesNotMatch(unread, /No downtime record/);
   assert.match(h, /<h3 class="sec warn">Sensors <span class="n">2<\/span>/, "a sensor at 85C or more makes the heading amber");
   assert.match(h, /<td class="n warn">96C<\/td>/);
   assert.match(h, /Tctl 96C  Tccd1 91C/);

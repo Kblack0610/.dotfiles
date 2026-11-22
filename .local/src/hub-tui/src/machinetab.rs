@@ -538,8 +538,13 @@ fn inventory(live: &HostNow, p: Palette, w: usize) -> Vec<Line<'static>> {
 
 /// Its downtime records, newest first; an unexplained one in the warning colour.
 fn downtime(h: &HostHistory, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+    if let Some(why) = &h.down_unread {
+        let text = format!("{}: {why}", hub_core::reading::NOT_READ);
+        return vec![heading("DOWNTIME", text, p)];
+    }
     if h.down.is_empty() {
-        return vec![heading("DOWNTIME", "no record in the window", p)];
+        let text = "no record in the window (one is written once a downtime ends)";
+        return vec![heading("DOWNTIME", text, p)];
     }
     let mut out = vec![heading("DOWNTIME", format!("{} records", h.down.len()), p)];
     out.extend(
@@ -859,6 +864,25 @@ mod tests {
                 .as_deref(),
             Some("https://g/d/kb-fleet?var-host=workstation")
         );
+    }
+
+    #[test]
+    fn downtime_records_not_read_say_why_and_never_the_empty_text() {
+        let mut page = fixture();
+        let h = page.history.as_mut().unwrap();
+        h.down.clear();
+        let empty = text(&page_lines(&page));
+        assert!(
+            empty.contains("no record in the window (one is written once a downtime ends)"),
+            "{empty}"
+        );
+        page.history.as_mut().unwrap().down_unread = Some("Loki answer 503".into());
+        let unread = text(&page_lines(&page));
+        assert!(
+            unread.contains("DOWNTIME  not read: Loki answer 503"),
+            "{unread}"
+        );
+        assert!(!unread.contains("no record in the window"), "{unread}");
     }
 
     #[test]
