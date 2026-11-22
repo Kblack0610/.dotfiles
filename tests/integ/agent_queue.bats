@@ -3056,6 +3056,34 @@ EOF
   assert_equal "$(jq -c '.wait_minutes_median' <<<"$output")" '250'
 }
 
+@test "stats chain: handoff from the predecessor's finish to the start, by priority, over after: items only (ar-3263)" {
+  "$AQ" add --project game --slug p --priority urgent "p"
+  legacy f "after: p" --project game --priority urgent "f"
+  "$AQ" add --project game --slug plain --priority urgent "plain"
+  "$AQ" move p running; "$AQ" move p done --status ok
+  "$AQ" set p finished=2026-11-03T12:00:00Z
+  "$AQ" move plain running
+  f="$(item queued f)"; sed -i 's/^queued: .*/queued: 2026-11-03T08:00:00Z/' "$f"
+  "$AQ" move f running; "$AQ" set f started=2026-11-03T12:10:00Z
+  run "$AQ" stats --json --since 2000-01-01
+  assert_success
+  # one handoff of 10 min; plain has no after:, so it is not a handoff; the 2026-11 start is not in the last 24h
+  assert_equal "$(jq -c '.chain.by_priority' <<<"$output")" '{"urgent":{"n":1,"p50":10,"p90":10}}'
+  assert_equal "$(jq -c '.chain.h24' <<<"$output")" '{}'
+  run "$AQ" stats --since 2000-01-01
+  assert_output --partial "chain:   handoff p50/p90 min from the predecessor's finish to the start (n): urgent 10/10 (1); last 24h: none"
+  # negative control: a start inside the last 24h lands in h24
+  now=$(date +%s)   # one read, so the 10 min between the two stamps cannot straddle a minute
+  "$AQ" set f started="$(date -u -d "@$((now - 3600))" +%FT%TZ)"
+  "$AQ" set p finished="$(date -u -d "@$((now - 3600 - 600))" +%FT%TZ)"
+  run "$AQ" stats --json --since 2000-01-01
+  assert_equal "$(jq -c '.chain.h24' <<<"$output")" '{"urgent":{"n":1,"p50":10,"p90":10}}'
+  # an item also gated by an event (ask, pr, nightly, rbw, hold) has no recorded ready time: left out
+  "$AQ" set f tags="pr:o/r#5"
+  run "$AQ" stats --json --since 2000-01-01
+  assert_equal "$(jq -c '.chain.h24' <<<"$output")" '{}'
+}
+
 # ar-617: the Queue table shows each item's wait, so list carries the same ready stats medians.
 @test "list --json carries ready: queued, else its after: item's finish when later, none while that holds it" {
   "$AQ" add --project game --slug p "p"
