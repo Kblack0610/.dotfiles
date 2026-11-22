@@ -3891,7 +3891,7 @@ ask_decisions() {
 # slash commands or human at the pane, so it reads the skill and closes differently, and a plan item
 # on one plans first (plan_stage). A start that resumes the item's last run (resume_thread) gets
 # resume_brief instead, and one that does not, of an item with salvaged work, is told where it is
-# (salvage_line). A Forgejo repo lands with agent-land too, which merges through that forge's API.
+# (salvage_line), and one an earlier run handed off reads that run's note first (handoff_line). A Forgejo repo lands with agent-land too, which merges through that forge's API.
 # A `canary` item (fleet-bench canary queue) opens no PR: its task is the whole brief, as is a trainee's
 # review item's (cmd_trainee_review writes it). A trainee's run (a sandboxed harness on anything but a
 # canary) gets trainee_brief: it cannot commit, so it leaves its change in the worktree.
@@ -3941,6 +3941,7 @@ item_brief() {
   jq -r .task <<<"$it"
   echo
   ask_decisions "$tags"
+  handoff_line "$it"
   salvage_line "$it"
   lost_line "$it"
   pr_line "$it"
@@ -3991,6 +3992,14 @@ plan_stage() {
   echo "This is a plan item: plan first, and change nothing in any repo until the human approves the plan. Write it to ~/.claude/plans/$1.md, then post it: agent-ask post --kind approval --options 'approve=build the plan as written|revise=change the plan first' --recommend approve --why \"<one sentence>\" --context \"The plan is ~/.claude/plans/$1.md\" \"Approve the plan for $1?\". Then run agent-queue requeue $1 --ask <id> and stop: the answer resumes this run, and you build only once it approves."
   echo "Once the plan is approved, build it as below."
   echo
+}
+
+# handoff_line <item json> -- an earlier run of the item handed it to this fresh session to keep its context
+# small (agent-queue handoff, `handoff:` its note): the new session reads that note before anything else.
+handoff_line() {
+  local note; note=$(jq -r '.handoff // empty' <<<"$1")
+  [ -n "$note" ] || return 0
+  echo "An earlier run of this item handed it to this fresh session to keep context small (agent-queue handoff): read $note first. It says what is done, what is next and what that run learned; do not redo what it finished, and keep that file as this run's plan."
 }
 
 # salvage_line <item json> -- an earlier run of the item pushed its unfinished work (`salvage:`, from

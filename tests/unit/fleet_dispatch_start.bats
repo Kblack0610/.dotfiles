@@ -1975,3 +1975,15 @@ rollup_setup() {
   assert_failure
   [ "$(cat "$out")" = FAILED ] || fail "unread board: $(cat "$out")"
 }
+
+@test "the brief of an item a run handed off names its note first, then its salvage branch; one never handed off names none (ar-2777)" {
+  started_item fix-menu lab:game-agent-1
+  run item_brief "$(agent-queue show fix-menu --json)"
+  refute_output --partial 'handed it to this fresh session'
+  f="$(qitem running fix-menu)"
+  sed -i 's|^slug: .*|&\nhandoff: /home/u/.claude/plans/fix-menu.md\nhandoffs: 1\nsalvage: feat/menu@abc123|' "$f"
+  run item_brief "$(agent-queue show fix-menu --json)"
+  assert_output --partial 'An earlier run of this item handed it to this fresh session to keep context small (agent-queue handoff): read /home/u/.claude/plans/fix-menu.md first.'
+  assert_output --partial 'left its unfinished work on branch feat/menu at abc123 on origin'
+  [[ "$output" == *"read /home/u/.claude/plans/fix-menu.md first"*"left its unfinished work on branch feat/menu"* ]] || fail "the note is not named before the salvage branch"
+}

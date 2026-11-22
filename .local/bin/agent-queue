@@ -65,6 +65,8 @@
 #   credit-of <project> < changed-paths  print what attribute would record ("<winner>\t<touches>"), writing nothing
 #   requeue <slug> --hold <resource> [--class c] | --ask <id>   a started item back to its board row, gated on that agent-hold
 #       or ask (#hold/<res>, #ask/<id>): the item closes returned, and dispatch promotes the row once the gate clears
+#   handoff <slug> --note <file> [--dir <checkout>]   a running item to a fresh session with its work pushed: salvage: (or its pr:),
+#       handoff: <note>, back to queued with end_reason: handoff (unrated), AGENT_HANDOFF_MAX (2) per item; see cmd_handoff
 #   start <slug>   start a queued item's session now, through add's start guards (a low one, a desk wait or the dispatch hold keep it queued)
 #   ask-holds [<id>]   `<slug or row id><TAB><ask id><TAB><releasing options>` per active item, and per open board row gated
 #       #ask/<id>, held on an ask (that ask only, given one)
@@ -95,33 +97,37 @@
 set -uo pipefail
 
 AQ_DIR="${AGENT_QUEUE_DIR:-$HOME/.agent/queue}"
+# This script's own directory, resolved once: every call paid two forks per lib and sibling it
+# found from here, about 12 of its 80 ms startup, and fleet-dispatch's tests call it ~70 times
+# each (ar-3036).
+AQ_BIN="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 # The registry's resolver: this tree's project-name.sh (PROJECT_NAME_LIB when the script runs
 # from a copy, as in the tests); AGENT_QUEUE_PROJECT_MAP points it at another map.
 # shellcheck source=../../.config/shared-hooks/project-name.sh
-. "${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
+. "${PROJECT_NAME_LIB:-$AQ_BIN/../../.config/shared-hooks/project-name.sh}"
 AQ_MAP="${AGENT_QUEUE_PROJECT_MAP:-$(project_map_file)}"
 PROJECT_MAP_FILE="$AQ_MAP"
 # shellcheck source=../lib/chain-event.sh
-. "${CHAIN_EVENT_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/chain-event.sh}"
+. "${CHAIN_EVENT_LIB:-$AQ_BIN/../lib/chain-event.sh}"
 # The one reader of a plan's `## Phases` checklist and `epic:` line, shared with fleet-sessions.
 # shellcheck source=../lib/plan-phases.sh
-. "${PLAN_PHASES_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh}"
+. "${PLAN_PHASES_LIB:-$AQ_BIN/../lib/plan-phases.sh}"
 # shellcheck source=../lib/machine-mode.sh
-. "${MACHINE_MODE_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/machine-mode.sh}"
+. "${MACHINE_MODE_LIB:-$AQ_BIN/../lib/machine-mode.sh}"
 # shellcheck source=../lib/end-reasons.sh
-. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/end-reasons.sh"
+. "$AQ_BIN/../lib/end-reasons.sh"
 # so_pr_view: the one forge rule pr_state reads a pr: hold's PR by.
 # shellcheck source=../lib/session-outcomes.sh
-. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/session-outcomes.sh"
+. "$AQ_BIN/../lib/session-outcomes.sh"
 # A `pr:<owner>/<repo>#<N>` item waits for that PR to merge; its state is cached here.
 AQ_PR_CACHE="${AGENT_QUEUE_PR_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/agent-queue/pr}"
 AQ_PR_TTL="${AGENT_QUEUE_PR_TTL:-120}"
 # A `nightly:<repo>` item waits on the scheduled-run facts schedules-sync writes, through its `pending` verb.
-AQ_SCHEDULES="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/schedules-sync"
+AQ_SCHEDULES="$AQ_BIN/schedules-sync"
 # An `ask:<id>[=<option>]` item waits on that agent-ask's answer, read from its file here.
 AQ_ASKS="${AGENT_ASK_ROOT:-$HOME/.agent/asks}"
 # A `hold:<resource>` item waits while this tree's agent-hold says that resource is held.
-AQ_HOLD="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/agent-hold"
+AQ_HOLD="$AQ_BIN/agent-hold"
 # Of the items waiting on one resource, the best `desk:<class>` (agent-hold classes) starts once it
 # is free, the rest stay held behind it (desk_wait); a desk:auth item waits while this says away.
 AQ_PRESENCE="${AGENT_QUEUE_PRESENCE:-fleet-presence}"
@@ -133,7 +139,7 @@ AQ_DESK_START_MIN=10
 AQ_RBW="${AGENT_QUEUE_RBW:-rbw}"
 AQ_RBW_TIMEOUT_S=5
 AQ_GATE_DONE_DAYS=3650   # days of closed rows a gate's after/<row-id> lookup reads (cmd_gate): a row closed before that reads as no such row
-AQ_ASK="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/agent-ask"
+AQ_ASK="$AQ_BIN/agent-ask"
 # waiting: its session needs the human (a plan, a dialog, an ask). review: its session ended or
 # stopped at an open PR, which reap closes on the merge. They are two states so "needs you" counts
 # only the first.
@@ -189,7 +195,7 @@ hand_start() {
   printf '%s\t%s\n' "$session" "$window"
 }
 # The one closer, beside this script (TMUX_CLOSE when the script runs from a copy, as in tests).
-TMUX_CLOSE="${TMUX_CLOSE:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/tmux-close}"
+TMUX_CLOSE="${TMUX_CLOSE:-$AQ_BIN/tmux-close}"
 
 # --- the file format ---
 # `key: value` lines, a `---` line, then the task as typed.
@@ -2574,7 +2580,7 @@ close_on() {
   local host="$1"; shift
   [ -n "$host" ] || { "$TMUX_CLOSE" "$@"; return; }
   # shellcheck source=../lib/fleet-hosts.sh
-  declare -F fleet_host_run >/dev/null || . "${FLEET_HOSTS_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
+  declare -F fleet_host_run >/dev/null || . "${FLEET_HOSTS_LIB:-$AQ_BIN/../lib/fleet-hosts.sh}"
   fleet_host_run "$host" tmux-close "$@"
 }
 
@@ -3385,6 +3391,61 @@ cmd_requeue() {
   AQ_RETURN_KEEP_SESSION=1 cmd_return "$slug" --why "requeued behind $tag: its row waits on it"
 }
 
+# handoff <slug> --note <file> [--dir <checkout>] -- a running item's session passes the item to a fresh
+# session, so the work goes on without the context the long run carries (lever 2 of plan
+# lets-do-a-thoruoghou-abundant-teapot, P4; the long-session-handoff hook says when). The work must be on
+# origin first: a checkout with uncommitted changes, or a head with work the trunk lacks that origin does not
+# have, is refused, so nothing is lost with the old window. That head becomes `salvage:` (salvage_line in the
+# next brief), unless the item has a PR, which the next brief continues (pr_line). The note becomes `handoff:`,
+# which the next brief names first (handoff_line). The item goes back to queued with end_reason: handoff, an
+# unrated end (lib/end-reasons.sh), and `handoffs:` counts them: AGENT_HANDOFF_MAX (2) per item, so a run that
+# keeps handing off finishes where it is instead.
+cmd_handoff() {
+  local usage="usage: agent-queue handoff <slug> --note <file> [--dir <checkout>]"
+  local slug="${1:?$usage}" note="" dir="$PWD" f n max="${AGENT_HANDOFF_MAX:-2}" br sha trunk remote sv=""
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --note) note="${2:?--note needs a file}"; shift 2 ;;
+      --dir) dir="${2:?--dir needs a checkout}"; shift 2 ;;
+      *) die "$usage" ;;
+    esac
+  done
+  [ -n "$note" ] || die "$usage"
+  [ -s "$note" ] || die "--note $note is missing or empty: write what is done, what is next and what you learned there first"
+  note="$(realpath "$note")"
+  # Under HOME, which outlives a reboot: /tmp is tmpfs, and the next run may start after one.
+  case "$note" in "$(realpath "$HOME")"/*) ;; *) die "--note $note is outside \$HOME, where it can be gone before the next run reads it: put it in your plan file (~/.claude/plans/)" ;; esac
+  git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || die "$dir is not a git checkout: pass --dir <the item's worktree>"
+  [ -z "$(git -C "$dir" status --porcelain 2>/dev/null)" ] ||
+    die "$dir has uncommitted changes: commit and push them first, so the next session starts from them"
+  sha="$(git -C "$dir" rev-parse HEAD)"
+  trunk="$(git -C "$dir" rev-parse -q --verify refs/remotes/origin/HEAD || git -C "$dir" rev-parse -q --verify refs/remotes/origin/main)" ||
+    die "$dir has no origin/HEAD or origin/main to tell its work from the trunk's"
+  # A head the trunk already holds has no work to carry: the next session starts from the trunk.
+  if ! git -C "$dir" merge-base --is-ancestor "$sha" "$trunk" 2>/dev/null; then
+    br="$(git -C "$dir" symbolic-ref --short -q HEAD)" || die "$dir is on a detached head: put the work on a branch and push it first"
+    remote="$(git -C "$dir" ls-remote origin "refs/heads/$br" 2>/dev/null | cut -f1)"
+    [ "$remote" = "$sha" ] || die "$br at ${sha:0:12} is not on origin${remote:+ (origin has ${remote:0:12})}: push it first (git push origin $br), so the next session starts from it"
+    sv="$br@$sha"
+  fi
+  lock
+  f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
+  [ "$(state_of "$f")" = running ] || die "$slug is $(state_of "$f"), not running: only a running item hands off"
+  n="$(fm_get "$f" handoffs)"; [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  [ "$n" -lt "$max" ] || die "$slug has handed off $n times (AGENT_HANDOFF_MAX $max): finish it in this session"
+  [ -z "$(fm_get "$f" pr)" ] || sv=""
+  # The move first: one that is refused leaves the item as it was, its handoffs unspent.
+  AQ_LOCKED=1 cmd_move "$slug" queued --end handoff --if running || return
+  f="$(find_item "$slug")"; [ -n "$f" ] || die "$slug left the queue on its move to queued: nothing to hand off to"
+  # An older salvage: (a lost run's) is not this head: the next start begins from the trunk or the PR instead.
+  if [ -n "$sv" ]; then header_set "$f" salvage "$sv"; else header_del "$f" salvage; fi
+  header_set "$f" handoff "$note"
+  header_set "$f" handoffs "$((n + 1))"
+  item_event item-set "$f" --why "handoff $((n + 1)) of $max: $note${sv:+, from $sv}"
+  echo "$slug: handed off ($((n + 1)) of $max); end this session now (/wind-down auto): the next start reads $note"
+}
+
 # ask-holds [<id>] -- each active item held on an ask, `<slug><TAB><ask id><TAB><options>` (options
 # `+`-joined as the tag has them, empty for any answer), from the header's slug and tags lines alone.
 # Why: agent-ask asks this on every card and answer, and `list --json` builds every item's whole
@@ -3803,7 +3864,7 @@ cmd_backfill_briefs() {
   trap 'AGENT_STORE_HOOK=1 store-sync --now --bg 8>&- 2>/dev/null' EXIT
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
-  add | list | next | show | mine | claim | cancel | return | bump | set | retask | attribute | move | requeue | start | reopen | stats | admission | mix | gate) v="$1"; shift; "cmd_$v" "$@" ;;
+  add | list | next | show | mine | claim | cancel | return | bump | set | retask | attribute | move | requeue | handoff | start | reopen | stats | admission | mix | gate) v="$1"; shift; "cmd_$v" "$@" ;;
   lock-miss) shift; cmd_lock_miss "$@" ;;
   credit-of) shift; cmd_credit_of "$@" ;;
   ask-holds) shift; cmd_ask_holds "$@" ;;

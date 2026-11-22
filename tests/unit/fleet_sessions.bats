@@ -735,6 +735,29 @@ ledger() {
   done
 }
 
+@test "live_wait reads a background agentctl-playground-night as a test, by the repo's own time-use.conf (ar-1846)" {
+  # 2026-11-22 agent-3 read "background shell is not a gate or test" while its shell ran the human's night run
+  # (agentctl-playground-night --sha <commit>), and the nudge would have told it to stop the night. Reads the shipped
+  # conf, not a copy, so dropping the `test agentctl-playground-night` line fails here.
+  mkdir -p "$SANDBOX/wt" "$SANDBOX/bin"
+  printf 'sleep 60\n' > "$SANDBOX/bin/agentctl-playground-night"
+  export FLEET_TIME_USE_CONF="$BATS_TEST_DIRNAME/../../.config/agent-panel/time-use.conf"
+  # root stands in for the session's claude; the night run sits below it, outside the session's worktree
+  (cd "$SANDBOX/bin" && exec setsid bash -c 'bash agentctl-playground-night --sha a99a6eb5b; :') >/dev/null 2>&1 3>&- &
+  local root=$!; LIVE_PIDS="-$root"
+  # the process is the event: wait until /proc shows the script's own exec (the anchor skips the wrapper's `bash -c`)
+  until pgrep -s "$root" -f '^bash agentctl-playground-night' >/dev/null; do
+    kill -0 "$root" 2>/dev/null || fail "the night stand-in exited before it started"
+  done
+  run live_wait "$SANDBOX/wt" "$root"
+  assert_output 'test'
+  # negative control: a conf without the line reads nothing
+  printf 'gate agent-land\ntest bats\n' > "$SANDBOX/other.conf"
+  FLEET_TIME_USE_CONF="$SANDBOX/other.conf" run live_wait "$SANDBOX/wt" "$root"
+  assert_output ''
+  pkill -KILL -s "$root" || true; wait "$root" 2>/dev/null || true
+}
+
 @test "live_wait finds a gate or test process running in the session worktree, and only there" {
   # 2026-11-07 unity-core-playground-agent-30: a gate detached with & left only its until-loop in the
   # transcript (open job jobs), so a Tests run in progress read STALLED.
@@ -1705,6 +1728,53 @@ SH
   jq -r .reason <<<"$output" | grep -q 'not a gate or test'
 }
 
+@test "a gate shell whose open output file is still being written is WORKING past FLEET_SHELL_STALE_MIN (ar-1334)" {
+  # 2026-11-10 agent-92: gate-and-land.sh sat 2h in the landing-slot wait behind #2103, printing a line a minute,
+  # and the row read STALLED by the transcript's idle minutes.
+  landed_fixture
+  local out="$SANDBOX/tasks/b1.output" done="$SANDBOX/tasks/b0.output" srv="$SANDBOX/tasks/b2.output"
+  mkdir -p "$SANDBOX/tasks"
+  export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
+  printf 'gate gate-and-land.sh\ntest bats\n' > "$FLEET_TIME_USE_CONF"
+  printf '==> landing slot: #2103 holds main\n' > "$out"; : > "$done"; : > "$srv"
+  # launch <tool id> <command> <output file> <result text>: a Bash call and the result naming its output file,
+  # in Claude Code's own wording (a run_in_background call, or one moved to the background at its timeout)
+  launch() {
+    printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"%s","name":"Bash","input":{"command":"%s"}}]}}\n' "$1" "$2"
+    printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"%s","content":"%s Output is being written to: %s. You will be notified"}]}}\n' "$1" "$4" "$3"
+  }
+  {
+    launch t0 'bats tests/unit' "$done" 'Command running in background with ID: b0.'
+    printf '{"type":"user","message":{"content":"<task-notification>\\n<task-id>b0</task-id>\\n<output-file>%s</output-file>\\n<status>completed</status>"}}\n' "$done"
+    launch t1 'scripts/git/gate-and-land.sh 2182' "$out" 'Command did not complete within its 120s timeout and was moved to the background (ID: b1).'
+    launch t2 'npm run dev' "$srv" 'Command running in background with ID: b2.'
+  } > "$SANDBOX/t.jsonl"
+  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" PANEL_STATUS=shell PANEL_JOB=gate PANEL_IDLE_S=$((200 * 60)) panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  # the bucket counts the output write; idle_min stays the transcript's own silence
+  [ "$(jq -r '"\(.bucket) \(.idle_min)"' <<<"$output")" = "WORKING 200" ]
+  # negative control: the same gate whose output has not moved in 3h reads idle
+  touch -d '3 hours ago' "$out"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = "LANDED" ]
+  jq -r .reason <<<"$output" | grep -q 'background shell idle over 120m'
+  # negative controls: a fresh file of a task the transcript saw finish, or of an open task that is not a gate
+  # or test (a dev server beside a hung gate), does not count
+  touch "$done" "$srv"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = "LANDED" ]
+  run open_outputs "$SANDBOX/t.jsonl"
+  assert_output "$out"
+  # a gate that redirects into Logs/gate-and-land.out (a FLEET_GATE_LOGS default) counts the same way
+  mkdir -p "$SANDBOX/wt/Logs"; : > "$SANDBOX/wt/Logs/gate-and-land.out"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = "WORKING" ]
+}
+
 @test "end to end: a row carries the open job its shell waits on, and null when none is known" {
   # fleet-dispatch counts no open_job queue session toward its pace target (pipeline-eval-p2).
   landed_fixture
@@ -2269,6 +2339,24 @@ clean_fixture() {
   run "$S" --json
   [ "$(jq -r .nudged <<<"$output")" = false ]
   [ "$(jq -r .close_sent <<<"$output")" = false ]
+}
+
+@test "end to end: a session whose item handed off its pushed branch (salvage: its HEAD) has nothing to land; another head still does (ar-2777)" {
+  clean_fixture
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
+  echo 1 > "$SANDBOX/wt/f"; "${g[@]}" add f; "${g[@]}" commit -q -m 'add f'
+  "${g[@]}" push -q origin feat/x 2>/dev/null
+  queue_item queued lab:s1
+  local f="$HOME/.agent/queue/queued/20261103-100000-fix-wave-save.md"
+  sed -i "s|^session: .*|&\nsalvage: feat/x@$("${g[@]}" rev-parse HEAD)\nhandoff: $HOME/.claude/plans/fix-wave-save.md\nhandoffs: 1|" "$f"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, no plan file, its item fix-wave-save moved on (queued)' ]
+  # negative control: a commit past the salvaged head is this session's own, unlanded
+  echo 2 > "$SANDBOX/wt/g"; "${g[@]}" add g; "${g[@]}" commit -q -m 'add g'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = '2 file(s) not on the default branch, no PR' ]
 }
 
 @test "end to end: a clean session reads its queue item from any state, and a removed worktree is DONE" {
