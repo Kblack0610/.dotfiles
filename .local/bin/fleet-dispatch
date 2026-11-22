@@ -1928,7 +1928,7 @@ waits_gate() {
 }
 
 # suggest [--json] -- the Candidates list: every open agent-lane row (and every row a worker takes)
-# of each project from dev up with a repo, in every notes profile, in RANK_JQ order. Each
+# of each project from dev up with a repo, in each DISPATCH_PROFILES profile (the list `run` reads), in RANK_JQ order. Each
 # carries `why`; `auto`, whether a worker in workers.json takes it (widening one is a line there);
 # `verdict`, the latest under this policy for this text, or `unjudged`; `held`, whether an active
 # queue item holds its area (never on a row judged tier 3, which no area holds); and `blocked`, every counted reason it would not start (nobody_why,
@@ -1937,11 +1937,9 @@ waits_gate() {
 # in the last day. Display only: it never judges, claims or queues. `--write` stores it for the hub
 # Candidates fold (candidates_write); each real `run` does that.
 cmd_suggest() {
-  local profs cands
-  profs=$(notes projects --stats --json 2>/dev/null | jq -r '[.[] | select(.automation != false) | .profile] | unique | join(" ")' 2>/dev/null)
-  [ -n "$profs" ] || profs=$DISPATCH_PROFILES
+  local cands
   load_gates; load_pool_idle
-  cands=$(SUGGEST=1 DISPATCH_PROFILES="$profs" VERDICTS=/dev/null cmd_candidates)
+  cands=$(SUGGEST=1 VERDICTS=/dev/null cmd_candidates)
   [ -n "$cands" ] || { [ "${1:-}" = --json ] || echo "suggest: no open agent row"; return 0; }
   jq -sc --arg sig "$(policy_sig)" --argjson prules "$(policy_rules)" --slurpfile v <(latest_verdicts) \
     --argjson busy "$(queue_areas | jq -Rsc 'split("\n") | map(select(length > 0) | ascii_downcase)')" "$RANK_JQ$ROW_JQ"'
