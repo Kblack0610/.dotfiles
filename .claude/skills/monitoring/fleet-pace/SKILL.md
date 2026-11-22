@@ -6,12 +6,23 @@ metadata:
   category: monitoring
   tags: [agents, fleet, load, thermal, hold]
   system: [dispatch, sessions]
-  reviewed: 2026-11-11
+  reviewed: 2026-11-22
   # The hand-typed forms that hang or kill the machine; hand_methods.py denies them.
+  # The two interpreter rows share one name list; change both together.
   replaces:
     - match: |-
+        (?:^|[^A-Za-z0-9_.-])(?:pkill|killall)(?:[ \t]+[^;&|\s]+)*[ \t]+(?:node|nodejs|bun|deno|python(?:[23](?:\.\d+)?)?|perl|ruby|java|sh)(?:[ \t;&|)"']|$)
+      use: "kill a PID you hold: `$!`, a pidfile, or the process you started; never kill a generic interpreter by name on a shared host"
+      mode: deny
+      why: "killing a generic interpreter kills other sessions' runners, bridges and MCP servers on a shared host (2026-11-12: pkill -x node killed both GitHub runners, emotiv-bridge and playwright-mcp on mac-mini)"
+    - match: |-
+        (?m)\A(?=.*(?:^|[;&|(`]|\$\(|xargs(?:\s+[^;&|\s]+)*)[ \t]*(?:sudo[ \t]+)?kill(?:\s|$))(?=.*(?:^|[^A-Za-z0-9_.-])(?:pgrep|pidof)(?:[ \t]+[^;&|\s]+)*[ \t]+(?:node|nodejs|bun|deno|python(?:[23](?:\.\d+)?)?|perl|ruby|java|sh)(?:[ \t;&|)"']|$))
+      use: "kill a PID you hold: `$!`, a pidfile, or the process you started; a pgrep or pidof of an interpreter finds every session's copy"
+      mode: deny
+      why: "the same kill as a pkill of the interpreter, by its PIDs (the pkill -x node incident of 2026-11-12)"
+    - match: |-
         (?:^|[^A-Za-z0-9_.-])pkill(?:[ \t]+[^;&|\s]+)*[ \t]+(?:-[a-eg-zA-Z0-9]*f[A-Za-z0-9]*|--full)(?:[ \t;&|)"']|$)
-      use: "`pkill -x <name>`, or kill a PID you hold: `$!`, a pidfile, or `pgrep -x <name>`. To search or write about the command, break the phrase, e.g. `rg 'pkill[ ]-f'`"
+      use: "kill a PID you hold: `$!`, a pidfile, or the process you started; `pkill -x <name>` only for a name no other session runs, never an interpreter. To search or write about the command, break the phrase, e.g. `rg 'pkill[ ]-f'`"
       mode: deny
       why: "a -f pattern also matches this command's own shell and other sessions' processes, so it kills them (a test-file pattern once killed every worktree's bats run; 291 session-days of the lesson before the guard)"
     - match: |-
