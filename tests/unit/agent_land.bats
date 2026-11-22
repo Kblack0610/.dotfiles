@@ -1474,6 +1474,23 @@ EOF2
   assert_output ''
 }
 
+@test "a done item with no row links no Task: row on its second PR, since its board step leaves rows to the closing PR (ar-4231)" {
+  item tidy-loader
+  run "$LAND" 42 --item tidy-loader
+  assert_success
+  printf 'The change.\nTask: ar-1\n' >"$NOTES_FIXTURE/body"
+  jq -n '{rows: [{profile: "personal", project: "dotfiles", lane: "agent", id: "ar-1", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
+  : >"$LOG"
+  echo https://github.com/o/p/pull/552 >"$NOTES_FIXTURE/url"
+  echo https://github.com/o/p.git >"$NOTES_FIXTURE/origin.url"
+  run "$LAND" 552 --item tidy-loader
+  assert_success
+  assert_line 'landed #552'
+  refute_output --partial 'item-row:'
+  run jq -r '.row // ""' <<<"$(agent-queue show tidy-loader --json)"
+  assert_output ''
+}
+
 @test "an item that already has a row does not link a different row from Task: in the body" {
   printf 'The change.\nTask: ar-1\n' >"$NOTES_FIXTURE/body"
   jq -n '{rows: [{profile: "personal", project: "dotfiles", lane: "agent", id: "ar-1", state: "open"}]}' >"$NOTES_FIXTURE/board.json"

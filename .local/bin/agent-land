@@ -855,10 +855,11 @@ stamp_item() {
 
 # link_task_row: an item with no row links the row its PR body's "Task: <id>" line names, when that id
 # is one open row on the boards (as close_rows reads them), so the row closes on landing (ar-4231).
-# A Task: id that is no open row (closed, mistyped, a text key) links nothing and says so.
+# A Task: id that is no open row (closed, mistyped, a text key) links nothing and says so. An item
+# already done (done_as more or again) links nothing: its board step leaves the row to its closing PR.
 link_task_row() {
   local task_id feed hit prof proj lane out
-  [ -z "$row" ] || return 0
+  [ -z "$row" ] && [ -z "$done_as" ] || return 0
   task_id=$(tr -d '\r' <<<"$body" | sed -n '/^[[:space:]]*Task:/{s/^[[:space:]]*Task:[[:space:]]*\([^[:space:]]*\).*/\1/p;q;}')
   [ -n "$task_id" ] || return 0
   feed=$(notes board --json 2>/dev/null) || { echo "item-row: notes board --json failed, so Task: $task_id is not linked"; return 0; }
