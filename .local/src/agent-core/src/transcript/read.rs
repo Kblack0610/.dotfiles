@@ -110,7 +110,7 @@ pub fn tool_input(v: Option<&Value>) -> String {
 }
 
 /// `2026-10-27T22:31:45.360Z` (UTC, optional fraction) -> epoch seconds. Anything else is None.
-pub(super) fn iso_epoch(s: &str) -> Option<u64> {
+pub fn iso_epoch(s: &str) -> Option<u64> {
     let b = s.as_bytes();
     if b.len() < 20
         || b[4] != b'-'
