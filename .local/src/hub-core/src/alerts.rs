@@ -584,6 +584,24 @@ fn am_rows(list: &[Firing]) -> Vec<Alert> {
         .collect()
 }
 
+/// One firing row per red of the infra machinery itself (`machinery`), with no owner: nothing
+/// files a fix for the machinery's own reds.
+fn machinery_rows(infra: &Infra, open: Option<&[Red]>, now: i64) -> Vec<Alert> {
+    machinery(infra)
+        .into_iter()
+        .map(|item| {
+            let mut a = Alert {
+                sev: "high".into(),
+                what: item,
+                source: "infra".into(),
+                ..Default::default()
+            };
+            owner(&mut a, None, open, now);
+            a
+        })
+        .collect()
+}
+
 /// The counts of the firing rows, the fixes and the watches; the history's are the caller's.
 fn counted(firing: &[Alert], fixes: Option<&Reds>, watches: &[Watch]) -> Counts {
     let n = |s: &str| watches.iter().filter(|w| w.state == s).count();
@@ -684,17 +702,7 @@ pub fn join(
             owner(&mut a, red_key(item, &items).as_deref(), open, now);
             firing.push(a);
         }
-        for item in machinery(infra) {
-            let mut a = Alert {
-                sev: "high".into(),
-                what: item,
-                source: "infra".into(),
-                ..Default::default()
-            };
-            // Nothing files a fix for the machinery's own reds.
-            owner(&mut a, None, open, now);
-            firing.push(a);
-        }
+        firing.extend(machinery_rows(infra, open, now));
     }
     match &infra.alertmanager {
         Some(Ok(list)) => firing.extend(am_rows(list)),

@@ -554,7 +554,11 @@ mod tests {
         // printer is no DOMAINS entry: it follows the strip rather than going missing.
         assert_eq!(names, ["k3s", "ci", "projects", "prod", "printer"]);
         assert_eq!(h[4].level, Level::Ok);
-        assert_eq!(i.domains(), (1, 1, 1), "no data is neither down, warn nor up");
+        assert_eq!(
+            i.domains(),
+            (1, 1, 1),
+            "no data is neither down, warn nor up"
+        );
         assert_eq!(h[0].level, Level::Nodata);
         assert_eq!(h[1].level, Level::Red);
         assert_eq!(h[2].level, Level::Nodata);
