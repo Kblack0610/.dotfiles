@@ -36,7 +36,7 @@
   {"file":".local/bin/fleet-bench","by":"keeps: sums one token-usage snapshot's sessions by kind for the token KPIs, no card figure","fns":{"kpi_tokens":1}},
   {"file":".local/bin/fleet-bench","by":"keeps: adds up the parts of agent-queue stats over BENCH_QUEUE_DAYS (done by status, items with a PR), a window no card shows","fns":{"queue_line":2}},
   {"file":".local/bin/fleet-bench","by":"ar-2793: per-model cost sums its own store instead of the hub-core cost figure (of the 18, the rest are run and CI ratios)","fns":{"models_json":18}},
-  {"file":".local/bin/fleet-bench","by":"keeps: picks the longest project base a worktree name starts with, no count (the Commits on main column it feeds is git log on the base)","fns":{"merge_rows":1}},
+  {"file":".local/bin/fleet-bench","by":"keeps: the one site is max_by(.b | length) picking the longest project base a worktree name starts with, a regex match and no count; the Commits on main column it feeds counts git log on the base","fns":{"merge_rows":1}},
   {"file":".local/bin/fleet-bench","by":"ar-2793: cost per sweep sums its own store (of the 5, the rest are sweep ratios)","fns":{"canary_dream":5}},
   {"file":".config/waybar/ai_agents.sh","by":"keeps: the session counts are the published Sessions figures; what is counted here is textfile freshness per host, a column width and an empty-section check, no fleet figure","fns":{"main":5}},
   {"file":".config/waybar/ci_runners.sh","by":"keeps: whether the weight footnote prints over `hub ci --json`, no figure","fns":{"main":1}},

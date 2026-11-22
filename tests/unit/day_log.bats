@@ -346,7 +346,7 @@ day_record() { jq -n "{schema: 2, date: \"$1\", merged: []} | $2" > "$DAYLOG_DIR
   pr game 1 'feat(raiders): x' 2026-10-28T03:00:00Z | merged     # 20:00 PDT on the 27th
   run "$SUBJECT" finalize
   assert_success
-  assert_output '1 PRs merged across 1 repos'
+  assert_output '1 PR merged across 1 repos'
   run grep -c 'game#1' "$DAYLOG_REFS_DIR/2026-10-27/shipped.md"
   assert_output 1
 }
