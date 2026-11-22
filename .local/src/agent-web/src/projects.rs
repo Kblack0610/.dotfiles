@@ -35,7 +35,6 @@ fn shown(p: &Projects, q: &TableQuery) -> Value {
         errors: p.errors.clone(),
         board_open: p.board_open,
         board_backlog: p.board_backlog,
-        today: p.today,
     });
     out["table"] = json!(table);
     out
@@ -95,7 +94,6 @@ mod tests {
             errors: vec!["notes projects failed".into()],
             board_open: Some(7),
             board_backlog: Some(4),
-            today: None,
         }
     }
 

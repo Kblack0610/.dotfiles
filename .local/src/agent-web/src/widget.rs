@@ -134,7 +134,7 @@ async fn read<'a>(s: &Shared, names: Option<&[&'a str]>) -> (Vec<Card>, Vec<&'a 
     let missing = names
         .iter()
         .copied()
-        .filter(|n| !all.iter().any(|c| c.tab == *n))
+        .filter(|n| !all.iter().any(|c| c.tab == cards::id(n)))
         .collect();
     (cards::pick(all, names), missing, now)
 }
