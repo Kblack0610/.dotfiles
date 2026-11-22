@@ -5,7 +5,7 @@
 # (`hub`, Prefix i, then 6) renders the records; day-log.timer snapshots today every 5 min.
 #
 #   day-log snapshot [--date D]   gather the day and write DAYLOG_DIR/<D>.json, print its path;
-#                                 today is also published as day_log.prom
+#                                 today is also published as day_log.prom, by the fleet-lease holder only
 #   day-log json [--date D]       the day's record: today is gathered, a past day is read
 #   day-log show [--date D]       the day as markdown, every PR listed with its author, and who did what
 #   day-log finalize [--date D]   re-gather D (default yesterday), write its notes ref
@@ -246,8 +246,10 @@ snapshot() {
     flock 9
     gather "$day" > "$out.tmp" && jq -e .schema "$out.tmp" >/dev/null && mv "$out.tmp" "$out"
   ) 9>"$DAYLOG_DIR/.lock" || { rm -f "$out.tmp"; say "could not write $out"; return 1; }
-  # Only today's record is today's numbers: re-gathering a past day must not overwrite them.
-  if [ "$day" = "$(today)" ]; then
+  # Only today's record is today's numbers: re-gathering a past day must not overwrite them. Only the
+  # fleet-lease holder publishes: a peer's own record is a second, lower reading of each agent_day
+  # gauge (razer 66 vs 77, ar-4373), and fleet-lease renew removes the copy a handover leaves.
+  if [ "$day" = "$(today)" ] && fleet-lease held >/dev/null 2>&1; then
     prom_textfile day_log.prom day_prom "$out" || say "could not write day_log.prom"
   fi
   printf '%s\n' "$out"

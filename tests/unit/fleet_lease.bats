@@ -276,7 +276,7 @@ EOS
 
 @test "every textfile a tool here publishes is a singleton's, which renew removes off the holder, or every node's" {
   # A new writer left out of both would leave a frozen copy behind on each lease handover.
-  local every_node=" day_log.prom " singletons f
+  local every_node=" " singletons f
   singletons=" $(sed -n 's/^TEXTFILES="${FLEET_LEASE_TEXTFILES:-\(.*\)}"$/\1/p' "$BIN") "
   [ "$singletons" != "  " ] || fail "no TEXTFILES default in fleet-lease"
   for f in $(grep -ohE 'prom_textfile [a-z_]+\.prom' "$REPO_ROOT"/.local/bin/* | awk '{print $2}' | sort -u); do
