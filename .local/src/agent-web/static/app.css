@@ -263,6 +263,8 @@ h3.sub { font-size: 13px; margin: 12px 0 6px; }
 .seg.istrip button:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 .ft { font: var(--fs-sm) var(--mono); color: var(--muted); }
 .muted { color: var(--muted); font-weight: normal; }
+/* agent-web keeps its own warn and bad hues for a section head (web-kit ui.css uses the kit's). */
+.sec.warn { color: var(--b-stalled); } .sec.bad { color: var(--b-needs); }
 .bhead { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; font-size: 12px; font-family: var(--mono); margin-bottom: 10px; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
 .tile { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px 10px 15px; font: inherit; overflow: hidden; }

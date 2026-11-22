@@ -25,6 +25,6 @@ details.cfold[open] > summary { margin-bottom: 6px; }
 tr:hover .c12, tr.sel .c12 { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 
 /* A record list (tblRec): dense, no rules, no zebra, so a short list reads as a list. */
-table.rec { width: 100%; border-collapse: collapse; font-size: var(--fs-md); }
+table.rec { width: 100%; border-collapse: collapse; }
 table.rec td { padding: 3px 10px 3px 0; vertical-align: top; }
 table.rec td a { color: var(--accent); text-decoration: none; } table.rec td a:hover { text-decoration: underline; }
