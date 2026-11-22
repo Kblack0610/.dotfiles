@@ -958,13 +958,13 @@ pub fn stats(runner: &dyn Runner) -> Result<Stats, String> {
     serde_json::from_str(&out).map_err(|e| format!("agent-queue stats: {e}"))
 }
 
-/// What a Queue view shows: the items (`all`), the week's stats, the last dispatch pass's
-/// verdict (the line over the table), and what could not be read.
+/// What a Queue view shows: the items (`all`), the week's stats, whether work flows
+/// (`queue_verdict`, the lines over the table), and what could not be read.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Queue {
     pub items: Vec<Item>,
     pub stats: Option<Stats>,
-    pub dispatch: Option<crate::capacity::Dispatch>,
+    pub verdict: Option<crate::queue_verdict::Verdict>,
     pub errors: Vec<String>,
     /// Each item's own session as fleet-sessions last saw it (`sessions`), None when that state
     /// was not read fresh, so a running row then says only `running`.
@@ -1053,14 +1053,21 @@ impl Queue {
     }
 
     pub fn read(runner: &dyn Runner) -> Queue {
-        Queue {
-            dispatch: Some(crate::capacity::Dispatch::now()),
-            sessions: sessions(
-                &crate::boards::fleet_state(),
-                chrono::Utc::now().timestamp(),
-            ),
-            ..Queue::from_reads(list(runner, "all"), stats(runner))
-        }
+        let now = chrono::Utc::now().timestamp();
+        // The verdict is a Prometheus call, so it runs beside agent-queue's two reads.
+        std::thread::scope(|s| {
+            let verdict = s.spawn(|| crate::queue_verdict::Verdict::read(now));
+            let q = Queue::from_reads(list(runner, "all"), stats(runner));
+            Queue {
+                verdict: Some(
+                    verdict
+                        .join()
+                        .unwrap_or_else(|e| std::panic::resume_unwind(e)),
+                ),
+                sessions: sessions(&crate::boards::fleet_state(), now),
+                ..q
+            }
+        })
     }
 
     /// The view over a `list` and a `stats` read made elsewhere (agent-web keeps both), each

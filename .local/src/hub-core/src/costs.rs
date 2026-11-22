@@ -371,13 +371,11 @@ fn read_burn(base: Option<&str>, paths: &Paths, now: i64, errors: &mut Vec<Strin
             errors.push(format!("dispatch log: {e}"));
             String::new()
         });
-    burn::build(&series, burn::drip(&log, now, held(&paths.headroom)), now)
-}
-
-/// The hold reason from the last pass's headroom, only when it names a kind: "nothing runnable"
-/// is an empty queue, not a hold, and a stale pass holds nothing.
-fn held(path: &std::path::Path) -> Option<String> {
-    crate::capacity::Dispatch::read(path).held
+    burn::build(
+        &series,
+        burn::drip(&log, now, crate::capacity::held(&paths.headroom)),
+        now,
+    )
 }
 
 /// calls.jsonl's lines since `since`, through the runners' parser.
@@ -1393,7 +1391,7 @@ mod tests {
         let p = dir.join("headroom.json");
         let held = |j: &str| {
             std::fs::write(&p, j).unwrap();
-            held(&p)
+            crate::capacity::held(&p)
         };
         assert_eq!(
             held(r#"{"held":"load 42 on 24 cores","held_kind":"load"}"#).as_deref(),
@@ -1406,7 +1404,7 @@ mod tests {
         assert_eq!(held(r#"{"held":null,"held_kind":null}"#), None);
         assert_eq!(held("not json"), None);
         std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(super::held(&p), None, "a missing file is no hold");
+        assert_eq!(crate::capacity::held(&p), None, "a missing file is no hold");
     }
 
     use crate::spend_history::{Day, Sess};

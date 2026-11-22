@@ -28,9 +28,10 @@ pub async fn get(State(s): State<Shared>) -> Json<Vec<Card>> {
 
 /// The grid as `/api/home/cards` sends it; the widget picks its cards from the same read.
 pub async fn read(s: &Shared) -> Vec<Card> {
-    let (infra, queue, sessions, alerts, costs, schedules, projects, home) = tokio::join!(
+    let (infra, mut queue, verdict, sessions, alerts, costs, schedules, projects, home) = tokio::join!(
         s.infra.infra(),
         s.queue.queue(),
+        crate::queue::verdict(),
         s.session_table.read(),
         s.alerts.read(&s.infra),
         crate::costs::read(),
@@ -42,6 +43,8 @@ pub async fn read(s: &Shared) -> Vec<Card> {
         Ok(p) => p.board.as_ref().map_err(String::as_str),
         Err(e) => Err(e.as_str()),
     };
+    // The Queue card's Flow rows and room parts.
+    queue.verdict = Some(verdict);
     let items = queue.items.clone();
     // The day-log read keeps its last parse until the record changes (`phone::merged_today`).
     let (releases, pipeline, merged) = tokio::join!(
