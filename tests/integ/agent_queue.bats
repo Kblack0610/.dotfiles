@@ -1655,6 +1655,18 @@ notes --profile bnb ptask game --agent run gm-9"
   [ "$(field "$(item running e)" end_reason)" = limit ]
 }
 
+# ar-4215: fleet-bench triage reads proves_at with fromdateiso8601, so a time it cannot parse would hold nothing.
+@test "set proves_at takes a UTC time and refuses any other shape" {
+  "$AQ" add --project game --running --slug p "p" >/dev/null
+  run "$AQ" set p proves_at=tomorrow
+  assert_failure
+  assert_output --partial 'proves_at is a UTC time'
+  run "$AQ" set p proves_at=2026-11-22T12:05:00Z
+  assert_success
+  [ "$(field "$(item running p)" proves_at)" = 2026-11-22T12:05:00Z ]
+  [ "$("$AQ" list --json --state all | jq -r 'select(.slug == "p") | .proves_at')" = 2026-11-22T12:05:00Z ]
+}
+
 @test "stats counts finished items by end reason, and leaves out the ones that name none" {
   "$AQ" add --project game --running --slug a "a" >/dev/null
   "$AQ" add --project game --running --slug b "b" >/dev/null
