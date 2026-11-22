@@ -6,6 +6,7 @@
 
 use hub_core::app_status::AppStatus;
 use hub_core::builds::{Builds, Scope};
+use hub_core::display::fmt::{age, counted, dur_secs};
 use hub_core::lanes::Flow;
 use hub_core::layout;
 use hub_core::releases::{App, Changelog, Deploy, Level, Release, Releases, STALE_SECS};
@@ -341,7 +342,7 @@ impl ReleasesView {
     pub fn status(&self, s: &Releases, p: Palette, now: i64) -> Vec<Line<'static>> {
         let mut head = vec![Span::styled(s.summary.clone(), p.head())];
         if s.at > 0 {
-            let age = hub_core::display::fmt::age(now - s.at);
+            let age = age(now - s.at);
             head.push(Span::styled(
                 format!("  refreshed {} ({age} ago)", clock(s.at, now)),
                 if s.stale(now) { p.warn() } else { p.dim() },
@@ -349,7 +350,7 @@ impl ReleasesView {
         }
         if s.stale(now) {
             head.push(Span::styled(
-                format!("  older than {}", hub_core::display::fmt::age(STALE_SECS)),
+                format!("  older than {}", age(STALE_SECS)),
                 p.warn(),
             ));
         }
@@ -573,6 +574,15 @@ fn page_lines<T>(
     out
 }
 
+/// The Builds row: how many runs joined to a tag, and how many are still going.
+fn builds_line(n: usize, live: usize) -> String {
+    match (n, live) {
+        (0, _) => "no build run joined to a tag in the last 30 days".to_string(),
+        (n, 0) => counted(n, "run"),
+        (n, l) => format!("{}, {l} in progress", counted(n, "run")),
+    }
+}
+
 /// The pane: the app's word and its channels, the headline env's channels, the other envs under
 /// a fold (`others` unfolds them), then the app's changelog (`cl`, None while it is being read).
 pub fn detail(
@@ -631,7 +641,7 @@ pub fn detail(
                 format!(
                     "{} {} (F)",
                     if others { "-" } else { "+" },
-                    hub_core::display::fmt::counted(n, "other channel")
+                    counted(n, "other channel")
                 ),
                 p.head(),
             ),
@@ -687,14 +697,7 @@ pub fn detail(
     let live = a.builds.iter().filter(|b| b.live).count();
     out.extend(wrapped(
         &format!("  {:<LABEL$} ", "Builds"),
-        &match (a.builds.len(), live) {
-            (0, _) => "no build run joined to a tag in the last 30 days".to_string(),
-            (n, 0) => hub_core::display::fmt::counted(n, "run"),
-            (n, l) => format!(
-                "{}, {l} in progress",
-                hub_core::display::fmt::counted(n, "run")
-            ),
-        },
+        &builds_line(a.builds.len(), live),
         p.dim(),
         p,
         w,
@@ -785,7 +788,7 @@ fn status(
         format!(
             "checked {} ({} ago)",
             clock(t, now),
-            hub_core::display::fmt::dur_secs((now - t) as f64)
+            dur_secs((now - t) as f64)
         )
     });
     out.push(head(format!("{}, {checked}", s.banner), level(s.level, p)));
