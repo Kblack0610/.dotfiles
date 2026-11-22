@@ -690,13 +690,13 @@ setup_profile() {
 }
 
 # Render theme-switch's generated output. kitty's current-theme.conf, waybar's
-# style.css and palette.css, sketchybar's colors.sh, dunst's dunstrc.d/50-theme.conf, swaync's style.css and noctalia's palettes/dotfiles.json are NOT tracked -- they are the render of
+# style.css and palette.css, sketchybar's colors.sh, dunst's dunstrc.d/50-theme.conf, swaync's style.css, noctalia's palettes/dotfiles.json, hyprland's conf/theme.lua, nvim's kennethblack/theme.lua, starship.toml and lazygit's config.yml are NOT tracked -- they are the render of
 # a tracked palette + template, and tracking them meant the theme-day/theme-night
 # timers dirtied the repo twice a day. A fresh clone therefore has none of them,
 # and sketchybarrc hard-`source`s colors.sh, so it must be rendered at install.
 #
-# --only the generated targets on purpose: every other tool theme-switch
-# touches is a TRACKED file that already ships correct, and re-patching those
+# --only the generated targets on purpose: termux is the one TRACKED render
+# (the phone reads it over git), it already ships correct, and re-rendering it
 # here would leave a fresh install with a dirty tree before first login.
 setup_theme() {
     log_section "Rendering theme (generated config)"
@@ -704,7 +704,7 @@ setup_theme() {
     local theme_switch="$HOME/.local/bin/theme-switch"
     if [[ ! -x "$theme_switch" ]]; then
         log_warning "theme-switch not found at $theme_switch - skipping"
-        log_info "Render later with:  theme-switch <theme> --only kitty,waybar,sketchybar,dunst,swaync,noctalia,hyprland"
+        log_info "Render later with:  theme-switch <theme> --only kitty,waybar,sketchybar,dunst,swaync,noctalia,hyprland,nvim,starship,lazygit"
         return 0
     fi
 
@@ -715,7 +715,7 @@ setup_theme() {
     [[ -r "$state" ]] && theme="$(<"$state")"
 
     log_info "Rendering generated theme files for: $theme"
-    "$theme_switch" "$theme" --only kitty,waybar,sketchybar,dunst,swaync,noctalia,hyprland
+    "$theme_switch" "$theme" --only kitty,waybar,sketchybar,dunst,swaync,noctalia,hyprland,nvim,starship,lazygit
 }
 
 # Configure rbw (Rust Bitwarden CLI) against the self-hosted Vaultwarden. The

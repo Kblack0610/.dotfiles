@@ -44,7 +44,7 @@ return {
             {
               "branch",
               icon = git_icons.GitBranch,
-              color = { fg = "#f3fd21", gui = "bold" },
+              color = { fg = require("kennethblack.palette").lualine_branch, gui = "bold" },
             },
             { "filetype", icon_only = true, separator = "", padding = { right = 0, left = 1 } },
             {
