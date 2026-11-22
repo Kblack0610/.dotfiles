@@ -111,7 +111,12 @@ write_payload() { jq -nc --arg p "$1" --arg c "$2" '{tool_name: "Write", tool_in
   run bash "$HOOK" <<< "$(jq -nc --arg p "$MEM" --arg n "$RULE" '{tool_name: "Edit", tool_input: {file_path: $p, old_string: "x", new_string: $n}}')"
   assert_failure 2
   assert_output --partial 'memory line 2 restates global'
-  export CONTEXT_BUDGET_GLOBAL_FILE="$CLAUDE_MD"
+  mkdir -p "$HOME/.claude"
+  mv "$CLAUDE_MD" "$HOME/.claude/CLAUDE.md"
+  export CLAUDE_MD="$HOME/.claude/CLAUDE.md" CONTEXT_BUDGET_GLOBAL_FILE="$HOME/.claude/CLAUDE.md"
+  export DRIFT_DOCS="$CLAUDE_MD
+$LESSON
+$MEM"
   head -c 20481 /dev/zero | tr '\0' x >> "$CLAUDE_MD"
   run bash "$HOOK" <<< "$(write_payload "$CLAUDE_MD" "$RULE")"
   assert_failure 2
