@@ -429,6 +429,10 @@ EOF
   # The same sub text as a plan and phase line is not a title's shape.
   run "$SUBJECT" --channel ui --role sub - <<< "can-we-add-more-jaunty-moonbeam P3"
   assert_success
+  # A role the channel does not list is a finding, never a silent pass.
+  run "$SUBJECT" --channel ui --role titel - <<< "Wait on the review"
+  assert_failure 1
+  assert_output --partial "unknown-role"
 }
 
 @test "the ui channel grades hub ui-text records by their own role, as rows" {

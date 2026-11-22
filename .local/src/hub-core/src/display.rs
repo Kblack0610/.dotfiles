@@ -141,15 +141,16 @@ impl Shown {
         if too_many {
             out = words[..caps.words].join(" ");
         }
+        // A chip is a state, so it is cut with no "..." after it.
+        if too_many && role != Role::Chip {
+            out = format!("{}...", out.trim_end_matches([',', ';', ':', '.']));
+        }
         if caps.chars > 0 && out.chars().count() > caps.chars {
-            // A chip is a state, so it is cut with no "..." after it.
             out = if role == Role::Chip {
                 out.chars().take(caps.chars).collect()
             } else {
                 text::cap(&out, caps.chars)
             };
-        } else if too_many && role != Role::Chip {
-            out = format!("{}...", out.trim_end_matches([',', ';', ':', '.']));
         }
         let full = (out != whole).then(|| whole.to_string());
         Shown {
@@ -392,9 +393,9 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
     }
 
-    /// comms-lint's findings for `text` in `role`, the one grader of `[channel.ui]`; None when
-    /// python3 is not here to run it.
-    fn lint(role: Role, text: &str) -> Option<Vec<String>> {
+    /// comms-lint's findings for `text` in `role`, the one grader of `[channel.ui]`. It panics
+    /// when python3 or comms-lint cannot run, so a missing grader fails the test, never passes it.
+    fn lint(role: Role, text: &str) -> Vec<String> {
         use std::io::Write;
         let mut p = Command::new("python3")
             .arg(repo().join(".local/bin/comms-lint"))
@@ -407,19 +408,22 @@ mod tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .ok()?;
-        p.stdin.take()?.write_all(text.as_bytes()).ok()?;
-        let out = p.wait_with_output().ok()?;
+            .expect("python3 must run comms-lint");
+        p.stdin
+            .take()
+            .expect("piped stdin")
+            .write_all(text.as_bytes())
+            .expect("write to comms-lint");
+        let out = p.wait_with_output().expect("comms-lint exits");
         assert!(
             matches!(out.status.code(), Some(0 | 1)),
             "comms-lint failed on {text:?}"
         );
-        let findings = String::from_utf8_lossy(&out.stdout)
+        String::from_utf8_lossy(&out.stdout)
             .lines()
             .filter_map(|l| l.trim().split(':').next().map(String::from))
             .filter(|c| !c.is_empty() && !c.contains(' '))
-            .collect();
-        Some(findings)
+            .collect()
     }
 
     /// The pre-fix strings the human's screenshots showed.
@@ -441,6 +445,17 @@ mod tests {
         for r in Role::ALL {
             assert!(r.caps().chars > 0, "{} has no char cap", r.key());
         }
+    }
+
+    #[test]
+    fn a_title_cut_by_the_word_cap_still_fits_the_char_cap_with_its_dots() {
+        // Ten words of 7 or 8 chars come to about 79 chars, and the cut adds "...".
+        let raw = "alphabe bravois charlie deltaon echofox foxtrot golfbal hotelie india99 julie9 extraword";
+        let t = Shown::title(raw);
+        assert!(t.text().chars().count() <= 80, "{}", t.text());
+        assert!(t.text().split_whitespace().count() <= 10, "{}", t.text());
+        assert!(t.text().ends_with("..."), "{}", t.text());
+        assert_eq!(t.full(), raw);
     }
 
     #[test]
@@ -560,19 +575,16 @@ mod tests {
         let texts: Vec<Text> = fake_pages().iter().flat_map(|(n, p)| walk(n, p)).collect();
         assert!(texts.len() >= 7, "{texts:?}");
         for t in &texts {
-            match lint(t.role, &t.text) {
-                Some(f) => assert!(f.is_empty(), "{}: {:?} -> {f:?}", t.path, t.text),
-                None => return,
-            }
+            let f = lint(t.role, &t.text);
+            assert!(f.is_empty(), "{}: {:?} -> {f:?}", t.path, t.text);
         }
     }
 
     #[test]
     fn negative_control_the_pre_fix_strings_fail_the_lint() {
         let fails = |role, text: &str, code: &str| {
-            if let Some(f) = lint(role, text) {
-                assert!(f.iter().any(|c| c == code), "{text:?}: {f:?}");
-            }
+            let f = lint(role, text);
+            assert!(f.iter().any(|c| c == code), "{text:?}: {f:?}");
         };
         fails(Role::Title, SESSION_PROMPT, "forbid");
         fails(Role::Title, SESSION_PROMPT, "too-long");
@@ -582,9 +594,8 @@ mod tests {
         for (role, raw) in [(Role::Title, SESSION_PROMPT), (Role::Title, PHASE_ROW)] {
             let s = Shown::title(raw);
             assert_eq!(s.role(), role);
-            if let Some(f) = lint(role, s.text()) {
-                assert!(f.is_empty(), "{:?}: {f:?}", s.text());
-            }
+            let f = lint(role, s.text());
+            assert!(f.is_empty(), "{:?}: {f:?}", s.text());
         }
     }
 

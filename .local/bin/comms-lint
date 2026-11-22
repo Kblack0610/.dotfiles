@@ -146,6 +146,8 @@ def lint(text, ch, ids, priority=None, title=None, record=None, role=None):
     if role and (cap := ch.get("roles", {}).get(role)):
         ch = {**ch, "max_chars": cap[0]}
         words = cap[1]
+    elif role and ch.get("roles"):
+        f.append(("unknown-role", f"role {role!r} is not one of {sorted(ch['roles'])}"))
     item_re = re.compile(ch["item"])
     lines = body_lines(text)
     scoped = "\n".join(lines)

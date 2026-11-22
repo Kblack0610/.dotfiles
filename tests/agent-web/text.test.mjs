@@ -9,13 +9,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 
 const dir = new URL("../../.local/src/agent-web/static/", import.meta.url);
 const baseline = JSON.parse(readFileSync(new URL("./text.baseline.json", import.meta.url), "utf8"));
 
 const SHAPES = {
   list: /<(?:ul|li)[\s>]/g,
-  err: /class="[^"]*\berr\b/g,
+  err: /class=["'][^"']*\berr\b/g,
   fold: /<details[\s>]/g,
 };
 
@@ -45,8 +46,14 @@ export const verdict = (found, base) => {
   return bad;
 };
 
+// Every .js, .mjs and .html under static/, keyed by its path relative to it.
+const scripts = (rel = "") => readdirSync(new URL(rel, dir), { withFileTypes: true }).flatMap((e) => {
+  const p = join(rel, e.name);
+  if (e.isDirectory()) return scripts(p + "/");
+  return /\.(?:js|mjs|html)$/.test(e.name) ? [p] : [];
+});
 const files = () => Object.fromEntries(
-  readdirSync(dir).filter((f) => f.endsWith(".js")).sort().map((f) => [f, readFileSync(new URL(f, dir), "utf8")]),
+  scripts().sort().map((f) => [f, readFileSync(new URL(f, dir), "utf8")]),
 );
 
 test("agent-web's scripts hold no more hand-built lists, error blocks and folds than the baseline", () => {

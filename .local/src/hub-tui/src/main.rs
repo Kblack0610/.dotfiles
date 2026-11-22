@@ -336,7 +336,15 @@ fn ui_text(args: Vec<String>) -> i32 {
     for r in hub_core::display::records(&pages, &ts) {
         println!("{r}");
     }
-    0
+    // A page that could not be read has no texts, so say so: a grade over fewer pages is not clean.
+    let mut failed = briefing.errors.clone();
+    if let Err(e) = &board {
+        failed.push(format!("board: {e}"));
+    }
+    for f in &failed {
+        eprintln!("hub ui-text: could not read {f}");
+    }
+    i32::from(!failed.is_empty())
 }
 
 /// `hub needs --json`: NEEDS YOU as Home ranks it. `--page`: the pager over it, with no
