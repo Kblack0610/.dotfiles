@@ -833,7 +833,7 @@ close_items_sample() {
 # - Manual (investigate-only) permission mode, nothing typed yet: its hook denies every write, so a
 #   typed /wind-down auto is wasted (ar-4046); close its window the same way, no keystrokes.
 # - Typed FLEET_IDLE_CLOSE_MIN ago and still due (WINDOW, CLOSE_REFUSED_JQ): whatever it did with the
-#   close (manual mode refused it, a red stopped it), it is quiet again with nothing to land: close it.
+#   close (a red stopped it), it is quiet again with nothing to land: close it.
 # A window closes only unshown, with Claude in front (an editor's buffer is not in the scrollback) and
 # no turn running in its footer, by wind-down.sh close (scrollback, window, a reap that refuses a dirty
 # tree), its own open asks set to reopen it first (logged once in .reopen-failed when one cannot be).
