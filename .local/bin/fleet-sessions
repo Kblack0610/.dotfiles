@@ -1175,13 +1175,14 @@ heavy_panes() {
   "$fa" 2>/dev/null | awk 'f && NF == 0 { exit } f && $8 != "" && $8 != "-" { print $8 } /^PID /{ f = 1 }' | sort -u
 }
 
-# restored_panes <agent-panel rows> -> <server>/<pane id> of each pane fleet-dispatch restore reopened
-# (its @fleet_restored pane option), one per line, one tmux call per server the local rows name. The
-# option dies with the pane, so a later hand resume of the same conversation is a new pane without it.
+# restored_panes <agent-panel rows> -> "<server>/<pane id> <epoch>" of each pane fleet-dispatch restore
+# reopened, the epoch its @fleet_restored option holds (when its server was last seen alive), one per
+# line, one tmux call per server the local rows name. The option dies with the pane, so a later hand
+# resume of the same conversation is a new pane without it.
 restored_panes() {
   local srv
   for srv in $(jq -r 'select((.host // "") == "") | .pane // "" | select(contains("/")) | sub("/.*"; "")' <<<"$1" 2>/dev/null | sort -u); do
-    tmux -L "$srv" list-panes -a -f '#{@fleet_restored}' -F '#{pane_id}' 2>/dev/null | sed "s|^|$srv/|"
+    tmux -L "$srv" list-panes -a -f '#{@fleet_restored}' -F '#{pane_id} #{@fleet_restored}' 2>/dev/null | sed "s|^|$srv/|"
   done
 }
 
@@ -2253,7 +2254,7 @@ collect() {
     unreadable agent-panel
     if [ "$prc" -eq 3 ] && [ -n "$panel" ]; then echo + >> "$CACHE/blind"; else echo '*' >> "$CACHE/blind"; fi
   fi
-  # A restored pane's quiet is its transcript's alone (CLOSE_JQ): its claude is new, its conversation is not.
+  # A restored pane carries the quiet it had before the restore (CLOSE_JQ): its claude is new, its conversation is not.
   local restored; restored="$(restored_panes "$panel")"
   local PENDING_ASKS
   PENDING_ASKS="$(pending_asks)" || { unreadable agent-ask; echo "*" >> "$CACHE/blind"; }
@@ -2325,7 +2326,10 @@ collect() {
     askids="$(grep . <<<"$ownids" | { if [ -n "$qheld" ]; then grep -vxF "$qheld"; else cat; fi; } | paste -sd, -)"
     asks=0; [ -n "$askids" ] && asks="$(tr ',' '\n' <<<"$askids" | wc -l)"
     hv=0; [ "$host" = - ] && [ -n "$pane" ] && grep -qxF "${target%%/*}/$pane" <<<"$heavy" && hv=1
-    rs=0; [ "$host" = - ] && [ -n "$pane" ] && grep -qxF "${target%%/*}/$pane" <<<"$restored" && rs=1
+    # quiet_before_min: the quiet a restored pane's conversation had when its server was last seen alive.
+    rs=-; [ "$host" = - ] && [ -n "$pane" ] && rs="$(awk -v p="${target%%/*}/$pane" -v s="$since" \
+      '$1 == p && $2 ~ /^[0-9]+$/ && s > 0 { q = int(($2 - s) / 60); print (q > 0 ? q : 0); exit }' <<<"$restored")"
+    rs=${rs:--}
     local solo item
     solo="$(jq -r --arg k "${target%:*}" 'select((.target | sub(":[^:]*$"; "")) == $k) | .target' <<<"$panel" 2>/dev/null | wc -l)"
     item="$(item_of "$qitems" "$sid" "${target%%/*}:$tsess" "$solo" "$started")"
@@ -2909,14 +2913,15 @@ explain() {
 # and its window is closed by close_sample an hour later, never by the session itself.
 # Unlanded work reads from `blockers` (work_blockers), not raw git counts: a squash-merged branch
 # stays `ahead` of main with nothing left to land. A null age_min reads 0. A row fleet-dispatch restore
-# reopened is quiet for its idle alone: its claude is new, but the conversation was as quiet before the
-# reboot, and the age floor would hold a finished window open another hour (ar-4141). The row of the session
+# reopened adds quiet_before_min, the quiet it had when its server was last seen, to its age: its claude
+# is new, its conversation is not, and the bare age would hold a finished window open another hour while
+# the outage itself is no quiet (ar-4141). The row of the session
 # named by `--arg self` (close --self, run mid-turn by /wind-down auto) skips the turn and the
 # quiet steps: the shepherd's nudge came after the quiet time, and the session is always mid-turn.
 CLOSE_JQ='
   def close_verdict($idle_close; $chat_close_h):
     ((($ARGS.named.self // "") != "") and .session_id == $ARGS.named.self) as $me
-    | (if .restored then (.idle_min // 0) else ([.idle_min // 0, .age_min // 0] | min) end) as $quiet
+    | ([.idle_min // 0, (.age_min // 0) + (.quiet_before_min // 0)] | min) as $quiet
     | ((.blockers // []) | map(select(test("^(open ask |[0-9]+ open ask)") | not))) as $other
     | ($other | map(select(test("dirty file|not on the default branch|(^|: )PR ([^ /]+/[^ /]+)?#[0-9]+ open|commits after merged PR")))[0])
       as $unlanded
@@ -3138,8 +3143,8 @@ json_rows() {
       attached: ((.[64] // "0") == "1"),
       # The manual (default) permission mode is investigate-only, so the session cannot write a wind-down note.
       in_manual_mode: ((.[65] // "0") == "1"),
-      # fleet-dispatch restore reopened it (its pane carries @fleet_restored): quiet is idle alone (CLOSE_JQ).
-      restored: ((.[66] // "0") == "1")} | '"$CLOSE_JQ"
+      # fleet-dispatch restore reopened it: the quiet it had when its server was last seen (CLOSE_JQ).
+      quiet_before_min: (if (.[66] // "-") == "-" then null else .[66] | tonumber end)} | '"$CLOSE_JQ"
 }
 
 # overdue_of <now epoch> <rows file> <eta file> -> {session_id: verdict}: the one overdue rule, which

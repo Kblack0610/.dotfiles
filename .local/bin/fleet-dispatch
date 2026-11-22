@@ -3701,17 +3701,18 @@ wound_down() { compgen -G "$HOME/.agent/spin-down/$1.[rf]*" >/dev/null || compge
 # (`agent-queue mine --sid --newest`: when several do, a running one, then the one updated last),
 # so the item records where it runs again. A claude conversation whose item is running gets
 # RESTORE_PROMPT as its first message and carries on; any other comes back at an empty prompt (the
-# human's own conversation, or an item waiting on someone). Each reopened pane is tagged
-# @fleet_restored, so its close timer runs on in fleet-sessions from the quiet it had before. The manifest brings back the declared
+# human's own conversation, or an item waiting on someone). The manifest brings back the declared
 # sessions and windows first; a plain shell is listed, not reopened. A prompted reopen is a wake and
 # is paced (wake_take): one past the batch is left for a later pass, listed in RESTORE_OWED
 # (restore_pace reads it). Consumed only when every reopen worked and none is owed, so a rerun
 # finishes, and only as read at the start, under record's lock: a death world_lost adds to it
-# meanwhile stays owed.
+# meanwhile stays owed. Each reopened pane is tagged @fleet_restored with the record's time, when its
+# server was last seen alive, so fleet-sessions runs its close timer on from the quiet it had then.
 restore_world() {
-  local f=$1 dry=$2 srv sess win cwd id mode project item it prompt said failed=0 opened=0 owed=0 walked
+  local f=$1 dry=$2 srv sess win cwd id mode project item it prompt said failed=0 opened=0 owed=0 walked alive
   walked=$(sha256sum < "$f")
   srv=$(jq -r .server "$f")
+  alive=$(date -d "$(jq -r '.at // empty' "$f")" +%s 2>/dev/null) || alive=
   [ "$dry" = 1 ] || tmx ensure "$srv" >/dev/null || say "restore: tmx ensure $srv failed"
   while IFS=$'\037' read -r sess win cwd id; do
     if [ -z "$id" ]; then echo "$srv:$sess:$win: no conversation, not reopened ($cwd)"; continue; fi
@@ -3736,11 +3737,14 @@ restore_world() {
     if cmd_start --project "${project:-${cwd##*/}}" --server "$srv" --session "$sess" --window "$win" \
         --cwd "$cwd" --resume "$id" ${item:+--item "$item"} ${prompt:+--prompt "$prompt"} </dev/null >/dev/null; then
       echo "$srv:$sess:$win: reopened in $mode${item:+ for queue item $item}$said"; opened=$((opened + 1))
-      # Its claude is new but its conversation is not: fleet-sessions reads a @fleet_restored pane's
-      # quiet from the transcript alone, so a window closed-now before the reboot closes now again,
-      # not an hour after its reopen (ar-4141). The option dies with the pane.
-      [ -z "$START_PANE" ] || tmux -L "$srv" set-option -pq -t "$START_PANE" @fleet_restored 1 ||
+      # Its claude is new but its conversation is not: fleet-sessions adds the quiet it had when the
+      # server was last seen to its age, so a window closed-now before the reboot closes now again, not
+      # an hour after its reopen, and the outage itself is not quiet (ar-4141). The option dies with the pane.
+      if [ -z "$START_PANE" ] || [ -z "$alive" ]; then
+        say "restore: $srv:$sess:$win has no pane or record time to tag @fleet_restored; it closes an hour after its reopen"
+      elif ! tmux -L "$srv" set-option -pq -t "$START_PANE" @fleet_restored "$alive"; then
         say "restore: could not tag $srv:$sess:$win @fleet_restored; it closes an hour after its reopen"
+      fi
     else
       failed=$((failed + 1))
     fi

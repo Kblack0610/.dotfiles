@@ -1992,22 +1992,27 @@ SH
   [ "$(jq -r .in_manual_mode <<<"$output")" = false ]
 }
 
-@test "end to end: a pane fleet-dispatch restore reopened is quiet for its idle alone, not its new claude's age (ar-4141)" {
+@test "end to end: a pane fleet-dispatch restore reopened adds the quiet it had before the reboot to its age, never the outage (ar-4141)" {
   landed_fixture
-  # A claude started 10 minutes ago on a conversation quiet an hour: the age floor holds it.
-  PANEL_AGE_S=600 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  # A claude started 10 minutes ago on a conversation quiet two hours: the bare age holds it.
+  PANEL_AGE_S=600 PANEL_IDLE_S=7200 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
   rm -f "$NOTES_FIXTURE/tmux.panes"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
-  [ "$(jq -r .restored <<<"$output")" = false ]
+  [ "$(jq -r .quiet_before_min <<<"$output")" = null ]
   [ "$(jq -r .close.why <<<"$output")" = "quiet 10m of 60m" ]
-  # The same pane carries @fleet_restored (the stub's list-panes on lab answers it): the hour counts.
-  printf '%s\n' %7 > "$NOTES_FIXTURE/tmux.panes.lab"
+  # Its pane carries @fleet_restored: the server was last seen 30 minutes ago, after 90 quiet minutes.
+  printf '%s\n' "%7 $(( $(date +%s) - 1800 ))" > "$NOTES_FIXTURE/tmux.panes.lab"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
-  [ "$(jq -r .restored <<<"$output")" = true ]
-  [ "$(jq -r '"\(.close.verdict): \(.close.why)"' <<<"$output")" = "now: quiet 60m, nothing to land" ]
-  assert_called "tmux -L lab list-panes -a -f #{@fleet_restored} -F #{pane_id}"
+  [ "$(jq -r .quiet_before_min <<<"$output")" = 90 ]
+  [ "$(jq -r '"\(.close.verdict): \(.close.why)"' <<<"$output")" = "now: quiet 100m, nothing to land" ]
+  assert_called "tmux -L lab list-panes -a -f #{@fleet_restored} -F #{pane_id} #{@fleet_restored}"
+  # Active 5 minutes before the server died 100 minutes ago: the outage is not quiet, 5 + 10 is.
+  printf '%s\n' "%7 $(( $(date +%s) - 6900 ))" > "$NOTES_FIXTURE/tmux.panes.lab"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .close.why <<<"$output")" = "quiet 15m of 60m" ]
 }
 
 @test "end to end: plan mode with no approval dialog open is not NEEDS plan awaiting approval" {
@@ -5496,10 +5501,11 @@ verdict() {
   # A headless run's replay: the shepherd never types into its opencode TUI; fleet-dispatch reap closes it.
   [ "$(verdict '{activity: "done", bucket: "DONE", idle_min: 600}')" = "keep: headless run: fleet-dispatch reap closes its replay once its item leaves review" ]
   # A worker row runs the same chain: the shepherd types its close over ssh (fleet_host_run).
-  # A pane restore reopened: its new claude's age is no floor, the conversation's idle is its quiet (ar-4141).
+  # A pane restore reopened adds the quiet it had before its server died to its new claude's age (ar-4141).
   [ "$(verdict '{idle_min: 90, age_min: 10}')" = "after: quiet 10m of 60m" ]
-  [ "$(verdict '{idle_min: 90, age_min: 10, restored: true}')" = "now: quiet 90m, nothing to land" ]
-  [ "$(verdict '{idle_min: 5, age_min: 10, restored: true}')" = "after: quiet 5m of 60m" ]
+  [ "$(verdict '{idle_min: 90, age_min: 10, quiet_before_min: 70}')" = "now: quiet 80m, nothing to land" ]
+  [ "$(verdict '{idle_min: 90, age_min: 10, quiet_before_min: 20}')" = "after: quiet 30m of 60m" ]
+  [ "$(verdict '{idle_min: 5, age_min: 10, quiet_before_min: 70}')" = "after: quiet 5m of 60m" ]
   [ "$(verdict '{host: "ms-a2"}')" = "now: quiet 90m, nothing to land" ]
   [ "$(verdict '{host: "ms-a2", idle_min: 5}')" = "after: quiet 5m of 60m" ]
   [ "$(SELF=s1 verdict '{host: "ms-a2", session_id: "s1", idle_min: 5}')" = "now: quiet 5m, nothing to land" ]
