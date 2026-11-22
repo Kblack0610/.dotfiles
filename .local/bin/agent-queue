@@ -1287,7 +1287,8 @@ ORDER='def untagged($t): ((.tags // "") | if type == "array" then join(" ") else
   | if $mix == null then sort_by(bucket, .queued) else mix($mix; bucket) end'
 
 # Classes of service (AQ_CLASSES, plan can-we-move-our-mellow-sphinx P3): an item is in the first class
-# whose `tags` it carries, else whose `from` it came from, else whose `kinds` holds its row type
+# whose `tags` it carries, else whose `from` it came from, else whose `projects` holds its project,
+# else whose `kinds` holds its row type
 # (`type:`, which `add` stamps from `notes row parse`), else the `default` class. Match a cleanup class
 # by kind, not by the `cleanup` tag: fleet-dispatch puts that tag on every kinds.json cleanup kind, fix
 # included. Inside a bucket the items interleave by class: each next place goes to the class whose count
@@ -1302,21 +1303,29 @@ ORDER='def untagged($t): ((.tags // "") | if type == "array" then join(" ") else
 # near min_vruntime; a class with only held items there sets no floor, as it starts nothing. The cut
 # count carries into the next bucket like any other. So a class served a lot this week waits about
 # lag_places places at most, and one served little gets at most lag_places * share / (sum of shares)
-# places ahead. Shares are weights: the bound divides by their sum. No lag_places is no bound. An AQ_CLASSES not
+# places ahead. Shares are weights: the bound divides by their sum. No lag_places is no bound. A class with a `min_live`
+# (a whole number, ar-3943) that has fewer live items (running or waiting, plus the places this order already
+# gave it) goes first among the classes with a startable head item in its bucket, ahead of the shares,
+# and that item carries `short: true` for fleet-dispatch (pick_item keeps run units for it). It ranks and
+# starts nothing past the pace target. An AQ_CLASSES not
 # `on: true`, or unreadable, is no mix.
 AQ_CLASSES="${AGENT_QUEUE_CLASSES:-$HOME/.config/fleet-dispatch/classes.json}"
 CLASS_JQ='def class_of($cs): ((.tags // "") | if type == "array" then join(" ") else tostring end | [splits("\\s+")]) as $tg
   | (.from // "") as $f
+  | (.project // "") as $p
   | (.type // "") as $k
   | ([$cs[] | select(any(.tags[]?; . as $t | $tg | index([$t]) != null))][0]
      // [$cs[] | select(any(.from[]?; . == $f))][0]
+     // [$cs[] | select(any(.projects[]?; . == $p))][0]
      // [$cs[] | select(any(.kinds[]?; . == $k))][0]
      // [$cs[] | select(.default == true)][0]
      // {name: "none"}).name;'
 MIX_JQ='def mix($m; bucket): ($m.classes | map(.name)) as $names
   | ($m.classes | map({(.name): (.share // 0)}) | add) as $share
   | ([$share[] | select(. > 0)] | add // 0) as $sum
+  | ($m.classes | map({(.name): (.min_live // 0)}) | add) as $minlive
   | def ratio($c; $n): if ($share[$c] // 0) > 0 then (($n[$c] // 0) / $share[$c]) else infinite end;
+  def short($c; $s): ($minlive[$c] // 0) > (($s.l[$c]) // 0) and $s.q[$c][0].hold == null;
   def bound: if $m.lag_places == null or $sum == 0 then . else
       (.q | to_entries | map(select(($share[.key] // 0) > 0 and any(.value[]; .hold == null)) | .key)) as $in
       | if ($in | length) == 0 then . else
@@ -1324,21 +1333,22 @@ MIX_JQ='def mix($m; bucket): ($m.classes | map(.name)) as $names
           | reduce $in[] as $c (.; .n[$c] = ([(.n[$c] // 0), $top * $share[$c]] | min))
         end
     end;
-  reduce (group_by(bucket)[] | sort_by(.queued)) as $b ({out: [], n: $m.done};
+  reduce (group_by(bucket)[] | sort_by(.queued)) as $b ({out: [], n: $m.done, l: ($m.live // {})};
     .q = ($b | map({c: class_of($m.classes), i: .}) | group_by(.c) | map({key: .[0].c, value: map(.i)}) | from_entries)
     | bound
     | until((.q | map(length) | add // 0) == 0;
         . as $s
         | ($s.q | to_entries | map(select(.value | length > 0) | .key)
-           | min_by(. as $c | [ratio($c; $s.n), ($names | map(. == $c) | index(true) // 1e9)])) as $c
+           | min_by(. as $c | [(if short($c; $s) then 0 else 1 end), ratio($c; $s.n), ($names | map(. == $c) | index(true) // 1e9)])) as $c
+        | short($c; $s) as $short
         | .q[$c][0] as $it
-        | .out += [$it] | .q[$c] |= .[1:]
-        | if $it.hold == null then .n[$c] = ((.n[$c] // 0) + 1) else . end)
+        | .out += [if $short and $it.hold == null then $it + {short: true} else $it end] | .q[$c] |= .[1:]
+        | if $it.hold == null then .n[$c] = ((.n[$c] // 0) + 1) | .l[$c] = ((.l[$c] // 0) + 1) else . end)
     | del(.q))
   | .out;'
 
 # class_cfg [--mix] -> AQ_CLASSES on one line: a class list, a window_days of whole days (default 7)
-# and a lag_places, when set, of a number not below 0. Plain, it is the order's config and needs
+# a lag_places, when set, of a number not below 0, and a min_live per class, when set, of a whole number not below 0. Plain, it is the order's config and needs
 # `on: true`; --mix (agent-queue mix) takes it on or off and also needs a starve_days of whole days
 # (default 3) inside the window. Only mix checks starve_days, so
 # a bad watch setting never turns the order off. Any other file fails, printing nothing.
@@ -1346,11 +1356,12 @@ class_cfg() {
   jq -ce --argjson mix "$([ "${1:-}" = --mix ] && echo true || echo false)" 'def days: type == "number" and . >= 1 and . == floor;
     select(($mix or .on == true) and (.classes | type) == "array" and (.classes | length) > 0 and (.window_days // 7 | days)
       and (.lag_places == null or (.lag_places | type == "number" and . >= 0))
+      and all(.classes[]; .min_live == null or (.min_live | type == "number" and . >= 0 and . == floor))
       and (($mix | not) or ((.starve_days // 3 | days) and (.starve_days // 3) <= (.window_days // 7))))' \
     "$AQ_CLASSES" 2>/dev/null
 }
 
-# class_started <cfg> -> {window: {<class>: n}, recent: {<class>: n}}: each class's started items that
+# class_started <cfg> -> {window: {<class>: n}, recent: {<class>: n}, live: {<class>: n}} (live: those running or waiting): each class's started items that
 # closed in the last window_days or are still running, waiting or in review (the mix's count, so a
 # class that just started one is not picked again as if it had not), and of those the ones started in
 # the last starve_days. It reads without the lock: an item moves between states by a rename and a write
@@ -1363,8 +1374,9 @@ class_started() {
   items_json --rows "$CLASS_JQ $cfg"' as $cfg | (now - ($cfg.starve_days // 3) * 86400) as $cut
     | def count: group_by(.c) | map({(.[0].c): length}) | add // {};
     [.[] | select((.started // "") != "")
-      | {c: class_of($cfg.classes), recent: ((.started | sub("\\.[0-9]+"; "") | fromdateiso8601? // 0) >= $cut)}]
-    | {window: count, recent: (map(select(.recent)) | count)}' "${FILES[@]}"
+      | {c: class_of($cfg.classes), live: (.state == "running" or .state == "waiting"),
+         recent: ((.started | sub("\\.[0-9]+"; "") | fromdateiso8601? // 0) >= $cut)}]
+    | {window: count, recent: (map(select(.recent)) | count), live: (map(select(.live)) | count)}' "${FILES[@]}"
 }
 
 # mix_json -> the class config plus `done`, class_started's window counts (MIX_JQ's base); null when
@@ -1372,7 +1384,7 @@ class_started() {
 mix_json() {
   local cfg
   cfg="$(class_cfg)" || { echo null; return 0; }
-  class_started "$cfg" 2>/dev/null | jq -c --argjson cfg "$cfg" '$cfg + {done: .window}' 2>/dev/null || echo null
+  class_started "$cfg" 2>/dev/null | jq -c --argjson cfg "$cfg" '$cfg + {done: .window, live: .live}' 2>/dev/null || echo null
 }
 
 # mix [--json] -> each class of service (AQ_CLASSES, on or off): its share, its runnable items (queued,
@@ -1382,21 +1394,21 @@ mix_json() {
 cmd_mix() {
   local json='' cfg q s out
   case "${1:-}" in --json) json=1 ;; '') ;; *) die "unknown option: $1" ;; esac
-  cfg="$(class_cfg --mix)" || die "$AQ_CLASSES has no class list, a window_days or starve_days that is not whole days inside the window, or a lag_places that is not a number of 0 or more"
+  cfg="$(class_cfg --mix)" || die "$AQ_CLASSES has no class list, a window_days or starve_days that is not whole days inside the window, a lag_places that is not a number of 0 or more, or a class min_live that is not a whole number of 0 or more"
   q="$(snap_json "$CLASS_JQ $cfg"' as $cfg | [.[] | select(.hold == null) | class_of($cfg.classes)]
     | group_by(.) | map({(.[0]): length}) | add // {}' queued)" || die "the queue could not be read"
   s="$(class_started "$cfg")" || die "the started items could not be read"
   out="$(jq -nc --argjson cfg "$cfg" --argjson q "$q" --argjson s "$s" '([$s.window[]] | add // 0) as $total
     | {on: ($cfg.on == true), window_days: ($cfg.window_days // 7), starve_days: ($cfg.starve_days // 3),
        classes: [$cfg.classes[] | .name as $n
-         | {name: $n, share: (.share // 0), runnable: ($q[$n] // 0), started: ($s.window[$n] // 0), recent: ($s.recent[$n] // 0),
+         | {name: $n, share: (.share // 0), runnable: ($q[$n] // 0), live: ($s.live[$n] // 0), min_live: (.min_live // 0), started: ($s.window[$n] // 0), recent: ($s.recent[$n] // 0),
             pct: (if $total > 0 then ($s.window[$n] // 0) * 100 / $total | round else null end)}]}
     | .starved = [.classes[] | select(.runnable > 0 and .recent == 0) | .name]')"
   [ -z "$json" ] || { printf '%s\n' "$out"; return 0; }
   jq -r 'def r($w): tostring | " " * ($w - length) + .;
     "mix (\(if .on then "on" else "off" end)): items started in \(.window_days)d against each class share",
-    "class        share  started    pct  runnable  started \(.starve_days)d",
-    (.classes[] | "\(.name + "          " | .[0:10]) \("\(.share)%" | r(7)) \(.started | r(8)) \(if .pct == null then "-" else "\(.pct)%" end | r(6)) \(.runnable | r(9)) \(.recent | r(10))"),
+    "class        share  started    pct  runnable  started \(.starve_days)d  live/min",
+    (.classes[] | "\(.name + "          " | .[0:10]) \("\(.share)%" | r(7)) \(.started | r(8)) \(if .pct == null then "-" else "\(.pct)%" end | r(6)) \(.runnable | r(9)) \(.recent | r(10))  \(if .min_live > 0 then "\(.live)/\(.min_live)" else "\(.live)" end | r(8))"),
     (if (.starved | length) > 0 then "starved: \(.starved | join(", ")) (runnable, none started in \(.starve_days)d)" else "starved: none" end)' <<<"$out"
 }
 

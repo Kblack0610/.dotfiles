@@ -1287,6 +1287,9 @@ runs_now() {
   jq -e --argjson now "$(date +%s)" --argjson h "$DISPATCH_ASK_FRESH_H" "$ASK_JQ runs_now(\$now; \$h)" <<<"$1" >/dev/null 2>&1
 }
 
+# short_item <item json> -- the item is in a class under its classes.json min_live (agent-queue marks it `short`).
+short_item() { jq -e '.short == true' <<<"$1" >/dev/null 2>&1; }
+
 # runs_now_label <item json> -> "urgent" or "ask", the word the run log names it by.
 runs_now_label() { if [ "$(jq -r .priority <<<"$1")" = urgent ]; then echo urgent; else echo ask; fi; }
 
@@ -5259,7 +5262,7 @@ load_findings() {
 # 2026-11-07 "starved pool:unity ... every queue item waits" stood for 2 unity items of an idle
 # project while the other 40 waited on account pace, which the message never named.
 pick_item() {
-  local items="$1" it why need free host mwhy='' mread=0 fhit=0 uwait=0 held=() waits="every queue item waits" reserved=''
+  local items="$1" it why need free host mwhy='' mread=0 fhit=0 uwait=0 held=() waits="every queue item waits" reserved='' kept=''
   local shold=0 sfirst='' shost='' swhy='' mhit=0
   share_state   # in this shell, so every share_why reads one count
   if [ "${RED_PASS:-0}" = 1 ]; then waits="every red item waits; the rest wait on ${FLOOR_GATE:-the gate}"
@@ -5288,8 +5291,12 @@ pick_item() {
     # keeps the free ones: a later item that would use them waits too, or a stream of light items starves a heavy one.
     if [ -n "$reserved" ] && [ -z "$why" ] && [ -z "$host" ] && ! runs_now "$it"; then
       why="the $free free run units wait for $(runs_now_label "$PICK_RESERVED") $reserved"
+    elif [ -n "$kept" ] && [ -z "$why" ] && [ -z "$host" ] && ! runs_now "$it" && ! short_item "$it"; then
+      why="the $free free run units wait for $kept, its class under min_live"
     elif [ -z "$reserved" ] && [ "$uwait" = 1 ] && [ "$need" -le "$TARGET" ] && runs_now "$it" && [ -z "$(held_by "$it" "$FIRING")" ]; then
       reserved=$(jq -r .slug <<<"$it") PICK_RESERVED=$it
+    elif [ -z "$kept" ] && [ "$uwait" = 1 ] && [ "$need" -le "$TARGET" ] && short_item "$it" && [ -z "$(held_by "$it" "$FIRING")" ] && [ -z "$(share_why "$it")" ]; then
+      kept=$(jq -r .slug <<<"$it")
     fi
     if [ -z "$why" ]; then
       PICKED=$it PLACE_HOST=$host
@@ -5302,7 +5309,7 @@ pick_item() {
   # The fleet share cap lets go when nothing else can start: the first item it held takes the place
   # it had, unless the free units wait for a reserved item. Only the start after the fill (SHARE_LET_GO) lets go:
   # the queue pass first tops the board up with other projects' rows, and a floor's list is filtered, so a hold there is no proof.
-  if [ -n "$sfirst" ] && [ "${SHARE_LET_GO:-0}" = 1 ] && { [ -z "$reserved" ] || [ -n "$shost" ]; }; then
+  if [ -n "$sfirst" ] && [ "${SHARE_LET_GO:-0}" = 1 ] && { [ -z "$reserved$kept" ] || [ -n "$shost" ]; }; then
     PICKED=$sfirst PLACE_HOST=$shost PICK_NOTE="; the fleet share cap let it go, as nothing else could start ($swhy)"
     return 0
   fi

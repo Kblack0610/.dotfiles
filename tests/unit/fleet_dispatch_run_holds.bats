@@ -754,3 +754,48 @@ share_history() {
   assert_output --partial "so the board fills from other projects"
   [ -z "$(agent-queue list --json --state active 2>/dev/null | jq -r 'select(.project == "game") | .slug')" ] || fail "the #urgent fleet row was promoted past the cap"
 }
+
+# classes.json min_live (ar-3943): a class under its minimum of live sessions has its first item ranked
+# ahead inside its bucket (agent-queue marks it `short`), and when that item waits only on run units it
+# keeps the free ones like an urgent one, so light work of a class over its minimum cannot starve it.
+min_live_classes() {
+  export AGENT_QUEUE_CLASSES="$SANDBOX/classes.json"
+  jq -n --argjson m "$1" '{on: true, window_days: 7, classes: [
+    {name: "rest", share: 10, default: true},
+    {name: "heavy-game", share: 10, tags: ["gamework"], min_live: $m}]}' > "$AGENT_QUEUE_CLASSES"
+}
+
+@test "min_live: a short class's heavy item that waits on run units keeps them from a light item of the other class" {
+  five_of_six_units
+  min_live_classes 1
+  agent-queue add --project game --slug big-game --priority high --tags gamework --weight heavy "big game"
+  agent-queue add --project game --slug small-rest --priority high --weight light "small rest"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'wait for big-game, its class under min_live'
+  assert_not_called 'wt new'
+  [ -n "$(qitem queued small-rest)" ] || fail "the light item took the units the short class's item waits for"
+  [ -n "$(qitem queued big-game)" ] || fail "the heavy item left the queue"
+}
+
+@test "min_live: with no minimum the light item starts past the heavy one that does not fit (negative control)" {
+  five_of_six_units
+  min_live_classes 0
+  agent-queue add --project game --slug big-game --priority high --tags gamework --weight heavy "big game"
+  agent-queue add --project game --slug small-rest --priority high --weight light "small rest"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  [ -n "$(qitem running small-rest)" ] || fail "the light item did not start"
+  [ -n "$(qitem queued big-game)" ] || fail "the heavy item started past the unit budget"
+}
+
+@test "min_live: a class at its minimum of live sessions keeps no units" {
+  five_of_six_units
+  min_live_classes 1
+  sed -i '/^mode:/a tags: gamework' "$AGENT_QUEUE_DIR"/running/*-l1.md
+  agent-queue add --project game --slug big-game --priority high --tags gamework --weight heavy "big game"
+  agent-queue add --project game --slug small-rest --priority high --weight light "small rest"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  [ -n "$(qitem running small-rest)" ] || fail "the light item waited for a class already at its minimum"
+}
