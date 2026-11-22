@@ -44,12 +44,65 @@ old_stash() {
   assert_output 'On main: recent'
   run "$DIRTY"
   assert_success
-  ref="$(git -C "$REPO" for-each-ref --format='%(refname)' 'refs/parked/stash/' | head -n1)"
+  ref="$(git -C "$REPO" for-each-ref --format='%(refname) %(subject)' 'refs/parked/stash/' | awk '$NF == "first" { print $1 }')"
   git -C "$REPO" stash store -m restored "$ref"
   git -C "$REPO" checkout -q -- a.txt
   git -C "$REPO" stash apply -q stash@{0}
   run cat "$REPO/a.txt"
-  assert_output --regexp '^(first|second)$'
+  assert_output first
+}
+
+@test "a stash with untracked files keeps them once parked" {
+  echo wip > "$REPO/new.md"
+  GIT_COMMITTER_DATE="$(date -d '40 days ago' '+%s +0000')" git -C "$REPO" stash push -q -u -m withnew
+  "$PARK" stashes "$REPO"
+  ref="$(git -C "$REPO" for-each-ref --format='%(refname)' 'refs/parked/stash/')"
+  git -C "$REPO" stash store -m restored "$ref"
+  git -C "$REPO" stash apply -q stash@{0}
+  run cat "$REPO/new.md"
+  assert_output wip
+}
+
+@test "paths parks a staged new file and removes it from the index" {
+  echo staged > "$REPO/c.txt"
+  git -C "$REPO" add c.txt
+  run "$PARK" paths "$REPO" c.txt
+  assert_success
+  run git -C "$REPO" status --porcelain
+  assert_output ''
+  ref="$(git -C "$REPO" for-each-ref --format='%(refname)' 'refs/parked/tree/')"
+  run git -C "$REPO" show "$ref:c.txt"
+  assert_output staged
+}
+
+@test "paths reads a glob as a literal name, so it never parks what it does not restore" {
+  echo changed > "$REPO/a.txt"
+  run "$PARK" paths "$REPO" '*.txt'
+  assert_failure 1
+  run cat "$REPO/a.txt"
+  assert_output changed
+  assert_equal "$(git -C "$REPO" for-each-ref refs/parked/)" ''
+}
+
+@test "paths on ignored-only or missing paths is nothing to park, exit 1" {
+  mkdir -p "$REPO/ignored"
+  echo blob > "$REPO/ignored/blob"
+  run "$PARK" paths "$REPO" ignored
+  assert_failure 1
+  run "$PARK" paths "$REPO" nothing-here
+  assert_failure 1
+}
+
+@test "paths refuses a nested git checkout and leaves it in place" {
+  git init -q "$REPO/vendor"
+  echo x > "$REPO/vendor/f"
+  git -C "$REPO/vendor" add f
+  git -C "$REPO/vendor" -c user.email=t@example.com -c user.name=t commit -qm v
+  run "$PARK" paths "$REPO" vendor
+  assert_failure 2
+  assert_output --partial 'nested git checkout'
+  assert [ -f "$REPO/vendor/f" ]
+  assert_equal "$(git -C "$REPO" for-each-ref refs/parked/)" ''
 }
 
 @test "stashes with none old enough exits 1 and changes nothing" {

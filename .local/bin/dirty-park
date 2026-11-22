@@ -52,28 +52,42 @@ park_stashes() {
   [ "$n" -gt 0 ] || { printf 'dirty-park: no stash older than %sd in %s\n' "$days" "$repo" >&2; return 1; }
 }
 
+# snapshot <path>... - the tree of HEAD with the paths as they are in the work tree now
+# (tracked changes, deletions, untracked files; ignored files left out), built in a scratch
+# index so the checkout's own index is not touched.
+snapshot() {
+  local idx tree=""
+  idx="$(mktemp)" || return 1
+  GIT_INDEX_FILE="$idx" g read-tree HEAD && GIT_INDEX_FILE="$idx" g add -A -- "$@" &&
+    tree="$(GIT_INDEX_FILE="$idx" g write-tree)"
+  rm -f "$idx"
+  [ -n "$tree" ] && printf '%s\n' "$tree"
+}
+
 park_paths() {
   [ "$#" -gt 0 ] || die "paths needs at least one path"
-  local idx tree commit ref branch
-  idx="$(mktemp)" || die "mktemp failed"
-  # A scratch index built from HEAD, so the checkout's own index is not touched until the
-  # parked commit exists.
-  if ! { GIT_INDEX_FILE="$idx" g read-tree HEAD && GIT_INDEX_FILE="$idx" g add -A -- "$@"; }; then
-    rm -f "$idx"; die "cannot stage $* in $repo"
-  fi
-  tree="$(GIT_INDEX_FILE="$idx" g write-tree)"
-  rm -f "$idx"
-  [ -n "$tree" ] || die "cannot write the tree"
-  if [ "$tree" = "$(g rev-parse 'HEAD^{tree}')" ]; then
+  # Each argument is a literal path, never a glob or pathspec magic, so the restore below
+  # matches exactly what was parked.
+  export GIT_LITERAL_PATHSPECS=1
+  local tree commit ref branch
+  local -a tracked
+  if [ -z "$(g status --porcelain --untracked-files=all -- "$@")" ]; then
     printf 'dirty-park: %s holds no change under %s\n' "$repo" "$*" >&2; return 1
+  fi
+  tree="$(snapshot "$@")" || die "cannot stage $* in $repo"
+  # A nested clone is stored as a bare gitlink, which restores nothing.
+  if g diff-tree -r --diff-filter=A HEAD "$tree" | awk '$2 == "160000" { found = 1 } END { exit !found }'; then
+    die "$* holds a nested git checkout, which a parked commit cannot store; move it aside by hand"
   fi
   branch="$(g symbolic-ref -q --short HEAD || echo detached)"
   commit="$(printf 'dirty-park: %s on %s\n\n%s\n' "$*" "$branch" "$(g rev-parse --show-toplevel)" | g commit-tree "$tree" -p HEAD)" || die "cannot write the commit"
   ref="refs/parked/tree/$(date +%F)-${commit:0:7}"
   g update-ref "$ref" "$commit" || die "cannot write $ref"
+  # Anything written under the paths since the snapshot would be lost by the restore: stop
+  # with the parked ref kept and the tree untouched.
+  [ "$(snapshot "$@")" = "$tree" ] || die "$* changed while it was parked; $ref holds the earlier state and the tree was left as it is"
   # Back to HEAD: unstage, restore what HEAD tracks, remove what it does not (untracked and
   # newly added files; ignored ones were not parked and stay).
-  local -a tracked
   g reset -q HEAD -- "$@" 2>/dev/null
   mapfile -d '' -t tracked < <(g ls-tree -r -z --name-only HEAD -- "$@")
   if [ "${#tracked[@]}" -gt 0 ]; then
