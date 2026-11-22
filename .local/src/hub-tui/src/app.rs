@@ -50,7 +50,7 @@ use crate::{board, day, fleet, fleettab, focustab, hometab, logtab, outboxtab};
 /// timers in the journal). A genuine UI cadence: Prometheus has no push, and its rules
 /// evaluate every 30-60s anyway.
 pub const PROM_REFRESH: Duration = Duration::from_secs(60);
-/// One `fleet-bench reds` read takes about 2s and a fix moves in minutes, so the tick re-reads
+/// One `fleet-bench reds` read takes about 6s (more under load) and a fix moves in minutes, so the tick re-reads
 /// Red fixes only this often; entering Infra and `r` still read it at once.
 pub const REDS_REFRESH: Duration = Duration::from_secs(300);
 /// VictoriaMetrics has no push and a check runs every one to five minutes, so the tick re-reads
@@ -9297,7 +9297,7 @@ mod tests {
         let mut a = with_tx(Tab::Alerts, tx);
         a.handle(Msg::Reds(Err("x".into())));
         assert!(!a.reds_read.busy);
-        // A fresh answer: the tick leaves it alone (one read is about 2s of fleet-bench).
+        // A fresh answer: the tick leaves it alone (one read is about 6s of fleet-bench).
         a.handle(Msg::Tick);
         assert!(!a.reds_read.busy, "the tick re-read a fresh answer");
         // r always reads.

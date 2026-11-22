@@ -5951,11 +5951,11 @@ canary_lane_why() {
   [ "$1" != claude ] || [ -z "$2" ] || [ -n "$3" ] || { echo "a claude lane needs --effort, which keeps its scores out of the claude baseline"; return 1; }
 }
 
-# canary_queue [--harness h [--model m [--effort e]]] [--max N] [--task id[,id]] [--pts n[,n]]: the CLI. With a lane it queues that lane's
+# canary_queue [--harness h [--model m [--effort e]]] [--max N] [--task id[,id]] [--pts n[,n]] [--off-claude]: the CLI. With a lane it queues that lane's
 # missing tasks (at most N when given; only the named ids and sizes when --task or --pts is given); with --max alone it tops up across the claude lane and every lane
-# in BENCH_CANARY_LANES (canary_top_up), one task a lane a round, so a few canaries run across lanes together.
+# in BENCH_CANARY_LANES (canary_top_up), one task a lane a round, so a few canaries run across lanes together. --off-claude (fleet-dispatch, while its fleet share is full) leaves the claude lanes out.
 canary_queue() {
-  local why harness="" model="" effort="" max="" only_ids="" only_pts=""   # only_*: read by canary_lane_queue (dynamic scope)
+  local why harness="" model="" effort="" max="" only_ids="" only_pts="" off_claude=""   # only_*: read by canary_lane_queue, off_claude by canary_top_up (dynamic scope)
   while [ $# -gt 0 ]; do
     case "$1" in
       --harness) harness="${2:?canary queue: --harness needs a value}"; shift 2 ;;
@@ -5964,13 +5964,15 @@ canary_queue() {
       --max) max="${2:?canary queue: --max needs a number}"; shift 2 ;;
       --task) only_ids="${2:?canary queue: --task needs task ids, comma-separated}"; shift 2 ;;
       --pts) only_pts="${2:?canary queue: --pts needs sizes, comma-separated}"; shift 2 ;;
-      *) say "usage: fleet-bench canary queue [--harness h [--model m [--effort e]]] [--max N] [--task id[,id]] [--pts n[,n]]"; return 2 ;;
+      --off-claude) off_claude=1; shift ;;
+      *) say "usage: fleet-bench canary queue [--harness h [--model m [--effort e]]] [--max N] [--task id[,id]] [--pts n[,n]] [--off-claude]"; return 2 ;;
     esac
   done
   [[ -z "$only_pts" || "$only_pts" =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]] || { say "canary queue: --pts needs whole sizes, comma-separated"; return 2; }
   [[ -z "$only_ids" || "$only_ids" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*(,[A-Za-z0-9][A-Za-z0-9_-]*)*$ ]] || { say "canary queue: --task needs task ids (letters, digits, - and _), comma-separated"; return 2; }
   [ -z "$only_ids$only_pts" ] || [ -n "$harness" ] || { say "canary queue: --task and --pts need --harness (the top-up fills every lane)"; return 2; }
   [[ -z "$max" || "$max" =~ ^[1-9][0-9]*$ ]] || { say "canary queue: --max needs a whole number above 0"; return 2; }
+  [ -z "$off_claude" ] || { [ -n "$max" ] && [ -z "$harness" ]; } || { say "canary queue: --off-claude goes with --max alone (the top-up)"; return 2; }
   why=$(canary_lane_why "$harness" "$model" "$effort") || { say "canary queue: $why"; return 2; }
   if [ -n "$max" ] && [ -z "$harness" ]; then canary_top_up "$max"; return; fi
   canary_lane_queue "$harness" "$model" "$effort" "${max:-0}"
@@ -6088,6 +6090,7 @@ canary_top_up() {
   local left=$1 h m e src why label lane entry got rc=0 round
   local -A lanes=() queued=() dead=()
   local -a active=("||")
+  [ -z "${off_claude:-}" ] || active=()   # the claude baseline lane is the one with no harness
   # An earlier week's queued items go first: they hold floor slots for lanes that no longer replay them.
   canary_retire || say "canary: could not retire every earlier week's run"
   # Every title of the week's window in one read, held for the whole pass.
@@ -6100,6 +6103,7 @@ canary_top_up() {
       if [ -n "${lanes[$lane]:-}" ]; then say "canary: $label not queued, its slug is ${lanes[$lane]}'s"; continue; fi
       lanes[$lane]=$label
       if ! why=$(canary_lane_why "$h" "$m" "$e"); then say "canary: $label not queued, $why"; rc=1; continue; fi
+      [ "$h" != claude ] || [ -z "${off_claude:-}" ] || continue
       if [ "$h" = claude ]; then
         if ! why=$($BENCH_ROOM_CMD 2>&1); then say "canary: $label not queued, no Claude account has room${why:+: $why}"; continue; fi
       else
@@ -6112,7 +6116,7 @@ canary_top_up() {
   fi
   while [ "$left" -gt 0 ]; do
     round=0
-    for entry in "${active[@]}"; do
+    for entry in ${active[@]+"${active[@]}"}; do
       [ "$left" -gt 0 ] || break
       [ -z "${dead[$entry]:-}" ] || continue
       IFS='|' read -r h m e <<<"$entry"
@@ -6123,7 +6127,7 @@ canary_top_up() {
     done
     [ "$round" = 1 ] || break
   done
-  for entry in "${active[@]}"; do
+  for entry in ${active[@]+"${active[@]}"}; do
     [ -n "${queued[$entry]:-}" ] || continue
     IFS='|' read -r h m e <<<"$entry"
     say "canary: ${queued[$entry]} queued for $(canary_week)${h:+ ($h${m:+/$m}${e:+@$e})}"

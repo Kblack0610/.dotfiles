@@ -1003,8 +1003,14 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   assert_output --partial '1 due, none urgent, last pass 0m ago: no new pass'
   assert_equal "$(pass_id)" "$id"
   assert_equal "$(starts)" 1
+  # The pass start lands a minute after its tick, so the run one debounce later reads 29m: that
+  # starts the pass (TICK_SLACK_MIN, 1), while 28m is still inside the debounce
+  aged 28
+  run "$SH" run
+  assert_output --partial 'none urgent, last pass 28m ago'
+  assert_equal "$(starts)" 1
   # b was held back, not handed: past the debounce it goes to the next pass plain, not as unhandled
-  aged 31
+  aged 29
   run "$SH" run
   assert_output --partial 'started pass'
   run prompt
