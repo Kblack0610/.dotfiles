@@ -31,6 +31,9 @@ CUT_WAIT_FACTOR=3
 # Seconds of STEP_TIMEOUT kept free after that wait: timeout's 30 s kill grace, then promote and any
 # project after this one.
 CUT_HEADROOM=300
+# Re-sends of one version's failed cut at the same commit after a main-side change (cut_inputs);
+# past this the lane pages and waits for a newer green run, since an unrelated change also counts.
+CUT_RESENDS=2
 # The local minute, in the `cut=` stamp's own format, so the two compare as strings.
 NOW="${RELEASE_CUT_NOW:-$(date +%Y-%m-%dT%H:%M)}"
 
@@ -129,10 +132,24 @@ await_cut() {
   return 1
 }
 
+# cut_inputs_changed REPO WF CFG HEAD: print, space-separated, the files main changed since HEAD (the
+# main commit a failed cut run read) under what the cut reads from main: its workflow file and the
+# config's `cut_inputs` prefixes. Empty when none changed, HEAD is unknown or GitHub cannot say, so
+# a failed cut then waits for a newer green run as before. It reads the compare's first page (300
+# files): a fix past it is missed, and the cut waits as before.
+cut_inputs_changed() {
+  local repo="$1" wf="$2" cfg="$3" head="$4" pre
+  [ -n "$head" ] && [ "$head" != - ] || return 0
+  pre="$(jq -c --arg w ".github/workflows/$wf" '[$w] + [.cut_inputs[]?]' <<<"$cfg")" || return 0
+  gh api "repos/$repo/compare/$head...main" \
+    --jq "[.files[]?.filename | select(. as \$f | $pre | any(. as \$p | \$f | startswith(\$p)))] | join(\" \")" 2>/dev/null \
+    || log "cannot compare $repo $head...main, so no re-send of the failed cut" >&2
+}
+
 # cut_release NAME VER REPO CFG WHY: dispatch the cut workflow for VER, at most once per green SHA,
 # and wait on its run.
 cut_release() {
-  local name="$1" ver="$2" repo="$3" cfg="$4" why="$5" wf tw tt sha mark runs inflight live last="" note="" cutwait="" out id
+  local name="$1" ver="$2" repo="$3" cfg="$4" why="$5" wf tw tt sha mark runs inflight live last="" lasthead="" changed resends=0 note="" cutwait="" out id
   # 0.0.0-test is the cut workflow's own proof version, never a release.
   [[ "${ver#v}" != 0.0.0* ]] || { fail "$name $ver: 0.0.0 is the cut workflow's proof version, not cut"; return 1; }
   wf="$(jq -r '.cut_workflow' <<<"$cfg")" tw="$(jq -r '.tests.workflow' <<<"$cfg")" tt="$(jq -r '.tests.title' <<<"$cfg")"
@@ -148,9 +165,10 @@ cut_release() {
   }
   mark="$STATE/cuts/$name@$ver"
   # A failed run list is also how a workflow not on main yet answers.
-  if runs="$(gh run list -R "$repo" --workflow "$wf" -L 20 --json databaseId,status,conclusion \
-      --jq '"\([.[] | select(.status != "completed")] | length) \((first(.[] | select(.status != "completed")) | .databaseId) // 0) \(.[0].conclusion // "")"')"; then
-    read -r inflight live last <<<"$runs"
+  if runs="$(gh run list -R "$repo" --workflow "$wf" -L 20 --json databaseId,status,conclusion,headSha \
+      --jq '"\([.[] | select(.status != "completed")] | length) \((first(.[] | select(.status != "completed")) | .databaseId) // 0) \(.[0].headSha // "-") \(.[0].conclusion // "")"')"; then
+    # headSha before the conclusion, which is empty for a run in flight and so goes last.
+    read -r inflight live lasthead last <<<"$runs"
     if [ "${inflight:-0}" -gt 0 ]; then
       # Waited on only once this lane has dispatched VER (its mark); another run in flight (another
       # version, a re-send) is left alone, and a later pass decides.
@@ -168,14 +186,27 @@ cut_release() {
     return 1
   fi
   if [ "$(cut -f1 "$mark" 2>/dev/null)" = "$sha" ]; then
-    # Dispatched at this SHA and no tag: a newer green SHA retries; a failed run is news.
+    # Dispatched at this SHA and no tag: a newer green SHA retries; a failed run is news, unless main
+    # has since changed what the cut reads.
     if [ -n "$last" ] && [ "$last" != success ]; then
-      fail "$name $ver: the $wf run dispatched at ${sha:0:10} ended $last with no tag ($why)"
-      notify "cutfailed-$name@$ver" "release cut failed: $name $ver" "$wf for $name $ver at ${sha:0:10} ended $last and made no tag; the next green $tt retries it."
-      return 1
+      # The cut checks out main, not SHA: a fix on main to what it reads retries at this SHA.
+      changed="$(cut_inputs_changed "$repo" "$wf" "$cfg" "$lasthead")"
+      resends="$(cut -f3 "$mark" 2>/dev/null)"; resends="${resends:-0}"
+      if [ -n "$changed" ] && [ "$resends" -ge "$CUT_RESENDS" ]; then
+        log "main changed $changed since the failed $wf run, but $name $ver was already sent again $resends time(s) at ${sha:0:10}"
+        changed=""
+      fi
+      if [ -z "$changed" ]; then
+        fail "$name $ver: the $wf run dispatched at ${sha:0:10} ended $last with no tag ($why)"
+        notify "cutfailed-$name@$ver" "release cut failed: $name $ver" "$wf for $name $ver at ${sha:0:10} ended $last and made no tag; the next green $tt, or a fix on main to what the cut reads, retries it."
+        return 1
+      fi
+      log "the $wf run dispatched at ${sha:0:10} ended $last; main changed $changed since that run, so the cut is sent again at ${sha:0:10} ($why)"
+      resends=$((resends + 1))
+    else
+      say "$name $ver: $wf already dispatched at ${sha:0:10} and no tag came; waits for a newer green $tt ($why)"
+      return 0
     fi
-    say "$name $ver: $wf already dispatched at ${sha:0:10} and no tag came; waits for a newer green $tt ($why)"
-    return 0
   fi
   bound_wait "$name" "$ver" "$repo" "$wf" "$why" || return 1
   if [ "$DRY" = 1 ]; then
@@ -184,7 +215,7 @@ cut_release() {
     return 0
   fi
   if out="$(gh workflow run "$wf" -R "$repo" --ref main -f version="${ver#v}" -f sha="$sha")"; then
-    mkdir -p "$STATE/cuts" && printf '%s\t%s\n' "$sha" "$NOW" > "$mark"
+    mkdir -p "$STATE/cuts" && printf '%s\t%s\t%s\n' "$sha" "$NOW" "$resends" > "$mark"
     dispatched=$((dispatched + 1)); actions+=("cut $name $ver")
     log "dispatched $wf for $name $ver at ${sha:0:10} ($why)"
     agent-notify -t "release cut: $name $ver" "$wf dispatched at ${sha:0:10}: $why." >/dev/null 2>&1 || true
