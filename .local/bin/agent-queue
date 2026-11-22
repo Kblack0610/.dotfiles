@@ -3370,7 +3370,7 @@ check_tags() {
 # Called without the lock: file_story runs notes, and set takes the lock itself.
 story_row_for() {
   local slug=$1 f=$2 title prio proj board prof id
-  title="$(fm_get "$f" title)"; [ -n "$title" ] || title="$(fm_body "$f" | head -1)"
+  title="$(fm_get "$f" title)"; [ -n "$title" ] || title="$(fm_body "$f" | awk 'NR==1')"
   prio="$(fm_get "$f" priority)"; proj="$(fm_get "$f" project)"
   IFS=$'\t' read -r board prof id < <(file_story "$proj" "$title" "${prio:-high}" "" "" "$(fm_body "$f")" "" "" "$(fm_get "$f" tags)" </dev/null)
   [ -n "$id" ] || return 1
