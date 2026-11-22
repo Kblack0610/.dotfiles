@@ -1566,17 +1566,27 @@ main_health() {
   cut -f1-4 "$key"
 }
 
+# store_landed <toplevel> -> exit 0 when <toplevel> is the agent store (AGENT_STORE) or the notes vault
+# (NOTES_STORE). store-sync commits and pushes both on its own and many writers share them, so nothing in
+# either is a session's to land by PR: as a repo it edited (#2719) or as its own cwd (ar-3883).
+store_landed() {
+  local s
+  [ -n "$1" ] || return 1
+  for s in "$AGENT_STORE" "$NOTES_STORE"; do
+    [ "$1" = "$(git -C "$s" rev-parse --show-toplevel 2>/dev/null)" ] && return 0
+  done
+  return 1
+}
+
 # edited_work_blockers <cwd> <edited paths>: unlanded work in other repositories this
-# session edited. Never scan unrelated sibling worktrees or count their work as ours, nor the
-# agent store (AGENT_STORE) or the notes vault (NOTES_STORE), which store-sync lands on its own.
+# session edited. Never scan unrelated sibling worktrees or count their work as ours, nor a
+# store store-sync lands (store_landed).
 edited_work_blockers() {
-  local cwd="$1" edited="$2" top store notes path dir g dirty ahead pr state ci inpr branch behind conflicts fork oid names why bucket red health workflows suspects kind=WORKING out=""
+  local cwd="$1" edited="$2" top path dir g dirty ahead pr state ci inpr branch behind conflicts fork oid names why bucket red health workflows suspects kind=WORKING out=""
   [ -n "$edited" ] || return 0
   top="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)"
-  store="$(git -C "$AGENT_STORE" rev-parse --show-toplevel 2>/dev/null)"
-  notes="$(git -C "$NOTES_STORE" rev-parse --show-toplevel 2>/dev/null)"
   while IFS= read -r dir; do
-    [ -n "$dir" ] && [ "$dir" != "$top" ] && [ "$dir" != "$store" ] && [ "$dir" != "$notes" ] || continue
+    [ -n "$dir" ] && [ "$dir" != "$top" ] && ! store_landed "$dir" || continue
     read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names < <(git_facts "$dir" "$edited")
     red=-
     if [ "$state" = MERGED ]; then
@@ -2221,6 +2231,11 @@ collect() {
     # What a deployed checkout off its default branch holds is one fault, its CHECKOUT row, and no
     # session's work: 2026-11-06 it read 9 files ahead on all 16 sessions there, each one STALLED.
     if [ "$host" = - ] && [ "$g" = 1 ] && in_checkout "$cwd" "$off"; then ahead=0 pr=- state=- ci=- oid=- inpr=1; fi
+    # A session working in the agent store or the notes vault reads other writers' files and store-sync's
+    # unpushed commit there; none of it is the session's to land (ar-3883).
+    if [ "$host" = - ] && [ "$g" = 1 ] && store_landed "$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)"; then
+      dirty=0 ahead=0 pr=- state=- ci=- oid=- inpr=1 names=-
+    fi
     # A run that handed its item off left its pushed branch to the item's next start: a clean tree whose
     # HEAD is that item's salvage: has nothing left here to land.
     if [ "$host" = - ] && [ "$g" = 1 ] && [ "$irel" = moved ] && [ "$dirty" = 0 ] && [ "$ahead" -gt 0 ] && [ "$pr" = - ] \
