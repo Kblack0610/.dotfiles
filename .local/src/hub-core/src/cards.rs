@@ -518,7 +518,8 @@ pub fn done(d: Option<&crate::phone::Done>) -> Card {
 /// vitals. It opens the Infra tab.
 pub fn health(i: &crate::infra::Infra) -> Card {
     const COUNTED: &str = "machines with a reading, CI runners and the cc:domain_status domains \
-         from Prometheus; CI busy is the slot units in use of the pool's, from the CI glance; \
+         from Prometheus; CI running is the jobs on a runner now and Runners up the runners up of the \
+         roster, both from the CI glance, which alone turns the card red for CI; \
          vitals are fleet-bench's KPIs against their targets";
     if !i.ok {
         return Card::failed(
@@ -540,9 +541,16 @@ pub fn health(i: &crate::infra::Infra) -> Card {
     let (d_down, d_warn, d_up) = i.domains();
     let mut c = Card::new("health", "Health", COUNTED)
         .bar(up, i.machines.len() - up - unread, unread)
-        .part("Runners down", down, lvl(down, Level::Red))
-        .part("CI busy", g.units_line(), Level::Ok)
+        .part("CI running", g.busy, Level::Ok)
         .part("CI queued", g.queued, Level::Ok)
+        .part(
+            "Runners up",
+            g.up_line(),
+            match g.expected {
+                0 => Level::Nodata,
+                _ => lvl(down, Level::Red),
+            },
+        )
         .part("No runner", i.ci.red.len(), lvl(i.ci.red.len(), Level::Red))
         .part("Stuck", stuck, lvl(stuck, Level::Red))
         .part("Domains down", d_down, lvl(d_down, Level::Red))

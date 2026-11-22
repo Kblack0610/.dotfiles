@@ -279,11 +279,20 @@ pub struct Part {
 /// and the runners down.
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct Glance {
-    /// `cc:domain_status{domain="ci"}`.
+    /// `cc:domain_status{domain="ci"}`: the whole domain, queue waits and pass rate too. The
+    /// System health strip reads it; the CI card surfaces read `alert`.
     pub level: Level,
+    /// The one CI alert: Red while a runner is down (`Infra::runners_down`) or a queued job has
+    /// no online runner that can take it (`Ci::red`), Nodata with no runner read, else Ok. Queue
+    /// depth, drain and pass rate are information, never this.
+    pub alert: Level,
+    /// Runners up (`Infra::runners_up`) of the roster: up plus the ones down.
+    pub up: u32,
+    pub expected: u32,
     pub parts: Vec<Part>,
     /// `Infra::feed`: why runner rows may be missing.
     pub feed: Option<String>,
+    /// Jobs running now: busy slots, each once.
     pub busy: u32,
     pub slots: u32,
     /// The first waiting groups (`Ci::queue`, oldest first), with where and about when each
@@ -335,18 +344,27 @@ impl Glance {
         })
     }
 
-    /// `6.4/16 busy, 23 queued (oldest 21m), 9.2 queued ~12m, 759 done 24h, 91% passed`:
-    /// slot units throughout, never a runner count (kinds overlap, so runners are no capacity).
-    /// Running and queued only: a slot held back or lent is no count here; a job it makes wait
-    /// is in queued, and the runners table keeps each slot's own state.
+    /// `12/12`: runners up of the roster, `-/-` with no runner read (never a zero standing in).
+    pub fn up_line(&self) -> String {
+        if self.expected == 0 {
+            return "-/-".into();
+        }
+        format!("{}/{}", self.up, self.expected)
+    }
+
+    /// `4 running, 23 queued (oldest 21m), 9.2 queued ~12m, 12/12 runners up, 759 done 24h,
+    /// 91% passed`: jobs running and waiting, then runner liveness. Slot units stay in the
+    /// machine rows; a slot held back or lent is no count here, and a job it makes wait is in
+    /// queued.
     pub fn head(&self, dur: impl Fn(i64) -> String) -> String {
-        let mut s = format!("{} busy, {} queued", self.units_line(), self.queued);
+        let mut s = format!("{} running, {} queued", self.busy, self.queued);
         if let Some(o) = self.oldest.filter(|_| self.queued > 0) {
             s += &format!(" (oldest {})", dur(o as i64));
         }
         if let Some(d) = self.drain_line(&dur) {
             s += &format!(", {} queued {d}", units_of(self.backlog));
         }
+        s += &format!(", {} runners up", self.up_line());
         if self.done > 0 {
             s += &format!(", {} done 24h", self.done);
             if let Some(p) = self.pass {
@@ -485,6 +503,15 @@ pub fn glance(infra: &Infra) -> Glance {
         .into_iter()
         .map(|((host, state), n)| Down { host, state, n })
         .collect();
+    g.up = infra.runners_up();
+    g.expected = g.up + infra.down.len() as u32;
+    g.alert = if !infra.down.is_empty() || !infra.ci.red.is_empty() {
+        Level::Red
+    } else if g.expected == 0 {
+        Level::Nodata
+    } else {
+        Level::Ok
+    };
     let mut long: Vec<Long> = infra
         .ci
         .rows
@@ -2070,7 +2097,7 @@ mod tests {
         );
         assert_eq!(
             g.head(|s| format!("{}m", s / 60)),
-            "1.6/3 busy, 2 queued (oldest 15m), 9.2 queued ~12m, 4 done 24h, 50% passed"
+            "1 running, 2 queued (oldest 15m), 9.2 queued ~12m, 3/3 runners up, 4 done 24h, 50% passed"
         );
     }
 
@@ -2098,6 +2125,68 @@ mod tests {
         );
     }
 
+    /// The CI alert is runner liveness alone: an offline Forgejo seat (lent by design) and a
+    /// tripped domain watch leave it ok, one GitHub runner down turns it red, and up plus down
+    /// is the roster every time.
+    #[test]
+    fn the_ci_alert_is_red_only_while_a_runner_is_down() {
+        let mut i = crate::machines::tests::fleet();
+        let mut rows = i.get("runners").to_vec();
+        rows.extend(series(vec![(
+            json!({"__name__": "github_runner_state",
+            "host": "cachyos-x8664-main", "name": "ws-forgejo", "state": "offline",
+            "site": "local", "forge": "forgejo"}),
+            "1",
+        )]));
+        i.instant.insert("runners", rows);
+        i.instant.entry("cc").or_default().extend(series(vec![(
+            json!({"__name__": "cc:domain_status", "domain": "ci"}),
+            "1",
+        )]));
+        i.derive();
+        let g = &i.ci.glance;
+        assert_eq!((g.level, g.alert), (Level::Warn, Level::Ok));
+        assert_eq!((g.up, g.expected), (3, 3));
+        // A rollout's stale second report of an idle runner is not a runner down, and a runner
+        // reported up twice counts once.
+        let mut rows = i.get("runners").to_vec();
+        rows.extend(series(vec![
+            (
+                json!({"__name__": "github_runner_state",
+                "host": "cachyos-x8664-main", "name": "ws-unity-2", "state": "missing",
+                "site": "home"}),
+                "1",
+            ),
+            (
+                json!({"__name__": "github_runner_state",
+                "host": "cachyos-x8664-main", "name": "ws-unity-2", "state": "idle",
+                "site": "home"}),
+                "1",
+            ),
+        ]));
+        i.instant.insert("runners", rows);
+        i.derive();
+        let g = &i.ci.glance;
+        assert_eq!((g.up, g.expected, g.alert), (3, 3, Level::Ok));
+        let mut rows = i.get("runners").to_vec();
+        rows.extend(series(vec![(
+            json!({"__name__": "github_runner_state",
+            "host": "cachyos-x8664-main", "name": "ws-gate-9", "state": "offline",
+            "site": "local"}),
+            "1",
+        )]));
+        i.instant.insert("runners", rows);
+        i.derive();
+        let g = &i.ci.glance;
+        assert_eq!(g.alert, Level::Red);
+        assert_eq!((g.up, g.expected), (3, 4));
+        assert!(g.head(|s| format!("{s}s")).contains("3/4 runners up"));
+        // No runner read at all: no verdict, never ok.
+        i.instant.insert("runners", vec![]);
+        i.derive();
+        assert_eq!(i.ci.glance.alert, Level::Nodata);
+    }
+
     /// ar-3326: the glance every surface renders counts each slot once, names what the slots
     /// are doing, folds the stopped cloud host to one name, and lists no runner of it as down.
     #[test]
@@ -2111,7 +2200,7 @@ mod tests {
         // row has units either.
         assert_eq!(
             g.head(|s| format!("{}m", s / 60)),
-            "-/- busy, 2 queued (oldest 15m), - queued -, 4 done 24h, 50% passed"
+            "1 running, 2 queued (oldest 15m), - queued -, 3/3 runners up, 4 done 24h, 50% passed"
         );
         assert!(g
             .machines
@@ -2134,6 +2223,8 @@ mod tests {
         assert!(i.machine_rows().iter().all(|m| m.host != "aws-burst-1"));
         assert!(i.machines.iter().any(|m| m.host == "aws-burst-1"));
         assert!(g.down.is_empty(), "{:?}", g.down);
+        // The stopped host's runners are neither up nor down, so every runner is up and CI is ok.
+        assert_eq!((g.up, g.expected, g.alert), (3, 3, Level::Ok));
         let kinds: Vec<&str> = g.kinds.iter().map(|k| k.kind.as_str()).collect();
         assert_eq!(kinds, ["unity", "gates", "macos"]);
         // The waybar chip (.config/waybar/ci_runners.sh) reads these JSON keys by name, and its
@@ -2143,11 +2234,13 @@ mod tests {
         assert_eq!(
             keys(&v),
             [
+                "alert",
                 "backlog",
                 "busy",
                 "done",
                 "down",
                 "drain",
+                "expected",
                 "feed",
                 "kinds",
                 "level",
@@ -2161,7 +2254,8 @@ mod tests {
                 "queued",
                 "slots",
                 "units",
-                "units_busy"
+                "units_busy",
+                "up"
             ]
         );
         assert_eq!(

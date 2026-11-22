@@ -735,6 +735,7 @@ bucket_facts() {
         FAIL)    echo "STALLED PR #$pr CI red" ;;
         NOSTART) echo "WORKING PR #$pr CI never started (its jobs ran no steps), waiting on billing" ;;
         PENDING) echo "WORKING PR #$pr CI running" ;;
+        -)       echo "STALLED PR #$pr open, CI unknown, not merged" ;;
         *)       echo "STALLED PR #$pr green, not merged" ;;
       esac ;;
     CLOSED)
@@ -1175,6 +1176,27 @@ heavy_panes() {
   "$fa" 2>/dev/null | awk 'f && NF == 0 { exit } f && $8 != "" && $8 != "-" { print $8 } /^PID /{ f = 1 }' | sort -u
 }
 
+# restored_panes <agent-panel rows> -> "<server>/<pane id> <epoch>" of each pane fleet-dispatch restore
+# reopened, the epoch its @fleet_restored option holds (when its server was last seen alive), one per
+# line, one tmux call per server the local rows name. The option dies with the pane, so a later hand
+# resume of the same conversation is a new pane without it.
+restored_panes() {
+  local srv
+  for srv in $(jq -r 'select((.host // "") == "") | .pane // "" | select(contains("/")) | sub("/.*"; "")' <<<"$1" 2>/dev/null | sort -u); do
+    tmux -L "$srv" list-panes -a -f '#{@fleet_restored}' -F '#{pane_id} #{@fleet_restored}' 2>/dev/null | sed "s|^|$srv/|"
+  done
+}
+
+# quiet_before <restored_panes lines> <host> <server>/<pane id> <since epoch> -> quiet_before_min, the
+# minutes a restored pane's conversation had been quiet when its server was last seen alive (its last
+# entry to its @fleet_restored epoch), or - for a remote row or a pane restore did not reopen. CLOSE_JQ
+# adds it to the age: the pane's claude is new, its conversation is not (ar-4141).
+quiet_before() {
+  [ "$2" = - ] || { echo -; return; }
+  awk -v p="$3" -v s="$4" '$1 == p && $2 ~ /^[0-9]+$/ && s > 0 { q = int(($2 - s) / 60); r = q > 0 ? q : 0; exit }
+    END { print (r == "" ? "-" : r) }' <<<"$1"
+}
+
 # repo_slug <dir> -> the origin URL as a file-name-safe key (cache files, NIGHTLY ledger ids).
 repo_slug() {
   local LC_ALL=C url f="${CACHE:+$CACHE/slug_${1//\//%}}"   # C: one _ per byte, as tr -c gave
@@ -1484,8 +1506,8 @@ re_quote() { sed 's/[][\.*^$+?(){}|]/\\&/g' <<<"$1"; }
 # this session opened in a repo other than <dir>'s, or nothing. A session that works in one clone
 # can open its PR from another (ar-349, read STALLED "no PR" while that PR ran CI). A Forgejo PR
 # (host/owner/repo) is skipped: gh cannot read its CI. Its CI is one
-# `gh pr view` reused for FLEET_MAIN_TTL seconds across passes; a failed call is
-# (or an answer that is not a PR) is not cached, nor retried in this pass, and is named unreadable so tick does not log the blink.
+# `gh pr view` reused for FLEET_MAIN_TTL seconds across passes; a failed call
+# (or an answer that is not a PR) adopts the PR with CI unknown (-), is not cached, nor retried in this pass, and is named unreadable so tick does not log the blink.
 sibling_pr() {
   local own repo n file failed view
   own="$(origin_repo "$1")"
@@ -1502,7 +1524,7 @@ sibling_pr() {
     printf '%s\n' "$view" > "$file.$$" && mv "$file.$$" "$file"
   else
     [ -f "$failed" ] || { : > "$failed"; unreadable "gh pr view $repo#$n"; }
-    blind_row; return 0
+    blind_row; printf '%s\t%s\t-\t-\n' "$repo" "$n"; return 0
   fi
   jq -r --arg r "$repo" --argjson n "$n" "$CI_JQ"' [$r, $n, ci, (.headRefOid // "-")] | @tsv' <<<"$view"
 }
@@ -2243,7 +2265,7 @@ collect() {
     unreadable agent-panel
     if [ "$prc" -eq 3 ] && [ -n "$panel" ]; then echo + >> "$CACHE/blind"; else echo '*' >> "$CACHE/blind"; fi
   fi
-  local PENDING_ASKS
+  local PENDING_ASKS restored="$(restored_panes "$panel")"
   PENDING_ASKS="$(pending_asks)" || { unreadable agent-ask; echo "*" >> "$CACHE/blind"; }
   { [ -n "$panel" ] && printf '%s\n' "$panel"; parked_lines "$panel"; remote_panel_lines; } | while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -2536,12 +2558,12 @@ collect() {
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
     nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
     [ ! -e "$CLOSED/$sid" ] || n=1
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
       "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}" \
       "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test" "$mh" \
-      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iby" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "$qwait" "$qdepth" "$prun" "$pwq" "$wake" "$(critical_of "$wait_on" "$irow" "$gd" "$pr")" "${shown:-0}" "${mman:-0}"
+      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iby" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "$qwait" "$qdepth" "$prun" "$pwq" "$wake" "$(critical_of "$wait_on" "$irow" "$gd" "$pr")" "${shown:-0}" "${mman:-0}" "$(quiet_before "$restored" "$host" "${target%%/*}/$pane" "$since")"
     [ ! -f "$CACHE/blind_row" ] || echo "$sid" >> "$CACHE/blind"
   done
   [ -z "${CLOSE_SELF:-}" ] || return 0
@@ -2895,13 +2917,16 @@ explain() {
 # `--self` reads quiet 0 mid-turn and keeps, so past the timer the shepherd's typed close is declined
 # and its window is closed by close_sample an hour later, never by the session itself.
 # Unlanded work reads from `blockers` (work_blockers), not raw git counts: a squash-merged branch
-# stays `ahead` of main with nothing left to land. A null age_min reads 0. The row of the session
+# stays `ahead` of main with nothing left to land. A null age_min reads 0. A row fleet-dispatch restore
+# reopened adds quiet_before_min, the quiet it had when its server was last seen, to its age: its claude
+# is new, its conversation is not, and the bare age would hold a finished window open another hour while
+# the outage itself is no quiet (ar-4141). The row of the session
 # named by `--arg self` (close --self, run mid-turn by /wind-down auto) skips the turn and the
 # quiet steps: the shepherd's nudge came after the quiet time, and the session is always mid-turn.
 CLOSE_JQ='
   def close_verdict($idle_close; $chat_close_h):
     ((($ARGS.named.self // "") != "") and .session_id == $ARGS.named.self) as $me
-    | ([.idle_min // 0, .age_min // 0] | min) as $quiet
+    | ([.idle_min // 0, (.age_min // 0) + (.quiet_before_min // 0)] | min) as $quiet
     | ((.blockers // []) | map(select(test("^(open ask |[0-9]+ open ask)") | not))) as $other
     | ($other | map(select(test("dirty file|not on the default branch|(^|: )PR ([^ /]+/[^ /]+)?#[0-9]+ open|commits after merged PR")))[0])
       as $unlanded
@@ -3122,7 +3147,9 @@ json_rows() {
       # window on screen, so session-close-overdue skips a row with it.
       attached: ((.[64] // "0") == "1"),
       # The manual (default) permission mode is investigate-only, so the session cannot write a wind-down note.
-      in_manual_mode: ((.[65] // "0") == "1")} | '"$CLOSE_JQ"
+      in_manual_mode: ((.[65] // "0") == "1"),
+      # fleet-dispatch restore reopened it: the quiet it had when its server was last seen (CLOSE_JQ).
+      quiet_before_min: (if (.[66] // "-") == "-" then null else .[66] | tonumber end)} | '"$CLOSE_JQ"
 }
 
 # overdue_of <now epoch> <rows file> <eta file> -> {session_id: verdict}: the one overdue rule, which

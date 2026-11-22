@@ -312,7 +312,7 @@ load 'fleet_dispatch/common'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game \
     --server default --session fix-crash --cwd "$SANDBOX/repos/game" --resume abc-123
   assert_success
-  assert_called "tmux -L default new-session -d -s fix-crash -c $SANDBOX/repos/game ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume abc-123"
+  assert_called "tmux -L default new-session -d -P -F #{pane_id} -s fix-crash -c $SANDBOX/repos/game ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume abc-123"
   # No item from a start: the human's own conversation (a scratch send, a restore of their session).
   assert_not_called '@dispatch'
   assert_not_called 'start fix crash'
@@ -372,8 +372,8 @@ load 'fleet_dispatch/common'
     --cwd "$SANDBOX/repos/game" --resume x
   assert_failure
   assert_output --partial 'not --row'
-  assert_not_called 'new-session -d -s s2'
-  assert_not_called 'new-session -d -s s3'
+  assert_not_called '-s s2 '
+  assert_not_called '-s s3 '
 }
 
 @test "start runs claude on the account claude-acct picks, for a brief and for a resume" {
@@ -722,7 +722,7 @@ load 'fleet_dispatch/common'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session dotfiles \
     --window crash --cwd "$SANDBOX/repos/game" --resume abc-123
   assert_success
-  assert_called "new-session -d -s dotfiles -n crash -c $SANDBOX/repos/game ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume abc-123"
+  assert_called "new-session -d -P -F #{pane_id} -s dotfiles -n crash -c $SANDBOX/repos/game ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume abc-123"
 }
 
 # 2026-11-21: a world restore made hub:dotfiles with an agent's window first, tagged the session, and
@@ -1612,7 +1612,7 @@ trainee_start_ready() {
   tmux_script 'echo "tmux $*" >> "$NOTES_FIXTURE/calls.log"; case " $* " in *" has-session "*) exit 1 ;; esac; exit 0'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --resume th-4 --session cx-again --cwd "$SANDBOX/repos/game"
   assert_success
-  assert_called 'new-session -d -s cx-again'
+  assert_called 'new-session -d -P -F #{pane_id} -s cx-again'
   assert_called 'agent-codex resume th-4 -m gpt-6.1-sol'
   assert_not_called 'claude --resume'
   assert_equal "$(qfield "$(qitem running cx)" session)" lab:cx-again

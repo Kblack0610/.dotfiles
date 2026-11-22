@@ -1521,9 +1521,9 @@ MD
 # s1 (sid-9, pane %7), open for three hours and idle for one, with status $PANEL_STATUS
 # (default idle), context window $PANEL_WINDOW (default null, a model agent-panel does not know) and
 # open job $PANEL_JOB (default none known), idle $PANEL_IDLE_S seconds (default 3600), time use
-# $PANEL_TIME (a time_use object, default none).
+# $PANEL_TIME (a time_use object, default none), its claude started $PANEL_AGE_S seconds ago (default 3h05m).
 panel() {
-  local since=$(( $(date +%s) - ${PANEL_IDLE_S:-3600} )) started=$(( $(date +%s) - 3 * 3600 - 300 ))
+  local since=$(( $(date +%s) - ${PANEL_IDLE_S:-3600} )) started=$(( $(date +%s) - ${PANEL_AGE_S:-11100} ))
   printf '#!/usr/bin/env bash\necho %q\n' \
     "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":${PANEL_PLAN_MODE:-false},\"doing\":\"${PANEL_DOING:-}\",\"session_id\":\"${PANEL_SID:-sid-9}\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"context_window\":${PANEL_WINDOW:-null},\"plan_file\":\"${2:-}\",\"transcript\":\"${PANEL_TRANSCRIPT:-}\",\"edited_files\":${3:-[]},\"account\":\"${PANEL_ACCOUNT:-main}\",\"open_job\":\"${PANEL_JOB:-}\",\"time_use\":${PANEL_TIME:-null},\"attached\":${PANEL_ATTACHED:-false},\"manual_mode\":${PANEL_MANUAL:-false}}" \
     > "$SANDBOX/bin/agent-panel"
@@ -1990,6 +1990,29 @@ SH
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   [ "$(jq -r .in_manual_mode <<<"$output")" = false ]
+}
+
+@test "end to end: a pane fleet-dispatch restore reopened adds the quiet it had before the reboot to its age, never the outage (ar-4141)" {
+  landed_fixture
+  # A claude started 10 minutes ago on a conversation quiet two hours: the bare age holds it.
+  PANEL_AGE_S=600 PANEL_IDLE_S=7200 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  rm -f "$NOTES_FIXTURE/tmux.panes"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .quiet_before_min <<<"$output")" = null ]
+  [ "$(jq -r .close.why <<<"$output")" = "quiet 10m of 60m" ]
+  # Its pane carries @fleet_restored: the server was last seen 30 minutes ago, after 90 quiet minutes.
+  printf '%s\n' "%7 $(( $(date +%s) - 1800 ))" > "$NOTES_FIXTURE/tmux.panes.lab"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .quiet_before_min <<<"$output")" = 90 ]
+  [ "$(jq -r '"\(.close.verdict): \(.close.why)"' <<<"$output")" = "now: quiet 100m, nothing to land" ]
+  assert_called "tmux -L lab list-panes -a -f #{@fleet_restored} -F #{pane_id} #{@fleet_restored}"
+  # Active 5 minutes before the server died 100 minutes ago: the outage is not quiet, 5 + 10 is.
+  printf '%s\n' "%7 $(( $(date +%s) - 6900 ))" > "$NOTES_FIXTURE/tmux.panes.lab"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .close.why <<<"$output")" = "quiet 15m of 60m" ]
 }
 
 @test "end to end: plan mode with no approval dialog open is not NEEDS plan awaiting approval" {
@@ -4111,13 +4134,17 @@ SH
   [ "$(grep -c 'pr view 3 --repo o/three' "$SANDBOX/gh.log")" -eq 1 ] # reused across passes
   run sibling_pr "$SANDBOX/one" '[{"repo":"o/one","number":5,"state":"OPEN"}]'
   assert_output ''
-  # A view gh cannot answer adopts nothing, is named unreadable, and is not asked again this pass.
+  # A view gh cannot answer adopts the PR with CI unknown (-), is named unreadable, and is not asked again this pass.
   export VIEW_FAIL=1 FLEET_MAIN_TTL=0
   run sibling_pr "$SANDBOX/one" "$prs"
-  assert_output ''
+  assert_output "$(printf 'o/three\t3\t-\t-')"
   run sibling_pr "$SANDBOX/one" "$prs"
+  assert_output "$(printf 'o/three\t3\t-\t-')"
   [ "$(grep -c 'pr view 3' "$SANDBOX/gh.log")" -eq 2 ]
   grep -qx 'gh pr view o/three#3' "$CACHE/unreadable"
+  # The store's state decides what is open: a PR it lists as merged or closed is never adopted on a failed view.
+  run sibling_pr "$SANDBOX/one" '[{"repo":"o/three","number":3,"state":"MERGED"},{"repo":"o/four","number":4,"state":"CLOSED"}]'
+  assert_output ''
 }
 
 @test "end to end: an open PR in a sibling repo is the session's PR, its CI deciding the bucket (ar-349)" {
@@ -4160,6 +4187,33 @@ SH
   : > "$SANDBOX/t.jsonl"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = CHAT ]
+}
+
+@test "end to end: a sibling-repo PR whose gh pr view fails is adopted with CI unknown and read as unlanded (ar-4257)" {
+  git init -q --bare "$SANDBOX/origin.git"
+  git clone -q "$SANDBOX/origin.git" "$SANDBOX/wt" 2>/dev/null
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  git -C "$SANDBOX/wt" push -q origin HEAD:main 2>/dev/null
+  git -C "$SANDBOX/wt" checkout -q -b feat/x
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"gh pr create -t x"}}]}}' > "$SANDBOX/t.jsonl"
+  echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"https://github.com/o/other/pull/42"}]}}' >> "$SANDBOX/t.jsonl"
+  local since=$(( $(date +%s) - 3600 ))
+  printf '#!/usr/bin/env bash\necho %q\n' \
+    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"idle\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$SANDBOX/wt\",\"idle_since\":$since,\"context_tokens\":5,\"plan_file\":\"\",\"transcript\":\"$SANDBOX/t.jsonl\"}" \
+    > "$SANDBOX/bin/agent-panel"
+  printf -- '-\t42\tOPEN\tNONE\t-\t-\n' > "$LEDGER_DIR/prs_o_other.tsv"
+  gh_script 'exit 1'
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-bench"
+  chmod +x "$SANDBOX/bin/fleet-assess" "$SANDBOX/bin/fleet-bench"
+  export SANDBOX XDG_CACHE_HOME="$SANDBOX/xdg"
+
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -c '[.bucket, .pr, .pr_state, .ci, .finished, .close.verdict]' <<<"$output")" = '["STALLED","42","OPEN",null,false,"keep"]' ]
+  [ "$(jq -r .close.why <<<"$output")" = 'land it: PR o/other#42 open, CI -' ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR o/other#42 open, CI unknown, not merged' ]
+  [ "$(jq -c .blockers <<<"$output")" = '["PR o/other#42 open, CI -","no plan file and nothing merged"]' ]
 }
 
 @test "pr_made_here: its own PR by session_prs, plan Phases, URL or a push of the branch; nothing else (ar-455)" {
@@ -4975,8 +5029,9 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   printf -- '-\t9\tCLOSED\tPASS\t-\t-\n' > "$LEDGER_DIR/prs_o_two.tsv"
   PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" panel "$SANDBOX/wt"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  # (the transcript does not name #2166, so pr_made_here drops it; the open o/one#7 keeps #2178 out)
-  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, no plan file, its item ucp-342 moved on (done)' ]
+  # (the transcript does not name #2166, so pr_made_here drops it; the open o/one#7 keeps #2178 out and stays unlanded)
+  [ "$(jq -r .reason <<<"$output")" = 'PR o/one#7 open, CI unknown, not merged' ]
+  [ "$(jq -r .finished <<<"$output")" = false ]
   panel "$SANDBOX/wt"
   rm -r "$d"; mkdir -p "$HOME/.agent/queue/running"
   printf 'slug: ucp-342\nproject: shape-city\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-08T02:51:57Z\nsessions: sid-9\npr: o/r#2178\n---\nskater\n' \
@@ -5478,6 +5533,11 @@ verdict() {
   # A headless run's replay: the shepherd never types into its opencode TUI; fleet-dispatch reap closes it.
   [ "$(verdict '{activity: "done", bucket: "DONE", idle_min: 600}')" = "keep: headless run: fleet-dispatch reap closes its replay once its item leaves review" ]
   # A worker row runs the same chain: the shepherd types its close over ssh (fleet_host_run).
+  # A pane restore reopened adds the quiet it had before its server died to its new claude's age (ar-4141).
+  [ "$(verdict '{idle_min: 90, age_min: 10}')" = "after: quiet 10m of 60m" ]
+  [ "$(verdict '{idle_min: 90, age_min: 10, quiet_before_min: 70}')" = "now: quiet 80m, nothing to land" ]
+  [ "$(verdict '{idle_min: 90, age_min: 10, quiet_before_min: 20}')" = "after: quiet 30m of 60m" ]
+  [ "$(verdict '{idle_min: 5, age_min: 10, quiet_before_min: 70}')" = "after: quiet 5m of 60m" ]
   [ "$(verdict '{host: "ms-a2"}')" = "now: quiet 90m, nothing to land" ]
   [ "$(verdict '{host: "ms-a2", idle_min: 5}')" = "after: quiet 5m of 60m" ]
   [ "$(SELF=s1 verdict '{host: "ms-a2", session_id: "s1", idle_min: 5}')" = "now: quiet 5m, nothing to land" ]

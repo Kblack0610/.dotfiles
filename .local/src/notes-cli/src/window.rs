@@ -225,6 +225,7 @@ pub(crate) fn record(
     let fitted = |lines: &[&str], budget: u32, floor: usize| -> Vec<String> {
         let fits = project_sweep::fit(
             lines,
+            &[],
             budget,
             floor,
             opened,
@@ -343,8 +344,8 @@ fn open_ids(dir: &Path) -> HashSet<String> {
 /// Is row `line` still waiting at `cut`, so it cannot land by it: behind `#after/<id>` of a row in
 /// `open` and not in `landed`, or held by an `#at/` gate (`#at/<HHMM>` read on `today`) that opens
 /// at or after `cut` or that it cannot read. A window's snapshot ([`record`], [`lock_sprint`])
-/// leaves such a row out, and [`admit`] sends an urgent one on to the next window, so a wait never
-/// holds a cut.
+/// leaves such a row out, and [`admit`] sends an urgent one on to the next window, the one it can
+/// ship in.
 fn waiting(
     line: &str,
     today: NaiveDate,
@@ -1218,7 +1219,7 @@ pub(crate) enum Route {
 /// A row aimed later keeps its aim, and one aimed at the open version by hand is pushed into
 /// the window, so it goes in as an interrupt the score counts. An urgent row that `waits` (it
 /// is [`waiting`] at the window's end) goes to the next window unless aimed at the open one by
-/// hand: an urgent interrupt holds the cut, and a wait would hold it for days (ar-3833).
+/// hand: a wait would only carry it at the cut, so it ranks in the window it can ship in (ar-3833).
 fn route(window: Option<V>, line: &str, source: bool, waits: bool) -> Route {
     let Some(c) = window else {
         return Route::Open;
@@ -2074,7 +2075,7 @@ mod tests {
     }
 
     /// In a frozen window an urgent add that still waits at the window's end goes to the next
-    /// window, even from a person, since an urgent interrupt holds the cut; one whose gate opens
+    /// window, even from a person, since a wait would only carry it at the cut; one whose gate opens
     /// inside the window, or aimed at the open version by hand, still goes in (ar-3833).
     #[test]
     fn an_urgent_add_that_waits_past_the_window_goes_to_the_next_one() {
