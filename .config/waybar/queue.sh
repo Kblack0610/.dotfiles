@@ -189,7 +189,7 @@ if [ -n "$ready" ]; then
   # hub-core's verdict (flow::drain) from summary/bar: shrinking green, growing amber.
   fl="$(d failed_24h)"
   [[ "$fl" =~ ^[0-9]+$ ]] && ((fl > 0)) && fl="$(paint "$C_YEL" "$fl")"
-  today="$(cf projects_shipped_today) shipped (merged a PR), $(cf projects_checks_closed) checks closed with no merge, $fl failed in 24h"
+  today="$(cf done_shipped) shipped (merged a PR), $(cf done_checks) checks closed with no merge, $fl failed in 24h"
   drain="$([ -z "$BAR" ] || jq -r '.drain // empty' <<< "$BAR")"
   case "$drain" in
     *shrinking) drain="$(paint "$C_GRN" "$drain")" ;;
@@ -219,10 +219,10 @@ fi
 
 # The bar: two totals behind their labels, and only Q takes the chip's level colour; a number the
 # feed lacks reads -. Both are hub-core's own figures (`hub cards --json --figures`, sent as
-# summary/cards): Q the queue card's On deck part, D the projects card's shipped today.
+# summary/cards): Q the queue card's On deck part, D the done card's Shipped part.
 qn="$(cf queue_on_deck)"
 ((level > 0)) && qn="$(paint "${LEVEL_COLOUR[$level]}" "$qn")"
 lc="$(label_colour)"
-text="$(paint "$lc" Q:)$qn  $(paint "$lc" D:)$(cf projects_shipped_today)"
+text="$(paint "$lc" Q:)$qn  $(paint "$lc" D:)$(cf done_shipped)"
 
 emit "$text" "$tip" "${LEVEL_CLASS[$level]}"
