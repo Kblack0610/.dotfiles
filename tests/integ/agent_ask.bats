@@ -125,6 +125,20 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   run env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer --by agent "$b" later
   assert_success
   run "$AGENT_ASK" show "$b"; assert_line 'answered_by: agent'
+  # A session may not claim another actor either, with either variable set.
+  for by in judge shepherd; do
+    run env CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" answer --by "$by" "$b" go
+    assert_failure 2
+  done
+  # An agent answer fills a pending ask only: it never overwrites a human's.
+  c="$(post demo 'already answered?')"
+  "$AGENT_ASK" answer "$c" yes 2>/dev/null
+  run env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer "$c" no
+  assert_failure 1
+  run "$AGENT_ASK" show "$c"; assert_line 'answer: yes'; assert_line 'answered_by: human'
+  # The answer is delivered worded as an agent's: the board row for an unsent one says so.
+  "$AGENT_ASK" deliver --all 2>/dev/null
+  assert_called "answered: later (answered by an agent session, not the human; to override: agent-ask answer $b <option>)"
   # An agent answer is no human decision: `decision` prints nothing for it.
   run "$AGENT_ASK" decision "$b"; assert_output ''
   # Negative control: outside a session (a board) the default is still human.

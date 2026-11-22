@@ -945,6 +945,7 @@ answer_said() {
   case "$3" in
     judge) echo "$2 (the judge, $(field "$1" judge_rule): $(field "$1" judge_reason | sed 's/\.$//'); the human can override in this session)" ;;
     hold) echo "$2 ($(field "$1" answer_note | sed 's/\.$//'); the human can override in this session)" ;;
+    agent) echo "$2 (answered by another agent session, not the human; the human can override in this session)" ;;
     *) echo "$2" ;;
   esac
 }
@@ -957,21 +958,32 @@ answer_row() {
   case "$3" in
     judge) how=" (the judge; to override: agent-ask answer $(field "$1" id) <option>)" ;;
     hold) how=" ($(field "$1" answer_note | cut -c1-80); to override: agent-ask answer $(field "$1" id) <option>)" ;;
+    agent) how=" (answered by an agent session, not the human; to override: agent-ask answer $(field "$1" id) <option>)" ;;
   esac
   file_board_row "$1" "$(field "$1" question) -> answered: $2$how${4:+; $4}"
 }
 
-cmd_answer() {
-  # `human` needs the human's own channel (a board, or the reply typed into the session). A call
-  # from inside an agent session is the agent's, so it defaults to `agent` and may not claim `human`:
-  # 2026-11-20 ask 5ZRfWB read answered_by human with no human answer.
+# cmd_answer_cli [--by who] <id> <answer...>: the `answer` subcommand. `human` needs the human's own
+# channel (a board, or the reply typed into the session). Called from inside an agent session
+# (CLAUDE_CODE_SESSION_ID or AGENT_QUEUE_ITEM set) the answer is the agent's: `agent` is the
+# default and the only value allowed, so no session can write `human`, `judge` or `shepherd`
+# (the judge and the sweeps call cmd_answer directly). 2026-11-20 ask 5ZRfWB read answered_by
+# human with no human answer. The boards run outside a session and strip those two variables.
+cmd_answer_cli() {
   local by=human in_agent=""
   [ -z "${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}" ] || { in_agent=1; by=agent; }
   if [ "${1:-}" = --by ]; then by="${2:-}"; shift 2 2>/dev/null || shift $#; fi
   case "$by" in human|judge|shepherd|agent) ;; *) echo "agent-ask: --by is human, judge, shepherd or agent" >&2; return 2 ;; esac
-  if [ "$by" = human ] && [ -n "$in_agent" ]; then
-    echo "agent-ask: an agent session cannot answer as the human; answer from a board or in the session, or pass --by agent" >&2; return 2
+  if [ -n "$in_agent" ] && [ "$by" != agent ]; then
+    echo "agent-ask: an agent session answers as agent, not $by; the human answers from a board or in the session" >&2; return 2
   fi
+  cmd_answer --by "$by" "$@"
+}
+
+cmd_answer() {
+  local by=human
+  if [ "${1:-}" = --by ]; then by="${2:-}"; shift 2 2>/dev/null || shift $#; fi
+  case "$by" in human|judge|shepherd|agent) ;; *) echo "agent-ask: --by is human, judge, shepherd or agent" >&2; return 2 ;; esac
   local id="${1:-}"; shift 2>/dev/null || true
   local answer; answer="$(oneline "$*")"
   [ -n "$id" ] && [ -n "$answer" ] || { echo "usage: agent-ask answer [--by human|judge|shepherd|agent] <id> <answer...>" >&2; return 2; }
@@ -979,6 +991,9 @@ cmd_answer() {
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
   local of; of="$(field "$f" audit_of)"
   if [ -n "$of" ]; then audit_answer "$f" "$of" "$answer" "$by"; return; fi
+  if [ "$by" = agent ] && [ "$(field "$f" status)" != pending ]; then
+    echo "agent-ask: $id is $(field "$f" status); an agent answer does not replace one" >&2; return 1
+  fi
 
   # A human answer is the review of any judge answer. One given after the judge's stands beside
   # it: the judge's stays what judge-eval and the precedents read, so the override is what counts.
@@ -1002,6 +1017,9 @@ cmd_answer() {
   # No page: only the human answers, so "ask answered" told them what they just did. The
   # producer learns from the file (post --wait), deliver_to_session, and ask-resume.
   echo "answered $id: $answer" >&2
+  # An agent answer releases no gate: only the human's does (released_by).
+  [ "$by" != agent ] || [ -z "$(queue_holders "$id")" ] ||
+    echo "agent-ask: queue items held on $id stay held until the human answers it from a board" >&2
 }
 
 # record_answer <file> <by> <answer> [<key> <value>...]: the ask's answer fields, and any others
@@ -1012,7 +1030,7 @@ record_answer() {
   local f="$1" by="$2" answer="$3"; shift 3
   (
     command -v flock >/dev/null 2>&1 && flock 9
-    case "$by" in judge|hold) [ "$(field "$f" status)" = pending ] || exit 1 ;; esac
+    case "$by" in judge|hold|agent) [ "$(field "$f" status)" = pending ] || exit 1 ;; esac
     write_fields "$f" status answered answer "$answer" answered_at "$(now_iso)" answered_by "$by" "$@"
   ) 9>"$(dirname "$f")/.lock" || return 1
   queue_changed
@@ -2758,7 +2776,7 @@ case "$sub" in
   reopen) cmd_reopen "$@" ;;
   live-sessions) live_sessions ;;
   titles) session_titles ;;
-  answer) cmd_answer "$@" ;;
+  answer) cmd_answer_cli "$@" ;;
   cancel) cmd_cancel "$@" ;;
   park)   cmd_park "$@" ;;
   unpark) cmd_unpark "$@" ;;
