@@ -3307,6 +3307,34 @@ empty_submodule_fixture() {
   assert_output --partial "$store: 1 dirty file(s)"
 }
 
+@test "end to end: a session whose cwd is the agent store has nothing to land there (ar-3883)" {
+  # A file it edited in ~/.agent, and store-sync's commit of it, read as this session's "dirty
+  # file(s)" and "file(s) not on the default branch, no PR", so a session there never closed.
+  clean_fixture
+  phases_plan '- [x] Phase 1: notes'
+  panel "$SANDBOX/wt" "$SANDBOX/plan.md" "[\"$SANDBOX/wt/synced\"]"
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
+  "${g[@]}" checkout -q -B main origin/main 2>/dev/null
+  echo x > "$SANDBOX/wt/synced"; "${g[@]}" add synced; "${g[@]}" commit -q -m 'store-sync, not pushed yet'
+  echo y >> "$SANDBOX/wt/synced"
+  local store
+  for store in AGENT_STORE_DIR NOTES_DIR; do
+    run env NOTES_DIR="$SANDBOX/none" AGENT_STORE_DIR="$SANDBOX/none" "$store=$SANDBOX/wt" "$REPO_ROOT/.local/bin/fleet-sessions" --json
+    assert_success
+    [ "$(jq -r .bucket <<<"$output")" = DONE ]
+    [ "$(jq -r .finished <<<"$output")" = true ]
+    [ "$(jq -c .blockers <<<"$output")" = '[]' ]
+  done
+  # A store inside a bigger checkout is not that checkout: its work is still the session's.
+  mkdir -p "$SANDBOX/wt/sub"
+  NOTES_DIR="$SANDBOX/none" AGENT_STORE_DIR="$SANDBOX/wt/sub" run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  # Negative control: the same checkout outside the store is this session's unlanded work.
+  NOTES_DIR="$SANDBOX/none" AGENT_STORE_DIR="$SANDBOX/none" run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r '.blockers | join("; ")' <<<"$output")" = "1 dirty file(s) (synced), no PR; 1 file(s) not on the default branch, no PR" ]
+}
+
 @test "end to end: a busy session checking its own row reads finished while its bucket is WORKING" {
   landed_fixture
   phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [x] Phase 2: rollout (#876)'

@@ -1614,17 +1614,33 @@ main_health() {
   cut -f1-4 "$key"
 }
 
+# store_landed <toplevel> -> exit 0 when <toplevel> is the agent store (AGENT_STORE) or the notes vault
+# (NOTES_STORE). store-sync commits and pushes both on its own and many writers share them, so nothing in
+# either is a session's to land by PR: as a repo it edited (#2719) or as its own cwd (ar-3883). A store
+# is only a repo root: one inside a bigger checkout must not make that whole checkout unlandable. Their
+# roots are read once per process (STORE_TOPS), as this runs per session and per edited repo.
+STORE_TOPS=""
+store_landed() {
+  local s t
+  [ -n "$1" ] || return 1
+  if [ -z "$STORE_TOPS" ]; then
+    STORE_TOPS=:
+    for s in "$AGENT_STORE" "$NOTES_STORE"; do
+      t="$(git -C "$s" rev-parse --show-toplevel 2>/dev/null)" && [ "$t" = "$(cd "$s" && pwd -P)" ] && STORE_TOPS="$STORE_TOPS$t:"
+    done
+  fi
+  [[ "$STORE_TOPS" == *":$1:"* ]]
+}
+
 # edited_work_blockers <cwd> <edited paths>: unlanded work in other repositories this
-# session edited. Never scan unrelated sibling worktrees or count their work as ours, nor the
-# agent store (AGENT_STORE) or the notes vault (NOTES_STORE), which store-sync lands on its own.
+# session edited. Never scan unrelated sibling worktrees or count their work as ours, nor a
+# store store-sync lands (store_landed).
 edited_work_blockers() {
-  local cwd="$1" edited="$2" top store notes path dir g dirty ahead pr state ci inpr branch behind conflicts fork oid names why bucket red health workflows suspects kind=WORKING out=""
+  local cwd="$1" edited="$2" top path dir g dirty ahead pr state ci inpr branch behind conflicts fork oid names why bucket red health workflows suspects kind=WORKING out=""
   [ -n "$edited" ] || return 0
   top="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)"
-  store="$(git -C "$AGENT_STORE" rev-parse --show-toplevel 2>/dev/null)"
-  notes="$(git -C "$NOTES_STORE" rev-parse --show-toplevel 2>/dev/null)"
   while IFS= read -r dir; do
-    [ -n "$dir" ] && [ "$dir" != "$top" ] && [ "$dir" != "$store" ] && [ "$dir" != "$notes" ] || continue
+    [ -n "$dir" ] && [ "$dir" != "$top" ] && ! store_landed "$dir" || continue
     read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names < <(git_facts "$dir" "$edited")
     red=-
     if [ "$state" = MERGED ]; then
@@ -1807,8 +1823,10 @@ git_facts() {
   local d="$1" edited="${2:-}" shell="${3:--}" branch dirty=0 paths ahead pahead pin base prb pr state ci oid red inpr=1 head
   [ -d "$d" ] || { echo "gone 0 0 - - - 1 - - - - - -"; return; }
   git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo "0 0 0 - - - 1 - - - - - -"; return; }
-  fetch_once "$d"
   branch="$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  # A session working in a store reads other writers' files and store-sync's unpushed commit there (ar-3883).
+  store_landed "$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" && { echo "1 0 0 - - - 1 ${branch:--} 0 no - - -"; return; }
+  fetch_once "$d"
   paths="$(dirty_paths "$d" "$edited")"
   [ -n "$paths" ] && dirty="$(wc -l <<<"$paths")"
   base="$(default_base "$d")"
