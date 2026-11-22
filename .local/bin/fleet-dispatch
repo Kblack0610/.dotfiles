@@ -281,7 +281,8 @@ prio_of() {
 }
 
 # The one rank every caller sorts by (the judge's cap, picks, fill --dry-run): a row an open sprint holds
-# (`sprint` 0, row_sprint), then cleanup of an AI system (cleanup_row), then the project's #prio, then, while
+# (`sprint` 0, row_sprint), its committed rows before the open version's rows it did not commit (`uncommitted`
+# 1, row_uncommitted), then cleanup of an AI system (cleanup_row), then the project's #prio, then, while
 # any row's repo gates on an idle pool (`pool_idle`, load_pool_idle), the head of the feed rank (frank's
 # millions: due bucket, priority, #requested, notes-cli Rank::key) and then such a row (pool_term, a
 # tie-breaker below every human rank and above age; with no pool idle it orders nothing), then the row's
@@ -313,7 +314,7 @@ def rank_fields($today; $pprio):
          due: (if $dd == null then 3 elif $dd < 0 then 0 elif $dd == 0 then 1 elif $dd <= 3 then 2 else 3 end),
          due_in: $dd, age: (if $cd == null then 0 else -$cd end),
          req: (if $b | test("(^|\\s)#requested(\\s|$)") then 0 else 1 end)}
-  | . + {why: ([(if .sprint == 0 then "open sprint" else empty end),
+  | . + {why: ([(if .sprint != 0 then empty elif (.uncommitted // 0) == 1 then "open sprint, uncommitted" else "open sprint" end),
                 (if .cleanup == 0 then "cleanup" else empty end),
                 (if $pprio != "" then "\($pprio) project" else empty end),
                 (if (.pool_idle // "") != "" then "idle pool \(.pool_idle)" else empty end),
@@ -329,7 +330,7 @@ def rank_fields($today; $pprio):
 def area_key: if (.area // "") == "" then "row:\(.key)" else .area end;
 def pool_term($pi): if $pi then [((.frank // 1e15) / 1000000 | floor), (if (.pool_idle // "") != "" then 0 else 1 end)] else [] end;
 def rank: any(.[]; (.pool_idle // "") != "") as $pi
-  | sort_by((.sprint // 1), (.cleanup // 1), (.pprio // 2), pool_term($pi), (.frank // 1e15), (.wrank // 0), (.krank // 1), ({"prod": 0, "beta": 1}[.stage] // 2), (.t3rank // []));
+  | sort_by((.sprint // 1), (.uncommitted // 0), (.cleanup // 1), (.pprio // 2), pool_term($pi), (.frank // 1e15), (.wrank // 0), (.krank // 1), ({"prod": 0, "beta": 1}[.stage] // 2), (.t3rank // []));
 '
 
 # repo_dir <project> -> the checkout its code lives in; nothing for a notes-only project.
@@ -626,9 +627,13 @@ load_extras() {
 }
 
 # SPRINT_ROW["<project>\t<id>"]: the open rows of each open sprint, from the board feed's `sprints` (a queued
-# sprint has not started), read by load_sprints from the one board read load_extras makes, or on first use.
-# SPRINT_PROJECT[<project>]: a project one of whose open sprint's rows nobody has started yet (`open`, not
-# `doing`), the projects the sprint floor's board scan reads (sprint_top_up).
+# sprint has not started), read by load_sprints from the one board read load_extras makes, or on first use:
+# 1 for a row its window holds (`tasks`, the snapshot and its interrupts), 2 for one of the open version's
+# unstarted agent rows it does not (`uncommitted`, notes-cli window::open_window), so a row that unblocks
+# mid-sprint ranks as sprint at once, after the committed ones (row_uncommitted), with no relock. While only
+# the snapshot counted, 20 open v0.5.5 rows waited on a human relock (2026-11-21, ar-4331).
+# SPRINT_PROJECT[<project>]: a project one of whose open sprint's rows nobody has started yet (`open` or
+# `uncommitted`, not `doing`), the projects the sprint floor's board scan reads (sprint_top_up).
 declare -gA SPRINT_ROW=() SPRINT_PROJECT=()
 SPRINT_LOADED=''
 load_sprints() {
@@ -636,10 +641,13 @@ load_sprints() {
   SPRINT_ROW=() SPRINT_PROJECT=() SPRINT_LOADED=1
   while IFS=$'\t' read -r p i st; do
     [ -n "$p" ] || continue
-    SPRINT_ROW["$p"$'\t'"$i"]=1
-    [ "$st" != open ] || SPRINT_PROJECT["$p"]=1
-  done < <(jq -r '.sprints[]? | select(.queued != true) | .project as $p | .tasks[]?
-    | select((.state == "open" or .state == "doing") and .id != null) | "\($p)\t\(.id)\t\(.state)"' <<<"$1" 2>/dev/null)
+    if [ "$st" != uncommitted ]; then SPRINT_ROW["$p"$'\t'"$i"]=1
+    elif [ -z "${SPRINT_ROW["$p"$'\t'"$i"]:-}" ]; then SPRINT_ROW["$p"$'\t'"$i"]=2
+    fi
+    [ "$st" = doing ] || SPRINT_PROJECT["$p"]=1
+  done < <(jq -r '.sprints[]? | select(.queued != true) | .project as $p
+    | ((.tasks[]? | select((.state == "open" or .state == "doing") and .id != null) | "\($p)\t\(.id)\t\(.state)"),
+       (.uncommitted[]? | "\($p)\t\(.)\tuncommitted"))' <<<"$1" 2>/dev/null)
 }
 # sprint_rows_ready -- load_sprints on first use; a board read that fails loads nothing, so the next use reads again.
 sprint_rows_ready() {
@@ -652,6 +660,9 @@ sprint_rows_ready() {
 # row_sprint <project> <id> -> 0 when an open sprint holds the row (SPRINT_ROW), else 1: a candidate's
 # `sprint`, which RANK_JQ ranks first as `cleanup` ranks a cleanup row, and promote tags the item with.
 row_sprint() { if [ -n "${SPRINT_ROW["$1"$'\t'"$2"]:-}" ]; then echo 0; else echo 1; fi; }
+# row_uncommitted <project> <id> -> 1 for a sprint row its window did not commit (SPRINT_ROW 2), else 0: the
+# rank key after `sprint`, so committed rows rank first within the sprint.
+row_uncommitted() { if [ "${SPRINT_ROW["$1"$'\t'"$2"]:-}" = 2 ]; then echo 1; else echo 0; fi; }
 
 # POOL_IDLE["<repo>"]=<pool>: each repo whose CI gates on an idle pool, read once a pass (its entry point
 # calls load_pool_idle before its subshells, as load_gates) from Prometheus, the source the starved-pool
@@ -1710,13 +1721,13 @@ cmd_candidates() {
             --argjson details "$dj" --arg dsig "$dsig" --argjson planned "$planned" --argjson plan "$plan" \
             --arg line "$line" --argjson prio "$(prio_rank "$text")" --arg priority "$(row_priority "$text" "$name")" --argjson tier "$tier" \
             --arg worker "$worker" --argjson wrank "$rank" --arg today "$today" --arg pprio "$pprio" \
-            --argjson cleanup "$(cleanup_row "$name" "$text")" --argjson sprint "$(row_sprint "$name" "$key")" --arg nobody "$nobody" --argjson active "$active" \
+            --argjson cleanup "$(cleanup_row "$name" "$text")" --argjson sprint "$(row_sprint "$name" "$key")" --argjson uncommitted "$(row_uncommitted "$name" "$key")" --arg nobody "$nobody" --argjson active "$active" \
             --arg kind "$kind" --argjson krank "${KIND_RANK[${kind:-_}]:-1}" --arg klabel "${KIND_LABEL[${kind:-_}]:-}" \
             --arg rsize "$(row_size "$text")" --arg off "$off" --argjson frank "${RNK["$name"$'\t'"$lane"$'\t'"$key"]:-null}" \
             --arg gates "$gates" --arg gwait "$gwait" --arg rdue "${RLD["$name"$'\t'"$lane"$'\t'"$key"]:-}" --arg pidle "$pidle" \
             "$RANK_JQ"'{profile: $profile, project: $project, stage: $stage, lane: $lane, key: $key,
               text: $text, repo: $repo, prio: $prio, priority: $priority, tier: $tier, line: $line,
-              worker: $worker, wrank: $wrank, frank: $frank, cleanup: $cleanup, sprint: $sprint, details: $details, dsig: $dsig, planned: ($planned == 1),
+              worker: $worker, wrank: $wrank, frank: $frank, cleanup: $cleanup, sprint: $sprint, uncommitted: $uncommitted, details: $details, dsig: $dsig, planned: ($planned == 1),
               kind: $kind, krank: $krank, klabel: $klabel, row_size: $rsize}
               + (if $plan == 1 then {plan: true} else {} end)
               + (if $off != "" then {off: $off} else {} end)
@@ -7651,10 +7662,10 @@ t3_rows() {
           --arg priority "$(row_priority "$text" "$name")" --argjson order "$n" --arg obs "$DISPATCH_T3_OBSERVER" \
           --arg profile "$prof" --arg rsize "$(row_size "$text")" --arg pprio "$(prio_of "$sheet")" \
           --argjson cleanup "$(cleanup_row "$name" "$text")" --argjson frank "${RNK["$name"$'\t'agent$'\t'"$key"]:-null}" \
-          --argjson sprint "$(row_sprint "$name" "$key")" --arg gates "$gates" --arg pidle "$pidle" \
+          --argjson sprint "$(row_sprint "$name" "$key")" --argjson uncommitted "$(row_uncommitted "$name" "$key")" --arg gates "$gates" --arg pidle "$pidle" \
           '{profile: $profile, project: $project, stage: $stage, lane: "agent", key: $key,
             text: $text, repo: $repo, prio: $prio, priority: $priority, tier: 3, line: $line, order: $order, wrank: 0, frank: $frank, row_size: $rsize,
-            cleanup: $cleanup, sprint: $sprint, project_prio: $pprio,
+            cleanup: $cleanup, sprint: $sprint, uncommitted: $uncommitted, project_prio: $pprio,
             details: $details, dsig: $dsig, planned: ($planned == 1),
             rank: (if ($body | test("(^| )#requested( |$)")) then -1 elif ($body | test($obs; "i")) then 0 else 1 end)}
             + (if $pidle != "" then {pool_idle: $pidle} else {} end)
