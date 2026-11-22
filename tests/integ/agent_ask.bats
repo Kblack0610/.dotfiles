@@ -108,6 +108,36 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_success
 }
 
+@test "answer: from an agent session it records agent, and --by human is refused; a board's call records human" {
+  local a b c d
+  for v in CLAUDE_CODE_SESSION_ID=sid-9 AGENT_QUEUE_ITEM=ar-1; do
+    a="$(post demo 'run it?')"
+    run env "$v" "$AGENT_ASK" answer "$a" go
+    assert_success
+    run "$AGENT_ASK" show "$a"
+    assert_line 'status: answered'; assert_line 'answered_by: agent'
+  done
+  b="$(post demo 'run it again?')"
+  run env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer --by human "$b" go
+  assert_failure 2
+  assert_output --partial 'cannot answer as the human'
+  run "$AGENT_ASK" show "$b"; assert_line 'status: pending'
+  run env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer --by agent "$b" later
+  assert_success
+  run "$AGENT_ASK" show "$b"; assert_line 'answered_by: agent'
+  # An agent answer is no human decision: `decision` prints nothing for it.
+  run "$AGENT_ASK" decision "$b"; assert_output ''
+  # Negative control: outside a session (a board) the default is still human.
+  c="$(post demo 'board answer?')"
+  run "$AGENT_ASK" answer "$c" go
+  assert_success
+  run "$AGENT_ASK" show "$c"; assert_line 'answered_by: human'
+  d="$(post demo 'explicit?')"
+  run "$AGENT_ASK" answer --by human "$d" go
+  assert_success
+  run "$AGENT_ASK" show "$d"; assert_line 'answered_by: human'
+}
+
 @test "another session, or a post with no session id, is not held by someone else's ask" {
   CLAUDE_CODE_SESSION_ID=sid-1 post demo 'merge it?' >/dev/null
   run env CLAUDE_CODE_SESSION_ID=sid-2 "$AGENT_ASK" post --project demo 'ship it?'

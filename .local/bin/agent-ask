@@ -48,7 +48,10 @@
 #   agent-ask answer [--by who] <id> <answer...>
 #                                       record the answer; flip to answered; queue its
 #                                       delivery (`deliver`) and return.
-#                                       --by human (default) | judge | shepherd -> answered_by
+#                                       --by human (default from a board) | judge | shepherd | agent
+#                                       -> answered_by. Inside an agent session
+#                                       (CLAUDE_CODE_SESSION_ID or AGENT_QUEUE_ITEM set) the
+#                                       default is agent and --by human is refused
 #   agent-ask deliver <id> | --all      deliver a recorded answer: typed into its live session,
 #                                       else a board row, then its `resume` (via ask-resume).
 #                                       agent-ask-deliver.path runs --all on each answer
@@ -959,12 +962,19 @@ answer_row() {
 }
 
 cmd_answer() {
-  local by=human
+  # `human` needs the human's own channel (a board, or the reply typed into the session). A call
+  # from inside an agent session is the agent's, so it defaults to `agent` and may not claim `human`:
+  # 2026-11-20 ask 5ZRfWB read answered_by human with no human answer.
+  local by=human in_agent=""
+  [ -z "${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}" ] || { in_agent=1; by=agent; }
   if [ "${1:-}" = --by ]; then by="${2:-}"; shift 2 2>/dev/null || shift $#; fi
-  case "$by" in human|judge|shepherd) ;; *) echo "agent-ask: --by is human, judge or shepherd" >&2; return 2 ;; esac
+  case "$by" in human|judge|shepherd|agent) ;; *) echo "agent-ask: --by is human, judge, shepherd or agent" >&2; return 2 ;; esac
+  if [ "$by" = human ] && [ -n "$in_agent" ]; then
+    echo "agent-ask: an agent session cannot answer as the human; answer from a board or in the session, or pass --by agent" >&2; return 2
+  fi
   local id="${1:-}"; shift 2>/dev/null || true
   local answer; answer="$(oneline "$*")"
-  [ -n "$id" ] && [ -n "$answer" ] || { echo "usage: agent-ask answer [--by human|judge|shepherd] <id> <answer...>" >&2; return 2; }
+  [ -n "$id" ] && [ -n "$answer" ] || { echo "usage: agent-ask answer [--by human|judge|shepherd|agent] <id> <answer...>" >&2; return 2; }
   local f; f="$(find_ask "$id")"
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
   local of; of="$(field "$f" audit_of)"

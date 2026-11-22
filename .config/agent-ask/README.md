@@ -88,7 +88,7 @@ agent-ask trace <id> [--json]                the Full log: timeline (posted, jud
 agent-ask target [--reopen] <id>             the live asking session as an agent-panel jump target; fails saying why, a session live on a fleet worker included. --reopen starts an ended one through fleet-dispatch start --resume, in its first cwd and that cwd's world, as window ask-<id>
 agent-ask live-sessions                      the Claude session ids running now (what the questions panel and the card read to tell a live session from a dead one)
 agent-ask titles                             Claude session ids on stdin -> `<id><TAB><title>` from the session registry (card and questions rows)
-agent-ask answer [--by who] <id> <answer...> record answer; status->answered; queue its delivery and return; --by human (default) | judge | shepherd sets answered_by
+agent-ask answer [--by who] <id> <answer...> record answer; status->answered; queue its delivery and return; --by human (default from a board) | judge | shepherd | agent sets answered_by; inside an agent session (`CLAUDE_CODE_SESSION_ID` or `AGENT_QUEUE_ITEM` set) the default is `agent` and `--by human` is refused, so `human` always means a board or a reply typed into the session
 agent-ask deliver <id> | --all               run a queued delivery: type the answer into the live session, else a board row; run `resume`; start the queue items it releases
 agent-ask delivery-seen <id>                 the human read a failed delivery's note; it leaves the boards
 agent-ask wait-delivered <id>                block (inotify) until the delivery leaves queued and delivering, then print it; AGENT_ASK_WAIT_TIMEOUT (120 s) is the guard
@@ -123,7 +123,7 @@ recommend: oauth          # optional, one of options
 recommend_why: SSO is on the roadmap and oauth gets it free     # optional, the card's because: line
 answer:                   # filled by `answer`
 answered_at:
-answered_by:              # human | judge | shepherd | hold
+answered_by:              # human | judge | shepherd | agent | hold
 answer_note:              # how it was answered: the session's words, or the hold that settled it
 judge:                    # the answer judge: human | take-recommend | answer:<text> | error
 judge_rule:               # what decided it: the criterion that sent it to the human, else its type
