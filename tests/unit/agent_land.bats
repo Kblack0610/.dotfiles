@@ -2429,6 +2429,30 @@ EOF
   assert_output --partial '"state":"done"'
 }
 
+@test "prs: a Forgejo PR's store is named by the project map's forges.forgejo host, not the html_url host (ar-4530)" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  printf '{"forges":{"forgejo":"store.example"}}\n' >"$SANDBOX/map.json"
+  SO_PROJECT_MAP="$SANDBOX/map.json" run "$LAND" 42 --item ship
+  assert_success
+  run grep '^schedules-sync' "$LOG"
+  assert_output 'schedules-sync sync-prs store.example/o/r'
+}
+
+@test "prs: a Forgejo PR with no readable project map keeps the html_url host (ar-4530)" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  printf 'not json\n' >"$SANDBOX/map.json"
+  SO_PROJECT_MAP="$SANDBOX/map.json" run "$LAND" 42 --item ship
+  assert_success
+  run grep '^schedules-sync' "$LOG"
+  assert_output 'schedules-sync sync-prs forgejo.example/o/r'
+  : >"$LOG"
+  SO_PROJECT_MAP="$SANDBOX/none.json" run "$LAND" 42 --item ship
+  run grep '^schedules-sync' "$LOG"
+  assert_output 'schedules-sync sync-prs forgejo.example/o/r'
+}
+
 @test "a Forgejo-canonical checkout (home-config): its forgejo remote, not the GitHub origin, carries every git step" {
   forgejo
   mkdir -p "$SANDBOX/hc/.forgejo/workflows"
