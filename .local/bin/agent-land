@@ -769,7 +769,7 @@ own_item() {
   done
   # A body that cannot be read names no item here; stamp_item reads it again and fails on its own.
   text=$(pr_view body .body 2>/dev/null) || text=''
-  named=$(tr -d '\r' <<<"$text" | sed -n 's/^Item: *\([^[:space:]]*\).*/\1/p' | head -n 1)
+  named=$(tr -d '\r' <<<"$text" | sed -n '/^Item: */{s/^Item: *\([^[:space:]]*\).*/\1/p;q;}')
   [ "$named" != "$item" ] || return 0
   # A placeholder ("Item: <slug>", "Item: n/a") is no item: stamp_item rewrites it.
   if [ -n "$named" ]; then
