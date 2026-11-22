@@ -27,12 +27,16 @@
             "default": "●"
         }
     },
-    "idle_inhibitor": {
-        "format": "{icon}",
-        "format-icons": {
-            "activated": "",
-            "deactivated": ""
-        }
+    // Caffeine: a click holds idle off, a second lets it go (caffeine.sh). Custom, not the built-in
+    // idle_inhibitor, so `modules.sh off caffeine` can drop it per machine.
+    "custom/caffeine": {
+        "format": "{}",
+        "return-type": "json",
+        "exec": "$HOME/.config/waybar/modules.sh gate custom/caffeine $HOME/.config/waybar/caffeine.sh",
+        "signal": 10,
+        "hide-empty-text": true,
+        "on-click": "$HOME/.config/waybar/caffeine.sh toggle",
+        "tooltip": true
     },
     "clock#date": {
         "format": "{:%a %b %d}",
