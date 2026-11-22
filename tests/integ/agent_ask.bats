@@ -2218,6 +2218,39 @@ ASK-JUDGE-END'
   assert_line 'judge_level: self'; assert_line 'judge_level_raised: false'
 }
 
+# ar-3917: agent-queue cancels work the human asked for only on the human's answer, so an ask that
+# would cancel it is the human's: a judge answer would be one the queue refuses.
+@test "post: an ask that would cancel work the human asked for is an approval and never reaches the judge" {
+  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue" AGENT_ASK_PROMPT="$REPO_ROOT/.config/agent-ask/policy.md"
+  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug theirs --from human "chore(x): the human's" >/dev/null
+  AGENT_QUEUE_PULL=1 "$AGENT_ASK_QUEUE_CMD" add --project demo --from shepherd --slug mine "chore(x): an agent's own" >/dev/null
+  unset AGENT_ASK_NO_JUDGE
+  fake_judge "$(score cleanup_restructure)"
+  run --separate-stderr "$AGENT_ASK" post --project demo --options 'a=cancel theirs and mine|b=keep both' --recommend a 'cut the queue back?'
+  assert_success
+  assert_equal "$stderr" "agent-ask post: the ask would cancel theirs, work the human asked for, so it is an approval for the human"
+  run "$AGENT_ASK" show "$output"
+  assert_line 'kind: approval'; assert_line 'judge: human'; assert_line 'judge_rule: gate'
+  assert [ ! -e "$BATS_TEST_TMPDIR/judge.calls" ]
+  # negative controls: a cancel of the agent's own item, and the human's item with no cancel, go to the judge
+  local id
+  for q in 'drop mine from the queue?' 'run theirs on the pool next?'; do
+    rm -f "$BATS_TEST_TMPDIR/judge.calls"
+    id="$(CLAUDE_CODE_SESSION_ID="s-$RANDOM" "$AGENT_ASK" post --project demo --options 'a=yes|b=no' "$q" 2>/dev/null)"
+    run "$AGENT_ASK" show "$id"; assert_line 'kind: question'
+    assert [ -e "$BATS_TEST_TMPDIR/judge.calls" ]
+  done
+  # a question posted before the rule is held to it when judged again
+  rm "$BATS_TEST_TMPDIR/judge.calls"
+  id="$(AGENT_ASK_NO_JUDGE=1 AGENT_ASK_QUEUE_CMD=false "$AGENT_ASK" post --project demo --options 'a=yes|b=no' 'cancel theirs, it looks stale?')"
+  run "$AGENT_ASK" show "$id"; assert_line 'kind: question'
+  "$AGENT_ASK" judge "$id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge: human'; assert_line 'judge_rule: gate'
+  assert_line 'judge_reason: the ask would cancel theirs, work the human asked for; not sent to the judge'
+  assert [ ! -e "$BATS_TEST_TMPDIR/judge.calls" ]
+}
+
 @test "post: an ask naming the judge's own authority is an approval and never reaches the judge" {
   export AGENT_ASK_PROMPT="$REPO_ROOT/.config/agent-ask/policy.md"
   unset AGENT_ASK_NO_JUDGE
