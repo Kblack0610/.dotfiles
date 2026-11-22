@@ -481,12 +481,17 @@ test("a runner page's lists stop at the server's shown, and each +N more opens o
 
 test("the sentinel page counts its watches, a tripped one a warn line linking to Alerts' Watches, never the watch table", async () => {
   const w = (name, state) => ({ name, state, severity: "normal", since: null, lastrun: null, lasttrip: null, place: "", what: "", action: "", evidence: "" });
-  const h = await openPage("sentinel", { sentinel: runnerPage("sentinel", { extras: { kind: "sentinel-watches", watches: [w("a", "TRIP"), w("b", "OK"), w("c", "ERROR")] } }) });
-  assert.match(h, /<h2 class="sec warn">Watches <span class="n">3<\/span><\/h2><div class="cline warn"><a href="#alerts\/watches">1 tripped<\/a><\/div>/);
+  // `tripped` is hub-core's figure: the page prints it and counts no state itself, so a figure of 2
+  // over one TRIP row reads 2 (the negative control for a page that recounts).
+  const h = await openPage("sentinel", { sentinel: runnerPage("sentinel", { extras: { kind: "sentinel-watches", watches: [w("a", "TRIP"), w("b", "OK"), w("c", "ERROR")], tripped: 2 } }) });
+  assert.match(h, /<h2 class="sec warn">Watches <span class="n">3<\/span><\/h2><div class="cline warn"><a href="#alerts\/watches">2 tripped<\/a><\/div>/);
   assert.doesNotMatch(h, /<th>watch<\/th>/);
-  const quiet = await openPage("sentinel", { sentinel: runnerPage("sentinel", { extras: { kind: "sentinel-watches", watches: [w("b", "OK")] } }) });
+  const quiet = await openPage("sentinel", { sentinel: runnerPage("sentinel", { extras: { kind: "sentinel-watches", watches: [w("b", "OK")], tripped: 0 } }) });
   assert.match(quiet, /<h2 class="sec">Watches <span class="n">1<\/span><\/h2>/);
   assert.doesNotMatch(quiet, /Watches <span class="n">1<\/span><\/h2><div class="cline warn">/, "no warn line while nothing is tripped");
+  // A payload without the figure reads ?, never a quiet 0.
+  const old = await openPage("sentinel", { sentinel: runnerPage("sentinel", { extras: { kind: "sentinel-watches", watches: [w("a", "TRIP")] } }) });
+  assert.match(old, /<a href="#alerts\/watches">\? tripped<\/a>/);
 });
 
 test("a runner with no runs says no run in 14 days, not an error", async () => {

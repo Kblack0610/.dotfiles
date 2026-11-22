@@ -235,3 +235,70 @@ STUB
   assert_line --index 0 --regexp '^store sync stuck: '
   refute_line --regexp '^unreadable: '
 }
+
+# --notes: the notes store's sync.log (store-sync --store notes, outside the vault) is judged too.
+notes_setup() {
+  mkdir -p "$BATS_TEST_TMPDIR/notes-sync"
+  export NOTES_SYNC_LOG="$BATS_TEST_TMPDIR/notes-sync/sync.log"
+  printf '[2026-11-17 11:50:00] [h] COMPLETE: Sync finished\n' > "$LOG"
+  printf '[2026-11-17 11:55:00] [h] COMPLETE: Sync finished\n' > "$NOTES_SYNC_LOG"
+}
+
+@test "--notes: both stores current is green, one line each" {
+  notes_setup
+  run "$BIN" --notes "$LOG"
+  assert_success
+  assert_output $'store sync current: last COMPLETE 10 min ago (limit 30)\nnotes store sync current: last COMPLETE 5 min ago (limit 30)'
+}
+
+@test "--notes: a stale notes store turns the check red and says it is the notes store" {
+  notes_setup
+  printf '[2026-11-16 12:00:00] [h] COMPLETE: Sync finished\n[2026-11-17 11:59:00] [h] ERROR: Fetch failed\n' > "$NOTES_SYNC_LOG"
+  run "$BIN" --notes "$LOG"
+  assert_failure 1
+  assert_line --index 1 --regexp '^notes store sync stale: last COMPLETE 1440 min ago.*ERROR: Fetch failed'
+}
+
+@test "--notes: a notes merge conflict is stuck" {
+  notes_setup
+  : > "$BATS_TEST_TMPDIR/notes-sync/conflict"
+  run "$BIN" --notes "$LOG"
+  assert_failure 1
+  assert_line --index 1 --regexp '^notes store sync stuck: '
+}
+
+@test "without --notes a stale notes store is not read (negative control)" {
+  notes_setup
+  printf '[2026-11-16 12:00:00] [h] COMPLETE: Sync finished\n' > "$NOTES_SYNC_LOG"
+  run "$BIN" "$LOG"
+  assert_success
+  assert_output "store sync current: last COMPLETE 10 min ago (limit 30)"
+}
+
+@test "--notes: a red notes store is never hidden behind the agent store's unreadable log" {
+  notes_setup
+  rm "$LOG"
+  : > "$BATS_TEST_TMPDIR/notes-sync/conflict"
+  run "$BIN" --notes "$LOG"
+  assert_failure 1
+  refute_line --regexp '^unreadable: '
+  assert_line --index 0 --partial "agent store: unreadable: "
+}
+
+@test "--notes: a red agent store is never hidden behind the notes store's unreadable log" {
+  notes_setup
+  : > "$BATS_TEST_TMPDIR/conflict"
+  rm "$NOTES_SYNC_LOG"
+  run "$BIN" --notes "$LOG"
+  assert_failure 1
+  refute_line --regexp '^unreadable: '
+  assert_line --index 1 --partial "notes store: unreadable: "
+}
+
+@test "--notes: a missing notes log with a current agent store is could-not-check" {
+  notes_setup
+  rm "$NOTES_SYNC_LOG"
+  run "$BIN" --notes "$LOG"
+  assert_failure 1
+  assert_line --index 1 --regexp '^unreadable: .*notes-sync/sync.log is missing'
+}
