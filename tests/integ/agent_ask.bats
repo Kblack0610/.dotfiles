@@ -1639,6 +1639,11 @@ human_hold() {
   fake_judge "$(score external 'skip it' | jq -c '.settled_by = "hold:release-cut"')"
   id="$("$AGENT_ASK" post --project demo --options "$opts" --recommend tag 'cut the tag, skip?' 2>/dev/null)"
   grep -qx 'status: pending' "$(ask_file "$id")"
+  # An empty answer is no pick: the recommendation is what the asker wants, and a hold can forbid exactly
+  # that (PZLBaS, 2026-11-20), so the human answers instead of the hold taking it (ar-4236).
+  fake_judge "$(score external "" | jq -c '.settled_by = "hold:release-cut"')"
+  id="$("$AGENT_ASK" post --project demo --options "$opts" --recommend tag 'cut the tag, no pick?' 2>/dev/null)"
+  grep -qx 'status: pending' "$(ask_file "$id")"
   id="$(AGENT_ASK_NO_JUDGE=1 "$AGENT_ASK" post --project disarmed --options "$opts" --recommend tag 'tag it, disarmed?')"
   printf 'assume_disarmed: 2026-11-19T10:00:00-0800\n' >> "$(ask_file "$id")"
   fake_judge "$(score external wait | jq -c '.settled_by = "hold:release-cut"')"
