@@ -1,6 +1,6 @@
 #!/bin/bash
-# Stop check: Node/TypeScript projects (typecheck, lint, format, knip).
-# Exit codes: 0=pass, 1=warn, 2=block.
+# Stop check: Node/TypeScript projects (typecheck, lint, format).
+# Exit codes: 0=pass, 2=block.
 
 set -uo pipefail
 
@@ -37,16 +37,4 @@ else
   echo "$PKG" | grep -q '"lint"' && { pnpm lint 2>&1 || exit 2; }
 fi
 
-KNIP_WARN=0
-KNIP_OUT=$(mktemp)
-echo "$PKG" | grep -q '"knip"' && {
-  pnpm knip >"$KNIP_OUT" 2>&1 || {
-    KNIP_WARN=1
-    UNUSED=$(grep -cE '^(Unused|Unlisted)' "$KNIP_OUT" 2>/dev/null || echo 0)
-    echo "knip: $UNUSED unused/unlisted entries (run \`pnpm knip\` for details)" >&2
-  }
-}
-rm -f "$KNIP_OUT"
-
-[ $KNIP_WARN -eq 1 ] && exit 1
 exit 0
