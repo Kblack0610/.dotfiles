@@ -1206,7 +1206,7 @@ Description=tmux child pane 40 launched by process 95
 ControlGroup=/s/mute
 EOF
   mkdir -p "$TMUX_TMPDIR/tmux-$(id -u)" "$SANDBOX/fakes"
-  : > "$TMUX_TMPDIR/tmux-$(id -u)/hub"
+  python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TMUX_TMPDIR/tmux-$(id -u)/hub"
   echo '81 10' > "$SANDBOX/panes.hub"
   printf '#!/bin/sh\ncat %q\n' "$SANDBOX/scopes" > "$SANDBOX/fakes/systemctl"
   # list-panes for the server after -L, from panes.<server>; no such file is a server that is silent

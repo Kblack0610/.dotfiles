@@ -32,7 +32,7 @@ hypr_rows() {
 }
 
 # The socket to read binds from, as tmux args. Inside tmux, this server. Outside, the first socket
-# that answers list-sessions, hub first; never a list-keys on a socket that has not answered.
+# that answers has-session (tmux_live_servers), hub first; never a list-keys on a socket that has not answered.
 tmux_socket() {
     if [ -n "${TMUX:-}" ]; then
         printf '%s\n' "${TMUX%%,*}"
