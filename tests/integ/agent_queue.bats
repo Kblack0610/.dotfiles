@@ -843,8 +843,6 @@ mix_classes() { jq --argjson on "$1" '.on = $on | del(.classes[].min_live)' "$RE
   assert_failure
 }
 
-# agent-ask reads holds on every card and answer through ask-holds, which reads the header lines
-# alone: it must name exactly what list --json's tags do, and nothing from a done item.
 # agent-ask sends an ask that would cancel one of these to the human (ar-3917): the list must be
 # exactly what cancel_guard holds, the active items from the human or a #requested row.
 @test "human-work lists the active items the human asked for, and no other" {
@@ -866,6 +864,8 @@ mix_classes() { jq --argjson on "$1" '.on = $on | del(.classes[].min_live)' "$RE
   assert_success
 }
 
+# agent-ask reads holds on every card and answer through ask-holds, which reads the header lines
+# alone: it must name exactly what list --json's tags do, and nothing from a done item.
 @test "ask-holds lists each active item held on an ask, as list --json's tags have them" {
   export AGENT_ASK_ROOT="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_ROOT/game"
   for i in h1 h2; do printf 'id: %s\nstatus: pending\noptions: a|b\n' "$i" > "$AGENT_ASK_ROOT/game/$i.md"; done

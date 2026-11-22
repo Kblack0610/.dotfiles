@@ -228,14 +228,18 @@ queue_holders() {
   awk -F'\t' -v OFS='\t' -v id="$1" '$2 == id { print $1, $3 }' <<<"$QUEUE_HOLDS"
 }
 
-# human_cancel <text>: when the text proposes a cancel or a drop, the first active queue item the
+# human_cancel <text>: when the text proposes taking work off the queue (a cancel, drop, removal,
+# prune, kill or retire, any of HUMAN_CANCEL_VERBS), the first active queue item the
 # human asked for (`agent-queue human-work`) it names as a whole word; fails on any other text.
 # agent-queue's cancel_guard cancels that work only on the human's answer to an ask naming it, so a
 # judge's answer is one the queue refuses: post makes the ask an approval, and judge sends one posted
 # before to the human (ar-3917; on 2026-11-12 a cleanup cancelled the human's items on an ask the
 # judge answered in 20 s). A queue that cannot be read names none, and the guard still holds.
+# Every form a session words a cancel in: a word that only looks like one (dropdown) stays out, and
+# an extra match only sends an ask to the human, never past them.
+HUMAN_CANCEL_VERBS='cancel[a-z]*|drop|drops|dropped|dropping|abandon[a-z]*|remove|removes|removed|removing|delete|deletes|deleted|deleting|kill|kills|killed|killing|prune|prunes|pruned|pruning|retire|retires|retired|retiring|scrap|scraps|scrapped|scrapping|discard[a-z]*|withdraw[a-z]*'
 human_cancel() {
-  [[ " ${1,,} " =~ [^a-z](cancel[a-z]*|drop|drops|dropped|dropping|abandon[a-z]*)[^a-z] ]] || return 1
+  [[ " ${1,,} " =~ [^a-z]($HUMAN_CANCEL_VERBS)[^a-z] ]] || return 1
   local slugs hit
   slugs="$($AGENT_ASK_QUEUE_CMD human-work 2>/dev/null)" && [ -n "$slugs" ] || return 1
   hit="$(grep -owF -f <(printf '%s\n' "$slugs") <<<"$1" | head -n1)"

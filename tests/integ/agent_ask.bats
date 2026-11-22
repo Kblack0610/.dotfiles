@@ -2234,7 +2234,10 @@ ASK-JUDGE-END'
   assert [ ! -e "$BATS_TEST_TMPDIR/judge.calls" ]
   # negative controls: a cancel of the agent's own item, and the human's item with no cancel, go to the judge
   local id
-  for q in 'drop mine from the queue?' 'run theirs on the pool next?'; do
+  # any wording of a cancel counts
+  id="$("$AGENT_ASK" post --project demo --options 'a=yes|b=no' 'prune theirs, it looks stale?' 2>/dev/null)"
+  run "$AGENT_ASK" show "$id"; assert_line 'kind: approval'
+  for q in 'drop mine from the queue?' 'run theirs on the pool next?' 'add a dropdown to theirs?'; do
     rm -f "$BATS_TEST_TMPDIR/judge.calls"
     id="$(CLAUDE_CODE_SESSION_ID="s-$RANDOM" "$AGENT_ASK" post --project demo --options 'a=yes|b=no' "$q" 2>/dev/null)"
     run "$AGENT_ASK" show "$id"; assert_line 'kind: question'
