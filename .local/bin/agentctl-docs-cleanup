@@ -32,8 +32,9 @@ report() { [ "$DRY" = 1 ] || proof_outcome "$NAME" "$@"; }
 fail() { report FAILED "$1"; echo "$1" >&2; exit 1; }
 INBOX="${AGENTCTL_INBOX:-$HOME/.local/state/agentctl/docs-cleanup}"
 LESSONS="${DOCS_CLEANUP_LESSONS:-$HOME/.agent/lessons}"
-# skill-drift by path beside this script, so a worktree run counts with the worktree's copy.
-DRIFT="$(dirname "$(readlink -f "$0")")/skill-drift"
+# Tools by path beside this script, so a worktree run counts with the worktree's copy.
+HERE="$(dirname "$(readlink -f "$0")")"
+DRIFT="$HERE/skill-drift"
 stamp="$(date +%Y%m%d)"
 dir="$INBOX/$stamp"
 mkdir -p "$dir"
@@ -46,19 +47,33 @@ snap() {
 }
 snap skills --json
 snap docs --docs --json
+# A dead path whose file git renamed is fixed by script in the docs outside the dotfiles checkouts
+# (those need a PR, so the pass edits them: status "repo"); the counts are then taken over the result.
+mode=--apply; [ "$DRY" = 1 ] && mode=
+"$HERE/docs-renamed-paths" $mode "$dir/skills.json" "$dir/docs.json" > "$dir/renames.tsv" 2>"$dir/renames.err" \
+    || fail "docs-renamed-paths failed ($dir/renames.err)"
+if grep -q '^fixed' "$dir/renames.tsv"; then
+    snap skills --json
+    snap docs --docs --json
+fi
 # --check exits 1 over the dup_pairs_max baseline in kpi-thresholds and still prints the JSON; with no
 # such row it exits 2 with no JSON, so a lost baseline reads FAILED, never "no drift".
 snap dups --dups --check --json
+# A chain whose target is still in the file is archived by script (the corrector stays, its marker goes),
+# so the chains below are the ones a session has to read: a dangling marker.
+sup=; [ "$DRY" = 1 ] && sup=--dry-run
+"$HERE/lessons" supersede $sup "$LESSONS" > "$dir/superseded.txt" 2>&1 \
+    || fail "lessons supersede failed on $LESSONS ($dir/superseded.txt)"
 for f in "$LESSONS"/*.md; do [ -f "$f" ] && printf '%s\t%s\n' "$(wc -c < "$f")" "$(basename "$f")"; done \
     | sort -rn > "$dir/lessons.tsv"
 # A correction chain (a lesson whose supersedes marker names another, or names a key no lesson
 # carries any more) is drift: pick already hides the named lesson, and the pass folds the two.
-"$(dirname "$(readlink -f "$0")")/lessons" chains "$LESSONS" > "$dir/chains.tsv" \
+"$HERE/lessons" chains "$LESSONS" > "$dir/chains.tsv" \
     || fail "lessons chains failed on $LESSONS"
 chains_n="$(awk 'END { print NR }' "$dir/chains.tsv")"
 # Knowledge drift: `notes knowledge lint` over the vault with the retired list, so a page that
 # still names a sold host or a deleted command as live counts beside the registry classes.
-"$(dirname "$(readlink -f "$0")")/knowledge-retired" > "$dir/retired.tsv" 2>"$dir/retired.err" \
+"$HERE/knowledge-retired" > "$dir/retired.tsv" 2>"$dir/retired.err" \
     || fail "knowledge-retired failed ($dir/retired.err)"
 notes knowledge lint --json --retired "$dir/retired.tsv" > "$dir/knowledge.json" 2>"$dir/knowledge.err"
 jq -e '.total | numbers' "$dir/knowledge.json" >/dev/null 2>&1 \
