@@ -119,7 +119,7 @@ queue_index() {
                    refs: ((.[$x.s].refs // []) + [{row: ($x.i.row // ""), type: ($x.i.type // "")}]),
                    landed: ((.[$x.s].landed // []) + (($x.s + "=") as $k
                      | if ($x.i.landed_by // "") != "" then [$x.i.landed_by | split(" ")[] | select(startswith($k)) | ltrimstr($k)]
-                       elif ($x.i.sessions | split(" ") | unique | length) == 1 then [$x.i.pr // "" | tostring | split(" ")[] | select(. != "")]
+                       elif ($x.i.sessions | split(" ") | unique | length) == 1 then ($x.i.pr // "" | tostring | split(" "))
                        else [] end))})' > "$1" && return 0
   printf '{}' > "$1"
   return 1

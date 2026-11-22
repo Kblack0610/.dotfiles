@@ -111,9 +111,8 @@ mkdir -p "$REG_DIR" 2>/dev/null || exit 0
 # Under a lock: two Stops that read the same registry would each mv their copy over it, and
 # the second drops the first's row. Runner passes made that common. No flock on macOS. A lock
 # not had in 10 s skips this upsert (the next Stop makes it) rather than race the holder's rewrite.
-# The copy is made next to the registry, so the swap below is one rename: a /tmp copy crossed
-# filesystems, mv copied it over the registry, and a crash mid-copy left it empty (2680 rows to
-# 0 on 2026-11-20). A filter pass that fails swaps nothing, or the registry would keep one row (ar-2779).
+# The copy is made next to the registry so the swap below is one rename (a /tmp copy crossed
+# filesystems, and a crash mid-copy emptied the registry, ar-2779); a filter pass that fails swaps nothing.
 exec 9>>"$REG.lock"
 if command -v flock >/dev/null 2>&1; then flock -w 10 9 || exit 0; fi
 TMP=$(mktemp "$REG_DIR/.sessions.jsonl.XXXXXX" 2>/dev/null) || exit 0

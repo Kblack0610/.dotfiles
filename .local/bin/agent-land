@@ -766,15 +766,16 @@ own_merged() {
   fail match "#$pr ($pr_ref, from $head_ref) is merged, and nothing ties it to $item: its body has no \"Item: $item\" line, its head ${head_oid:0:8} is not in this checkout's HEAD, and the item records ${it_pr:-no PR}. A PR in another repo: run from a checkout of it, with --repo <owner>/<repo>"
 }
 
-# landed_by: the set argument that adds "<this session>=<pr_ref>" to the item's landed_by: pairs,
-# read from $it, or nothing with no session id. The nightly outcomes pass credits each session
+# landed_by: sets lb to the set argument that adds "<this session>=<pr_ref>" to the item's landed_by:
+# pairs, read from $it, or to nothing with no session id. The nightly outcomes pass credits each session
 # with the PRs it landed from these pairs (queue_index); sessions: alone cannot say which one did (ar-2779).
 landed_by() {
   local sid="${CLAUDE_CODE_SESSION_ID:-}" cur
+  lb=()
   [ -n "$sid" ] || return 0
   cur=$(jq -r '.landed_by // ""' <<<"$it")
   [[ " $cur " == *" $sid=$pr_ref "* ]] || cur="${cur:+$cur }$sid=$pr_ref"
-  printf 'landed_by=%s\n' "$cur"
+  lb=("landed_by=$cur")
 }
 
 # other_session: exit 0 when another session owns this queue item (its session: names another
@@ -1175,7 +1176,7 @@ case "$done_as" in
   [ "$partial" -eq 1 ] || closing=("closing_pr=$pr_ref")
   # A full landing ends the item's open PR; a partial one leaves the item's other PRs open (stack_pr reads it).
   clear_open=open_pr=; [ -z "$marker" ] || clear_open=
-  mapfile -t lb < <(landed_by)
+  landed_by
   out=$(aq_retry set "$item" "pr=${refs[*]}" "merged=${oids[*]}" "partial=$marker" $clear_open "${closing[@]}" "${lb[@]}" 2>&1) || fail item "$(lastline "$out")"
   credited="$(credit)${open_ref:-}"
   if [ "$partial" -eq 0 ]; then
@@ -1190,7 +1191,7 @@ more)
     echo "item: could not record this session on $item: $(lastline "$out")" >&2
   fi
   it=$(aq_retry show "$item" --json 2>&1) || fail item "agent-queue show: $(lastline "$it")"
-  mapfile -t lb < <(landed_by)
+  landed_by
   out=$(aq_retry set "$item" "pr=$(jq -r .pr <<<"$it") $pr_ref" "merged=$(jq -r '.merged // ""' <<<"$it") $merged" "${lb[@]}" 2>&1) ||
     fail item "$(lastline "$out")"
   credited=", beside $(jq -r .pr <<<"$it")"
