@@ -1250,7 +1250,6 @@ ORDER='def untagged($t): ((.tags // "") | if type == "array" then join(" ") else
 # lag_places places at most, and one served little gets at most lag_places * share / (sum of shares)
 # places ahead. Shares are weights: the bound divides by their sum. No lag_places is no bound. An AQ_CLASSES not
 # `on: true`, or unreadable, is no mix.
-# The shares are the human's; DISPATCH_PROJECT_FLOOR (fleet-dispatch) is the separate project axis.
 AQ_CLASSES="${AGENT_QUEUE_CLASSES:-$HOME/.config/fleet-dispatch/classes.json}"
 CLASS_JQ='def class_of($cs): ((.tags // "") | if type == "array" then join(" ") else tostring end | [splits("\\s+")]) as $tg
   | (.from // "") as $f

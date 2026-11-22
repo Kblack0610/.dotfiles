@@ -606,7 +606,8 @@ pub fn projects(p: &crate::projects::Projects) -> Card {
         "projects",
         "Projects",
         "lab projects with their board slice and queue (notes projects --stats); shipped today is \
-         the queue items closed ok with a merge, checks the ones closed with none, one per slug",
+         every queue item closed ok with a merge, lab project or not, checks the ones closed with \
+         none, one per slug (Queue::done_today)",
     )
     .bar(cards.len() - waiting, waiting, 0)
     .part(
@@ -615,9 +616,18 @@ pub fn projects(p: &crate::projects::Projects) -> Card {
         Level::Ok,
     )
     .part("Waiting", sum(|c| c.waiting), lvl(waiting, Level::Warn))
-    .part("Hot", sum(|c| c.hot), Level::Ok)
-    .part("Shipped today", sum(|c| c.today.shipped), Level::Ok)
-    .part("Checks closed", sum(|c| c.today.checks), Level::Ok);
+    .part("Hot", sum(|c| c.hot), Level::Ok);
+    // An unread queue says so, never a zero or a missing part (rule 6); `figures` then has no
+    // number for it, so waybar's D: reads -.
+    c = match p.today {
+        Some(d) => {
+            c.part("Shipped today", d.shipped, Level::Ok)
+                .part("Checks closed", d.checks, Level::Ok)
+        }
+        None => c
+            .part("Shipped today", crate::reading::NOT_READ, Level::Warn)
+            .part("Checks closed", crate::reading::NOT_READ, Level::Warn),
+    };
     c.big = cards.len().to_string();
     c.unit = "lab projects".into();
     if !p.errors.is_empty() {
@@ -800,7 +810,7 @@ pub fn needs(home: &crate::home::Home, now: i64) -> Card {
     c.first(old.into_iter().map(|n| {
         let waited = n
             .since
-            .map(|t| crate::text::age(now - t))
+            .map(|t| crate::display::fmt::age(now - t))
             .unwrap_or_default();
         let sub = [waited.as_str(), n.project.trim_start_matches('.')]
             .iter()
@@ -1176,7 +1186,7 @@ mod tests {
         assert_eq!(c.first_head, "Bottleneck");
         assert_eq!(
             (c.first[0].text.as_str(), c.first[0].sub.as_str()),
-            ("needs you", "age p90 9h (bound 4h)")
+            ("needs you", "age p90 9h00m (bound 4h00m)")
         );
         // A snapshot that could not be read is said on the card, beside what waits on you.
         let c = queue(&held, Some(&Err("state.json: bad json".into())));

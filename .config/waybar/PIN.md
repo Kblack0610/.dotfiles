@@ -110,7 +110,7 @@ survives a reboot, unlike `pin.sh`'s `/tmp` state.
 
 **Add a toggle:** add a row to `modules.registry` (`key|label|module-id ...`, one key
 may own several ids), wrap that module's `exec` in `modules.sh gate <id>` and give it
-`"signal": 10` plus `"hide-empty-text": true`, then add a leaf to `pinbar-settings` in
+`"signal": 10` (or a number of its own) plus `"hide-empty-text": true`, then add a leaf to `pinbar-settings` in
 `leader.lua` with a description (it is the legend entry).
 
 Only **custom** modules can be toggled. Built-ins (memory, clock, tray...) have
@@ -123,6 +123,7 @@ safe. `RTMIN+9` belongs to `custom/gungan` (the red mic while a voice take runs)
 `gungan` on every start and stop. (`RTMIN+8` was fired by `hypr/scripts/voice_to_text.sh`, now
 removed, but stay off 8 too until the old bars are gone.) `RTMIN+11` belongs to
 `custom/passthrough` (`passthrough.sh`), fired by the Hyprland passthrough toggles.
+`RTMIN+12` belongs to `custom/caffeine`, fired by `caffeine.sh toggle` so a click redraws that chip alone on Noctalia. `modules.sh` signals each registry chip by its own number, so a chip that owns one still hides at once.
 `custom/webcam` (`webcam.sh`) needs no signal: it stays running on inotify and prints a line
 whenever a `/dev/video*` node gains or loses its holders.
 
@@ -145,6 +146,7 @@ Only the default moves. An app set to Default follows it mid-call (WirePlumber `
 - `webcam.sh`        - `custom/webcam`, the red CAM pill while a process holds the webcam
 - `audio_input.sh`   - `custom/audio-input`, the input apps hear and the switch between them (Noctalia only)
 - `printer.sh`       - `custom/printer`, `N 21% B`: N is the Neptune (heat, err, a check when done; ? wrong address, ! Klipper not ready), B the A1 while on; an idle or off printer is hidden
+- `caffeine.sh`      - `custom/caffeine`, the keep-awake eye: a click holds idle off with `systemd-inhibit --what=idle` in its own user unit (`waybar-caffeine`), a second lets it go
 - `style.css`        - `window#waybar.pin` + `#custom-machines` + button styles
 - `layout.css`       - theme-neutral layout (`#status` dividers), imported by every theme
 - `hypr/conf/keybindings.lua` - the `Super+Shift+M` / `Super+Shift+,` binds

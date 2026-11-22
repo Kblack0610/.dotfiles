@@ -103,7 +103,6 @@ Media/Music
 !.claude/skills/authoring/one-pager/
 !.claude/skills/authoring/quick-demo/
 !.claude/skills/authoring/shell-test-harness/
-!.claude/skills/authoring/skill-refine/
 !.claude/skills/authoring/svg-diagram/
 !.claude/skills/authoring/update-rules/
 !.claude/skills/memory/claude-recall/
@@ -129,7 +128,6 @@ Media/Music
 !.claude/skills/monitoring/fix-red/
 !.claude/skills/monitoring/fleet-runners/
 !.claude/skills/monitoring/fleet-asks/
-!.claude/skills/monitoring/fleet-memory/
 !.claude/skills/monitoring/fleet-accounts/
 !.claude/skills/monitoring/fleet-queue/
 !.claude/skills/ops/game-eval/
@@ -138,8 +136,6 @@ Media/Music
 !.claude/skills/ops/provision-capture/
 !.claude/skills/ops/playground-headless-test/
 !.claude/skills/ops/playground-nightly-fix/
-!.claude/skills/ops/ci-cost/
-!.claude/skills/ops/ci-failures/
 !.claude/skills/ops/board-cleanup/
 !.claude/skills/ops/ci-cleanup/
 !.claude/skills/ops/fix-ci/

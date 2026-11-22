@@ -29,19 +29,11 @@
 #       one approval ask per candidate (the briefing runs it on Mondays), unless one for that
 #       cell is pending or was answered or closed in the last PROMOTE_QUIET_DAYS days.
 #
-#   judge-eval replay [--limit N] [--ids ID,...] [--out DIR] [--json]
-#       the answer judge's current policy over the asks the human answered with an option, newest
-#       first: the real `agent-ask judge` on blind copies, by its own agent `ask-judge-replay`,
-#       then the usual ask-judge report on the copies. --out keeps them. --ids replays those asks
-#       in any state (answered, cancelled, parked) and prints one row per ask instead: the judge's
-#       call, its type and level, whether the live rules would have let it act, and what you did.
-#
-# Read-only: replay works on copies and spends a model call per ask. The standard, each lane's
-# truth and the formulas: ~/.local/src/docs/judges.md.
+# Read-only. The standard, each lane's truth and the formulas: ~/.local/src/docs/judges.md.
 
 set -uo pipefail
 
-# agent-ask's helpers (ask root, named_option, live_rules) and AGENT_ASK_LIVE_BAR, the scored rows a
+# agent-ask's helpers (ask root) and AGENT_ASK_LIVE_BAR, the scored rows a
 # lane's score needs; judge.sh comes with it (judge_ask_docs, the calls.jsonl path).
 # shellcheck source=agent-ask
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/agent-ask"
@@ -52,10 +44,6 @@ set -uo pipefail
 : "${JUDGE_EVAL_QUEUE_CMD:=agent-queue list --json --state all}"
 # The notes ingest record: what became of each row a runner wrote (its 30 days are all it keeps).
 : "${JUDGE_EVAL_INGEST_CMD:=notes log --json --days 30}"
-# replay's judge, and what it must not see of an ask: every field the human's answer left on it.
-: "${JUDGE_EVAL_REPLAY_CMD:=agentctl-run --agent ask-judge-replay}"
-: "${JUDGE_EVAL_REPLAY_JOBS:=4}"
-: "${JUDGE_EVAL_BLIND_FIELDS:=answer answered_at answered_by answer_note assume_at assume_answer assume_disarmed resume resumed_at closed_at closed_reason parked_until parked_at delivery_answer delivery_note}"
 CONF_DIR="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}"
 # How long a runner's write stands before it counts as right: a filed row untouched, a skipped row
 # not started by hand.
@@ -596,140 +584,8 @@ promote() {
         + "  \(.status)\(if .demoted then " (demoted)" else "" end): \(.why)") end' <<<"$out"
 }
 
-# replay_labelled: the id and project of each ask the human answered with one option, newest
-# first, approvals out (the judge never sees one). Free text and bare settle-session stamps carry no label.
-replay_labelled() {
-  local asks
-  asks="$(judge_ask_docs "$ASKS_ROOT" | jq -c 'select(.status == "answered" and (.answered_by // "human") == "human"
-    and (.options // "") != "" and (.kind // "") != "approval")')"
-  jq -sr --argjson picks "$(answer_picks "$asks")" '
-    map(select(.answer as $a | $picks[.id] or (.options | split("|") | index($a))))
-    | sort_by(.created // "") | reverse | .[] | [.id, .project] | @tsv' <<<"$asks"
-}
-
-# replay_blind <ask file> <copy>: the ask as it stood when it was posted, pending and unjudged.
-# Fails when the answer survived, so a label can never reach the judge.
-replay_blind() {
-  local fields
-  fields="$(tr ' ' '|' <<<"$JUDGE_EVAL_BLIND_FIELDS")"
-  sed -E -e '/^(judge|judge_[a-z]+|judged_at): /d' -e "s/^($fields): .*/\\1: /" -e 's/^status: .*/status: pending/' "$1" > "$2"
-  ! grep -qE '^answer: .*[^ ]' "$2"
-}
-
-# replay_named <ids>: the id and project of each named ask, in the order given and once each; fails
-# on an id that is no ask id or that the store does not hold, before any call.
-replay_named() {
-  local id f seen=" " list
-  IFS=', ' read -ra list <<<"$1"
-  for id in "${list[@]}"; do
-    [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || { say "'$id' is no ask id"; return 1; }
-    [[ "$seen" == *" $id "* ]] && continue
-    seen+="$id "
-    f="$(find_ask "$id")" || { say "no ask '$id'"; return 1; }
-    printf '%s\t%s\n' "$id" "$(basename "$(dirname "$f")")"
-  done
-}
-
-# replay_row <ask> <copy>: one --ids row as JSON. acts is what the leveled judge would have done at
-# post: live_answer, the one place agent-ask decides, read on the judged copy; why says what kept it
-# from acting. queue_waits reads today's queue, not the queue the ask was posted under. same compares
-# the judge's option with the one the answer named, and only a human answer counts.
-replay_row() {
-  local a="$1" c="$2" judge want="" act acts="no" why="" status human by=""
-  judge="$(field "$c" judge)"
-  case "$judge" in
-    take-recommend) want="$(field "$c" recommend)" ;;
-    answer:*) want="${judge#answer:}" ;;
-  esac
-  if act="$(live_answer "$c")"; then acts="yes"; want="$act"
-  elif [ "$(field "$c" kind)" = approval ]; then why="an approval is the human's"
-  elif [ -z "$judge" ]; then why="not judged"
-  elif [ "$judge" = human ] || [ "$judge" = error ]; then why="judge said $judge"
-  elif [ -z "$want" ]; then why="the call names no option"
-  elif queue_waits "$(field "$a" id)"; then why="a queue item waits on it"
-  elif [ -z "$(field "$c" judge_rule)" ] || [ -z "$(field "$c" judge_level)" ]; then why="no type or level"
-  else why="cell $(field "$c" judge_rule)@$(field "$c" judge_level) is shadow"
-  fi
-  status="$(field "$a" status)"
-  case "$status" in
-    answered) human="$(field "$a" answer)"; by="$(field "$a" answered_by)"; by="${by:-human}" ;;
-    cancelled|closed) human="$(field "$a" closed_reason)" ;;
-    *) human=""; is_parked "$a" && { status=parked; human="$(field "$a" parked_until)"; } ;;
-  esac
-  jq -cn --arg id "$(field "$a" id)" --arg project "$(field "$a" project)" --arg question "$(field "$a" question)" \
-    --arg judge "$judge" --arg want "$want" --arg type "$(field "$c" judge_type)" --arg level "$(field "$c" judge_level)" \
-    --arg reason "$(field "$c" judge_reason)" --arg acts "$acts" --arg why "$why" --arg status "$status" --arg human "$human" \
-    --arg by "$by" --arg pick "$(named_option "$(field "$a" options)" "$(field "$a" answer)")" \
-    '{$id, $project, $question, $judge, $want, $type, $level, $reason, acts: ($acts == "yes"), $why, $status, $by, $human,
-      same: (if $want == "" or $by != "human" or $pick == "" then null else ($pick | ascii_downcase) == ($want | ascii_downcase) end)}'
-}
-
-# replay [--limit N] [--ids ID,...] [--out DIR] [--json]: see the header. The verdicts are moved
-# onto copies of the answered asks, so judge-eval's one scoring reads them like any other. Only
-# this run's selection is judged and read, so copies an earlier run left in --out cost nothing.
-replay() {
-  local limit="" ids="" dir="" json=0 ask id project n=0 out rc=0 sel picked=""
-  ask="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/agent-ask"
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --limit) [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { say "--limit takes a count"; return 2; }; limit="$2"; shift 2 ;;
-      --ids) [ -n "${2:-}" ] || { say "--ids takes ask ids, comma separated"; return 2; }; ids="$2"; shift 2 ;;
-      --out) [ -n "${2:-}" ] || { say "--out takes a directory"; return 2; }; dir="$2"; shift 2 ;;
-      --json) json=1; shift ;;
-      *) say "usage: judge-eval replay [--limit N] [--ids ID,...] [--out DIR] [--json]"; return 2 ;;
-    esac
-  done
-  if [ -n "$ids" ]; then sel="$(replay_named "$ids")" || return 1; else sel="$(replay_labelled)"; fi
-  local keep=1
-  [ -n "$dir" ] || { dir="$(mktemp -d)" || return 1; keep=0; }
-  mkdir -p "$dir" || return 1
-  while IFS=$'\t' read -r id project; do
-    [ -n "$id" ] || continue
-    mkdir -p "$dir/blind/$project"
-    replay_blind "$ASKS_ROOT/$project/$id.md" "$dir/blind/$project/$id.md" ||
-      { say "the answer to $id survived the blinding; nothing was sent"; rc=1; break; }
-    picked+="$id"$'\t'"$project"$'\n'
-    n=$((n + 1))
-    [ "$n" = "${limit:-0}" ] && break
-  done <<<"$sel"
-  picked="${picked%$'\n'}"
-  if [ "$rc" = 0 ] && [ "$n" -gt 0 ]; then
-    cut -f1 <<<"$picked" |
-      AGENT_ASK_ROOT="$dir/blind" AGENT_ASK_PRECEDENTS_ROOT="$ASKS_ROOT" AGENT_ASK_JUDGE_CMD="$JUDGE_EVAL_REPLAY_CMD" \
-        xargs -r -P "$JUDGE_EVAL_REPLAY_JOBS" -n 1 "$ask" judge >/dev/null 2>&1
-    say "replayed $n ask(s) on blind copies"
-    if [ -n "$ids" ]; then
-      # The holds are read once for every row.
-      out="$(load_queue_asks; while IFS=$'\t' read -r id project; do
-        replay_row "$ASKS_ROOT/$project/$id.md" "$dir/blind/$project/$id.md"; done <<<"$picked" | jq -sc .)" || rc=1
-      if [ "$rc" = 0 ]; then if [ "$json" = 1 ]; then printf '%s\n' "$out"; else replay_report "$out"; fi; fi
-    else
-      local pat='^(judge|judge_[a-z]+|judged_at): '
-      rm -rf -- "$dir/scored"
-      while IFS=$'\t' read -r id project; do
-        mkdir -p "$dir/scored/$project"
-        { grep -Ev "$pat" "$ASKS_ROOT/$project/$id.md"; grep -E "$pat" "$dir/blind/$project/$id.md"; } > "$dir/scored/$project/$id.md"
-      done <<<"$picked"
-      out="$(ASKS_ROOT="$dir/scored" AGENTS="ask-judge ask-judge-replay" eval_json ask-judge 1 "")" || rc=1
-      if [ "$rc" = 0 ]; then if [ "$json" = 1 ]; then printf '%s\n' "$out"; else report "$out"; fi; fi
-    fi
-  elif [ "$rc" = 0 ]; then
-    say "no labelled asks to replay"
-  fi
-  [ "$keep" = 1 ] || rm -rf -- "$dir"
-  return "$rc"
-}
-
-# replay_report <rows json>: the --ids rows as text, one block per ask.
-replay_report() {
-  jq -r '.[] | "\(.id)  \(.project)  \(if .type == "" then "-" else .type end)@\(if .level == "" then "-" else .level end)  judge: \(if .judge == "" then "-" else .judge end)  acts: \(if .acts then "yes" else "no (\(.why))" end)",
-      "    \(.question | .[0:100])",
-      "    you: \(.status)\(if .by == "" or .by == "human" then "" else " by the \(.by)" end)\(if .human == "" then "" else " \(.human | .[0:80])" end)\(if .same == null then "" elif .same then "  (same)" else "  (differs)" end)"' <<<"$1"
-}
-
 main() {
   local want="" any=0 days="" json=0 a
-  if [ "${1:-}" = replay ]; then shift; replay "$@"; return; fi
   if [ "${1:-}" = log ]; then shift; log "$@"; return; fi
   if [ "${1:-}" = cells ]; then shift; cells "$@"; return; fi
   if [ "${1:-}" = promote ]; then shift; promote "$@"; return; fi

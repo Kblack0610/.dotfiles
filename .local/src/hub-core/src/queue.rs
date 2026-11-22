@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use crate::display::fmt::{dur_min, usd};
 use agent_core::account::GATEWAY;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -694,15 +695,6 @@ pub struct Recent {
     pub checks_today: u64,
 }
 
-/// Minutes as the views print them: `-` for none, hours from two hours up.
-pub(crate) fn dur(m: Option<i64>) -> String {
-    match m {
-        None => "-".into(),
-        Some(m) if m >= 120 => format!("{}h", m / 60),
-        Some(m) => format!("{m}m"),
-    }
-}
-
 impl Stats {
     /// The window's line: what finished, with a PR, and how long items waited to start.
     pub fn week(&self) -> String {
@@ -715,10 +707,10 @@ impl Stats {
             n("ok"),
             n("failed"),
             n("cancelled"),
-            dur(self.wait_minutes_median),
-            dur(self.wait_minutes_p90),
+            dur_min(self.wait_minutes_median),
+            dur_min(self.wait_minutes_p90),
             self.started_at_once,
-            dur(self.to_pr_minutes_median)
+            dur_min(self.to_pr_minutes_median)
         )
     }
 
@@ -733,22 +725,13 @@ impl Stats {
             (0, _) => "Queue: nothing can start now.".to_string(),
             (n, Some(o)) => format!(
                 "Queue: {n} can start now, the oldest waiting {} ({}), median {}.",
-                dur(Some(o.minutes)),
+                dur_min(Some(o.minutes)),
                 o.slug,
-                dur(s.runnable_age_minutes_median)
+                dur_min(s.runnable_age_minutes_median)
             ),
             (n, None) => format!("Queue: {n} can start now."),
         };
         Some(out)
-    }
-}
-
-/// Dollars as the Queue shows them: cents under $100, whole dollars above.
-pub fn money(c: f64) -> String {
-    if c >= 100.0 {
-        format!("${c:.0}")
-    } else {
-        format!("${c:.2}")
     }
 }
 
@@ -785,7 +768,7 @@ impl DayTotal {
             out.push(format!("{} failed", self.failed));
         }
         if self.cost > 0.0 {
-            out.push(money(self.cost));
+            out.push(usd(self.cost));
         }
         if self.unpriced > 0 {
             out.push(format!("{} unpriced", self.unpriced));
@@ -832,7 +815,7 @@ pub struct DoneToday {
 pub fn done_today<'a>(items: impl IntoIterator<Item = &'a Item>, midnight: i64) -> DoneToday {
     let mut shipped: HashMap<&str, bool> = HashMap::new();
     for i in items {
-        if !i.finished_at().is_some_and(|f| f.timestamp() >= midnight) {
+        if i.finished_at().is_none_or(|f| f.timestamp() < midnight) {
             continue;
         }
         if let Some(c) = i.closed_as() {
@@ -1055,6 +1038,18 @@ impl Queue {
     /// False when `agent-queue list` failed, so `items` is empty for want of a read, not for want of items.
     pub fn list_read(&self) -> bool {
         !self.errors.iter().any(|e| e.starts_with(LIST_FAILED))
+    }
+
+    /// The items shipped and the checks closed since local midnight at `now` (epoch seconds), over
+    /// every done item: the one figure the Projects card, the phone's Done head and the waybar D:
+    /// read. None when the list was not read, which is not none done.
+    pub fn done_today(&self, now: i64) -> Option<DoneToday> {
+        self.list_read().then(|| {
+            done_today(
+                self.items.iter().filter(|i| i.state == State::Done),
+                crate::text::local_day_start(now),
+            )
+        })
     }
 
     pub fn read(runner: &dyn Runner) -> Queue {
@@ -2125,11 +2120,11 @@ mod tests {
         assert_eq!(s.by_project["game"].prs, 2);
         assert_eq!(
             s.week(),
-            "since 2026-10-27: 3 done (3 ok, 0 failed, 0 cancelled), 2 with a PR, wait median 12m p90 2h (4 started at once), to PR median 95m"
+            "since 2026-10-27: 3 done (3 ok, 0 failed, 0 cancelled), 2 with a PR, wait median 12m p90 2h10m (4 started at once), to PR median 1h35m"
         );
         assert_eq!(
             s.sitting_line().as_deref(),
-            Some("Queue: 1 can start now, the oldest waiting 3h (q1), median 3h.")
+            Some("Queue: 1 can start now, the oldest waiting 3h20m (q1), median 3h20m.")
         );
         assert_eq!(
             Stats::default().sitting_line(),
@@ -2504,8 +2499,6 @@ mod tests {
             item(r#"{"slug":"a","state":"done","cost_usd":"2.5","gateway_cost_usd":"9.1","task":"t"}"#).cost(),
             Some(9.1)
         );
-        assert_eq!(money(6.1), "$6.10");
-        assert_eq!(money(214.4), "$214");
     }
 
     #[test]

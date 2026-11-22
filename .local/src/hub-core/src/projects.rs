@@ -524,6 +524,9 @@ pub struct Projects {
     pub board_open: Option<usize>,
     /// `totals.backlog`, the agent rows past their project's board budget, shown beside it.
     pub board_backlog: Option<usize>,
+    /// The whole queue's shipped and checks today (`Queue::done_today`), lab project or not, the
+    /// Projects card's figure. None when the queue was not read.
+    pub today: Option<crate::queue::DoneToday>,
 }
 
 /// What an ETA reads when the net rate is at or below zero: rows are filed as fast as they close.
@@ -679,22 +682,25 @@ pub fn window_words(c: &Card) -> String {
     let Some(w) = &c.window else {
         return NO_WINDOW.to_string();
     };
-    let plural = |n: i64| if n == 1 { "" } else { "s" };
+    let days = |n: i64| crate::display::fmt::counted(n as usize, "day");
     let mut s = format!("{} rows", score(w));
     match (&w.due, w.days_left) {
         (Some(d), Some(n)) => {
             s += &format!(", due {}", crate::text::short_day(d));
             s += &match n {
                 0 => " (due today)".to_string(),
-                n if n > 0 => format!(" ({n} day{} left)", plural(n)),
-                n => format!(" ({} day{} over)", -n, plural(-n)),
+                n if n > 0 => format!(" ({} left)", days(n)),
+                n => format!(" ({} over)", days(-n)),
             };
         }
         _ => s += ", no due day",
     }
     if w.interrupted > 0 {
         let n = i64::from(w.interrupted);
-        s += &format!(", {n} interrupt{}", plural(n));
+        s += &format!(
+            ", {}",
+            crate::display::fmt::counted(n as usize, "interrupt")
+        );
     }
     s
 }
@@ -710,9 +716,8 @@ pub fn on_time_words(c: &Card) -> String {
     });
     let verdict = match o.state {
         "late" => format!(
-            "late {} day{}{eta}",
-            o.late_days,
-            if o.late_days == 1 { "" } else { "s" }
+            "late {}{eta}",
+            crate::display::fmt::counted(o.late_days as usize, "day")
         ),
         "on track" => format!("on track{eta}"),
         NEVER => NEVER.to_string(),
@@ -782,10 +787,10 @@ pub fn version_epics(epics: &[EpicRollup]) -> Vec<VersionEpics> {
 /// One version's epic line: `v0.3.0: 2 open epics, 5 of 20 points done`.
 pub fn version_words(v: &VersionEpics) -> String {
     format!(
-        "{}: {} open epic{}, {} of {} points done",
+        "{}: {} open {}, {} of {} points done",
         v.version,
         v.epics,
-        if v.epics == 1 { "" } else { "s" },
+        crate::display::fmt::noun(v.epics as usize, "epic", "epics"),
         v.done_weight,
         v.total_weight
     )
@@ -869,9 +874,9 @@ fn owner(i: &Item, labs: &[&str]) -> Option<String> {
         .map(String::from)
 }
 
-/// A minute count at a glance, `text::age`'s words: what the `oldest` column prints.
+/// A minute count at a glance, `display::fmt::age`'s words: what the `oldest` column prints.
 pub fn wait_word(min: Option<i64>) -> String {
-    min.map_or_else(|| "-".to_string(), |m| crate::text::age(m * 60))
+    min.map_or_else(|| "-".to_string(), |m| crate::display::fmt::age(m * 60))
 }
 
 /// The cards, in flight first (running, then waiting), then by closes in 7 days, then name.
@@ -930,6 +935,7 @@ pub fn build(
                 None => out.unlinked.push(format!("{}: {}", r.project, r.title)),
             }
         }
+        out.today = q.done_today(now.timestamp());
         let midnight = crate::text::local_day_start(now.timestamp());
         let mut closed: HashMap<usize, Vec<&Item>> = HashMap::new();
         for i in q.items.iter().filter(|i| i.state == State::Done) {
