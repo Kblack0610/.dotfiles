@@ -147,9 +147,19 @@ prompt() { # prompt <project> <mode>
   assert_output --partial '## Verification cannot be n/a'
 }
 
-@test "a plan with Phases cannot use n/a" {
+@test "a plan with more than one phase cannot use n/a" {
+  run gate untyped "$(base | sed 's/^Small, and reversible\.$/n\/a: small/'; printf '\n## Phases\n\n- [ ] one\n- [ ] two\n')"
+  assert_output --partial 'cannot be n/a in a plan with more than one phase'
+}
+
+@test "an example checklist inside a code fence is not a second phase" {
+  run gate untyped "$(base | sed 's/^Small, and reversible\.$/n\/a: small/'; printf '\n## Phases\n\n- [ ] one\n\n```\n- [ ] a\n- [ ] b\n```\n')"
+  refute_output --partial 'cannot be n/a'
+}
+
+@test "a one-phase checklist, which one-shot writes on every plan, may use n/a" {
   run gate untyped "$(base | sed 's/^Small, and reversible\.$/n\/a: small/'; printf '\n## Phases\n\n- [ ] one\n')"
-  assert_output --partial 'cannot be n/a in a plan with ## Phases'
+  refute_output --partial 'cannot be n/a'
 }
 
 # phases <n> -> a ## Phases section with n open lines and one ticked one.
@@ -284,6 +294,12 @@ labbed() {
   run gate labbed "$(printf 'epic: lb-1\n\n'; base; phases 1)"
   assert_output --partial 'epic: lb-1 is a standing'
   run gate labbed "$(printf 'epic: lb-3\n\n'; base; phases 1)"
+  assert_output ''
+}
+
+@test "a one-phase checklist may name a standing to-standard epic" {
+  labbed
+  run gate labbed "$(printf 'epic: lb-1\n\n'; base; printf '\n## Phases\n\n- [ ] the task\n')"
   assert_output ''
 }
 

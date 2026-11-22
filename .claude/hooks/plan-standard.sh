@@ -91,6 +91,17 @@ path_exists() {
 
 all_headings=$(headings)
 phased=$(grep -m1 '^## Phases' <<<"$all_headings")
+# multi: a plan with more than one phase is a feature (planning.md, Phases). The one-phase checklist
+# one-shot writes on every plan is not, so it keeps n/a sections and may name a standing epic.
+# shellcheck source=/dev/null
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.local/lib/plan-phases.sh" 2>/dev/null
+multi=''
+if [ -n "${_PLAN_PHASES_AWK:-}" ]; then
+  # Outside code fences, so an example checklist in a fence is no phase.
+  [ "$(awk '/^```/ {f = !f; next} !f' <<<"$plan" | awk -v mode=count "$_PLAN_PHASES_AWK" | cut -f2)" -gt 1 ] 2>/dev/null && multi=1
+else
+  multi=$phased   # no parser: the stricter old rule, never a silent pass
+fi
 gaps=()
 while IFS=$'\t' read -r name must; do
   [ -n "$name" ] || continue
@@ -104,8 +115,8 @@ while IFS=$'\t' read -r name must; do
   if grep -qiE '^[[:space:]]*n/a' <<<"${text%%$'\n'*}"; then
     if [ "$name" = Changes ] || [ "$name" = Context ] || [ "$name" = Verification ]; then
       gaps+=("## $name cannot be n/a: $must")
-    elif [ -n "$phased" ]; then
-      gaps+=("## $name cannot be n/a in a plan with ## Phases: $must")
+    elif [ -n "$multi" ]; then
+      gaps+=("## $name cannot be n/a in a plan with more than one phase: $must")
     elif ! grep -qiE '^[[:space:]]*n/a:[[:space:]]*[^[:space:]]' <<<"${text%%$'\n'*}"; then
       gaps+=("## $name needs a reason: write n/a: <reason>")
     fi
@@ -126,8 +137,6 @@ done < <(rows)
 # counts, read outside code, quotes and backticks and never a negated one, so "answers given in
 # this session", "never run them in one session" or a quoted old rule passes, and so does a
 # plan with one open phase. Open phases are counted by the queue's own parser.
-# shellcheck source=/dev/null
-. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.local/lib/plan-phases.sh" 2>/dev/null
 open=0
 [ -n "${_PLAN_PHASES_AWK:-}" ] && open=$(awk -v mode=list "$_PLAN_PHASES_AWK" <<<"$plan" | grep -c '^open')
 if [ "$open" -gt 1 ]; then
@@ -153,7 +162,7 @@ if [ -n "$phased" ] && [ -x "$aq" ] && tmpd=$(mktemp -d); then
 fi
 
 # The doc's Epic: rule (epic_checked, above). The id must be an epic( row on some lab sheet, open
-# or closed; a plan with ## Phases is a feature, so its epic is not a standing
+# or closed; a plan with more than one phase is a feature, so its epic is not a standing
 # "epic(<system>): <system> to standard" one.
 # epic_new_gaps <proposal> -> one gap a line for an `epic: new` (plan_epic_new): the read-only part of
 # the self-check `notes ptask add` runs on it at approval (plan-approved.sh). The shortlist is the CLI's:
@@ -194,8 +203,8 @@ if epic_checked; then
     gaps+=("No epic: <id> line: name the epic this plan serves, or its system's standing \"epic(<system>): <system> to standard\" row, or propose a new one as epic: new epic(<system>): <outcome> #<priority>")
   elif [ -z "$row" ]; then
     gaps+=("epic: $epic is not an epic( row on any sheet under ~/.notes/lab")
-  elif [ -n "$phased" ] && grep -qE 'epic\([^)]*\):[[:space:]]*[^[:space:]]+ to standard([[:space:]]|$)' <<<"$row"; then
-    gaps+=("epic: $epic is a standing \"to standard\" epic, and a plan with ## Phases is a feature: propose its own as epic: new epic(<system>): <outcome> #<priority>")
+  elif [ -n "$multi" ] && grep -qE 'epic\([^)]*\):[[:space:]]*[^[:space:]]+ to standard([[:space:]]|$)' <<<"$row"; then
+    gaps+=("epic: $epic is a standing \"to standard\" epic, and a plan with more than one phase is a feature: propose its own as epic: new epic(<system>): <outcome> #<priority>")
   fi
 fi
 
