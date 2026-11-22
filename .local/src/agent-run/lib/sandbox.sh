@@ -55,8 +55,7 @@ sandbox_load() {
 }
 
 # sandbox_refuse <why>: refuse the run (role_die, exit 78), first appending a line for a named call
-# to AGENTCTL_SANDBOX_REFUSALS: {agent, role, harness, sandbox, at, why}. The lane-sandbox-refusals
-# watch reads it. It is not calls.jsonl, because every reader of that file counts a line as a call
+# to AGENTCTL_SANDBOX_REFUSALS: {agent, role, harness, sandbox, at, why}. It is not calls.jsonl, because every reader of that file counts a line as a call
 # made. A name comes from lib/calls.sh, which fleet-dispatch does not load, so there it only refuses.
 sandbox_refuse() {
   local name=""

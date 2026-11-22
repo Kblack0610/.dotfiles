@@ -52,7 +52,7 @@ alst.render = () => {
 // title, its count n and its level make the head.
 function alertsFold(k, title, n, level, inner) {
   const on = alertsOpen[k] ?? true;
-  return `<details class="sec-d" id="sec-${k}" data-k="${k}"${on ? " open" : ""}><summary>${secHead("", title, n, level)}</summary>${inner}</details>`;
+  return fold("sec-d", secHead("", title, n, level), inner, { k, id: `sec-${k}`, open: on });
 }
 
 const ALERT_HUE = { red: "bad", warn: "warn", ok: "ok", nodata: "" };
@@ -142,7 +142,7 @@ function alertsFixRow(r) {
 function alertsFixes(d) {
   const r = d.fixes, failed = (d.errors || []).some((e) => e.startsWith("fleet-bench reds:"));
   const open = r.open.length ? `<div class="panel">${r.open.map(alertsFixRow).join("")}</div><div data-tbl="${FIX_PRE}">${tblPager(d.fixes_table)}</div>` : "";
-  const settled = r.settled.length ? `<details class="sec-d" data-k="fixes-settled"${alertsOpen["fixes-settled"] ? " open" : ""}><summary class="muted fold">+${r.settled.length} settled</summary><div class="panel">${r.settled.map(alertsFixRow).join("")}</div></details>` : "";
+  const settled = r.settled.length ? fold("sec-d", `+${r.settled.length} settled`, `<div class="panel">${r.settled.map(alertsFixRow).join("")}</div>`, { k: "fixes-settled", open: alertsOpen["fixes-settled"], sum: ' class="muted fold"' }) : "";
   const empty = failed ? `<div class="panel down">${NOT_READ}: the fixes.</div>` : open || settled ? "" : `<div class="panel muted">No red was queued as a fix this week.</div>`;
   return innerWrap("alerts", "fixes", alertsFold("fixes", "Fixes", failed ? null : d.counts.fixes_open, failed ? "bad" : "", open + settled + empty));
 }

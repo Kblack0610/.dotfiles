@@ -128,7 +128,7 @@ setup() {
   assert_success
 }
 
-@test "agent-web's scripts: no more hand-built lists, error blocks or folds than text.baseline.json (ui.md, the display guard)" {
+@test "agent-web's scripts: no hand-built list, error block or fold outside ui.js (ui.md, the display guard)" {
   run node --test "$BATS_TEST_DIRNAME/../agent-web/text.test.mjs"
   assert_success
 }

@@ -88,7 +88,7 @@ test-fast: test-unit test-integ
 # shards of 296 s predicted each (run 42983385857), against 5 minutes for the whole gate. Its
 # files are as isolated as unit's: helpers/sandbox gives each test its own HOME and TMPDIR under
 # BATS_TEST_TMPDIR, and the files that skip the sandbox are stdin-to-stdout hook checks or set
-# HOME to that dir themselves; shell_tests_scope.bats registers a worktree in the real repo at a
+# HOME to that dir themselves; files that register a worktree in the real repo do so at a
 # per-test path. Three wall-clock budgets (agent_ask, questions_panel, agentctl_report) run at
 # one job per core, so they share a core no more than serially. A test that shares a fixed
 # path, a port or setup_file state with another breaks that, and goes red here first.
@@ -109,7 +109,7 @@ test-unit: $(BATS)
 test-integ: $(BATS)
 	@$(call junit_mk,integ) $(RUN_BATS) $(BATS_FLAGS) $(FAST_PAR) $(call junit,integ) $(HERE)integ
 
-# The Stop hook's entry (the files 60-shell-tests.sh picked for the change) and CI's (one shard.sh shard).
+# CI's entry (one shard.sh shard) and a session's by hand (the files tests/pick.sh picks).
 # One bats run over every file, in parallel like test-unit and test-integ, so one report names
 # every red.
 test-files: $(BATS)

@@ -333,7 +333,7 @@ pub struct Card {
 }
 
 /// A targeted version against the day the work up to it closes at the net rate: what the card,
-/// the lab-status line and the Sentinel `release-late` watch read (`hub projects --json`).
+/// `hub projects --status` and the Sentinel `release-late` watch read (`hub projects --json`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct OnTime {
     pub version: String,
@@ -524,6 +524,9 @@ pub struct Projects {
     pub board_open: Option<usize>,
     /// `totals.backlog`, the agent rows past their project's board budget, shown beside it.
     pub board_backlog: Option<usize>,
+    /// The whole queue's shipped and checks today (`Queue::done_today`), lab project or not, the
+    /// Projects card's figure. None when the queue was not read.
+    pub today: Option<crate::queue::DoneToday>,
 }
 
 /// What an ETA reads when the net rate is at or below zero: rows are filed as fast as they close.
@@ -930,6 +933,7 @@ pub fn build(
                 None => out.unlinked.push(format!("{}: {}", r.project, r.title)),
             }
         }
+        out.today = q.done_today(now.timestamp());
         let midnight = crate::text::local_day_start(now.timestamp());
         let mut closed: HashMap<usize, Vec<&Item>> = HashMap::new();
         for i in q.items.iter().filter(|i| i.state == State::Done) {
