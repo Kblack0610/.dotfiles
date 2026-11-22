@@ -20,7 +20,7 @@ const ctx = vm.createContext({
   window: { addEventListener() {} },
   fetch: async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => [] }),
 });
-for (const f of ["ui.js", "md.js", "app.js", "waiting.js", "table.js", "actions.js", "queue.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["../../web-kit/kb-ui.js", "ui.js", "md.js", "app.js", "waiting.js", "table.js", "actions.js", "queue.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
 const now = () => Math.floor(Date.now() / 1000);
 const KINDS = { perm: "Permission", turn: "Your turn", plan: "Plan to approve" };
