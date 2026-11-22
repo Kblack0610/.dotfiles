@@ -27,6 +27,7 @@ Every boot records how the boot before it ended, so a reboot is never "no logs, 
 - `boot-cause-sample.timer` runs `boot-cause sample` every minute: AC, battery, UPS (NUT `upsc` or apcupsd `apcaccess`, when installed), load and hottest thermal zone, the last 10 kept in `~/.local/state/boot-cause/samples.log`. No event says a power cut is coming, so the last sample before the log stops is the only record of the state it died in.
 - `boot-cause-record.service` runs `boot-cause record` once per boot, after `nm-online` (up to 60 s) so the Prometheus check can answer. A second run in the same boot adds nothing.
 - The kernel-side capture it reads comes from `setup_journal` in `install_arch.sh`: a 2 GB journal and `systemd-pstore`.
+- `git-store-fsck.service` runs `git-store-fsck boot` after the record. When the previous boot did not shut down cleanly (or this boot has no record), it checks `~/.agent`, `~/.notes` and every checkout in project-map.json `paths` for a zero-byte object or pack file and with `git fsck --connectivity-only` (commit-graph and reflogs left out, since both list commits gc pruned). An unclean shutdown on 2026-11-20 left a zero-byte object in `~/.notes` that stopped every notes sync for a day. A damaged store leaves the unit failed, and the `systemd-user-failed` watch pages it. `git-store-fsck` with no argument runs the same check by hand.
 
 ## Troubleshooting
 
@@ -36,4 +37,5 @@ Every boot records how the boot before it ended, so a reboot is never "no logs, 
 | `gap: no power sample` | the timer was not running at death. `systemctl --user enable --now boot-cause-sample.timer`. |
 | `gap: Prometheus did not answer` | the host was offline at boot, or CC_PROM_URL is unset in `~/.config/command-center/env`. Query `node_boot_time_seconds` by hand for the window. |
 | `previous-boot-not-in-journal` | `/var/log/journal` is missing or rotated. Run `setup_journal` from `install_arch.sh`. |
+| `git-store-fsck.service` failed (the `systemd-user-failed` page) | `journalctl --user -u git-store-fsck` names each damaged repo. Refetch a zero-byte or missing object from origin (move the empty file aside, `git fetch origin`; never rewrite history), then `systemctl --user start git-store-fsck` re-checks and clears the unit. |
 | `silent-death` on a house power cut | the other hosts' Prometheus targets were down too (so no co-reboot count). Read `hosts_rebooted_with` and the Prometheus boot times. |

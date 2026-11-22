@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# git-store-fsck - is every git store and main checkout intact after a crash?
+#
+#   git-store-fsck boot        after an unclean boot (boot-cause last), check every store (git-store-fsck.service)
+#   git-store-fsck [repo]...   check the named repos now, or every store with none named
+#
+# An unclean shutdown can leave a zero-byte loose object: on 2026-11-20 one in ~/.notes stopped
+# every notes sync for a day with nothing paging (ar-4466). The stores are ~/.agent, ~/.notes and
+# every checkout in project-map.json's `paths`; one that is not on this machine is skipped. A repo
+# fails on a zero-byte object or pack file (a zero-byte blob passes --connectivity-only), or when
+# `git fsck --connectivity-only` exits non-zero. The commit-graph and reflogs are left out: both
+# list commits gc has pruned (~/.dotfiles had 45 on 2026-11-21) and neither is data.
+# Exit 0 intact or skipped, 1 a repo failed, 2 usage. A failure leaves the unit failed, which the
+# systemd-user-failed watch pages; `systemctl --user start git-store-fsck` after the repair
+# re-checks and clears it. Reading guide: docs/operations/boot-cause.md.
+set -uo pipefail
+
+# One repo's fsck must not hold the boot unit forever (ucp, the largest, takes about 2 s).
+FSCK_TIMEOUT=${GIT_STORE_FSCK_TIMEOUT:-600}
+here="$(dirname "$(readlink -f "$0")")"
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "$here/../../.config/shared-hooks/project-name.sh"
+
+stores() {
+  local map; map="$(project_map_file)"
+  { printf '%s\n' "${AGENT_STORE_DIR:-$HOME/.agent}" "${NOTES_DIR:-$HOME/.notes}"
+    [ -f "$map" ] && jq -r '.paths // {} | keys[]' "$map"
+  } | awk 'NF && !seen[$0]++' | while IFS= read -r r; do
+    # A zero-byte HEAD makes git call the repo "not a git repository", so presence is .git, not git.
+    [ -e "$r/.git" ] && printf '%s\n' "$r"
+  done
+}
+
+# check <repo>: silent and 0 when intact, else one line saying why and 1.
+check() {
+  local r=$1 gd empty err rc
+  gd="$(git -C "$r" rev-parse --path-format=absolute --git-common-dir 2>&1)" \
+    || { echo "$r: git cannot open it: ${gd##*$'\n'}"; return 1; }
+  # .promisor and .keep files are empty by design (a partial clone holds hundreds); objects are not.
+  empty="$(find "$gd/objects" -type f -empty \( -path "$gd/objects/[0-9a-f][0-9a-f]/*" -o -name '*.pack' -o -name '*.idx' \) 2>/dev/null | head -n 3)"
+  [ -z "$empty" ] || { echo "$r: zero-byte object file: $(tr '\n' ' ' <<<"$empty")"; return 1; }
+  err="$(timeout "$FSCK_TIMEOUT" git -C "$r" -c core.commitGraph=false fsck --connectivity-only --no-dangling --no-reflogs --no-progress 2>&1 >/dev/null)"
+  rc=$?
+  [ "$rc" -eq 0 ] || { echo "$r: git fsck --connectivity-only exit $rc: $(head -n 1 <<<"$err" | cut -c1-200)"; return 1; }
+}
+
+# check_all <repo>...: every repo checked, the bad ones named; 1 when any failed.
+check_all() {
+  local r bad=0 n=0
+  for r in "$@"; do
+    n=$((n + 1))
+    check "$r" || bad=$((bad + 1))
+  done
+  if [ "$bad" -gt 0 ]; then
+    echo "git-store-fsck: $bad of $n git stores damaged; repair each (refetch the object from origin, never rewrite history), then systemctl --user start git-store-fsck"
+    return 1
+  fi
+  echo "git-store-fsck: $n git stores intact"
+}
+
+case ${1-} in
+  boot)
+    # boot-cause-record.service ran first (After=); a record for another boot, or none, is a boot
+    # nobody classified, so it is checked as unclean.
+    rec="$("$here/boot-cause" last --json 2>/dev/null)"
+    me="${BOOT_CAUSE_BOOT_ID:-$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)}"
+    if [ -n "$rec" ] && [ "$(jq -r '.boot_id' <<<"$rec" 2>/dev/null)" = "$me" ] \
+      && [ "$(jq -r '.previous.shutdown' <<<"$rec" 2>/dev/null)" = clean ]; then
+      echo "git-store-fsck: the previous boot shut down cleanly; nothing to check"
+      exit 0
+    fi
+    mapfile -t repos < <(stores)
+    check_all "${repos[@]}" ;;
+  -h | --help) sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -*) echo "git-store-fsck: unknown flag $1" >&2; exit 2 ;;
+  '') mapfile -t repos < <(stores); check_all "${repos[@]}" ;;
+  *) check_all "$@" ;;
+esac

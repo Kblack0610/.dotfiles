@@ -1,0 +1,16 @@
+[Unit]
+Description=Check every git store after an unclean boot (git-store-fsck boot)
+# The check reads this boot's record (boot-cause last) to tell a clean boot from an unclean one.
+After=boot-cause-record.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/git-store-fsck boot
+# A damaged store fails this unit, and it stays failed: the systemd-user-failed watch pages it.
+# `systemctl --user start git-store-fsck` after the repair re-checks and clears it.
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=default.target
