@@ -110,7 +110,7 @@ setup() {
   export DISPATCH_FLEET_SHARE=0   # off unless a test is about it ("fleet share:"), so a fleet project's item starts in queue order
   export DISPATCH_START_LOAD=0   # a start adds no pending load unless a test is about it, whatever the runner's cores
   export DISPATCH_PER_PASS=1   # one start a pass unless a test is about it; the shipped default, 0, is no cap
-  printf '%s\n' 'policy' '- (fits) dispatch' '- (tier3) tier 3' '- (unclear) not clear' > "$DISPATCH_POLICY"
+  printf '%s\n' 'policy' '- (fits) dispatch' '- (unclear) not clear' > "$DISPATCH_POLICY"
   mkdir -p "$SANDBOX/repos/game" "$SANDBOX/repos/app" "$SANDBOX/sheets"
   : > "$NOTES_FIXTURE/tmux.sessions.lab"
   stub_notes
@@ -372,7 +372,9 @@ kinds_match() {
   [ "$types" = "$keys" ] || { echo "kinds.json keys differ from ROW_TYPES:"; diff <(echo "$types") <(echo "$keys"); return 1; }
   jq -e 'to_entries | all(.value | (.rank | type) == "number" and (.entry | type) == "string"
     and (.rung | IN("build", "propose", "human")) and (.exit | type) == "string"
-    and (.stages | type) == "array" and (.enabled | type) == "boolean")' "$1" >/dev/null || { echo "an entry lacks a field"; return 1; }
+    and (.enabled | type) == "boolean")' "$1" >/dev/null || { echo "an entry lacks a field"; return 1; }
+  # The project's stage decides where a row dispatches (dispatchable), so no kind repeats it.
+  jq -e 'to_entries | all(.value | has("stages") or has("off") | not)' "$1" >/dev/null || { echo "an entry has stages or off: the stage is dispatchable's"; return 1; }
 }
 
 # --- run ---------------------------------------------------------------------------------
@@ -537,13 +539,14 @@ pr_lane_ready() {
   project agent-runtime alpha "$SANDBOX/repos/app"
 }
 
-# pr_lane_verdict <key> [area] [tier3_only] [size] [project] -- a tier-3 skip under the current policy for the row's text
+# pr_lane_verdict <key> [area] [fits] [size] [project] -- a tier-3 verdict under the current policy for the
+# row's text: a dispatch, the tier-3 gate's to take, or with fits false an unclear skip
 pr_lane_verdict() {
   mkdir -p "$FLEET_DISPATCH_DIR"
-  jq -cn --arg p "${5:-agent-runtime}" --arg k "$1" --arg a "${2-$1}" --argjson t3 "${3:-true}" --arg s "${4:-S}" --arg sig "$(policy_sig)" \
+  jq -cn --arg p "${5:-agent-runtime}" --arg k "$1" --arg a "${2-$1}" --argjson fits "${3:-true}" --arg s "${4:-S}" --arg sig "$(policy_sig)" \
     --arg line "$(line_of "${5:-agent-runtime}" agent "$1")" \
-    '{project: $p, lane: "agent", key: $k, verdict: "skip", size: $s, tier: 3, area: $a,
-      clear: true, agent_only: true, tier3_only: $t3, rule: "tier3", reason: "tier 3", policy: $sig, line: $line}' \
+    '{project: $p, lane: "agent", key: $k, verdict: (if $fits then "dispatch" else "skip" end), size: $s, tier: 3, area: $a,
+      clear: $fits, agent_only: true, rule: (if $fits then "fits" else "unclear" end), reason: "tier 3", policy: $sig, line: $line}' \
     >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
 }
 
