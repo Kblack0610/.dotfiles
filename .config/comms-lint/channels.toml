@@ -187,3 +187,22 @@ group = "rows"
 lead_ids = false
 max_lead = 0
 source = { kind = "command", cmd = ["hub", "actions", "--since", "{since}", "--records"], ts = "at", text = "text", path = "source", select = { source = ["shepherd-log", "dispatch-log"] } }
+
+# Text the UIs draw (agent-web, the hub TUI), one record per role-built string: `hub ui-text --json`
+# dumps what hub-core's builders send. A text fills one role (hub_core::display), and `roles` is
+# the one home of its caps, [max chars, max words] (0 = no limit): the Rust constructors read them
+# from this file, and comms-lint applies the record's own role in place of max_chars. `run_on` are
+# the labels of a status block, so a text with two of them is a paragraph that wants fields.
+# Chat answers are out of scope.
+[channel.ui]
+group = "rows"
+max_lead = 0
+lead_ids = false                # a sub may be an id; hub_core::display strips the ids a title leads with
+run_on = ["Done:", "Doing:", "Next:", "Needs you:"]
+roles = { title = [80, 10], sub = [140, 0], chip = [24, 2], next = [100, 0], note = [200, 0] }
+forbid = [
+  ['^\s*/[a-z][a-z0-9-]*(\s|$)', 'a slash command leads the text: a session prompt is no title'],
+  ['`', 'a backtick: UI text is words, not markup'],
+  ['^[a-z][a-z0-9]*(-[a-z0-9]+)* P\d[0-9+a-z]*:', 'a plan slug and phase lead the text: the phase words are the title'],
+]
+source = { kind = "command", cmd = ["hub", "ui-text", "--json"], ts = "ts", text = "text", path = "path", timeout = 60 }
