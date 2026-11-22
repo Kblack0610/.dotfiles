@@ -72,6 +72,8 @@ test("a #p: tag opens its project, a wikilink opens its note, a missing one is m
   assert.match(h, /<a href="#projects\/demo" class="ptag">#p:demo<\/a>/);
   assert.match(h, /<a href="#daily\/journal\/refs\/2026-11-05\/briefing" class="wl">the briefing<\/a>/);
   assert.match(box("d-nav").innerHTML, /<a class="dn missing" href="#daily\/gone" title="gone \(no such note\)">Gone<\/a>/);
+  const css = readFileSync(new URL("app.css", dir), "utf8");
+  assert.match(css, /\.md a\.ptag\s*\{[^}]*color:\s*var\(--c5\)/, "project tags use a distinct color from --accent links even inside .md");
 });
 
 test("Daily's one nav: the places, Daily first, each once, only the open one marked, then the note's parts", () => {
