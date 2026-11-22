@@ -78,6 +78,16 @@ whole() {
   SHARD_WEIGHTS= run --separate-stderr "$SUBJECT" --matrix "$list" unit=5 integ=4
   assert_success
   assert_equal "$(whole "$output")" "$(printf 'integ 1\nunit 5')"
+  # A header-only table (--junit over JUnit with no suites) lists no unit file: also the max,
+  # not the 1 s median's one shard. A table listing only integ sizes integ but not unit.
+  printf '# header\n' > "$SHARD_WEIGHTS"
+  run --separate-stderr "$SUBJECT" --matrix "$list" unit=5 integ=4
+  assert_success
+  assert_equal "$(whole "$output")" "$(printf 'integ 1\nunit 5')"
+  printf '# header\n10\tinteg/x.bats\n' > "$SHARD_WEIGHTS"
+  printf 'unit/c.bats\ninteg/x.bats\n' > "$list"
+  run --separate-stderr "$SUBJECT" --matrix "$list" unit=5 integ=4
+  assert_equal "$(whole "$output")" "$(printf 'integ 1\nunit 5')"
   # Negative controls on whole: a dropped last shard, a count one short, a tier missing.
   json='[{"tier":"unit","shard":"1/2"},{"tier":"unit","shard":"2/2"},{"tier":"integ","shard":"1/1"}]'
   whole "$json" >/dev/null || fail "the good matrix failed"
@@ -156,7 +166,6 @@ whole() {
 
 @test "a bad spec, an unknown tier and an empty shard fail instead of running nothing" {
   fixture unit/a.bats ta
-  printf '5\tunit/a.bats\n' > "$SHARD_WEIGHTS"
   : > "$SHARD_WEIGHTS"
   run --separate-stderr "$SUBJECT" unit 01/08
   assert_success

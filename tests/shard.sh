@@ -76,13 +76,14 @@ weigh() {
 }
 
 # The matrix: one shard per SHARD_SECONDS of a tier's pick. Why: every PR run started all 16
-# shards, and of the 47 PR runs after #3053 (2026-11-22), 22 picked under 100 s of unit time yet
+# shards, and of the 47 PR runs after #3053 (2026-11-21), 22 picked under 100 s of unit time yet
 # took 16 runners, each paying setup for a near-empty shard. At about 40 runs an hour that queued
 # shards for up to 221 s, and the gate read p90 7.4 min (ar-3036).
 matrix() {
   [ $# -ge 2 ] || die "usage: shard.sh --matrix <list> <tier>=<max>..."
   [[ ${SHARD_SECONDS-} =~ ^[1-9][0-9]*$ ]] || die "--matrix needs SHARD_SECONDS, a whole number of seconds"
   local picked arg tier max files total n i sep=
+  [ -z "$WEIGHTS" ] || [ -r "$WEIGHTS" ] || die "cannot read the weights table $WEIGHTS"
   picked=$(cat -- "$1") || die "cannot read list $1"
   shift
   printf '['
@@ -92,7 +93,9 @@ matrix() {
     [ -d "$DIR/$tier" ] || die "no tier directory $DIR/$tier"
     files=$(grep "^$tier/" <<<"$picked" || true)
     total=0 n=1
-    if [ -n "$files" ] && [ -z "$WEIGHTS" ]; then
+    # No table, or one that lists no file of the tier (a header-only --junit), predicts no time:
+    # its 1 s median would size a full pick to a shard or two that run into the job's cap.
+    if [ -n "$files" ] && { [ -z "$WEIGHTS" ] || ! awk -F'\t' -v tier="$tier/" '!/^#/ && index($2, tier) == 1 { found = 1; exit } END { exit !found }' "$WEIGHTS"; }; then
       n=$max
     elif [ -n "$files" ]; then
       total=$(weigh "$tier" "$files" | awk -F'\t' '{ s += $1 } END { printf "%.0f", s }')
