@@ -4699,12 +4699,12 @@ source_floor_start() {
   [ "${DISPATCH_SOURCE_FLOOR:-0}" -gt 0 ] 2>/dev/null || return "$FLOOR_SHUT"
   items=$(jq -c 'select(((" " + (.tags // "") + " ") | contains(" red ")) | not)' <<<"$1")
   [ -n "$items" ] || return "$FLOOR_SHUT"
-  [ -z "$(SOURCE_PICK=${DISPATCH_SOURCE_PICKS%% *} gate)" ] || return "$FLOOR_SHUT"
   for pick in $DISPATCH_SOURCE_PICKS; do
     [ "${SOURCE_STARTED:-0}" -lt "$DISPATCH_SOURCE_FLOOR" ] || break
     src=$(harness_source "${pick%%:*}"); [ -n "$src" ] || continue
     out=$(claude-acct check underuse "$src" 2>&1)
     [[ "$out" == under-used* ]] || continue   # not under-used, unread and not a paced source all say something else
+    [ -z "$(SOURCE_PICK=$pick gate)" ] || return "$FLOOR_SHUT"   # after the cached check: every pass with room asks
     say "$2; $out, so ${pick%%:*} takes work on the source floor (DISPATCH_SOURCE_FLOOR=$DISPATCH_SOURCE_FLOOR)"
     SOURCE_PICK=$pick FLOOR_QUIET=1 UNITS_FREE=$(( DISPATCH_SOURCE_FLOOR * 2 )) start_items "$items" $(( DISPATCH_SOURCE_FLOOR - ${SOURCE_STARTED:-0} )); rc=$?
     [ "$rc" = 0 ] || return "$rc"
@@ -7085,6 +7085,15 @@ cmd_run() {
     fi
     PROOF_HELD_KEEP=1 settle_board NOOP "at $full, starting nothing"; return 0
   fi
+  # With room the source floor runs too: the queue's route offers Codex only for a class model-lane promoted,
+  # so from 11-16, with the run floor leaving most passes room, it started none and Codex sat 10% used at
+  # 73% of its week (ar-2436). Its start is past Claude's room, as other_source_start's is, so a red or
+  # urgent item at the head keeps the slot.
+  local sbefore=${STARTED:-0} src
+  NEXT_QUEUED=${NEXT_QUEUED-$(next_items --points)}
+  source_floor_start "$NEXT_QUEUED" "room for $room"; src=$?
+  case "$src" in 0 | "$FLOOR_SHUT") ;; *) return "$src" ;; esac
+  [ "${STARTED:-0}" -eq "$sbefore" ] || unset NEXT_QUEUED
   # The queue comes first; the board tops it up while fewer than DISPATCH_LOW_WATER items are
   # runnable, so the next pass has work before this one runs dry. An item a firing finding holds is
   # not runnable, so the pass goes on to the board, whose rows pass the same holds. On 2026-11-05 held
