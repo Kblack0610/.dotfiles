@@ -58,16 +58,16 @@ impl<'a> Board<'a> {
         Line::styled(s, self.p.dim())
     }
 
-    /// `ci 11.5/18 busy +2 github-hosted, waiting 5`: the glance in slot units (the numbers the
-    /// bar and the Runners head read) and GitHub's own runners. With no units read, -/-, as every surface.
+    /// `ci 4 running +2 github-hosted, waiting 5, 12/12 up`: jobs on our runners (the figure the
+    /// bar and the Runners head read), GitHub's own, the queue and the runners up of the roster.
     fn ci_line(&self) -> String {
         let g = &self.infra.ci.glance;
-        let mut out = format!("ci {} busy", g.units_line());
+        let mut out = format!("ci {} running", g.busy);
         let hosted = self.get("cc:github_hosted_running").unwrap_or(0.0);
         if hosted > 0.0 {
             out += &format!(" +{hosted:.0} github-hosted");
         }
-        out + &format!(", waiting {}", g.queued)
+        out + &format!(", waiting {}, {} up", g.queued, g.up_line())
     }
 
     /// The Space section (`hub_core::workload`): the cluster's cores and memory by class, one row
@@ -634,7 +634,7 @@ pub(crate) mod tests {
         let i = fixture();
         let ci = tab(&i, "ci", 160);
         assert!(
-            ci.starts_with("CI RUNNERS  -/- busy, 4 queued (oldest 2h28m), - queued -, 112 done 24h, 44% passed  failed 24h 2 (Runs, red)\n\nRUNNERS  all 5  busy 3  idle 1  off 1  late 1\nHOST"),
+            ci.starts_with("CI RUNNERS  3 running, 4 queued (oldest 2h28m), - queued -, 4/5 runners up, 112 done 24h, 44% passed  failed 24h 2 (Runs, red)\n\nRUNNERS  all 5  busy 3  idle 1  off 1  late 1\nHOST"),
             "{ci}"
         );
         // A late job carries the bang; each slot names its pool, job and ref.
@@ -682,7 +682,7 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(names, want);
         let ci = tab(&i, "ci", 160);
-        assert!(ci.starts_with("CI RUNNERS  -/- busy, 4 queued"), "{ci}");
+        assert!(ci.starts_with("CI RUNNERS  3 running, 4 queued"), "{ci}");
         assert!(has(&ci, "failed 24h 2"), "{ci}");
         // The queue and the local failures are their own sections, after the slots.
         assert!(tab(&i, "waiting", 160).starts_with("WAITING  all "));
@@ -717,12 +717,12 @@ pub(crate) mod tests {
         let ci = section(Some(0), "ci");
         assert_line(
             &ci,
-            "CI RUNNERS -/- busy, 0 queued, 112 done 24h, 44% passed green: nothing waiting or failed in 24h",
+            "CI RUNNERS 0 running, 0 queued, -/- runners up, 112 done 24h, 44% passed green: nothing waiting or failed in 24h",
         );
         // Before the runs read lands, nothing says green: their failures are not known yet.
         assert_line(
             &section(None, "ci"),
-            "CI RUNNERS -/- busy, 0 queued, 112 done 24h, 44% passed",
+            "CI RUNNERS 0 running, 0 queued, -/- runners up, 112 done 24h, 44% passed",
         );
         // An empty table is its title and why, on one line, with no header or chips.
         assert_line(&ci, "RUNNERS no runner reports");
@@ -791,14 +791,14 @@ pub(crate) mod tests {
         with_cloud(&mut i, "3");
         let out = text(&i, 160);
         assert!(
-            has(&out, "ci -/- busy +3 github-hosted, waiting 4"),
+            has(&out, "ci 4 running +3 github-hosted, waiting 4, 6/7 up"),
             "{out}"
         );
         // No GitHub-hosted job running says nothing about them.
         let mut i = fixture();
         with_cloud(&mut i, "0");
         let out = text(&i, 160);
-        assert!(has(&out, "ci -/- busy, waiting 4"), "{out}");
+        assert!(has(&out, "ci 4 running, waiting 4, 6/7 up"), "{out}");
         assert!(!out.contains("github-hosted"));
     }
 
@@ -807,7 +807,7 @@ pub(crate) mod tests {
         let mut i = fixture();
         i.instant.remove("runners");
         let out = text(&i, 160);
-        assert!(has(&out, "ci -/- busy, waiting 4"), "{out}");
+        assert!(has(&out, "ci 0 running, waiting 4, -/- up"), "{out}");
     }
 
     #[test]
@@ -988,7 +988,7 @@ pub(crate) mod tests {
     fn the_numbers_come_from_the_cc_series() {
         // The domain strip and red now are Home's (hub_core::home, app.rs tests).
         let out = text(&fixture(), 160);
-        assert!(has(&out, "ci -/- busy, waiting 4"), "{out}");
+        assert!(has(&out, "ci 3 running, waiting 4, 4/5 up"), "{out}");
         assert!(!has(&out, "OVERALL"));
     }
 
@@ -1055,7 +1055,7 @@ pub(crate) mod tests {
         for item in [
             "nodes ",
             "heartbeats ",
-            "ci -/- busy, waiting 4",
+            "ci 3 running, waiting 4",
             "spend: 0 Costs",
         ] {
             assert!(joined.contains(item), "{item} lost: {narrow:?}");
