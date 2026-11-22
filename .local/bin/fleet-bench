@@ -2470,11 +2470,9 @@ cmd_prs() {
 }
 
 # ledger_base <key> -> the baseline count for <key>: its last `key=N` line plus each `key+=N` or
-# `key-=N` line after it. A delta line names its date and what changed (`runners+=1 2026-11-21
-# lfs-store: why`), so two PRs that each add one in the same spot merge as both lines (the private
-# repo's .gitattributes marks the file merge=union) and no two lines read alike for union to fold;
-# two PRs that each rewrote `runners=34` to 35 conflicted, or under union kept one 35 for two adds
-# (ar-4471). Prints the raw value when the absolute line is not a number, and `bad delta: <line>`
+# `key-=N` line after it (format: the baseline's header). The file is merge=union, so two PRs that
+# each add a line keep both, and a delta must carry its date and name so no two read alike for union
+# to fold into one; two PRs that each rewrote `runners=34` to 35 conflicted (ar-4471). Prints the raw value when the absolute line is not a number, and `bad delta: <line>`
 # for a delta with no date, so the caller fails either.
 ledger_base() {
   awk -v k="$1" '
