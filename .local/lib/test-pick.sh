@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# test-pick.sh - which fast-tier test files a change can affect: the Stop hook's 60-shell-tests.sh
+# test-pick.sh - which fast-tier test files a change can affect: tests/pick.sh (the PR gate)
 # picks by it, and fleet-bench's hold check reads a merge's "area tests" by it.
 
 # _test_pick_names <changed paths>: the words and parent/name paths test_picked matches, built
@@ -19,6 +19,16 @@ _test_pick_names() {
     awk '{gsub(/[][\\.*^$+?(){}|]/, "\\\\&"); o=o (o==""?"":"|") $0} END {if (o!="") printf "(^|[^A-Za-z0-9_-])(%s)($|[^A-Za-z0-9_-])", o}')"
   _TEST_PICK_PATHS="$(grep -v '^$' <<<"$1" | grep '/' | awk -F/ 'NR==FNR {d[$0]; next} ($NF in d) {print $(NF-1) "/" $NF}' \
     <(printf '%s\n' "$shared") - | sort -u)" || true
+  _TEST_PICK_PATHS_RE="$(awk '{gsub(/[][\\.*^$+?(){}|]/, "\\\\&"); o=o (o==""?"":"|") $0} END {printf "%s", o}' <<<"$_TEST_PICK_PATHS")"
+  # Every tracked file with one of those basenames: a longer path that names one which did not
+  # change is not a use of the one that did (_test_pick_path_named).
+  _TEST_PICK_SHARED_FILES="$(git -C "$_TEST_PICK_REPO" ls-files 2>/dev/null |
+    awk -F/ 'NR==FNR {sub(/.*\//, ""); b[$0]; next} ($NF in b)' <(printf '%s\n' "$_TEST_PICK_PATHS") -)" || true
+  # The fixture entries the change touches (tests/fixtures/<top>/...), as one ERE for a test that
+  # names one (`fixtures/<top>`) or seeds its sandbox from one (`sandbox_init <top>`).
+  _TEST_PICK_FIXTURES="$(sed -n 's#^tests/fixtures/\([^/]*\).*#\1#p' <<<"$1" | sort -u |
+    awk '{gsub(/[][\\.*^$+?(){}|]/, "\\\\&"); o=o (o==""?"":"|") $0}
+    END {if (o!="") printf "(fixtures/|sandbox_init[[:space:]]+)(%s)($|[^A-Za-z0-9._-])", o}')" || true
   # The changed paths with a directory in them, as one ERE bounded like a path: the one-level read
   # of a script a test runs (test_picked) matches only these.
   _TEST_PICK_HOP="$(grep '/' <<<"$1" | awk '{gsub(/[][\\.*^$+?(){}|]/, "\\\\&"); o=o (o==""?"":"|") $0}
@@ -38,10 +48,58 @@ _test_pick_aliases() {
 # changed, or its text with what it loads names a changed file's basename (not as a stub or a
 # directory) or a directory a changed file sits under as `<dir>/` or `<dir>/*...` (a glob such as
 # `.claude/hooks/stop-post.d/*.sh`), or a script it runs as `$REPO_ROOT/<path>` (or through a
-# helper's variable for one) names a changed path in its code; a change to the shared harness
-# (helpers, fixtures, vendor, Makefile, run-bats.sh) picks every file.
+# helper's variable for one) names a changed path in its code, or it names a changed fixture
+# entry; a change to the shared harness (helpers, vendor, fixtures/basic, Makefile, run-bats.sh)
+# picks every file.
+
+# _test_pick_unstub: stdin to stdout, each `stub <name> '<body>'` line without the uses of <name>
+# inside its quoted body, which are the fake naming itself. A use that is part of a path (a
+# passthrough's `exec "$REPO_ROOT/.local/bin/<name>"`) or anything after the body stays.
+_test_pick_unstub() {
+  awk '{
+    if (!match($0, /(^|[[:space:];&|(])stub[[:space:]]+[^[:space:]]+[[:space:]]+["'"'"']/)) { print; next }
+    head = substr($0, 1, RSTART + RLENGTH - 1); rest = substr($0, RSTART + RLENGTH)
+    q = substr(head, length(head), 1); name = head
+    sub(/[[:space:]]+.$/, "", name); sub(/.*stub[[:space:]]+/, "", name)
+    for (i = 1; i <= length(rest); i++) {
+      c = substr(rest, i, 1)
+      if (q == "\"" && c == "\\") i++
+      else if (c == q) break
+    }
+    body = substr(rest, 1, i - 1); tail = substr(rest, i); out = ""
+    while ((n = index(body, name)) > 0) {
+      pre = substr(body, n - 1, 1); post = substr(body, n + length(name), 1)
+      if (n > 1 && pre ~ /[A-Za-z0-9_.\/-]/ || post ~ /[A-Za-z0-9_.\/-]/) out = out substr(body, 1, n + length(name) - 1)
+      else out = out substr(body, 1, n - 1)
+      body = substr(body, n + length(name))
+    }
+    print head out body tail
+  }'
+}
+
+# _test_pick_path_named <changed> <text>: status 0 when the text names a changed shared basename as
+# `<parent>/<name>`, other than as the tail of a longer path that is a tracked file which did not
+# change. fleet_dispatch/common.bash reads .local/src/notes-cli/src/projects.rs, so a change to
+# hub-core's or agent-web's src/projects.rs picked every fleet_dispatch*.bats file (ar-3036).
+_test_pick_path_named() {
+  local tok c f other
+  while read -r tok; do
+    [ -n "$tok" ] || continue
+    while read -r c; do
+      case "$tok" in "$c" | */"$c") return 0 ;; esac
+      case "$c" in "$tok" | */"$tok") return 0 ;; esac
+    done <<<"$1"
+    other=
+    while read -r f; do
+      case "$tok" in "$f" | */"$f") other=1 && break ;; esac
+    done <<<"$_TEST_PICK_SHARED_FILES"
+    [ -n "$other" ] || return 0
+  done < <(grep -oE "[A-Za-z0-9._/-]*($_TEST_PICK_PATHS_RE)" <<<"$2")
+  return 1
+}
+
 test_picked() {
-  grep -qE '^tests/(helpers|fixtures|vendor)/|^tests/(Makefile|run-bats\.sh)$' <<<"$1" && return 0
+  grep -qE '^tests/(helpers|vendor|fixtures/basic)/|^tests/(Makefile|run-bats\.sh)$' <<<"$1" && return 0
   grep -qxF "$2" <<<"$1" && return 0
   local text rel inc new more seen=$'\n'
   text="$(cat)" new=$text
@@ -90,15 +148,21 @@ test_picked() {
       grep -qE "$_TEST_PICK_HOP" <(sed -E '/^[[:space:]]*#/d' "$_TEST_PICK_REPO/$ref") && return 0
     done < <(grep -oE '\$\{?REPO_ROOT\}?/[A-Za-z0-9._/-]+' <<<"$code" | sed -E 's#^\$\{?REPO_ROOT\}?/##' | sort -u)
   fi
-  # A basename counts where it can name the file. Dropped first: comment lines and @test titles
-  # (prose), `stub <name>` (a fake stands in for it), `<name>/` (a directory of that name, such
-  # as ~/.config/agentctl/) and `<name>@` (a systemd unit). A shared basename (README.md,
-  # SKILL.md) is matched as `<parent dir>/<name>`. Without these,
-  # unit/fleet_dispatch.bats, a third of the unit tier, was picked by 33 of 40 commits on main.
-  [ -n "$_TEST_PICK_PATHS" ] && grep -qFf <(printf '%s\n' "$_TEST_PICK_PATHS") <<<"$text" && return 0
+  # A basename counts where it can name the file. A shared basename (README.md, SKILL.md) is
+  # matched as `<parent dir>/<name>` (_test_pick_path_named). For any other, dropped first:
+  # comment lines and @test titles (prose), `stub <name>` and the fake's own quoted body (a fake
+  # stands in for it), `<name>/` (a directory of that name, such as ~/.config/agentctl/) and
+  # `<name>@` (a systemd unit). Without these, unit/fleet_dispatch.bats, a third of the unit tier,
+  # was picked by 33 of 40 commits on main, and `stub store-sync 'echo "store-sync $*" >>calls.log'`
+  # picked every fleet_dispatch*.bats file on a store-sync change (ar-3036).
+  [ -n "$_TEST_PICK_PATHS" ] && _test_pick_path_named "$1" "$text" && return 0
   [ -n "$_TEST_PICK_WORDS" ] && grep -qE "$_TEST_PICK_WORDS" \
-    <(sed -E '/^[[:space:]]*#/d; s/^@test[[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"')//
-      s/(^|[[:space:];&|(])stub[[:space:]]+[^[:space:]]+/\1stub/g; s#[A-Za-z0-9._-]+[/@]#/#g' <<<"$text") && return 0
+    <(_test_pick_unstub <<<"$text" | sed -E '/^[[:space:]]*#/d; s/^@test[[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"')//
+      s/(^|[[:space:];&|(])stub[[:space:]]+[^[:space:]]+/\1stub/g; s#[A-Za-z0-9._-]+[/@]#/#g') && return 0
+  # A fixture is data for the tests that name it, so a change under tests/fixtures/<top> picks
+  # those, not the whole tier: a comms-lint fixture ran every file of both tiers (#3040, 6.3 min).
+  # basic, which sandbox_init seeds by default, is the harness above.
+  [ -n "$_TEST_PICK_FIXTURES" ] && grep -qE "$_TEST_PICK_FIXTURES" <<<"$text" && return 0
   # Every ancestor directory of a changed path, regex-escaped, as one alternation; a caller
   # loops over every test file with one change list, so it is built once per list.
   if [ "${_TEST_PICK_FOR-}" != "$1" ]; then

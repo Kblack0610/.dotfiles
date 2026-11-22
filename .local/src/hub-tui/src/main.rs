@@ -65,6 +65,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub projects --page NAME | --status NAME
        hub board --json
        hub releases --json | check
+       hub quarantine soon
        hub tabs
   TAB     a tab id (`hub tabs` lists them), or a retired name (hub_core::layout::RETIRED)
           that lands on its new tab, on the section it became when it became one
@@ -128,6 +129,12 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
           one line per place the stores disagree: a PR an item or a tag names that the PR store
           lacks, a bare pr:N on a project with no one repo, a deploy naming a run the runs ledger
           lacks. Exits 1 when it prints a line or a store could not be read
+  quarantine soon
+          each owner row whose quarantine entries end within hub_core::quarantine::SOON_DAYS
+          of today and have not ended, soonest first, as repo<TAB>row<TAB>entries<TAB>ends<TAB>
+          days_left (quarantine.json, which schedules-sync writes; the quarantine-expiry watch
+          reads it). No file prints nothing. Exits 2 when the file cannot be read, 1 when an
+          end is not a date (the other rows still print)
   actions what the fleet's machinery did since WHEN (epoch seconds or RFC 3339): counts per
           actor and the escalations, trips and failed runs, or {actions, counts, errors} with
           --json. Exits 1 when a ledger could not be read.";
@@ -236,6 +243,10 @@ fn main() {
     if it.peek().map(|a| a.as_str()) == Some("releases") {
         it.next();
         std::process::exit(releases_cmd(it.cloned().collect()));
+    }
+    if it.peek().map(|a| a.as_str()) == Some("quarantine") {
+        it.next();
+        std::process::exit(quarantine_cmd(it.cloned().collect()));
     }
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -643,6 +654,41 @@ fn releases_cmd(args: Vec<String>) -> i32 {
         }
         _ => die(USAGE),
     }
+}
+
+/// `hub quarantine soon`: each owner row whose entries end within `SOON_DAYS`, one TSV line each.
+/// No file is no quarantine, as on Infra's Tests; a file that does not parse exits 2, an end that
+/// is not a date 1, so the watch still notes the rows that parsed.
+fn quarantine_cmd(args: Vec<String>) -> i32 {
+    if args != ["soon"] {
+        die(USAGE);
+    }
+    let path = hub_core::builds::Paths::from_env().quarantine;
+    let lanes = match std::fs::read_to_string(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => vec![],
+        Err(e) => {
+            eprintln!("hub quarantine soon: {}: {e}", path.display());
+            return 2;
+        }
+        Ok(text) => match hub_core::quarantine::parse(&text) {
+            Ok(lanes) => lanes,
+            Err(e) => {
+                eprintln!("hub quarantine soon: {e}");
+                return 2;
+            }
+        },
+    };
+    let (rows, errors) = hub_core::quarantine::ending(&lanes, chrono::Local::now().date_naive());
+    for r in &rows {
+        println!(
+            "{}\t{}\t{}\t{}\t{}",
+            r.repo, r.row, r.entries, r.ends, r.days_left
+        );
+    }
+    for e in &errors {
+        eprintln!("hub quarantine soon: {e}");
+    }
+    i32::from(!errors.is_empty())
 }
 
 /// `hub vitals`: the one-line summary, then a row per question, for tmux, waybar and the briefing;
