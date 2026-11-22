@@ -27,7 +27,7 @@ setup() {
   printf '#!/usr/bin/env bash\necho "fleet-dispatch $*" >> "$NOTES_FIXTURE/calls.log"\nexit "${FD_EXIT:-0}"\n' > "$SANDBOX/bin/fleet-dispatch"
   chmod +x "$SANDBOX/bin/fleet-dispatch"
   # The caller's Claude session stamps items and decides mine: a test sets it, never inherits it.
-  unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_ENTRYPOINT
+  unset CLAUDE_CODE_SESSION_ID
 }
 
 # The file is a redirect, not an operand: awk reads stdin for an empty one, which hangs a local run (ar-3455).
