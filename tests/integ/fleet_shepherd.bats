@@ -638,10 +638,16 @@ typed() { cat "$HOME/panel.calls" 2>/dev/null; }
 }
 
 @test "check types nothing for a manual, close-sent, keep or after row, a row another writer claimed, or a session off the lease" {
-  doc "[$(crow 1 DONE now '{"labels":["manual"]}'), $(crow 2 DONE now '{"close_sent":true, "nudged":true}'), $(crow 3 DONE keep),
+  doc "[$(crow 1 DONE keep '{"labels":["manual"]}'), $(crow 2 DONE now '{"close_sent":true, "nudged":true}'), $(crow 3 DONE keep),
         $(crow 4 CHAT after), $(crow 5 LANDED after), $(crow 6 NEEDS after '{"own_asks":1}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   [ -z "$(typed)" ]
+  # A manual row the close flow reads now (quiet FLEET_CHAT_CLOSE_H, ar-4041) is typed its close like any row.
+  doc "[$(crow 8 DONE now '{"labels":["manual"]}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  run typed
+  assert_line 'send --wait 0 --pane lab/%8 /wind-down auto'
+  : > "$HOME/panel.calls"
   # mark --close exits 1 when the session already holds its close claim: another check got there first.
   stub fleet-sessions 'echo "$*" >> "$HOME/sessions.calls"; [ "$1" != mark ]'
   doc "[$(crow 7 DONE now)]"
@@ -730,7 +736,7 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
 @test "check closes no window for a row not yet nudged, nudged under an hour ago, manual, not now, shown or mid-turn" {
   nudged_ago 30 2 6 7 8 9
   nudged_ago 0 10
-  doc "[$(crow 1 DONE now), $(crow 2 DONE now '{"nudged":true,"close_sent":true,"labels":["manual"]}'),
+  doc "[$(crow 1 DONE now), $(crow 2 DONE keep '{"nudged":true,"close_sent":true,"labels":["manual"]}'),
         $(crow 6 DONE after '{"nudged":true,"close_sent":true}'), $(crow 7 DONE keep '{"nudged":true,"close_sent":true}'), $(crow 8 WORKING now '{"nudged":true,"close_sent":true}'),
         $(crow 10 DONE now '{"nudged":true,"close_sent":true,"idle_min":120}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
@@ -745,6 +751,12 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
   [ -z "$(closes)" ]
   # Unshown and between turns, it is closed whatever its prompt holds.
   STUB_PANE="${IDLE/$'\xc2\xa0'/$'\xc2\xa0'half a thought}" "$SH" check >/dev/null || true
+  [ -n "$(closes)" ]
+  # A manual row quiet past FLEET_CHAT_CLOSE_H reads now and is closed like any other (ar-4041).
+  : > "$HOME/wind-down.calls"
+  nudged_ago 30 11
+  doc "[$(crow 11 DONE now '{"nudged":true,"close_sent":true,"idle_min":2000,"labels":["manual"]}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   [ -n "$(closes)" ]
 }
 
