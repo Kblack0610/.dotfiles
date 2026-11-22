@@ -73,6 +73,71 @@ setup() {
   [ "$n" -gt 1 ]
 }
 
+@test "picker: a stub's body naming its own fake does not pick the test; another name in it does (ar-3036)" {
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  run test_picked .local/bin/store-sync tests/x.bats <<<"  stub store-sync 'echo \"store-sync \$*\" >> \"\$NOTES_FIXTURE/calls.log\"'"
+  assert_failure
+  # Negative controls: the fake runs the real command, a longer name only contains it, and a
+  # later line runs it.
+  run test_picked .local/bin/store-sync tests/x.bats <<<"  stub fleet-bench 'exec store-sync \"\$@\"'"
+  assert_success
+  run test_picked .local/bin/store-sync tests/x.bats <<<"  stub store-sync-age 'echo store-sync'"
+  assert_success
+  run test_picked .local/bin/store-sync tests/x.bats <<<$'  stub store-sync \'exit 0\'\n  run store-sync join'
+  assert_success
+  run test_picked .local/bin/store-sync tests/x.bats <<<"  stub store-sync 'exit 0'; run store-sync join"
+  assert_success
+  # A passthrough fake runs the real script by path, so it is a use.
+  run test_picked .local/bin/agent-hold tests/x.bats <<<'  stub agent-hold "exec \"$REPO_ROOT/.local/bin/agent-hold\" \"\$@\""'
+  assert_success
+  # The real file: fleet_dispatch.bats only fakes store-sync (fleet_dispatch/common.bash).
+  run test_picked .local/bin/store-sync tests/unit/fleet_dispatch.bats <"$REPO_ROOT/tests/unit/fleet_dispatch.bats"
+  assert_failure
+}
+
+@test "picker: a fixture change picks the tests that name its entry, not the whole tier; basic is the harness (ar-3036)" {
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  local ch=tests/fixtures/comms/lab-status/fail/new.txt t
+  for t in 'for f in "$REPO_ROOT"/tests/fixtures/comms/*/*/*; do' 'ls "$REPO_ROOT/tests/fixtures/comms"' \
+    'cp "$BATS_TEST_DIRNAME/../fixtures/comms/x" .' '  sandbox_init comms'; do
+    run test_picked "$ch" tests/x.bats <<<"$t"
+    assert_success
+  done
+  # Negative controls: a longer entry name and a test that names no fixture.
+  for t in 'ls "$REPO_ROOT/tests/fixtures/comms-old"' '  sandbox_init basic; run comms-lint'; do
+    run test_picked "$ch" tests/x.bats <<<"$t"
+    assert_failure
+  done
+  # sandbox_init seeds every sandbox from basic by default, so it still picks every file.
+  run test_picked tests/fixtures/basic/notes.md tests/x.bats <<<'run true'
+  assert_success
+  # The real files, through tests/pick.sh: comms_lint.bats in, fleet_dispatch.bats out, and no full run.
+  run env PICK_CHANGED="$ch" "$REPO_ROOT/tests/pick.sh" unit HEAD
+  assert_success
+  assert_line unit/comms_lint.bats
+  refute_line unit/fleet_dispatch.bats
+  refute_output --partial 'full:'
+}
+
+@test "picker: a shared basename named as the tail of another tracked file's path does not pick it (ar-3036)" {
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  local ch=.local/src/hub-core/src/projects.rs t
+  [ -f "$REPO_ROOT/.local/src/notes-cli/src/projects.rs" ]
+  [ -f "$REPO_ROOT/$ch" ]
+  run test_picked "$ch" tests/x.bats <<<'sed -n p "$REPO_ROOT/.local/src/notes-cli/src/projects.rs"'
+  assert_failure
+  # Negative controls: the changed file's own path, a path the picker cannot place, and a bare
+  # parent/name all still pick it.
+  for t in 'cat "$REPO_ROOT/.local/src/hub-core/src/projects.rs"' 'cat "$CRATE/src/projects.rs"' 'cat src/projects.rs'; do
+    run test_picked "$ch" tests/x.bats <<<"$t"
+    assert_success
+  done
+  run test_picked "$ch" tests/unit/fleet_dispatch.bats <"$REPO_ROOT/tests/unit/fleet_dispatch.bats"
+  assert_failure
+  run test_picked .local/src/notes-cli/src/projects.rs tests/unit/fleet_dispatch.bats <"$REPO_ROOT/tests/unit/fleet_dispatch.bats"
+  assert_success
+}
+
 @test "picker: a file a test loads picks it, with or without .bash, and so does a file that one loads" {
   . "$REPO_ROOT/.local/lib/test-pick.sh"
   _TEST_PICK_REPO="$BATS_TEST_TMPDIR/repo"
