@@ -438,6 +438,15 @@ ledger() {
   # parked with no PR open is not handed off: files off the branch are still its own
   run work_blockers '' idle 0 0 0 30 1 0 2 - - - 1 - - - - - - - "$r"
   assert_output '2 file(s) not on the default branch, no PR; no plan file and nothing merged'
+  # a live waiter (gate or queue) keeps the open PR from being handed off: unfinished and blocked (ar-3923)
+  local j
+  for j in 'gate' 'queue'; do
+    run b idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - "$j" - - "$r"
+    assert_output 'STALLED PR #9 CI red'
+    ! session_finished idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - "$j" - - "$r"
+    run work_blockers '' idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - "$j" - - "$r"
+    assert_output 'PR #9 open, CI FAIL; no plan file and nothing merged'
+  done
   # an open ask still decides first
   run b idle 0 1 0 30 1 0 2 9 OPEN FAIL 1 - - - - - - - "$r"
   assert_output 'NEEDS 1 pending ask(s)'
@@ -2074,6 +2083,21 @@ SH
   # negative control: with the probe list off, the same red blames #875 again
   FLEET_DEPLOY_PROBES= run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r 'select(.bucket != "NIGHTLY") | .reason' <<<"$output")" = "nightly red after PR #875: Binks Production Smoke @${red:0:8} (#875)" ]
+
+  # a merge is blamed only for the reds whose range names it: Release builds broke after #876 and
+  # Phone release has no green in view, so both stay on the NIGHTLY row and out of #875's reason (ar-3985)
+  red2="$(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit-tree -p "$red" -m 'fix: y (#876)' "$red^{tree}")"
+  ledger main "[$(r Tests success "$green" 1),$(r Tests failure "$red" 2),$(r 'Release builds' success "$red" 3),$(r 'Release builds' failure "$red2" 4),$(r 'Phone release' failure "$red2" 5)]"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r 'select(.bucket != "NIGHTLY") | .reason' <<<"$output")" = "nightly red after PR #875: Tests @${red:0:8} (#875)" ]
+  [ "$(jq -r 'select(.bucket == "NIGHTLY") | .fact' <<<"$output")" = "NIGHTLY origin red: Phone release (no green in window), Release builds @${red2:0:8} (#876), Tests @${red:0:8} (#875)" ]
+  [ "$(jq -r 'select(.bucket == "NIGHTLY") | .owners | join(",")' <<<"$output")" = sid-9 ]
+  # with Tests green again, the reds left name no merge of this session's, so it has landed
+  ledger main "[$(r Tests success "$red" 2),$(r 'Release builds' success "$red" 3),$(r 'Release builds' failure "$red2" 4)]"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r 'select(.bucket != "NIGHTLY") | .bucket' <<<"$output")" = LANDED ]
+  [ "$(jq -r 'select(.bucket == "NIGHTLY") | .owners | length' <<<"$output")" = 0 ]
 }
 
 # nightly_item <state> <slug> <sessions line> -- a project demo queue item; demo's checkout is $SANDBOX/wt
@@ -3234,11 +3258,17 @@ empty_submodule_fixture() {
 @test "a merged edited worktree suspected of turning main red blocks completion" {
   git init -q "$SANDBOX/other"
   git_facts() { echo '1 0 0 9 MERGED PASS 1 branch 0 no - - -'; }
-  main_health() { printf 'RED\tTests (#9)\tdeadbeef\t9\n'; }
+  main_health() { printf 'RED\tTests (#9), Release builds (#8)\tdeadbeef\n'; }
+  main_blame() { [ "$2" = 9 ] && echo 'Tests (#9)'; }
   run edited_work_blockers "$SANDBOX" "$SANDBOX/other/file"
   assert_success
   assert_output --partial 'STALLED unlanded work in'
-  assert_output --partial 'nightly red after PR #9'
+  assert_output --partial 'nightly red after PR #9: Tests (#9)'
+  refute_output --partial 'Release builds'
+  # a red whose range does not name the merged PR blames nothing on it (ar-3985)
+  main_blame() { return 1; }
+  run edited_work_blockers "$SANDBOX" "$SANDBOX/other/file"
+  refute_output --partial 'nightly red'
 }
 
 @test "edited work waiting for CI stays WORKING, but a stalled sibling takes priority" {
@@ -5815,6 +5845,15 @@ JSONL
   [ -z "$(plan_pointer "$SANDBOX/long.md")" ]
 }
 
+@test "phases_word: no plan, a missing recorded plan, plan mode before the plan is written, no checklist, a count (ar-2368, ar-3918)" {
+  printf '# Plan\n' > "$SANDBOX/p.md"
+  [ "$(phases_word - 0 - -)" = - ]
+  [ "$(phases_word "$SANDBOX/nowhere.md" 0 - -)" = missing ]
+  [ "$(phases_word "$SANDBOX/nowhere.md" 1 - -)" = - ]
+  [ "$(phases_word "$SANDBOX/p.md" 1 - -)" = none ]
+  [ "$(phases_word "$SANDBOX/p.md" 0 1 3)" = 1/3 ]
+}
+
 @test "a recorded plan file that is missing is its own verdict: STALLED, never DONE, unless its item moved on (ar-2368)" {
   run b idle 0 0 0 30 1 0 0 875 MERGED PASS 1 - missing -
   assert_output 'STALLED PR #875 merged, tree clean, its plan file is missing'
@@ -5844,6 +5883,16 @@ JSONL
   [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its plan file is missing' ]
   [ "$(jq -r .finished <<<"$output")" = false ]
   [[ "$(jq -r .close.why <<<"$output")" == quiet* ]]
+}
+
+@test "end to end: a plan-mode session with no plan written yet is not STALLED plan file missing (ar-3918)" {
+  clean_fixture
+  PANEL_PLAN_MODE=true panel "$SANDBOX/wt" "$SANDBOX/not-written-yet.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = CHAT ]
+  [ "$(jq -r .reason <<<"$output")" = "clean, nothing on the branch, no plan file, no queue item: the human's conversation" ]
+  [ "$(jq -r '"\(.in_plan_mode) \(.close.verdict): \(.close.why)"' <<<"$output")" = "true keep: plan mode: the human approves or ends it" ]
 }
 
 @test "end to end: an item whose task names one phase of the plan holds that phase only (ar-2368)" {

@@ -32,8 +32,9 @@ case "$*" in
   *new-window*) echo %9 ;;
   *" list-panes "*) printf "%b" "${STUB_PANES:-}" ;;
   *list-clients*) printf "%b" "${STUB_CLIENTS:-}" ;;
-  *session_attached*) echo "${STUB_IN_MODE:-0} ${STUB_SHOWN:-0 0} ${STUB_FG:-claude}" ;;
-  *pane_in_mode*) echo "${STUB_IN_MODE:-0}" ;;
+  *copy-mode*) touch "$HOME/.mode-left" ;;
+  *session_attached*) echo "$([ -e "$HOME/.mode-left" ] && [ -z "${STUB_MODE_STICKY:-}" ] && echo 0 || echo "${STUB_IN_MODE:-0}") ${STUB_SHOWN:-0 0} ${STUB_FG:-claude}" ;;
+  *pane_in_mode*) [ -e "$HOME/.mode-left" ] && [ -z "${STUB_MODE_STICKY:-}" ] && echo 0 || echo "${STUB_IN_MODE:-0}" ;;
   *) printf "%b" "${STUB_PANE:-}" ;;
 esac'
   # The one typer: close_sample's keystrokes go through it (agent-core send, under the pane lock).
@@ -845,6 +846,25 @@ nudge_ago() { printf 'fact: STALLED f-%s\nat: %s\n' "$2" "$(date -Iseconds -d "$
   assert_output --regexp '^close	agent-9-x	[0-9]+	1$'
   run grep -q 'not taken over' "$HOME/pages"; assert_failure
   assert_equal "$("$SH" stats | jq -c '[.takeovers_24h, .takeovers_failed_24h]')" '[1,0]'
+}
+
+@test "takeover leaves the tmux mode of an unwatched pane (copy mode, tree mode) before it closes, and keeps a shown or stuck one" {
+  takeover_checkout "$HOME/wt"; nudge_ago 120 1
+  doc "[$(trow 1)]"
+  STUB_IN_MODE=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  grep -q 'copy-mode -q -t %1' "$HOME/tmux.calls"
+  run closes
+  assert_output 'close --server lab --pane %1 --sid 1'
+  grep -q 'takeover: lab/%1: left its tmux mode on an unwatched pane' "$FLEET_SHEPHERD_DIR/log.md"
+  # Negative controls: a pane shown to a client keeps its mode, and a mode that will not leave closes nothing.
+  rm -f "$HOME/.mode-left" "$HOME/tmux.calls" "$HOME/wind-down.calls" "$FLEET_SHEPHERD_DIR/.takeover"
+  STUB_SHOWN="1 1" STUB_IN_MODE=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  run grep -c 'copy-mode' "$HOME/tmux.calls"; assert_output 0
+  rm -f "$HOME/.mode-left" "$HOME/tmux.calls"
+  STUB_MODE_STICKY=1 STUB_IN_MODE=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  grep -q 'copy-mode -q -t %1' "$HOME/tmux.calls"
 }
 
 @test "takeover leaves a row alone that is not its to move: manual, plan mode, another host, an ask, not yet old enough, a draft in the prompt" {

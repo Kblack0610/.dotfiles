@@ -35,7 +35,7 @@
 # one this session added or claimed (`agent-queue mine`). No item, no landing: every merged PR
 # is a unit of work on the work ledger, so add one first (`agent-queue add --running`). An item
 # taken from the session, not named by --item, takes only a PR in its project's repo (own_project), and
-# none whose body names another queue item, or that comes beside the item's own open PR in that repo (own_item).
+# only one it records or whose body names it on an "Item: <slug>" line (own_item).
 # Exit 0 landed, 1 a step failed, 2 usage, 3 a catch-up merge of origin/<base> that conflicts
 # (before or after the checks): resolve it and re-run, 4 an item stacked on an item that has not closed ok (stack_gate). A head pushed after the checks waits on its own
 # checks before it merges; the local gate script runs again on a merge of <base> only when the repo's CI
@@ -750,41 +750,35 @@ own_project() {
   die "#$pr is in ${pr_ref%#*} ($got), and $item, taken from $implied, is a $project item in $want: a PR outside the item's repo names its item. Pass --item $item if this PR is that item's work (with --partial while its own PR is still to land), or give it its own item (agent-queue add --running --project $got \"<type(area): title>\") and pass --item <that slug>"
 }
 
-# own_item: an item this run did not name is only the session's guess, and parallel subagents of one
-# coordinator share its Claude session id, so `agent-queue mine` can return a sibling's item. Before
-# anything is touched, a PR whose body names another queue item ("Item: <slug>"), or one beside the
-# item's own open PR in this repo (open_pr:, still OPEN, unless a --partial landing says it carries
-# more), is refused. A PR the item records, or whose body names it, lands; so does one with neither
-# sign, a first landing. Not the branch: `branch:` is the last push the Stop hook saw, and a run that
-# re-cuts its branch lands from the new one in the same turn. Why: home-config #1195 got a sibling
-# subagent's "Item:" line on 2026-11-18, while that item's #1193 was in its checks (ar-3047).
+# own_item: an item this run did not name is only the session's guess: a session lands side fixes in
+# its item's repo too, and parallel subagents of one coordinator share its Claude session id, so
+# `agent-queue mine` can return a sibling's item. Before anything is touched, such an item takes only
+# a PR it records (pr:, open_pr:) or whose body names it on an "Item: <slug>" line; any other PR is
+# refused, a body naming another queue item with that item in the message, so stamp_item only adds the
+# line for an item --item named or one that records the PR. Not the branch: `branch:` is the last push the Stop hook saw, and a
+# run that re-cuts its branch lands from the new one in the same turn. Why: home-config #1195 got a
+# sibling subagent's "Item:" line on 2026-11-18 (ar-3047), and unity-core-playground#2985, an iOS
+# side fix with no "Item:" line, closed its session's overnight release watch on 2026-11-20 (ar-3970).
 own_item() {
   [ -n "$implied" ] || return 0
-  local ref refs open text named='' st rc=0 why=''
+  local ref refs named rc=1
   read -ra refs <<<"$it_pr"
-  open=$(jq -r '.open_pr // ""' <<<"$it")
-  for ref in "${refs[@]}" $open; do
+  for ref in "${refs[@]}" $(jq -r '.open_pr // ""' <<<"$it"); do
     [ "$ref" = "$pr_ref" ] || { [[ "$ref" != */*#* || "$pr_ref" != */*#* ]] && [ "${ref##*#}" = "$pr" ]; } || continue
     return 0
   done
-  # A body that cannot be read names no item here; stamp_item reads it again and fails on its own.
-  text=$(pr_view body .body 2>/dev/null) || text=''
-  named=$(tr -d '\r' <<<"$text" | sed -n '/^Item: */{s/^Item: *\([^[:space:]]*\).*/\1/p;q;}')
+  body=$(pr_view body .body 2>&1) || fail item-line "$api pr view: $(lastline "$body")"
+  named=$(tr -d '\r' <<<"$body" | sed -n '/^Item: */{s/^Item: *\([^[:space:]]*\).*/\1/p;q;}')
   [ "$named" != "$item" ] || return 0
-  # A placeholder ("Item: <slug>", "Item: n/a") is no item: stamp_item rewrites it.
+  # A placeholder ("Item: <slug>", "Item: n/a") names no item, as no line does.
   if [ -n "$named" ]; then
+    rc=0
     aq_retry show "$named" >/dev/null 2>&1 || rc=$?
     [ "$rc" -ne "$QUEUE_BUSY" ] || die "the queue is locked by another writer: nothing touched, re-run"
-    [ "$rc" -ne 0 ] || why="its body names its item, $named"
   fi
-  if [ -z "$why" ] && [ "${open%#*}" = "${pr_ref%#*}" ] && [[ "$open" == */*#* ]] && [ "$partial" -eq 0 ] &&
-    [ "$(jq -r '.partial // ""' <<<"$it")" != yes ] && [[ " $it_pr " != *" $open "* ]]; then
-    st=$(pr=${open##*#}; pr_view state .state 2>/dev/null) || st=''
-    [ "$st" != OPEN ] || why="$item's own PR ${open} is open"
-  fi
-  [ -n "$why" ] || return 0
-  [ "$rc" -eq 0 ] && [ -n "$named" ] || named=''
-  die "#$pr ($pr_ref) is not $item's work, taken from $implied: $why. Pass --item ${named:-<slug>} for the item #$pr is the work of, or --item $item if it is this item's"
+  [ "$rc" -eq 0 ] &&
+    die "#$pr ($pr_ref) is not $item's work, taken from $implied: its body names its item, $named. Pass --item $named for the item #$pr is the work of, or --item $item if it is this item's"
+  die "#$pr ($pr_ref) may be a side fix, not $item's work, taken from $implied: its body has no \"Item: $item\" line and $item does not record it. If it is $item's work, add that line to the body or pass --item $item; else give it its own item (agent-queue add --running --project <p> \"<type(area): title>\") and pass --item <that slug>"
 }
 
 # own_merged: a MERGED PR skips own_head, which is what ties an open PR to this checkout. So it must
@@ -1050,7 +1044,7 @@ if [ "$dry" -eq 1 ]; then
   fi
   [ -z "$fj" ] || echo "forge: Forgejo $fj on remote $remote: each gh pr call below is that API (pulls/$pr, PATCH for the body, commits/<head>/status for the checks, POST pulls/$pr/merge {Do, head_commit_id}, pulls/$pr/files), and each git step reads $remote, not origin"
   echo "item-line: gh pr view $pr${repo:+ -R $repo} --json body, then gh pr edit $pr --body-file -  (unless it has \"Item: $item\")"
-  echo "head: git rev-parse HEAD must equal the PR's headRefOid (when it is git ls-remote origin's tip of the PR branch, poll gh pr view $pr --json headRefOid until it does), else exit 1 naming the PR's checkout (git worktree list); the PR's repo must be origin's; a MERGED PR must name the item, have its head in HEAD, or be on the item; an item not named by --item takes only a PR in its project's repo, and none whose body names another queue item or beside the item's own open PR"
+  echo "head: git rev-parse HEAD must equal the PR's headRefOid (when it is git ls-remote origin's tip of the PR branch, poll gh pr view $pr --json headRefOid until it does), else exit 1 naming the PR's checkout (git worktree list); the PR's repo must be origin's; a MERGED PR must name the item, have its head in HEAD, or be on the item; an item not named by --item takes only a PR in its project's repo that it records or whose body has \"Item: $item\""
   echo "review: fleet-dispatch item-tier $item  (tier 3: the body needs a \"Review: \" line and the checks must run)"
   echo "shape: shape-grow \$(git merge-base HEAD origin/<base>) HEAD  (no function over 150 lines gets longer, unless the body has a \"Split: <row id>\" line naming an open row that names each function)"
   echo "checks: gh pr checks $pr${repo:+ -R $repo} --watch --fail-fast -i $CHECKS_WATCH_INTERVAL  (must pass, or report none on a tier 1 or 2 item; a land that would refuse none, on a head with workflow files, first waits up to $CHECKS_FIRST_RUN_TRIES x ${CHECKS_QUEUED_POLL}s for its first run, AGENT_LAND_CHECKS_FIRST_RUN_TRIES)"

@@ -141,6 +141,17 @@ overrides() {
   assert_output '["delta","eps","zeta"]'
 }
 
+@test "a skill a rulesync-global rule routes to is never hidden" {
+  # bitbucket-ops was hidden on #2551 though overview.md routes to it (ar-3977).
+  mkdir -p "$DOTFILES_PRIVATE/.config/rulesync-global/.rulesync/rules"
+  echo 'For Bitbucket, use the beta skill.' > "$DOTFILES_PRIVATE/.config/rulesync-global/.rulesync/rules/overview.md"
+  echo '{"skillOverrides":{}}' > "$SANDBOX/settings.json"
+  FIXTURE_USED="alpha" run overrides
+  assert_success
+  run jq -c '.hide' <<<"$output"
+  assert_output '["delta","eps","gamma","zeta"]'
+}
+
 @test "a paths-scoped or model-disabled skill is left alone" {
   printf -- '---\nname: beta\npaths:\n  - "x/**"\n---\n' > "$CLAUDE_SKILLS/beta/SKILL.md"
   printf -- '---\nname: gamma\ndisable-model-invocation: true\n---\n' > "$CLAUDE_SKILLS/gamma/SKILL.md"

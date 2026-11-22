@@ -715,7 +715,7 @@ bucket_facts() {
       elif [ "$inpr" != 1 ]; then echo "STALLED commits after merged PR #$pr"
       else plan_bucket "PR #$pr merged, tree clean" "$phases" "$next" 1 "$item" "$cron"; fi ;;
     OPEN)
-      if handed_off "$item" "$pr" "$dirty" "$inpr"; then
+      if handed_off "$item" "$pr" "$dirty" "$inpr" "${17:--}"; then
         local slug="${item#review:}"; slug="${slug%% *}"; local why="PR #$pr parked for review, its item $slug owns it"
         case "$phases" in
           -|none) echo "DONE $why" ;;
@@ -744,12 +744,14 @@ bucket_facts() {
   esac
 }
 
-# handed_off <item> <pr> <dirty> <in_pr> -> exit 0 when this session's open PR is its parked
+# handed_off <item> <pr> <dirty> <in_pr> [<job>] -> exit 0 when this session's open PR is its parked
 # item's (item_of's "review:<slug> pr <n>", the item's own pr:) and nothing here is outside it: no
-# dirty file, HEAD inside the PR. fleet-dispatch's reap owns that PR once the session ends
+# dirty file, HEAD inside the PR, and no live waiter (gate or queue) still running in the background.
+# fleet-dispatch's reap owns that PR once the session ends
 # (own_parked_pr gives a red one a fix-ci session and a green one a lander), so it is no longer the session's to finish.
 handed_off() {
-  [[ "$1" == review:*" pr "* ]] && [ "${1##* pr }" = "${2##*#}" ] && [ "$3" = 0 ] && [ "$4" = 1 ]
+  [[ "$1" == review:*" pr "* ]] && [ "${1##* pr }" = "${2##*#}" ] && [ "$3" = 0 ] && [ "$4" = 1 ] \
+    && [ "${5:--}" != gate ] && [ "${5:--}" != queue ]
 }
 
 # salvaged_here <qall> <slug> <dir> -> exit 0 when the item that moved on from this session carries this
@@ -795,7 +797,7 @@ work_blockers() {
       [ "$red" != - ] && b+=("nightly red after PR #$pr: $red")
       [ "$dirty" -gt 0 ] && b+=("$dirty dirty file(s)$nm")
       [ "$inpr" != 1 ] && b+=("commits after merged PR #$pr") ;;
-    OPEN) if handed_off "${20:--}" "$pr" "$dirty" "$inpr"; then merged=1
+    OPEN) if handed_off "${20:--}" "$pr" "$dirty" "$inpr" "${17:--}"; then merged=1
           elif [ "${21:--}" != - ]; then b+=("PR #$pr open, waiting on ${21}")
           else b+=("PR #$pr open, CI ${ci:--}"); fi ;;
     CLOSED) [ "$merged" = 1 ] || b+=("PR #$pr closed without merging") ;;
@@ -1569,26 +1571,29 @@ prs_cell() {
     "\(map(select(.state == "MERGED")) | length)/\(length)\(if any(.state == null) then "?" else "" end)" end'
 }
 
-# main_health <dir> -> "RED \t <detail> \t <red sha> \t <suspect PRs, space-separated>", "OK"
-# or "UNKNOWN", cached per repo per pass. A red workflow's range is last-green..red on this
-# clone, and its (#N) squash subjects are suspects only when there are FLEET_SUSPECTS_MAX or
-# fewer. No green in the window, a range the clone lacks, or a FLEET_DEPLOY_PROBES workflow names nobody.
+# main_health <dir> -> "RED \t <detail> \t <red sha>", "OK" or "UNKNOWN", cached per repo per
+# pass. A red workflow's range is last-green..red on this clone, and its (#N) squash subjects are
+# its suspects only when there are FLEET_SUSPECTS_MAX or fewer, kept per workflow for main_blame.
+# No green in the window, a range the clone lacks, or a FLEET_DEPLOY_PROBES workflow names nobody.
 main_health() {
-  local dir="$1" url key base b runs st wf red green wfs="" sha="" prs="" range
+  local dir="$1" url key blame base b runs st wf red green wfs="" sha="" range one named p
   url="$(git -C "$dir" remote get-url origin 2>/dev/null)" || { echo OK; return; }
   key="$CACHE/main_$(repo_slug "$dir")"
+  blame="$CACHE/blame_$(repo_slug "$dir")"
   if [ ! -f "$key" ]; then
+    : > "$blame"
     base="$(default_base "$dir")"
     b="${base#*/}"
     # Could not look is not green: say so, so the shepherd never reads a dead gh, or runs main_state
     # cannot read, as healthy.
     if ! runs="$(branch_runs "$dir" "$b")" || ! st="$(main_state <<<"$runs")"; then
-      printf 'UNKNOWN\t-\t-\t-\t%s\n' "$(basename "$url" .git)" > "$key"
-      cut -f1-4 "$key"; return
+      printf 'UNKNOWN\t-\t-\t%s\n' "$(basename "$url" .git)" > "$key"
+      cut -f1-3 "$key"; return
     fi
     while IFS=$'\t' read -r wf red green; do
       [ -n "$wf" ] || continue
       [ -n "$sha" ] || sha="$red"
+      named=""
       if [ -n "$FLEET_DEPLOY_PROBES" ] && [[ $wf =~ $FLEET_DEPLOY_PROBES ]]; then range="probes a deployment"
       elif [ "$green" = - ]; then range="no green in window"
       elif ! git -C "$dir" cat-file -e "$red^{commit}" 2>/dev/null \
@@ -1597,21 +1602,30 @@ main_health() {
         range="$(git -C "$dir" log --format=%s "$green..$red" | grep -oE '\(#[0-9]+\)$' | tr -dc '0-9\n' | sort -un | tr '\n' ' ')"
         range="${range% }"
         if [ -z "$range" ]; then range="no PR in range"
-        elif [ "$(wc -w <<<"$range")" -le "$FLEET_SUSPECTS_MAX" ]; then prs="$prs $range"; range="#${range// / #}"
+        elif [ "$(wc -w <<<"$range")" -le "$FLEET_SUSPECTS_MAX" ]; then named="$range"; range="#${range// / #}"
         else range="$(wc -w <<<"$range") PRs since green"; fi
       fi
       # No green: the oldest red in view slides as runs age out, so that fact names no sha.
-      if [ "$green" = - ]; then wfs="${wfs:+$wfs, }$wf ($range)"
-      else wfs="${wfs:+$wfs, }$wf @${red:0:8} ($range)"; fi
+      if [ "$green" = - ]; then one="$wf ($range)"; else one="$wf @${red:0:8} ($range)"; fi
+      wfs="${wfs:+$wfs, }$one"
+      for p in $named; do printf '%s\t%s\n' "$p" "$one" >> "$blame"; done
     done <<<"$st"
-    if [ -n "$wfs" ]; then
-      # Every field non-empty: read with a tab IFS folds an empty field into the next.
-      prs="$(tr ' ' '\n' <<<"$prs" | grep . | sort -un | paste -sd' ' -)"
-      printf 'RED\t%s\t%s\t%s\t%s\n' "$wfs" "${sha:0:8}" "${prs:--}" "$(basename "$url" .git)" > "$key"
+    # Every field non-empty: read with a tab IFS folds an empty field into the next.
+    if [ -n "$wfs" ]; then printf 'RED\t%s\t%s\t%s\n' "$wfs" "${sha:0:8}" "$(basename "$url" .git)" > "$key"
     else echo OK > "$key"; fi
   fi
   [ "$(cut -f1 "$key")" != UNKNOWN ] || blind_row   # a later row of the repo read the same failed ledger
-  cut -f1-4 "$key"
+  cut -f1-3 "$key"
+}
+
+# main_blame <dir> <PR> -> the red workflows of <dir>'s main whose suspects name <PR>, comma-joined;
+# rc 1 for none. It runs main_health itself (a cache hit after the first), so its file is always there. Only those are its merge's to fix: agent-10's #2983
+# was a suspect of Drop closed gates alone, and its close verdict also held it for iOS release, Phone
+# release, Release builds and Slim tour, reds whose ranges did not name it (ar-3985).
+main_blame() {
+  main_health "$1" > /dev/null
+  awk -F'\t' -v p="$2" '$1 == p { out = out (out == "" ? "" : ", ") $2 } END { if (out == "") exit 1; print out }' \
+    "$CACHE/blame_$(repo_slug "$1")" 2>/dev/null
 }
 
 # store_landed <toplevel> -> exit 0 when <toplevel> is the agent store (AGENT_STORE) or the notes vault
@@ -1636,7 +1650,7 @@ store_landed() {
 # session edited. Never scan unrelated sibling worktrees or count their work as ours, nor a
 # store store-sync lands (store_landed).
 edited_work_blockers() {
-  local cwd="$1" edited="$2" top path dir g dirty ahead pr state ci inpr branch behind conflicts fork oid names why bucket red health workflows suspects kind=WORKING out=""
+  local cwd="$1" edited="$2" top path dir g dirty ahead pr state ci inpr branch behind conflicts fork oid names why bucket red health workflows kind=WORKING out=""
   [ -n "$edited" ] || return 0
   top="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)"
   while IFS= read -r dir; do
@@ -1644,8 +1658,8 @@ edited_work_blockers() {
     read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names < <(git_facts "$dir" "$edited")
     red=-
     if [ "$state" = MERGED ]; then
-      IFS=$'\t' read -r health workflows _ suspects < <(main_health "$dir")
-      if [ "$health" = RED ] && grep -qxF "$pr" <<<"$(tr ' ' '\n' <<<"$suspects")"; then
+      IFS=$'\t' read -r health _ < <(main_health "$dir")
+      if [ "$health" = RED ] && workflows="$(main_blame "$dir" "$pr")"; then
         red="$workflows"
         [ -z "${3:-}" ] || printf '%s\t%s\n' "$(repo_slug "$dir")" "$3" >> "$CACHE/owners"
       fi
@@ -2114,6 +2128,17 @@ remote_panel_lines() {
   return 0
 }
 
+# phases_word <plan file|-> <in plan mode 0|1> <done> <total|-> -> session_bucket's <phases> word. A plan the pane
+# recorded that does not exist (every account shares ~/.claude/plans, claude-acct) is not a session with no plan:
+# its phases are unknown, so it is never read as finished (ar-2368). In plan mode, though, the pane names the plan
+# path before Claude writes it: no file yet is no plan, not missing (ar-3918).
+phases_word() {
+  if [ "$1" = - ] || { [ "$2" = 1 ] && [ ! -f "$1" ]; }; then echo -
+  elif [ ! -f "$1" ]; then echo missing
+  elif [ "$4" = - ]; then echo none
+  else echo "$3/$4"; fi
+}
+
 collect() {
   local now heavy line
   # The one `project` every row carries is the name the hooks give its directory; a pass that cannot
@@ -2308,12 +2333,7 @@ collect() {
       if [ -n "${xpr:-}" ]; then pr="$xpr" state=OPEN ci="$xci" oid="$xoid" conflicts=-; else xr=-; fi
     fi
     [ "$host" != - ] || planf="$(item_plan "$islugs" "$started" "$planf")"; IFS=$'\t' read -r pdone ptotal pnext < <(plan_phases "$planf")   # the item's own plan outranks the transcript's
-    # A plan the pane recorded that does not exist (every account shares ~/.claude/plans, claude-acct) is not a
-    # session with no plan: its phases are unknown, so it is never read as finished (ar-2368).
-    if [ "$planf" = - ]; then phases=-
-    elif [ ! -f "$planf" ]; then phases=missing
-    elif [ "$ptotal" = - ]; then phases=none
-    else phases="$pdone/$ptotal"; fi
+    phases="$(phases_word "$planf" "$inplan" "$pdone" "$ptotal")"
     # A copy of a queued plan under another file name is that plan (plan_copy_of): the items name it and
     # tick it, and the session may tick its own, so a phase is done when either plan says so.
     local plist="$planf" pcopy="" plj merged=""
@@ -2392,10 +2412,10 @@ collect() {
       [ -z "$qd" ] || IFS=$'\t' read -r pq prun pwq <<<"$qd"
     fi
     # mh is this repo's main health for the row's main_red (RED, OK, UNKNOWN; - outside git).
-    local red=- mh=- mwfs msuspects
+    local red=- mh=- mwfs
     if [ "$g" = 1 ] && [ "$gd" != - ]; then
-      IFS=$'\t' read -r mh mwfs _ msuspects < <(main_health "$gd")
-      if [ "$state" = MERGED ] && [ "$mh" = RED ] && grep -qxF "$pr" <<<"$(tr ' ' '\n' <<<"$msuspects")"; then
+      IFS=$'\t' read -r mh _ < <(main_health "$gd")
+      if [ "$state" = MERGED ] && [ "$mh" = RED ] && mwfs="$(main_blame "$gd" "$pr")"; then
         red="$mwfs"
         printf '%s\t%s\n' "$(repo_slug "$gd")" "$sid" >> "$CACHE/owners"
       fi
@@ -2499,11 +2519,11 @@ nightly_item_owners() {
 # on their own STALLED rows, and the sessions running a nightly item for that repo (nightly_item_owners).
 # Its nudged and escalated cells read that ledger, as every row's do.
 main_rows() {
-  local f slug st wfs sha prs repo sid reason owners nu e
+  local f slug st wfs sha repo sid reason owners nu e
   nightly_item_owners >> "$CACHE/owners"
   for f in "$CACHE"/main_*; do
     [ -f "$f" ] || continue
-    IFS=$'\t' read -r st wfs sha prs repo < "$f"
+    IFS=$'\t' read -r st wfs sha repo < "$f"
     slug="${f##*/main_}"; sid="main-$slug"
     case "$st" in
       RED) reason="$repo red: $wfs" ;;
