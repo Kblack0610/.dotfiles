@@ -674,6 +674,22 @@ fn hold_rows(list: Vec<Hold>, open: Option<&[Red]>, now: i64) -> Vec<Alert> {
         .collect()
 }
 
+/// Adds `hold_rows` to `firing`, dropping the `hold-age` watch's row when they stand for it: that
+/// row is these holds said once, and each hold is its own row here. A failed read is the error.
+fn add_holds(
+    firing: &mut Vec<Alert>,
+    holds: Result<Vec<Hold>, String>,
+    open: Option<&[Red]>,
+    now: i64,
+) -> Result<(), String> {
+    let rows = hold_rows(holds?, open, now);
+    if !rows.is_empty() {
+        firing.retain(|a| a.source != "sentinel" || a.error() || a.what != HOLD_WATCH);
+    }
+    firing.extend(rows);
+    Ok(())
+}
+
 /// The counts of the firing rows, the fixes and the watches; the history's are the caller's.
 fn counted(firing: &[Alert], fixes: Option<&Reds>, watches: &[Watch]) -> Counts {
     let n = |s: &str| watches.iter().filter(|w| w.state == s).count();
@@ -782,16 +798,8 @@ pub fn join(
         Some(Err(e)) => errors.push(format!("alertmanager: {e}")),
         None => {}
     }
-    match holds {
-        Ok(list) => {
-            let rows = hold_rows(list, open, now);
-            // The hold-age watch's row is these holds, said once: each hold is its own row here.
-            if !rows.is_empty() {
-                firing.retain(|a| a.source != "sentinel" || a.error() || a.what != HOLD_WATCH);
-            }
-            firing.extend(rows);
-        }
-        Err(e) => errors.push(format!("holds: {e}")),
+    if let Err(e) = add_holds(&mut firing, holds, open, now) {
+        errors.push(format!("holds: {e}"));
     }
     firing.sort_by_cached_key(order);
 

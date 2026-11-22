@@ -1150,19 +1150,7 @@ pub fn needs(
             b["at"].as_i64(),
         ));
     }
-    for h in state["holds"].as_array().into_iter().flatten() {
-        let resource = str_of(h, "resource");
-        out.push(condition(
-            Kind::Hold,
-            format!("hold:{resource}"),
-            format!(
-                "Hold {resource}, {}: {}. Release it once its work is done: agent-hold release {resource} (agent-hold show {resource}).",
-                str_of(h, "held"),
-                str_of(h, "reason").trim_end_matches('.')
-            ),
-            h["since"].as_i64(),
-        ));
-    }
+    out.extend(hold_needs(state));
     let recent = |i: &Item| {
         let done = i.finished.as_deref().and_then(ts);
         now.zip(done)
@@ -1319,6 +1307,33 @@ pub fn gather(with_infra: bool) -> (Value, Queue, Result<Feed, String>, Option<I
             infra.map(|i| i.join().unwrap_or_default()),
         )
     })
+}
+
+/// The Hold rows of `state["holds"]` (`signals::join`: the standing holds the human set), one a
+/// hold, as conditions with no score.
+fn hold_needs(state: &Value) -> Vec<Need> {
+    let rows = state["holds"].as_array().into_iter().flatten();
+    rows.map(|h| {
+        let resource = str_of(h, "resource");
+        Need {
+            kind: Kind::Hold,
+            need: NeedKind::of_condition(Kind::Hold),
+            rank: 0,
+            ask: None,
+            project: String::new(),
+            text: short(&format!(
+                "Hold {resource}, {}: {}. Release it once its work is done: agent-hold release {resource} (agent-hold show {resource}).",
+                str_of(h, "held"),
+                str_of(h, "reason").trim_end_matches('.')
+            )),
+            id: format!("hold:{resource}"),
+            target: None,
+            since: h["since"].as_i64(),
+            recommend: None,
+            score: None,
+        }
+    })
+    .collect()
 }
 
 /// Home from fleet-sessions' `state.json` (null when missing), the queue, the board feed,
