@@ -522,6 +522,36 @@ full_fleet() {
   assert_equal "$(grep -c 'agent-codex' "$NOTES_FIXTURE/calls.log")" 1
 }
 
+# 2026-11-21: with the run floor leaving most passes room, every start went through the queue's route, which
+# offers Codex only for a promoted class: the source floor sat behind a full target and codex-underuse stayed red (ar-2436).
+@test "source floor: a fleet with room starts an item on a source whose week is going unused past its room, a red keeping the slot; on pace it starts on Claude" {
+  route_ready
+  acct main:ok
+  srcs codex:ok:5
+  cpu 10 5 0 85
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PROJECT_FLOOR=0 DISPATCH_PER_PASS=1
+  fleet_state 2
+  # Negative control: codex is on pace for its week, so the pass's one start goes to Claude.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item fix-menu'
+  refute_output --partial 'source floor'
+  assert_not_called 'agent-codex'
+  agent-queue move fix-menu queued >/dev/null
+  rm -f "$NOTES_FIXTURE/calls.log"
+  under_used codex
+  # A red at the head keeps the pass's one slot: the floor's start is past Claude's room.
+  agent-queue add --project game --slug r2 --tags 'red cause:cd34' "fix r2" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item r2'
+  assert_equal "$(qfield "$(qitem running r2)" agent)" claude
+  assert_output --partial 'room for 1; under-used near its reset: codex 18% used, 72% of its week gone, resets in 46h, so codex takes work on the source floor (DISPATCH_SOURCE_FLOOR=1)'
+  assert_output --partial 'started queue item fix-menu on codex (sol), the source floor (DISPATCH_SOURCE_FLOOR=1)'
+  assert_equal "$(qfield "$(qitem running fix-menu)" agent)" codex
+  assert_equal "$(grep -c 'agent-codex' "$NOTES_FIXTURE/calls.log")" 1
+}
+
 @test "source floor: past its pace target, a source with no room, a tier-3 item, a named model and a red still start nothing" {
   route_ready
   acct main:ok
