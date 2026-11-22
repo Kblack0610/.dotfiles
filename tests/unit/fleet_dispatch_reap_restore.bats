@@ -1384,6 +1384,11 @@ esac'
   row game human hm-7 "- [ ] feat(game): rolled augments (agent row gm-7) <!-- id:hm-7 -->"
   row game human hm-8 "- [ ] feat(game): augments in the bag #after/gm-7 (agent row gm-8) <!-- id:hm-8 -->"
   row game agent gm-3 "- [ ] feat(game): waits on a row nobody filed $T #after/gm-404 <!-- id:gm-3 -->"
+  # a copy on another project's sheet, and a copy the human already closed, are not where the work went
+  row app human ap-9 "- [ ] feat(app): same words (agent row gm-9) <!-- id:ap-9 -->"
+  row game agent gm-10 "- [ ] feat(game): waits on gm-9 $T #after/gm-9 <!-- id:gm-10 -->"
+  row game human hm-11 "- [x] feat(game): closed copy (agent row gm-11) <!-- id:hm-11 -->"
+  row game agent gm-12 "- [ ] feat(game): waits on gm-11 $T #after/gm-11 <!-- id:gm-12 -->"
   run follow_moved_gates
   assert_success
   local agent human; agent=$(cut -f2 "$NOTES_FIXTURE/rows.game.agent") human=$(cut -f2 "$NOTES_FIXTURE/rows.game.human")
@@ -1394,6 +1399,8 @@ esac'
   # an open gate stays though a copy names it; a dead one with no copy stays for dead_holds
   grep -q '^- \[ \] feat(game): waits on an open row .*#after/gm-1 <!-- id:gm-2 -->' <<<"$agent"
   grep -q '^- \[ \] feat(game): waits on a row nobody filed .*#after/gm-404 <!-- id:gm-3 -->' <<<"$agent"
+  grep -q '^- \[ \] feat(game): waits on gm-9 .*#after/gm-9 <!-- id:gm-10 -->' <<<"$agent"
+  grep -q '^- \[ \] feat(game): waits on gm-11 .*#after/gm-11 <!-- id:gm-12 -->' <<<"$agent"
   run cmd_starved
   assert_output --partial 'gm-3 (game, #after/gm-404: '
   refute_output --partial 'gm-4 ('
