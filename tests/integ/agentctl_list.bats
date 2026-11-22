@@ -45,7 +45,17 @@ setup() {
   refute_line 'learn'
 }
 
-@test "a conf with no LANE, or one outside the four, is listed as invalid with the reason (negative control)" {
+@test "a runner on the coordinate lane is listed under it, not invalid" {
+  sed -i 's/^LANE=observe/LANE=coordinate/' "$HOME/.config/agentctl/agents/beta.conf"
+  run "$AGENTCTL_BIN" list
+  assert_success
+  assert_line --index 1 'coordinate'
+  assert_line --index 2 --regexp '^  beta +idle '
+  assert_line --index 3 'observe'
+  refute_line 'invalid (reload skips these)'
+}
+
+@test "a conf with no LANE, or one outside the lanes, is listed as invalid with the reason (negative control)" {
   sed -i '/^LANE=/d' "$HOME/.config/agentctl/agents/alpha.conf"
   sed -i 's/^LANE=observe/LANE=misc/' "$HOME/.config/agentctl/agents/beta.conf"
   run "$AGENTCTL_BIN" list
@@ -63,7 +73,7 @@ setup() {
   assert_success
   assert_line 'triage'
   assert_line --regexp '^  beta +idle '
-  assert_line --regexp '^  alpha +invalid LANE=session \(deliver observe learn maintain triage\)'
+  assert_line --regexp '^  alpha +invalid LANE=session \(coordinate deliver observe learn maintain triage\)'
 }
 
 @test "no lanes.tsv leaves no lane, and the reason names the file (negative control)" {
