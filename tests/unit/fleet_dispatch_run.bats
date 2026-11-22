@@ -105,7 +105,7 @@ bats_require_minimum_version 1.5.0
 }
 
 @test "run over DISPATCH_LOW_WATER queues an open sprint's dispatchable row before the queue pass, which starts it ahead of queued off-sprint items" {
-  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=2 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=0
+  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=2
   project game beta "$SANDBOX/repos/game"
   row game human gm-9 "- [ ] fix(game): sprint crash #high $T <!-- id:gm-9 -->"
   row game human gm-5 "- [ ] fix(game): off-sprint polish #high $T <!-- id:gm-5 -->"
@@ -143,8 +143,9 @@ bats_require_minimum_version 1.5.0
   [ -z "$(qitem queued gm-5)" ] || fail "the sprint floor queued a row off the sprint"
 }
 
-@test "run over DISPATCH_LOW_WATER still tops cleanup rows up to DISPATCH_CLEANUP_FLOOR, as high, and nothing else" {
+@test "run over DISPATCH_LOW_WATER still tops cleanup rows up to the cleanup min_live, as high, and nothing else" {
   export DISPATCH_CLEANUP_PROJECTS=game DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=2
+  class_floors 0 2
   project game beta "$SANDBOX/repos/game"
   row game human 'new map' "- [ ] feat(game): a new map #high $T"
   row game human 'crash' "- [ ] fix(game): crash on load #low $T"
@@ -155,15 +156,16 @@ bats_require_minimum_version 1.5.0
   agent-queue add --project game --slug three "three"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_output --partial 'runnable cleanup 0 is under the floor 2, topping cleanup up from the board'
+  assert_output --partial 'cleanup is 2 under its min_live, topping cleanup up from the board'
   f=$(qitem queued gm-1)
   [ -n "$f" ] || fail "the floor did not promote the cleanup row"
   assert_equal "$(qfield "$f" title) | $(qfield "$f" priority) | $(qfield "$f" tags)" 'fix(game): crash on load | high | cleanup tier1'
   [ -z "$(qitem queued gm-2)" ] || fail "the floor promoted a row that is not cleanup"
 }
 
-@test "run over DISPATCH_LOW_WATER still tops #requested rows up to DISPATCH_REQUESTED_FLOOR, on any project, and nothing else" {
-  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=2 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=1
+@test "run over DISPATCH_LOW_WATER still tops #requested rows up to the requested min_live, on any project, and nothing else" {
+  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=2
+  class_floors 1 0
   project game beta "$SANDBOX/repos/game"
   row game human 'new map' "- [ ] feat(game): a new map #high $T"
   row game human 'the ask' "- [ ] fix(game): the bench is throwable #requested $T"
@@ -174,7 +176,7 @@ bats_require_minimum_version 1.5.0
   agent-queue add --project game --slug three "three"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_output --partial 'runnable requested 0 is under the floor 1, topping requested rows up from the board'
+  assert_output --partial 'requested is 1 under its min_live, topping requested rows up from the board'
   f=$(qitem queued gm-1)
   [ -n "$f" ] || fail "the floor did not promote the requested row"
   assert_equal "$(qfield "$f" title)" 'fix(game): the bench is throwable'
@@ -182,8 +184,9 @@ bats_require_minimum_version 1.5.0
   [ -z "$(qitem queued gm-2)" ] || fail "the floor promoted a row nobody requested"
 }
 
-@test "run with DISPATCH_CLEANUP_FLOOR cleanup items already runnable does not read the board, so a fresh cleanup row waits" {
-  export DISPATCH_CLEANUP_PROJECTS=game DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=1 DISPATCH_CLEANUP_FLOOR=2
+@test "run with the cleanup class at its min_live does not read the board, so a fresh cleanup row waits" {
+  export DISPATCH_CLEANUP_PROJECTS=game DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=1
+  class_floors 0 2
   project game beta "$SANDBOX/repos/game"
   row game human 'crash' "- [ ] fix(game): crash on load $T"
   verdict game human 'crash' dispatch S 1 crash
@@ -192,15 +195,15 @@ bats_require_minimum_version 1.5.0
   agent-queue add --project game --slug c3 --tags cleanup "c3"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  # the pass starts c1, which leaves 2 runnable cleanup items: the floor is met (low water is 1, so only the floor decides)
+  # the pass starts c1, which leaves 2 runnable cleanup items: the minimum of 2 is met (low water is 1, so only the floor decides)
   assert_output --partial 'started game-agent-1: game: c1'
-  refute_output --partial 'under the floor'
-  assert_not_called 'judge called'
-  [ -z "$(qitem queued gm-1)" ] || fail "the floor read the board with the cleanup floor met"
-  # negative control: with the floor at 3 the next pass starts c2, leaves 1 cleanup item, and promotes the same row
-  export DISPATCH_CLEANUP_FLOOR=3
+  refute_output --partial "under its min_live"
+  assert_not_called "judge called"
+  [ -z "$(qitem queued gm-1)" ] || fail "the floor read the board with the cleanup class at its minimum"
+  # negative control: with the minimum at 3 the next pass starts c2, leaves 1 runnable cleanup item, and promotes the same row
+  class_floors 0 3
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'runnable cleanup 1 is under the floor 3'
+  assert_output --partial 'cleanup is 2 under its min_live'
   [ -n "$(qitem queued gm-1)" ] || fail "under the floor the cleanup row was not promoted"
 }
 

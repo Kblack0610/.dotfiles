@@ -3540,7 +3540,7 @@ picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | 
   assert_line --index 1 --partial 'app asked: 2'
 }
 
-@test "focus: promote tags a #requested row's item requested, which the requested floor counts" {
+@test "focus: promote tags a #requested row's item requested, which puts it in the requested class" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
   row app human 'asked one' '- [ ] asked one #requested <!-- id:gm-7 -->'

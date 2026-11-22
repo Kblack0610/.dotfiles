@@ -113,7 +113,8 @@ load 'fleet_dispatch/common'
 # Review of #2589: the requested floor promotes week-old #requested rows, so a fresh ask is measured
 # from the row's own created date (the feed's `since`), which promote stamps as `asked:`, never `queued`.
 @test "human floor: a #requested row promote moves carries its row's date as asked:, which fresh_ask reads" {
-  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=1 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=5
+  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=1
+  class_floors 5 0
   project game beta "$SANDBOX/repos/game"
   row game human 'the ask' "- [ ] fix(game): the bench is throwable #requested $T <!-- since:$(date -d '-7 days' +%F) -->"
   verdict game human 'the ask' dispatch S 1 bench
