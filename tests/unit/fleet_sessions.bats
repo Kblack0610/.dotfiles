@@ -5003,6 +5003,54 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red, background shell idle over 30m' ]
 }
 
+# chained_item <state> <dep slug>: session s1's running item, after: <dep slug>, and that dependency's own item
+chained_item() {
+  mkdir -p "$HOME/.agent/queue/running" "$HOME/.agent/queue/$1"
+  printf 'slug: fix-wave-save\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s1\nafter: %s\n---\nfix wave save\n' \
+    "$2" > "$HOME/.agent/queue/running/20261103-100000-fix-wave-save.md"
+  printf 'slug: %s\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T09:00:00Z\nsession: lab:s2\n---\nthe dependency\n' \
+    "$2" > "$HOME/.agent/queue/$1/20261103-090000-$2.md"
+}
+
+@test "end to end: a red gate line is CI running while its item is after: a live item, red once that item is done (ar-4314)" {
+  # 2026-11-21 unity-core-playground #3076 and #3083 read STALLED CI red: each item was stacked on an open
+  # item, so agent-land held it (exit 4) before a gate was dispatched and Checks' Merge gate line stayed red.
+  landed_fixture
+  local oid; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"
+  job 77 'Harness tests:success' 'Merge gate line:failure'
+  ledger feat/x '[]'; open_pr FAIL 77
+  chained_item review dep-item
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
+
+  # negative controls: the dependency is done, a gate already red on the head, another step is red, no after:
+  rm -r "$HOME/.agent/queue/review"; chained_item done dep-item
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+  rm -r "$HOME/.agent/queue/done"; chained_item review dep-item
+  ledger feat/x "[$(gate 'Tests (affected)' completed failure "$oid" 5)]"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+  job 78 'Docs within their budgets:failure' 'Merge gate line:failure'
+  ledger feat/x '[]'; open_pr FAIL 78
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+  # a dependency that is only queued has no PR to stack on
+  rm -r "$HOME/.agent/queue/review" "$HOME/.agent/queue/running"; chained_item queued dep-item
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+  # a dependency that is the session's own item waits on nobody else
+  rm -r "$HOME/.agent/queue/queued"; chained_item running dep-item
+  sed -i 's/^session: lab:s2$/session: lab:s1/' "$HOME/.agent/queue/running/20261103-090000-dep-item.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+  rm -rf "$HOME/.agent/queue/review" "$HOME/.agent/queue/running"; queue_item running lab:s1
+  ledger feat/x '[]'; open_pr FAIL 77
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+}
+
 @test "end to end: a PR riding an open landing train is WORKING waiting on the train, not CI red (ar-2160)" {
   # 2026-11-13 agent-7 #2415, agent-28 #2417 and agent-31 #2444 read STALLED CI red and were nudged:
   # each rode train #2467 (train.py), whose PlayMode shard sat queued on a full unity pool, and each
