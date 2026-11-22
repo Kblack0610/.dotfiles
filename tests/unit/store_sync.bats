@@ -663,14 +663,28 @@ close_item() {
   assert_line 'status: ok'
 }
 
-@test "two closes that are both failed, or both ok, on one item still conflict" {
+@test "two closes that are both failed, or both ok, on one item keep this side's and the other as a lost file (ar-4471)" {
   peer a; peer b
   close_item a failed
   close_item b failed
   on a --now
   run on b --now
-  assert_failure
-  assert_output --partial "conflicts in queue/done/2026-11-20/x.md"
+  assert_success
+  assert_output --partial COMPLETE
+  run show "$ORIGIN" queue/done/2026-11-20/x.md
+  assert_line 'note: closed on b'
+  refute_output --partial '<<<<<<<'
+  run cat "$SANDBOX/b/.sync/lost/"queue__done__2026-11-20__x.md.lost-*
+  assert_line 'note: closed on a'
+  run grep -c 'merge-item: queue/done/2026-11-20/x.md differs on both sides' "$SANDBOX/b/.sync/sync.log"
+  assert_output 1
+  # store-sync-age reads the lost file as red, and green once it is settled and deleted
+  run "$REPO_ROOT/.local/bin/store-sync-age" "$SANDBOX/b/.sync/sync.log"
+  assert_failure 1
+  assert_output --regexp '^store sync lost a side: 1 item copy'
+  rm "$SANDBOX/b/.sync/lost/"*
+  run "$REPO_ROOT/.local/bin/store-sync-age" "$SANDBOX/b/.sync/sync.log"
+  assert_success
 }
 
 @test "a close cancelled on one machine and failed by a stale reaper on another keeps the cancel (ar-3439)" {
@@ -787,22 +801,31 @@ set_key() {
   refute_output --partial '<<<<<<<'
 }
 
-@test "one key set two ways on one item, or a repeated key, still conflicts" {
+@test "one key set two ways on one item, or a repeated key, keeps this side's whole and the other as a lost file (ar-4471)" {
   peer a; running_item a; peer b
   set_key a open_pr o#2; set_key a pr o#1
   set_key b open_pr o#3
   on a --now
   run on b --now
-  assert_failure
-  assert_output --partial 'conflicts in queue/running/r.md'
+  assert_success
+  run show "$ORIGIN" queue/running/r.md
+  assert_line 'open_pr: o#3'
+  refute_line 'pr: o#1'
+  run cat "$SANDBOX/b/.sync/lost/"queue__running__r.md.lost-*
+  assert_line 'open_pr: o#2'
+  assert_line 'pr: o#1'
   peer c; peer d
-  # each side adds its own key at one spot; only the repeat on c's side stops the merge
+  # each side adds its own key at one spot; only the repeat on c's side stops the key merge
   sed -i 's/^---$/note: c\nnote: c\n---/' "$SANDBOX/c/queue/running/r.md"
   set_key d branch br@2
   on c --now
   run on d --now
-  assert_failure
-  assert_output --partial 'conflicts in queue/running/r.md'
+  assert_success
+  run show "$ORIGIN" queue/running/r.md
+  assert_line 'branch: br@2'
+  refute_line 'note: c'
+  run cat "$SANDBOX/d/.sync/lost/"queue__running__r.md.lost-*
+  assert_line 'note: c'
 }
 
 @test "a clone set up with the old close driver moves to the item driver" {
