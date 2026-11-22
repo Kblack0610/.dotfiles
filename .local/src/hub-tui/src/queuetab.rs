@@ -13,7 +13,7 @@ use chrono::{DateTime, Utc};
 use hub_core::flow::Rail;
 use hub_core::item_history::History;
 use hub_core::links::Link;
-use hub_core::queue::{money, Candidate, Candidates, Item, Queue, QueueRow, State};
+use hub_core::queue::{Candidate, Candidates, Item, Queue, QueueRow, State};
 use hub_core::table::Row;
 use hub_core::tasks::Write;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -23,6 +23,7 @@ use crate::datatable::{DataTable, Took};
 use crate::fit::{cell, clip_line, Cell, Table};
 use crate::flowline::{self, LineView};
 use crate::fmt::{clock, Palette};
+use hub_core::display::fmt::{counted, dur_min, usd};
 
 /// What a key on the Queue tab asks the app to do.
 #[derive(Debug, PartialEq)]
@@ -307,17 +308,6 @@ fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
     ])
 }
 
-/// A span of minutes as the table prints it: `14m`, `1h05`, `2d03h`; `-` where the item has not
-/// reached the stage.
-fn mins(m: Option<i64>) -> String {
-    match m {
-        None => "-".into(),
-        Some(m) if m < 60 => format!("{m}m"),
-        Some(m) if m < 24 * 60 => format!("{}h{:02}", m / 60, m % 60),
-        Some(m) => format!("{}d{:02}h", m / (24 * 60), m % (24 * 60) / 60),
-    }
-}
-
 /// The STATE column: what the item needs, or how it finished.
 fn state(r: &QueueRow, p: Palette) -> Cell {
     let i = r.item;
@@ -374,9 +364,9 @@ fn row(r: &QueueRow, p: Palette) -> Vec<Cell> {
         state(r, p),
         or_dash(r.val("hold").shown().as_deref()).into(),
         or_dash(r.val("from").shown().as_deref()).into(),
-        mins(r.timing.in_state).into(),
-        mins(r.timing.wait).into(),
-        mins(r.timing.run).into(),
+        dur_min(r.timing.in_state).into(),
+        dur_min(r.timing.wait).into(),
+        dur_min(r.timing.run).into(),
         pr,
         or_dash(r.val("row").shown().as_deref()).into(),
         or_dash(i.kind.as_deref()).into(),
@@ -414,7 +404,6 @@ fn history(
         }
         Some(Ok(h)) => h,
     };
-    let plural = |n: usize, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
     let cut = if h.steps > h.lines.len() {
         format!(", last {}", h.lines.len())
     } else {
@@ -422,8 +411,8 @@ fn history(
     };
     let mut out = vec![head(format!(
         "  {}, {}{cut}",
-        plural(h.attempts, "attempt"),
-        plural(h.steps, "step")
+        counted(h.attempts, "attempt"),
+        counted(h.steps, "step")
     ))];
     if h.lines.is_empty() {
         out.push(Line::styled(
@@ -495,15 +484,15 @@ fn detail(
         ("row", some(&i.row).unwrap_or("").to_string()),
         ("after", some(&i.after).unwrap_or("").to_string()),
         ("pr", i.pr_words().unwrap_or_default()),
-        ("cost", i.cost().map(money).unwrap_or_default()),
+        ("cost", i.cost().map(usd).unwrap_or_default()),
         (
             "timing",
             format!(
                 "in {}  wait {}  run {}  lead {}",
-                mins(t.in_state),
-                mins(t.wait),
-                mins(t.run),
-                mins(t.lead)
+                dur_min(t.in_state),
+                dur_min(t.wait),
+                dur_min(t.run),
+                dur_min(t.lead)
             ),
         ),
     ];
@@ -541,7 +530,7 @@ fn detail(
                 let when = chrono::DateTime::parse_from_rfc3339(at.trim())
                     .map_or(at.clone(), |d| clock(d.timestamp(), now));
                 match st.gap_min {
-                    Some(g) => format!("{when}  +{}", mins(Some(g))),
+                    Some(g) => format!("{when}  +{}", dur_min(Some(g))),
                     None => when,
                 }
             }
@@ -997,7 +986,7 @@ pub(crate) mod tests {
             "it opens on active work, done one chip away\n{open}"
         );
         assert!(
-            s.contains("4 done (3 ok, 0 failed, 1 cancelled)") && s.contains("to PR median 95m"),
+            s.contains("4 done (3 ok, 0 failed, 1 cancelled)") && s.contains("to PR median 1h35m"),
             "{s}"
         );
         let empty = text(&Queue::default(), &QueueView::default(), 120);
@@ -1067,20 +1056,17 @@ pub(crate) mod tests {
         };
         assert_eq!(under("SIZE", 4), "m", "{wide}");
         assert_eq!(under("PTS", 3), "5", "{wide}");
-        // PLAN, MODE, ACCT, PTS, SIZE and KIND give way first (then WAIT, ROW, FROM, RUN, PR, IN, HOLD); STATE and TITLE never do.
+        // PLAN, MODE, ACCT, PTS, SIZE and KIND give way first (then WAIT, ROW, FROM, RUN, PR, IN; HOLD keeps its place); STATE and TITLE never do.
         assert_eq!(
             heads(80),
-            ["#", "TITLE", "PROJECT", "PRIORITY", "STATE", "HOLD", "IN"],
+            ["#", "TITLE", "PROJECT", "PRIORITY", "STATE", "HOLD"],
             "{}",
             text(&q, &all(), 80)
         );
         let s = text(&q, &all(), 80);
         assert!(s.lines().all(|l| l.chars().count() <= 80), "{s}");
         let r = line(&s, "Pick a side");
-        assert!(
-            r.contains("needs you") && r.contains("2h55") && r.contains("game"),
-            "{r}"
-        );
+        assert!(r.contains("needs you") && r.contains("game"), "{r}");
         assert!(line(&s, "Wide row").contains("unity-core"), "{s}");
         let s = text(&q, &all(), 40);
         assert!(line(&s, "Pick a side").contains("needs you"), "{s}");
@@ -1309,7 +1295,7 @@ pub(crate) mod tests {
             "night",
             "PR r#7 merged",
             "$6.10",
-            "in -  wait 15m  run 1h05  lead 1h30",
+            "in -  wait 15m  run 1h05m  lead 1h30m",
         ] {
             assert!(s.contains(want), "{want} missing from\n{s}");
         }

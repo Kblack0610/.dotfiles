@@ -16,8 +16,9 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
 use crate::fit::{cell, Cell, Table};
-use crate::fmt::{clock, dur, Palette};
+use crate::fmt::{clock, Palette};
 use crate::jobs::LogPane;
+use hub_core::display::fmt::dur_secs;
 
 /// `Run::COLUMNS` in capitals, in its order, the sort mark placed by that index. `forge`, `event`
 /// and `title` filter without a column: the log pane's heading says what they would.
@@ -86,7 +87,10 @@ impl BuildsView {
         ];
         if b.stale(now) {
             head.push(Span::styled(
-                format!("  ledger older than {}", dur(builds::STALE_SECS as f64)),
+                format!(
+                    "  ledger older than {}",
+                    dur_secs(builds::STALE_SECS as f64)
+                ),
                 p.warn(),
             ));
         }
@@ -593,7 +597,7 @@ pub fn quarantine(b: &Builds, p: Palette, w: usize, rows: usize) -> Vec<Line<'st
 /// (`+12m`): a clock in the past would read as on time.
 pub fn eta(eta: Option<i64>, now: i64) -> String {
     match eta {
-        Some(t) if t < now => format!("+{}", dur((now - t) as f64)),
+        Some(t) if t < now => format!("+{}", dur_secs((now - t) as f64)),
         Some(t) => clock(t, now),
         None => "-".into(),
     }
@@ -604,8 +608,8 @@ fn run_row(r: &Run, p: Palette, now: i64) -> Vec<Cell> {
         l => cell(r.state.clone(), level(l, p)),
     };
     let took = match (r.state.as_str(), r.took) {
-        ("queued", Some(s)) => format!("wait {}", dur(s as f64)),
-        (_, Some(s)) => dur(s as f64),
+        ("queued", Some(s)) => format!("wait {}", dur_secs(s as f64)),
+        (_, Some(s)) => dur_secs(s as f64),
         _ => "-".into(),
     };
     vec![
@@ -617,7 +621,7 @@ fn run_row(r: &Run, p: Palette, now: i64) -> Vec<Cell> {
         took.into(),
         r.usual
             .map_or("-".into(), |u| {
-                format!("{}/{}", dur(u.median as f64), dur(u.p90 as f64))
+                format!("{}/{}", dur_secs(u.median as f64), dur_secs(u.p90 as f64))
             })
             .into(),
         eta(r.eta, now).into(),

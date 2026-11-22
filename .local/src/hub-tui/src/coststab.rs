@@ -15,7 +15,8 @@
 
 use hub_core::burn::{self, Account, Burn};
 use hub_core::costs::{self, Board, Costs};
-use hub_core::fleet_cost::{dollars, FleetCost};
+use hub_core::display::fmt::usd_est;
+use hub_core::fleet_cost::FleetCost;
 use hub_core::gateway::Consumers;
 use hub_core::layout;
 use hub_core::sections::{self, Block};
@@ -568,7 +569,7 @@ impl CostsView {
                 if st.is_empty() { "" } else { "    " },
                 b.table.shown,
                 b.table.total,
-                costs::usd(b.unpriced.is_none().then_some(b.shown_usd))
+                hub_core::display::fmt::usd_opt(b.unpriced.is_none().then_some(b.shown_usd))
             ),
             p.dim(),
         ));
@@ -721,7 +722,7 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
                 a.resets.map_or("-".into(), time).into(),
                 pc(a.five_hour).into(),
                 a.five_hour_resets.map_or("-".into(), time).into(),
-                costs::usd(a.cost_24h).into(),
+                hub_core::display::fmt::usd_opt(a.cost_24h).into(),
             ]
         })
         .collect::<Vec<_>>();
@@ -746,7 +747,7 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
             dash(),
             dash(),
             dash(),
-            costs::usd(f.cost_24h).into(),
+            hub_core::display::fmt::usd_opt(f.cost_24h).into(),
         ]);
     }
     out.extend(
@@ -1107,7 +1108,7 @@ fn spend_chart(bars: &[Bar], sel: &str, p: Palette, w: usize) -> Vec<Line<'stati
     ];
     for row in (0..CHART_ROWS).rev() {
         let axis = if row == CHART_ROWS - 1 {
-            format!("{:>7} ", dollars(max))
+            format!("{:>7} ", usd_est(max))
         } else {
             " ".repeat(8)
         };
@@ -1173,9 +1174,9 @@ fn tot_cells(t: &spend_history::Tot, style: Style) -> Vec<Cell> {
     vec![
         cell(t.name.clone(), style),
         cell(t.sessions.to_string(), style),
-        cell(dollars(t.cost), style),
+        cell(usd_est(t.cost), style),
         cell(pct_text(t.share), style),
-        cell(dollars(t.per_session), style),
+        cell(usd_est(t.per_session), style),
         cell(pct_text(t.est), style),
     ]
 }
@@ -1254,7 +1255,7 @@ fn day_table(d: &DayView, f: &FleetCost, at: usize, p: Palette, w: usize) -> Vec
                     cell(r.who.clone(), style),
                     cell(opt(&r.project), style),
                     cell(opt(&r.harness), style),
-                    cell(dollars(r.cost), style),
+                    cell(usd_est(r.cost), style),
                     cell(pct_text(r.share), style),
                     cell(pct_text(r.est), style),
                     cell(r.days.to_string(), style),
@@ -1495,7 +1496,10 @@ fn tiles(b: &Board, p: Palette) -> Vec<Span<'static>> {
             ));
             continue;
         }
-        s.push(Span::raw(format!("{} ", costs::usd(Some(t.usd)))));
+        s.push(Span::raw(format!(
+            "{} ",
+            hub_core::display::fmt::usd_opt(Some(t.usd))
+        )));
         let through = t.through.get(5..).unwrap_or(&t.through);
         s.push(Span::styled(
             format!("({}d to {through})  ", t.days),
@@ -1511,7 +1515,7 @@ fn direct(b: &Board, p: Palette) -> Vec<Span<'static>> {
     let d = &b.direct;
     let mut s = vec![
         Span::styled("DIRECT ", p.dim()),
-        Span::raw(costs::usd(Some(d.usd))),
+        Span::raw(hub_core::display::fmt::usd_opt(Some(d.usd))),
     ];
     if d.unpriced > 0 {
         s.push(Span::styled(format!(" +{} unpriced", d.unpriced), p.warn()));
@@ -1548,9 +1552,9 @@ fn text(v: Val) -> String {
 pub fn show(l: &costs::Line, col: &str) -> String {
     use hub_core::table::Row;
     match col {
-        "cost" => costs::usd(Some(l.cost)),
-        "per_pr" => costs::usd(l.per_pr),
-        "tokens" => costs::tokens(l.tokens),
+        "cost" => hub_core::display::fmt::usd_opt(Some(l.cost)),
+        "per_pr" => hub_core::display::fmt::usd_opt(l.per_pr),
+        "tokens" => hub_core::display::fmt::tokens(l.tokens),
         "share" => format!("{:.0}%", l.share * 100.0),
         "landed" => l.landed.map_or("-".into(), |x| format!("{x:.2}")),
         "session" => l

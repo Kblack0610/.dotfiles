@@ -137,10 +137,10 @@ impl Red {
         epoch(self.finished.as_deref())
     }
 
-    /// How long ago it was queued, as `text::age` words; `-` when the time does not parse.
+    /// How long ago it was queued, as `display::fmt::age` words; `-` when the time does not parse.
     pub fn age(&self, now: i64) -> String {
         self.queued_at()
-            .map_or("-".into(), |t| crate::text::age(now - t))
+            .map_or("-".into(), |t| crate::display::fmt::age(now - t))
     }
 
     fn rank(&self) -> usize {
@@ -295,7 +295,7 @@ fn summary(open: &[Red], settled: &[Red]) -> String {
     mins.sort_unstable();
     let p50 = mins
         .get(mins.len().saturating_sub(1) / 2)
-        .map(|m| format!(", fix p50 {}", crate::queue::dur(Some(*m))))
+        .map(|m| format!(", fix p50 {}", crate::display::fmt::dur_min(Some(*m))))
         .unwrap_or_default();
     format!("{head} | {done}{p50}")
 }
@@ -437,7 +437,7 @@ mod tests {
         let one = r#"{"slug":"ar-1","red":"watch a","fix_min":150,"merged":"x","outcome":"fixed"}"#;
         assert_eq!(
             read(&fixed(Ok(one))).unwrap().summary,
-            "none open | 1 fixed in 7d, fix p50 2h"
+            "none open | 1 fixed in 7d, fix p50 2h30m"
         );
         let two = concat!(
             r#"{"slug":"ar-1","red":"a","outcome":"fixing"}"#,

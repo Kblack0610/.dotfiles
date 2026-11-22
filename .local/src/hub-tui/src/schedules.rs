@@ -8,7 +8,8 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
 use crate::fit::{cell, wrap, Cell, Table};
-use crate::fmt::{clock, dur, Palette};
+use crate::fmt::{clock, Palette};
+use hub_core::display::fmt::dur_secs;
 use hub_core::reading::JobState;
 use hub_core::vocab::Level;
 
@@ -163,7 +164,7 @@ fn row(r: &Schedule, p: Palette, now: i64, name: usize) -> Vec<Cell> {
         // The time alone when it starts today, else the day too.
         r.next.map_or("-".into(), |t| clock(t, now)).into(),
         day(r.last),
-        r.took.map_or("-".into(), |t| dur(t as f64)).into(),
+        r.took.map_or("-".into(), |t| dur_secs(t as f64)).into(),
         day(r.ok_at),
         day(r.fail_at),
         streak,
@@ -208,7 +209,7 @@ pub fn detail(r: &Schedule, p: Palette, now: i64, w: usize) -> Vec<Line<'static>
         let took = u
             .took
             .filter(|t| *t > 0)
-            .map_or(String::new(), |t| format!("in {}", dur(t as f64)));
+            .map_or(String::new(), |t| format!("in {}", dur_secs(t as f64)));
         let failed = if u.failed.is_empty() {
             String::new()
         } else {
