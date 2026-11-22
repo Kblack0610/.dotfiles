@@ -58,7 +58,7 @@ check() {
   gd="$(git -C "$r" rev-parse --path-format=absolute --git-common-dir 2>&1)" \
     || { echo "$r: git cannot open it: ${gd##*$'\n'}"; return 1; }
   # .promisor and .keep files are empty by design (a partial clone holds hundreds); objects are not.
-  empty="$(find "$gd/objects" -type f -empty \( -path "$gd/objects/[0-9a-f][0-9a-f]/*" -o -name '*.pack' -o -name '*.idx' \) 2>/dev/null | head -n 3)"
+  empty="$(find "$gd/objects" -type f -empty \( -path "$gd/objects/[0-9a-f][0-9a-f]/*" -o -name '*.pack' -o -name '*.idx' \) 2>/dev/null | awk 'NR<=3')"
   [ -z "$empty" ] || { echo "$r: zero-byte object file: $(tr '\n' ' ' <<<"$empty")"; return 1; }
   err="$(timeout "$FSCK_TIMEOUT" git -C "$r" -c core.commitGraph=false fsck --connectivity-only --no-dangling --no-reflogs --no-progress 2>&1 >/dev/null)"
   rc=$?
