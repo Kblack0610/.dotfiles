@@ -7537,7 +7537,10 @@ mod tests {
         assert!(!s.contains("watch gateway-errors"), "{s}");
         assert!(!s.contains("NEEDS YOU (1)"), "{s}");
         assert!(at("HEALTH") < at("NEEDS YOU"), "the cards lead: {s}");
-        assert!(!s.contains("ci NODATA"), "the health chips are Alerts': {s}");
+        assert!(
+            !s.contains("ci NODATA"),
+            "the health chips are Alerts': {s}"
+        );
         assert!(!s.contains("MACHINES"), "the machinery is Infra's: {s}");
         assert!(s.lines().last().unwrap().contains("r refresh"));
     }
