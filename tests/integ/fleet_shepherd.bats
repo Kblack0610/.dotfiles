@@ -536,6 +536,19 @@ typed() { cat "$HOME/panel.calls" 2>/dev/null; }
   grep -q 'close: lab/2:1 DONE: typed /wind-down auto, but its Enter was not taken; the escalation carries it' "$FLEET_SHEPHERD_DIR/log.md"
 }
 
+@test "a close-now row in manual (investigate-only) mode has its window closed, typed nothing (ar-4046)" {
+  : > "$HOME/wind-down.calls"; doc "[$(crow 1 DONE now '{"in_manual_mode":true}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  run closes; assert_output 'close --server lab --pane %1 --sid 1'
+  grep -q 'close: lab/1:1: closed its window, manual (investigate-only) mode' "$FLEET_SHEPHERD_DIR/log.md"
+  [ -z "$(typed)" ]
+  ! grep -q '^mark ' "$HOME/sessions.calls"
+  # Negative control: the same row outside manual mode is typed /wind-down auto.
+  : > "$HOME/wind-down.calls"; doc "[$(crow 2 DONE now '{"in_manual_mode":false}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  run typed; assert_output 'send --wait 0 --pane lab/%2 /wind-down auto'
+}
+
 @test "a close-now row whose prompt takes no keys (a draft, copy mode, a dialog) has its window closed, typed nothing, handing a pass no line" {
   draft="${IDLE/$'\xc2\xa0'/$'\xc2\xa0'half a thought}"
   for screen in "$draft" 'a dialog: 1. Yes  2. No'; do
