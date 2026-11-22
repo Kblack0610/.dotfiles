@@ -95,6 +95,12 @@ so_canon_claims() {
     if type == "object" and (.prs | type) == "array" then .prs |= map(.repo |= canon) else . end'
 }
 
+# so_store_key MAP KEY - one PR-store key (host/owner/repo, or owner/repo) with a Forgejo alias host
+# mapped to the store's, through so_canon_claims' one alias rule. A key it cannot map is printed as given.
+so_store_key() {
+  jq -nc --arg k "$2" '{prs: [{repo: $k}]}' | so_canon_claims "$1" | jq -r '.prs[0].repo' || printf '%s\n' "$2"
+}
+
 # so_mapped_repos MAP - the PR-store keys of the repos the project map lists, one per line, lower-cased:
 # a tracker's Forgejo slug on the `forges.forgejo` host, else its GitHub slug. A tracker with both is
 # Forgejo-canonical, so its GitHub slug is the mirror and is not expected in the store. A claim in a
