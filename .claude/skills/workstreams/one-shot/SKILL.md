@@ -6,7 +6,7 @@ metadata:
   category: workstreams
   tags: [delivery, landing, autonomy, session]
   system: [dispatch]
-  reviewed: "2026-11-05"
+  reviewed: "2026-11-22"
 ---
 
 # one-shot
@@ -41,15 +41,15 @@ Not for a pile of tasks (`fleet-queue`), a release (the system cuts it; `release
 
 5. **PR.** Re-fetch. If the branch is behind, `git merge origin/<base>` (a pushed branch is never rebased, never force-pushed) and re-run the affected part of step 4. Stage by path, never `git add -A`. Push and `gh pr create` with: summary, the `assumed:` lines, the classes/checks run with their counts, the line `Item: <slug>` naming its queue item (without it, `agent-land` takes the PR only with `--item <slug>`, since an item it finds on its own takes only a PR whose body names it or that it records), and for an item promoted from a board row the `Task: <id>` line its brief names. A tier-3 item (`fleet-dispatch item-tier <slug>` prints 3: harness projects and `tier3` items) also needs the `Review:` line of fix-red step 5, after `/code-review high`; `agent-land` refuses it without one. Follow the writing-style rules (ASCII, `de-ai-writing`). A project whose gate-and-land command opens the PR itself (unity-core-playground: its Checks reads the gate line from the body) gets the body file that command names instead.
 
-6. **Gate and land.** `~/.claude/CLAUDE.md` gives standing authorization; do not ask. Run ONE command and act only on its result. Its checks usually finish in 3 to 7 minutes (dotfiles, 40 PRs to 2026-11-22), so run it in the foreground with `timeout: 600000` (the global rule: a start ack and a wake cost more than the wait); background it only when the project's gate runs longer than 10 minutes (unity-core-playground's `gate-and-land.sh`). A timeout kills only the wait: run the same command again, and a PR already merged skips to recording.
+6. **Gate and land.** `~/.claude/CLAUDE.md` gives standing authorization; do not ask. Run ONE command and act only on its result. Gate time plus checks plus a catch-up wait is usually under 10 minutes (dotfiles checks: 2 to 7 minutes over the last 40 merged PRs, 2026-11-22), so run it in the foreground with `timeout: 600000`: a start ack and a wake cost more than the wait, and past the timeout the harness moves the call to the background without stopping it, so a slow landing still ends in one completion notice, never a second run. Start it in the background from the first when the gate is unknown or runs past about 5 minutes (unity-core-playground's `gate-and-land.sh`).
    ```bash
    <the project's gate command> && agent-land <N> --item <slug> --plan ~/.claude/plans/<slug>.md --phase "<task>"
    ```
    `agent-land` waits for the PR's checks, merges the validated head, records the PR on the item and moves it to done, closes the board row when the item came from the board, and ticks the plan phase. With no gate script the command is `agent-land` alone. A project doc that gives its own gate-and-land command wins; add `--item --plan --phase` to its `agent-land`.
-   - One item, two PRs (the dotfiles public and private split): one worktree per repo (step 2), both PR bodies carry `Item: <slug>`, and the ONE command (two waits can pass 10 minutes, so this one goes in the background) lands either first with `--partial` (it refuses `--plan`/`--phase`) and the other with the full flags, each from its own checkout: `cd <wt-A> && agent-land <A> --repo <owner>/<repo-A> --item <slug> --partial && cd <wt-B> && agent-land <B> --repo <owner>/<repo-B> --item <slug> --plan <plan> --phase "<task>"`. Pipe it to `tail` only under `set -o pipefail`, or a refused first landing still runs the second. On a red, start the same command: a merged partial PR skips to recording.
+   - One item, two PRs (the dotfiles public and private split): one worktree per repo (step 2), both PR bodies carry `Item: <slug>`, and the ONE command (two waits can pass 10 minutes: start it in the background) lands either first with `--partial` (it refuses `--plan`/`--phase`) and the other with the full flags, each from its own checkout: `cd <wt-A> && agent-land <A> --repo <owner>/<repo-A> --item <slug> --partial && cd <wt-B> && agent-land <B> --repo <owner>/<repo-B> --item <slug> --plan <plan> --phase "<task>"`. Pipe it to `tail` only under `set -o pipefail`, or a refused first landing still runs the second. On a red, start the same command: a merged partial PR skips to recording.
    - A Forgejo repo (home-config, bnb-game-servers): `gh` cannot see its PRs, so open the PR through the `forgejo-ops` PR API; `agent-land` lands it the same way, through that API.
    - `landed #N`: go to step 7.
-   - A red gate: back to step 3, commit, push, and start the same command.
+   - A red gate: back to step 3, commit, push, and start the same command. A call that ran past its timeout is not a red: it is in the background, so wait for its notice.
    - Exit 3: the branch was behind before the checks, or a base that moved during them does not merge cleanly (a clean one `agent-land` merges, pushes, and lands once that head's checks are green). Merge `origin/<base>` (unity-core-playground: `scripts/git/merge-main.sh`), resolve, push, and start the same command.
    - Exit 1 names the failed step. Fix it and re-run; a PR already merged skips straight to recording.
    - A sheet row the human wrote for this work: also `notes ptask <project> done "<row>" --proof pr:<N>`.

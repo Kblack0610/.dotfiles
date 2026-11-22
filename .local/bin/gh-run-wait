@@ -2,8 +2,8 @@
 # gh-run-wait <run-id> [label] - wait for one GitHub Actions run to finish, print its result, exit
 # by its conclusion. Another repo: GH_REPO=<owner>/<repo> gh-run-wait <run-id>.
 #
-# A run expected under 10 minutes: run it in the foreground with a timeout of 600000. Longer: start it
-# with run_in_background and act on its completion notice. agent-panel's time-use.conf
+# A run expected under 10 minutes: run it in the foreground with `timeout: 600000` (past it the harness
+# backgrounds the call, still running). Longer or unknown: start it with run_in_background and act on its completion notice. agent-panel's time-use.conf
 # names it as a gate, so fleet-sessions reads the wait as CI; a session's own wrapper script hides
 # its `gh run view` and reads as STALLED. A PR's checks: agent-land waits on those itself.
 #
