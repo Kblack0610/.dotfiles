@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-# first-prompt-lessons.sh: the first prompt of a session gets the project's lessons that match
-# it, less the ones the preflight already put in turn 1, logged as delivered; a later prompt and a
+# session-preflight.sh on UserPromptSubmit: the first prompt of a session gets the project's lessons
+# that match it, less the ones turn 1 already carried, logged as delivered; a later prompt and a
 # prompt nothing matches get nothing.
 
 setup() {
@@ -10,8 +10,9 @@ setup() {
   sandbox_init basic
   ln -s "$REPO_ROOT/.local/bin/lessons" "$SANDBOX/bin/lessons"
   mkdir -p "$HOME/.config/shared-hooks" "$HOME/.agent/lessons" "$SANDBOX/run"
-  cp "$REPO_ROOT/.config/shared-hooks/project-name.sh" "$HOME/.config/shared-hooks/"
-  HOOK="$REPO_ROOT/.config/shared-hooks/first-prompt-lessons.sh"
+  DEPLOY="$SANDBOX/deploy"; mkdir -p "$DEPLOY"
+  cp "$REPO_ROOT/.config/shared-hooks/"{session-preflight.sh,project-name.sh,stop-session-changes.py} "$DEPLOY/"
+  HOOK="$DEPLOY/session-preflight.sh"
   export XDG_RUNTIME_DIR="$SANDBOX/run"
   REPO="$SANDBOX/repo"; mkdir -p "$REPO"
   # The preflight's project dir decides the lessons file, not the payload cwd (another dir here).
@@ -59,32 +60,32 @@ prompt() { # SID PROMPT
 }
 
 @test "what the preflight showed is left out and the count says what is left; all of it shown adds nothing" {
-  lessons pick --matched "$L" "waybar chip click target" | grep 'click target' | bash "$HOOK" shown s3
+  # What turn 1 carried, as the SessionStart branch records it for the first prompt.
+  mkdir -p "$SANDBOX/run/lessons-shown"
+  lessons pick --matched "$L" "waybar chip click target" | grep 'click target' > "$SANDBOX/run/lessons-shown/s3"
   run prompt s3 "make the waybar chip width smaller"
   ctx=$(jq -r .hookSpecificOutput.additionalContext <<<"$output")
   [[ "$ctx" == "## Lessons for this work (1 matched on the first prompt)"$'\n'* ]] || fail "header: $ctx"
   [[ "$ctx" == *"Waybar chips cost width"* && "$ctx" != *"click target"* ]] || fail "lessons: $ctx"
   [ ! -e "$SANDBOX/run/lessons-shown/s3" ] || fail "the shown file outlived the first prompt"
-  lessons pick --matched "$L" "waybar chip width" | bash "$HOOK" shown s4
+  lessons pick --matched "$L" "waybar chip width" > "$SANDBOX/run/lessons-shown/s4"
   run prompt s4 "make the waybar chip width smaller"
   assert_output ""
 }
 
 @test "the preflight records its lessons for the session, and nothing once the first prompt is past" {
-  DEPLOY="$SANDBOX/deploy"; mkdir -p "$DEPLOY"
-  cp "$REPO_ROOT/.config/shared-hooks/"{session-preflight.sh,project-name.sh,stop-session-changes.py,first-prompt-lessons.sh} "$DEPLOY/"
   git -C "$REPO" init -q .
   # The preflight hands out only the lessons that match the work, which for a dispatched session is its item's title.
   printf '#!/usr/bin/env bash\n[ "$1" = show ] && echo %s\n' \
     "'{\"title\":\"x P2: waybar chip click target\"}'" > "$SANDBOX/bin/agent-queue"
   chmod +x "$SANDBOX/bin/agent-queue"
   export AGENT_QUEUE_ITEM=x-p2
-  bash "$DEPLOY/session-preflight.sh" <<<'{"source":"startup","session_id":"s5"}' >/dev/null
+  bash "$HOOK" <<<'{"source":"startup","session_id":"s5"}' >/dev/null
   run cat "$SANDBOX/run/lessons-shown/s5"
   assert_success
   assert_line --index 0 --partial "## Lessons"
   prompt s5 "set up the kubernetes ingress" >/dev/null
-  bash "$DEPLOY/session-preflight.sh" <<<'{"source":"resume","session_id":"s5"}' >/dev/null
+  bash "$HOOK" <<<'{"source":"resume","session_id":"s5"}' >/dev/null
   [ ! -e "$SANDBOX/run/lessons-shown/s5" ] || fail "a resume after the first prompt left a file"
 }
 
@@ -98,6 +99,11 @@ prompt() { # SID PROMPT
 @test "a session id that is not a plain token writes nothing" {
   run prompt "../x" "make the waybar chip width smaller"
   assert_output ""
-  printf 'x\n' | bash "$HOOK" shown "../x"
+  git -C "$REPO" init -q .
+  printf '#!/usr/bin/env bash\n[ "$1" = show ] && echo %s\n' \
+    "'{\"title\":\"x P2: waybar chip click target\"}'" > "$SANDBOX/bin/agent-queue"
+  chmod +x "$SANDBOX/bin/agent-queue"
+  AGENT_QUEUE_ITEM=x-p2 bash "$HOOK" <<<'{"source":"startup","session_id":"../x"}' >/dev/null
   [ ! -e "$SANDBOX/x" ] && [ ! -e "$SANDBOX/run/x" ]
+  [ -z "$(ls -A "$SANDBOX/run/lessons-shown" 2>/dev/null)" ] || fail "an unsafe id wrote: $(ls "$SANDBOX/run/lessons-shown")"
 }
