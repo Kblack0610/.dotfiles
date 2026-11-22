@@ -108,6 +108,50 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_success
 }
 
+@test "answer: from an agent session it records agent, and --by human is refused; a board's call records human" {
+  local a b c d
+  for v in CLAUDE_CODE_SESSION_ID=sid-9 AGENT_QUEUE_ITEM=ar-1; do
+    a="$(post demo 'run it?')"
+    run env "$v" "$AGENT_ASK" answer "$a" go
+    assert_success
+    run "$AGENT_ASK" show "$a"
+    assert_line 'status: answered'; assert_line 'answered_by: agent'
+  done
+  b="$(post demo 'run it again?')"
+  run env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer --by human "$b" go
+  assert_failure 2
+  assert_output --partial 'answers as agent, not human'
+  run "$AGENT_ASK" show "$b"; assert_line 'status: pending'
+  run env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer --by agent "$b" later
+  assert_success
+  run "$AGENT_ASK" show "$b"; assert_line 'answered_by: agent'
+  # A session may not claim another actor either, with either variable set.
+  for by in judge shepherd; do
+    run env CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" answer --by "$by" "$b" go
+    assert_failure 2
+  done
+  # An agent answer fills a pending ask only: it never overwrites a human's.
+  c="$(post demo 'already answered?')"
+  "$AGENT_ASK" answer "$c" yes 2>/dev/null
+  run env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer "$c" no
+  assert_failure 1
+  run "$AGENT_ASK" show "$c"; assert_line 'answer: yes'; assert_line 'answered_by: human'
+  # The answer is delivered worded as an agent's: the board row for an unsent one says so.
+  "$AGENT_ASK" deliver --all 2>/dev/null
+  assert_called "answered: later (answered by an agent session, not the human; to override: agent-ask answer $b <option>)"
+  # An agent answer is no human decision: `decision` prints nothing for it.
+  run "$AGENT_ASK" decision "$b"; assert_output ''
+  # Negative control: outside a session (a board) the default is still human.
+  c="$(post demo 'board answer?')"
+  run "$AGENT_ASK" answer "$c" go
+  assert_success
+  run "$AGENT_ASK" show "$c"; assert_line 'answered_by: human'
+  d="$(post demo 'explicit?')"
+  run "$AGENT_ASK" answer --by human "$d" go
+  assert_success
+  run "$AGENT_ASK" show "$d"; assert_line 'answered_by: human'
+}
+
 @test "another session, or a post with no session id, is not held by someone else's ask" {
   CLAUDE_CODE_SESSION_ID=sid-1 post demo 'merge it?' >/dev/null
   run env CLAUDE_CODE_SESSION_ID=sid-2 "$AGENT_ASK" post --project demo 'ship it?'
@@ -2849,6 +2893,7 @@ delay_setup() {
   done
 }
 
+# A board answers outside the asking session, so the stub below strips its variables.
 @test "delay: a human answer during the judge's call stands; the judge writes nothing over it" {
   unset AGENT_ASK_NO_JUDGE
   export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0
@@ -2856,7 +2901,7 @@ delay_setup() {
   cat > "$BATS_TEST_TMPDIR/judge" <<SH
 #!/usr/bin/env bash
 grep -l '^question: race' "$HOME"/.agent/asks/demo/*.md | while IFS= read -r f; do
-  grep -qx 'status: pending' "\$f" && "$AGENT_ASK" answer "\$(sed -n 's/^id: //p' "\$f")" wait >/dev/null 2>&1
+  grep -qx 'status: pending' "\$f" && env -u CLAUDE_CODE_SESSION_ID -u AGENT_QUEUE_ITEM "$AGENT_ASK" answer "\$(sed -n 's/^id: //p' "\$f")" wait >/dev/null 2>&1
 done
 printf '%s\n' '$(score ship_deploy)'
 SH
