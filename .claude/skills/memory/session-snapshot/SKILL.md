@@ -58,14 +58,13 @@ OUT="$(notes path inbox)/${DATE}-reboot-restore.md"
 
 # 1. tmux sessions/windows (cwd + live branch + foreground cmd), on EVERY live named server.
 #    The worlds (hub, lab, ...) are named sockets and a bare `tmux` reaches only one of them, so
-#    walk the socket dir like panel_live_servers (.local/src/tmux/panel-lib.sh). list-windows
+#    walk the socket dir with tmux_servers_all (~/.local/lib/tmux-servers.sh). list-windows
 #    fails on a socket file whose server is gone, which skips it. Tab-separated, the server
 #    first and the path last: the path is the field step 6 takes, and it may hold spaces.
-for sock in "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"/*; do
-  [ -S "$sock" ] || continue
-  srv=${sock##*/}
+. ~/.local/lib/tmux-servers.sh
+while IFS= read -r srv; do
   tmux -L "$srv" list-windows -a -F "$srv"$'\t''#{session_name}:#{window_index}'$'\t''[#{pane_current_command}]'$'\t''#{pane_current_path}' 2>/dev/null
-done
+done < <(tmux_servers_all)
 
 # 2. Claude sessions
 ps -eo pid,etime,cmd | grep -E '[c]laude ' | grep -v claude-1000

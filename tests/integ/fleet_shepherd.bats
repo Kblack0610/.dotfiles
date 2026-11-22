@@ -25,7 +25,7 @@ if [ -n "${STUB_USAGE:-}" ]; then printf "%s" "$STUB_USAGE"; else printf "{\"ses
   stub agent-notify 'echo "$*" >> "$HOME/pages"'
   # hub-core's figures: Only you (STUB_ONLY_YOU) and the Sessions card's Working part (STUB_WORKING, else the state document's WORKING rows, as the fixture's card), each "unread" for one hub could not give
   stub hub-figure 'case "$*" in "--fresh needs_only_you") v="${STUB_ONLY_YOU:-0}" ;; "--fresh sessions_working") v="${STUB_WORKING:-$(jq "[.sessions[] | select(.bucket == \"WORKING\")] | length" "$FLEET_STATE_FILE")}" ;; *) exit 2 ;; esac; [ "$v" = unread ] && exit 1; echo "$v"'
-  stub watch-companion-loop '[ "$1" = tripped ] && printf "%b" "${STUB_TRIPPED:-}"'
+  stub watch-companion-loop 'case "$1" in tripped) printf "%b" "${STUB_TRIPPED:-}" ;; quarantined) printf "%b" "${STUB_QUARANTINED:-}" ;; esac'
   stub fleet-bench '[ -z "${STUB_BENCH_FAIL:-}" ] || exit 1; if [ "$1" = requests ]; then printf "## Your requests\n\n- ci-cleanup, 1 of 3\n"; elif [ "$1" = improve ]; then [ -n "${STUB_IMPROVE:-}" ] || exit 1; printf "%s\n" "$STUB_IMPROVE"; else printf "%b" "${STUB_FINDINGS:-}"; fi'
   tmux_script 'echo "$*" >> "$HOME/tmux.calls"; [ -n "${STUB_TMUX_FAIL:-}" ] && [[ "$*" =~ $STUB_TMUX_FAIL ]] && exit 1
 case "$*" in
@@ -1742,6 +1742,16 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   refute_output --partial 'watch: neptune-health'
 }
 
+@test "a watch with an unexpired quarantine raises no line; one the quarantine does not name still does (ar-4585)" {
+  doc "[$(row a STALLED false false)]"
+  export STUB_TRIPPED='fleet-budget-pace\thigh\nqueue-starved\thigh\nhome-k3s-node-disk\turgent\n' STUB_K3S='[]'
+  export STUB_QUARANTINED='fleet-budget-pace\t2026-11-28T00:00:00-08:00\task:fQgFbo\tthe cap stands\nalert:dc9f31da\t2026-11-23T02:00:00.000Z\tar-4229\tsilence\n'
+  run "$SH" run
+  refute_output --partial 'watch: fleet-budget-pace'
+  assert_output --partial 'watch: queue-starved tripped (high)'
+  assert_output --partial 'watch: home-k3s-node-disk tripped (urgent)'
+}
+
 @test "a high or urgent trip and a red cluster lead the due lines, ahead of sessions" {
   doc "[$(row a STALLED false false)]"
   export STUB_TRIPPED='home-k3s-node-disk\turgent\nqueue-starved\thigh\n' STUB_K3S='[{"value":[0,"2"]}]'
@@ -2458,11 +2468,14 @@ gw_accts() {
   doc "[$(row a STALLED false false)]"
   "$SH" check >/dev/null
   # a copy whose cmd_due fails loudly: skip must not call it
-  sed 's/^cmd_due() {$/cmd_due() { echo "cmd_due called" >\&2; return 9;/' "$SH" > "$BATS_TEST_TMPDIR/sh-nocmd"
-  chmod +x "$BATS_TEST_TMPDIR/sh-nocmd"
-  grep -q 'cmd_due called' "$BATS_TEST_TMPDIR/sh-nocmd"   # the sed matched
+  # (in a bin/ with the repo's lib beside it: the script sources ../lib/tmux-servers.sh)
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  ln -s "$(dirname "$(readlink -f "$SH")")/../lib" "$BATS_TEST_TMPDIR/lib"
+  sed 's/^cmd_due() {$/cmd_due() { echo "cmd_due called" >\&2; return 9;/' "$SH" > "$BATS_TEST_TMPDIR/bin/sh-nocmd"
+  chmod +x "$BATS_TEST_TMPDIR/bin/sh-nocmd"
+  grep -q 'cmd_due called' "$BATS_TEST_TMPDIR/bin/sh-nocmd"   # the sed matched
   FLEET_LEAD_FUNCTIONS="$(dirname "$(readlink -f "$SH")")/../../.config/fleet-lead/functions.tsv" \
-    run "$BATS_TEST_TMPDIR/sh-nocmd" skip 'nudge STALLED: a f-a' 'why'
+    run "$BATS_TEST_TMPDIR/bin/sh-nocmd" skip 'nudge STALLED: a f-a' 'why'
   assert_success
   refute_output --partial 'cmd_due called'
 }

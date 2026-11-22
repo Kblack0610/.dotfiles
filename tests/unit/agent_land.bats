@@ -49,6 +49,8 @@ case "$1 $2" in
   *body*) cat "$NOTES_FIXTURE/body" ;;
   # merge.oid: the PR's merge commit
   *mergeCommit*) cat "$NOTES_FIXTURE/merge.oid" 2>/dev/null || echo fedcba9876543210fedcba9876543210fedcba98 ;;
+  # checks.rollup: statusCheckRollup JSON for conclusion-based check evaluation after watch timeout
+  *statusCheckRollup*) cat "$NOTES_FIXTURE/checks.rollup" 2>/dev/null || echo '{"statusCheckRollup":[]}' ;;
   *) cat "$NOTES_FIXTURE/state" ;;
   esac ;;
 # rules.json: the base's rulesets ([] when absent); rules.fail: the call fails
@@ -3116,4 +3118,77 @@ EOF
   mv "$SANDBOX/notes.ok" "$SANDBOX/bin/notes"
   assert_failure
   assert_output --partial "agent-land: board failed: no open task matches 'gm-1' in game"
+}
+
+@test "a watch that times out with a check left IN_PROGRESS and conclusion SUCCESS lands on its conclusion (ar-4595)" {
+  printf '%s\n' '{"statusCheckRollup":[{"name":"Checks (docs)","workflowName":"Checks","status":"IN_PROGRESS","completedAt":"2026-11-22T10:00:00Z","conclusion":"SUCCESS","detailsUrl":"https://github.com/o/r/actions/runs/1/job/137130856490"}]}' >"$NOTES_FIXTURE/checks.rollup"
+  printf '#!/usr/bin/env bash\nprintf "timeout %%s\\n" "$1" >>"$NOTES_FIXTURE/calls.log"\nexit 124\n' >"$SANDBOX/bin/timeout"
+  chmod +x "$SANDBOX/bin/timeout"
+  AGENT_LAND_CHECKS_WATCH_TIMEOUT=45 run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: green'
+  assert_line 'landed #42'
+  run grep '^timeout ' "$LOG"
+  assert_output 'timeout 45'
+  run grep -c 'pr view 42 --json statusCheckRollup' "$LOG"
+  assert_output 1
+}
+
+@test "a watch that times out with a check left IN_PROGRESS and conclusion FAILURE stops at checks, naming the check (ar-4595)" {
+  printf '%s\n' '{"statusCheckRollup":[{"name":"Checks (docs)","workflowName":"Checks","status":"IN_PROGRESS","completedAt":"2026-11-22T10:00:00Z","conclusion":"FAILURE","detailsUrl":"https://github.com/o/r/actions/runs/1/job/137130856490"}]}' >"$NOTES_FIXTURE/checks.rollup"
+  printf '#!/usr/bin/env bash\nexit 124\n' >"$SANDBOX/bin/timeout"
+  chmod +x "$SANDBOX/bin/timeout"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: Checks (docs)'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "a watch that times out with checks still pending stops at the overall wait bound (ar-4595)" {
+  printf '%s\n' '{"statusCheckRollup":[{"name":"Checks (docs)","workflowName":"Checks","status":"IN_PROGRESS","conclusion":null,"detailsUrl":"https://github.com/o/r/actions/runs/1/job/137130856490"}]}' >"$NOTES_FIXTURE/checks.rollup"
+  printf '#!/usr/bin/env bash\nexit 124\n' >"$SANDBOX/bin/timeout"
+  chmod +x "$SANDBOX/bin/timeout"
+  AGENT_LAND_CHECKS_WAIT_TIMEOUT=1 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'the watch timed out with checks still pending; continuing'
+  assert_output --partial 'checks failed: timed out waiting for checks after 1s'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "a cancelled check whose open run on HEAD already has a conclusion is not waited on as a newer run (ar-4595)" {
+  printf '%s\n' "$CANCELLED" >"$NOTES_FIXTURE/checks.cancelled"
+  printf '%s\n' '[{"status":"in_progress","conclusion":"success","workflowName":"Checks"}]' >"$NOTES_FIXTURE/runs.open"
+  fake_sleep
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=1 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: cancelled: Checks, and no run of its workflow is left on the head to replace it'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "a red read after a watch timeout waits on a newer run of its workflow on the head, then stops at checks once none is left (ar-4595)" {
+  printf '%s\n' '{"statusCheckRollup":[{"name":"Checks (docs)","workflowName":"Checks","status":"COMPLETED","conclusion":"CANCELLED","detailsUrl":"https://github.com/o/r/actions/runs/1/job/2"}]}' >"$NOTES_FIXTURE/checks.rollup"
+  printf '%s\n' '[{"status":"in_progress","workflowName":"Checks"}]' >"$NOTES_FIXTURE/runs.open"
+  printf '#!/usr/bin/env bash\nexit 124\n' >"$SANDBOX/bin/timeout"
+  chmod +x "$SANDBOX/bin/timeout"
+  fake_sleep
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks: red: Checks (docs); waiting on the newer run of its workflow on the head'
+  assert_output --partial 'checks failed: Checks (docs)'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "a rollup with no readable verdict after a watch timeout stops at checks, never reads as green (ar-4595)" {
+  printf '%s\n' 'not json' >"$NOTES_FIXTURE/checks.rollup"
+  printf '#!/usr/bin/env bash\nexit 124\n' >"$SANDBOX/bin/timeout"
+  chmod +x "$SANDBOX/bin/timeout"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'the rollup gave no verdict'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
 }

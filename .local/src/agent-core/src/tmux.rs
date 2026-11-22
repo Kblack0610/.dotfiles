@@ -96,7 +96,7 @@ fn answers(server: &str) -> Result<bool, String> {
 
 /// Servers with a live process behind their socket, sorted, and one line per thing that
 /// stopped it telling. A socket file can outlive its server, so only ones that answer
-/// `has-session` count (same rule as panel-lib.sh `panel_live_servers`); no socket dir is
+/// `has-session` count (same rule as `.local/lib/tmux-servers.sh`); no socket dir is
 /// no tmux, not a gap.
 pub fn servers() -> (Vec<String>, Vec<String>) {
     let (mut names, mut gaps) = (Vec::new(), Vec::new());

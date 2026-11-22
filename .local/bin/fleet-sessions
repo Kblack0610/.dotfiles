@@ -55,6 +55,8 @@ set -uo pipefail
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/main-state.sh"
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/origin-repo.sh"
+# shellcheck source=../lib/tmux-servers.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/tmux-servers.sh" || exit 1   # tmux_servers_all
 # A PR's check rollup as NONE, PENDING, FAIL or PASS (ci), and its red job ids (red): CI_JQ.
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/pr-ci.sh"
@@ -1154,7 +1156,7 @@ tmux_project() {
   local -a cmd
   want="$(jq -r '.sessions[] | select(.target | test("^[^/]+/[^:]+:"))
     | [.target, .bucket, ((.labels // []) | join(","))] | @tsv' "$1" 2>/dev/null)" || return 0
-  for srv in $( { find "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)" -maxdepth 1 -type s -printf '%f\n' 2>/dev/null
+  for srv in $( { tmux_servers_all
                   [ -n "$want" ] && cut -d/ -f1 <<<"$want"; } | sort -u); do
     have="$(tmux -L "$srv" list-windows -a -f '#{@fleet_stage}' -F '#{session_name}:#{window_index}' 2>/dev/null)" || continue
     cmd=()
