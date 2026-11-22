@@ -24,7 +24,7 @@ STUB
 }
 
 # feed [d:<domain>=<level>] [w:<domain>:<item>=<level>] [c:<domain>:<component>=<level>] [o=<level>]
-#      [f:<down|warn|up>[:<host>]=<n>]: f is an Infra card figure on a host's summary/cards topic.
+#      [f:<down|warn|up>[:<host>]=<n>]: f is a Health card figure on a host's summary/cards topic.
 feed() {
   python3 - "$FX/prom.json" "$@" <<'PY'
 import json, sys
@@ -36,7 +36,7 @@ for a in sys.argv[2:]:
         "d": lambda: {"__name__": "cc:domain_status", "domain": p[1]},
         "w": lambda: {"__name__": "cc:watch_state", "domain": p[1], "item": p[2]},
         "c": lambda: {"__name__": "cc:component_status", "domain": p[1], "component": p[2]},
-        "f": lambda: {"__name__": "mqtt_figures_infra_domains_" + p[1],
+        "f": lambda: {"__name__": "mqtt_figures_health_domains_" + p[1],
                       "topic": "agents_%s_summary_cards" % (p[2] if len(p) > 2 else "ws")},
     }[p[0]]()
     rows.append({"metric": m, "value": [0, v]})

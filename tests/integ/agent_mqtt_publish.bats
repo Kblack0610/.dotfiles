@@ -490,7 +490,7 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
 }
 
 @test "cards: hub's widget document rides as an attribute and its state is the worst card's level" {
-  doc='{"version":0,"title":"Fleet","updated_at":"2026-11-21T20:00:00Z","state":"bad","figures":{"queue_on_deck":13,"projects_shipped_today":12},"sections":[{"id":"queue","items":[{"kind":"metric","value":"13","unit":"on deck, 1..."},{"kind":"pill","label":"Held","value":"4"}]}]}'
+  doc='{"version":0,"title":"Fleet","updated_at":"2026-11-21T20:00:00Z","state":"bad","figures":{"queue_on_deck":13,"done_shipped":12},"sections":[{"id":"queue","items":[{"kind":"metric","value":"13","unit":"on deck, 1..."},{"kind":"pill","label":"Held","value":"4"}]}]}'
   cards_stub "$doc"
   run "$PUB" --quiet
   assert_success
