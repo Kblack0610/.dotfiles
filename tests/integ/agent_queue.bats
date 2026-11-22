@@ -1821,6 +1821,23 @@ handoff_repo() {
   "$AQ" set d pr=o/game#2 >/dev/null
   [ "$(field "$f" pr)" = o/game#2 ]
   [ "$(field "$f" merged)" = aaa111 ]
+  # Two PRs against one sha would put the lists out of step for reopen --unland: dropped.
+  "$AQ" set d "pr=o/game#2 o/game#3" >/dev/null
+  [ -z "$(field "$f" merged)" ]
+}
+
+@test "a failed done item still drops merged: on a new pr:, and a title naming merged= does not skip the drop" {
+  "$AQ" add --project game --running --slug fd "fd" >/dev/null
+  "$AQ" set fd pr=o/game#1 merged=aaa111 >/dev/null
+  "$AQ" move fd done --status failed >/dev/null
+  local f
+  f="$(ls "$AGENT_QUEUE_DIR"/done/*/*-fd.md)"
+  "$AQ" set fd pr=o/game#2 >/dev/null
+  [ -z "$(field "$f" merged)" ]
+  "$AQ" add --project game --running --slug tm "tm" >/dev/null
+  "$AQ" set tm pr=o/game#1 merged=aaa111 >/dev/null
+  "$AQ" set tm pr=o/game#2 "title=x merged=y" >/dev/null
+  [ -z "$(field "$(item running tm)" merged)" ]
 }
 
 @test "a failing model-lane never fails the move" {
