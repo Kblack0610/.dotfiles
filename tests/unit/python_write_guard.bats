@@ -22,19 +22,19 @@ decision() {
 denied() { assert_output --partial 'python-write-guard: '; }
 
 @test "a str.replace patch of a named file is denied, naming Edit and the path, in every python form" {
-  run decision "$(printf 'python3 - <<%sEOF%s\np = "%s/a.py"\ns = open(p).read()\nassert "x" in s\nopen(p, "w").write(s.replace("x", "y"))\nEOF' "'" "'" "$R")"
+  run decision "$(printf 'python3 - <<%sEOF%s\np = "%s/CLAUDE.md"\ns = open(p).read()\nassert "x" in s\nopen(p, "w").write(s.replace("x", "y"))\nEOF' "'" "'" "$R")"
   denied
-  assert_output --partial "patches $R/a.py"
+  assert_output --partial "patches $R/CLAUDE.md"
   assert_output --partial 'Use Edit'
   for c in \
-    $'cd /w && python3 <<EOF\nfrom pathlib import Path\np = Path("f.txt")\nt = p.read_text()\np.write_text(t.replace("a", "b", 1))\nEOF' \
-    $'python3 - <<EOF\nwith open("/w/a.md") as f:\n    s = f.read()\nwith open("/w/a.md", "w") as f:\n    f.write(s.replace("x", "y"))\nEOF' \
-    $'python3 - <<EOF\nimport os\nroot = os.path.expanduser("~/r")\np = f"{root}/a.md"\ns = open(p).read()\ns = s.replace("x", "y")\ns = s.replace("z", "w")\nopen(p, "w").write(s)\nEOF' \
-    $'python3 - <<EOF\nwith open("/w/a", "r+") as f:\n    s = f.read(); f.seek(0); f.write(s.replace("a", "b")); f.truncate()\nEOF' \
-    $'python3 - <<EOF\np = "/w/a"\nopen(p, "w").write(open(p).read().replace("a", "b"))\nEOF\necho done # shlex cannot split this comment\'s quote' \
-    $'python3 - 2>&1 <<EOF\np = "/w/a"\nopen(p, "w").write(open(p).read().replace("a", "b"))\nEOF' \
-    $'python3 -W ignore -X utf8 - <<EOF\np = "/w/a"\nopen(p, "w").write(open(p).read().replace("a", "b"))\nEOF' \
-    "bash -c \"python3 -c 's = open(\\\"/w/a\\\").read(); open(\\\"/w/a\\\", \\\"w\\\").write(s.replace(\\\"a\\\", \\\"b\\\"))'\""; do
+    $'cd /w && python3 <<EOF\nfrom pathlib import Path\np = Path("SKILL.md")\nt = p.read_text()\np.write_text(t.replace("a", "b", 1))\nEOF' \
+    $'python3 - <<EOF\nwith open("/w/AGENTS.md") as f:\n    s = f.read()\nwith open("/w/AGENTS.md", "w") as f:\n    f.write(s.replace("x", "y"))\nEOF' \
+    $'python3 - <<EOF\nimport os\nroot = os.path.expanduser("~/r")\np = f"{root}/memory/a.md"\ns = open(p).read()\ns = s.replace("x", "y")\ns = s.replace("z", "w")\nopen(p, "w").write(s)\nEOF' \
+    $'python3 - <<EOF\nwith open("/w/memory/MEMORY.md", "r+") as f:\n    s = f.read(); f.seek(0); f.write(s.replace("a", "b")); f.truncate()\nEOF' \
+    $'python3 - <<EOF\np = "/w/memory/MEMORY.md"\nopen(p, "w").write(open(p).read().replace("a", "b"))\nEOF\necho done # shlex cannot split this comment\'s quote' \
+    $'python3 - 2>&1 <<EOF\np = "/w/memory/MEMORY.md"\nopen(p, "w").write(open(p).read().replace("a", "b"))\nEOF' \
+    $'python3 -W ignore -X utf8 - <<EOF\np = "/w/memory/MEMORY.md"\nopen(p, "w").write(open(p).read().replace("a", "b"))\nEOF' \
+    "bash -c \"python3 -c 's = open(\\\"/w/memory/MEMORY.md\\\").read(); open(\\\"/w/memory/MEMORY.md\\\",\\\"w\\\").write(s.replace(\\\"a\\\", \\\"b\\\"))'\""; do
     run decision "$c"
     denied
     assert_output --partial 'Use Edit'
@@ -42,26 +42,26 @@ denied() { assert_output --partial 'python-write-guard: '; }
 }
 
 @test "a cd moves the path a relative write resolves against" {
-  run decision $'cd /w && python3 <<EOF\nfrom pathlib import Path\np = Path("f.txt")\np.write_text(p.read_text().replace("a", "b"))\nEOF'
-  assert_output --partial 'patches /w/f.txt'
+  run decision $'cd /w && python3 <<EOF\nfrom pathlib import Path\np = Path("SKILL.md")\np.write_text(p.read_text().replace("a", "b"))\nEOF'
+  assert_output --partial 'patches /w/SKILL.md'
 }
 
 @test "a heredoc run through a wrapper resolves against the cwd at its own line" {
-  run decision $'cd /a && python3 x.py; cd /b; uv run python - <<EOF\nopen("f", "w").write("x")\nEOF'
-  assert_output --partial "literal string to /b/f"
+  run decision $'cd /a && python3 x.py; cd /b; uv run python - <<EOF\nopen("CLAUDE.md", "w").write("x")\nEOF'
+  assert_output --partial "literal string to /b/CLAUDE.md"
 }
 
 @test "a handle name reused for a read still counts its write" {
-  run decision $'python3 - <<EOF\nwith open("/w/a", "w") as f:\n    f.write("x")\nwith open("/w/a") as f:\n    s = f.read()\nEOF'
+  run decision $'python3 - <<EOF\nwith open("/w/memory/MEMORY.md", "w") as f:\n    f.write("x")\nwith open("/w/memory/MEMORY.md") as f:\n    s = f.read()\nEOF'
   denied
 }
 
 @test "a literal string written to a named file is denied, naming Write" {
-  run decision "python3 -c 'open(\"src/x.py\", \"w\").write(\"hello\")'"
+  run decision "python3 -c 'open(\".github/workflows/x.yml\", \"w\").write(\"hello\")'"
   denied
-  assert_output --partial "literal string to $R/src/x.py"
+  assert_output --partial "literal string to $R/.github/workflows/x.yml"
   assert_output --partial 'Use Write'
-  run decision $'python3 - <<EOF\nfrom pathlib import Path\nPath("/w/n.md").write_text("""# title\nbody\n""")\nEOF'
+  run decision $'python3 - <<EOF\nfrom pathlib import Path\nPath("/w/.agent/lessons/n.md").write_text("""# title\nbody\n""")\nEOF'
   assert_output --partial 'Use Write'
 }
 
@@ -88,6 +88,47 @@ denied() { assert_output --partial 'python-write-guard: '; }
     run decision "$c"
     assert_output allow
   done
+}
+
+@test "negative control: a patch or literal of a file no Edit/Write guard checks passes outside manual mode" {
+  for c in \
+    $'python3 - <<EOF\np = "/w/a.py"\ns = open(p).read()\nopen(p, "w").write(s.replace("x", "y"))\nEOF' \
+    $'cd /w && python3 <<EOF\nfrom pathlib import Path\np = Path("notes.md")\np.write_text(p.read_text().replace("a", "b"))\nEOF' \
+    "python3 -c 'open(\"src/x.py\", \"w\").write(\"hello\")'" \
+    $'python3 - <<EOF\nopen("/w/.github/README.yml.bak", "w").write("x")\nEOF'; do
+    run decision "$c"
+    assert_output allow
+  done
+  # The same patch of a guarded file is still denied: the narrowing is by target, not by form.
+  run decision $'python3 - <<EOF\np = "/w/CLAUDE.md"\ns = open(p).read()\nopen(p, "w").write(s.replace("x", "y"))\nEOF'
+  denied
+}
+
+@test "guarded: context-budget-guard's paths, workflow files and settings.json Edit denies; their look-alikes pass" {
+  # context-budget-guard.sh's path test (its kind= branches): CLAUDE.md/AGENTS.md/SKILL.md by name, .md under memory/ or in .agent/lessons.
+  for p in /w/CLAUDE.md /w/sub/AGENTS.md /w/s/SKILL.md /w/memory/MEMORY.md /w/p/memory/a.md /h/.agent/lessons/dotfiles.md \
+    /w/.github/workflows/ci.yml /w/.github/workflows/a.yaml \
+    /w/.env /w/app/.env.local /w/certs/k.pem "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts" "$HOME/.config/gh/hosts.yml" /etc/shadow; do
+    run decision "python3 -c 'open(\"$p\", \"w\").write(\"hello\")'"
+    denied
+  done
+  run decision $'python3 - <<EOF\nimport os\np = os.path.expanduser("~/.config/gh/hosts.yml")\ns = open(p).read()\nopen(p, "w").write(s.replace("a", "b"))\nEOF'
+  denied
+  for p in /w/src/memory/cache.py /w/CLAUDE.md.bak /w/SKILL.md.orig /w/MEMORY.md /h/.agent/lessons/x.json /h/.agent/lessons/old/x.md \
+    /w/.envrc /w/docs/env.md; do
+    run decision "python3 -c 'open(\"$p\", \"w\").write(\"hello\")'"
+    assert_output allow
+  done
+}
+
+@test "with no settings.json beside the hooks, every path is guarded (the deny before the narrowing)" {
+  mkdir -p "$BATS_TEST_TMPDIR/c/hooks"
+  for f in python-write-guard.py forge-guard.py block-poll.py hosted-runner-guard.py; do
+    cp "$BATS_TEST_DIRNAME/../../.claude/hooks/$f" "$BATS_TEST_TMPDIR/c/hooks/"
+  done
+  HOOK="$BATS_TEST_TMPDIR/c/hooks/python-write-guard.py"
+  run decision "python3 -c 'open(\"/w/a.py\", \"w\").write(\"hello\")'"
+  denied
 }
 
 @test "manual mode denies any python write outside scratch, and passes reads and scratch writes" {
