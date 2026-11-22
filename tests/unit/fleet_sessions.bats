@@ -1705,6 +1705,41 @@ SH
   jq -r .reason <<<"$output" | grep -q 'not a gate or test'
 }
 
+@test "a gate shell whose open output file is still being written is WORKING past FLEET_SHELL_STALE_MIN (ar-1334)" {
+  # 2026-11-10 agent-92: gate-and-land.sh sat 2h in the landing-slot wait behind #2103, printing a line a minute,
+  # and the row read STALLED by the transcript's idle minutes.
+  landed_fixture
+  local out="$SANDBOX/tasks/b1.output" done="$SANDBOX/tasks/b0.output"
+  mkdir -p "$SANDBOX/tasks"
+  printf '==> landing slot: #2103 holds main\n' > "$out"; : > "$done"
+  {
+    printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t0","content":"Command running in background with ID: b0. Output is being written to: %s. You will be notified"}]}}\n' "$done"
+    printf '{"type":"user","message":{"content":"<task-notification>\\n<task-id>b0</task-id>\\n<output-file>%s</output-file>\\n<status>completed</status>"}}\n' "$done"
+    printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"Command running in background with ID: b1. Output is being written to: %s. You will be notified"}]}}\n' "$out"
+  } > "$SANDBOX/t.jsonl"
+  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" PANEL_STATUS=shell PANEL_JOB=gate PANEL_IDLE_S=$((200 * 60)) panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  # the bucket counts the output write; idle_min stays the transcript's own silence
+  [ "$(jq -r '"\(.bucket) \(.idle_min)"' <<<"$output")" = "WORKING 200" ]
+  # negative control: the same gate whose output has not moved in 3h reads idle
+  touch -d '3 hours ago' "$out"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = "LANDED" ]
+  jq -r .reason <<<"$output" | grep -q 'background shell idle over 120m'
+  # negative control: a task the transcript saw finish does not count, however fresh its file
+  touch "$done"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = "LANDED" ]
+  # a gate that redirects into Logs/gate-and-land.out (a FLEET_GATE_LOGS default) counts the same way
+  mkdir -p "$SANDBOX/wt/Logs"; : > "$SANDBOX/wt/Logs/gate-and-land.out"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = "WORKING" ]
+}
+
 @test "end to end: a row carries the open job its shell waits on, and null when none is known" {
   # fleet-dispatch counts no open_job queue session toward its pace target (pipeline-eval-p2).
   landed_fixture
