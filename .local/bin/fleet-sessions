@@ -454,21 +454,68 @@ git_checkout() {
     || [[ "$1" =~ ^([^\ ]*/)?git-lfs[[:space:]]+(smudge|filter-process|pull|fetch|checkout)([[:space:]]|$) ]]
 }
 
-# queue_wait_min <cwd> [<claude pid>] -> the minutes the oldest FLEET_QUEUE_GATES process live_wait would
-# find has run, or nothing: how long the session has waited its landing turn (ar-2525: 2026-11-15
-# unity-core-playground-agent-3's gate-and-land.sh sat 3.5h behind #2733 with #2726 green). One `ps` of
-# the matched pids; a pid gone since the snapshot reads nothing. collect asks for a session whose open job is
-# queue and for one whose PR is held by the landing queue or a train, since a gate-and-land behind another
-# PR's re-check can read as another open job (ar-3486: agent-27 #2900 behind #2539 read overdue).
-queue_wait_min() {
-  local pid cmd pids="" s
+# queue_gate_of <cwd> [<claude pid>] -> "<minutes>\t<repo>\t<pr>" of the oldest FLEET_QUEUE_GATES process live_wait
+# would find, or nothing. <minutes> is how long the session has waited its landing turn (ar-2525: 2026-11-15
+# unity-core-playground-agent-3's gate-and-land.sh sat 3.5h behind #2733 with #2726 green); one `ps` of the matched
+# pids, and a pid gone since the snapshot reads nothing. collect asks for a session whose open job is queue and for
+# one whose PR is held by the landing queue or a train, since a gate-and-land behind another PR's re-check can read
+# as another open job (ar-3486: agent-27 #2900 behind #2539 read overdue). <repo> is the owner/repo that gate lands in
+# (agent-land's own order: --repo, the item's recorded pr:, its cwd's origin) and <pr> the number `agent-land <N>`
+# names, each "-" when the command line or checkout does not say.
+# Why: a lander the session runs from another repo's worktree (2026-11-21 lab/dotfiles-agent-24: a gate-line.py --land
+# on unity-core-playground #2492) waits on that repo's PR, and the landing line read the session's own, `dotfiles PR
+# #2492` (ar-4303).
+queue_gate_of() {
+  local pid cmd pids="" age top="" old="" repo="" pr=- dir
+  local -A cmds=()
   while IFS=$'\t' read -r pid cmd; do
-    [ -n "$pid" ] && queue_gate "$cmd" && pids+="${pids:+,}$pid"
+    if [ -n "$pid" ] && queue_gate "$cmd"; then pids+="${pids:+,}$pid"; cmds[$pid]="$cmd"; fi
   done < <(wait_procs "$@")
   [ -n "$pids" ] || return 0
-  s="$(ps -o etimes= -p "$pids" 2>/dev/null | sort -n | tail -n 1)"
-  s="${s//[[:space:]]/}"
-  [[ "$s" =~ ^[0-9]+$ ]] && echo $(( s / 60 ))
+  while read -r age pid; do
+    [[ "$age" =~ ^[0-9]+$ ]] || continue
+    if [ -z "$top" ] || [ "$age" -gt "$top" ]; then top="$age" old="$pid"; fi
+  done < <(ps -o etimes=,pid= -p "$pids" 2>/dev/null)
+  [ -n "$top" ] || return 0
+  cmd="${cmds[$old]:-}"
+  # agent-land <pr>'s number: its first bare integer before --plan and --phase (their text holds numbers), past any --flag value.
+  if [[ "$cmd" =~ agent-land[[:space:]](.*) ]]; then
+    local -a w; read -ra w <<<"${BASH_REMATCH[1]}"
+    local i=0
+    while [ "$i" -lt "${#w[@]}" ]; do
+      case "${w[$i]}" in
+        --plan | --phase) break ;;
+        --repo | --item) i=$((i + 2)) ;;
+        --*) i=$((i + 1)) ;;
+        *) [[ "${w[$i]}" =~ ^[0-9]+$ ]] && pr="${w[$i]}"; break ;;
+      esac
+    done
+  fi
+  # The repo agent-land lands in: --repo, else the repo of the item's own pr:<owner>/<repo>#<pr>, else its checkout's origin.
+  if [[ "$cmd" =~ (^|[[:space:]])--repo[[:space:]]([^[:space:]]+) ]]; then repo="${BASH_REMATCH[2]}"
+  else
+    if [ "$pr" != - ] && [[ "$cmd" =~ (^|[[:space:]])--item[[:space:]]([^[:space:]]+) ]]; then
+      repo="$(jq -r --arg s "${BASH_REMATCH[2]}" --arg n "$pr" 'first(select(.slug == $s) | (.pr // "" | tostring | split(" ")[]) | select(endswith("#" + $n)) | sub("#.*"; ""))' \
+        <<<"${qall:-}" 2>/dev/null)"
+    fi
+    if [ -z "$repo" ]; then
+      repo=-
+      if dir="$(readlink "/proc/$old/cwd" 2>/dev/null)" && [ -n "$dir" ]; then repo="$(origin_repo "$dir" 2>/dev/null)" || repo=-; fi
+    fi
+  fi
+  [ -n "$repo" ] || repo=-
+  printf '%s\t%s\t%s\n' $(( top / 60 )) "$repo" "$pr"
+}
+
+# queue_wait_of <cwd> <claude pid> <git dir or -> -> "<minutes>\t<repo>\t<pr>" of queue_gate_of, each "-" when unknown, the repo
+# "-" too when it is the row's own (<git dir>'s origin, compared case-insensitively): only a lander run from another
+# repo's worktree names its repo (ar-4303).
+queue_wait_of() {
+  local w r p own=-
+  IFS=$'\t' read -r w r p < <(queue_gate_of "$1" "$2")
+  [ "$3" = - ] || own="$(origin_repo "$3" 2>/dev/null)" || own=-
+  [ "${r,,}" != "${own,,}" ] || r=-
+  printf '%s\t%s\t%s\n' "${w:--}" "${r:--}" "${p:--}"
 }
 
 # wait_procs <cwd> [<claude pid>] -> "pid<TAB>command line" of each process live_wait reads: running in <cwd>
@@ -2511,8 +2558,8 @@ collect() {
     fi
     # A session waiting its landing turn carries how long its gate has waited and how deep its repo's
     # landing queue is, so the shepherd names a multi-hour wait on its own line (ar-2525).
-    local qwait=- qdepth=-
-    if [ "$host" = - ] && { [ "$ojob" = queue ] || [ -n "$wait_on" ]; }; then qwait="$(queue_wait_min "$cwd" "$cpid")"; qwait="${qwait:--}"; fi
+    local qwait=- qdepth=- qrepo=- qpr=-
+    if [ "$host" = - ] && { [ "$ojob" = queue ] || [ -n "$wait_on" ]; }; then IFS=$'\t' read -r qwait qrepo qpr < <(queue_wait_of "$cwd" "$cpid" "$gd"); fi
     if [ "$g" = 1 ] && [ "$gd" != - ] && [ -n "$FLEET_QUEUE_LABEL" ] && { [ "$ojob" = queue ] || [ -n "$wait_on" ]; }; then
       qdepth="$(queue_depth "$gd")"; qdepth="${qdepth:--}"
     fi
@@ -2558,12 +2605,12 @@ collect() {
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
     nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
     [ ! -e "$CLOSED/$sid" ] || n=1
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
       "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}" \
       "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test" "$mh" \
-      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iby" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "$qwait" "$qdepth" "$prun" "$pwq" "$wake" "$(critical_of "$wait_on" "$irow" "$gd" "$pr")" "${shown:-0}" "${mman:-0}" "$(quiet_before "$restored" "$host" "${target%%/*}/$pane" "$since")"
+      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iby" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "$qwait" "$qdepth" "$prun" "$pwq" "$wake" "$(critical_of "$wait_on" "$irow" "$gd" "$pr")" "${shown:-0}" "${mman:-0}" "$(quiet_before "$restored" "$host" "${target%%/*}/$pane" "$since")" "$qrepo" "$qpr"
     [ ! -f "$CACHE/blind_row" ] || echo "$sid" >> "$CACHE/blind"
   done
   [ -z "${CLOSE_SELF:-}" ] || return 0
@@ -3149,7 +3196,10 @@ json_rows() {
       # The manual (default) permission mode is investigate-only, so the session cannot write a wind-down note.
       in_manual_mode: ((.[65] // "0") == "1"),
       # fleet-dispatch restore reopened it: the quiet it had when its server was last seen (CLOSE_JQ).
-      quiet_before_min: (if (.[66] // "-") == "-" then null else .[66] | tonumber end)} | '"$CLOSE_JQ"
+      quiet_before_min: (if (.[66] // "-") == "-" then null else .[66] | tonumber end),
+      # The repo and PR the queue gate of the session lands, where its lander runs in another worktree (queue_gate_of).
+      wait_repo: (if (.[67] // "-") == "-" then null else .[67] end),
+      wait_pr: (if (.[68] // "-") == "-" then null else .[68] end)} | '"$CLOSE_JQ"
 }
 
 # overdue_of <now epoch> <rows file> <eta file> -> {session_id: verdict}: the one overdue rule, which

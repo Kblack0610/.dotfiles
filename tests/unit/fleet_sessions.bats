@@ -1079,7 +1079,7 @@ MD
   kill "$pid"; wait "$pid" 2>/dev/null || true
 }
 
-@test "queue_wait_min: the minutes the session's oldest queue gate has run, and nothing without one (ar-2525)" {
+@test "queue_gate_of: the minutes the session's oldest queue gate has run, and nothing without one (ar-2525)" {
   # 2026-11-15 unity-core-playground-agent-3's gate-and-land.sh sat 3.5h in the landing-slot queue, and no line named the wait.
   mkdir -p "$SANDBOX/wt/scripts/test"
   printf 'sleep 60\n' > "$SANDBOX/wt/scripts/test/gate-and-land.sh"
@@ -1087,10 +1087,11 @@ MD
   printf 'gate gh-run-wait\n' > "$SANDBOX/time-use.conf"
   export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
   local gate other
+  queue_gate_min() { queue_gate_of "$@" | cut -f1; }
   # ps answers the age of the pids it is asked about: the gate 3.5h, anything else 5h
   ps() {
-    if [ "${1:-}" = -o ] && [ "${2:-}" = etimes= ]; then
-      local p; for p in ${4//,/ }; do [ "$p" = "$gate" ] && echo ' 12600' || echo ' 18000'; done
+    if [ "${1:-}" = -o ] && [ "${2:-}" = etimes=,pid= ]; then
+      local p; for p in ${4//,/ }; do [ "$p" = "$gate" ] && echo " 12600 $p" || echo " 18000 $p"; done
     else command ps "$@"; fi
   }
   # a gate that is not queue-shaped has no landing wait, however old
@@ -1098,20 +1099,78 @@ MD
   other=$!
   until grep -q gh-run-wait "/proc/$other/cmdline" 2>/dev/null; do :; done
   LIVE_PIDS="$other"
-  run queue_wait_min "$SANDBOX/wt"
+  run queue_gate_min "$SANDBOX/wt"
   assert_output ''
   (cd "$SANDBOX/wt" && exec -a x bash scripts/test/gate-and-land.sh) >/dev/null 2>&1 3>&- &
   gate=$!
   until grep -q gate-and-land.sh "/proc/$gate/cmdline" 2>/dev/null; do :; done
   LIVE_PIDS="$other $gate"
-  run queue_wait_min "$SANDBOX/wt"
+  run queue_gate_min "$SANDBOX/wt"
   assert_output '210'
   # negative controls: another worktree, and the knob naming no gate
   mkdir -p "$SANDBOX/other"
-  run queue_wait_min "$SANDBOX/other"
+  run queue_gate_min "$SANDBOX/other"
   assert_output ''
-  FLEET_QUEUE_GATES='nothing-like-it' run queue_wait_min "$SANDBOX/wt"
+  FLEET_QUEUE_GATES='nothing-like-it' run queue_gate_min "$SANDBOX/wt"
   assert_output ''
+}
+
+@test "queue_gate_of: the oldest gate's minutes, the repo it lands in and the PR agent-land names (ar-4303)" {
+  # 2026-11-21 lab/dotfiles-agent-24 waited on a lander for unity-core-playground #2492 and its line read dotfiles #2492.
+  mkdir -p "$SANDBOX/wt"
+  git -C "$SANDBOX/wt" init -q
+  git -C "$SANDBOX/wt" remote add origin https://github.com/o/ucp.git
+  printf 'sleep 60\n' > "$SANDBOX/wt/agent-land"
+  printf 'gate gh-run-wait\n' > "$SANDBOX/time-use.conf"
+  export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
+  local gate
+  ps() {
+    if [ "${1:-}" = -o ] && [ "${2:-}" = etimes=,pid= ]; then
+      local p; for p in ${4//,/ }; do echo " 600 $p"; done
+    else command ps "$@"; fi
+  }
+  # the checkout's own origin and the number agent-land names
+  (cd "$SANDBOX/wt" && exec -a x bash agent-land 2492 --item x) >/dev/null 2>&1 3>&- &
+  gate=$!
+  until grep -q 'agent-land' "/proc/$gate/cmdline" 2>/dev/null; do :; done
+  LIVE_PIDS="$gate"
+  run queue_gate_of "$SANDBOX/wt"
+  assert_output "$(printf '10\to/ucp\t2492')"
+  kill "$gate"; wait "$gate" 2>/dev/null || true
+  # --repo outranks the checkout, and a gate that names no number reads -
+  (cd "$SANDBOX/wt" && exec -a x bash agent-land --repo a/b) >/dev/null 2>&1 3>&- &
+  gate=$!
+  until grep -q 'a/b' "/proc/$gate/cmdline" 2>/dev/null; do :; done
+  LIVE_PIDS="$gate"
+  run queue_gate_of "$SANDBOX/wt"
+  assert_output "$(printf '10\ta/b\t-')"
+  kill "$gate"; wait "$gate" 2>/dev/null || true
+  # flags before the number, and a number inside --phase text, are not the PR; the item's own pr: names the repo
+  qall='{"slug":"it","pr":"x/y#5 a/c#2492"}'
+  (cd "$SANDBOX/wt" && exec -a x bash agent-land --item it 2492 --phase "Phase 3 of 4") >/dev/null 2>&1 3>&- &
+  gate=$!
+  until grep -q 'Phase' "/proc/$gate/cmdline" 2>/dev/null; do :; done
+  LIVE_PIDS="$gate"
+  run queue_gate_of "$SANDBOX/wt"
+  assert_output "$(printf '10\ta/c\t2492')"
+  kill "$gate"; wait "$gate" 2>/dev/null || true
+  qall=""
+  (cd "$SANDBOX/wt" && exec -a x bash agent-land --item it --phase "Phase 3 of 4") >/dev/null 2>&1 3>&- &
+  gate=$!
+  until grep -q 'Phase' "/proc/$gate/cmdline" 2>/dev/null; do :; done
+  LIVE_PIDS="$gate"
+  run queue_gate_of "$SANDBOX/wt"
+  assert_output "$(printf '10\to/ucp\t-')"
+  kill "$gate"; wait "$gate" 2>/dev/null || true
+  # a checkout with no origin has no repo
+  rm -rf "$SANDBOX/wt/.git"
+  (cd "$SANDBOX/wt" && exec -a x bash agent-land 7) >/dev/null 2>&1 3>&- &
+  gate=$!
+  until grep -q 'agent-land' "/proc/$gate/cmdline" 2>/dev/null; do :; done
+  LIVE_PIDS="$gate"
+  run queue_gate_of "$SANDBOX/wt"
+  assert_output "$(printf '10\t-\t7')"
+  kill "$gate"; wait "$gate" 2>/dev/null || true
 }
 
 @test "queue_match takes a gate-and-land.sh, ci-gate.sh, agent-land or gate-line.py --recheck argument, and not a reader of its log (ar-2346)" {

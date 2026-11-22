@@ -484,7 +484,9 @@ landing_due() {
     | select($l.wait_min >= $min)
     | ([.[].landing_queue | numbers] | max) as $d
     | "landing: \($l.project // "-") longest wait \($l.target)\($l | ptag)"
-      + (if ($l.pr // "-") != "-" then " PR #\($l.pr)" else "" end) + " \($l.wait_min)m"
+      + (if $l.wait_repo != null then (if $l.wait_pr != null then " PR \($l.wait_repo)#\($l.wait_pr)" else " gate in \($l.wait_repo)" end)
+         elif $l.wait_pr != null then " PR #\($l.wait_pr)"
+         elif ($l.pr // "-") != "-" then " PR #\($l.pr)" else "" end) + " \($l.wait_min)m"
       + ", \(length) waiting their landing turn"
       + (if $d != null then ", \($d) PRs in the landing queue" else "" end)
       + "; then: read what holds the landing slot and its session; when it is moving, fleet-shepherd skip this line naming it"' \
