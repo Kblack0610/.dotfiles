@@ -6,6 +6,8 @@
 #       [--row <code>-<N>] [--epic <code>-<N>] [--want <channel>] [--running [--session s]] [--repeat] [task...]    the task from args, or stdin when there are none
 #       --running with no --from or --want is from item:<$AGENT_QUEUE_ITEM> in a queue item's session, from session in any
 #       other Claude session, and from human only at a terminal; a hand session records the human's own want with --want human.
+#       A headless Claude run (`claude -p`, CLAUDE_CODE_ENTRYPOINT sdk-*) is never the human: its add goes to the board and
+#       never starts at add, and its --want is refused (headless).
 #       --want names the channel a human's want came in by (`notes ptask add --want`): its story row gets #requested from
 #       the notes writer. Without it the row carries no stamp, as a session's own add does not.
 #       --tags interrupt puts #interrupt on its story row (or an open twin), so a locked sprint takes it (notes' interrupt
@@ -547,16 +549,22 @@ admission_log() {
 # dispatch-run agent's or a filer's, is filed on the board instead and exits AQ_EX_HELD.
 # Provisional (rules.jsonl, anchor "Only the board fills the queue"): hand sessions add straight in;
 # the human, 2026-11-19, made their want start at add there (start_at_add).
-# hand_caller <from> <from_given> -> true for the human: no --from but `human`, and no queue item, or one
-# whose session the human opened (origin hand or resume). A finished or unknown item is an agent's.
+# hand_caller <from> <from_given> -> true for the human: no --from but `human`, not a headless Claude run,
+# and no queue item, or one whose session the human opened (origin hand or resume). A finished or
+# unknown item is an agent's.
 hand_caller() {
   [ -z "$2" ] || [ "$1" = human ] || return 1
+  ! headless || return 1
   [ -n "${AGENT_QUEUE_ITEM:-}" ] || return 0
   local f; f="$(find_item "$AGENT_QUEUE_ITEM")"
   [ -n "$f" ] || return 1
   case "$(fm_get "$f" origin)" in hand | resume) return 0 ;; esac
   return 1
 }
+# headless -- the caller runs under a headless Claude run: Claude sets CLAUDE_CODE_ENTRYPOINT to sdk-cli for
+# `claude -p` (every agentctl runner and private launch) and sdk-* for an SDK host, and to cli in a session
+# with a pane. No human sits at one, so what it adds is an agent's, with or without a queue item (ar-3887).
+headless() { [[ "${CLAUDE_CODE_ENTRYPOINT:-}" == sdk-* ]]; }
 # running_from -> the `from` of a --running record that names no --from or --want: a session's record of its own
 # work is the session's, item:<slug> in a queue item's session, and `from: human` stays for what the human typed
 # (a terminal add, --want, the hub's Add) (ar-4154).
@@ -1835,7 +1843,7 @@ cmd_add() {
       --slug) slug="${2:?}"; shift 2 ;;
       --title) title="$(one_line "${2:?}")"; shift 2 ;;
       --epic) epic="${2:?}"; shift 2 ;;
-      --want) want="${2:?}"; shift 2 ;;
+      --want) want="${2:?}"; ! headless || die "--want names a human's channel; a headless Claude run ($CLAUDE_CODE_ENTRYPOINT) has no human at hand, so its add carries none"; shift 2 ;;
       --row) row="${2:?}"; shift 2 ;;
       --running) running=1; shift ;;
       --session) session="${2:?}"; shift 2 ;;
@@ -2054,9 +2062,10 @@ cmd_add() {
 }
 
 # human_at_hand <from> -- the human filed this, by hand or through a session they sit in: from human,
-# and no dispatched session's $AGENT_QUEUE_ITEM. A hand start skips the load and run-unit gates, so a
-# machine filer, or an unattended session that took the default from, waits for a dispatch pass.
-human_at_hand() { [ "$1" = human ] && [ -z "${AGENT_QUEUE_ITEM:-}" ]; }
+# no dispatched session's $AGENT_QUEUE_ITEM, and not a headless run. A hand start skips the load and
+# run-unit gates, so a machine filer, or an unattended session that took the default from, waits for a
+# dispatch pass.
+human_at_hand() { [ "$1" = human ] && [ -z "${AGENT_QUEUE_ITEM:-}" ] && ! headless; }
 # human_session -- the caller is an interactive Claude session (a headless `claude -p` sets another entrypoint).
 human_session() { [ "${CLAUDE_CODE_ENTRYPOINT:-}" = cli ]; }
 

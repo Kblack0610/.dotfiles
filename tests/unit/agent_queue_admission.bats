@@ -132,6 +132,7 @@ COND=(
   'pull_ok;[ -n "${AGENT_QUEUE_PULL:-}" ];`AGENT_QUEUE_PULL=hand`;AGENT_QUEUE_PULL='
   'hand_caller;[ -z "$2" ];no `--from`;--from'
   'hand_caller;[ "$1" = human ];other than `human`;"human"'
+  'hand_caller;! headless;not a headless Claude run;-'
   'hand_caller;[ -n "${AGENT_QUEUE_ITEM:-}" ];no `AGENT_QUEUE_ITEM`;-'
   'hand_caller;[ -n "$f" ];-;-'
   'hand_caller;in hand | resume);`origin` is `hand` or `resume`;-'
@@ -142,11 +143,12 @@ fn_body() {
   awk -v f="$2" 'index($0, f "() {") == 1 {on = 1} on {print} on && (/^}/ || /; }$/) {exit}' "$1"
 }
 
-# conds <agent-queue> -> "<function>;<condition>" for each test and case arm in pull_ok and hand_caller
+# conds <agent-queue> -> "<function>;<condition>" for each test, negated predicate call (`! headless ||`)
+# and case arm in pull_ok and hand_caller
 conds() {
   local fn
   for fn in pull_ok hand_caller; do
-    fn_body "$1" "$fn" | grep -vE '^[[:space:]]*#' | grep -oE '\[ [^]]+ \]|in [a-z |]+\)' | sed "s/^/$fn;/"
+    fn_body "$1" "$fn" | grep -vE '^[[:space:]]*#' | grep -oE '\[ [^]]+ \]|! [a-z_]+ \|\||in [a-z |]+\)' | sed -E "s/ \|\|$//; s/^/$fn;/"
   done | sort -u
 }
 
@@ -204,7 +206,7 @@ check_admit_names() { # <skill-drift>
 }
 
 @test "negative control: a May add bullet that drops a condition fails" {
-  printf '%s\n' '## Admission' '' '- May add: dispatch'"'"'s pull (`AGENT_QUEUE_PULL=dispatch`), `AGENT_QUEUE_PULL=hand`, `--running`, and the human: no `--from` other than `human` (no `AGENT_QUEUE_ITEM`).' '## Next' > "$BATS_TEST_TMPDIR/q.md"
+  printf '%s\n' '## Admission' '' '- May add: dispatch'"'"'s pull (`AGENT_QUEUE_PULL=dispatch`), `AGENT_QUEUE_PULL=hand`, `--running`, and the human: no `--from` other than `human`, not a headless Claude run (no `AGENT_QUEUE_ITEM`).' '## Next' > "$BATS_TEST_TMPDIR/q.md"
   run check_doc "$BATS_TEST_TMPDIR/q.md"
   assert_failure
   assert_output 'May add does not name `origin` is `hand` or `resume` (hand_caller: in hand | resume))'
