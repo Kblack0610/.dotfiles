@@ -3082,14 +3082,24 @@ EOF
   "$AQ" set f tags="pr:o/r#5"
   run "$AQ" stats --json --since 2000-01-01
   assert_equal "$(jq -c '.chain.h24' <<<"$output")" '{}'
-  # a restart is not a handoff: the second session's start reads from the first ready time (ar-4436)
-  "$AQ" set f tags=""
-  f="$(item running f)"; sed -i '0,/^after: /s//sessions: s1\nafter: /' "$f"
+}
+
+# ar-4436: a return to the queue clears `started`, so the restart read as the wait since the predecessor
+# finished (a week, for an item that blocked on a login). It is ready again from the return.
+@test "stats chain: an item returned to the queue and restarted waits from its return, not from its predecessor's finish (ar-4436)" {
+  "$AQ" add --project game --slug p --priority urgent "p"
+  legacy f "after: p" --project game --priority urgent "f"
+  "$AQ" move p running; "$AQ" move p done --status ok
+  now=$(date +%s)
+  "$AQ" set p finished="$(date -u -d "@$((now - 259200))" +%FT%TZ)"
+  f="$(item queued f)"; sed -i "s/^queued: .*/queued: $(date -u -d "@$((now - 259300))" +%FT%TZ)/" "$f"
+  "$AQ" move f running; "$AQ" set f started="$(date -u -d "@$((now - 258600))" +%FT%TZ)"
+  "$AQ" move f queued
+  [ -n "$(sed -n 's/^requeued: //p' "$(item queued f)")" ]
+  "$AQ" move f running
   run "$AQ" stats --json --since 2000-01-01
-  assert_equal "$(jq -c '.chain.h24' <<<"$output")" '{"urgent":{"n":1,"p50":10,"p90":10}}'
-  sed -i 's/^sessions: .*/sessions: s1 s2/' "$f"
-  run "$AQ" stats --json --since 2000-01-01
-  assert_equal "$(jq -c '.chain.h24' <<<"$output")" '{}'
+  assert_success
+  assert_equal "$(jq -c '.chain.h24.urgent.p90 < 5' <<<"$output")" 'true'
 }
 
 # ar-617: the Queue table shows each item's wait, so list carries the same ready stats medians.
