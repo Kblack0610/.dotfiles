@@ -5828,6 +5828,16 @@ verdict() {
   AGENT_PANEL="$SANDBOX/bin/panel-w" run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
   assert_failure 1
   assert_output --partial "keep: it wakes itself: a one-shot cron a318 at "
+  # An armed Monitor keeps it until TaskStop ends it (ar-4158, ar-4304).
+  result_line "$(date -u -d "@$(( now - 60 ))" +%Y-%m-%dT%H:%M:%SZ)" 'Monitor started (task m1, expires in 30m unless the source ends first).' \
+    '{"taskId":"m1","timeoutMs":1800000,"persistent":false}' > "$tx"
+  AGENT_PANEL="$SANDBOX/bin/panel-w" run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_failure 1
+  assert_output --partial "keep: it wakes itself: a Monitor m1 until "
+  result_line "$(date -u -d "@$(( now - 30 ))" +%Y-%m-%dT%H:%M:%SZ)" 'Successfully stopped task: m1' '{}' >> "$tx"
+  AGENT_PANEL="$SANDBOX/bin/panel-w" run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_success
+  assert_output "now: quiet 0m, nothing to land"
   # Every other step still holds it, and the row's blockers are named.
   holder_doc "$now" '{"session_id":"sid-w","host":"razer-laptop","bucket":"WORKING","blockers":["PR #9 open"]}'
   run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
