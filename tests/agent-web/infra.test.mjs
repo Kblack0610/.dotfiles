@@ -407,21 +407,26 @@ test("a pool has one colour in the 7-day chart, set by its history", () => {
 
 // hub_core::ci::Glance as /api/infra sends it under ci.glance.
 const glance = { busy: 5, slots: 9, queued: 23, oldest: 1260, done: 759, pass: 0.91, off: ["aws-spot-1", "aws-spot-2"],
-  units_busy: 6.4, units: 16, backlog: 9.2, drain: 720 };
+  units_busy: 6.4, units: 16, backlog: 9.2, drain: 720, alert: "ok", up: 12, expected: 12 };
 
-test("CI BUSY and the Runners head read hub_core's glance in slot units, never runners or the per-cap pool sums", () => {
+test("CI RUNNING and the Runners head read hub_core's glance: jobs running, runners up, red only on a runner down", () => {
   // A slot takes unity, light and heavy: the per-cap pools sum to 3/3 for one runner.
   const cc = { "cc:pool_slots": { unity: 1, light: 1, heavy: 1 }, "cc:pool_busy": { unity: 1, light: 1, heavy: 1 } };
   const h = run(`kpis(${JSON.stringify(cc)}, ${JSON.stringify(glance)})`);
-  assert.match(h, /CI BUSY[\s\S]*?6\.4\/16[\s\S]*?23 queued, cloud: 2 hosts off/);
-  assert.doesNotMatch(h, /CI BUSY[\s\S]*?(3\/3|5\/16)/);
-  assert.match(run(`kpis({})`), /CI BUSY[\s\S]*?\?\/\?/, "no glance is unknown, never 0/0");
+  assert.match(h, /CI RUNNING[\s\S]*?>5<[\s\S]*?23 queued, 12\/12 runners up, cloud: 2 hosts off/);
+  assert.doesNotMatch(h, /CI RUNNING[\s\S]*?(6\.4\/16|3\/3)/);
+  assert.match(h, /AGENT RUNNERS/, "the agentctl runners tile says whose runners it counts");
+  const hue = (g) => run(`kpis({}, ${JSON.stringify(g)})`).match(/--c:var\((--[a-z0-9-]+)\)"><span class="tl">CI RUNNING/)?.[1];
+  assert.equal(hue(glance), "--b-done");
+  assert.equal(hue({ ...glance, alert: "red", up: 11 }), "--b-needs");
+  assert.equal(hue({ ...glance, alert: "nodata", up: 0, expected: 0 }), "--c-other");
+  assert.match(run(`kpis({})`), /CI RUNNING[\s\S]*?\?/, "no glance is unknown, never 0");
   Object.assign(ist, { open: {} });
   const s = section({ rows: [], queue: [], red: [], local: [], glance });
-  assert.match(s, /<div class="cline">6.4\/16 busy, 23 queued \(oldest 21m\), 9.2 queued ~12m, 759 done 24h, 91% passed; cloud: 2 hosts off<\/div>/);
-  // hc-668: no governor unit series reads `-`, never a runner count standing in.
-  const bare = section({ rows: [], queue: [], red: [], local: [], glance: { ...glance, units_busy: null, units: null, backlog: null, drain: null } });
-  assert.match(bare, /-\/- busy, 23 queued \(oldest 21m\), - queued -, 759 done/);
+  assert.match(s, /<div class="cline">5 running, 23 queued \(oldest 21m\), 9.2 queued ~12m, 12\/12 runners up, 759 done 24h, 91% passed; cloud: 2 hosts off<\/div>/);
+  // No runner read is -/-, never 0/0.
+  const bare = section({ rows: [], queue: [], red: [], local: [], glance: { ...glance, backlog: null, drain: null, up: 0, expected: 0 } });
+  assert.match(bare, /5 running, 23 queued \(oldest 21m\), - queued -, -\/- runners up, 759 done/);
   // A stale glance with held fields still says running and queued only.
   assert.doesNotMatch(section({ rows: [], queue: [], red: [], local: [], glance: { ...glance, units_held: 2, held: 7 } }), /held|lent/);
 });
