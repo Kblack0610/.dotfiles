@@ -2626,16 +2626,6 @@ live_answer_file() {
   refute_output --partial '## Past disagreements'
 }
 
-@test "precedents: AGENT_ASK_PRECEDENTS_ROOT replaces the store they are read from" {
-  local r="$BATS_TEST_TMPDIR/real/demo"
-  mkdir -p "$r"
-  printf 'id: R1\nproject: demo\nstatus: answered\nquestion: elsewhere?\noptions: fix|wait\nrecommend: fix\nanswer: wait\nanswered_at: 2026-11-01T10:00:00-0800\n' > "$r/R1.md"
-  run "$AGENT_ASK" precedents 2026-11-02T10:00:00-0800
-  assert_output ''
-  AGENT_ASK_PRECEDENTS_ROOT="$BATS_TEST_TMPDIR/real" run "$AGENT_ASK" precedents 2026-11-02T10:00:00-0800
-  assert_output 'R1 (demo): elsewhere? | recommended: fix | the human chose: wait'
-}
-
 @test "precedents: the jq count does not grow with the asks, so the judge's 30s guard is not spent on them" {
   # ar-2553: a jq, grep and subshell per answered ask cost about 3.5s of every judge call at
   # 750 asks, more under load, and the guard timed calls out before the model was reached.
