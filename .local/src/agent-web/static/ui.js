@@ -214,7 +214,7 @@ const secOpen = (open, k) => !open || open[k] !== false;
 // k keys it in the tab's `open` map (paint and the toggle listeners keep that current), id anchors
 // it, open is its state, attrs any further attributes (html), sum the summary's (` class="muted fold"`).
 const fold = (cls, summary, inner, o = {}) =>
-  `<details${cls ? ` class="${cls}"` : ""}${o.k ? ` data-k="${esc(o.k)}"` : ""}${o.id ? ` id="${o.id}"` : ""}${o.attrs || ""}${o.open ? " open" : ""}>` +
+  `<details${cls ? ` class="${cls}"` : ""}${o.k ? ` data-k="${esc(o.k)}"` : ""}${o.id ? ` id="${esc(o.id)}"` : ""}${o.attrs || ""}${o.open ? " open" : ""}>` +
   `<summary${o.sum || ""}>${summary}</summary>${inner}</details>`;
 // A fold keyed by k, open when open[k] says so (paint or a toggle listener keeps open current).
 // A per-row detail starts shut; a section (`section` true) starts open, as secOpen says.
@@ -224,7 +224,7 @@ const cfold = (k, summary, inner, open, section) =>
 // id keeps an empty one as a live region, cls adds classes. An empty msg draws the empty block.
 const errPanel = (msg, o = {}) => {
   const tag = o.tag || "div";
-  return `<${tag} class="${[o.cls, o.card && "card", "err"].filter(Boolean).join(" ")}"${o.id ? ` id="${o.id}"` : ""}>${esc(msg || "")}</${tag}>`;
+  return `<${tag} class="${[o.cls, o.card && "card", "err"].filter(Boolean).join(" ")}"${o.id ? ` id="${esc(o.id)}"` : ""}>${esc(msg || "")}</${tag}>`;
 };
 // A page that has not drawn yet: the read's error (text) in a down panel, else the wait word (text).
 const readPanel = (err, wait) => `<div class="${err ? "panel down" : "empty"}">${esc(err || wait)}</div>`;

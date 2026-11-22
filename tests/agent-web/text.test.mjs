@@ -2,7 +2,8 @@
 // agent-web's scripts (.local/src/agent-web/static) hold none of the three hand-built shapes the
 // shared renderers in ui.js replace: a record list (<ul>, <li>: `tblRec`), an error block
 // (class="err": `errPanel`) and a fold (<details>: `fold`, `cfold`, `pfold`). The migration is
-// done, so the allowance is zero: a new tab that builds one fails here. Two files are exempt by
+// done, so the allowance is zero (the sweep reads the literal markup, so a node built with
+// createElement is for review to catch): a new tab that builds one fails here. Two files are exempt by
 // kind, ui.js because it is where the renderers live, and md.js because it turns the human's own
 // markdown into HTML, where a list is the content and not a record. Run by `node --test` from
 // tests/unit/agent_web_queue.bats. The Rust side is hub-core's display.rs (`prose_fields_never_grow`),

@@ -442,6 +442,9 @@ span.warn { color: var(--b-stalled); }
 .tbl td.warn, .tbl td.bad { font-weight: 600; }
 .tbl td.warn { color: var(--b-stalled); } .tbl td.bad { color: var(--b-needs); }
 .tbl td.wrap { white-space: normal; min-width: 160px; }
+/* tblRec's record rows: no minimum width, no zebra, no rules, so a short list reads as a list. */
+.tbl.rec td.wrap { min-width: 0; border-bottom: 0; padding: 3px 10px 3px 0; }
+.tbl.rec tr:nth-child(odd of :not(.wdet, .rcd, .tfilters, .bopen)):has(> td) { background: none; }
 .tbl .c2 { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .tbl .c1 { max-width: 56ch; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tbl .c12 { max-width: 44ch; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
