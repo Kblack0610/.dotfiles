@@ -130,7 +130,8 @@ def snapshot(day):
     per_pr = burn.get("per_merged_pr") or {}
     by_project = {r["key"]: usage(r) for r in proj.get("rows") or []}
     for k, v in (burn.get("by_project") or {}).items():
-        by_project.setdefault(k, {}).update(sessions=v.get("sessions"), cost_usd=round(v.get("cost_usd") or 0, 2))
+        c = v.get("cost_usd")   # None when the fleet cost could not be read, never a $0
+        by_project.setdefault(k, {}).update(sessions=v.get("sessions"), cost_usd=None if c is None else round(c, 2))
     long_runs = proj.get("long_runs") or {}
     fc = burn.get("fleet_cost")
     # Each session's fleet-cost spend in the day, and the dollars no session row carries (fleet_cost's

@@ -404,7 +404,7 @@ markdown() {
           + (if .why then " (\(.why))" else "" end)
           + (if .pr then " " + (.pr | tostring | split(" ") | map(sub("^[^/]*/"; "")) | join(" ")) else "" end)), "" else empty end),
       "## Spend by project", "", "| Project | Sessions | Tokens | Cost |", "|---|---|---|---|",
-      (.usage[] | "| \(.project) | \(.sessions) | \(.tokens | tok) | \(.cost_usd | money) |"),
+      ((.usage // [])[] | "| \(.project) | \(.sessions) | \(.tokens | tok) | \(.cost_usd | money) |"),
       (if (.usage // []) == [] then "| - | - | - | the fleet cost was unreadable |" else empty end), "",
       ($u | if .measured then "- The fleet cost, about \(.cost | money): \(.measured | money) measured, \(.estimated | money) estimated (agent-usage fleet-cost).", "" else empty end),
       (if .work then "## Flow", "",

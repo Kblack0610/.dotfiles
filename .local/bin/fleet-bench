@@ -1074,15 +1074,21 @@ prom_map() {
   prom_q "$2" "$3" | jq -c --arg l "$1" '[.data.result[] | {key: (.metric[$l] // "-"), value: (.value[1] | tonumber)}] | from_entries'
 }
 
-# spend_by_session <now> -> {session id: dollars in the last 24h}, the fleet cost's session rows
-# (BENCH_FLEET_COST_FILE, the file the hub's Costs card reads: billed where a session reports cost,
-# priced from tokens otherwise). rc 1 when it cannot answer for this window: a replay, a window that
-# is not the file's 24h, no file, or one older than four of the sampler's tries (BENCH_FLEET_COST_EVERY_MIN).
+# spend_by_session <now> -> {session id: dollars in the window}, the fleet cost's session rows (billed
+# where a session reports cost, priced from tokens otherwise). The 24h window reads BENCH_FLEET_COST_FILE,
+# the file the hub's Costs card reads, unless it is older than four of the sampler's tries
+# (BENCH_FLEET_COST_EVERY_MIN); any other window asks BENCH_FLEET_COST_CMD for its own range. rc 1 when
+# it cannot answer: a replay, or a cost that cannot be read.
 spend_by_session() {
-  [ -z "${BENCH_PROM_TSV:-}" ] && [ "$BENCH_WINDOW_H" = 24 ] || return 1
-  jq -ce --argjson oldest "$(($1 - BENCH_FLEET_COST_EVERY_MIN * 240))" '
-    select((.as_of_epoch // 0) >= $oldest) | (.by_session // []) | map({key: .sid, value: .usd}) | from_entries' \
-    "$BENCH_FLEET_COST_FILE" 2>/dev/null
+  [ -z "${BENCH_PROM_TSV:-}" ] || return 1
+  local rows='(.by_session // []) | map({key: .sid, value: .usd}) | from_entries'
+  if [ "$BENCH_WINDOW_H" = 24 ]; then
+    jq -ce --argjson oldest "$(($1 - BENCH_FLEET_COST_EVERY_MIN * 240))" "select((.as_of_epoch // 0) >= \$oldest) | $rows" \
+      "$BENCH_FLEET_COST_FILE" 2>/dev/null
+  else
+    $BENCH_FLEET_COST_CMD --since "$(date -d "@$(($1 - BENCH_WINDOW_H * 3600))" -Iseconds)" --before "$(date -d "@$1" -Iseconds)" 2>/dev/null |
+      jq -ce "$rows" 2>/dev/null
+  fi
 }
 
 # fleet_cost_figure -> {usd, measured, estimated}: the hub Costs card's figures (whole dollars, the

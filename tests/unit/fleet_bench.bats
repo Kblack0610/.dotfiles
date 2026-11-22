@@ -5559,7 +5559,7 @@ scorecard_with_data() {
 
 @test "breakdown negative controls: a stale fleet-cost file prices no session, and an unreadable hub figure says so" {
   stub_breakdown
-  stub_fleet_cost $((T0 + 3600 - 7201))   # past hub_core::fleet_cost::STALE_SECS
+  stub_fleet_cost $((T0 + 3600 - 7201))   # past four of the 30-minute sampler's tries
   scorecard_with_data
   run sed -n '/^## Where/,/^## Sessions/p' "$BENCH_SCORECARD_DIR/latest.md"
   assert_output --partial 'Agent spend over 24h: about $18 (measured $13, estimated $5), the hub Costs figure.'
@@ -5568,6 +5568,17 @@ scorecard_with_data() {
   BENCH_HUB_FIGURE_CMD=false BENCH_NOW=$((T0 + 3600)) "$SUBJECT" scorecard >/dev/null
   run grep '^Agent spend' "$BENCH_SCORECARD_DIR/latest.md"
   assert_output 'Agent spend: the hub Costs figure is unreadable.'
+}
+
+@test "breakdown: a window other than 24h prices its sessions from the fleet cost of its own range, not the 24h file" {
+  stub_breakdown
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s/fc-args"\necho %s\n' "$SANDBOX" "'{\"by_session\":[{\"sid\":\"s1\",\"usd\":7.5}]}'" > "$SANDBOX/bin/fc-stub"
+  chmod +x "$SANDBOX/bin/fc-stub"
+  BENCH_WINDOW_H=48 BENCH_FLEET_COST_CMD=fc-stub scorecard_with_data
+  run sed -n '/^## Where/,/^## Sessions/p' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output --partial '| game | 1 | 0.2 | 0.2 | 0.2 | $7.5 |'
+  run cat "$SANDBOX/fc-args"
+  assert_output --partial "--since $(date -d "@$((T0 + 3600 - 48 * 3600))" -Iseconds) --before $(date -d "@$((T0 + 3600))" -Iseconds)"
 }
 
 @test "breakdown: a project with unreadable merges shows a question mark, never zero" {
