@@ -360,6 +360,17 @@ item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
   [ -z "$(agent-queue list --state queued --json | jq -r 'select(.slug == "ga-6") | .slug')" ]
 }
 
+@test "pull-after --queue-only queues the rows gated on the closed row and starts none" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent ga-1 "- [/] feat(game): the map first <!-- id:ga-1 -->"
+  row game agent ga-2 "- [ ] feat(game): then its doors $T #high #after/ga-1 <!-- id:ga-2 -->"
+  cmd_start() { echo "start $*" >> "$NOTES_FIXTURE/started"; }
+  run cmd_pull_after --queue-only ga-1
+  assert_success
+  assert_equal "$(agent-queue list --state queued --json | jq -r .slug | paste -sd,)" "ga-2"
+  [ ! -e "$NOTES_FIXTURE/started" ]
+}
+
 @test "pull-after starts every high row gated on the closed row, though a start reads stdin" {
   # Every row gated on the closed one is read, whatever a start reads from stdin (chain-after-stuck).
   project game beta "$SANDBOX/repos/game"
