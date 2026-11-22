@@ -735,6 +735,7 @@ bucket_facts() {
         FAIL)    echo "STALLED PR #$pr CI red" ;;
         NOSTART) echo "WORKING PR #$pr CI never started (its jobs ran no steps), waiting on billing" ;;
         PENDING) echo "WORKING PR #$pr CI running" ;;
+        -)       echo "STALLED PR #$pr open, CI unknown, not merged" ;;
         *)       echo "STALLED PR #$pr green, not merged" ;;
       esac ;;
     CLOSED)
@@ -1505,8 +1506,8 @@ re_quote() { sed 's/[][\.*^$+?(){}|]/\\&/g' <<<"$1"; }
 # this session opened in a repo other than <dir>'s, or nothing. A session that works in one clone
 # can open its PR from another (ar-349, read STALLED "no PR" while that PR ran CI). A Forgejo PR
 # (host/owner/repo) is skipped: gh cannot read its CI. Its CI is one
-# `gh pr view` reused for FLEET_MAIN_TTL seconds across passes; a failed call is
-# (or an answer that is not a PR) is not cached, nor retried in this pass, and is named unreadable so tick does not log the blink.
+# `gh pr view` reused for FLEET_MAIN_TTL seconds across passes; a failed call
+# (or an answer that is not a PR) adopts the PR with CI unknown (-), is not cached, nor retried in this pass, and is named unreadable so tick does not log the blink.
 sibling_pr() {
   local own repo n file failed view
   own="$(origin_repo "$1")"
@@ -1523,7 +1524,7 @@ sibling_pr() {
     printf '%s\n' "$view" > "$file.$$" && mv "$file.$$" "$file"
   else
     [ -f "$failed" ] || { : > "$failed"; unreadable "gh pr view $repo#$n"; }
-    blind_row; return 0
+    blind_row; printf '%s\t%s\t-\t-\n' "$repo" "$n"; return 0
   fi
   jq -r --arg r "$repo" --argjson n "$n" "$CI_JQ"' [$r, $n, ci, (.headRefOid // "-")] | @tsv' <<<"$view"
 }
