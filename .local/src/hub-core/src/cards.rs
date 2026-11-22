@@ -315,6 +315,16 @@ pub fn queue(
 /// Alerts: what fires now that needs the human (no owner, a fix that did not hold, a fix that
 /// waits or is past its due), by the hue the Alerts tab gives each row; a red with its fix in
 /// hand on time counts as being fixed, in the bar's green and as its own part, never as red.
+/// A count, or `reading::NOT_READ` when the join's errors say its source (by the error's prefix)
+/// was not read.
+fn read_or(a: &crate::alerts::Alerts, source: &str, n: usize) -> String {
+    if a.errors.iter().any(|e| e.starts_with(source)) {
+        crate::reading::NOT_READ.to_string()
+    } else {
+        n.to_string()
+    }
+}
+
 pub fn alerts(a: &crate::alerts::Alerts) -> Card {
     let by = |l: Level| {
         a.firing
@@ -339,7 +349,15 @@ pub fn alerts(a: &crate::alerts::Alerts) -> Card {
     .part("Being fixed", k.being_fixed, Level::Ok)
     .part("No owner", k.no_owner, lvl(k.no_owner, Level::Warn))
     .part("Fixes open", k.fixes_open, Level::Ok)
-    .part("Firing", k.firing, Level::Nodata);
+    .part("Firing", k.firing, Level::Nodata)
+    // Uncoloured like Firing: Need you and Being fixed say whether a red waits on the human. A
+    // source that did not answer reads not read, never 0 (rule 6).
+    .part("Red now", read_or(a, "prometheus:", k.red_now), Level::Nodata)
+    .part(
+        "Watches tripped",
+        read_or(a, "watches:", k.watches_tripped),
+        Level::Nodata,
+    );
     // Nothing needing the human is green when every source answered; the tab's own level says
     // which, and a tab that is red only for rows being fixed is green here.
     c.level = if need == Level::Ok && a.level == Level::Nodata {
@@ -431,11 +449,13 @@ pub fn done(d: Option<&crate::phone::Done>) -> Card {
 }
 
 /// Health: the machines Prometheus reads, the CI pool from the CI glance (the one the bar and
-/// the phone's CI row read), what is stuck, and fleet-bench's vitals head. It opens the Infra tab.
+/// the phone's CI row read), what is stuck, the System domains (`cc:domain_status`,
+/// `Infra::domains`) the waybar health chip and the phone's System line show, and fleet-bench's
+/// vitals. It opens the Infra tab.
 pub fn health(i: &crate::infra::Infra) -> Card {
-    const COUNTED: &str = "machines with a reading and CI runners from Prometheus; CI busy is \
-         the slot units in use of the pool's, from the CI glance; vitals are fleet-bench's KPIs \
-         against their targets";
+    const COUNTED: &str = "machines with a reading, CI runners and the cc:domain_status domains \
+         from Prometheus; CI busy is the slot units in use of the pool's, from the CI glance; \
+         vitals are fleet-bench's KPIs against their targets";
     if !i.ok {
         return Card::failed(
             "health",
@@ -451,12 +471,16 @@ pub fn health(i: &crate::infra::Infra) -> Card {
     let down = i.runners_down().len();
     let stuck = i.ci.red.len();
     let g = &i.ci.glance;
+    let (d_down, d_warn, d_up) = i.domains();
     let mut c = Card::new("health", "Health", COUNTED)
         .bar(up, i.machines.len() - up - unread, unread)
         .part("Runners down", down, lvl(down, Level::Red))
         .part("CI busy", g.units_line(), Level::Ok)
         .part("CI queued", g.queued, Level::Ok)
-        .part("Stuck", stuck, lvl(stuck, Level::Red));
+        .part("Stuck", stuck, lvl(stuck, Level::Red))
+        .part("Domains down", d_down, lvl(d_down, Level::Red))
+        .part("Domains warn", d_warn, lvl(d_warn, Level::Warn))
+        .part("Domains up", d_up, Level::Ok);
     if let Some(v) = crate::vitals::read(i) {
         let level = if v.rows.is_empty() {
             Level::Nodata
@@ -693,7 +717,15 @@ pub fn projects(p: &crate::projects::Projects) -> Card {
         Level::Ok,
     )
     .part("Waiting", sum(|c| c.waiting), lvl(waiting, Level::Warn))
-    .part("Hot", sum(|c| c.hot), Level::Ok);
+    .part("Hot", sum(|c| c.hot), Level::Ok)
+    .part(
+        "Sprints",
+        cards
+            .iter()
+            .filter(|c| crate::projects::sprint_says(c).is_some())
+            .count(),
+        Level::Ok,
+    );
     c.big = cards.len().to_string();
     c.unit = "lab projects".into();
     if !p.errors.is_empty() {
@@ -1335,6 +1367,24 @@ mod tests {
             "nothing firing but a source unread is no green bar"
         );
         assert_eq!(c.error.as_deref(), Some("reds: no answer"));
+        // Prometheus or the watches unread: their counts read not read, never 0 (rule 6).
+        let says = |a: &crate::alerts::Alerts, label: &str| {
+            let c = alerts(a);
+            c.parts
+                .iter()
+                .find(|p| p.label == label)
+                .unwrap()
+                .value
+                .clone()
+        };
+        assert_eq!(
+            says(&a, "Red now"),
+            "0",
+            "a reds read failure is not Prometheus's"
+        );
+        a.errors = vec!["prometheus: timeout".into(), "watches: gone".into()];
+        assert_eq!(says(&a, "Red now"), crate::reading::NOT_READ);
+        assert_eq!(says(&a, "Watches tripped"), crate::reading::NOT_READ);
         a.level = Level::Ok;
         a.errors.clear();
         a.counts.watches = 9;
