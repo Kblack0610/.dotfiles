@@ -289,13 +289,13 @@ snapshot() {
 
     # Open asks: questions an agent is blocked on until the human answers.
     if command -v agent-ask >/dev/null 2>&1; then
-        local count
-        count="$(agent-ask count --all 2>/dev/null)"
-        [[ "$count" =~ ^[0-9]+$ ]] || count=0
+        # Its own list: `agent-ask count --all` is Home's Question figure now, a hub read this
+        # publisher must not wait on. The sensor retires with ar-4397.
         emit summary asks_open mdi:account-question "$(agent-ask list --all --pending 2>/dev/null |
-            jq -cR --argjson n "$count" -s '
-              {state: $n, asks: [split("\n")[] | select(length > 0) | split("\t")
-                | {id: .[0], project: .[1], kind: .[4], question: (.[5] // "" | .[0:160])}]}')" \
+            jq -cR -s '
+              [split("\n")[] | select(length > 0) | split("\t")
+                | {id: .[0], project: .[1], kind: .[4], question: (.[5] // "" | .[0:160])}] as $a
+              | {state: ($a | length), asks: $a}')" \
             '{"state_class":"measurement"}'
     fi
 

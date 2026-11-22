@@ -14,6 +14,11 @@ setup() {
   export QUESTIONS_ASK="$AGENT_ASK"
   export QUESTIONS_STATE="$BATS_TEST_TMPDIR/state"
   : >"$QUESTIONS_STATE"
+  # The bar's count is Home's, read through needs-figure: a stub prints $NOTES_FIXTURE/needs-figure,
+  # and says ? and fails (as the real one does with no count) when the fixture is absent.
+  export QUESTIONS_NEEDS="$BATS_TEST_TMPDIR/needs-figure"
+  printf '#!/bin/sh\n[ "$1" = needs_headline ] && cat "$NOTES_FIXTURE/needs-figure" 2>/dev/null || { echo "?"; exit 1; }\n' >"$QUESTIONS_NEEDS"
+  chmod +x "$QUESTIONS_NEEDS"
 }
 
 ask() { "$AGENT_ASK" post --project "$1" --session "$2" --options "$3" "$4"; }
@@ -203,7 +208,7 @@ live_agent() {
   assert_equal "$(waiting 0 0 0 0)" 'no questions waiting'
 }
 
-@test "count is the number of rows, so the status bar and the panel read one number" {
+@test "count is Home's Needs you count, not the panel's rows, so the bar reads what every surface reads" {
   ask demo agent-1 'a=the first|b=the second' 'one?' >/dev/null
   ask demo agent-2 'a=the first|b=the second' 'two?' >/dev/null
   {
@@ -213,22 +218,20 @@ live_agent() {
   } >"$NOTES_FIXTURE/agent-panel.list.json"
   # agent-panel list prints a `!` glyph for a waiting status; the fixture serves both forms.
   printf 'lab/demo-agent-4:1\t!\tdemo\tx\nhub/demo:2\t!\tdemo\tx\nlab/demo-agent-6:1\t~\tdemo\tx\n' >"$NOTES_FIXTURE/agent-panel.list"
+  printf '%s\n' 9 >"$NOTES_FIXTURE/needs-figure"
   . "$Q"
   run "$Q" count
   assert_success
-  assert_output 4
+  assert_output 9
+  # The panel lists only the part of those it answers: the two asks and the two dialogs.
   assert_equal "$("$Q" rows | rows_count | awk '{ print $1 + $2 + $3 + $4 }')" 4
-  assert_equal "$("$AGENT_ASK" count --all)" 2
-  # An answered or cancelled ask leaves both counts; the dialog just answered does too.
-  QUESTIONS_ANSWERED=hub/demo:2 run "$Q" count
-  assert_output 3
 }
 
-@test "count is 0 with nothing waiting, and a busy session adds nothing (negative control)" {
-  printf 'lab/demo-agent-6:1\t~\tdemo\tx\n' >"$NOTES_FIXTURE/agent-panel.list"
+@test "count is ? when Home's count cannot be read, never a 0 (negative control)" {
+  rm -f "$NOTES_FIXTURE/needs-figure"
   run "$Q" count
   assert_success
-  assert_output 0
+  assert_output '?'
 }
 
 @test "with no state document, or no question at all, a dialog row never appears" {
@@ -438,9 +441,6 @@ plan_dialog() {
   refute_output --partial 'pos('
   run rows
   assert_output ''
-  # The status bar never counted an answer on its way.
-  run "$Q" count
-  assert_output 0
 }
 
 @test "the background wait leaves a choice armed meanwhile alone, and gives up after its guard (negative control)" {
@@ -695,12 +695,11 @@ transcript() {
   . "$Q"
   assert_equal "$("$Q" rows | rows_count)" '1 0 0 0 1 0 0'
   assert_equal "$(waiting 1 0 0 0 1)" '1 ask waiting . 1 parked'
-  run "$Q" count
-  assert_output 1
-  # Negative control: unparked, it counts again.
+  # The pending list, which the panel's rows are built from, leaves the parked ask out.
+  assert_equal "$("$AGENT_ASK" list --all --pending | grep -c .)" 1
+  # Negative control: unparked, it is pending again.
   "$AGENT_ASK" unpark "$parked" 2>/dev/null
-  run "$Q" count
-  assert_output 2
+  assert_equal "$("$AGENT_ASK" list --all --pending | grep -c .)" 2
 }
 
 @test "the panel hides parked asks until P, and P again hides them" {
@@ -731,9 +730,6 @@ transcript() {
   assert_output ''
   run rows
   assert_equal "$(cut -f1 <<<"$output" | tr '\n' ' ')" "$live "
-  # The status bar count never counted parked asks, hidden or not.
-  run "$Q" count
-  assert_output 1
   # Typing an answer, P is a letter.
   echo "typing - $live" >"$QUESTIONS_STATE"
   run "$Q" key P "$live"

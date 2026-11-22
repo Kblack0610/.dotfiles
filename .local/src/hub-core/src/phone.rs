@@ -1,7 +1,7 @@
 //! The phone widget's rows: `hub phone --json`, published by `agent-mqtt-publish` and laid out by
 //! home-config's `phone_widget.jinja`. Plain text and a level, no markup, so the layout lives in
 //! one place. Needs come from `home::Home`, so the phone and the hub count the same rows and word
-//! the same kind split (`Home::waiting`, `Home::split`); the phone keeps no count of its own.
+//! the same kind split (`Home::waiting`, `Home::parts`); the phone keeps no count of its own.
 //!
 //! The System block is not here: it is read in the cluster, so it still shows with this machine off.
 
@@ -101,7 +101,7 @@ pub fn red_repos(home: &Home) -> Vec<&str> {
         .collect()
 }
 
-/// The Needs you rows: Home's one count and its one kind split (`Home::waiting`, `Home::split`),
+/// The Needs you rows: Home's one count and its one kind split (`Home::waiting`, `Home::parts`),
 /// then where the rows sit and the oldest wait.
 fn needs(home: &Home, now: i64) -> Vec<Row> {
     let count = home.waiting().count;
@@ -109,7 +109,7 @@ fn needs(home: &Home, now: i64) -> Vec<Row> {
         return vec![row(Level::Ok, "needs", "Needs you: nothing")];
     }
     let split: Vec<String> = home
-        .split()
+        .parts()
         .iter()
         .map(|(label, n)| format!("{label} {n}"))
         .collect();
@@ -772,7 +772,7 @@ mod tests {
         assert_eq!(home.waiting().count, 4);
         assert_eq!(
             needs[0],
-            "Needs you: 4 (Question 2, Your turn 1, Blocked 1)"
+            "Needs you: 4 (Question 2, Your turn 1, Blocked 1, Only you 4)"
         );
         assert!(needs[1].starts_with("dotfiles 1"), "{}", needs[1]);
     }

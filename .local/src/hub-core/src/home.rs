@@ -699,6 +699,11 @@ impl Home {
     pub fn waiting(&self) -> Waiting {
         Waiting {
             count: self.needs.len(),
+            human: self
+                .needs
+                .iter()
+                .filter(|n| n.score.as_ref().is_none_or(|s| s.human))
+                .count(),
             sessions: self
                 .needs
                 .iter()
@@ -722,12 +727,30 @@ impl Home {
             .filter(|(_, n)| *n > 0)
             .collect()
     }
+
+    /// The Needs you card's parts, one per figure: the kind split, then `ONLY_YOU`, the rows only
+    /// the human can answer, counted here once so no reader filters the rows itself (the
+    /// shepherd's "N need you", ar-4395). `ONLY_YOU` is always there, 0 included, because a
+    /// reader must tell "none" from "not read".
+    pub fn parts(&self) -> Vec<(&'static str, usize)> {
+        let mut parts = self.split();
+        parts.push((ONLY_YOU, self.waiting().human));
+        parts
+    }
 }
+
+/// The Needs you part that counts the rows only the human can answer (`Score::human`): the
+/// rows the judge left to a machine are in the headline but not here. A row with no score (a
+/// condition: a red, a stopped dispatch hold) is counted, since only a judged ask is ever a
+/// machine's; the shepherd's old jq filter dropped them (`null` is not true).
+pub const ONLY_YOU: &str = "Only you";
 
 /// The count of Needs you rows and the link that opens them.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Waiting {
     pub count: usize,
+    /// How many of those rows only the human can answer (`Score::human`).
+    pub human: usize,
     /// How many of those rows are sessions waiting on a dialog: the number on Sessions' tab.
     pub sessions: usize,
     pub href: String,
@@ -1892,6 +1915,10 @@ mod tests {
                 "gate"
             ]
         );
+        // Only you is the part the shepherd's settle page reads: the 7 rows less the 2 the judge
+        // left to a machine, so no reader filters the rows itself.
+        assert_eq!((h.waiting().count, h.waiting().human), (7, 5));
+        assert_eq!(h.parts().last(), Some(&(ONLY_YOU, 5)));
         // The project is the one the row carries: a freqtrade_trading_attempt worktree is trader.
         assert_eq!(h.needs[0].project, "trader");
         // (1 + session + 3 phases left) * 30 min.

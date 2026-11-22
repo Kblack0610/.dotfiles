@@ -5383,6 +5383,31 @@ live_merges() {
   assert_output --partial 'merges/h: platform 0.1'
 }
 
+@test "throughput: a repo with no clone on this machine reads unread, never merges: none (nc-56)" {
+  live_merges
+  rm -rf "$SANDBOX/plat"
+  BENCH_NOW=$T0 run "$SUBJECT" throughput
+  assert_success
+  assert_line 'merges: none in the repos read'
+  refute_line 'merges: none'
+  assert_line 'merges unread (no mapped repo, or no clone here that fetches): platform'
+}
+
+@test "throughput: a readable repo keeps its merges/h beside an unmapped project's unread line (nc-56)" {
+  live_merges
+  printf '{"epoch":%s,"project":"unmapped","bucket":"WORKING"}\n' $((T0 - 600)) >> "$FLEET_BENCH_DIR/progress.jsonl"
+  BENCH_NOW=$T0 run "$SUBJECT" throughput
+  assert_line 'merges/h: platform 0.5'
+  assert_line 'merges unread (no mapped repo, or no clone here that fetches): unmapped'
+}
+
+@test "throughput: an unreadable project map is named as such, never as a project (nc-56)" {
+  live_merges
+  export BENCH_PROJECT_MAP="$SANDBOX/gone.json"
+  BENCH_NOW=$T0 run "$SUBJECT" throughput
+  assert_line 'merges unread: the project map is unreadable'
+}
+
 @test "findings: a repo that cannot be fetched is blind, its old refs are not read as no merges" {
   live_merges
   git -C "$SANDBOX/plat" remote set-url origin "$SANDBOX/gone.git"
