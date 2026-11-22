@@ -1888,7 +1888,18 @@ SH
   # an ask with no live session and no resume is filed as a row, saying the judge answered
   "$AGENT_ASK" deliver --all 2>/dev/null
   assert_called "notes ptask"
-  assert_equal "$("$AGENT_ASK" count --all)" 2
+  assert_equal "$("$AGENT_ASK" list --all --pending | grep -c .)" 2
+}
+
+@test "count --all is Home's Question figure through needs-figure, ? when unread; a project's count is its own pending files" {
+  post demo 'ship it?' >/dev/null
+  printf '#!/bin/sh\n[ "$1" = needs_question ] && echo 17 || echo "?"\n' >"$SANDBOX/bin/needs-figure"
+  chmod +x "$SANDBOX/bin/needs-figure"
+  assert_equal "$("$AGENT_ASK" count --all)" 17
+  assert_equal "$("$AGENT_ASK" count demo)" 1
+  # Negative control: no reader, no count; never a 0.
+  rm "$SANDBOX/bin/needs-figure"
+  assert_equal "$("$AGENT_ASK" count --all)" '?'
 }
 
 # 2026-11-07: the judge answered itX9A3 under a queued phase, and agent-queue releases an ask only

@@ -64,7 +64,7 @@ pub struct Alert {
     pub slug: String,
     /// Who is fixing it while its fix is in hand and not past its due time: the item's tmux
     /// session, else its slug while it waits to start. Empty when it has no owner, its fix
-    /// did not hold, it waits on someone or is late: the rows `needs_you` keeps.
+    /// did not hold, it waits on someone or is late: the rows `unfixed` keeps.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub fixing_by: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -105,7 +105,7 @@ impl Alert {
     /// True when the overview (Home's Alerts card, and the phone widget's with it) shows this
     /// row to the human: it has a hue and nobody is fixing it on time. A row with an owner in
     /// hand reads "being fixed by <fixing_by>" there instead; the Alerts tab lists every row.
-    pub fn needs_you(&self) -> bool {
+    pub fn unfixed(&self) -> bool {
         self.hue() != Level::Ok && self.fixing_by.is_empty()
     }
 }
@@ -279,9 +279,9 @@ pub struct Counts {
     pub red_now: usize,
     pub errors: usize,
     pub no_owner: usize,
-    /// Rows the overviews show the human (`Alert::needs_you`), and the rows with a fix in hand
+    /// Rows the overviews show the human (`Alert::unfixed`), and the rows with a fix in hand
     /// on time that they read as "being fixed by <session>".
-    pub need_you: usize,
+    pub unfixed: usize,
     pub being_fixed: usize,
     pub fixes_open: usize,
     pub fixes_settled: usize,
@@ -648,7 +648,7 @@ fn counted(firing: &[Alert], fixes: Option<&Reds>, watches: &[Watch]) -> Counts 
         tripped: firing.iter().filter(|a| a.in_state("trip")).count(),
         errors: firing.iter().filter(|a| a.error()).count(),
         no_owner: firing.iter().filter(|a| a.in_state("no owner")).count(),
-        need_you: firing.iter().filter(|a| a.needs_you()).count(),
+        unfixed: firing.iter().filter(|a| a.unfixed()).count(),
         being_fixed: firing.iter().filter(|a| !a.fixing_by.is_empty()).count(),
         fixes_open: fixes.map_or(0, |r| r.open.len()),
         fixes_settled: fixes.map_or(0, |r| r.settled.len()),
@@ -1172,7 +1172,7 @@ mod tests {
         let a = join(&infra(&[]), Ok(ws), Ok(fixes), Ok(String::new()), NOW);
         let by = |w: &str| {
             let r = a.firing.iter().find(|r| r.what == w).unwrap();
-            (r.fixing_by.as_str(), r.needs_you())
+            (r.fixing_by.as_str(), r.unfixed())
         };
         assert_eq!(by("on-time"), ("dotfiles-agent-7", false));
         assert_eq!(by("queued"), ("ar-8", false));
@@ -1186,8 +1186,8 @@ mod tests {
             a.firing.iter().find(|r| r.what == "retried").unwrap().owner,
             "ar-7 fixing"
         );
-        assert_eq!((a.counts.need_you, a.counts.being_fixed), (5, 3));
-        // The tab still lists and hues every one: only the overviews read `needs_you`.
+        assert_eq!((a.counts.unfixed, a.counts.being_fixed), (5, 3));
+        // The tab still lists and hues every one: only the overviews read `unfixed`.
         assert_eq!((a.counts.tripped, a.level), (8, Level::Red));
     }
 

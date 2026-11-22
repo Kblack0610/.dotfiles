@@ -56,7 +56,7 @@
 #   agent-ask wait-delivered <id>       wait for the answer to go out (inotify, 120 s guard), then
 #                                       print done, failed or the state it is still in
 #   agent-ask cancel <id> [reason...]   flip to cancelled
-#   agent-ask count [project|--all]     number of pending asks, parked ones left out (for badges)
+#   agent-ask count [project|--all]     a project's pending asks, parked ones left out (for badges); --all is Home's Question count, ? when unread
 #   agent-ask resumable [project|--all] answered asks whose `resume` has not run yet
 #   agent-ask mark-resumed <id>         stamp `resumed_at`; the answer is consumed
 #   agent-ask recommend <id> <option> [why...]
@@ -891,6 +891,11 @@ cmd_list() {
 
 cmd_count() {
   local key="${1:-}"; [ -n "$key" ] || key="$(resolve_project)"
+  # --all is the fleet figure: Home's Question count (needs-figure), the one every surface shows,
+  # "?" when it cannot be read (ar-4395). One project's count stays its own pending files.
+  if [ "$key" = "--all" ]; then
+    local n; n="$(needs-figure needs_question 2>/dev/null)"; echo "${n:-?}"; return 0
+  fi
   cmd_list "$key" --pending | grep -c . || true
 }
 
