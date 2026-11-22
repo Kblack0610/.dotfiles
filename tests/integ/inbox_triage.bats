@@ -282,18 +282,18 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   [ "$(jq '[.rows[] | select(.text | test("step (one|two)"))] | length' <<<"$output")" = 0 ] || fail "a step is a board row: $output"
 }
 
-@test "the lane rule names the projects an untagged agent worker takes, and only with such a worker" {
+@test "the lane rule names the projects dispatch covers (fleet-dispatch covered), and only when it covers some" {
   sheet '- the gun sound is off\n' ''
   answer '{"n": 1, "action": "skip", "why": "test"}'
   run "$TRIAGE"
   refute_output --partial 'failed'
   run grep -c 'agents do the work unattended' "$NOTES_FIXTURE/prompt.txt"
   assert_output 0
-  echo '{"board": {"lane": "agent", "untagged": true, "projects": ["scratch"]}, "x": {"projects": ["other"]}}' >"$SANDBOX/w.json"
-  export DISPATCH_WORKERS="$SANDBOX/w.json"
+  printf '#!/usr/bin/env bash\n[ "$1" = covered ] && printf "scratch\\nother\\n"\n' >"$SANDBOX/bin/fleet-dispatch"
+  chmod +x "$SANDBOX/bin/fleet-dispatch"
   rm -f "$HOME/.local/state/notes/ingest.jsonl"
   run "$TRIAGE"
-  run grep -o 'lane is agent unless a step needs a person.*: scratch\.' "$NOTES_FIXTURE/prompt.txt"
+  run grep -o 'lane is agent unless a step needs a person.*: scratch, other\.' "$NOTES_FIXTURE/prompt.txt"
   assert_success
 }
 

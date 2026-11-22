@@ -354,9 +354,9 @@ plan_fixture() {
 }
 
 board_workers() {
-  echo '{"requested": {"max_tier": 2, "projects": ["game"], "only_tag": "requested"},
+  echo '{"requested": {"max_tier": 2, "only_tag": "requested"},
          "fleet": {"max_tier": 1},
-         "board": {"max_tier": 2, "projects": ["game"], "lane": "agent", "untagged": true}}' > "$DISPATCH_WORKERS"
+         "board": {"max_tier": 2, "lane": "agent", "untagged": true}}' > "$DISPATCH_WORKERS"
 }
 
 # c_area <key> <feed rank>: a candidate on project game
