@@ -3598,6 +3598,55 @@ empty_submodule_fixture() {
   [ ! -e "$FLEET_SHEPHERD_DIR/labels/sid-9" ]
 }
 
+@test "label self in tmux is the live row in this pane, not CLAUDE_CODE_SESSION_ID (ar-4148)" {
+  bats_require_minimum_version 1.5.0
+  landed_fixture
+  # the env id differs from the row's transcript id, as on hub/dotfiles:3 (2026-11-20)
+  TMUX="$SANDBOX/tmux/lab,1,0" TMUX_PANE=%7 CLAUDE_CODE_SESSION_ID=sid-env \
+    run "$REPO_ROOT/.local/bin/fleet-sessions" label self +manual
+  assert_success
+  assert_output manual
+  [ -f "$FLEET_SHEPHERD_DIR/labels/sid-9" ]
+  [ ! -e "$FLEET_SHEPHERD_DIR/labels/sid-env" ]
+  # a pane with no live row is refused, not filed under the env id
+  TMUX="$SANDBOX/tmux/lab,1,0" TMUX_PANE=%99 CLAUDE_CODE_SESSION_ID=sid-env \
+    run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions" label self +chat
+  assert_failure 2
+  [[ "$stderr" == *"no live session matches 'lab/%99'"* ]]
+  [ ! -e "$FLEET_SHEPHERD_DIR/labels/sid-env" ]
+  # the same pane id on another server is not this session
+  TMUX="$SANDBOX/tmux/hub,1,0" TMUX_PANE=%7 run "$REPO_ROOT/.local/bin/fleet-sessions" label self +chat
+  assert_failure 2
+  # NEGATIVE CONTROL: outside tmux the env id is the only identity
+  CLAUDE_CODE_SESSION_ID=sid-env run "$REPO_ROOT/.local/bin/fleet-sessions" label self +chat
+  assert_output chat
+  [ -f "$FLEET_SHEPHERD_DIR/labels/sid-env" ]
+}
+
+@test "tick prunes the label file of a session with no row, keeps a live one's, a blinked one's and one written during the pass (ar-4148)" {
+  landed_fixture
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  "$REPO_ROOT/.local/bin/fleet-sessions" label s1 +manual >/dev/null
+  mkdir -p "$FLEET_SHEPHERD_DIR/labels"
+  echo manual > "$FLEET_SHEPHERD_DIR/labels/sid-gone"
+  echo manual > "$FLEET_SHEPHERD_DIR/labels/sid-new"
+  touch -d '-1 hour' "$FLEET_SHEPHERD_DIR/labels/sid-gone" "$FLEET_SHEPHERD_DIR/labels/sid-9"
+  touch -d '+1 hour' "$FLEET_SHEPHERD_DIR/labels/sid-new"
+  # a tick that cannot read agent-panel keeps the last rows, so the live session keeps its labels
+  cp "$SANDBOX/bin/agent-panel" "$SANDBOX/panel.ok"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/agent-panel"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ "$(cat "$FLEET_SHEPHERD_DIR/labels/sid-9")" = manual ]
+  [ ! -e "$FLEET_SHEPHERD_DIR/labels/sid-gone" ]
+  [ -f "$FLEET_SHEPHERD_DIR/labels/sid-new" ]
+  cp "$SANDBOX/panel.ok" "$SANDBOX/bin/agent-panel"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ "$(cat "$FLEET_SHEPHERD_DIR/labels/sid-9")" = manual ]
+  [ -f "$FLEET_SHEPHERD_DIR/labels/sid-new" ]
+}
+
 @test "label refuses an unknown session and a malformed op" {
   landed_fixture
   run "$REPO_ROOT/.local/bin/fleet-sessions" label nope +x

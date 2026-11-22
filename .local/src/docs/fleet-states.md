@@ -182,11 +182,11 @@ A fix that deletes a copy adds its row in the same PR, so the copy cannot come b
 
 ## Labels and stages on screen
 
-Labels live in `~/.agent/shepherd/labels/<session id>`, one per line, and nowhere else. The window options are a copy for display: nothing reads them back as fact.
+Labels live in `~/.agent/shepherd/labels/<session id>`, one per line, and nowhere else. The window options are a copy for display: nothing reads them back as fact. Each tick removes the file of a session with no row (`prune_labels`; a row a failed read missed keeps its last cells, so a blink removes nothing).
 
 | To | Do |
 | --- | --- |
-| Tag a session | `fleet-sessions label <who> +name`; `-name` clears, `^name` flips, no op prints. `<who>` is a target, a tmux session or `self` |
+| Tag a session | `fleet-sessions label <who> +name`; `-name` clears, `^name` flips, no op prints. `<who>` is a target, a tmux session or `self`: the live row in this tmux pane, or `$CLAUDE_CODE_SESSION_ID` outside tmux (inside it that id can differ from the row's, ar-4148) |
 | See a session's stage and labels in the status bar | Nothing: every tick sets them on its window. STALLED shows red, LANDED and DONE green, PARKED dim, CHAT uncoloured (it is not attention), labels in orange brackets. WORKING and NEEDS print nothing (NEEDS is already the `!` glyph) |
 | See how many sessions sit in each stage | The waybar agents chip: the bar is the robot coloured by fleet health, red when every `fleet_sessions.prom` is stale, amber with a stalled session, no session numbers on Prometheus or a stale file beside a fresh one, green otherwise, then the fleet total (every session on every host, chat, stalled and parked included) and two counts within it: `~` working (amber) and a check mark ready, landed or done (green). What needs you is the `custom/needs` chip first in the row, Home's one count. The hover opens with one sentence (waiting, stuck, working, as of when, on how many hosts), then Waiting, Stuck and Working sections, a row per session named by project and task with its reason, idle time and target, filled to the `bar` channel's line cap in that order; a last line counts what was cut, and one says how many are ready to close. Click opens agent-panel, right-click `hub --tab sessions`; `modules.sh toggle agents` hides it |
 | See the fleet on the phone | The Home Assistant Template widget shows `fleet-overview`: each waybar chip's `phone` lines (sessions with a glyph strip per project, queue and capacity, CI, red now), published as `summary/overview` by `agent-mqtt-publish`. To show another chip there, give it a `phone` argument to `emit` and add it to `CHIPS` in `fleet-overview`. Widget setup: home-config `apps/home-assistant/README.md` |
