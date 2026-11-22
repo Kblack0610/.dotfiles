@@ -278,6 +278,10 @@ As of 03:45, as the hub Queue tab read it then."
   run "$MODULE"
   run tip
   assert_line "<b>Room</b>  $(y 24) of 24 sessions, load $(r 40) of 36"
+  cardfeed nopill=queue.Load
+  run "$MODULE"
+  run tip
+  assert_line "<b>Room</b>  $(g 21) of 24 sessions, load -"
   cardfeed nopill=queue.Sessions nopill=queue.Load
   run "$MODULE"
   run tip

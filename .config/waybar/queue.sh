@@ -50,7 +50,7 @@ done < <(jq -r --argjson w "$BAR_WIDTH" "$BAR_JQ"'
         | to_entries[] | select(.value.kind == "row") | .key as $k | .value
         | (.sub // "" | clean) as $do
         | if $f != null and $k > $f then
-            "flow\t\(.level)\t\(.text | clean | fit($w - 8 - (if $do == "" then 0 else ($do | length) + 2 end)) | esc)\t\($do | esc)"
+            "flow\t\(.level)\t\(.text | clean | fit([$w - 8 - (if $do == "" then 0 else ($do | length) + 2 end), 20] | max) | esc)\t\($do | esc)"
           else "err\t\(.text | clean | fit($w - 24) | esc)" end)
     else empty end)' <<< "$CARDS")
 [ -n "$qlevel" ] || no_card "summary/cards has no Queue card"
@@ -110,8 +110,12 @@ esac
 [ -n "$drain" ] && today+="; queue $drain"
 tip+=$'\n\n'"<b>Today</b>  $today"
 
-# Room: the sessions and load parts, each number in its part's colour; no parts, no pass read.
-room() { local v="${PV[queue.$1]}"; printf '%s %s' "$(hue "${PL[queue.$1]}" "${v%% *}")" "${v#* }"; }
+# Room: the sessions and load parts, each number in its part's colour, - for a part the card lacks;
+# no Sessions part, no pass read.
+room() {
+  local v="${PV[queue.$1]:-}"
+  if [ -z "$v" ]; then printf -; else printf '%s %s' "$(hue "${PL[queue.$1]}" "${v%% *}")" "${v#* }"; fi
+}
 if [ -n "${PV[queue.Sessions]:-}" ]; then
   tip+=$'\n'"<b>Room</b>  $(room Sessions) sessions, load $(room Load)"
 else

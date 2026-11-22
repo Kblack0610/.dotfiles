@@ -349,26 +349,26 @@ pub fn queue(
 
 /// The room the last dispatch pass had, as parts: sessions against the target (amber once the run
 /// units fill it, the gates and not the count decide when the machine is full) and load against its
-/// cap (amber from 80%, red past it), and the focus projects that go first. None without a pass.
+/// cap (amber from 80%, red past it; none when the pass sent no load), and the focus projects that go
+/// first. None without a pass.
 fn room(mut c: Card, v: &crate::queue_verdict::Verdict) -> Card {
     let d = |k: &str| v.get(&format!("dispatch.{k}"));
     if let Some(cap) = d("room_max_live") {
         let units = d("room_live_runs").unwrap_or(0);
         let total = d("room_total_live").map_or("-".into(), |n| n.to_string());
-        let (load, lcap) = (d("room_load").unwrap_or(0), d("room_load_cap").unwrap_or(0));
-        let ll = if load > lcap {
-            Level::Red
-        } else if load * 100 >= lcap * 80 {
-            Level::Warn
-        } else {
-            Level::Ok
-        };
         let ul = if units >= cap { Level::Warn } else { Level::Ok };
-        c = c.part("Sessions", format!("{total} of {cap}"), ul).part(
-            "Load",
-            format!("{load} of {lcap}"),
-            ll,
-        );
+        c = c.part("Sessions", format!("{total} of {cap}"), ul);
+        let f = |k: &str| v.fact(&format!("dispatch.{k}"));
+        if let (Some(load), Some(lcap)) = (f("room_load"), f("room_load_cap")) {
+            let ll = if load > lcap {
+                Level::Red
+            } else if load >= lcap * 0.8 {
+                Level::Warn
+            } else {
+                Level::Ok
+            };
+            c = c.part("Load", format!("{} of {}", load.floor(), lcap.floor()), ll);
+        }
     }
     match d("focus_projects") {
         Some(n) if n > 0 => c.part("Focus first", n, Level::Warn),
@@ -1541,6 +1541,28 @@ mod tests {
             ["Flowing"]
         );
         assert!(c.parts.iter().all(|p| p.label != "Sessions"));
+        // The load is judged on its fractions (24.6 is over a cap of 24.5), and a pass that sent no
+        // load has a Sessions part and no Load part, never a load of 0.
+        let mut room = |load: &[(&str, f64)]| {
+            let mut series = vec![
+                s("summary_dispatch", "last_pass_epoch", 990.0),
+                s("summary_dispatch", "room_max_live", 40.0),
+                s("summary_dispatch", "room_total_live", 20.0),
+            ];
+            series.extend(load.iter().map(|(k, v)| s("summary_dispatch", k, *v)));
+            held.verdict = Some(crate::queue_verdict::Verdict::from_series(&series, 1000));
+            let c = queue(&held, None, 1000);
+            let load = c.parts.iter().find(|p| p.label == "Load");
+            (
+                c.parts.iter().any(|p| p.label == "Sessions"),
+                load.map(|p| (p.value.clone(), p.level)),
+            )
+        };
+        assert_eq!(
+            room(&[("room_load", 24.6), ("room_load_cap", 24.5)]),
+            (true, Some(("24 of 24".to_string(), Level::Red)))
+        );
+        assert_eq!(room(&[("room_load", 24.6)]), (true, None));
     }
 
     #[test]

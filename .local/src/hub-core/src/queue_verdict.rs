@@ -69,8 +69,8 @@ pub struct Verdict {
     pub paused: Option<String>,
     /// Each account with no room and why, when the account gate held the pass.
     pub accounts: Vec<(String, String)>,
-    /// The source host's facts by `<kind>.<key>`, floored: every one is a count, a 0/1 or an epoch.
-    pub facts: BTreeMap<String, i64>,
+    /// The source host's facts by `<kind>.<key>`: counts, 0/1s and epochs, and the load and its cap.
+    pub facts: BTreeMap<String, f64>,
     /// Why Prometheus could not be read; the verdict is then that one line.
     pub error: Option<String>,
 }
@@ -124,8 +124,13 @@ impl Verdict {
         }
     }
 
-    /// A fact of the source host, None when the feed lacks it.
+    /// A fact of the source host floored, None when the feed lacks it.
     pub fn get(&self, key: &str) -> Option<i64> {
+        self.fact(key).map(|v| v.floor() as i64)
+    }
+
+    /// A fact of the source host as published (the load and its cap carry fractions).
+    pub fn fact(&self, key: &str) -> Option<f64> {
         self.facts.get(key).copied()
     }
 
@@ -365,8 +370,8 @@ impl Verdict {
 
 /// The facts by `<kind>.<key>` of the host whose pass ran last; with no pass on record anywhere,
 /// every host's, by their max. A second scrape of one host counts once (the max).
-fn source_facts(series: &[Series]) -> BTreeMap<String, i64> {
-    let mut all: Vec<(String, String, i64)> = vec![];
+fn source_facts(series: &[Series]) -> BTreeMap<String, f64> {
+    let mut all: Vec<(String, String, f64)> = vec![];
     for s in series {
         let (Some(t), Some(name), Some(v)) = (
             s.labels.get("topic"),
@@ -388,12 +393,12 @@ fn source_facts(series: &[Series]) -> BTreeMap<String, i64> {
         }) else {
             continue;
         };
-        all.push((host.to_string(), format!("{kind}.{name}"), v.floor() as i64));
+        all.push((host.to_string(), format!("{kind}.{name}"), v));
     }
     let src = all
         .iter()
         .filter(|(_, k, _)| k == "dispatch.last_pass_epoch")
-        .max_by_key(|(_, _, v)| *v)
+        .max_by(|a, b| a.2.total_cmp(&b.2))
         .map(|(h, _, _)| h.clone());
     let mut out = BTreeMap::new();
     for (h, k, v) in all {

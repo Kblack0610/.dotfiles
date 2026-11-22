@@ -72,7 +72,8 @@ impl Cache {
         }
     }
 
-    /// `hub_queue::Queue::read`, as Home and the pipeline line draw it.
+    /// `hub_queue::Queue::read` with no flow verdict, as Home and the pipeline line draw it; the
+    /// cards add theirs (`verdict`).
     pub async fn queue(&self) -> hub_queue::Queue {
         let (all, stats) = tokio::join!(self.all(), self.stats());
         hub_queue::Queue::from_reads(all, stats)
@@ -113,6 +114,18 @@ pub struct QueueQuery {
     pub sel: String,
 }
 
+/// The flow verdict now, off the async workers and beside the items' read (a Prometheus call); a
+/// read that died says so in its one line, so the items still show. The tab and the Queue card read it.
+pub(crate) async fn verdict() -> hub_core::queue_verdict::Verdict {
+    let now = chrono::Utc::now().timestamp();
+    tokio::task::spawn_blocking(move || hub_core::queue_verdict::Verdict::read(now))
+        .await
+        .unwrap_or_else(|e| hub_core::queue_verdict::Verdict {
+            error: Some(format!("the verdict read died: {e}")),
+            ..Default::default()
+        })
+}
+
 /// Every active item plus those finished in the last `DONE_DAYS` days, read through hub-core,
 /// then filtered and sorted by `hub_core::table` so the page only draws (`render`), and the last
 /// flow verdict (`flow`: hub-core `queue_verdict` lines, each its sentence and level, the lines the
@@ -123,19 +136,12 @@ pub async fn list(
     Query(q): Query<QueueQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let now = chrono::Utc::now();
-    // The verdict is a Prometheus call, so it runs beside the items' read.
-    let (items, verdict) = tokio::join!(
-        s.queue.recent(),
-        tokio::task::spawn_blocking(move || {
-            hub_core::queue_verdict::Verdict::read(now.timestamp())
-        })
-    );
+    let (items, verdict) = tokio::join!(s.queue.recent(), verdict());
     let hq = hub_queue::Queue {
         items: items.map_err(|e| bad(StatusCode::BAD_REQUEST, e))?,
         ..Default::default()
     };
     let flow: serde_json::Value = verdict
-        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .lines(|| hub_core::bar::ready(&hq, now.timestamp()))
         .iter()
         .map(|l| serde_json::json!({ "line": l.said(), "level": l.level }))
