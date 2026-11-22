@@ -4329,6 +4329,23 @@ SS
   assert_output ''
 }
 
+@test "prs lists the 20 oldest unowned branches and counts the rest, --check branches all of them (ar-4470)" {
+  prs_fixture
+  cat > "$SANDBOX/bin/branches-stub" <<'STUB'
+#!/usr/bin/env bash
+for i in $(seq 1 22); do printf '{"repo":"o/r","branch":"b%s","sha":"s","commit":"2026-01-01T00:00:00Z","kind":"pushed"}\n' "$i"; done
+STUB
+  chmod +x "$SANDBOX/bin/branches-stub"
+  export BENCH_BRANCHES_CMD=branches-stub   # on PATH: the sandbox path has a space
+  run "$SUBJECT" prs
+  assert_success
+  assert_line 'unowned branches (land, open a PR or delete): 22'
+  assert_line '  and 2 more: fleet-bench prs --check branches'
+  [ "$(grep -c '^  o/r b' <<<"$output")" = 20 ]
+  run "$SUBJECT" prs --check branches
+  [ "$(grep -c '^o/r b' <<<"$output")" = 22 ]
+}
+
 @test "pipeline --check chain-lag: an urgent or high handoff p90 over 24h past its bound trips; inside it, low, an empty window and no chain field do not (ar-3263)" {
   # NEGATIVE CONTROL: the same canned stats, each pushed past the bound in turn
   echo '{"done":{},"by_project":{},"chain":{"h24":{"urgent":{"n":5,"p50":0,"p90":60},"high":{"n":3,"p50":0,"p90":12},"low":{"n":4,"p50":900,"p90":4000}}}}' > "$QSTATS"

@@ -2442,7 +2442,7 @@ prs_all() { prs_search && prs_forgejo; }
 # salvage for a salvage/* branch, else pushed. A repo the PR store does not sync is skipped: without
 # its PRs every branch would read unowned.
 prs_branches() {
-  local dir repo key base b sha when seen=' ' prs repos
+  local dir repo key base seen=' ' prs repos
   repos=$("$SCHEDULES_SYNC" repos 2>/dev/null) || return 1
   while IFS= read -r dir; do
     [ -e "$dir/.git" ] || continue
@@ -2454,14 +2454,16 @@ prs_branches() {
     # The store names a Forgejo repo host/owner/repo, a GitHub one owner/repo.
     key=$(jq -r --arg r "$repo" 'first(.[] | select(.forge == "forgejo" and .repo == $r) | "\(.host)/\(.repo)") // $r' <<<"$repos") || continue
     prs=$("$SCHEDULES_SYNC" prs "$key" --state all 2>/dev/null) || continue
-    while IFS=$'\t' read -r b sha when; do
-      when=$(date -u -d "@$when" +%Y-%m-%dT%H:%M:%SZ) || continue   # UTC with Z: jq's date parser takes no offset
-      [ "$b" != "$base" ] && [ "$b" != origin/HEAD ] || continue
-      b=${b#origin/}
-      jq -e --arg b "$b" --arg s "$sha" 'any(.[]; .branch == $b and (.state == "OPEN" or (.state == "MERGED" and .head_sha == $s)))' <<<"$prs" >/dev/null && continue
-      jq -cn --arg r "$repo" --arg b "$b" --arg s "$sha" --arg c "$when" \
-        '{repo: $r, branch: $b, sha: $s, commit: $c, kind: (if $b | startswith("salvage/") then "salvage" else "pushed" end)}'
-    done < <(git -C "$dir" for-each-ref --no-merged "$base" --format='%(refname:short)%09%(objectname)%09%(committerdate:unix)' refs/remotes/origin)
+    # One jq over the whole branch list: a clone holds thousands of branches, a process each is minutes.
+    # commit is UTC with a Z (jq's date parser takes no offset). Owned: an open PR names the branch, or a
+    # merged PR's head is this very commit.
+    git -C "$dir" for-each-ref --no-merged "$base" --format='%(refname:lstrip=3)%09%(objectname)%09%(committerdate:unix)' refs/remotes/origin |
+      jq -Rnc --arg r "$repo" --arg base "${base#origin/}" --slurpfile prs <(printf '%s' "$prs") '
+        ($prs[0] | {open: (map(select(.state == "OPEN") | {(.branch): 1}) | add // {}),
+                    merged: (map(select(.state == "MERGED") | {"\(.branch) \(.head_sha)": 1}) | add // {}) }) as $p
+        | inputs | split("\t") | {b: .[0], sha: .[1], t: (.[2] | tonumber)}
+        | select(.b != $base and .b != "HEAD" and ($p.open[.b] | not) and ($p.merged["\(.b) \(.sha)"] | not))
+        | {repo: $r, branch: .b, sha: .sha, commit: (.t | todate), kind: (if .b | startswith("salvage/") then "salvage" else "pushed" end)}'
   done < <(jq -r '.paths | keys[]' "$BENCH_PROJECT_MAP" 2>/dev/null)
 }
 
@@ -2535,7 +2537,7 @@ cmd_prs() {
     *) jq -r "$PRS_LINE"'"open PRs: \(.prs | length), stranded after \(.bounds.idle_h)h with no live item, blocked after \(.bounds.blocked_h)h idle, aged past \(.bounds.window_d)d or a draft; idle counts from the last commit",
         (["stranded", "blocked", "aged"][] as $c | [.prs[] | select(.class == $c)] | sort_by(-.idle_h)
           | "", "\($c): \(length)", (.[] | "  " + line)),
-        "", "unowned branches (land, open a PR or delete): \(.branches | length)", (.branches | sort_by(-.idle_h)[] | "  " + branch_line)' <<<"$json" ;;
+        "", "unowned branches (land, open a PR or delete): \(.branches | length)", (.branches | sort_by(-.idle_h) | (.[:20][] | "  " + branch_line), if length > 20 then "  and \(length - 20) more: fleet-bench prs --check branches" else empty end)' <<<"$json" ;;
   esac
 }
 
