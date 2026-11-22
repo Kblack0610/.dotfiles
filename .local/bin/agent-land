@@ -754,8 +754,8 @@ own_project() {
 # its item's repo too, and parallel subagents of one coordinator share its Claude session id, so
 # `agent-queue mine` can return a sibling's item. Before anything is touched, such an item takes only
 # a PR it records (pr:, open_pr:) or whose body names it on an "Item: <slug>" line; any other PR is
-# refused, a body naming another queue item with that item in the message. stamp_item writes the line
-# only for an item --item named. Not the branch: `branch:` is the last push the Stop hook saw, and a
+# refused, a body naming another queue item with that item in the message, so stamp_item only adds the
+# line for an item --item named or one that records the PR. Not the branch: `branch:` is the last push the Stop hook saw, and a
 # run that re-cuts its branch lands from the new one in the same turn. Why: home-config #1195 got a
 # sibling subagent's "Item:" line on 2026-11-18 (ar-3047), and unity-core-playground#2985, an iOS
 # side fix with no "Item:" line, closed its session's overnight release watch on 2026-11-20 (ar-3970).

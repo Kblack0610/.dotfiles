@@ -69,7 +69,7 @@ git add <exact paths for this concern>            # NEVER add -A
 git commit -m "<type(scope): subject>"
 git push -u origin pr/<concern>
 gh pr create --fill --title "<subject>" --body "<what + why>"
-agent-land "$(gh pr view --json number -q .number)" --partial   # "get it in"; the last concern drops --partial
+agent-land "$(gh pr view --json number -q .number)" --item <slug> --partial   # "get it in"; the last concern drops --partial
 git switch "$base" && git pull --ff-only          # main now has this concern; remaining buckets stay dirty
 ```
 Every concern lands on the session's one queue item (`agent-queue add --running` first when it has none); never `gh pr merge`, which records it nowhere. If the user chose "leave PRs open," skip the merge + pull and just move to the next branch off `base` (independent file sets => no conflicts). Use the `gh-workflows` skill conventions for PR bodies.
