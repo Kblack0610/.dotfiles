@@ -106,7 +106,8 @@ list (a prs-only repo is read for this alone: no runs, schedules or quarantine),
 it changes, kept forever and compacted like the ledger. It reads pulls?state=all newest update
 first back to the last sync less an hour, the whole history on a cold start or, in a pass (never agent-land's sync-prs), once its row shape (PR_ROW) changed; GitHub's first page
 is conditional on the ETag in the store's sync.json (a 304 when no PR changed), Forgejo's is one
-page; a Forgejo pull mirror, whose PRs are off, is synced with none. A store's last sync and
+page; a Forgejo pull mirror, whose PRs are off, is synced with none. A Forgejo PR the store holds OPEN
+that the read missed and the open list lacks is read alone, and a 404 (deleted on the forge) is CLOSED. A store's last sync and
 error per repo are in that sync.json; a pass that read the list drops the entry of a repo no longer on it
 (retired, archived), which a reader would otherwise report as stale forever. No reader stores a PR fact of its own:
 run -> PR is a join against this store, so the ledger's runs carry no PR list.
@@ -938,6 +939,43 @@ def fetch_prs(forge, repo, host, entry):
     return out, etag
 
 
+def fj_vanished(host, repo, name, last, got):
+    """Rows for the PRs the store holds OPEN that this read did not update and Forgejo's open list
+    no longer has. A read since the last sync never sees a PR deleted on the forge, which then read
+    OPEN forever (home-config #943, a 404, listed stranded on 2026-11-21). Each is read alone: its
+    real row, or CLOSED on a 404. One open-list read per sync, none when the store holds no such PR.
+    A failed read here leaves those rows as they were and never fails the sync of the rows just read;
+    a repo whose PRs are off (a pull mirror) has no open list to read."""
+    seen = {p.get("number") for p in got}
+    held = [n for n, r in last.items() if r.get("state") == "OPEN" and n not in seen]
+    if not held:
+        return []
+    open_now = set()
+    try:
+        for page in range(1, PR_PAGES + 1):
+            batch = fj(host, f"repos/{repo}/pulls?state=open&limit={FJ_PAGE}&page={page}")
+            batch = batch if isinstance(batch, list) else []
+            open_now |= {p.get("number") for p in batch}
+            if len(batch) < FJ_PAGE:
+                break
+    except GhError as e:
+        if not ("error: 404" in e.detail and fj_pulls_off(host, repo)):
+            print(f"schedules-sync: PRs of {name}: open list: {e.detail}", file=sys.stderr)
+        return []
+    rows = []
+    for n in held:
+        if n in open_now:
+            continue
+        try:
+            rows.append(fj_pr_row(name, fj(host, f"repos/{repo}/pulls/{n}"), last[n]))
+        except GhError as e:
+            if "error: 404" in e.detail:
+                rows.append(dict(last[n], state="CLOSED"))
+            else:
+                print(f"schedules-sync: PRs of {name}: #{n}: {e.detail}", file=sys.stderr)
+    return rows
+
+
 def sync_prs(forge, repo, host, t, wait=True):
     """Refresh one repo's PR store and its entry in the store's sync.json, under the store's lock
     (a pass and agent-land's `sync-prs` may run at once). -> the error, or None. With wait False a held lock is that error at once:
@@ -961,6 +999,7 @@ def sync_prs(forge, repo, host, t, wait=True):
             got, etag = fetch_prs(forge, repo, host, since)
             if forge == "forgejo":
                 rows = [fj_pr_row(name, p, last.get(p.get("number"))) for p in got or [] if "number" in p]
+                rows += fj_vanished(host, repo, name, last, got or [])
             else:
                 rows = [gh_pr_row(name, p) for p in got or [] if "number" in p]
             write_ledger(last, n, torn, rows, t, pr_file(name), pr_key, None)

@@ -1474,6 +1474,62 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
   assert_output '[{"forge":"forgejo","repo":"fj.test/o/fj","number":3,"branch":"fix-y","base":"develop","state":"MERGED","draft":false,"title":"fix","author":"bob","labels":["bug","landing-queue"],"created_at":null,"updated_at":"2025-11-06T10:00:00Z","closed_at":null,"merged_at":"2025-11-06T10:00:00Z","merge_sha":"f3","head_sha":"h3","url":null,"links":[],"items":[],"revert":null}]'
 }
 
+@test "PR store, forgejo: an OPEN PR the forge deleted (a 404) or closed out of the read's window stops reading OPEN" {
+  fj_list o/fj
+  fj_page | fj_serve 1
+  pr() { jq -nc --argjson n "$1" --arg s "$2" --arg u "$3" '{number: $n, state: $s, merged: false, title: "t\($n)",
+    head: {ref: "b\($n)", sha: "h\($n)"}, base: {ref: "main"}, user: {login: "o"}, updated_at: $u}'; }
+  pr 1 open 2025-11-06T10:00:00Z > "$SANDBOX/p1"; pr 2 open 2025-11-06T10:00:00Z > "$SANDBOX/p2"; pr 3 open 2025-11-06T10:00:00Z > "$SANDBOX/p3"
+  jq -sc . "$SANDBOX/p1" "$SANDBOX/p2" "$SANDBOX/p3" > "$FJD/$(key "$(fj_pulls o/fj 1)")"
+  run "$SUBJECT"
+  assert_success
+  # a day on: the window read sees none of them; 1 is still open, 2 was deleted (no file: a 404), 3 closed
+  echo '[]' > "$FJD/$(key "$(fj_pulls o/fj 1)")"
+  jq -sc . "$SANDBOX/p1" > "$FJD/$(key "repos/o/fj/pulls?state=open&limit=50&page=1")"
+  pr 3 closed 2025-11-06T11:00:00Z > "$FJD/$(key repos/o/fj/pulls/3)"
+  SCHEDULES_NOW=1762520000 run "$SUBJECT"
+  assert_success
+  run "$SUBJECT" prs fj.test/o/fj --state open
+  assert_success
+  [ "$(jq -c '[.[].number]' <<<"$output")" = '[1]' ]
+  run "$SUBJECT" prs fj.test/o/fj
+  [ "$(jq -c 'map({number, state}) | sort_by(.number)' <<<"$output")" = '[{"number":1,"state":"OPEN"},{"number":2,"state":"CLOSED"},{"number":3,"state":"CLOSED"}]' ]
+  # a third pass reads no PR alone: 2 and 3 are no longer OPEN, and 1 is on the open list
+  : > "$FJD/calls"
+  SCHEDULES_NOW=1762600000 run "$SUBJECT"
+  assert_success
+  ! grep -q 'pulls/[0-9]' "$FJD/calls"
+}
+
+@test "PR store, forgejo: a failed open-list or single read keeps the held PR OPEN and never loses the rows the window read" {
+  fj_list o/fj
+  fj_page | fj_serve 1
+  pr() { jq -nc --argjson n "$1" --arg u "$2" '{number: $n, state: "open", merged: false, title: "t\($n)",
+    head: {ref: "b\($n)", sha: "h\($n)"}, base: {ref: "main"}, user: {login: "o"}, updated_at: $u}'; }
+  pr 4 2025-11-06T10:00:00Z | jq -sc . > "$FJD/$(key "$(fj_pulls o/fj 1)")"
+  run "$SUBJECT"
+  assert_success
+  # the window read brings a new PR 5; 4 is off the open list but its own read fails (not JSON, no 404)
+  pr 5 2025-11-07T10:00:00Z | jq -sc . > "$FJD/$(key "$(fj_pulls o/fj 1)")"
+  echo '[]' > "$FJD/$(key "repos/o/fj/pulls?state=open&limit=50&page=1")"
+  echo 'upstream 500' > "$FJD/$(key repos/o/fj/pulls/4)"
+  SCHEDULES_NOW=1762520000 run "$SUBJECT"
+  assert_success
+  assert_output --partial 'PRs of fj.test/o/fj: #4:'
+  run "$SUBJECT" prs fj.test/o/fj --state open
+  assert_success
+  [ "$(jq -c '[.[].number] | sort' <<<"$output")" = '[4,5]' ]
+  # the open list itself fails: nothing held changes, the sync still succeeds
+  rm "$FJD/$(key "repos/o/fj/pulls?state=open&limit=50&page=1")"
+  echo '{"name":"fj","has_pull_requests":true}' > "$FJD/$(key repos/o/fj)"
+  SCHEDULES_NOW=1762600000 run "$SUBJECT"
+  assert_success
+  assert_output --partial 'open list:'
+  run "$SUBJECT" prs fj.test/o/fj --state open
+  assert_success
+  [ "$(jq -c '[.[].number] | sort' <<<"$output")" = '[4,5]' ]
+}
+
 @test "PR store, forgejo: a pull mirror with PRs off is synced with none, not stale; another 404 stays an error" {
   fj_list o/fj o/gone
   fj_page | fj_serve 1
