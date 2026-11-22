@@ -4134,11 +4134,12 @@ SH
   [ "$(grep -c 'pr view 3 --repo o/three' "$SANDBOX/gh.log")" -eq 1 ] # reused across passes
   run sibling_pr "$SANDBOX/one" '[{"repo":"o/one","number":5,"state":"OPEN"}]'
   assert_output ''
-  # A view gh cannot answer adopts nothing, is named unreadable, and is not asked again this pass.
+  # A view gh cannot answer adopts the PR with CI unknown (-), is named unreadable, and is not asked again this pass.
   export VIEW_FAIL=1 FLEET_MAIN_TTL=0
   run sibling_pr "$SANDBOX/one" "$prs"
-  assert_output ''
+  assert_output "$(printf 'o/three\t3\t-\t-')"
   run sibling_pr "$SANDBOX/one" "$prs"
+  assert_output "$(printf 'o/three\t3\t-\t-')"
   [ "$(grep -c 'pr view 3' "$SANDBOX/gh.log")" -eq 2 ]
   grep -qx 'gh pr view o/three#3' "$CACHE/unreadable"
 }
@@ -4183,6 +4184,33 @@ SH
   : > "$SANDBOX/t.jsonl"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = CHAT ]
+}
+
+@test "end to end: a sibling-repo PR whose gh pr view fails is adopted with CI unknown and read as unlanded (ar-4257)" {
+  git init -q --bare "$SANDBOX/origin.git"
+  git clone -q "$SANDBOX/origin.git" "$SANDBOX/wt" 2>/dev/null
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  git -C "$SANDBOX/wt" push -q origin HEAD:main 2>/dev/null
+  git -C "$SANDBOX/wt" checkout -q -b feat/x
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"gh pr create -t x"}}]}}' > "$SANDBOX/t.jsonl"
+  echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"https://github.com/o/other/pull/42"}]}}' >> "$SANDBOX/t.jsonl"
+  local since=$(( $(date +%s) - 3600 ))
+  printf '#!/usr/bin/env bash\necho %q\n' \
+    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"idle\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$SANDBOX/wt\",\"idle_since\":$since,\"context_tokens\":5,\"plan_file\":\"\",\"transcript\":\"$SANDBOX/t.jsonl\"}" \
+    > "$SANDBOX/bin/agent-panel"
+  printf -- '-\t42\tOPEN\tNONE\t-\t-\n' > "$LEDGER_DIR/prs_o_other.tsv"
+  gh_script 'exit 1'
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-bench"
+  chmod +x "$SANDBOX/bin/fleet-assess" "$SANDBOX/bin/fleet-bench"
+  export SANDBOX XDG_CACHE_HOME="$SANDBOX/xdg"
+
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -c '[.bucket, .pr, .pr_state, .ci, .finished, .close.verdict]' <<<"$output")" = '["STALLED","42","OPEN",null,false,"keep"]' ]
+  [ "$(jq -r .close.why <<<"$output")" = 'land it: PR o/other#42 open, CI -' ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR o/other#42 open, CI unknown, not merged' ]
+  [ "$(jq -c .blockers <<<"$output")" = '["PR o/other#42 open, CI -","no plan file and nothing merged"]' ]
 }
 
 @test "pr_made_here: its own PR by session_prs, plan Phases, URL or a push of the branch; nothing else (ar-455)" {
@@ -4998,8 +5026,9 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   printf -- '-\t9\tCLOSED\tPASS\t-\t-\n' > "$LEDGER_DIR/prs_o_two.tsv"
   PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" panel "$SANDBOX/wt"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  # (the transcript does not name #2166, so pr_made_here drops it; the open o/one#7 keeps #2178 out)
-  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, no plan file, its item ucp-342 moved on (done)' ]
+  # (the transcript does not name #2166, so pr_made_here drops it; the open o/one#7 keeps #2178 out and stays unlanded)
+  [ "$(jq -r .reason <<<"$output")" = 'PR o/one#7 open, CI unknown, not merged' ]
+  [ "$(jq -r .finished <<<"$output")" = false ]
   panel "$SANDBOX/wt"
   rm -r "$d"; mkdir -p "$HOME/.agent/queue/running"
   printf 'slug: ucp-342\nproject: shape-city\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-08T02:51:57Z\nsessions: sid-9\npr: o/r#2178\n---\nskater\n' \
