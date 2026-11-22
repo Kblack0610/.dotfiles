@@ -1430,6 +1430,16 @@ EOF2
   assert_equal "$(jq -r '"\(.state) \(.status) \(.pr) \(.sessions)"' <<<"$output")" 'done ok o/r#42 sid-l'
 }
 
+@test "a PR URL that names no repo lands with no landed_by, since agent-queue refuses a bare #N there (ar-2779)" {
+  item tidy-loader
+  echo https://example.test/merge-request/42 >"$NOTES_FIXTURE/url"
+  CLAUDE_CODE_SESSION_ID=sid-l run "$LAND" 42 --item tidy-loader
+  assert_success
+  assert_line 'landed #42'
+  run agent-queue show tidy-loader --json
+  assert_equal "$(jq -r '"\(.state) \(.status) \(.landed_by // "none")"' <<<"$output")" 'done ok none'
+}
+
 @test "a human item closes the story row agent-queue add filed for it, like a board item" {
   # NEGATIVE CONTROL: before P2 agent-land closed only `from: board:` rows, so this row stayed open.
   item menus human agent bnb
@@ -1573,6 +1583,8 @@ repo_map() {
   assert_output ''
   run agent-queue show split --json
   assert_equal "$(jq -r .sessions <<<"$output")" 'sid-first sid-second'
+  # Which session landed which PR, for the outcomes credit (ar-2779).
+  assert_equal "$(jq -r .landed_by <<<"$output")" 'sid-first=o/r#42 sid-second=o/p#552'
   assert_equal "$(jq -r '"\(.state) \(.status) \(.pr) \(.merged)"' <<<"$output")" \
     'done ok o/r#42 o/p#552 fedcba9876543210fedcba9876543210fedcba98 abcdef0123456789abcdef0123456789abcdef01'
   # A re-run of either PR records nothing twice; a second PR in a repo the item carries is refused.
@@ -2646,6 +2658,8 @@ EOF2
   assert_line --partial 'item: ship partial with pr:o/r#42'
   run agent-queue show ship --json
   assert_equal "$(jq -r '[.state, .partial, .pr, .sessions] | join("|")' <<<"$output")" 'running|yes|o/r#42|sid-owner'
+  # It still landed #42, so landed_by names it (ar-2779).
+  assert_equal "$(jq -r .landed_by <<<"$output")" 'sid-lander=o/r#42'
 
   # Negative control: landing without --partial claims the item on its final landing.
   echo '{"state":"MERGED","mergeCommit":{"oid":"abcdef0123456789abcdef0123456789abcdef01"}}' >"$NOTES_FIXTURE/prior.json"
@@ -2655,7 +2669,7 @@ EOF2
   CLAUDE_CODE_SESSION_ID=sid-lander run "$LAND" 43 --item ship
   assert_success
   run agent-queue show ship --json
-  assert_equal "$(jq -r '[.state, .sessions] | join("|")' <<<"$output")" 'done|sid-owner sid-lander'
+  assert_equal "$(jq -r '[.state, .sessions, .landed_by] | join("|")' <<<"$output")" 'done|sid-owner sid-lander|sid-lander=o/r#42 sid-lander=o/p#43'
 }
 
 @test "a partial landing on an item owned via tmux session does not claim the item (ar-3368)" {
