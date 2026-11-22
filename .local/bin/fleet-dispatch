@@ -6211,7 +6211,8 @@ cmd_starved() {
   mine=$(human_urgent "$queue" | jq -c --argjson cut "$cut" 'select(.t != null and .t < $cut)')
   plans=$(jq -r 'select((.plan // "") != "") | .slug' <<<"$mine")
   # A plan phase waiting while the plan floor is met or off waits on purpose, as a plain high item does.
-  [ -z "$plans" ] || [ $(( DISPATCH_PLAN_FLOOR - $(live_plans | grep -c . || true) )) -gt 0 ] || plans=''
+  local live_pl; live_pl=$(live_plans | grep -c . || true)
+  [ -z "$plans" ] || [ $(( DISPATCH_PLAN_FLOOR - live_pl )) -gt 0 ] || plans=''
   local fmt='"\(.slug) (\(if (.plan // "") != "" then "a ready phase of a plan the human approved" else (if .priority == "urgent" then "urgent from the human" else "an ask the human made" end) end), queued \(.queued))"'
   human=$(jq -r "$fmt" <<<"$mine")
   if ! agent-hold check dispatch >/dev/null 2>&1; then
@@ -6273,8 +6274,7 @@ cmd_starved() {
     [ "$room" = 0 ]; then
     # How many approved plan phases wait on load, beside the plan load floor that lets some past it. With
     # that floor full they wait on the human's own bound, as past a met plan floor (above): not starved.
-    local live_pl note
-    live_pl=$(live_plans | grep -c . || true)
+    local note
     note="$(jq -s '[.[] | select((.plan // "") != "")] | length' <<<"$mine") approved plan phase(s) wait on load; the plan load floor has $live_pl of DISPATCH_PLAN_LOAD_FLOOR=$DISPATCH_PLAN_LOAD_FLOOR live"
     [ "${DISPATCH_PLAN_LOAD_FLOOR:-0}" -le 0 ] || [ "$live_pl" -lt "$DISPATCH_PLAN_LOAD_FLOOR" ] ||
       human=$(jq -r 'select((.plan // "") == "") | '"$fmt" <<<"$mine")
