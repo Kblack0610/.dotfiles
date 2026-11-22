@@ -20,7 +20,7 @@ function page() {
       done({ ok: status < 400, status, statusText: "", headers: { get: () => "application/json" }, json: async () => ({ path }), text: async () => "boom" }))),
     requestAnimationFrame: (f) => frames.push(f),
   });
-  vm.runInContext(readFileSync(new URL("ui.js", dir), "utf8"), ctx, { filename: "ui.js" });
+  for (const f of ["../../web-kit/kb-ui.js", "ui.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
   const settle = () => new Promise((r) => setImmediate(r));
   return {
     ctx, main, clock,

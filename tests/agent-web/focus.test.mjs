@@ -23,7 +23,7 @@ const ctx = vm.createContext({
   URLSearchParams,
   fetch: async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => [] }),
 });
-for (const f of ["ui.js", "md.js", "app.js", "outbox.js", "focus.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["../../web-kit/kb-ui.js", "ui.js", "md.js", "app.js", "outbox.js", "focus.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
 // `line` is the note line of the lane's heading and `lines` the note line of each markdown line
 // (hub-core focus); a fixture without them draws no live rows.

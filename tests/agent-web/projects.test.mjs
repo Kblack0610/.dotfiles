@@ -37,7 +37,7 @@ const ctx = vm.createContext({
     return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => a ?? [] };
   },
 });
-for (const f of ["ui.js", "charts.js", "app.js", "table.js", "actions.js", "board.js", "ladder.js", "departments.js", "projects.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["../../web-kit/kb-ui.js", "ui.js", "charts.js", "app.js", "table.js", "actions.js", "board.js", "ladder.js", "departments.js", "projects.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
 // hub_core::projects::Status as sent: the headline, then a Fact (chip label, note value) per labelled line.
 const shown = (role, text, full) => ({ role, text, ...(full ? { full } : {}) });

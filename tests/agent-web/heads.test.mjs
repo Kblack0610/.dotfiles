@@ -1,4 +1,4 @@
-// Section heads (static/ui.js secHead), run from tests/unit/agent_web_queue.bats: a head is its
+// Section heads (web-kit/kb-ui.js secHead), run from tests/unit/agent_web_queue.bats: a head is its
 // title and its count, never a sentence beside it (docs/dashboards.md, Section head). The sweep
 // reads every tab's source, so a hand-written head, and the prose it invites, cannot come back.
 import { test } from "node:test";
@@ -8,7 +8,7 @@ import vm from "node:vm";
 
 const dir = new URL("../../.local/src/agent-web/static/", import.meta.url);
 const ctx = vm.createContext({});
-vm.runInContext(readFileSync(new URL("ui.js", dir), "utf8") + ";this.secHead = secHead;", ctx, { filename: "ui.js" });
+vm.runInContext(readFileSync(new URL("../../web-kit/kb-ui.js", dir), "utf8") + ";this.secHead = kbUi.secHead;", ctx, { filename: "kb-ui.js" });
 const { secHead } = ctx;
 
 test("a head is its title and its count, escaped, with an anchor id", () => {

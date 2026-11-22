@@ -5,8 +5,9 @@
 // and `behind` when called, by which time every script has loaded.
 
 const $ = (id) => document.getElementById(id);
-const ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
-const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ESC[c]);
+// The renderers every kblab site shares are web-kit's (kb-ui.js, loaded before this file): the
+// escaper, section head, fold, error block, clamped cells and record list.
+const { esc, secHead, fold, errPanel, clamp2, clamp1, rec2, tblRec } = kbUi;
 // The empty-state words, hub_core::reading's NOT_READ and NO_DATA; its guard test keeps them equal.
 const NOT_READ = "not read", NO_DATA = "no data";
 
@@ -182,13 +183,6 @@ const tile = (l, v, c, sub, href) => {
   return `${open} style="--c:${c}"><span class="tl">${l}</span><span class="tv">${v}</span>${sub ? `<span class="ts1">${sub}</span>` : ""}${close}`;
 };
 
-// A section head: its title and its count, nothing else (docs/dashboards.md, Section head). A problem
-// the section holds is a line under the head while it holds, and level (warn, bad) hues the title,
-// so a shut fold still says so; detail is a fold; what the section is for is hub_core::layout's.
-const secHead = (id, title, n, level, tag = "h2") =>
-  `<${tag} class="sec${level === "warn" || level === "bad" ? ` ${level}` : ""}"${id ? ` id="sec-${id}"` : ""}>${esc(title)}` +
-  `${n == null || n === "" ? "" : ` <span class="n">${esc(n)}</span>`}</${tag}>`;
-
 // Card pieces for the tabs whose rows are cards (Queue, Waiting): a title row with chips, one
 // quiet line, then folds for what the human rarely needs. Every argument named html is already
 // escaped; text arguments are escaped here.
@@ -210,31 +204,12 @@ function cardLine(parts) {
 // Whether section k is open: every section starts open, and one the reader folded stays folded,
 // because paint records each fold's state in `open` (dashboards rule 4).
 const secOpen = (open, k) => !open || open[k] !== false;
-// A fold: the one <details> every tab draws. cls is its class; summary and inner are html.
-// k keys it in the tab's `open` map (paint and the toggle listeners keep that current), id anchors
-// it, open is its state, attrs any further attributes (html), sum the summary's (` class="muted fold"`).
-const fold = (cls, summary, inner, o = {}) =>
-  `<details${cls ? ` class="${cls}"` : ""}${o.k ? ` data-k="${esc(o.k)}"` : ""}${o.id ? ` id="${esc(o.id)}"` : ""}${o.attrs || ""}${o.open ? " open" : ""}>` +
-  `<summary${o.sum || ""}>${summary}</summary>${inner}</details>`;
 // A fold keyed by k, open when open[k] says so (paint or a toggle listener keeps open current).
 // A per-row detail starts shut; a section (`section` true) starts open, as secOpen says.
 const cfold = (k, summary, inner, open, section) =>
   fold("cfold", summary, inner, { k, open: section ? secOpen(open, k) : open && open[k] });
-// An error block: msg (text) in the error hue. card sizes it as a card, tag "span" draws it inline,
-// id keeps an empty one as a live region, cls adds classes. An empty msg draws the empty block.
-const errPanel = (msg, o = {}) => {
-  const tag = o.tag || "div";
-  return `<${tag} class="${[o.cls, o.card && "card", "err"].filter(Boolean).join(" ")}"${o.id ? ` id="${esc(o.id)}"` : ""}>${esc(msg || "")}</${tag}>`;
-};
 // A page that has not drawn yet: the read's error (text) in a down panel, else the wait word (text).
 const readPanel = (err, wait) => `<div class="${err ? "panel down" : "empty"}">${esc(err || wait)}</div>`;
-// A record list as a table: each row is its cells (html), the first the lead, or {cells, cls}
-// for a row that carries a class. One renderer, so no tab hand-builds a <ul> of sentences.
-const tblRec = (rows, cls = "") =>
-  `<table class="tbl rec${cls ? ` ${cls}` : ""}">${rows.map((r) => {
-    const cells = Array.isArray(r) ? r : r.cells;
-    return `<tr${r.cls ? ` class="${r.cls}"` : ""}>${cells.map((c) => `<td class="wrap">${c}</td>`).join("")}</tr>`;
-  }).join("")}</table>`;
 // A part of a tab that a phone folds to one line, so what needs attention comes first; a wider
 // screen always shows it and never sees the summary (app.css). summary is html and says the part's
 // state, because it is all a phone shows. PFOLD holds what was opened, so no tab keeps its own map.
@@ -342,16 +317,6 @@ function poll(tab, refresh, ms, shown = () => st.tab === tab) {
 // A folded Log section lists at most this many rows, then says how many older ones it left out.
 const LOG_ROWS = 50;
 const older = (n) => (n > 0 ? `<div class="muted more">+${n} older</div>` : "");
-// A table cell's text at most two lines (ui.md rule 9), the whole of it on hover.
-const clamp2 = (html, full) => `<div class="c2" title="${esc(full)}">${html}</div>`;
-// A table cell's text on one line, its second line on hover and in the selected row, the whole on hover.
-const clamp1 = (html, full) => `<div class="c12" title="${esc(full)}">${html}</div>`;
-// A record cell (ui.md rule 9): its name (html; `full` its text) on line one over a muted second
-// line (html; `subFull` its text), each one line cut with an ellipsis and whole on hover, so every
-// row is the same two lines high.
-const rec2 = (html, full, sub, subFull) =>
-  `<div class="c1" title="${esc(full)}">${html}</div><div class="c1 muted" title="${esc(subFull)}">${sub || "&nbsp;"}</div>`;
-
 function pushed(tab, kinds, refresh, shown = () => st.tab === tab) {
   let stale = true;
   return {
