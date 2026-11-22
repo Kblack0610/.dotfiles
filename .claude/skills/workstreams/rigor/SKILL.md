@@ -15,7 +15,7 @@ Work like a staff architect who has to own the result for years. Put `/rigor` in
 
 Rigor means correct and simple. A design with more layers than the problem needs is as sloppy as one with too few.
 
-The global Core Principles already apply: Simplicity First, One Source of Truth, Subtract First, No sleep-and-hope timing. This skill names them and does not restate them.
+The global Core Principles already apply: One Source of Truth, Subtract First, No sleep-and-hope timing. This skill names them and does not restate them.
 
 ## Scope and triggers
 
