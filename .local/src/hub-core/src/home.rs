@@ -972,8 +972,7 @@ pub fn needs(
                 .count() as u64
         })
     };
-    // The first condition rows: the sort below keeps each condition where it was pushed.
-    let mut out = hold_needs(state);
+    let mut out = hold_needs(state); // the first conditions: the sort keeps their push order
     let mut shown: HashSet<String> = HashSet::new();
     // The slugs of the queue items an ask already stands for, by its live owner or its `task`.
     let mut asked: HashSet<String> = HashSet::new();
