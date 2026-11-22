@@ -35,7 +35,7 @@
 # one this session added or claimed (`agent-queue mine`). No item, no landing: every merged PR
 # is a unit of work on the work ledger, so add one first (`agent-queue add --running`). An item
 # taken from the session, not named by --item, takes only a PR in its project's repo (own_project), and
-# none whose body names another item, or that is not the item's own open PR or from its pushed branch (own_item).
+# none whose body names another queue item, or that comes beside the item's own open PR in that repo (own_item).
 # Exit 0 landed, 1 a step failed, 2 usage, 3 a catch-up merge of origin/<base> that conflicts
 # (before or after the checks): resolve it and re-run, 4 an item stacked on an item that has not closed ok (stack_gate). A head pushed after the checks waits on its own
 # checks before it merges; the local gate script runs again on a merge of <base> only when the repo's CI
@@ -752,31 +752,38 @@ own_project() {
 
 # own_item: an item this run did not name is only the session's guess, and parallel subagents of one
 # coordinator share its Claude session id, so `agent-queue mine` can return a sibling's item. Before
-# anything is touched, a PR that names another item, or an item whose own open PR or pushed branch is
-# another, is refused; one the item records, or whose body names it, lands. Neither is a first landing
-# and lands as before. Why: home-config #1195 got a sibling subagent's "Item:" line (2026-11-18, ar-3047).
+# anything is touched, a PR whose body names another queue item ("Item: <slug>"), or one beside the
+# item's own open PR in this repo (open_pr:, still OPEN, unless a --partial landing says it carries
+# more), is refused. A PR the item records, or whose body names it, lands; so does one with neither
+# sign, a first landing. Not the branch: `branch:` is the last push the Stop hook saw, and a run that
+# re-cuts its branch lands from the new one in the same turn. Why: home-config #1195 got a sibling
+# subagent's "Item:" line on 2026-11-18, while that item's #1193 was in its checks (ar-3047).
 own_item() {
   [ -n "$implied" ] || return 0
-  local ref refs open br named why=''
+  local ref refs open text named='' st rc=0 why=''
   read -ra refs <<<"$it_pr"
   open=$(jq -r '.open_pr // ""' <<<"$it")
   for ref in "${refs[@]}" $open; do
     [ "$ref" = "$pr_ref" ] || { [[ "$ref" != */*#* || "$pr_ref" != */*#* ]] && [ "${ref##*#}" = "$pr" ]; } || continue
     return 0
   done
-  body=$(pr_view body .body 2>&1) || fail item-line "$api pr view: $(lastline "$body")"
-  named=$(tr -d '\r' <<<"$body" | sed -n 's/^Item: *\([^[:space:]]*\).*/\1/p' | head -n 1)
-  br=$(jq -r '.branch // ""' <<<"$it")
-  br=${br%@*}
+  # A body that cannot be read names no item here; stamp_item reads it again and fails on its own.
+  text=$(pr_view body .body 2>/dev/null) || text=''
+  named=$(tr -d '\r' <<<"$text" | sed -n 's/^Item: *\([^[:space:]]*\).*/\1/p' | head -n 1)
+  [ "$named" != "$item" ] || return 0
+  # A placeholder ("Item: <slug>", "Item: n/a") is no item: stamp_item rewrites it.
   if [ -n "$named" ]; then
-    [ "$named" != "$item" ] || return 0
-    why="its body names its item, $named"
-  elif [ -n "$open" ] && [ "$partial" -eq 0 ] && [ "$(jq -r '.partial // ""' <<<"$it")" != yes ] && [[ " $it_pr " != *" $open "* ]]; then
-    why="$item's open PR is $open"
-  elif [ -n "$br" ] && [ "$br" != "$head_ref" ]; then
-    why="$item's run pushed $br, and #$pr is from $head_ref"
+    aq_retry show "$named" >/dev/null 2>&1 || rc=$?
+    [ "$rc" -ne "$QUEUE_BUSY" ] || die "the queue is locked by another writer: nothing touched, re-run"
+    [ "$rc" -ne 0 ] || why="its body names its item, $named"
+  fi
+  if [ -z "$why" ] && [ "${open%#*}" = "${pr_ref%#*}" ] && [[ "$open" == */*#* ]] && [ "$partial" -eq 0 ] &&
+    [ "$(jq -r '.partial // ""' <<<"$it")" != yes ] && [[ " $it_pr " != *" $open "* ]]; then
+    st=$(pr=${open##*#}; pr_view state .state 2>/dev/null) || st=''
+    [ "$st" != OPEN ] || why="$item's own PR ${open} is open"
   fi
   [ -n "$why" ] || return 0
+  [ "$rc" -eq 0 ] && [ -n "$named" ] || named=''
   die "#$pr ($pr_ref) is not $item's work, taken from $implied: $why. Pass --item ${named:-<slug>} for the item #$pr is the work of, or --item $item if it is this item's"
 }
 
@@ -1043,7 +1050,7 @@ if [ "$dry" -eq 1 ]; then
   fi
   [ -z "$fj" ] || echo "forge: Forgejo $fj on remote $remote: each gh pr call below is that API (pulls/$pr, PATCH for the body, commits/<head>/status for the checks, POST pulls/$pr/merge {Do, head_commit_id}, pulls/$pr/files), and each git step reads $remote, not origin"
   echo "item-line: gh pr view $pr${repo:+ -R $repo} --json body, then gh pr edit $pr --body-file -  (unless it has \"Item: $item\")"
-  echo "head: git rev-parse HEAD must equal the PR's headRefOid (when it is git ls-remote origin's tip of the PR branch, poll gh pr view $pr --json headRefOid until it does), else exit 1 naming the PR's checkout (git worktree list); the PR's repo must be origin's; a MERGED PR must name the item, have its head in HEAD, or be on the item; an item not named by --item takes only a PR in its project's repo"
+  echo "head: git rev-parse HEAD must equal the PR's headRefOid (when it is git ls-remote origin's tip of the PR branch, poll gh pr view $pr --json headRefOid until it does), else exit 1 naming the PR's checkout (git worktree list); the PR's repo must be origin's; a MERGED PR must name the item, have its head in HEAD, or be on the item; an item not named by --item takes only a PR in its project's repo, and none whose body names another queue item or beside the item's own open PR"
   echo "review: fleet-dispatch item-tier $item  (tier 3: the body needs a \"Review: \" line and the checks must run)"
   echo "shape: shape-grow \$(git merge-base HEAD origin/<base>) HEAD  (no function over 150 lines gets longer, unless the body has a \"Split: <row id>\" line naming an open row that names each function)"
   echo "checks: gh pr checks $pr${repo:+ -R $repo} --watch --fail-fast -i $CHECKS_WATCH_INTERVAL  (must pass, or report none on a tier 1 or 2 item; a land that would refuse none, on a head with workflow files, first waits up to $CHECKS_FIRST_RUN_TRIES x ${CHECKS_QUEUED_POLL}s for its first run, AGENT_LAND_CHECKS_FIRST_RUN_TRIES)"

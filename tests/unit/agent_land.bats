@@ -25,6 +25,8 @@ printf 'gh %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
 case "$1 $2" in
 'pr view')
   case "$*" in
+  # pr41.state: the state of #41, an earlier PR an item records as open (OPEN by default)
+  'pr view 41 --json state '*) cat "$NOTES_FIXTURE/pr41.state" 2>/dev/null || echo OPEN ;;
   # head.oid / head.ref / head.cross: the PR's head commit, branch and fork-ness (this checkout's HEAD, branch pr-42, same repo, by default)
   # The caller's real -q runs through jq on the JSON gh would return, so a query gh rejects fails here too.
   # prior.json: an earlier PR the item records, asked for its state and merge commit (open by default)
@@ -1542,7 +1544,7 @@ untouched() {
   agent-queue set qualify open_pr=o/r#41 >/dev/null
   CLAUDE_CODE_SESSION_ID=sid-coord run "$LAND" 42
   assert_failure 2
-  assert_output --partial "#42 (o/r#42) is not qualify's work, taken from agent-queue mine: qualify's open PR is o/r#41. Pass --item <slug>"
+  assert_output --partial "#42 (o/r#42) is not qualify's work, taken from agent-queue mine: qualify's own PR o/r#41 is open. Pass --item <slug>"
   untouched qualify
   # NEGATIVE CONTROL: named by --item, the same PR lands on it.
   CLAUDE_CODE_SESSION_ID=sid-coord run "$LAND" 42 --item qualify --partial
@@ -1551,6 +1553,7 @@ untouched() {
 
 @test "an item taken from the session refuses a PR whose body names another item, and takes one that names it (ar-3047)" {
   item fix-crash
+  item other-item
   printf 'The change.\n\nItem: other-item\n' >"$NOTES_FIXTURE/body"
   AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42
   assert_failure 2
@@ -1565,23 +1568,21 @@ untouched() {
   assert_output --partial 'item: fix-crash done with pr:o/r#42'
 }
 
-@test "an item taken from the session refuses a PR from another branch than its run pushed, and takes its own (ar-3047)" {
+@test "an item taken from the session lands past a placeholder Item: line or an open_pr that closed (ar-3047)" {
   item fix-crash
-  agent-queue set fix-crash branch=agent-3-x@0123456789abcdef >/dev/null
-  AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42
-  assert_failure 2
-  assert_output --partial "fix-crash's run pushed agent-3-x, and #42 is from pr-42"
-  untouched fix-crash
-  # NEGATIVE CONTROL: the PR from that branch lands with no --item and no Item: line.
-  printf 'agent-3-x\n' >"$NOTES_FIXTURE/head.ref"
+  agent-queue set fix-crash open_pr=o/r#41 >/dev/null
+  printf 'closed\n' >"$NOTES_FIXTURE/pr41.state"
+  printf 'The change.\n\nItem: <slug>\n' >"$NOTES_FIXTURE/body"
   AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42
   assert_success
   assert_output --partial 'item: fix-crash done with pr:o/r#42'
+  run grep -cx 'Item: fix-crash' "$NOTES_FIXTURE/body"
+  assert_output 1
 }
 
-@test "a re-run on the PR the item records as open lands, whatever its branch (ar-3047)" {
+@test "a re-run on the PR the item records as open lands with no Item: line (ar-3047)" {
   item fix-crash
-  agent-queue set fix-crash open_pr=o/r#42 branch=elsewhere@0123 >/dev/null
+  agent-queue set fix-crash open_pr=o/r#42 >/dev/null
   AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42
   assert_success
   assert_output --partial 'item: fix-crash done with pr:o/r#42'
