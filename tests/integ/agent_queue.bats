@@ -3082,6 +3082,14 @@ EOF
   "$AQ" set f tags="pr:o/r#5"
   run "$AQ" stats --json --since 2000-01-01
   assert_equal "$(jq -c '.chain.h24' <<<"$output")" '{}'
+  # a restart is not a handoff: the second session's start reads from the first ready time (ar-4436)
+  "$AQ" set f tags=""
+  f="$(item running f)"; sed -i '0,/^after: /s//sessions: s1\nafter: /' "$f"
+  run "$AQ" stats --json --since 2000-01-01
+  assert_equal "$(jq -c '.chain.h24' <<<"$output")" '{"urgent":{"n":1,"p50":10,"p90":10}}'
+  sed -i 's/^sessions: .*/sessions: s1 s2/' "$f"
+  run "$AQ" stats --json --since 2000-01-01
+  assert_equal "$(jq -c '.chain.h24' <<<"$output")" '{}'
 }
 
 # ar-617: the Queue table shows each item's wait, so list carries the same ready stats medians.
