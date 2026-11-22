@@ -265,11 +265,11 @@ fetch() {
         cat "$cache"
         return 0
     fi
+    token=$(acct_token "$name") || return 1
     probe=$(usage_probe) || {
         printf 'claude-acct: %s usage read failed: %s names no models.claude.haiku for the probe\n' "$name" "$HARNESSES" >&2
         return 1
     }
-    token=$(acct_token "$name") || return 1
     ver=$(claude --version 2>/dev/null | awk '{print $1}')
     mkdir -p "$CACHE"
     tmp=$(mktemp "$CACHE/.$name.XXXXXX")

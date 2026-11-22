@@ -42,4 +42,4 @@ Claude may run on any of the human's machines (the 2026-11-12 "no Claude on any 
 | Session still stops with a login error | The account has no entry (`claude-acct check tokens` names it) or the token expired; run `setup-token --renew`. |
 | `check tokens` exits 2 | rbw is missing or locked on this machine. |
 | `token push: <host>: <acct> failed` | ssh to the host failed, or its dotfiles are too old to read the copy: pull them there, re-run. |
-| An account reads unread (`fetch failed` in `status`, "usage unreadable" on the Costs tab) | It has no token (`claude-acct check tokens`), or rbw is locked with no pushed copy; `rbw unlock`. If both are fine, the probe call was refused without rate-limit headers: check `USAGE_PROBE`'s model id in `claude-acct`. |
+| An account reads unread (`fetch failed` in `status`, "usage unreadable" on the Costs tab) | It has no token (`claude-acct check tokens`), or rbw is locked with no pushed copy; `rbw unlock`. If both are fine, the probe call was refused without rate-limit headers: check the probe's model id, harnesses.json `models.claude.haiku` (a file without it reads "names no models.claude.haiku for the probe"). |

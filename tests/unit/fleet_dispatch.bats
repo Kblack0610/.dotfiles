@@ -1933,7 +1933,7 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   sed 's/^DISPATCH_RED_FLOOR=/DISPATCH_RED_FLOR=/' "$REPO_ROOT/tests/fixtures/fleet-dispatch.conf" > "$DISPATCH_CONF"
   run env -u DISPATCH_RED_FLOOR "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
   assert_failure 78
-  assert_output --partial "$DISPATCH_CONF does not set DISPATCH_RED_FLOOR; that conf is the one home"
+  assert_output --partial "$DISPATCH_CONF does not set DISPATCH_RED_FLOOR (each a bare KEY=VALUE line, no trailing comment); that conf is the one home"
   run env -u DISPATCH_PER_PASS DISPATCH_CONF="$SANDBOX/none.conf" "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_failure 78
   assert_output --partial "$SANDBOX/none.conf does not set DISPATCH_PER_PASS DISPATCH_ORPHAN_HOURS"

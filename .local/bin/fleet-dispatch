@@ -98,7 +98,7 @@ dispatch_conf_load() {
   done < <(sed -n "s/^\(DISPATCH_[A-Z0-9_]*\)=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}[[:space:]]*$/\1=\2/p" "$DISPATCH_CONF" 2>/dev/null)
   for k in "${DISPATCH_CONF_KEYS[@]}"; do [ -n "${!k+x}" ] || missing+=("$k"); done
   [ "${#missing[@]}" -eq 0 ] && return 0
-  printf 'fleet-dispatch: %s does not set %s; that conf is the one home of the dispatch tuning and the code holds no default\n' \
+  printf 'fleet-dispatch: %s does not set %s (each a bare KEY=VALUE line, no trailing comment); that conf is the one home of the dispatch tuning and the code holds no default\n' \
     "$DISPATCH_CONF" "${missing[*]}" >&2
   exit 78
 }
