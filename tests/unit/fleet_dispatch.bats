@@ -1915,7 +1915,7 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
 
 @test "a run with no conf starts nothing on its own: the keys the conf sets default to neutral" {
   two_items
-  run env -u DISPATCH_LOW_WATER -u DISPATCH_CANARY_FLOOR -u DISPATCH_RUN_FLOOR -u DISPATCH_TARGET_PRESENT -u DISPATCH_TARGET_AWAY -u DISPATCH_MAX_LOAD -u DISPATCH_MIN_IDLE -u DISPATCH_PROFILES \
+  run env -u DISPATCH_LOW_WATER -u DISPATCH_CANARY_KEEP -u DISPATCH_RUN_FLOOR -u DISPATCH_TARGET_PRESENT -u DISPATCH_TARGET_AWAY -u DISPATCH_MAX_LOAD -u DISPATCH_MIN_IDLE -u DISPATCH_PROFILES \
     "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r '[.could_start, .max_live, .load_cap, .min_idle] | @tsv' <<<"$output")" $'0\t0\t0\t100'
   assert_equal "$(jq -r .held <<<"$output")" "load 0.10 on $(nproc) cores is over the 0 pace; real idle 90.0% is under 100%"

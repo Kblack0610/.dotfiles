@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# fleet-dispatch, a `run` pass against its floors: the run, human, sprint, red and source floors, and the other-source pass.
+# fleet-dispatch, a `run` pass against its floors: the run, human, sprint and red floors, and the other-source pass.
 # One of the tests/unit/fleet_dispatch*.bats files, split so CI shards can spread them;
 # the fixtures and setup they share are in fleet_dispatch/common.bash.
 
@@ -150,35 +150,44 @@ plan_queued() {
   agent-queue add --plan "$SANDBOX/$name.md" --project game --priority high "$@" >/dev/null
 }
 
-# A fleet past its pace target, the floors that pass it off (red, canary, project, source): only urgent
-# items preempt, so a high item waits for room, as the 8 playground phases did from 11-13 (ar-2832).
+# A fleet past its pace target, the floors that pass it off (red, sprint, trainee, other sources): only
+# urgent items preempt, so a high item waits for room, as the 8 playground phases did from 11-13 (ar-2832).
 full_fleet() {
   project game beta "$SANDBOX/repos/game"
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PER_PASS=3
   fleet_state 8
 }
 
-@test "human floor: a ready phase of an approved plan starts past a shut pace gate, the target or the weekly pace" {
+# pace_shut -- room under the pace target, but the one account is refused for its weekly pace alone and
+# no run floor lifts it: only the human floor starts.
+pace_shut() {
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PER_PASS=3 DISPATCH_RUN_FLOOR=0
+  fleet_state 0
+  acct alt:pace:/home/u/.claude-personal
+}
+
+# Plan vast-soaring-prism P3: the plan floor that started a ready phase past a full pace target is gone.
+@test "human floor: a ready phase of an approved plan starts past the weekly pace; past a full pace target it waits" {
   full_fleet
   plan_queued pa '- [ ] one'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_output --partial 'started queue item pa-p1 on the human floor, past the pace target: a ready phase of a plan the human approved'
-  assert_equal "$(outcome)" WORKED
-  # The weekly pace shut with room under the target: the same floor takes an account refused for its pace alone.
-  agent-queue move pa-p1 done --status cancelled --why test >/dev/null
-  fleet_state 0
-  acct alt:pace:/home/u/.claude-personal
-  plan_queued pb '- [ ] one'
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'wt new'
+  [ -n "$(qitem queued pa-p1)" ] || fail "pa-p1 left the queue past a full target"
+  # Positive control: room under the target and the weekly pace shut, the human floor takes it.
+  pace_shut
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_output --partial 'started queue item pb-p1 on the human floor'
+  assert_output --partial 'started queue item pa-p1 on the human floor, past the weekly pace: a ready phase of a plan the human approved'
   assert_called 'CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --model'
+  assert_equal "$(outcome)" WORKED
 }
 
 @test "human floor: one phase of a plan a pass: a second ready phase of the same plan waits, another plan's starts" {
-  full_fleet
+  pace_shut
   plan_queued pa '- [ ] one (independent)\n- [ ] two (independent)'
   plan_queued pb '- [ ] one'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -189,7 +198,7 @@ full_fleet() {
 }
 
 @test "human floor: a phase of a plan that was superseded after it queued does not start (ar-3466)" {
-  full_fleet
+  pace_shut
   plan_queued pa '- [ ] one'
   plan_queued pb '- [ ] one'
   sed -i '1a\\nSuperseded by #42' "$SANDBOX/pa.md"
@@ -200,7 +209,7 @@ full_fleet() {
 }
 
 @test "human floor: a phase an after: or a tag holds does not start on it, nor one a machine filer queued" {
-  full_fleet
+  pace_shut
   plan_queued pa '- [x] one\n- [ ] two\n- [ ] three (independent)'
   legacy_hold pa-p3 "after: pa-p2"   # an item queued before G2, waiting on pa-p2
   legacy_hold pa-p2 "tags: at:$(date -d tomorrow +%F)T09:00"
@@ -214,36 +223,6 @@ full_fleet() {
   refute_output --partial 'started queue item pm-p1'
 }
 
-@test "human floor: past the pace target a plain high item still waits while a plan phase queued after it starts" {
-  full_fleet
-  agent-queue add --project game --slug p --priority high "plain p" >/dev/null
-  plan_queued pa '- [ ] one'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'started queue item pa-p1 on the human floor'
-  refute_output --partial 'started queue item p '
-  refute_output --partial 'started queue item p on'
-  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
-}
-
-@test "human floor: DISPATCH_PLAN_FLOOR live plan phases fill it, and 0 turns it off" {
-  full_fleet
-  export DISPATCH_PLAN_FLOOR=1
-  started_item l1 "lab:game-agent-l1" run area-l1
-  sed -i "/^mode:/a plan: $SANDBOX/pl.md" "$AGENT_QUEUE_DIR"/running/*-l1.md
-  printf 'game-agent-l1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
-  plan_queued pa '- [ ] one'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_not_called 'wt new'
-  # The live phase gone, its slot opens; at 0 the floor is off all the same.
-  : > "$NOTES_FIXTURE/tmux.sessions.lab"
-  DISPATCH_PLAN_FLOOR=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_not_called 'wt new'
-  # Negative control: at 1 with no live phase, pa-p1 starts.
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'started queue item pa-p1 on the human floor'
-}
 
 @test "sprint floor: an urgent sprint item starts past a full pace target, a plain one of the sprint and an urgent one off it wait" {
   full_fleet
@@ -291,7 +270,7 @@ full_fleet() {
   assert_output --partial 'started queue item sp-urg on the sprint floor'
 }
 
-@test "starved: an approved plan's ready phase behind a full fleet starves, as the human floor passes the target; a plain high one is held" {
+@test "starved: an approved plan's ready phase behind a full fleet is held like a plain high one, not starved" {
   full_fleet
   export DISPATCH_TARGET_PRESENT=6
   local old; old=$(date -u -d '-3 hours' +%Y-%m-%dT%H:%M:%SZ)
@@ -301,6 +280,11 @@ full_fleet() {
   assert_output --partial 'held by a full fleet'
   plan_queued pa '- [ ] one'
   sed -i "s/^queued: .*/queued: $old/" "$AGENT_QUEUE_DIR"/queued/*-pa-p1.md
+  run cmd_starved
+  assert_success
+  assert_output --partial 'held by a full fleet'
+  # Negative control: under the target, the same old phase starves at once.
+  fleet_state 0
   run cmd_starved
   assert_failure
   assert_output --partial 'pa-p1 (high'
@@ -494,104 +478,13 @@ full_fleet() {
   assert_output ''
 }
 
-# 2026-11-14: codex sat 18% used at 71% of its week (codex-underuse red, ar-2432, ar-2433) because the
-# pace target counts every harness (26 of 25) and only a hand start passed it.
-@test "source floor: a fleet past its pace target starts work on a source whose week is going unused; a source that is not under-used starts nothing" {
-  route_ready
-  acct main:ok
-  srcs codex:ok:5
-  cpu 60 30 0 10   # real idle 10%: the floor goes past it, as the other floors do
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PROJECT_FLOOR=0 DISPATCH_PER_PASS=3
-  fleet_state 8
-  # Negative control: codex is on pace for its week, so the full fleet starts nothing.
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
-  assert_not_called 'agent-codex'
-  under_used codex
-  # The floor off: under-used, the same full fleet still starts nothing.
-  DISPATCH_SOURCE_FLOOR=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
-  assert_not_called 'agent-codex'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'under-used near its reset: codex 18% used, 72% of its week gone, resets in 46h, so codex takes work on the source floor (DISPATCH_SOURCE_FLOOR=1)'
-  assert_output --partial 'started queue item fix-menu on codex (sol), the source floor (DISPATCH_SOURCE_FLOOR=1)'
-  assert_equal "$(qfield "$(qitem running fix-menu)" agent)" codex
-  assert_equal "$(outcome)" WORKED
-  # One start a pass: the next item waits for the next pass.
-  assert_equal "$(grep -c 'agent-codex' "$NOTES_FIXTURE/calls.log")" 1
-}
-
-# 2026-11-21: with the run floor leaving most passes room, every start went through the queue's route, which
-# offers Codex only for a promoted class: the source floor sat behind a full target and codex-underuse stayed red (ar-2436).
-@test "source floor: a fleet with room starts an item on a source whose week is going unused past its room, a red keeping the slot; on pace it starts on Claude" {
-  route_ready
-  acct main:ok
-  srcs codex:ok:5
-  cpu 10 5 0 85
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PROJECT_FLOOR=0 DISPATCH_PER_PASS=1
-  fleet_state 2
-  # Negative control: codex is on pace for its week, so the pass's one start goes to Claude.
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'started queue item fix-menu'
-  refute_output --partial 'source floor'
-  assert_not_called 'agent-codex'
-  agent-queue move fix-menu queued >/dev/null
-  rm -f "$NOTES_FIXTURE/calls.log"
-  under_used codex
-  # A red at the head keeps the pass's one slot: the floor's start is past Claude's room.
-  agent-queue add --project game --slug r2 --tags 'red cause:cd34' "fix r2" >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'started queue item r2'
-  assert_equal "$(qfield "$(qitem running r2)" agent)" claude
-  assert_output --partial 'room for 1; under-used near its reset: codex 18% used, 72% of its week gone, resets in 46h, so codex takes work on the source floor (DISPATCH_SOURCE_FLOOR=1)'
-  assert_output --partial 'started queue item fix-menu on codex (sol), the source floor (DISPATCH_SOURCE_FLOOR=1)'
-  assert_equal "$(qfield "$(qitem running fix-menu)" agent)" codex
-  assert_equal "$(grep -c 'agent-codex' "$NOTES_FIXTURE/calls.log")" 1
-}
-
-@test "source floor: past its pace target, a source with no room, a tier-3 item, a named model and a red still start nothing" {
-  route_ready
-  acct main:ok
-  cpu 10 5 0 85
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PROJECT_FLOOR=0 DISPATCH_PER_PASS=3
-  fleet_state 8
-  under_used codex
-  srcs codex:reserve:5
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
-  assert_not_called 'agent-codex'
-  # Room, but the item names its own model, or is a red (the red floor's): it stays queued.
-  srcs codex:ok:5
-  agent-queue set fix-menu model=opus >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
-  assert_not_called 'agent-codex'
-  agent-queue set fix-menu model= >/dev/null
-  agent-queue set fix-menu "tags=red" >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
-  assert_not_called 'agent-codex'
-  agent-queue set fix-menu "tags=" >/dev/null
-  # Room, but the only item is tier 3: past the unattended ceiling, as a routed start.
-  srcs codex:ok:5
-  agent-queue move fix-menu done --status ok >/dev/null
-  agent-queue add --project game --slug ci-first "ci: the runner retries a dead batch" >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
-  assert_not_called 'agent-codex'
-  [ -n "$(qitem queued ci-first)" ] || fail "a tier-3 item left the queue on the source floor"
-}
-
 # 2026-11-18: 34 Claude sessions past a target of 30 held every item while codex, go and ocfree sat
 # idle with room: the target is Claude's budget, so another source's item waits on its own room only.
 @test "other sources: past a full Claude pace target, an item routed to another source with room starts; a Claude-only one waits" {
   route_ready
   acct main:ok
   cpu 10 5 0 85
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PROJECT_FLOOR=0 DISPATCH_SOURCE_FLOOR=0 DISPATCH_PER_PASS=3
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PER_PASS=3
   fleet_state 8
   # Negative control: no other source has room, so the full target starts nothing and asks model-lane nothing.
   srcs codex:reserve:5
@@ -615,4 +508,26 @@ full_fleet() {
   assert_output --partial 'started queue item fix-menu on codex (sol)'
   assert_equal "$(qfield "$(qitem running fix-menu)" agent)" codex
   assert_equal "$(outcome)" WORKED
+}
+
+# Plan vast-soaring-prism P3: with the canary floor gone, a non-Claude lane's canary goes the other-source way.
+@test "other sources: past a full Claude pace target, a canary pinned to another source with room starts there" {
+  route_ready
+  acct main:ok
+  cpu 10 5 0 85
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PER_PASS=3
+  fleet_state 8
+  agent-queue move fix-menu done --status ok >/dev/null   # route_ready's claude item would only wait
+  agent-queue add --project game --slug ca-cx --agent codex --priority high --tags canary "check(canary): a 2026w47" >/dev/null
+  agent-queue set ca-cx model=sol canary=a >/dev/null
+  # Negative control: codex has no room, so the canary waits like any item.
+  srcs codex:reserve:5
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'agent-codex'
+  [ -n "$(qitem queued ca-cx)" ] || fail "the canary left the queue with no source room"
+  srcs codex:ok:5
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item ca-cx on codex (sol)'
 }

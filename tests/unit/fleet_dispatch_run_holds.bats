@@ -706,7 +706,7 @@ share_history() {
   [ -n "$(qitem queued fix-game)" ] && [ -n "$(qitem queued fix-game-2)" ] || fail "a share-held item started on a committed-rows pass"
 }
 
-@test "fleet share: a full share passes a #requested fleet row through the fill, not an #urgent one, and a floor's filtered list never lets the cap go" {
+@test "fleet share: a full share passes a #requested fleet row through the fill, not an #urgent one" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
   row game human 'fix crash on load' "- [ ] fix crash on load #high #requested $T"
@@ -729,19 +729,4 @@ share_history() {
   assert_success
   assert_output --partial "so the board fills from other projects"
   [ -z "$(agent-queue list --json --state active 2>/dev/null | jq -r 'select(.project == "game") | .slug')" ] || fail "the #urgent fleet row was promoted past the cap"
-  # Past the pace target the project floor hands start_items one idle project's items only: a fleet item
-  # held there stays held, as the list proves nothing else could start.
-  agent-queue list --json --state active 2>/dev/null | jq -r .slug | while read -r s; do agent-queue move "$s" done --status cancelled >/dev/null; done
-  : > "$NOTES_FIXTURE/rows.game.human"; : > "$NOTES_FIXTURE/rows.app.human"
-  idle_held_machine; export DISPATCH_TARGET_AWAY=6; fleet_state 8
-  agent-queue add --project app --slug busy "app work" >/dev/null
-  agent-queue move busy running >/dev/null
-  agent-queue add --project game --slug g1 "game work" >/dev/null
-  export DISPATCH_PROJECT_FLOOR=1
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  refute_output --partial 'started queue item g1'
-  # The negative control: the cap off, the same floor starts it.
-  DISPATCH_FLEET_SHARE=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'started queue item g1 on the project floor (DISPATCH_PROJECT_FLOOR=1)'
 }
