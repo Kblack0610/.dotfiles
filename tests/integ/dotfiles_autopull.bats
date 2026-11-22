@@ -57,6 +57,21 @@ head_of() { git -C "$1" rev-parse HEAD; }
   assert_output --partial '~/.dotfiles: fast-forwarded main'
 }
 
+@test "--now --bg returns at once, and the detached pass fast-forwards and logs its result (ar-4471)" {
+  merge pub v2
+  run "$PULL" --now "$PUB" --bg
+  assert_success
+  assert_output '~: the pass runs in the background; its result is logged to ~/.cache/dotfiles-autopull/autopull.log'
+  # The pass holds bg.lock shared until it ends, so taking it exclusive awaits it with no timer.
+  timeout 60 flock -x "$XDG_CACHE_HOME/dotfiles-autopull/bg.lock" true
+  assert_equal "$(cat "$PUB/f")" v2
+  run grep -E '\] --now .+ \(background\): done; ~/\.dotfiles: fast-forwarded main' "$XDG_CACHE_HOME/dotfiles-autopull/autopull.log"
+  assert_success
+  # A repo that is not a checkout forks nothing and prints nothing, as in the foreground.
+  run "$PULL" --now "$SANDBOX" --bg
+  assert_output ''
+}
+
 @test "a fast-forward links the files it added into \$HOME and leaves a physical copy alone" {
   export DOTFILES_DEPLOY="$REPO_ROOT/.local/bin/dotfiles-deploy"
   rm -rf "$PRIV" # both fixtures track f; one repo keeps the manifest free of dual ownership
