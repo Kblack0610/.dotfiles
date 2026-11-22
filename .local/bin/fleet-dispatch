@@ -1099,14 +1099,17 @@ pace_target() {
 # SHARE_JQ: `share_held($s)` is an item the fleet share cap holds, $s being SHARE_STATE: the share is
 # full and the item is on a fleet project, no red, no #requested (the human's ask, ask XI2fDO) and no
 # urgent `from: human` (human_urgent's urgent test; its fresh asks and plan phases pass on the human
-# floor, HUMAN_PASS). A canary or any other urgent waits like the rest, a board row's #urgent
+# floor, HUMAN_PASS). A Claude canary or any other urgent waits like the rest, a board row's #urgent
 # included (`from: board:`): 180 of the 1132 starts in the 3 days to 2026-11-21 passed the cap that
-# way while the fleet held 79% of them (plan swhow-me-asll-data-modular-otter P3). The one test
-# share_why and queue_depth apply.
+# way while the fleet held 79% of them (plan swhow-me-asll-data-modular-otter P3). A canary pinned to a
+# harness with its own source ($s.sourced, harnesses.json `source`) passes, as a trainee start does: it
+# spends no Claude session, and held, the week's set never ran while the fleet sat over its share (ask
+# GDUmQQ, ar-4554). The one test share_why and queue_depth apply.
 # shellcheck disable=SC2016
-SHARE_JQ='def share_held($s): (.project // "") as $p | $s.full and any($s.projects[]; . == $p)
+SHARE_JQ='def share_held($s): (.project // "") as $p | (.agent // "claude") as $a | $s.full and any($s.projects[]; . == $p)
   and ((.priority == "urgent" and (.from // "human") == "human") | not)
-  and ((" " + (.tags // "") + " ") | test(" #?(red|requested) ") | not);'
+  and ((" " + (.tags // "") + " ") | test(" #?(red|requested) ") | not)
+  and (((" " + (.tags // "") + " ") | contains(" canary ")) and any(($s.sourced // [])[]; . == $a) | not);'
 
 # share_state -- SHARE_STATE, read once a process: {full, fleet, total, projects}, the queue items
 # started in the last DISPATCH_FLEET_SHARE_H hours (any state, hand starts and cancelled ones too, as
@@ -1132,6 +1135,9 @@ share_state() {
       | [.[] | select(((.started // "") | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch 0) >= $cut)]
       | {fleet: (map(select(.project as $x | any($ps[]; . == $x))) | length), total: length, projects: $ps}') &&
     [ -n "$s" ] || return 0
+  # The harnesses that spend from their own source, not a Claude account: a canary pinned to one passes (SHARE_JQ).
+  s=$(jq -c --argjson src "$(jq -c '[.harnesses // {} | to_entries[] | select(.value.source) | .key]' "$HARNESSES" 2>/dev/null || echo '[]')" \
+    '.sourced = $src' <<<"$s") || return 0
   share_set "$s"
 }
 
@@ -1152,7 +1158,7 @@ share_full() { share_state; [ "$(jq -r .full <<<"$SHARE_STATE")" = true ]; }
 # share_why <item json> -> why the fleet share cap holds the item, or nothing: share_held, outside the
 # human and sprint floors (HUMAN_PASS), which are the human's own work and never cut off, and outside the
 # trainee floor (TRAINEE_PASS), whose start runs on a free trainee key and spends no session the cap
-# guards. A canary waits like any fleet item. pick_item lets the first held item go when nothing
+# guards. A Claude canary waits like any fleet item. pick_item lets the first held item go when nothing
 # else can start, so the cap never leaves a slot idle.
 share_why() {
   [ "${HUMAN_PASS:-0}${TRAINEE_PASS:-0}" = 00 ] || return 0
@@ -1160,6 +1166,31 @@ share_why() {
   jq -r --argjson s "$SHARE_STATE" --argjson pct "${DISPATCH_FLEET_SHARE:-0}" --argjson h "$DISPATCH_FLEET_SHARE_H" "$SHARE_JQ"'
     select(share_held($s))
     | "fleet share: \($s.fleet) of the \($s.total) items started in \($h)h are fleet work (\($s.projects | join(", "))), at or over DISPATCH_FLEET_SHARE=\($pct)%"' <<<"$1" 2>/dev/null
+  return 0
+}
+
+# share_return -- each queued item from a board row that the fleet share cap holds (share_why) and that
+# has waited DISPATCH_STARVED_MIN or longer goes back to its row (agent-queue return): the queue holds only
+# work that can start, and the fill promotes the row again once the share has room. Held in queued/, a
+# let-go fill's leftovers sat behind every other project's fresh row: ar-3412 and four more 9h on
+# 2026-11-21, the queued age p90 494m against its 420m bound (watch queue-age, ar-4554). A canary has no
+# row; canary_top_up queues no Claude lane's while the share is full. A sprint row is left to its floor
+# (sprint_floor_start). Run after the pass, so the floors and the let-go have started what they would.
+share_return() {
+  share_full || return 0
+  local cut it slug why err
+  cut=$(date -u -d "-$DISPATCH_STARVED_MIN min" +%Y-%m-%dT%H:%M:%SZ)
+  while IFS= read -r it; do
+    [ -n "$it" ] || continue
+    why=$(share_why "$it"); [ -n "$why" ] || continue
+    slug=$(jq -r .slug <<<"$it")
+    if ! err=$(AQ_RETURN_QUEUED=1 agent-queue return "$slug" --why "held by the $why, for ${DISPATCH_STARVED_MIN}m or more: its row waits for room" 2>&1 >/dev/null); then
+      say "queue item $slug stays queued, held by the $why: agent-queue return refused it${err:+: ${err//$'\n'/; }}"; continue
+    fi
+    say "returned queue item $slug to its board row: the $why"
+    logline "returned queue item $slug to its board row: held by the $why"
+  done < <(agent-queue list --json --state queued 2>/dev/null |
+    jq -c --arg cut "$cut" 'select((.from // "") | startswith("board:")) | select((" " + (.tags // "") + " ") | contains(" sprint ") | not) | select((.queued // "") != "" and .queued <= $cut)' 2>/dev/null)
   return 0
 }
 
@@ -4735,20 +4766,25 @@ other_source_start() {
 # agent-queue takes them), one task a lane a round, so a week's set trickles in as each one finishes
 # instead of sitting in the queue whole (the cap and the queue age count every queued item). They start
 # in queue order like any item, the class mix (classes.json `cleanup`, tag `canary`) keeping their class
-# from falling behind. Skipped in a dry run, at 0, and while floor_gate is shut (a red cluster with the
-# gateway up still queues them), dispatch's hold included;
+# from falling behind. While the fleet share is full only the lanes on their own source queue (--off-claude:
+# a Claude lane's canary would wait at the cap). Skipped in a dry run, at 0, and while floor_gate is shut
+# (a red cluster with the gateway up still queues them), dispatch's hold included;
 # a failure is said once, never the end of the pass.
 canary_top_up() {
   local live have want out rc=0 note='' FLOOR_WHY GATEWAY_ONLY
   [ "$DRY" = 0 ] && [ "${DISPATCH_CANARY_KEEP:-0}" -gt 0 ] 2>/dev/null || return 0
-  have=$(agent-queue list --json --state queued 2>/dev/null | jq -s '[.[] | select((" " + (.tags // "") + " ") | contains(" canary "))] | length') || have=
+  # A canary the fleet share holds is not counted: it cannot start, so it keeps no lane busy.
+  share_state
+  have=$(agent-queue list --json --state queued 2>/dev/null | jq -s --argjson s "$SHARE_STATE" "$SHARE_JQ"'[.[] | select((" " + (.tags // "") + " ") | contains(" canary ")) | select(share_held($s) | not)] | length') || have=
   [[ "$have" =~ ^[0-9]+$ ]] || { say "canary top-up: the queue is unreadable, so none is queued"; return 0; }
   live=$(live_tagged canary | grep -c . || true)
   want=$(( DISPATCH_CANARY_KEEP - have - live ))
   [ "$want" -gt 0 ] || return 0
   floor_gate; [ -z "$FLOOR_WHY" ] || return 0   # only when canaries are missing: it reads gate and the cluster
-  out=$(AGENT_QUEUE_PULL=dispatch fleet-bench canary queue --max "$want" 2>&1) || rc=$?
-  [ "$rc" = 0 ] || note=", not every lane queued"
+  # While the share is full a Claude lane's canary would wait in queued/, so only the lanes on their own source queue (SHARE_JQ).
+  local off=(); if share_full; then off=(--off-claude); note=", the fleet share full: no Claude lane"; fi
+  out=$(AGENT_QUEUE_PULL=dispatch fleet-bench canary queue --max "$want" "${off[@]}" 2>&1) || rc=$?
+  [ "$rc" = 0 ] || note="$note, not every lane queued"
   [ -n "$out" ] || [ "$rc" = 0 ] || out="fleet-bench exited $rc"
   [ -z "$out" ] || say "canary top-up (keep $DISPATCH_CANARY_KEEP, $have queued, $want wanted$note): ${out//$'\n'/; }"
 }
@@ -7689,6 +7725,8 @@ main() {
   case "${1:-}" in
     run)
       shift; cmd_run "$@"; local rc=$?
+      # After the pass, so the floors and the cap's let-go have started what they would; under its lock.
+      [ "$DRY" = 1 ] || ! flock -n 9 2>/dev/null || share_return
       # After the pass, so it counts what the pass left: stats reads this, never the gates itself.
       [ "$DRY" = 1 ] || { cmd_headroom --json > "$HEADROOM.$$" 2>/dev/null && mv -f "$HEADROOM.$$" "$HEADROOM" || rm -f "$HEADROOM.$$"; }
       # The candidates snapshot too, but only from the pass that holds the lock: a skipped pass would
