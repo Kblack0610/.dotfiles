@@ -37,8 +37,8 @@ Object.defineProperty(ctx, "fetch", { get: () => fetchNow, set: (f) => {
 } });
 // In the page's own order: a script that calls another at load needs it loaded first.
 const page = readFileSync(new URL("../src/index.html", dir), "utf8");
-const scripts = new Set(["ui.js", "md.js", "app.js", "actions.js", "table.js", "flow.js", "waiting.js", "cards.js", "home.js", "queue.js"]);
-for (const f of [...page.matchAll(/static\/([a-z]+\.js)/g)].map((m) => m[1]).filter((f) => scripts.has(f))) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+const scripts = new Set(["kb-ui.js", "ui.js", "md.js", "app.js", "actions.js", "table.js", "flow.js", "waiting.js", "cards.js", "home.js", "queue.js"]);
+for (const f of [...page.matchAll(/static\/([a-z-]+\.js)/g)].map((m) => m[1]).filter((f) => scripts.has(f))) vm.runInContext(readFileSync(new URL(f === "kb-ui.js" ? "../../web-kit/kb-ui.js" : f, dir), "utf8"), ctx, { filename: f });
 
 const now = () => Math.floor(Date.now() / 1000);
 function draw(home, agents = [], opened = []) {

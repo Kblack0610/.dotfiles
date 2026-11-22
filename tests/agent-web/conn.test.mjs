@@ -38,7 +38,7 @@ const ctx = vm.createContext({
   // Reads and drawing other scripts own (waiting.js, home.js, sessions.js); this test loads app.js alone.
   refreshAsks: () => Promise.resolve(), refreshHome: () => Promise.resolve(), renderBadge() {}, sst: { render() {} }, renderHome() {},
 });
-for (const f of ["ui.js", "app.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["../../web-kit/kb-ui.js", "ui.js", "app.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 const settle = () => new Promise((r) => setImmediate(r));
 const land = async () => { await settle(); agentsRead?.(); agentsRead = null; await settle(); await settle(); };
 const pill = parts["live-off"];

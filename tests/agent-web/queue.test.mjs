@@ -34,7 +34,7 @@ const ctx = vm.createContext({
   history: { url: "", replaceState(a, b, u) { this.url = u; } },
   fetch: async (url, o) => { asked.push(url); if (o && o.body) posted.push(`${url} ${o.body}`); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => (url.startsWith("/api/flow") ? { line: rail(), grafana: null } : typeof reply === "function" ? reply(url) : reply) }; },
 });
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "table.js", "infra.js", "actions.js", "flow.js", "jobs.js", "waiting.js", "queue.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["../../web-kit/kb-ui.js", "ui.js", "md.js", "charts.js", "app.js", "log.js", "table.js", "infra.js", "actions.js", "flow.js", "jobs.js", "waiting.js", "queue.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 const run = (src) => vm.runInContext(src, ctx);
 const settle = () => new Promise((r) => setImmediate(r));
 
@@ -783,7 +783,7 @@ const loadAt = async (hash) => {
   });
   // The page's own script order, since the listeners' order is what this checks.
   const page = readFileSync(new URL("../src/index.html", dir), "utf8");
-  for (const [, f] of page.matchAll(/<script src="\/static\/([\w-]+\.js)/g)) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), c, { filename: f });
+  for (const [, f] of page.matchAll(/<script src="\/static\/([\w-]+\.js)/g)) vm.runInContext(readFileSync(new URL(f === "kb-ui.js" ? "../../web-kit/kb-ui.js" : f, dir), "utf8"), c, { filename: f });
   ready.forEach((f) => f());
   await settle();
   return urls.filter((u) => /^\/api\/queue(\?|$)/.test(u));
