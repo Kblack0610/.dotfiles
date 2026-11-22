@@ -9,6 +9,11 @@
 #                                   a weights table, seconds<TAB><tier>/<file>, from the bats JUnit
 #                                   report.xml files under <dir>; the tier is an argument because
 #                                   bats names a suite by basename and seven exist in both tiers
+#   shard.sh --matrix <list> <tier>=<max>...
+#                                   the CI fast matrix for <list>, a JSON array of {tier, shard}:
+#                                   a tier gets one shard per $SHARD_SECONDS of its picked files'
+#                                   predicted seconds, rounded up, at least 1 and at most <max>;
+#                                   with no table it gets <max>, since a test count predicts no time
 #
 # A shard lists its files heaviest first, the order bats --jobs starts them in once its slots
 # are full: sorted by name, a unit shard's heaviest file, fleet_bench.bats, started two minutes in
@@ -50,7 +55,70 @@ junit() {
   exit 0
 }
 
-[ $# -eq 2 ] || [ $# -eq 3 ] || die "usage: shard.sh <unit|integ> <i>/<n> [<list>] | --junit <tier> <dir>..."
+# weigh <tier> <files>: each file with its weight, "<weight><TAB><file>": the table's seconds, the
+# tier's median for a file the table does not list (1s when it lists none of the tier), or its
+# @test count when there is no table.
+weigh() {
+  local tier=$1 files=$2 med
+  if [ -n "$WEIGHTS" ]; then
+    [ -r "$WEIGHTS" ] || die "cannot read the weights table $WEIGHTS"
+    med=$(awk -F'\t' -v tier="$tier/" '!/^#/ && index($2, tier) == 1 { print $1 }' "$WEIGHTS" | sort -g |
+      awk '{ v[NR] = $1 } END { print NR ? (NR % 2 ? v[(NR + 1) / 2] : (v[NR / 2] + v[NR / 2 + 1]) / 2) : 1 }')
+    awk -F'\t' -v tier="$tier/" -v med="$med" '
+      FILENAME == ARGV[1] { if (!/^#/ && index($2, tier) == 1) w[$2] = $1; next }
+      ($0 in w) { printf "%s\t%s\n", w[$0], $0; next }
+      { printf "%s\t%s\n", med, $0; print "shard.sh: " $0 " is not in the table; it weighs the median, " med "s" > "/dev/stderr" }
+    ' "$WEIGHTS" <(printf '%s\n' "$files")
+  else
+    echo "shard.sh: no weights table (SHARD_WEIGHTS); each file weighs its @test count" >&2
+    (cd "$DIR" && while read -r f; do printf '%s\t%s\n' "$(grep -c '^@test' "$f" || true)" "$f"; done <<<"$files")
+  fi
+}
+
+# The matrix: one shard per SHARD_SECONDS of a tier's pick. Why: every PR run started all 16
+# shards, and of the 47 PR runs after #3053 (2026-11-21), 22 picked under 100 s of unit time yet
+# took 16 runners, each paying setup for a near-empty shard. At about 40 runs an hour that queued
+# shards for up to 221 s, and the gate read p90 7.4 min (ar-3036).
+matrix() {
+  [ $# -ge 2 ] || die "usage: shard.sh --matrix <list> <tier>=<max>..."
+  [[ ${SHARD_SECONDS-} =~ ^[1-9][0-9]*$ ]] || die "--matrix needs SHARD_SECONDS, a whole number of seconds"
+  local picked arg tier max files total n i sep=
+  [ -z "$WEIGHTS" ] || [ -r "$WEIGHTS" ] || die "cannot read the weights table $WEIGHTS"
+  picked=$(cat -- "$1") || die "cannot read list $1"
+  shift
+  printf '['
+  for arg in "$@"; do
+    [[ $arg =~ ^([a-z]+)=([1-9][0-9]*)$ ]] || die "'$arg' is not <tier>=<max>"
+    tier=${BASH_REMATCH[1]} max=${BASH_REMATCH[2]}
+    [ -d "$DIR/$tier" ] || die "no tier directory $DIR/$tier"
+    files=$(grep "^$tier/" <<<"$picked" || true)
+    total=0 n=1
+    # No table, or one that lists no file of the tier (a header-only --junit), predicts no time:
+    # its 1 s median would size a full pick to a shard or two that run into the job's cap.
+    if [ -n "$files" ] && { [ -z "$WEIGHTS" ] || ! awk -F'\t' -v tier="$tier/" '!/^#/ && index($2, tier) == 1 { found = 1; exit } END { exit !found }' "$WEIGHTS"; }; then
+      n=$max
+    elif [ -n "$files" ]; then
+      total=$(weigh "$tier" "$files" | awk -F'\t' '{ s += $1 } END { printf "%.0f", s }')
+      n=$(((total + SHARD_SECONDS - 1) / SHARD_SECONDS))
+      ((n >= 1)) || n=1
+      ((n <= max)) || n=$max
+    fi
+    echo "shard.sh: $tier: $n of at most $max shards for ${total}s predicted, one per ${SHARD_SECONDS}s" >&2
+    for ((i = 1; i <= n; i++)); do
+      printf '%s{"tier":"%s","shard":"%d/%d"}' "$sep" "$tier" "$i" "$n"
+      sep=,
+    done
+  done
+  printf ']\n'
+}
+
+[ "${1-}" = --matrix ] && {
+  shift
+  matrix "$@"
+  exit 0
+}
+
+[ $# -eq 2 ] || [ $# -eq 3 ] || die "usage: shard.sh <unit|integ> <i>/<n> [<list>] | --junit <tier> <dir>... | --matrix <list> <tier>=<max>..."
 tier=$1 spec=$2 list=${3-}
 [[ $spec =~ ^([0-9]+)/([0-9]+)$ ]] || die "shard '$spec' is not <i>/<n>"
 i=$((10#${BASH_REMATCH[1]})) n=$((10#${BASH_REMATCH[2]}))
@@ -66,23 +134,9 @@ else
   [ "$files" != "$tier/*.bats" ] || die "tier $tier has no .bats files"
 fi
 
-# Each file with its weight: the table's seconds, the tier's median for a file the table does
-# not list (1s when it lists none of the tier), or its @test count when there is no table.
 unit=s
-if [ -n "$WEIGHTS" ]; then
-  [ -r "$WEIGHTS" ] || die "cannot read the weights table $WEIGHTS"
-  med=$(awk -F'\t' -v tier="$tier/" '!/^#/ && index($2, tier) == 1 { print $1 }' "$WEIGHTS" | sort -g |
-    awk '{ v[NR] = $1 } END { print NR ? (NR % 2 ? v[(NR + 1) / 2] : (v[NR / 2] + v[NR / 2 + 1]) / 2) : 1 }')
-  weighed=$(awk -F'\t' -v tier="$tier/" -v med="$med" '
-    FILENAME == ARGV[1] { if (!/^#/ && index($2, tier) == 1) w[$2] = $1; next }
-    ($0 in w) { printf "%s\t%s\n", w[$0], $0; next }
-    { printf "%s\t%s\n", med, $0; print "shard.sh: " $0 " is not in the table; it weighs the median, " med "s" > "/dev/stderr" }
-  ' "$WEIGHTS" <(printf '%s\n' "$files"))
-else
-  echo "shard.sh: no weights table (SHARD_WEIGHTS); each file weighs its @test count" >&2
-  unit=' tests'
-  weighed=$(cd "$DIR" && while read -r f; do printf '%s\t%s\n' "$(grep -c '^@test' "$f" || true)" "$f"; done <<<"$files")
-fi
+[ -n "$WEIGHTS" ] || unit=' tests'
+weighed=$(weigh "$tier" "$files")
 
 out=$(printf '%s\n' "$weighed" |
   sort -t$'\t' -k1,1gr -k2,2 |
