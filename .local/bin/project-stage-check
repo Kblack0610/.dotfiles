@@ -245,8 +245,8 @@ stage_epic() {
 # notes refresh) could hold open under the caller's `$(...)`.
 file_gaps() {
   local epics ladder check rc gaps passes have n=0 filed=0 had=0 closed=0 failed=0 met=0 opened=0
-  local fopen=0 fclosed=0 folded=0 listed_says="" full key title state lane id declared today
-  [ -n "$FILE_LAB" ] || { echo "project-stage-check: \"$NAME\" has no lab sheet to file rows on" >&2; exit 2; }
+  local fopen=0 fclosed=0 folded=0 listed_says="" full key title state lane id declared today v
+  [ -n "$FILE_LAB" ] || { echo "project-stage-check: \"$NAME\" has no lab sheet and no project-map board to file rows on" >&2; exit 2; }
   epics="$(notes projects --stats --json 2>/dev/null | jq -c --arg n "$BOARD" \
     '[.[] | select((.name | ascii_downcase) == ($n | ascii_downcase)) | .epics[]?]')" \
     || { echo "project-stage-check: notes projects --stats --json failed" >&2; exit 2; }
@@ -287,6 +287,13 @@ file_gaps() {
       | [$t, .stage, .requirement, .check, "stages.md #\(.stage), check: \(.check)"] | map(. // "" | tostring) | join("\u001f")' <<<"$check")"
     passes="$(jq -r --arg t "$TARGET" '.requirements[] | select(.result == "PASS")
       | [$t, .stage, .requirement, .check, "stages.md #\(.stage), check: \(.check)"] | map(. // "" | tostring) | join("\u001f")' <<<"$check")"
+  fi
+  # On another project's board a row names its repo, in its text and key, or two repos' rows would
+  # read as one. Both the filing and the PASS-closing below read these lines.
+  if [ "$BOARD" != "$NAME" ]; then
+    for v in gaps passes; do
+      printf -v "$v" '%s' "$(awk -F'\037' -v OFS='\037' -v p="$NAME: " 'NF { $3 = p $3; $5 = p $5 } 1' <<<"${!v}")"
+    done
   fi
   # A text that also fails (two rows or systems sharing a text) is a gap, never met.
   passes="$(awk -F'\037' 'FILENAME == ARGV[1] { f[$3]; next } $3 != "" && !($3 in f)' <(printf '%s\n' "$gaps") <(printf '%s\n' "$passes"))"
@@ -346,8 +353,6 @@ file_systems() {
   while IFS=$'\037' read -r target area full chk key; do
     [ -n "$target" ] || continue
     n=$((n + 1))
-    # On another project's board the row names its repo, or two repos' rows would read as one.
-    [ "$BOARD" = "$NAME" ] || { full="$NAME: $full"; key="$NAME: $key"; }
     title="$(title_of "$full")"; t="$(twins "$title" "$key")"
     read -r state ao ac < <(held "$t")
     fopen=$((fopen + ao)) fclosed=$((fclosed + ac))

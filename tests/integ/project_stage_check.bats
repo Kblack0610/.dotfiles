@@ -989,7 +989,7 @@ wrap_notes() {
   # NEGATIVE CONTROL: no `board` key, so there is no sheet to file on.
   run "$CHECK" tool-canon --systems --file
   assert_failure 2
-  assert_output --partial 'has no lab sheet to file rows on'
+  assert_output --partial 'has no lab sheet and no project-map board to file rows on'
   assert_not_called 'ptask'
   jq '.trackers["tool-canon"].board = "shooter"' "$PROJECT_MAP_FILE" > "$HOME/map.new" && mv "$HOME/map.new" "$PROJECT_MAP_FILE"
   epics '[{"id":"sh-5","system":"docs","title":"docs for shooter"}]'
@@ -999,6 +999,21 @@ wrap_notes() {
   assert_called 'notes ptask shooter --agent add chore(docs): tool-canon: An architecture doc #of/sh-5 #size/s #low'
   assert_called 'from project-stage-check tool-canon --file, tool-canon: systems.md docs'
   assert_not_called 'ptask tool-canon'
+  # A second run finds its row open, and files nothing.
+  row='- [ ] chore(docs): tool-canon: An architecture doc #of/sh-5 #size/s #low <!-- id:sh-9 -->'
+  board "$(printf -- '%s\n  from project-stage-check tool-canon --file, tool-canon: systems.md docs, check: `[ -f docs/architecture.md ]`' "$row")"
+  parses "$row" 'tool-canon: An architecture doc' docs
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$CHECK" tool-canon --systems --file
+  assert_success
+  assert_line --regexp '^open +docs +tool-canon: An architecture doc$'
+  assert_not_called 'add chore(docs): tool-canon: An architecture doc'
+  # Once the check passes, the row on the board closes.
+  mkdir -p "$HOME/tool/docs"; : > "$HOME/tool/README.md"; : > "$HOME/tool/docs/architecture.md"
+  run "$CHECK" tool-canon --systems --file
+  assert_success
+  assert_line --regexp '^met +sh-9 +tool-canon: An architecture doc$'
+  assert_called 'notes ptask shooter --agent done sh-9'
 }
 
 @test "file: --json keeps the report on stderr and prints the check of its target with the rows it filed" {
