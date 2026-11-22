@@ -87,7 +87,7 @@ Write that file in the status shape from the `comms-standard` skill (no frontmat
 - <what comes next, in order; the first line is the single most useful next action>
 
 ## Needs you
-- <one verb, one action, where to do it: an open ask, a human-sheet row; else "Nothing." An open PR on a queue item is Doing, never a merge ask here: dispatch owns it (`pr_owner: land` lands it, `fix` fixes it), and the lint below fails the line.>
+- <one verb, one action, where to do it: an open ask, a human-sheet row; else "Nothing." An open PR on a queue item is Doing, never a merge ask here: dispatch owns it (`pr_owner: land` lands it, `fix` fixes it), and the lint below fails the line; a merge the human owns is a filed ask, named by its id.>
 
 ## Deferred phases
 - <each `[-]` phase in the plan's ## Phases checklist, and the board row it went to; omit the section when there are none>

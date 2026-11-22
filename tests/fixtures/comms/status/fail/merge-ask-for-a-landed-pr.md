@@ -22,4 +22,3 @@ PR 226 is open: bump_home_config.py now waits for Forgejo to report the PR merge
 ## Files touched
 - `ci/bump_home_config.py` - wait_mergeable before the merge call
 - `lab/tests/test_bump_home_config.py` - merge test updated, two new tests
-# Session wrap-up - 2026-11-19

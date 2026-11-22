@@ -205,7 +205,16 @@ EOF
   run "$SUBJECT" --channel status - <<< $'Head.\nDone: x.\nDoing: y.\nNext: z.\nNeeds you: merge #5.'
   assert_failure 1
   assert_output --partial "a merge ask under Needs you"
+  run "$SUBJECT" --channel status - <<< $'## Done\n- x\n\n## Next\n- y\n\n## Needs you\n- Merge PR 227 once CI is green.'
+  assert_failure 1
+  run "$SUBJECT" --channel status - <<< $'## Done\n- x\n\n## Next\n- y\n\n## Needs you\nMerge https://github.com/a/b/pull/227 today.'
+  assert_failure 1
   run "$SUBJECT" --channel status - <<< $'## Done\n- agent-land merged #12\n\n## Next\n- y\n\n## Needs you\n- Answer ask cL3WZL: merge #856 in a repo not ours.\n\n## Verification\n- merged #12, CI green'
+  assert_success
+  # negative controls: a merge in the next section, or on the next label line, is not under Needs you
+  run "$SUBJECT" --channel status - <<< $'## Done\n- x\n\n## Next\n- y\n\n## Needs you\n- Nothing.\n\n## Verification\n- merge #12 ok'
+  assert_success
+  run "$SUBJECT" --channel status - <<< $'Head.\nDone: x.\nNeeds you:\nNext: merge #5.'
   assert_success
 }
 
