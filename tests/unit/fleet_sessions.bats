@@ -6385,7 +6385,7 @@ fire_line() {   # <ts> <task id>
 
 # pending_wakes <transcript> <start epoch|-> <now epoch>: what will wake the session by itself, read from the
 # shapes Claude Code writes (probed 2026-11-20 for ar-3598): a tool_result line with its toolUseResult, the
-# assistant tool_use of ScheduleWakeup, and the <task-notification> that ends a Monitor.
+# assistant tool_use of ScheduleWakeup, the <task-notification> and the TaskStop result that end a Monitor.
 result_line() {   # <ts> <result text> <toolUseResult json>
   jq -nc --arg ts "$1" --arg c "$2" --argjson r "$3" '{type: "user", timestamp: $ts, toolUseResult: $r, message: {content: [{type: "tool_result", tool_use_id: "t", content: $c}]}}'
 }
@@ -6439,7 +6439,7 @@ notice_line() {   # <ts> <task id> <status>
   run pending_wakes "$t.b" "$start" "$now"; assert_output ''
 }
 
-@test "pending_wakes: an armed Monitor waits until it expires or its task notification ends it (ar-3598)" {
+@test "pending_wakes: an armed Monitor waits until it expires or its task notification or TaskStop ends it (ar-3598, ar-4158)" {
   local t="$BATS_TEST_TMPDIR/m.jsonl" start now
   start="$(date -u -d 2026-11-20T10:00:00Z +%s)"; now="$(date -u -d 2026-11-20T12:10:00Z +%s)"
   result_line 2026-11-20T12:00:00Z 'Monitor started (task blf2qpuvu, expires in 30m unless the source ends first).' \
@@ -6454,6 +6454,15 @@ notice_line() {   # <ts> <task id> <status>
   # Claude Code can write the end notice before the "Monitor started" line (a source that ends at once)
   { notice_line 2026-11-20T12:00:00.725Z blf2qpuvu completed; cat "$t"; } > "$t.o"
   run pending_wakes "$t.o" "$start" "$now"; assert_output ''
+  # a TaskStop result ends it with no notification: the JSON tool_result Claude Code writes, or the bare text; a
+  # stop of another task, or the words inside some other output, do not (ar-4158)
+  cp "$t" "$t.s"; result_line 2026-11-20T12:03:00Z '{"message":"Successfully stopped task: other (sleep 9)","task_id":"other"}' '{"task_id":"other"}' >> "$t.s"
+  result_line 2026-11-20T12:03:30Z 'grep says: Successfully stopped task: blf2qpuvu' '{}' >> "$t.s"
+  run pending_wakes "$t.s" "$start" "$now"; assert_output --partial 'monitor	blf2qpuvu'
+  result_line 2026-11-20T12:04:00Z '{"message":"Successfully stopped task: blf2qpuvu (tail -f x)","task_id":"blf2qpuvu"}' '{"task_id":"blf2qpuvu"}' >> "$t.s"
+  run pending_wakes "$t.s" "$start" "$now"; assert_output ''
+  cp "$t" "$t.b"; result_line 2026-11-20T12:04:00Z 'Successfully stopped task: blf2qpuvu' '{}' >> "$t.b"
+  run pending_wakes "$t.b" "$start" "$now"; assert_output ''
   # a persistent Monitor has no expiry, so it holds 7 days, as a recurring cron does
   result_line 2026-11-20T12:00:00Z 'Monitor started (task p1p1p1p1, persistent).' '{"taskId":"p1p1p1p1","timeoutMs":1800000,"persistent":true}' > "$t.p"
   run pending_wakes "$t.p" "$start" "$(date -u -d 2026-11-20T18:00:00Z +%s)"; assert_output "$(printf 'monitor\tp1p1p1p1\t-')"
