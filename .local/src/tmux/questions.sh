@@ -592,14 +592,14 @@ key_enter() {
   armed)
     if [[ "$sid" == @* ]]; then dialog_send "$opt" "$sid" "$seen"; return 0; fi
     ask_load "$sid"
-    if err="$("$QUESTIONS_ASK" answer "$sid" "${A_OPTS[opt - 1]}" 2>&1 >/dev/null)"; then
+    if err="$(env -u CLAUDE_CODE_SESSION_ID -u AGENT_QUEUE_ITEM "$QUESTIONS_ASK" answer "$sid" "${A_OPTS[opt - 1]}" 2>&1 >/dev/null)"; then
       after "answered \"${A_OPTS[opt - 1]}\" . sending it to $A_WHO" "$sid"
     else st_write ""; footer "not sent: ${err:-agent-ask answer failed}"; fi
     ;;
   typing)
     [ -n "$q" ] || { footer "type an answer first . esc cancels"; return 0; }
     if [[ "$sid" == @* ]]; then dialog_send "$opt" "$sid" "$seen" "$q"; return 0; fi
-    if err="$("$QUESTIONS_ASK" answer "$sid" "$q" 2>&1 >/dev/null)"; then after "answered . sending it" "$sid"
+    if err="$(env -u CLAUDE_CODE_SESSION_ID -u AGENT_QUEUE_ITEM "$QUESTIONS_ASK" answer "$sid" "$q" 2>&1 >/dev/null)"; then after "answered . sending it" "$sid"
     else footer "not sent: ${err:-agent-ask answer failed}"; fi
     ;;
   seen)

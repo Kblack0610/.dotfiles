@@ -377,7 +377,7 @@ journal() {
 enter_action() { # $1=type $2=id $3=target — what Enter means for each row kind
   local type="${1:-}" id="${2:-}" target="${3:-}"
   case "$type" in
-    ask)    tmux new-window "agent-ask show '$id'; agent-ask answer '$id'" 2>/dev/null ;;
+    ask)    tmux new-window "agent-ask show '$id'; env -u CLAUDE_CODE_SESSION_ID -u AGENT_QUEUE_ITEM agent-ask answer '$id'" 2>/dev/null ;;
     watch)  [ -f "$target" ] && tmux new-window "nvim '$target'" 2>/dev/null ;;
     runner) journal "$id" ;;
     agent)  agent-panel jump "$target" ;;   # it owns the cross-server hop
