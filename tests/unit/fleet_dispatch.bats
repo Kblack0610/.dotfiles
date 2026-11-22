@@ -1977,6 +1977,18 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   assert_output --partial "$SANDBOX/none.conf does not set DISPATCH_PER_PASS DISPATCH_ORPHAN_HOURS"
 }
 
+@test "a worker with no conf still answers the verbs it runs for the dispatcher; restore without --here still exits 78" {
+  run env -u DISPATCH_PER_PASS DISPATCH_CONF="$SANDBOX/none.conf" "$REPO_ROOT/.local/bin/fleet-dispatch" kit
+  assert_success
+  refute_output --regexp 'does not set|unbound'
+  run env -u DISPATCH_PER_PASS DISPATCH_CONF="$SANDBOX/none.conf" DISPATCH_HARNESSES="$SANDBOX/none.json" "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready nim
+  assert_success
+  assert_output "nim: no harness map at $SANDBOX/none.json"
+  run env -u DISPATCH_PER_PASS DISPATCH_CONF="$SANDBOX/none.conf" "$REPO_ROOT/.local/bin/fleet-dispatch" restore --dry-run
+  assert_failure 78
+  assert_output --partial "does not set DISPATCH_PER_PASS"
+}
+
 # conf_keys <file>: the DISPATCH_* keys a conf sets, sorted; code_keys: fleet-dispatch's DISPATCH_CONF_KEYS
 conf_keys() { sed -n 's/^\(DISPATCH_[A-Z0-9_]*\)=.*/\1/p' "$1" | sort; }
 code_keys() { sed -n '/^DISPATCH_CONF_KEYS=(/,/^)/p' "$REPO_ROOT/.local/bin/fleet-dispatch" | grep -oE 'DISPATCH_[A-Z0-9_]+' | grep -vx DISPATCH_CONF_KEYS | sort; }

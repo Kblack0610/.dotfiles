@@ -104,7 +104,13 @@ dispatch_conf_load() {
     "$DISPATCH_CONF" "${missing[*]}" >&2
   exit 78
 }
-dispatch_conf_load
+# The verbs a worker runs for the dispatching machine (probe_hosts, start --host, on_workers) are
+# mechanism, and a worker carries no private overlay, so they load no conf. One that read a tuning key
+# would still stop loud: an unbound variable under set -u.
+case "$([ "${BASH_SOURCE[0]}" = "$0" ] && echo "${1:-} ${2:-}")" in
+  "kit "* | "harness-ready "* | "lane-sandbox "* | "harness-prep "* | "trainee-patch "* | "item-end "* | "record --here" | "restore --here") DISPATCH_WORKER_VERB=1 ;;
+  *) DISPATCH_WORKER_VERB=''; dispatch_conf_load ;;
+esac
 
 : "${FLEET_STATE_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 : "${DISPATCH_PROC_STAT:=/proc/stat}"
@@ -146,7 +152,7 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 # shellcheck source=../lib/wake-pace.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/wake-pace.sh"
 LEVEL=$(machine_level)
-read -r PER_PASS MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH_PER_PASS" DISPATCH_MAX_LOAD "$DISPATCH_MAX_LOAD")
+[ -n "$DISPATCH_WORKER_VERB" ] || read -r PER_PASS MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH_PER_PASS" DISPATCH_MAX_LOAD "$DISPATCH_MAX_LOAD")
 # Tier-3 rows fill never promotes, whatever the judge says (decide rows and the release kind are off in
 # kinds.json): the human-merge list, release cuts, secrets and auth and production data migrations (ask BwiKfB, 2026-11-21), plus
 # money (the go hard gate), anything needing a device or the human's own machine, and wishes. Case-insensitive ERE.
