@@ -25,6 +25,8 @@ printf 'gh %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
 case "$1 $2" in
 'pr view')
   case "$*" in
+  # pr41.state: the state of #41, an earlier PR an item records as open (OPEN by default)
+  'pr view 41 --json state '*) cat "$NOTES_FIXTURE/pr41.state" 2>/dev/null || echo OPEN ;;
   # head.oid / head.ref / head.cross: the PR's head commit, branch and fork-ness (this checkout's HEAD, branch pr-42, same repo, by default)
   # The caller's real -q runs through jq on the JSON gh would return, so a query gh rejects fails here too.
   # prior.json: an earlier PR the item records, asked for its state and merge commit (open by default)
@@ -1515,9 +1517,75 @@ repo_map() {
   ITEM_PROJECT=tools item tool 'board:tools:tool fix' agent
   printf 'https://github.com/o/r/pull/43\n' >"$NOTES_FIXTURE/url"
   printf 'OPEN\n' >"$NOTES_FIXTURE/state"
+  # #43 is another PR, with its own body: #42's carries "Item: store" now.
+  printf 'The change and why.\n' >"$NOTES_FIXTURE/body"
   AGENT_QUEUE_ITEM=tool run "$LAND" 43
   assert_success
   assert_output --partial 'item: tool done with pr:o/r#43'
+}
+
+# untouched <slug> -> asserts nothing past the refusal ran: no body edit, check, merge or board write, and the item has no PR
+untouched() {
+  run grep -c 'pr edit\|pr checks\|pr merge' "$LOG"
+  assert_output 0
+  run board_calls
+  assert_output ''
+  run agent-queue show "$1" --json
+  assert_equal "$(jq -r '.state + " " + (.pr // "")' <<<"$output")" 'running '
+  run grep -c '^Item:' "$NOTES_FIXTURE/body"
+  assert_output 0
+}
+
+@test "a sibling subagent's item that agent-queue mine returns refuses this PR while its own PR is open (ar-3047)" {
+  # home-config #1195, 2026-11-18: two subagents of one coordinator share its session id; one added
+  # its item and started agent-land on its PR, and the other's bare agent-land took that item.
+  item qualify
+  agent-queue claim qualify --sid sid-coord >/dev/null
+  agent-queue set qualify open_pr=o/r#41 >/dev/null
+  CLAUDE_CODE_SESSION_ID=sid-coord run "$LAND" 42
+  assert_failure 2
+  assert_output --partial "#42 (o/r#42) is not qualify's work, taken from agent-queue mine: qualify's own PR o/r#41 is open. Pass --item <slug>"
+  untouched qualify
+  # NEGATIVE CONTROL: named by --item, the same PR lands on it.
+  CLAUDE_CODE_SESSION_ID=sid-coord run "$LAND" 42 --item qualify --partial
+  assert_success
+}
+
+@test "an item taken from the session refuses a PR whose body names another item, and takes one that names it (ar-3047)" {
+  item fix-crash
+  item other-item
+  printf 'The change.\n\nItem: other-item\n' >"$NOTES_FIXTURE/body"
+  AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42
+  assert_failure 2
+  assert_output --partial 'its body names its item, other-item. Pass --item other-item for the item #42 is the work of'
+  run grep -c 'pr edit\|pr checks\|pr merge\|^notes' <(not_recorded)
+  assert_output 0
+  # NEGATIVE CONTROL: a body that names this item lands, though its open_pr names an earlier PR.
+  agent-queue set fix-crash open_pr=o/r#41 >/dev/null
+  printf 'The change.\n\nItem: fix-crash\n' >"$NOTES_FIXTURE/body"
+  AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42
+  assert_success
+  assert_output --partial 'item: fix-crash done with pr:o/r#42'
+}
+
+@test "an item taken from the session lands past a placeholder Item: line or an open_pr that closed (ar-3047)" {
+  item fix-crash
+  agent-queue set fix-crash open_pr=o/r#41 >/dev/null
+  printf 'closed\n' >"$NOTES_FIXTURE/pr41.state"
+  printf 'The change.\n\nItem: <slug>\n' >"$NOTES_FIXTURE/body"
+  AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42
+  assert_success
+  assert_output --partial 'item: fix-crash done with pr:o/r#42'
+  run grep -cx 'Item: fix-crash' "$NOTES_FIXTURE/body"
+  assert_output 1
+}
+
+@test "a re-run on the PR the item records as open lands with no Item: line (ar-3047)" {
+  item fix-crash
+  agent-queue set fix-crash open_pr=o/r#42 >/dev/null
+  AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42
+  assert_success
+  assert_output --partial 'item: fix-crash done with pr:o/r#42'
 }
 
 @test "an agent-lane board item closes its row with --agent" {
