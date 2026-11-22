@@ -1003,6 +1003,22 @@ EOF
   assert_output --partial 'shape failed: shape-grow 5eedbase5eedbase HEAD: shape-grow: git diff origin/main HEAD: bad revision'
 }
 
+@test "tier 3: a playground fix(ci) item the tier-3 gate queued is refused without a Review: line, and lands with one and green checks" {
+  ITEM_PROJECT=unity-core-playground item fix-ci-probe 'human'
+  agent-queue set fix-ci-probe tags=tier3 >/dev/null
+  run "$LAND" 42 --item fix-ci-probe
+  assert_failure 1
+  assert_output --partial 'review failed: tier-3 item fix-ci-probe: no "Review: /code-review <level>'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+  printf 'fix(ci): retry the flaky runner probe\n\nReview: /code-review high, 1 finding fixed\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item fix-ci-probe
+  assert_success
+  assert_output --partial 'review: present (tier 3)'
+  assert_output --partial 'checks: green'
+  assert_output --partial 'merge: #42 MERGED'
+}
+
 @test "tier 3: an item tagged tier1 on agent-runtime, or an untiered one elsewhere, lands without a Review: line" {
   ITEM_PROJECT=agent-runtime item small 'human'
   agent-queue set small tags=tier1 >/dev/null
