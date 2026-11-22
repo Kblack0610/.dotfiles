@@ -1809,6 +1809,20 @@ handoff_repo() {
   "$AQ" move re done --status ok
 }
 
+@test "setting pr= on a done item keeps its merged: sha" {
+  "$AQ" add --project game --running --slug d "d" >/dev/null
+  "$AQ" set d pr=o/game#1 merged=aaa111 >/dev/null
+  "$AQ" move d done --status ok >/dev/null
+  local f
+  f="$(ls "$AGENT_QUEUE_DIR"/done/*/*-d.md)"
+  "$AQ" set d pr= >/dev/null
+  [ -z "$(field "$f" pr)" ]
+  [ "$(field "$f" merged)" = aaa111 ]
+  "$AQ" set d pr=o/game#2 >/dev/null
+  [ "$(field "$f" pr)" = o/game#2 ]
+  [ "$(field "$f" merged)" = aaa111 ]
+}
+
 @test "a failing model-lane never fails the move" {
   printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/model-lane"; chmod +x "$SANDBOX/bin/model-lane"
   "$AQ" add --project game --running --slug m "m" >/dev/null; "$AQ" set m lane_run=r1 >/dev/null

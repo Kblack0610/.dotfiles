@@ -2866,12 +2866,16 @@ cmd_set() {
   esac
   # merged: is the merge of the PR in pr:, so a new pr: drops an old merged: unless this set names
   # one too (agent-land sets both), or done ok would pass on the last PR's merge (cmd_move).
-  case " $* " in
-    *" merged="*) ;;
-    *" pr="*) for kv in "$@"; do
-        [ "${kv%%=*}" = pr ] && [ "${kv#*=}" != "$(fm_get "$f" pr)" ] && header_del "$f" merged
-      done ;;
-  esac
+  # A done item has passed that check: its merged: is the proof it shipped, kept when pr: is fixed
+  # or cleared after the PR record is gone (ar-3899, seen 2026-11-19 on the audio items).
+  if [ "$(state_of "$f")" != done ]; then
+    case " $* " in
+      *" merged="*) ;;
+      *" pr="*) for kv in "$@"; do
+          [ "${kv%%=*}" = pr ] && [ "${kv#*=}" != "$(fm_get "$f" pr)" ] && header_del "$f" merged
+        done ;;
+    esac
+  fi
   for kv in "$@"; do
     case "$kv" in
       session=*) kv="session=$(qualified "${kv#*=}")" || exit 1 ;;
