@@ -80,7 +80,7 @@ DISPATCH_CONF_KEYS=(
   DISPATCH_IDLE_WINDOW DISPATCH_RED_FLOOR DISPATCH_FIX_TRIES DISPATCH_TRAINEE_REVIEW_HOURS
   DISPATCH_PROJECT_FLOOR DISPATCH_LINE_MAX DISPATCH_FLEET_SHARE DISPATCH_FLEET_SHARE_H
   DISPATCH_SOURCE_FLOOR DISPATCH_ROLLUP_DAYS DISPATCH_ROLLUP_MIN DISPATCH_ROLLUP_BOARD
-  DISPATCH_ROLLUP_TAGS DISPATCH_PROVIDER_HOLD_MIN DISPATCH_CANARY_FLOOR DISPATCH_PLAN_FLOOR
+  DISPATCH_ROLLUP_TAGS DISPATCH_PROVIDER_HOLD_MIN DISPATCH_PLAN_FLOOR
   DISPATCH_SPRINT_FLOOR DISPATCH_SOURCE_PICKS DISPATCH_RUN_FLOOR DISPATCH_STARVED_MIN
   DISPATCH_IDLE_CAP_PCT DISPATCH_FLAP_MOVES DISPATCH_FINDING_FRESH_MIN DISPATCH_JUDGE_MAX
   DISPATCH_DETAIL_CHARS DISPATCH_PLAN_BACKLOG DISPATCH_EXIT_MAX DISPATCH_START_WAIT
@@ -106,6 +106,9 @@ dispatch_conf_load
 
 : "${FLEET_STATE_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 : "${DISPATCH_PROC_STAT:=/proc/stat}"
+# A switch whose 0 is off: the conf dropped the canary floor (private #1216), and plan
+# vast-soaring-prism P3 (ar-4444) deletes this read with the floor.
+: "${DISPATCH_CANARY_FLOOR:=0}"
 : "${DISPATCH_TRAINEE_REPOS:=$HOME/.dotfiles}"   # the checkouts a trainee may work in, space-separated: its provider is a free one that sees the row and the repo, so public repos only (trainee_public_why)
 : "${PLANNED_REBOOT_WINDOW_S:=1800}"   # a lost server this soon after a planned reboot's boot does not page (planned_reboot)
 # The first message restore types into a reopened conversation whose queue item is running (each %s: the

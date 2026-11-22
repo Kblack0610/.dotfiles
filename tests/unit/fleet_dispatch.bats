@@ -1950,11 +1950,14 @@ code_keys() { sed -n '/^DISPATCH_CONF_KEYS=(/,/^)/p' "$REPO_ROOT/.local/bin/flee
   assert_output ''
 }
 
-@test "the private agentctl conf sets exactly DISPATCH_CONF_KEYS, so the live fleet never exits 78 on a key" {
+@test "the private agentctl conf sets every one of DISPATCH_CONF_KEYS, so the live fleet never exits 78 on a key" {
   private_or_skip "the conf's keys are"
   conf="$PRIVATE/.config/agentctl/agents/fleet-dispatch.conf"
   [ -f "$conf" ]
-  assert_equal "$(conf_keys "$conf")" "$(code_keys)"
+  # Every key, not exactly them: the private conf lands first, so it may carry a key the public code
+  # does not read yet.
+  run comm -13 <(conf_keys "$conf") <(code_keys)
+  assert_output ''
 }
 
 @test "the machine-mode level scales the start limits where they are read; mid is the conf's own" {

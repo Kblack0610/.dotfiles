@@ -104,6 +104,21 @@ sandbox_fleet() {
 # loader keeps a key's first line)
 dispatch_conf() { { printf '%s\n' "$@"; cat "$TESTS_DIR/fixtures/fleet-dispatch.conf"; } > "$DISPATCH_CONF"; }
 
+# sandbox_tool_files -> the files tools read config from or write side files to, inside $SANDBOX
+sandbox_tool_files() {
+  # Detach from node_exporter's textfile directory: fleet-sessions, fleet-bench and day-log
+  # publish there as a side effect, and on the workstation it exists. A test that wants the
+  # files makes this directory itself.
+  export PROM_TEXTFILE_DIR="$SANDBOX/textfile"
+  # fleet-dispatch reads its tuning from DISPATCH_CONF and exits 78 on a missing key, holding no
+  # default of its own: every suite runs on the fixture conf, and a test changes a key with dispatch_conf.
+  export DISPATCH_CONF="$SANDBOX/fleet-dispatch.conf"
+  cp "$TESTS_DIR/fixtures/fleet-dispatch.conf" "$DISPATCH_CONF"
+  # agentctl reads the lanes a conf's LANE= may name from lanes.tsv (private, so absent in CI).
+  export AGENTCTL_LANES_FILE="$SANDBOX/lanes.tsv"
+  cp "$TESTS_DIR/fixtures/lanes.tsv" "$AGENTCTL_LANES_FILE"
+}
+
 sandbox_init() {
   local fixture="${1:-basic}"
 
@@ -230,19 +245,7 @@ EOF
   # Detach from a sandboxed runner's lane keys (lib/sandbox.sh): a suite run inside one would
   # otherwise sandbox, or hand a real token to, every agentctl-run it tests.
   unset SANDBOX_PROFILE GH_TOKEN_FILE AGENTCTL_SANDBOX_DIR GH_TOKEN GITHUB_TOKEN
-
-  # Detach from node_exporter's textfile directory: fleet-sessions, fleet-bench and day-log
-  # publish there as a side effect, and on the workstation it exists. A test that wants the
-  # files makes this directory itself.
-  export PROM_TEXTFILE_DIR="$SANDBOX/textfile"
-
-  # fleet-dispatch reads its tuning from DISPATCH_CONF and exits 78 on a missing key, holding no
-  # default of its own: every suite runs on the fixture conf, and a test changes a key with dispatch_conf.
-  export DISPATCH_CONF="$SANDBOX/fleet-dispatch.conf"
-  cp "$TESTS_DIR/fixtures/fleet-dispatch.conf" "$DISPATCH_CONF"
-  # agentctl reads the lanes a conf's LANE= may name from lanes.tsv (private, so absent in CI).
-  export AGENTCTL_LANES_FILE="$SANDBOX/lanes.tsv"
-  cp "$TESTS_DIR/fixtures/lanes.tsv" "$AGENTCTL_LANES_FILE"
+  sandbox_tool_files
 
   # Stub dir wins over anything real.
   export PATH="$SANDBOX/bin:$PATH"
