@@ -197,6 +197,18 @@ EOF
   assert_output --partial "missing: Done section"
 }
 
+@test "a merge ask under Needs you fails status; an ask that names it, or a merge elsewhere, passes" {
+  # ar-3975: dispatch owns a queue item's open PR (pr_owner), so "merge #N" asks the human for nothing.
+  run "$SUBJECT" --channel status - <<< $'## Done\n- x (#226)\n\n## Next\n- y\n\n## Needs you\n- Nothing new.\n- Review and merge PR #227.'
+  assert_failure 1
+  assert_output --partial "a merge ask under Needs you"
+  run "$SUBJECT" --channel status - <<< $'Head.\nDone: x.\nDoing: y.\nNext: z.\nNeeds you: merge #5.'
+  assert_failure 1
+  assert_output --partial "a merge ask under Needs you"
+  run "$SUBJECT" --channel status - <<< $'## Done\n- agent-land merged #12\n\n## Next\n- y\n\n## Needs you\n- Answer ask cL3WZL: merge #856 in a repo not ours.\n\n## Verification\n- merged #12, CI green'
+  assert_success
+}
+
 @test "a missing prose checker is a usage error, never a silent pass" {
   export COMMS_PROSE_CHECK="$SANDBOX/nope.py"
   run "$SUBJECT" --channel status - <<< $'Done\n- x\nNext\n- y'
