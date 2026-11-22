@@ -93,8 +93,8 @@ function laneCard(l) {
   const own = new RegExp(`(^|\\s)#${l.name.replace(/\W/g, "")}(?![\\w:/-])`, "gim");
   const text = l.markdown.replace(own, "$1");
   const at = liveRows() ? l.lines : null;
-  return `<details class="dlane${tint}" data-k="${esc(k)}"${fcs.open[k] ? " open" : ""}><summary class="dlh">${head}</summary>` +
-    `<div class="md">${md(text, { notes: true, rows: at })}${addRow(l)}</div></details>`;
+  return fold(`dlane${tint}`, head, `<div class="md">${md(text, { notes: true, rows: at })}${addRow(l)}</div>`,
+    { k, open: fcs.open[k], sum: ' class="dlh"' });
 }
 
 // A link's short name for a button: its label when it has one, else the last part of its path
@@ -223,7 +223,7 @@ function editBody() {
   }
   html += `<textarea id="f-edit" spellcheck="false" autocapitalize="off">${esc(e.text)}</textarea>`;
   html += `<div class="opts">${e.stale ? "" : `<button class="btn sm primary" data-f="save"${e.saving ? " disabled" : ""}>Save</button>`}<span id="f-edit-st" class="muted">${esc(editLine())}</span></div>`;
-  if (e.err) html += `<div class="err">${esc(e.err)}</div>`;
+  if (e.err) html += errPanel(e.err);
   return html;
 }
 

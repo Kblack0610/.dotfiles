@@ -333,7 +333,7 @@ pub struct Card {
 }
 
 /// A targeted version against the day the work up to it closes at the net rate: what the card,
-/// the lab-status line and the Sentinel `release-late` watch read (`hub projects --json`).
+/// `hub projects --status` and the Sentinel `release-late` watch read (`hub projects --json`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct OnTime {
     pub version: String,

@@ -1,0 +1,6 @@
+_2026-11-21_ - The UI-text epic is at phase 6 of 9.
+The writer change is in review.
+Done: the lab status reader (#3040).
+Doing: the lab status writer (ar-4383).
+Next: agent-web migration.
+Needs you: nothing.

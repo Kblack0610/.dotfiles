@@ -1145,7 +1145,7 @@ ITEM_JQ='def lepoch($s): ($s + ":00Z" | fromdateiso8601) as $l | ($l - (($l | lo
   | .priority //= "high"
   | (if (.origin // "") == "" then . else .by = ('"$ORIGIN_BY"'[.origin] // .origin) end)
   | (if (.hold // "") != "" then null
-     else ([.queued, ($x.afin // "" | select(. != ""))] + at_ready(.tags // ""; .queued)) | max end) as $due
+     else ([.queued, (.requeued // empty), ($x.afin // "" | select(. != ""))] + at_ready(.tags // ""; .queued)) | max end) as $due
   | (if $due != null and (.started // "") != "" and $due > .started then .started else $due end) as $ready
   | (if $ready then .ready = $ready else . end)
   | if (.row // "") != "" then . elif (.from // "" | startswith("board:")) then .row = (.from | ltrimstr("board:"))
@@ -3110,7 +3110,10 @@ cmd_move() {
     # that no longer works it. `sessions:` stays: it is the history of who worked the item.
     # lane_run goes too: the next start logs a run of its own, and host: too, since the next start
     # may run it here.
-    queued) header_del "$f" session window started waiting review origin lane_run host desk_start ;;
+    # `requeued` is when it went back: ITEM_JQ reads its ready time from there, since `started` is gone
+    # and a restart a week later would otherwise read as a week of waiting since the predecessor finished.
+    queued) [ -z "$(fm_get "$f" started)" ] || header_set "$f" requeued "$(now_utc)"
+      header_del "$f" session window started waiting review origin lane_run host desk_start ;;
     running) [ -n "$(fm_get "$f" started)" ] || header_set "$f" started "$(now_utc)"
       # A new run has not ended yet: the last run's reason goes.
       header_del "$f" end_reason

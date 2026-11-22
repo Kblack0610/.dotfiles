@@ -298,10 +298,9 @@ function runnersSection(ci) {
 }
 const waitingSection = () => secHead("waiting", "Waiting for a runner", infraN("queued"), "", "h3") + INFRA_T.queued.html();
 function localSection(ci) {
-  const open = secOpen(ist.open, "ci-more") ? " open" : "";
   const n = infraN("local");
   return secHead("local", "Local Unity", n, n ? "bad" : "", "h3") + INFRA_T.local.html() +
-    `<details class="sec-d" data-k="ci-more"${open}><summary>${secHead("", "CI runs finished today", null, "", "h3")}</summary>${doneToday(ci)}</details>`;
+    fold("sec-d", secHead("", "CI runs finished today", null, "", "h3"), doneToday(ci), { k: "ci-more", open: secOpen(ist.open, "ci-more") });
 }
 
 // The governor's global series: whether it is up and saw every source, and its queue.
@@ -360,7 +359,7 @@ function infraPageHtml() {
   if (!o) return "";
   const back = `<a class="btn sm" href="#infra/${ENTITY_PAGES.infra[o.p.word]}${st.views.infra ? "?" + st.views.infra : ""}">${o.p.back}</a>`;
   const d = pgst.data;
-  if (!d) return `<div class="bhead"><span>${esc(o.name)}</span>${back}</div><div class="${pgst.err ? "panel down" : "empty"}">${pgst.err ? esc(pgst.err) : "Loading..."}</div>`;
+  if (!d) return `<div class="bhead"><span>${esc(o.name)}</span>${back}</div>${readPanel(pgst.err, "Loading...")}`;
   let h = `<div class="bhead"><span>${esc(d.head)}</span>${back}</div>`;
   const errs = pgst.err ? [`refresh failed, showing the last read: ${pgst.err}`, ...d.errors] : d.errors;
   if (errs.length) h += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;

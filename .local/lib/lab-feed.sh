@@ -177,8 +177,8 @@ lab_feed_fields() {
   status="$(sed -n '/STATUS:START/,/STATUS:END/p' "$meta" 2>/dev/null \
     | sed '1d;$d' | sed '/^[[:space:]]*$/d' | awk 'NR==1')"
   case "$status" in *'no status yet'*) status="" ;; esac
-  # `_2026-07-28_ — the sentence`: the date becomes field 8, the separator is dropped
-  # by class rather than by literal, because the writer uses an em dash and matching a
+  # `_2026-07-28_ - the sentence`: the date becomes field 8, the separator is dropped
+  # by class rather than by literal, because older notes carry an em dash (the writer now uses " - ") and matching a
   # multibyte literal inside a bracket expression is locale-dependent.
   sdate="$(printf '%s' "$status" | sed -n 's/^_\([0-9][0-9-]*\)_.*/\1/p')"
   # First sentence only, and no trailing full stop: `s/\. .*//` cuts at a period FOLLOWED
