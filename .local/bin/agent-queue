@@ -3375,7 +3375,7 @@ story_row_for() {
   IFS=$'\t' read -r board prof id < <(file_story "$proj" "$title" "${prio:-high}" "" "" "$(fm_body "$f")" "" "" "$(fm_get "$f" tags)" </dev/null)
   [ -n "$id" ] || return 1
   "$0" set "$slug" row="$board:$id" lane=agent profile="$prof" </dev/null >/dev/null ||
-    { echo "agent-queue: row $board:$id filed but not linked to $slug; link it with agent-queue set $slug row=$board:$id" >&2; return 1; }
+    { echo "agent-queue: row $board:$id filed but not linked to $slug; link it with agent-queue set $slug row=$board:$id" >&2; return 2; }
 }
 
 # requeue <slug> --hold <resource> | --ask <id>[=<option>] -- send an active item back to its board row,
@@ -3417,11 +3417,19 @@ cmd_requeue() {
   # or its story row was refused): file one from the item, as backfill-briefs does, so the return has a
   # row to gate. notes writes it and may call agent-queue, so the lock goes first.
   if [ -z "$(item_row "$f")" ]; then
+    local rc=0
     unlock
-    story_row_for "$slug" "$f" ||
-      die "$slug has no board row to wait on $tag, and none could be filed for it: give it one (agent-queue set $slug row=<board>:<id>) and requeue again"
+    story_row_for "$slug" "$f" || rc=$?
+    case "$rc" in
+      0) ;;
+      2) die "$slug has a filed row it is not linked to (above): link it, then requeue again" ;;
+      *) die "$slug has no board row to wait on $tag, and none could be filed for it: give it one (agent-queue set $slug row=<board>:<id>) and requeue again" ;;
+    esac
     lock
     f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
+    # The filing took a while with the lock off: the gate may have cleared since the checks above.
+    if [ -n "$res" ]; then [ -n "$(hold_pending "$res")" ] || die "$res was released while the row was filed: claim it (agent-hold claim $res) instead of requeueing"
+    else [ -n "$(ask_pending "$ask")" ] || die "ask ${ask%%=*} was answered while the row was filed: read the answer and go on instead of requeueing"; fi
   fi
   tags="$(fm_get "$f" tags)"
   local want="$tags"

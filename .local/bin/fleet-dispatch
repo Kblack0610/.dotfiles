@@ -4428,7 +4428,7 @@ settle_item() {
   # Codex runs that asked, 2026-11-10) goes back to its board row gated #ask/<id> while its work is
   # unfinished (no report, no PR or an open one): the human's answer promotes the row again
   # (agent-ask start_held), where a failed item turned the answer into a new board row. An item with no
-  # row has nowhere to wait (agent-queue requeue) and fails as below. A report or a merge is the work
+  # row is not requeued here (the guard below reads its row) and fails as below. A report or a merge is the work
   # done, ask or not.
   if [ -z "$report" ] && { [ -z "$pr" ] || [ "$state" = OPEN ]; }; then
     ask=$(item_ask "$1" "$it") || {
