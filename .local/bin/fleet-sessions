@@ -886,13 +886,15 @@ work_blockers() {
 }
 
 # carried_by <all items, jsonl> <session id> <item_of's answer> <server:tmux session> -> for an own:<slugs> answer, the
-# comma list of running items in another session (not this session id, not this tmux session) filed from one of those
+# comma list of running items (or a held `-close` item) in another session (not this session id, not this tmux session) filed from one of those
 # slugs. A waiting or review item is blocked on someone, not working, so it carries nothing (`from: item:<slug>`, which
 # agent-queue records for an add made inside an item's session), else -. A coordinator's own item is open while the
 # fix items it filed do the work, so its idle pane is not a stall (ar-4015: nightly-green-ucp-2823 on
-# hub/unity-core-playground:2, 2026-11-20). A queued `<slug>-close` item (held by its at: tag) carries
-# the item too: the session kept it open on purpose and the close item ends it, so it is not STALLED
-# (ar-4582: agent-21 kept ar-4554 open after agent-land refused at watch_gate, 2026-11-22).
+# hub/unity-core-playground:2, 2026-11-20). A queued `<slug>-close` item still held by its at: tag (`ready`
+# in the future) carries the item too: the session kept it open on purpose and the close item ends it, so it is not
+# STALLED. Once `ready` passes with the item still queued it is starved, and the row reads STALLED again (ar-4582:
+# agent-21 kept ar-4554 open after agent-land refused at watch_gate, 2026-11-22). Only a running item closes the
+# row's item through close_items_sample: a carried row is WORKING, so its close verdict is keep and close.items empty.
 carried_by() {
   local out
   [[ "$3" == own:* ]] || { printf -- -; return; }
@@ -901,7 +903,8 @@ carried_by() {
         and ((.from // "") | startswith("item:"))
         and ((.from | sub("^item:"; "")) as $f | $own | contains("," + $f + ","))
         and (((.sessions // "") | split(" ") | any(. == $sid)) | not))
-        or (.state == "queued" and (.slug | endswith("-close"))
+        or (.state == "queued" and ((.slug // "") | endswith("-close"))
+        and ((.ready // "") | fromdateiso8601? // 0) > now
         and ((.slug | sub("-close$"; "")) as $f | $own | contains("," + $f + ","))))
       | .slug] | unique | join(",")' <<<"$1" 2>/dev/null)"
   printf '%s' "${out:--}"
