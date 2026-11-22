@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
-"""PreToolUse(Bash) guard: a python file write that Edit or Write would make one-for-one is denied.
+"""PreToolUse(Bash) guard: a python write Edit or Write would make one-for-one, of a file an Edit/Write guard checks, is denied.
 
-The Edit/Write guards (manual-mode-investigate before, context-budget-guard
+The Edit/Write guards (manual-mode-investigate and hosted-runner-guard before, context-budget-guard
 after) match those tools only, and settings.json allows all of Bash, so a python heredoc that
 patches a file skips every one of them. Usage-cleanup pass 6 (7 days to 2026-11-09) counted 11.2k
-of 15k python3 calls as `open().read().replace()` patches (ar-2018).
+of 15k python3 calls as `open().read().replace()` patches (ar-2018). Outside manual mode only two of
+those guards check anything, each on its own files, so the deny is held to those files (guarded):
+in the 7 days to 2026-11-22, 94% of about 1,700 denies were of other files, each a turn spent to
+repeat the change through Edit with no guard to run (teapot P7, ar-2780).
 
 The python code is each stdin heredoc (`python3 - <<'EOF'`, `python3 <<EOF`) and each `-c` payload,
 found with forge-guard's walker (cd, subshells, bash -c, eval) and parsed with ast. A written path
 resolves from a literal, a name assigned once, Path(...), `/`, os.path.join and expanduser.
 
-Denied, outside scratch (/tmp, /var/tmp, /dev, $TMPDIR, ~/.cache, $XDG_CACHE_HOME):
+Denied, outside scratch (/tmp, /var/tmp, /dev, $TMPDIR, ~/.cache, $XDG_CACHE_HOME), of a workflow
+file (hosted-runner-guard's WORKFLOW) or a budget file (BUDGET, context-budget-guard's paths):
 - a text patch: the code reads a named file as text and writes it back, and calls nothing but
   open, path and plain str methods (replace, find, count...), so Edit makes the same change;
 - a literal: a str constant written (mode w or x) to a named file, which is Write.
 - In manual permission mode, any python write: that mode is investigate-only.
-Passed: content the code computes (regex, json, joins, loops over lines), files found in a loop or
+Passed: a patch or literal of any other file, content the code computes (regex, json, joins, loops over lines), files found in a loop or
 from argv (an unresolved path), bytes, appends, scripts run from a file, and outside manual mode
 kernel files under /proc and /sys. Not covered: sed -i,
 `cat >`, tee, and python run from a script file. Fail-open: any error allows the command.
@@ -39,13 +43,17 @@ PATCH_METHODS = {"read", "read_text", "write", "write_text", "replace", "count",
                  "close", "seek", "truncate", "expanduser", "resolve", "absolute", "exists", "is_file",
                  "startswith", "endswith", "encode", "decode"}
 SCRATCH = None  # the scratch roots, normalised and resolved, built on first need
+WORKFLOW = None  # hosted-runner-guard's workflow path pattern, loaded on first need
+# context-budget-guard.sh's cheap-exit globs as path substrings; tests/unit/python_write_guard.bats checks they agree.
+BUDGET = ("MEMORY.md", "CLAUDE.md", "AGENTS.md", "/.agent/lessons/", "/memory/", "SKILL.md")
 
 VERB = {"Edit": "patches", "Write": "writes a literal string to"}
 EDIT_MSG = (
     "python-write-guard: this python {verb} {path}, a change {tool} makes one-for-one, so the Edit/Write "
     "guard hooks never see it. Use {tool}: Edit takes old_string/new_string (replace_all for a repeated "
-    "string), Write takes the whole text. Python still passes when it computes the content (regex, json, "
-    "generated text), changes files it finds in a loop, or writes scratch (/tmp, ~/.cache)."
+    "string), Write takes the whole text. Python still passes for files no Edit/Write guard checks (any "
+    "but workflow and budget files like CLAUDE.md, SKILL.md, lessons and memory), when it computes the "
+    "content (regex, json, generated text), changes files it finds in a loop, or writes scratch (/tmp, ~/.cache)."
 )
 MANUAL_MSG = (
     "python-write-guard: manual mode is investigate-only, and this python writes {path}. Answer without "
@@ -292,13 +300,22 @@ def verdict(code, cwd, manual, resolve):
             continue
         if manual:
             return MANUAL_MSG.format(path=target or "a file it computes")
-        if target is None:
+        if target is None or not guarded(target):
             continue
         tool = ("Edit" if target in reads and patchy(tree) else
                 "Write" if literal(content) and "+" not in mode else None)
         if tool:
             return EDIT_MSG.format(verb=VERB[tool], path=target, tool=tool)
     return None
+
+
+def guarded(target):
+    """True when an Edit or Write of target runs a guard outside manual mode: a workflow file
+    (hosted-runner-guard) or a budget file (context-budget-guard). Any other file has none to skip."""
+    global WORKFLOW
+    if WORKFLOW is None:
+        WORKFLOW = _load("hosted_runner_guard", "hosted-runner-guard.py").WORKFLOW
+    return any(b in target for b in BUDGET) or bool(WORKFLOW.search(target))
 
 
 def reason(cmd, cwd, manual):
