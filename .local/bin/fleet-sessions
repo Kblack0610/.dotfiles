@@ -834,15 +834,16 @@ work_blockers() {
   printf '%s' "$out"
 }
 
-# carried_by <all items, jsonl> <session id> <item_of's comma list of slugs running here> -> the comma list of live
-# items (running, waiting or in review, in another session) filed from one of those slugs (`from: item:<slug>`, which
+# carried_by <all items, jsonl> <session id> <item_of's comma list of slugs running here> <server:tmux session> -> the
+# comma list of running items in another session (not this session id, not this tmux session) filed from one of those
+# slugs. A waiting or review item is blocked on someone, not working, so it carries nothing (`from: item:<slug>`, which
 # agent-queue records for an add made inside an item's session), else -. A coordinator's own item is open while the
 # fix items it filed do the work, so its idle pane is not a stall (ar-4015: nightly-green-ucp-2823 on
 # hub/unity-core-playground:2, 2026-11-20).
 carried_by() {
   local out
-  out="$(jq -rn --arg sid "$2" --arg own ",$3," '
-    [inputs | select((.state == "running" or .state == "waiting" or .state == "review")
+  out="$(jq -rn --arg sid "$2" --arg own ",$3," --arg me "$4" '
+    [inputs | select(.state == "running" and (.session // "") != $me
         and ((.from // "") | startswith("item:"))
         and ((.from | sub("^item:"; "")) as $f | $own | contains("," + $f + ","))
         and (((.sessions // "") | split(" ") | any(. == $sid)) | not))
@@ -871,14 +872,14 @@ plan_bucket() {
   # The first running item names the row, so a side item starting or ending is not a new fact.
   [[ "$item" == own:* ]] && { own="${item#own:}"; own="${own%%,*}"; }
   case "$phases" in
-    -)    if [ "$merged" = 1 ]; then plan_done "$why" "$own" ", no plan file, its PR landed"
+    -)    if [ "$merged" = 1 ]; then plan_done "$why" "$own" ", no plan file, its PR landed" "" "$carried"
           else case "$item" in
             moved:*) echo "DONE $why, no plan file, its item ${item#moved:}" ;;
             own:*)   if [ "$carried" = - ]; then echo "STALLED $why, no plan file, its item $own is running here"
                      else echo "WORKING $why, no plan file, its item $own is carried by live items: $carried"; fi ;;
             *)       echo "CHAT $why, no plan file, no queue item: the human's conversation" ;;
           esac; fi ;;
-    none) if [ "$merged" = 1 ]; then plan_done "$why" "$own" ", single-phase plan, its PR landed"
+    none) if [ "$merged" = 1 ]; then plan_done "$why" "$own" ", single-phase plan, its PR landed" "" "$carried"
           else echo "LANDED $why, plan has no ## Phases checklist"; fi ;;
     # A recorded plan that is nowhere has phases no one can read: never finished, whatever merged,
     # unless its item moved on and took the work (ar-2368).
@@ -2293,7 +2294,7 @@ collect() {
     esac
     # The live items this session's own running items filed (carried_by): a coordinator's work runs in them.
     local carried=-
-    [ "$irel" != own ] || carried="$(carried_by "$qall" "$sid" "$islugs")"
+    [ "$irel" != own ] || carried="$(carried_by "$qall" "$sid" "$islugs" "${target%%/*}:$tsess")"
     # A done item's merged PRs are the session's landed ones when its transcript names no merged PR, none
     # open and every state known. A landing train merges a member's commits through its own train/* PR and
     # closes the member, so the transcript names only the closed member while agent-land records the train

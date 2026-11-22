@@ -374,6 +374,9 @@ ledger() {
   ! session_finished idle 0 0 0 30 1 0 0 - - - 1 - - - - - - - 'own:coord' - - - ucp-1
   run work_blockers '' idle 0 0 0 30 1 0 0 - - - 1 - - - - - - - 'own:coord'
   assert_output 'no plan file and nothing merged; its item coord is running here'
+  # a merged PR with no plan, or a single-phase plan, the same
+  run b idle 0 0 0 30 1 0 0 7 MERGED PASS 1 - - - - - - - 'own:coord' - - - ucp-1
+  assert_output 'WORKING PR #7 merged, tree clean, its item coord is carried by live items: ucp-1'
   # every phase done or queued, and a merged PR: the same
   run b idle 0 0 0 30 1 0 0 7 MERGED PASS 1 - 2/2 - - - - - 'own:coord' - - - ucp-1
   assert_output 'WORKING PR #7 merged, tree clean, its item coord is carried by live items: ucp-1'
@@ -384,20 +387,22 @@ ledger() {
   assert_output 'STALLED 3 dirty file(s), no PR'
 }
 
-@test "carried_by names the live items filed from a running item, not its own sessions or finished ones (ar-4015)" {
+@test "carried_by names the live items filed from a running item, only running ones in other sessions (ar-4015)" {
   local q
   q='{"slug":"coord","state":"running","sessions":"sidA"}
 {"slug":"fix-1","state":"running","from":"item:coord","sessions":"sidB"}
 {"slug":"fix-2","state":"waiting","from":"item:coord","sessions":"sidC"}
+{"slug":"fix-8","state":"running","from":"item:coord","session":"lab:other"}
+{"slug":"fix-9","state":"running","from":"item:coord","session":"lab:me"}
 {"slug":"fix-3","state":"done","from":"item:coord","sessions":"sidD"}
 {"slug":"fix-4","state":"queued","from":"item:coord"}
 {"slug":"fix-5","state":"running","from":"item:coord-other","sessions":"sidE"}
 {"slug":"fix-6","state":"running","from":"item:coord","sessions":"sidA"}
 {"slug":"fix-7","state":"running","from":"board:p:x","sessions":"sidF"}'
-  run carried_by "$q" sidA coord
-  assert_output 'fix-1,fix-2'
-  run carried_by "$q" sidA other
-  assert_output '-'
+  run carried_by "$q" sidA coord lab:me
+  assert_output 'fix-1,fix-8'
+  run carried_by "$q" sidA other lab:me
+  [ "$output" = - ]
 }
 
 @test "a merged side PR is not DONE while an item still runs here: every running item names the session" {
