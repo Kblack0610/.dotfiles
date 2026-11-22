@@ -130,6 +130,9 @@ pub struct SessionRow {
     pub done: bool,
     /// This live session counts as having no queue item (`item:none`).
     pub unlinked: bool,
+    /// The shepherd, or a NIGHTLY or SHARED row: the fleet's own, which `fleet-sessions`
+    /// `.counts` leave out, so the Sessions card does too.
+    pub machine: bool,
 }
 
 /// What the given rows cost, summed: the overview's spend for the rows a view shows. A row with
@@ -376,6 +379,7 @@ fn live_row(s: &Value, feed: &Feed, items: &HashMap<&str, &Item>) -> SessionRow 
         harness: item.map_or_else(String::new, |i| i.harness().to_string()),
         close: s["close"]["verdict"].as_str().unwrap_or("").to_string(),
         unlinked: is_live(s) && is_unlinked(s),
+        machine: is_machine(s),
         ..SessionRow::default()
     }
 }

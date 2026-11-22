@@ -351,52 +351,89 @@ pub fn machinery(infra: &Infra) -> Vec<String> {
             s.label("state")
         ));
     }
-    // One row per repo and branch, its oldest age and its runs' workflows: the exporter has a
-    // series per workflow run, and a push starts several, so one row each read as one run listed
-    // 2-4 times (ar-4358).
-    let mut stuck: Vec<(&str, &str, Vec<&str>, Option<f64>)> = vec![];
-    for s in infra.get("waiting") {
-        if s.label("stuck") != "true" {
-            continue;
-        }
-        let (repo, branch) = (s.label("repo"), s.label("branch"));
-        let age = s.value.filter(|v| v.is_finite());
-        match stuck.iter_mut().find(|e| (e.0, e.1) == (repo, branch)) {
-            Some(e) => {
-                e.2.push(s.label("workflow"));
-                e.3 = match (e.3, age) {
-                    (Some(a), Some(b)) => Some(a.max(b)),
-                    (a, b) => a.or(b),
-                };
-            }
-            None => stuck.push((repo, branch, vec![s.label("workflow")], age)),
-        }
-    }
-    for (repo, branch, workflows, age) in stuck {
-        let runs = if workflows.len() > 1 {
-            let mut names: Vec<&str> = vec![];
-            for w in workflows.iter().copied().map(label) {
-                if !names.contains(&w) {
-                    names.push(w);
-                }
-            }
-            format!(" ({} runs: {})", workflows.len(), names.join(", "))
-        } else {
-            String::new()
-        };
-        items.push(format!(
-            "stuck run: {} {}, {}, no jobs{runs}",
-            label(repo),
-            label(branch),
-            age.map_or("-".into(), |v| crate::display::fmt::age(v as i64)),
-        ));
-    }
+    items.extend(stuck_runs(infra).iter().map(StuckRun::line));
     if let Some(why) = infra.feed() {
         items.insert(0, why.into());
     } else if infra.get("runners").is_empty() {
         items.push("no runner series from the exporter".into());
     }
     items
+}
+
+/// One branch with runs waiting and stuck (`waiting{stuck="true"}`): its oldest age and its runs'
+/// workflows. The exporter has a series per workflow run, and a push starts several, so one row
+/// each read as one run listed 2-4 times (ar-4358). Alerts' rows and Health's Stuck count both
+/// read this one list.
+#[derive(Debug, PartialEq)]
+pub struct StuckRun<'a> {
+    pub repo: &'a str,
+    pub branch: &'a str,
+    pub workflows: Vec<&'a str>,
+    pub age: Option<f64>,
+}
+
+impl StuckRun<'_> {
+    /// The age as a surface says it, `-` when the series had none.
+    pub fn age_text(&self) -> String {
+        self.age
+            .map_or("-".into(), |v| crate::display::fmt::age(v as i64))
+    }
+
+    /// `app main`, as a row names the branch.
+    pub fn name(&self) -> String {
+        format!("{} {}", label(self.repo), label(self.branch))
+    }
+
+    /// The Alerts row: the branch, its oldest age and, with several runs, their workflows.
+    pub fn line(&self) -> String {
+        let runs = if self.workflows.len() > 1 {
+            let mut names: Vec<&str> = vec![];
+            for w in self.workflows.iter().copied().map(label) {
+                if !names.contains(&w) {
+                    names.push(w);
+                }
+            }
+            format!(" ({} runs: {})", self.workflows.len(), names.join(", "))
+        } else {
+            String::new()
+        };
+        format!(
+            "stuck run: {}, {}, no jobs{runs}",
+            self.name(),
+            self.age_text()
+        )
+    }
+}
+
+/// The stuck runs, one per repo and branch, in the exporter's order.
+pub fn stuck_runs(infra: &Infra) -> Vec<StuckRun<'_>> {
+    let mut stuck: Vec<StuckRun> = vec![];
+    for s in infra.get("waiting") {
+        if s.label("stuck") != "true" {
+            continue;
+        }
+        let (repo, branch) = (s.label("repo"), s.label("branch"));
+        let age = s.value.filter(|v| v.is_finite());
+        match stuck
+            .iter_mut()
+            .find(|e| (e.repo, e.branch) == (repo, branch))
+        {
+            Some(e) => {
+                e.workflows.push(s.label("workflow"));
+                e.age = match (e.age, age) {
+                    (Some(a), Some(b)) => Some(a.max(b)),
+                    (a, b) => a.or(b),
+                };
+            }
+            None => stuck.push(StuckRun {
+                repo,
+                branch,
+                workflows: vec![s.label("workflow")],
+                age,
+            }),
+        }
+    }
+    stuck
 }
 
 fn label(v: &str) -> &str {
