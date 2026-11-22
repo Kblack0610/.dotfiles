@@ -95,6 +95,27 @@ run_hook() {
   assert_output --partial '"session_id":"self"'
 }
 
+@test "a filter pass that fails leaves the registry as it was, not this one row (ar-2779)" {
+  # NEGATIVE CONTROL: before ar-2779 the failed pass's exit was ignored and the swap left only this row.
+  jq -nc --arg t "$LIVE" '{session_id:"keep", transcript:$t}' > "$REG"
+  before=$(cat "$REG")
+  real=$(command -v jq)
+  printf '#!/bin/sh\ncase " $* " in *" --arg dead "*) exit 5 ;; esac\nexec %s "$@"\n' "$real" > "$SANDBOX/bin/jq"
+  chmod +x "$SANDBOX/bin/jq"
+  run_hook
+  assert_equal "$(cat "$REG")" "$before"
+  assert_equal "$(find "$(dirname "$REG")" -name '.sessions.jsonl.*' | wc -l)" 0
+}
+
+@test "the rewrite is made next to the registry and renamed over it, so an unwritable TMPDIR still registers (ar-2779)" {
+  # NEGATIVE CONTROL: a /tmp copy crossed filesystems, so mv copied it over the registry and a crash mid-copy emptied it.
+  jq -nc --arg t "$LIVE" '{session_id:"keep", transcript:$t}' > "$REG"
+  TMPDIR="$SANDBOX/no-such-dir" run_hook
+  run jq -r .session_id "$REG"
+  assert_output $'keep\nself'
+  assert_equal "$(find "$(dirname "$REG")" -name '.sessions.jsonl.*' | wc -l)" 0
+}
+
 @test "a Stop after its worktree is reaped stays under the project an earlier Stop recorded" {
   jq -nc --arg t "$TRANSCRIPT" '{session_id:"self", transcript:$t, project:"alpha"}' > "$REG"
   CLAUDE_PROJECT_DIR="$SANDBOX/alpha-wt-reaped" run_hook
