@@ -8,7 +8,9 @@
 //!   each red;
 //! - the agent-notify ledger (`actions::parse_notify`): the pages the alert senders wrote;
 //! - `alertmanager::read` (asked inside `infra::gather`, so cached with it): what the cluster's
-//!   rules have firing, one row per alert.
+//!   rules have firing, one row per alert;
+//! - `holds::read`: each standing hold (`holds::Hold::standing`), one red row, in place of the
+//!   `hold-age` watch's one row that pages for them all.
 //!
 //! A source that cannot be read is an error line on the tab, never an empty (green) section.
 
@@ -20,6 +22,7 @@ use crate::actions::{self, Action};
 use crate::alertmanager::Firing;
 use crate::fix_owner::fix_owner;
 use crate::fleet::runner::{self, Watch};
+use crate::holds::{self, Hold};
 use crate::home::{Chip, Level};
 use crate::infra::Infra;
 use crate::layout::FOLD_ROWS;
@@ -36,6 +39,10 @@ pub const ALERT_SENDERS: [&str; 1] = ["sentinel"];
 /// The source name of a row from Alertmanager.
 pub const ALERTMANAGER: &str = "alertmanager";
 
+/// The source name of a standing hold's row, and the watch that pages for every one of them.
+pub const HOLD: &str = "hold";
+pub const HOLD_WATCH: &str = "hold-age";
+
 /// One thing firing now.
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
 pub struct Alert {
@@ -48,8 +55,8 @@ pub struct Alert {
     /// fleet-wide watch or a red nothing files a fix for.
     pub project: String,
     /// `sentinel` (a watch's own state files), `red_now` (`cc:red_now`), `infra` (the
-    /// machinery: down runners, stuck runs, the exporter or GitHub not answering) or
-    /// `alertmanager` (a cluster rule firing).
+    /// machinery: down runners, stuck runs, the exporter or GitHub not answering),
+    /// `alertmanager` (a cluster rule firing) or `hold` (a standing hold, `HOLD`).
     pub source: String,
     /// When it went red, epoch seconds; none for a Prometheus row, which has no start.
     pub since: Option<i64>,
@@ -511,7 +518,7 @@ fn owner(a: &mut Alert, key: Option<&str>, fixes: Option<&[Red]>, now: i64) {
 /// severity, then the longest red, then by name.
 fn order(a: &Alert) -> (usize, usize, i64, String) {
     let kind = match (a.source.as_str(), a.error()) {
-        ("sentinel", false) => 0,
+        ("sentinel", false) | (HOLD, _) => 0,
         ("sentinel", true) => 1,
         ("red_now", _) => 2,
         (ALERTMANAGER, _) => 4,
@@ -639,6 +646,34 @@ fn machinery_rows(infra: &Infra, open: Option<&[Red]>, now: i64) -> Vec<Alert> {
         .collect()
 }
 
+/// One red row per standing hold, oldest first: only the human releases one, so it is red until
+/// they do (ar-4645). Its owner is the `hold-age` watch's fix item, when one is filed; a row opens
+/// to the hold's reason and to `agent-hold show`.
+fn hold_rows(list: Vec<Hold>, open: Option<&[Red]>, now: i64) -> Vec<Alert> {
+    holds::standing(list, now)
+        .into_iter()
+        .map(|h| {
+            let mut a = Alert {
+                sev: "high".into(),
+                what: format!("hold {}", h.resource),
+                source: HOLD.into(),
+                since: h.since,
+                about: h.reason.clone(),
+                place: format!("~/.agent/holds/{} ({})", h.resource, h.show()),
+                action: format!(
+                    "{}; release it once its work is done (agent-hold release {}), or ask its setter. Nothing releases a hold on its age.",
+                    h.show(),
+                    h.resource
+                ),
+                evidence: h.held(now),
+                ..Default::default()
+            };
+            owner(&mut a, Some(&format!("watch {HOLD_WATCH}")), open, now);
+            a
+        })
+        .collect()
+}
+
 /// The counts of the firing rows, the fixes and the watches; the history's are the caller's.
 fn counted(firing: &[Alert], fixes: Option<&Reds>, watches: &[Watch]) -> Counts {
     let n = |s: &str| watches.iter().filter(|w| w.state == s).count();
@@ -669,6 +704,7 @@ pub fn join(
     watches: Result<Vec<Watch>, String>,
     fixes: Result<Reds, String>,
     notify: Result<String, String>,
+    holds: Result<Vec<Hold>, String>,
     now: i64,
 ) -> Alerts {
     let mut errors = vec![];
@@ -746,6 +782,17 @@ pub fn join(
         Some(Err(e)) => errors.push(format!("alertmanager: {e}")),
         None => {}
     }
+    match holds {
+        Ok(list) => {
+            let rows = hold_rows(list, open, now);
+            // The hold-age watch's row is these holds, said once: each hold is its own row here.
+            if !rows.is_empty() {
+                firing.retain(|a| a.source != "sentinel" || a.error() || a.what != HOLD_WATCH);
+            }
+            firing.extend(rows);
+        }
+        Err(e) => errors.push(format!("holds: {e}")),
+    }
     firing.sort_by_cached_key(order);
 
     let mut history: Vec<Action> = match notify {
@@ -814,7 +861,14 @@ pub fn read(infra: &Infra, fixes: Result<Reds, String>, now: i64) -> Alerts {
     let (dir, state) = watch_dirs();
     let watches = runner::watches(&dir, &state);
     let notify = crate::jobs::read_or_empty(&actions::Paths::from_env().notify_log);
-    join(infra, watches, fixes, notify, now)
+    join(
+        infra,
+        watches,
+        fixes,
+        notify,
+        holds::read(&holds::dir()),
+        now,
+    )
 }
 
 /// A project card's count line over `watches`: how many carry `project:` and how many of them
@@ -934,6 +988,58 @@ mod tests {
     }
 
     #[test]
+    fn a_standing_hold_is_a_red_row_in_place_of_the_hold_age_watch_and_a_load_hold_is_none() {
+        let hold = |resource: &str, kind: &str, by: &str, age: i64| Hold {
+            resource: resource.into(),
+            kind: kind.into(),
+            by: by.into(),
+            since: Some(NOW - age),
+            reason: format!("why {resource}"),
+        };
+        let mut ws = ok_watches();
+        ws.push(watch(HOLD_WATCH, "TRIP", "high", Some(NOW - 600)));
+        let a = join(
+            &infra(&[]),
+            Ok(ws.clone()),
+            Ok(Reds::default()),
+            Ok(String::new()),
+            Ok(vec![
+                hold("critical", "resource", "human", 2 * 86400),
+                hold("unity", "load", "fleet-pace", 9 * 86400),
+                hold("mac-desktop", "claim", "agent-7", 9 * 86400),
+                hold("fresh", "resource", "human", 3600),
+            ]),
+            NOW,
+        );
+        let rows: Vec<(&str, &str)> = a
+            .firing
+            .iter()
+            .map(|r| (r.what.as_str(), r.source.as_str()))
+            .collect();
+        assert_eq!(rows, [("hold critical", HOLD)]);
+        let r = &a.firing[0];
+        assert_eq!(r.hue(), Level::Red);
+        assert!(r.unfixed());
+        assert_eq!(r.since, Some(NOW - 2 * 86400));
+        assert!(r.place.contains("agent-hold show critical"), "{}", r.place);
+        assert_eq!(r.evidence, "held 2d by human");
+        assert_eq!(a.level, Level::Red);
+        // Negative control: with no standing hold the watch's own row stays, and a hold read
+        // that fails is an error line, never a green tab.
+        let a = join(
+            &infra(&[]),
+            Ok(ws),
+            Ok(Reds::default()),
+            Ok(String::new()),
+            Err("denied".into()),
+            NOW,
+        );
+        assert_eq!(a.firing.len(), 1);
+        assert_eq!(a.firing[0].what, HOLD_WATCH);
+        assert!(a.errors.contains(&"holds: denied".to_string()));
+    }
+
+    #[test]
     fn nothing_tripped_and_nothing_red_is_zero_firing_ok_and_only_the_new_watch_counted() {
         // The negative control: with every watch ok and cc:red_now empty, nothing fires and the
         // tab is ok, so a red one below is the join's doing and not the fixture's.
@@ -942,6 +1048,7 @@ mod tests {
             Ok(ok_watches()),
             Ok(Reds::default()),
             Ok(String::new()),
+            Ok(vec![]),
             NOW,
         );
         assert_eq!(a.counts.firing, 0, "{:?}", a.firing);
@@ -976,6 +1083,7 @@ mod tests {
             Ok(ok_watches()),
             Ok(Reds::default()),
             Ok(String::new()),
+            Ok(vec![]),
             NOW,
         );
         assert_eq!(
@@ -998,6 +1106,7 @@ mod tests {
             Ok(ws),
             Ok(Reds::default()),
             Ok(String::new()),
+            Ok(vec![]),
             NOW,
         );
         let got: Vec<(&str, &str, &str)> = a
@@ -1033,6 +1142,7 @@ mod tests {
             Ok(ws),
             Ok(Reds::default()),
             Ok(String::new()),
+            Ok(vec![]),
             NOW,
         );
         assert_eq!((a.counts.firing, a.level), (1, Level::Warn));
@@ -1047,6 +1157,7 @@ mod tests {
             Ok(ws),
             Ok(fixes),
             Ok(String::new()),
+            Ok(vec![]),
             NOW,
         );
         let got: Vec<(&str, &str, &str)> = a
@@ -1082,6 +1193,7 @@ mod tests {
             Ok(ws),
             Ok(fixes),
             Ok(String::new()),
+            Ok(vec![]),
             NOW,
         );
         let got: Vec<(&str, &str, &str)> = a
@@ -1169,7 +1281,14 @@ mod tests {
                 Some(NOW + 60),
             ),
         ]);
-        let a = join(&infra(&[]), Ok(ws), Ok(fixes), Ok(String::new()), NOW);
+        let a = join(
+            &infra(&[]),
+            Ok(ws),
+            Ok(fixes),
+            Ok(String::new()),
+            Ok(vec![]),
+            NOW,
+        );
         let by = |w: &str| {
             let r = a.firing.iter().find(|r| r.what == w).unwrap();
             (r.fixing_by.as_str(), r.unfixed())
@@ -1207,6 +1326,7 @@ mod tests {
             Ok(vec![watch("delta", "TRIP", "low", None)]),
             Ok(Reds::default()),
             Ok(String::new()),
+            Ok(vec![]),
             NOW,
         );
         let got: Vec<(&str, &str)> = a
@@ -1275,6 +1395,7 @@ mod tests {
             Err("no such dir".into()),
             Err("exit 1".into()),
             Err("permission denied".into()),
+            Ok(vec![]),
             NOW,
         );
         assert_eq!(
@@ -1298,6 +1419,7 @@ mod tests {
             Ok(vec![watch("delta", "TRIP", "low", None)]),
             Err("exit 1".into()),
             Ok(String::new()),
+            Ok(vec![]),
             NOW,
         );
         assert_eq!(a.firing[0].state, crate::reading::NOT_READ);
@@ -1327,6 +1449,7 @@ mod tests {
             Ok(ok_watches()),
             Ok(Reds::default()),
             Ok(log),
+            Ok(vec![]),
             NOW,
         );
         assert_eq!(
@@ -1360,6 +1483,7 @@ mod tests {
             Ok(ok_watches()),
             Ok(Reds::default()),
             Ok(String::new()),
+            Ok(vec![]),
             NOW,
         );
         assert_eq!(
@@ -1385,6 +1509,7 @@ mod tests {
             Ok(ok_watches()),
             Ok(Reds::default()),
             Ok(String::new()),
+            Ok(vec![]),
             NOW,
         );
         assert_eq!(a.level, Level::Warn, "a warning needs a look");
@@ -1399,7 +1524,14 @@ mod tests {
         ]));
         let mut ws = ok_watches();
         ws.push(watch("delta", "TRIP", "low", Some(NOW - 60)));
-        let a = join(&i, Ok(ws), Ok(Reds::default()), Ok(String::new()), NOW);
+        let a = join(
+            &i,
+            Ok(ws),
+            Ok(Reds::default()),
+            Ok(String::new()),
+            Ok(vec![]),
+            NOW,
+        );
         assert_eq!(a.level, Level::Red);
         let got: Vec<(&str, &str, &str)> = a
             .firing
@@ -1454,6 +1586,7 @@ mod tests {
             Ok(ok_watches()),
             Ok(Reds::default()),
             Ok(String::new()),
+            Ok(vec![]),
             NOW,
         );
         let got: Vec<(&str, &str, usize)> = a
@@ -1488,11 +1621,25 @@ mod tests {
         // A rule going from one place to two keeps its row: the same what and place.
         let key = |a: &Alerts| (a.firing[0].what.clone(), a.firing[0].place.clone());
         i.alertmanager = Some(Ok(vec![cve("warning", "alpine", 60)]));
-        let one = join(&i, Ok(vec![]), Ok(Reds::default()), Ok(String::new()), NOW);
+        let one = join(
+            &i,
+            Ok(vec![]),
+            Ok(Reds::default()),
+            Ok(String::new()),
+            Ok(vec![]),
+            NOW,
+        );
         let mut other = cve("warning", "nginx", 600);
         other.description = "nginx has 3".into();
         i.alertmanager = Some(Ok(vec![cve("warning", "alpine", 60), other]));
-        let two = join(&i, Ok(vec![]), Ok(Reds::default()), Ok(String::new()), NOW);
+        let two = join(
+            &i,
+            Ok(vec![]),
+            Ok(Reds::default()),
+            Ok(String::new()),
+            Ok(vec![]),
+            NOW,
+        );
         assert_eq!(key(&one), key(&two));
         // Text the alerts do not share is each alert's, never one alert's on the row.
         let rule = &two.firing[0];
@@ -1517,6 +1664,7 @@ mod tests {
             Ok(ok_watches()),
             Ok(Reds::default()),
             Ok(String::new()),
+            Ok(vec![]),
             NOW,
         );
         assert_eq!(a.errors, ["alertmanager: cannot read https://am"]);
@@ -1533,6 +1681,7 @@ mod tests {
             Ok(ws),
             Ok(Reds::default()),
             Ok(String::new()),
+            Ok(vec![]),
             NOW,
         );
         let v = crate::table::View::new::<Alert>("", "error", "", "");
@@ -1562,7 +1711,14 @@ mod tests {
             open: vec![fix, other],
             ..Default::default()
         };
-        let a = join(&infra(&[]), Ok(ws), Ok(fixes), Ok(String::new()), NOW);
+        let a = join(
+            &infra(&[]),
+            Ok(ws),
+            Ok(fixes),
+            Ok(String::new()),
+            Ok(vec![]),
+            NOW,
+        );
         let project = |what: &str| {
             a.firing
                 .iter()

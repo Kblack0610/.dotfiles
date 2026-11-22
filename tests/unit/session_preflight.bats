@@ -144,11 +144,13 @@ item_stub() { # <title>
   hold unity-tests --by cap "96 C, 16 editors"
   hold row-x-1 --kind resource --by fleet-dispatch "keep the console step held (otherproj)"
   hold toolrepo-freeze --kind resource --by human "no merges to toolrepo until the human says"
+  sed -i "s/^since: .*/since: $(date -d '-2 days' +%Y-%m-%dT%H:%M:%S%z)/" "$AGENT_HOLD_DIR/toolrepo-freeze"
   run context
   assert_success
   assert_output --partial 'Active holds'
-  assert_output --partial 'unity-tests since'
-  assert_output --partial 'toolrepo-freeze since'
+  assert_output --regexp 'unity-tests since [^ ]+ \(held 0h\) by cap'
+  # Its age shows beside the stamp, so a hold that stood for days reads as old (ar-4645).
+  assert_output --regexp 'toolrepo-freeze since [^ ]+ \(held 2d\) by human'
   refute_output --partial 'row-x-1'
   refute_output --partial 'console step'
   assert_output --partial '+1 hold(s) for other projects or claims'

@@ -8901,6 +8901,7 @@ mod tests {
             Ok(vec![]),
             a.reds.clone().unwrap(),
             Ok(String::new()),
+            Ok(vec![]),
             0,
         ));
         let s = screen(&mut a, 160, 80);

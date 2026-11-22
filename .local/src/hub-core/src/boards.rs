@@ -1614,6 +1614,7 @@ mod tests {
             comms: dir.clone(),
             confs: dir.clone(),
             agentctl: dir.clone(),
+            holds: dir.join("holds"),
         };
         let state = |f: &Path, r: &Fixed| state_with(f, r, &signals, 0, (vec![], vec![]));
         let s = state(&f, &Fixed(Ok(tsv.into())));

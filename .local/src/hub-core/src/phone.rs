@@ -605,6 +605,7 @@ mod tests {
             Ok(watches.clone()),
             Ok(Default::default()),
             Ok(String::new()),
+            Ok(vec![]),
             NOW,
         );
         (inf, alerts, watches)
