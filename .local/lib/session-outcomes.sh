@@ -98,7 +98,10 @@ so_canon_claims() {
 # so_store_key MAP KEY - one PR-store key (host/owner/repo, or owner/repo) with a Forgejo alias host
 # mapped to the store's, through so_canon_claims' one alias rule. A key it cannot map is printed as given.
 so_store_key() {
-  jq -nc --arg k "$2" '{prs: [{repo: $k}]}' | so_canon_claims "$1" | jq -r '.prs[0].repo' || printf '%s\n' "$2"
+  local out
+  out=$(jq -nc --arg k "$2" '{prs: [{repo: $k}]}' | so_canon_claims "$1" 2>/dev/null | jq -r '.prs[0].repo // empty' 2>/dev/null) &&
+    [ -n "$out" ] || out=$2
+  printf '%s\n' "$out"
 }
 
 # so_mapped_repos MAP - the PR-store keys of the repos the project map lists, one per line, lower-cased:
