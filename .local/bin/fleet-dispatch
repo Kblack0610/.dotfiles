@@ -564,7 +564,6 @@ gate_wait() {
 load_extras() {
   local board p l i r t g d rd
   load_gates
-  # A failed read loads no sprints (sprint_rows_ready reads again), so sync_sprint_tags never strips on it.
   board=$(notes board --json 2>/dev/null) && load_sprints "$board"
   while IFS=$'\t' read -r p l i r rd t g d; do
     DET["$p"$'\t'"$l"$'\t'"$i"]="$g"$'\t'"$d"
@@ -598,6 +597,7 @@ declare -gA SPRINT_ROW=() SPRINT_PROJECT=()
 SPRINT_LOADED=''
 load_sprints() {
   local p i st
+  [ -n "$1" ] || return 0   # an empty read (exit 0, no output) is a failed one: sync_sprint_tags must not strip on it
   SPRINT_ROW=() SPRINT_PROJECT=() SPRINT_LOADED=1
   while IFS=$'\t' read -r p i st; do
     [ -n "$p" ] || continue
@@ -1319,7 +1319,7 @@ live_sprints() { live_where '((" " + (.tags // "") + " ") | contains(" sprint ")
 # queued before its row joined an open sprint gains it. Skips when the board read failed (SPRINT_LOADED
 # empty) so an unreadable feed never strips sprint tags.
 sync_sprint_tags() {
-  local slug row tags project key has in_sprint new_tags t why
+  local slug row tags project key has in_sprint new_tags t why tl
   [ "$DRY" = 0 ] || return 0
   sprint_rows_ready
   [ -n "$SPRINT_LOADED" ] || return 0
@@ -1335,7 +1335,8 @@ sync_sprint_tags() {
       why="added sprint tag ($row is in an open sprint)"
     else
       new_tags=''
-      for t in $tags; do
+      read -ra tl <<<"$tags"
+      for t in "${tl[@]}"; do
         [ "$t" = sprint ] || new_tags="${new_tags:+$new_tags }$t"
       done
       why="removed sprint tag ($row left the open sprint)"
@@ -1343,6 +1344,8 @@ sync_sprint_tags() {
     if agent-queue set "$slug" "tags=$new_tags" >/dev/null 2>&1; then
       say "queue item $slug: $why"
       unset NEXT_QUEUED
+    else
+      say "queue item $slug: agent-queue set failed, sprint tag left as it is (wanted: $why)"
     fi
   done < <(agent-queue list --json --state queued 2>/dev/null |
     jq -r 'select((.row // "") != "") | [(.slug // ""), (.row // ""), (.tags // "")] | @tsv' 2>/dev/null)

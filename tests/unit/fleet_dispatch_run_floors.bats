@@ -375,8 +375,11 @@ echo "OK load 2.0x cores"'
   agent-queue add --project game --slug sp-joined --priority urgent --from board:game:sp-joined "joined sprint" >/dev/null
   # sp-joined is in the open sprint; sp-left and sp-closed are not.
   jq -nc '[{project: "game", queued: false, tasks: [{id: "sp-joined", state: "open"}]}]' > "$NOTES_FIXTURE/board.sprints"
+  assert_equal "$(qfield "$(qitem queued sp-closed)" tags)" "sprint"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
+  assert_output --partial 'queue item sp-closed: removed sprint tag (game:sp-closed left the open sprint)'
+  assert_output --partial 'queue item sp-left: removed sprint tag'
   assert_output --partial 'started queue item sp-joined on the sprint floor'
   refute_output --partial 'started queue item sp-left'
   assert_equal "$(qfield "$(qitem queued sp-left)" tags)" "foo"
@@ -386,6 +389,12 @@ echo "OK load 2.0x cores"'
   stub notes 'exit 1'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
+  assert_equal "$(qfield "$(qitem queued sp-closed)" tags)" "sprint"
+  # An empty read that exits 0 is a failed one too.
+  stub notes 'exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  refute_output --partial 'removed sprint tag'
   assert_equal "$(qfield "$(qitem queued sp-closed)" tags)" "sprint"
 }
 
