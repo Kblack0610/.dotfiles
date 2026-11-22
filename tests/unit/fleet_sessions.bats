@@ -1998,6 +1998,53 @@ SH
   [ "$(jq -r 'select(.bucket != "NIGHTLY") | .reason' <<<"$output")" = "nightly red after PR #875: Binks Production Smoke @${red:0:8} (#875)" ]
 }
 
+# nightly_item <state> <slug> <sessions line> -- a project demo queue item; demo's checkout is $SANDBOX/wt
+nightly_item() {
+  mkdir -p "$HOME/.agent/queue/$1"
+  printf 'slug: %s\nproject: demo\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-15T10:00:00Z\nsession: lab:demo-agent-3\n%b---\nfix the nightly\n' \
+    "$2" "$3" > "$HOME/.agent/queue/$1/20261115-100000-$2.md"
+}
+
+@test "end to end: a running nightly-fix or nightly-green item for the repo owns its NIGHTLY row (ar-2467)" {
+  git init -q --bare "$SANDBOX/origin.git"
+  git clone -q "$SANDBOX/origin.git" "$SANDBOX/wt" 2>/dev/null
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  green="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m 'feat: x (#875)'
+  red="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  git -C "$SANDBOX/wt" push -q origin HEAD:main 2>/dev/null
+  git -C "$SANDBOX/wt" fetch -q origin
+  git -C "$SANDBOX/wt" checkout -q -b feat/x "$red"
+  phases_plan '- [ ] Phase 1: fix main'
+  panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  # a deployment probe names no suspect, so only an item can own the row
+  ledger main "[$(r 'Binks Production Smoke' success "$green" 1),$(r 'Binks Production Smoke' failure "$red" 2)]"
+  gh_script 'exit 1'; printf 'feat/x\t875\tMERGED\tPASS\t%s\n' "$red" > "$LEDGER_DIR/prs.tsv"
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"; chmod +x "$SANDBOX/bin/fleet-assess"
+  export PROJECT_MAP_FILE="$SANDBOX/map.json"
+  jq -n --arg wt "$SANDBOX/wt" '{paths: {($wt): "demo"}, trackers: {demo: {}}}' > "$PROJECT_MAP_FILE"
+
+  # negative control: a queued nightly item, and a running item of another kind, own nothing
+  nightly_item queued nightly-fix-later-dm-1 'sessions: sid-5\n'
+  nightly_item running fix-wave-save 'sessions: sid-6\n'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r 'select(.bucket == "NIGHTLY") | .owners | length' <<<"$output")" = 0 ]
+
+  # a running nightly-fix item names the Claude session it last ran in, a nightly-green one with no
+  # Claude session yet its tmux session
+  nightly_item running nightly-fix-throw-dm-2 'sessions: sid-7 sid-8\n'
+  nightly_item running nightly-green-dm-3 ''
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r 'select(.bucket == "NIGHTLY") | .owners | sort | join(",")' <<<"$output")" = lab:demo-agent-3,sid-8 ]
+
+  # another project's checkout is not this repo's
+  jq -n --arg wt "$SANDBOX/elsewhere" '{paths: {($wt): "demo"}, trackers: {demo: {}}}' > "$PROJECT_MAP_FILE"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r 'select(.bucket == "NIGHTLY") | .owners | length' <<<"$output")" = 0 ]
+}
+
 @test "end to end: a deployed checkout off main is one CHECKOUT row naming its actor, not a STALLED row per session" {
   # 2026-11-06: ~/.dotfiles sat detached on an unmerged branch and all 16 sessions there read
   # "9 file(s) not on the default branch" while the fault itself was on no row at all.
