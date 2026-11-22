@@ -9,7 +9,7 @@
 # an approach, checks, a size and a split. Every write is the CLI's: `ptask edit --exact` takes
 # #plan off and adds the plan as detail lines, `ptask add` adds each split row. A refusal is in
 # the ingest record, so later passes skip the row until its words change. `--kick` starts this
-# runner's unit, without waiting, when a row waits; the inbox sweep and fleet-dispatch's plan_skips
+# runner's unit, without waiting, when a row waits; the inbox sweep and fleet-dispatch's skip_exits
 # call it after they tag rows. How it all fits: notes-cli README, "Intake".
 #
 # A row the person asked for (#requested) is theirs to review: unless it carries #go, it is held
