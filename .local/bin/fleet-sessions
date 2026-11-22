@@ -2194,20 +2194,22 @@ own_slugs() {
   case "$1" in own:* | here:*) local s="${1#*:}"; printf '%s' "${s%% *}" ;; esac
 }
 
-# chain_hold <all items, jsonl> <comma list of a session's item slugs> <item_of's relation> -> the slug of another session's live item
-# (running, waiting or review, the states agent-queue stack_pr stacks on) that one of the session's live items is
-# `after:`, else nothing. Such an item was started stacked on that item's open PR and agent-land holds its landing
-# (stack_gate, exit 4) before any gate runs, so its Checks stays red in the Merge gate line step (ar-4314:
-# unity-core-playground #3076 and #3083 read STALLED CI red, 2026-11-21). A dependency that is done, ok or not, is
-# no wait: ok releases it, and any other close never does, which is the session's to resolve. One of the session's
+# chain_hold <all items, jsonl> <comma list of a session's item slugs> <item_of's relation> [<scope: live|open>] -> the slug
+# of another session's item that one of the session's live items is `after:`, else nothing. Under the default `live`
+# scope, only running, waiting or review items match (the states agent-queue stack_pr stacks on): such an item was
+# started stacked on that item's open PR and agent-land holds its landing (stack_gate, exit 4) before any gate runs,
+# so its Checks stays red in the Merge gate line step (ar-4314: unity-core-playground #3076 and #3083 read STALLED
+# CI red, 2026-11-21). Under `open`, any non-done item (including queued) matches, because agent-land's stack_gate
+# refuses to merge a green PR while any `after:` prereq is not done (ar-4420). A dependency that is done, ok or not,
+# is no wait: ok releases it, and any other close never does, which is the session's to resolve. One of the session's
 # own slugs is no wait either: it holds nothing back that the session is not itself doing.
 chain_hold() {
   case "${3:-}" in own | review | here) ;; *) return 0 ;; esac
   [ -n "${2:-}" ] && [ "${2:--}" != - ] || return 0
-  jq -rn --arg own ",$2," '[inputs] as $all
+  jq -rn --arg own ",$2," --arg scope "${4:-live}" '[inputs] as $all
     | [$all[] | select(.state != "done" and (.slug as $s | $own | contains("," + $s + ",")))
         | (.after // "") | split(" ")[] | select(. != "" and (. as $d | $own | contains("," + $d + ",") | not))] as $deps
-    | first($all[] | select((.state | IN("running", "waiting", "review")) and (.slug as $s | $deps | any(. == $s))) | .slug) // empty' <<<"$1" 2>/dev/null
+    | first($all[] | select((if $scope == "open" then .state != "done" else (.state | IN("running", "waiting", "review")) end) and (.slug as $s | $deps | any(. == $s))) | .slug) // empty' <<<"$1" 2>/dev/null
 }
 
 # dispatch_tag <collect's items: "<slug>\t<project>: <slug>" lines> <item_of's relation> <its comma list of slugs>
@@ -2569,17 +2571,24 @@ collect() {
     act="$(activity_line "${status:--}" "$ojob" "$doing" "$act_dir" "$branch" "$act_sha" "$now")"
     # A PR of this clone's repo riding an open landing train waits on that train's gate, and one queued for the
     # landing slot waits its turn, unless its own Checks are red past the slot's refusal (git_facts left ci FAIL).
-    local wait_on="" tn
+    # A green (or unknown-CI) PR whose queue item is `after:` an open prereq waits on that prereq instead of
+    # reading STALLED "green, not merged": agent-land's stack_gate refuses to merge before the prereq closes ok (ar-4420).
+    local wait_on="" tn land_wait="" after_hold=""
     if [ "$g" = 1 ] && [ "$state" = OPEN ] && [ "$xr" = - ] && [ "$gd" != - ]; then
       tn=""; [ "$oid" = - ] || tn="$(train_of "$gd" "$pr" "$oid")"
       if [ -n "$tn" ]; then wait_on="train #$tn"
       elif [ "$ci" != FAIL ] && [ -n "$FLEET_QUEUE_LABEL" ] && queued_in "$gd" "$pr"; then wait_on="the landing queue"; fi
+      land_wait="$wait_on"
+    fi
+    if [ -z "$wait_on" ] && [ "$g" = 1 ] && [ "$state" = OPEN ] && [ "$ci" != FAIL ] && [ "$ci" != PENDING ] && [ "$ci" != NOSTART ]; then
+      after_hold="${chain:-$(chain_hold "$qall" "$islugs" "$irel" open)}"
+      [ -z "$after_hold" ] || wait_on="after: $after_hold"
     fi
     # A session waiting its landing turn carries how long its gate has waited and how deep its repo's
     # landing queue is, so the shepherd names a multi-hour wait on its own line (ar-2525).
     local qwait=- qdepth=- qrepo=- qpr=-
-    if [ "$host" = - ] && { [ "$ojob" = queue ] || [ -n "$wait_on" ]; }; then IFS=$'\t' read -r qwait qrepo qpr < <(queue_wait_of "$cwd" "$cpid" "$gd"); fi
-    if [ "$g" = 1 ] && [ "$gd" != - ] && [ -n "$FLEET_QUEUE_LABEL" ] && { [ "$ojob" = queue ] || [ -n "$wait_on" ]; }; then
+    if [ "$host" = - ] && { [ "$ojob" = queue ] || [ -n "$land_wait" ]; }; then IFS=$'\t' read -r qwait qrepo qpr < <(queue_wait_of "$cwd" "$cpid" "$gd"); fi
+    if [ "$g" = 1 ] && [ "$gd" != - ] && [ -n "$FLEET_QUEUE_LABEL" ] && { [ "$ojob" = queue ] || [ -n "$land_wait" ]; }; then
       qdepth="$(queue_depth "$gd")"; qdepth="${qdepth:--}"
     fi
     # The transcript can be 40 MB, so it is read only for an idle session, or the one asking about itself (wake_facts).
@@ -2629,7 +2638,7 @@ collect() {
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
       "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}" \
       "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test" "$mh" \
-      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iby" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "$qwait" "$qdepth" "$prun" "$pwq" "$wake" "$(critical_of "$wait_on" "$irow" "$gd" "$pr")" "${shown:-0}" "${mman:-0}" "$(quiet_before "$restored" "$host" "${target%%/*}/$pane" "$since")" "$qrepo" "$qpr"
+      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iby" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "$qwait" "$qdepth" "$prun" "$pwq" "$wake" "$(critical_of "$land_wait" "$irow" "$gd" "$pr")" "${shown:-0}" "${mman:-0}" "$(quiet_before "$restored" "$host" "${target%%/*}/$pane" "$since")" "$qrepo" "$qpr"
     [ ! -f "$CACHE/blind_row" ] || echo "$sid" >> "$CACHE/blind"
   done
   [ -z "${CLOSE_SELF:-}" ] || return 0

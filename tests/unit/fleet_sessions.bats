@@ -5051,6 +5051,40 @@ chained_item() {
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
 }
 
+@test "end to end: a green PR whose item is after: an open prereq is WORKING waiting on it, not STALLED green-not-merged (ar-4420)" {
+  landed_fixture
+  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"
+  ledger feat/x '[]'; open_pr PASS
+  chained_item review dep-item
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 waiting on after: dep-item' ]
+  jq -e '.blockers | index("PR #9 open, waiting on after: dep-item")' <<<"$output" >/dev/null
+  [ "$(jq -r .landing_queue <<<"$output")" = null ]
+
+  # a queued after: prereq also blocks agent-land's stack_gate
+  rm -r "$HOME/.agent/queue/review"; chained_item queued dep-item
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 waiting on after: dep-item' ]
+
+  # negative controls: prereq is done, prereq is the session's own item, or no after:
+  rm -r "$HOME/.agent/queue/queued"; chained_item done dep-item
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+  rm -r "$HOME/.agent/queue/done"; chained_item running dep-item
+  sed -i 's/^session: lab:s2$/session: lab:s1/' "$HOME/.agent/queue/running/20261103-090000-dep-item.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+  rm -rf "$HOME/.agent/queue/running"; queue_item running lab:s1
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+}
+
 @test "end to end: a PR riding an open landing train is WORKING waiting on the train, not CI red (ar-2160)" {
   # 2026-11-13 agent-7 #2415, agent-28 #2417 and agent-31 #2444 read STALLED CI red and were nudged:
   # each rode train #2467 (train.py), whose PlayMode shard sat queued on a full unity pool, and each
