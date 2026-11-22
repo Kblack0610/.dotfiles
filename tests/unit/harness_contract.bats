@@ -54,8 +54,8 @@ read_facts() {
       row=$(bash -c '. "$1/.local/lib/session-outcomes.sh" && so_opencode_rows "$2" "$3"' _ "$REPO_ROOT" "$w/oc.db" "$w")
       # end_reason: fleet-dispatch's item_oc_end on an item that claimed the session the row names, its
       # DB the fixture's, in a sandboxed HOME so no lane's own opencode.db is read. LAB_STAGES is the
-      # ladder sourcing fleet-dispatch would ask notes for, the one the fleet_dispatch tests give it.
-      end=$(HOME="$w" LAB_STAGES="draft dev alpha beta prod" DISPATCH_OPENCODE_DB="$w/oc.db" DISPATCH_HARNESSES="$2" \
+      # ladder sourcing fleet-dispatch would ask notes for, the one the fleet_dispatch tests give it. Its tuning is the fixture conf, as in every sandbox.
+      end=$(HOME="$w" DISPATCH_CONF="$REPO_ROOT/tests/fixtures/fleet-dispatch.conf" LAB_STAGES="draft dev alpha beta prod" DISPATCH_OPENCODE_DB="$w/oc.db" DISPATCH_HARNESSES="$2" \
         DISPATCH_OPENCODE_SESSION_JQ="$REPO_ROOT/.local/lib/opencode-session.jq" \
         bash -c '. "$1/.local/bin/fleet-dispatch" && item_oc_end "$(jq -cn --arg s "$2" "{sessions: \$s}")" 0' \
         _ "$REPO_ROOT" "$(jq -r .session_id <<<"$row")")
@@ -66,7 +66,7 @@ read_facts() {
       cp "$FIX/agy-success.jsonl" "$w/r/agy_1.jsonl"
       local row end
       row=$(bash -c '. "$1/.local/lib/session-outcomes.sh" && so_agy_rows "$2" "$3"' _ "$REPO_ROOT" "$w/r" "$w")
-      end=$(HOME="$w" LAB_STAGES="draft dev alpha beta prod" DISPATCH_AGY_RUNS="$w/r" DISPATCH_HARNESSES="$2" \
+      end=$(HOME="$w" DISPATCH_CONF="$REPO_ROOT/tests/fixtures/fleet-dispatch.conf" LAB_STAGES="draft dev alpha beta prod" DISPATCH_AGY_RUNS="$w/r" DISPATCH_HARNESSES="$2" \
         DISPATCH_AGY_RESULT_JQ="$REPO_ROOT/.local/lib/agy-result.jq" \
         bash -c '. "$1/.local/bin/fleet-dispatch" && item_agy_end "{\"sessions\": \"agy_1\"}" 0' _ "$REPO_ROOT")
       jq -c --arg end "$end" '{end_reason: (if $end == "" then null else $end end), tokens: .tokens.total, cost: .cost_usd,
