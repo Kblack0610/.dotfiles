@@ -384,7 +384,8 @@ wt_merged_pr_heads() {
     # One PR for the base/head pair, found after its branch is deleted too (a branch with more
     # than one may read as not merged, which only keeps it). Base and branch are percent-encoded;
     # the branch keeps its slashes, which the API reads as part of the head.
-    so_forgejo_get "${fj#* }" "pulls/$(jq -rn --arg x "$def" '$x|@uri')/$(jq -rn --arg x "$2" '$x|@uri|gsub("%2F";"/")')" 2>/dev/null |
+    # One try: a proxy that refuses with a plain 403 would otherwise sleep ~35 s per tree.
+    SO_FORGEJO_GATE_TRIES=1 so_forgejo_get "${fj#* }" "pulls/$(jq -rn --arg x "$def" '$x|@uri')/$(jq -rn --arg x "$2" '$x|@uri|gsub("%2F";"/")')" 2>/dev/null |
       jq -r 'select(.merged == true) | .head.sha // empty' 2>/dev/null | grep -E '^[0-9a-f]{40,64}$'
     return 0
   fi
