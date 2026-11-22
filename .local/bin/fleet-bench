@@ -2418,14 +2418,15 @@ prs_search() {
 
 # prs_forgejo -> prs_search's shape for every open PR of each Forgejo repo in the repo list, read from
 # the PR store (`schedules-sync prs`, the one reader of it). The store holds no commit date and no
-# mergeable verdict: commit is the PR's last update (a Renovate rebase is a commit), mergeable UNKNOWN,
-# which never trips. A repo whose store cannot be read fails the whole read: nothing is left silently out.
+# mergeable verdict: commit is the PR's last update, so on Forgejo a comment or label does reset idle,
+# and mergeable is UNKNOWN, which never trips. Only the PRs the repo owner's login authored count, as
+# author:@me limits the GitHub side: a bot's (Renovate) are not the fleet's to land. A repo whose store cannot be read fails the whole read: nothing is left silently out.
 prs_forgejo() {
   local repos r
   repos=$("$SCHEDULES_SYNC" repos 2>/dev/null | jq -r '.[] | select(.forge == "forgejo") | "\(.host)/\(.repo)"') || return 1
   while IFS= read -r r; do
     [ -n "$r" ] || continue
-    "$SCHEDULES_SYNC" prs "$r" --state open --checks | jq -c --arg r "${r#*/}" '.[] | {ref: "\($r)#\(.number)", branch, title, draft,
+    "$SCHEDULES_SYNC" prs "$r" --state open --checks | jq -c --arg r "${r#*/}" '($r | split("/")[0]) as $o | .[] | select(.author == $o) | {ref: "\($r)#\(.number)", branch, title, draft,
       created: .created_at, updated: .updated_at, commit: .updated_at, mergeable: "UNKNOWN", url,
       checks: ({NONE: "NONE", PENDING: "PENDING", FAIL: "FAILURE", PASS: "SUCCESS"}[.ci // "NONE"] // "NONE")}' || return 1
   done <<<"$repos"
@@ -2441,7 +2442,8 @@ prs_all() { prs_search && prs_forgejo; }
 # salvage for a salvage/* branch, else pushed. A repo the PR store does not sync is skipped: without
 # its PRs every branch would read unowned.
 prs_branches() {
-  local dir repo base b sha when seen=' ' prs
+  local dir repo key base b sha when seen=' ' prs repos
+  repos=$("$SCHEDULES_SYNC" repos 2>/dev/null) || return 1
   while IFS= read -r dir; do
     [ -e "$dir/.git" ] || continue
     repo=$(origin_repo "$dir") || continue
@@ -2449,14 +2451,17 @@ prs_branches() {
     seen+="$repo "
     base=$(git -C "$dir" symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null) || base=origin/main
     git -C "$dir" rev-parse --verify -q "$base" >/dev/null || continue
-    prs=$("$SCHEDULES_SYNC" prs "$repo" --state all 2>/dev/null) || continue
+    # The store names a Forgejo repo host/owner/repo, a GitHub one owner/repo.
+    key=$(jq -r --arg r "$repo" 'first(.[] | select(.forge == "forgejo" and .repo == $r) | "\(.host)/\(.repo)") // $r' <<<"$repos") || continue
+    prs=$("$SCHEDULES_SYNC" prs "$key" --state all 2>/dev/null) || continue
     while IFS=$'\t' read -r b sha when; do
+      when=$(date -u -d "@$when" +%Y-%m-%dT%H:%M:%SZ) || continue   # UTC with Z: jq's date parser takes no offset
       [ "$b" != "$base" ] && [ "$b" != origin/HEAD ] || continue
       b=${b#origin/}
       jq -e --arg b "$b" --arg s "$sha" 'any(.[]; .branch == $b and (.state == "OPEN" or (.state == "MERGED" and .head_sha == $s)))' <<<"$prs" >/dev/null && continue
       jq -cn --arg r "$repo" --arg b "$b" --arg s "$sha" --arg c "$when" \
         '{repo: $r, branch: $b, sha: $s, commit: $c, kind: (if $b | startswith("salvage/") then "salvage" else "pushed" end)}'
-    done < <(git -C "$dir" for-each-ref --no-merged "$base" --format='%(refname:short)%09%(objectname)%09%(committerdate:iso-strict)' refs/remotes/origin)
+    done < <(git -C "$dir" for-each-ref --no-merged "$base" --format='%(refname:short)%09%(objectname)%09%(committerdate:unix)' refs/remotes/origin)
   done < <(jq -r '.paths | keys[]' "$BENCH_PROJECT_MAP" 2>/dev/null)
 }
 
@@ -2521,7 +2526,7 @@ cmd_prs() {
   case "${1:-}" in
     --json) printf '%s\n' "$json" ;;
     --check) out=$(jq -r --arg c "$2" "$PRS_LINE"'
-        (if $c == "branches" then [.branches[] | select(.kind != null)] | sort_by(-.idle_h)
+        (if $c == "branches" then .branches | sort_by(-.idle_h)
            | if length == 0 then empty else "\(length) unowned branch\(if length > 1 then "es" else "" end)", (.[] | branch_line) end
          else [.prs[] | select(.class == $c)] | sort_by(-.idle_h)
            | if length == 0 then empty else "\(length) \($c) PR\(if length > 1 then "s" else "" end)", (.[] | line) end end)' <<<"$json") \

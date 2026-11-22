@@ -4262,7 +4262,9 @@ prs_fixture() {
 case "\$1" in
   repos) echo '[{"forge":"github","repo":"o/gh"},{"forge":"forgejo","host":"git.example","repo":"o/fj"}]' ;;
   prs) [ "\$2 \$3 \$4 \$5" = "git.example/o/fj --state open --checks" ] || exit 2
-    printf '[{"number":7,"branch":"renovate/x","title":"bump x","draft":false,"created_at":"%s","updated_at":"%s","url":"u","ci":"FAIL"}]\n' \
+    # #7 is the owner's; #8 is a bot's, which is not the fleet's to land and so never listed
+    printf '[{"number":7,"author":"o","branch":"fix/x","title":"bump x","draft":false,"created_at":"%s","updated_at":"%s","url":"u","ci":"FAIL"},{"number":8,"author":"renovate","branch":"renovate/y","title":"bump y","draft":false,"created_at":"%s","updated_at":"%s","url":"u","ci":"PASS"}]\n' \
+      "$(date -u -d "@$((T0 - 400 * 3600))" +%FT%TZ)" "$(date -u -d "@$((T0 - 300 * 3600))" +%FT%TZ)" \
       "$(date -u -d "@$((T0 - 400 * 3600))" +%FT%TZ)" "$(date -u -d "@$((T0 - 300 * 3600))" +%FT%TZ)" ;;
   *) exit 2 ;;
 esac
@@ -4289,9 +4291,10 @@ SS
   git -C "$clone" fetch -q "$origin" 2>/dev/null || true
   git -C "$clone" update-ref refs/remotes/origin/main main
   git -C "$clone" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
-  old=$(date -u -d "@$((T0 - 100 * 3600))" +%FT%TZ)
-  new=$(date -u -d "@$((T0 - 2 * 3600))" +%FT%TZ)
-  mkbranch() { # <name> <iso date>
+  # committed in UTC-8: the branch listing must read an offset date, which jq's date parser would refuse
+  old="@$((T0 - 100 * 3600)) -0800"
+  new="@$((T0 - 2 * 3600)) -0800"
+  mkbranch() { # <name> <git date>
     GIT_AUTHOR_DATE=$2 GIT_COMMITTER_DATE=$2 git -C "$clone" -c user.name=t -c user.email=t@e commit -q --allow-empty -m "$1" --only
     git -C "$clone" update-ref "refs/remotes/origin/$1" HEAD
     git -C "$clone" reset -q --hard main
@@ -4305,7 +4308,8 @@ SS
   printf '{"paths":{"%s":"r"}}\n' "$clone" > "$SANDBOX/map.json"
   export BENCH_PROJECT_MAP="$SANDBOX/map.json" BENCH_BRANCHES_CMD=prs_branches
   export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync"
-  printf '#!/usr/bin/env bash\n[ "$1 $2" = "prs o/r" ] || exit 3\njq -cn --arg s "%s" %s\n' \
+  # o/r is a Forgejo repo here: the store names it host/owner/repo, so asking for o/r would read as unsynced
+  printf '#!/usr/bin/env bash\n[ "$1" = repos ] && { echo "[{\\"forge\\":\\"forgejo\\",\\"host\\":\\"git.example\\",\\"repo\\":\\"o/r\\"}]"; exit 0; }\n[ "$1 $2" = "prs git.example/o/r" ] || exit 3\njq -cn --arg s "%s" %s\n' \
     "$(git -C "$clone" rev-parse refs/remotes/origin/squashed)" \
     "'[{branch: \"owned\", state: \"OPEN\", head_sha: \"x\"}, {branch: \"squashed\", state: \"MERGED\", head_sha: \$s}]'" > "$SCHEDULES_SYNC"
   chmod +x "$SCHEDULES_SYNC"
@@ -4319,7 +4323,7 @@ SS
   refute_output --partial 'r merged'
   refute_output --partial 'r squashed'
   # a repo the PR store does not sync lists nothing: without its PRs every branch would read unowned
-  printf '#!/usr/bin/env bash\nexit 3\n' > "$SCHEDULES_SYNC"
+  printf '#!/usr/bin/env bash\n[ "$1" = repos ] && { echo "[]"; exit 0; }\nexit 3\n' > "$SCHEDULES_SYNC"
   run "$SUBJECT" prs --check branches
   assert_success
   assert_output ''
