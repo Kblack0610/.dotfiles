@@ -2211,6 +2211,24 @@ chain_hold() {
     | first($all[] | select(.state != "done" and (.slug as $s | $deps | any(. == $s))) | .slug) // empty' <<<"$1" 2>/dev/null
 }
 
+# pr_wait <git> <pr state> <sibling repo> <clone> <ci> <pr> <head oid> <chain> -> two lines: the landing-slot wait, then
+# the wait the bucket reads (empty when none). A PR of this clone's repo riding an open landing train waits on that
+# train's gate, and one queued for the landing slot waits its turn, unless its own Checks are red past the slot's
+# refusal (git_facts left ci FAIL). A green or unknown-CI PR whose item is `after:` an item that is not done (<chain>,
+# chain_hold) waits on it, not STALLED green, not merged (ar-4420); its red gate line is open_pr_ci's.
+pr_wait() {
+  local g="$1" state="$2" xr="$3" gd="$4" ci="$5" pr="$6" oid="$7" chain="$8" tn="" land="" w
+  [ "$g" = 1 ] && [ "$state" = OPEN ] && [ "$xr" = - ] || { printf '\n\n'; return 0; }
+  if [ "$gd" != - ]; then
+    [ "$oid" = - ] || tn="$(train_of "$gd" "$pr" "$oid")"
+    if [ -n "$tn" ]; then land="train #$tn"
+    elif [ "$ci" != FAIL ] && [ -n "$FLEET_QUEUE_LABEL" ] && queued_in "$gd" "$pr"; then land="the landing queue"; fi
+  fi
+  w="$land"
+  if [ -z "$w" ] && [ -n "$chain" ]; then case "$ci" in FAIL | PENDING | NOSTART) ;; *) w="after: $chain" ;; esac; fi
+  printf '%s\n%s\n' "$land" "$w"
+}
+
 # dispatch_tag <collect's items: "<slug>\t<project>: <slug>" lines> <item_of's relation> <its comma list of slugs>
 # -> the row's [dispatch: <project>: <slug>] tag, else -. It is the row's own item by item_of's join (own, here,
 # review), never its tmux lane: a recycled lane would show the previous Claude's item (ar-860).
@@ -2568,20 +2586,9 @@ collect() {
     if [ "$g" = 1 ] && [ "$branch" != - ] && [ "$gd" != - ]; then dbase="$(default_base "$gd")"; [ "$branch" = "${dbase#*/}" ] || act_dir="$gd"; fi
     local act_sha="$oid"; [ "$oid" != - ] || act_sha="$whead"
     act="$(activity_line "${status:--}" "$ojob" "$doing" "$act_dir" "$branch" "$act_sha" "$now")"
-    # A PR of this clone's repo riding an open landing train waits on that train's gate, and one queued for the
-    # landing slot waits its turn, unless its own Checks are red past the slot's refusal (git_facts left ci FAIL).
-    # A green (or unknown-CI) PR whose item is `after:` an open item (chain_hold) waits on it, not STALLED green, not
-    # merged (ar-4420). Only the landing-slot waits (land_wait) carry the slot's wait, depth and critical path.
-    local wait_on="" tn land_wait=""
-    if [ "$g" = 1 ] && [ "$state" = OPEN ] && [ "$xr" = - ] && [ "$gd" != - ]; then
-      tn=""; [ "$oid" = - ] || tn="$(train_of "$gd" "$pr" "$oid")"
-      if [ -n "$tn" ]; then wait_on="train #$tn"
-      elif [ "$ci" != FAIL ] && [ -n "$FLEET_QUEUE_LABEL" ] && queued_in "$gd" "$pr"; then wait_on="the landing queue"; fi
-      land_wait="$wait_on"
-    fi
-    if [ -z "$wait_on" ] && [ -n "$chain" ] && [ "$g" = 1 ] && [ "$state" = OPEN ] && [ "$xr" = - ]; then
-      case "$ci" in FAIL | PENDING | NOSTART) ;; *) wait_on="after: $chain" ;; esac
-    fi
+    # What an open PR waits on (pr_wait); only a landing-slot wait carries the slot's wait, depth and critical path.
+    local wait_on="" land_wait=""
+    { IFS= read -r land_wait; IFS= read -r wait_on; } < <(pr_wait "$g" "$state" "$xr" "$gd" "$ci" "$pr" "$oid" "$chain")
     # A session waiting its landing turn carries how long its gate has waited and how deep its repo's
     # landing queue is, so the shepherd names a multi-hour wait on its own line (ar-2525).
     local qwait=- qdepth=- qrepo=- qpr=-
