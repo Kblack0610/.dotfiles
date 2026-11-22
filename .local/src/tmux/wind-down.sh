@@ -67,8 +67,10 @@ cmd_arm() {
     esac
   done
 
-  if [ -z "${TMUX:-}" ] && [ "${CLAUDE_CODE_SESSION_KIND:-}" = bg ]; then
-    arm_bg
+  # First, whatever TMUX says: a TMUX a background session inherited names the foreground claude's
+  # pane, never its own.
+  if [ "${CLAUDE_CODE_SESSION_KIND:-}" = bg ]; then
+    arm_bg "$scope"
     return
   fi
 
@@ -116,7 +118,7 @@ cmd_arm() {
   fi
 }
 
-# arm_bg: arm the end of this background session. The job is the daemon's own key for it
+# arm_bg <scope>: arm the end of this background session. The job is the daemon's own key for it
 # (CLAUDE_JOB_DIR=<config>/jobs/<short>), which `claude stop` takes; the sentinel is keyed by the
 # session id, as the Stop hook looks it up.
 arm_bg() {
@@ -137,6 +139,7 @@ arm_bg() {
     echo "ts=$(date +%s)"
   } > "$sentinel"
   echo "wind-down armed: background session '$job' will stop at next Stop (claude stop $job; sentinel: $sentinel)"
+  [ "${1:-}" != session ] || echo "wind-down: --session has nothing wider to close here: a background session has no tmux session, so only it stops."
 }
 
 # worktree_of <dir>: the root of the `wt` worktree <dir> sits in, or nothing. Only a tree under
@@ -304,7 +307,7 @@ cmd_fire() {
     hist="$HISTORY_DIR/$(date +%F-%H%M%S)-${label//[^A-Za-z0-9_-]/_}-${sid:-nosid}.txt"
     "${TM[@]}" capture-pane -p -J -S - -t "$killtarget" > "$hist" 2>/dev/null || true
     [ -s "$hist" ] || rm -f -- "$hist"
-    find "$HISTORY_DIR" -type f -name '*.txt' -mtime +30 -delete 2>/dev/null
+    prune_history
   fi
 
   # Schedule the kill on the tmux SERVER via `run-shell -b`, NOT as a child of
@@ -338,27 +341,31 @@ cmd_fire() {
 # conversation, so `claude attach` or `--resume` reopens it. It reads fire's locals (bash dynamic
 # scope). There is no window, so no tag protection: the session armed this itself.
 fire_bg() {
-  local logf="$SPIN_DIR/fire.log" claude_bin kill_cmd hist
+  local logf="$SPIN_DIR/fire.log" claude_bin kill_cmd hist save_cmd=''
   mkdir -p "$SPIN_DIR"
   [[ "$target" =~ ^[0-9a-f]{8}$ ]] || { echo "wind-down fire: bad background job '$target'" >&2; return 1; }
   claude_bin=$(command -v claude) || { echo "wind-down fire: no claude on PATH to stop '$target'" >&2; return 1; }
   reopen_asks "$sid" "$logf"
-  # The session's screen, as capture-pane saves a window's: best effort, never an empty file.
-  if mkdir -p "$HISTORY_DIR" 2>/dev/null; then
-    hist="$HISTORY_DIR/$(date +%F-%H%M%S)-${label//[^A-Za-z0-9_-]/_}-${sid:-nosid}.txt"
-    timeout 10 "$claude_bin" logs "$target" > "$hist" 2>/dev/null || true
-    [ -s "$hist" ] || rm -f -- "$hist"
-  fi
   kill_cmd="$(printf '%q' "$claude_bin") stop '$target'"
+  # The session's screen, as capture-pane saves a window's: in the detached job right before the
+  # stop, so it never holds the Stop hook; best effort, and never an empty file.
+  if mkdir -p "$HISTORY_DIR" 2>/dev/null; then
+    prune_history
+    hist="$(printf '%q' "$HISTORY_DIR/$(date +%F-%H%M%S)-${label//[^A-Za-z0-9_-]/_}-${sid:-nosid}.txt")"
+    save_cmd="timeout 10 $(printf '%q' "$claude_bin") logs '$target' > $hist 2>/dev/null; [ -s $hist ] || rm -f -- $hist; "
+  fi
   # setsid: `claude stop` ends this session's process tree, the hook included, and the reap and
   # scratchpad removal chained behind it must outlive that. `sleep 1` lets the Stop pipeline finish
   # first, as the tmux path's does. `cd /`: the job would hold the worktree against the reap.
-  setsid -f bash -c "cd /; sleep 1; $kill_cmd >> '$logf' 2>&1; echo \"[\$(date +%H:%M:%S)] ran: $kill_cmd\" >> '$logf'$(after_kill "$worktree" "$sid" "$logf")" </dev/null >/dev/null 2>&1
+  setsid -f bash -c "cd /; sleep 1; $save_cmd$kill_cmd >> '$logf' 2>&1; echo \"[\$(date +%H:%M:%S)] ran: $kill_cmd\" >> '$logf'$(after_kill "$worktree" "$sid" "$logf")" </dev/null >/dev/null 2>&1
   local sched_rc=$?
   [ "$sched_rc" = 0 ] && WD_SCHEDULED=1
   printf '[%s] fire: scheduled rc=%s cmd=%s\n' "$(date '+%F %T' 2>/dev/null)" "$sched_rc" "$kill_cmd" >> "$logf" 2>/dev/null || true
   echo "wind-down: scheduled '$kill_cmd' (rc=$sched_rc)"
 }
+
+# Saved screens are kept 30 days.
+prune_history() { find "$HISTORY_DIR" -type f -name '*.txt' -mtime +30 -delete 2>/dev/null; }
 
 # after_kill <worktree> <sid> <logf>: the steps chained behind a teardown, as one "; ..." string.
 # Reap the worktree AFTER the kill and never before: `wt reap` refuses while a tmux session for the
@@ -370,7 +377,7 @@ fire_bg() {
 after_kill() {
   local out=''
   if [ -n "$1" ] && [ -d "$1" ] && [ -x "$HOME/.local/bin/wt" ]; then
-    out="; $HOME/.local/bin/wt reap --after-kill '$1' >> '$3' 2>&1"
+    out="; $(printf '%q' "$HOME/.local/bin/wt") reap --after-kill '$1' >> '$3' 2>&1"
   fi
   is_session_id "$2" && out+="; rm -rf -- '$(scratch_root)'/*/'$2'"
   printf '%s' "$out"

@@ -661,12 +661,12 @@ disarm() { run bash -c 'printf "%s" "$2" | env -u CLAUDE_CODE_SESSION_ID bash "$
 # TMUX_PANE is the pane of the foreground claude that spawned it, a different live session, so
 # the session ends itself with `claude stop <job>` and no pane is ever killed.
 
-# Test-local claude and setsid: claude logs its call and prints a screen for `logs`; setsid only
-# logs the chain it was handed, so nothing is detached or stopped for real.
+# Test-local claude and setsid: claude only logs its call; setsid only logs the chain it was
+# handed, so nothing is detached or stopped for real.
 bg_stubs() {
   local bin="$BATS_TEST_TMPDIR/bin"
   mkdir -p "$bin"
-  printf '#!/bin/sh\necho "claude $*" >> "$NOTES_FIXTURE/calls.log"\n[ "$1" = logs ] && echo "bg screen"\nexit 0\n' > "$bin/claude"
+  printf '#!/bin/sh\necho "claude $*" >> "$NOTES_FIXTURE/calls.log"\n' > "$bin/claude"
   printf '#!/bin/sh\nprintf "setsid %%s\\n" "$*" >> "$NOTES_FIXTURE/calls.log"\n' > "$bin/setsid"
   chmod +x "$bin/claude" "$bin/setsid"
   export PATH="$bin:$PATH"
@@ -679,6 +679,18 @@ bg_stubs() {
   assert_output --partial "background session '72e3cb7a' will stop"
   run grep -E '^(scope|target|sid)=' "$SPIN_DIR/$SID_A.request"
   assert_output "$(printf 'scope=bg\ntarget=72e3cb7a\nsid=%s' "$SID_A")"
+  run grep tmux "$NOTES_FIXTURE/calls.log"
+  assert_failure
+}
+
+@test "arm in a background session that inherited TMUX still arms the stop, never the pane" {
+  # The daemon can carry the TMUX and TMUX_PANE of the foreground claude that spawned it.
+  TMUX="fake" TMUX_PANE="%29" CLAUDE_CODE_SESSION_KIND=bg CLAUDE_CODE_SESSION_ID="$SID_A" \
+    CLAUDE_JOB_DIR="$HOME/.claude-x/jobs/72e3cb7a" wd arm --session
+  assert_success
+  assert_output --partial 'only it stops'
+  run grep -E '^(scope|target|pane)=' "$SPIN_DIR/$SID_A.request"
+  assert_output "$(printf 'scope=bg\ntarget=72e3cb7a')"
   run grep tmux "$NOTES_FIXTURE/calls.log"
   assert_failure
 }
@@ -714,13 +726,14 @@ sid=$SID_A
 EOF
   run bash "$WIND_DOWN" fire "$SENTINEL"
   assert_success
-  run grep -rlx 'bg screen' "$HOME/.local/share/tmux-history"
-  assert_success
-  assert_output --partial "bg-72e3cb7a-$SID_A.txt"
   run grep '^setsid' "$NOTES_FIXTURE/calls.log"
   assert_success
   local chain="$output"
   assert_output --partial "stop '72e3cb7a'"
+  # The screen is saved in the detached job, before the stop, never in the Stop hook.
+  assert_output --partial "logs '72e3cb7a' > $(printf '%q' "$HOME/.local/share/tmux-history/")"
+  assert_output --partial "bg-72e3cb7a-$SID_A.txt"
+  [[ "${chain%%" stop '72e3cb7a'"*}" == *" logs '72e3cb7a'"* ]] || fail "the screen is saved after the stop"
   assert_output --partial "wt reap --after-kill '$HOME/.worktrees/repo-agent-1'"
   assert_output --partial "/*/'$SID_A'"
   local before_stop="${chain%%" stop '72e3cb7a'"*}"
@@ -728,8 +741,8 @@ EOF
   case "$before_stop" in
     *"wt reap"*|*"rm -rf"*) fail "the reap or scratchpad removal runs before the stop" ;;
   esac
-  # Only `logs` ran in the foreground; the stop is the detached job's, and no pane is killed.
-  run grep -E '^claude stop|tmux' "$NOTES_FIXTURE/calls.log"
+  # Nothing ran in the foreground: logs and stop are the detached job's, and no pane is killed.
+  run grep -E '^(claude|tmux) ' "$NOTES_FIXTURE/calls.log"
   assert_failure
 }
 

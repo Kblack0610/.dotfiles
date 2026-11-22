@@ -18,12 +18,12 @@ not kill its own window mid-turn.
 
 ## Scope and triggers
 
-Cleanly wrap up and spin down the current Claude session - write a short status note (Done, Doing, Next, Needs you) to ~/.agent/sessions/{project}/ (the agent-runtime knowledge axis) and arm a self-teardown that closes Claude's own tmux window (or the whole session) after the normal Stop pipeline finishes. Use when the user says "wind down", "spin yourself down", "you're done, close up", "close this out", "close it", "let's close", "shut it down", "/wind-down", or "wrap up and close the window". Default closes just Claude's window; "session" widens it to the whole tmux session, except a session a world manifest declares (hub, dotfiles, lab: `tmux-close`), where only the window closes. When the human asks, it winds down at once; "auto" is the self-initiated form (the shepherd, one-shot), which first checks the plan is finished, no question to the human is open, and the human did not order the window kept open. The note is written even when not in tmux (kill is simply skipped).
+Cleanly wrap up and spin down the current Claude session - write a short status note (Done, Doing, Next, Needs you) to ~/.agent/sessions/{project}/ (the agent-runtime knowledge axis) and arm a self-teardown that closes Claude's own tmux window (or the whole session) after the normal Stop pipeline finishes. Use when the user says "wind down", "spin yourself down", "you're done, close up", "close this out", "close it", "let's close", "shut it down", "/wind-down", or "wrap up and close the window". Default closes just Claude's window; "session" widens it to the whole tmux session, except a session a world manifest declares (hub, dotfiles, lab: `tmux-close`), where only the window closes. When the human asks, it winds down at once; "auto" is the self-initiated form (the shepherd, one-shot), which first checks the plan is finished, no question to the human is open, and the human did not order the window kept open. The note is written even when not in tmux (kill is simply skipped); a Claude background session (`claude daemon`) has no window, so it stops itself instead (`claude stop`).
 
 ## How it works
 
 1. Claude writes a wrap-up note to `~/.agent/sessions/{project}/`.
-2. Claude runs `wind-down.sh arm` to drop a sentinel recording this window's tmux target.
+2. Claude runs `wind-down.sh arm` to drop a sentinel recording this window's tmux target (a background session: its daemon job).
 3. Claude stops normally. The Stop coordinator runs its checks, spawns the (detached) eval
  judge, then `stop-post.d/95-wind-down.sh` reads the sentinel and - if checks passed - 
    captures the scrollback and schedules a detached `tmux kill-window`. The window (and Claude
@@ -250,7 +250,7 @@ the whole session it spun up. Default to window scope.
 
 The script prints what it armed. Relay that to the user. Two cases to handle:
 
-- **Not in tmux** - `arm` prints a notice and exits non-zero without arming. The note is still
+- **Not in tmux, and not a background session** - `arm` prints a notice and exits non-zero without arming. The note is still
   written; tell the user there's no tmux window to close so nothing was armed.
 - **A background session** (`claude daemon`, `CLAUDE_CODE_SESSION_KIND=bg`) - it has no window,
   so `arm` arms `claude stop <job>` for this session instead; the conversation is kept, and

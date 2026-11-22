@@ -83,6 +83,7 @@ GOOGLE_GENAI_USE_GCA              # picks a Google client's Code Assist login ov
 # Kept deliberately. Each line says why, because an unexplained exclusion is how
 # a real redirect gets parked here later and nobody re-reads it.
 CLAUDE_CODE_SESSION_ID            # identity of the session, no routing effect
+CLAUDE_CODE_SESSION_KIND          # bg for a claude daemon session; wind-down.sh stops one with claude stop, no routing effect
 CLAUDE_CODE_SESSION_ATTENDED      # 1 when a human is attached; agent-ask reads it, no routing effect
 CLAUDE_CODE_CHILD_SESSION         # 1 in a child of another session; claude_launch_env (claude-telemetry.sh) drops it on launch, no routing effect
 CLAUDE_CODE_BRIDGE_SESSION_ID     # the remote-control bridge's session id; claude_launch_env (claude-telemetry.sh) drops it on launch, no routing effect
