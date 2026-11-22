@@ -1205,9 +1205,9 @@ gate_rbw() {
   run "$AQ" requeue forms --hold mac-desktop
   assert_failure; assert_output --partial "claim it"
   "$REPO_ROOT/.local/bin/agent-hold" claim mac-desktop --by other "steam forms" >/dev/null
-  # The wait is the board row's: an item with none is refused and stays running.
+  # A project with no board to file on cannot give it a row: refused, and the item stays running.
   run "$AQ" requeue forms --hold mac-desktop
-  assert_failure; assert_output --partial "has no board row to wait on hold:mac-desktop"
+  assert_failure; assert_output --partial "has no board row to wait on hold:mac-desktop and none could be filed"
   [ -n "$(item running forms)" ]
   "$AQ" set forms row=game:gm-9 >/dev/null
   : > "$NOTES_FIXTURE/calls.log"
@@ -1289,6 +1289,28 @@ gate_rbw() {
   run "$AQ" list --state queued
   assert_output --partial "hold:mac-desktop (behind old, listing)"
   refute_output --partial "behind waits"
+}
+
+@test "requeue --hold files the story row of a hand-queued item with none, then returns the item to it (ar-4236)" {
+  story_notes
+  export AGENT_HOLD_DIR="$SANDBOX/holds"
+  "$AQ" add --project level --running --slug forms "fill the store forms" >/dev/null
+  # A hand-queued item that never got a row (its add filed none): drop the one the add filed.
+  sed -i '/^row: /d' "$(item running forms)"
+  [ -z "$(field "$(item running forms)" row)" ]
+  "$REPO_ROOT/.local/bin/agent-hold" claim mac-desktop --by other "steam forms" >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" requeue forms --hold mac-desktop
+  assert_success
+  # Its row is filed, then un-started behind the hold: the same two writes a row-bearing item gets.
+  run grep '^notes --profile' "$NOTES_FIXTURE/calls.log"
+  assert_output --partial "ptask level --agent add --origin agent-queue"
+  assert_called "ptask level --agent tag --add hold/mac-desktop lv-9"
+  assert_called "ptask level --agent unstart lv-9"
+  [ -z "$(item queued forms 2>/dev/null)" ]
+  f="$(ls "$AGENT_QUEUE_DIR"/done/*/*-forms.md)"
+  [ "$(field "$f" row)" = level:lv-9 ]
+  [ "$(field "$f" end_reason)" = returned ]
 }
 
 @test "requeue --class tags the item's desk class once, and a later --class replaces it" {

@@ -2592,8 +2592,10 @@ settle_by_verdict() {
       # The human disarmed the judge's answers on this ask; a hold answer is one too.
       [ -z "${ASK[assume_disarmed]:-}" ] || return 1
       reason="$(human_holds | awk -F'\t' -v n="$name" '$1 == n { print $2; found = 1; exit } END { exit !found }')" || return 1
-      # Empty means the recommendation is right (policy, Answer). With options it must name one.
-      ans="$(field "$f" judge_settled_answer)"; [ -n "$ans" ] || ans="${ASK[recommend]:-}"
+      # The option the hold picks, named by the judge: never the recommendation, which is what the
+      # asker wants, and a hold can forbid exactly that (PZLBaS, 2026-11-20: the critical hold bans
+      # the DNS work, and the recommended `a` was that work). With options and no pick, a human answers.
+      ans="$(field "$f" judge_settled_answer)"
       if [ -n "$opts" ]; then
         [[ "|$opts|" == *"|${ans%%[: ]*}|"* ]] || return 1
       else

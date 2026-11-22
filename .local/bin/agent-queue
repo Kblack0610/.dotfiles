@@ -3370,7 +3370,7 @@ check_tags() {
 # (Codex) that needs the human, whose run ends when it stops: the answer starts it again and its brief
 # carries the decision (fleet-dispatch ask_decisions), where a run left waiting would have no session to
 # hear it. Not a redo: the model did nothing wrong, so its lane run is dropped, not reported to
-# model-lane, as a cancel is.
+# model-lane, as a cancel is. An item with no board row (added by hand) gets its story row filed first.
 cmd_requeue() {
   local usage="usage: agent-queue requeue <slug> --hold <resource> [--class <class>] | --ask <id>[=<option>[+<option>]]"
   local slug="${1:?$usage}" res="" ask="" cls="" tag f tags
@@ -3397,10 +3397,22 @@ cmd_requeue() {
     check_tags "$tag"
     [ -n "$(ask_pending "$ask")" ] || die "ask ${ask%%=*} is already answered: read the answer and go on instead of requeueing"
   fi
+  f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
+  # The wait is the board row's (cmd_add), so a hand-queued item with none gets its story row filed
+  # first, as add files one, and goes back to it: refusing it stranded the item behind the hold (ar-4236).
+  if [ -z "$(item_row "$f")" ]; then
+    local story sboard sprof srow
+    local body title; body="$(fm_body "$f")"; title="$(fm_get "$f" title)"
+    story="$(file_story "$(fm_get "$f" project)" "${title:-$(head -1 <<<"$body")}" "$(fm_get "$f" priority)" "" "" "$body" "" "" "$(fm_get "$f" tags)")"
+    [ -n "$story" ] || die "$slug has no board row to wait on $tag and none could be filed: give it one (agent-queue set $slug row=<board>:<id>) and requeue again"
+    IFS=$'\t' read -r sboard sprof srow <<<"$story"
+    lock
+    f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
+    header_set "$f" row "$sboard:$srow"; header_set "$f" lane agent; header_set "$f" profile "$sprof"
+    unlock
+  fi
   lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
-  # The wait is the board row's (cmd_add): an item with none has nowhere to wait.
-  [ -n "$(item_row "$f")" ] || die "$slug has no board row to wait on $tag: give it one (agent-queue set $slug row=<board>:<id>) and requeue again"
   tags="$(fm_get "$f" tags)"
   local want="$tags"
   case " $want " in *" $tag "*) ;; *) want="${want:+$want }$tag" ;; esac
