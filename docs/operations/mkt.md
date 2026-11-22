@@ -12,7 +12,7 @@ One JSONL file per product and month, `~/.agent/outbound/<project>/<YYYY-MM>.jso
 | `review` | `mkt draft` once its ask is posted | `ask` |
 | `verdict` | `mkt answer`, `mkt skip` | `verdict` (`hand`, `post`, `skip`, `revise`), `reviewed_by`, `note` |
 | `sent` | `mkt answer` (an answer with a URL), `mkt log`, `mkt post` | `url, by` |
-| `metrics` | `mkt metrics`, from `mkt-metrics publish` | `metrics` (`{name: number}`), `window` (`{from, to, final}`); the newest replaces the last |
+| `metrics` | `mkt metrics`, by hand | `metrics` (`{name: number}`), `window` (`{from, to, final}`); the newest replaces the last |
 
 An item's id is `YYMMDD-xxxxxx`. Its `utm` is `utm_source=<channel>&utm_medium=<kind>&utm_campaign=<project>&utm_content=<id>`; add it to the links in the draft, so a visit can be traced to the item. A drafter writes `<url>?{utm}`, and `mkt draft` turns the `?` into `&` when the link already has a query (a Play link's `?id=`).
 
@@ -57,7 +57,7 @@ Every channel that a product or an event names is a key of `accounts`. Reddit, H
 - `mkt post <id> [--dry-run]` sends an item whose verdict is `post` through its channel's adapter (see Adapters) and records the send with the URL it gets back. It refuses an item with any other verdict, a channel with no adapter, and a channel whose mode for the product is not `"approve"`. `--dry-run` prints the payload the adapter would send, touches neither rbw nor the network, and says on stderr what a real send would refuse.
 - `mkt skip <id> [--by who]` closes an item that will not go out: a revise once its new draft exists, or a draft whose ask was refused. A sent item is refused.
 - `mkt list [--project P] [--state S] [--json]` and `mkt show <id>` read it.
-- `mkt metrics <id> <json>` records how a sent item did, `{"metrics": {"wishlist_adds_7d": 9}, "window": {"from": "2026-11-15", "to": "2026-11-21", "final": true}}`: numbers only, `from` to `to` as days. It prints `recorded`, or `unchanged` and writes nothing when the numbers and window match the last ones. Only a sent item takes it. `mkt-metrics publish` is its caller (see Metrics).
+- `mkt metrics <id> <json>` records how a sent item did, `{"metrics": {"wishlist_adds_7d": 9}, "window": {"from": "2026-11-15", "to": "2026-11-21", "final": true}}`: numbers only, `from` to `to` as days. It prints `recorded`, or `unchanged` and writes nothing when the numbers and window match the last ones. Only a sent item takes it. Nothing calls it on a schedule.
 - `mkt scorecard [--project P] [--json]` is the channel scorecard, rendered from the ledger: one row per project, channel and kind with items sent, sent by hand vs through an adapter (a send `by: mkt`), items still open, the median hours from review ask to verdict, and the first and last send. Skipped items are left out. It replaces a hand-typed metrics sheet (board row mkt-5). Each item's own numbers (see Metrics) are on its row in `mkt show` and the Outbound tables; the scorecard counts sends only. Visits per item (UTM `utm_content`) wait for Umami; until a channel has visits to judge, nothing asks to drop one.
 
 ## Adapters
@@ -97,37 +97,6 @@ A row in the ledger in any state, skipped included, with the same project, chann
 
 Knobs, all env with defaults in the script: `RELEASE_DAYS` 14, `EVENT_DAYS` 14, `RECUR_DAYS` 3, `WEEKLY_CHANNELS`, `MAX_DRAFTS` 6 a run (the rest waits for the next run, so a first run on a long-tagged product is bounded). Not done: no image is attached, since nothing yet says which screenshot belongs to a release (`mkt draft --attach` takes them when something does), and a `per-release` calendar rule is covered by the release trigger instead of a second one.
 
-## Metrics
-
-`mkt-metrics` (`.local/bin/mkt-metrics`, runner `agents/mkt-metrics.conf` in the private overlay, daily) reads each product's marketing numbers for a day (default yesterday, UTC) and joins them to the sent items. `mkt-metrics [YYYY-MM-DD]` prints the JSON and writes nothing; `mkt-metrics publish` also writes `mkt_metrics.prom` to the node_exporter textfile dir and each item's numbers to the ledger through `mkt metrics`.
-
-| Source | What, per product and day | Credential (rbw) | Which products |
-|---|---|---|---|
-| `steam` | Steam wishlist adds, deletes, purchases and gifts (`IPartnerFinancialsService/GetAppWishlistReporting`, one call per app and day, GMT days, no settlement lag) | `store_sales_steam`, the Financial API Group key `store-sales` reads | apps in project-map `targets[].live.steam.app` |
-| `search` | Google Search Console clicks and impressions per page (`searchAnalytics.query`, one POST per product, `dataState: all`, only the days before `firstIncompleteDate`) | `search_console`, a Google service account JSON (`client_email`, `private_key`), scope `webmasters.readonly` | products with `channels.yaml` `search_console` (a property), else `links.home` as `sc-domain:<host>` |
-
-How an item is joined. Its window is its send day (UTC) and the 6 days after. An item is measured while it is sent, sent at most 30 days ago, and its window is not final.
-
-- `wishlist_adds_7d`: the product's Steam wishlist adds over the window. It counts every add in those days, whatever caused them, so two posts in one week each show the same total.
-- `search_clicks_7d`, `search_impressions_7d`: clicks and impressions of the item's own URL (fragment, query and trailing `/` dropped) when it is a page of the product's site. A post on another site (bluesky, reddit) gets no search numbers.
-- `window.to` is the last day every source the item uses has read, with no gap from the send day; a day Steam has no summary for ends it there. `final` is true once `to` is the window's last day, and the item is not measured again. A window never shrinks: `mkt metrics` leaves numbers recorded through a later day, so a run for an earlier day changes nothing.
-- The Marketing tab's outbound table (web and TUI) shows the last event in its result column, for example `9 wishlist adds 7d, so far to 2026-11-16`, without the "so far" once final.
-
-Series, all on the workstation's textfile collector:
-
-| Series | Means |
-|---|---|
-| `mkt_metrics_value{project,source,metric}` | the number on the source's last read day: `wishlist_adds`, `wishlist_deletes`, `wishlist_purchases`, `wishlist_gifts`, `search_clicks`, `search_impressions` |
-| `mkt_metrics_up{source}` | 1 when every product of the source read |
-| `mkt_metrics_day_seconds{source}` | UTC midnight of the day those numbers are for (Search Console lags about 2 days) |
-| `mkt_metrics_generated_seconds` | when it last ran |
-
-home-config records them as `kb_project_number{dept="marketing"}` (metric `<name>_1d`) for the Marketing tab and the kb-project dashboard, and `kb_project_source_up{source="mkt-metrics"}`. A run is FAILED when no source read or a ledger write failed, WORKED otherwise, with `N of M sources read` in its outcome.
-
-Search Console setup, once per product: make a service account in a Google Cloud project with the Search Console API enabled, add its `client_email` as a user (Restricted is enough) on the product's property in Search Console, and store its JSON key in rbw as `search_console`. Until then the search source reads `no rbw entry search_console` and Steam still reads.
-
-Not done: visits per item by `utm_content` wait for Umami (a queued item deploys it and adds a third source), and installs per item belong to Analytics.
-
 ## costs.csv check
 
 `mkt costs <costs.csv> [--max-age-days N]` lists the marketing benchmark rows due a re-check, one per line (`id`, `item`, why), then a count. A row is due when its `last_checked` is older than N days (183, about 6 months) or not a date, or its `notes` do not open with `verified`. Exit 0 means none is due, 1 means some are, and 2 (with an `unreadable:` line) means the file or its header could not be read.
@@ -150,7 +119,3 @@ Sentinel runs it monthly as the watch `mkt-costs-stale` on `~/.notes/lab/bnb/pro
 | `not retried, the post may exist` | Look at the profile before running `mkt post` again; the item stays approved until a send is recorded. |
 | `has images, and the adapters post text only` | Post it by hand with the image, then `mkt log <id> <url>`. |
 | A preview image shows broken on Waiting | The file is not under the ledger, or not an image; agent-web serves only those. `mkt draft` copies attachments there itself. |
-| `no rbw entry search_console` in mkt-metrics | The service account is not in rbw yet, or rbw has not synced: see Metrics, Search Console setup. Steam still reads. |
-| `HTTP 403: User does not have sufficient permission for site` | The service account is not a user on that property, or the property differs: a URL-prefix property needs `search_console: https://...` on the product in `channels.yaml`. |
-| `25000 rows or more in the range` | One query returned a full page, so the product is not read rather than read short. Narrow it: give the product a URL-prefix `search_console` property for the part of the site that is marketed. |
-| An item's window stops short of 7 days and stays not final | A day in its window did not read for a source it uses (Steam had no summary, or Search Console still counting it). The next run picks it up; after 30 days from the send it is left as is. |
