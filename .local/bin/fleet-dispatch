@@ -11,7 +11,7 @@
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
 #   fleet-dispatch promote --project P [--profile X] [--agent] [--dispatch] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item; --dispatch makes it a capped pull like dispatch's own
 #   fleet-dispatch pull-after [--queue-only] ID  promote, and start unless low or --queue-only, the open rows gated #after/ID: agent-queue runs it when ID's item closes ok
-#   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session; a row whose #ask/ gate the human answered another way is held or dropped, one on a cancelled ask is held (or follows the ask it joined)
+#   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session; a row whose #ask/ gate the human answered another way is held or dropped, one on a cancelled ask closes on its done item's merged PR, follows the ask it joined, or is asked again
 #   fleet-dispatch headroom [--json] how many more queue items could start now, and the margin under each limit
 #   fleet-dispatch idle-cap          rc 1 when live sessions are at the pace target with under DISPATCH_IDLE_CAP_PCT of them busy,
 #                                    naming the idle ones; rc 2 when the fleet state cannot be read (watch fleet-cap-mostly-idle)
@@ -4165,13 +4165,13 @@ item_row() {
 # merged: commit in the checkout of the repo its PR names, with proof "pr:<N> commit:<sha12>"; with no proof the
 # row is left started and the reason logged once (reap_stuck), so a false close never happens.
 close_row() {
-  local it row prof project lane key flag=() oid pr dir out rc=1 info state r MERGE_PROOF_REMOTE=${MERGE_PROOF_REMOTE:-origin}
+  local it row prof project lane key flag=() oid pr dir out rc=1 info state r line MERGE_PROOF_REMOTE=${MERGE_PROOF_REMOTE:-origin}
   it=$(agent-queue show "$1" --json 2>/dev/null) || return 0
   row=$(item_row "$it"); [ -n "$row" ] || return 0
   IFS=$'\x1f' read -r prof project lane key <<<"$row"
   [ "$lane" = agent ] && flag=(--agent)
-  r=$(row_line "$prof" "$project" "$lane" "$key")
-  [[ $r == '- [/]'* || ( "${2:-}" = open && $r == '- [ ]'* ) ]] || { reap_unstuck "$1"; return 0; }
+  line=$(row_line "$prof" "$project" "$lane" "$key")
+  [[ $line == '- [/]'* || ( "${2:-}" = open && $line == '- [ ]'* ) ]] || { reap_unstuck "$1"; return 0; }
   # The row closes on the item's first PR: pr: and merged: are lists in step, one PR per repo.
   oid=$(jq -r '.merged // "" | split(" ")[0] // empty' <<<"$it"); pr=$(jq -r '.pr // "" | split(" ")[0] // empty' <<<"$it")
   dir=$(pr_repo_dir "$pr" "$project")
@@ -4194,7 +4194,7 @@ close_row() {
   if [ "$rc" != 0 ]; then
     # Not at once: a refusal can be a checkout that has not fetched yet, and the next fetch proves it.
     reap_stuck "$1" "$it" "$DISPATCH_ORPHAN_HOURS" \
-      "queue item $1: $project row left started, no merge proof: $out" \
+      "queue item $1: $project row left $([[ $line == '- [ ]'* ]] && echo open || echo started), no merge proof: $out" \
       "chore(board): no merge proof for PR $pr ($out); close $project row $key with its proof, or correct the item's merged:"
     return 0
   fi
@@ -6562,6 +6562,8 @@ cmd_reap() {
   done
   # A stuck marker no pass has rewritten in a day is an item that settled (reap_stuck).
   [ ! -d "$DIR/stuck" ] || find "$DIR/stuck" -type f -mmin +1440 -delete 2>/dev/null
+  # A re-post's record outlives any pass that could still find a row on its cancelled ask.
+  [ ! -d "$DIR/reposed" ] || find "$DIR/reposed" -type f -mtime +30 -delete 2>/dev/null
   reap_replays
   unstart_orphans
   ask_failed_rows
@@ -6708,37 +6710,44 @@ settle_answered_gates() {
 
 # repose_ask <profile> <project> <row id> <gate> <ask id> <ask file> <closed reason> -- the cancelled
 # ask posed again from its own fields, and the row's gate moved to the new ask with its option, so the
-# human decides (lesson 2026-09-16: a cancel is nobody deciding). Once: an ask this posed, cancelled
-# again, is left dead, and dead_holds lists it (queue-starved). A post or retag that fails leaves the
-# gate for the next pass; a post whose retag failed is cancelled.
+# human decides (lesson 2026-09-16: a cancel is nobody deciding). Once per cancelled ask: REPOSED/<ask id>
+# names the new one, so every row gated on it, this pass or a later one (a retag that failed), moves
+# to that same ask and the human gets one question. An ask this posed, cancelled again, is left dead,
+# and dead_holds lists it (queue-starved). A post that fails leaves the gate for the next pass.
 REPOSED_MARK='Re-posed by fleet-dispatch:'
+REPOSED="$DIR/reposed"
 repose_ask() {
-  local prof=$1 p=$2 id=$3 g=$4 aid=$5 ask=$6 rsn=$7 f q kind ap opts='' o n ctx new
+  local prof=$1 p=$2 id=$3 g=$4 aid=$5 ask=$6 rsn=$7 f q kind ap opts='' n ctx new
   local -A A=()
   for f in question kind project options option_notes context recommend recommend_why; do
     A[$f]=$(sed -n "/^$f: */{s///p;q;}" <<<"$ask")
   done
   ctx=${A[context]}
   [[ $ctx != "$REPOSED_MARK"* ]] || return 0
-  q=${A[question]} kind=${A[kind]:-question} ap=${A[project]:-$p}
-  [ -n "$q" ] || { say "settle_answered_gates: cancelled ask $aid has no question to pose again ($p row $id)"; return 0; }
-  # `options:` holds the slugs and `option_notes:` their meanings, pipe-aligned; post takes slug=meaning.
-  if [ -n "${A[options]}" ]; then
-    local -a os ns
-    IFS='|' read -r -a os <<<"${A[options]}"; IFS='|' read -r -a ns <<<"${A[option_notes]}"
-    for n in "${!os[@]}"; do o="${os[n]}=${ns[n]:-}"; opts+="${opts:+|}$o"; done
+  new=$(cat "$REPOSED/$aid" 2>/dev/null)
+  if ! { [[ $new =~ ^[A-Za-z0-9_-]+$ ]] && agent-ask show "$new" </dev/null >/dev/null 2>&1; }; then
+    q=${A[question]} kind=${A[kind]:-question} ap=${A[project]:-$p}
+    [ -n "$q" ] || { say "settle_answered_gates: cancelled ask $aid has no question to pose again ($p row $id)"; return 0; }
+    # `options:` holds the slugs and `option_notes:` their meanings, pipe-aligned; post takes slug=meaning
+    # and refuses a bare slug, so a missing meaning (a gate's default approve|hold) reads as agent-ask's audit words.
+    if [ -n "${A[options]}" ]; then
+      local -a os ns
+      IFS='|' read -r -a os <<<"${A[options]}"; IFS='|' read -r -a ns <<<"${A[option_notes]}"
+      for n in "${!os[@]}"; do opts+="${opts:+|}${os[n]}=${ns[n]:-as the asker offered it}"; done
+    fi
+    ctx="$REPOSED_MARK ask $aid was cancelled (${rsn:-no reason given}) before anyone answered it, and board row $id ($p) waits on this answer.${ctx:+ $ctx}"
+    new=$(env -u CLAUDE_CODE_SESSION_ID -u TMUX -u TMUX_PANE -u AGENTCTL_NAME agent-ask post --kind "$kind" --project "$ap" ${prof:+--profile "$prof"} \
+        ${opts:+--options "$opts"} ${A[recommend]:+--recommend "${A[recommend]}"} ${A[recommend_why]:+--why "${A[recommend_why]}"} \
+        --context "$ctx" -- "$q" </dev/null 2>/dev/null | tail -n 1)
+    [[ $new =~ ^[A-Za-z0-9_-]+$ ]] && agent-ask show "$new" </dev/null >/dev/null 2>&1 ||
+      { say "settle_answered_gates: could not pose cancelled ask $aid again for $p row $id"; return 0; }
+    mkdir -p "$REPOSED" && printf '%s\n' "$new" > "$REPOSED/$aid" ||
+      say "settle_answered_gates: could not record ask $new as the re-post of $aid"
   fi
-  ctx="$REPOSED_MARK ask $aid was cancelled (${rsn:-no reason given}) before anyone answered it, and board row $id ($p) waits on this answer.${ctx:+ $ctx}"
-  new=$(env -u CLAUDE_CODE_SESSION_ID -u TMUX -u TMUX_PANE -u AGENTCTL_NAME agent-ask post --kind "$kind" --project "$ap" ${prof:+--profile "$prof"} \
-      ${opts:+--options "$opts"} ${A[recommend]:+--recommend "${A[recommend]}"} ${A[recommend_why]:+--why "${A[recommend_why]}"} \
-      --context "$ctx" -- "$q" </dev/null 2>/dev/null | tail -n 1)
-  [[ $new =~ ^[A-Za-z0-9_-]+$ ]] && agent-ask show "$new" </dev/null >/dev/null 2>&1 ||
-    { say "settle_answered_gates: could not pose cancelled ask $aid again for $p row $id"; return 0; }
   if np "$prof" ptask "$p" --agent tag --add "ask/$new${g#ask/$aid}" --remove "$g" "$id" </dev/null >/dev/null 2>&1; then
     logline "posed cancelled ask $aid again as $new: $p row $id waits on it"
     echo "asked again about $p: $id (ask $aid was cancelled, now ask $new)"
   else
-    agent-ask cancel "$new" "fleet-dispatch could not gate row $id on it" </dev/null >/dev/null 2>&1
     say "settle_answered_gates: could not retag $p row $id from #$g to #ask/$new"
   fi
 }
