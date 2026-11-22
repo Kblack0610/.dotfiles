@@ -544,6 +544,22 @@ setup_journal() {
 }
 
 # Setup fingerprint auth (fprintd + libfprint + PAM)
+# A kernel upgraded without a reboot deletes the running kernel's modules, so one not yet
+# loaded (xpad, 2026-11-18) fails until the reboot. kernel-modules-hook's pacman hooks keep
+# that tree; linux-modules-cleanup.service moves it out at the next boot.
+setup_kernel_modules_hook() {
+    log_section "Keeping the running kernel's modules across a kernel upgrade"
+
+    install_pacman_package "kernel-modules-hook"
+    if ! pacman -Q kernel-modules-hook &>/dev/null; then
+        log_warning "kernel-modules-hook is not installed - skipping linux-modules-cleanup.service"
+        return 0
+    fi
+
+    sudo systemctl enable linux-modules-cleanup.service
+    log_info "kernel-modules-hook installed, linux-modules-cleanup.service enabled - see .config/kernel-modules-hook/README.md"
+}
+
 setup_fingerprint() {
     log_section "Setting up fingerprint auth (fprintd + PAM)"
 
@@ -939,6 +955,7 @@ install_all() {
     step keyd        setup_keyd
     step powerkey    setup_power_key
     step journal     setup_journal
+    step kernelmods  setup_kernel_modules_hook
     step fingerprint setup_fingerprint
     step tailscale   install_tailscale
 
