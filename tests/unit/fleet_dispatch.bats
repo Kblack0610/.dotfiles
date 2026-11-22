@@ -325,6 +325,20 @@ item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
   [ -z "$(agent-queue list --state queued --json | jq -r 'select(.slug == "ga-6") | .slug')" ]
 }
 
+@test "pull-after starts every high row gated on the closed row, though a start reads stdin" {
+  # Every row gated on the closed one is read, whatever a start reads from stdin (chain-after-stuck).
+  project game beta "$SANDBOX/repos/game"
+  row game agent ga-1 "- [/] feat(game): the map first <!-- id:ga-1 -->"
+  row game agent ga-2 "- [ ] feat(game): then its doors $T #high #after/ga-1 <!-- id:ga-2 -->"
+  row game agent ga-3 "- [ ] feat(game): the paint $T #low #after/ga-1 <!-- id:ga-3 -->"
+  row game agent ga-4 "- [ ] feat(game): then its roof $T #high #after/ga-1 <!-- id:ga-4 -->"
+  cmd_start() { cat >/dev/null; echo "start $*" >> "$NOTES_FIXTURE/started"; }
+  run cmd_pull_after ga-1
+  assert_success
+  assert_equal "$(paste -sd, "$NOTES_FIXTURE/started")" "start --item ga-2,start --item ga-4"
+  assert_equal "$(agent-queue list --state queued --json | jq -r .slug | sort | paste -sd,)" "ga-2,ga-3,ga-4"
+}
+
 @test "row gates: cleared gates commit an agent row only, the human's row still needs its verdict, and a gated row keeps its verdict's area" {
   echo '{"fleet": {"max_tier": 1, "projects": ["game"]}}' > "$DISPATCH_WORKERS"
   project game beta "$SANDBOX/repos/game"
@@ -2435,6 +2449,30 @@ J
   [ -n "$(qitem queued gm-9)" ] || fail "the sprint row was not queued first: $(ls "$AGENT_QUEUE_DIR/queued")"
   [ -z "$(qitem queued ap-1)" ] || fail "a queued sprint's row ranked as the open sprint's"
   grep -q '^tags:.*sprint' "$(qitem queued gm-9)" || fail "the item has no sprint tag: $(cat "$(qitem queued gm-9)")"
+}
+
+@test "sprint rank: an open-version row the window left out ranks as sprint once it unblocks, with no relock, after the committed row" {
+  export DISPATCH_PROFILES=bnb
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  row app human ap-1 "- [ ] fix(app): menu text #urgent $T <!-- id:ap-1 -->"
+  # gm-7 waited #after/ a row that has since closed, so the lock left it out. It is #urgent and on the sheet
+  # and its area sorts first (picks breaks a tie by area), so only the committed-first key puts gm-9 ahead.
+  row game agent gm-7 "- [ ] fix(game): unblocked row #urgent $T <!-- id:gm-7 -->"
+  row game agent gm-9 "- [ ] fix(game): committed row #high $T <!-- id:gm-9 -->"
+  verdict game agent gm-7 dispatch S 1 boot
+  verdict app human ap-1 dispatch S 1 menu
+  verdict game agent gm-9 dispatch S 1 crash
+  # NEGATIVE CONTROL: a sprint read from its snapshot alone ranks the unblocked row behind the other project's.
+  jq -nc '[{project: "game", queued: false, tasks: [{id: "gm-9", state: "open"}]}]' > "$NOTES_FIXTURE/board.sprints"
+  assert_equal "$(picks_order)" 'gm-9 ap-1 gm-7'
+  # The feed lists it under the open sprint's `uncommitted`: the next pass ranks it as sprint, no relock run.
+  jq -nc '[{project: "game", queued: false, tasks: [{id: "gm-9", state: "open"}], uncommitted: ["gm-7", "gm-9"]},
+           {project: "app", queued: true, tasks: [], uncommitted: ["ap-1"]}]' > "$NOTES_FIXTURE/board.sprints"
+  assert_equal "$(picks_order)" 'gm-9 gm-7 ap-1'
+  [[ "$(DRY=1 JUDGE_RC='' fill_day 4)" == *'open sprint, uncommitted'* ]] || fail "the why does not name it: $(DRY=1 JUDGE_RC='' fill_day 4)"
+  DRY=0 JUDGE_RC='' fill_day 2
+  grep -q '^tags:.*sprint' "$(qitem queued gm-7)" || fail "the uncommitted row's item has no sprint tag: $(cat "$(qitem queued gm-7)")"
 }
 
 # pool_prom -- a curl that answers prom_q as Prometheus would: the idle comparison keeps the unity pool

@@ -3497,6 +3497,12 @@ cmd_stats() {
       to_pr_minutes_median: to_pr};
     def group(f): group_by(f) | map({key: (.[0] | f), value: outcomes}) | from_entries;
     def spread: {n: length, p50: median, p90: p90};
+    # Chain handoff: an item with an after: key goes from the finish of its predecessor (ready) to its start.
+    # 0 is a real answer (the next phase started at once), so unlike waits it is counted.
+    # An item gated by an event too (ask, pr, nightly, rbw, hold) is left out: its ready time is not recorded.
+    def handoffs: [.[] | select((.after // "") != "" and ((.tags // "") | test("(^| )(ask|pr|nightly|rbw|hold):") | not)) | {p: (.priority // "high"), m: mins(.ready; .started), at: .started}
+      | select(.m != null)];
+    def by_priority: group_by(.p) | map({key: .[0].p, value: ([.[].m] | spread)}) | from_entries;
     def stage($name; f): [.[] | select((f // "") != "") | {day: (f | fromdateiso8601 | strflocaltime("%F")), stage: $name, item: .}];
     def at($name): map(select(.stage == $name) | .item);
     (map(select(.state == "done"))) as $done
@@ -3508,6 +3514,8 @@ cmd_stats() {
        wait_minutes_median: (waited | median),
        wait_minutes_p90: (waited | p90),
        started_at_once: (waits | map(select(. == 0)) | length),
+       chain: {by_priority: (handoffs | by_priority),
+         h24: (handoffs | map(select((.at | fromdateiso8601) >= now - 86400)) | by_priority)},
        sitting: {queued: ($queued | length), runnable: ($runnable | length),
          held: ($queued | map(select(.hold)) | length),
          held_by: ($queued | map(select(.hold)) | count_by(.hold | hold_kind)),
@@ -3554,10 +3562,13 @@ cmd_stats() {
   if [ -n "$json" ]; then printf '%s\n' "$stats"; return 0; fi
   jq -r 'def dur: if . == null then "-" elif . >= 120 then "\(. / 60 | floor)h" else "\(.)m" end;
     def pairs: to_entries | map("\(.key) \(.value)") | join(", ");
+    def chain_line: if . == {} then "none" else to_entries | sort_by(.key | {urgent: 0, high: 1, low: 2}[.] // 3)
+      | map("\(.key) \(.value.p50)/\(.value.p90) (\(.value.n))") | join(", ") end;
     "since \(.since)",
     "active:  \(.active | pairs | if . == "" then "none" else . end)",
     "done:    \(.done | pairs | if . == "" then "none" else . end)",
     "wait:    median \(.wait_minutes_median // "-") min, p90 \(.wait_minutes_p90 // "-") min from ready to started, \(.started_at_once) started at once and not counted",
+    "chain:   handoff p50/p90 min from the predecessor'"'"'s finish to the start (n): \(.chain.by_priority | chain_line); last 24h: \(.chain.h24 | chain_line)",
     (.sitting | "sitting: \(.runnable) can start, oldest \(.oldest_runnable[0].minutes | dur)"
       + (if .runnable > 0 then " (\(.oldest_runnable[0].slug)), median \(.runnable_age_minutes_median | dur)" else "" end)
       + "; \(.held) held" + (if .held > 0 then " (\(.held_by | pairs))" else "" end)),

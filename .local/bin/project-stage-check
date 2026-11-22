@@ -26,7 +26,9 @@
 # name; with no open epic for it, `epic(stage): <stage> to standard` is filed on the human sheet
 # first. A gap whose row on either sheet, matched by title or from line, was closed or dropped by
 # hand is never filed again, unless it was dropped as a dup of another row for that gap. Each
-# open agent row of a row that now PASSes is closed with the check as proof.
+# open agent row of a row that now PASSes is closed with the check as proof. With --systems, a repo
+# with no sheet of its own files on the board project-map names for it (`project_board`, as
+# dotfiles-private on agent-runtime), each row and its from line prefixed with the repo's name.
 # Exit 0, 1 when a write failed, 2 as above. With --json those lines go to stderr, and stdout gets
 # the check's own --json (`stage` is the target) plus filed_open and filed_closed: the gaps the
 # agent sheet holds open (a rollup line or a row of its own) and the agent rows of its rows closed.
@@ -144,11 +146,11 @@ requirements() {
 # so, when the verb does or answers short.
 sheet_rows() {
   local f files=() rows titles
-  for f in "$LAB/README.md" "$LAB/agent/README.md" "$LAB"/versions/*.md "$LAB"/agent/versions/*.md; do
+  for f in "$FILE_LAB/README.md" "$FILE_LAB/agent/README.md" "$FILE_LAB"/versions/*.md "$FILE_LAB"/agent/versions/*.md; do
     [ -f "$f" ] && files+=("$f")
   done
   [ "${#files[@]}" -gt 0 ] || return 0
-  rows="$(awk -v agent="$LAB/agent/" '
+  rows="$(awk -v agent="$FILE_LAB/agent/" '
     FNR == 1 { sp = 0; cur = 0 }
     /^[ \t]*- \[.\] / {
       n++; txt[n] = $0; ln[n] = (index(FILENAME, agent) == 1 ? "agent" : "human")
@@ -212,7 +214,7 @@ brief_of() {
   awk -v id="$1" '
     on && (/^[ \t]*- \[.\] / || /^[^ \t]/) { exit }
     on && /[^ \t]/ { sub(/^[ \t]+/, ""); sub(/[ \t]+$/, ""); print; next }
-    /^[ \t]*- \[.\] / && match($0, "id:" id "([^0-9]|$)") { on = 1 }' "$LAB/agent/README.md" 2>/dev/null
+    /^[ \t]*- \[.\] / && match($0, "id:" id "([^0-9]|$)") { on = 1 }' "$FILE_LAB/agent/README.md" 2>/dev/null
 }
 
 # title_of <text>: the title as the sheet stores it (`projects::row_title`): words that start
@@ -227,7 +229,7 @@ title_of() {
 # gaps never waits on a human to open its epic.
 stage_epic() {
   local out id
-  out="$(notes ptask "$NAME" add "epic(stage): $1 to standard" --origin project-stage-check)" || return 1
+  out="$(notes ptask "$BOARD" add "epic(stage): $1 to standard" --origin project-stage-check)" || return 1
   id="$(grep -o 'id:[a-z0-9]*-[0-9]*' <<<"$out" | awk 'NR==1')"
   [ -n "$id" ] || return 1
   printf 'epic    %-10s  %s to standard (%s)\n' "$1" "$1" "${id#id:}" >&2
@@ -243,9 +245,9 @@ stage_epic() {
 # notes refresh) could hold open under the caller's `$(...)`.
 file_gaps() {
   local epics ladder check rc gaps passes have n=0 filed=0 had=0 closed=0 failed=0 met=0 opened=0
-  local fopen=0 fclosed=0 folded=0 listed_says="" full key title state lane id declared today
-  [ -n "$LAB" ] || { echo "project-stage-check: \"$NAME\" has no lab sheet to file rows on" >&2; exit 2; }
-  epics="$(notes projects --stats --json 2>/dev/null | jq -c --arg n "$NAME" \
+  local fopen=0 fclosed=0 folded=0 listed_says="" full key title state lane id declared today v
+  [ -n "$FILE_LAB" ] || { echo "project-stage-check: \"$NAME\" has no lab sheet and no project-map board to file rows on" >&2; exit 2; }
+  epics="$(notes projects --stats --json 2>/dev/null | jq -c --arg n "$BOARD" \
     '[.[] | select((.name | ascii_downcase) == ($n | ascii_downcase)) | .epics[]?]')" \
     || { echo "project-stage-check: notes projects --stats --json failed" >&2; exit 2; }
   have="$(sheet_rows)" || exit 2
@@ -286,6 +288,13 @@ file_gaps() {
     passes="$(jq -r --arg t "$TARGET" '.requirements[] | select(.result == "PASS")
       | [$t, .stage, .requirement, .check, "stages.md #\(.stage), check: \(.check)"] | map(. // "" | tostring) | join("\u001f")' <<<"$check")"
   fi
+  # On another project's board a row names its repo, in its text and key, or two repos' rows would
+  # read as one. Both the filing and the PASS-closing below read these lines.
+  if [ "$BOARD" != "$NAME" ]; then
+    for v in gaps passes; do
+      printf -v "$v" '%s' "$(awk -F'\037' -v OFS='\037' -v p="$NAME: " 'NF { $3 = p $3; $5 = p $5 } 1' <<<"${!v}")"
+    done
+  fi
   # A text that also fails (two rows or systems sharing a text) is a gap, never met.
   passes="$(awk -F'\037' 'FILENAME == ARGV[1] { f[$3]; next } $3 != "" && !($3 in f)' <(printf '%s\n' "$gaps") <(printf '%s\n' "$passes"))"
   today="$(date +%F)"
@@ -299,7 +308,7 @@ file_gaps() {
       [ "$lane" = agent ] || continue
       if [ "$state" = closed ]; then fclosed=$((fclosed + 1)); continue; fi
       [ "$id" != - ] || continue
-      if notes ptask "$NAME" --agent "done" "$id" --proof "check:project-stage-check $NAME${SYSTEMS:+ --systems} PASS $today" >/dev/null; then
+      if notes ptask "$BOARD" --agent "done" "$id" --proof "check:project-stage-check $NAME${SYSTEMS:+ --systems} PASS $today" >/dev/null; then
         met=$((met + 1)) fclosed=$((fclosed + 1)); printf 'met     %-10s  %s\n' "$id" "$title"
       else
         failed=$((failed + 1)); printf 'error   %-10s  %s (ptask done failed)\n' "$id" "$title"
@@ -356,9 +365,9 @@ file_systems() {
     text="from project-stage-check $NAME --file, $key"
     # A cut title keeps the whole requirement on a detail line.
     if [ "$title" = "$full" ]; then
-      notes ptask "$NAME" --agent add "$row" --detail "$text" --origin project-stage-check >/dev/null
+      notes ptask "$BOARD" --agent add "$row" --detail "$text" --origin project-stage-check >/dev/null
     else
-      notes ptask "$NAME" --agent add "$row" --detail "$full" --detail "$text" --origin project-stage-check >/dev/null
+      notes ptask "$BOARD" --agent add "$row" --detail "$full" --detail "$text" --origin project-stage-check >/dev/null
     fi
     rc=$?
     case "$rc" in
@@ -392,7 +401,7 @@ retag_rollup() {
   case "$rprio" in low|high|-) ;; *) return 0 ;; esac
   [ "$rprio" != "$prio" ] || return 0
   args=(--add "$prio"); [ "$rprio" = - ] || args+=(--remove "$rprio")
-  terr="$(notes ptask "$NAME" --agent tag "$rid" "${args[@]}" 2>&1 >/dev/null)" && return 0
+  terr="$(notes ptask "$BOARD" --agent tag "$rid" "${args[@]}" 2>&1 >/dev/null)" && return 0
   if grep -q 'sprint: the cut carries open rows' <<<"$terr"; then
     printf 'held    %-10s  meet the %s stage standard, #%s kept: the open sprint holds it\n' "$rid" "$TARGET" "$rprio"
     return 0
@@ -459,7 +468,7 @@ file_rollup() {
         printf 'open    %-10s  meet the %s stage standard, no gap left but in progress, left as it is\n' "$id" "$TARGET"
         [ "$id" != "$rid" ] || old=""; continue
       fi
-      if notes ptask "$NAME" --agent "done" "$id" --proof "$proof" >/dev/null; then
+      if notes ptask "$BOARD" --agent "done" "$id" --proof "$proof" >/dev/null; then
         printf 'row     %-10s  meet the %s stage standard, closed: no gap left to list\n' "$id" "$TARGET"
         listed_says="0 listed, $id closed"
       else
@@ -479,7 +488,7 @@ file_rollup() {
       fi
       target_epic || { listed_says="0 listed"; return 0; }
       while IFS= read -r l; do args+=(--detail "$l"); done <<<"$brief"
-      out="$(notes ptask "$NAME" --agent add "chore(stage): meet the $TARGET stage standard #of/$epic #size/m #$prio" "${args[@]}" --origin project-stage-check)"; rc=$?
+      out="$(notes ptask "$BOARD" --agent add "chore(stage): meet the $TARGET stage standard #of/$epic #size/m #$prio" "${args[@]}" --origin project-stage-check)"; rc=$?
       # Exit 3 is add's twin check: a concurrent run filed the rollup first, and its list stands.
       if [ "$rc" -eq 3 ]; then
         printf 'open    %-10s  meet the %s stage standard, filed by another run\n' rollup "$TARGET"
@@ -497,14 +506,14 @@ file_rollup() {
       if [ "$rstage" != "$TARGET" ]; then
         if ! target_epic; then
           ok=0
-        elif notes ptask "$NAME" --agent edit "$rid" --text "chore(stage): meet the $TARGET stage standard #of/$epic" >/dev/null; then
+        elif notes ptask "$BOARD" --agent edit "$rid" --text "chore(stage): meet the $TARGET stage standard #of/$epic" >/dev/null; then
           printf 'row     %-10s  meet the %s stage standard, retitled from #%s\n' "$rid" "$TARGET" "$rstage"
         else
           ok=0 failed=$((failed + 1)); printf 'error   %-10s  meet the %s stage standard (ptask edit --text failed)\n' "$rid" "$TARGET"
         fi
       fi
       old="$(brief_of "$rid")"
-      if [ "$ok" = 1 ] && [ "$old" != "$brief" ] && ! notes ptask "$NAME" --agent edit "$rid" --brief "$brief" >/dev/null; then
+      if [ "$ok" = 1 ] && [ "$old" != "$brief" ] && ! notes ptask "$BOARD" --agent edit "$rid" --brief "$brief" >/dev/null; then
         failed=$((failed + 1)) ok=0; printf 'error   %-10s  meet the %s stage standard (ptask edit --brief failed)\n' "$rid" "$TARGET"
       fi
       old="$(grep '^#' <<<"$old")"
@@ -522,7 +531,7 @@ file_rollup() {
     listed_says="$(grep -c . <<<"$lines") listed on $rid ($news new)"
     while IFS=$'\t' read -r id title; do
       [ -n "$id" ] || continue
-      if notes ptask "$NAME" --agent drop "$id" --dup "$rid" >/dev/null; then
+      if notes ptask "$BOARD" --agent drop "$id" --dup "$rid" >/dev/null; then
         folded=$((folded + 1)); printf 'folded  %-10s  %s (into %s)\n' "$id" "$title" "$rid"
       else
         failed=$((failed + 1)); printf 'error   %-10s  %s (ptask drop --dup %s failed)\n' "$id" "$title" "$rid"
@@ -531,7 +540,7 @@ file_rollup() {
     while IFS=$'\t' read -r id mark; do
       [ -n "$id" ] || continue
       if [ "$mark" = doing ]; then printf 'open    %-10s  another stage rollup, in progress, left as it is\n' "$id"; continue; fi
-      if notes ptask "$NAME" --agent drop "$id" --dup "$rid" >/dev/null; then
+      if notes ptask "$BOARD" --agent drop "$id" --dup "$rid" >/dev/null; then
         folded=$((folded + 1)); printf 'folded  %-10s  another stage rollup (into %s)\n' "$id" "$rid"
       else
         failed=$((failed + 1)); printf 'error   %-10s  another stage rollup (ptask drop --dup %s failed)\n' "$id" "$rid"
@@ -568,6 +577,18 @@ if declare -F lab_roots >/dev/null; then
   while IFS= read -r root; do
     [ -f "$root/$NAME/summary.md" ] && { LAB="$root/$NAME"; break; }
   done < <(lab_roots)
+fi
+# BOARD, FILE_LAB: where --file writes. A repo with no sheet of its own files its systems gaps on the
+# board project-map names for it (`project_board`: dotfiles-private -> agent-runtime), under its own name;
+# the checks keep reading LAB, the project's own.
+BOARD="$NAME" FILE_LAB="$LAB"
+if [ -z "$LAB" ] && [ -n "$SYSTEMS" ] && declare -F lab_roots >/dev/null; then
+  b="$(project_board "$NAME")"
+  if [ -n "$b" ] && [ "$b" != "$NAME" ]; then
+    while IFS= read -r root; do
+      [ -f "$root/$b/summary.md" ] && { BOARD="$b" FILE_LAB="$root/$b"; break; }
+    done < <(lab_roots)
+  fi
 fi
 TYPE="$(project_inherited "$NAME" type)"
 # TAGS: the Applies tags this project takes, `base`, its type, and `store` when it ships through a
