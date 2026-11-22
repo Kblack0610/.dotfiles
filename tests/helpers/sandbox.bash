@@ -191,8 +191,8 @@ EOF
 
   # The suite runs from inside a Claude session, whose id, attended flag and dispatched queue
   # item would otherwise be read as the test's own: an attended post renders into the pane,
-  # and an item satisfies the focus gate.
-  unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED AGENT_QUEUE_ITEM
+  # and an item satisfies the focus gate. Its entrypoint (cli) makes an agent-queue add a hand start.
+  unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED AGENT_QUEUE_ITEM CLAUDE_CODE_ENTRYPOINT
 
   # A suite run from a dispatched session (agentctl-run) also inherits CLAUDE_HEADLESS=1, which
   # switches the focus gate off, and AGENTCTL_MODEL, which outranks the conf MODEL and the
