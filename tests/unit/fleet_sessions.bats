@@ -51,8 +51,10 @@ SS
   chmod +x "$SANDBOX/bin/agent-queue"
   export AGENT_QUEUE_DIR="$HOME/.agent/queue"
   # The fleet lease: this machine holds it only while $SANDBOX/lease-held exists, never the host's.
+  # It holds it by default, as the fleet home does; a worker's test removes the file.
   printf '#!/usr/bin/env bash\n[ -e %q ]\n' "$SANDBOX/lease-held" > "$SANDBOX/bin/fleet-lease"
   chmod +x "$SANDBOX/bin/fleet-lease"
+  : > "$SANDBOX/lease-held"
   export FLEET_LEASE="$SANDBOX/bin/fleet-lease"
   # shellcheck source=/dev/null
   source "$REPO_ROOT/.local/bin/fleet-sessions"
@@ -3221,6 +3223,40 @@ cells() { printf '%s\t%s\tcurrent\tno\tclean\t#1 open\t%s\t1/2\t-\t%s\t-\t5m\t1h
   [ "$(wc -l < "$FLEET_SHEPHERD_DIR/watch.log")" -eq 1 ]
 }
 
+@test "tick on a machine that does not hold the fleet lease leaves the shared ledger alone (ar-3439)" {
+  bats_require_minimum_version 1.5.0
+  landed_fixture
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  cp "$FLEET_SHEPHERD_DIR/watch.state" "$SANDBOX/holder.state"
+  "$REPO_ROOT/.local/bin/fleet-sessions" label s1 +quality:simplifying >/dev/null
+  rm "$SANDBOX/lease-held"
+  run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [[ "$stderr" == *"tick skipped: this machine does not hold the fleet lease"* ]]
+  cmp "$SANDBOX/holder.state" "$FLEET_SHEPHERD_DIR/watch.state"
+  [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
+  # NEGATIVE CONTROL: the holder's tick logs the same change.
+  : > "$SANDBOX/lease-held"
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  grep -q 'quality - -> simplifying' "$FLEET_SHEPHERD_DIR/watch.log"
+}
+
+@test "a tick whose lease lapses during its pass leaves the shared ledger alone (ar-3439)" {
+  bats_require_minimum_version 1.5.0
+  landed_fixture
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  cp "$FLEET_SHEPHERD_DIR/watch.state" "$SANDBOX/holder.state"
+  "$REPO_ROOT/.local/bin/fleet-sessions" label s1 +quality:simplifying >/dev/null
+  # Held for the first read only (the entry check), lapsed by the write.
+  printf '#!/usr/bin/env bash\n[ -e %q ] || exit 1\nrm %q\n' "$SANDBOX/lease-once" "$SANDBOX/lease-once" > "$SANDBOX/bin/fleet-lease"
+  : > "$SANDBOX/lease-once"
+  run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [[ "$stderr" == *"tick skipped: the fleet lease moved during this pass"* ]]
+  cmp "$SANDBOX/holder.state" "$FLEET_SHEPHERD_DIR/watch.state"
+  [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
+}
+
 # interrupt_pass <signal>: start a pass whose agent-queue read hangs, send <signal> to the
 # fleet-sessions pid alone (a caller forwarding it, or `timeout`), and check the pass ends with
 # every process it started and leaves no scratch dir (nc-42).
@@ -5001,6 +5037,7 @@ verdict() {
 }
 
 @test "close --self on a fleet worker: the lease holder's pushed row answers it (ar-3356)" {
+  rm -f "$SANDBOX/lease-held"
   bats_require_minimum_version 1.5.0
   export CLAUDE_CODE_SESSION_ID=sid-w FLEET_HOST=razer-laptop FLEET_STATE_FILE="$SANDBOX/state/state.json"
   mkdir -p "$SANDBOX/state"
@@ -5071,6 +5108,7 @@ verdict() {
 }
 
 @test "the lease holder pushes each worker its own rows, and no one else (ar-3356)" {
+  rm -f "$SANDBOX/lease-held"
   export FLEET_HOST=state FLEET_STATE_FILE="$SANDBOX/holder/state.json" XDG_STATE_HOME="$SANDBOX/worker-state"
   mkdir -p "$SANDBOX/holder"
   worker_ssh
