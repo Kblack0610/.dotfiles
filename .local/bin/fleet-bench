@@ -2449,8 +2449,7 @@ prs_branches() {
     repo=$(origin_repo "$dir") || continue
     case "$seen" in *" $repo "*) continue ;; esac
     seen+="$repo "
-    base=$(git -C "$dir" symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null) || base=origin/main
-    git -C "$dir" rev-parse --verify -q "$base" >/dev/null || continue
+    base=$(merge_proof_ref "$dir") || continue
     # The store names a Forgejo repo host/owner/repo, a GitHub one owner/repo.
     key=$(jq -r --arg r "$repo" 'first(.[] | select(.forge == "forgejo" and .repo == $r) | "\(.host)/\(.repo)") // $r' <<<"$repos") || continue
     prs=$("$SCHEDULES_SYNC" prs "$key" --state all 2>/dev/null) || continue
@@ -2458,7 +2457,7 @@ prs_branches() {
     # commit is UTC with a Z (jq's date parser takes no offset). Owned: an open PR names the branch, or a
     # merged PR's head is this very commit.
     git -C "$dir" for-each-ref --no-merged "$base" --format='%(refname:lstrip=3)%09%(objectname)%09%(committerdate:unix)' refs/remotes/origin |
-      jq -Rnc --arg r "$repo" --arg base "${base#origin/}" --slurpfile prs <(printf '%s' "$prs") '
+      jq -Rnc --arg r "$repo" --arg base "${base#*/}" --slurpfile prs <(printf '%s' "$prs") '
         ($prs[0] | {open: (map(select(.state == "OPEN") | {(.branch): 1}) | add // {}),
                     merged: (map(select(.state == "MERGED") | {"\(.branch) \(.head_sha)": 1}) | add // {}) }) as $p
         | inputs | split("\t") | {b: .[0], sha: .[1], t: (.[2] | tonumber)}
