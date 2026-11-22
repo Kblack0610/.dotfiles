@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check a message against its channel, or report on every message and row the fleet wrote.
 
-  comms-lint --channel <name> [--priority P] [--title T] <file|->
+  comms-lint --channel <name> [--priority P] [--title T] [--role R] <file|->
   comms-lint report [--since 7d] [--channel C] [--json]
   comms-lint snapshot [--date D]
   comms-lint line
@@ -46,7 +46,7 @@ SNAPSHOT_WINDOWS = ("7d", "28d")
 QUIET_OK = {"low", "normal", "default", "min"}
 KEYS = {"ascii", "emoji", "max_emoji", "max_chars", "max_lines", "max_line", "max_lead", "lead_ids",
         "prose", "sections", "item", "max_items", "max_item", "require", "forbid", "quiet", "source",
-        "max_title", "refs", "group", "option_meanings"}
+        "max_title", "refs", "group", "option_meanings", "roles", "run_on"}
 
 
 def die(msg, code=2):
@@ -136,11 +136,16 @@ def prose_findings(text):
 HEADING = re.compile(r"\s*#+(\s|$)")
 
 
-def lint(text, ch, ids, priority=None, title=None, record=None):
+def lint(text, ch, ids, priority=None, title=None, record=None, role=None):
     """Findings for one message, as (code, detail) pairs. record: the message's `key: value`
-    fields, for the checks that read more than its text (option_meanings)."""
+    fields, for the checks that read more than its text (option_meanings). role: the UI role
+    the text fills (`roles` in the channel: [max chars, max words]), which replaces max_chars."""
     ids, refs = ids
     f = []
+    words = 0
+    if role and (cap := ch.get("roles", {}).get(role)):
+        ch = {**ch, "max_chars": cap[0]}
+        words = cap[1]
     item_re = re.compile(ch["item"])
     lines = body_lines(text)
     scoped = "\n".join(lines)
@@ -165,6 +170,11 @@ def lint(text, ch, ids, priority=None, title=None, record=None):
         for i, l in enumerate(content, 1):
             if len(l) > ch["max_line"]:
                 f.append(("line-too-long", f"line {i}: {len(l)} chars, budget {ch['max_line']}"))
+
+    if words and len(scoped.split()) > words:
+        f.append(("too-many-words", f"{len(scoped.split())} words, budget {words} for a {role}"))
+    if len([l for l in ch.get("run_on", []) if l in scoped]) > 1:
+        f.append(("run-on", "two or more labelled parts in one text: give each its own field"))
 
     if content:
         lead, _ = lead_of(content[0], item_re)
@@ -358,6 +368,8 @@ def read_command(src, since):
         if when < since:
             continue
         meta = {"path": str(rec.get(k_path) or "")}
+        if rec.get("role"):
+            meta["role"] = str(rec["role"])
         if rec.get("reject"):
             meta["reject"] = str(rec["reject"])
         yield when, str(rec.get(k_text) or ""), meta
@@ -407,10 +419,10 @@ def build_report(window, only, channels, ids, rcfg):
             pri = meta.get("priority")
             try:
                 f = ([("shape", meta["reject"])] if meta.get("reject")
-                     else lint(text, ch, ids, priority=pri, record=meta.get("record")))
+                     else lint(text, ch, ids, priority=pri, record=meta.get("record"), role=meta.get("role")))
             except FileNotFoundError:
                 prose_missing = True
-                f = lint(text, {**ch, "prose": False}, ids, priority=pri, record=meta.get("record"))
+                f = lint(text, {**ch, "prose": False}, ids, priority=pri, record=meta.get("record"), role=meta.get("role"))
             n += 1
             lengths.append(len(text))
             if not f:
@@ -604,6 +616,7 @@ def main():
     ap.add_argument("--channel", required=True)
     ap.add_argument("--priority")
     ap.add_argument("--title")
+    ap.add_argument("--role")
     ap.add_argument("path")
     args = ap.parse_args(argv)
     if args.channel not in channels:
@@ -612,7 +625,7 @@ def main():
     if not text.strip():
         die("empty input")
     try:
-        f = lint(text, channels[args.channel], ids, priority=args.priority, title=args.title)
+        f = lint(text, channels[args.channel], ids, priority=args.priority, title=args.title, role=args.role)
     except FileNotFoundError as e:
         die(f"prose checker not found: {e} (set COMMS_PROSE_CHECK)")
     for code, detail in f:

@@ -55,6 +55,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub cards --json [--figures]
        hub vitals [--json]
        hub needs --json | --page
+       hub ui-text --json
        hub bar --json
        hub ci [--json | --pool-match SECS]
        hub ci pass [--since WHEN] [--until WHEN] [--branch B]
@@ -95,6 +96,8 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
   needs   Home's NEEDS YOU as {needs, errors}, ranked, each row with the score it counted
           (fleet-bench asks reads it); --page sends one grouped page for the new rows over the
           bar in channels.toml [pager.needs] (fleet-state.service runs it after every pass)
+  ui-text every text Home, the board, the projects cards and the briefing send, one JSON line each
+          ({ts, path, role, text}), what comms-lint grades under its `ui` channel
   bar     what the queue and sessions chip hovers lay out as {as_of, sessions, ready,
           candidates, drain, errors} (hub_core::bar): live sessions worst first, the items ready
           to start in start order, the top cleared board candidates; agent-mqtt-publish sends it
@@ -215,6 +218,10 @@ fn main() {
         it.next();
         std::process::exit(needs(it.cloned().collect()));
     }
+    if it.peek().map(|a| a.as_str()) == Some("ui-text") {
+        it.next();
+        std::process::exit(ui_text(it.cloned().collect()));
+    }
     if it.peek().map(|a| a.as_str()) == Some("bar") {
         it.next();
         if it.cloned().collect::<Vec<String>>() != ["--json"] {
@@ -292,6 +299,44 @@ fn actions(args: Vec<String>) -> i32 {
         print!("{}", hub_core::actions::digest(&g));
     }
     i32::from(!g.errors.is_empty())
+}
+
+/// `hub ui-text --json`: every text the pages agent-web and the TUI draw send, one JSON object per
+/// line ({ts, path, role, text}), what comms-lint grades under its `ui` channel
+/// (`hub_core::display::walk`). Home, the board, the projects cards and the briefing are read as
+/// their own commands read them; a source that could not be read adds no text.
+fn ui_text(args: Vec<String>) -> i32 {
+    if args != ["--json"] {
+        die(USAGE);
+    }
+    let (state, queue, board, infra) = hub_core::home::gather(false);
+    let now = chrono::Utc::now().timestamp();
+    let home = hub_core::home::build(
+        Some(&state),
+        Some(&queue),
+        Some(&board),
+        infra.as_ref(),
+        hub_core::jobs::now(),
+    );
+    let since = now - hub_core::briefing::DEFAULT_WINDOW_SECS;
+    let briefing = hub_core::briefing::build(&hub_core::briefing::gather(since, now));
+    let pages = [
+        ("home", serde_json::to_value(&home).unwrap_or_default()),
+        ("board", hub_core::sheet_view::gather()),
+        (
+            "projects",
+            hub_core::projects::to_json(&hub_core::projects::gather()),
+        ),
+        (
+            "briefing",
+            serde_json::to_value(&briefing).unwrap_or_default(),
+        ),
+    ];
+    let ts = chrono::Local::now().to_rfc3339();
+    for r in hub_core::display::records(&pages, &ts) {
+        println!("{r}");
+    }
+    0
 }
 
 /// `hub needs --json`: NEEDS YOU as Home ranks it. `--page`: the pager over it, with no

@@ -65,7 +65,7 @@ A client update adds what the job config asks for, such as a greeting, a heads-u
 
 **PR body.** The change and why it was made, in the first line. What it removed (or why nothing could be removed). How it was verified.
 
-**UI text** (agent-web, the hub TUI, trader, any page the human reads):
+**UI text** (agent-web, the hub TUI, trader, any page the human reads). In hub-core it is a role (`hub_core::display`: title, sub, chip, next, note), whose caps are `[channel.ui]` in channels.toml (`ui.md` rule 16); `comms-lint --channel ui --role <role> -` checks one text, and `hub ui-text --json` is what the report grades. The bullets are what each role says:
 - A label or heading is a noun the human already uses ("Queue", "Questions for you"). Internal terms ("ptask", "oneshot", "lane") stay out of it.
 - A chip is a state in one or two words ("running", "waiting on you").
 - A button is the verb for what happens ("Approve", "Restart session").

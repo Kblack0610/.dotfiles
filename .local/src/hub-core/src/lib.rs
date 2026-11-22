@@ -21,6 +21,7 @@ pub mod ci;
 pub mod costs;
 pub mod deliverables;
 pub mod departments;
+pub mod display;
 pub mod epics;
 pub mod fix_owner;
 pub mod fleet;
