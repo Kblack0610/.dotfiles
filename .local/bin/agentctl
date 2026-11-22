@@ -357,13 +357,15 @@ status_write() {
     # the unit's cgroup. So the WHOLE run is bounded, not just its broker calls. A cut run loses
     # nothing: the publisher caches each topic as it sends.
     if command -v agent-mqtt-publish >/dev/null 2>&1; then
-        if [ "${STATUS_PUBLISH_ASYNC:-0}" = 1 ]; then
+        publish() {
             AGENT_MQTT_TIMEOUT=2 AGENT_MQTT_RETRIES=0 timeout -k 1 "${AGENTCTL_MQTT_BUDGET:-5}" \
-                agent-mqtt-publish --quiet </dev/null >/dev/null 2>&1 &
+                agent-mqtt-publish --quiet </dev/null >/dev/null 2>&1
+        }
+        if [ "$STATUS_PUBLISH_ASYNC" = 1 ]; then
+            publish </dev/null >/dev/null 2>&1 &
             disown 2>/dev/null || true
         else
-            AGENT_MQTT_TIMEOUT=2 AGENT_MQTT_RETRIES=0 timeout -k 1 "${AGENTCTL_MQTT_BUDGET:-5}" \
-                agent-mqtt-publish --quiet </dev/null >/dev/null 2>&1 || true
+            publish || true
         fi
     fi
 }
@@ -428,6 +430,8 @@ _ledger_stop() {
 
 cmd_report() {
     local name="${AGENTCTL_NAME:-}" lifecycle=""
+    # Set by the start lifecycle only, never read from the environment (see status_write).
+    STATUS_PUBLISH_ASYNC=0
     local -a kvs=()
     while [ $# -gt 0 ]; do
         case "$1" in

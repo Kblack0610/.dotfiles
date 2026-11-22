@@ -371,19 +371,22 @@ line() { sed -n "${1}p" "$AGENTCTL_STATE_DIR/runs.jsonl"; }
 
 # The start report publishes in the background: ExecStartPost's 15s timeout is shared with the
 # rest of the start phase, and a 5s publish budget on every start timed orphan-gc out at load 90
-# (2026-11-21). The stub blocks on a FIFO until the test reads it, so the report can only return
-# in time if it does not wait for the publisher; the read proves the publisher did start.
+# (2026-11-21). The stub hangs for 30s and the publish budget is 10s, so a report that waited
+# for it would take 10s; this one must return in well under that. The FIFO is held open
+# read-write before the report runs, so the stub's write never blocks and the read below
+# cannot hang: it proves the publisher did start, whenever it got there.
 @test "a start report does not wait for the publisher" {
   mkfifo "$SANDBOX/ran"
+  exec 7<>"$SANDBOX/ran"
   printf '#!/usr/bin/env bash\necho up > "%s/ran"\nsleep 30\n' "$SANDBOX" \
     > "$SANDBOX/bin/agent-mqtt-publish"
   chmod +x "$SANDBOX/bin/agent-mqtt-publish"
   local t0=$SECONDS
-  AGENTCTL_MQTT_BUDGET=2 run "$AGENTCTL_BIN" report --name alpha --lifecycle start
+  AGENTCTL_MQTT_BUDGET=10 run "$AGENTCTL_BIN" report --name alpha --lifecycle start
   assert_success
-  # Returned before the stub could finish its write: the FIFO has no reader yet.
-  [ $((SECONDS - t0)) -lt 2 ]
+  [ $((SECONDS - t0)) -lt 5 ]
   assert_equal "$(field state)" 'working'
-  read -r -t 10 line < "$SANDBOX/ran"
+  read -r -t 10 -u 7 line
+  exec 7>&-
   assert_equal "$line" up
 }
