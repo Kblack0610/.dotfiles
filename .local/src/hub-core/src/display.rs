@@ -10,6 +10,8 @@
 //! (`prose_fields_never_grow`), `tests/agent-web/text.test.mjs` for the web side.
 
 use crate::{plans, text};
+
+pub mod fmt;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -204,8 +206,7 @@ impl Count {
     pub fn shown(&self) -> String {
         match self.of {
             Some(of) => format!("{}/{of} {}s", self.n, self.unit),
-            None if self.n == 1 => format!("1 {}", self.unit),
-            None => format!("{} {}s", self.n, self.unit),
+            None => fmt::counted(self.n as usize, self.unit),
         }
     }
 }
@@ -233,7 +234,7 @@ impl When {
     pub fn ago(epoch: i64, now: i64) -> When {
         When {
             epoch,
-            text: format!("{} ago", text::age(now - epoch)),
+            text: format!("{} ago", fmt::age(now - epoch)),
         }
     }
 
@@ -382,10 +383,10 @@ pub fn records(pages: &[(&str, Value)], ts: &str) -> Vec<Value> {
         .collect()
 }
 
+/// comms-lint as the tests run it: the one grader of `[channel.ui]` and the briefing channels.
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
+pub(crate) mod grader {
+    use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
 
@@ -393,13 +394,13 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
     }
 
-    /// comms-lint's findings for `text` in `role`, the one grader of `[channel.ui]`. It panics
+    /// comms-lint's finding codes for `text` under `args` (`--channel ui --role next`). It panics
     /// when python3 or comms-lint cannot run, so a missing grader fails the test, never passes it.
-    fn lint(role: Role, text: &str) -> Vec<String> {
-        use std::io::Write;
+    pub(crate) fn grade(args: &[&str], text: &str) -> Vec<String> {
         let mut p = Command::new("python3")
             .arg(repo().join(".local/bin/comms-lint"))
-            .args(["--channel", "ui", "--role", role.key(), "-"])
+            .args(args)
+            .arg("-")
             .env(
                 "COMMS_CHANNELS",
                 repo().join(".config/comms-lint/channels.toml"),
@@ -424,6 +425,18 @@ mod tests {
             .filter_map(|l| l.trim().split(':').next().map(String::from))
             .filter(|c| !c.is_empty() && !c.contains(' '))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::path::{Path, PathBuf};
+
+    /// The findings for `text` in `role` of the `ui` channel.
+    fn lint(role: Role, text: &str) -> Vec<String> {
+        grader::grade(&["--channel", "ui", "--role", role.key()], text)
     }
 
     /// The pre-fix strings the human's screenshots showed.

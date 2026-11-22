@@ -1242,22 +1242,6 @@ pub fn board(
     }
 }
 
-/// Money as the queue prints it (`queue::money`): whole dollars from $100; `-` for none.
-pub fn usd(v: Option<f64>) -> String {
-    v.map_or("-".into(), crate::queue::money)
-}
-
-/// A token count as the table prints it: 1.9B, 61M, 12k.
-pub fn tokens(n: Option<f64>) -> String {
-    match n {
-        None => "-".into(),
-        Some(n) if n >= 1e9 => format!("{:.1}B", n / 1e9),
-        Some(n) if n >= 1e6 => format!("{:.0}M", n / 1e6),
-        Some(n) if n >= 1e3 => format!("{:.0}k", n / 1e3),
-        Some(n) => format!("{n:.0}"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2058,15 +2042,6 @@ mod tests {
         let c = calls(line, 0);
         assert_eq!((c[0].runner.as_str(), c[0].cost), ("dream", Some(0.4)));
         assert!(calls(line, i64::MAX).is_empty());
-    }
-
-    #[test]
-    fn money_and_tokens_read_short() {
-        assert_eq!(usd(Some(1288.4)), "$1288");
-        assert_eq!(usd(Some(8.734)), "$8.73");
-        assert_eq!(usd(None), "-");
-        assert_eq!(tokens(Some(1.9e9)), "1.9B");
-        assert_eq!(tokens(Some(61e6)), "61M");
     }
 
     #[test]

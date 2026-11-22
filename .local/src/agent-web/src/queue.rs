@@ -211,7 +211,7 @@ fn item_view(i: &Item, now: chrono::DateTime<chrono::Utc>) -> serde_json::Value 
     v["harness"] = i.harness_label().into();
     if let Some(c) = i.cost() {
         v["cost"] = c.into();
-        v["cost_label"] = hub_queue::money(c).into();
+        v["cost_label"] = hub_core::display::fmt::usd(c).into();
     }
     if let Some((label, url)) = i.pr_link() {
         v["pr_label"] = label.into();

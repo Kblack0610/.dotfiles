@@ -385,7 +385,7 @@ pub fn machinery(infra: &Infra) -> Vec<String> {
             "stuck run: {} {}, {}, no jobs{runs}",
             label(repo),
             label(branch),
-            age.map_or("-".into(), |v| crate::text::age(v as i64)),
+            age.map_or("-".into(), |v| crate::display::fmt::age(v as i64)),
         ));
     }
     if let Some(why) = infra.feed() {

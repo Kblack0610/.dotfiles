@@ -2344,13 +2344,12 @@ cmd_mark_resumed() {
 
 # precedents <before>: the human's disagreements decided before an ISO time, newest first, capped
 # by PRECEDENTS in ask-judge.conf, one line each: an ask they answered with another option than
-# the recommendation, or a live answer they overrode. Only earlier ones count, so a replayed ask
-# never reads its own answer. Computed from the ask files, never stored. Read from
-# AGENT_ASK_PRECEDENTS_ROOT when set, because a replay's ASKS_ROOT holds only blind copies.
+# the recommendation, or a live answer they overrode. Only earlier ones count, so a re-judged ask
+# never reads its own answer. Computed from the ask files, never stored.
 cmd_precedents() {
   local before="${1:-}"; [ -n "$before" ] || { echo "usage: agent-ask precedents <before>" >&2; return 2; }
   local asks
-  asks="$(judge_ask_docs "${AGENT_ASK_PRECEDENTS_ROOT:-$ASKS_ROOT}" | jq -c 'select(.status == "answered"
+  asks="$(judge_ask_docs "$ASKS_ROOT" | jq -c 'select(.status == "answered"
     and (.options // "") != "" and (.recommend // "") != "" and (.kind // "") != "approval")')"
   [ -n "$asks" ] || return 0
   jq -sr --argjson picks "$(answer_picks "$asks")" --arg before "$before" --argjson cap "$(judge_conf PRECEDENTS 30)" "$JQ_EPOCH"'
@@ -2381,7 +2380,7 @@ cmd_judge() {
   local f; f="$(find_ask "$id")"
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
   # A pending ask is scored every time: a verdict made under an older policy must not pin it.
-  # An answered one keeps the verdict judge-eval scores it on; replay re-judges copies.
+  # An answered one keeps the verdict judge-eval scores it on.
   [ "$(field "$f" status)" = pending ] || { echo "agent-ask: $id is $(field "$f" status); only a pending ask is judged" >&2; return 1; }
   # shellcheck disable=SC2086 # a word list
   drop_field "$f" $VERDICT_FIELDS

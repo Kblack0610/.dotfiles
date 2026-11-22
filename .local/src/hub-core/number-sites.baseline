@@ -1,0 +1,2 @@
+# Source file (crate/src/file.rs), then how many number formatters it still writes itself: a fn named like a copy of display::fmt (usd, dur, age, ...) or a hand-built plural.
+# display/fmt.rs `number_formatters_have_one_home` fails when a file is above its line or below it: lower the line as a copy goes. Never raise one.

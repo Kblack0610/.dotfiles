@@ -9,7 +9,7 @@ bats_require_minimum_version 1.5.0
 @test "trainee floor: a trainee harness that does not spend the gateway still waits on a red cluster" {
   trainee_ready
   srcs go:ok:0.1 codex:reserve:5
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0
   fleet_state 8
   stub fleet-shepherd 'echo "infra: k3s domain red"'
   gateway_up
@@ -24,35 +24,10 @@ bats_require_minimum_version 1.5.0
   refute_output --partial 'started queue item t-one'
 }
 
-@test "canary floor: on a red k3s domain with the gateway up only gateway-lane canaries start; a down gateway starts none" {
-  route_ready; ocfree_ready
-  harness_set '.harnesses.ocfree.projects = ["game"]'
-  srcs ocfree:ok:0.1
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PER_PASS=3 DISPATCH_CANARY_FLOOR=2
-  fleet_state 8
-  stub fleet-shepherd 'echo "infra: k3s domain red"'
-  agent-queue add --project game --slug c-claude --priority high --tags canary "check(canary): a 2026w47" >/dev/null
-  agent-queue add --project game --slug c-free --agent ocfree --priority low "Canary eval c-1" >/dev/null
-  agent-queue set c-free model=beam >/dev/null
-  canary_item c-free c-1
-  # Negative control: the gateway is down, so no canary starts.
-  stub curl 'exit 7'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  refute_output --partial 'on the canary floor'
-  assert_not_called 'opencode run'
-  gateway_up
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'canary items start on the canary floor (DISPATCH_CANARY_FLOOR=2, 2 open), gateway lanes only: the cluster is red and the gateway answers'
-  assert_output --partial 'started queue item c-free on ocfree (beam)'
-  refute_output --partial 'started queue item c-claude'
-  [ -n "$(qitem queued c-claude)" ] || fail "the claude canary left the queue on a red cluster"
-}
-
 @test "trainee floor: the fleet share cap does not hold its start, which runs on a free trainee key, not a session the cap counts" {
   trainee_ready
   srcs go:ok:0.1 codex:reserve:5
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0 DISPATCH_FLEET_PROJECTS=game DISPATCH_FLEET_SHARE=30
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_FLEET_PROJECTS=game DISPATCH_FLEET_SHARE=30
   fleet_state 8
   local i
   for i in 1 2; do
@@ -72,7 +47,7 @@ bats_require_minimum_version 1.5.0
 @test "fleet_first: a trainee floor start goes to a worker that lists trainee and runs its harness, while this machine has room" {
   trainee_ready
   srcs go:ok:0.1 codex:reserve:5
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0
   fleet_state 8
   agent-queue add --project game --slug t-one --priority low --tags tier1 "Fix the menu title #pts/1" >/dev/null
   # Negative control: the worker lists trainee but does not run gotrain, so the run starts here.
@@ -98,7 +73,7 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
 # razer-laptop at load 4 (ar-3507); an unreadable Claude usage shut it too, though a trainee spends none.
 @test "trainee floor: with no Claude usage readable and this machine over its pace it starts on a free worker; an agent-hold still shuts it" {
   trainee_ready
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0
   fleet_state 8
   acct main:unread
   over_pace_here
@@ -124,7 +99,7 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
 @test "trainee floor: with no fleet worker a trainee start reads this machine's pace itself, and the batch review waits on it; under the pace both start" {
   trainee_ready
   acct main:ok
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0
   export TRAINEE_LANE='{"candidates":[{"harness":"gotrain","model":"glm"}],"points":1,"max_waiting":5,"review_batch":1,"reviewer":"opus","reviewer_model":"opus"}'
   fleet_state 8
   d="$HOME/.local/state/agentctl/dispatch/trainee"; mkdir -p "$d"
@@ -159,7 +134,7 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
 
 @test "trainee floor: with no queued row it takes, it promotes and starts the top board row naming only tracked shell, bats or docs files; a cargo-tree, untracked, unnamed or sensitive row stays" {
   trainee_ready
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0 DISPATCH_LOW_WATER=0
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_LOW_WATER=0
   fleet_state 8
   r="$SANDBOX/repos/game"
   mkdir -p "$r/scripts" "$r/crate/src"
@@ -210,7 +185,7 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
 
 @test "trainee floor: it reads every area's rows, so a row behind a higher one of its area that it cannot take still starts" {
   trainee_ready
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0 DISPATCH_LOW_WATER=0
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_LOW_WATER=0
   fleet_state 8
   r="$SANDBOX/repos/game"
   mkdir -p "$r/scripts"
@@ -230,7 +205,7 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
 # 2026-11-19: the floor read only judged day_picks rows, about 9 a day, while 653 open rows were #pts/1-3 (ar-3727).
 @test "trainee floor: it draws from every open agent row, unjudged and backlog-tier ones too; a row a failed or skip verdict holds, or a human row, stays out; a tier-3 row keeps the tier-3 gate" {
   trainee_ready
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0 DISPATCH_LOW_WATER=0
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_LOW_WATER=0
   fleet_state 8
   r="$SANDBOX/repos/game"
   mkdir -p "$r/scripts"
@@ -240,7 +215,7 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   row game human tr-human "- [ ] fix(menu): fix scripts/setup #pts/1 #high $T <!-- id:tr-human -->"
   row game agent tr-dead "- [ ] fix(menu): fix scripts/setup #pts/1 #high $T <!-- id:tr-dead -->"
   verdict game agent tr-dead failed; verdict game agent tr-dead failed   # DISPATCH_FIX_TRIES failures hold it
-  # The judge's skip holds a row too, and a tier-3 row whose skip is tier 3 alone stays the tier-3 gate's.
+  # The judge's skip holds a row too, and a tier-3 row it dispatched stays the tier-3 gate's.
   row game agent tr-skip "- [ ] fix(menu): fix scripts/setup #pts/1 #high $T <!-- id:tr-skip -->"
   verdict game agent tr-skip skip
   pr_lane_ready
@@ -277,7 +252,7 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
 
 @test "trainee-pool: counts the board rows a trainee takes and each refusal of the rest, by the floor's own checks" {
   trainee_ready
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0 DISPATCH_LOW_WATER=0
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_LOW_WATER=0
   fleet_state 8
   r="$SANDBOX/repos/game"
   mkdir -p "$r/scripts"
@@ -389,7 +364,7 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
 @test "trainee floor: a batch review of the waiting diffs starts at review_batch, or when a trainee holds max_waiting diffs, and not before; one at a time" {
   trainee_ready
   acct "main:ok"
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0
   fleet_state 8
   d="$HOME/.local/state/agentctl/dispatch/trainee"; mkdir -p "$d"
   local s lane='{"candidates":[{"harness":"gotrain","model":"glm"}],"points":1,"reviewer":"opus","reviewer_model":"opus"'
@@ -441,7 +416,7 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
 
 @test "trainee floor: a batch review whose start failed stays queued and the next pass starts it on the floor, filing no second one (ar-3788)" {
   trainee_ready
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0
   fleet_state 8
   d="$HOME/.local/state/agentctl/dispatch/trainee"; mkdir -p "$d"
   export TRAINEE_LANE='{"candidates":[{"harness":"gotrain","model":"glm"}],"points":1,"max_waiting":5,"review_batch":1,"reviewer":"opus","reviewer_model":"opus"}'
@@ -475,7 +450,7 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
 # Plan trainee-steady-queue P4: the review leaves Claude's critical path when no account has room.
 @test "trainee floor: with no Claude room the batch review goes to lanes.yaml reviewer_fallback (codex), with room it stays on opus; no fallback waits" {
   trainee_ready
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0
   fleet_state 8
   d="$HOME/.local/state/agentctl/dispatch/trainee"; mkdir -p "$d"
   local s b it lane='{"candidates":[{"harness":"gotrain","model":"glm"}],"points":1,"max_open":5,"review_batch":1,"reviewer":"opus","reviewer_model":"opus"'
@@ -525,7 +500,7 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
 @test "trainee floor: a diff waiting past DISPATCH_TRAINEE_REVIEW_HOURS files the batch short of review_batch; one under it, or 0, does not" {
   trainee_ready
   acct "main:ok"
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0 DISPATCH_TRAINEE_REVIEW_HOURS=6
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_TRAINEE_REVIEW_HOURS=6
   fleet_state 8
   d="$HOME/.local/state/agentctl/dispatch/trainee"; mkdir -p "$d"
   local s lane='{"candidates":[{"harness":"gotrain","model":"glm"}],"points":1,"max_waiting":5,"review_batch":5,"reviewer":"opus","reviewer_model":"opus"}'
@@ -555,7 +530,7 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
 @test "trainee floor: a trainee PR's queued lander starts past the pace target, one trainee review live at a time" {
   trainee_ready
   acct "main:ok"
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0
   fleet_state 8
   d="$HOME/.local/state/agentctl/dispatch/trainee"; mkdir -p "$d"
   local s lane='{"candidates":[{"harness":"gotrain","model":"glm"}],"points":1,"max_waiting":5,"review_batch":1,"reviewer":"opus","reviewer_model":"opus"}'

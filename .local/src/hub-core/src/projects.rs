@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::display::{Fact, Shown};
 use crate::home::{self, Running};
 use crate::links::{Kind, Link};
 use crate::queue::{Item, Queue, State};
@@ -102,6 +103,7 @@ pub struct Stats {
     pub progress: Progress,
     pub status: String,
     pub status_date: String,
+    pub status_parts: StatusParts,
     /// The human sheet's epics with their leaf rollup (notes-cli `epics.rs`).
     pub epics: Vec<EpicRollup>,
     /// The version the human promised (`Target:` head line) and its day, `YYYY-MM-DD`.
@@ -154,12 +156,71 @@ pub fn safe_name(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
+/// The STATUS block's labelled lines as `notes projects --stats --json` sends them
+/// (`status_parts`). The fields are private: they are read once, by [`Status::of`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct StatusParts {
+    done: String,
+    doing: String,
+    next: String,
+    needs: String,
+}
+
+/// A project's agent note: the headline, then a key table of what was done, is being done, comes
+/// next and needs the human. Both surfaces draw it as sent; the numbers (state, waves, window,
+/// gate) are the page's own and are never in it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Status {
+    pub headline: Option<Shown>,
+    /// One fact per labelled line the note carries, in the order they are written.
+    pub rows: Vec<Fact>,
+}
+
+impl Status {
+    pub fn of(headline: &str, parts: &StatusParts) -> Status {
+        let rows = [
+            ("Done", &parts.done),
+            ("Doing", &parts.doing),
+            ("Next", &parts.next),
+            ("Needs you", &parts.needs),
+        ]
+        .into_iter()
+        .filter(|(_, v)| !v.trim().is_empty())
+        .map(|(l, v)| Fact {
+            label: Shown::chip(l),
+            value: Shown::note(v),
+        })
+        .collect();
+        Status {
+            headline: (!headline.trim().is_empty()).then(|| Shown::note(headline)),
+            rows,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.headline.is_none() && self.rows.is_empty()
+    }
+
+    /// Every word of the note, for a search.
+    fn search_text(&self) -> String {
+        self.headline
+            .iter()
+            .chain(self.rows.iter().map(|f| &f.value))
+            .map(|s| s.full())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
 /// The opened card's Agent note head: `model-written, <date>`, or `none`.
 pub fn note_says(c: &Card) -> String {
     if c.status.is_empty() {
         "none".into()
     } else {
         format!("model-written, {}", c.status_date)
+            .trim_end_matches([',', ' '])
+            .to_string()
     }
 }
 
@@ -257,7 +318,7 @@ pub struct Card {
     pub today: crate::queue::DoneToday,
     /// Minutes the longest-waiting queued item has sat; None when none is queued.
     pub oldest_ready_min: Option<i64>,
-    pub status: String,
+    pub status: Status,
     pub status_date: String,
     /// The department inner tabs its page has (`layout::dept_tabs` over its project-map type): all
     /// nine for a game or app, engineering and ops for infra, none for an untyped project.
@@ -272,7 +333,7 @@ pub struct Card {
 }
 
 /// A targeted version against the day the work up to it closes at the net rate: what the card,
-/// the lab-status line and the Sentinel `release-late` watch read (`hub projects --json`).
+/// `hub projects --status` and the Sentinel `release-late` watch read (`hub projects --json`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct OnTime {
     pub version: String,
@@ -328,7 +389,7 @@ impl Card {
             last_window: s.last_window.clone(),
             on_time: on_time(s, today),
             versions: version_epics(&s.epics),
-            status: s.status.clone(),
+            status: Status::of(&s.status, &s.status_parts),
             status_date: s.status_date.clone(),
             dept_tabs: crate::layout::dept_tabs(
                 project_map::cached()
@@ -416,7 +477,13 @@ impl crate::table::Row for Card {
 
     /// A bare word searches what a project is called, what it is for and its note.
     fn text(&self) -> String {
-        format!("{}\n{}\n{}", self.name, self.goal, self.status).to_lowercase()
+        format!(
+            "{}\n{}\n{}",
+            self.name,
+            self.goal,
+            self.status.search_text()
+        )
+        .to_lowercase()
     }
 
     fn rank(&self, col: &str) -> Val {
@@ -612,22 +679,25 @@ pub fn window_words(c: &Card) -> String {
     let Some(w) = &c.window else {
         return NO_WINDOW.to_string();
     };
-    let plural = |n: i64| if n == 1 { "" } else { "s" };
+    let days = |n: i64| crate::display::fmt::counted(n as usize, "day");
     let mut s = format!("{} rows", score(w));
     match (&w.due, w.days_left) {
         (Some(d), Some(n)) => {
             s += &format!(", due {}", crate::text::short_day(d));
             s += &match n {
                 0 => " (due today)".to_string(),
-                n if n > 0 => format!(" ({n} day{} left)", plural(n)),
-                n => format!(" ({} day{} over)", -n, plural(-n)),
+                n if n > 0 => format!(" ({} left)", days(n)),
+                n => format!(" ({} over)", days(-n)),
             };
         }
         _ => s += ", no due day",
     }
     if w.interrupted > 0 {
         let n = i64::from(w.interrupted);
-        s += &format!(", {n} interrupt{}", plural(n));
+        s += &format!(
+            ", {}",
+            crate::display::fmt::counted(n as usize, "interrupt")
+        );
     }
     s
 }
@@ -643,9 +713,8 @@ pub fn on_time_words(c: &Card) -> String {
     });
     let verdict = match o.state {
         "late" => format!(
-            "late {} day{}{eta}",
-            o.late_days,
-            if o.late_days == 1 { "" } else { "s" }
+            "late {}{eta}",
+            crate::display::fmt::counted(o.late_days as usize, "day")
         ),
         "on track" => format!("on track{eta}"),
         NEVER => NEVER.to_string(),
@@ -715,10 +784,10 @@ pub fn version_epics(epics: &[EpicRollup]) -> Vec<VersionEpics> {
 /// One version's epic line: `v0.3.0: 2 open epics, 5 of 20 points done`.
 pub fn version_words(v: &VersionEpics) -> String {
     format!(
-        "{}: {} open epic{}, {} of {} points done",
+        "{}: {} open {}, {} of {} points done",
         v.version,
         v.epics,
-        if v.epics == 1 { "" } else { "s" },
+        crate::display::fmt::noun(v.epics as usize, "epic", "epics"),
         v.done_weight,
         v.total_weight
     )
@@ -802,9 +871,9 @@ fn owner(i: &Item, labs: &[&str]) -> Option<String> {
         .map(String::from)
 }
 
-/// A minute count at a glance, `text::age`'s words: what the `oldest` column prints.
+/// A minute count at a glance, `display::fmt::age`'s words: what the `oldest` column prints.
 pub fn wait_word(min: Option<i64>) -> String {
-    min.map_or_else(|| "-".to_string(), |m| crate::text::age(m * 60))
+    min.map_or_else(|| "-".to_string(), |m| crate::display::fmt::age(m * 60))
 }
 
 /// The cards, in flight first (running, then waiting), then by closes in 7 days, then name.
@@ -1041,6 +1110,45 @@ mod tests {
     use super::*;
     use crate::tasks::{Project, Row};
     use serde_json::json;
+
+    #[test]
+    fn a_status_note_is_a_headline_over_its_labelled_lines_in_the_written_order() {
+        let stats: Stats = serde_json::from_value(json!({
+            "name": "demo",
+            "status": "Waves are landing.",
+            "status_parts": {"done": "AI skins (#412).", "doing": "", "next": "morality meter.", "needs": "nothing."},
+        }))
+        .unwrap();
+        let s = Status::of(&stats.status, &stats.status_parts);
+        assert_eq!(s.headline.as_ref().unwrap().text(), "Waves are landing.");
+        let rows: Vec<(&str, &str)> = s
+            .rows
+            .iter()
+            .map(|f| (f.label.text(), f.value.text()))
+            .collect();
+        // A label with no words is no row.
+        assert_eq!(
+            rows,
+            [
+                ("Done", "AI skins (#412)."),
+                ("Next", "morality meter."),
+                ("Needs you", "nothing.")
+            ]
+        );
+        // No headline and no lines is no note: a project the writer never reached.
+        let none = Status::of("", &StatusParts::default());
+        assert!(none.is_empty());
+        let mut card = Card::default();
+        assert_eq!(note_says(&card), "none");
+        // A note of labelled lines alone still is one, and a search finds the words in it.
+        card.status = Status::of("", &stats.status_parts);
+        assert!(!card.status.is_empty());
+        assert!(crate::table::Row::text(&card).contains("morality meter"));
+        // The roles ride in the JSON both surfaces draw: a chip for each label, a note for the headline.
+        let walk = serde_json::to_value(&s).unwrap();
+        assert_eq!(walk["rows"][0]["label"]["role"], "chip");
+        assert_eq!(walk["headline"]["role"], "note");
+    }
 
     #[test]
     fn the_list_sorts_filters_and_searches_on_the_one_view() {

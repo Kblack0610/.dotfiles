@@ -38,7 +38,7 @@ The day-log skill's "The snapshot schema" says what each record field means. Whe
 - A queue wait, a NEEDS total or the ETA error in `day-log week` keeps growing and nobody can say which stage.
 - After a pipeline lever lands, to prove what it moved.
 
-Siblings: token spend is `usage-cleanup`; CI pass rate and CI time are `ci-cleanup` and `ci-cost`; one session's progress is `shepherd`; ETAs themselves are `fleet-bench`.
+Siblings: token spend is `usage-cleanup`; CI pass rate and CI time are `ci-cleanup`; one session's progress is `shepherd`; ETAs themselves are `fleet-bench`.
 
 ## Steps
 

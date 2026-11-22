@@ -125,6 +125,20 @@ max_item = 200
 require = [['(?im)^#*\s*done\b|\bDone:', 'Done section'], ['(?im)^#*\s*next\b|\bNext:', 'Next section']]
 source = { kind = "files", glob = "~/.agent/sessions/*/*-wind-down.md" }
 
+# A lab project's STATUS block (summary.md), the shape `notes projects --stats --json` reads into
+# hub_core::projects::Status: a headline that stands alone, then Done, Doing, Next and Needs you each on
+# its own line. The numbers (state, waves, window, gate) are the page's, so none is pasted in.
+[channel.lab-status]
+prose = true
+max_line = 240
+require = [['(?m)^Done:', 'Done: line'], ['(?m)^Doing:', 'Doing: line'], ['(?m)^Next:', 'Next: line'], ['(?m)^Needs you:', 'Needs you: line']]
+forbid = [
+  ['(?m)\S.*[ \t](?:Done|Doing|Next|Needs you):', 'a label inside a line: each label opens its own line'],
+  ['(?m)^\s*(?:State|Waves|On time|Gate to beta|Playtests waiting|Upkeep only):', 'a number the page already shows: it is never pasted into the note'],
+  ['\A[^\n]*\n(?!(?:Done|Doing|Next|Needs you):)', 'a second headline line: the headline is line 1 and line 2 opens with a label'],
+  ['\A(?:_\d{4}-\d\d-\d\d_ - [^\n]{141}|(?!_\d{4}-\d\d-\d\d_ )[^\n]{141})', 'a headline over 140 characters (its date not counted): notes projects shows line 1'],
+]
+
 # A pull request body.
 [channel.pr-body]
 prose = true

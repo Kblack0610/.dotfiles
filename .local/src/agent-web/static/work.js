@@ -32,7 +32,7 @@ const workRow = (r, today) => `<tr><td><span class="chip sm" style="--c:${WORK_C
   `<td class="muted">${r.plan ? clamp2(esc(r.plan), r.plan) : ""}</td><td class="muted">${esc(r.kind || "")}</td><td class="muted">${esc(r.ci || "")}</td><td>${workPr(r)}</td><td class="n">${r.cost == null ? "" : usd(r.cost)}</td></tr>`;
 
 function workHead(t) {
-  const d = t.data, errs = [t.err, ...d.errors.map((e) => `unread: ${e}`)].filter(Boolean).map((e) => `<div class="card err">${esc(e)}</div>`).join("");
+  const d = t.data, errs = [t.err, ...d.errors.map((e) => `unread: ${e}`)].filter(Boolean).map((e) => errPanel(e, { card: true })).join("");
   return secHead("", "Work", tblCount(d.table)) + errs;
 }
 

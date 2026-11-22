@@ -38,7 +38,7 @@ function stepsLabel(names) {
 }
 
 function groupHtml(rows, names, open) {
-  return `<details class="steps"${open ? " open" : ""}><summary>${esc(stepsLabel(names))}</summary><div class="stg">${rows.join("")}</div></details>`;
+  return fold("steps", esc(stepsLabel(names)), `<div class="stg">${rows.join("")}</div>`, { open });
 }
 
 function textHtml(e) {

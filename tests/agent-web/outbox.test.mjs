@@ -104,15 +104,15 @@ test("Handled today says what was done to each line, newest first, and left line
     ],
   });
   assert.match(h, /^<h2 class="sec">Handled today <span class="n">2<\/span><\/h2>/, "the head counts the steps; each row says what was done");
-  assert.match(h, /<li class="warn"><span class="muted">13:40<\/span> left: maybe tidy &lt;stuff&gt; <span class="muted">\(why: too vague\)/);
-  assert.match(h, /14:01<\/span> filed db-51 in <a class="wl" href="#projects\/dodginballs">dodginballs<\/a>: fix\(audio\)/);
+  assert.match(h, /<tr class="warn"><td class="wrap"><span class="muted">13:40<\/span><\/td><td class="wrap">left: maybe tidy &lt;stuff&gt; <span class="muted">\(why: too vague\)/);
+  assert.match(h, /14:01<\/span><\/td><td class="wrap">filed db-51 in <a class="wl" href="#projects\/dodginballs">dodginballs<\/a>: fix\(audio\)/);
   assert.match(run("handledHtml(input)", { counts: "", handled: [] }), /^<h2 class="sec">Handled today<\/h2><div class="muted">Nothing handled yet today\./);
 });
 
 test("the tag legend is drawn from the doc's tags, escaped, and nothing when the CLI sends none", () => {
   const h = run("tagsHtml(input)", [{ tag: "#investigate", does: "a longer read-only look" }, { tag: "<id>: <words>", does: "adds to that row" }]);
-  assert.match(h, /^<details class="o-tags"><summary class="muted">Tags<\/summary><ul>/);
-  assert.match(h, /<li><code>#investigate<\/code> <span class="muted">a longer read-only look<\/span><\/li>/);
+  assert.match(h, /^<details class="o-tags"><summary class="muted">Tags<\/summary><table class="tbl rec">/);
+  assert.match(h, /<tr><td class="wrap"><code>#investigate<\/code><\/td><td class="wrap"><span class="muted">a longer read-only look<\/span><\/td><\/tr>/);
   assert.match(h, /<code>&lt;id&gt;: &lt;words&gt;<\/code>/);
   assert.equal(run("tagsHtml(input)", []), "");
   assert.equal(run("tagsHtml(input)", null), "");

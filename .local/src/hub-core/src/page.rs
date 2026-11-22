@@ -323,9 +323,8 @@ pub fn need_groups(c: &Chain) -> Vec<NeedGroup> {
         out.push(NeedGroup {
             kind: "verify".into(),
             says: format!(
-                "{} epic{} landed with no live proof",
-                verify.len(),
-                plural(verify.len())
+                "{} landed with no live proof",
+                crate::display::fmt::counted(verify.len(), "epic")
             ),
             items: verify,
         });
@@ -333,7 +332,10 @@ pub fn need_groups(c: &Chain) -> Vec<NeedGroup> {
     if !plans.is_empty() {
         out.push(NeedGroup {
             kind: "plan".into(),
-            says: format!("{} plan{} with no epic", plans.len(), plural(plans.len())),
+            says: format!(
+                "{} with no epic",
+                crate::display::fmt::counted(plans.len(), "plan")
+            ),
             items: plans,
         });
     }
@@ -347,10 +349,10 @@ fn stage_group(p: &Page) -> Option<NeedGroup> {
     Some(NeedGroup {
         kind: "stage".into(),
         says: format!(
-            "{} {} check{} failing, {} for a human",
+            "{} {} {} failing, {} for a human",
             g.fail,
             g.stage,
-            plural(g.fail as usize),
+            crate::display::fmt::noun(g.fail as usize, "check", "checks"),
             g.human
         ),
         items: p
@@ -360,14 +362,6 @@ fn stage_group(p: &Page) -> Option<NeedGroup> {
             .map(|r| format!("{} {}", r.result, r.requirement))
             .collect(),
     })
-}
-
-fn plural(n: usize) -> &'static str {
-    if n == 1 {
-        ""
-    } else {
-        "s"
-    }
 }
 
 /// The epics under their systems: every system the project's type has, in `systems.md` order,
@@ -432,14 +426,14 @@ pub fn systems(c: &Chain, criteria: &[Criteria], in_open: &[String], now: i64) -
                 let done = s.features_done;
                 let n = features.len();
                 parts.push(format!(
-                    "{n} feature{}, {done} done",
-                    if n == 1 { "" } else { "s" }
+                    "{}, {done} done",
+                    crate::display::fmt::counted(n, "feature")
                 ));
             }
             if standing > 0 {
                 parts.push(format!(
-                    "{standing} standard epic{}",
-                    if standing == 1 { "" } else { "s" }
+                    "{standing} standard {}",
+                    crate::display::fmt::noun(standing, "epic", "epics")
                 ));
             }
             if !parts.is_empty() {
@@ -739,11 +733,11 @@ fn stats_of(runner: &dyn Runner, name: &str) -> Result<crate::projects::Stats, S
         .ok_or_else(|| format!("notes projects lists no project {name}"))
 }
 
-/// The numbers of a project's lab STATUS line (`lab-status`), one sentence each: the project's
+/// A project's numbers as prose (`hub projects --status`), one sentence each: the project's
 /// state ([`crate::projects::state`]), each system's
 /// current wave and its percent, the systems with only upkeep open, the open version and its
 /// release window, the next stage's gate and the playtests waiting. Every number is one this page or the
-/// card already counts; only the words are here, and the model writing the status adds none.
+/// card already counts; only the words are here. The lab STATUS note carries none of them.
 pub fn status_line(p: &Page, c: &Card, playtest_open: usize) -> String {
     let waves: Vec<String> = p
         .systems
@@ -774,8 +768,8 @@ pub fn status_line(p: &Page, c: &Card, playtest_open: usize) -> String {
         .count();
     if upkeep > 0 {
         out.push(format!(
-            "Upkeep only: {upkeep} system{}.",
-            if upkeep == 1 { "" } else { "s" }
+            "Upkeep only: {}.",
+            crate::display::fmt::counted(upkeep, "system")
         ));
     }
     out.push(match &c.version {
@@ -794,7 +788,7 @@ pub fn status_line(p: &Page, c: &Card, playtest_open: usize) -> String {
     out.join(" ")
 }
 
-/// `hub projects --status NAME`: the STATUS line's numbers for one lab project. A source the line
+/// `hub projects --status NAME`: one lab project's numbers as prose. A source the line
 /// says (the chain, the next stage's check, the board feed) that could not be read is an error,
 /// never a line that leaves it out.
 pub fn status(runner: &(dyn Runner + Sync), name: &str, now: i64) -> Result<String, String> {

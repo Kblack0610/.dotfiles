@@ -125,10 +125,6 @@ pub(crate) fn dated(epoch: i64) -> String {
         .map_or_else(|| "-".into(), |t| t.format("%m-%d %H:%M").to_string())
 }
 
-fn mins(m: f64) -> String {
-    crate::queue::dur(Some(m.round() as i64))
-}
-
 impl Pipeline {
     pub fn step(&self, name: &str) -> Option<&Step> {
         self.steps.iter().find(|s| s.step == name)
@@ -149,8 +145,8 @@ impl Pipeline {
         let b = self.bottleneck.as_ref()?;
         Some(format!(
             "age p90 {} (bound {})",
-            mins(b.age_p90_min?),
-            mins(b.bound_min?)
+            crate::display::fmt::dur_min(Some(b.age_p90_min?.round() as i64)),
+            crate::display::fmt::dur_min(Some(b.bound_min?.round() as i64))
         ))
     }
 
@@ -182,7 +178,7 @@ pub(crate) mod tests {
         let p = snapshot(&[("waiting", 2, 540.0, 2.25), ("queued", 3, 60.0, 0.5)]);
         assert_eq!(
             p.bottleneck_text(str::to_string).unwrap(),
-            "bottleneck: waiting, age p90 9h (bound 4h)"
+            "bottleneck: waiting, age p90 9h00m (bound 4h00m)"
         );
     }
 

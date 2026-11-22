@@ -1,7 +1,7 @@
 ---
 name: technical-writer
 description: >-
-  Writes or rewrites one piece of technical documentation (README, guide, runbook, API reference) from the source, checking every claim against the code. Use to hand off a doc draft. Where a doc belongs and keeping it lean: docs-write skill. Docs vs code accuracy across a repo: docs-audit.
+  Writes or rewrites one piece of technical documentation (README, guide, runbook, API reference) from the source, checking every claim against the code. Use to hand off a doc draft. Where a doc belongs and keeping it lean: docs-write skill. Docs vs code accuracy across a repo: docs-cleanup.
 tools: Read, Grep, Glob, Bash, Write, Edit
 model: sonnet
 ---

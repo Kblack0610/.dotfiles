@@ -17,11 +17,10 @@
 #   notes-version-summary --backfill <profile> <project>         # every version in a project
 #   notes-version-summary --backfill --all                       # every project, every profile
 #   flags: --dry-run (print, write nothing)  --force (regenerate an existing block)
-#          --rewrite (also rewrite the changelog BODY into clean legible prose, then summarize)
 #
-# Model calls: the registered agents `version-summary` and `version-rewrite`
-# (`agentctl-run --agent <name> -p`). Their confs pick the route and model; their prompts are
-# ~/.config/notes-cockpit/prompts/. Each call is a line in ~/.local/state/agentctl/calls.jsonl.
+# Model calls: the registered agent `version-summary` (`agentctl-run --agent version-summary -p`).
+# Its conf picks the route and model; its prompt is ~/.config/notes-cockpit/prompts/version-summary.md.
+# Each call is a line in ~/.local/state/agentctl/calls.jsonl.
 # The git-log source is the project's checkout and `path` from the registry (project_repo_path).
 
 set -uo pipefail
@@ -35,7 +34,6 @@ DRY_RUN=0
 FORCE=0
 BACKFILL=0
 ALL=0
-REWRITE=0
 
 die() { echo "notes-version-summary: $*" >&2; exit 1; }
 
@@ -134,8 +132,7 @@ sanitize() {
 }
 
 # ── LLM call ────────────────────────────────────────────────────────
-# call_llm <agent> <user> -> the reply text. The input goes on stdin: a --rewrite pass feeds
-# it a version's whole changelog, past ARG_MAX (#264).
+# call_llm <agent> <user> -> the reply text. The input goes on stdin, past ARG_MAX (#264).
 call_llm() {
   printf '%s' "$2" | "$RUN" --agent "$1" -p
 }
@@ -176,34 +173,6 @@ splice() {
   rm -f "$tmp"
 }
 
-# frontmatter <file> -> the YAML frontmatter block (lines 1..closing ---, inclusive), or nothing.
-frontmatter() {
-  [ "$(head -1 "$1")" = "---" ] || return 0
-  awk 'NR==1{print;next} {print} NR>1 && $0=="---"{exit}' "$1"
-}
-
-# write_full <file> <block> <newbody> — replace the whole note: frontmatter + summary block +
-# the rewritten body. Used by --rewrite (splice() only swaps the block and keeps the old body).
-write_full() {
-  local file="$1" block="$2" newbody="$3" fm
-  fm="$(frontmatter "$file")"
-  {
-    [ -n "$fm" ] && printf '%s\n' "$fm"
-    printf '\n%s\n\n' "$block"
-    printf '%s\n' "$newbody" | sed '/./,$!d'
-  } > "$file"
-}
-
-# rewrite_body <project> <ver> <body> <subjects> -> a clean, legible changelog body on stdout.
-# Preserves every real fact + ticket/PR ref; only reshapes the prose into scannable ASCII.
-rewrite_body() {
-  local project="$1" ver="$2" body="$3" subjects="$4" usr out
-  usr="Project: $project   Version: $ver"$'\n\n'"Changelog to rewrite:"$'\n'"$body"
-  [ -n "$subjects" ] && usr="$usr"$'\n\n'"Commit subjects for reference:"$'\n'"$subjects"
-  out="$(call_llm version-rewrite "$usr")" || return 1
-  printf '%s' "$out" | strip_think | sanitize | sed -e 's/[[:space:]]*$//'
-}
-
 # ── one version ─────────────────────────────────────────────────────
 # all_versions <root> -> "vX.Y.Z<TAB>path" for every note under versions/ + changelog/, desc.
 all_versions() {
@@ -220,25 +189,17 @@ prev_of() { # $1=version $2=versions-list("ver\tpath"…desc) -> the next-lower 
 process_file() { # $1=profile $2=project $3=file $4=versions-list
   local profile="$1" project="$2" file="$3" vlist="$4"
   [ -f "$file" ] || { echo "no such file: $file" >&2; return 1; }
-  # --rewrite always reprocesses; plain summarize skips a note that already has a block.
-  if [ "$REWRITE" -eq 0 ] && [ "$FORCE" -eq 0 ] && grep -q '<!-- summary:auto -->' "$file"; then
+  # a note that already has a block is skipped unless --force.
+  if [ "$FORCE" -eq 0 ] && grep -q '<!-- summary:auto -->' "$file"; then
     echo "skip (has summary): $(basename "$file")"; return 0
   fi
-  local ver prev body subjects tickets usr sum block newbody=""
+  local ver prev body subjects tickets usr sum block
   ver="$(basename "$file" .md)"
   prev="$(prev_of "$ver" "$vlist")"
   body="$(note_body "$file")"
   repo_of "$project"
   subjects="$(git_subjects "$REPO" "$project" "$PATHFILTER" "$prev" "$ver")"
   tickets="$(extract_tickets "$body"$'\n'"$subjects")"
-
-  # rewrite the body first (if asked), then summarize from the CLEAN version
-  if [ "$REWRITE" -eq 1 ]; then
-    newbody="$(rewrite_body "$project" "$ver" "$body" "$subjects")" \
-      || { echo "rewrite failed: $project $ver" >&2; return 1; }
-    [ -n "$newbody" ] || { echo "empty rewrite: $project $ver" >&2; return 1; }
-    body="$newbody"
-  fi
 
   usr="Project: $project   Version: $ver"$'\n\n'"Version notes / tasks:"$'\n'"${body:-(none)}"
   [ -n "$subjects" ] && usr="$usr"$'\n\n'"Commits in this version:"$'\n'"$subjects"
@@ -253,14 +214,9 @@ process_file() { # $1=profile $2=project $3=file $4=versions-list
   if [ "$DRY_RUN" -eq 1 ]; then
     echo "=== $project $ver ($file) ==="
     printf '%s\n' "$block"
-    if [ "$REWRITE" -eq 1 ]; then printf -- '--- rewritten body ---\n%s\n' "$newbody"; fi
     return 0
   fi
-  if [ "$REWRITE" -eq 1 ]; then
-    write_full "$file" "$block" "$newbody" && echo "rewrote+summarized: $project $ver" || return 1
-  else
-    splice "$file" "$block" && echo "summarized: $project $ver" || return 1
-  fi
+  splice "$file" "$block" && echo "summarized: $project $ver" || return 1
 }
 
 # root_of <profile> <project> -> the project's directory (via `notes projects`)
@@ -309,8 +265,7 @@ for a in "$@"; do
     --force)   FORCE=1 ;;
     --backfill) BACKFILL=1 ;;
     --all)     ALL=1 ;;
-    --rewrite) REWRITE=1 ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,23p' "$0"; exit 0 ;;
     -*)        die "unknown flag: $a" ;;
     *)         POS+=("$a") ;;
   esac

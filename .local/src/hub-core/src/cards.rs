@@ -402,8 +402,8 @@ pub fn done(d: Option<&crate::phone::Done>) -> Card {
         }
         None => {
             c = c
-                .part("Shipped", "-", Level::Nodata)
-                .part("Checks", "-", Level::Nodata);
+                .part("Shipped", crate::reading::NOT_READ, Level::Nodata)
+                .part("Checks", crate::reading::NOT_READ, Level::Nodata);
             unread.push("agent-queue list could not be read");
             c.level = Level::Warn;
         }
@@ -465,7 +465,7 @@ pub fn health(i: &crate::infra::Infra) -> Card {
         } else {
             Level::Warn
         };
-        c = c.part("Vitals", &v.head, level);
+        c = c.part("Vitals", v.tally(), level);
         if level == Level::Warn && c.level == Level::Ok {
             c.level = Level::Warn;
         }
@@ -873,7 +873,7 @@ pub fn needs(home: &crate::home::Home, now: i64) -> Card {
     c.first(old.into_iter().map(|n| {
         let waited = n
             .since
-            .map(|t| crate::text::age(now - t))
+            .map(|t| crate::display::fmt::age(now - t))
             .unwrap_or_default();
         let sub = [waited.as_str(), n.project.trim_start_matches('.')]
             .iter()
@@ -1269,7 +1269,7 @@ mod tests {
         assert_eq!(c.first_head, "Bottleneck");
         assert_eq!(
             (c.first[0].text.as_str(), c.first[0].sub.as_str()),
-            ("needs you", "age p90 9h (bound 4h)")
+            ("needs you", "age p90 9h00m (bound 4h00m)")
         );
         // A snapshot that could not be read is said on the card, beside what waits on you.
         let c = queue(&held, Some(&Err("state.json: bad json".into())));

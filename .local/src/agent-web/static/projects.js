@@ -275,9 +275,12 @@ function pActivity(c, pg) {
     html += secHead("p-shipped", "Shipped", pg.shipped.length) + (pg.shipped.length ? `<div class="card">${pLines(pg.shipped)}</div>` : "");
     if (pg.timeline) html += secHead("p-timeline", "Timeline", pg.timeline.lines.length + pg.timeline.older) + `<div class="card">${pTimeline(pg.timeline)}</div>`;
   }
-  // The note's date is a fact in its card.
-  return html + secHead("p-note", "Agent note") + (c.status
-    ? `<div class="card"><div class="pstat">${esc(c.status)}</div>${c.status_date ? `<div class="cline muted"><b>written</b> ${esc(c.status_date)}</div>` : ""}</div>`
+  // The headline, then the labelled lines as a key table (hub_core::projects::Status, drawn as
+  // sent: the opened card shows each line's uncut words). The note's date is a fact in its card.
+  const s = c.status, full = (x) => x.full || x.text;
+  return html + secHead("p-note", "Agent note") + (s.headline || s.rows.length
+    ? `<div class="card">${s.headline ? `<div class="pstat">${esc(full(s.headline))}</div>` : ""}${facts(s.rows.map((f) => [f.label.text, full(f.value)]))}` +
+      `${c.status_date ? `<div class="cline muted"><b>written</b> ${esc(c.status_date)}</div>` : ""}</div>`
     : `<div class="card muted">No agent note.</div>`);
 }
 
@@ -310,8 +313,8 @@ function pList() {
     ? `<div class="panel scroll"><table class="tbl">${tblHead(t, P_COLS)}${d.cards.map((c, i) => pLine(c, i, t)).join("")}</table></div>`
     : `<div class="card muted">${t.total ? "No project matches." : "No projects."}</div>`;
   if (d.unlinked && d.unlinked.length) {
-    html += `<details data-k="unlinked"${pst.unlinked ? " open" : ""}><summary>${secHead("", "Not on a card", d.unlinked.length)}</summary>` +
-      `<div class="card">${d.unlinked.map((u) => `<div>${esc(u)}</div>`).join("")}</div></details>`;
+    html += fold("", secHead("", "Not on a card", d.unlinked.length), `<div class="card">${d.unlinked.map((u) => `<div>${esc(u)}</div>`).join("")}</div>`,
+      { k: "unlinked", open: pst.unlinked });
   }
   return html;
 }

@@ -54,6 +54,18 @@ pub struct Vitals {
     pub rows: Vec<Row>,
 }
 
+impl Vitals {
+    /// "5/6": the KPIs on target of those counted, short enough for a card part (the widget caps a
+    /// pill value at 16 characters, which "3 of 4 off target" passes); `no data` with none.
+    pub fn tally(&self) -> String {
+        if self.rows.is_empty() {
+            return crate::reading::NO_DATA.into();
+        }
+        let on = self.rows.iter().filter(|r| r.level == Level::Ok).count();
+        format!("{on}/{}", self.rows.len())
+    }
+}
+
 impl Row {
     pub fn text(&self) -> String {
         self.parts.join("; ")

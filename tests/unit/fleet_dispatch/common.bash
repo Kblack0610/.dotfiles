@@ -47,10 +47,6 @@ acct() {
     [ -e "$NOTES_FIXTURE/route.$r" ] && { cat "$NOTES_FIXTURE/route.$r"; exit 1; }; fi
   echo "$3: room"; exit 0
 fi
-if [ "$1 ${2:-}" = "check underuse" ]; then
-  [ -e "$NOTES_FIXTURE/under.$3" ] || { echo "no source under-used near its reset (1 sources)"; exit 0; }
-  cat "$NOTES_FIXTURE/under.$3"; exit 1
-fi
 [ "$1 ${2:-}" = "room --json" ] || exit 0
 n=$(cat "$NOTES_FIXTURE/room.n" 2>/dev/null || echo 0); echo $((n + 1)) > "$NOTES_FIXTURE/room.n"
 f="$NOTES_FIXTURE/acct.json"; [ ! -e "$NOTES_FIXTURE/acct.$n.json" ] || f="$NOTES_FIXTURE/acct.$n.json"
@@ -74,9 +70,6 @@ srcs() {
   done
   printf '%s\n' "$rows" > "$NOTES_FIXTURE/sources.json"
 }
-
-# under_used <source> -> claude-acct check underuse names it: its week is going unused near the reset.
-under_used() { echo "under-used near its reset: $1 18% used, 72% of its week gone, resets in 46h" > "$NOTES_FIXTURE/under.$1"; }
 
 # cpu <us> <sy> <ni> <id> -> each real idle sample window adds these jiffies to /proc/stat, and the
 # last sample is gone, so the next gate reads (ni + id) of the four as free. sleep is the window.
@@ -105,12 +98,11 @@ setup() {
   export DISPATCH_LOADAVG="$SANDBOX/loadavg"
   export DISPATCH_JUDGE_CMD=judge-stub   # on PATH: the command is a word list, and the sandbox path has a space
   echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
-  export DISPATCH_PROJECT_FLOOR=0   # off unless a test is about it ("project floor:"), so an idle-held machine stays held
-  export DISPATCH_CANARY_FLOOR=0   # off unless a test is about it ("canary floor:"), so a canary starts in queue order
+  export DISPATCH_CANARY_KEEP=0   # off unless a test is about it ("canary top-up:"), so no pass asks fleet-bench for canaries
   export DISPATCH_FLEET_SHARE=0   # off unless a test is about it ("fleet share:"), so a fleet project's item starts in queue order
   export DISPATCH_START_LOAD=0   # a start adds no pending load unless a test is about it, whatever the runner's cores
   export DISPATCH_PER_PASS=1   # one start a pass unless a test is about it; the shipped default, 0, is no cap
-  printf '%s\n' 'policy' '- (fits) dispatch' '- (tier3) tier 3' '- (unclear) not clear' > "$DISPATCH_POLICY"
+  printf '%s\n' 'policy' '- (fits) dispatch' '- (unclear) not clear' > "$DISPATCH_POLICY"
   mkdir -p "$SANDBOX/repos/game" "$SANDBOX/repos/app" "$SANDBOX/sheets"
   : > "$NOTES_FIXTURE/tmux.sessions.lab"
   stub_notes
@@ -197,7 +189,7 @@ case "${args[0]}" in
       else printf -- '-\t-\t%s\t0\n' "$l"; fi
     done ;;
   board)
-    # A fixture with board.sprints (one JSON array of the feed's `sprints`) adds them to the feed.
+    # A fixture with board.sprints (one JSON array of the feed's `sprints`) adds them to the feed; without one it is [], as the real feed always carries it.
     { if [ -f "$F/board.rows" ]; then jq -sc '{rows: ., done: []}' "$F/board.rows"
     else
       for f in "$F"/rows.*.*; do
@@ -212,7 +204,7 @@ case "${args[0]}" in
             marker: ((.[1] | capture("<!--.* (?<m>dropped)") | .m) // ""),
             state: (if (.[1] | startswith("- [/]")) then "doing" elif (.[1] | startswith("- [x]")) then "done" else "open" end)}' < "$f"
       done | jq -sc '{rows: map(select(.state != "done")), done: map(select(.state == "done"))}'
-    fi; } | if [ -f "$F/board.sprints" ]; then jq -c --slurpfile s "$F/board.sprints" '. + {sprints: $s[0]}'; else cat; fi ;;
+    fi; } | if [ -f "$F/board.sprints" ]; then jq -c --slurpfile s "$F/board.sprints" '. + {sprints: $s[0]}'; else jq -c '. + {sprints: (.sprints // [])}'; fi ;;
   ptask)
     p="${args[1]}"; f="$F/rows.$p.$lane"
     [ "${args[2]}" != add ] || [ ! -f "$F/refuse.$p" ] || exit 1   # a sheet that refuses the row: touch $F/refuse.<project>
@@ -372,7 +364,9 @@ kinds_match() {
   [ "$types" = "$keys" ] || { echo "kinds.json keys differ from ROW_TYPES:"; diff <(echo "$types") <(echo "$keys"); return 1; }
   jq -e 'to_entries | all(.value | (.rank | type) == "number" and (.entry | type) == "string"
     and (.rung | IN("build", "propose", "human")) and (.exit | type) == "string"
-    and (.stages | type) == "array" and (.enabled | type) == "boolean")' "$1" >/dev/null || { echo "an entry lacks a field"; return 1; }
+    and (.enabled | type) == "boolean")' "$1" >/dev/null || { echo "an entry lacks a field"; return 1; }
+  # The project's stage decides where a row dispatches (dispatchable), so no kind repeats it.
+  jq -e 'to_entries | all(.value | has("stages") or has("off") | not)' "$1" >/dev/null || { echo "an entry has stages or off: the stage is dispatchable's"; return 1; }
 }
 
 # --- run ---------------------------------------------------------------------------------
@@ -407,17 +401,6 @@ red_held_machine() {
   stub fleet-assess '[ "$1" = --watch-probe ] && exit 1; [ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
   echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   export DISPATCH_RUN_FLOOR=0 DISPATCH_PER_PASS=3 DISPATCH_RED_FLOOR=2
-}
-
-# 2026-11-07: Unity and fleet work held every slot while trader's requested plans waited 5h behind
-# real idle; no floor lifted it for a project nothing was working on.
-idle_held_machine() {
-  project game beta "$SANDBOX/repos/game"
-  project app beta "$SANDBOX/repos/app"
-  room_on_floor
-  acct alt:ok:/home/u/.claude-personal
-  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
-  export DISPATCH_RUN_FLOOR=0 DISPATCH_RED_FLOOR=0 DISPATCH_PER_PASS=3
 }
 
 # finding <rule> <scope> [repos json] -- one finding row fleet-bench reports as firing now
@@ -537,13 +520,14 @@ pr_lane_ready() {
   project agent-runtime alpha "$SANDBOX/repos/app"
 }
 
-# pr_lane_verdict <key> [area] [tier3_only] [size] [project] -- a tier-3 skip under the current policy for the row's text
+# pr_lane_verdict <key> [area] [fits] [size] [project] -- a tier-3 verdict under the current policy for the
+# row's text: a dispatch, the tier-3 gate's to take, or with fits false an unclear skip
 pr_lane_verdict() {
   mkdir -p "$FLEET_DISPATCH_DIR"
-  jq -cn --arg p "${5:-agent-runtime}" --arg k "$1" --arg a "${2-$1}" --argjson t3 "${3:-true}" --arg s "${4:-S}" --arg sig "$(policy_sig)" \
+  jq -cn --arg p "${5:-agent-runtime}" --arg k "$1" --arg a "${2-$1}" --argjson fits "${3:-true}" --arg s "${4:-S}" --arg sig "$(policy_sig)" \
     --arg line "$(line_of "${5:-agent-runtime}" agent "$1")" \
-    '{project: $p, lane: "agent", key: $k, verdict: "skip", size: $s, tier: 3, area: $a,
-      clear: true, agent_only: true, tier3_only: $t3, rule: "tier3", reason: "tier 3", policy: $sig, line: $line}' \
+    '{project: $p, lane: "agent", key: $k, verdict: (if $fits then "dispatch" else "skip" end), size: $s, tier: 3, area: $a,
+      clear: $fits, agent_only: true, rule: (if $fits then "fits" else "unclear" end), reason: "tier 3", policy: $sig, line: $line}' \
     >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
 }
 
