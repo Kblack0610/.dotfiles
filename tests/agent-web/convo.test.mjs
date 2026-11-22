@@ -9,7 +9,7 @@ import vm from "node:vm";
 const dir = new URL("../../.local/src/agent-web/static/", import.meta.url);
 const el = () => new Proxy({}, { get: (t, k) => (k in t ? t[k] : () => el()) });
 const ctx = vm.createContext({ console, document: { getElementById: el, addEventListener() {}, createElement: el }, window: { addEventListener() {} }, location: { hash: "" } });
-for (const f of ["ui.js", "md.js", "convo.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["../../web-kit/kb-ui.js", "ui.js", "md.js", "convo.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 const html = (evs) => { vm.runInContext("convoReset()", ctx); ctx.__e = evs; return vm.runInContext("convoHtml(__e)", ctx); };
 
 const said = (role, text) => ({ ts: "2026-11-07T10:00:00Z", role, kind: "text", text });

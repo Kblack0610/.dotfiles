@@ -27,7 +27,7 @@ const ctx = vm.createContext({
 });
 // watch.js loads before log.js in the page; its target helper is all the Sessions table uses.
 vm.runInContext('const shortTarget = (t) => String(t).split("/").pop();', ctx);
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "table.js", "log.js", "work.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["../../web-kit/kb-ui.js", "ui.js", "md.js", "charts.js", "app.js", "table.js", "log.js", "work.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
 const pr = (repo, project, number, at, o = {}) => ({ repo, project, number, title: `t${number}`, url: `https://x/${number}`, merged_at: at, area: "hub", group: "web", ...o });
 // Six projects merged, so two of them share Other; dotfiles has ten rows, so two fold.
