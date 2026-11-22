@@ -1,14 +1,14 @@
 #!/usr/bin/env bats
-# ai_agents.sh: the waybar agents chip, the one overview of live agent sessions. The bar is the
-# fleet total and three counts within it from fleet-sessions on Prometheus, ~ working in amber, a check mark ready (LANDED or DONE)
-# in green and ! need you in red, after a robot coloured by fleet health; the hover has the stage counts, then a section per tmux world
-# with its counts and a row per session with its idle time, plus why for one that needs you or is stalled; past HOVER_MAX_ROWS the
-# need-you and stalled rows are kept first and a last line counts the rest (dashboards.md rule 3). What these pin: the bar is four
-# numbers whatever the fleet's size (a group per project pushed the clock off the bar); the total is every session on every host,
-# chat, stalled and parked included, so it reads as the whole fleet; sessions group by world, not repo; a long fleet is capped,
-# never cut by the screen edge; a stalled session or a stale textfile turns the robot red, an unclear
-# one amber; a second scrape counts once; Prometheus down reads ? and no textfile reads amber,
-# never a quiet 0.
+# ai_agents.sh: the waybar agents chip, the one overview of live agent sessions. The bar is the fleet
+# total and two counts from fleet-sessions on Prometheus (~ working amber, a check mark ready green)
+# after a robot coloured by fleet health; what needs you is custom/needs, not this chip. The hover opens
+# with one sentence (waiting, stuck, working, as of when, on how many hosts), then any warning, then
+# Waiting, Stuck and Working sections from the summary/bar topic (`hub bar --json`), each row named by
+# project and task, filled to the bar channel's line cap in that order, a line counting what was cut, and
+# one for what is ready to close. What these pin: the bar is three numbers whatever the fleet's size;
+# counts come from Prometheus and names from summary/bar; a missing or old topic is one amber line with
+# the counts still shown; a stale textfile never counts its sessions and is named once (red only when
+# every file is stale); the hover fits the bar channel and comms-lint fails one that does not.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -16,24 +16,28 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
   MODULE="$REPO_ROOT/.config/waybar/ai_agents.sh"
-  ICON=$'\U000f06a9' CK=$'\u2713' # as escapes so no editor can strip them
+  ICON=$'\U000f06a9' CK=$'✓' # as escapes so no editor can strip them
   G="#a6e34a" Y="#ffcc2f" R="#ef5734"
-  # bar <health colour> <total> <working> <ready> <need>: the chip text.
-  bar() { printf "<span color='%s'>%s</span> %s  <span color='$Y'>~:%s</span>  <span color='$G'>%s:%s</span>  %s" "$1" "$ICON" "$2" "$3" "$CK" "$4" "$(need "$5")"; }
-  need() { if [ "$1" = 0 ]; then printf '!:0'; else printf "<span color='$R'>!:%s</span>" "$1"; fi; }
-  export CC_PROM_URL=http://prom.test FX="$BATS_TEST_TMPDIR" AGENTS_NOW=100000
+  # bar <health colour> <total> <working> <ready>: the chip text.
+  bar() { printf "<span color='%s'>%s</span> %s  <span color='$Y'>~:%s</span>  <span color='$G'>%s:%s</span>" "$1" "$ICON" "$2" "$3" "$CK" "$4"; }
+  export CC_PROM_URL=http://prom.test FX="$BATS_TEST_TMPDIR" AGENTS_NOW=100000 TZ=UTC
+  export AGENT_MQTT_HOST=mqtt.test MQTT_SUB_FIXTURE="$BATS_TEST_TMPDIR/bar.json"
+  export COMMS_CHANNELS="$REPO_ROOT/.config/comms-lint/channels.toml"
   cat > "$SANDBOX/bin/curl" <<'STUB'
 #!/usr/bin/env bash
 [ -n "${CURL_FAIL:-}" ] && exit 7
+printf '%s\n' "$*" >> "$FX/curl.args"
 cat "$FX/prom.json"
 STUB
   chmod +x "$SANDBOX/bin/curl"
 }
 
-# feed [target=BUCKET:age[:idle[:why]] ...] [mtime=<age s>|mtime=-] [dup:target=...] [p:<project>:target=...]
+# feed [target=BUCKET:age[:idle] ...] [mtime=<age s>|mtime=-] [stale=<age s>] [dup:target=...] [novocab]
 # -> Prometheus's answer: one agent_session_age_minutes series per session (idle adds
-# agent_session_idle_minutes, and why adds agent_session_why), and fleet_sessions.prom written 60s ago unless mtime says otherwise.
-# dup: is a second scrape; p: names the session's project, proj without it.
+# agent_session_idle_minutes with the same labels), the bucket order, and fleet_sessions.prom written
+# 60s ago unless mtime says otherwise. dup: is a second scrape. stale= adds a second, host-less
+# fleet_sessions.prom of that age on another instance (the leftover on razer-laptop), with no sessions
+# of its own: Prometheus's `and on (instance)` leaves them out.
 feed() {
   python3 - "$FX/prom.json" "$@" <<'PY'
 import json, sys
@@ -45,16 +49,18 @@ for a in sys.argv[2:]:
     if k == "mtime":
         mtime = None if v == "-" else int(v)
         continue
-    inst, proj = "i1", "proj"
+    if k == "stale":
+        res.append({"metric": {"__name__": "node_textfile_mtime_seconds", "instance": "10.0.0.9:9100",
+                               "file": "/var/lib/node-exporter-textfile/fleet_sessions.prom"},
+                    "value": [0, str(100000 - int(v))]})
+        continue
+    inst = "i1"
     if k.startswith("dup:"): inst, k = "i9", k[4:]
-    if k.startswith("p:"): _, proj, k = k.split(":", 2)
-    b, age, *idle = v.split(":", 3)
-    base = {"target": k, "bucket": b, "project": proj, "host": "h1", "instance": inst}
+    b, age, *idle = v.split(":", 2)
+    base = {"target": k, "bucket": b, "project": "proj", "host": "h1", "instance": inst}
     res.append({"metric": dict(base, __name__="agent_session_age_minutes"), "value": [0, age]})
     if idle:
         res.append({"metric": dict(base, __name__="agent_session_idle_minutes"), "value": [0, idle[0]]})
-    if len(idle) > 1:
-        res.append({"metric": dict(base, __name__="agent_session_why", reason=idle[1]), "value": [0, "1"]})
 if "novocab" not in sys.argv:
     for i, b in enumerate(["NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED"]):
         for inst in ("i1", "i9"):
@@ -70,108 +76,218 @@ json.dump({"status": "success", "data": {"result": res}}, open(sys.argv[1], "w")
 PY
 }
 
+# barfeed [age=<s>] [err=<text>] ['BUCKET|project|task|why|idle|target' ...] -> the retained
+# summary/bar message, `hub bar --json` built <age> seconds ago (60 by default), sessions in the order
+# given (hub-core sorts them). why is the reason, or the activity of a WORKING row; an empty idle is
+# null. `barfeed -` leaves no message on the broker.
+barfeed() {
+  python3 - "$MQTT_SUB_FIXTURE" "$@" <<'PY'
+import json, os, sys
+path, args = sys.argv[1], sys.argv[2:]
+if args == ["-"]:
+    os.path.exists(path) and os.remove(path)
+    sys.exit()
+doc = {"as_of": 100000 - 60, "sessions": [], "ready": {"total": 0, "urgent": 0, "high": 0, "items": []},
+       "candidates": [], "drain": None, "errors": []}
+for a in args:
+    if a.startswith("age="): doc["as_of"] = 100000 - int(a[4:]); continue
+    if a.startswith("err="): doc["errors"].append(a[4:]); continue
+    b, proj, task, why, idle, target = a.split("|")
+    doc["sessions"].append({"bucket": b, "project": proj, "task": task,
+        "reason": "" if b == "WORKING" else why, "activity": why if b == "WORKING" else "idle",
+        "target": target, "item": "", "pr": None, "pr_state": "", "ci": "",
+        "idle_min": int(idle) if idle else None, "done": b in ("DONE", "LANDED")})
+json.dump(doc, open(path, "w"))
+PY
+}
+
 text() { jq -r .text <<< "$output"; }
 class() { jq -r .class <<< "$output"; }
 tip() { jq -r .tooltip <<< "$output"; }
+# plain: the hover as the human reads it, markup dropped and entities undone (pango_ansi, NO_COLOR).
+plain() { jq -r .tooltip <<< "$output" | (. "$REPO_ROOT/.config/waybar/pango.sh"; NO_COLOR=1 pango_ansi); }
 
-@test "the bar is a green robot and amber working, green ready and red need-you totals, however many" {
+@test "the bar is a green robot and amber working and green ready totals, however many, and no need-you count" {
   feed hub/dotfiles:1=WORKING:30 hub/dotfiles:2=NEEDS:90:20 lab/uc-agent-1:1=WORKING:10 \
     lab/uc-agent-2:1=LANDED:300 lab/uc-agent-3:1=DONE:400 lab/uc-agent-4:1=PARKED:50
   run "$MODULE"
   assert_success
-  assert_equal "$(text)" "$(bar "$G" 6 2 2 1)"
+  assert_equal "$(text)" "$(bar "$G" 6 2 2)"
+  # Negative control: a NEEDS session is on the bar only through custom/needs, Home's one count.
+  [[ "$(text)" != *'!:'* ]]
   assert_equal "$(class)" ok
   local args=() i
   for i in $(seq 1 40); do args+=("lab/uc-agent-1$i:1=WORKING:5"); done
   feed "${args[@]}"
   run "$MODULE"
-  assert_equal "$(text)" "$(bar "$G" 40 40 0 0)"
+  assert_equal "$(text)" "$(bar "$G" 40 40 0)"
 }
 
-@test "the hover groups by world, not repo, and lists every session worst first, why only on what wants you" {
-  feed hub/dotfiles:1=WORKING:30:3 hub/shepherd:2=NEEDS:90:20:"1 pending ask(s)" lab/dotfiles-agent-2:1=WORKING:5 \
-    lab/uc-agent-1:1=WORKING:10 lab/uc-agent-2:1=DONE:400 lab/uc-agent-9:1=STALLED:200:80:"PR #7 CI red"
+@test "the hover opens with waiting, stuck and working from Prometheus, then a section per stage named by task" {
+  feed hub/dotfiles:1=WORKING:30:3 hub/dotfiles:2=NEEDS:90:20 lab/uc-agent-1:1=WORKING:10:4 \
+    lab/uc-agent-2:1=DONE:400 lab/uc-agent-9:1=STALLED:200:80 razer@lab/dotfiles-agent-4:1=CHAT:300
+  barfeed 'NEEDS|dotfiles|retire the CI governor|1 pending ask(s)|20|hub/dotfiles:2' \
+    'STALLED|playground|chip art pass|PR #3076 CI red|80|razer-laptop@lab/unity-core-playground-agent-12:1' \
+    'WORKING|dotfiles|one export for hub cards|Bash: run bats tests|3|hub/dotfiles:1' \
+    'WORKING|playground|move SaveWrites|testing|4|lab/uc-agent-1:1' \
+    'DONE|playground|chain wiring||400|lab/uc-agent-2:1' 'CHAT|dotfiles|chat||300|razer@lab/dotfiles-agent-4:1'
+  run "$MODULE"
+  assert_success
+  run tip
+  assert_output "<b>Sessions:</b> <span color='$Y'>1 waiting</span>, <span color='$Y'>1 stuck</span>, 2 working. As of 03:45, 6 sessions on 3 hosts.
+
+<b><span color='$Y'>Waiting</span></b>  1
+<tt>  dotfiles    retire the CI governor                            1 pending ask(s)      20m     hub/dotfiles:2</tt>
+
+<b><span color='$Y'>Stuck</span></b>  1
+<tt>  playground  chip art pass                                     PR #3076 CI red       1h20m   ...ore-playground-agent-12</tt>
+
+<b>Working</b>  2
+<tt>  dotfiles    one export for hub cards                          Bash: run bats tests  3m
+  playground  move SaveWrites                                   testing               4m</tt>
+
+Ready to close 1 (1 done); also 1 chat"
+}
+
+@test "rows fill to the bar channel's line cap, waiting and stuck first, and a last line counts what was cut" {
+  printf '[channel.bar]\nmax_lines = 12\nmax_line = 120\n' > "$BATS_TEST_TMPDIR/channels.toml"
+  local rows=() args=() i
+  for i in $(seq 1 20); do rows+=("WORKING|dotfiles|task w$i|busy|$i|hub/w$i:1"); args+=("hub/w$i:1=WORKING:5"); done
+  rows+=("NEEDS|dotfiles|task n1|ask|9|lab/n1:1" "NEEDS|dotfiles|task n2|ask|8|lab/n2:1" "STALLED|dotfiles|task s1|conflict|90|lab/s1:1")
+  feed "${args[@]}" lab/n1:1=NEEDS:30 lab/n2:1=NEEDS:30 lab/s1:1=STALLED:90
+  barfeed "${rows[@]}"
+  COMMS_CHANNELS="$BATS_TEST_TMPDIR/channels.toml" run "$MODULE"
+  run tip
+  # bats drops blank lines from $lines; the cap counts them, as the tooltip draws them
+  assert_equal "$(printf '%s\n' "$output" | wc -l)" 12
+  assert_output --partial "task n1"
+  assert_output --partial "task n2"
+  assert_output --partial "task s1"
+  assert_output --partial "task w1 "
+  refute_output --partial "task w2 "
+  assert_line "+19 more working: click for every session (agent-panel)"
+}
+
+@test "a stage cut to no rows keeps its heading and count, and the cut line names each stage" {
+  printf '[channel.bar]\nmax_lines = 8\nmax_line = 120\n' > "$BATS_TEST_TMPDIR/channels.toml"
+  local rows=() i
+  for i in $(seq 1 5); do rows+=("NEEDS|dotfiles|need $i|ask|$i|lab/n$i:1"); done
+  rows+=("WORKING|dotfiles|work 1|busy|1|hub/w1:1")
+  feed lab/n1:1=NEEDS:30 hub/w1:1=WORKING:5
+  barfeed "${rows[@]}"
+  COMMS_CHANNELS="$BATS_TEST_TMPDIR/channels.toml" run "$MODULE"
+  run tip
+  assert_line "<b>Working</b>  1"
+  refute_output --partial "work 1"
+  assert_line "+3 more waiting, 1 more working: click for every session (agent-panel)"
+}
+
+@test "no summary/bar is one amber line, and the counts still show" {
+  feed hub/dotfiles:2=NEEDS:90:20 lab/uc-agent-1:1=WORKING:10
+  barfeed -
+  run "$MODULE"
+  assert_equal "$(text)" "$(bar "$G" 2 1 0)"
+  run tip
+  assert_output "<b>Sessions:</b> <span color='$Y'>1 waiting</span>, 0 stuck, 1 working. 2 sessions in all.
+<span color='$Y'>No session detail: no summary/bar on mqtt.test</span>"
+}
+
+@test "an old summary/bar says how old in amber and lists no rows from it" {
+  feed hub/dotfiles:2=NEEDS:90:20
+  barfeed age=900 'NEEDS|dotfiles|stale task|ask|20|hub/dotfiles:2'
   run "$MODULE"
   run tip
-  assert_line --index 0 "<b>Sessions</b>  6 total, 5 in progress: <span color='$Y'>1</span> need you, <span color='$Y'>1</span> stalled, 1 done, 3 working"
-  assert_line --index 2 "<b>hub</b>  2 in progress: <span color='$Y'>1</span> need you, 1 working"
-  assert_line --index 3 "<tt>NEEDS    shepherd:2         idle 20m    1 pending ask(s)"
-  assert_line --index 4 "WORKING  dotfiles:1         idle 3m</tt>"
-  assert_line --index 5 "<b>lab</b>  3 in progress: <span color='$Y'>1</span> stalled, 1 done, 2 working"
-  assert_line --index 6 "<tt><span color='$Y'>STALLED  uc-agent-9:1       idle 1h20m  PR #7 CI red</span>"
-  assert_line --index 7 "DONE     uc-agent-2:1       idle -"
-  assert_output --partial "WORKING  uc-agent-1:1       idle -"
-  assert_output --partial "WORKING  dotfiles-agent-2:1 idle -</tt>"
-  refute_output --partial "more: click"
+  assert_line --index 1 --partial "<span color='$Y'>No session detail: summary/bar is 15m old"
+  refute_output --partial "stale task"
 }
 
-@test "a long reason ends in ... so its row stays one line" {
-  feed hub/a:1=NEEDS:30:12:"$(printf 'x%.0s' $(seq 1 100))"
+# Negative control for the read: the same message fresh lists its row.
+@test "a fresh summary/bar is read from the broker agent-mqtt-publish uses" {
+  feed hub/dotfiles:2=NEEDS:90:20
+  barfeed 'NEEDS|dotfiles|fresh task|ask|20|hub/dotfiles:2'
   run "$MODULE"
   run tip
-  assert_output --partial "idle 12m    $(printf 'x%.0s' $(seq 1 67))...</tt>"
+  assert_output --partial "fresh task"
+  refute_output --partial "No session detail"
+  assert_equal "$(cat "$MQTT_SUB_FIXTURE.args")" "-h mqtt.test -p 1883 -t agents/+/summary/bar -W 1"
 }
 
-@test "a working, done or landed row is the session and its idle time, no reason column" {
-  feed lab/uc-agent-1:1=WORKING:10 lab/uc-agent-2:1=LANDED:300 lab/uc-agent-3:1=DONE:400
+# A former lease holder that is switched off keeps its retained copy, and the broker may send it first.
+@test "of every retained copy the newest as_of wins, whichever arrives first" {
+  feed hub/dotfiles:2=NEEDS:90:20
+  barfeed 'NEEDS|dotfiles|fresh task|ask|20|hub/dotfiles:2'
+  local fresh; fresh="$(cat "$MQTT_SUB_FIXTURE")"
+  barfeed age=259200 'NEEDS|dotfiles|old holder task|ask|20|hub/dotfiles:2'
+  printf '\nnot json\n%s\n' "$fresh" >> "$MQTT_SUB_FIXTURE"
   run "$MODULE"
   run tip
-  assert_line "<b>lab</b>  1 in progress: 1 done, 1 landed, 1 working"
-  assert_line "<tt>DONE     uc-agent-3:1 idle -"
-  assert_line "LANDED   uc-agent-2:1 idle -"
-  assert_line "WORKING  uc-agent-1:1 idle -</tt>"
-  refute_output --partial "no reason published"
+  assert_output --partial "fresh task"
+  refute_output --partial "old holder task"
+  refute_output --partial "No session detail"
 }
 
-@test "a fleet past HOVER_MAX_ROWS shows 30 rows, every need-you and stalled one among them, and counts the rest" {
-  local args=() i
-  for i in $(seq 1 40); do args+=("hub/w$i:1=WORKING:5"); done
-  args+=("lab/n1:1=NEEDS:30:9:ask" "lab/s1:1=STALLED:200:80:conflict")
+@test "a broker it cannot reach is said as such, not as a missing topic" {
+  feed hub/dotfiles:2=NEEDS:90:20
+  barfeed -
+  MQTT_SUB_RC=1 run "$MODULE"
+  run tip
+  assert_line --index 1 "<span color='$Y'>No session detail: cannot reach the broker mqtt.test:1883</span>"
+  refute_output --partial "no summary/bar"
+}
+
+@test "a source summary/bar could not read is an amber line beside the rows it has" {
+  feed hub/dotfiles:2=NEEDS:90:20
+  barfeed 'err=agent-queue list: timed out' 'NEEDS|dotfiles|a task|ask|20|hub/dotfiles:2'
+  run "$MODULE"
+  run tip
+  assert_line --index 1 "<span color='$Y'>Session detail incomplete: agent-queue list: timed out</span>"
+  assert_output --partial "a task"
+}
+
+@test "a task with markup, a newline or a non-ASCII character stays one escaped ASCII row" {
+  feed hub/a:1=NEEDS:30:12
+  barfeed $'NEEDS|dotfiles|fix <b> & \xe2\x80\x94 line one\nline two|PR <#7>|12|hub/a:1'
+  run "$MODULE"
+  run tip
+  assert_output --partial "fix &lt;b&gt; &amp; ? line one line two"
+  assert_output --partial "PR &lt;#7&gt;"
+}
+
+@test "a long task or reason ends in ... so every line fits the bar channel's width" {
+  feed hub/a:1=NEEDS:30:12
+  barfeed "NEEDS|dotfiles|$(printf 't%.0s' $(seq 1 200))|$(printf 'r%.0s' $(seq 1 60))|12|hub/a:1"
+  run "$MODULE"
+  run plain
+  assert_output --partial "ttt...  rrrrrrrrrrrrrrrrrrrrr...  12m"
+  assert_equal "$(awk 'length > 120' <<< "$output")" ""
+}
+
+# comms-standard rule 12: the hover is checked against its channel. The negative control lints the same
+# hover against a channel with fewer lines than it has, which must fail.
+@test "the hover passes comms-lint --channel bar, and a channel with fewer lines fails it" {
+  local args=() rows=() i
+  for i in $(seq 1 60); do args+=("hub/w$i:1=WORKING:5"); rows+=("WORKING|dotfiles|task $i|busy|$i|hub/w$i:1"); done
   feed "${args[@]}"
+  barfeed "${rows[@]}"
   run "$MODULE"
-  run tip
-  assert_equal "$(grep -cE '^(<tt>)?(<span[^>]*>)?(NEEDS|STALLED|WORKING) ' <<< "$output")" 30
-  assert_output --partial "NEEDS    n1:1     idle 9m     ask"
-  assert_output --partial "STALLED  s1:1     idle 1h20m  conflict"
-  assert_line --index 0 --partial "42 total"
-  assert_line "<b>hub</b>  40 in progress: 40 working"
-  assert_equal "${lines[-1]}" "+12 more: click for every session (agent-panel)"
+  plain > "$BATS_TEST_TMPDIR/hover.txt"
+  run "$REPO_ROOT/.local/bin/comms-lint" --channel bar "$BATS_TEST_TMPDIR/hover.txt"
+  assert_success
+  { cat "$COMMS_CHANNELS"; printf '\n[channel.tight]\nmax_lines = 10\n'; } > "$BATS_TEST_TMPDIR/tight.toml"
+  COMMS_CHANNELS="$BATS_TEST_TMPDIR/tight.toml" run "$REPO_ROOT/.local/bin/comms-lint" --channel tight "$BATS_TEST_TMPDIR/hover.txt"
+  assert_failure
+  assert_output --partial "too-many-lines"
 }
 
-@test "a need-you or stalled row says why, and says so when no reason was published" {
-  feed hub/a:1=NEEDS:30:12:"plan awaiting approval" hub/b:1=NEEDS:30:5
+@test "a stalled session turns the robot amber; the Stuck section, not a warning line, says which" {
+  feed lab/uc-agent-1:1=WORKING:10 lab/uc-agent-9:1=STALLED:200:80
+  barfeed 'STALLED|playground|chip art|PR #9 conflicts|80|lab/uc-agent-9:1'
   run "$MODULE"
-  run tip
-  assert_output --partial "NEEDS    a:1      idle 12m    plan awaiting approval"
-  assert_output --partial "NEEDS    b:1      idle 5m     no reason published"
-}
-
-@test "a reason with a colon or a markup character reaches the hover whole and escaped" {
-  feed hub/a:1=NEEDS:30:12:"PR <#7>: CI red & stuck"
-  run "$MODULE"
-  run tip
-  assert_output --partial "PR &lt;#7&gt;: CI red &amp; stuck"
-}
-
-@test "a stalled session turns the robot amber, leads the hover and heads its world" {
-  feed lab/uc-agent-1:1=WORKING:10 lab/uc-agent-9:1=STALLED:200:80:"PR #9 conflicts"
-  run "$MODULE"
-  assert_equal "$(text)" "$(bar "$Y" 2 1 0 0)"
+  assert_equal "$(text)" "$(bar "$Y" 2 1 0)"
   assert_equal "$(class)" warn
   run tip
-  assert_line --index 1 "<span color='$Y'>1 session(s) STALLED: unlanded work and idle, or a ready PR that conflicts</span>"
-  assert_line --index 2 "<b>lab</b>  2 in progress: <span color='$Y'>1</span> stalled, 1 working"
-  assert_line --index 3 "<tt><span color='$Y'>STALLED  uc-agent-9:1 idle 1h20m  PR #9 conflicts</span>"
-}
-
-@test "the hover's order is the published bucket order: a need-you line leads a stalled one" {
-  feed lab/uc-agent-1:1=STALLED:200:80:x lab/uc-agent-2:1=NEEDS:30:20:y lab/uc-agent-3:1=WORKING:10
-  run "$MODULE"
-  run tip
-  assert_output --partial "3 in progress: "
-  assert_line --index 3 --partial "NEEDS "
-  assert_line --index 3 --partial "uc-agent-2:1"
-  assert_line --index 4 --partial "STALLED "
+  refute_output --partial "STALLED:"
+  assert_line --index 1 "<b><span color='$Y'>Stuck</span></b>  1"
 }
 
 @test "no published bucket order reads amber and says so, never a built-in list" {
@@ -182,18 +298,17 @@ tip() { jq -r .tooltip <<< "$output"; }
   assert_output --partial "no agent_session_bucket on Prometheus"
 }
 
-@test "a CHAT session is counted, has a plain row and leaves the robot green: the human's conversation is not attention" {
+@test "a CHAT session is counted and leaves the robot green: the human's conversation is not attention" {
   feed hub/dotfiles:1=CHAT:10
+  barfeed 'CHAT|dotfiles|chat||10|hub/dotfiles:1'
   run "$MODULE"
-  assert_equal "$(text)" "$(bar "$G" 1 0 0 0)"
+  assert_equal "$(text)" "$(bar "$G" 1 0 0)"
   assert_equal "$(class)" inactive
   run tip
-  assert_output --partial "1 total, 0 in progress: 1 chat"
-  assert_line "<tt>CHAT     dotfiles:1 idle -</tt>"
-  refute_output --partial "<span color='$Y'>"
+  assert_line "also 1 chat"
 }
 
-@test "a sessions textfile older than five minutes is red: the tick stopped" {
+@test "the only sessions textfile older than five minutes is red: the tick stopped" {
   feed hub/dotfiles:1=WORKING:10 mtime=900
   run "$MODULE"
   assert_equal "$(class)" critical
@@ -201,26 +316,72 @@ tip() { jq -r .tooltip <<< "$output"; }
   assert_output --partial "fleet_sessions.prom on h1 is 15m old"
 }
 
+# With every file stale the join leaves no session series, only the bucket order and the file's age.
+@test "every textfile stale is red with no sessions and no false bucket-order warning" {
+  feed mtime=900
+  run "$MODULE"
+  assert_equal "$(text)" "$(bar "$R" 0 0 0)"
+  assert_equal "$(class)" critical
+  run tip
+  assert_output --partial "fleet_sessions.prom on h1 is 15m old"
+  refute_output --partial "no agent_session_bucket"
+}
+
+# The leftover from a host that once held the lease: no host label, two days old, beside a fresh file.
+@test "a stale textfile beside a fresh one is named once by its instance in amber, and the robot is not red" {
+  feed hub/dotfiles:1=WORKING:10 stale=183000
+  run "$MODULE"
+  assert_equal "$(text)" "$(bar "$Y" 1 1 0)"
+  assert_equal "$(class)" warn
+  run tip
+  assert_equal "$(grep -c 'fleet_sessions.prom on' <<< "$output")" 1
+  assert_line --index 1 --partial "<span color='$Y'>fleet_sessions.prom on 10.0.0.9:9100 is 2d2h old"
+  refute_output --partial "color='$R'>fleet"
+}
+
+# Negative control: the same fleet with only fresh files has no such line and a green robot.
+@test "a fresh textfile alone has no stale line and a green robot" {
+  feed hub/dotfiles:1=WORKING:10
+  run "$MODULE"
+  assert_equal "$(text)" "$(bar "$G" 1 1 0)"
+  run tip
+  refute_output --partial "fleet_sessions.prom on"
+}
+
+# Prometheus answers the stub's JSON whatever is asked, so the join and the selector are pinned on the query.
+@test "the query reads age and idle with one selector and joins session series only to a fresh textfile" {
+  feed hub/dotfiles:1=WORKING:10:3
+  run "$MODULE"
+  local q
+  q="$(sed -n 's/.* --data-urlencode query=//p' "$FX/curl.args")"
+  [[ "$q" == '{__name__=~"agent_session_(age|idle)_minutes"} and on (instance) (time() - node_textfile_mtime_seconds{file=~".*/fleet_sessions.prom"} < 300)'* ]]
+  [[ "$q" != *"agent_session_age_minutes or "* ]]
+  # the bucket order and the file itself are read unjoined: a stale file can be named, and a fleet
+  # with every file stale still has its vocabulary
+  [[ "$q" == *") or agent_session_bucket or node_textfile_mtime_seconds{file=~\".*/fleet_sessions.prom\"}" ]]
+}
+
 @test "a second scrape of a session counts once" {
   feed hub/dotfiles:1=WORKING:10 dup:hub/dotfiles:1=WORKING:10
   run "$MODULE"
-  assert_equal "$(text)" "$(bar "$G" 1 1 0 0)"
+  assert_equal "$(text)" "$(bar "$G" 1 1 0)"
 }
 
 @test "the total is the whole fleet: chat, stalled and parked sessions, a worker's too, are in it" {
   feed hub/dotfiles:1=WORKING:10 lab/uc-agent-1:1=NEEDS:20 lab/uc-agent-2:1=DONE:30 \
     lab/uc-agent-3:1=STALLED:200:80 razer@lab/dotfiles-agent-4:1=CHAT:300 \
     razer@lab/dotfiles-agent-5:1=CHAT:300 lab/uc-agent-6:1=PARKED:50
+  barfeed -
   run "$MODULE"
-  assert_equal "$(text)" "$(bar "$Y" 7 1 1 1)"
+  assert_equal "$(text)" "$(bar "$Y" 7 1 1)"
   run tip
-  assert_line --index 0 --partial "<b>Sessions</b>  7 total, 3 in progress: "
+  assert_line --index 0 --partial "1 working. 7 sessions in all."
 }
 
 @test "no sessions with a fresh textfile is inactive zeros" {
   feed
   run "$MODULE"
-  assert_equal "$(text)" "$(bar "$G" 0 0 0 0)"
+  assert_equal "$(text)" "$(bar "$G" 0 0 0)"
   assert_equal "$(class)" inactive
 }
 
@@ -239,13 +400,4 @@ tip() { jq -r .tooltip <<< "$output"; }
   assert_success
   assert_equal "$(text)" "$ICON <span color='$Y'>?</span>"
   assert_equal "$(class)" warn
-}
-
-@test "a reason with a newline or a pipe stays one row" {
-  feed hub/a:1=NEEDS:30:12:$'line one\nline | two' hub/b:1=NEEDS:30:5:"ok"
-  run "$MODULE"
-  run tip
-  assert_output --partial "NEEDS    a:1 "
-  assert_output --partial "line one line   two"
-  assert_output --partial "idle 5m     ok"
 }

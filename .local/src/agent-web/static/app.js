@@ -19,8 +19,6 @@ const logShows = (sec) => st.tab === "log" && innerShown("log", homeOf("log", se
 
 const refreshAgents = coalesce(async () => {
   st.agents = await api("/api/agents");
-  const waiting = st.agents.filter((a) => a.status === "waiting").length;
-  $("wait-badge").innerHTML = waiting ? `<span class="badge">${waiting}</span>` : "";
   refreshWaiting();
   sst.render();
   if (st.tab === "home") renderHome();
@@ -33,18 +31,12 @@ const refreshAgents = coalesce(async () => {
   }
 });
 
-// "3/6 phases, next: <name>", from fleet-sessions' read of the plan's ## Phases checklist.
-function phasesText(a) {
-  const p = a.phases;
-  return p ? `${p.done}/${p.total} phases${p.next ? `, next: ${p.next}` : ""}` : "";
-}
-
 // Approve a session's open plan dialog (session action approve-plan) from a Waiting card or a
 // Queue row: the first click arms an in-place confirm, the second sends it.
 st.approving = null;
 function approveButtons(a) {
   if (!a || !(a.actions || []).includes("approve-plan")) return "";
-  const t = esc(a.target), err = st.approveErr[a.target] ? `<span class="err">${esc(st.approveErr[a.target])}</span>` : "";
+  const t = esc(a.target), err = st.approveErr[a.target] ? errPanel(st.approveErr[a.target], { tag: "span" }) : "";
   // A sent approval draws busy on every surface (Home, the pinned card, a Queue item) until the
   // session list says the dialog is gone, so a slow approve never reads as a dead click.
   if (askst.sending[`ses:${a.target}`]) return `<button class="btn sm primary" disabled><span class="spin"></span>Approving...</button>`;
@@ -113,7 +105,7 @@ function renderActs() {
     const btns = (a.actions || []).map((n) => `<button class="btn${DANGER.includes(n) ? " danger" : ""}" data-act="${esc(n)}" ${st.act.busy ? "disabled" : ""}>${esc(actLabel(n))}</button>`).join("");
     if (btns) html += pfold("acts", "Actions", `<div class="actrow">${btns}</div>`);
   }
-  if (st.act.msg) html += `<div class="msg${st.act.err ? " err" : ""}">${esc(st.act.msg)}</div>`;
+  if (st.act.msg) html += (st.act.err ? errPanel(st.act.msg, { cls: "msg" }) : `<div class="msg">${esc(st.act.msg)}</div>`);
   box.innerHTML = html;
 }
 

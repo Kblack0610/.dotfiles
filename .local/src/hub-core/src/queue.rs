@@ -293,6 +293,19 @@ impl Item {
         said(&self.finished).and_then(stamp)
     }
 
+    /// What a finished item counts as: shipped when it closed ok with a merge, a check when it
+    /// closed ok with none (a watch or alert that cleared); failed, cancelled or unfinished is None.
+    pub fn closed_as(&self) -> Option<Closed> {
+        if self.state != State::Done || said(&self.status) != Some("ok") {
+            return None;
+        }
+        Some(if said(&self.merged).is_some() {
+            Closed::Shipped
+        } else {
+            Closed::Check
+        })
+    }
+
     /// Minutes it has been ready at `now`: from `ready` (its hold's release), else `queued`,
     /// the start `timing`'s wait measures from. None for an item with neither stamp.
     pub fn ready_min(&self, now: chrono::DateTime<chrono::Utc>) -> Option<i64> {
@@ -342,39 +355,6 @@ impl Item {
     /// The plan file and phase numbers (`4 5`) of an item `agent-queue add --plan` queued.
     pub fn plan(&self) -> Option<(&str, &str)> {
         Some((self.extra_str("plan")?, self.extra_str("phases")?))
-    }
-
-    /// A plan item's (`<plan name> P5`, `<phase words>`): its plan label and its title, as
-    /// every view says them (`parse` sets both): the plan by its heading (`plans::named`) in
-    /// place of the file name `agent-queue add --plan` titles it with. A one-phase item takes
-    /// the label its words lead with (`P9 live stage`) over its checklist place. An item with no
-    /// `plan:` whose title has that shape (one promoted from a board row) is named the same way
-    /// when its plan file exists. None for any other item.
-    fn plan_title(&self) -> Option<(String, String)> {
-        use crate::plans::{base, legacy, named, own_label, path};
-        // An item with no `title:` header is worded by its task, as `title()` words it.
-        let head = self.title.trim().is_empty().then(|| headline(&self.task).0);
-        let title = head.as_deref().unwrap_or(self.title.trim());
-        let (plan, tag, words, one) = match (self.plan(), legacy(title)) {
-            (Some((plan, phases)), old) => {
-                let words = old
-                    .filter(|(b, ..)| *b == base(plan))
-                    .map_or(title, |(.., w)| w);
-                let phases: Vec<&str> = phases.split_whitespace().collect();
-                let tag = format!("P{}", phases.join("+"));
-                (plan.to_string(), tag, words, phases.len() == 1)
-            }
-            (None, Some((b, tag, words))) if std::path::Path::new(&path(b)).is_file() => {
-                (path(b), tag.to_string(), words, !tag.contains('+'))
-            }
-            _ => return None,
-        };
-        let (label, words) = one
-            .then(|| own_label(words))
-            .flatten()
-            .unwrap_or((tag, words));
-        let words = cap(&crate::text::clean(words).text, TITLE_MAX);
-        Some((format!("{} {label}", named(&plan)), words))
     }
 
     /// The stage times at `now` (see [`Timing`]). A stamp before the one it is measured from
@@ -659,6 +639,7 @@ pub struct Waiter {
 #[serde(default)]
 pub struct Sitting {
     pub queued: u64,
+    /// Queued items nothing holds (agent-queue's `hold` rule): on deck.
     pub runnable: u64,
     pub runnable_age_minutes_median: Option<i64>,
     /// The three runnable items that have sat longest, oldest first.
@@ -692,7 +673,7 @@ pub struct Stats {
 }
 
 /// `stats.recent`: items added (by `queued`), started, done and failed (by `finished`) in the
-/// last 1, 6 and 24 hours, and the ok items done since local midnight. Added against done over a
+/// last 1, 6 and 24 hours, and the items shipped and the checks closed since local midnight (`DoneToday`). Added against done over a
 /// window is the drain: whether the queue shrinks or grows.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -709,7 +690,8 @@ pub struct Recent {
     pub started_24h: u64,
     pub done_24h: u64,
     pub failed_24h: u64,
-    pub done_today: u64,
+    pub shipped_today: u64,
+    pub checks_today: u64,
 }
 
 /// Minutes as the views print them: `-` for none, hours from two hours up.
@@ -830,6 +812,40 @@ pub fn day_of(at: &str) -> Option<String> {
     )
 }
 
+/// What a finished item counts as, by [`Item::closed_as`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Closed {
+    Shipped,
+    Check,
+}
+
+/// The items closed since a local midnight, one count per slug: a slug that shipped once is
+/// shipped however many runs it took. `agent-queue stats` .recent `shipped_today` and
+/// `checks_today` count by the same rule, for the waybar chip.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct DoneToday {
+    pub shipped: usize,
+    pub checks: usize,
+}
+
+/// [`DoneToday`] over `items`, counting the ones that finished at or after `midnight` (epoch seconds).
+pub fn done_today<'a>(items: impl IntoIterator<Item = &'a Item>, midnight: i64) -> DoneToday {
+    let mut shipped: HashMap<&str, bool> = HashMap::new();
+    for i in items {
+        if !i.finished_at().is_some_and(|f| f.timestamp() >= midnight) {
+            continue;
+        }
+        if let Some(c) = i.closed_as() {
+            *shipped.entry(i.slug.as_str()).or_default() |= c == Closed::Shipped;
+        }
+    }
+    let n = shipped.values().filter(|s| **s).count();
+    DoneToday {
+        shipped: n,
+        checks: shipped.len() - n,
+    }
+}
+
 /// A day (`YYYY-MM-DD`) as the Queue headings word it, by the same clock `day_of` uses: Today,
 /// Yesterday, else `Thu 6 Nov`.
 pub fn day_label(day: &str) -> String {
@@ -901,13 +917,17 @@ pub fn pr_link_of(pr: &str) -> Option<(String, Option<String>)> {
 
 /// `agent-queue list --json --points` prints one object per line (`points` and the board row's `size` joined in); a line that does not parse is skipped.
 /// Each item's `title` becomes the one every view shows: a plan item's phase words, with its
-/// plan and phase in `plan_label` (`plan_title`), else `title()`.
+/// plan and phase in `plan_label` ([`crate::plans::split_title`]; an item with no `title:`
+/// header is worded by its task, as `title()` words it), else `title()`.
 pub fn parse(jsonl: &str) -> Vec<Item> {
+    let home = crate::plans::home();
     jsonl
         .lines()
         .filter_map(|l| serde_json::from_str::<Item>(l).ok())
         .map(|mut i| {
-            match i.plan_title() {
+            let head = i.title.trim().is_empty().then(|| headline(&i.task).0);
+            let title = head.as_deref().unwrap_or(i.title.trim());
+            match crate::plans::split_title(&home, title, i.plan()) {
                 Some((label, words)) => (i.plan_label, i.title) = (Some(label), words),
                 None => i.title = i.title(),
             }
@@ -1071,14 +1091,26 @@ impl Queue {
         self.in_state(s).count()
     }
 
-    /// `1 running, 2 on deck`: the phone widget's queue line. Every queued item can start; work
-    /// that waits on a gate is a board row.
+    /// The queued items that could start now, agent-queue's own count (`stats.sitting.runnable`);
+    /// None from an agent-queue older than the field, so a caller says nothing, not zero.
+    pub fn on_deck(&self) -> Option<u64> {
+        Some(self.stats.as_ref()?.sitting.as_ref()?.runnable)
+    }
+
+    /// The queued items a gate holds (`queued - runnable`), the part of the queue that is not on deck.
+    pub fn held(&self) -> Option<u64> {
+        let s = self.stats.as_ref()?.sitting.as_ref()?;
+        Some(s.queued.saturating_sub(s.runnable))
+    }
+
+    /// `1 running, 2 on deck`: the phone widget's queue line, on deck as the Queue card counts it.
+    /// Without the stats it says `queued` and the item count, so the label never claims a runnable count.
     pub fn counts_line(&self) -> String {
-        format!(
-            "{} running, {} on deck",
-            self.count(State::Running),
-            self.count(State::Queued)
-        )
+        let running = self.count(State::Running);
+        match self.on_deck() {
+            Some(n) => format!("{running} running, {n} on deck"),
+            None => format!("{running} running, {} queued", self.count(State::Queued)),
+        }
     }
 }
 
@@ -1588,6 +1620,12 @@ impl Candidates {
         self.rows.len() - self.shown().len()
     }
 
+    /// When the snapshot was written, unix seconds; None when the rows came from no file.
+    pub fn written_epoch(&self) -> Option<i64> {
+        let t = self.written?.duration_since(std::time::UNIX_EPOCH).ok()?;
+        i64::try_from(t.as_secs()).ok()
+    }
+
     /// Each blocked reason and how many rows it blocks, most first: the `blocked` facet's counts,
     /// a row counted once per reason as the facet counts it, without scanning every other facet.
     pub fn reasons(&self) -> Vec<(String, usize)> {
@@ -1698,6 +1736,7 @@ pub const MODES: [&str; 2] = ["oneshot", "plan"];
 /// A task to queue from the human (agent-web's Add and both Homes' "Queue a fix"): an empty
 /// mode or priority is a high oneshot.
 #[derive(Clone, Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Add {
     pub project: String,
     #[serde(default)]
@@ -2682,13 +2721,19 @@ mod tests {
     #[test]
     fn stats_reads_recent_and_an_older_agent_queue_without_it() {
         let s: Stats = serde_json::from_str(
-            r#"{"since":"2026-10-30","recent":{"added_6h":80,"done_6h":84,"failed_24h":5,"done_today":280}}"#,
+            r#"{"since":"2026-10-30","recent":{"added_6h":80,"done_6h":84,"failed_24h":5,"shipped_today":126,"checks_today":125}}"#,
         )
         .unwrap();
         let r = s.recent.unwrap();
         assert_eq!(
-            (r.added_6h, r.done_6h, r.failed_24h, r.done_today),
-            (80, 84, 5, 280)
+            (
+                r.added_6h,
+                r.done_6h,
+                r.failed_24h,
+                r.shipped_today,
+                r.checks_today
+            ),
+            (80, 84, 5, 126, 125)
         );
         let old: Stats = serde_json::from_str(r#"{"since":"2026-10-30"}"#).unwrap();
         assert_eq!(old.recent, None);

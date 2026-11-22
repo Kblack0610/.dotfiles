@@ -9,14 +9,15 @@
 # an approach, checks, a size and a split. Every write is the CLI's: `ptask edit --exact` takes
 # #plan off and adds the plan as detail lines, `ptask add` adds each split row. A refusal is in
 # the ingest record, so later passes skip the row until its words change. `--kick` starts this
-# runner's unit, without waiting, when a row waits; the inbox sweep and fleet-dispatch's plan_skips
+# runner's unit, without waiting, when a row waits; the inbox sweep and fleet-dispatch's skip_exits
 # call it after they tag rows. How it all fits: notes-cli README, "Intake".
 #
 # A row the person asked for (#requested) is theirs to review: unless it carries #go, it is held
 # instead, `fleet-dispatch start --mode plan` opening a plan-mode session that writes a phased plan
 # and waits on their approval. INBOX_PLAN_REVIEW_MAX such plan items may be open at once (waiting on
 # the person or building what they approved: each holds a session); past it the row keeps #plan
-# until one closes. Rows nobody asked for, on either board, and #go rows are planned here, as above.
+# until one closes. A row gated on what clears (a pending ask, an #after/ PR) is "gated": no refusal,
+# its slot goes to the next row, and the next pass tries it again. Rows nobody asked for, on either board, and #go rows are planned here, as above.
 # Only a #plan the person typed holds a row: triage and fleet-dispatch put #go beside their own.
 
 set -uo pipefail
@@ -40,7 +41,7 @@ LIB="$HERE/../lib"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "$HERE/../../.config/shared-hooks/project-name.sh"
 
-DRY=0; ONLY=""; KICK=0; PLANNED=0; SPLIT=0; FAILED=0; HELD=0; KEPT=0; DECLINED=0; RECORD=""
+DRY=0; ONLY=""; KICK=0; PLANNED=0; SPLIT=0; FAILED=0; HELD=0; KEPT=0; GATED=0; DECLINED=0; RECORD=""
 say() { printf 'inbox-plan: %s\n' "$*" >&2; }
 clean() { md_ascii | tr -cd ' -~' | cut -c1-"$1"; }
 
@@ -166,7 +167,8 @@ $open"
     || say "$p $id: not recorded as planned"
 }
 
-# hold_row <row json>: start the row as a plan item, for the person to review its plan.
+# hold_row <row json>: start the row as a plan item, for the person to review its plan. Returns 3
+# when the row waits on a gate, so its slot goes to the next row.
 hold_row() {
   local row="$1" p id lane prof text details f out rc
   p="$(jq -r .project <<<"$row")"; id="$(jq -r .id <<<"$row")"; lane="$(jq -r .lane <<<"$row")"
@@ -194,6 +196,15 @@ hold_row() {
     refused "$p" "not held: $(grep -m1 'already finished ok' <<<"$out" | clean 140)" "$text"
     DECLINED=$((DECLINED + 1))
     return 0
+  fi
+  # A row gated on something that clears (a pending ask, an #after/ PR) is not ready yet, and nothing
+  # broke. No refusal is recorded: the gate tag stays on the row once it clears, so a refusal would
+  # hide the row for good. A gate that never clears, beside a pending one or alone, is still a
+  # failure. The words are fleet-dispatch's gate_wait and promote skip line; start lower-cases the key.
+  if [ "$rc" != 0 ] && [[ "${out,,}" == *" ${id,,} waits on "* && "$out" != *"never clears"* ]]; then
+    say "$p $id: not held yet: $(grep -im1 " $id waits on " <<<"$out" | clean 160)"
+    GATED=$((GATED + 1))
+    return 3
   fi
   if [ "$rc" != 0 ]; then
     out="$(tail -n 1 <<<"${out:-no output}" | clean 160)"
@@ -256,7 +267,8 @@ main() {
       if [ "$holds" -ge "$slots" ]; then KEPT=$((KEPT + 1)); continue; fi
       holds=$((holds + 1))
       agentctl report --name "$NAME" "item=$(jq -r '.project + " " + .id' <<<"$row")" >/dev/null 2>&1 || true
-      hold_row "$row" || rc=1
+      hold_row "$row"; r=$?
+      case "$r" in 0) ;; 3) holds=$((holds - 1)) ;; *) rc=1 ;; esac
       continue
     fi
     [ "$tries" -lt "$INBOX_PLAN_MAX" ] || continue
@@ -274,6 +286,7 @@ main() {
   done <<<"$rows"
   summary="planned $PLANNED, split into $SPLIT rows, refused $FAILED"
   [ "$HELD$KEPT" = 00 ] || summary="$summary, held $HELD for review, $KEPT waiting ($([ -n "$blind" ] && echo "queue unread" || echo "cap $INBOX_PLAN_REVIEW_MAX"))"
+  [ "$GATED" = 0 ] || summary="$summary, $GATED gated"
   say "$summary"
   [ "$DRY" = 1 ] && return "$rc"
   verdict=NOOP

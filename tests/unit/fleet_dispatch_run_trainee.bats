@@ -228,7 +228,7 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
 }
 
 # 2026-11-19: the floor read only judged day_picks rows, about 9 a day, while 653 open rows were #pts/1-3 (ar-3727).
-@test "trainee floor: it draws from every open agent row, unjudged and backlog-tier ones too; a row a failed or skip verdict holds, or a human row, stays out; a tier-3 row keeps its PR brief" {
+@test "trainee floor: it draws from every open agent row, unjudged and backlog-tier ones too; a row a failed or skip verdict holds, or a human row, stays out; a tier-3 row keeps the tier-3 gate" {
   trainee_ready
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0 DISPATCH_LOW_WATER=0
   fleet_state 8
@@ -239,8 +239,8 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   # Ahead of the one it takes: a human-lane row and a row whose session died, both naming a file it takes.
   row game human tr-human "- [ ] fix(menu): fix scripts/setup #pts/1 #high $T <!-- id:tr-human -->"
   row game agent tr-dead "- [ ] fix(menu): fix scripts/setup #pts/1 #high $T <!-- id:tr-dead -->"
-  verdict game agent tr-dead failed
-  # The judge's skip holds a row too, and a tier-3 row whose skip is tier 3 alone keeps its PR-only brief.
+  verdict game agent tr-dead failed; verdict game agent tr-dead failed   # DISPATCH_FIX_TRIES failures hold it
+  # The judge's skip holds a row too, and a tier-3 row it dispatched stays the tier-3 gate's.
   row game agent tr-skip "- [ ] fix(menu): fix scripts/setup #pts/1 #high $T <!-- id:tr-skip -->"
   verdict game agent tr-skip skip
   pr_lane_ready
@@ -251,9 +251,9 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   run trainee_rows
   assert_success
   assert_equal "$(jq -r 'select(.key | startswith("tr-")) | .key' <<<"$output")" tr-ok
-  assert_equal "$(jq -r 'select(.key == "t3-a") | "\(.worker) \(.area)"' <<<"$output")" 'tier3-pr wt'
+  assert_equal "$(jq -r 'select(.key == "t3-a") | "\(.worker) \(.area)"' <<<"$output")" 'tier3 wt'
   run row_task "$(jq -c 'select(.key == "t3-a")' <<<"$output")"
-  assert_output --partial 'Open the PR, do not merge.'
+  assert_output 'wt done never reaps (worktree.sh:213) #tier/3 #high'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool --json
   assert_success
   assert_equal "$(jq -r .eligible <<<"$output")" 1
@@ -267,10 +267,12 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   for k in human dead skip; do
     [ -z "$(agent-queue show "tr-$k" --json 2>/dev/null)" ] || fail "the trainee floor promoted tr-$k"
   done
-  # With its failed verdict cleared, the dead row is back in the pool.
-  jq -cn '{project: "game", lane: "agent", key: "tr-dead", verdict: "cleared"}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  # The run's reap asked the human about the dead row: it waits on that ask, not on its failures.
+  assert_output --partial 'asked about game: tr-dead (failed 2 times, ask '
+  grep -qE '#ask/[A-Za-z0-9_-]+/retry <!-- id:tr-dead -->' "$NOTES_FIXTURE/rows.game.agent" || fail "dead row not gated on the ask"
+  assert_equal "$(jq -r 'select(.key == "tr-dead") | .verdict' "$FLEET_DISPATCH_DIR/verdicts.jsonl" | tail -1)" cleared
   run trainee_rows
-  assert_output --partial '"key":"tr-dead"'
+  refute_output --partial '"key":"tr-dead"'
 }
 
 @test "trainee-pool: counts the board rows a trainee takes and each refusal of the rest, by the floor's own checks" {

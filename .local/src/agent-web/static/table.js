@@ -49,9 +49,9 @@ function tblFacet(f, q) {
   const on = f.on || [];
   const label = on.length ? `${f.key}: ${on[0]}${on.length > 1 ? ` +${on.length - 1}` : ""}` : f.key;
   const clear = on.length ? `<button type="button" class="tfclear" data-tqc="${esc(f.clear)}">clear ${esc(f.key)}</button>` : "";
-  return `<details class="tfacet${on.length ? " on" : ""}" data-fkey="${esc(f.key)}" data-fq="${esc(q || "")}"><summary title="filter ${esc(f.key)}: tick one or more">${esc(label)}</summary><div class="tfmenu">${clear}` +
-    f.values.map((v) => `<label><input type="checkbox" data-tq data-fv="${esc(v.value)}" value="${esc(v.q)}"${v.on ? " checked" : ""}> <span>${esc(v.value)}</span> <span class="n">${v.n}</span></label>`).join("") +
-    `</div></details>`;
+  return fold(`tfacet${on.length ? " on" : ""}`, esc(label), `<div class="tfmenu">${clear}` +
+    f.values.map((v) => `<label><input type="checkbox" data-tq data-fv="${esc(v.value)}" value="${esc(v.q)}"${v.on ? " checked" : ""}> <span>${esc(v.value)}</span> <span class="n">${v.n}</span></label>`).join("") + `</div>`,
+    { attrs: ` data-fkey="${esc(f.key)}" data-fq="${esc(q || "")}"`, sum: ` title="filter ${esc(f.key)}: tick one or more"` });
 }
 
 // The facets each table's header drew under its columns, keyed by the summary's facets array (a
@@ -108,8 +108,15 @@ function tblBar(id, t, hint, tiles = "", days = "") {
 // The header row. `labels` maps a column key to [text, class, named]; a column it leaves out is not
 // drawn, and a named one is worded with its label on a phone row ("pass 84%"). A second table on a
 // tab sorts apart from the first through its block's data-tbl (tblOf), not through these buttons.
-function tblHead(t, labels) {
+// `fixed` is the head of a list that has no view to change (a project page's In flight): plain
+// labels, no sort button and no filter row.
+function tblHead(t, labels, fixed = false) {
   const cols = t.columns.filter((c) => labels[c.key]);
+  const th = (c, extra, inner) => {
+    const [label, cls, named] = labels[c.key];
+    return `<th${cls ? ` class="${cls}"` : ""}${extra} data-role="${c.role || ""}" data-label="${esc(label)}"${named ? " data-named" : ""}>${inner(label)}</th>`;
+  };
+  if (fixed) return "<tr>" + cols.map((c) => th(c, "", esc)).join("") + "</tr>";
   const facet = new Map((t.facets || []).map((f) => [f.key, f]));
   const mine = cols.filter((c) => facet.has(c.key));
   if (t.facets) tblDrawn.set(t.facets, new Set(mine.map((c) => c.key)));
@@ -118,10 +125,9 @@ function tblHead(t, labels) {
   const filters = mine.length ? `<tr class="tfilters" data-phone="filters">` +
     cols.map((c) => (facet.has(c.key) ? `<th>${tblFacet(facet.get(c.key), t.q)}</th>` : `<td></td>`)).join("") + "</tr>" : "";
   return "<tr>" + cols.map((c) => {
-    const [label, cls, named] = labels[c.key];
     const aria = c.sort ? ` aria-sort="${c.sort === "asc" ? "ascending" : "descending"}"` : "";
     const mark = c.sort ? (c.sort === "asc" ? " ^" : " v") : "";
-    return `<th${cls ? ` class="${cls}"` : ""}${aria} data-role="${c.role || ""}" data-label="${esc(label)}"${named ? " data-named" : ""}><button class="thsort" data-tsort="${esc(c.next_sort)}" data-tdir="${c.next_dir}" title="sort by ${esc(label)}">${esc(label)}${mark}</button></th>`;
+    return th(c, aria, (label) => `<button class="thsort" data-tsort="${esc(c.next_sort)}" data-tdir="${c.next_dir}" title="sort by ${esc(label)}">${esc(label)}${mark}</button>`);
   }).join("") + "</tr>" + filters;
 }
 
@@ -249,7 +255,7 @@ function tblTab(o) {
     if (!table()) {
       const why = t.err || (t.data?.errors || [])[0];
       // A failed read looks like one, never like an empty table.
-      paint(el, (o.lead ? o.lead() : "") + (why ? `<div class="card err">${esc(why)}</div>` : `<div class="empty">${o.wait || "Loading..."}</div>`));
+      paint(el, (o.lead ? o.lead() : "") + (why ? errPanel(why, { card: true }) : `<div class="empty">${o.wait || "Loading..."}</div>`));
       return;
     }
     if (t.repaint()) return;

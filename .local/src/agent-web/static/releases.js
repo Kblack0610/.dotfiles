@@ -237,11 +237,15 @@ const relFlowColor = (k) => REL_FLOW_COLOR[k] || OTHER;
 const relFlowAsked = () => new URLSearchParams({ project: relFlow.project, window: relFlow.window }).toString();
 const relFlowOn = () => st.tab === "releases" && !relDetail() && innerOf("releases", st.arg)[0] === "flow";
 // A read for a project or window picked since it started is dropped; a failed one keeps the last up.
+// An answer missing a list relFlowBlock draws is a failed read, never drawn: drawing it throws.
+const REL_FLOW_LISTS = ["projects", "windows", "keys", "ci", "release", "errors"];
 const relFlowRefresh = coalesce(async () => {
   const asked = relFlowAsked();
   let data = null, err = null;
   try { data = await api("/api/releases/lanes?" + asked); } catch (e) { err = e.message; }
   if (asked !== relFlowAsked()) return;
+  const missing = data ? REL_FLOW_LISTS.filter((k) => !Array.isArray(data[k])) : [];
+  if (missing.length) { data = null; err = `${NOT_READ}: the Flow lanes, the answer has no ${missing.join(", ")}. Retry, or check the agent-web log.`; }
   if (data) { relFlow.data = data; relFlow.project = data.project; relFlow.window = data.window; [relFlow.from, relFlow.to] = relFlowDays(data.window); }
   relFlow.err = err;
   relst.render();
@@ -251,7 +255,7 @@ const relFlowLanes = (d, lanes) => swimlanes(lanes.map((l) => ({ ...l, segs: l.s
 const relFlowDays = (w) => (/^\d{4}-\d{2}-\d{2}(\.\.\d{4}-\d{2}-\d{2})?$/.test(w) ? [w.slice(0, 10), w.slice(-10)] : ["", ""]);
 function relFlowBlock() {
   const d = relFlow.data;
-  if (!d) return secHead("", "Flow") + `<div class="${relFlow.err ? "panel down" : "empty"}">${relFlow.err ? esc(relFlow.err) : "reading..."}</div>`;
+  if (!d) return secHead("", "Flow") + readPanel(relFlow.err, "reading...");
   const pick = `<select class="rel-flow" aria-label="project">${d.projects.concat(d.projects.includes(d.project) ? [] : [d.project]).map((p) => `<option${p === d.project ? " selected" : ""}>${esc(p)}</option>`).join("")}</select>`;
   const [from, to] = relFlowDays(d.window);
   // The ledger's days are the only ones with runs: the pickers reach no further back.
@@ -430,7 +434,7 @@ function appIncidents(list) {
 // The open app's status section: what its Gatus checks say, each check's card, then its incidents.
 function appStatus() {
   const d = apst.data;
-  if (!d) return secHead("", "Status") + `<div class="${apst.err ? "panel down" : "empty"}">${apst.err ? esc(apst.err) : "reading..."}</div>`;
+  if (!d) return secHead("", "Status") + readPanel(apst.err, "reading...");
   const checked = d.newest ? `checked ${clock(d.newest * 1e3)} (${ago(d.newest)} ago)` : "no result yet";
   let h = secHead("", "Status") +
     `<div class="panel"><div class="appbanner"><span class="chip" style="--c:${LEVEL_COLOR[d.level]}">${esc(d.banner)}</span> <span class="muted">${esc(checked)}</span>` +

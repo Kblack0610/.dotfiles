@@ -13,7 +13,7 @@ use serde_json::Value;
 use crate::home::{Home, Kind, Level};
 use crate::infra::Infra;
 use crate::projects::{Card, Projects};
-use crate::queue::{day_of, Queue, State};
+use crate::queue::{done_today, DoneToday, Item, Queue};
 use crate::text::{age, cap};
 use crate::vocab::Vocab;
 
@@ -43,6 +43,13 @@ pub struct Phone {
     /// The worst row: ok, warn or critical.
     pub state: &'static str,
     pub rows: Vec<Row>,
+    /// When the fleet state these figures were counted from was written (its `generated_epoch`),
+    /// None when it could not be read. Every host with `hub` publishes this document, so a reader
+    /// takes the newest: a host off the fleet lease counts from a state file that stopped.
+    pub as_of: Option<i64>,
+    /// Home's Needs you card (`cards::needs`) for a chip that lays out figures, not rows: the
+    /// waybar `custom/needs` chip. None when the fleet state could not be read, as the rows.
+    pub needs: Option<crate::cards::Card>,
 }
 
 /// What `build` reads besides Home, all gathered by the caller.
@@ -216,31 +223,27 @@ fn agents(i: &Inputs) -> Vec<Row> {
     out
 }
 
-/// "Done today: 42 queue items, 33 PRs merged", then one line per project, busiest first:
-/// "unity-core-playground 38 items, 25 PRs", the last ending ", +3 more" when there are others. Queue items done are the ok ones finished since local
-/// midnight and PRs come from the day-log, so each source counts only when it could be read; with
-/// neither there is no section.
+/// "Done today: 40 shipped, 12 checks, 33 PRs merged", then one line per project, busiest first:
+/// "unity-core-playground 30 shipped, 2 checks, 25 PRs", the last ending ", +3 more" when there are
+/// others. Shipped and checks are the queue items closed since local midnight by
+/// `queue::done_today`, the rule the Projects card and the waybar chip count by; PRs come from the
+/// day-log, so each source counts only when it could be read; with neither there is no section.
 fn done(i: &Inputs) -> Vec<Row> {
-    let Some(today) = chrono::DateTime::from_timestamp(i.now, 0).map(|t| {
-        t.with_timezone(&chrono::Local)
-            .format("%Y-%m-%d")
-            .to_string()
-    }) else {
-        return vec![];
-    };
+    let midnight = crate::text::local_day_start(i.now);
     // A failed `agent-queue list` leaves no items, which is not the same as none done today.
-    let items: Option<Vec<&str>> = i.queue.filter(|q| q.list_read()).map(|q| {
-        q.items
-            .iter()
-            .filter(|x| x.state == State::Done && x.status.as_deref().unwrap_or("ok") == "ok")
-            .filter(|x| x.finished.as_deref().and_then(day_of).as_deref() == Some(&today))
-            .map(|x| {
-                if x.project.is_empty() {
-                    "other"
-                } else {
-                    repo(&x.project)
-                }
-            })
+    let items: Option<BTreeMap<&str, DoneToday>> = i.queue.filter(|q| q.list_read()).map(|q| {
+        let mut by: BTreeMap<&str, Vec<&Item>> = BTreeMap::new();
+        for x in &q.items {
+            let p = if x.project.is_empty() {
+                "other"
+            } else {
+                repo(&x.project)
+            };
+            by.entry(p).or_default().push(x);
+        }
+        by.into_iter()
+            .map(|(p, v)| (p, done_today(v, midnight)))
+            .filter(|(_, d)| d.shipped + d.checks > 0)
             .collect()
     });
     let prs = i.merged.as_ref();
@@ -251,7 +254,15 @@ fn done(i: &Inputs) -> Vec<Row> {
         |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
     let mut head = vec![];
     if let Some(v) = &items {
-        head.push(plural(v.len(), "queue item", "queue items"));
+        head.push(format!(
+            "{} shipped",
+            v.values().map(|d| d.shipped).sum::<usize>()
+        ));
+        head.push(plural(
+            v.values().map(|d| d.checks).sum(),
+            "check",
+            "checks",
+        ));
     }
     if let Some(v) = prs {
         head.push(plural(v.len(), "PR merged", "PRs merged"));
@@ -262,17 +273,17 @@ fn done(i: &Inputs) -> Vec<Row> {
         format!("Done today: {}", head.join(", ")),
     )];
 
-    let mut by: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
-    for p in items.iter().flatten() {
-        by.entry(p).or_default().0 += 1;
+    let mut by: BTreeMap<&str, (DoneToday, usize)> = BTreeMap::new();
+    for (p, d) in items.iter().flatten() {
+        by.entry(p).or_default().0 = *d;
     }
     for p in prs.into_iter().flatten() {
         by.entry(repo(p)).or_default().1 += 1;
     }
-    let mut by: Vec<(&str, (usize, usize))> = by.into_iter().collect();
-    by.sort_by_key(|(name, (n, m))| (std::cmp::Reverse(n + m), *name));
+    let mut by: Vec<(&str, (DoneToday, usize))> = by.into_iter().collect();
+    by.sort_by_key(|(name, (d, m))| (std::cmp::Reverse(d.shipped + d.checks + m), *name));
     let shown = by.len().min(DONE_PROJECTS);
-    for (k, (name, (n, m))) in by.iter().take(shown).enumerate() {
+    for (k, (name, (d, m))) in by.iter().take(shown).enumerate() {
         // The fold rides on the last row, so the section stays a head and `DONE_PROJECTS` lines.
         let fold = if k + 1 == shown && by.len() > shown {
             format!(", +{} more", by.len() - shown)
@@ -281,7 +292,11 @@ fn done(i: &Inputs) -> Vec<Row> {
         };
         let tail = format!(
             " {}{fold}",
-            counted(&[(*n, "item", "items"), (*m, "PR", "PRs")])
+            counted(&[
+                (d.shipped, "shipped", "shipped"),
+                (d.checks, "check", "checks"),
+                (*m, "PR", "PRs")
+            ])
         );
         let room = LINE_MAX.saturating_sub(tail.chars().count());
         out.push(row(Level::Ok, "done", format!("{}{tail}", cap(name, room))));
@@ -431,7 +446,12 @@ pub fn build(home: &Home, i: &Inputs) -> Phone {
     } else {
         "ok"
     };
-    Phone { state, rows }
+    Phone {
+        state,
+        rows,
+        as_of: i.state["generated_epoch"].as_i64(),
+        needs: (!i.state.is_null()).then(|| crate::cards::needs(home, i.now)),
+    }
 }
 
 /// The project of each PR merged today, from the day-log record (`DAYLOG_DIR`); None when there
@@ -692,6 +712,21 @@ mod tests {
     }
 
     #[test]
+    fn the_needs_card_rides_the_document_with_the_state_age() {
+        let (s, q) = (state(), queue_of(vec![(State::Waiting, "w1")]));
+        let inf = infra(vec![]);
+        let home = home::build(Some(&s), Some(&q), None, Some(&inf), NOW);
+        let p = phone(&s, Some(&q), Some(&inf));
+        let card = p.needs.expect("a read state carries the needs card");
+        assert_eq!(card.big, home.waiting().count.to_string());
+        assert_eq!(p.as_of, Some(NOW));
+        // Negative control: no state read is no card and no age, never a zero.
+        let none = phone(&Value::Null, Some(&q), Some(&inf));
+        assert_eq!(none.needs, None);
+        assert_eq!(none.as_of, None);
+    }
+
+    #[test]
     fn the_heuristics_are_counted_and_keep_their_baselines() {
         let s = state();
         let inf = infra(vec![("bench", bench())]);
@@ -724,6 +759,9 @@ mod tests {
         ]);
         q.stats = Some(crate::queue::Stats {
             sitting: Some(crate::queue::Sitting {
+                // Two queued, one of them held: the line counts what is on deck.
+                queued: 2,
+                runnable: 1,
                 oldest_runnable: vec![crate::queue::Waiter {
                     minutes: 37 * 60,
                     ..Default::default()
@@ -736,7 +774,7 @@ mod tests {
         assert_eq!(
             texts(&p, "queue"),
             [
-                "Queue: 1 running, 2 on deck",
+                "Queue: 1 running, 1 on deck",
                 "oldest waited 37h, $6.54 per PR (28d $7.00)",
             ]
         );
@@ -746,21 +784,28 @@ mod tests {
     fn done_leads_with_the_day_per_project_and_counts_only_what_was_read() {
         let mut q = queue_of(vec![(State::Running, "r1")]);
         // Every finish is NOW itself, so the machine's timezone cannot move one across midnight.
+        // a and c merged (shipped); b merged nothing (a check), and so did a's second run.
+        let merged = |mut x: Item| {
+            x.merged = Some("abc123".into());
+            x
+        };
+        q.items.push(merged(done_item("a", "agent-runtime", NOW)));
         q.items.push(done_item("a", "agent-runtime", NOW));
         q.items.push(done_item("b", "agent-runtime", NOW));
-        q.items.push(done_item("c", ".dotfiles", NOW));
+        q.items.push(merged(done_item("c", ".dotfiles", NOW)));
         q.items
             .push(done_item("old", "agent-runtime", NOW - 3 * 86400));
-        let mut failed = done_item("bad", "agent-runtime", NOW);
+        // Negative control: a failed run with a merge counts in neither.
+        let mut failed = merged(done_item("bad", "agent-runtime", NOW));
         failed.status = Some("failed".into());
         q.items.push(failed);
         let p = phone(&state(), Some(&q), Some(&infra(vec![])));
         assert_eq!(
             texts(&p, "done"),
             [
-                "Done today: 3 queue items, 85 PRs merged",
+                "Done today: 2 shipped, 1 check, 85 PRs merged",
                 "unity-core-playground 57 PRs",
-                "dotfiles 1 item, 28 PRs, +1 more",
+                "dotfiles 1 shipped, 28 PRs, +1 more",
             ]
         );
         // After Needs, before Agents: near the top, not a detail under Queue.
@@ -793,15 +838,17 @@ mod tests {
         assert_eq!(
             texts(&p, "done"),
             [
-                "Done today: 15 queue items",
-                "e 5 items",
-                "d 4 items, +3 more",
+                "Done today: 0 shipped, 15 checks",
+                "e 5 checks",
+                "d 4 checks, +3 more",
             ]
         );
     }
 
     #[test]
-    fn a_failed_queue_list_is_not_a_zero_and_a_missing_status_counts_as_ok() {
+    fn a_failed_queue_list_is_not_a_zero_and_a_missing_status_counts_in_neither() {
+        // agent-queue stats counts only status ok, so the phone does too (no done item in the
+        // ledger lacked a status, 2026-11-21).
         let mut q = queue_of(vec![]);
         let mut bare = done_item("a", "p", NOW);
         bare.status = None;
@@ -809,7 +856,7 @@ mod tests {
         let p = phone(&state(), Some(&q), None);
         assert_eq!(
             texts(&p, "done")[0],
-            "Done today: 1 queue item, 85 PRs merged"
+            "Done today: 0 shipped, 0 checks, 85 PRs merged"
         );
         q.items.clear();
         q.errors.push("agent-queue list: boom".into());
@@ -869,11 +916,11 @@ mod tests {
             p.rows.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
             [
                 "Needs you: nothing",
-                "Done today: 0 queue items, 85 PRs merged",
+                "Done today: 0 shipped, 0 checks, 85 PRs merged",
                 "unity-core-playground 57 PRs",
                 "dotfiles 28 PRs",
                 "Agents: 2 working",
-                "Queue: 1 running, 0 on deck",
+                "Queue: 1 running, 0 queued",
                 "CI: 6.0/20 busy, 80% passed",
             ]
         );

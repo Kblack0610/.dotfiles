@@ -105,6 +105,9 @@ pub struct Page {
     /// What needs the human, grouped by kind, each with its count and every item: the chain's
     /// (`need_groups`), then the next stage's failing and human checks (kind `stage`).
     pub need_groups: Vec<NeedGroup>,
+    /// How many items Overview's Needs you lists: those groups, plus the departments' once
+    /// `with_department_needs` has them. The number on Overview's inner tab, on both surfaces.
+    pub need_count: usize,
     /// The project's open feature epics as the Deliverables table, the TUI's Build inner tab
     /// (agent-web reads `/api/deliverables?scope=` for its own, the same `deliverables::build`).
     #[serde(skip)]
@@ -155,6 +158,18 @@ impl Page {
     pub fn check_read(&self) -> Option<Vec<(String, Vec<String>)>> {
         (!self.check_groups.is_empty())
             .then(|| vec![(self.project.clone(), self.check_groups.clone())])
+    }
+
+    /// Overview's Needs you count: every item of the work's groups, then the departments'
+    /// (`Product::need_groups`) when the product is known.
+    pub fn overview_needs(&self, prod: Option<&crate::departments::Product>) -> usize {
+        let own = need_count(&self.need_groups);
+        own + prod.map_or(0, |p| need_count(&p.need_groups()))
+    }
+
+    /// Sets `need_count` with the departments' needs in it; `None` leaves the work's alone.
+    pub fn with_department_needs(&mut self, prod: Option<&crate::departments::Product>) {
+        self.need_count = self.overview_needs(prod);
     }
 
     /// The checks badge from a [`crate::app_status::badges`] read; a failed one is named.
@@ -263,6 +278,17 @@ pub fn epic_line(e: &Epic, now: i64) -> String {
         s += &format!("  {t}");
     }
     s
+}
+
+/// The stage group joins the work groups, then `need_count` is taken over all of them.
+fn close_needs(p: &mut Page) {
+    p.need_groups.extend(stage_group(p));
+    p.need_count = need_count(&p.need_groups);
+}
+
+/// The items a set of Needs you groups lists.
+pub fn need_count(groups: &[NeedGroup]) -> usize {
+    groups.iter().map(|g| g.items.len()).sum()
 }
 
 /// What the chain asks of the human, by kind: the epics to verify once every row landed, then
@@ -669,7 +695,7 @@ pub fn read_with(
         let in_open = roadmap.as_ref().map(closed_in_open).unwrap_or_default();
         p.systems = systems(c, &criteria, &in_open, now);
     }
-    p.need_groups.extend(stage_group(&p));
+    close_needs(&mut p);
     let open_epics: usize = p.systems.iter().map(|s| s.epics.len()).sum();
     p.systems_says = format!("{} systems, {open_epics} open epics", p.systems.len());
     if let Some(n) = chain
@@ -713,11 +739,11 @@ fn stats_of(runner: &dyn Runner, name: &str) -> Result<crate::projects::Stats, S
         .ok_or_else(|| format!("notes projects lists no project {name}"))
 }
 
-/// The numbers of a project's lab STATUS line (`lab-status`), one sentence each: the project's
+/// A project's numbers as prose (`hub projects --status`), one sentence each: the project's
 /// state ([`crate::projects::state`]), each system's
 /// current wave and its percent, the systems with only upkeep open, the open version and its
 /// release window, the next stage's gate and the playtests waiting. Every number is one this page or the
-/// card already counts; only the words are here, and the model writing the status adds none.
+/// card already counts; only the words are here. The lab STATUS note carries none of them.
 pub fn status_line(p: &Page, c: &Card, playtest_open: usize) -> String {
     let waves: Vec<String> = p
         .systems
@@ -768,7 +794,7 @@ pub fn status_line(p: &Page, c: &Card, playtest_open: usize) -> String {
     out.join(" ")
 }
 
-/// `hub projects --status NAME`: the STATUS line's numbers for one lab project. A source the line
+/// `hub projects --status NAME`: one lab project's numbers as prose. A source the line
 /// says (the chain, the next stage's check, the board feed) that could not be read is an error,
 /// never a line that leaves it out.
 pub fn status(runner: &(dyn Runner + Sync), name: &str, now: i64) -> Result<String, String> {

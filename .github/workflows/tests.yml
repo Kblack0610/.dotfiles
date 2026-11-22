@@ -42,9 +42,9 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  # The PR budget is a p90 of 5 minutes (~/.local/src/docs/ci.md); timeout-minutes is the hang
-  # guard at 2x that, never a lever. tests/pick.sh lists the files, and tests/shard.sh splits them
-  # across runners, balanced by the seconds the weights job reads from the newest green main run's
+  # The PR budget is a p90 of 5 minutes (~/.local/src/docs/ci.md); each job's timeout-minutes is
+  # its hang guard (fast's is 2x the budget), never a lever. tests/pick.sh lists the files, and
+  # tests/shard.sh splits them across runners, balanced by the seconds the weights job reads from the newest green main run's
   # JUnit. A shard is bounded below by its heaviest file, so no file may weigh much past a shard's
   # share of a picked run: unit/fleet_dispatch*.bats, 40% of unit, is ten files for that. With
   # eight shards a run picking the family still read p90 6.4 min over 54 runs, its slowest shard
@@ -358,6 +358,7 @@ jobs:
     timeout-minutes: 20
     env:
       CARGO_INCREMENTAL: 0   # incremental state only helps a rebuild in place, and it bloats the cache
+      RUST_JOBS: 4           # crates rust.sh gates at once, the runner's vCPU count (tests/rust.sh)
     steps:
       - uses: actions/checkout@v4
         with:

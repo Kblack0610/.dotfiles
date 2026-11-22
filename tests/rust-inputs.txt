@@ -12,7 +12,12 @@
 .local/src/hub-core    .config/fleet-sessions/state.conf
 .local/src/hub-core    .config/comms-lint/
 .local/src/hub-core    .local/bin/comms-lint
-.local/src/hub-core    .local/src/agent-web/static/infra.js
+# hub-core's reading::tests::empty_state_words_come_from_one_place scans these three trees by
+# CARGO_MANIFEST_DIR.join("..") plus a list, which the guard above cannot see: keep them in step
+# with that list by hand. Whole trees, since any new file in one is scanned (#2981, ar-4309).
+.local/src/hub-core    .local/src/agent-web/src/
+.local/src/hub-core    .local/src/agent-web/static/
+.local/src/hub-core    .local/src/hub-tui/src/
 .local/src/hub-core    .local/src/docs/stages.md
 .local/src/hub-core    tests/agent-web/tilecast-schema.sh
 .local/src/project-map .config/shared-hooks/project-name.sh

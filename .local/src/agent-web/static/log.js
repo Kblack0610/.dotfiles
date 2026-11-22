@@ -122,17 +122,16 @@ function renderLog() {
   const rec = lst.rec, day = rec.date;
   const ds = lst.hist.map((r) => r.date), i = ds.indexOf(day);
   const total = (rec.usage || []).find((u) => u.project === "TOTAL") || {};
-  const w = rec.waiting || {};
-  const nWait = rec.waiting_total;
-  const repos = new Set((rec.merged || []).map((m) => m.repo)).size;
+  // hub_core::boards::day_counts and waiting_total: every figure on these tiles is the server's.
+  const nWait = rec.waiting_total, n = rec.counts;
   let html = `<div class="bhead daynav">
     <span><button class="btn" data-step="-1"${i > 0 ? "" : " disabled"}>Previous day</button>
     <b>${weekday(day)} ${esc(day)}</b> <span class="muted">${rec.live ? "live" : "closed"}, gathered ${rec.gathered_at ? hm(rec.gathered_at) : "?"}</span>
     <button class="btn" data-step="1"${i >= 0 && i < ds.length - 1 ? "" : " disabled"}>Next day</button>
     <button class="btn" data-today${lst.day ? "" : " disabled"}>Today</button></span>
     <span class="muted">[ ] day, t today${(rec.unreadable || []).length ? `, ${NOT_READ}: ` + esc(rec.unreadable.join(", ")) : ""}</span></div>`;
-  html += `<div class="tiles roomy">${tile("MERGED", (rec.merged || []).length, "var(--c1)", `${repos} repo(s)`)}${tile("OPEN", (rec.open || []).length, "var(--b-working)")}${
-    tile("WAITING", nWait, nWait ? "var(--b-needs)" : "var(--b-done)", `${(w.main || []).length} nightly, ${(w.asks || []).length} asks, on Home`, st.waiting ? esc(st.waiting.href) : "")}${
+  html += `<div class="tiles roomy">${tile("MERGED", n.merged, "var(--c1)", `${n.repos} repo(s)`)}${tile("OPEN", n.open, "var(--b-working)")}${
+    tile("WAITING", nWait, nWait ? "var(--b-needs)" : "var(--b-done)", `${n.nightly} nightly, ${n.asks} asks, on Home`, st.waiting ? esc(st.waiting.href) : "")}${
     tile("SPEND", "on Costs", "var(--c2)", "by project, last 24h", "#costs?by=project&w=24h")}${tile("SESSIONS", total.sessions ?? "-", "var(--c3)")}</div>`;
   if (rec.bench && rec.bench.headline) html += `<div class="headline muted">${esc(rec.bench.headline)}</div>`;
   html += innerWrap("log", "history", `<div id="sec-history">${historyCharts(day)}</div>`);
@@ -140,7 +139,7 @@ function renderLog() {
   html += `<div class="panel"><h3>Merged by hour ${hours.legend}</h3>${hours.chart}</div>`;
   html += benchTable(rec);
   const tl = rec.timeline || [];
-  if (tl.length) html += `<details class="sec-d" data-k="timeline"${secOpen(lst.open, "timeline") ? " open" : ""}><summary>${secHead("", "Timeline", tl.length)}</summary><div class="panel feed">${tl.slice().reverse().map((l) => `<div class="tl1">${esc(l)}</div>`).join("")}</div></details>`;
+  if (tl.length) html += fold("sec-d", secHead("", "Timeline", tl.length), `<div class="panel feed">${tl.slice().reverse().map((l) => `<div class="tl1">${esc(l)}</div>`).join("")}</div>`, { k: "timeline", open: secOpen(lst.open, "timeline") });
   paint(el, html, lst.open);
 }
 

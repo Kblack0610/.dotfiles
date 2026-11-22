@@ -25,7 +25,7 @@ import { createRequire } from "node:module";
 import { availableParallelism, homedir } from "node:os";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BIG_PROJECT, FIXTURES, NOW, RUNNER_PAGES, STACK_RULE_ROWS, WIDGET_CARDS, pageRows } from "./fixtures.mjs";
+import { BIG_PROJECT, FIXTURES, NOW, RUNNER_PAGES, STACK_RULE_ROWS, pageRows } from "./fixtures.mjs";
 
 const VIEWPORT = { width: 390, height: 844 };
 const ORIGIN = "https://agent-web.invalid";
@@ -125,7 +125,7 @@ function dumpIndex() {
   const r = spawnSync("cargo", ["test", "--quiet", "assets::tests::dump_index_for_phone_harness", "--", "--ignored", "--exact"], { cwd: WEB, env: { ...process.env, AGENT_WEB_INDEX_OUT: path, CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR || join(WEB, "target") }, encoding: "utf8" });
   try {
     if (r.status !== 0) throw new Error(`dumping assets::index() failed:\n${r.stdout}\n${r.stderr}`);
-    return { index: readFileSync(path, "utf8"), widget: readFileSync(`${path}.widget`, "utf8"), csp: readFileSync(`${path}.csp`, "utf8"), roles: JSON.parse(readFileSync(`${path}.roles`, "utf8")) };
+    return { index: readFileSync(path, "utf8"), csp: readFileSync(`${path}.csp`, "utf8"), roles: JSON.parse(readFileSync(`${path}.roles`, "utf8")) };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -170,7 +170,7 @@ function staticFile(name) {
   return { status: 200, contentType: TYPES[extname(name)], body, headers: NOSNIFF };
 }
 
-async function wire(context, page, { index, widget, csp, roles }, seen) {
+async function wire(context, page, { index, csp, roles }, seen) {
   await context.route("**/*", async (route) => {
     const url = new URL(route.request().url());
     if (url.origin !== ORIGIN) return route.abort();
@@ -180,11 +180,6 @@ async function wire(context, page, { index, widget, csp, roles }, seen) {
       return route.fulfill({ response: await route.fetch({ url: api + path + url.search, headers }) });
     }
     if (path === "/") return route.fulfill({ status: 200, contentType: TYPES[".html"], body: index, headers: { ...NOSNIFF, "content-security-policy": csp } });
-    // assets::widget(): the page with its cards as JSON, `<` escaped, under the same CSP.
-    if (path === "/widget") {
-      const data = JSON.stringify({ at: NOW, cards: WIDGET_CARDS }).replaceAll("<", "\\u003c");
-      return route.fulfill({ status: 200, contentType: TYPES[".html"], body: widget.replace("{{data}}", data), headers: { ...NOSNIFF, "content-security-policy": csp } });
-    }
     if (path.startsWith("/static/")) return route.fulfill(staticFile(path.slice("/static/".length)));
     // A fixture keyed with its query (`/api/queue/candidates?counts=1`) answers that read only.
     const key = (path + url.search) in FIXTURES ? path + url.search : path;
@@ -259,13 +254,15 @@ async function renderTab(browser, spec, page0) {
   await page.screenshot({ path: join(out, `${spec.name || spec.tab}.png`) }).catch((e) => seen.errors.push(`screenshot: ${e.message}`));
   await context.close();
   seen.errors.push(...seen.drift);
-  return { ...result, errors: seen.errors, unfixtured: [...seen.unfixtured] };
+  if (seen.unfixtured.size) seen.errors.push(`no fixture, answered {}: ${[...seen.unfixtured].join(", ")}`);
+  return { ...result, errors: seen.errors };
 }
 
 // One page's height at a desktop size: the document's, or its tab element's when that scrolls
 // inside its own box. Under --control every fold is opened and every inner tab shown first.
-// A drifted fixture fails it, and so does a project read the big project page makes with no
-// fixture: a page answered {} draws short and would pass the budget for the wrong reason.
+// A drifted fixture fails it, and so does any read the page makes with no fixture (renderTab
+// likewise): a page answered {} draws short and passes the budget for the wrong reason, or throws
+// in a coalesced refresh that only warns, and then draws or not by which read lands first.
 async function heightOf(browser, spec, page0) {
   const { context, page, seen } = await openPage(browser, page0, DESK, false);
   const result = { page: spec.name, big: !!spec.big, height: null, errors: seen.errors };
@@ -285,9 +282,7 @@ async function heightOf(browser, spec, page0) {
   await page.screenshot({ path: join(out, `tall-${spec.name.replace("/", "-")}.png`) }).catch((e) => seen.errors.push(`screenshot: ${e.message}`));
   await context.close();
   seen.errors.push(...seen.drift);
-  const own = [...seen.unfixtured].filter((p) => p.startsWith("/api/projects"));
-  if (spec.big && own.length) seen.errors.push(`no fixture, answered {}: ${own.join(", ")}`);
-  result.unfixtured = [...seen.unfixtured];
+  if (seen.unfixtured.size) seen.errors.push(`no fixture, answered {}: ${[...seen.unfixtured].join(", ")}`);
   return result;
 }
 
@@ -374,48 +369,6 @@ async function cardsCheck(browser, page0, css = null) {
   return errors;
 }
 
-// The home-screen widget at two widget sizes (a 4x3 and a 4x2 cell widget): every card shown, two
-// across, inside the widget with its number unclipped, the page never scrolling. A web-widget app
-// snapshots the viewport, so anything past it is lost, not scrolled to.
-const WIDGET_SIZES = [{ width: 360, height: 420 }, { width: 360, height: 280 }];
-const WIDGET_CONTROL_CSS = ".wgrid { grid-template-columns: 1fr !important; }";
-async function widgetCheck(browser, page0, css = null) {
-  const errors = [];
-  for (const size of WIDGET_SIZES) {
-    const at = `${size.width}x${size.height}`;
-    const { context, page, seen } = await openPage(browser, page0, size, true);
-    try {
-      await page.goto(`${ORIGIN}/widget`, { waitUntil: "load" });
-      await page.waitForSelector(".wgrid .kcard", { state: "attached", timeout: WAIT_MS });
-      if (css) await page.addStyleTag({ content: css });
-      await page.evaluate(async () => { await document.fonts.ready; await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))); });
-      const w = await page.evaluate(({ width, height }) => {
-        const cards = [...document.querySelectorAll(".wgrid .kcard")];
-        const box = (e) => e.getBoundingClientRect();
-        return { n: cards.length, cols: new Set(cards.map((c) => Math.round(box(c).left))).size,
-          past: cards.filter((c) => box(c).bottom > height || box(c).right > width).map((c) => c.dataset.card),
-          // A line the card cuts off (past its bottom) or squeezes (shorter than its own content).
-          clipped: cards.filter((c) => !c.querySelector(".kbig") || [...c.children].some((e) => e.getClientRects().length &&
-            (box(e).bottom > box(c).bottom - 1 || e.scrollHeight > e.clientHeight + 1))).map((c) => c.dataset.card),
-          scrolls: document.documentElement.scrollHeight > height || document.documentElement.scrollWidth > width,
-          bad: document.body.innerText.match(/.{0,30}\b(undefined|NaN)\b.{0,20}/)?.[0] ?? null };
-      }, size);
-      if (w.n !== WIDGET_CARDS.length) errors.push(`${at}: ${w.n} of ${WIDGET_CARDS.length} cards drawn`);
-      if (w.cols !== 2) errors.push(`${at}: the cards sit ${w.cols} across, not two across`);
-      if (w.past.length) errors.push(`${at}: ${w.past.join(", ")} past the widget's edge`);
-      if (w.clipped.length) errors.push(`${at}: a line is cut or squeezed on ${w.clipped.join(", ")}`);
-      if (w.scrolls) errors.push(`${at}: the page scrolls, so a snapshot loses its end`);
-      if (w.bad) errors.push(`${at}: the page shows "${w.bad}"`);
-    } catch (e) {
-      errors.push(`${at}: ${e.message.split("\n")[0]}`);
-    }
-    await page.screenshot({ path: join(out, `widget-${at}.png`) }).catch((e) => errors.push(`screenshot: ${e.message}`));
-    errors.push(...seen.errors, ...seen.drift);
-    await context.close();
-  }
-  return errors;
-}
-
 // The shared pager (table.js tblPager over hub_core::table::page), on Stack Rules: the server's
 // first page only, every page reachable, next reads page 2 with the page in the URL, and a search
 // opens page 1 again. Under --control the summary loses its pager, which must be reported.
@@ -468,10 +421,7 @@ function print(results) {
   const cells = [cols, ...results.map((r) => cols.map((c) => String(r[c])))];
   const widths = cols.map((_, i) => Math.max(...cells.map((row) => row[i].length)));
   for (const row of cells) console.log(row.map((c, i) => c.padEnd(widths[i])).join("  "));
-  for (const r of results) {
-    for (const e of r.errors) console.log(`ERROR ${r.tab}: ${e}`);
-    if (r.unfixtured.length) console.log(`note ${r.tab}: no fixture, answered {}: ${r.unfixtured.join(", ")}`);
-  }
+  for (const r of results) for (const e of r.errors) console.log(`ERROR ${r.tab}: ${e}`);
 }
 
 // Every check opens its own context and reads no other's state, so they run PAGES_AT_ONCE at a time.
@@ -503,10 +453,9 @@ async function main() {
   const browser = await pw.chromium.launch({ headless: true, executablePath: chromium(pw) });
   const slot = limiter(PAGES_AT_ONCE);
   // --control proves the overflow detector alone; the nav check has its own control, --no-kit.
-  const [navErrors, cardErrors, widgetErrors, pagerErrors, results, heights] = await Promise.all([
+  const [navErrors, cardErrors, pagerErrors, results, heights] = await Promise.all([
     control || wide ? [] : slot(() => navCheck(browser, page)),
     wide || noKit ? [] : slot(() => cardsCheck(browser, page, control ? CARDS_CONTROL_CSS : null)),
-    wide || noKit ? [] : slot(() => widgetCheck(browser, page, control ? WIDGET_CONTROL_CSS : null)),
     wide || noKit ? [] : slot(() => pagerCheck(browser, page, control)),
     noKit ? [] : Promise.all(TABS.map((spec) => slot(() => renderTab(browser, spec, page)))),
     noKit ? [] : Promise.all(TALL.map((spec) => slot(() => heightOf(browser, spec, page)))),
@@ -514,11 +463,9 @@ async function main() {
   await browser.close();
   for (const e of navErrors) console.log(`NAV ${e}`);
   for (const e of cardErrors) console.log(`CARDS ${e}`);
-  for (const e of widgetErrors) console.log(`WIDGET ${e}`);
   for (const e of pagerErrors) console.log(`PAGER ${e}`);
   if (control && !pagerErrors.some((e) => e.includes("no pager"))) { console.log("FAIL: --control: the pager check did not report the missing pager"); process.exit(1); }
   if (control && !cardErrors.some((e) => e.includes("not two across"))) { console.log("FAIL: --control: the cards check did not report one card per row"); process.exit(1); }
-  if (control && !widgetErrors.some((e) => e.includes("not two across"))) { console.log("FAIL: --control: the widget check did not report one card per row"); process.exit(1); }
   if (noKit) {
     if (!navErrors.some((e) => e.includes("no menu button"))) { console.log("FAIL: --no-kit control: the nav check did not report the missing menu button"); process.exit(1); }
     console.log("no-kit control ok: the nav check reported the missing menu button");
@@ -529,8 +476,6 @@ async function main() {
   else if (!control && !wide) console.log("nav ok: phone menu opens and closes, wide sidebar shows");
   if (!control && cardErrors.length) fail.push(`Home cards check, ${cardErrors.length} error(s)`);
   else if (!control && !wide) console.log("cards ok: Home's cards show two across, they and the Needs you head inside the first screen");
-  if (!control && widgetErrors.length) fail.push(`widget check, ${widgetErrors.length} error(s)`);
-  else if (!control && !wide) console.log(`widget ok: ${WIDGET_CARDS.length} cards two across inside the widget at ${WIDGET_SIZES.map((s) => `${s.width}x${s.height}`).join(" and ")}`);
   if (!control && pagerErrors.length) fail.push(`pager check, ${pagerErrors.length} error(s)`);
   else if (!control && !wide) console.log(`pager ok: Stack Rules pages ${pageRows("rules")} rows at a time, next reads page 2 into the URL, a search opens page 1`);
   writeFileSync(join(out, "numbers.json"), JSON.stringify(results, null, 2) + "\n");
@@ -538,7 +483,7 @@ async function main() {
   console.log(`screenshots and numbers.json: ${out}`);
   const budget = BUDGET_SCREENS * DESK.height;
   console.log(`\nheight at ${DESK.width}x${DESK.height}, budget ${budget}px${control ? " (control: every fold open, every inner tab shown)" : ""}`);
-  for (const h of heights) console.log(`${h.page.padEnd(20)}${String(h.height).padStart(7)}${h.height > budget ? "  over" : ""}${h.errors.map((e) => `  ERROR ${e}`).join("")}${h.unfixtured.length ? `  note: no fixture for ${h.unfixtured.join(", ")}` : ""}`);
+  for (const h of heights) console.log(`${h.page.padEnd(20)}${String(h.height).padStart(7)}${h.height > budget ? "  over" : ""}${h.errors.map((e) => `  ERROR ${e}`).join("")}`);
   const unmeasured = heights.filter((h) => h.errors.length || h.height == null);
   if (unmeasured.length) fail.push(`height not measured on ${unmeasured.map((h) => h.page).join(", ")}`);
   const tall = heights.filter((h) => h.height > budget);

@@ -123,7 +123,7 @@ function soon() {
 }
 
 function statusText() {
-  if (obx.err) return `<span class="err">${esc(obx.err)}</span>`;
+  if (obx.err) return errPanel(obx.err, { tag: "span" });
   const v = obx.view;
   if (!v) return `<span class="muted">Reading the outbox...</span>`;
   const parts = [`${v.doc.waiting} waiting`];
@@ -136,21 +136,20 @@ function statusText() {
 function handledHtml(v) {
   const head = secHead("", "Handled today", v.handled.length || null);
   if (!v.handled.length) return head + `<div class="muted">Nothing handled yet today.</div>`;
-  return head + `<ul class="o-steps">${v.handled.map((s) => {
+  return head + tblRec(v.handled.map((s) => {
     const warn = s.action === "left" || s.action === "refused";
     const id = s.id ? " " + s.id : "";
     const to = s.to ? ` in <a class="wl" href="#projects/${encodeURIComponent(s.to)}">${esc(s.to)}</a>` : "";
     const why = s.why ? ` <span class="muted">(why: ${esc(s.why)})</span>` : "";
-    return `<li${warn ? ` class="warn"` : ""}><span class="muted">${esc(String(s.ts).slice(11, 16))}</span> ${esc(s.action)}${esc(id)}${to}: ${esc(s.text)}${why}</li>`;
-  }).join("")}</ul>`;
+    return { cells: [`<span class="muted">${esc(String(s.ts).slice(11, 16))}</span>`, `${esc(s.action)}${esc(id)}${to}: ${esc(s.text)}${why}`], cls: warn ? "warn" : "" };
+  }), "o-steps");
 }
 
 // The intake tags, notes-cli's one table (`notes outbox tags`), folded under the box. Drawn once
 // a read brings them, so an open fold stays open across reads.
 function tagsHtml(tags) {
   if (!tags || !tags.length) return "";
-  return `<details class="o-tags"><summary class="muted">Tags</summary><ul>${tags.map((t) =>
-    `<li><code>${esc(t.tag)}</code> <span class="muted">${esc(t.does)}</span></li>`).join("")}</ul></details>`;
+  return fold("o-tags", "Tags", tblRec(tags.map((t) => [`<code>${esc(t.tag)}</code>`, `<span class="muted">${esc(t.does)}</span>`])), { sum: ' class="muted"' });
 }
 function renderTags() {
   // A doc with no tags (a notes older than the table) leaves the fold for a later read.

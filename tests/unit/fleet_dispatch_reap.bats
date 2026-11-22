@@ -314,6 +314,25 @@ real_epic_board() {
   [ -n "$(qitem review w)" ] || fail "an answered session on a PR did not go back to review"
 }
 
+# 2026-11-21 (ar-4406): an ask a past Claude left pending on a recycled lane moved each agy trainee's
+# item review -> waiting, so reap_replays kept its replay open for hours and no batch review saw its diff.
+@test "reap never moves a headless harness's item to waiting on a stale ask from its lane, and puts a stuck one back in review" {
+  project game beta "$SANDBOX/repos/game"
+  jq -n '{harnesses: {agy: {launcher: "agy", headless: true, timeout_min: 30, models: {flash: "flash"}}}}' > "$SANDBOX/harnesses.json"
+  HARNESSES="$SANDBOX/harnesses.json"
+  started_item t lab:game-agent-1 run '' human review
+  started_item u lab:game-agent-2 run '' human waiting
+  sed -i 's/^agent: claude$/agent: agy/' "$AGENT_QUEUE_DIR"/review/*-t.md "$AGENT_QUEUE_DIR"/waiting/*-u.md
+  sed -i "s/^started: .*/&\nreview: 2026-11-03T11:00:00Z/" "$AGENT_QUEUE_DIR"/waiting/*-u.md
+  printf 'game-agent-%s\n' 1 2 > "$NOTES_FIXTURE/tmux.sessions.lab"
+  stub agent-panel 'exit 0'
+  stub agent-ask 'for n in 1 2; do printf "a$n\tgame\t\tpending\tquestion\tq?\ta|b\t\t\t\tb\t2026-11-02\tgame-agent-$n\t\t\told-sid-$n\n"; done'
+  run cmd_reap
+  assert_success
+  [ -n "$(qitem review t)" ] || fail "a headless item left review on another session's ask"
+  [ -n "$(qitem review u)" ] || fail "a headless item stuck in waiting did not go back to review"
+}
+
 # 2026-11-05: about a fifth of running items were dead: a shell kept the tmux session after claude
 # exited, or a hub-window item had no session of its own, and reap read both as live forever.
 @test "reap settles an item whose claude exited though its tmux session lives; a parked pane, a live Codex run and a fresh start are kept" {
@@ -632,18 +651,18 @@ real_epic_board() {
   [ -z "$(qitem running hub-work)" ] || fail "kept a gone hub conversation after restore finished"
 }
 
-@test "cleanup lane: a tier-3 cleanup row S or M is a merging item at noon behind the red-fix gate; feat, a deps bump, L and tier-3 PR rows are not" {
+@test "tier3 gate: a cleanup row ranks first and promotes high, a feat or a deps bump merges behind the same gate, an L row goes to inbox-plan" {
   pr_lane_ready
   row agent-runtime agent 'drop the dead timer' '- [ ] chore(timer): drop the dead timer #tier/3 #low'
   row agent-runtime agent 'prune the hooks' '- [ ] refactor(hooks): prune the dead hooks #tier/3'
   row agent-runtime agent 'add a panel' '- [ ] feat(panel): add a timer panel #tier/3'
   # A chore that bumps a dependency is shared infrastructure (DISPATCH_CLEANUP_NOT), not cleanup.
   row agent-runtime agent 'bump jq' '- [ ] chore(deps): bump jq to 1.8 #tier/3'
-  pr_lane_verdict 'drop the dead timer' timer; pr_lane_verdict 'prune the hooks' hooks true L; pr_lane_verdict 'add a panel' panel; pr_lane_verdict 'bump jq' jq
+  pr_lane_verdict 'drop the dead timer' timer; pr_lane_verdict 'prune the hooks' hooks false L; pr_lane_verdict 'add a panel' panel; pr_lane_verdict 'bump jq' jq
 
   fill --dry-run --json
-  assert_equal "$(jq -r 'select(.state == "ready" and .worker == "tier3-cleanup") | "\(.key) \(.worker)"' <<<"$output")" 'drop the dead timer tier3-cleanup'
-  assert_equal "$(jq -r 'select(.state == "ready" and .worker == "tier3-pr") | .key' <<<"$output" | sort | paste -sd, -)" 'add a panel,bump jq'
+  # Cleanup ranks first (its #low lifted to high); every S or M tier-3 row is the one gate's.
+  assert_equal "$(jq -r 'select(.state == "ready" and .worker == "tier3") | .key' <<<"$output" | paste -sd, -)" 'drop the dead timer,bump jq,add a panel'
   DISPATCH_PER_PASS=5 fill
   assert_success
   f=$(agent-queue list --json --state queued | jq -r 'select(.title | test("drop the dead timer")) | .slug')
@@ -654,19 +673,23 @@ real_epic_board() {
   refute_output --partial -- '--pr-only'
   assert_output --partial 'agent-land refuses a tier-3 PR without that line'
   assert_output --partial 'Merge with agent-land'
-  # The L cleanup row is neither merging nor a PR row: plan_skips sends it to inbox-plan.
+  # The L row the judge skipped is neither started nor queued: skip_exits sends it to inbox-plan.
   [ "$(state_of 'prune the hooks')" = '- [ ]' ] || fail "an L cleanup row was started"
   assert_equal "$(pr_lane_keys)" 'add a panel,bump jq'
+  g=$(agent-queue list --json --state queued | jq -r 'select(.title | test("add a timer panel")) | .slug')
+  run item_brief "$(agent-queue show "$g" --json)"
+  refute_output --partial -- '--pr-only'
+  assert_output --partial 'agent-land refuses a tier-3 PR without that line'
 }
 
-@test "cleanup lane: a tier-3 cleanup pick ranks with its project's #prio, as a day pick does" {
+@test "tier3 gate: a tier-3 cleanup pick ranks with its project's #prio, as a day pick does" {
   pr_lane_ready
   sed -i '1s/$/ #prio\/focus/' "$SANDBOX/sheets/agent-runtime/README.md"
   row agent-runtime agent 'drop the dead timer' '- [ ] chore(timer): drop the dead timer #tier/3'
   pr_lane_verdict 'drop the dead timer' timer
   run t3_picks "$(t3_rows '')"
   assert_success
-  assert_equal "$(jq -r '"\(.pprio) \(.why)"' <<<"$output")" '0 cleanup, focus project, tier3-cleanup, #high, alpha'
+  assert_equal "$(jq -r '"\(.pprio) \(.why)"' <<<"$output")" '0 cleanup, focus project, tier3, #high, alpha'
 }
 
 @test "reap closes a queue item whose session ended: ok with a PR, failed without; a closed one is left alone" {
@@ -856,7 +879,7 @@ OUT
   run cmd_reap
   refute_output --partial 'fix-crash'
   assert_equal "$(grep -c 'ptask game add fix(ci)' "$NOTES_FIXTURE/calls.log")" 1
-  assert_equal "$(grep -c "agent-notify .*PR o/game#12 red" "$NOTES_FIXTURE/calls.log")" 1
+  assert_equal "$(grep -c "agent-notify -t Needs you -d needs:dispatch:pr:o/game#12:fix:${h2:0:12} PR o/game#12 red" "$NOTES_FIXTURE/calls.log")" 1
   # the human pushed a new head and it is red: the count starts again
   fix_ended "$h1" FAIL
   run cmd_reap
@@ -1027,4 +1050,63 @@ takeover_item() {
   assert_output --partial 'failed queue item tk'
   assert_output --partial 'failed queue item gone'
   refute_output --partial 'takeover queue item'
+}
+
+# branch_item <state> [head] -- takeover_item's item `tk`, whose session pushed branch `work` and opened PR
+# o/game#7 from it without recording it; the gh stub lists PRs 3 (closed) and 7 (<state>, at <head>, default the
+# pushed sha) by that head and reads #7 as <state>.
+branch_item() {
+  takeover_item
+  printf '%s %s\n' "$1" "$WORK" > "$NOTES_FIXTURE/pr.state"
+  stub gh 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"
+case "$*" in
+"pr list --head work --state all --json number,url,state,headRefOid") echo "[{\"number\":3,\"url\":\"https://github.com/o/game/pull/3\",\"state\":\"CLOSED\",\"headRefOid\":\"'"$WORK"'\"},{\"number\":7,\"url\":\"https://github.com/o/game/pull/7\",\"state\":\"'"$1"'\",\"headRefOid\":\"'"${2:-$WORK}"'\"}]" ;;
+"pr list"*) echo "[]" ;;
+*) [ -s "$NOTES_FIXTURE/pr.state" ] && cat "$NOTES_FIXTURE/pr.state" ;;
+esac'
+}
+
+@test "reap: a session that opened a PR from its pushed branch and never recorded it settles by that PR, not by a takeover" {
+  branch_item OPEN
+  run cmd_reap
+  assert_success
+  assert_output --partial 'review queue item tk (PR o/game#7 open'
+  refute_output --partial 'takeover queue item'
+  assert_equal "$(agent-queue show tk --json | jq -r '[.state, .pr] | join("|")')" "review|o/game#7"
+  grep -qF "its branch's PR o/game#7 recorded" "$FLEET_DISPATCH_DIR"/log.md || fail "recorded PR not logged"
+  assert_equal "$(grep -c 'action reaped --from game --item tk' "$NOTES_FIXTURE/calls.log")" 1
+}
+
+@test "reap: the branch's merged PR closes the item ok with merged:" {
+  branch_item MERGED
+  git -C "$SANDBOX/repos/game" push -q origin "$WORK:refs/heads/main"
+  run cmd_reap
+  assert_equal "$(agent-queue show tk --json | jq -r '[.state, .status, .pr, .merged] | join("|")')" "done|ok|o/game#7|$WORK"
+}
+
+@test "reap: a PR at an older head than the branch's pushed work is no proof for it: the work is taken over" {
+  branch_item MERGED 0123456789abcdef0123456789abcdef01234567
+  run cmd_reap
+  assert_output --partial "takeover queue item tk (branch work at ${WORK:0:12}"
+  assert_equal "$(agent-queue show tk --json | jq -r '.pr // ""')" ""
+}
+
+@test "reap: a PR closed unmerged is no proof for the branch's work either: it is taken over, not failed" {
+  branch_item CLOSED
+  run cmd_reap
+  assert_output --partial "takeover queue item tk (branch work at ${WORK:0:12}"
+  assert_equal "$(agent-queue show tk --json | jq -r '.pr // ""')" ""
+}
+
+@test "reap: a branch no PR was opened from still takes over, and a Forgejo checkout is not read through gh" {
+  branch_item OPEN
+  stub gh 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; echo "[]"'
+  run cmd_reap
+  assert_output --partial "takeover queue item tk (branch work at ${WORK:0:12}"
+  assert_equal "$(agent-queue show tk --json | jq -r '.pr // ""')" ""
+  mkdir -p "$SANDBOX/repos/game/.forgejo/workflows"; : > "$SANDBOX/repos/game/.forgejo/workflows/mirror-to-github.yaml"
+  : > "$NOTES_FIXTURE/calls.log"
+  run branch_pr "$(agent-queue show tk --json)"
+  assert_failure
+  assert_not_called 'gh pr list'
 }

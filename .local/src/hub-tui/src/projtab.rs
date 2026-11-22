@@ -10,6 +10,7 @@
 
 use hub_core::deliverables::{Deliverable, Deliverables};
 use hub_core::departments::{self, Coverage};
+use hub_core::home::Running;
 use hub_core::layout::{self, Inner, Tab};
 use hub_core::page::{NeedGroup, Page, System};
 use hub_core::projects::{self, Card, Projects, Stats};
@@ -39,7 +40,7 @@ pub fn load(runner: &dyn Runner) -> Loaded {
 /// The list's columns, `Card`'s `Row::COLUMNS` in order, so the sort's mark lands on its header.
 const HEADER: [&str; 21] = [
     "PROJECT", "STATE", "PROFILE", "STAGE", "VERSION", "PRIO", "OPEN", "DOING", "HOT", "DONE",
-    "7D", "PTS", "PTS7D", "WINDOW", "DUE", "PACE/WK", "RUN", "WAIT", "QUEUED", "TODAY", "OLDEST",
+    "7D", "PTS", "PTS7D", "WINDOW", "DUE", "PACE/WK", "RUN", "WAIT", "QUEUED", "SHIPPED", "OLDEST",
 ];
 
 #[derive(Debug)]
@@ -682,16 +683,11 @@ fn overview(
     }
     out.push(Line::raw(""));
     out.push(sec_head("IN FLIGHT", &projects::counts(c), "", p, w));
-    for r in &c.running {
-        let mut t = r.title.clone();
-        if let Some(ph) = &r.phases {
-            t += &format!(" (phase {} of {}", ph.done + 1, ph.total);
-            if let Some(n) = &ph.next {
-                t += &format!(": {n}");
-            }
-            t += ")";
-        }
-        out.extend(wrapped("  running  ", &t, p.good(), p, w));
+    if !c.running.is_empty() {
+        // Home's Running table scoped to the project, so a phase reads the same in both.
+        let rows: Vec<&Running> = c.running.iter().collect();
+        let t = crate::hometab::running_table(&rows, p, hub_core::jobs::now(), None, true);
+        out.extend(t.fit_wrapped(w, p.dim()).0);
     }
     out.push(Line::raw(""));
     out.push(sec_head(
@@ -857,8 +853,20 @@ fn activity(c: &Card, pg: &Page, p: Palette, w: usize) -> Vec<Line<'static>> {
     }
     out.push(Line::raw(""));
     out.push(sec_head("AGENT NOTE", &projects::note_says(c), "", p, w));
-    if !c.status.is_empty() {
-        out.extend(wrapped("  ", &c.status, p.dim(), p, w));
+    if let Some(h) = &c.status.headline {
+        out.extend(wrapped("  ", h.full(), p.dim(), p, w));
+    }
+    // The labelled lines as a key table: the label padded to the widest, the value wrapped under itself.
+    let key = c
+        .status
+        .rows
+        .iter()
+        .map(|f| f.label.text().len())
+        .max()
+        .unwrap_or(0);
+    for f in &c.status.rows {
+        let lead = format!("  {:<key$}  ", f.label.text());
+        out.extend(wrapped(&lead, f.value.full(), p.dim(), p, w));
     }
     out
 }
@@ -867,15 +875,11 @@ fn activity(c: &Card, pg: &Page, p: Palette, w: usize) -> Vec<Line<'static>> {
 /// a department's needs that are not ok.
 fn inner_count(pg: Option<&Page>, prod: Option<&departments::Product>, id: &str) -> usize {
     if let Some(d) = prod.and_then(|pr| pr.dept(id)) {
-        return d
-            .needs
-            .iter()
-            .filter(|n| n.level != hub_core::vocab::Level::Ok)
-            .count();
+        return d.open_needs();
     }
     let Some(pg) = pg else { return 0 };
     match id {
-        OVERVIEW => need_groups(pg, prod).iter().map(|g| g.items.len()).sum(),
+        OVERVIEW => pg.overview_needs(prod),
         "stage" => pg.gate.as_ref().map_or(0, |g| g.fail as usize),
         _ => 0,
     }
@@ -1022,7 +1026,7 @@ fn row(c: &Card, p: Palette) -> Vec<Cell> {
         lit(c.running.len(), p.good()),
         lit(c.waiting, p.warn()),
         c.queued.to_string().into(),
-        lit(c.done_today, p.good()),
+        lit(c.today.shipped, p.good()),
         projects::wait_word(c.oldest_ready_min).into(),
     ]
 }
@@ -1293,7 +1297,10 @@ pub(crate) mod tests {
                 days_left: Some(7),
                 ..Default::default()
             }),
-            status: "landed the cards".into(),
+            status: projects::Status::of(
+                "landed the cards",
+                &serde_json::from_str(r#"{"done":"the arena (#9).","needs":"nothing."}"#).unwrap(),
+            ),
             status_date: "2026-11-05".into(),
             ..Default::default()
         };
@@ -1353,6 +1360,7 @@ pub(crate) mod tests {
                 says: "1 epic landed with no live proof".into(),
                 items: vec!["Saves (4 of 4 rows landed)".into()],
             }],
+            need_count: 1,
             timeline: Some(hub_core::timeline::Timeline {
                 says: "7d: 1 commit (1 red on CI)".into(),
                 lines: vec![hub_core::timeline::Line {
@@ -1422,6 +1430,38 @@ pub(crate) mod tests {
         assert!(
             t.contains("IN FLIGHT  0 running, 0 waiting, 0 queued; 0 rows #requested, 0 in the inbox; Sprint 12/71 | Today 75 | Backlog 12 | Epics 2 | Epic backlog 5"),
             "{t}"
+        );
+        // In flight is Home's Running table scoped to the project: the phase as `Phases::shown`
+        // words it, the next phase its own column, and no PROJECT column or sentence.
+        let mut busy = pr.cards[0].clone();
+        busy.running = vec![hub_core::home::Running {
+            slug: "s1".into(),
+            title: "wire the bar".into(),
+            project: busy.name.clone(),
+            phases: Some(hub_core::boards::Phases {
+                done: 1,
+                total: 3,
+                next: Some("web".into()),
+                eta: None,
+                eta_epoch: None,
+                overdue: None,
+            }),
+            ..Default::default()
+        }];
+        let flight = draw(&busy, Some(&pg), &pv).join("\n");
+        assert!(
+            flight.contains("wire the bar") && flight.contains("PHASE"),
+            "{flight}"
+        );
+        assert!(
+            flight
+                .lines()
+                .any(|l| l.contains("1/3") && l.contains("web")),
+            "{flight}"
+        );
+        assert!(
+            !flight.contains("PROJECT") && !flight.contains("phase 2 of"),
+            "{flight}"
         );
         assert!(
             !body.contains("Menus"),
@@ -1514,7 +1554,7 @@ pub(crate) mod tests {
         for s in [
             "SHIPPED  none yet",
             "TIMELINE  7d: 1 commit (1 red on CI)\n  PRs: the origin is not GitHub\n  14:02  commit  fix(web): keep the cart (#12)  CI red\n  +3 older",
-            "AGENT NOTE  model-written, 2026-11-05\n  landed the cards",
+            "AGENT NOTE  model-written, 2026-11-05\n  landed the cards\n  Done       the arena (#9).\n  Needs you  nothing.",
         ] {
             assert!(act.contains(s), "{s} in {act}");
         }

@@ -701,24 +701,62 @@ fn open_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
         .find(|l| md::task_key(l) == key)
 }
 
-/// The open row on `content` that `text` nearly duplicates: the same `type(area)` and title
-/// words (hashtags, stamps and words under 3 letters aside, order ignored) of which at least
-/// [`NEAR_DUP`] are shared, each title having 3 or more. A word is split on whitespace only and
-/// keeps its inner `_`, `-` and digits, so templated rows that differ by one name
-/// (`retry_rate` and `no_pr_rate`) stay apart. Deterministic, and strict on purpose: a refused
-/// near-dup exits 3, which callers read as already filed, so a false twin would drop a row.
+/// The open row on `content` that `text` nearly duplicates: the same type and title words
+/// (hashtags, stamps and words under 3 letters aside, order ignored) of which at least
+/// [`NEAR_DUP`] are shared, each title having 3 or more, and the same [`names`]: templated rows
+/// that differ by one unit, watch, id or date (`agentctl@inbox-plan.service` and
+/// `agentctl@nightly-measure.service` failed) are two rows however many words they share. The
+/// area does not count: inbox-triage rewrites a filed row's area, so a filer that files the same
+/// words again would miss its own row (research-pick's `research(roster):` row, re-scoped to
+/// `research(notes):`, filed nightly). Deterministic, and strict on purpose: a refused near-dup
+/// exits 3, which callers read as already filed, so a false twin would drop a row.
 fn near_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
-    let (kind, want) = title_words(&format!("- [ ] {text}"));
+    let line = format!("- [ ] {text}");
+    let (kind, want) = title_words(&line);
     if want.len() < 3 {
         return None;
     }
+    let own = names(&line);
     sheet::open_rows(content)
         .into_iter()
         .map(|(_, l)| l)
         .find(|l| {
             let (k, have) = title_words(l);
-            k == kind && have.len() >= 3 && share(&want, &have) >= NEAR_DUP
+            row_type(&k) == row_type(&kind)
+                && have.len() >= 3
+                && share(&want, &have) >= NEAR_DUP
+                && names(l) == own
         })
+}
+
+/// A row title's name-like tokens, lower-cased with edge punctuation trimmed: a word led by a
+/// letter that also holds a digit, `_`, `@`, `/`, `:`, `-` or `.` (a unit, a watch, a lane, a
+/// build), or an ISO date, so a dated template files one row per date. A token led by a digit or
+/// a sign is a count or reading (`2 checks`, `7d 0.3`, `3/5`, `-3`), so a row whose numbers moved
+/// is still the row.
+fn names(line: &str) -> Words {
+    projects::row_title(line)
+        .to_lowercase()
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| ",;:.()[]\"'`".contains(c)))
+        .filter(|w| {
+            let date = w.len() == 10
+                && w.bytes().enumerate().all(|(i, b)| match i {
+                    4 | 7 => b == b'-',
+                    _ => b.is_ascii_digit(),
+                });
+            let named = w.chars().next().is_some_and(char::is_alphabetic)
+                && w.chars()
+                    .any(|c| c.is_ascii_digit() || "_@/:-.".contains(c));
+            date || named
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+/// The type half of a row's `type(area)`.
+fn row_type(kind: &Option<(String, String)>) -> Option<&str> {
+    kind.as_ref().map(|(t, _)| t.as_str())
 }
 
 type Words = std::collections::BTreeSet<String>;
@@ -747,8 +785,9 @@ fn share(a: &Words, b: &Words) -> usize {
 
 /// The open rows of `content` closest to `text`, best first, at most `top`, each with its
 /// [`share`] (under [`MIN_SIMILAR`] is no match: one shared `the` makes none). A tie goes to the row of the
-/// same `type(area)`, then to the one higher on the sheet. The same scoring as [`near_twin`], so
-/// what a reader is shown is what the writer would refuse.
+/// same `type(area)`, then to the one higher on the sheet. The same share as [`near_twin`], so
+/// every row the writer would refuse is listed; the writer also needs the same [`names`], and only
+/// this tie-break reads the area.
 fn similar<'a>(content: &'a str, text: &str, top: usize) -> Vec<(usize, &'a str)> {
     let (kind, want) = title_words(&format!("- [ ] {text}"));
     let mut hits: Vec<(usize, bool, &str)> = content
@@ -2678,10 +2717,12 @@ pub fn retext(
                     |l| Some(l.into()),
                 )
             });
-            if found.is_none() {
+            let Some((_, row)) = found else {
                 eprintln!("no open task matches '{pick}' in {name}");
                 return Ok(1);
-            }
+            };
+            // Refused here too, before the epic is filed, for the same reason.
+            projects::refuse_retired_priority(&row, t)?;
             let proj_dir = projects::project_dir(p, name)?;
             linked = link_standing(p, log, name, &proj_dir, &[t.to_string()], bin)?;
             match &linked {
@@ -3597,6 +3638,10 @@ where
             Ok((0, Some(matched)))
         }
         Some((new, matched)) => {
+            // No edit writes a priority word no reader knows (`tag --add p1`, `edit --text "... #p1"`).
+            if let Some(line) = after.borrow().as_deref() {
+                projects::refuse_retired_priority(&matched, line)?;
+            }
             write_sheet(&sheet, &new)?;
             log.info("ptask", &format!("{verb} in {} ({name})", sheet.display()));
             let mut ev = crate::ingest::Event::row(verb, name, "", lane.name(), &matched);
@@ -4585,7 +4630,7 @@ Version: v1.2.0
     }
 
     #[test]
-    fn a_near_duplicate_is_the_same_type_area_and_most_title_words() {
+    fn a_near_duplicate_is_the_same_type_and_most_title_words() {
         let board = "## Tasks\n- [ ] fix(ui): the pause menu flickers on resume #size/s <!-- id:sc-4 -->\n- [x] fix(ui): closed rows are never twins of anything\n";
         assert!(
             near_twin(board, "fix(ui): Pause menu flickers on resume #size/m").is_some(),
@@ -4611,6 +4656,18 @@ Version: v1.2.0
             near_twin(board, "fix(ui): closed rows are never twins of anything").is_none(),
             "a closed row"
         );
+        assert!(
+            near_twin(
+                board,
+                "fix(menu): the pause menu flickers on resume #size/s"
+            )
+            .is_some(),
+            "triage re-scoped the area: the same words in another area are still the row"
+        );
+        assert!(
+            near_twin(board, "fix(menu): the pause menu crashes on load #size/s").is_none(),
+            "another area and other words file"
+        );
         let kpi = "## Tasks\n- [ ] check(kpi): no_pr_rate past threshold: 7d 0.3 (28d 0.2, max 0.1) #size/s\n";
         assert!(
             near_twin(
@@ -4619,6 +4676,51 @@ Version: v1.2.0
             )
             .is_none(),
             "templated rows for two KPIs are two rows"
+        );
+        let unit = "## Tasks\n- [ ] fix(unit): agentctl@inbox-plan.service failed: exit 1, see the journal #size/s\n";
+        assert!(
+            near_twin(
+                unit,
+                "fix(recovery): agentctl@nightly-measure.service failed: exit 1, see the journal #size/s"
+            )
+            .is_none(),
+            "a templated row for another unit files, whatever its area"
+        );
+        assert!(
+            near_twin(
+                unit,
+                "fix(recovery): agentctl@inbox-plan.service failed: exit 1, see the journal #size/s"
+            )
+            .is_some(),
+            "the same unit re-scoped is still the row"
+        );
+        let watch = "## Tasks\n- [ ] check(recovery): watch claude-spend-hourly is red; fix: read where the red is watched, fix the cause #size/s\n";
+        assert!(
+            near_twin(
+                watch,
+                "check(telemetry): watch source-pace is red; fix: read where the red is watched, fix the cause #size/s"
+            )
+            .is_none(),
+            "a hyphenated watch name is a name"
+        );
+        let queue = "## Tasks\n- [ ] check(kpi): queue 12m old, 3 checks failing on agent-runtime; read the dispatch log and fix the oldest cause #size/s\n";
+        assert!(
+            near_twin(
+                queue,
+                "check(kpi): queue 15m old, 3 checks failing on agent-runtime; read the dispatch log and fix the oldest cause #size/s"
+            )
+            .is_some(),
+            "a row whose readings moved is still the row"
+        );
+        let names = |t: &str| {
+            let mut n: Vec<String> = names(&format!("- [ ] {t}")).into_iter().collect();
+            n.sort();
+            n
+        };
+        assert_eq!(
+            names("fix(x): 2 checks, 7d 0.3, 3/5, -3 and 12:30 on b1 via claude:sonnet 2026-11-21"),
+            ["2026-11-21", "b1", "claude:sonnet"],
+            "counts, readings, ratios, signs and times are not names; builds, lanes and dates are"
         );
     }
 
@@ -5375,6 +5477,74 @@ mod inbox_tests {
         }
     }
 
+    // A `#p1` survived on a sheet (2026-11-21): no edit writes a priority word no reader knows.
+    // A row that already carries one still takes an edit, so it can be fixed or closed.
+    #[test]
+    fn an_edit_refuses_a_retired_priority_word() {
+        let v = vault(
+            "retired",
+            "",
+            "- [ ] fix(a): clean row #low <!-- id:sc-1 -->\n- [ ] fix(a): old row #p1 <!-- id:sc-2 -->\n",
+        );
+        let w = Writer::human();
+        let id = |i: &str| Pick::Id(i.to_string());
+        let tag_as = |pick: &Pick, t: &str| {
+            tag(
+                &v.p,
+                &v.log,
+                "scratch",
+                pick,
+                &[t.to_string()],
+                &[],
+                Lane::Human,
+                &w,
+            )
+        };
+        let before = v.read();
+        let e = tag_as(&id("sc-1"), "p1").expect_err("refused").to_string();
+        assert!(e.contains("#p1 is not a priority"), "{e}");
+        let e = retext(
+            &v.p,
+            &v.log,
+            "scratch",
+            &id("sc-1"),
+            Some("fix(a): clean row #medium"),
+            None,
+            &[],
+            false,
+            None,
+            Lane::Human,
+            &w,
+        )
+        .expect_err("refused")
+        .to_string();
+        assert!(e.contains("#medium is not a priority"), "{e}");
+        let e = tag_as(&id("sc-2"), "p2").expect_err("refused").to_string();
+        assert!(e.contains("#p2 is not a priority"), "{e}");
+        // With a systems list the refusal comes before the standing epic is filed: a missing
+        // systems binary would fail later, so this error proves nothing reached it.
+        let e = retext(
+            &v.p,
+            &v.log,
+            "scratch",
+            &id("sc-1"),
+            Some("fix(a): clean row #p3"),
+            None,
+            &[],
+            false,
+            Some("/nonexistent/systems"),
+            Lane::Human,
+            &w,
+        )
+        .expect_err("refused")
+        .to_string();
+        assert!(e.contains("#p3 is not a priority"), "{e}");
+        assert_eq!(v.read(), before, "a refusal writes nothing");
+        // NEGATIVE CONTROL: the row that already had #p1 still takes a tag.
+        assert_eq!(tag_as(&id("sc-2"), "size/s").unwrap(), 0);
+        assert!(v.read().contains("#size/s"));
+    }
+
     #[test]
     fn a_raw_add_waits_in_the_inbox_and_a_typed_one_goes_to_tasks() {
         let v = vault("add", "", "");
@@ -5810,7 +5980,7 @@ mod inbox_tests {
             2
         );
         assert!(similar(board, "chore(x): zzz", 10).is_empty());
-        // what it ranks first is what the writer refuses as a near-duplicate
+        // a row the writer refuses as a near-duplicate is one it ranks
         assert!(near_twin(board, "fix(ui): pause menu flickers on resume").is_some());
     }
 

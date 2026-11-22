@@ -32,8 +32,10 @@ const refreshWaiting = coalesce(async () => {
 });
 function renderBadge() {
   const w = st.waiting;
-  const b = w === undefined ? "" : w === null ? `<span class="badge" title="${NOT_READ}">?</span>` : w.count ? `<span class="badge">${w.count}</span>` : "";
-  for (const id of ["ask-badge", "menu-badge"]) $(id).innerHTML = b;
+  const badge = (n) => w === undefined ? "" : w === null ? `<span class="badge" title="${NOT_READ}">?</span>` : n ? `<span class="badge">${n}</span>` : "";
+  for (const id of ["ask-badge", "menu-badge"]) $(id).innerHTML = badge(w?.count);
+  // Sessions' tab shows its own share of that count (Waiting.sessions), not a count of /api/agents.
+  $("wait-badge").innerHTML = badge(w?.sessions);
 }
 
 // The band a Needs you card opens with: its kind label (hub_core::home::NeedKind::label, sent on
@@ -84,7 +86,7 @@ async function askTrace(e, draw) {
   if (!k || !k.startsWith("trace:") || !e.target.open || askst.open[k]) return;
   const id = k.slice(6);
   try { askst.trace[id] = traceHtml(await api(`/api/asks/${encodeURIComponent(id)}/trace`)); }
-  catch (err) { askst.trace[id] = `<div class="err">${esc(err.message)}</div>`; }
+  catch (err) { askst.trace[id] = errPanel(err.message); }
   draw();
 }
 
@@ -153,8 +155,8 @@ async function answerSession(card, e) {
 // says why; a sent ask leaves Home's list when the badge and Home read again.
 const sendingCls = (key) => (askst.sending[key] ? " sending" : "");
 const statusLine = (key) => askst.sending[key]
-  ? `<div class="cstat" role="status"><span class="spin"></span>Sending ${esc(askst.sending[key])}...</div><div class="err"></div>`
-  : `<div class="cstat" role="status"></div><div class="err"></div>`;
+  ? `<div class="cstat" role="status"><span class="spin"></span>Sending ${esc(askst.sending[key])}...</div>${errPanel("")}`
+  : `<div class="cstat" role="status"></div>${errPanel("")}`;
 // Every drawn card for `key` (a session's card can show on Home and pinned in its conversation),
 // found afresh, since a redraw mid-send replaces the clicked one.
 const cardKey = (c) => (c.dataset.t ? `ses:${c.dataset.t}` : `ask:${c.dataset.id}`);
@@ -229,7 +231,7 @@ function parkedSection() {
   const row = (a) => `<tr><td>${esc(a.project) || "-"}</td><td class="n" title="${esc(a.parked_until)}">${stamp(a.parked_until)}</td>` +
     `<td class="wrap">${esc(a.title || a.question)}</td><td><button class="btn sm" data-unpark="${esc(a.id)}">Unpark</button></td></tr>`;
   const table = `<div class="panel scroll"><table class="tbl"><tr><th>project</th><th class="n" data-role="glance">back</th><th data-role="lead">question</th><th></th></tr>${rows.map(row).join("")}</table></div>`;
-  const err = askst.parkErr ? `<div class="err">${esc(askst.parkErr)}</div>` : "";
+  const err = askst.parkErr ? errPanel(askst.parkErr) : "";
   return cfold("parked", `Parked <span class="muted">${rows.length}</span>`, err + table, askst.open);
 }
 

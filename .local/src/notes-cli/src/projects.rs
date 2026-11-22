@@ -112,7 +112,62 @@ fn version_str(dir: &Path) -> String {
 /// block — the agent-written "where we are" note. Skips blank / comment / italic
 /// placeholder (`_(…)_`) lines. `None` when the block is absent or unwritten.
 fn status_line(content: &str) -> Option<String> {
+    let s = status_note(content);
+    (!s.headline.is_empty()).then_some(s.headline)
+}
+
+/// The STATUS block read as its parts: a headline, then one value per labelled line.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct StatusNote {
+    /// What comes before the first label, `_YYYY-MM-DD_` date included.
+    headline: String,
+    done: String,
+    doing: String,
+    next: String,
+    needs: String,
+}
+
+/// The labelled lines of a STATUS block, as `--stats --json` sends them.
+#[derive(Debug, Default, PartialEq, Eq, serde::Serialize)]
+struct StatusParts {
+    done: String,
+    doing: String,
+    next: String,
+    needs: String,
+}
+
+impl StatusNote {
+    fn parts(self) -> StatusParts {
+        StatusParts {
+            done: self.done,
+            doing: self.doing,
+            next: self.next,
+            needs: self.needs,
+        }
+    }
+}
+
+/// The labels a STATUS block carries, in the order they are written, and where each lands.
+const STATUS_LABELS: [&str; 4] = ["Done:", "Doing:", "Next:", "Needs you:"];
+
+/// What opens the numbers the lab-status writer used to paste after `Needs you:`; the page
+/// data owns them, so a note that still carries them is read without them.
+const STATUS_NUMBERS: [&str; 6] = [
+    "State:",
+    "Waves:",
+    "On time:",
+    "Gate to beta:",
+    "Playtests waiting:",
+    "Upkeep only:",
+];
+
+/// Read the block in either shape: the headline on line 1 and each label on its own line, or
+/// the old single run-on line (`headline. Done: x. Doing: y. Next: z. Needs you: w. State:
+/// ...`). A label counts at the start of the block or after whitespace; the old line's numbers
+/// are dropped. A block with no label is all headline.
+fn status_note(content: &str) -> StatusNote {
     let mut in_block = false;
+    let mut body = String::new();
     for line in content.lines() {
         let t = line.trim();
         if t.contains("STATUS:START") {
@@ -125,9 +180,59 @@ fn status_line(content: &str) -> Option<String> {
         if !in_block || t.is_empty() || is_comment(t) || is_placeholder(t) {
             continue;
         }
-        return Some(t.replace('\t', " "));
+        if !body.is_empty() {
+            body.push('\n');
+        }
+        body.push_str(&t.replace('\t', " "));
     }
-    None
+    // The old shape is one line, its labels inline after a space; the new one opens each label
+    // at the start of its own line, so a label word inside a value is only a word.
+    let legacy = !body.contains('\n');
+    let at = |text: &str, label: &str| {
+        text.match_indices(label).map(|(i, _)| i).find(|&i| {
+            i == 0
+                || text[..i].ends_with(if legacy {
+                    char::is_whitespace
+                } else {
+                    |c| c == '\n'
+                })
+        })
+    };
+    // The pasted numbers only ever followed `Needs you:` on the old line.
+    let end = if legacy {
+        at(&body, "Needs you:").and_then(|n| {
+            STATUS_NUMBERS
+                .iter()
+                .filter_map(|l| at(&body[n..], l).map(|i| i + n))
+                .min()
+        })
+    } else {
+        None
+    }
+    .unwrap_or(body.len());
+    let body = &body[..end];
+    let mut marks: Vec<(usize, usize)> = STATUS_LABELS
+        .iter()
+        .enumerate()
+        .filter_map(|(k, l)| Some((at(body, l)?, k)))
+        .collect();
+    marks.sort();
+    let one_line = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut note = StatusNote {
+        headline: one_line(&body[..marks.first().map_or(body.len(), |m| m.0)]),
+        ..StatusNote::default()
+    };
+    for (n, &(i, k)) in marks.iter().enumerate() {
+        let stop = marks.get(n + 1).map_or(body.len(), |m| m.0);
+        let v = one_line(&body[i + STATUS_LABELS[k].len()..stop]);
+        match k {
+            0 => note.done = v,
+            1 => note.doing = v,
+            2 => note.next = v,
+            _ => note.needs = v,
+        }
+    }
+    note
 }
 
 fn is_comment(t: &str) -> bool {
@@ -1144,6 +1249,26 @@ fn summary_findings(content: &str) -> Vec<String> {
 /// Priority words no reader knows. A row carrying one sorts as untagged (high), so the
 /// word looks meaningful and is not.
 const RETIRED_PRIORITIES: &[&str] = &["normal", "medium", "p0", "p1", "p2", "p3"];
+
+/// Why an edit from `old` to `new` is refused: `new` carries a [`RETIRED_PRIORITIES`] word,
+/// before its marker, that `old` did not. A row that already had one still takes an edit, so
+/// it can be fixed or closed.
+pub(crate) fn refuse_retired_priority(old: &str, new: &str) -> anyhow::Result<()> {
+    let retired = |line: &str| -> Vec<String> {
+        let head = line.find("<!--").map_or(line, |i| &line[..i]);
+        md::find_hashtags(head)
+            .into_iter()
+            .filter(|t| RETIRED_PRIORITIES.contains(&t.as_str()))
+            .collect()
+    };
+    let had = retired(old);
+    match retired(new).into_iter().find(|t| !had.contains(t)) {
+        Some(t) => anyhow::bail!(
+            "#{t} is not a priority (urgent, high or low; quote it in backticks to mean the word), so nothing was written"
+        ),
+        None => Ok(()),
+    }
+}
 
 /// Tags nothing reads any more. Each looks meaningful on a row and changes nothing.
 /// `#ci` work is the `ci(<area>):` type; `#oneshot`, `#ai` and `#high-priority` have no reader.
@@ -3593,10 +3718,12 @@ struct ProjectStats {
     epics: Vec<crate::epics::EpicProgress>,
     /// The size scale the weights use, for a legend.
     weights: Vec<crate::epics::Weight>,
-    /// The summary's STATUS line without its leading `_YYYY-MM-DD_` date.
+    /// The summary's STATUS headline without its leading `_YYYY-MM-DD_` date.
     status: String,
     /// That date; empty when the line carries none.
     status_date: String,
+    /// The block's labelled lines (Done, Doing, Next, Needs you); empty strings when it has none.
+    status_parts: StatusParts,
     /// When the open version is due to be cut, and at what bump. JSON only.
     release: ReleaseDue,
     /// The open version's release window counted against its snapshot; null when none was
@@ -4119,9 +4246,8 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
     let c = sheet_counts(&content, cur);
     let ix = crate::epics::Index::of(dir, cur);
     let summary = dir.join("summary.md");
-    let (status_date, status) = status_line(&read_or_empty(Some(summary.clone())))
-        .map(|l| split_status_date(&l))
-        .unwrap_or_default();
+    let note = status_note(&read_or_empty(Some(summary.clone())));
+    let (status_date, status) = split_status_date(&note.headline);
     let today = chrono::Local::now().date_naive();
     let stage = stage_of(dir).unwrap_or_default();
     let progress = progress_of(dir, cur, cur, &ix, today);
@@ -4167,6 +4293,7 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
         weights: crate::epics::weights(),
         status,
         status_date,
+        status_parts: note.parts(),
         release,
         window: cur.and_then(|c| crate::window::open(dir, c, &ix)),
         last_window: crate::window::last(dir),
@@ -6757,6 +6884,54 @@ mod stats_tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    fn block(body: &str) -> String {
+        format!("# demo\n\n<!-- STATUS:START -->\n{body}\n<!-- STATUS:END -->\n<!-- AUTO:START -->\nNext: not mine\n")
+    }
+
+    #[test]
+    fn a_multi_line_status_block_reads_as_headline_and_labelled_lines() {
+        let n = status_note(&block(
+            "_2026-11-21_ - Waves are landing.\nDone: AI skins (#412).\nDoing: school days (db-275).\nNext: morality meter.\nNeeds you: nothing.",
+        ));
+        assert_eq!(n.headline, "_2026-11-21_ - Waves are landing.");
+        assert_eq!(n.done, "AI skins (#412).");
+        assert_eq!(n.doing, "school days (db-275).");
+        assert_eq!(n.next, "morality meter.");
+        assert_eq!(n.needs, "nothing.");
+    }
+
+    #[test]
+    fn the_old_run_on_line_reads_the_same_and_drops_its_pasted_numbers() {
+        let n = status_note(&block(
+            "_2026-11-09_ - Waves are landing. Done: AI skins (#412). Doing: school days. Next: morality. Needs you: nothing. State: at risk. Waves: gameplay 32%. Gate to beta: 5 of 19 met.",
+        ));
+        assert_eq!(n.headline, "_2026-11-09_ - Waves are landing.");
+        assert_eq!(n.done, "AI skins (#412).");
+        assert_eq!(n.needs, "nothing.");
+        // A one-line status with no label is all headline; the AUTO block is no part of it.
+        let n = status_note(&block("_2026-11-09_ - shipped"));
+        assert_eq!(n.headline, "_2026-11-09_ - shipped");
+        assert_eq!(n.parts(), StatusParts::default());
+        assert_eq!(status_line(&block("_(no status yet)_")), None);
+    }
+
+    #[test]
+    fn a_label_word_inside_a_value_of_the_new_shape_is_only_a_word() {
+        let n = status_note(&block(
+            "Headline.\nDoing: State: machine rewrite\nDone: wired the Next: button\nNext: X\nNeeds you: approve Y",
+        ));
+        assert_eq!(n.doing, "State: machine rewrite");
+        assert_eq!(n.done, "wired the Next: button");
+        assert_eq!((n.next.as_str(), n.needs.as_str()), ("X", "approve Y"));
+    }
+
+    #[test]
+    fn a_label_inside_a_word_is_no_label() {
+        let n = status_note(&block("Shipped the Redone: layout.\nDone: it."));
+        assert_eq!(n.headline, "Shipped the Redone: layout.");
+        assert_eq!(n.done, "it.");
+    }
+
     #[test]
     fn a_status_line_splits_off_its_leading_date() {
         assert_eq!(
@@ -6782,10 +6957,13 @@ mod stats_tests {
         fs::write(dir.join("README.md"), SHEET).unwrap();
         fs::write(
             dir.join("summary.md"),
-            "# demo\n\n<!-- STATUS:START -->\n_2026-10-01_ - boss fight in review\n<!-- STATUS:END -->\n",
+            "# demo\n\n<!-- STATUS:START -->\n_2026-10-01_ - boss fight in review\nDone: the arena (#9).\nNeeds you: nothing.\n<!-- STATUS:END -->\n",
         )
         .unwrap();
         let v = serde_json::to_value(project_stats("bnb", "demo", &dir)).unwrap();
+        assert_eq!(v["status_parts"]["done"], "the arena (#9).");
+        assert_eq!(v["status_parts"]["needs"], "nothing.");
+        assert_eq!(v["status_parts"]["next"], "");
         assert_eq!(v["version"], "v0.3.2");
         assert_eq!(v["done"], 1);
         assert_eq!(v["open"], 4);

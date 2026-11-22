@@ -40,8 +40,7 @@ elif a[0] == "get":
         sys.exit(1)
     shutil.copy(ghd + "/" + run + "." + a[1] + ".txt", a[a.index("--dir") + 1] + "/summary.txt")
 PY
-  cat > "$SANDBOX/bin/gh" <<'SH'
-#!/usr/bin/env bash
+  gh_script <<'SH'
 echo "$*" >> "$GHD/calls.log"
 case "$1 $2" in
   "run list") [ -f "$GHD/list.fail" ] && exit 1
@@ -60,7 +59,6 @@ case "$1 $2" in
     done ;;
 esac
 SH
-  chmod +x "$SANDBOX/bin/gh"
 }
 
 # artifacts <run id> <name>...: the run's artifacts, in the store (live ones only) and in GitHub's list (with an expired one that is never read).

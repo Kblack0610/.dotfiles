@@ -27,9 +27,8 @@ function shepWhen(stamp) {
 }
 
 function rundownCard(r) {
-  const open = shst.open.has(r.file) ? " open" : "";
-  return `<details class="card rd"${open} data-file="${esc(r.file)}"><summary><b>${esc(r.title)}</b>` +
-    ` <span class="muted">${shepWhen(r.stamp)}</span></summary><div class="rd-body md">${md(r.body)}</div></details>`;
+  return fold("card rd", `<b>${esc(r.title)}</b> <span class="muted">${shepWhen(r.stamp)}</span>`, `<div class="rd-body md">${md(r.body)}</div>`,
+    { attrs: ` data-file="${esc(r.file)}"`, open: shst.open.has(r.file) });
 }
 
 // Minutes since an epoch in seconds, as "12m"; "-" when the ledger does not say.
@@ -75,7 +74,7 @@ function renderShepherd() {
   const d = shst.data;
   const chat = d && d.target ? `<button class="btn" data-chat>Chat: open ${esc(d.target)} (${esc(d.status)})</button>`
     : '<span class="muted">No shepherd armed. Its lease is set when fleet-shepherd starts a pass.</span>';
-  const pass = shst.err ? `<div class="card err">${esc(shst.err)}</div>` : !d ? '<div class="empty">Loading.</div>'
+  const pass = shst.err ? errPanel(shst.err, { card: true }) : !d ? '<div class="empty">Loading.</div>'
     : passHtml(d.stats) + dueHtml(d.ledger);
   paint(el, `<div class="ovbar">${chat}</div>${pass}`);
 }
@@ -85,7 +84,7 @@ function renderShepherd() {
 function renderLogRundowns() {
   const d = shst.data;
   const el = $("log-rundowns");
-  paint(el, shst.err ? `<div class="card err">${esc(shst.err)}</div>` : !d ? '<div class="empty">Loading.</div>'
+  paint(el, shst.err ? errPanel(shst.err, { card: true }) : !d ? '<div class="empty">Loading.</div>'
     : d.rundowns.length ? `<div class="muted">${d.rundowns_table.shown} newest</div><div data-tbl="${RUNDOWNS_PRE}">` +
       d.rundowns.map(rundownCard).join("") + tblPager(d.rundowns_table) + `</div>`
     : '<div class="empty">No rundowns kept yet. The shepherd writes one with <code>fleet-shepherd log --rundown</code> each time it sums up the fleet or answers you in its session.</div>');

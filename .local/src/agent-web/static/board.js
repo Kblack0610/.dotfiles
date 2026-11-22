@@ -29,6 +29,8 @@ const bst = tblTab({
     form: null, controlsKey: "",
     // `spr` is the opened Sprints row, `<profile>/<project>/<version>` (bSprKey): a project can show its open and its queued sprint.
     spr: null,
+    // `stask` is the opened sprint task, `<sprint key>/<id, else its line>` (bTaskKey): a place would move as states re-sort the list.
+    stask: null,
   },
   body: () => bBody(),
 });
@@ -84,7 +86,7 @@ function bControls() {
       ? `<input id="b-game" placeholder="game (optional)" value="${esc(d.game)}">`
       : `<input id="b-to" placeholder="version vX.Y.Z (optional)" value="${esc(d.to)}">`) +
     `<button class="btn primary" id="b-add"${bst.busy ? " disabled" : ""}>${bst.busy ? "Adding..." : "Add"}</button>` +
-    `</div><div class="err" id="b-msg">${esc(bst.msg)}</div></div>`;
+    `</div>${errPanel(bst.msg, { id: "b-msg" })}</div>`;
 }
 
 // The opened row, under its line in the table: its whole text and tags, then its actions.
@@ -178,10 +180,14 @@ function bLine(r, i) {
 
 // The Sprints table (hub_core::tasks::SprintRow, its times read on the server): one row per open
 // release window and per sprint queued behind one (LEFT reads queued),
-// soonest cut first; a row opens to its tasks, most urgent first, each opening its Board row.
-// Under one project its tasks show.
+// soonest cut first; a row opens to its tasks, most urgent first. A task leads with its title over
+// what the title leaves out, as its Board row does (hub_core::tasks::row_title), and opens in place
+// to its whole line and, when it has one, the link to its Board row. Under one project its tasks show.
 const bSprKey = (s) => `${s.profile}/${s.project}/${s.version}`;
-const SPR_TASK_COLS = [["id", "ID", "lead"], ["text", "TASK", ""], ["priority", "PRIORITY", "glance"], ["state", "STATE", "glance"]];
+const bTaskKey = (s, t) => `${bSprKey(s)}/${t.id || t.text}`;
+const SPR_TASK_COLS = [["id", "ID", "lead"], ["title", "TASK", ""], ["priority", "PRIORITY", "glance"], ["state", "STATE", "glance"]];
+const bTask = (t) => `<div class="card qitem brow"><div class="q">${esc(t.text)}</div>` +
+  (t.href ? `<div class="opts"><a class="btn sm" href="${esc(t.href)}">Open its Board row</a></div>` : "") + `</div>`;
 function bSprints() {
   const d = bst.feed.sprints;
   if (!d || !d.rows || !d.rows.length) return "";
@@ -199,11 +205,13 @@ function bSprints() {
   const tasks = (s) => !s.tasks.length ? `<div class="muted">No task in this window.</div>` :
     `<table class="tbl"><tr>${SPR_TASK_COLS.map(([, h, r]) => `<th data-role="${r}" data-label="${h}">${h}</th>`).join("")}</tr>` +
     s.tasks.map((t) => {
-      const st = t.queue || t.state;
-      return `<tr${t.href ? ` class="jr" data-href="${esc(t.href)}"` : ""}><td><code>${bDash(t.id)}</code></td>` +
-        `<td class="wrap">${tblLink(t.href, t.text)}${t.interrupt ? ` <span class="qtag">interrupt</span>` : ""}</td>` +
+      const st = t.queue || t.state, k = bTaskKey(s, t), open = bst.stask === k;
+      const sum = t.summary ? `<div class="bsum muted">${esc(t.summary)}</div>` : "";
+      const line = `<tr class="jr${open ? " sel" : ""}" data-stask="${esc(k)}"><td><code>${bDash(t.id)}</code></td>` +
+        `<td class="btitle"><div class="bt">${esc(t.title)}${t.interrupt ? ` <span class="qtag">interrupt</span>` : ""}</div>${sum}</td>` +
         `<td><span class="qprio ${esc(t.priority)}">${esc(t.priority)}</span></td>` +
         `<td>${st === "running" || st === "doing" ? `<b>${esc(st)}</b>` : esc(st)}</td></tr>`;
+      return open ? line + `<tr class="bopen"><td colspan="${SPR_TASK_COLS.length}">${bTask(t)}</td></tr>` : line;
     }).join("") + `</table>`;
   const rows = d.rows.map((s) => {
     const open = one || bst.spr === bSprKey(s);
@@ -298,8 +306,8 @@ $("b-root").addEventListener("click", (e) => {
   const r = rows[d.start || d.done || d.drop || d.promote || d.demote || d.move || d.edit || d.tag || d.formgo || d.formcancel];
   if (!r) {
     if (t.closest("a")) return;
-    const task = t.closest("tr[data-href]");
-    if (task) { location.hash = task.dataset.href.slice(1); return; }
+    const task = t.closest("tr[data-stask]");
+    if (task) { bst.stask = bst.stask === task.dataset.stask ? null : task.dataset.stask; bst.render(); return; }
     const spr = t.closest("tr[data-spr]");
     if (spr) { bst.spr = bst.spr === spr.dataset.spr ? null : spr.dataset.spr; bst.render(); return; }
     const line = t.closest("tr[data-row]");

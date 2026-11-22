@@ -147,7 +147,7 @@ have_toolchain() { "$REPO/tests/rust.sh" --toolchain-ready; }
 realrepo() {
   mkrepo
   mkdir -p "$W/.local/src/tmux" "$W/.local/src/neg/src"
-  for f in lint.sh lint-files.sh lint-head.awk pick.sh rust.sh rust-crates.sh rust-inputs.txt rust-toolchain; do
+  for f in lint.sh lint-files.sh lint-head.awk lint-bare-sleep.awk pick.sh rust.sh rust-crates.sh rust-inputs.txt rust-toolchain; do
     cp "$REPO/tests/$f" "$W/tests/$f"
   done
   cp "$REPO/.shellcheckrc" "$W/"

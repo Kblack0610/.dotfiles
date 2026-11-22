@@ -59,7 +59,7 @@ use agent_core::{agent, parked, session};
 use anyhow::Result;
 use assets::LOGIN;
 use axum::body::Bytes;
-use axum::extract::{Form, Path as UrlPath, Query, Request, State};
+use axum::extract::{DefaultBodyLimit, Form, Path as UrlPath, Query, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
@@ -90,6 +90,10 @@ const KEYS: &[&str] = &[
     "Enter", "Escape", "Up", "Down", "Left", "Right", "Tab", "BTab", "Space", "1", "2", "3", "4",
     "5", "6", "7", "8", "9",
 ];
+/// The most text one send types into a pane; a paste past this is refused, not cut.
+const MAX_SEND: usize = 64 * 1024;
+/// The most text one ask answer takes; agent-ask flattens it to one line.
+const MAX_ANSWER: usize = 8 * 1024;
 
 struct AppState {
     oauth: auth::OAuth,
@@ -287,17 +291,16 @@ fn router(state: Shared) -> Router {
         .layer(middleware::from_fn_with_state(state.clone(), wrote))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
-    Router::new()
+    let app = Router::new()
         .route("/", get(index))
         .route("/login", get(login))
         .route("/login/key", post(login_key))
         .route("/oauth/callback", get(callback))
         .route("/logout", post(logout))
         .route("/healthz", get(|| async { "ok" }))
-        // The assets are this public repo's code and carry no data, so the widget page loads them
-        // with no cookie; every read of data stays behind sign-in or the widget key.
+        // The assets are this public repo's code and carry no data, so they load with no cookie;
+        // every read of data stays behind sign-in or the widget key.
         .route("/static/{name}", get(static_file))
-        .route("/widget", get(widget::page))
         .route("/widget.json", get(widget::doc))
         // A literal, not push::REGISTER, so audit's route test reads it.
         .route(
@@ -308,7 +311,8 @@ fn router(state: Shared) -> Router {
         // Behind the session sign-in, which each handler checks: never the widget key.
         .route("/widget/setup", get(setup::page))
         .route("/widget/setup/new-key", post(setup::new_key))
-        .merge(api)
+        .merge(api);
+    guard_writes(app, state.oauth.base())
         .layer(middleware::from_fn_with_state(state.clone(), audit::layer))
         .layer(middleware::map_response(assets::headers))
         .layer(middleware::from_fn(reqlog::log))
@@ -717,6 +721,46 @@ async fn require_auth(
     match signed_in(&s, &headers) {
         Some(_) => next.run(req).await,
         None => (StatusCode::UNAUTHORIZED, "unauthorized").into_response(),
+    }
+}
+
+/// The write guards every route sits behind: `same_origin`, and a body limit pinned to the
+/// audit buffer's (axum's own default is the same 2 MiB; this keeps the two one constant). The
+/// one place they are mounted, so the tests that drive this prove what `router` serves.
+fn guard_writes<S: Clone + Send + Sync + 'static>(app: Router<S>, base: &str) -> Router<S> {
+    app.layer(middleware::from_fn_with_state(
+        Arc::<str>::from(base),
+        same_origin,
+    ))
+    .layer(DefaultBodyLimit::max(audit::BODY_MAX))
+}
+
+/// Every write a browser makes comes from this server's own pages. A write naming another
+/// `Origin` is refused, and so is one that carries the session cookie with no `Origin` at all
+/// (browsers send it on every POST, PUT and DELETE). A write with neither, the Tilecast app's
+/// push register or agent-mqtt-publish's poke, carries no cookie to ride on and passes to the
+/// route's own key check. SameSite=Lax already keeps the cookie off another site's POST; this
+/// holds without it, and covers the sign-in form, which has no cookie yet.
+async fn same_origin(State(base): State<Arc<str>>, req: Request, next: Next) -> Response {
+    let m = req.method();
+    if m == axum::http::Method::GET || m == axum::http::Method::HEAD {
+        return next.run(req).await;
+    }
+    let h = req.headers();
+    let ok = match h.get(header::ORIGIN).map(|v| v.to_str()) {
+        Some(o) => o.is_ok_and(|o| o == &*base),
+        None => auth::cookie(cookie_header(h), auth::SESSION_COOKIE).is_none(),
+    };
+    if ok {
+        next.run(req).await
+    } else {
+        eprintln!(
+            "agent-web: {} {} refused: origin {:?} is not {base:?}",
+            m,
+            req.uri().path(),
+            h.get(header::ORIGIN)
+        );
+        (StatusCode::FORBIDDEN, "cross-origin request refused").into_response()
     }
 }
 
@@ -1175,6 +1219,7 @@ async fn screen(Query(q): Query<TargetQuery>) -> ApiResult<String> {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ActionBody {
     /// The account a move resumes on.
     #[serde(default)]
@@ -1218,6 +1263,7 @@ async fn session_options() -> Json<serde_json::Value> {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SendBody {
     t: String,
     #[serde(default)]
@@ -1239,6 +1285,8 @@ async fn send(Json(b): Json<SendBody>) -> ApiResult<StatusCode> {
     if b.text.is_empty() && b.key.is_none() {
         return Err(bad(StatusCode::BAD_REQUEST, "nothing to send"));
     }
+    let text = cli::plain_text(&b.text, MAX_SEND)
+        .ok_or_else(|| bad(StatusCode::BAD_REQUEST, "text is plain lines, under 64 KB"))?;
     let not_taken = || {
         bad(
             StatusCode::CONFLICT,
@@ -1249,7 +1297,7 @@ async fn send(Json(b): Json<SendBody>) -> ApiResult<StatusCode> {
     // agent-panel send owns typing into a pane: the bracketed paste, waiting for it to be drawn
     // before Enter, and the check that the Enter was taken. tmux sends the key.
     let taken = live
-        .send(&b.text, b.submit.unwrap_or(true), b.key.as_deref())
+        .send(&text, b.submit.unwrap_or(true), b.key.as_deref())
         .await
         .map_err(|e| pane_err(live.host.as_deref(), e))?;
     if taken {
@@ -1309,6 +1357,7 @@ async fn parked_asks() -> ApiResult<Json<Vec<boards::Ask>>> {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ParkBody {
     id: String,
     /// true puts a parked ask back on the boards now.
@@ -1327,6 +1376,7 @@ async fn park(Json(b): Json<ParkBody>) -> ApiResult<StatusCode> {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AnswerBody {
     id: String,
     answer: String,
@@ -1381,11 +1431,17 @@ async fn answer(Json(b): Json<AnswerBody>) -> ApiResult<StatusCode> {
     if !ask_id_ok(&b.id) {
         return Err(bad(StatusCode::BAD_REQUEST, "bad ask id"));
     }
-    if b.answer.trim().is_empty() {
+    let answer = cli::plain_text(b.answer.trim(), MAX_ANSWER).ok_or_else(|| {
+        bad(
+            StatusCode::BAD_REQUEST,
+            "an answer is plain text, under 8 KB",
+        )
+    })?;
+    if answer.is_empty() {
         return Err(bad(StatusCode::BAD_REQUEST, "empty answer"));
     }
     let out = tokio::process::Command::new("agent-ask")
-        .args(["answer", &b.id, b.answer.trim()])
+        .args(["answer", &b.id, &answer])
         .output()
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, format!("agent-ask: {e}")))?;
@@ -2681,5 +2737,143 @@ mod tests {
         assert!(KEYS.contains(&"Escape"));
         assert!(!KEYS.contains(&"C-c"));
         assert!(!KEYS.contains(&"C-d"));
+    }
+
+    const BASE: &str = "https://agents.example";
+
+    /// One write through `guard_writes`, the layers `router` puts on every route.
+    async fn through_layers(method: &str, headers: &[(&str, &str)], body: &str) -> StatusCode {
+        use tower::ServiceExt;
+        // A path held in a variable: audit's route test reads every `.route("` literal here.
+        let path = "/w";
+        let app = Router::new().route(
+            path,
+            get(|| async { "ok" }).post(|b: String| async move { b }),
+        );
+        let app = guard_writes(app, BASE);
+        let mut req = Request::builder().method(method).uri("/w");
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        let req = req.body(axum::body::Body::from(body.to_string())).unwrap();
+        app.oneshot(req).await.unwrap().status()
+    }
+
+    const COOKIE: (&str, &str) = ("cookie", "agent_web=abc");
+
+    #[tokio::test]
+    async fn a_write_from_another_origin_is_refused_whatever_it_carries() {
+        for o in [
+            "https://evil.example",
+            "https://agents.example.evil",
+            "null",
+        ] {
+            for h in [vec![("origin", o), COOKIE], vec![("origin", o)]] {
+                assert_eq!(
+                    through_layers("POST", &h, "").await,
+                    StatusCode::FORBIDDEN,
+                    "{h:?}"
+                );
+            }
+        }
+        assert_eq!(
+            through_layers("DELETE", &[("origin", "https://evil.example")], "").await,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn a_signed_in_write_with_no_origin_is_refused() {
+        assert_eq!(
+            through_layers("POST", &[COOKIE], "").await,
+            StatusCode::FORBIDDEN
+        );
+        // Refused before routing, so a method the path does not take is refused the same way.
+        assert_eq!(
+            through_layers("PUT", &[COOKIE], "").await,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn own_page_writes_keyed_clients_and_reads_pass() {
+        let own = [("origin", BASE), COOKIE];
+        assert_eq!(through_layers("POST", &own, "").await, StatusCode::OK);
+        // The Tilecast app and agent-mqtt-publish: no cookie, no Origin, the route's key decides.
+        assert_eq!(through_layers("POST", &[], "").await, StatusCode::OK);
+        // A cross-site link is a GET, which writes nothing.
+        let read = [("origin", "https://evil.example"), COOKIE];
+        assert_eq!(through_layers("GET", &read, "").await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_body_past_the_audit_limit_is_refused() {
+        let own = [("origin", BASE), COOKIE];
+        let big = "x".repeat(audit::BODY_MAX + 1);
+        assert_eq!(
+            through_layers("POST", &own, &big).await,
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+        let fits = "x".repeat(audit::BODY_MAX);
+        assert_eq!(through_layers("POST", &own, &fits).await, StatusCode::OK);
+    }
+
+    #[test]
+    fn a_write_body_with_a_field_the_route_does_not_take_is_refused() {
+        // A mistyped field used to fall back to its default and run anyway.
+        assert!(serde_json::from_str::<SendBody>(r#"{"t":"a","txet":"hi"}"#).is_err());
+        assert!(
+            serde_json::from_str::<AnswerBody>(r#"{"id":"a","answer":"y","by":"judge"}"#).is_err()
+        );
+        assert!(serde_json::from_str::<ParkBody>(r#"{"id":"a","unpak":true}"#).is_err());
+        assert!(serde_json::from_str::<ActionBody>(r#"{"acount":"bnb"}"#).is_err());
+        assert!(serde_json::from_str::<hub_core::queue::Add>(
+            r#"{"project":"p","task":"t","priorty":"low"}"#
+        )
+        .is_err());
+        // What the pages send still parses (static/app.js, waiting.js, home.js).
+        assert!(serde_json::from_str::<SendBody>(r#"{"t":"a","key":"Escape"}"#).is_ok());
+        assert!(serde_json::from_str::<ActionBody>("{}").is_ok());
+        assert!(
+            serde_json::from_str::<hub_core::queue::Add>(r#"{"project":"p","task":"t"}"#).is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn send_and_answer_refuse_control_bytes_and_oversize_text_before_any_command() {
+        let send_err = |text: String| async move {
+            send(Json(SendBody {
+                t: "x".into(),
+                text,
+                submit: None,
+                key: None,
+            }))
+            .await
+            .unwrap_err()
+        };
+        for text in [
+            "clear\u{1b}[2J".to_string(),
+            "\u{1b}[201~".into(),
+            "x".repeat(MAX_SEND + 1),
+        ] {
+            let (code, msg) = send_err(text).await;
+            assert_eq!(code, StatusCode::BAD_REQUEST);
+            assert!(msg.contains("plain lines"), "{msg}");
+        }
+        for text in ["yes\u{7}".to_string(), "y".repeat(MAX_ANSWER + 1)] {
+            let (code, msg) = answer_err(text).await;
+            assert_eq!(code, StatusCode::BAD_REQUEST);
+            assert!(msg.contains("plain text"), "{msg}");
+        }
+        assert_eq!(answer_err("  \n ".into()).await.1, "empty answer");
+    }
+
+    async fn answer_err(text: String) -> (StatusCode, String) {
+        answer(Json(AnswerBody {
+            id: "abc123".into(),
+            answer: text,
+        }))
+        .await
+        .unwrap_err()
     }
 }

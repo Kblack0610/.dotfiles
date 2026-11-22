@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::display::{Fact, Shown};
 use crate::home::{self, Running};
 use crate::links::{Kind, Link};
 use crate::queue::{Item, Queue, State};
@@ -102,6 +103,7 @@ pub struct Stats {
     pub progress: Progress,
     pub status: String,
     pub status_date: String,
+    pub status_parts: StatusParts,
     /// The human sheet's epics with their leaf rollup (notes-cli `epics.rs`).
     pub epics: Vec<EpicRollup>,
     /// The version the human promised (`Target:` head line) and its day, `YYYY-MM-DD`.
@@ -154,12 +156,71 @@ pub fn safe_name(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
+/// The STATUS block's labelled lines as `notes projects --stats --json` sends them
+/// (`status_parts`). The fields are private: they are read once, by [`Status::of`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct StatusParts {
+    done: String,
+    doing: String,
+    next: String,
+    needs: String,
+}
+
+/// A project's agent note: the headline, then a key table of what was done, is being done, comes
+/// next and needs the human. Both surfaces draw it as sent; the numbers (state, waves, window,
+/// gate) are the page's own and are never in it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Status {
+    pub headline: Option<Shown>,
+    /// One fact per labelled line the note carries, in the order they are written.
+    pub rows: Vec<Fact>,
+}
+
+impl Status {
+    pub fn of(headline: &str, parts: &StatusParts) -> Status {
+        let rows = [
+            ("Done", &parts.done),
+            ("Doing", &parts.doing),
+            ("Next", &parts.next),
+            ("Needs you", &parts.needs),
+        ]
+        .into_iter()
+        .filter(|(_, v)| !v.trim().is_empty())
+        .map(|(l, v)| Fact {
+            label: Shown::chip(l),
+            value: Shown::note(v),
+        })
+        .collect();
+        Status {
+            headline: (!headline.trim().is_empty()).then(|| Shown::note(headline)),
+            rows,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.headline.is_none() && self.rows.is_empty()
+    }
+
+    /// Every word of the note, for a search.
+    fn search_text(&self) -> String {
+        self.headline
+            .iter()
+            .chain(self.rows.iter().map(|f| &f.value))
+            .map(|s| s.full())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
 /// The opened card's Agent note head: `model-written, <date>`, or `none`.
 pub fn note_says(c: &Card) -> String {
     if c.status.is_empty() {
         "none".into()
     } else {
         format!("model-written, {}", c.status_date)
+            .trim_end_matches([',', ' '])
+            .to_string()
     }
 }
 
@@ -253,11 +314,11 @@ pub struct Card {
     pub waiting: usize,
     /// Every queued item; each can start, since work with a gate is a board row.
     pub queued: usize,
-    /// Items that finished since local midnight, whatever their status.
-    pub done_today: usize,
+    /// Queue items closed since local midnight, shipped and checks (`queue::done_today`).
+    pub today: crate::queue::DoneToday,
     /// Minutes the longest-waiting queued item has sat; None when none is queued.
     pub oldest_ready_min: Option<i64>,
-    pub status: String,
+    pub status: Status,
     pub status_date: String,
     /// The department inner tabs its page has (`layout::dept_tabs` over its project-map type): all
     /// nine for a game or app, engineering and ops for infra, none for an untyped project.
@@ -272,7 +333,7 @@ pub struct Card {
 }
 
 /// A targeted version against the day the work up to it closes at the net rate: what the card,
-/// the lab-status line and the Sentinel `release-late` watch read (`hub projects --json`).
+/// `hub projects --status` and the Sentinel `release-late` watch read (`hub projects --json`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct OnTime {
     pub version: String,
@@ -328,7 +389,7 @@ impl Card {
             last_window: s.last_window.clone(),
             on_time: on_time(s, today),
             versions: version_epics(&s.epics),
-            status: s.status.clone(),
+            status: Status::of(&s.status, &s.status_parts),
             status_date: s.status_date.clone(),
             dept_tabs: crate::layout::dept_tabs(
                 project_map::cached()
@@ -356,7 +417,8 @@ impl Card {
 impl crate::table::Row for Card {
     const COLUMNS: &'static [&'static str] = &[
         "project", "state", "profile", "stage", "version", "prio", "open", "doing", "hot", "done",
-        "7d", "pts", "pts7d", "window", "due", "pace", "run", "wait", "queued", "today", "oldest",
+        "7d", "pts", "pts7d", "window", "due", "pace", "run", "wait", "queued", "shipped",
+        "oldest",
     ];
     const STATES: &'static [&'static str] = &["all", "in flight", "waiting"];
     const FACETS: &'static [&'static str] = &["profile", "stage", "state"];
@@ -397,7 +459,7 @@ impl crate::table::Row for Card {
             "run" => Val::Num(self.running.len() as f64),
             "wait" => Val::Num(self.waiting as f64),
             "queued" => Val::Num(self.queued as f64),
-            "today" => Val::Num(self.done_today as f64),
+            "shipped" => Val::Num(self.today.shipped as f64),
             "oldest" => self
                 .oldest_ready_min
                 .map_or(Val::None, |m| Val::Num(m as f64)),
@@ -415,7 +477,13 @@ impl crate::table::Row for Card {
 
     /// A bare word searches what a project is called, what it is for and its note.
     fn text(&self) -> String {
-        format!("{}\n{}\n{}", self.name, self.goal, self.status).to_lowercase()
+        format!(
+            "{}\n{}\n{}",
+            self.name,
+            self.goal,
+            self.status.search_text()
+        )
+        .to_lowercase()
     }
 
     fn rank(&self, col: &str) -> Val {
@@ -863,13 +931,14 @@ pub fn build(
             }
         }
         let midnight = crate::text::local_day_start(now.timestamp());
-        let today = q.items.iter().filter(|i| {
-            i.state == State::Done && i.finished_at().is_some_and(|f| f.timestamp() >= midnight)
-        });
-        for i in today {
+        let mut closed: HashMap<usize, Vec<&Item>> = HashMap::new();
+        for i in q.items.iter().filter(|i| i.state == State::Done) {
             if let Some(k) = owner(i, &labs).and_then(|o| at(&mut cards, &o)) {
-                cards[k].done_today += 1;
+                closed.entry(k).or_default().push(i);
             }
+        }
+        for (k, items) in closed {
+            cards[k].today = crate::queue::done_today(items, midnight);
         }
         for i in q
             .items
@@ -936,6 +1005,16 @@ fn queue(c: &Card) -> String {
         c.waiting,
         c.queued
     )
+}
+
+/// The card's In flight as Home's Running table draws it, scoped to the project: the same
+/// [`Running`] row type, so the same columns and each cell's links. It is a fixed list on the
+/// project page (no query, sort or filter to give), so it sends no facets or state chips.
+pub fn running_table(c: &Card) -> crate::table::Summary {
+    let (_, mut t) = crate::table::View::default().summary(&c.running);
+    t.facets.clear();
+    t.states.clear();
+    t
 }
 
 /// The opened card's In flight counts: the queue, then rows #requested and the inbox, then its
@@ -1016,6 +1095,9 @@ pub fn to_json(p: &Projects) -> Value {
             j["in_flight"] = c.in_flight().into();
             j["pace"] = c.pace().into();
             j["oldest"] = wait_word(c.oldest_ready_min).into();
+            if !c.running.is_empty() {
+                j["running_table"] = serde_json::to_value(running_table(c)).unwrap_or_default();
+            }
         }
     }
     v
@@ -1026,6 +1108,45 @@ mod tests {
     use super::*;
     use crate::tasks::{Project, Row};
     use serde_json::json;
+
+    #[test]
+    fn a_status_note_is_a_headline_over_its_labelled_lines_in_the_written_order() {
+        let stats: Stats = serde_json::from_value(json!({
+            "name": "demo",
+            "status": "Waves are landing.",
+            "status_parts": {"done": "AI skins (#412).", "doing": "", "next": "morality meter.", "needs": "nothing."},
+        }))
+        .unwrap();
+        let s = Status::of(&stats.status, &stats.status_parts);
+        assert_eq!(s.headline.as_ref().unwrap().text(), "Waves are landing.");
+        let rows: Vec<(&str, &str)> = s
+            .rows
+            .iter()
+            .map(|f| (f.label.text(), f.value.text()))
+            .collect();
+        // A label with no words is no row.
+        assert_eq!(
+            rows,
+            [
+                ("Done", "AI skins (#412)."),
+                ("Next", "morality meter."),
+                ("Needs you", "nothing.")
+            ]
+        );
+        // No headline and no lines is no note: a project the writer never reached.
+        let none = Status::of("", &StatusParts::default());
+        assert!(none.is_empty());
+        let mut card = Card::default();
+        assert_eq!(note_says(&card), "none");
+        // A note of labelled lines alone still is one, and a search finds the words in it.
+        card.status = Status::of("", &stats.status_parts);
+        assert!(!card.status.is_empty());
+        assert!(crate::table::Row::text(&card).contains("morality meter"));
+        // The roles ride in the JSON both surfaces draw: a chip for each label, a note for the headline.
+        let walk = serde_json::to_value(&s).unwrap();
+        assert_eq!(walk["rows"][0]["label"]["role"], "chip");
+        assert_eq!(walk["headline"]["role"], "note");
+    }
 
     #[test]
     fn the_list_sorts_filters_and_searches_on_the_one_view() {
@@ -1092,6 +1213,46 @@ mod tests {
             "v0.10.0 is newer than v0.2.0"
         );
         assert_eq!(names("", "", "pace", "")[0], "low");
+    }
+
+    #[test]
+    fn a_card_sends_its_in_flight_as_homes_running_table_in_the_rows_order() {
+        let run = |slug: &str| Running {
+            slug: slug.into(),
+            title: format!("work {slug}"),
+            project: "focus".into(),
+            row: Some("ar-1".into()),
+            ..Default::default()
+        };
+        let mut c = Card {
+            name: "focus".into(),
+            running: vec![run("b"), run("a")],
+            ..Default::default()
+        };
+        let t = running_table(&c);
+        assert_eq!((t.total, t.shown), (2, 2));
+        assert!(
+            t.facets.is_empty() && t.states.is_empty(),
+            "a fixed list has no controls"
+        );
+        assert_eq!(
+            t.links.len(),
+            2,
+            "one links map per row, in the rows' order"
+        );
+        assert_eq!(t.links[0]["item"], "#queue/b");
+        let wire = to_json(&Projects {
+            cards: vec![c.clone()],
+            ..Default::default()
+        });
+        assert_eq!(wire["cards"][0]["running_table"]["shown"], 2);
+        assert_eq!(wire["cards"][0]["running"][0]["slug"], "b");
+        c.running.clear();
+        let none = to_json(&Projects {
+            cards: vec![c],
+            ..Default::default()
+        });
+        assert!(none["cards"][0].get("running_table").is_none());
     }
 
     #[test]
@@ -1622,10 +1783,19 @@ mod tests {
                 .format("%Y-%m-%dT%H:%M")
                 .to_string(),
         );
+        today.status = Some("ok".into());
+        today.merged = Some("abc123".into());
+        // Closed today too: a check (ok, no merge) and a failed run with a merge, which counts
+        // in neither.
+        let mut check = item("k", State::Done, "trader", None);
+        (check.finished, check.status) = (Some(ago(0)), Some("ok".into()));
+        let mut failed = item("f", State::Done, "trader", None);
+        (failed.finished, failed.status) = (Some(ago(0)), Some("failed".into()));
+        failed.merged = Some("def456".into());
         let mut before = item("y", State::Done, "trader", None);
         before.finished = Some(ago(48));
         let q = Queue {
-            items: vec![ready_old, ready_new, today, before],
+            items: vec![ready_old, ready_new, today, check, failed, before],
             ..Queue::default()
         };
         let row = |state: &str, priority: &str| Row {
@@ -1660,7 +1830,16 @@ mod tests {
             (2, 2),
             "a done, playtest or later-release row counts neither"
         );
-        assert_eq!((c.queued, c.done_today), (2, 1));
+        assert_eq!(
+            (c.queued, c.today),
+            (
+                2,
+                crate::queue::DoneToday {
+                    shipped: 1,
+                    checks: 1
+                }
+            )
+        );
         assert_eq!(
             c.oldest_ready_min,
             Some(30 * 60),

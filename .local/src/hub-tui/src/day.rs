@@ -162,15 +162,9 @@ pub fn today(rec: Option<&Value>, p: Palette, now: i64, w: usize) -> Page {
     }
     out.push(clip_line(Line::from(head), w));
 
-    let merged: Vec<&Value> = rec["merged"]
-        .as_array()
-        .map(|a| a.iter().collect())
-        .unwrap_or_default();
-    let mut repos: Vec<&str> = merged.iter().map(|m| s(m, "repo")).collect();
-    repos.sort_unstable();
-    repos.dedup();
+    let n = hub_core::boards::day_counts(rec);
     let open = rec["open"].as_array();
-    let mut items = vec![format!("merged {} in {} repos", merged.len(), repos.len())];
+    let mut items = vec![format!("merged {} in {} repos", n.merged, n.repos)];
     if let Some(o) = open {
         let fresh = o.iter().filter(|x| recent(x, now)).count();
         items.push(format!("open {fresh} (+{} older)", o.len() - fresh));

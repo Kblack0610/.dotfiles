@@ -133,12 +133,6 @@ function pSplit(arg) {
 // The arg naming what is open: the project, and its inner tab unless that is Overview.
 const pArg = () => pst.open + (pst.inner === "overview" ? "" : "/" + pst.inner);
 
-// One running item: its title (two lines at most), then its phases and estimate.
-function pRunning(r) {
-  const meta = [esc(phasesText(r)), etaText(r.phases)].filter(Boolean).join(", ");
-  return `<li><span class="prt">${esc(r.title)}</span>${meta ? `<span class="prm">${meta}</span>` : ""}</li>`;
-}
-
 // The opened card's top: its name and chips, profile and prio, then the release window (a meter
 // of delivered over committed rows and hub_core's cell; neither with no window, which the summary says), and hub_core's
 // summary word for word under it, every number named.
@@ -147,7 +141,7 @@ const pTop = (c, chips) => cardHead(c.name, chips.filter(Boolean)) +
   `<div class="pprog">${c.window_share == null ? "" : `${meter(c.window_share / 100)}<span class="ppct">${esc(c.window_cell)}</span>`}</div>` +
   `<div class="psum">${esc(c.summary)}</div>`;
 
-const P_COLS = { project: ["project"], state: ["state"], profile: ["profile"], stage: ["stage"], version: ["version"], prio: ["prio"], open: ["open", "n"], doing: ["doing", "n"], hot: ["hot", "n"], done: ["done", "n"], "7d": ["7d", "n"], pts: ["pts", "n"], pts7d: ["pts7d", "n"], window: ["window", "n"], due: ["due", "n"], pace: ["pace/wk", "n"], run: ["run", "n"], wait: ["wait", "n"], queued: ["queued", "n"], today: ["today", "n"], oldest: ["oldest", "n"] };
+const P_COLS = { project: ["project"], state: ["state"], profile: ["profile"], stage: ["stage"], version: ["version"], prio: ["prio"], open: ["open", "n"], doing: ["doing", "n"], hot: ["hot", "n"], done: ["done", "n"], "7d": ["7d", "n"], pts: ["pts", "n"], pts7d: ["pts7d", "n"], window: ["window", "n"], due: ["due", "n"], pace: ["pace/wk", "n"], run: ["run", "n"], wait: ["wait", "n"], queued: ["queued", "n"], shipped: ["shipped", "n"], oldest: ["oldest", "n"] };
 const pDash = (v) => esc(v == null || v === "" ? "-" : v);
 
 // One line of the list, its name a link; a click or Enter on it opens the project.
@@ -159,7 +153,7 @@ const pLine = (c, i, t) => `<tr class="jr" tabindex="0" data-open="${esc(pKey(c)
   `<td class="n">${esc(c.window_cell)}</td><td class="n">${esc(c.due_cell)}</td>` +
   `<td class="n">${c.pace.toFixed(1)}</td><td class="n">${c.running.length}</td>` +
   `<td class="n">${c.waiting}</td><td class="n">${c.queued}</td>` +
-  `<td class="n">${c.done_today}</td><td class="n">${pDash(c.oldest)}</td></tr>`;
+  `<td class="n">${c.today.shipped}</td><td class="n">${pDash(c.oldest)}</td></tr>`;
 
 const pLines = (lines, cls) => lines.map((l) => `<div${cls ? ` class="${cls}"` : ""}>${esc(l)}</div>`).join("");
 // The Timeline fold: its notes, then one line per event newest first, colored by its level,
@@ -185,7 +179,7 @@ function pOpened(c) {
     html += `<div class="cline${pg.gate && pg.gate.fail ? " warn" : ""}">next stage: <a href="#" data-pgo="stage">${esc(pg.next_says)}</a></div>`;
     html += pg.errors.map((e) => `<div class="panel down">${esc(e)}</div>`).join("");
   } else if (got && got.err) html += `<div class="panel down">${esc(got.err)}</div>`;
-  const counts = { ...deptCounts(pKey(c)), ...(pg ? { overview: pNeedCount(pg, pKey(c)), stage: pg.gate ? pg.gate.fail : 0 } : {}) };
+  const counts = { ...deptCounts(pKey(c)), ...(pg ? { overview: pg.need_count, stage: pg.gate ? pg.gate.fail : 0 } : {}) };
   return html + `</div>` + stripHtml(pPage(c), pst.inner, "ptab", [], counts, pDepts(c)[0] || null);
 }
 
@@ -204,7 +198,6 @@ const pDeptNote = (c) => {
   if (got.err) return `departments not read: ${got.err}`;
   return got.data.product ? null : `departments not read: ${got.data.says || NOT_READ}`;
 };
-const pNeedCount = (pg, key) => pNeedGroups(pg, key).reduce((n, g) => n + g.items.length, 0);
 // A link that moves the page to an inner tab, `open <its title>`.
 const pGoLink = (go) => `<a href="#" data-pgo="${go.pgo}">open ${esc((PROJECT_PAGE.find((t) => t[0] === go.pgo) || [, go.pgo])[1])}</a>`;
 
@@ -214,14 +207,14 @@ const pGoLink = (go) => `<a href="#" data-pgo="${go.pgo}">open ${esc((PROJECT_PA
 function pOverview(c, pg) {
   let html = "";
   if (pg) {
-    const groups = pNeedGroups(pg, pKey(c)), n = pNeedCount(pg, pKey(c)), note = pDeptNote(c);
+    const groups = pNeedGroups(pg, pKey(c)), n = pg.need_count, note = pDeptNote(c);
     html += secHead("p-needs", "Needs you", n);
     if (groups.length || note) html += `<div class="card">` + groups.map((g) => cfold(`pg:need:${g.kind}`,
       `<b>${esc(g.says)}</b>${g.go ? ` ${pGoLink(g.go)}` : ""}`, pLines(g.items), pst.folds)).join("") +
       (note ? `<div class="muted">${esc(note)}</div>` : "") + `</div>`;
   }
   html += secHead("p-flight", "In flight", c.running.length) +
-    `<div class="card">${c.running.length ? `<ul class="prun">${c.running.map(pRunning).join("")}</ul>` : `<div class="muted">nothing running</div>`}` +
+    `<div class="card">${c.running.length ? `<div class="panel scroll">${runTable(c.running_table, c.running, true)}</div>` : `<div class="muted">nothing running</div>`}` +
     (c.counts ? `<div class="cline muted">${esc(c.counts)}</div>` : "") + `<div class="cline"><a href="#queue?q=${encodeURIComponent("project:" + c.name)}">this project's queue</a></div></div>`;
   if (pg) html += secHead("p-systems", "Systems", pg.systems.length) + pSysTable(pg.systems);
   return html;
@@ -282,9 +275,12 @@ function pActivity(c, pg) {
     html += secHead("p-shipped", "Shipped", pg.shipped.length) + (pg.shipped.length ? `<div class="card">${pLines(pg.shipped)}</div>` : "");
     if (pg.timeline) html += secHead("p-timeline", "Timeline", pg.timeline.lines.length + pg.timeline.older) + `<div class="card">${pTimeline(pg.timeline)}</div>`;
   }
-  // The note's date is a fact in its card.
-  return html + secHead("p-note", "Agent note") + (c.status
-    ? `<div class="card"><div class="pstat">${esc(c.status)}</div>${c.status_date ? `<div class="cline muted"><b>written</b> ${esc(c.status_date)}</div>` : ""}</div>`
+  // The headline, then the labelled lines as a key table (hub_core::projects::Status, drawn as
+  // sent: the opened card shows each line's uncut words). The note's date is a fact in its card.
+  const s = c.status, full = (x) => x.full || x.text;
+  return html + secHead("p-note", "Agent note") + (s.headline || s.rows.length
+    ? `<div class="card">${s.headline ? `<div class="pstat">${esc(full(s.headline))}</div>` : ""}${facts(s.rows.map((f) => [f.label.text, full(f.value)]))}` +
+      `${c.status_date ? `<div class="cline muted"><b>written</b> ${esc(c.status_date)}</div>` : ""}</div>`
     : `<div class="card muted">No agent note.</div>`);
 }
 
@@ -317,8 +313,8 @@ function pList() {
     ? `<div class="panel scroll"><table class="tbl">${tblHead(t, P_COLS)}${d.cards.map((c, i) => pLine(c, i, t)).join("")}</table></div>`
     : `<div class="card muted">${t.total ? "No project matches." : "No projects."}</div>`;
   if (d.unlinked && d.unlinked.length) {
-    html += `<details data-k="unlinked"${pst.unlinked ? " open" : ""}><summary>${secHead("", "Not on a card", d.unlinked.length)}</summary>` +
-      `<div class="card">${d.unlinked.map((u) => `<div>${esc(u)}</div>`).join("")}</div></details>`;
+    html += fold("", secHead("", "Not on a card", d.unlinked.length), `<div class="card">${d.unlinked.map((u) => `<div>${esc(u)}</div>`).join("")}</div>`,
+      { k: "unlinked", open: pst.unlinked });
   }
   return html;
 }

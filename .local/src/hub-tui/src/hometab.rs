@@ -12,7 +12,7 @@ use hub_core::vitals::Vitals;
 use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
-use crate::fit::{cell, clip_line, Table};
+use crate::fit::{cell, clip_line, Cell, Table};
 use crate::fmt::{clock, dur, Palette};
 
 /// Home's two tables and which has the keys: Needs you, or Running once Tab moves them there.
@@ -388,6 +388,72 @@ pub fn cards(cards: &[Card], p: Palette, w: usize) -> Vec<Line<'static>> {
     out
 }
 
+/// The running items as one table: Home's Running and a project page's In flight alike, so the
+/// two never word a phase or an estimate apart (the PHASE cell is `Phases::shown`). `mark` is the
+/// sort column of `Row::COLUMNS` with its direction. `scoped` is one project's table: no PROJECT
+/// column, which every row would repeat.
+pub(crate) fn running_table(
+    rows: &[&Running],
+    p: Palette,
+    now: i64,
+    mark: Option<(usize, &'static str)>,
+    scoped: bool,
+) -> Table {
+    let or_dash = |s: Option<&String>| s.cloned().unwrap_or("-".into());
+    let cells = |r: &Running| -> Vec<Cell> {
+        let ph = r.phases.as_ref();
+        // Late by `overdue`, fleet-sessions' verdict, which the web's Overdue chip counts too.
+        let eta = match (ph.and_then(|x| x.eta_epoch), r.overdue) {
+            (Some(e), true) => cell(format!("{} late", clock(e, now)), p.warn()),
+            (Some(e), false) => clock(e, now).into(),
+            (None, true) => cell("late".to_string(), p.warn()),
+            (None, false) => "-".into(),
+        };
+        let ci = match r.ci.as_deref() {
+            Some(c) if r.ci_failing() => cell(c.to_string(), p.bad()),
+            Some(c) => c.to_string().into(),
+            None => "-".into(),
+        };
+        vec![
+            r.title.clone().into(),
+            r.project.clone().into(),
+            or_dash(r.row.as_ref()).into(),
+            or_dash(r.epic.as_ref()).into(),
+            ph.map_or("-".into(), |x| x.shown()).into(),
+            ph.and_then(|x| x.next.clone()).unwrap_or("-".into()).into(),
+            eta,
+            or_dash(r.pr.as_ref()).into(),
+            ci,
+        ]
+    };
+    // `hub_core::table::Row::COLUMNS` for Running, with NEXT after PHASE (the web prints it
+    // under the item) and without SINCE, which the session page carries.
+    let t = Table {
+        // The sort column in `Row::COLUMNS` order, moved past NEXT; SINCE is not drawn.
+        mark: mark.and_then(|(i, m)| match i {
+            0..=4 => Some((i, m)),
+            5..=7 => Some((i + 1, m)),
+            _ => None,
+        }),
+        header: vec![
+            "ITEM", "PROJECT", "ROW", "EPIC", "PHASE", "NEXT", "ETA", "PR", "CI",
+        ],
+        rows: rows.iter().map(|r| cells(r)).collect(),
+        // ITEM, then what is late or red, then where it sits; NEXT goes first.
+        keep: vec![0, 6, 8, 4, 7, 1, 2, 3, 5],
+        flex: Some(0),
+        flexmin: 20,
+        flexkeep: true,
+        right: vec![4],
+        cap: vec![(1, 22), (3, 12), (5, 40)],
+    };
+    if scoped {
+        const PROJECT: usize = 1;
+        return t.without_col(PROJECT);
+    }
+    t
+}
+
 /// Home as lines, and the line Running's selected row starts on while Running has the keys.
 pub fn page(
     h: &Home,
@@ -518,57 +584,7 @@ pub fn page(
             ));
             return (out, None);
         }
-        let t = Table {
-            // The sort column in `Row::COLUMNS` order, moved past NEXT; SINCE is not drawn.
-            mark: rv.mark::<Running>().and_then(|(i, m)| match i {
-                0..=4 => Some((i, m)),
-                5..=7 => Some((i + 1, m)),
-                _ => None,
-            }),
-            // `hub_core::table::Row::COLUMNS` for Running, with NEXT after PHASE (the web prints it
-            // under the item) and without SINCE, which the session page carries.
-            header: vec![
-                "ITEM", "PROJECT", "ROW", "EPIC", "PHASE", "NEXT", "ETA", "PR", "CI",
-            ],
-            rows: rows
-                .iter()
-                .map(|r| {
-                    let ph = r.phases.as_ref();
-                    // Late by `overdue`, fleet-sessions' verdict, which the web's Overdue chip counts too.
-                    let eta = match (ph.and_then(|x| x.eta_epoch), r.overdue) {
-                        (Some(e), true) => cell(format!("{} late", clock(e, now)), p.warn()),
-                        (Some(e), false) => clock(e, now).into(),
-                        (None, true) => cell("late".to_string(), p.warn()),
-                        (None, false) => "-".into(),
-                    };
-                    let or_dash = |s: Option<&String>| s.cloned().unwrap_or("-".into());
-                    let ci = match r.ci.as_deref() {
-                        Some(c) if r.ci_failing() => cell(c.to_string(), p.bad()),
-                        Some(c) => c.to_string().into(),
-                        None => "-".into(),
-                    };
-                    vec![
-                        r.title.clone().into(),
-                        r.project.clone().into(),
-                        or_dash(r.row.as_ref()).into(),
-                        or_dash(r.epic.as_ref()).into(),
-                        ph.map_or("-".into(), |x| format!("{}/{}", x.done, x.total))
-                            .into(),
-                        ph.and_then(|x| x.next.clone()).unwrap_or("-".into()).into(),
-                        eta,
-                        or_dash(r.pr.as_ref()).into(),
-                        ci,
-                    ]
-                })
-                .collect(),
-            // ITEM, then what is late or red, then where it sits; NEXT goes first.
-            keep: vec![0, 6, 8, 4, 7, 1, 2, 3, 5],
-            flex: Some(0),
-            flexmin: 20,
-            flexkeep: true,
-            right: vec![4],
-            cap: vec![(1, 22), (3, 12), (5, 40)],
-        };
+        let t = running_table(rows, p, now, rv.mark::<Running>(), false);
         let (mut lines, starts) = t.fit_wrapped(w, p.dim());
         // While Running has the keys its selected row is marked, every line it wraps onto.
         if view.on_running {

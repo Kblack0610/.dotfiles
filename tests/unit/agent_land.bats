@@ -18,8 +18,7 @@ setup() {
   # gh: `pr view` answers from fixture files, `pr merge` flips the state to merged.state.
   printf 'OPEN\n' >"$NOTES_FIXTURE/state"
   printf 'MERGED\n' >"$NOTES_FIXTURE/merged.state"
-  cat >"$SANDBOX/bin/gh" <<'EOF'
-#!/usr/bin/env bash
+  gh_script <<'EOF'
 printf 'gh %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
 # hint: every call also writes gh 2.105's success hint to stderr
 [ ! -f "$NOTES_FIXTURE/hint" ] || printf 'hint: if you need to wait for this pull request, use this instead of polling:\n    gh event listen --resource x\n' >&2
@@ -142,7 +141,7 @@ cat >"$NOTES_FIXTURE/linted.txt"
 [ ! -f "$NOTES_FIXTURE/lint.out" ] || cat "$NOTES_FIXTURE/lint.out"
 exit "$(cat "$NOTES_FIXTURE/lint.rc" 2>/dev/null || echo 0)"
 EOF
-  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/git" "$SANDBOX/bin/comms-lint"
+  chmod +x "$SANDBOX/bin/git" "$SANDBOX/bin/comms-lint"
 
   # dotfiles-autopull: logs its call, prints autopull.out, exits autopull.rc (0 by default)
   cat >"$SANDBOX/bin/dotfiles-autopull" <<'EOF'
@@ -190,7 +189,7 @@ EOF
 }
 
 # board_calls -> the notes calls that write a board, leaving out the chain's ingest record lines
-board_calls() { grep '^notes' "$LOG" | grep -v -e '^notes ingest record ' -e '^notes projects --prios' || true; }
+board_calls() { grep '^notes' "$LOG" | grep -v -e '^notes ingest record ' -e '^notes projects --prios' -e '^notes board --json$' || true; }
 # ran -> the call log without the read that picks the forge (fj_detect), which runs before any step
 ran() { grep -v -x -E 'git( -C [^ ]+)? rev-parse --show-toplevel' "$LOG" || true; }
 # not_recorded -> the call log without the chain's record lines, which a stopped landing writes too
@@ -727,13 +726,11 @@ EOF
 }
 
 @test "item-line: a body that cannot be edited stops before the checks and the merge" {
-  mv "$SANDBOX/bin/gh" "$NOTES_FIXTURE/gh.real"
-  cat >"$SANDBOX/bin/gh" <<'EOF'
-#!/usr/bin/env bash
+  cp "$NOTES_FIXTURE/gh.script" "$NOTES_FIXTURE/gh.real"
+  gh_script <<'EOF'
 [ "$1 $2" != 'pr edit' ] || { printf 'gh %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"; echo 'HTTP 403' >&2; exit 1; }
-exec "$NOTES_FIXTURE/gh.real" "$@"
+. "$NOTES_FIXTURE/gh.real"
 EOF
-  chmod +x "$SANDBOX/bin/gh"
   run "$LAND" 42 --item ship
   assert_failure 1
   assert_output --partial 'item-line failed: gh pr edit: HTTP 403'
@@ -1004,6 +1001,22 @@ EOF
   run "$LAND" 42 --item ship
   assert_failure 1
   assert_output --partial 'shape failed: shape-grow 5eedbase5eedbase HEAD: shape-grow: git diff origin/main HEAD: bad revision'
+}
+
+@test "tier 3: a playground fix(ci) item the tier-3 gate queued is refused without a Review: line, and lands with one and green checks" {
+  ITEM_PROJECT=unity-core-playground item fix-ci-probe 'human'
+  agent-queue set fix-ci-probe tags=tier3 >/dev/null
+  run "$LAND" 42 --item fix-ci-probe
+  assert_failure 1
+  assert_output --partial 'review failed: tier-3 item fix-ci-probe: no "Review: /code-review <level>'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+  printf 'fix(ci): retry the flaky runner probe\n\nReview: /code-review high, 1 finding fixed\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item fix-ci-probe
+  assert_success
+  assert_output --partial 'review: present (tier 3)'
+  assert_output --partial 'checks: green'
+  assert_output --partial 'merge: #42 MERGED'
 }
 
 @test "tier 3: an item tagged tier1 on agent-runtime, or an untiered one elsewhere, lands without a Review: line" {

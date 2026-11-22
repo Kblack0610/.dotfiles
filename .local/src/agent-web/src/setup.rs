@@ -22,14 +22,10 @@ pub async fn page(State(s): State<Shared>, headers: HeaderMap) -> Response {
     show(signed_in, s.oauth.base(), &auth::widget_token_path())
 }
 
+/// A cross-origin POST never reaches here: `same_origin` in main refuses it for every route.
 pub async fn new_key(State(s): State<Shared>, headers: HeaderMap) -> Response {
     let signed_in = crate::signed_in(&s, &headers).is_some();
-    rotate(
-        signed_in,
-        &headers,
-        s.oauth.base(),
-        &auth::widget_token_path(),
-    )
+    rotate(signed_in, &auth::widget_token_path())
 }
 
 /// A signed-out visit goes to `/`, the sign-in page with the Forgejo button and the key form.
@@ -63,17 +59,9 @@ fn show(signed_in: bool, base: &str, key_file: &Path) -> Response {
     ([crate::widget::NO_STORE], Html(page)).into_response()
 }
 
-fn rotate(signed_in: bool, headers: &HeaderMap, base: &str, key_file: &Path) -> Response {
+fn rotate(signed_in: bool, key_file: &Path) -> Response {
     if !signed_in {
         return to_sign_in();
-    }
-    // SameSite=Lax already keeps the cookie off another site's POST; this holds even without it.
-    if !same_origin(headers, base) {
-        eprintln!(
-            "agent-web: new widget key refused: origin {:?} is not {base:?}",
-            headers.get(header::ORIGIN)
-        );
-        return (StatusCode::FORBIDDEN, "cross-origin request refused").into_response();
     }
     if let Err(e) = auth::rotate_token(key_file) {
         eprintln!("agent-web: could not write a new widget key: {e:#}");
@@ -93,15 +81,6 @@ fn add_link(base: &str, key: &str) -> String {
         auth::pct_encode(&format!("{base}/widget.json")),
         auth::pct_encode(key)
     )
-}
-
-/// The request's `Origin` is this server's: a browser sends it on every form POST, and
-/// `AGENT_WEB_BASE_URL` is an origin (the routes and the OAuth callback sit at its root).
-fn same_origin(headers: &HeaderMap, base: &str) -> bool {
-    headers
-        .get(header::ORIGIN)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|o| o == base)
 }
 
 fn escape(s: &str) -> String {
@@ -157,12 +136,6 @@ mod tests {
         String::from_utf8(b.to_vec()).unwrap()
     }
 
-    fn origin(o: &str) -> HeaderMap {
-        let mut h = HeaderMap::new();
-        h.insert(header::ORIGIN, o.parse().unwrap());
-        h
-    }
-
     fn mode(p: &Path) -> u32 {
         std::fs::metadata(p).unwrap().permissions().mode() & 0o777
     }
@@ -174,7 +147,7 @@ mod tests {
         let r = show(false, BASE, &file);
         assert_eq!(r.status(), StatusCode::SEE_OTHER);
         assert_eq!(location(&r), Some("/"));
-        let r = rotate(false, &origin(BASE), BASE, &file);
+        let r = rotate(false, &file);
         assert_eq!(r.status(), StatusCode::SEE_OTHER);
         assert_eq!(location(&r), Some("/"));
         assert!(!file.exists());
@@ -207,7 +180,7 @@ mod tests {
     fn new_key_rotates_the_file_and_keeps_it_0600_and_creates_it_when_missing() {
         let dir = temp_dir().join("agent-web");
         let file = dir.join("widget.token");
-        let r = rotate(true, &origin(BASE), BASE, &file);
+        let r = rotate(true, &file);
         assert_eq!(r.status(), StatusCode::SEE_OTHER);
         assert_eq!(location(&r), Some(PATH));
         let first = auth::read_token(&file).unwrap();
@@ -218,7 +191,7 @@ mod tests {
 
         // An old file with looser bits is replaced, not kept.
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
-        rotate(true, &origin(BASE), BASE, &file);
+        rotate(true, &file);
         let second = auth::read_token(&file).unwrap();
         assert_ne!(first, second);
         assert_eq!(mode(&file), 0o600);
@@ -232,7 +205,7 @@ mod tests {
         let file = dir.join("widget.token");
         let codes: Vec<StatusCode> = std::thread::scope(|s| {
             let runs: Vec<_> = (0..8)
-                .map(|_| s.spawn(|| rotate(true, &origin(BASE), BASE, &file).status()))
+                .map(|_| s.spawn(|| rotate(true, &file).status()))
                 .collect();
             runs.into_iter().map(|r| r.join().unwrap()).collect()
         });
@@ -242,24 +215,6 @@ mod tests {
         );
         assert_eq!(auth::read_token(&file).unwrap().len(), 48);
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn a_cross_origin_or_originless_post_is_refused_and_keeps_the_key() {
-        let dir = temp_dir();
-        let file = dir.join("widget.token");
-        std::fs::write(&file, "old").unwrap();
-        for h in [
-            origin("https://evil.example"),
-            origin("https://agents.example.evil"),
-            origin("null"),
-            HeaderMap::new(),
-        ] {
-            let r = rotate(true, &h, BASE, &file);
-            assert_eq!(r.status(), StatusCode::FORBIDDEN);
-            assert_eq!(auth::read_token(&file).as_deref(), Some("old"));
-        }
         let _ = std::fs::remove_dir_all(dir);
     }
 }

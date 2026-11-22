@@ -40,7 +40,7 @@ function sessionsHead() {
   const line = c ? c.parts.map(capPart).join(" | ") : '<span class="muted">Reading capacity.</span>';
   const bad = [sst.err, sst.capErr, ...(sst.data?.errors || []), ...(c?.errors || [])].filter(Boolean);
   const unlinked = c && c.unlinked ? `<div class="capline muted">${c.unlinked} of ${c.live} live sessions have no queue item <button class="btn sm" data-unlinked>Show</button></div>` : "";
-  return `<div class="capline">${line}</div>${unlinked}` + bad.map((e) => `<div class="card err">${esc(e)}</div>`).join("");
+  return `<div class="capline">${line}</div>${unlinked}` + bad.map((e) => errPanel(e, { card: true })).join("");
 }
 
 const sessionAgent = (r) => st.agents.find((a) => a.target === r.target || (r.session_id && a.session === r.session_id));
@@ -206,11 +206,11 @@ $("side").addEventListener("click", (e) => {
 // the state document, and the folds, each open until the reader folds it.
 function pageHtml(p) {
   const s = sessionsOf().find((x) => (p.session_id && x.session_id === p.session_id) || (p.target && x.target === p.target));
-  const outcome = p.outcome ? fold("page-outcome", "Outcome card", `<pre class="joblog">${esc(p.outcome)}</pre>`) : pageRow("Outcome card", "after it ends");
+  const outcome = p.outcome ? ovFold("page-outcome", "Outcome card", `<pre class="joblog">${esc(p.outcome)}</pre>`) : pageRow("Outcome card", "after it ends");
   return `<div class="pghead"><span class="chip" style="--c:${bucketColor(p.bucket)}">${esc(p.bucket)}</span> <span class="muted">${esc(p.idle)}</span> ${esc(p.task)}</div>` +
-    p.errors.map((e) => `<div class="card err">${esc(e)}</div>`).join("") +
+    p.errors.map((e) => errPanel(e, { card: true })).join("") +
     p.parts.map(pagePart).join("") +
-    outcome + (s ? fold("page-state", "Fleet state", card(s, Date.now())) : "");
+    outcome + (s ? ovFold("page-state", "Fleet state", card(s, Date.now())) : "");
 }
 
 const loadPage = coalesce(async () => {

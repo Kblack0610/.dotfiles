@@ -204,7 +204,7 @@ ask_fixture() {
   assert_line '[["row three","failed"],["row two","done/failed"]]'
 }
 
-@test "dispatch-judge: an unrated end, or a failed line a later cleared released, is not wrong" {
+@test "dispatch-judge: an unrated end is not wrong; a failed line is, though a later cleared restarted its count" {
   local at; at="$(date -Iseconds)"
   v() { jq -cn --arg v "$1" --arg k "$2" --arg at "${3:-$at}" '{verdict: $v, project: "p", key: $k, at: $at, rule: "fits", judge_call: "d1"}'; }
   {
@@ -220,9 +220,9 @@ ask_fixture() {
   run "$JUDGE_EVAL" dispatch-judge --json
   assert_success
   run jq -c '.agents[0] | [.total | .tp, .fp, .pending], (.misses | map([.id, .answer]) | sort)' <<<"$output"
-  # negative control: row three's timeout is the model's, so it stays wrong; row four landed
-  assert_line '[1,1,2]'
-  assert_line '[["row three","done/failed"]]'
+  # negative control: row three's timeout is the model's, so it stays wrong; row four landed; row two failed
+  assert_line '[1,2,1]'
+  assert_line '[["row three","done/failed"],["row two","failed"]]'
 }
 
 @test "kpi --json: the judge KPIs over 7 and 28 days, every prompt, and no ask false-defer KPI" {
@@ -274,18 +274,22 @@ ask_fixture() {
   assert_output '[9,9,3,37.5,8]'
 }
 
-@test "kpi: judge_critical_live_pct is the share of critical verdicts the judge answered itself" {
+@test "kpi: judge_human_only_live_pct trips on a judge answer planted on a human-only ask; ask_human_only_pct is their share" {
   run "$JUDGE_EVAL" kpi --json
-  assert_equal "$(jq -c '.judge_critical_live_pct' <<<"$output")" '{"7d":null,"28d":null}'
-  ask c_human judge=human judge_type=ship_deploy judge_rule=external judge_level=critical answer=no
+  assert_equal "$(jq -c '[.judge_human_only_live_pct, .ask_human_only_pct]' <<<"$output")" '[{"7d":null,"28d":null},{"7d":null,"28d":null}]'
+  ask h_human judge=human judge_type=ship_deploy judge_rule=external judge_level=repo judge_human_only=true answer=no
   run "$JUDGE_EVAL" kpi --json
-  assert_equal "$(jq -c '.judge_critical_live_pct["7d"]' <<<"$output")" 0
-  ask c_live judge=take-recommend judge_type=fast judge_level=critical answered_by=judge judge_override=kept answer=yes
-  ask c_live2 judge=take-recommend judge_type=fast judge_level=critical answered_by=judge answer=yes
-  # negative control: a live answer at a lower level is no critical one
+  assert_equal "$(jq -c '[.judge_human_only_live_pct["7d"], .ask_human_only_pct["7d"]]' <<<"$output")" '[0,100]'
+  # a judge answer planted on a human-only ask is the trip, at any level
+  ask h_live judge=take-recommend judge_type=fast judge_level=self judge_human_only=true answered_by=judge judge_override=kept answer=yes
+  # an ask judged before the flag carried it as level critical: human-only, with no level
+  ask c_legacy judge=take-recommend judge_type=fast judge_level=critical answered_by=judge answer=yes
+  # negative control: a live answer with no flag is no human-only one
   ask r_live judge=take-recommend judge_type=fast judge_level=repo answered_by=judge answer=yes
   run "$JUDGE_EVAL" kpi --json
-  assert_equal "$(jq -c '.judge_critical_live_pct["7d"]' <<<"$output")" 66.7
+  assert_equal "$(jq -c '[.judge_human_only_live_pct["7d"], .ask_human_only_pct["7d"]]' <<<"$output")" '[66.7,75]'
+  run "$JUDGE_EVAL" log --human-only --json
+  assert_equal "$(jq -c 'map([.id, .level, .human_only]) | sort' <<<"$output")" '[["c_legacy","",true],["h_human","repo",true],["h_live","self",true]]'
 }
 
 @test "cells: one per type and impact level, a live cell scored only on reviewed answers, and the floor's share" {
@@ -297,12 +301,12 @@ ask_fixture() {
   ask r_none judge=take-recommend judge_type=fast judge_level=repo answered_by=judge judge_override=none answer=yes
   # the fast row stops at repo, so its fleet cell is not live
   ask f_tp judge=take-recommend judge_type=fast judge_level=fleet answer=yes
-  ask c_crit judge=human judge_type=ship_deploy judge_rule=external judge_level=critical judge_level_raised=true answer=no
+  ask c_crit judge=human judge_type=ship_deploy judge_rule=external judge_level=fleet judge_human_only=true judge_level_raised=true answer=no
   ask unrated judge=take-recommend judge_type=ship_deploy answer=yes
   run "$JUDGE_EVAL" cells --json
   assert_success
   run jq -c 'map([.type, .level, .verdicts, .tp, .fp, .unscorable, .live, .audited, .level_raised_pct, .precision_lo])' <<<"$output"
-  assert_output '[["fast","repo",3,1,1,1,true,2,33.3,9.5],["fast","fleet",1,1,0,0,false,0,0,20.7],["ship_deploy","",1,1,0,0,false,0,0,20.7],["ship_deploy","self",2,1,1,0,false,0,0,9.5],["ship_deploy","critical",1,0,0,1,false,0,100,null]]'
+  assert_output '[["fast","repo",3,1,1,1,true,2,33.3,9.5],["fast","fleet",1,1,0,0,false,0,0,20.7],["ship_deploy","",1,1,0,0,false,0,0,20.7],["ship_deploy","self",2,1,1,0,false,0,0,9.5],["ship_deploy","fleet",1,0,0,1,false,0,100,null]]'
   run "$JUDGE_EVAL" cells
   assert_success
   assert_line --regexp '^fast +repo +3 +2 +50% \[9.5-90.5\] +0 +yes +2 +33.3%$'
@@ -317,7 +321,7 @@ cell() {
   for ((i = 0; i < ${4:-0}; i++)); do ask "$1-$2-w$i" judge=take-recommend "judge_type=$1" "judge_rule=$1" "judge_level=$2" answer=no; done
 }
 
-@test "promote: the bar scales with level; fleet, critical, a hard stop, a live cell and a cell over a weak narrower one are not candidates" {
+@test "promote: the bar scales with level; fleet, a hard stop, a live cell and a cell over a weak narrower one are not candidates" {
   echo 'PROMOTE_BARS="self=70 repo=85"' >> "$AGENTCTL_CONF_DIR/ask-judge.conf"
   cell slow self 10        # Wilson low bound 72.2: past 70
   cell mid repo 10         # 72.2: under 85

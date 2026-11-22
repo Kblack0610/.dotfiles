@@ -357,6 +357,21 @@ S
   assert_equal "$(f xi 8)" '2026-07-28'
 }
 
+@test "the labelled-lines block: line 1 is the row's status, its digit kept, after the ASCII separator" {
+  # The shape write-lab-status.sh writes: `_date_ - headline`, then one line per label.
+  mk_summary pi <<'S'
+<!-- STATUS:START -->
+_2026-11-21_ - 3 waves land this week. Two wait on verify.
+Done: AI skins (#412).
+Doing: school days (db-275).
+Next: morality meter.
+Needs you: nothing.
+<!-- STATUS:END -->
+S
+  assert_equal "$(f pi 6)" '3 waves land this week'
+  assert_equal "$(f pi 8)" '2026-11-21'
+}
+
 @test "the shipped date and the narrative's date are kept apart" {
   # The live shape this was found in: a feed saying v9.0.0 shipped in August, next to
   # prose written in January still claiming v1.8.15 is live. Collapsing the two dates is

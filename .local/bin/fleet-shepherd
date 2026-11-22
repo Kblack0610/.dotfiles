@@ -754,8 +754,9 @@ remind_sample() {
     [ $((now - when)) -ge $((min * 60)) ] || continue
     decision="$(remind_decision "$bucket" "$reason" "$pr")"
     # A page agent-notify refused is not recorded, so the next check tries it again. An undelivered
-    # one it queues (ntfy down) exits 0 and is flushed by Sentinel.
-    agent-notify -p high -k decision -t "$target: one decision closes it" -r "tmux:$target" \
+    # one it queues (ntfy down) exits 0 and is flushed by Sentinel. Normal, silent: a finished
+    # session waiting on its close costs nothing within the hour (priority.md, "sessions and shepherd").
+    agent-notify -p normal -k decision -t "$target: one decision closes it" -r "tmux:$target" \
       "$target has sat $(( (now - when) / 3600 ))h since the shepherd told you: $reason. To close it: $decision." >/dev/null 2>&1 || continue
     printf '%s\t%s\t%s\n' "$today" "$sid" "$fact" >> "$REMINDED"
     cmd_log "remind: $target ($reason): $decision" >/dev/null

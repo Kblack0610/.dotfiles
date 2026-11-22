@@ -523,9 +523,7 @@ pub struct Running {
 impl Running {
     /// `2/4`, or empty with no checklist.
     pub fn phase(&self) -> String {
-        self.phases
-            .as_ref()
-            .map_or(String::new(), |p| format!("{}/{}", p.done, p.total))
+        self.phases.as_ref().map_or(String::new(), |p| p.shown())
     }
 
     /// fleet-sessions writes the PR's CI as `PASS`, `FAIL`, `PENDING` or `NONE` (fleet-states.md).
@@ -704,6 +702,11 @@ impl Home {
     pub fn waiting(&self) -> Waiting {
         Waiting {
             count: self.needs.len(),
+            sessions: self
+                .needs
+                .iter()
+                .filter(|n| n.kind == Kind::Session)
+                .count(),
             href: crate::links::Link::tab("home").href(),
         }
     }
@@ -728,6 +731,8 @@ impl Home {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Waiting {
     pub count: usize,
+    /// How many of those rows are sessions waiting on a dialog: the number on Sessions' tab.
+    pub sessions: usize,
     pub href: String,
 }
 
@@ -758,7 +763,7 @@ pub(crate) fn day_start(day: &str) -> Option<i64> {
         .map(|t| t.timestamp())
 }
 
-/// A tier-3 PR queue item (tag `tier3`) that finished failed: it ran unattended, so its failure is the human's.
+/// A tier-3 queue item (tag `tier3`, merging behind the red-fix gate) that finished failed: it ran unattended, so its failure is the human's.
 /// A failed one needs the human for a day after it ends; after that the queue holds it.
 pub const NIGHT_WINDOW_SECS: i64 = 86_400;
 
@@ -1358,6 +1363,15 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn an_ask_row_keeps_the_state_documents_audit_of_for_the_pager() {
+        let row = |a: Value| ask_need(&a, None, None, Score::new(true, true, 0, 0, 120));
+        let audit = row(json!({"id": "au", "project": "p", "question": "q?", "audit_of": "q1"}));
+        assert_eq!(audit.ask.unwrap().audit_of, "q1");
+        let plain = row(json!({"id": "a1", "project": "p", "question": "q?"}));
+        assert_eq!(plain.ask.unwrap().audit_of, "");
+    }
+
     /// `build` with every kind in `needs`, for the tests of the ranking and the rows themselves;
     /// `build` alone moves the agent kinds to `routed` (`Kind::owner`).
     fn build_all(
@@ -1600,6 +1614,14 @@ mod tests {
         let h = build(Some(&state()), None, None, None, NOW);
         let w = h.waiting();
         assert_eq!(w.count, h.needs.len());
+        assert_eq!(
+            w.sessions,
+            h.needs.iter().filter(|n| n.kind == Kind::Session).count()
+        );
+        assert!(
+            w.sessions > 0 && w.sessions < w.count,
+            "the split is a part of the count"
+        );
         assert_eq!(w.href, crate::links::Link::tab("home").href());
         assert_eq!(build(None, None, None, None, NOW).waiting().count, 0);
     }

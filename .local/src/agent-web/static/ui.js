@@ -210,10 +210,31 @@ function cardLine(parts) {
 // Whether section k is open: every section starts open, and one the reader folded stays folded,
 // because paint records each fold's state in `open` (dashboards rule 4).
 const secOpen = (open, k) => !open || open[k] !== false;
+// A fold: the one <details> every tab draws. cls is its class; summary and inner are html.
+// k keys it in the tab's `open` map (paint and the toggle listeners keep that current), id anchors
+// it, open is its state, attrs any further attributes (html), sum the summary's (` class="muted fold"`).
+const fold = (cls, summary, inner, o = {}) =>
+  `<details${cls ? ` class="${cls}"` : ""}${o.k ? ` data-k="${esc(o.k)}"` : ""}${o.id ? ` id="${esc(o.id)}"` : ""}${o.attrs || ""}${o.open ? " open" : ""}>` +
+  `<summary${o.sum || ""}>${summary}</summary>${inner}</details>`;
 // A fold keyed by k, open when open[k] says so (paint or a toggle listener keeps open current).
 // A per-row detail starts shut; a section (`section` true) starts open, as secOpen says.
 const cfold = (k, summary, inner, open, section) =>
-  `<details class="cfold" data-k="${esc(k)}"${(section ? secOpen(open, k) : open && open[k]) ? " open" : ""}><summary>${summary}</summary>${inner}</details>`;
+  fold("cfold", summary, inner, { k, open: section ? secOpen(open, k) : open && open[k] });
+// An error block: msg (text) in the error hue. card sizes it as a card, tag "span" draws it inline,
+// id keeps an empty one as a live region, cls adds classes. An empty msg draws the empty block.
+const errPanel = (msg, o = {}) => {
+  const tag = o.tag || "div";
+  return `<${tag} class="${[o.cls, o.card && "card", "err"].filter(Boolean).join(" ")}"${o.id ? ` id="${esc(o.id)}"` : ""}>${esc(msg || "")}</${tag}>`;
+};
+// A page that has not drawn yet: the read's error (text) in a down panel, else the wait word (text).
+const readPanel = (err, wait) => `<div class="${err ? "panel down" : "empty"}">${esc(err || wait)}</div>`;
+// A record list as a table: each row is its cells (html), the first the lead, or {cells, cls}
+// for a row that carries a class. One renderer, so no tab hand-builds a <ul> of sentences.
+const tblRec = (rows, cls = "") =>
+  `<table class="tbl rec${cls ? ` ${cls}` : ""}">${rows.map((r) => {
+    const cells = Array.isArray(r) ? r : r.cells;
+    return `<tr${r.cls ? ` class="${r.cls}"` : ""}>${cells.map((c) => `<td class="wrap">${c}</td>`).join("")}</tr>`;
+  }).join("")}</table>`;
 // A part of a tab that a phone folds to one line, so what needs attention comes first; a wider
 // screen always shows it and never sees the summary (app.css). summary is html and says the part's
 // state, because it is all a phone shows. PFOLD holds what was opened, so no tab keeps its own map.
@@ -224,7 +245,7 @@ const pfoldOpen = (k) => !isPhone() || !!PFOLD[k];
 // `head`: the summary is the part's section head, so a wide screen shows it as the head (app.css .hfold)
 // and a phone taps it; one markup for both sides, so crossing the width needs no redraw.
 const pfold = (k, summary, inner, head = false) =>
-  `<details class="pfold${head ? " hfold" : ""}" data-pf="${esc(k)}"${pfoldOpen(k) ? " open" : ""}><summary>${summary}</summary>${inner}</details>`;
+  fold(`pfold${head ? " hfold" : ""}`, summary, inner, { attrs: ` data-pf="${esc(k)}"`, open: pfoldOpen(k) });
 // Crossing the width: every drawn fold, on every tab, takes the state for the new side.
 const pfoldFit = () => document.querySelectorAll("details.pfold").forEach((d) => { d.open = pfoldOpen(d.dataset.pf); });
 // The facts (text) that have a value, as a name/value grid for a fold.
@@ -242,6 +263,27 @@ function etaText(p) {
   if (o) return `<span class="qlate" title="estimate ${esc(p.eta || "-")}; ${esc(o.phase || "")} open ${ageMin(o.age_min)}, expected ${ageMin(o.expected_min)}">overdue ${ageMin(o.age_min)}${eta ? ` (${eta})` : ""}</span>`;
   return eta ? `<span title="estimate ${esc(p.eta || "")}">${eta}</span>` : "";
 }
+// The running queue items (hub_core::home::Running) as one table, Home's Running and a project
+// page's In flight alike. Each row opens its session page, or its queue item when no session runs
+// it, and each cell that names a record links to that record's page (`l`: tblLinks for the row).
+// The PHASE cell is hub_core's `Phases::shown`, the next phase a muted line under the item.
+// `scoped` is a table of one project: no PROJECT column, no sortable headers (a fixed list has no
+// view to sort), and no row click (the item's link opens it).
+const RUN_COLS = { item: ["item"], project: ["project"], row: ["row"], epic: ["epic"], phase: ["phase", "n"], eta: ["eta", "n"], pr: ["pr"], ci: ["ci"], since: ["since", "n"] };
+const RUN_COLS_SCOPED = Object.fromEntries(Object.entries(RUN_COLS).filter(([k]) => k !== "project"));
+function runRow(r, l, scoped = false) {
+  const p = r.phases;
+  const pr = r.pr ? tblLink(l.pr, `${r.pr}${r.pr_state && r.pr_state !== "open" ? ` ${r.pr_state}` : ""}`) : "-";
+  const open = scoped ? "<tr>" : `<tr class="jr" data-slug="${esc(r.slug)}"${r.target ? ` data-target="${esc(r.target)}"` : ""} title="${esc(r.target || r.slug)}">`;
+  return open + `<td class="wrap">${tblLink(l.item, r.title)}${p && p.next ? `<div class="muted">next: ${esc(p.next)}</div>` : ""}</td>` +
+    (scoped ? "" : `<td>${tblLink(l.project, r.project)}</td>`) + `<td>${tblLink(l.row, r.row)}</td><td>${tblLink(l.epic, r.epic)}</td>` +
+    `<td class="n">${p ? esc(p.shown) : "-"}</td><td class="n">${etaText(p) || (r.overdue ? `<span class="qlate" title="fleet-sessions says its phase is overdue">overdue</span>` : "-")}</td><td>${pr}</td>` +
+    `<td>${r.ci ? tblLink(l.ci, r.ci, `ci ${r.ci}`) : "-"}</td><td class="n"${r.started ? ` title="${esc(r.started)}"` : ""}>${r.started ? esc(ago(r.started)) : "-"}</td></tr>`;
+}
+function runTable(t, rows, scoped = false) {
+  return `<table class="tbl">${tblHead(t, scoped ? RUN_COLS_SCOPED : RUN_COLS, scoped)}${rows.map((r, i) => runRow(r, tblLinks(t, i), scoped)).join("")}</table>`;
+}
+
 // Redraw answer cards (sel matches them) without eating a reply being typed into one: the
 // card is found again by its session target or ask id, and the text and focus go back.
 function keepTyping(sel, draw) {

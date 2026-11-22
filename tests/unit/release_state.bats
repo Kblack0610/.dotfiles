@@ -44,14 +44,12 @@ printf '%s' "${KUBE_IMAGE:-reg/web:v1.0.0}"
 EOF
   chmod +x "$SANDBOX/bin/kubectl"
 
-  cat > "$SANDBOX/bin/gh" <<'EOF'
-#!/usr/bin/env bash
+  gh_script <<'EOF'
 printf '%s\n' "$*" >> "$SANDBOX/gh.calls"
 [ "${GH_FAIL:-0}" = 1 ] && exit 1
 empty='{"data":{"repository":{"deployments":{"nodes":[]}}}}'
 printf '%s' "${GH_REPLY:-$empty}"
 EOF
-  chmod +x "$SANDBOX/bin/gh"
   export SANDBOX
   # The tag fetch on a refresh must not dial out: CODE's origin is a GitHub ssh URL.
   export GIT_SSH_COMMAND=false

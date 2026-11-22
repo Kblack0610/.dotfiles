@@ -388,7 +388,7 @@ load 'fleet_dispatch/common'
   assert_equal "$(outcome)" ''
 }
 
-@test "tier3 lane: a tier-3 row is pulled by the day fill, and its item starts --pr-only on the account room names" {
+@test "tier3 gate: a tier-3 row is pulled by the day fill, and its item starts behind the red-fix gate on the account room names" {
   pr_lane_ready
   row agent-runtime agent 'fix it' '- [ ] fix it #tier/3'
   pr_lane_verdict 'fix it' hooks
@@ -397,7 +397,8 @@ load 'fleet_dispatch/common'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_called 'CLAUDE_CONFIG_DIR=/acct/alt claude'
-  assert_called '/one-shot --pr-only fix it'
+  assert_called '/one-shot fix it'
+  assert_not_called '--pr-only'
   [ -n "$(qitem running gm-1)" ] || fail "tier3 item not started"
 }
 

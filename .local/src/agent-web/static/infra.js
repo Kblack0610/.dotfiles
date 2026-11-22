@@ -264,34 +264,17 @@ const INFRA_T = {
   local: infraTable("local", LOCAL_COLS, LOCAL_CELLS, "search, or platform:android branch:feat", "No local Unity gate failed in 24h."),
 };
 
-// Done today. Each row's `hour` label is the start of the hour it finished in, epoch seconds.
-// A conclusion that is none of these (skipped, neutral) counts in no column, as builds::verdict counts.
-const CI_OUTCOME = { success: "ok", failure: "bad", timed_out: "bad", cancelled: "can" };
-const ciRows = (inst) => (inst.hourly || []).map((s) => ({ hour: +s.labels.hour, scope: s.labels.scope, out: CI_OUTCOME[s.labels.conclusion], n: s.value || 0 }));
-const localRows = (inst) => (inst.local_hourly || []).map((s) => ({ hour: +s.labels.hour, out: s.labels.result === "pass" ? "ok" : "bad", n: s.value || 0 }));
-
-function tally(rows) {
-  const t = { ok: 0, bad: 0, can: 0 };
-  for (const r of rows) if (r.out) t[r.out] += r.n;
-  return t;
-}
-
-// Passed of passed and failed; a cancel is neither.
-const passOf = (t) => (t.ok + t.bad ? t.ok / (t.ok + t.bad) : null);
-
-function doneToday(inst, t1) {
-  const ci = ciRows(inst), local = localRows(inst);
-  if (!ci.length && !local.length) return `<div class="panel">No hourly data yet.</div>`;
-  const midnight = new Date(t1).setHours(0, 0, 0, 0) / 1e3, today = (r) => r.hour >= midnight;
-  const tc = tally(ci.filter(today)), tl = tally(local.filter(today));
-  const failed = (scope) => tally(ci.filter((r) => today(r) && r.scope === scope)).bad;
-  const onMain = failed("main");
+// CI runs finished today: hub_core::ci::Day counts the passed, failed and cancelled runs since local
+// midnight (skipped and neutral count in none), so the tiles only draw its fields.
+function doneToday(ci) {
+  const t = ci.day;
+  if (!t.read) return `<div class="panel">No hourly data yet.</div>`;
   const tiles = `<div class="tiles roomy">${
-    tile("CI RUNS", tc.ok + tc.bad + tc.can, "var(--c1)", `${pct(passOf(tc))} pass`)}${
-    tile("FAILED ON MAIN", onMain, onMain ? "var(--b-needs)" : "var(--b-done)")}${
-    tile("FAILED ON BRANCHES", failed("branch"), "var(--b-stalled)")}${
-    tile("CANCELLED", tc.can, "var(--c-other)")}${
-    tile("LOCAL UNITY", tl.ok + tl.bad, "var(--c3)", `${pct(passOf(tl))} pass`)}</div>`;
+    tile("CI RUNS", t.runs, "var(--c1)", `${pct(t.pass)} pass`)}${
+    tile("FAILED ON MAIN", t.failed_main, t.failed_main ? "var(--b-needs)" : "var(--b-done)")}${
+    tile("FAILED ON BRANCHES", t.failed_branch, "var(--b-stalled)")}${
+    tile("CANCELLED", t.cancelled, "var(--c-other)")}${
+    tile("LOCAL UNITY", t.local, "var(--c3)", `${pct(t.local_pass)} pass`)}</div>`;
   const note = `Tiles count from midnight; CI is read every 10 minutes. Runs per hour and the 24h status lanes are in Grafana ${gLink("kb-ci-runners", "CI / Runners")} ${gLink("kb-command-center", "Command Center")}.`;
   return `${tiles}<div class="muted fold">${note}</div>`;
 }
@@ -314,11 +297,10 @@ function runnersSection(ci) {
   return html + INFRA_T.runners.html();
 }
 const waitingSection = () => secHead("waiting", "Waiting for a runner", infraN("queued"), "", "h3") + INFRA_T.queued.html();
-function localSection(inst, t1) {
-  const open = secOpen(ist.open, "ci-more") ? " open" : "";
+function localSection(ci) {
   const n = infraN("local");
   return secHead("local", "Local Unity", n, n ? "bad" : "", "h3") + INFRA_T.local.html() +
-    `<details class="sec-d" data-k="ci-more"${open}><summary>${secHead("", "Done today", null, "", "h3")}</summary>${doneToday(inst, t1)}</details>`;
+    fold("sec-d", secHead("", "CI runs finished today", null, "", "h3"), doneToday(ci), { k: "ci-more", open: secOpen(ist.open, "ci-more") });
 }
 
 // The governor's global series: whether it is up and saw every source, and its queue.
@@ -377,7 +359,7 @@ function infraPageHtml() {
   if (!o) return "";
   const back = `<a class="btn sm" href="#infra/${ENTITY_PAGES.infra[o.p.word]}${st.views.infra ? "?" + st.views.infra : ""}">${o.p.back}</a>`;
   const d = pgst.data;
-  if (!d) return `<div class="bhead"><span>${esc(o.name)}</span>${back}</div><div class="${pgst.err ? "panel down" : "empty"}">${pgst.err ? esc(pgst.err) : "Loading..."}</div>`;
+  if (!d) return `<div class="bhead"><span>${esc(o.name)}</span>${back}</div>${readPanel(pgst.err, "Loading...")}`;
   let h = `<div class="bhead"><span>${esc(d.head)}</span>${back}</div>`;
   const errs = pgst.err ? [`refresh failed, showing the last read: ${pgst.err}`, ...d.errors] : d.errors;
   if (errs.length) h += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
@@ -601,7 +583,7 @@ function drawInfra() {
   html += innerWrap("infra", "machines", `${kpis(cc, d.ci.glance)}${spaceSection(d.space)}${secHead("machines", "Machines", infraN("machines"))}${INFRA_T.machines.html()}${governorLine(g)}`);
   html += innerWrap("infra", "pools", secHead("pools", "Job kinds", infraN("pools")) + INFRA_T.pools.html());
   html += innerWrap("infra", "ci", runnersSection(d.ci)) + innerWrap("infra", "waiting", waitingSection()) +
-    innerWrap("infra", "local", localSection(inst, t1));
+    innerWrap("infra", "local", localSection(d.ci));
   paint(el, html, ist.open);
   seekSection();
 }

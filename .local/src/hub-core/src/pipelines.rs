@@ -7,7 +7,7 @@
 //! |----------------------------|-------------------------------------------------------------------|
 //! | which pipelines            | state.json (`schedules-sync`): the base's files, scheduled (`workflows`) and not (`unscheduled`); else the ledger's `(repo, path)` |
 //! | its crons, purpose, jobs   | state.json `workflows[]`                                          |
-//! | on or held from the night  | state.json `night`: the repo's `scripts/night.json`, by file name |
+//! | on or held from the night  | state.json `night`: the repo's `config/ci/nightly.json`, by file name |
 //! | what starts the night      | the registry: `trackers.<repo>.nightRunner`; its schedule, next and last start from its conf and timer (`schedules::runner_starts`) |
 //! | its runs                   | the builds ledger by the workflow's file; a night member's by its nightly title (`builds::timed_as`), so a PR's affected run of the same file is not the nightly |
 //! | pass, runs, usual, p90     | `builds::time_of` over those runs, the ledger's window (`builds::KEEP_DAYS`) |
@@ -333,7 +333,7 @@ fn files_of<'a>(repo: &'a CiRepo, errors: &mut Vec<String>) -> Vec<File<'a>> {
             match out.iter_mut().find(|f| base_name(f.path) == name) {
                 Some(f) => f.night = Some((word, title.as_str())),
                 None => errors.push(format!(
-                    "{}: scripts/night.json names {name}, which is not a workflow on {}",
+                    "{}: config/ci/nightly.json names {name}, which is not a workflow on {}",
                     repo.repo,
                     base_of(repo)
                 )),
@@ -991,7 +991,7 @@ mod tests {
         );
         assert_eq!(
             p.errors,
-            ["Org/game: scripts/night.json names gone.yml, which is not a workflow on main"]
+            ["Org/game: config/ci/nightly.json names gone.yml, which is not a workflow on main"]
         );
     }
 

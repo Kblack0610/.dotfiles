@@ -1,0 +1,5 @@
+_2026-11-21_ - The UI-text epic is at phase 5 of 9.
+Done: briefing items lead with the action (#3038).
+Doing: the lab status reader (ar-4382).
+Next: the status writer (ar-4383).
+Needs you: nothing.

@@ -257,6 +257,22 @@ full_fleet() {
   assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
 }
 
+@test "sprint floor: an urgent sprint row still on the board is queued and starts past a full pace target the same pass" {
+  full_fleet
+  row game human sp-1 "- [ ] fix(game): boss soft-locks #urgent $T <!-- id:sp-1 -->"
+  verdict game human sp-1 dispatch S 1 boss
+  # Negative control: no open sprint, so the row stays on the board behind the full target.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  refute_output --partial 'on the sprint floor'
+  [ -z "$(qitem queued sp-1)" ] || fail "the row was queued with no sprint open"
+  jq -nc '[{project: "game", queued: false, tasks: [{id: "sp-1", state: "open"}]}]' > "$NOTES_FIXTURE/board.sprints"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'queued 1 dispatchable row(s) of the open sprint ahead of the queue pass'
+  assert_output --partial 'started queue item sp-1 on the sprint floor'
+}
+
 @test "sprint floor: DISPATCH_SPRINT_FLOOR live urgent sprint items fill it, and 0 turns it off" {
   full_fleet
   export DISPATCH_SPRINT_FLOOR=1
@@ -503,6 +519,36 @@ full_fleet() {
   assert_equal "$(qfield "$(qitem running fix-menu)" agent)" codex
   assert_equal "$(outcome)" WORKED
   # One start a pass: the next item waits for the next pass.
+  assert_equal "$(grep -c 'agent-codex' "$NOTES_FIXTURE/calls.log")" 1
+}
+
+# 2026-11-21: with the run floor leaving most passes room, every start went through the queue's route, which
+# offers Codex only for a promoted class: the source floor sat behind a full target and codex-underuse stayed red (ar-2436).
+@test "source floor: a fleet with room starts an item on a source whose week is going unused past its room, a red keeping the slot; on pace it starts on Claude" {
+  route_ready
+  acct main:ok
+  srcs codex:ok:5
+  cpu 10 5 0 85
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PROJECT_FLOOR=0 DISPATCH_PER_PASS=1
+  fleet_state 2
+  # Negative control: codex is on pace for its week, so the pass's one start goes to Claude.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item fix-menu'
+  refute_output --partial 'source floor'
+  assert_not_called 'agent-codex'
+  agent-queue move fix-menu queued >/dev/null
+  rm -f "$NOTES_FIXTURE/calls.log"
+  under_used codex
+  # A red at the head keeps the pass's one slot: the floor's start is past Claude's room.
+  agent-queue add --project game --slug r2 --tags 'red cause:cd34' "fix r2" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item r2'
+  assert_equal "$(qfield "$(qitem running r2)" agent)" claude
+  assert_output --partial 'room for 1; under-used near its reset: codex 18% used, 72% of its week gone, resets in 46h, so codex takes work on the source floor (DISPATCH_SOURCE_FLOOR=1)'
+  assert_output --partial 'started queue item fix-menu on codex (sol), the source floor (DISPATCH_SOURCE_FLOOR=1)'
+  assert_equal "$(qfield "$(qitem running fix-menu)" agent)" codex
   assert_equal "$(grep -c 'agent-codex' "$NOTES_FIXTURE/calls.log")" 1
 }
 
