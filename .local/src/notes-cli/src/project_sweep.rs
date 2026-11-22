@@ -195,10 +195,9 @@ pub(crate) enum Asked {
 /// With a release window, its committed rows still open and the rows that entered through the
 /// interrupt lane are pinned too, so the sprint spends the budget first and the rest of the board
 /// fills behind it: the sprint ranks first, it never parks the board (`stages.md`, "Flow").
-/// The pinned rows and the
-/// `#requested` rows aimed at the open version and held by no gate ([`held`]) stay and their
-/// weight is spent first; then the
-/// others, each in sheet order, stay while their weight fits what is left (a row too heavy
+///
+/// The pinned rows and the `#requested` rows aimed at the open version and held by no gate
+/// ([`held`]) stay and their weight is spent first; then the others, each in sheet order, stay while their weight fits what is left (a row too heavy
 /// for it goes to the backlog and lighter rows after it can still fit), and at least `agent_board_floor`
 /// of them stay whatever they weigh, so a project that shipped nothing still has rows to pull.
 /// Every other row takes [`BACKLOG`], and a row back inside the budget loses it. A row aimed

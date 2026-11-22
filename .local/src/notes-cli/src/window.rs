@@ -344,8 +344,8 @@ fn open_ids(dir: &Path) -> HashSet<String> {
 /// Is row `line` still waiting at `cut`, so it cannot land by it: behind `#after/<id>` of a row in
 /// `open` and not in `landed`, or held by an `#at/` gate (`#at/<HHMM>` read on `today`) that opens
 /// at or after `cut` or that it cannot read. A window's snapshot ([`record`], [`lock_sprint`])
-/// leaves such a row out, and [`admit`] sends an urgent one on to the next window, so a wait never
-/// holds a cut.
+/// leaves such a row out, and [`admit`] sends an urgent one on to the next window, the one it can
+/// ship in.
 fn waiting(
     line: &str,
     today: NaiveDate,
