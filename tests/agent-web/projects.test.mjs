@@ -168,6 +168,7 @@ test("with a project open every card is read, and an answer for a list no longer
 
 const page = {
   project: "demo", flow_line: "ideas 3 | briefs 1 | plans 1 | epics 2 | rows 5 | landed 1 | verified 0",
+  need_count: 5,
   need_groups: [
     { kind: "verify", says: "1 epic landed with no live proof", items: ["verify: Saves (4 of 4 rows landed, no live proof)"] },
     { kind: "plan", says: "2 plans with no epic", items: ["plan with no epic: a", "plan with no epic: <b>"] },
@@ -196,8 +197,9 @@ const pinOf = (pane, id) => (pane.match(new RegExp(`<div data-pin="${id}"( hidde
 
 test("an opened project is a header and an inner tab strip over Overview, never every epic's tasks", async () => {
   ctx.answers = { "/api/projects/demo/page": page };
-  const running = [{ slug: "s1", title: "wire the bar", project: "demo", phases: { done: 1, total: 3, next: "web" } }];
-  const c = card({ running, state: "on track", state_level: "ok", counts: "1 running, 0 waiting, 0 queued; 1 rows #requested, 2 in the inbox", status: "landed it", status_date: "2026-11-05", version_lines: ["v0.2.0: 2 open epics, 5 of 20 points done <b>"] });
+  const running = [{ slug: "s1", title: "wire the bar", project: "demo", row: "ar-9", phases: { done: 1, total: 3, shown: "1/3", next: "web" } }];
+  const running_table = { q: "", state: "", sort: "", dir: "desc", total: 1, shown: 1, states: [], facets: [], columns: ["item", "project", "row", "epic", "phase", "eta", "pr", "ci", "since"].map((key) => ({ key, sort: null, next_sort: key, next_dir: "desc", role: key === "item" ? "lead" : "" })), links: [{ item: "#queue/s1", project: "#projects/demo", row: "#projects/all?q=id:=ar-9" }] };
+  const c = card({ running, running_table, state: "on track", state_level: "ok", counts: "1 running, 0 waiting, 0 queued; 1 rows #requested, 2 in the inbox", status: "landed it", status_date: "2026-11-05", version_lines: ["v0.2.0: 2 open epics, 5 of 20 points done <b>"] });
   let { head, pane } = draw(list([c]), "bnb/demo");
   assert.match(head, /<span class="ctitle">demo<\/span><span class="cchip state ok">On track<\/span><span class="cchip ">alpha<\/span>/, "the state pill leads the chips");
   assert.match(head, /<div class="pgoal">ship the menu<\/div><div class="cline">epics: v0\.2\.0: 2 open epics, 5 of 20 points done &lt;b&gt;<\/div><\/div>/, "one line per version, escaped");
@@ -222,6 +224,12 @@ test("an opened project is a header and an inner tab strip over Overview, never 
   assert.match(over, /data-k="pg:need:stage"><summary><b>1 beta check failing, 1 for a human<\/b> <a href="#" data-pgo="stage">open Stage<\/a><\/summary><div>HUMAN sign off<\/div><div>FAIL a soak test<\/div>/);
   assert.doesNotMatch(over, /<details[^>]* open/, "a group's items are per-row detail and start shut");
   assert.match(over, /id="sec-p-flight">In flight <span class="n">1<\/span><\/h2>.*wire the bar.*<div class="cline muted">1 running, 0 waiting, 0 queued; 1 rows #requested, 2 in the inbox<\/div><div class="cline"><a href="#queue\?q=project%3Ademo"/s);
+  // In flight is Home's Running table scoped to the project: the item and its next phase, the
+  // phase as hub_core words it, no PROJECT column, no sort button or row click on a fixed list.
+  const flight = (over.match(/id="sec-p-flight".*?<\/table>/s) || [""])[0];
+  assert.match(flight, /<th class="n"[^>]*>phase<\/th>/);
+  assert.doesNotMatch(flight, />project<|thsort|class="jr"|<ul/, "scoped to the project, nothing to sort, no old list");
+  assert.match(flight, /<tr><td class="wrap"><a class="tl" href="#queue\/s1">wire the bar<\/a><div class="muted">next: web<\/div><\/td><td><a class="tl" href="#projects\/all\?q=id:=ar-9">ar-9<\/a><\/td><td>-<\/td><td class="n">1\/3<\/td>/);
   // Systems: one row each, the head's numbers as columns; a system opens Deliverables.
   assert.match(over, /id="sec-p-systems">Systems <span class="n">2<\/span><\/h2>/);
   assert.match(over, /<tr class="jr" tabindex="0" data-psys="ui"><td>ui<\/td><td class="n">25%<\/td><td class="n">0 of 1<\/td><td class="n">1<\/td><td class="n">3<\/td><td class="n warn">1<\/td><td class="n">5 of 7<\/td><td class="wrap">Menus 25% <span class="muted">\+2<\/span><\/td><\/tr>/);
@@ -691,6 +699,8 @@ const depts = () => ({
       }),
       dept("support", "Support"), dept("money", "Money")],
   },
+  // Product::open_needs: each department's needs that are not ok.
+  dept_needs: { marketing: 1, legal: 1 },
   // Product::need_groups over the depts above: red first.
   need_groups: [
     { kind: "dept:legal", says: "Legal: 1", items: ["privacy policy: no privacyUrl in game.json"] },
@@ -702,7 +712,7 @@ const DEPT_API = "/api/projects/bnb%2Fdemo/departments";
 test("a project's page has the work tabs, then the department tabs its card names, their needs on Overview, and Legal says what is missing", async () => {
   // A list read an earlier test left in flight lands first, so it cannot replace this card.
   await settle(); await settle();
-  ctx.answers = { "/api/projects/demo/page": page, [DEPT_API]: depts() };
+  ctx.answers = { "/api/projects/demo/page": { ...page, need_count: 7 }, [DEPT_API]: depts() };
   draw(list([card({ dept_tabs: ["analytics", "marketing", "legal", "support", "money"] })]), "bnb/demo");
   await settle(); await settle();
   const { head, pane } = read();

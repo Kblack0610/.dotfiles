@@ -137,12 +137,13 @@
     "group/status": {
         "orientation": "horizontal",
         "modules": [
+            "custom/needs",
             "custom/timebox",
             "custom/health",
             "custom/fleet",
             "custom/projects",
             "custom/ai-agents",
-            "custom/dispatch",
+            "custom/queue",
             "custom/ci",
             "custom/printer"
         ]
@@ -204,9 +205,23 @@
         "on-click": "$HOME/.config/waybar/audio_input.sh next",
         "on-click-right": "$HOME/.config/waybar/audio_input.sh prev"
     },
-    // Agents: the robot coloured by fleet health, then the live total and its working, ready and need-you parts on the bar; the hover is the fleet-sessions stages, a section
-    // per tmux world (hub, lab) with a line per session, need-you first, capped to fit the screen (ai_agents.sh). 15s because fleet-sessions
-    // ticks once a minute. Click opens agent-panel, right-click the hub board on Sessions.
+    // Needs you: Home's one count of what only the human can do, first in the status group; the hover is its kind
+    // split and oldest rows (needs.sh, from the retained summary/overview). 30s: one broker read, and the publisher
+    // sends on events. Click opens the hub on Home.
+    "custom/needs": {
+        "format": "{}",
+        "return-type": "json",
+        "interval": 30,
+        "exec": "$HOME/.config/waybar/modules.sh gate custom/needs $HOME/.config/waybar/needs.sh",
+        "signal": 10,
+        "hide-empty-text": true,
+        "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab home",
+        "tooltip": true
+    },
+    // Agents: the robot coloured by fleet health, then the live total and its working and ready parts on the bar (what needs you is
+    // custom/needs); the hover is the fleet-sessions stages, a section per tmux world (hub, lab) with a line per session, the waiting
+    // and stalled ones first, capped to fit the screen (ai_agents.sh). 15s because fleet-sessions ticks once a minute. Click opens
+    // agent-panel, right-click the hub board on Sessions.
     "custom/ai-agents": {
         "format": "{}",
         "return-type": "json",
@@ -305,13 +320,13 @@
         "on-click": "$HOME/.local/bin/machine-mode next",
         "tooltip": true
     },
-    // Queue: Q ready to start and D done today; the hover has a section
-    // per system: Queue, Dispatch, Shepherd (dispatch.sh). Click opens the hub board on Queue.
-    "custom/dispatch": {
+    // Queue: Q ready to start and D done today; the hover leads with whether work flows and
+    // what to fix, then Queue, Dispatch and Shepherd numbers (queue.sh). Click opens the hub on Queue.
+    "custom/queue": {
         "format": "{}",
         "return-type": "json",
         "interval": 60,
-        "exec": "$HOME/.config/waybar/modules.sh gate custom/dispatch $HOME/.config/waybar/dispatch.sh",
+        "exec": "$HOME/.config/waybar/modules.sh gate custom/queue $HOME/.config/waybar/queue.sh",
         "signal": 10,
         "hide-empty-text": true,
         "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab queue",

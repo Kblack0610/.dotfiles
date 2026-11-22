@@ -19,7 +19,7 @@ setup() {
   jq -n --arg r "$R" '{paths: {"\($r)/board": "board", "\($r)/two": "two", "\($r)/work": "work", "\($r)/loose": "loose"},
     trackers: {_comment: "x", board: {lab: "personal"}, two: {lab: "bnb"}, work: {lab: "client", client: "acme"}}}' > "$PROJECT_MAP_FILE"
   stub fleet-sessions 'cat "$NOTES_FIXTURE/live.json" 2>/dev/null; exit 0'
-  stub gh 'echo "$PWD" >> "$NOTES_FIXTURE/gh.log"; exit 0'
+  gh_script 'echo "$PWD" >> "$NOTES_FIXTURE/gh.log"; exit 0'
   # The model saves each prompt and answers from model.out.<board>, else model.out
   stub model-stub 'for a; do case "$a" in *"## Messages"*) echo "the prompt came as an argument" >&2; exit 64 ;; esac; done; p="$(cat)"; b="$(sed -n "1s/^## Messages (\(.*\))$/\1/p" <<<"$p")"; echo "$b" >> "$NOTES_FIXTURE/model.log"; printf "%s" "$p" > "$NOTES_FIXTURE/prompt.$b"
     cat "$NOTES_FIXTURE/model.out.$b" 2>/dev/null || cat "$NOTES_FIXTURE/model.out" 2>/dev/null; exit "$(cat "$NOTES_FIXTURE/model.rc.$b" 2>/dev/null || cat "$NOTES_FIXTURE/model.rc" 2>/dev/null || echo 0)"'

@@ -96,7 +96,6 @@ setup() {
   # The tuning these cases are written against: the code defaults of the keys the agentctl conf sets
   # hold every start ("a key the conf sets gets a neutral default"), and the sandbox has no conf.
   export DISPATCH_TARGET_PRESENT=50 DISPATCH_TARGET_AWAY=25 DISPATCH_MAX_LOAD=0.7 DISPATCH_MIN_IDLE=30 DISPATCH_LOW_WATER=3
-  export DISPATCH_T3_PROJECTS="agent-runtime notes-cockpit"
   export DISPATCH_REQUESTED_FLOOR=0   # its own cases below turn it on; every other case reads the board by the low water alone
   export DISPATCH_PROJECT_MAP="$SANDBOX/map.json"
   export DISPATCH_POLICY="$SANDBOX/policy.md"
@@ -531,20 +530,19 @@ codex_run() {
   stub pgrep "[ \"\$*\" = \"-u $(id -u) -f agent-codex (run|resume)\" ] || exit 2; for p in $pids; do echo \$p; done"
 }
 
-# --- tier 3 to an open PR (t3_picks) ---
+# --- tier 3 behind the red-fix gate (t3_picks) ---
 
-# pr_lane_ready: the agent-runtime board in the default profile, every gate passing.
+# pr_lane_ready: the agent-runtime board, every gate passing.
 pr_lane_ready() {
-  export DISPATCH_T3_PROFILE='' DISPATCH_T3_PROJECTS=agent-runtime
   project agent-runtime alpha "$SANDBOX/repos/app"
 }
 
-# pr_lane_verdict <key> [area] [tier3_only] [size] -- a tier-3 skip under the current policy for the row's text
+# pr_lane_verdict <key> [area] [tier3_only] [size] [project] -- a tier-3 skip under the current policy for the row's text
 pr_lane_verdict() {
   mkdir -p "$FLEET_DISPATCH_DIR"
-  jq -cn --arg k "$1" --arg a "${2-$1}" --argjson t3 "${3:-true}" --arg s "${4:-S}" --arg sig "$(policy_sig)" \
-    --arg line "$(line_of agent-runtime agent "$1")" \
-    '{project: "agent-runtime", lane: "agent", key: $k, verdict: "skip", size: $s, tier: 3, area: $a,
+  jq -cn --arg p "${5:-agent-runtime}" --arg k "$1" --arg a "${2-$1}" --argjson t3 "${3:-true}" --arg s "${4:-S}" --arg sig "$(policy_sig)" \
+    --arg line "$(line_of "${5:-agent-runtime}" agent "$1")" \
+    '{project: $p, lane: "agent", key: $k, verdict: "skip", size: $s, tier: 3, area: $a,
       clear: true, agent_only: true, tier3_only: $t3, rule: "tier3", reason: "tier 3", policy: $sig, line: $line}' \
     >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
 }
@@ -579,7 +577,7 @@ pr_item() {
   started_item fix-crash lab:game-agent-1 run '' 'board:game:fix crash'
   agent-queue set fix-crash pr=o/game#12 lane=agent >/dev/null
   printf '%s %s\n' "$1" "${2:-$OID}" > "$NOTES_FIXTURE/pr.state"
-  stub gh 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; [ -s "$NOTES_FIXTURE/pr.state" ] || exit 1; cat "$NOTES_FIXTURE/pr.state"'
+  gh_script 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; [ -s "$NOTES_FIXTURE/pr.state" ] || exit 1; cat "$NOTES_FIXTURE/pr.state"'
 }
 
 # fj_item <state> <status> [merge sha] -- pr_item's fix-crash on a checkout whose canonical forge is
@@ -594,7 +592,7 @@ fj_item() {
   git -C "$SANDBOX/repos/game" update-ref refs/remotes/forgejo/main "$OID"
   export SO_CURL=curl-fj SO_FORGEJO_HOSTS=git.example.test GIT_ALLOW_PROTOCOL=file
   printf 'sekret-token' > "$RBW_FIXTURE/forgejo_repo_admin"
-  stub gh 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; exit 1'
+  gh_script 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; exit 1'
   stub curl-fj 'url=${*: -1}; printf "%s\n" "$url" >> "$NOTES_FIXTURE/fj.urls"; printf "%s %s\n" "$url" "$(cat)" >> "$NOTES_FIXTURE/fj.auth"
 case "$url" in */pulls/12) cat "$NOTES_FIXTURE/fj.pr" ;; */commits/*/status) cat "$NOTES_FIXTURE/fj.status" ;; *) exit 22 ;; esac'
   fj_pr "$1" "${3:-}"
@@ -678,7 +676,6 @@ orphan_seen() {
 # the row stays started and no active item names it. The row file and calls.log are put back after the
 # move, which now closes the row of an ok close with no PR.
 landed_item() {
-  export DISPATCH_T3_PROFILE=bnb
   pr_item "$1"
   agent-queue set fix-crash pr= >/dev/null
   cp "$NOTES_FIXTURE/rows.game.agent" "$SANDBOX/rows.kept"
@@ -693,7 +690,7 @@ landed_item() {
 bare_pr() {
   landed_item MERGED 12
   jq -n --arg o "$OID" --arg b "$1" '{state: "MERGED", mergeCommit: {oid: $o}, body: $b}' > "$NOTES_FIXTURE/pr.json"
-  stub gh 'printf "gh %s in %s\n" "$(tr "\n" " " <<<"$*")" "$PWD" >> "$NOTES_FIXTURE/calls.log"; jq -r "${@: -1}" "$NOTES_FIXTURE/pr.json"'
+  gh_script 'printf "gh %s in %s\n" "$(tr "\n" " " <<<"$*")" "$PWD" >> "$NOTES_FIXTURE/calls.log"; jq -r "${@: -1}" "$NOTES_FIXTURE/pr.json"'
 }
 
 # --- starved -----------------------------------------------------------------------------
@@ -731,7 +728,7 @@ record_setup() {
   export TMUX_SERVERS_DIR="$SANDBOX/manifests"
   mkdir -p "$TMUX_SERVERS_DIR" "$HOME/.claude/sessions"
   : > "$TMUX_SERVERS_DIR/hub.conf"
-  stub tmux 'case "$*" in
+  tmux_script 'case "$*" in
     *display-message*) [ -s "$NOTES_FIXTURE/world.instance" ] || exit 1; cat "$NOTES_FIXTURE/world.instance"; echo ;;
     *list-panes*) cat "$NOTES_FIXTURE/world.panes" ;;
   esac'
@@ -803,7 +800,7 @@ harness_ready() {
       {mode: "lane-sandbox", why: "no match, so never read by route"}]}' > "$HOME/.config/fleet-bench/matrix.json"
   stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" != log ] || echo run-9'
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
-  stub tmux 'exit 0'
+  tmux_script 'exit 0'
   agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
 }
 
@@ -857,7 +854,7 @@ cloud_run_ready() {
   agent-queue add --project game --slug cloud-fix --priority high --tags cloud-ok "Fix the menu text" >/dev/null
   agent-queue move cloud-fix running >/dev/null
   stub claude 'echo "claude $*" >> "$NOTES_FIXTURE/calls.log"; echo "Session: https://claude.ai/code/session_01AbC"'
-  stub gh 'echo "gh $*" >> "$NOTES_FIXTURE/calls.log"; cat "$NOTES_FIXTURE/prs.json"'
+  gh_script 'echo "gh $*" >> "$NOTES_FIXTURE/calls.log"; cat "$NOTES_FIXTURE/prs.json"'
   export CLOUD_POLL_SEC=0 CLAUDE_BIN=claude
 }
 

@@ -1350,8 +1350,7 @@ notes --profile bnb ptask game --agent run gm-9"
 @test "a pr: tag holds an item until gh says the PR merged, and after still holds with it" {
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
   # gh stub: the state for PR N is the file $SANDBOX/pr-N; every call is logged.
-  printf '#!/usr/bin/env bash\necho "gh $*" >> "%s/gh.log"\ncat "%s/pr-$3"\n' "$SANDBOX" "$SANDBOX" > "$SANDBOX/bin/gh"
-  chmod +x "$SANDBOX/bin/gh"
+  gh_script "echo \"gh \$*\" >> \"$SANDBOX/gh.log\"; cat \"$SANDBOX/pr-\$3\""
   echo OPEN > "$SANDBOX/pr-7"; echo OPEN > "$SANDBOX/pr-8"
   legacy blocked "tags: pr:Org/game#7" --project game --priority urgent "a"
   "$AQ" add --project game --slug base "b"
@@ -1365,7 +1364,7 @@ notes --profile bnb ptask game --agent run gm-9"
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"both\") | .hold'"
   assert_output "after base"
   # A merged PR is cached for good: once more with gh failing makes no difference.
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"
+  gh_script 'exit 1'
   [ "$("$AQ" next --json | jq -r .slug)" = blocked ]
   run "$AQ" add --project game --tags "pr:1653" "x"
   assert_failure; assert_output --partial "pr:<owner>/<repo>#<N>"
@@ -1373,7 +1372,7 @@ notes --profile bnb ptask game --agent run gm-9"
 
 @test "a pr: tag holds while gh cannot read the PR" {
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+  gh_script 'exit 1'
   legacy blocked "tags: pr:Org/game#9" --project game "a"
   run bash -c "'$AQ' list --json | jq -r '.hold'"
   assert_output "pr:Org/game#9 not merged"
@@ -1385,11 +1384,11 @@ notes --profile bnb ptask game --agent run gm-9"
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache" AGENT_QUEUE_PR_TTL=0
   mkdir -p "$REPO/.forgejo/workflows"; : > "$REPO/.forgejo/workflows/mirror-to-github.yaml"
   git -C "$REPO" remote add forgejo https://git.example.test/o/game.git
-  printf '#!/usr/bin/env bash\necho "gh $*" >> "%s/gh.log"\nexit 1\n' "$SANDBOX" > "$SANDBOX/bin/gh"
+  gh_script "echo \"gh \$*\" >> \"$SANDBOX/gh.log\"; exit 1"
   printf '#!/usr/bin/env bash\necho sekret\n' > "$SANDBOX/bin/rbw-fj"
   printf '#!/usr/bin/env bash\nurl=${*: -1}; echo "$url" >> "%s/fj.urls"\ncase "$url" in */pulls/5) cat "%s/fj.pr" ;; */status) echo "{\\"statuses\\": []}" ;; *) exit 22 ;; esac\n' \
     "$SANDBOX" "$SANDBOX" > "$SANDBOX/bin/curl-fj"
-  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/rbw-fj" "$SANDBOX/bin/curl-fj"
+  chmod +x "$SANDBOX/bin/rbw-fj" "$SANDBOX/bin/curl-fj"
   export SO_CURL=curl-fj SO_RBW=rbw-fj SO_FORGEJO_HOSTS=git.example.test
   echo '{"number": 5, "state": "open", "merged": false, "head": {"sha": "h1"}}' > "$SANDBOX/fj.pr"
   legacy blocked "tags: pr:kblack0610/game#5" --project game "a"
@@ -1406,7 +1405,7 @@ notes --profile bnb ptask game --agent run gm-9"
 
 @test "a pr: read that fails is cached for the TTL, so a pass of lists costs one call (negative control: TTL 0 asks again)" {
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
-  printf '#!/usr/bin/env bash\necho "gh $*" >> "%s/gh.log"\nexit 1\n' "$SANDBOX" > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+  gh_script "echo \"gh \$*\" >> \"$SANDBOX/gh.log\"; exit 1"
   legacy blocked "tags: pr:Org/game#9" --project game "a"
   for _ in 1 2 3; do "$AQ" list --json >/dev/null; done
   [ "$(wc -l < "$SANDBOX/gh.log")" -eq 1 ] || fail "gh asked $(wc -l < "$SANDBOX/gh.log") times"
@@ -1416,7 +1415,7 @@ notes --profile bnb ptask game --agent run gm-9"
 
 @test "a pr: tag on a PR closed unmerged holds and says it never releases" {
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
-  printf '#!/usr/bin/env bash\ncat "%s/pr-$3"\n' "$SANDBOX" > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+  gh_script "cat \"$SANDBOX/pr-\$3\""
   echo CLOSED > "$SANDBOX/pr-11"
   legacy dead "tags: pr:Org/game#11" --project game "a"
   run bash -c "'$AQ' list --json | jq -r '.hold'"
@@ -2461,7 +2460,7 @@ EOF
   "$AQ" move first done --status ok >/dev/null
   sed -i '/^from: /i tags: pr:Org/game#11' "$(item queued second)"
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
-  printf '#!/usr/bin/env bash\ncat "%s/pr-$3"\n' "$SANDBOX" > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+  gh_script "cat \"$SANDBOX/pr-\$3\""
   echo CLOSED > "$SANDBOX/pr-11"
   [[ "$("$AQ" show second --json | jq -r .hold)" == "pr:Org/game#11 closed unmerged"* ]]
   run "$AQ" bump second urgent
@@ -4430,8 +4429,7 @@ already"
   story_notes
   export AGENT_QUEUE_CAP=0 # the cap derives every hold to count runnable; this test is about the writers that do not
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
-  printf '#!/usr/bin/env bash\necho "gh $*" >> "%s/gh.log"\necho OPEN\n' "$SANDBOX" > "$SANDBOX/bin/gh"
-  chmod +x "$SANDBOX/bin/gh"
+  gh_script "echo \"gh \$*\" >> \"$SANDBOX/gh.log\"; echo OPEN"
   legacy held "tags: pr:Org/game#7" --project game "a"
   : > "$SANDBOX/gh.log"
   run "$AQ" add --project game --row lv-2 --slug by-row "feat(menu): the row's work"
@@ -4653,8 +4651,7 @@ already"
 stack_gh() {
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
   # gh stub: the state of PR N is the file $SANDBOX/pr-N.
-  printf '#!/usr/bin/env bash\ncat "%s/pr-$3"\n' "$SANDBOX" > "$SANDBOX/bin/gh"
-  chmod +x "$SANDBOX/bin/gh"
+  gh_script "cat \"$SANDBOX/pr-\$3\""
   echo OPEN > "$SANDBOX/pr-7"
 }
 
@@ -4718,4 +4715,113 @@ stack_gh() {
   run timeout 10 bash -c "$fns"'; declare -F fm_get fm_body >/dev/null && [ -z "$(fm_get "" slug)" ] && [ -z "$(fm_body "")" ]' <&4
   exec 4>&-
   assert_success
+}
+
+@test "ar-4349: a session's urgent plan queues at high; the human's own add, a red plan and dispatch's promote keep urgent" {
+  story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
+  printf '## Phases\n\n- [ ] P1 One (independent)\n- [ ] P2 Two (independent)\n' > "$SANDBOX/u.md"
+  CLAUDE_CODE_SESSION_ID=sid-a AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/u.md" --project level --priority urgent --slug sess
+  assert_success
+  assert_output --partial "a session's plan queues at high at most"
+  [ "$(field "$(item queued sess-p1)" priority)" = high ]
+  [ "$(field "$(item queued sess-p2)" priority)" = high ]
+  cp "$SANDBOX/u.md" "$SANDBOX/r.md"; cp "$SANDBOX/u.md" "$SANDBOX/h.md"
+  AGENT_QUEUE_ITEM=u1 AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/r.md" --project level --priority urgent --tags red --slug red
+  assert_success
+  [ "$(field "$(item queued red-p1)" priority)" = urgent ]
+  cp "$SANDBOX/u.md" "$SANDBOX/b.md"
+  AGENT_QUEUE_ITEM=u1 AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/b.md" --project level --priority urgent --from board:level:lv-9 --slug promo
+  assert_success
+  [ "$(field "$(item queued promo-p1)" priority)" = urgent ]
+  # NEGATIVE CONTROL: the same urgent plan with no session around it (the human's own) keeps urgent on every phase.
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/h.md" --project level --priority urgent --slug hand
+  assert_success
+  refute_output --partial "queues at high at most"
+  [ "$(field "$(item queued hand-p1)" priority)" = urgent ]
+  [ "$(field "$(item queued hand-p2)" priority)" = urgent ]
+}
+
+# row_item <slug> <row> <priority> [tags] -- a queued item that works <row>, at its own <priority>.
+row_item() {
+  mkdir -p "$AGENT_QUEUE_DIR/queued"
+  local n; n="$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)"
+  { printf 'slug: %s\nproject: level\nmode: oneshot\npriority: %s\nweight: light\n' "$1" "$3"
+    [ -z "${4:-}" ] || printf 'tags: %s\n' "$4"
+    printf 'from: session\nagent: claude\nqueued: 2026-11-07T01:00:0%sZ\nrow: %s\nlane: agent\nprofile: bnb\n---\n%s\n' "$n" "$2" "$1"
+  } > "$AGENT_QUEUE_DIR/queued/2026110701000$n-$1.md"
+}
+
+@test "ar-3011: the queue ranks an item by its open board row's priority; a red keeps its own, a cleanup item on a #low row ranks high" {
+  story_notes
+  row_item retagged-down level:lv-1 high
+  row_item retagged-up level:lv-2 low
+  row_item red level:lv-3 low "red cause:x"
+  row_item cleanup level:lv-4 high cleanup
+  row_item gone level:lv-5 high
+  jq -n '{rows: [{project: "level", id: "lv-1", state: "open", priority: "low"},
+                 {project: "level", id: "lv-2", state: "doing", priority: "urgent"},
+                 {project: "level", id: "lv-3", state: "open", priority: "low"},
+                 {project: "level", id: "lv-4", state: "open", priority: "low"}]}' > "$NOTES_FIXTURE/board.json"
+  run bash -c "'$AQ' list --json | jq -r '\"\(.slug) \(.priority)\"'"
+  assert_success
+  # The red goes first at its own low; lv-5 is on no open row, so it keeps its own high.
+  assert_output $'red low\nretagged-up urgent\ncleanup high\ngone high\nretagged-down low'
+  [ "$("$AQ" next --json | jq -r .slug)" = red ]
+  # A real board (4,700 rows on 11-21) is past the argument limit as a whole map: only the rows items
+  # work are bound, so the order still reads them.
+  jq --argjson n 9000 '.rows += [range($n) | {project: "level", id: "lv-x\(.)", state: "open", priority: "high"}]' \
+    "$NOTES_FIXTURE/board.json" > "$NOTES_FIXTURE/big.json" && mv "$NOTES_FIXTURE/big.json" "$NOTES_FIXTURE/board.json"
+  run bash -c "'$AQ' list --json | jq -r '\"\(.slug) \(.priority)\"'"
+  assert_success
+  assert_output $'red low\nretagged-up urgent\ncleanup high\ngone high\nretagged-down low'
+  # An item on a row by its from: board: alone, and a waiting one, rank by their rows among the 9,000.
+  row_item boarded level:lv-x5 low
+  sed -i -e '/^row: /d' -e 's/^from: session$/from: board:level:lv-x5/' "$(item queued boarded)"
+  row_item parked level:lv-2 low
+  mkdir -p "$AGENT_QUEUE_DIR/waiting" && mv "$(item queued parked)" "$AGENT_QUEUE_DIR/waiting/"
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"boarded\" or .slug == \"parked\") | \"\(.slug) \(.priority)\"' | sort"
+  assert_output $'boarded high\nparked urgent'
+  rm "$(item queued boarded)" "$AGENT_QUEUE_DIR"/waiting/*parked.md
+  # NEGATIVE CONTROL: a board notes cannot read ranks every item by its own line, as before.
+  rm "$NOTES_FIXTURE/board.json"
+  run bash -c "'$AQ' list --json | jq -r '\"\(.slug) \(.priority)\"'"
+  assert_output $'red low\nretagged-down high\ncleanup high\ngone high\nretagged-up low'
+}
+
+@test "ar-3011: bump and set priority= write the item's row, which the order reads; an item with no row writes none" {
+  story_notes
+  row_item rowed level:lv-1 high
+  "$AQ" add --project game --slug plain "plain" >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" bump rowed urgent
+  assert_success
+  run grep -c -- '--profile bnb ptask level --agent tag --add urgent lv-1' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+  run "$AQ" set rowed priority=low
+  assert_success
+  grep -q -- 'ptask level --agent tag --add low lv-1' "$NOTES_FIXTURE/calls.log"
+  [ "$(field "$(item queued rowed)" priority)" = low ]
+  run "$AQ" set rowed priority=soon
+  assert_failure
+  assert_output --partial "urgent, high or low"
+  # NEGATIVE CONTROL: an item with no row has only its own line to change.
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" bump plain low >/dev/null
+  run grep -c ' tag ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
+@test "ar-3011: the human's add that links a filed row gives it the --priority it names; one with no --priority, or a session's, leaves the row's" {
+  story_notes
+  run "$AQ" add --project level --row lv-7 --priority urgent --slug linked "work lv-7"
+  assert_success
+  grep -q -- 'ptask level --agent tag --add urgent lv-7' "$NOTES_FIXTURE/calls.log"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" add --project level --row lv-8 --running --slug mine "work lv-8"
+  assert_success
+  # NEGATIVE CONTROL: a session's add names a priority every time, so its low never demotes the row.
+  CLAUDE_CODE_SESSION_ID=sid-a AGENT_QUEUE_START=0 run "$AQ" add --project level --row lv-9 --priority low --slug sess "work lv-9"
+  assert_success
+  run grep -c ' tag ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
 }

@@ -95,6 +95,9 @@ struct Tabs<'a> {
     product: Option<&'a Product>,
     /// Overview's Needs you groups for the departments (`Product::need_groups`).
     need_groups: Vec<NeedGroup>,
+    /// Each department's needs that are not ok, by department id (`Product::open_needs`): the
+    /// number on its inner tab.
+    dept_needs: BTreeMap<String, usize>,
     says: String,
 }
 
@@ -107,14 +110,16 @@ fn tabs<'a>(c: &'a Coverage, key: &str) -> Tabs<'a> {
         (None, true) => format!("{key} has no department tabs: no type in project-map.json"),
     };
     let need_groups = product.map(Product::need_groups).unwrap_or_default();
+    let dept_needs = product.map(Product::open_needs).unwrap_or_default();
     Tabs {
         product,
         need_groups,
+        dept_needs,
         says,
     }
 }
 
-async fn current() -> Arc<Coverage> {
+pub async fn current() -> Arc<Coverage> {
     // No product means the catalog read failed (its reason is in `says`): show that, and read
     // again next time; that read is cheap, as it probes nothing.
     let read = READ

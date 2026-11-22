@@ -44,7 +44,7 @@ Super+A                L1 pinbar          space control menu | a agents> | i inp
   d desk parts         L2 pinbar-desk     c bar classic | m bar modern | n noctalia | d dunst | s swaync | esc back
 ```
 
-Views: **min** = the main bar's status cluster (timebox | agents | dispatch | fleet | ci | day); **big** = +
+Views: **min** = the main bar's status cluster (timebox | agents | queue | fleet | ci | day); **big** = +
 machines, cpu+load/mem, action buttons. Swap with the on-bar chevron, `Super+Shift+,`, or leader `s`.
 
 **Control menu** (leader `space`, `~/.local/bin/control-menu`): every chip in `modules.registry` in an fzf list, its bar text on the line and its hover in the preview beside it, so no chip needs the mouse. j/k or the arrows move and the preview follows; Enter runs the chip's `on-click`, alt-Enter its `on-click-right`, ctrl-r re-reads, Esc closes. A click that opens a terminal (`kitty --class C -e CMD`, which is every dropdown) runs CMD in the menu's own window, and its Esc or q comes back to the list; any other click (a GUI app, a URL, a toggle) launches and closes the menu. A chip hidden with `modules.sh` still lists, marked "(hidden on bar)". It reads the exec and clicks from `config.base`/`config.pin-full` and holds no list of its own, so a new chip is a registry row plus its config entry, as for a toggle. Below the chips, one "hub" row per hub tab (`hub tabs`, from hub-core's layout): the preview is that tab's `hub --once` page and Enter opens that hub page in place. Then one "window" row per described exec bind (`hypr/conf/keybindings.lua` and `leader.lua`, read from the `hypr-binds` registry) with the chord that reaches it (`Super+D`, `Super+A t s`); Enter runs it through `hyprctl dispatch 'hl.dsp.exec_cmd(...)'`. A launcher bind without a description does not list. Its window floats at 1400x820 (`control-menu` class, `hypr/conf/rules.lua`).
@@ -141,6 +141,7 @@ Only the default moves. An app set to Default follows it mid-call (WirePlumber `
 - `config.pin-min`   - minimal bar
 - `config.pin-full`  - bigger bar
 - `pin.sh`           - toggle / resize state machine (`/tmp/waybar-pin.state`)
+- `needs.sh`         - `custom/needs`, Needs you: Home's count from the retained `agents/+/summary/overview` card, `?` when unread or stale
 - `webcam.sh`        - `custom/webcam`, the red CAM pill while a process holds the webcam
 - `audio_input.sh`   - `custom/audio-input`, the input apps hear and the switch between them (Noctalia only)
 - `printer.sh`       - `custom/printer`, `N 21% B`: N is the Neptune (heat, err, a check when done; ? wrong address, ! Klipper not ready), B the A1 while on; an idle or off printer is hidden

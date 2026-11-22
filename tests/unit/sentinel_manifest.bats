@@ -356,6 +356,37 @@ EOF
   assert_output --partial 'confirm'
 }
 
+@test "severity and notify_priority accept each of the four words" {
+  for w in low normal high urgent; do
+    base; sed -i "s/^severity: .*/severity: $w/" "$M"; echo "notify_priority: $w" >> "$M"
+    run "$SM" validate "$M"
+    assert_success
+  done
+}
+
+@test "plain validate refuses a severity or notify_priority outside the four words" {
+  # The loop paged `medium` at normal with only a log line; priority.md has four words.
+  base; sed -i 's/^severity: .*/severity: medium/' "$M"
+  run "$SM" validate "$M"
+  assert_failure
+  assert_output --partial "severity 'medium' is not one of low normal high urgent"
+  base; echo 'notify_priority: critical' >> "$M"
+  run "$SM" validate "$M"
+  assert_failure
+  assert_output --partial "notify_priority 'critical'"
+}
+
+@test "a manifest with no severity, or an empty or null one, is still valid: the loop pages it at normal" {
+  for v in "" " ~" " null"; do
+    base; sed -i "s/^severity: .*/severity:$v/" "$M"; echo "notify_priority:$v" >> "$M"
+    run "$SM" validate "$M"
+    assert_success
+  done
+  base; sed -i '/^severity:/d' "$M"
+  run "$SM" validate "$M"
+  assert_success
+}
+
 @test "env words a watch from its name when the manifest says nothing" {
   base
   sed -i 's/^name: w$/name: home-k3s-node-ready/' "$M"
