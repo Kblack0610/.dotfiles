@@ -161,7 +161,8 @@
 # the conf's DELAY_RULES, at or under that row's impact level, is answered live (`answered_by:
 # judge`, see "live answers" below), at once or after its wait, and a sample of those answers goes
 # back to the human as an audit; every other rule is shadow, and the human answers. An approval
-# is never sent to the model; it is the human's by rule. AGENT_ASK_NO_JUDGE=1 skips the call (the
+# is never sent to the model, and an ask flagged `judge_human_only` is never answered live; both
+# are the human's by rule. AGENT_ASK_NO_JUDGE=1 skips the call (the
 # test sandbox sets it), AGENT_ASK_JUDGE_CMD replaces it, and AGENT_ASK_DELAY_RULES replaces the
 # conf's table (tests).
 
@@ -1167,7 +1168,7 @@ judge_conf() {
 # ask-judge.conf's DELAY_RULES is `<type>@<level>=<minutes>` per type the judge may answer, and
 # the level is its ceiling: the row answers that type at every impact level up to it (self, repo,
 # fleet; JUDGE_LEVELS), so a type is proven where a wrong answer reaches least before it answers
-# where it reaches most. `critical` is never a ceiling. A type it does not list stays shadow. At
+# where it reaches most. A type it does not list stays shadow. At
 # 0 the judge answers at post: the asker gets the answer in place of the question and goes on.
 # Above 0 the ask is armed: the human keeps the question and its deadline until `assume-due`
 # fires the answer. Either way the human's messages review it (review_judge_answer), and so does
@@ -1179,8 +1180,7 @@ judge_conf() {
 
 # delay_rows: the live cells as `<type> <level> <minutes>`, one per line; the one reader of
 # DELAY_RULES (space or comma separated). A hard stop (JUDGE_HARD_STOPS), a row that is not
-# `<type>@<level>=<minutes>`, a level the judge may not answer at (critical, or none of
-# JUDGE_LEVELS) and a second row for one type that does not reach a higher level than its
+# `<type>@<level>=<minutes>`, a level that is none of JUDGE_LEVELS and a second row for one type that does not reach a higher level than its
 # first are refused, never read as 0, and a demoted cell (`<type>@<level>` in the demote list)
 # is left out. A type may carry one row per level band, lowest first: `t@repo=0 t@fleet=240`
 # answers self and repo at post and waits 240 minutes at fleet, so a wider reach waits longer.
@@ -1196,9 +1196,9 @@ delay_rows() {
     [[ "$row" =~ ^[^=@]+@([a-z]+)=([0-9]+)$ ]] ||
       { echo "agent-ask: DELAY_RULES refuses '$row': a row is <type>@<level>=<minutes>" >&2; continue; }
     level="${BASH_REMATCH[1]}"; wait="${BASH_REMATCH[2]}"
-    case " ${JUDGE_LEVELS% critical} " in
+    case " $JUDGE_LEVELS " in
       *" $level "*) ;;
-      *) echo "agent-ask: DELAY_RULES refuses '$row': the judge answers at ${JUDGE_LEVELS% critical}, never $level" >&2; continue ;;
+      *) echo "agent-ask: DELAY_RULES refuses '$row': the judge answers at $JUDGE_LEVELS, never $level" >&2; continue ;;
     esac
     rank=0; i=0
     for l in $JUDGE_LEVELS; do i=$((i + 1)); [ "$l" = "$level" ] && rank=$i; done
@@ -1223,11 +1223,13 @@ live_rules() { delay_rows | awk '{ print $1 "@" $2 }'; }
 delay_of() { delay_rows | awk -v r="$1" -v l="$2" '$1 == r && $2 == l && !found { print $3; found = 1 } END { exit !found }'; }
 
 # live_answer <file>: print the answer the judge gives this ask when its rule is live. Fails on
-# anything else: an approval, a human or error call, a shadow rule, an ask the human disarmed. The
-# one place that decides; a gate is answered like a question, under its cell's level ceiling.
+# anything else: an approval, a human-only ask, a human or error call, a shadow rule, an ask the
+# human disarmed. The one place that decides; a gate is answered like a question, under its
+# cell's level ceiling.
 live_answer() {
   local f="$1" judge rule ans
   [ "$(field "$f" kind)" != approval ] || return 1
+  [ "$(field "$f" judge_human_only)" != true ] || return 1
   [ -z "$(field "$f" assume_disarmed)" ] || return 1
   ! queue_waits "$(field "$f" id)" || return 1
   judge="$(field "$f" judge)"; rule="$(field "$f" judge_rule)"
@@ -1258,7 +1260,7 @@ drop_arm() { drop_field "$1" assume_at assume_answer "${@:2}"; }
 
 # VERDICT_FIELDS: the judge_* fields one verdict writes beside `judge`, dropped before the next
 # verdict (cmd_judge, gh_login_settle) so none outlives the verdict that wrote it.
-VERDICT_FIELDS='judge_rule judge_type judge_met judge_evidence judge_call judge_level judge_level_evidence judge_level_raised judge_settled_by judge_settled_answer'
+VERDICT_FIELDS='judge_rule judge_type judge_met judge_evidence judge_call judge_level judge_level_evidence judge_level_raised judge_human_only judge_human_only_evidence judge_settled_by judge_settled_answer'
 
 # judge_said <file> <answer>: the line that tells a session the judge answered and why.
 judge_said() {
@@ -2465,15 +2467,18 @@ Return the verdict in the structured output."
   set_field "$f" judge_type "$(jq -r .type <<<"$verdict")"
   set_field "$f" judge_met "$(jq -r .met <<<"$verdict")"
   set_field "$f" judge_evidence "$(oneline "$(jq -r .evidence <<<"$verdict")")"
-  # The level: what judge_derive makes of the rating, raised to fleet by a policy floor name.
-  # judge_level_raised says a floor raised it, which judge-eval counts per cell.
-  local level lev_ev floor raised=false
+  # The level: the judge's widest rating, raised to fleet by a policy floor name.
+  # judge_level_raised says a floor raised it, which judge-eval counts per cell. judge_human_only
+  # is the human-stop flag beside it (external, or not reversible), never a level.
+  local level lev_ev floor raised=false ho=()
   level=$(jq -r .level <<<"$verdict"); lev_ev=$(jq -r .level_evidence <<<"$verdict")
   if [ "$level" = self ] || [ "$level" = repo ]; then
     floor="$(judge_floor_hit "$policy" "$(ask_text "$f")" "Fleet floor")" &&
       { level=fleet; lev_ev="the ask names $floor"; raised=true; }
   fi
-  set_field "$f" judge_level "$level" judge_level_evidence "$(oneline "$lev_ev")" judge_level_raised "$raised"
+  [ "$(jq -r .human_only <<<"$verdict")" = true ] &&
+    ho=(judge_human_only true judge_human_only_evidence "$(oneline "$(jq -r .human_only_evidence <<<"$verdict")")")
+  set_field "$f" judge_level "$level" judge_level_evidence "$(oneline "$lev_ev")" judge_level_raised "$raised" "${ho[@]}"
   settled=$(jq -r .settled_by <<<"$verdict")
   [ -z "$settled" ] || set_field "$f" judge_settled_by "$(oneline "$settled")" judge_settled_answer "$(oneline "$answer")"
   judge_record "$f" "$call" "$rule" "$(jq -r .reason <<<"$verdict")" "$cid"
@@ -2636,7 +2641,8 @@ cmd_trace() {
                                  ($a.kind | select(. != "question"))] | map(select(. != null)) | join(", ")),
        ev($a.judged_at; "judged"; ($judge | sub("^Judge: "; ""))
          + (if ($a.judge_level // "") == "" then "" else "; level \($a.judge_level)"
-              + (if $a.judge_level_raised == "true" then " (raised by a floor name)" else "" end) end)),
+              + (if $a.judge_level_raised == "true" then " (raised by a floor name)" else "" end) end)
+         + (if $a.judge_human_only == "true" then "; human-only" else "" end)),
        ev($a.assume_at; "armed"; "\($a.assume_answer // "") goes out at this time unless the human replies"),
        ev($a.assume_disarmed; "disarmed"; "the human replied, so \($a.assume_answer // "the answer") is not assumed"),
        ev($a.answered_at; "answered"; "\($a.answer) by \(if ($a.answered_by // "") == "" then "human" else $a.answered_by end)"
