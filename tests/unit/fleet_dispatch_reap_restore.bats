@@ -396,7 +396,6 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
 }
 
 @test "reap: an agent row started with no queue item is un-started only once it stays orphaned DISPATCH_ORPHAN_HOURS" {
-  export DISPATCH_T3_PROFILE=bnb
   project game beta "$SANDBOX/repos/game"
   row game agent gm-1 '- [/] fix x <!-- id:gm-1 -->'
   run cmd_reap
@@ -412,7 +411,6 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
 }
 
 @test "reap: orphan sweep reads every board profile and routes unstart to the row's profile" {
-  export DISPATCH_T3_PROFILE=bnb
   project game beta "$SANDBOX/repos/game"
   row game agent gm-4 '- [/] outside dispatch <!-- id:gm-4 -->'
   jq -cn '{rows: [{profile: "extra", project: "game", lane: "agent", id: "gm-4", state: "doing"}]}' > "$SANDBOX/board.json"
@@ -552,7 +550,6 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
 }
 
 @test "reap: a row an active item names, and a human-lane row, are never orphans" {
-  export DISPATCH_T3_PROFILE=bnb
   project game beta "$SANDBOX/repos/game"
   row game agent gm-2 '- [/] linked <!-- id:gm-2 -->'
   row game human 'mine' '- [/] the human is on it'
@@ -569,7 +566,6 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
 # NEGATIVE CONTROL: before ar-3262 no item named the plan row, so it was un-started past the grace
 # while its chain still ran.
 @test "reap: a started plan row keeps its start while an item of its plan's chain is active" {
-  export DISPATCH_T3_PROFILE=bnb
   project game beta "$SANDBOX/repos/game"
   printf '# pp\n\n## Phases\n\n- [ ] P1 one\n' > "$SANDBOX/pp.md"
   row game agent gm-9 '- [/] plan pp: run its open phases <!-- id:gm-9 -->'
@@ -598,7 +594,6 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
 @test "reap: a live item's started row keeps its start when the board's key for it is its text with tags (ar-206)" {
   # NEGATIVE CONTROL: rows() keyed by the list's text column (no id from the marker), the row read as an
   # orphan, was un-started past the grace with its session still up, as agent-29's was on 2026-10-28.
-  export DISPATCH_T3_PROFILE=bnb
   project game beta "$SANDBOX/repos/game"
   # The real `ptask list` key is the row's text with its tags, not its id: rows() must read the id off the marker.
   row game agent 'fix(core): slots #tier/3 #size/m' '- [/] fix(core): slots #tier/3 #size/m #c1028 #low <!-- id:gm-4 run:1112 -->'
@@ -617,7 +612,6 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
 }
 
 @test "reap: a queue it cannot read un-starts no orphan" {
-  export DISPATCH_T3_PROFILE=bnb
   project game beta "$SANDBOX/repos/game"
   row game agent gm-3 '- [/] fix y <!-- id:gm-3 -->'
   orphan_seen game gm-3 96
