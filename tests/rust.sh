@@ -96,16 +96,23 @@ fi
   exit 1
 }
 
-rc=0
-ran=()
+# RUST_JOBS: how many crates gate at once. One crate's build leaves most of a runner's cores idle
+# (its own crate compiles alone at the end), and the CI rust job is the critical path of a picked
+# run: 3 crates one after another were 197 s of a 284 s job (run 44958645304). CI sets it; a
+# local push keeps the default, 1, because many worktrees push at once on this machine.
+RUST_JOBS="${RUST_JOBS:-1}"
+[[ "$RUST_JOBS" =~ ^[1-9][0-9]*$ ]] || { echo "rust: RUST_JOBS must be a positive integer, got '$RUST_JOBS'" >&2; exit 1; }
 
-for crate in "${CRATES[@]}"; do
+# gate_crate <dir> <ran file>: test, clippy and fmt one crate, appending each step it ran to the
+# ran file. Exit 1 when any step failed; the other steps still run and report.
+gate_crate() {
+  local crate="$1" ranf="$2" name rc=0
   name="$(basename "$crate")"
 
   # --locked so CI fails on a stale Cargo.lock instead of silently resolving a newer
   # dependency than the one committed -- the lockfiles ARE tracked here.
   if [ "$RUST_TESTS" = 1 ]; then
-    ran+=("test:$name")
+    echo "test:$name" >>"$ranf"
     if cargo test --manifest-path "$crate/Cargo.toml" --locked --quiet; then
       echo "cargo test: $name PASSED"
     else
@@ -116,7 +123,7 @@ for crate in "${CRATES[@]}"; do
 
   # --all-targets so tests and benches are linted too, not just the bin/lib.
   if [ "$CLIPPY" = 1 ]; then
-    ran+=("clippy:$name")
+    echo "clippy:$name" >>"$ranf"
     if cargo clippy --manifest-path "$crate/Cargo.toml" --locked --all-targets --quiet -- -D warnings; then
       echo "cargo clippy: $name clean"
     else
@@ -125,13 +132,37 @@ for crate in "${CRATES[@]}"; do
     fi
   fi
 
-  ran+=("fmt:$name")
+  echo "fmt:$name" >>"$ranf"
   if cargo fmt --all --manifest-path "$crate/Cargo.toml" --check; then
     echo "cargo fmt: $name clean"
   else
     echo "cargo fmt: $name FAILED (run: cargo fmt --all --manifest-path $crate/Cargo.toml)" >&2
     rc=1
   fi
+  return $rc
+}
+
+# Each crate writes its output and exit status to files of its own, printed in crate order once
+# all are done, so crates that run at once never interleave. The status goes to a file because
+# `wait -n` frees a pool slot without saying which crate finished.
+out="$(mktemp -d)" || exit 1
+trap 'rm -rf "$out"' EXIT
+for i in "${!CRATES[@]}"; do
+  while [ "$(jobs -rp | wc -l)" -ge "$RUST_JOBS" ]; do wait -n; done
+  (
+    gate_crate "${CRATES[$i]}" "$out/$i.ran" >"$out/$i.log" 2>&1
+    echo $? >"$out/$i.rc"
+  ) &
+done
+wait
+
+rc=0
+ran=()
+for i in "${!CRATES[@]}"; do
+  cat "$out/$i.log"
+  [ -f "$out/$i.ran" ] && mapfile -t -O "${#ran[@]}" ran <"$out/$i.ran"
+  # No status file means the crate's subshell died before writing one: a failure, never a pass.
+  [ "$(cat "$out/$i.rc" 2>/dev/null)" = 0 ] || rc=1
 done
 
 # Say what actually RAN, and name the crates -- lint.sh's argument applies here with
