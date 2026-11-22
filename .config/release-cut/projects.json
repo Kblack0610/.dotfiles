@@ -1,7 +1,8 @@
 {
-  "_doc": "Projects the release-cut lane cuts (rules: ~/.local/src/docs/stages.md, Release windows, Cut). cut_hour: the local time a window with no cut= is cut on its due day. tests: the full run a cut needs green on main. promote: for each tag of the newest cut (the version's, and one per game), once its newest deployment to an environment ending in deployment_suffix (<target><suffix>) succeeds, the lane files this item once ({tag}, {build} and {target} filled in); a target whose deployment failed gets none.",
+  "_doc": "Projects the release-cut lane cuts (rules: ~/.local/src/docs/stages.md, Release windows, Cut). cut_hour: the local time a window with no cut= is cut on its due day. tests: the full run a cut needs green on main. cut_inputs: path prefixes the cut workflow checks out from main besides its own file (its sparse-checkout); a change under one since a failed cut run sends the cut again at the same commit. promote: for each tag of the newest cut (the version's, and one per game), once its newest deployment to an environment ending in deployment_suffix (<target><suffix>) succeeds, the lane files this item once ({tag}, {build} and {target} filled in); a target whose deployment failed gets none.",
   "unity-core-playground": {
     "cut_workflow": "cut.yml",
+    "cut_inputs": ["scripts/", "config/ci/", ".github/actions/artifact/"],
     "cut_hour": "22:00",
     "tests": { "workflow": "test.yml", "title": "Tests (all)" },
     "promote": {

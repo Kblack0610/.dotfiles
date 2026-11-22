@@ -251,6 +251,64 @@ board() {
   grep -qF -- '-d release-cut:cutfailed-game@v1.2.0' "$F/paged"
 }
 
+@test "a failed cut is sent again at the same commit once main changes what the cut reads, and only then (v0.5.5)" {
+  board - g-1:done
+  jq '.game.cut_inputs = ["scripts/"]' "$F/conf.json" > "$F/c" && mv "$F/c" "$F/conf.json"
+  echo 1 > "$F/runend"
+  run "$BIN"
+  assert_failure
+  echo '[{"status":"completed","conclusion":"failure","headSha":"h1"}]' > "$F/cutruns"
+  # NEGATIVE CONTROL: main changed nothing the cut reads since the failed run, so no retry.
+  echo '{"files":[{"filename":"README.md"},{"filename":"src/scripts/x.sh"}]}' > "$F/compare"
+  run "$BIN"
+  assert_failure
+  assert_output --partial 'FAILED game v1.2.0: the cut.yml run dispatched at ccc ended failure with no tag'
+  assert_equal "$(wc -l < "$F/dispatched")" 1
+  # A fix to the workflow file, or under a cut_inputs prefix, sends it again at the same commit.
+  for f in .github/workflows/cut.yml scripts/release/gate.sh; do
+    echo 0 > "$F/runend"; echo 0 > "$F/tag"
+    printf '{"files":[{"filename":"README.md"},{"filename":"%s"}]}\n' "$f" > "$F/compare"
+    run "$BIN"
+    assert_success
+    assert_output --partial "main changed $f since that run, so the cut is sent again at ccc"
+    assert_output --partial 'the cut.yml run 99 for game v1.2.0 succeeded'
+    assert_equal "$(tail -n 1 "$F/dispatched")" 'workflow run cut.yml -R acme/game --ref main -f version=1.2.0 -f sha=ccc'
+  done
+  assert_equal "$(wc -l < "$F/dispatched")" 3
+  # Bounded: past CUT_RESENDS (2) re-sends at one commit, a further change pages and waits instead.
+  echo 1 > "$F/runend"; echo 0 > "$F/tag"
+  echo '{"files":[{"filename":"scripts/other.sh"}]}' > "$F/compare"
+  run "$BIN"
+  assert_failure
+  assert_output --partial 'already sent again 2 time(s) at ccc'
+  assert_output --partial 'FAILED game v1.2.0: the cut.yml run dispatched at ccc ended failure with no tag'
+  assert_equal "$(wc -l < "$F/dispatched")" 3
+}
+
+@test "a compare GitHub cannot answer, or a config with no cut_inputs, keeps a failed cut on its old wait" {
+  board - g-1:done
+  echo 1 > "$F/runend"
+  run "$BIN"
+  echo '[{"status":"completed","conclusion":"failure","headSha":"h1"}]' > "$F/cutruns"
+  touch "$F/nocommit"
+  run "$BIN"
+  assert_failure
+  assert_output --partial 'cannot compare acme/game h1...main, so no re-send'
+  assert_output --partial 'ended failure with no tag'
+  grep -qF -- '-d release-cut:cutfailed-game@v1.2.0' "$F/paged"
+  # No cut_inputs: a script change is no re-send, a change to the workflow file still is.
+  rm "$F/nocommit"
+  echo '{"files":[{"filename":"scripts/release/gate.sh"}]}' > "$F/compare"
+  run "$BIN"
+  assert_failure
+  assert_equal "$(wc -l < "$F/dispatched")" 1
+  echo '{"files":[{"filename":".github/workflows/cut.yml"}]}' > "$F/compare"
+  echo 0 > "$F/runend"
+  run "$BIN"
+  assert_success
+  assert_equal "$(wc -l < "$F/dispatched")" 2
+}
+
 @test "no stats, no early cut: the pass fails instead of skipping the epic check" {
   board - g-1:done g-9:done
   touch "$F/nostats"
