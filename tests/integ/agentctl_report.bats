@@ -355,16 +355,38 @@ line() { sed -n "${1}p" "$AGENTCTL_STATE_DIR/runs.jsonl"; }
 # and its `-` prefix forgives an exit code but not a timeout. On 2026-11-04 the publisher's
 # scan took 34s at load 83 and fleet-dispatch failed to start five times.
 
-@test "a publisher that hangs does not hold up or fail a lifecycle report" {
+@test "a publisher that hangs does not hold up or fail a stop report" {
   # Not exec: the hang is a CHILD of the publisher, as a stuck mosquitto_pub or scan would be.
   printf '#!/usr/bin/env bash\ntouch "%s/publisher-ran"\nsleep 30\n' "$SANDBOX" \
     > "$SANDBOX/bin/agent-mqtt-publish"
   chmod +x "$SANDBOX/bin/agent-mqtt-publish"
   local t0=$SECONDS
-  AGENTCTL_MQTT_BUDGET=1 run "$AGENTCTL_BIN" report --name alpha --lifecycle start
+  AGENTCTL_MQTT_BUDGET=1 run "$AGENTCTL_BIN" report --name alpha --lifecycle stop
   assert_success
   # The stub ran (the bound was exercised, not skipped) and was cut well before its 30s.
   [ -f "$SANDBOX/publisher-ran" ]
   [ $((SECONDS - t0)) -lt 10 ]
+  assert_equal "$(field state)" 'idle'
+}
+
+# The start report publishes in the background: ExecStartPost's 15s timeout is shared with the
+# rest of the start phase, and a 5s publish budget on every start timed orphan-gc out at load 90
+# (2026-11-21). The stub hangs for 30s and the publish budget is 10s, so a report that waited
+# for it would take 10s; this one must return in well under that. The FIFO is held open
+# read-write before the report runs, so the stub's write never blocks and the read below
+# cannot hang: it proves the publisher did start, whenever it got there.
+@test "a start report does not wait for the publisher" {
+  mkfifo "$SANDBOX/ran"
+  exec 7<>"$SANDBOX/ran"
+  printf '#!/usr/bin/env bash\necho up > "%s/ran"\nsleep 30\n' "$SANDBOX" \
+    > "$SANDBOX/bin/agent-mqtt-publish"
+  chmod +x "$SANDBOX/bin/agent-mqtt-publish"
+  local t0=$SECONDS
+  AGENTCTL_MQTT_BUDGET=10 run "$AGENTCTL_BIN" report --name alpha --lifecycle start
+  assert_success
+  [ $((SECONDS - t0)) -lt 5 ]
   assert_equal "$(field state)" 'working'
+  read -r -t 10 -u 7 line
+  exec 7>&-
+  assert_equal "$line" up
 }

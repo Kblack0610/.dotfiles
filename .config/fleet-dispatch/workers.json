@@ -1,0 +1,17 @@
+{
+  "requested": {
+    "what": "/one-shot on a #requested row the human already decided, tagged #worker/requested",
+    "max_tier": 2,
+    "only_tag": "requested"
+  },
+  "fleet": {
+    "what": "/one-shot on a row the human assigned with #worker/fleet",
+    "max_tier": 1
+  },
+  "board": {
+    "what": "/one-shot on an agent-board row with no #worker tag, the judge reads the tier (which projects: their stage, fleet-dispatch skill); tier 3 rows (harness, CI, runners) go to the tier-3 gate and merge behind the red-fix gate (policy.md \"Tier\")",
+    "max_tier": 2,
+    "lane": "agent",
+    "untagged": true
+  }
+}

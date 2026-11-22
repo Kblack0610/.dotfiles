@@ -4,6 +4,7 @@
 # the fixtures and setup they share are in fleet_dispatch/common.bash.
 
 load 'fleet_dispatch/common'
+bats_require_minimum_version 1.5.0
 
 # --- candidates --------------------------------------------------------------------------
 
@@ -86,20 +87,54 @@ load 'fleet_dispatch/common'
   assert_output ''
 }
 
-@test "candidates: the requested worker takes only #requested rows, only in its project, never tier 3" {
+@test "candidates: the requested worker takes only #requested rows, in any project, never tier 3" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
-  echo '{"requested": {"max_tier": 9, "projects": ["game"], "only_tag": "requested"}}' > "$DISPATCH_WORKERS"
+  echo '{"requested": {"max_tier": 9, "only_tag": "requested"}}' > "$DISPATCH_WORKERS"
   row game agent 'real ask' '- [ ] real ask #requested #worker/requested #tier/2'
   row game agent 'tagged no ask' '- [ ] tagged no ask #worker/requested #tier/2'
   row game agent 'lookalike' '- [ ] lookalike #requests #worker/requested #tier/2'
   row game agent 'tier three' '- [ ] tier three #requested #worker/requested #tier/3'
   row game agent 'other worker' '- [ ] other worker #requested #worker/fleet #tier/1'
-  row app agent 'wrong project' '- [ ] wrong project #requested #worker/requested #tier/2'
+  row app agent 'other project' '- [ ] other project #requested #worker/requested #tier/2'
 
   run cmd_candidates
   assert_success
-  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'real ask'
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'real ask,other project'
+}
+
+@test "candidates: stage decides which projects dispatch: a prod project's row is judged, an off project's is refused with the off-list reason, a draft's is not read" {
+  board_workers
+  mkdir -p "$SANDBOX/repos/web" "$SANDBOX/repos/fin" "$SANDBOX/repos/sketch"
+  project webapp prod "$SANDBOX/repos/web"
+  project finance beta "$SANDBOX/repos/fin"
+  project sketch draft "$SANDBOX/repos/sketch"
+  export DISPATCH_OFF_PROJECTS=finance
+  row webapp agent 'web fix' '- [ ] fix(api): the login redirect loops'
+  row finance agent 'fin fix' '- [ ] fix(ledger): the totals are off'
+  row finance agent 'fin ci' '- [ ] ci(ledger): cache the test deps #tier/3'
+  row sketch agent 'sketch row' '- [ ] fix(ui): the button is off'
+  off='no worker covers finance: it is on DISPATCH_OFF_PROJECTS, so its rows stay with the human'
+
+  OFF_SAY=1 run --separate-stderr cmd_candidates
+  assert_success
+  assert_equal "$(jq -r '"\(.key)=\(.worker)"' <<<"$output" | paste -sd,)" 'web fix=board'
+  assert_equal "$stderr" "fleet-dispatch: $off"
+  # Judged: the next judge call gets the prod row, never a finance row, from the day or the tier-3 path.
+  run --separate-stderr unjudged_rows
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'web fix'
+  # Only the command and a pass's judge read say it (OFF_SAY), so the many reads of one pass log it once.
+  assert_equal "$stderr" ''
+  # suggest lists each finance row with the off-list reason, never auto.
+  run --separate-stderr cmd_suggest --json
+  assert_equal "$(jq -r 'select(.project == "finance") | "\(.key)=\(.auto)/\(.blocked | join("; "))"' <<<"$output" | paste -sd,)" \
+    "fin fix=false/$off,fin ci=false/$off"
+  run cmd_covered
+  assert_output 'webapp'
+  # Negative control: with no off list, finance dispatches like any project at its stage.
+  OFF_SAY=1 DISPATCH_OFF_PROJECTS='' run --separate-stderr cmd_candidates
+  assert_equal "$(jq -r .key <<<"$output" | sort | paste -sd,)" 'fin fix,web fix'
+  assert_equal "$stderr" ''
 }
 
 @test "candidates: a worker with no projects or only_tag is unlimited by them" {
@@ -340,7 +375,7 @@ item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
 }
 
 @test "row gates: cleared gates commit an agent row only, the human's row still needs its verdict, and a gated row keeps its verdict's area" {
-  echo '{"fleet": {"max_tier": 1, "projects": ["game"]}}' > "$DISPATCH_WORKERS"
+  echo '{"fleet": {"max_tier": 1}}' > "$DISPATCH_WORKERS"
   project game beta "$SANDBOX/repos/game"
   # at/0000 is past at any hour, so both rows' gates are clear.
   row game human gh-1 "- [ ] feat(game): the human's row $T #at/0000 <!-- id:gh-1 -->"
@@ -629,7 +664,7 @@ ptask game --agent tag --add plan --add go ga-7'
   assert_equal "$(jq -r .key <<<"$output")" 'fix crash'
 }
 
-@test "candidates: an untagged worker takes untagged agent rows of its project, at its own tier" {
+@test "candidates: an untagged worker takes untagged agent rows of any project, at its own tier" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
   board_workers
@@ -643,7 +678,7 @@ ptask game --agent tag --add plan --add go ga-7'
 
   run cmd_candidates
   assert_success
-  assert_equal "$(jq -r '"\(.key)=\(.worker)/\(.tier)"' <<<"$output" | paste -sd,)" 'plain=board/2,tier one=board/1'
+  assert_equal "$(jq -r '"\(.key)=\(.worker)/\(.tier)"' <<<"$output" | paste -sd,)" 'plain=board/2,tier one=board/1,other project=board/2'
 }
 
 @test "candidates: the human sheet stays opt-in" {
@@ -664,14 +699,8 @@ private_or_skip() {
   has_private || skip "no private checkout at $PRIVATE: $1 unchecked"
 }
 
-# shipped_workers: the live worker roster, which names private projects and so lives in the private repo.
-shipped_workers() {
-  private_or_skip 'the shipped workers.json is'
-  export DISPATCH_WORKERS="$PRIVATE/.config/fleet-dispatch/workers.json"
-}
-
-@test "the shipped registry: requested, then the human's assignments, then the game's agent board, never tier 3" {
-  shipped_workers
+@test "the shipped registry: requested, then the human's assignments, then every project's agent board, never tier 3" {
+  export DISPATCH_WORKERS="$REPO_ROOT/.config/fleet-dispatch/workers.json"
   project unity-core-playground beta "$SANDBOX/repos/game"
   project platform prod "$SANDBOX/repos/app"
   row unity-core-playground agent 'an ask' '- [ ] an ask #requested #worker/requested #tier/2'
@@ -681,11 +710,11 @@ shipped_workers() {
   row unity-core-playground human 'human plain' '- [ ] human plain'
   row platform agent 'platform plain' '- [ ] platform plain'
   run cmd_candidates
-  assert_equal "$(jq -sr 'sort_by(.wrank) | map("\(.key)=\(.worker)") | join(",")' <<<"$output")" 'an ask=requested,assigned=fleet,plain=board'
+  assert_equal "$(jq -sr 'sort_by(.wrank) | map("\(.key)=\(.worker)") | join(",")' <<<"$output")" 'an ask=requested,assigned=fleet,plain=board,platform plain=board'
 }
 
-@test "the shipped registry: the AI systems and the home cluster have a day worker, under the same tier ceiling; finance has none" {
-  shipped_workers
+@test "the shipped registry: the AI systems and the home cluster have a day worker, under the same tier ceiling; an off project (finance, in the conf) has none" {
+  export DISPATCH_WORKERS="$REPO_ROOT/.config/fleet-dispatch/workers.json" DISPATCH_OFF_PROJECTS=finance
   mkdir -p "$SANDBOX/repos/ar" "$SANDBOX/repos/hc" "$SANDBOX/repos/fin"
   project agent-runtime alpha "$SANDBOX/repos/ar"
   project home-config alpha "$SANDBOX/repos/hc"
@@ -694,8 +723,9 @@ shipped_workers() {
   row agent-runtime agent 'ar ci' '- [ ] ci(runners): the pool'
   row home-config agent 'hc row' '- [ ] chore(dns): tidy a record'
   row finance agent 'fin row' '- [ ] chore(budget): a sheet'
-  run cmd_candidates
-  assert_equal "$(jq -sr 'sort_by(.key) | map("\(.key)=\(.worker)") | join(",")' <<<"$output")" 'ar fix=infra,hc row=infra'
+  OFF_SAY=1 run --separate-stderr cmd_candidates
+  assert_equal "$(jq -sr 'sort_by(.key) | map("\(.key)=\(.worker)") | join(",")' <<<"$output")" 'ar fix=board,hc row=board'
+  assert_equal "$stderr" 'fleet-dispatch: no worker covers finance: it is on DISPATCH_OFF_PROJECTS, so its rows stay with the human'
 }
 
 # --- picks -------------------------------------------------------------------------------
@@ -770,7 +800,8 @@ shipped_workers() {
 }
 
 @test "suggest: every open agent row and each human row a worker takes, auto or not, with its verdict and held area; it never judges" {
-  echo '{"fleet": {"max_tier": 1, "projects": ["game"]}}' > "$DISPATCH_WORKERS"
+  echo '{"fleet": {"max_tier": 1}}' > "$DISPATCH_WORKERS"
+  export DISPATCH_OFF_PROJECTS=app
   project game beta "$SANDBOX/repos/game"
   project app alpha "$SANDBOX/repos/app"
   mkdir -p "$SANDBOX/repos/sketch"
@@ -791,7 +822,7 @@ shipped_workers() {
 auto  dispatch  game game judged  [fleet, #high, beta]
 auto  dispatch  game game busy  [fleet, #high, beta]  blocked: area held by a queue item
 auto  unjudged  game game new  [fleet, #high, beta]
-man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app"
+man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app: it is on DISPATCH_OFF_PROJECTS, so its rows stay with the human"
   refute_output --partial 'app human'
   refute_output --partial 'sketch'
   run grep -c 'judge called' "$NOTES_FIXTURE/calls.log"
@@ -804,15 +835,16 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app"
     'game human=unjudged/true game judged=unjudged/true game busy=unjudged/true game new=unjudged/true app row=unjudged/false'
 }
 
-@test "suggest: each row no worker takes names why: no cover, the tier-3 gate's skip word or its gap, a tier-3 row in any project, size, the judge" {
-  echo '{"personal": {"max_tier": 2, "projects": ["game"], "lane": "agent", "untagged": true}}' > "$DISPATCH_WORKERS"
+@test "suggest: each row no worker takes names why: an off project, the tier-3 gate's skip word, a tier-3 row in any project, no worker on its lane, size, the judge" {
+  echo '{"board": {"max_tier": 2, "lane": "agent", "untagged": true}}' > "$DISPATCH_WORKERS"
+  export DISPATCH_OFF_PROJECTS=app
   project game beta "$SANDBOX/repos/game"
   project app alpha "$SANDBOX/repos/app"
   mkdir -p "$SANDBOX/repos/night"
   project night alpha "$SANDBOX/repos/night"
   row app agent 'app row' "- [ ] app row"
   row app agent 'app low' "- [ ] app low #tier/1"
-  row night agent 'night sudo' "- [ ] chore(box): run it with sudo"
+  row night agent 'night sudo' "- [ ] chore(box): run it with sudo #tier/3"
   row night agent 'night plain' "- [ ] chore(box): tidy the docs"
   row game agent 'game ci' "- [ ] ci(game): the runner pool #tier/3"
   row game agent 'game big' "- [ ] feat(game): a whole new mode #size/l"
@@ -821,21 +853,27 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app"
   run cmd_suggest --json
   assert_success
   b() { jq -r --arg k "$1" 'select(.key == $k) | .blocked | join("; ")' <<<"$output"; }
-  # Every project has the tier-3 gate: an untiered row where no worker reaches is the gate's if
-  # judged tier 3, a tier-1 one there has no path, and a tier-3 row of a covered project is the gate's.
-  assert_equal "$(b 'app row')" 'tier3 only: no day worker covers app'
-  assert_equal "$(b 'app low')" 'no worker covers app'
+  # Stage decides: every row of a project at dev or later has a worker, but an off project's; a
+  # tier-3 row of any of them is the gate's, unless a skip word keeps it with the human.
+  assert_equal "$(b 'app row')" 'no worker covers app: it is on DISPATCH_OFF_PROJECTS, so its rows stay with the human'
+  assert_equal "$(b 'app low')" 'no worker covers app: it is on DISPATCH_OFF_PROJECTS, so its rows stay with the human'
   assert_equal "$(b 'night sudo')" 'tier3 skip: sudo'
-  assert_equal "$(b 'night plain')" 'tier3 only: no day worker covers night'
+  assert_equal "$(b 'night plain')" ''
+  assert_equal "$(jq -r 'select(.key == "night plain") | .worker' <<<"$output")" board
   assert_equal "$(b 'game ci')" 'tier3 only: the tier-3 gate takes it'
   assert_equal "$(b 'game big')" 'size/l: too big for a pick'
   assert_equal "$(b 'game skip')" 'judge: skip, r'
   # active: no repo here has a commit, so a row nobody takes is never marked worked on today.
   assert_equal "$(jq -r 'select(.key == "app row") | .active' <<<"$output")" false
+  # With no untagged worker on the agent lane, an untiered row is the tier-3 gate's, and a tier-1 one has no path.
+  run nobody_why "$(echo '{"fleet": {"max_tier": 1}}' > "$DISPATCH_WORKERS"; workers)" agent '- [ ] chore(box): tidy the docs'
+  assert_output 'tier3 only: no day worker reads the agent lane'
+  run nobody_why "$(workers)" agent '- [ ] chore(box): tidy the docs #tier/1'
+  assert_output 'no untagged worker reads the agent lane'
 }
 
 @test "rank: a cleanup kind (kinds.json) of an AI system outranks the rest of its bucket; a feature, docs or an adding refactor there, or a fix elsewhere, does not" {
-  echo '{"personal": {"max_tier": 2, "projects": ["game", "app"], "lane": "agent", "untagged": true}}' > "$DISPATCH_WORKERS"
+  echo '{"personal": {"max_tier": 2, "lane": "agent", "untagged": true}}' > "$DISPATCH_WORKERS"
   export DISPATCH_CLEANUP_PROJECTS="app"
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
@@ -2078,7 +2116,8 @@ code_keys() { sed -n '/^DISPATCH_CONF_KEYS=(/,/^)/p' "$REPO_ROOT/.local/bin/flee
   refute_output --partial -- '--pr-only'
 }
 
-@test "tier3 gate: auth, migration and money word forms, every finance row, and an untagged gated row stay out; a tagged gated row is taken" {
+@test "tier3 gate: auth, migration and money word forms, every row of an off project, and an untagged gated row stay out; a tagged gated row is taken" {
+  export DISPATCH_OFF_PROJECTS=finance
   mkdir -p "$SANDBOX/repos/pg" "$SANDBOX/repos/fin"
   project unity-core-playground beta "$SANDBOX/repos/pg"
   project finance beta "$SANDBOX/repos/fin"
@@ -2094,13 +2133,13 @@ code_keys() { sed -n '/^DISPATCH_CONF_KEYS=(/,/^)/p' "$REPO_ROOT/.local/bin/flee
 
   run t3_rows ''
   assert_equal "$(jq -r '"\(.key) \(.gated)"' <<<"$output" | sort | paste -sd,)" 'pg-3 true,skill null'
-  run nobody_why '' finance agent '- [ ] fix(ci): reconcile the March statement #tier/3'
-  assert_output 'tier3 skip: finance stays with the human'
+  run off_project finance
+  assert_output 'no worker covers finance: it is on DISPATCH_OFF_PROJECTS, so its rows stay with the human'
 }
 
 @test "tier3 gate: a tier-3 row is never a day pick, even with a dispatch verdict: the tier-3 gate queues it" {
   pr_lane_ready
-  echo '{"board": {"max_tier": 9, "projects": ["agent-runtime"], "lane": "agent", "untagged": true}}' > "$DISPATCH_WORKERS"
+  echo '{"board": {"max_tier": 9, "lane": "agent", "untagged": true}}' > "$DISPATCH_WORKERS"
   row agent-runtime agent 'add the timer panel' '- [ ] feat(timer): add a timer panel #tier/3'
   verdict agent-runtime agent 'add the timer panel' dispatch S 3 timer
   pr_lane_verdict 'add the timer panel' timer

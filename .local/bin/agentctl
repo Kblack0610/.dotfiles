@@ -350,15 +350,26 @@ status_write() {
     done
     mv -f "$tmp" "$f"
 
-    # Mirror the change into Home Assistant. Synchronous on purpose: from ExecStopPost a
-    # backgrounded child is killed with the unit's cgroup. So the WHOLE run is bounded, not
-    # just its broker calls: its snapshot scan and lock wait took 34s at load 83 on 2026-11-04,
-    # past the user manager's 15s start timeout, and ExecStartPost's `-` does not cover a
-    # timeout, so fleet-dispatch failed to start until it hit start-limit. A cut run loses
-    # nothing: the publisher caches each topic as it sends, and its 5-min timer catches up.
+    # Mirror the change into Home Assistant. `report --lifecycle start` publishes in the
+    # background (STATUS_PUBLISH_ASYNC=1): ExecStartPost sits inside the user manager's 15s
+    # start timeout, and the publisher spent 5s of it on every start (14s unbounded at load 25).
+    # Under load the rest of the start phase went over: orphan-gc timed out at load 90 on
+    # 2026-11-21, and fleet-dispatch at load 83 on 2026-11-04 (ExecStartPost's `-` does not
+    # cover a timeout). The stop publish and the 5-min timer catch up on a run cut short. Every
+    # other call stays synchronous, since from ExecStopPost a backgrounded child is killed with
+    # the unit's cgroup. So the WHOLE run is bounded, not just its broker calls. A cut run loses
+    # nothing: the publisher caches each topic as it sends.
     if command -v agent-mqtt-publish >/dev/null 2>&1; then
-        AGENT_MQTT_TIMEOUT=2 AGENT_MQTT_RETRIES=0 timeout -k 1 "${AGENTCTL_MQTT_BUDGET:-5}" \
-            agent-mqtt-publish --quiet </dev/null >/dev/null 2>&1 || true
+        publish() {
+            AGENT_MQTT_TIMEOUT=2 AGENT_MQTT_RETRIES=0 timeout -k 1 "${AGENTCTL_MQTT_BUDGET:-5}" \
+                agent-mqtt-publish --quiet </dev/null >/dev/null 2>&1
+        }
+        if [ "$STATUS_PUBLISH_ASYNC" = 1 ]; then
+            publish </dev/null >/dev/null 2>&1 &
+            disown 2>/dev/null || true
+        else
+            publish || true
+        fi
     fi
 }
 
@@ -422,6 +433,8 @@ _ledger_stop() {
 
 cmd_report() {
     local name="${AGENTCTL_NAME:-}" lifecycle=""
+    # Set by the start lifecycle only, never read from the environment (see status_write).
+    STATUS_PUBLISH_ASYNC=0
     local -a kvs=()
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -448,7 +461,8 @@ cmd_report() {
             # different fixes and looked identical before. A run that STARTS declares
             # PENDING and is expected to overwrite it.
             _outcome_seed "$name"
-            _ledger_start "$name" ;;
+            _ledger_start "$name"
+            STATUS_PUBLISH_ASYNC=1 ;;
         stop)
             # systemd sets these for ExecStopPost only. Anything but `success` is a fault
             # worth a glyph, which is the distinction `inactive` alone can never make.

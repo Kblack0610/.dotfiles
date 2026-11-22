@@ -224,6 +224,32 @@ NS
   assert_output --partial 'baseline has no number for runners'
 }
 
+@test "dated delta lines after the last count add to it, so two PRs that each add one union-merge (ar-4471)" {
+  printf 'NAME=gamma\nKIND=oneshot\n' > "$LEDGER_CONF_DIR/gamma.conf"
+  printf 'NAME=delta\nKIND=oneshot\n' > "$LEDGER_CONF_DIR/delta.conf"
+  printf 'runners+=1 2026-11-22 gamma: why\n' >> "$LEDGER_BASELINE"
+  run "$SUBJECT" ledger --check
+  assert_failure
+  assert_output 'runners grew: 4 > baseline 3'
+  printf 'runners+=1 2026-11-22 delta: why\n' >> "$LEDGER_BASELINE"
+  run "$SUBJECT" ledger --check
+  assert_success
+  # a retirement subtracts; a count written after the deltas starts over from it
+  printf 'runners-=1 2026-11-23 delta retired\n' >> "$LEDGER_BASELINE"
+  run "$SUBJECT" ledger --check
+  assert_output 'runners grew: 4 > baseline 3'
+  printf 'runners=4\n' >> "$LEDGER_BASELINE"
+  run "$SUBJECT" ledger --check
+  assert_success
+}
+
+@test "a delta line with no date fails rather than reading as held (ar-4471)" {
+  printf 'runners+=5\n' >> "$LEDGER_BASELINE"
+  run "$SUBJECT" ledger --check
+  assert_failure
+  assert_output --partial 'baseline has no number for runners'
+}
+
 @test "the scan skips gitignored build output" {
   mkdir -p "$LEDGER_SRC/target"
   printf 'claude -p x\n' > "$LEDGER_SRC/target/built"

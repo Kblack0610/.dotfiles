@@ -636,7 +636,7 @@ git -C . rev-parse --verify --quiet refs/remotes/origin/main
 git -C . rev-parse --verify --quiet fedcba9876543210fedcba9876543210fedcba98^{commit}
 git -C . merge-base --is-ancestor fedcba9876543210fedcba9876543210fedcba98 origin/main
 git -C . rev-parse --short fedcba9876543210fedcba9876543210fedcba98
-dotfiles-autopull --now .
+dotfiles-autopull --now . --bg
 schedules-sync sync-prs o/r
 notes ingest record --stage land --action merged --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 -- ship
 notes ingest record --stage queue --action item-set --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --why pr=o/r#42 merged=fedcba9876543210fedcba9876543210fedcba98 partial= open_pr= closing_pr=o/r#42 -- ship
@@ -1853,17 +1853,17 @@ real_notes_board() {
   assert_equal "$(jq -r '"\(.state) \(.project)"' <<<"$output")" 'done dotfiles'
 }
 
-@test "live: after the merge proof, the stowed checkout of this repo is fast-forwarded and said" {
-  printf '~/.dotfiles: fast-forwarded main 01234567..fedcba98\n' >"$NOTES_FIXTURE/autopull.out"
+@test "live: after the merge proof, the stowed checkout of this repo is fast-forwarded in the background and said" {
+  printf '~: the pass runs in the background; its result is logged to ~/.cache/dotfiles-autopull/autopull.log\n' >"$NOTES_FIXTURE/autopull.out"
   run "$LAND" 42 --item ship
   assert_success
-  assert_line 'live: ~/.dotfiles: fast-forwarded main 01234567..fedcba98'
+  assert_line 'live: ~: the pass runs in the background; its result is logged to ~/.cache/dotfiles-autopull/autopull.log'
   printf '%s\n' '~/.dotfiles: fast-forwarded main 01234567..fedcba98' '~: rebuilt agent-web (cargo build --release)' >"$NOTES_FIXTURE/autopull.out"
   run "$LAND" 42 --item ship
   assert_line 'live: ~: rebuilt agent-web (cargo build --release)'
   run grep 'pr merge 42\|^dotfiles-autopull' "$LOG"
   assert_line --index 0 --partial 'pr merge 42'
-  assert_line --index 1 'dotfiles-autopull --now .'
+  assert_line --index 1 'dotfiles-autopull --now . --bg'
 }
 
 @test "live: a repo that is not a stowed checkout gets no line" {

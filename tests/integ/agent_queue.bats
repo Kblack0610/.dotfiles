@@ -1048,6 +1048,34 @@ gate_rbw() {
   assert_output --partial "notes board --json failed"
 }
 
+@test "gate names the fix for a dead after/: a date or time is an at/ gate, a queue item's slug is its row (ar-4471)" {
+  jq -n '{rows: [{id: "ar-1", state: "open", tags: []}], done: []}' > "$NOTES_FIXTURE/board.json"
+  mkdir -p "$AGENT_QUEUE_DIR/queued"
+  printf 'slug: build-it\nproject: game\nrow: game:ar-1\nqueued: 2026-11-07T01:00:00Z\n---\nbuild it\n' > "$AGENT_QUEUE_DIR/queued/20261107-010000-build-it.md"
+  run "$AQ" gate --json after/2026-11-23 after/0900 after/build-it after/nothing-here
+  assert_failure 3
+  st() { jq -r --arg t "$1" 'select(.tag == $t) | "\(.state)|\(.why)"' <<<"$output"; }
+  [ "$(st after/2026-11-23)" = "dead|after 2026-11-23: no board row has that id; a date is an at gate: #at/2026-11-23/HHMM" ]
+  [ "$(st after/0900)" = "dead|after 0900: no board row has that id; a time is an at gate: #at/0900" ]
+  [ "$(st after/build-it)" = "dead|after build-it: no board row has that id; build-it is a queue item, its row is #after/ar-1" ]
+  [ "$(st after/nothing-here)" = "dead|after nothing-here: no board row has that id" ]
+}
+
+@test "a queued item whose body's last Blocked heading is not followed by an Unblocked one holds, and has no ready (ar-4471)" {
+  mkdir -p "$AGENT_QUEUE_DIR/queued"
+  hdr='project: game\npriority: high\nqueued: 2026-11-07T01:00:00Z\nweight: light\n'
+  printf "slug: b\n${hdr}---\ntask\n\n## Blocked 2026-11-14 (agent-11)\nneeds a login\n" > "$AGENT_QUEUE_DIR/queued/20261107-010000-b.md"
+  printf "slug: u\n${hdr}---\ntask\n\n## Blocked 2026-11-14 (agent-11)\nx\n\n## Unblocked 2026-11-20 (human)\ny\n" > "$AGENT_QUEUE_DIR/queued/20261107-010001-u.md"
+  printf "slug: p\n${hdr}---\ntask, mentions ## Blocked inline only\n" > "$AGENT_QUEUE_DIR/queued/20261107-010002-p.md"
+  list="$("$AQ" list --json --state queued)"
+  hold() { jq -r --arg s "$1" 'select(.slug == $s) | "\(.hold // "none")|\(.ready // "none")"' <<<"$list"; }
+  [ "$(hold b)" = 'blocked: "## Blocked 2026-11-14 (agent-11)" in its body; a later "## Unblocked" heading releases it|none' ]
+  [ "$(hold u)" = "none|2026-11-07T01:00:00Z" ]
+  [ "$(hold p)" = "none|2026-11-07T01:00:00Z" ]
+  # show reads the same hold as the listing.
+  [ "$(jq -r .hold <<<"$("$AQ" show b --json)")" = "$(jq -r 'select(.slug == "b") | .hold' <<<"$list")" ]
+}
+
 @test "return writes what the item still waits on onto its row as gate tags before un-starting it" {
   gate_rbw
   export AGENT_ASK_ROOT="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_ROOT/game"
@@ -4537,6 +4565,25 @@ already"
   flock -u 9
   run "$AQ" list --json
   [ "$(jq -sr 'map(.slug) | join(",")' <<<"$output")" = one-item ]
+}
+
+@test "lock-miss counts the timeouts in its window against its bound, the rotated log too; no log is no misses (ar-4471)" {
+  mkdir -p "$AGENT_QUEUE_DIR"
+  run "$AQ" lock-miss
+  assert_success
+  assert_output "0 queue lock misses in the last 1h (bound 3)"
+  log="$AGENT_QUEUE_DIR/lock-miss.jsonl"
+  now=$(date -u -Is) old=$(date -u -Is -d "-3 hours")
+  for t in "$old" "$now" "$now"; do jq -nc --arg ts "$t" '{ts: $ts, cmd: "agent-queue list", caller: "hub"}'; done > "$log"
+  jq -nc --arg ts "$now" '{ts: $ts, cmd: "agent-queue add", caller: "dispatch"}' > "$log.1"
+  run "$AQ" lock-miss --max 3
+  assert_success
+  assert_output --partial "3 queue lock misses in the last 1h (bound 3); the latest at $now: agent-queue list from hub"
+  run "$AQ" lock-miss --max 2
+  assert_failure 1
+  run "$AQ" lock-miss --hours 4 --max 3
+  assert_failure 1
+  assert_output --partial "4 queue lock misses in the last 4h"
 }
 
 # ar-3025: a timeout names who held the lock. NEGATIVE CONTROL: before it, nothing was written and

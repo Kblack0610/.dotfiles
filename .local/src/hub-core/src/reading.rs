@@ -205,10 +205,14 @@ mod tests {
 
     /// The files allowed to spell an empty-state word, per file, outside tests and comments:
     /// agent-web's mirror of `NOT_READ` and `NO_DATA`, which the browser cannot import, and
-    /// `releases::UNREAD`, release-state's wire word for a channel it could not read. Any other
+    /// `releases::UNREAD`, release-state's wire word for a channel it could not read, and the
+    /// host-downtime records' cause `unknown`, the janitor's wire word for a downtime it found no
+    /// cause for (`host_history`, infra.js), which is no empty state. Any other
     /// file writing one by hand fails this test (dashboards.md rule 6).
     const HAND_WRITTEN: &[(&str, usize)] = &[
+        ("agent-web/static/infra.js", 1),
         ("agent-web/static/ui.js", 2),
+        ("hub-core/src/host_history.rs", 1),
         ("hub-core/src/releases.rs", 1),
     ];
 

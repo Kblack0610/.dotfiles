@@ -1396,11 +1396,12 @@ split_waiting() {
   return "$rc"
 }
 
-# agent_run_rule: the lane sentence for projects an agent-lane worker takes with no tags, from the
-# worker table: there an agent does the work unattended, so a line files where the worker reads.
+# agent_run_rule: the lane sentence for projects an agent-lane worker takes with no tags, as dispatch
+# reads them (`fleet-dispatch covered`: stage, repo, off list): there an agent does the work
+# unattended, so a line files where the worker reads.
 agent_run_rule() {
   local names
-  names="$(jq -r '[.[] | select(.lane == "agent" and .untagged == true) | .projects[]?] | unique | join(", ")' "${DISPATCH_WORKERS:-$HOME/.config/fleet-dispatch/workers.json}" 2>/dev/null)"
+  names="$(fleet-dispatch covered 2>/dev/null | paste -sd, - | sed 's/,/, /g')"
   printf ' A line that asks for a credential, token or key for a service we run (minted through its admin path into SOPS, home-config docs/credentials.md) is lane agent, since an agent mints it and the person is never asked; only an outside account (GitHub, a store, a broker, a SaaS) or the persons own login stays lane human.'
   [ -z "$names" ] || printf ' Except on these projects, where agents do the work unattended, lane is agent unless a step needs a person (a playtest on a device, a release, money, a purchase, a product decision nobody has made): %s.' "$names"
 }
