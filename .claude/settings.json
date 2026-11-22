@@ -351,19 +351,11 @@
           },
           {
             "type": "command",
-            "command": "bash ~/.claude/hooks/manual-mode-investigate.sh"
-          },
-          {
-            "type": "command",
             "command": "bash ~/.claude/hooks/plan-standard.sh"
           },
           {
             "type": "command",
-            "command": "bash ~/.claude/hooks/answer-standard.sh"
-          },
-          {
-            "type": "command",
-            "command": "bash ~/.dotfiles/.config/shared-hooks/first-prompt-lessons.sh"
+            "command": "bash ~/.dotfiles/.config/shared-hooks/session-preflight.sh"
           }
         ]
       }

@@ -7,6 +7,53 @@ set -euo pipefail
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
 . "$(dirname "$0")/project-name.sh"
+
+# The hook payload, read only when piped, so a manual TTY run does not block on a read.
+PAYLOAD=""
+[ -t 0 ] || PAYLOAD=$(cat 2>/dev/null || true)
+HOOK_EVENT=""
+[ -z "$PAYLOAD" ] || ! command -v jq >/dev/null 2>&1 ||
+  HOOK_EVENT=$(jq -r '.hook_event_name // empty' <<<"$PAYLOAD" 2>/dev/null || true)
+
+# Lessons for the first prompt. SessionStart sees only the cwd, branch and queue title, so a hand
+# session on main got lessons matched to none of its work; the first prompt says what the work is.
+# On the first UserPromptSubmit of a session only: the top 3 of `lessons pick --matched` against
+# the prompt, less the lines turn 1 already carried, logged as delivered. A later prompt, or one
+# nothing matches, adds nothing. State is per session under $XDG_RUNTIME_DIR (tmpfs, gone at
+# reboot): <sid> holds turn 1's lessons until the first prompt reads it, <sid>.done marks that
+# the first prompt was seen, so a resume or compaction after it records nothing.
+SHOWN_DIR="${XDG_RUNTIME_DIR:+$XDG_RUNTIME_DIR/lessons-shown}"
+valid_sid() { [ -n "$1" ] && [ "${1//[^A-Za-z0-9_-]/}" = "$1" ]; }
+first_prompt_lessons() {
+  local sid prompt project file pick
+  [ -n "$SHOWN_DIR" ] || return 0
+  sid=$(jq -r '.session_id // ""' <<<"$PAYLOAD" 2>/dev/null) || return 0
+  valid_sid "$sid" && [ ! -e "$SHOWN_DIR/$sid.done" ] || return 0
+  # The ranker reads the first 12 distinct words, so 2000 chars is plenty and keeps a pasted log
+  # under the argument size limit. A prompt under three words ("continue", "hi") says nothing
+  # about the work, so the next prompt keeps the chance.
+  prompt=$(jq -r '(.prompt // "")[:2000]' <<<"$PAYLOAD" 2>/dev/null) || return 0
+  [ "$(wc -w <<<"$prompt")" -ge 3 ] || return 0
+  { mkdir -p "$SHOWN_DIR" && : > "$SHOWN_DIR/$sid.done"; } 2>/dev/null || return 0
+  # shellcheck disable=SC2064 # sid is a plain token (valid_sid), fixed now on purpose
+  trap "rm -f '$SHOWN_DIR/$sid'" EXIT
+  command -v lessons >/dev/null 2>&1 || return 0
+  project=$(resolve_project_name "$PROJECT_DIR")
+  file="$HOME/.agent/lessons/$project.md"
+  pick=$(lessons pick -n 3 --matched "$file" "$prompt" 2>/dev/null || true)
+  # `lessons log` counts the lines after the header, so the header says how many are left.
+  pick=$(awk -v sf="$SHOWN_DIR/$sid" 'BEGIN { while ((getline l < sf) > 0) seen[l] = 1 }
+    NR == 1 { next }
+    !($0 in seen) { body = body $0 "\n"; k++ }
+    END { if (k) printf "## Lessons for this work (%d matched on the first prompt)\n%s", k, body }' <<<"$pick")
+  [ -n "$pick" ] || return 0
+  printf '%s\n' "$pick" | lessons log "$project" "$file" 2>/dev/null || true
+  jq -nc --arg c "$pick" '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $c}}'
+}
+if [ "$HOOK_EVENT" = UserPromptSubmit ]; then
+  first_prompt_lessons
+  exit 0
+fi
 # Guarded on purpose. These hooks are deployed by `stow --no-folding .`, one symlink per
 # file, so a checkout can reach a commit that adds a lib before stow has linked it. Under
 # `set -e` an unguarded source of a missing file kills the whole preflight: you lose the
@@ -45,11 +92,10 @@ if [ -f "$PROJECT_MAP" ] && command -v jq >/dev/null 2>&1; then
   PROJECT_PATHFILTER=$(jq -r --arg n "$PROJECT_NAME" '.trackers[$n].path // empty' "$PROJECT_MAP" 2>/dev/null || true)
 fi
 
-# Read the hook payload's `source` from stdin (JSON) — only when piped, so manual
-# TTY runs of this script don't block on a read. Valid sources: startup|resume|compact.
+# The SessionStart payload's `source`: startup|resume|compact.
 HOOK_SOURCE="" HOOK_SID=""
-if [ ! -t 0 ] && command -v jq >/dev/null 2>&1; then
-  read -r HOOK_SOURCE HOOK_SID < <(cat 2>/dev/null | jq -r '"\(.source // "-") \(.session_id // "")"' 2>/dev/null) || true
+if [ -n "$PAYLOAD" ] && command -v jq >/dev/null 2>&1; then
+  read -r HOOK_SOURCE HOOK_SID < <(jq -r '"\(.source // "-") \(.session_id // "")"' <<<"$PAYLOAD" 2>/dev/null) || true
   [ "$HOOK_SOURCE" != - ] || HOOK_SOURCE=""
 fi
 # Preserve the first snapshot across resume and compaction.
@@ -226,8 +272,8 @@ startup_mark open
 # session is on and hands out only the ones that match (a session with no match gets none: the
 # newest five were unrelated to the work 68% of the time). SessionStart sees only the cwd, so the
 # work is the queue item's title for a dispatched session, plus the branch and the cwd's place in
-# the repo; the first prompt says more: first-prompt-lessons.sh adds the lessons it matches, less
-# these. Plans come from the anchor's AUTO block, which stop-post.d/87-regen-anchor.sh rewrites.
+# the repo; the first prompt says more: first_prompt_lessons above adds the lessons it matches,
+# less these. Plans come from the anchor's AUTO block, which stop-post.d/87-regen-anchor.sh rewrites.
 # An app in a monorepo also gets its repo's lessons: CI, release plumbing and k8s still bind it.
 WORK_TEXT="" SEC_TASK=""
 if [ -n "${AGENT_QUEUE_ITEM:-}" ] && command -v agent-queue >/dev/null 2>&1; then
@@ -305,8 +351,9 @@ add_section "lessons digest" "$LESSONS_FILE" "$SEC_LESSONS"
 # A lesson counts as delivered only once it is in the context; the archive reads the log.
 if [ -n "$SEC_LESSONS" ] && [[ ", $OMITTED" != *", lessons digest ("* ]]; then
   [ -z "$PICK" ] || printf '%s\n' "$PICK" | lessons log "$PROJECT_NAME" "$LESSONS_FILE" 2>/dev/null || true
-  [ -z "$PICK" ] || [ -z "$HOOK_SID" ] ||
-    printf '%s\n' "$PICK" | bash "$(dirname "$(realpath "$0")")/first-prompt-lessons.sh" shown "$HOOK_SID" 2>/dev/null || true
+  # What turn 1 carried, for the first prompt to leave out; nothing once that prompt is past.
+  [ -z "$PICK" ] || [ -z "$SHOWN_DIR" ] || ! valid_sid "$HOOK_SID" || [ -e "$SHOWN_DIR/$HOOK_SID.done" ] ||
+    { mkdir -p "$SHOWN_DIR" && printf '%s\n' "$PICK" > "$SHOWN_DIR/$HOOK_SID"; } 2>/dev/null || true
   [ -z "$PARENT_PICK" ] || printf '%s\n' "$PARENT_PICK" | lessons log "$PARENT_NAME" "$PARENT_LESSONS" 2>/dev/null || true
 fi
 add_section "plans" "$PLAN_DIR/" "$SEC_PLANS"
