@@ -1397,6 +1397,32 @@ pr_states() {
   [ -s "$file" ] && cat "$file"
 }
 
+# inflight_done_items: the done items of this pass ($qall) whose recorded PRs (`pr:`, "owner/repo#N ...")
+# include one still OPEN in the PR store, one JSON line each, for the phase holders beside the live items.
+# Its phases are in flight elsewhere: 2026-11-10 agent-land closed urgent-runs-now-p2 on public #1727
+# while P3 rode private #733, done items held no phase, and hub/dotfiles:9 read LANDED "queue P3" (ar-1429).
+# A repo the store cannot answer for holds nothing, so its phase reads as next, never as queued.
+inflight_done_items() {
+  # held: only an item that can hold a phase (a plan: field or a "Phase N of" task) costs a PR store read.
+  local refs repo open="" sel='def held: select(.state == "done" and ((.plan // "") != ""
+      or ((.task // "") | test("(?i)\\bphases? [^\\s:,]+ of "))));
+    def refs: .pr // "" | tostring | split(" ") | map(select(test("^[^#]+#[0-9]+$")));'
+  refs="$(jq -r "$sel"' held | refs[]' <<<"$qall")" || return 1
+  [ -n "$refs" ] || return 0
+  while IFS= read -r repo; do
+    open+="$(pr_states "$repo" | jq -r --arg r "$repo" '.[] | select(.state == "OPEN") | "\($r)#\(.number)"')"$'\n'
+  done < <(sed 's/#[0-9]*$//' <<<"$refs" | sort -u)
+  jq -c --arg open "$open" "$sel"' ($open | split("\n")) as $o | held | select(refs | any(. as $p | $o | index($p)))' <<<"$qall"
+}
+
+# inflight_done: inflight_done_items, read once a run into $CACHE/inflight_done; a failed read is named
+# unreadable and its row blind, so the phase reads as next, never as queued.
+inflight_done() {
+  [ -f "$CACHE/inflight_done" ] || { inflight_done_items > "$CACHE/inflight_done.$$" 2>/dev/null || { unreadable "done items' open PRs"; blind_row; }
+    mv -f "$CACHE/inflight_done.$$" "$CACHE/inflight_done"; }
+  cat "$CACHE/inflight_done"
+}
+
 # merged_prs <session_prs json> -> "#7,#9" for the PRs that merged, "-" for none (work_blockers' 23rd argument).
 merged_prs() {
   jq -r 'map(select(.state == "MERGED") | "#\(.number)") | if length == 0 then "-" else join(",") end' <<<"$1"
@@ -2193,7 +2219,7 @@ collect() {
               | (if ($first | length) > 0 and all($first[]; .st == "queued") then "1" else "-" end) as $wq
               | if ($holders | length) == 0 then empty
                 elif ($free | length) == 0 then "queued:" + ($holders | map(.slug) | join(",")) + "\t" + $run + "\t" + $wq
-                else $free[0].name + "\t" + $run + "\t" + $wq end' <<<"$qjson$(printf '\n'; cat "$CACHE/plan_gated")" 2>/dev/null)" ||
+                else $free[0].name + "\t" + $run + "\t" + $wq end' <<<"$qjson$(printf '\n'; cat "$CACHE/plan_gated"; inflight_done)" 2>/dev/null)" ||
         { unreadable "plan phases of $plist"; blind_row; }
       [ -z "$qd" ] || IFS=$'\t' read -r pq prun pwq <<<"$qd"
     fi

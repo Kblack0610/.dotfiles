@@ -735,6 +735,29 @@ ledger() {
   done
 }
 
+@test "live_wait reads a background agentctl-playground-night as a test, by the repo's own time-use.conf (ar-1846)" {
+  # 2026-11-22 agent-3 read "background shell is not a gate or test" while its shell ran the human's night run
+  # (agentctl-playground-night --sha <commit>), and the nudge would have told it to stop the night. Reads the shipped
+  # conf, not a copy, so dropping the `test agentctl-playground-night` line fails here.
+  mkdir -p "$SANDBOX/wt" "$SANDBOX/bin"
+  printf 'sleep 60\n' > "$SANDBOX/bin/agentctl-playground-night"
+  export FLEET_TIME_USE_CONF="$BATS_TEST_DIRNAME/../../.config/agent-panel/time-use.conf"
+  # root stands in for the session's claude; the night run sits below it, outside the session's worktree
+  (cd "$SANDBOX/bin" && exec setsid bash -c 'bash agentctl-playground-night --sha a99a6eb5b; :') >/dev/null 2>&1 3>&- &
+  local root=$!; LIVE_PIDS="-$root"
+  # the process is the event: wait until /proc shows the script's own exec (the anchor skips the wrapper's `bash -c`)
+  until pgrep -s "$root" -f '^bash agentctl-playground-night' >/dev/null; do
+    kill -0 "$root" 2>/dev/null || fail "the night stand-in exited before it started"
+  done
+  run live_wait "$SANDBOX/wt" "$root"
+  assert_output 'test'
+  # negative control: a conf without the line reads nothing
+  printf 'gate agent-land\ntest bats\n' > "$SANDBOX/other.conf"
+  FLEET_TIME_USE_CONF="$SANDBOX/other.conf" run live_wait "$SANDBOX/wt" "$root"
+  assert_output ''
+  pkill -KILL -s "$root" || true; wait "$root" 2>/dev/null || true
+}
+
 @test "live_wait finds a gate or test process running in the session worktree, and only there" {
   # 2026-11-07 unity-core-playground-agent-30: a gate detached with & left only its until-loop in the
   # transcript (open job jobs), so a Tests run in progress read STALLED.
@@ -2593,6 +2616,66 @@ research_item() {
   sed -i "s|^plan: .*|plan: $SANDBOX/alias.md|" "$HOME/.agent/queue/queued/20261103-100000-rollout.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
+}
+
+# due_has_no_landed_line: after a tick, fleet-shepherd due finds nothing due for the row: no LANDED nudge, no phase to queue (ar-1429).
+due_has_no_landed_line() {
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  # the due pass reads this row: a DONE one draws no LANDED line, and its close is close_sample's
+  [ "$(jq -r '.sessions | map(.bucket) | join(",")' "$XDG_STATE_HOME/fleet/state.json")" = DONE ]
+  run "$REPO_ROOT/.local/bin/fleet-shepherd" due
+  assert_failure 1   # due's "nothing is due"
+  assert_output ''
+}
+
+# phase_item <state> <slug> <plan> <task> [<extra header lines>]: a queue item of another session that holds phases of <plan>.
+phase_item() {
+  local d="$HOME/.agent/queue/$1"; [ "$1" = done ] && d="$d/$(date +%F)"
+  mkdir -p "$d"
+  printf 'slug: %s\nproject: dotfiles\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-10T16:40:00Z\nplan: %s\n%s---\n%s\n' \
+    "$2" "$3" "${5:-}" "$4" > "$d/20261110-164000-$2.md"
+}
+
+@test "end to end: a planner chat with no PR whose symlinked plan's phases are all items reads DONE, never LANDED (ar-1429 hub/dotfiles:15)" {
+  # 2026-11-10 hub/dotfiles:15 opened no PR; its plan-mode file was a symlink to the plan its phases were
+  # queued under (db-tune-speed-p1..p5, p1 running elsewhere). Read by file name only, phase 1 was free:
+  # LANDED "queue phase 1", which the session took for a merge it never made. #2091 (the symlink) and
+  # #2259 (plan_copy_of) each fixed it alone; this pins the row.
+  clean_fixture
+  mkdir -p "$SANDBOX/canon"
+  phases_plan '- [ ] Phase 1: tunable data' '- [ ] Phase 2: throw numbers' '- [ ] Phase 3: sim speed'
+  mv "$SANDBOX/plan.md" "$SANDBOX/canon/tune-speed.md"
+  ln -s "$SANDBOX/canon/tune-speed.md" "$SANDBOX/bubbly-rocket.md"
+  panel "$SANDBOX/wt" "$SANDBOX/bubbly-rocket.md"
+  phase_item running tune-p1 "$SANDBOX/canon/tune-speed.md" "Phase 1 of the plan $SANDBOX/canon/tune-speed.md: tunable data" $'phases: 1\nsession: lab:ucp-agent-10\n'
+  phase_item queued tune-p2 "$SANDBOX/canon/tune-speed.md" "Phase 2 of the plan $SANDBOX/canon/tune-speed.md: throw numbers" $'phases: 2\n'
+  phase_item queued tune-p3 "$SANDBOX/canon/tune-speed.md" "Phase 3 of the plan $SANDBOX/canon/tune-speed.md: sim speed" $'phases: 3\n'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [[ "$(jq -r .reason <<<"$output")" == 'clean, nothing on the branch, its next phases are queue items: '* ]]
+  [ "$(jq -r .finished <<<"$output")" = true ]
+  due_has_no_landed_line
+}
+
+@test "end to end: a next phase whose done item still has an open PR is in flight elsewhere, not LANDED (ar-1429 hub/dotfiles:9)" {
+  # 2026-11-10 hub/dotfiles:9: P3 rode urgent-runs-now-p2 as private #733. agent-land closed that item done
+  # on public #1727 while #733 was open, done items held no phase, and the row read LANDED "queue P3".
+  clean_fixture
+  panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  phases_plan '- [x] P1 declare deps (#1725)' '- [x] P2 urgent preempts (#1727)' '- [ ] P3 the rule, private repo (after 2)'
+  phase_item done runs-p2 "$SANDBOX/plan.md" "Phases P2 and P3 of the plan $SANDBOX/plan.md" \
+    "$(printf 'session: lab:dotfiles-agent-4\npr: o/pub#1727 o/priv#733\nstatus: ok\nfinished: %s\n' "$(date -u +%FT%TZ)")"$'\n'
+  printf 'feat/p2\t1727\tMERGED\tPASS\tabc\n' > "$LEDGER_DIR/prs_o_pub.tsv"
+  printf 'feat/p3\t733\tOPEN\tPASS\tdef\n' > "$LEDGER_DIR/prs_o_priv.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, its next phases are queue items: runs-p2' ]
+  due_has_no_landed_line
+  # negative control: once #733 merged the item holds nothing, and an unticked P3 is this plan's next phase
+  printf 'feat/p3\t733\tMERGED\tPASS\tdef\n' > "$LEDGER_DIR/prs_o_priv.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+  [ "$(jq -r .next_phase <<<"$output")" = 'P3 the rule, private repo (after 2)' ]
 }
 
 @test "end to end: a session whose next phase add --plan filed on its board row behind a gate reads DONE; an ungated row is no phase (ar-3121)" {
