@@ -992,19 +992,21 @@ pane_run() {
 pane_tmux() { local h="$1" s="$2"; shift 2; pane_run "$h" tmux -L "$s" "$@"; }
 
 # pane_takes_keys <host|-> <server> <pane> -> exit 0 when the pane is in no tmux mode at an idle prompt.
-# A pane in a mode (copy mode, the choose-tree picker, stacked) that no client shows, its session
-# detached or its window not the current one, is left first: `copy-mode -q` resets every mode, where
-# `send-keys -X cancel` does nothing in tree mode (ar-3949: hub/dotfiles:11 sat skipped 4.5h). A shown
-# pane keeps its mode. The caller has checked the pane quiet.
+# A pane on this machine in a mode (copy mode, the choose-tree picker, stacked) that no client shows,
+# its session detached or its window not the current one, is left first with leave_mode (`copy-mode
+# -q` resets every mode, where `send-keys -X cancel` does nothing in tree mode; ar-3949: hub/dotfiles:11
+# sat skipped 4.5h). A shown pane keeps its mode, and a worker's pane in one is not touched (leave_mode
+# runs tmux here). The caller has checked the pane quiet.
 pane_takes_keys() {
   local h="$1" s="$2" p="$3" st mode att wa
+  declare -F leave_mode >/dev/null || . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/tmux-pane.sh" || return 1
   st="$(pane_tmux "$h" "$s" display-message -p -t "$p" '#{pane_in_mode} #{session_attached} #{window_active}' 2>/dev/null)" || return 1
   read -r mode att wa _ <<<"$st"
   if [ "${mode:-1}" != 0 ]; then
+    [ "$h" = - ] || return 1
     [ "${att:-1}" = 0 ] || [ "${wa:-1}" != 1 ] || return 1
-    pane_tmux "$h" "$s" copy-mode -q -t "$p" 2>/dev/null || return 1
-    [ "$(pane_tmux "$h" "$s" display-message -p -t "$p" '#{pane_in_mode}' 2>/dev/null)" = 0 ] || return 1
-    cmd_log "close: $s/$p: left its tmux mode on an unwatched pane" >/dev/null
+    leave_mode "$s" "$p" || return 1
+    cmd_log "takeover: $s/$p: left its tmux mode on an unwatched pane" >/dev/null
   fi
   idle_prompt "$(pane_tmux "$h" "$s" capture-pane -p -t "$p" 2>/dev/null)"
 }
