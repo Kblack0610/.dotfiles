@@ -29,7 +29,7 @@
 #                          two checks in a row that would start a pass; exit 0 otherwise. Sentinel's watch shepherd-stuck
 #   fleet-shepherd check   refresh the state document and samples as `run` does, take each queue
 #                          session's budget checkpoint (budget_sample: carry on, or park and
-#                          page), re-page the human on escalated rows left unchanged (remind_sample),
+#                          page), close the window of a STALLED row still unmoved past its nudge (takeover_sample),
 #                          type /wind-down into each session whose close verdict is now, and close the window
 #                          of one still closable an hour after its close was typed, its own asks set
 #                          to reopen it on the answer (close_sample),
@@ -163,10 +163,6 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 : "${FLEET_SHEPHERD_BUDGET_S:=12}" "${FLEET_SHEPHERD_BUDGET_M:=25}" "${FLEET_SHEPHERD_BUDGET_L:=50}"
 : "${FLEET_SHEPHERD_BUDGET_USD:=25}" # an item with no size tag
 : "${FLEET_SHEPHERD_BUDGET_EXTEND:=3}" # a session still WORKING is parked only at this many budgets
-# A row nudged and escalated that still sits unchanged this long pages the human again, in plain
-# words naming the one decision that closes it, once per fact per day (remind_sample).
-# trader-real-money-plan sat 6h+ past its escalation with nobody told again (2026-11-06).
-: "${FLEET_SHEPHERD_REMIND_H:=4}"
 # A STALLED row nudged and still unmoved this long, quiet since, has its window closed so a fresh agent
 # takes its step over (takeover_sample); a branch taken over this many times that stalls again pages the
 # human instead. Provisional, 2026-11-20: 60 matches UNHANDLED_MIN, low confidence, nothing measured yet;
@@ -174,7 +170,6 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 # are the human's (ar-3741: two failed takeovers, then a page).
 : "${FLEET_SHEPHERD_TAKEOVER_MIN:=60}" "${FLEET_SHEPHERD_TAKEOVER_TRIES:=2}"
 TAKEOVERS="$LEDGER/.takeover" # close\t<branch>\t<epoch>\t<sid>: each window closed for takeover; page\t<sid>\t<fact>: each failed takeover, paged once
-REMINDED="$LEDGER/.remind"   # <date>\t<session id>\t<fact>: today's reminders, once each
 BUDGETS="$LEDGER/.budget"     # <item>\t<budgets reached>\t<extended|parked|pending|left>: each checkpoint, once
 SHARED_ITEMS="$LEDGER/.shared"  # <fact>\t<item slug | row:<board row>>: what owns each shared red episode
 # The project a shared red's item is filed on: the test failures fleet-sessions reads are the
@@ -307,12 +302,10 @@ TAKEOVER_JQ='def takeover_row:
 # the line by it, and the target stays for a reader to act on. A row with no pane gets no tag.
 PANE_TAG_JQ='def ptag: if (.pane // "") != "" then " [\(.pane)]" else "" end;'
 # HELD_JQ: held -> true for a DONE or LANDED row the close flow keeps for work left here
-# (`close.left`, set by CLOSE_JQ's unlanded, only-item and held steps); why_held -> what holds a
-# row, for the escalation and the reminder: that blocker, else the row's reason. Its bucket reason
-# names the plan, not the item that keeps it open (2026-11-19: agent-29 sat LANDED on its running
-# item, never nudged).
-HELD_JQ='def held: (.bucket | IN("DONE","LANDED")) and (.close.left // null) != null;
-  def why_held: if held then .close.left else (.reason // "") end;'
+# (`close.left`, set by CLOSE_JQ's unlanded, only-item and held steps), so it is nudged though its
+# bucket reason names the plan, not the item that keeps it open (2026-11-19: agent-29 sat LANDED on
+# its running item, never nudged).
+HELD_JQ='def held: (.bucket | IN("DONE","LANDED")) and (.close.left // null) != null;'
 
 cmd_due() {
   [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
@@ -340,7 +333,7 @@ cmd_due() {
           if ($ask | not) and (.bucket == "STALLED" or held)
           then "nudge \(.bucket): \(.target)\(ptag) \(.fact // "")" else empty end
         elif .bucket == "NEEDS" and (.escalated | not) then
-          "escalate \(.bucket): \(.target)\(ptag) \(why_held); then: fleet-sessions escalate \(.session_id) \"\(.fact)\""
+          "escalate \(.bucket): \(.target)\(ptag) \(.reason // ""); then: fleet-sessions escalate \(.session_id) \"\(.fact)\""
         else empty end )
   ' "$STATE_FILE")" || die "unreadable state document $STATE_FILE"
   # A hold the machine no longer needs is a GO decision, and a machine over budget with no
@@ -741,37 +734,6 @@ budget_mark() {
 }
 budget_page() { agent-notify -p high -t "$1" -r "file:$LEDGER/log.md" "$2" >/dev/null 2>&1 || true; }
 
-# remind_sample: a DONE, LANDED or CHAT row the shepherd nudged and escalated (a pass, an overdue line; cmd_due
-# escalates only NEEDS, and a STALLED row is taken over, takeover_sample, never re-paged), idle and
-# unchanged FLEET_SHEPHERD_REMIND_H since that escalation, pages the human again with the one
-# decision that closes it. Once per fact per day: $REMINDED keeps only today's lines. NEEDS is left
-# out: its ask already waits in the human's NEEDS YOU list.
-remind_sample() {
-  local today now min sid target bucket fact reason pr at when decision
-  today="$(date +%F)" now="$(date +%s)" min=$((FLEET_SHEPHERD_REMIND_H * 60))
-  touch "$REMINDED" 2>/dev/null || return 0
-  awk -F'\t' -v d="$today" '$1 == d' "$REMINDED" > "$REMINDED.tmp" && mv "$REMINDED.tmp" "$REMINDED"
-  while IFS=$'\t' read -r sid target bucket fact reason pr; do
-    case "$sid" in ''|*/*|.|..) continue ;; esac
-    awk -F'\t' -v s="$sid" -v f="$fact" '$2 == s && $3 == f { found = 1 } END { exit !found }' "$REMINDED" && continue
-    at="$(sed -n '/^at: /{s///p;q;}' "$LEDGER/$sid" 2>/dev/null)"
-    when="$(date -d "$at" +%s 2>/dev/null)" || continue
-    [ $((now - when)) -ge $((min * 60)) ] || continue
-    decision="$(remind_decision "$bucket" "$reason" "$pr")"
-    # A page agent-notify refused is not recorded, so the next check tries it again. An undelivered
-    # one it queues (ntfy down) exits 0 and is flushed by Sentinel. Normal, silent: a finished
-    # session waiting on its close costs nothing within the hour (priority.md, "sessions and shepherd").
-    agent-notify -p normal -k decision -t "$target: one decision closes it" -r "tmux:$target" \
-      "$target has sat $(( (now - when) / 3600 ))h since the shepherd told you: $reason. To close it: $decision." >/dev/null 2>&1 || continue
-    printf '%s\t%s\t%s\n' "$today" "$sid" "$fact" >> "$REMINDED"
-    cmd_log "remind: $target ($reason): $decision" >/dev/null
-  done < <(jq -r --argjson min "$min" "$HELD_JQ"'(.sessions // [])[]
-    | select(.nudged and .escalated and (.bucket | IN("DONE","LANDED","CHAT"))
-        and ((.labels // []) | index("manual") | not) and (.idle_min // 0) >= $min)
-    | [.session_id, .target, (if held then "HELD" else .bucket end), .fact, why_held, (.pr // "-")]
-    | map(tostring | if . == "" then "-" else gsub("[\t\n]"; " ") end) | @tsv' "$STATE_FILE" 2>/dev/null)
-}
-
 # takeover_sample: the takeover step (ar-3741). A STALLED row (TAKEOVER_JQ) whose nudge is FLEET_SHEPHERD_TAKEOVER_MIN
 # old and which has been quiet that long has its window closed through wind-down.sh close, the one closer
 # close_sample's WINDOW path uses, once its work is safe: a clean tree, commits on a remote, a branch off
@@ -874,7 +836,7 @@ close_items_sample() {
 # no turn running in its footer, by wind-down.sh close (scrollback, window, a reap that refuses a dirty
 # tree), its own open asks set to reopen it first (logged once in .reopen-failed when one cannot be).
 # A failed close is logged once in .close-failed and left to the escalation. A worker's pane goes over
-# ssh (pane_run). Having acted, it refreshes the document so cmd_due and remind_sample read it.
+# ssh (pane_run). Having acted, it refreshes the document so cmd_due reads it.
 close_sample() {
   local sid target pane close fact asks nasks host server cmd when now rc wdc how st mode att wa fg screen
   local acted="" failed="$LEDGER/.close-failed"
@@ -1032,29 +994,6 @@ idle_prompt() {
       for (i = r2 + 1; i < r1; i++) { s = l[i]; gsub(/❯/, "", s); gsub(nb, " ", s); out = out s }
       exit (out ~ /[^ \t]/)
     }' <<<"$1"
-}
-
-# remind_decision <bucket> <reason> <pr> -> the one decision, in plain words. remind_sample passes
-# HELD for a DONE or LANDED row the close flow keeps (`close.left` as the reason), so the bucket
-# arms never tell the human to close a window that still has work left; the reason arms decide.
-remind_decision() {
-  local pr="#$3"
-  case "$1:$2" in
-    *"is still open with every phase done or queued") echo "close its queue item (agent-land its last PR without --partial, or agent-queue move <slug> done)" ;;
-    *"is running here") echo "have it carry its queue item on to a PR, or move the item done or waiting" ;;
-    DONE:*) echo "nothing is left; close its window" ;;
-    LANDED:*) echo "close its window; fleet-dispatch files its open phases" ;;
-    CHAT:*) echo "close the chat, or label it chat or manual (kept until quiet 24h) to keep it" ;;
-    *"green, not merged"*) echo "merge PR $pr or close it" ;;
-    *"nightly red"*) echo "say who fixes the nightly red, or that it is not this PR's" ;;
-    *"CI red"*) echo "have PR $pr fixed, or close it" ;;
-    *"closed without merging"*) echo "reopen PR $pr or discard the branch" ;;
-    *"commits after merged"*) echo "open a PR for the commits after PR $pr, or drop them" ;;
-    *"dirty file"*) echo "land the dirty files or discard them" ;;
-    *"not on the default branch"*) echo "open a PR for the branch or drop it" ;;
-    *"PR #"*" open"*) echo "land ${2%% open*} or close it" ;;
-    *) echo "act on: $2" ;;
-  esac
 }
 
 # shared_items -> {fact: owner} from $SHARED_ITEMS, as JSON for cmd_due.
@@ -1245,11 +1184,9 @@ cmd_check() {
   # So is filing a shared red's owner: one writer of $SHARED_ITEMS.
   cmd_holds 2>/dev/null && shared_sample
   # And so is closing a session (typing its close, or closing its window once it stayed quiet after
-  # one): one writer of its claim, and before the reminder, so a closed window is not paged.
+  # one): one writer of its claim.
   cmd_holds 2>/dev/null && close_sample
   cmd_holds 2>/dev/null && takeover_sample
-  # And so is a reminder: one writer of $REMINDED.
-  cmd_holds 2>/dev/null && remind_sample
   local due due_rc=0
   due="$(cmd_due)" || due_rc=$?
   [ "$due_rc" = 0 ] || [ "$due_rc" = 1 ] || return "$due_rc"
@@ -1927,7 +1864,7 @@ hand_due() {
 
 # run_locked <run|check>: cmd_run or cmd_check_routed, one at a time. Two runs (the timer and a hand
 # run) would each read the same .pass and start a pass, and a check beside a run (a fleet-lead
-# pass's check while the runner samples) rewrites the samples' ledgers (.budget, .remind,
+# pass's check while the runner samples) rewrites the samples' ledgers (.budget,
 # $SHARED_ITEMS, the close claims) under it and can park or page twice. flock -o holds the lock in
 # flock itself, so nothing the run starts (a tmux server, a page sent in the background) inherits
 # it and holds it past the run. A run that loses starts nothing; a check waits CHECK_WAIT for it,
