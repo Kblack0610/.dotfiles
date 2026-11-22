@@ -156,14 +156,18 @@ net_retry() {
 # newer_runs <checks json>: how many runs on HEAD of a check's workflow have not completed, the newer
 # run it gave way to; on a failed read, the read's output and status 1. A cancelled check's
 # replacement can start before the cancel lands, so any open run of its workflow counts. A failed
-# check counts only a run of its own event created or (re-)started after it completed, never the open
-# run it failed in; a queued run's startedAt can be empty or zero, so createdAt counts too.
+# check counts only a run of its own event created or (re-)started after it completed, or with a higher
+# run id than the run its link names, never the open run it failed in; a queued run's startedAt can be
+# empty or zero, so createdAt counts too. The id: a body edit's re-run can open before the run it
+# cancels fails its aggregate check, so it predates that red (train #3108, 2026-11-21, ar-2940).
 newer_runs() {
   local runs
-  runs=$(gh run list "${R[@]}" --commit "$(git rev-parse HEAD)" --json status,workflowName,event,createdAt,startedAt 2>&1) || { printf '%s' "$runs"; return 1; }
-  jq -r --argjson c "$1" '[.[] | select(.status != "completed") | . as $r
+  runs=$(gh run list "${R[@]}" --commit "$(git rev-parse HEAD)" --json databaseId,status,workflowName,event,createdAt,startedAt 2>&1) || { printf '%s' "$runs"; return 1; }
+  jq -r --argjson c "$1" 'def run_id: ((.link // "") | capture("/actions/runs/(?<id>[0-9]+)") | .id | tonumber) // 0;
+    [.[] | select(.status != "completed") | . as $r
     | select($c | any(.workflow == $r.workflowName and (.bucket != "fail" or
-        (((.event // "") == "" or .event == $r.event) and ([$r.createdAt, $r.startedAt] | map(. // "") | max) > (.completedAt // "~")))))] | length' <<<"$runs"
+        (((.event // "") == "" or .event == $r.event) and (([$r.createdAt, $r.startedAt] | map(. // "") | max) > (.completedAt // "~")
+          or (run_id > 0 and ($r.databaseId // 0) > run_id))))))] | length' <<<"$runs"
 }
 # gh_read <var> <gh args...>: gh's stdout in <var> and its stderr in gh_err, so a warning gh prints
 # beside an answer is never part of it; returns gh's status.
@@ -237,7 +241,7 @@ wait_checks() {
       # red (unity-core-playground#2492 lost the landing slot that way, 2026-11-21). Wait on the
       # newer run; a failed or unreadable look leaves the red as the verdict.
       # gh exits non-zero while a check fails, so a read that printed JSON still has its answer.
-      gh_read stale pr checks "$pr" "${R[@]}" --json name,bucket,workflow,event,completedAt -q 'map(select(.bucket == "fail"))' || true
+      gh_read stale pr checks "$pr" "${R[@]}" --json name,bucket,workflow,event,completedAt,link -q 'map(select(.bucket == "fail"))' || true
       if [ -n "$stale" ] && [ "$stale" != '[]' ]; then
         queued=$(newer_runs "$stale") || {
           net_error "$queued" || fail checks "$failed (reading the runs on the head: $(lastline "$queued"))"
