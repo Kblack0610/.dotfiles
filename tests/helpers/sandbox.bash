@@ -117,6 +117,11 @@ sandbox_tool_files() {
   # agentctl reads the lanes a conf's LANE= may name from lanes.tsv (private, so absent in CI).
   export AGENTCTL_LANES_FILE="$SANDBOX/lanes.tsv"
   cp "$TESTS_DIR/fixtures/lanes.tsv" "$AGENTCTL_LANES_FILE"
+  # hub-figure (a repo bin on PATH) keeps its cache in XDG_RUNTIME_DIR, which is the host's,
+  # and asks the host's `hub` when it is stale: a test with no hub-figure stub read the workstation's
+  # live figure (agent_ask.bats count --all printed 31, not ?). Point both inside the sandbox; a
+  # hub-figure test sets its own after sandbox_init, and a `hub` stub in $SANDBOX/bin is the one it asks.
+  export HUB_FIGURE_CACHE="$SANDBOX/tmp/hub-figure.json" HUB_FIGURE_HUB="$SANDBOX/bin/hub"
 }
 
 sandbox_init() {
@@ -152,11 +157,6 @@ EOF
   # session exports it pointing at the real ~/.local/state.
   export XDG_STATE_HOME="$HOME/.local/state"
   mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$HOME/.agent/asks"
-  # hub-figure (a repo bin on PATH, below) keeps its cache in XDG_RUNTIME_DIR, which is the host's,
-  # and asks the host's `hub` when it is stale: a test with no hub-figure stub read the workstation's
-  # live figure (agent_ask.bats count --all printed 31, not ?). Point both inside the sandbox; a
-  # hub-figure test sets its own after sandbox_init, and a `hub` stub in $SANDBOX/bin is the one it asks.
-  export HUB_FIGURE_CACHE="$SANDBOX/tmp/hub-figure.json" HUB_FIGURE_HUB="$SANDBOX/bin/hub"
 
   # Resolve the real binaries BEFORE the stub dir goes on PATH. The UI tier must drive a
   # genuine tmux server; `command tmux` is not enough, since `command` bypasses functions
