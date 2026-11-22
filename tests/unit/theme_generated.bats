@@ -338,7 +338,7 @@ nvim_written_keys() {
   sed -n '/^apply_nvim()/,/^}/p' "$THEME_SWITCH" | grep -oE '^ +[a-z_]+ = "\$\{THEME_' | awk '{ print $1 }' | sort -u
 }
 nvim_read_keys() {
-  grep -ohE 'require\("kennethblack\.theme"\)\.[a-z_]+' "$REPO_ROOT"/.config/nvim/lua/kennethblack/init.lua \
+  grep -ohE 'require\("kennethblack\.palette"\)\.[a-z_]+' "$REPO_ROOT"/.config/nvim/lua/kennethblack/init.lua \
     "$REPO_ROOT"/.config/nvim/lua/kennethblack/plugins/*.lua | sed 's/.*)\.//' | sort -u
 }
 

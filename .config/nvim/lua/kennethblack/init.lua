@@ -34,6 +34,7 @@ require("lazy").setup("kennethblack.plugins", {
   },
 })
 
--- colorscheme: kennethblack/theme.lua is theme-switch's render (gitignored), never edited here
-vim.cmd.colorscheme(require("kennethblack.theme").colorscheme)
+-- colorscheme: from theme-switch's render (kennethblack/palette.lua), never edited here
+local colorscheme = require("kennethblack.palette").colorscheme
+if colorscheme then vim.cmd.colorscheme(colorscheme) end
 

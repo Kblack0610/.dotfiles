@@ -12,7 +12,8 @@ return {
     local git_icons = icons.git
     local diagnostics = icons.diagnostics
     -- Set modified highlight color
-    vim.api.nvim_set_hl(0, "NeoTreeModified", { fg = require("kennethblack.theme").neotree_modified })
+    local modified = require("kennethblack.palette").neotree_modified
+    if modified then vim.api.nvim_set_hl(0, "NeoTreeModified", { fg = modified }) end
     -- get autocommand to open neotree on load working
     return {
       source_selector = {

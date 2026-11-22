@@ -3,7 +3,7 @@
 # theme-switch — Unified theme switcher for dotfiles
 #
 # Applies a named color theme across all configured tools at once:
-#   kitty, termux, nvim, lualine, neo-tree, starship, lazygit, waybar, dunst, swaync, noctalia, hyprland, wallpaper
+#   kitty, termux, nvim (lualine and neo-tree too), starship, lazygit, waybar, dunst, swaync, noctalia, hyprland, wallpaper
 #
 # Usage:
 #   theme-switch <theme-name>                  Apply theme to all tools
@@ -16,7 +16,8 @@
 #   theme-switch --help                        Show this help
 #
 # Palette files live in palettes/<name>.sh — shell-sourceable color variables.
-# Templates (full-file replacements) live in templates/<tool>/<name>.<ext>.
+# Templates live in templates/<tool>/: per theme (kitty/<name>.conf, waybar/<name>.css), or one
+# hand-authored config the palette is patched into (starship/starship.toml, lazygit/config.yml).
 #
 # State is tracked in ~/.config/theme/current (single-line file).
 #
@@ -346,7 +347,7 @@ apply_starship() {
     sedi "/^\[cmd_duration\]$/,/^\[/ s/^style = \"#[0-9a-fA-F]\{6\}\"/style = \"${THEME_DURATION}\"/" "$file"
 
     info "starship: rendered 7 color values (next prompt redraws automatically)"
-    command -v starship &>/dev/null && link_generated .config/starship.toml .config
+    if command -v starship &>/dev/null; then link_generated .config/starship.toml .config; fi
 }
 
 apply_lazygit() {
@@ -384,8 +385,7 @@ apply_lazygit() {
     sedi "/defaultFgColor:/{n;s/\"#[0-9a-fA-F]\{6\}\"/\"${THEME_LG_DEFAULT_FG}\"/;}" "$file"
 
     info "lazygit: rendered 11 color values"
-    command -v lazygit &>/dev/null && mkdir -p "$HOME/.config/jesseduffield/lazygit" \
-        && link_generated .config/jesseduffield/lazygit/config.yml
+    if command -v lazygit &>/dev/null; then link_generated .config/jesseduffield/lazygit/config.yml .config; fi
     warn "lazygit: restart lazygit to see changes"
 }
 

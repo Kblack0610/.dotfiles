@@ -204,7 +204,7 @@ for rel in nvim/lua/kennethblack/theme.lua starship.toml jesseduffield/lazygit/c
     [[ -f "$XCONFIG/$rel" ]] && continue
     (( DRY )) && { dim "would render $rel with theme-switch"; break; }
     theme="$(cat "$HOME/.config/theme/current" 2>/dev/null || echo batman)"
-    "$DOTFILES/.local/src/theme/theme-switch" "$theme" --only nvim,starship,lazygit >/dev/null \
+    DOTFILES_ROOT="$DOTFILES" "$DOTFILES/.local/src/theme/theme-switch" "$theme" --only nvim,starship,lazygit >/dev/null \
         || warn "theme-switch could not render $rel"
     break
 done
