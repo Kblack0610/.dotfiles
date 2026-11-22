@@ -918,8 +918,9 @@ pub(crate) fn open_window(dir: &Path, cur: V) -> Option<(Vec<Task>, Vec<String>)
     Some((tasks, rest))
 }
 
-/// The ids of the version's unstarted agent-lane rows (`- [ ]`, not in the Backlog tier) that
-/// `tasks`, its window, does not hold: rows left out at the lock because they waited or did not
+/// The ids of the version's unstarted agent-lane rows (`- [ ]`, ones the window counts,
+/// [`Index::counts`], so not an epic, and not in the Backlog tier) that `tasks`, its window, does
+/// not hold: rows left out at the lock because they waited or did not
 /// fit, which dispatch ranks as the sprint's, after its committed rows. A row that unblocks
 /// mid-sprint moves at once, with no relock; the score never counts it.
 fn uncommitted(tasks: &[Task], rows: &Rows) -> Vec<String> {

@@ -629,7 +629,7 @@ load_extras() {
 # 1 for a row its window holds (`tasks`, the snapshot and its interrupts), 2 for one of the open version's
 # unstarted agent rows it does not (`uncommitted`, notes-cli window::open_window), so a row that unblocks
 # mid-sprint ranks as sprint at once, after the committed ones (row_uncommitted), with no relock. While only
-# the snapshot counted, 25 open v0.5.5 rows waited on a human relock (2026-11-21, ar-4331).
+# the snapshot counted, 20 open v0.5.5 rows waited on a human relock (2026-11-21, ar-4331).
 # SPRINT_PROJECT[<project>]: a project one of whose open sprint's rows nobody has started yet (`open` or
 # `uncommitted`, not `doing`), the projects the sprint floor's board scan reads (sprint_top_up).
 declare -gA SPRINT_ROW=() SPRINT_PROJECT=()

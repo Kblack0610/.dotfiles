@@ -16,7 +16,7 @@ A project's sprint is its open version's release window: the rows it commits to,
 ## Scope and triggers
 
 - When the human asks whether a project has a sprint, or to set one up, shorten one or lock one for a number of hours.
-- When a row the lock left out (it waited, or did not fit) should move: it already does, step 4.
+- When the human asks why a row the lock left out (it waited, or did not fit) has not started: it ranks as the sprint's already, so look at its gate (step 4).
 - When a new ask arrives mid-sprint and has to go in now, or wait for the next version.
 - When a sprint's cut time has passed and the human asks why nothing moved.
 - When the human wants a window that stays open and follows the sprint to its cut: that is `/coordinate sprint <project>` (`coordinate`, step 2).
