@@ -3333,6 +3333,7 @@ dispatch_tag() {
 #                           It reopens in the mode its transcript last shows; with none, plan for
 #                           a plan item, else bypass. --prompt TEXT is its first message (claude
 #                           only): how agent-ask reopen hands an ended session the answer to its ask.
+#                           It leaves the pane it opened in START_PANE, which its caller clears (restore_world tags it).
 cmd_start() {
   local base='' START_NOW='' project='' prof='' lane=human agent_work=1 key='' server='' model='' brief_file='' trn='' drc='' \
     resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' prompt='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' hwhy='' rh='' qmode='' eff='' hold='' brief cmd label origin acct mode rec size
@@ -3472,10 +3473,10 @@ cmd_start() {
       cmd="${item:+AGENT_QUEUE_ITEM=$(printf '%q' "$item") }$(telemetry_env "$cwd" "$item")$(token_env)$(account_env)${sbx_env}claude${model:+ --model $(printf '%q' "$model")}$eff${item:+$(dropped_tools "$it")}$sbx_flags $flags --resume $(printf '%q' "$resume")${prompt:+ $(printf '%q' "$prompt")}"
     fi
     if [ -n "$joined" ]; then
-      target=$(tmux -L "$server" new-window -d -P -F '#{pane_id}' -t "=$session:" -n "$window" -c "$cwd" "$cmd") ||
+      target=$(tmux -L "$server" new-window -d -P -F '#{pane_id}' -t "=$session:" -n "$window" -c "$cwd" "$cmd") && START_PANE=$target ||
         { say "could not open window $window in $session on $server"; return 1; }
     else
-      tmux -L "$server" new-session -d -s "$session" ${window:+-n "$window"} -c "$cwd" "$cmd" ||
+      START_PANE=$(tmux -L "$server" new-session -d -P -F '#{pane_id}' -s "$session" ${window:+-n "$window"} -c "$cwd" "$cmd") ||
         { say "could not create session $session on $server"; return 1; }
     fi
     # A window joined into a live session is one Claude among others there, so the item does not
@@ -3703,11 +3704,13 @@ wound_down() { compgen -G "$HOME/.agent/spin-down/$1.[rf]*" >/dev/null || compge
 # is paced (wake_take): one past the batch is left for a later pass, listed in RESTORE_OWED
 # (restore_pace reads it). Consumed only when every reopen worked and none is owed, so a rerun
 # finishes, and only as read at the start, under record's lock: a death world_lost adds to it
-# meanwhile stays owed.
+# meanwhile stays owed. Each reopened pane is tagged @fleet_restored with the record's time, when its
+# server was last seen alive, so fleet-sessions runs its close timer on from the quiet it had then.
 restore_world() {
-  local f=$1 dry=$2 srv sess win cwd id mode project item it prompt said failed=0 opened=0 owed=0 walked
+  local f=$1 dry=$2 srv sess win cwd id mode project item it prompt said failed=0 opened=0 owed=0 walked alive
   walked=$(sha256sum < "$f")
   srv=$(jq -r .server "$f")
+  alive=$(date -d "$(jq -r '.at // empty' "$f")" +%s 2>/dev/null) || alive=
   [ "$dry" = 1 ] || tmx ensure "$srv" >/dev/null || say "restore: tmx ensure $srv failed"
   while IFS=$'\037' read -r sess win cwd id; do
     if [ -z "$id" ]; then echo "$srv:$sess:$win: no conversation, not reopened ($cwd)"; continue; fi
@@ -3717,7 +3720,7 @@ restore_world() {
     item=$(agent-queue mine --sid "$id" --newest 2>/dev/null) || item=''
     it=''; [ -z "$item" ] || it=$(agent-queue show "$item" --json 2>/dev/null) || it=''
     mode=$(resume_mode "$id" "$(jq -r '.mode // empty' <<<"$it" 2>/dev/null)")
-    prompt=''; said=''
+    prompt='' said='' START_PANE=''
     if [ "$(jq -r '[.state, .agent // "claude"] | join(" ")' <<<"$it" 2>/dev/null)" = 'running claude' ]; then
       prompt=${RESTORE_PROMPT//\%s/$item}; said=', prompted to carry on'
     fi
@@ -3732,6 +3735,14 @@ restore_world() {
     if cmd_start --project "${project:-${cwd##*/}}" --server "$srv" --session "$sess" --window "$win" \
         --cwd "$cwd" --resume "$id" ${item:+--item "$item"} ${prompt:+--prompt "$prompt"} </dev/null >/dev/null; then
       echo "$srv:$sess:$win: reopened in $mode${item:+ for queue item $item}$said"; opened=$((opened + 1))
+      # Its claude is new but its conversation is not: fleet-sessions adds the quiet it had when the
+      # server was last seen to its age, so a window closed-now before the reboot closes now again, not
+      # an hour after its reopen, and the outage itself is not quiet (ar-4141). The option dies with the pane.
+      if [ -z "$START_PANE" ] || [ -z "$alive" ]; then
+        say "restore: $srv:$sess:$win has no pane or record time to tag @fleet_restored; it closes an hour after its reopen"
+      elif ! tmux -L "$srv" set-option -pq -t "$START_PANE" @fleet_restored "$alive"; then
+        say "restore: could not tag $srv:$sess:$win @fleet_restored; it closes an hour after its reopen"
+      fi
     else
       failed=$((failed + 1))
     fi
