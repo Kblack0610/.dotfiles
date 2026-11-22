@@ -11,9 +11,14 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
 # The hook payload, read only when piped, so a manual TTY run does not block on a read.
 PAYLOAD=""
 [ -t 0 ] || PAYLOAD=$(cat 2>/dev/null || true)
-HOOK_EVENT=""
-[ -z "$PAYLOAD" ] || ! command -v jq >/dev/null 2>&1 ||
-  HOOK_EVENT=$(jq -r '.hook_event_name // empty' <<<"$PAYLOAD" 2>/dev/null || true)
+# One jq call: a later prompt, which adds nothing, pays only this and the .done check. With no jq
+# a prompt's payload cannot be read, and falling through would re-send the whole turn 1.
+HOOK_EVENT="" EVENT_SID=""
+if [ -n "$PAYLOAD" ] && command -v jq >/dev/null 2>&1; then
+  read -r HOOK_EVENT EVENT_SID < <(jq -r '"\(.hook_event_name // "-") \(.session_id // "")"' <<<"$PAYLOAD" 2>/dev/null) || true
+elif [[ "$PAYLOAD" == *UserPromptSubmit* ]]; then
+  exit 0
+fi
 
 # Lessons for the first prompt. SessionStart sees only the cwd, branch and queue title, so a hand
 # session on main got lessons matched to none of its work; the first prompt says what the work is.
@@ -25,9 +30,8 @@ HOOK_EVENT=""
 SHOWN_DIR="${XDG_RUNTIME_DIR:+$XDG_RUNTIME_DIR/lessons-shown}"
 valid_sid() { [ -n "$1" ] && [ "${1//[^A-Za-z0-9_-]/}" = "$1" ]; }
 first_prompt_lessons() {
-  local sid prompt project file pick
+  local sid="$EVENT_SID" prompt project file pick
   [ -n "$SHOWN_DIR" ] || return 0
-  sid=$(jq -r '.session_id // ""' <<<"$PAYLOAD" 2>/dev/null) || return 0
   valid_sid "$sid" && [ ! -e "$SHOWN_DIR/$sid.done" ] || return 0
   # The ranker reads the first 12 distinct words, so 2000 chars is plenty and keeps a pasted log
   # under the argument size limit. A prompt under three words ("continue", "hi") says nothing
