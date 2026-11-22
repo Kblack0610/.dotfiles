@@ -3598,6 +3598,65 @@ empty_submodule_fixture() {
   [ ! -e "$FLEET_SHEPHERD_DIR/labels/sid-9" ]
 }
 
+@test "label self in tmux is the live row in this pane, not CLAUDE_CODE_SESSION_ID (ar-4148)" {
+  bats_require_minimum_version 1.5.0
+  landed_fixture
+  # the env id differs from the row's transcript id, as on hub/dotfiles:3 (2026-11-20)
+  TMUX="$SANDBOX/tmux/lab,1,0" TMUX_PANE=%7 CLAUDE_CODE_SESSION_ID=sid-env \
+    run "$REPO_ROOT/.local/bin/fleet-sessions" label self +manual
+  assert_success
+  assert_output manual
+  [ -f "$FLEET_SHEPHERD_DIR/labels/sid-9" ]
+  [ ! -e "$FLEET_SHEPHERD_DIR/labels/sid-env" ]
+  # a pane with no live row is refused, not filed under the env id
+  TMUX="$SANDBOX/tmux/lab,1,0" TMUX_PANE=%99 CLAUDE_CODE_SESSION_ID=sid-env \
+    run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions" label self +chat
+  assert_failure 2
+  [[ "$stderr" == *"no live session matches 'lab/%99'"* ]]
+  [ ! -e "$FLEET_SHEPHERD_DIR/labels/sid-env" ]
+  # the same pane id on another server is not this session
+  TMUX="$SANDBOX/tmux/hub,1,0" TMUX_PANE=%7 run "$REPO_ROOT/.local/bin/fleet-sessions" label self +chat
+  assert_failure 2
+  # a pane no row holds (a popup) falls back to the env id only when a live row carries it
+  TMUX="$SANDBOX/tmux/lab,1,0" TMUX_PANE=%99 CLAUDE_CODE_SESSION_ID=sid-9 \
+    run "$REPO_ROOT/.local/bin/fleet-sessions" label self +chat
+  assert_output manual,chat
+  "$REPO_ROOT/.local/bin/fleet-sessions" label s1 -chat >/dev/null
+  # NEGATIVE CONTROL: outside tmux the env id is the only identity
+  CLAUDE_CODE_SESSION_ID=sid-env run "$REPO_ROOT/.local/bin/fleet-sessions" label self +chat
+  assert_output chat
+  [ -f "$FLEET_SHEPHERD_DIR/labels/sid-env" ]
+}
+
+@test "tick prunes a label file unseen FLEET_LABEL_GRACE_H, and a row it reads keeps its file fresh (ar-4148)" {
+  landed_fixture
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  "$REPO_ROOT/.local/bin/fleet-sessions" label s1 +manual >/dev/null
+  mkdir -p "$FLEET_SHEPHERD_DIR/labels"
+  echo manual > "$FLEET_SHEPHERD_DIR/labels/sid-gone"
+  echo manual > "$FLEET_SHEPHERD_DIR/labels/sid-recent"
+  touch -d '-2 days' "$FLEET_SHEPHERD_DIR/labels/sid-gone" "$FLEET_SHEPHERD_DIR/labels/sid-9"
+  touch -d '-1 hour' "$FLEET_SHEPHERD_DIR/labels/sid-recent"
+  # a failed agent-panel read keeps the last rows, so sid-9 is seen; sid-gone is past the grace
+  cp "$SANDBOX/bin/agent-panel" "$SANDBOX/panel.ok"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/agent-panel"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ "$(cat "$FLEET_SHEPHERD_DIR/labels/sid-9")" = manual ]
+  [ ! -e "$FLEET_SHEPHERD_DIR/labels/sid-gone" ]
+  [ -f "$FLEET_SHEPHERD_DIR/labels/sid-recent" ]
+  # the tick touched sid-9, so an empty read that succeeds (a reboot before the restore) keeps it
+  [ "$(stat -c %Y "$FLEET_SHEPHERD_DIR/labels/sid-9")" -gt $(( $(date +%s) - 600 )) ]
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/agent-panel"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ "$(cat "$FLEET_SHEPHERD_DIR/labels/sid-9")" = manual ]
+  # NEGATIVE CONTROL: a zero grace prunes every file whose session has no row
+  FLEET_LABEL_GRACE_H=0 run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ ! -e "$FLEET_SHEPHERD_DIR/labels/sid-recent" ]
+}
+
 @test "label refuses an unknown session and a malformed op" {
   landed_fixture
   run "$REPO_ROOT/.local/bin/fleet-sessions" label nope +x
