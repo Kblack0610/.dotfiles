@@ -21,8 +21,11 @@ if hard:
     print("  line 1: DASH: em dash")
 sys.exit(1 if hard or "robust" in t else 0)
 EOF
-  # The queue's reader prints nothing here, so no live queue reaches a report.
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/agent-queue"; chmod +x "$SANDBOX/bin/agent-queue"
+  # The row streams' readers print nothing here, so no live queue, board or UI text reaches a report
+  # (`notes` and `gh` are the shared stubs; the real `hub` and `agent-queue` are on the host PATH).
+  for reader in agent-queue hub; do
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/$reader"; chmod +x "$SANDBOX/bin/$reader"
+  done
 }
 
 @test "a plain page passes" {
