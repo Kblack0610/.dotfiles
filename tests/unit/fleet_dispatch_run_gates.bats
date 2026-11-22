@@ -1,135 +1,9 @@
 #!/usr/bin/env bats
-# fleet-dispatch, a `run` pass against its gates and pacing: the project floor, presence, committed rows, the gate read before each start, the canary floor and top-up.
+# fleet-dispatch, a `run` pass against its gates and pacing: presence, committed rows, the gate read before each start, canaries in queue order and the canary top-up.
 # One of the tests/unit/fleet_dispatch*.bats files, split so CI shards can spread them;
 # the fixtures and setup they share are in fleet_dispatch/common.bash.
 
 load 'fleet_dispatch/common'
-
-@test "project floor: a fleet past its pace target still starts an idle project's item; a busy project's waits" {
-  # The pass returned NOOP before the project floor (full_fleet_machine).
-  full_fleet_machine
-  agent-queue add --project game --slug busy "game work" >/dev/null
-  agent-queue move busy running >/dev/null
-  agent-queue add --project game --slug g2 "more game work" >/dev/null
-  agent-queue add --project app --slug a1 "app work" >/dev/null
-  agent-queue add --project app --slug a2 "more app work" >/dev/null
-  # Negative control first: no project floor, the full fleet starts nothing.
-  export DISPATCH_PROJECT_FLOOR=0
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
-  assert_not_called 'wt new'
-  export DISPATCH_PROJECT_FLOOR=1
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'pace target: 8 live sessions, the away pace target is 6; a project nothing is working on starts on the project floor (DISPATCH_PROJECT_FLOOR=1)'
-  assert_output --partial 'started queue item a1 on the project floor (DISPATCH_PROJECT_FLOOR=1)'
-  refute_output --partial 'started queue item g2'
-  refute_output --partial 'started queue item a2'
-  assert_equal "$(outcome)" WORKED
-}
-
-@test "project floor: agent-hold and an account in its reserve still hold an idle project's item" {
-  full_fleet_machine
-  export DISPATCH_PROJECT_FLOOR=1
-  agent-queue add --project app --slug a1 "app work" >/dev/null
-  stub agent-hold '[ "$2" = dispatch ] && exit 1; exit 0'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_not_called 'wt new'
-  assert_equal "$(outcome)" NOOP
-  stub agent-hold 'exit 0'
-  acct main:reserve
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_not_called 'wt new'
-  assert_equal "$(outcome)" NOOP
-}
-
-@test "project floor: a finding that holds the idle project's item settles NOOP, not BLOCKED" {
-  full_fleet_machine
-  export DISPATCH_PROJECT_FLOOR=1
-  agent-queue add --project app --slug a1 "app work" >/dev/null
-  findings "$(finding starved pool:unity '["app"]')"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_not_called 'wt new'
-  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
-  refute_output --partial 'under-used'
-  assert_equal "$(outcome)" NOOP
-}
-
-@test "project floor: an item parked on its PR keeps its project busy, as a running one does" {
-  full_fleet_machine
-  export DISPATCH_PROJECT_FLOOR=1
-  agent-queue add --project game --slug parked "game work" >/dev/null
-  agent-queue move parked review >/dev/null
-  agent-queue add --project game --slug g2 "more game work" >/dev/null
-  agent-queue add --project app --slug a1 "app work" >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'started queue item a1 on the project floor'
-  refute_output --partial 'started queue item g2'
-}
-
-@test "project floor: one start a project even with room for more" {
-  full_fleet_machine
-  export DISPATCH_PROJECT_FLOOR=2
-  agent-queue add --project app --slug a1 "app work" >/dev/null
-  agent-queue add --project app --slug a2 "more app work" >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'started queue item a1 on the project floor'
-  refute_output --partial 'started queue item a2'
-}
-
-@test "project floor: an account past its pace, load and agent-hold still hold an idle project's item" {
-  full_fleet_machine
-  export DISPATCH_PROJECT_FLOOR=1
-  agent-queue add --project app --slug a1 "app work" >/dev/null
-  acct alt:pace:/home/u/.claude-personal
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_not_called 'wt new'
-  acct alt:ok:/home/u/.claude-personal
-  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'starting nothing'
-  assert_not_called 'wt new'
-  echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
-  stub agent-hold '[ "$2" = dispatch ] && exit 1; exit 0'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_not_called 'wt new'
-  # Negative control: the hold lifted, the same full fleet starts it on the floor.
-  stub agent-hold 'exit 0'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'started queue item a1 on the project floor'
-}
-
-# 2026-11-07: a floor pass whose 2 unity items a starved pool held said "every queue item waits",
-# and the gate the other 40 waited on was named nowhere.
-@test "project floor: a finding that holds every idle project's item says so, and names the gate the rest wait on" {
-  full_fleet_machine
-  export DISPATCH_PROJECT_FLOOR=1
-  agent-queue add --project game --slug busy "game work" >/dev/null
-  agent-queue move busy running >/dev/null
-  agent-queue add --project game --slug g2 "more game work" >/dev/null
-  agent-queue add --project app --slug a1 "app work" >/dev/null
-  findings "$(finding starved pool:unity '["app"]')"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_not_called 'wt new'
-  assert_output --partial 'finding firing: a1 (starved pool:unity), every item of an idle project waits; the rest wait on '
-  assert_output --partial 'the rest wait on pace target: 8 live sessions'
-  refute_output --partial 'every queue item waits'
-}
-
-@test "project floor: light items of idle projects, open only on a project pass under DISPATCH_PROJECT_FLOOR" {
-  local items
-  items=$(printf '%s\n' '{"slug":"g1","project":"game"}' '{"slug":"a1","project":"app"}' '{"slug":"a2","project":"app"}' '{"slug":"x1","project":"x"}')
-  items+=$'\n''{"slug":"h1","project":"y","weight":"heavy"}'
-  BUSY_PROJECTS=game run idle_project_items "$items"
-  assert_output "$(printf '%s\n' '{"slug":"a1","project":"app"}' '{"slug":"a2","project":"app"}' '{"slug":"x1","project":"x"}')"
-  export DISPATCH_PROJECT_FLOOR=1
-  PROJECT_PASS=1 run project_floor_open; assert_success
-  PROJECT_PASS=1 PROJECT_STARTED=1 run project_floor_open; assert_failure
-  PROJECT_PASS=0 run project_floor_open; assert_failure
-  DISPATCH_PROJECT_FLOOR=0 PROJECT_PASS=1 run project_floor_open; assert_failure
-}
 
 @test "room gone by the start: BLOCKED names the closest account and how far past its pace, from room's own line" {
   game_ready
@@ -442,121 +316,53 @@ load 'fleet_dispatch/common'
   [ -n "$(qitem queued fix-menu)" ] || fail "fix-menu left the queue"
 }
 
-@test "focus: the project floor starts a focus project's item first, and the other project only with a floor left" {
-  full_fleet_machine
-  export DISPATCH_PROJECT_FLOOR=1
-  agent-queue add --project app --slug a1 "app work" >/dev/null
-  agent-queue add --project game --slug g1 "game work" >/dev/null
-  focus_on game
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'started queue item g1 on the project floor'
-  refute_output --partial 'started queue item a1'
-}
-
-# 2026-11-17: the week-47 canary set sat at queue position 222 of 606 while every night pass ran over
-# the pace target, so no canary had started since 11-14 (ar-2774).
-@test "canary floor: a fleet past its pace target keeps DISPATCH_CANARY_FLOOR canaries running, one lane in turn; a plain item waits; 0 is off" {
+# Plan vast-soaring-prism P3: the canary floor that started canaries past a full pace target is gone;
+# a canary is a cleanup-class item (classes.json) and starts in queue order like any other.
+@test "canary: a fleet past its pace target starts no canary; with room it starts in queue order, on no floor" {
   project game beta "$SANDBOX/repos/game"
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PER_PASS=3
   fleet_state 8
-  agent-queue add --project game --slug p --priority high "plain p" >/dev/null
   agent-queue add --project game --slug ca1 --priority high --tags canary "check(canary): a 2026w47" >/dev/null
-  agent-queue add --project game --slug ca2 --priority high --tags canary "check(canary): b 2026w47" >/dev/null
-  agent-queue add --project game --slug cb1 --priority low --tags canary "check(canary): a 2026w47 claude/sonnet@medium" >/dev/null
-  agent-queue set cb1 model=sonnet effort=medium >/dev/null
-  # Negative control first: the floor off, the full fleet starts nothing.
-  DISPATCH_CANARY_FLOOR=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
-  assert_not_called 'wt new'
-  DISPATCH_CANARY_FLOOR=2 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_output --partial 'canary items start on the canary floor (DISPATCH_CANARY_FLOOR=2, 2 open)'
-  assert_output --partial 'started queue item ca1 on the canary floor (DISPATCH_CANARY_FLOOR=2)'
-  # The low sonnet lane takes the second slot ahead of the high lane's second task.
-  assert_output --partial 'started queue item cb1 on the canary floor (DISPATCH_CANARY_FLOOR=2)'
-  refute_output --partial 'started queue item ca2'
-  refute_output --partial 'started queue item p'
-  assert_equal "$(outcome)" WORKED
-}
-
-@test "canary floor: its live canaries fill it, and the gate still holds it" {
-  project game beta "$SANDBOX/repos/game"
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PER_PASS=3 DISPATCH_CANARY_FLOOR=1
-  fleet_state 8
-  started_item l1 "lab:game-agent-l1" run area-l1
-  sed -i "/^mode:/a tags: canary" "$AGENT_QUEUE_DIR"/running/*-l1.md
-  printf 'game-agent-l1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
-  agent-queue add --project game --slug c1 --tags canary "check(canary): c 2026w47" >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
   assert_not_called 'wt new'
-  # The live canary gone, its slot opens, but a machine over the load pace still holds the start.
-  : > "$NOTES_FIXTURE/tmux.sessions.lab"
-  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_not_called 'wt new'
-  # Negative control: under the load pace, c1 starts on the open slot.
-  echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'started queue item c1 on the canary floor (DISPATCH_CANARY_FLOOR=1)'
-}
-
-@test "canary floor: with room, a canary start takes one of it, so a plain item waits" {
-  project game beta "$SANDBOX/repos/game"
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PER_PASS=3 DISPATCH_CANARY_FLOOR=2
+  [ -n "$(qitem queued ca1)" ] || fail "ca1 left the queue past a full target"
+  # Positive control: with room, the same canary starts as a plain queue item.
   fleet_state 5
-  agent-queue add --project game --slug p --priority high "plain p" >/dev/null
-  agent-queue add --project game --slug ca1 --priority high --tags canary "check(canary): a 2026w47" >/dev/null
-  agent-queue add --project game --slug cb1 --priority low --tags canary "check(canary): a 2026w47 claude/sonnet@medium" >/dev/null
-  agent-queue set cb1 model=sonnet effort=medium >/dev/null
-  # One unit of room: the two canary starts use it, so the plain item waits for the next pass.
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_output --partial 'started queue item ca1 on the canary floor (DISPATCH_CANARY_FLOOR=2)'
-  assert_output --partial 'started queue item cb1 on the canary floor (DISPATCH_CANARY_FLOOR=2)'
-  refute_output --partial 'started queue item p'
-}
-
-@test "canary floor: DISPATCH_PER_PASS caps how many it starts in one pass" {
-  project game beta "$SANDBOX/repos/game"
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PER_PASS=1 DISPATCH_CANARY_FLOOR=2
-  fleet_state 8
-  agent-queue add --project game --slug ca1 --priority high --tags canary "check(canary): a 2026w47" >/dev/null
-  agent-queue add --project game --slug cb1 --priority low --tags canary "check(canary): a 2026w47 claude/sonnet@medium" >/dev/null
-  agent-queue set cb1 model=sonnet effort=medium >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'canary items start on the canary floor (DISPATCH_CANARY_FLOOR=2, 1 open)'
-  assert_output --partial 'started queue item ca1 on the canary floor'
-  refute_output --partial 'started queue item cb1'
+  assert_output --partial 'started queue item ca1'
+  refute_output --partial 'canary floor'
 }
 
 # 2026-11-18: the weekly retro filed 149 canaries at once, and the queue counts every one of them (ar-3029).
-@test "canary top-up: a pass queues the canaries the floor lacks as dispatch's pull; a met floor and a held dispatch ask for none" {
+@test "canary top-up: a pass queues the canaries DISPATCH_CANARY_KEEP lacks as dispatch's pull; a met keep, a held dispatch and a dry run ask for none" {
   project game beta "$SANDBOX/repos/game"
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PER_PASS=3 DISPATCH_CANARY_FLOOR=3
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PER_PASS=3 DISPATCH_CANARY_KEEP=3
   fleet_state 8
   stub fleet-bench "[ \"\$1\" = canary ] || exit 0; echo \"pull=\$AGENT_QUEUE_PULL \$*\" >> '$SANDBOX/bench.calls'; echo 'canary: 2 queued for 2026w47'"
   agent-queue add --project game --slug ca1 --priority high --tags canary "check(canary): a 2026w47" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_equal "$(cat "$SANDBOX/bench.calls")" 'pull=dispatch canary queue --max 2'
-  assert_output --partial 'canary top-up (floor 3, 1 queued, 2 wanted): canary: 2 queued for 2026w47'
-  # Negative controls: a floor met by queued items, a held dispatch and a dry run ask for nothing.
+  assert_output --partial 'canary top-up (keep 3, 1 queued, 2 wanted): canary: 2 queued for 2026w47'
+  # Negative controls: a keep met by queued items, a held dispatch and a dry run ask for nothing.
   rm "$SANDBOX/bench.calls"
   agent-queue add --project game --slug ca2 --priority high --tags canary "check(canary): b 2026w47" >/dev/null
   agent-queue add --project game --slug ca3 --priority high --tags canary "check(canary): c 2026w47" >/dev/null
-  agent-queue add --project game --slug ca4 --priority high --tags canary "check(canary): d 2026w47" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  [ ! -e "$SANDBOX/bench.calls" ] || fail "a met floor asked: $(cat "$SANDBOX/bench.calls")"
+  [ ! -e "$SANDBOX/bench.calls" ] || fail "a met keep asked: $(cat "$SANDBOX/bench.calls")"
+  agent-queue move ca3 done --status ok >/dev/null
   stub agent-hold '[ "$2" = dispatch ] && exit 1; exit 0'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   [ ! -e "$SANDBOX/bench.calls" ] || fail "a held dispatch asked: $(cat "$SANDBOX/bench.calls")"
   stub agent-hold 'exit 0'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
   [ ! -e "$SANDBOX/bench.calls" ] || fail "a dry run asked: $(cat "$SANDBOX/bench.calls")"
-  # Positive control: the same pass with dispatch free and no dry run asks again.
+  DISPATCH_CANARY_KEEP=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  [ ! -e "$SANDBOX/bench.calls" ] || fail "a keep of 0 asked: $(cat "$SANDBOX/bench.calls")"
+  # Positive control: the same pass with dispatch free and no dry run asks for the one missing.
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_equal "$(cat "$SANDBOX/bench.calls")" 'pull=dispatch canary queue --max 3'
+  assert_equal "$(cat "$SANDBOX/bench.calls")" 'pull=dispatch canary queue --max 1'
 }

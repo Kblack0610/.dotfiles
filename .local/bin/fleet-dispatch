@@ -95,26 +95,22 @@ dispatch_conf_load
 : "${DISPATCH_RED_FLOOR:=2}"   # red items that may start past the pace target, the weekly pace, load and the fleet-assess HOLD, apart from the run floor: a fix held behind a busy machine keeps the fleet red (human, 2026-11-06). Each tripped watch's red item (tag `watch`) adds one, so every tripped watch has a running owner the hour it trips (human, 2026-11-10, ar-1531); 0 is off for both
 : "${DISPATCH_FIX_TRIES:=2}"   # fix-ci sessions a parked review item with a red PR gets, and lander sessions one with a green PR gets, before it goes to the human sheet (own_parked_pr), and failed runs a board row gets before it is held and asked about (in_force, ask_failed_rows), as fleet-bench TRIAGE_FIX_TRIES bounds a red cause. Provisional: the plan's cap (2026-11-09, 16 of 20 parked PRs red), medium confidence; revisit when a third try would have landed one, or two burn on gate churn
 : "${DISPATCH_TRAINEE_REVIEW_HOURS:=6}"   # hours the oldest waiting trainee diff waits before its batch review is filed short of lanes.yaml review_batch (trainee_batch_start): on 11-19 three diffs sat 18h under a batch of 5, and no trainee run counts until its diff lands. Provisional: at most about four batches a day, low confidence; revisit when a diff still waits a day, or batches of one or two take most of the reviewer's Opus; 0 is off
-: "${DISPATCH_PROJECT_FLOOR:=1}"   # starts a pass may make past a full pace target (never an account's pace), one per project with no running, waiting or review item: Unity and fleet work held every slot while trader's requested plans waited 5h (human, 2026-11-07)
 : "${DISPATCH_LINE_MAX:=6}"   # sessions of one project waiting their landing turn (open_job queue) at which a pass starts no more of its items but urgent and red ones, so the room goes to other projects. Provisional: one playground train is 6 PRs, and on 2026-11-14 22 waiters sat behind trains that merged 5 of 25, medium confidence; revisit when a train is no longer 6 or the playground merges 4+ an hour
 # The fleet share cap (plan lets-burn-the-midnitgh-cosmic-ritchie P4): the fleet's work on itself gets a
 # capped share of starts, the products the rest (share_why).
 # DISPATCH_FLEET_PROJECTS, space-separated, are the projects whose share of starts DISPATCH_FLEET_SHARE
 # caps; unset, the ones the human put on `#prio/low` (agent-runtime and home-config, the fleet's work on
 # itself), read in share_state, as project precedence has one store; empty is off.
-: "${DISPATCH_FLEET_SHARE:=30}"   # percent of the queue items started in the last DISPATCH_FLEET_SHARE_H hours (hand starts included) at or over which a pass starts no DISPATCH_FLEET_PROJECTS item but a red or the human's own (urgent from them, #requested, the human and plan floors) (share_held), and the board fills from other projects, its cleanup lane included; the cap lets go when nothing else can start. 0 is off. The human's pick (2026-11-18, ask PaIYoy a), against 7d starts of agent-runtime 45.7% and home-config 11.7%
+: "${DISPATCH_FLEET_SHARE:=30}"   # percent of the queue items started in the last DISPATCH_FLEET_SHARE_H hours (hand starts included) at or over which a pass starts no DISPATCH_FLEET_PROJECTS item but a red or the human's own (urgent from them, #requested, the human floor) (share_held), and the board fills from other projects, its cleanup lane included; the cap lets go when nothing else can start. 0 is off. The human's pick (2026-11-18, ask PaIYoy a), against 7d starts of agent-runtime 45.7% and home-config 11.7%
 : "${DISPATCH_FLEET_SHARE_H:=24}"   # hours of starts the share reads. Provisional: a day, so a week over the cap holds fleet work about a day, not a week (the human's "elastic, no rigidness", ask EF60vp), low confidence; revisit when the 7-day done split with the cap on still shows the fleet over 30%, or fleet reds wait (stale_urgent_d)
-: "${DISPATCH_SOURCE_FLOOR:=1}"   # starts a pass may make past a full pace target on a flat-plan source its week is leaving unused (claude-acct check underuse): the target counts every harness, so Codex sat 18% used at 71% of its week while the fleet held 26 of 25 (ar-2433); 0 is off
 : "${DISPATCH_TRAINEE_REPOS:=$HOME/.dotfiles}"   # the checkouts a trainee may work in, space-separated: its provider is a free one that sees the row and the repo, so public repos only (trainee_public_why)
 : "${DISPATCH_ROLLUP_DAYS:=7}"   # days of trainee reject reasons trainee-rollup reads from LANE_RUNS. Provisional: a week is the plan's pick (2026-11-20), long enough for a slow pair's runs to add up, low confidence; revisit when a cause's row is filed only after its pair already left the roster, or a stale cause keeps a row open
 : "${DISPATCH_ROLLUP_MIN:=3}"   # rejects of one cause in that window that make one fix row (cmd_trainee_rollup). The plan's pick (why-are-more-trainees-twinkling P4, 2026-11-20): three is a cause, two may be chance. Provisional, low confidence; revisit when its rows are mostly dropped as noise, or a cause seen twice a week keeps costing runs
 : "${DISPATCH_ROLLUP_BOARD:=agent-runtime}"   # the agent board a trainee-rollup fix row goes on, and where its open twin is looked for
 : "${DISPATCH_ROLLUP_TAGS:=#size/s #of/ar-3691 #low}"   # a trainee-rollup fix row's tags: the ladder epic, and low, as an agent's follow-up is
 : "${DISPATCH_PROVIDER_HOLD_MIN:=60}"   # Provisional, low confidence (the gateway reports no reset time; revisit when it does): minutes a source takes no start after a run on it ended on a provider refusal (provider_hold_scan), unless its harness sets provider_hold_min in harnesses.json: the gateway publishes no reset time for a refused 5h budget, so the hold is the window's length, and the start after it is the probe
-: "${DISPATCH_CANARY_FLOOR:=0}"   # canary items (tag `canary`) kept queued or running (canary_top_up queues the missing ones, a few at a time, never a week's set at once), and a pass keeps running past a full pace target and the merge line, each lane in turn (canary_floor_start): a canary sat at position 222 of 606 queued while every pass ran over the target, so no week's set started after 11-14 (ar-2774). Provisional: a week is about 150 canaries over five 5h nights at about 40 min each, low confidence; revisit when a week's set is still queued at week end with the floor met; 0 is off
-: "${DISPATCH_PLAN_FLOOR:=8}"   # live approved plan phases (plan: set, from: human, runner-started) the human floor keeps running past a full pace target and the weekly pace, one phase a plan a pass (plan_floor_start): 8 ready unity-core-playground phases sat 4 days behind a full target that only urgent items passed (ar-2832). Provisional: 8 is the approved plans with a ready phase on the live queue on 2026-11-17, low confidence; revisit when a plan phase still pages queue-starved with the floor met, or plan sessions crowd the target out; 0 is off
+: "${DISPATCH_CANARY_KEEP:=0}"   # canary items (tag `canary`) kept queued or running: canary_top_up queues the missing ones, a few at a time, never a week's set at once, and they start in queue order through the class mix (classes.json) like any item; the floor that started them past a full pace target is gone (plan vast-soaring-prism P3). Provisional: a week is about 150 canaries over five 5h nights at about 40 min each, low confidence; revisit when a week's set is still queued at week end; 0 is off
 : "${DISPATCH_SPRINT_FLOOR:=3}"   # live urgent rows of an open sprint (tag `sprint`, which promote puts on an item whose board row the project's open window holds) the sprint floor keeps running past a full pace target and the weekly pace (sprint_floor_start): urgent playground v0.5.4 sprint rows sat hours with no session while dispatch ran at its pace target on agent-runtime items (ar-3816). Provisional: 3 is a guess at the urgent rows one sprint holds at once, low confidence; revisit when an urgent sprint row still pages queue-starved with the floor met; 0 is off
-: "${DISPATCH_SOURCE_PICKS:=codex:sol}"   # the <harness>:<model> pairs that floor may start; a pick whose source is not under-used starts nothing
 : "${DISPATCH_RUN_FLOOR:=0}"   # run sessions that may start past the weekly pace: hand starts never wait on pace, so without one no run starts while they fill the week
 : "${DISPATCH_STARVED_MIN:=60}"   # an urgent or high item runnable this long pages (watch queue-starved), and an open sprint row nobody owns this long (watch sprint-stalled)
 : "${DISPATCH_IDLE_CAP_PCT:=50}"   # the idle-cap share: at its pace target, under this percent of the counted live sessions busy is a red (cmd_idle_cap, watch fleet-cap-mostly-idle). Provisional, low confidence: one half is the plan's guess (ar-3741-takeover, 2026-11-20, live WORKING 23 of 34 counted); revisit when it trips while takeover_sample has nothing left to close, or never trips in a week the target held
@@ -1206,14 +1202,12 @@ share_count() {
 share_full() { share_state; [ "$(jq -r .full <<<"$SHARE_STATE")" = true ]; }
 
 # share_why <item json> -> why the fleet share cap holds the item, or nothing: share_held, outside the
-# human and plan floors (HUMAN_PASS), which are the human's own work and never cut off, and outside the
+# human and sprint floors (HUMAN_PASS), which are the human's own work and never cut off, and outside the
 # trainee floor (TRAINEE_PASS), whose start runs on a free trainee key and spends no session the cap
-# guards, and the canary floor (CANARY_PASS), whose DISPATCH_CANARY_FLOOR is already the count of
-# canaries kept running: the cap would make it a no-op, as a floor's list never lets the cap go.
-# Elsewhere a canary waits like any fleet item. pick_item lets the first held item go when nothing
+# guards. A canary waits like any fleet item. pick_item lets the first held item go when nothing
 # else can start, so the cap never leaves a slot idle.
 share_why() {
-  [ "${HUMAN_PASS:-0}${TRAINEE_PASS:-0}${CANARY_PASS:-0}" = 000 ] || return 0
+  [ "${HUMAN_PASS:-0}${TRAINEE_PASS:-0}" = 00 ] || return 0
   share_state
   jq -r --argjson s "$SHARE_STATE" --argjson pct "${DISPATCH_FLEET_SHARE:-0}" --argjson h "${DISPATCH_FLEET_SHARE_H:-24}" "$SHARE_JQ"'
     select(share_held($s))
@@ -1232,10 +1226,8 @@ floor_open() {
 }
 
 # live_tagged <tag> -> the sessions of the items tagged <tag> the runner started that are live, one a
-# line: the red floor's count (live_reds) and the canary floor's. live_plans -> those of the approved
-# plan phases (human_plan_phases' items): the plan floor's count.
+# line: the red floor's count (live_reds) and the canaries canary_top_up keeps.
 live_tagged() { live_where '(" " + (.tags // "") + " ") | contains(" '"$1"' ")'; }
-live_plans() { live_where '(.plan // "") != "" and (.from // "human") == "human"'; }
 live_where() {
   agent-queue list --json --state active 2>/dev/null | jq -r '
     select(.state != "queued" and .by == "dispatch")
@@ -1293,9 +1285,9 @@ runs_now() {
 runs_now_label() { if [ "$(jq -r .priority <<<"$1")" = urgent ]; then echo urgent; else echo ask; fi; }
 
 # human_urgent <item json lines> -> the human's own work among them, which their standing rule keeps
-# clear of every limit (dotfiles CLAUDE.md, "Hard limits on budgets"): the items they queued as
-# urgent, their fresh asks (ASK_JQ), and the ready phases of the plans they approved
-# (human_plan_phases), in queue order.
+# clear of the weekly pace (dotfiles CLAUDE.md, "Hard limits on budgets"; the human floor): the items they
+# queued as urgent, their fresh asks (ASK_JQ), and the ready phases of the plans they approved
+# (human_plan_phases), in queue order. Past a full pace target they wait in queue order like any item.
 human_urgent() {
   jq -sc --argjson plan "$(human_plan_phases "$1" | jq -sc 'map(.slug)')" \
     --argjson now "$(date +%s)" --argjson h "$DISPATCH_ASK_FRESH_H" "$ASK_JQ"'
@@ -1305,12 +1297,11 @@ human_urgent() {
 
 # human_plan_phases <item json lines> -> the first phase of each approved plan among them, in queue
 # order: a plan item the human queued (`from: human`; agent-queue admits no machine filer's plan as
-# approved), one a plan, and none of a plan the floor already started a phase of this pass
-# (PLANS_STARTED); none at DISPATCH_PLAN_FLOOR=0. The items are runnable ones, so an `after:` or tag
-# hold already keeps a phase out.
-# 8 playground phases sat ready from 11-13 behind a full pace target only urgent items pass (ar-2832).
+# approved), one a plan, and none of a plan the human floor already started a phase of this pass
+# (PLANS_STARTED). The items are runnable ones, so an `after:` or tag hold already keeps a phase out.
+# They pass the weekly pace on the human floor; under a full pace target they wait in queue order,
+# as the plan floor that started them past it is gone (plan vast-soaring-prism P3).
 human_plan_phases() {
-  [ "${DISPATCH_PLAN_FLOOR:-0}" -gt 0 ] 2>/dev/null || return 0
   local p sup="[]"
   # A superseded plan's phases are another plan's (plan_superseded): none starts here.
   while IFS= read -r p; do
@@ -1321,27 +1312,6 @@ human_plan_phases() {
         and (.value.plan as $p | ($d | index($p) | not) and ($sup | index($p) | not))))
     | group_by(.value.plan) | map(first) | sort_by(.key)[] | .value' <<<"$1" 2>/dev/null
   return 0
-}
-
-# plan_floor_start -- start the ready phase of each approved plan (human_plan_phases) past the pace
-# target and the weekly pace, one a plan a pass, while fewer than DISPATCH_PLAN_FLOOR run, at most
-# DISPATCH_PER_PASS a pass when that is set. Load,
-# fleet-assess, agent-hold, the reserve and the github budget still hold it (gate under
-# HUMAN_PASS), and each start after the first reads the gate again (start_items). A side start like
-# the canary floor's: the hold stands (start_item). The queue it read is NEXT_QUEUED, as the canary
-# floor's. Rc FLOOR_SHUT when nothing is due.
-plan_floor_start() {
-  local items n slots NO_ROUTE=()
-  NEXT_QUEUED=${NEXT_QUEUED-$(next_items --points)}
-  items=$(human_plan_phases "$NEXT_QUEUED")
-  [ -n "$items" ] || return "$FLOOR_SHUT"
-  n=$(grep -c . <<<"$items")
-  slots=$(( DISPATCH_PLAN_FLOOR - $(live_plans | grep -c . || true) ))
-  [ "$n" -gt "$slots" ] && n=$slots
-  [ "$PER_PASS" -gt 0 ] && [ "$n" -gt "$PER_PASS" ] && n=$PER_PASS
-  [ "$n" -gt 0 ] && [ -z "$(HUMAN_PASS=1 gate)" ] || return "$FLOOR_SHUT"
-  say "the human's approved plans start their ready phase on the human floor, one a plan, past the pace target (DISPATCH_PLAN_FLOOR=$DISPATCH_PLAN_FLOOR, $n open)"
-  HUMAN_PASS=1 PLAN_PASS=1 FLOOR_QUIET=1 UNITS_FREE=$(( n * 2 )) start_items "$items" "$n"
 }
 
 # live_sprints -> the sessions of the urgent sprint items (tag `sprint`) the runner started that are live:
@@ -1383,7 +1353,7 @@ sprint_top_up() {
 # target and the weekly pace while fewer than DISPATCH_SPRINT_FLOOR run, at most DISPATCH_PER_PASS a
 # pass when that is set, in queue order. Load, fleet-assess, agent-hold, the reserve and the
 # github budget still hold it (gate under HUMAN_PASS), and each start after the first reads the gate
-# again (start_items). A side start like the plan floor's: the hold stands (start_item). Rc FLOOR_SHUT
+# again (start_items). A side start like the trainee floor's: the hold stands (start_item). Rc FLOOR_SHUT
 # when nothing is due. Urgent sprint rows sat hours behind a full pace target (ar-3816).
 sprint_floor_start() {
   local items n slots NO_ROUTE=()
@@ -1397,7 +1367,7 @@ sprint_floor_start() {
   [ "$PER_PASS" -gt 0 ] && [ "$n" -gt "$PER_PASS" ] && n=$PER_PASS
   [ "$n" -gt 0 ] && [ -z "$(HUMAN_PASS=1 gate)" ] || return "$FLOOR_SHUT"
   say "the open sprint's urgent rows start on the sprint floor, past the pace target (DISPATCH_SPRINT_FLOOR=$DISPATCH_SPRINT_FLOOR, $n open)"
-  HUMAN_PASS=1 PLAN_PASS=1 SPRINT_PASS=1 FLOOR_QUIET=1 UNITS_FREE=$(( n * 2 )) start_items "$items" "$n"
+  HUMAN_PASS=1 SPRINT_PASS=1 FLOOR_QUIET=1 UNITS_FREE=$(( n * 2 )) start_items "$items" "$n"
 }
 
 # human_floor_open -- HUMAN_PASS says the start is the human's urgent item or fresh ask (human_floor_start): an account
@@ -1417,33 +1387,6 @@ human_floor_start() {
   start_items "$urgent" "$2"; rc=$?
   HUMAN_PASS=0 FLOOR_GATE=''
   return "$rc"
-}
-
-# busy_projects -> the projects with a running, waiting or review queue item, one a line. A hand or plan start
-# counts too, so the project floor lifts only a project nothing is working on.
-busy_projects() {
-  agent-queue list --json --state active 2>/dev/null |
-    jq -r 'select(.state == "running" or .state == "waiting" or .state == "review") | .project // empty' | sort -u
-  return 0
-}
-
-# idle_project_items <item json lines> -> in queue order, the light items of every project that
-# BUSY_PROJECTS (cmd_run's read before its first start) does not name: the project floor's picks. All
-# of a project's items, not its first, so a head item a finding holds does not starve the rest;
-# start_items starts one a project. Light only: a heavy Unity run waits for the load gate and the run units.
-idle_project_items() {
-  local busy=${BUSY_PROJECTS-$(busy_projects)}
-  jq -c --arg busy "$busy" '($busy | split("\n") | map(select(. != ""))) as $b
-    | select((.weight // "light") == "light" and ((.project // "") as $p | $b | index($p) | not))' <<<"$1"
-}
-
-# project_floor_open -- a project-floor start is due past a full pace target: PROJECT_PASS says the start is an
-# idle project's first item (idle_project_items), and this pass's project-floor starts are under
-# DISPATCH_PROJECT_FLOOR. Load, fleet-assess, agent-hold and every account's pace and reserve still hold it.
-project_floor_open() {
-  [ "${PROJECT_PASS:-0}" = 1 ] || return 1
-  [ "${DISPATCH_PROJECT_FLOOR:-0}" -gt 0 ] 2>/dev/null || return 1
-  [ "${PROJECT_STARTED:-0}" -lt "$DISPATCH_PROJECT_FLOOR" ]
 }
 
 # is_red <item json> -- the item carries the red tag.
@@ -4764,55 +4707,15 @@ red_floor_start() {
   return "$rc"
 }
 
-# project_floor_start <item json lines> <room> <why> -- start the light items of idle projects among
-# them on the project floor, past <why>, the full pace target; the hold stands (start_item). Every
-# other gate must be clear. Rc FLOOR_SHUT when the floor is not due (off, spent, no idle project's
-# item, or a closed gate), so the caller settles the pass as it would have. FLOOR_QUIET=1 (the full fleet) leaves a
-# pass that picks nothing to the caller's NOOP: a full fleet is working, not blocked.
+# FLOOR_SHUT: the rc a floor or side start (trainee, sprint, the other-source pass) returns when it is
+# not due, so the caller goes on as it would have.
 FLOOR_SHUT=10
-project_floor_start() {
-  local idle rc
-  [ "${DISPATCH_PROJECT_FLOOR:-0}" -gt 0 ] 2>/dev/null && PROJECT_PASS=1 project_floor_open || return "$FLOOR_SHUT"
-  idle=$(idle_project_items "$1")
-  [ -n "$idle" ] && [ -z "$(gate)" ] || return "$FLOOR_SHUT"
-  say "$3; a project nothing is working on starts on the project floor (DISPATCH_PROJECT_FLOOR=$DISPATCH_PROJECT_FLOOR)"
-  PROJECT_PASS=1 FLOOR_GATE=$3
-  start_items "$idle" "$2"; rc=$?
-  PROJECT_PASS=0 FLOOR_GATE=''
-  return "$rc"
-}
-
-# source_floor_start <item json lines> <why> -- past a full pace target, start up to
-# DISPATCH_SOURCE_FLOOR items in all on the DISPATCH_SOURCE_PICKS sources whose week is going unused
-# (claude-acct check underuse, the codex-underuse watch's probe): a flat plan loses what is left at its
-# reset, and the target counts the Claude sessions that cannot use it. Reds stay with the red floor.
-# Each item goes through route with that pick alone, so its tier, excluded kinds, project allowlist,
-# named model and the source's room all hold; load, fleet-assess and agent-hold still hold the pass.
-# Rc FLOOR_SHUT when nothing is due.
-source_floor_start() {
-  local pick src out items rc
-  [ "${DISPATCH_SOURCE_FLOOR:-0}" -gt 0 ] 2>/dev/null || return "$FLOOR_SHUT"
-  items=$(jq -c 'select(((" " + (.tags // "") + " ") | contains(" red ")) | not)' <<<"$1")
-  [ -n "$items" ] || return "$FLOOR_SHUT"
-  for pick in $DISPATCH_SOURCE_PICKS; do
-    [ "${SOURCE_STARTED:-0}" -lt "$DISPATCH_SOURCE_FLOOR" ] || break
-    src=$(harness_source "${pick%%:*}"); [ -n "$src" ] || continue
-    out=$(claude-acct check underuse "$src" 2>&1)
-    [[ "$out" == under-used* ]] || continue   # not under-used, unread and not a paced source all say something else
-    [ -z "$(SOURCE_PICK=$pick gate)" ] || return "$FLOOR_SHUT"   # after the cached check: every pass with room asks
-    say "$2; $out, so ${pick%%:*} takes work on the source floor (DISPATCH_SOURCE_FLOOR=$DISPATCH_SOURCE_FLOOR)"
-    SOURCE_PICK=$pick FLOOR_QUIET=1 UNITS_FREE=$(( DISPATCH_SOURCE_FLOOR * 2 )) start_items "$items" $(( DISPATCH_SOURCE_FLOOR - ${SOURCE_STARTED:-0} )); rc=$?
-    [ "$rc" = 0 ] || return "$rc"
-    [ "${SOURCE_STARTED:-0}" -eq 0 ] || return 0
-  done
-  return "$FLOOR_SHUT"
-}
 
 # other_source_start <item json lines> <why> -- past a full Claude pace target, start the items that route
 # to a non-Claude source with room: the target is Claude's budget (pace_target), so codex, go, ocfree and
 # the gateway teams wait on their own room (max_live, reserve and budget, in claude-acct room --json), never on it.
 # CLAUDE_FULL=1 makes route refuse claude, so an item starts only on another candidate. Tried: an item pinned
-# to a harness whose source has room, one whose cached verdict (lane_cached) names such a harness, and at
+# to a harness whose source has room (a non-Claude lane's canary among them), one whose cached verdict (lane_cached) names such a harness, and at
 # most one unclassified item a slot (its verdict is cached when it routes nowhere, so a pass asks
 # model-lane little). Bound: the free slots of the sources with room (their cap less live: room --json max_live is max_live or rpm over run_rpm; 1 a pass for one
 # with no cap), at most DISPATCH_PER_PASS when set; start_items reads the gate again each start.
@@ -4837,66 +4740,34 @@ other_source_start() {
     if [ -n "$v" ]; then
       jq -e --argjson o "${open:-[]}" 'any(.candidates[]?; .harness as $h | $h != "claude" and any($o[]; . == $h))' <<<"$v" >/dev/null 2>&1 && printf '%s\n' "$s"
     elif [ "$fresh" -lt "$slots" ]; then fresh=$((fresh + 1)); printf '%s\n' "$s"; fi
-  done < <(jq -c 'select(((" " + (.tags // "") + " ") | (contains(" red ") or contains(" canary "))) | not)' <<<"$1"))
+  done < <(jq -c 'select(((" " + (.tags // "") + " ") | contains(" red ")) | not)' <<<"$1"))
   [ -n "$items" ] || return "$FLOOR_SHUT"
   [ -z "$(gate)" ] || return "$FLOOR_SHUT"
   say "$2; $slots slot(s) free on other sources, so items routed off Claude start past it"
   OTHER_PASS=1 CLAUDE_FULL=1 FLOOR_QUIET=1 UNITS_FREE=$(( slots * 2 )) start_items "$items" "$slots"
 }
 
-# canary_items <item json lines> -> the canary items among them, one lane (agent, model, effort) in
-# turn, queue order within a lane: the claude lanes queue high and every other lane low, so in plain
-# queue order a week's go, nim and ocfree canaries waited behind every claude one.
-canary_items() {
-  jq -sc 'map(select((" " + (.tags // "") + " ") | contains(" canary ")))
-    | group_by([.agent // "", .model // "", .effort // ""]) | map(to_entries) | flatten | sort_by(.key) | .[].value' <<<"$1"
-}
-
-# canary_top_up <live> -- hold DISPATCH_CANARY_FLOOR canary items queued or running, <live> of them running:
-# the ones missing are queued by `fleet-bench canary queue --max N` as dispatch's own pull
-# (AGENT_QUEUE_PULL=dispatch, so agent-queue takes them), one task a lane a round, so a week's set trickles
-# in as each one finishes instead of sitting in the queue whole (the cap and the queue age count every
-# queued item). Skipped while dispatch is held; a failure is said once, never the end of the pass.
+# canary_top_up -- hold DISPATCH_CANARY_KEEP canary items queued or running: the ones missing are
+# queued by `fleet-bench canary queue --max N` as dispatch's own pull (AGENT_QUEUE_PULL=dispatch, so
+# agent-queue takes them), one task a lane a round, so a week's set trickles in as each one finishes
+# instead of sitting in the queue whole (the cap and the queue age count every queued item). They start
+# in queue order like any item, the class mix (classes.json `cleanup`, tag `canary`) keeping their class
+# from falling behind. Skipped in a dry run, at 0, and while floor_gate is shut (a red cluster with the
+# gateway up still queues them), dispatch's hold included;
+# a failure is said once, never the end of the pass.
 canary_top_up() {
-  local live=$1 have want out rc=0 note=''
-  agent-hold check dispatch >/dev/null 2>&1 || return 0
+  local live have want out rc=0 note='' FLOOR_WHY GATEWAY_ONLY
+  [ "$DRY" = 0 ] && [ "${DISPATCH_CANARY_KEEP:-0}" -gt 0 ] 2>/dev/null || return 0
   have=$(agent-queue list --json --state queued 2>/dev/null | jq -s '[.[] | select((" " + (.tags // "") + " ") | contains(" canary "))] | length') || have=
   [[ "$have" =~ ^[0-9]+$ ]] || { say "canary top-up: the queue is unreadable, so none is queued"; return 0; }
-  want=$(( DISPATCH_CANARY_FLOOR - have - live ))
+  live=$(live_tagged canary | grep -c . || true)
+  want=$(( DISPATCH_CANARY_KEEP - have - live ))
   [ "$want" -gt 0 ] || return 0
+  floor_gate; [ -z "$FLOOR_WHY" ] || return 0   # only when canaries are missing: it reads gate and the cluster
   out=$(AGENT_QUEUE_PULL=dispatch fleet-bench canary queue --max "$want" 2>&1) || rc=$?
   [ "$rc" = 0 ] || note=", not every lane queued"
   [ -n "$out" ] || [ "$rc" = 0 ] || out="fleet-bench exited $rc"
-  [ -z "$out" ] || say "canary top-up (floor $DISPATCH_CANARY_FLOOR, $have queued, $want wanted$note): ${out//$'\n'/; }"
-}
-
-# canary_floor_start -- keep DISPATCH_CANARY_FLOOR canary items running past the pace target: a canary
-# is the eval every lane is scored by, queued as an item that runs over the target,
-# so with no floor no week's set started after 11-14 (ar-2774). The gate still holds it (load,
-# fleet-assess, the weekly pace, agent-hold), and route still picks a source with room, which on a priced
-# route counts its starts this window (claude-acct route_paced, ar-3902). A canary start leaves a standing hold as it is (start_item): it is a side start that proves nothing about the queue.
-# Rc FLOOR_SHUT when nothing is due; the pass goes on as it would have either way. The queue it read is
-# NEXT_QUEUED, which cmd_run reuses while no canary started. The top-up runs only while the gate is open.
-canary_floor_start() {
-  local slots items live why NO_ROUTE=()
-  [ "${DISPATCH_CANARY_FLOOR:-0}" -gt 0 ] 2>/dev/null || return "$FLOOR_SHUT"
-  live=$(live_tagged canary | grep -c . || true)
-  floor_gate; why=$FLOOR_WHY
-  [ "$DRY" = 1 ] || [ -n "$why" ] || canary_top_up "$live"
-  NEXT_QUEUED=$(next_items --points)
-  items=$(canary_items "$NEXT_QUEUED")
-  [ -n "$items" ] || return "$FLOOR_SHUT"
-  if [ "$GATEWAY_ONLY" = 1 ]; then
-    items=$(jq -c --slurpfile map "$HARNESSES" --argjson gl "$GATEWAY_LAUNCHERS" "select($SPENDS_GATEWAY_JQ)" <<<"$items") ||
-      { say "canary floor: shut, the harness map $HARNESSES is unreadable"; return "$FLOOR_SHUT"; }
-    [ -n "$items" ] || { say "canary floor: shut, the cluster is red and no queued canary runs on a gateway harness"; return "$FLOOR_SHUT"; }
-  fi
-  slots=$(( DISPATCH_CANARY_FLOOR - live ))
-  [ "$PER_PASS" -gt 0 ] && [ "$slots" -gt "$PER_PASS" ] && slots=$PER_PASS
-  [ "$slots" -gt 0 ] && [ -z "$why" ] || return "$FLOOR_SHUT"
-  local only=''; [ "$GATEWAY_ONLY" = 0 ] || only=', gateway lanes only: the cluster is red and the gateway answers'
-  say "canary items start on the canary floor (DISPATCH_CANARY_FLOOR=$DISPATCH_CANARY_FLOOR, $slots open)$only"
-  GATEWAY_FLOOR=$GATEWAY_ONLY CANARY_PASS=1 FLOOR_QUIET=1 UNITS_FREE=$(( slots * 2 )) start_items "$items" "$slots"
+  [ -z "$out" ] || say "canary top-up (keep $DISPATCH_CANARY_KEEP, $have queued, $want wanted$note): ${out//$'\n'/; }"
 }
 
 # trainee_floor_why -> FLOOR_WHY, why the trainee floor is shut now (no trainee: lane, else floor_gate's
@@ -4917,7 +4788,7 @@ trainee_floor_why() {
 # row it takes (trainee_queued_pick), else the top-ranked board row it takes (trainee_board_pick),
 # promoted and started in the same step, so no promoted row waits in the queue. The gate still holds
 # it, route still needs the trainee's source room, and each pass says why the floor is shut when it
-# is: a silent starved floor is how the canary floor went unseen. Rc FLOOR_SHUT when nothing started.
+# is: a silent starved floor goes unseen. Rc FLOOR_SHUT when nothing started.
 # Off with lanes.yaml trainee `candidates: []`.
 trainee_floor_start() {
   local before=${STARTED:-0} why h hs=() shut=() queued board='' bread=0 it c key rc
@@ -5249,15 +5120,7 @@ trainee_land_start() {
 # A runnable item left waiting is BLOCKED, not NOOP: on 11-03 a gate held every pass for 7.5h and
 # each one published NOOP, which every dashboard showed green. A dispatch hold is BLOCKED the same way.
 run_queue() {
-  local items="$1" head why sbefore=${STARTED:-0} rc
-  # The source floor runs first: the route below offers Codex only for a class model-lane promoted, so from
-  # 11-16, with the run floor leaving most passes room, it started none and Codex sat 10% used at 73% of its
-  # week (ar-2436). Its start is past Claude's room, as other_source_start's is: a red or urgent head keeps the slot.
-  source_floor_start "$items" "room for $2"; rc=$?
-  case "$rc" in 0 | "$FLOOR_SHUT") ;; *) return "$rc" ;; esac
-  if [ "${STARTED:-0}" -gt "$sbefore" ]; then
-    unset NEXT_QUEUED; items=$(next_items --points); [ -n "$items" ] || return 0
-  fi
+  local items="$1" head why
   head=$(head -n 1 <<<"$items")
   why=$(gate)
   if [ -n "$why" ]; then
@@ -5306,14 +5169,9 @@ start_items() {
     [ "$rc" -ne 5 ] || continue
     [ "$rc" -eq 0 ] && STARTED=$(( ${STARTED:-0} + 1 )) && share_count "$PICKED"
     [ "$rc" -eq 0 ] && is_red "$PICKED" && RED_STARTED=$(( ${RED_STARTED:-0} + 1 ))
-    [ "$rc" -eq 0 ] && [ -n "${SOURCE_PICK:-}" ] && SOURCE_STARTED=$(( ${SOURCE_STARTED:-0} + 1 ))
     if [ "$rc" -eq 0 ] && [ "${HUMAN_PASS:-0}" = 1 ]; then
       local plan; plan=$(jq -r '.plan // ""' <<<"$PICKED")
       [ -z "$plan" ] || PLANS_STARTED="${PLANS_STARTED:+$PLANS_STARTED$'\n'}$plan"
-    fi
-    if [ "$rc" -eq 0 ] && [ "${PROJECT_PASS:-0}" = 1 ]; then
-      PROJECT_STARTED=$(( ${PROJECT_STARTED:-0} + 1 ))
-      items=$(jq -c --arg p "$(jq -r '.project // ""' <<<"$PICKED")" 'select((.project // "") != $p)' <<<"$items")
     fi
     if [ "$rc" -eq 0 ] && [ -n "$PLACE_HOST" ]; then HOST_FREE[$PLACE_HOST]=$(( HOST_FREE[$PLACE_HOST] - 1 ))
     elif [ "$rc" -eq 0 ]; then UNITS_FREE=$(( UNITS_FREE - $(weight_units "$(jq -r '.weight // "light"' <<<"$PICKED")") ))
@@ -5321,14 +5179,14 @@ start_items() {
     [ "$rc" -eq 4 ] && taken=$((taken + 1)) || n=$((n + 1))
   done
   # No item it tried had a source with room it may run on: held, so BLOCKED, naming what it tried.
-  if [ "$n" -eq 0 ] && [ "$taken" -eq 0 ] && [ "${#NO_ROUTE[@]}" -gt 0 ] && [ -z "${SOURCE_PICK:-}" ] && [ "${CANARY_PASS:-0}${PLAN_PASS:-0}${TRAINEE_PASS:-0}${BATCH_PASS:-0}${OTHER_PASS:-0}" = 00000 ]; then
+  if [ "$n" -eq 0 ] && [ "$taken" -eq 0 ] && [ "${#NO_ROUTE[@]}" -gt 0 ] && [ "${SPRINT_PASS:-0}${TRAINEE_PASS:-0}${BATCH_PASS:-0}${OTHER_PASS:-0}" = 0000 ]; then
     why=$(printf '%s, ' "${NO_ROUTE[@]:0:3}")
     [ "${#NO_ROUTE[@]}" -le 3 ] || why="$why$(( ${#NO_ROUTE[@]} - 3 )) more, "
     settle BLOCKED "${NO_ROOM:+$NO_ROOM, and }no queue item has a source with room it may run on: ${why%, }"
     return 0
   fi
   # Every item this pass picked was started by someone else: the work moved, nothing failed.
-  [ "$n" -gt 0 ] || [ "$taken" -eq 0 ] || [ "${CANARY_PASS:-0}${PLAN_PASS:-0}${TRAINEE_PASS:-0}${BATCH_PASS:-0}${OTHER_PASS:-0}" != 00000 ] || settle NOOP "another start took the $taken queue item(s) this pass picked"
+  [ "$n" -gt 0 ] || [ "$taken" -eq 0 ] || [ "${SPRINT_PASS:-0}${TRAINEE_PASS:-0}${BATCH_PASS:-0}${OTHER_PASS:-0}" != 0000 ] || settle NOOP "another start took the $taken queue item(s) this pass picked"
   [ "$n" -gt 0 ] && [ -n "$items" ] || return 0
   # A limit, not the machine, stopped the pass: say which, so the human can raise it (headroom).
   # Not on a floor past a full fleet: the pace target already holds the rest, by design.
@@ -5379,8 +5237,6 @@ pick_item() {
   local shold=0 sfirst='' shost='' swhy=''
   share_state   # in this shell, so every share_why reads one count
   if [ "${RED_PASS:-0}" = 1 ]; then waits="every red item waits; the rest wait on ${FLOOR_GATE:-the gate}"
-  elif [ "${PROJECT_PASS:-0}" = 1 ]; then waits="every item of an idle project waits; the rest wait on ${FLOOR_GATE:-the gate}"
-  elif [ "${CANARY_PASS:-0}" = 1 ]; then waits="every canary item waits"
   elif [ "${TRAINEE_PASS:-0}${BATCH_PASS:-0}" != 00 ]; then waits="the trainee floor's item waits"; fi
   PICKED='' PICK_WHY='' PICK_FULL=1 PLACE_HOST='' PICK_RESERVED='' PICK_LINE=''
   load_findings || { PICK_WHY="fleet-bench findings unreadable"; PICK_FULL=0; return 1; }
@@ -5910,18 +5766,7 @@ route() {
   ROUTE_HARNESS='' ROUTE_MODEL='' ROUTE_WHY=''
   project=$(jq -r '.project // ""' <<<"$it")
   item_pinned "$it" && pinned=1
-  # A source-floor start (source_floor_start) takes one harness and model, with no model-lane verdict:
-  # the verdict offers Codex only for a class it was promoted or trialled for, so most work never asks.
-  if [ -n "${SOURCE_PICK:-}" ]; then
-    # A model the human named, and cloud-ok routing, are choices a floor start does not override.
-    [ -z "$(claude_pin "$it")" ] && ! cloud_routed "$(jq -r .slug <<<"$it")" ||
-      { ROUTE_WHY="the item names its own model or routes to the cloud"; return 1; }
-    [ "$pinned" = 0 ] || [ "$(jq -r .agent <<<"$it")" = "${SOURCE_PICK%%:*}" ] ||
-      { ROUTE_WHY="pinned to $(jq -r .agent <<<"$it")"; return 1; }
-    [ "$pinned" = 1 ] || cands=$(jq -cn --arg p "$SOURCE_PICK" '[{harness: ($p | split(":")[0]), model: ($p | split(":")[1]), fit: 0}]')
-  fi
-  if [ -n "${cands:-}" ]; then :
-  elif [ "$pinned" = 1 ]; then cands=$(jq -c '[{harness: .agent, model: (.model // ""), fit: 0}]' <<<"$it")
+  if [ "$pinned" = 1 ]; then cands=$(jq -c '[{harness: .agent, model: (.model // ""), fit: 0}]' <<<"$it")
   else cands=$(jq -c '.candidates // empty | select(length > 0)' <<<"${verdict:-null}" 2>/dev/null); fi
   [ -n "$cands" ] || cands='[{"harness": "claude", "model": "", "fit": 0}]'
   # A trainee row (trainee_why) offers the trainees ahead of every other fit, one model per harness picked
@@ -5929,7 +5774,7 @@ route() {
   # past its cap or with no room falls to the verdict's own candidates. Only a harness in a lane sandbox
   # trains: that is where its cap and review hand-off are applied (sandbox_item_why, gateway_launch). A
   # pair the verdict promoted for the class is no trainee there: it stays at its own fit and runs direct.
-  if [ "$pinned" = 0 ] && [ -z "${SOURCE_PICK:-}" ] && trainee_why "$it" >/dev/null &&
+  if [ "$pinned" = 0 ] && trainee_why "$it" >/dev/null &&
     trn=$(jq -c --argjson t "$TRAINEE_CONF" --slurpfile H "$HARNESSES" --argjson n "$(cksum <<<"$(jq -r .slug <<<"$it")" | cut -d' ' -f1)" \
       --argjson v "${verdict:-null}" '. as $c | (($v // {}).direct // []) as $p
         | [$t.candidates[] | select(($H[0].harnesses[.harness].sandbox // "") != "" and ("\(.harness):\(.model)" as $k | $p | index($k) | not))]
@@ -6013,8 +5858,7 @@ start_item() {
   # Today's verdict for an item no source could take skips it without asking model-lane again; a
   # start always classifies afresh, and cmd_start logs that verdict, so model-lane is asked once.
   cached=$(lane_cached "$slug")
-  if [ -n "${SOURCE_PICK:-}" ]; then route "$it" ''   # a source-floor start asks no verdict (route)
-  elif [ -n "$cached" ] && ! route "$it" "$cached"; then :
+  if [ -n "$cached" ] && ! route "$it" "$cached"; then :
   else
     item_pinned "$it" || cloud_routed "$slug" || verdict=$(lane_pick "$slug" claude)
     # A broken router is not a fact about the item: the next pass asks again.
@@ -6029,14 +5873,11 @@ start_item() {
   if [ "$harness" = claude ]; then
     # A floor start leaves the hold standing (keep, settle): a red-floor one went past the machine
     # gates, and a run-floor one past an account over its pace has no room either.
-    if [ "${CANARY_PASS:-0}" = 1 ]; then floor=" on the canary floor (DISPATCH_CANARY_FLOOR=$DISPATCH_CANARY_FLOOR)"; keep=1
-    elif [ "${BATCH_PASS:-0}" = 1 ]; then
+    if [ "${BATCH_PASS:-0}" = 1 ]; then
       floor=" on the trainee floor: a batch review of the waiting trainee diffs"; keep=1
       [ -z "$(jq -r '.pr_owner // ""' <<<"$it")" ] || floor=" on the trainee floor: the $(jq -r .pr_owner <<<"$it") session of a trainee's PR"
     elif red_floor_open; then floor=" on the red floor (DISPATCH_RED_FLOOR=$DISPATCH_RED_FLOOR)"; keep=1
-    elif project_floor_open; then floor=" on the project floor (DISPATCH_PROJECT_FLOOR=$DISPATCH_PROJECT_FLOOR)"; keep=1
     elif [ "${SPRINT_PASS:-0}" = 1 ]; then floor=" on the sprint floor, past the pace target: an urgent row of the open sprint (DISPATCH_SPRINT_FLOOR=$DISPATCH_SPRINT_FLOOR)"; keep=1
-    elif [ "${PLAN_PASS:-0}" = 1 ]; then floor=" on the human floor, past the pace target: a ready phase of a plan the human approved"; keep=1
     elif human_floor_open; then
       floor=" on the human floor, past the weekly pace: $([ "$(runs_now_label "$it")" = urgent ] && echo "urgent from the human" || echo "the human's ask")"
       [ -z "$(jq -r '.plan // ""' <<<"$it")" ] || floor=" on the human floor, past the weekly pace: a ready phase of a plan the human approved"
@@ -6053,8 +5894,6 @@ start_item() {
     else floor=" on $harness ($ROUTE_MODEL), routed by model-lane"; fi
     # A start past the account hold leaves it standing, like a floor start.
     [ "$ACCT_RC" = 0 ] || { floor="$floor while $ACCT_WHY"; keep=1; }
-    if [ -n "${SOURCE_PICK:-}" ]; then floor=" on $harness ($ROUTE_MODEL), the source floor (DISPATCH_SOURCE_FLOOR=$DISPATCH_SOURCE_FLOOR): its week is going unused"; keep=1; fi
-    if [ "${CANARY_PASS:-0}" = 1 ]; then floor="$floor, on the canary floor (DISPATCH_CANARY_FLOOR=$DISPATCH_CANARY_FLOOR)"; keep=1; fi
     if [ "${TRAINEE_PASS:-0}" = 1 ]; then floor="$floor, on the trainee floor (lanes.yaml trainee:, a free slot)"; keep=1; fi
     if [ "${BATCH_PASS:-0}" = 1 ]; then floor="$floor, on the trainee floor: a batch review of the waiting trainee diffs"; keep=1; fi
     START_ORIGIN=run START_VERDICT=$verdict cmd_start --item "$slug" --harness "$harness" --model "$ROUTE_MODEL" ${PLACE_HOST:+--host "$PLACE_HOST"}
@@ -6157,7 +5996,7 @@ cmd_stopped() {
 # low water starves: runnable under DISPATCH_LOW_WATER, rows a pass would pick, and no run start in
 # twice DISPATCH_STARVED_MIN (low_starved), which is a fill that has stopped filling.
 cmd_starved() {
-  local items board low last cut started why stopped dead queue qrc human mine plans
+  local items board low last cut started why stopped dead queue qrc human mine
   load_gates   # once, for the picks and unjudged rows it counts
   cut=$(( $(date +%s) - DISPATCH_STARVED_MIN * 60 ))
   queue=$(runnable); qrc=$?
@@ -6166,9 +6005,6 @@ cmd_starved() {
   # (queue-starved) for the human to decide. 2026-11-10: four sat 4h, 2h of it under a dispatch hold
   # that read as nothing starved (ar-1432).
   mine=$(human_urgent "$queue" | jq -c --argjson cut "$cut" 'select(.t != null and .t < $cut)')
-  plans=$(jq -r 'select((.plan // "") != "") | .slug' <<<"$mine")
-  # A plan phase waiting while the plan floor is met or off waits on purpose, as a plain high item does.
-  [ -z "$plans" ] || [ $(( DISPATCH_PLAN_FLOOR - $(live_plans | grep -c . || true) )) -gt 0 ] || plans=''
   human=$(jq -r '"\(.slug) (\(if (.plan // "") != "" then "a ready phase of a plan the human approved" else (if .priority == "urgent" then "urgent from the human" else "an ask the human made" end) end), queued \(.queued))"' <<<"$mine")
   if ! agent-hold check dispatch >/dev/null 2>&1; then
     [ -n "$human" ] || { echo "dispatch is held (agent-hold), so nothing is starved"; return 0; }
@@ -6188,8 +6024,7 @@ cmd_starved() {
   # through in order. It does not clear an urgent item they passed over: that one sits first in the
   # order, so a pass that started others and not it is held by something specific to it (2026-11-10:
   # four human urgent items sat 2h behind a weekly pace while run-floor starts kept this healthy).
-  # Nor an approved plan's ready phase: the human floor starts it whatever the order (plan_floor_start).
-  if [ -z "$stopped" ] && [ -n "$started" ] && [ "$(date -d "$started" +%s 2>/dev/null || echo 0)" -ge "$cut" ] && [ -z "$plans" ] &&
+  if [ -z "$stopped" ] && [ -n "$started" ] && [ "$(date -d "$started" +%s 2>/dev/null || echo 0)" -ge "$cut" ] &&
     ! jq -e --argjson cut "$cut" 'select(.priority == "urgent" and .t != null and .t < $cut)' <<<"$queue" >/dev/null 2>&1; then
     [ -z "$dead" ]; return
   fi
@@ -6211,10 +6046,10 @@ cmd_starved() {
   # A full fleet is working, not blocked (cmd_run): at its pace target no pass starts a high item,
   # so one waits on sessions finishing, and no pass reaches the fill there, so unjudged board rows
   # wait too (board_starved is not read). Only that case holds: an urgent item may preempt a runner session there, and the red
-  # and human floors go past the target, so a red item, an approved plan's ready phase, a standing
+  # and human floors go past the target, so a red item, a standing
   # hold or low water still trips. On 11-11 this tripped 4h at 42 of 25 live sessions. Once the
   # fleet is under its target, a waiting item trips it at once.
-  if [ -n "$TOTAL_LIVE" ] && [ "$TOTAL_LIVE" -ge "$TARGET" ] && [ -z "$stopped$low$plans" ] &&
+  if [ -n "$TOTAL_LIVE" ] && [ "$TOTAL_LIVE" -ge "$TARGET" ] && [ -z "$stopped$low" ] &&
     ! grep -qE '\(urgent, |, red, ' <<<"$items"; then
     echo "held by a full fleet ($TOTAL_LIVE live sessions, the $TARGET_WHEN pace target is $TARGET$NEEDS_NOTE), so nothing is starved"
     [ -z "$dead" ]; return
@@ -6399,7 +6234,6 @@ cmd_headroom() {
   read -r starts pend < <(pending_load)
   local items; items=$(next_items)
   runnable=$(grep -c . <<<"$items" || true)
-  local idle_projects; idle_projects=$(idle_project_items "$items" | jq -r .project | sort -u | grep -c . || true)
   why=$(gate)
   if [ -z "$why" ]; then could=$(( slots < runnable ? slots : runnable )); [ "$could" -gt 0 ] || could=0; fi
   local focus_runnable=0; load_focus
@@ -6410,7 +6244,6 @@ cmd_headroom() {
     --argjson per_pass "$PER_PASS" --arg level "$LEVEL" --argjson could "$could" --argjson cores "$cores" \
     --arg load "${load:-}" --argjson starts "$starts" --argjson pend "$pend" --arg max_load "$MAX_LOAD" --arg held "$why" \
     --argjson floor "${DISPATCH_RUN_FLOOR:-0}" --argjson floor_live "$floor_live" --argjson red_floor "${DISPATCH_RED_FLOOR:-0}" --argjson red_live "$red_live" --argjson red_watch "${red_watch:-0}" \
-    --argjson project_floor "${DISPATCH_PROJECT_FLOOR:-0}" --argjson idle_projects "$idle_projects" \
     --arg focus "$FOCUS_PROJECTS" --argjson focus_runnable "${focus_runnable:-0}" --argjson share "$SHARE_STATE" --argjson share_cap "${DISPATCH_FLEET_SHARE:-0}" '
     def num: if . == "" then null else tonumber end;
     {could_start: $could, per_pass: $per_pass, level: $level, per_pass_limited: ($per_pass > 0 and $could > $per_pass),
@@ -6419,7 +6252,6 @@ cmd_headroom() {
      load: ($load | num), starting: $starts, load_pending: $pend, load_cap: (($max_load | tonumber) * $cores * 100 | round / 100),
      load_room: (if $load == "" then null else ((($max_load | tonumber) * $cores) - ($load | tonumber) - $pend) * 100 | round / 100 end),
      run_floor: $floor, floor_live: $floor_live, red_floor: $red_floor, red_watch: $red_watch, red_live: $red_live,
-     project_floor: $project_floor, idle_projects: $idle_projects,
      focus: ($focus | split(" ") | map(select(. != ""))), focus_runnable: $focus_runnable,
      fleet_share: ($share + {cap: $share_cap, pct: (if $share.total > 0 then $share.fleet * 100 / $share.total | round else null end)}),
      held: (if $held != "" then $held
@@ -6440,7 +6272,6 @@ cmd_headroom() {
         "  load:      \(.load // "?")\(if .starting > 0 then " plus \(.load_pending) for \(.starting) started in the last '"$DISPATCH_START_LOAD_MIN"' min" else "" end) of a \(.load_cap) cap, \(.load_room // "?") room",
         "  run floor: \(.floor_live) of \(.run_floor) run sessions live; under it the weekly pace of an account refused for its pace alone does not hold a start (committed burn, the reserve and the 5h window still do)",
         "  red floor: \(.red_live) of \(if .red_floor > 0 then .red_floor + .red_watch else 0 end) red sessions live (\(.red_floor), plus \(.red_watch) for tripped watches); under it the pace target, weekly pace, load and fleet-assess do not hold a red",
-        "  project floor: \(.idle_projects) project(s) with light work and nothing running; up to \(.project_floor) start a pass past a full pace target",
         (if .fleet_share.cap > 0 and .fleet_share.unread == true then "  fleet share: off, as `notes projects --prios` failed and no #prio/low project could be read" elif .fleet_share.cap > 0 and (.fleet_share.projects | length) > 0 then "  fleet share: \(.fleet_share.fleet) of \(.fleet_share.total) items started in '"$DISPATCH_FLEET_SHARE_H"'h are fleet work (\(.fleet_share.projects | join(", "))), \(.fleet_share.pct // 0)% against a \(.fleet_share.cap)% cap\(if .fleet_share.full then ": full, so only reds and work the human asked for start their items until nothing else can" else "" end)" else empty end),
         (if (.focus | length) > 0 then "  focus:     \(.focus | join(" ")) first; \(.focus_runnable) runnable item(s) of it start ahead of the other projects (reds and urgent items still go first)" else empty end)'
     fi
@@ -7111,9 +6942,9 @@ cmd_run() {
   # Once a pass, so each subshell of the pass reads the same gates; after the reap, whose returns
   # write gates onto the rows they un-start (agent-queue return_gates).
   GATES_LOADED=''; load_gates
-  HUMAN_PASS=0 PLAN_PASS=0 SPRINT_PASS=0 PLANS_STARTED=''
-  QUEUE_HELD='' LINE_HELD='' SHARE_STATE='' PREEMPTED=0 STARTED=0 RED_STARTED=0 RED_PASS=0 PROJECT_STARTED=0 PROJECT_PASS=0 SOURCE_STARTED=0 SOURCE_PICK='' RUN_GATED=0 FLOOR_HELD=0 FLOOR_GATE='' JUDGE_RC= JUDGE_WHY= PLAN_TAGGED=0 TRIAGE_FAILED= NO_ROOM=
-  NO_ROUTE=(); unset NEXT_QUEUED   # set once a pass has read the queue (canary_floor_start), even to nothing
+  HUMAN_PASS=0 SPRINT_PASS=0 PLANS_STARTED=''
+  QUEUE_HELD='' LINE_HELD='' SHARE_STATE='' PREEMPTED=0 STARTED=0 RED_STARTED=0 RED_PASS=0 RUN_GATED=0 FLOOR_HELD=0 FLOOR_GATE='' JUDGE_RC= JUDGE_WHY= PLAN_TAGGED=0 TRIAGE_FAILED= NO_ROOM=
+  NO_ROUTE=(); unset NEXT_QUEUED   # set once a pass has read the queue (trainee or sprint floor), even to nothing
   [ "$DRY" = 1 ] || triage_pass
   # Each skip takes the exit its rule names (plan, the human, a gate); a dry run only reads.
   [ "$DRY" = 1 ] || ! agent-hold check dispatch >/dev/null 2>&1 || skip_exits
@@ -7126,7 +6957,6 @@ cmd_run() {
   FLOOR_LIVE=$(grep -c . <<<"$runs" || true)
   probe_hosts "$runs"
   RED_LIVE=$(live_reds | grep -c . || true) RED_WATCH=$(watch_reds)
-  BUSY_PROJECTS=$(busy_projects)
   UNITS_FREE=$(( TARGET - live ))
   # Room is this machine's units plus every placed worker's.
   # A worker adds room only when it takes a session now (host_why), not merely by being placed.
@@ -7149,13 +6979,14 @@ cmd_run() {
     [ "$urc" = 0 ] && [ "${STARTED:-0}" -eq "$before" ] && [ "${PICK_FULL:-0}" = 1 ] && [ "$PREEMPT_PARKED" = 0 ] || return "$urc"
   fi
   sprint_top_up "$room" || JUDGE_RC=$SPRINT_JUDGE_RC JUDGE_WHY=$SPRINT_JUDGE_WHY
-  # The floors start past the target, in this order, before the queue order buries what they hold: canaries
-  # (canary_floor_start), each trainee's row and a due batch review (trainee_floor_start, queued or promoted from
-  # the board in the same step), the ready phase of each plan the human approved, one a plan (plan_floor_start),
-  # and the urgent rows of an open sprint (sprint_floor_start). With room, each start takes one of it, so the pass
-  # starts no more than before; a park, a finding's hold or an error ends the pass here.
+  # Canaries are queued here (canary_top_up) and start in queue order like any item.
+  canary_top_up
+  # The side floors start past the target, in this order, before the queue order buries what they hold: each
+  # trainee's row and a due batch review (trainee_floor_start, queued or promoted from the board in the same
+  # step) and the urgent rows of an open sprint (sprint_floor_start). With room, each start takes one of it,
+  # so the pass starts no more than before; a park, a finding's hold or an error ends the pass here.
   local floor_fn frc fbefore
-  for floor_fn in canary_floor_start trainee_floor_start plan_floor_start sprint_floor_start; do
+  for floor_fn in trainee_floor_start sprint_floor_start; do
     fbefore=${STARTED:-0}; "$floor_fn"; frc=$?
     case "$frc" in 0 | "$FLOOR_SHUT") ;; *) return "$frc" ;; esac
     if [ "${STARTED:-0}" -gt "$fbefore" ]; then
@@ -7171,22 +7002,13 @@ cmd_run() {
     # (red_floor_open, read again each start), caps what starts; the run units it lifts here.
     local reds queued='' slots=$(( DISPATCH_RED_FLOOR + ${RED_WATCH:-0} - ${RED_LIVE:-0} ))
     [ "$PER_PASS" -gt 0 ] && [ "$slots" -gt "$PER_PASS" ] && slots=$PER_PASS
-    if [ "$slots" -gt 0 ] || [ "${DISPATCH_PROJECT_FLOOR:-0}" -gt 0 ] || [ "${DISPATCH_SOURCE_FLOOR:-0}" -gt 0 ] 2>/dev/null; then queued=${NEXT_QUEUED-$(next_items --points)}; fi
-    if [ "$slots" -gt 0 ]; then reds=$(red_items "$queued"); fi
+    if [ "$slots" -gt 0 ]; then queued=${NEXT_QUEUED-$(next_items --points)}; reds=$(red_items "$queued"); fi
     if [ "$slots" -gt 0 ] && red_floor_due "$reds"; then
       UNITS_FREE=$(( slots * 2 )) red_floor_start "$reds" "$slots" "pace target: $full"; return
     fi
-    # The project floor goes past a full fleet too: hand starts count toward the target but are never
-    # held by it, so game sessions held 58-78 live against 25-50 and an idle trader queue waited 27h
-    # (11-12). Bound: DISPATCH_PROJECT_FLOOR a pass, and a start makes its project busy.
+    # Nothing else interrupts a full target: canaries, plan phases and idle projects wait their turn
+    # in the class mix (plan vast-soaring-prism P3).
     local before=${STARTED:-0} prc
-    FLOOR_QUIET=1 UNITS_FREE=$DISPATCH_PROJECT_FLOOR project_floor_start "$queued" "$DISPATCH_PROJECT_FLOOR" "pace target: $full"; prc=$?
-    case "$prc" in 0 | "$FLOOR_SHUT") ;; *) return "$prc" ;; esac
-    [ "${STARTED:-0}" -eq "$before" ] || return 0
-    # The source floor goes past it for a flat plan about to lose its week (source_floor_start).
-    source_floor_start "$queued" "pace target: $full"; prc=$?
-    case "$prc" in 0 | "$FLOOR_SHUT") ;; *) return "$prc" ;; esac
-    [ "${STARTED:-0}" -eq "$before" ] || return 0
     # The pace target is Claude's: an item that routes to another source with room starts past it.
     if [ "$gap" -le 0 ]; then
       [ -n "$queued" ] || queued=${NEXT_QUEUED-$(next_items --points)}
