@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # git-store-fsck - is every git store and main checkout intact after a crash?
 #
-#   git-store-fsck boot        after an unclean boot (boot-cause last), check every store (git-store-fsck.service)
+#   git-store-fsck boot        after an unclean boot (boot-cause last) check every store, after a clean one
+#                              only those the last check found damaged (git-store-fsck.service)
 #   git-store-fsck [repo]...   check the named repos now, or every store with none named
 #
 # An unclean shutdown can leave a zero-byte loose object: on 2026-11-20 one in ~/.notes stopped
@@ -12,23 +13,43 @@
 # list commits gc has pruned (~/.dotfiles had 45 on 2026-11-21) and neither is data.
 # Exit 0 intact or skipped, 1 a repo failed, 2 usage. A failure leaves the unit failed, which the
 # systemd-user-failed watch pages; `systemctl --user start git-store-fsck` after the repair
-# re-checks and clears it. Reading guide: docs/operations/boot-cause.md.
+# re-checks and clears it, and a clean reboot does not: it re-checks the damaged ones. A project-map
+# that is there but cannot be read fails too. Reading guide: docs/operations/boot-cause.md.
 set -uo pipefail
 
-# One repo's fsck must not hold the boot unit forever (ucp, the largest, takes about 2 s).
-FSCK_TIMEOUT=${GIT_STORE_FSCK_TIMEOUT:-600}
+# One repo's fsck must not hold the boot unit forever: ucp, the largest, takes about 2 s, and the
+# unit's TimeoutStartSec (1 h) covers this for every store in the map (22 on 2026-11-21).
+FSCK_TIMEOUT=${GIT_STORE_FSCK_TIMEOUT:-120}
+# The repos the last check found damaged, one a line. A clean boot re-checks them, so a store still
+# damaged after a clean reboot keeps the unit failed; a passing check takes a repo off.
+DAMAGED=${GIT_STORE_FSCK_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/git-store-fsck}/damaged
 here="$(dirname "$(readlink -f "$0")")"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "$here/../../.config/shared-hooks/project-name.sh"
 
+# stores: fill repos with every store on this machine. A map that is there but cannot be read
+# fails the check (map_err), never a quiet pass over the two stores alone.
+map_err=""
 stores() {
-  local map; map="$(project_map_file)"
-  { printf '%s\n' "${AGENT_STORE_DIR:-$HOME/.agent}" "${NOTES_DIR:-$HOME/.notes}"
-    [ -f "$map" ] && jq -r '.paths // {} | keys[]' "$map"
-  } | awk 'NF && !seen[$0]++' | while IFS= read -r r; do
+  local map list r; map="$(project_map_file)"
+  list="$(printf '%s\n' "${AGENT_STORE_DIR:-$HOME/.agent}" "${NOTES_DIR:-$HOME/.notes}")"
+  if [ -f "$map" ]; then
+    r="$(jq -r '.paths // {} | keys[]' "$map" 2>&1)" && list+=$'\n'"$r" \
+      || map_err="git-store-fsck: $map could not be read (${r##*$'\n'}), so no project checkout was checked"
+  fi
+  repos=()
+  while IFS= read -r r; do
     # A zero-byte HEAD makes git call the repo "not a git repository", so presence is .git, not git.
-    [ -e "$r/.git" ] && printf '%s\n' "$r"
-  done
+    [ -e "$r/.git" ] && repos+=("$r")
+  done < <(sed 's#/*$##' <<<"$list" | awk 'NF && !seen[$0]++')
+}
+
+# remember <repo> <ok|damaged>: keep the damaged list current.
+remember() {
+  mkdir -p "$(dirname "$DAMAGED")" || return 0
+  { [ -f "$DAMAGED" ] && grep -vxF -- "$1" "$DAMAGED"; [ "$2" = ok ] || printf '%s\n' "$1"; } > "$DAMAGED.tmp"
+  mv "$DAMAGED.tmp" "$DAMAGED"
+  [ -s "$DAMAGED" ] || rm -f "$DAMAGED"
 }
 
 # check <repo>: silent and 0 when intact, else one line saying why and 1.
@@ -48,9 +69,12 @@ check() {
 check_all() {
   local r bad=0 n=0
   for r in "$@"; do
+    # A store removed since it was found damaged has nothing left to repair.
+    [ -e "$r" ] || { echo "git-store-fsck: $r is not on this machine, skipped"; remember "$r" ok; continue; }
     n=$((n + 1))
-    check "$r" || bad=$((bad + 1))
+    if check "$r"; then remember "$r" ok; else bad=$((bad + 1)); remember "$r" damaged; fi
   done
+  [ -z "$map_err" ] || { echo "$map_err"; bad=$((bad + 1)); }
   if [ "$bad" -gt 0 ]; then
     echo "git-store-fsck: $bad of $n git stores damaged; repair each (refetch the object from origin, never rewrite history), then systemctl --user start git-store-fsck"
     return 1
@@ -66,13 +90,19 @@ case ${1-} in
     me="${BOOT_CAUSE_BOOT_ID:-$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)}"
     if [ -n "$rec" ] && [ "$(jq -r '.boot_id' <<<"$rec" 2>/dev/null)" = "$me" ] \
       && [ "$(jq -r '.previous.shutdown' <<<"$rec" 2>/dev/null)" = clean ]; then
+      if [ -s "$DAMAGED" ]; then
+        echo "git-store-fsck: the previous boot shut down cleanly; re-checking the stores the last check found damaged"
+        mapfile -t repos < "$DAMAGED"
+        check_all "${repos[@]}"
+        exit
+      fi
       echo "git-store-fsck: the previous boot shut down cleanly; nothing to check"
       exit 0
     fi
-    mapfile -t repos < <(stores)
+    stores
     check_all "${repos[@]}" ;;
-  -h | --help) sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h | --help) sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
   -*) echo "git-store-fsck: unknown flag $1" >&2; exit 2 ;;
-  '') mapfile -t repos < <(stores); check_all "${repos[@]}" ;;
+  '') stores; check_all "${repos[@]}" ;;
   *) check_all "$@" ;;
 esac

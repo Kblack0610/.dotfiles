@@ -17,7 +17,7 @@ EOF
   export PATH="$BATS_TEST_TMPDIR/bin:$PATH" STUB_FAILED="$BATS_TEST_TMPDIR/failed"
   : > "$STUB_FAILED"
   # The watch's exclude list (its expect_cmd in ~/.agent/watches/systemd-user-failed.yaml).
-  EXCLUDES=(--exclude 'agentctl@*' --exclude 'app-*')
+  EXCLUDES=(--exclude 'agentctl@*' --exclude 'app-*' --exclude 'run-*')
 }
 
 failed() { printf '%s loaded failed failed %s\n' "$1" "${2:-unit}" >> "$STUB_FAILED"; }
@@ -45,10 +45,11 @@ failed() { printf '%s loaded failed failed %s\n' "$1" "${2:-unit}" >> "$STUB_FAI
   assert_output "git-store-fsck.service"
 }
 
-@test "excluded classes stay quiet: agentctl runners (fleet-liveness) and desktop app units" {
+@test "excluded classes stay quiet: agentctl runners (fleet-liveness), desktop app units, transient systemd-run units" {
   failed agentctl@tmp-gc.service
   failed app-dev.lizardbyte.app.Sunshine@autostart.service
   failed app-firefox-1234.scope
+  failed run-r0123abcd.scope
   run "$BIN" "${EXCLUDES[@]}"
   assert_success
   assert_output ""

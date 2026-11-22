@@ -10,7 +10,7 @@ ExecStart=%h/.local/bin/git-store-fsck boot
 # `systemctl --user start git-store-fsck` after the repair re-checks and clears it.
 Nice=10
 IOSchedulingClass=idle
-TimeoutStartSec=30min
+TimeoutStartSec=1h
 
 [Install]
 WantedBy=default.target

@@ -14,9 +14,10 @@ setup() {
   mkrepo "$T/agent"
   mkrepo "$T/notes"
   mkrepo "$T/proj"
-  printf '{"paths": {"%s": "proj", "%s": "notes", "%s": "gone"}}\n' "$T/proj" "$T/notes" "$T/not-on-this-machine" > "$T/map.json"
+  printf '{"paths": {"%s": "proj", "%s/": "notes", "%s": "gone"}}\n' "$T/proj" "$T/notes" "$T/not-on-this-machine" > "$T/map.json"
   export AGENT_STORE_DIR="$T/agent" NOTES_DIR="$T/notes" PROJECT_MAP_FILE="$T/map.json"
   export BOOT_CAUSE_DIR="$T/boots" BOOT_CAUSE_HOST=fixture BOOT_CAUSE_BOOT_ID=boot-now
+  export GIT_STORE_FSCK_STATE="$T/state"
   mkdir -p "$BOOT_CAUSE_DIR"
 }
 
@@ -44,7 +45,7 @@ boot() {
     "${2:-boot-now}" "$1" >> "$BOOT_CAUSE_DIR/fixture.jsonl"
 }
 
-@test "intact stores pass, a project-map path not on this machine is skipped (negative control)" {
+@test "intact stores pass; a map path not on this machine is skipped, one with a trailing slash counted once (negative control)" {
   run "$BIN"
   assert_success
   assert_output "git-store-fsck: 3 git stores intact"
@@ -118,4 +119,39 @@ boot() {
   grep -qx 'ExecStart=%h/.local/bin/git-store-fsck boot' "$U/git-store-fsck.service"
   grep -qx 'After=boot-cause-record.service' "$U/git-store-fsck.service"
   [ -L "$U/default.target.wants/git-store-fsck.service" ]
+}
+
+@test "boot: a store still damaged after a clean reboot keeps failing the unit" {
+  zero "$T/notes" HEAD:a
+  boot unclean boot-before
+  BOOT_CAUSE_BOOT_ID=boot-before run "$BIN" boot
+  assert_failure 1
+  boot clean
+  run "$BIN" boot
+  assert_failure 1
+  assert_output --partial "re-checking the stores the last check found damaged"
+  assert_output --partial "$T/notes: zero-byte object file"
+}
+
+@test "a repaired store comes off the damaged list, so the next clean boot is quiet" {
+  local o
+  o="$(git -C "$T/notes" rev-parse HEAD:a)"
+  cp "$T/notes/.git/objects/${o:0:2}/${o:2}" "$T/blob"
+  zero "$T/notes" HEAD:a
+  run "$BIN"
+  assert_failure 1
+  cp "$T/blob" "$T/notes/.git/objects/${o:0:2}/${o:2}"
+  run "$BIN" "$T/notes"
+  assert_success
+  boot clean
+  run "$BIN" boot
+  assert_success
+  assert_output --partial "nothing to check"
+}
+
+@test "a project-map that is there but cannot be read fails, never a quiet pass over two stores" {
+  echo 'not json' > "$T/map.json"
+  run "$BIN"
+  assert_failure 1
+  assert_output --partial "map.json could not be read"
 }
