@@ -81,7 +81,7 @@
 # The queue holds no gated work: an add that waits on a hold or an after: item not done is filed as its
 # board row carrying the gate, and exits AQ_EX_HELD (cmd_add). An item that closes ok pulls the rows
 # gated #after/<its row> at once (pull_after, fleet-dispatch pull-after). A low one, or a machine
-# filer's, waits for a dispatch pass, which starts the queue in priority order. AGENT_QUEUE_START=0 only queues.
+# filer's, waits for a dispatch pass, which starts the queue in priority order. AGENT_QUEUE_START=0 only queues, a pull included.
 # Weight: heavy holds two of fleet-dispatch's run units, light one; see weight_of.
 # A partial: yes item stays open until agent-land without --partial finishes it; if its session ends first, reap requeues it once for that.
 # Holds: `after <slug>...` (until every slug named closed ok), and the tags at:HH:MM (that time of day), at:YYYY-MM-DDTHH:MM (that moment)
@@ -3231,7 +3231,7 @@ cmd_move() {
   case "$to" in running) mark_row "$dest" run ;; queued) mark_row "$dest" start ;; esac
   [ "$to" = done ] && [ "$status" = ok ] || return 0
   close_row_on_item "$slug" "$dest"
-  [ "${AGENT_QUEUE_START:-1}" != 1 ] || pull_after "$slug" "$dest"
+  pull_after "$slug" "$dest"
 }
 
 # mark_row <file> <run|start> -- the item's board row records its queue state, through notes, the rows'
@@ -3540,14 +3540,17 @@ dispatch_held() {
 # (fleet-dispatch pull-after: promoted behind the same gates and room a pass checks, the urgent and high
 # ones started), so a plan's next phase takes the slot the closing session frees and waits for no
 # dispatch pass. An item with no row has nothing waiting on it there. A failed pull leaves the rows for
-# the next pass, which reads the row closed.
+# the next pass, which reads the row closed. AGENT_QUEUE_START=0 (the shepherd's idle close) still pulls:
+# fleet-dispatch pull-after --queue-only queues the rows and starts none (2026-11-21: ar-4357 sat 10h behind
+# ar-4356, which the shepherd closed with the pull skipped and the fleet share kept a pass from filling it).
 pull_after() {
-  local row
+  local row only=()
   row="$(item_row "$2")"
   [ -n "$row" ] || return 0
+  [ "${AGENT_QUEUE_START:-1}" = 1 ] || only=(--queue-only)
   # fleet-dispatch adds through this script: free the lock, and keep the fd out of tmux.
   unlock
-  fleet-dispatch pull-after "${row#*:}" ||
+  fleet-dispatch pull-after "${only[@]}" "${row#*:}" ||
     echo "agent-queue: the rows after ${row#*:} were not pulled now, so the next dispatch pass promotes them" >&2
   return 0
 }
