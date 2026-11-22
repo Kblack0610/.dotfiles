@@ -1,0 +1,161 @@
+#!/usr/bin/env bats
+# .local/lib/test-pick.sh: which fast-tier test files a change can affect. tests/pick.sh (the PR
+# gate) and fleet-bench's hold check both read it, so a miss here is a test that skips and a red
+# that reaches main.
+
+setup() {
+  load '../vendor/bats-support/load'
+  load '../vendor/bats-assert/load'
+  REPO_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
+}
+
+@test "picker: a script change picks the tests that name it, and only those" {
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  run test_picked .local/bin/fleet-bench tests/unit/fleet_bench.bats <"$REPO_ROOT/tests/unit/fleet_bench.bats"
+  assert_success
+  run test_picked .local/bin/fleet-bench tests/unit/theme_generated.bats <"$REPO_ROOT/tests/unit/theme_generated.bats"
+  assert_failure
+}
+
+# A test that globs a directory names no file in it: stop_hook_quiet.bats greps
+# .claude/hooks/stop-post.d/*.sh and never names 80-session-register.sh. test-pick.sh reads
+# `<dir>/` and `<dir>/*` as a reference to every file under <dir>.
+@test "picker: a change under a directory picks the test that globs that directory" {
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  run test_picked .claude/hooks/stop-post.d/80-session-register.sh tests/integ/stop_hook_quiet.bats <"$REPO_ROOT/tests/integ/stop_hook_quiet.bats"
+  assert_success
+}
+
+@test "picker: a path through a directory is not a reference to the whole directory" {
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  run test_picked .claude/hooks/stop-post.d/other.sh tests/x.bats <<<'cp "$R/.claude/hooks/stop-post.d/95-wind-down.sh" .'
+  assert_failure
+  run test_picked .claude/hooks/stop-post.d/other.sh tests/x.bats <<<'cp "$R/.claude/hooks/stop-post.d/" .'
+  assert_success
+  run test_picked docs/x.md tests/x.bats <<<'globs: ["*/.local/src/docs/*"]'
+  assert_failure
+  run test_picked .claude/hooks/stop-post.d/other.sh tests/x.bats <<<'ls .claude/hooks/stop-postXd/*'
+  assert_failure
+  local root
+  for root in '${R}/' '~/' '$BATS_TEST_DIRNAME/../../' '$(git rev-parse --show-toplevel)/' './'; do
+    run test_picked .claude/hooks/stop-post.d/other.sh tests/x.bats <<<"for f in $root.claude/hooks/stop-post.d/*; do"
+    assert_success
+  done
+  run test_picked README.md tests/x.bats <<<'ls "$R"/ ./'
+  assert_failure
+}
+
+@test "picker: a name a test only stubs, mentions in prose, or uses as a directory does not pick it" {
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  local t
+  for t in '  stub agentctl "exit 0"' '# the agentctl conf' '@test "agentctl says no" {' \
+    'mkdir -p "$HOME/.config/agentctl/"' 'systemctl --user start agentctl@inbox.service'; do
+    run test_picked .local/bin/agentctl tests/x.bats <<<"$t"
+    assert_failure
+  done
+  # The same name run for real still picks it (negative control).
+  run test_picked .local/bin/agentctl tests/x.bats <<<'  stub fleet-bench "exit 0"; run agentctl list'
+  assert_success
+  # The real files: an agentctl change leaves the fleet_dispatch*.bats files out; a fleet-dispatch
+  # change, sourced only in the fleet_dispatch/common.bash they load, picks every one.
+  local f n=0
+  for f in "$REPO_ROOT"/tests/unit/fleet_dispatch*.bats; do
+    n=$((n + 1))
+    run test_picked .local/bin/agentctl "tests/unit/${f##*/}" <"$f"
+    assert_failure
+    run test_picked .local/bin/fleet-dispatch "tests/unit/${f##*/}" <"$f"
+    assert_success
+    run test_picked tests/unit/fleet_dispatch/common.bash "tests/unit/${f##*/}" <"$f"
+    assert_success
+    run test_picked tests/helpers/sandbox.bash "tests/unit/${f##*/}" <"$f"
+    assert_success
+  done
+  [ "$n" -gt 1 ]
+}
+
+@test "picker: a file a test loads picks it, with or without .bash, and so does a file that one loads" {
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  _TEST_PICK_REPO="$BATS_TEST_TMPDIR/repo"
+  mkdir -p "$_TEST_PICK_REPO/tests/unit/lib"
+  printf "load 'lib/inner'\n" > "$_TEST_PICK_REPO/tests/unit/lib/outer.bash"
+  printf "load 'lib/outer'\n" > "$_TEST_PICK_REPO/tests/unit/lib/inner.bash"   # a cycle ends
+  printf 'run fleet-dispatch\n' > "$_TEST_PICK_REPO/tests/unit/lib/plain"
+  local t
+  for t in "load 'lib/outer'" "load 'lib/outer.bash'" 'load lib/outer'; do
+    run test_picked tests/unit/lib/inner.bash tests/unit/x.bats <<<"$t"
+    assert_success
+  done
+  run test_picked tests/unit/lib/plain tests/unit/x.bats <<<"load 'lib/plain'"
+  assert_success
+  run test_picked .local/bin/fleet-dispatch tests/unit/x.bats <<<"load 'lib/plain'"
+  assert_success
+  # Negative controls: a file the test does not load, and a load of another directory's file.
+  run test_picked tests/unit/lib/inner.bash tests/unit/x.bats <<<"load 'lib/plain'"
+  assert_failure
+  run test_picked tests/unit/lib/inner.bash tests/integ/x.bats <<<"load 'lib/outer'"
+  assert_failure
+}
+
+@test "picker: a basename many files share counts only with its parent directory" {
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  run test_picked .claude/skills/sentinel/SKILL.md tests/x.bats <<<'grep -c x "$R/.claude/skills/ci-cost/SKILL.md"'
+  assert_failure
+  run test_picked .claude/skills/sentinel/SKILL.md tests/x.bats <<<'grep -c x "$R/.claude/skills/sentinel/SKILL.md"'
+  assert_success
+}
+
+# Two misses main paid for (ar-4309): questions_panel.bats runs agent-ask only as "$AGENT_ASK",
+# which sandbox.bash defines, and worktree_create_hook.bats runs worktree-remove.sh, which runs
+# worktree.sh by path. #2385 and #2127 changed those scripts, were not picked, and went red on main.
+@test "picker: a script a shared helper names is named where the test uses its variable" {
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  run test_picked .local/bin/agent-ask tests/x.bats <<<'run "$AGENT_ASK" list'
+  assert_success
+  run test_picked .local/bin/agent-ask tests/x.bats <<<'run "${AGENT_ASK}" list'
+  assert_success
+  # Negative controls: the variable in a comment, and a longer name it only starts.
+  run test_picked .local/bin/agent-ask tests/x.bats <<<'# "$AGENT_ASK" is the real one'
+  assert_failure
+  run test_picked .local/bin/agent-ask tests/x.bats <<<'run "$AGENT_ASK_ROOT" list'
+  assert_failure
+  run test_picked .local/bin/agent-ask tests/integ/questions_panel.bats <"$REPO_ROOT/tests/integ/questions_panel.bats"
+  assert_success
+}
+
+@test "picker: a script the test runs by path is read one level down for the repo paths it names" {
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  # A fixture repo, so the controls do not ride on what a live hook happens to say.
+  local repo="$BATS_TEST_TMPDIR/repo" hook='bash "$REPO_ROOT/hooks/remove.sh"'
+  mkdir -p "$repo/hooks"
+  cat >"$repo/hooks/remove.sh" <<'EOF'
+# .local/src/tmux/fleet.sh is only named in a comment
+jq -r . "$1"
+wt list
+"$(dirname "$0")/../.local/src/tmux/worktree.sh" remove "$1"
+EOF
+  _TEST_PICK_REPO=$repo run test_picked .local/src/tmux/worktree.sh tests/x.bats <<<"$hook"
+  assert_success
+  # Negative controls: a path only its comments name, and commands it runs by bare name.
+  _TEST_PICK_REPO=$repo run test_picked .local/src/tmux/fleet.sh tests/x.bats <<<"$hook"
+  assert_failure
+  _TEST_PICK_REPO=$repo run test_picked .local/bin/jq tests/x.bats <<<"$hook"
+  assert_failure
+  _TEST_PICK_REPO=$repo run test_picked .local/bin/wt tests/x.bats <<<"$hook"
+  assert_failure
+  # The real chain #2127 broke: worktree_create_hook.bats -> worktree-remove.sh -> worktree.sh.
+  run test_picked .local/src/tmux/worktree.sh tests/integ/worktree_create_hook.bats <"$REPO_ROOT/tests/integ/worktree_create_hook.bats"
+  assert_success
+}
+
+@test "picker: a changed test file picks itself" {
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  run test_picked tests/unit/test_pick.bats tests/unit/test_pick.bats <"$BATS_TEST_FILENAME"
+  assert_success
+}
+
+@test "picker: a change no test names picks nothing" {
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  # Built at runtime: written out literally, this file would name it and pick itself.
+  run test_picked "docs/$(printf 'unnamed%s' -doc).md" tests/unit/test_pick.bats <"$BATS_TEST_FILENAME"
+  assert_failure
+}
