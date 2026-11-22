@@ -843,6 +843,27 @@ mix_classes() { jq --argjson on "$1" '.on = $on | del(.classes[].min_live)' "$RE
   assert_failure
 }
 
+# agent-ask sends an ask that would cancel one of these to the human (ar-3917): the list must be
+# exactly what cancel_guard holds, the active items from the human or a #requested row.
+@test "human-work lists the active items the human asked for, and no other" {
+  "$AQ" add --project game --slug typed --from human "chore(x): the human typed it" >/dev/null
+  "$AQ" add --project game --from board:game:g2-9 --slug asked --tags "ui requested" "chore(x): a #requested row" >/dev/null
+  "$AQ" add --project game --from shepherd --slug agents "chore(x): an agent's own" >/dev/null
+  # An empty from: must not hand its tags (requested) to the from field.
+  "$AQ" add --project game --from shepherd --slug nofrom --tags requested "chore(x): an empty from" >/dev/null
+  sed -i 's/^from: .*/from: /' "$(ls "${AGENT_QUEUE_DIR:-$HOME/.agent/queue}"/queued/*-nofrom.md)"
+  "$AQ" add --project game --slug closed --from human "chore(x): closed by the human" >/dev/null
+  "$AQ" move closed done --status ok >/dev/null
+  run "$AQ" human-work
+  assert_success
+  assert_equal "$(sort <<<"$output")" "$(printf 'asked\nnofrom\ntyped')"
+  # it names exactly the items cancel_guard refuses a session
+  run env CLAUDE_CODE_SESSION_ID=sid-1 "$AQ" cancel typed --why "a test"
+  assert_failure; assert_output --partial "typed is work the human asked for"
+  run env CLAUDE_CODE_SESSION_ID=sid-1 "$AQ" cancel agents --why "a test"
+  assert_success
+}
+
 # agent-ask reads holds on every card and answer through ask-holds, which reads the header lines
 # alone: it must name exactly what list --json's tags do, and nothing from a done item.
 @test "ask-holds lists each active item held on an ask, as list --json's tags have them" {
