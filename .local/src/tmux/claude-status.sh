@@ -10,10 +10,10 @@ QUESTIONS_SH="${QUESTIONS_SH:-${BASH_SOURCE[0]%/*}/questions.sh}"
 get_session_status() {
     local target_session="$1"
 
-    # `!N` is the number of questions waiting on the human: the Prefix y panel's own count
-    # (`questions.sh count`: every pending ask file, held or live, plus every open dialog), the
-    # same fleet-wide number whatever session the bar is drawn in. `~` and the check count this
-    # tmux server's agents in the session: where an agent stands is decided once, elsewhere
+    # `!N` is what waits on the human: Home's Needs you count (`questions.sh count`, read through
+    # needs-figure), the same fleet-wide number on the bar, the hub, agent-web and the phone,
+    # whatever session the bar is drawn in. `!?` when it could not be read, never a 0.
+    # `~` and the check count this tmux server's agents in the session: where an agent stands is decided once, elsewhere
     # (.local/src/docs/fleet-states.md), by agent-panel's live glyph (~ busy or on a background
     # shell, check = idle). This script classifies nothing from pane text.
     #
@@ -24,6 +24,7 @@ get_session_status() {
     server=$(tmux display-message -p '#{socket_path}' 2>/dev/null)
     server="${server##*/}"
     questions=$("$QUESTIONS_SH" count 2>/dev/null)
+    [ "$questions" = "?" ] && { echo "!?"; return; }
     questions="${questions//[!0-9]/}"
     # AGENT_LIST: the list the status-left path already read, so one refresh calls agent-panel once.
     if [ -n "${AGENT_LIST+x}" ]; then list=$AGENT_LIST; else list=$(agent-panel list 2>/dev/null); fi

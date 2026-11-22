@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# needs-figure - one number from Home's Needs you card, for a script that must not count it again.
+#
+# Usage: needs-figure [--fresh] [NAME]
+#
+# NAME is a figure of the card, as `hub cards --json --figures` names it: needs_headline (the
+# default, every row Home lists as waiting on the human), needs_only_you (less the asks the judge
+# left to a machine), needs_question, needs_blocked, needs_to_do, needs_your_turn. A kind with no
+# rows reads 0 (the card leaves a zero kind out). Prints "?" and exits 1 when the count cannot be
+# read, and for a 0 counted while a read failed (`errors` in `hub needs --json`): never a made-up
+# 0 (dashboards.md rule 6).
+#
+# `hub needs --json` reads the whole fleet (about 4s, 11s under load), so a caller that ticks, the
+# tmux status bar every few seconds, would start a hub per tick. This keeps the last answer in
+# $NEEDS_FIGURE_CACHE: an answer younger than $NEEDS_FIGURE_TTL seconds is served as is, an older one
+# is served while ONE background hub (flock) replaces it, and one older than $NEEDS_FIGURE_MAX_AGE
+# is not served at all: the reader waits for a fresh count, and prints "?" when that fails.
+# --fresh always waits for a fresh count (a page, a report).
+#
+# Env: NEEDS_FIGURE_HUB (the hub binary), NEEDS_FIGURE_CACHE, NEEDS_FIGURE_TTL (default 60),
+# NEEDS_FIGURE_MAX_AGE (default 900, the stale limit of waybar's needs chip).
+
+set -u
+
+HUB="${NEEDS_FIGURE_HUB:-hub}"
+CACHE="${NEEDS_FIGURE_CACHE:-${XDG_RUNTIME_DIR:-/tmp}/needs-figure.$(id -u).json}"
+TTL="${NEEDS_FIGURE_TTL:-60}"
+MAX_AGE="${NEEDS_FIGURE_MAX_AGE:-900}"
+
+fresh=0
+[ "${1:-}" = "--fresh" ] && { fresh=1; shift; }
+case "${1:-}" in -h | --help) sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
+name="${1:-needs_headline}"
+
+age_of() { local m; m="$(stat -c %Y "$CACHE" 2>/dev/null)" || return 1; echo $(($(date +%s) - m)); }
+
+# fetch: one `hub needs --json` into the cache, atomically; false when hub failed or gave no figures,
+# and the old answer stays.
+fetch() {
+  local tmp out
+  tmp="$(mktemp "$CACHE.XXXXXX")" || return 1
+  out="$("$HUB" needs --json 2>/dev/null)"
+  if jq -e '.figures | objects' >/dev/null 2>&1 <<<"$out"; then
+    printf '%s' "$out" | jq -c '{figures, errors}' >"$tmp" && mv "$tmp" "$CACHE" && return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
+serve() {
+  jq -r --arg n "$name" '
+    (.figures // {}) as $f | (.errors // []) as $e
+    | if ($f.needs_headline | type) != "number" then "?"
+      else ($f[$n] // 0) as $v | if $v == 0 and ($e | length) > 0 then "?" else $v end end' "$CACHE" 2>/dev/null
+}
+
+age="$(age_of)" || age=""
+if [ "$fresh" = 1 ] || [ -z "$age" ] || [ "$age" -gt "$MAX_AGE" ]; then
+  fetch || { echo '?'; exit 1; }
+elif [ "$age" -gt "$TTL" ]; then
+  # One refresher at a time: a tick that loses the lock serves the cache and moves on.
+  ( flock -n 9 || exit 0; fetch ) 9>"$CACHE.lock" >/dev/null 2>&1 &
+fi
+
+out="$(serve)"
+[ -n "$out" ] || out='?'
+echo "$out"
+[ "$out" != '?' ]

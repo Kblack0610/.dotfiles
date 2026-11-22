@@ -38,6 +38,7 @@ SNAPSHOTS="$HERE/../lib/day-log-snapshots.py"
 : "${DAYLOG_USAGE_CMD:=agent-usage}"
 : "${DAYLOG_HOLD_CMD:=agent-hold}"
 : "${DAYLOG_UNITY_CMD:=pgrep -cx Unity}"
+: "${DAYLOG_NEEDS_CMD:=needs-figure}"   # Home's Needs you figures (hub-core); the Question count is its needs_question
 : "${DAYLOG_OUTCOMES_DIR:=$HOME/.agent/outcomes}"
 : "${DAYLOG_REFS_DIR:=$HOME/.notes/journal/refs}"
 : "${DAYLOG_OPEN_DAYS:=7}"    # an open PR untouched longer than this is counted, not listed
@@ -107,7 +108,7 @@ store_prs() {
 # gather <day> -> the day's record on stdout; a source that cannot be read keeps the
 # previous record's value for it and is named in .unreadable.
 gather() {
-  local day="$1" prev s e live=false tmp
+  local day="$1" prev s e live=false tmp n
   prev="$(record_of "$day")"; [ -s "$prev" ] || prev=/dev/null
   s=$(date -d "$day 00:00" +%s); e=$(date -d "$day +1 day 00:00" +%s)
   [ "$day" = "$(today)" ] && live=true
@@ -123,6 +124,8 @@ gather() {
     $DAYLOG_BENCH_CMD sessions --json 2>/dev/null | jq -s '.[:8]' > "$tmp/bench" 2>/dev/null || rm -f "$tmp/bench"
     $DAYLOG_HOLD_CMD list 2>/dev/null | jq -Rn '[inputs | split("\t") | {resource: .[0], since: .[1], by: .[2], reason: .[3]}]' > "$tmp/holds"
     $DAYLOG_UNITY_CMD > "$tmp/unity" 2>/dev/null || echo 0 > "$tmp/unity"
+    # "?" when Home cannot be read, never a count made up from the rows listed below it (dashboards rule 6)
+    n="$($DAYLOG_NEEDS_CMD needs_question 2>/dev/null)"; echo "${n:-?}" > "$tmp/needs"
   fi
   { grep -F "$day " "$DAYLOG_WATCH_LOG" 2>/dev/null | grep "^$day " | tail -n 50; } | jq -Rn '[inputs]' > "$tmp/timeline"
   usage_json "$s" "$e" > "$tmp/usage"
@@ -142,6 +145,7 @@ gather() {
      --slurpfile bench <(cat "$tmp/bench" 2>/dev/null || echo null) \
      --slurpfile holds <(cat "$tmp/holds" 2>/dev/null || echo null) \
      --arg unity "$(cat "$tmp/unity" 2>/dev/null)" \
+     --arg needq "$(cat "$tmp/needs" 2>/dev/null)" \
      --slurpfile timeline "$tmp/timeline" --slurpfile usage "$tmp/usage" \
      --slurpfile ledger <(cat "$tmp/ledger" 2>/dev/null || echo null) --slurpfile groups "$tmp/groups" --slurpfile tokens "$tmp/tokens" \
      --slurpfile projects "$tmp/projects" \
@@ -186,7 +190,8 @@ gather() {
        waiting: (if $live and $st != null then
            {main: [$st.main[]? | {repo, reason}],
             needs: [$st.sessions[]? | select(.bucket == "NEEDS") | {who: (.target | sub("^[^/]*/"; "") | sub(":1$"; "")), reason, idle_min}],
-            asks: [$st.asks[]? | {id, project, kind, question, created}] | sort_by(.created) | reverse}
+            asks: [$st.asks[]? | {id, project, kind, question, created}] | sort_by(.created) | reverse,
+            questions: $needq}
          else ($p.waiting // null) end),
        fleet: (if $live and $st != null then
            {sessions: ($st.sessions | length), buckets: ($st.sessions | group_by(.bucket) | map({key: (.[0].bucket // "?"), value: length}) | from_entries),
@@ -344,15 +349,15 @@ markdown() {
           (.[] | "- \(.phase | step | cap | clip(120)) (\(.who)\(if .total then ", \(.done // 0) of \(.total) done" else "" end))"), "")
         else empty end),
       (if .waiting then "## Needs you", "",
-        (if (.waiting.main + .waiting.needs + .waiting.asks | length) == 0 then "- Nothing." else empty end),
+        ((.waiting.questions // (.waiting.asks | length | tostring)) as $q
+          | (if (.waiting.main + .waiting.needs | length) == 0 and $q == "0" then "- Nothing." else empty end),
         (.waiting.main[] | "- Nightly red in \(.repo): \(.reason | sub("^[^ ]+ red: "; "") | clip(150))"),
         (.waiting.needs | map(.why = (.reason | if test("pending ask") then "asks" else . end)) | group_by(.why) | sort_by(-length)[]
           | (if length == 1 then "1 session" else "\(length) sessions" end) as $n
           | "- \(if .[0].why == "asks" then "Questions hold up \($n)" else "\($n) \(if length == 1 then "is" else "are" end) \(.[0].why)" end): \(map(.who) | .[:4] | join(", "))\(if length > 4 then ", and \(length - 4) more" else "" end)."),
-        (.waiting.asks | if length > 0 then
-          "- \(length) \(if length == 1 then "question waits" else "questions wait" end) on you. List: fleet-bench asks.",
-          (.[:3][] | "- Question: \(.question | gsub("\n"; " ") | clip(140)) (\(.project), \(.created | hm))")
-          else empty end), "" else empty end),
+        (if $q == "0" then empty
+          else "- \(if $q == "?" then "Questions waiting on you could not be counted" elif $q == "1" then "1 question waits on you" else "\($q) questions wait on you" end). List: fleet-bench asks.",
+            (.waiting.asks[:3][] | "- Question: \(.question | gsub("\n"; " ") | clip(140)) (\(.project), \(.created | hm))") end)), "" else empty end),
       (if .bench then "## Sessions", "", .bench.headline, "",
         "| Session | Plan | Phase | Working h | Waiting on you h | PRs | CI reds | Cost |", "|---|---|---|---|---|---|---|---|",
         (.bench.sessions[] | "| \(.target) | \(.plan // "-") | \(.phase) | \(.working_h) | \(.waiting_h) | \(.prs_merged // "-") | \(.ci_reds // "-") | \(.cost_usd | money) |"), "" else empty end),

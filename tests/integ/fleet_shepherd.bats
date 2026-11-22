@@ -23,7 +23,7 @@ setup() {
   stub agent-usage '[ "$1 $3" = "session --json" ] || exit 2
 if [ -n "${STUB_USAGE:-}" ]; then printf "%s" "$STUB_USAGE"; else printf "{\"session_id\":\"%s\",\"usage_source\":\"none\"}" "$2"; fi'
   stub agent-notify 'echo "$*" >> "$HOME/pages"'
-  stub hub '[ "$*" = "needs --json" ] || exit 2; if [ -n "${STUB_NEEDS:-}" ]; then printf "%s" "$STUB_NEEDS"; else echo "{\"needs\":[],\"errors\":[]}"; fi'
+  stub needs-figure '[ "$*" = "--fresh needs_only_you" ] || exit 2; [ "${STUB_ONLY_YOU:-0}" = unread ] && exit 1; echo "${STUB_ONLY_YOU:-0}"'
   stub watch-companion-loop '[ "$1" = tripped ] && printf "%b" "${STUB_TRIPPED:-}"'
   stub fleet-bench '[ -z "${STUB_BENCH_FAIL:-}" ] || exit 1; if [ "$1" = requests ]; then printf "## Your requests\n\n- ci-cleanup, 1 of 3\n"; elif [ "$1" = improve ]; then [ -n "${STUB_IMPROVE:-}" ] || exit 1; printf "%s\n" "$STUB_IMPROVE"; else printf "%b" "${STUB_FINDINGS:-}"; fi'
   tmux_script 'echo "$*" >> "$HOME/tmux.calls"; [ -n "${STUB_TMUX_FAIL:-}" ] && [[ "$*" =~ $STUB_TMUX_FAIL ]] && exit 1
@@ -1051,8 +1051,8 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
 
 @test "a settled fleet pages once, and work coming back re-arms the page" {
   doc "[$(row a NEEDS false true)]"
-  # Home's list: one row only the human can answer; a machine-answerable ask and a red nightly are not counted
-  export STUB_NEEDS='{"needs":[{"kind":"session","score":{"human":true}},{"kind":"ask","score":{"human":false}},{"kind":"nightly"}],"errors":[]}'
+  # Home's Only you figure, which hub-core counts: the shepherd prints it and filters nothing
+  export STUB_ONLY_YOU=1
   "$SH" run
   "$SH" run
   run cat "$HOME/pages"
@@ -1061,6 +1061,14 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   doc "[$(row a WORKING false false)]"
   "$SH" run
   [ ! -e "$FLEET_SHEPHERD_DIR/.settled" ]
+}
+
+@test "a settled page says ? when Home's Only you figure cannot be read, never 0" {
+  doc "[$(row a NEEDS false true)]"
+  export STUB_ONLY_YOU=unread
+  "$SH" run
+  run cat "$HOME/pages"
+  assert_output --partial 'fleet settled: ? need you'
 }
 
 @test "the pass runs the skill the conf names, and a conf naming none starts no pass" {
