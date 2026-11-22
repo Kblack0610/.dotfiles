@@ -1507,8 +1507,8 @@ done_session_setup() {
 }
 
 @test "gc keeps a landed tree another tool git-locked as claimed, and reaps one under wt's own lock" {
-  # agentctl-playground-train reuses one tree every pass; gc reaping it under a starting pass
-  # failed that run (ar-1830). Its lock is git's own "do not remove this", so reap honors it.
+  # A runner that reuses one tree every pass failed when gc reaped it under a starting pass (ar-1830):
+  # its lock is git's own "do not remove this", so reap honors it.
   make_repo
   git -C "$MAIN" worktree add --quiet --detach "$WT_ROOT/repo-train" origin/main
   git -C "$MAIN" worktree lock --reason 'the train reuses it' "$WT_ROOT/repo-train"

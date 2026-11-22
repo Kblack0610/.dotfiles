@@ -2,7 +2,6 @@
 # fleet-pace's metadata.replaces rows, read from the real SKILL.md through hand_methods.py: a -f kill
 # pattern and a recursive search from a network mount's ancestor are denied; a kill by name or PID, a
 # search that stays on one filesystem or inside the share, and quoted or heredoc text are not.
-# block_root_search.bats keeps the Grep and Glob half of the root-search deny.
 
 setup() {
   load '../vendor/bats-support/load'

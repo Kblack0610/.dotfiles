@@ -682,7 +682,7 @@ wt_occupied_reason() {
     return 1
   fi
   # Another tool's git lock is git's own "do not remove this": a runner that reuses one tree
-  # every pass (agentctl-playground-train) holds it so gc does not reap it between passes.
+  # every pass holds it so gc does not reap it between passes.
   local reason
   if reason=$(wt_foreign_lock "$1"); then
     printf 'git-locked: %s\n' "${reason:-no reason given}"
