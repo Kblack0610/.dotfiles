@@ -142,16 +142,24 @@ gate_crate() {
   return $rc
 }
 
-# Each crate writes its output and exit status to files of its own, printed in crate order once
-# all are done, so crates that run at once never interleave. The status goes to a file because
-# `wait -n` frees a pool slot without saying which crate finished.
+# A pool of one gates each crate in the foreground, its output live on stdout and stderr. A larger
+# pool runs crates in the background, each line streamed live under its crate's name, so a hung
+# crate still shows its last line. A background job ignores SIGINT, so an interrupt kills the
+# whole process group, cargo included. Each crate's status goes to a file, because `wait -n` frees
+# a slot without saying which crate finished; bash older than 4.3 has no `wait -n` and waits for all.
 out="$(mktemp -d)" || exit 1
 trap 'rm -rf "$out"' EXIT
+[ "$RUST_JOBS" = 1 ] || trap 'trap "" INT TERM; kill -TERM 0; exit 130' INT TERM
 for i in "${!CRATES[@]}"; do
-  while [ "$(jobs -rp | wc -l)" -ge "$RUST_JOBS" ]; do wait -n; done
-  (
-    gate_crate "${CRATES[$i]}" "$out/$i.ran" >"$out/$i.log" 2>&1
+  if [ "$RUST_JOBS" = 1 ]; then
+    gate_crate "${CRATES[$i]}" "$out/$i.ran"
     echo $? >"$out/$i.rc"
+    continue
+  fi
+  while [ "$(jobs -rp | wc -l)" -ge "$RUST_JOBS" ]; do wait -n 2>/dev/null || wait; done
+  (
+    gate_crate "${CRATES[$i]}" "$out/$i.ran" 2>&1 | sed -u "s|^|[$(basename "${CRATES[$i]}")] |"
+    echo "${PIPESTATUS[0]}" >"$out/$i.rc"
   ) &
 done
 wait
@@ -159,7 +167,6 @@ wait
 rc=0
 ran=()
 for i in "${!CRATES[@]}"; do
-  cat "$out/$i.log"
   [ -f "$out/$i.ran" ] && mapfile -t -O "${#ran[@]}" ran <"$out/$i.ran"
   # No status file means the crate's subshell died before writing one: a failure, never a pass.
   [ "$(cat "$out/$i.rc" 2>/dev/null)" = 0 ] || rc=1

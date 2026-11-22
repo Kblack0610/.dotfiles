@@ -26,6 +26,7 @@ for a; do case $prev in --manifest-path) crate=$(basename "$(dirname "$a")") ;; 
 echo "stub $1 $crate"
 [ "$1" = test ] || exit 0
 [ "$crate" = "${STUB_FAIL:-}" ] && exit 1
+[ -n "${STUB_FAIL:-}" ] && exit 0
 case $crate in
   a) timeout 3 cat "$FIFO" >/dev/null ;;
   b) timeout 3 sh -c 'echo met >"$FIFO"' ;;
@@ -38,27 +39,30 @@ EOF
 
 gate() { (cd "$W" && tests/rust.sh c/a c/b); }
 
-@test "a pool of two gates both crates at once and prints each crate's lines in crate order" {
+@test "a pool of two gates both crates at once, each line under its crate's name, the ran list in crate order" {
   RUST_JOBS=2 run gate
   assert_success
-  assert_output --partial "cargo test: a PASSED"
-  assert_output --partial "cargo test: b PASSED"
-  [[ "$output" == *"fmt: a clean"*"stub test b"* ]]
+  assert_output --partial "[a] cargo test: a PASSED"
+  assert_output --partial "[b] cargo test: b PASSED"
+  assert_output --partial "[b] cargo fmt: b clean"
   assert_output --partial "ran test:a,clippy:a,fmt:a,test:b,clippy:b,fmt:b"
 }
 
-@test "negative control: the default pool of one runs the crates one after another, so the fifo pair never meets" {
-  run gate
+@test "negative control: the default pool of one runs the crates in the foreground one after another, so the fifo pair never meets" {
+  run --separate-stderr gate
   assert_failure 1
-  assert_output --partial "cargo test: a FAILED"
+  [[ "$stderr" == *"cargo test: a FAILED"* ]]
+  assert_output --partial "cargo fmt: a clean"
+  refute_output --partial "[a]"
 }
 
 @test "one crate's failure reds the gate and the other crate still runs every step" {
   STUB_FAIL=b RUST_JOBS=2 run gate
   assert_failure 1
-  assert_output --partial "cargo test: b FAILED"
-  assert_output --partial "cargo fmt: b clean"
-  assert_output --partial "ran test:a,clippy:a,fmt:a,test:b,clippy:b,fmt:b"
+  assert_output --partial "[b] cargo test: b FAILED"
+  assert_output --partial "[b] cargo fmt: b clean"
+  assert_output --partial "[a] cargo test: a PASSED"
+  assert_output --partial "[a] cargo fmt: a clean"
 }
 
 @test "a RUST_JOBS that is not a positive integer is refused before any crate runs" {
