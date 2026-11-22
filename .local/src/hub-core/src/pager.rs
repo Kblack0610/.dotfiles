@@ -78,7 +78,7 @@ pub struct Page {
     pub reference: Option<String>,
 }
 
-/// What to send, and the ids the paged file keeps after it.
+/// What to send, and the lines the paged file keeps after it: ids and `repage:<id>` marks.
 #[derive(Debug, PartialEq)]
 pub struct Decision {
     pub page: Option<Page>,
@@ -243,7 +243,8 @@ pub struct Paths {
     pub config: PathBuf,
     /// agent-notify's ledger (`AGENT_NOTIFY_LOG`).
     pub ledger: PathBuf,
-    /// The ids already paged, one a line; the pager is its only writer.
+    /// The ids already paged, one a line, and a `repage:<id>` line for an ask re-paged once;
+    /// the pager is its only writer.
     pub paged: PathBuf,
 }
 
