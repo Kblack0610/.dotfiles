@@ -6213,7 +6213,8 @@ cmd_starved() {
 # dead_holds -> one line per open board row gated on what can never clear, each gate `agent-queue gate`
 # calls dead (load_gates): an #after/ on a row that was dropped or does not exist, an #ask/ the human
 # cancelled, that no longer exists, or that was answered with another option (reap holds or drops an
-# agent row on the human's answer, and closes, moves or asks again on a cancel: settle_answered_gates). Nothing promotes such a row, so it
+# agent row on the human's answer, and closes, moves or asks again on a cancel: settle_answered_gates; an #after/ on a
+# row sent to the human sheet follows it there: follow_moved_gates). Nothing promotes such a row, so it
 # waits for good unless someone sees it: this is where they surface. On 2026-11-07 trader's Kalshi
 # phases sat behind cancelled ask ybXZIM and nothing named them.
 dead_holds() {
@@ -6642,6 +6643,7 @@ cmd_reap() {
   unstart_orphans
   ask_failed_rows
   settle_answered_gates
+  follow_moved_gates
   reconcile_plans
   reconcile_epics
   return 0
@@ -6707,6 +6709,38 @@ ask_failed_rows() {
 # done queue item on the row whose PR merged closes it on merge proof (land_orphan), and otherwise
 # the ask is posed again (repose_ask) and the row gated on the new one.
 SETTLE_SKIP_RE='\b(skip|skipped|drop|cancel|cancelled|abandon|scrap|not needed|no longer needed)\b'
+
+# follow_moved_gates -- each open agent- or human-lane row gated #after/<id> on a row that reads dead
+# (dropped, or gone from the board) follows that row to where its work went: the row whose text says
+# "(agent row <id>)", which skip_exits files on the human sheet as it drops the agent row. The gate
+# becomes #after/<that row's id>, so the row waits on the work, not on a closed copy. A dead gate with
+# no such row stays for dead_holds and a person. Why: on 2026-11-22 ucp-2693 and ucp-2984 waited on
+# ucp-2691 and ucp-2688, both sent to the sheet as ucp-2983 and ucp-2988, and queue-starved paged (ar-3172).
+follow_moved_gates() {
+  local board prof p lane id t g old to
+  local -a lf
+  load_gates
+  [ -z "$GATES_FAILED" ] || return 0
+  board=$(notes board --json 2>/dev/null) || return 0
+  while IFS=$'\x1f' read -r prof p lane id t; do
+    for g in $t; do
+      [[ $g == after/?* ]] && [ "${GATE_ST[$g]:-}" = dead ] || continue
+      old=${g#after/}
+      to=$(jq -r --arg m "(agent row $old)" --arg self "$id" 'first((.rows // [])[], (.done // [])[]
+        | select(.id != null and .id != $self and ((.raw // "") | contains($m))
+            and ((.marker // "") | test("(^| )dropped") | not))) | .id' <<<"$board")
+      [ -n "$to" ] || continue
+      lf=(); [ "$lane" != agent ] || lf=(--agent)
+      if np "$prof" ptask "$p" "${lf[@]}" tag --remove "$g" --add "after/$to" "$id" </dev/null >/dev/null 2>&1; then
+        logline "moved $p row $id from #$g to #after/$to: row $old went there"
+      else
+        say "follow_moved_gates: could not retag $p row $id from #$g to #after/$to"
+      fi
+    done
+  done < <(jq -r '.rows[]? | select(.state == "open" and (.lane | IN("agent", "human")) and .id != null)
+    | "\(.profile // "")\u001f\(.project)\u001f\(.lane)\u001f\(.id)\u001f\((.tags_cased // .tags // []) | join(" "))"' <<<"$board")
+  return 0
+}
 settle_answered_gates() {
   local board prof p id t g aid ask st by ans why hold had rsn to done_items='' got_done='' slug rc
   load_gates
