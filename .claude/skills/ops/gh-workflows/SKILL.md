@@ -8,7 +8,7 @@ metadata:
   reviewed: "2026-11-03"
   replaces:
     - match: '(?:^|[;&|(){}\s])gh\s+run\s+watch(?=[;&|(){}\s]|$)'
-      use: "a PR: `agent-land <N>` waits for its checks (start it with run_in_background). Any other run: `gh-run-wait <run-id> [label]` with run_in_background; do not write your own waiter"
+      use: "a PR: `agent-land <N>` waits for its checks (foreground with timeout 600000 when they run under 10 minutes). Any other run: `gh-run-wait <run-id> [label]` (foreground under 10 minutes, else run_in_background); do not write your own waiter"
       mode: deny
       why: gh run watch polls the GitHub API for the whole wait and blocks the turn (337 playground sessions tried it in 30 days to 2026-11-09)
     - match: '(?:^|[;&|(){}\s/])gh\s+(?:run\s+rerun(?![\w-])|api\s(?:[^;&|\n]*actions/(?:runs|jobs)/[^/\s]+/rerun(?:-failed-jobs)?(?![\w-])|\s*Q\s[^;&|\n]*(?:-X\s+|--method[\s=]+)(?i:POST)(?![\w-])|[^;&|\n]*(?:-X\s+|--method[\s=]+)(?i:POST)\s+Q\s))'
@@ -79,7 +79,7 @@ gh run list -L 10
 gh run list --workflow=ci.yml --branch=main
 gh run view <run-id>
 gh run view <run-id> --log-failed
-gh-run-wait <run-id> [label]          # wait on the run in the background; exit code is its result (gh run watch is denied: this skill's metadata.replaces)
+gh-run-wait <run-id> [label]          # wait on the run (foreground with timeout under 10 min, else in the background); exit code is its result (gh run watch is denied: this skill's metadata.replaces)
 gh pr checks <number> --watch --fail-fast
 gh run cancel <run-id>
 
