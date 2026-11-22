@@ -27,7 +27,7 @@ const qst = tblTab({
   tab: "queue", id: "qt", el: "q-list", on: "queue", scroller: "queue", refresh: () => refreshQueue(), table: (t) => t.table,
   hint: "search, or project:dotfiles kind:fix -acct:k1",
   state: {
-    items: null, table: null, aliases: {}, needs: 0, sel: "", dispatch: null,
+    items: null, table: null, aliases: {}, needs: 0, sel: "", flow: [],
     stats: null, projects: [], busy: false, msg: "", draft: null,
     // candCounts: the Candidates heading's counts, read whether the fold is open or shut.
     candCounts: null, candErr: null,
@@ -102,7 +102,7 @@ const refreshQueue = coalesce(async () => {
     if (st.tab === "queue" && st.arg) p.set("sel", st.arg);
     const q = p.toString();
     const d = await api("/api/queue" + (q ? "?" + q : ""));
-    Object.assign(qst, { items: d.items, table: d.table, aliases: d.section_aliases || {}, needs: d.needs_you, dispatch: d.dispatch || null, err: null });
+    Object.assign(qst, { items: d.items, table: d.table, aliases: d.section_aliases || {}, needs: d.needs_you, flow: d.flow || [], err: null });
   } catch (e) { qst.err = e.message; }
   // An old section id (`#queue/running`) opens the table on its chip; a new one scrolls there.
   if (st.tab === "queue" && st.arg) {
@@ -349,9 +349,11 @@ function qFlow() {
   const why = n?.stopped ? `${n.label} stopped` : n?.hot ? `${n.label} past its bound` : "";
   return pfold("q-flow", secHead("flow", "Pipeline", null, why ? "warn" : null), (why ? `<div class="cline warn">${esc(why)}</div>` : "") + qStrip() + qFlowTail(), true);
 }
-// The heading, then the last dispatch pass's verdict (hub-core `capacity::Dispatch`), amber when held.
+// The heading, then the flow verdict's lines (hub-core `queue_verdict`, as the Queue card and the
+// waybar chip carry them), each in its level's hue.
+const flowClass = (level) => (level === "red" ? "bad" : level === "warn" ? "warn" : "");
 const qTableHead = () => secHead("table", "Queue", tblCount(qst.table)) +
-  (qst.dispatch ? `<div class="cline qdispatch${qst.dispatch.warn ? " warn" : ""}">${esc(qst.dispatch.line)}</div>` : "");
+  qst.flow.map((l) => `<div class="cline qverdict ${flowClass(l.level)}">${esc(l.line)}</div>`).join("");
 
 // One ranked row: rank, project, key, title, how it would start (hub-core's label) with its
 // Promote, why, and each reason nothing would start it.

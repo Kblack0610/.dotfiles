@@ -275,7 +275,7 @@ fn card_cols(w: usize) -> usize {
 
 const CARD_GAP: usize = 2;
 
-fn level_style(l: Level, p: Palette) -> ratatui::style::Style {
+pub(crate) fn level_style(l: Level, p: Palette) -> ratatui::style::Style {
     match l {
         Level::Ok => p.good(),
         Level::Warn => p.warn(),

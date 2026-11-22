@@ -88,7 +88,7 @@ fi
 ((figs_ok)) && ((n_stalled > 0)) && ((level < 1)) && level=1
 
 bar_caps
-bar_read "$now"
+summary_read "$now" bar
 waiting="$n_wait waiting" stuck="$n_stalled stuck"
 ((figs_ok)) && ((n_wait > 0)) && waiting="$(paint "$C_YEL" "$waiting")"
 ((figs_ok)) && ((n_stalled > 0)) && stuck="$(paint "$C_YEL" "$stuck")"

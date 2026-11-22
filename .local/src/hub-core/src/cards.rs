@@ -250,11 +250,14 @@ pub fn sessions(rows: &[crate::session_table::SessionRow]) -> Card {
     }))
 }
 
-/// Queue: agent-queue's items by state, and the flow strip's bottleneck from fleet-bench's
-/// pipeline snapshot when it has been read.
+/// Queue: the items by state, and whether work flows (`queue_verdict`): the head verdict, then the
+/// item a hold keeps waiting and each other exception, each with its Do, as the rows, worst first;
+/// the card wears the worst. The waybar queue chip lays this card out from summary/cards, and the
+/// Queue tabs draw the same lines, so the three agree.
 pub fn queue(
     q: &crate::queue::Queue,
     pipeline: Option<&Result<Option<crate::pipeline::Pipeline>, String>>,
+    now: i64,
 ) -> Card {
     use crate::queue::State;
     let (running, review, queued) = (
@@ -295,7 +298,29 @@ pub fn queue(
     if c.level == Level::Nodata && !q.items.is_empty() {
         c.level = Level::Ok;
     }
-    c.first_head = "Bottleneck";
+    let ready = crate::bar::ready(q, now);
+    c = c
+        .part("Urgent", ready.urgent, Level::Ok)
+        .part("High", ready.high, Level::Ok);
+    if let Some(r) = q.stats.as_ref().and_then(|s| s.recent.as_ref()) {
+        let n = r.failed_24h as usize;
+        c = c.part("Failed 24h", n, lvl(n, Level::Warn));
+    }
+    c.first_head = "Flow";
+    if let Some(v) = &q.verdict {
+        c = room(c, v);
+        // Every line, uncapped: a hidden exception is one the human cannot act on.
+        c.first = v
+            .lines(|| &ready)
+            .into_iter()
+            .map(|l| row(l.text, l.act, l.level, None))
+            .collect();
+        let flow = v.level();
+        let rank = crate::queue_verdict::rank;
+        if c.level == Level::Nodata || rank(flow) > rank(c.level) {
+            c.level = flow;
+        }
+    }
     let read = pipeline.map(Result::as_ref);
     let bottleneck = match read {
         Some(Ok(Some(p))) => p.bottleneck.as_ref().map(|b| (b, p.bottleneck_age())),
@@ -303,7 +328,12 @@ pub fn queue(
     };
     if let Some((b, age)) = bottleneck {
         let step = crate::flow::step_label(&b.step);
-        c = c.first([row(step, age.unwrap_or_default(), Level::Warn, None)]);
+        // Its age is in the text, so every Flow row's sub is a Do, as the chip lays it out.
+        let text = match age {
+            Some(a) => format!("Bottleneck: {step}, {a}"),
+            None => format!("Bottleneck: {step}"),
+        };
+        c.first.push(row(text, String::new(), Level::Warn, None));
     }
     // A pipeline that could not be read is said, so it never reads as no bottleneck.
     let pipe_err = match read {
@@ -315,6 +345,35 @@ pub fn queue(
         c.error = Some(errors.join("; "));
     }
     c
+}
+
+/// The room the last dispatch pass had, as parts: sessions against the target (amber once the run
+/// units fill it, the gates and not the count decide when the machine is full) and load against its
+/// cap (amber from 80%, red past it; none when the pass sent no load), and the focus projects that go
+/// first. None without a pass.
+fn room(mut c: Card, v: &crate::queue_verdict::Verdict) -> Card {
+    let d = |k: &str| v.get(&format!("dispatch.{k}"));
+    if let Some(cap) = d("room_max_live") {
+        let units = d("room_live_runs").unwrap_or(0);
+        let total = d("room_total_live").map_or("-".into(), |n| n.to_string());
+        let ul = if units >= cap { Level::Warn } else { Level::Ok };
+        c = c.part("Sessions", format!("{total} of {cap}"), ul);
+        let f = |k: &str| v.fact(&format!("dispatch.{k}"));
+        if let (Some(load), Some(lcap)) = (f("room_load"), f("room_load_cap")) {
+            let ll = if load > lcap {
+                Level::Red
+            } else if load >= lcap * 0.8 {
+                Level::Warn
+            } else {
+                Level::Ok
+            };
+            c = c.part("Load", format!("{} of {}", load.floor(), lcap.floor()), ll);
+        }
+    }
+    match d("focus_projects") {
+        Some(n) if n > 0 => c.part("Focus first", n, Level::Warn),
+        _ => c,
+    }
 }
 
 /// Alerts: what fires now that needs the human (no owner, a fix that did not hold, a fix that
@@ -1055,7 +1114,7 @@ pub fn grid(r: &Reads) -> Vec<Card> {
         done_today,
         one(r.infra, "health", "Health", health),
         one(r.sessions, "sessions", "Sessions", sessions),
-        one(r.queue, "queue", "Queue", |q| queue(q, r.pipeline)),
+        one(r.queue, "queue", "Queue", |q| queue(q, r.pipeline, r.now)),
         one(r.board, "board", "Board", board),
         one(r.alerts, "alerts", "Alerts", alerts),
         one(r.costs, "costs", "Costs", costs),
@@ -1343,7 +1402,7 @@ mod tests {
     fn queue_names_the_bottleneck_step_and_never_counts_who_waits_on_you() {
         use crate::flow::tests::{pipe, queue as q};
         // No stats read: every queued item is counted and the unit says queued, never on deck.
-        let c = queue(&q(), Some(&Ok(Some(pipe(2.25)))));
+        let c = queue(&q(), Some(&Ok(Some(pipe(2.25)))), 0);
         assert_eq!((c.big.as_str(), c.unit.as_str()), ("2", "queued"));
         assert!(c
             .parts
@@ -1357,12 +1416,13 @@ mod tests {
             runnable: 1,
             ..Default::default()
         });
-        let c = queue(&held, Some(&Ok(Some(pipe(2.25)))));
+        let c = queue(&held, Some(&Ok(Some(pipe(2.25)))), 0);
         assert_eq!((c.big.as_str(), c.unit.as_str()), ("1", "on deck"));
         let parts: Vec<_> = c
             .parts
             .iter()
             .map(|p| (p.label.as_str(), p.value.as_str()))
+            .take(4)
             .collect();
         assert_eq!(
             parts,
@@ -1376,18 +1436,19 @@ mod tests {
         let bar: Vec<_> = c.bar.iter().map(|s| (s.level, s.n)).collect();
         // A waiting item is Needs you's fact (Blocked), so it is no red segment here: one reader.
         assert_eq!(bar, [(Level::Ok, 3)]);
-        assert_eq!(c.first_head, "Bottleneck");
+        // With no verdict read the bottleneck is the only row, after where the flow lines go.
+        assert_eq!(c.first_head, "Flow");
         assert_eq!(
             (c.first[0].text.as_str(), c.first[0].sub.as_str()),
-            ("needs you", "age p90 9h00m (bound 4h00m)")
+            ("Bottleneck: needs you, age p90 9h00m (bound 4h00m)", "")
         );
         // A snapshot that could not be read is said on the card, never as no bottleneck.
-        let c = queue(&held, Some(&Err("state.json: bad json".into())));
+        let c = queue(&held, Some(&Err("state.json: bad json".into())), 0);
         assert!(c.first.is_empty());
         assert_eq!(c.error.as_deref(), Some("pipeline: state.json: bad json"));
         // No snapshot read: no rows, and the item that waits on the human (q() has one) is no
         // segment or row of this card, since Needs you counts it as Blocked.
-        let c = queue(&q(), None);
+        let c = queue(&q(), None, 0);
         assert_eq!(c.error, None);
         assert!(c.first.is_empty());
         assert_eq!(c.level, Level::Ok);
@@ -1397,7 +1458,111 @@ mod tests {
         only.items
             .retain(|i| i.state == crate::queue::State::Waiting);
         assert!(!only.items.is_empty());
-        assert_eq!(queue(&only, None).level, Level::Ok);
+        assert_eq!(queue(&only, None, 0).level, Level::Ok);
+    }
+
+    #[test]
+    fn queue_rows_are_the_flow_verdict_with_its_do_and_the_card_wears_the_worst() {
+        use crate::flow::tests::{pipe, queue as q};
+        use crate::prom::Series;
+        let s = |topic: &str, name: &str, v: f64| Series {
+            labels: [
+                ("__name__".to_string(), format!("mqtt_{name}")),
+                ("topic".to_string(), format!("agents_h1_main_{topic}")),
+            ]
+            .into(),
+            value: Some(v),
+            points: vec![],
+        };
+        let mut held = q();
+        held.verdict = Some(crate::queue_verdict::Verdict::from_series(
+            &[
+                s("summary_dispatch", "runnable", 2.0),
+                s("summary_dispatch", "last_pass_epoch", 990.0),
+                s("summary_dispatch", "held_s", 600.0),
+                s("summary_dispatch", "room_held_load", 1.0),
+                s("summary_dispatch", "room_load", 30.0),
+                s("summary_dispatch", "room_load_cap", 25.0),
+                s("summary_dispatch", "room_max_live", 40.0),
+                s("summary_dispatch", "room_total_live", 20.0),
+                s("summary_shepherd", "unhandled", 1.0),
+                s("watch_queue_starved", "tripped", 1.0),
+            ],
+            1000,
+        ));
+        let c = queue(&held, Some(&Ok(Some(pipe(2.25)))), 1000);
+        assert_eq!(c.level, Level::Red, "a hold that starved the queue is red");
+        let rows: Vec<_> = c
+            .first
+            .iter()
+            .map(|r| (r.level, r.text.as_str(), r.sub.as_str()))
+            .collect();
+        assert_eq!(
+            rows[0],
+            (
+                Level::Red,
+                "Dispatch paused 10m: load 30 is over its cap of 25",
+                "See the fleet-pace skill"
+            )
+        );
+        assert_eq!(
+            rows[rows.len() - 2],
+            (
+                Level::Warn,
+                "1 shepherd due line(s) unhandled",
+                "Use the shepherd skill, triage"
+            )
+        );
+        assert!(rows
+            .last()
+            .unwrap()
+            .1
+            .starts_with("Bottleneck: needs you, "));
+        let part = |l: &str| {
+            c.parts
+                .iter()
+                .find(|p| p.label == l)
+                .map(|p| (p.value.as_str(), p.level))
+        };
+        assert_eq!(part("Sessions"), Some(("20 of 40", Level::Ok)));
+        assert_eq!(part("Load"), Some(("30 of 25", Level::Red)));
+        // Negative control: the same queue flowing is one green "Flowing" row and an ok card.
+        held.verdict = Some(crate::queue_verdict::Verdict::from_series(
+            &[
+                s("summary_dispatch", "runnable", 2.0),
+                s("summary_dispatch", "last_pass_epoch", 990.0),
+            ],
+            1000,
+        ));
+        let c = queue(&held, None, 1000);
+        assert_eq!(c.level, Level::Ok);
+        assert_eq!(
+            c.first.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            ["Flowing"]
+        );
+        assert!(c.parts.iter().all(|p| p.label != "Sessions"));
+        // The load is judged on its fractions (24.6 is over a cap of 24.5), and a pass that sent no
+        // load has a Sessions part and no Load part, never a load of 0.
+        let mut room = |load: &[(&str, f64)]| {
+            let mut series = vec![
+                s("summary_dispatch", "last_pass_epoch", 990.0),
+                s("summary_dispatch", "room_max_live", 40.0),
+                s("summary_dispatch", "room_total_live", 20.0),
+            ];
+            series.extend(load.iter().map(|(k, v)| s("summary_dispatch", k, *v)));
+            held.verdict = Some(crate::queue_verdict::Verdict::from_series(&series, 1000));
+            let c = queue(&held, None, 1000);
+            let load = c.parts.iter().find(|p| p.label == "Load");
+            (
+                c.parts.iter().any(|p| p.label == "Sessions"),
+                load.map(|p| (p.value.clone(), p.level)),
+            )
+        };
+        assert_eq!(
+            room(&[("room_load", 24.6), ("room_load_cap", 24.5)]),
+            (true, Some(("24 of 24".to_string(), Level::Red)))
+        );
+        assert_eq!(room(&[("room_load", 24.6)]), (true, None));
     }
 
     #[test]
