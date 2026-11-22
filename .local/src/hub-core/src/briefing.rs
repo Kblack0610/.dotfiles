@@ -34,7 +34,8 @@ use crate::text::{age, cap};
 /// Needs you holds at most this many items; past it, one less and a "more" line
 /// (`channels.toml [channel.briefing]`).
 pub const NEEDS_SHOWN: usize = 5;
-/// How long one Needs you item may be (the same channel's cap).
+/// How long one line of Landed, Builds, Overnight (but its mail) and Money may be (the same
+/// channel's cap). A Needs you item and an overnight mail line take the `next` role's cap instead.
 pub const ITEM_MAX: usize = 160;
 /// How long one Areas line may be.
 pub const AREA_MAX: usize = 200;
@@ -179,10 +180,11 @@ fn names(all: &[String], n: usize) -> String {
 /// `words` are cut so `tail` (the place and the id) always fits inside the one cap a `next`
 /// text has (`[channel.ui]`, enforced by [`Shown::next`]): a long text is cut, an id never is.
 fn next_line(words: &str, tail: &str) -> String {
-    let room = Role::Next
-        .caps()
-        .chars
-        .saturating_sub(tail.chars().count() + 1);
+    // A cap of 0 is "no limit" (`Caps`); a tail that fills the cap leaves the words 8 characters.
+    let room = match Role::Next.caps().chars {
+        0 => usize::MAX,
+        max => max.saturating_sub(tail.chars().count() + 1).max(8),
+    };
     let words = cap(words.trim_end_matches('.'), room);
     let stop = if tail.is_empty() && words.ends_with("...") {
         ""
@@ -194,11 +196,14 @@ fn next_line(words: &str, tail: &str) -> String {
         .to_string()
 }
 
-/// The id a row ends with, naming its kind so `ask dNreTJ` is not a bare code.
+/// The place and id a row ends with, naming its kind so `ask dNreTJ` is not a bare code.
 fn id_tail(n: &Need) -> String {
     match n.kind {
         Kind::Ask => format!(" (ask {})", n.id),
         Kind::Queue => format!(" (queue item {})", n.id),
+        Kind::Session => format!(" (session {})", cap(home::tmux_name(&n.id), 30)),
+        Kind::Sheet if n.project.is_empty() => " (your sheet)".into(),
+        Kind::Sheet => format!(" (your sheet, {})", cap(&n.project, 30)),
         _ => String::new(),
     }
 }
@@ -224,18 +229,12 @@ fn need_line(n: &Need, now: i64) -> String {
             )
         }
         Kind::Session => {
-            let mut meta = vec![format!("session {}", home::tmux_name(&n.id))];
-            meta.extend(waited);
-            next_line(
-                &format!("Unblock: {text}"),
-                &format!(" ({})", meta.join(", ")),
-            )
+            let tail = id_tail(n).trim_end_matches(')').to_string();
+            let waited = waited.map_or_else(String::new, |w| format!(", {w}"));
+            next_line(&format!("Unblock: {text}"), &format!("{tail}{waited})"))
         }
         Kind::Queue => next_line(&format!("Decide this: {text}"), &id_tail(n)),
-        Kind::Sheet => next_line(
-            &format!("Do: {text}"),
-            &format!(" (your sheet, {})", n.project),
-        ),
+        Kind::Sheet => next_line(&format!("Do: {text}"), &id_tail(n)),
         _ => next_line(text, ""),
     }
 }
@@ -2106,6 +2105,33 @@ mod tests {
         )
         .iter()
         .any(|c| c == "item-id"));
+    }
+
+    /// A folded group still names the place of its top row, and a sheet row with no project
+    /// has no empty bracket.
+    #[test]
+    fn a_group_names_the_place_of_its_top_row() {
+        let rows: Vec<Need> = (0..3)
+            .map(|k| {
+                need(
+                    Kind::Session,
+                    &format!("lab/s{k}:1"),
+                    "plan awaiting approval",
+                )
+            })
+            .collect();
+        assert_eq!(
+            needs(&rows, NOW),
+            ["Unblock 3 sessions; top: plan awaiting approval (session s0)."]
+        );
+        let mut sheet = need(Kind::Sheet, "row", "Call the vet");
+        sheet.project = String::new();
+        assert_eq!(need_line(&sheet, NOW), "Do: Call the vet (your sheet).");
+        let rows = [sheet.clone(), sheet];
+        assert_eq!(
+            needs(&rows, NOW),
+            ["Do 2 rows of your sheet; top: Call the vet (your sheet)."]
+        );
     }
 
     #[test]
