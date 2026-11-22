@@ -1383,6 +1383,14 @@ inflight_done_items() {
   jq -c --arg open "$open" "$sel"' ($open | split("\n")) as $o | held | select(refs | any(. as $p | $o | index($p)))' <<<"$qall"
 }
 
+# inflight_done: inflight_done_items, read once a run into $CACHE/inflight_done; a failed read is named
+# unreadable and its row blind, so the phase reads as next, never as queued.
+inflight_done() {
+  [ -f "$CACHE/inflight_done" ] || { inflight_done_items > "$CACHE/inflight_done.$$" 2>/dev/null || { unreadable "done items' open PRs"; blind_row; }
+    mv -f "$CACHE/inflight_done.$$" "$CACHE/inflight_done"; }
+  cat "$CACHE/inflight_done"
+}
+
 # merged_prs <session_prs json> -> "#7,#9" for the PRs that merged, "-" for none (work_blockers' 23rd argument).
 merged_prs() {
   jq -r 'map(select(.state == "MERGED") | "#\(.number)") | if length == 0 then "-" else join(",") end' <<<"$1"
@@ -2153,9 +2161,6 @@ collect() {
       # A phase add --plan filed on its board row behind a gate holds it as an item does (plan_gated_rows), read
       # once a run.
       [ -f "$CACHE/plan_gated" ] || { plan_gated_rows "$(board_feed)" > "$CACHE/plan_gated.$$" && mv -f "$CACHE/plan_gated.$$" "$CACHE/plan_gated"; }
-      # A done item whose PR is still open holds its phases too (inflight_done_items), read once a run.
-      [ -f "$CACHE/inflight_done" ] || { inflight_done_items > "$CACHE/inflight_done.$$" 2>/dev/null || { unreadable "done items' open PRs"; blind_row; }
-                                         mv -f "$CACHE/inflight_done.$$" "$CACHE/inflight_done"; }
       local canon ptgt pbase=1 pn
       canon="$(realpath -q -- "$plist" 2>/dev/null)" || canon="$plist"
       IFS=$'\t' read -r ptgt pn < <(plan_pointer "$plist")
@@ -2182,7 +2187,7 @@ collect() {
               | (if ($first | length) > 0 and all($first[]; .st == "queued") then "1" else "-" end) as $wq
               | if ($holders | length) == 0 then empty
                 elif ($free | length) == 0 then "queued:" + ($holders | map(.slug) | join(",")) + "\t" + $run + "\t" + $wq
-                else $free[0].name + "\t" + $run + "\t" + $wq end' <<<"$qjson$(printf '\n'; cat "$CACHE/plan_gated" "$CACHE/inflight_done")" 2>/dev/null)" ||
+                else $free[0].name + "\t" + $run + "\t" + $wq end' <<<"$qjson$(printf '\n'; cat "$CACHE/plan_gated"; inflight_done)" 2>/dev/null)" ||
         { unreadable "plan phases of $plist"; blind_row; }
       [ -z "$qd" ] || IFS=$'\t' read -r pq prun pwq <<<"$qd"
     fi
