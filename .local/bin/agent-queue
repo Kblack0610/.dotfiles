@@ -72,6 +72,8 @@
 #   start <slug>   start a queued item's session now, through add's start guards (a low one, a desk wait or the dispatch hold keep it queued)
 #   ask-holds [<id>]   `<slug or row id><TAB><ask id><TAB><releasing options>` per active item, and per open board row gated
 #       #ask/<id>, held on an ask (that ask only, given one)
+#   human-work    the active items the human asked for (from: human, or #requested), one slug per line: agent-ask
+#       sends an ask that would cancel one to the human, since cancel takes only the human's answer
 #   reopen <slug> [--to running|waiting] [--why text] [--unland <owner>/<repo>#<N>]   a falsely-done item back to running (or waiting),
 #       its row started again. A failed close reopens as it is; an ok close only with --unland naming the PR it
 #       closed on that was not its work, which comes off pr:, merged: and closing_pr:, and its row reopens through
@@ -3504,6 +3506,29 @@ cmd_ask_holds() {
     END { flush() }' "${FILES[@]}"
 }
 
+# human-work -- each active item the human asked for (human_work), one slug per line, from the header
+# lines alone, as ask-holds reads them. agent-ask reads it on an ask that proposes a cancel: cancel_guard
+# takes only the human's answer for these, so the judge must not answer that ask (ar-3917).
+cmd_human_work() {
+  local FILES=() slug from tags
+  lock_read
+  list_files waiting review running queued
+  ((${#FILES[@]})) || return 0
+  while IFS=$'\t' read -r slug from tags; do
+    [ -n "$slug" ] && human_work "$from" "$tags" && printf '%s\n' "$slug"
+  done < <(awk -v OFS='\t' '
+    # A tab is IFS whitespace, so an empty from would hand the tags to read as from.
+    function flush() { if (slug != "") print slug, (from == "" ? "-" : from), tags }
+    FNR == 1 { flush(); slug = ""; from = ""; tags = ""; head = 1 }
+    !head { next }
+    $0 == "---" { head = 0; next }
+    /^slug: / { slug = substr($0, 7) }
+    /^from: / { from = substr($0, 7) }
+    /^tags: / { tags = substr($0, 7) }
+    END { flush() }' "${FILES[@]}")
+  return 0
+}
+
 # reopen <slug> [--to running|waiting] [--why <text>] -- put back an item a false close finished,
 # such as a reap that read a live session as gone (ar-900, 2026-11-07: the shepherd had to move the
 # file under the lock by hand). The latest done item with the slug goes to running (or waiting) with
@@ -3891,6 +3916,7 @@ case "${1:-}" in
   lock-miss) shift; cmd_lock_miss "$@" ;;
   credit-of) shift; cmd_credit_of "$@" ;;
   ask-holds) shift; cmd_ask_holds "$@" ;;
+  human-work) shift; cmd_human_work "$@" ;;
   backfill-briefs) shift; cmd_backfill_briefs "$@" ;;
   -h | --help | '') sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
   *) die "unknown verb: $1 (try --help)" ;;
