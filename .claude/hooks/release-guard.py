@@ -11,8 +11,8 @@ Denied: `git tag` creating a release tag (`v<n>.<n>...`, `<name>-v<n>.<n>...`); 
 carries one, deletes one, pushes a tag glob, or pushes `--tags`, `--follow-tags` or `--mirror`;
 `gh release create` (or an API release write) of a release tag not yet on origin; an API write to
 `git/refs` or `git/tags` naming a release tag; `gh workflow run cut.yml`, or a workflow named by id
-or by a release-like display name; a run of a cut script (`scripts/release/ship.sh`,
-`scripts/release.sh`, `scripts/publish.sh`); a `gh api` or curl write to `rulesets`,
+or by a release-like display name; a run of a cut script (`scripts/release/{ship,release,publish}.sh`,
+or a repo's `scripts/release.sh`, `scripts/publish.sh`); a `gh api` or curl write to `rulesets`,
 `environments` or `keys`, and an environment's `gh secret`/`gh variable` write (the ruleset
 bypass, the environments, the deploy key); and the untested override (`RELEASE_UNTESTED=`, a
 workflow's `untested-reason` input). Wrappers (`timeout`, `nice`, `setsid`, `stdbuf`, `xargs`) are
@@ -38,7 +38,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RELEASE_TAG = re.compile(r"(?:^|-)v\d+\.\d+")
 RELEASE_WORKFLOWS = {"release.yml", "phone-release.yml", "ios-release.yml", "steam.yml"}
 CUT_WORKFLOWS = {"cut.yml"}
-CUT_SCRIPTS = {("release", "ship.sh"), ("scripts", "release.sh"), ("scripts", "publish.sh")}
+CUT_SCRIPTS = {("release", "ship.sh"), ("release", "release.sh"), ("release", "publish.sh"), ("scripts", "release.sh"), ("scripts", "publish.sh")}
 GUARDED_API = re.compile(r"/(rulesets|environments|keys)(?:/|$)")
 TAG_API = re.compile(r"/(?:git/refs|git/tags|releases)(?:/|$)")
 BODY_TAG = re.compile(r"(?:refs/tags/|tag_name\W+|\btag\W+)([\w.+-]+)")
@@ -277,7 +277,7 @@ def check_api(head, argv, cwd):
 
 
 def cut_script(argv, cwd):
-    """The cut script argv runs, directly or through a shell (`bash scripts/release.sh`)."""
+    """The cut script argv runs, directly or through a shell (`bash scripts/release/release.sh`)."""
     cands = [argv[0]]
     if os.path.basename(argv[0]) in FORGE.SHELLS:
         cands += [a for a in argv[1:] if not a.startswith("-")][:1]
