@@ -2310,7 +2310,8 @@ collect() {
     [ "$host" != - ] || planf="$(item_plan "$islugs" "$started" "$planf")"; IFS=$'\t' read -r pdone ptotal pnext < <(plan_phases "$planf")   # the item's own plan outranks the transcript's
     # A plan the pane recorded that does not exist (every account shares ~/.claude/plans, claude-acct) is not a
     # session with no plan: its phases are unknown, so it is never read as finished (ar-2368).
-    if [ "$planf" = - ]; then phases=-
+    # In plan mode, though, the pane names the plan path before Claude writes it: no file yet is no plan, not missing.
+    if [ "$planf" = - ] || { [ "$inplan" = 1 ] && [ ! -f "$planf" ]; }; then phases=-
     elif [ ! -f "$planf" ]; then phases=missing
     elif [ "$ptotal" = - ]; then phases=none
     else phases="$pdone/$ptotal"; fi

@@ -5846,6 +5846,16 @@ JSONL
   [[ "$(jq -r .close.why <<<"$output")" == quiet* ]]
 }
 
+@test "end to end: a plan-mode session with no plan written yet is not STALLED plan file missing (ar-3918)" {
+  clean_fixture
+  PANEL_PLAN_MODE=true panel "$SANDBOX/wt" "$SANDBOX/not-written-yet.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = CHAT ]
+  [ "$(jq -r .reason <<<"$output")" = "clean, nothing on the branch, no plan file, no queue item: the human's conversation" ]
+  [ "$(jq -r '"\(.in_plan_mode) \(.close.verdict): \(.close.why)"' <<<"$output")" = "true keep: plan mode: the human approves or ends it" ]
+}
+
 @test "end to end: an item whose task names one phase of the plan holds that phase only (ar-2368)" {
   # 2026-11-14 forgejo-hetzner-tailnet ("Phase Tailnet of ~/.claude/plans/virtual-strolling-nova.md",
   # no phases:) held all six open phases, and two shepherds told the plan's session to close.
