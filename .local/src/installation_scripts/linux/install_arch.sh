@@ -543,6 +543,24 @@ setup_journal() {
     log_info "Installed $dst, enabled systemd-pstore, added $USER to systemd-journal (log out and back in for the group)"
 }
 
+# A kernel upgraded without a reboot deletes the running kernel's modules, so one not yet
+# loaded (xpad, 2026-11-18) fails until the reboot. kernel-modules-hook's pacman hooks keep
+# that tree; linux-modules-cleanup.service moves it out at the next boot. install_all runs
+# this before update_system, so the first -Syu that upgrades the kernel is covered too.
+setup_kernel_modules_hook() {
+    log_section "Keeping the running kernel's modules across a kernel upgrade"
+
+    install_pacman_package "kernel-modules-hook"
+    # install_pacman_package returns 0 on failure too (it warned already): check the package.
+    pacman -Q kernel-modules-hook &>/dev/null || return 0
+
+    if ! sudo systemctl enable linux-modules-cleanup.service; then
+        log_warning "Could not enable linux-modules-cleanup.service - old module trees will pile up in /usr/lib/modules"
+        return 0
+    fi
+    log_info "kernel-modules-hook installed, linux-modules-cleanup.service enabled - see .config/kernel-modules-hook/README.md"
+}
+
 # Setup fingerprint auth (fprintd + libfprint + PAM)
 setup_fingerprint() {
     log_section "Setting up fingerprint auth (fprintd + PAM)"
@@ -690,13 +708,13 @@ setup_profile() {
 }
 
 # Render theme-switch's generated output. kitty's current-theme.conf, waybar's
-# style.css and palette.css, sketchybar's colors.sh, dunst's dunstrc.d/50-theme.conf, swaync's style.css and noctalia's palettes/dotfiles.json are NOT tracked -- they are the render of
+# style.css and palette.css, sketchybar's colors.sh, dunst's dunstrc.d/50-theme.conf, swaync's style.css, noctalia's palettes/dotfiles.json, hyprland's conf/theme.lua, nvim's kennethblack/theme.lua, starship.toml and lazygit's config.yml are NOT tracked -- they are the render of
 # a tracked palette + template, and tracking them meant the theme-day/theme-night
 # timers dirtied the repo twice a day. A fresh clone therefore has none of them,
 # and sketchybarrc hard-`source`s colors.sh, so it must be rendered at install.
 #
-# --only the generated targets on purpose: every other tool theme-switch
-# touches is a TRACKED file that already ships correct, and re-patching those
+# --only the generated targets on purpose: termux is the one TRACKED render
+# (the phone reads it over git), it already ships correct, and re-rendering it
 # here would leave a fresh install with a dirty tree before first login.
 setup_theme() {
     log_section "Rendering theme (generated config)"
@@ -704,7 +722,7 @@ setup_theme() {
     local theme_switch="$HOME/.local/bin/theme-switch"
     if [[ ! -x "$theme_switch" ]]; then
         log_warning "theme-switch not found at $theme_switch - skipping"
-        log_info "Render later with:  theme-switch <theme> --only kitty,waybar,sketchybar,dunst,swaync,noctalia,hyprland"
+        log_info "Render later with:  theme-switch <theme> --only kitty,waybar,sketchybar,dunst,swaync,noctalia,hyprland,nvim,starship,lazygit"
         return 0
     fi
 
@@ -715,7 +733,7 @@ setup_theme() {
     [[ -r "$state" ]] && theme="$(<"$state")"
 
     log_info "Rendering generated theme files for: $theme"
-    "$theme_switch" "$theme" --only kitty,waybar,sketchybar,dunst,swaync,noctalia,hyprland
+    "$theme_switch" "$theme" --only kitty,waybar,sketchybar,dunst,swaync,noctalia,hyprland,nvim,starship,lazygit
 }
 
 # Configure rbw (Rust Bitwarden CLI) against the self-hosted Vaultwarden. The
@@ -898,6 +916,8 @@ PY
 
 install_all() {
     step base        create_directories
+    # Before update_system: its -Syu may upgrade the running kernel
+    step kernelmods  setup_kernel_modules_hook
     step base        update_system
     step base        install_basics
     step dev         install_tools

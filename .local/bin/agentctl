@@ -39,10 +39,13 @@ LIVENESS_PAUSE_MAX_S=86400
 
 die() { printf 'agentctl: %s\n' "$*" >&2; exit 1; }
 
-# The four lanes, in the order `agentctl list` shows them. deliver ships work, observe
-# reports on state, learn turns activity into knowledge, maintain keeps the fleet's own
-# files tidy. README.md says which lane a new runner belongs in.
-AGENTCTL_LANES='deliver observe learn maintain'
+# The lanes a conf's LANE= may name, in the order `agentctl list` shows them: the lanes.tsv rows
+# whose `lane` column is yes (the file is the one home of the kinds and what each means; README.md
+# says which lane a new runner belongs in). A missing file leaves no lane, so every conf reads
+# invalid and names the file, rather than running on a second list here.
+AGENTCTL_LANES_FILE="${AGENTCTL_LANES_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/agentctl/lanes.tsv}"
+AGENTCTL_LANES=
+[ -r "$AGENTCTL_LANES_FILE" ] && AGENTCTL_LANES=$(awk -F'\t' '!/^#/ && $4 == "yes" { printf "%s%s", s, $1; s = " " }' "$AGENTCTL_LANES_FILE")
 
 # Each timer fires up to this long after its OnCalendar time, at an offset fixed per timer
 # (FixedRandomDelay), so a runner keeps a steady cadence. Without it every runner on :00
@@ -101,10 +104,10 @@ load_agent() {
         [ "$NAME" = "$name" ] || { printf 'NAME=%s does not match filename %s\n' "$NAME" "$name" >&2; exit 1; }
         # Every runner says which lane it is in and what it is for, so `agentctl list` can
         # answer "what are all these" from the confs instead of from a README that drifts.
-        : "${LANE:?missing LANE ($AGENTCTL_LANES)}"
+        : "${LANE:?missing LANE (${AGENTCTL_LANES:-no lanes.tsv rows with lane yes at $AGENTCTL_LANES_FILE})}"
         case " $AGENTCTL_LANES " in
             *" $LANE "*) ;;
-            *) printf 'invalid LANE=%s (%s)\n' "$LANE" "$AGENTCTL_LANES" >&2; exit 1 ;;
+            *) printf 'invalid LANE=%s (%s)\n' "$LANE" "${AGENTCTL_LANES:-no lanes.tsv rows with lane yes at $AGENTCTL_LANES_FILE}" >&2; exit 1 ;;
         esac
         : "${DESCRIPTION:?missing DESCRIPTION (one line: what it is for)}"
         # What a run may change on its own, so the catalog (`list --md`) says which runners

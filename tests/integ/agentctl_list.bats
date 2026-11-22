@@ -55,6 +55,24 @@ setup() {
   assert_line --regexp '^  beta +invalid LANE=misc'
 }
 
+@test "the lanes come from lanes.tsv: a new lane yes row is accepted and listed, a kind that is no lane is not" {
+  printf 'triage\tsorts inboxes\tlabels\tyes\n' >> "$AGENTCTL_LANES_FILE"
+  sed -i 's/^LANE=observe/LANE=triage/' "$HOME/.config/agentctl/agents/beta.conf"
+  sed -i 's/^LANE=observe/LANE=session/' "$HOME/.config/agentctl/agents/alpha.conf"
+  run "$AGENTCTL_BIN" list
+  assert_success
+  assert_line 'triage'
+  assert_line --regexp '^  beta +idle '
+  assert_line --regexp '^  alpha +invalid LANE=session \(deliver observe learn maintain triage\)'
+}
+
+@test "no lanes.tsv leaves no lane, and the reason names the file (negative control)" {
+  rm "$AGENTCTL_LANES_FILE"
+  run "$AGENTCTL_BIN" list
+  assert_success
+  assert_line --regexp "^  alpha +invalid LANE=observe \(no lanes.tsv rows with lane yes at $AGENTCTL_LANES_FILE\)"
+}
+
 @test "a conf with no DESCRIPTION is invalid (negative control)" {
   sed -i '/^DESCRIPTION=/d' "$HOME/.config/agentctl/agents/alpha.conf"
   run "$AGENTCTL_BIN" list

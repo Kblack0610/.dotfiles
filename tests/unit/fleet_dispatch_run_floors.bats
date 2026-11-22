@@ -223,6 +223,103 @@ pace_shut() {
 }
 
 
+# red_held_machine, with fleet-assess holding on load alone: the only HOLD the plan load floor goes past.
+# Its probe answers as fleet_verdict does: with load's mark out of reach (FLEET_HOLD_LOAD_X), the next
+# reason, $PROBE_MEM ("HOLD memory ..." when set), else OK.
+plan_load_held_machine() {
+  red_held_machine
+  stub fleet-assess '[ "$1" = --github ] && { echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0; }
+[ "$1" = --watch-probe ] || exit 0
+[ "${FLEET_HOLD_LOAD_X:-1.75}" = 1000000 ] || { echo "HOLD load 2.0x cores >= 1.75x"; exit 1; }
+[ -z "${PROBE_MEM:-}" ] || { echo "$PROBE_MEM"; exit 1; }
+echo "OK load 2.0x cores"'
+}
+
+# 2026-11-20: at load 29.6 to 77 on 28 cores the load gate held every approved plan phase for a day,
+# so the human chose a floor of 2 plan starts past load, as reds have (ask GwQIYE a).
+@test "plan load floor: past load and a fleet-assess HOLD on load an approved plan phase starts; a plain urgent or low item does not" {
+  plan_load_held_machine
+  agent-queue add --project game --slug lo --priority low "plain low" >/dev/null
+  agent-queue add --project game --slug hu --priority urgent "human urgent" >/dev/null
+  plan_queued pa '- [ ] one'
+  # Negative control first: the floor off, the same machine starts nothing.
+  DISPATCH_PLAN_LOAD_FLOOR=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'fleet-assess says HOLD'
+  assert_not_called 'wt new'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'only approved plan phases start, on the plan load floor (DISPATCH_PLAN_LOAD_FLOOR=2)'
+  assert_output --partial 'started queue item pa-p1 on the human floor, past the weekly pace: a ready phase of a plan the human approved, past '
+  assert_output --partial 'on the plan load floor (DISPATCH_PLAN_LOAD_FLOOR=2)'
+  refute_output --partial 'started queue item lo'
+  refute_output --partial 'started queue item hu'
+}
+
+@test "plan load floor: memory over its mark beside load, which fleet-assess's verdict names first, still holds an approved plan phase" {
+  plan_load_held_machine
+  export PROBE_MEM="HOLD memory 5% free < 10%"
+  plan_queued pa '- [ ] one'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'fleet-assess says HOLD'
+  assert_not_called 'wt new'
+}
+
+@test "plan load floor: it counts live plan phases and this pass's plan starts; past it the machine gates hold again" {
+  plan_load_held_machine
+  export DISPATCH_PLAN_LOAD_FLOOR=1
+  plan_queued pa '- [ ] one'
+  plan_queued pb '- [ ] one'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item pa-p1 on the human floor'
+  assert_output --partial 'the pass stops after 1 started'
+  refute_output --partial 'started queue item pb-p1'
+  # A live approved plan phase the runner started fills the floor: nothing starts past load.
+  agent-queue move pa-p1 done --status cancelled --why test >/dev/null
+  started_item l1 "lab:game-agent-l1" run area-l1
+  sed -i "/^mode:/a plan: $SANDBOX/pl.md\nby: dispatch" "$AGENT_QUEUE_DIR"/running/*-l1.md
+  printf 'game-agent-l1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  rm -f "$NOTES_FIXTURE/calls.log"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_not_called 'wt new'
+}
+
+@test "plan load floor: open only on a PLAN_PASS start, under DISPATCH_PLAN_LOAD_FLOOR counting live plan phases and this pass's" {
+  live_plans() { printf '%s\n' "${LIVE[@]}"; }
+  export DISPATCH_PLAN_LOAD_FLOOR=2
+  LIVE=(a); PLAN_PASS=1 run plan_load_floor_open; assert_success
+  LIVE=(a b); PLAN_PASS=1 run plan_load_floor_open; assert_failure
+  LIVE=(a); PLAN_STARTED=1 PLAN_PASS=1 run plan_load_floor_open; assert_failure
+  LIVE=(); PLAN_PASS=0 run plan_load_floor_open; assert_failure
+  LIVE=(); DISPATCH_PLAN_LOAD_FLOOR=0 PLAN_PASS=1 run plan_load_floor_open; assert_failure
+}
+
+@test "starved: held by load counts the approved plan phases that wait on it beside the plan load floor" {
+  plan_load_held_machine
+  acct alt:ok:/home/u/.claude-personal   # room: a load hold, not an account one
+  local old; old=$(date -u -d '-3 hours' +%Y-%m-%dT%H:%M:%SZ)
+  queued_item mine urgent "$old"
+  run cmd_starved
+  assert_failure
+  assert_output --partial "the human's urgent items wait on it (0 approved plan phase(s) wait on load; the plan load floor has 0 of DISPATCH_PLAN_LOAD_FLOOR=2 live)"
+  plan_queued pa '- [ ] one'
+  sed -i "s/^queued: .*/queued: $old/" "$AGENT_QUEUE_DIR"/queued/*-pa-p1.md
+  run cmd_starved
+  assert_failure
+  assert_output --partial '(1 approved plan phase(s) wait on load; the plan load floor has 0 of'
+  assert_output --partial 'pa-p1 (a ready phase of a plan the human approved'
+  # The plan load floor full: the plan phase waits on the human's bound, only the plain urgent item is starved.
+  live_plans() { printf 'a\nb\n'; }
+  run cmd_starved
+  assert_failure
+  assert_output --partial '(1 approved plan phase(s) wait on load; the plan load floor has 2 of DISPATCH_PLAN_LOAD_FLOOR=2 live):'
+  refute_output --partial 'pa-p1 (a ready phase'
+  assert_output --partial 'mine (urgent from the human'
+  # With only the plan phase left, nothing is starved.
+  agent-queue move mine done --status cancelled --why test >/dev/null
+  run cmd_starved
+  assert_output --partial 'so nothing is starved (1 approved plan phase(s) wait on load; the plan load floor has 2 of'
+}
+
 @test "sprint floor: an urgent sprint item starts past a full pace target, a plain one of the sprint and an urgent one off it wait" {
   full_fleet
   agent-queue add --project game --slug off --priority urgent --from board:game:off "urgent, not in a sprint" >/dev/null

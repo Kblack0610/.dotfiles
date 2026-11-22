@@ -1,7 +1,7 @@
 # theme — unified dotfiles theme switcher
 
-Single-command color theme switcher across kitty, nvim, lualine, neo-tree,
-starship, lazygit, waybar, hyprland, and wallpaper.
+Single-command color theme switcher across kitty, nvim (with lualine and
+neo-tree), starship, lazygit, waybar, hyprland, and wallpaper.
 
 Eight themes ship:
 
@@ -188,13 +188,11 @@ The second rule needs the first to stay honest: if the ANSI ramp drifts past a l
 | noctalia   | `palettes/dotfiles.json` (its 16 colour keys and the terminal set) from the palette, then `noctalia msg config-reload` when it runs; `config.toml` selects it | generated |
 | dunst      | `dunstrc.d/50-theme.conf` colors rebuilt from the palette, then `dunstctl reload`; layout stays in the tracked `dunstrc` | generated |
 | sketchybar | `colors.sh` rebuilt from the palette (no per-theme template)      | generated |
-| nvim       | colorscheme name patched in `init.lua`                            | tracked  |
-| lualine    | branch fg color patched                                           | tracked  |
-| neo-tree   | `NeoTreeModified` highlight patched                               | tracked  |
-| starship   | 7 color values patched in `starship.toml`                         | tracked  |
-| lazygit    | 11 color values patched in `config.yml` (restart lazygit to see)  | tracked  |
+| nvim       | `lua/kennethblack/theme.lua` (colorscheme, lualine branch fg, `NeoTreeModified`) from the palette; `init.lua`, `lualine.lua` and `neo-tree.lua` require it | generated |
+| starship   | `starship.toml`: `templates/starship/starship.toml` with 7 color values patched in; edit the template | generated |
+| lazygit    | `config.yml`: `templates/lazygit/config.yml` with 11 color values patched in; edit the template (restart lazygit to see) | generated |
 | hyprland   | `conf/theme.lua` colors rebuilt from the palette, then `hyprctl reload`; layout stays in the tracked `conf/look-and-feel.lua` | generated |
-| termux     | `colors.properties` rebuilt from the palette (no per-theme template) | tracked, see below |
+| termux     | `colors.properties` rebuilt from the palette, only by `--only termux` (no per-theme template) | tracked, see below |
 | wallpaper  | random pick matching prefix; backend: hyprpaper > swww > swaybg   | n/a      |
 
 ## Tracked vs generated
@@ -211,14 +209,15 @@ is a loop to cut.
 
 Because a fresh clone has none of them -- and `sketchybarrc` hard-`source`s
 `colors.sh` -- the installers call `setup_theme()` after `apply_dotfiles` to
-render them once. It passes `--only` the generated targets on purpose: every
-**tracked** target above already ships correct, and re-patching those at install
+render them once. It passes `--only` the generated targets on purpose: the one
+**tracked** target, termux, already ships correct, and re-rendering it at install
 time would hand a fresh machine a dirty tree before first login.
 
-The remaining `tracked` rows are hand-authored config with a few values patched
-in place, so they still churn on a theme switch. Converting each to its tool's
-native include (lazygit `LG_CONFIG_FILE`, an nvim palette
-module) is the follow-up that finishes the job.
+starship and lazygit have no include a palette file could feed, so their whole
+config is the render: the hand-authored file lives in `templates/<tool>/`, and
+`theme-switch` copies it out and patches the palette's colours in. Edit the
+template; the rendered copy is overwritten at the next switch. A switch writes
+no tracked file at all (ar-4528); the `dirty-mains` watch trips on one that does.
 
 ### termux: generated, and tracked anyway
 
@@ -233,8 +232,8 @@ Git is the delivery mechanism. Gitignoring it would mean the phone never
 receives a palette change at all -- the file would exist only on whichever
 desktop last ran the switcher.
 
-The cost is real and accepted: the day/night timers regenerate it at 07:00 and
-19:00, so this single file dirties the tree twice a day. If that becomes
-annoying before the phone can run the generator itself, drop `termux` from the
-timers' `--only` set rather than gitignoring it -- the phone reads whatever was
-last committed either way, and an explicit theme switch still refreshes it.
+So a full switch (the day/night timers, a plain `theme-switch <name>`) leaves it
+alone: rendering it there dirtied the tree twice a day. `theme-switch <name>
+--only termux` writes it for the theme named, to commit; the phone reads
+whatever was last committed. On the phone itself (where
+`termux-reload-settings` exists) a full switch writes it too.

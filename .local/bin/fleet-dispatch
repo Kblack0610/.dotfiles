@@ -67,68 +67,62 @@
 
 set -uo pipefail
 
-# The agentctl conf is the one home of the DISPATCH_* tuning. The runner exports it; a run from a
-# shell (headroom, a hand start) reads it here, so both see the limits the timer pass uses. A value
-# already in the environment wins (the runner, tests). A key the conf sets gets a neutral default
-# below, never a second number: no board, no tier-3 lane, low water, targets and floors 0 and a load
-# cap of 0, so a run with no conf starts nothing on its own (headroom names the load cap as its hold).
+# The agentctl conf is the one home of the DISPATCH_* tuning, each key with its value and why. The
+# runner exports it; a run from a shell (headroom, a hand start) reads it here, so both see the limits
+# the timer pass uses. A value already in the environment wins (the runner, tests). The code holds no
+# default for any of DISPATCH_CONF_KEYS: a conf that is missing, did not parse or lost a key exits 78
+# naming each missing key, where a silent default would run a different fleet (plan
+# pasted-content-id-62f7-no-synthetic-lark P3). What stays below is mechanism: paths, test seams, the
+# matching vocabulary the judge policy names, and switches whose empty value is off.
 : "${DISPATCH_CONF:=$HOME/.config/agentctl/agents/fleet-dispatch.conf}"
-# dispatch_conf_load -- set each DISPATCH_* the conf names that the environment does not
+DISPATCH_CONF_KEYS=(
+  DISPATCH_PROFILES DISPATCH_PER_PASS DISPATCH_LOW_WATER DISPATCH_ORPHAN_HOURS
+  DISPATCH_TARGET_PRESENT DISPATCH_TARGET_AWAY DISPATCH_STATE_FRESH_MIN DISPATCH_MAX_LOAD
+  DISPATCH_HOST_MEM_MIN_PCT DISPATCH_START_LOAD DISPATCH_START_LOAD_MIN
+  DISPATCH_RED_FLOOR DISPATCH_PLAN_LOAD_FLOOR DISPATCH_FIX_TRIES DISPATCH_TRAINEE_REVIEW_HOURS
+  DISPATCH_FLEET_SHARE DISPATCH_FLEET_SHARE_H
+  DISPATCH_ROLLUP_DAYS DISPATCH_ROLLUP_MIN DISPATCH_ROLLUP_BOARD
+  DISPATCH_ROLLUP_TAGS DISPATCH_PROVIDER_HOLD_MIN
+  DISPATCH_SPRINT_FLOOR DISPATCH_RUN_FLOOR DISPATCH_STARVED_MIN
+  DISPATCH_IDLE_CAP_PCT DISPATCH_FLAP_MOVES DISPATCH_FINDING_FRESH_MIN DISPATCH_JUDGE_MAX
+  DISPATCH_DETAIL_CHARS DISPATCH_PLAN_BACKLOG DISPATCH_EXIT_MAX DISPATCH_START_WAIT
+  DISPATCH_REAP_GRACE DISPATCH_REAP_CONFIRM DISPATCH_HOST_DEAD DISPATCH_PREEMPT
+  DISPATCH_OFF_PROJECTS DISPATCH_CLEANUP_PROJECTS
+  DISPATCH_ASK_FRESH_H DISPATCH_PREEMPT_REST DISPATCH_PLAN_RECONCILE
+  DISPATCH_EPIC_VERIFY DISPATCH_LANE_FLOOR DISPATCH_CANARY_KEEP
+)
+# dispatch_conf_load -- set each DISPATCH_* the conf names that the environment does not, then exit 78
+# (EX_CONFIG) when any of DISPATCH_CONF_KEYS is still unset
 dispatch_conf_load() {
-  local k v
+  local k v missing=()
   while IFS='=' read -r k v; do
     [ -n "${!k+x}" ] || printf -v "$k" '%s' "$v"
-  done < <(sed -n "s/^\(DISPATCH_[A-Z_]*\)=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}[[:space:]]*$/\1=\2/p" "$DISPATCH_CONF" 2>/dev/null)
+  done < <(sed -n "s/^\(DISPATCH_[A-Z0-9_]*\)=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}[[:space:]]*$/\1=\2/p" "$DISPATCH_CONF" 2>/dev/null)
+  for k in "${DISPATCH_CONF_KEYS[@]}"; do [ -n "${!k+x}" ] || missing+=("$k"); done
+  [ "${#missing[@]}" -eq 0 ] && return 0
+  printf 'fleet-dispatch: %s does not set %s (each a bare KEY=VALUE line, no trailing comment); that conf is the one home of the dispatch tuning and the code holds no default\n' \
+    "$DISPATCH_CONF" "${missing[*]}" >&2
+  exit 78
 }
-dispatch_conf_load
+# The verbs a worker runs for the dispatching machine (probe_hosts, start --host, on_workers) are
+# mechanism, and a worker carries no private overlay, so they load no conf. One that read a tuning key
+# would still stop loud: an unbound variable under set -u.
+case "$([ "${BASH_SOURCE[0]}" = "$0" ] && echo "${1:-} ${2:-}")" in
+  "kit "* | "harness-ready "* | "lane-sandbox "* | "harness-prep "* | "trainee-patch "* | "item-end "* | "record --here" | "restore --here") DISPATCH_WORKER_VERB=1 ;;
+  *) DISPATCH_WORKER_VERB=''; dispatch_conf_load ;;
+esac
 
-: "${DISPATCH_PROFILES:=}"   # the notes profiles whose boards fill reads; empty reads none
-: "${DISPATCH_PER_PASS:=0}"   # most new sessions a pass; 0 is no cap: each start after the first reads the gate again, and the load it charges recent starts (DISPATCH_START_LOAD) ends the pass. A fixed 3 held a pass to 3 while headroom showed 36 free (2026-11-07)
-: "${DISPATCH_LOW_WATER:=0}"   # runnable queue items under which a pass tops the queue up from the board; 0: only an empty queue
-: "${DISPATCH_ORPHAN_HOURS:=72}"   # hours an agent row stays started with no queue item before reap un-starts it, and a gone item stays stuck on a PR reap cannot read or a merge it cannot prove before reap files it on the human sheet (reap_stuck)
-: "${DISPATCH_TARGET_PRESENT:=0}"   # the most live Claude sessions, hand starts included, a pass fills the fleet to while the human is here: the target is the live sessions plus the Opus sessions the Claude accounts' spend has spare at their weekly pace (claude-acct room --json .fleet.spare) under this cap, never under DISPATCH_RUN_FLOOR; the runner's own sessions also hold at most this many run units (a heavy item 2, a light one 1). The bigger target: the human's own work and the agents beside it get the room the away pace saved
-: "${DISPATCH_TARGET_AWAY:=0}"   # the same cap while the human is away (fleet-presence), so a night does not spend the week ahead of its line
-: "${DISPATCH_STATE_FRESH_MIN:=10}"   # minutes old the fleet state document (fleet-sessions --write, every minute) may be before the live count is unreadable, which holds every start
 : "${FLEET_STATE_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
-: "${DISPATCH_MAX_LOAD:=0}"   # 1-min load per core over which a start waits; 0 holds every start
-: "${DISPATCH_HOST_MEM_MIN_PCT:=20}"   # a fleet worker whose MemAvailable is under this percent of MemTotal takes no session (host_why): load was the only worker gate, and a 32 GB laptop holding 10 GB of pods could OOM at a cap that suits its load. Provisional, medium confidence: home-config scripts/host-headroom.py mem_min (NodeMemoryLow fires at 15), set 2026-11-18; revisit when a worker OOMs above it, or one it refuses never reaches NodeMemoryLow
-: "${DISPATCH_START_LOAD:=2.5}"   # 1-min load one session started in the last DISPATCH_START_LOAD_MIN minutes will still add; 0 is off. Provisional: 2.8 measured over 21 starts on 24 cores (2026-11-07), medium confidence; re-measure when the session mix changes
-: "${DISPATCH_START_LOAD_MIN:=5}"   # minutes a start counts as not yet in the load
-: "${DISPATCH_RED_FLOOR:=2}"   # red items that may start past the pace target, the weekly pace, load and the fleet-assess HOLD, apart from the run floor: a fix held behind a busy machine keeps the fleet red (human, 2026-11-06). Each tripped watch's red item (tag `watch`) adds one, so every tripped watch has a running owner the hour it trips (human, 2026-11-10, ar-1531); 0 is off for both
-: "${DISPATCH_FIX_TRIES:=2}"   # fix-ci sessions a parked review item with a red PR gets, and lander sessions one with a green PR gets, before it goes to the human sheet (own_parked_pr), and failed runs a board row gets before it is held and asked about (in_force, ask_failed_rows), as fleet-bench TRIAGE_FIX_TRIES bounds a red cause. Provisional: the plan's cap (2026-11-09, 16 of 20 parked PRs red), medium confidence; revisit when a third try would have landed one, or two burn on gate churn
-: "${DISPATCH_TRAINEE_REVIEW_HOURS:=6}"   # hours the oldest waiting trainee diff waits before its batch review is filed short of lanes.yaml review_batch (trainee_batch_start): on 11-19 three diffs sat 18h under a batch of 5, and no trainee run counts until its diff lands. Provisional: at most about four batches a day, low confidence; revisit when a diff still waits a day, or batches of one or two take most of the reviewer's Opus; 0 is off
-# The fleet share cap (plan lets-burn-the-midnitgh-cosmic-ritchie P4): the fleet's work on itself gets a
-# capped share of starts, the products the rest (share_why).
-# DISPATCH_FLEET_PROJECTS, space-separated, are the projects whose share of starts DISPATCH_FLEET_SHARE
-# caps; unset, the ones the human put on `#prio/low` (agent-runtime and home-config, the fleet's work on
-# itself), read in share_state, as project precedence has one store; empty is off.
-: "${DISPATCH_FLEET_SHARE:=30}"   # percent of the queue items started in the last DISPATCH_FLEET_SHARE_H hours (hand starts included) at or over which a pass starts no DISPATCH_FLEET_PROJECTS item but a red or the human's own (urgent from them, #requested, the human floor) (share_held), and the board fills from other projects, its cleanup lane included; the cap lets go when nothing else can start. 0 is off. The human's pick (2026-11-18, ask PaIYoy a), against 7d starts of agent-runtime 45.7% and home-config 11.7%
-: "${DISPATCH_FLEET_SHARE_H:=24}"   # hours of starts the share reads. Provisional: a day, so a week over the cap holds fleet work about a day, not a week (the human's "elastic, no rigidness", ask EF60vp), low confidence; revisit when the 7-day done split with the cap on still shows the fleet over 30%, or fleet reds wait (stale_urgent_d)
+: "${DISPATCH_PROC_STAT:=/proc/stat}"
 : "${DISPATCH_TRAINEE_REPOS:=$HOME/.dotfiles}"   # the checkouts a trainee may work in, space-separated: its provider is a free one that sees the row and the repo, so public repos only (trainee_public_why)
-: "${DISPATCH_ROLLUP_DAYS:=7}"   # days of trainee reject reasons trainee-rollup reads from LANE_RUNS. Provisional: a week is the plan's pick (2026-11-20), long enough for a slow pair's runs to add up, low confidence; revisit when a cause's row is filed only after its pair already left the roster, or a stale cause keeps a row open
-: "${DISPATCH_ROLLUP_MIN:=3}"   # rejects of one cause in that window that make one fix row (cmd_trainee_rollup). The plan's pick (why-are-more-trainees-twinkling P4, 2026-11-20): three is a cause, two may be chance. Provisional, low confidence; revisit when its rows are mostly dropped as noise, or a cause seen twice a week keeps costing runs
-: "${DISPATCH_ROLLUP_BOARD:=agent-runtime}"   # the agent board a trainee-rollup fix row goes on, and where its open twin is looked for
-: "${DISPATCH_ROLLUP_TAGS:=#size/s #of/ar-3691 #low}"   # a trainee-rollup fix row's tags: the ladder epic, and low, as an agent's follow-up is
-: "${DISPATCH_PROVIDER_HOLD_MIN:=60}"   # Provisional, low confidence (the gateway reports no reset time; revisit when it does): minutes a source takes no start after a run on it ended on a provider refusal (provider_hold_scan), unless its harness sets provider_hold_min in harnesses.json: the gateway publishes no reset time for a refused 5h budget, so the hold is the window's length, and the start after it is the probe
-: "${DISPATCH_CANARY_KEEP:=0}"   # canary items (tag `canary`) kept queued or running: canary_top_up queues the missing ones, a few at a time, never a week's set at once, and they start in queue order through the class mix (classes.json) like any item; the floor that started them past a full pace target is gone (plan vast-soaring-prism P3). Provisional: a week is about 150 canaries over five 5h nights at about 40 min each, low confidence; revisit when a week's set is still queued at week end; 0 is off
-: "${DISPATCH_SPRINT_FLOOR:=3}"   # live urgent rows of an open sprint (tag `sprint`, which promote puts on an item whose board row the project's open window holds) the sprint floor keeps running past a full pace target and the weekly pace (sprint_floor_start): urgent playground v0.5.4 sprint rows sat hours with no session while dispatch ran at its pace target on agent-runtime items (ar-3816). Provisional: 3 is a guess at the urgent rows one sprint holds at once, low confidence; revisit when an urgent sprint row still pages queue-starved with the floor met; 0 is off
-: "${DISPATCH_RUN_FLOOR:=0}"   # run sessions that may start past the weekly pace: hand starts never wait on pace, so without one no run starts while they fill the week
-: "${DISPATCH_STARVED_MIN:=60}"   # an urgent or high item runnable this long pages (watch queue-starved), and an open sprint row nobody owns this long (watch sprint-stalled)
-: "${DISPATCH_IDLE_CAP_PCT:=50}"   # the idle-cap share: at its pace target, under this percent of the counted live sessions busy is a red (cmd_idle_cap, watch fleet-cap-mostly-idle). Provisional, low confidence: one half is the plan's guess (ar-3741-takeover, 2026-11-20, live WORKING 23 of 34 counted); revisit when it trips while takeover_sample has nothing left to close, or never trips in a week the target held
 : "${PLANNED_REBOOT_WINDOW_S:=1800}"   # a lost server this soon after a planned reboot's boot does not page (planned_reboot)
 # The first message restore types into a reopened conversation whose queue item is running (each %s: the
 # item), so it carries on without a nudge: on 2026-11-16 restored sessions sat idle until the human
 # nudged each one.
 : "${RESTORE_PROMPT:=fleet-dispatch restore reopened this session after its tmux server was lost (a crash or reboot). Carry on with queue item %s from where you stopped; first check what changed while you were down (git status, your PR, agent-queue show %s).}"
-: "${DISPATCH_FLAP_MOVES:=3}"   # reap moves of one item in an hour that make it flapping (stats), when reap made one of them twice in a row
-: "${DISPATCH_FINDING_FRESH_MIN:=20}"   # two fleet-bench samples: a finding stays open 60 min after it stops firing
-: "${DISPATCH_JUDGE_MAX:=40}"   # rows judged per pass; the rest wait for the next pass
 : "${DISPATCH_JUDGE_CMD:=agentctl-run --agent dispatch-judge}"
-: "${DISPATCH_DETAIL_CHARS:=800}"   # of a row's detail lines, what the judge reads
 : "${DISPATCH_PLAN_RULES:=unclear bundle too-big multi-area stage question tier-above unknown}"   # policy rules whose skip sends an agent row to inbox-plan (skip_exits)
 : "${DISPATCH_HUMAN_RULES:=needs-person release prod-write compliance personal design}"   # policy rules whose skip moves an agent row to the human sheet or improvements.md (skip_exits)
-: "${DISPATCH_PLAN_BACKLOG:=10}"   # open #plan rows at which skip_exits tags no more for a plan; 0 sends none
-: "${DISPATCH_EXIT_MAX:=40}"   # skip exits skip_exits takes a pass, so a backlog drains over passes; 0 is no cap
 # The judge's policy is its agent conf's PROMPT (agentctl-run puts it ahead of the rows); read
 # here so a policy edit re-judges rows (policy_sig), and for the rule ids a verdict may name.
 : "${DISPATCH_POLICY:=$(. "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/dispatch-judge.conf" 2>/dev/null; printf '%s' "${PROMPT:-}")}"
@@ -146,14 +140,9 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 : "${DISPATCH_KINDS:=$HOME/.config/fleet-dispatch/kinds.json}"   # per row type: rank, entry, rung, exit, enabled (load_kinds)
 : "${DISPATCH_CLASSES:=$HOME/.config/fleet-dispatch/classes.json}"   # its `idle_pool` knob: the pools whose idle slots rank rows (load_pool_idle)
 : "${DISPATCH_LOADAVG:=/proc/loadavg}"
-: "${DISPATCH_START_WAIT:=120}"   # seconds a start waits for another start of a queue item to claim its own
 : "${DISPATCH_SANDBOX_PROFILE:=}"   # a lane sandbox profile (agent-run docs/contract.md "Lane sandbox") every claude start runs under; empty is off, and a start that cannot hold the profile is refused (lane_sandbox)
 : "${DISPATCH_SANDBOX_GH_TOKEN_FILE:=}"   # the sandboxed session's own repo-scoped GitHub token file, as GH_TOKEN_FILE is for a runner; empty gives it no token
-: "${DISPATCH_REAP_GRACE:=600}"   # seconds after a start before reap may read a missing Claude as gone: a claude still booting has no registry entry yet
-: "${DISPATCH_REAP_CONFIRM:=120}"   # seconds between the two reaps that must both miss a Claude before it counts as gone: two reads closer than that share one load spike, so they are one witness. Provisional: one false fail (ar-900, 2026-11-07) whose re-read a minute later listed the session, low confidence; revisit on the next false reap or one held a pass too long
-: "${DISPATCH_HOST_DEAD:=1800}"   # seconds a fleet worker with active items goes unanswered, on every reap in between, before reap reads it lost and re-queues its items elsewhere (host_lost). Provisional: two 15-minute passes, three misses in a row, where a reboot or container restart answers within one; low confidence; revisit on the first re-queue of a host that came back with its sessions alive
 : "${PARKED_DIR:=${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}}"   # claude-acct park: a parked pane is never reaped and holds no run unit
-: "${DISPATCH_PREEMPT:=1}"   # 1: an urgent item or fresh ask (runs_now) waiting only on run units parks the lowest-priority runner session for them at its next turn end (preempt_for), and a pass resumes it once units free (unpark_preempted); 0 is off. Provisional: the human's rule (2026-11-10), no thrash measured yet; revisit when one victim is parked twice in an hour
 # The machine-mode level scales the limits that bind starts; the conf holds the mid numbers.
 # Scaled into names of their own, never back into the exported DISPATCH_* a child would scale again.
 # shellcheck source=../lib/machine-mode.sh
@@ -163,42 +152,18 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 # shellcheck source=../lib/wake-pace.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/wake-pace.sh"
 LEVEL=$(machine_level)
-read -r PER_PASS MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH_PER_PASS" DISPATCH_MAX_LOAD "$DISPATCH_MAX_LOAD")
+[ -n "$DISPATCH_WORKER_VERB" ] || read -r PER_PASS MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH_PER_PASS" DISPATCH_MAX_LOAD "$DISPATCH_MAX_LOAD")
 # Tier-3 rows fill never promotes, whatever the judge says (decide rows and the release kind are off in
 # kinds.json): the human-merge list, release cuts, secrets and auth and production data migrations (ask BwiKfB, 2026-11-21), plus
 # money (the go hard gate), anything needing a device or the human's own machine, and wishes. Case-insensitive ERE.
 : "${DISPATCH_T3_SKIP:=\b(device|pads?|headset|playtest)\b|\b(waybar|hypr[a-z]*|ananicy|sysctl|sudo|wi-?fi)\b|\b(secrets?|passwords?|credentials?|rbw|sops|o?auth(entication|enticate|orization|orize|n|z)?[0-9]*|(api|access|signing|ssh|deploy) (keys?|tokens?))\b|\b(bank(ing)?|payments?|billing)\b|\b(prod|production|dns)\b|\b(data|schema|database|db) migrations?\b|\bmigrate (the )?(data|database|db|schema)\b|\brelease cuts?\b|\bcut (a |the )?release\b|would be cool|should i\b|\bmaybe\b|\bideally\b|investigate whether}"
 # Observer rows: an improvement row (`#kpi/<k>`, filed by `fleet-bench improve`) or a typed finding
 # retro and triage file. jq (Oniguruma) regex, matched case-insensitively against the row body.
-# Projects that dispatch nothing whatever their stage, so every row stays with the human (off_project).
-# Space-separated names, set in the conf (finance: it holds bank data, the human's pick of 2026-11-21).
-: "${DISPATCH_OFF_PROJECTS=}"
 : "${DISPATCH_T3_OBSERVER:=#kpi/|^[a-z]+\((kpi|lesson|watch|runner|unit|logs)\):}"
-# The AI systems: in these projects a row whose kind is cleanup in kinds.json (fix, chore, a deletion
-# refactor) is cleanup (cleanup_row). Cleanup ranks ahead of every other board row (a red is a queue item, which runs before the board)
-# and promotes as high whatever its #low (the human's asks of 2026-11-05 and 2026-11-06); an item here
-# with no tier counts as tier 3 (item_tier). It gates no lane: every tier-3 row merges behind the one gate. Empty turns it off.
-: "${DISPATCH_CLEANUP_PROJECTS=agent-runtime notes-cockpit}"
 # A row that touches what policy.md's tier 3 calls shared infrastructure is never cleanup, whatever
 # its kind: a `chore(deps): bump X` or a `fix: the deploy step` is an upgrade or a pipeline change,
 # not a deletion, so it does not rank as cleanup (review of #1222, 2026-11-06). Matched case-blind.
 : "${DISPATCH_CLEANUP_NOT:=\b(deps?|dependenc(y|ies)|bump(s|ed)?|pin(s|ned)?|upgrade[sd]?|version|migrat(e|es|ion|ions)|schema|deploy(s|ment)?|release|ci|workflows?)\b}"
-# Hours an item from a `#requested` row (its `requested` tag) runs as the human's ask: it starts past
-# the weekly pace and the pace target, and preempts a runner session at its turn end, as an urgent
-# item does (ASK_JQ). The human's rule (2026-11-18): what they asked for starts as soon as a machine
-# has room, whatever the spend pace. Provisional: 24 is "today", confidence medium; revisit when
-# asks drain a week early or one waits past the window. 0 turns it off.
-: "${DISPATCH_ASK_FRESH_H:=24}"
-# Minutes a preempted session is spared another preempt (preempted_lately): a park and resume costs a
-# cold cache. Provisional: the revisit trigger on DISPATCH_PREEMPT, one victim parked twice an hour.
-: "${DISPATCH_PREEMPT_REST:=60}"
-# 0 stops reap queueing the phases an approved plan's dead session left (reconcile_plans).
-: "${DISPATCH_PLAN_RECONCILE:=1}"
-# 0 stops reap queueing a verify item for each epic whose leaves have all landed (reconcile_epics).
-: "${DISPATCH_EPIC_VERIFY:=1}"
-# The lowest model-lane lane a started item runs on: every dispatched session lands its own PR,
-# and the human approved Sonnet for that (2026-11-05), not Haiku.
-: "${DISPATCH_LANE_FLOOR:=sonnet}"
 DIR="${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}"
 VERDICTS="$DIR/verdicts.jsonl"
 AQ_EX_FINISHED=4   # agent-queue add's exit when the slug's item already finished ok (its finished_ok)
@@ -1192,7 +1157,7 @@ share_full() { share_state; [ "$(jq -r .full <<<"$SHARE_STATE")" = true ]; }
 share_why() {
   [ "${HUMAN_PASS:-0}${TRAINEE_PASS:-0}" = 00 ] || return 0
   share_state
-  jq -r --argjson s "$SHARE_STATE" --argjson pct "${DISPATCH_FLEET_SHARE:-0}" --argjson h "${DISPATCH_FLEET_SHARE_H:-24}" "$SHARE_JQ"'
+  jq -r --argjson s "$SHARE_STATE" --argjson pct "${DISPATCH_FLEET_SHARE:-0}" --argjson h "$DISPATCH_FLEET_SHARE_H" "$SHARE_JQ"'
     select(share_held($s))
     | "fleet share: \($s.fleet) of the \($s.total) items started in \($h)h are fleet work (\($s.projects | join(", "))), at or over DISPATCH_FLEET_SHARE=\($pct)%"' <<<"$1" 2>/dev/null
   return 0
@@ -1209,8 +1174,10 @@ floor_open() {
 }
 
 # live_tagged <tag> -> the sessions of the items tagged <tag> the runner started that are live, one a
-# line: the red floor's count (live_reds) and the canaries canary_top_up keeps.
+# line: the red floor's count (live_reds) and the canaries canary_top_up keeps. live_plans -> those of
+# the approved plan phases (human_plan_phases' items): the plan load floor's count.
 live_tagged() { live_where '(" " + (.tags // "") + " ") | contains(" '"$1"' ")'; }
+live_plans() { live_where '(.plan // "") != "" and (.from // "human") == "human"'; }
 live_where() {
   agent-queue list --json --state active 2>/dev/null | jq -r '
     select(.state != "queued" and .by == "dispatch")
@@ -1243,6 +1210,18 @@ red_floor_open() {
   [ "${DISPATCH_RED_FLOOR:-0}" -gt 0 ] 2>/dev/null || return 1
   local live=${RED_LIVE:-$(live_reds | grep -c . || true)} watch=${RED_WATCH:-$(watch_reds)}
   [ $(( live + ${RED_STARTED:-0} )) -lt $(( DISPATCH_RED_FLOOR + watch )) ]
+}
+
+# plan_load_floor_open -- an approved plan phase's start is due past this machine's load: PLAN_PASS says
+# the human floor is starting approved plan phases past load (human_floor_start), and the live ones the
+# runner started plus this pass's (PLAN_STARTED) are under DISPATCH_PLAN_LOAD_FLOOR. Load
+# and a fleet-assess HOLD on load do not hold it (machine_why); every other gate still does. PLAN_LIVE
+# is cmd_run's count before its first start, as RED_LIVE.
+plan_load_floor_open() {
+  [ "${PLAN_PASS:-0}" = 1 ] || return 1
+  [ "${DISPATCH_PLAN_LOAD_FLOOR:-0}" -gt 0 ] 2>/dev/null || return 1
+  local live=${PLAN_LIVE:-$(live_plans | grep -c . || true)}
+  [ $(( live + ${PLAN_STARTED:-0} )) -lt "$DISPATCH_PLAN_LOAD_FLOOR" ]
 }
 
 # ASK_JQ: `fresh_ask($now; $h)` is an item from a #requested row (dispatch copies the tag onto it)
@@ -1357,23 +1336,32 @@ sprint_floor_start() {
 }
 
 # human_floor_open -- HUMAN_PASS says the start is the human's urgent item or fresh ask (human_floor_start): an account
-# refused for its weekly pace alone takes it, as on a floor (acct_room). The reserve, the 5h window,
+# refused for its weekly pace alone takes it, as on a floor (acct_room); PLAN_PASS adds the plan load floor (plan_load_floor_open). The reserve, the 5h window,
 # committed burn, load, fleet-assess, agent-hold and the github budget still hold it.
 human_floor_open() { [ "${HUMAN_PASS:-0}" = 1 ]; }
 
 # human_floor_start <item json lines> <room> <why> -- start the human's urgent items and fresh asks among them past
 # <why>, the gates that held the pass, once nothing but the weekly pace holds it; the hold stands
-# (start_item). Rc FLOOR_SHUT when none is queued or another gate holds.
+# (start_item). Past this machine's load only the approved plan phases among them start, on the plan
+# load floor (plan_load_floor_open). Rc FLOOR_SHUT when none is queued or another gate holds.
 human_floor_start() {
-  local urgent rc
+  local urgent rc past=''
   urgent=$(human_urgent "$1")
-  [ -n "$urgent" ] && [ -z "$(HUMAN_PASS=1 gate)" ] || return "$FLOOR_SHUT"
-  say "$3; the human's urgent items and asks start past the weekly pace"
+  [ -n "$urgent" ] || return "$FLOOR_SHUT"
+  if [ -n "$(HUMAN_PASS=1 gate)" ]; then
+    urgent=$(human_plan_phases "$urgent")
+    [ -n "$urgent" ] && [ -z "$(HUMAN_PASS=1 PLAN_PASS=1 gate)" ] || return "$FLOOR_SHUT"
+    past=$(HUMAN_PASS=1 machine_here_why) PLAN_PASS=1
+  fi
+  say "$3; the human's urgent items and asks start past the weekly pace${past:+; past $past only approved plan phases start, on the plan load floor (DISPATCH_PLAN_LOAD_FLOOR=$DISPATCH_PLAN_LOAD_FLOOR)}"
   HUMAN_PASS=1 FLOOR_GATE=$3
   start_items "$urgent" "$2"; rc=$?
-  HUMAN_PASS=0 FLOOR_GATE=''
+  HUMAN_PASS=0 PLAN_PASS=0 FLOOR_GATE=''
   return "$rc"
 }
+
+# plan_load_past -> the machine holds a start on the plan load floor goes past (PLAN_PASS), or nothing.
+plan_load_past() { [ "${PLAN_PASS:-0}" = 1 ] || return 0; PLAN_PASS=0 machine_here_why; }
 
 # is_red <item json> -- the item carries the red tag.
 is_red() { [[ " $(jq -r '.tags // ""' <<<"$1") " == *" red "* ]]; }
@@ -5166,6 +5154,8 @@ start_items() {
     [ "$rc" -ne 5 ] || continue
     [ "$rc" -eq 0 ] && STARTED=$(( ${STARTED:-0} + 1 )) && share_count "$PICKED"
     [ "$rc" -eq 0 ] && is_red "$PICKED" && RED_STARTED=$(( ${RED_STARTED:-0} + 1 ))
+    # Any approved plan phase a start of this pass took, by any path, counts toward the plan load floor (live_plans' test).
+    [ "$rc" -eq 0 ] && jq -e '(.plan // "") != "" and (.from // "human") == "human"' <<<"$PICKED" >/dev/null 2>&1 && PLAN_STARTED=$(( ${PLAN_STARTED:-0} + 1 ))
     if [ "$rc" -eq 0 ] && [ "${HUMAN_PASS:-0}" = 1 ]; then
       local plan; plan=$(jq -r '.plan // ""' <<<"$PICKED")
       [ -z "$plan" ] || PLANS_STARTED="${PLANS_STARTED:+$PLANS_STARTED$'\n'}$plan"
@@ -5868,6 +5858,8 @@ start_item() {
     return 5
   fi
   harness=$ROUTE_HARNESS
+  local plan_past; plan_past=$(plan_load_past)
+  [ -z "$plan_past" ] || plan_past=", past $plan_past on the plan load floor (DISPATCH_PLAN_LOAD_FLOOR=$DISPATCH_PLAN_LOAD_FLOOR)"
   if [ "$harness" = claude ]; then
     # A floor start leaves the hold standing (keep, settle): a red-floor one went past the machine
     # gates, and a run-floor one past an account over its pace has no room either.
@@ -5880,6 +5872,7 @@ start_item() {
       floor=" on the human floor, past the weekly pace: $([ "$(runs_now_label "$it")" = urgent ] && echo "urgent from the human" || echo "the human's ask")"
       [ -z "$(jq -r '.plan // ""' <<<"$it")" ] || floor=" on the human floor, past the weekly pace: a ready phase of a plan the human approved"
       keep=$ACCT_PAST_PACE
+      [ -z "$plan_past" ] || { floor="$floor$plan_past"; keep=1; }
     elif floor_open; then
       floor=" on the run floor (DISPATCH_RUN_FLOOR=$DISPATCH_RUN_FLOOR)"
       keep=$ACCT_PAST_PACE
@@ -5894,6 +5887,7 @@ start_item() {
     [ "$ACCT_RC" = 0 ] || { floor="$floor while $ACCT_WHY"; keep=1; }
     if [ "${TRAINEE_PASS:-0}" = 1 ]; then floor="$floor, on the trainee floor (lanes.yaml trainee:, a free slot)"; keep=1; fi
     if [ "${BATCH_PASS:-0}" = 1 ]; then floor="$floor, on the trainee floor: a batch review of the waiting trainee diffs"; keep=1; fi
+    [ -z "$plan_past" ] || { floor="$floor$plan_past"; keep=1; }
     START_ORIGIN=run START_VERDICT=$verdict cmd_start --item "$slug" --harness "$harness" --model "$ROUTE_MODEL" ${PLACE_HOST:+--host "$PLACE_HOST"}
   fi
   rc=$?; exec 7>&-
@@ -6003,7 +5997,8 @@ cmd_starved() {
   # (queue-starved) for the human to decide. 2026-11-10: four sat 4h, 2h of it under a dispatch hold
   # that read as nothing starved (ar-1432).
   mine=$(human_urgent "$queue" | jq -c --argjson cut "$cut" 'select(.t != null and .t < $cut)')
-  human=$(jq -r '"\(.slug) (\(if (.plan // "") != "" then "a ready phase of a plan the human approved" else (if .priority == "urgent" then "urgent from the human" else "an ask the human made" end) end), queued \(.queued))"' <<<"$mine")
+  local fmt='"\(.slug) (\(if (.plan // "") != "" then "a ready phase of a plan the human approved" else (if .priority == "urgent" then "urgent from the human" else "an ask the human made" end) end), queued \(.queued))"'
+  human=$(jq -r "$fmt" <<<"$mine")
   if ! agent-hold check dispatch >/dev/null 2>&1; then
     [ -n "$human" ] || { echo "dispatch is held (agent-hold), so nothing is starved"; return 0; }
     # gate stops at the hold and names it in the words the Stopped line uses.
@@ -6057,8 +6052,16 @@ cmd_starved() {
   why=$(gate)
   if [ -n "$why" ] && ! sed 's/; /\n/g' <<<"$why" | grep -qvE '^(fleet-assess says HOLD|load )' &&
     [ "$room" = 0 ]; then
-    [ -n "$human" ] || { echo "held by load ($why), so nothing is starved"; [ -z "$dead" ]; return; }
-    echo "held by load ($why), and the human's urgent items wait on it:"
+    # How many approved plan phases wait on load, beside the plan load floor that lets some past it. With
+    # that floor full they wait on the human's own bound (DISPATCH_PLAN_LOAD_FLOOR): not starved.
+    local live_pl note
+    live_pl=$(live_plans | grep -c . || true)
+    note="$(jq -s '[.[] | select((.plan // "") != "")] | length' <<<"$mine") approved plan phase(s) wait on load; the plan load floor has $live_pl of DISPATCH_PLAN_LOAD_FLOOR=$DISPATCH_PLAN_LOAD_FLOOR live"
+    if [ "${DISPATCH_PLAN_LOAD_FLOOR:-0}" -gt 0 ] 2>/dev/null && [ "$live_pl" -ge "$DISPATCH_PLAN_LOAD_FLOOR" ]; then
+      human=$(jq -r 'select((.plan // "") == "") | '"$fmt" <<<"$mine")
+    fi
+    [ -n "$human" ] || { echo "held by load ($why), so nothing is starved ($note)"; [ -z "$dead" ]; return; }
+    echo "held by load ($why), and the human's urgent items wait on it ($note):"
     sed 's/^/  /' <<<"$human"
   fi
   # shellcheck source=/dev/null
@@ -6778,17 +6781,28 @@ load_why() {
 # assess_why <red 0|1> -> "fleet-assess says HOLD" while fleet-assess puts this machine over its high
 # mark (load, memory, stall, temperature, a local load hold), or nothing; the red floor goes past it.
 # It reads only this machine, so like load_why it holds a start here, not one a fleet worker takes.
+# <1> is 1 on the red floor, which goes past every HOLD, and 2 on the plan load floor, which goes past a
+# HOLD on load alone: its probe puts load's mark out of reach, as fleet-assess's verdict names only its
+# first reason and load comes first, so memory, stall and temperature still hold by its own thresholds,
+# and "HOLD held, load ..." is load's low mark.
 assess_why() {
-  [ "$1" = 1 ] || fleet-assess --watch-probe >/dev/null 2>&1 || echo "fleet-assess says HOLD"
-  return 0
+  local v
+  [ "$1" != 1 ] || return 0
+  if [ "$1" = 2 ]; then
+    v=$(FLEET_HOLD_LOAD_X=1000000 fleet-assess --watch-probe 2>/dev/null) && return 0
+    [[ "$v" == "HOLD held, load "* ]] && return 0
+  else
+    fleet-assess --watch-probe >/dev/null 2>&1 && return 0
+  fi
+  echo "fleet-assess says HOLD"
 }
 
 # machine_why -> this machine's own holds (assess_why, load_why), "; "-joined, or nothing.
 # gate reads it whole and drops it while a fleet worker is open; pick_item reads it per start.
 machine_why() {
-  local red=0 p parts=() out
-  red_floor_open && red=1
-  for p in "$(assess_why "$red")" "$(load_why "$red")"; do [ -z "$p" ] || parts+=("$p"); done
+  local red=0 assess=0 p parts=() out
+  if red_floor_open; then red=1 assess=1; elif plan_load_floor_open; then red=1 assess=2; fi
+  for p in "$(assess_why "$assess")" "$(load_why "$red")"; do [ -z "$p" ] || parts+=("$p"); done
   [ "${#parts[@]}" -gt 0 ] || return 0
   out=$(printf '%s; ' "${parts[@]}"); printf '%s' "${out%; }"
 }
@@ -6938,7 +6952,7 @@ cmd_run() {
   # Once a pass, so each subshell of the pass reads the same gates; after the reap, whose returns
   # write gates onto the rows they un-start (agent-queue return_gates).
   GATES_LOADED=''; load_gates
-  HUMAN_PASS=0 SPRINT_PASS=0 PLANS_STARTED=''
+  HUMAN_PASS=0 SPRINT_PASS=0 PLAN_PASS=0 PLAN_STARTED=0 PLANS_STARTED=''
   QUEUE_HELD='' SHARE_HELD='' SHARE_STATE='' PREEMPTED=0 STARTED=0 RED_STARTED=0 RED_PASS=0 RUN_GATED=0 FLOOR_HELD=0 FLOOR_GATE='' JUDGE_RC= JUDGE_WHY= PLAN_TAGGED=0 TRIAGE_FAILED= NO_ROOM=
   NO_ROUTE=(); unset NEXT_QUEUED   # set once a pass has read the queue (trainee or sprint floor), even to nothing
   [ "$DRY" = 1 ] || triage_pass
@@ -6952,7 +6966,7 @@ cmd_run() {
   live=$(units_on '' <<<"$runs")
   FLOOR_LIVE=$(grep -c . <<<"$runs" || true)
   probe_hosts "$runs"
-  RED_LIVE=$(live_reds | grep -c . || true) RED_WATCH=$(watch_reds)
+  RED_LIVE=$(live_reds | grep -c . || true) RED_WATCH=$(watch_reds) PLAN_LIVE=$(live_plans | grep -c . || true)
   UNITS_FREE=$(( TARGET - live ))
   # Room is this machine's units plus every placed worker's.
   # A worker adds room only when it takes a session now (host_why), not merely by being placed.
