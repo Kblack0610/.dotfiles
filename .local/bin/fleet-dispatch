@@ -6103,8 +6103,9 @@ cmd_starved() {
     local live_pl note
     live_pl=$(live_plans | grep -c . || true)
     note="$(jq -s '[.[] | select((.plan // "") != "")] | length' <<<"$mine") approved plan phase(s) wait on load; the plan load floor has $live_pl of DISPATCH_PLAN_LOAD_FLOOR=$DISPATCH_PLAN_LOAD_FLOOR live"
-    [ "${DISPATCH_PLAN_LOAD_FLOOR:-0}" -le 0 ] || [ "$live_pl" -lt "$DISPATCH_PLAN_LOAD_FLOOR" ] ||
+    if [ "${DISPATCH_PLAN_LOAD_FLOOR:-0}" -gt 0 ] 2>/dev/null && [ "$live_pl" -ge "$DISPATCH_PLAN_LOAD_FLOOR" ]; then
       human=$(jq -r 'select((.plan // "") == "") | '"$fmt" <<<"$mine")
+    fi
     [ -n "$human" ] || { echo "held by load ($why), so nothing is starved ($note)"; [ -z "$dead" ]; return; }
     echo "held by load ($why), and the human's urgent items wait on it ($note):"
     sed 's/^/  /' <<<"$human"
@@ -6873,12 +6874,18 @@ idle_why() {
 # mark (load, memory, stall, temperature, a local load hold), or nothing; the red floor goes past it.
 # It reads only this machine, so like load_why it holds a start here, not one a fleet worker takes.
 # <1> is 1 on the red floor, which goes past every HOLD, and 2 on the plan load floor, which goes past a
-# HOLD on load alone ("HOLD load ..." or "HOLD held, load ..."): memory, stall and temperature still hold.
+# HOLD on load alone: its probe puts load's mark out of reach, as fleet-assess's verdict names only its
+# first reason and load comes first, so memory, stall and temperature still hold by its own thresholds,
+# and "HOLD held, load ..." is load's low mark.
 assess_why() {
   local v
   [ "$1" != 1 ] || return 0
-  v=$(fleet-assess --watch-probe 2>/dev/null) && return 0
-  [ "$1" = 2 ] && [[ "$v" == "HOLD load "* || "$v" == "HOLD held, load "* ]] && return 0
+  if [ "$1" = 2 ]; then
+    v=$(FLEET_HOLD_LOAD_X=1000000 fleet-assess --watch-probe 2>/dev/null) && return 0
+    [[ "$v" == "HOLD held, load "* ]] && return 0
+  else
+    fleet-assess --watch-probe >/dev/null 2>&1 && return 0
+  fi
   echo "fleet-assess says HOLD"
 }
 

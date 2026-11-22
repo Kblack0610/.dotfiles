@@ -225,9 +225,15 @@ pace_shut() {
 
 
 # red_held_machine, with fleet-assess holding on load alone: the only HOLD the plan load floor goes past.
+# Its probe answers as fleet_verdict does: with load's mark out of reach (FLEET_HOLD_LOAD_X), the next
+# reason, $PROBE_MEM ("HOLD memory ..." when set), else OK.
 plan_load_held_machine() {
   red_held_machine
-  stub fleet-assess '[ "$1" = --watch-probe ] && { echo "HOLD load 2.0x cores >= 1.75x"; exit 1; }; [ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
+  stub fleet-assess '[ "$1" = --github ] && { echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0; }
+[ "$1" = --watch-probe ] || exit 0
+[ "${FLEET_HOLD_LOAD_X:-1.75}" = 1000000 ] || { echo "HOLD load 2.0x cores >= 1.75x"; exit 1; }
+[ -z "${PROBE_MEM:-}" ] || { echo "$PROBE_MEM"; exit 1; }
+echo "OK load 2.0x cores"'
 }
 
 # 2026-11-20: at load 29.6 to 77 on 28 cores the load gate held every approved plan phase for a day,
@@ -250,9 +256,9 @@ plan_load_held_machine() {
   refute_output --partial 'started queue item hu'
 }
 
-@test "plan load floor: a fleet-assess HOLD on memory, not load, still holds an approved plan phase" {
+@test "plan load floor: memory over its mark beside load, which fleet-assess's verdict names first, still holds an approved plan phase" {
   plan_load_held_machine
-  stub fleet-assess '[ "$1" = --watch-probe ] && { echo "HOLD memory 5% free < 10%"; exit 1; }; [ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
+  export PROBE_MEM="HOLD memory 5% free < 10%"
   plan_queued pa '- [ ] one'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'fleet-assess says HOLD'
