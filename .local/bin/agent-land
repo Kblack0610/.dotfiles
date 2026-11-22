@@ -159,7 +159,7 @@ net_retry() {
 # check counts only a run of its own event created or (re-)started after it completed, or with a higher
 # run id than the run its link names, never the open run it failed in; a queued run's startedAt can be
 # empty or zero, so createdAt counts too. The id: a body edit's re-run can open before the run it
-# cancels fails its aggregate check, so it predates that red (train #3108, 2026-11-21, ar-2940).
+# cancels fails its aggregate check, so it predates that red (train #3108, 2026-11-21 22:25 local, 06:25Z, ar-2940).
 newer_runs() {
   local runs
   runs=$(gh run list "${R[@]}" --commit "$(git rev-parse HEAD)" --json databaseId,status,workflowName,event,createdAt,startedAt 2>&1) || { printf '%s' "$runs"; return 1; }
@@ -236,7 +236,7 @@ wait_checks() {
         try=0
         continue
       fi
-      # A failed check whose workflow has a run on HEAD started after it is superseded: the edit
+      # A failed check whose workflow has a run on HEAD started after it, or with a higher run id (newer_runs), is superseded: the edit
       # that adds the gate line re-runs Checks, and a watch read seconds later still sees the old
       # red (unity-core-playground#2492 lost the landing slot that way, 2026-11-21). Wait on the
       # newer run; a failed or unreadable look leaves the red as the verdict.
