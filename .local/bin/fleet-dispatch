@@ -10,7 +10,7 @@
 #   fleet-dispatch exits [--dry-run] give each skipped agent row its rule's exit (skip_exits; each run pass does); --dry-run lists them
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
 #   fleet-dispatch promote --project P [--profile X] [--agent] [--dispatch] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item; --dispatch makes it a capped pull like dispatch's own
-#   fleet-dispatch pull-after ID     promote, and start unless low, the open rows gated #after/ID: agent-queue runs it when ID's item closes ok
+#   fleet-dispatch pull-after [--queue-only] ID  promote, and start unless low or --queue-only, the open rows gated #after/ID: agent-queue runs it when ID's item closes ok
 #   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session; a row whose #ask/ gate the human answered another way is held or dropped, one on a cancelled ask is held (or follows the ask it joined)
 #   fleet-dispatch headroom [--json] how many more queue items could start now, and the margin under each limit
 #   fleet-dispatch idle-cap          rc 1 when live sessions are at the pace target with under DISPATCH_IDLE_CAP_PCT of them busy,
@@ -7480,9 +7480,18 @@ cmd_promote() {
 # pass in its turn (agent-queue waits_turn). The row it waited on may still read open (an item with a PR
 # closes its row at the merge, after this move), so its after/ counts clear here: the ok close is the
 # proof. Under the dispatch hold (agent-hold) nothing is pulled; the pass after the release does it.
+# --queue-only (agent-queue under AGENT_QUEUE_START=0, the shepherd's idle close) queues the rows and
+# starts none.
 cmd_pull_after() {
-  local id=${1-} board c pri err kept='' rc
-  [ -n "$id" ] || { say "usage: fleet-dispatch pull-after <row id>"; return 2; }
+  local id='' board c pri err kept='' rc queue_only='' a
+  for a in "$@"; do
+    case "$a" in
+      --queue-only) queue_only=1 ;;
+      -*) say "pull-after: unknown argument: $a"; return 2 ;;
+      *) id=$a ;;
+    esac
+  done
+  [ -n "$id" ] || { say "usage: fleet-dispatch pull-after [--queue-only] <row id>"; return 2; }
   agent-hold check dispatch >/dev/null 2>&1 || { say "pull-after $id: dispatch is held, so the rows after it wait for a pass"; return 0; }
   board=$(notes board --json 2>/dev/null) || { say "pull-after $id: notes board --json failed, so a pass promotes the rows after it"; return 1; }
   load_gates
@@ -7503,6 +7512,7 @@ cmd_pull_after() {
     # A plan row whose chain filed every phase on its own row queued nothing to start.
     [ -n "$PROMOTED" ] || continue
     kept="$kept $PROMOTED"
+    [ -z "$queue_only" ] || continue
     pri=$(agent-queue show "$PROMOTED" --json 2>/dev/null | jq -r '.priority // empty')
     if [ "$pri" = low ]; then say "pull-after $id: $PROMOTED is low priority, so a pass starts it in its turn"; continue; fi
     cmd_start --item "$PROMOTED" </dev/null 3<&- || say "pull-after $id: $PROMOTED could not start now, so it stays queued for a pass"

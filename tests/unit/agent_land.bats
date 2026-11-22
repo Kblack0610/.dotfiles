@@ -177,6 +177,8 @@ EOF
 
   # The real agent-queue, on a sandbox store: the item steps are its verbs.
   cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  # An ok close pulls the rows after it (pull_after), even under START=0: a silent stub, never the PATH one.
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/fleet-dispatch"; chmod +x "$SANDBOX/bin/fleet-dispatch"
   export AGENT_QUEUE_DIR="$SANDBOX/queue" AGENT_QUEUE_START=0
   export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh"
   unset CLAUDE_CODE_SESSION_ID
