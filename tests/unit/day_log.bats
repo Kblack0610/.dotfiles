@@ -49,8 +49,10 @@ EOF
 printf "game\\t3\\t10\\t2000000\\t12.5\\t0\\n"
 EOF
   printf '#!/usr/bin/env bash\nprintf "unity\\t2026-10-28T15:49:30-0700\\tshepherd\\thot\\n"\n' > "$SANDBOX/bin/hold-stub"
-  # needs-stub: needs-figure needs_question serves $SANDBOX/needq (0 when none), "?" and exit 1 when it holds "?"
-  printf '#!/usr/bin/env bash\n[ "$1" = needs_question ] || exit 2\nn=$(cat "%s" 2>/dev/null || echo 0); echo "$n"; [ "$n" = "?" ] && exit 1; exit 0\n' "$SANDBOX/needq" > "$SANDBOX/bin/needs-stub"
+  local f; for f in headline working need_you stalled ready_to_close; do echo 0 > "$SANDBOX/sessions.$f"; done
+  # needs-stub: hub-figure. needs_question serves $SANDBOX/needq (0 when none), "?" and exit 1 when it holds "?";
+  # sessions_<part> serves $SANDBOX/sessions.<part>, "?" and exit 1 when the file is absent
+  printf '#!/usr/bin/env bash\ncase "$1" in\n  needs_question) n=$(cat "%s" 2>/dev/null || echo 0); echo "$n"; [ "$n" = "?" ] && exit 1; exit 0 ;;\n  sessions_*) n=$(cat "%s.${1#sessions_}" 2>/dev/null) || { echo "?"; exit 1; }; echo "$n"; exit 0 ;;\n  *) exit 2 ;;\nesac\n' "$SANDBOX/needq" "$SANDBOX/sessions" > "$SANDBOX/bin/needs-stub"
   # queue-stub: agent-queue list serves $SANDBOX/items (the work ledger), stats serves $SANDBOX/queue;
   # each fails while its file is missing
   export DAYLOG_QUEUE_CMD=queue-stub
@@ -297,6 +299,20 @@ day_record() { jq -n "{schema: 2, date: \"$1\", merged: []} | $2" > "$DAYLOG_DIR
   assert_output 0
   run rec -c '[.live, .waiting.main[0].repo, .waiting.needs[0].who, .bench.headline, .fleet.unity_runs]' 2026-10-27
   assert_output '[false,"game","game-agent-3","bench 24h: 2 sessions, 3 phases ticked",2]'
+}
+
+@test "a live record's session counts are the Sessions figures, not a count of the state document" {
+  # the state document lists 3 sessions; hub-core's card counts 5 live (every host, less the fleet's own)
+  echo '{"sessions":[{"target":"a/x:1","bucket":"WORKING"},{"target":"a/y:1","bucket":"NEEDS"},{"target":"a/z:1","bucket":"DONE"}],"main":[],"asks":[]}' > "$DAYLOG_STATE"
+  local f; for f in headline:5 working:2 need_you:1 stalled:1 ready_to_close:1; do echo "${f#*:}" > "$SANDBOX/sessions.${f%%:*}"; done
+  DAYLOG_NOW=1793127600 "$SUBJECT" snapshot --date 2026-10-27
+  run rec -c '[.fleet.sessions, .unreadable]' 2026-10-27
+  assert_output '[{"headline":5,"working":2,"need_you":1,"stalled":1,"ready_to_close":1},[]]'
+  # Negative control: no figure from hub-core is named as unread, and nothing is counted in its place
+  rm "$SANDBOX/sessions.stalled"
+  DAYLOG_NOW=1793127600 "$SUBJECT" snapshot --date 2026-10-27
+  run rec -c '[.fleet.sessions.stalled, .unreadable]' 2026-10-27
+  assert_output '[null,["Sessions figure"]]'
 }
 
 @test "json reads a past day's record and refuses a day with none, or one still to come" {

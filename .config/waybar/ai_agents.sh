@@ -9,11 +9,13 @@
 # The hover opens with one sentence (waiting, stuck, working), then any warning, then a section per
 # stage, worst first, filled to the bar channel's line cap (summary_bar.sh); a last line counts what
 # was cut and points at the click (agent-panel, every session).
-# Counts are fleet-sessions on Prometheus, so the laptop thin client reads the same; rows are
-# `hub bar --json` from the summary/bar topic, which carries the task and reason no label can. A missing
-# topic is one amber line and the counts still show. Prometheus unreadable reads ? in amber.
-# Session series join only to a fleet_sessions.prom fresher than STATE_LATE_SECS; one selector reads
-# age and idle, because `a or b` drops b's series whose labels match a's (same labels on both).
+# The counts are hub-core's Sessions card figures (`hub cards --json --figures`: headline, working,
+# need_you, stalled, ready_to_close; every host, less the fleet's own), which summary/cards carries to
+# Prometheus, live topics only, as health.sh reads its Health figures; this script counts no session.
+# Rows are `hub bar --json` from the summary/bar topic, which carries the task and reason no label can.
+# A missing topic is one amber line and the counts still show; counts nobody publishes read ? in amber.
+# fleet_sessions.prom is read for its age alone: the tick that writes the state the card counts.
+# Prometheus unreadable reads ? in amber.
 # Sources and states: .local/src/docs/fleet-states.md, the custom/ai-agents row.
 
 set -u
@@ -33,8 +35,7 @@ STATE_LATE_SECS=300
 now="${AGENTS_NOW:-$(date +%s)}"
 title="<b>Sessions:</b>"
 MTIME='node_textfile_mtime_seconds{file=~".*/fleet_sessions.prom"}'
-q='{__name__=~"agent_session_(age|idle)_minutes"} and on (instance) (time() - '"$MTIME < $STATE_LATE_SECS)"
-q+=" or agent_session_bucket or $MTIME"
+q="$MTIME"' or ({__name__=~"mqtt_figures_sessions_(headline|working|need_you|stalled|ready_to_close)", topic=~"agents_.+_summary_cards"} and on (topic) cc:agents_topic_live)'
 
 if ! raw="$(prom_q "$q")"; then
   emit "$ICON $(paint "$C_YEL" '?')" "$title cannot read $PROM_URL" warn
@@ -59,40 +60,38 @@ for s in "${stale[@]}"; do
   flag $((fresh ? 1 : 2)) "fleet_sessions.prom on $host is $(prom_dur "$age") old; is fleet-state.timer running there, or is it a leftover to delete?"
 done
 
-# The bucket vocabulary fleet-sessions publishes: which buckets are in progress and which finished.
-declare -A IN_PROGRESS=() FINISHED=()
-n_order=0
-while IFS=$'\t' read -r b ip fin; do
-  n_order=$((n_order + 1))
-  [ "$ip" = 1 ] && IN_PROGRESS[$b]=1
-  [ "$fin" = 1 ] && FINISHED[$b]=1
-done < <(jq -r '[.data.result[] | select(.metric.__name__ == "agent_session_bucket")
-    | {b: .metric.bucket, i: .metric.in_progress, f: .metric.finished}] | unique_by(.b)[] | [.b, .i, .f] | @tsv' <<< "$raw")
-
-# Each session's bucket, once however many scrapes or series carry it.
-total=0 in_progress=0 n_work=0 n_ready=0 n_wait=0 n_stalled=0
-while read -r b; do
-  [ -n "$b" ] || continue
-  total=$((total + 1))
-  [ -n "${IN_PROGRESS[$b]:-}" ] && in_progress=$((in_progress + 1))
-  [ -n "${FINISHED[$b]:-}" ] && n_ready=$((n_ready + 1))
-  case $b in WORKING) n_work=$((n_work + 1)) ;; NEEDS) n_wait=$((n_wait + 1)) ;; STALLED) n_stalled=$((n_stalled + 1)) ;; esac
-done < <(jq -r '[.data.result[] | select(.metric.target) | {t: .metric.target, b: (.metric.bucket // "?")}]
-  | unique_by(.t)[] | .b' <<< "$raw")
+# The Sessions card's figures as published, each - when no live topic sends it. Only the lease holder
+# sends summary/cards; while a lease move leaves two topics live that disagree, a figure is !, since
+# Prometheus does not say which is newer.
+fig() {
+  jq -r --arg l "$1" '[.data.result[] | select(.metric.__name__ == "mqtt_figures_sessions_" + $l)
+      | .value[1] | tonumber | floor] | unique | if length > 1 then "!" else .[0] // "-" end' <<< "$raw"
+}
+total=$(fig headline) n_work=$(fig working) n_wait=$(fig need_you) n_stalled=$(fig stalled) n_ready=$(fig ready_to_close)
+figs_ok=1 in_progress=0
+for v in "$total" "$n_work" "$n_wait" "$n_stalled" "$n_ready"; do
+  [[ "$v" =~ ^[0-9]+$ ]] || figs_ok=0
+done
+if ((figs_ok)); then
+  # in progress is what an agent or the human still has to move: working, waiting and stalled
+  in_progress=$((n_work + n_wait + n_stalled))
+else
+  total='?' n_work='?' n_wait='?' n_stalled='?' n_ready='?'
+fi
 
 # No textfile on Prometheus at all is a missing feed, not an empty fleet.
 if ! jq -e 'any(.data.result[]; .metric.__name__ == "node_textfile_mtime_seconds")' <<< "$raw" >/dev/null; then
   flag 1 "no fleet_sessions.prom on Prometheus: fleet-sessions tick writes it"
 fi
-((n_order > 0)) || flag 1 "no agent_session_bucket on Prometheus: fleet-sessions tick writes the bucket order"
+((figs_ok)) || flag 1 "no published session counts (summary/cards), or two machines publish different ones"
 # A stalled session is the robot's amber; the Stuck section says which and why.
-((n_stalled > 0)) && ((level < 1)) && level=1
+((figs_ok)) && ((n_stalled > 0)) && ((level < 1)) && level=1
 
 bar_caps
 bar_read "$now"
 waiting="$n_wait waiting" stuck="$n_stalled stuck"
-((n_wait > 0)) && waiting="$(paint "$C_YEL" "$waiting")"
-((n_stalled > 0)) && stuck="$(paint "$C_YEL" "$stuck")"
+((figs_ok)) && ((n_wait > 0)) && waiting="$(paint "$C_YEL" "$waiting")"
+((figs_ok)) && ((n_stalled > 0)) && stuck="$(paint "$C_YEL" "$stuck")"
 tip="$title $waiting, $stuck, $n_work working."
 if [ -n "$BAR" ]; then
   hosts="$(jq '[.sessions[].target | if test("@") then split("@")[0] else "" end] | unique | length' <<< "$BAR")"

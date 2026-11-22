@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# needs-figure: one number from Home's Needs you card, cached so a status bar that ticks every 3 s
+# hub-figure: one number from Home's Needs you card, cached so a status bar that ticks every 3 s
 # starts no hub per tick. hub is a stub that serves $T/hub.json (or fails) and logs each call; a
 # cache's age is set with touch -d, so no test sleeps.
 
@@ -7,9 +7,9 @@ setup() {
   bats_require_minimum_version 1.5.0
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
-  SUBJECT="$BATS_TEST_DIRNAME/../../.local/bin/needs-figure"
+  SUBJECT="$BATS_TEST_DIRNAME/../../.local/bin/hub-figure"
   T="$BATS_TEST_TMPDIR"
-  export NEEDS_FIGURE_CACHE="$T/cache.json" NEEDS_FIGURE_HUB="$T/hub" NEEDS_FIGURE_TTL=60 NEEDS_FIGURE_MAX_AGE=900
+  export HUB_FIGURE_CACHE="$T/cache.json" HUB_FIGURE_HUB="$T/hub" HUB_FIGURE_TTL=60 HUB_FIGURE_MAX_AGE=900
   printf '#!/usr/bin/env bash\necho "$*" >> "%s/calls"\n[ -f "%s/hub.json" ] || exit 1\ncat "%s/hub.json"\n' "$T" "$T" "$T" > "$T/hub"
   chmod +x "$T/hub"
   serve '{"needs_headline":54,"needs_question":4,"needs_only_you":49}' '[]'
@@ -18,7 +18,7 @@ setup() {
 # serve <figures> <errors>: what the stub hub's `needs --json` prints
 serve() { printf '{"needs":[],"errors":%s,"figures":%s}' "$2" "$1" > "$T/hub.json"; }
 calls() { wc -l < "$T/calls" 2>/dev/null || echo 0; }
-age() { touch -d "$1 seconds ago" "$NEEDS_FIGURE_CACHE"; }
+age() { touch -d "$1 seconds ago" "$HUB_FIGURE_CACHE"; }
 
 @test "the headline is the default, and a named figure reads its own number" {
   run "$SUBJECT"
@@ -104,7 +104,7 @@ age() { touch -d "$1 seconds ago" "$NEEDS_FIGURE_CACHE"; }
 @test "a stale cache whose refresh just failed starts no hub, and still serves" {
   "$SUBJECT" >/dev/null
   age 120
-  touch "$NEEDS_FIGURE_CACHE.fail"
+  touch "$HUB_FIGURE_CACHE.fail"
   run "$SUBJECT"
   assert_output 54
   assert_equal "$(calls)" 1
@@ -118,4 +118,53 @@ age() { touch -d "$1 seconds ago" "$NEEDS_FIGURE_CACHE"; }
   assert_output 7
   run "$SUBJECT"
   assert_output 7
+}
+
+# A figure that is not the Needs you card's comes out of `hub cards --json --figures`, its own cache.
+@test "a sessions figure reads the cards export, not hub needs" {
+  serve '{"sessions_headline":38,"sessions_working":16,"sessions_need_you":5,"sessions_stalled":9,"sessions_ready_to_close":4}' '[]'
+  run "$SUBJECT" sessions_working
+  assert_success
+  assert_output 16
+  assert_equal "$(cat "$T/calls")" "cards --json --figures"
+  run "$SUBJECT" sessions_ready_to_close
+  assert_output 4
+  assert_equal "$(calls)" 1
+}
+
+@test "the cards cache is its own: a needs read and a sessions read do not serve each other" {
+  serve '{"needs_headline":54,"sessions_working":16}' '[]'
+  run "$SUBJECT" needs_headline
+  assert_output 54
+  run "$SUBJECT" sessions_working
+  assert_output 16
+  assert_equal "$(calls)" 2
+  [ -f "$HUB_FIGURE_CACHE.cards" ]
+}
+
+@test "a cache path with no .json still keeps the two answers apart" {
+  export HUB_FIGURE_CACHE="$T/cache"
+  serve '{"needs_headline":54,"sessions_working":16}' '[]'
+  run "$SUBJECT" sessions_working
+  assert_output 16
+  run "$SUBJECT" needs_headline
+  assert_output 54
+  assert_equal "$(calls)" 2
+}
+
+@test "a card figure the answer lacks is ?, never 0: its reader failed" {
+  serve '{"needs_headline":54}' '[]'
+  run "$SUBJECT" sessions_working
+  assert_failure 1
+  assert_output '?'
+}
+
+@test "an unreadable hub is ? for a sessions figure too, and backs off once" {
+  rm "$T/hub.json"
+  run "$SUBJECT" sessions_working
+  assert_failure 1
+  assert_output '?'
+  run "$SUBJECT" sessions_stalled
+  assert_failure 1
+  assert_equal "$(calls)" 1
 }

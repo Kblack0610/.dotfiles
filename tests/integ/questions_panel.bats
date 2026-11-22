@@ -14,10 +14,10 @@ setup() {
   export QUESTIONS_ASK="$AGENT_ASK"
   export QUESTIONS_STATE="$BATS_TEST_TMPDIR/state"
   : >"$QUESTIONS_STATE"
-  # The bar's count is Home's, read through needs-figure: a stub prints $NOTES_FIXTURE/needs-figure,
+  # The bar's count is Home's, read through hub-figure: a stub prints $NOTES_FIXTURE/hub-figure,
   # and says ? and fails (as the real one does with no count) when the fixture is absent.
-  export QUESTIONS_NEEDS="$BATS_TEST_TMPDIR/needs-figure"
-  printf '#!/bin/sh\n[ "$1" = needs_headline ] && cat "$NOTES_FIXTURE/needs-figure" 2>/dev/null || { echo "?"; exit 1; }\n' >"$QUESTIONS_NEEDS"
+  export QUESTIONS_NEEDS="$BATS_TEST_TMPDIR/hub-figure"
+  printf '#!/bin/sh\n[ "$1" = needs_headline ] && cat "$NOTES_FIXTURE/hub-figure" 2>/dev/null || { echo "?"; exit 1; }\n' >"$QUESTIONS_NEEDS"
   chmod +x "$QUESTIONS_NEEDS"
 }
 
@@ -218,7 +218,7 @@ live_agent() {
   } >"$NOTES_FIXTURE/agent-panel.list.json"
   # agent-panel list prints a `!` glyph for a waiting status; the fixture serves both forms.
   printf 'lab/demo-agent-4:1\t!\tdemo\tx\nhub/demo:2\t!\tdemo\tx\nlab/demo-agent-6:1\t~\tdemo\tx\n' >"$NOTES_FIXTURE/agent-panel.list"
-  printf '%s\n' 9 >"$NOTES_FIXTURE/needs-figure"
+  printf '%s\n' 9 >"$NOTES_FIXTURE/hub-figure"
   . "$Q"
   run "$Q" count
   assert_success
@@ -228,7 +228,7 @@ live_agent() {
 }
 
 @test "count is ? when Home's count cannot be read, never a 0 (negative control)" {
-  rm -f "$NOTES_FIXTURE/needs-figure"
+  rm -f "$NOTES_FIXTURE/hub-figure"
   run "$Q" count
   assert_success
   assert_output '?'

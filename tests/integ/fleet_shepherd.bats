@@ -23,7 +23,8 @@ setup() {
   stub agent-usage '[ "$1 $3" = "session --json" ] || exit 2
 if [ -n "${STUB_USAGE:-}" ]; then printf "%s" "$STUB_USAGE"; else printf "{\"session_id\":\"%s\",\"usage_source\":\"none\"}" "$2"; fi'
   stub agent-notify 'echo "$*" >> "$HOME/pages"'
-  stub needs-figure '[ "$*" = "--fresh needs_only_you" ] || exit 2; [ "${STUB_ONLY_YOU:-0}" = unread ] && exit 1; echo "${STUB_ONLY_YOU:-0}"'
+  # hub-core's figures: Only you (STUB_ONLY_YOU) and the Sessions card's Working part (STUB_WORKING, else the state document's WORKING rows, as the fixture's card), each "unread" for one hub could not give
+  stub hub-figure 'case "$*" in "--fresh needs_only_you") v="${STUB_ONLY_YOU:-0}" ;; "--fresh sessions_working") v="${STUB_WORKING:-$(jq "[.sessions[] | select(.bucket == \"WORKING\")] | length" "$FLEET_STATE_FILE")}" ;; *) exit 2 ;; esac; [ "$v" = unread ] && exit 1; echo "$v"'
   stub watch-companion-loop '[ "$1" = tripped ] && printf "%b" "${STUB_TRIPPED:-}"'
   stub fleet-bench '[ -z "${STUB_BENCH_FAIL:-}" ] || exit 1; if [ "$1" = requests ]; then printf "## Your requests\n\n- ci-cleanup, 1 of 3\n"; elif [ "$1" = improve ]; then [ -n "${STUB_IMPROVE:-}" ] || exit 1; printf "%s\n" "$STUB_IMPROVE"; else printf "%b" "${STUB_FINDINGS:-}"; fi'
   tmux_script 'echo "$*" >> "$HOME/tmux.calls"; [ -n "${STUB_TMUX_FAIL:-}" ] && [[ "$*" =~ $STUB_TMUX_FAIL ]] && exit 1
@@ -1064,9 +1065,19 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   run cat "$HOME/pages"
   assert_output '-p normal -t shepherd -r file:'"$FLEET_SHEPHERD_DIR"'/log.md fleet settled: 1 need you; rundown in '"$FLEET_SHEPHERD_DIR"'/log.md'
   [ "$(wc -l < "$HOME/pages")" -eq 1 ] || { cat "$HOME/pages"; false; }
+  # work coming back is the Sessions card's Working part rising, which hub-core counts
   doc "[$(row a WORKING false false)]"
+  export STUB_WORKING=1
   "$SH" run
   [ ! -e "$FLEET_SHEPHERD_DIR/.settled" ]
+}
+
+# Negative control: a Working figure hub cannot give is not a quiet fleet, whatever the state document says.
+@test "no settled page while the Working figure cannot be read" {
+  doc "[$(row a NEEDS false true)]"
+  export STUB_WORKING=unread
+  "$SH" run
+  [ ! -s "$HOME/pages" ] || { cat "$HOME/pages"; false; }
 }
 
 @test "a settled page says ? when Home's Only you figure cannot be read, never 0" {

@@ -11,7 +11,7 @@ get_session_status() {
     local target_session="$1"
 
     # `!N` is what waits on the human: Home's Needs you count (`questions.sh count`, read through
-    # needs-figure), the same fleet-wide number on the bar, the hub, agent-web and the phone,
+    # hub-figure), the same fleet-wide number on the bar, the hub, agent-web and the phone,
     # whatever session the bar is drawn in. `!?` when it could not be read, never a 0.
     # `~` and the check count this tmux server's agents in the session: where an agent stands is decided once, elsewhere
     # (.local/src/docs/fleet-states.md), by agent-panel's live glyph (~ busy or on a background
