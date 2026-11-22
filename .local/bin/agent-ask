@@ -125,7 +125,7 @@
 # A gate/approval is just an ask with kind=gate or kind=approval (options default approve|hold),
 # e.g. "PR #1036 is green, merge it?". A gate is a session's own stop, and the judge rules on it as
 # on a question; an approval (a plan, an outbox line's project, an audit, the judge's own
-# authority, a cancel of work the human asked for: human_cancel) is the human's by rule.
+# authority, a cancel of work the human asked for: human_floor) is the human's by rule.
 
 # PARKED is not a status. A pending ask with `parked_until` still ahead waits on something the
 # human will do later (plug in a headset, order parts): `list --pending` and `count` leave it out,
@@ -240,6 +240,19 @@ human_cancel() {
   slugs="$($AGENT_ASK_QUEUE_CMD human-work 2>/dev/null)" && [ -n "$slugs" ] || return 1
   hit="$(grep -owF -f <(printf '%s\n' "$slugs") <<<"$1" | head -n1)"
   [ -n "$hit" ] && printf '%s\n' "$hit"
+}
+
+# human_floor <text>: why an ask with this text is the human's by rule, worded to follow "the ask";
+# fails when it is not. Two rules: the ask names the judge's own reach (the policy's "Judge
+# authority" list), which the judge never rules on, or it would cancel work the human asked for
+# (human_cancel). post makes such an ask an approval, and judge holds one posted before to it.
+human_floor() {
+  local hit
+  if hit="$(judge_floor_hit "$(judge_conf PROMPT "")" "$1" "Judge authority")"; then
+    printf "names %s, the judge's own authority\n" "$hit"
+  elif hit="$(human_cancel "$1")"; then
+    printf 'would cancel %s, work the human asked for\n' "$hit"
+  else return 1; fi
 }
 
 # collapse a value to a single physical line (files are one key:value per line)
@@ -544,18 +557,10 @@ cmd_post() {
     done < <(grep -lx "claude_session: $owner" "$ASKS_ROOT"/*/*.md 2>/dev/null)
   fi
   case "$kind" in question|gate|approval) ;; *) kind="question" ;; esac
-  # An ask about the judge's own authority is the human's by rule: the judge never rules on its
-  # own reach (the policy's "Judge authority" list).
-  local authority
-  if [ "$kind" != approval ] && authority="$(judge_floor_hit "$(judge_conf PROMPT "")" \
-       "$task $question $context $options $option_notes $why" "Judge authority")"; then
+  local floor
+  if [ "$kind" != approval ] && floor="$(human_floor "$task $question $context $options $option_notes $why")"; then
     kind=approval
-    echo "agent-ask post: the ask names $authority, the judge's own authority, so it is an approval for the human" >&2
-  fi
-  local cancels
-  if [ "$kind" != approval ] && cancels="$(human_cancel "$task $question $context $options $option_notes $why")"; then
-    kind=approval
-    echo "agent-ask post: the ask would cancel $cancels, work the human asked for, so it is an approval for the human" >&2
+    echo "agent-ask post: the ask $floor, so it is an approval for the human" >&2
   fi
   # a gate with no explicit options defaults to a yes/hold decision
   [ "$kind" != question ] && [ -z "$options" ] && options="approve|hold"
@@ -2412,15 +2417,10 @@ cmd_judge() {
     judge_record "$f" human gate "an approval is the human's by rule; not sent to the judge" ""
     return 0
   fi
-  # A question or gate posted before the authority floor, judged again, is held to it all the same.
-  local policy authority; policy="$(judge_conf PROMPT "")"
-  if authority="$(judge_floor_hit "$policy" "$(ask_text "$f")" "Judge authority")"; then
-    judge_record "$f" human gate "the ask names $authority, the judge's own authority; not sent to the judge" ""
-    return 0
-  fi
-  local cancels
-  if cancels="$(human_cancel "$(ask_text "$f")")"; then
-    judge_record "$f" human gate "the ask would cancel $cancels, work the human asked for; not sent to the judge" ""
+  # A question or gate posted before a human_floor rule, judged again, is held to it all the same.
+  local policy floor; policy="$(judge_conf PROMPT "")"
+  if floor="$(human_floor "$(ask_text "$f")")"; then
+    judge_record "$f" human gate "the ask $floor; not sent to the judge" ""
     return 0
   fi
   local prompt precedents holds older out wd rc verdict call rule answer cid settled
