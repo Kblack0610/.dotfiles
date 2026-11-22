@@ -186,7 +186,12 @@ fn row(text: impl Into<String>, sub: impl Into<String>, level: Level, link: Opti
 /// Sessions: the live sessions by fleet-sessions bucket, need-you first.
 pub fn sessions(rows: &[crate::session_table::SessionRow]) -> Card {
     use crate::session_table::Source;
-    let live: Vec<_> = rows.iter().filter(|r| r.source == Source::Live).collect();
+    // The fleet's own sessions (the shepherd) are no one's task: fleet-sessions' `.counts`, which
+    // Home's "need you" header reads, leave them out, so this card does too (one number per fact).
+    let live: Vec<_> = rows
+        .iter()
+        .filter(|r| r.source == Source::Live && !r.machine)
+        .collect();
     let n = |b: &str| live.iter().filter(|r| r.bucket == b).count();
     let (needs, stalled) = (n("NEEDS"), n("STALLED"));
     // the ok segment: live rows neither finished nor waiting, counted directly so a finished bucket
@@ -245,8 +250,7 @@ pub fn queue(
     pipeline: Option<&Result<Option<crate::pipeline::Pipeline>, String>>,
 ) -> Card {
     use crate::queue::State;
-    let (waiting, running, review, queued) = (
-        q.count(State::Waiting),
+    let (running, review, queued) = (
         q.count(State::Running),
         q.count(State::Review),
         q.count(State::Queued),
@@ -262,7 +266,7 @@ pub fn queue(
     .bar(
         running + review + on_deck.map_or(queued, |n| n as usize),
         0,
-        waiting,
+        0,
     )
     .part("Running", running, Level::Ok)
     .part("On a PR", review, Level::Ok);
@@ -289,16 +293,6 @@ pub fn queue(
     if let Some((b, age)) = bottleneck {
         let step = crate::flow::step_label(&b.step);
         c = c.first([row(step, age.unwrap_or_default(), Level::Warn, None)]);
-    } else {
-        c.first_head = "Waiting on you";
-        c = c.first(q.in_state(State::Waiting).map(|i| {
-            row(
-                i.title(),
-                i.project.clone(),
-                Level::Red,
-                Some(Link::to(crate::links::Kind::Queue, i.slug.clone())),
-            )
-        }));
     }
     // A pipeline that could not be read is said, so it never reads as no bottleneck.
     let pipe_err = match read {
@@ -469,7 +463,9 @@ pub fn health(i: &crate::infra::Infra) -> Card {
     let up = i.machines.iter().filter(|m| m.state == "up").count();
     let unread = i.machines.iter().filter(|m| m.state == NO_DATA).count();
     let down = i.runners_down().len();
-    let stuck = i.ci.red.len();
+    // Alerts' stuck runs, the one list its rows read: one number for one fact.
+    let runs = crate::alerts::stuck_runs(i);
+    let stuck = runs.len();
     let g = &i.ci.glance;
     let (d_down, d_warn, d_up) = i.domains();
     let mut c = Card::new("health", "Health", COUNTED)
@@ -494,7 +490,7 @@ pub fn health(i: &crate::infra::Infra) -> Card {
             c.level = Level::Warn;
         }
     }
-    if down + stuck > 0 {
+    if down + stuck + i.ci.red.len() > 0 {
         c.level = Level::Red;
     }
     c.big = format!("{up} of {}", i.machines.len());
@@ -524,7 +520,21 @@ pub fn health(i: &crate::infra::Infra) -> Card {
         i.ci.red
             .iter()
             .map(|r| row(r.clone(), "CI", Level::Red, None));
-    c.first(red.chain(runners).chain(machines).collect::<Vec<_>>())
+    let stuck_rows = runs.iter().map(|s| {
+        row(
+            s.name(),
+            format!("stuck run, {}", s.age_text()),
+            Level::Red,
+            None,
+        )
+    });
+    c.first(
+        stuck_rows
+            .chain(red)
+            .chain(runners)
+            .chain(machines)
+            .collect::<Vec<_>>(),
+    )
 }
 
 /// Costs: the fleet's 24h figure, this month's bill and the burn pace.
@@ -609,6 +619,22 @@ fn top_session(k: &crate::costs::Costs) -> Option<First> {
     ))
 }
 
+/// What an app's row says: its status word and, for a channel the collector could not read, which
+/// one and why, so "ok" never sits under an amber hue unexplained.
+fn app_says(a: &crate::releases::App) -> String {
+    let unread: Vec<String> = a
+        .channels
+        .iter()
+        .filter(|c| c.unread())
+        .map(|c| format!("{} not read: {}", c.label, c.why_unread()))
+        .collect();
+    if unread.is_empty() {
+        a.status_text.clone()
+    } else {
+        format!("{}; {}", a.status_text, unread.join("; "))
+    }
+}
+
 /// Releases: each app's worst channel, as release-state judged it.
 pub fn releases(r: &crate::releases::Releases) -> Card {
     use crate::releases::Level as R;
@@ -647,40 +673,34 @@ pub fn releases(r: &crate::releases::Releases) -> Card {
     c.first(r.apps.iter().filter(|a| !a.level.calm()).map(|a| {
         row(
             a.project.clone(),
-            a.status_text.clone(),
+            app_says(a),
             hue(a.level),
             Some(Link::to(crate::links::Kind::App, a.project.clone())),
         )
     }))
 }
 
-/// Schedules: everything that runs on its own, by its job state, amber with no purpose.
+/// Schedules: everything that runs on its own, by its job state.
 pub fn schedules(s: &crate::schedules::Schedules) -> Card {
     use crate::reading::JobState;
     let n = |st: JobState| s.rows.iter().filter(|r| r.state == st).count();
     let (failing, stale, never) = (n(JobState::Failing), n(JobState::Stale), n(JobState::Never));
-    // One "no purpose" count everywhere (the chip, the summary): every row with none. The bar
-    // splits the rows once, so there only an ok row with none adds to the amber part.
-    let why = s.rows.iter().filter(|r| r.purpose.is_empty()).count();
-    let quiet_gaps = s
-        .rows
-        .iter()
-        .filter(|r| r.state == JobState::Ok && r.purpose.is_empty())
-        .count();
-    let look = stale + never + quiet_gaps;
+    // A row with no purpose is the tab's lint, not a fault: it joins no level here (its count is in
+    // the summary `counted` says).
+    let look = stale + never;
     let mut c = Card::new("schedules", "Schedules", "")
         .bar(s.rows.len() - failing - look, look, failing)
         .part("Failing", failing, lvl(failing, Level::Red))
         .part("Stale", stale, lvl(stale, Level::Warn))
-        .part("Never ran", never, lvl(never, Level::Warn))
-        .part("No purpose", why, lvl(why, Level::Warn));
+        .part("Never ran", never, lvl(never, Level::Warn));
     c.big = s.rows.len().to_string();
     c.unit = "scheduled things".into();
     c.counted = s.summary.clone();
     if !s.errors.is_empty() {
         c.error = Some(s.errors.join("; "));
     }
-    // The rows come ranked failing, stale, never, then no purpose (schedules::rank).
+    // The rows come ranked failing, stale, never, then no purpose (schedules::rank); the last are
+    // not listed.
     c.first(s.rows.iter().filter_map(|r| {
         let (sub, level) = match r.state {
             JobState::Failing if r.streak < 0 => (
@@ -691,33 +711,27 @@ pub fn schedules(s: &crate::schedules::Schedules) -> Card {
             JobState::Stale | JobState::Never => {
                 (format!("{} - {}", r.kind, r.status), Level::Warn)
             }
-            JobState::Ok if r.purpose.is_empty() => {
-                (format!("{} - no purpose", r.kind), Level::Warn)
-            }
             _ => return None,
         };
         Some(row(r.name.clone(), sub, level, None))
     }))
 }
 
-/// Projects: the lab projects, amber where one waits on the human.
+/// Projects: the lab projects and which have work in flight. Who waits on the human is Needs
+/// you's fact, never counted here (one reader per fact), and the per-project hot count is the
+/// Projects tab's.
 pub fn projects(p: &crate::projects::Projects) -> Card {
     let cards = &p.cards;
-    let waiting = cards.iter().filter(|c| c.waiting > 0).count();
-    let sum = |f: fn(&crate::projects::Card) -> usize| cards.iter().map(f).sum::<usize>();
     let mut c = Card::new(
         "projects",
         "Projects",
         "lab projects with their board slice and queue (notes projects --stats)",
     )
-    .bar(cards.len() - waiting, waiting, 0)
     .part(
         "In flight",
         cards.iter().filter(|c| c.in_flight()).count(),
         Level::Ok,
     )
-    .part("Waiting", sum(|c| c.waiting), lvl(waiting, Level::Warn))
-    .part("Hot", sum(|c| c.hot), Level::Ok)
     .part(
         "Sprints",
         cards
@@ -726,26 +740,25 @@ pub fn projects(p: &crate::projects::Projects) -> Card {
             .count(),
         Level::Ok,
     );
+    // Every project counted is one green: a bar of one segment would repeat the big number.
+    c.level = worst(0, 0, cards.len());
     c.big = cards.len().to_string();
     c.unit = "lab projects".into();
     if !p.errors.is_empty() {
         c.error = Some(p.errors.join("; "));
     }
-    let mut look: Vec<_> = cards
-        .iter()
-        .filter(|c| c.waiting > 0 || c.hot > 0)
-        .collect();
-    look.sort_by_key(|a| std::cmp::Reverse((a.waiting, a.hot)));
+    c.first_head = "In flight";
+    let mut look: Vec<_> = cards.iter().filter(|c| c.in_flight()).collect();
+    look.sort_by_key(|a| std::cmp::Reverse(a.running.len()));
     c.first(look.into_iter().map(|p| {
-        let level = if p.waiting > 0 {
-            Level::Warn
-        } else {
-            Level::Ok
+        let sub = match p.running.len() {
+            0 => "none running".to_string(),
+            n => format!("{n} running"),
         };
         row(
             p.name.clone(),
-            format!("{} waiting on you, {} hot", p.waiting, p.hot),
-            level,
+            sub,
+            Level::Ok,
             Some(Link::to(crate::links::Kind::Project, p.name.clone())),
         )
     }))
@@ -1263,7 +1276,7 @@ mod tests {
     }
 
     #[test]
-    fn queue_names_the_bottleneck_step_and_else_what_waits_on_you() {
+    fn queue_names_the_bottleneck_step_and_never_counts_who_waits_on_you() {
         use crate::flow::tests::{pipe, queue as q};
         // No stats read: every queued item is counted and the unit says queued, never on deck.
         let c = queue(&q(), Some(&Ok(Some(pipe(2.25)))));
@@ -1297,26 +1310,24 @@ mod tests {
             ]
         );
         let bar: Vec<_> = c.bar.iter().map(|s| (s.level, s.n)).collect();
-        assert_eq!(bar, [(Level::Ok, 3), (Level::Red, 1)]);
+        // A waiting item is Needs you's fact (Blocked), so it is no red segment here: one reader.
+        assert_eq!(bar, [(Level::Ok, 3)]);
         assert_eq!(c.first_head, "Bottleneck");
         assert_eq!(
             (c.first[0].text.as_str(), c.first[0].sub.as_str()),
             ("needs you", "age p90 9h00m (bound 4h00m)")
         );
-        // A snapshot that could not be read is said on the card, beside what waits on you.
+        // A snapshot that could not be read is said on the card, never as no bottleneck.
         let c = queue(&held, Some(&Err("state.json: bad json".into())));
-        assert_eq!(c.first_head, "Waiting on you");
+        assert!(c.first.is_empty());
         assert_eq!(c.error.as_deref(), Some("pipeline: state.json: bad json"));
-        // No snapshot read: the item that waits on the human is where to look.
+        // No snapshot read: no rows, and the item that waits on the human (q() has one) is no
+        // segment or row of this card, since Needs you counts it as Blocked.
         let c = queue(&q(), None);
         assert_eq!(c.error, None);
-        assert_eq!(c.first_head, "Waiting on you");
-        assert_eq!(c.first[0].link.as_ref().unwrap().href(), "#queue/d");
-        assert_eq!(
-            c.level,
-            Level::Red,
-            "an item waiting on you is red on the bar"
-        );
+        assert!(c.first.is_empty());
+        assert_eq!(c.level, Level::Ok);
+        assert!(c.bar.iter().all(|s| s.level != Level::Red));
     }
 
     #[test]
@@ -1466,7 +1477,7 @@ mod tests {
     }
 
     #[test]
-    fn schedules_rank_failing_then_no_purpose_and_cap_the_list() {
+    fn schedules_rank_failing_and_cap_the_list_and_a_missing_purpose_is_no_level() {
         let s = |name: &str, streak: i32, purpose: &str| {
             let mut r = crate::schedules::Schedule::default();
             r.name = name.into();
@@ -1494,16 +1505,15 @@ mod tests {
         assert_eq!(c.level, Level::Red);
         assert_eq!(c.first.len(), SHOWN_FIRST);
         assert_eq!(c.first[0].sub, "timer - failed 2 in a row");
+        // Negative control: the row with no purpose (b) is on no row, part or level here.
+        assert!(c.first.iter().all(|f| f.text != "b"));
+        assert!(c.parts.iter().all(|p| p.label != "No purpose"));
         assert_eq!(
             c.bar,
             vec![
                 Seg {
                     level: Level::Ok,
-                    n: 1
-                },
-                Seg {
-                    level: Level::Warn,
-                    n: 1
+                    n: 2
                 },
                 Seg {
                     level: Level::Red,
@@ -1514,24 +1524,114 @@ mod tests {
     }
 
     #[test]
-    fn projects_look_first_where_the_human_is_waited_on() {
-        let p = |name: &str, waiting: usize, hot: usize| crate::projects::Card {
+    fn projects_list_who_has_work_in_flight_and_count_nobody_waiting_or_hot() {
+        let p = |name: &str, waiting: usize, hot: usize, running: usize| crate::projects::Card {
             name: name.into(),
             waiting,
             hot,
+            running: vec![Default::default(); running],
             ..Default::default()
         };
         let ps = crate::projects::Projects {
-            cards: vec![p("quiet", 0, 0), p("hot", 0, 4), p("binks", 2, 1)],
+            cards: vec![
+                p("quiet", 0, 0, 0),
+                p("hot", 0, 4, 0),
+                p("binks", 2, 1, 0),
+                p("busy", 0, 0, 3),
+            ],
             ..Default::default()
         };
         let c = projects(&ps);
-        assert_eq!(c.level, Level::Warn);
-        assert_eq!(
-            c.first.iter().map(|f| f.text.as_str()).collect::<Vec<_>>(),
-            ["binks", "hot"]
+        // Waiting is Needs you's and Hot is the tab's: no pill, level or bar here says either.
+        assert!(c
+            .parts
+            .iter()
+            .all(|p| p.label != "Waiting" && p.label != "Hot"));
+        assert_eq!((c.level, c.bar.is_empty()), (Level::Ok, true));
+        let rows: Vec<_> = c
+            .first
+            .iter()
+            .map(|f| (f.text.as_str(), f.sub.as_str()))
+            .collect();
+        assert_eq!(rows, [("busy", "3 running"), ("binks", "none running")]);
+        assert_eq!(c.first[0].link.as_ref().unwrap().href(), "#projects/busy");
+        assert_eq!(projects(&Default::default()).level, Level::Nodata);
+    }
+
+    #[test]
+    fn sessions_need_you_is_the_count_home_says_not_the_fleets_own_sessions() {
+        use serde_json::json;
+        let s = |target: &str, bucket: &str, labels: &[&str]| json!({"target": target, "bucket": bucket, "labels": labels});
+        let doc = vec![
+            s("hub/a:1", "NEEDS", &[]),
+            s("hub/b:1", "NEEDS", &[]),
+            // The shepherd waits on a dialog too, and fleet-sessions' `.counts` leave it out.
+            s("hub/shepherd:1", "NEEDS", &["shepherd"]),
+            s("hub/c:1", "WORKING", &[]),
+        ];
+        let counts = json!({"WORKING": 1, "NEEDS": 2, "STALLED": 0});
+        let state = json!({"sessions": doc, "counts": counts, "generated_epoch": 1000});
+        let rows = crate::session_table::rows(&doc, &Default::default(), &Default::default(), &[]);
+        let c = sessions(&rows);
+        let pill = c.parts.iter().find(|p| p.label == "Need you").unwrap();
+        let home = crate::home::build(Some(&state), None, None, None, 1000);
+        assert_eq!(home.sessions, "1 working, 2 need you, 0 stalled");
+        assert_eq!(pill.value, "2", "the card reads Home's count");
+        assert_eq!(c.big, "3", "the shepherd is no live session of the card");
+    }
+
+    #[test]
+    fn health_stuck_is_alerts_stuck_runs_one_per_branch() {
+        use crate::prom::Series;
+        let run = |branch: &str, wf: &str| Series {
+            labels: [
+                ("repo", "app"),
+                ("branch", branch),
+                ("workflow", wf),
+                ("stuck", "true"),
+            ]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+            value: Some(600.0),
+            points: vec![],
+        };
+        let mut i = crate::infra::Infra {
+            ok: true,
+            ..Default::default()
+        };
+        // Three runs on two branches: Alerts has two rows, so Health says two, never three or 0.
+        i.instant.insert(
+            "waiting",
+            vec![run("main", "CI"), run("main", "Checks"), run("feat", "CI")],
         );
-        assert_eq!(c.first[0].link.as_ref().unwrap().href(), "#projects/binks");
+        let c = health(&i);
+        let pill = c.parts.iter().find(|p| p.label == "Stuck").unwrap();
+        let rows = crate::alerts::machinery(&i)
+            .iter()
+            .filter(|l| l.starts_with("stuck run"))
+            .count();
+        assert_eq!((pill.value.as_str(), rows), ("2", 2));
+        assert_eq!(c.level, Level::Red);
+    }
+
+    #[test]
+    fn a_release_row_names_the_channel_that_was_not_read() {
+        let mut a = crate::releases::App {
+            project: "game".into(),
+            status_text: "ok".into(),
+            level: crate::releases::Level::Warn,
+            ..Default::default()
+        };
+        assert_eq!(app_says(&a), "ok");
+        let mut ch = crate::releases::Release {
+            status: "unknown".into(),
+            label: "beta game-beta".into(),
+            ..Default::default()
+        };
+        ch.live.error = Some("no store key".into());
+        a.channels = vec![ch];
+        assert_eq!(app_says(&a), "ok; beta game-beta not read: no store key");
     }
 
     #[test]
