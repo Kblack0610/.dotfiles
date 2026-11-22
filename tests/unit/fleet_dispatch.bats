@@ -2351,6 +2351,97 @@ J
   grep -q '^tags:.*sprint' "$(qitem queued gm-7)" || fail "the uncommitted row's item has no sprint tag: $(cat "$(qitem queued gm-7)")"
 }
 
+# age_sightings <minutes> -- every row sprint-stalled has seen unowned was first seen that long ago.
+age_sightings() {
+  local f="$FLEET_DISPATCH_DIR/sprint-stalled.tsv"
+  awk -F'\t' -v OFS='\t' -v d="$(( $1 * 60 ))" '{ $3 -= d; print }' "$f" > "$f.new" && mv "$f.new" "$f"
+}
+
+@test "sprint-stalled: an open sprint row with no item, session or open gate for an hour trips, named with its verdict; gated, parent, started, human-lane and out-of-sprint rows do not; queued it clears (ar-4333)" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 "- [ ] fix(game): committed and unowned $T <!-- id:gm-1 -->"
+  row game agent gm-2 "- [ ] fix(game): waits on gm-1 $T #after/gm-1 <!-- id:gm-2 -->"
+  row game agent gm-3 "- [ ] fix(game): left out at the lock, unowned $T <!-- id:gm-3 -->"
+  row game agent gm-4 "- [ ] feat(game): a parent $T <!-- id:gm-4 -->"
+  row game agent gm-5 "- [ ] fix(game): the parent's child #of/gm-4 $T #after/gm-1 <!-- id:gm-5 -->"
+  row game agent gm-6 "- [/] fix(game): a session holds it $T <!-- id:gm-6 -->"
+  row game agent gm-7 "- [ ] fix(game): not in the sprint $T <!-- id:gm-7 -->"
+  row game human gm-8 "- [ ] fix(game): the human's own $T <!-- id:gm-8 -->"
+  verdict game agent gm-1 skip
+  jq -nc '[{project: "game", queued: false, tasks: [{id: "gm-1", state: "open"}, {id: "gm-2", state: "open"}, {id: "gm-4", state: "open"},
+           {id: "gm-6", state: "doing"}, {id: "gm-8", state: "open"}], uncommitted: ["gm-3", "gm-5"]}]' > "$NOTES_FIXTURE/board.sprints"
+  # The first sighting starts the clock: under the hour nothing trips.
+  run cmd_sprint_stalled
+  assert_success
+  assert_output --partial '(2 unowned for less)'
+  assert_equal "$(cut -f2 "$FLEET_DISPATCH_DIR/sprint-stalled.tsv" | paste -sd,)" 'gm-1,gm-3'
+  age_sightings 61
+  run cmd_sprint_stalled
+  assert_failure
+  assert_output --partial '  gm-1 (game, 61 min); last verdict skip: r'
+  assert_output --partial '  gm-3 (game, uncommitted, 61 min); never judged'
+  assert_line --index -1 '2 open sprint row(s) stalled: gm-1, gm-3 (fleet-dispatch suggest says why each waits)'
+  for k in gm-2 gm-4 gm-5 gm-6 gm-7 gm-8; do refute_output --partial "  $k ("; done
+  # Queued, the row is owned: it drops out, and the other still trips.
+  board_item gm-1 "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  run cmd_sprint_stalled
+  assert_failure
+  refute_output --partial '  gm-1 ('
+  assert_line --index -1 '1 open sprint row(s) stalled: gm-3 (fleet-dispatch suggest says why each waits)'
+  # A row that leaves the sprint and comes back counts from its new sighting.
+  jq -nc '[{project: "game", queued: false, tasks: [], uncommitted: []}]' > "$NOTES_FIXTURE/board.sprints"
+  run cmd_sprint_stalled
+  assert_success
+  jq -nc '[{project: "game", queued: false, tasks: [], uncommitted: ["gm-3"]}]' > "$NOTES_FIXTURE/board.sprints"
+  run cmd_sprint_stalled
+  assert_success
+  # A dispatch hold is on purpose: nothing trips, and the clock restarts.
+  age_sightings 61
+  stub agent-hold 'exit 1'
+  run cmd_sprint_stalled
+  assert_success
+  assert_output --partial 'dispatch is held (agent-hold)'
+  [ ! -e "$FLEET_DISPATCH_DIR/sprint-stalled.tsv" ] || fail "the sightings outlived the hold"
+}
+
+@test "sprint-stalled: a queue or gate read that fails is unreadable (rc 2), never a trip" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 "- [ ] fix(game): unowned $T <!-- id:gm-1 -->"
+  jq -nc '[{project: "game", queued: false, tasks: [{id: "gm-1", state: "open"}]}]' > "$NOTES_FIXTURE/board.sprints"
+  stub agent-queue 'exit 1'
+  run cmd_sprint_stalled
+  assert_failure 2
+  assert_output --partial 'unreadable: agent-queue gate --all failed'
+  unset GATES_LOADED
+  stub_list='case "$1" in list) exit 1 ;; *) exec "'"$SANDBOX"'/bin/aq-real" "$@" ;; esac'
+  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/aq-real"
+  stub agent-queue "$stub_list"
+  run cmd_sprint_stalled
+  assert_failure 2
+  assert_output --partial 'unreadable: agent-queue list --json failed'
+  # An empty worker table or a board feed with no sprints reads as no rows to cmd_candidates: rc 2, and
+  # an hour of sightings that would trip survives it.
+  stub agent-queue 'exec "'"$SANDBOX"'/bin/aq-real" "$@"'
+  printf 'game\tgm-1\t%s\n' "$(( $(date +%s) - 61 * 60 ))" > "$FLEET_DISPATCH_DIR/sprint-stalled.tsv"
+  cp "$DISPATCH_WORKERS" "$SANDBOX/workers.keep"
+  echo '{}' > "$DISPATCH_WORKERS"
+  run cmd_sprint_stalled
+  assert_failure 2
+  assert_output --partial 'unreadable: no workers in'
+  cp "$SANDBOX/workers.keep" "$DISPATCH_WORKERS"
+  cp "$SANDBOX/bin/notes" "$SANDBOX/notes.keep"
+  stub notes 'case "$1" in board) echo "{\"rows\": []}" ;; *) exit 1 ;; esac'
+  run cmd_sprint_stalled
+  assert_failure 2
+  assert_output --partial 'unreadable: notes board --json failed or has no sprints'
+  grep -q "^game$(printf '\t')gm-1$(printf '\t')" "$FLEET_DISPATCH_DIR/sprint-stalled.tsv" || fail "an unreadable pass wiped the sightings"
+  # Control: with both reads restored the same sightings trip.
+  cp "$SANDBOX/notes.keep" "$SANDBOX/bin/notes"
+  run cmd_sprint_stalled
+  assert_failure 1
+  assert_output --partial '  gm-1 (game, 61 min)'
+}
+
 # pool_prom -- a curl that answers prom_q as Prometheus would: the idle comparison keeps the unity pool
 # while $NOTES_FIXTURE/busy of its 14 slots is under half, and github_pool_workflow puts repo `game`'s
 # workflows on it. Each query goes to $NOTES_FIXTURE/curl.log.

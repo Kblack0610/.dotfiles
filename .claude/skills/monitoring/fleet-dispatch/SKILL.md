@@ -112,6 +112,8 @@ One store sets project precedence: the `#prio/<word>` head tag on a project's la
 
 `starved` reads a fleet at its pace target as working. `fleet-dispatch idle-cap` is the other half: it exits 1 when the live sessions the target counts are at the target and under `DISPATCH_IDLE_CAP_PCT` (50) of them are busy (WORKING, or NEEDS carrying on), naming each idle one, and 2 with an `unreadable:` line on a missing or stale state document. The watch `fleet-cap-mostly-idle` runs it; its trip is a `red watch` item (triage-routes) whose owner moves the idle rows: the shepherd's nudge and takeover (`fleet-shepherd due`), or the cause that keeps them from closing.
 
+`fleet-dispatch sprint-stalled` exits 1 naming each agent row of an open sprint that has gone `DISPATCH_STARVED_MIN` (60) minutes with no active queue item, no session and no open gate or child, with the row's last verdict; 2 with an `unreadable:` line on a failed queue, gate, board or worker read; 0 under a dispatch `agent-hold`. First sightings live in `~/.agent/dispatch/sprint-stalled.tsv`. The watch `sprint-stalled` runs it. Its owner reads `fleet-dispatch suggest` for each named row and fixes what holds it: a stale verdict, a tier no worker takes (`no worker takes it:`), or a `#plan` row inbox-plan has not taken. Queuing the row clears it.
+
 ## Do NOT
 
 The fleet-wide list is in `fleet-lead`; this is this role's own.
