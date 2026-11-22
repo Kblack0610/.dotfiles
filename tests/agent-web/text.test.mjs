@@ -1,46 +1,35 @@
 // The source sweep behind ui.md's "UI text is a hub_core::display role, no free sentence list":
-// agent-web's scripts (.local/src/agent-web/static) may not grow the three hand-built shapes the
-// shared renderers replace: a record list (<ul>, <li>), an error block (class="err") and a fold
-// (<details>). Each file's count may only fall: text.baseline.json holds today's, a file above
-// its line fails, and so does one below it (lower the line), so the migration is measured and
-// cannot slide back. Run by `node --test` from tests/unit/agent_web_queue.bats. The Rust side is
-// hub-core's display.rs (`prose_fields_never_grow`), the live side `comms-lint report` on the
-// `ui` channel.
+// agent-web's scripts (.local/src/agent-web/static) hold none of the three hand-built shapes the
+// shared renderers in ui.js replace: a record list (<ul>, <li>: `tblRec`), an error block
+// (class="err": `errPanel`) and a fold (<details>: `fold`, `cfold`, `pfold`). The migration is
+// done, so the allowance is zero: a new tab that builds one fails here. Two files are exempt by
+// kind, ui.js because it is where the renderers live, and md.js because it turns the human's own
+// markdown into HTML, where a list is the content and not a record. Run by `node --test` from
+// tests/unit/agent_web_queue.bats. The Rust side is hub-core's display.rs (`prose_fields_never_grow`),
+// the live side `comms-lint report` on the `ui` channel.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import vm from "node:vm";
 
 const dir = new URL("../../.local/src/agent-web/static/", import.meta.url);
-const baseline = JSON.parse(readFileSync(new URL("./text.baseline.json", import.meta.url), "utf8"));
 
+const EXEMPT = new Set(["ui.js", "md.js"]);
 const SHAPES = {
-  list: /<(?:ul|li)[\s>]/g,
-  err: /class=["'][^"']*\berr\b/g,
-  fold: /<details[\s>]/g,
+  list: [/<(?:ul|li)[\s>]/g, "tblRec"],
+  err: [/class=["'][^"']*\berr\b/g, "errPanel"],
+  fold: [/<details[\s>]/g, "fold"],
 };
 
-export const sweep = (files) => {
-  const out = {};
-  for (const [name, src] of Object.entries(files)) {
-    for (const [shape, re] of Object.entries(SHAPES)) {
-      const n = (src.match(re) || []).length;
-      if (n) (out[shape] ||= {})[name] = n;
-    }
-  }
-  return out;
-};
-
-/** The sweep's complaints against a baseline: a count above its line, or below it. */
-export const verdict = (found, base) => {
+/** The sweep's complaints: every hand-built shape in a script that is not exempt. */
+export const verdict = (files) => {
   const bad = [];
-  for (const shape of Object.keys(SHAPES)) {
-    const names = new Set([...Object.keys(found[shape] || {}), ...Object.keys(base[shape] || {})]);
-    for (const f of [...names].sort()) {
-      const n = (found[shape] || {})[f] || 0;
-      const was = (base[shape] || {})[f] || 0;
-      if (n > was) bad.push(`${f}: ${n} hand-built ${shape}, baseline ${was}: draw it with the shared renderer`);
-      else if (n < was) bad.push(`${f}: ${n} ${shape} now, baseline ${was}: lower text.baseline.json to ${n}`);
+  for (const [name, src] of Object.entries(files)) {
+    if (EXEMPT.has(name)) continue;
+    for (const [shape, [re, use]] of Object.entries(SHAPES)) {
+      const n = (src.match(re) || []).length;
+      if (n) bad.push(`${name}: ${n} hand-built ${shape}: draw it with ${use} (ui.js)`);
     }
   }
   return bad;
@@ -56,25 +45,55 @@ const files = () => Object.fromEntries(
   scripts().sort().map((f) => [f, readFileSync(new URL(f, dir), "utf8")]),
 );
 
-test("agent-web's scripts hold no more hand-built lists, error blocks and folds than the baseline", () => {
-  const found = sweep(files());
-  const total = (s) => Object.values(found[s] || {}).reduce((a, b) => a + b, 0);
-  console.log(`hand-built shapes: ${total("list")} list, ${total("err")} err, ${total("fold")} fold`);
-  assert.deepEqual(verdict(found, baseline), []);
+test("agent-web's scripts hold no hand-built list, error block or fold", () => {
+  assert.deepEqual(verdict(files()), []);
 });
 
 test("negative control: a list, an error block and a fold added to a script are refused", () => {
   const real = files();
   const edited = { ...real, "queue.js": real["queue.js"] + '\nconst x = `<ul><li>${a}</li></ul><div class="err">${e}</div><details><summary>s</summary></details>`;\n' };
-  const bad = verdict(sweep(edited), baseline);
+  const bad = verdict(edited);
   assert.equal(bad.length, 3, bad.join("\n"));
-  assert.ok(bad.some((b) => b.startsWith("queue.js") && b.includes("list")));
-  assert.ok(bad.some((b) => b.includes("err")) && bad.some((b) => b.includes("fold")));
+  assert.ok(bad.every((b) => b.startsWith("queue.js")));
 });
 
-test("negative control: a script that migrated off its line is told to lower the baseline", () => {
-  const found = sweep(files());
-  const bad = verdict(found, { ...baseline, fold: { ...baseline.fold, "costs.js": 9 } });
-  assert.deepEqual(bad.map((b) => b.split(":")[0]), ["costs.js"]);
-  assert.match(bad[0], /lower text\.baseline\.json/);
+test("negative control: the renderers' own file is not refused for holding the markup", () => {
+  const real = files();
+  assert.match(real["ui.js"], /<details/);
+  assert.deepEqual(verdict({ "ui.js": real["ui.js"] }), []);
+});
+
+// The shared renderers themselves: what the migrated tabs now draw through.
+const ui = () => {
+  const ctx = vm.createContext({ console, document: {}, st: { tab: "home" }, conn: {}, location: {} });
+  vm.runInContext(readFileSync(new URL("ui.js", dir), "utf8"), ctx, { filename: "ui.js" });
+  return (code, input) => { ctx.input = input; return vm.runInContext(code, ctx); };
+};
+
+test("errPanel escapes its text and carries its card, tag, id and class", () => {
+  const run = ui();
+  assert.equal(run('errPanel("a <b>")'), '<div class="err">a &lt;b&gt;</div>');
+  assert.equal(run('errPanel("", { id: "q-msg" })'), '<div class="err" id="q-msg"></div>');
+  assert.equal(run('errPanel("x", { card: true })'), '<div class="card err">x</div>');
+  assert.equal(run('errPanel("x", { tag: "span", cls: "msg" })'), '<span class="msg err">x</span>');
+});
+
+test("readPanel is the down panel for an error and the wait word otherwise", () => {
+  const run = ui();
+  assert.equal(run('readPanel("boom <1>", "Loading...")'), '<div class="panel down">boom &lt;1&gt;</div>');
+  assert.equal(run('readPanel(null, "Loading...")'), '<div class="empty">Loading...</div>');
+});
+
+test("fold draws its class, key, id, state and summary attributes in one order", () => {
+  const run = ui();
+  assert.equal(run('fold("csec", "S", "<p>i</p>", { k: "a", id: "sec-a", open: true, sum: \' class="dlh"\', attrs: \' data-x="1"\' })'),
+    '<details class="csec" data-k="a" id="sec-a" data-x="1" open><summary class="dlh">S</summary><p>i</p></details>');
+  assert.equal(run('fold("", "S", "i")'), "<details><summary>S</summary>i</details>");
+  assert.equal(run('cfold("k", "S", "i", { k: true })'), '<details class="cfold" data-k="k" open><summary>S</summary>i</details>');
+});
+
+test("tblRec draws each record as a row of wrapping cells, a row's own class kept, cells as sent", () => {
+  const run = ui();
+  assert.equal(run('tblRec([["<b>a</b>", "x"], { cells: ["c"], cls: "warn" }], "o-steps")'),
+    '<table class="tbl rec o-steps"><tr><td class="wrap"><b>a</b></td><td class="wrap">x</td></tr><tr class="warn"><td class="wrap">c</td></tr></table>');
 });

@@ -212,9 +212,10 @@ function spendTable(d) {
   const n = dv.table ? dv.table.total : dv.groups ? dv.groups.length : null;
   const live = f && dv.live ? `<div class="muted">${esc(f.coverage)}</div>` + f.unpriced.map((u) => `<div class="warn">${esc(u)}</div>`).join("") : "";
   const notes = f ? live + `<div class="muted">${esc(f.foot)}</div>` : "";
-  return `<details class="csec" data-k="spend-table" id="sec-sessions"${secOpen(cost.open, "spend-table") ? " open" : ""}><summary>${secHead("", "Spend table", n)}</summary>` +
+  return fold("csec", secHead("", "Spend table", n),
     (dv.head ? `<div class="panel"><div><span class="muted">DAY</span> ${esc(dv.head)}</div></div>` : "") +
-    `<div>${days}${cuts}</div>` + dayTable(dv) + `<div class="panel">${notes}</div></details>`;
+    `<div>${days}${cuts}</div>` + dayTable(dv) + `<div class="panel">${notes}</div>`,
+    { k: "spend-table", id: "sec-sessions", open: secOpen(cost.open, "spend-table") });
 }
 
 function historySection(d) {
@@ -229,13 +230,14 @@ function historySection(d) {
   const charts = `<div class="spendcharts"><div class="panel"><h3>$/day, last 30 days, click a day for its table above ${SPEND_KEY}</h3>` +
     `<div id="spend-days">${columns(spendBars(h.chart, 7), { height: 160, sel: dv.day, yfmt: usd })}</div>${pace}</div>` +
     (h.months.length ? `<div class="panel"><h3>By month</h3>${columns(spendBars(h.months, 1), { height: 160, yfmt: usd })}</div>` : "") + `</div>`;
-  const periods = `<details class="sec-d" data-k="spend-periods"${secOpen(cost.open, "spend-periods") ? " open" : ""}><summary class="muted fold">Year, month and day rows</summary>` +
+  const periods = fold("sec-d", "Year, month and day rows",
     `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">period</th><th class="n">total</th><th class="n">days</th><th class="n" data-role="glance" data-named>$/day</th><th class="n" data-role="glance" data-named title="what one session cost on an average day">$/session</th><th class="n" data-role="glance" data-named>vs prev</th><th class="n" data-role="glance" data-named>est.</th></tr>` +
     h.rows.map(row).join("") + `</table>${h.older ? older(h.older) : ""}` +
     (h.missing ? `<div class="warn">${h.missing} days in the range have no figure and are not counted</div>` : "") +
-    `</div><div class="muted fold">${esc(h.note)}</div></details>`;
-  return `<details class="csec" data-k="spend" id="sec-spend"${secOpen(cost.open, "spend") ? " open" : ""}><summary>${secHead("", "Spend", null, h.stale ? "warn" : null)}</summary>` +
-    stale + charts + periods + `</details>`;
+    `</div><div class="muted fold">${esc(h.note)}</div>`,
+    { k: "spend-periods", open: secOpen(cost.open, "spend-periods"), sum: ' class="muted fold"' });
+  return fold("csec", secHead("", "Spend", null, h.stale ? "warn" : null), stale + charts + periods,
+    { k: "spend", id: "sec-spend", open: secOpen(cost.open, "spend") });
 }
 
 // The Burn section (hub_core::burn, the hub's coststab.rs `burn`): the fleet's level on the head,
@@ -315,11 +317,12 @@ function costsConsumers(d) {
   if (!c || !c.table) return "";
   const open = secOpen(cost.open, "consumers");
   const notes = [c.stale, ...c.errors].filter(Boolean).map((e) => `<div class="warn">${esc(e)}</div>`).join("");
-  return `<details class="csec" data-k="consumers" id="sec-consumers"${open ? " open" : ""}><summary>${secHead("", "Consumers", tblCount(c.table), c.level === "ok" ? null : c.level)}</summary>` +
+  return fold("csec", secHead("", "Consumers", tblCount(c.table), c.level === "ok" ? null : c.level),
     (notes ? `<div class="panel">${notes}</div>` : "") +
     costBlock("c", "costs-cons", c.table, "search, or priority:low -status:ok", () => consumerRows(c)) +
     `<div class="panel muted">${c.pools.map((l) => `<div>${esc(l)}</div>`).join("")}<div>${esc(c.routes)}</div></div>` +
-    `<div class="muted fold">${c.legend.map(([t, x]) => `${esc(t.toLowerCase())}: ${esc(x)}`).join("; ")}</div></details>`;
+    `<div class="muted fold">${c.legend.map(([t, x]) => `${esc(t.toLowerCase())}: ${esc(x)}`).join("; ")}</div>`,
+    { k: "consumers", id: "sec-consumers", open });
 }
 
 function costsBurn(d) {
@@ -328,11 +331,12 @@ function costsBurn(d) {
   const cls = b.level === "bad" ? "bad" : b.level === "warn" ? "warn" : "ok";
   const held = b.drip.held ? ` <a class="warn" href="#sessions" title="${esc(b.drip.held)}">dispatch held -> Sessions</a>` : "";
   const key = isPhone() ? "burn-phone" : "burn", open = isPhone() ? !!cost.open[key] : secOpen(cost.open, key);
-  return `<details class="csec" data-k="${key}" id="sec-burn"${open ? " open" : ""}><summary>${secHead("", "Burn", null, b.level)}</summary>` +
+  return fold("csec", secHead("", "Burn", null, b.level),
     `<div class="panel"><div><span class="muted">BURN</span> <span class="burn ${cls}">${esc(b.head)}</span></div><div><span class="muted">DRIP</span> ${esc(b.drip_line)}${held}</div>` +
     `<div><span class="muted">BACK ON PACE</span> ${burnPace(b)}</div></div>` +
     `<div class="panel scroll">${burnTable(b, BURN_COLS, b.accounts.filter((a) => !a.nested))}</div>` + burnKeys(b) +
-    (b.legend?.length ? `<div class="muted fold">${b.legend.map(([t, d]) => `${esc(t.toLowerCase())}: ${esc(d)}`).join("; ")}</div>` : "") + "</details>";
+    (b.legend?.length ? `<div class="muted fold">${b.legend.map(([t, d]) => `${esc(t.toLowerCase())}: ${esc(d)}`).join("; ")}</div>` : ""),
+    { k: key, id: "sec-burn", open });
 }
 
 // The tool table of a tokens window. A row with parts (Bash's commands, a tool's file types, the
@@ -372,11 +376,12 @@ function tokensSection(d) {
   const seg = `<div class="seg fseg"><span class="muted">window</span>` + Object.entries(TOK_WINDOWS).map(([k, l]) =>
     `<button class="${k === cost.tokWin ? "on" : ""}" data-tokwin="${k}">${l}</button>`).join("") + `</div>`;
   const partial = w.partial ? `<span class="warn">, ${w.partial} of ${w.days} partial</span>` : "";
-  return `<details class="csec" data-k="${key}" id="sec-tokens"${open ? " open" : ""}><summary>${secHead("", "Where the tokens go", null, t.stale ? "warn" : null)}</summary>` +
+  return fold("csec", secHead("", "Where the tokens go", null, t.stale ? "warn" : null),
     stale + `<div class="panel scroll">${seg}<div class="muted">${cost.tokWin === "day" && t.stale ? esc(t.date) : TOK_WINDOWS[cost.tokWin]}: ${kfmt(w.context)} context, ${kfmt(w.per_response)}/response, tool output carried ${pct(w.carried_share)} ` +
     `(snapshot ${esc(t.date.slice(5))}, ${t.generated_at ? clock(t.generated_at * 1e3) : "-"}${partial})</div>` +
     tokensTable(w.tools) +
-    `<div class="muted more">a + row opens: Bash by command, a tool by file type, Other to every tool; counted by claude-recall tool-output, nightly, its time the wall clock between call and result (a permission wait included); dollars per tool: <a href="#costs?by=tool&w=7d">the tool cut</a></div></div></details>`;
+    `<div class="muted more">a + row opens: Bash by command, a tool by file type, Other to every tool; counted by claude-recall tool-output, nightly, its time the wall clock between call and result (a permission wait included); dollars per tool: <a href="#costs?by=tool&w=7d">the tool cut</a></div></div>`,
+    { k: key, id: "sec-tokens", open });
 }
 
 // A duration in ms as the tool tables read it: 99ms, 17.5s.
@@ -391,11 +396,11 @@ function langfuseSection(d) {
   const t = d.tokens, lf = t?.langfuse;
   if (!t) return "";
   const f = lf?.figures, key = "langfuse", open = secOpen(cost.open, key);
-  const head = (warn) => `<details class="csec" data-k="${key}" id="sec-langfuse"${open ? " open" : ""}><summary>${secHead("", "What Langfuse sees", null, warn ? "warn" : null)}</summary>`;
+  const lfFold = (warn, inner) => fold("csec", secHead("", "What Langfuse sees", null, warn ? "warn" : null), inner, { k: key, id: "sec-langfuse", open });
   if (!f) {
-    return head(true) + `<div class="cline warn">no figures in snapshot ${esc(t.date)}</div>` +
+    return lfFold(true, `<div class="cline warn">no figures in snapshot ${esc(t.date)}</div>` +
       `<div class="panel"><div class="warn">${esc(lf?.why || "the snapshot has no langfuse section: written before the reader, or the run stopped")}</div>` +
-      `<div class="muted more">read nightly by agent-usage langfuse; the Sentinel watch langfuse-read trips after two nights</div></div></details>`;
+      `<div class="muted more">read nightly by agent-usage langfuse; the Sentinel watch langfuse-read trips after two nights</div></div>`);
   }
   const shares = `<div><b>tool errors</b> ${pct(f.tool_error_share)}, <b>gateway errors</b> ${pct(f.gateway_error_share)}, <b>gateway cost</b> ${usd(f.gateway_cost_usd)}</div>`;
   // A tool the tokens table opens links to its rows there, where each carries its own time.
@@ -403,11 +408,11 @@ function langfuseSection(d) {
   const rows = f.tools.map((x) => `<tr><td>${split.has(x.tool) ? `<a href="${esc(tokLink(x.tool))}">${esc(x.tool)}</a>` : esc(x.tool)}</td><td class="n">${x.calls.toLocaleString()}</td><td class="n">${lfMs(x.p50_ms)}</td><td class="n">${lfMs(x.p95_ms)}</td><td class="n">${secs(x.total_s)}</td></tr>`).join("");
   const models = f.gateway_models.map((m) => `${esc(m.model)} ${usd(m.cost_usd)}`).join(", ") + (f.gateway_other_models ? `, ${f.gateway_other_models} more` : "");
   const trunc = f.truncated ? `<span class="warn"> (classes partial: more errors than were paged)</span>` : "";
-  return head(t.stale) + (t.stale ? `<div class="cline warn">stale: newest snapshot ${esc(t.date)}</div>` : "") +
+  return lfFold(t.stale, (t.stale ? `<div class="cline warn">stale: newest snapshot ${esc(t.date)}</div>` : "") +
     `<div class="panel scroll">${shares}<table class="tbl"><tr><th data-role="lead">slowest tools, by total time</th><th class="n" data-role="glance" data-named>calls</th><th class="n">p50</th><th class="n" data-role="glance" data-named>p95</th><th class="n" data-role="glance" data-named>total</th></tr>${rows}</table>` +
     `<div class="muted">tool errors: ${f.tool_errors.toLocaleString()} of ${f.tool_executions.toLocaleString()} executions (${lfClasses(f.tool_error_classes)})${trunc}</div>` +
     `<div class="muted">gateway: ${f.gateway_calls.toLocaleString()} calls, ${f.gateway_errors.toLocaleString()} errors (${lfClasses(f.gateway_error_classes)}), ${kfmt(f.gateway_tokens)} tokens; dearest: ${models || "none"}</div>` +
-    `<div class="muted more">snapshot ${esc(t.date.slice(5))}, counted by agent-usage langfuse, nightly; the gateway is not Claude sessions, whose cost is <a href="#costs/sessions">the spend table</a> on Spend</div></div></details>`;
+    `<div class="muted more">snapshot ${esc(t.date.slice(5))}, counted by agent-usage langfuse, nightly; the gateway is not Claude sessions, whose cost is <a href="#costs/sessions">the spend table</a> on Spend</div></div>`);
 }
 
 // The Sections block (hub_core::sections, the TUI's coststab.rs `sections`): what each section of
@@ -422,9 +427,10 @@ function sectionRows(b) {
 function costsSections(d) {
   const b = d.sections;
   if (!b || !b.table) return "";
-  return `<details class="csec" data-k="sections" id="sec-sections"${secOpen(cost.open, "sections") ? " open" : ""}><summary>${secHead("", "Sections", tblCount(b.table))}</summary>` +
+  return fold("csec", secHead("", "Sections", tblCount(b.table)),
     costBlock("s", "costs-sec", b.table, "search, or section:agent-web", () => sectionRows(b)) +
-    `<div class="muted fold">${b.notes.map(esc).join(" ")}</div></details>`;
+    `<div class="muted fold">${b.notes.map(esc).join(" ")}</div>`,
+    { k: "sections", id: "sec-sections", open: secOpen(cost.open, "sections") });
 }
 
 // The page is the layout's inner tabs (hub_core::layout, app.js INNER_TABS): the strip first, then

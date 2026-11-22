@@ -139,7 +139,7 @@ function renderLog() {
   html += `<div class="panel"><h3>Merged by hour ${hours.legend}</h3>${hours.chart}</div>`;
   html += benchTable(rec);
   const tl = rec.timeline || [];
-  if (tl.length) html += `<details class="sec-d" data-k="timeline"${secOpen(lst.open, "timeline") ? " open" : ""}><summary>${secHead("", "Timeline", tl.length)}</summary><div class="panel feed">${tl.slice().reverse().map((l) => `<div class="tl1">${esc(l)}</div>`).join("")}</div></details>`;
+  if (tl.length) html += fold("sec-d", secHead("", "Timeline", tl.length), `<div class="panel feed">${tl.slice().reverse().map((l) => `<div class="tl1">${esc(l)}</div>`).join("")}</div>`, { k: "timeline", open: secOpen(lst.open, "timeline") });
   paint(el, html, lst.open);
 }
 

@@ -66,7 +66,7 @@ const show = (d, inner = "") => { run(`st.tab = 'alerts'; st.arg = ${JSON.string
 
 test("the sections come in the layout's order, each open: the strip, then one inner tab each, health with firing", () => {
   const h = show(data());
-  const at = (k) => h.indexOf(`id="sec-${k}" data-k="${k}" open>`);
+  const at = (k) => h.indexOf(`data-k="${k}" id="sec-${k}" open>`);
   const order = ["health", "firing", "fixes", "watches", "history"].map(at);
   assert.ok(order.every((i) => i >= 0), order.join(","));
   assert.deepEqual([...order].sort((a, b) => a - b), order);
@@ -78,9 +78,9 @@ test("the sections come in the layout's order, each open: the strip, then one in
   assert.match(h, /<span class="cchip bad">FIRING<\/span><\/span><\/div>/, "the tab's head row is the level chip alone");
   assert.match(show(data({ level: "ok" })), /<summary><h2 class="sec">Firing <span class="n">2<\/span><\/h2>/);
   // Health and Firing show; the rest wait behind the strip.
-  assert.match(h, /<div data-in="firing"><details class="sec-d" id="sec-health"/);
-  assert.match(h, /<div data-in="firing"><details class="sec-d" id="sec-firing"/);
-  for (const k of ["fixes", "watches", "history"]) assert.match(h, new RegExp(`<div data-in="${k}" hidden><details class="sec-d" id="sec-${k}"`));
+  assert.match(h, /<div data-in="firing"><details class="sec-d" data-k="health" id="sec-health"/);
+  assert.match(h, /<div data-in="firing"><details class="sec-d" data-k="firing" id="sec-firing"/);
+  for (const k of ["fixes", "watches", "history"]) assert.match(h, new RegExp(`<div data-in="${k}" hidden><details class="sec-d" data-k="${k}" id="sec-${k}"`));
   // Each label carries the reader's count, History none.
   assert.match(h, /data-itab="firing"[^>]*>Firing <span class="pill warn">2<\/span>/);
   assert.match(h, /data-itab="watches"[^>]*>Watches <span class="pill warn">2<\/span>/);
@@ -96,8 +96,8 @@ test("an old #alerts/<section> link opens the inner tab holding it", () => {
   assert.equal(run("route('#alerts/health').arg"), "firing", "Health opens with Firing");
   assert.equal(run("route('#infra/health').section"), "health", "a moved name still scrolls to it");
   const h = show(data(), "history");
-  assert.match(h, /<div data-in="history"><details class="sec-d" id="sec-history"/);
-  assert.match(h, /<div data-in="firing" hidden><details class="sec-d" id="sec-health"/);
+  assert.match(h, /<div data-in="history"><details class="sec-d" data-k="history" id="sec-history"/);
+  assert.match(h, /<div data-in="firing" hidden><details class="sec-d" data-k="health" id="sec-health"/);
 });
 
 test("a rule firing in many places is one row with its count, and opens its alerts with their own text", () => {
@@ -208,10 +208,10 @@ test("watches open on their inner tab with nothing tripped, no count on the labe
   assert.doesNotMatch(h0, /1 tripped, 1 error/);
   const quiet = data({ counts: { ...counts, watches_tripped: 0, watches_error: 0 }, strip: { ...strip, watches: 0 } });
   const h = show(quiet, "watches");
-  assert.match(h, /id="sec-watches" data-k="watches" open>/);
+  assert.match(h, /data-k="watches" id="sec-watches" open>/);
   assert.match(h, /data-itab="watches"[^>]*>Watches<\/button>/);
   run("alertsOpen.watches = false; alst.render()");
-  assert.match(box.innerHTML, /id="sec-watches" data-k="watches"><summary>/);
+  assert.match(box.innerHTML, /data-k="watches" id="sec-watches"><summary>/);
 });
 
 // One inner tab's section of the page.
