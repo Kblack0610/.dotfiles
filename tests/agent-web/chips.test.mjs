@@ -10,8 +10,9 @@
 // function fails too, and an entry whose sites are gone fails until it is removed, so the list only
 // shrinks. Every `by` is an open board row id (the pass that moves the site, `ar-NNNN: why`) or
 // `keeps: <why>` for a count that is not a fleet figure. The row ids are checked against the real
-// agent board and skipped where there is none (CI): a committed copy of the board would only
-// restate this list. The readers.test.mjs pattern for agent-web, run from tests/unit/waybar_figures.bats.
+// agent board only on request (FIGURE_SITES_BOARD=1; each pass that moves a site runs it): the
+// board is live state a merge gate must not read, and a committed copy of it would only restate
+// this list. The readers.test.mjs pattern for agent-web, run from tests/unit/waybar_figures.bats.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
@@ -68,6 +69,7 @@ test("the scan sees each kind of count and skips comments and layout widths", ()
     "age=$((now - start))",
     "awk '{ if ($2 == \"~\") working++; else idle++ } END { print working }'",
     "for ((i = 0; i < 3; i++)); do :; done",
+    "awk '!seen[$1]++' f",  // the dedup idiom is no count: the awk `n++` site needs a `;` or `}` after it
   ].join("\n");
   assert.deepEqual(scan(src), [
     { fn: "main", line: 2 },
@@ -116,10 +118,11 @@ export const openRows = (text) =>
 export function checkBy(sites, open) {
   const bad = [];
   for (const s of sites) {
-    const row = s.by.match(/^(ar-\d+): \S/);
     if (/^keeps: \S/.test(s.by)) continue;
-    if (!row) bad.push(`${s.file} (${Object.keys(s.fns).join(",")}): by must be "ar-N: why" or "keeps: why": ${s.by}`);
-    else if (open && !open.has(row[1])) bad.push(`${s.file} (${Object.keys(s.fns).join(",")}): ${row[1]} is not an open row on the agent board`);
+    const at = `${s.file} (${Object.keys(s.fns).join(",")})`;
+    if (!/^ar-\d+: \S/.test(s.by)) bad.push(`${at}: by must be "ar-N: why" or "keeps: why": ${s.by}`);
+    else if (open)
+      for (const id of new Set(s.by.match(/\bar-\d+\b/g))) if (!open.has(id)) bad.push(`${at}: ${id} is not an open row on the agent board`);
   }
   return bad;
 }
@@ -156,6 +159,7 @@ test("negative control: an entry whose site is gone, or whose by names no open r
   assert.equal(checkBy(e("ar-9: closed row"), open).length, 1);
   assert.equal(checkBy(e("outbox: filed nowhere"), open).length, 1);
   assert.equal(checkBy(e("ar-4395"), open).length, 1);
+  assert.equal(checkBy(e("ar-4395: one site is ar-9's"), open).length, 1);
 });
 
 test("waybar chips, tmux scripts, agent-mqtt-publish and the figure CLIs count no fleet figure themselves", () => {
@@ -171,6 +175,9 @@ test("waybar chips, tmux scripts, agent-mqtt-publish and the figure CLIs count n
   assert.deepEqual(checkBy(SITES, null), [], "every entry names its row or why it stays");
 });
 
-test("every by: row id is open on the agent board", { skip: !existsSync(BOARD) && `no board at ${BOARD}` }, () => {
+// Opt-in (FIGURE_SITES_BOARD=1, or AGENT_BOARD_FILE): the board is live shared state, so a gate that
+// read it would go red on every other branch the moment a session closes one of these rows.
+const WANT_BOARD = process.env.FIGURE_SITES_BOARD === "1" || !!process.env.AGENT_BOARD_FILE;
+test("every by: row id is open on the agent board", { skip: !WANT_BOARD ? "opt-in: FIGURE_SITES_BOARD=1" : !existsSync(BOARD) && `no board at ${BOARD}` }, () => {
   assert.deepEqual(checkBy(SITES, openRows(readFileSync(BOARD, "utf8"))), [], "name a row the board carries: file it with `notes ptask <project> --agent add`, then use its id");
 });
