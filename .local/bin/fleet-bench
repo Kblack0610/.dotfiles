@@ -2316,11 +2316,11 @@ pipeline_json() {
        steps: $rows}'
 }
 
-# pipeline_check <cap|age|mix|held|owner> -- one line and exit 1 when the queue's flow is off: runnable items over
+# pipeline_check <cap|age|mix|held|owner|chain-lag> -- one line and exit 1 when the queue's flow is off: runnable items over
 # the admission cap (the adds it exempts, urgent, red, board pulls and plans, can
 # carry it past), the queued step's age p90 past its bound (an empty step passes), or, while the mix
 # is on, a class of service starved (agent-queue mix; off, nothing balances the classes), or a queued item with a pending gate (hold_for, past a desk turn),
-# which belongs on its board row (QUEUE.md "Admission"), or an active item no session owns (ownerless, the
+# which belongs on its board row (QUEUE.md "Admission"), or an urgent or high chain whose handoff p90 over 24h is past chain_handoff_p90_max, or an active item no session owns (ownerless, the
 # ownerless_running KPI, which reap flags). Exit 2 when
 # its source cannot be read. cap, age, mix and owner are each one Sentinel watch (queue-over-cap, queue-age, queue-class-starved, queue-ownerless, chain-lag,
 # in ~/.agent/watches), so one that stays red masks no other.

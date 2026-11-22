@@ -3499,7 +3499,8 @@ cmd_stats() {
     def spread: {n: length, p50: median, p90: p90};
     # Chain handoff: an item with an after: key goes from the finish of its predecessor (ready) to its start.
     # 0 is a real answer (the next phase started at once), so unlike waits it is counted.
-    def handoffs: [.[] | select((.after // "") != "") | {p: (.priority // "high"), m: mins(.ready; .started), at: .started}
+    # An item gated by an event too (ask, pr, nightly, rbw, hold) is left out: its ready time is not recorded.
+    def handoffs: [.[] | select((.after // "") != "" and ((.tags // "") | test("(^| )(ask|pr|nightly|rbw|hold):") | not)) | {p: (.priority // "high"), m: mins(.ready; .started), at: .started}
       | select(.m != null)];
     def by_priority: group_by(.p) | map({key: .[0].p, value: ([.[].m] | spread)}) | from_entries;
     def stage($name; f): [.[] | select((f // "") != "") | {day: (f | fromdateiso8601 | strflocaltime("%F")), stage: $name, item: .}];

@@ -3077,6 +3077,10 @@ EOF
   "$AQ" set p finished="$(date -u -d '70 minutes ago' +%FT%TZ)"
   run "$AQ" stats --json --since 2000-01-01
   assert_equal "$(jq -c '.chain.h24' <<<"$output")" '{"urgent":{"n":1,"p50":10,"p90":10}}'
+  # an item also gated by an event (ask, pr, nightly, rbw, hold) has no recorded ready time: left out
+  "$AQ" set f tags="pr:o/r#5"
+  run "$AQ" stats --json --since 2000-01-01
+  assert_equal "$(jq -c '.chain.h24' <<<"$output")" '{}'
 }
 
 # ar-617: the Queue table shows each item's wait, so list carries the same ready stats medians.
