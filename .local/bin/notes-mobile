@@ -48,60 +48,90 @@ resolve_daily() {
     printf '%s' "$daily"
 }
 
-# 0. The hub PC, when one is named: its first word is an ssh destination (an alias or a
-#    LAN address). BatchMode so a missing key fails at once instead of asking for a password;
-#    accept-new so the first tap trusts the PC instead of failing on an unknown host key.
-#    ssh exits 255 only when it cannot connect, and then the phone copy opens, with a line
-#    saying why. Any other exit is the hub session ending, and the tap is done.
+# The hub PC, when one is named: the file's first word is an ssh destination (an alias or a
+# LAN address). BatchMode so a missing key fails at once instead of asking for a password;
+# accept-new so the first tap trusts the PC instead of failing on an unknown host key.
 HOST_FILE="${NOTES_MOBILE_HOST_FILE:-$HOME/.config/notes-mobile/host}"
+HUB_SESSION="${NOTES_MOBILE_HUB_SESSION:-notes-hub}"
+SSH_OPTS=(-o ConnectTimeout=4 -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
 HUB_HOST=""
 [ -r "$HOST_FILE" ] && HUB_HOST="$(awk '!/^[[:space:]]*#/ && NF {print $1; exit}' "$HOST_FILE")"
-if [ -n "$HUB_HOST" ]; then
-    # shellcheck disable=SC2088 # the ~ is the PC's home, expanded by its shell
-    ssh -t -o ConnectTimeout=4 -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$HUB_HOST" '~/.local/bin/tmx root hub'
-    rc=$?
-    [ "$rc" -eq 255 ] || exit "$rc"
-    printf 'hub unreachable (%s): opening the phone copy\n' "$HUB_HOST" >&2
-    # A UI timer, not a wait on work: the editor would cover the line at once.
-    [ -t 0 ] && read -r -t 3 _ 2>/dev/null
-fi
 
-# 1. Pull latest before opening.
-sync
+# Probed on its own, so "cannot connect" (fall back to the phone copy) is never confused
+# with "the hub session's connection dropped" (both are ssh exit 255).
+hub_reachable() { ssh "${SSH_OPTS[@]}" "$HUB_HOST" true </dev/null >/dev/null 2>&1; }
 
-# 2. Resolve today's note.
-DAILY="$(resolve_daily)"
-
-# 3. One editor in one tmux session, always on today's note. nvim listens on a socket so
-#    a later tap points the running editor at today (a session left open overnight would
-#    otherwise reattach to yesterday's note). -D detaches the client in the previous Termux
-#    session: that copy of this script then syncs and exits 0, and Termux closes a session
-#    whose command exits 0, so taps never pile up sessions.
-SOCK="${TMPDIR:-/tmp}/notes-mobile-$SESSION.sock"
-if command -v tmux >/dev/null 2>&1; then
-    if tmux has-session -t "=$SESSION" 2>/dev/null; then
-        # Probe first: with no server behind the socket, `--remote` opens a local nvim instead
-        # of failing. No answer means a session from before the socket, or its nvim is gone:
-        # start over; unsaved edits survive in nvim's swap file, offered on the next open.
-        # The timeout keeps a frozen nvim from hanging the tap. A failed switch (nvim at a
-        # prompt) still attaches, so the human sees and answers it; an unsaved buffer does not
-        # block it, since 'hidden' (on by default) keeps yesterday's edits in a hidden buffer.
-        if timeout 3 nvim --server "$SOCK" --remote-expr 1 >/dev/null 2>&1 </dev/null; then
-            timeout 3 nvim --server "$SOCK" --remote "$DAILY" >/dev/null 2>&1 </dev/null
-        else
-            tmux kill-session -t "=$SESSION"
-        fi
+# The PC's hub landing (`tmx root hub`, Prefix+N there) inside a phone tmux session, for the
+# reason the phone copy uses one: a tap kills the previous tap's session, whose Termux client
+# then exits 0 and Termux closes it, and the fresh `tmx root` re-points the hub at today.
+# Prefix and status off, so every key reaches the PC's tmux. A failure on the PC stays on
+# screen until Enter rather than closing the window with no word.
+open_hub() {
+    # shellcheck disable=SC2016 # expanded by the inner bash, from its own arguments
+    local run='ssh -t "$@" "~/.local/bin/tmx root hub" && exit
+printf "\nhub failed on %s (exit %s); Enter closes\n" "${@: -1}" "$?"; read -r _'
+    if ! command -v tmux >/dev/null 2>&1; then
+        bash -c "$run" _ "${SSH_OPTS[@]}" "$HUB_HOST"
+        return
     fi
-    tmux has-session -t "=$SESSION" 2>/dev/null || rm -f "$SOCK"
-    tmux new-session -A -D -s "$SESSION" nvim --listen "$SOCK" "$DAILY"
+    tmux kill-session -t "=$HUB_SESSION" 2>/dev/null
+    tmux new-session -d -s "$HUB_SESSION" bash -c "$run" _ "${SSH_OPTS[@]}" "$HUB_HOST"
+    tmux set -t "=$HUB_SESSION:" prefix None \; set -t "=$HUB_SESSION:" prefix2 None \; \
+        set -t "=$HUB_SESSION:" status off
+    tmux attach -t "=$HUB_SESSION"
+}
+
+# The phone copy: the notes repo on this phone, in its own editor, synced around the edit.
+open_phone_copy() {
+    # 1. Pull latest before opening.
+    sync
+
+    # 2. Resolve today's note.
+    DAILY="$(resolve_daily)"
+
+    # 3. One editor in one tmux session, always on today's note. nvim listens on a socket so
+    #    a later tap points the running editor at today (a session left open overnight would
+    #    otherwise reattach to yesterday's note). -D detaches the client in the previous Termux
+    #    session: that copy of this script then syncs and exits 0, and Termux closes a session
+    #    whose command exits 0, so taps never pile up sessions.
+    SOCK="${TMPDIR:-/tmp}/notes-mobile-$SESSION.sock"
+    if command -v tmux >/dev/null 2>&1; then
+        if tmux has-session -t "=$SESSION" 2>/dev/null; then
+            # Probe first: with no server behind the socket, `--remote` opens a local nvim instead
+            # of failing. No answer means a session from before the socket, or its nvim is gone:
+            # start over; unsaved edits survive in nvim's swap file, offered on the next open.
+            # The timeout keeps a frozen nvim from hanging the tap. A failed switch (nvim at a
+            # prompt) still attaches, so the human sees and answers it; an unsaved buffer does not
+            # block it, since 'hidden' (on by default) keeps yesterday's edits in a hidden buffer.
+            if timeout 3 nvim --server "$SOCK" --remote-expr 1 >/dev/null 2>&1 </dev/null; then
+                timeout 3 nvim --server "$SOCK" --remote "$DAILY" >/dev/null 2>&1 </dev/null
+            else
+                tmux kill-session -t "=$SESSION"
+            fi
+        fi
+        tmux has-session -t "=$SESSION" 2>/dev/null || rm -f "$SOCK"
+        tmux new-session -A -D -s "$SESSION" nvim --listen "$SOCK" "$DAILY"
+    else
+        nvim "$DAILY"
+    fi
+}
+
+if [ -n "$HUB_HOST" ] && hub_reachable; then
+    open_hub
 else
-    nvim "$DAILY"
+    if [ -n "$HUB_HOST" ]; then
+        printf 'hub unreachable (%s): opening the phone copy\n' "$HUB_HOST" >&2
+        # A UI timer, not a wait on work: the editor would cover the line at once.
+        [ -t 0 ] && read -r -t 3 _ 2>/dev/null
+    fi
+    open_phone_copy
 fi
 
-# 4. Push whatever changed on detach/exit.
+# Push whatever changed on detach/exit; after a hub session this pulls the PC's edits
+# for the mirror below.
 sync
 
-# 5. Refresh the home-screen widget mirror (Termux only; self-skips elsewhere). By path
-#    like SYNC_CMD: Termux's PATH has no ~/.local/bin, where notes-phone-setup installs it.
+# Refresh the home-screen widget mirror (Termux only; self-skips elsewhere). By path
+# like SYNC_CMD: Termux's PATH has no ~/.local/bin, where notes-phone-setup installs it.
 MIRROR_CMD="${NOTES_MIRROR_CMD:-$HOME/.local/bin/notes-mirror-shared}"
 [ -x "$MIRROR_CMD" ] && "$MIRROR_CMD" >/dev/null 2>&1 || true
