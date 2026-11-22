@@ -6460,6 +6460,7 @@ epics_fixture() {
   kpi_setup
   run "$SUBJECT" ledger
   assert_success
+  assert_line 'lesson_held_share=?'
   refute_output --partial insight_expired_share
 }
 
