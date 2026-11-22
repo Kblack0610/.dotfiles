@@ -18,6 +18,8 @@
 #                                    an urgent one from the human even under a dispatch hold or load,
 #                                    or board rows no pass has judged in that time (the human here or away; not at a full fleet),
 #                                    or a queue under DISPATCH_LOW_WATER with rows to pick and no start in twice that
+#   fleet-dispatch sprint-stalled    rc 1 naming each agent row of an open sprint with no queue item, session or open gate
+#                                    for DISPATCH_STARVED_MIN (watch sprint-stalled); rc 2 when a read fails
 #   fleet-dispatch stopped [--json]  rc 1 and one line when a hold has stopped every pass for DISPATCH_STARVED_MIN:
 #                                    how long, why, what clears it (hub Home, the briefing, queue-starved)
 #   fleet-dispatch stats             one JSON object: runnable work, starts and reaps in the last hour, flapping items
@@ -118,7 +120,7 @@ dispatch_conf_load
 : "${DISPATCH_SPRINT_FLOOR:=3}"   # live urgent rows of an open sprint (tag `sprint`, which promote puts on an item whose board row the project's open window holds) the sprint floor keeps running past a full pace target and the weekly pace (sprint_floor_start): urgent playground v0.5.4 sprint rows sat hours with no session while dispatch ran at its pace target on agent-runtime items (ar-3816). Provisional: 3 is a guess at the urgent rows one sprint holds at once, low confidence; revisit when an urgent sprint row still pages queue-starved with the floor met; 0 is off
 : "${DISPATCH_SOURCE_PICKS:=codex:sol}"   # the <harness>:<model> pairs that floor may start; a pick whose source is not under-used starts nothing
 : "${DISPATCH_RUN_FLOOR:=0}"   # run sessions that may start past the weekly pace and idle gates: hand starts never wait on pace, so without one no run starts while they fill the week
-: "${DISPATCH_STARVED_MIN:=60}"   # an urgent or high item runnable this long pages (watch queue-starved)
+: "${DISPATCH_STARVED_MIN:=60}"   # an urgent or high item runnable this long pages (watch queue-starved), and an open sprint row nobody owns this long (watch sprint-stalled)
 : "${DISPATCH_IDLE_CAP_PCT:=50}"   # the idle-cap share: at its pace target, under this percent of the counted live sessions busy is a red (cmd_idle_cap, watch fleet-cap-mostly-idle). Provisional, low confidence: one half is the plan's guess (ar-3741-takeover, 2026-11-20, live WORKING 23 of 34 counted); revisit when it trips while takeover_sample has nothing left to close, or never trips in a week the target held
 : "${PLANNED_REBOOT_WINDOW_S:=1800}"   # a lost server this soon after a planned reboot's boot does not page (planned_reboot)
 # The first message restore types into a reopened conversation whose queue item is running (each %s: the
@@ -4803,12 +4805,12 @@ source_floor_start() {
   [ "${DISPATCH_SOURCE_FLOOR:-0}" -gt 0 ] 2>/dev/null || return "$FLOOR_SHUT"
   items=$(jq -c 'select(((" " + (.tags // "") + " ") | contains(" red ")) | not)' <<<"$1")
   [ -n "$items" ] || return "$FLOOR_SHUT"
-  [ -z "$(SOURCE_PICK=${DISPATCH_SOURCE_PICKS%% *} gate)" ] || return "$FLOOR_SHUT"
   for pick in $DISPATCH_SOURCE_PICKS; do
     [ "${SOURCE_STARTED:-0}" -lt "$DISPATCH_SOURCE_FLOOR" ] || break
     src=$(harness_source "${pick%%:*}"); [ -n "$src" ] || continue
     out=$(claude-acct check underuse "$src" 2>&1)
     [[ "$out" == under-used* ]] || continue   # not under-used, unread and not a paced source all say something else
+    [ -z "$(SOURCE_PICK=$pick gate)" ] || return "$FLOOR_SHUT"   # after the cached check: every pass with room asks
     say "$2; $out, so ${pick%%:*} takes work on the source floor (DISPATCH_SOURCE_FLOOR=$DISPATCH_SOURCE_FLOOR)"
     SOURCE_PICK=$pick FLOOR_QUIET=1 UNITS_FREE=$(( DISPATCH_SOURCE_FLOOR * 2 )) start_items "$items" $(( DISPATCH_SOURCE_FLOOR - ${SOURCE_STARTED:-0} )); rc=$?
     [ "$rc" = 0 ] || return "$rc"
@@ -5257,7 +5259,15 @@ trainee_land_start() {
 # A runnable item left waiting is BLOCKED, not NOOP: on 11-03 a gate held every pass for 7.5h and
 # each one published NOOP, which every dashboard showed green. A dispatch hold is BLOCKED the same way.
 run_queue() {
-  local items="$1" head why
+  local items="$1" head why sbefore=${STARTED:-0} rc
+  # The source floor runs first: the route below offers Codex only for a class model-lane promoted, so from
+  # 11-16, with the run floor leaving most passes room, it started none and Codex sat 10% used at 73% of its
+  # week (ar-2436). Its start is past Claude's room, as other_source_start's is: a red or urgent head keeps the slot.
+  source_floor_start "$items" "room for $2"; rc=$?
+  case "$rc" in 0 | "$FLOOR_SHUT") ;; *) return "$rc" ;; esac
+  if [ "${STARTED:-0}" -gt "$sbefore" ]; then
+    unset NEXT_QUEUED; items=$(next_items --points); [ -n "$items" ] || return 0
+  fi
   head=$(head -n 1 <<<"$items")
   why=$(gate)
   if [ -n "$why" ]; then
@@ -6294,6 +6304,64 @@ board_starved() {
   [ "$n" -gt 0 ] || return 0
   if [ "$judged" = 0 ]; then judged=never; else judged=$(date -d "@$judged" -Iminutes); fi
   echo "$n board rows unjudged, none judged since $judged"
+}
+
+# sprint-stalled -- rc 1 naming each agent-lane row of an open sprint (SPRINT_ROW) left DISPATCH_STARVED_MIN
+# minutes or longer unstarted (so no session holds it), with no active queue item on it and nothing it waits on:
+# no gate pending or dead (a dead one is queue-starved's, dead_holds) and nothing row_off names. A verdict
+# holding the row, or no worker taking it, is the stall itself, so rows are read as suggest reads them, verdicts
+# ignored, and each line names the row's last verdict. First sightings live in $DIR/sprint-stalled.tsv, as
+# unstart_orphans keeps its own; a row that stops being one counts again from its next sighting. A dispatch
+# hold (agent-hold) is deliberate: nothing trips and the sightings restart. A failed read is rc 2 `unreadable:`
+# (Sentinel's UNKNOWN). Event-free by necessity: an unowned row has no event, so the watch sprint-stalled
+# samples it. Why: on 2026-11-21 v0.5.5 held 25 open rows, none queued, and nothing paged (ar-4333).
+cmd_sprint_stalled() {
+  local seen_f="$DIR/sprint-stalled.tsv" verdicts="$VERDICTS" cands linked now first key project seen='' out='' keys='[]' last stopped n=0
+  mkdir -p "$DIR"
+  if ! agent-hold check dispatch >/dev/null 2>&1; then
+    rm -f "$seen_f"
+    echo "dispatch is held (agent-hold), so no sprint row is stalled"; return 0
+  fi
+  load_gates
+  [ -z "${GATES_FAILED:-}" ] || { echo "unreadable: $GATES_FAILED"; return 2; }
+  linked=$(agent-queue list --json 2>/dev/null) || { echo "unreadable: agent-queue list --json failed"; return 2; }
+  linked=$(jq -r 'select(.state != "done" and (.row // "") != "") | .row | sub(":"; "\t")' <<<"$linked")
+  # cmd_candidates reads an empty board or worker table as no rows, which would wipe the sightings.
+  notes board --json 2>/dev/null | jq -e 'has("sprints")' >/dev/null || { echo "unreadable: notes board --json failed or has no sprints"; return 2; }
+  [ -n "$(workers)" ] || { echo "unreadable: no workers in $DISPATCH_WORKERS"; return 2; }
+  cands=$(VERDICTS=/dev/null SUGGEST=1 SPRINT_ONLY=1 cmd_candidates | jq -c 'select(.lane == "agent"
+    and (.gate_wait // "") == "" and (.off // "") == "")')
+  now=$(date +%s)
+  while IFS=$'\t' read -r project key; do
+    [ -n "$key" ] || continue
+    grep -qxF "$project"$'\t'"$key" <<<"$linked" && continue
+    first=$(K="$project"$'\t'"$key" awk -F'\t' '$1"\t"$2 == ENVIRON["K"] { print $3; exit }' "$seen_f" 2>/dev/null)
+    first=${first:-$now}
+    seen+="$project"$'\t'"$key"$'\t'"$first"$'\n'
+    [ $(( now - first )) -ge $(( DISPATCH_STARVED_MIN * 60 )) ] || continue
+    keys=$(jq -c --arg k "$project"$'\t'"$key" '. + [$k]' <<<"$keys")
+  done < <(jq -r '"\(.project)\t\(.key)"' <<<"$cands")
+  printf '%s' "$seen" > "$seen_f.new" && mv "$seen_f.new" "$seen_f"
+  [ "$keys" != '[]' ] || { echo "no open sprint row has gone ${DISPATCH_STARVED_MIN} min with no queue item, session or gate ($(grep -c . <<<"$seen" || true) unowned for less)"; return 0; }
+  # The last verdict of each stalled row: one read of the cache, the one judged_keys reads.
+  last=$(jq -rn --argjson k "$keys" 'reduce (inputs | select(.lane == "agent")) as $v ({};
+      "\($v.project)\t\($v.key)" as $x | if ($k | index($x)) != null then .[$x] = "\($v.verdict)\(if ($v.reason // "") != "" then ": \($v.reason)" else "" end)" else . end)
+    | to_entries[] | "\(.key)\t\(.value)"' "$verdicts" 2>/dev/null)
+  echo "open sprint rows with no queue item, no session and nothing they wait on for ${DISPATCH_STARVED_MIN}+ min:"
+  while IFS=$'\t' read -r project key first; do
+    jq -e --arg k "$project"$'\t'"$key" 'index($k) != null' <<<"$keys" >/dev/null || continue
+    n=$(( n + 1 )) out+="${out:+, }$key"
+    jq -r --arg min "$(( (now - first) / 60 ))" --arg v "$(K="$project"$'\t'"$key" awk -F'\t' '$1"\t"$2 == ENVIRON["K"] { print substr($0, length($1) + length($2) + 3); exit }' <<<"$last")" \
+      --arg p "$project" --arg k "$key" 'select(.project == $p and .key == $k)
+      | "  \(.key) (\(.project)\(if (.uncommitted // 0) == 1 then ", uncommitted" else "" end), \($min) min)"
+        + (if (.nobody // "") != "" then "; no worker takes it: \(.nobody)" else "" end)
+        + (if .plan == true then "; #plan, waits on inbox-plan" else "" end)
+        + (if $v != "" then "; last verdict \($v)" else "; never judged" end)' <<<"$cands"
+  done <<<"$seen"
+  stopped=$(cmd_stopped)
+  [ -z "$stopped" ] || echo "$stopped"
+  echo "$n open sprint row(s) stalled: $out (fleet-dispatch suggest says why each waits)"
+  return 1
 }
 
 # idle-cap -- rc 1 when the fleet's live Claude sessions are at the pace target (pace_target, so the
@@ -7830,6 +7898,7 @@ main() {
     exits) shift; skip_exits "$@" ;;
     reap) cmd_reap ;;
     starved) cmd_starved ;;
+    sprint-stalled) cmd_sprint_stalled ;;
     stats) cmd_stats ;;
     stopped) shift; cmd_stopped "$@" ;;
     start) shift; PULL=$(start_pull) cmd_start "$@" ;;
