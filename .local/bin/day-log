@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# day-log - what a day shipped, in the status shape (Done, Doing, Next, Needs you): every PR you merged in any repo, what is still open, what
-# waits on you, and the fleet's telemetry, kept as one record per day. The hub Log tab
+# day-log - what a day merged, in the status shape (Done, Doing, Next, Needs you): every PR you merged in any repo, what is still open, what
+# waits on you, and the fleet's telemetry, kept as one record per day. "PRs merged" is its own count, the one the hub-core
+# Done today card reads; Shipped and Checks (queue items closed with and without a merge) are that card's figures. The hub Log tab
 # (`hub`, Prefix i, then 6) renders the records; day-log.timer snapshots today every 5 min.
 #
 #   day-log snapshot [--date D]   gather the day and write DAYLOG_DIR/<D>.json, print its path;
@@ -13,7 +14,7 @@
 #                                 snapshot, CI, finalize, the week and day_log_rollup.prom
 #   day-log week [--date D] [--json | --line]   "what moved": 7 finished days against the 7 before
 # Deterministic, no model: the PR store (schedules-sync prs), the fleet state document, fleet-bench, agent-usage,
-# agent-hold, the shepherd's watch log and the nightly token-usage snapshot. The live sections (waiting on you, fleet,
+# agent-hold, hub-figure, the shepherd's watch log and the nightly token-usage snapshot. The live sections (waiting on you, fleet, done,
 # scorecard) are read while the day is today and kept as last seen once it is past. The work,
 # agents and ci sections and the week are lib/day-log-snapshots.py.
 
@@ -38,7 +39,7 @@ SNAPSHOTS="$HERE/../lib/day-log-snapshots.py"
 : "${DAYLOG_USAGE_CMD:=agent-usage}"
 : "${DAYLOG_HOLD_CMD:=agent-hold}"
 : "${DAYLOG_UNITY_CMD:=pgrep -cx Unity}"
-: "${DAYLOG_NEEDS_CMD:=hub-figure}"   # Home's Needs you figures (hub-core); the Question count is its needs_question
+: "${DAYLOG_NEEDS_CMD:=hub-figure}"   # hub-core card figures: Needs you (needs_question), Sessions (sessions_*), Done today (done_shipped, done_checks)
 : "${DAYLOG_OUTCOMES_DIR:=$HOME/.agent/outcomes}"
 : "${DAYLOG_REFS_DIR:=$HOME/.notes/journal/refs}"
 : "${DAYLOG_OPEN_DAYS:=7}"    # an open PR untouched longer than this is counted, not listed
@@ -134,6 +135,13 @@ gather() {
       v="$($DAYLOG_NEEDS_CMD "sessions_$n" 2>/dev/null)" && sessfig="$(jq -c --arg k "$n" --argjson v "$v" '.[$k] = $v' <<< "$sessfig")"
     done
     echo "$sessfig" > "$tmp/sessions"
+    # Shipped and Checks are the Done today card's (queue items closed today), never this tool's
+    # merged PRs; one that cannot be read is left out and prints "?".
+    donefig='{}'
+    for n in shipped checks; do
+      v="$($DAYLOG_NEEDS_CMD "done_$n" 2>/dev/null)" && donefig="$(jq -c --arg k "$n" --argjson v "$v" '.[$k] = $v' <<< "$donefig")"
+    done
+    echo "$donefig" > "$tmp/done"
   fi
   { grep -F "$day " "$DAYLOG_WATCH_LOG" 2>/dev/null | grep "^$day " | tail -n 50; } | jq -Rn '[inputs]' > "$tmp/timeline"
   usage_json "$s" "$e" > "$tmp/usage"
@@ -155,6 +163,7 @@ gather() {
      --arg unity "$(cat "$tmp/unity" 2>/dev/null)" \
      --arg needq "$(cat "$tmp/needs" 2>/dev/null)" \
      --slurpfile sessfig <(cat "$tmp/sessions" 2>/dev/null || echo '{}') \
+     --slurpfile donefig <(cat "$tmp/done" 2>/dev/null || echo '{}') \
      --slurpfile timeline "$tmp/timeline" --slurpfile usage "$tmp/usage" \
      --slurpfile ledger <(cat "$tmp/ledger" 2>/dev/null || echo null) --slurpfile groups "$tmp/groups" --slurpfile tokens "$tmp/tokens" \
      --slurpfile projects "$tmp/projects" \
@@ -175,7 +184,8 @@ gather() {
                      if $live and $open[0] == null then "PR store open" else empty end,
                      if $live and $st == null then "fleet state" else empty end,
                      if $live and $needq == "?" then "Needs you figure" else empty end,
-                     if $live and (($sessfig[0] // {}) | length) < 5 then "Sessions figure" else empty end]),
+                     if $live and (($sessfig[0] // {}) | length) < 5 then "Sessions figure" else empty end,
+                     if $live and (($donefig[0] // {}) | length) < 2 then "Done figure" else empty end]),
        merged: (if $m == null then ($p.merged // [])
          else ($stale | split(",") | map(sub("^.*/"; ""))) as $sb
            | [$m[] | .repository.name as $r | ($by["\($r)#\(.number)"] // {}) as $i
@@ -208,6 +218,7 @@ gather() {
            {sessions: ($sessfig[0] // {}),
             holds: ($holds[0] // []), unity_runs: ($unity | tonumber? // 0)}
          else ($p.fleet // null) end),
+       done: (if $live then ($donefig[0] // {}) else ($p.done // null) end),
        bench: (if $live and $headline[0] != null then {headline: $headline[0], sessions: ($bench[0] // [])}
          else ($p.bench // null) end),
        usage: $usage[0],
@@ -326,7 +337,7 @@ def agent_table($week):
     | "## By agent", "",
       (if ($rows | length) == 0 then "- No PR merged and no trainee row moved." else
         "Each cell is the day, with the 7 days to it in brackets. Waiting review is what waits now.", "",
-        "| Agent | Merged | Waiting review | Sent back | Failed |", "|---|---|---|---|---|",
+        "| Agent | PRs merged | Waiting review | Sent back | Failed |", "|---|---|---|---|---|",
         ($rows[] | . as $n | "| \($n) | \(cell($n; "merged")) | \(cell($n; "waiting_review")) | \(cell($n; "sent_back")) | \(cell($n; "failed")) |") end);
 def recent($now; $days): .updated_at != null and ((.updated_at | fromdateiso8601) >= ($now - $days * 86400));
 '
@@ -338,7 +349,7 @@ markdown() {
   jq -r --argjson now "$(now)" --argjson days "$DAYLOG_OPEN_DAYS" --argjson week "$week" "$JQ_VIEW"'
     spend as $u
     | "# Day log, \(.date)", "",
-      "\(.merged | length) PRs merged in \(.merged | map(.repo) | unique | length) repos; \($u.sessions) sessions spent \($u.cost | money). Gathered \(.gathered_at[0:16] | sub("T"; " ")) by `day-log` (deterministic: the PR store, the fleet state document, fleet-bench, agent-usage).", "",
+      "\(.merged | length) PRs merged in \(.merged | map(.repo) | unique | length) repos; \(if .done then "\(.done.shipped // "?") shipped and \(.done.checks // "?") checks (queue items, hub-core Done today); " else "" end)\($u.sessions) sessions spent \($u.cost | money). Gathered \(.gathered_at[0:16] | sub("T"; " ")) by `day-log` (deterministic: the PR store, the fleet state document, fleet-bench, agent-usage).", "",
       (if .tokens then .tokens, "" else empty end),
       "## Done", "",
       (if (.merged | length) == 0 then "- Nothing merged.", "" else empty end),
@@ -370,7 +381,7 @@ markdown() {
           else "- \(if $q == "?" then "Questions waiting on you could not be counted" elif $q == "1" then "1 question waits on you" else "\($q) questions wait on you" end). List: fleet-bench asks.",
             (.waiting.asks[:3][] | "- Question: \(.question | gsub("\n"; " ") | clip(140)) (\(.project), \(.created | hm))") end)), "" else empty end),
       (if .bench then "## Sessions", "", .bench.headline, "",
-        "| Session | Plan | Phase | Working h | Waiting on you h | PRs | CI reds | Cost |", "|---|---|---|---|---|---|---|---|",
+        "| Session | Plan | Phase | Working h | Waiting on you h | PRs merged | CI reds | Cost |", "|---|---|---|---|---|---|---|---|",
         (.bench.sessions[] | "| \(.target) | \(.plan // "-") | \(.phase) | \(.working_h) | \(.waiting_h) | \(.prs_merged // "-") | \(.ci_reds // "-") | \(.cost_usd | money) |"), "" else empty end),
       (.work.by_agent | if . then agent_table($week), "" else empty end),
       (if (.trainee // []) | length > 0 then "### Trainee rows (\(.trainee | length))", "",
@@ -400,7 +411,7 @@ finalize() {
   f="$(snapshot "$day")" || return 1
   out="$DAYLOG_REFS_DIR/$day/shipped.md"
   mkdir -p "${out%/*}" && markdown "$f" > "$out.tmp" && mv "$out.tmp" "$out" || { say "could not write $out"; return 1; }
-  jq -r '"\(.merged | length) merged across \(.merged | map(.repo) | unique | length) repos"' "$f"
+  jq -r '"\(.merged | length) PRs merged across \(.merged | map(.repo) | unique | length) repos"' "$f"
 }
 
 # nightly <day>: close a finished day. The CI read takes minutes, so it runs before finalize,
@@ -452,8 +463,8 @@ main() {
     finalize) day="$(day_arg "$(date -d "$(today) -1 day" +%F)" "$@")" || return 2; finalize "$day" ;;
     nightly) day="$(day_arg "$(date -d "$(today) -1 day" +%F)" "$@")" || return 2; nightly "$day" ;;
     week) "$SNAPSHOTS" week "$@" ;;
-    -h | --help) sed -n '2,18p' "$0" ;;
-    *) sed -n '2,14p' "$0" >&2; return 2 ;;
+    -h | --help) sed -n '2,19p' "$0" ;;
+    *) sed -n '2,15p' "$0" >&2; return 2 ;;
   esac
 }
 
