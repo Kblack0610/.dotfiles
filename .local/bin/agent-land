@@ -1212,7 +1212,10 @@ live=$("${DOTFILES_AUTOPULL:-$(dirname "$(readlink -f "$0")")/dotfiles-autopull}
 # reads the merge.
 if [[ "$pr_ref" == */*#* ]]; then
   store=${pr_ref%#*} host=$(url_host "$url")
-  [ "$host" = github.com ] || store="$host/$store"
+  # html_url carries the public host; the store keys a Forgejo repo by the project map's
+  # forges.forgejo host, so map the alias or sync-prs exits 3, unseen (ar-4530).
+  [ "$host" = github.com ] ||
+    store=$(so_store_key "${SO_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}" "$host/$store")
   rc=0; out=$("${SCHEDULES_SYNC:-schedules-sync}" sync-prs "$store" 2>&1) || rc=$?
   [ "$rc" = 0 ] || [ "$rc" = 3 ] || echo "prs: $store not refreshed ($(lastline "$out")); its next poll reads the merge" >&2
 fi
