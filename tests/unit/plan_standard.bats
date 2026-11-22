@@ -149,7 +149,12 @@ prompt() { # prompt <project> <mode>
 
 @test "a plan with more than one phase cannot use n/a" {
   run gate untyped "$(base | sed 's/^Small, and reversible\.$/n\/a: small/'; printf '\n## Phases\n\n- [ ] one\n- [ ] two\n')"
-  assert_output --partial 'cannot be n/a in a plan with ## Phases'
+  assert_output --partial 'cannot be n/a in a plan with more than one phase'
+}
+
+@test "an example checklist inside a code fence is not a second phase" {
+  run gate untyped "$(base | sed 's/^Small, and reversible\.$/n\/a: small/'; printf '\n## Phases\n\n- [ ] one\n\n```\n- [ ] a\n- [ ] b\n```\n')"
+  refute_output --partial 'cannot be n/a'
 }
 
 @test "a one-phase checklist, which one-shot writes on every plan, may use n/a" {

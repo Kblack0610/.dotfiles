@@ -96,7 +96,12 @@ phased=$(grep -m1 '^## Phases' <<<"$all_headings")
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.local/lib/plan-phases.sh" 2>/dev/null
 multi=''
-[ -n "${_PLAN_PHASES_AWK:-}" ] && [ "$(awk -v mode=count "$_PLAN_PHASES_AWK" <<<"$plan" | cut -f2)" -gt 1 ] 2>/dev/null && multi=1
+if [ -n "${_PLAN_PHASES_AWK:-}" ]; then
+  # Outside code fences, so an example checklist in a fence is no phase.
+  [ "$(awk '/^```/ {f = !f; next} !f' <<<"$plan" | awk -v mode=count "$_PLAN_PHASES_AWK" | cut -f2)" -gt 1 ] 2>/dev/null && multi=1
+else
+  multi=$phased   # no parser: the stricter old rule, never a silent pass
+fi
 gaps=()
 while IFS=$'\t' read -r name must; do
   [ -n "$name" ] || continue
@@ -111,7 +116,7 @@ while IFS=$'\t' read -r name must; do
     if [ "$name" = Changes ] || [ "$name" = Context ] || [ "$name" = Verification ]; then
       gaps+=("## $name cannot be n/a: $must")
     elif [ -n "$multi" ]; then
-      gaps+=("## $name cannot be n/a in a plan with ## Phases: $must")
+      gaps+=("## $name cannot be n/a in a plan with more than one phase: $must")
     elif ! grep -qiE '^[[:space:]]*n/a:[[:space:]]*[^[:space:]]' <<<"${text%%$'\n'*}"; then
       gaps+=("## $name needs a reason: write n/a: <reason>")
     fi
