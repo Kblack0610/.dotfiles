@@ -112,8 +112,8 @@ for f in "${files[@]}"; do
   # Index entries with no readable file behind them: deleted-but-unstaged, sparse checkout,
   # submodule gitlink. Not an error - just nothing to lint.
   [ -f "$f" ] && [ -r "$f" ] || continue
-  # A tracked symlink whose target is not in the index (.local/bin/scrcpy-all -> an untracked
-  # ../src/android-suite) resolves on this box alone: linting it makes a local red that CI, where
+  # A tracked symlink whose target is not in the index (.local/bin/muxpoon -> an untracked
+  # ../src/muxpoon) resolves on this box alone: linting it makes a local red that CI, where
   # it dangles, never sees. One into the index (.local/bin/tmx) stays, as the same file CI reads.
   if [ -L "$f" ]; then t=$(readlink -f "$f"); [ -n "${tracked[${t#"$root"/}]:-}" ] || continue; fi
 
