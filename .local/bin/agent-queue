@@ -3428,11 +3428,14 @@ cmd_handoff() {
   n="$(fm_get "$f" handoffs)"; [[ "$n" =~ ^[0-9]+$ ]] || n=0
   [ "$n" -lt "$max" ] || die "$slug has handed off $n times (AGENT_HANDOFF_MAX $max): finish it in this session"
   [ -z "$(fm_get "$f" pr)" ] || sv=""
-  [ -z "$sv" ] || header_set "$f" salvage "$sv"
+  # The move first: one that is refused leaves the item as it was, its handoffs unspent.
+  AQ_LOCKED=1 cmd_move "$slug" queued --end handoff --if running || return
+  f="$(find_item "$slug")"; [ -n "$f" ] || die "$slug left the queue on its move to queued: nothing to hand off to"
+  # An older salvage: (a lost run's) is not this head: the next start begins from the trunk or the PR instead.
+  if [ -n "$sv" ]; then header_set "$f" salvage "$sv"; else header_del "$f" salvage; fi
   header_set "$f" handoff "$note"
   header_set "$f" handoffs "$((n + 1))"
   item_event item-set "$f" --why "handoff $((n + 1)) of $max: $note${sv:+, from $sv}"
-  AQ_LOCKED=1 cmd_move "$slug" queued --end handoff --if running || return
   echo "$slug: handed off ($((n + 1)) of $max); end this session now (/wind-down auto): the next start reads $note"
 }
 

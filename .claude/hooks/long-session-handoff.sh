@@ -34,9 +34,10 @@ case "$sid" in '' | */* | . | ..) exit 0 ;; esac
 state="${AGENT_HANDOFF_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/long-session-handoff}"
 mkdir -p "$state" 2>/dev/null || exit 0
 mark="$state/$sid"
-[ ! -e "$mark.told" ] || exit 0
+# Touched on each call, so the week-old prune below never takes the marker of a session still running.
+[ ! -e "$mark.told" ] || { touch "$mark.told"; exit 0; }
 
-every="${AGENT_HANDOFF_EVERY:-10}"
+every="${AGENT_HANDOFF_EVERY:-10}"; [[ "$every" =~ ^[1-9][0-9]*$ ]] || every=10
 n=$(cat "$mark.calls" 2>/dev/null); [[ "$n" =~ ^[0-9]+$ ]] || n=0
 n=$((n + 1))
 echo "$n" >"$mark.calls"
@@ -60,7 +61,7 @@ read -r turns compactions < <(jq -nrR 'reduce (inputs | fromjson? | select(.isSi
 [ "$turns" -ge "$turns_max" ] || [ "$compactions" -ge 1 ] || exit 0
 
 show=$("${AGENT_QUEUE_BIN:-agent-queue}" show "$item" --json 2>/dev/null) || exit 0
-max="${AGENT_HANDOFF_MAX:-2}"
+max="${AGENT_HANDOFF_MAX:-2}"; [[ "$max" =~ ^[0-9]+$ ]] || max=2
 jq -e --arg s "$sid" --argjson max "$max" '.state == "running"
   and ((.sessions // "") | split(" ") | index($s) != null)
   and (((.handoffs // "0") | tonumber? // 0) < $max)' <<<"$show" >/dev/null || { : >"$mark.told"; exit 0; }

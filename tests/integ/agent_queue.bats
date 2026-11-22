@@ -1699,6 +1699,8 @@ handoff_repo() {
   # On main, which origin holds: nothing to carry, and no branch needed.
   git -C "$WT" checkout -q main
   "$AQ" add --project game --running --slug m "m" >/dev/null
+  # An older salvage (a lost run's) is not this head: the handoff clears it.
+  "$AQ" set m salvage=feat@0000000 >/dev/null
   run "$AQ" handoff m --note "$NOTE" --dir "$WT"
   assert_success
   [ -z "$(field "$(item queued m)" salvage)" ]

@@ -612,12 +612,13 @@ handed_off() {
 }
 
 # salvaged_here <qall> <slug> <dir> -> exit 0 when the item that moved on from this session carries this
-# checkout's HEAD as its `salvage:` (`<branch>@<sha>`). agent-queue handoff writes it only once that head is
-# on origin, and the item's next start begins from it, so the branch is not this session's to land (ar-2777).
+# checkout's HEAD in its `salvage:` (`<branch>@<sha>`): that sha, or one built on it by a later run's handoff.
+# agent-queue handoff writes it only once that head is on origin, and the item's next start begins from it,
+# so the branch is not this session's to land (ar-2777). A sha this clone lacks holds nothing.
 salvaged_here() {
   local sv
   sv="$(jq -r --arg s "$2" 'select(.slug == $s) | .salvage // empty' <<<"$1" 2>/dev/null | head -n 1)"
-  [ -n "$sv" ] && [ "${sv##*@}" = "$(git -C "$3" rev-parse HEAD 2>/dev/null)" ]
+  [ -n "$sv" ] && git -C "$3" merge-base --is-ancestor HEAD "${sv##*@}" 2>/dev/null
 }
 
 # session_finished: session_bucket's arguments -> exit 0 when the work half of DONE holds

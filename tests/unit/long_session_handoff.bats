@@ -123,3 +123,13 @@ payload() { jq -nc --arg c "${1:-$WT}" --arg t "$T" --arg a "${2:-}" '{session_i
   ITEM_HANDOFFS=1 run bash "$HOOK" <<<"$(payload)"
   [[ "$output" == *additionalContext* ]]
 }
+
+@test "a bad AGENT_HANDOFF_EVERY or AGENT_HANDOFF_MAX falls back to the default, never a divide by zero" {
+  transcript 9
+  AGENT_HANDOFF_EVERY=0 AGENT_HANDOFF_MAX=x run bash "$HOOK" <<<"$(payload)"
+  assert_success
+  refute_output --partial 'division'
+  # Every 10: the first call does not count the transcript.
+  assert_output ''
+  [ "$(cat "$AGENT_HANDOFF_STATE/sid-1.calls")" = 1 ]
+}
