@@ -5509,7 +5509,7 @@ JSONL
   [ "$(jq -r .bucket <<<"$output")" = WORKING ]
 }
 
-@test "resume_killed_gate names the first killed call that was a gate or test, and a finished session is left to DONE (ar-1902)" {
+@test "resume_killed_gate names the newest notice's first killed gate or test until any gate runs, and a finished session is left to DONE (ar-1902)" {
   export FLEET_TIME_USE_CONF="$BATS_TEST_DIRNAME/../../.config/agent-panel/time-use.conf"
   killed_gate_transcript "$SANDBOX/t.jsonl" 'scripts/test/run.sh --filter Playground.PlayTests.OutfitsPlayTests'
   run resume_killed_gate "$SANDBOX/t.jsonl"
@@ -5522,6 +5522,26 @@ JSONL
   assert_output "$(printf 'gate gh-run-wait\t2026-11-12T15:43')"
   run resume_killed_gate "$SANDBOX/missing.jsonl"
   assert_output ''
+  # any later gate or test clears it (the session landed another way), and a newer notice that killed no gate leaves
+  # the older one standing (ar-1902 review)
+  killed_gate_transcript "$SANDBOX/t.jsonl"
+  cp "$SANDBOX/t.jsonl" "$SANDBOX/t3.jsonl"
+  jq -cn '{type: "assistant", message: {content: [{type: "tool_use", id: "toolu_l", name: "Bash", input: {command: "agent-land 12 --item ucp-634"}}]}}' >> "$SANDBOX/t.jsonl"
+  run resume_killed_gate "$SANDBOX/t.jsonl"
+  assert_output ''
+  jq -cn '{type: "assistant", message: {content: [{type: "tool_use", id: "toolu_x", name: "Bash", input: {command: "sleep 600"}}]}}' >> "$SANDBOX/t3.jsonl"
+  jq -cn '{type: "user", timestamp: "2026-11-13T09:00:00.000Z", message: {content: "<task-notification>\n<tool-use-id>toolu_x</tool-use-id>\n<status>stopped</status>\n<summary>Background shell command didn'"'"'t finish before the previous session ended</summary>\n</task-notification>"}}' >> "$SANDBOX/t3.jsonl"
+  run resume_killed_gate "$SANDBOX/t3.jsonl"
+  assert_output "$(printf 'gate gate-and-land.sh\t2026-11-12T15:43')"
+  # stopped_bucket: a nightly-red suspect, a PR conflict and a red CI run keep their own row; another STALLED row does not
+  run stopped_bucket "$SANDBOX/t3.jsonl" 'STALLED nightly red after PR #12: Tests (all)' 'Tests (all)'
+  assert_output ''
+  run stopped_bucket "$SANDBOX/t3.jsonl" 'STALLED PR #12 conflicts with the default branch' -
+  assert_output ''
+  run stopped_bucket "$SANDBOX/t3.jsonl" 'STALLED PR #12 CI red' -
+  assert_output ''
+  run stopped_bucket "$SANDBOX/t3.jsonl" 'STALLED 2 dirty file(s), no PR' -
+  assert_output "$(printf 'STALLED resume killed its background gate (gate-and-land.sh) before it finished\t2026-11-12T15:43')"
   # every phase ticked and the PR merged: finished, so not this row's
   landed_fixture
   phases_plan '- [x] Phase 1: fleet-sessions (#875)'
