@@ -494,6 +494,9 @@ keyed_row_left() {
 @test "--backlog: a check(alert) row fleet-bench keys is left as it is" {
   keyed_row_left 'check(alert): NodeDown hp-victus firing, alertmanager-fleet tripped since 2026-11-01, expected: -'
 }
+@test "--backlog: a check(red) row fleet-bench keys is left as it is" {
+  keyed_row_left 'check(red): watch voice-puck is red'
+}
 @test "--backlog: a check(lesson) guard row fleet-bench keys is left as it is" {
   keyed_row_left 'check(lesson): guard 0a1b2c3d: lesson "x" (a.md, last 2026-11-01) was found again in 4 dream sweeps'
 }
@@ -508,6 +511,23 @@ keyed_row_left() {
 }
 @test "--backlog: a fix(runner) row fleet-bench keys is left as it is" {
   keyed_row_left 'fix(runner): dream is FAILED: no detail'
+}
+
+@test "--backlog: an answer cached for a keyed row before it was left alone is neither reported nor applied" {
+  local raw='- [ ] fix(unit): foo.service failed: exit-code <!-- id:sc-1 -->' cache
+  sheet '' "$raw\n"
+  cache="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/inbox-triage/backlog-scratch.jsonl"
+  mkdir -p "$(dirname "$cache")"
+  jq -cn --arg r "$raw" '{lane: "human", raw: $r, action: "rewrite", id: "", project: "", row: "fix(systemd): foo fails #size/s", why: "", epic: "", priority: ""}' >"$cache"
+  run "$TRIAGE" --backlog --report
+  assert_success
+  assert_output --partial 'Open rows read: 0 (agent 0, human 0) on 0 projects. Judged: 0.'
+  assert_line '| rewrite | 0 |'
+  run "$TRIAGE" --backlog --project scratch
+  assert_success
+  run tasks
+  assert_output --partial "$raw"
+  refute_output --partial 'fix(systemd)'
 }
 
 @test "--backlog: an untyped rewrite, a dup of itself, a dup of no listed row and a drop of a heading change nothing" {

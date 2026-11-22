@@ -1904,6 +1904,10 @@ key_of() {
 @test "board keys: an alert row's key is its alert, host and 'firing'" {
   assert_equal "$(key_of 'check(alert): NodeDown hp-victus firing, alertmanager-fleet tripped since 2026-11-01, expected: -')" 'check(alert): NodeDown hp-victus firing'
 }
+@test "board keys: a red row's key is its item, one word or two, and 'is red'" {
+  assert_equal "$(key_of 'check(red): watch voice-puck is red')" 'check(red): watch voice-puck is red'
+  assert_equal "$(key_of 'check(red): voice-puck is red')" 'check(red): voice-puck is red'
+}
 @test "board keys: a lesson guard row's key ends at its hash's colon" {
   assert_equal "$(key_of 'check(lesson): guard 0a1b2c3d: lesson "x" (a.md, last 2026-11-01) was found again in 4 dream sweeps')" 'check(lesson): guard 0a1b2c3d:'
 }
@@ -1924,10 +1928,14 @@ key_of() {
   assert_failure
   run key_of 'fix(unit): the pane timer misses a beat'
   assert_failure
+  run key_of 'fix(unit): tests failed on CI and nobody noticed'
+  assert_failure
 }
 
-@test "board keys: every row triage files from a runner, unit or watch red is a key, its prefix the key" {
+@test "board keys: every row triage files from a runner, unit, watch or remote red is a key, its prefix the key" {
   triage_setup
+  printf '#!/usr/bin/env bash\necho "watch voice-puck"\n' > "$SANDBOX/bin/red-stub"; chmod +x "$SANDBOX/bin/red-stub"
+  export TRIAGE_RED_CMD=red-stub
   mkdir -p "$AGENTCTL_STATE_DIR/beta"
   printf "NAME=beta\nSCHEDULE='*-*-* 04:00'\n" > "$LEDGER_CONF_DIR/beta.conf"
   printf FAILED > "$AGENTCTL_STATE_DIR/beta/last-outcome"
@@ -1937,18 +1945,20 @@ key_of() {
   run "$SUBJECT" triage --dry-run
   assert_success
   assert_line --partial 'fix(runner): beta is'
+  assert_line --partial 'check(red): watch voice-puck is red'
   local line n=0
   while IFS= read -r line; do
     [[ $line == fleet-bench:* ]] && continue
     [ -n "$(key_of "$line")" ] || fail "fleet-bench filed a row the triager would rewrite: $line"
     n=$((n + 1))
   done <<<"$output"
-  assert_equal "$n" 3
+  assert_equal "$n" 4
 }
 
-@test "triage: a runner's or a lesson guard's row is never retired, only refreshed by board_upsert" {
+@test "triage: a red, runner or lesson guard row is never retired, only refreshed by board_upsert" {
   triage_setup
   watch drift OK -90000 normal
+  board_row ' ' 'check(red): watch voice-puck is red'
   board_row ' ' 'fix(runner): gamma is FAILED: 2026-10-30 why: gone'
   board_row ' ' 'check(lesson): guard 0a1b2c3d: lesson "x" (a.md, last 2026-11-01) was found again in 4 dream sweeps'
   board_row ' ' 'check(watch): drift tripped since 2026-11-01, expected: drift is healthy.'
@@ -1957,6 +1967,7 @@ key_of() {
   assert_line 'retire: check(watch): drift tripped since'
   refute_line --partial 'retire: fix(runner)'
   refute_line --partial 'retire: check(lesson)'
+  refute_line --partial 'retire: check(red)'
 }
 
 @test "triage: a queue that cannot be read closes no row: unknown is not recovered" {

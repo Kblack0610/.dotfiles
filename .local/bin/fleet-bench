@@ -5049,8 +5049,8 @@ triage_retire() {
   while IFS=$'\t' read -r scope _ _ title raw; do
     [[ $title =~ $BOARD_KEY_ERE ]] || continue
     key=${BASH_REMATCH[1]}
-    # a runner's row and a lesson guard's are board_upsert's to refresh, never closed here
-    case $key in 'fix(runner): '* | 'check(lesson): '*) continue ;; esac
+    # only these kinds close on recovery; a red, runner or lesson row is board_upsert's alone
+    case $key in 'check(watch): '* | 'check(alert): '* | 'fix(hold): '* | 'fix(logs): '* | 'fix(unit): '*) ;; *) continue ;; esac
     runner=; [[ $key =~ ^fix\(logs\):\ ([^ ]+) ]] && runner=${BASH_REMATCH[1]}
     [ "$scope" != - ] || scope=
     [[ $raw == '- [ ]'* ]] && ! grep -qxF -- "$key" <<<"$live" || continue
