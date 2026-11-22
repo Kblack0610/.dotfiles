@@ -22,12 +22,18 @@ fixture() {
   for t in "$@"; do printf '@test "%s" {\n  true\n}\n' "$t" >> "$SHARD_DIR/$f"; done
 }
 
-@test "every real file of each tier is in exactly one shard, for 1 to the CI matrix's shard count" {
+# fast_shards <tests.yml>: each fast tier's most shards, "<tier> <max>", one tier a line, from
+# the weights job's FAST_SHARDS
+fast_shards() {
+  sed -nE 's/^ *FAST_SHARDS: *(.*)$/\1/p' "$1" | tr ' ' '\n' | grep . | tr '=' ' '
+}
+
+@test "every real file of each tier is in exactly one shard, for 1 to the CI's most shards" {
   unset SHARD_DIR SHARD_WEIGHTS
   local tests="$BATS_TEST_DIRNAME/.." top
   for tier in unit integ; do
-    top=$(matrix_shards "$tests/../.github/workflows/tests.yml" | awk -v t="$tier" '$1 == t { print $2 }')
-    [[ $top =~ ^[0-9]+$ ]] || fail "no $tier shard count read from tests.yml's matrix"
+    top=$(fast_shards "$tests/../.github/workflows/tests.yml" | awk -v t="$tier" '$1 == t { print $2 }')
+    [[ $top =~ ^[0-9]+$ ]] || fail "no $tier shard count read from tests.yml's FAST_SHARDS"
     for ((n = 1; n <= top; n++)); do
       local all=()
       for ((i = 1; i <= n; i++)); do
@@ -40,29 +46,77 @@ fixture() {
   done
 }
 
-# matrix_shards <tests.yml>: each fast tier's matrix shards, "<tier> <n> <i i i...>", one tier a line
-matrix_shards() {
-  sed -nE 's/^ *- *\{ *tier: *([a-z]+), *shard: *([0-9]+)\/([0-9]+) *\}.*/\1 \3 \2/p' "$1" |
-    sort -k1,1 -k2,2n -k3,3n | awk '$1 != t || $2 != n { if (t != "") print l; t = $1; n = $2; l = $1 " " $2 } { l = l " " $3 } END { if (t != "") print l }'
+# whole <matrix json>: each of unit and integ lists exactly 1/n to n/n of its one n, so no shard
+# of a split is missing; prints "<tier> <n>" a line
+whole() {
+  jq -re 'group_by(.tier) | map({tier: .[0].tier, n: length, s: map(.shard)}) |
+    select(length == 2 and all(.[]; . as $t | $t.s == [range(1; $t.n + 1) | "\(.)/\($t.n)"]))[] | "\(.tier) \(.n)"' <<<"$1"
 }
 
-@test "the CI matrix runs every shard of each fast tier: 1/n to n/n of one n, each once" {
-  local wf="$BATS_TEST_DIRNAME/../../.github/workflows/tests.yml"
-  # Two tiers, each listing exactly 1..n of its one n.
-  ok() { matrix_shards "$1" | awk '{ for (i = 3; i <= NF; i++) if ($i != i - 2) bad = 1; if (NF - 2 != $2) bad = 1; c++ } END { exit bad || c != 2 }'; }
-  ok "$wf"
-  # Negative controls, read from the matrix so a reshard keeps them: unit's last shard dropped,
-  # integ's first dropped, and unit's first given a count one short.
-  local un ni
-  un=$(matrix_shards "$wf" | awk '$1 == "unit" { print $2 }')
-  ni=$(matrix_shards "$wf" | awk '$1 == "integ" { print $2 }')
-  sed "/tier: unit, shard: $un\/$un}/d" "$wf" >"$BATS_TEST_TMPDIR/a.yml"
-  sed "/tier: integ, shard: 1\/$ni}/d" "$wf" >"$BATS_TEST_TMPDIR/b.yml"
-  sed "s#tier: unit, shard: 1/$un}#tier: unit, shard: 1/$((un - 1))}#" "$wf" >"$BATS_TEST_TMPDIR/c.yml"
-  for f in a b c; do
-    ! cmp -s "$wf" "$BATS_TEST_TMPDIR/$f.yml" || fail "$f.yml: the control changed nothing"
-    ! ok "$BATS_TEST_TMPDIR/$f.yml" || fail "$f.yml passed"
+@test "--matrix gives each tier a shard per SHARD_SECONDS of its pick, 1 at least, its max at most, every shard of the split once" {
+  export SHARD_SECONDS=100
+  for f in a b c d; do fixture "unit/$f.bats" "t$f"; done
+  fixture integ/x.bats tx
+  printf '250\tunit/a.bats\n120\tunit/b.bats\n30\tunit/c.bats\n10\tinteg/x.bats\n' > "$SHARD_WEIGHTS"
+  local list="$BATS_TEST_TMPDIR/list" json
+  # unit 250+120+30 = 400 s is 4 shards, past unit's max of 3; integ 10 s is 1.
+  printf 'unit/a.bats\nunit/b.bats\nunit/c.bats\ninteg/x.bats\n' > "$list"
+  run --separate-stderr "$SUBJECT" --matrix "$list" unit=3 integ=2
+  assert_success
+  assert_equal "$(whole "$output")" "$(printf 'integ 1\nunit 3')"
+  [[ $stderr == *"unit: 3 of at most 3 shards for 400s predicted, one per 100s"* ]] || fail "stderr: $stderr"
+  # 120+30 = 150 s rounds up to 2; d is not in the table and weighs the unit median, 120 s.
+  printf 'unit/b.bats\nunit/c.bats\n' > "$list"
+  run --separate-stderr "$SUBJECT" --matrix "$list" unit=12 integ=4
+  assert_success
+  assert_equal "$(whole "$output")" "$(printf 'integ 1\nunit 2')"
+  printf 'unit/d.bats\n' > "$list"
+  run --separate-stderr "$SUBJECT" --matrix "$list" unit=12 integ=4
+  assert_equal "$(whole "$output")" "$(printf 'integ 1\nunit 2')"
+  # No table: a test count predicts no time, so every tier with a pick gets its max.
+  printf 'unit/c.bats\n' > "$list"
+  SHARD_WEIGHTS= run --separate-stderr "$SUBJECT" --matrix "$list" unit=5 integ=4
+  assert_success
+  assert_equal "$(whole "$output")" "$(printf 'integ 1\nunit 5')"
+  # A header-only table (--junit over JUnit with no suites) lists no unit file: also the max,
+  # not the 1 s median's one shard. A table listing only integ sizes integ but not unit.
+  printf '# header\n' > "$SHARD_WEIGHTS"
+  run --separate-stderr "$SUBJECT" --matrix "$list" unit=5 integ=4
+  assert_success
+  assert_equal "$(whole "$output")" "$(printf 'integ 1\nunit 5')"
+  printf '# header\n10\tinteg/x.bats\n' > "$SHARD_WEIGHTS"
+  printf 'unit/c.bats\ninteg/x.bats\n' > "$list"
+  run --separate-stderr "$SUBJECT" --matrix "$list" unit=5 integ=4
+  assert_equal "$(whole "$output")" "$(printf 'integ 1\nunit 5')"
+  # Negative controls on whole: a dropped last shard, a count one short, a tier missing.
+  json='[{"tier":"unit","shard":"1/2"},{"tier":"unit","shard":"2/2"},{"tier":"integ","shard":"1/1"}]'
+  whole "$json" >/dev/null || fail "the good matrix failed"
+  ! whole '[{"tier":"unit","shard":"1/2"},{"tier":"integ","shard":"1/1"}]' || fail "a dropped shard passed"
+  ! whole '[{"tier":"unit","shard":"1/1"},{"tier":"unit","shard":"2/2"},{"tier":"integ","shard":"1/1"}]' || fail "a short count passed"
+  ! whole '[{"tier":"unit","shard":"1/1"}]' || fail "a missing tier passed"
+}
+
+@test "--matrix fails without SHARD_SECONDS, on a bad <tier>=<max> and on an unknown tier" {
+  printf 'unit/a.bats\n' > "$BATS_TEST_TMPDIR/list"
+  fixture unit/a.bats ta
+  printf '5\tunit/a.bats\n' > "$SHARD_WEIGHTS"
+  run --separate-stderr "$SUBJECT" --matrix "$BATS_TEST_TMPDIR/list" unit=3
+  assert_failure 2
+  export SHARD_SECONDS=100
+  for bad in unit=0 unit nope=3; do
+    run --separate-stderr "$SUBJECT" --matrix "$BATS_TEST_TMPDIR/list" "$bad"
+    assert_failure 2
   done
+  run --separate-stderr "$SUBJECT" --matrix "$BATS_TEST_TMPDIR/list" unit=3
+  assert_success
+}
+
+@test "CI sizes the fast matrix with --matrix from the weights job, for both tiers" {
+  local wf="$BATS_TEST_DIRNAME/../../.github/workflows/tests.yml"
+  assert_equal "$(fast_shards "$wf" | awk '{ print $1 }' | sort | tr '\n' ' ')" "integ unit "
+  grep -q 'include: ${{ fromJSON(needs.weights.outputs.matrix) }}' "$wf" || fail "fast does not read the weights job's matrix"
+  grep -q 'tests/shard.sh --matrix "$RUNNER_TEMP/picked" $FAST_SHARDS' "$wf" || fail "weights does not size the matrix"
+  ! grep -qE '^ *- *\{ *tier: *[a-z]+, *shard:' "$wf" || fail "a hand-listed shard is back in the matrix"
 }
 
 @test "the heaviest file gets a shard of its own and the rest balance behind it" {
