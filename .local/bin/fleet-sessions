@@ -1833,6 +1833,15 @@ own_slugs() {
   case "$1" in own:* | here:*) local s="${1#*:}"; printf '%s' "${s%% *}" ;; esac
 }
 
+# dispatch_tag <collect's items: "<slug>\t<project>: <slug>" lines> <item_of's relation> <its comma list of slugs>
+# -> the row's [dispatch: <project>: <slug>] tag, else -. It is the row's own item by item_of's join (own, here,
+# review), never its tmux lane: a recycled lane would show the previous Claude's item (ar-860).
+dispatch_tag() {
+  local d=
+  case "$2" in own | here | review) d="$(awk -F'\t' -v sl=",$3," 'index(sl, "," $1 ",") { print $2; exit }' <<<"$1")" ;; esac
+  printf '%s' "${d:--}"
+}
+
 # handoff_of <items: collect's qhand, the jsonl of doc+ask items with a report and an ask> <item_of's answer> -> "<ask id>\t<doc>"
 # when the item is of a doc+ask kind (kinds.json `exit`, by the item's `type`) and has handed its work
 # over: its `report` doc exists and its `ask` is filed. That ask is the deliverable, so it is not the
@@ -2108,13 +2117,7 @@ collect() {
     # The plan is queued only when every open phase is held; else its first free one is next.
     # A read that fails is named unreadable, and tick logs no blink for the row (blind_row) (ar-2905).
     local dsp=- n=0 e=0 prun=- pwq=- mine="$(own_slugs "$item")"
-    # The [dispatch: <project>: <slug>] tag is this row's own item by item_of's join, never its tmux lane:
-    # a recycled lane would show the previous Claude's item (ar-860).
-    case "$irel" in
-      own | here | review)
-        dsp="$(awk -F'\t' -v sl=",$islugs," 'index(sl, "," $1 ",") { print $2; exit }' <<<"$items")"
-        dsp="${dsp:--}" ;;
-    esac
+    dsp="$(dispatch_tag "$items" "$irel" "$islugs")"
     pq="$pnext"
     # With a phase open, a merged PR is a landed phase only when the plan names it: a side item's PR
     # (2026-11-16 the chore #2118 of hub/dotfiles:1's own done item, named by no phase of its plan) is not
