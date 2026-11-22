@@ -1232,7 +1232,8 @@ ORDER='def untagged($t): ((.tags // "") | if type == "array" then join(" ") else
   | if $mix == null then sort_by(bucket, .queued) else mix($mix; bucket) end'
 
 # Classes of service (AQ_CLASSES, plan can-we-move-our-mellow-sphinx P3): an item is in the first class
-# whose `tags` it carries, else whose `from` it came from, else whose `kinds` holds its row type
+# whose `tags` it carries, else whose `from` it came from, else whose `projects` holds its project,
+# else whose `kinds` holds its row type
 # (`type:`, which `add` stamps from `notes row parse`), else the `default` class. Match a cleanup class
 # by kind, not by the `cleanup` tag: fleet-dispatch puts that tag on every kinds.json cleanup kind, fix
 # included. Inside a bucket the items interleave by class: each next place goes to the class whose count
@@ -1247,7 +1248,11 @@ ORDER='def untagged($t): ((.tags // "") | if type == "array" then join(" ") else
 # near min_vruntime; a class with only held items there sets no floor, as it starts nothing. The cut
 # count carries into the next bucket like any other. So a class served a lot this week waits about
 # lag_places places at most, and one served little gets at most lag_places * share / (sum of shares)
-# places ahead. Shares are weights: the bound divides by their sum. No lag_places is no bound. An AQ_CLASSES not
+# places ahead. Shares are weights: the bound divides by their sum. No lag_places is no bound. A class with a `min_live`
+# (a whole number, ar-3943) that has fewer live items (running or waiting, plus the places this order already
+# gave it) goes first among the classes with a startable head item in its bucket, ahead of the shares,
+# and that item carries `short: true` for fleet-dispatch (pick_item keeps run units for it). It ranks and
+# starts nothing past the pace target. An AQ_CLASSES not
 # `on: true`, or unreadable, is no mix.
 AQ_CLASSES="${AGENT_QUEUE_CLASSES:-$HOME/.config/fleet-dispatch/classes.json}"
 CLASS_JQ='def class_of($cs): ((.tags // "") | if type == "array" then join(" ") else tostring end | [splits("\\s+")]) as $tg
@@ -1265,7 +1270,7 @@ MIX_JQ='def mix($m; bucket): ($m.classes | map(.name)) as $names
   | ([$share[] | select(. > 0)] | add // 0) as $sum
   | ($m.classes | map({(.name): (.min_live // 0)}) | add) as $minlive
   | def ratio($c; $n): if ($share[$c] // 0) > 0 then (($n[$c] // 0) / $share[$c]) else infinite end;
-  def short($c; $s): ($minlive[$c] // 0) > (($s.l[$c]) // 0) and any($s.q[$c][]; .hold == null);
+  def short($c; $s): ($minlive[$c] // 0) > (($s.l[$c]) // 0) and $s.q[$c][0].hold == null;
   def bound: if $m.lag_places == null or $sum == 0 then . else
       (.q | to_entries | map(select(($share[.key] // 0) > 0 and any(.value[]; .hold == null)) | .key)) as $in
       | if ($in | length) == 0 then . else
@@ -1288,7 +1293,7 @@ MIX_JQ='def mix($m; bucket): ($m.classes | map(.name)) as $names
   | .out;'
 
 # class_cfg [--mix] -> AQ_CLASSES on one line: a class list, a window_days of whole days (default 7)
-# and a lag_places, when set, of a number not below 0. Plain, it is the order's config and needs
+# a lag_places, when set, of a number not below 0, and a min_live per class, when set, of a whole number not below 0. Plain, it is the order's config and needs
 # `on: true`; --mix (agent-queue mix) takes it on or off and also needs a starve_days of whole days
 # (default 3) inside the window. Only mix checks starve_days, so
 # a bad watch setting never turns the order off. Any other file fails, printing nothing.
@@ -1301,7 +1306,7 @@ class_cfg() {
     "$AQ_CLASSES" 2>/dev/null
 }
 
-# class_started <cfg> -> {window: {<class>: n}, recent: {<class>: n}}: each class's started items that
+# class_started <cfg> -> {window: {<class>: n}, recent: {<class>: n}, live: {<class>: n}} (live: those running or waiting): each class's started items that
 # closed in the last window_days or are still running, waiting or in review (the mix's count, so a
 # class that just started one is not picked again as if it had not), and of those the ones started in
 # the last starve_days. It reads without the lock: an item moves between states by a rename and a write
@@ -1334,7 +1339,7 @@ mix_json() {
 cmd_mix() {
   local json='' cfg q s out
   case "${1:-}" in --json) json=1 ;; '') ;; *) die "unknown option: $1" ;; esac
-  cfg="$(class_cfg --mix)" || die "$AQ_CLASSES has no class list, a window_days or starve_days that is not whole days inside the window, or a lag_places that is not a number of 0 or more"
+  cfg="$(class_cfg --mix)" || die "$AQ_CLASSES has no class list, a window_days or starve_days that is not whole days inside the window, a lag_places that is not a number of 0 or more, or a class min_live that is not a whole number of 0 or more"
   q="$(snap_json "$CLASS_JQ $cfg"' as $cfg | [.[] | select(.hold == null) | class_of($cfg.classes)]
     | group_by(.) | map({(.[0]): length}) | add // {}' queued)" || die "the queue could not be read"
   s="$(class_started "$cfg")" || die "the started items could not be read"

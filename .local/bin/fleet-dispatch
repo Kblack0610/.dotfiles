@@ -5273,7 +5273,7 @@ pick_item() {
       why="the $free free run units wait for $kept, its class under min_live"
     elif [ -z "$reserved" ] && [ "$uwait" = 1 ] && [ "$need" -le "$TARGET" ] && runs_now "$it" && [ -z "$(held_by "$it" "$FIRING")" ]; then
       reserved=$(jq -r .slug <<<"$it") PICK_RESERVED=$it
-    elif [ -z "$kept" ] && [ "$uwait" = 1 ] && [ "$need" -le "$TARGET" ] && short_item "$it" && [ -z "$(held_by "$it" "$FIRING")" ]; then
+    elif [ -z "$kept" ] && [ "$uwait" = 1 ] && [ "$need" -le "$TARGET" ] && short_item "$it" && [ -z "$(held_by "$it" "$FIRING")" ] && [ -z "$(line_why "$it")" ] && [ -z "$(share_why "$it")" ]; then
       kept=$(jq -r .slug <<<"$it")
     fi
     if [ -z "$why" ]; then

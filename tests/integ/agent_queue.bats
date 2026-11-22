@@ -506,11 +506,11 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   assert_success
   run jq -c '[.on, .starve_days, (.classes[] | [.name, .runnable, .started, .recent, .pct]), .starved]' <<<"$output"
   # The held chore is no runnable cleanup, so cleanup is not starved; bug's only start is 5 days old.
-  assert_output '[false,3,["bug",1,1,0,25],["requested",1,2,2,50],["cleanup",0,0,0,0],["research",1,0,0,0],["feature",1,1,1,25],["bug","research"]]'
+  assert_output '[false,3,["bug",1,1,0,25],["requested",1,2,2,50],["cleanup",0,0,0,0],["unity",0,0,0,0],["research",1,0,0,0],["feature",1,1,1,25],["bug","research"]]'
   run "$AQ" mix
   assert_success
   assert_line 'mix (off): items started in 7d against each class share'
-  assert_line 'bug            15%        1    25%         1          0'
+  assert_line 'bug            15%        1    25%         1          0         0'
   assert_line 'starved: bug, research (runnable, none started in 3d)'
   # NEGATIVE CONTROL: a 7-day starve window counts the 5-day-old bug start, and research stays starved.
   jq '.starve_days = 7 | .on = true' "$SANDBOX/classes.json" > "$SANDBOX/c2.json" && mv "$SANDBOX/c2.json" "$SANDBOX/classes.json"
