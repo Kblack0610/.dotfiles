@@ -100,8 +100,10 @@ dispatch_conf_load
 : "${DISPATCH_LINE_MAX:=6}"   # sessions of one project waiting their landing turn (open_job queue) at which a pass starts no more of its items but urgent and red ones, so the room goes to other projects. Provisional: one playground train is 6 PRs, and on 2026-11-14 22 waiters sat behind trains that merged 5 of 25, medium confidence; revisit when a train is no longer 6 or the playground merges 4+ an hour
 # The fleet share cap (plan lets-burn-the-midnitgh-cosmic-ritchie P4): the fleet's work on itself gets a
 # capped share of starts, the products the rest (share_why).
-: "${DISPATCH_FLEET_PROJECTS=agent-runtime home-config}"   # the projects that are the fleet's work on itself, whose share of starts DISPATCH_FLEET_SHARE caps; empty is off
-: "${DISPATCH_FLEET_SHARE:=30}"   # percent of the queue items started in the last DISPATCH_FLEET_SHARE_H hours (hand starts included) at or over which a pass starts no DISPATCH_FLEET_PROJECTS item but an interrupt (red, canary, urgent, #requested, the human and plan floors), and the board fills from other projects, its tier-3 gate included; the cap lets go when nothing else can start. 0 is off. The human's pick (2026-11-18, ask PaIYoy a), against 7d starts of agent-runtime 45.7% and home-config 11.7%
+# DISPATCH_FLEET_PROJECTS, space-separated, are the projects whose share of starts DISPATCH_FLEET_SHARE
+# caps; unset, the ones the human put on `#prio/low` (agent-runtime and home-config, the fleet's work on
+# itself), read in share_state, as project precedence has one store; empty is off.
+: "${DISPATCH_FLEET_SHARE:=30}"   # percent of the queue items started in the last DISPATCH_FLEET_SHARE_H hours (hand starts included) at or over which a pass starts no DISPATCH_FLEET_PROJECTS item but a red or the human's own (urgent from them, #requested, the human and plan floors) (share_held), and the board fills from other projects, its cleanup lane included; the cap lets go when nothing else can start. 0 is off. The human's pick (2026-11-18, ask PaIYoy a), against 7d starts of agent-runtime 45.7% and home-config 11.7%
 : "${DISPATCH_FLEET_SHARE_H:=24}"   # hours of starts the share reads. Provisional: a day, so a week over the cap holds fleet work about a day, not a week (the human's "elastic, no rigidness", ask EF60vp), low confidence; revisit when the 7-day done split with the cap on still shows the fleet over 30%, or fleet reds wait (stale_urgent_d)
 : "${DISPATCH_SOURCE_FLOOR:=1}"   # starts a pass may make past a full pace target on a flat-plan source its week is leaving unused (claude-acct check underuse): the target counts every harness, so Codex sat 18% used at 71% of its week while the fleet held 26 of 25 (ar-2433); 0 is off
 : "${DISPATCH_TRAINEE_REPOS:=$HOME/.dotfiles}"   # the checkouts a trainee may work in, space-separated: its provider is a free one that sees the row and the repo, so public repos only (trainee_public_why)
@@ -1142,11 +1144,16 @@ line_why() {
 }
 
 # SHARE_JQ: `share_held($s)` is an item the fleet share cap holds, $s being SHARE_STATE: the share is
-# full and the item is on a fleet project and is no interrupt (red, canary, urgent or #requested: the
-# human's lane for reds and their own asks). The one test share_why and queue_depth apply.
+# full and the item is on a fleet project, no red, no #requested (the human's ask, ask XI2fDO) and no
+# urgent `from: human` (human_urgent's urgent test; its fresh asks and plan phases pass on the human
+# floor, HUMAN_PASS). A canary or any other urgent waits like the rest, a board row's #urgent
+# included (`from: board:`): 180 of the 1132 starts in the 3 days to 2026-11-21 passed the cap that
+# way while the fleet held 79% of them (plan swhow-me-asll-data-modular-otter P3). The one test
+# share_why and queue_depth apply.
 # shellcheck disable=SC2016
 SHARE_JQ='def share_held($s): (.project // "") as $p | $s.full and any($s.projects[]; . == $p)
-  and .priority != "urgent" and ((" " + (.tags // "") + " ") | test(" #?(red|canary|requested) ") | not);'
+  and ((.priority == "urgent" and (.from // "human") == "human") | not)
+  and ((" " + (.tags // "") + " ") | test(" #?(red|requested) ") | not);'
 
 # share_state -- SHARE_STATE, read once a process: {full, fleet, total, projects}, the queue items
 # started in the last DISPATCH_FLEET_SHARE_H hours (any state, hand starts and cancelled ones too, as
@@ -1157,11 +1164,17 @@ SHARE_JQ='def share_held($s): (.project // "") as $p | $s.full and any($s.projec
 share_state() {
   [ -z "${SHARE_STATE:-}" ] || return 0
   SHARE_STATE='{"full":false,"fleet":0,"total":0,"projects":[]}'
-  [ "${DISPATCH_FLEET_SHARE:-0}" -gt 0 ] 2>/dev/null && [ -n "${DISPATCH_FLEET_PROJECTS// }" ] || return 0
-  local s
+  [ "${DISPATCH_FLEET_SHARE:-0}" -gt 0 ] 2>/dev/null || return 0
+  local s prios ps=${DISPATCH_FLEET_PROJECTS-}
+  if [ -z "${DISPATCH_FLEET_PROJECTS+x}" ]; then
+    # A failed read is `unread`, which headroom names, so the cap is never off without a word.
+    prios=$(notes projects --prios 2>/dev/null) || { SHARE_STATE='{"full":false,"fleet":0,"total":0,"projects":[],"unread":true}'; return 0; }
+    ps=$(awk -F '\t' '$2 == "low" { printf "%s%s", (n++ ? " " : ""), $1 }' <<<"$prios")
+  fi
+  [ -n "${ps// }" ] || return 0
   s=$({ agent-queue list --json --state done --since "$(( (DISPATCH_FLEET_SHARE_H + 23) / 24 ))d" &&
     agent-queue list --json --state active; } 2>/dev/null |
-    jq -sc --argjson cut "$(( $(date +%s) - DISPATCH_FLEET_SHARE_H * 3600 ))" --arg p "$DISPATCH_FLEET_PROJECTS" '
+    jq -sc --argjson cut "$(( $(date +%s) - DISPATCH_FLEET_SHARE_H * 3600 ))" --arg p "$ps" '
       [$p | splits(" +") | select(. != "")] as $ps
       | [.[] | select(((.started // "") | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch 0) >= $cut)]
       | {fleet: (map(select(.project as $x | any($ps[]; . == $x))) | length), total: length, projects: $ps}') &&
@@ -1186,10 +1199,12 @@ share_full() { share_state; [ "$(jq -r .full <<<"$SHARE_STATE")" = true ]; }
 # share_why <item json> -> why the fleet share cap holds the item, or nothing: share_held, outside the
 # human and plan floors (HUMAN_PASS), which are the human's own work and never cut off, and outside the
 # trainee floor (TRAINEE_PASS), whose start runs on a free trainee key and spends no session the cap
-# guards, as a canary's does not. pick_item lets the first held item go when nothing else can start, so
-# the cap never leaves a slot idle.
+# guards, and the canary floor (CANARY_PASS), whose DISPATCH_CANARY_FLOOR is already the count of
+# canaries kept running: the cap would make it a no-op, as a floor's list never lets the cap go.
+# Elsewhere a canary waits like any fleet item. pick_item lets the first held item go when nothing
+# else can start, so the cap never leaves a slot idle.
 share_why() {
-  [ "${HUMAN_PASS:-0}${TRAINEE_PASS:-0}" = 00 ] || return 0
+  [ "${HUMAN_PASS:-0}${TRAINEE_PASS:-0}${CANARY_PASS:-0}" = 000 ] || return 0
   share_state
   jq -r --argjson s "$SHARE_STATE" --argjson pct "${DISPATCH_FLEET_SHARE:-0}" --argjson h "${DISPATCH_FLEET_SHARE_H:-24}" "$SHARE_JQ"'
     select(share_held($s))
@@ -6287,7 +6302,7 @@ cmd_headroom() {
         "  run floor: \(.floor_live) of \(.run_floor) run sessions live; under it idle does not hold a start, nor the weekly pace of an account refused for its pace alone (committed burn, the reserve and the 5h window still do)",
         "  red floor: \(.red_live) of \(if .red_floor > 0 then .red_floor + .red_watch else 0 end) red sessions live (\(.red_floor), plus \(.red_watch) for tripped watches); under it the pace target, weekly pace, idle, load and fleet-assess do not hold a red",
         "  project floor: \(.idle_projects) project(s) with light work and nothing running; up to \(.project_floor) start a pass past real idle",
-        (if .fleet_share.cap > 0 then "  fleet share: \(.fleet_share.fleet) of \(.fleet_share.total) items started in '"$DISPATCH_FLEET_SHARE_H"'h are fleet work (\(.fleet_share.projects | join(", "))), \(.fleet_share.pct // 0)% against a \(.fleet_share.cap)% cap\(if .fleet_share.full then ": full, so only interrupts start their items until nothing else can" else "" end)" else empty end),
+        (if .fleet_share.cap > 0 and .fleet_share.unread == true then "  fleet share: off, as `notes projects --prios` failed and no #prio/low project could be read" elif .fleet_share.cap > 0 and (.fleet_share.projects | length) > 0 then "  fleet share: \(.fleet_share.fleet) of \(.fleet_share.total) items started in '"$DISPATCH_FLEET_SHARE_H"'h are fleet work (\(.fleet_share.projects | join(", "))), \(.fleet_share.pct // 0)% against a \(.fleet_share.cap)% cap\(if .fleet_share.full then ": full, so only reds and work the human asked for start their items until nothing else can" else "" end)" else empty end),
         (if (.focus | length) > 0 then "  focus:     \(.focus | join(" ")) first; \(.focus_runnable) runnable item(s) of it start ahead of the other projects (reds and urgent items still go first)" else empty end)'
     fi
 }
@@ -7213,13 +7228,14 @@ fill_day() {
   load_pool_idle   # once, before the judge's and the picks' subshells
   [ "${2:-}" = gated ] || judge_once || return 1
   picked=$(day_picks 999)
-  # While the fleet share is full, the fill passes over fleet rows but interrupts (share_held), the cleanup
-  # floor's included, since the cap would only hold them. It lets go when nothing else can start: a
-  # low-water fill with no other row and nothing runnable in the queue takes the fleet rows too.
+  # While the fleet share is full, the fill passes over fleet rows but #requested and #red ones, the
+  # cleanup floor's included: a row's item comes from the board, so share_held would hold any other. It
+  # lets go when nothing else can start: a low-water fill with no other row and nothing runnable in the
+  # queue takes the fleet rows too.
   if share_full; then
     local kept
     kept=$(jq -c --argjson s "$SHARE_STATE" '(.project // "") as $p
-      | select((any($s.projects[]; . == $p) | not) or ((.text // "") | test("(^|\\s)#(requested|urgent|red|canary)(\\s|$)")) or .priority == "urgent")' <<<"$picked")
+      | select((any($s.projects[]; . == $p) | not) or ((.text // "") | test("(^|\\s)#(requested|red)(\\s|$)")))' <<<"$picked")
     if [ -n "$kept" ] || [ -n "${2:-}" ] || [ -n "$(runnable 2>/dev/null)" ]; then
       [ "$kept" = "$picked" ] || say "the fleet share is full ($(jq -r '"\(.fleet) of \(.total)"' <<<"$SHARE_STATE") starts in ${DISPATCH_FLEET_SHARE_H}h, DISPATCH_FLEET_SHARE=$DISPATCH_FLEET_SHARE%), so the board fills from other projects"
       picked=$kept
