@@ -31,7 +31,7 @@ const ctx = vm.createContext({
   MutationObserver: function (f) { observed = f; this.observe = () => {}; },
   requestAnimationFrame: (f) => f(),
 });
-for (const f of ["ui.js", "app.js", "nav.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["../../web-kit/kb-ui.js", "ui.js", "app.js", "nav.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
 const outline = made.find((e) => e.className === "outl");
 const show = (tab, anchors) => {

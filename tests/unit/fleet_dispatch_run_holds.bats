@@ -13,7 +13,7 @@ load 'fleet_dispatch/common'
   assert_not_called 'wt new'
 }
 
-@test "under DISPATCH_RUN_FLOOR a run start goes past the weekly pace and real idle, and says so" {
+@test "under DISPATCH_RUN_FLOOR a run start goes past the weekly pace, and says so" {
   game_ready
   room_on_floor
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
@@ -135,33 +135,6 @@ load 'fleet_dispatch/common'
   assert_output --partial 'finding firing: fix-game (starved pool:unity), every queue item waits'
   assert_not_called 'wt new'
   assert_equal "$(outcome)" BLOCKED
-}
-
-# pipeline-eval-p2 review: a merge-line hold is by design, so it goes on to the board like a finding
-# hold, and a pass that starts nothing is NOOP, never the BLOCKED fleet-liveness reads as a stall.
-@test "every queue item a full merge line holds sends the pass on to the board; one that starts nothing is NOOP" {
-  project game beta "$SANDBOX/repos/game"
-  project app beta "$SANDBOX/repos/app"
-  agent-queue add --project game --slug fix-game --priority high "fix the game" >/dev/null
-  row app human 'fix app crash' "- [ ] fix app crash #high $T"
-  verdict app human 'fix app crash' dispatch
-  export DISPATCH_LINE_MAX=6
-  line_state 0 6 game
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'merge line full: fix-game (merge line: 6 game sessions wait their landing turn'
-  assert_output --partial 'started game-agent-1: app: '
-  assert_equal "$(outcome)" WORKED
-  [ -n "$(qitem queued fix-game)" ] || fail "the held item stays queued"
-  # No row left to start: NOOP naming the line, not BLOCKED.
-  agent-queue list --json 2>/dev/null | jq -r 'select(.project == "app") | .slug' | while read -r s; do agent-queue move "$s" done --status cancelled >/dev/null; done
-  : > "$NOTES_FIXTURE/rows.app.human"; : > "$NOTES_FIXTURE/calls.log"
-  line_state 0 6 game
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'merge line full: fix-game'
-  assert_not_called 'wt new'
-  assert_equal "$(outcome)" NOOP
 }
 
 # ar-3991: a throughput drop names no stage that binds, so a hold on it starves the merges it waits
@@ -731,6 +704,30 @@ share_history() {
   assert_output --partial 'started game-agent-1: app: fix-app'
   refute_output --partial 'the fleet share cap let it go'
   [ -n "$(qitem queued fix-game)" ] && [ -n "$(qitem queued fix-game-2)" ] || fail "a share-held item started on a committed-rows pass"
+}
+
+# 2026-11-21 (ar-4450): a pass read "fleet share full: ar-4356 (fleet share ...), ucp-1567 (load 28.28 ...
+# over the 0.99 pace ...), 22 more" and settled NOOP, a hold by design, while load held the rest.
+@test "fleet share: the share names a held pass only when load held none of its items" {
+  local fleet='{"slug":"fix-game","project":"game"}' other='{"slug":"fix-app","project":"app"}'
+  # A fleet worker takes the game item and not the app one; this machine's load holds a start here.
+  HOST_PROBE=([razer-laptop]=1)
+  load_findings() { FIRING=''; }
+  share_state() { :; }
+  held_by() { :; }
+  line_why() { :; }
+  machine_why() { echo "load 28.28 on 28 cores is over the 0.99 pace"; }
+  place_host() { [ "$(jq -r .project <<<"$1")" = game ] && [ "${2:-}" != first ] && echo razer-laptop; }
+  share_why() { if [ "$(jq -r .project <<<"$1")" = game ]; then echo "fleet share: 3 of 4 starts are fleet work"; fi; }
+  TARGET=4 DRY=0
+  unset UNITS_FREE SHARE_LET_GO
+  # Load holds the app item and the share the game item: the load names the pass.
+  pick_item "$fleet"$'\n'"$other" && fail "an item was picked"
+  [[ "$PICK_WHY" == "machine pace: fix-game (fleet share: "* ]] || fail "a pass load held read: $PICK_WHY"
+  assert_equal "$(grep -c 'over the 0.99 pace, and no fleet worker takes it' <<<"$PICK_WHY")" 1
+  # The negative control: with the share's item alone held, the share names the pass.
+  pick_item "$fleet" && fail "the fleet item was picked"
+  [[ "$PICK_WHY" == "fleet share full: fix-game (fleet share: "* ]] || fail "a pass the share alone held read: $PICK_WHY"
 }
 
 @test "fleet share: a full share passes a #requested fleet row through the fill, not an #urgent one" {

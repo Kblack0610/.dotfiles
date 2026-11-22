@@ -26,7 +26,7 @@ const JS: &str = "text/javascript; charset=utf-8";
 const CSS: &str = "text/css; charset=utf-8";
 const WOFF2: &str = "font/woff2";
 
-/// `(name, content type, body)`. tokens.css, shell.css, kb-shell.js and the fonts are web-kit's
+/// `(name, content type, body)`. tokens.css, shell.css, ui.css, kb-shell.js, kb-ui.js and the fonts are web-kit's
 /// (`../../web-kit`, shared with every kblab site), served flat beside agent-web's own.
 /// ui.js is the shared helpers, md.js the markdown renderer,
 /// app.js the open session and the event stream, sessions.js the Sessions table, waiting.js the answer cards, cards.js the status card Home
@@ -38,6 +38,8 @@ const FILES: &[(&str, &str, &[u8])] = &[
         include_bytes!("../../web-kit/tokens.css"),
     ),
     ("shell.css", CSS, include_bytes!("../../web-kit/shell.css")),
+    ("ui.css", CSS, include_bytes!("../../web-kit/ui.css")),
+    ("kb-ui.js", JS, include_bytes!("../../web-kit/kb-ui.js")),
     (
         "kb-shell.js",
         JS,
