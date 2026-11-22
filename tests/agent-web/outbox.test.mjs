@@ -22,7 +22,7 @@ const ctx = vm.createContext({
   setTimeout: () => 0, clearTimeout() {},
   fetch: async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => [] }),
 });
-for (const f of ["ui.js", "md.js", "app.js", "outbox.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["../../web-kit/kb-ui.js", "ui.js", "md.js", "app.js", "outbox.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 const run = (code, input) => { ctx.input = input; return JSON.parse(vm.runInContext(`JSON.stringify(${code})`, ctx)); };
 
 test("a line the sweep took leaves, a line typed since stays, a line an agent added arrives", () => {
@@ -104,15 +104,15 @@ test("Handled today says what was done to each line, newest first, and left line
     ],
   });
   assert.match(h, /^<h2 class="sec">Handled today <span class="n">2<\/span><\/h2>/, "the head counts the steps; each row says what was done");
-  assert.match(h, /<tr class="warn"><td class="wrap"><span class="muted">13:40<\/span><\/td><td class="wrap">left: maybe tidy &lt;stuff&gt; <span class="muted">\(why: too vague\)/);
-  assert.match(h, /14:01<\/span><\/td><td class="wrap">filed db-51 in <a class="wl" href="#projects\/dodginballs">dodginballs<\/a>: fix\(audio\)/);
+  assert.match(h, /<tr class="warn"><td><span class="muted">13:40<\/span><\/td><td>left: maybe tidy &lt;stuff&gt; <span class="muted">\(why: too vague\)/);
+  assert.match(h, /14:01<\/span><\/td><td>filed db-51 in <a class="wl" href="#projects\/dodginballs">dodginballs<\/a>: fix\(audio\)/);
   assert.match(run("handledHtml(input)", { counts: "", handled: [] }), /^<h2 class="sec">Handled today<\/h2><div class="muted">Nothing handled yet today\./);
 });
 
 test("the tag legend is drawn from the doc's tags, escaped, and nothing when the CLI sends none", () => {
   const h = run("tagsHtml(input)", [{ tag: "#investigate", does: "a longer read-only look" }, { tag: "<id>: <words>", does: "adds to that row" }]);
-  assert.match(h, /^<details class="o-tags"><summary class="muted">Tags<\/summary><table class="tbl rec">/);
-  assert.match(h, /<tr><td class="wrap"><code>#investigate<\/code><\/td><td class="wrap"><span class="muted">a longer read-only look<\/span><\/td><\/tr>/);
+  assert.match(h, /^<details class="o-tags"><summary class="muted">Tags<\/summary><table class="rec">/);
+  assert.match(h, /<tr><td><code>#investigate<\/code><\/td><td><span class="muted">a longer read-only look<\/span><\/td><\/tr>/);
   assert.match(h, /<code>&lt;id&gt;: &lt;words&gt;<\/code>/);
   assert.equal(run("tagsHtml(input)", []), "");
   assert.equal(run("tagsHtml(input)", null), "");

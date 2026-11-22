@@ -56,6 +56,6 @@ Not for how dispatch picks and starts sessions (`fleet-dispatch`), or an account
 ## Do NOT
 
 - Do not write into `~/.agent/queue/` by hand or `mv` an item; every transition goes through `agent-queue`, so two writers cannot both move one.
-- Do not file an item for a want nobody has set up: that is a follow-up sent with `notes ptask --agent add` (the outbox, then a board row), and `agent-queue` is not a notes list. Work the human asked for in a session they opened is not a follow-up: `agent-queue add --want human` for one task, `--plan` for several, which start now unless low (the global CLAUDE.md, "Track your work in the queue").
+- Do not file an item for a want nobody has set up: that is a follow-up sent with `notes ptask --agent add` (the outbox, then a board row), and `agent-queue` is not a notes list. Work the human asked for in a session they opened is not a follow-up: `agent-queue add` for one task, `--plan` for several; an add from their interactive session starts now unless low, and every start at add that does not start leaves a line in `~/.agent/dispatch/log.md`.
 - Do not `cancel`, `move` or `bump` another session's item. Do not dispatch around a gate by adding an item with a fake hold or tag.
 - Do not merge a PR with `gh pr merge` and skip `agent-land`; the item, board row and plan then never close.
