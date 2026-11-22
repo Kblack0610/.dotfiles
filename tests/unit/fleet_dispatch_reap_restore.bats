@@ -1442,3 +1442,43 @@ rm "$NOTES_FIXTURE/origin-close"; agent-queue set fix-crash "pr=o/game#12" "merg
   run cmd_reap
   [ -n "$(qitem running fix-crash)" ] || fail "settled a peer host's item with no COMPLETE sync"
 }
+
+# ar-4452: ar-4025 started at once, was requeued after a partial landing, then waited on load behind agent items.
+@test "reap: a requeued item of the human's goes back through agent-queue start" {
+  stub fleet-dispatch 'echo "fleet-dispatch $*" >> "$NOTES_FIXTURE/calls.log"'
+  pr_item MERGED
+  agent-queue set fix-crash "merged=$OID" partial=yes from=human >/dev/null
+  run cmd_reap
+  assert_success
+  assert_output --partial 'requeued queue item fix-crash'
+  assert_called 'fleet-dispatch start --item fix-crash'
+}
+
+@test "reap: the same requeue of an item an agent filed starts nothing (negative control)" {
+  stub fleet-dispatch 'echo "fleet-dispatch $*" >> "$NOTES_FIXTURE/calls.log"'
+  pr_item MERGED
+  agent-queue set fix-crash "merged=$OID" partial=yes from=auto:filer >/dev/null
+  run cmd_reap
+  assert_success
+  assert_output --partial 'requeued queue item fix-crash'
+  assert_not_called 'start --item fix-crash'
+}
+
+@test "reap: a requeued item of the human's keeps add's guards: a low one waits and says so in the dispatch log" {
+  stub fleet-dispatch 'echo "fleet-dispatch $*" >> "$NOTES_FIXTURE/calls.log"'
+  pr_item MERGED
+  agent-queue set fix-crash "merged=$OID" partial=yes from=human priority=low >/dev/null
+  run cmd_reap
+  assert_success
+  assert_not_called 'start --item fix-crash'
+  grep -qF 'start now: fix-crash is low priority' "$FLEET_DISPATCH_DIR"/log.md || fail "wait not logged"
+}
+
+@test "reap: a human item requeued after a usage limit is not hand-started into the same limit (negative control)" {
+  stub fleet-dispatch 'echo "fleet-dispatch $*" >> "$NOTES_FIXTURE/calls.log"'
+  codex_end_item th-lim '{"type":"task_complete","error":{"message":"x","codex_error_info":"usage_limit_exceeded"}}'
+  agent-queue set cx from=human >/dev/null
+  run cmd_reap
+  assert_output --partial 'requeued queue item cx'
+  assert_not_called 'start --item cx'
+}

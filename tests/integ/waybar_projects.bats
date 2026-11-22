@@ -36,11 +36,15 @@ card() {
       running: [range($r) | {slug: "x"}], waiting: $q, in_flight: ($r > 0 or $q > 0)}'
 }
 
-# feed <errors-json> <card...>: hub's answer, cards in hub's order.
+# feed <errors-json> <card...>: hub's answer, cards in hub's order, with the Projects card figures
+# hub-core sends with them (none on a partial read, as widget_doc::figures drops a failed card's).
 feed() {
   local errors="$1"
   shift
-  printf '%s\n' "$@" | jq -s --argjson e "$errors" '{cards: ., unlinked: [], errors: $e}' > "$FX/projects.json"
+  printf '%s\n' "$@" | jq -s --argjson e "$errors" '{cards: ., unlinked: [], errors: $e}
+    | .figures = (if $e == [] then {projects_in_flight: ([.cards[] | select(.in_flight)] | length),
+        projects_headline: (.cards | length), projects_sprints: ([.cards[] | select(.sprint_says != null)] | length)}
+      else {} end)' > "$FX/projects.json"
 }
 
 text() { jq -r .text <<< "$output"; }
@@ -79,12 +83,28 @@ class() { jq -r .class <<< "$output"; }
   assert_output --partial "<tt>a&lt;b&amp;c  <span color=\"$Y\">no window</span>  alpha"
 }
 
-@test "hub's errors show amber on the hover and the chip turns warn" {
+# Negative control for a chip that recounts: the numbers are hub-core's figures as sent, so
+# figures that differ from the cards print as sent.
+@test "the counts are the Projects card figures, never a count of the cards" {
+  feed '[]' "$(card web alpha 21/60 5 2 1)" "$(card shop prod 13/25 4 0 0)"
+  jq '.figures = {projects_in_flight: 7, projects_headline: 30, projects_sprints: 0}' "$FX/projects.json" > "$FX/f" && mv "$FX/f" "$FX/projects.json"
+  run "$MODULE"
+  assert_equal "$(text)" "$ICON 7"
+  run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
+  assert_line --index 0 "<b>Projects</b>  7 in flight, 30 total"
+}
+
+@test "hub's errors show amber on the hover and the chip turns warn; the counts it then has no figure for read ? and -" {
   # An unread queue states no card (hub_core::projects::build): its state cell is a grey dash.
-  feed '["agent-queue list: gone"]' "$(card shop prod 13/25 4 0 0 none null)"
+  feed '["agent-queue list: gone"]' "$(card shop prod 13/25 4 1 0 none null | jq -c '.sprint_says = "v1 4/15" | .window = {version: "v1", delivered: 4, committed: 15}')"
+  export PANGO_PALETTE="$BATS_TEST_TMPDIR/palette.css"
+  echo '@define-color palette_accent #123456;' > "$PANGO_PALETTE"
   run "$MODULE"
   assert_equal "$(class)" warn
+  assert_equal "$(text)" "$ICON <span color='$Y'>?</span>  <span color='#123456'>S:</span><span color='$Y'>?</span>"
   run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
+  assert_line --index 0 "<b>Projects</b>  - in flight, - total"
+  assert_line --index 2 "  shop v1 4/15"
   assert_output --partial "<span color=\"$Y\">error: agent-queue list: gone</span>"
   assert_output --partial "shop  <span color=\"$D\">-</span>  prod"
 }
