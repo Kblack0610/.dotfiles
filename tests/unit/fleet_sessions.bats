@@ -841,6 +841,14 @@ ledger() {
   printf 'main\t4\tMERGED\tPASS\t2222\t-\nother\t3\tOPEN\tPASS\t3333\t-\n' > "$LEDGER_DIR/prs_o_c.tsv"
   run pr_of_head "$SANDBOX/c" other
   assert_output "$(printf 'other\t3\tOPEN\tPASS\t3333\t-')"
+  # an open PR of the upstream outranks a newer finished one of the local slot name (ar-1582)
+  CACHE="$SANDBOX/pass4"; mkdir -p "$CACHE"
+  printf 'agent-69\t9\tMERGED\tPASS\t9999\t-\nfeat/y\t3\tOPEN\tPASS\t3333\t-\n' > "$LEDGER_DIR/prs_o_c.tsv"
+  run pr_of_head "$SANDBOX/c" agent-69 "$(printf '%040d' 0)" feat/y
+  assert_output "$(printf 'feat/y\t3\tOPEN\tPASS\t3333\t-')"
+  # negative control: with no open one, the newest of the names is still it
+  run pr_of_head "$SANDBOX/c" agent-69 "$(printf '%040d' 0)" feat/z
+  assert_output "$(printf 'agent-69\t9\tMERGED\tPASS\t9999\t-')"
   # a detached HEAD (no branch name) matches no row, and an empty store prints nothing at all
   run pr_of_head "$SANDBOX/c" ''
   assert_output ''
@@ -4805,6 +4813,35 @@ GH
   stack_pr OPEN "$top"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .pr_state <<<"$output")" = null ]
+}
+
+@test "end to end: a slot branch whose work heads an open PR on another branch reads that PR, not its name's old one (ar-1582)" {
+  # A reused slot name `agent-69` has an old merged PR of its own (#2125 in the ucp store); its work went out
+  # as the open #2014 on another branch, whose head is past this HEAD. The row read "N file(s) not on the
+  # default branch, no PR": the name's merged PR is another session's, so pr_made_here dropped it.
+  landed_fixture
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t) old here top
+  "${g[@]}" checkout -q -b agent-69 origin/main
+  echo o > "$SANDBOX/wt/o.txt"; "${g[@]}" add o.txt; "${g[@]}" commit -q -m old; old="$("${g[@]}" rev-parse HEAD)"
+  "${g[@]}" checkout -q -B agent-69 origin/main
+  echo a > "$SANDBOX/wt/a.txt"; "${g[@]}" add a.txt; "${g[@]}" commit -q -m a; here="$("${g[@]}" rev-parse HEAD)"
+  echo b > "$SANDBOX/wt/b.txt"; "${g[@]}" add b.txt; "${g[@]}" commit -q -m b; top="$("${g[@]}" rev-parse HEAD)"
+  "${g[@]}" reset -q --hard "$here"   # the PR's head moved on past this clone's HEAD (a fix pushed elsewhere)
+  printf 'agent-69\t2125\tMERGED\tPASS\t%s\t-\nfeat/beach\t2014\tOPEN\tPASS\t%s\t-\n' "$old" "$top" > "$LEDGER_DIR/prs.tsv"
+  # no upstream: the open PR whose head holds HEAD is found by HEAD
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r '"\(.pr) \(.pr_state)"' <<<"$output")" = '2014 OPEN' ]
+  # an upstream that names it: found by name, open before the slot name's merged one
+  "${g[@]}" push -q origin "$top:refs/heads/feat/beach" 2>/dev/null
+  "${g[@]}" fetch -q origin; "${g[@]}" branch -q -u origin/feat/beach
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r '"\(.pr) \(.pr_state)"' <<<"$output")" = '2014 OPEN' ]
+  "${g[@]}" branch -q --unset-upstream
+
+  # negative control: an open PR whose head does not hold HEAD is not it
+  printf 'agent-69\t2125\tMERGED\tPASS\t%s\t-\nfeat/beach\t2014\tOPEN\tPASS\t%s\t-\n' "$old" "$old" > "$LEDGER_DIR/prs.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .pr <<<"$output")" != 2014 ]
 }
 
 @test "gate_ci: a branch run list the ledger cannot read keeps the rollup's answer and is named unreadable (ar-191)" {
