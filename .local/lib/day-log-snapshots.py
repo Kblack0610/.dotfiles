@@ -18,7 +18,7 @@ them, and a source it cannot read keeps the previous value and is named in .unre
   agentctl runs.jsonl        last night's runner passes, priced from calls.jsonl, scored by
                              judge-eval --all --json (each lane's score_7d, as the Workers cell)
   ci-failures --json         pass rate per workflow, reds on main, failure buckets
-  scripts/ci-cost.py --json  gates, runner-hours, re-gates, quarantine (a repo that has one)
+  scripts/ci/ci-cost.py --json  gates, runner-hours, re-gates, quarantine (a repo that has one)
   hub ci hosts               each runner group's pass over its last 50 jobs, from the job archive
   agent-queue list --json    who did what: each merged PR's author and reviewer, each closed trainee
                              row's outcome, and the per-agent tally (work.by_agent)
@@ -513,7 +513,7 @@ def ci_hosts(end):
 
 
 def ci_cost(clone, base, day, start, end):
-    """scripts/ci-cost.py as the base branch has it, so a stale checkout never measures. It runs from that
+    """scripts/ci/ci-cost.py as the base branch has it, so a stale checkout never measures. It runs from that
     branch's whole scripts/ tree, because it loads files beside it (test/train.py). The cache only serves a
     retry of the same day, so a finished read removes it."""
     subprocess.run(["git", "-C", clone, "fetch", "-q", "origin", base], capture_output=True)
@@ -527,9 +527,9 @@ def ci_cost(clone, base, day, start, end):
                 t.extractall(tmp, filter="data")
         except (tarfile.TarError, OSError) as e:
             return None, f"scripts/ on origin/{base}: {e}"
-        script = Path(tmp) / "scripts" / "ci-cost.py"
+        script = Path(tmp) / "scripts" / "ci" / "ci-cost.py"
         if not script.is_file():
-            return None, f"no scripts/ci-cost.py on origin/{base}"
+            return None, f"no scripts/ci/ci-cost.py on origin/{base}"
         got, err = run_json([sys.executable, str(script), *window_args(start, end), "--cache", str(cache), "--repo-dir", clone])
     if got is not None:
         shutil.rmtree(cache, ignore_errors=True)

@@ -504,11 +504,11 @@ pub struct CiRepo {
     pub workflows: Vec<CiWorkflow>,
     /// The other workflow files on the base, path to blob sha.
     pub unscheduled: BTreeMap<String, String>,
-    /// The repo's night set (`scripts/night.json`); None when it has none.
+    /// The repo's night set (`config/ci/nightly.json`); None when it has none.
     pub night: Option<NightSet>,
 }
 
-/// `scripts/night.json` on a repo's base: workflow file name to the run title the nightly starts
+/// `config/ci/nightly.json` on a repo's base: workflow file name to the run title the nightly starts
 /// (`night`) or holds back (`held`).
 #[derive(Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(default)]
