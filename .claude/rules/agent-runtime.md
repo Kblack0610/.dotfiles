@@ -9,7 +9,6 @@ paths:
   - ".config/systemd/user/**"
   - ".config/fleet-bench/**"
   - ".config/claude-acct/**"
-  - ".claude/hooks/spawn-watch.sh"
   - ".claude/hooks/stop-post.d/90-session-spend.sh"
   - "tests/**/agent_*.bats"
   - "tests/**/agentctl_*.bats"

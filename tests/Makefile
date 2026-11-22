@@ -109,7 +109,7 @@ test-unit: $(BATS)
 test-integ: $(BATS)
 	@$(call junit_mk,integ) $(RUN_BATS) $(BATS_FLAGS) $(FAST_PAR) $(call junit,integ) $(HERE)integ
 
-# The Stop hook's entry (the files 60-shell-tests.sh picked for the change) and CI's (one shard.sh shard).
+# CI's entry (one shard.sh shard) and a session's by hand (the files tests/pick.sh picks).
 # One bats run over every file, in parallel like test-unit and test-integ, so one report names
 # every red.
 test-files: $(BATS)
