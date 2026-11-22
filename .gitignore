@@ -270,6 +270,8 @@ test_notifications.sh
 .config/opencode/
 .config/shared-hooks/project-map.json
 .config/shared-hooks/knowledge-bases.json
+# fleet-dispatch's worker roster names the private projects each worker may take.
+.config/fleet-dispatch/workers.json
 .config/firefox/bookmarks/
 .config/firefox/simpletabgroups/
 .config/firefox/policies.vdi.json

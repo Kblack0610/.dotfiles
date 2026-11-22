@@ -656,8 +656,22 @@ ptask game --agent tag --add plan --add go ga-7'
   assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'assigned'
 }
 
+# private_or_skip <what> -> $PRIVATE, the private checkout (read-only: the account home suite_home
+# kept), or the test skips naming <what> it left unchecked.
+private_or_skip() {
+  load '../helpers/private'
+  PRIVATE="${DOTFILES_PRIVATE:-${ACCOUNT_HOME:-}/.dotfiles-private}"
+  has_private || skip "no private checkout at $PRIVATE: $1 unchecked"
+}
+
+# shipped_workers: the live worker roster, which names private projects and so lives in the private repo.
+shipped_workers() {
+  private_or_skip 'the shipped workers.json is'
+  export DISPATCH_WORKERS="$PRIVATE/.config/fleet-dispatch/workers.json"
+}
+
 @test "the shipped registry: requested, then the human's assignments, then the game's agent board, never tier 3" {
-  export DISPATCH_WORKERS="$REPO_ROOT/.config/fleet-dispatch/workers.json"
+  shipped_workers
   project unity-core-playground beta "$SANDBOX/repos/game"
   project platform prod "$SANDBOX/repos/app"
   row unity-core-playground agent 'an ask' '- [ ] an ask #requested #worker/requested #tier/2'
@@ -671,7 +685,7 @@ ptask game --agent tag --add plan --add go ga-7'
 }
 
 @test "the shipped registry: the AI systems and the home cluster have a day worker, under the same tier ceiling; finance has none" {
-  export DISPATCH_WORKERS="$REPO_ROOT/.config/fleet-dispatch/workers.json"
+  shipped_workers
   mkdir -p "$SANDBOX/repos/ar" "$SANDBOX/repos/hc" "$SANDBOX/repos/fin"
   project agent-runtime alpha "$SANDBOX/repos/ar"
   project home-config alpha "$SANDBOX/repos/hc"
@@ -1904,8 +1918,7 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
 }
 
 @test "a run from a shell reads the DISPATCH_* tuning from the agentctl conf; the environment wins" {
-  mkdir -p "$HOME/.config/agentctl/agents"
-  printf "NAME=fleet-dispatch\nDISPATCH_TARGET_AWAY=24\nDISPATCH_MAX_LOAD='1.5'\nDISPATCH_PER_PASS=3\n" > "$HOME/.config/agentctl/agents/fleet-dispatch.conf"
+  dispatch_conf NAME=fleet-dispatch DISPATCH_TARGET_AWAY=24 "DISPATCH_MAX_LOAD='1.5'" DISPATCH_PER_PASS=3
   two_items
   run env -u DISPATCH_TARGET_AWAY -u DISPATCH_MAX_LOAD -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r '[.max_live, .per_pass, .load_cap / '"$(nproc)"'] | @tsv' <<<"$output")" $'24\t3\t1.5'
@@ -1913,31 +1926,39 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   assert_equal "$(jq -r .max_live <<<"$output")" 2
 }
 
-@test "a run with no conf starts nothing on its own: the keys the conf sets default to neutral" {
+@test "a conf that lost a tuning key, or no conf, exits 78 naming each missing key; the fixture conf runs" {
   two_items
-  run env -u DISPATCH_LOW_WATER -u DISPATCH_CANARY_FLOOR -u DISPATCH_RUN_FLOOR -u DISPATCH_TARGET_PRESENT -u DISPATCH_TARGET_AWAY -u DISPATCH_MAX_LOAD -u DISPATCH_MIN_IDLE -u DISPATCH_PROFILES \
-    "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
-  assert_equal "$(jq -r '[.could_start, .max_live, .load_cap, .min_idle] | @tsv' <<<"$output")" $'0\t0\t0\t100'
-  assert_equal "$(jq -r .held <<<"$output")" "load 0.10 on $(nproc) cores is over the 0 pace; real idle 90.0% is under 100%"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_success
+  sed 's/^DISPATCH_RED_FLOOR=/DISPATCH_RED_FLOR=/' "$REPO_ROOT/tests/fixtures/fleet-dispatch.conf" > "$DISPATCH_CONF"
+  run env -u DISPATCH_RED_FLOOR "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_failure 78
+  assert_output --partial "$DISPATCH_CONF does not set DISPATCH_RED_FLOOR; that conf is the one home"
+  run env -u DISPATCH_PER_PASS DISPATCH_CONF="$SANDBOX/none.conf" "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_failure 78
+  assert_output --partial "$SANDBOX/none.conf does not set DISPATCH_PER_PASS DISPATCH_ORPHAN_HOURS"
 }
 
-@test "each DISPATCH_* key the private conf sets has a neutral code default (empty, 0, or 100 for an idle floor), never a second number" {
-  load '../helpers/private'
-  PRIVATE="${DOTFILES_PRIVATE:-${ACCOUNT_HOME:-}/.dotfiles-private}"   # read-only: the account home suite_home kept
-  has_private || skip "no private checkout at $PRIVATE: the conf's keys are unchecked"
+# conf_keys <file>: the DISPATCH_* keys a conf sets, sorted; code_keys: fleet-dispatch's DISPATCH_CONF_KEYS
+conf_keys() { sed -n 's/^\(DISPATCH_[A-Z0-9_]*\)=.*/\1/p' "$1" | sort; }
+code_keys() { sed -n '/^DISPATCH_CONF_KEYS=(/,/^)/p' "$REPO_ROOT/.local/bin/fleet-dispatch" | grep -oE 'DISPATCH_[A-Z0-9_]+' | grep -vx DISPATCH_CONF_KEYS | sort; }
+
+@test "the fixture conf sets exactly DISPATCH_CONF_KEYS, and the code holds no default for any of them" {
+  [ "$(code_keys | wc -l)" -gt 40 ]
+  assert_equal "$(conf_keys "$REPO_ROOT/tests/fixtures/fleet-dispatch.conf")" "$(code_keys)"
+  run grep -nE "^: \"\\\$\\{($(code_keys | paste -sd'|')):?=" "$REPO_ROOT/.local/bin/fleet-dispatch"
+  assert_output ''
+}
+
+@test "the private agentctl conf sets exactly DISPATCH_CONF_KEYS, so the live fleet never exits 78 on a key" {
+  private_or_skip "the conf's keys are"
   conf="$PRIVATE/.config/agentctl/agents/fleet-dispatch.conf"
   [ -f "$conf" ]
-  bad=
-  while IFS='=' read -r k v; do
-    d=$(grep -oE "^: \"\\\$\\{$k:?=[^}]*" "$REPO_ROOT/.local/bin/fleet-dispatch" | sed -E "s/^: \"\\\$\\{$k:?=//")
-    case "$d" in ''|0|100) ;; *) bad+="$k: code $d, conf $v; " ;; esac
-  done < <(sed -n "s/^\(DISPATCH_[A-Z_]*\)=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}[[:space:]]*$/\1=\2/p" "$conf")
-  assert_equal "$bad" ""
+  assert_equal "$(conf_keys "$conf")" "$(code_keys)"
 }
 
 @test "the machine-mode level scales the start limits where they are read; mid is the conf's own" {
-  mkdir -p "$HOME/.config/agentctl/agents"
-  printf "NAME=fleet-dispatch\nDISPATCH_TARGET_AWAY=24\nDISPATCH_MAX_LOAD='1.5'\nDISPATCH_PER_PASS=3\n" > "$HOME/.config/agentctl/agents/fleet-dispatch.conf"
+  dispatch_conf NAME=fleet-dispatch DISPATCH_TARGET_AWAY=24 "DISPATCH_MAX_LOAD='1.5'" DISPATCH_PER_PASS=3
   two_items
   run env -u DISPATCH_TARGET_AWAY -u DISPATCH_MAX_LOAD -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r '[.level, .per_pass, .load_cap / '"$(nproc)"'] | @tsv' <<<"$output")" $'mid\t3\t1.5'

@@ -23,7 +23,7 @@ Covers keeping the agent-queue topped up from the board, the pace target by pres
 
 Use for "what would dispatch pick", "why did it skip that row", "start a session for this row", "pause dispatch". Moving live sessions through their plans: `shepherd`. Load and holds: `fleet-pace`.
 
-Who may take a row is `~/.config/fleet-dispatch/workers.json`, walked in file order:
+Who may take a row is `~/.config/fleet-dispatch/workers.json` (in the private repo, since it names the private projects), walked in file order:
 
 - `requested`: `#requested` rows tagged `#worker/requested`, on `unity-core-playground`, up to tier 2.
 - `fleet`: rows the human tagged `#worker/fleet`, up to tier 1, with a `#tier/N`.

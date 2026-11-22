@@ -1030,8 +1030,7 @@ EOF
 }
 
 @test "tier 3: item-tier reads the dispatcher's conf, so a DISPATCH_CLEANUP_PROJECTS override there moves the gate" {
-  mkdir -p "$HOME/.config/agentctl/agents"
-  printf 'DISPATCH_CLEANUP_PROJECTS="dotfiles"\n' >"$HOME/.config/agentctl/agents/fleet-dispatch.conf"
+  dispatch_conf 'DISPATCH_CLEANUP_PROJECTS="dotfiles"'
   item mine 'human'
   run "$LAND" 42 --item mine
   assert_failure 1
