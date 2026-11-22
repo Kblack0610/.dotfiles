@@ -225,9 +225,10 @@ fn agents(i: &Inputs) -> Vec<Row> {
 
 /// "Done today: 40 shipped, 12 checks, 33 PRs merged", then one line per project, busiest first:
 /// "unity-core-playground 30 shipped, 2 checks, 25 PRs", the last ending ", +3 more" when there are
-/// others. Shipped and checks are `Queue::done_today`, the figure the Projects card and the waybar
-/// chip show; each project's line groups the same items by `queue::done_today`; PRs come from the
-/// day-log, so each source counts only when it could be read; with neither there is no section.
+/// others. The head's shipped and checks are `Queue::done_today`, the figure the Projects card and
+/// the waybar chip show. Each project's line applies the same rule to that project's items alone,
+/// so a slug closed under two project names counts once in the head and once in each line. PRs come
+/// from the day-log. Each source counts only when it could be read; with neither there is no section.
 fn done(i: &Inputs) -> Vec<Row> {
     let midnight = crate::text::local_day_start(i.now);
     // A failed `agent-queue list` leaves no items, which is not the same as none done today.
@@ -737,7 +738,10 @@ mod tests {
         };
         let head = |h: &str| texts(p, h).first().cloned().unwrap_or_default();
         let mut says = |what: &str, got: String, want: String| {
-            if !got.starts_with(&want) {
+            // The figures lead the head; what may follow is more text, never more digits, so
+            // "of 2" does not pass for "of 20".
+            let rest = got.strip_prefix(&want);
+            if !rest.is_some_and(|r| !r.starts_with(|ch: char| ch.is_ascii_digit())) {
                 bad.push(format!("phone {what}: {got:?}, the cards say {want:?}"));
             }
         };
@@ -915,6 +919,26 @@ mod tests {
             1,
             "a phone that recounts shipped"
         );
+        let mut ph = p.clone();
+        let proj = ph.rows.iter_mut().find(|r| r.head == "projects").unwrap();
+        let of = format!("of {}", projects.cards.len());
+        proj.text = proj.text.replacen(&of, &format!("{of}0"), 1);
+        assert_eq!(
+            disagree(&cards, &doc, &figs, &ph).len(),
+            1,
+            "a longer number behind the card's"
+        );
+        // An unread queue says so on the card and leaves no figure, never a zero (rule 6).
+        let unread = crate::cards::projects(&crate::projects::Projects {
+            today: None,
+            ..projects.clone()
+        });
+        let shipped = unread.parts.iter().find(|x| x.label == "Shipped today");
+        assert_eq!(
+            shipped.map(|x| x.value.as_str()),
+            Some(crate::reading::NOT_READ)
+        );
+        assert!(!crate::widget_doc::figures(&[unread]).contains_key("projects_shipped_today"));
         // A Home row of any kind moves the needs figure on every surface together.
         let mut more = home.clone();
         more.needs.push(more.needs[0].clone());

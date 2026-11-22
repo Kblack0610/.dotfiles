@@ -2,7 +2,9 @@
 // out what hub-core counted (`hub <verb> --json`, the publisher's summary/cards `figures`), never
 // a count of their own. This sweep fails when one of them counts records: jq `group_by`, `add`, a
 // `select(...) | length` or `[...] | length`, a shell `n=$((n + 1))` or `((n++))`, `wc -l` or
-// `grep -c`, outside the allowlists below. Each entry carries its site count, so a new count in an
+// `grep -c`, outside the allowlists below. It is a tripwire, not a parser: a bare `x | length` is
+// not a site, since the chips use it for column widths and empty checks, so a count spelled that
+// way passes and review is still the backstop. Each entry carries its site count, so a new count in an
 // allowed function fails too, and an entry whose sites are gone fails until it is removed, so the
 // list only shrinks. The readers.test.mjs pattern for agent-web, run from tests/unit/waybar_figures.bats.
 import { test } from "node:test";
@@ -13,7 +15,7 @@ const root = new URL("../../", import.meta.url);
 const WAYBAR = ".config/waybar/";
 
 const SITE =
-  /\bgroup_by\(|select\(.*\|\s*length\b|\]\s*\|\s*length\b|\|\s*add\b|\b[\w]+(?:\[[^\]]*\])?=\$\(\(\s*\$?\{?[\w]+(?:\[[^\]]*\])?(?::-0)?\}?\s*\+\s*1\s*\)\)|\(\(\s*\w+\+\+\s*\)\)|\bwc\s+-l\b|\bgrep\s+-\w*c/;
+  /\bgroup_by\(|select\(.*\|\s*length\b|\]\s*\|\s*length\b|\|\s*add\b|\b[\w]+(?:\[[^\]]*\])?=\$\(\(\s*\$?\{?[\w]+(?:\[[^\]]*\])?(?::-0)?\}?\s*\+\s*1\s*\)\)|\(\(\s*\w+\+\+\s*\)\)|\bwc\s+-l\b|\bgrep\s+(?:-\w*c|--count\b)/;
 
 // Whole files that show no fleet figure hub-core owns: this machine's own devices and menus.
 const PLUMBING_FILES = {
@@ -76,6 +78,7 @@ test("the scan sees each kind of count and skips comments and layout widths", ()
     "}",
     "((i++))",
     "x=$(wc -l < f); y=$(grep -c ok f)",
+    "z=$(grep --count ok f)",
     "jq 'def pad($n): . + (\" \" * ([$n - length, 0] | max));'",
     "age=$((now - start))",
   ].join("\n");
@@ -87,6 +90,7 @@ test("the scan sees each kind of count and skips comments and layout widths", ()
     { fn: "count", line: 7 },
     { fn: "main", line: 9 },
     { fn: "main", line: 10 },
+    { fn: "main", line: 11 },
   ]);
 });
 

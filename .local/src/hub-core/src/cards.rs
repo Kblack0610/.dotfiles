@@ -617,14 +617,17 @@ pub fn projects(p: &crate::projects::Projects) -> Card {
     )
     .part("Waiting", sum(|c| c.waiting), lvl(waiting, Level::Warn))
     .part("Hot", sum(|c| c.hot), Level::Ok);
-    // No queue read is no figure, never a zero (rule 6): waybar's D: then says -.
-    if let Some(d) = p.today {
-        c = c.part("Shipped today", d.shipped, Level::Ok).part(
-            "Checks closed",
-            d.checks,
-            Level::Ok,
-        );
-    }
+    // An unread queue says so, never a zero or a missing part (rule 6); `figures` then has no
+    // number for it, so waybar's D: reads -.
+    c = match p.today {
+        Some(d) => {
+            c.part("Shipped today", d.shipped, Level::Ok)
+                .part("Checks closed", d.checks, Level::Ok)
+        }
+        None => c
+            .part("Shipped today", crate::reading::NOT_READ, Level::Warn)
+            .part("Checks closed", crate::reading::NOT_READ, Level::Warn),
+    };
     c.big = cards.len().to_string();
     c.unit = "lab projects".into();
     if !p.errors.is_empty() {
