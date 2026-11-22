@@ -5390,7 +5390,7 @@ load_findings() {
 # project while the other 40 waited on account pace, which the message never named.
 pick_item() {
   local items="$1" it why need free host mwhy='' mread=0 fhit=0 lhit=0 lfirst='' uwait=0 held=() waits="every queue item waits" reserved=''
-  local shold=0 sfirst='' shost='' swhy=''
+  local shold=0 sfirst='' shost='' swhy='' mhit=0
   share_state   # in this shell, so every share_why reads one count
   if [ "${RED_PASS:-0}" = 1 ]; then waits="every red item waits; the rest wait on ${FLOOR_GATE:-the gate}"
   elif [ "${PROJECT_PASS:-0}" = 1 ]; then waits="every item of an idle project waits; the rest wait on ${FLOOR_GATE:-the gate}"
@@ -5409,7 +5409,7 @@ pick_item() {
     elif [ "$need" -le "$free" ] && { { [ ${#HOST_PROBE[@]} -eq 0 ] && [ "${TRAINEE_PASS:-0}" = 0 ]; } || { [ "$mread" = 1 ] || { mwhy=$(machine_why); mread=1; }; [ -z "$mwhy" ]; }; }; then :
     elif host=$(place_host "$it"); then :
     elif [ "$need" -gt "$free" ]; then uwait=1; why="$([ "$need" -gt 1 ] && echo heavy || echo light) needs $need run units, $free free"
-    else why="$mwhy, and no fleet worker takes it"; PICK_FULL=0
+    else why="$mwhy, and no fleet worker takes it"; PICK_FULL=0 mhit=1
     fi
     if [ -z "$why" ]; then why=$(held_by "$it" "$FIRING"); [ -z "$why" ] || { PICK_FULL=0; fhit=1; }; fi
     if [ -z "$why" ]; then why=$(line_why "$it"); [ -z "$why" ] || { PICK_FULL=0; lhit=$(( lhit + 1 )); lfirst=${lfirst:-$why}; }; fi
@@ -5443,7 +5443,9 @@ pick_item() {
   if [ "$PICK_FULL" = 1 ]; then PICK_WHY="run units: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
   elif [ "$fhit" = 1 ]; then PICK_WHY="finding firing: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
   elif [ "$lhit" -gt 0 ]; then PICK_WHY="merge line full: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
-  elif [ "$shold" -gt 0 ]; then PICK_WHY="fleet share full: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
+  # The share names the pass only when load held none of the rest: a pass read "fleet share full" and
+  # settled NOOP while load held 22 other items (2026-11-21, ar-4450).
+  elif [ "$shold" -gt 0 ] && [ "$mhit" = 0 ]; then PICK_WHY="fleet share full: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
   else PICK_WHY="machine pace: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"; fi
   return 1
 }
