@@ -326,7 +326,7 @@ button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 
 .tbar span { display: block; }
 .wcard details { margin-top: 6px; font-size: 12px; }
 .wcard summary { cursor: pointer; color: var(--muted); }
-.wcard ul { margin: 4px 0 0; padding-left: 18px; }
+.wcard .rec { margin-top: 4px; }
 .ci { font-weight: 600; }
 .ci.pass { color: var(--b-done); } .ci.fail { color: var(--b-needs); } .ci.pending { color: var(--b-stalled); }
 .feed { max-height: 420px; overflow-y: auto; padding: 6px 10px; }
@@ -442,6 +442,9 @@ span.warn { color: var(--b-stalled); }
 .tbl td.warn, .tbl td.bad { font-weight: 600; }
 .tbl td.warn { color: var(--b-stalled); } .tbl td.bad { color: var(--b-needs); }
 .tbl td.wrap { white-space: normal; min-width: 160px; }
+/* tblRec's record rows: no minimum width, no zebra, no rules, so a short list reads as a list. */
+.tbl.rec td.wrap { min-width: 0; border-bottom: 0; padding: 3px 10px 3px 0; }
+.tbl.rec tr:nth-child(odd of :not(.wdet, .rcd, .tfilters, .bopen)):has(> td) { background: none; }
 .tbl .c2 { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .tbl .c1 { max-width: 56ch; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tbl .c12 { max-width: 44ch; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -595,9 +598,9 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
 /* Daily's outbox (#daily/outbox): the doc as tall as the screen allows, on a phone too. */
 #o-doc { display: block; width: 100%; box-sizing: border-box; min-height: 40vh; max-height: none; font: var(--fs-lg)/1.5 var(--mono); }
 #o-said { font-size: 12px; }
-.o-steps { list-style: none; padding: 0; margin: 0; font-size: 13px; }
-.o-steps li { padding: 3px 0; overflow-wrap: anywhere; }
-.o-steps li.warn { color: var(--wait); }
+.o-steps { font-size: 13px; }
+.o-steps td { overflow-wrap: anywhere; }
+.o-steps tr.warn { color: var(--wait); }
 
 /* Needs you (home.js, waiting.js): one card per thing that waits on the human, its kind a band
    and a left stripe. Waiting is the status, so the kind takes the categorical colours (rule 5):
@@ -649,7 +652,7 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
 }
 .o-send { display: flex; align-items: center; gap: 12px; margin: 8px auto 14px; }
 .o-tags { font-size: 12px; margin: 0 0 14px; }
-.o-tags ul { margin: 4px 0 0; padding-left: 18px; }
+.o-tags .rec { margin-top: 4px; }
 .dhead { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; margin-bottom: 12px; }
 #daily .dhead > h2.sec { margin: 0; max-width: none; }
 .dhead .btn, .dhead .seg button { font-family: inherit; font-size: 13px; padding: 6px 11px; margin: 0; min-height: 32px; }

@@ -205,7 +205,7 @@ function sheetClose(n) {
   const how = c.how || SHEET_CLOSE[0][0];
   return `<div class="opts"><select data-closehow>${SHEET_CLOSE.map(([v, l]) => `<option value="${v}"${v === how ? " selected" : ""}>${esc(l)}</option>`).join("")}</select>` +
     `<input data-free data-closewhy value="${esc(c.why || "")}" placeholder="why, or pr:123 / a URL">` +
-    `<button class="btn sm" data-closego${c.busy ? " disabled" : ""}>${c.busy ? "Closing..." : "Close"}</button></div><div class="err">${esc(c.err || "")}</div>`;
+    `<button class="btn sm" data-closego${c.busy ? " disabled" : ""}>${c.busy ? "Closing..." : "Close"}</button></div>${errPanel(c.err)}`;
 }
 
 // Read the row fresh off the board by its id, so a row changed since Home drew it fails the write
@@ -320,7 +320,7 @@ async function queueFix(name) {
 function drawHome() {
   const el = $("home"), h = hst.data;
   el.inert = !!hst.kept;
-  if (!h) { paint(el, hst.err ? `<div class="err">${esc(hst.err)}</div>` : '<div class="empty">Reading...</div>', askst.open); return; }
+  if (!h) { paint(el, hst.err ? errPanel(hst.err) : '<div class="empty">Reading...</div>', askst.open); return; }
   const errs = (hst.kept ? `<div class="cline muted">Showing Home as read ${keptAge(hst.kept.at)}${hst.err ? "" : ", reading it now"}.</div>` : "") +
     [hst.err, ...h.errors].filter(Boolean).map((e) => `<div class="cline warn">${esc(e)}</div>`).join("");
   const rt = h.running_table;

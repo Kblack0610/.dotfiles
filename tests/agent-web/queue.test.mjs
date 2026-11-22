@@ -196,7 +196,7 @@ test("Candidates is the shared table in its fold: the count heads it, urgent blo
   load();
   try {
     const h = drawCands(cands());
-    assert.match(h, /<details class="csec" id="sec-candidates" data-k="sec:candidates" open><summary id="qc-sum"><h2 class="sec warn">Candidates <span class="n">41<\/span><\/h2><\/summary>/);
+    assert.match(h, /<details class="csec" data-k="sec:candidates" id="sec-candidates" open><summary id="qc-sum"><h2 class="sec warn">Candidates <span class="n">41<\/span><\/h2><\/summary>/);
     assert.match(h, /<div class="cline warn">1 urgent blocked<\/div>/);
     assert.match(h, /<div class="cline warn">Worked on today, and no worker covers a row: trader<\/div>/);
     assert.match(h, /<b>auto<\/b> 2, <b>as of<\/b> 10:20/);
@@ -461,7 +461,7 @@ test("shut, Candidates is a heading from its counts read, made after the table's
   asked = [];
   reply = (url) => url.startsWith("/api/queue/projects") ? [] : url.startsWith("/api/queue/candidates") ? counts : data;
   const h = draw();
-  assert.match(h, /<details class="csec" id="sec-candidates" data-k="sec:candidates"><summary id="qc-sum"><h2 class="sec warn">Candidates <span class="n">120<\/span><\/h2><\/summary><div id="qc-fold"><\/div><\/details>/);
+  assert.match(h, /<details class="csec" data-k="sec:candidates" id="sec-candidates"><summary id="qc-sum"><h2 class="sec warn">Candidates <span class="n">120<\/span><\/h2><\/summary><div id="qc-fold"><\/div><\/details>/);
   assert.doesNotMatch(h, /qc-q|qc-body/, "a shut fold builds no rows, chips or search box");
   run("TABS.queue.show()");
   await settle(); await settle(); await settle();
@@ -494,7 +494,7 @@ test("opening Candidates reads them once; a redraw's toggle reads nothing, and s
   await settle();
   assert.deepEqual(asked.filter((u) => u.startsWith("/api/queue/candidates")), ["/api/queue/candidates"]);
   // The read repaints the fold alone (qCandPaint), inside the list the toggle drew open.
-  assert.match(parts["q-list"].innerHTML, /id="sec-candidates" data-k="sec:candidates" open>/);
+  assert.match(parts["q-list"].innerHTML, /data-k="sec:candidates" id="sec-candidates" open>/);
   assert.match(parts["qc-fold"].innerHTML, /id="qc-q"/);
   fold(true);
   await settle();
