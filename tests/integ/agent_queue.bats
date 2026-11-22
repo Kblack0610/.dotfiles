@@ -1631,6 +1631,80 @@ notes --profile bnb ptask game --agent run gm-9"
   [ -z "$(field "$(item running req)" end_reason)" ]
 }
 
+# handoff_repo: a checkout on branch feat, one commit past origin/main (pushed: main only), and a
+# handoff note in the sandbox HOME's plans.
+handoff_repo() {
+  ORIGIN="$SANDBOX/origin.git" WT="$SANDBOX/wt" NOTE="$HOME/.claude/plans/h.md"
+  git init -q --bare "$ORIGIN"
+  git init -q -b main "$WT"
+  git -C "$WT" remote add origin "$ORIGIN"
+  git -C "$WT" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  git -C "$WT" push -q -u origin main 2>/dev/null
+  git -C "$WT" checkout -q -b feat
+  git -C "$WT" -c user.email=t@t -c user.name=t commit -q --allow-empty -m work
+  mkdir -p "${NOTE%/*}"
+  printf '## Handoff\ndone: the parser, tests green\nnext: the menu\n' > "$NOTE"
+}
+
+@test "handoff passes a running item to a fresh session: its pushed branch as salvage, its note, an unrated end; refused while its work is not pushed (ar-2777)" {
+  printf '#!/usr/bin/env bash\necho "model-lane $*" >> "$NOTES_FIXTURE/calls.log"\n' > "$SANDBOX/bin/model-lane"
+  chmod +x "$SANDBOX/bin/model-lane"
+  handoff_repo
+  "$AQ" add --project game --running --slug h "h" >/dev/null
+  "$AQ" set h lane_run=r-h >/dev/null
+  run "$AQ" handoff h --note "$NOTE" --dir "$WT"
+  assert_failure
+  assert_output --partial "feat at $(git -C "$WT" rev-parse --short=12 HEAD) is not on origin: push it first"
+  git -C "$WT" push -q origin feat 2>/dev/null
+  : > "$WT/untracked"
+  run "$AQ" handoff h --note "$NOTE" --dir "$WT"
+  assert_failure
+  assert_output --partial 'has uncommitted changes'
+  rm "$WT/untracked"
+  run "$AQ" handoff h --note "$SANDBOX/missing.md" --dir "$WT"
+  assert_failure
+  assert_output --partial 'is missing or empty'
+  cp "$NOTE" "$BATS_TEST_TMPDIR/scratch.md"
+  run "$AQ" handoff h --note "$BATS_TEST_TMPDIR/scratch.md" --dir "$WT"
+  assert_failure
+  assert_output --partial 'is outside $HOME'
+  # Nothing refused moved the item.
+  [ -n "$(item running h)" ]
+  run "$AQ" handoff h --note "$NOTE" --dir "$WT"
+  assert_success
+  assert_output --partial "h: handed off (1 of 2); end this session now (/wind-down): the next start reads $NOTE"
+  it=$("$AQ" show h --json)
+  assert_equal "$(jq -r '[.state, .salvage, .handoff, .handoffs, .end_reason] | join("|")' <<<"$it")" "queued|feat@$(git -C "$WT" rev-parse HEAD)|$NOTE|1|handoff"
+  # Unrated: the run did not fail, so model-lane hears nothing (a plain move to queued files a redo).
+  run grep '^model-lane' "$NOTES_FIXTURE/calls.log"
+  assert_output ''
+  run "$AQ" handoff h --note "$NOTE" --dir "$WT"
+  assert_failure
+  assert_output --partial 'h is queued, not running'
+}
+
+@test "handoff stops at AGENT_HANDOFF_MAX; an item with a PR, or a head the trunk holds, carries no salvage (ar-2777)" {
+  handoff_repo
+  git -C "$WT" push -q origin feat 2>/dev/null
+  "$AQ" add --project game --running --slug p "p" >/dev/null
+  "$AQ" set p pr=o/game#12 >/dev/null
+  run "$AQ" handoff p --note "$NOTE" --dir "$WT"
+  assert_success
+  [ -z "$(field "$(item queued p)" salvage)" ]
+  "$AQ" move p running >/dev/null
+  AGENT_HANDOFF_MAX=1 run "$AQ" handoff p --note "$NOTE" --dir "$WT"
+  assert_failure
+  assert_output --partial 'p has handed off 1 times (AGENT_HANDOFF_MAX 1): finish it in this session'
+  [ -n "$(item running p)" ]
+  # On main, which origin holds: nothing to carry, and no branch needed.
+  git -C "$WT" checkout -q main
+  "$AQ" add --project game --running --slug m "m" >/dev/null
+  run "$AQ" handoff m --note "$NOTE" --dir "$WT"
+  assert_success
+  [ -z "$(field "$(item queued m)" salvage)" ]
+  [ "$(field "$(item queued m)" handoffs)" = 1 ]
+}
+
 @test "an item that waited with an end reason and then landed, or was cancelled, keeps none" {
   "$AQ" add --project game --running --slug w "w" >/dev/null
   "$AQ" move w waiting --end cut >/dev/null
