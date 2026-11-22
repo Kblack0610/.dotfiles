@@ -1017,7 +1017,8 @@ labels_of() {
 # pane, <server>/$TMUX_PANE); anything else matches a live session's id, target (lab/s1:1), tmux
 # target (s1:1) or tmux session (s1). Not $CLAUDE_CODE_SESSION_ID inside tmux: it can differ from the
 # transcript id the row carries, and a label filed under it lands on no row (hub/dotfiles:3,
-# 2026-11-20, ar-4148). Outside tmux there is no pane, so the env id is the only identity.
+# 2026-11-20, ar-4148). A pane no row holds (a run-shell or popup pane) falls back to the env id only
+# when a live row carries it. Outside tmux there is no pane, so the env id is the only identity.
 resolve_sid() {
   local who="$1" pane=""
   if [ "$who" = self ]; then
@@ -1028,24 +1029,30 @@ resolve_sid() {
     pane="$(basename "${TMUX%%,*}")/$TMUX_PANE"
   fi
   local sid
-  sid="$("${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null | jq -rn --arg w "$who" --arg p "$pane" '
-    [inputs | select(if $p != "" then .pane == $p else
-             .session_id == $w or .target == $w or (.target | sub("^[^/]*/"; "")) == $w
-             or (.target | sub("^[^/]*/"; "") | sub(":[^:]*$"; "")) == $w end) | .session_id] | .[:1][]')"
+  sid="$("${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null | jq -rn --arg w "$who" --arg p "$pane" --arg env "${CLAUDE_CODE_SESSION_ID:-}" '
+    [inputs] as $r
+    | if $p != "" then ([$r[] | select(.pane == $p)] | if length > 0 then . else [$r[] | select($env != "" and .session_id == $env)] end)
+      else [$r[] | select(.session_id == $w or .target == $w or (.target | sub("^[^/]*/"; "")) == $w
+             or (.target | sub("^[^/]*/"; "") | sub(":[^:]*$"; "")) == $w)] end | map(.session_id) | .[:1][]')"
   [ -n "$sid" ] || { echo "fleet-sessions: no live session matches '${pane:-$who}'" >&2; return 2; }
   echo "$sid"
 }
 
-# prune_labels <cells file> <pass start epoch>: remove the label file of each session with no row in
-# the tick's cells, which keep_blind has already given back every row a failed read missed, so a
-# blink prunes nothing. A file written since the pass began is kept: its session may be too new for
-# this pass's rows. Without it, a gone session's labels sat in $LABELS for good (ar-4148).
+# prune_labels <cells file>: the tick's label sweep. A session with a row has its label file touched,
+# so the file's mtime is when a tick last saw it; a file unseen FLEET_LABEL_GRACE_H (24h) is removed.
+# The grace, not one pass, decides: a reboot or tmux restart reads no rows until the restore brings
+# the same session ids back, and a partial read drops rows no source reports blind, and neither may
+# take a `manual` hold. Without it, a gone session's labels sat in $LABELS for good (ar-4148).
 prune_labels() {
-  local f
+  local f m cut
+  cut=$(( $(date +%s) - ${FLEET_LABEL_GRACE_H:-24} * 3600 ))
   for f in "$LABELS"/*; do
     [ -f "$f" ] || continue
-    [ "$(stat -c %Y "$f")" -lt "$2" ] || continue
-    awk -F'\t' -v s="${f##*/}" '$1 == s { found = 1; exit } END { exit !found }' "$1" || rm -f "$f"
+    if awk -F'\t' -v s="${f##*/}" '$1 == s { found = 1; exit } END { exit !found }' "$1"; then
+      touch -c "$f"; continue
+    fi
+    m="$(stat -c %Y "$f" 2>/dev/null)" || continue
+    [ "$m" -ge "$cut" ] || rm -f "$f"
   done
 }
 
@@ -2833,7 +2840,7 @@ tick() {
         || cp "$LEDGER/watch.state" "$cur"
       new="$(transitions "$LEDGER/watch.state" "$cur")"
       [ -n "$new" ] && sed "s/^/$now  /" <<<"$new" >> "$LEDGER/watch.log"
-      prune_labels "$cur" "$t0"
+      prune_labels "$cur"
     fi
     cp "$cur" "$LEDGER/watch.state"
   ) 9>"$LEDGER/watch.lock" || rc=$?

@@ -182,7 +182,7 @@ A fix that deletes a copy adds its row in the same PR, so the copy cannot come b
 
 ## Labels and stages on screen
 
-Labels live in `~/.agent/shepherd/labels/<session id>`, one per line, and nowhere else. The window options are a copy for display: nothing reads them back as fact. Each tick removes the file of a session with no row (`prune_labels`; a row a failed read missed keeps its last cells, so a blink removes nothing).
+Labels live in `~/.agent/shepherd/labels/<session id>`, one per line, and nowhere else. The window options are a copy for display: nothing reads them back as fact. Each tick touches the file of every session it has a row for and removes one unseen `FLEET_LABEL_GRACE_H` (24h, `prune_labels`), so a reboot that reads no rows until the restore keeps a `manual` hold.
 
 | To | Do |
 | --- | --- |
