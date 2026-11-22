@@ -308,7 +308,7 @@ lock_miss() {
         printf 'proc\t%s\t%s\t%s\n' "$f" "$p" "$(tr '\0' ' ' < "/proc/$p/cmdline" | cut -c1-300)"
       done
     done
-  } 2>/dev/null | jq -Rnc --arg ts "$(date -Is)" --arg mode "$([ "$1" = -s ] && echo shared || echo exclusive)" \
+  } 2>/dev/null | jq -Rnc --arg ts "$(date -u -Is)" --arg mode "$([ "$1" = -s ] && echo shared || echo exclusive)" \
     --argjson wait "$LOCK_WAIT" --arg cmd "$(tr '\0' ' ' < /proc/$$/cmdline | cut -c1-300)" \
     --arg caller "$(tr '\0' ' ' < /proc/$PPID/cmdline | cut -c1-300)" \
     '[inputs | split("\t")] | {ts: $ts, mode: $mode, wait: $wait, cmd: $cmd, caller: $caller,
@@ -321,8 +321,9 @@ lock_miss() {
 # (AQ_LOCK_MISS_HOURS, 1) against the bound N (AQ_LOCK_MISS_MAX, 3), with the latest one's command
 # and caller; exit 1 when over the bound, 2 when the log cannot be read. The rotated .1 counts too.
 # The watch queue-lock-miss runs it: a miss is a line in a file, no event, so the watch samples the rate.
-# A ts is `date -Is` on this host, so the cutoff in that form compares as a string (an hour off across
-# a DST change at most). Bound: every hour since the log began had none but 2026-11-18T11, which had 364.
+# lock_miss writes ts in UTC (`date -u -Is`) and the log syncs with the store, so lines from every host
+# and either side of a DST change compare as strings against a UTC cutoff; lines before 2026-11-21
+# carry -08:00 and are all from 2026-11-18. Bound: no hour had a miss but 2026-11-18T11, which had 364.
 cmd_lock_miss() {
   local hours="${AQ_LOCK_MISS_HOURS:-1}" max="${AQ_LOCK_MISS_MAX:-3}" cut out n
   while [ $# -gt 0 ]; do
@@ -333,7 +334,7 @@ cmd_lock_miss() {
     esac
   done
   [[ "$hours" =~ ^[0-9]+$ && "$max" =~ ^[0-9]+$ ]] || die "lock-miss: --hours and --max are whole numbers"
-  cut=$(date -Is -d "-$hours hours")
+  cut=$(date -u -Is -d "-$hours hours")
   # A missing log (or no .1 yet) is no misses: only a jq failure is unreadable.
   out=$({ cat "$AQ_LOCK_MISS_LOG.1" "$AQ_LOCK_MISS_LOG" 2>/dev/null || :; } | jq -nrR --arg cut "$cut" '
     [inputs | fromjson? | objects | select((.ts // "") >= $cut)] | "\(length)\t\(last // {} | "\(.ts): \(.cmd) from \(.caller)")"') ||
@@ -1192,7 +1193,7 @@ ITEM_JQ='def lepoch($s): ($s + ":00Z" | fromdateiso8601) as $l | ($l - (($l | lo
     + (if ($x.hold // "") == "" then {} else {hold: $x.hold} end)
     + (if ($x.stack // "") == "" then {} else {stacked_on: $x.stack} end)
   | (if .state == "queued" and (.hold // "") == "" then
-      ([.task | scan("(?m)^## (?:Un)?[Bb]locked\\b[^\n]*")] | last) as $h
+      ([.task | scan("(?m)^## (?:[Uu]n)?[Bb]locked\\b[^\n]*")] | last) as $h
       | if $h != null and ($h | test("^## [Bb]locked")) then .hold = "blocked: \"\($h)\" in its body; a later \"## Unblocked\" heading releases it" else . end
     else . end)
   | .priority //= "high"

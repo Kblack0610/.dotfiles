@@ -82,6 +82,12 @@ setup() {
   assert_failure 1
   run "$HOLD" aged --days 9
   assert_success
+  # An empty since is unreadable, so it shows: date -d "" alone reads as today.
+  sed -i "s/^since: .*/since: /" "$AGENT_HOLD_DIR/fresh"
+  run "$HOLD" aged --days 9
+  assert_failure 1
+  assert_line --index 0 --partial 'fresh: held '
+  assert_line --index 0 --partial 'since an unreadable time by human: new'
 }
 
 @test "a hold on one resource leaves another free" {

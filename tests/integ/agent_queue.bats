@@ -4538,7 +4538,7 @@ already"
   assert_success
   assert_output "0 queue lock misses in the last 1h (bound 3)"
   log="$AGENT_QUEUE_DIR/lock-miss.jsonl"
-  now=$(date -Is) old=$(date -Is -d '-3 hours')
+  now=$(date -u -Is) old=$(date -u -Is -d "-3 hours")
   for t in "$old" "$now" "$now"; do jq -nc --arg ts "$t" '{ts: $ts, cmd: "agent-queue list", caller: "hub"}'; done > "$log"
   jq -nc --arg ts "$now" '{ts: $ts, cmd: "agent-queue add", caller: "dispatch"}' > "$log.1"
   run "$AQ" lock-miss --max 3

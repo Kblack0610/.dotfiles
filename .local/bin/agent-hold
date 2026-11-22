@@ -446,8 +446,9 @@ cmd_aged() {
   for f in "$HOLD_ROOT"/*; do
     [ -f "$f" ] || continue
     since="$(field "$f" since)"
-    # A since no date reads is a hold nobody can age: it shows, since it is as old as anything.
-    s=$(date -d "$since" +%s 2>/dev/null) || s=0
+    # A since no date reads is a hold nobody can age: it shows, since it is as old as anything. An
+    # empty one too: `date -d ""` reads as today's midnight.
+    { [ -n "$since" ] && s=$(date -d "$since" +%s 2>/dev/null); } || s=0
     age=$(( (now - s) / 86400 ))
     [ "$age" -ge "$days" ] || continue
     n=$((n + 1))
