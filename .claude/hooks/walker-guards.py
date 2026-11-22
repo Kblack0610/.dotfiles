@@ -33,7 +33,8 @@ def reasons(data):
             elif forge:
                 mod.FORGE = forge
             r = mod.decide(data)
-        except Exception:
+        except Exception as e:  # stderr on exit 0 reaches the transcript, never the model
+            print("walker-guards: %s skipped, it raised %r" % (name, e), file=sys.stderr)
             continue
         if r:
             out.append(r)

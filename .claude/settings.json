@@ -271,7 +271,7 @@
           {
             "type": "command",
             "command": "python3 ~/.claude/hooks/walker-guards.py || true",
-            "timeout": 15
+            "timeout": 30
           }
         ]
       },

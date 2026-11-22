@@ -78,4 +78,5 @@ denied_by() { assert_success; assert_output --partial '"deny"'; assert_output --
   WALKER="$T/hooks/walker-guards.py" run at "$T/dots" 'git checkout -b feat/x && gh auth logout'
   denied_by gh-login-guard
   refute_output --partial 'checkout-guard:'
+  assert_output --partial 'walker-guards: checkout-guard skipped'
 }
