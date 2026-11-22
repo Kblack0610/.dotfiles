@@ -11,6 +11,7 @@ use serde_json::Value;
 
 use crate::fit::{cell, clip_line, Cell};
 use crate::fmt::{older, Palette};
+use hub_core::display::fmt::{dur_min, dur_secs, hours_min};
 
 /// Changes listed under the table; watch.log keeps them all.
 use hub_core::layout::FOLD_ROWS;
@@ -23,25 +24,6 @@ fn dash(x: &str) -> String {
         "-".into()
     } else {
         x.into()
-    }
-}
-
-/// Minutes as 45m, 3h12m, 2d4h, as the bash board's `dur`.
-fn mins(m: Option<i64>) -> String {
-    match m {
-        None => "-".into(),
-        Some(m) if m < 60 => format!("{m}m"),
-        Some(m) if m < 1440 => format!("{}h{}m", m / 60, m % 60),
-        Some(m) => format!("{}d{}h", m / 1440, m % 1440 / 60),
-    }
-}
-
-/// Minutes rounded to 45m or 3h: a share of an age, not a clock; - for none.
-fn hrs(m: i64) -> String {
-    match m {
-        ..=0 => "-".into(),
-        1..=59 => format!("{m}m"),
-        _ => format!("{}h", (m as f64 / 60.0).round() as i64),
     }
 }
 
@@ -154,7 +136,7 @@ pub fn row(x: &Value, p: Palette) -> Vec<Cell> {
         _ if v > 0 => Some((k, v)),
         _ => best,
     })
-    .map_or("-".into(), |(k, v)| format!("{k} {}", hrs(v)));
+    .map_or("-".into(), |(k, v)| format!("{k} {}", hours_min(v)));
     let bucket = s(x, "bucket");
     let doing = s(x, "doing");
     let why = if bucket == "WORKING" && !doing.is_empty() {
@@ -178,17 +160,13 @@ pub fn row(x: &Value, p: Palette) -> Vec<Cell> {
         cell(dash(&ci), ci_style(p, &ci)),
         plan.into(),
         dash(s(x, "eta")).into(),
-        hrs(tm("work_min")).into(),
+        hours_min(tm("work_min")).into(),
         wait.into(),
-        mins(n("idle_min")).into(),
-        mins(n("age_min")).into(),
+        dur_min(n("idle_min")).into(),
+        dur_min(n("age_min")).into(),
         dash(&labels.join(",")).into(),
         why.into(),
     ]
-}
-
-fn ago(ts: i64, now: i64) -> String {
-    mins(Some((now - ts).max(0) / 60))
 }
 
 /// The whole tab, top to bottom, with the session table in its place under the counts.
@@ -206,7 +184,10 @@ pub fn page(watch: &Watch, table: Vec<Line<'static>>, p: Palette, now: i64) -> V
         let age = hub_core::reading::State::of_age(at, now, hub_core::home::FLEET_STATE_STALE_SECS);
         out.push(Line::styled(
             match at {
-                Some(at) => format!("SESSIONS   state {} old", ago(at, now)),
+                Some(at) => format!(
+                    "SESSIONS   state {} old",
+                    dur_secs((now - at).max(0) as f64)
+                ),
                 None => format!("SESSIONS   {}", age.words("state age")),
             },
             if age == hub_core::reading::State::Live {

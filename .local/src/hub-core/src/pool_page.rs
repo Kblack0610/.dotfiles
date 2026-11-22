@@ -7,16 +7,17 @@
 //! |---------|---------------------------------------------------------------------------------|
 //! | history | `cc:pool_{busy,waiting}{pool}`: its own jobs running and the jobs waiting; the local gates (`gates`, once `unity-local`) count `cc:host_local_gate` and read `ci_governor_backlog_units{kind="local"}`, as `machines::pools` counts them |
 
+use crate::display::fmt::counted;
 use serde::Serialize;
 
 use crate::ci::Queued;
+use crate::display::fmt::age;
 use crate::host_history::{self, Hours, BUCKET, DAYS, STEP};
 use crate::infra::Infra;
 use crate::links::Link;
 use crate::machines::{Machine, Pool, LOCAL_POOL, LOCAL_POOL_OLD};
 use crate::prom::{self, Series};
 use crate::session_page::Part;
-use crate::text::age;
 
 /// What the page says for a name the Pools table does not have.
 pub const NO_POOL: &str = "no pool named";
@@ -143,16 +144,13 @@ fn parts(infra: &Infra, p: &Pool, waiting: &[Queued]) -> Vec<Part> {
         None => "no slot reading".into(),
     };
     let hosts = p.machines.len();
-    slots = format!(
-        "{slots}, on {hosts} machine{}",
-        if hosts == 1 { "" } else { "s" }
-    );
+    slots = format!("{slots}, on {}", counted(hosts, "machine"));
     // No reading at all is the warning; 0 running is slots busy with other kinds.
     out.push(Part::new("Slots", slots).warn(p.running.is_none()));
     let stuck = waiting.iter().filter(|q| q.stuck).count();
     let wait = match p.waiting {
         Some(w) if w > 0.0 => {
-            let mut t = format!("{} job{}", n(w), if w == 1.0 { "" } else { "s" });
+            let mut t = counted(w as usize, "job");
             if let Some(o) = p.oldest.filter(|o| *o > 0.0) {
                 t = format!("{t}, the oldest {}", age(o as i64));
             }

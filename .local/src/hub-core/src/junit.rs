@@ -23,6 +23,7 @@
 //! An NUnit file (`results.xml`, Unity's) has `test-case` elements, read as one suite per class;
 //! a test in several files of one tier (a shard rerun) is the newest file's.
 
+use crate::display::fmt::counted;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -350,11 +351,9 @@ impl Totals {
             n => format!(", {n} quarantined"),
         };
         format!(
-            "{} test{} in {} suite{}: {} failed{held}, {} skipped, {} passed",
-            self.tests,
-            if self.tests == 1 { "" } else { "s" },
-            self.suites,
-            if self.suites == 1 { "" } else { "s" },
+            "{} in {}: {} failed{held}, {} skipped, {} passed",
+            counted(self.tests, "test"),
+            counted(self.suites, "suite"),
             self.failed,
             self.skipped,
             self.passed

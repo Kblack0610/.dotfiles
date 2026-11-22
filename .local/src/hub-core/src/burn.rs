@@ -47,7 +47,7 @@ impl Room {
 
     /// The verdict in words: `room, 4 points spare`, or `no room: pace 20 points past the line`.
     fn words(&self) -> String {
-        let pts = |n: f64| format!("{n} point{}", if n == 1.0 { "" } else { "s" });
+        let pts = |n: f64| format!("{n} {}", if n == 1.0 { "point" } else { "points" });
         if self.ok {
             return match self.headroom {
                 Some(h) if h >= 0.0 => format!("room, {} spare", pts(h.floor())),

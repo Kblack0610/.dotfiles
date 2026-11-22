@@ -248,7 +248,7 @@ impl Row for Machine {
             "next" => self
                 .next
                 .as_ref()
-                .map_or(Val::None, |n| Val::Text(n.line(crate::text::age))),
+                .map_or(Val::None, |n| Val::Text(n.line(crate::display::fmt::age))),
             "governor" => self
                 .governor
                 .as_ref()
@@ -372,8 +372,8 @@ fn rule(p: &Power, v: &HashMap<&str, f64>) -> String {
             mins("start_after_seconds")
         ),
         _ if want > 0 => format!(
-            "{want} job{} past the home hosts, starts at {excess}",
-            if want == 1 { "" } else { "s" }
+            "{} past the home hosts, starts at {excess}",
+            crate::display::fmt::counted(want as usize, "job")
         ),
         _ => format!("no job past the home hosts; starts at {excess}"),
     }

@@ -341,7 +341,7 @@ impl ReleasesView {
     pub fn status(&self, s: &Releases, p: Palette, now: i64) -> Vec<Line<'static>> {
         let mut head = vec![Span::styled(s.summary.clone(), p.head())];
         if s.at > 0 {
-            let age = hub_core::text::age(now - s.at);
+            let age = hub_core::display::fmt::age(now - s.at);
             head.push(Span::styled(
                 format!("  refreshed {} ({age} ago)", clock(s.at, now)),
                 if s.stale(now) { p.warn() } else { p.dim() },
@@ -349,7 +349,7 @@ impl ReleasesView {
         }
         if s.stale(now) {
             head.push(Span::styled(
-                format!("  older than {}", hub_core::text::age(STALE_SECS)),
+                format!("  older than {}", hub_core::display::fmt::age(STALE_SECS)),
                 p.warn(),
             ));
         }
@@ -629,9 +629,9 @@ pub fn detail(
         let spans = vec![
             Span::styled(
                 format!(
-                    "{} {n} other channel{} (F)",
+                    "{} {} (F)",
                     if others { "-" } else { "+" },
-                    if n == 1 { "" } else { "s" }
+                    hub_core::display::fmt::counted(n, "other channel")
                 ),
                 p.head(),
             ),
@@ -689,8 +689,11 @@ pub fn detail(
         &format!("  {:<LABEL$} ", "Builds"),
         &match (a.builds.len(), live) {
             (0, _) => "no build run joined to a tag in the last 30 days".to_string(),
-            (n, 0) => format!("{n} run{}", if n == 1 { "" } else { "s" }),
-            (n, l) => format!("{n} run{}, {l} in progress", if n == 1 { "" } else { "s" }),
+            (n, 0) => hub_core::display::fmt::counted(n, "run"),
+            (n, l) => format!(
+                "{}, {l} in progress",
+                hub_core::display::fmt::counted(n, "run")
+            ),
         },
         p.dim(),
         p,
@@ -782,7 +785,7 @@ fn status(
         format!(
             "checked {} ({} ago)",
             clock(t, now),
-            crate::fmt::dur((now - t) as f64)
+            hub_core::display::fmt::dur_secs((now - t) as f64)
         )
     });
     out.push(head(format!("{}, {checked}", s.banner), level(s.level, p)));

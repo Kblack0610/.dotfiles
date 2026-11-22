@@ -16,6 +16,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::burn::{Account, Burn};
+use crate::display::fmt::usd;
 use crate::session_actions::Runner;
 use crate::table::{Keys, Row, Summary, Val};
 
@@ -247,10 +248,6 @@ pub fn header(col: &str) -> &'static str {
     }
 }
 
-fn money(v: f64) -> String {
-    crate::queue::money(v)
-}
-
 /// The text inside a gateway model name's parens (`fast (gpt-oss-120b)` is `gpt-oss-120b`), a
 /// Claude id without `claude-`, else itself.
 fn short(model: &str) -> String {
@@ -267,9 +264,9 @@ fn at_cap(spend: Option<f64>, max: Option<f64>) -> bool {
 /// `$28.27/$150 all`, `$0.02/$25 30d`, `$0.74 all` with no cap.
 fn spent(k: &Key) -> String {
     let period = k.budget_duration.as_deref().unwrap_or("all");
-    let s = money(k.spend.unwrap_or(0.0));
+    let s = usd(k.spend.unwrap_or(0.0));
     match k.max_budget {
-        Some(m) => format!("{s}/{} {period}", money(m)),
+        Some(m) => format!("{s}/{} {period}", usd(m)),
         None => format!("{s} {period}"),
     }
 }
@@ -623,8 +620,8 @@ fn team_text(t: &Team) -> String {
     format!(
         "{} {}/{}{cap}",
         t.alias.as_deref().unwrap_or("-"),
-        money(t.spend.unwrap_or(0.0)),
-        t.max_budget.map_or("-".into(), money)
+        usd(t.spend.unwrap_or(0.0)),
+        t.max_budget.map_or("-".into(), usd)
     )
 }
 

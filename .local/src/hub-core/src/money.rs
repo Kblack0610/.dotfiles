@@ -7,7 +7,7 @@
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
-use crate::queue::money;
+use crate::display::fmt::usd;
 use crate::session_actions::Runner;
 
 /// Titles one line names before "and N more".
@@ -154,7 +154,7 @@ fn amounts(made: &[Amount]) -> String {
     v.sort_by_key(|a| a.currency != "USD");
     v.iter()
         .map(|a| match a.currency.as_str() {
-            "USD" => money(a.amount),
+            "USD" => usd(a.amount),
             c => format!("{c} {:.2}", a.amount),
         })
         .collect::<Vec<_>>()
@@ -177,8 +177,8 @@ pub fn line(s: &Source) -> String {
         let d: f64 = made.iter().map(|a| a.amount).sum();
         return match d {
             d if d.abs() < 0.005 => format!("{}: flat yesterday.", s.name),
-            d if d > 0.0 => format!("{}: made {} yesterday.", s.name, money(d)),
-            d => format!("{}: lost {} yesterday.", s.name, money(-d)),
+            d if d > 0.0 => format!("{}: made {} yesterday.", s.name, usd(d)),
+            d => format!("{}: lost {} yesterday.", s.name, usd(-d)),
         };
     }
     if made.is_empty() {
