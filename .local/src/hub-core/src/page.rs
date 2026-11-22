@@ -739,11 +739,11 @@ fn stats_of(runner: &dyn Runner, name: &str) -> Result<crate::projects::Stats, S
         .ok_or_else(|| format!("notes projects lists no project {name}"))
 }
 
-/// The numbers of a project's lab STATUS line (`lab-status`), one sentence each: the project's
+/// A project's numbers as prose (`hub projects --status`), one sentence each: the project's
 /// state ([`crate::projects::state`]), each system's
 /// current wave and its percent, the systems with only upkeep open, the open version and its
 /// release window, the next stage's gate and the playtests waiting. Every number is one this page or the
-/// card already counts; only the words are here, and the model writing the status adds none.
+/// card already counts; only the words are here. The lab STATUS note carries none of them.
 pub fn status_line(p: &Page, c: &Card, playtest_open: usize) -> String {
     let waves: Vec<String> = p
         .systems
@@ -794,7 +794,7 @@ pub fn status_line(p: &Page, c: &Card, playtest_open: usize) -> String {
     out.join(" ")
 }
 
-/// `hub projects --status NAME`: the STATUS line's numbers for one lab project. A source the line
+/// `hub projects --status NAME`: one lab project's numbers as prose. A source the line
 /// says (the chain, the next stage's check, the board feed) that could not be read is an error,
 /// never a line that leaves it out.
 pub fn status(runner: &(dyn Runner + Sync), name: &str, now: i64) -> Result<String, String> {
