@@ -974,6 +974,10 @@ read_open() { [ -n "$queue_read" ] || { queue_items=$(aq_retry list --json 2>/de
 row_worker() {
   jq -rs --arg r "${1,,}" --arg s "$item" 'first(.[] | select((.row // "" | ascii_downcase) == $r and .slug != $s) | .slug) // empty' <<<"$queue_items"
 }
+# row_closed <id>: rc 0 when the boards' done feed lists that row id, so a done that matched no open
+# row met one already ticked (by hand, or by another landing), not a row that is missing (ar-4189).
+# 3650 days reaches every close the feed keeps, the version notes included.
+row_closed() { notes board --json --done-days 3650 2>/dev/null | jq -e --arg id "$1" 'any(.done[]?; .id == $id)' >/dev/null 2>&1; }
 # close_rows <id>...: each row still open on a board closes with this PR as proof, as the item's own row
 # does, unless another open item works it. The PR is merged by now, so a row it cannot close is a line
 # with the command, never a failed landing.
@@ -1250,8 +1254,13 @@ elif [ "${#b[@]}" -gt 0 ]; then
   elif other=$(row_worker "$(jq -r .row <<<"$it")") && [ -n "$other" ]; then
     echo "board: left \"${b[-3]}\" open, $other still works it (its landing closes it; if it is dropped: notes ${b[*]})"
   else
-    out=$(notes "${b[@]}" 2>&1) || fail board "$(lastline "$out")"
-    echo "board: closed \"${b[-3]}\" with ${b[-1]}"
+    if out=$(notes "${b[@]}" 2>&1); then
+      echo "board: closed \"${b[-3]}\" with ${b[-1]}"
+    elif [[ "$out" == *"no open task matches "* ]] && row_closed "${b[-3]}"; then
+      echo "board: \"${b[-3]}\" was already closed, left as is"
+    else
+      fail board "$(lastline "$out")"
+    fi
   fi
 fi
 
