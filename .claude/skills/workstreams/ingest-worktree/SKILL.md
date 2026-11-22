@@ -52,7 +52,7 @@ Bucket every changed file into exactly one concern (a file may only live in one 
 
 **Before assigning, run the two safety filters:**
 
-- **Ephemeral / machine-local churn -> HOLD.** Anything a timer, daemon, or generator writes is not a hand-authored change and usually differs per machine. Tell-tales: a file whose git history shows commits like "applied by X.timer"; a comment saying another tool "sed-rewrites" it; a working-tree diff that is only a color-palette swap (theme-switch). Examples in this repo: `.config/kitty/current-theme.conf`, `.config/starship.toml` colors, the nvim `colorscheme` line + lualine/neo-tree highlight colors, `lazygit` theme colors. Do NOT commit these - the theme-switch timers own them. Surface them in the report so the user decides.
+- **Ephemeral / machine-local churn -> HOLD.** Anything a timer, daemon, or generator writes is not a hand-authored change and usually differs per machine. Tell-tales: a file whose git history shows commits like "applied by X.timer"; a comment saying another tool "sed-rewrites" it; a working-tree diff that is only a color-palette swap (theme-switch). Example in this repo: `.termux/colors.properties`, the one tracked theme-switch render (every other one is gitignored, ar-4528). Do NOT commit it from a timer's switch - `theme-switch <name> --only termux` owns it. Surface them in the report so the user decides.
 - **Secret scan on untracked -> BLOCK until cleared.** Before committing any untracked file, read it. Reject real keys/tokens/passwords. Confirm a `.gitignore` excludes runtime/auth state (keypairs, sqlite, `data/`). A compose/README that merely *mentions* "key" (e.g. rustdesk `-k _`) is fine; an actual private key value is not.
 
 ## 3. Plan

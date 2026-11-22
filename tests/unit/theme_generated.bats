@@ -108,6 +108,17 @@ is_ignored() {
   assert_success
 }
 
+@test "nvim's rendered theme module, starship.toml and lazygit's config.yml are ignored" {
+  # They were tracked and sed-patched in place, so the day/night timers dirtied the main
+  # checkout twice a day and the dirty-mains watch tripped on it (ar-4528).
+  run is_ignored .config/nvim/lua/kennethblack/theme.lua
+  assert_success
+  run is_ignored .config/starship.toml
+  assert_success
+  run is_ignored .config/jesseduffield/lazygit/config.yml
+  assert_success
+}
+
 @test "dunst's hand-authored dunstrc is tracked, not swept up with its drop-in" {
   # The drop-in sits under the same .config/dunst/ directory as the layout file it
   # overrides; an ignore rule one level too wide would untrack the layout too.
@@ -121,9 +132,9 @@ is_ignored() {
   # Without this, the three assertions above are unfalsifiable. If check-ignore were
   # broken, missing, or matching everything through some future catch-all rule, they
   # would all still pass and this file would certify a fix that had been undone.
-  # starship.toml is hand-authored config that theme-switch patches in place -- it is
+  # init.lua is hand-authored config that requires the generated theme module -- it is
   # genuinely tracked, so git must say so.
-  run is_ignored .config/starship.toml
+  run is_ignored .config/nvim/lua/kennethblack/init.lua
   assert_failure
 }
 
@@ -134,16 +145,12 @@ is_ignored() {
 
 # ── the canary ───────────────────────────────────────────────────────────────
 
-@test "theme-switch's write targets are still the fourteen that were classified" {
-  # Tracked: hand-authored config with values patched in place. These still churn on a
-  # switch; converting each to its tool's native include (lazygit LG_CONFIG_FILE, an nvim
-  # palette module) is the unfinished half of the job.
-  #
-  # .termux/colors.properties is the exception to the binary below: it is generated in
-  # full, yet must stay TRACKED. The phone never runs the switcher, so a desktop
-  # generates the file and commits it and the phone picks it up on `git pull` --
-  # git is the transport, and an ignored file would never arrive. It is the one
-  # target that pays the twice-daily churn on purpose.
+@test "theme-switch's write targets are still the twelve that were classified" {
+  # Every target is generated and ignored except one. .termux/colors.properties is
+  # generated in full, yet must stay TRACKED: the phone never runs the switcher, so a
+  # desktop generates the file and commits it and the phone picks it up on `git pull`
+  # -- git is the transport, and an ignored file would never arrive. A full switch
+  # therefore leaves it alone (next tests); only `--only termux` writes it.
   local expected
   expected="$(printf '%s\n' \
     .config/dunst/dunstrc.d/50-theme.conf \
@@ -151,9 +158,7 @@ is_ignored() {
     .config/jesseduffield/lazygit/config.yml \
     .config/kitty/current-theme.conf \
     .config/noctalia/palettes/dotfiles.json \
-    .config/nvim/lua/kennethblack/init.lua \
-    .config/nvim/lua/kennethblack/plugins/lualine.lua \
-    .config/nvim/lua/kennethblack/plugins/neo-tree.lua \
+    .config/nvim/lua/kennethblack/theme.lua \
     .config/sketchybar/colors.sh \
     .config/starship.toml \
     .config/swaync/style.css \
@@ -169,8 +174,9 @@ is_ignored() {
     echo "" >&2
     echo "Answer two questions, then update this test:" >&2
     echo "  1. Is the new target GENERATED in full from the palette/template?" >&2
-    echo "     no  -> it is tracked config patched in place; add it to the" >&2
-    echo "            expected list here and to the README's tracked column." >&2
+    echo "     no  -> make it one: patching a tracked file in place dirties the" >&2
+    echo "            main checkout on every switch (ar-4528). Render a module the" >&2
+    echo "            config requires, or the whole file from templates/<tool>/." >&2
     echo "  2. If generated: does anything read it that CANNOT run theme-switch," >&2
     echo "     reaching it over git rather than off this disk?" >&2
     echo "     no  -> add it to .gitignore, and to the generated cases above," >&2
@@ -288,4 +294,57 @@ hypr_read_keys() {
   run jq -r '[.dark | .. | strings] | length, all(test("^#[0-9a-fA-F]{6}$"))' "$out"
   assert_success
   assert_output $'38\ntrue'
+}
+
+# --- a full switch writes no tracked file (ar-4528) -------------------------
+
+@test "a full switch leaves the tracked termux render alone; --only termux writes it" {
+  # --dry-run: a real full switch would signal the live kitty, dunst and hyprland.
+  local root="$BATS_TEST_TMPDIR/dotfiles"
+  mkdir -p "$root/.termux"
+  DOTFILES_ROOT="$root" run "$THEME_SWITCH" arthur --dry-run
+  assert_success
+  assert_output --partial "termux: tracked render left as is"
+  refute_output --partial "termux: would regenerate"
+  # Negative control: naming it writes it.
+  DOTFILES_ROOT="$root" run "$THEME_SWITCH" arthur --only termux
+  assert_success
+  run grep -c 'palettes/arthur.sh' "$root/.termux/colors.properties"
+  assert_output 1
+}
+
+@test "nvim, starship and lazygit render only ignored files, the templates with the palette's colours" {
+  local root="$BATS_TEST_TMPDIR/dotfiles" rel tpl="$REPO_ROOT/.local/src/theme/templates"
+  mkdir -p "$root"
+  DOTFILES_ROOT="$root" run "$THEME_SWITCH" arthur --only nvim,starship,lazygit
+  assert_success
+  # Every file the run wrote is one git ignores, so the main checkout stays clean.
+  while IFS= read -r rel; do
+    run is_ignored "$rel"
+    assert_success
+  done < <(cd "$root" && find . -type f | sed 's|^\./||')
+  [ "$(cd "$root" && find . -type f | wc -l)" -eq 3 ]
+  # shellcheck source=/dev/null
+  . "$REPO_ROOT/.local/src/theme/palettes/arthur.sh"
+  grep -qF "success_symbol = \"[❯](bold $THEME_SUCCESS)\"" "$root/.config/starship.toml"
+  grep -qF "\"$THEME_LG_ACTIVE_BORDER\"" "$root/.config/jesseduffield/lazygit/config.yml"
+  # Same shape as the template: only colour values changed.
+  assert_equal "$(wc -l < "$root/.config/starship.toml")" "$(wc -l < "$tpl/starship/starship.toml")"
+  assert_equal "$(wc -l < "$root/.config/jesseduffield/lazygit/config.yml")" "$(wc -l < "$tpl/lazygit/config.yml")"
+}
+
+# The keys apply_nvim writes into kennethblack/theme.lua, and the ones the config reads.
+nvim_written_keys() {
+  sed -n '/^apply_nvim()/,/^}/p' "$THEME_SWITCH" | grep -oE '^ +[a-z_]+ = "\$\{THEME_' | awk '{ print $1 }' | sort -u
+}
+nvim_read_keys() {
+  grep -ohE 'require\("kennethblack\.palette"\)\.[a-z_]+' "$REPO_ROOT"/.config/nvim/lua/kennethblack/init.lua \
+    "$REPO_ROOT"/.config/nvim/lua/kennethblack/plugins/*.lua | sed 's/.*)\.//' | sort -u
+}
+
+@test "nvim's config reads exactly the keys theme-switch writes" {
+  [ "$(nvim_written_keys | wc -l)" -eq 3 ]
+  assert_equal "$(nvim_read_keys)" "$(nvim_written_keys)"
+  # Negative control: a reader that drops a key does not compare equal.
+  [ "$(nvim_read_keys | grep -v colorscheme)" != "$(nvim_written_keys)" ]
 }

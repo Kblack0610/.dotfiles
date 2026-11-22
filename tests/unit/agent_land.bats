@@ -1126,6 +1126,51 @@ STALE='[{"name":"Checks","bucket":"fail","workflow":"Checks","event":"pull_reque
   assert_output 'sleep 60'
 }
 
+# The Item-line edit re-ran Checks while the gate-line edit's run was still cancelling: the re-run opened
+# 28s before the cancelled run's aggregate Checks failed, so only its run id says it is newer
+# (unity-core-playground#3108, 2026-11-21 22:25 local, so 06:25Z on the 22nd, ar-2940).
+STALE_LINKED='[{"name":"Checks","bucket":"fail","workflow":"Checks","event":"pull_request","completedAt":"2026-11-22T06:26:12Z","link":"https://github.com/o/r/actions/runs/44993658091/job/137120075783"}]'
+@test "a failed check with a newer run of its workflow and event opened before it failed: the higher run id waits, then lands on that run's green" {
+  printf 'Checks\tfail\t1m\n' >"$NOTES_FIXTURE/checks.seq"
+  echo green >>"$NOTES_FIXTURE/checks.seq"
+  printf 'Checks\n' >"$NOTES_FIXTURE/checks.failed"
+  printf '%s\n' "$STALE_LINKED" >"$NOTES_FIXTURE/checks.stale"
+  printf '%s\n' '[{"databaseId":44993676563,"status":"in_progress","workflowName":"Checks","event":"pull_request","createdAt":"2026-11-22T06:25:44Z","startedAt":"2026-11-22T06:25:44Z"}]' >"$NOTES_FIXTURE/runs.open"
+  fake_sleep
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: failed: Checks; waiting on the newer run of its workflow on the head'
+  assert_line 'landed #42'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 2
+}
+
+@test "a failed check whose only open run is the one its link names: the run id is no newer run, it stops at checks" {
+  printf 'Checks\tfail\t1m\n' >"$NOTES_FIXTURE/checks.out"
+  printf 'Checks\n' >"$NOTES_FIXTURE/checks.failed"
+  printf '%s\n' "$STALE_LINKED" >"$NOTES_FIXTURE/checks.stale"
+  printf '%s\n' '[{"databaseId":44993658091,"status":"in_progress","workflowName":"Checks","event":"pull_request","createdAt":"2026-11-22T06:25:30Z","startedAt":"2026-11-22T06:25:30Z"},{"databaseId":44993700000,"status":"queued","workflowName":"Checks","event":"schedule","createdAt":"2026-11-22T06:25:50Z","startedAt":"2026-11-22T06:25:50Z"}]' >"$NOTES_FIXTURE/runs.open"
+  fake_sleep
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: Checks'
+  refute_output --partial 'waiting on the newer run'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "a failed check with no Actions run in its link: a higher-id open run created before it is no newer run, it stops at checks" {
+  printf 'Checks\tfail\t1m\n' >"$NOTES_FIXTURE/checks.out"
+  printf 'Checks\n' >"$NOTES_FIXTURE/checks.failed"
+  printf '%s\n' '[{"name":"Checks","bucket":"fail","workflow":"Checks","event":"pull_request","completedAt":"2026-11-22T06:26:12Z","link":""}]' >"$NOTES_FIXTURE/checks.stale"
+  printf '%s\n' '[{"databaseId":44993676563,"status":"in_progress","workflowName":"Checks","event":"pull_request","createdAt":"2026-11-22T06:25:44Z","startedAt":"2026-11-22T06:25:44Z"}]' >"$NOTES_FIXTURE/runs.open"
+  fake_sleep
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: Checks'
+  refute_output --partial 'waiting on the newer run'
+}
+
 @test "a failed check whose open runs are the one it failed in, another event's or another workflow's: it stops at checks, never merges" {
   printf 'Checks\tfail\t1m\n' >"$NOTES_FIXTURE/checks.out"
   printf 'Checks\n' >"$NOTES_FIXTURE/checks.failed"

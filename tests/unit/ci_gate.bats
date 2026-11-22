@@ -8,7 +8,7 @@ setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
   WF="$BATS_TEST_DIRNAME/../../.github/workflows/tests.yml"
-  # weights may fail (fast falls back to test counts); report only draws; gate is the aggregate.
+  # weights gates through fast (fast needs its pick); report only draws; gate is the aggregate.
   NOT_GATES='gate report weights'
 }
 
