@@ -28,7 +28,7 @@ The human asked this window to stay and see its work through: this window stays 
 fleet-sessions label self +manual +coordinator
 ```
 
-First quote the order in one line, `coordinating at the human's word: "<their words>"`; with no such words from the human in this conversation, do not start (close, or ask them). `manual` is the one keep the close flow, the shepherd's close and park nudges and `/wind-down auto` all honour (`~/.local/src/docs/fleet-states.md`, "Close verdict"); `coordinator` only names the mode on the panel and the tmux window. Labels outlive a reboot and a restore.
+First quote the order in one line, `coordinating at the human's word: "<their words>"`; with no such words from the human in this conversation, do not start (close, or ask them). `manual` is the keep the close flow, the shepherd's close and park nudges and `/wind-down auto` all honour while it is quiet under `FLEET_CHAT_CLOSE_H` (`~/.local/src/docs/fleet-states.md`, "Close verdict"); `coordinator` only names the mode on the panel and the tmux window. Labels outlive a reboot and a restore.
 
 If `$AGENT_QUEUE_ITEM` is set, close your own item now (`agent-land` its PR, or `agent-queue move <slug> done --proof <what landed>`): it frees its slot under the cap, and with no item owning the window, an `agent-queue cancel` or `return` cannot close it.
 
@@ -100,7 +100,7 @@ agent-ask post --options 'a=validated: drop the hold and let the window close|b=
   --recommend a --why "every ledger line is merged and live" --context "<plan file>" "Validated <goal>?"
 ```
 
-Keep `manual`: this window stays open until the human answers. Manual rows get no shepherd nudge or reminder, so the ask (the `!N` count and the asks list) is what shows the wait. The answer reaches this pane by itself: `agent-ask deliver` types it into the live session (`agent-ask-deliver.path` runs on each answer), so no `reopen-on-answer` is needed. A "not yet" adds its lines to the ledger, and the armed watch (steps 4 and 5) carries them.
+Keep `manual`: this window stays open until the human answers (past quiet `FLEET_CHAT_CLOSE_H` the label alone no longer holds it; the armed `coord-watch` is its `wake` keep, so a live coordinator stays). Manual rows get no shepherd nudge or reminder, so the ask (the `!N` count and the asks list) is what shows the wait. The answer reaches this pane by itself: `agent-ask deliver` types it into the live session (`agent-ask-deliver.path` runs on each answer), so no `reopen-on-answer` is needed. A "not yet" adds its lines to the ledger, and the armed watch (steps 4 and 5) carries them.
 
 ### 7. Done
 

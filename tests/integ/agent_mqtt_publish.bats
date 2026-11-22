@@ -490,10 +490,14 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
 }
 
 @test "cards: hub's widget document rides as an attribute and its state is the worst card's level" {
-  cards_stub '{"version":0,"title":"Fleet","updated_at":"2026-11-21T20:00:00Z","state":"bad","figures":{"queue_on_deck":13,"projects_shipped_today":12},"sections":[{"id":"queue","items":[{"kind":"metric","value":"13","unit":"on deck, 1..."},{"kind":"pill","label":"Held","value":"4"}]}]}'
+  doc='{"version":0,"title":"Fleet","updated_at":"2026-11-21T20:00:00Z","state":"bad","figures":{"queue_on_deck":13,"projects_shipped_today":12},"sections":[{"id":"queue","items":[{"kind":"metric","value":"13","unit":"on deck, 1..."},{"kind":"pill","label":"Held","value":"4"}]}]}'
+  cards_stub "$doc"
   run "$PUB" --quiet
   assert_success
   p="$(payload agents/testhost/summary/cards)"
+  # The publisher half of the card parity (hub-core phone::tests::every_card_figure_reads_the_same_on_every_surface):
+  # it adds, drops and recounts nothing, so HA and the waybar chips read hub's figures as hub wrote them.
+  assert_equal "$(jq -cS . <<< "$p")" "$(jq -cS . <<< "$doc")"
   assert_equal "$(jq -r .state <<< "$p")" bad
   assert_equal "$(jq -r .updated_at <<< "$p")" 2026-11-21T20:00:00Z
   assert_equal "$(jq -r '.sections[0].items[1].label' <<< "$p")" Held
