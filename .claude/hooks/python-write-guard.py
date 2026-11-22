@@ -1,23 +1,30 @@
 #!/usr/bin/env python3
-"""PreToolUse(Bash) guard: a python file write that Edit or Write would make one-for-one is denied.
+"""PreToolUse(Bash) guard: a python write Edit or Write would make one-for-one, of a file an Edit/Write guard checks, is denied.
 
-The Edit/Write guards (manual-mode-investigate before, context-budget-guard
+The Edit/Write guards (manual-mode-investigate and hosted-runner-guard before, context-budget-guard
 after) match those tools only, and settings.json allows all of Bash, so a python heredoc that
 patches a file skips every one of them. Usage-cleanup pass 6 (7 days to 2026-11-09) counted 11.2k
-of 15k python3 calls as `open().read().replace()` patches (ar-2018).
+of 15k python3 calls as `open().read().replace()` patches (ar-2018). Outside manual mode only two of
+those guards check anything, each on its own files, so the deny is held to those files (guarded):
+in the 7 days to 2026-11-22, 94% of about 1,700 denies were of other files, each a turn spent to
+repeat the change through Edit with no guard to run (teapot P7, ar-2780).
 
 The python code is each stdin heredoc (`python3 - <<'EOF'`, `python3 <<EOF`) and each `-c` payload,
 found with forge-guard's walker (cd, subshells, bash -c, eval) and parsed with ast. A written path
 resolves from a literal, a name assigned once, Path(...), `/`, os.path.join and expanduser.
 
-Denied, outside scratch (/tmp, /var/tmp, /dev, $TMPDIR, ~/.cache, $XDG_CACHE_HOME):
+Denied, outside scratch (/tmp, /var/tmp, /dev, $TMPDIR, ~/.cache, $XDG_CACHE_HOME), of a guarded
+file: a workflow file (hosted-runner-guard's WORKFLOW, in any repo: its owner and label checks need
+git and gh, and a workflow write is rare), a budget file (budget(), context-budget-guard's paths), or
+a path settings.json permissions.deny denies to Edit or Write (.env, ssh keys, ~/.config/gh), which
+Edit then refuses:
 - a text patch: the code reads a named file as text and writes it back, and calls nothing but
   open, path and plain str methods (replace, find, count...), so Edit makes the same change;
 - a literal: a str constant written (mode w or x) to a named file, which is Write.
 - In manual permission mode, any python write: that mode is investigate-only.
-Passed: content the code computes (regex, json, joins, loops over lines), files found in a loop or
-from argv (an unresolved path), bytes, appends, scripts run from a file, and outside manual mode
-kernel files under /proc and /sys. Not covered: sed -i,
+Passed: a patch or literal of any other file, content the code computes (regex, json, joins, loops
+over lines), files found in a loop or from argv (an unresolved path), bytes, appends, scripts run
+from a file, and outside manual mode kernel files under /proc and /sys. Not covered: sed -i,
 `cat >`, tee, and python run from a script file. Fail-open: any error allows the command.
 """
 import json
@@ -39,13 +46,17 @@ PATCH_METHODS = {"read", "read_text", "write", "write_text", "replace", "count",
                  "close", "seek", "truncate", "expanduser", "resolve", "absolute", "exists", "is_file",
                  "startswith", "endswith", "encode", "decode"}
 SCRATCH = None  # the scratch roots, normalised and resolved, built on first need
+WORKFLOW = None  # hosted-runner-guard's workflow path pattern, loaded on first need
+DENIED = None  # settings.json's Edit/Write permission denies as path regexes, built on first need
 
 VERB = {"Edit": "patches", "Write": "writes a literal string to"}
 EDIT_MSG = (
     "python-write-guard: this python {verb} {path}, a change {tool} makes one-for-one, so the Edit/Write "
     "guard hooks never see it. Use {tool}: Edit takes old_string/new_string (replace_all for a repeated "
-    "string), Write takes the whole text. Python still passes when it computes the content (regex, json, "
-    "generated text), changes files it finds in a loop, or writes scratch (/tmp, ~/.cache)."
+    "string), Write takes the whole text. Python still passes for files no Edit/Write guard checks (any "
+    "but workflow files, budget files like CLAUDE.md, SKILL.md, lessons and memory, and paths the "
+    "permission deny list holds), when it computes the "
+    "content (regex, json, generated text), changes files it finds in a loop, or writes scratch (/tmp, ~/.cache)."
 )
 MANUAL_MSG = (
     "python-write-guard: manual mode is investigate-only, and this python writes {path}. Answer without "
@@ -292,13 +303,68 @@ def verdict(code, cwd, manual, resolve):
             continue
         if manual:
             return MANUAL_MSG.format(path=target or "a file it computes")
-        if target is None:
+        if target is None or not guarded(target):
             continue
         tool = ("Edit" if target in reads and patchy(tree) else
                 "Write" if literal(content) and "+" not in mode else None)
         if tool:
             return EDIT_MSG.format(verb=VERB[tool], path=target, tool=tool)
     return None
+
+
+def budget(target):
+    """context-budget-guard.sh's path test past its cheap exit, less its git-toplevel check for a
+    CLAUDE.md or AGENTS.md (a nested one is denied too): tests/unit/python_write_guard.bats pins it."""
+    base, parent = os.path.basename(target), os.path.dirname(target)
+    return (base in ("CLAUDE.md", "AGENTS.md", "SKILL.md") or target.endswith(".md")
+            and ("/memory/" in parent + "/" or parent.endswith("/.agent/lessons")))
+
+
+def glob_re(glob):
+    """A permission rule's path glob as a regex over a whole absolute path: ** spans directories."""
+    out, i = "", 0
+    while i < len(glob):
+        if glob.startswith("**/", i):
+            out, i = out + "(?:.*/)?", i + 3
+        elif glob.startswith("**", i):
+            out, i = out + ".*", i + 2
+        else:
+            out, i = out + ("[^/]*" if glob[i] == "*" else "[^/]" if glob[i] == "?" else re.escape(glob[i])), i + 1
+    return re.compile(out + r"\Z")
+
+
+def denied_paths():
+    """settings.json's Edit(...) and Write(...) permission denies as regexes. `//p` and `/p` are read
+    as absolute, `~/p` under HOME, and a relative glob at any depth, so a rule never denies less.
+    An unreadable settings.json guards every path, the deny this hook made before it was narrowed."""
+    try:
+        with open(os.path.join(HERE, "..", "settings.json")) as f:
+            rules = (json.load(f).get("permissions") or {}).get("deny") or []
+    except (OSError, ValueError, AttributeError):
+        return [re.compile("")]
+    home = os.path.expanduser("~").rstrip("/")
+    out = []
+    for r in rules:
+        m = re.fullmatch(r"(?:Edit|Write|MultiEdit)\((.+)\)", r)
+        if not m:
+            continue
+        g = m.group(1)
+        g = (g[1:] if g.startswith("//") else home + g[1:] if g.startswith("~/") else g if g.startswith("/")
+             else "/**/" + g.removeprefix("./"))
+        out.append(glob_re(g))
+    return out
+
+
+def guarded(target):
+    """True when an Edit or Write of target meets a check python would skip: a guard hook that runs
+    outside manual mode (hosted-runner-guard on a workflow, context-budget-guard on a budget file) or
+    a settings.json permission deny. Any other file has none to skip."""
+    global WORKFLOW, DENIED
+    if WORKFLOW is None:
+        WORKFLOW = _load("hosted_runner_guard", "hosted-runner-guard.py").WORKFLOW
+    if DENIED is None:
+        DENIED = denied_paths()
+    return budget(target) or bool(WORKFLOW.search(target)) or any(d.match(target) for d in DENIED)
 
 
 def reason(cmd, cwd, manual):
