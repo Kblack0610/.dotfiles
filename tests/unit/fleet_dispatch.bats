@@ -116,13 +116,15 @@ bats_require_minimum_version 1.5.0
   row sketch agent 'sketch row' '- [ ] fix(ui): the button is off'
   off='no worker covers finance: it is on DISPATCH_OFF_PROJECTS, so its rows stay with the human'
 
-  run --separate-stderr cmd_candidates
+  OFF_SAY=1 run --separate-stderr cmd_candidates
   assert_success
   assert_equal "$(jq -r '"\(.key)=\(.worker)"' <<<"$output" | paste -sd,)" 'web fix=board'
   assert_equal "$stderr" "fleet-dispatch: $off"
   # Judged: the next judge call gets the prod row, never a finance row, from the day or the tier-3 path.
   run --separate-stderr unjudged_rows
   assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'web fix'
+  # Only the command and a pass's judge read say it (OFF_SAY), so the many reads of one pass log it once.
+  assert_equal "$stderr" ''
   # suggest lists each finance row with the off-list reason, never auto.
   run --separate-stderr cmd_suggest --json
   assert_equal "$(jq -r 'select(.project == "finance") | "\(.key)=\(.auto)/\(.blocked | join("; "))"' <<<"$output" | paste -sd,)" \
@@ -130,7 +132,7 @@ bats_require_minimum_version 1.5.0
   run cmd_covered
   assert_output 'webapp'
   # Negative control: with no off list, finance dispatches like any project at its stage.
-  DISPATCH_OFF_PROJECTS='' run --separate-stderr cmd_candidates
+  OFF_SAY=1 DISPATCH_OFF_PROJECTS='' run --separate-stderr cmd_candidates
   assert_equal "$(jq -r .key <<<"$output" | sort | paste -sd,)" 'fin fix,web fix'
   assert_equal "$stderr" ''
 }
@@ -713,7 +715,7 @@ ptask game --agent tag --add plan --add go ga-7'
   row agent-runtime agent 'ar ci' '- [ ] ci(runners): the pool'
   row home-config agent 'hc row' '- [ ] chore(dns): tidy a record'
   row finance agent 'fin row' '- [ ] chore(budget): a sheet'
-  run --separate-stderr cmd_candidates
+  OFF_SAY=1 run --separate-stderr cmd_candidates
   assert_equal "$(jq -sr 'sort_by(.key) | map("\(.key)=\(.worker)") | join(",")' <<<"$output")" 'ar fix=board,hc row=board'
   assert_equal "$stderr" 'fleet-dispatch: no worker covers finance: it is on DISPATCH_OFF_PROJECTS, so its rows stay with the human'
 }

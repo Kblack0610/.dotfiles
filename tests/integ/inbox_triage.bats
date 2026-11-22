@@ -285,12 +285,14 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
 @test "the lane rule names the projects dispatch covers (fleet-dispatch covered), and only when it covers some" {
   sheet '- the gun sound is off\n' ''
   answer '{"n": 1, "action": "skip", "why": "test"}'
+  # A stub, so neither half reads the host's own fleet-dispatch: first it covers nothing.
+  printf '#!/usr/bin/env bash\n' >"$SANDBOX/bin/fleet-dispatch"
+  chmod +x "$SANDBOX/bin/fleet-dispatch"
   run "$TRIAGE"
   refute_output --partial 'failed'
   run grep -c 'agents do the work unattended' "$NOTES_FIXTURE/prompt.txt"
   assert_output 0
   printf '#!/usr/bin/env bash\n[ "$1" = covered ] && printf "scratch\\nother\\n"\n' >"$SANDBOX/bin/fleet-dispatch"
-  chmod +x "$SANDBOX/bin/fleet-dispatch"
   rm -f "$HOME/.local/state/notes/ingest.jsonl"
   run "$TRIAGE"
   run grep -o 'lane is agent unless a step needs a person.*: scratch, other\.' "$NOTES_FIXTURE/prompt.txt"

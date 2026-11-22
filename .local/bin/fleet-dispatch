@@ -1676,8 +1676,8 @@ judged_keys() {
 # (a human-lane row is still judged, since only the verdict says the human's row is agent work). When the
 # gates could not be read (GATES_FAILED) it lists no row but under suggest. CLEANUP_ONLY,
 # REQUESTED_ONLY, GATED_ONLY and SPRINT_ONLY (fill_day's floors) read only their rows (floor_row), in the projects
-# that can hold one (floor_project). A project off_project names is no candidate: the pass says why
-# once per read, and suggest lists its agent rows with that reason.
+# that can hold one (floor_project). A project off_project names is no candidate: it says why under OFF_SAY (the `candidates`
+# command, and a pass's one judge read, so not once per read), and suggest lists its agent rows with that reason.
 cmd_candidates() {
   local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today nobody active poff
   local x planned dj dsig plan off kind board gates gwait pidle
@@ -1696,7 +1696,7 @@ cmd_candidates() {
       stage=$(stage_of "$sheet")
       dispatchable "$stage" || continue
       poff=$(off_project "$name")
-      [ -z "$poff" ] || [ "${SUGGEST:-0}" = 1 ] || { say "$poff"; continue; }
+      [ -z "$poff" ] || [ "${SUGGEST:-0}" = 1 ] || { [ "${OFF_SAY:-0}" != 1 ] || say "$poff"; continue; }
       pprio=$(prio_of "$sheet")
       repo=$(repo_dir "$name")
       [ -n "$repo" ] && [ -d "$repo" ] || continue
@@ -7364,7 +7364,7 @@ judge_once() {
   if [ -z "${JUDGE_RC:-}" ]; then
     JUDGE_RC=0
     if [ "$DRY" != 1 ]; then
-      judge "$(unjudged_rows)"; JUDGE_RC=$?
+      judge "$(OFF_SAY=1 unjudged_rows)"; JUDGE_RC=$?
     fi
   fi
   [ "$JUDGE_RC" = "$EX_BUDGET" ] || return "$JUDGE_RC"
@@ -7919,7 +7919,7 @@ main() {
       # read every board a second time beside the one running.
       [ "$DRY" = 1 ] || ! flock -n 9 2>/dev/null || candidates_write || true
       return "$rc" ;;
-    candidates) load_pool_idle; cmd_candidates ;;
+    candidates) load_pool_idle; OFF_SAY=1 cmd_candidates ;;
     covered) cmd_covered ;;
     suggest) shift; if [ "${1:-}" = --write ]; then candidates_write; else cmd_suggest "$@"; fi ;;
     fill) shift; cmd_fill "$@" ;;
