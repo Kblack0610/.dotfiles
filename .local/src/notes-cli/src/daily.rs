@@ -2570,7 +2570,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("knowledge/_log/2026/09")).unwrap();
         std::fs::write(
             dir.join("journal/refs/2026-09-30/briefing.md"),
-            "---\ngenerated: true\n---\n\n# Morning briefing\n\nAs of Tue 06:45: 1 thing needs you.\n\n## Needs you\n\n- Runner wave-roll stalled. Run agentctl status wave-roll.\n\n## Quiet\n\n- 15 watches OK\n",
+            "---\ngenerated: true\n---\n\n# Morning briefing\n\nAs of Tue 06:45: 1 thing needs you.\n\n## Needs you\n\n- Unblock: plan awaiting approval (session wave-roll, 9h).\n\n## Quiet\n\n- 15 watches OK\n",
         )
         .unwrap();
         std::fs::write(
@@ -2600,7 +2600,7 @@ mod tests {
         refresh_morning(&p, &note, d("2026-09-30")).unwrap();
         let out = std::fs::read_to_string(&note).unwrap();
 
-        let expected = "## Morning\n- Outbox: [[outbox]]\n- Inbox: [[status/inbox]]\n- Briefing: [[journal/refs/2026-09-30/briefing]] As of Tue 06:45: 1 thing needs you.\n  - Runner wave-roll stalled. Run agentctl status wave-roll.\n- Shipped: [[journal/refs/2026-09-30/shipped]] 3 PRs merged in 2 repos; 4 sessions spent $4.5\n- Knowledge: 0 new, 1 updated (2026-09-29) [[knowledge/_log/2026/09/2026-09-29]]\n";
+        let expected = "## Morning\n- Outbox: [[outbox]]\n- Inbox: [[status/inbox]]\n- Briefing: [[journal/refs/2026-09-30/briefing]] As of Tue 06:45: 1 thing needs you.\n  - Unblock: plan awaiting approval (session wave-roll, 9h).\n- Shipped: [[journal/refs/2026-09-30/shipped]] 3 PRs merged in 2 repos; 4 sessions spent $4.5\n- Knowledge: 0 new, 1 updated (2026-09-29) [[knowledge/_log/2026/09/2026-09-29]]\n";
         assert!(out.contains(expected), "{out}");
         let at = |h: &str| out.find(h).unwrap_or_else(|| panic!("no {h}:\n{out}"));
         assert!(

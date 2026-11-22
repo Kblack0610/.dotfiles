@@ -357,39 +357,6 @@ impl Item {
         Some((self.extra_str("plan")?, self.extra_str("phases")?))
     }
 
-    /// A plan item's (`<plan name> P5`, `<phase words>`): its plan label and its title, as
-    /// every view says them (`parse` sets both): the plan by its heading (`plans::named`) in
-    /// place of the file name `agent-queue add --plan` titles it with. A one-phase item takes
-    /// the label its words lead with (`P9 live stage`) over its checklist place. An item with no
-    /// `plan:` whose title has that shape (one promoted from a board row) is named the same way
-    /// when its plan file exists. None for any other item.
-    fn plan_title(&self) -> Option<(String, String)> {
-        use crate::plans::{base, legacy, named, own_label, path};
-        // An item with no `title:` header is worded by its task, as `title()` words it.
-        let head = self.title.trim().is_empty().then(|| headline(&self.task).0);
-        let title = head.as_deref().unwrap_or(self.title.trim());
-        let (plan, tag, words, one) = match (self.plan(), legacy(title)) {
-            (Some((plan, phases)), old) => {
-                let words = old
-                    .filter(|(b, ..)| *b == base(plan))
-                    .map_or(title, |(.., w)| w);
-                let phases: Vec<&str> = phases.split_whitespace().collect();
-                let tag = format!("P{}", phases.join("+"));
-                (plan.to_string(), tag, words, phases.len() == 1)
-            }
-            (None, Some((b, tag, words))) if std::path::Path::new(&path(b)).is_file() => {
-                (path(b), tag.to_string(), words, !tag.contains('+'))
-            }
-            _ => return None,
-        };
-        let (label, words) = one
-            .then(|| own_label(words))
-            .flatten()
-            .unwrap_or((tag, words));
-        let words = cap(&crate::text::clean(words).text, TITLE_MAX);
-        Some((format!("{} {label}", named(&plan)), words))
-    }
-
     /// The stage times at `now` (see [`Timing`]). A stamp before the one it is measured from
     /// (a clock step, a re-run predecessor) counts 0, never a negative span.
     pub fn timing(&self, now: chrono::DateTime<chrono::Utc>) -> Timing {
@@ -950,13 +917,17 @@ pub fn pr_link_of(pr: &str) -> Option<(String, Option<String>)> {
 
 /// `agent-queue list --json --points` prints one object per line (`points` and the board row's `size` joined in); a line that does not parse is skipped.
 /// Each item's `title` becomes the one every view shows: a plan item's phase words, with its
-/// plan and phase in `plan_label` (`plan_title`), else `title()`.
+/// plan and phase in `plan_label` ([`crate::plans::split_title`]; an item with no `title:`
+/// header is worded by its task, as `title()` words it), else `title()`.
 pub fn parse(jsonl: &str) -> Vec<Item> {
+    let home = crate::plans::home();
     jsonl
         .lines()
         .filter_map(|l| serde_json::from_str::<Item>(l).ok())
         .map(|mut i| {
-            match i.plan_title() {
+            let head = i.title.trim().is_empty().then(|| headline(&i.task).0);
+            let title = head.as_deref().unwrap_or(i.title.trim());
+            match crate::plans::split_title(&home, title, i.plan()) {
                 Some((label, words)) => (i.plan_label, i.title) = (Some(label), words),
                 None => i.title = i.title(),
             }

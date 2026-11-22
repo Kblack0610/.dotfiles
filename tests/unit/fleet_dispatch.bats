@@ -325,6 +325,20 @@ item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
   [ -z "$(agent-queue list --state queued --json | jq -r 'select(.slug == "ga-6") | .slug')" ]
 }
 
+@test "pull-after starts every high row gated on the closed row, though a start reads stdin" {
+  # Every row gated on the closed one is read, whatever a start reads from stdin (chain-after-stuck).
+  project game beta "$SANDBOX/repos/game"
+  row game agent ga-1 "- [/] feat(game): the map first <!-- id:ga-1 -->"
+  row game agent ga-2 "- [ ] feat(game): then its doors $T #high #after/ga-1 <!-- id:ga-2 -->"
+  row game agent ga-3 "- [ ] feat(game): the paint $T #low #after/ga-1 <!-- id:ga-3 -->"
+  row game agent ga-4 "- [ ] feat(game): then its roof $T #high #after/ga-1 <!-- id:ga-4 -->"
+  cmd_start() { cat >/dev/null; echo "start $*" >> "$NOTES_FIXTURE/started"; }
+  run cmd_pull_after ga-1
+  assert_success
+  assert_equal "$(paste -sd, "$NOTES_FIXTURE/started")" "start --item ga-2,start --item ga-4"
+  assert_equal "$(agent-queue list --state queued --json | jq -r .slug | sort | paste -sd,)" "ga-2,ga-3,ga-4"
+}
+
 @test "row gates: cleared gates commit an agent row only, the human's row still needs its verdict, and a gated row keeps its verdict's area" {
   echo '{"fleet": {"max_tier": 1, "projects": ["game"]}}' > "$DISPATCH_WORKERS"
   project game beta "$SANDBOX/repos/game"
@@ -374,34 +388,143 @@ item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
   refute_output --partial '"key"'
 }
 
-@test "plan_skips: tags agent rows skipped as undefined and never planned, then kicks inbox-plan" {
+# skipv <key> <rule> [reason] [clear] -- a skip verdict on a game agent row, under the current policy
+skipv() {
+  verdict game agent "$1" skip
+  jq -c --arg k "$1" --arg r "$2" --arg why "${3:-r}" --argjson c "${4:-true}" \
+    'if .key == $k then .rule = $r | .reason = $why | .clear = $c else . end' \
+    "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+}
+
+# exits_fixture -- one game agent row per exit, a dispatch, and the open row a waits skip names
+exits_fixture() {
+  printf '%s\n' '- (design) a product call' '- (needs-person) a device run' '- (waits) waits on another' >> "$DISPATCH_POLICY"
+  project game beta "$SANDBOX/repos/game"
+  local k
+  for k in gx-1 gx-2 gx-4 gx-5 gx-6 gx-7 gx-9; do row game agent "$k" "- [ ] row $k $T <!-- id:$k -->"; done
+  row game agent gx-3 "- [ ] row gx-3 #low $T <!-- id:gx-3 -->"
+  : > "$NOTES_FIXTURE/board.rows"
+  for k in gx-1 gx-2 gx-3 gx-4 gx-5 gx-6 gx-7 gx-9; do board_row game agent "$k" '[]' '[]'; done
+  skipv gx-1 unclear r false; skipv gx-2 design; skipv gx-3 needs-person
+  skipv gx-4 waits 'waits on gx-9 landing'; skipv gx-5 waits 'after feat/x lands'
+  skipv gx-6 waits 'after kblack0610/dotfiles#3021 merges'
+  verdict game agent gx-7 dispatch
+  stub systemctl 'echo "$*" >> "$NOTES_FIXTURE/systemctl.log"'
+}
+
+@test "skip_exits: each skip takes its rule's exit (plan, the human sheet, improvements.md, an #after/ or #pr/ gate); a dispatch moves nothing" {
+  exits_fixture
+  skip_exits
+  assert_equal "$PLAN_TAGGED" 2
+  assert_equal "$EXITS_TAKEN" 6
+  run grep -oE 'ptask game --agent tag --add [^ ]+ gx-[0-9]+' "$NOTES_FIXTURE/calls.log"
+  assert_output 'ptask game --agent tag --add plan gx-1
+ptask game --agent tag --add after/gx-9 gx-4
+ptask game --agent tag --add plan gx-5
+ptask game --agent tag --add pr/kblack0610/dotfiles/3021 gx-6'
+  # a bare design skip goes on the human sheet, a #low needs-person one to improvements.md, each without
+  # its #worker/ tag, and each agent row is dropped naming where it went
+  grep -qxF 'notes --profile bnb ptask game add row gx-2 #tier/1 (agent row gx-2) --origin fleet-dispatch' "$NOTES_FIXTURE/calls.log"
+  grep -qxF 'notes --profile bnb improve game --why dispatch skipped it (needs-person): r -- row gx-3 #low #tier/1' "$NOTES_FIXTURE/calls.log"
+  grep -q 'id:gx-2 dropped: on the game sheet: dispatch skipped it (design)' "$NOTES_FIXTURE/rows.game.agent"
+  grep -q 'id:gx-3 dropped: kept in game improvements.md' "$NOTES_FIXTURE/rows.game.agent"
+  # each exit is on record, and the verdict that carries it is not taken again
+  assert_equal "$(jq -r 'select(.exit) | "\(.key)=\(.exit)"' "$FLEET_DISPATCH_DIR/verdicts.jsonl" | paste -sd,)" \
+    'gx-1=plan,gx-2=sheet,gx-3=improve,gx-4=after/gx-9,gx-5=plan,gx-6=pr/kblack0610/dotfiles/3021'
+  : > "$NOTES_FIXTURE/calls.log"
+  skip_exits
+  assert_equal "$EXITS_TAKEN" 0
+  run grep -E 'tag --add|improve|ptask game add|drop' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+  # negative control: the dispatch verdict's row was never touched
+  run grep -c 'gx-7' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
+@test "skip_exits: --dry-run lists each row's exit and the counts, and writes nothing" {
+  exits_fixture
+  cp "$FLEET_DISPATCH_DIR/verdicts.jsonl" "$SANDBOX/before"
+  run skip_exits --dry-run
+  assert_success
+  assert_output 'plan	game	gx-1	unclear
+sheet	game	gx-2	design
+improve	game	gx-3	needs-person
+after/gx-9	game	gx-4	waits
+plan	game	gx-5	waits
+pr/kblack0610/dotfiles/3021	game	gx-6	waits
+exits: gate 2 improve 1 plan 2 sheet 1'
+  cmp "$FLEET_DISPATCH_DIR/verdicts.jsonl" "$SANDBOX/before"
+  run grep -E 'tag --add|improve|ptask game add|drop' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+}
+
+@test "skip_exits: a waits gate needs an open row and a verdict that otherwise fits; a planned row still skipped by a plan rule goes to the human" {
+  exits_fixture
+  # the reason names no open row (zz-404 is not on the board), or the row is not clear: plan
+  skipv gx-4 waits 'waits on zz-404'; skipv gx-6 waits 'waits on gx-9' false
+  # gx-1 was planned and the judge read that plan (its dsig) and still skips it; gx-5's verdict predates any dsig
+  jq -c 'if .id == "gx-1" or .id == "gx-5" then .details = ["goal: split it"] else . end' "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b"
+  mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"
+  jq -c --arg d "$(detail_sig '"goal: split it"')" 'if .key == "gx-1" then .dsig = $d else . end' \
+    "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  run skip_exits --dry-run
+  assert_output --partial 'sheet	game	gx-1	unclear'
+  assert_output --partial 'plan	game	gx-4	waits'
+  assert_output --partial 'plan	game	gx-6	waits'
+  refute_output --partial 'gx-5'
+  refute_output --partial 'after/'
+}
+
+@test "skip_exits: every skip rule in the shipped policy has exactly one exit" {
+  one_exit() {
+    local r n bad=''
+    for r in $(judge_rules "$1"); do
+      [ "$r" != fits ] || continue
+      n=0
+      [[ " $DISPATCH_PLAN_RULES " != *" $r "* ]] || n=$((n + 1))
+      [[ " $DISPATCH_HUMAN_RULES " != *" $r "* ]] || n=$((n + 1))
+      [ "$r" != waits ] || n=$((n + 1))
+      [ "$n" = 1 ] || bad+=" $r"
+    done
+    [ -z "$bad" ] || { echo "no single exit:$bad"; return 1; }
+  }
+  run one_exit "$REPO_ROOT/.config/fleet-dispatch/policy.md"
+  assert_success
+  # negative control: a rule with no exit is caught
+  cp "$REPO_ROOT/.config/fleet-dispatch/policy.md" "$SANDBOX/p.md"; echo '- (new-rule) a new skip' >> "$SANDBOX/p.md"
+  run one_exit "$SANDBOX/p.md"
+  assert_failure
+  assert_output 'no single exit: new-rule'
+}
+
+@test "skip_exits: tags agent rows skipped as undefined and never planned, then kicks inbox-plan" {
   plan_fixture
-  plan_skips
+  skip_exits
   assert_equal "$PLAN_TAGGED" 2
   run grep -o 'ptask game --agent tag --add plan [a-z0-9-]*' "$NOTES_FIXTURE/calls.log"
   assert_output 'ptask game --agent tag --add plan ga-1
 ptask game --agent tag --add plan ga-7'
-  # negative controls: a design skip, a planned row, a dispatch, an edited row and a human row
+  # negative controls: a design skip (the human's), a planned row, a dispatch, an edited row and a human row
   run grep -E 'tag --add plan (ga-2|ga-3|ga-4|ga-5|ga-6|gh-1)' "$NOTES_FIXTURE/calls.log"
   assert_failure
   # ga-6 already waits, so inbox-plan's unit is started
   grep -qx -- '--user start --no-block agentctl@inbox-plan.service' "$NOTES_FIXTURE/systemctl.log"
 }
 
-@test "plan_skips: a backlog-tier row gets no #plan, since dispatch does not pull it" {
+@test "skip_exits: a backlog-tier row takes no exit, since dispatch does not pull it" {
   plan_fixture
-  jq -c 'if .id == "ga-1" then .backlog = true else . end' "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b"
+  jq -c 'if .id == "ga-1" or .id == "ga-2" then .backlog = true else . end' "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b"
   mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"
-  plan_skips
-  assert_equal "$PLAN_TAGGED" 1
+  skip_exits
+  assert_equal "$EXITS_TAKEN" 1
   run grep -o 'ptask game --agent tag --add plan [a-z0-9-]*' "$NOTES_FIXTURE/calls.log"
   assert_output 'ptask game --agent tag --add plan ga-7'
 }
 
-@test "plan_skips: a requested row gets #go beside #plan, so inbox-plan does not hold it for the person's review" {
+@test "skip_exits: a requested row gets #go beside #plan, so inbox-plan does not hold it for the person's review" {
   plan_fixture
   jq -c 'if .id == "ga-7" then .requested = true else . end' "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b" && mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"
-  plan_skips
+  skip_exits
   run grep -o 'ptask game --agent tag --add plan.* ga-[0-9]*' "$NOTES_FIXTURE/calls.log"
   assert_output 'ptask game --agent tag --add plan ga-1
 ptask game --agent tag --add plan --add go ga-7'
@@ -418,7 +541,7 @@ ptask game --agent tag --add plan --add go ga-7'
   assert_equal "$(jq -r 'select(.plan) | .key' <<<"$output" | paste -sd,)" 'ga-7'
 }
 
-@test "plan_skips: a too-big skip queues one split per row: a second pass, a planned row and a stale verdict queue none" {
+@test "skip_exits: a too-big skip queues one split per row: a second pass, a planned row and a stale verdict queue none" {
   printf '%s\n' '- (too-big) an L row' >> "$DISPATCH_POLICY"
   project game beta "$SANDBOX/repos/game"
   row game agent ga-20 "- [ ] feat(game): the whole store $T <!-- id:ga-20 -->"
@@ -426,67 +549,74 @@ ptask game --agent tag --add plan --add go ga-7'
   board_row game agent ga-20 '[]' '[]'
   verdict game agent ga-20 skip L
   jq -c '.rule = "too-big"' "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  cp "$FLEET_DISPATCH_DIR/verdicts.jsonl" "$SANDBOX/v0"
   stub systemctl 'echo "$*" >> "$NOTES_FIXTURE/systemctl.log"'
-  plan_skips
+  skip_exits
   assert_equal "$PLAN_TAGGED" 1
   run grep -c 'tag --add plan ga-20' "$NOTES_FIXTURE/calls.log"
   assert_output 1
-  # the board now carries the tag: the same verdict queues nothing more
+  # without its exit on record (the first verdict only): the board now carries the tag, so nothing more
+  cp "$SANDBOX/v0" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
   : > "$NOTES_FIXTURE/board.rows"; board_row game agent ga-20 '["plan"]' '[]'
-  plan_skips
+  skip_exits
   assert_equal "$PLAN_TAGGED" 0
-  # inbox-plan wrote its goal and dropped the tag: still none
+  # inbox-plan wrote its goal and dropped the tag, and the verdict predates it: still none
   : > "$NOTES_FIXTURE/board.rows"; board_row game agent ga-20 '[]' '["goal: split into stories"]'
-  plan_skips
-  assert_equal "$PLAN_TAGGED" 0
+  skip_exits
+  assert_equal "$EXITS_TAKEN" 0
   # negative control on the signature: the row was edited after its verdict, so it waits for a new one
   sed -i 's/the whole store/the whole store and more/' "$NOTES_FIXTURE/rows.game.agent"
   : > "$NOTES_FIXTURE/board.rows"; board_row game agent ga-20 '[]' '[]'
-  plan_skips
-  assert_equal "$PLAN_TAGGED" 0
+  skip_exits
+  assert_equal "$EXITS_TAKEN" 0
   run grep -c 'tag --add plan ga-20' "$NOTES_FIXTURE/calls.log"
   assert_output 1
 }
 
-@test "plan_skips: a cleanup row read as not clear or size L under a tier-3 skip goes to inbox-plan; a feature, a clear M row, or a human-only skip does not" {
-  project game beta "$SANDBOX/repos/game"
-  export DISPATCH_CLEANUP_PROJECTS=game
-  row game agent ga-8 "- [ ] chore(game): prune the cache $T <!-- id:ga-8 -->"
-  row game agent ga-9 "- [ ] fix(game): the sweep never retries $T <!-- id:ga-9 -->"
-  row game agent ga-10 "- [ ] feat(game): a new page $T <!-- id:ga-10 -->"
-  row game agent ga-11 "- [ ] chore(game): drop the dead flag $T <!-- id:ga-11 -->"
-  row game agent ga-12 "- [ ] fix(game): the score $T #size/m <!-- id:ga-12 -->"
-  row game agent ga-13 "- [ ] fix(game): the headset drops the pad $T <!-- id:ga-13 -->"
-  row game agent ga-14 "- [ ] chore(game): remove the old store build $T <!-- id:ga-14 -->"
-  : > "$NOTES_FIXTURE/board.rows"
-  for k in ga-8 ga-9 ga-10 ga-11 ga-12 ga-13 ga-14; do board_row game agent "$k" '[]' '[]'; done
-  t3() { verdict game agent "$1" skip "$2" 3; jq -c --argjson c "$3" 'if .key == "'"$1"'" then .rule = "tier3" | .tier3_only = true | .clear = $c else . end' \
-    "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"; }
-  t3 ga-8 S false; t3 ga-9 L true; t3 ga-10 S false; t3 ga-11 M true; t3 ga-12 L true
-  # unclear or L, but held by a rule only the human clears: a device run, a release
-  human() { verdict game agent "$1" skip L 3; jq -c 'if .key == "'"$1"'" then .rule = "'"$2"'" | .tier3_only = false | .clear = false else . end' \
-    "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"; }
-  human ga-13 needs-person; human ga-14 release
-  stub systemctl 'echo "$*" >> "$NOTES_FIXTURE/systemctl.log"'
-  plan_skips
-  assert_equal "$PLAN_TAGGED" 2
-  run grep -o 'ptask game --agent tag --add plan [a-z0-9-]*' "$NOTES_FIXTURE/calls.log"
-  assert_output 'ptask game --agent tag --add plan ga-8
-ptask game --agent tag --add plan ga-9'
-  # negative controls: a feature (not cleanup), a clear M cleanup row, an L verdict the row's own
-  # #size/m overrides, and unclear L rows a needs-person or release skip holds for the human
-  run grep -E 'tag --add plan (ga-10|ga-11|ga-12|ga-13|ga-14)' "$NOTES_FIXTURE/calls.log"
-  assert_failure
+@test "skip_exits: plan tags stop at DISPATCH_PLAN_BACKLOG open #plan rows, and the other exits go on" {
+  plan_fixture
+  DISPATCH_PLAN_BACKLOG=0 skip_exits
+  assert_equal "$PLAN_TAGGED" 0
+  assert_equal "$EXITS_TAKEN" 1   # ga-2, a design skip, to the human sheet
+  run grep -c 'tag --add plan' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # ga-6 is the one #plan row open, so a room of 2 tags one more
+  DISPATCH_PLAN_BACKLOG=2 skip_exits
+  assert_equal "$PLAN_TAGGED" 1
 }
 
-@test "plan_skips: stops at DISPATCH_PLAN_BACKLOG open #plan rows, and 0 turns it off" {
-  plan_fixture
-  DISPATCH_PLAN_BACKLOG=2 plan_skips
-  assert_equal "$PLAN_TAGGED" 1
+@test "skip_exits: a row in progress takes no exit; DISPATCH_EXIT_MAX caps a pass and the next takes the rest" {
+  exits_fixture
+  jq -c 'if .id == "gx-1" then .state = "doing" else . end' "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b"
+  mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"
+  DISPATCH_EXIT_MAX=2 skip_exits
+  assert_equal "$EXITS_TAKEN" 2
+  skip_exits
+  assert_equal "$EXITS_TAKEN" 3
+  # gx-1 is doing: a session holds it, so it is never tagged, filed or dropped
+  run grep -c 'gx-1' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  assert_equal "$(jq -r 'select(.exit) | .key' "$FLEET_DISPATCH_DIR/verdicts.jsonl" | sort | paste -sd,)" 'gx-2,gx-3,gx-4,gx-5,gx-6'
+}
+
+@test "skip_exits: a row filed whose agent row will not drop keeps its exit on record, so no later pass files it again" {
+  exits_fixture
+  np() { [[ " $* " != *" drop "* ]] || return 1; local p=$1; shift; notes --profile "$p" "$@"; }
+  run skip_exits
+  assert_output --partial 'skip_exits: game gx-2 is on the game sheet, but the agent row would not drop: drop it by hand'
+  assert_equal "$(jq -r 'select(.key == "gx-2") | .exit // empty' "$FLEET_DISPATCH_DIR/verdicts.jsonl")" sheet
   : > "$NOTES_FIXTURE/calls.log"
-  DISPATCH_PLAN_BACKLOG=0 plan_skips
-  assert_equal "$PLAN_TAGGED" 0
-  run grep -c 'board --json' "$NOTES_FIXTURE/calls.log"
+  run skip_exits
+  run grep -c 'ptask game add' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
+@test "skip_exits: exits takes --dry-run or nothing; any other argument is a usage error that moves no row" {
+  exits_fixture
+  run skip_exits --dryrun
+  assert_failure 2
+  assert_output --partial 'usage: fleet-dispatch exits [--dry-run]'
+  run grep -cE 'tag --add|improve|ptask game add|drop' "$NOTES_FIXTURE/calls.log"
   assert_output 0
 }
 
@@ -787,7 +917,7 @@ app urgent: fleet, #urgent, alpha"
   assert_output 'n l'
 }
 
-@test "kinds: kinds.json names every notes-cli row type and no other, each with rank, entry, rung, exit, stages and enabled" {
+@test "kinds: kinds.json names every notes-cli row type and no other, each with rank, entry, rung, exit and enabled, and none with stages or off" {
   run kinds_match "$DISPATCH_KINDS"
   assert_success
   # negative controls: a key ROW_TYPES lacks, a type missing, and an entry with no rung each fail
@@ -799,6 +929,9 @@ app urgent: fleet, #urgent, alpha"
   assert_failure
   jq 'del(.fix.rung)' "$DISPATCH_KINDS" > "$SANDBOX/norung.json"
   run kinds_match "$SANDBOX/norung.json"
+  assert_failure
+  jq '.fix.stages = ["dev"]' "$DISPATCH_KINDS" > "$SANDBOX/stages.json"
+  run kinds_match "$SANDBOX/stages.json"
   assert_failure
 }
 
@@ -872,12 +1005,12 @@ app urgent: fleet, #urgent, alpha"
   assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'game urgent,game unranked,game low'
 }
 
-@test "candidates: a kind that is off, off in the project or not at the stage, and a parent row, never reach the judge; suggest says why" {
-  jq -n '{fix: {rank: 0, label: "bug", entry: "/one-shot", rung: "build", exit: "pr", stages: ["beta", "alpha"], enabled: true},
-          feat: {rank: 1, entry: "/one-shot", rung: "build", exit: "pr", stages: ["beta", "alpha"], enabled: true, off: ["app"]},
-          chore: {rank: 1, entry: "/one-shot", rung: "build", exit: "pr", stages: ["prod"], enabled: true},
-          decide: {rank: 1, entry: "", rung: "human", exit: "ask", stages: [], enabled: false},
-          epic: {rank: 1, entry: "", rung: "human", exit: "none", stages: [], enabled: false}}' > "$SANDBOX/kinds.json"
+@test "candidates: a kind that is off and a parent row never reach the judge; suggest says why" {
+  jq -n '{fix: {rank: 0, label: "bug", entry: "/one-shot", rung: "build", exit: "pr", enabled: true},
+          feat: {rank: 1, entry: "/one-shot", rung: "build", exit: "pr", enabled: true},
+          chore: {rank: 1, entry: "/one-shot", rung: "build", exit: "pr", enabled: false},
+          decide: {rank: 1, entry: "", rung: "human", exit: "ask", enabled: false},
+          epic: {rank: 1, entry: "", rung: "human", exit: "none", enabled: false}}' > "$SANDBOX/kinds.json"
   export DISPATCH_KINDS="$SANDBOX/kinds.json"
   project game beta "$SANDBOX/repos/game"
   project app alpha "$SANDBOX/repos/app"
@@ -892,20 +1025,21 @@ app urgent: fleet, #urgent, alpha"
   board_row game agent gm-6 '["of/gm-5"]' '[]'
   run cmd_candidates
   assert_success
-  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'gm-1,gm-6,ap-2'
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'gm-1,gm-6,ap-1,ap-2'
   run cmd_suggest --json
   assert_success
   b() { jq -r --arg k "$1" 'select(.key == $k) | .blocked | join("; ")' <<<"$output"; }
   assert_equal "$(b gm-2)" 'kind decide is off'
-  assert_equal "$(b gm-3)" 'kind chore does not dispatch at beta'
+  assert_equal "$(b gm-3)" 'kind chore is off'
   assert_equal "$(b gm-4)" 'kind epic is off'
   assert_equal "$(b gm-5)" 'a parent: open rows name it in #of/'
-  assert_equal "$(b ap-1)" 'kind feat is off in app'
+  # negative control: an enabled kind at an alpha project is the stage's to judge, not the registry's
+  assert_equal "$(b ap-1)" ''
   assert_equal "$(b gm-1)" ''
   # A closed child holds nothing: with no open row naming it, the parent is a row like any other.
   : > "$NOTES_FIXTURE/board.rows"
   run cmd_candidates
-  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'gm-1,gm-5,gm-6,ap-2'
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'gm-1,gm-5,gm-6,ap-1,ap-2'
 }
 
 @test "size: a row's #size/ tag is its size: the judge reads it as given and picks trust it over the judge" {
@@ -1107,7 +1241,7 @@ app urgent: fleet, #urgent, alpha"
   echo 'policy v2' >> "$DISPATCH_POLICY"
   run picks '{"project":"game","stage":"beta","lane":"human","key":"k","prio":1,"tier":1,"line":""}' 1
   assert_equal "$(jq -r .key <<<"$output")" k
-  printf '%s\n' 'policy' '- (tier3) tier 3' > "$DISPATCH_POLICY"
+  printf '%s\n' 'policy' '- (other) another rule' > "$DISPATCH_POLICY"
   run picks '{"project":"game","stage":"beta","lane":"human","key":"k","prio":1,"tier":1,"line":""}' 1
   assert_output ''
 }
@@ -1231,7 +1365,7 @@ EOF
   assert_equal "$(jq -c '.properties.verdicts | [.minItems, .maxItems]' "$NOTES_FIXTURE/schema.json")" '[3,3]'
   # the rule is one of the policy's ids, so "(stage)" with the policy's parentheses cannot be answered
   assert_equal "$(jq -c '.properties.verdicts.items.properties.rule.enum' "$NOTES_FIXTURE/schema.json")" \
-    '["fits","tier3","unclear"]'
+    '["fits","unclear"]'
   # the rest is the conf's schema, unchanged
   assert_equal "$(jq -S 'del(.properties.verdicts.minItems, .properties.verdicts.maxItems, .properties.verdicts.items.properties.rule.enum)' "$NOTES_FIXTURE/schema.json")" \
     "$(jq -S . "$DISPATCH_SCHEMA")"
@@ -2124,17 +2258,21 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   [ "$(state_of 'fix it')" = '- [ ]' ] || fail "row left started"
 }
 
-@test "tier3 gate: the judge is asked for tier3_only on new rows, and keeps it" {
+@test "tier3 gate: the judge reads a new row as tier 3, and its dispatch goes to the gate; its skip does not" {
   pr_lane_ready
-  row agent-runtime agent 'fix it' '- [ ] fix it #tier/3'
+  row agent-runtime agent 'fix it' '- [ ] fix it'
+  row agent-runtime agent 'vague' '- [ ] fix something'
+  stub judge-stub 'printf "%s" "$2" > "$NOTES_FIXTURE/prompt"; cat "$NOTES_FIXTURE/judge.out"'
   cat > "$NOTES_FIXTURE/judge.out" <<'J'
-{"verdicts":[{"project": "agent-runtime", "lane": "agent", "key": "fix it", "tier": 3, "size": "S", "area": "hooks", "clear": true, "agent_only": true, "tier3_only": true, "verdict": "skip", "rule": "tier3", "reason": "tier 3"}]}
+{"verdicts":[{"project": "agent-runtime", "lane": "agent", "key": "fix it", "tier": 3, "size": "S", "area": "hooks", "clear": true, "agent_only": true, "verdict": "dispatch", "rule": "fits", "reason": "tier 3"},
+{"project": "agent-runtime", "lane": "agent", "key": "vague", "tier": 3, "size": "S", "area": "hooks", "clear": false, "agent_only": true, "verdict": "skip", "rule": "unclear", "reason": "not clear"}]}
 J
-  fill
+  DISPATCH_PER_PASS=5 fill
   assert_success
-  assert_called 'judge called'
+  # an untagged agent-runtime row goes to the judge as its tier-3 copy, so tier 3 is the highest it may dispatch at
+  grep -qF '"key":"fix it"' "$NOTES_FIXTURE/prompt" || fail "$(cat "$NOTES_FIXTURE/prompt")"
+  grep -F '"key":"fix it"' "$NOTES_FIXTURE/prompt" | grep -qF '"tier":3' || fail "$(cat "$NOTES_FIXTURE/prompt")"
   assert_equal "$(pr_lane_keys)" 'fix it'
-  [ "$(jq -r .tier3_only "$FLEET_DISPATCH_DIR/verdicts.jsonl")" = true ]
 }
 
 @test "policy_sig: a workers.json edit keeps every verdict fresh; a policy edit that keeps the rule is not judged again" {
@@ -2311,6 +2449,121 @@ J
   [ -n "$(qitem queued gm-9)" ] || fail "the sprint row was not queued first: $(ls "$AGENT_QUEUE_DIR/queued")"
   [ -z "$(qitem queued ap-1)" ] || fail "a queued sprint's row ranked as the open sprint's"
   grep -q '^tags:.*sprint' "$(qitem queued gm-9)" || fail "the item has no sprint tag: $(cat "$(qitem queued gm-9)")"
+}
+
+@test "sprint rank: an open-version row the window left out ranks as sprint once it unblocks, with no relock, after the committed row" {
+  export DISPATCH_PROFILES=bnb
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  row app human ap-1 "- [ ] fix(app): menu text #urgent $T <!-- id:ap-1 -->"
+  # gm-7 waited #after/ a row that has since closed, so the lock left it out. It is #urgent and on the sheet
+  # and its area sorts first (picks breaks a tie by area), so only the committed-first key puts gm-9 ahead.
+  row game agent gm-7 "- [ ] fix(game): unblocked row #urgent $T <!-- id:gm-7 -->"
+  row game agent gm-9 "- [ ] fix(game): committed row #high $T <!-- id:gm-9 -->"
+  verdict game agent gm-7 dispatch S 1 boot
+  verdict app human ap-1 dispatch S 1 menu
+  verdict game agent gm-9 dispatch S 1 crash
+  # NEGATIVE CONTROL: a sprint read from its snapshot alone ranks the unblocked row behind the other project's.
+  jq -nc '[{project: "game", queued: false, tasks: [{id: "gm-9", state: "open"}]}]' > "$NOTES_FIXTURE/board.sprints"
+  assert_equal "$(picks_order)" 'gm-9 ap-1 gm-7'
+  # The feed lists it under the open sprint's `uncommitted`: the next pass ranks it as sprint, no relock run.
+  jq -nc '[{project: "game", queued: false, tasks: [{id: "gm-9", state: "open"}], uncommitted: ["gm-7", "gm-9"]},
+           {project: "app", queued: true, tasks: [], uncommitted: ["ap-1"]}]' > "$NOTES_FIXTURE/board.sprints"
+  assert_equal "$(picks_order)" 'gm-9 gm-7 ap-1'
+  [[ "$(DRY=1 JUDGE_RC='' fill_day 4)" == *'open sprint, uncommitted'* ]] || fail "the why does not name it: $(DRY=1 JUDGE_RC='' fill_day 4)"
+  DRY=0 JUDGE_RC='' fill_day 2
+  grep -q '^tags:.*sprint' "$(qitem queued gm-7)" || fail "the uncommitted row's item has no sprint tag: $(cat "$(qitem queued gm-7)")"
+}
+
+# age_sightings <minutes> -- every row sprint-stalled has seen unowned was first seen that long ago.
+age_sightings() {
+  local f="$FLEET_DISPATCH_DIR/sprint-stalled.tsv"
+  awk -F'\t' -v OFS='\t' -v d="$(( $1 * 60 ))" '{ $3 -= d; print }' "$f" > "$f.new" && mv "$f.new" "$f"
+}
+
+@test "sprint-stalled: an open sprint row with no item, session or open gate for an hour trips, named with its verdict; gated, parent, started, human-lane and out-of-sprint rows do not; queued it clears (ar-4333)" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 "- [ ] fix(game): committed and unowned $T <!-- id:gm-1 -->"
+  row game agent gm-2 "- [ ] fix(game): waits on gm-1 $T #after/gm-1 <!-- id:gm-2 -->"
+  row game agent gm-3 "- [ ] fix(game): left out at the lock, unowned $T <!-- id:gm-3 -->"
+  row game agent gm-4 "- [ ] feat(game): a parent $T <!-- id:gm-4 -->"
+  row game agent gm-5 "- [ ] fix(game): the parent's child #of/gm-4 $T #after/gm-1 <!-- id:gm-5 -->"
+  row game agent gm-6 "- [/] fix(game): a session holds it $T <!-- id:gm-6 -->"
+  row game agent gm-7 "- [ ] fix(game): not in the sprint $T <!-- id:gm-7 -->"
+  row game human gm-8 "- [ ] fix(game): the human's own $T <!-- id:gm-8 -->"
+  verdict game agent gm-1 skip
+  jq -nc '[{project: "game", queued: false, tasks: [{id: "gm-1", state: "open"}, {id: "gm-2", state: "open"}, {id: "gm-4", state: "open"},
+           {id: "gm-6", state: "doing"}, {id: "gm-8", state: "open"}], uncommitted: ["gm-3", "gm-5"]}]' > "$NOTES_FIXTURE/board.sprints"
+  # The first sighting starts the clock: under the hour nothing trips.
+  run cmd_sprint_stalled
+  assert_success
+  assert_output --partial '(2 unowned for less)'
+  assert_equal "$(cut -f2 "$FLEET_DISPATCH_DIR/sprint-stalled.tsv" | paste -sd,)" 'gm-1,gm-3'
+  age_sightings 61
+  run cmd_sprint_stalled
+  assert_failure
+  assert_output --partial '  gm-1 (game, 61 min); last verdict skip: r'
+  assert_output --partial '  gm-3 (game, uncommitted, 61 min); never judged'
+  assert_line --index -1 '2 open sprint row(s) stalled: gm-1, gm-3 (fleet-dispatch suggest says why each waits)'
+  for k in gm-2 gm-4 gm-5 gm-6 gm-7 gm-8; do refute_output --partial "  $k ("; done
+  # Queued, the row is owned: it drops out, and the other still trips.
+  board_item gm-1 "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  run cmd_sprint_stalled
+  assert_failure
+  refute_output --partial '  gm-1 ('
+  assert_line --index -1 '1 open sprint row(s) stalled: gm-3 (fleet-dispatch suggest says why each waits)'
+  # A row that leaves the sprint and comes back counts from its new sighting.
+  jq -nc '[{project: "game", queued: false, tasks: [], uncommitted: []}]' > "$NOTES_FIXTURE/board.sprints"
+  run cmd_sprint_stalled
+  assert_success
+  jq -nc '[{project: "game", queued: false, tasks: [], uncommitted: ["gm-3"]}]' > "$NOTES_FIXTURE/board.sprints"
+  run cmd_sprint_stalled
+  assert_success
+  # A dispatch hold is on purpose: nothing trips, and the clock restarts.
+  age_sightings 61
+  stub agent-hold 'exit 1'
+  run cmd_sprint_stalled
+  assert_success
+  assert_output --partial 'dispatch is held (agent-hold)'
+  [ ! -e "$FLEET_DISPATCH_DIR/sprint-stalled.tsv" ] || fail "the sightings outlived the hold"
+}
+
+@test "sprint-stalled: a queue or gate read that fails is unreadable (rc 2), never a trip" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 "- [ ] fix(game): unowned $T <!-- id:gm-1 -->"
+  jq -nc '[{project: "game", queued: false, tasks: [{id: "gm-1", state: "open"}]}]' > "$NOTES_FIXTURE/board.sprints"
+  stub agent-queue 'exit 1'
+  run cmd_sprint_stalled
+  assert_failure 2
+  assert_output --partial 'unreadable: agent-queue gate --all failed'
+  unset GATES_LOADED
+  stub_list='case "$1" in list) exit 1 ;; *) exec "'"$SANDBOX"'/bin/aq-real" "$@" ;; esac'
+  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/aq-real"
+  stub agent-queue "$stub_list"
+  run cmd_sprint_stalled
+  assert_failure 2
+  assert_output --partial 'unreadable: agent-queue list --json failed'
+  # An empty worker table or a board feed with no sprints reads as no rows to cmd_candidates: rc 2, and
+  # an hour of sightings that would trip survives it.
+  stub agent-queue 'exec "'"$SANDBOX"'/bin/aq-real" "$@"'
+  printf 'game\tgm-1\t%s\n' "$(( $(date +%s) - 61 * 60 ))" > "$FLEET_DISPATCH_DIR/sprint-stalled.tsv"
+  cp "$DISPATCH_WORKERS" "$SANDBOX/workers.keep"
+  echo '{}' > "$DISPATCH_WORKERS"
+  run cmd_sprint_stalled
+  assert_failure 2
+  assert_output --partial 'unreadable: no workers in'
+  cp "$SANDBOX/workers.keep" "$DISPATCH_WORKERS"
+  cp "$SANDBOX/bin/notes" "$SANDBOX/notes.keep"
+  stub notes 'case "$1" in board) echo "{\"rows\": []}" ;; *) exit 1 ;; esac'
+  run cmd_sprint_stalled
+  assert_failure 2
+  assert_output --partial 'unreadable: notes board --json failed or has no sprints'
+  grep -q "^game$(printf '\t')gm-1$(printf '\t')" "$FLEET_DISPATCH_DIR/sprint-stalled.tsv" || fail "an unreadable pass wiped the sightings"
+  # Control: with both reads restored the same sightings trip.
+  cp "$SANDBOX/notes.keep" "$SANDBOX/bin/notes"
+  run cmd_sprint_stalled
+  assert_failure 1
+  assert_output --partial '  gm-1 (game, 61 min)'
 }
 
 # pool_prom -- a curl that answers prom_q as Prometheus would: the idle comparison keeps the unity pool

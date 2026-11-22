@@ -74,8 +74,7 @@ fn queue_to(state: &'static str) -> Option<Target> {
 }
 
 /// Added against finished over the last 6 hours, and whether the queue shrinks or grows. This is
-/// the waybar chip's drain rule (`.config/waybar/queue.sh`), which keeps its copy until that
-/// chip moves here.
+/// the one drain rule: the waybar queue chip hover shows it from `hub bar --json` (`bar.rs`).
 pub fn drain(r: &Recent) -> String {
     let verdict = match r.added_6h.cmp(&r.done_6h) {
         std::cmp::Ordering::Less => "shrinking",

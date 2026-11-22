@@ -905,9 +905,33 @@ impl Task {
 /// in its order, each as its live row stands, then the interrupts that entered since. One row
 /// per key, an open copy ahead of a closed one.
 pub(crate) fn tasks(dir: &Path, cur: V) -> Option<Vec<Task>> {
+    open_window(dir, cur).map(|(tasks, _)| tasks)
+}
+
+/// The open version `cur`'s [`tasks`], and the ids of its rows a sprint moves through without
+/// committing them ([`uncommitted`]): one read of the sheets for both.
+pub(crate) fn open_window(dir: &Path, cur: V) -> Option<(Vec<Task>, Vec<String>)> {
     let snap = read(dir, cur)?;
     let rows = rows_of(dir, cur, &Index::of(dir, Some(cur)));
-    Some(window_tasks(&snap, &rows))
+    let tasks = window_tasks(&snap, &rows);
+    let rest = uncommitted(&tasks, &rows);
+    Some((tasks, rest))
+}
+
+/// The ids of the version's unstarted agent-lane rows (`- [ ]`, ones the window counts,
+/// [`Index::counts`], so not an epic, and not in the Backlog tier) that `tasks`, its window, does
+/// not hold: rows left out at the lock because they waited or did not
+/// fit, which dispatch ranks as the sprint's, after its committed rows. A row that unblocks
+/// mid-sprint moves at once, with no relock; the score never counts it.
+fn uncommitted(tasks: &[Task], rows: &Rows) -> Vec<String> {
+    let held: HashSet<&str> = tasks.iter().filter_map(|t| t.id.as_deref()).collect();
+    let mut seen = HashSet::new();
+    rows.open[rows.human..]
+        .iter()
+        .filter(|l| !md::is_in_progress(l) && !project_sweep::in_backlog(l))
+        .filter_map(|l| md::row_id(l))
+        .filter(|id| !held.contains(id.as_str()) && seen.insert(id.clone()))
+        .collect()
 }
 
 fn window_tasks(snap: &Snapshot, rows: &Rows) -> Vec<Task> {
@@ -1891,6 +1915,54 @@ mod tests {
                 open: 2,
                 committed: 4
             })
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A row the window left out because it waited is the open version's still: once its wait
+    /// clears it lists as uncommitted, with no relock, beside every other unstarted agent row of
+    /// the version the window does not hold. The score stays the snapshot's.
+    #[test]
+    fn a_row_left_out_of_the_window_moves_with_it_uncommitted() {
+        let human = "- [ ] fix(h): human row <!-- id:db-70 -->\n";
+        let board = "- [ ] fix(a): the open row <!-- id:db-71 -->\n\
+                     - [ ] fix(a): behind it #after/db-71 <!-- id:db-72 -->\n";
+        let dir = project("uncommitted", "#prio/focus", human, board);
+        let v = (0, 2, 0);
+        let ix = Index::of(&dir, Some(v));
+        record(
+            &dir,
+            "demo",
+            v,
+            day("2026-11-19"),
+            Some(day("2026-11-26")),
+            &ix,
+        )
+        .unwrap();
+        let (_, rest) = open_window(&dir, v).unwrap();
+        // The wait kept db-72 out of the snapshot; it is the version's row all the same.
+        assert_eq!(rest, ["db-72"]);
+        fs::write(
+            dir.join("agent/README.md"),
+            "## Tasks\n- [x] fix(a): the open row <!-- id:db-71 done:2026-11-20 -->\n\
+             - [ ] fix(a): behind it #after/db-71 <!-- id:db-72 -->\n\
+             - [/] fix(a): started <!-- id:db-73 -->\n\
+             - [ ] fix(a): parked <!-- id:db-74 tier:backlog -->\n\
+             - [ ] fix(a): aimed later #v0.3.0 <!-- id:db-75 -->\n\
+             - [ ] fix(a): a plain add <!-- id:db-76 -->\n\
+             - [ ] fix(a): no id\n",
+        )
+        .unwrap();
+        let (ts, rest) = open_window(&dir, v).unwrap();
+        // NEGATIVE CONTROL: a started, parked, later or human-lane row is not listed, nor one
+        // the window holds.
+        assert_eq!(rest, ["db-72", "db-76"]);
+        assert_eq!(
+            Sprint::of(&ts),
+            Sprint {
+                open: 0,
+                committed: 1
+            }
         );
         let _ = fs::remove_dir_all(&dir);
     }

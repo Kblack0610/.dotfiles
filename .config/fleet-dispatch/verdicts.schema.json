@@ -20,7 +20,6 @@
           "area",
           "clear",
           "agent_only",
-          "tier3_only",
           "verdict",
           "rule"
         ],
@@ -62,9 +61,6 @@
             "type": "boolean"
           },
           "agent_only": {
-            "type": "boolean"
-          },
-          "tier3_only": {
             "type": "boolean"
           },
           "verdict": {

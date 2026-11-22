@@ -4225,6 +4225,33 @@ prs_fixture() {
   assert_output --partial 'unreadable:'
 }
 
+@test "pipeline --check chain-lag: an urgent or high handoff p90 over 24h past its bound trips; inside it, low, an empty window and no chain field do not (ar-3263)" {
+  # NEGATIVE CONTROL: the same canned stats, each pushed past the bound in turn
+  echo '{"done":{},"by_project":{},"chain":{"h24":{"urgent":{"n":5,"p50":0,"p90":60},"high":{"n":3,"p50":0,"p90":12},"low":{"n":4,"p50":900,"p90":4000}}}}' > "$QSTATS"
+  run "$SUBJECT" pipeline --check chain-lag
+  assert_success
+  assert_output ''
+  jq -c '.chain.h24.urgent.p90 = 61' "$QSTATS" > "$QSTATS.new" && mv "$QSTATS.new" "$QSTATS"
+  run "$SUBJECT" pipeline --check chain-lag
+  assert_failure 1
+  assert_output 'chain handoff over 24h is past its bound of 60m: urgent p90 61m over 5 handoffs'
+  # the bound is the threshold when one is set
+  echo chain_handoff_p90_max=90 >> "$KPI_THRESHOLDS"
+  run "$SUBJECT" pipeline --check chain-lag
+  assert_success
+  echo chain_handoff_p90_max=10 >> "$KPI_THRESHOLDS"
+  run "$SUBJECT" pipeline --check chain-lag
+  assert_failure 1
+  assert_output 'chain handoff over 24h is past its bound of 10m: urgent p90 61m over 5 handoffs, high p90 12m over 3 handoffs'
+  # no chain started in 24h passes; stats with no chain field is unreadable, not green
+  echo '{"done":{},"by_project":{},"chain":{"by_priority":{},"h24":{}}}' > "$QSTATS"
+  run "$SUBJECT" pipeline --check chain-lag
+  assert_success
+  echo '{"done":{},"by_project":{}}' > "$QSTATS"
+  run "$SUBJECT" pipeline --check chain-lag
+  assert_failure 2
+}
+
 @test "pipeline --check held: a queued item with a pending gate trips it; a desk turn, a running hold and a clear queue pass; an unreadable list exits 2" {
   items_stub "$(item a queued high human)" "$(item b queued high human '{"hold":"hold:unity (behind c, unity-build)"}')" \
     "$(item d queued high human '{"hold":"hold:unity (desk:auth waits for the human, away)"}')" \

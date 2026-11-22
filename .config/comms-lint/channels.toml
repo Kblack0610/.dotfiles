@@ -96,6 +96,14 @@ max_item = 200
 max_lead = 200
 source = { kind = "section", glob = "~/.notes/journal/daily/*.md", heading = "## Morning" }
 
+# The waybar and noctalia chip hovers (queue.sh, ai_agents.sh), read by both scripts for their caps. A
+# GTK tooltip cannot scroll, so a taller one is cut at the screen edge with nothing to say so: 45 lines
+# is the workstation's 1080 px screen at about 20 px a line, less the bar, and 120 characters about
+# 940 px of monospace. No source: the hover is drawn each run and kept nowhere.
+[channel.bar]
+max_lines = 45
+max_line = 120
+
 # The phone widget's rows (`hub phone --json`). No source: the retained MQTT message is the only copy.
 [channel.phone]
 max_lines = 14
@@ -116,6 +124,18 @@ max_item = 200
 # A section is a heading or a "Done:" label, so a one-line lab status passes in the same shape.
 require = [['(?im)^#*\s*done\b|\bDone:', 'Done section'], ['(?im)^#*\s*next\b|\bNext:', 'Next section']]
 source = { kind = "files", glob = "~/.agent/sessions/*/*-wind-down.md" }
+
+# A lab project's STATUS block (summary.md), the shape `notes projects --stats --json` reads into
+# hub_core::projects::Status: a headline that stands alone, then Done, Doing, Next and Needs you each on
+# its own line. The numbers (state, waves, window, gate) are the page's, so none is pasted in.
+[channel.lab-status]
+prose = true
+max_line = 240
+require = [['(?m)^Done:', 'Done: line'], ['(?m)^Doing:', 'Doing: line'], ['(?m)^Next:', 'Next: line'], ['(?m)^Needs you:', 'Needs you: line']]
+forbid = [
+  ['(?m)\S.*[ \t](?:Done|Doing|Next|Needs you):', 'a label inside a line: each label opens its own line'],
+  ['(?m)^\s*(?:State|Waves|On time|Gate to beta|Playtests waiting|Upkeep only):', 'a number the page already shows: it is never pasted into the note'],
+]
 
 # A pull request body.
 [channel.pr-body]
@@ -179,3 +199,22 @@ group = "rows"
 lead_ids = false
 max_lead = 0
 source = { kind = "command", cmd = ["hub", "actions", "--since", "{since}", "--records"], ts = "at", text = "text", path = "source", select = { source = ["shepherd-log", "dispatch-log"] } }
+
+# Text the UIs draw (agent-web, the hub TUI), one record per role-built string: `hub ui-text --json`
+# dumps what hub-core's builders send. A text fills one role (hub_core::display), and `roles` is
+# the one home of its caps, [max chars, max words] (0 = no limit): the Rust constructors read them
+# from this file, and comms-lint applies the record's own role in place of max_chars. `run_on` are
+# the labels of a status block, so a text with two of them is a paragraph that wants fields.
+# Chat answers are out of scope.
+[channel.ui]
+group = "rows"
+max_lead = 0
+lead_ids = false                # a sub may be an id; hub_core::display strips the ids a title leads with
+run_on = ["Done:", "Doing:", "Next:", "Needs you:"]
+roles = { title = [80, 10], sub = [140, 0], chip = [24, 2], next = [100, 0], note = [200, 0] }
+forbid = [
+  ['^\s*/[a-z][a-z0-9-]*(\s|$)', 'a slash command leads the text: a session prompt is no title'],
+  ['`', 'a backtick: UI text is words, not markup'],
+  ['^[a-z][a-z0-9]*(-[a-z0-9]+)* P\d[0-9+a-z]*:', 'a plan slug and phase lead the text: the phase words are the title'],
+]
+source = { kind = "command", cmd = ["hub", "ui-text", "--json"], ts = "ts", text = "text", path = "path", timeout = 60 }

@@ -658,7 +658,7 @@ real_epic_board() {
   row agent-runtime agent 'add a panel' '- [ ] feat(panel): add a timer panel #tier/3'
   # A chore that bumps a dependency is shared infrastructure (DISPATCH_CLEANUP_NOT), not cleanup.
   row agent-runtime agent 'bump jq' '- [ ] chore(deps): bump jq to 1.8 #tier/3'
-  pr_lane_verdict 'drop the dead timer' timer; pr_lane_verdict 'prune the hooks' hooks true L; pr_lane_verdict 'add a panel' panel; pr_lane_verdict 'bump jq' jq
+  pr_lane_verdict 'drop the dead timer' timer; pr_lane_verdict 'prune the hooks' hooks false L; pr_lane_verdict 'add a panel' panel; pr_lane_verdict 'bump jq' jq
 
   fill --dry-run --json
   # Cleanup ranks first (its #low lifted to high); every S or M tier-3 row is the one gate's.
@@ -673,7 +673,7 @@ real_epic_board() {
   refute_output --partial -- '--pr-only'
   assert_output --partial 'agent-land refuses a tier-3 PR without that line'
   assert_output --partial 'Merge with agent-land'
-  # The L row is neither started nor queued: plan_skips sends it to inbox-plan.
+  # The L row the judge skipped is neither started nor queued: skip_exits sends it to inbox-plan.
   [ "$(state_of 'prune the hooks')" = '- [ ]' ] || fail "an L cleanup row was started"
   assert_equal "$(pr_lane_keys)" 'add a panel,bump jq'
   g=$(agent-queue list --json --state queued | jq -r 'select(.title | test("add a timer panel")) | .slug')

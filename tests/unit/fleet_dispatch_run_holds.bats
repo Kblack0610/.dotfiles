@@ -661,6 +661,42 @@ share_history() {
   done
 }
 
+@test "fleet share: a canary or an agent's urgent on a fleet project waits at the cap, as the human's urgent does not" {
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  share_history 1 1
+  agent-queue add --project app --slug fix-app --priority low "fix the app" >/dev/null
+  for t in "--tags canary" "--priority urgent --from session"; do
+    agent-queue list --json --state active 2>/dev/null | jq -r 'select(.project == "game") | .slug' | while read -r s; do agent-queue move "$s" done --status cancelled >/dev/null; done
+    # shellcheck disable=SC2086 # $t is several words on purpose
+    agent-queue add --project game --slug "fleet-$RANDOM" $t "the fleet's own work" >/dev/null
+    agent-queue list --json --state active 2>/dev/null | jq -r 'select(.project == "app" and .state != "queued") | .slug' | while read -r s; do agent-queue move "$s" done --status cancelled >/dev/null; done
+    agent-queue add --project app --slug "app-$RANDOM" --priority low "fix the app" >/dev/null
+    run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+    assert_success
+    assert_output --partial 'started game-agent-1: app: '
+    assert_output --partial 'held by fleet share'
+    [ -n "$(agent-queue list --json --state active 2>/dev/null | jq -r 'select(.project == "game" and .state == "queued") | .slug')" ] || fail "the $t fleet item started past the cap"
+  done
+}
+
+@test "fleet share: unset, DISPATCH_FLEET_PROJECTS is the #prio/low projects" {
+  two_items
+  share_history 1 1
+  unset DISPATCH_FLEET_PROJECTS
+  printf 'game\tlow\napp\thigh\n' > "$NOTES_FIXTURE/prios"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
+  assert_output --partial 'fleet share: 1 of 2 items started in 24h are fleet work (game), 50% against a 30% cap: full'
+  # The negative control: no project on #prio/low, no cap.
+  printf 'app\thigh\n' > "$NOTES_FIXTURE/prios"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
+  refute_output --partial 'fleet share'
+  # A failed read turns the cap off out loud, never in silence.
+  rm -f "$NOTES_FIXTURE/prios"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
+  assert_output --partial 'fleet share: off, as `notes projects --prios` failed'
+}
+
 @test "fleet share: with only fleet work to start the cap lets go, and the board fills from other projects first" {
   project game beta "$SANDBOX/repos/game"
   agent-queue add --project game --slug fix-game --priority high "fix the game" >/dev/null
@@ -697,10 +733,10 @@ share_history() {
   [ -n "$(qitem queued fix-game)" ] && [ -n "$(qitem queued fix-game-2)" ] || fail "a share-held item started on a committed-rows pass"
 }
 
-@test "fleet share: a full share passes an urgent fleet row through the fill, and a floor's filtered list never lets the cap go" {
+@test "fleet share: a full share passes a #requested fleet row through the fill, not an #urgent one, and a floor's filtered list never lets the cap go" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
-  row game human 'fix crash on load' "- [ ] fix crash on load #urgent $T"
+  row game human 'fix crash on load' "- [ ] fix crash on load #high #requested $T"
   verdict game human 'fix crash on load' dispatch
   row app human 'fix app crash' "- [ ] fix app crash #low $T"
   verdict app human 'fix app crash' dispatch
@@ -708,7 +744,18 @@ share_history() {
   DISPATCH_PER_PASS=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" fill   # up to the low water, both rows
   assert_success
   refute_output --partial "so the board fills from other projects"
-  [ -n "$(agent-queue list --json --state active 2>/dev/null | jq -r 'select(.project == "game") | .slug')" ] || fail "the urgent fleet row was left out of the fill"
+  [ -n "$(agent-queue list --json --state active 2>/dev/null | jq -r 'select(.project == "game") | .slug')" ] || fail "the #requested fleet row was left out of the fill"
+  # An #urgent fleet row is no longer one: its board item would wait at the cap, so the fill leaves it out.
+  agent-queue list --json --state active 2>/dev/null | jq -r .slug | while read -r s; do agent-queue move "$s" done --status cancelled >/dev/null; done
+  : > "$NOTES_FIXTURE/rows.game.human"; : > "$NOTES_FIXTURE/rows.app.human"
+  row game human 'fix crash on save' "- [ ] fix crash on save #urgent $T"
+  verdict game human 'fix crash on save' dispatch
+  row app human 'fix app hang' "- [ ] fix app hang #low $T"
+  verdict app human 'fix app hang' dispatch
+  DISPATCH_PER_PASS=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" fill
+  assert_success
+  assert_output --partial "so the board fills from other projects"
+  [ -z "$(agent-queue list --json --state active 2>/dev/null | jq -r 'select(.project == "game") | .slug')" ] || fail "the #urgent fleet row was promoted past the cap"
   # Past the pace target the project floor hands start_items one idle project's items only: a fleet item
   # held there stays held, as the list proves nothing else could start.
   agent-queue list --json --state active 2>/dev/null | jq -r .slug | while read -r s; do agent-queue move "$s" done --status cancelled >/dev/null; done

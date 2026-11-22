@@ -815,6 +815,10 @@ struct FeedProject {
     /// the project's [`FeedSprint`], not here.
     #[serde(skip)]
     tasks: Vec<crate::window::Task>,
+    /// The open version's rows that window did not commit ([`crate::window::open_window`]),
+    /// carried on the project's [`FeedSprint`], not here.
+    #[serde(skip)]
+    uncommitted: Vec<String>,
 }
 
 impl FeedProject {
@@ -935,6 +939,10 @@ struct FeedSprint {
     start: Option<String>,
     /// The rows the window holds, as they stand.
     tasks: Vec<crate::window::Task>,
+    /// The ids of the open version's unstarted agent-lane rows the window does not hold
+    /// ([`crate::window::open_window`]): dispatch ranks them as the sprint's after `tasks`, so a
+    /// row that unblocks mid-sprint moves with no relock. Not scored; empty for a queued sprint.
+    uncommitted: Vec<String>,
     /// The weight of the tasks still open or in progress.
     remaining_weight: u32,
     /// The agent lane's shipped weight per hour over the budget window
@@ -1023,31 +1031,31 @@ fn sprint_lines(
             else {
                 return Vec::new();
             };
-            let open = fp
-                .sprint
-                .zip(crate::window::frame(dir, cur))
-                .map(|(s, f)| feed_sprint(fp, (cur, s, &f, &fp.tasks), rows, now));
+            let open = fp.sprint.zip(crate::window::frame(dir, cur)).map(|(s, f)| {
+                feed_sprint(fp, (cur, s, &f, (&fp.tasks, &fp.uncommitted)), rows, now)
+            });
             let queued = crate::window::queued_chain(dir, cur)
                 .into_iter()
                 .filter_map(|next| {
                     let f = crate::window::frame(dir, next)?;
                     let tasks = crate::window::tasks(dir, next)?;
                     let s = crate::window::Sprint::of(&tasks);
-                    Some(feed_sprint(fp, (next, s, &f, &tasks), rows, now))
+                    Some(feed_sprint(fp, (next, s, &f, (&tasks, &[])), rows, now))
                 });
             open.into_iter().chain(queued).collect()
         })
         .collect()
 }
 
-/// One window's [`FeedSprint`]: version `v` of project `fp`, its count, frame and tasks.
+/// One window's [`FeedSprint`]: version `v` of project `fp`, its count, frame, tasks and the
+/// rows it did not commit.
 fn feed_sprint(
     fp: &FeedProject,
-    (v, sprint, frame, tasks): (
+    (v, sprint, frame, (tasks, uncommitted)): (
         crate::sheet::V,
         crate::window::Sprint,
         &crate::window::Frame,
-        &[crate::window::Task],
+        (&[crate::window::Task], &[String]),
     ),
     rows: (&[FeedRow], &[FeedRow]),
     now: chrono::NaiveDateTime,
@@ -1077,6 +1085,7 @@ fn feed_sprint(
         start: frame.start.map(moment),
         remaining_weight: tasks.iter().filter(|t| t.is_open()).map(|t| t.weight).sum(),
         tasks: tasks.to_vec(),
+        uncommitted: uncommitted.to_vec(),
         rate_per_hour: crate::window::rate_per_hour(std::path::Path::new(&fp.dir)),
     }
 }
@@ -1257,14 +1266,16 @@ fn feed_for_dir(
         }
     }
     let (epic_open, epic_backlog) = crate::epics::strip_counts(dir);
-    let tasks = version
+    let (tasks, uncommitted) = version
         .as_deref()
         .and_then(crate::projects::parse_version)
-        .and_then(|v| crate::window::tasks(dir, v));
+        .and_then(|v| crate::window::open_window(dir, v))
+        .map_or((None, Vec::new()), |(t, u)| (Some(t), u));
     let proj = FeedProject {
         runs_sprints: crate::window::runs_sprints(dir),
         sprint: tasks.as_deref().map(crate::window::Sprint::of),
         tasks: tasks.unwrap_or_default(),
+        uncommitted,
         profile: profile.to_string(),
         project: project.to_string(),
         dir: dir.display().to_string(),

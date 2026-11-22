@@ -1357,12 +1357,12 @@ def names():
 quarantine.txt'
 }
 
-# night_file <sha> <json>: o/game's scripts/night.json on main, as the contents API answers it
+# night_file <sha> <json>: o/game's config/ci/nightly.json on main, as the contents API answers it
 night_file() {
-  printf '{"sha":"%s","content":"%s"}' "$1" "$(printf '%s' "$2" | base64 -w0)" | serve 'repos/o/game/contents/scripts/night.json?ref=main'
+  printf '{"sha":"%s","content":"%s"}' "$1" "$(printf '%s' "$2" | base64 -w0)" | serve 'repos/o/game/contents/config/ci/nightly.json?ref=main'
 }
 
-@test "night set: scripts/night.json is kept on the repo's entry, an unchanged one is a 304, a missing one is asked again a day later" {
+@test "night set: config/ci/nightly.json is kept on the repo's entry, an unchanged one is a 304, a missing one is asked again a day later" {
   game_files; runs | page1
   night_file n1 '{"_comment": "x", "night": {"test.yml": "Tests (all)"}, "held": {"multi.yml": "Multi (all)"}}'
   run "$SUBJECT"
@@ -1374,8 +1374,8 @@ night_file() {
   : > "$GHD/calls"
   run "$SUBJECT"
   assert_success
-  run grep night.json "$GHD/calls"
-  assert_output 'repos/o/game/contents/scripts/night.json?ref=main (conditional)'
+  run grep nightly.json "$GHD/calls"
+  assert_output 'repos/o/game/contents/config/ci/nightly.json?ref=main (conditional)'
   run jq -c '.repos[0].night | [.night, .sha]' "$STATE"
   assert_output '[{"test.yml":"Tests (all)"},"n1"]'
 
@@ -1386,29 +1386,29 @@ night_file() {
   assert_success
   run jq -c '.repos | map([.night.night, .night.held, .night.sha, .night_absent])' "$STATE"
   assert_output '[[{"test.yml":"Tests (all)","soak.yml":"Soak (all)"},{},"n2",null],[null,null,null,"2025-11-07T12:00:00Z"]]'
-  run grep -c 'o/empty/contents/scripts/night.json' "$GHD/calls"
+  run grep -c 'o/empty/contents/config/ci/nightly.json' "$GHD/calls"
   assert_output 1
 }
 
-@test "night set: a failed read of night.json keeps the last set with its error, and the repo's sync stays good" {
+@test "night set: a failed read of nightly.json keeps the last set with its error, and the repo's sync stays good" {
   game_files; runs | page1
   night_file n1 '{"night": {"test.yml": "Tests (all)"}}'
   run "$SUBJECT"
   assert_success
-  touch "$GHD/repos_o_game_contents_scripts_night.json_ref_main.fail"
+  touch "$GHD/repos_o_game_contents_config_ci_nightly.json_ref_main.fail"
   run "$SUBJECT"
   assert_success
   run jq -c '.repos[0] | [.error, .night.night, .night.sha, .night.error]' "$STATE"
   assert_output '[null,{"test.yml":"Tests (all)"},"n1","HTTP 502"]'
 }
 
-@test "negative control: a night.json that is not a JSON object is kept with its error, never read as an empty night" {
+@test "negative control: a nightly.json that is not a JSON object is kept with its error, never read as an empty night" {
   game_files; runs | page1
   night_file n3 '["test.yml"]'
   run "$SUBJECT"
   assert_success
   run jq -c '.repos[0].night | [.night, .held, .sha, .error]' "$STATE"
-  assert_output '[{},{},"n3","scripts/night.json: not a JSON object"]'
+  assert_output '[{},{},"n3","config/ci/nightly.json: not a JSON object"]'
 }
 
 # ---- PR store ----

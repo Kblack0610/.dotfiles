@@ -304,7 +304,7 @@ EOF
 @test "the shipped channels.toml loads and every channel is listed" {
   run "$SUBJECT" channels
   assert_success
-  for c in page briefing briefing-agents morning rundown status pr-body client-eod client-weekly board proof ask queue fleet-log; do
+  for c in page briefing briefing-agents morning rundown status lab-status pr-body client-eod client-weekly board proof ask queue fleet-log ui; do
     assert_output --partial "$c"
   done
 }
@@ -408,4 +408,42 @@ EOF
     n=$((n + 1))
   done
   [ "$n" -ge 12 ] || fail "only $n fixtures found"
+}
+
+@test "a ui text is held to its role's caps and shapes; negative control: the pre-fix strings fail" {
+  run "$SUBJECT" --channel ui --role title - <<< "Wait on the review"
+  assert_success
+  run "$SUBJECT" --channel ui --role chip - <<< "waiting on you"
+  assert_failure 1
+  assert_output --partial "too-many-words"
+  run "$SUBJECT" --channel ui --role title - <<< "/one-shot ucp-2697: PerfRun.SwapTo waits for launcher.Current.id == apociseum while the run"
+  assert_failure 1
+  assert_output --partial "too-many-words"
+  assert_output --partial "a slash command leads the text"
+  run "$SUBJECT" --channel ui --role title - <<< 'pasted-content-id-6b1b-l-wondrous-moon P4: Lab status writer'
+  assert_failure 1
+  assert_output --partial "plan slug and phase lead the text"
+  run "$SUBJECT" --channel ui --role note - <<< "Done: P1 and P2 merged. Doing: P3 in review."
+  assert_failure 1
+  assert_output --partial "run-on"
+  # The same sub text as a plan and phase line is not a title's shape.
+  run "$SUBJECT" --channel ui --role sub - <<< "can-we-add-more-jaunty-moonbeam P3"
+  assert_success
+  # A role the channel does not list is a finding, never a silent pass.
+  run "$SUBJECT" --channel ui --role titel - <<< "Wait on the review"
+  assert_failure 1
+  assert_output --partial "unknown-role"
+}
+
+@test "the ui channel grades hub ui-text records by their own role, as rows" {
+  cat > "$SANDBOX/bin/hub" <<'EOF2'
+#!/usr/bin/env bash
+now=$(date -Iseconds)
+printf '{"ts":"%s","path":"home.running[0].title","role":"title","text":"Fix the queue reader"}\n' "$now"
+printf '{"ts":"%s","path":"home.running[1].title","role":"title","text":"/one-shot ucp-1: a session prompt as a title"}\n' "$now"
+printf '{"ts":"%s","path":"home.running[2].sub","role":"sub","text":"a longer second line is allowed more words than a title"}\n' "$now"
+EOF2
+  chmod +x "$SANDBOX/bin/hub"
+  run python3 -c "import json,sys; d=json.loads(sys.argv[1])['channels']['ui']; print(d['group'], d['messages'], d['passed'], sorted(d['findings']))" "$("$SUBJECT" report --since 1d --channel ui --json)"
+  assert_output "rows 3 2 ['forbid: a slash command leads the text']"
 }

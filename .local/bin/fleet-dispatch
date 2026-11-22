@@ -6,6 +6,7 @@
 #   fleet-dispatch suggest [--json|--write]  the Candidates: open rows of every dev+ project, ranked, with why, auto, verdict, held; --write stores them for the hub fold
 #   fleet-dispatch report            latest verdict per row: picked or skipped, and why
 #   fleet-dispatch verdicts          the same as JSON lines, each with plan: true for a skip by a DISPATCH_PLAN_RULES rule
+#   fleet-dispatch exits [--dry-run] give each skipped agent row its rule's exit (skip_exits; each run pass does); --dry-run lists them
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
 #   fleet-dispatch promote --project P [--profile X] [--agent] [--dispatch] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item; --dispatch makes it a capped pull like dispatch's own
 #   fleet-dispatch pull-after ID     promote, and start unless low, the open rows gated #after/ID: agent-queue runs it when ID's item closes ok
@@ -17,6 +18,8 @@
 #                                    an urgent one from the human even under a dispatch hold or load,
 #                                    or board rows no pass has judged in that time (the human here or away; not at a full fleet),
 #                                    or a queue under DISPATCH_LOW_WATER with rows to pick and no start in twice that
+#   fleet-dispatch sprint-stalled    rc 1 naming each agent row of an open sprint with no queue item, session or open gate
+#                                    for DISPATCH_STARVED_MIN (watch sprint-stalled); rc 2 when a read fails
 #   fleet-dispatch stopped [--json]  rc 1 and one line when a hold has stopped every pass for DISPATCH_STARVED_MIN:
 #                                    how long, why, what clears it (hub Home, the briefing, queue-starved)
 #   fleet-dispatch stats             one JSON object: runnable work, starts and reaps in the last hour, flapping items
@@ -100,8 +103,10 @@ dispatch_conf_load
 : "${DISPATCH_LINE_MAX:=6}"   # sessions of one project waiting their landing turn (open_job queue) at which a pass starts no more of its items but urgent and red ones, so the room goes to other projects. Provisional: one playground train is 6 PRs, and on 2026-11-14 22 waiters sat behind trains that merged 5 of 25, medium confidence; revisit when a train is no longer 6 or the playground merges 4+ an hour
 # The fleet share cap (plan lets-burn-the-midnitgh-cosmic-ritchie P4): the fleet's work on itself gets a
 # capped share of starts, the products the rest (share_why).
-: "${DISPATCH_FLEET_PROJECTS=agent-runtime home-config}"   # the projects that are the fleet's work on itself, whose share of starts DISPATCH_FLEET_SHARE caps; empty is off
-: "${DISPATCH_FLEET_SHARE:=30}"   # percent of the queue items started in the last DISPATCH_FLEET_SHARE_H hours (hand starts included) at or over which a pass starts no DISPATCH_FLEET_PROJECTS item but an interrupt (red, canary, urgent, #requested, the human and plan floors), and the board fills from other projects, its tier-3 gate included; the cap lets go when nothing else can start. 0 is off. The human's pick (2026-11-18, ask PaIYoy a), against 7d starts of agent-runtime 45.7% and home-config 11.7%
+# DISPATCH_FLEET_PROJECTS, space-separated, are the projects whose share of starts DISPATCH_FLEET_SHARE
+# caps; unset, the ones the human put on `#prio/low` (agent-runtime and home-config, the fleet's work on
+# itself), read in share_state, as project precedence has one store; empty is off.
+: "${DISPATCH_FLEET_SHARE:=30}"   # percent of the queue items started in the last DISPATCH_FLEET_SHARE_H hours (hand starts included) at or over which a pass starts no DISPATCH_FLEET_PROJECTS item but a red or the human's own (urgent from them, #requested, the human and plan floors) (share_held), and the board fills from other projects, its cleanup lane included; the cap lets go when nothing else can start. 0 is off. The human's pick (2026-11-18, ask PaIYoy a), against 7d starts of agent-runtime 45.7% and home-config 11.7%
 : "${DISPATCH_FLEET_SHARE_H:=24}"   # hours of starts the share reads. Provisional: a day, so a week over the cap holds fleet work about a day, not a week (the human's "elastic, no rigidness", ask EF60vp), low confidence; revisit when the 7-day done split with the cap on still shows the fleet over 30%, or fleet reds wait (stale_urgent_d)
 : "${DISPATCH_SOURCE_FLOOR:=1}"   # starts a pass may make past a full pace target on a flat-plan source its week is leaving unused (claude-acct check underuse): the target counts every harness, so Codex sat 18% used at 71% of its week while the fleet held 26 of 25 (ar-2433); 0 is off
 : "${DISPATCH_TRAINEE_REPOS:=$HOME/.dotfiles}"   # the checkouts a trainee may work in, space-separated: its provider is a free one that sees the row and the repo, so public repos only (trainee_public_why)
@@ -115,7 +120,7 @@ dispatch_conf_load
 : "${DISPATCH_SPRINT_FLOOR:=3}"   # live urgent rows of an open sprint (tag `sprint`, which promote puts on an item whose board row the project's open window holds) the sprint floor keeps running past a full pace target and the weekly pace (sprint_floor_start): urgent playground v0.5.4 sprint rows sat hours with no session while dispatch ran at its pace target on agent-runtime items (ar-3816). Provisional: 3 is a guess at the urgent rows one sprint holds at once, low confidence; revisit when an urgent sprint row still pages queue-starved with the floor met; 0 is off
 : "${DISPATCH_SOURCE_PICKS:=codex:sol}"   # the <harness>:<model> pairs that floor may start; a pick whose source is not under-used starts nothing
 : "${DISPATCH_RUN_FLOOR:=0}"   # run sessions that may start past the weekly pace and idle gates: hand starts never wait on pace, so without one no run starts while they fill the week
-: "${DISPATCH_STARVED_MIN:=60}"   # an urgent or high item runnable this long pages (watch queue-starved)
+: "${DISPATCH_STARVED_MIN:=60}"   # an urgent or high item runnable this long pages (watch queue-starved), and an open sprint row nobody owns this long (watch sprint-stalled)
 : "${DISPATCH_IDLE_CAP_PCT:=50}"   # the idle-cap share: at its pace target, under this percent of the counted live sessions busy is a red (cmd_idle_cap, watch fleet-cap-mostly-idle). Provisional, low confidence: one half is the plan's guess (ar-3741-takeover, 2026-11-20, live WORKING 23 of 34 counted); revisit when it trips while takeover_sample has nothing left to close, or never trips in a week the target held
 : "${PLANNED_REBOOT_WINDOW_S:=1800}"   # a lost server this soon after a planned reboot's boot does not page (planned_reboot)
 # The first message restore types into a reopened conversation whose queue item is running (each %s: the
@@ -127,8 +132,10 @@ dispatch_conf_load
 : "${DISPATCH_JUDGE_MAX:=40}"   # rows judged per pass; the rest wait for the next pass
 : "${DISPATCH_JUDGE_CMD:=agentctl-run --agent dispatch-judge}"
 : "${DISPATCH_DETAIL_CHARS:=800}"   # of a row's detail lines, what the judge reads
-: "${DISPATCH_PLAN_RULES:=unclear bundle too-big}"   # policy rules whose skip sends an agent row to inbox-plan
-: "${DISPATCH_PLAN_BACKLOG:=10}"   # open #plan rows at which plan_skips tags no more; 0 turns it off
+: "${DISPATCH_PLAN_RULES:=unclear bundle too-big multi-area stage question tier-above unknown}"   # policy rules whose skip sends an agent row to inbox-plan (skip_exits)
+: "${DISPATCH_HUMAN_RULES:=needs-person release prod-write compliance personal design}"   # policy rules whose skip moves an agent row to the human sheet or improvements.md (skip_exits)
+: "${DISPATCH_PLAN_BACKLOG:=10}"   # open #plan rows at which skip_exits tags no more for a plan; 0 sends none
+: "${DISPATCH_EXIT_MAX:=40}"   # skip exits skip_exits takes a pass, so a backlog drains over passes; 0 is no cap
 # The judge's policy is its agent conf's PROMPT (agentctl-run puts it ahead of the rows); read
 # here so a policy edit re-judges rows (policy_sig), and for the rule ids a verdict may name.
 : "${DISPATCH_POLICY:=$(. "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/dispatch-judge.conf" 2>/dev/null; printf '%s' "${PROMPT:-}")}"
@@ -143,7 +150,7 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 # shellcheck source=../lib/fleet-hosts.sh
 . "${FLEET_HOSTS_LIB:-$HERE/../lib/fleet-hosts.sh}"
 : "${DISPATCH_WORKERS:=$HOME/.config/fleet-dispatch/workers.json}"
-: "${DISPATCH_KINDS:=$HOME/.config/fleet-dispatch/kinds.json}"   # per row type: rank, entry, rung, exit, stages, enabled, off (load_kinds)
+: "${DISPATCH_KINDS:=$HOME/.config/fleet-dispatch/kinds.json}"   # per row type: rank, entry, rung, exit, enabled (load_kinds)
 : "${DISPATCH_CLASSES:=$HOME/.config/fleet-dispatch/classes.json}"   # its `idle_pool` knob: the pools whose idle slots rank rows (load_pool_idle)
 : "${DISPATCH_LOADAVG:=/proc/loadavg}"
 : "${DISPATCH_START_WAIT:=120}"   # seconds a start waits for another start of a queue item to claim its own
@@ -279,7 +286,8 @@ prio_of() {
 }
 
 # The one rank every caller sorts by (the judge's cap, picks, fill --dry-run): a row an open sprint holds
-# (`sprint` 0, row_sprint), then cleanup of an AI system (cleanup_row), then the project's #prio, then, while
+# (`sprint` 0, row_sprint), its committed rows before the open version's rows it did not commit (`uncommitted`
+# 1, row_uncommitted), then cleanup of an AI system (cleanup_row), then the project's #prio, then, while
 # any row's repo gates on an idle pool (`pool_idle`, load_pool_idle), the head of the feed rank (frank's
 # millions: due bucket, priority, #requested, notes-cli Rank::key) and then such a row (pool_term, a
 # tie-breaker below every human rank and above age; with no pool idle it orders nothing), then the row's
@@ -311,7 +319,7 @@ def rank_fields($today; $pprio):
          due: (if $dd == null then 3 elif $dd < 0 then 0 elif $dd == 0 then 1 elif $dd <= 3 then 2 else 3 end),
          due_in: $dd, age: (if $cd == null then 0 else -$cd end),
          req: (if $b | test("(^|\\s)#requested(\\s|$)") then 0 else 1 end)}
-  | . + {why: ([(if .sprint == 0 then "open sprint" else empty end),
+  | . + {why: ([(if .sprint != 0 then empty elif (.uncommitted // 0) == 1 then "open sprint, uncommitted" else "open sprint" end),
                 (if .cleanup == 0 then "cleanup" else empty end),
                 (if $pprio != "" then "\($pprio) project" else empty end),
                 (if (.pool_idle // "") != "" then "idle pool \(.pool_idle)" else empty end),
@@ -327,7 +335,7 @@ def rank_fields($today; $pprio):
 def area_key: if (.area // "") == "" then "row:\(.key)" else .area end;
 def pool_term($pi): if $pi then [((.frank // 1e15) / 1000000 | floor), (if (.pool_idle // "") != "" then 0 else 1 end)] else [] end;
 def rank: any(.[]; (.pool_idle // "") != "") as $pi
-  | sort_by((.sprint // 1), (.cleanup // 1), (.pprio // 2), pool_term($pi), (.frank // 1e15), (.wrank // 0), (.krank // 1), ({"prod": 0, "beta": 1}[.stage] // 2), (.t3rank // []));
+  | sort_by((.sprint // 1), (.uncommitted // 0), (.cleanup // 1), (.pprio // 2), pool_term($pi), (.frank // 1e15), (.wrank // 0), (.krank // 1), ({"prod": 0, "beta": 1}[.stage] // 2), (.t3rank // []));
 '
 
 # repo_dir <project> -> the checkout its code lives in; nothing for a notes-only project.
@@ -372,27 +380,27 @@ row_tier() {
 
 # The kind registry, kinds.json, is keyed by notes-cli's ROW_TYPES (a bats test pins the two): per
 # type its `rank` within a priority, the `label` why names, the `entry` skill a session starts on,
-# its autonomy `rung` (build, propose, human), its `exit` (pr, doc+ask, proof), the `stages` it dispatches
-# at, `enabled`, an optional `off` list of projects, and `cleanup`: true when a row of that kind in a
+# its autonomy `rung` (build, propose, human), its `exit` (pr, doc+ask, proof), `enabled`, and
+# `cleanup`: true when a row of that kind in a
 # DISPATCH_CLEANUP_PROJECTS project is cleanup, or an ERE its body must match too (cleanup_row). A
 # kind that is off never dispatches a row: the `release` kind is off, since no row starts a cut
 # (ucp-2709 P15). A row with no type, or one the registry lacks, ranks 1, is not cleanup, dispatches
 # and starts /one-shot; with no registry every kind does.
-declare -gA KIND_RANK=() KIND_LABEL=() KIND_ENTRY=() KIND_ON=() KIND_STAGES=() KIND_OFF=() KIND_EXIT=() KIND_CLEANUP=()
+declare -gA KIND_RANK=() KIND_LABEL=() KIND_ENTRY=() KIND_ON=() KIND_EXIT=() KIND_CLEANUP=()
 KINDS_LOADED=0
 load_kinds() {
-  local k r l e on st off x c
+  local k r l e on x c
   [ "$KINDS_LOADED" = 1 ] && return 0
   KINDS_LOADED=1
   [ -r "$DISPATCH_KINDS" ] || { say "no kind registry at $DISPATCH_KINDS: every kind ranks alike and dispatches"; return 0; }
   # "-" stands for empty, because read collapses empty tab fields; join, not @tsv, so a cleanup
   # pattern keeps its backslashes.
-  while IFS=$'\t' read -r k r l e on st off x c; do
-    KIND_RANK[$k]=$r KIND_LABEL[$k]=${l#-} KIND_ENTRY[$k]=${e#-} KIND_ON[$k]=$on KIND_STAGES[$k]=$st KIND_OFF[$k]=$off KIND_EXIT[$k]=${x#-}
+  while IFS=$'\t' read -r k r l e on x c; do
+    KIND_RANK[$k]=$r KIND_LABEL[$k]=${l#-} KIND_ENTRY[$k]=${e#-} KIND_ON[$k]=$on KIND_EXIT[$k]=${x#-}
     KIND_CLEANUP[$k]=${c#-}
   done < <(jq -r 'def d: if . == "" then "-" else . end;
     to_entries[] | [.key, (.value.rank // 1), (.value.label // "" | d), (.value.entry // "" | d), (.value.enabled // false),
-      ((.value.stages // []) | join(",") | d), ((.value.off // []) | join(",") | d), (.value.exit // "" | d),
+      (.value.exit // "" | d),
       (.value.cleanup // false | if . == true then "true" elif type == "string" then d else "-" end)]
     | map(tostring | gsub("[\t\n]"; " ")) | join("\t")' "$DISPATCH_KINDS")
 }
@@ -427,15 +435,12 @@ row_kinds_load() {
   for i in "${!texts[@]}"; do ROW_KIND[${texts[$i]}]=${types[$i]}; done
 }
 
-# kind_off <kind> <project> <stage> [<row text>] -> why the registry keeps a row of that kind from
-# dispatching there, nothing when it may: the kind is off, off in that project, or not at that stage.
+# kind_off <kind> -> why the registry keeps a row of that kind from dispatching, nothing when it may:
+# the kind is off. The project's stage is dispatchable's to read, once.
 kind_off() {
   local k="$1"
   [ -n "$k" ] && [ -n "${KIND_ON[$k]+x}" ] || return 0
-  if [ "${KIND_ON[$k]}" != true ]; then echo "kind $k is off"
-  elif [[ ",${KIND_OFF[$k]}," == *",$2,"* ]]; then echo "kind $k is off in $2"
-  elif [[ ",${KIND_STAGES[$k]}," != *",$3,"* ]]; then echo "kind $k does not dispatch at $3"
-  fi
+  [ "${KIND_ON[$k]}" = true ] || echo "kind $k is off"
 }
 
 # row_size <text> -> S, M, L or XL from the row's `#size/` tag, nothing when it has none: the one
@@ -624,9 +629,13 @@ load_extras() {
 }
 
 # SPRINT_ROW["<project>\t<id>"]: the open rows of each open sprint, from the board feed's `sprints` (a queued
-# sprint has not started), read by load_sprints from the one board read load_extras makes, or on first use.
-# SPRINT_PROJECT[<project>]: a project one of whose open sprint's rows nobody has started yet (`open`, not
-# `doing`), the projects the sprint floor's board scan reads (sprint_top_up).
+# sprint has not started), read by load_sprints from the one board read load_extras makes, or on first use:
+# 1 for a row its window holds (`tasks`, the snapshot and its interrupts), 2 for one of the open version's
+# unstarted agent rows it does not (`uncommitted`, notes-cli window::open_window), so a row that unblocks
+# mid-sprint ranks as sprint at once, after the committed ones (row_uncommitted), with no relock. While only
+# the snapshot counted, 20 open v0.5.5 rows waited on a human relock (2026-11-21, ar-4331).
+# SPRINT_PROJECT[<project>]: a project one of whose open sprint's rows nobody has started yet (`open` or
+# `uncommitted`, not `doing`), the projects the sprint floor's board scan reads (sprint_top_up).
 declare -gA SPRINT_ROW=() SPRINT_PROJECT=()
 SPRINT_LOADED=''
 load_sprints() {
@@ -634,10 +643,13 @@ load_sprints() {
   SPRINT_ROW=() SPRINT_PROJECT=() SPRINT_LOADED=1
   while IFS=$'\t' read -r p i st; do
     [ -n "$p" ] || continue
-    SPRINT_ROW["$p"$'\t'"$i"]=1
-    [ "$st" != open ] || SPRINT_PROJECT["$p"]=1
-  done < <(jq -r '.sprints[]? | select(.queued != true) | .project as $p | .tasks[]?
-    | select((.state == "open" or .state == "doing") and .id != null) | "\($p)\t\(.id)\t\(.state)"' <<<"$1" 2>/dev/null)
+    if [ "$st" != uncommitted ]; then SPRINT_ROW["$p"$'\t'"$i"]=1
+    elif [ -z "${SPRINT_ROW["$p"$'\t'"$i"]:-}" ]; then SPRINT_ROW["$p"$'\t'"$i"]=2
+    fi
+    [ "$st" = doing ] || SPRINT_PROJECT["$p"]=1
+  done < <(jq -r '.sprints[]? | select(.queued != true) | .project as $p
+    | ((.tasks[]? | select((.state == "open" or .state == "doing") and .id != null) | "\($p)\t\(.id)\t\(.state)"),
+       (.uncommitted[]? | "\($p)\t\(.)\tuncommitted"))' <<<"$1" 2>/dev/null)
 }
 # sprint_rows_ready -- load_sprints on first use; a board read that fails loads nothing, so the next use reads again.
 sprint_rows_ready() {
@@ -650,6 +662,9 @@ sprint_rows_ready() {
 # row_sprint <project> <id> -> 0 when an open sprint holds the row (SPRINT_ROW), else 1: a candidate's
 # `sprint`, which RANK_JQ ranks first as `cleanup` ranks a cleanup row, and promote tags the item with.
 row_sprint() { if [ -n "${SPRINT_ROW["$1"$'\t'"$2"]:-}" ]; then echo 0; else echo 1; fi; }
+# row_uncommitted <project> <id> -> 1 for a sprint row its window did not commit (SPRINT_ROW 2), else 0: the
+# rank key after `sprint`, so committed rows rank first within the sprint.
+row_uncommitted() { if [ "${SPRINT_ROW["$1"$'\t'"$2"]:-}" = 2 ]; then echo 1; else echo 0; fi; }
 
 # POOL_IDLE["<repo>"]=<pool>: each repo whose CI gates on an idle pool, read once a pass (its entry point
 # calls load_pool_idle before its subshells, as load_gates) from Prometheus, the source the starved-pool
@@ -702,16 +717,16 @@ in_backlog() {
   [[ " ${m%%-->*} " == *' tier:backlog '* ]]
 }
 
-# row_off <project> <stage> <key> <text> -> why the row may not dispatch whatever the judge says:
+# row_off <project> <key> <text> -> why the row may not dispatch whatever the judge says:
 # its kind (kind_off), it is a parent, which closes when its children do, or the sweep put it on the
 # backlog tier (`tier:backlog`, notes project_sweep), off the board until it climbs back into the
 # budget. Nothing when it may. A hand `fleet-dispatch start` reads none of this. With BACKLOG_OK set
 # (trainee_rows) the backlog tier is no bar: that budget paces claude's work, not a free trainee key's.
 row_off() {
   local why
-  why=$(kind_off "$(row_kind "$4")" "$1" "$2" "$4")
-  [ -n "$why" ] || [ -z "${PAR[$3]:-}" ] || why="a parent: open rows name it in #of/"
-  [ -n "$why" ] || [ -n "${BACKLOG_OK:-}" ] || ! in_backlog "$4" || why="on the backlog tier: past the board budget"
+  why=$(kind_off "$(row_kind "$3")")
+  [ -n "$why" ] || [ -z "${PAR[$2]:-}" ] || why="a parent: open rows name it in #of/"
+  [ -n "$why" ] || [ -n "${BACKLOG_OK:-}" ] || ! in_backlog "$3" || why="on the backlog tier: past the board budget"
   printf '%s' "$why"
 }
 
@@ -1142,11 +1157,16 @@ line_why() {
 }
 
 # SHARE_JQ: `share_held($s)` is an item the fleet share cap holds, $s being SHARE_STATE: the share is
-# full and the item is on a fleet project and is no interrupt (red, canary, urgent or #requested: the
-# human's lane for reds and their own asks). The one test share_why and queue_depth apply.
+# full and the item is on a fleet project, no red, no #requested (the human's ask, ask XI2fDO) and no
+# urgent `from: human` (human_urgent's urgent test; its fresh asks and plan phases pass on the human
+# floor, HUMAN_PASS). A canary or any other urgent waits like the rest, a board row's #urgent
+# included (`from: board:`): 180 of the 1132 starts in the 3 days to 2026-11-21 passed the cap that
+# way while the fleet held 79% of them (plan swhow-me-asll-data-modular-otter P3). The one test
+# share_why and queue_depth apply.
 # shellcheck disable=SC2016
 SHARE_JQ='def share_held($s): (.project // "") as $p | $s.full and any($s.projects[]; . == $p)
-  and .priority != "urgent" and ((" " + (.tags // "") + " ") | test(" #?(red|canary|requested) ") | not);'
+  and ((.priority == "urgent" and (.from // "human") == "human") | not)
+  and ((" " + (.tags // "") + " ") | test(" #?(red|requested) ") | not);'
 
 # share_state -- SHARE_STATE, read once a process: {full, fleet, total, projects}, the queue items
 # started in the last DISPATCH_FLEET_SHARE_H hours (any state, hand starts and cancelled ones too, as
@@ -1157,11 +1177,17 @@ SHARE_JQ='def share_held($s): (.project // "") as $p | $s.full and any($s.projec
 share_state() {
   [ -z "${SHARE_STATE:-}" ] || return 0
   SHARE_STATE='{"full":false,"fleet":0,"total":0,"projects":[]}'
-  [ "${DISPATCH_FLEET_SHARE:-0}" -gt 0 ] 2>/dev/null && [ -n "${DISPATCH_FLEET_PROJECTS// }" ] || return 0
-  local s
+  [ "${DISPATCH_FLEET_SHARE:-0}" -gt 0 ] 2>/dev/null || return 0
+  local s prios ps=${DISPATCH_FLEET_PROJECTS-}
+  if [ -z "${DISPATCH_FLEET_PROJECTS+x}" ]; then
+    # A failed read is `unread`, which headroom names, so the cap is never off without a word.
+    prios=$(notes projects --prios 2>/dev/null) || { SHARE_STATE='{"full":false,"fleet":0,"total":0,"projects":[],"unread":true}'; return 0; }
+    ps=$(awk -F '\t' '$2 == "low" { printf "%s%s", (n++ ? " " : ""), $1 }' <<<"$prios")
+  fi
+  [ -n "${ps// }" ] || return 0
   s=$({ agent-queue list --json --state done --since "$(( (DISPATCH_FLEET_SHARE_H + 23) / 24 ))d" &&
     agent-queue list --json --state active; } 2>/dev/null |
-    jq -sc --argjson cut "$(( $(date +%s) - DISPATCH_FLEET_SHARE_H * 3600 ))" --arg p "$DISPATCH_FLEET_PROJECTS" '
+    jq -sc --argjson cut "$(( $(date +%s) - DISPATCH_FLEET_SHARE_H * 3600 ))" --arg p "$ps" '
       [$p | splits(" +") | select(. != "")] as $ps
       | [.[] | select(((.started // "") | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch 0) >= $cut)]
       | {fleet: (map(select(.project as $x | any($ps[]; . == $x))) | length), total: length, projects: $ps}') &&
@@ -1186,10 +1212,12 @@ share_full() { share_state; [ "$(jq -r .full <<<"$SHARE_STATE")" = true ]; }
 # share_why <item json> -> why the fleet share cap holds the item, or nothing: share_held, outside the
 # human and plan floors (HUMAN_PASS), which are the human's own work and never cut off, and outside the
 # trainee floor (TRAINEE_PASS), whose start runs on a free trainee key and spends no session the cap
-# guards, as a canary's does not. pick_item lets the first held item go when nothing else can start, so
-# the cap never leaves a slot idle.
+# guards, and the canary floor (CANARY_PASS), whose DISPATCH_CANARY_FLOOR is already the count of
+# canaries kept running: the cap would make it a no-op, as a floor's list never lets the cap go.
+# Elsewhere a canary waits like any fleet item. pick_item lets the first held item go when nothing
+# else can start, so the cap never leaves a slot idle.
 share_why() {
-  [ "${HUMAN_PASS:-0}${TRAINEE_PASS:-0}" = 00 ] || return 0
+  [ "${HUMAN_PASS:-0}${TRAINEE_PASS:-0}${CANARY_PASS:-0}" = 000 ] || return 0
   share_state
   jq -r --argjson s "$SHARE_STATE" --argjson pct "${DISPATCH_FLEET_SHARE:-0}" --argjson h "${DISPATCH_FLEET_SHARE_H:-24}" "$SHARE_JQ"'
     select(share_held($s))
@@ -1671,7 +1699,7 @@ cmd_candidates() {
           case "$text" in '- [ ]'*) ;; *) continue ;; esac
           plan=${PLN["$name"$'\t'"$lane"$'\t'"$key"]:-0}
           [ "$plan" = 0 ] || [ "${SUGGEST:-0}" = 1 ] || continue
-          off=$(row_off "$name" "$stage" "$key" "$text")
+          off=$(row_off "$name" "$key" "$text")
           [ -z "$off" ] || [ "${SUGGEST:-0}" = 1 ] || continue
           gates=${GAT["$name"$'\t'"$lane"$'\t'"$key"]:-}
           gwait=''; [ -z "$gates" ] || gwait=$(gate_wait "$gates")
@@ -1695,13 +1723,13 @@ cmd_candidates() {
             --argjson details "$dj" --arg dsig "$dsig" --argjson planned "$planned" --argjson plan "$plan" \
             --arg line "$line" --argjson prio "$(prio_rank "$text")" --arg priority "$(row_priority "$text" "$name")" --argjson tier "$tier" \
             --arg worker "$worker" --argjson wrank "$rank" --arg today "$today" --arg pprio "$pprio" \
-            --argjson cleanup "$(cleanup_row "$name" "$text")" --argjson sprint "$(row_sprint "$name" "$key")" --arg nobody "$nobody" --argjson active "$active" \
+            --argjson cleanup "$(cleanup_row "$name" "$text")" --argjson sprint "$(row_sprint "$name" "$key")" --argjson uncommitted "$(row_uncommitted "$name" "$key")" --arg nobody "$nobody" --argjson active "$active" \
             --arg kind "$kind" --argjson krank "${KIND_RANK[${kind:-_}]:-1}" --arg klabel "${KIND_LABEL[${kind:-_}]:-}" \
             --arg rsize "$(row_size "$text")" --arg off "$off" --argjson frank "${RNK["$name"$'\t'"$lane"$'\t'"$key"]:-null}" \
             --arg gates "$gates" --arg gwait "$gwait" --arg rdue "${RLD["$name"$'\t'"$lane"$'\t'"$key"]:-}" --arg pidle "$pidle" \
             "$RANK_JQ"'{profile: $profile, project: $project, stage: $stage, lane: $lane, key: $key,
               text: $text, repo: $repo, prio: $prio, priority: $priority, tier: $tier, line: $line,
-              worker: $worker, wrank: $wrank, frank: $frank, cleanup: $cleanup, sprint: $sprint, details: $details, dsig: $dsig, planned: ($planned == 1),
+              worker: $worker, wrank: $wrank, frank: $frank, cleanup: $cleanup, sprint: $sprint, uncommitted: $uncommitted, details: $details, dsig: $dsig, planned: ($planned == 1),
               kind: $kind, krank: $krank, klabel: $klabel, row_size: $rsize}
               + (if $plan == 1 then {plan: true} else {} end)
               + (if $off != "" then {off: $off} else {} end)
@@ -1817,7 +1845,7 @@ There are $n rows above. Return exactly $n verdicts in the structured output, on
         and (.project | type) == "string" and (.lane | type) == "string"
         and (.key | type) == "string" and (.verdict == "dispatch" or .verdict == "skip"))
       | ([.project, .lane, .key] | tostring) as $k | select(any($c[]; .k == $k))
-      | {project, lane, key, tier, size, area, clear, agent_only, tier3_only, verdict, rule, reason, at: $at,
+      | {project, lane, key, tier, size, area, clear, agent_only, verdict, rule, reason, at: $at,
          policy: $sig, line: ([$c[] | select(.k == $k) | .line] | first),
          dsig: ([$c[] | select(.k == $k) | .dsig] | first), judge_call: $call}
       | . as $v | if any($rules[]; . == $v.rule) then $v
@@ -1860,56 +1888,134 @@ verdict_errors() {
     '{project, lane, key, verdict: "error", reason: $r, at: $at, policy: $sig, line, judge_call: $call}' <<<"$1"
 }
 
-# plan_skips -- tag #plan each open agent row the judge skipped by one of DISPATCH_PLAN_RULES (not
-# defined enough to start), and each cleanup row (cleanup_row) it read as not clear or size L or XL
-# under a dispatch or a tier-3 skip (that skip hid both, so those rows never moved: 87 on
-# 2026-11-06; a needs-person, release, prod-write or decide skip waits on the human, not a plan), that
-# inbox-plan never planned (no `goal:` detail), while fewer than DISPATCH_PLAN_BACKLOG #plan rows
-# are open, then kick inbox-plan. Its plan splits or rewrites the row, so the judge reads it again
-# with the plan. A design or question skip waits on the human, not a plan. A #requested row also
-# gets #go: the judge asked for this plan, not the person, so inbox-plan plans it without holding it
-# for their review. A backlog-tier row is left alone: dispatch does not pull it, so a plan would
-# wait for the sweep to lift it. Sets PLAN_TAGGED.
-plan_skips() {
-  local board rows room p prof id raw line dsig dj why size req
+# skip_exits [--dry-run] -- give each open agent row whose latest verdict is a skip, still current
+# for the row's text, the exit its rule names (policy.md "Always skip"), so no skip parks a row:
+#  - plan (DISPATCH_PLAN_RULES): tag it #plan, and #go beside it on a #requested row (the judge asked
+#    for this plan, not the person, so inbox-plan does not hold it for their review), while fewer than
+#    DISPATCH_PLAN_BACKLOG #plan rows are open, then kick inbox-plan; its plan splits or rewrites the
+#    row, so the judge reads it again with the plan. A row the rest wait behind keeps its verdict and
+#    is tagged on a later pass. A row inbox-plan already planned (a `goal:` detail) that the judge,
+#    reading that plan, still skips by such a rule takes the human exit: a second plan would not help.
+#  - human (DISPATCH_HUMAN_RULES): an #urgent, #high, bare or #requested row is filed on the human sheet
+#    (human_sheet_row), a #low one kept in improvements.md (`notes improve`), its #worker/ tag off so no
+#    worker takes it there; then the agent row is dropped with a --why naming where it went.
+#  - waits: gated #after/<row> on the first open row its verdict's reason, else its text, names (its
+#    own id and #of/ links aside) or #pr/<owner>/<repo>/<N> on a PR named so, when the judge read the
+#    rest of it as one it would start (S or M, clear, agent-only, one area): a cleared gate starts a
+#    row with no verdict. Any other waits skip takes the plan exit.
+# Each exit taken appends the verdict again with `exit` (and `exit_at`) to verdicts.jsonl, so counting
+# exits is a jq query, and that latest verdict, carrying its exit, is not taken again. At most
+# DISPATCH_EXIT_MAX exits a pass (0 is no cap), so a backlog of skips drains over passes, not in one. A
+# backlog-tier row is left alone, and so is one already started: dispatch does not pull it. --dry-run writes
+# nothing and prints `<exit> TAB <project> TAB <id> TAB <rule>` per row (`plan-wait` for a plan row
+# past the room), then the counts. Sets PLAN_TAGGED and EXITS_TAKEN.
+skip_exits() {
+  local dry='' board rows room p prof id raw line dsig dj rule req prio planned d e body why where gate
   local -a add
-  PLAN_TAGGED=0
-  [ "$DISPATCH_PLAN_BACKLOG" -gt 0 ] || return 0
-  board=$(notes board --json 2>/dev/null) || { say "plan_skips: notes board --json failed"; return 0; }
+  local -A ids=() n=()
+  case "${1:-}" in
+    '') ;;
+    --dry-run) dry=1 ;;
+    *) say "usage: fleet-dispatch exits [--dry-run]"; return 2 ;;
+  esac
+  PLAN_TAGGED=0 EXITS_TAKEN=0
+  board=$(notes board --json 2>/dev/null) || { say "skip_exits: notes board --json failed"; return 0; }
   room=$(jq -r "$ROW_JQ"'[.rows[]? | select(plan_tagged)] | length' <<<"$board")
   room=$(( DISPATCH_PLAN_BACKLOG - ${room:-0} ))
-  [ "$room" -gt 0 ] || return 0
-  rows=$(jq -r --argjson prules "$(policy_rules)" --arg rules "$DISPATCH_PLAN_RULES" --argjson n "$DISPATCH_DETAIL_CHARS" \
+  while IFS= read -r id; do [ -z "$id" ] || ids[$id]=1; done < <(jq -r '.rows[]? | select(.id != null) | .id' <<<"$board")
+  rows=$(jq -r --argjson prules "$(policy_rules)" --argjson n "$DISPATCH_DETAIL_CHARS" \
       --slurpfile v <(latest_verdicts) "$ROW_JQ"'
-    ($rules | split(" ") | map(select(length > 0))) as $r
-    | ($v | map(select(.lane == "agent" and usable($prules)))
-       | map(. + {why: (if .verdict == "skip" and (.rule as $u | $r | index($u)) then "rule"
-                        elif .verdict == "skip" and .rule != "tier3" and .tier3_only != true then empty
-                        elif .clear == false then "unclear" else "size:" + ((.size // "") | ascii_upcase) end)})
+    ($v | map(select(.lane == "agent" and .verdict == "skip" and .exit == null and usable($prules)))
        | map({key: "\(.project)\t\(.key)", value: .}) | from_entries) as $by
-    | .rows[]? | select(.lane == "agent" and .id != null and .backlog != true and (plan_tagged | not) and (planned | not))
+    | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and .backlog != true and (plan_tagged | not))
     | $by["\(.project)\t\(.id)"] as $d | select($d != null)
-    | "\(.profile)\t\(.project)\t\(.id)\t\($d.line)\t\($d.dsig // "-")\t\(details_json($n))\t\($d.why)\t\(.requested == true)\t\(.raw)"' <<<"$board")
-  # raw last: read hands it the rest of the line; details_json is JSON, with no bare tab. No field
-  # is empty: a tab is IFS whitespace, so read would fold an empty one into its neighbour
-  while IFS=$'\t' read -r prof p id line dsig dj why req raw; do
-    [ -n "$id" ] && [ "$room" -gt 0 ] || continue
-    if [ "$why" != rule ]; then
-      [ "$(cleanup_row "$p" "$raw")" = 0 ] || continue
-      size=$(row_size "$raw" || true); size=${size:-${why#size:}}
-      [ "$why" = unclear ] || [ "$size" = L ] || [ "$size" = XL ] || continue
-    fi
+    | "\(.profile)\t\(.project)\t\(.id)\t\($d.line)\t\($d.dsig // "-")\t\(details_json($n))\t\($d.rule)\t\(.requested == true)\t\(planned)\t\($d | tojson)\t\(.raw)"' <<<"$board")
+  # raw last: read hands it the rest of the line; details_json and the verdict are JSON, with no bare
+  # tab. No field is empty: a tab is IFS whitespace, so read would fold an empty one into its neighbour
+  while IFS=$'\t' read -r prof p id line dsig dj rule req planned d raw; do
+    [ -n "$id" ] || continue
     # the verdict must still hold for the row as it reads now (ROW_JQ holds)
     [ "$(row_sig "$raw")" = "$line" ] || continue
     [ "$dsig" = - ] || [ "$(detail_sig "$dj")" = "$dsig" ] || continue
-    add=(--add plan); [ "$req" = true ] && add+=(--add go)
-    if np "$prof" ptask "$p" --agent tag "${add[@]}" "$id" >/dev/null 2>&1; then
-      PLAN_TAGGED=$(( PLAN_TAGGED + 1 )); room=$(( room - 1 ))
-    else say "plan_skips: could not tag $p $id"; fi
+    body=${raw#- \[?\] }; body=${body%%<!--*}; body=${body%"${body##*[![:space:]]}"}
+    e='' gate=''
+    if [ "$rule" = waits ]; then
+      gate=$(waits_gate "$id" "$(jq -r '.reason // ""' <<<"$d")" "$body")
+      if [ -n "$gate" ] && [[ $gate == after/* ]] && [ -z "${ids[${gate#after/}]:-}" ]; then gate=''; fi
+      [ -n "$gate" ] && jq -e '(.size | IN("S", "M")) and .clear == true and .agent_only == true and ((.area // "") != "")' <<<"$d" >/dev/null || gate=''
+      if [ -n "$gate" ]; then e=gate; else e=plan; fi
+    elif [[ " $DISPATCH_PLAN_RULES " == *" $rule "* ]]; then e=plan
+    elif [[ " $DISPATCH_HUMAN_RULES " == *" $rule "* ]]; then e=human
+    fi
+    [ -n "$e" ] || continue
+    if [ "$e" = plan ] && [ "$planned" = true ]; then
+      # a plan made before the verdict that dsig cannot date: the judge may not have read it yet
+      [ "$dsig" != - ] || continue
+      e=human
+    fi
+    if [ "$e" = human ]; then
+      prio=$(prio_rank "$body")
+      if [ "$req" = true ] || [ "$prio" -le 1 ]; then e=sheet; else e=improve; fi
+    fi
+    if [ "$e" = plan ] && [ "$room" -le 0 ]; then
+      [ -z "$dry" ] || { printf 'plan-wait\t%s\t%s\t%s\n' "$p" "$id" "$rule"; n[plan-wait]=$(( ${n[plan-wait]:-0} + 1 )); }
+      continue
+    fi
+    if [ -n "$dry" ]; then
+      printf '%s\t%s\t%s\t%s\n' "${gate:-$e}" "$p" "$id" "$rule"
+      n[$e]=$(( ${n[$e]:-0} + 1 )); [ "$e" != plan ] || room=$(( room - 1 ))
+      continue
+    fi
+    [ "$DISPATCH_EXIT_MAX" = 0 ] || [ "$EXITS_TAKEN" -lt "$DISPATCH_EXIT_MAX" ] || break
+    why="dispatch skipped it ($rule): $(jq -r '.reason // ""' <<<"$d")"
+    case "$e" in
+      plan)
+        add=(--add plan); [ "$req" = true ] && add+=(--add go)
+        np "$prof" ptask "$p" --agent tag "${add[@]}" "$id" >/dev/null 2>&1 || { say "skip_exits: could not tag $p $id for a plan"; continue; }
+        PLAN_TAGGED=$(( PLAN_TAGGED + 1 )); room=$(( room - 1 )) ;;
+      gate)
+        np "$prof" ptask "$p" --agent tag --add "$gate" "$id" >/dev/null 2>&1 || { say "skip_exits: could not gate $p $id #$gate"; continue; }
+        e=$gate ;;
+      sheet | improve)
+        body=$(sed -E 's/(^|[[:space:]])#worker\/[^[:space:]]+//g; s/^[[:space:]]+//' <<<"$body")
+        if [ "$e" = sheet ]; then
+          where=$(human_sheet_row "$(jq -cn --arg pr "$prof" --arg p "$p" '{profile: $pr, project: $p}')" "$body (agent row $id)")
+          case "$where" in "not filed"*) say "skip_exits: $p $id $where"; continue ;; esac
+        else
+          np "$prof" improve "$p" --why "$why" -- "$body" >/dev/null 2>&1 || { say "skip_exits: notes improve refused $p $id"; continue; }
+          where="kept in $p improvements.md"
+        fi
+        # Filed is the exit: a drop that fails is said and its exit recorded all the same, so a later pass
+        # files no second copy; the agent row stays open for a hand drop.
+        np "$prof" ptask "$p" --agent drop "$id" --why "$where: $why" >/dev/null 2>&1 ||
+          say "skip_exits: $p $id is $where, but the agent row would not drop: drop it by hand" ;;
+    esac
+    EXITS_TAKEN=$(( EXITS_TAKEN + 1 ))
+    jq -c --arg e "$e" --arg at "$(date -Iseconds)" '. + {exit: $e, exit_at: $at}' <<<"$d" >> "$VERDICTS"
   done <<<"$rows"
+  if [ -n "$dry" ]; then
+    for e in "${!n[@]}"; do printf '%s %s\n' "$e" "${n[$e]}"; done | sort | paste -sd' ' | sed 's/^/exits: /'
+    return 0
+  fi
+  [ "$EXITS_TAKEN" = 0 ] || say "gave $EXITS_TAKEN skipped row(s) their exit"
   [ "$PLAN_TAGGED" = 0 ] && return 0
   say "tagged $PLAN_TAGGED for a plan"
-  "$HERE/agentctl-inbox-plan" --kick || say "plan_skips: could not start inbox-plan"
+  "$HERE/agentctl-inbox-plan" --kick || say "skip_exits: could not start inbox-plan"
+}
+
+# waits_gate <own id> <text>... -> the gate a waits skip waits behind: `pr/<owner>/<repo>/<N>` for the
+# first `<owner>/<repo>#<N>`, else `after/<id>` for the first row id (not <own id>, not an #of/ or
+# #after/ link), searching each text in turn; nothing when none names one.
+waits_gate() {
+  local own="$1" t m
+  shift
+  for t in "$@"; do
+    t=$(sed -E 's/(^|[[:space:]])#(of|after)\/[^[:space:]]*//g' <<<"$t")
+    m=$(grep -oE '\b[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+\b' <<<"$t" | awk 'NR==1')
+    [ -z "$m" ] || { echo "pr/${m%#*}/${m##*#}"; return 0; }
+    m=$(grep -oE '\b[a-z]{2,4}-[0-9]+\b' <<<"$t" | grep -vxF -- "$own" | awk 'NR==1')
+    [ -z "$m" ] || { echo "after/$m"; return 0; }
+  done
 }
 
 # suggest [--json] -- the Candidates list: every open agent-lane row (and every row a worker takes)
@@ -4699,12 +4805,12 @@ source_floor_start() {
   [ "${DISPATCH_SOURCE_FLOOR:-0}" -gt 0 ] 2>/dev/null || return "$FLOOR_SHUT"
   items=$(jq -c 'select(((" " + (.tags // "") + " ") | contains(" red ")) | not)' <<<"$1")
   [ -n "$items" ] || return "$FLOOR_SHUT"
-  [ -z "$(SOURCE_PICK=${DISPATCH_SOURCE_PICKS%% *} gate)" ] || return "$FLOOR_SHUT"
   for pick in $DISPATCH_SOURCE_PICKS; do
     [ "${SOURCE_STARTED:-0}" -lt "$DISPATCH_SOURCE_FLOOR" ] || break
     src=$(harness_source "${pick%%:*}"); [ -n "$src" ] || continue
     out=$(claude-acct check underuse "$src" 2>&1)
     [[ "$out" == under-used* ]] || continue   # not under-used, unread and not a paced source all say something else
+    [ -z "$(SOURCE_PICK=$pick gate)" ] || return "$FLOOR_SHUT"   # after the cached check: every pass with room asks
     say "$2; $out, so ${pick%%:*} takes work on the source floor (DISPATCH_SOURCE_FLOOR=$DISPATCH_SOURCE_FLOOR)"
     SOURCE_PICK=$pick FLOOR_QUIET=1 UNITS_FREE=$(( DISPATCH_SOURCE_FLOOR * 2 )) start_items "$items" $(( DISPATCH_SOURCE_FLOOR - ${SOURCE_STARTED:-0} )); rc=$?
     [ "$rc" = 0 ] || return "$rc"
@@ -4940,7 +5046,7 @@ trainee_reason_key() {
 # item_tier and trainee_public_why. The judged rows alone (day_picks) were about 9 a day of 653 open
 # #pts/1-3 rows (2026-11-19). A verdict still holds a row as picks and t3_ready read it: `failed` (its
 # session died), and a `skip` the policy still defines for the row's current text, unless the row is
-# gated or tier 3 is the skip's only reason (tier3_only, what t3_ready takes); an area a verdict
+# gated; an area a verdict
 # named and an active item holds (queue_areas) is skipped. A tier-3 row gets t3_picks' worker.
 trainee_rows() {
   local d pid
@@ -4957,7 +5063,7 @@ trainee_rows() {
     --slurpfile v <(latest_verdicts) "$RANK_JQ$ROW_JQ"'
     ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
     | map(select(.lane == "agent") | . as $c | $by[[.project, .lane, .key] | tostring] as $d
-      | select($d == null or ($d.verdict != "failed" and ($c.gated == true or $d.verdict != "skip" or $d.tier3_only == true
+      | select($d == null or ($d.verdict != "failed" and ($c.gated == true or $d.verdict != "skip"
           or (($d | usable($prules)) and ($d | holds($c))) == false)))
       | . + {area: (if ($d.area | type) == "string" then $d.area | ascii_downcase else "" end)}
       | select(.area == "" or ("\(.project | ascii_downcase)/\(.area)" as $a | $busy | index($a) | not))
@@ -5153,7 +5259,15 @@ trainee_land_start() {
 # A runnable item left waiting is BLOCKED, not NOOP: on 11-03 a gate held every pass for 7.5h and
 # each one published NOOP, which every dashboard showed green. A dispatch hold is BLOCKED the same way.
 run_queue() {
-  local items="$1" head why
+  local items="$1" head why sbefore=${STARTED:-0} rc
+  # The source floor runs first: the route below offers Codex only for a class model-lane promoted, so from
+  # 11-16, with the run floor leaving most passes room, it started none and Codex sat 10% used at 73% of its
+  # week (ar-2436). Its start is past Claude's room, as other_source_start's is: a red or urgent head keeps the slot.
+  source_floor_start "$items" "room for $2"; rc=$?
+  case "$rc" in 0 | "$FLOOR_SHUT") ;; *) return "$rc" ;; esac
+  if [ "${STARTED:-0}" -gt "$sbefore" ]; then
+    unset NEXT_QUEUED; items=$(next_items --points); [ -n "$items" ] || return 0
+  fi
   head=$(head -n 1 <<<"$items")
   why=$(gate)
   if [ -n "$why" ]; then
@@ -6192,6 +6306,64 @@ board_starved() {
   echo "$n board rows unjudged, none judged since $judged"
 }
 
+# sprint-stalled -- rc 1 naming each agent-lane row of an open sprint (SPRINT_ROW) left DISPATCH_STARVED_MIN
+# minutes or longer unstarted (so no session holds it), with no active queue item on it and nothing it waits on:
+# no gate pending or dead (a dead one is queue-starved's, dead_holds) and nothing row_off names. A verdict
+# holding the row, or no worker taking it, is the stall itself, so rows are read as suggest reads them, verdicts
+# ignored, and each line names the row's last verdict. First sightings live in $DIR/sprint-stalled.tsv, as
+# unstart_orphans keeps its own; a row that stops being one counts again from its next sighting. A dispatch
+# hold (agent-hold) is deliberate: nothing trips and the sightings restart. A failed read is rc 2 `unreadable:`
+# (Sentinel's UNKNOWN). Event-free by necessity: an unowned row has no event, so the watch sprint-stalled
+# samples it. Why: on 2026-11-21 v0.5.5 held 25 open rows, none queued, and nothing paged (ar-4333).
+cmd_sprint_stalled() {
+  local seen_f="$DIR/sprint-stalled.tsv" verdicts="$VERDICTS" cands linked now first key project seen='' out='' keys='[]' last stopped n=0
+  mkdir -p "$DIR"
+  if ! agent-hold check dispatch >/dev/null 2>&1; then
+    rm -f "$seen_f"
+    echo "dispatch is held (agent-hold), so no sprint row is stalled"; return 0
+  fi
+  load_gates
+  [ -z "${GATES_FAILED:-}" ] || { echo "unreadable: $GATES_FAILED"; return 2; }
+  linked=$(agent-queue list --json 2>/dev/null) || { echo "unreadable: agent-queue list --json failed"; return 2; }
+  linked=$(jq -r 'select(.state != "done" and (.row // "") != "") | .row | sub(":"; "\t")' <<<"$linked")
+  # cmd_candidates reads an empty board or worker table as no rows, which would wipe the sightings.
+  notes board --json 2>/dev/null | jq -e 'has("sprints")' >/dev/null || { echo "unreadable: notes board --json failed or has no sprints"; return 2; }
+  [ -n "$(workers)" ] || { echo "unreadable: no workers in $DISPATCH_WORKERS"; return 2; }
+  cands=$(VERDICTS=/dev/null SUGGEST=1 SPRINT_ONLY=1 cmd_candidates | jq -c 'select(.lane == "agent"
+    and (.gate_wait // "") == "" and (.off // "") == "")')
+  now=$(date +%s)
+  while IFS=$'\t' read -r project key; do
+    [ -n "$key" ] || continue
+    grep -qxF "$project"$'\t'"$key" <<<"$linked" && continue
+    first=$(K="$project"$'\t'"$key" awk -F'\t' '$1"\t"$2 == ENVIRON["K"] { print $3; exit }' "$seen_f" 2>/dev/null)
+    first=${first:-$now}
+    seen+="$project"$'\t'"$key"$'\t'"$first"$'\n'
+    [ $(( now - first )) -ge $(( DISPATCH_STARVED_MIN * 60 )) ] || continue
+    keys=$(jq -c --arg k "$project"$'\t'"$key" '. + [$k]' <<<"$keys")
+  done < <(jq -r '"\(.project)\t\(.key)"' <<<"$cands")
+  printf '%s' "$seen" > "$seen_f.new" && mv "$seen_f.new" "$seen_f"
+  [ "$keys" != '[]' ] || { echo "no open sprint row has gone ${DISPATCH_STARVED_MIN} min with no queue item, session or gate ($(grep -c . <<<"$seen" || true) unowned for less)"; return 0; }
+  # The last verdict of each stalled row: one read of the cache, the one judged_keys reads.
+  last=$(jq -rn --argjson k "$keys" 'reduce (inputs | select(.lane == "agent")) as $v ({};
+      "\($v.project)\t\($v.key)" as $x | if ($k | index($x)) != null then .[$x] = "\($v.verdict)\(if ($v.reason // "") != "" then ": \($v.reason)" else "" end)" else . end)
+    | to_entries[] | "\(.key)\t\(.value)"' "$verdicts" 2>/dev/null)
+  echo "open sprint rows with no queue item, no session and nothing they wait on for ${DISPATCH_STARVED_MIN}+ min:"
+  while IFS=$'\t' read -r project key first; do
+    jq -e --arg k "$project"$'\t'"$key" 'index($k) != null' <<<"$keys" >/dev/null || continue
+    n=$(( n + 1 )) out+="${out:+, }$key"
+    jq -r --arg min "$(( (now - first) / 60 ))" --arg v "$(K="$project"$'\t'"$key" awk -F'\t' '$1"\t"$2 == ENVIRON["K"] { print substr($0, length($1) + length($2) + 3); exit }' <<<"$last")" \
+      --arg p "$project" --arg k "$key" 'select(.project == $p and .key == $k)
+      | "  \(.key) (\(.project)\(if (.uncommitted // 0) == 1 then ", uncommitted" else "" end), \($min) min)"
+        + (if (.nobody // "") != "" then "; no worker takes it: \(.nobody)" else "" end)
+        + (if .plan == true then "; #plan, waits on inbox-plan" else "" end)
+        + (if $v != "" then "; last verdict \($v)" else "; never judged" end)' <<<"$cands"
+  done <<<"$seen"
+  stopped=$(cmd_stopped)
+  [ -z "$stopped" ] || echo "$stopped"
+  echo "$n open sprint row(s) stalled: $out (fleet-dispatch suggest says why each waits)"
+  return 1
+}
+
 # idle-cap -- rc 1 when the fleet's live Claude sessions are at the pace target (pace_target, so the
 # same sessions it counts) and under DISPATCH_IDLE_CAP_PCT of them are busy: sessions that cannot move
 # hold the target, no pass starts, and cmd_starved reads that full fleet as working, so nothing else
@@ -6287,7 +6459,7 @@ cmd_headroom() {
         "  run floor: \(.floor_live) of \(.run_floor) run sessions live; under it idle does not hold a start, nor the weekly pace of an account refused for its pace alone (committed burn, the reserve and the 5h window still do)",
         "  red floor: \(.red_live) of \(if .red_floor > 0 then .red_floor + .red_watch else 0 end) red sessions live (\(.red_floor), plus \(.red_watch) for tripped watches); under it the pace target, weekly pace, idle, load and fleet-assess do not hold a red",
         "  project floor: \(.idle_projects) project(s) with light work and nothing running; up to \(.project_floor) start a pass past real idle",
-        (if .fleet_share.cap > 0 then "  fleet share: \(.fleet_share.fleet) of \(.fleet_share.total) items started in '"$DISPATCH_FLEET_SHARE_H"'h are fleet work (\(.fleet_share.projects | join(", "))), \(.fleet_share.pct // 0)% against a \(.fleet_share.cap)% cap\(if .fleet_share.full then ": full, so only interrupts start their items until nothing else can" else "" end)" else empty end),
+        (if .fleet_share.cap > 0 and .fleet_share.unread == true then "  fleet share: off, as `notes projects --prios` failed and no #prio/low project could be read" elif .fleet_share.cap > 0 and (.fleet_share.projects | length) > 0 then "  fleet share: \(.fleet_share.fleet) of \(.fleet_share.total) items started in '"$DISPATCH_FLEET_SHARE_H"'h are fleet work (\(.fleet_share.projects | join(", "))), \(.fleet_share.pct // 0)% against a \(.fleet_share.cap)% cap\(if .fleet_share.full then ": full, so only reds and work the human asked for start their items until nothing else can" else "" end)" else empty end),
         (if (.focus | length) > 0 then "  focus:     \(.focus | join(" ")) first; \(.focus_runnable) runnable item(s) of it start ahead of the other projects (reds and urgent items still go first)" else empty end)'
     fi
 }
@@ -7004,8 +7176,8 @@ cmd_run() {
   QUEUE_HELD='' LINE_HELD='' SHARE_STATE='' PREEMPTED=0 STARTED=0 RED_STARTED=0 RED_PASS=0 PROJECT_STARTED=0 PROJECT_PASS=0 SOURCE_STARTED=0 SOURCE_PICK='' RUN_GATED=0 FLOOR_HELD=0 FLOOR_GATE='' JUDGE_RC= JUDGE_WHY= PLAN_TAGGED=0 TRIAGE_FAILED= NO_ROOM=
   NO_ROUTE=(); unset NEXT_QUEUED   # set once a pass has read the queue (canary_floor_start), even to nothing
   [ "$DRY" = 1 ] || triage_pass
-  # Skips no session can take for want of a definition go to inbox-plan; a dry run only reads.
-  [ "$DRY" = 1 ] || ! agent-hold check dispatch >/dev/null 2>&1 || plan_skips
+  # Each skip takes the exit its rule names (plan, the human, a gate); a dry run only reads.
+  [ "$DRY" = 1 ] || ! agent-hold check dispatch >/dev/null 2>&1 || skip_exits
   pace_target
   [ -n "$TOTAL_LIVE" ] || { settle BLOCKED "live sessions unreadable: the fleet state document ($FLEET_STATE_FILE) is missing or older than $DISPATCH_STATE_FRESH_MIN min, so the pace target cannot be read"; return 0; }
   say "pace target: $TOTAL_LIVE of $TARGET live sessions (the human is $TARGET_WHEN: the live ones plus the Opus sessions the Claude spend has spare at pace, at most present $DISPATCH_TARGET_PRESENT, away $DISPATCH_TARGET_AWAY)$NEEDS_NOTE"
@@ -7163,9 +7335,11 @@ share_let_go() {
   echo 0
 }
 
-# unjudged_rows ->the open rows no verdict covers yet, day candidates and tier-3 rows, once each. A
-# gated row (cmd_candidates) is never judged: its gates cleared, so it is committed work.
-unjudged_rows() { { cmd_candidates; t3_rows "$(judged_keys)"; } | jq -sc 'map(select(.gated | not)) | unique_by([.project, .lane, .key])[]'; }
+# unjudged_rows ->the open rows no verdict covers yet, tier-3 rows and day candidates, once each. A
+# row both list goes to the judge as its tier-3 copy (tier 3, the highest the gate allows it), so the
+# judge may `dispatch` it at any tier: picks takes a tier 1 or 2 dispatch, t3_ready a tier 3 one.
+# A gated row (cmd_candidates) is never judged: its gates cleared, so it is committed work.
+unjudged_rows() { { t3_rows "$(judged_keys)"; cmd_candidates; } | jq -sc 'map(select(.gated | not)) | unique_by([.project, .lane, .key])[]'; }
 
 # fill_now <room> -- `fill` by hand: up to <room> day picks (fill_day).
 fill_now() { fill_day "$1"; }
@@ -7213,13 +7387,14 @@ fill_day() {
   load_pool_idle   # once, before the judge's and the picks' subshells
   [ "${2:-}" = gated ] || judge_once || return 1
   picked=$(day_picks 999)
-  # While the fleet share is full, the fill passes over fleet rows but interrupts (share_held), the cleanup
-  # floor's included, since the cap would only hold them. It lets go when nothing else can start: a
-  # low-water fill with no other row and nothing runnable in the queue takes the fleet rows too.
+  # While the fleet share is full, the fill passes over fleet rows but #requested and #red ones, the
+  # cleanup floor's included: a row's item comes from the board, so share_held would hold any other. It
+  # lets go when nothing else can start: a low-water fill with no other row and nothing runnable in the
+  # queue takes the fleet rows too.
   if share_full; then
     local kept
     kept=$(jq -c --argjson s "$SHARE_STATE" '(.project // "") as $p
-      | select((any($s.projects[]; . == $p) | not) or ((.text // "") | test("(^|\\s)#(requested|urgent|red|canary)(\\s|$)")) or .priority == "urgent")' <<<"$picked")
+      | select((any($s.projects[]; . == $p) | not) or ((.text // "") | test("(^|\\s)#(requested|red)(\\s|$)")))' <<<"$picked")
     if [ -n "$kept" ] || [ -n "${2:-}" ] || [ -n "$(runnable 2>/dev/null)" ]; then
       [ "$kept" = "$picked" ] || say "the fleet share is full ($(jq -r '"\(.fleet) of \(.total)"' <<<"$SHARE_STATE") starts in ${DISPATCH_FLEET_SHARE_H}h, DISPATCH_FLEET_SHARE=$DISPATCH_FLEET_SHARE%), so the board fills from other projects"
       picked=$kept
@@ -7286,8 +7461,8 @@ floor_row() {
 #     any other (not approved, or its own session still holds it) holds the epic for the human.
 #  3. the board: its agent-lane leaves stay there, and dispatch takes them leaf by leaf. The human's
 #     own Start ([repeat], cmd_promote) tags each open s or m one off the backlog tier whose kind dispatches
-#     there (kind_off) #requested, so the requested floor takes them first; an l or xl leaf is named
-#     as needing a plan (plan_skips plans it as it does any l row).
+#     (kind_off) #requested, so the requested floor takes them first; an l or xl leaf is named
+#     as needing a plan (skip_exits plans it as it does any l row).
 # rc 1, the why said, when nothing is taken; else rc 0 with nothing for the caller to start, and what
 # was taken in EPIC_TOOK (cmd_start --brief says it).
 take_epic() {
@@ -7326,14 +7501,15 @@ take_epic() {
   fi
   [ -n "$(jq -r 'select(.lane == "agent" and .type != "epic") | .id' <<<"$leaves")" ] ||
     { say "skip $project: epic $id has nothing to take: no story on the agent board and no plan (lifecycle.md, Writing an epic's stories)"; return 1; }
-  load_kinds
   sheet=$(np "$prof" projects 2>/dev/null | awk -F'\t' -v p="$project" '$1 == p { print $2; exit }')
   stage=$(stage_of "$sheet") && [ -n "$stage" ] ||
-    { say "skip $project: epic $id: its project's stage cannot be read, so which of its stories dispatch cannot be"; return 1; }
+    { say "skip $project: epic $id: its project's stage cannot be read, so whether its stories dispatch cannot be"; return 1; }
+  dispatchable "$stage" || { say "skip $project: epic $id: its project is at stage $stage, before dev, so dispatch starts none of its stories"; return 1; }
+  load_kinds
   while IFS=$'\t' read -r k kind size; do
     [ -n "$k" ] || continue
     case "$size" in l | xl) big+=("$k"); continue ;; esac
-    [ -z "$(kind_off "$kind" "$project" "$stage")" ] || continue
+    [ -z "$(kind_off "$kind")" ] || continue
     taggable+=("$k")
   done < <(jq -r 'select(.lane == "agent" and .state == "open" and .type != "epic" and .requested != true and .backlog != true)
     | [.id, (.type // "-"), ((.size // "-") | ascii_downcase)] | @tsv' <<<"$leaves")
@@ -7529,7 +7705,11 @@ cmd_pull_after() {
   load_gates
   GATE_ST[after/$id]=clear
   err=$(mktemp) || return 1
-  while IFS= read -r c; do
+  # The rows come on fd 3, so nothing the body runs can read them: on stdin, the first start ate every
+  # row after it (2026-11-20: ar-4071 behind ar-4069, chain-after-stuck). The start also gets
+  # </dev/null, as in restore_world, so it never reads the closing session's stdin, and 3<&-, so the
+  # session it launches does not keep the row pipe.
+  while IFS= read -r -u 3 c; do
     [ -n "$c" ] || continue
     PROMOTED=''
     # Its reason goes to the log too: the closing session's stderr is gone once it ends. AQ_ROOM_KEEP
@@ -7542,8 +7722,8 @@ cmd_pull_after() {
     kept="$kept $PROMOTED"
     pri=$(agent-queue show "$PROMOTED" --json 2>/dev/null | jq -r '.priority // empty')
     if [ "$pri" = low ]; then say "pull-after $id: $PROMOTED is low priority, so a pass starts it in its turn"; continue; fi
-    cmd_start --item "$PROMOTED" || say "pull-after $id: $PROMOTED could not start now, so it stays queued for a pass"
-  done < <(jq -c --arg g "after/$id" '.rows[]? | select(.state == "open" and .id != null and ((.tags // []) | index($g)))
+    cmd_start --item "$PROMOTED" </dev/null 3<&- || say "pull-after $id: $PROMOTED could not start now, so it stays queued for a pass"
+  done 3< <(jq -c --arg g "after/$id" '.rows[]? | select(.state == "open" and .id != null and ((.tags // []) | index($g)))
     | {profile: (.profile // ""), project, lane, key: .id, raw: (.raw // .text // "")}' <<<"$board")
   rm -f "$err"
   return 0
@@ -7617,7 +7797,7 @@ t3_rows() {
         body=${text#- \[ \] }
         grep -qiE -- "$DISPATCH_T3_SKIP" <<<"${body%%<!--*}" && continue
         [ -z "${PLN["$name"$'\t'agent$'\t'"$key"]:-}" ] || continue
-        [ -z "$(row_off "$name" "$stage" "$key" "$text")" ] || continue
+        [ -z "$(row_off "$name" "$key" "$text")" ] || continue
         gates=${GAT["$name"$'\t'agent$'\t'"$key"]:-}
         [ -z "$gates" ] || [ -z "$(gate_wait "$gates")" ] || continue
         # A gated row starts with no verdict (t3_ready), so only a #tier/3 tag makes one tier 3 here;
@@ -7635,10 +7815,10 @@ t3_rows() {
           --arg priority "$(row_priority "$text" "$name")" --argjson order "$n" --arg obs "$DISPATCH_T3_OBSERVER" \
           --arg profile "$prof" --arg rsize "$(row_size "$text")" --arg pprio "$(prio_of "$sheet")" \
           --argjson cleanup "$(cleanup_row "$name" "$text")" --argjson frank "${RNK["$name"$'\t'agent$'\t'"$key"]:-null}" \
-          --argjson sprint "$(row_sprint "$name" "$key")" --arg gates "$gates" --arg pidle "$pidle" \
+          --argjson sprint "$(row_sprint "$name" "$key")" --argjson uncommitted "$(row_uncommitted "$name" "$key")" --arg gates "$gates" --arg pidle "$pidle" \
           '{profile: $profile, project: $project, stage: $stage, lane: "agent", key: $key,
             text: $text, repo: $repo, prio: $prio, priority: $priority, tier: 3, line: $line, order: $order, wrank: 0, frank: $frank, row_size: $rsize,
-            cleanup: $cleanup, sprint: $sprint, project_prio: $pprio,
+            cleanup: $cleanup, sprint: $sprint, uncommitted: $uncommitted, project_prio: $pprio,
             details: $details, dsig: $dsig, planned: ($planned == 1),
             rank: (if ($body | test("(^| )#requested( |$)")) then -1 elif ($body | test($obs; "i")) then 0 else 1 end)}
             + (if $pidle != "" then {pool_idle: $pidle} else {} end)
@@ -7649,8 +7829,8 @@ t3_rows() {
 }
 
 # t3_ready <rows> -> the t3_rows whose verdict, under a policy that still defines its rule and for the row's current
-# text, says tier 3 is the only reason a merging session may not take it, and that it is S or M,
-# clear, agent-only and in one area, with that area on the row.
+# text, is a `dispatch` the judge read as tier 3, S or M, clear, agent-only and in one area, with that
+# area on the row. A dispatch it read as tier 1 or 2 is a day worker's (picks).
 # A `gated` row needs no verdict, as in picks: only a `failed` one (its session died) holds it.
 t3_ready() {
   [ -n "$1" ] || return 0
@@ -7659,7 +7839,7 @@ t3_ready() {
     | .[] | . as $c | $by[[.project, .lane, .key] | tostring] as $d
     | if $c.gated == true then select($d == null or $d.verdict != "failed") | . + {area: (if ($d.area | type) == "string" then $d.area | ascii_downcase else "" end)}
       else
-        select($d != null and $d.tier3_only == true and $d.tier == 3
+        select($d != null and $d.verdict == "dispatch" and $d.tier == 3
           and (eff_size($d) | IN("S", "M")) and $d.clear == true and $d.agent_only == true
           and ($d | usable($prules)) and ($d | holds($c))
           and ($d.area | type) == "string" and $d.area != "")
@@ -7686,7 +7866,7 @@ cmd_report() {
 }
 
 # cmd_verdicts -- latest_verdicts, each with plan: true when it is a skip by one of
-# DISPATCH_PLAN_RULES (a row plan_skips sends for a split); fleet-bench's next_up_blocked reads it
+# DISPATCH_PLAN_RULES (a row skip_exits sends for a plan); fleet-bench's next_up_blocked reads it
 cmd_verdicts() {
   latest_verdicts | jq -c --arg rules "$DISPATCH_PLAN_RULES" \
     '($rules | split(" ") | map(select(. != ""))) as $r | . + {plan: (.verdict == "skip" and ((.rule // "") | IN($r[])))}'
@@ -7697,7 +7877,7 @@ main() {
   # reap sessions stand down before they read anything.
   case "${1:-}" in
     run) lease_guard "$1" || return $(($? == 2)) ;;   # another holder is no fault, a lease no remote can say is
-    reap | start | fill | promote | pull-after) lease_guard "$1" || return 1 ;;
+    reap | start | fill | promote | pull-after | exits) lease_guard "$1" || return 1 ;;
   esac
   case "${1:-}" in
     run)
@@ -7715,8 +7895,10 @@ main() {
     pull-after) shift; PULL=after cmd_pull_after "$@" ;;
     report) cmd_report ;;
     verdicts) cmd_verdicts ;;
+    exits) shift; skip_exits "$@" ;;
     reap) cmd_reap ;;
     starved) cmd_starved ;;
+    sprint-stalled) cmd_sprint_stalled ;;
     stats) cmd_stats ;;
     stopped) shift; cmd_stopped "$@" ;;
     start) shift; PULL=$(start_pull) cmd_start "$@" ;;
