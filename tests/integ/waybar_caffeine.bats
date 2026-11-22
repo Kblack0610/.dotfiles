@@ -3,7 +3,8 @@
 # registry, and both profiles carry it in place of the built-in idle_inhibitor; with no hold it reads
 # off; a toggle starts the hold as its own user unit (not a child of the bar, which desk.service kills
 # with its cgroup) running systemd-inhibit --what=idle, and the chip reads on; a second toggle stops
-# that unit and the chip reads off.
+# that unit and the chip reads off, and signals the bar so Noctalia redraws too; Noctalia shows the
+# same gated chip, so `modules.sh off caffeine` hides it on either bar.
 # systemctl and systemd-run are stubs over one state file: present means the unit is active.
 
 setup() {
@@ -72,4 +73,21 @@ chip() { run "$W/caffeine.sh"; assert_success; CLASS="$(jq -r .class <<< "$outpu
   run "$W/caffeine.sh" bogus
   assert_failure 2
   assert_output --partial usage
+}
+
+@test "a toggle signals the chip, so Noctalia redraws it at once" {
+  mkdir -p "$HOME/.local/bin"
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s/desk.calls"\n' "$BATS_TEST_TMPDIR" > "$HOME/.local/bin/desk"
+  chmod +x "$HOME/.local/bin/desk"
+  run "$W/caffeine.sh" toggle
+  assert_success
+  run cat "$BATS_TEST_TMPDIR/desk.calls"
+  assert_output 'signal custom/caffeine'
+}
+
+@test "Noctalia's caffeine is the same gated chip, its click acting rather than opening a hover" {
+  run grep -A3 '^\[widget.caffeine\]$' "$REPO_ROOT/.config/noctalia/config.toml"
+  assert_line 'type = "dotfiles/chips:chip"'
+  assert_line 'module = "custom/caffeine"'
+  assert_line 'dropdown = false'
 }
