@@ -53,9 +53,32 @@ setup() {
     run test_picked .local/bin/agentctl tests/x.bats <<<"$t"
     assert_failure
   done
-  # The same name run for real still picks it (negative control).
-  run test_picked .local/bin/agentctl tests/x.bats <<<'  stub fleet-bench "exit 0"; run agentctl list'
+  # A trailing comment and a path in another directory (ar-3036): fleet_dispatch/common.bash had
+  # both for fleet-bench, which picked all ten fleet_dispatch*.bats files for a fleet-bench change.
+  for t in '  export X=0   # so no pass asks agentctl' 'mkdir -p "$HOME/.config/agentctl"' \
+    'cat "$SANDBOX/state/agentctl" "x/agentctl"' 'run /opt/tool/agentctl'; do
+    run test_picked .local/bin/agentctl tests/x.bats <<<"$t"
+    assert_failure
+  done
+  # The same name run for real still picks it (negative controls): after a code `#` that starts
+  # no word, by a path in its own directory or through a variable, before a trailing comment, and
+  # after a ` #` inside quotes.
+  for t in '  stub fleet-bench "exit 0"; run agentctl list' '  [ $# -gt 0 ] && agentctl list' \
+    'run "$REPO_ROOT/.local/bin/agentctl" list' 'run "$BIN/agentctl"' 'run ${BIN}/agentctl' \
+    'run ./agentctl' '  agentctl list   # the real one' \
+    '  printf "%s\n" "issue #12" | agentctl add' "  echo 'a #1'; agentctl list"; do
+    run test_picked .local/bin/agentctl tests/x.bats <<<"$t"
+    assert_success
+  done
+  # A file changed at the repo root sits in no directory, so `<dir>/<name>` is another file.
+  run test_picked rootcmd tests/x.bats <<<'bash scripts/rootcmd'
+  assert_failure
+  run test_picked rootcmd tests/x.bats <<<'bash "$REPO_ROOT/rootcmd"'
   assert_success
+  # The real file: a fleet-bench change leaves fleet_dispatch_reap.bats out, which only loads
+  # common.bash and so names fleet-bench in a stub, a comment and a config directory.
+  run test_picked .local/bin/fleet-bench tests/unit/fleet_dispatch_reap.bats <"$REPO_ROOT/tests/unit/fleet_dispatch_reap.bats"
+  assert_failure
   # The real files: an agentctl change leaves the fleet_dispatch*.bats files out; a fleet-dispatch
   # change, sourced only in the fleet_dispatch/common.bash they load, picks every one.
   local f n=0

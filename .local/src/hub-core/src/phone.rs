@@ -820,11 +820,11 @@ mod tests {
                     c.tab
                 ));
             }
-            if let Ok(n) = c.big.parse::<i64>() {
+            if let Some(n) = crate::widget_doc::figure_value(&c.big) {
                 want.insert(format!("{}_headline", c.tab), n);
             }
             for (l, v) in parts {
-                if let Ok(n) = v.parse::<i64>() {
+                if let Some(n) = crate::widget_doc::figure_value(v) {
                     want.insert(crate::widget_doc::figure_name(c.tab, l), n);
                 }
             }
@@ -895,6 +895,16 @@ mod tests {
         bad
     }
 
+    /// A read fleet cost, so its dollars are in the parity check (`hub-figure costs_*`, which
+    /// fleet-bench reads).
+    fn read_costs() -> crate::costs::Costs {
+        let mut costs = crate::costs::Costs::default();
+        costs.fleet_cost.usd = "about $1,203".into();
+        costs.fleet_cost.measured = "$403".into();
+        costs.fleet_cost.estimated = "$800".into();
+        costs
+    }
+
     /// Every card figure from one fixture, on every surface that shows it: the card (the hub and
     /// agent-web draw it as is), the widget document (`/widget.json`, Tilecast), `figures` (the
     /// publisher's summary/cards, so the waybar chips and Home Assistant) and the phone's heads
@@ -944,7 +954,7 @@ mod tests {
             &[],
         );
         let board = crate::tasks::Feed::default();
-        let costs = crate::costs::Costs::default();
+        let costs = read_costs();
         let releases = crate::releases::Releases::default();
         let schedules = crate::schedules::Schedules::default();
         let mut cards = vec![

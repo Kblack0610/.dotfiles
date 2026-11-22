@@ -97,33 +97,37 @@
 set -uo pipefail
 
 AQ_DIR="${AGENT_QUEUE_DIR:-$HOME/.agent/queue}"
+# This script's own directory, resolved once: every call paid two forks per lib and sibling it
+# found from here, about 12 of its 80 ms startup, and fleet-dispatch's tests call it ~70 times
+# each (ar-3036).
+AQ_BIN="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 # The registry's resolver: this tree's project-name.sh (PROJECT_NAME_LIB when the script runs
 # from a copy, as in the tests); AGENT_QUEUE_PROJECT_MAP points it at another map.
 # shellcheck source=../../.config/shared-hooks/project-name.sh
-. "${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
+. "${PROJECT_NAME_LIB:-$AQ_BIN/../../.config/shared-hooks/project-name.sh}"
 AQ_MAP="${AGENT_QUEUE_PROJECT_MAP:-$(project_map_file)}"
 PROJECT_MAP_FILE="$AQ_MAP"
 # shellcheck source=../lib/chain-event.sh
-. "${CHAIN_EVENT_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/chain-event.sh}"
+. "${CHAIN_EVENT_LIB:-$AQ_BIN/../lib/chain-event.sh}"
 # The one reader of a plan's `## Phases` checklist and `epic:` line, shared with fleet-sessions.
 # shellcheck source=../lib/plan-phases.sh
-. "${PLAN_PHASES_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh}"
+. "${PLAN_PHASES_LIB:-$AQ_BIN/../lib/plan-phases.sh}"
 # shellcheck source=../lib/machine-mode.sh
-. "${MACHINE_MODE_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/machine-mode.sh}"
+. "${MACHINE_MODE_LIB:-$AQ_BIN/../lib/machine-mode.sh}"
 # shellcheck source=../lib/end-reasons.sh
-. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/end-reasons.sh"
+. "$AQ_BIN/../lib/end-reasons.sh"
 # so_pr_view: the one forge rule pr_state reads a pr: hold's PR by.
 # shellcheck source=../lib/session-outcomes.sh
-. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/session-outcomes.sh"
+. "$AQ_BIN/../lib/session-outcomes.sh"
 # A `pr:<owner>/<repo>#<N>` item waits for that PR to merge; its state is cached here.
 AQ_PR_CACHE="${AGENT_QUEUE_PR_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/agent-queue/pr}"
 AQ_PR_TTL="${AGENT_QUEUE_PR_TTL:-120}"
 # A `nightly:<repo>` item waits on the scheduled-run facts schedules-sync writes, through its `pending` verb.
-AQ_SCHEDULES="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/schedules-sync"
+AQ_SCHEDULES="$AQ_BIN/schedules-sync"
 # An `ask:<id>[=<option>]` item waits on that agent-ask's answer, read from its file here.
 AQ_ASKS="${AGENT_ASK_ROOT:-$HOME/.agent/asks}"
 # A `hold:<resource>` item waits while this tree's agent-hold says that resource is held.
-AQ_HOLD="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/agent-hold"
+AQ_HOLD="$AQ_BIN/agent-hold"
 # Of the items waiting on one resource, the best `desk:<class>` (agent-hold classes) starts once it
 # is free, the rest stay held behind it (desk_wait); a desk:auth item waits while this says away.
 AQ_PRESENCE="${AGENT_QUEUE_PRESENCE:-fleet-presence}"
@@ -135,7 +139,7 @@ AQ_DESK_START_MIN=10
 AQ_RBW="${AGENT_QUEUE_RBW:-rbw}"
 AQ_RBW_TIMEOUT_S=5
 AQ_GATE_DONE_DAYS=3650   # days of closed rows a gate's after/<row-id> lookup reads (cmd_gate): a row closed before that reads as no such row
-AQ_ASK="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/agent-ask"
+AQ_ASK="$AQ_BIN/agent-ask"
 # waiting: its session needs the human (a plan, a dialog, an ask). review: its session ended or
 # stopped at an open PR, which reap closes on the merge. They are two states so "needs you" counts
 # only the first.
@@ -191,7 +195,7 @@ hand_start() {
   printf '%s\t%s\n' "$session" "$window"
 }
 # The one closer, beside this script (TMUX_CLOSE when the script runs from a copy, as in tests).
-TMUX_CLOSE="${TMUX_CLOSE:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/tmux-close}"
+TMUX_CLOSE="${TMUX_CLOSE:-$AQ_BIN/tmux-close}"
 
 # --- the file format ---
 # `key: value` lines, a `---` line, then the task as typed.
@@ -2576,7 +2580,7 @@ close_on() {
   local host="$1"; shift
   [ -n "$host" ] || { "$TMUX_CLOSE" "$@"; return; }
   # shellcheck source=../lib/fleet-hosts.sh
-  declare -F fleet_host_run >/dev/null || . "${FLEET_HOSTS_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
+  declare -F fleet_host_run >/dev/null || . "${FLEET_HOSTS_LIB:-$AQ_BIN/../lib/fleet-hosts.sh}"
   fleet_host_run "$host" tmux-close "$@"
 }
 
