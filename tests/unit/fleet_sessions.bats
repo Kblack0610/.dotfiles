@@ -2042,6 +2042,7 @@ nightly_item() {
   # another project's checkout is not this repo's
   jq -n --arg wt "$SANDBOX/elsewhere" '{paths: {($wt): "demo"}, trackers: {demo: {}}}' > "$PROJECT_MAP_FILE"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
   [ "$(jq -r 'select(.bucket == "NIGHTLY") | .owners | length' <<<"$output")" = 0 ]
 }
 
