@@ -859,7 +859,7 @@ stamp_item() {
 link_task_row() {
   local task_id feed hit prof proj lane out
   [ -z "$row" ] || return 0
-  task_id=$(tr -d '\r' <<<"$body" | sed -n 's/^[[:space:]]*Task:[[:space:]]*\([^[:space:]]*\).*/\1/p' | head -n 1)
+  task_id=$(tr -d '\r' <<<"$body" | sed -n '/^[[:space:]]*Task:/{s/^[[:space:]]*Task:[[:space:]]*\([^[:space:]]*\).*/\1/p;q;}')
   [ -n "$task_id" ] || return 0
   feed=$(notes board --json 2>/dev/null) || { echo "item-row: notes board --json failed, so Task: $task_id is not linked"; return 0; }
   hit=$(jq -r --arg id "$task_id" '[.rows[]? | select(.id == $id)] | if length == 1 then .[0] | [.profile, .project, .lane] | @tsv else empty end' <<<"$feed" 2>/dev/null) || hit=''
