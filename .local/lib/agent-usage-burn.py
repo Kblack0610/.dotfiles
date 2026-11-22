@@ -484,7 +484,6 @@ def scan(path, start, end, acc):
 
 def registry(start, end, root):
     by_acct, by_proj, n, cost, last = defaultdict(lambda: Counter()), defaultdict(lambda: Counter()), 0, 0.0, {}
-    by_sess = {}
     for f in glob.glob(os.path.join(root, "*", "sessions.jsonl")):
         rows = {}
         for line in open(f, errors="ignore"):
@@ -511,8 +510,7 @@ def registry(start, end, root):
                 b[k]["output"] += tok.get("output", 0) or 0
             n += 1
             cost += c
-            by_sess[r["session_id"]] = by_sess.get(r["session_id"], 0) + c  # one sid in two registries counts in both, as cost does
-    return n, cost, by_acct, by_proj, last, by_sess
+    return n, cost, by_acct, by_proj, last
 
 
 def fleet_cut(reg, fc, priced):
@@ -1040,7 +1038,7 @@ def main():
             continue
         scan(p, start, end, acc)
 
-    n, cost, by_acct, by_proj, reg_last, reg_by_sess = registry(start, end, env.get("SESS_ROOT", f"{home}/.agent/sessions"))
+    n, cost, by_acct, by_proj, reg_last = registry(start, end, env.get("SESS_ROOT", f"{home}/.agent/sessions"))
     prs, prs_by_sess = merged_prs(start, end, env.get("OUTCOMES_ROOT", f"{home}/.agent/outcomes"))
     ctx_all = sum(b["input"] + b["cache_write"] + b["cache_read"] for b in acc["kind"].values())
     fc = sorted(acc["first_ctx"])
@@ -1130,7 +1128,7 @@ def main():
         "cost_error": cost_error,
         "fleet_cost": d,
         # billed sessions only: a cross-check on the fitted cost, never the headline
-        "registry": {"sessions": n, "cost_usd": round(cost, 2), "cost_by_session": reg_by_sess},
+        "registry": {"sessions": n, "cost_usd": round(cost, 2)},
         "by_account": fleet_cut(by_acct, (d or {}).get("by_account") or {}, d is not None),
         "by_project": fleet_cut(by_proj, (d or {}).get("by_project") or {}, d is not None),
         "by_kind": {k: {**v, "sessions": len(acc["kind_files"][k])}

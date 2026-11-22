@@ -133,10 +133,10 @@ def snapshot(day):
         by_project.setdefault(k, {}).update(sessions=v.get("sessions"), cost_usd=round(v.get("cost_usd") or 0, 2))
     long_runs = proj.get("long_runs") or {}
     fc = burn.get("fleet_cost")
-    # Each session's fleet-cost spend in the day, and the dollars no session row carries (the
-    # gateway's metered line, the helper estimate): the by_tool and by_skill split inputs.
+    # Each session's fleet-cost spend in the day, and the dollars no session row carries (fleet_cost's
+    # total.unattributed): the by_tool and by_skill split inputs.
     costs = {r["sid"]: r["usd"] for r in fc.get("by_session") or []} if fc else None
-    rest = round(fc["total"]["usd"] - sum(costs.values()), 4) if fc else 0.0
+    rest = fc["total"]["unattributed"] if fc else 0.0
     rd = (calls.get("buckets") or {}).get("all") or {}
     reads = {k: rd.get(k, 0) for k in ("reads", "locate_then_read", "reread_same_lines",
                                        "locate_then_read_ctx", "reread_same_lines_ctx",
@@ -151,7 +151,7 @@ def snapshot(day):
         "totals": {**tu, "input": t.get("input_tokens"), "cache_write": t.get("cache_creation_input_tokens"),
                    "cache_read": t.get("cache_read_input_tokens"), "tool_calls": t.get("calls"),
                    "cost_usd": fc["total"]["usd"] if fc else None,
-                   "sessions": len(fc.get("by_session") or []) if fc else None} if t else None,
+                   "sessions": fc["total"]["sessions"] if fc else None} if t else None,
         "context_per_response": ctx // turns if turns else None,
         "carried_share": round(tu["carried_tokens"] / ctx, 4) if ctx else None,
         "carried_x": t.get("carried", 0) // t["chars"] if t.get("chars") else None,

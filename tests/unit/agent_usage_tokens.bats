@@ -63,7 +63,7 @@ echo '{"totals":{"turns":2,"calls":3},"rows":{"project":[],"command":[],"session
 EOS
   cat > "$stub/burn" <<'EOS'
 #!/bin/sh
-echo '{"fleet_cost":{"total":{"usd":11},"by_session":[{"sid":"a","usd":8},{"sid":"b","usd":2}]},"registry":{"sessions":1,"cost_usd":3,"cost_by_session":{"a":3}}}'
+echo '{"fleet_cost":{"total":{"usd":11,"unattributed":1,"sessions":2},"by_session":[{"sid":"a","usd":8},{"sid":"b","usd":2}]},"registry":{"sessions":1,"cost_usd":3}}'
 EOS
   chmod +x "$stub"/*
   TOKENS_RECALL_CMD="$stub/recall" TOKENS_BURN_CMD="$stub/burn" "$AU" tokens snapshot >/dev/null
@@ -80,7 +80,7 @@ echo '{"totals":{"turns":5},"rows":{"session,skill":[{"key":["a","one-shot"],"tu
 EOS
   cat > "$stub/burn" <<'EOS'
 #!/bin/sh
-echo '{"fleet_cost":{"total":{"usd":10},"by_session":[{"sid":"a","usd":9},{"sid":"b","usd":1}]}}'
+echo '{"fleet_cost":{"total":{"usd":10,"unattributed":0,"sessions":2},"by_session":[{"sid":"a","usd":9},{"sid":"b","usd":1}]}}'
 EOS
   chmod +x "$stub"/*
   TOKENS_RECALL_CMD="$stub/recall" TOKENS_BURN_CMD="$stub/burn" "$AU" tokens snapshot >/dev/null
