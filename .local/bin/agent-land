@@ -14,7 +14,7 @@
 # touched; else the merge would be refused as "Head branch was modified": run from the PR's own
 # checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (a head behind origin/<base> is merged up to it, each clean submodule checkout on its old pin moved to the merged one (submodule_follow), and pushed, before the checks and again after them if the base moved on during them; a head pushed after them waits on its own checks before it merges, and on a base without strict checks a second move lands that green head behind it, catch_up), item-line
 # (before the checks, the PR body gets the line "Item: <slug>" unless it has it, so a reader holding
-# only the PR finds its work item; a stale "Item:" line is rewritten), review (a tier-3 item's body has a
+# only the PR finds its work item; a stale "Item:" line is rewritten, except on a merged PR where another queue item's line stays), review (a tier-3 item's body has a
 # "Review:" line, review_gate), shape (no function over 150 lines gets longer unless the body has a "Split: <row id>" line, shape_gate), checks (the PR's checks pass: CI, a required check; a cancelled check is no pass, waited on while a run on the head goes on, and on GitHub so is a failed one while a run of its workflow and event started after it goes on; a tier-3 item, or one landed with --ran-checks, needs checks that ran), merge (--squash, or with --merge-commit a merge commit,
 # for a landing train whose member PRs read MERGED only while their heads stay reachable; --admin adds gh's --admin, which skips a required approving review on a repo whose owner allows it, never the checks step above; --match-head-commit HEAD, then gh pr view must say MERGED), proof (the PR's merge commit is
 # on origin/<base>, by agent-merge-proof.sh), live (dotfiles-autopull --now --bg fast-forwards, in the background, the stowed
@@ -835,13 +835,22 @@ other_session() {
 
 # stamp_item: the PR body names its work item on one "Item: <slug>" line. A body that already has it
 # is left alone; any other "Item:" line is replaced, else the line is appended. Before the checks,
-# so a CI job that reads the body runs on the stamped one.
+# so a CI job that reads the body runs on the stamped one. On a MERGED PR an "Item:" line naming another
+# queue item is that item's link (landing a duplicate item on the PR that did its work must not cut it),
+# so it stays; a placeholder or an unknown slug is rewritten as on an open PR (ar-4252).
 stamp_item() {
-  local new out
+  local new out named
   [ -n "$body" ] || body=$(pr_view body .body 2>&1) || fail item-line "$api pr view: $(lastline "$body")"
   if tr -d '\r' <<<"$body" | grep -qxF "Item: $item"; then
     echo "item-line: present"
     return 0
+  fi
+  if [ "$state" = MERGED ]; then
+    named=$(tr -d '\r' <<<"$body" | sed -n '/^Item: */{s/^Item: *\([^[:space:]]*\).*/\1/p;q;}')
+    if [ -n "$named" ] && aq_retry show "$named" >/dev/null 2>&1; then
+      echo "item-line: merged body names another item ($named), left as is"
+      return 0
+    fi
   fi
   if grep -q '^Item: ' <<<"$body"; then
     new=$(I="Item: $item" awk '/^Item: / { $0 = ENVIRON["I"] } { print }' <<<"$body")

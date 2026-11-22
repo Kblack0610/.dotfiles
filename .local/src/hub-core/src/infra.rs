@@ -408,21 +408,18 @@ impl Infra {
         (!e.is_empty()).then(|| e.iter().map(|s| s.label("host")).collect())
     }
 
-    /// The runners that are down: offline or missing, unless the governor has powered their host
-    /// off (`powered_off`). A Forgejo seat is offline by design until the governor lends it its
-    /// slot, and a registration on a host the topology lists no slot for is stale, not down. RED
-    /// NOW on every surface and the phone's CI line read this, so none of them judges a runner
-    /// itself. By host, then name.
-    pub fn runners_down(&self) -> Vec<&Series> {
+    /// The runners whose liveness CI judges: every registration but one on a host the governor
+    /// has powered off (`powered_off`), a Forgejo seat (offline by design until the governor
+    /// lends it its slot) and a registration on a host the topology lists no slot for (stale,
+    /// not down). `runners_down` and `runners_up` both read this, so up plus down is the roster.
+    fn judged(&self) -> Vec<&Series> {
         let off = self.powered_off();
         let alias = self.aliases();
         let hosts: Option<std::collections::HashSet<String>> = self
             .ci_hosts()
             .map(|h| h.into_iter().map(|x| host(&alias, x)).collect());
-        let mut down: Vec<&Series> = self
-            .get("runners")
+        self.get("runners")
             .iter()
-            .filter(|s| matches!(s.label("state"), "offline" | "missing"))
             .filter(|s| !off.contains_key(s.label("host")))
             .filter(|s| s.label("forge") != "forgejo")
             .filter(|s| {
@@ -430,9 +427,43 @@ impl Infra {
                     .as_ref()
                     .is_none_or(|h| h.contains(&host(&alias, s.label("host"))))
             })
+            .collect()
+    }
+
+    /// The runners that are down: the judged ones offline or missing whose name no other series
+    /// reports up, each name once (two exporter pods report one runner twice during a rollout,
+    /// one of them stale). RED NOW on every surface and the phone's CI line read this, so none of
+    /// them judges a runner itself. By host, then name.
+    pub fn runners_down(&self) -> Vec<&Series> {
+        let judged = self.judged();
+        let up: std::collections::HashSet<&str> = judged
+            .iter()
+            .filter(|s| is_up(s))
+            .map(|s| s.label("name"))
+            .filter(|n| !n.is_empty())
+            .collect();
+        let mut down: Vec<&Series> = judged
+            .into_iter()
+            .filter(|s| matches!(s.label("state"), "offline" | "missing"))
+            .filter(|s| !up.contains(s.label("name")))
             .collect();
         down.sort_by_key(|s| (s.label("host"), s.label("name")));
+        let mut seen = std::collections::HashSet::new();
+        down.retain(|s| s.label("name").is_empty() || seen.insert(s.label("name")));
         down
+    }
+
+    /// How many judged runners are up (running or idle), each name once by the same rule as
+    /// `runners_down`, so up plus down is the roster. A series with no name label is one runner.
+    pub fn runners_up(&self) -> u32 {
+        let up: Vec<&Series> = self.judged().into_iter().filter(|s| is_up(s)).collect();
+        let unnamed = up.iter().filter(|s| s.label("name").is_empty()).count();
+        let named: std::collections::HashSet<&str> = up
+            .iter()
+            .map(|s| s.label("name"))
+            .filter(|n| !n.is_empty())
+            .collect();
+        (named.len() + unnamed) as u32
     }
 
     /// The Machines table's rows on both surfaces: every machine but a cloud host the governor
@@ -520,6 +551,11 @@ impl Infra {
         let n = |l: Level| h.iter().filter(|c| c.level == l).count();
         (n(Level::Red), n(Level::Warn), n(Level::Ok))
     }
+}
+
+/// A runner series that can take a job now.
+fn is_up(s: &Series) -> bool {
+    matches!(s.label("state"), "running" | "idle")
 }
 
 #[cfg(test)]
