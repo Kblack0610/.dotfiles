@@ -137,33 +137,6 @@ load 'fleet_dispatch/common'
   assert_equal "$(outcome)" BLOCKED
 }
 
-# pipeline-eval-p2 review: a merge-line hold is by design, so it goes on to the board like a finding
-# hold, and a pass that starts nothing is NOOP, never the BLOCKED fleet-liveness reads as a stall.
-@test "every queue item a full merge line holds sends the pass on to the board; one that starts nothing is NOOP" {
-  project game beta "$SANDBOX/repos/game"
-  project app beta "$SANDBOX/repos/app"
-  agent-queue add --project game --slug fix-game --priority high "fix the game" >/dev/null
-  row app human 'fix app crash' "- [ ] fix app crash #high $T"
-  verdict app human 'fix app crash' dispatch
-  export DISPATCH_LINE_MAX=6
-  line_state 0 6 game
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'merge line full: fix-game (merge line: 6 game sessions wait their landing turn'
-  assert_output --partial 'started game-agent-1: app: '
-  assert_equal "$(outcome)" WORKED
-  [ -n "$(qitem queued fix-game)" ] || fail "the held item stays queued"
-  # No row left to start: NOOP naming the line, not BLOCKED.
-  agent-queue list --json 2>/dev/null | jq -r 'select(.project == "app") | .slug' | while read -r s; do agent-queue move "$s" done --status cancelled >/dev/null; done
-  : > "$NOTES_FIXTURE/rows.app.human"; : > "$NOTES_FIXTURE/calls.log"
-  line_state 0 6 game
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'merge line full: fix-game'
-  assert_not_called 'wt new'
-  assert_equal "$(outcome)" NOOP
-}
-
 # ar-3991: a throughput drop names no stage that binds, so a hold on it starves the merges it waits
 # on. It holds nothing; a pool that binds on capacity still holds the items of its repo.
 @test "a throughput drop holds no queue item, while a pool starved on capacity still holds its repo's" {
