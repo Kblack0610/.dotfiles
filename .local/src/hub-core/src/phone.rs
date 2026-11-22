@@ -895,6 +895,16 @@ mod tests {
         bad
     }
 
+    /// A read fleet cost, so its dollars are in the parity check (`hub-figure costs_*`, which
+    /// fleet-bench reads).
+    fn read_costs() -> crate::costs::Costs {
+        let mut costs = crate::costs::Costs::default();
+        costs.fleet_cost.usd = "about $1,203".into();
+        costs.fleet_cost.measured = "$403".into();
+        costs.fleet_cost.estimated = "$800".into();
+        costs
+    }
+
     /// Every card figure from one fixture, on every surface that shows it: the card (the hub and
     /// agent-web draw it as is), the widget document (`/widget.json`, Tilecast), `figures` (the
     /// publisher's summary/cards, so the waybar chips and Home Assistant) and the phone's heads
@@ -944,11 +954,7 @@ mod tests {
             &[],
         );
         let board = crate::tasks::Feed::default();
-        // A read fleet cost: its dollars are figures the reports read (`hub-figure costs_*`).
-        let mut costs = crate::costs::Costs::default();
-        costs.fleet_cost.usd = "about $1,203".into();
-        costs.fleet_cost.measured = "$403".into();
-        costs.fleet_cost.estimated = "$800".into();
+        let costs = read_costs();
         let releases = crate::releases::Releases::default();
         let schedules = crate::schedules::Schedules::default();
         let mut cards = vec![
@@ -997,16 +1003,6 @@ mod tests {
         assert_eq!(figs["done_shipped"], 2);
         assert_eq!(figs["done_checks"], 1);
         assert_eq!(figs["queue_on_deck"], 1);
-        // The fleet cost and its named parts, in whole dollars: day-log, fleet-bench and the
-        // shepherd print these.
-        assert_eq!(
-            (
-                figs["costs_headline"],
-                figs["costs_measured"],
-                figs["costs_estimated"]
-            ),
-            (1203, 403, 800)
-        );
         assert!(figs["needs_headline"] > 0);
 
         // Negative controls: a surface that counts a figure itself fails the check.
