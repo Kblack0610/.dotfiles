@@ -1775,8 +1775,10 @@ git_facts() {
   local d="$1" edited="${2:-}" shell="${3:--}" branch dirty=0 paths ahead pahead pin base prb pr state ci oid red inpr=1 head
   [ -d "$d" ] || { echo "gone 0 0 - - - 1 - - - - - -"; return; }
   git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo "0 0 0 - - - 1 - - - - - -"; return; }
-  fetch_once "$d"
   branch="$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  # A session working in a store reads other writers' files and store-sync's unpushed commit there (ar-3883).
+  store_landed "$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" && { echo "1 0 0 - - - 1 ${branch:--} 0 no - - -"; return; }
+  fetch_once "$d"
   paths="$(dirty_paths "$d" "$edited")"
   [ -n "$paths" ] && dirty="$(wc -l <<<"$paths")"
   base="$(default_base "$d")"
@@ -2237,11 +2239,6 @@ collect() {
     # What a deployed checkout off its default branch holds is one fault, its CHECKOUT row, and no
     # session's work: 2026-11-06 it read 9 files ahead on all 16 sessions there, each one STALLED.
     if [ "$host" = - ] && [ "$g" = 1 ] && in_checkout "$cwd" "$off"; then ahead=0 pr=- state=- ci=- oid=- inpr=1; fi
-    # A session working in the agent store or the notes vault reads other writers' files and store-sync's
-    # unpushed commit there; none of it is the session's to land (ar-3883).
-    if [ "$host" = - ] && [ "$g" = 1 ] && store_landed "$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)"; then
-      dirty=0 ahead=0 pr=- state=- ci=- oid=- inpr=1 names=-
-    fi
     # A run that handed its item off left its pushed branch to the item's next start: a clean tree whose
     # HEAD is that item's salvage: has nothing left here to land.
     if [ "$host" = - ] && [ "$g" = 1 ] && [ "$irel" = moved ] && [ "$dirty" = 0 ] && [ "$ahead" -gt 0 ] && [ "$pr" = - ] \
