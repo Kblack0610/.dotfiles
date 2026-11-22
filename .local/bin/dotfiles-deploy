@@ -53,8 +53,9 @@
 #      and one link serves it. See fold_point.
 #   6. A FOLDED directory (a directory link into a repo that tools write through) is unfolded
 #      the way `stow --no-folding` lays it out: a link per deploy path, the ignored runtime
-#      entries moved out of the checkout into $HOME, the other repo's twins removed. Only a
-#      full --apply does it, never --missing. See unfold.
+#      entries moved out of the checkout into $HOME, the other repo's twins removed. A tracked
+#      absolute link stow ignores (an enable into /usr/lib) is kept as it is; any other
+#      tracked path stow ignores blocks it. Only a full --apply does it, never --missing. See unfold.
 #   7. A STALE link (dangling, into a repo) is removed; --missing does that too.
 #   8. A RUNTIME directory (a link to a checkout directory no repo tracks) moves out of the
 #      checkout whole, under a full --apply only.
@@ -695,7 +696,7 @@ move_entry() {
 unfold() {
   local lp="$1" repo="$2" new="$HOME/$1.unfold-$STAMP" old="$HOME/$1.folded-$STAMP"
   local rec path dir e c i src backup ndone=0
-  local -a links=() queue=() twins=() moves=() blockers=() expanded=() moved=()
+  local -a links=() queue=() twins=() moves=() blockers=() expanded=() moved=() keeps=()
   UNFOLD_OTHER=()
   for rec in "${MANIFEST[@]}"; do
     IFS="$SEP" read -r path _ dir _ <<< "$rec"
@@ -736,6 +737,18 @@ unfold() {
       "$lp" "${#blockers[@]}" "${blockers[*]:0:5}" >&2
     FAILED=$((FAILED + 1)); return 1
   fi
+  # A tracked path stow ignores reaches $HOME only through the fold. An absolute link (an enable
+  # into /usr/lib) is kept as it is; a file would vanish from $HOME, so it blocks the directory.
+  load_ignore "$repo"
+  while IFS= read -r -d '' e; do
+    stow_ignored "$e" || continue
+    if [ -L "$repo/$e" ] && [[ "$(readlink -- "$repo/$e")" == /* ]]; then keeps+=("$e"); else blockers+=("$e"); fi
+  done < <(git -C "$repo" ls-files -z -- ":(literal)$lp" 2>/dev/null)
+  if [ "${#blockers[@]}" -gt 0 ]; then
+    printf '  SKIP  %s - %s tracked path(s) stow ignores would leave $HOME: %s\n' \
+      "$lp" "${#blockers[@]}" "${blockers[*]:0:5}" >&2
+    FAILED=$((FAILED + 1)); return 1
+  fi
   if [ -e "$new" ] || [ -L "$new" ] || [ -e "$old" ] || [ -L "$old" ]; then
     printf '  SKIP  %s - %s or %s already exists\n' "$lp" "$new" "$old" >&2
     FAILED=$((FAILED + 1)); return 1
@@ -751,6 +764,11 @@ unfold() {
     IFS="$SEP" read -r path dir <<< "$rec"
     c="$new/${path#"$lp"/}"
     mkdir -p -- "$(dirname -- "$c")" && stow_link "$c" "$dir/$path" || { ndone=-1; break; }
+  done
+  for e in ${keeps[@]+"${keeps[@]}"}; do
+    [ "$ndone" -eq 0 ] || break
+    c="$new/${e#"$lp"/}"
+    mkdir -p -- "$(dirname -- "$c")" && ln -s -- "$(readlink -- "$repo/$e")" "$c" || ndone=-1
   done
   if [ "$ndone" -eq 0 ]; then
     for e in ${moves[@]+"${moves[@]}"}; do
@@ -793,7 +811,7 @@ unfold() {
       move_entry "$repo/$e" "$HOME/$e" && moved+=("$e")
   done < <(git -C "$repo" ls-files -z --others --directory -- ":(literal)$lp" 2>/dev/null)
   printf '  unfolded  ~/%s: %s link(s), %s runtime entr(ies) moved out of the checkout, %s twin(s) removed\n' \
-    "$lp" "${#links[@]}" "${#moved[@]}" "${#twins[@]}"
+    "$lp" "$(( ${#links[@]} + ${#keeps[@]} ))" "${#moved[@]}" "${#twins[@]}"
   APPLIED=$((APPLIED + 1)); return 0
 }
 

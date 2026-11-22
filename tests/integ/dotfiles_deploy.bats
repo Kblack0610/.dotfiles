@@ -636,6 +636,28 @@ systemd_fold() {
   assert_equal "$(git -C "$PUB" status --porcelain --ignored -- .config)" ''
 }
 
+@test "an unfold keeps a tracked absolute enable that stow ignores" {
+  systemd_fold
+  # Stow refuses an absolute link into /usr/lib, so the repo ignores it; the fold served it.
+  printf '%s\n' '^/\.config/systemd/user/default\.target\.wants/ydo\.service$' >> "$PUB/.stow-local-ignore"
+  mkdir -p "$PUB/.config/systemd/user/default.target.wants"
+  track_symlink "$PUB" .config/systemd/user/default.target.wants/ydo.service /usr/lib/systemd/user/ydo.service
+  run "$DEPLOY" --apply
+  assert_success
+  assert_output --partial 'unfolded  ~/.config/systemd: 5 link(s)'
+  assert_equal "$(readlink "$HOME/.config/systemd/user/default.target.wants/ydo.service")" '/usr/lib/systemd/user/ydo.service'
+}
+
+@test "a tracked file stow ignores under a fold blocks the unfold" {
+  systemd_fold
+  printf '%s\n' '^/\.config/systemd/user/mac\.plist$' >> "$PUB/.stow-local-ignore"
+  radd "$PUB" .config/systemd/user/mac.plist 'mac only'
+  run "$DEPLOY" --apply
+  assert_failure
+  assert_output --partial 'SKIP  .config/systemd - 1 tracked path(s) stow ignores would leave $HOME: .config/systemd/user/mac.plist'
+  [ -L "$HOME/.config/systemd" ] || fail 'the fold was replaced despite the blocker'
+}
+
 @test "an untracked file git does not ignore blocks the unfold, and nothing moves" {
   systemd_fold
   printf 'wip\n' > "$PUB/.config/systemd/user/wip.service"
