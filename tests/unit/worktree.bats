@@ -1988,6 +1988,13 @@ make_unity_tree() {
   local wt="$WT_ROOT/repo-agent-1"
   git -C "$MAIN" worktree add --quiet "$wt" -b feat origin/main
   git -C "$wt" commit --quiet --allow-empty -m work # on no remote
+  # A nested repo with no commit fails the snapshot itself, and the refusal names git's reason.
+  git init --quiet "$wt/scratch"
+  run cmd_archive "$wt"
+  assert_failure 2
+  assert_output --partial "kept repo-agent-1: could not snapshot its uncommitted work: error: 'scratch/' does not have a commit checked out"
+  [ -d "$wt/scratch/.git" ]
+  rm -rf "$wt/scratch"
   mkdir -p "$wt/vendor"
   git clone --quiet "$ORIGIN" "$wt/vendor/lib"
   printf 'local\n' > "$wt/vendor/lib/edit.txt"

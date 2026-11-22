@@ -1484,11 +1484,12 @@ cmd_archive() {
 }
 
 # wt_unsaved_gitlinks <path> <tree> -- each gitlink path in <tree> that <path>'s .gitmodules does
-# not name; cmd_archive has checked each named one clean and pushed. A path git quotes never
-# matches, so an odd name is refused, never passed.
+# not name; cmd_archive has checked each named one clean and pushed. quotePath off keeps a
+# non-ASCII path raw, as .gitmodules has it; a path git still quotes (a tab, a quote) never
+# matches, so it is refused, never passed.
 wt_unsaved_gitlinks() {
   local ls
-  ls=$(git -C "$1" ls-tree -r "$2") || return 1
+  ls=$(git -C "$1" -c core.quotePath=false ls-tree -r "$2") || return 1
   # The leading blank line keeps the first file non-empty, so NR == FNR never spills into the second.
   awk -F'\t' 'NR == FNR { ok[$0] = 1; next } substr($1, 1, 7) == "160000 " && !($2 in ok) { print $2 }' \
     <(echo; wt_submodule_list "$1" | cut -f2) <(printf '%s\n' "$ls")
@@ -1505,18 +1506,23 @@ wt_archive_tree() {
   # A copy of the tree's own index keeps its stat cache, so add -A hashes only what changed (a
   # Unity tree is 15-20 GB); a tree with no index starts from HEAD.
   if { cp "$(git -C "$path" rev-parse --path-format=absolute --git-path index)" "$idx" 2>/dev/null ||
-    GIT_INDEX_FILE=$idx git -C "$path" read-tree HEAD; } && GIT_INDEX_FILE=$idx git -C "$path" add -A &&
+    GIT_INDEX_FILE=$idx git -C "$path" read-tree HEAD; } && out=$(GIT_INDEX_FILE=$idx git -C "$path" add -A 2>&1) &&
     tree=$(GIT_INDEX_FILE=$idx git -C "$path" write-tree); then
     rm -f "$idx"
   else
     rm -f "$idx"
-    panel_fail "kept $name: could not snapshot its uncommitted work"
+    # A nested repo with no commit fails add -A ("does not have a commit checked out"); name it.
+    out=$(grep -m1 -e '^error:' -e '^fatal:' <<<"$out")
+    panel_fail "kept $name: could not snapshot its uncommitted work${out:+: $out}"
     return 2
   fi
   # add -A stores a nested repo that is no submodule as a bare gitlink, its files and history
   # left out, and the forced remove below would delete them (ar-3313).
   out=$(wt_unsaved_gitlinks "$path" "$tree") || { panel_fail "kept $name: cannot list the repos nested in it"; return 2; }
-  [ -z "$out" ] || { panel_fail "kept $name: nested git repo ${out//$'\n'/, } is no submodule, so its bundle would not save it"; return 1; }
+  [ -z "$out" ] || {
+    panel_fail "kept $name: nested git repo ${out//$'\n'/, } is no submodule, so its bundle would not save it; push and remove it, or make it a submodule"
+    return 1
+  }
   # Made even when the files match HEAD: an empty commit still names HEAD as its parent.
   snap=$(git -C "$path" commit-tree "$tree" -p "$head" -m "wt archive: $name, uncommitted work included") &&
     git -C "$main" update-ref "$ref" "$snap" ||
