@@ -231,7 +231,8 @@ cmd_merge_item() {
 
 # keep_ours <theirs> <path>: the last resort of merge-item. The local copy stands whole and the remote
 # one is kept as $SYNC_DIR/lost/<path, / as __>.lost-<its blob hash>, named by content, so a merge
-# retried writes the same file; store-sync-age reads any file there as red until someone settles it
+# retried, or the in-memory merge-tree run before the real merge, finds it and logs nothing more;
+# store-sync-age reads any file there as red until someone settles it
 # (re-applies what the remote side should have kept, with agent-queue set) and deletes it. Exit 1,
 # the conflict as before, only when the file cannot be written. Logged, never printed: a driver's
 # stdout is git's. Why: one item set two ways on two hosts stopped every sync of the store until a
@@ -240,6 +241,7 @@ keep_ours() {
   local h lost
   h=$(git hash-object -- "$1" 2>/dev/null) || return 1
   lost="$SYNC_DIR/lost/${2//\//__}.lost-${h:0:12}"
+  [ -e "$lost" ] && return 0
   mkdir -p "${lost%/*}" && cp -- "$1" "$lost" || return 1
   QUIET=1 log "merge-item: $2 differs on both sides past what merges; kept this side's copy, the other is in ${lost/#"$HOME"/\~}"
 }
