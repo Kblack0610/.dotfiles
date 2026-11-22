@@ -5515,9 +5515,13 @@ cmd_throughput() {
       ($m | split("\n") | map(select(. != "") | split("\t"))
        | (map(select(.[0] | startswith("!")) | .[0][1:]) | unique) as $unread
        | (map(select((.[0] | startswith("!") | not) and (.[1] | tonumber) > $a and (.[1] | tonumber) <= $b)) | group_by(.[0])
-          | if length == 0 then "merges: none" else "merges/h: " + (map("\(.[0][0]) \(length / $h | round1)") | join(", ")) end),
+          | if length > 0 then "merges/h: " + (map("\(.[0][0]) \(length / $h | round1)") | join(", "))
+            elif ($unread | length) > 0 then "merges: none in the repos read"
+            else "merges: none" end),
          # a project with no repo in the map, or no clone here that fetches, is unread, never counted as no merges
-         (if ($unread | length) > 0 then "merges unread (no mapped repo, or no clone here that fetches): \($unread | join(", "))" else empty end)),
+         (if $unread == ["project-map"] then "merges unread: the project map is unreadable"
+          elif ($unread | length) > 0 then "merges unread (no mapped repo, or no clone here that fetches): \($unread | join(", "))"
+          else empty end)),
       (if $s == null then "pool and hosts: prometheus unreadable"
        else ($s["cc:pool_slots"] // {} | keys[] | . as $p | select(($s["cc:pool_slots"][$p] // 0) > 0)
              | "pool \($p): \($s["cc:pool_waiting"][$p] // 0) waiting, \($s["cc:pool_busy"][$p] // 0) running"
