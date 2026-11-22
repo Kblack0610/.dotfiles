@@ -95,13 +95,12 @@ if [ -z "$ready" ]; then
   flag 1 "no dispatch numbers on the feed" nofeed
 else
   # The one gate that stopped the last pass, if any, in words with its numbers.
-  for k in slots load idle account assess other; do
+  for k in slots load account assess other; do
     [ "$(get "dispatch.room_held_$k")" = 1 ] || continue
     gate=$k
     case $k in
       slots) paused="the fleet is at its session target of $(d room_max_live)" ;;
       load) paused="load $(d room_load) is over its cap of $(d room_load_cap)" ;;
-      idle) paused="idle $(d room_idle)% is under its floor of $(d room_min_idle)%" ;;
       assess) paused="the fleet-assess check says the machine is too busy" ;;
       account)
         reasons="$(jq -r '[.data.result[] | select(.metric.__name__ == "claude_account_room_reason" and (.metric.kind // "claude") == "claude") | .metric]
@@ -208,11 +207,9 @@ if [ -n "$ready" ]; then
   # units are amber at most: the gates, not the count, decide when the machine is full.
   if [ -n "$(get dispatch.room_max_live)" ]; then
     units=$(n0 room_live_runs) cap=$(n0 room_max_live) load=$(n0 room_load) lcap=$(n0 room_load_cap)
-    idle=$(n0 room_idle) floor=$(n0 room_min_idle)
     ul=0; ((units >= cap)) && ul=1
     ll=0; ((load * 100 >= lcap * 80)) && ll=1; ((load > lcap)) && ll=2
-    il=0; ((idle < floor + 10)) && il=1; ((idle < floor)) && il=2
-    tip+=$'\n'"<b>Room</b>  $(paint "${LEVEL_COLOUR[$ul]}" "$(d room_total_live)") of $cap sessions, load $(paint "${LEVEL_COLOUR[$ll]}" "$load") of $lcap, idle $(paint "${LEVEL_COLOUR[$il]}" "$idle%") (floor $floor%)"
+    tip+=$'\n'"<b>Room</b>  $(paint "${LEVEL_COLOUR[$ul]}" "$(d room_total_live)") of $cap sessions, load $(paint "${LEVEL_COLOUR[$ll]}" "$load") of $lcap"
   else
     tip+=$'\n'"<b>Room</b>  - (no headroom from a pass in the last 45m)"
   fi

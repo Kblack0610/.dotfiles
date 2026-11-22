@@ -13,7 +13,7 @@ load 'fleet_dispatch/common'
   assert_not_called 'wt new'
 }
 
-@test "under DISPATCH_RUN_FLOOR a run start goes past the weekly pace and real idle, and says so" {
+@test "under DISPATCH_RUN_FLOOR a run start goes past the weekly pace, and says so" {
   game_ready
   room_on_floor
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
@@ -760,7 +760,7 @@ share_history() {
   # held there stays held, as the list proves nothing else could start.
   agent-queue list --json --state active 2>/dev/null | jq -r .slug | while read -r s; do agent-queue move "$s" done --status cancelled >/dev/null; done
   : > "$NOTES_FIXTURE/rows.game.human"; : > "$NOTES_FIXTURE/rows.app.human"
-  idle_held_machine; export DISPATCH_TARGET_AWAY=6; fleet_state 8
+  full_fleet_machine
   agent-queue add --project app --slug busy "app work" >/dev/null
   agent-queue move busy running >/dev/null
   agent-queue add --project game --slug g1 "game work" >/dev/null

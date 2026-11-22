@@ -20,9 +20,9 @@ load 'fleet_dispatch/common'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'started queue item fix-game on the run floor'
-  assert_output --partial 'over its weekly pace, and no other source has room; real idle 10.0% is under 30%, the pass stops after 1 started'
+  assert_output --partial 'over its weekly pace, and no other source has room, the pass stops after 1 started'
   refute_output --partial 'started queue item fix-app'
-  # the negative control: no floor, the same room and idle start nothing
+  # the negative control: no floor, the same room starts nothing
   export DISPATCH_RUN_FLOOR=0
   rm -f "$NOTES_FIXTURE/calls.log"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -48,7 +48,6 @@ load 'fleet_dispatch/common'
 
 @test "the run floor lifts the pace reason alone: pace with the 5h window, committed burn or the reserve still refuses" {
   game_ready
-  cpu 60 30 0 10
   export DISPATCH_RUN_FLOOR=2
   for r in pace,five_hour pace,committed reserve,pace; do
     acct "alt:$r:/home/u/.claude-personal"
@@ -70,7 +69,7 @@ load 'fleet_dispatch/common'
 # its weekly pace. The human's rule: limits never cut off their own work.
 @test "human floor: an urgent item from the human starts on an account past its pace alone; a plain, an agent's and a high one do not" {
   project game beta "$SANDBOX/repos/game"
-  acct alt:pace:/home/u/.claude-personal; cpu 5 5 0 90
+  acct alt:pace:/home/u/.claude-personal
   export DISPATCH_RUN_FLOOR=0 DISPATCH_PER_PASS=3
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
   agent-queue add --project game --slug lo --priority high "plain high" >/dev/null
@@ -92,7 +91,7 @@ load 'fleet_dispatch/common'
 # whatever the spend pace. A #requested row's item (tag `requested`) is an ask for DISPATCH_ASK_FRESH_H.
 @test "human floor: a fresh ask at high priority starts past the weekly pace; one asked past DISPATCH_ASK_FRESH_H waits" {
   project game beta "$SANDBOX/repos/game"
-  acct alt:pace:/home/u/.claude-personal; cpu 5 5 0 90
+  acct alt:pace:/home/u/.claude-personal
   export DISPATCH_RUN_FLOOR=0 DISPATCH_PER_PASS=3
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
   agent-queue add --project game --slug old-ask --priority high --tags requested "old ask" >/dev/null
@@ -126,7 +125,6 @@ load 'fleet_dispatch/common'
 
 @test "human floor: it lifts the pace reason alone: the reserve, the 5h window and committed burn still refuse, and so does load" {
   project game beta "$SANDBOX/repos/game"
-  cpu 5 5 0 90
   export DISPATCH_RUN_FLOOR=0
   agent-queue add --project game --slug hu --priority urgent "human urgent" >/dev/null
   for r in pace,five_hour pace,committed reserve,pace; do
@@ -317,7 +315,7 @@ full_fleet() {
   assert_not_called 'CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude'
 }
 
-@test "red floor: a red starts past fleet-assess HOLD, load, real idle and the weekly pace; a plain item does not" {
+@test "red floor: a red starts past fleet-assess HOLD, load and the weekly pace; a plain item does not" {
   red_held_machine
   agent-queue add --project game --slug p --priority urgent "plain p" >/dev/null
   agent-queue add --project game --slug r --tags 'red cause:ab12' "fix r" >/dev/null
@@ -482,7 +480,6 @@ full_fleet() {
   # Negative control: the machine gates open, and the next start ends the hold.
   stub fleet-assess '[ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
   echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
-  cpu 5 5 0 90
   agent-queue add --project game --slug r2 --tags 'red cause:cd34' "fix r2" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item r2'
@@ -500,7 +497,6 @@ full_fleet() {
   route_ready
   acct main:ok
   srcs codex:ok:5
-  cpu 60 30 0 10   # real idle 10%: the floor goes past it, as the other floors do
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PROJECT_FLOOR=0 DISPATCH_PER_PASS=3
   fleet_state 8
   # Negative control: codex is on pace for its week, so the full fleet starts nothing.
@@ -528,7 +524,6 @@ full_fleet() {
   route_ready
   acct main:ok
   srcs codex:ok:5
-  cpu 10 5 0 85
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PROJECT_FLOOR=0 DISPATCH_PER_PASS=1
   fleet_state 2
   # Negative control: codex is on pace for its week, so the pass's one start goes to Claude.
@@ -555,7 +550,6 @@ full_fleet() {
 @test "source floor: past its pace target, a source with no room, a tier-3 item, a named model and a red still start nothing" {
   route_ready
   acct main:ok
-  cpu 10 5 0 85
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PROJECT_FLOOR=0 DISPATCH_PER_PASS=3
   fleet_state 8
   under_used codex
@@ -590,7 +584,6 @@ full_fleet() {
 @test "other sources: past a full Claude pace target, an item routed to another source with room starts; a Claude-only one waits" {
   route_ready
   acct main:ok
-  cpu 10 5 0 85
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PROJECT_FLOOR=0 DISPATCH_SOURCE_FLOOR=0 DISPATCH_PER_PASS=3
   fleet_state 8
   # Negative control: no other source has room, so the full target starts nothing and asks model-lane nothing.

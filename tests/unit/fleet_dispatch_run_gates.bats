@@ -5,32 +5,9 @@
 
 load 'fleet_dispatch/common'
 
-@test "project floor: an idle project's first item starts past real idle; a busy project's waits" {
-  idle_held_machine
-  agent-queue add --project game --slug busy "game work" >/dev/null
-  agent-queue move busy running >/dev/null
-  agent-queue add --project game --slug g2 "more game work" >/dev/null
-  agent-queue add --project app --slug a1 "app work" >/dev/null
-  agent-queue add --project app --slug a2 "more app work" >/dev/null
-  # Negative control first: no project floor, the same machine starts nothing.
-  export DISPATCH_PROJECT_FLOOR=0
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'real idle'
-  assert_not_called 'wt new'
-  export DISPATCH_PROJECT_FLOOR=1
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'started queue item a1 on the project floor (DISPATCH_PROJECT_FLOOR=1)'
-  refute_output --partial 'started queue item g2'
-  refute_output --partial 'started queue item a2'
-}
-
 @test "project floor: a fleet past its pace target still starts an idle project's item; a busy project's waits" {
-  # 2026-11-12 18:08 to 11-13 21:00: hand-started game sessions held 58-78 live against a target of
-  # 25-50, the pass returned NOOP before the project floor, and trader's 15 queued items waited 27h.
-  idle_held_machine
-  export DISPATCH_TARGET_AWAY=6
-  fleet_state 8
+  # The pass returned NOOP before the project floor (full_fleet_machine).
+  full_fleet_machine
   agent-queue add --project game --slug busy "game work" >/dev/null
   agent-queue move busy running >/dev/null
   agent-queue add --project game --slug g2 "more game work" >/dev/null
@@ -51,10 +28,9 @@ load 'fleet_dispatch/common'
   assert_equal "$(outcome)" WORKED
 }
 
-@test "project floor: past its pace target, agent-hold and an account in its reserve still hold an idle project's item" {
-  idle_held_machine
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_PROJECT_FLOOR=1
-  fleet_state 8
+@test "project floor: agent-hold and an account in its reserve still hold an idle project's item" {
+  full_fleet_machine
+  export DISPATCH_PROJECT_FLOOR=1
   agent-queue add --project app --slug a1 "app work" >/dev/null
   stub agent-hold '[ "$2" = dispatch ] && exit 1; exit 0'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -67,10 +43,9 @@ load 'fleet_dispatch/common'
   assert_equal "$(outcome)" NOOP
 }
 
-@test "project floor: past its pace target, a finding that holds the idle project's item settles NOOP, not BLOCKED" {
-  idle_held_machine
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_PROJECT_FLOOR=1
-  fleet_state 8
+@test "project floor: a finding that holds the idle project's item settles NOOP, not BLOCKED" {
+  full_fleet_machine
+  export DISPATCH_PROJECT_FLOOR=1
   agent-queue add --project app --slug a1 "app work" >/dev/null
   findings "$(finding starved pool:unity '["app"]')"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -82,7 +57,7 @@ load 'fleet_dispatch/common'
 }
 
 @test "project floor: an item parked on its PR keeps its project busy, as a running one does" {
-  idle_held_machine
+  full_fleet_machine
   export DISPATCH_PROJECT_FLOOR=1
   agent-queue add --project game --slug parked "game work" >/dev/null
   agent-queue move parked review >/dev/null
@@ -95,7 +70,7 @@ load 'fleet_dispatch/common'
 }
 
 @test "project floor: one start a project even with room for more" {
-  idle_held_machine
+  full_fleet_machine
   export DISPATCH_PROJECT_FLOOR=2
   agent-queue add --project app --slug a1 "app work" >/dev/null
   agent-queue add --project app --slug a2 "more app work" >/dev/null
@@ -105,7 +80,7 @@ load 'fleet_dispatch/common'
 }
 
 @test "project floor: an account past its pace, load and agent-hold still hold an idle project's item" {
-  idle_held_machine
+  full_fleet_machine
   export DISPATCH_PROJECT_FLOOR=1
   agent-queue add --project app --slug a1 "app work" >/dev/null
   acct alt:pace:/home/u/.claude-personal
@@ -125,7 +100,7 @@ load 'fleet_dispatch/common'
 # 2026-11-07: a floor pass whose 2 unity items a starved pool held said "every queue item waits",
 # and the gate the other 40 waited on was named nowhere.
 @test "project floor: a finding that holds every idle project's item says so, and names the gate the rest wait on" {
-  idle_held_machine
+  full_fleet_machine
   export DISPATCH_PROJECT_FLOOR=1
   agent-queue add --project game --slug busy "game work" >/dev/null
   agent-queue move busy running >/dev/null
@@ -135,7 +110,7 @@ load 'fleet_dispatch/common'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_not_called 'wt new'
   assert_output --partial 'finding firing: a1 (starved pool:unity), every item of an idle project waits; the rest wait on '
-  assert_output --regexp 'the rest wait on [^;]*real idle'
+  assert_output --partial 'the rest wait on pace target: 8 live sessions'
   refute_output --partial 'every queue item waits'
 }
 
@@ -464,7 +439,7 @@ load 'fleet_dispatch/common'
 }
 
 @test "focus: the project floor starts a focus project's item first, and the other project only with a floor left" {
-  idle_held_machine
+  full_fleet_machine
   export DISPATCH_PROJECT_FLOOR=1
   agent-queue add --project app --slug a1 "app work" >/dev/null
   agent-queue add --project game --slug g1 "game work" >/dev/null
