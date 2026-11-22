@@ -6,7 +6,8 @@
 # each checkout in project-map.json `paths`, one line naming: tracked changes (deletions
 # included) and non-ignored untracked files older than the age limit (younger is someone
 # mid-edit), and stashes older than the stash limit (every worktree of the clone shares them).
-# The Sentinel watch dirty-mains runs it; main-checkout-branch covers the branch.
+# The Sentinel watch dirty-mains runs it; main-checkout-branch covers the branch; dirty-park
+# sets what it names aside without deleting it.
 #
 # Usage: dirty-mains [--quiet]    exit 0 clean, 1 something reported, 2 map unreadable
 # Env:   DIRTY_MAINS_MAP (default ~/.config/shared-hooks/project-map.json),
