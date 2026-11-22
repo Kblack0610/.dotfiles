@@ -515,6 +515,22 @@ def registry(start, end, root):
     return n, cost, by_acct, by_proj, last, by_sess
 
 
+def fleet_cut(reg, fc, priced):
+    """One by_account or by_project table. Its dollars and sessions are the fleet_cost cut fc (cost_usd,
+    measured, estimated; sessions priced in the window), its cache_read and output the registry cut reg,
+    and billed_usd the registry's billed-only sum, kept as the cross-check. With no fleet cost (priced
+    False) the dollars are None and sessions are the registry's."""
+    out = {}
+    for k in set(reg) | set(fc):
+        r, f = reg.get(k) or {}, fc.get(k) or {}
+        out[k] = {"sessions": f.get("sessions", 0) if priced else r.get("sessions", 0),
+                  **{name: round(f.get(src, 0), 2) if priced else None
+                     for name, src in (("cost_usd", "usd"), ("measured", "measured"), ("estimated", "estimated"))},
+                  "billed_usd": round(r.get("cost_usd", 0), 2),
+                  "cache_read": r.get("cache_read", 0), "output": r.get("output", 0)}
+    return dict(sorted(out.items(), key=lambda kv: (-(kv[1]["cost_usd"] or 0), -kv[1]["billed_usd"], kv[0])))
+
+
 def merged_prs(start, end, root):
     prs, last, by_sess = set(), {}, defaultdict(set)
     for f in glob.glob(os.path.join(root, "*", "*.jsonl")):
@@ -916,6 +932,16 @@ def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
     priced_other = sum(v["usd"] for v in other.values())   # a price table or the harness's own sum, never a bill
     other["gateway"] = {"usd": round(gateway, 2), "sessions": len(gateway_sessions), "priced": len(gateway_sessions), "source": "metered"}
     helper_usd = estimated_usd * share
+    # By project: the session rows grouped, so a project row is the sum of its sessions' rows.
+    by["project"] = defaultdict(lambda: {**bucket(), "tokens": 0})
+    for r in by_session:
+        b = by["project"][r["project"] or "?"]
+        for k in ("measured", "estimated", "tokens"):
+            b[k] += r[k] or 0
+        b["sessions"] += 1
+        b["sessions_measured"] += r["measured"] > 0
+
+    total_usd = measured_usd + gateway + estimated_usd + helper_usd + priced_other
 
     def rows(cut):
         for b in cut.values():
@@ -935,12 +961,16 @@ def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
         "coverage": {"tokens": tokens_all, "tokens_estimated": tokens_est,
                      "estimated_token_share": round(tokens_est / tokens_all, 4) if tokens_all else None,
                      "sessions": len(sess), "sessions_estimated": sum(1 for s in sess.values() if s["measured"] <= 0)},
-        "total": {"usd": round(measured_usd + gateway + estimated_usd + helper_usd + priced_other, 2),
+        "total": {"usd": round(total_usd, 2),
                   "measured": round(measured_usd + gateway, 2), "claude_measured": round(measured_usd, 2),
                   "estimated": round(estimated_usd + helper_usd + priced_other, 2),
-                  "helper_usd": round(helper_usd, 2), "helper_range": [0, round(estimated_usd * top, 2)]},
+                  "helper_usd": round(helper_usd, 2), "helper_range": [0, round(estimated_usd * top, 2)],
+                  # The session rows' count and tokens, and the dollars no row carries (the gateway's metered
+                  # line, the helper estimate, a harness line with no session id).
+                  "sessions": len(by_session), "tokens": sum(r["tokens"] or 0 for r in by_session),
+                  "unattributed": round(total_usd - sum(r["usd"] for r in by_session), 2)},
         "by_origin": rows(by["origin"]), "by_runner": rows(by["runner"]),
-        "by_account": rows(by["account"]), "by_model": rows(by["model"]),
+        "by_account": rows(by["account"]), "by_model": rows(by["model"]), "by_project": rows(by["project"]),
         "other_harness": other,
         # Every session the window priced, dearest first, to the tenth of a cent so short calls keep a row.
         # Their sum is the total less the gateway's metered line and the helper estimate, which no session
@@ -1101,8 +1131,8 @@ def main():
         "fleet_cost": d,
         # billed sessions only: a cross-check on the fitted cost, never the headline
         "registry": {"sessions": n, "cost_usd": round(cost, 2), "cost_by_session": reg_by_sess},
-        "by_account": {k: dict(v) for k, v in sorted(by_acct.items(), key=lambda x: -x[1]["cost_usd"])},
-        "by_project": {k: dict(v) for k, v in sorted(by_proj.items(), key=lambda x: -x[1]["cost_usd"])},
+        "by_account": fleet_cut(by_acct, (d or {}).get("by_account") or {}, d is not None),
+        "by_project": fleet_cut(by_proj, (d or {}).get("by_project") or {}, d is not None),
         "by_kind": {k: {**v, "sessions": len(acc["kind_files"][k])}
                     for k, v in sorted(acc["kind"].items(), key=lambda x: -x[1]["cache_read"])},
         "by_model": {k: dict(v) for k, v in sorted(acc["model"].items(), key=lambda x: -x[1]["turns"])},
@@ -1154,8 +1184,8 @@ def main():
         for k, v in rows.items():
             print("  " + "\t".join([k] + [f"{v.get(c, 0):,.0f}" if isinstance(v.get(c, 0), (int, float)) else str(v.get(c)) for c in cols]))
         print()
-    table("by account (registry)", out["by_account"], ["sessions", "cost_usd", "cache_read", "output"])
-    table("by project (registry)", out["by_project"], ["sessions", "cost_usd", "cache_read", "output"])
+    table("by account (fleet cost; billed_usd is the registry)", out["by_account"], ["sessions", "cost_usd", "billed_usd", "cache_read", "output"])
+    table("by project (fleet cost; billed_usd is the registry)", out["by_project"], ["sessions", "cost_usd", "billed_usd", "cache_read", "output"])
     table("by kind (transcripts)", out["by_kind"], ["sessions", "turns", "input", "output", "cache_write", "cache_read"])
     table("by model (transcripts)", out["by_model"], ["turns", "input", "output", "cache_write", "cache_read"])
     table("by origin (fleet cost; subagent row is its threads' tokens, their cost is in the parent's row)",

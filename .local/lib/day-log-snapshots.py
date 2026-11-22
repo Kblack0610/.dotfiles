@@ -590,7 +590,7 @@ def ci(a):
 SUM = {"queue.queued": "work.queue.queued", "queue.started": "work.queue.started", "queue.waiting": "work.queue.waiting",
        "queue.done": "work.queue.done", "queue.failed": "work.queue.failed", "board.opened": "work.board.opened",
        "board.closed": "work.board.closed", "phases.ticked": "work.phases.ticked", "tokens.context": "agents.tokens.context",
-       "merged_prs": "agents.merged_prs", "stages.needs_min": "work.stages.stages.NEEDS.minutes",
+       "merged_prs": "agents.merged_prs", "cost_usd": "agents.cost_usd", "stages.needs_min": "work.stages.stages.NEEDS.minutes",
        "stages.ask_min": "work.stages.stages.NEEDS:ask.minutes", "stages.prompt_min": "work.stages.stages.NEEDS:prompt.minutes",
        "stages.plan_approval_min": "work.stages.stages.NEEDS:plan_approval.minutes",
        "stages.stalled_min": "work.stages.stages.STALLED.minutes", "stages.ci_rerun_after_red": "work.stages.ci.rerun_after_red",
@@ -651,8 +651,8 @@ def rollup(records):
     return out
 
 
-def window_usage(start, end):
-    """(sessions, cost) over the window from the registry: a session counts once however many days it ran."""
+def window_sessions(start, end):
+    """Sessions over the window from the registry: a session counts once however many days it ran."""
     try:
         out = subprocess.run(cmd("DAYLOG_USAGE_CMD") + ["rollup", "--since", str(start), "--until", str(end)],
                              capture_output=True, text=True, timeout=CALL_TIMEOUT).stdout
@@ -660,23 +660,25 @@ def window_usage(start, end):
         return None
     rows = [line.split("\t") for line in out.splitlines() if line.count("\t") >= 4]
     total = [r for r in rows if r[0] == "TOTAL"] or rows
-    return (sum(int(r[1]) for r in total), round(sum(float(r[4]) for r in total), 2)) if total else None
+    return sum(int(r[1]) for r in total) if total else None
 
 
 def side(span):
-    """(records, metrics) of one week. Sessions and cost are read over the window, never added up
-    from the days, because a session spans days."""
+    """(records, metrics) of one week. Sessions are read over the window, never added up from the
+    days, because a session spans days. Cost is the days' fleet cost summed (SUM): each day's is
+    that day's spend alone, so the days add up."""
     records = [r for r in (load(DIR / f"{d}.json") for d in span) if r]
     out = rollup(records)
     if not records:
         return records, out
     start, end = day_bounds(span[0])[0], day_bounds(span[-1])[1]
-    usage = window_usage(start, end)
-    if usage:
-        out["sessions.total"], out["cost_usd"] = (usage[0], WINDOW), (usage[1], WINDOW)
-        prs, days_read = out.get("merged_prs", (0, 0))
-        if prs and days_read == WINDOW:  # the PRs burn counts per day, so it reads like the daily number
-            out["cost_per_merged_pr"] = (round(usage[1] / prs, 2), WINDOW)
+    sessions = window_sessions(start, end)
+    if sessions is not None:
+        out["sessions.total"] = (sessions, WINDOW)
+    prs, prs_days = out.get("merged_prs", (0, 0))
+    cost, cost_days = out.get("cost_usd", (None, 0))
+    if prs and prs_days == cost_days == WINDOW:  # the PRs burn counts per day, so it reads like the daily number
+        out["cost_per_merged_pr"] = (round(cost / prs, 2), WINDOW)
     try:
         rows = outcome_rows(start, end)
     except (subprocess.SubprocessError, ValueError):

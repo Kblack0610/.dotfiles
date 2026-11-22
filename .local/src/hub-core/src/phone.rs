@@ -820,11 +820,11 @@ mod tests {
                     c.tab
                 ));
             }
-            if let Ok(n) = c.big.parse::<i64>() {
+            if let Some(n) = crate::widget_doc::figure_value(&c.big) {
                 want.insert(format!("{}_headline", c.tab), n);
             }
             for (l, v) in parts {
-                if let Ok(n) = v.parse::<i64>() {
+                if let Some(n) = crate::widget_doc::figure_value(v) {
                     want.insert(crate::widget_doc::figure_name(c.tab, l), n);
                 }
             }
@@ -944,7 +944,11 @@ mod tests {
             &[],
         );
         let board = crate::tasks::Feed::default();
-        let costs = crate::costs::Costs::default();
+        // A read fleet cost: its dollars are figures the reports read (`hub-figure costs_*`).
+        let mut costs = crate::costs::Costs::default();
+        costs.fleet_cost.usd = "about $1,203".into();
+        costs.fleet_cost.measured = "$403".into();
+        costs.fleet_cost.estimated = "$800".into();
         let releases = crate::releases::Releases::default();
         let schedules = crate::schedules::Schedules::default();
         let mut cards = vec![
@@ -993,6 +997,16 @@ mod tests {
         assert_eq!(figs["done_shipped"], 2);
         assert_eq!(figs["done_checks"], 1);
         assert_eq!(figs["queue_on_deck"], 1);
+        // The fleet cost and its named parts, in whole dollars: day-log, fleet-bench and the
+        // shepherd print these.
+        assert_eq!(
+            (
+                figs["costs_headline"],
+                figs["costs_measured"],
+                figs["costs_estimated"]
+            ),
+            (1203, 403, 800)
+        );
         assert!(figs["needs_headline"] > 0);
 
         // Negative controls: a surface that counts a figure itself fails the check.

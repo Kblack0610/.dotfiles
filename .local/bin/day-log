@@ -82,11 +82,20 @@ ledger_prs() {
      | {key: "\(.r)#\(.n)", value: {item: $i.slug, area: ($i.area // null)}}] | from_entries'
 }
 
-# usage_json <since> <until> -> per-project spend from the agent-usage registry (no network).
+# usage_json <since> <until> -> the window's spend from the fleet cost (agent-usage fleet-cost, the base of
+# the hub Costs figure): its by_project rows, a "(no session)" row for the dollars no session carries
+# (its total.unattributed: the gateway's metered line, the helper estimate), and a TOTAL row, the fleet
+# total with its measured and estimated parts. A live day reads up to now. [] when it cannot be read.
 usage_json() {
-  $DAYLOG_USAGE_CMD rollup --since "$1" --until "$2" 2>/dev/null |
-    jq -Rn '[inputs | split("\t") | select(length >= 5)
-      | {project: .[0], sessions: (.[1] | tonumber), tokens: (.[3] | tonumber), cost_usd: (.[4] | tonumber)}]'
+  local before=()
+  [ "$2" -lt "$(now)" ] && before=(--before "$(date -d "@$2" -Iseconds)")
+  $DAYLOG_USAGE_CMD fleet-cost --since "$(date -d "@$1" -Iseconds)" "${before[@]}" --json 2>/dev/null |
+    jq -ce '.total as $t
+      | [.by_project | to_entries[] | {project: .key, sessions: .value.sessions, tokens: .value.tokens, cost_usd: .value.usd}]
+      | sort_by(-.cost_usd)
+      + (if $t.unattributed > 0 then [{project: "(no session)", sessions: 0, tokens: 0, cost_usd: $t.unattributed}] else [] end)
+      + [{project: "TOTAL", sessions: $t.sessions, tokens: $t.tokens,
+          cost_usd: $t.usd, measured_usd: $t.measured, estimated_usd: $t.estimated}]' 2>/dev/null || echo '[]'
 }
 
 # store_prs <out> <from> <to> <prs args...> -> <out>: DAYLOG_AUTHOR's GitHub PRs in the PR store, in the
@@ -244,8 +253,9 @@ snapshot() {
   printf '%s\n' "$out"
 }
 
-# day_prom <record> -> the day_log.prom lines: PRs merged per area, and spend per project. The
-# usage TOTAL row is the sum of the others (agent-usage rollup), so it is left out here.
+# day_prom <record> -> the day_log.prom lines: PRs merged per area, and spend per project (the fleet
+# cost; "(no session)" is the gateway and helper dollars). The usage TOTAL row is the sum of the
+# others, so it is left out here.
 day_prom() {
   jq -r "$PROM_JQ"'
     gauge("agent_day_merged"; "PRs merged today, by day-log area.";
@@ -308,9 +318,13 @@ def hm: if . == null then "-" elif endswith("Z") then fromdateiso8601 | strfloca
 def subject: .title | sub("^[a-z]+(\\([^)]*\\))?!?: *"; "");
 def money: if . == null then "-" else "$\(. * 100 | round / 100)" end;
 def tok: if . >= 1e9 then "\(. / 1e8 | floor / 10)B" elif . >= 1e6 then "\(. / 1e5 | floor / 10)M" else "\(.)" end;
-def spend: (.usage // []) | (map(select(.project == "TOTAL")) | first)
-  // {cost_usd: (map(.cost_usd) | add // 0), tokens: (map(.tokens) | add // 0), sessions: (map(.sessions) | add // 0)}
-  | {cost: .cost_usd, tokens: .tokens, sessions: .sessions};
+# The day'\''s spend: the usage TOTAL row, the fleet cost total (null when it could not be read).
+def spend: (.usage // []) | map(select(.project == "TOTAL")) | first
+  | if . then {cost: .cost_usd, measured: .measured_usd, estimated: .estimated_usd, tokens: .tokens, sessions: .sessions} else null end;
+# The headline clause; a record gathered before the fleet cost (no measured part) reads as it was.
+def spent: if . == null then "the fleet cost was unreadable"
+  elif .measured == null then "\(.sessions) sessions spent \(.cost | money)"
+  else "\(.sessions) sessions spent about \(.cost | money)" end;
 def clip($n): if length > $n then .[:$n - 3] + "..." else . end;
 def cap: (.[:1] | ascii_upcase) + .[1:];
 def pad($w): tostring | if length >= $w then . else . + " " * ($w - length) end;
@@ -349,7 +363,7 @@ markdown() {
   jq -r --argjson now "$(now)" --argjson days "$DAYLOG_OPEN_DAYS" --argjson week "$week" "$JQ_VIEW"'
     spend as $u
     | "# Day log, \(.date)", "",
-      "\(.merged | length) PRs merged in \(.merged | map(.repo) | unique | length) repos; \(if .done then "\(.done.shipped // "?") shipped and \(.done.checks // "?") checks (queue items, hub-core Done today); " else "" end)\($u.sessions) sessions spent \($u.cost | money). Gathered \(.gathered_at[0:16] | sub("T"; " ")) by `day-log` (deterministic: the PR store, the fleet state document, fleet-bench, agent-usage).", "",
+      "\(.merged | length) PRs merged in \(.merged | map(.repo) | unique | length) repos; \(if .done then "\(.done.shipped // "?") shipped and \(.done.checks // "?") checks (queue items, hub-core Done today); " else "" end)\($u | spent). Gathered \(.gathered_at[0:16] | sub("T"; " ")) by `day-log` (deterministic: the PR store, the fleet state document, fleet-bench, agent-usage).", "",
       (if .tokens then .tokens, "" else empty end),
       "## Done", "",
       (if (.merged | length) == 0 then "- Nothing merged.", "" else empty end),
@@ -390,7 +404,9 @@ markdown() {
           + (if .why then " (\(.why))" else "" end)
           + (if .pr then " " + (.pr | tostring | split(" ") | map(sub("^[^/]*/"; "")) | join(" ")) else "" end)), "" else empty end),
       "## Spend by project", "", "| Project | Sessions | Tokens | Cost |", "|---|---|---|---|",
-      (.usage[] | "| \(.project) | \(.sessions) | \(.tokens | tok) | \(.cost_usd | money) |"), "",
+      (.usage[] | "| \(.project) | \(.sessions) | \(.tokens | tok) | \(.cost_usd | money) |"),
+      (if (.usage // []) == [] then "| - | - | - | the fleet cost was unreadable |" else empty end), "",
+      ($u | if .measured then "- The fleet cost, about \(.cost | money): \(.measured | money) measured, \(.estimated | money) estimated (agent-usage fleet-cost).", "" else empty end),
       (if .work then "## Flow", "",
         (.work.queue | if . then "- Queue: \(.queued // 0) queued, \(.started // 0) started, \(.waiting // 0) moved to waiting, \(.done // 0) done (\(.failed // 0) failed); lead p50 \(.lead_minutes.p50 // "-") min, wait p50 \(.wait_minutes.p50 // "-") min" else empty end),
         (.work.board | if . then "- Board: \(.opened // "-") rows opened, \(.closed // "-") closed, \(.open_end // "-") open" else empty end),
