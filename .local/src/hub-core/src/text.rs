@@ -357,15 +357,6 @@ pub fn short_day(d: &str) -> &str {
     d.get(5..).unwrap_or(d)
 }
 
-/// An age at a glance: minutes, then hours, then days (the phone widget and the needs page).
-pub fn age(secs: i64) -> String {
-    match secs.max(0) {
-        s if s < 3600 => format!("{}m", s / 60),
-        s if s < 172_800 => format!("{}h", s / 3600),
-        s => format!("{}d", s / 86400),
-    }
-}
-
 /// Unix seconds at the local midnight that starts the day holding `now`.
 pub fn local_day_start(now: i64) -> i64 {
     use chrono::{Local, TimeZone};

@@ -20,6 +20,7 @@ setup() {
   export BENCH_SOURCES_CMD=false BENCH_HARNESSES="$SANDBOX/no-harnesses.json" BENCH_ROOM_CMD=false BENCH_CANARY_LANES="$SANDBOX/no-canary-lanes"   # nor the real sources, harnesses or lanes
   export BENCH_SKILL_CMD=true   # nor the real runner confs: no dangling SKILL unless a test serves one
   export BENCH_SYSTEMS_CMD=false   # nor the real skill tree: systems_no_skill reads ? unless a test serves one
+  export BENCH_BRANCHES_CMD=true   # nor the real clones' branches: none unless a test serves them
   export BENCH_ITEMS_CMD=true BENCH_QUEUE_SLOTS=3   # nor the real agent queue: empty unless a test serves one
   export BENCH_NEEDS_CMD='echo {"needs":[],"errors":[]}'   # nor the real hub: no needs unless a test serves them
   export KPI_THRESHOLDS="$SANDBOX/kpi-thresholds"
@@ -4171,8 +4172,8 @@ prs_fixture() {
     pr o/r#5 false 10 5 MERGEABLE FAILURE      # red but its fix is queued: not blocked
     pr o/r#6 false 10 5 MERGEABLE PENDING      # blocked: checks pending 5h, even with a running owner
     pr o/r#7 false 10 2 MERGEABLE FAILURE      # red, idle only 2h: none yet
-    pr o/r#8 true 100 90 MERGEABLE FAILURE     # a draft: none
-    pr o/r#9 false 2000 900 MERGEABLE SUCCESS  # opened before the window: none
+    pr o/r#8 true 100 90 MERGEABLE FAILURE     # a draft nobody works: aged, listed rather than dropped
+    pr o/r#9 false 2000 900 MERGEABLE SUCCESS  # opened before the window, nobody works it: aged
     pr o/r#10 false 100 30 MERGEABLE FAILURE   # in open_pr: of a running item, as agent-land records it: none
     pr o/r#11 false 100 30 MERGEABLE FAILURE   # a review item listed after the running one: the running one owns it
   } > "$SANDBOX/prs.jsonl"
@@ -4190,7 +4191,7 @@ prs_fixture() {
   run "$SUBJECT" prs --json
   assert_success
   [ "$(jq -c '[.prs[] | [.ref, .class]]' <<<"$output")" = \
-    '[["o/r#1","stranded"],["o/r#2","stranded"],["o/r#3","none"],["o/r#4","blocked"],["o/r#5","none"],["o/r#6","blocked"],["o/r#7","none"],["o/r#8","none"],["o/r#9","none"],["o/r#10","none"],["o/r#11","none"]]' ]
+    '[["o/r#1","stranded"],["o/r#2","stranded"],["o/r#3","none"],["o/r#4","blocked"],["o/r#5","none"],["o/r#6","blocked"],["o/r#7","none"],["o/r#8","aged"],["o/r#9","aged"],["o/r#10","none"],["o/r#11","none"]]' ]
   [ "$(jq -c '.prs[] | select(.ref == "o/r#11") | .owner' <<<"$output")" = '{"slug":"g","state":"running"}' ]
   run "$SUBJECT" prs
   assert_success
@@ -4223,6 +4224,126 @@ prs_fixture() {
   run "$SUBJECT" prs --check stranded
   assert_failure 2
   assert_output --partial 'unreadable:'
+}
+
+@test "prs: idle counts from the last commit, so a comment or CI churn does not reset it (ar-4470)" {
+  prs_fixture
+  # o/r#1 was last updated 30h ago; a commit 2h ago makes it a live PR, a comment 1h ago on a 30h-old commit does not
+  iso() { date -u -d "@$((T0 - $1 * 3600))" +%Y-%m-%dT%H:%M:%SZ; }
+  jq -cn --arg c "$(iso 100)" --arg u "$(iso 1)" --arg k "$(iso 30)" \
+    '{ref: "o/r#20", title: "t", draft: false, created: $c, updated: $u, commit: $k, mergeable: "MERGEABLE", checks: "SUCCESS"}' > "$SANDBOX/prs.jsonl"
+  jq -cn --arg c "$(iso 100)" --arg u "$(iso 1)" --arg k "$(iso 2)" \
+    '{ref: "o/r#21", title: "t", draft: false, created: $c, updated: $u, commit: $k, mergeable: "MERGEABLE", checks: "SUCCESS"}' >> "$SANDBOX/prs.jsonl"
+  run "$SUBJECT" prs --json
+  assert_success
+  [ "$(jq -c '[.prs[] | [.ref, .idle_h, .class]]' <<<"$output")" = '[["o/r#20",30,"stranded"],["o/r#21",2,"none"]]' ]
+}
+
+@test "prs --check aged lists a draft or a PR past the window that no live item works, and not one a running item owns" {
+  prs_fixture
+  run "$SUBJECT" prs --check aged
+  assert_failure 1
+  assert_line '2 aged PRs'
+  assert_line 'o/r#9 idle 900h, no item: t o/r#9'
+  assert_line 'o/r#8 idle 90h, no item, checks red: t o/r#8'
+  # NEGATIVE CONTROL: a running item on the old PR takes it out of the class
+  items_stub '{"slug":"w","state":"running","pr":"o/r#9"}' '{"slug":"x","state":"queued","pr":"o/r#8"}'
+  run "$SUBJECT" prs --check aged
+  assert_success
+  assert_output ''
+}
+
+@test "prs reads the open PRs of the Forgejo repos in the PR store, with checks mapped and mergeable unknown (ar-4470)" {
+  items_stub
+  export BENCH_PRS_CMD=prs_forgejo BENCH_NOW=$T0
+  export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync"
+  cat > "$SCHEDULES_SYNC" <<SS
+#!/usr/bin/env bash
+case "\$1" in
+  repos) echo '[{"forge":"github","repo":"o/gh"},{"forge":"forgejo","host":"git.example","repo":"o/fj"}]' ;;
+  prs) [ "\$2 \$3 \$4 \$5" = "git.example/o/fj --state open --checks" ] || exit 2
+    # #7 is the owner's; #8 is a bot's, which is not the fleet's to land and so never listed
+    printf '[{"number":7,"author":"o","branch":"fix/x","title":"bump x","draft":false,"created_at":"%s","updated_at":"%s","url":"u","ci":"FAIL"},{"number":8,"author":"renovate","branch":"renovate/y","title":"bump y","draft":false,"created_at":"%s","updated_at":"%s","url":"u","ci":"PASS"}]\n' \
+      "$(date -u -d "@$((T0 - 400 * 3600))" +%FT%TZ)" "$(date -u -d "@$((T0 - 300 * 3600))" +%FT%TZ)" \
+      "$(date -u -d "@$((T0 - 400 * 3600))" +%FT%TZ)" "$(date -u -d "@$((T0 - 300 * 3600))" +%FT%TZ)" ;;
+  *) exit 2 ;;
+esac
+SS
+  chmod +x "$SCHEDULES_SYNC"
+  run "$SUBJECT" prs --json
+  assert_success
+  [ "$(jq -c '[.prs[] | [.ref, .idle_h, .checks, .mergeable, .class]]' <<<"$output")" = '[["o/fj#7",300,"FAILURE","UNKNOWN","stranded"]]' ]
+  # a store that cannot be read is unreadable, never an empty list
+  printf '#!/usr/bin/env bash\n[ "$1" = repos ] && echo "[{\\"forge\\":\\"forgejo\\",\\"host\\":\\"h\\",\\"repo\\":\\"o/fj\\"}]" || exit 1\n' > "$SCHEDULES_SYNC"
+  run "$SUBJECT" prs --check aged
+  assert_failure 2
+  assert_output --partial 'unreadable:'
+}
+
+@test "prs lists a pushed branch no open or merged PR owns, salvage/* marked, and not a merged or owned or fresh one (ar-4470)" {
+  items_stub
+  export BENCH_PRS_CMD=true BENCH_NOW=$T0
+  local origin="$SANDBOX/o.git" clone="$SANDBOX/c" old new
+  git init -q --bare -b main "$origin"
+  git init -q -b main "$clone"
+  git -C "$clone" -c user.name=t -c user.email=t@e commit -q --allow-empty -m seed
+  git -C "$clone" remote add origin "https://example.com/o/r.git"
+  git -C "$clone" fetch -q "$origin" 2>/dev/null || true
+  git -C "$clone" update-ref refs/remotes/origin/main main
+  git -C "$clone" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+  # committed in UTC-8: the branch listing must read an offset date, which jq's date parser would refuse
+  old="@$((T0 - 100 * 3600)) -0800"
+  new="@$((T0 - 2 * 3600)) -0800"
+  mkbranch() { # <name> <git date>
+    GIT_AUTHOR_DATE=$2 GIT_COMMITTER_DATE=$2 git -C "$clone" -c user.name=t -c user.email=t@e commit -q --allow-empty -m "$1" --only
+    git -C "$clone" update-ref "refs/remotes/origin/$1" HEAD
+    git -C "$clone" reset -q --hard main
+  }
+  mkbranch salvage/a "$old"
+  mkbranch loose "$old"
+  mkbranch owned "$old"
+  mkbranch squashed "$old"
+  mkbranch fresh "$new"
+  git -C "$clone" update-ref refs/remotes/origin/merged main
+  printf '{"paths":{"%s":"r"}}\n' "$clone" > "$SANDBOX/map.json"
+  export BENCH_PROJECT_MAP="$SANDBOX/map.json" BENCH_BRANCHES_CMD=prs_branches
+  export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync"
+  # o/r is a Forgejo repo here: the store names it host/owner/repo, so asking for o/r would read as unsynced
+  printf '#!/usr/bin/env bash\n[ "$1" = repos ] && { echo "[{\\"forge\\":\\"forgejo\\",\\"host\\":\\"git.example\\",\\"repo\\":\\"o/r\\"}]"; exit 0; }\n[ "$1 $2" = "prs git.example/o/r" ] || exit 3\njq -cn --arg s "%s" %s\n' \
+    "$(git -C "$clone" rev-parse refs/remotes/origin/squashed)" \
+    "'[{branch: \"owned\", state: \"OPEN\", head_sha: \"x\"}, {branch: \"squashed\", state: \"MERGED\", head_sha: \$s}]'" > "$SCHEDULES_SYNC"
+  chmod +x "$SCHEDULES_SYNC"
+  run "$SUBJECT" prs --check branches
+  assert_failure 1
+  assert_line '2 unowned branches'
+  assert_line 'o/r salvage/a (salvage) idle 100h'
+  assert_line 'o/r loose (pushed) idle 100h'
+  refute_output --partial 'r owned'
+  refute_output --partial 'r fresh'
+  refute_output --partial 'r merged'
+  refute_output --partial 'r squashed'
+  # a repo the PR store does not sync lists nothing: without its PRs every branch would read unowned
+  printf '#!/usr/bin/env bash\n[ "$1" = repos ] && { echo "[]"; exit 0; }\nexit 3\n' > "$SCHEDULES_SYNC"
+  run "$SUBJECT" prs --check branches
+  assert_success
+  assert_output ''
+}
+
+@test "prs lists the 20 oldest unowned branches and counts the rest, --check branches all of them (ar-4470)" {
+  prs_fixture
+  cat > "$SANDBOX/bin/branches-stub" <<'STUB'
+#!/usr/bin/env bash
+for i in $(seq 1 22); do printf '{"repo":"o/r","branch":"b%s","sha":"s","commit":"2026-01-01T00:00:00Z","kind":"pushed"}\n' "$i"; done
+STUB
+  chmod +x "$SANDBOX/bin/branches-stub"
+  export BENCH_BRANCHES_CMD=branches-stub   # on PATH: the sandbox path has a space
+  run "$SUBJECT" prs
+  assert_success
+  assert_line 'unowned branches (land, open a PR or delete): 22'
+  assert_line '  and 2 more: fleet-bench prs --check branches'
+  [ "$(grep -c '^  o/r b' <<<"$output")" = 20 ]
+  run "$SUBJECT" prs --check branches
+  [ "$(grep -c '^o/r b' <<<"$output")" = 22 ]
 }
 
 @test "pipeline --check chain-lag: an urgent or high handoff p90 over 24h past its bound trips; inside it, low, an empty window and no chain field do not (ar-3263)" {

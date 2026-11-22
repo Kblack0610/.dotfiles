@@ -12,7 +12,8 @@ use serde_json::Value;
 
 use crate::fit::{cell, clip_line, wrap, Cell, Table};
 use crate::fleet::short;
-use crate::fmt::{clock, dur, Palette};
+use crate::fmt::{clock, Palette};
+use hub_core::display::fmt::dur_secs;
 
 pub const BIN: &str = "fleet-bench";
 
@@ -317,7 +318,7 @@ pub fn timeline(s: &Value, p: Palette, now: i64, w: usize) -> Vec<Line<'static>>
     )));
     if let Some(m) = i(s, "late_min") {
         spans.push(Span::styled(
-            format!("late {}  ", dur(m as f64 * 60.0)),
+            format!("late {}  ", dur_secs(m as f64 * 60.0)),
             p.bad(),
         ));
     }
@@ -522,8 +523,8 @@ fn versus(vs: &Got, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
         .map(|s| {
             let st = s["state"].as_str().unwrap_or("-");
             let min = match (st, i(s, "min")) {
-                ("behind", Some(m)) => format!("{} past due", dur(m as f64 * 60.0)),
-                ("ahead", Some(m)) => format!("{} early", dur(m as f64 * 60.0)),
+                ("behind", Some(m)) => format!("{} past due", dur_secs(m as f64 * 60.0)),
+                ("ahead", Some(m)) => format!("{} early", dur_secs(m as f64 * 60.0)),
                 _ => "-".into(),
             };
             vec![
