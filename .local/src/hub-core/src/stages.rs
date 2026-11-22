@@ -549,8 +549,8 @@ fn gate(from: Option<&str>, today: NaiveDate) -> String {
         Ok(d) if d > today => {
             let days = (d - today).num_days();
             format!(
-                "report only until {from} (in {days} day{}), then a failing row blocks a stage move",
-                if days == 1 { "" } else { "s" }
+                "report only until {from} (in {}), then a failing row blocks a stage move",
+                crate::display::fmt::counted(days as usize, "day")
             )
         }
         Ok(_) => format!("enforced since {from}: a failing row blocks a stage move"),

@@ -133,8 +133,27 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
+      # bats is cloned from GitHub; a cache hit skips the clone, so one refused clone (403,
+      # run 44982853251, 2026-11-22 UTC) no longer fails a shard before any test runs. The key
+      # is the three pinned refs, not the whole Makefile, so an unrelated Makefile edit still
+      # hits. main saves it (as the cargo cache does) and every PR reads main's copy.
+      - name: Bats refs
+        id: bats-refs
+        run: echo "key=$(grep -E '^(BATS|SUPPORT|ASSERT)_REF' tests/Makefile | tr -d ' ' | sha256sum | cut -c1-16)" >>"$GITHUB_OUTPUT"
+      - name: Restore bats vendor
+        id: bats-vendor
+        uses: actions/cache/restore@v4
+        with:
+          path: tests/vendor
+          key: bats-vendor-${{ steps.bats-refs.outputs.key }}
       - name: Bootstrap bats
         run: make -C tests bootstrap
+      - name: Save bats vendor
+        if: github.event_name != 'pull_request' && steps.bats-vendor.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: tests/vendor
+          key: ${{ steps.bats-vendor.outputs.cache-primary-key }}
       # The .debs are cached per runner image, so a hit installs them with dpkg and no network.
       # A miss goes to the mirror with bounded Acquire timeouts, and the step has its own cap:
       # a hung mirror (10 min on 2026-11-10, run 42763517511) fails here by name in 3 minutes

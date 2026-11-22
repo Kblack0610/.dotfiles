@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-use crate::fleet_cost::dollars;
+use crate::display::fmt::usd_est;
 
 /// The schema `agent-usage budget --json` writes; another one is read as nothing.
 const SCHEMA: u32 = 2;
@@ -151,10 +151,6 @@ impl Budget {
     }
 }
 
-fn money(v: Option<f64>) -> String {
-    v.map_or("-".into(), dollars)
-}
-
 fn note(l: &Line) -> String {
     let mut parts: Vec<String> = vec![];
     if l.status != "ok" {
@@ -165,9 +161,9 @@ fn note(l: &Line) -> String {
     }
     match (l.list_usd, l.cap) {
         (Some(list), Some(fee)) if fee > 0.0 => {
-            parts.push(format!("{} list work ({:.0}x)", dollars(list), list / fee))
+            parts.push(format!("{} list work ({:.0}x)", usd_est(list), list / fee))
         }
-        (Some(list), _) => parts.push(format!("{} list work", dollars(list))),
+        (Some(list), _) => parts.push(format!("{} list work", usd_est(list))),
         _ => {}
     }
     if !l.note.is_empty() {
@@ -180,7 +176,7 @@ fn shares(cuts: &[Cut]) -> Vec<Share> {
     cuts.iter()
         .map(|c| Share {
             name: c.name.clone(),
-            usd: dollars(c.usd),
+            usd: usd_est(c.usd),
         })
         .collect()
 }
@@ -204,8 +200,8 @@ pub fn build(f: &File, now: i64) -> Budget {
                 s = format!(
                     "{} over its {} cap ({})",
                     l.name,
-                    dollars(cap),
-                    dollars(spent)
+                    usd_est(cap),
+                    usd_est(spent)
                 );
             }
         } else if !l.note.is_empty() {
@@ -248,7 +244,7 @@ pub fn build(f: &File, now: i64) -> Budget {
             } else {
                 String::new()
             };
-            by_lane.push(format!("{lead}{} {}", c.name, dollars(c.usd)));
+            by_lane.push(format!("{lead}{} {}", c.name, usd_est(c.usd)));
         }
     }
     let groups: Vec<Group> = ids
@@ -270,9 +266,9 @@ pub fn build(f: &File, now: i64) -> Budget {
             let ours = || lines.iter().filter(|l| l.paid_by.is_none());
             let name = group_name(&id);
             Some(Group {
-                spent: sum(ours().filter_map(|l| l.spent)).map_or("-".into(), dollars),
+                spent: sum(ours().filter_map(|l| l.spent)).map_or("-".into(), usd_est),
                 month: sum(ours().filter_map(|l| l.projected))
-                    .map_or("-".into(), |m| format!("~{}", dollars(m))),
+                    .map_or("-".into(), |m| format!("~{}", usd_est(m))),
                 bills: lines.into_iter().map(bill).collect(),
                 id,
                 name,
@@ -288,9 +284,9 @@ pub fn build(f: &File, now: i64) -> Budget {
             f.day,
             f.days
         ),
-        spent: dollars(t.spent),
-        projected: format!("~{}", dollars(t.projected)),
-        caps: dollars(t.caps),
+        spent: usd_est(t.spent),
+        projected: format!("~{}", usd_est(t.projected)),
+        caps: usd_est(t.caps),
         partial: f.partial.clone(),
         as_of: Some(f.as_of_epoch),
         stale,
@@ -319,9 +315,9 @@ fn bill(l: &Line) -> Bill {
     Bill {
         name: l.name.clone(),
         kind: l.kind.clone(),
-        cap: money(l.cap),
-        spent: money(l.spent),
-        month: money(l.projected),
+        cap: l.cap.map_or("-".into(), usd_est),
+        spent: l.spent.map_or("-".into(), usd_est),
+        month: l.projected.map_or("-".into(), usd_est),
         note: note(l),
         status: l.status.clone(),
     }

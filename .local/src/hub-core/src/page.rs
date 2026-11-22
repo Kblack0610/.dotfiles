@@ -323,9 +323,8 @@ pub fn need_groups(c: &Chain) -> Vec<NeedGroup> {
         out.push(NeedGroup {
             kind: "verify".into(),
             says: format!(
-                "{} epic{} landed with no live proof",
-                verify.len(),
-                plural(verify.len())
+                "{} landed with no live proof",
+                crate::display::fmt::counted(verify.len(), "epic")
             ),
             items: verify,
         });
@@ -333,7 +332,10 @@ pub fn need_groups(c: &Chain) -> Vec<NeedGroup> {
     if !plans.is_empty() {
         out.push(NeedGroup {
             kind: "plan".into(),
-            says: format!("{} plan{} with no epic", plans.len(), plural(plans.len())),
+            says: format!(
+                "{} with no epic",
+                crate::display::fmt::counted(plans.len(), "plan")
+            ),
             items: plans,
         });
     }
@@ -347,10 +349,10 @@ fn stage_group(p: &Page) -> Option<NeedGroup> {
     Some(NeedGroup {
         kind: "stage".into(),
         says: format!(
-            "{} {} check{} failing, {} for a human",
+            "{} {} {} failing, {} for a human",
             g.fail,
             g.stage,
-            plural(g.fail as usize),
+            crate::display::fmt::noun(g.fail as usize, "check", "checks"),
             g.human
         ),
         items: p
@@ -360,14 +362,6 @@ fn stage_group(p: &Page) -> Option<NeedGroup> {
             .map(|r| format!("{} {}", r.result, r.requirement))
             .collect(),
     })
-}
-
-fn plural(n: usize) -> &'static str {
-    if n == 1 {
-        ""
-    } else {
-        "s"
-    }
 }
 
 /// The epics under their systems: every system the project's type has, in `systems.md` order,
@@ -432,14 +426,14 @@ pub fn systems(c: &Chain, criteria: &[Criteria], in_open: &[String], now: i64) -
                 let done = s.features_done;
                 let n = features.len();
                 parts.push(format!(
-                    "{n} feature{}, {done} done",
-                    if n == 1 { "" } else { "s" }
+                    "{}, {done} done",
+                    crate::display::fmt::counted(n, "feature")
                 ));
             }
             if standing > 0 {
                 parts.push(format!(
-                    "{standing} standard epic{}",
-                    if standing == 1 { "" } else { "s" }
+                    "{standing} standard {}",
+                    crate::display::fmt::noun(standing, "epic", "epics")
                 ));
             }
             if !parts.is_empty() {
@@ -774,8 +768,8 @@ pub fn status_line(p: &Page, c: &Card, playtest_open: usize) -> String {
         .count();
     if upkeep > 0 {
         out.push(format!(
-            "Upkeep only: {upkeep} system{}.",
-            if upkeep == 1 { "" } else { "s" }
+            "Upkeep only: {}.",
+            crate::display::fmt::counted(upkeep, "system")
         ));
     }
     out.push(match &c.version {

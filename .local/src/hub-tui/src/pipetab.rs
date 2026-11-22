@@ -10,7 +10,8 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
 use crate::fit::{cell, wrap, Cell, Table};
-use crate::fmt::{clock, dur, Palette};
+use crate::fmt::{clock, Palette};
+use hub_core::display::fmt::dur_secs;
 
 /// The columns drawn, as the web's, each the `Pipeline::COLUMNS` key it shows; `file` and
 /// `running` sort and filter without a column (the detail has the file).
@@ -149,7 +150,7 @@ fn row(r: &Pipeline, p: Palette, now: i64) -> Vec<Cell> {
             s.to_string()
         }
     };
-    let secs = |v: Option<i64>| v.map_or("-".into(), |s| dur(s as f64));
+    let secs = |v: Option<i64>| v.map_or("-".into(), |s| dur_secs(s as f64));
     let pass = match r.pass {
         Some(n) if n < 70 => cell(format!("{n}%"), p.bad()),
         Some(n) if n < 90 => cell(format!("{n}%"), p.warn()),
@@ -225,7 +226,7 @@ pub fn detail(d: &Detail, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> 
     }
     part("Jobs", &d.jobs);
     for u in &d.runs {
-        let took = u.took.map_or("-".into(), |s| dur(s as f64));
+        let took = u.took.map_or("-".into(), |s| dur_secs(s as f64));
         let result = u.conclusion.as_deref().unwrap_or(&u.state);
         part(
             "Run",

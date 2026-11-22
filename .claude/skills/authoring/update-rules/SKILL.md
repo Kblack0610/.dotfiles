@@ -153,7 +153,7 @@ diff -u ~/.dotfiles-private/AGENTS.md \
 git -C ~/.codex diff --stat; git -C ~/.gemini diff --stat
 ```
 
-For drift between the rules and *reality* (paths that moved, retired skills still advertised), that is `skill-drift` and the `skill-refine` skill, not this one.
+For drift between the rules and *reality* (paths that moved, retired skills still advertised), that is `skill-drift` and the `docs-cleanup` skill, not this one.
 
 ## Style rules for new bullets
 
@@ -169,7 +169,7 @@ For drift between the rules and *reality* (paths that moved, retired skills stil
 - Per-correction lessons -> write directly to `~/.agent/lessons/{project}.md`. The SessionStart hook injects them; no rule-layer change needed.
 - User preferences that should ride across projects -> `mem0-ops` skill, not the rule layer.
 - Project runbooks -> the project repo's docs, not CLAUDE.md or AGENTS.md.
-- Auditing/polishing the skills themselves -> `skill-refine`.
+- Auditing/polishing the skills themselves -> `docs-cleanup` (Skills).
 
 ## Verification after a change
 

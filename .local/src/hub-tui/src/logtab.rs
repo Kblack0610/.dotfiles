@@ -51,7 +51,7 @@ fn work_row(r: &Work, today: &str, p: Palette) -> Vec<Cell> {
         cell(r.ci.as_deref().unwrap_or(""), p.dim()),
         pr,
         r.cost
-            .map_or(String::new(), |c| crate::day::money(Some(c)))
+            .map_or(String::new(), hub_core::display::fmt::usd)
             .into(),
     ]
 }

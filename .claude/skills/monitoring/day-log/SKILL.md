@@ -1,12 +1,12 @@
 ---
 name: day-log
 description: >-
-  What a day shipped: merged PRs by area, the work item behind each, what waits on the human, spend. Use for "what got done today", "daily summary", "what merged this week", "what moved this week", "what landed #N". ETAs are fleet-bench.
+  What a day or week shipped, and a review of it (was drift-audit): merged PRs by area, what waits on the human, spend, gaps and drift. Use for "what got done today", "daily summary", "what moved this week", "review yesterday's work", "what landed #N". ETAs: fleet-bench.
 metadata:
   category: monitoring
-  tags: [fleet, prs, daily, history, observability]
-  system: [telemetry]
-  reviewed: 2026-11-06
+  tags: [fleet, prs, daily, history, observability, audit, retrospective]
+  system: [telemetry, dispatch]
+  reviewed: "2026-11-21"
 ---
 
 # day-log
@@ -20,8 +20,9 @@ What a day shipped, from the day-log record: every PR merged in any repo grouped
 - The user asks what got done, merged or shipped today, yesterday, or on a given date.
 - The user asks for the week or what moved: `day-log week`, a table of 7 finished days against the 7 before (`--line` is the one-liner fleet-bench shows, `--json` the data, `--date D` a week ending on D).
 - The user wants the day as a page to look at or share.
+- The user wants a judgment on a day or week of many-session work, not only the list: what crept in, what was left half-done, gaps, source-of-truth breaks ("review yesterday's work", "how did yesterday go", "drift audit on <repo>"). That is the Review section below.
 
-Not for what sessions are doing right now (`shepherd status`, the hub Sessions tab) and not for how the scorecard is computed (`fleet-bench`).
+Not for what sessions are doing right now (`shepherd status`, the hub Sessions tab), how the scorecard is computed (`fleet-bench`), a single-PR review (`code-review`), a functional bug hunt (`bug-bash`), or whole-repo health with no window (`stack-review`).
 
 ## Steps
 
@@ -48,8 +49,23 @@ ETA accuracy stays in fleet-bench; the record copies its headline.
 
 The board is the hub's Log tab (Prefix i, then 6; `hub:board`): every section in full, scrolled with j/k, space, g/G, `n`/`N` jumping between sections, `[`/`]` stepping days; `h` lists every recorded day. `hub --once --tab log` prints it as text. `day-log show` prints the same record as markdown.
 
+## Review: judge a day or week
+
+Answers three questions about a window of many-session work: what changed (a narrative by workstream), what it left behind (drift, dirty code, source-of-truth breaks, ranked) and what is missing (gaps, each filed as one outbox line). Then it does the obvious safe cleanup and reports the rest.
+
+Inputs: the window ("yesterday" or a date is one day; "last week" or N days, default 7), converted to absolute dates and stated; the scope, every repo in the window's records unless a repo is named; the project key from `~/.dotfiles-private/.config/shared-hooks/project-map.json` (a fleet-wide run uses `dotfiles`, so each run finds the last as its baseline). Artifacts go to `~/.agent/evals/{project}/drift-audit-{YYYY-MM-DD}/` as `week-in-review.md` (narrative by workstream) and `findings.md` (severity-ranked, file:line, CONFIRMED / REPORTED / FIXED), never inside the target repo.
+
+1. **Gather the window** from the record: `day-log json --date D` per day (`work` and `merged` for what landed, `open` with age, `agents` and `ci` for waste) and `day-log week --date D`. Churn and reversals: `git log --since --name-only` per repo, files touched by 3 or more PRs, revert or "back out" subjects. Repo state: `git branch -vv` (behind, `[gone]`), `git stash list`, worktrees. Branch any cleanup off `origin/main`.
+2. **Baseline.** The newest `~/.agent/evals/{project}/drift-audit-*` or `stack-review-*` dir (a letter suffix is a later run that day): every earlier finding in its `findings.md` or `report.md` is FIXED, STILL OPEN or GONE. Lead with what changed since; with no dir, say there is no baseline.
+3. **Fan out**, one Explore agent per dimension, concurrently, each brief in `references/day-review-briefs.md`: workstreams, churn and source-of-truth breaks in the fleet repos; code drift and repo hygiene; other repos and the open-PR backlog; process waste. For an independent read of a high-stakes area, add a `blind-review` run.
+4. **Artifact check, then verify.** Before calling a number bad, check for a counting artifact: one deliberate drain or bulk cancel, headless runners (which never open PRs) inside the no-PR sessions, board rows that left the sheet without a check, a level change read as a rate change. Never trust an agent's high-severity finding unverified: re-run the grep, read the file:line. Two house patterns are not drift: a code default plus a conf override that agree, and a `rules.jsonl` row naming a knob by anchor.
+5. **Write the docs and the answer.** `week-in-review.md` groups every change into workstreams with their PRs and closes with the most important signal. `findings.md`: baseline table first, then P0 (real bug or process breach), P1, P2 (hygiene), git hygiene; a "done multiple ways" section; an executed-vs-reported ledger. Answer in the `comms-standard` status shape: what changed since the baseline, the top findings, what was executed (PR links), what waits on the human.
+6. **Split safe cleanup from report.** Execute only the unambiguous, low-risk fixes (a dead knob, a stale doc row, a copied number replaced by a link) on a branch off `origin/main`, tested, landed per `dotfiles-land`. Anything on shared history, stash drops, branch deletes, mechanism merges that need caller migration, or CI-cost trades is one `notes ptask <project> --agent add` line each, never a board row written directly.
+7. **Hand off.** Durable patterns go to `~/.agent/lessons/{project}.md`; delete the scratch the run and its agents left. Fold new dimensions and artifact traps into this section and the briefs.
+
 ## Do NOT
 
 - Do not call `gh` yourself to count the day. Two producers drift; a scope or bound fix belongs in `day-log`, and grouping belongs in `~/.config/day-log/groups`.
 - Do not read `usage` cost as the day's spend. It is the whole-session spend of every session active that day, so a session that ran for three days counts in full on each. The same goes for `agents.cost_usd`: for a week use `day-log week`.
 - Do not recompute scorecard numbers. `bench` is `fleet-bench`'s own output, copied.
+- Do not report a P0 you did not verify first-hand, a raw count you did not check for an artifact, or a raw commit dump in place of a workstream narrative; do not commit a Review's cleanup onto a docs or throwaway branch.
