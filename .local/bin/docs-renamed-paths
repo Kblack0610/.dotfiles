@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""docs-renamed-paths - rewrite a dead path in a doc to where git says the file went.
+
+  docs-renamed-paths [--apply] [--reroot FROM=TO]... [JSON...]
+
+JSON is skill-drift output (`--json`, `--docs --json`); with none it runs `skill-drift --docs --json`
+beside this script. For each DEADPATH finding whose file was renamed in the public or private
+dotfiles repo (`git log --diff-filter=R`, newest rename first, followed until the target exists),
+it prints one TSV line "<status>\\t<doc>\\t<line>\\t<old>\\t<new>". Nothing is written without --apply.
+
+Status: would-fix (dry run), fixed (written), repo (the doc is a file in a dotfiles checkout: an
+edit there is a PR from a worktree, so it is skipped unless --reroot maps the checkout to one:
+--reroot ~/.dotfiles=~/.worktrees/dotfiles-fix), gone (the doc or the new path no longer exists).
+A path with no rename on record (deleted, or moved between repos) prints nothing: that claim moved
+too, so a session reads the sentence. A directory is never followed, only a renamed file.
+
+Env: DOTFILES, DOTFILES_PRIVATE (the two checkouts), DOCS_RENAME_MIN_SCORE (git's similarity
+percent a rename needs, 80: a file deleted and reborn under another name at 30% is not a move).
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+
+HOME = os.path.expanduser("~")
+PUB = os.environ.get("DOTFILES", os.path.join(HOME, ".dotfiles"))
+PRIV = os.environ.get("DOTFILES_PRIVATE", os.path.join(HOME, ".dotfiles-private"))
+MIN_SCORE = int(os.environ.get("DOCS_RENAME_MIN_SCORE", "80"))
+MAX_HOPS = 10
+_renames = {}
+
+
+def usage(code):
+    print(__doc__.strip(), file=sys.stderr if code else sys.stdout)
+    sys.exit(code)
+
+
+def renames(repo):
+    """{old: new} per repo, the newest rename of each old path."""
+    if repo not in _renames:
+        out = {}
+        if os.path.isdir(os.path.join(repo, ".git")) or os.path.isfile(os.path.join(repo, ".git")):
+            r = subprocess.run(
+                ["git", "-C", repo, "-c", "core.quotepath=off", "log", "--diff-filter=R", "-M",
+                 "--name-status", "--format="],
+                capture_output=True, text=True, check=False)
+            for ln in r.stdout.splitlines():
+                f = ln.split("\t")
+                if len(f) == 3 and f[0].startswith("R") and f[0][1:].isdigit() and int(f[0][1:]) >= MIN_SCORE:
+                    out.setdefault(f[1], f[2])
+        _renames[repo] = out
+    return _renames[repo]
+
+
+def moved(path):
+    """Where `path` went, or None: a path inside a checkout, or a stowed path under $HOME."""
+    for repo in (PUB, PRIV):
+        for base, rel in ((repo, _under(path, repo)), (HOME, _under(path, HOME))):
+            cur, seen = rel, 0
+            while cur is not None and seen < MAX_HOPS:
+                nxt = renames(repo).get(cur)
+                if nxt is None:
+                    break
+                cur, seen = nxt, seen + 1
+                cand = os.path.join(base, cur)
+                if os.path.exists(cand):
+                    return cand
+    return None
+
+
+def _under(path, root):
+    root = root.rstrip("/") + "/"
+    return path[len(root):] if path.startswith(root) else None
+
+
+def shown(path):
+    return "~/" + path[len(HOME) + 1:] if path.startswith(HOME + "/") else path
+
+
+def doc_path(finding):
+    d = finding.get("doc")
+    if d:
+        return os.path.expanduser(d)
+    s = finding.get("skill")
+    return os.path.join(HOME, ".claude", "skills", s, "SKILL.md") if s else None
+
+
+def rewrite(text, old, new):
+    forms = [(shown(old), shown(new)), ("$HOME/" + old[len(HOME) + 1:], "$HOME/" + new[len(HOME) + 1:]),
+             ("${HOME}/" + old[len(HOME) + 1:], "${HOME}/" + new[len(HOME) + 1:]), (old, new)]
+    for a, b in forms:
+        text = re.sub(re.escape(a) + r"(?![\w/-])(?!\.\w)", lambda _m, b=b: b, text)
+    return text
+
+
+def main(argv):
+    apply, reroot, files = False, [], []
+    it = iter(argv)
+    for a in it:
+        if a == "--apply":
+            apply = True
+        elif a == "--reroot":
+            f, _, t = next(it, "").partition("=")
+            if not f or not t:
+                usage(2)
+            reroot.append((os.path.realpath(os.path.expanduser(f)), os.path.expanduser(t)))
+        elif a in ("-h", "--help"):
+            usage(0)
+        elif a.startswith("-"):
+            usage(2)
+        else:
+            files.append(a)
+    if files:
+        findings = [f for p in files for f in json.load(open(p)).get("findings", [])]
+    else:
+        here = os.path.dirname(os.path.realpath(__file__))
+        r = subprocess.run([os.path.join(here, "skill-drift"), "--docs", "--json"], capture_output=True, text=True)
+        findings = json.loads(r.stdout).get("findings", [])  # skill-drift exits 1 on any finding
+    checkouts = [os.path.realpath(p) for p in (PUB, PRIV)]
+    edits, rows = {}, []  # edits: write path -> [(old, new)]
+    for f in findings:
+        if f.get("type") != "DEADPATH" or not f.get("item"):
+            continue
+        old = os.path.expanduser(f["item"])
+        new = moved(old) if old.startswith(HOME + "/") else None
+        doc = doc_path(f)
+        if new is None or not doc:
+            continue
+        m = re.search(r"line (\d+)", f.get("detail", ""))
+        line = m.group(1) if m else "-"
+        real = os.path.realpath(doc)
+        target, status = real, "would-fix"
+        if not os.path.isfile(real):
+            status = "gone"
+        else:
+            for src, dst in reroot:
+                if _under(real, src) is not None:
+                    target = os.path.join(dst, _under(real, src))
+                    break
+            else:
+                if any(_under(real, c) is not None for c in checkouts):
+                    status = "repo"
+            if status == "would-fix" and not os.path.isfile(target):
+                status = "gone"
+        if status == "would-fix" and apply:
+            edits.setdefault(target, [])
+            if (old, new) not in edits[target]:
+                edits[target].append((old, new))
+            status = "fixed"
+        rows.append((status, shown(doc), line, f["item"], shown(new)))
+    for target, pairs in edits.items():
+        text = open(target, encoding="utf-8").read()
+        for old, new in pairs:
+            text = rewrite(text, old, new)
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write(text)
+    for r in rows:
+        print("\t".join(r))
+    done = sum(1 for r in rows if r[0] == "fixed")
+    print(f"docs-renamed-paths: {len(rows)} renamed, {done} fixed, {sum(1 for r in rows if r[0] == 'repo')} in a checkout",
+          file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
