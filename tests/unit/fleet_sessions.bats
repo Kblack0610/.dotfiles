@@ -4142,6 +4142,9 @@ SH
   assert_output "$(printf 'o/three\t3\t-\t-')"
   [ "$(grep -c 'pr view 3' "$SANDBOX/gh.log")" -eq 2 ]
   grep -qx 'gh pr view o/three#3' "$CACHE/unreadable"
+  # The store's state decides what is open: a PR it lists as merged or closed is never adopted on a failed view.
+  run sibling_pr "$SANDBOX/one" '[{"repo":"o/three","number":3,"state":"MERGED"},{"repo":"o/four","number":4,"state":"CLOSED"}]'
+  assert_output ''
 }
 
 @test "end to end: an open PR in a sibling repo is the session's PR, its CI deciding the bucket (ar-349)" {
