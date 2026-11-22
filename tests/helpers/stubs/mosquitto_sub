@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Stub for `mosquitto_sub`, the MQTT reader the waybar chips use for agents/+/summary/bar.
+#
+# On PATH ahead of the real one so no test reads the live broker. It logs its arguments to
+# $MQTT_SUB_FIXTURE.args and prints $MQTT_SUB_FIXTURE, one retained message a line, when that file
+# exists; otherwise it exits $MQTT_SUB_RC: 27 by default, as the real one does when -W passes with no
+# message, or 1 to play a broker it cannot reach. -C <n> stops after n messages, as the real one does.
+set -uo pipefail
+
+fix="${MQTT_SUB_FIXTURE:-}"
+[ -n "$fix" ] || exit "${MQTT_SUB_RC:-27}"
+printf '%s\n' "$*" >> "$fix.args"
+[ -f "$fix" ] || exit "${MQTT_SUB_RC:-27}"
+count=0 prev=""
+for a in "$@"; do [ "$prev" = -C ] && count="$a"; prev="$a"; done
+if [ "$count" -gt 0 ]; then grep -v -m "$count" "^$" "$fix"; else cat "$fix"; fi
+exit 27

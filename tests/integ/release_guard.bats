@@ -56,9 +56,9 @@ allowed() { assert_success; assert_output ''; }
   local c
   for c in 'gh workflow run cut.yml -f version=0.5.5 -f sha=abc' 'gh workflow run .github/workflows/cut.yml' \
            'scripts/release/ship.sh all' './scripts/release/ship.sh v0.5.5' 'bash scripts/release/ship.sh all' \
-           'scripts/release.sh v0.5.5 linux' 'scripts/publish.sh 0.5.5' 'infra/scripts/release.sh someapp 1.0.0' \
+           'scripts/release/release.sh v0.5.5 linux' 'scripts/release/publish.sh 0.5.5' 'scripts/release.sh v0.5.5 linux' 'scripts/publish.sh 0.5.5' 'infra/scripts/release.sh someapp 1.0.0' \
            'cd scripts/release && ./ship.sh all' \
-           'RELEASE_UNTESTED="red Multi" scripts/release-gate.sh v0.5.2' 'export RELEASE_UNTESTED=x' 'env RELEASE_UNTESTED=x make' \
+           'RELEASE_UNTESTED="red Multi" scripts/release/release-gate.sh v0.5.2' 'export RELEASE_UNTESTED=x' 'env RELEASE_UNTESTED=x make' \
            'gh workflow run release.yml -f tag=v0.5.2 -f untested-reason="Multi red"' 'gh workflow run 12345' \
            'gh workflow run Cut -f version=0.5.5' 'gh workflow run "Release (tag)"' 'gh workflow run cut.yml --ref main -f version=0.0.0-test'; do
     run at "$T/game" "$c"
@@ -127,7 +127,7 @@ allowed() { assert_success; assert_output ''; }
   local c
   for c in 'git push origin HEAD' 'git push -u origin feat/x' 'git push origin fix-v1.2-bug' 'git tag -l "v*"' 'git tag --contains HEAD' \
            'git tag -d v0.5.5' 'git tag wip-snapshot' 'git tag --list' 'git ls-remote --tags origin' 'gh run rerun 44630195233 --failed' \
-           'gh workflow run checks.yml --ref main' 'scripts/shots/publish.sh site v1' 'scripts/release-gate.sh v0.5.2' \
+           'gh workflow run checks.yml --ref main' 'scripts/shots/publish.sh site v1' 'scripts/release/release-gate.sh v0.5.2' \
            'rg RELEASE_UNTESTED scripts/' 'gh release view v0.5.2' 'gh release create v0.5.2 --notes x' 'git log --tags' \
            "git push origin 'refs/heads/*'" 'timeout 60 git push origin HEAD' "timeout 60 bash -c 'git push origin HEAD'" 'gh workflow run checks' \
            'gh api repos/o/game/releases -f tag_name=v0.5.2 -f name=x' 'git tag -m "-l" wip-x'; do
