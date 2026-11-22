@@ -7,8 +7,8 @@
 # What these pin: a moving queue is green "flowing"; BLOCKED, a hold, flapping, a limit, an unhandled
 # shepherd line are amber; queue-starved, a failed runner and a stopped pass are red; a hold that trips
 # queue-starved is one red sentence; a gate is said once; the host whose pass ran last is the source and
-# any other sender is ignored and named nowhere here (the health chip's queue_senders row names it,
-# ar-4306, ask DgXpVP); counts are Prometheus and names summary/bar,
+# any other sender is ignored and named nowhere here (ar-4306; home-config's command-center rules
+# raise it as the agents queue_senders row on the health chip); counts are Prometheus and names summary/bar,
 # so a missing topic is one amber line with the counts kept; Prometheus down reads ?, and a number the
 # feed lacks reads -, never 0; the hover fits the bar channel and comms-lint fails one that does not.
 setup() {
