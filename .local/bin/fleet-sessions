@@ -1186,6 +1186,16 @@ restored_panes() {
   done
 }
 
+# quiet_before <restored_panes lines> <host> <server>/<pane id> <since epoch> -> quiet_before_min, the
+# minutes a restored pane's conversation had been quiet when its server was last seen alive (its last
+# entry to its @fleet_restored epoch), or - for a remote row or a pane restore did not reopen. CLOSE_JQ
+# adds it to the age: the pane's claude is new, its conversation is not (ar-4141).
+quiet_before() {
+  [ "$2" = - ] || { echo -; return; }
+  awk -v p="$3" -v s="$4" '$1 == p && $2 ~ /^[0-9]+$/ && s > 0 { q = int(($2 - s) / 60); r = q > 0 ? q : 0; exit }
+    END { print (r == "" ? "-" : r) }' <<<"$1"
+}
+
 # repo_slug <dir> -> the origin URL as a file-name-safe key (cache files, NIGHTLY ledger ids).
 repo_slug() {
   local LC_ALL=C url f="${CACHE:+$CACHE/slug_${1//\//%}}"   # C: one _ per byte, as tr -c gave
@@ -2254,16 +2264,14 @@ collect() {
     unreadable agent-panel
     if [ "$prc" -eq 3 ] && [ -n "$panel" ]; then echo + >> "$CACHE/blind"; else echo '*' >> "$CACHE/blind"; fi
   fi
-  # A restored pane carries the quiet it had before the restore (CLOSE_JQ): its claude is new, its conversation is not.
-  local restored; restored="$(restored_panes "$panel")"
-  local PENDING_ASKS
+  local PENDING_ASKS restored="$(restored_panes "$panel")"
   PENDING_ASKS="$(pending_asks)" || { unreadable agent-ask; echo "*" >> "$CACHE/blind"; }
   { [ -n "$panel" ] && printf '%s\n' "$panel"; parked_lines "$panel"; remote_panel_lines; } | while IFS= read -r line; do
     [ -n "$line" ] || continue
     # close --self reads one row: the others' git, gh and transcript reads cost a minute (54 rows).
     [ -z "${CLOSE_SELF:-}" ] || [[ "$line" == *"$CLOSE_SELF"* ]] || continue
     rm -f "$CACHE/blind_row"
-    local target pane status plan sid cwd since ctx planf tsess idle bidle asks ownask hv rs bucket fact edited \
+    local target pane status plan sid cwd since ctx planf tsess idle bidle asks ownask hv bucket fact edited \
           pdone ptotal pnext phases fin started age oid askids blk transcript prs \
           work jobs human parked compactions topic doing said gate test ojob acct pq names landed live cpid host cwin shown mman
     # The separator is a unit separator, not a tab: read collapses an empty tab-separated field and
@@ -2326,10 +2334,6 @@ collect() {
     askids="$(grep . <<<"$ownids" | { if [ -n "$qheld" ]; then grep -vxF "$qheld"; else cat; fi; } | paste -sd, -)"
     asks=0; [ -n "$askids" ] && asks="$(tr ',' '\n' <<<"$askids" | wc -l)"
     hv=0; [ "$host" = - ] && [ -n "$pane" ] && grep -qxF "${target%%/*}/$pane" <<<"$heavy" && hv=1
-    # quiet_before_min: the quiet a restored pane's conversation had when its server was last seen alive.
-    rs=-; [ "$host" = - ] && [ -n "$pane" ] && rs="$(awk -v p="${target%%/*}/$pane" -v s="$since" \
-      '$1 == p && $2 ~ /^[0-9]+$/ && s > 0 { q = int(($2 - s) / 60); print (q > 0 ? q : 0); exit }' <<<"$restored")"
-    rs=${rs:--}
     local solo item
     solo="$(jq -r --arg k "${target%:*}" 'select((.target | sub(":[^:]*$"; "")) == $k) | .target' <<<"$panel" 2>/dev/null | wc -l)"
     item="$(item_of "$qitems" "$sid" "${target%%/*}:$tsess" "$solo" "$started")"
@@ -2558,7 +2562,7 @@ collect() {
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
       "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}" \
       "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test" "$mh" \
-      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iby" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "$qwait" "$qdepth" "$prun" "$pwq" "$wake" "$(critical_of "$wait_on" "$irow" "$gd" "$pr")" "${shown:-0}" "${mman:-0}" "$rs"
+      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iby" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "$qwait" "$qdepth" "$prun" "$pwq" "$wake" "$(critical_of "$wait_on" "$irow" "$gd" "$pr")" "${shown:-0}" "${mman:-0}" "$(quiet_before "$restored" "$host" "${target%%/*}/$pane" "$since")"
     [ ! -f "$CACHE/blind_row" ] || echo "$sid" >> "$CACHE/blind"
   done
   [ -z "${CLOSE_SELF:-}" ] || return 0

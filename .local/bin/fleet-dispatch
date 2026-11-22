@@ -3333,9 +3333,8 @@ dispatch_tag() {
 #                           It reopens in the mode its transcript last shows; with none, plan for
 #                           a plan item, else bypass. --prompt TEXT is its first message (claude
 #                           only): how agent-ask reopen hands an ended session the answer to its ask.
-#                           It leaves the pane it opened in START_PANE (restore_world tags it).
+#                           It leaves the pane it opened in START_PANE, which its caller clears (restore_world tags it).
 cmd_start() {
-  START_PANE=''
   local base='' START_NOW='' project='' prof='' lane=human agent_work=1 key='' server='' model='' brief_file='' trn='' drc='' \
     resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' prompt='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' hwhy='' rh='' qmode='' eff='' hold='' brief cmd label origin acct mode rec size
   while [ $# -gt 0 ]; do
@@ -3474,9 +3473,8 @@ cmd_start() {
       cmd="${item:+AGENT_QUEUE_ITEM=$(printf '%q' "$item") }$(telemetry_env "$cwd" "$item")$(token_env)$(account_env)${sbx_env}claude${model:+ --model $(printf '%q' "$model")}$eff${item:+$(dropped_tools "$it")}$sbx_flags $flags --resume $(printf '%q' "$resume")${prompt:+ $(printf '%q' "$prompt")}"
     fi
     if [ -n "$joined" ]; then
-      target=$(tmux -L "$server" new-window -d -P -F '#{pane_id}' -t "=$session:" -n "$window" -c "$cwd" "$cmd") ||
+      target=$(tmux -L "$server" new-window -d -P -F '#{pane_id}' -t "=$session:" -n "$window" -c "$cwd" "$cmd") && START_PANE=$target ||
         { say "could not open window $window in $session on $server"; return 1; }
-      START_PANE=$target
     else
       START_PANE=$(tmux -L "$server" new-session -d -P -F '#{pane_id}' -s "$session" ${window:+-n "$window"} -c "$cwd" "$cmd") ||
         { say "could not create session $session on $server"; return 1; }
@@ -3722,7 +3720,7 @@ restore_world() {
     item=$(agent-queue mine --sid "$id" --newest 2>/dev/null) || item=''
     it=''; [ -z "$item" ] || it=$(agent-queue show "$item" --json 2>/dev/null) || it=''
     mode=$(resume_mode "$id" "$(jq -r '.mode // empty' <<<"$it" 2>/dev/null)")
-    prompt=''; said=''
+    prompt='' said='' START_PANE=''
     if [ "$(jq -r '[.state, .agent // "claude"] | join(" ")' <<<"$it" 2>/dev/null)" = 'running claude' ]; then
       prompt=${RESTORE_PROMPT//\%s/$item}; said=', prompted to carry on'
     fi
