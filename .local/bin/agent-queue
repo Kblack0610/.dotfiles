@@ -2804,7 +2804,7 @@ cmd_bump() {
 # settable: they are what the item is. `from` is, so a project rename can move a board origin, and
 # `title` is, so an item whose plan changed stops showing its old title (one line, as add --title
 # writes it). The board row's own words are its sheet's: `notes ptask edit`.
-SETTABLE=" asked title project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage branch lost plan phases pr open_pr merged partial closing_pr fix_tries land_tries takeover_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee direct review_fix proves_at "
+SETTABLE=" asked title project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage branch lost plan phases pr open_pr merged landed_by partial closing_pr fix_tries land_tries takeover_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee direct review_fix proves_at "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k
@@ -2821,6 +2821,8 @@ cmd_set() {
     [ "$k" != phases ] || [[ "$(word_list "${kv#*=}")" =~ ^([0-9]+( [0-9]+)*)?$ ]] || die "phases is plan checklist numbers such as 3 4, not ${kv#*=}"
     # merged: the merge commit of each PR in pr:, in step; a PR ref here (fix-ci-ghw, 2026-11-13) failed merge proof every reap.
     [ "$k" != merged ] || [[ "$(word_list "${kv#*=}")" =~ ^([0-9a-f]+( [0-9a-f]+)*)?$ ]] || die "merged is the merge commit sha of each PR in pr:, not ${kv#*=}"
+    # landed_by: "<session id>=<owner>/<repo>#<N>" per PR a session landed, read by the nightly outcomes pass (ar-2779).
+    [ "$k" != landed_by ] || [[ "$(word_list "${kv#*=}")" =~ ^([^=\ ]+=[^#\ ]+/[^#\ ]+#[0-9]+( [^=\ ]+=[^#\ ]+/[^#\ ]+#[0-9]+)*)?$ ]] || die "landed_by is <session id>=<owner>/<repo>#<N> per PR, not ${kv#*=}"
     [ "$k" != end_reason ] || [ -z "${kv#*=}" ] || check_end "${kv#*=}"
     # review_fix: what a trainee's batch review changed before it landed the diff, read by fleet-bench's Trainee table.
     [ "$k" != review_fix ] || [[ "${kv#*=}" =~ ^(none|small)?$ ]] || die "review_fix is none or small, not ${kv#*=}"

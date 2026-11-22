@@ -109,10 +109,14 @@ mkdir -p "$REG_DIR" 2>/dev/null || exit 0
 
 # --- upsert + self-heal: rewrite dropping this id and this host's dead transcripts ---
 # Under a lock: two Stops that read the same registry would each mv their copy over it, and
-# the second drops the first's row. Runner passes made that common. No flock on macOS.
+# the second drops the first's row. Runner passes made that common. No flock on macOS. A lock
+# not had in 10 s skips this upsert (the next Stop makes it) rather than race the holder's rewrite.
+# The copy is made next to the registry, so the swap below is one rename: a /tmp copy crossed
+# filesystems, mv copied it over the registry, and a crash mid-copy left it empty (2680 rows to
+# 0 on 2026-11-20). A filter pass that fails swaps nothing, or the registry would keep one row (ar-2779).
 exec 9>>"$REG.lock"
-command -v flock >/dev/null 2>&1 && flock -w 10 9
-TMP=$(mktemp 2>/dev/null) || exit 0
+if command -v flock >/dev/null 2>&1; then flock -w 10 9 || exit 0; fi
+TMP=$(mktemp "$REG_DIR/.sessions.jsonl.XXXXXX" 2>/dev/null) || exit 0
 # Two jq passes, no per-line forks: the old loop ran jq twice per registry line, ~6 s per
 # Stop on a 1,400-line registry. Pass 1 lists transcript paths so bash only stats short
 # strings; pass 2 filters. Raw input (-R) so an unparseable line is kept verbatim, as
@@ -127,7 +131,7 @@ if [ -f "$REG" ]; then
     | (try fromjson catch null) as $o
     | select((try ($o.session_id // "") catch "") != $sid)
     | select((try ($host != "" and $o.host == $host and $d[($o.transcript // "") | tostring] != null) catch false) | not)
-    | $raw' "$REG" >> "$TMP" 2>/dev/null
+    | $raw' "$REG" >> "$TMP" 2>/dev/null || { rm -f "$TMP"; exit 0; }
 fi
 
 jq -nc \
