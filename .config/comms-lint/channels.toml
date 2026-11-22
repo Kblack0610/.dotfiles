@@ -96,6 +96,14 @@ max_item = 200
 max_lead = 200
 source = { kind = "section", glob = "~/.notes/journal/daily/*.md", heading = "## Morning" }
 
+# The waybar and noctalia chip hovers (queue.sh, ai_agents.sh), read by both scripts for their caps. A
+# GTK tooltip cannot scroll, so a taller one is cut at the screen edge with nothing to say so: 45 lines
+# is the workstation's 1080 px screen at about 20 px a line, less the bar, and 120 characters about
+# 940 px of monospace. No source: the hover is drawn each run and kept nowhere.
+[channel.bar]
+max_lines = 45
+max_line = 120
+
 # The phone widget's rows (`hub phone --json`). No source: the retained MQTT message is the only copy.
 [channel.phone]
 max_lines = 14
