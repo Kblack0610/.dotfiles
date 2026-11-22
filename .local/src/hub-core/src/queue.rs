@@ -1041,8 +1041,8 @@ impl Queue {
     }
 
     /// The items shipped and the checks closed since local midnight at `now` (epoch seconds), over
-    /// every done item: the one figure the Projects card, the phone's Done head and the waybar D:
-    /// read. None when the list was not read, which is not none done.
+    /// every done item: the one figure the Done today card, the phone's Done head and the waybar
+    /// D: read (`phone::Done`). None when the list was not read, which is not none done.
     pub fn done_today(&self, now: i64) -> Option<DoneToday> {
         self.list_read().then(|| {
             done_today(

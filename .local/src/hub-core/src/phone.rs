@@ -6,6 +6,9 @@
 //! The System block is not here: it is read in the cluster, so it still shows with this machine off.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::SystemTime;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -224,74 +227,106 @@ fn agents(i: &Inputs) -> Vec<Row> {
     out
 }
 
+/// What got done today, by project: the queue items closed since local midnight
+/// (`queue::done_today`, the rule the waybar chip counts by) and the PRs merged (the day-log
+/// record). The one count the phone's Done section and the Done today card (`cards::done`) show,
+/// so the two cannot disagree. Each source counts only when it was read.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Done {
+    /// The items closed today over every project (`Queue::done_today`); None when `agent-queue
+    /// list` could not be read, which is not the same as none done.
+    pub items: Option<DoneToday>,
+    /// The PRs merged today; None with no day-log record.
+    pub prs: Option<usize>,
+    /// Each project with something done, busiest first: its items and its PRs.
+    pub by: Vec<(String, DoneToday, usize)>,
+}
+
+impl Done {
+    /// None when neither source could be read.
+    pub fn read(queue: Option<&Queue>, merged: Option<&[String]>, now: i64) -> Option<Done> {
+        let midnight = crate::text::local_day_start(now);
+        let items: Option<BTreeMap<&str, DoneToday>> = queue.filter(|q| q.list_read()).map(|q| {
+            let mut by: BTreeMap<&str, Vec<&Item>> = BTreeMap::new();
+            for x in &q.items {
+                let p = if x.project.is_empty() {
+                    "other"
+                } else {
+                    repo(&x.project)
+                };
+                by.entry(p).or_default().push(x);
+            }
+            by.into_iter()
+                .map(|(p, v)| (p, done_today(v, midnight)))
+                .filter(|(_, d)| d.shipped + d.checks > 0)
+                .collect()
+        });
+        if items.is_none() && merged.is_none() {
+            return None;
+        }
+        let mut by: BTreeMap<&str, (DoneToday, usize)> = BTreeMap::new();
+        for (p, d) in items.iter().flatten() {
+            by.entry(p).or_default().0 = *d;
+        }
+        for p in merged.into_iter().flatten() {
+            by.entry(repo(p)).or_default().1 += 1;
+        }
+        let mut by: Vec<(String, DoneToday, usize)> = by
+            .into_iter()
+            .map(|(p, (d, m))| (p.to_string(), d, m))
+            .collect();
+        by.sort_by_key(|(name, d, m)| (std::cmp::Reverse(d.shipped + d.checks + m), name.clone()));
+        Some(Done {
+            // The whole queue's one figure, not a sum of the projects: a slug closed under two
+            // project names counts once.
+            items: queue.and_then(|q| q.done_today(now)),
+            prs: merged.map(<[String]>::len),
+            by,
+        })
+    }
+
+    /// One project's counts as its row says them: "30 shipped, 2 checks, 25 PRs".
+    pub fn said(d: &DoneToday, prs: usize) -> String {
+        counted(&[
+            (d.shipped, "shipped", "shipped"),
+            (d.checks, "check", "checks"),
+            (prs, "PR", "PRs"),
+        ])
+    }
+}
+
 /// "Done today: 40 shipped, 12 checks, 33 PRs merged", then one line per project, busiest first:
 /// "unity-core-playground 30 shipped, 2 checks, 25 PRs", the last ending ", +3 more" when there are
-/// others. The head's shipped and checks are `Queue::done_today`, the figure the Projects card and
-/// the waybar chip show. Each project's line applies the same rule to that project's items alone,
-/// so a slug closed under two project names counts once in the head and once in each line. PRs come
-/// from the day-log. Each source counts only when it could be read; with neither there is no section.
+/// others. The head's shipped and checks are `Queue::done_today`, the one figure the Done today
+/// card and the waybar chip show; each project's line applies the same rule to that project's
+/// items alone, so a slug closed under two project names counts once in the head and once in each
+/// line. All of it is `Done`'s; with neither of its sources read there is no section.
 fn done(i: &Inputs) -> Vec<Row> {
-    let midnight = crate::text::local_day_start(i.now);
-    // A failed `agent-queue list` leaves no items, which is not the same as none done today.
-    let items: Option<BTreeMap<&str, DoneToday>> = i.queue.filter(|q| q.list_read()).map(|q| {
-        let mut by: BTreeMap<&str, Vec<&Item>> = BTreeMap::new();
-        for x in &q.items {
-            let p = if x.project.is_empty() {
-                "other"
-            } else {
-                repo(&x.project)
-            };
-            by.entry(p).or_default().push(x);
-        }
-        by.into_iter()
-            .map(|(p, v)| (p, done_today(v, midnight)))
-            .filter(|(_, d)| d.shipped + d.checks > 0)
-            .collect()
-    });
-    let prs = i.merged.as_ref();
-    if items.is_none() && prs.is_none() {
+    let Some(d) = Done::read(i.queue, i.merged.as_deref(), i.now) else {
         return vec![];
-    }
+    };
     let mut head = vec![];
-    // The head is the Projects card's figure (`Queue::done_today`), not a sum of the rows below.
-    if let Some(d) = i.queue.and_then(|q| q.done_today(i.now)) {
-        head.push(format!("{} shipped", d.shipped));
-        head.push(plural(d.checks, "check", "checks"));
+    if let Some(t) = d.items {
+        head.push(format!("{} shipped", t.shipped));
+        head.push(plural(t.checks, "check", "checks"));
     }
-    if let Some(v) = prs {
-        head.push(plural(v.len(), "PR merged", "PRs merged"));
+    if let Some(n) = d.prs {
+        head.push(plural(n, "PR merged", "PRs merged"));
     }
     let mut out = vec![row(
         Level::Ok,
         "done",
         format!("Done today: {}", head.join(", ")),
     )];
-
-    let mut by: BTreeMap<&str, (DoneToday, usize)> = BTreeMap::new();
-    for (p, d) in items.iter().flatten() {
-        by.entry(p).or_default().0 = *d;
-    }
-    for p in prs.into_iter().flatten() {
-        by.entry(repo(p)).or_default().1 += 1;
-    }
-    let mut by: Vec<(&str, (DoneToday, usize))> = by.into_iter().collect();
-    by.sort_by_key(|(name, (d, m))| (std::cmp::Reverse(d.shipped + d.checks + m), *name));
-    let shown = by.len().min(DONE_PROJECTS);
-    for (k, (name, (d, m))) in by.iter().take(shown).enumerate() {
+    let shown = d.by.len().min(DONE_PROJECTS);
+    for (k, (name, t, m)) in d.by.iter().take(shown).enumerate() {
         // The fold rides on the last row, so the section stays a head and `DONE_PROJECTS` lines.
-        let fold = if k + 1 == shown && by.len() > shown {
-            format!(", +{} more", by.len() - shown)
+        let fold = if k + 1 == shown && d.by.len() > shown {
+            format!(", +{} more", d.by.len() - shown)
         } else {
             String::new()
         };
-        let tail = format!(
-            " {}{fold}",
-            counted(&[
-                (d.shipped, "shipped", "shipped"),
-                (d.checks, "check", "checks"),
-                (*m, "PR", "PRs")
-            ])
-        );
+        let tail = format!(" {}{fold}", Done::said(t, *m));
         let room = LINE_MAX.saturating_sub(tail.chars().count());
         out.push(row(Level::Ok, "done", format!("{}{tail}", cap(name, room))));
     }
@@ -458,10 +493,36 @@ pub fn merged_today() -> Option<Vec<String>> {
         )
     });
     let day = chrono::Local::now().format("%F");
-    let text = std::fs::read_to_string(format!("{dir}/{day}.json")).ok()?;
-    let v: Value = serde_json::from_str(&text).ok()?;
-    let merged = v["merged"].as_array()?;
-    Some(merged.iter().map(crate::boards::pr_project).collect())
+    merged_in(Path::new(&format!("{dir}/{day}.json")))
+}
+
+/// The last record read, by path and modification time: the Done card reads it on every
+/// `/widget.json` hit (about every 30 s) and the record is rewritten far less often, so a hit
+/// with no new record costs one stat, not a parse of the day's PRs.
+type Kept = Option<(PathBuf, SystemTime, Option<Vec<String>>)>;
+static MERGED: Mutex<Kept> = Mutex::new(None);
+
+fn merged_in(path: &Path) -> Option<Vec<String>> {
+    let at = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
+    let mut kept = MERGED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((p, t, v)) = kept.as_ref() {
+        if p == path && *t == at {
+            return v.clone();
+        }
+    }
+    let read = || -> Option<Vec<String>> {
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+        Some(
+            v["merged"]
+                .as_array()?
+                .iter()
+                .map(crate::boards::pr_project)
+                .collect(),
+        )
+    };
+    let v = read();
+    *kept = Some((path.to_path_buf(), at, v.clone()));
+    v
 }
 
 #[cfg(test)]
@@ -807,13 +868,13 @@ mod tests {
                 part("queue", "On deck")
             ),
         );
-        let checks = part("projects", "Checks closed");
+        let checks = part("done", "Checks");
         says(
             "done",
             head("done"),
             format!(
                 "Done today: {} shipped, {checks} {}",
-                part("projects", "Shipped today"),
+                part("done", "Shipped"),
                 if checks == "1" { "check" } else { "checks" }
             ),
         );
@@ -890,10 +951,15 @@ mod tests {
             crate::cards::needs(&home, NOW),
             crate::cards::main_red(&home),
         ];
+        // A day-log record is read: a card with a source unread carries an error and publishes
+        // no figures, so the Done card's would not be in the check.
+        let prs = merged(3);
         cards.extend(crate::cards::grid(&crate::cards::Reads {
             sessions: Some(Ok(&sessions)),
             board: Some(Ok(&board)),
             queue: Some(Ok(&q)),
+            merged: Some(&prs),
+            now: NOW,
             pipeline: None,
             alerts: Some(Ok(&alerts)),
             infra: Some(Ok(&inf)),
@@ -916,15 +982,16 @@ mod tests {
                 queue: Some(&q),
                 infra: Some(&inf),
                 projects: Some(&projects),
-                merged: None,
+                merged: Some(prs.clone()),
                 now: NOW,
             },
         );
         assert_eq!(disagree(&cards, &doc, &figs, &p), Vec::<String>::new());
+        assert_eq!(figs["done_headline"], 3);
         // The fixture reaches the figures the phone shares: shipped counts the stray project's
         // item, and on deck is the runnable count, not every queued item.
-        assert_eq!(figs["projects_shipped_today"], 2);
-        assert_eq!(figs["projects_checks_closed"], 1);
+        assert_eq!(figs["done_shipped"], 2);
+        assert_eq!(figs["done_checks"], 1);
         assert_eq!(figs["queue_on_deck"], 1);
         assert!(figs["needs_headline"] > 0);
 
@@ -944,7 +1011,7 @@ mod tests {
             "a document that recounts on deck"
         );
         let mut f = figs.clone();
-        f.insert("projects_shipped_today".into(), 3);
+        f.insert("done_shipped".into(), 3);
         assert_eq!(
             disagree(&cards, &doc, &f, &p).len(),
             1,
@@ -968,17 +1035,6 @@ mod tests {
             1,
             "a longer number behind the card's"
         );
-        // An unread queue says so on the card and leaves no figure, never a zero (rule 6).
-        let unread = crate::cards::projects(&crate::projects::Projects {
-            today: None,
-            ..projects.clone()
-        });
-        let shipped = unread.parts.iter().find(|x| x.label == "Shipped today");
-        assert_eq!(
-            shipped.map(|x| x.value.as_str()),
-            Some(crate::reading::NOT_READ)
-        );
-        assert!(!crate::widget_doc::figures(&[unread]).contains_key("projects_shipped_today"));
         // A Home row of any kind moves the needs figure on every surface together.
         let mut more = home.clone();
         more.needs.push(more.needs[0].clone());
@@ -995,9 +1051,11 @@ mod tests {
     #[test]
     fn the_system_and_red_figures_count_what_prometheus_and_the_watches_say() {
         let (inf, alerts, watches) = reds();
-        let figs =
-            crate::widget_doc::figures(&[crate::cards::infra(&inf), crate::cards::alerts(&alerts)]);
-        let sys = ["down", "warn", "up"].map(|l| figs[&format!("infra_domains_{l}")]);
+        let figs = crate::widget_doc::figures(&[
+            crate::cards::health(&inf),
+            crate::cards::alerts(&alerts),
+        ]);
+        let sys = ["down", "warn", "up"].map(|l| figs[&format!("health_domains_{l}")]);
         assert_eq!(sys, [1, 1, 1]);
         assert_eq!(figs["alerts_red_now"], 2);
         assert_eq!(figs["alerts_watches_tripped"], 1);
@@ -1418,5 +1476,139 @@ mod tests {
         assert_eq!(age(5 * 3600), "5h");
         assert_eq!(age(47 * 3600), "47h");
         assert_eq!(age(3 * 86400), "3d");
+    }
+
+    /// One shipped and one check in agent-runtime and one shipped in dotfiles, all at NOW.
+    fn done_queue() -> Queue {
+        let mut q = queue_of(vec![]);
+        let mut a = done_item("a", "agent-runtime", NOW);
+        a.merged = Some("abc123".into());
+        let mut c = done_item("c", ".dotfiles", NOW);
+        c.merged = Some("def456".into());
+        q.items.extend([a, done_item("b", "agent-runtime", NOW), c]);
+        q
+    }
+
+    #[test]
+    fn the_done_card_and_the_done_section_are_one_count() {
+        let (q, m) = (done_queue(), merged(85));
+        let p = phone(&state(), Some(&q), None);
+        assert_eq!(
+            texts(&p, "done")[0],
+            "Done today: 2 shipped, 1 check, 85 PRs merged"
+        );
+        let grid = crate::cards::grid(&crate::cards::Reads {
+            queue: Some(Ok(&q)),
+            merged: Some(&m),
+            now: NOW,
+            ..Default::default()
+        });
+        let c = &grid[0];
+        assert_eq!(
+            (c.tab, c.big.as_str(), c.unit.as_str(), c.level),
+            ("done", "85", "PRs merged", Level::Ok)
+        );
+        let parts: Vec<_> = c
+            .parts
+            .iter()
+            .map(|p| (p.label.as_str(), p.value.as_str()))
+            .collect();
+        assert_eq!(parts, [("Shipped", "2"), ("Checks", "1")]);
+        let rows: Vec<_> = c
+            .first
+            .iter()
+            .map(|f| (f.text.as_str(), f.sub.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("unity-core-playground", "57 PRs"),
+                ("dotfiles", "1 shipped, 28 PRs"),
+                ("agent-runtime", "1 shipped, 1 check"),
+            ]
+        );
+        assert!(c.error.is_none());
+    }
+
+    #[test]
+    fn a_done_source_not_read_is_a_dash_and_its_reason_never_a_zero() {
+        let mut q = queue_of(vec![]);
+        q.errors.push("agent-queue list: boom".into());
+        let m = merged(3);
+        let c = crate::cards::done(Done::read(Some(&q), Some(&m), NOW).as_ref());
+        assert_eq!((c.big.as_str(), c.level), ("3", Level::Warn));
+        assert!(
+            c.parts.iter().all(|p| p.value == crate::reading::NOT_READ),
+            "{:?}",
+            c.parts
+        );
+        assert!(c
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("agent-queue")));
+        // No figure either, so waybar's D: reads -, never a zero (rule 6).
+        assert!(!crate::widget_doc::figures(&[c]).contains_key("done_shipped"));
+        let c = crate::cards::done(Done::read(Some(&done_queue()), None, NOW).as_ref());
+        assert_eq!((c.big.as_str(), c.level), ("-", Level::Nodata));
+        assert!(c.error.as_deref().is_some_and(|e| e.contains("day-log")));
+        let c = crate::cards::done(Done::read(None, None, NOW).as_ref());
+        assert_eq!(c.big, crate::reading::NO_DATA.to_uppercase());
+    }
+
+    #[test]
+    fn health_reads_ci_from_the_glance_the_ci_row_reads() {
+        let inf = infra(vec![]);
+        let c = crate::cards::health(&inf);
+        assert_eq!(
+            (c.tab, c.title, c.link.href()),
+            ("health", "Health", "#infra".into())
+        );
+        let part = |l: &str| c.parts.iter().find(|p| p.label == l).unwrap();
+        let busy = &part("CI busy").value;
+        assert_eq!(*busy, inf.ci.glance.units_line());
+        let ci = &texts(&phone(&state(), None, Some(&inf)), "ci")[0];
+        assert!(
+            ci.starts_with(&format!("CI: {busy} busy")),
+            "{ci} vs {busy}"
+        );
+        let vitals = crate::vitals::read(&inf).unwrap();
+        assert_eq!(part("Vitals").value, vitals.tally());
+        if !vitals.all_ok {
+            assert_ne!(c.level, Level::Ok);
+        }
+    }
+
+    #[test]
+    fn the_merged_read_keeps_its_parse_until_the_record_changes() {
+        let dir = std::env::temp_dir().join(format!("hub-phone-merged-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("day.json");
+        let at = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        let write = |n: usize| {
+            let prs = vec![json!({"project": "dotfiles"}); n];
+            std::fs::write(&f, json!({ "merged": prs }).to_string()).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&f)
+                .unwrap()
+                .set_modified(at + std::time::Duration::from_secs(n as u64))
+                .unwrap();
+        };
+        write(2);
+        assert_eq!(merged_in(&f).map(|v| v.len()), Some(2));
+        // Rewritten under the same time, the kept parse answers: no second parse.
+        std::fs::write(&f, "not json").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&f)
+            .unwrap()
+            .set_modified(at + std::time::Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(merged_in(&f).map(|v| v.len()), Some(2));
+        // A new record is read again.
+        write(3);
+        assert_eq!(merged_in(&f).map(|v| v.len()), Some(3));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(merged_in(&f), None);
     }
 }

@@ -6,7 +6,7 @@
 #
 # It computes nothing and lists no system: rows and levels come from the cc:* rules (home-config
 # apps/monitoring/prometheus-rules-command-center.yaml), so a new domain shows up by itself and
-# the bar agrees with the Overview. The head's down, warn and up are hub-core's Infra card figures
+# the bar agrees with the Overview. The head's down, warn and up are hub-core's Health card figures
 # (`hub cards --json --figures`, summary/cards on Prometheus, live topics only), the numbers the
 # phone's System line prints; with none published the head says so in amber and the rows still
 # show. Prometheus unreadable, or no rows, reads ? in amber.
@@ -30,7 +30,7 @@ unknown() {
 }
 
 q='{__name__=~"cc:(overall_status|domain_status|watch_state|component_status)"}'
-q+=' or ({__name__=~"mqtt_figures_infra_domains_(down|warn|up)", topic=~"agents_.+_summary_cards"} and on (topic) cc:agents_topic_live)'
+q+=' or ({__name__=~"mqtt_figures_health_domains_(down|warn|up)", topic=~"agents_.+_summary_cards"} and on (topic) cc:agents_topic_live)'
 raw="$(prom_q "$q")" || unknown "cannot read $PROM_URL"
 
 # level<TAB>domain<TAB>why, worst first then by name.
@@ -49,7 +49,7 @@ overall="$(jq -r 'first(.data.result[] | select(.metric.__name__ == "cc:overall_
 # summary/cards; while a lease move leaves two topics live that disagree, a figure is !, since
 # Prometheus does not say which is newer.
 read -r -a figs < <(jq -r '[.data.result[]] as $r | ["down", "warn", "up"]
-  | map(. as $l | [$r[] | select(.metric.__name__ == "mqtt_figures_infra_domains_" + $l) | .value[1] | tonumber | floor]
+  | map(. as $l | [$r[] | select(.metric.__name__ == "mqtt_figures_health_domains_" + $l) | .value[1] | tonumber | floor]
         | unique | if length > 1 then "!" else .[0] // "-" end) | @tsv' <<< "$raw")
 
 width="$(cut -f2 <<< "$rows" | wc -L)"
