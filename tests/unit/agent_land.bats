@@ -1432,6 +1432,75 @@ EOF2
   assert_equal "$(jq -r '"\(.state) \(.status) \(.pr) \(.sessions)"' <<<"$output")" 'done ok o/r#42 sid-l'
 }
 
+@test "an item with no row links the row its PR body's Task: line names and closes it on landing" {
+  item tidy-loader
+  printf 'The change.\nTask: ar-1\n' >"$NOTES_FIXTURE/body"
+  jq -n '{rows: [{profile: "personal", project: "dotfiles", lane: "agent", id: "ar-1", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
+  run "$LAND" 42 --item tidy-loader
+  assert_success
+  assert_line 'board: closed "ar-1" with pr:o/r#42 commit:fedcba987654'
+  assert_line 'landed #42'
+  run board_calls
+  assert_output --partial 'notes --profile personal ptask dotfiles --agent done ar-1 --proof pr:o/r#42 commit:fedcba987654'
+  run jq -r .row <<<"$(agent-queue show tidy-loader --json)"
+  assert_output 'dotfiles:ar-1'
+}
+
+@test "an item with no row links the row on another project named by Task: in its PR body" {
+  item foamy-nyg-p16
+  printf 'The change.\nTask: ar-4306\n' >"$NOTES_FIXTURE/body"
+  jq -n '{rows: [{profile: "personal", project: "agent-runtime", lane: "agent", id: "ar-4306", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
+  run "$LAND" 42 --item foamy-nyg-p16
+  assert_success
+  assert_line 'board: closed "ar-4306" with pr:o/r#42 commit:fedcba987654'
+  assert_line 'landed #42'
+  run board_calls
+  assert_output --partial 'notes --profile personal ptask agent-runtime --agent done ar-4306 --proof pr:o/r#42 commit:fedcba987654'
+  run jq -r .row <<<"$(agent-queue show foamy-nyg-p16 --json)"
+  assert_output 'agent-runtime:ar-4306'
+}
+
+@test "an item with no row whose Task: names no open row lands with nothing linked (ar-4231)" {
+  item tidy-loader
+  printf 'The change.\nTask: ar-77\n' >"$NOTES_FIXTURE/body"
+  jq -n '{rows: [{profile: "personal", project: "dotfiles", lane: "agent", id: "ar-1", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
+  run "$LAND" 42 --item tidy-loader
+  assert_success
+  assert_line 'item-row: Task: ar-77 is not one open row on any board, left unlinked'
+  assert_line 'landed #42'
+  run board_calls
+  refute_output --partial ' done '
+  run jq -r '.row // ""' <<<"$(agent-queue show tidy-loader --json)"
+  assert_output ''
+}
+
+@test "a done item with no row links no Task: row on its second PR, since its board step leaves rows to the closing PR (ar-4231)" {
+  item tidy-loader
+  run "$LAND" 42 --item tidy-loader
+  assert_success
+  printf 'The change.\nTask: ar-1\n' >"$NOTES_FIXTURE/body"
+  jq -n '{rows: [{profile: "personal", project: "dotfiles", lane: "agent", id: "ar-1", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
+  : >"$LOG"
+  echo https://github.com/o/p/pull/552 >"$NOTES_FIXTURE/url"
+  echo https://github.com/o/p.git >"$NOTES_FIXTURE/origin.url"
+  run "$LAND" 552 --item tidy-loader
+  assert_success
+  assert_line 'landed #552'
+  refute_output --partial 'item-row:'
+  run jq -r '.row // ""' <<<"$(agent-queue show tidy-loader --json)"
+  assert_output ''
+}
+
+@test "an item that already has a row does not link a different row from Task: in the body" {
+  printf 'The change.\nTask: ar-1\n' >"$NOTES_FIXTURE/body"
+  jq -n '{rows: [{profile: "personal", project: "dotfiles", lane: "agent", id: "ar-1", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'board: closed "ship it" with pr:o/r#42 commit:fedcba987654'
+  run jq -r .row <<<"$(agent-queue show ship --json)"
+  assert_output 'dotfiles:ship it'
+}
+
 @test "a PR URL that names no repo lands with no landed_by, since agent-queue refuses a bare #N there (ar-2779)" {
   item tidy-loader
   echo https://example.test/merge-request/42 >"$NOTES_FIXTURE/url"
@@ -2966,4 +3035,31 @@ EOF
   refute_output --partial 'checks: none reported'
   run grep -c 'pr merge' "$LOG"
   assert_output 0
+}
+
+@test "board step on a row already ticked still lands and ticks --plan (ar-4189)" {
+  item fix 'board:game:gm-1' human
+  jq -n '{rows: [], done: [{project: "game", lane: "human", id: "gm-1", state: "done"}]}' >"$NOTES_FIXTURE/board.json"
+  mv "$SANDBOX/bin/notes" "$SANDBOX/notes.ok"
+  printf '#!/usr/bin/env bash\ncase " $* " in *" done "*) echo "no open task matches '\''gm-1'\'' in game" >&2; exit 1 ;; esac\nexec "%s" "$@"\n' "$SANDBOX/notes.ok" >"$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  run "$LAND" 42 --item fix --plan "$PLAN" --phase "6. agent-land"
+  mv "$SANDBOX/notes.ok" "$SANDBOX/bin/notes"
+  assert_success
+  assert_line 'board: "gm-1" was already closed, left as is'
+  assert_line 'plan: ticked "6. agent-land"'
+  assert_line --index -1 'landed #42'
+}
+
+@test "board step on a row no board lists as done on its project, or one dropped, still fails (ar-4189)" {
+  item fix 'board:game:gm-1' human
+  jq -n '{rows: [], done: [{project: "other", lane: "human", id: "gm-1", state: "done", marker: "id:gm-1 done:2026-11-01"},
+    {project: "game", lane: "human", id: "gm-1", state: "done", marker: "id:gm-1 dropped:2026-11-02"}]}' >"$NOTES_FIXTURE/board.json"
+  mv "$SANDBOX/bin/notes" "$SANDBOX/notes.ok"
+  printf '#!/usr/bin/env bash\ncase " $* " in *" done "*) echo "no open task matches '\''gm-1'\'' in game" >&2; exit 1 ;; esac\nexec "%s" "$@"\n' "$SANDBOX/notes.ok" >"$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  run "$LAND" 42 --item fix
+  mv "$SANDBOX/notes.ok" "$SANDBOX/bin/notes"
+  assert_failure
+  assert_output --partial "agent-land: board failed: no open task matches 'gm-1' in game"
 }
