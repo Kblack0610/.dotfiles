@@ -77,15 +77,15 @@ function prList(prs, now) {
   if (!(prs || []).length) return "";
   const merged = prs.filter((p) => p.state === "MERGED");
   const last = Math.max(0, ...merged.map((p) => Date.parse(p.merged_at) || 0));
-  const items = prs.map((p) => `<li><a href="https://github.com/${esc(p.repo)}/pull/${esc(p.number)}" target="_blank" rel="noopener">${esc(p.repo)}#${esc(p.number)}</a> ${esc((p.state || NO_DATA).toLowerCase())}</li>`).join("");
-  return `<details><summary>${merged.length}/${prs.length} PRs merged${last ? `, last ${dur((now - last) / 60e3)} ago` : ""}</summary><ul>${items}</ul></details>`;
+  const items = prs.map((p) => [`<a href="https://github.com/${esc(p.repo)}/pull/${esc(p.number)}" target="_blank" rel="noopener">${esc(p.repo)}#${esc(p.number)}</a>`, esc((p.state || NO_DATA).toLowerCase())]);
+  return fold("", `${merged.length}/${prs.length} PRs merged${last ? `, last ${dur((now - last) / 60e3)} ago` : ""}`, tblRec(items));
 }
 
 function card(s, now) {
   const pr = s.pr && s.pr !== "-" ? `PR #${esc(s.pr)}${s.pr_state ? " " + esc(s.pr_state.toLowerCase()) : ""}${s.ci ? ` <b class="ci ${esc(s.ci.toLowerCase())}">${esc(s.ci)}</b>` : ""}` : "no PR";
   const git = [s.ahead ? `ahead ${s.ahead}` : "", s.behind ? `behind ${s.behind}` : "", s.dirty ? `${s.dirty} dirty` : "", s.conflicts ? "<b class=\"ci fail\">conflicts</b>" : ""].filter(Boolean).join(", ");
   const phases = s.phases_total ? `<span class="kv">phases ${meter(s.phases_done / s.phases_total, "var(--b-done)")} ${s.phases_done}/${s.phases_total}</span>` : "";
-  const blockers = (s.blockers || []).length ? `<details><summary>${s.blockers.length} reason(s)</summary><ul>${s.blockers.map((b) => `<li>${esc(b)}</li>`).join("")}</ul></details>` : "";
+  const blockers = (s.blockers || []).length ? fold("", `${s.blockers.length} reason(s)`, tblRec(s.blockers.map((b) => [esc(b)]))) : "";
   return `
     <div class="wcard" data-sid="${esc(s.session_id || "")}" data-t="${esc(s.target)}" style="--c:${bucketColor(s.bucket)}">
       <div class="wh"><span class="chip">${esc(s.bucket)}</span><span class="wt" title="${esc(s.target)}">${esc(clip(shortTarget(s.target), 34))}</span></div>
@@ -140,7 +140,8 @@ function renderFacts() {
   const pr = s.pr && s.pr !== "-" ? ` PR #${esc(s.pr)}${s.ci ? ` <b class="ci ${esc(s.ci.toLowerCase())}">${esc(s.ci)}</b>` : ""}` : "";
   const ph = s.phases_total ? `, ${s.phases_done}/${s.phases_total} phases` : "";
   const eta = s.eta ? `, eta ${esc(s.eta)}` : "";
-  paint(el, `<details data-k="facts"${secOpen(wst.open, "facts") ? " open" : ""}><summary><span class="chip" style="--c:${bucketColor(s.bucket)}">${esc(s.bucket)}</span> ${esc(s.topic || s.reason || "")}<span class="muted">${pr}${ph}${eta}</span></summary>${card(s, Date.now())}</details>`, wst.open);
+  paint(el, fold("", `<span class="chip" style="--c:${bucketColor(s.bucket)}">${esc(s.bucket)}</span> ${esc(s.topic || s.reason || "")}<span class="muted">${pr}${ph}${eta}</span>`, card(s, Date.now()),
+    { k: "facts", open: secOpen(wst.open, "facts") }), wst.open);
 }
 
 // The folds under the table: how old the state is and the last day's swimlanes, shut to one line
@@ -160,7 +161,7 @@ function overviewFolds() {
     // The state's age is a fact in the lanes' bar; a source it could not read is a warn line.
     const unread = (state.unreadable || []).length ? `<div class="cline warn">${NOT_READ}: ${esc(state.unreadable.join(", "))}</div>` : "";
     // The unread warn stays outside the shut fold, so it is seen.
-    html += unread + fold("lanes", `Last ${WATCH_HOURS}h`, `<div class="ovbar">${legend(BUCKETS.map((b) => [b, bucketColor(b)]))}<label class="tog"><input type="checkbox" data-ended${wst.ended ? " checked" : ""}> ended sessions (${ended})</label>` +
+    html += unread + ovFold("lanes", `Last ${WATCH_HOURS}h`, `<div class="ovbar">${legend(BUCKETS.map((b) => [b, bucketColor(b)]))}<label class="tog"><input type="checkbox" data-ended${wst.ended ? " checked" : ""}> ended sessions (${ended})</label>` +
       `<span class="muted"><b>state</b> ${age == null ? "?" : dur(age) + " old"}</span></div>` +
       `<div class="panel">${swimlanes(keep.map((l) => ({ label: l.target, sub: l.gone ? "gone" : "", dim: !!l.gone, segs: l.segs })), t0, now, bucketColor)}</div>`, keep.length, true);
   }
@@ -181,7 +182,7 @@ async function loadCard(sid) {
 }
 function renderLogRanked() {
   const rows = ost.rows || [];
-  const body = ost.err ? `<div class="card err">${esc(ost.err)}</div>` : !ost.rows ? '<div class="empty">Loading.</div>'
+  const body = ost.err ? errPanel(ost.err, { card: true }) : !ost.rows ? '<div class="empty">Loading.</div>'
     : !rows.length ? '<div class="empty">No session with friction in the last 7 days.</div>'
     : `<div class="panel scroll"><table class="tbl"><tr><th class="n" data-role="glance" data-named>friction</th><th data-role="lead">session</th><th>project</th><th class="n">wall</th><th class="n" data-role="glance" data-named>cost</th><th class="n">PRs</th><th data-role="glance">why</th></tr>${rows.map((r) => {
         const prs = r.prs_merged + r.prs_open + r.prs_closed_unmerged;
@@ -204,8 +205,8 @@ LOG_PARTS.push({ sec: "ranked", show() { renderLogRanked(); if ($("sec-ranked").
 
 // An overview section, open until the reader folds it, or with `shut` shut until the reader opens it;
 // the fold is remembered across re-renders by its key. title is text, n the count its summary shows.
-const fold = (k, title, body, n, shut) =>
-  `<details class="ovsec" data-k="${k}"${(shut ? wst.open[k] === true : secOpen(wst.open, k)) ? " open" : ""}><summary>${secHead("", title, n)}</summary>${body}</details>`;
+const ovFold = (k, title, body, n, shut) =>
+  fold("ovsec", secHead("", title, n), body, { k, open: shut ? wst.open[k] === true : secOpen(wst.open, k) });
 
 $("scroll").addEventListener("change", (e) => {
   if (st.sel) return;

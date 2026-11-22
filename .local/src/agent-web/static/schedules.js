@@ -50,7 +50,7 @@ const runLine = (u) => `<div>${u.at ? when(u.at) : "-"} <span class="${u.ok === 
 function scheduleRuns(runs) {
   const open = runs.slice(0, SCHEDULE_RUNS_OPEN), older = runs.slice(SCHEDULE_RUNS_OPEN);
   return open.map(runLine).join("") +
-    (older.length ? `<details><summary class="muted">+${older.length} older</summary>${older.map(runLine).join("")}</details>` : "");
+    (older.length ? fold("", `+${older.length} older`, older.map(runLine).join(""), { sum: ' class="muted"' }) : "");
 }
 
 function scheduleDetail(r) {

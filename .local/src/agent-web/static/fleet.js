@@ -238,7 +238,7 @@ function renderRunner(el) {
   const rv = tblParams(st.views.sessions, RUNNERS_PRE).toString();
   const back = `<a class="btn sm" href="#sessions/runners${rv ? "?" + rv : ""}">All runners</a>`;
   const r = rst.data;
-  if (!r) { paint(el, `<div class="bhead"><span>${esc(runnerName())}</span>${back}</div><div class="${rst.err ? "panel down" : "empty"}">${rst.err ? esc(rst.err) : "Loading..."}</div>`); return; }
+  if (!r) { paint(el, `<div class="bhead"><span>${esc(runnerName())}</span>${back}</div>${readPanel(rst.err, "Loading...")}`); return; }
   const g = r.registry, day = r.calls.day, week = r.calls.week;
   let h = `<div class="bhead"><span>${esc(r.name)} <span class="muted">${esc(r.lane || "no lane")}</span></span>${back}</div>`;
   if (r.errors.length) h += `<div class="panel down">${r.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;

@@ -49,9 +49,9 @@ function tblFacet(f, q) {
   const on = f.on || [];
   const label = on.length ? `${f.key}: ${on[0]}${on.length > 1 ? ` +${on.length - 1}` : ""}` : f.key;
   const clear = on.length ? `<button type="button" class="tfclear" data-tqc="${esc(f.clear)}">clear ${esc(f.key)}</button>` : "";
-  return `<details class="tfacet${on.length ? " on" : ""}" data-fkey="${esc(f.key)}" data-fq="${esc(q || "")}"><summary title="filter ${esc(f.key)}: tick one or more">${esc(label)}</summary><div class="tfmenu">${clear}` +
-    f.values.map((v) => `<label><input type="checkbox" data-tq data-fv="${esc(v.value)}" value="${esc(v.q)}"${v.on ? " checked" : ""}> <span>${esc(v.value)}</span> <span class="n">${v.n}</span></label>`).join("") +
-    `</div></details>`;
+  return fold(`tfacet${on.length ? " on" : ""}`, esc(label), `<div class="tfmenu">${clear}` +
+    f.values.map((v) => `<label><input type="checkbox" data-tq data-fv="${esc(v.value)}" value="${esc(v.q)}"${v.on ? " checked" : ""}> <span>${esc(v.value)}</span> <span class="n">${v.n}</span></label>`).join("") + `</div>`,
+    { attrs: ` data-fkey="${esc(f.key)}" data-fq="${esc(q || "")}"`, sum: ` title="filter ${esc(f.key)}: tick one or more"` });
 }
 
 // The facets each table's header drew under its columns, keyed by the summary's facets array (a
@@ -255,7 +255,7 @@ function tblTab(o) {
     if (!table()) {
       const why = t.err || (t.data?.errors || [])[0];
       // A failed read looks like one, never like an empty table.
-      paint(el, (o.lead ? o.lead() : "") + (why ? `<div class="card err">${esc(why)}</div>` : `<div class="empty">${o.wait || "Loading..."}</div>`));
+      paint(el, (o.lead ? o.lead() : "") + (why ? errPanel(why, { card: true }) : `<div class="empty">${o.wait || "Loading..."}</div>`));
       return;
     }
     if (t.repaint()) return;

@@ -86,7 +86,7 @@ function bControls() {
       ? `<input id="b-game" placeholder="game (optional)" value="${esc(d.game)}">`
       : `<input id="b-to" placeholder="version vX.Y.Z (optional)" value="${esc(d.to)}">`) +
     `<button class="btn primary" id="b-add"${bst.busy ? " disabled" : ""}>${bst.busy ? "Adding..." : "Add"}</button>` +
-    `</div><div class="err" id="b-msg">${esc(bst.msg)}</div></div>`;
+    `</div>${errPanel(bst.msg, { id: "b-msg" })}</div>`;
 }
 
 // The opened row, under its line in the table: its whole text and tags, then its actions.
