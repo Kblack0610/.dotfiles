@@ -325,6 +325,19 @@ item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
   [ -z "$(agent-queue list --state queued --json | jq -r 'select(.slug == "ga-6") | .slug')" ]
 }
 
+@test "pull-after starts every high row gated on the closed row, though a start reads stdin" {
+  # 2026-11-20: ar-4068 closed, its pull-after started ar-4069, and ar-4071 (#high #after/ar-4068 too)
+  # was never read: the start ate the rest of the loop's candidate list on stdin (chain-after-stuck).
+  project game beta "$SANDBOX/repos/game"
+  row game agent ga-1 "- [/] feat(game): the map first <!-- id:ga-1 -->"
+  row game agent ga-2 "- [ ] feat(game): then its doors $T #high #after/ga-1 <!-- id:ga-2 -->"
+  row game agent ga-3 "- [ ] feat(game): then its roof $T #high #after/ga-1 <!-- id:ga-3 -->"
+  cmd_start() { cat >/dev/null; echo "start $*" >> "$NOTES_FIXTURE/started"; }
+  run cmd_pull_after ga-1
+  assert_success
+  assert_equal "$(paste -sd, "$NOTES_FIXTURE/started")" "start --item ga-2,start --item ga-3"
+}
+
 @test "row gates: cleared gates commit an agent row only, the human's row still needs its verdict, and a gated row keeps its verdict's area" {
   echo '{"fleet": {"max_tier": 1, "projects": ["game"]}}' > "$DISPATCH_WORKERS"
   project game beta "$SANDBOX/repos/game"

@@ -7529,7 +7529,9 @@ cmd_pull_after() {
   load_gates
   GATE_ST[after/$id]=clear
   err=$(mktemp) || return 1
-  while IFS= read -r c; do
+  # The rows come on fd 3: a start reads stdin (restore_world starts with </dev/null for it), and on
+  # stdin it ate every row after the first it started (2026-11-20: ar-4071 behind ar-4069, chain-after-stuck).
+  while IFS= read -r -u 3 c; do
     [ -n "$c" ] || continue
     PROMOTED=''
     # Its reason goes to the log too: the closing session's stderr is gone once it ends. AQ_ROOM_KEEP
@@ -7542,8 +7544,8 @@ cmd_pull_after() {
     kept="$kept $PROMOTED"
     pri=$(agent-queue show "$PROMOTED" --json 2>/dev/null | jq -r '.priority // empty')
     if [ "$pri" = low ]; then say "pull-after $id: $PROMOTED is low priority, so a pass starts it in its turn"; continue; fi
-    cmd_start --item "$PROMOTED" || say "pull-after $id: $PROMOTED could not start now, so it stays queued for a pass"
-  done < <(jq -c --arg g "after/$id" '.rows[]? | select(.state == "open" and .id != null and ((.tags // []) | index($g)))
+    cmd_start --item "$PROMOTED" </dev/null || say "pull-after $id: $PROMOTED could not start now, so it stays queued for a pass"
+  done 3< <(jq -c --arg g "after/$id" '.rows[]? | select(.state == "open" and .id != null and ((.tags // []) | index($g)))
     | {profile: (.profile // ""), project, lane, key: .id, raw: (.raw // .text // "")}' <<<"$board")
   rm -f "$err"
   return 0
