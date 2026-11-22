@@ -2785,6 +2785,29 @@ picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | 
   assert_success
 }
 
+# 2026-11-22: an urgent item sat 100 min behind "starved pool:unity" while the probe's last pass named
+# another item's run-floor start, so the gate holding it showed nowhere the watch reads (ar-3172).
+@test "starved names the firing finding that holds each waiting item, and none when no finding holds it" {
+  local old; old=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)
+  queued_item stuck urgent "$old"
+  acct main:pace
+  # Negative control: no finding fires, so the item carries no gate.
+  findings
+  run cmd_starved
+  assert_failure
+  assert_output --partial "stuck (urgent, queued $old)"
+  refute_output --partial 'held by finding'
+  findings "$(finding starved pool:unity)"
+  run cmd_starved
+  assert_failure
+  assert_output --partial "stuck (urgent, queued $old, held by finding starved pool:unity)"
+  # A finding scoped to another repo holds nothing here.
+  findings "$(finding starved pool:unity '["other-repo"]')"
+  run cmd_starved
+  assert_failure
+  assert_output --partial "stuck (urgent, queued $old)"
+}
+
 # 2026-11-10: the same four sat 4h, 2h of it under a dispatch hold that read as "nothing is starved" (ar-1432).
 @test "starved: neither a dispatch hold nor load clears an urgent item from the human; an agent's urgent and a fresh one still read as held" {
   local old; old=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)

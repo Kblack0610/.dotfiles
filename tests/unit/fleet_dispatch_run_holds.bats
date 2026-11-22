@@ -113,6 +113,30 @@ load 'fleet_dispatch/common'
   [ -n "$(qitem queued fix-game)" ] || fail "the held item stays queued"
 }
 
+# 2026-11-22: the hold kept urgent ucp-3033 queued 100 min while 25 other items started (ar-3172).
+@test "an urgent item goes past a pool starved on capacity, one a pass; a high one and another finding still hold" {
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  agent-queue add --project game --slug fix-game --priority high "fix the game"
+  agent-queue add --project game --slug urgent-1 --priority urgent "first urgent"
+  agent-queue add --project game --slug urgent-2 --priority urgent "second urgent"
+  findings "$(finding starved pool:unity '["game"]' capacity)"
+  # Room for three starts, so only the one-a-pass rule keeps urgent-2 queued.
+  export DISPATCH_PER_PASS=3
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial ': game: urgent-1'
+  assert_output --partial 'urgent, it went past the finding starved pool:unity (one a pass)'
+  [ -n "$(qitem queued urgent-2)" ] || fail "a second urgent item waits for the next pass"
+  [ -n "$(qitem queued fix-game)" ] || fail "the high item stays held"
+  # A finding other than a starved pool holds the urgent item too.
+  findings "$(finding starved host)"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  refute_output --partial ': game: urgent-2'
+  [ -n "$(qitem queued urgent-2)" ] || fail "another finding holds an urgent item"
+}
+
 # 2026-11-05: held unity items kept every pass off the board for 7h, so the rows filed to fix the
 # hold never started.
 @test "every queue item a finding holds sends the pass on to the board, and an unheld row starts" {

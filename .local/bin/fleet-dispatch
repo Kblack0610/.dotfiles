@@ -5316,7 +5316,7 @@ load_findings() {
 # project while the other 40 waited on account pace, which the message never named.
 pick_item() {
   local items="$1" it why need free host mwhy='' mread=0 fhit=0 uwait=0 held=() waits="every queue item waits" reserved='' kept=''
-  local shold=0 sfirst='' shost='' swhy='' mhit=0
+  local shold=0 sfirst='' shost='' swhy='' mhit=0 ppass=''
   share_state   # in this shell, so every share_why reads one count
   if [ "${RED_PASS:-0}" = 1 ]; then waits="every red item waits; the rest wait on ${FLOOR_GATE:-the gate}"
   elif [ "${TRAINEE_PASS:-0}${BATCH_PASS:-0}" != 00 ]; then waits="the trainee floor's item waits"; fi
@@ -5335,7 +5335,16 @@ pick_item() {
     elif [ "$need" -gt "$free" ]; then uwait=1; why="$([ "$need" -gt 1 ] && echo heavy || echo light) needs $need run units, $free free"
     else why="$mwhy, and no fleet worker takes it"; PICK_FULL=0 mhit=1
     fi
-    if [ -z "$why" ]; then why=$(held_by "$it" "$FIRING"); [ -z "$why" ] || { PICK_FULL=0; fhit=1; }; fi
+    ppass=''
+    if [ -z "$why" ]; then
+      why=$(held_by "$it" "$FIRING")
+      # An urgent item goes past a starved pool, one a pass (POOL_PASSED): its few CI jobs cost the
+      # pool less than the red it fixes left open. On 11-22 the hold kept urgent ucp-3033 queued
+      # 100 min while 25 other items started (ar-3172, ask hqkYtZ). Any other finding still holds it.
+      if [ -n "$why" ] && [ "${POOL_PASSED:-0}" = 0 ] && [ "$(jq -r .priority <<<"$it")" = urgent ] &&
+        ! tr ',' '\n' <<<"$why" | grep -qv '^starved pool:'; then ppass=$why why=''; fi
+      [ -z "$why" ] || { PICK_FULL=0; fhit=1; }
+    fi
     if [ -z "$why" ]; then
       why=$(share_why "$it")
       [ -z "$why" ] || { PICK_FULL=0; shold=$(( shold + 1 )); [ -n "$sfirst" ] || { sfirst=$it shost=$host swhy=$why; }; }
@@ -5354,6 +5363,7 @@ pick_item() {
     if [ -z "$why" ]; then
       PICKED=$it PLACE_HOST=$host
       [ "$shold" = 0 ] || PICK_NOTE="; passed $shold item$([ "$shold" = 1 ] || echo s) held by $swhy"
+      [ -z "$ppass" ] || { POOL_PASSED=1; PICK_NOTE+="; urgent, it went past the finding $ppass (one a pass)"; }
       return 0
     fi
     [ "$DRY" = 0 ] || say "queue item $(jq -r .slug <<<"$it") waits: $why"
@@ -6124,9 +6134,21 @@ cmd_starved() {
   local TARGET TARGET_WHEN TOTAL_LIVE NEEDS_LIVE NEEDS_NOTE
   pace_target
   [ "$qrc" = 0 ] || { echo "agent-queue unreadable"; return 1; }
-  items=$(jq -rs --argjson cut "$cut" '
+  items=$(jq -cs --argjson cut "$cut" '
     [.[] | select((.priority == "urgent" or .priority == "high") and .t != null and .t < $cut)]
-    | sort_by(.t) | .[] | "\(.slug) (\(.priority)\(if ((" " + (.tags // "") + " ") | contains(" red ")) then ", red" else "" end), queued \(.queued))"' <<<"$queue") || { echo "agent-queue unreadable"; return 1; }
+    | sort_by(.t) | .[] | . + {line: "\(.slug) (\(.priority)\(if ((" " + (.tags // "") + " ") | contains(" red ")) then ", red" else "" end), queued \(.queued)"}' <<<"$queue") || { echo "agent-queue unreadable"; return 1; }
+  # Each item names the firing finding that holds it (held_by, as pick_item reads it): the last pass's
+  # line names another item's start when the passes go past this one. On 11-22 an urgent item sat
+  # 100 min behind "starved pool:unity" while the probe showed only a run-floor start of another item (ar-3172).
+  if [ -n "$items" ]; then
+    local it fw lines='' FIRING
+    load_findings || FIRING=''
+    while IFS= read -r it; do
+      fw=$(held_by "$it" "$FIRING")
+      lines+="$(jq -r .line <<<"$it")${fw:+, held by finding $fw})"$'\n'
+    done <<<"$items"
+    items=${lines%$'\n'}
+  fi
   # A fleet at its pace target never reaches the fill, so its unjudged rows wait (below): no scan.
   board=''; [ -n "$TOTAL_LIVE" ] && [ "$TOTAL_LIVE" -ge "$TARGET" ] || board=$(board_starved "$cut")
   low=$(low_starved "$(( cut - DISPATCH_STARVED_MIN * 60 ))")
