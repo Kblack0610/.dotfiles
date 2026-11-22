@@ -9,7 +9,7 @@
     "max_tier": 1
   },
   "board": {
-    "what": "/one-shot on an agent-board row of any project at stage dev or later but DISPATCH_OFF_PROJECTS, no tags needed, the judge reads the tier; tier 3 rows (harness, CI, runners) go to the tier-3 gate and merge behind the red-fix gate (policy.md \"Tier\")",
+    "what": "/one-shot on an agent-board row with no #worker tag, the judge reads the tier (which projects: their stage, fleet-dispatch skill); tier 3 rows (harness, CI, runners) go to the tier-3 gate and merge behind the red-fix gate (policy.md \"Tier\")",
     "max_tier": 2,
     "lane": "agent",
     "untagged": true

@@ -273,7 +273,7 @@ stage_of() {
 dispatchable() { lab_stage_at_least "$1" dev; }
 
 # off_project <project> -> why the project dispatches nothing whatever its stage, nothing when it may:
-# it is on DISPATCH_OFF_PROJECTS. candidates, t3_rows and take_epic read it; the one off list.
+# it is on DISPATCH_OFF_PROJECTS. candidates, t3_rows, take_epic and covered read it; the one off list.
 off_project() {
   [[ " $DISPATCH_OFF_PROJECTS " != *" $1 "* ]] || echo "no worker covers $1: it is on DISPATCH_OFF_PROJECTS, so its rows stay with the human"
 }
@@ -464,11 +464,11 @@ workers() {
     "$DISPATCH_WORKERS" 2>/dev/null
 }
 
-# row_worker <workers> <project> <lane> <row text> -> "<rank> <worker> <tier>" for the first worker
+# row_worker <workers> <lane> <row text> -> "<rank> <worker> <tier>" for the first worker
 # that may take the row, nothing when none may. A row with no tier tag counts as the highest tier
 # an untagged worker takes, and the judge must read it no higher.
 row_worker() {
-  local lane="$3" text="$4" tag row_t t rank name max only wlane untagged
+  local lane="$2" text="$3" tag row_t t rank name max only wlane untagged
   tag=$(tag_value "$text" worker)
   row_t=$(row_tier "$text")
   while IFS=$'\t' read -r rank name max only wlane untagged; do
@@ -498,18 +498,23 @@ cleanup_row() {
   if { [ "$c" = true ] || { [ -n "$c" ] && grep -qiE -- "$c" <<<"$body"; }; } && ! grep -qiE -- "$DISPATCH_CLEANUP_NOT" <<<"$body"; then echo 0; else echo 1; fi
 }
 
-# nobody_why <workers> <project> <lane> <row text> -> why no worker takes a row row_worker turned
+# untagged_reads <workers> <lane> -> 0 when an untagged worker reads the lane (its own, or every lane), else 1.
+untagged_reads() {
+  local rank name max only wlane untagged
+  while IFS=$'\t' read -r rank name max only wlane untagged; do
+    [ "$untagged" = true ] && { [ "$wlane" = - ] || [ "$wlane" = "$2" ]; } && return 0
+  done <<<"$1"
+  return 1
+}
+
+# nobody_why <workers> <lane> <row text> -> why no worker takes a row row_worker turned
 # down, the first of: it is tier 3, or untiered where no untagged worker reads its lane, so the
 # tier-3 gate takes it (t3_rows) unless a DISPATCH_T3_SKIP word keeps it with the human; no untagged
 # worker reads its lane; its tier is past the unattended ceiling (a human-lane row); or its tags and
 # tier fit none. A project off_project names never gets here: candidates gives that reason instead.
 nobody_why() {
-  local lane="$3" text="$4" rank name max only wlane untagged covers=0 t m
-  while IFS=$'\t' read -r rank name max only wlane untagged; do
-    [ "$untagged" = true ] || continue
-    [ "$wlane" = - ] || [ "$wlane" = "$lane" ] || continue
-    covers=1
-  done <<<"$1"
+  local lane="$2" text="$3" covers=0 t m
+  ! untagged_reads "$1" "$lane" || covers=1
   t=$(row_tier "$text")
   if [ "$lane" = agent ] && { [ "$t" = 3 ] || { [ -z "$t" ] && [ "$covers" = 0 ]; }; }; then
     m=$(grep -oiE -m1 -- "$DISPATCH_T3_SKIP" <<<"${text%%<!--*}" | awk 'NR==1')
@@ -1715,11 +1720,11 @@ cmd_candidates() {
           kind=$(row_kind "$text")
           ! floor_pass || floor_row "$name" "$text" "$([ "$lane" = agent ] && [ -z "$gwait" ] && printf %s "$gates")" "$key" || continue
           nobody=''
-          if [ -n "$poff" ] || ! read -r rank worker tier < <(row_worker "$table" "$name" "$lane" "$text"); then
+          if [ -n "$poff" ] || ! read -r rank worker tier < <(row_worker "$table" "$lane" "$text"); then
             # suggest shows the agent rows no worker takes too, after the ones one does.
             [ "${SUGGEST:-0}" = 1 ] && [ "$lane" = agent ] || continue
             rank=99 worker='' tier=$(row_tier "$text"); tier=${tier:-null}
-            nobody=${poff:-$(nobody_why "$table" "$name" "$lane" "$text")}
+            nobody=${poff:-$(nobody_why "$table" "$lane" "$text")}
           fi
           line=$(row_sig "$text")
           x=${DET["$name"$'\t'"$lane"$'\t'"$key"]:-$'0\t""'}
@@ -7811,7 +7816,7 @@ t3_rows() {
         gates=${GAT["$name"$'\t'agent$'\t'"$key"]:-}
         [ -z "$gates" ] || [ -z "$(gate_wait "$gates")" ] || continue
         # A gated row starts with no verdict (t3_ready), so only a #tier/3 tag makes one tier 3 here;
-        # an untagged one stays with the worker path, where a worker covers its project.
+        # an untagged one stays with the worker path, where the board worker takes it.
         [ -z "$gates" ] || [ "$t" = 3 ] || continue
         ! floor_pass || floor_row "$name" "$text" "$gates" "$key" || continue
         line=$(row_sig "$text")
@@ -7881,7 +7886,7 @@ cmd_report() {
 # of them is filed where the worker reads.
 cmd_covered() {
   local prof name sheet repo _v
-  workers | awk -F'\t' '$6 == "true" && ($5 == "-" || $5 == "agent")' | grep -q . || return 0
+  untagged_reads "$(workers)" agent || return 0
   for prof in $DISPATCH_PROFILES; do
     while IFS=$'\t' read -r name sheet _v _; do
       [ -n "$name" ] && [ -z "$(off_project "$name")" ] && dispatchable "$(stage_of "$sheet")" || continue

@@ -4,6 +4,7 @@
 # the fixtures and setup they share are in fleet_dispatch/common.bash.
 
 load 'fleet_dispatch/common'
+bats_require_minimum_version 1.5.0
 
 # --- candidates --------------------------------------------------------------------------
 
@@ -855,9 +856,9 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app: it i
   # active: no repo here has a commit, so a row nobody takes is never marked worked on today.
   assert_equal "$(jq -r 'select(.key == "app row") | .active' <<<"$output")" false
   # With no untagged worker on the agent lane, an untiered row is the tier-3 gate's, and a tier-1 one has no path.
-  run nobody_why "$(echo '{"fleet": {"max_tier": 1}}' > "$DISPATCH_WORKERS"; workers)" night agent '- [ ] chore(box): tidy the docs'
+  run nobody_why "$(echo '{"fleet": {"max_tier": 1}}' > "$DISPATCH_WORKERS"; workers)" agent '- [ ] chore(box): tidy the docs'
   assert_output 'tier3 only: no day worker reads the agent lane'
-  run nobody_why "$(workers)" night agent '- [ ] chore(box): tidy the docs #tier/1'
+  run nobody_why "$(workers)" agent '- [ ] chore(box): tidy the docs #tier/1'
   assert_output 'no untagged worker reads the agent lane'
 }
 
