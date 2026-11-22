@@ -56,21 +56,42 @@ dirty_paths() {
   case "$d/" in
     "$HOME/.worktrees/"*)
       git --no-optional-locks -C "$d" -c index.threads=1 -c core.preloadIndex=false status --porcelain -z --no-renames 2>/dev/null \
-        | while IFS= read -r -d '' e; do empty_submodule "$d" "${e:3}" || printf '%s\n' "${e:3}"; done; return ;;
+        | while IFS= read -r -d '' e; do submodule_noise "$d" "$e" || printf '%s\n' "${e:3}"; done; return ;;
   esac
   [ -n "$edited" ] || return 0
   top="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" || return 0
   # -uall: an untracked file inside a new dir is listed by name, as edited_files names it.
   git --no-optional-locks -C "$d" -c index.threads=1 -c core.preloadIndex=false status --porcelain -z --no-renames -uall 2>/dev/null \
-    | while IFS= read -r -d '' e; do empty_submodule "$top" "${e:3}" || printf '%s/%s\n' "$top" "${e:3}"; done \
+    | while IFS= read -r -d '' e; do submodule_noise "$top" "$e" || printf '%s/%s\n' "$top" "${e:3}"; done \
     | grep -xFf <(printf '%s\n' "$edited" | xargs -r -d '\n' realpath -m -- 2>/dev/null | grep .) \
     | cut -c"$(( ${#top} + 2 ))"-
+}
+
+# submodule_noise <dir> <status record>: a submodule entry that is not the session's work, by
+# empty_submodule or moved_pin. Never a plain file.
+submodule_noise() {
+  local d="$1" e="$2"
+  empty_submodule "$d" "${e:3}" || { [ "${e:0:2}" = " M" ] && moved_pin "$d" "${e:3}"; }
+}
+
+# moved_pin <dir> <path>: a submodule whose checkout sits at another commit than the index pin
+# (` M`, nothing staged) with its own tree clean. A canary worktree cut at an old commit reads it
+# for the pointers the stow and the shared clones moved on (.local/src/android-suite, gungan:
+# ar-4016, razer dotfiles-agent-17 and -18 read STALLED). A staged pin, a commit no remote ref
+# holds, or any working or untracked file inside the submodule is still the session's work.
+moved_pin() {
+  local d="$1" path="$2" mode
+  mode="$(git -C "$d" ls-tree HEAD -- "$path" 2>/dev/null)" && [ "${mode%% *}" = 160000 ] || return 1
+  [ -e "$d/$path/.git" ] || return 1
+  # A commit no remote ref holds is the session's own unpushed work, however the pin reads.
+  [ -z "$(git -C "$d/$path" rev-list -1 HEAD --not --remotes 2>/dev/null)" ] || return 1
+  [ -z "$(git --no-optional-locks -C "$d/$path" -c index.threads=1 -c core.preloadIndex=false status --porcelain --ignore-submodules=none 2>/dev/null)" ]
 }
 
 # empty_submodule <dir> <path>: a submodule cloned with --no-checkout has HEAD but no index entries
 # or working files, so status reports every file as a staged deletion though nothing was touched
 # (ar-1057: finished sessions read STALLED). Only at the unchanged pin; a populated index, a working
-# file or a moved pin is still dirt.
+# file or a staged or content-dirty moved pin is still dirt (an unstaged clean one is moved_pin's).
 empty_submodule() {
   local d="$1" path="$2" pin staged head gitdir files
   [ -e "$d/$path/.git" ] || return 1
