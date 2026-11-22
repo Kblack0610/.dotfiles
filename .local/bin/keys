@@ -38,13 +38,11 @@ tmux_socket() {
         printf '%s\n' "${TMUX%%,*}"
         return 0
     fi
-    local dir sock
-    dir="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
-    for sock in "$dir/hub" "$dir"/*; do
-        [ -S "$sock" ] || continue
-        tmux -S "$sock" list-sessions >/dev/null 2>&1 && { printf '%s\n' "$sock"; return 0; }
-    done
-    return 1
+    local live srv
+    live="$(tmux_live_servers)"
+    srv="$(grep -Fx hub <<< "$live" || head -n 1 <<< "$live")"
+    [ -n "$srv" ] || return 1
+    printf '%s/%s\n' "$(tmux_socket_dir)" "$srv"
 }
 
 tmux_rows() {

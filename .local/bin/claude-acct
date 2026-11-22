@@ -104,6 +104,8 @@ set -uo pipefail
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/audit.sh"
 # shellcheck source=../lib/tmux-pane.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/tmux-pane.sh"   # leave_mode
+# shellcheck source=../lib/tmux-servers.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/tmux-servers.sh"   # tmux_servers_all
 # shellcheck source=../lib/wake-pace.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/wake-pace.sh"   # wake_take: unpark --all is a bulk wake
 
@@ -1929,13 +1931,6 @@ bg_shells() {
     done
 }
 
-# tmux_servers -> the name of every tmux socket in this user's socket dir
-tmux_servers() {
-    local d="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)" s
-    for s in "$d"/*; do [[ -S "$s" ]] && printf '%s\n' "${s##*/}"; done
-    return 0
-}
-
 # find_claude <server> <session> [window] [pane] -> "pid US pane US pane_pid US registry file US
 # window index" for each live claude in the session's panes (only that window's, by index or
 # name, or only that pane, when given): one whose registered pid is the pane's process or under it.
@@ -2233,7 +2228,7 @@ park_flow() {
         while read -r s; do
             if [[ -n "$pane_t" ]]; then pane_session "$s" "$pane_t" > /dev/null && found+=("$s")
             else tmux -L "$s" has-session -t "=$session" 2>/dev/null && found+=("$s"); fi
-        done < <(tmux_servers)
+        done < <(tmux_servers_all)
         case ${#found[@]} in
             0) [[ -n "$pane_t" ]] && { refuse "no tmux server has that pane"; return; }
                refuse "no tmux server has that session"; return ;;

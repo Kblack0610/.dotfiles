@@ -230,20 +230,18 @@ cmd_holds() {
 # one tmux session holds many agents, and a session option reads as set on every pane in it.
 # Readers show the tag only while that is in the future (.tmux.conf @shepherd_live, agent-panel),
 # so a shepherd that stopped renewing drops its tag with no cleanup. Every server in the socket
-# dir is swept, found the way agent-panel finds them (tmux.rs socket_dir). The pane argument is a
+# dir is swept, found by tmux_servers_all (agent-panel does the same in tmux.rs socket_dir). The pane argument is a
 # pane on $SERVER: the runner tags the pass it starts, so the tag is there before the pass's own
 # lease call. A lease taken outside tmux has no pane, so it only clears.
 tag_pane() {
-  local dir sock pid val
-  dir="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
-  [ -z "${TMUX:-}" ] || dir="$(dirname "${TMUX%%,*}")"
-  for sock in "$dir"/*; do
-    [ -S "$sock" ] || continue
-    tmux -S "$sock" list-panes -a -F '#{pane_id} #{@shepherd}' 2>/dev/null |
+  local srv pid val
+  . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/tmux-servers.sh" || return 1
+  while IFS= read -r srv; do
+    tmux -L "$srv" list-panes -a -F '#{pane_id} #{@shepherd}' 2>/dev/null |
       while read -r pid val; do
-        [ -z "$val" ] || tmux -S "$sock" set-option -p -t "$pid" -u @shepherd 2>/dev/null
+        [ -z "$val" ] || tmux -L "$srv" set-option -p -t "$pid" -u @shepherd 2>/dev/null
       done
-  done
+  done < <(tmux_servers_all)
   if [ -n "${2:-}" ]; then
     tmux -L "$SERVER" set-option -p -t "$2" @shepherd "$1" 2>/dev/null || true
     return 0

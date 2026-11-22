@@ -79,6 +79,10 @@ PANEL_TAB=$'\t'
 # the $'..' form, are in that file and in CONVENTIONS.md.
 . "${BASH_SOURCE[0]%/*}/panel-palette.sh" || return 1
 
+# tmux_live_servers and tmux_servers_all: the one walk of the socket dir (.local/lib/tmux-servers.sh).
+# shellcheck source=../../lib/tmux-servers.sh
+. "${BASH_SOURCE[0]%/*}/../../lib/tmux-servers.sh" || return 1
+
 # ── Diagnostics ──────────────────────────────────────────────────────────────
 # stderr ALWAYS, plus a best-effort tmux flash. tags.sh:59's idiom, and strictly better than
 # REPLACING stderr with the flash -- scripts and agents call these
@@ -308,21 +312,6 @@ panel_ensure_session() {
   local name="$1" dir="${2:-$HOME}"
   tmux has-session -t "=$name" 2>/dev/null && return 0
   tmux new-session -ds "$name" -c "$dir"
-}
-
-# panel_live_servers -- every tmux server with a live socket, by name, one per line.
-#
-# A socket file can outlive its server, so only one that answers counts. Read at call time,
-# not source time: a caller may set TMUX_TMPDIR after sourcing. servers.sh lists worlds with
-# it; worktree.sh needs it because a worktree's agent may be running on any of them.
-panel_live_servers() {
-  local dir="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)" sock
-  [ -d "$dir" ] || return 0
-  for sock in "$dir"/*; do
-    [ -S "$sock" ] || continue
-    tmux -L "${sock##*/}" has-session 2>/dev/null && printf '%s\n' "${sock##*/}"
-  done
-  return 0
 }
 
 # panel_new_window <cmd...> -- open a window, or say why not.
