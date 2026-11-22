@@ -299,10 +299,12 @@ run_locked() {
 # restore_reordered <checkout> <name> <refused merge output> -> succeeds when it restored every file
 # in the way, one line each. Claude Code rewrites ~/.claude/settings.json (a stow link into the
 # checkout) with its keys in its own order, so the checkout reads dirty with no change in it, and
-# every pull that touches the file is refused (ar-2453). A tracked .json file with nothing staged,
-# whose working copy parses equal to HEAD's (jq -S), holds no value. Only when every file in the way
-# is one does it restore them from HEAD, so a pull that stays refused reverts nothing; each copy is
-# kept under $CACHE_DIR/restored first, and one whose bytes changed since the check stays put.
+# every pull that touches the file is refused (ar-2453). Since #2876 settings.json is committed in
+# that order, so a restore logged for it means an edit added a key out of the harness's order.
+# A tracked .json file with nothing staged, whose working copy parses equal to HEAD's (jq -S),
+# holds no value. Only when every file in the way is one does it restore them from HEAD, so a pull
+# that stays refused reverts nothing; each copy is kept under $CACHE_DIR/restored first, and one
+# whose bytes changed since the check stays put.
 restore_reordered() {
   local repo=$1 name=$2 f keep mine
   local -a files=()

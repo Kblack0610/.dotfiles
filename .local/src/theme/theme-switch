@@ -78,14 +78,18 @@ dry()   { echo "  $(dim "dry") $1"; }
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 # link_generated <path under $DOTFILES>: give a generated file its $HOME link when it has
-# none. stow and dotfiles-deploy link tracked files only, so a gitignored render in a
-# directory linked file by file (stow --no-folding) is never linked by them. Only for the
+# none, or when a plain file stands there: the stale render an unfold (dotfiles-deploy) moved
+# out of the checkout. stow and dotfiles-deploy link tracked files only, so a gitignored render
+# in a directory linked file by file (stow --no-folding) is never linked by them. Only for the
 # stowed checkout (a DOTFILES_ROOT worktree render must not reach $HOME), and only where
 # the tool's config directory is deployed on this machine.
 link_generated() {
     local rel="$1" dst="$HOME/$1"
-    [[ -e "$dst" || -L "$dst" ]] && return 0
+    [[ -L "$dst" ]] && return 0
     [[ "$(readlink -f "$DOTFILES")" == "$(readlink -f "$HOME/.dotfiles")" ]] || return 0
+    # Under a folded directory link $dst IS the render; only a file of its own is stale.
+    [[ -e "$dst" && "$(readlink -f "$dst")" == "$(readlink -f "${DOTFILES}/$rel")" ]] && return 0
+    [[ -e "$dst" && ! -f "$dst" ]] && return 0
     [[ -d "$HOME/$(cut -d/ -f1-2 <<<"$rel")" ]] || return 0
     # shellcheck source=../../lib/stow-link.sh
     . "$SCRIPT_DIR/../../lib/stow-link.sh"
@@ -205,6 +209,7 @@ apply_kitty() {
         cat "$src"
     } > "$dst"
     info "kitty: applied palette + template"
+    link_generated .config/kitty/current-theme.conf
 
     # Live reload: send SIGUSR1 to all kitty instances
     if pgrep -x kitty &>/dev/null; then
@@ -415,6 +420,8 @@ PAL
     # No signal: config.base sets reload_style_on_change, so waybar picks the new CSS
     # up itself. SIGUSR2 is a full reload of every bar and has crashed the main one.
     info "waybar: applied template and palette.css (reloads on file change)"
+    link_generated .config/waybar/style.css
+    link_generated .config/waybar/palette.css
 }
 
 apply_sketchybar() {
@@ -481,6 +488,7 @@ export CPU_COLOR=\$BLUE
 export CALENDAR_COLOR=\$CYAN
 EOF
     info "sketchybar: regenerated colors.sh from palette"
+    link_generated .config/sketchybar/colors.sh
 
     # Live reload: re-source the whole config so new colors take effect
     if command -v sketchybar &>/dev/null && pgrep -x sketchybar &>/dev/null; then
@@ -535,6 +543,7 @@ apply_dunst() {
     highlight = "${THEME_ERROR}"
 EOF
     info "dunst: regenerated dunstrc.d/50-theme.conf from palette"
+    link_generated .config/dunst/dunstrc.d/50-theme.conf
 
     if command -v dunstctl &>/dev/null && pgrep -x dunst &>/dev/null; then
         dunstctl reload &>/dev/null || true
@@ -670,6 +679,7 @@ return {
 }
 EOF
     info "hyprland: wrote border + group + shadow colors"
+    link_generated .config/hypr/conf/theme.lua
 
     # Hyprland reloads on its own when a config file changes; this makes it immediate.
     if command -v hyprctl &>/dev/null; then

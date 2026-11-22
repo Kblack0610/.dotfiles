@@ -425,7 +425,7 @@ world_wt_private() {
   refute_output --partial '.local/bin/svc'
   run "$DEPLOY" --apply --missing
   assert_success
-  assert_output --partial '1 path(s) linked, none missing now (copies not checked'
+  assert_output --partial '1 path(s) linked or pruned, none missing now (copies not checked'
   assert_equal "$(readlink -f "$HOME/.local/bin/new-tool")" "$(readlink -f "$PUB/.local/bin/new-tool")"
   [ ! -L "$PUB/.local/bin/svc" ] || fail '--missing converted a physical copy'
   assert_equal "$(cat "$PUB/.local/bin/svc")" 'running'
@@ -462,8 +462,12 @@ world_wt_private() {
   [ -L "$PUB/.local/src/newtool" ] || fail 'the public tree got a physical directory'
   assert_equal "$(readlink "$PUB/.local/src/newtool")" '../../../.dotfiles-private/.local/src/newtool'
   assert_equal "$(cat "$HOME/.local/src/newtool/lib/util")" 'util'
-  run "$DEPLOY" --check
+  run "$DEPLOY" --check --missing
   assert_success
+  # The dir link sits in the public checkout, so a full check reports the fold it went through.
+  run "$DEPLOY" --check
+  assert_failure
+  assert_output --regexp 'FOLDED +public +\.local/src '
 }
 
 @test "a new private file in a directory the public tree already has is one file link" {
@@ -541,21 +545,23 @@ hypr_world() {
   radd "$PRIV" .config/moved/b 'b'
   run "$DEPLOY" --apply --missing
   assert_success
-  assert_output --partial '1 path(s) linked'
+  assert_output --partial '2 path(s) linked or pruned'
   assert_equal "$(readlink "$HOME/.config/moved")" '../.dotfiles-private/.config/moved'
   assert_equal "$(cat "$HOME/.config/moved/b")" 'b'
 }
 
-@test "a dangling directory link over a directory holding a stow-ignored path fails loudly, no dir link" {
+@test "a dangling directory link over a directory holding a stow-ignored path is pruned, then linked per file" {
   world
   printf '%s\n' '^/\.config/moved/secret$' >> "$PRIV/.stow-local-ignore"
   mkdir -p "$HOME/.config"; ln -s ../.dotfiles/.config/moved "$HOME/.config/moved"
   radd "$PRIV" .config/moved/a 'a'
   radd "$PRIV" .config/moved/secret 's'
   run "$DEPLOY" --apply --missing
-  assert_failure
-  assert_output --partial 'DID NOT CONVERGE'
-  assert_equal "$(readlink "$HOME/.config/moved")" '../.dotfiles/.config/moved'
+  assert_success
+  assert_output --partial 'pruned    ~/.config/moved'
+  [ -d "$HOME/.config/moved" ] && [ ! -L "$HOME/.config/moved" ] || fail 'no real directory replaced the dangling link'
+  assert_equal "$(readlink "$HOME/.config/moved/a")" '../../.dotfiles-private/.config/moved/a'
+  [ ! -e "$HOME/.config/moved/secret" ] || fail 'the stow-ignored path deployed'
 }
 
 @test "a directory holding a stow-ignored path keeps per-file links: a dir link would deploy that path" {
@@ -569,6 +575,167 @@ hypr_world() {
   [ ! -L "$PUB/.local/src/newtool" ] || fail 'the dir link deploys a path stow ignores'
   [ ! -e "$HOME/.local/src/newtool/secret" ] || fail 'the ignored path deployed'
   assert_equal "$(cat "$HOME/.local/src/newtool/run")" 'run'
+}
+
+# -- FOLDED: a directory link tools write through, and its unfold --
+
+# systemd_fold - ~/.config/systemd is one folded link into the public tree, as a stow run
+# without --no-folding leaves it. Through it: a wants link systemd wrote (ignored, relative),
+# a private unit attached as a link inside the public tree, and a private drop-in directory
+# attached as one directory link there.
+systemd_fold() {
+  world
+  radd "$PUB"  .config/systemd/user/a.service 'a'
+  radd "$PUB"  .config/systemd/user/timers.target.wants/keep.timer 'tracked wants'
+  radd "$PRIV" .config/systemd/user/p.service 'p'
+  radd "$PRIV" .config/systemd/user/p.service.d/override.conf 'o'
+  printf '%s\n' '/.config/systemd/user/default.target.wants/' >> "$PUB/.git/info/exclude"
+  mkdir -p "$HOME/.config"
+  stow_link "$HOME/.config/systemd" "$PUB/.config/systemd"
+  mkdir -p "$HOME/.config/systemd/user/default.target.wants"
+  ln -s ../a.service "$HOME/.config/systemd/user/default.target.wants/a.service"
+  stow_link "$PUB/.config/systemd/user/p.service" "$PRIV/.config/systemd/user/p.service"
+  stow_link "$PUB/.config/systemd/user/p.service.d" "$PRIV/.config/systemd/user/p.service.d"
+}
+
+@test "a folded directory a tool wrote into is FOLDED, and --check moves nothing" {
+  systemd_fold
+  local before; before="$(cd "$HOME" && find . | sort)"
+  run "$DEPLOY" --check
+  assert_failure
+  assert_output --regexp 'FOLDED +public +\.config/systemd +directory link: 3 untracked and 2 other-repo'
+  refute_output --partial 'p.service.d/override.conf'
+  assert_equal "$(cd "$HOME" && find . | sort)" "$before"
+}
+
+@test "a folded directory nothing is written through is not FOLDED" {
+  world
+  radd "$PUB" .config/tool/a 'a'
+  mkdir -p "$HOME/.config"; stow_link "$HOME/.config/tool" "$PUB/.config/tool"
+  run "$DEPLOY" --check
+  assert_success
+}
+
+@test "--apply unfolds it: a link per file, runtime moved out of the checkout, twins removed, converged" {
+  systemd_fold
+  run "$DEPLOY" --apply
+  assert_success
+  assert_output --partial 'unfolded  ~/.config/systemd: 4 link(s), 1 runtime entr(ies) moved out of the checkout, 2 twin(s) removed'
+  [ -d "$HOME/.config/systemd/user" ] && [ ! -L "$HOME/.config/systemd" ] || fail 'still folded'
+  assert_equal "$(readlink "$HOME/.config/systemd/user/a.service")" '../../../.dotfiles/.config/systemd/user/a.service'
+  assert_equal "$(readlink "$HOME/.config/systemd/user/p.service")" '../../../.dotfiles-private/.config/systemd/user/p.service'
+  assert_equal "$(readlink "$HOME/.config/systemd/user/p.service.d/override.conf")" \
+    '../../../../.dotfiles-private/.config/systemd/user/p.service.d/override.conf'
+  assert_equal "$(cat "$HOME/.config/systemd/user/default.target.wants/a.service")" 'a'
+  assert_equal "$(git -C "$PUB" status --porcelain --ignored -- .config)" ''
+  run "$DEPLOY" --check
+  assert_success
+  # The point of it: an enable now lands in $HOME and leaves the checkout clean.
+  mkdir -p "$HOME/.config/systemd/user/timers.target.wants"
+  ln -s ../a.service "$HOME/.config/systemd/user/timers.target.wants/new.timer"
+  assert_equal "$(git -C "$PUB" status --porcelain --ignored -- .config)" ''
+}
+
+@test "an untracked file git does not ignore blocks the unfold, and nothing moves" {
+  systemd_fold
+  printf 'wip\n' > "$PUB/.config/systemd/user/wip.service"
+  run "$DEPLOY" --apply
+  assert_failure
+  assert_output --partial 'SKIP  .config/systemd - 1 untracked path(s) git does not ignore'
+  assert_output --partial '.config/systemd/user/wip.service'
+  [ -L "$HOME/.config/systemd" ] || fail 'the fold was replaced despite the blocker'
+  [ -L "$PUB/.config/systemd/user/default.target.wants/a.service" ] || fail 'runtime moved despite the blocker'
+  [ -L "$PUB/.config/systemd/user/p.service" ] || fail 'a twin was removed despite the blocker'
+}
+
+@test "--missing never unfolds: that run is unattended" {
+  systemd_fold
+  run "$DEPLOY" --apply --missing
+  assert_success
+  [ -L "$HOME/.config/systemd" ] || fail '--missing unfolded a directory'
+  [ -L "$PUB/.config/systemd/user/default.target.wants/a.service" ] || fail '--missing moved runtime'
+}
+
+@test "--only limits the repair to one directory" {
+  systemd_fold
+  radd "$PUB" .config/game/settings 's'
+  stow_link "$HOME/.config/game" "$PUB/.config/game"
+  printf 'save\n' > "$HOME/.config/game/save.dat"
+  printf '%s\n' '/.config/game/*.dat' >> "$PUB/.git/info/exclude"
+  run "$DEPLOY" --apply --only .config/game/
+  assert_success
+  [ ! -L "$HOME/.config/game" ] || fail 'the named directory was not unfolded'
+  assert_equal "$(cat "$HOME/.config/game/save.dat")" 'save'
+  [ -L "$HOME/.config/systemd" ] || fail 'a directory --only did not name was unfolded'
+  run "$DEPLOY" --only
+  assert_failure 2
+}
+
+# -- STALE: a dangling link into a checkout --
+
+@test "a dangling link into a checkout is STALE, --apply --missing prunes it, a foreign one stays" {
+  world
+  ln -s ../../.dotfiles/.local/bin/gone "$HOME/.local/bin/gone"
+  ln -s /nonexistent/elsewhere "$HOME/.local/bin/foreign"
+  run "$DEPLOY" --check --missing
+  assert_failure
+  assert_output --regexp 'STALE +public +\.local/bin/gone +dangling'
+  refute_output --partial 'foreign'
+  run "$DEPLOY" --apply --missing
+  assert_success
+  assert_output --partial 'pruned    ~/.local/bin/gone'
+  [ ! -L "$HOME/.local/bin/gone" ] || fail 'the stale link survived'
+  [ -L "$HOME/.local/bin/foreign" ] || fail 'a link into no repo was pruned'
+}
+
+# -- RUNTIME: a directory link to a checkout directory no repo tracks --
+
+# runtime_dir - a tool's state dir that lives in the public checkout through a directory link:
+# every file in it ignored, nothing in it tracked by either repo.
+runtime_dir() {
+  world
+  mkdir -p "$PUB/.local/tooldata"
+  echo 'state' > "$PUB/.local/tooldata/cache.db"
+  printf '%s\n' '/.local/tooldata/' >> "$PUB/.git/info/exclude"
+  ln -s ../.dotfiles/.local/tooldata "$HOME/.local/tooldata"
+}
+
+@test "a directory link to a checkout dir no repo tracks is RUNTIME, and --apply moves it out" {
+  runtime_dir
+  run "$DEPLOY" --check --missing
+  refute_output --partial 'tooldata'
+  run "$DEPLOY" --check
+  assert_failure
+  assert_output --regexp 'RUNTIME +public +\.local/tooldata '
+  run "$DEPLOY" --apply
+  assert_success
+  assert_output --partial 'moved     ~/.local/tooldata out of the checkout'
+  [ -d "$HOME/.local/tooldata" ] && [ ! -L "$HOME/.local/tooldata" ] || fail 'not a real dir'
+  assert_equal "$(cat "$HOME/.local/tooldata/cache.db")" 'state'
+  [ ! -e "$PUB/.local/tooldata" ] || fail 'the runtime dir is still in the checkout'
+  run "$DEPLOY" --check
+  assert_success
+}
+
+@test "a dir the other repo tracks, or a clone kept in the checkout, is not RUNTIME" {
+  runtime_dir
+  # The private repo tracks it, stow-ignored on this OS (the .config/launchd case).
+  printf '%s\n' '^/\.local/tooldata$' >> "$PRIV/.stow-local-ignore"
+  radd "$PRIV" .local/tooldata/plist 'mac only'
+  mkdir -p "$PUB/.local/proj/.git"
+  ln -s ../.dotfiles/.local/proj "$HOME/.local/proj"
+  run "$DEPLOY" --check
+  refute_output --partial 'RUNTIME'
+}
+
+@test "an untracked file git does not ignore blocks the RUNTIME move" {
+  runtime_dir
+  sed -i 's|^/\.local/tooldata/$||' "$PUB/.git/info/exclude"
+  run "$DEPLOY" --apply
+  assert_failure
+  assert_output --partial 'SKIP  .local/tooldata'
+  [ -L "$HOME/.local/tooldata" ] || fail 'the link was removed despite the block'
+  assert_equal "$(cat "$PUB/.local/tooldata/cache.db")" 'state'
 }
 
 # ── things that must never enter the manifest ────────────────────────────────

@@ -249,6 +249,24 @@ hypr_read_keys() {
   [ ! -e "$HOME/.config/swaync/style.css" ] && [ ! -L "$HOME/.config/swaync/style.css" ]
 }
 
+@test "theme-switch replaces a stale plain render, and leaves one a folded directory link serves" {
+  local root="$BATS_TEST_TMPDIR/dotfiles"
+  mkdir -p "$root" "$HOME/.config/swaync"
+  ln -s "$root" "$HOME/.dotfiles"
+  # The copy an unfold moved out of the checkout: a plain file, last switch's colours.
+  echo stale > "$HOME/.config/swaync/style.css"
+  DOTFILES_ROOT="$root" run "$THEME_SWITCH" batman --only swaync
+  assert_success
+  assert [ -L "$HOME/.config/swaync/style.css" ]
+  assert_equal "$(readlink -f "$HOME/.config/swaync/style.css")" "$(readlink -f "$root/.config/swaync/style.css")"
+  # Folded: ~/.config/noctalia is the repo dir itself, so the render is already in place.
+  mkdir -p "$root/.config/noctalia"
+  ln -s "$root/.config/noctalia" "$HOME/.config/noctalia"
+  DOTFILES_ROOT="$root" run "$THEME_SWITCH" batman --only noctalia
+  assert_success
+  assert [ -f "$root/.config/noctalia/palettes/dotfiles.json" ] && assert [ ! -L "$root/.config/noctalia/palettes/dotfiles.json" ]
+}
+
 @test "theme-switch links nothing for a tool not deployed on this machine" {
   local root="$BATS_TEST_TMPDIR/dotfiles"
   mkdir -p "$root"
