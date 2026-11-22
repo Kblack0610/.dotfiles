@@ -5179,7 +5179,15 @@ trainee_land_start() {
 # A runnable item left waiting is BLOCKED, not NOOP: on 11-03 a gate held every pass for 7.5h and
 # each one published NOOP, which every dashboard showed green. A dispatch hold is BLOCKED the same way.
 run_queue() {
-  local items="$1" head why
+  local items="$1" head why sbefore=${STARTED:-0} rc
+  # The source floor runs first: the route below offers Codex only for a class model-lane promoted, so from
+  # 11-16, with the run floor leaving most passes room, it started none and Codex sat 10% used at 73% of its
+  # week (ar-2436). Its start is past Claude's room, as other_source_start's is: a red or urgent head keeps the slot.
+  source_floor_start "$items" "room for $2"; rc=$?
+  case "$rc" in 0 | "$FLOOR_SHUT") ;; *) return "$rc" ;; esac
+  if [ "${STARTED:-0}" -gt "$sbefore" ]; then
+    unset NEXT_QUEUED; items=$(next_items --points); [ -n "$items" ] || return 0
+  fi
   head=$(head -n 1 <<<"$items")
   why=$(gate)
   if [ -n "$why" ]; then
@@ -7111,15 +7119,6 @@ cmd_run() {
     fi
     PROOF_HELD_KEEP=1 settle_board NOOP "at $full, starting nothing"; return 0
   fi
-  # With room the source floor runs too: the queue's route offers Codex only for a class model-lane promoted,
-  # so from 11-16, with the run floor leaving most passes room, it started none and Codex sat 10% used at
-  # 73% of its week (ar-2436). Its start is past Claude's room, as other_source_start's is, so a red or
-  # urgent item at the head keeps the slot.
-  local sbefore=${STARTED:-0} src
-  NEXT_QUEUED=${NEXT_QUEUED-$(next_items --points)}
-  source_floor_start "$NEXT_QUEUED" "room for $room"; src=$?
-  case "$src" in 0 | "$FLOOR_SHUT") ;; *) return "$src" ;; esac
-  [ "${STARTED:-0}" -eq "$sbefore" ] || unset NEXT_QUEUED
   # The queue comes first; the board tops it up while fewer than DISPATCH_LOW_WATER items are
   # runnable, so the next pass has work before this one runs dry. An item a firing finding holds is
   # not runnable, so the pass goes on to the board, whose rows pass the same holds. On 2026-11-05 held
