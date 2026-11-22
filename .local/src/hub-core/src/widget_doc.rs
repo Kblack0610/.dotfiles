@@ -185,17 +185,6 @@ pub fn document(cards: &[Card], missing: &[&str], now: i64, base: Option<&str>) 
 /// `<tab>_<label>` (lowercase, other characters `_`). A figure that is not a whole number, or
 /// belongs to a card whose reader failed, is absent: no figure is better than a made-up zero.
 pub fn figures(cards: &[Card]) -> BTreeMap<String, i64> {
-    let slug = |s: &str| {
-        s.chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() {
-                    c.to_ascii_lowercase()
-                } else {
-                    '_'
-                }
-            })
-            .collect::<String>()
-    };
     let mut m = BTreeMap::new();
     for c in cards.iter().filter(|c| c.error.is_none()) {
         if let Ok(n) = c.big.parse::<i64>() {
@@ -203,11 +192,26 @@ pub fn figures(cards: &[Card]) -> BTreeMap<String, i64> {
         }
         for p in &c.parts {
             if let Ok(n) = p.value.parse::<i64>() {
-                m.insert(format!("{}_{}", c.tab, slug(&p.label)), n);
+                m.insert(figure_name(c.tab, &p.label), n);
             }
         }
     }
     m
+}
+
+/// A part's figure name: `<tab>_<label>`, the label lowercase with every other character `_`.
+pub fn figure_name(tab: &str, label: &str) -> String {
+    let slug: String = label
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{tab}_{slug}")
 }
 
 fn section(c: &Card, base: Option<&str>) -> Section {

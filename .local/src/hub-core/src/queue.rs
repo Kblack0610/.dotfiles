@@ -1040,6 +1040,18 @@ impl Queue {
         !self.errors.iter().any(|e| e.starts_with(LIST_FAILED))
     }
 
+    /// The items shipped and the checks closed since local midnight at `now` (epoch seconds), over
+    /// every done item: the one figure the Projects card, the phone's Done head and the waybar D:
+    /// read. None when the list was not read, which is not none done.
+    pub fn done_today(&self, now: i64) -> Option<DoneToday> {
+        self.list_read().then(|| {
+            done_today(
+                self.items.iter().filter(|i| i.state == State::Done),
+                crate::text::local_day_start(now),
+            )
+        })
+    }
+
     pub fn read(runner: &dyn Runner) -> Queue {
         Queue {
             dispatch: Some(crate::capacity::Dispatch::now()),
