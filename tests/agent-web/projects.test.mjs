@@ -39,11 +39,15 @@ const ctx = vm.createContext({
 });
 for (const f of ["ui.js", "charts.js", "app.js", "table.js", "actions.js", "board.js", "ladder.js", "departments.js", "projects.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
+// hub_core::projects::Status as sent: the headline, then a Fact (chip label, note value) per labelled line.
+const shown = (role, text, full) => ({ role, text, ...(full ? { full } : {}) });
+const NOTE = { headline: shown("note", "landed it"), rows: [{ label: shown("chip", "Done"), value: shown("note", "the arena (#9).") }, { label: shown("chip", "Needs you"), value: shown("note", "cut at the cap...", "cut at the cap and then the rest of the line") }] };
+
 const card = (o) => ({
   profile: "bnb", name: "demo", stage: "alpha", version: "v0.1.0", goal: "ship the menu",
   progress: { open: 2, done: 1, open_weight: 3, done_weight: 1, closed_7d: 1, closed_weight_7d: 1 },
   window: { version: "v0.1.0", opened: "2026-11-15", due: "2026-11-22", committed: 4, delivered: 1, open: 3, dropped: 0, interrupted: 0, days_left: 4 }, window_says: "1/4 due 11-22", window_share: 25, window_cell: "1/4", due_cell: "4d",
-  requested: 1, inbox: 2, running: [], waiting: 0, queued: 0, status: "", status_date: "",
+  requested: 1, inbox: 2, running: [], waiting: 0, queued: 0, status: { headline: null, rows: [] }, status_date: "",
   doing: 0, hot: 0, today: { shipped: 0, checks: 0 }, oldest: "-",
   summary: "v0.1.0 window 1/4 rows, due 11-22 (4 days left), closed 1 in 7d, 1 in 28d", in_flight: false, pace: 0.3, ...o,
 });
@@ -108,7 +112,7 @@ function click(id, dataset, row) {
 
 test("the list is one table row per project with its counts, and the card's words stay on the card", () => {
   const running = [{ slug: "s1", title: "wire the bar", project: "demo", phases: { done: 1, total: 3, next: "web" } }];
-  const { cards } = draw(list([card({ running, state: "at risk", state_level: "warn", queued: 2, waiting: 1, in_flight: true, prio: "focus", status: "landed it", status_date: "2026-11-05", pace: 4.3, doing: 1, hot: 1, today: { shipped: 3, checks: 1 }, oldest: "30h" }), card({ profile: "personal", name: "garden", state: "parked", state_level: null, stage: "", version: null, window: null, window_share: null, window_says: "no window", window_cell: "no window", due_cell: "-", summary: "no version no rows", oldest: "" })], { unlinked: ["dotfiles: tidy"] }));
+  const { cards } = draw(list([card({ running, state: "at risk", state_level: "warn", queued: 2, waiting: 1, in_flight: true, prio: "focus", status: NOTE, status_date: "2026-11-05", pace: 4.3, doing: 1, hot: 1, today: { shipped: 3, checks: 1 }, oldest: "30h" }), card({ profile: "personal", name: "garden", state: "parked", state_level: null, stage: "", version: null, window: null, window_share: null, window_says: "no window", window_cell: "no window", due_cell: "-", summary: "no version no rows", oldest: "" })], { unlinked: ["dotfiles: tidy"] }));
   assert.match(cards, /<h2 class="sec" id="sec-cards">Projects <span class="n">2<\/span><\/h2>/);
   assert.doesNotMatch(cards, /qstats|progress is the open version/, "the in-flight count is its state chip");
   assert.doesNotMatch(cards, /Board/, "every project's rows are the Board inner tab");
@@ -199,7 +203,7 @@ test("an opened project is a header and an inner tab strip over Overview, never 
   ctx.answers = { "/api/projects/demo/page": page };
   const running = [{ slug: "s1", title: "wire the bar", project: "demo", row: "ar-9", phases: { done: 1, total: 3, shown: "1/3", next: "web" } }];
   const running_table = { q: "", state: "", sort: "", dir: "desc", total: 1, shown: 1, states: [], facets: [], columns: ["item", "project", "row", "epic", "phase", "eta", "pr", "ci", "since"].map((key) => ({ key, sort: null, next_sort: key, next_dir: "desc", role: key === "item" ? "lead" : "" })), links: [{ item: "#queue/s1", project: "#projects/demo", row: "#projects/all?q=id:=ar-9" }] };
-  const c = card({ running, running_table, state: "on track", state_level: "ok", counts: "1 running, 0 waiting, 0 queued; 1 rows #requested, 2 in the inbox", status: "landed it", status_date: "2026-11-05", version_lines: ["v0.2.0: 2 open epics, 5 of 20 points done <b>"] });
+  const c = card({ running, running_table, state: "on track", state_level: "ok", counts: "1 running, 0 waiting, 0 queued; 1 rows #requested, 2 in the inbox", status: NOTE, status_date: "2026-11-05", version_lines: ["v0.2.0: 2 open epics, 5 of 20 points done <b>"] });
   let { head, pane } = draw(list([c]), "bnb/demo");
   assert.match(head, /<span class="ctitle">demo<\/span><span class="cchip state ok">On track<\/span><span class="cchip ">alpha<\/span>/, "the state pill leads the chips");
   assert.match(head, /<div class="pgoal">ship the menu<\/div><div class="cline">epics: v0\.2\.0: 2 open epics, 5 of 20 points done &lt;b&gt;<\/div><\/div>/, "one line per version, escaped");
@@ -243,7 +247,9 @@ test("an opened project is a header and an inner tab strip over Overview, never 
   assert.match(act, /id="sec-p-timeline">Timeline <span class="n">5<\/span><\/h2>.*<div class="muted">PRs: the origin is not GitHub<\/div>/s);
   assert.match(act, /<div class="ptl bad"><a href="https:\/\/ci\.example\/run\/1" target="_blank" rel="noopener">2h  commit  fix the menu  CI red<\/a><\/div>/);
   assert.match(act, /<div class="ptl">3h  PR      #7 opened: &lt;menu&gt;<\/div><div class="muted more">\+3 older<\/div>/, "a non-http url is not a link");
-  assert.match(act, /id="sec-p-note">Agent note<\/h2><div class="card"><div class="pstat">landed it<\/div><div class="cline muted"><b>written<\/b> 2026-11-05<\/div><\/div>/);
+  // The note is its headline over a key table; a cut line shows its uncut words on the opened card.
+  assert.match(act, /id="sec-p-note">Agent note<\/h2><div class="card"><div class="pstat">landed it<\/div><dl><dt>Done<\/dt><dd>the arena \(#9\)\.<\/dd><dt>Needs you<\/dt><dd>cut at the cap and then the rest of the line<\/dd><\/dl><div class="cline muted"><b>written<\/b> 2026-11-05<\/div><\/div>/);
+  assert.doesNotMatch(act, /cut at the cap\.\.\./, "the cap's cut is not drawn where the full text is");
 });
 
 test("an inner tab is in the URL, a deep link opens on it, and a system opens Deliverables filtered to it", async () => {
