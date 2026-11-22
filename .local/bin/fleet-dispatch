@@ -5250,6 +5250,7 @@ start_items() {
     items=$(jq -c --arg s "$(jq -r .slug <<<"$PICKED")" 'select(.slug != $s)' <<<"$items")
     [ "$rc" -ne 5 ] || continue
     [ "$rc" -eq 0 ] && STARTED=$(( ${STARTED:-0} + 1 )) && share_count "$PICKED"
+    [ "$rc" -eq 0 ] && [ -n "${PICK_PPASS:-}" ] && POOL_PASSED=1   # pool_pass: spent only by a start
     [ "$rc" -eq 0 ] && is_red "$PICKED" && RED_STARTED=$(( ${RED_STARTED:-0} + 1 ))
     # Any approved plan phase a start of this pass took, by any path, counts toward the plan load floor (live_plans' test).
     [ "$rc" -eq 0 ] && jq -e '(.plan // "") != "" and (.from // "human") == "human"' <<<"$PICKED" >/dev/null 2>&1 && PLAN_STARTED=$(( ${PLAN_STARTED:-0} + 1 ))
@@ -5320,7 +5321,7 @@ pick_item() {
   share_state   # in this shell, so every share_why reads one count
   if [ "${RED_PASS:-0}" = 1 ]; then waits="every red item waits; the rest wait on ${FLOOR_GATE:-the gate}"
   elif [ "${TRAINEE_PASS:-0}${BATCH_PASS:-0}" != 00 ]; then waits="the trainee floor's item waits"; fi
-  PICKED='' PICK_WHY='' PICK_FULL=1 PLACE_HOST='' PICK_RESERVED='' PICK_NOTE=''
+  PICKED='' PICK_WHY='' PICK_FULL=1 PLACE_HOST='' PICK_RESERVED='' PICK_NOTE='' PICK_PPASS=''
   load_findings || { PICK_WHY="fleet-bench findings unreadable"; PICK_FULL=0; return 1; }
   free=${UNITS_FREE:-$TARGET}
   while IFS= read -r it; do
@@ -5338,11 +5339,7 @@ pick_item() {
     ppass=''
     if [ -z "$why" ]; then
       why=$(held_by "$it" "$FIRING")
-      # An urgent item goes past a starved pool, one a pass (POOL_PASSED): its few CI jobs cost the
-      # pool less than the red it fixes left open. On 11-22 the hold kept urgent ucp-3033 queued
-      # 100 min while 25 other items started (ar-3172, ask hqkYtZ). Any other finding still holds it.
-      if [ -n "$why" ] && [ "${POOL_PASSED:-0}" = 0 ] && [ "$(jq -r .priority <<<"$it")" = urgent ] &&
-        ! tr ',' '\n' <<<"$why" | grep -qv '^starved pool:'; then ppass=$why why=''; fi
+      if pool_pass "$it" "$why"; then ppass=$why why=''; fi
       [ -z "$why" ] || { PICK_FULL=0; fhit=1; }
     fi
     if [ -z "$why" ]; then
@@ -5355,15 +5352,15 @@ pick_item() {
       why="the $free free run units wait for $(runs_now_label "$PICK_RESERVED") $reserved"
     elif [ -n "$kept" ] && [ -z "$why" ] && [ -z "$host" ] && ! runs_now "$it" && ! short_item "$it"; then
       why="the $free free run units wait for $kept, its class under min_live"
-    elif [ -z "$reserved" ] && [ "$uwait" = 1 ] && [ "$need" -le "$TARGET" ] && runs_now "$it" && [ -z "$(held_by "$it" "$FIRING")" ]; then
+    elif [ -z "$reserved" ] && [ "$uwait" = 1 ] && [ "$need" -le "$TARGET" ] && runs_now "$it" && [ -z "$(finding_hold "$it")" ]; then
       reserved=$(jq -r .slug <<<"$it") PICK_RESERVED=$it
-    elif [ -z "$kept" ] && [ "$uwait" = 1 ] && [ "$need" -le "$TARGET" ] && short_item "$it" && [ -z "$(held_by "$it" "$FIRING")" ] && [ -z "$(share_why "$it")" ]; then
+    elif [ -z "$kept" ] && [ "$uwait" = 1 ] && [ "$need" -le "$TARGET" ] && short_item "$it" && [ -z "$(finding_hold "$it")" ] && [ -z "$(share_why "$it")" ]; then
       kept=$(jq -r .slug <<<"$it")
     fi
     if [ -z "$why" ]; then
       PICKED=$it PLACE_HOST=$host
       [ "$shold" = 0 ] || PICK_NOTE="; passed $shold item$([ "$shold" = 1 ] || echo s) held by $swhy"
-      [ -z "$ppass" ] || { POOL_PASSED=1; PICK_NOTE+="; urgent, it went past the finding $ppass (one a pass)"; }
+      [ -z "$ppass" ] || { PICK_PPASS=1; PICK_NOTE+="; urgent, it went past the finding $ppass (one a pass)"; }
       return 0
     fi
     [ "$DRY" = 0 ] || say "queue item $(jq -r .slug <<<"$it") waits: $why"
@@ -5467,7 +5464,7 @@ preempt_items() {
   load_findings || return 1
   local it
   while IFS= read -r it; do
-    [ -n "$it" ] && [ -z "$(held_by "$it" "$FIRING")" ] && printf '%s\n' "$it"
+    [ -n "$it" ] && [ -z "$(finding_hold "$it")" ] && printf '%s\n' "$it"
   done < <(next_items --points | jq -c --argjson max "$TARGET" \
     --argjson now "$(date +%s)" --argjson h "$DISPATCH_ASK_FRESH_H" "$ASK_JQ"'
     select(runs_now($now; $h) and (if (.weight // "light") == "heavy" then 2 else 1 end) <= $max)' 2>/dev/null)
@@ -5747,6 +5744,22 @@ item_repo() {
   url=$(git -C "$dir" remote get-url origin 2>/dev/null) || url=$dir
   url=${url%/}; url=${url##*/}; url=${url##*:}
   printf '%s' "${url%.git}"
+}
+
+# pool_pass <item json> <held_by output> -- an urgent item held by starved pools alone goes past them,
+# one a pass (POOL_PASSED, set by the start it made): its few CI jobs cost the pool less than the red
+# it fixes left open. On 11-22 the hold kept urgent ucp-3033 queued 100 min while 25 other items
+# started (ar-3172, ask hqkYtZ). Any other finding still holds it.
+pool_pass() {
+  [ -n "$2" ] && [ "${POOL_PASSED:-0}" = 0 ] && [ "$(jq -r .priority <<<"$1")" = urgent ] &&
+    ! tr ',' '\n' <<<"$2" | grep -qv '^starved pool:'
+}
+
+# finding_hold <item json> -> the findings in FIRING that hold the item (held_by), less the starved
+# pools an urgent item goes past (pool_pass): the test the reserve, preempt and starved share with the pick.
+finding_hold() {
+  local h; h=$(held_by "$1" "$FIRING")
+  pool_pass "$1" "$h" || printf '%s' "$h"
 }
 
 # held_by <item json> <findings> -> "<rule> <scope>" of each firing finding that holds this item,
@@ -6141,11 +6154,11 @@ cmd_starved() {
   # line names another item's start when the passes go past this one. On 11-22 an urgent item sat
   # 100 min behind "starved pool:unity" while the probe showed only a run-floor start of another item (ar-3172).
   if [ -n "$items" ]; then
-    local it fw lines='' FIRING
-    load_findings || FIRING=''
+    local it fw lines='' FIRING fread=1
+    load_findings || fread=0
     while IFS= read -r it; do
-      fw=$(held_by "$it" "$FIRING")
-      lines+="$(jq -r .line <<<"$it")${fw:+, held by finding $fw})"$'\n'
+      if [ "$fread" = 1 ]; then fw=$(finding_hold "$it"); fw=${fw:+, held by finding $fw}; else fw=', findings unreadable, which hold it'; fi
+      lines+="$(jq -r .line <<<"$it")$fw)"$'\n'
     done <<<"$items"
     items=${lines%$'\n'}
   fi
