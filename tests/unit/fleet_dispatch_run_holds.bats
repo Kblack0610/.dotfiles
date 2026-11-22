@@ -13,7 +13,7 @@ load 'fleet_dispatch/common'
   assert_not_called 'wt new'
 }
 
-@test "under DISPATCH_RUN_FLOOR a run start goes past the weekly pace and real idle, and says so" {
+@test "under DISPATCH_RUN_FLOOR a run start goes past the weekly pace, and says so" {
   game_ready
   room_on_floor
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
