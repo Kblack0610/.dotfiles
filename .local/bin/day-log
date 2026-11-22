@@ -106,7 +106,8 @@ store_prs() {
 }
 
 # gather <day> -> the day's record on stdout; a source that cannot be read keeps the
-# previous record's value for it and is named in .unreadable.
+# previous record's value for it and is named in .unreadable (the Needs you question figure reads "?"
+# instead: a count kept from an earlier gather would read as today's).
 gather() {
   local day="$1" prev s e live=false tmp n
   prev="$(record_of "$day")"; [ -s "$prev" ] || prev=/dev/null
@@ -164,7 +165,8 @@ gather() {
                      if $stale != "" then "PR store stale: \($stale)" else empty end,
                      if $ledger[0] == null then "queue ledger" else empty end,
                      if $live and $open[0] == null then "PR store open" else empty end,
-                     if $live and $st == null then "fleet state" else empty end]),
+                     if $live and $st == null then "fleet state" else empty end,
+                     if $live and $needq == "?" then "Needs you figure" else empty end]),
        merged: (if $m == null then ($p.merged // [])
          else ($stale | split(",") | map(sub("^.*/"; ""))) as $sb
            | [$m[] | .repository.name as $r | ($by["\($r)#\(.number)"] // {}) as $i

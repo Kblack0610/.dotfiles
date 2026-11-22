@@ -15,10 +15,13 @@
 # $NEEDS_FIGURE_CACHE: an answer younger than $NEEDS_FIGURE_TTL seconds is served as is, an older one
 # is served while ONE background hub (flock) replaces it, and one older than $NEEDS_FIGURE_MAX_AGE
 # is not served at all: the reader waits for a fresh count, and prints "?" when that fails.
-# --fresh always waits for a fresh count (a page, a report).
+# --fresh always waits for a fresh count (a page, a report). With nothing to serve, one caller reads
+# hub and the rest wait for it; a failed read holds every other read off for $NEEDS_FIGURE_BACKOFF
+# seconds, so a hub that is down is asked once, not once per tick.
 #
 # Env: NEEDS_FIGURE_HUB (the hub binary), NEEDS_FIGURE_CACHE, NEEDS_FIGURE_TTL (default 60),
-# NEEDS_FIGURE_MAX_AGE (default 900, the stale limit of waybar's needs chip).
+# NEEDS_FIGURE_MAX_AGE (default 900, the stale limit of waybar's needs chip), NEEDS_FIGURE_BACKOFF
+# (default 30), NEEDS_FIGURE_LOCK_WAIT (default 30).
 
 set -u
 
@@ -26,6 +29,9 @@ HUB="${NEEDS_FIGURE_HUB:-hub}"
 CACHE="${NEEDS_FIGURE_CACHE:-${XDG_RUNTIME_DIR:-/tmp}/needs-figure.$(id -u).json}"
 TTL="${NEEDS_FIGURE_TTL:-60}"
 MAX_AGE="${NEEDS_FIGURE_MAX_AGE:-900}"
+BACKOFF="${NEEDS_FIGURE_BACKOFF:-30}"   # seconds after a failed hub read before another is started
+LOCK_WAIT="${NEEDS_FIGURE_LOCK_WAIT:-30}"   # the longest a caller waits on another caller's hub read
+FAIL="$CACHE.fail"
 
 fresh=0
 [ "${1:-}" = "--fresh" ] && { fresh=1; shift; }
@@ -33,6 +39,7 @@ case "${1:-}" in -h | --help) sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit
 name="${1:-needs_headline}"
 
 age_of() { local m; m="$(stat -c %Y "$CACHE" 2>/dev/null)" || return 1; echo $(($(date +%s) - m)); }
+failed_lately() { local m; m="$(stat -c %Y "$FAIL" 2>/dev/null)" || return 1; [ $(($(date +%s) - m)) -lt "$BACKOFF" ]; }
 
 # fetch: one `hub needs --json` into the cache, atomically; false when hub failed or gave no figures,
 # and the old answer stays.
@@ -41,9 +48,9 @@ fetch() {
   tmp="$(mktemp "$CACHE.XXXXXX")" || return 1
   out="$("$HUB" needs --json 2>/dev/null)"
   if jq -e '.figures | objects' >/dev/null 2>&1 <<<"$out"; then
-    printf '%s' "$out" | jq -c '{figures, errors}' >"$tmp" && mv "$tmp" "$CACHE" && return 0
+    printf '%s' "$out" | jq -c '{figures, errors}' >"$tmp" && mv "$tmp" "$CACHE" && { rm -f "$FAIL"; return 0; }
   fi
-  rm -f "$tmp"
+  rm -f "$tmp"; touch "$FAIL"
   return 1
 }
 
@@ -55,9 +62,16 @@ serve() {
 }
 
 age="$(age_of)" || age=""
-if [ "$fresh" = 1 ] || [ -z "$age" ] || [ "$age" -gt "$MAX_AGE" ]; then
+if [ "$fresh" = 1 ]; then
   fetch || { echo '?'; exit 1; }
-elif [ "$age" -gt "$TTL" ]; then
+elif [ -z "$age" ] || [ "$age" -gt "$MAX_AGE" ]; then
+  # Nothing to serve. One hub at a time: a caller that loses the lock waits for the winner and
+  # serves what it fetched, and after a failure none starts another hub for FAIL_BACKOFF seconds.
+  failed_lately && { echo '?'; exit 1; }
+  ( flock -w "$LOCK_WAIT" 9 || exit 1
+    a="$(age_of)" && [ "$a" -le "$TTL" ] && exit 0
+    fetch ) 9>"$CACHE.lock" || { echo '?'; exit 1; }
+elif [ "$age" -gt "$TTL" ] && ! failed_lately; then
   # One refresher at a time: a tick that loses the lock serves the cache and moves on.
   ( flock -n 9 || exit 0; fetch ) 9>"$CACHE.lock" >/dev/null 2>&1 &
 fi

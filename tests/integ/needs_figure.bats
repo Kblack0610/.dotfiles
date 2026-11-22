@@ -91,3 +91,31 @@ age() { touch -d "$1 seconds ago" "$NEEDS_FIGURE_CACHE"; }
   run "$SUBJECT"
   assert_output 54
 }
+
+@test "a failed read holds the next one off: a hub that is down is asked once, not once per tick" {
+  rm "$T/hub.json"
+  run "$SUBJECT"
+  assert_failure 1
+  run "$SUBJECT"
+  assert_failure 1
+  assert_equal "$(calls)" 1
+}
+
+@test "a stale cache whose refresh just failed starts no hub, and still serves" {
+  "$SUBJECT" >/dev/null
+  age 120
+  touch "$NEEDS_FIGURE_CACHE.fail"
+  run "$SUBJECT"
+  assert_output 54
+  assert_equal "$(calls)" 1
+}
+
+@test "a good read clears the back-off" {
+  rm "$T/hub.json"
+  "$SUBJECT" || true
+  serve '{"needs_headline":7}' '[]'
+  run "$SUBJECT" --fresh
+  assert_output 7
+  run "$SUBJECT"
+  assert_output 7
+}

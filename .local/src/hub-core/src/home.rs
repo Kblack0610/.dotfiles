@@ -740,7 +740,9 @@ impl Home {
 }
 
 /// The Needs you part that counts the rows only the human can answer (`Score::human`): the
-/// rows the judge left to a machine are in the headline but not here.
+/// rows the judge left to a machine are in the headline but not here. A row with no score (a
+/// condition: a red, a stopped dispatch hold) is counted, since only a judged ask is ever a
+/// machine's; the shepherd's old jq filter dropped them (`null` is not true).
 pub const ONLY_YOU: &str = "Only you";
 
 /// The count of Needs you rows and the link that opens them.
