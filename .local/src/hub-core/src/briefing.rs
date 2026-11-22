@@ -21,6 +21,7 @@ use serde_json::Value;
 use crate::burn::Account;
 use crate::capacity::clock;
 use crate::costs::Call;
+use crate::display::{Role, Shown};
 use crate::fleet::runner::Watch;
 use crate::home::{self, Home, Kind, Need};
 use crate::jobs::{self, Job};
@@ -33,7 +34,8 @@ use crate::text::{age, cap};
 /// Needs you holds at most this many items; past it, one less and a "more" line
 /// (`channels.toml [channel.briefing]`).
 pub const NEEDS_SHOWN: usize = 5;
-/// How long one Needs you item may be (the same channel's cap).
+/// How long one line of Landed, Builds, Overnight (but its mail) and Money may be (the same
+/// channel's cap). A Needs you item and an overnight mail line take the `next` role's cap instead.
 pub const ITEM_MAX: usize = 160;
 /// How long one Areas line may be.
 pub const AREA_MAX: usize = 200;
@@ -174,6 +176,38 @@ fn names(all: &[String], n: usize) -> String {
     s
 }
 
+/// One Needs you item as a person acts on it: the action first, then the place, the id last.
+/// `words` are cut so `tail` (the place and the id) always fits inside the one cap a `next`
+/// text has (`[channel.ui]`, enforced by [`Shown::next`]): a long text is cut, an id never is.
+fn next_line(words: &str, tail: &str) -> String {
+    // A cap of 0 is "no limit" (`Caps`); a tail that fills the cap leaves the words 8 characters.
+    let room = match Role::Next.caps().chars {
+        0 => usize::MAX,
+        max => max.saturating_sub(tail.chars().count() + 1).max(8),
+    };
+    let words = cap(words.trim_end_matches('.'), room);
+    let stop = if tail.is_empty() && words.ends_with("...") {
+        ""
+    } else {
+        "."
+    };
+    Shown::next(&format!("{words}{tail}{stop}"))
+        .text()
+        .to_string()
+}
+
+/// The place and id a row ends with, naming its kind so `ask dNreTJ` is not a bare code.
+fn id_tail(n: &Need) -> String {
+    match n.kind {
+        Kind::Ask => format!(" (ask {})", n.id),
+        Kind::Queue => format!(" (queue item {})", n.id),
+        Kind::Session => format!(" (session {})", cap(home::tmux_name(&n.id), 30)),
+        Kind::Sheet if n.project.is_empty() => " (your sheet)".into(),
+        Kind::Sheet => format!(" (your sheet, {})", cap(&n.project, 30)),
+        _ => String::new(),
+    }
+}
+
 /// One Needs you line for a row.
 fn need_line(n: &Need, now: i64) -> String {
     let waited = n.since.map(|s| age(now - s));
@@ -183,48 +217,57 @@ fn need_line(n: &Need, now: i64) -> String {
             let mut meta: Vec<String> = vec![];
             meta.extend((!n.project.is_empty()).then(|| n.project.clone()));
             meta.extend(waited);
-            meta.extend(n.recommend.as_ref().map(|r| format!("recommend {r}")));
-            let meta = if meta.is_empty() {
-                String::new()
-            } else {
-                format!(" ({})", meta.join(", "))
-            };
-            format!("Answer ask {}: {text}{meta}.", n.id)
+            meta.extend(
+                n.recommend
+                    .as_ref()
+                    .map(|r| format!("recommend {}", cap(r, 12))),
+            );
+            meta.push(format!("ask {}", n.id));
+            next_line(
+                &format!("Answer this ask: {text}"),
+                &format!(" ({})", meta.join(", ")),
+            )
         }
-        Kind::Session => format!(
-            "Session {} needs you: {text}{}.",
-            home::tmux_name(&n.id),
-            waited.map_or_else(String::new, |w| format!(" ({w})"))
-        ),
-        Kind::Queue => format!("Queue item {} waits on you: {text}.", n.id),
-        Kind::Sheet => format!("From your sheet ({}): {text}.", n.project),
-        _ => format!("{text}."),
+        Kind::Session => {
+            let tail = id_tail(n).trim_end_matches(')').to_string();
+            let waited = waited.map_or_else(String::new, |w| format!(", {w}"));
+            next_line(&format!("Unblock: {text}"), &format!("{tail}{waited})"))
+        }
+        Kind::Queue => next_line(&format!("Decide this: {text}"), &id_tail(n)),
+        Kind::Sheet => next_line(&format!("Do: {text}"), &id_tail(n)),
+        _ => next_line(text, ""),
     }
 }
 
-/// Several rows of one kind as one line: how many, and the top one.
-fn group_line(kind: Kind, rows: &[&Need], now: i64) -> String {
+/// Several rows of one kind as one line: what to do about how many, then the top one.
+fn group_line(kind: Kind, rows: &[&Need]) -> String {
     let n = rows.len();
-    let top = need_line(rows[0], now);
-    let ids = |f: &dyn Fn(&Need) -> String| rows.iter().map(|r| f(r)).collect::<Vec<_>>();
-    match kind {
+    let top = rows[0];
+    let lead = match kind {
         Kind::Ask => {
             let held = rows.iter().filter(|r| r.target.is_some()).count();
             format!(
-                "{} wait on you, {held} holding up a session. Top: {top}",
+                "Answer {}, {held} holding up a session",
                 plural(n, "ask", "asks")
             )
         }
-        Kind::Session => format!("{n} sessions need you. Top: {top}"),
-        Kind::Queue => format!("{n} queue items wait on you. Top: {top}"),
-        Kind::Sheet => format!("{n} rows of your sheet need you. Top: {top}"),
-        Kind::Budget => format!(
-            "{n} runners stopped at their budget: {}. To go on today: agentctl budget <name> raise <usd>.",
-            names(&ids(&|r| r.id.trim_start_matches("budget:").to_string()), 3)
-        ),
-        Kind::Mail => format!("{n} critical mail threads. Top: {top}"),
-        _ => format!("{n} more like this. Top: {top}"),
-    }
+        Kind::Session => format!("Unblock {n} sessions"),
+        Kind::Queue => format!("Decide on {n} queue items"),
+        Kind::Sheet => format!("Do {n} rows of your sheet"),
+        Kind::Budget => {
+            let ids: Vec<String> = rows
+                .iter()
+                .map(|r| r.id.trim_start_matches("budget:").to_string())
+                .collect();
+            return next_line(
+                &format!("Raise {n} runner budgets: {}", names(&ids, 3)),
+                " (agentctl budget <name> raise <usd>)",
+            );
+        }
+        Kind::Mail => format!("Read {n} critical mail threads"),
+        _ => format!("{n} more like this"),
+    };
+    next_line(&format!("{lead}; top: {}", top.text), &id_tail(top))
 }
 
 /// Needs you: Home.s ranking folded by kind, in the order each kind first ranks. Home holds only
@@ -248,10 +291,9 @@ pub fn needs(rows: &[Need], now: i64) -> Vec<String> {
             if g.len() == 1 || matches!(k, Kind::Janitor) {
                 g.iter().map(|r| need_line(r, now)).collect::<Vec<_>>()
             } else {
-                vec![group_line(*k, g, now)]
+                vec![group_line(*k, g)]
             }
         })
-        .map(|l| cap(&l, ITEM_MAX))
         .collect();
     if lines.len() > NEEDS_SHOWN {
         let more = lines.len() - (NEEDS_SHOWN - 1);
@@ -1004,7 +1046,7 @@ fn overnight(i: &Inputs) -> Vec<String> {
         .needs
         .iter()
         .filter(|n| n.kind == Kind::Mail)
-        .map(|n| cap(&need_line(n, i.now), ITEM_MAX))
+        .map(|n| need_line(n, i.now))
         .collect();
     capped(mail, "critical mail threads", &mut out);
     // A source that could not be read is said so, never folded into "Nothing broke overnight".
@@ -1657,6 +1699,7 @@ fn gather_from(since: i64, now: i64, home: impl FnOnce() -> (Value, Queue, Home)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::display::grader;
     use crate::jobs::{Source, State as JobState};
     use serde_json::json;
 
@@ -1964,10 +2007,130 @@ mod tests {
         assert_eq!(
             lines,
             [
-                "9 asks wait on you, 1 holding up a session. Top: Answer ask ask0A: Question 0? (p, 9h, recommend a).",
+                "Answer 9 asks, 1 holding up a session; top: Question 0? (ask ask0A).",
                 "dream stopped at its budget: $10.",
                 "Critical mail from a: b (x).",
             ]
+        );
+    }
+
+    /// A row of each kind, as it reads on the briefing: the action first, the place, the id last.
+    #[test]
+    fn a_needs_line_leads_with_the_action_and_ends_with_the_id() {
+        let mut ask = need(Kind::Ask, "dNreTJ", "Send the post on mastodon.");
+        ask.recommend = Some("send".into());
+        let session = need(Kind::Session, "lab/dotfiles:3", "plan awaiting approval");
+        let queue = need(Kind::Queue, "ar-4381", "Pick the cap");
+        let mut sheet = need(Kind::Sheet, "row", "Call the vet");
+        sheet.project = "home".into();
+        for (n, want) in [
+            (
+                ask,
+                "Answer this ask: Send the post on mastodon (p, 9h, recommend send, ask dNreTJ).",
+            ),
+            (
+                session,
+                "Unblock: plan awaiting approval (session dotfiles, 9h).",
+            ),
+            (queue, "Decide this: Pick the cap (queue item ar-4381)."),
+            (sheet, "Do: Call the vet (your sheet, home)."),
+        ] {
+            let got = need_line(&n, NOW);
+            assert_eq!(got, want);
+            assert_eq!(
+                grader::grade(&["--channel", "ui", "--role", "next"], &got),
+                Vec::<String>::new(),
+                "{got}"
+            );
+        }
+    }
+
+    /// The text is what gives way: a long one is cut and its place and id still end the line,
+    /// inside the `next` cap.
+    #[test]
+    fn a_long_text_is_cut_and_the_id_still_ends_the_line() {
+        let long = "Send the post \"Apociseum Mastodon: Screenshot Saturday 2026-11-21\" on mastodon for the studio account before the weekend";
+        let mut ask = need(Kind::Ask, "dNreTJ", long);
+        ask.recommend = Some("send it as written, with the screenshot".into());
+        let line = need_line(&ask, NOW);
+        let cap = Role::Next.caps().chars;
+        assert!(line.chars().count() <= cap, "{line}");
+        assert!(
+            line.contains("...") && line.ends_with("ask dNreTJ)."),
+            "{line}"
+        );
+        assert!(line.starts_with("Answer this ask: Send the post"), "{line}");
+        let mut rows = vec![ask];
+        rows.extend((0..4).map(|k| need(Kind::Ask, &format!("a{k}"), &format!("{long} {k}"))));
+        for l in needs(&rows, NOW) {
+            assert!(l.chars().count() <= cap, "{l}");
+        }
+    }
+
+    /// The whole overview, with a row of every kind, is clean under the briefing and ui lint.
+    #[test]
+    fn the_briefing_fixture_passes_its_lint() {
+        let mut i = green();
+        let mut ask = need(
+            Kind::Ask,
+            "dNreTJ",
+            "Send the post on mastodon for the studio account.",
+        );
+        ask.recommend = Some("send".into());
+        let mut sheet = need(Kind::Sheet, "row", "Call the vet");
+        sheet.project = "home".into();
+        i.home.needs = vec![
+            ask,
+            need(Kind::Ask, "kLmNoP", "Second question?"),
+            need(Kind::Session, "lab/dotfiles:3", "plan awaiting approval"),
+            need(Kind::Queue, "ar-4381", "Pick the cap"),
+            sheet,
+            need(Kind::Mail, "mail:a:b", "Critical mail from a: b."),
+        ];
+        i.sales = Some(vec![]);
+        i.trader = Some(vec![]);
+        let b = build(&i);
+        let md = b.markdown();
+        let found = grader::grade(&["--channel", "briefing"], &md);
+        assert!(found.is_empty(), "{found:?}\n{md}");
+        for l in &b.needs {
+            let f = grader::grade(&["--channel", "ui", "--role", "next"], l);
+            assert!(f.is_empty(), "{l}: {f:?}");
+        }
+        // Negative control: the line this replaced, a bare id up front, fails the same lint.
+        let old = "- dNreTJ: Answer ask: Send the post (p, 9h).\n";
+        assert!(grader::grade(
+            &["--channel", "briefing"],
+            &md.replace(&format!("- {}\n", b.needs[0]), old)
+        )
+        .iter()
+        .any(|c| c == "item-id"));
+    }
+
+    /// A folded group still names the place of its top row, and a sheet row with no project
+    /// has no empty bracket.
+    #[test]
+    fn a_group_names_the_place_of_its_top_row() {
+        let rows: Vec<Need> = (0..3)
+            .map(|k| {
+                need(
+                    Kind::Session,
+                    &format!("lab/s{k}:1"),
+                    "plan awaiting approval",
+                )
+            })
+            .collect();
+        assert_eq!(
+            needs(&rows, NOW),
+            ["Unblock 3 sessions; top: plan awaiting approval (session s0)."]
+        );
+        let mut sheet = need(Kind::Sheet, "row", "Call the vet");
+        sheet.project = String::new();
+        assert_eq!(need_line(&sheet, NOW), "Do: Call the vet (your sheet).");
+        let rows = [sheet.clone(), sheet];
+        assert_eq!(
+            needs(&rows, NOW),
+            ["Do 2 rows of your sheet; top: Call the vet (your sheet)."]
         );
     }
 
@@ -2001,7 +2164,9 @@ mod tests {
             lines[4],
             "2 more on Home: run hub needs, or open the Home tab."
         );
-        assert!(lines.iter().all(|l| l.chars().count() <= ITEM_MAX));
+        assert!(lines
+            .iter()
+            .all(|l| l.chars().count() <= Role::Next.caps().chars));
     }
 
     #[test]
