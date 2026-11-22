@@ -13,5 +13,5 @@ printf '%s\n' "$*" >> "$fix.args"
 [ -f "$fix" ] || exit "${MQTT_SUB_RC:-27}"
 count=0 prev=""
 for a in "$@"; do [ "$prev" = -C ] && count="$a"; prev="$a"; done
-if [ "$count" -gt 0 ]; then grep -v "^$" "$fix" | head -n "$count"; else cat "$fix"; fi
+if [ "$count" -gt 0 ]; then grep -v -m "$count" "^$" "$fix"; else cat "$fix"; fi
 exit 27
