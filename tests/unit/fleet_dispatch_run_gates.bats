@@ -55,7 +55,7 @@ load 'fleet_dispatch/common'
 
 @test "run at or over DISPATCH_LOW_WATER, with the cleanup floor off, promotes no plain row, and 0 promotes one only for an empty queue" {
   game_ready
-  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=2 DISPATCH_CLEANUP_FLOOR=0
+  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=2
   agent-queue add --project game --slug one "one"
   agent-queue add --project game --slug two "two"
   agent-queue add --project game --slug three "three"
@@ -69,8 +69,9 @@ load 'fleet_dispatch/common'
   [ -z "$(qitem queued gm-1)" ] || fail "low water 0 read the board with items runnable"
 }
 
-@test "run with DISPATCH_REQUESTED_FLOOR requested items runnable, or the floor at 0, promotes no requested row" {
-  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=1 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=2
+@test "run with the requested class at its min_live, or no min_live, promotes no requested row" {
+  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=1
+  class_floors 2 0
   project game beta "$SANDBOX/repos/game"
   row game human 'the ask' "- [ ] fix(game): the bench is throwable #requested $T"
   verdict game human 'the ask' dispatch S 1 bench
@@ -81,24 +82,24 @@ load 'fleet_dispatch/common'
   agent-queue add --project game --slug r5 --tags requested "r5"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  # the pass starts r1, which leaves 4 runnable requested items: the floor is met
-  refute_output --partial 'under the floor'
+  # the pass starts r1, which leaves 4 runnable requested items: the minimum of 2 is met
+  refute_output --partial "under its min_live"
   assert_not_called 'judge called'
-  [ -z "$(qitem queued gm-1)" ] || fail "the floor read the board with the floor met"
-  export DISPATCH_REQUESTED_FLOOR=0
+  [ -z "$(qitem queued gm-1)" ] || fail "the floor read the board with the minimum met"
+  class_floors 0 0
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  [ -z "$(qitem queued gm-1)" ] || fail "floor 0 read the board"
-  # negative control: with the floor over what is left the next pass promotes the same row
-  export DISPATCH_REQUESTED_FLOOR=5
+  [ -z "$(qitem queued gm-1)" ] || fail "min_live 0 read the board"
+  # negative control: with the minimum over the runnable requested items the next pass promotes the same row
+  class_floors 9 0
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'runnable requested 2 is under the floor 5'
+  assert_output --regexp 'requested is [0-9]+ under its min_live'
   [ -n "$(qitem queued gm-1)" ] || fail "under the floor the requested row was not promoted"
 }
 
 @test "committed rows: over the low water a pass still promotes an agent row whose gates cleared, with no verdict; a pending gate and a plain row do not" {
   # 2026-11-19: ar-2894 (#at/2026-11-18/1800) sat 10h past its time and #after/ rows past their closed
   # row, as no pass over the low water read the board for committed rows.
-  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=1 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=0
+  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=1
   project game beta "$SANDBOX/repos/game"
   # at/0000 is past at any hour; at/2099-01-01/0000 is ahead at every hour.
   row game agent ga-1 "- [ ] check(game): re-measure at its hour $T #urgent #at/0000 <!-- id:ga-1 -->"
@@ -121,7 +122,7 @@ load 'fleet_dispatch/common'
 @test "committed rows: a release row the human asked for at a set time (#requested #at/) stays on the board, as its kind is off and no row starts a cut (ucp-2709 P15)" {
   # The timed_ask path (ar-3582) let a #requested #at/ release row start a cut session; P15 took it
   # out, so only cut.yml cuts. A plain check row with the same gate is the negative control.
-  export DISPATCH_PER_PASS=2 DISPATCH_LOW_WATER=1 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=0
+  export DISPATCH_PER_PASS=2 DISPATCH_LOW_WATER=1
   project game beta "$SANDBOX/repos/game"
   row game agent ga-1 "- [ ] release(steam): the cut $T #urgent #requested #at/2026-01-01/0400 <!-- id:ga-1 -->"
   row game agent ga-2 "- [ ] check(game): re-measure at its hour $T #urgent #requested #at/2026-01-01/0400 <!-- id:ga-2 -->"

@@ -921,6 +921,19 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app: it i
   assert_output --regexp '^cleanup, '
 }
 
+@test "suggest: reads the profiles run reads (DISPATCH_PROFILES), never a list derived from notes projects --stats" {
+  export DISPATCH_PROFILES="bnb personal"
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'game row' "- [ ] game row $T"
+  run cmd_suggest --json
+  assert_success
+  assert_equal "$(grep -c '^notes --profile bnb projects' "$NOTES_FIXTURE/calls.log")" 1
+  assert_equal "$(grep -c '^notes --profile personal projects' "$NOTES_FIXTURE/calls.log")" 1
+  assert_equal "$(grep -c '^notes --profile [a-z]* projects' "$NOTES_FIXTURE/calls.log")" 2
+  run grep -c -- '--stats' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
 @test "suggest: says so when no project has an open agent row" {
   project game beta "$SANDBOX/repos/game"
   run cmd_suggest
@@ -3570,7 +3583,7 @@ picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | 
   assert_line --index 1 --partial 'app asked: 2'
 }
 
-@test "focus: promote tags a #requested row's item requested, which the requested floor counts" {
+@test "focus: promote tags a #requested row's item requested, which puts it in the requested class" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
   row app human 'asked one' '- [ ] asked one #requested <!-- id:gm-7 -->'

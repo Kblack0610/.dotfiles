@@ -360,7 +360,8 @@ mix_done() { # <day> <slug> <from> <task> [started]
   printf 'slug: %s\nproject: game\npriority: high\nfrom: %s\nqueued: %sT00:00:00Z\n%s%sstatus: %s\nfinished: %sT01:00:00Z\n---\n%s\n' \
     "$2" "$3" "$1" "$type" "$started" "$([ -n "${5:-}" ] && echo ok || echo cancelled)" "$1" "$4" > "$AGENT_QUEUE_DIR/done/$1/x-$2.md"
 }
-mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispatch/classes.json" > "$SANDBOX/classes.json"; }
+# The shipped classes without their min_live: these cases are about shares, and a class under its minimum goes first (the "min_live" cases write their own).
+mix_classes() { jq --argjson on "$1" '.on = $on | del(.classes[].min_live)' "$REPO_ROOT/.config/fleet-dispatch/classes.json" > "$SANDBOX/classes.json"; }
 
 @test "the class mix: inside a bucket the class furthest under its share goes first; urgent stays ahead; a held item adds no count; started items in the window count, running ones too" {
   export AGENT_QUEUE_CLASSES="$SANDBOX/classes.json"
@@ -459,7 +460,7 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   for i in 1 2 3 4 5 6; do "$AQ" add --project game --from shepherd --slug "f$i" "feature $i"; done
   for i in 1 2; do "$AQ" add --project game --from shepherd --slug "b$i" "fix(game): bug $i"; done
   n=0; for s in r1 f1 f2 f3 f4 f5 f6 b1 b2; do n=$((n + 1)); sed -i "s/^queued: .*/queued: ${today}T00:0$n:00Z/" "$(item queued "$s")"; done
-  lag() { jq --argjson l "$1" '.on = true | .lag_places = $l' "$REPO_ROOT/.config/fleet-dispatch/classes.json" > "$SANDBOX/classes.json"; }
+  lag() { jq --argjson l "$1" '.on = true | .lag_places = $l | del(.classes[].min_live)' "$REPO_ROOT/.config/fleet-dispatch/classes.json" > "$SANDBOX/classes.json"; }
   order() { "$AQ" list --json --state queued | jq -r .slug | paste -sd' '; }
   # lag 10 over shares summing to 100: requested is cut to 0.1 above the lowest (0), so it waits only
   # for the one feature and two bugs at or under that, and goes 4th.
@@ -4760,7 +4761,7 @@ already"
   "$AQ" add --project game --from shepherd --slug f1 "feature 1"
   legacy z1 "after: r2" --project game --from shepherd "research(game): held question"
   n=0; for s in r2 r3 f1 z1; do n=$((n + 1)); sed -i "s/^queued: .*/queued: ${today}T00:0$n:00Z/" "$(item queued "$s")"; done
-  jq '.on = true | .lag_places = 10' "$REPO_ROOT/.config/fleet-dispatch/classes.json" > "$SANDBOX/classes.json"
+  jq '.on = true | .lag_places = 10 | del(.classes[].min_live)' "$REPO_ROOT/.config/fleet-dispatch/classes.json" > "$SANDBOX/classes.json"
   # The floor is requested's 0.5, so feature is cut to 0.6 and both requested items go before it. Had
   # held research's 0 set the floor, both would be cut to 0.1 and f1 would go second.
   run bash -c "'$AQ' list --json --state queued | jq -r .slug | paste -sd' '"

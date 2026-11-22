@@ -82,7 +82,6 @@ setup() {
   # The tuning these cases are written against: the code defaults of the keys the agentctl conf sets
   # hold every start ("a key the conf sets gets a neutral default"), and the sandbox has no conf.
   export DISPATCH_TARGET_PRESENT=50 DISPATCH_TARGET_AWAY=25 DISPATCH_MAX_LOAD=0.7 DISPATCH_LOW_WATER=3
-  export DISPATCH_REQUESTED_FLOOR=0   # its own cases below turn it on; every other case reads the board by the low water alone
   export DISPATCH_PROJECT_MAP="$SANDBOX/map.json"
   export DISPATCH_POLICY="$SANDBOX/policy.md"
   export DISPATCH_WORKERS="$SANDBOX/workers.json"
@@ -131,6 +130,16 @@ setup() {
   LAUNCH_ENV=$(bash -c '. "$HOME/.config/shared-hooks/claude-telemetry.sh" && claude_launch_env' 2>/dev/null)
   # shellcheck source=/dev/null
   source "$REPO_ROOT/.local/bin/fleet-dispatch"
+}
+
+# class_floors <requested min_live> <cleanup min_live> -> a classes.json mix with those minimums: the board
+# top-up above the low water reads them (class_gap). A case that never calls it has no mix, so no floor.
+class_floors() {
+  export AGENT_QUEUE_CLASSES="$SANDBOX/classes.json"
+  jq -n --argjson r "$1" --argjson c "$2" '{on: true, window_days: 7, classes: [
+    {name: "requested", share: 60, tags: ["requested"], min_live: $r},
+    {name: "cleanup", share: 10, tags: ["cleanup"], min_live: $c},
+    {name: "rest", share: 30, default: true}]}' > "$AGENT_QUEUE_CLASSES"
 }
 
 stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "$SANDBOX/bin/$1"; }
