@@ -77,7 +77,7 @@ def _forge():
     return mod
 
 
-FORGE = None  # loaded past main's prefilter: this hook runs on every Bash call
+FORGE = None  # loaded past decide's prefilter, or set by walker-guards.py: it runs on every Bash call
 
 
 def release_tag(ref):
@@ -336,17 +336,21 @@ def check(head, argv, env, cwd):
     return None
 
 
-def main():
+def decide(data):
+    """The deny reason for one PreToolUse payload, or None. walker-guards.py calls this."""
     global FORGE
-    data = json.load(sys.stdin)
     if data.get("tool_name", "Bash") != "Bash":
-        return
+        return None
     cmd = (data.get("tool_input") or {}).get("command") or ""
     if not any(w in cmd for w in ("tag", "push", "workflow", "release", "publish", "ship.sh", "api",
                                   "rulesets", "environments", "keys", "deploy-key", "secret", "variable", OVERRIDE_ENV)):
-        return
-    FORGE = _forge()
-    r = FORGE.reason(cmd, data.get("cwd") or os.getcwd(), check)
+        return None
+    FORGE = FORGE or _forge()
+    return FORGE.reason(cmd, data.get("cwd") or os.getcwd(), check)
+
+
+def main():
+    r = decide(json.load(sys.stdin))
     if r:
         print(json.dumps({"hookSpecificOutput": {
             "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": r}}))

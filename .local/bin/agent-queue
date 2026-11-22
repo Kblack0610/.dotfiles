@@ -2477,7 +2477,7 @@ cmd_show() {
 # session that worked it (`sessions:`), whatever window it ran in. Without one, the tmux session,
 # and only a running item: a hub session hosts many conversations, and a waiting item of an
 # earlier one is not this one's (2026-11-05 a land closed c1103's waiting item that way).
-# --sid asks of that Claude session alone, with no tmux fallback (the focus gate, from a hook).
+# --sid asks of that Claude session alone, with no tmux fallback.
 cmd_mine() {
   local session='' sid only=0 newest=0 slugs files last
   while [ $# -gt 0 ]; do

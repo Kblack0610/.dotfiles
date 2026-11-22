@@ -7,8 +7,7 @@
 #
 # There is no shebang because this file is SOURCED, never executed. The shell= directive is
 # what supplies the dialect; without it SC2148 fires at ERROR severity and fails the lint
-# gate. (focus-lib.sh uses a real shebang for the same purpose; a directive is the more honest
-# spelling for a fragment that is not runnable.) The disable is for SC2034: the palette and
+# gate. (A directive is the honest spelling for a fragment that is not runnable.) The disable is for SC2034: the palette and
 # the PANEL_* names are this library's public API, read by consumers rather than by anything
 # in here, so "appears unused" is a false positive for the whole file.
 #

@@ -18,7 +18,8 @@
 #
 # Roles are written INLINE, never read from the private overlay: the real roles
 # live in gitignored `.config/agentctl/`, so a test that read them would pass on
-# this machine and fail in CI. Same convention as agent_run_headless.bats.
+# this machine and fail in CI, and reading the deployed ~/.config copy would assert this
+# machine's provisioning rather than the contract.
 
 setup() {
   load '../vendor/bats-support/load'
