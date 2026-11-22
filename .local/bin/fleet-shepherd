@@ -1192,14 +1192,23 @@ Unreadable, so this record does not say what the human is waiting on: $requests"
 # settled rule does, so a quiet fleet still says it is quiet.
 settle() {
   local working
-  working="$(jq '[(.sessions // [])[] | select(.bucket == "WORKING")] | length' "$STATE_FILE" 2>/dev/null)"
-  if [ "${working:-1}" -gt 0 ]; then rm -f "$LEDGER/.settled"; return 0; fi
-  [ -e "$LEDGER/.settled" ] && return 0
+  # The Sessions card's Working part (hub_core::cards::sessions), every host and less the fleet's own
+  # sessions such as this one: counted in hub-core, not over the state document here. A figure that
+  # cannot be read is not a quiet fleet, so it does not settle.
+  # Once settled, a pass only watches for work coming back, so it reads the cached figure (a hub
+  # read is about 10s); the page itself waits for a fresh one.
+  if [ -e "$LEDGER/.settled" ]; then
+    working="$(hub-figure sessions_working 2>/dev/null)" || working=1
+    [ "${working:-1}" -gt 0 ] && rm -f "$LEDGER/.settled"
+    return 0
+  fi
+  working="$(hub-figure --fresh sessions_working 2>/dev/null)" || working=1
+  [ "${working:-1}" -gt 0 ] && return 0
   : > "$LEDGER/.settled"
   # The count is the Needs you card's Only you part (hub_core::home::ONLY_YOU): Home's rows less
   # what a machine can answer, counted in hub-core, not filtered here. "?" when unread.
   local n
-  n="$(needs-figure --fresh needs_only_you)" || n="?"
+  n="$(hub-figure --fresh needs_only_you)" || n="?"
   agent-notify -p normal -t shepherd -r "file:$LEDGER/log.md" "fleet settled: $n need you; rundown in $LEDGER/log.md" || true
 }
 

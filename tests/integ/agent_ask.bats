@@ -1891,14 +1891,14 @@ SH
   assert_equal "$("$AGENT_ASK" list --all --pending | grep -c .)" 2
 }
 
-@test "count --all is Home's Question figure through needs-figure, ? when unread; a project's count is its own pending files" {
+@test "count --all is Home's Question figure through hub-figure, ? when unread; a project's count is its own pending files" {
   post demo 'ship it?' >/dev/null
-  printf '#!/bin/sh\n[ "$1" = needs_question ] && echo 17 || echo "?"\n' >"$SANDBOX/bin/needs-figure"
-  chmod +x "$SANDBOX/bin/needs-figure"
+  printf '#!/bin/sh\n[ "$1" = needs_question ] && echo 17 || echo "?"\n' >"$SANDBOX/bin/hub-figure"
+  chmod +x "$SANDBOX/bin/hub-figure"
   assert_equal "$("$AGENT_ASK" count --all)" 17
   assert_equal "$("$AGENT_ASK" count demo)" 1
   # Negative control: no reader, no count; never a 0.
-  rm "$SANDBOX/bin/needs-figure"
+  rm "$SANDBOX/bin/hub-figure"
   assert_equal "$("$AGENT_ASK" count --all)" '?'
 }
 

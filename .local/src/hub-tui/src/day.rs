@@ -171,17 +171,35 @@ pub fn today(rec: Option<&Value>, p: Palette, now: i64, w: usize) -> Page {
     ));
     items.push(hub_core::costs::spend_badge());
     if let Some(f) = rec["fleet"].as_object() {
-        let mut b: Vec<(&String, i64)> = f
-            .get("buckets")
-            .and_then(Value::as_object)
-            .map(|m| {
-                m.iter()
-                    .map(|(k, v)| (k, v.as_i64().unwrap_or(0)))
-                    .collect()
-            })
-            .unwrap_or_default();
-        b.sort_by(|x, y| y.1.cmp(&x.1).then(x.0.cmp(y.0)));
-        let mut fl: Vec<String> = b.iter().map(|(k, v)| format!("{k} {v}")).collect();
+        // The Sessions card's figures (`fleet.sessions`, written since ar-4475), each "?" when it
+        // could not be read; a stored day from before has the bucket counts instead.
+        let mut fl: Vec<String> = Vec::new();
+        if let Some(fig) = f.get("sessions").and_then(Value::as_object) {
+            for (key, label) in [
+                ("working", "working"),
+                ("need_you", "need you"),
+                ("stalled", "stalled"),
+                ("ready_to_close", "ready"),
+            ] {
+                let v = match fig.get(key) {
+                    Some(Value::Number(n)) => n.to_string(),
+                    _ => "?".into(),
+                };
+                fl.push(format!("{label} {v}"));
+            }
+        } else {
+            let mut b: Vec<(&String, i64)> = f
+                .get("buckets")
+                .and_then(Value::as_object)
+                .map(|m| {
+                    m.iter()
+                        .map(|(k, v)| (k, v.as_i64().unwrap_or(0)))
+                        .collect()
+                })
+                .unwrap_or_default();
+            b.sort_by(|x, y| y.1.cmp(&x.1).then(x.0.cmp(y.0)));
+            fl = b.iter().map(|(k, v)| format!("{k} {v}")).collect();
+        }
         fl.push(format!(
             "unity runs {}",
             f.get("unity_runs").and_then(Value::as_i64).unwrap_or(0)
@@ -379,7 +397,7 @@ pub mod tests {
                 "asks": [{"id": "ggK2ey", "project": "dotfiles", "kind": "question",
                           "question": "rename the\\nbucket?", "created": "2026-11-03T12:17:46-0800"}]
             },
-            "fleet": {"sessions": 35, "buckets": {"NEEDS": 8, "WORKING": 27}, "holds": [], "unity_runs": 3},
+            "fleet": {"sessions": {"headline": 35, "working": 27, "need_you": 8, "stalled": 0, "ready_to_close": "?"}, "holds": [], "unity_runs": 3},
             "bench": {"headline": "bench 24h: 108 sessions, 218 phases ticked",
                       "sessions": [{"target": "hub/dotfiles:1", "plan": "hub-plan", "phase": "6/6",
                                     "working_h": 18.3, "waiting_h": 0.6, "prs_merged": 7,
@@ -458,7 +476,10 @@ pub mod tests {
             t.contains("merged 2 in 2 repos  open 1 (+1 older)  65 sessions  spend: 0 Costs"),
             "{t}"
         );
-        assert!(t.contains("fleet WORKING 27 NEEDS 8 unity runs 3"), "{t}");
+        assert!(
+            t.contains("fleet working 27 need you 8 stalled 0 ready ? unity runs 3"),
+            "{t}"
+        );
         assert!(t.contains("$211"), "{t}");
         // Newest timeline line first.
         assert!(at("stage NEEDS -> WORKING") < at("new: NEEDS"));

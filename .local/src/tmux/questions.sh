@@ -27,7 +27,7 @@
 #                     sending or failed, then the parked asks soonest back first; in the panel
 #                     the parked ones only after P
 #   saved             the rows as the panel last built them (after an answer, P), not built again
-#   count             one number: Home's Needs you count (needs-figure), what the human has to do
+#   count             one number: Home's Needs you count (hub-figure), what the human has to do
 #                     fleet-wide, not only the rows this panel lists. The agents status bar's !N, so
 #                     the bar, the hub, agent-web and the phone read one count; "?" when it cannot
 #                     be read, and up to a minute behind an answer given here
@@ -46,8 +46,8 @@ SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/../../lib/fmt.sh" || exit 1
 
 QUESTIONS_ASK="${QUESTIONS_ASK:-$HOME/.local/bin/agent-ask}"
-# The Needs you count the bar shows: Home's, read once and cached (.local/bin/needs-figure).
-QUESTIONS_NEEDS="${QUESTIONS_NEEDS:-needs-figure}"
+# The Needs you count the bar shows: Home's, read once and cached (.local/bin/hub-figure).
+QUESTIONS_NEEDS="${QUESTIONS_NEEDS:-hub-figure}"
 # fleet-sessions' state document: a worker host's sessions, which no local read can see.
 FLEET_STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 # The armed choice between a key and its enter: "<mode> <option> <id> [<option text>]", or "said"
@@ -230,7 +230,7 @@ parked_filter() {
   if parked_shown; then cat; return 0; fi
   tr '\n\000' '\037\n' | awk "$PARK_ROW"' park { next } { print }' | tr '\n\037' '\000\n'
 }
-# cmd_count: Home's Needs you count, from needs-figure's cache so a status bar that ticks every 3 s
+# cmd_count: Home's Needs you count, from hub-figure's cache so a status bar that ticks every 3 s
 # starts no hub per tick (ar-4395). The panel lists the asks and dialogs, the part of Needs you
 # answered here; the bar says what waits in all.
 cmd_count() {

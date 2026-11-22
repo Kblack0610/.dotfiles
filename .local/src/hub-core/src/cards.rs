@@ -209,7 +209,14 @@ pub fn sessions(rows: &[crate::session_table::SessionRow]) -> Card {
     .bar(ok, stalled, needs)
     .part("Working", n("WORKING"), Level::Ok)
     .part("Need you", needs, lvl(needs, Level::Red))
-    .part("Stalled", stalled, lvl(stalled, Level::Warn));
+    .part("Stalled", stalled, lvl(stalled, Level::Warn))
+    // Ready to close: live rows in a finished bucket (DONE, LANDED), the chip's check count. The
+    // chip reads it as `sessions_ready_to_close`, so no surface counts the vocabulary itself.
+    .part(
+        "Ready to close",
+        live.iter().filter(|r| r.done).count(),
+        Level::Ok,
+    );
     c.big = live.len().to_string();
     c.unit = "live sessions".into();
     let look = ["NEEDS", "STALLED"]
@@ -1109,6 +1116,41 @@ mod tests {
         );
         assert!(c.parts.iter().all(|p| p.label != "Ended today"));
         assert_eq!(c.link.href(), "#sessions");
+    }
+
+    #[test]
+    fn ready_to_close_counts_live_finished_rows_and_the_fleets_own_sit_outside() {
+        let done = SessionRow {
+            done: true,
+            ..live("LANDED", "d")
+        };
+        let rows = vec![
+            live("WORKING", "a"),
+            done.clone(),
+            SessionRow {
+                machine: true,
+                ..done
+            },
+            // an ended row is the Done today card's, not a session to close
+            SessionRow {
+                source: Source::Queue,
+                done: true,
+                ..live("DONE", "q")
+            },
+        ];
+        let c = sessions(&rows);
+        let part = |l: &str| {
+            c.parts
+                .iter()
+                .find(|p| p.label == l)
+                .map(|p| p.value.clone())
+        };
+        assert_eq!(part("Ready to close").as_deref(), Some("1"));
+        assert_eq!(c.big, "2");
+        assert_eq!(
+            crate::widget_doc::figures(&[c]).get("sessions_ready_to_close"),
+            Some(&1)
+        );
     }
 
     #[test]
