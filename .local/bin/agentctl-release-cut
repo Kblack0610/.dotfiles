@@ -64,7 +64,7 @@ repo_of() {
 }
 
 # green_sha REPO WORKFLOW TITLE: the commit the newest green full run on main tested: its
-# tested-sha-<sha> artifact (a pinned night), else its head (playground scripts/tested-runs.py).
+# tested-sha-<sha> artifact (a pinned night), else its head (playground scripts/ci/tested-runs.py).
 green_sha() {
   local id head tested
   read -r id head < <(gh run list -R "$1" --workflow "$2" --branch main --status success -L 40 \
