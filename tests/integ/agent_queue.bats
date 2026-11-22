@@ -2289,6 +2289,35 @@ handoff_repo() {
   assert_not_called 'start --item i5'
 }
 
+@test "a headless Claude run with no queue item is not the human: its add goes to the board, its urgent never starts, its --want is refused (ar-3887)" {
+  story_notes
+  unset AGENT_QUEUE_PULL AGENT_QUEUE_ITEM
+  export CLAUDE_CODE_ENTRYPOINT=sdk-cli
+  run "$AQ" add --project game --want human --slug hw "a runner claims the human's want"
+  assert_failure
+  assert_output --partial 'a headless Claude run (sdk-cli) has no human at hand'
+  [ -z "$(item queued hw)" ]
+  run "$AQ" add --project level --priority urgent --slug hu "a runner's urgent"
+  assert_failure 5
+  assert_output --partial 'only the board fills the queue'
+  [ -z "$(item queued hu)" ]
+  assert_not_called 'start --item hu'
+  run "$AQ" add --project level --from human --priority high --slug hf "a runner names the human"
+  assert_failure 5
+  [ -z "$(item queued hf)" ]
+  # A headless run's own record still goes in, from session's default, and starts nothing.
+  run "$AQ" add --project game --running --slug hr "a runner's record of its own work"
+  assert_success
+  assert_not_called 'start --item hr'
+  # NEGATIVE CONTROLS: the same want from the human's interactive session and from an SDK host's entrypoint
+  run env CLAUDE_CODE_ENTRYPOINT=cli "$AQ" add --project game --want human --slug cw "the human's want"
+  assert_success
+  assert_called 'fleet-dispatch start --item cw'
+  run env CLAUDE_CODE_ENTRYPOINT=sdk-ts "$AQ" add --project game --want human --slug tw "an SDK host's want"
+  assert_failure
+  [ -z "$(item queued tw)" ]
+}
+
 @test "start_at_add logs each outcome that is not a start: a low item, a dispatch hold and a failed start (ar-4452)" {
   story_notes
   export FLEET_DISPATCH_DIR="$SANDBOX/dispatch"
