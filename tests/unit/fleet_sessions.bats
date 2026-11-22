@@ -3162,7 +3162,7 @@ empty_submodule_fixture() {
   assert_output ''
 }
 
-@test "empty submodule filtering preserves working files, indexed deletions, and staged pins" {
+@test "empty submodule filtering preserves working files, indexed deletions, and changed pins" {
   empty_submodule_fixture
   local sub="$EMPTY_WT/External/asset library"
   echo new > "$sub/new.txt"
@@ -3178,10 +3178,9 @@ empty_submodule_fixture() {
   run dirty_paths "$EMPTY_WT" ''
   assert_output 'External/asset library'
   git -C "$sub" -c user.email=t@t -c user.name=t commit -q --allow-empty -m next
-  # A moved pin nobody staged, over a clean submodule tree, is not the session's work (ar-4016);
-  # staging it is.
+  # A commit no remote holds is the session's own, staged or not (ar-4016 skips only a pushed one).
   run dirty_paths "$EMPTY_WT" ''
-  assert_output ''
+  assert_output 'External/asset library'
   git -C "$EMPTY_WT" add 'External/asset library'
   run dirty_paths "$EMPTY_WT" ''
   assert_output 'External/asset library'
@@ -5296,8 +5295,16 @@ main_change() {
   git -C "$d" -c user.email=t@t -c user.name=t commit -qm init
   run dirty_paths "$d" ''
   assert_output ''
-  # The checkout moves to a newer commit, the index pin stays: a canary at an old commit.
-  git -C "$d/module" -c user.email=t@t -c user.name=t commit -q --allow-empty -m two
+  # The session's own commit inside the submodule, held by no remote ref, is its work.
+  git -C "$d/module" -c user.email=t@t -c user.name=t commit -q --allow-empty -m mine
+  [ "$(git -C "$d" status --porcelain)" = ' M module' ]
+  run dirty_paths "$d" ''
+  assert_output 'module'
+  git -C "$d/module" reset -q --hard HEAD~1
+  # The checkout moves to a newer commit a remote holds, the index pin stays: a canary at an old commit.
+  git -C "$sub" -c user.email=t@t -c user.name=t commit -q --allow-empty -m two
+  git -C "$d/module" fetch -q origin
+  git -C "$d/module" checkout -q --detach origin/HEAD
   [ "$(git -C "$d" status --porcelain)" = ' M module' ]
   run dirty_paths "$d" ''
   assert_output ''
@@ -5315,8 +5322,14 @@ main_change() {
   run dirty_paths "$d" ''
   assert_output 'module'
   rm "$d/module/new"
-  # A staged pin is a deliberate bump.
+  # A staged pin is a deliberate bump, and stays dirt when moved on again (MM).
   git -C "$d" add module
+  run dirty_paths "$d" ''
+  assert_output 'module'
+  git -C "$sub" -c user.email=t@t -c user.name=t commit -q --allow-empty -m three
+  git -C "$d/module" fetch -q origin
+  git -C "$d/module" checkout -q --detach origin/HEAD
+  [ "$(git -C "$d" status --porcelain)" = 'MM module' ]
   run dirty_paths "$d" ''
   assert_output 'module'
   # The shared-checkout path reads the same way.
