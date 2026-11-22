@@ -355,16 +355,35 @@ line() { sed -n "${1}p" "$AGENTCTL_STATE_DIR/runs.jsonl"; }
 # and its `-` prefix forgives an exit code but not a timeout. On 2026-11-04 the publisher's
 # scan took 34s at load 83 and fleet-dispatch failed to start five times.
 
-@test "a publisher that hangs does not hold up or fail a lifecycle report" {
+@test "a publisher that hangs does not hold up or fail a stop report" {
   # Not exec: the hang is a CHILD of the publisher, as a stuck mosquitto_pub or scan would be.
   printf '#!/usr/bin/env bash\ntouch "%s/publisher-ran"\nsleep 30\n' "$SANDBOX" \
     > "$SANDBOX/bin/agent-mqtt-publish"
   chmod +x "$SANDBOX/bin/agent-mqtt-publish"
   local t0=$SECONDS
-  AGENTCTL_MQTT_BUDGET=1 run "$AGENTCTL_BIN" report --name alpha --lifecycle start
+  AGENTCTL_MQTT_BUDGET=1 run "$AGENTCTL_BIN" report --name alpha --lifecycle stop
   assert_success
   # The stub ran (the bound was exercised, not skipped) and was cut well before its 30s.
   [ -f "$SANDBOX/publisher-ran" ]
   [ $((SECONDS - t0)) -lt 10 ]
+  assert_equal "$(field state)" 'idle'
+}
+
+# The start report publishes in the background: ExecStartPost's 15s timeout is shared with the
+# rest of the start phase, and a 5s publish budget on every start timed orphan-gc out at load 90
+# (2026-11-21). The stub blocks on a FIFO until the test reads it, so the report can only return
+# in time if it does not wait for the publisher; the read proves the publisher did start.
+@test "a start report does not wait for the publisher" {
+  mkfifo "$SANDBOX/ran"
+  printf '#!/usr/bin/env bash\necho up > "%s/ran"\nsleep 30\n' "$SANDBOX" \
+    > "$SANDBOX/bin/agent-mqtt-publish"
+  chmod +x "$SANDBOX/bin/agent-mqtt-publish"
+  local t0=$SECONDS
+  AGENTCTL_MQTT_BUDGET=2 run "$AGENTCTL_BIN" report --name alpha --lifecycle start
+  assert_success
+  # Returned before the stub could finish its write: the FIFO has no reader yet.
+  [ $((SECONDS - t0)) -lt 2 ]
   assert_equal "$(field state)" 'working'
+  read -r -t 10 line < "$SANDBOX/ran"
+  assert_equal "$line" up
 }
