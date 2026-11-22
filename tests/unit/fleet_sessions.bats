@@ -1820,6 +1820,84 @@ SH
   [ "$(jq -r .bucket <<<"$output")" = "WORKING" ]
 }
 
+@test "a pgrep loop on a live gate-and-land.sh reads as a queue gate, not 'not a gate or test' (ar-2121)" {
+  # 2026-11-12 agent-24: its gate-and-land.sh ran before the PR existed, started outside the claude's tree, and the
+  # session's background shell was `until ! pgrep -f 'gate-and-land.sh 7431211'; do sleep 20; done`, a `jobs` class by time-use.conf.
+  landed_fixture
+  export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
+  printf 'gate gate-and-land.sh\n' > "$FLEET_TIME_USE_CONF"
+  mkdir -p "$SANDBOX/tasks"
+  local out="$SANDBOX/tasks/b1.output"; : > "$out"
+  {
+    jq -cn --arg c "until ! pgrep -f 'gate-and-land.sh 7431211'; do sleep 20; done" \
+      '{type: "assistant", message: {content: [{type: "tool_use", id: "w1", name: "Bash", input: {command: $c}}]}}'
+    printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"w1","content":"Command running in background with ID: b1. Output is being written to: %s. You will be notified"}]}}\n' "$out"
+  } > "$SANDBOX/t.jsonl"
+  printf 'sleep 300\n' > "$SANDBOX/gate-and-land.sh"
+  # no live gate: the loop is a plain job
+  run watched_gate "$SANDBOX/t.jsonl"
+  assert_output ''
+  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" PANEL_STATUS=shell PANEL_JOB=jobs PANEL_IDLE_S=$((200 * 60)) panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  jq -r .reason <<<"$output" | grep -q 'not a gate or test'
+  # gate <PR>: a gate-and-land.sh of its own session (setsid: teardown kills the group and its sleep), up before it returns
+  gate() {
+    (exec setsid bash "$SANDBOX/gate-and-land.sh" "$1") >/dev/null 2>&1 3>&- &
+    LIVE_PIDS="${LIVE_PIDS:-} -$!"
+    until tr "\0" " " < "/proc/$!/cmdline" 2>/dev/null | grep -q "gate-and-land.sh $1"; do kill -0 "$!" 2>/dev/null || fail "gate $1 exited"; done
+  }
+  # negative controls: a gate of another PR (the loop's pattern names 7431211), and a claude whose dispatch prompt names agent-land
+  gate 7431999
+  printf '#!/usr/bin/env bash\nsleep 300\n' > "$SANDBOX/stub.sh"
+  (exec setsid bash -c 'exec -a claude bash "$@"' x "$SANDBOX/stub.sh" 'dispatch prompt' zz-land-2121 7431211) >/dev/null 2>&1 3>&- &
+  LIVE_PIDS="${LIVE_PIDS:-} -$!"
+  until tr "\0" " " < "/proc/$!/cmdline" 2>/dev/null | grep -q zz-land-2121; do kill -0 "$!" 2>/dev/null || fail "claude stub exited"; done
+  run watched_gate "$SANDBOX/t.jsonl"
+  assert_output ''
+  jq -cn --arg c "until ! pgrep -f zz-land-2121; do sleep 20; done" \
+    '{type: "assistant", message: {content: [{type: "tool_use", id: "w1", name: "Bash", input: {command: $c}}]}}' > "$SANDBOX/t2.jsonl"
+  printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"w1","content":"Output is being written to: %s. x"}]}}\n' "$out" >> "$SANDBOX/t2.jsonl"
+  export FLEET_QUEUE_GATES=zz-land-2121   # a text no host process holds
+  run watched_gate "$SANDBOX/t2.jsonl"
+  assert_output ''
+  # the same text on a process that is not a claude is a gate
+  (exec setsid bash "$SANDBOX/stub.sh" zz-land-2121 1) >/dev/null 2>&1 3>&- &
+  LIVE_PIDS="${LIVE_PIDS:-} -$!"
+  until tr "\0" " " < "/proc/$!/cmdline" 2>/dev/null | grep -q "stub.sh zz-land-2121 1"; do kill -0 "$!" 2>/dev/null || fail "stub exited"; done
+  run watched_gate "$SANDBOX/t2.jsonl"
+  assert_output 'queue'
+  export FLEET_QUEUE_GATES='gate-and-land.sh|ci-gate.sh|gate-line.py --recheck|agent-land'
+  # a live gate-and-land.sh of that PR: the loop is its wait
+  gate 7431211
+  run watched_gate "$SANDBOX/t.jsonl"
+  assert_output 'queue'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .open_job <<<"$output")" = "queue" ]
+  jq -r .reason <<<"$output" | grep -vq 'not a gate or test'
+  # negative control: a task the transcript saw end is no wait, however live the gate
+  printf '{"type":"user","message":{"content":"<task-notification>\\n<output-file>%s</output-file>\\n<status>completed</status>"}}\n' "$out" >> "$SANDBOX/t.jsonl"
+  run watched_gate "$SANDBOX/t.jsonl"
+  assert_output ''
+}
+
+@test "pgrep_pattern reads the literal pattern after pgrep, and nothing for one the shell expands (ar-2121)" {
+  run pgrep_pattern "until ! pgrep -f 'gate-and-land.sh 12'; do sleep 2; done"
+  assert_output 'gate-and-land.sh 12'
+  run pgrep_pattern 'while pgrep -fa "agent-land 7" >/dev/null; do :; done'
+  assert_output 'agent-land 7'
+  run pgrep_pattern 'until ! pgrep -u kb -f gate-and-land.sh; do :; done'
+  assert_output 'gate-and-land.sh'
+  # negative controls: an expanded word, a command with no pgrep pattern
+  run pgrep_pattern 'until ! pgrep -f "gate-and-land.sh $PR"; do :; done'
+  assert_failure
+  run pgrep_pattern 'until ! pgrep -f "$(cat gate.pid)"; do :; done'
+  assert_failure
+  run pgrep_pattern 'sleep 5'
+  assert_failure
+}
+
 @test "end to end: a row carries the open job its shell waits on, and null when none is known" {
   # fleet-dispatch counts no open_job queue session toward its pace target (pipeline-eval-p2).
   landed_fixture

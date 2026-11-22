@@ -336,27 +336,75 @@ gate_text() {
   done < "$conf"
 }
 
-# open_outputs <transcript> -> the output file of each background Bash task the transcript started whose command
-# matches a `gate` or `test` line of agent-panel's time-use.conf and that no <task-notification> closed, one a line.
-# Claude writes a background Bash's output there, so its mtime is the gate's last line; a dev server or poll loop
-# beside a hung gate is not the gate (ar-1334 review). It reads Claude Code's own wording: a tool result's "Output is
-# being written to: <path>.output" (run_in_background, or a call moved to the background at its timeout) and a
-# notification's <output-file>, so a reworded transcript reads no file and the bucket falls back to transcript idle
-# (pinned by "a gate shell whose open output file is still being written ..." in tests/unit/fleet_sessions.bats).
-# Only the lines holding those strings, then the open tasks' own tool_use lines, reach jq: a transcript runs to 100 MB.
-open_outputs() {
-  local id path
-  [ -r "$1" ] && [ -r "$FLEET_TIME_USE_CONF" ] || return 0
-  while IFS=$'\t' read -r id path; do
-    [ -z "$(gate_text "$(bash_command "$1" "$id")")" ] || printf '%s\n' "$path"
-  done < <(grep -F -e 'Output is being written to: ' -e '<output-file>' "$1" | jq -R -r '
+# open_tasks <transcript> -> "<tool_use id><TAB><output file>" of each background Bash task the transcript started that no
+# <task-notification> closed, one a line. Claude writes a background Bash's output to that file, so its mtime is the task's
+# last line. It reads Claude Code's own wording: a tool result's "Output is being written to: <path>.output"
+# (run_in_background, or a call moved to the background at its timeout) and a notification's <output-file>, so a reworded
+# transcript reads no task and the bucket falls back to transcript idle (pinned by "a gate shell whose open output file is
+# still being written ..." in tests/unit/fleet_sessions.bats). Only the lines holding those strings reach jq: a transcript
+# runs to 100 MB.
+open_tasks() {
+  [ -r "$1" ] || return 0
+  grep -F -e 'Output is being written to: ' -e '<output-file>' "$1" | jq -R -r '
       fromjson? | select(type == "object")
       | (select(.type == "user") | .message.content | arrays | .[] | select(.type? == "tool_result") | . as $t
          | $t.content | tostring | capture("Output is being written to: (?<p>[^\"\\\\]+?\\.output)")
          | "O\t\($t.tool_use_id)\t\(.p)"),
         (tostring | scan("<output-file>([^<]+)</output-file>") | "D\t-\t\(.[0])")' 2>/dev/null \
     | awk -F'\t' '$1 == "O" && !($3 in seen) { seen[$3] = 1; id[++n] = $2; p[n] = $3 } $1 == "D" { closed[$3] = 1 }
-        END { for (i = 1; i <= n; i++) if (!(p[i] in closed)) print id[i] "\t" p[i] }')
+        END { for (i = 1; i <= n; i++) if (!(p[i] in closed)) print id[i] "\t" p[i] }'
+}
+
+# open_outputs <transcript> -> the output file of each open background Bash task (open_tasks) whose command matches a `gate`
+# or `test` line of agent-panel's time-use.conf; a dev server or poll loop beside a hung gate is not the gate (ar-1334 review).
+open_outputs() {
+  local id path
+  [ -r "$1" ] && [ -r "$FLEET_TIME_USE_CONF" ] || return 0
+  while IFS=$'\t' read -r id path; do
+    [ -z "$(gate_text "$(bash_command "$1" "$id")")" ] || printf '%s\n' "$path"
+  done < <(open_tasks "$1")
+}
+
+# pgrep_pattern <command> -> the first non-option word after `pgrep` in <command>, quotes dropped (an option that takes
+# a value, -u -U -g -G -P -s -t -n -o, is skipped with it): the regex pgrep -f matches against command lines, so
+# `pgrep -f 'gate-and-land.sh 2200'` names one session's gate and not every gate's. Nothing (exit 1) when the word is
+# not literal text (a $var, $(...) or backtick the shell expanded) or no pattern parses: such a loop names no gate.
+pgrep_pattern() {
+  local sq="'" re p
+  re="pgrep(([[:space:]]+-[uUgGPstno][[:space:]]+[^[:space:]]+)|([[:space:]]+-[^[:space:]]+))*[[:space:]]+(${sq}([^${sq}]*)${sq}|\"([^\"]*)\"|([^[:space:];|&)]+))"
+  [[ "$1" =~ $re ]] || return 1
+  p="${BASH_REMATCH[5]}${BASH_REMATCH[6]}${BASH_REMATCH[7]}"
+  case "$p" in "" | *'$'* | *'`'*) return 1 ;; esac
+  printf '%s\n' "$p"
+}
+
+# watched_gate <transcript> -> queue when an open background Bash task (open_tasks) is a `pgrep` loop on one of
+# FLEET_QUEUE_GATES' texts and a process of that text is alive (queue_match, so a pgrep and a `-c` line holding the
+# loop's own text do not count), else nothing. The gate is the session's own, started apart from the loop (a
+# gate-and-land.sh before its PR exists, which the session watches for its end); time-use.conf reads the loop as `jobs`
+# because pgrep, not the text, starts the command, and live_wait finds the gate only inside this claude's tree.
+# 2026-11-12 agent-24 read "background shell is not a gate or test" while its gate-and-land.sh ran (ar-2121). A loop
+# whose target ended has ended with it, and one that matches only itself finds no live process. Not counted: a
+# `-c` line and a claude (its argv carries a dispatch prompt that names agent-land), as wait_procs skips them. The
+# loop is read from any open task, not only the one the panel calls the open job, and the process from any session,
+# narrowed by the loop's own pattern (pgrep_pattern); a loop on a bare `gate-and-land.sh` reads any live one.
+watched_gate() {
+  local id path cmd text line pat args=""
+  local -a qg=(); IFS='|' read -ra qg <<<"$FLEET_QUEUE_GATES"
+  grep -qF pgrep "$1" 2>/dev/null || return 0   # most transcripts have no such loop: skip the task reads
+  while IFS=$'\t' read -r id path; do
+    cmd="$(bash_command "$1" "$id")"
+    [[ "$cmd" == *pgrep* ]] || continue
+    pat="$(pgrep_pattern "$cmd")" || continue
+    [ -n "$args" ] || args="$(ps -e -o args= 2>/dev/null)"
+    for text in "${qg[@]}"; do
+      [[ "$cmd" == *pgrep*"$text"* ]] || continue
+      while IFS= read -r line; do
+        case "$line" in *" -c "* | claude" "* | */claude" "*) continue ;; esac
+        queue_match "$line" "$text" && [[ "$line" =~ $pat ]] && { echo queue; return 0; }
+      done <<<"$args"
+    done
+  done < <(open_tasks "$1")
 }
 
 # live_wait <cwd> [<claude pid>]: queue when such a process is a FLEET_QUEUE_GATES one (a gate waiting for its
@@ -2160,8 +2208,8 @@ collect() {
     # A gate or test running in the worktree is a wait whatever the transcript's open job says.
     live=""
     if [ "$host" = - ] && [ "$status" = shell ] && { [ "$ojob" = jobs ] || [ "$ojob" = none ] || [ "$ojob" = gate ]; }; then
-      live="$(live_wait "$cwd" "$cpid")"
-      # a transcript job that already reads gate keeps its class: the probe only adds the queue case
+      live="$(live_wait "$cwd" "$cpid")"; [ -n "$live" ] || [ "$ojob" = gate ] || live="$(watched_gate "$transcript")"
+      # watched_gate: a pgrep loop on a gate outside the claude's tree is its wait (ar-2121); a transcript job that already reads gate keeps its class: the probes only add the queue case
       [ "$ojob" != gate ] || [ "$live" = queue ] || live=""
       ojob="${live:-$ojob}"
     fi
