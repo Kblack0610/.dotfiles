@@ -21,7 +21,7 @@ case "\$1" in
 esac
 EOF
   printf '#!/bin/sh\nexec "$@"\n' >"$SANDBOX/bin/sudo"
-  printf '#!/bin/sh\necho "systemctl $*" >>"%s"\n' "$CALLS" >"$SANDBOX/bin/systemctl"
+  printf '#!/bin/sh\necho "systemctl $*" >>"%s"\n[ ! -e "%s/fail-enable" ]\n' "$CALLS" "$BATS_TEST_TMPDIR" >"$SANDBOX/bin/systemctl"
   chmod +x "$SANDBOX/bin/pacman" "$SANDBOX/bin/sudo" "$SANDBOX/bin/systemctl"
   PATH="$SANDBOX/bin:$PATH"
 }
@@ -29,22 +29,34 @@ EOF
 @test "setup_kernel_modules_hook installs the package and enables linux-modules-cleanup.service" {
   run setup_kernel_modules_hook
   assert_success
-  run cat "$CALLS"
-  assert_line "pacman -S --noconfirm kernel-modules-hook"
-  assert_line "systemctl enable linux-modules-cleanup.service"
+  local order
+  order=$(grep -nE '^(pacman -S |systemctl enable )' "$CALLS" | cut -d: -f2- | paste -sd'|')
+  [ "$order" = "pacman -S --noconfirm kernel-modules-hook|systemctl enable linux-modules-cleanup.service" ]
+  refute_output --partial "Could not enable"
+}
+
+@test "a failed enable is reported, not logged as enabled" {
+  touch "$BATS_TEST_TMPDIR/fail-enable"
+  run setup_kernel_modules_hook
+  assert_success
+  assert_output --partial "Could not enable linux-modules-cleanup.service"
+  refute_output --partial "cleanup.service enabled"
 }
 
 @test "a failed install skips the service and the install carries on" {
   touch "$BATS_TEST_TMPDIR/fail-install"
   run setup_kernel_modules_hook
   assert_success
-  assert_output --partial "kernel-modules-hook is not installed"
+  assert_output --partial "Failed to install kernel-modules-hook"
   run cat "$CALLS"
   refute_line --partial "systemctl"
 }
 
-@test "the Arch install runs setup_kernel_modules_hook by default" {
+@test "the Arch install runs setup_kernel_modules_hook by default, before update_system" {
   INSTALL_MODE=dry-run run install_all
   assert_success
   assert_line --regexp '^ +kernelmods +setup_kernel_modules_hook$'
+  local order
+  order=$(printf '%s\n' "$output" | awk '{print $2}' | grep -xE 'setup_kernel_modules_hook|update_system' | paste -sd' ')
+  [ "$order" = "setup_kernel_modules_hook update_system" ]
 }

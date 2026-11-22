@@ -543,23 +543,25 @@ setup_journal() {
     log_info "Installed $dst, enabled systemd-pstore, added $USER to systemd-journal (log out and back in for the group)"
 }
 
-# Setup fingerprint auth (fprintd + libfprint + PAM)
 # A kernel upgraded without a reboot deletes the running kernel's modules, so one not yet
 # loaded (xpad, 2026-11-18) fails until the reboot. kernel-modules-hook's pacman hooks keep
-# that tree; linux-modules-cleanup.service moves it out at the next boot.
+# that tree; linux-modules-cleanup.service moves it out at the next boot. install_all runs
+# this before update_system, so the first -Syu that upgrades the kernel is covered too.
 setup_kernel_modules_hook() {
     log_section "Keeping the running kernel's modules across a kernel upgrade"
 
     install_pacman_package "kernel-modules-hook"
-    if ! pacman -Q kernel-modules-hook &>/dev/null; then
-        log_warning "kernel-modules-hook is not installed - skipping linux-modules-cleanup.service"
+    # install_pacman_package returns 0 on failure too (it warned already): check the package.
+    pacman -Q kernel-modules-hook &>/dev/null || return 0
+
+    if ! sudo systemctl enable linux-modules-cleanup.service; then
+        log_warning "Could not enable linux-modules-cleanup.service - old module trees will pile up in /usr/lib/modules"
         return 0
     fi
-
-    sudo systemctl enable linux-modules-cleanup.service
     log_info "kernel-modules-hook installed, linux-modules-cleanup.service enabled - see .config/kernel-modules-hook/README.md"
 }
 
+# Setup fingerprint auth (fprintd + libfprint + PAM)
 setup_fingerprint() {
     log_section "Setting up fingerprint auth (fprintd + PAM)"
 
@@ -914,6 +916,8 @@ PY
 
 install_all() {
     step base        create_directories
+    # Before update_system: its -Syu may upgrade the running kernel
+    step kernelmods  setup_kernel_modules_hook
     step base        update_system
     step base        install_basics
     step dev         install_tools
@@ -955,7 +959,6 @@ install_all() {
     step keyd        setup_keyd
     step powerkey    setup_power_key
     step journal     setup_journal
-    step kernelmods  setup_kernel_modules_hook
     step fingerprint setup_fingerprint
     step tailscale   install_tailscale
 

@@ -4,7 +4,7 @@ A kernel upgrade without a reboot removes `/usr/lib/modules/$(uname -r)`, the mo
 
 ## Setup
 
-`setup_kernel_modules_hook` in `.local/src/installation_scripts/linux/install_arch.sh` does it, as the `kernelmods` module (on by default):
+`setup_kernel_modules_hook` in `.local/src/installation_scripts/linux/install_arch.sh` does it, as the `kernelmods` module (on by default). It runs before `update_system`, so the installer's own `pacman -Syu` is covered:
 
 ```bash
 sudo pacman -S --needed kernel-modules-hook
