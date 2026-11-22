@@ -1618,11 +1618,12 @@ main_health() {
   cut -f1-3 "$key"
 }
 
-# main_blame <dir> <PR> -> the red workflows of <dir>'s main (main_health, run first this pass) whose
-# suspects name <PR>, comma-joined; rc 1 for none. Only those are its merge's to fix: agent-10's #2983
+# main_blame <dir> <PR> -> the red workflows of <dir>'s main whose suspects name <PR>, comma-joined;
+# rc 1 for none. It runs main_health itself (a cache hit after the first), so its file is always there. Only those are its merge's to fix: agent-10's #2983
 # was a suspect of Drop closed gates alone, and its close verdict also held it for iOS release, Phone
 # release, Release builds and Slim tour, reds whose ranges did not name it (ar-3985).
 main_blame() {
+  main_health "$1" > /dev/null
   awk -F'\t' -v p="$2" '$1 == p { out = out (out == "" ? "" : ", ") $2 } END { if (out == "") exit 1; print out }' \
     "$CACHE/blame_$(repo_slug "$1")" 2>/dev/null
 }
