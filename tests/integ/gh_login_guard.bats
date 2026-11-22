@@ -75,9 +75,7 @@ allowed() { assert_success; assert_output ''; }
   allowed
 }
 
-@test "settings.json runs it on every Bash call and denies Edit and Write into the gh dir" {
-  run jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command | select(test("gh-login-guard"))' "$BATS_TEST_DIRNAME/../../.claude/settings.json"
-  assert_output 'python3 ~/.claude/hooks/gh-login-guard.py || true'
+@test "settings.json denies Edit and Write into the gh dir" {
   run jq -r '.permissions.deny[] | select(. == "Edit(~/.config/gh/**)")' "$BATS_TEST_DIRNAME/../../.claude/settings.json"
   assert_output 'Edit(~/.config/gh/**)'
 }

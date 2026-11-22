@@ -13,7 +13,7 @@ setup() {
   RUN="$REPO_ROOT/.local/src/agent-run/agentctl-run"
   CALLS="$HOME/.local/state/agentctl/calls.jsonl"
 
-  # Inline role fixtures: the real roles live in the private overlay (see agent_run_headless).
+  # Inline role fixtures: the real roles live in the private overlay (see agent_run_family.bats).
   mkdir -p "$HOME/.config/agentctl/roles" "$HOME/.config/agentctl/mcp" "$AGENTCTL_CONF_DIR"
   for r in watcher builder; do
     printf 'ROLE_DESC="%s fixture"\nROLE_WRITE=no\nROLE_TASK=no\nROLE_BASH=yes\nROLE_MCP=none\nROLE_MCP_DENY=""\nROLE_APPROVE="Read"\n' "$r" \
