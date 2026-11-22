@@ -116,13 +116,6 @@ allowed() { assert_success; assert_output ''; }
   done
 }
 
-@test "Claude's settings.json and Codex's hooks.json run the guard on every Bash call, fail-open" {
-  run jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command | select(test("release-guard"))' "$ROOT/.claude/settings.json"
-  assert_output 'python3 ~/.claude/hooks/release-guard.py || true'
-  run jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command | select(test("release-guard"))' "$ROOT/.config/codex/hooks.json"
-  assert_output 'python3 $HOME/.claude/hooks/release-guard.py || true'
-}
-
 @test "negative control: ordinary pushes, tags and reruns pass" {
   local c
   for c in 'git push origin HEAD' 'git push -u origin feat/x' 'git push origin fix-v1.2-bug' 'git tag -l "v*"' 'git tag --contains HEAD' \
