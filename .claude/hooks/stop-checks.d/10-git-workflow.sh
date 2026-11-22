@@ -102,15 +102,6 @@ if [ "${AHEAD:-0}" -gt 0 ] 2>/dev/null; then
   fi
 fi
 
-if command -v gh >/dev/null 2>&1; then
-  # Bounded: offline, gh waits on the network and this runs on every Stop.
-  PR=$(timeout 5 gh pr view "$BRANCH" --json state,url --jq '.state + " " + .url' 2>/dev/null)
-  if [ "${PR%% *}" = "OPEN" ]; then
-    echo "Open PR not yet merged (may be pre-existing): ${PR#* }" >&2
-    WARN=1
-  fi
-fi
-
 [ $FAILED -eq 1 ] && exit 2
 [ $WARN -eq 1 ] && exit 1
 exit 0
