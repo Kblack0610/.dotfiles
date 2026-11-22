@@ -274,6 +274,9 @@ pub fn components(infra: &Infra) -> Vec<Component> {
 pub struct Counts {
     pub firing: usize,
     pub tripped: usize,
+    /// Every `cc:red_now` item, a red watch's included though its row is the watch's: the
+    /// Red now figure, the count over the phone's RED lines.
+    pub red_now: usize,
     pub errors: usize,
     pub no_owner: usize,
     /// Rows the overviews show the human (`Alert::needs_you`), and the rows with a fix in hand
@@ -595,7 +598,7 @@ fn counted(firing: &[Alert], fixes: Option<&Reds>, watches: &[Watch]) -> Counts 
         fixes_open: fixes.map_or(0, |r| r.open.len()),
         fixes_settled: fixes.map_or(0, |r| r.settled.len()),
         watches: watches.len(),
-        watches_tripped: n("TRIP"),
+        watches_tripped: runner::tripped(watches),
         watches_error: n("ERROR"),
         watches_ok: n("OK"),
         watches_new: n("new"),
@@ -719,6 +722,7 @@ pub fn join(
     let counts = Counts {
         history: history.len(),
         history_older,
+        red_now: if infra_ok { red_now(infra).len() } else { 0 },
         ..counted(&firing, fixes.as_ref(), &watches)
     };
     let strip = BTreeMap::from([

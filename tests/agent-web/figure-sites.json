@@ -42,8 +42,6 @@
   {"file":".local/bin/fleet-bench","by":"ar-2793: cost per sweep sums its own store (of the 5, the rest are sweep ratios)","fns":{"canary_dream":5}},
   {"file":".config/waybar/ai_agents.sh","by":"ar-4396: sessions figures from one source; the Sessions card counts fleet-sessions state and the chip and its hover read it (of the 10, one is textfile freshness per host, one a column width, one an empty-section check)","fns":{"main":10}},
   {"file":".config/waybar/ci_runners.sh","by":"keeps: whether the weight footnote prints over `hub ci --json`, no figure","fns":{"main":1}},
-  {"file":".config/waybar/health.sh","by":"ar-4478: a card figure for the red count and System domains up/down; health.sh reads it","fns":{"main":1}},
-  {"file":".config/waybar/projects.sh","by":"ar-4478: the waybar projects chip reads in flight, the project count and sprints from the Projects card figures","fns":{"main":2}},
   {"file":".config/waybar/queue.sh","by":"keeps: joins Prometheus series per key, lists room reasons per account and counts hover lines against the bar's line budget, no figure","fns":{"main":4}},
   {"file":".local/bin/agent-mqtt-publish","by":"ar-4397: publisher drops asks_open and sensor.agent_sessions","fns":{"snapshot":6}},
   {"file":".local/bin/agent-mqtt-publish","by":"keeps: the messages it sent, for its own log line","fns":{"main":2}}

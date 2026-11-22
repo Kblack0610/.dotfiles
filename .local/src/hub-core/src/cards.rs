@@ -329,7 +329,13 @@ pub fn alerts(a: &crate::alerts::Alerts) -> Card {
     .part("Being fixed", k.being_fixed, Level::Ok)
     .part("No owner", k.no_owner, lvl(k.no_owner, Level::Warn))
     .part("Fixes open", k.fixes_open, Level::Ok)
-    .part("Firing", k.firing, Level::Nodata);
+    .part("Firing", k.firing, Level::Nodata)
+    .part("Red now", k.red_now, lvl(k.red_now, Level::Red))
+    .part(
+        "Watches tripped",
+        k.watches_tripped,
+        lvl(k.watches_tripped, Level::Warn),
+    );
     // Nothing needing the human is green when every source answered; the tab's own level says
     // which, and a tab that is red only for rows being fixed is green here.
     c.level = if need == Level::Ok && a.level == Level::Nodata {
@@ -364,9 +370,11 @@ pub fn alerts(a: &crate::alerts::Alerts) -> Card {
     }))
 }
 
-/// Infra: the machines Prometheus reads, the CI pool and what is stuck.
+/// Infra: the machines Prometheus reads, the CI pool and what is stuck, and the System domains
+/// (`cc:domain_status`, `Infra::domains`) the waybar health chip and the phone's System line show.
 pub fn infra(i: &crate::infra::Infra) -> Card {
-    const COUNTED: &str = "machines with a reading, CI runners and slots from Prometheus";
+    const COUNTED: &str =
+        "machines with a reading, CI runners and slots, and the cc:domain_status domains, from Prometheus";
     if !i.ok {
         return Card::failed(
             "infra",
@@ -381,6 +389,7 @@ pub fn infra(i: &crate::infra::Infra) -> Card {
     let unread = i.machines.iter().filter(|m| m.state == NO_DATA).count();
     let down = i.runners_down().len();
     let stuck = i.ci.red.len();
+    let (d_down, d_warn, d_up) = i.domains();
     let mut c = Card::new("infra", "Infra", COUNTED)
         .bar(up, i.machines.len() - up - unread, unread)
         .part("Runners down", down, lvl(down, Level::Red))
@@ -390,7 +399,10 @@ pub fn infra(i: &crate::infra::Infra) -> Card {
             Level::Ok,
         )
         .part("CI queued", i.ci.queued, Level::Ok)
-        .part("Stuck", stuck, lvl(stuck, Level::Red));
+        .part("Stuck", stuck, lvl(stuck, Level::Red))
+        .part("Domains down", d_down, lvl(d_down, Level::Red))
+        .part("Domains warn", d_warn, lvl(d_warn, Level::Warn))
+        .part("Domains up", d_up, Level::Ok);
     if down + stuck > 0 {
         c.level = Level::Red;
     }
@@ -616,7 +628,15 @@ pub fn projects(p: &crate::projects::Projects) -> Card {
         Level::Ok,
     )
     .part("Waiting", sum(|c| c.waiting), lvl(waiting, Level::Warn))
-    .part("Hot", sum(|c| c.hot), Level::Ok);
+    .part("Hot", sum(|c| c.hot), Level::Ok)
+    .part(
+        "Sprints",
+        cards
+            .iter()
+            .filter(|c| crate::projects::sprint_says(c).is_some())
+            .count(),
+        Level::Ok,
+    );
     // An unread queue says so, never a zero or a missing part (rule 6); `figures` then has no
     // number for it, so waybar's D: reads -.
     c = match p.today {

@@ -936,9 +936,9 @@ fn extras(x: &Extras, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
             }
         }
         // Every watch with what it checks, where and what to do is Alerts' Watches; here only
-        // the count and the way there.
-        Extras::SentinelWatches { watches } => {
-            let trip = watches.iter().filter(|x| x.state == "TRIP").count();
+        // the count and the way there; `tripped` is hub-core's (runner::tripped).
+        Extras::SentinelWatches { watches, tripped } => {
+            let trip = *tripped;
             let alerts = hub_core::layout::bar_label("alerts");
             out.push(clip_line(
                 heading(
@@ -1615,9 +1615,7 @@ pub mod tests {
             state: state.into(),
             ..Default::default()
         };
-        r.extras = Extras::SentinelWatches {
-            watches: vec![watch("TRIP"), watch("OK")],
-        };
+        r.extras = Extras::sentinel(vec![watch("TRIP"), watch("OK")]);
         let lines = page_text(Some(&Ok(r)), 120);
         assert!(
             lines.contains(&"WATCHES  2 watches, 1 tripped: 7 Alerts, Watches".to_string()),
@@ -1697,15 +1695,13 @@ pub mod tests {
             Extras::AskJudge {
                 judge: Box::new(fixture().judge),
             },
-            Extras::SentinelWatches {
-                watches: vec![hub_core::fleet::runner::Watch {
-                    name: "claude-spend-hourly".into(),
-                    state: "TRIP".into(),
-                    severity: "high".into(),
-                    since: Some(NOW - 600),
-                    ..Default::default()
-                }],
-            },
+            Extras::sentinel(vec![hub_core::fleet::runner::Watch {
+                name: "claude-spend-hourly".into(),
+                state: "TRIP".into(),
+                severity: "high".into(),
+                since: Some(NOW - 600),
+                ..Default::default()
+            }]),
             Extras::Ingest {
                 counts_7d: [("filed".to_string(), 3)].into(),
                 steps: vec![hub_core::outbox::Step {

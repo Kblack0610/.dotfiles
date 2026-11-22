@@ -1081,9 +1081,12 @@ pub fn gather() -> Projects {
 }
 
 /// The cards as JSON, each with its `summary` line, `in_flight` and `pace`, so a reader prints
-/// the same words the TUI does and computes nothing.
+/// the same words the TUI does and computes nothing, and `figures`, the Projects card's whole
+/// numbers by name (`widget_doc::figures`, absent with any read error), the counts the waybar
+/// projects chip shows.
 pub fn to_json(p: &Projects) -> Value {
     let mut v = serde_json::to_value(p).unwrap_or_default();
+    v["figures"] = serde_json::json!(crate::widget_doc::figures(&[crate::cards::projects(p)]));
     if let Some(cards) = v["cards"].as_array_mut() {
         for (j, c) in cards.iter_mut().zip(&p.cards) {
             j["state_level"] = serde_json::to_value(state_level(c.state)).unwrap_or_default();
