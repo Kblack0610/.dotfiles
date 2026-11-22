@@ -409,6 +409,46 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   assert_output $'u1\nr1\nf1\nb1\nh1\nb2\nc1\nz1'
 }
 
+@test "classes min_live: a class matched by project and under its minimum of live items goes first in its bucket and is marked short; at the minimum, or with none set, the shares decide" {
+  export AGENT_QUEUE_CLASSES="$SANDBOX/classes.json"
+  today="$(date +%F)"
+  mkdir -p "$AGENT_QUEUE_DIR/running" "$AGENT_QUEUE_DIR/waiting"
+  printf 'slug: gl1\nproject: game\npriority: high\nfrom: shepherd\nqueued: %sT00:00:00Z\nstarted: %sT00:30:00Z\n---\nrunning\n' "$today" "$today" \
+    > "$AGENT_QUEUE_DIR/running/20261118-000000-gl1.md"
+  for s in o1 o2; do "$AQ" add --project app --from shepherd --slug "$s" "other $s"; done
+  for s in g1 g2; do "$AQ" add --project game --from shepherd --slug "$s" "game $s"; done
+  n=0; for s in o1 o2 g1 g2; do n=$((n + 1)); sed -i "s/^queued: .*/queued: ${today}T00:0$n:00Z/" "$(item queued "$s")"; done
+  classes() { jq -n --argjson m "$1" '{on: true, window_days: 7, classes: [
+    {name: "other", share: 10, default: true},
+    {name: "gamework", share: 10, projects: ["game"], min_live: $m}]}' > "$SANDBOX/classes.json"; }
+  order() { run bash -c "'$AQ' list --json --state queued | jq -r '[.slug, (.short // false)] | join(\":\")' | paste -sd,"; assert_success; }
+  # Negative control: no minimum, the tie goes to the first class in the file.
+  classes 0; order
+  assert_output 'o1:false,o2:false,g1:false,g2:false'
+  # One game item is live and the minimum is 2: gamework is short once, then at its minimum.
+  classes 2; order
+  assert_output 'g1:true,o1:false,o2:false,g2:false'
+  # At the minimum (1 live): no class is short.
+  classes 1; order
+  assert_output 'o1:false,o2:false,g1:false,g2:false'
+  # A waiting item is live too; a review one holds no session.
+  mv "$AGENT_QUEUE_DIR/running/20261118-000000-gl1.md" "$AGENT_QUEUE_DIR/waiting/"
+  classes 2; order
+  assert_output 'g1:true,o1:false,o2:false,g2:false'
+  mkdir -p "$AGENT_QUEUE_DIR/review"; mv "$AGENT_QUEUE_DIR/waiting/20261118-000000-gl1.md" "$AGENT_QUEUE_DIR/review/"
+  classes 2; order
+  assert_output 'g1:true,g2:true,o1:false,o2:false'
+  run "$AQ" mix --json
+  [ "$(jq -c '.classes[] | select(.name == "gamework") | [.live, .min_live]' <<<"$output")" = '[0,2]' ]
+  # A minimum that is not a whole number is no mix, never a failed listing.
+  classes 1.5
+  run bash -c "'$AQ' list --json --state queued | jq -r .slug | paste -sd,"
+  assert_success
+  assert_output 'o1,o2,g1,g2'
+  run "$AQ" mix
+  assert_failure
+}
+
 @test "the class mix is elastic: lag_places bounds how far the window's history holds a class back, and a class with nothing queued gives its turns to the rest" {
   export AGENT_QUEUE_CLASSES="$SANDBOX/classes.json"
   today="$(date +%F)"
@@ -495,7 +535,7 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   run jq -r --slurpfile k "$REPO_ROOT/.config/fleet-dispatch/kinds.json" '.classes[].kinds[]? | select(. as $n | $k[0] | has($n) | not)' "$c"
   assert_success
   assert_output ''
-  run jq -e '(.classes | all(.share | type == "number")) and ([.classes[] | select(.default == true)] | length == 1) and (.on | type == "boolean")' "$c"
+  run jq -e '(.classes | all(.share | type == "number")) and (.classes | all(.min_live == null or (.min_live | type == "number" and . == floor))) and ([.classes[] | select(.default == true)] | length == 1) and (.on | type == "boolean")' "$c"
   assert_success
 }
 
