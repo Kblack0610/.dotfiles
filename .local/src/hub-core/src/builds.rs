@@ -330,9 +330,8 @@ impl Counts {
     /// `212 runs in 30 days: 3 running, 2 queued, 14 red`.
     pub fn says(&self) -> String {
         format!(
-            "{} run{} in {KEEP_DAYS} days: {} running, {} queued, {} red",
-            self.total,
-            if self.total == 1 { "" } else { "s" },
+            "{} in {KEEP_DAYS} days: {} running, {} queued, {} red",
+            crate::display::fmt::counted(self.total, "run"),
             self.running,
             self.queued,
             self.red

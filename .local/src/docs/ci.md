@@ -38,7 +38,7 @@ The one home for CI doctrine across every repo the fleet works in. Each rule is 
 
 One decision list. Walk it top to bottom for every red.
 
-1. Classify the red from its log and the same-commit history, never by rerunning it (`ci-failures` buckets: infra, timeout, test, check, derived, pending).
+1. Classify the red from its log and the same-commit history, never by rerunning it (`ci-cleanup` Reds buckets: infra, timeout, test, check, derived, pending).
 2. A test red is fixed, its cause reverted, or quarantined with an owner, an expiry of at most two weeks, and a board row. Why: a quarantine without an expiry is permanent (`playground-nightly-fix`).
 3. A rerun is allowed only for a red classified infra with evidence: the log shows a runner lost, a network or transport error, a rate limit or a registry pull failure, before the job's main work started. A test assertion or a timeout inside the tests is never infra. The infra cause is filed on the board or queue first. A rerun never turns a test red green. Why: blanket reruns hide flakes until main is red every night (the G2I digest rejects a client auto-retry workflow for this reason).
 4. No automatic retry, at the job or the test level. Why: the same.
@@ -48,12 +48,12 @@ One decision list. Walk it top to bottom for every red.
 
 - A change to the CI harness or the picker ships with a test and a negative control that proves the test can fail. Why: a gate that cannot fail is not a gate (playground rule 13; dotfiles `shell-test-harness` section 3).
 - A gate that cannot enumerate its inputs fails rather than reporting clean. Why: dotfiles lesson 2026-07-26; a silent empty pick is a green on nothing.
-- A cost or speed change is measured before and after with the same script and window, and the measured number replaces the plan's estimate. Why: a saving measured with another script or window cannot be credited to the lever (skill `ci-cost` step 6, playground `docs/operations/ci-cost.md` log).
+- A cost or speed change is measured before and after with the same script and window, and the measured number replaces the plan's estimate. Why: a saving measured with another script or window cannot be credited to the lever (skill `ci-cleanup`, Cost step 5, playground `docs/operations/ci-cost.md` log).
 
 ## Analysis
 
-- Read PRs from the PR store (`schedules-sync prs`) and runs from the local run ledger (`schedules-sync runs`, the playground's `~/.local/state/unity-test-runs/runs.tsv`) and the `ci-failures` and `ci-cost` scripts, with their caches; never sweep `gh api` live in a loop. A pass rate is `hub ci pass` (hub_core `builds::verdict`: green over green plus red, each attempt a run, cancelled and skipped left out), never a second formula. Why: a session hit a GitHub 403 on 2026-11-10, and the account's 5,000 calls an hour are shared by every session.
-- Quote only a number counted in this session or read from a dated doc. Why: an uncounted number cannot be compared next time (skills `ci-cost`, `ci-failures`).
+- Read PRs from the PR store (`schedules-sync prs`) and runs from the local run ledger (`schedules-sync runs`, the playground's `~/.local/state/unity-test-runs/runs.tsv`) and `ci-failures.py` and `ci-cost.py`, with their caches; never sweep `gh api` live in a loop. A pass rate is `hub ci pass` (hub_core `builds::verdict`: green over green plus red, each attempt a run, cancelled and skipped left out), never a second formula. Why: a session hit a GitHub 403 on 2026-11-10, and the account's 5,000 calls an hour are shared by every session.
+- Quote only a number counted in this session or read from a dated doc. Why: an uncounted number cannot be compared next time (skill `ci-cleanup`).
 
 ## Client bars
 

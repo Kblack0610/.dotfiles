@@ -217,8 +217,9 @@ fn name(r: &SessionRow) -> String {
 
 fn idle(r: &SessionRow) -> String {
     if r.ended.is_empty() {
-        r.idle_min
-            .map_or(String::new(), |m| format!("{} idle", queue::dur(Some(m))))
+        r.idle_min.map_or(String::new(), |m| {
+            format!("{} idle", crate::display::fmt::dur_min(Some(m)))
+        })
     } else {
         r.ended.clone()
     }

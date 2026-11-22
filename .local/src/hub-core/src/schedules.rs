@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Datelike, FixedOffset, Local, Timelike};
 use serde::{Deserialize, Serialize};
 
+use crate::display::fmt::age;
 use crate::fleet::{self, runner, runner::Watch, Conf};
 use crate::jobs::{self, Job, State};
 use crate::prom::{self, Series};
@@ -18,7 +19,6 @@ use crate::reading::JobState;
 use crate::reds::{self, Red, Route};
 use crate::session_actions::Runner;
 use crate::table::{Row, Val};
-use crate::text::age;
 use crate::vocab::Level;
 
 /// How far back a streak looks; agentctl's ledger and the journal both hold a week.

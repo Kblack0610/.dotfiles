@@ -15,7 +15,8 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::{DataTable, Took};
 use crate::fit::{cell, clip_line, Cell, Table};
-use crate::fmt::{clock, dur, pct, Palette};
+use crate::fmt::{clock, pct, Palette};
+use hub_core::display::fmt::dur_secs;
 
 /// The tables in `hub_core::layout` section order; an index here is a table's view.
 pub const TABLES: [&str; 5] = ["machines", "pools", "runners", "queued", "local"];
@@ -395,7 +396,7 @@ fn machines(d: &Draw, rows: &[Machine], now: i64) -> Vec<Line<'static>> {
                 or_dash(m.running.join(", ")),
                 m.next
                     .as_ref()
-                    .map_or("-".into(), |n| n.line(|s| dur(s as f64)).into()),
+                    .map_or("-".into(), |n| n.line(|s| dur_secs(s as f64)).into()),
                 m.governor.as_ref().map_or("-".into(), |g| g.says().into()),
                 power.into(),
                 m.boot.map_or("-".into(), |b| clock(b as i64, now).into()),
@@ -437,7 +438,7 @@ fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
                     Some(x) if x > 0.0 => cell(format!("{x:.0}"), p.warn()),
                     v => num(v),
                 },
-                r.oldest.map_or("-".into(), |s| dur(s).into()),
+                r.oldest.map_or("-".into(), |s| dur_secs(s).into()),
                 num(r.done),
                 cell(pct(r.pass), p.pass(r.pass)),
                 or_dash(shown(r, "machines")),
@@ -460,7 +461,7 @@ const SLOT_HEAD: [&str; 8] = [
 /// Every CI slot with the job it runs and how long against its usual; a late job is amber.
 fn runners(d: &Draw, rows: &[Slot]) -> Vec<Line<'static>> {
     let p = d.p;
-    let secs = |v: Option<i64>| v.map_or("-".to_string(), |s| dur(s as f64));
+    let secs = |v: Option<i64>| v.map_or("-".to_string(), |s| dur_secs(s as f64));
     d.table(
         "RUNNERS".into(),
         rows,
@@ -537,13 +538,13 @@ fn queued(d: &Draw, rows: &[Queued]) -> Vec<Line<'static>> {
                 or_dash(q.pool.clone()),
                 or_dash(q.reference()),
                 q.n.to_string().into(),
-                dur(q.wait as f64).into(),
+                dur_secs(q.wait as f64).into(),
                 or_dash(q.needs.join(", ")),
                 cell(can, s),
                 match q.starts {
                     None => "-".into(),
                     Some(0) => format!("now {}", q.at).into(),
-                    Some(t) => format!("in {} {}", dur(t as f64), q.at).into(),
+                    Some(t) => format!("in {} {}", dur_secs(t as f64), q.at).into(),
                 },
             ]
         },
