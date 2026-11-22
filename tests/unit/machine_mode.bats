@@ -27,6 +27,8 @@ setup() {
   export CC_PROM_URL=http://prom.test CC_KUBE_CONTEXT=test-ctx
   touch "$FX/actions.runner.host-unity-pool-1.service"
   export MACHINE_MODE_RUNNER_UNITS="$FX/actions.runner.*-unity-pool-*.service"
+  # No count directory: the slot part is skipped until a test makes one (slots_fixture).
+  export MACHINE_MODE_SLOT_FILE="$FX/ci-slots/slots"
   ln -s "$REPO_ROOT/.local/bin/agent-hold" "$SANDBOX/bin/agent-hold"
   # Never a real waybar: the switch goes through desk, which signals it by process name.
   mkdir -p "$HOME/.local/bin" && ln -s "$REPO_ROOT/.local/bin/desk" "$HOME/.local/bin/desk"
@@ -278,6 +280,111 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
   [ ! -e "$STATE" ]
   [ ! -e "$AGENT_HOLD_DIR/dispatch" ]
   [ ! -e "$FX/kubectl.log" ]
+}
+
+# slots_fixture: two slots, both running, a count directory, and stubs for the units. systemctl
+# keeps a unit's state as a file under active/ (a user unit's as user.<name>), and answers show with
+# the slot's home; pgrep matches procs, the command lines running; systemd-run logs and runs its
+# command now, or leaves its unit active with WAITER_HOLD. The job-end waiter logs and exits WAIT_RC.
+slots_fixture() {
+  touch "$FX/actions.runner.host-unity-pool-2.service"
+  mkdir -p "$FX/ci-slots" "$FX/active"
+  touch "$FX/active/actions.runner.host-unity-pool-1.service" "$FX/active/actions.runner.host-unity-pool-2.service"
+  : > "$FX/procs"
+  cat > "$SANDBOX/bin/systemctl" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >> "$FX/systemctl.log"
+user=""; [ "$1" = --user ] && { user=user.; shift; }
+[ "$1" = --no-ask-password ] && shift
+unit="${*: -1}"
+case "$1" in
+  is-active) [ -e "$FX/active/$user$unit" ] ;;
+  show) echo "$FX/home/$unit" ;;
+  start) [ -z "$user" ] && [ -n "${SYSTEMCTL_FAIL:-}" ] && exit 1; touch "$FX/active/$user$unit" ;;
+  stop) [ -z "$user" ] && [ -n "${SYSTEMCTL_FAIL:-}" ] && exit 1; rm -f "$FX/active/$user$unit" ;;
+esac
+STUB
+  printf '#!/usr/bin/env bash
+grep -qE -- "${*: -1}" "$FX/procs"
+' > "$SANDBOX/bin/pgrep"
+  cat > "$SANDBOX/bin/systemd-run" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >> "$FX/systemd-run.log"
+while [ "$1" != /bin/sh ]; do [ "$1" = --unit ] && unit="$2"; shift; done
+touch "$FX/active/user.$unit"
+[ -n "${WAITER_HOLD:-}" ] && exit 0
+"$@"; rm -f "$FX/active/user.$unit"
+STUB
+  printf '#!/usr/bin/env bash
+echo "$*" >> "$FX/wait.log"
+exit "${WAIT_RC:-0}"
+' > "$FX/wait"
+  chmod +x "$SANDBOX/bin/systemctl" "$SANDBOX/bin/pgrep" "$SANDBOX/bin/systemd-run" "$FX/wait"
+  export MACHINE_MODE_WAIT_WORKER="$FX/wait"
+}
+active() { [ -e "$FX/active/$1" ]; }
+# Not "! active": bats ignores a negated command's status on any line but the last.
+inactive() { [ ! -e "$FX/active/$1" ]; }
+busy() { echo "$FX/home/actions.runner.host-unity-pool-$1.service/bin.2.337.0/Runner.Worker spawnclient 1 2" >> "$FX/procs"; }
+
+@test "a switch writes the mode's runners as the slot count, runs the slots under it and stops an idle one over it" {
+  slots_fixture
+  run "$MM" full
+  assert_success
+  assert_equal "$(cat "$MACHINE_MODE_SLOT_FILE")" 1
+  active actions.runner.host-unity-pool-1.service
+  inactive actions.runner.host-unity-pool-2.service
+  [ ! -e "$FX/systemd-run.log" ]
+  run "$MM" reserved
+  assert_equal "$(cat "$MACHINE_MODE_SLOT_FILE")" 0
+  inactive actions.runner.host-unity-pool-1.service
+}
+
+@test "a busy slot over the count stops once its job ends, and one waiter at a time" {
+  slots_fixture
+  busy 2
+  WAITER_HOLD=1 run "$MM" full
+  assert_success
+  assert_output --partial "actions.runner.host-unity-pool-2.service: stops when its job ends"
+  active actions.runner.host-unity-pool-2.service
+  active user.machine-mode-drain-2
+  WAITER_HOLD=1 run "$MM" full
+  assert_equal "$(wc -l < "$FX/systemd-run.log")" 1
+  # The waiter's own command: once the job ends it stops the slot, and on a timeout it leaves it.
+  rm "$FX/active/user.machine-mode-drain-2"
+  WAIT_RC=124 run "$MM" full
+  active actions.runner.host-unity-pool-2.service
+  run "$MM" full
+  inactive actions.runner.host-unity-pool-2.service
+  assert_equal "$(tail -1 "$FX/wait.log")" "^$FX/home/actions.runner.host-unity-pool-2.service/bin[^/]*/Runner.Worker 21600"
+}
+
+@test "a switch that runs a draining slot again cancels its waiter" {
+  slots_fixture
+  busy 2
+  export MACHINE_MODE_MODES="$FX/modes"
+  printf 'both|2|2|mid\none|1|2|mid\n' > "$MACHINE_MODE_MODES"
+  WAITER_HOLD=1 run "$MM" one
+  active user.machine-mode-drain-2
+  run "$MM" both
+  assert_success
+  inactive user.machine-mode-drain-2
+  active actions.runner.host-unity-pool-2.service
+}
+
+@test "a slot that will not start or stop leaves the switch unapplied, exit 1, and names the polkit rule" {
+  slots_fixture
+  SYSTEMCTL_FAIL=1 run "$MM" full
+  assert_failure
+  assert_output --partial "its polkit rule"
+  assert_equal "$(state RUNNERS_PINNED)" no
+}
+
+@test "a host with no count directory starts and stops no slot" {
+  run "$MM" full
+  assert_success
+  [ ! -e "$FX/ci-slots" ]
+  [ ! -e "$FX/systemctl.log" ]
 }
 
 # hours_fixture: a day of two parts, so the clock tests do not move with the shipped hours.
