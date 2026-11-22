@@ -1,12 +1,12 @@
 ---
 name: day-log
 description: >-
-  What a day or week shipped, and a review of it (was drift-audit): merged PRs by area, what waits on the human, spend, gaps and drift. Use for "what got done today", "what merged this week", "review yesterday's work", "drift audit", "what landed #N". ETAs: fleet-bench.
+  What a day or week shipped, and a review of it (was drift-audit): merged PRs by area, what waits on the human, spend, gaps and drift. Use for "what got done today", "daily summary", "what moved this week", "review yesterday's work", "what landed #N". ETAs: fleet-bench.
 metadata:
   category: monitoring
   tags: [fleet, prs, daily, history, observability, audit, retrospective]
   system: [telemetry, dispatch]
-  reviewed: 2026-11-06
+  reviewed: "2026-11-21"
 ---
 
 # day-log

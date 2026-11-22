@@ -833,11 +833,11 @@ check_stale() {
 # Every skill's description sits in the context window of every session whether
 # it fires or not, so a skill nothing calls is a standing cost. Counted by
 # `claude-recall stats` over USE_KINDS, so a skill the human reaches only by its slash
-# command (captain, one-shot) or a session only by reading it is not reported unused.
+# command (one-shot) or a session only by reading it is not reported unused.
 #
 # A SIGNAL, not a verdict. A release runbook is supposed to look idle between
 # releases; what this is for is finding the ones that are idle because the router
-# never picks them, which is the overlap problem skill-refine has had no data for.
+# never picks them, which is the overlap problem docs-cleanup audits.
 declare -A USED=() BYPASS=() BYPASS_COVERED=() DENIED=() REPLACES=()
 # The window start and the time every transcript root reaches back to, from the last load_usage.
 USAGE_SINCE="" USAGE_COVERED=""
