@@ -1207,7 +1207,7 @@ gate_rbw() {
   "$REPO_ROOT/.local/bin/agent-hold" claim mac-desktop --by other "steam forms" >/dev/null
   # A project with no board to file on cannot give it a row: refused, and the item stays running.
   run "$AQ" requeue forms --hold mac-desktop
-  assert_failure; assert_output --partial "has no board row to wait on hold:mac-desktop and none could be filed"
+  assert_failure; assert_output --partial "has no board row to wait on hold:mac-desktop and none was filed"
   [ -n "$(item running forms)" ]
   "$AQ" set forms row=game:gm-9 >/dev/null
   : > "$NOTES_FIXTURE/calls.log"
@@ -1311,6 +1311,27 @@ gate_rbw() {
   f="$(ls "$AGENT_QUEUE_DIR"/done/*/*-forms.md)"
   [ "$(field "$f" row)" = level:lv-9 ]
   [ "$(field "$f" end_reason)" = returned ]
+}
+
+@test "requeue --hold leaves a canary item with no row refused, and a twin row another item works (ar-4236)" {
+  story_notes
+  export AGENT_HOLD_DIR="$SANDBOX/holds"
+  "$REPO_ROOT/.local/bin/agent-hold" claim mac-desktop --by other "steam forms" >/dev/null
+  "$AQ" add --project level --running --slug forms "fill the store forms" >/dev/null
+  "$AQ" add --project level --running --slug twin "fill the store forms" >/dev/null
+  sed -i '/^row: /d' "$(item running forms)"
+  # The twin's row is open and carried by the other live item: forms may not take it.
+  printf -- '- [ ] fill the store forms <!-- id:lv-9 -->\n' > "$NOTES_FIXTURE/story.out"; echo 3 > "$NOTES_FIXTURE/story.rc"
+  run "$AQ" requeue forms --hold mac-desktop
+  assert_failure; assert_output --partial "is item twin's"
+  [ -n "$(item running forms)" ]
+  # An item with its own record (a canary) is refused with no row filed.
+  sed -i 's/^from: .*/from: canary/' "$(item running forms)"
+  rm -f "$NOTES_FIXTURE/story.rc"; : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" requeue forms --hold mac-desktop
+  assert_failure; assert_output --partial "keeps its own record"
+  run grep -c ' add ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
 }
 
 @test "requeue --class tags the item's desk class once, and a later --class replaces it" {

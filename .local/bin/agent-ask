@@ -2576,7 +2576,8 @@ joinable() {
 # settle_by_verdict <file> <post|sweep>: close the ask on what the judge said already settles it
 # (policy, Settled already), each premise checked again here, since the model only reads text.
 # `hold:<name>`: a hold the human set and still holds decides it, so it is answered by that hold
-# (`answered_by: hold`), told to the asker at post and delivered at sweep. `ask:<id>`: an older
+# (`answered_by: hold`), with options by the option the judge names (none, or not an option, leaves the
+# ask pending), told to the asker at post and delivered at sweep. `ask:<id>`: an older
 # joinable ask asks the same, so this ask's sessions wait on that one and this one is cancelled.
 # Prints `hold <name>` or `joined <id>`. Fails, changing nothing, on any other verdict or a premise gone. Never an
 # approval, an audit, an ask a queue item waits on (the queue releases only on the human's answer),

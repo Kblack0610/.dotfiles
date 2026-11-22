@@ -3398,17 +3398,29 @@ cmd_requeue() {
     [ -n "$(ask_pending "$ask")" ] || die "ask ${ask%%=*} is already answered: read the answer and go on instead of requeueing"
   fi
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
-  # The wait is the board row's (cmd_add), so a hand-queued item with none gets its story row filed
-  # first, as add files one, and goes back to it: refusing it stranded the item behind the hold (ar-4236).
+  # The wait is the board row's (cmd_add), so a hand-queued item with none gets its story row first, as
+  # add files one (a re-queue keeps its old row, prior_story), and goes back to it: refusing it stranded
+  # the item behind the hold (ar-4236). Work with its own record (cmd_add: canary, trainee, an ask's
+  # resume) has no row by design and is still refused.
   if [ -z "$(item_row "$f")" ]; then
-    local story sboard sprof srow
-    local body title; body="$(fm_body "$f")"; title="$(fm_get "$f" title)"
-    story="$(file_story "$(fm_get "$f" project)" "${title:-$(head -1 <<<"$body")}" "$(fm_get "$f" priority)" "" "" "$body" "" "" "$(fm_get "$f" tags)")"
-    [ -n "$story" ] || die "$slug has no board row to wait on $tag and none could be filed: give it one (agent-queue set $slug row=<board>:<id>) and requeue again"
+    local story sboard sprof srow body title other
+    case "$(fm_get "$f" from)" in
+      canary | trainee | ask:*) die "$slug has no board row to wait on $tag, and an item of its kind keeps its own record: give it one (agent-queue set $slug row=<board>:<id>) and requeue again" ;;
+    esac
+    body="$(fm_body "$f")" title="$(fm_get "$f" title)"
+    story="$(prior_story "$slug" "$(fm_get "$f" project)")"
+    [ -n "$story" ] || story="$(file_story "$(fm_get "$f" project)" "${title:-$(head -1 <<<"$body")}" "$(fm_get "$f" priority)" "" "" "$body" "" "" "$(fm_get "$f" tags)")"
+    [ -n "$story" ] || die "$slug has no board row to wait on $tag and none was filed (the agent-queue line above says why): fix that, or give it one (agent-queue set $slug row=<board>:<id>) and requeue again"
     IFS=$'\t' read -r sboard sprof srow <<<"$story"
+    # A twin of an open row is that row: refuse when another live item works it.
+    other="$(grep -lxF "row: $sboard:$srow" "$AQ_DIR"/{queued,running,waiting,review}/*.md 2>/dev/null | grep -v -F -x "$f" | head -1 || true)"
+    [ -z "$other" ] || die "$slug has no board row, and the one its words match, $sboard:$srow, is item $(fm_get "$other" slug)'s: requeue that item, or give $slug a row (agent-queue set $slug row=<board>:<id>)"
     lock
     f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
-    header_set "$f" row "$sboard:$srow"; header_set "$f" lane agent; header_set "$f" profile "$sprof"
+    # A concurrent requeue may have set one meanwhile: it wins.
+    if [ -z "$(item_row "$f")" ]; then
+      header_set "$f" row "$sboard:$srow"; header_set "$f" lane agent; header_set "$f" profile "$sprof"
+    fi
     unlock
   fi
   lock
