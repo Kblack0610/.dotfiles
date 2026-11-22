@@ -167,7 +167,7 @@ newer_runs() {
   jq -r --argjson c "$1" '[.[] | select(.status != "completed") | . as $r
     | select($c | any(.workflow == $r.workflowName and (.bucket != "fail" or
         (((.event // "") == "" or .event == $r.event) and (
-          (((.link // "") | capture("/runs/(?<id>[0-9]+)/")?.id | tonumber) // infinite) < ($r.databaseId // 0)
+          ([(.link // "") | capture("/runs/(?<id>[0-9]+)/") | .id | tonumber][0] // infinite) < ($r.databaseId // 0)
           or ([$r.createdAt, $r.startedAt] | map(. // "") | max) > (.completedAt // "~"))))))] | length' <<<"$runs"
 }
 # gh_read <var> <gh args...>: gh's stdout in <var> and its stderr in gh_err, so a warning gh prints
