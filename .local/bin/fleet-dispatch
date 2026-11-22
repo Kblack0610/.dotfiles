@@ -7479,12 +7479,18 @@ cmd_promote() {
 # queue gets a log line. An urgent or high one started at once (start --item); a low one waits for a
 # pass in its turn (agent-queue waits_turn). The row it waited on may still read open (an item with a PR
 # closes its row at the merge, after this move), so its after/ counts clear here: the ok close is the
-# proof. --queue-only (agent-queue under AGENT_QUEUE_START=0, the shepherd's idle close) queues the rows and starts none. Under the dispatch hold (agent-hold)
-# nothing is pulled; the pass after the release does it.
+# proof. Under the dispatch hold (agent-hold) nothing is pulled; the pass after the release does it.
+# --queue-only (agent-queue under AGENT_QUEUE_START=0, the shepherd's idle close) queues the rows and
+# starts none.
 cmd_pull_after() {
-  local id board c pri err kept='' rc queue_only=''
-  [ "${1-}" != --queue-only ] || { queue_only=1; shift; }
-  id=${1-}
+  local id='' board c pri err kept='' rc queue_only='' a
+  for a in "$@"; do
+    case "$a" in
+      --queue-only) queue_only=1 ;;
+      -*) say "pull-after: unknown argument: $a"; return 2 ;;
+      *) id=$a ;;
+    esac
+  done
   [ -n "$id" ] || { say "usage: fleet-dispatch pull-after [--queue-only] <row id>"; return 2; }
   agent-hold check dispatch >/dev/null 2>&1 || { say "pull-after $id: dispatch is held, so the rows after it wait for a pass"; return 0; }
   board=$(notes board --json 2>/dev/null) || { say "pull-after $id: notes board --json failed, so a pass promotes the rows after it"; return 1; }

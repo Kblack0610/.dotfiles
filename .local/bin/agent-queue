@@ -3544,13 +3544,14 @@ dispatch_held() {
 # fleet-dispatch pull-after --queue-only queues the rows and starts none (2026-11-21: ar-4357 sat 10h behind
 # ar-4356, which the shepherd closed with the pull skipped and the fleet share kept a pass from filling it).
 pull_after() {
-  local row only=()
+  local row rc=0
   row="$(item_row "$2")"
   [ -n "$row" ] || return 0
-  [ "${AGENT_QUEUE_START:-1}" = 1 ] || only=(--queue-only)
   # fleet-dispatch adds through this script: free the lock, and keep the fd out of tmux.
   unlock
-  fleet-dispatch pull-after "${only[@]}" "${row#*:}" ||
+  if [ "${AGENT_QUEUE_START:-1}" = 1 ]; then fleet-dispatch pull-after "${row#*:}" || rc=$?
+  else fleet-dispatch pull-after --queue-only "${row#*:}" || rc=$?; fi
+  [ "$rc" = 0 ] ||
     echo "agent-queue: the rows after ${row#*:} were not pulled now, so the next dispatch pass promotes them" >&2
   return 0
 }

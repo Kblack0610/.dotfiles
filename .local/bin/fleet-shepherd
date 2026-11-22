@@ -831,7 +831,7 @@ takeover_sample() {
 # FLEET_IDLE_CLOSE_MIN gets `agent-queue move <slug> done --status ok --if running`, so its close verdict
 # reads now and close_sample closes it in the same pass (2026-11-18: agent-22 sat 7h on its item, nudged
 # and never closed). Not manual (its verdict is keep), not a worker's row (its queue is on its machine),
-# AGENT_QUEUE_START=0 (the shepherd starts nothing). agent-queue refuses an item with a partial landing or
+# AGENT_QUEUE_START=0 (the shepherd starts nothing; the close still queues the rows after its item, pull_after). agent-queue refuses an item with a partial landing or
 # an open PR: that refusal is logged and left to the nudge and escalation, and tried again after FLEET_IDLE_CLOSE_MIN
 # (a marker file in .item-close-failed/). A row that wakes itself (`wake`) keeps its item: its wake needs it.
 close_items_sample() {
