@@ -50,9 +50,11 @@ printf "game\\t3\\t10\\t2000000\\t12.5\\t0\\n"
 EOF
   printf '#!/usr/bin/env bash\nprintf "unity\\t2026-10-28T15:49:30-0700\\tshepherd\\thot\\n"\n' > "$SANDBOX/bin/hold-stub"
   local f; for f in headline working need_you stalled ready_to_close; do echo 0 > "$SANDBOX/sessions.$f"; done
+  for f in shipped checks; do echo 0 > "$SANDBOX/done.$f"; done
   # needs-stub: hub-figure. needs_question serves $SANDBOX/needq (0 when none), "?" and exit 1 when it holds "?";
-  # sessions_<part> serves $SANDBOX/sessions.<part>, "?" and exit 1 when the file is absent
-  printf '#!/usr/bin/env bash\ncase "$1" in\n  needs_question) n=$(cat "%s" 2>/dev/null || echo 0); echo "$n"; [ "$n" = "?" ] && exit 1; exit 0 ;;\n  sessions_*) n=$(cat "%s.${1#sessions_}" 2>/dev/null) || { echo "?"; exit 1; }; echo "$n"; exit 0 ;;\n  *) exit 2 ;;\nesac\n' "$SANDBOX/needq" "$SANDBOX/sessions" > "$SANDBOX/bin/needs-stub"
+  # sessions_<part> and done_<part> serve $SANDBOX/sessions.<part> and $SANDBOX/done.<part>, "?" and exit 1 when
+  # the file is absent
+  printf '#!/usr/bin/env bash\ncase "$1" in\n  needs_question) n=$(cat "%s" 2>/dev/null || echo 0); echo "$n"; [ "$n" = "?" ] && exit 1; exit 0 ;;\n  sessions_*|done_*) n=$(cat "%s/${1%%%%_*}.${1#*_}" 2>/dev/null) || { echo "?"; exit 1; }; echo "$n"; exit 0 ;;\n  *) exit 2 ;;\nesac\n' "$SANDBOX/needq" "$SANDBOX" > "$SANDBOX/bin/needs-stub"
   # queue-stub: agent-queue list serves $SANDBOX/items (the work ledger), stats serves $SANDBOX/queue;
   # each fails while its file is missing
   export DAYLOG_QUEUE_CMD=queue-stub
@@ -315,6 +317,23 @@ day_record() { jq -n "{schema: 2, date: \"$1\", merged: []} | $2" > "$DAYLOG_DIR
   assert_output '[null,["Sessions figure"]]'
 }
 
+@test "Shipped and Checks are hub-core's Done today figures, not the PRs day-log counts merged" {
+  # two PRs merged; the Done today card closed 7 items with a merge and 3 without
+  { pr game 1 'feat(a): x' 2026-10-28T17:00:00Z; pr game 2 'feat(b): y' 2026-10-28T18:00:00Z; } | merged
+  echo 7 > "$SANDBOX/done.shipped"; echo 3 > "$SANDBOX/done.checks"
+  run "$SUBJECT" show
+  assert_success
+  assert_line --partial '2 PRs merged in 1 repos; 7 shipped and 3 checks (queue items, hub-core Done today); '
+  run rec -c '[.done, .unreadable]' 2026-10-28
+  assert_output '[{"shipped":7,"checks":3},[]]'
+  # Negative control: a Done figure hub-core cannot give reads ?, never the PR count, and is named
+  rm "$SANDBOX/done.shipped"
+  run "$SUBJECT" show
+  assert_line --partial '2 PRs merged in 1 repos; ? shipped and 3 checks'
+  run rec -c '[.done, .unreadable]' 2026-10-28
+  assert_output '[{"checks":3},["Done figure"]]'
+}
+
 @test "json reads a past day's record and refuses a day with none, or one still to come" {
   run "$SUBJECT" json --date 2026-10-20
   assert_failure
@@ -327,7 +346,7 @@ day_record() { jq -n "{schema: 2, date: \"$1\", merged: []} | $2" > "$DAYLOG_DIR
   pr game 1 'feat(raiders): x' 2026-10-28T03:00:00Z | merged     # 20:00 PDT on the 27th
   run "$SUBJECT" finalize
   assert_success
-  assert_output '1 merged across 1 repos'
+  assert_output '1 PR merged across 1 repos'
   run grep -c 'game#1' "$DAYLOG_REFS_DIR/2026-10-27/shipped.md"
   assert_output 1
 }
