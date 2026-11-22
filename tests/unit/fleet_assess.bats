@@ -43,6 +43,18 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   assert_output --partial 'HOLD memory 8%'
 }
 
+# fleet-dispatch's plan load floor (assess_why 2) reads the verdict with load's mark out of reach.
+@test "load names the verdict first; with FLEET_HOLD_LOAD_X out of reach, memory and temperature beside it still HOLD" {
+  run fleet_verdict 72 24 60 8 0
+  assert_output --partial 'HOLD load 3.0x'
+  FLEET_HOLD_LOAD_X=1000000 run fleet_verdict 72 24 60 8 0
+  assert_output --partial 'HOLD memory 8%'
+  FLEET_HOLD_LOAD_X=1000000 run fleet_verdict 72 24 99 60 0
+  assert_output --partial 'HOLD tctl 99'
+  FLEET_HOLD_LOAD_X=1000000 run fleet_verdict 72 24 60 60 0
+  assert_output --partial 'OK load 3.0x'
+}
+
 @test "the 2026-11-06 miss (48% free, kswapd swapping into zram) is HOLD on memory stall" {
   run fleet_verdict 5 24 60 48 0 35
   assert_output --partial 'HOLD memory stall 35.0%'
