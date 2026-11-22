@@ -413,10 +413,11 @@ fn projects(p: &Projects) -> Vec<Row> {
 
 /// "CI: 4 running, 3 queued, 12/12 up, aws-burst-1 offline, 1 no runner": the glance the bar and the Infra
 /// tab read, red only while a runner is down or a queued job has no runner (`Glance::alert`),
-/// naming what is down; no row with no runner read.
+/// naming what is down. With no runner read it still says what runs and waits, at no verdict
+/// (`-/- up`); no row only when there is nothing to say.
 fn ci(infra: &Infra) -> Option<Row> {
     let g = &infra.ci.glance;
-    if g.alert == Level::Nodata {
+    if g.alert == Level::Nodata && g.busy == 0 && g.queued == 0 {
         return None;
     }
     let mut said = vec![format!("CI: {} running", g.busy)];
@@ -1276,6 +1277,15 @@ mod tests {
         inf.ci.glance.alert = Level::Red;
         let p = phone(&state(), None, Some(&inf));
         assert_eq!(texts(&p, "ci"), ["CI: 6 running, 1/1 up, 1 no runner"]);
+        // No runner read: what runs still shows, at no verdict, and nothing at all is no row.
+        let mut inf = infra(vec![]);
+        let p = phone(&state(), None, Some(&inf));
+        assert_eq!(texts(&p, "ci"), ["CI: 6 running, -/- up"]);
+        let row = p.rows.iter().find(|r| r.head == "ci").unwrap();
+        assert_eq!(row.level, Level::Nodata);
+        inf.ci.glance.busy = 0;
+        let p = phone(&state(), None, Some(&inf));
+        assert!(texts(&p, "ci").is_empty());
     }
 
     #[test]

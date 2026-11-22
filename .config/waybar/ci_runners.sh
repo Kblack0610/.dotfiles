@@ -4,13 +4,15 @@
 # struct), so the bar cannot count slots one way while the board counts them another.
 #
 # Bar: jobs running, jobs queued and runners up of the roster: `CI 4 run q3 12/12`, `-/-` with
-# no runner read. The CI label and the class take glance.alert, red only while a runner is down
-# or a queued job has no runner that can take it; queue depth, drain and pass rate never colour
-# the bar (the health chip keeps cc:domain_status{domain="ci"}, queue waits and pass rate
-# included); the up count is red only while a runner is down, and a job no online runner can take
-# (hub ci's red lines) is the hover's first line under the parts. No slot cells on the bar: one per slot ran ~40 wide and pushed the right-side
-# modules into each other. A unit in the hover is one slot a machine really has (a Unity slot, a
-# gate slot, a macos runner), never a runner registration.
+# no runner read. No slot cells on the bar: one per slot ran ~40 wide and pushed the right-side
+# modules into each other.
+# Colour: the CI label and the class take glance.alert, red only while a runner is down or a
+# queued job has no runner that can take it. Queue depth, drain and pass rate never colour the
+# bar; the health chip keeps cc:domain_status{domain="ci"}, queue waits and pass rate included.
+# The up count is red only while a runner is down. A job no online runner can take (hub ci's red
+# lines) is the hover's first line under the parts.
+# A unit in the hover is one slot a machine really has (a Unity slot, a gate slot, a macos
+# runner), never a runner registration.
 # Hover: the title with each machine's cells, a group per machine (a whole busy unit full, the
 # taken fraction as an eighth block on the dim colour, the rest dim), then the same head line as the
 # board (jobs running, queued, backlog units and drain time, runners up, done in 24h, pass rate
@@ -92,7 +94,7 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
   | .glance as $g
   | ($g.alert | lvl) as $lv
   # Glance::up_line: runners up of the roster, -/- with no runner read.
-  | (if $g.expected == 0 then "-/-" else "\($g.up)/\($g.expected)" end) as $up
+  | (if ($g.expected // 0) == 0 then "-/-" else "\($g.up)/\($g.expected)" end) as $up
   | (if $g.queued > 0 then (if $g.drain == null then "-" else "~" + ($g.drain | dur) end) else null end) as $drain
   | ("\($g.busy) running, \($g.queued) queued"
      + (if $g.queued > 0 and $g.oldest != null then " (oldest \($g.oldest | dur))" else "" end)

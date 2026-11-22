@@ -2147,6 +2147,27 @@ mod tests {
         let g = &i.ci.glance;
         assert_eq!((g.level, g.alert), (Level::Warn, Level::Ok));
         assert_eq!((g.up, g.expected), (3, 3));
+        // A rollout's stale second report of an idle runner is not a runner down, and a runner
+        // reported up twice counts once.
+        let mut rows = i.get("runners").to_vec();
+        rows.extend(series(vec![
+            (
+                json!({"__name__": "github_runner_state",
+                "host": "cachyos-x8664-main", "name": "ws-unity-2", "state": "missing",
+                "site": "home"}),
+                "1",
+            ),
+            (
+                json!({"__name__": "github_runner_state",
+                "host": "cachyos-x8664-main", "name": "ws-unity-2", "state": "idle",
+                "site": "home"}),
+                "1",
+            ),
+        ]));
+        i.instant.insert("runners", rows);
+        i.derive();
+        let g = &i.ci.glance;
+        assert_eq!((g.up, g.expected, g.alert), (3, 3, Level::Ok));
         let mut rows = i.get("runners").to_vec();
         rows.extend(series(vec![(
             json!({"__name__": "github_runner_state",
