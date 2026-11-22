@@ -288,6 +288,8 @@ test_notifications.sh
 .local/bin/notes-bootstrap
 .local/bin/notes-sync
 .local/bin/notes-watch
+.local/bin/opencode-binks
+.local/bin/opencode-binks-bootstrap
 .local/bin/watch-companion-loop
 # Noctalia's settings window writes this through its stow link; it can hold a home
 # location or a plugin key, so it is tracked in the private overlay (docs/desk.md).

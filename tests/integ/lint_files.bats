@@ -214,7 +214,7 @@ fixture_repo() {
 }
 
 @test "a tracked symlink that resolves outside the index is skipped; one into the index is kept" {
-  # The real instance: a .local/bin link into ../src/<tree>, an untracked checkout.
+  # The real instance: .local/bin/muxpoon -> ../src/muxpoon, an untracked tree.
   # It resolves on the box that has the tree and dangles in CI, so linting it made a local
   # pre-push red over a file CI never sees.
   local d

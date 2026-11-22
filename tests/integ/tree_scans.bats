@@ -68,7 +68,7 @@ setup() {
     [ -f "$REPO_ROOT/$f" ] || continue
     IFS= read -r first < "$REPO_ROOT/$f" || true
     case "$first" in *bash|*bash\ *|*/sh|*/sh\ *) ;; *) continue ;; esac
-    # A symlink out of the index (a link into an untracked ../src/<tree>) is not this
+    # A symlink out of the index (muxpoon -> untracked ../src/muxpoon) is not this
     # tree's script: lint-files.sh skips it, since CI, where it dangles, cannot read it.
     if [ -L "$REPO_ROOT/$f" ]; then
       t=$(readlink -f "$REPO_ROOT/$f")
