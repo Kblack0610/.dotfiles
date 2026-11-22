@@ -156,7 +156,6 @@
     "figma-use": "name-only",
     "fleet-env-rebuild": "name-only",
     "flow-review": "name-only",
-    "ingest-prs": "name-only",
     "ingest-worktree": "name-only",
     "init": "name-only",
     "jira-ticket-pipeline": "name-only",
