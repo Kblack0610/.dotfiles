@@ -26,18 +26,18 @@ REPORT_DIR="$STORE/presence"
 PUBLISH_STEP_S=300
 HOST="${FLEET_HOST:-$(uname -n | cut -d. -f1)}"
 
+# shellcheck source=../lib/tmux-servers.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/tmux-servers.sh" || exit 2
+
 die() { echo "fleet-presence: $*" >&2; exit 2; }
 
 # tmux_activity -> the newest client keypress on any server, as an epoch; nothing when no client
 # is attached. Named sockets only: list-clients never starts a server, and a dead socket is empty.
 tmux_activity() {
-  local dir sock
-  dir="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
-  [ -z "${TMUX:-}" ] || dir="$(dirname "${TMUX%%,*}")"
-  for sock in "$dir"/*; do
-    [ -S "$sock" ] || continue
-    tmux -S "$sock" list-clients -F '#{client_activity}' 2>/dev/null
-  done | sort -n | tail -n 1
+  local srv
+  while IFS= read -r srv; do
+    tmux -L "$srv" list-clients -F '#{client_activity}' 2>/dev/null
+  done < <(tmux_servers_all) | sort -n | tail -n 1
 }
 
 # desktop_activity -> the last desktop input as an epoch, "now" while active, nothing when there

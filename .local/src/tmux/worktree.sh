@@ -523,7 +523,7 @@ wt_other_servers() {
   local cur="${WT_SERVER:-$(wt_current_server)}" s
   while IFS= read -r s; do
     [ -n "$s" ] && [ "$s" != "${cur:-default}" ] && printf '%s\n' "$s"
-  done < <(panel_live_servers)
+  done < <(tmux_live_servers)
   return 0
 }
 
@@ -1964,11 +1964,10 @@ WT_TMUX="${WT_TMUX:-tmux}"
 # answers. One call a server, so a server lists every pane or none: one that does not answer lists
 # none, and wt_closed_pane_scopes skips its scopes rather than read them as closed.
 wt_live_panes() {
-  local sock
-  for sock in "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"/*; do
-    [ -e "$sock" ] || continue
-    timeout 5 "$WT_TMUX" -S "$sock" list-panes -a -F '#{pid} #{pane_pid}' 2>/dev/null
-  done
+  local srv
+  while IFS= read -r srv; do
+    timeout 5 "$WT_TMUX" -L "$srv" list-panes -a -F '#{pid} #{pane_pid}' 2>/dev/null
+  done < <(tmux_servers_all)
 }
 
 # wt_closed_pane_scopes -- "<unit> <cgroup>" for each pane scope whose pane is gone. tmux puts each

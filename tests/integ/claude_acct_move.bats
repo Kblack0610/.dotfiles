@@ -143,7 +143,7 @@ STUB
 
 q() { printf %q "$1"; }
 
-# socket <server> -- a socket file where tmux_servers looks; nothing listens on it
+# socket <server> -- a socket file where tmux_servers_all looks; nothing listens on it
 socket() {
   mkdir -p "$TMUX_TMPDIR/tmux-$(id -u)"
   python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TMUX_TMPDIR/tmux-$(id -u)/$1"

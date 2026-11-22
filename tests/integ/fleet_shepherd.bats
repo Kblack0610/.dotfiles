@@ -2468,11 +2468,14 @@ gw_accts() {
   doc "[$(row a STALLED false false)]"
   "$SH" check >/dev/null
   # a copy whose cmd_due fails loudly: skip must not call it
-  sed 's/^cmd_due() {$/cmd_due() { echo "cmd_due called" >\&2; return 9;/' "$SH" > "$BATS_TEST_TMPDIR/sh-nocmd"
-  chmod +x "$BATS_TEST_TMPDIR/sh-nocmd"
-  grep -q 'cmd_due called' "$BATS_TEST_TMPDIR/sh-nocmd"   # the sed matched
+  # (in a bin/ with the repo's lib beside it: the script sources ../lib/tmux-servers.sh)
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  ln -s "$(dirname "$(readlink -f "$SH")")/../lib" "$BATS_TEST_TMPDIR/lib"
+  sed 's/^cmd_due() {$/cmd_due() { echo "cmd_due called" >\&2; return 9;/' "$SH" > "$BATS_TEST_TMPDIR/bin/sh-nocmd"
+  chmod +x "$BATS_TEST_TMPDIR/bin/sh-nocmd"
+  grep -q 'cmd_due called' "$BATS_TEST_TMPDIR/bin/sh-nocmd"   # the sed matched
   FLEET_LEAD_FUNCTIONS="$(dirname "$(readlink -f "$SH")")/../../.config/fleet-lead/functions.tsv" \
-    run "$BATS_TEST_TMPDIR/sh-nocmd" skip 'nudge STALLED: a f-a' 'why'
+    run "$BATS_TEST_TMPDIR/bin/sh-nocmd" skip 'nudge STALLED: a f-a' 'why'
   assert_success
   refute_output --partial 'cmd_due called'
 }
