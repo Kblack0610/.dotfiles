@@ -2194,7 +2194,7 @@ own_slugs() {
   case "$1" in own:* | here:*) local s="${1#*:}"; printf '%s' "${s%% *}" ;; esac
 }
 
-# chain_hold <all items, jsonl> <comma list of a session's item slugs> -> the slug of another session's live item
+# chain_hold <all items, jsonl> <comma list of a session's item slugs> <item_of's relation> -> the slug of another session's live item
 # (running, waiting or review, the states agent-queue stack_pr stacks on) that one of the session's live items is
 # `after:`, else nothing. Such an item was started stacked on that item's open PR and agent-land holds its landing
 # (stack_gate, exit 4) before any gate runs, so its Checks stays red in the Merge gate line step (ar-4314:
@@ -2202,6 +2202,7 @@ own_slugs() {
 # no wait: ok releases it, and any other close never does, which is the session's to resolve. One of the session's
 # own slugs is no wait either: it holds nothing back that the session is not itself doing.
 chain_hold() {
+  case "${3:-}" in own | review | here) ;; *) return 0 ;; esac
   [ -n "${2:-}" ] && [ "${2:--}" != - ] || return 0
   jq -rn --arg own ",$2," '[inputs] as $all
     | [$all[] | select(.state != "done" and (.slug as $s | $own | contains("," + $s + ",")))
@@ -2439,8 +2440,7 @@ collect() {
         | if length == 0 then "-" else join(",") end' <<<"$qall" 2>/dev/null)"
       landed="${landed:--}"
     fi
-    local sjob=- chain=; [ "$status" = shell ] && sjob="$ojob"
-    case "$item" in own:* | review:* | here:*) chain="$(chain_hold "$qall" "$islugs")" ;; esac
+    local sjob=- chain="$(chain_hold "$qall" "$islugs" "$irel")"; [ "$status" = shell ] && sjob="$ojob"
     # gd is the clone repo-wide reads go through: the cwd here, this machine's clone of a worker's repo
     # (worker_clone), - when there is none. whead is a worker's HEAD, for activity_line.
     local gd="$cwd" whead=- wmain worigin
