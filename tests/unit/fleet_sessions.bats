@@ -2548,6 +2548,16 @@ research_item() {
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
 }
 
+# due_has_no_landed_line: after a tick, fleet-shepherd due finds nothing due for the row: no LANDED nudge, no phase to queue (ar-1429).
+due_has_no_landed_line() {
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  # the due pass reads this row: a DONE one draws no LANDED line, and its close is close_sample's
+  [ "$(jq -r '.sessions | map(.bucket) | join(",")' "$XDG_STATE_HOME/fleet/state.json")" = DONE ]
+  run "$REPO_ROOT/.local/bin/fleet-shepherd" due
+  assert_failure 1   # due's "nothing is due"
+  assert_output ''
+}
+
 # phase_item <state> <slug> <plan> <task> [<extra header lines>]: a queue item of another session that holds phases of <plan>.
 phase_item() {
   local d="$HOME/.agent/queue/$1"; [ "$1" = done ] && d="$d/$(date +%F)"
@@ -2574,6 +2584,7 @@ phase_item() {
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
   [[ "$(jq -r .reason <<<"$output")" == 'clean, nothing on the branch, its next phases are queue items: '* ]]
   [ "$(jq -r .finished <<<"$output")" = true ]
+  due_has_no_landed_line
 }
 
 @test "end to end: a next phase whose done item still has an open PR is in flight elsewhere, not LANDED (ar-1429 hub/dotfiles:9)" {
@@ -2589,6 +2600,7 @@ phase_item() {
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
   [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, its next phases are queue items: runs-p2' ]
+  due_has_no_landed_line
   # negative control: once #733 merged the item holds nothing, and an unticked P3 is this plan's next phase
   printf 'feat/p3\t733\tMERGED\tPASS\tdef\n' > "$LEDGER_DIR/prs_o_priv.tsv"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json

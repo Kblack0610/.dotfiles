@@ -1371,14 +1371,16 @@ pr_states() {
 # while P3 rode private #733, done items held no phase, and hub/dotfiles:9 read LANDED "queue P3" (ar-1429).
 # A repo the store cannot answer for holds nothing, so its phase reads as next, never as queued.
 inflight_done_items() {
-  local refs repo open=""
-  refs="$(jq -r 'select(.state == "done") | (.pr // "") | split(" ")[] | select(test("^[^#]+#[0-9]+$"))' <<<"$qall" 2>/dev/null)"
+  # held: only an item that can hold a phase (a plan: field or a "Phase N of" task) costs a PR store read.
+  local refs repo open="" sel='def held: select(.state == "done" and ((.plan // "") != ""
+      or ((.task // "") | test("(?i)\\bphases? [^\\s:,]+ of "))));
+    def refs: .pr // "" | tostring | split(" ") | map(select(test("^[^#]+#[0-9]+$")));'
+  refs="$(jq -r "$sel"' held | refs[]' <<<"$qall")" || return 1
   [ -n "$refs" ] || return 0
   while IFS= read -r repo; do
-    open+="$(pr_states "$repo" | jq -r --arg r "$repo" '.[] | select(.state == "OPEN") | "\($r)#\(.number)"' 2>/dev/null)"$'\n'
+    open+="$(pr_states "$repo" | jq -r --arg r "$repo" '.[] | select(.state == "OPEN") | "\($r)#\(.number)"')"$'\n'
   done < <(sed 's/#[0-9]*$//' <<<"$refs" | sort -u)
-  jq -c --arg open "$open" '($open | split("\n")) as $o
-    | select(.state == "done" and ((.pr // "") | split(" ") | any(. as $p | $o | index($p))))' <<<"$qall" 2>/dev/null
+  jq -c --arg open "$open" "$sel"' ($open | split("\n")) as $o | held | select(refs | any(. as $p | $o | index($p)))' <<<"$qall"
 }
 
 # merged_prs <session_prs json> -> "#7,#9" for the PRs that merged, "-" for none (work_blockers' 23rd argument).
@@ -2152,7 +2154,8 @@ collect() {
       # once a run.
       [ -f "$CACHE/plan_gated" ] || { plan_gated_rows "$(board_feed)" > "$CACHE/plan_gated.$$" && mv -f "$CACHE/plan_gated.$$" "$CACHE/plan_gated"; }
       # A done item whose PR is still open holds its phases too (inflight_done_items), read once a run.
-      [ -f "$CACHE/inflight_done" ] || { inflight_done_items > "$CACHE/inflight_done.$$" && mv -f "$CACHE/inflight_done.$$" "$CACHE/inflight_done"; }
+      [ -f "$CACHE/inflight_done" ] || { inflight_done_items > "$CACHE/inflight_done.$$" 2>/dev/null || { unreadable "done items' open PRs"; blind_row; }
+                                         mv -f "$CACHE/inflight_done.$$" "$CACHE/inflight_done"; }
       local canon ptgt pbase=1 pn
       canon="$(realpath -q -- "$plist" 2>/dev/null)" || canon="$plist"
       IFS=$'\t' read -r ptgt pn < <(plan_pointer "$plist")
