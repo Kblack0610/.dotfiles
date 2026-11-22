@@ -706,6 +706,30 @@ share_history() {
   [ -n "$(qitem queued fix-game)" ] && [ -n "$(qitem queued fix-game-2)" ] || fail "a share-held item started on a committed-rows pass"
 }
 
+# 2026-11-21 (ar-4450): a pass read "fleet share full: ar-4356 (fleet share ...), ucp-1567 (load 28.28 ...
+# over the 0.99 pace ...), 22 more" and settled NOOP, a hold by design, while load held the rest.
+@test "fleet share: the share names a held pass only when load held none of its items" {
+  local fleet='{"slug":"fix-game","project":"game"}' other='{"slug":"fix-app","project":"app"}'
+  # A fleet worker takes the game item and not the app one; this machine's load holds a start here.
+  HOST_PROBE=([razer-laptop]=1)
+  load_findings() { FIRING=''; }
+  share_state() { :; }
+  held_by() { :; }
+  line_why() { :; }
+  machine_why() { echo "load 28.28 on 28 cores is over the 0.99 pace"; }
+  place_host() { [ "$(jq -r .project <<<"$1")" = game ] && [ "${2:-}" != first ] && echo razer-laptop; }
+  share_why() { if [ "$(jq -r .project <<<"$1")" = game ]; then echo "fleet share: 3 of 4 starts are fleet work"; fi; }
+  TARGET=4 DRY=0
+  unset UNITS_FREE SHARE_LET_GO
+  # Load holds the app item and the share the game item: the load names the pass.
+  pick_item "$fleet"$'\n'"$other" && fail "an item was picked"
+  [[ "$PICK_WHY" == "machine pace: fix-game (fleet share: "* ]] || fail "a pass load held read: $PICK_WHY"
+  assert_equal "$(grep -c 'over the 0.99 pace, and no fleet worker takes it' <<<"$PICK_WHY")" 1
+  # The negative control: with the share's item alone held, the share names the pass.
+  pick_item "$fleet" && fail "the fleet item was picked"
+  [[ "$PICK_WHY" == "fleet share full: fix-game (fleet share: "* ]] || fail "a pass the share alone held read: $PICK_WHY"
+}
+
 @test "fleet share: a full share passes a #requested fleet row through the fill, not an #urgent one" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"

@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# user-units-failed - the probe behind the systemd-user-failed Sentinel watch.
+#
+#   user-units-failed [--exclude GLOB]...
+#
+# Lists every systemd user unit in the failed state that no --exclude glob matches, one a line.
+# Exit 0 when none is left, 1 when one or more is. The exclude list is the watch's own (its
+# expect_cmd), one --exclude per unit class another signal owns, so every other unit is watched.
+# Until 2026-11-21 the watch matched only agentctl*, agent-*, fleet-*, sentinel* and watch-*, and
+# git-sync-notes.service failed about 191 times after the 11-20 crash with nothing paging (ar-4466).
+set -uo pipefail
+
+excludes=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --exclude) [ $# -ge 2 ] || { echo "user-units-failed: --exclude needs a glob" >&2; exit 2; }; excludes+=("$2"); shift 2 ;;
+    *) echo "user-units-failed: unknown argument $1" >&2; exit 2 ;;
+  esac
+done
+
+if ! list="$(systemctl --user list-units --failed --no-legend --plain 2>&1)"; then
+  # The Sentinel companion reads an `unreadable:` line as "could not check", never as healthy.
+  echo "unreadable: systemctl --user list-units failed: ${list##*$'\n'}"
+  exit 1
+fi
+
+failed=()
+while read -r unit _; do
+  [ -n "$unit" ] || continue
+  for g in "${excludes[@]}"; do
+    # shellcheck disable=SC2053 # the exclude is a glob on purpose
+    [[ $unit == $g ]] && continue 2
+  done
+  failed+=("$unit")
+done <<<"$list"
+
+[ "${#failed[@]}" -gt 0 ] || exit 0
+printf '%s\n' "${failed[@]}"
+exit 1
