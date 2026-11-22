@@ -81,7 +81,7 @@ gitBranch), `--since YYYY-MM-DD`, `--role user|assistant`, `--regex`, `-i`,
 
 ## stats: counting what recurs
 
-`stats` is the one counter for "how often": skill-drift, skill-refine and the Monday briefing read it, so do not grep transcripts for a count elsewhere.
+`stats` is the one counter for "how often": skill-drift, docs-cleanup and the Monday briefing read it, so do not grep transcripts for a count elsewhere.
 
 - SESSIONS is the headline column. A `/loop` that fires a command 200 times in one session is one session.
 - `inter` vs `auto`: `turnOrigin` decides where present (`human` is interactive; a /loop fire, a peer message or a task notification is auto); older records fall back to `entrypoint == sdk-cli` and `isMeta`. Interactive is not proof a person typed it: a session fleet-dispatch starts gets its task as an interactive turn.

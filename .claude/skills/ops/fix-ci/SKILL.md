@@ -1,7 +1,7 @@
 ---
 name: fix-ci
 description: >-
-  Fix the red checks on one PR at their root cause: two attempts, then file it and stop. Use for "fix CI on this PR", "the checks are red", `/fix-ci <pr>`. Why CI keeps failing across runs: ci-failures.
+  Fix the red checks on one PR at their root cause: two attempts, then file it and stop. Use for "fix CI on this PR", "the checks are red", `/fix-ci <pr>`. Reds across runs: ci-cleanup.
 argument-hint: "[pr | owner/repo#N]"
 allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, Task]
 metadata:
@@ -19,7 +19,7 @@ Fix the failing checks on the current branch's PR. If the repo has a CI doc (`do
 
 - One PR's red checks: `/fix-ci <pr>`, or the current branch's PR with no argument. fleet-dispatch starts a session on it for a parked PR that went red.
 
-Not for reds that recur across many runs - that is `ci-failures`. Not for a whole CI cleanup pass - that is `ci-cleanup`.
+Not for reds that recur across many runs or a whole CI cleanup pass - that is `ci-cleanup`.
 
 ## Steps
 
