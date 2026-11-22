@@ -77,7 +77,7 @@ The map of the whole agentic system, every plane with its one producer, document
 
 1. A runner's conf names `COMMAND`, `ROLE`, `ROUTE` and `DATA_CLASS`. `agentctl@.service` loads the conf as environment and runs the command.
 2. The command calls `agentctl-run` (`.local/src/agent-run/agentctl-run`). With `--agent <name>` it reads the agent's conf first (`lib/agent.sh`), whose role, model, route, data class and harness replace what a parent left in the environment.
-3. It scrubs transport variables before the role loads (`lib/scrub.sh`), so an ambient model id cannot satisfy the model-family check, then declares `CLAUDE_HEADLESS=1`.
+3. It scrubs transport variables before the role loads (`lib/scrub.sh`), so an ambient model id cannot satisfy the model-family check.
 4. `lib/role.sh` loads the role (`ROLE_WRITE`, `ROLE_TASK`, `ROLE_BASH`, `ROLE_MCP`, `ROLE_APPROVE`). A missing key, an unknown role or a harness that cannot enforce the denials is a refusal, never a default.
 5. `lib/route.sh` resolves the route (`routes/` here for the public one, the overlay for the rest) and `lib/budget.sh` checks the caps against `calls.jsonl`.
 6. A harness adapter (`harnesses/claude.sh`, `opencode.sh`, `raw.sh`; `binks.sh` is a stub that refuses) execs the model. `lib/calls.sh` appends one line to `calls.jsonl`.

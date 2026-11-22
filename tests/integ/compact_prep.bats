@@ -87,8 +87,7 @@ precompact() {
   DEPLOY="$SANDBOX/shared-hooks"
   mkdir -p "$DEPLOY"
   cp "$REPO_ROOT/.config/shared-hooks/session-preflight.sh" \
-     "$REPO_ROOT/.config/shared-hooks/project-name.sh" \
-     "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" "$DEPLOY/"
+     "$REPO_ROOT/.config/shared-hooks/project-name.sh" "$DEPLOY/"
 
   run bash -c 'printf "{\"source\":\"compact\"}\n" | bash "$1" | jq -r ".hookSpecificOutput.additionalContext // empty"' \
     _ "$DEPLOY/session-preflight.sh"

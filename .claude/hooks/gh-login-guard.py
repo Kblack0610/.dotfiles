@@ -57,7 +57,7 @@ def _forge():
     return mod
 
 
-FORGE = None  # loaded past main's prefilter: this hook runs on every Bash call
+FORGE = None  # loaded past decide's prefilter, or set by walker-guards.py: it runs on every Bash call
 
 
 def gh_dir_for(env):
@@ -174,21 +174,26 @@ def redirects(cmd, cwd):
     return None
 
 
-def main():
+def decide(data):
+    """The deny reason for one PreToolUse payload, or None. walker-guards.py calls this."""
     global FORGE
-    data = json.load(sys.stdin)
     if data.get("tool_name", "Bash") != "Bash":
-        return
+        return None
     cmd = (data.get("tool_input") or {}).get("command") or ""
     if not (re.search(PREFILTER, cmd) or any(d in cmd for d in gh_dir_list())):
-        return
-    FORGE = _forge()
+        return None
+    FORGE = FORGE or _forge()
     cwd = data.get("cwd") or os.getcwd()
     r = FORGE.reason(cmd, cwd, check)
     try:
         r = r or redirects(FORGE._strip_heredocs()(cmd), cwd)
     except ValueError:  # an unbalanced quote: no shell would run it either
         pass
+    return r
+
+
+def main():
+    r = decide(json.load(sys.stdin))
     if r:
         print(json.dumps({"hookSpecificOutput": {
             "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": r}}))

@@ -28,6 +28,7 @@ A merge through a forge's PR API (`curl -X POST .../pulls/N/merge`, `gh api -X P
 is denied too, naming `agent-land`, which lands a Forgejo PR through that API and records it: 12 of
 those 62 were home-config and bnb-game-servers PRs merged by a raw Forgejo call (ar-1213).
 """
+import functools
 import importlib.util
 import json
 import os
@@ -78,6 +79,7 @@ GH_BODY = ("-f", "--raw-field", "-F", "--field", "--input")
 SHORT_VALUE = set("AbcCDeEHKmoPqQrtuUwxyYz")
 
 
+@functools.lru_cache(maxsize=None)
 def _strip_heredocs():
     spec = importlib.util.spec_from_file_location("block_poll", os.path.join(HERE, "block-poll.py"))
     mod = importlib.util.module_from_spec(spec)
@@ -382,14 +384,18 @@ def reason(cmd, cwd, check=check):
     return None
 
 
-def main():
-    data = json.load(sys.stdin)
+def decide(data):
+    """The deny reason for one PreToolUse payload, or None. walker-guards.py calls this."""
     if data.get("tool_name", "Bash") != "Bash":
-        return
+        return None
     cmd = (data.get("tool_input") or {}).get("command") or ""
     if not any(w in cmd for w in ("push", "gh", "/merge")):
-        return
-    r = reason(cmd, data.get("cwd") or os.getcwd())
+        return None
+    return reason(cmd, data.get("cwd") or os.getcwd())
+
+
+def main():
+    r = decide(json.load(sys.stdin))
     if r:
         print(json.dumps({"hookSpecificOutput": {
             "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": r}}))
