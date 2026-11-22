@@ -994,17 +994,6 @@ mod tests {
             1,
             "a longer number behind the card's"
         );
-        // An unread queue says so on the card and leaves no figure, never a zero (rule 6).
-        let unread = crate::cards::done(Some(&Done {
-            items: None,
-            ..Done::read(Some(&q), None, NOW).unwrap()
-        }));
-        let shipped = unread.parts.iter().find(|x| x.label == "Shipped");
-        assert_eq!(
-            shipped.map(|x| x.value.as_str()),
-            Some(crate::reading::NOT_READ)
-        );
-        assert!(!crate::widget_doc::figures(&[unread]).contains_key("done_shipped"));
         // A Home row of any kind moves the needs figure on every surface together.
         let mut more = home.clone();
         more.needs.push(more.needs[0].clone());
@@ -1494,6 +1483,8 @@ mod tests {
             .error
             .as_deref()
             .is_some_and(|e| e.contains("agent-queue")));
+        // No figure either, so waybar's D: reads -, never a zero (rule 6).
+        assert!(!crate::widget_doc::figures(&[c]).contains_key("done_shipped"));
         let c = crate::cards::done(Done::read(Some(&done_queue()), None, NOW).as_ref());
         assert_eq!((c.big.as_str(), c.level), ("-", Level::Nodata));
         assert!(c.error.as_deref().is_some_and(|e| e.contains("day-log")));
