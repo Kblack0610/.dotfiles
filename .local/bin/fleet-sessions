@@ -88,7 +88,8 @@ set -uo pipefail
 # asked for 24h on a chat and 60m on everything else, hand-opened sessions included; revisit if a
 # chat closes while the human still means to come back to it, or chats pile up overnight).
 : "${FLEET_CHAT_CLOSE_H:=24}"
-: "${FLEET_API_ERROR_IDLE_MIN:=2}" # a turn that ended on an API Error this many minutes ago is stopped, not working
+: "${FLEET_API_ERROR_IDLE_MIN:=2}" # an idle session this many minutes past its own stop line (an API Error, a resume that killed its gate) is stopped, not working
+: "${FLEET_TIME_USE_CONF:=$HOME/.config/agent-panel/time-use.conf}" # agent-panel's gate, test and build texts (gate_text, live_wait)
 : "${FLEET_SHELL_STALE_MIN:=120}" # a background shell this long past the last entry is not work:
                                   # a real gate wait is under an hour, a forgotten ugrep is not
 : "${FLEET_GATE_LOGS:=Logs/gate.txt Logs/gate-and-land.out}" # files under a session's worktree a running local gate writes to: a write
@@ -317,6 +318,24 @@ gate_log_idle() {
   echo "$idle"
 }
 
+# bash_command <transcript> <tool_use id> -> the command of the Bash call with that id, or nothing. Only the lines
+# naming the id reach jq: a transcript runs to 100 MB.
+bash_command() {
+  grep -F "\"id\":\"$2\"" "$1" 2>/dev/null | jq -r --arg id "$2" 'select(.type == "assistant")
+    | .message.content[]? | select(.type? == "tool_use" and .id == $id and .name == "Bash") | .input.command // empty' 2>/dev/null
+}
+
+# gate_text <command> -> "<kind> <text>" of the first `gate` or `test` line of agent-panel's time-use.conf whose text is
+# in <command>, or nothing (no command, no conf, no match).
+gate_text() {
+  local conf="$FLEET_TIME_USE_CONF" kind text
+  [ -n "$1" ] && [ -r "$conf" ] || return 0
+  while read -r kind text; do
+    { [ "$kind" = gate ] || [ "$kind" = test ]; } && [ -n "$text" ] || continue
+    case "$1" in *"$text"*) printf '%s %s\n' "$kind" "$text"; return 0 ;; esac
+  done < "$conf"
+}
+
 # open_outputs <transcript> -> the output file of each background Bash task the transcript started whose command
 # matches a `gate` or `test` line of agent-panel's time-use.conf and that no <task-notification> closed, one a line.
 # Claude writes a background Bash's output there, so its mtime is the gate's last line; a dev server or poll loop
@@ -326,16 +345,10 @@ gate_log_idle() {
 # (pinned by "a gate shell whose open output file is still being written ..." in tests/unit/fleet_sessions.bats).
 # Only the lines holding those strings, then the open tasks' own tool_use lines, reach jq: a transcript runs to 100 MB.
 open_outputs() {
-  local conf="${FLEET_TIME_USE_CONF:-$HOME/.config/agent-panel/time-use.conf}" id path cmd kind text
-  [ -r "$1" ] && [ -r "$conf" ] || return 0
+  local id path
+  [ -r "$1" ] && [ -r "$FLEET_TIME_USE_CONF" ] || return 0
   while IFS=$'\t' read -r id path; do
-    cmd="$(grep -F "\"id\":\"$id\"" "$1" | jq -r --arg id "$id" 'select(.type == "assistant")
-      | .message.content[]? | select(.type? == "tool_use" and .id == $id and .name == "Bash") | .input.command // empty' 2>/dev/null)"
-    [ -n "$cmd" ] || continue
-    while read -r kind text; do
-      { [ "$kind" = gate ] || [ "$kind" = test ]; } && [ -n "$text" ] || continue
-      case "$cmd" in *"$text"*) printf '%s\n' "$path"; break ;; esac
-    done < "$conf"
+    [ -z "$(gate_text "$(bash_command "$1" "$id")")" ] || printf '%s\n' "$path"
   done < <(grep -F -e 'Output is being written to: ' -e '<output-file>' "$1" | jq -R -r '
       fromjson? | select(type == "object")
       | (select(.type == "user") | .message.content | arrays | .[] | select(.type? == "tool_result") | . as $t
@@ -360,7 +373,7 @@ open_outputs() {
 # which names agent-land), and this pass's own ancestors. With no claude pid (an agent-panel row
 # without .pid) only the worktree is read.
 live_wait() {
-  local conf="${FLEET_TIME_USE_CONF:-$HOME/.config/agent-panel/time-use.conf}" want kind text pid cmd
+  local conf="$FLEET_TIME_USE_CONF" want kind text pid cmd
   local -a cmds=()
   while IFS=$'\t' read -r pid cmd; do [ -z "$pid" ] || cmds+=("$cmd"); done < <(wait_procs "$@")
   [ "${#cmds[@]}" -gt 0 ] || return 0
@@ -494,6 +507,54 @@ api_error_stop() {
             | capture("API Error: (?<c>[0-9]+)")? // {c: ""}).c as $c
           | if $c == "" then "" else "\($c)\t\((.timestamp // "-")[:16])" end
         else "" end' 2>/dev/null | tail -n 1 | grep . || true
+}
+
+# resume_killed_gate <transcript> -> "<kind> <text>\t<timestamp to the minute>" when the newest notice that a resume
+# ended a background shell (Claude Code's <task-notification>, status stopped, "Background shell command didn't finish
+# before the previous session ended", written as the resumed claude starts) whose ids include a Bash call that was a gate
+# or test (gate_text) has no gate or test Bash call after it; else nothing. Any later gate or test counts, not only the
+# killed one's text: a session that went on to gate or land another way is past it (ar-1902 review). The notice wakes no turn:
+# 2026-11-12 07:41 a planned reboot took the lab tmux server down, fleet-dispatch restore reopened its 22 conversations
+# at 07:43 with no prompt, and agent-3, -5, -7 and -10 had each lost a gate-and-land, a local run or a train wait; they
+# sat idle until they read STALLED at 08:07 (ar-1902). Only the notices' lines, then the lines after one, reach jq.
+resume_killed_gate() {
+  [ -s "${1:-}" ] || return 0
+  local n at ids id g
+  while IFS=$'\t' read -r n at ids; do
+    for id in $ids; do
+      g="$(gate_text "$(bash_command "$1" "$id")")"
+      [ -n "$g" ] || continue
+      [ -z "$(gate_text "$(tail -n "+$((n + 1))" "$1" | grep -a -F '"name":"Bash"' | jq -r 'select(.type == "assistant")
+          | .message.content[]? | select(.type? == "tool_use" and .name == "Bash") | .input.command // empty' 2>/dev/null)")" ] \
+        && printf '%s\t%s\n' "$g" "$at"
+      return 0
+    done
+  done < <(grep -a -n -F 'finish before the previous session ended' "$1" 2>/dev/null | jq -R -r '
+      capture("^(?<n>[0-9]+):(?<j>.*)$") | .n as $n | .j | fromjson? | select(type == "object" and .type == "user")
+      | (.message.content | if type == "string" then . else (map(.text? // "") | join(" ")) end) as $c
+      | select(($c | test("<status>stopped</status>")) and ($c | test("[Bb]ackground shell commands? didn.t finish before the previous session ended")))
+      | [$n, (.timestamp // "-")[:16], ([$c | scan("<tool-use-id>([^<]+)</tool-use-id>") | .[0]] | join(" "))] | @tsv' 2>/dev/null | tac)
+}
+
+# stopped_bucket <transcript> <bucket> <main red|-> -> "<bucket>\t<stop minute>" when an idle session's transcript ends on
+# its own stop line, else nothing: nothing in such a session wakes without a message. An API Error (api_error_stop) replaces
+# a WORKING row (idle under FLEET_IDLE_MIN, a pending CI run). A resume that killed a background gate or test
+# (resume_killed_gate) replaces a WORKING or STALLED one, since rerunning it is the next step whatever the tree reads, but
+# not a nightly-red suspect, a PR conflict or a red CI run, whose own nudge comes first (ar-1902 review).
+stopped_bucket() {
+  local s k at
+  if [[ "$2" == WORKING* ]]; then
+    s="$(api_error_stop "$1")"
+    [ -z "$s" ] || { printf 'STALLED turn ended on API Error %s\n' "$s"; return 0; }
+  fi
+  case "$2" in
+    WORKING*) ;;
+    "STALLED PR #"*" conflicts with the default branch" | "STALLED PR #"*" CI red") return 0 ;;
+    STALLED*) [ "$3" = - ] || return 0 ;;
+    *) return 0 ;;
+  esac
+  IFS=$'\t' read -r k at < <(resume_killed_gate "$1")
+  [ -z "${k:-}" ] || printf 'STALLED resume killed its background %s (%s) before it finished\t%s\n' "${k%% *}" "${k#* }" "$at"
 }
 
 # pending_wakes <transcript> <claude start epoch|-> <now epoch> -> one "<kind>\t<id>\t<at epoch|->" line, soonest
@@ -2303,14 +2364,12 @@ collect() {
               "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" "$cron")"
     fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$bidle" "$g" "$dirty" "$ahead" \
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" && fin=1
-    # An idle session whose last message is an API Error line is stopped, whatever else reads WORKING
-    # (idle under FLEET_IDLE_MIN, a pending CI run): nothing in it wakes without a message. A finished
-    # one is left to DONE.
-    local apistop=""
+    # An idle session whose transcript ends on its own stop line is stopped (stopped_bucket); a finished one is left to DONE.
+    local stopped="" stopat=""
     if [ "$host" = - ] && [ "$status" = idle ] && [ "$hv" = 0 ] && [ "$ojob" != agent ] && [ "$fin" = 0 ] \
-       && [ "${bucket%% *}" = WORKING ] && [ "$idle" -ge "$FLEET_API_ERROR_IDLE_MIN" ]; then
-      apistop="$(api_error_stop "$transcript")"
-      [ -z "$apistop" ] || bucket="STALLED turn ended on API Error ${apistop%%$'\t'*}"
+       && [ "$idle" -ge "$FLEET_API_ERROR_IDLE_MIN" ]; then
+      IFS=$'\t' read -r stopped stopat < <(stopped_bucket "$transcript" "$bucket" "$red")
+      [ -z "$stopped" ] || bucket="$stopped"
     fi
     blk="$(work_blockers "$askids" "$status" "$plan" "$asks" "$hv" "$bidle" "$g" "$dirty" "$ahead" \
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" - "$(merged_prs "$prs")")"
@@ -2332,7 +2391,7 @@ collect() {
     # Carrying on is activity, not a fact: a session flipping between busy and idle must never page twice.
     fact="${bucket%, carrying on}"; [ "$pr" != - ] && fact="$fact @$branch"
     # One error is one fact (its minute), so a second one after a nudge restarted the session is nudged again.
-    [ -z "$apistop" ] || fact="$fact at ${apistop#*$'\t'}"
+    [ -z "$stopat" ] || fact="$fact at $stopat"
     if [ "$bucket" = "STALLED PR #$pr conflicts with the default branch" ]; then
       fact="$fact base ${fork:0:12}"
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
