@@ -2127,6 +2127,41 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_not_called 'start --item wl'
 }
 
+@test "an add from the human's interactive session starts at add at high; a dispatched session, a headless one, a terminal add and a low one do not (ar-4452)" {
+  story_notes
+  unset AGENT_QUEUE_PULL
+  export CLAUDE_CODE_ENTRYPOINT=cli
+  run "$AQ" add --project game --priority high --slug i1 "my own task"
+  assert_success
+  assert_called 'fleet-dispatch start --item i1'
+  # NEGATIVE CONTROLS
+  run env CLAUDE_CODE_ENTRYPOINT=sdk-cli "$AQ" add --project game --priority high --slug i2 "headless"
+  assert_not_called 'start --item i2'
+  run env -u CLAUDE_CODE_ENTRYPOINT "$AQ" add --project game --priority high --slug i3 "terminal"
+  assert_not_called 'start --item i3'
+  "$AQ" set i1 origin=hand >/dev/null
+  run env AGENT_QUEUE_ITEM=i1 "$AQ" add --project game --priority high --slug i4 "dispatched"
+  assert_not_called 'start --item i4'
+  run "$AQ" add --project game --priority low --slug i5 "low"
+  assert_success
+  assert_not_called 'start --item i5'
+}
+
+@test "start_at_add logs each outcome that is not a start: a low item, a dispatch hold and a failed start (ar-4452)" {
+  story_notes
+  export FLEET_DISPATCH_DIR="$SANDBOX/dispatch"
+  run "$AQ" add --project game --want human --priority low --slug l1 "a low want"
+  assert_success
+  grep -qF 'start now: l1 is low priority' "$FLEET_DISPATCH_DIR/log.md" || fail "low not logged"
+  FD_EXIT=1 run "$AQ" add --project game --want human --slug f1 "a start that fails"
+  grep -qF 'start now: f1 could not start now' "$FLEET_DISPATCH_DIR/log.md" || fail "failure not logged"
+  # NEGATIVE CONTROL: a start that works adds no line of its own (fleet-dispatch start logs it).
+  : > "$FLEET_DISPATCH_DIR/log.md"
+  run "$AQ" add --project game --want human --slug ok1 "a start that works"
+  assert_called 'fleet-dispatch start --item ok1'
+  [ ! -s "$FLEET_DISPATCH_DIR/log.md" ] || fail "a start logged a waiting line"
+}
+
 @test "add --plan starts each urgent or high phase whose wait is met once the chain is written; a low plan, a machine filer's, a dry run and AGENT_QUEUE_START=0 only queue (ar-2944)" {
   story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
   printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' '- [ ] P3 three (independent)' > "$SANDBOX/ch.md"

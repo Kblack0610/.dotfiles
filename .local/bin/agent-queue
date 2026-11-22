@@ -65,6 +65,7 @@
 #   credit-of <project> < changed-paths  print what attribute would record ("<winner>\t<touches>"), writing nothing
 #   requeue <slug> --hold <resource> [--class c] | --ask <id>   a started item back to its board row, gated on that agent-hold
 #       or ask (#hold/<res>, #ask/<id>): the item closes returned, and dispatch promotes the row once the gate clears
+#   start <slug>   start a queued item's session now, through add's start guards (a low one, a desk wait or the dispatch hold keep it queued)
 #   ask-holds [<id>]   `<slug or row id><TAB><ask id><TAB><releasing options>` per active item, and per open board row gated
 #       #ask/<id>, held on an ask (that ask only, given one)
 #   reopen <slug> [--to running|waiting] [--why text] [--unland <owner>/<repo>#<N>]   a falsely-done item back to running (or waiting),
@@ -2030,7 +2031,7 @@ cmd_add() {
   [ -z "$running" ] && [ "${AGENT_QUEUE_START:-1}" = 1 ] || return 0
   # A --plan phase starts from add_plan, once its whole chain is written.
   [ -z "${AQ_ITEM_PLAN:-}" ] || return 0
-  [ "$mode" = plan ] || { { [ "$priority" = urgent ] || [ -n "$want" ]; } && human_at_hand "$from"; } || return 0
+  [ "$mode" = plan ] || { human_at_hand "$from" && { [ "$priority" = urgent ] || [ -n "$want" ] || human_session; }; } || return 0
   start_at_add "$f" "$slug" "$priority"
 }
 
@@ -2038,22 +2039,43 @@ cmd_add() {
 # and no dispatched session's $AGENT_QUEUE_ITEM. A hand start skips the load and run-unit gates, so a
 # machine filer, or an unattended session that took the default from, waits for a dispatch pass.
 human_at_hand() { [ "$1" = human ] && [ -z "${AGENT_QUEUE_ITEM:-}" ]; }
+# human_session -- the caller is an interactive Claude session (a headless `claude -p` sets another entrypoint).
+human_session() { [ "${CLAUDE_CODE_ENTRYPOINT:-}" = cli ]; }
+
+# dispatch_log <text> -- one line in the dispatch log, in fleet-dispatch's own shape, so a start that did
+# not happen is told where the ones that did are. Before it, the reason reached only the filer's stderr.
+dispatch_log() {
+  local d="${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}"
+  mkdir -p "$d" && printf -- '- %s %s\n' "$(date '+%Y-%m-%d %H:%M')" "$*" >> "$d/log.md"
+}
 
 # start_at_add <file> <slug> <priority> -- start a just-queued item now: a plan session, the human's
-# urgent ask (it waited up to a dispatch pass, ar-2944), the human's want added at hand (--want, which
-# stamps #requested; a low one still waits its turn), and each queued phase of the human's urgent or
+# urgent ask (it waited up to a dispatch pass, ar-2944), what the human adds from their own interactive
+# session or with --want (a low one still waits its turn), and each queued phase of the human's urgent or
 # high --plan (the queue holds no gated one). Not a low one (waits_turn), not under the dispatch hold.
+# Every outcome but a start is logged here; fleet-dispatch start logs the start itself.
 start_at_add() {
-  local h
-  ! waits_turn "$2" "$3" || return 0
+  local h w
+  w="$(waits_turn "$2" "$3")" && { echo "$w"; dispatch_log "start now: ${w#agent-queue: }"; return 0; }
   # A free desk resource still goes to its best-ranked waiter first (desk_wait).
   h="$(hold_reason "$1")"
-  [ -z "$h" ] || { echo "agent-queue: $2 waits its turn ($h), so a dispatch pass starts it"; return 0; }
-  ! dispatch_held "$2" || return 0
+  [ -z "$h" ] || { echo "agent-queue: $2 waits its turn ($h), so a dispatch pass starts it"; dispatch_log "start now: $2 waits its turn ($h)"; return 0; }
+  w="$(dispatch_held "$2" 2>&1)" && { echo "$w" >&2; dispatch_log "start now: ${w#agent-queue: }"; return 0; }
   # The starter writes this item back through this script: free the lock, and keep the fd out of tmux.
   unlock
-  fleet-dispatch start --item "$2" ||
+  fleet-dispatch start --item "$2" || {
     echo "agent-queue: $2 could not start now, so it stays queued for the next dispatch pass" >&2
+    dispatch_log "start now: $2 could not start now, so it stays queued for the next dispatch pass"
+  }
+}
+
+# start <slug> -- start a queued item now through start_at_add, with its guards (a low one, a desk
+# wait and the dispatch hold keep it queued). fleet-dispatch reap calls it for a requeued item of the human's.
+cmd_start() {
+  local slug="${1:?usage: agent-queue start <slug>}" f
+  f="$(find_item "$slug")" && [ "$(state_of "$f")" = queued ] || die "$slug is not queued"
+  [ "$(fm_get "$f" from)" = human ] || die "$slug is not the human's: only a pass starts it"
+  start_at_add "$f" "$slug" "$(fm_get "$f" priority)"
 }
 
 # weight_of <project> <mode> <phases> -> sets WEIGHT, heavy or light, for an item added without
@@ -3762,7 +3784,7 @@ cmd_backfill_briefs() {
   trap 'AGENT_STORE_HOOK=1 store-sync --now --bg 8>&- 2>/dev/null' EXIT
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
-  add | list | next | show | mine | claim | cancel | return | bump | set | retask | attribute | move | requeue | reopen | stats | admission | mix | gate) v="$1"; shift; "cmd_$v" "$@" ;;
+  add | list | next | show | mine | claim | cancel | return | bump | set | retask | attribute | move | requeue | start | reopen | stats | admission | mix | gate) v="$1"; shift; "cmd_$v" "$@" ;;
   lock-miss) shift; cmd_lock_miss "$@" ;;
   credit-of) shift; cmd_credit_of "$@" ;;
   ask-holds) shift; cmd_ask_holds "$@" ;;
