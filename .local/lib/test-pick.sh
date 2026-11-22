@@ -82,10 +82,25 @@ _test_pick_unstub() {
 }
 
 # _test_pick_uncomment: stdin to stdout without comments: whole comment lines, and the tail of a
-# line from a `#` that starts a word. fleet_dispatch/common.bash ends a code line with "so no pass
-# asks fleet-bench for canaries", which picked all ten fleet_dispatch*.bats files (~3,500 s of the
-# unit tier) for a fleet-bench change although common.bash stubs fleet-bench (#3104, ar-3036).
-_test_pick_uncomment() { sed -E '/^[[:space:]]*#/d; s/[[:space:]]#.*$//'; }
+# line from a `#` that starts a word outside quotes (`"issue #12" | agentctl add` keeps its name).
+# A line whose quotes do not close keeps its tail. fleet_dispatch/common.bash ends a code line with
+# "so no pass asks fleet-bench for canaries", which picked all ten fleet_dispatch*.bats files
+# (~3,500 s of the unit tier) for a fleet-bench change although it stubs fleet-bench (#3104, ar-3036).
+_test_pick_uncomment() {
+  awk '/^[[:space:]]*#/ { next }
+    {
+      q = ""
+      for (i = 1; i <= length($0); i++) {
+        c = substr($0, i, 1)
+        if (q == "'"'"'") { if (c == q) q = ""; continue }
+        if (c == "\\") { i++; continue }
+        if (q == "\"") { if (c == q) q = ""; continue }
+        if (c == "\"" || c == "'"'"'") q = c
+        else if (c == "#" && substr($0, i - 1, 1) ~ /[[:space:]]/) { $0 = substr($0, 1, i - 1); break }
+      }
+      print
+    }'
+}
 
 # _test_pick_otherdir: stdin to stdout without each changed word that ends a path in another
 # directory: `<dir>/<word>` where <dir> is a literal name (not a variable, `.` or `..`) other than
@@ -94,8 +109,9 @@ _test_pick_uncomment() { sed -E '/^[[:space:]]*#/d; s/[[:space:]]#.*$//'; }
 # `"$BIN/fleet-bench"` stay.
 _test_pick_otherdir() {
   [ -n "$_TEST_PICK_PARENTS" ] || { cat; return 0; }
-  awk -v pairs="$_TEST_PICK_PARENTS" 'BEGIN {
-      n = split(pairs, l, "\n")
+  # The pairs go through the environment: a -v value with a newline in it fails in BSD awk.
+  PICK_PARENTS=$_TEST_PICK_PARENTS awk 'BEGIN {
+      n = split(ENVIRON["PICK_PARENTS"], l, "\n")
       for (i = 1; i <= n; i++) { split(l[i], f, "\t"); if (!(f[1] in dirs)) names[++k] = f[1]; dirs[f[1]] = dirs[f[1]] " " f[2] " " }
     }
     {

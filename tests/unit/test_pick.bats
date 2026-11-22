@@ -56,15 +56,17 @@ setup() {
   # A trailing comment and a path in another directory (ar-3036): fleet_dispatch/common.bash had
   # both for fleet-bench, which picked all ten fleet_dispatch*.bats files for a fleet-bench change.
   for t in '  export X=0   # so no pass asks agentctl' 'mkdir -p "$HOME/.config/agentctl"' \
-    'cat "$SANDBOX/state/agentctl" "x/agentctl"'; do
+    'cat "$SANDBOX/state/agentctl" "x/agentctl"' 'run /opt/tool/agentctl'; do
     run test_picked .local/bin/agentctl tests/x.bats <<<"$t"
     assert_failure
   done
   # The same name run for real still picks it (negative controls): after a code `#` that starts
-  # no word, by a path in its own directory or through a variable, and before a trailing comment.
+  # no word, by a path in its own directory or through a variable, before a trailing comment, and
+  # after a ` #` inside quotes.
   for t in '  stub fleet-bench "exit 0"; run agentctl list' '  [ $# -gt 0 ] && agentctl list' \
-    'run "$REPO_ROOT/.local/bin/agentctl" list' 'run "$BIN/agentctl"' 'run ./agentctl' \
-    '  agentctl list   # the real one'; do
+    'run "$REPO_ROOT/.local/bin/agentctl" list' 'run "$BIN/agentctl"' 'run ${BIN}/agentctl' \
+    'run ./agentctl' '  agentctl list   # the real one' \
+    '  printf "%s\n" "issue #12" | agentctl add' "  echo 'a #1'; agentctl list"; do
     run test_picked .local/bin/agentctl tests/x.bats <<<"$t"
     assert_success
   done
