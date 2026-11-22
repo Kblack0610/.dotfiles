@@ -4,7 +4,8 @@
 //! here (`fpg`).
 //!
 //! Prometheus and Alertmanager come from the Infra tab's cache (`infra::CACHE_SECS`).
-//! `fleet-bench reds` takes about 2s and a fix moves in minutes, so its answer is kept for
+//! `fleet-bench reds` takes about 6s alone and 9s under load (the `alerts` refresh averaged 9.4s,
+//! max 25.5s, 2026-11-21, load about 11) and a fix moves in minutes, so its answer is kept for
 //! `REDS_SECS` or until a queue write (a fix item filed or moved). The watches and the pages
 //! ledger are files, read on every request, so the push that a watch changed state is answered
 //! with that state.
