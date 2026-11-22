@@ -376,13 +376,16 @@ fold_point() {
   done
 }
 
-# first_link <path> - the shortest prefix of <path> that is a symlink under $HOME, or nothing.
+# first_link <path> - set FIRST_LINK to the shortest prefix of <path> that is a symlink under $HOME,
+# or to nothing. A variable, not output: it runs per deploy path, and a subshell each is seconds.
+FIRST_LINK=""
 first_link() {
   local rest="$1" prefix="" comp
+  FIRST_LINK=""
   while [ -n "$rest" ]; do
     comp="${rest%%/*}"
     prefix="${prefix:+$prefix/}$comp"
-    [ -L "$HOME/$prefix" ] && { printf '%s\n' "$prefix"; return 0; }
+    [ -L "$HOME/$prefix" ] && { FIRST_LINK="$prefix"; return 0; }
     if [ "$rest" = "$comp" ]; then rest=""; else rest="${rest#*/}"; fi
   done
   return 0
@@ -404,7 +407,7 @@ find_folds() {
   FOLD_REPO=(); FOLD_OTHER=()
   for rec in "${MANIFEST[@]}"; do
     IFS="$SEP" read -r path _ dir _ <<< "$rec"
-    lp="$(first_link "$path")"
+    first_link "$path"; lp="$FIRST_LINK"
     [ -n "$lp" ] && [ "$lp" != "$path" ] || continue
     under+=("$lp${SEP}$dir")
     [ -z "${seen[$lp]:-}" ] || continue
@@ -427,6 +430,12 @@ find_folds() {
 # fold_findings - one FOLDED finding per fold that something is written through: an untracked
 # path in its repo dir (ignored ones included), or a deploy path of the other repo under it,
 # which can only attach as a link inside this checkout. FOLDED_AT names each, for under_folded.
+# untracked_under <repo-dir> <dir> - the untracked entries under <dir>, NUL-separated; `--directory`
+# collapses a wholly untracked directory to one entry.
+untracked_under() {
+  git -C "$1" ls-files -z --others --directory -- ":(literal)$2" 2>/dev/null
+}
+
 declare -A FOLDED_AT=()
 fold_findings() {
   local lp repo n o
@@ -434,7 +443,7 @@ fold_findings() {
   while IFS= read -r lp; do
     [ -n "$lp" ] || continue
     repo="${FOLD_REPO[$lp]}"
-    n="$(git -C "$repo" ls-files -z --others --directory -- ":(literal)$lp" 2>/dev/null | tr -cd '\0' | wc -c | tr -d ' ')"
+    n="$(untracked_under "$repo" "$lp" | tr -cd '\0' | wc -c | tr -d ' ')"
     o="${FOLD_OTHER[$lp]:-0}"
     [ "$n" -gt 0 ] || [ "$o" -gt 0 ] || continue
     FOLDED_AT["$lp"]=1
@@ -473,7 +482,7 @@ repo_of_target() {
 tracked_anywhere() {
   local r
   for r in "${!REPO_NAME[@]}"; do
-    [ -n "$(git -C "$r" ls-files -- ":(literal)$1" 2>/dev/null | head -1)" ] && return 0
+    [ -n "$(git -C "$r" ls-files -- ":(literal)$1" 2>/dev/null)" ] && return 0
   done
   return 1
 }
@@ -483,7 +492,7 @@ tracked_anywhere() {
 # per directory link to the same path in a repo that tracks nothing there. A directory a repo
 # deleted whole is not looked in: its parent is.
 link_findings() {
-  local rec path d l r rel
+  local rec path d l r rel real
   declare -A dirs=() deploys=()
   local -a starts=()
   for rec in "${MANIFEST[@]}"; do
@@ -499,16 +508,18 @@ link_findings() {
   # Keyed "/<dir>", so $HOME itself is "/": bash refuses an empty key.
   for d in "${!dirs[@]}"; do
     d="${d#/}"
-    [ -z "$d" ] || { [ -d "$HOME/$d" ] && [ -z "$(first_link "$d")" ]; } || continue
+    [ -z "$d" ] || { [ -d "$HOME/$d" ] && first_link "$d" && [ -z "$FIRST_LINK" ]; } || continue
     starts+=("$HOME${d:+/$d}")
   done
   [ "${#starts[@]}" -gt 0 ] || return 0
   while IFS= read -r -d '' l; do
     rel="${l#"$HOME"/}"
     if [ -e "$l" ]; then
-      [ -d "$l" ] && [ -z "${dirs[/$rel]:-}" ] || continue
+      # --missing drops RUNTIME, so the unattended pass does not pay for it.
+      [ "$ONLY_MISSING" = 0 ] && [ -d "$l" ] && [ -z "${dirs[/$rel]:-}" ] || continue
+      real="$(readlink -f -- "$l")"
       for r in "${!REPO_NAME[@]}"; do
-        [ "$(readlink -f -- "$l")" = "$(readlink -f -- "$r/$rel")" ] || continue
+        [ "$real" = "$(readlink -f -- "$r/$rel")" ] || continue
         # A nested clone kept in the checkout (a project of its own) is not runtime.
         [ -e "$r/$rel/.git" ] && continue
         # Either repo: a directory one tracks (stow-ignored on this OS, say) is not runtime.
@@ -564,7 +575,7 @@ classify_all() {
     if [ -n "$real_src" ] && [ "$real_tgt" = "$real_src" ]; then
       # The first link on the path is the one stow meets: the file's own, or a folded
       # directory's. Absolute and pointing at this repo's copy of that same path: ABSLINK.
-      lp="$(first_link "$path")"
+      first_link "$path"; lp="$FIRST_LINK"
       if [ -n "$lp" ] && [ -z "${SEEN_ABS[$lp]:-}" ] && [[ "$(readlink -- "$HOME/$lp")" == /* ]] \
          && [ "$(readlink -f -- "$HOME/$lp")" = "$(readlink -f -- "$dir/$lp")" ]; then
         SEEN_ABS["$lp"]=1
@@ -705,7 +716,7 @@ unfold() {
     [ "$dir" != "$repo" ] && UNFOLD_OTHER["$path"]="$dir"
   done
   while IFS= read -r -d '' e; do queue+=("${e%/}"); done \
-    < <(git -C "$repo" ls-files -z --others --directory -- ":(literal)$lp" 2>/dev/null)
+    < <(untracked_under "$repo" "$lp")
   # `--directory` collapses a wholly untracked directory to one entry, so each is judged here:
   # git's own ignored listing omits ignored files inside an untracked directory.
   while [ "${#queue[@]}" -gt 0 ]; do
@@ -809,7 +820,7 @@ unfold() {
     e="${e%/}"
     [ -z "${UNFOLD_OTHER[$e]:-}" ] && git -C "$repo" check-ignore -q -- "$e" 2>/dev/null &&
       move_entry "$repo/$e" "$HOME/$e" && moved+=("$e")
-  done < <(git -C "$repo" ls-files -z --others --directory -- ":(literal)$lp" 2>/dev/null)
+  done < <(untracked_under "$repo" "$lp")
   printf '  unfolded  ~/%s: %s link(s), %s runtime entr(ies) moved out of the checkout, %s twin(s) removed\n' \
     "$lp" "$(( ${#links[@]} + ${#keeps[@]} ))" "${#moved[@]}" "${#twins[@]}"
   APPLIED=$((APPLIED + 1)); return 0
@@ -830,7 +841,7 @@ prune() {
 # not ignore may be work in progress, and a .git inside is a clone; either blocks it.
 move_runtime() {
   local lp="$1" repo="$2" text
-  if [ -n "$(git -C "$repo" ls-files --others --exclude-standard -- ":(literal)$lp" 2>/dev/null | head -1)" ] ||
+  if [ -n "$(git -C "$repo" ls-files --others --exclude-standard -- ":(literal)$lp" 2>/dev/null)" ] ||
      [ -n "$(find "$repo/$lp" -name .git -print -quit 2>/dev/null)" ]; then
     printf '  SKIP  %s - it holds an untracked path git does not ignore, or a clone\n' "$lp" >&2
     FAILED=$((FAILED + 1)); return 1

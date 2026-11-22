@@ -49,9 +49,12 @@ old_entries() {
 
 # sample <lines> - the count and up to three of the lines, for a one-line report.
 sample() {
-  local n
-  n="$(printf '%s\n' "$1" | grep -c .)"
-  printf '%s (%s)' "$n" "$(printf '%s\n' "$1" | head -3 | paste -sd, - | sed 's/,/, /g')$([ "$n" -gt 3 ] && printf ', ...')"
+  local -a a
+  local s="" p
+  mapfile -t a <<< "$1"
+  for p in "${a[@]:0:3}"; do s="${s:+$s, }$p"; done
+  [ "${#a[@]}" -gt 3 ] && s="$s, ..."
+  printf '%s (%s)' "${#a[@]}" "$s"
 }
 
 while IFS= read -r repo; do
