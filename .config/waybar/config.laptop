@@ -12,7 +12,7 @@
     ],
     "modules-right": [
         "group/status",
-        "idle_inhibitor",
+        "custom/caffeine",
         "pulseaudio",
         "custom/bluetooth",
         "network",
