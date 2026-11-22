@@ -533,6 +533,22 @@ resume_killed_gate() {
   done
 }
 
+# stopped_bucket <transcript> <bucket> <main red|-> -> "<bucket>\t<stop minute>" when an idle session's transcript ends on
+# its own stop line, else nothing: nothing in such a session wakes without a message. An API Error (api_error_stop) replaces
+# a WORKING row (idle under FLEET_IDLE_MIN, a pending CI run). A resume that killed a background gate or test
+# (resume_killed_gate) replaces a WORKING or STALLED one, since rerunning it is the next step whatever the tree reads, but
+# not a nightly-red suspect's.
+stopped_bucket() {
+  local s k at
+  if [[ "$2" == WORKING* ]]; then
+    s="$(api_error_stop "$1")"
+    [ -z "$s" ] || { printf 'STALLED turn ended on API Error %s\n' "$s"; return 0; }
+  fi
+  [[ "$2" == WORKING* ]] || { [[ "$2" == STALLED* ]] && [ "$3" = - ]; } || return 0
+  IFS=$'\t' read -r k at < <(resume_killed_gate "$1")
+  [ -z "${k:-}" ] || printf 'STALLED resume killed its background %s (%s) before it finished\t%s\n' "${k%% *}" "${k#* }" "$at"
+}
+
 # pending_wakes <transcript> <claude start epoch|-> <now epoch> -> one "<kind>\t<id>\t<at epoch|->" line, soonest
 # first, per thing that will wake the session by itself, so closing it would lose a turn it waits for:
 #   cron     a recurring CronCreate job ("Scheduled recurring job <id>"), under 7 days old (Claude Code expires it then)
@@ -2313,24 +2329,12 @@ collect() {
               "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" "$cron")"
     fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$bidle" "$g" "$dirty" "$ahead" \
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" && fin=1
-    # An idle session whose last message is an API Error line is stopped, whatever else reads WORKING
-    # (idle under FLEET_IDLE_MIN, a pending CI run): nothing in it wakes without a message. A finished
-    # one is left to DONE.
-    local apistop=""
+    # An idle session whose transcript ends on its own stop line is stopped (stopped_bucket); a finished one is left to DONE.
+    local stopped="" stopat=""
     if [ "$host" = - ] && [ "$status" = idle ] && [ "$hv" = 0 ] && [ "$ojob" != agent ] && [ "$fin" = 0 ] \
-       && [ "${bucket%% *}" = WORKING ] && [ "$idle" -ge "$FLEET_API_ERROR_IDLE_MIN" ]; then
-      apistop="$(api_error_stop "$transcript")"
-      [ -z "$apistop" ] || bucket="STALLED turn ended on API Error ${apistop%%$'\t'*}"
-    fi
-    # The same for a resume that killed its background gate or test before it finished: rerunning it is the next step,
-    # whatever else the row reads, except a nightly red the merge may have caused (resume_killed_gate).
-    if [ -z "$apistop" ] && [ "$host" = - ] && [ "$status" = idle ] && [ "$hv" = 0 ] && [ "$ojob" != agent ] && [ "$fin" = 0 ] \
-       && { [ "${bucket%% *}" = WORKING ] || { [ "${bucket%% *}" = STALLED ] && [ "$red" = - ]; }; } \
        && [ "$idle" -ge "$FLEET_API_ERROR_IDLE_MIN" ]; then
-      local kgate="" kat=""
-      IFS=$'\t' read -r kgate kat < <(resume_killed_gate "$transcript")
-      # The stop's minute rides in apistop's second field, so the fact below carries it the same way.
-      [ -z "${kgate:-}" ] || { bucket="STALLED resume killed its background ${kgate%% *} (${kgate#* }) before it finished"; apistop="-"$'\t'"$kat"; }
+      IFS=$'\t' read -r stopped stopat < <(stopped_bucket "$transcript" "$bucket" "$red")
+      [ -z "$stopped" ] || bucket="$stopped"
     fi
     blk="$(work_blockers "$askids" "$status" "$plan" "$asks" "$hv" "$bidle" "$g" "$dirty" "$ahead" \
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" - "$(merged_prs "$prs")")"
@@ -2352,7 +2356,7 @@ collect() {
     # Carrying on is activity, not a fact: a session flipping between busy and idle must never page twice.
     fact="${bucket%, carrying on}"; [ "$pr" != - ] && fact="$fact @$branch"
     # One error is one fact (its minute), so a second one after a nudge restarted the session is nudged again.
-    [ -z "$apistop" ] || fact="$fact at ${apistop#*$'\t'}"
+    [ -z "$stopat" ] || fact="$fact at $stopat"
     if [ "$bucket" = "STALLED PR #$pr conflicts with the default branch" ]; then
       fact="$fact base ${fork:0:12}"
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
