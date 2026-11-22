@@ -2116,6 +2116,17 @@ remote_panel_lines() {
   return 0
 }
 
+# phases_word <plan file|-> <in plan mode 0|1> <done> <total|-> -> session_bucket's <phases> word. A plan the pane
+# recorded that does not exist (every account shares ~/.claude/plans, claude-acct) is not a session with no plan:
+# its phases are unknown, so it is never read as finished (ar-2368). In plan mode, though, the pane names the plan
+# path before Claude writes it: no file yet is no plan, not missing (ar-3918).
+phases_word() {
+  if [ "$1" = - ] || { [ "$2" = 1 ] && [ ! -f "$1" ]; }; then echo -
+  elif [ ! -f "$1" ]; then echo missing
+  elif [ "$4" = - ]; then echo none
+  else echo "$3/$4"; fi
+}
+
 collect() {
   local now heavy line
   # The one `project` every row carries is the name the hooks give its directory; a pass that cannot
@@ -2310,12 +2321,7 @@ collect() {
       if [ -n "${xpr:-}" ]; then pr="$xpr" state=OPEN ci="$xci" oid="$xoid" conflicts=-; else xr=-; fi
     fi
     [ "$host" != - ] || planf="$(item_plan "$islugs" "$started" "$planf")"; IFS=$'\t' read -r pdone ptotal pnext < <(plan_phases "$planf")   # the item's own plan outranks the transcript's
-    # A plan the pane recorded that does not exist (every account shares ~/.claude/plans, claude-acct) is not a
-    # session with no plan: its phases are unknown, so it is never read as finished (ar-2368).
-    if [ "$planf" = - ]; then phases=-
-    elif [ ! -f "$planf" ]; then phases=missing
-    elif [ "$ptotal" = - ]; then phases=none
-    else phases="$pdone/$ptotal"; fi
+    phases="$(phases_word "$planf" "$inplan" "$pdone" "$ptotal")"
     # A copy of a queued plan under another file name is that plan (plan_copy_of): the items name it and
     # tick it, and the session may tick its own, so a phase is done when either plan says so.
     local plist="$planf" pcopy="" plj merged=""
