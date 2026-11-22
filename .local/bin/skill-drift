@@ -833,11 +833,11 @@ check_stale() {
 # Every skill's description sits in the context window of every session whether
 # it fires or not, so a skill nothing calls is a standing cost. Counted by
 # `claude-recall stats` over USE_KINDS, so a skill the human reaches only by its slash
-# command (captain, one-shot) or a session only by reading it is not reported unused.
+# command (one-shot) or a session only by reading it is not reported unused.
 #
 # A SIGNAL, not a verdict. A release runbook is supposed to look idle between
 # releases; what this is for is finding the ones that are idle because the router
-# never picks them, which is the overlap problem skill-refine has had no data for.
+# never picks them, which is the overlap problem docs-cleanup audits.
 declare -A USED=() BYPASS=() BYPASS_COVERED=() DENIED=() REPLACES=()
 # The window start and the time every transcript root reaches back to, from the last load_usage.
 USAGE_SINCE="" USAGE_COVERED=""
@@ -1573,7 +1573,7 @@ cat <<'EOF'
   UNUSED     -> a signal, not a verdict. A release runbook is meant to look idle;
                 a skill the router never picks is the one to look at
   RETIRE     -> no use and no hand-typed form of its work: propose retiring it with
-                `/skill-refine`; the human says yes before anything is deleted
+                `/docs-cleanup`; the human says yes before anything is deleted
   PROMOTE    -> a draft earned its place: remove `status: draft` and `disable-model-invocation`
                 after a read of its description (skills.md, the listing rule)
   BYPASSED   -> sessions did the skill's work by hand (`claude-recall stats --kind bypass`
@@ -1582,7 +1582,7 @@ cat <<'EOF'
   LISTBUDGET -> shorten descriptions, or give a domain skill `paths:` so it is listed
                 only where it applies
 
-  Reason about these with `/skill-refine audit` - it adds the lessons/mem0 layer
+  Reason about these with `/docs-cleanup` (Skills, audit) - it adds the lessons/mem0 layer
   and writes proposed diffs. Do NOT silence a finding by deleting the check.
 EOF
 exit 1

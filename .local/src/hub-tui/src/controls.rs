@@ -21,7 +21,8 @@ use serde_json::Value;
 use crate::datatable::DataTable;
 use crate::fit::{cell, clip_line, Cell, Table};
 use crate::fleet;
-use crate::fmt::{clock, dur, Palette};
+use crate::fmt::{clock, Palette};
+use hub_core::display::fmt::dur_secs;
 
 /// The fleet cells the detail leaves to the page's Worktree, PR and Plan parts.
 const ON_PAGE: [&str; 7] = ["SYNC", "CONFLICTS", "TREE", "PR", "PRS", "CI", "PLAN"];
@@ -413,7 +414,7 @@ impl Controls {
         let spend = session_table::spend(self.table.view.apply(&self.all));
         chips.push(Span::raw(format!(
             " | spend {}",
-            hub_core::costs::usd(Some(spend))
+            hub_core::display::fmt::usd_opt(Some(spend))
         )));
         out.push(clip_line(Line::from(chips), w));
         out
@@ -490,7 +491,7 @@ impl Controls {
             let late = self.plan(r.target).and_then(|s| s["late_min"].as_i64());
             return match late {
                 Some(m) => cell(
-                    format!("{} late {}", clock(f, now), dur(m as f64 * 60.0)),
+                    format!("{} late {}", clock(f, now), dur_secs(m as f64 * 60.0)),
                     p.bad(),
                 ),
                 None => clock(f, now).into(),

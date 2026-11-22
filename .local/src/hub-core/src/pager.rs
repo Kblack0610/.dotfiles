@@ -10,9 +10,10 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::display::fmt::age;
 use crate::home::{Kind, Need};
 use crate::session_actions::Runner;
-use crate::text::{age, cap};
+use crate::text::cap;
 
 /// The page's fixed title, so the ledger counts this sender (comms-standard: a countable title).
 pub const TITLE: &str = "Needs you";
@@ -126,8 +127,8 @@ pub fn decide(needs: &[Need], paged: &HashSet<String>, buzzed: usize, cfg: &Conf
 fn text(fresh: &[&Need], waiting: usize, top: usize) -> String {
     let n = fresh.len();
     let lead = format!(
-        "{n} new need{} you, {waiting} waiting.",
-        if n == 1 { "s" } else { "" }
+        "{} you, {waiting} waiting.",
+        crate::display::fmt::plural(n, "new needs", "new need")
     );
     let first = fresh[0];
     let s = first.score.clone().unwrap_or_default();

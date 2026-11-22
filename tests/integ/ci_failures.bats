@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# ci-failures.py: the counting script behind the ci-failures skill. It lists runs from the run
+# ci-failures.py: the counting script behind the ci-cleanup skill (its Reds section). It lists runs from the run
 # ledger (runs.jsonl and sync.json) and their jobs from the job archive (jobs.jsonl), both read by
 # this tree's schedules-sync, and reads a cache of gh responses (ann-<job>.json, log-<job>.txt, and
 # jobs-<run>-<attempt>.json for an attempt the archive lacks), so the fixture in
@@ -12,7 +12,7 @@ setup() {
   load '../vendor/bats-assert/load'
   load '../helpers/sandbox'
   sandbox_init basic
-  SCRIPT="$REPO_ROOT/.claude/skills/ops/ci-failures/ci-failures.py"
+  SCRIPT="$REPO_ROOT/.claude/skills/ops/ci-cleanup/ci-failures.py"
   CACHE="$SANDBOX/cache"
   cp -r "$REPO_ROOT/tests/fixtures/ci-failures" "$CACHE"
   export SCHEDULES_SYNC="$REPO_ROOT/.local/bin/schedules-sync" SCHEDULES_RUNS_LEDGER="$CACHE/runs.jsonl" SCHEDULES_JOBS_LEDGER="$CACHE/jobs.jsonl"

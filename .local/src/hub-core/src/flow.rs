@@ -208,17 +208,6 @@ fn step_of<'a>(p: Option<&'a Pipeline>, key: &str) -> Option<&'a Step> {
 /// How old the snapshot may be before the line says so: three missed 10-minute ticks.
 const STALE_SECS: i64 = 30 * 60;
 
-/// Past this an age reads in days: `2.8d` says more than `67h`.
-const DAYS_FROM_MIN: f64 = 48.0 * 60.0;
-
-fn age(m: f64) -> String {
-    if m >= DAYS_FROM_MIN {
-        format!("{:.1}d", m / (24.0 * 60.0))
-    } else {
-        crate::queue::dur(Some(m.round() as i64))
-    }
-}
-
 /// One thing that went wrong at a step, worded once for both surfaces.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Trouble {
@@ -296,7 +285,7 @@ fn node(c: &Chip, s: Option<&Step>, drain: Option<&str>) -> Node {
     let count = c.value.clone();
     let sub = match (c.key, s.and_then(|s| s.age_p90_min), s.and_then(|s| s.wip)) {
         ("done", ..) => "24h".to_string(),
-        (_, Some(a), _) => format!("p90 {}", age(a)),
+        (_, Some(a), _) => format!("p90 {}", crate::display::fmt::age_min(a)),
         (_, None, Some(0)) => "ok".to_string(),
         _ => "-".to_string(),
     };
@@ -306,9 +295,15 @@ fn node(c: &Chip, s: Option<&Step>, drain: Option<&str>) -> Node {
         line.extend(count.as_ref().map(|n| format!("{n} items")));
     }
     if let Some(s) = s {
-        line.extend(s.oldest_min.map(|m| format!("oldest {}", age(m))));
+        line.extend(
+            s.oldest_min
+                .map(|m| format!("oldest {}", crate::display::fmt::age_min(m))),
+        );
         if let (Some(b), Some(r)) = (s.bound, ratio) {
-            line.push(format!("bound {} ({r:.1}x)", age(b)));
+            line.push(format!(
+                "bound {} ({r:.1}x)",
+                crate::display::fmt::age_min(b)
+            ));
         }
         if let (Some(i), Some(o)) = (s.in_24h, s.out_24h) {
             line.push(format!("24h +{i}/-{o}"));
@@ -503,7 +498,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             st.bottleneck.as_deref(),
-            Some("bottleneck: needs you, age p90 9h (bound 4h)"),
+            Some("bottleneck: needs you, age p90 9h00m (bound 4h00m)"),
             "the record's step is named as its chip"
         );
     }
@@ -585,7 +580,7 @@ pub(crate) mod tests {
         assert_eq!(
             q.facts,
             [
-                "2 items, oldest 3.8d, bound 12h (5.7x), 24h +110/-220",
+                "2 items, oldest 3.8d, bound 12h00m (5.7x), 24h +110/-220",
                 "drain 6h +41/-52 shrinking"
             ]
         );

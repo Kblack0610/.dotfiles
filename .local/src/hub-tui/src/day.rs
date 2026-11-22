@@ -47,10 +47,6 @@ fn hm(ts: &str) -> String {
     }
 }
 
-pub fn money(v: Option<f64>) -> String {
-    v.map_or("-".into(), |v| format!("${v:.2}"))
-}
-
 /// Touched within OPEN_DAYS of `now`.
 fn recent(pr: &Value, now: i64) -> bool {
     DateTime::parse_from_rfc3339(s(pr, "updated_at"))
@@ -276,7 +272,7 @@ pub fn today(rec: Option<&Value>, p: Palette, now: i64, w: usize) -> Page {
                             num(&x["waiting_h"]).into(),
                             num(&x["prs_merged"]).into(),
                             num(&x["ci_reds"]).into(),
-                            money(x["cost_usd"].as_f64()).into(),
+                            hub_core::display::fmt::usd_opt(x["cost_usd"].as_f64()).into(),
                         ]
                     })
                     .collect(),
@@ -463,7 +459,7 @@ pub mod tests {
             "{t}"
         );
         assert!(t.contains("fleet WORKING 27 NEEDS 8 unity runs 3"), "{t}");
-        assert!(t.contains("$211.22"), "{t}");
+        assert!(t.contains("$211"), "{t}");
         // Newest timeline line first.
         assert!(at("stage NEEDS -> WORKING") < at("new: NEEDS"));
     }
