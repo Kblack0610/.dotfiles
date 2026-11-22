@@ -314,6 +314,47 @@ hold_stubs() {
   assert_equal "$(wc -l <"$NOTES_FIXTURE/dispatch.log")" 1
 }
 
+@test "hold: a row gated on a pending ask is not ready yet: NOOP, not recorded, tried again next pass" {
+  hold_stubs
+  sheet '- [ ] feat(a): one #plan #requested <!-- id:sc-1 -->\n'
+  export DISPATCH_RC=1 DISPATCH_OUT='fleet-dispatch: skip scratch: sc-1 waits on ask dWWuvc=retry (pending)'
+  run "$PLAN"
+  assert_success
+  assert_output --partial 'sc-1: not held yet: fleet-dispatch: skip scratch: sc-1 waits on ask'
+  assert_output --partial 'refused 0'
+  assert_output --partial '1 gated'
+  assert_equal "$(outcome)" NOOP
+  run record
+  refute_output --partial '"action":"refused"'
+  run "$PLAN"
+  assert_success
+  assert_equal "$(wc -l <"$NOTES_FIXTURE/dispatch.log")" 2
+}
+
+@test "hold: a gated row gives its slot to the next held row" {
+  hold_stubs
+  sheet '- [ ] feat(a): one #plan #requested <!-- id:sc-1 -->\n- [ ] feat(b): two #plan #requested <!-- id:sc-2 -->\n'
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$NOTES_FIXTURE/dispatch.log"\ncase "$*" in *"--row sc-1 "*) echo "fleet-dispatch: skip scratch: sc-1 waits on ask x=retry (pending)"; exit 1 ;; esac\n' >"$SANDBOX/bin/fleet-dispatch"
+  INBOX_PLAN_REVIEW_MAX=1 run "$PLAN"
+  assert_success
+  assert_output --partial 'sc-2: held in a plan session for review'
+  assert_output --partial 'held 1 for review, 0 waiting (cap 1), 1 gated'
+  assert_equal "$(outcome)" WORKED
+}
+
+@test "hold: a gate that never clears is still a failure (negative control)" {
+  hold_stubs
+  sheet '- [ ] feat(a): one #plan #requested <!-- id:sc-1 -->\n'
+  export DISPATCH_RC=1 DISPATCH_OUT='fleet-dispatch: skip scratch: sc-1 gate #after/x never clears: PR closed'
+  run "$PLAN"
+  assert_failure
+  assert_equal "$(outcome)" FAILED
+  export DISPATCH_OUT='fleet-dispatch: skip scratch: sc-1 waits on ask y=retry (pending); gate #after/x never clears: PR closed'
+  run "$PLAN"
+  assert_failure
+  assert_equal "$(outcome)" FAILED
+}
+
 @test "hold: a refused hold and a budget stop in one pass end BLOCKED with exit 75, not FAILED" {
   hold_stubs
   sheet '- [ ] feat(a): one #plan #requested <!-- id:sc-1 -->\n- [ ] fix(ui): the menu #plan <!-- id:sc-2 -->\n'
