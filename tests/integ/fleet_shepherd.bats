@@ -608,26 +608,6 @@ typed() { cat "$HOME/panel.calls" 2>/dev/null; }
   assert_output 'worker close --server lab --pane %7 --sid 7'
 }
 
-@test "the reminder for a LANDED row held by its own item names the item and its decision, never close its window" {
-  doc "[$(crow 1 LANDED keep '{"nudged":true,"escalated":true,"idle_min":400,"close":{"verdict":"keep","why":"w","left":"its item s is running here"}}')]"
-  printf 'fact: x\nescalated: x\nat: %s\n' "$(date -Iseconds -d '5 hours ago')" > "$FLEET_SHEPHERD_DIR/1"
-  "$SH" check >/dev/null || true
-  grep -q 'since the shepherd told you: its item s is running here. To close it: have it carry its queue item on to a PR' "$HOME/pages"
-  run grep -q 'close its window' "$HOME/pages"
-  assert_failure
-}
-
-@test "the reminder for a DONE or LANDED row held by unlanded work names that work's decision, never close its window" {
-  doc "[$(crow 1 DONE keep '{"nudged":true,"escalated":true,"idle_min":400,"pr":7,"close":{"verdict":"keep","why":"w","left":"2 dirty file(s) (a, b), no PR"}}'),
-        $(crow 2 LANDED keep '{"nudged":true,"escalated":true,"idle_min":400,"pr":7,"close":{"verdict":"keep","why":"w","left":"PR #9 open, CI FAIL"}}')]"
-  for s in 1 2; do printf 'fact: x\nescalated: x\nat: %s\n' "$(date -Iseconds -d '5 hours ago')" > "$FLEET_SHEPHERD_DIR/$s"; done
-  "$SH" check >/dev/null || true
-  grep -q '2 dirty file(s) (a, b), no PR. To close it: land the dirty files or discard them' "$HOME/pages"
-  grep -q 'PR #9 open, CI FAIL. To close it: land PR #9 or close it' "$HOME/pages"
-  run grep -q 'close its window' "$HOME/pages"
-  assert_failure
-}
-
 @test "check types /wind-down auto into a close-now row whose bucket nudge was held unseen (2026-11-18: hub/dotfiles:4 and :8)" {
   # The pass marked LANDED and its SendMessage waited for approval in a manual-mode session; that
   # fact mark is not the close claim, so the close is still typed.
@@ -667,7 +647,7 @@ typed() { cat "$HOME/panel.calls" 2>/dev/null; }
 
 closes() { cat "$HOME/wind-down.calls" 2>/dev/null; }
 # nudged_ago <hours> <sid>...: each session was typed its close (the .closed claim) and escalated
-# (the ledger remind_sample reads) <hours> ago
+# <hours> ago
 nudged_ago() {
   local h="$1" s; shift; mkdir -p "$FLEET_SHEPHERD_DIR/.closed"
   for s in "$@"; do
@@ -677,7 +657,6 @@ nudged_ago() {
 }
 
 @test "check closes the window of a nudged session whose verdict is still now, then refreshes the document and pages nobody" {
-  # Escalated hours ago: without the close, remind_sample would page "close its window".
   nudged_ago 30 1 2 3
   # The refresh drops a closed session's row, as the real collect does once its window is gone.
   stub fleet-sessions 'echo "$*" >> "$HOME/sessions.calls"
@@ -696,16 +675,12 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
   grep -q 'close: lab/1:1: closed its window, still due 60m after its close was typed (DONE f-1)' "$FLEET_SHEPHERD_DIR/log.md"
   [ "$(grep -c -- '--write' "$HOME/sessions.calls")" = 2 ]
   [ -z "$(typed)" ]
-  # Closed before the reminder runs, so the human is not paged to close it.
-  [ -z "$(grep 'one decision closes it' "$HOME/pages")" ]
-  # Negative control: a close that fails (a protected window) is logged once per fact, and the
-  # escalation pages the human as before.
+  # Negative control: a close that fails (a protected window) is logged once per fact.
   : > "$HOME/wind-down.calls"; doc "[$row1]"
   STUB_WD_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   STUB_WD_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   [ "$(grep -c 'close: lab/1:1: closing its window failed; the escalation carries it' "$FLEET_SHEPHERD_DIR/log.md")" = 1 ]
   [ "$(grep -c . "$HOME/wind-down.calls")" = 1 ]
-  grep -q 'lab/1:1: one decision closes it' "$HOME/pages"
 }
 
 @test "check closes the window of a NEEDS row that turned down its close, setting its own asks to reopen it first" {
@@ -927,46 +902,6 @@ nudge_ago() { printf 'fact: STALLED f-%s\nat: %s\n' "$2" "$(date -Iseconds -d "$
 
 # prow <target> [dispatch]: a PARKED row, started for that queue row when one is given
 prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudged:false, escalated:false, labels:[], dispatch:(if $d == "" then null else $d end)}'; }
-
-@test "check re-pages an escalated row left unchanged for hours, once per fact per day, naming the decision (ar-455)" {
-  ago() { date -Iseconds -d "@$(( $(date +%s) - $1 * 3600 ))"; }
-  row() { jq -n --arg sid "$1" --arg b "$2" --arg r "$3" --argjson n "$4" --argjson e "$5" --argjson i "$6" --argjson l "${7:-[]}" \
-    '{session_id: $sid, target: "lab/\($sid):1", bucket: $b, reason: $r, fact: "\($b) \($r)", nudged: $n, escalated: $e,
-      idle_min: $i, labels: $l, pr: "12", next_phase: "Phase 4: live money", plan_file: "/p/calm-lagoon.md"}'; }
-  doc "[$(row s-landed LANDED 'PR #12 merged, tree clean, next phase: Phase 4: live money' true true 400),
-        $(row s-green LANDED 'PR #12 green, not merged' true true 400 | jq -c '. + {close: {left: "PR #12 green, not merged"}}'),
-        $(row s-young DONE 'PR #12 CI red' true true 400),
-        $(row s-manual DONE 'clean, nothing on the branch' true true 400 '["manual"]'),
-        $(row s-open DONE 'clean, nothing on the branch' true false 400),
-        $(row s-busy DONE 'clean, nothing on the branch' true true 30)]"
-  for s in s-landed s-green s-manual s-open s-busy; do printf 'fact: x\nescalated: x\nat: %s\n' "$(ago 5)" > "$FLEET_SHEPHERD_DIR/$s"; done
-  printf 'fact: x\nescalated: x\nat: %s\n' "$(ago 1)" > "$FLEET_SHEPHERD_DIR/s-young"
-  "$SH" check >/dev/null || true
-  run grep -c 'one decision closes it' "$HOME/pages"
-  assert_output 2
-  run grep 'lab/s-landed:1: one decision' "$HOME/pages"
-  assert_output --partial '-p normal -k decision'
-  assert_output --partial "close its window; fleet-dispatch files its open phases"
-  assert_output --partial 'tmux:lab/s-landed:1'
-  run grep 'lab/s-green:1: one decision' "$HOME/pages"
-  assert_output --partial 'merge PR #12 or close it'
-  grep -q 'remind: lab/s-green:1' "$FLEET_SHEPHERD_DIR/log.md"
-  # The same facts the same day page nothing more.
-  "$SH" check >/dev/null || true
-  run grep -c 'one decision closes it' "$HOME/pages"
-  assert_output 2
-  # The next day they page again, once.
-  sed -i "s/^$(date +%F)/2000-01-01/" "$FLEET_SHEPHERD_DIR/.remind"
-  "$SH" check >/dev/null || true
-  "$SH" check >/dev/null || true
-  run grep -c 'one decision closes it' "$HOME/pages"
-  assert_output 4
-  # A page agent-notify refused is not recorded as sent: the next check tries again.
-  : > "$FLEET_SHEPHERD_DIR/.remind"
-  stub agent-notify 'exit 1'
-  "$SH" check >/dev/null || true
-  [ ! -s "$FLEET_SHEPHERD_DIR/.remind" ]
-}
 
 @test "a parked session on a CLEAR machine with no hold is a pace line; a park its ledger gives an owner and a held machine are not" {
   doc "[$(prow lab/p:1), $(prow lab/q:1 'dotfiles: q2'), $(prow lab/r:1 'dotfiles: q3'), $(row m PARKED false false '["manual"]')]"
