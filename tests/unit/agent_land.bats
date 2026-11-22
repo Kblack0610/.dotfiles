@@ -2982,9 +2982,10 @@ EOF
   assert_line --index -1 'landed #42'
 }
 
-@test "board step on a row no board lists, open or done, still fails (ar-4189)" {
+@test "board step on a row no board lists as done on its project, or one dropped, still fails (ar-4189)" {
   item fix 'board:game:gm-1' human
-  jq -n '{rows: [], done: []}' >"$NOTES_FIXTURE/board.json"
+  jq -n '{rows: [], done: [{project: "other", lane: "human", id: "gm-1", state: "done", marker: "id:gm-1 done:2026-11-01"},
+    {project: "game", lane: "human", id: "gm-1", state: "done", marker: "id:gm-1 dropped:2026-11-02"}]}' >"$NOTES_FIXTURE/board.json"
   mv "$SANDBOX/bin/notes" "$SANDBOX/notes.ok"
   printf '#!/usr/bin/env bash\ncase " $* " in *" done "*) echo "no open task matches '\''gm-1'\'' in game" >&2; exit 1 ;; esac\nexec "%s" "$@"\n' "$SANDBOX/notes.ok" >"$SANDBOX/bin/notes"
   chmod +x "$SANDBOX/bin/notes"
