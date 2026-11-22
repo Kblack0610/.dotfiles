@@ -853,8 +853,20 @@ fn activity(c: &Card, pg: &Page, p: Palette, w: usize) -> Vec<Line<'static>> {
     }
     out.push(Line::raw(""));
     out.push(sec_head("AGENT NOTE", &projects::note_says(c), "", p, w));
-    if !c.status.is_empty() {
-        out.extend(wrapped("  ", &c.status, p.dim(), p, w));
+    if let Some(h) = &c.status.headline {
+        out.extend(wrapped("  ", h.full(), p.dim(), p, w));
+    }
+    // The labelled lines as a key table: the label padded to the widest, the value wrapped under itself.
+    let key = c
+        .status
+        .rows
+        .iter()
+        .map(|f| f.label.text().len())
+        .max()
+        .unwrap_or(0);
+    for f in &c.status.rows {
+        let lead = format!("  {:<key$}  ", f.label.text());
+        out.extend(wrapped(&lead, f.value.full(), p.dim(), p, w));
     }
     out
 }
@@ -1285,7 +1297,10 @@ pub(crate) mod tests {
                 days_left: Some(7),
                 ..Default::default()
             }),
-            status: "landed the cards".into(),
+            status: projects::Status::of(
+                "landed the cards",
+                &serde_json::from_str(r#"{"done":"the arena (#9).","needs":"nothing."}"#).unwrap(),
+            ),
             status_date: "2026-11-05".into(),
             ..Default::default()
         };
@@ -1539,7 +1554,7 @@ pub(crate) mod tests {
         for s in [
             "SHIPPED  none yet",
             "TIMELINE  7d: 1 commit (1 red on CI)\n  PRs: the origin is not GitHub\n  14:02  commit  fix(web): keep the cart (#12)  CI red\n  +3 older",
-            "AGENT NOTE  model-written, 2026-11-05\n  landed the cards",
+            "AGENT NOTE  model-written, 2026-11-05\n  landed the cards\n  Done       the arena (#9).\n  Needs you  nothing.",
         ] {
             assert!(act.contains(s), "{s} in {act}");
         }

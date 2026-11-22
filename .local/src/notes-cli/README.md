@@ -108,7 +108,7 @@ Each profile has a `projects/index.md`. lab-sync regenerates its `AUTO` overview
 ```
 current/<name>/
   README.md                the working sheet: `Version: vX.Y.Z #<stage>`, the generated `Agents:` line and `Docs:` list, then `## Inbox` and `## Tasks`
-  summary.md               generated: a dated STATUS block (lab-status) and the AUTO release feed (lab-sync); no hand text
+  summary.md               generated: a dated STATUS block (lab-status) and the AUTO release feed (lab-sync); no hand text. STATUS is a headline, then `Done:`, `Doing:`, `Next:` and `Needs you:` each on its own line (`comms-lint --channel lab-status`); `projects --stats --json` sends the headline as `status` and the lines as `status_parts`, and still reads the old one-line shape, minus the numbers it pasted
   agent/README.md          the agent board (`ptask --agent`): the same two sections, no `Version:` line (it follows the sheet)
   ideas.md                 unshaped ideas for this project, written by the person only
   improvements.md          optional: nice-to-haves agents found, one line each, written only by `notes improve` (the triager's `improvement` verdict); a line becomes work with `ptask <name> --agent add`
