@@ -41,7 +41,8 @@ LOOP_MSG = (
     "context. Start the same wait with run_in_background: true (or the Monitor tool) and act on "
     "the completion notification; do not check its output, gh or git before the notice arrives. "
     "A loop inside a script file is not affected. For a CI run use `gh-run-wait <run-id> [label]` "
-    "in the background, not a wrapper script of your own: fleet-sessions counts it as a gate, and "
+    "(in the foreground with timeout 600000 when the run is under 10 minutes), not a wrapper "
+    "script of your own: fleet-sessions counts it as a gate, and "
     "reads a script of your own as STALLED."
 )
 LIVE_MSG = (
