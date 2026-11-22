@@ -3,20 +3,6 @@
 use chrono::{Local, TimeZone};
 use ratatui::style::{Color, Modifier, Style};
 
-/// 45s, 36m, 2h28m, 3d4h, as `prom_dur` in `.local/lib/prom.sh`; - for no number.
-pub fn dur(secs: f64) -> String {
-    if !secs.is_finite() || secs < 0.0 {
-        return "-".into();
-    }
-    let s = secs as i64;
-    match s {
-        0..=59 => format!("{s}s"),
-        60..=3599 => format!("{}m", s / 60),
-        3600..=86399 => format!("{}h{:02}m", s / 3600, s % 3600 / 60),
-        _ => format!("{}d{}h", s / 86400, s % 86400 / 3600),
-    }
-}
-
 /// A ratio as a whole percent, or - when the series is absent.
 pub fn pct(v: Option<f64>) -> String {
     v.map_or("-".into(), |v| format!("{:.0}%", v * 100.0))
@@ -32,15 +18,6 @@ pub fn bar(percent: Option<u32>, mark: Option<u32>, width: usize) -> (String, St
         (0..on).map(|i| cell(i, '#')).collect(),
         (on..width).map(|i| cell(i, '.')).collect(),
     )
-}
-
-/// A count as 2.3M, 12k or 512.
-pub fn kilo(n: u64) -> String {
-    match n {
-        n if n >= 1_000_000 => format!("{:.1}M", n as f64 / 1e6),
-        n if n >= 1_000 => format!("{}k", (n + 500) / 1_000),
-        n => n.to_string(),
-    }
 }
 
 /// A unix time as the local clock: HH:MM today, else MM-DD HH:MM.
@@ -127,16 +104,6 @@ pub fn older(total: usize, shown: usize, p: Palette) -> Option<ratatui::text::Li
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn durations_read_as_the_bash_boards_wrote_them() {
-        assert_eq!(dur(45.9), "45s");
-        assert_eq!(dur(2160.0), "36m");
-        assert_eq!(dur(8880.0), "2h28m");
-        assert_eq!(dur(3949200.0), "45d17h");
-        assert_eq!(dur(f64::NAN), "-");
-        assert_eq!(dur(-1.0), "-");
-    }
 
     #[test]
     fn every_chip_is_black_text_on_its_colour() {

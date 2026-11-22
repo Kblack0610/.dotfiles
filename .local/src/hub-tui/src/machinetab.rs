@@ -12,7 +12,8 @@ use ratatui::text::{Line, Span};
 
 use crate::controls::{dash, page_field};
 use crate::fit::{self, cell, clip_line, Table};
-use crate::fmt::{clock, dur, Palette};
+use crate::fmt::{clock, Palette};
+use hub_core::display::fmt::dur_secs;
 
 /// The page's own keys, as its heading says them.
 pub const PAGE_KEYS: &str = "[Esc all machines  o Grafana]";
@@ -133,7 +134,7 @@ fn slots(page: &MachinePage, p: Palette, w: usize) -> Vec<Line<'static>> {
     let busy = runners.iter().filter(|s| s.now == "busy").count();
     let mut head = format!("{busy} of {} busy", runners.len());
     if let Some(age) = runners.iter().filter_map(|s| s.disk_age).reduce(f64::max) {
-        head += &format!(", disk read {} ago", dur(age));
+        head += &format!(", disk read {} ago", dur_secs(age));
     }
     let no = hub_core::reading::NO_DATA;
     let read = |t: String| {
@@ -234,7 +235,7 @@ fn running(page: &MachinePage, p: Palette, w: usize) -> Vec<Line<'static>> {
                 .running
                 .iter()
                 .map(|s| {
-                    let ran = s.ran.map_or("-".into(), |r| dur(r as f64));
+                    let ran = s.ran.map_or("-".into(), |r| dur_secs(r as f64));
                     vec![
                         dash(&s.job),
                         dash(&s.pool),
@@ -244,7 +245,7 @@ fn running(page: &MachinePage, p: Palette, w: usize) -> Vec<Line<'static>> {
                         } else {
                             ran.into()
                         },
-                        s.usual.map_or("-".into(), |u| dur(u as f64).into()),
+                        s.usual.map_or("-".into(), |u| dur_secs(u as f64).into()),
                         dash(&s.reference()),
                     ]
                 })
@@ -373,9 +374,8 @@ fn sensors(live: &HostNow, p: Palette, w: usize) -> Vec<Line<'static>> {
     let mut out = vec![heading(
         "SENSORS",
         format!(
-            "{} device{}, amber at {HOT_C:.0}C",
-            live.devices.len(),
-            if live.devices.len() == 1 { "" } else { "s" }
+            "{}, amber at {HOT_C:.0}C",
+            hub_core::display::fmt::counted(live.devices.len(), "device")
         ),
         p,
     )];
@@ -560,7 +560,7 @@ fn downtime(h: &HostHistory, p: Palette, now: i64, w: usize) -> Vec<Line<'static
                         } else {
                             clock(d.to as i64, now).into()
                         },
-                        dur(d.to.saturating_sub(d.from) as f64).into(),
+                        dur_secs(d.to.saturating_sub(d.from) as f64).into(),
                         d.why.clone().into(),
                     ]
                 })
@@ -599,7 +599,7 @@ fn recent(rows: &[RecentJob], p: Palette, now: i64, w: usize) -> Vec<Line<'stati
                         dash(&j.job),
                         dash(&j.runner),
                         c,
-                        j.took.map_or("-".into(), |t| dur(t as f64).into()),
+                        j.took.map_or("-".into(), |t| dur_secs(t as f64).into()),
                     ]
                 })
                 .collect(),

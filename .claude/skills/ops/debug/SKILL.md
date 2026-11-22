@@ -20,7 +20,7 @@ The steps are ordered against the failures our sessions repeat most: a process's
 - A human reports one bug: "debug this", "why is X broken", "not working", "it crashes", "this regressed", "still broken", "didn't that session fix this".
 - A fix you made did not take, or a test fails and its message does not explain why.
 
-Not for a sweep across a repo (`bug-bash`), a tripped watch, runner or unit (`fix-red`), the red checks on one PR (`fix-ci`), CI failing across many runs (`ci-failures`), or lag, hitches and looks (`game-eval`). For a read-only second opinion on the cause, dispatch the `root-cause-analyst` agent: it runs steps 0 to 6 (Step 0 through Root cause) and stops before the fix.
+Not for a sweep across a repo (`bug-bash`), a tripped watch, runner or unit (`fix-red`), the red checks on one PR (`fix-ci`), CI failing across many runs (`ci-cleanup`), or lag, hitches and looks (`game-eval`). For a read-only second opinion on the cause, dispatch the `root-cause-analyst` agent: it runs steps 0 to 6 (Step 0 through Root cause) and stops before the fix.
 
 ## Step 0
 

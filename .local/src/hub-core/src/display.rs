@@ -10,6 +10,8 @@
 //! (`prose_fields_never_grow`), `tests/agent-web/text.test.mjs` for the web side.
 
 use crate::{plans, text};
+
+pub mod fmt;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -204,8 +206,7 @@ impl Count {
     pub fn shown(&self) -> String {
         match self.of {
             Some(of) => format!("{}/{of} {}s", self.n, self.unit),
-            None if self.n == 1 => format!("1 {}", self.unit),
-            None => format!("{} {}s", self.n, self.unit),
+            None => fmt::counted(self.n as usize, self.unit),
         }
     }
 }
@@ -233,7 +234,7 @@ impl When {
     pub fn ago(epoch: i64, now: i64) -> When {
         When {
             epoch,
-            text: format!("{} ago", text::age(now - epoch)),
+            text: format!("{} ago", fmt::age(now - epoch)),
         }
     }
 

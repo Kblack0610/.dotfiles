@@ -13,7 +13,9 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
 use crate::fit::{cell, clip_line, Cell, Table};
-use crate::fmt::{clock, dur, Palette};
+
+use crate::fmt::{clock, Palette};
+use hub_core::display::fmt::dur_since;
 
 /// Home's two tables and which has the keys: Needs you, or Running once Tab moves them there.
 #[derive(Debug, Default)]
@@ -38,10 +40,6 @@ impl HomeView {
         rows.truncate(SHOWN);
         rows
     }
-}
-
-pub(crate) fn age(since: Option<i64>, now: i64) -> String {
-    since.map_or("-".into(), |t| dur((now - t).max(0) as f64))
 }
 
 /// The Home sections, top to bottom; the caller adds the infra body under them.
@@ -106,7 +104,7 @@ fn needs(h: &Home, view: &DataTable, p: Palette, now: i64, w: usize) -> Vec<Line
                     n.rank.to_string().into(),
                     cell(format!("{mark}{}", n.need.label()), style),
                     or_dash(n.project.clone()).into(),
-                    age(n.since, now).into(),
+                    dur_since(n.since, now).into(),
                     or_dash(n.holds()).into(),
                     if machine {
                         cell(n.text.clone(), p.dim())
@@ -512,7 +510,7 @@ pub fn page(
                     vec![
                         r.stream.clone().into(),
                         r.project.clone().into(),
-                        age(r.at(), now).into(),
+                        dur_since(r.at(), now).into(),
                         r.title.clone().into(),
                     ]
                 })

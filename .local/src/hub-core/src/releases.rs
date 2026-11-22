@@ -1119,8 +1119,8 @@ fn gaps(rows: &[Release]) -> String {
     n.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     let causes: Vec<String> = n.iter().map(|(w, c)| format!("{w} ({c})")).collect();
     format!(
-        "{total} channel{} not read: {}",
-        if total == 1 { "" } else { "s" },
+        "{} not read: {}",
+        crate::display::fmt::counted(total, "channel"),
         causes.join(", ")
     )
 }
