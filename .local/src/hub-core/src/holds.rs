@@ -102,26 +102,25 @@ pub fn dir() -> PathBuf {
 }
 
 /// Every hold in `dir`, by resource. No directory is no hold (`agent-hold` makes it on the first
-/// set); a directory that cannot be listed is an error, never an empty list. Dot files are
-/// `agent-hold`'s temp files mid-rename.
+/// set); a directory or a hold file that cannot be read is an error, never a shorter list, since a
+/// hold left out is a standing hold shown green. Dot files are `agent-hold`'s temp files mid-rename.
 pub fn read(dir: &Path) -> Result<Vec<Hold>, String> {
     let rd = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
         Err(e) => return Err(format!("{}: {e}", dir.display())),
     };
-    let mut out: Vec<Hold> = rd
-        .flatten()
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
-        .filter_map(|e| {
-            let name = e.file_name().to_str()?.to_string();
-            if name.starts_with('.') {
-                return None;
-            }
-            let text = std::fs::read_to_string(e.path()).ok()?;
-            Some(Hold::parse(&name, &text))
-        })
-        .collect();
+    let mut out = vec![];
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        // Anything but a directory is a hold file, so a broken link is a hold that cannot be read.
+        if name.starts_with('.') || e.path().is_dir() {
+            continue;
+        }
+        let text = std::fs::read_to_string(e.path())
+            .map_err(|err| format!("{}: {err}", e.path().display()))?;
+        out.push(Hold::parse(&name, &text));
+    }
     out.sort_by(|a, b| a.resource.cmp(&b.resource));
     Ok(out)
 }
@@ -189,8 +188,13 @@ mod tests {
         std::fs::write(d.join("b"), "kind: resource\nby: human\n").unwrap();
         std::fs::write(d.join(".b.XXXX"), "kind: resource\n").unwrap();
         let got = read(&d).unwrap();
-        std::fs::remove_dir_all(&d).unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].resource, "b");
+        // A hold file that cannot be read is an error, not a hold left out: a broken link fails
+        // the read for any user, root included.
+        std::os::unix::fs::symlink(d.join("missing"), d.join("c")).unwrap();
+        let err = read(&d);
+        std::fs::remove_dir_all(&d).unwrap();
+        assert!(err.is_err_and(|e| e.contains("/c: ")));
     }
 }

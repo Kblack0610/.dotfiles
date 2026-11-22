@@ -1,8 +1,9 @@
 //! What NEEDS YOU reads beyond fleet-sessions' state: critical mail (comms' surfaced mail), the
 //! janitor's NEEDS YOU lines (today's `infra-cleanup.md`), the runners stopped at their budget
-//! today (each runner's activity.log) and the standing holds the human set (`holds`). `join` adds them to the state document beside the live
-//! asks (`boards::state`), so Home, `hub needs`, the pager and the briefing read one list. A
-//! source that cannot be read is named in the document's `unreadable`, never an empty list.
+//! today (each runner's activity.log) and the standing holds the human set (`holds`). `join` adds
+//! them to the state document beside the live asks (`boards::state`), so Home, `hub needs`, the
+//! pager and the briefing read one list. A source that cannot be read is named in the document's
+//! `unreadable`, never an empty list.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

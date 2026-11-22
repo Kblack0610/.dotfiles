@@ -86,7 +86,7 @@ const fn conf_number(conf: &str, key: &str) -> i64 {
 }
 
 /// What a row is, and who owns it (`Kind::owner`): `build` keeps the human's kinds in `Home.needs`
-/// and moves the agent's to `Home.routed`. Conditions (Budget to Red) list after every scored row,
+/// and moves the agent's to `Home.routed`. Conditions (Hold to Red) list after every scored row,
 /// in this order. A condition has no score, so the needs pager never pages it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -104,11 +104,11 @@ pub enum Kind {
     /// An open `#urgent` or `#high` row of a project's human sheet that only the human can do
     /// (`HUMAN_TYPES`), with no ask, session or queue item shown for it.
     Sheet,
-    /// A runner stopped at its budget today (`signals::budget_stop`): it waits for a raise.
-    Budget,
     /// A hold the human set that has stood a day (`holds::Hold::standing`): it waits on their
     /// release. Alerts shows it red too, beside the holds an agent set.
     Hold,
+    /// A runner stopped at its budget today (`signals::budget_stop`): it waits for a raise.
+    Budget,
     /// A `night` queue item that finished failed.
     Night,
     /// A NEEDS YOU line of the home-k3s janitor (`signals::janitor`).
@@ -279,7 +279,7 @@ pub struct Need {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recommend: Option<String>,
     /// What the row counted, for an ask, a session, a queue item or a sheet row; a condition
-    /// (Stopped, Budget to Red) is not a wait, and has none.
+    /// (Stopped, Hold to Red) is not a wait, and has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<Score>,
     /// An ask row's whole record, joined here so a surface draws its answer card from the row
@@ -972,7 +972,8 @@ pub fn needs(
                 .count() as u64
         })
     };
-    let mut out = Vec::new();
+    // The first condition rows: the sort below keeps each condition where it was pushed.
+    let mut out = hold_needs(state);
     let mut shown: HashSet<String> = HashSet::new();
     // The slugs of the queue items an ask already stands for, by its live owner or its `task`.
     let mut asked: HashSet<String> = HashSet::new();
@@ -1150,7 +1151,6 @@ pub fn needs(
             b["at"].as_i64(),
         ));
     }
-    out.extend(hold_needs(state));
     let recent = |i: &Item| {
         let done = i.finished.as_deref().and_then(ts);
         now.zip(done)
@@ -1537,8 +1537,8 @@ mod tests {
             [
                 (Kind::Ask, "a1"),
                 (Kind::Session, "hub/dotfiles:2"),
-                (Kind::Budget, "budget:dream"),
                 (Kind::Hold, "hold:critical"),
+                (Kind::Budget, "budget:dream"),
                 (Kind::Night, "night-1"),
                 (Kind::Janitor, "janitor:pvc stuck"),
                 (Kind::Mail, "mail:alarm@aws:ALARM: 5xx"),
@@ -1569,7 +1569,7 @@ mod tests {
         assert!(h
             .needs
             .iter()
-            .filter(|n| n.kind >= Kind::Budget)
+            .filter(|n| n.kind >= Kind::Hold)
             .all(|n| n.score.is_none()));
         // A budget stop waits on a raise and a hold on its release, so both filter as Blocked; the
         // rest as Failing.

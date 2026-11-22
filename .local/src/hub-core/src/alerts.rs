@@ -684,7 +684,13 @@ fn add_holds(
 ) -> Result<(), String> {
     let rows = hold_rows(holds?, open, now);
     if !rows.is_empty() {
-        firing.retain(|a| a.source != "sentinel" || a.error() || a.what != HOLD_WATCH);
+        // Its Prometheus twin too: red_now adds it while the watch's own state file lags.
+        let watch = format!("watch {HOLD_WATCH}");
+        firing.retain(|a| match a.source.as_str() {
+            "sentinel" => a.error() || a.what != HOLD_WATCH,
+            "red_now" => a.what.replace('_', "-") != watch,
+            _ => true,
+        });
     }
     firing.extend(rows);
     Ok(())
@@ -1007,7 +1013,7 @@ mod tests {
         let mut ws = ok_watches();
         ws.push(watch(HOLD_WATCH, "TRIP", "high", Some(NOW - 600)));
         let a = join(
-            &infra(&[]),
+            &infra(&["watch hold_age"]),
             Ok(ws.clone()),
             Ok(Reds::default()),
             Ok(String::new()),
@@ -1024,6 +1030,7 @@ mod tests {
             .iter()
             .map(|r| (r.what.as_str(), r.source.as_str()))
             .collect();
+        // One row a hold: neither the watch's row nor its Prometheus twin stands beside it.
         assert_eq!(rows, [("hold critical", HOLD)]);
         let r = &a.firing[0];
         assert_eq!(r.hue(), Level::Red);

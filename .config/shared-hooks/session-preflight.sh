@@ -162,11 +162,12 @@ HEADER=$(
           else reason="${reason:0:297}"; reason="${reason% *}..."; fi
         fi
         # Its age beside the stamp, in hours under a day, so a hold that has stood for days reads
-        # as old at a glance (ar-4645); a since no date reads shows no age.
+        # as old at a glance (ar-4645); a since no date reads, or one ahead of this clock, shows none.
         since="$(sed -n 's/^since: //p' "$hold")" age=""
         if [ -n "$since" ] && held_s=$(date -d "$since" +%s 2>/dev/null); then
           held_s=$(( $(date +%s) - held_s ))
-          if [ "$held_s" -ge 86400 ]; then age=" (held $((held_s / 86400))d)"; else age=" (held $((held_s / 3600))h)"; fi
+          if [ "$held_s" -lt 0 ]; then age=""
+          elif [ "$held_s" -ge 86400 ]; then age=" (held $((held_s / 86400))d)"; else age=" (held $((held_s / 3600))h)"; fi
         fi
         HOLD_SHOWN+=("$(printf '  %s since %s%s by %s: %s' "$res" "$since" "$age" \
           "$(sed -n 's/^by: //p' "$hold")" "$reason")")
