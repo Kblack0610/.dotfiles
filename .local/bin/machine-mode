@@ -5,7 +5,7 @@
 #   machine-mode <mode>     switch to a mode from the modes file, by hand
 #   machine-mode next       switch to the next one, wrapping (the waybar chip's click)
 #   machine-mode hours      print the day's parts, the mode each runs in, and which one is now
-#   machine-mode clock      the timer's tick: a new part's mode applies once (agentctl machine-clock)
+#   machine-mode clock      the timer's tick: a new part's mode applies once (machine-clock.timer, at each part's start)
 #   machine-mode auto       give the mode back to the clock: apply this part's mode now
 #   machine-mode release-lane <host> --until <time>   keep <host>'s pool slots for release jobs
 #                           until <time> (date -d, at most 24h ahead); it ends on its own
@@ -19,8 +19,8 @@
 #
 # The clock hours, .config/machine-mode/hours, name the day's parts. When a part begins, `clock`
 # switches to its mode, except that a mode set by hand holds while the human is here
-# (fleet-presence): the part's mode then applies at the first tick they are away. Inside a part
-# the clock changes nothing, so a hand switch stands until the next part begins.
+# (fleet-presence), and then stands until the next part begins or `machine-mode auto`. The tick is
+# machine-clock.timer, at each part's start, so a hold is not re-read inside a part.
 #
 # A mode sets two things, its numbers in .config/machine-mode/modes:
 #   runners and unity_slots
@@ -225,33 +225,22 @@ clock_target() {
   printf '%s %s\n' "$part" "$want"
 }
 
-# clock_proof <verdict> [detail] -- the tick's outcome for its agentctl runner (agent-proof.sh), so a
-# run that changed nothing reads NOOP, not STALLED.
-clock_proof() {
-  # shellcheck source=../lib/agent-proof.sh
-  . "$here/../lib/agent-proof.sh" || die "agent-proof.sh not found, so the tick cannot report an outcome"
-  [ -z "${3:-}" ] || proof_why "$3"
-  proof_report machine-clock "$1" "${2:-}"
-}
-
+# clock: the tick of machine-clock.timer. Its exit code is the unit's result: a quiet tick exits 0.
 clock() {
   local part want by rc=0
   read -r part want <<< "$(clock_target)"
-  [ -n "$part" ] || { clock_proof FAILED "" "the hours file does not name a part for the time now, or names an unknown mode"; exit 1; }
+  [ -n "$part" ] || exit 1   # clock_target said why
   by="$(state_value MODE_BY)"
   # A state file from before the clock names no setter: its mode was set by hand.
   [ -z "$by" ] && [ -n "$(state_value MACHINE_MODE)" ] && by=hand
   if [ "$(state_value CLOCK_PART)" = "$part" ]; then
     # Applied this part already; retry only a runner pin that never reached the cluster.
-    [ "$(state_value RUNNERS_PINNED)" = no ] && [ "$by" = clock ] || { clock_proof NOOP "$part: $(current_mode), applied already"; return 0; }
+    [ "$(state_value RUNNERS_PINNED)" = no ] && [ "$by" = clock ] || return 0
   elif [ "$by" = hand ] && [ "$(current_mode)" != "$want" ] && human_here; then
-    echo "machine-mode: $part began; $(current_mode) was set by hand and you are here, so it holds until you are away"
-    clock_proof NOOP "$part: $(current_mode) held by hand while the human is here"
+    echo "machine-mode: $part began; $(current_mode) was set by hand and you are here, so it holds until the next part begins (machine-mode auto hands it back)"
     return 0
   fi
   switch "$want" clock "$part" || rc=$?
-  if [ "$rc" = 0 ]; then clock_proof WORKED "$part: switched to $want"
-  else clock_proof FAILED "$part: $want" "the runner pin did not reach the cluster"; fi
   return "$rc"
 }
 
@@ -277,8 +266,8 @@ case "${1:-}" in
 esac
 
 if ! compgen -G "$RUNNER_UNITS" >/dev/null; then
-  # The timer runs on every machine with the runner confs; with no pool runners its tick has nothing to do.
-  [ "${1:-}" = clock ] && { clock_proof NOOP "no pool runners on this machine"; exit 0; }
+  # The timer is stowed on every machine; with no pool runners its tick has nothing to do.
+  [ "${1:-}" = clock ] && exit 0
   die "no pool runners on this machine, so there is nothing to set"
 fi
 

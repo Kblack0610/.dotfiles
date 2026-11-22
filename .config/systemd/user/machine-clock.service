@@ -1,0 +1,11 @@
+[Unit]
+Description=Apply the machine mode of the day part that has begun (machine-mode clock)
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=%h/.local/bin/machine-mode clock
+# A pin that did not reach the cluster exits 1 and leaves the chip amber; retry it, as the 15-minute
+# runner did, until it lands or the next boundary applies the new part.
+Restart=on-failure
+RestartSec=15min

@@ -6,8 +6,9 @@
 # pool runners refuses; the status reads what the runners do and where the governor moves them
 # (ci_governor_effective_slots), not what was asked. The
 # clock: the real hours file covers the day once and names real modes; a new part's mode applies
-# once; a hand mode holds inside its part, and past a boundary while the human is here; each
-# tick reports its agentctl outcome, so a quiet tick is NOOP and never STALLED.
+# once; a hand mode holds inside its part, and past a boundary while the human is here; a quiet
+# tick exits 0 and a failed pin exits 1 (the unit's result); machine-clock.timer fires at the
+# start of each part of the shipped hours file and is enabled.
 # agent-hold is the real one against a sandbox hold dir, so its list format is pinned too.
 
 # The governor whose override.schema.json each write is checked against; the test skips without it.
@@ -373,20 +374,26 @@ hours_fixture() {
   assert_equal "$(state MACHINE_MODE)" reserved
 }
 
-@test "each tick reports its outcome to the machine-clock runner: WORKED, NOOP, FAILED" {
+@test "machine-clock.timer fires at the start of each part of the shipped hours file, and is enabled" {
+  U="$REPO_ROOT/.config/systemd/user"
+  want="$(grep -v '^#' "$REPO_ROOT/.config/machine-mode/hours" | grep . | cut -d'|' -f2 | cut -d- -f1 | sort)"
+  got="$(sed -n 's/^OnCalendar=\*-\*-\* \([0-9:]*\):00$/\1/p' "$U/machine-clock.timer" | sort)"
+  assert_equal "$got" "$want"
+  grep -q '^Persistent=true' "$U/machine-clock.timer"
+  grep -q '^ExecStart=%h/.local/bin/machine-mode clock$' "$U/machine-clock.service"
+  [ -L "$U/timers.target.wants/machine-clock.timer" ]
+}
+
+@test "a tick that changes nothing exits 0 and says nothing; one whose pin fails exits 1" {
   hours_fixture
-  out() { cat "$HOME/.local/state/agentctl/machine-clock/last-outcome"; }
-  MACHINE_MODE_NOW=12:00 "$MM" clock >/dev/null
-  assert_equal "$(out)" WORKED
-  MACHINE_MODE_NOW=12:15 "$MM" clock >/dev/null
-  assert_equal "$(out)" NOOP
-  MACHINE_MODE_NOW=12:30 "$MM" reserved >/dev/null
-  MACHINE_MODE_NOW=23:00 "$MM" clock >/dev/null
-  assert_equal "$(out)" NOOP
+  MACHINE_MODE_NOW=12:00 run "$MM" clock
+  assert_success
+  MACHINE_MODE_NOW=12:15 run "$MM" clock
+  assert_success
+  assert_output ""
   MACHINE_MODE_NOW=12:00 "$MM" auto >/dev/null
   KUBE_FAIL=1 MACHINE_MODE_NOW=23:00 run "$MM" clock
   assert_failure
-  assert_equal "$(out)" FAILED
 }
 
 # The release lane: `release-lane` writes only "<host>.reserve" {"until": <epoch>}, which the governor

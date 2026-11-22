@@ -56,11 +56,12 @@ The system's clock hours live in one file, `.config/machine-mode/hours`: each ro
 | day | 06:00-01:00 | open | your hours: board rows wait until you are away, queued items start |
 | night | 01:00-06:00 | full | unattended: nightly builds and tests, twice the starts |
 
-- The agentctl runner `machine-clock` runs `machine-mode clock` every 15 minutes. When a new part has begun, it switches to that part's mode once. Inside a part it changes nothing, so a mode you set by hand stands until the next part begins.
-- A mode you set by hand holds past a boundary while `fleet-presence` says you are here. The part's mode applies at the first tick after you are away, so going to `reserved` at 00:30 to play a build is not undone at 01:00.
+- The systemd timer `machine-clock.timer` runs `machine-mode clock` at 01:00 and 06:00, the start of each part (`Persistent=true`, so a boundary missed while the machine was off applies at the next boot). It switches to that part's mode once; inside a part nothing runs, so a mode you set by hand stands until the next part begins.
+- A mode you set by hand holds past a boundary while `fleet-presence` says you are here, so going to `reserved` at 00:30 to play a build is not undone at 01:00. It then stands until the next boundary: nothing re-reads presence inside a part, so the night's `full` does not apply later that night.
 - `machine-mode auto` gives the mode back to the clock at once, whether you are here or not.
 - Nightly work belongs in the `night` row: a runner's `SCHEDULE=`, a CI cron, an `at:` item. The hub Schedules tab lists what runs when.
-- 15 minutes is a poll on purpose: a boundary could be a calendar timer, but presence has no event for a tmux keypress, and a timer per boundary would put the hours in a second file.
+- The two times in `machine-clock.timer` copy the part starts of the hours file; `tests/unit/machine_mode.bats` fails when they differ, so change both together. It was a 15-minute agentctl runner (`machine-clock`, 1191 NOOP to 23 WORKED) until ar-4456.
+- A pin that did not reach the cluster exits 1, and the unit retries every 15 minutes (`Restart=on-failure`) until it lands.
 
 ## What a switch does
 
@@ -98,6 +99,6 @@ It writes only the `<host>.reserve` key, `{"until": <epoch>}`, in the same Confi
 | `paused by <name>` | Someone holds `dispatch`; machine-mode never sets or lifts that hold | `agent-hold show dispatch`, then ask the holder |
 | `no pool runners on this machine` | No `actions.runner.*-unity-pool-*` unit here | Run it on the workstation |
 | `level <word> is not in .../levels, so nothing is scaled` | A mode row names a level the levels file does not list | Fix the row in `modes` or add the level to `levels`; until then the confs' own numbers apply |
-| The mode did not change at a part's start | You set the mode by hand and are still here, or the tick is up to 15 minutes late | `machine-mode` shows `set by hand`; run `machine-mode auto` to hand it back |
+| The mode did not change at a part's start | You set the mode by hand and were here at the boundary | `machine-mode` shows `set by hand`; run `machine-mode auto` to hand it back |
 | `no part of .../hours holds the time now` | A hand edit left a gap in the hours file | Fix the windows so they cover the day; `machine_mode.bats` checks the shipped file |
-| The `machine-clock` row in `agentctl list` reads FAILED | The tick's switch failed, almost always a runner pin that did not reach the cluster; the outcome line's `why:` names it. A quiet tick reads NOOP and a switch WORKED | Fix cluster access; the next tick retries the pin |
+| `systemctl --user status machine-clock` reads failed or auto-restart | The tick's switch failed, almost always a runner pin that did not reach the cluster; `journalctl --user -u machine-clock` names it | Fix cluster access; the unit retries every 15 minutes |
