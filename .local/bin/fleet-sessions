@@ -495,8 +495,8 @@ queue_gate_of() {
   if [[ "$cmd" =~ (^|[[:space:]])--repo[[:space:]]([^[:space:]]+) ]]; then repo="${BASH_REMATCH[2]}"
   else
     if [ "$pr" != - ] && [[ "$cmd" =~ (^|[[:space:]])--item[[:space:]]([^[:space:]]+) ]]; then
-      repo="$(jq -r --arg s "${BASH_REMATCH[2]}" --arg n "$pr" 'select(.slug == $s) | (.pr // "" | tostring | split(" ")[]) | select(endswith("#" + $n)) | sub("#.*"; "")' \
-        <<<"${qall:-}" 2>/dev/null | head -n 1)"
+      repo="$(jq -r --arg s "${BASH_REMATCH[2]}" --arg n "$pr" 'first(select(.slug == $s) | (.pr // "" | tostring | split(" ")[]) | select(endswith("#" + $n)) | sub("#.*"; ""))' \
+        <<<"${qall:-}" 2>/dev/null)"
     fi
     if [ -z "$repo" ]; then
       repo=-
