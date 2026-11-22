@@ -11,6 +11,10 @@
 #       reads it after the normal Stop pipeline runs and fires the teardown.
 #       --session widens the kill from the window to the whole tmux session, unless a world
 #       manifest declares it (tmux-close, close.sh): then only the window closes.
+#       A Claude background session (CLAUDE_CODE_SESSION_KIND=bg, run by `claude daemon`) has
+#       no tmux window of its own: arm records its daemon job instead (scope=bg), and fire
+#       ends the session with `claude stop <job>`. The daemon's TMUX_PANE is the pane of the
+#       foreground claude that spawned it, a different live session, so it is never killed.
 #
 #   wind-down.sh fire <sentinel-path>
 #       Executor — called by the Stop hook, NOT by Claude. Saves the window
@@ -29,10 +33,11 @@
 #   (A dead session's scratchpad is reaped hourly by agentctl-tmp-gc, not here.)
 #
 # Sentinel format (key=val, one per line):
-#   scope=window|session
+#   scope=window|session|bg
 #   target=<window_id>          # stable @N — NEVER use window_index (it renumbers
 #                               #   and bare display-message returns the session's
 #                               #   ACTIVE window, not Claude's pane's window)
+#                               # scope=bg: the daemon job's short id instead
 #   label=<session_name>:<window_index>   # human-readable, for messages only
 #   pane=<pane_id>
 #   session=<session_name>
@@ -61,6 +66,11 @@ cmd_arm() {
       *) echo "wind-down arm: unknown arg '$a'" >&2; return 2 ;;
     esac
   done
+
+  if [ -z "${TMUX:-}" ] && [ "${CLAUDE_CODE_SESSION_KIND:-}" = bg ]; then
+    arm_bg
+    return
+  fi
 
   if [ -z "${TMUX:-}" ]; then
     echo "wind-down: not inside tmux — nothing to spin down. (Note still written; no kill armed.)" >&2
@@ -106,6 +116,41 @@ cmd_arm() {
   fi
 }
 
+# arm_bg: arm the end of this background session. The job is the daemon's own key for it
+# (CLAUDE_JOB_DIR=<config>/jobs/<short>), which `claude stop` takes; the sentinel is keyed by the
+# session id, as the Stop hook looks it up.
+arm_bg() {
+  local sid="${CLAUDE_CODE_SESSION_ID:-}" job="${CLAUDE_JOB_DIR:-}" sentinel
+  job="${job%/}"; job="${job##*/}"
+  if ! is_session_id "$sid" || [[ ! "$job" =~ ^[0-9a-f]{8}$ ]]; then
+    echo "wind-down: background session without a session id or daemon job (CLAUDE_JOB_DIR): nothing armed." >&2
+    return 1
+  fi
+  mkdir -p "$SPIN_DIR"
+  sentinel="$SPIN_DIR/${sid}.request"
+  {
+    echo "scope=bg"
+    echo "target=$job"
+    echo "label=bg-$job"
+    echo "worktree=$(worktree_of "$PWD")"
+    echo "sid=$sid"
+    echo "ts=$(date +%s)"
+  } > "$sentinel"
+  echo "wind-down armed: background session '$job' will stop at next Stop (claude stop $job; sentinel: $sentinel)"
+}
+
+# worktree_of <dir>: the root of the `wt` worktree <dir> sits in, or nothing. Only a tree under
+# $WT_ROOT counts: winding down an ordinary session must never put a main checkout near `reap`.
+# --show-toplevel, not <dir> itself: a pane in <worktree>/tests is still in the worktree, but
+# `git worktree remove <worktree>/tests` is simply an error.
+worktree_of() {
+  local top
+  [ -n "${1:-}" ] && top=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || return 0
+  case "$top" in
+    "${WT_ROOT:-$HOME/.worktrees}"/*) echo "$top" ;;
+  esac
+}
+
 # write_sentinel <path> <scope> <pane> <sid> <tmux argv...>: resolve the pane's window, session and
 # worktree through the given tmux command and write the sentinel `fire` reads. It sets the
 # caller's target, session, windows and label (bash dynamic scope) for its messages.
@@ -127,18 +172,9 @@ write_sentinel() {
   fi
 
   # The worktree this session is sitting in, resolved NOW for the same reason as everything
-  # above: at fire time the window is being killed and $PWD is long gone. Recorded only when
-  # the session actually lives under $WT_ROOT -- winding down an ordinary session must never
-  # put a main checkout anywhere near `reap`.
-  local worktree='' cwd top
-  cwd=$("$@" display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)
-  # --show-toplevel, not the pane path itself: a pane sitting in <worktree>/tests is still
-  # in the worktree, but `git worktree remove <worktree>/tests` is simply an error.
-  if [ -n "$cwd" ] && top=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null); then
-    case "$top" in
-      "${WT_ROOT:-$HOME/.worktrees}"/*) worktree="$top" ;;
-    esac
-  fi
+  # above: at fire time the window is being killed and $PWD is long gone.
+  local worktree
+  worktree=$(worktree_of "$("$@" display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)")
 
   {
     echo "scope=$scope"
@@ -200,6 +236,10 @@ cmd_fire() {
   scope="${scope:-window}"
 
   [ -n "$target" ] || { echo "wind-down fire: no target in sentinel" >&2; return 1; }
+  if [ "$scope" = bg ]; then
+    fire_bg
+    return
+  fi
 
   # Reach the SAME tmux server the window lives on. Pinning the socket (-S) makes
   # this work regardless of $TMPDIR/$TMUX in the Stop hook's environment, which is
@@ -246,20 +286,7 @@ cmd_fire() {
     fi
   fi
 
-  # Each pending ask this session posted or joined is set to reopen it on the answer, so the answer
-  # carries on without the window: a `/wind-down` the human typed skips the skill's close check, where
-  # the model ran this. An ask that already resumes some other way keeps that resume; a refusal goes
-  # to fire.log and never holds the close (fleet-shepherd's close sets them first and keeps a window
-  # whose asks it cannot set). Set before the kill is scheduled, so the kill cannot cut a write short.
-  # Asks are read where agent-ask keeps them, <root>/<project>/<id>.md.
-  if is_session_id "$sid"; then
-    local af err
-    while IFS= read -r af; do
-      err="$(CLAUDE_CODE_SESSION_ID="$sid" "$SCRIPT_DIR/../../bin/agent-ask" reopen-on-answer "$(basename "$af" .md)" 2>&1 >/dev/null)" ||
-        printf '[%s] fire: ask %s not set to reopen: %s\n' "$(date '+%F %T' 2>/dev/null)" "$(basename "$af" .md)" "${err##*$'\n'}" >> "$logf" 2>/dev/null || true
-    done < <(grep -lxF "claude_session: $sid" "${AGENT_ASK_ROOT:-$HOME/.agent/asks}"/*/*.md 2>/dev/null |
-      xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null)
-  fi
+  reopen_asks "$sid" "$logf"
 
   # Resolve the window's CURRENT session:index from its stable id, only to name the saved history.
   label=$("${TM[@]}" list-windows -a -F '#{window_id} #{session_name}:#{window_index}' 2>/dev/null \
@@ -299,29 +326,71 @@ cmd_fire() {
     kill_cmd="$close ${sock}window '$target'"
   fi
 
-  # Reap the worktree AFTER the kill, in the same chain, and never before: `wt reap` refuses
-  # while a tmux session for the worktree is live, which is the correct answer right up until
-  # this window is gone. Ordering it here is what turns that refusal from an obstacle into
-  # the guard it is meant to be. `reap` also refuses anything dirty or unpushed, so a session
-  # that ended mid-thought keeps its worktree and says so in the log -- there is no --force.
-  local reap_cmd=''
-  if [ -n "$worktree" ] && [ -d "$worktree" ] && [ -x "$HOME/.local/bin/wt" ]; then
-    reap_cmd="; $HOME/.local/bin/wt reap --after-kill '$worktree' >> '$logf' 2>&1"
-  fi
-
-  # The scratchpad goes after the kill too: until then Claude may still be writing to it.
-  # The id sits inside a glob, so anything that is not exactly a session id schedules nothing.
-  local scratch_cmd=''
-  if is_session_id "$sid"; then
-    scratch_cmd="; rm -rf -- '$(scratch_root)'/*/'$sid'"
-  fi
-
   # `-c /`: the job would start in this hook's cwd, the worktree, and hold it against the reap.
-  "${TM[@]}" run-shell -b -c / "sleep 1; $kill_cmd; echo \"[\$(date +%H:%M:%S)] ran: $kill_cmd\" >> '$logf'$reap_cmd$scratch_cmd" 2>/dev/null
+  "${TM[@]}" run-shell -b -c / "sleep 1; $kill_cmd; echo \"[\$(date +%H:%M:%S)] ran: $kill_cmd\" >> '$logf'$(after_kill "$worktree" "$sid" "$logf")" 2>/dev/null
   local sched_rc=$?
   [ "$sched_rc" = 0 ] && WD_SCHEDULED=1   # read by cmd_close
   printf '[%s] fire: scheduled rc=%s cmd=%s\n' "$(date '+%F %T' 2>/dev/null)" "$sched_rc" "$kill_cmd" >> "$logf" 2>/dev/null || true
   echo "wind-down: scheduled '$kill_cmd' (rc=$sched_rc)"
+}
+
+# fire_bg: end a background session (scope=bg) with `claude stop <job>`; the daemon keeps its
+# conversation, so `claude attach` or `--resume` reopens it. It reads fire's locals (bash dynamic
+# scope). There is no window, so no tag protection: the session armed this itself.
+fire_bg() {
+  local logf="$SPIN_DIR/fire.log" claude_bin kill_cmd hist
+  mkdir -p "$SPIN_DIR"
+  [[ "$target" =~ ^[0-9a-f]{8}$ ]] || { echo "wind-down fire: bad background job '$target'" >&2; return 1; }
+  claude_bin=$(command -v claude) || { echo "wind-down fire: no claude on PATH to stop '$target'" >&2; return 1; }
+  reopen_asks "$sid" "$logf"
+  # The session's screen, as capture-pane saves a window's: best effort, never an empty file.
+  if mkdir -p "$HISTORY_DIR" 2>/dev/null; then
+    hist="$HISTORY_DIR/$(date +%F-%H%M%S)-${label//[^A-Za-z0-9_-]/_}-${sid:-nosid}.txt"
+    timeout 10 "$claude_bin" logs "$target" > "$hist" 2>/dev/null || true
+    [ -s "$hist" ] || rm -f -- "$hist"
+  fi
+  kill_cmd="$(printf '%q' "$claude_bin") stop '$target'"
+  # setsid: `claude stop` ends this session's process tree, the hook included, and the reap and
+  # scratchpad removal chained behind it must outlive that. `sleep 1` lets the Stop pipeline finish
+  # first, as the tmux path's does. `cd /`: the job would hold the worktree against the reap.
+  setsid -f bash -c "cd /; sleep 1; $kill_cmd >> '$logf' 2>&1; echo \"[\$(date +%H:%M:%S)] ran: $kill_cmd\" >> '$logf'$(after_kill "$worktree" "$sid" "$logf")" </dev/null >/dev/null 2>&1
+  local sched_rc=$?
+  [ "$sched_rc" = 0 ] && WD_SCHEDULED=1
+  printf '[%s] fire: scheduled rc=%s cmd=%s\n' "$(date '+%F %T' 2>/dev/null)" "$sched_rc" "$kill_cmd" >> "$logf" 2>/dev/null || true
+  echo "wind-down: scheduled '$kill_cmd' (rc=$sched_rc)"
+}
+
+# after_kill <worktree> <sid> <logf>: the steps chained behind a teardown, as one "; ..." string.
+# Reap the worktree AFTER the kill and never before: `wt reap` refuses while a tmux session for the
+# worktree is live, which is the correct answer right up until the window is gone. `reap` also
+# refuses anything dirty or unpushed, so a session that ended mid-thought keeps its worktree and says
+# so in the log -- there is no --force. The scratchpad goes after the kill too: until then Claude may
+# still be writing to it. The id sits inside a glob, so anything that is not exactly a session id
+# schedules nothing.
+after_kill() {
+  local out=''
+  if [ -n "$1" ] && [ -d "$1" ] && [ -x "$HOME/.local/bin/wt" ]; then
+    out="; $HOME/.local/bin/wt reap --after-kill '$1' >> '$3' 2>&1"
+  fi
+  is_session_id "$2" && out+="; rm -rf -- '$(scratch_root)'/*/'$2'"
+  printf '%s' "$out"
+}
+
+# reopen_asks <sid> <logf>: each pending ask this session posted or joined is set to reopen it on the answer, so the answer
+# carries on without the window: a `/wind-down` the human typed skips the skill's close check, where
+# the model ran this. An ask that already resumes some other way keeps that resume; a refusal goes
+# to fire.log and never holds the close (fleet-shepherd's close sets them first and keeps a window
+# whose asks it cannot set). Set before the kill is scheduled, so the kill cannot cut a write short.
+# Asks are read where agent-ask keeps them, <root>/<project>/<id>.md.
+reopen_asks() {
+  if is_session_id "$1"; then
+    local af err
+    while IFS= read -r af; do
+      err="$(CLAUDE_CODE_SESSION_ID="$1" "$SCRIPT_DIR/../../bin/agent-ask" reopen-on-answer "$(basename "$af" .md)" 2>&1 >/dev/null)" ||
+        printf '[%s] fire: ask %s not set to reopen: %s\n' "$(date '+%F %T' 2>/dev/null)" "$(basename "$af" .md)" "${err##*$'\n'}" >> "$2" 2>/dev/null || true
+    done < <(grep -lxF "claude_session: $1" "${AGENT_ASK_ROOT:-$HOME/.agent/asks}"/*/*.md 2>/dev/null |
+      xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null)
+  fi
 }
 
 cmd_note_path() {

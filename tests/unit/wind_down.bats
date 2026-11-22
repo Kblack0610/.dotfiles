@@ -654,3 +654,94 @@ disarm() { run bash -c 'printf "%s" "$2" | env -u CLAUDE_CODE_SESSION_ID bash "$
   run grep 'run-shell' "$NOTES_FIXTURE/calls.log"
   assert_failure
 }
+
+# --- a Claude background session (claude daemon, no tmux) ---
+#
+# 2026-11-19 (ar-3885): arm refused "not inside tmux" in a background session. The daemon's
+# TMUX_PANE is the pane of the foreground claude that spawned it, a different live session, so
+# the session ends itself with `claude stop <job>` and no pane is ever killed.
+
+# Test-local claude and setsid: claude logs its call and prints a screen for `logs`; setsid only
+# logs the chain it was handed, so nothing is detached or stopped for real.
+bg_stubs() {
+  local bin="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$bin"
+  printf '#!/bin/sh\necho "claude $*" >> "$NOTES_FIXTURE/calls.log"\n[ "$1" = logs ] && echo "bg screen"\nexit 0\n' > "$bin/claude"
+  printf '#!/bin/sh\nprintf "setsid %%s\\n" "$*" >> "$NOTES_FIXTURE/calls.log"\n' > "$bin/setsid"
+  chmod +x "$bin/claude" "$bin/setsid"
+  export PATH="$bin:$PATH"
+}
+
+@test "arm in a background session records its daemon job and touches no tmux" {
+  TMUX="" TMUX_PANE="%29" CLAUDE_CODE_SESSION_KIND=bg CLAUDE_CODE_SESSION_ID="$SID_A" \
+    CLAUDE_JOB_DIR="$HOME/.claude-x/jobs/72e3cb7a" wd arm
+  assert_success
+  assert_output --partial "background session '72e3cb7a' will stop"
+  run grep -E '^(scope|target|sid)=' "$SPIN_DIR/$SID_A.request"
+  assert_output "$(printf 'scope=bg\ntarget=72e3cb7a\nsid=%s' "$SID_A")"
+  run grep tmux "$NOTES_FIXTURE/calls.log"
+  assert_failure
+}
+
+@test "arm in a background session records the worktree it runs in" {
+  mk_worktree
+  cd "$HOME/.worktrees/repo-agent-1"
+  TMUX="" CLAUDE_CODE_SESSION_KIND=bg CLAUDE_CODE_SESSION_ID="$SID_A" \
+    CLAUDE_JOB_DIR="$HOME/.claude-x/jobs/72e3cb7a" wd arm
+  assert_success
+  run grep '^worktree=' "$SPIN_DIR/$SID_A.request"
+  assert_output "worktree=$HOME/.worktrees/repo-agent-1"
+}
+
+@test "arm in a background session with no job or session id arms nothing" {
+  TMUX="" CLAUDE_CODE_SESSION_KIND=bg CLAUDE_CODE_SESSION_ID="$SID_A" CLAUDE_JOB_DIR='' wd arm
+  assert_failure
+  TMUX="" CLAUDE_CODE_SESSION_KIND=bg CLAUDE_CODE_SESSION_ID='' CLAUDE_JOB_DIR="$HOME/jobs/72e3cb7a" wd arm
+  assert_failure
+  run bash -c 'ls "$1"/*.request 2>/dev/null | wc -l' _ "$SPIN_DIR"
+  assert_output '0'
+}
+
+@test "fire on a background session saves its screen, then stops it detached, reap and scratchpad after" {
+  bg_stubs
+  mk_worktree
+  mk_sentinel <<EOF
+scope=bg
+target=72e3cb7a
+label=bg-72e3cb7a
+worktree=$HOME/.worktrees/repo-agent-1
+sid=$SID_A
+EOF
+  run bash "$WIND_DOWN" fire "$SENTINEL"
+  assert_success
+  run grep -rlx 'bg screen' "$HOME/.local/share/tmux-history"
+  assert_success
+  assert_output --partial "bg-72e3cb7a-$SID_A.txt"
+  run grep '^setsid' "$NOTES_FIXTURE/calls.log"
+  assert_success
+  local chain="$output"
+  assert_output --partial "stop '72e3cb7a'"
+  assert_output --partial "wt reap --after-kill '$HOME/.worktrees/repo-agent-1'"
+  assert_output --partial "/*/'$SID_A'"
+  local before_stop="${chain%%" stop '72e3cb7a'"*}"
+  [ "$before_stop" != "$chain" ] || fail "no stop in the chain at all"
+  case "$before_stop" in
+    *"wt reap"*|*"rm -rf"*) fail "the reap or scratchpad removal runs before the stop" ;;
+  esac
+  # Only `logs` ran in the foreground; the stop is the detached job's, and no pane is killed.
+  run grep -E '^claude stop|tmux' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+}
+
+@test "fire on a background sentinel with a malformed job stops nothing" {
+  bg_stubs
+  mk_sentinel <<EOF
+scope=bg
+target=72e3cb7a; rm -rf ~
+sid=$SID_A
+EOF
+  run bash "$WIND_DOWN" fire "$SENTINEL"
+  assert_failure
+  run grep -E 'setsid|claude' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+}

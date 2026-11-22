@@ -210,7 +210,7 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
    - **Next time, keep big artifacts off `/tmp` entirely.** Anything over about 1 GB (disk
      images, Unity or Windows builds, tarballs) goes to disk, e.g.
      `~/.cache/claude-artifacts/<session-id>/`, not `/tmp` or the scratchpad.
-6. **Release the worktree.** Inside tmux, step 3 does this: `fire` runs `wt reap --after-kill` behind the kill, under the same dirty and unpushed checks. Do not run `wt done` there: step 3 already armed the same teardown, which waits for the Stop pipeline and your closing message. Outside tmux, hand the slot back yourself:
+6. **Release the worktree.** Inside tmux or a background session, step 3 does this: `fire` runs `wt reap --after-kill` behind the kill, under the same dirty and unpushed checks. Do not run `wt done` there: step 3 already armed the same teardown, which waits for the Stop pipeline and your closing message. Outside tmux, hand the slot back yourself:
 
    ```bash
    ~/.local/bin/wt done          # from anywhere inside the worktree
@@ -252,6 +252,9 @@ The script prints what it armed. Relay that to the user. Two cases to handle:
 
 - **Not in tmux** - `arm` prints a notice and exits non-zero without arming. The note is still
   written; tell the user there's no tmux window to close so nothing was armed.
+- **A background session** (`claude daemon`, `CLAUDE_CODE_SESSION_KIND=bg`) - it has no window,
+  so `arm` arms `claude stop <job>` for this session instead; the conversation is kept, and
+  `claude attach <job>` reopens it. The pane the human views it from is never closed.
 - **Sole window in the session** - `arm` notes that closing the window ends the session too.
   Pass that along.
 
