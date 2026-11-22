@@ -718,7 +718,7 @@ add_sessions() {
 }
 
 @test "suggest --write: a real pass stores what suggest --json prints; a dry pass writes none; a failed read, or an empty one with notes down, keeps the last" {
-  echo '{"fleet": {"max_tier": 1, "projects": ["game"]}}' > "$DISPATCH_WORKERS"
+  echo '{"fleet": {"max_tier": 1}}' > "$DISPATCH_WORKERS"
   project game beta "$SANDBOX/repos/game"
   row game agent 'game row' "- [ ] game row #high $T"
   verdict game agent 'game row' skip   # cached, so the pass calls no judge and promotes nothing
