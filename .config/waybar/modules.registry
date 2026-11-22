@@ -18,6 +18,7 @@ fleet|Fleet health|custom/fleet
 load|CPU and load (fleet on hover)|custom/load
 ci|CI runners|custom/ci
 printer|3D printers|custom/printer
+caffeine|Caffeine: keep this machine awake|custom/caffeine
 mode|Machine mode|custom/machine-mode
 timebox|Timebox|custom/timebox
 storage|Disk usage|custom/storage

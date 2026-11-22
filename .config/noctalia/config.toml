@@ -156,7 +156,7 @@ type = "dotfiles/chips:chip"
 module = "custom/load"
 divider = "after"
 
-# waybar's built-in temperature, temperature#gpu, memory and idle_inhibitor have
+# waybar's built-in temperature, temperature#gpu and memory, and its custom/caffeine, have
 # Noctalia widgets of their own, so they are not chips.
 [widget.cpu-temp]
 type = "sysmon"
