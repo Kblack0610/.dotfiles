@@ -125,7 +125,7 @@ CHECKS_POLL="${AGENT_LAND_CHECKS_POLL:-10}"
 CHECKS_QUEUED_POLL="${AGENT_LAND_CHECKS_QUEUED_POLL:-60}"
 CHECKS_WATCH_INTERVAL=30 # gh's default is 10s; a check takes minutes
 CHECKS_WATCH_TIMEOUT="${AGENT_LAND_CHECKS_WATCH_TIMEOUT:-600}" # bound one gh pr checks --watch (a check left IN_PROGRESS with conclusion SUCCESS never exits)
-CHECKS_WAIT_TIMEOUT="${AGENT_LAND_CHECKS_WAIT_TIMEOUT:-3600}"  # bound the whole checks wait (wait_checks / fj_wait_checks)
+CHECKS_WAIT_TIMEOUT="${AGENT_LAND_CHECKS_WAIT_TIMEOUT:-3600}"  # the cap on one whole checks wait, either forge (the slowest PR run seen: 42m, playground 2026-11-22)
 CHECKS_TRIES="${AGENT_LAND_CHECKS_TRIES:-12}"
 # GitHub opens a PR's pull_request run only once it has built the merge ref: seconds on most PRs,
 # minutes on some (80 dotfiles PRs to 2026-11-21: p90 5s, then 111s, 192s, 949s). #1710's came 213s
@@ -185,47 +185,59 @@ gh_read() {
   printf -v "$var" '%s' "$got"
   return "$rc"
 }
-# checks_by_conclusion: when `gh pr checks --watch` times out (rc 124), e.g. a check run left
-# IN_PROGRESS with a conclusion set (unity-core-playground#3115), judge the PR's statusCheckRollup
-# by each check's conclusion via pr-ci.sh's ci. Returns 0 when green (sets had_checks=yes),
-# 1 when still pending or retried on a network error, 2 when NONE (sets out='no checks reported'),
-# or fails checks when a check has a failing/cancelled conclusion.
+# checks_by_conclusion: after `gh pr checks --watch` times out (rc 124), e.g. on a check run left
+# IN_PROGRESS with a conclusion set (unity-core-playground#3115), judge the PR's statusCheckRollup by
+# each check's conclusion through pr-ci.sh's ci. Returns 0 when green (sets had_checks=yes), 1 to
+# watch again (still pending, or a red that a newer run on HEAD supersedes, as newer_runs reads it),
+# 2 when none is reported (sets out). Any other red, or a verdict it cannot read, stops at checks.
 checks_by_conclusion() {
-  local rollup verdict failed
-  gh_read rollup pr view "$pr" "${R[@]}" --json statusCheckRollup || {
-    net_error "$gh_err" || fail checks "reading checks after watch timeout: $(lastline "$gh_err")"
+  local rollup red queued
+  until gh_read rollup pr view "$pr" "${R[@]}" --json statusCheckRollup; do
+    net_error "$gh_err" || fail checks "reading the checks after the watch timed out: $(lastline "$gh_err")"
     net_retry "$gh_err"
-    return 1
-  }
-  verdict=$(jq -r "$CI_JQ"' ci' <<<"$rollup")
-  case "$verdict" in
+  done
+  case "$(jq -r "$CI_JQ"' ci' <<<"$rollup")" in
   PASS)
     echo "checks: green"
     had_checks=yes
     return 0
     ;;
-  FAIL)
-    failed=$(jq -r "$CI_JQ"' [checks | .[] | select((.conclusion // .state // "") | test(red_re)) | (.name // .context // "check")] | join(", ")' <<<"$rollup")
-    fail checks "${failed:-a check failed}"
-    ;;
   PENDING)
-    echo "checks: watch timed out after ${CHECKS_WATCH_TIMEOUT}s with checks still pending; continuing"
+    echo "checks: the watch timed out with checks still pending; continuing"
     return 1
     ;;
   NONE)
     out='no checks reported'
     return 2
     ;;
+  FAIL)
+    red=$(jq -c "$CI_JQ"' [checks | .[] | select((.conclusion // .state // "") | test(red_re))
+      | {name: (.name // .context // "check"), workflow: (.workflowName // ""), completedAt, link: .detailsUrl,
+         bucket: (if (.conclusion // .state // "") | test("CANCEL") then "cancel" else "fail" end)}]' <<<"$rollup")
+    queued=$(newer_runs "$red") || {
+      net_error "$queued" || fail checks "$(jq -r 'map(.name) | join(", ")' <<<"$red") (reading the runs on the head: $(lastline "$queued"))"
+      net_retry "$queued"
+      return 1
+    }
+    if [[ $queued =~ ^[1-9][0-9]*$ ]]; then
+      echo "checks: red: $(jq -r 'map(.name) | join(", ")' <<<"$red"); waiting on the newer run of its workflow on the head"
+      sleep "$CHECKS_QUEUED_POLL"
+      return 1
+    fi
+    fail checks "$(jq -r 'map(.name) | join(", ")' <<<"$red")"
+    ;;
+  *) fail checks "reading the checks after the watch timed out: the rollup gave no verdict" ;;
   esac
 }
 had_checks=''
 wait_checks() {
   [ -z "$fj" ] || { fj_wait_checks; return; }
-  local try out rc failed cancelled names queued read_err stale deadline=$((SECONDS + CHECKS_WAIT_TIMEOUT))
+  local try out rc left failed cancelled names queued read_err stale deadline=$((SECONDS + CHECKS_WAIT_TIMEOUT))
   for ((try = 1; ; try++)); do
-    [ "$SECONDS" -lt "$deadline" ] || fail checks "timed out waiting for checks after ${CHECKS_WAIT_TIMEOUT}s"
+    left=$((deadline - SECONDS))
+    [ "$left" -gt 0 ] || fail checks "timed out waiting for checks after ${CHECKS_WAIT_TIMEOUT}s"
     rc=0
-    out=$(timeout "$CHECKS_WATCH_TIMEOUT" gh pr checks "$pr" "${R[@]}" --watch --fail-fast -i "$CHECKS_WATCH_INTERVAL" 2>&1) || rc=$?
+    out=$(timeout "$((left < CHECKS_WATCH_TIMEOUT ? left : CHECKS_WATCH_TIMEOUT))" gh pr checks "$pr" "${R[@]}" --watch --fail-fast -i "$CHECKS_WATCH_INTERVAL" 2>&1) || rc=$?
     if [ "$rc" -eq 0 ]; then
       # gh counts a cancelled check as neither failed nor pending, so a watch whose only Checks is
       # a cancelled run exits 0 while the newer run on the head has no check yet, and GitHub then
