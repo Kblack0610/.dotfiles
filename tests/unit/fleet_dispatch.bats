@@ -929,6 +929,7 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app: it i
   assert_success
   assert_equal "$(grep -c '^notes --profile bnb projects' "$NOTES_FIXTURE/calls.log")" 1
   assert_equal "$(grep -c '^notes --profile personal projects' "$NOTES_FIXTURE/calls.log")" 1
+  assert_equal "$(grep -c '^notes --profile [a-z]* projects' "$NOTES_FIXTURE/calls.log")" 2
   run grep -c -- '--stats' "$NOTES_FIXTURE/calls.log"
   assert_output 0
 }
