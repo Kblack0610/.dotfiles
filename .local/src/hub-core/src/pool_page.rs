@@ -150,7 +150,7 @@ fn parts(infra: &Infra, p: &Pool, waiting: &[Queued]) -> Vec<Part> {
     let stuck = waiting.iter().filter(|q| q.stuck).count();
     let wait = match p.waiting {
         Some(w) if w > 0.0 => {
-            let mut t = counted(w as usize, "job");
+            let mut t = counted(w.ceil() as usize, "job");
             if let Some(o) = p.oldest.filter(|o| *o > 0.0) {
                 t = format!("{t}, the oldest {}", age(o as i64));
             }

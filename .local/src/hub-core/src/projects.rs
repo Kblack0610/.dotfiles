@@ -874,7 +874,7 @@ fn owner(i: &Item, labs: &[&str]) -> Option<String> {
         .map(String::from)
 }
 
-/// A minute count at a glance, `text::age`'s words: what the `oldest` column prints.
+/// A minute count at a glance, `display::fmt::age`'s words: what the `oldest` column prints.
 pub fn wait_word(min: Option<i64>) -> String {
     min.map_or_else(|| "-".to_string(), |m| crate::display::fmt::age(m * 60))
 }

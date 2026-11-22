@@ -137,7 +137,7 @@ impl Red {
         epoch(self.finished.as_deref())
     }
 
-    /// How long ago it was queued, as `text::age` words; `-` when the time does not parse.
+    /// How long ago it was queued, as `display::fmt::age` words; `-` when the time does not parse.
     pub fn age(&self, now: i64) -> String {
         self.queued_at()
             .map_or("-".into(), |t| crate::display::fmt::age(now - t))

@@ -2,7 +2,8 @@
 //! (agent-web through hub-core, the TUI, the panel's cards) calls these, so `$214` and `2h28m`
 //! read the same everywhere; a copy elsewhere fails `number_formatters_have_one_home`.
 
-/// Dollars as the views show them: cents under $100, whole dollars above.
+/// Dollars as the views show them: cents under $100, whole dollars above. [`usd_est`] is the
+/// second form, for an estimate, not a measured price.
 pub fn usd(c: f64) -> String {
     if c >= 100.0 {
         format!("${c:.0}")
@@ -61,7 +62,11 @@ pub fn dur_secs(secs: f64) -> String {
 
 /// [`dur_secs`] of minutes; `-` for none.
 pub fn dur_min(m: Option<i64>) -> String {
-    m.map_or("-".into(), |m| dur_secs(m as f64 * 60.0))
+    match m {
+        None => "-".into(),
+        Some(m) if m < 60 => format!("{}m", m.max(0)),
+        Some(m) => dur_secs(m as f64 * 60.0),
+    }
 }
 
 /// Minutes as an age: [`dur_min`], and past two days `2.8d`, which says more than `67h`.
@@ -145,6 +150,8 @@ mod tests {
         assert_eq!(dur_secs(-1.0), "-");
         assert_eq!(dur_min(Some(150)), "2h30m");
         assert_eq!(dur_min(None), "-");
+        assert_eq!(dur_min(Some(0)), "0m");
+        assert_eq!(dur_min(Some(14)), "14m");
         assert_eq!(age(300), "5m");
         assert_eq!(age(7200), "2h");
         assert_eq!(age(3 * 86400), "3d");

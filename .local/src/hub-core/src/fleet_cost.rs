@@ -30,7 +30,7 @@ pub struct Cut {
 }
 
 impl Cut {
-    /// Its usd_est, or None when none of its sessions has a price: unknown, never $0.
+    /// Its dollars, or None when none of its sessions has a price: unknown, never $0.
     pub fn priced(&self) -> Option<f64> {
         (self.usd >= CENT).then_some(self.usd)
     }
