@@ -5452,6 +5452,85 @@ JSONL
   [ "$(jq -r .bucket <<<"$output")" = WORKING ]
 }
 
+# killed_gate_transcript <file> [<killed command>]: the tail of a session a reboot stopped mid-gate and fleet-dispatch
+# restore resumed (2026-11-12 07:43 PST, unity-core-playground-agent-10 d43a2bc6), as Claude Code writes it: the
+# background Bash call, its kill as the old claude exited, then the resumed claude's own notice, also on its queue line.
+killed_gate_transcript() {
+  local cmd="${2:-scripts/test/gate-and-land.sh --item ucp-634 > Logs/gate-and-land.out 2>&1}"
+  jq -cn --arg c "$cmd" '{type: "assistant", timestamp: "2026-11-12T15:32:18.206Z", message: {content: [{type: "tool_use",
+    id: "toolu_g", name: "Bash", input: {command: $c, run_in_background: true}}]}}' > "$1"
+  cat >> "$1" <<'JSONL'
+{"type":"user","timestamp":"2026-11-12T15:32:18.900Z","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_g","content":"Command running in background with ID: bsf8othhu. Output is being written to: /tmp/claude-1000/x/tasks/bsf8othhu.output"}]}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-12T15:40:56.082Z","content":"<task-notification>\n<task-id>bsf8othhu</task-id>\n<tool-use-id>toolu_g</tool-use-id>\n<status>killed</status>\n<summary>Background command was stopped</summary>\n</task-notification>"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-12T15:43:34.340Z","content":"<task-notification>\n<task-id>bsf8othhu</task-id>\n<tool-use-id>toolu_g</tool-use-id>\n<status>stopped</status>\n<summary>Background shell command didn't finish before the previous session ended</summary>\n</task-notification>"}
+{"type":"user","timestamp":"2026-11-12T15:43:34.357Z","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>\n<task-id>bsf8othhu</task-id>\n<tool-use-id>toolu_g</tool-use-id>\n<status>stopped</status>\n<summary>Background shell command didn't finish before the previous session ended</summary>\n<note>No completion record was found for it in the previous session.</note>\n</task-notification>"}}
+JSONL
+}
+
+@test "a resume that killed its background gate is STALLED with its own fact until the gate runs again (ar-1902)" {
+  landed_fixture
+  export FLEET_TIME_USE_CONF="$BATS_TEST_DIRNAME/../../.config/agent-panel/time-use.conf"
+  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl"
+  killed_gate_transcript "$SANDBOX/t.jsonl"
+  # idle 5m is under FLEET_IDLE_MIN, so before this the row read WORKING idle 5m
+  PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = 'resume killed its background gate (gate-and-land.sh) before it finished' ]
+  [ "$(jq -r .fact <<<"$output")" = 'STALLED resume killed its background gate (gate-and-land.sh) before it finished @feat/x at 2026-11-12T15:43' ]
+  # a row already STALLED for its branch (commits after the merged PR) reads the lost gate instead: rerunning it is the next step
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m more
+  PANEL_IDLE_S=1800 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'resume killed its background gate (gate-and-land.sh) before it finished' ]
+  git -C "$SANDBOX/wt" reset -q --hard HEAD~1
+  # Negative controls: the gate ran again after the notice, just resumed (under the grace), a busy row, a killed
+  # command that is no gate or test, and the background-agent notice (the subagent's own row covers that).
+  jq -cn '{type: "assistant", timestamp: "2026-11-12T15:50:00.000Z", message: {content: [{type: "tool_use", id: "toolu_r",
+    name: "Bash", input: {command: "scripts/test/gate-and-land.sh --item ucp-634 > Logs/gate-and-land.out 2>&1"}}]}}' >> "$SANDBOX/t.jsonl"
+  PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  killed_gate_transcript "$SANDBOX/t.jsonl"
+  PANEL_IDLE_S=60 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  PANEL_STATUS=busy PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = busy ]
+  killed_gate_transcript "$SANDBOX/t.jsonl" 'sleep 600'
+  PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  killed_gate_transcript "$SANDBOX/t.jsonl"
+  sed -i "s/Background shell command didn't finish/1 background agent didn't finish/" "$SANDBOX/t.jsonl"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+}
+
+@test "resume_killed_gate names the first killed call that was a gate or test, and a finished session is left to DONE (ar-1902)" {
+  export FLEET_TIME_USE_CONF="$BATS_TEST_DIRNAME/../../.config/agent-panel/time-use.conf"
+  killed_gate_transcript "$SANDBOX/t.jsonl" 'scripts/test/run.sh --filter Playground.PlayTests.OutfitsPlayTests'
+  run resume_killed_gate "$SANDBOX/t.jsonl"
+  assert_output "$(printf 'test scripts/test/run.sh\t2026-11-12T15:43')"
+  # two shells in one notice: a dev server first, then a train wait
+  jq -cn '{type: "assistant", message: {content: [{type: "tool_use", id: "toolu_s", name: "Bash", input: {command: "pnpm dev"}},
+    {type: "tool_use", id: "toolu_w", name: "Bash", input: {command: "gh-run-wait 4321"}}]}}' > "$SANDBOX/t2.jsonl"
+  jq -cn '{type: "user", timestamp: "2026-11-12T15:43:35.000Z", message: {content: "<task-notification>\n<task-id>a</task-id>\n<tool-use-id>toolu_s</tool-use-id>\n<task-id>b</task-id>\n<tool-use-id>toolu_w</tool-use-id>\n<status>stopped</status>\n<summary>2 Background shell commands didn'"'"'t finish before the previous session ended</summary>\n</task-notification>"}}' >> "$SANDBOX/t2.jsonl"
+  run resume_killed_gate "$SANDBOX/t2.jsonl"
+  assert_output "$(printf 'gate gh-run-wait\t2026-11-12T15:43')"
+  run resume_killed_gate "$SANDBOX/missing.jsonl"
+  assert_output ''
+  # every phase ticked and the PR merged: finished, so not this row's
+  landed_fixture
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)'
+  killed_gate_transcript "$SANDBOX/t.jsonl"
+  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" != STALLED ]
+}
+
 @test "end to end: a session plan that is a pointer stub reads the canonical plan's queued phases as queued (ar-2421)" {
   # 2026-11-14 school-front-foliage-cleanup, camera-npc-pan-beats, hometown-town-simulation: each
   # session's plan was a stub ("Phase 2 of <plan>.md") under another name, and its phase was a

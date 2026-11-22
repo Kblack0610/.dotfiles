@@ -88,7 +88,7 @@ set -uo pipefail
 # asked for 24h on a chat and 60m on everything else, hand-opened sessions included; revisit if a
 # chat closes while the human still means to come back to it, or chats pile up overnight).
 : "${FLEET_CHAT_CLOSE_H:=24}"
-: "${FLEET_API_ERROR_IDLE_MIN:=2}" # a turn that ended on an API Error this many minutes ago is stopped, not working
+: "${FLEET_API_ERROR_IDLE_MIN:=2}" # an idle session this many minutes past its own stop line (an API Error, a resume that killed its gate) is stopped, not working
 : "${FLEET_SHELL_STALE_MIN:=120}" # a background shell this long past the last entry is not work:
                                   # a real gate wait is under an hour, a forgotten ugrep is not
 : "${FLEET_GATE_LOGS:=Logs/gate.txt Logs/gate-and-land.out}" # files under a session's worktree a running local gate writes to: a write
@@ -317,6 +317,24 @@ gate_log_idle() {
   echo "$idle"
 }
 
+# bash_command <transcript> <tool_use id> -> the command of the Bash call with that id, or nothing. Only the lines
+# naming the id reach jq: a transcript runs to 100 MB.
+bash_command() {
+  grep -F "\"id\":\"$2\"" "$1" 2>/dev/null | jq -r --arg id "$2" 'select(.type == "assistant")
+    | .message.content[]? | select(.type? == "tool_use" and .id == $id and .name == "Bash") | .input.command // empty' 2>/dev/null
+}
+
+# gate_text <command> -> "<kind> <text>" of the first `gate` or `test` line of agent-panel's time-use.conf whose text is
+# in <command>, or nothing (no command, no conf, no match).
+gate_text() {
+  local conf="${FLEET_TIME_USE_CONF:-$HOME/.config/agent-panel/time-use.conf}" kind text
+  [ -n "$1" ] && [ -r "$conf" ] || return 0
+  while read -r kind text; do
+    { [ "$kind" = gate ] || [ "$kind" = test ]; } && [ -n "$text" ] || continue
+    case "$1" in *"$text"*) printf '%s %s\n' "$kind" "$text"; return 0 ;; esac
+  done < "$conf"
+}
+
 # open_outputs <transcript> -> the output file of each background Bash task the transcript started whose command
 # matches a `gate` or `test` line of agent-panel's time-use.conf and that no <task-notification> closed, one a line.
 # Claude writes a background Bash's output there, so its mtime is the gate's last line; a dev server or poll loop
@@ -326,16 +344,10 @@ gate_log_idle() {
 # (pinned by "a gate shell whose open output file is still being written ..." in tests/unit/fleet_sessions.bats).
 # Only the lines holding those strings, then the open tasks' own tool_use lines, reach jq: a transcript runs to 100 MB.
 open_outputs() {
-  local conf="${FLEET_TIME_USE_CONF:-$HOME/.config/agent-panel/time-use.conf}" id path cmd kind text
-  [ -r "$1" ] && [ -r "$conf" ] || return 0
+  local id path
+  [ -r "$1" ] || return 0
   while IFS=$'\t' read -r id path; do
-    cmd="$(grep -F "\"id\":\"$id\"" "$1" | jq -r --arg id "$id" 'select(.type == "assistant")
-      | .message.content[]? | select(.type? == "tool_use" and .id == $id and .name == "Bash") | .input.command // empty' 2>/dev/null)"
-    [ -n "$cmd" ] || continue
-    while read -r kind text; do
-      { [ "$kind" = gate ] || [ "$kind" = test ]; } && [ -n "$text" ] || continue
-      case "$cmd" in *"$text"*) printf '%s\n' "$path"; break ;; esac
-    done < "$conf"
+    [ -z "$(gate_text "$(bash_command "$1" "$id")")" ] || printf '%s\n' "$path"
   done < <(grep -F -e 'Output is being written to: ' -e '<output-file>' "$1" | jq -R -r '
       fromjson? | select(type == "object")
       | (select(.type == "user") | .message.content | arrays | .[] | select(.type? == "tool_result") | . as $t
@@ -494,6 +506,31 @@ api_error_stop() {
             | capture("API Error: (?<c>[0-9]+)")? // {c: ""}).c as $c
           | if $c == "" then "" else "\($c)\t\((.timestamp // "-")[:16])" end
         else "" end' 2>/dev/null | tail -n 1 | grep . || true
+}
+
+# resume_killed_gate <transcript> -> "<kind> <text>\t<timestamp to the minute>" when the transcript's last notice that a
+# resume ended a background shell (Claude Code's <task-notification>, status stopped, "Background shell command didn't
+# finish before the previous session ended", written as the resumed claude starts) names a Bash call that was a gate
+# or test (gate_text) and no Bash call after the notice runs that text again; else nothing. The notice wakes no turn:
+# 2026-11-12 07:41 a planned reboot took the lab tmux server down, fleet-dispatch restore reopened its 22 conversations
+# at 07:43 with no prompt, and agent-3, -5, -7 and -10 had each lost a gate-and-land, a local run or a train wait; they
+# sat idle until they read STALLED at 08:07 (ar-1902). Only the notice's lines, then the lines after it, reach jq.
+resume_killed_gate() {
+  [ -s "${1:-}" ] || return 0
+  local n at ids id g
+  IFS=$'\t' read -r n at ids < <(grep -a -n -F 'finish before the previous session ended' "$1" 2>/dev/null | jq -R -r '
+      capture("^(?<n>[0-9]+):(?<j>.*)$") | .n as $n | .j | fromjson? | select(type == "object" and .type == "user")
+      | (.message.content | if type == "string" then . else (map(.text? // "") | join(" ")) end) as $c
+      | select(($c | test("<status>stopped</status>")) and ($c | test("[Bb]ackground shell commands? didn.t finish before the previous session ended")))
+      | [$n, (.timestamp // "-")[:16], ([$c | scan("<tool-use-id>([^<]+)</tool-use-id>") | .[0]] | join(" "))] | @tsv' 2>/dev/null | tail -n 1)
+  [ -n "${ids:-}" ] || return 0
+  for id in $ids; do
+    g="$(gate_text "$(bash_command "$1" "$id")")"
+    [ -n "$g" ] || continue
+    tail -n "+$((n + 1))" "$1" | grep -a -F '"name":"Bash"' | jq -r 'select(.type == "assistant") | .message.content[]?
+        | select(.type? == "tool_use" and .name == "Bash") | .input.command // empty' 2>/dev/null | grep -qF -- "${g#* }" && continue
+    printf '%s\t%s\n' "$g" "$at"; return 0
+  done
 }
 
 # pending_wakes <transcript> <claude start epoch|-> <now epoch> -> one "<kind>\t<id>\t<at epoch|->" line, soonest
@@ -2284,6 +2321,16 @@ collect() {
        && [ "${bucket%% *}" = WORKING ] && [ "$idle" -ge "$FLEET_API_ERROR_IDLE_MIN" ]; then
       apistop="$(api_error_stop "$transcript")"
       [ -z "$apistop" ] || bucket="STALLED turn ended on API Error ${apistop%%$'\t'*}"
+    fi
+    # The same for a resume that killed its background gate or test before it finished: rerunning it is the next step,
+    # whatever else the row reads, except a nightly red the merge may have caused (resume_killed_gate).
+    if [ -z "$apistop" ] && [ "$host" = - ] && [ "$status" = idle ] && [ "$hv" = 0 ] && [ "$ojob" != agent ] && [ "$fin" = 0 ] \
+       && { [ "${bucket%% *}" = WORKING ] || { [ "${bucket%% *}" = STALLED ] && [ "$red" = - ]; }; } \
+       && [ "$idle" -ge "$FLEET_API_ERROR_IDLE_MIN" ]; then
+      local kgate="" kat=""
+      IFS=$'\t' read -r kgate kat < <(resume_killed_gate "$transcript")
+      # The stop's minute rides in apistop's second field, so the fact below carries it the same way.
+      [ -z "${kgate:-}" ] || { bucket="STALLED resume killed its background ${kgate%% *} (${kgate#* }) before it finished"; apistop="-"$'\t'"$kat"; }
     fi
     blk="$(work_blockers "$askids" "$status" "$plan" "$asks" "$hv" "$bidle" "$g" "$dirty" "$ahead" \
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" - "$(merged_prs "$prs")")"
