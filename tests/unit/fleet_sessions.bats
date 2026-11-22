@@ -3162,7 +3162,7 @@ empty_submodule_fixture() {
   assert_output ''
 }
 
-@test "empty submodule filtering preserves working files, indexed deletions, and changed pins" {
+@test "empty submodule filtering preserves working files, indexed deletions, and staged pins" {
   empty_submodule_fixture
   local sub="$EMPTY_WT/External/asset library"
   echo new > "$sub/new.txt"
@@ -3178,8 +3178,10 @@ empty_submodule_fixture() {
   run dirty_paths "$EMPTY_WT" ''
   assert_output 'External/asset library'
   git -C "$sub" -c user.email=t@t -c user.name=t commit -q --allow-empty -m next
+  # A moved pin nobody staged, over a clean submodule tree, is not the session's work (ar-4016);
+  # staging it is.
   run dirty_paths "$EMPTY_WT" ''
-  assert_output 'External/asset library'
+  assert_output ''
   git -C "$EMPTY_WT" add 'External/asset library'
   run dirty_paths "$EMPTY_WT" ''
   assert_output 'External/asset library'
@@ -5278,6 +5280,50 @@ main_change() {
   assert_output tracked
   jq -es 'any(.[]; .event == "def_param" and .param == "index.threads" and .scope == "command" and .value == "1")' "$trace"
   jq -es 'any(.[]; .event == "def_param" and .param == "core.preloadindex" and .scope == "command" and .value == "false")' "$trace"
+}
+
+@test "dirty_paths skips an unstaged moved submodule pin with a clean tree, keeps every other submodule change (ar-4016)" {
+  local d="$HOME/.worktrees/pin" sub="$SANDBOX/pinsub"
+  mkdir -p "$d" "$sub"
+  git init -q "$sub"
+  echo one > "$sub/inside"
+  git -C "$sub" add inside
+  git -C "$sub" -c user.email=t@t -c user.name=t commit -qm one
+  git init -q "$d"
+  git -C "$d" -c protocol.file.allow=always submodule add -q "$sub" module
+  echo original > "$d/tracked"
+  git -C "$d" add tracked
+  git -C "$d" -c user.email=t@t -c user.name=t commit -qm init
+  run dirty_paths "$d" ''
+  assert_output ''
+  # The checkout moves to a newer commit, the index pin stays: a canary at an old commit.
+  git -C "$d/module" -c user.email=t@t -c user.name=t commit -q --allow-empty -m two
+  [ "$(git -C "$d" status --porcelain)" = ' M module' ]
+  run dirty_paths "$d" ''
+  assert_output ''
+  # A plain file beside it is still dirt.
+  echo x > "$d/tracked"
+  run dirty_paths "$d" ''
+  assert_output 'tracked'
+  git -C "$d" checkout -q tracked
+  # A working change or an untracked file inside the submodule is the session's work.
+  echo edit > "$d/module/inside"
+  run dirty_paths "$d" ''
+  assert_output 'module'
+  git -C "$d/module" checkout -q inside
+  echo new > "$d/module/new"
+  run dirty_paths "$d" ''
+  assert_output 'module'
+  rm "$d/module/new"
+  # A staged pin is a deliberate bump.
+  git -C "$d" add module
+  run dirty_paths "$d" ''
+  assert_output 'module'
+  # The shared-checkout path reads the same way.
+  git -C "$d" reset -q module
+  mv "$d" "$SANDBOX/pin-shared"
+  run dirty_paths "$SANDBOX/pin-shared" "$SANDBOX/pin-shared/module"
+  assert_output ''
 }
 
 # verdict <row json>: the row's close verdict as "<verdict>: <why>" (CLOSE_JQ, the close flow in
