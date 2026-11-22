@@ -136,7 +136,8 @@ pub(crate) fn at_dated(line: &str) -> Option<NaiveDateTime> {
 /// parent another open row names with `#of/<id>`, a plan-chain phase whose `#after/<id>` gate is
 /// open (dispatch skips backlog rows, so a chain's next phase pushed there stalls the chain), a
 /// row whose `#at/` gate opens within the soon window, or one the rank puts first (`#urgent`,
-/// due within the rank's soon window). A `#requested` row is not pinned: it fills the budget first.
+/// due within the rank's soon window). The agent board also pins a `#requested` row, in its
+/// budget fill ([`fit`] with `pin_asked`), so a release window does not commit every one.
 fn pinned(
     line: &str,
     parents: &HashSet<String>,
@@ -172,9 +173,9 @@ fn pins(rows: &[&str], today: NaiveDate) -> Vec<bool> {
 /// lane stay, every other row takes [`BACKLOG`], so the board holds the sprint and nothing
 /// refills it with new work until the cut.
 ///
-/// Otherwise by the board budget, which is a weight (the Today tier). The pinned rows
-/// stay and their weight is spent first; then the `#requested` rows aimed at the open version,
-/// then the others, each in sheet order, stay while their weight fits what is left (a row too heavy
+/// Otherwise by the board budget, which is a weight (the Today tier). The pinned rows and the
+/// `#requested` rows aimed at the open version stay and their weight is spent first; then the
+/// others, each in sheet order, stay while their weight fits what is left (a row too heavy
 /// for it goes to the backlog and lighter rows after it can still fit), and at least `agent_board_floor`
 /// of them stay whatever they weigh, so a project that shipped nothing still has rows to pull.
 /// Every other row takes [`BACKLOG`], and a row back inside the budget loses it. A row aimed
@@ -200,6 +201,7 @@ fn tier(open: Vec<Block>, ctx: &Ctx) -> Vec<Block> {
             ctx.shape.agent_board_floor,
             ctx.today,
             ctx.open,
+            true,
         ),
     };
     open.into_iter()
@@ -214,20 +216,27 @@ fn tier(open: Vec<Block>, ctx: &Ctx) -> Vec<Block> {
 /// Which of `rows`, in sheet order, fit `budget` (a weight): the pinned rows whatever they weigh,
 /// then the `#requested` rows, then the others, each in sheet order while its weight fits what is
 /// left, and at least `floor` of those whatever they weigh. A row aimed later than `open` takes no
-/// slot. The one fill the agent board's tier ([`tier`]) and a release window's committed rows
-/// (`window::record`) share.
+/// slot. With `pin_asked` (the agent board) a `#requested` row not aimed later is pinned too: the
+/// human asked for it, so no budget sends it to the backlog. The one fill the agent board's tier
+/// ([`tier`]) and a release window's committed rows (`window::record`, without `pin_asked`, so a
+/// sprint commits only the `#requested` rows its capacity holds) share.
 pub(crate) fn fit(
     rows: &[&str],
     budget: u32,
     floor: usize,
     today: NaiveDate,
     open: Option<V>,
+    pin_asked: bool,
 ) -> Vec<bool> {
-    let pins = pins(rows, today);
+    let asked = |i: usize| rank::of(rows[i], today).req == 0;
+    let pins: Vec<bool> = pins(rows, today)
+        .into_iter()
+        .enumerate()
+        .map(|(i, p)| p || (pin_asked && asked(i) && !sheet::is_later(rows[i], open)))
+        .collect();
     let weight = |i: usize| projects::size_weight(rows[i]);
     let pinned_weight: u32 = (0..rows.len()).filter(|&i| pins[i]).map(weight).sum();
     let mut room = budget.saturating_sub(pinned_weight);
-    let asked = |i: usize| rank::of(rows[i], today).req == 0;
     let free = |i: usize| !pins[i] && !sheet::is_later(rows[i], open);
     let mut stays = pins.clone();
     let mut kept = 0;
@@ -961,8 +970,8 @@ Version: v0.12.1
     }
 
     // Pinned: started or queued, urgent, due within 3 days, an epic, a parent an open row names,
-    // an `#at/` gate that opens within 3 days.
-    // The budget here is nothing, so only they stay; a `#requested` row is not one of them.
+    // an `#at/` gate that opens within 3 days, and on the agent board a `#requested` row, so the
+    // human's asks never wait on the backlog. The budget here is nothing, so only they stay.
     #[test]
     fn a_pinned_row_stays_on_the_board_whatever_the_budget() {
         let s = "# d\n\n## Tasks\n\
@@ -989,6 +998,7 @@ Version: v0.12.1
         assert_eq!(
             board,
             [
+                "asked",
                 "dated",
                 "due",
                 "epic(look):",
@@ -1005,7 +1015,7 @@ Version: v0.12.1
         backlog.sort();
         assert_eq!(
             backlog,
-            ["asked", "badtime", "behind", "child", "far", "later", "orphan", "plain"],
+            ["badtime", "behind", "child", "far", "later", "orphan", "plain"],
             "{out}"
         );
     }
@@ -1111,26 +1121,30 @@ Version: v0.12.1
         assert_eq!(tiered(&out, true), ["big"], "{out}");
     }
 
-    // A `#requested` row fills the budget before a `#high` row the human did not ask for, and
-    // costs the same weight; it no longer sits outside the budget.
+    // A `#requested` row is pinned: every one stays past the budget, its weight is spent first,
+    // so a `#high` row the human did not ask for goes to the backlog. One aimed at a later
+    // version takes no slot, pinned or not.
     #[test]
-    fn a_requested_row_fills_the_budget_before_a_higher_priority_row() {
+    fn a_requested_row_past_the_budget_stays_on_the_board() {
+        // The test context's open version is v0.12.1.
         let s = "# d\n\n## Tasks\n\
-- [ ] first #high #c1001\n- [ ] asked #low #requested #c1002\n- [ ] plain #high #c1003\n";
+- [ ] first #high #c1001\n- [ ] asked #low #requested #c1002\n\
+- [ ] again #low #requested #size/l #c1003\n- [ ] plain #high #c1004\n\
+- [ ] soon #low #requested #v0.13.0 #c1005\n";
         let out = sweep_sheet(s, &agent(1)).unwrap().0;
-        assert_eq!(tiered(&out, false), ["asked"], "{out}");
-        assert_eq!(tiered(&out, true), ["first", "plain"], "{out}");
+        assert_eq!(tiered(&out, false), ["asked", "again"], "{out}");
+        assert_eq!(tiered(&out, true), ["first", "plain", "soon"], "{out}");
     }
 
-    // The floor keeps the top rows of a project that shipped nothing (budget 0), asked ones
-    // first, and no more than the floor.
+    // The floor keeps the top unpinned rows of a project that shipped nothing (budget 0), and no
+    // more than the floor; a `#requested` row is pinned, so it takes no floor slot.
     #[test]
     fn the_floor_keeps_rows_on_a_board_with_no_budget() {
         let s = "# d\n\n## Tasks\n\
 - [ ] a #high #c1001\n- [ ] b #low #requested #c1002\n- [ ] c #low #c1003\n- [ ] d #low #c1004\n";
         let out = sweep_sheet(s, &agent_floor(0, 2)).unwrap().0;
-        assert_eq!(tiered(&out, false), ["a", "b"], "{out}");
-        assert_eq!(tiered(&out, true), ["c", "d"], "{out}");
+        assert_eq!(tiered(&out, false), ["a", "b", "c"], "{out}");
+        assert_eq!(tiered(&out, true), ["d"], "{out}");
     }
 
     // A plan-chain phase (`#after/<id>`) stays on the board at budget 0: dispatch skips the

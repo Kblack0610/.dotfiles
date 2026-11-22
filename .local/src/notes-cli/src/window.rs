@@ -223,7 +223,7 @@ pub(crate) fn record(
     let human: Vec<&str> = human.iter().filter(landing).map(String::as_str).collect();
     let agent: Vec<&str> = agent.iter().filter(landing).map(String::as_str).collect();
     let fitted = |lines: &[&str], budget: u32, floor: usize| -> Vec<String> {
-        let fits = project_sweep::fit(lines, budget, floor, opened, Some(cur));
+        let fits = project_sweep::fit(lines, budget, floor, opened, Some(cur), false);
         lines
             .iter()
             .zip(fits)
