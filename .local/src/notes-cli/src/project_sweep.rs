@@ -191,12 +191,11 @@ pub(crate) enum Asked {
     First,
 }
 
-/// Mark `open`, already in sheet order, by the project's release window when it has one: the
-/// pinned rows, its committed rows still open and the rows that entered through the interrupt
-/// lane stay, every other row takes [`BACKLOG`], so the board holds the sprint and nothing
-/// refills it with new work until the cut; a `#requested` row the window did not commit waits too.
-///
-/// Otherwise by the board budget, which is a weight (the Today tier). The pinned rows and the
+/// Mark `open`, already in sheet order, by the board budget, which is a weight (the Today tier).
+/// With a release window, its committed rows still open and the rows that entered through the
+/// interrupt lane are pinned too, so the sprint spends the budget first and the rest of the board
+/// fills behind it: the sprint ranks first, it never parks the board (`stages.md`, "Flow").
+/// The pinned rows and the
 /// `#requested` rows aimed at the open version and held by no gate ([`held`]) stay and their
 /// weight is spent first; then the
 /// others, each in sheet order, stay while their weight fits what is left (a row too heavy
@@ -211,23 +210,22 @@ fn tier(open: Vec<Block>, ctx: &Ctx) -> Vec<Block> {
         return open;
     };
     let lines: Vec<&str> = open.iter().map(|b| b[0].as_str()).collect();
-    let stays = match &ctx.window {
-        Some((cur, keys)) => pins(&lines, ctx.today)
-            .into_iter()
-            .zip(&lines)
-            .map(|(pin, l)| {
-                pin || (!sheet::is_later(l, Some(*cur)) && crate::window::holds(keys, l))
-            })
+    let sprint: Vec<bool> = match &ctx.window {
+        Some((cur, keys)) => lines
+            .iter()
+            .map(|l| !sheet::is_later(l, Some(*cur)) && crate::window::holds(keys, l))
             .collect(),
-        None => fit(
-            &lines,
-            budget,
-            ctx.shape.agent_board_floor,
-            ctx.today,
-            ctx.open,
-            Asked::Pinned,
-        ),
+        None => vec![],
     };
+    let stays = fit(
+        &lines,
+        &sprint,
+        budget,
+        ctx.shape.agent_board_floor,
+        ctx.today,
+        ctx.open,
+        Asked::Pinned,
+    );
     open.into_iter()
         .zip(stays)
         .map(|(mut b, stays)| {
@@ -237,7 +235,8 @@ fn tier(open: Vec<Block>, ctx: &Ctx) -> Vec<Block> {
         .collect()
 }
 
-/// Which of `rows`, in sheet order, fit `budget` (a weight): the pinned rows whatever they weigh,
+/// Which of `rows`, in sheet order, fit `budget` (a weight): the pinned rows and the `sprint` ones
+/// (a release window's rows, [`tier`]; empty for none) whatever they weigh,
 /// then the others, each in sheet order while its weight fits what is left, and at least `floor`
 /// of those whatever they weigh. A row aimed later than `open` takes no slot. `asked` says where
 /// a `#requested` row goes: [`Asked::Pinned`] (the agent board's tier, [`tier`]) pins one not
@@ -246,6 +245,7 @@ fn tier(open: Vec<Block>, ctx: &Ctx) -> Vec<Block> {
 /// fills with them ahead of the others.
 pub(crate) fn fit(
     rows: &[&str],
+    sprint: &[bool],
     budget: u32,
     floor: usize,
     today: NaiveDate,
@@ -263,7 +263,7 @@ pub(crate) fn fit(
     let pins: Vec<bool> = pins(rows, today)
         .into_iter()
         .enumerate()
-        .map(|(i, p)| p || pin_asked(i))
+        .map(|(i, p)| p || sprint.get(i).copied().unwrap_or(false) || pin_asked(i))
         .collect();
     let weight = |i: usize| projects::size_weight(rows[i]);
     let pinned_weight: u32 = (0..rows.len()).filter(|&i| pins[i]).map(weight).sum();
@@ -1051,34 +1051,51 @@ Version: v0.12.1
         );
     }
 
-    // With a recorded window the board's tier is the window: its committed rows still in the
-    // version, the interrupt-lane rows and the pinned rows (started, urgent) stay, and nothing
-    // else does, however much budget is left. Without one the same rows fill the budget as before.
+    // With a recorded window its committed rows still in the version and the interrupt-lane rows
+    // are pinned beside the pinned rows (started, urgent) and spend the budget first; the rest of
+    // the board fills behind them, so a sprint ranks first and never parks the board. A row aimed
+    // past the window takes no slot. Why: a held v0.5.5 cut parked 879 of 951 playground rows
+    // for a day (2026-11-22).
     #[test]
-    fn a_recorded_window_is_the_board_tier() {
+    fn a_recorded_window_ranks_first_and_the_budget_fills_behind_it() {
         let s = "# d\n\n## Tasks\n\
+- [ ] extra #low <!-- id:dm-5 -->\n\
 - [ ] kept #low <!-- id:dm-1 -->\n\
 - [ ] deferred #low #v0.2.0 <!-- id:dm-2 -->\n\
 - [ ] red #low #interrupt <!-- id:dm-3 -->\n\
 - [ ] fire #urgent <!-- id:dm-4 -->\n\
-- [ ] extra #low <!-- id:dm-5 -->\n\
+- [ ] spare #low <!-- id:dm-7 -->\n\
 - [/] started #low <!-- id:dm-6 -->\n\
 - [ ] noid #low\n";
         let keys: HashSet<String> = ["dm-1", "dm-2", "noid"].map(String::from).into();
-        let windowed = Ctx {
-            window: Some(((0, 1, 0), keys)),
-            ..agent(100)
+        let windowed = |weight| Ctx {
+            window: Some(((0, 1, 0), keys.clone())),
+            open: Some((0, 1, 0)),
+            ..agent(weight)
         };
-        let out = sweep_sheet(s, &windowed).unwrap().0;
-        let mut board = tiered(&out, false);
-        board.sort();
-        assert_eq!(board, ["fire", "kept", "noid", "red", "started"], "{out}");
-        let mut backlog = tiered(&out, true);
-        backlog.sort();
-        assert_eq!(backlog, ["deferred", "extra"], "{out}");
-        // NEGATIVE CONTROL: no window, the budget keeps every row aimed at the open version.
-        let out = sweep_sheet(s, &agent(100)).unwrap().0;
-        assert_eq!(tiered(&out, true), Vec::<String>::new(), "{out}");
+        let sorted = |out: &str, backlog| {
+            let mut v = tiered(out, backlog);
+            v.sort();
+            v
+        };
+        // The window's five rows weigh 5: one more row fits, the first in sheet order.
+        let out = sweep_sheet(s, &windowed(6)).unwrap().0;
+        assert_eq!(
+            sorted(&out, false),
+            ["extra", "fire", "kept", "noid", "red", "started"],
+            "{out}"
+        );
+        assert_eq!(sorted(&out, true), ["deferred", "spare"], "{out}");
+        // A roomy budget keeps every row aimed at the open version; the later one still waits.
+        let out = sweep_sheet(s, &windowed(100)).unwrap().0;
+        assert_eq!(sorted(&out, true), ["deferred"], "{out}");
+        // NEGATIVE CONTROL: no budget, only the window and the pinned rows stay.
+        let out = sweep_sheet(s, &windowed(0)).unwrap().0;
+        assert_eq!(
+            sorted(&out, false),
+            ["fire", "kept", "noid", "red", "started"],
+            "{out}"
+        );
     }
 
     // A row under an epic aimed at the targeted version, due tomorrow, ranks ahead of an older
