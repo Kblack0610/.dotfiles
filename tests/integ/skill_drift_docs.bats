@@ -135,36 +135,36 @@ setup() {
 knob_default() { grep -oE "^: \"\\\$\\{$1:=[0-9]+" "$REPO_ROOT/.local/bin/fleet-dispatch" | grep -oE '[0-9]+$'; }
 
 @test "KNOB: a number that is not the knob's effective value is reported, the right one is not" {
-  def=$(knob_default DISPATCH_ORPHAN_HOURS)
+  def=$(knob_default PLANNED_REBOOT_WINDOW_S)
   [ -n "$def" ]
   mkdir -p "$HOME/.config/agentctl/agents"
   printf 'DISPATCH_TARGET_PRESENT=30\n' > "$HOME/.config/agentctl/agents/fleet-dispatch.conf"
   printf '%s\n' \
     'Fill to `DISPATCH_TARGET_PRESENT` (50) while here.' \
-    'Orphans after `DISPATCH_ORPHAN_HOURS` ('"$def"').' \
-    'Orphans after DISPATCH_ORPHAN_HOURS (default '"$((def + 1))"').' \
+    'A lost server waits `PLANNED_REBOOT_WINDOW_S` ('"$def"').' \
+    'A lost server waits PLANNED_REBOOT_WINDOW_S (default '"$((def + 1))"').' \
     'Present fill is DISPATCH_TARGET_PRESENT is 30.' \
     'At night `DISPATCH_TARGET_PRESENT` is 40.' > "$HOME/doc.md"
   DRIFT_DOCS="$HOME/doc.md" run "$DRIFT" --docs --json
   run jq -r '[.findings[] | select(.type == "KNOB") | "\(.item) \(.detail)"] | join("\n")' <<< "$output"
-  # the conf value wins over the script default, a default-only knob uses its default,
-  # and a number that ends the sentence is still read
-  assert_output "$(printf 'DISPATCH_TARGET_PRESENT states 50, the effective value is 30 (default %s) (line 1)\nDISPATCH_ORPHAN_HOURS states %s, the effective value is %s (default %s) (line 3)\nDISPATCH_TARGET_PRESENT states 40, the effective value is 30 (default %s) (line 5)' "$(knob_default DISPATCH_TARGET_PRESENT)" "$((def + 1))" "$def" "$def" "$(knob_default DISPATCH_TARGET_PRESENT)")"
+  # a conf-only knob reads the conf (fleet-dispatch holds no default for its tuning), a default-only knob
+  # uses its default, and a number that ends the sentence is still read
+  assert_output "$(printf 'DISPATCH_TARGET_PRESENT states 50, the effective value is 30 (default none) (line 1)\nPLANNED_REBOOT_WINDOW_S states %s, the effective value is %s (default %s) (line 3)\nDISPATCH_TARGET_PRESENT states 40, the effective value is 30 (default none) (line 5)' "$((def + 1))" "$def" "$def")"
 }
 
 @test "KNOB: a bare name, a unit, a per-lane knob and a claim naming the conf pass" {
-  def=$(knob_default DISPATCH_TARGET_PRESENT)
+  def=$(knob_default PLANNED_REBOOT_WINDOW_S)
   mkdir -p "$HOME/.config/agentctl/agents"
-  printf 'DISPATCH_TARGET_PRESENT=30\nLANE_CAP_XYZ=2\nSAME_CAP_XYZ=2\n' > "$HOME/.config/agentctl/agents/a.conf"
+  printf 'PLANNED_REBOOT_WINDOW_S=30\nLANE_CAP_XYZ=2\nSAME_CAP_XYZ=2\n' > "$HOME/.config/agentctl/agents/a.conf"
   printf 'LANE_CAP_XYZ=8\nSAME_CAP_XYZ=2\n' > "$HOME/.config/agentctl/agents/b.conf"
   printf '%s\n' \
-    'Set `DISPATCH_TARGET_PRESENT` to taste.' \
-    'Held `DISPATCH_TARGET_PRESENT` (30m) is a duration.' \
+    'Set `PLANNED_REBOOT_WINDOW_S` to taste.' \
+    'Held `PLANNED_REBOOT_WINDOW_S` (30m) is a duration.' \
     'Each lane sets `LANE_CAP_XYZ` (8).' \
     'Two lanes set `SAME_CAP_XYZ` (5), one number each.' \
-    'A fraction `DISPATCH_TARGET_PRESENT` is 30.5 here.' \
-    '`DISPATCH_TARGET_PRESENT` ('"$def"'; the conf sets 30) live.' \
-    '`DISPATCH_TARGET_PRESENT` ('"$def"'; the conf sets 31) is wrong.' > "$HOME/doc.md"
+    'A fraction `PLANNED_REBOOT_WINDOW_S` is 30.5 here.' \
+    '`PLANNED_REBOOT_WINDOW_S` ('"$def"'; the conf sets 30) live.' \
+    '`PLANNED_REBOOT_WINDOW_S` ('"$def"'; the conf sets 31) is wrong.' > "$HOME/doc.md"
   DRIFT_DOCS="$HOME/doc.md" run "$DRIFT" --docs --json
   run jq -r '[.findings[] | select(.type == "KNOB") | .detail] | join("\n")' <<< "$output"
   # negative control: the claim with the wrong conf value is still caught

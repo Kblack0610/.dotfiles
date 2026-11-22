@@ -104,8 +104,8 @@ POST_DIR="$HOOK_DIR/stop-post.d"
 [ "${1:-}" != --checks-only ] || POST_DIR=""   # run_post finds no dir and runs nothing
 
 # --- run_post: sequential, stdout/stderr passed through. Returns max exit code. ---
-# A post script that blocks this Stop (exit 2, or a "decision": "block" on stdout and exit 0, as 86
-# and 88 do) holds the teardown on it: the model was just told to act, an ask to file, and firing
+# A post script that blocks this Stop (exit 2, or a "decision": "block" on stdout and exit 0, as 88
+# does) holds the teardown on it: the model was just told to act, an ask to file, and firing
 # would close the window under it. The Stop after it is the armed retry, which fires on its own
 # fresh verdict, as 88 blocks only once a turn. Stdout goes through a file, not $(...), so a
 # background child holding the pipe cannot stall the hook.

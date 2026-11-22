@@ -341,10 +341,11 @@ tests/artifacts/
 __pycache__/
 *.pyc
 
-# theme-switch OUTPUT. These three files are generated in full -- kitty and
-# waybar are copied verbatim from `.local/src/theme/templates/<tool>/<theme>`,
-# sketchybar's colors.sh is a heredoc built from `palettes/<theme>.sh`. The
-# tracked source of truth is the palette + template; these are the render.
+# theme-switch OUTPUT. These files are generated in full from a tracked palette
+# (`.local/src/theme/palettes/<theme>.sh`) and, for kitty, waybar, starship and
+# lazygit, a tracked template under `.local/src/theme/templates/<tool>/`. The
+# palette + template are the source of truth; these are the render. Edit the
+# starship and lazygit config in the template, not here.
 #
 # They were tracked for years, and the theme-day/theme-night systemd timers
 # rewrite them at 07:00 and 19:00 DAILY -- so the repo dirtied itself twice a
@@ -361,6 +362,9 @@ __pycache__/
 .config/sketchybar/colors.sh
 .config/dunst/dunstrc.d/
 .config/hypr/conf/theme.lua
+.config/nvim/lua/kennethblack/theme.lua
+.config/starship.toml
+.config/jesseduffield/lazygit/config.yml
 
 # Private-overlay files that NEST inside this repo's working tree.
 #

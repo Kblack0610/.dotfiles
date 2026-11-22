@@ -45,8 +45,7 @@ seed_focus() {
     "$(date +%F)" "${1:-}" > "$HOME/.notes/journal/daily/$(date +%F).md"
 }
 
-@test "the human's Focus list is not turn-1 context, even with focus-lib deployed" {
-  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" "$DEPLOY/"
+@test "the human's Focus list is not turn-1 context" {
   seed_focus '- [/] a human task in progress'
   run context
   assert_success
@@ -105,8 +104,7 @@ EOF
   # The direct negative control for the jq trap. `.trackers` holds a documentation key
   # whose value is a string; an unguarded `.value.repo` over it exits 5, and under this
   # hook's `set -e` that costs the ENTIRE turn-1 context with no error anyone sees.
-  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
-     "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
+  cp "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
   seed_tracker_map
   # The hold scoping joins through project_lab_names, the other reader of the registry.
   export AGENT_HOLD_DIR="$HOME/.agent/holds"
@@ -186,8 +184,7 @@ item_stub() {
 }
 
 @test "a large anchor stays under 9,000 B: the lessons digest is left out and named" {
-  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
-     "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
+  cp "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
   seed_tracker_map
   seed_anchor_sized 40 10
   item_stub 'some-plan P2: digest lesson words'
@@ -205,8 +202,7 @@ item_stub() {
 }
 
 @test "small inputs omit nothing, and the matched lessons and plans arrive" {
-  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
-     "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
+  cp "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
   seed_tracker_map
   seed_anchor_sized 1 2
   item_stub 'some-plan P2: digest lesson words'

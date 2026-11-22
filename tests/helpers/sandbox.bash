@@ -100,6 +100,25 @@ sandbox_fleet() {
   unset FLEET_HOSTS_JSON
 }
 
+# dispatch_conf KEY=VALUE... -> the sandbox's fleet-dispatch conf: these lines over the fixture's (the
+# loader keeps a key's first line)
+dispatch_conf() { { printf '%s\n' "$@"; cat "$TESTS_DIR/fixtures/fleet-dispatch.conf"; } > "$DISPATCH_CONF"; }
+
+# sandbox_tool_files -> the files tools read config from or write side files to, inside $SANDBOX
+sandbox_tool_files() {
+  # Detach from node_exporter's textfile directory: fleet-sessions, fleet-bench and day-log
+  # publish there as a side effect, and on the workstation it exists. A test that wants the
+  # files makes this directory itself.
+  export PROM_TEXTFILE_DIR="$SANDBOX/textfile"
+  # fleet-dispatch reads its tuning from DISPATCH_CONF and exits 78 on a missing key, holding no
+  # default of its own: every suite runs on the fixture conf, and a test changes a key with dispatch_conf.
+  export DISPATCH_CONF="$SANDBOX/fleet-dispatch.conf"
+  cp "$TESTS_DIR/fixtures/fleet-dispatch.conf" "$DISPATCH_CONF"
+  # agentctl reads the lanes a conf's LANE= may name from lanes.tsv (private, so absent in CI).
+  export AGENTCTL_LANES_FILE="$SANDBOX/lanes.tsv"
+  cp "$TESTS_DIR/fixtures/lanes.tsv" "$AGENTCTL_LANES_FILE"
+}
+
 sandbox_init() {
   local fixture="${1:-basic}"
 
@@ -172,13 +191,13 @@ EOF
 
   # The suite runs from inside a Claude session, whose id, attended flag and dispatched queue
   # item would otherwise be read as the test's own: an attended post renders into the pane,
-  # and an item satisfies the focus gate. Its entrypoint (cli) makes an agent-queue add a hand start.
+  # and agent-land lands on the item. Its entrypoint (cli) makes an agent-queue add a hand start.
   unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED AGENT_QUEUE_ITEM CLAUDE_CODE_ENTRYPOINT
 
-  # A suite run from a dispatched session (agentctl-run) also inherits CLAUDE_HEADLESS=1, which
-  # switches the focus gate off, and AGENTCTL_MODEL, which outranks the conf MODEL and the
-  # route's model. Neither is a transport name, so the scrub.list unset below is not for them.
-  unset CLAUDE_HEADLESS AGENTCTL_MODEL
+  # A suite run from a dispatched session (agentctl-run) also inherits AGENTCTL_MODEL, which
+  # outranks the conf MODEL and the route's model. It is not a transport name, so the scrub.list
+  # unset below is not for it.
+  unset AGENTCTL_MODEL
 
   # A suite run from a fleet-shepherd pass inherits what its .pass.sh exports and what agentctl-run
   # exports for its agent: MODEL and HARNESS outrank the conf (agent_run_codex.bats read a Claude
@@ -226,11 +245,7 @@ EOF
   # Detach from a sandboxed runner's lane keys (lib/sandbox.sh): a suite run inside one would
   # otherwise sandbox, or hand a real token to, every agentctl-run it tests.
   unset SANDBOX_PROFILE GH_TOKEN_FILE AGENTCTL_SANDBOX_DIR GH_TOKEN GITHUB_TOKEN
-
-  # Detach from node_exporter's textfile directory: fleet-sessions, fleet-bench and day-log
-  # publish there as a side effect, and on the workstation it exists. A test that wants the
-  # files makes this directory itself.
-  export PROM_TEXTFILE_DIR="$SANDBOX/textfile"
+  sandbox_tool_files
 
   # Stub dir wins over anything real.
   export PATH="$SANDBOX/bin:$PATH"

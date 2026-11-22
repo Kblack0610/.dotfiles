@@ -13,7 +13,7 @@
 
 set -uo pipefail
 
-: "${AWAY_AFTER_MIN:=60}"   # the one home: every reader (dispatch, agent-queue, machine-mode, playloop) runs this
+: "${AWAY_AFTER_MIN:=60}"   # the one home: every reader (dispatch, agent-queue, machine-mode) runs this
 # Runtime dir, so a reboot clears it: a stale time would read as away right after login. It holds
 # the epoch desktop input stopped; empty or absent means active.
 RUN_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
