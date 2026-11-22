@@ -25,8 +25,8 @@
 # PR's repo adds it to its pr: and merged: lists instead, one PR per repo; an open item's earlier PR with
 # no merge recorded takes its merge commit from gh, and one not merged refuses before the merge, settle_prior;
 # a --partial landing passes one still open and leaves merged: empty for the final landing), board (the
-# item's row, whatever its origin: the story `agent-queue add` filed or the board row it was
-# promoted from, done with proof "pr:<owner>/<repo>#<pr> commit:<sha>" on the final landing), plan (--plan: the one "- [ ] <phase>"
+# item's row, whatever its origin: the story `agent-queue add` filed, the board row it was
+# promoted from, or the row its PR body's Task: line names when the item had none, done with proof "pr:<owner>/<repo>#<pr> commit:<sha>" on the final landing), plan (--plan: the one "- [ ] <phase>"
 # line becomes "- [x] <phase> (#<pr>)"; when that leaves no open phase, each row on the plan's `rows:` line
 # closes with the same proof). A row another open queue item names stays open for that item's landing (row_worker). After the merge, one "body:" line scores the PR body
 # against comms-standard (comms-lint --channel pr-body); it never fails the landing. Before that, a *.md or *.txt
@@ -682,10 +682,13 @@ item_pr_gate() {
 
 # The notes argv that closes the item's row (`row`, "<project>:<key>", agent-queue's one
 # definition), one word a line, as fleet-dispatch reads it; empty for an item with no row.
-row=$(jq -r 'select((.row // "") != "") | (.row | split(":")) as $r
-  | (if (.profile // "") != "" then ["--profile", .profile] else [] end) + ["ptask", $r[0]]
-    + (if (.lane // "agent") == "agent" then ["--agent"] else [] end)
-    + ["done", ($r[1:] | join(":")), "--proof"] | .[]' <<<"$it")
+set_row() {
+  row=$(jq -r 'select((.row // "") != "") | (.row | split(":")) as $r
+    | (if (.profile // "") != "" then ["--profile", .profile] else [] end) + ["ptask", $r[0]]
+      + (if (.lane // "agent") == "agent" then ["--agent"] else [] end)
+      + ["done", ($r[1:] | join(":")), "--proof"] | .[]' <<<"$it")
+}
+set_row
 # body_norm: stdin's text without CRs, "Item:" lines (item-line adds or rewrites one) or trailing blanks.
 body_norm() { tr -d '\r' | sed -e '/^Item: /d' -e 's/[[:space:]]*$//'; }
 # drop_body_scratch BODY: delete each *.md or *.txt file at the top of ~/.cache whose text is the
@@ -848,6 +851,24 @@ stamp_item() {
   out=$(printf '%s\n' "$new" | pr_edit_body 2>&1) || fail item-line "$api pr edit: $(lastline "$out")"
   body=$new
   echo "item-line: added \"Item: $item\" to the body"
+}
+
+# link_task_row: an item with no row links the row its PR body's "Task: <id>" line names, when that id
+# is one open row on the boards (as close_rows reads them), so the row closes on landing (ar-4231).
+# A Task: id that is no open row (closed, mistyped, a text key) links nothing and says so.
+link_task_row() {
+  local task_id feed hit prof proj lane out
+  [ -z "$row" ] || return 0
+  task_id=$(tr -d '\r' <<<"$body" | sed -n 's/^[[:space:]]*Task:[[:space:]]*\([^[:space:]]*\).*/\1/p' | head -n 1)
+  [ -n "$task_id" ] || return 0
+  feed=$(notes board --json 2>/dev/null) || { echo "item-row: notes board --json failed, so Task: $task_id is not linked"; return 0; }
+  hit=$(jq -r --arg id "$task_id" '[.rows[]? | select(.id == $id)] | if length == 1 then .[0] | [.profile, .project, .lane] | @tsv else empty end' <<<"$feed" 2>/dev/null) || hit=''
+  [ -n "$hit" ] || { echo "item-row: Task: $task_id is not one open row on any board, left unlinked"; return 0; }
+  IFS=$'\t' read -r prof proj lane <<<"$hit"
+  out=$(aq_retry set "$item" "row=$proj:$task_id" "lane=$lane" "profile=$prof" 2>&1) || fail item "linking row $proj:$task_id: $(lastline "$out")"
+  it=$(aq_retry show "$item" --json 2>&1) || fail item "agent-queue show: $(lastline "$it")"
+  set_row
+  echo "item-row: linked $proj:$task_id from the body's Task: line"
 }
 
 # review_gate: a tier-3 item (`fleet-dispatch item-tier`, the one beside this script: harness or tooling, promoted from a row or
@@ -1122,6 +1143,7 @@ if [ "$state" = MERGED ]; then own_merged; else own_head; fi
 # Past own_merged, a merged PR is this item's: what fails from here leaves only its record (fail).
 [ "$state" != MERGED ] || pr_landed=1
 stamp_item
+link_task_row
 # Persist intent even on an already-merged re-run, before any later record step can fail.
 if [ "$partial" -eq 1 ]; then
   out=$(aq_retry set "$item" partial=yes 2>&1) || fail item "$(lastline "$out")"

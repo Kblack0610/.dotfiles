@@ -1432,6 +1432,58 @@ EOF2
   assert_equal "$(jq -r '"\(.state) \(.status) \(.pr) \(.sessions)"' <<<"$output")" 'done ok o/r#42 sid-l'
 }
 
+@test "an item with no row links the row its PR body's Task: line names and closes it on landing" {
+  item tidy-loader
+  printf 'The change.\nTask: ar-1\n' >"$NOTES_FIXTURE/body"
+  jq -n '{rows: [{profile: "personal", project: "dotfiles", lane: "agent", id: "ar-1", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
+  run "$LAND" 42 --item tidy-loader
+  assert_success
+  assert_line 'board: closed "ar-1" with pr:o/r#42 commit:fedcba987654'
+  assert_line 'landed #42'
+  run board_calls
+  assert_output --partial 'notes --profile personal ptask dotfiles --agent done ar-1 --proof pr:o/r#42 commit:fedcba987654'
+  run jq -r .row <<<"$(agent-queue show tidy-loader --json)"
+  assert_output 'dotfiles:ar-1'
+}
+
+@test "an item with no row links the row on another project named by Task: in its PR body" {
+  item foamy-nyg-p16
+  printf 'The change.\nTask: ar-4306\n' >"$NOTES_FIXTURE/body"
+  jq -n '{rows: [{profile: "personal", project: "agent-runtime", lane: "agent", id: "ar-4306", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
+  run "$LAND" 42 --item foamy-nyg-p16
+  assert_success
+  assert_line 'board: closed "ar-4306" with pr:o/r#42 commit:fedcba987654'
+  assert_line 'landed #42'
+  run board_calls
+  assert_output --partial 'notes --profile personal ptask agent-runtime --agent done ar-4306 --proof pr:o/r#42 commit:fedcba987654'
+  run jq -r .row <<<"$(agent-queue show foamy-nyg-p16 --json)"
+  assert_output 'agent-runtime:ar-4306'
+}
+
+@test "an item with no row whose Task: names no open row lands with nothing linked (ar-4231)" {
+  item tidy-loader
+  printf 'The change.\nTask: ar-77\n' >"$NOTES_FIXTURE/body"
+  jq -n '{rows: [{profile: "personal", project: "dotfiles", lane: "agent", id: "ar-1", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
+  run "$LAND" 42 --item tidy-loader
+  assert_success
+  assert_line 'item-row: Task: ar-77 is not one open row on any board, left unlinked'
+  assert_line 'landed #42'
+  run board_calls
+  refute_output --partial ' done '
+  run jq -r '.row // ""' <<<"$(agent-queue show tidy-loader --json)"
+  assert_output ''
+}
+
+@test "an item that already has a row does not link a different row from Task: in the body" {
+  printf 'The change.\nTask: ar-1\n' >"$NOTES_FIXTURE/body"
+  jq -n '{rows: [{profile: "personal", project: "dotfiles", lane: "agent", id: "ar-1", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'board: closed "ship it" with pr:o/r#42 commit:fedcba987654'
+  run jq -r .row <<<"$(agent-queue show ship --json)"
+  assert_output 'dotfiles:ship it'
+}
+
 @test "a PR URL that names no repo lands with no landed_by, since agent-queue refuses a bare #N there (ar-2779)" {
   item tidy-loader
   echo https://example.test/merge-request/42 >"$NOTES_FIXTURE/url"
