@@ -411,34 +411,35 @@ fn projects(p: &Projects) -> Vec<Row> {
     out
 }
 
-/// "CI: 6.0/20 busy, 79% passed, aws-burst-1 offline": the glance the bar and the Infra tab read
-/// (slot units), naming only what is down; no row while the governor publishes no units.
+/// "CI: 4 running, 3 queued, 12/12 up, aws-burst-1 offline, 1 no runner": the glance the bar and the Infra
+/// tab read, red only while a runner is down or a queued job has no runner (`Glance::alert`),
+/// naming what is down. With no runner read it still says what runs and waits, at no verdict
+/// (`-/- up`); no row only when there is nothing to say.
 fn ci(infra: &Infra) -> Option<Row> {
     let g = &infra.ci.glance;
-    g.units?;
-    let mut said = vec![format!("CI: {} busy", g.units_line())];
+    if g.alert == Level::Nodata && g.busy == 0 && g.queued == 0 {
+        return None;
+    }
+    let mut said = vec![format!("CI: {} running", g.busy)];
     if g.queued > 0 {
         said.push(format!("{} queued", g.queued));
     }
-    if let Some(p) = g.pass {
-        said.push(format!("{:.0}% passed", p * 100.0));
-    }
-    let mut down: Vec<&str> = infra
-        .runners_down()
-        .into_iter()
-        .map(|s| s.label("host"))
+    said.push(format!("{} up", g.up_line()));
+    let mut down: Vec<&str> = g
+        .down
+        .iter()
+        .map(|d| d.host.as_str())
         .filter(|h| !h.is_empty())
         .collect();
-    down.sort();
     down.dedup();
-    let level = if down.is_empty() {
-        Level::Ok
-    } else {
-        Level::Warn
-    };
     if !down.is_empty() {
         said.push(format!("{} offline", down.join(", ")));
     }
+    // The other red: a queued kind no online runner holds the label for (`Ci::red`).
+    if !infra.ci.red.is_empty() {
+        said.push(format!("{} no runner", infra.ci.red.len()));
+    }
+    let level = g.alert;
     Some(row(level, "ci", said.join(", ")))
 }
 
@@ -556,15 +557,12 @@ mod tests {
             inf.instant.insert(k, series(rows));
         }
         crate::infra::judge(&mut inf, vec![]);
-        // The line reads the glance, each slot once.
-        inf.ci.glance = crate::ci::Glance {
-            busy: 6,
-            slots: 20,
-            units_busy: Some(6.0),
-            units: Some(20.0),
-            pass: Some(0.8),
-            ..Default::default()
-        };
+        inf.derive();
+        // The line reads the glance: its jobs and pass rate set here, its runners up, down and
+        // alert as the runner series derived them.
+        let g = &mut inf.ci.glance;
+        (g.busy, g.slots, g.units_busy, g.units, g.pass) =
+            (6, 20, Some(6.0), Some(20.0), Some(0.8));
         inf
     }
 
@@ -1259,7 +1257,11 @@ mod tests {
         let p = phone(&state(), None, Some(&inf));
         assert_eq!(
             texts(&p, "ci"),
-            ["CI: 6.0/20 busy, 80% passed, aws-burst-1 offline"]
+            ["CI: 6 running, 1/3 up, aws-burst-1 offline"]
+        );
+        assert_eq!(
+            p.rows.iter().find(|r| r.head == "ci").unwrap().level,
+            Level::Red
         );
         // Powered off by the governor, its runners are offline by design: nothing is down.
         let stopped = metric(
@@ -1269,14 +1271,34 @@ mod tests {
         );
         let inf = infra(vec![("runners", runners), ("power", vec![stopped])]);
         let p = phone(&state(), None, Some(&inf));
-        assert_eq!(texts(&p, "ci"), ["CI: 6.0/20 busy, 80% passed"]);
+        assert_eq!(texts(&p, "ci"), ["CI: 6 running, 1/1 up"]);
+        // Every runner up and a job nobody can take: red, and the row says so.
+        let mut inf = inf;
+        inf.ci.red = vec!["Build desktop needs [unity-build]".into()];
+        inf.ci.glance.alert = Level::Red;
+        let p = phone(&state(), None, Some(&inf));
+        assert_eq!(texts(&p, "ci"), ["CI: 6 running, 1/1 up, 1 no runner"]);
+        // No runner read: what runs still shows, at no verdict, and nothing at all is no row.
+        let mut inf = infra(vec![]);
+        let p = phone(&state(), None, Some(&inf));
+        assert_eq!(texts(&p, "ci"), ["CI: 6 running, -/- up"]);
+        let row = p.rows.iter().find(|r| r.head == "ci").unwrap();
+        assert_eq!(row.level, Level::Nodata);
+        inf.ci.glance.busy = 0;
+        let p = phone(&state(), None, Some(&inf));
+        assert!(texts(&p, "ci").is_empty());
     }
 
     #[test]
     fn an_all_green_fleet_is_one_line_a_section() {
         let s = json!({"generated_epoch": NOW, "counts": {"WORKING": 2}, "asks": [], "main": [], "sessions": []});
         let q = queue_of(vec![(State::Running, "r1")]);
-        let inf = infra(vec![]);
+        let up = metric(
+            "x",
+            json!({"host": "box", "name": "box-1", "state": "idle"}),
+            "1",
+        );
+        let inf = infra(vec![("runners", vec![up])]);
         let p = phone(&s, Some(&q), Some(&inf));
         assert_eq!(p.state, "ok");
         assert_eq!(
@@ -1288,7 +1310,7 @@ mod tests {
                 "dotfiles 28 PRs",
                 "Agents: 2 working",
                 "Queue: 1 running, 0 queued",
-                "CI: 6.0/20 busy, 80% passed",
+                "CI: 6 running, 1/1 up",
             ]
         );
     }
@@ -1568,19 +1590,26 @@ mod tests {
 
     #[test]
     fn health_reads_ci_from_the_glance_the_ci_row_reads() {
-        let inf = infra(vec![]);
+        let up = metric(
+            "x",
+            json!({"host": "box", "name": "box-1", "state": "running"}),
+            "1",
+        );
+        let inf = infra(vec![("runners", vec![up])]);
         let c = crate::cards::health(&inf);
         assert_eq!(
             (c.tab, c.title, c.link.href()),
             ("health", "Health", "#infra".into())
         );
         let part = |l: &str| c.parts.iter().find(|p| p.label == l).unwrap();
-        let busy = &part("CI busy").value;
-        assert_eq!(*busy, inf.ci.glance.units_line());
+        let running = &part("CI running").value;
+        assert_eq!(*running, inf.ci.glance.busy.to_string());
+        let up = &part("Runners up").value;
+        assert_eq!(*up, inf.ci.glance.up_line());
         let ci = &texts(&phone(&state(), None, Some(&inf)), "ci")[0];
         assert!(
-            ci.starts_with(&format!("CI: {busy} busy")),
-            "{ci} vs {busy}"
+            ci.starts_with(&format!("CI: {running} running")) && ci.contains(&format!("{up} up")),
+            "{ci} vs {running}, {up}"
         );
         let vitals = crate::vitals::read(&inf).unwrap();
         assert_eq!(part("Vitals").value, vitals.tally());
