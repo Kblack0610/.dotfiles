@@ -64,7 +64,7 @@ pub struct Alert {
     pub slug: String,
     /// Who is fixing it while its fix is in hand and not past its due time: the item's tmux
     /// session, else its slug while it waits to start. Empty when it has no owner, its fix
-    /// did not hold, it waits on someone or is late: the rows `needs_you` keeps.
+    /// did not hold, it waits on someone or is late: the rows `unfixed` keeps.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub fixing_by: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -105,7 +105,7 @@ impl Alert {
     /// True when the overview (Home's Alerts card, and the phone widget's with it) shows this
     /// row to the human: it has a hue and nobody is fixing it on time. A row with an owner in
     /// hand reads "being fixed by <fixing_by>" there instead; the Alerts tab lists every row.
-    pub fn needs_you(&self) -> bool {
+    pub fn unfixed(&self) -> bool {
         self.hue() != Level::Ok && self.fixing_by.is_empty()
     }
 }
@@ -279,9 +279,9 @@ pub struct Counts {
     pub red_now: usize,
     pub errors: usize,
     pub no_owner: usize,
-    /// Rows the overviews show the human (`Alert::needs_you`), and the rows with a fix in hand
+    /// Rows the overviews show the human (`Alert::unfixed`), and the rows with a fix in hand
     /// on time that they read as "being fixed by <session>".
-    pub need_you: usize,
+    pub unfixed: usize,
     pub being_fixed: usize,
     pub fixes_open: usize,
     pub fixes_settled: usize,
@@ -351,52 +351,89 @@ pub fn machinery(infra: &Infra) -> Vec<String> {
             s.label("state")
         ));
     }
-    // One row per repo and branch, its oldest age and its runs' workflows: the exporter has a
-    // series per workflow run, and a push starts several, so one row each read as one run listed
-    // 2-4 times (ar-4358).
-    let mut stuck: Vec<(&str, &str, Vec<&str>, Option<f64>)> = vec![];
-    for s in infra.get("waiting") {
-        if s.label("stuck") != "true" {
-            continue;
-        }
-        let (repo, branch) = (s.label("repo"), s.label("branch"));
-        let age = s.value.filter(|v| v.is_finite());
-        match stuck.iter_mut().find(|e| (e.0, e.1) == (repo, branch)) {
-            Some(e) => {
-                e.2.push(s.label("workflow"));
-                e.3 = match (e.3, age) {
-                    (Some(a), Some(b)) => Some(a.max(b)),
-                    (a, b) => a.or(b),
-                };
-            }
-            None => stuck.push((repo, branch, vec![s.label("workflow")], age)),
-        }
-    }
-    for (repo, branch, workflows, age) in stuck {
-        let runs = if workflows.len() > 1 {
-            let mut names: Vec<&str> = vec![];
-            for w in workflows.iter().copied().map(label) {
-                if !names.contains(&w) {
-                    names.push(w);
-                }
-            }
-            format!(" ({} runs: {})", workflows.len(), names.join(", "))
-        } else {
-            String::new()
-        };
-        items.push(format!(
-            "stuck run: {} {}, {}, no jobs{runs}",
-            label(repo),
-            label(branch),
-            age.map_or("-".into(), |v| crate::display::fmt::age(v as i64)),
-        ));
-    }
+    items.extend(stuck_runs(infra).iter().map(StuckRun::line));
     if let Some(why) = infra.feed() {
         items.insert(0, why.into());
     } else if infra.get("runners").is_empty() {
         items.push("no runner series from the exporter".into());
     }
     items
+}
+
+/// One branch with runs waiting and stuck (`waiting{stuck="true"}`): its oldest age and its runs'
+/// workflows. The exporter has a series per workflow run, and a push starts several, so one row
+/// each read as one run listed 2-4 times (ar-4358). Alerts' rows and Health's Stuck count both
+/// read this one list.
+#[derive(Debug, PartialEq)]
+pub struct StuckRun<'a> {
+    pub repo: &'a str,
+    pub branch: &'a str,
+    pub workflows: Vec<&'a str>,
+    pub age: Option<f64>,
+}
+
+impl StuckRun<'_> {
+    /// The age as a surface says it, `-` when the series had none.
+    pub fn age_text(&self) -> String {
+        self.age
+            .map_or("-".into(), |v| crate::display::fmt::age(v as i64))
+    }
+
+    /// `app main`, as a row names the branch.
+    pub fn name(&self) -> String {
+        format!("{} {}", label(self.repo), label(self.branch))
+    }
+
+    /// The Alerts row: the branch, its oldest age and, with several runs, their workflows.
+    pub fn line(&self) -> String {
+        let runs = if self.workflows.len() > 1 {
+            let mut names: Vec<&str> = vec![];
+            for w in self.workflows.iter().copied().map(label) {
+                if !names.contains(&w) {
+                    names.push(w);
+                }
+            }
+            format!(" ({} runs: {})", self.workflows.len(), names.join(", "))
+        } else {
+            String::new()
+        };
+        format!(
+            "stuck run: {}, {}, no jobs{runs}",
+            self.name(),
+            self.age_text()
+        )
+    }
+}
+
+/// The stuck runs, one per repo and branch, in the exporter's order.
+pub fn stuck_runs(infra: &Infra) -> Vec<StuckRun<'_>> {
+    let mut stuck: Vec<StuckRun> = vec![];
+    for s in infra.get("waiting") {
+        if s.label("stuck") != "true" {
+            continue;
+        }
+        let (repo, branch) = (s.label("repo"), s.label("branch"));
+        let age = s.value.filter(|v| v.is_finite());
+        match stuck
+            .iter_mut()
+            .find(|e| (e.repo, e.branch) == (repo, branch))
+        {
+            Some(e) => {
+                e.workflows.push(s.label("workflow"));
+                e.age = match (e.age, age) {
+                    (Some(a), Some(b)) => Some(a.max(b)),
+                    (a, b) => a.or(b),
+                };
+            }
+            None => stuck.push(StuckRun {
+                repo,
+                branch,
+                workflows: vec![s.label("workflow")],
+                age,
+            }),
+        }
+    }
+    stuck
 }
 
 fn label(v: &str) -> &str {
@@ -611,7 +648,7 @@ fn counted(firing: &[Alert], fixes: Option<&Reds>, watches: &[Watch]) -> Counts 
         tripped: firing.iter().filter(|a| a.in_state("trip")).count(),
         errors: firing.iter().filter(|a| a.error()).count(),
         no_owner: firing.iter().filter(|a| a.in_state("no owner")).count(),
-        need_you: firing.iter().filter(|a| a.needs_you()).count(),
+        unfixed: firing.iter().filter(|a| a.unfixed()).count(),
         being_fixed: firing.iter().filter(|a| !a.fixing_by.is_empty()).count(),
         fixes_open: fixes.map_or(0, |r| r.open.len()),
         fixes_settled: fixes.map_or(0, |r| r.settled.len()),
@@ -1135,7 +1172,7 @@ mod tests {
         let a = join(&infra(&[]), Ok(ws), Ok(fixes), Ok(String::new()), NOW);
         let by = |w: &str| {
             let r = a.firing.iter().find(|r| r.what == w).unwrap();
-            (r.fixing_by.as_str(), r.needs_you())
+            (r.fixing_by.as_str(), r.unfixed())
         };
         assert_eq!(by("on-time"), ("dotfiles-agent-7", false));
         assert_eq!(by("queued"), ("ar-8", false));
@@ -1149,8 +1186,8 @@ mod tests {
             a.firing.iter().find(|r| r.what == "retried").unwrap().owner,
             "ar-7 fixing"
         );
-        assert_eq!((a.counts.need_you, a.counts.being_fixed), (5, 3));
-        // The tab still lists and hues every one: only the overviews read `needs_you`.
+        assert_eq!((a.counts.unfixed, a.counts.being_fixed), (5, 3));
+        // The tab still lists and hues every one: only the overviews read `unfixed`.
         assert_eq!((a.counts.tripped, a.level), (8, Level::Red));
     }
 

@@ -27,9 +27,10 @@
 #                     sending or failed, then the parked asks soonest back first; in the panel
 #                     the parked ones only after P
 #   saved             the rows as the panel last built them (after an answer, P), not built again
-#   count             how many rows rows prints less the parked ones, one number: the pending asks
-#                     plus the open dialogs. The agents status bar's !N, so the bar and this panel
-#                     never disagree
+#   count             one number: Home's Needs you count (needs-figure), what the human has to do
+#                     fleet-wide, not only the rows this panel lists. The agents status bar's !N, so
+#                     the bar, the hub, agent-web and the phone read one count; "?" when it cannot
+#                     be read, and up to a minute behind an answer given here
 #   key <k> <id> [q]  what a key does, as fzf actions (the picker's one transform handler).
 #                     The panel's enter is `key submit`: an ask's answer is `key enter` at once (it
 #                     records and returns); a dialog's press runs in the background (`key dsend`)
@@ -45,6 +46,8 @@ SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/../../lib/fmt.sh" || exit 1
 
 QUESTIONS_ASK="${QUESTIONS_ASK:-$HOME/.local/bin/agent-ask}"
+# The Needs you count the bar shows: Home's, read once and cached (.local/bin/needs-figure).
+QUESTIONS_NEEDS="${QUESTIONS_NEEDS:-needs-figure}"
 # fleet-sessions' state document: a worker host's sessions, which no local read can see.
 FLEET_STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 # The armed choice between a key and its enter: "<mode> <option> <id> [<option text>]", or "said"
@@ -227,18 +230,13 @@ parked_filter() {
   if parked_shown; then cat; return 0; fi
   tr '\n\000' '\037\n' | awk "$PARK_ROW"' park { next } { print }' | tr '\n\037' '\000\n'
 }
-# cmd_count: the number of rows cmd_rows would print: the same ask list, and the same dialogs read
-# without the transcripts (agent-panel's `!` glyph is its `waiting` status, which prompt_rows
-# selects; tests/integ/questions_panel.bats holds the two equal). A status bar ticks every 3 s,
-# so it gets no titles, routes or project names.
+# cmd_count: Home's Needs you count, from needs-figure's cache so a status bar that ticks every 3 s
+# starts no hub per tick (ar-4395). The panel lists the asks and dialogs, the part of Needs you
+# answered here; the bar says what waits in all.
 cmd_count() {
-  local asks prompts
-  asks="$("$QUESTIONS_ASK" list --all --pending | grep -c .)" || true
-  prompts="$({
-    agent-panel list 2>/dev/null | awk -F'\t' -v done="${QUESTIONS_ANSWERED:-}" '$2 == "!" && $1 != done { print $1 }'
-    [ -r "$FLEET_STATE_FILE" ] && jq -r --arg done "${QUESTIONS_ANSWERED:-}" '.sessions[]? | select((.target | contains("@")) and .activity == "waiting" and .target != $done) | .target' "$FLEET_STATE_FILE" 2>/dev/null
-  } | grep -c .)" || true
-  echo $((${asks:-0} + ${prompts:-0}))
+  local n
+  n="$("$QUESTIONS_NEEDS" needs_headline 2>/dev/null)"
+  echo "${n:-?}"
 }
 # rows_count: "<asks> <plans> <questions> <prompts> <parked> <sending> <failed>" in what cmd_rows
 # printed (a row is NUL-ended; a dialog's id starts with @ and its first line names its kind; a

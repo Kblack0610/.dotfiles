@@ -831,7 +831,7 @@ takeover_sample() {
 # FLEET_IDLE_CLOSE_MIN gets `agent-queue move <slug> done --status ok --if running`, so its close verdict
 # reads now and close_sample closes it in the same pass (2026-11-18: agent-22 sat 7h on its item, nudged
 # and never closed). Not manual (its verdict is keep), not a worker's row (its queue is on its machine),
-# AGENT_QUEUE_START=0 (the shepherd starts nothing). agent-queue refuses an item with a partial landing or
+# AGENT_QUEUE_START=0 (the shepherd starts nothing; the close still queues the rows after its item, pull_after). agent-queue refuses an item with a partial landing or
 # an open PR: that refusal is logged and left to the nudge and escalation, and tried again after FLEET_IDLE_CLOSE_MIN
 # (a marker file in .item-close-failed/). A row that wakes itself (`wake`) keeps its item: its wake needs it.
 close_items_sample() {
@@ -1196,9 +1196,10 @@ settle() {
   if [ "${working:-1}" -gt 0 ]; then rm -f "$LEDGER/.settled"; return 0; fi
   [ -e "$LEDGER/.settled" ] && return 0
   : > "$LEDGER/.settled"
-  # The count is Home's NEEDS YOU list (hub_core::home::needs), less what a machine can answer.
+  # The count is the Needs you card's Only you part (hub_core::home::ONLY_YOU): Home's rows less
+  # what a machine can answer, counted in hub-core, not filtered here. "?" when unread.
   local n
-  n="$(hub needs --json | jq '[.needs[] | select(.score.human)] | length')" || n="?"
+  n="$(needs-figure --fresh needs_only_you)" || n="?"
   agent-notify -p normal -t shepherd -r "file:$LEDGER/log.md" "fleet settled: $n need you; rundown in $LEDGER/log.md" || true
 }
 

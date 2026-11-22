@@ -94,8 +94,9 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
   cards   Home's cards as the Tilecast widget document agent-web serves at /widget.json:
           every card, one section each, with `updated_at`; --figures adds `figures`, the whole numbers by name; agent-mqtt-publish sends it
   phone   the phone widget's rows as {state, rows}: what agent-mqtt-publish sends Home Assistant
-  needs   Home's NEEDS YOU as {needs, errors}, ranked, each row with the score it counted
-          (fleet-bench asks reads it); --page sends one grouped page for the new rows over the
+  needs   Home's NEEDS YOU as {needs, errors, figures}, ranked, each row with the score it counted;
+          figures are the Needs you card's whole numbers (needs_headline, needs_only_you, ...)
+          --page sends one grouped page for the new rows over the
           bar in channels.toml [pager.needs] (fleet-state.service runs it after every pass)
   ui-text every text Home, the board, the projects cards and the briefing send, one JSON line each
           ({ts, path, role, text}), what comms-lint grades under its `ui` channel
@@ -375,7 +376,14 @@ fn needs(args: Vec<String>) -> i32 {
         hub_core::jobs::now(),
     );
     if !page {
-        let out = serde_json::json!({"needs": home.needs, "errors": home.errors});
+        // `figures` are the Needs you card's whole numbers (`hub cards --json --figures` names
+        // them the same). They are counted over what was read, so a failed read leaves them in
+        // and lists itself in `errors`: a reader that must not show a clean 0 checks that.
+        let mut card = hub_core::cards::needs(&home, chrono::Utc::now().timestamp());
+        card.error = None;
+        let figures = hub_core::widget_doc::figures(&[card]);
+        let out =
+            serde_json::json!({"needs": home.needs, "errors": home.errors, "figures": figures});
         println!("{out}");
         return 0;
     }
