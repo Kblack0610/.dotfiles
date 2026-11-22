@@ -1,0 +1,26 @@
+name: bats vendor
+description: >-
+  Put bats in tests/vendor from the Actions cache, cloning it only on a miss, so a refused
+  GitHub clone (403, runs 44982853251 and 44987294024, 2026-11-22 UTC) fails no job before a
+  test runs. Every job that runs bats uses this, the host side of tests/docker.sh included.
+runs:
+  using: composite
+  steps:
+    # The key is the three pinned refs, not the whole Makefile, so an unrelated Makefile edit
+    # still hits.
+    - id: refs
+      shell: bash
+      run: echo "key=$(grep -E '^(BATS|SUPPORT|ASSERT)_REF' tests/Makefile | tr -d ' ' | sha256sum | cut -c1-16)" >>"$GITHUB_OUTPUT"
+    - id: restore
+      uses: actions/cache/restore@v4
+      with:
+        path: tests/vendor
+        key: bats-vendor-${{ steps.refs.outputs.key }}
+    - shell: bash
+      run: make -C tests bootstrap
+    # main saves it (as the cargo cache does) and every PR reads main's copy.
+    - if: github.event_name != 'pull_request' && steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: tests/vendor
+        key: ${{ steps.restore.outputs.cache-primary-key }}
