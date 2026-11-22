@@ -1079,7 +1079,7 @@ MD
   kill "$pid"; wait "$pid" 2>/dev/null || true
 }
 
-@test "queue_wait_min: the minutes the session's oldest queue gate has run, and nothing without one (ar-2525)" {
+@test "queue_gate_of: the minutes the session's oldest queue gate has run, and nothing without one (ar-2525)" {
   # 2026-11-15 unity-core-playground-agent-3's gate-and-land.sh sat 3.5h in the landing-slot queue, and no line named the wait.
   mkdir -p "$SANDBOX/wt/scripts/test"
   printf 'sleep 60\n' > "$SANDBOX/wt/scripts/test/gate-and-land.sh"
@@ -1087,10 +1087,11 @@ MD
   printf 'gate gh-run-wait\n' > "$SANDBOX/time-use.conf"
   export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
   local gate other
+  queue_gate_min() { queue_gate_of "$@" | cut -f1; }
   # ps answers the age of the pids it is asked about: the gate 3.5h, anything else 5h
   ps() {
-    if [ "${1:-}" = -o ] && [ "${2:-}" = etimes= ]; then
-      local p; for p in ${4//,/ }; do [ "$p" = "$gate" ] && echo ' 12600' || echo ' 18000'; done
+    if [ "${1:-}" = -o ] && [ "${2:-}" = etimes=,pid= ]; then
+      local p; for p in ${4//,/ }; do [ "$p" = "$gate" ] && echo " 12600 $p" || echo " 18000 $p"; done
     else command ps "$@"; fi
   }
   # a gate that is not queue-shaped has no landing wait, however old
@@ -1098,20 +1099,78 @@ MD
   other=$!
   until grep -q gh-run-wait "/proc/$other/cmdline" 2>/dev/null; do :; done
   LIVE_PIDS="$other"
-  run queue_wait_min "$SANDBOX/wt"
+  run queue_gate_min "$SANDBOX/wt"
   assert_output ''
   (cd "$SANDBOX/wt" && exec -a x bash scripts/test/gate-and-land.sh) >/dev/null 2>&1 3>&- &
   gate=$!
   until grep -q gate-and-land.sh "/proc/$gate/cmdline" 2>/dev/null; do :; done
   LIVE_PIDS="$other $gate"
-  run queue_wait_min "$SANDBOX/wt"
+  run queue_gate_min "$SANDBOX/wt"
   assert_output '210'
   # negative controls: another worktree, and the knob naming no gate
   mkdir -p "$SANDBOX/other"
-  run queue_wait_min "$SANDBOX/other"
+  run queue_gate_min "$SANDBOX/other"
   assert_output ''
-  FLEET_QUEUE_GATES='nothing-like-it' run queue_wait_min "$SANDBOX/wt"
+  FLEET_QUEUE_GATES='nothing-like-it' run queue_gate_min "$SANDBOX/wt"
   assert_output ''
+}
+
+@test "queue_gate_of: the oldest gate's minutes, the repo it lands in and the PR agent-land names (ar-4303)" {
+  # 2026-11-21 lab/dotfiles-agent-24 waited on a lander for unity-core-playground #2492 and its line read dotfiles #2492.
+  mkdir -p "$SANDBOX/wt"
+  git -C "$SANDBOX/wt" init -q
+  git -C "$SANDBOX/wt" remote add origin https://github.com/o/ucp.git
+  printf 'sleep 60\n' > "$SANDBOX/wt/agent-land"
+  printf 'gate gh-run-wait\n' > "$SANDBOX/time-use.conf"
+  export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
+  local gate
+  ps() {
+    if [ "${1:-}" = -o ] && [ "${2:-}" = etimes=,pid= ]; then
+      local p; for p in ${4//,/ }; do echo " 600 $p"; done
+    else command ps "$@"; fi
+  }
+  # the checkout's own origin and the number agent-land names
+  (cd "$SANDBOX/wt" && exec -a x bash agent-land 2492 --item x) >/dev/null 2>&1 3>&- &
+  gate=$!
+  until grep -q 'agent-land' "/proc/$gate/cmdline" 2>/dev/null; do :; done
+  LIVE_PIDS="$gate"
+  run queue_gate_of "$SANDBOX/wt"
+  assert_output "$(printf '10\to/ucp\t2492')"
+  kill "$gate"; wait "$gate" 2>/dev/null || true
+  # --repo outranks the checkout, and a gate that names no number reads -
+  (cd "$SANDBOX/wt" && exec -a x bash agent-land --repo a/b) >/dev/null 2>&1 3>&- &
+  gate=$!
+  until grep -q 'a/b' "/proc/$gate/cmdline" 2>/dev/null; do :; done
+  LIVE_PIDS="$gate"
+  run queue_gate_of "$SANDBOX/wt"
+  assert_output "$(printf '10\ta/b\t-')"
+  kill "$gate"; wait "$gate" 2>/dev/null || true
+  # flags before the number, and a number inside --phase text, are not the PR; the item's own pr: names the repo
+  qall='{"slug":"it","pr":"x/y#5 a/c#2492"}'
+  (cd "$SANDBOX/wt" && exec -a x bash agent-land --item it 2492 --phase "Phase 3 of 4") >/dev/null 2>&1 3>&- &
+  gate=$!
+  until grep -q 'Phase' "/proc/$gate/cmdline" 2>/dev/null; do :; done
+  LIVE_PIDS="$gate"
+  run queue_gate_of "$SANDBOX/wt"
+  assert_output "$(printf '10\ta/c\t2492')"
+  kill "$gate"; wait "$gate" 2>/dev/null || true
+  qall=""
+  (cd "$SANDBOX/wt" && exec -a x bash agent-land --item it --phase "Phase 3 of 4") >/dev/null 2>&1 3>&- &
+  gate=$!
+  until grep -q 'Phase' "/proc/$gate/cmdline" 2>/dev/null; do :; done
+  LIVE_PIDS="$gate"
+  run queue_gate_of "$SANDBOX/wt"
+  assert_output "$(printf '10\to/ucp\t-')"
+  kill "$gate"; wait "$gate" 2>/dev/null || true
+  # a checkout with no origin has no repo
+  rm -rf "$SANDBOX/wt/.git"
+  (cd "$SANDBOX/wt" && exec -a x bash agent-land 7) >/dev/null 2>&1 3>&- &
+  gate=$!
+  until grep -q 'agent-land' "/proc/$gate/cmdline" 2>/dev/null; do :; done
+  LIVE_PIDS="$gate"
+  run queue_gate_of "$SANDBOX/wt"
+  assert_output "$(printf '10\t-\t7')"
+  kill "$gate"; wait "$gate" 2>/dev/null || true
 }
 
 @test "queue_match takes a gate-and-land.sh, ci-gate.sh, agent-land or gate-line.py --recheck argument, and not a reader of its log (ar-2346)" {
@@ -1521,9 +1580,9 @@ MD
 # s1 (sid-9, pane %7), open for three hours and idle for one, with status $PANEL_STATUS
 # (default idle), context window $PANEL_WINDOW (default null, a model agent-panel does not know) and
 # open job $PANEL_JOB (default none known), idle $PANEL_IDLE_S seconds (default 3600), time use
-# $PANEL_TIME (a time_use object, default none).
+# $PANEL_TIME (a time_use object, default none), its claude started $PANEL_AGE_S seconds ago (default 3h05m).
 panel() {
-  local since=$(( $(date +%s) - ${PANEL_IDLE_S:-3600} )) started=$(( $(date +%s) - 3 * 3600 - 300 ))
+  local since=$(( $(date +%s) - ${PANEL_IDLE_S:-3600} )) started=$(( $(date +%s) - ${PANEL_AGE_S:-11100} ))
   printf '#!/usr/bin/env bash\necho %q\n' \
     "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":${PANEL_PLAN_MODE:-false},\"doing\":\"${PANEL_DOING:-}\",\"session_id\":\"${PANEL_SID:-sid-9}\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"context_window\":${PANEL_WINDOW:-null},\"plan_file\":\"${2:-}\",\"transcript\":\"${PANEL_TRANSCRIPT:-}\",\"edited_files\":${3:-[]},\"account\":\"${PANEL_ACCOUNT:-main}\",\"open_job\":\"${PANEL_JOB:-}\",\"time_use\":${PANEL_TIME:-null},\"attached\":${PANEL_ATTACHED:-false},\"manual_mode\":${PANEL_MANUAL:-false}}" \
     > "$SANDBOX/bin/agent-panel"
@@ -1990,6 +2049,29 @@ SH
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   [ "$(jq -r .in_manual_mode <<<"$output")" = false ]
+}
+
+@test "end to end: a pane fleet-dispatch restore reopened adds the quiet it had before the reboot to its age, never the outage (ar-4141)" {
+  landed_fixture
+  # A claude started 10 minutes ago on a conversation quiet two hours: the bare age holds it.
+  PANEL_AGE_S=600 PANEL_IDLE_S=7200 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  rm -f "$NOTES_FIXTURE/tmux.panes"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .quiet_before_min <<<"$output")" = null ]
+  [ "$(jq -r .close.why <<<"$output")" = "quiet 10m of 60m" ]
+  # Its pane carries @fleet_restored: the server was last seen 30 minutes ago, after 90 quiet minutes.
+  printf '%s\n' "%7 $(( $(date +%s) - 1800 ))" > "$NOTES_FIXTURE/tmux.panes.lab"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .quiet_before_min <<<"$output")" = 90 ]
+  [ "$(jq -r '"\(.close.verdict): \(.close.why)"' <<<"$output")" = "now: quiet 100m, nothing to land" ]
+  assert_called "tmux -L lab list-panes -a -f #{@fleet_restored} -F #{pane_id} #{@fleet_restored}"
+  # Active 5 minutes before the server died 100 minutes ago: the outage is not quiet, 5 + 10 is.
+  printf '%s\n' "%7 $(( $(date +%s) - 6900 ))" > "$NOTES_FIXTURE/tmux.panes.lab"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .close.why <<<"$output")" = "quiet 15m of 60m" ]
 }
 
 @test "end to end: plan mode with no approval dialog open is not NEEDS plan awaiting approval" {
@@ -4111,13 +4193,17 @@ SH
   [ "$(grep -c 'pr view 3 --repo o/three' "$SANDBOX/gh.log")" -eq 1 ] # reused across passes
   run sibling_pr "$SANDBOX/one" '[{"repo":"o/one","number":5,"state":"OPEN"}]'
   assert_output ''
-  # A view gh cannot answer adopts nothing, is named unreadable, and is not asked again this pass.
+  # A view gh cannot answer adopts the PR with CI unknown (-), is named unreadable, and is not asked again this pass.
   export VIEW_FAIL=1 FLEET_MAIN_TTL=0
   run sibling_pr "$SANDBOX/one" "$prs"
-  assert_output ''
+  assert_output "$(printf 'o/three\t3\t-\t-')"
   run sibling_pr "$SANDBOX/one" "$prs"
+  assert_output "$(printf 'o/three\t3\t-\t-')"
   [ "$(grep -c 'pr view 3' "$SANDBOX/gh.log")" -eq 2 ]
   grep -qx 'gh pr view o/three#3' "$CACHE/unreadable"
+  # The store's state decides what is open: a PR it lists as merged or closed is never adopted on a failed view.
+  run sibling_pr "$SANDBOX/one" '[{"repo":"o/three","number":3,"state":"MERGED"},{"repo":"o/four","number":4,"state":"CLOSED"}]'
+  assert_output ''
 }
 
 @test "end to end: an open PR in a sibling repo is the session's PR, its CI deciding the bucket (ar-349)" {
@@ -4160,6 +4246,33 @@ SH
   : > "$SANDBOX/t.jsonl"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = CHAT ]
+}
+
+@test "end to end: a sibling-repo PR whose gh pr view fails is adopted with CI unknown and read as unlanded (ar-4257)" {
+  git init -q --bare "$SANDBOX/origin.git"
+  git clone -q "$SANDBOX/origin.git" "$SANDBOX/wt" 2>/dev/null
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  git -C "$SANDBOX/wt" push -q origin HEAD:main 2>/dev/null
+  git -C "$SANDBOX/wt" checkout -q -b feat/x
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"gh pr create -t x"}}]}}' > "$SANDBOX/t.jsonl"
+  echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"https://github.com/o/other/pull/42"}]}}' >> "$SANDBOX/t.jsonl"
+  local since=$(( $(date +%s) - 3600 ))
+  printf '#!/usr/bin/env bash\necho %q\n' \
+    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"idle\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$SANDBOX/wt\",\"idle_since\":$since,\"context_tokens\":5,\"plan_file\":\"\",\"transcript\":\"$SANDBOX/t.jsonl\"}" \
+    > "$SANDBOX/bin/agent-panel"
+  printf -- '-\t42\tOPEN\tNONE\t-\t-\n' > "$LEDGER_DIR/prs_o_other.tsv"
+  gh_script 'exit 1'
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-bench"
+  chmod +x "$SANDBOX/bin/fleet-assess" "$SANDBOX/bin/fleet-bench"
+  export SANDBOX XDG_CACHE_HOME="$SANDBOX/xdg"
+
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -c '[.bucket, .pr, .pr_state, .ci, .finished, .close.verdict]' <<<"$output")" = '["STALLED","42","OPEN",null,false,"keep"]' ]
+  [ "$(jq -r .close.why <<<"$output")" = 'land it: PR o/other#42 open, CI -' ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR o/other#42 open, CI unknown, not merged' ]
+  [ "$(jq -c .blockers <<<"$output")" = '["PR o/other#42 open, CI -","no plan file and nothing merged"]' ]
 }
 
 @test "pr_made_here: its own PR by session_prs, plan Phases, URL or a push of the branch; nothing else (ar-455)" {
@@ -4890,6 +5003,54 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red, background shell idle over 30m' ]
 }
 
+# chained_item <state> <dep slug>: session s1's running item, after: <dep slug>, and that dependency's own item
+chained_item() {
+  mkdir -p "$HOME/.agent/queue/running" "$HOME/.agent/queue/$1"
+  printf 'slug: fix-wave-save\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s1\nafter: %s\n---\nfix wave save\n' \
+    "$2" > "$HOME/.agent/queue/running/20261103-100000-fix-wave-save.md"
+  printf 'slug: %s\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T09:00:00Z\nsession: lab:s2\n---\nthe dependency\n' \
+    "$2" > "$HOME/.agent/queue/$1/20261103-090000-$2.md"
+}
+
+@test "end to end: a red gate line is CI running while its item is after: a live item, red once that item is done (ar-4314)" {
+  # 2026-11-21 unity-core-playground #3076 and #3083 read STALLED CI red: each item was stacked on an open
+  # item, so agent-land held it (exit 4) before a gate was dispatched and Checks' Merge gate line stayed red.
+  landed_fixture
+  local oid; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"
+  job 77 'Harness tests:success' 'Merge gate line:failure'
+  ledger feat/x '[]'; open_pr FAIL 77
+  chained_item review dep-item
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
+
+  # negative controls: the dependency is done, a gate already red on the head, another step is red, no after:
+  rm -r "$HOME/.agent/queue/review"; chained_item done dep-item
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+  rm -r "$HOME/.agent/queue/done"; chained_item review dep-item
+  ledger feat/x "[$(gate 'Tests (affected)' completed failure "$oid" 5)]"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+  job 78 'Docs within their budgets:failure' 'Merge gate line:failure'
+  ledger feat/x '[]'; open_pr FAIL 78
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+  # a dependency that is only queued has no PR to stack on
+  rm -r "$HOME/.agent/queue/review" "$HOME/.agent/queue/running"; chained_item queued dep-item
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+  # a dependency that is the session's own item waits on nobody else
+  rm -r "$HOME/.agent/queue/queued"; chained_item running dep-item
+  sed -i 's/^session: lab:s2$/session: lab:s1/' "$HOME/.agent/queue/running/20261103-090000-dep-item.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+  rm -rf "$HOME/.agent/queue/review" "$HOME/.agent/queue/running"; queue_item running lab:s1
+  ledger feat/x '[]'; open_pr FAIL 77
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+}
+
 @test "end to end: a PR riding an open landing train is WORKING waiting on the train, not CI red (ar-2160)" {
   # 2026-11-13 agent-7 #2415, agent-28 #2417 and agent-31 #2444 read STALLED CI red and were nudged:
   # each rode train #2467 (train.py), whose PlayMode shard sat queued on a full unity pool, and each
@@ -4975,8 +5136,9 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   printf -- '-\t9\tCLOSED\tPASS\t-\t-\n' > "$LEDGER_DIR/prs_o_two.tsv"
   PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" panel "$SANDBOX/wt"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  # (the transcript does not name #2166, so pr_made_here drops it; the open o/one#7 keeps #2178 out)
-  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, no plan file, its item ucp-342 moved on (done)' ]
+  # (the transcript does not name #2166, so pr_made_here drops it; the open o/one#7 keeps #2178 out and stays unlanded)
+  [ "$(jq -r .reason <<<"$output")" = 'PR o/one#7 open, CI unknown, not merged' ]
+  [ "$(jq -r .finished <<<"$output")" = false ]
   panel "$SANDBOX/wt"
   rm -r "$d"; mkdir -p "$HOME/.agent/queue/running"
   printf 'slug: ucp-342\nproject: shape-city\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-08T02:51:57Z\nsessions: sid-9\npr: o/r#2178\n---\nskater\n' \
@@ -5478,6 +5640,11 @@ verdict() {
   # A headless run's replay: the shepherd never types into its opencode TUI; fleet-dispatch reap closes it.
   [ "$(verdict '{activity: "done", bucket: "DONE", idle_min: 600}')" = "keep: headless run: fleet-dispatch reap closes its replay once its item leaves review" ]
   # A worker row runs the same chain: the shepherd types its close over ssh (fleet_host_run).
+  # A pane restore reopened adds the quiet it had before its server died to its new claude's age (ar-4141).
+  [ "$(verdict '{idle_min: 90, age_min: 10}')" = "after: quiet 10m of 60m" ]
+  [ "$(verdict '{idle_min: 90, age_min: 10, quiet_before_min: 70}')" = "now: quiet 80m, nothing to land" ]
+  [ "$(verdict '{idle_min: 90, age_min: 10, quiet_before_min: 20}')" = "after: quiet 30m of 60m" ]
+  [ "$(verdict '{idle_min: 5, age_min: 10, quiet_before_min: 70}')" = "after: quiet 5m of 60m" ]
   [ "$(verdict '{host: "ms-a2"}')" = "now: quiet 90m, nothing to land" ]
   [ "$(verdict '{host: "ms-a2", idle_min: 5}')" = "after: quiet 5m of 60m" ]
   [ "$(SELF=s1 verdict '{host: "ms-a2", session_id: "s1", idle_min: 5}')" = "now: quiet 5m, nothing to land" ]

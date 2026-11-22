@@ -645,6 +645,7 @@ pub(crate) mod tests {
             ]),
             Ok(fix),
             Ok(String::new()),
+            Ok(vec![]),
             NOW,
         )
     }
@@ -818,8 +819,14 @@ pub(crate) mod tests {
             .extend(flat(serde_json::json!({"metric":
             {"host": "aws-burst-1", "name": "aws-1", "state": "offline", "site": "cloud"}, "value": [0, "0"]})));
         let firing = |i: &hub_core::infra::Infra| {
-            let a =
-                hub_core::alerts::join(i, Ok(vec![]), Ok(Reds::default()), Ok(String::new()), NOW);
+            let a = hub_core::alerts::join(
+                i,
+                Ok(vec![]),
+                Ok(Reds::default()),
+                Ok(String::new()),
+                Ok(vec![]),
+                NOW,
+            );
             page(&AlertsView::default(), &a, 160).0
         };
         let power = |state: &str| {
@@ -904,7 +911,14 @@ pub(crate) mod tests {
                 "component": "gateway"}, "value": [0, "2"]}]}}))
             .unwrap(),
         );
-        let a = hub_core::alerts::join(&i, Ok(vec![]), Ok(Reds::default()), Ok(String::new()), NOW);
+        let a = hub_core::alerts::join(
+            &i,
+            Ok(vec![]),
+            Ok(Reds::default()),
+            Ok(String::new()),
+            Ok(vec![]),
+            NOW,
+        );
         let (s, _) = page(&AlertsView::default(), &a, 160);
         let at = |w: &str| s.find(w).unwrap_or_else(|| panic!("no {w} in {s}"));
         assert!(at("HEALTH") < at("llm RED"), "{s}");
@@ -918,6 +932,7 @@ pub(crate) mod tests {
             Err("no such dir".into()),
             Err("exit 1".into()),
             Ok(String::new()),
+            Ok(vec![]),
             NOW,
         );
         let (s, _) = page(&every(), &a, 160);
@@ -975,6 +990,7 @@ pub(crate) mod tests {
             Ok(vec![watch("disk", "OK"), watch("dream", "OK")]),
             Ok(Reds::default()),
             Ok(String::new()),
+            Ok(vec![]),
             NOW,
         );
         let mut v = AlertsView::default();

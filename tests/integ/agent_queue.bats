@@ -1205,9 +1205,9 @@ gate_rbw() {
   run "$AQ" requeue forms --hold mac-desktop
   assert_failure; assert_output --partial "claim it"
   "$REPO_ROOT/.local/bin/agent-hold" claim mac-desktop --by other "steam forms" >/dev/null
-  # A project with no board to file on cannot give it a row: refused, and the item stays running.
+  # The wait is the board row's: an item with none is refused and stays running.
   run "$AQ" requeue forms --hold mac-desktop
-  assert_failure; assert_output --partial "has no board row to wait on hold:mac-desktop and none was filed"
+  assert_failure; assert_output --partial "has no board row to wait on hold:mac-desktop"
   [ -n "$(item running forms)" ]
   "$AQ" set forms row=game:gm-9 >/dev/null
   : > "$NOTES_FIXTURE/calls.log"
@@ -1221,6 +1221,34 @@ gate_rbw() {
   [ "$(field "$f" tags)" = "ui hold:mac-desktop" ]
   run grep '^model-lane' "$NOTES_FIXTURE/calls.log"
   assert_failure
+}
+
+@test "requeue --hold of a hand-queued item with no board row files its story row, then returns it behind the resource (ar-4237)" {
+  story_notes
+  export AGENT_HOLD_DIR="$SANDBOX/holds"
+  # The row write is refused at add (a shortlist, a failed notes), so the item starts with none.
+  echo 1 > "$NOTES_FIXTURE/story.rc"; echo "notes failed" > "$NOTES_FIXTURE/story.out"
+  "$AQ" add --project level --running --slug hand "feat(menu): fill the store forms" >/dev/null 2>&1
+  rm "$NOTES_FIXTURE/story.rc"
+  [ -z "$(field "$(item running hand)" row)" ] || fail "the item already has a row"
+  "$REPO_ROOT/.local/bin/agent-hold" claim mac-desktop --by other "steam forms" >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" requeue hand --hold mac-desktop
+  assert_success
+  # The row is filed from the item, then gated while still started, and un-started.
+  assert_called "ptask level --agent add"
+  assert_called "ptask level --agent tag --add hold/mac-desktop lv-9"
+  assert_called "ptask level --agent unstart lv-9"
+  [ -z "$(item queued hand 2>/dev/null)" ]
+  f="$(ls "$AGENT_QUEUE_DIR"/done/*/*-hand.md)"
+  [ "$(field "$f" end_reason)" = returned ]
+  [ "$(field "$f" row)" = level:lv-9 ]
+  # Negative control: when no row can be filed, it is refused and the item stays running.
+  echo 1 > "$NOTES_FIXTURE/story.rc"
+  "$AQ" add --project level --running --slug hand2 "feat(menu): again" >/dev/null 2>&1
+  run "$AQ" requeue hand2 --hold mac-desktop
+  assert_failure; assert_output --partial "has no board row to wait on hold:mac-desktop, and none could be filed"
+  [ -n "$(item running hand2)" ]
 }
 
 @test "one waiter per release: the best desk class starts, the rest wait behind it, desk:auth only while the human is here" {
@@ -1289,49 +1317,6 @@ gate_rbw() {
   run "$AQ" list --state queued
   assert_output --partial "hold:mac-desktop (behind old, listing)"
   refute_output --partial "behind waits"
-}
-
-@test "requeue --hold files the story row of a hand-queued item with none, then returns the item to it (ar-4236)" {
-  story_notes
-  export AGENT_HOLD_DIR="$SANDBOX/holds"
-  "$AQ" add --project level --running --slug forms "fill the store forms" >/dev/null
-  # A hand-queued item that never got a row (its add filed none): drop the one the add filed.
-  sed -i '/^row: /d' "$(item running forms)"
-  [ -z "$(field "$(item running forms)" row)" ]
-  "$REPO_ROOT/.local/bin/agent-hold" claim mac-desktop --by other "steam forms" >/dev/null
-  : > "$NOTES_FIXTURE/calls.log"
-  run "$AQ" requeue forms --hold mac-desktop
-  assert_success
-  # Its row is filed, then un-started behind the hold: the same two writes a row-bearing item gets.
-  run grep '^notes --profile' "$NOTES_FIXTURE/calls.log"
-  assert_output --partial "ptask level --agent add --origin agent-queue"
-  assert_called "ptask level --agent tag --add hold/mac-desktop lv-9"
-  assert_called "ptask level --agent unstart lv-9"
-  [ -z "$(item queued forms 2>/dev/null)" ]
-  f="$(ls "$AGENT_QUEUE_DIR"/done/*/*-forms.md)"
-  [ "$(field "$f" row)" = level:lv-9 ]
-  [ "$(field "$f" end_reason)" = returned ]
-}
-
-@test "requeue --hold leaves a canary item with no row refused, and a twin row another item works (ar-4236)" {
-  story_notes
-  export AGENT_HOLD_DIR="$SANDBOX/holds"
-  "$REPO_ROOT/.local/bin/agent-hold" claim mac-desktop --by other "steam forms" >/dev/null
-  "$AQ" add --project level --running --slug forms "fill the store forms" >/dev/null
-  "$AQ" add --project level --running --slug twin "fill the store forms" >/dev/null
-  sed -i '/^row: /d' "$(item running forms)"
-  # The twin's row is open and carried by the other live item: forms may not take it.
-  printf -- '- [ ] fill the store forms <!-- id:lv-9 -->\n' > "$NOTES_FIXTURE/story.out"; echo 3 > "$NOTES_FIXTURE/story.rc"
-  run "$AQ" requeue forms --hold mac-desktop
-  assert_failure; assert_output --partial "is item twin's"
-  [ -n "$(item running forms)" ]
-  # An item with its own record (a canary) is refused with no row filed.
-  sed -i 's/^from: .*/from: canary/' "$(item running forms)"
-  rm -f "$NOTES_FIXTURE/story.rc"; : > "$NOTES_FIXTURE/calls.log"
-  run "$AQ" requeue forms --hold mac-desktop
-  assert_failure; assert_output --partial "keeps its own record"
-  run grep -c ' add ' "$NOTES_FIXTURE/calls.log"
-  assert_output 0
 }
 
 @test "requeue --class tags the item's desk class once, and a later --class replaces it" {

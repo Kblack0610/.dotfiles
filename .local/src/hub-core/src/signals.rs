@@ -1,8 +1,9 @@
 //! What NEEDS YOU reads beyond fleet-sessions' state: critical mail (comms' surfaced mail), the
-//! janitor's NEEDS YOU lines (today's `infra-cleanup.md`) and the runners stopped at their budget
-//! today (each runner's activity.log). `join` adds them to the state document beside the live
-//! asks (`boards::state`), so Home, `hub needs`, the pager and the briefing read one list. A
-//! source that cannot be read is named in the document's `unreadable`, never an empty list.
+//! janitor's NEEDS YOU lines (today's `infra-cleanup.md`), the runners stopped at their budget
+//! today (each runner's activity.log) and the standing holds the human set (`holds`). `join` adds
+//! them to the state document beside the live asks (`boards::state`), so Home, `hub needs`, the
+//! pager and the briefing read one list. A source that cannot be read is named in the document's
+//! `unreadable`, never an empty list.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -19,6 +20,8 @@ pub struct Paths {
     pub confs: PathBuf,
     /// agentctl's state dir, each runner's default inbox.
     pub agentctl: PathBuf,
+    /// agent-hold's hold files (`AGENT_HOLD_DIR`).
+    pub holds: PathBuf,
 }
 
 impl Paths {
@@ -34,6 +37,7 @@ impl Paths {
                 .unwrap_or_else(|| home.join(".local/state/notes-comms")),
             confs: env("AGENTCTL_CONF_DIR").unwrap_or_else(|| home.join(".config/agentctl/agents")),
             agentctl: crate::jobs::Paths::from_env().agentctl,
+            holds: crate::holds::dir(),
         }
     }
 }
@@ -131,8 +135,10 @@ fn unreadable(state: &mut Value, what: &str) {
     }
 }
 
-/// Adds `mail`, `janitor` and `budget` to the state document; a source that cannot be read is
-/// named in `unreadable` (`comms`, `notes`, `agentctl`).
+/// Adds `mail`, `janitor`, `budget` and `holds` to the state document; a source that cannot be
+/// read is named in `unreadable` (`comms`, `notes`, `agentctl`, `holds`). `holds` is the standing
+/// holds `by: human`, oldest first: only the human ends one, so it waits on them (ar-4645). A
+/// standing hold an agent set is red on Alerts, where its fix is routed.
 pub fn join(state: &mut Value, p: &Paths, r: &dyn Runner, now: i64) {
     let surface = p.comms.join("surface");
     match std::fs::read_dir(&surface) {
@@ -187,6 +193,20 @@ pub fn join(state: &mut Value, p: &Paths, r: &dyn Runner, now: i64) {
     state["budget"] = Value::Array(stops);
     if !errors.is_empty() {
         unreadable(state, "agentctl");
+    }
+
+    match crate::holds::read(&p.holds) {
+        Ok(list) => {
+            state["holds"] = crate::holds::standing(list, now)
+                .iter()
+                .filter(|h| h.human())
+                .map(|h| h.json(now))
+                .collect();
+        }
+        Err(_) => {
+            state["holds"] = json!([]);
+            unreadable(state, "holds");
+        }
     }
 }
 
@@ -322,10 +342,30 @@ mod tests {
             "- Fri 06:30 [janitor] NEEDS YOU: pvc stuck\n",
         )
         .unwrap();
+        let holds = dir.join("holds");
+        std::fs::create_dir_all(&holds).unwrap();
+        let since = |days: i64| {
+            chrono::DateTime::from_timestamp(now - days * 86400, 0)
+                .unwrap()
+                .format("%Y-%m-%dT%H:%M:%S%z")
+                .to_string()
+        };
+        let put = |name: &str, kind: &str, by: &str, days: i64| {
+            let text = format!(
+                "kind: {kind}\nsince: {}\nby: {by}\nreason: why {name}\n",
+                since(days)
+            );
+            std::fs::write(holds.join(name), text).unwrap();
+        };
+        put("critical", "resource", "human", 2);
+        // Negative controls: an agent's standing hold is Alerts' alone, and a fresh one stands not yet.
+        put("row-x-1", "resource", "fleet-dispatch", 3);
+        put("fresh", "resource", "human", 0);
         let p = Paths {
             comms: comms.clone(),
             confs,
             agentctl,
+            holds,
         };
         let mut s = json!({"unreadable": []});
         join(&mut s, &p, &Notes(Ok(format!("{}\n", refs.display()))), now);
@@ -333,6 +373,9 @@ mod tests {
         assert_eq!(s["janitor"][0]["what"], "pvc stuck");
         assert_eq!(s["budget"].as_array().unwrap().len(), 1);
         assert_eq!(s["budget"][0]["runner"], "dream");
+        assert_eq!(s["holds"].as_array().unwrap().len(), 1, "{}", s["holds"]);
+        assert_eq!(s["holds"][0]["resource"], "critical");
+        assert_eq!(s["holds"][0]["held"], "held 2d by human");
         assert_eq!(s["unreadable"], json!([]));
 
         std::fs::remove_dir_all(comms.join("surface")).unwrap();

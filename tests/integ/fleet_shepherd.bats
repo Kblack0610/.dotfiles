@@ -2016,6 +2016,25 @@ phases_doc() { doc "$(jq -s . "$HOME/rows")"; verdicts; }
   refute_output --partial 'landing: ucp'
 }
 
+@test "a landing line names the repo and PR of the gate waited on, not the session's own PR (ar-4303)" {
+  # 2026-11-21 lab/dotfiles-agent-24 read 'PR #2492 165m' for dotfiles #2492 (merged) while its wait was a lander on unity-core-playground #2492.
+  phase s1 shell 40 500
+  phase s2 shell 40 500
+  phase s3 shell 40 500
+  phases_doc
+  jq '.sessions |= map(if .session_id == "s1" then . + {open_job:"queue", project:"dot", pr:"2492", wait_min:165, wait_repo:"o/ucp", wait_pr:"2492"}
+      elif .session_id == "s2" then . + {open_job:"queue", project:"dot2", pr:"7", wait_min:165, wait_repo:"o/ucp"}
+      elif .session_id == "s3" then . + {open_job:"queue", project:"dot3", pr:"9", wait_min:165, wait_pr:"12"} else . end)' \
+    "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+  verdicts
+  run "$SH" due
+  assert_success
+  assert_line --partial 'landing: dot longest wait t-s1 PR o/ucp#2492 165m,'
+  assert_line --partial 'landing: dot2 longest wait t-s2 gate in o/ucp 165m,'
+  assert_line --partial 'landing: dot3 longest wait t-s3 PR #12 165m,'
+  refute_output --partial 'PR #2492'
+}
+
 @test "a held PR that #high rows wait on is an urgent critical line past an hour, with the bump to run (ar-3761)" {
   # 2026-11-19: P1 #2935 sat in the landing queue 5h reading WORKING while ucp-2712 (#high, #after/ its row) waited.
   local q='{rows:["ucp-2712 #high"], place:"about 3 of 4 in the landing queue"}'

@@ -814,6 +814,34 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   assert_equal "$(qfield "$f" session)" ''
 }
 
+@test "restore tags each pane it reopens @fleet_restored with its record's time, joined window or new session, so its close timer runs on (ar-4141)" {
+  restore_setup
+  G="$SANDBOX/repos/game"
+  lost_pane mine "$G" conv-human
+  f="$FLEET_DISPATCH_DIR/panes/hub.lost.json"
+  jq '.at = "2026-11-20T14:36:00-08:00"' "$f" > "$f.new" && mv "$f.new" "$f"
+  at=$(date -d 2026-11-20T14:36:00-08:00 +%s)
+  echo %42 > "$NOTES_FIXTURE/tmux.new_pane"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_success
+  assert_called "tmux -L hub set-option -pq -t %42 @fleet_restored $at"
+  # A session the server no longer has comes back as a new session, whose pane new-session -P names.
+  : > "$NOTES_FIXTURE/tmux.sessions.hub"
+  : > "$NOTES_FIXTURE/calls.log"
+  tmux_script 'case " $* " in *" new-session "*) echo %43 ;; esac; STUB_FALLTHROUGH=1'
+  lost_pane mine "$G" conv-human
+  jq '.at = "2026-11-20T14:36:00-08:00"' "$f" > "$f.new" && mv "$f.new" "$f"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_success
+  assert_called 'new-session -d -P -F #{pane_id} -s dotfiles'
+  assert_called "tmux -L hub set-option -pq -t %43 @fleet_restored $at"
+  # A hand resume tags nothing: the human just opened it, so its age floor stands (negative control).
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server hub --session other --cwd "$G" --resume conv-human
+  assert_success
+  assert_not_called '@fleet_restored'
+}
+
 @test "restore prompts no conversation whose item waits, nor one with no item" {
   restore_setup
   G="$SANDBOX/repos/game"
@@ -1274,11 +1302,21 @@ settle_fixture() {
   printf 'closed_reason: joined hold1: the same question\n' >> "$d/gone2.md"
   ask gone3 cancelled '' question credential_or_account ''
   printf 'closed_reason: joined nope99: the same question\n' >> "$d/gone3.md"
-  stub agent-ask '[ "$1" = show ] && cat "$HOME"/.agent/asks/*/"$2".md'
+  printf 'context: %s\n' 'Re-posed by fleet-dispatch: ask old1 was cancelled (stale) before anyone answered it.' >> "$d/gone3.md"
+  ask gate1 cancelled '' gate '' ''
+  printf 'options: approve|hold\noption_notes: \nclosed_reason: stale\n' >> "$d/gate1.md"
+  # post writes a pending ask rep<N> from its flags and prints its id, as the real one does
+  stub agent-ask 'case $1 in
+show) cat "$HOME"/.agent/asks/*/"$2".md ;;
+cancel) echo "agent-ask $*" >> "$NOTES_FIXTURE/calls.log" ;;
+post) printf "agent-ask" >> "$NOTES_FIXTURE/calls.log"; printf " %q" "$@" >> "$NOTES_FIXTURE/calls.log"; echo >> "$NOTES_FIXTURE/calls.log"
+  n=$(( $(cat "$NOTES_FIXTURE/posts" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$NOTES_FIXTURE/posts"
+  printf "id: rep%s\nstatus: pending\nkind: question\nquestion: q?\n" "$n" > "$HOME/.agent/asks/game/rep$n.md"; echo "rep$n" ;;
+esac'
   stub agent-hold 'echo "agent-hold $*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" != show ] || [[ " ${HELD:-} " == *" $2 "* ]]'
 }
 
-@test "reap settles a row whose #ask/ gate the human answered another way: a skip drops it, any other answer holds it" {
+@test "reap settles a row whose #ask/ gate the human answered another way: a skip drops it, any other answer holds it, a cancel asks again" {
   settle_fixture
   row game agent gm-1 "- [ ] feat(game): xbox p3 $T #ask/hold1/b <!-- id:gm-1 -->"
   row game agent gm-2 "- [ ] feat(game): posthog counts $T #ask/skip1/a <!-- id:gm-2 -->"
@@ -1287,6 +1325,8 @@ settle_fixture() {
   row game agent gm-9 "- [ ] feat(game): joined ask $T #ask/gone2/a <!-- id:gm-9 -->"
   row game agent gm-10 "- [ ] feat(game): joined, no option $T #ask/gone2 <!-- id:gm-10 -->"
   row game agent gm-11 "- [ ] feat(game): joined a missing ask $T #ask/gone3/a <!-- id:gm-11 -->"
+  row game agent gm-12 "- [ ] feat(game): same cancelled ask $T #ask/gone1/b <!-- id:gm-12 -->"
+  row game agent gm-13 "- [ ] feat(game): cancelled gate $T #ask/gate1/approve <!-- id:gm-13 -->"
   row game agent gm-5 "- [ ] feat(game): still waits $T #ask/hold1/a <!-- id:gm-5 -->"
   row game agent gm-6 "- [ ] feat(game): use the old key $T #ask/mint1/a <!-- id:gm-6 -->"
   row game agent gm-7 "- [ ] feat(game): approved launch $T #ask/appr1/a <!-- id:gm-7 -->"
@@ -1303,12 +1343,22 @@ settle_fixture() {
   grep -q '^agent-hold set row-gm-1 --kind resource --by fleet-dispatch the human answered "a: keep it held until I say now" to ask hold1' "$NOTES_FIXTURE/calls.log"
   # dropped, with the answer as its why
   grep -q '^- \[x\] feat(game): posthog counts .*dropped: the human answered "b: skip it for now" to ask skip1, and #ask/skip1/a waited on another answer' <<<"$rows"
-  # a cancelled ask holds its row (nobody decided); one that joined another moves the gate to it
-  grep -q '^- \[ \] feat(game): cancelled ask .*#hold/row-gm-4 <!-- id:gm-4 -->' <<<"$rows"
+  # a cancelled ask (nobody decided) is posed again and the row gated on the new one, option kept; one
+  # that joined another moves the gate to it. NEGATIVE CONTROL: before ar-4646 both rows took #hold/row-<id>.
+  grep -q '^- \[ \] feat(game): cancelled ask .*#ask/rep1/a <!-- id:gm-4 -->' <<<"$rows"
   grep -q '^- \[ \] feat(game): joined ask .*#ask/hold1/a <!-- id:gm-9 -->' <<<"$rows"
   grep -q '^- \[ \] feat(game): joined, no option .*#ask/hold1 <!-- id:gm-10 -->' <<<"$rows"
-  grep -q '^- \[ \] feat(game): joined a missing ask .*#hold/row-gm-11 <!-- id:gm-11 -->' <<<"$rows"
-  grep -q '^agent-hold set row-gm-4 .*ask gone1 was cancelled (superseded by later), so nobody decided' "$NOTES_FIXTURE/calls.log"
+  # gone3 is itself a re-post: cancelled again, it stays dead for dead_holds, never posed a third time
+  grep -q '^- \[ \] feat(game): joined a missing ask .*#ask/gone3/a <!-- id:gm-11 -->' <<<"$rows"
+  run grep -E '^agent-hold set row-gm-(4|11) ' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+  # one new ask per cancelled one, however many rows wait on it; a gate's default options keep a meaning
+  grep -q '^- \[ \] feat(game): same cancelled ask .*#ask/rep1/b <!-- id:gm-12 -->' <<<"$rows"
+  grep -q '^- \[ \] feat(game): cancelled gate .*#ask/rep2/approve <!-- id:gm-13 -->' <<<"$rows"
+  assert_equal "$(grep -c '^agent-ask post ' "$NOTES_FIXTURE/calls.log")" 2
+  grep -qF -- '--kind gate --project game --profile bnb --options approve=as\ the\ asker\ offered\ it\|hold=as\ the\ asker\ offered\ it' "$NOTES_FIXTURE/calls.log"
+  grep -qF 'agent-ask post --kind question --project game --profile bnb --context Re-posed\ by\ fleet-dispatch:\ ask\ gone1\ was\ cancelled\ \(superseded\ by\ later\)' "$NOTES_FIXTURE/calls.log"
+  grep -q 'posed cancelled ask gone1 again as rep1: game row gm-4 waits on it' "$FLEET_DISPATCH_DIR/log.md"
   # a judge's answer, a gate the answer releases and a human-sheet row are left alone
   grep -q '^- \[ \] feat(game): judge answered .*#ask/judge1/a' <<<"$rows"
   grep -q '^- \[ \] feat(game): still waits .*#ask/hold1/a' <<<"$rows"
@@ -1319,7 +1369,41 @@ settle_fixture() {
   : > "$NOTES_FIXTURE/calls.log"
   run settle_answered_gates
   assert_success
-  run grep -E 'agent-hold set|ptask game --agent (drop|tag)' "$NOTES_FIXTURE/calls.log"
+  run grep -E 'agent-hold set|agent-ask post|ptask game --agent (drop|tag)' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+}
+
+@test "reap settle: a cancelled ask on a row whose done item's PR merged closes the row on merge proof, with no hold and no new ask" {
+  landed_item MERGED
+  settle_fixture
+  printf 'fix crash\t- [ ] fix crash #ask/gone1/a\n' > "$NOTES_FIXTURE/rows.game.agent"
+  run settle_answered_gates
+  assert_success
+  assert_output --partial 'closed game: fix crash (queue item fix-crash, PR o/game#12 merged)'
+  run grep -F 'ptask game --agent done fix crash' "$NOTES_FIXTURE/calls.log"
+  assert_output "notes --profile bnb ptask game --agent done fix crash --proof pr:o/game#12 commit:${OID:0:12}"
+  run grep -E '^agent-(hold set|ask post) ' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+}
+
+@test "reap settle: a cancelled ask whose done item's PR closed unmerged is asked again, and one whose forge does not answer waits" {
+  # NEGATIVE CONTROL: a done item is not done work until its PR merged; the row is not closed.
+  landed_item CLOSED
+  settle_fixture
+  printf 'fix crash\t- [ ] fix crash #ask/gone1/a <!-- id:fix-crash -->\n' > "$NOTES_FIXTURE/rows.game.agent"
+  agent-queue list --json --state done --since 3650d | jq -e 'select(.slug == "fix-crash")' >/dev/null
+  # the board row id is fix-crash here, so point the item at it
+  f=$(grep -rl '^slug: fix-crash' "$AGENT_QUEUE_DIR/done"); sed -i 's/^from: .*/from: board:game:fix-crash/' "$f"
+  : > "$NOTES_FIXTURE/pr.state"   # the forge does not answer: nothing changes this pass
+  run settle_answered_gates
+  assert_success
+  run grep -E '^agent-(hold set|ask post) |--agent (done|tag)' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+  printf 'CLOSED -\n' > "$NOTES_FIXTURE/pr.state"
+  run settle_answered_gates
+  assert_success
+  grep -q '^fix crash.- \[ \] fix crash #ask/rep1/a <!-- id:fix-crash -->' "$NOTES_FIXTURE/rows.game.agent"
+  run grep -E '^agent-hold set |--agent done' "$NOTES_FIXTURE/calls.log"
   assert_failure
 }
 
@@ -1339,6 +1423,23 @@ settle_fixture() {
   # both rows keep their gate, so the next reap tries again
   grep -q '#ask/hold1/b <!-- id:gm-1 -->' "$NOTES_FIXTURE/rows.game.agent"
   grep -q '#ask/mint1/a <!-- id:gm-2 -->' "$NOTES_FIXTURE/rows.game.agent"
+}
+
+@test "reap settle: a re-post whose retag failed is kept, and the next pass gates the row on it instead of asking again" {
+  settle_fixture
+  row game agent gm-4 "- [ ] feat(game): cancelled ask $T #ask/gone1/a <!-- id:gm-4 -->"
+  mv "$SANDBOX/bin/notes" "$SANDBOX/bin/notes.real"
+  stub notes '[[ " $* " == *" --agent tag "* ]] && exit 1; exec notes.real "$@"'
+  run settle_answered_gates
+  assert_success
+  assert_output --partial 'could not retag game row gm-4 from #ask/gone1/a to #ask/rep1'
+  run grep -E '^agent-ask cancel ' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+  mv "$SANDBOX/bin/notes.real" "$SANDBOX/bin/notes"
+  run settle_answered_gates
+  assert_success
+  grep -q '#ask/rep1/a <!-- id:gm-4 -->' "$NOTES_FIXTURE/rows.game.agent"
+  assert_equal "$(grep -c '^agent-ask post ' "$NOTES_FIXTURE/calls.log")" 1
 }
 
 # A headless gateway run's pane opens its transcript after its tail (gateway_launch); reap closes it

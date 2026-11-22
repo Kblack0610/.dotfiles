@@ -29,6 +29,7 @@ pub mod fleet_cost;
 pub mod flow;
 pub mod focus;
 pub mod gateway;
+pub mod holds;
 pub mod home;
 pub mod host_history;
 pub mod host_now;

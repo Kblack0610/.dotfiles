@@ -67,27 +67,44 @@ setup() {
   assert_output --partial 'by coordinator: 96 C, too many editors'
 }
 
-@test "aged names each hold set 7 days ago or longer and exits 1, and releases none (ar-4471)" {
+@test "aged names each standing hold set a day ago or longer, pages high and exits 1, and releases none (ar-4471, ar-4645)" {
   run "$HOLD" aged
   assert_success
+  back() { sed -i "s/^since: .*/since: $(date -d "-$2 days" +%Y-%m-%dT%H:%M:%S%z)/" "$AGENT_HOLD_DIR/$1"; }
   "$HOLD" set fresh --by human "new"
-  "$HOLD" set old --by human "kept on purpose"
-  sed -i "s/^since: .*/since: $(date -d '-8 days' +%Y-%m-%dT%H:%M:%S%z)/" "$AGENT_HOLD_DIR/old"
+  "$HOLD" set old --kind resource --by fleet-dispatch "kept on purpose"
+  back old 2
   run "$HOLD" aged
   assert_failure 1
-  assert_line --index 0 --regexp '^old: held 8d, since .* by human: kept on purpose$'
-  assert_line --index 1 --partial '1 hold(s) set 7 days ago or longer'
+  assert_line --index 0 --regexp '^old: held 2d, since .* by fleet-dispatch: kept on purpose$'
+  assert_line --index 1 --partial '1 hold(s) set 1 day(s) ago or longer'
+  assert_line --index 2 'page: high'
   refute_output --partial 'fresh'
   run "$HOLD" check old
   assert_failure 1
-  run "$HOLD" aged --days 9
+  run "$HOLD" aged --days 3
   assert_success
+  # A load hold set by the human is the human's to end, so it pages too.
+  back fresh 2
+  run "$HOLD" aged
+  assert_failure 1
+  assert_line --index 0 --partial 'fresh: held 2d'
   # An empty since is unreadable, so it shows: date -d "" alone reads as today.
   sed -i "s/^since: .*/since: /" "$AGENT_HOLD_DIR/fresh"
-  run "$HOLD" aged --days 9
+  run "$HOLD" aged --days 3
   assert_failure 1
   assert_line --index 0 --partial 'fresh: held '
   assert_line --index 0 --partial 'since an unreadable time by human: new'
+}
+
+@test "aged leaves out a load hold and a claim however old, since neither waits on the human (ar-4645)" {
+  back() { sed -i "s/^since: .*/since: $(date -d "-$2 days" +%Y-%m-%dT%H:%M:%S%z)/" "$AGENT_HOLD_DIR/$1"; }
+  "$HOLD" set unity --by fleet-pace "96 C"
+  "$HOLD" claim mac-desktop --by agent-7 "store forms"
+  back unity 2; back mac-desktop 2
+  run "$HOLD" aged
+  assert_success
+  assert_output ''
 }
 
 @test "a hold on one resource leaves another free" {

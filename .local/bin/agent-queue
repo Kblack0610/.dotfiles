@@ -66,7 +66,8 @@
 #   attribute <slug> < changed-paths    credit the item to the registry project whose path owns most of its PR
 #   credit-of <project> < changed-paths  print what attribute would record ("<winner>\t<touches>"), writing nothing
 #   requeue <slug> --hold <resource> [--class c] | --ask <id>   a started item back to its board row, gated on that agent-hold
-#       or ask (#hold/<res>, #ask/<id>): the item closes returned, and dispatch promotes the row once the gate clears
+#       or ask (#hold/<res>, #ask/<id>): the item closes returned, and dispatch promotes the row once the gate clears;
+#       an item with no row (hand-queued) gets a story row filed first (story_row_for), refused only when none can be
 #   handoff <slug> --note <file> [--dir <checkout>]   a running item to a fresh session with its work pushed: salvage: (or its pr:),
 #       handoff: <note>, back to queued with end_reason: handoff (unrated), AGENT_HANDOFF_MAX (2) per item; see cmd_handoff
 #   start <slug>   start a queued item's session now, through add's start guards (a low one, a desk wait or the dispatch hold keep it queued)
@@ -3364,13 +3365,26 @@ check_tags() {
   done
 }
 
+# story_row_for <slug> <file> -- file the story row of an item that has none, from its title, priority and
+# brief (file_story, started with the item), and link it with `set row=`. Fails when no row was filed or linked.
+# Called without the lock: file_story runs notes, and set takes the lock itself.
+story_row_for() {
+  local slug=$1 f=$2 title prio proj board prof id
+  title="$(fm_get "$f" title)"; [ -n "$title" ] || title="$(fm_body "$f" | awk 'NR==1')"
+  prio="$(fm_get "$f" priority)"; proj="$(fm_get "$f" project)"
+  IFS=$'\t' read -r board prof id < <(file_story "$proj" "$title" "${prio:-high}" "" "" "$(fm_body "$f")" "" "" "$(fm_get "$f" tags)" </dev/null)
+  [ -n "$id" ] || return 1
+  "$0" set "$slug" row="$board:$id" lane=agent profile="$prof" </dev/null >/dev/null ||
+    { echo "agent-queue: row $board:$id filed but not linked to $slug; link it with agent-queue set $slug row=$board:$id" >&2; return 2; }
+}
+
 # requeue <slug> --hold <resource> | --ask <id>[=<option>] -- send an active item back to its board row,
 # gated on an agent-hold resource or on an agent-ask the human has not answered. --hold is for a session that
 # finds a resource it needs held by another (`agent-hold claim` said busy); --ask for a headless run
 # (Codex) that needs the human, whose run ends when it stops: the answer starts it again and its brief
 # carries the decision (fleet-dispatch ask_decisions), where a run left waiting would have no session to
 # hear it. Not a redo: the model did nothing wrong, so its lane run is dropped, not reported to
-# model-lane, as a cancel is. An item with no board row (added by hand) gets its story row filed first.
+# model-lane, as a cancel is.
 cmd_requeue() {
   local usage="usage: agent-queue requeue <slug> --hold <resource> [--class <class>] | --ask <id>[=<option>[+<option>]]"
   local slug="${1:?$usage}" res="" ask="" cls="" tag f tags
@@ -3397,34 +3411,26 @@ cmd_requeue() {
     check_tags "$tag"
     [ -n "$(ask_pending "$ask")" ] || die "ask ${ask%%=*} is already answered: read the answer and go on instead of requeueing"
   fi
-  f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
-  # The wait is the board row's (cmd_add), so a hand-queued item with none gets its story row first, as
-  # add files one (a re-queue keeps its old row, prior_story), and goes back to it: refusing it stranded
-  # the item behind the hold (ar-4236). Work with its own record (cmd_add: canary, trainee, an ask's
-  # resume) has no row by design and is still refused.
-  if [ -z "$(item_row "$f")" ]; then
-    local story sboard sprof srow body title other
-    case "$(fm_get "$f" from)" in
-      canary | trainee | ask:*) die "$slug has no board row to wait on $tag, and an item of its kind keeps its own record: give it one (agent-queue set $slug row=<board>:<id>) and requeue again" ;;
-    esac
-    body="$(fm_body "$f")" title="$(fm_get "$f" title)"
-    story="$(prior_story "$slug" "$(fm_get "$f" project)")"
-    [ -n "$story" ] || story="$(file_story "$(fm_get "$f" project)" "${title:-$(head -1 <<<"$body")}" "$(fm_get "$f" priority)" "" "" "$body" "" "" "$(fm_get "$f" tags)")"
-    [ -n "$story" ] || die "$slug has no board row to wait on $tag and none was filed (the agent-queue line above says why): fix that, or give it one (agent-queue set $slug row=<board>:<id>) and requeue again"
-    IFS=$'\t' read -r sboard sprof srow <<<"$story"
-    # A twin of an open row is that row: refuse when another live item works it.
-    other="$(grep -lxF "row: $sboard:$srow" "$AQ_DIR"/{queued,running,waiting,review}/*.md 2>/dev/null | grep -v -F -x "$f" | head -1 || true)"
-    [ -z "$other" ] || die "$slug has no board row, and the one its words match, $sboard:$srow, is item $(fm_get "$other" slug)'s: requeue that item, or give $slug a row (agent-queue set $slug row=<board>:<id>)"
-    lock
-    f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
-    # A concurrent requeue may have set one meanwhile: it wins.
-    if [ -z "$(item_row "$f")" ]; then
-      header_set "$f" row "$sboard:$srow"; header_set "$f" lane agent; header_set "$f" profile "$sprof"
-    fi
-    unlock
-  fi
   lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
+  # The wait is the board row's (cmd_add). A hand-queued item may have none (add --running filed no row,
+  # or its story row was refused): file one from the item, as backfill-briefs does, so the return has a
+  # row to gate. notes writes it and may call agent-queue, so the lock goes first.
+  if [ -z "$(item_row "$f")" ]; then
+    local rc=0
+    unlock
+    story_row_for "$slug" "$f" || rc=$?
+    case "$rc" in
+      0) ;;
+      2) die "$slug has a filed row it is not linked to (above): link it, then requeue again" ;;
+      *) die "$slug has no board row to wait on $tag, and none could be filed for it: give it one (agent-queue set $slug row=<board>:<id>) and requeue again" ;;
+    esac
+    lock
+    f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
+    # The filing took a while with the lock off: the gate may have cleared since the checks above.
+    if [ -n "$res" ]; then [ -n "$(hold_pending "$res")" ] || die "$res was released while the row was filed: claim it (agent-hold claim $res) instead of requeueing"
+    else [ -n "$(ask_pending "$ask")" ] || die "ask ${ask%%=*} was answered while the row was filed: read the answer and go on instead of requeueing"; fi
+  fi
   tags="$(fm_get "$f" tags)"
   local want="$tags"
   case " $want " in *" $tag "*) ;; *) want="${want:+$want }$tag" ;; esac
