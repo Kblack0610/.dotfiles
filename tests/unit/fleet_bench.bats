@@ -5383,6 +5383,15 @@ live_merges() {
   assert_output --partial 'merges/h: platform 0.1'
 }
 
+@test "throughput: a repo with no clone on this machine reads unread, never merges: none (nc-56)" {
+  live_merges
+  rm -rf "$SANDBOX/plat"
+  BENCH_NOW=$T0 run "$SUBJECT" throughput
+  assert_success
+  assert_line 'merges: none'
+  assert_line 'merges unread (no mapped repo, or no clone here that fetches): platform'
+}
+
 @test "findings: a repo that cannot be fetched is blind, its old refs are not read as no merges" {
   live_merges
   git -C "$SANDBOX/plat" remote set-url origin "$SANDBOX/gone.git"
