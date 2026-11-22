@@ -643,6 +643,16 @@ handed_off() {
   [[ "$1" == review:*" pr "* ]] && [ "${1##* pr }" = "${2##*#}" ] && [ "$3" = 0 ] && [ "$4" = 1 ]
 }
 
+# salvaged_here <qall> <slug> <dir> -> exit 0 when the item that moved on from this session carries this
+# checkout's HEAD in its `salvage:` (`<branch>@<sha>`): that sha, or one built on it by a later run's handoff.
+# agent-queue handoff writes it only once that head is on origin, and the item's next start begins from it,
+# so the branch is not this session's to land (ar-2777). A sha this clone lacks holds nothing.
+salvaged_here() {
+  local sv
+  sv="$(jq -nr --arg s "$2" 'first(inputs | select(.slug == $s) | .salvage // empty)' <<<"$1" 2>/dev/null)"
+  [ -n "$sv" ] && git -C "$3" merge-base --is-ancestor HEAD "${sv##*@}" 2>/dev/null
+}
+
 # session_finished: session_bucket's arguments -> exit 0 when the work half of DONE holds
 # (phases all ticked, no ask, nothing unlanded, not a red-main suspect). It skips status,
 # plan mode, a heavy child and the idle threshold, so a session can check its own row mid-turn, when that row always reads WORKING busy.
@@ -2123,6 +2133,10 @@ collect() {
     # What a deployed checkout off its default branch holds is one fault, its CHECKOUT row, and no
     # session's work: 2026-11-06 it read 9 files ahead on all 16 sessions there, each one STALLED.
     if [ "$host" = - ] && [ "$g" = 1 ] && in_checkout "$cwd" "$off"; then ahead=0 pr=- state=- ci=- oid=- inpr=1; fi
+    # A run that handed its item off left its pushed branch to the item's next start: a clean tree whose
+    # HEAD is that item's salvage: has nothing left here to land.
+    if [ "$host" = - ] && [ "$g" = 1 ] && [ "$irel" = moved ] && [ "$dirty" = 0 ] && [ "$ahead" -gt 0 ] && [ "$pr" = - ] \
+       && salvaged_here "$qall" "$islug" "$cwd"; then ahead=0; fi
     # A finished branch PR this session did not make is another session's (pr_made_here): drop it,
     # and the commits it holds with it. An open one stays: it is unlanded work in this tree either way.
     if [ "$host" = - ] && [ "$g" = 1 ] && { [ "$state" = MERGED ] || [ "$state" = CLOSED ]; } && [ -s "$transcript" ] \

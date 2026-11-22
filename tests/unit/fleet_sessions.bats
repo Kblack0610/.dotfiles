@@ -2341,6 +2341,24 @@ clean_fixture() {
   [ "$(jq -r .close_sent <<<"$output")" = false ]
 }
 
+@test "end to end: a session whose item handed off its pushed branch (salvage: its HEAD) has nothing to land; another head still does (ar-2777)" {
+  clean_fixture
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
+  echo 1 > "$SANDBOX/wt/f"; "${g[@]}" add f; "${g[@]}" commit -q -m 'add f'
+  "${g[@]}" push -q origin feat/x 2>/dev/null
+  queue_item queued lab:s1
+  local f="$HOME/.agent/queue/queued/20261103-100000-fix-wave-save.md"
+  sed -i "s|^session: .*|&\nsalvage: feat/x@$("${g[@]}" rev-parse HEAD)\nhandoff: $HOME/.claude/plans/fix-wave-save.md\nhandoffs: 1|" "$f"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, no plan file, its item fix-wave-save moved on (queued)' ]
+  # negative control: a commit past the salvaged head is this session's own, unlanded
+  echo 2 > "$SANDBOX/wt/g"; "${g[@]}" add g; "${g[@]}" commit -q -m 'add g'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = '2 file(s) not on the default branch, no PR' ]
+}
+
 @test "end to end: a clean session reads its queue item from any state, and a removed worktree is DONE" {
   clean_fixture
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json

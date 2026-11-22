@@ -195,6 +195,16 @@
             "timeout": 30
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/long-session-handoff.sh",
+            "timeout": 15
+          }
+        ]
       }
     ],
     "PreToolUse": [
