@@ -62,9 +62,9 @@ OUT="$(notes path inbox)/${DATE}-reboot-restore.md"
 #    fails on a socket file whose server is gone, which skips it. Tab-separated, the server
 #    first and the path last: the path is the field step 6 takes, and it may hold spaces.
 . ~/.local/lib/tmux-servers.sh
-for srv in $(tmux_servers_all); do
+while IFS= read -r srv; do
   tmux -L "$srv" list-windows -a -F "$srv"$'\t''#{session_name}:#{window_index}'$'\t''[#{pane_current_command}]'$'\t''#{pane_current_path}' 2>/dev/null
-done
+done < <(tmux_servers_all)
 
 # 2. Claude sessions
 ps -eo pid,etime,cmd | grep -E '[c]laude ' | grep -v claude-1000
