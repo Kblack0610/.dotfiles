@@ -86,7 +86,7 @@ const fn conf_number(conf: &str, key: &str) -> i64 {
 }
 
 /// What a row is, and who owns it (`Kind::owner`): `build` keeps the human's kinds in `Home.needs`
-/// and moves the agent's to `Home.routed`. Conditions (Budget to Red) list after every scored row,
+/// and moves the agent's to `Home.routed`. Conditions (Hold to Red) list after every scored row,
 /// in this order. A condition has no score, so the needs pager never pages it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -104,6 +104,9 @@ pub enum Kind {
     /// An open `#urgent` or `#high` row of a project's human sheet that only the human can do
     /// (`HUMAN_TYPES`), with no ask, session or queue item shown for it.
     Sheet,
+    /// A hold the human set that has stood a day (`holds::Hold::standing`): it waits on their
+    /// release. Alerts shows it red too, beside the holds an agent set.
+    Hold,
     /// A runner stopped at its budget today (`signals::budget_stop`): it waits for a raise.
     Budget,
     /// A `night` queue item that finished failed.
@@ -173,11 +176,11 @@ impl NeedKind {
         }
     }
 
-    /// A condition row's: a budget stop waits on a raise, as a blocked item does; every other
-    /// condition is a failure.
+    /// A condition row's: a budget stop waits on a raise and a hold on its release, as a blocked
+    /// item does; every other condition is a failure.
     fn of_condition(kind: Kind) -> NeedKind {
         match kind {
-            Kind::Budget => NeedKind::Blocked,
+            Kind::Budget | Kind::Hold => NeedKind::Blocked,
             _ => NeedKind::Red,
         }
     }
@@ -221,6 +224,8 @@ impl Kind {
             // A raise is their call; the janitor and critical mail are addressed to them (mail
             // expires by `signals::MAIL_TTL_DAYS`).
             Kind::Budget | Kind::Janitor | Kind::Mail => Owner::Human,
+            // A hold the human set: only their word releases it.
+            Kind::Hold => Owner::Human,
             // A failed tier-3 task: the Queue tab, its board row open for dispatch.
             Kind::Night => Owner::Agent,
             // A `cc:red_now` item: Alerts, with its owner and fix.
@@ -241,6 +246,7 @@ impl Kind {
             Kind::Queue => "queue item",
             Kind::Sheet => "your sheet",
             Kind::Budget => "budget stop",
+            Kind::Hold => "hold",
             Kind::Night => "night task",
             Kind::Janitor => "home cluster",
             Kind::Mail => "critical mail",
@@ -273,7 +279,7 @@ pub struct Need {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recommend: Option<String>,
     /// What the row counted, for an ask, a session, a queue item or a sheet row; a condition
-    /// (Stopped, Budget to Red) is not a wait, and has none.
+    /// (Stopped, Hold to Red) is not a wait, and has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<Score>,
     /// An ask row's whole record, joined here so a surface draws its answer card from the row
@@ -966,7 +972,7 @@ pub fn needs(
                 .count() as u64
         })
     };
-    let mut out = Vec::new();
+    let mut out = hold_needs(state); // the first conditions: the sort keeps their push order
     let mut shown: HashSet<String> = HashSet::new();
     // The slugs of the queue items an ask already stands for, by its live owner or its `task`.
     let mut asked: HashSet<String> = HashSet::new();
@@ -1302,6 +1308,33 @@ pub fn gather(with_infra: bool) -> (Value, Queue, Result<Feed, String>, Option<I
     })
 }
 
+/// The Hold rows of `state["holds"]` (`signals::join`: the standing holds the human set), one a
+/// hold, as conditions with no score.
+fn hold_needs(state: &Value) -> Vec<Need> {
+    let rows = state["holds"].as_array().into_iter().flatten();
+    rows.map(|h| {
+        let resource = str_of(h, "resource");
+        Need {
+            kind: Kind::Hold,
+            need: NeedKind::of_condition(Kind::Hold),
+            rank: 0,
+            ask: None,
+            project: String::new(),
+            text: short(&format!(
+                "Hold {resource}, {}: {}. Release it once its work is done: agent-hold release {resource} (agent-hold show {resource}).",
+                str_of(h, "held"),
+                str_of(h, "reason").trim_end_matches('.')
+            )),
+            id: format!("hold:{resource}"),
+            target: None,
+            since: h["since"].as_i64(),
+            recommend: None,
+            score: None,
+        }
+    })
+    .collect()
+}
+
 /// Home from fleet-sessions' `state.json` (null when missing), the queue, the board feed,
 /// and infra: NEEDS YOU in `needs` order, the running items, the session counts, the vitals and the chips.
 pub fn build(
@@ -1336,6 +1369,7 @@ pub fn build(
             "comms" => "no critical mail is shown",
             "notes" => "no janitor lines are shown",
             "agentctl" => "no budget stops are shown",
+            "holds" => "no standing holds are shown",
             _ => continue,
         };
         h.errors.push(format!("{u} could not be read, so {what}"));
@@ -1473,6 +1507,8 @@ mod tests {
         st["budget"] =
             json!([{"runner": "dream", "detail": "day $10.20 of $10.", "at": NOW - 600}]);
         st["janitor"] = json!([{"when": "Fri 06:30", "who": "janitor", "what": "pvc stuck"}]);
+        st["holds"] = json!([{"resource": "critical", "since": NOW - 2 * 86400,
+            "held": "held 2d by human", "reason": "lockdown."}]);
         st["mail"] = json!([{"from": "alarm@aws", "subject": "ALARM: 5xx", "acct": "gigantic", "copies": 5}]);
         let mut failed = item("night-1", State::Done, None);
         failed.tags = "tier3".into();
@@ -1500,6 +1536,7 @@ mod tests {
             [
                 (Kind::Ask, "a1"),
                 (Kind::Session, "hub/dotfiles:2"),
+                (Kind::Hold, "hold:critical"),
                 (Kind::Budget, "budget:dream"),
                 (Kind::Night, "night-1"),
                 (Kind::Janitor, "janitor:pvc stuck"),
@@ -1511,6 +1548,10 @@ mod tests {
         assert_eq!(
             text(Kind::Budget),
             "dream stopped at its daily budget: day $10.20 of $10. To go on today: agentctl budget dream raise <usd>."
+        );
+        assert_eq!(
+            text(Kind::Hold),
+            "Hold critical, held 2d by human: lockdown. Release it once its work is done: agent-hold release critical (agent-hold show critical)."
         );
         assert_eq!(
             text(Kind::Night),
@@ -1527,11 +1568,18 @@ mod tests {
         assert!(h
             .needs
             .iter()
-            .filter(|n| n.kind >= Kind::Budget)
+            .filter(|n| n.kind >= Kind::Hold)
             .all(|n| n.score.is_none()));
-        // A budget stop waits on a raise, so it filters as Blocked; the rest as Failing.
+        // A budget stop waits on a raise and a hold on its release, so both filter as Blocked; the
+        // rest as Failing.
         let need = |k: Kind| h.needs.iter().find(|n| n.kind == k).unwrap().need;
         assert_eq!(need(Kind::Budget), NeedKind::Blocked);
+        assert_eq!(need(Kind::Hold), NeedKind::Blocked);
+        // The human's hold stays in Needs you, not routed (`build` alone).
+        assert!(build(Some(&st), Some(&q), None, None, NOW)
+            .needs
+            .iter()
+            .any(|n| n.kind == Kind::Hold));
         for k in [Kind::Night, Kind::Janitor, Kind::Mail] {
             assert_eq!(need(k), NeedKind::Red, "{k:?}");
         }
