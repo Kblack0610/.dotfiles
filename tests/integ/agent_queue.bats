@@ -2232,7 +2232,7 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_not_called 'start --item q0-p1'
 }
 
-@test "an ok close pulls the rows gated on its row through fleet-dispatch pull-after; a failed close, a rowless item and AGENT_QUEUE_START=0 pull nothing" {
+@test "an ok close pulls the rows gated on its row through fleet-dispatch pull-after; a failed close and a rowless item pull nothing; AGENT_QUEUE_START=0 still pulls, which queues and starts none" {
   story_notes
   # The rows after it are pulled through fleet-dispatch, which runs the admission and room checks.
   "$AQ" add --project level --running --slug ph1 "phase 1" >/dev/null
@@ -2240,14 +2240,18 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_success
   assert_called 'fleet-dispatch pull-after lv-9'
   : > "$NOTES_FIXTURE/calls.log"
-  # NEGATIVE CONTROLS: a failed close, an item with no row and AGENT_QUEUE_START=0 pull nothing.
+  # NEGATIVE CONTROLS: a failed close and an item with no row pull nothing.
   "$AQ" add --project level --running --slug f1 "fails" >/dev/null
   "$AQ" move f1 done --status failed >/dev/null
   "$AQ" add --project game --running --slug g1 "no row" >/dev/null
   "$AQ" move g1 done --status ok >/dev/null
+  assert_not_called 'pull-after'
+  # The shepherd's idle close (AGENT_QUEUE_START=0) pulls too: its chain's next phase waited 10h on a pass
+  # when it did not (2026-11-21, ar-4357); it passes --queue-only, so pull-after starts none.
   AGENT_QUEUE_START=0 "$AQ" add --project level --running --slug z1 "parent" >/dev/null
   AGENT_QUEUE_START=0 "$AQ" move z1 done --status ok >/dev/null
-  assert_not_called 'pull-after'
+  assert_called 'fleet-dispatch pull-after --queue-only lv-9'
+  : > "$NOTES_FIXTURE/calls.log"
   # A pull that fails leaves the rows to the next pass, and the close stands.
   "$AQ" add --project level --running --slug x1 "parent" >/dev/null
   FD_EXIT=1 run "$AQ" move x1 done --status ok
@@ -2287,6 +2291,7 @@ EOF
   assert_line --index 4 --regexp '^would queue my-plan-p6	phases 6	after my-plan-p4$'
   [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 1 ]
   AGENT_QUEUE_START=0 "$AQ" move base done --status ok >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"   # the close's own pull-after is not the add's
   AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/my-plan.md" --project level --after base --priority high --tags ui
   assert_success
   # P2 can start, so it is the one queue item; each phase after it waits on the row before it (#after/<row>).
