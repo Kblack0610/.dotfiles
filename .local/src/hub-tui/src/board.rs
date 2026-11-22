@@ -10,8 +10,9 @@ use hub_core::workload;
 use ratatui::text::{Line, Span};
 
 use crate::fit::{clip_line, wrap};
-use crate::fmt::{dur, Palette};
+use crate::fmt::Palette;
 use crate::infratables::InfraTables;
+use hub_core::display::fmt::dur_secs;
 
 pub struct Board<'a> {
     infra: &'a Infra,
@@ -172,7 +173,7 @@ impl<'a> Board<'a> {
     /// naming the missing label.
     pub fn ci_head(&self, failed: Option<usize>, w: usize) -> Vec<Line<'static>> {
         let ci = &self.infra.ci;
-        let secs = |v: i64| dur(v as f64);
+        let secs = |v: i64| dur_secs(v as f64);
         let mut head = vec![
             Span::styled("CI RUNNERS", self.p.head()),
             Span::raw(format!("  {}", ci.glance.head(secs))),

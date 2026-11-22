@@ -152,7 +152,6 @@
     "content-rating": "name-only",
     "cred-status": "name-only",
     "dataviz": "name-only",
-    "delta-audit": "name-only",
     "fewer-permission-prompts": "name-only",
     "figma-use": "name-only",
     "fleet-env-rebuild": "name-only",
@@ -183,10 +182,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.claude/hooks/ai-comment-guard.sh"
-          },
-          {
-            "type": "command",
             "command": "bash ~/.claude/hooks/context-budget-guard.sh"
           }
         ]
@@ -198,16 +193,6 @@
             "type": "command",
             "command": "bash ~/.claude/hooks/plan-approved.sh",
             "timeout": 30
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.claude/hooks/pr-overlap.sh",
-            "timeout": 20
           }
         ]
       }
@@ -337,24 +322,6 @@
             "type": "command",
             "command": "python3 ~/.claude/hooks/python-write-guard.py || true",
             "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Grep|Glob",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.claude/hooks/block-root-search.sh"
-          }
-        ]
-      },
-      {
-        "matcher": "Agent|Task|Workflow",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.claude/hooks/spawn-watch.sh"
           }
         ]
       }

@@ -1,0 +1,14 @@
+[Unit]
+Description=Machine mode at the day-part boundaries, 01:00 and 06:00 (.config/machine-mode/hours)
+
+# The two times are the starts of the parts in .config/machine-mode/hours; machine_mode.bats fails
+# when they drift. Persistent runs a boundary missed while the machine was off at the next boot, and
+# `machine-mode clock` applies whichever part holds the time then.
+[Timer]
+OnCalendar=*-*-* 01:00:00
+OnCalendar=*-*-* 06:00:00
+AccuracySec=1s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

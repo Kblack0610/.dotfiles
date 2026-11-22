@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# dirty-mains - name every project checkout that holds changes nobody is working on.
+#
+# A change left in a main clone blocks the pull that touches it and reads to every later
+# session as someone else's work; a runtime tool writing into the tree looks the same. For
+# each checkout in project-map.json `paths`, one line naming: tracked changes (deletions
+# included) and non-ignored untracked files older than the age limit (younger is someone
+# mid-edit), and stashes older than the stash limit (every worktree of the clone shares them).
+# The Sentinel watch dirty-mains runs it; main-checkout-branch covers the branch.
+#
+# Usage: dirty-mains [--quiet]    exit 0 clean, 1 something reported, 2 map unreadable
+# Env:   DIRTY_MAINS_MAP (default ~/.config/shared-hooks/project-map.json),
+#        DIRTY_MAINS_AGE_MIN (60), DIRTY_MAINS_STASH_DAYS (30)
+set -uo pipefail
+
+MAP="${DIRTY_MAINS_MAP:-$HOME/.config/shared-hooks/project-map.json}"
+AGE_MIN="${DIRTY_MAINS_AGE_MIN:-60}"
+STASH_DAYS="${DIRTY_MAINS_STASH_DAYS:-30}"
+QUIET=0
+
+case "${1:-}" in
+  --quiet) QUIET=1 ;;
+  "") ;;
+  -h|--help) awk 'NR==1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
+  *) printf 'dirty-mains: unknown argument: %s\n' "$1" >&2; exit 2 ;;
+esac
+
+paths="$(jq -r '.paths // {} | keys[]' "$MAP" 2>/dev/null)" || {
+  printf 'dirty-mains: cannot read the paths of %s\n' "$MAP" >&2; exit 2; }
+
+mtime() { stat -c %Y -- "$1" 2>/dev/null || stat -f %m -- "$1" 2>/dev/null; }
+
+now="$(date +%s)"
+cut_change=$((now - AGE_MIN * 60))
+cut_stash=$((now - STASH_DAYS * 86400))
+found=0
+
+# old_entries <repo> - each NUL-separated path on stdin that is older than the age limit, or
+# gone (a deletion has no mtime and counts), printed one per line. A collapsed untracked
+# directory is young while anything under it is.
+old_entries() {
+  local repo="$1" p t
+  while IFS= read -r -d '' p; do
+    p="${p%/}"
+    t="$(mtime "$repo/$p")"
+    [ -d "$repo/$p" ] && [ -n "$(find "$repo/$p" -mmin -"$AGE_MIN" -print -quit 2>/dev/null)" ] && continue
+    [ -z "$t" ] || [ "$t" -le "$cut_change" ] && printf '%s\n' "$p"
+  done
+  return 0
+}
+
+# sample <lines> - the count and up to three of the lines, for a one-line report.
+sample() {
+  local -a a
+  local s="" p
+  mapfile -t a <<< "$1"
+  for p in "${a[@]:0:3}"; do s="${s:+$s, }$p"; done
+  [ "${#a[@]}" -gt 3 ] && s="$s, ..."
+  printf '%s (%s)' "${#a[@]}" "$s"
+}
+
+while IFS= read -r repo; do
+  [ -n "$repo" ] || continue
+  git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 || continue
+  # A path that names a subdirectory of a clone is reported once, at the clone.
+  [ "$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null)" = "$(cd -P -- "$repo" && pwd -P)" ] || continue
+  parts=()
+  tracked="$( { git -C "$repo" diff -z --name-only HEAD -- 2>/dev/null || git -C "$repo" diff -z --name-only --cached -- 2>/dev/null; } | old_entries "$repo")"
+  [ -n "$tracked" ] && parts+=("tracked changes older than ${AGE_MIN}m: $(sample "$tracked")")
+  untracked="$(git -C "$repo" ls-files -z --others --exclude-standard --directory --no-empty-directory 2>/dev/null | old_entries "$repo")"
+  [ -n "$untracked" ] && parts+=("untracked older than ${AGE_MIN}m: $(sample "$untracked")")
+  stashes="$(git -C "$repo" stash list --format='%ct %gd' 2>/dev/null | awk -v c="$cut_stash" '$1 <= c' | grep -c .)"
+  [ "$stashes" -gt 0 ] && parts+=("$stashes stash(es) older than ${STASH_DAYS}d")
+  [ "${#parts[@]}" -gt 0 ] || continue
+  found=1
+  [ "$QUIET" = 1 ] && continue
+  branch="$(git -C "$repo" symbolic-ref -q --short HEAD || printf 'detached')"
+  line="${repo/#"$HOME"/\~} ($branch): ${parts[0]}"
+  for p in "${parts[@]:1}"; do line="$line; $p"; done
+  printf '%s\n' "$line"
+done <<< "$paths"
+
+exit "$found"

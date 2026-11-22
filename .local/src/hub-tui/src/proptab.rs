@@ -67,7 +67,7 @@ impl ProposalsView {
                     r.stream.clone().into(),
                     r.project.clone().into(),
                     r.title.clone().into(),
-                    crate::hometab::age(r.at(), now).into(),
+                    hub_core::display::fmt::dur_since(r.at(), now).into(),
                     r.verb.clone().into(),
                 ]
             })

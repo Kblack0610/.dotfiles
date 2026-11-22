@@ -17,13 +17,13 @@ It is stack-agnostic. The procedure is fixed; the tools come from whatever the r
 
 ## Scope and triggers
 
-Whole-repo, current-state health review of any codebase and any stack - what is broken right now, what is slow on the hot path, what is duplicated or has drifted between copies, where module boundaries and folder structure will not scale, and which quality gates are missing - with a file:line, a measured or first-hand-verified piece of evidence, and a concrete why for every finding, ranked by impact x effort. Use when the user asks "any cleanup we should do", "review the stack", "how healthy is this codebase", "what should we fix before this scales", "DRY this up", "is the folder structure right", "performance pass", "tech debt scan", or "make the components modular". Verbs - review (default, report only) | fix (land the safe tier as scoped PRs, only on request) | plan (rest into board rows and kb-architect specs). Differs from drift-audit (a time window of recent work), code-hygiene and simplify (one diff), bug-bash (functional bugs), ui-audit / delta-audit (screens). kb-architect's audit / debt-scan commands point here for the procedure; kb-architect designs the fixes this hands over.
+Whole-repo, current-state health review of any codebase and any stack - what is broken right now, what is slow on the hot path, what is duplicated or has drifted between copies, where module boundaries and folder structure will not scale, and which quality gates are missing - with a file:line, a measured or first-hand-verified piece of evidence, and a concrete why for every finding, ranked by impact x effort. Use when the user asks "any cleanup we should do", "review the stack", "how healthy is this codebase", "what should we fix before this scales", "DRY this up", "is the folder structure right", "performance pass", "tech debt scan", or "make the components modular". Verbs - review (default, report only) | fix (land the safe tier as scoped PRs, only on request) | plan (rest into board rows and kb-architect specs). Differs from day-log Review (a time window of recent work), code-hygiene and simplify (one diff), bug-bash (functional bugs), ui-audit (screens). kb-architect's audit / debt-scan commands point here for the procedure; kb-architect designs the fixes this hands over.
 
 - "any cleanup we should do", "review the stack / codebase", "tech debt scan", "what breaks first when this grows"
 - Before a big feature or a team scaling up on a repo, to know what to fix first
 - When `kb-architect` is asked to `audit` or `debt-scan` (it points here)
 
-Not for: work that landed in a recent window (`drift-audit`), one diff (`code-hygiene`, `simplify`, `code-review`), functional bugs (`bug-bash`), live UI (`ui-audit`, `delta-audit`), security review (`security-review` / `security-engineer`).
+Not for: work that landed in a recent window (`day-log`, Review), one diff (`code-hygiene`, `simplify`, `code-review`), functional bugs (`bug-bash`), live UI (`ui-audit`), security review (`security-review` / `security-engineer`).
 
 ## Verbs
 

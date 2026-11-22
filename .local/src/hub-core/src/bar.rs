@@ -157,7 +157,7 @@ pub fn build(
     match candidates {
         Ok(c) if stale(&c, now) => bar.errors.push(format!(
             "dispatch candidates: the snapshot was written {} ago, so its rows are not shown",
-            crate::text::age(now - c.written_epoch().unwrap_or(0))
+            crate::display::fmt::age(now - c.written_epoch().unwrap_or(0))
         )),
         Ok(c) => {
             bar.candidates = c

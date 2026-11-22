@@ -10,11 +10,12 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::display::fmt::{age, plural};
 use crate::home::{Home, Kind, Level};
 use crate::infra::Infra;
 use crate::projects::{Card, Projects};
 use crate::queue::{done_today, DoneToday, Item, Queue};
-use crate::text::{age, cap};
+use crate::text::cap;
 use crate::vocab::Vocab;
 
 /// How much of an ask the oldest row keeps: "oldest 13h: " plus this fills one line at 4x4.
@@ -251,8 +252,6 @@ fn done(i: &Inputs) -> Vec<Row> {
     if items.is_none() && prs.is_none() {
         return vec![];
     }
-    let plural =
-        |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
     let mut head = vec![];
     // The head is the Projects card's figure (`Queue::done_today`), not a sum of the rows below.
     if let Some(d) = i.queue.and_then(|q| q.done_today(i.now)) {
