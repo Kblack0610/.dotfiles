@@ -1,7 +1,7 @@
 ---
 name: discuss
 description: >-
-  Modifier (`/discuss /captain`): explain first, answer its own questions, plan mode until released. Use for "explain first", "talk me through this", "don't touch anything yet". Diff review is code-review.
+  Modifier (`/discuss /bug-bash`): explain first, answer its own questions, plan mode until released. Use for "explain first", "talk me through this", "don't touch anything yet". Diff review is code-review.
 metadata:
   category: workstreams
   tags: [conversation, plan-mode, explanation, modifier]
@@ -19,7 +19,7 @@ This skill is the other half. It composes: invoke it in the same message as anyt
 
 ## Scope and triggers
 
-A conversation modifier you append to any other skill or ask - `/discuss /captain`, `/discuss /ui-audit`, `/discuss why is the fee math wrong`. Forces the agent to EXPLAIN before it asks or builds - the mechanism as it actually works, what it verified vs assumed, the real options and what each costs, its own recommendation - and forbids it from asking a question it has not first answered itself. Enters plan mode so edits are blocked by the harness, and stays there until you explicitly release it. Use when you want to understand something before it changes, when an agent keeps jumping to a plan, when it interrogates you instead of answering you, when you say "explain first", "talk me through this", "don't touch anything yet", "answer my question", "I want to understand before you build", or "stop asking me things you could look up". Not for reviewing a finished diff - that is `code-review`. Not for a deep multi-agent investigation - that is `deep-research-code`.
+A conversation modifier you append to any other skill or ask - `/discuss /bug-bash`, `/discuss /ui-audit`, `/discuss why is the fee math wrong`. Forces the agent to EXPLAIN before it asks or builds - the mechanism as it actually works, what it verified vs assumed, the real options and what each costs, its own recommendation - and forbids it from asking a question it has not first answered itself. Enters plan mode so edits are blocked by the harness, and stays there until you explicitly release it. Use when you want to understand something before it changes, when an agent keeps jumping to a plan, when it interrogates you instead of answering you, when you say "explain first", "talk me through this", "don't touch anything yet", "answer my question", "I want to understand before you build", or "stop asking me things you could look up". Not for reviewing a finished diff - that is `code-review`. Not for a deep multi-agent investigation - that is `deep-research-code`.
 
 ## The one rule
 
@@ -31,7 +31,7 @@ If you cannot state a recommendation, you have not done enough research to be as
 
 ## When to use
 
-- Appended to any skill you want run in explain-first mode: `/discuss /captain`, `/discuss /release-coordinator`, `/discuss /bug-bash`.
+- Appended to any skill you want run in explain-first mode: `/discuss /release-coordinator`, `/discuss /bug-bash`, `/discuss /stack-review`.
 - On a bare question you want answered rather than acted on: `/discuss what is actually broken about the upload flow`.
 - Mid-session, when an agent has started building something you do not yet understand. It applies from that turn forward.
 
