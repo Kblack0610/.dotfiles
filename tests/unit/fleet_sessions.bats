@@ -438,6 +438,15 @@ ledger() {
   # parked with no PR open is not handed off: files off the branch are still its own
   run work_blockers '' idle 0 0 0 30 1 0 2 - - - 1 - - - - - - - "$r"
   assert_output '2 file(s) not on the default branch, no PR; no plan file and nothing merged'
+  # a live waiter (gate or queue) keeps the open PR from being handed off: unfinished and blocked (ar-3923)
+  local j
+  for j in 'gate' 'queue'; do
+    run b idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - "$j" - - "$r"
+    assert_output 'STALLED PR #9 CI red'
+    ! session_finished idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - "$j" - - "$r"
+    run work_blockers '' idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - "$j" - - "$r"
+    assert_output 'PR #9 open, CI FAIL; no plan file and nothing merged'
+  done
   # an open ask still decides first
   run b idle 0 1 0 30 1 0 2 9 OPEN FAIL 1 - - - - - - - "$r"
   assert_output 'NEEDS 1 pending ask(s)'
