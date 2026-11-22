@@ -695,7 +695,7 @@ share_history() {
 
 @test "fleet share: a pass not under the low water that reads the board for committed rows alone never lets the cap go" {
   # The committed-rows read (ar-2911) reaches the board on every pass; the cap lets go only for a fill.
-  export DISPATCH_PER_PASS=2 DISPATCH_LOW_WATER=0 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=0
+  export DISPATCH_PER_PASS=2 DISPATCH_LOW_WATER=0
   two_items
   agent-queue add --project game --slug fix-game-2 --priority high "fix the game again" >/dev/null
   share_history 1 1

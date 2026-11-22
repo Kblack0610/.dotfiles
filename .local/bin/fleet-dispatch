@@ -87,8 +87,8 @@ DISPATCH_CONF_KEYS=(
   DISPATCH_IDLE_CAP_PCT DISPATCH_FLAP_MOVES DISPATCH_FINDING_FRESH_MIN DISPATCH_JUDGE_MAX
   DISPATCH_DETAIL_CHARS DISPATCH_PLAN_BACKLOG DISPATCH_EXIT_MAX DISPATCH_START_WAIT
   DISPATCH_REAP_GRACE DISPATCH_REAP_CONFIRM DISPATCH_HOST_DEAD DISPATCH_PREEMPT
-  DISPATCH_OFF_PROJECTS DISPATCH_CLEANUP_PROJECTS DISPATCH_CLEANUP_FLOOR
-  DISPATCH_REQUESTED_FLOOR DISPATCH_ASK_FRESH_H DISPATCH_PREEMPT_REST DISPATCH_PLAN_RECONCILE
+  DISPATCH_OFF_PROJECTS DISPATCH_CLEANUP_PROJECTS
+  DISPATCH_ASK_FRESH_H DISPATCH_PREEMPT_REST DISPATCH_PLAN_RECONCILE
   DISPATCH_EPIC_VERIFY DISPATCH_LANE_FLOOR DISPATCH_CANARY_KEEP
 )
 # dispatch_conf_load -- set each DISPATCH_* the conf names that the environment does not, then exit 78
@@ -7032,7 +7032,7 @@ cmd_run() {
   # unity items kept every pass off the board for 7h: the rows filed to fix the hold never started,
   # and 220 rows sat unjudged. Above the low water, a floor still reads the board for its own rows
   # only (low_water_floors).
-  local items rc depth want cdepth rdepth only=''; items=${NEXT_QUEUED-$(next_items --points)}
+  local items rc depth want cgap rgap only=''; items=${NEXT_QUEUED-$(next_items --points)}
   if [ -n "$items" ]; then
     HELD_FALLS_THROUGH=1; run_queue "$items" "$room"; rc=$?; HELD_FALLS_THROUGH=0
     if [ -z "$QUEUE_HELD$SHARE_HELD" ]; then
@@ -7041,8 +7041,8 @@ cmd_run() {
       if [ "$depth" -lt "$DISPATCH_LOW_WATER" ]; then
         say "runnable $depth is under the low water $DISPATCH_LOW_WATER, topping the queue up from the board"
       else
-        rdepth=$(item_tag_depth requested); cdepth=$(item_tag_depth cleanup)
-        only=$(low_water_floors "$rdepth" "$cdepth"); [ -n "$only" ] || return 0
+        rgap=$(class_gap requested requested); cgap=$(class_gap cleanup cleanup)
+        only=$(low_water_floors "$rgap" "$cgap"); [ -n "$only" ] || return 0
       fi
     fi
   fi
@@ -7057,8 +7057,8 @@ cmd_run() {
   want=$(( DISPATCH_LOW_WATER - ${depth:-0} )); [ "$want" -gt "$room" ] || want=$room
   if [ -n "$only" ]; then
     want=0
-    [[ " $only " != *" requested "* ]] || want=$(( DISPATCH_REQUESTED_FLOOR - rdepth ))
-    [[ " $only " != *" cleanup "* ]] || want=$(( want + DISPATCH_CLEANUP_FLOOR - cdepth ))
+    [[ " $only " != *" requested "* ]] || want=$rgap
+    [[ " $only " != *" cleanup "* ]] || want=$(( want + cgap ))
   fi
   # The floors and the low water top up under the cap, never past it; committed rows take what it leaves.
   local qroom; qroom=$(queue_headroom); [ "$want" -le "$qroom" ] || want=$qroom
@@ -7075,20 +7075,20 @@ cmd_run() {
   SHARE_LET_GO=$let_go start_items "$items" "$room"   # the one unfiltered start the fleet share cap may let go in
 }
 
-# low_water_floors <requested depth> <cleanup depth> -> the floors a run pass over the low water still
-# reads the board for, space-separated: `requested` under DISPATCH_REQUESTED_FLOOR, `cleanup` under
-# DISPATCH_CLEANUP_FLOOR, and `gated` on every pass, for committed rows (an agent row whose #at/, #after/
+# low_water_floors <requested gap> <cleanup gap> -> the classes a run pass over the low water still
+# reads the board for, space-separated: `requested` and `cleanup` while their class is under its classes.json
+# min_live (class_gap), and `gated` on every pass, for committed rows (an agent row whose #at/, #after/
 # or other gates all cleared), which wait on no depth: on 2026-11-19, with 38 items runnable, ar-2894
 # sat 10h past its #at/ and seven #after/ rows past the rows they waited on.
 low_water_floors() {
   local only=''
-  if [ "$1" -lt "$DISPATCH_REQUESTED_FLOOR" ]; then
+  if [ "$1" -gt 0 ]; then
     only=requested
-    say "runnable requested $1 is under the floor $DISPATCH_REQUESTED_FLOOR, topping requested rows up from the board"
+    say "requested is $1 under its min_live, topping requested rows up from the board"
   fi
-  if [ -n "${DISPATCH_CLEANUP_PROJECTS// }" ] && [ "$2" -lt "$DISPATCH_CLEANUP_FLOOR" ]; then
+  if [ -n "${DISPATCH_CLEANUP_PROJECTS// }" ] && [ "$2" -gt 0 ]; then
     only="${only:+$only }cleanup"
-    say "runnable cleanup $2 is under the floor $DISPATCH_CLEANUP_FLOOR, topping cleanup up from the board"
+    say "cleanup is $2 under its min_live, topping cleanup up from the board"
   fi
   only="${only:+$only }gated"
   printf %s "$only"
@@ -7192,8 +7192,20 @@ fill_day() {
   return 0
 }
 
-# item_tag_depth <tag> -> the runnable items carrying <tag>: what a floor (cleanup, requested) measures.
+# item_tag_depth <tag> -> the runnable items carrying <tag>: what a class top-up (cleanup, requested) measures.
 item_tag_depth() { runnable 2>/dev/null | jq -c --arg t " $1 " 'select((" " + (.tags // "") + " ") | contains($t))' | grep -c . || true; }
+
+# class_gap <class> <tag> -> how many runnable items carrying <tag> the class lacks under its classes.json
+# min_live (the number the mix and this top-up share), 0 when the mix is off, the class has none, or
+# `agent-queue mix` cannot be read. The tag, not the class, counts the items: a cleanup row of kind fix
+# is in the bug class (agent-queue CLASS_JQ), and the requested class also holds every item from the human.
+class_gap() {
+  local min; min=$(agent-queue mix --json 2>/dev/null | jq -r --arg c "$1" 'if .on == true then [.classes[] | select(.name == $c) | .min_live][0] // 0 else 0 end' 2>/dev/null) || min=0
+  [[ "$min" =~ ^[0-9]+$ ]] || min=0
+  [ "$min" -gt 0 ] || { echo 0; return; }
+  local gap=$(( min - $(item_tag_depth "$2") )); [ "$gap" -gt 0 ] || gap=0
+  echo "$gap"
+}
 
 # floor_pass -> 0 when fill_day reads the board for its floors' rows alone (CLEANUP_ONLY, REQUESTED_ONLY,
 # GATED_ONLY, SPRINT_ONLY), which every scan under it then filters by floor_project and floor_row.
@@ -7357,7 +7369,7 @@ promote() {
     say "skip $project: row has no id and start gave it none (no code in project-map.json?), un-started: $key"
     return 1
   fi
-  # A #requested row's item carries the tag, which the requested floor counts (item_tag_depth).
+  # A #requested row's item carries the tag, which puts it in the requested class (classes.json).
   [[ " $tags " == *" requested "* ]] || [[ ! "${line%%<!--*}" =~ (^|[[:space:]])#requested([[:space:]]|$) ]] ||
     tags="${tags:+$tags }requested"
   # A row an open sprint holds is a `sprint` item, whichever path promotes it: the queue order and the sprint floor read the tag.
