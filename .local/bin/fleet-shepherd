@@ -655,12 +655,15 @@ cmd_infra() {
 # shepherd heard urgent only, so queue-starved (high) never reached it. Every other trip is owned by
 # its fleet-bench triage red item, or by the human sheet on a human route, so it raises no line here.
 # A watch whose `red` item is running or queued unheld has an owner, so it raises no line either; a
-# held one does not, as fleet-dispatch watch_reds gives it no slot.
+# held one does not, as fleet-dispatch watch_reds gives it no slot. A watch with an unexpired
+# quarantine (`watch-companion-loop quarantined`, in force only) is owned by the ask or row it names,
+# so it raises none either until the quarantine ends; then it is a due line like any red (ar-4585).
 infra_sample() {
   local owned
-  owned=$(agent-queue list --json 2>/dev/null | jq -r 'select(((" " + (.tags // "") + " ") | contains(" red ")))
+  owned=$({ agent-queue list --json 2>/dev/null | jq -r 'select(((" " + (.tags // "") + " ") | contains(" red ")))
     | select(.state != "queued" or (.hold // "") == "") | .task' \
-    | sed -n 's/^check(watch): \([^ ]*\) tripped.*/\1/p')
+    | sed -n 's/^check(watch): \([^ ]*\) tripped.*/\1/p'
+    watch-companion-loop quarantined 2>/dev/null | cut -f1; })
   {
     infra_now
     watch-companion-loop tripped 2>/dev/null | awk -F'\t' -v owned="$owned" '
