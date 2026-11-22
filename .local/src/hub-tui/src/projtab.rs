@@ -1310,7 +1310,6 @@ pub(crate) mod tests {
             errors: vec![],
             board_open: Some(4),
             board_backlog: Some(9),
-            today: None,
         }
     }
 

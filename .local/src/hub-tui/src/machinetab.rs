@@ -536,36 +536,38 @@ fn inventory(live: &HostNow, p: Palette, w: usize) -> Vec<Line<'static>> {
     out
 }
 
-/// The stretches with no reading, newest first.
+/// Its downtime records, newest first; an unexplained one in the warning colour.
 fn downtime(h: &HostHistory, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
-    if h.down.is_empty() {
-        return vec![heading("DOWNTIME", "none in the window", p)];
+    if let Some(why) = &h.down_unread {
+        let text = format!("{}: {why}", hub_core::reading::NOT_READ);
+        return vec![heading("DOWNTIME", text, p)];
     }
-    let mut out = vec![heading(
-        "DOWNTIME",
-        format!("{} stretches", h.down.len()),
-        p,
-    )];
+    if h.down.is_empty() {
+        let text = "no record in the window (one is written once a downtime ends)";
+        return vec![heading("DOWNTIME", text, p)];
+    }
+    let mut out = vec![heading("DOWNTIME", format!("{} records", h.down.len()), p)];
     out.extend(
         Table {
-            header: vec!["FROM", "TO", "TOOK", "WHY"],
+            header: vec!["FROM", "TO", "TOOK", "CAUSE", "WHY"],
             rows: h
                 .down
                 .iter()
                 .map(|d| {
                     vec![
                         clock(d.from as i64, now).into(),
-                        if d.open {
-                            cell("now", p.warn())
-                        } else {
-                            clock(d.to as i64, now).into()
-                        },
+                        clock(d.to as i64, now).into(),
                         dur_secs(d.to.saturating_sub(d.from) as f64).into(),
+                        if d.in_state("unexplained") {
+                            cell(&d.cause, p.warn())
+                        } else {
+                            d.cause.clone().into()
+                        },
                         d.why.clone().into(),
                     ]
                 })
                 .collect(),
-            keep: vec![0, 2, 1, 3],
+            keep: vec![0, 3, 2, 1, 4],
             right: vec![2],
             ..Default::default()
         }
@@ -744,8 +746,9 @@ mod tests {
                 down: vec![Down {
                     from: 3600,
                     to: 7200,
-                    open: false,
-                    why: hub_core::reading::NO_DATA.into(),
+                    id: "workstation@1970-01-01T01:00:00Z".into(),
+                    cause: "power".into(),
+                    why: "13 hosts rebooted".into(),
                 }],
                 power: Some(PowerHistory {
                     changes: vec![Change {
@@ -829,7 +832,7 @@ mod tests {
             "EditMode",
             "7 DAYS",
             "DOWNTIME",
-            "no data",
+            "13 hosts rebooted",
             "POWER",
             "11-10 3.5h",
             "queue",
@@ -861,6 +864,25 @@ mod tests {
                 .as_deref(),
             Some("https://g/d/kb-fleet?var-host=workstation")
         );
+    }
+
+    #[test]
+    fn downtime_records_not_read_say_why_and_never_the_empty_text() {
+        let mut page = fixture();
+        let h = page.history.as_mut().unwrap();
+        h.down.clear();
+        let empty = text(&page_lines(&page));
+        assert!(
+            empty.contains("no record in the window (one is written once a downtime ends)"),
+            "{empty}"
+        );
+        page.history.as_mut().unwrap().down_unread = Some("Loki answer 503".into());
+        let unread = text(&page_lines(&page));
+        assert!(
+            unread.contains("DOWNTIME  not read: Loki answer 503"),
+            "{unread}"
+        );
+        assert!(!unread.contains("no record in the window"), "{unread}");
     }
 
     #[test]

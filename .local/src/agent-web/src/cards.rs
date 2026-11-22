@@ -1,6 +1,6 @@
-//! `/api/home/cards`: Home's status grid (`hub_core::cards`), one card per tab, each from that
+//! `/api/home/cards`: Home's status grid (`hub_core::cards`), one card per tab (and Done today), each from that
 //! tab's own kept read, so a card and its tab show the same numbers. It is its own read beside
-//! `/api/home` because it reads nine tabs, and Home's Needs you must not wait on them. The Board
+//! `/api/home` because it runs ten readers, and Home's Needs you must not wait on them. The Board
 //! card maps the board Home itself keeps (`HomeParts`), so the grid adds no `notes board` read.
 
 use axum::extract::State;
@@ -43,10 +43,13 @@ pub async fn read(s: &Shared) -> Vec<Card> {
         Err(e) => Err(e.as_str()),
     };
     let items = queue.items.clone();
-    let (releases, pipeline) = tokio::join!(
+    // The day-log read keeps its last parse until the record changes (`phone::merged_today`).
+    let (releases, pipeline, merged) = tokio::join!(
         RELEASES.get((), off(move || releases::read(&System, &items))),
         off(hub_core::pipeline::read),
+        off(hub_core::phone::merged_today),
     );
+    let merged = merged.ok().flatten();
     // A worker that died is a failed read, said on the Queue card, never no bottleneck.
     let pipeline = pipeline.and_then(|r| r);
     cards::grid(&cards::Reads {
@@ -58,6 +61,8 @@ pub async fn read(s: &Shared) -> Vec<Card> {
         ),
         board: Some(board),
         queue: Some(Ok(&queue)),
+        merged: merged.as_deref(),
+        now: hub_core::jobs::now(),
         pipeline: Some(&pipeline),
         alerts: Some(alerts.as_ref().map_err(String::as_str)),
         infra: Some(Ok(&infra)),
