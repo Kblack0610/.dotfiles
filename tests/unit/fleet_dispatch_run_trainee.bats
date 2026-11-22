@@ -240,7 +240,7 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   row game human tr-human "- [ ] fix(menu): fix scripts/setup #pts/1 #high $T <!-- id:tr-human -->"
   row game agent tr-dead "- [ ] fix(menu): fix scripts/setup #pts/1 #high $T <!-- id:tr-dead -->"
   verdict game agent tr-dead failed; verdict game agent tr-dead failed   # DISPATCH_FIX_TRIES failures hold it
-  # The judge's skip holds a row too, and a tier-3 row whose skip is tier 3 alone stays the tier-3 gate's.
+  # The judge's skip holds a row too, and a tier-3 row it dispatched stays the tier-3 gate's.
   row game agent tr-skip "- [ ] fix(menu): fix scripts/setup #pts/1 #high $T <!-- id:tr-skip -->"
   verdict game agent tr-skip skip
   pr_lane_ready
