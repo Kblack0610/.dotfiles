@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # fleet-pace's metadata.replaces rows, read from the real SKILL.md through hand_methods.py: a -f kill
-# pattern and a recursive search from a network mount's ancestor are denied; a kill by name or PID, a
+# pattern, a generic interpreter kill, and a recursive search from a network mount's ancestor are denied; a kill by name or PID, a
 # search that stays on one filesystem or inside the share, and quoted or heredoc text are not.
 
 setup() {
@@ -32,7 +32,7 @@ reason() {
   assert_output ""
 }
 
-@test "pkill -f is denied in any clause and flag spelling; the reason names the skill and pkill -x" {
+@test "pkill -f is denied in any clause and flag spelling; the reason names the skill and the PID you hold first" {
   for c in 'pkill -f foo' 'sleep 1; pkill -9 -f "bats.*x"' 'sudo pkill -f x' 'x && pkill --full y' 'pkill -9f z' 'LC_ALL=C pkill -f w' \
     'bash -c "pkill -f foo"' 'if true; then pkill -f foo; fi' 'timeout 5 pkill -f foo' 'xargs -r pkill -f' \
     'pkill -u me -f foo' 'pkill -U 1000 -f foo' '/usr/bin/pkill -f x' 'echo pkill -f'; do
@@ -42,13 +42,35 @@ reason() {
   run reason 'pkill -f x'
   assert_output --partial 'hand-methods: '
   assert_output --partial 'fleet-pace'
-  assert_output --partial 'pkill -x <name>'
+  assert_output --partial 'kill a PID you hold'
+  assert_output --partial 'never node'
 }
 
 @test "a pgrep -f whose matches get killed is denied, with the kill before or after it" {
   for c in 'kill $(pgrep -f foo)' 'pgrep -f foo | xargs kill -9' 'pgrep -f foo | xargs -r sudo kill' $'pgrep -f foo\nkill $x'; do
     run decision "$c"
     assert_output deny
+  done
+}
+
+@test "pkill of generic interpreter names is denied; the reason points to the PID you hold" {
+  for c in 'pkill -x node' 'pkill node' 'pkill -9 node' 'pkill -9 -x node' 'pkill -x -9 node' \
+           'pkill -x python3' 'pkill python3' 'pkill -x ruby' 'pkill ruby' \
+           'pkill -x java' 'pkill java' 'pkill -x sh' 'pkill sh' \
+           'sudo pkill -x node' '/usr/bin/pkill -x node' 'pkill -u me -x node' \
+           'bash -c "pkill -x node"' 'sleep 1; pkill -x node' 'xargs -r pkill -x node' \
+           'killall node' 'killall -9 python3' 'killall -x ruby' 'killall java' 'killall -x sh'; do
+    run decision "$c"
+    assert_output deny
+  done
+  run reason 'pkill -x node'
+  assert_output --partial 'hand-methods: '
+  assert_output --partial 'fleet-pace'
+  assert_output --partial 'PID you hold'
+  for c in 'pkill -x nodemon' 'pkill -x nodejs' 'pkill -x node_exporter' \
+           'pkill -x fish' 'pkill -x bash' 'pkill -x zsh'; do
+    run decision "$c"
+    assert_output allow
   done
 }
 
