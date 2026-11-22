@@ -767,12 +767,13 @@ own_merged() {
 }
 
 # landed_by: sets lb to the set argument that adds "<this session>=<pr_ref>" to the item's landed_by:
-# pairs, read from $it, or to nothing with no session id. The nightly outcomes pass credits each session
+# pairs, read from $it, or to nothing with no session id or no repo in pr_ref. The nightly outcomes pass credits each session
 # with the PRs it landed from these pairs (queue_index); sessions: alone cannot say which one did (ar-2779).
 landed_by() {
   local sid="${CLAUDE_CODE_SESSION_ID:-}" cur
   lb=()
-  [ -n "$sid" ] || return 0
+  # A pr_ref that fell back to the bare argument names no repo, which agent-queue set refuses after the merge.
+  [ -n "$sid" ] && [[ "$pr_ref" =~ ^[^/]+/[^/#]+#[0-9]+$ ]] || return 0
   cur=$(jq -r '.landed_by // ""' <<<"$it")
   [[ " $cur " == *" $sid=$pr_ref "* ]] || cur="${cur:+$cur }$sid=$pr_ref"
   lb=("landed_by=$cur")

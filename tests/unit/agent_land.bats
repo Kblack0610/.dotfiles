@@ -1430,6 +1430,16 @@ EOF2
   assert_equal "$(jq -r '"\(.state) \(.status) \(.pr) \(.sessions)"' <<<"$output")" 'done ok o/r#42 sid-l'
 }
 
+@test "a PR URL that names no repo lands with no landed_by, since agent-queue refuses a bare #N there (ar-2779)" {
+  item tidy-loader
+  echo https://example.test/merge-request/42 >"$NOTES_FIXTURE/url"
+  CLAUDE_CODE_SESSION_ID=sid-l run "$LAND" 42 --item tidy-loader
+  assert_success
+  assert_line 'landed #42'
+  run agent-queue show tidy-loader --json
+  assert_equal "$(jq -r '"\(.state) \(.status) \(.landed_by // "none")"' <<<"$output")" 'done ok none'
+}
+
 @test "a human item closes the story row agent-queue add filed for it, like a board item" {
   # NEGATIVE CONTROL: before P2 agent-land closed only `from: board:` rows, so this row stayed open.
   item menus human agent bnb

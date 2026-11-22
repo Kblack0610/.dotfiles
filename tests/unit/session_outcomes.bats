@@ -1278,7 +1278,20 @@ EOF
   assert_equal "$(field c '[.prs[] | "\(.number) \(.state)"] | join(",")')" '12 MERGED'
 }
 
-@test "class: the size and kind of the item's roadmap row go on its session's row; the item's type stands in for a row off the roadmap; no item, no class" {
+@test "an item's host-less ref in a repo the map keeps on Forgejo is read from the PR store under host/owner/repo (ar-2779)" {
+  # NEGATIVE CONTROL: keyed o/audio as the item writes it, the claim was dropped as not in the PR store.
+  fj_setup
+  jq -n '{forges: {forgejo: "git.example.test"}, trackers: {audio: {forgejo: "o/audio"}}}' > "$SANDBOX/map.json"
+  export SO_PROJECT_MAP="$SANDBOX/map.json"
+  queue_stub
+  jq -cn '{slug: "fj", sessions: "sess-c", pr: "o/audio#12"}' > "$SANDBOX/items.jsonl"
+  run "$SUBJECT" run
+  assert_success
+  refute_output --partial "claims dropped"
+  assert_equal "$(field c '[.prs[] | "\(.repo)#\(.number) \(.state)"] | join(",")')" "git.example.test/o/audio#12 MERGED"
+}
+
+@test "class:the size and kind of the item's roadmap row go on its session's row; the item's type stands in for a row off the roadmap; no item, no class" {
   queue_stub
   export SO_ROADMAP=roadmap-stub
   printf '#!/usr/bin/env bash\n[ "$*" = "proj --json" ] || exit 9\necho %s\n' \
