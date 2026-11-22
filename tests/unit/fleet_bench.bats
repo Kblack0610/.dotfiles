@@ -1891,6 +1891,85 @@ closed_feed() {
   assert_output 1
 }
 
+# key_of <row text>: group 1 of BOARD_KEY_ERE, the key board_upsert and triage_retire find the row by
+key_of() {
+  # shellcheck source=../../.local/lib/board-keys.sh
+  . "$REPO_ROOT/.local/lib/board-keys.sh"
+  [[ $1 =~ $BOARD_KEY_ERE ]] && printf '%s\n' "${BASH_REMATCH[1]}"
+}
+
+@test "board keys: a watch row's key is its name and 'tripped since'" {
+  assert_equal "$(key_of 'check(watch): spend tripped since 2026-11-01, expected: spend is healthy. #high')" 'check(watch): spend tripped since'
+}
+@test "board keys: an alert row's key is its alert, host and 'firing'" {
+  assert_equal "$(key_of 'check(alert): NodeDown hp-victus firing, alertmanager-fleet tripped since 2026-11-01, expected: -')" 'check(alert): NodeDown hp-victus firing'
+}
+@test "board keys: a red row's key is its item, one word or two, and 'is red'" {
+  assert_equal "$(key_of 'check(red): watch voice-puck is red')" 'check(red): watch voice-puck is red'
+  assert_equal "$(key_of 'check(red): voice-puck is red')" 'check(red): voice-puck is red'
+}
+@test "board keys: a lesson guard row's key ends at its hash's colon" {
+  assert_equal "$(key_of 'check(lesson): guard 0a1b2c3d: lesson "x" (a.md, last 2026-11-01) was found again in 4 dream sweeps')" 'check(lesson): guard 0a1b2c3d:'
+}
+@test "board keys: a hold row's key is its name and 'went red'" {
+  assert_equal "$(key_of 'fix(hold): liveness-179 went red after cleanup merges nc-76 (pr 1 at abc)')" 'fix(hold): liveness-179 went red'
+}
+@test "board keys: a log row's key ends at its signature's colon" {
+  assert_equal "$(key_of 'fix(logs): alpha error 8b645240: alpha: queue item x may not spill')" 'fix(logs): alpha error 8b645240:'
+}
+@test "board keys: a unit row's key is its unit and 'failed'" {
+  assert_equal "$(key_of 'fix(unit): foo.service failed: exit-code #high')" 'fix(unit): foo.service failed'
+}
+@test "board keys: a runner row's key is its name and 'is'" {
+  assert_equal "$(key_of 'fix(runner): beta is FAILED: 2026-10-30 why: no answer block #high')" 'fix(runner): beta is '
+}
+@test "board keys: a typed row someone wrote is no key, so the triager may rewrite it" {
+  run key_of 'fix(logs): rotate the dream logs weekly #size/s'
+  assert_failure
+  run key_of 'fix(unit): the pane timer misses a beat'
+  assert_failure
+  run key_of 'fix(unit): tests failed on CI and nobody noticed'
+  assert_failure
+}
+
+@test "board keys: every row triage files from a runner, unit, watch or remote red is a key, its prefix the key" {
+  triage_setup
+  printf '#!/usr/bin/env bash\necho "watch voice-puck"\n' > "$SANDBOX/bin/red-stub"; chmod +x "$SANDBOX/bin/red-stub"
+  export TRIAGE_RED_CMD=red-stub
+  mkdir -p "$AGENTCTL_STATE_DIR/beta"
+  printf "NAME=beta\nSCHEDULE='*-*-* 04:00'\n" > "$LEDGER_CONF_DIR/beta.conf"
+  printf FAILED > "$AGENTCTL_STATE_DIR/beta/last-outcome"
+  printf '[2026-10-30T04:00:00-07:00] outcome=FAILED why: no answer block\n' > "$AGENTCTL_STATE_DIR/beta/activity.log"
+  echo 'foo.service exit-code loaded' > "$SANDBOX/failed"
+  watch spend TRIP -25200 urgent
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --partial 'fix(runner): beta is'
+  assert_line --partial 'check(red): watch voice-puck is red'
+  local line n=0
+  while IFS= read -r line; do
+    [[ $line == fleet-bench:* ]] && continue
+    [ -n "$(key_of "$line")" ] || fail "fleet-bench filed a row the triager would rewrite: $line"
+    n=$((n + 1))
+  done <<<"$output"
+  assert_equal "$n" 4
+}
+
+@test "triage: a red, runner or lesson guard row is never retired, only refreshed by board_upsert" {
+  triage_setup
+  watch drift OK -90000 normal
+  board_row ' ' 'check(red): watch voice-puck is red'
+  board_row ' ' 'fix(runner): gamma is FAILED: 2026-10-30 why: gone'
+  board_row ' ' 'check(lesson): guard 0a1b2c3d: lesson "x" (a.md, last 2026-11-01) was found again in 4 dream sweeps'
+  board_row ' ' 'check(watch): drift tripped since 2026-11-01, expected: drift is healthy.'
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line 'retire: check(watch): drift tripped since'
+  refute_line --partial 'retire: fix(runner)'
+  refute_line --partial 'retire: check(lesson)'
+  refute_line --partial 'retire: check(red)'
+}
+
 @test "triage: a queue that cannot be read closes no row: unknown is not recovered" {
   triage_setup
   watch drift OK -90000 normal

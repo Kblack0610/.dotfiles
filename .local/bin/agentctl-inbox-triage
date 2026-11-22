@@ -35,7 +35,8 @@
 # The plain --backlog and the --link passes' --dry-run keep their answers, so the apply writes
 # what it printed and a dry run stopped at its budget picks up where it stopped. The plain pass
 # judges each row by priority_rule too: raise a fault filed too low, send an agent row that is a
-# nice-to-have to improvements.md, close one that says it is done. --backlog --report prints the
+# nice-to-have to improvements.md, close one that says it is done. It never lists a row fleet-bench
+# keys by its prefix (lib/board-keys.sh, backlog_board), whose text fleet-bench alone writes. --backlog --report prints the
 # kept answers of every board by verdict, with no model call, for a person to confirm before the apply.
 # How it all fits: notes-cli README, "Intake".
 
@@ -70,6 +71,8 @@ LIB="$HERE/../lib"
 . "$LIB/inbox-epics.sh"
 # shellcheck source=../lib/chain-event.sh
 . "$LIB/chain-event.sh"
+# shellcheck source=../lib/board-keys.sh
+. "$LIB/board-keys.sh"   # BOARD_KEY_ERE: the rows fleet-bench finds by their prefix, which --backlog leaves alone
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-name.sh}"
 
@@ -1006,7 +1009,7 @@ answers_done() {
 backlog_report() {
   local board caches=() f p
   read_board || return 1
-  board="$(managed_board <<<"$BOARD")"
+  board="$(backlog_board <<<"$BOARD")"
   while IFS= read -r p; do
     [ -z "$ONLY" ] || [ "$p" = "$ONLY" ] || continue
     f="$(backlog_cache "$p")"
@@ -1051,7 +1054,7 @@ backlog_report() {
 backlog_pass() {
   local board names homes rc=0 p lane cache kept failed
   read_board || return 1
-  board="$(managed_board <<<"$BOARD")"
+  board="$(backlog_board <<<"$BOARD")"
   names="$(jq -r '[.projects[].project] | unique | join(", ")' <<<"$board")"
   homes="$(homes_rule)"
   TYPES="$(row_types)" || return 1   # once a pass, read by every backlog_batch
@@ -1073,6 +1076,11 @@ backlog_pass() {
 
 # The rows board automation may touch: none of a profile with `automation = false`.
 managed_board() { jq -c '.rows |= map(select(.automation != false)) | .projects |= map(select(.automation != false))'; }
+# The rows the plain --backlog pass and its --report read: managed_board less each row fleet-bench
+# keys by its prefix (BOARD_KEY_ERE). A rewrite loses the prefix fleet-bench refreshes and closes
+# it by, and its next pass writes the row's text back anyway, so such a row is never asked about,
+# a cached answer for one is never replayed or reported, and no row can be called its dup.
+backlog_board() { managed_board | jq -c --arg keys "$BOARD_KEY_ERE" '.rows |= map(select((.text // "") | test($keys) | not))'; }
 
 # One --priority answer line -> n, priority, split by US.
 # shellcheck disable=SC2016 # jq source, not shell
