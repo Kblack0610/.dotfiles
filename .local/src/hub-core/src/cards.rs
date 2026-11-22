@@ -606,7 +606,8 @@ pub fn projects(p: &crate::projects::Projects) -> Card {
         "projects",
         "Projects",
         "lab projects with their board slice and queue (notes projects --stats); shipped today is \
-         the queue items closed ok with a merge, checks the ones closed with none, one per slug",
+         every queue item closed ok with a merge, lab project or not, checks the ones closed with \
+         none, one per slug (Queue::done_today)",
     )
     .bar(cards.len() - waiting, waiting, 0)
     .part(
@@ -615,9 +616,15 @@ pub fn projects(p: &crate::projects::Projects) -> Card {
         Level::Ok,
     )
     .part("Waiting", sum(|c| c.waiting), lvl(waiting, Level::Warn))
-    .part("Hot", sum(|c| c.hot), Level::Ok)
-    .part("Shipped today", sum(|c| c.today.shipped), Level::Ok)
-    .part("Checks closed", sum(|c| c.today.checks), Level::Ok);
+    .part("Hot", sum(|c| c.hot), Level::Ok);
+    // No queue read is no figure, never a zero (rule 6): waybar's D: then says -.
+    if let Some(d) = p.today {
+        c = c.part("Shipped today", d.shipped, Level::Ok).part(
+            "Checks closed",
+            d.checks,
+            Level::Ok,
+        );
+    }
     c.big = cards.len().to_string();
     c.unit = "lab projects".into();
     if !p.errors.is_empty() {
