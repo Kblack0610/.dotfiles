@@ -160,7 +160,7 @@ net_retry() {
 # run id than the run its link names, or one created or (re-)started after it completed (a re-run
 # keeps its id; a queued run's startedAt can be empty or zero, so createdAt counts too). The id is
 # what catches a cancelled run's always() job, which fails after its replacement was created
-# (unity-core-playground trains #3102 and #3108 lost a green gate that way, 2026-11-22, ar-3447).
+# (unity-core-playground trains #3102 and #3108 lost a green gate that way, 2026-11-21, ar-3447).
 newer_runs() {
   local runs
   runs=$(gh run list "${R[@]}" --commit "$(git rev-parse HEAD)" --json databaseId,status,workflowName,event,createdAt,startedAt 2>&1) || { printf '%s' "$runs"; return 1; }

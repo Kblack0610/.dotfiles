@@ -1127,7 +1127,7 @@ STALE='[{"name":"Checks","bucket":"fail","workflow":"Checks","event":"pull_reque
 }
 
 # A cancelled run's always() Checks job fails after the run that cancelled it was created, so only
-# the run id says that run is newer (unity-core-playground trains #3102 and #3108, 2026-11-22).
+# the run id says that run is newer (unity-core-playground trains #3102 and #3108, 2026-11-21).
 @test "a failed check in a run its replacement cancelled (replacement created before the red completed): it waits, then lands" {
   printf 'Checks\tfail\t1m\n' >"$NOTES_FIXTURE/checks.seq"
   echo green >>"$NOTES_FIXTURE/checks.seq"
