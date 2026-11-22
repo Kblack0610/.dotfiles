@@ -921,6 +921,18 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app: it i
   assert_output --regexp '^cleanup, '
 }
 
+@test "suggest: reads the profiles run reads (DISPATCH_PROFILES), never a list derived from notes projects --stats" {
+  export DISPATCH_PROFILES="bnb personal"
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'game row' "- [ ] game row $T"
+  run cmd_suggest --json
+  assert_success
+  assert_equal "$(grep -c '^notes --profile bnb projects' "$NOTES_FIXTURE/calls.log")" 1
+  assert_equal "$(grep -c '^notes --profile personal projects' "$NOTES_FIXTURE/calls.log")" 1
+  run grep -c -- '--stats' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
 @test "suggest: says so when no project has an open agent row" {
   project game beta "$SANDBOX/repos/game"
   run cmd_suggest
