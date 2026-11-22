@@ -10,7 +10,10 @@ it prints one TSV line "<status>\\t<doc>\\t<line>\\t<old>\\t<new>". Nothing is w
 
 Status: would-fix (dry run), fixed (written), repo (the doc is a file in a dotfiles checkout: an
 edit there is a PR from a worktree, so it is skipped unless --reroot maps the checkout to one:
---reroot ~/.dotfiles=~/.worktrees/dotfiles-fix), gone (the doc or the new path no longer exists).
+--reroot ~/.dotfiles=~/.worktrees/dotfiles-fix), lesson (a lessons file: a rewrite re-keys the entry,
+a session reads it), dirty (uncommitted changes in the doc's repo), unchanged (the path is written in a
+form this script does not match), error (unreadable, not UTF-8 or unwritable), gone (the doc or the new
+path no longer exists). A stowed path under $HOME counts only when the new name is a link into the repo.
 A path with no rename on record (deleted, or moved between repos) prints nothing: that claim moved
 too, so a session reads the sentence. A directory is never followed, only a renamed file.
 
@@ -20,6 +23,7 @@ percent a rename needs, 80: a file deleted and reborn under another name at 30% 
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -64,9 +68,18 @@ def moved(path):
                     break
                 cur, seen = nxt, seen + 1
                 cand = os.path.join(base, cur)
-                if os.path.exists(cand):
+                # Under $HOME the new name must be a stow link into this repo: a same-named file that
+                # only happens to exist is not where the old one went.
+                if os.path.exists(cand) and (base == repo or _under(os.path.realpath(cand), os.path.realpath(repo)) is not None):
                     return cand
     return None
+
+
+def _dirty(path):
+    """True when path sits in a git repo and has uncommitted changes."""
+    r = subprocess.run(["git", "-C", os.path.dirname(path), "status", "--porcelain", "--", path],
+                       capture_output=True, text=True, check=False)
+    return r.returncode == 0 and bool(r.stdout.strip())
 
 
 def _under(path, root):
@@ -125,7 +138,7 @@ def main(argv):
         old = os.path.expanduser(f["item"])
         new = moved(old) if old.startswith(HOME + "/") else None
         doc = doc_path(f)
-        if new is None or not doc:
+        if new is None or not doc or not doc.startswith(("/", HOME)):
             continue
         m = re.search(r"line (\d+)", f.get("detail", ""))
         line = m.group(1) if m else "-"
@@ -143,20 +156,41 @@ def main(argv):
                     status = "repo"
             if status == "would-fix" and not os.path.isfile(target):
                 status = "gone"
+            elif status == "would-fix" and os.path.basename(os.path.dirname(real)) == "lessons":
+                # A lesson's key hashes its first line, so a path rewritten there re-keys it and orphans
+                # its markers; and "renamed A to B" is a claim about the old name. A session reads it.
+                status = "lesson"
+            elif status == "would-fix" and _dirty(target):
+                status = "dirty"  # another session holds an uncommitted edit to it
         if status == "would-fix" and apply:
             edits.setdefault(target, [])
             if (old, new) not in edits[target]:
                 edits[target].append((old, new))
             status = "fixed"
-        rows.append((status, shown(doc), line, f["item"], shown(new)))
+        rows.append([status, shown(doc), line, f["item"], shown(new), target])
+    state = {}
     for target, pairs in edits.items():
-        text = open(target, encoding="utf-8").read()
-        for old, new in pairs:
-            text = rewrite(text, old, new)
-        with open(target, "w", encoding="utf-8") as fh:
-            fh.write(text)
+        try:
+            with open(target, encoding="utf-8", newline="") as fh:
+                text = fh.read()
+            out = text
+            for old, new in pairs:
+                out = rewrite(out, old, new)
+            if out == text:
+                state[target] = "unchanged"  # the path is in a form or file this script does not read
+                continue
+            tmp = target + ".docs-renamed-paths"
+            with open(tmp, "w", encoding="utf-8", newline="") as fh:
+                fh.write(out)
+            shutil.copymode(target, tmp)
+            os.replace(tmp, target)
+        except (OSError, UnicodeError) as e:
+            state[target] = "error"
+            print(f"docs-renamed-paths: {target}: {e}", file=sys.stderr)
     for r in rows:
-        print("\t".join(r))
+        if r[0] == "fixed" and r[5] in state:
+            r[0] = state[r[5]]
+        print("\t".join(r[:5]))
     done = sum(1 for r in rows if r[0] == "fixed")
     print(f"docs-renamed-paths: {len(rows)} renamed, {done} fixed, {sum(1 for r in rows if r[0] == 'repo')} in a checkout",
           file=sys.stderr)

@@ -211,6 +211,9 @@ EOF
   grep -q '^# chain lessons: superseded entries' "$A"
   grep -q 'replaced by: - \*\*2026-08-20\*\* CORRECTION to the 08-18 section' "$A"
   grep -qxF -- '## Dreaming sweep 2026-08-18' "$A"
+  # The comment is one line that closes once: the corrector's own marker is not copied into it.
+  [ "$(grep -c 'archived .* by lessons supersede' "$A")" = 1 ]
+  [ "$(grep 'archived .* by lessons supersede' "$A" | grep -o -e '-->' | wc -l)" = 1 ]
   grep -qxF -- '- The backup mirror is alive when rev-list counts zero commits ahead of the backup remote.' "$A"
   # Nothing else changed: the kept lines plus the archived ones are the old file, minus the marker.
   sed -E 's/ <!-- supersedes:[0-9a-f]+ -->//' "$BATS_TEST_TMPDIR/before.md" | grep -vxFf "$DIR/chain.md" | grep -v '^$' | grep -vxFf "$A" && fail "a line was lost"
@@ -219,6 +222,16 @@ EOF
   run "$BIN" supersede "$DIR"
   assert_output 'lessons supersede: moved 0 superseded lesson(s)'
   cmp "$DIR/chain.md" "$BATS_TEST_TMPDIR/after.md"
+}
+
+@test "supersede's replaced-by comment drops the corrector's own marker, even on a short first line" {
+  printf -- '- **2026-08-18** Old fact about the mirror.\n- **2026-08-20** Fix: it is up. MARK\n' > "$DIR/short.md"
+  k=$("$BIN" key "$DIR/short.md" 1)
+  sed -i "s/MARK/<!-- supersedes:$k -->/" "$DIR/short.md"
+  run "$BIN" supersede "$DIR"
+  assert_success
+  run grep 'archived .* by lessons supersede' "$DIR/_archive/short-superseded.md"
+  assert_output --regexp 'replaced by: - \*\*2026-08-20\*\* Fix: it is up\. -->$'
 }
 
 @test "supersede --dry-run lists the target and writes nothing" {

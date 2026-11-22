@@ -16,8 +16,8 @@ setup() {
   seq 1 40 | sed 's/^/line /' > "$DOTFILES/.local/bin/old-tool"
   git add -A && git commit -qm add
   git mv .local/bin/old-tool .local/bin/new-tool && git commit -qm rename
-  # Stowed: the deployed name is a file under $HOME.
-  cp "$DOTFILES/.local/bin/new-tool" "$HOME/.local/bin/new-tool"
+  # Stowed: the deployed name is a link under $HOME into the checkout.
+  ln -s "$DOTFILES/.local/bin/new-tool" "$HOME/.local/bin/new-tool"
   printf 'Run ~/.local/bin/old-tool first, or $HOME/.local/bin/old-tool.\nSee ~/.local/bin/old-tool-extra too.\n' > "$HOME/docs/a.md"
   finding() { printf '{"findings":[{"type":"DEADPATH","doc":"~/docs/a.md","item":"%s","detail":"path does not exist (line 1)"}]}' "$1" > "$BATS_TEST_TMPDIR/f.json"; }
 }
@@ -43,7 +43,7 @@ setup() {
 
 @test "a rename followed through two hops lands on the file that exists" {
   git mv .local/bin/new-tool .local/bin/newest-tool && git commit -qm again
-  mv "$HOME/.local/bin/new-tool" "$HOME/.local/bin/newest-tool"
+  rm "$HOME/.local/bin/new-tool"; ln -s "$DOTFILES/.local/bin/newest-tool" "$HOME/.local/bin/newest-tool"
   finding '~/.local/bin/old-tool'
   run --separate-stderr "$BIN" "$BATS_TEST_TMPDIR/f.json"
   assert_output --partial $'~/.local/bin/newest-tool'
@@ -71,7 +71,7 @@ setup() {
   git mv .local/bin/low-old .local/bin/low-new
   seq 1 14 | sed 's/^/line /' > "$DOTFILES/.local/bin/low-new"; seq 1 26 | sed 's/^/fresh /' >> "$DOTFILES/.local/bin/low-new"
   git add -A && git commit -qm lowmv
-  cp "$DOTFILES/.local/bin/low-new" "$HOME/.local/bin/low-new"
+  ln -s "$DOTFILES/.local/bin/low-new" "$HOME/.local/bin/low-new"
   finding '~/.local/bin/low-old'
   run --separate-stderr "$BIN" --apply "$BATS_TEST_TMPDIR/f.json"
   assert_output ''
@@ -102,4 +102,60 @@ setup() {
   assert_output --partial 'fixed'
   run cat "$HOME/.claude/skills/demo/SKILL.md"
   assert_output 'Use ~/.local/bin/new-tool.'
+}
+
+@test "a lessons file is a lead for a session, never rewritten: the key hashes the first line" {
+  mkdir -p "$HOME/.agent/lessons"
+  printf -- '- **2026-10-01** old-tool prints X, renamed from old-tool.\n' > "$HOME/.agent/lessons/p.md"
+  printf '{"findings":[{"type":"DEADPATH","doc":"~/.agent/lessons/p.md","item":"~/.local/bin/old-tool","detail":"path does not exist (line 1)"}]}' > "$BATS_TEST_TMPDIR/f.json"
+  printf -- '- **2026-10-01** ~/.local/bin/old-tool prints X.\n' > "$HOME/.agent/lessons/p.md"
+  cp "$HOME/.agent/lessons/p.md" "$BATS_TEST_TMPDIR/before.md"
+  run --separate-stderr "$BIN" --apply "$BATS_TEST_TMPDIR/f.json"
+  assert_output --partial $'lesson\t'
+  cmp "$HOME/.agent/lessons/p.md" "$BATS_TEST_TMPDIR/before.md"
+}
+
+@test "a doc with uncommitted changes in its repo is left alone" {
+  mkdir -p "$HOME/notes"; git -C "$HOME/notes" init -q
+  printf 'Run ~/.local/bin/old-tool.\n' > "$HOME/notes/n.md"
+  printf '{"findings":[{"type":"DEADPATH","doc":"~/notes/n.md","item":"~/.local/bin/old-tool","detail":"path does not exist (line 1)"}]}' > "$BATS_TEST_TMPDIR/f.json"
+  run --separate-stderr "$BIN" --apply "$BATS_TEST_TMPDIR/f.json"
+  assert_output --partial $'dirty\t'
+  run cat "$HOME/notes/n.md"
+  assert_output 'Run ~/.local/bin/old-tool.'
+}
+
+@test "a path in a form the script does not match is reported unchanged, not fixed" {
+  printf 'Run ~/.local/bin/old-tool-v2 and ~/.local/bin/old-tool/sub.\n' > "$HOME/docs/a.md"
+  finding '~/.local/bin/old-tool'
+  run --separate-stderr "$BIN" --apply "$BATS_TEST_TMPDIR/f.json"
+  assert_output --partial $'unchanged\t'
+}
+
+@test "a doc that is not UTF-8 is an error row, and the other docs are still fixed" {
+  printf 'caf\xe9 ~/.local/bin/old-tool\n' > "$HOME/docs/bad.md"
+  printf '{"findings":[{"type":"DEADPATH","doc":"~/docs/bad.md","item":"~/.local/bin/old-tool","detail":"path does not exist (line 1)"},{"type":"DEADPATH","doc":"~/docs/a.md","item":"~/.local/bin/old-tool","detail":"path does not exist (line 1)"}]}' > "$BATS_TEST_TMPDIR/f.json"
+  run --separate-stderr "$BIN" --apply "$BATS_TEST_TMPDIR/f.json"
+  assert_success
+  assert_line --index 0 --partial $'error\t~/docs/bad.md'
+  assert_line --index 1 --partial $'fixed\t~/docs/a.md'
+  run cat "$HOME/docs/a.md"
+  assert_line --index 0 'Run ~/.local/bin/new-tool first, or $HOME/.local/bin/new-tool.'
+}
+
+@test "a relative doc name is skipped, whatever the working directory holds" {
+  printf 'Run ~/.local/bin/old-tool.\n' > "$BATS_TEST_TMPDIR/CLAUDE.md"
+  printf '{"findings":[{"type":"DEADPATH","doc":"CLAUDE.md","item":"~/.local/bin/old-tool","detail":"CLAUDE.md not found"}]}' > "$BATS_TEST_TMPDIR/f.json"
+  cd "$BATS_TEST_TMPDIR"
+  run --separate-stderr "$BIN" --apply "$BATS_TEST_TMPDIR/f.json"
+  assert_output ''
+  run cat "$BATS_TEST_TMPDIR/CLAUDE.md"
+  assert_output 'Run ~/.local/bin/old-tool.'
+}
+
+@test "negative control: a same-named file under HOME that is no stow link is not where the old one went" {
+  rm "$HOME/.local/bin/new-tool"; cp "$DOTFILES/.local/bin/new-tool" "$HOME/.local/bin/new-tool"
+  finding '~/.local/bin/old-tool'
+  run --separate-stderr "$BIN" --apply "$BATS_TEST_TMPDIR/f.json"
+  assert_output ''
 }

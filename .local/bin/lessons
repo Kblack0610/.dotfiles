@@ -21,7 +21,8 @@
 #   lessons supersede [--dry-run] [DIR]
 #       For each chain whose target is still in the file: move the target verbatim to
 #       DIR/_archive/<project>-superseded.md under "replaced by: <corrector's first line>" and drop
-#       the corrector's marker. A dangling marker (target "-") is left for a session to read.
+#       the corrector's marker (when it sat on the first line, that line's key changes). A dangling
+#       marker (target "-") is left for a session to read.
 #   lessons fat [--max N] [--json] [FILE|DIR...]
 #       "<file>:<line>\t<bytes>\t<first line>" per lesson over N bytes (LESSON_MAX_BYTES, 1500):
 #       the ones to rewrite as rule, why and one pointer. --json: one count line per file.
@@ -41,7 +42,7 @@ set -euo pipefail
 
 LESSONS_DIR_DEFAULT="$HOME/.agent/lessons"
 
-usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # The parser every mode shares. Bytes, not characters (LC_ALL=C), so the hash is the same
 # under any locale. Per line: own[NR] is the lesson it belongs to (0 for a `# ` title or
@@ -330,7 +331,7 @@ END {
 SUPERSEDE='
 END {
   chain_pairs()
-  for (i = 1; i <= np; i++) if (pt[i]) { gone[pt[i]] = 1; by[pt[i]] = substr(raw[start[pc[i]]], 1, 100); drop[pc[i], key[pt[i]]] = 1 }
+  for (i = 1; i <= np; i++) if (pt[i]) { gone[pt[i]] = 1; by[pt[i]] = substr(raw[start[pc[i]]], 1, 100); gsub(/<!--[^>]*-->/, "", by[pt[i]]); sub(/<!--.*$/, "", by[pt[i]]); sub(/[[:space:]]+$/, "", by[pt[i]]); drop[pc[i], key[pt[i]]] = 1 }
   if (dry) { for (r = 1; r <= n; r++) if (gone[r]) printf "%s %s %s\n", key[r], date[r], substr(title[r], 1, 100); exit }
   moved = 0
   for (l = 1; l <= NR; l++) {
@@ -610,19 +611,24 @@ cmd_supersede() {
     proj=$(basename "$f" .md)
     cp -p "$f" "$tmp/snap"
     moved=$(LC_ALL=C awk -v dry="$dry" -v today="$(date +%F)" -v keepto="$tmp/keep" -v archto="$tmp/arch" \
-      "$PARSE$SUPERSEDE" "$tmp/snap")
+      "$PARSE$SUPERSEDE" "$tmp/snap") || { echo "lessons supersede: $proj: the parse failed" >&2; return 1; }
     if [ "$dry" = 1 ]; then
       [ -z "$moved" ] || printf '%s\n' "$moved" | sed "s|^|$proj |"
       continue
     fi
     if [ "${moved:-0}" -gt 0 ]; then
+      # The archive is staged whole before the lesson file is swapped, so a full disk or a read-only
+      # _archive loses nothing: the target stays where it was and the next run moves it.
+      local arch="$dir/_archive/$proj-superseded.md"
+      mkdir -p "$dir/_archive" && {
+        if [ -s "$arch" ]; then cat "$arch"; else printf '# %s lessons: superseded entries\n\nArchived by docs-cleanup; each block names what replaced it.\n' "$proj"; fi
+        cat "$tmp/arch"; } > "$arch.new" || { rm -f "$arch.new"; echo "lessons supersede: $proj: cannot write $arch" >&2; return 1; }
       if swap_in "$tmp/snap" "$tmp/keep" "$f"; then
-        mkdir -p "$dir/_archive"
-        [ -s "$dir/_archive/$proj-superseded.md" ] || printf '# %s lessons: superseded entries\n\nArchived by docs-cleanup; each block names what replaced it.\n' "$proj" > "$dir/_archive/$proj-superseded.md"
-        cat "$tmp/arch" >> "$dir/_archive/$proj-superseded.md"
+        mv "$arch.new" "$arch" || { echo "lessons supersede: $proj: cannot replace $arch; the moved text is in $arch.new" >&2; return 1; }
         echo "lessons supersede: $proj: moved $moved to _archive/$proj-superseded.md"
         total=$((total + moved))
       else
+        rm -f "$arch.new"
         echo "lessons supersede: $proj: changed while reading, left for the next run"
       fi
     fi
