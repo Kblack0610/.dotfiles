@@ -3073,8 +3073,9 @@ EOF
   run "$AQ" stats --since 2000-01-01
   assert_output --partial "chain:   handoff p50/p90 min from the predecessor's finish to the start (n): urgent 10/10 (1); last 24h: none"
   # negative control: a start inside the last 24h lands in h24
-  "$AQ" set f started="$(date -u -d '1 hour ago' +%FT%TZ)"
-  "$AQ" set p finished="$(date -u -d '70 minutes ago' +%FT%TZ)"
+  now=$(date +%s)   # one read, so the 10 min between the two stamps cannot straddle a minute
+  "$AQ" set f started="$(date -u -d "@$((now - 3600))" +%FT%TZ)"
+  "$AQ" set p finished="$(date -u -d "@$((now - 3600 - 600))" +%FT%TZ)"
   run "$AQ" stats --json --since 2000-01-01
   assert_equal "$(jq -c '.chain.h24' <<<"$output")" '{"urgent":{"n":1,"p50":10,"p90":10}}'
   # an item also gated by an event (ask, pr, nightly, rbw, hold) has no recorded ready time: left out
