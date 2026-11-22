@@ -4,6 +4,7 @@
 #   fleet-dispatch run [--dry-run]   one pass: start the queue items the gates allow, else fill from the board and start those
 #   fleet-dispatch candidates        open rows eligible to judge, one JSON object per line
 #   fleet-dispatch suggest [--json|--write]  the Candidates: open rows of every dev+ project, ranked, with why, auto, verdict, held; --write stores them for the hub fold
+#   fleet-dispatch covered           the projects an untagged worker takes: stage dev or later, a repo, not on DISPATCH_OFF_PROJECTS
 #   fleet-dispatch report            latest verdict per row: picked or skipped, and why
 #   fleet-dispatch verdicts          the same as JSON lines, each with plan: true for a skip by a DISPATCH_PLAN_RULES rule
 #   fleet-dispatch exits [--dry-run] give each skipped agent row its rule's exit (skip_exits; each run pass does); --dry-run lists them
@@ -47,7 +48,8 @@
 #
 # A pass walks the workers in workers.json in file order, and a row goes to the first that may
 # take it: `#worker/<name>` plus a `#tier/N` within its max_tier (tier meanings: policy.md), and
-# inside its `projects`, `lane` and `only_tag` when it names them. A worker marked `untagged`
+# inside its `lane` and `only_tag` when it names them. Which projects dispatch is their stage
+# (dispatchable) less DISPATCH_OFF_PROJECTS (off_project), never a list per worker. A worker marked `untagged`
 # takes rows with no `#worker` tag instead, and with no `#tier` tag the judge's reading decides.
 # The human assigns `fleet` rows; agents may assign `requested` rows, which must carry `#requested`.
 # The queue comes first, and the board tops it up while fewer than DISPATCH_LOW_WATER items are runnable.
@@ -168,9 +170,9 @@ read -r PER_PASS MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH_PER_PASS"
 : "${DISPATCH_T3_SKIP:=\b(device|pads?|headset|playtest)\b|\b(waybar|hypr[a-z]*|ananicy|sysctl|sudo|wi-?fi)\b|\b(secrets?|passwords?|credentials?|rbw|sops|o?auth(entication|enticate|orization|orize|n|z)?[0-9]*|(api|access|signing|ssh|deploy) (keys?|tokens?))\b|\b(bank(ing)?|payments?|billing)\b|\b(prod|production|dns)\b|\b(data|schema|database|db) migrations?\b|\bmigrate (the )?(data|database|db|schema)\b|\brelease cuts?\b|\bcut (a |the )?release\b|would be cool|should i\b|\bmaybe\b|\bideally\b|investigate whether}"
 # Observer rows: an improvement row (`#kpi/<k>`, filed by `fleet-bench improve`) or a typed finding
 # retro and triage file. jq (Oniguruma) regex, matched case-insensitively against the row body.
-# Projects whose every row stays with the human, whatever its words: finance holds bank data, and no
-# worker covers it (workers.json `personal`). Space-separated project names.
-: "${DISPATCH_T3_HUMAN_PROJECTS:=finance}"
+# Projects that dispatch nothing whatever their stage, so every row stays with the human (off_project).
+# Space-separated names, set in the conf (finance: it holds bank data, the human's pick of 2026-11-21).
+: "${DISPATCH_OFF_PROJECTS=}"
 : "${DISPATCH_T3_OBSERVER:=#kpi/|^[a-z]+\((kpi|lesson|watch|runner|unit|logs)\):}"
 # The AI systems: in these projects a row whose kind is cleanup in kinds.json (fix, chore, a deletion
 # refactor) is cleanup (cleanup_row). Cleanup ranks ahead of every other board row (a red is a queue item, which runs before the board)
@@ -259,6 +261,12 @@ stage_of() {
 # dispatchable <stage>: agents build from dev on; a draft is still a concept, and no stage is
 # a question for the human, so neither gets a session.
 dispatchable() { lab_stage_at_least "$1" dev; }
+
+# off_project <project> -> why the project dispatches nothing whatever its stage, nothing when it may:
+# it is on DISPATCH_OFF_PROJECTS. candidates, t3_rows, take_epic and covered read it; the one off list.
+off_project() {
+  [[ " $DISPATCH_OFF_PROJECTS " != *" $1 "* ]] || echo "no worker covers $1: it is on DISPATCH_OFF_PROJECTS, so its rows stay with the human"
+}
 
 prio_rank() {
   case "$1" in
@@ -439,25 +447,23 @@ kind_off() {
 row_size() { tag_value "$1" size | grep -xiE 's|m|l|xl' | tr '[:lower:]' '[:upper:]'; }
 
 # workers -> one line per worker in registry order: rank, name, max tier capped at the ceiling,
-# projects, only_tag, lane, untagged. "-" stands for empty, because read collapses empty tab fields.
+# only_tag, lane, untagged. "-" stands for empty, because read collapses empty tab fields.
 workers() {
   jq -r --argjson c "$UNATTENDED_TIER_CEILING" 'to_entries | to_entries[] | .key as $rank | .value
     | [$rank, .key, ([.value.max_tier // 0, $c] | min | floor),
-       ((.value.projects // []) | join(",") | if . == "" then "-" else . end),
        (.value.only_tag // "-"), (.value.lane // "-"), (.value.untagged // false)] | @tsv' \
     "$DISPATCH_WORKERS" 2>/dev/null
 }
 
-# row_worker <workers> <project> <lane> <row text> -> "<rank> <worker> <tier>" for the first worker
+# row_worker <workers> <lane> <row text> -> "<rank> <worker> <tier>" for the first worker
 # that may take the row, nothing when none may. A row with no tier tag counts as the highest tier
 # an untagged worker takes, and the judge must read it no higher.
 row_worker() {
-  local project="$2" lane="$3" text="$4" tag row_t t rank name max projects only wlane untagged
+  local lane="$2" text="$3" tag row_t t rank name max only wlane untagged
   tag=$(tag_value "$text" worker)
   row_t=$(row_tier "$text")
-  while IFS=$'\t' read -r rank name max projects only wlane untagged; do
+  while IFS=$'\t' read -r rank name max only wlane untagged; do
     if [ "$untagged" = true ]; then [ -z "$tag" ] || continue; else [ "$tag" = "$name" ] || continue; fi
-    [ "$projects" = - ] || [[ ",$projects," == *",$project,"* ]] || continue
     [ "$only" = - ] || [[ " $text " == *" #$only "* ]] || continue
     [ "$wlane" = - ] || [ "$wlane" = "$lane" ] || continue
     t=$row_t
@@ -483,28 +489,32 @@ cleanup_row() {
   if { [ "$c" = true ] || { [ -n "$c" ] && grep -qiE -- "$c" <<<"$body"; }; } && ! grep -qiE -- "$DISPATCH_CLEANUP_NOT" <<<"$body"; then echo 0; else echo 1; fi
 }
 
-# nobody_why <workers> <project> <lane> <row text> -> why no worker takes a row row_worker turned
-# down, the first of: it is tier 3, or untiered where no untagged worker lists the project, so the
-# tier-3 gate takes it (t3_rows) unless a DISPATCH_T3_SKIP word keeps it with the human; no untagged
-# worker lists the project; its tier is past the unattended ceiling (a human-lane row); or its tags and tier fit none.
-nobody_why() {
-  local project="$2" lane="$3" text="$4" rank name max projects only wlane untagged covers=0 t m
-  while IFS=$'\t' read -r rank name max projects only wlane untagged; do
-    [ "$untagged" = true ] || continue
-    [ "$projects" = - ] || [[ ",$projects," == *",$project,"* ]] || continue
-    [ "$wlane" = - ] || [ "$wlane" = "$lane" ] || continue
-    covers=1
+# untagged_reads <workers> <lane> -> 0 when an untagged worker reads the lane (its own, or every lane), else 1.
+untagged_reads() {
+  local rank name max only wlane untagged
+  while IFS=$'\t' read -r rank name max only wlane untagged; do
+    [ "$untagged" = true ] && { [ "$wlane" = - ] || [ "$wlane" = "$2" ]; } && return 0
   done <<<"$1"
+  return 1
+}
+
+# nobody_why <workers> <lane> <row text> -> why no worker takes a row row_worker turned
+# down, the first of: it is tier 3, or untiered where no untagged worker reads its lane, so the
+# tier-3 gate takes it (t3_rows) unless a DISPATCH_T3_SKIP word keeps it with the human; no untagged
+# worker reads its lane; its tier is past the unattended ceiling (a human-lane row); or its tags and
+# tier fit none. A project off_project names never gets here: candidates gives that reason instead.
+nobody_why() {
+  local lane="$2" text="$3" covers=0 t m
+  ! untagged_reads "$1" "$lane" || covers=1
   t=$(row_tier "$text")
   if [ "$lane" = agent ] && { [ "$t" = 3 ] || { [ -z "$t" ] && [ "$covers" = 0 ]; }; }; then
     m=$(grep -oiE -m1 -- "$DISPATCH_T3_SKIP" <<<"${text%%<!--*}" | awk 'NR==1')
-    if [[ " $DISPATCH_T3_HUMAN_PROJECTS " == *" $project "* ]]; then echo "tier3 skip: $project stays with the human"
-    elif [ -n "$m" ]; then echo "tier3 skip: $m"
+    if [ -n "$m" ]; then echo "tier3 skip: $m"
     elif [ "$t" = 3 ]; then echo "tier3 only: the tier-3 gate takes it"
-    else echo "tier3 only: no day worker covers $project"; fi
+    else echo "tier3 only: no day worker reads the $lane lane"; fi
     return
   fi
-  if [ "$covers" = 0 ]; then echo "no worker covers $project"; return; fi
+  if [ "$covers" = 0 ]; then echo "no untagged worker reads the $lane lane"; return; fi
   if [ -n "$t" ] && [ "$t" -gt "$UNATTENDED_TIER_CEILING" ]; then echo "tier $t: past the unattended ceiling"; return; fi
   echo "no worker takes its tags or tier"
 }
@@ -1582,9 +1592,10 @@ judged_keys() {
 # (a human-lane row is still judged, since only the verdict says the human's row is agent work). When the
 # gates could not be read (GATES_FAILED) it lists no row but under suggest. CLEANUP_ONLY,
 # REQUESTED_ONLY, GATED_ONLY and SPRINT_ONLY (fill_day's floors) read only their rows (floor_row), in the projects
-# that can hold one (floor_project).
+# that can hold one (floor_project). A project off_project names is no candidate: it says why under OFF_SAY (the `candidates`
+# command, and a pass's one judge read, so not once per read), and suggest lists its agent rows with that reason.
 cmd_candidates() {
-  local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today nobody active
+  local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today nobody active poff
   local x planned dj dsig plan off kind board gates gwait pidle
   local -A DET=() PLN=() PAR=() RNK=() GAT=() RLD=()
   today=${DISPATCH_TODAY:-$(date +%F)}
@@ -1600,6 +1611,8 @@ cmd_candidates() {
       ! floor_pass || floor_project "$name" || continue
       stage=$(stage_of "$sheet")
       dispatchable "$stage" || continue
+      poff=$(off_project "$name")
+      [ -z "$poff" ] || [ "${SUGGEST:-0}" = 1 ] || { [ "${OFF_SAY:-0}" != 1 ] || say "$poff"; continue; }
       pprio=$(prio_of "$sheet")
       repo=$(repo_dir "$name")
       [ -n "$repo" ] && [ -d "$repo" ] || continue
@@ -1623,11 +1636,11 @@ cmd_candidates() {
           kind=$(row_kind "$text")
           ! floor_pass || floor_row "$name" "$text" "$([ "$lane" = agent ] && [ -z "$gwait" ] && printf %s "$gates")" "$key" || continue
           nobody=''
-          if ! read -r rank worker tier < <(row_worker "$table" "$name" "$lane" "$text"); then
+          if [ -n "$poff" ] || ! read -r rank worker tier < <(row_worker "$table" "$lane" "$text"); then
             # suggest shows the agent rows no worker takes too, after the ones one does.
             [ "${SUGGEST:-0}" = 1 ] && [ "$lane" = agent ] || continue
             rank=99 worker='' tier=$(row_tier "$text"); tier=${tier:-null}
-            nobody=$(nobody_why "$table" "$name" "$lane" "$text")
+            nobody=${poff:-$(nobody_why "$table" "$lane" "$text")}
           fi
           line=$(row_sig "$text")
           x=${DET["$name"$'\t'"$lane"$'\t'"$key"]:-$'0\t""'}
@@ -7103,7 +7116,7 @@ judge_once() {
   if [ -z "${JUDGE_RC:-}" ]; then
     JUDGE_RC=0
     if [ "$DRY" != 1 ]; then
-      judge "$(unjudged_rows)"; JUDGE_RC=$?
+      judge "$(OFF_SAY=1 unjudged_rows)"; JUDGE_RC=$?
     fi
   fi
   [ "$JUDGE_RC" = "$EX_BUDGET" ] || return "$JUDGE_RC"
@@ -7219,7 +7232,7 @@ floor_row() {
 # was taken in EPIC_TOOK (cmd_start --brief says it).
 take_epic() {
   local prof="$1" project="$2" id="$3" repeat="${4-}" board leaves dec plans f orphans active items queue=() flight=() wait=() out rc
-  local k kind size sheet stage taggable=() big=()
+  local k kind size sheet stage why taggable=() big=()
   board=$(notes board --json 2>/dev/null) || { say "skip $project: epic $id: notes board --json failed, so its leaves cannot be read"; return 1; }
   leaves=$(jq -c --arg p "$project" --arg e "$id" '.rows[]? | select(.project == $p and .parent == $e and .id != null and .state != "done")' <<<"$board")
   dec=$(jq -r 'select(.type == "decide") | .id' <<<"$leaves" | paste -sd' ' -)
@@ -7257,6 +7270,8 @@ take_epic() {
   stage=$(stage_of "$sheet") && [ -n "$stage" ] ||
     { say "skip $project: epic $id: its project's stage cannot be read, so whether its stories dispatch cannot be"; return 1; }
   dispatchable "$stage" || { say "skip $project: epic $id: its project is at stage $stage, before dev, so dispatch starts none of its stories"; return 1; }
+  why=$(off_project "$project")
+  [ -z "$why" ] || { say "skip $project: epic $id: $why"; return 1; }
   load_kinds
   while IFS=$'\t' read -r k kind size; do
     [ -n "$k" ] || continue
@@ -7530,7 +7545,7 @@ t3_rows() {
   for prof in $DISPATCH_PROFILES; do
     while IFS=$'\t' read -r name sheet _v _; do
       [ -n "$name" ] || continue
-      [[ " $DISPATCH_T3_HUMAN_PROJECTS " != *" $name "* ]] || continue
+      [ -z "$(off_project "$name")" ] || continue
       ! floor_pass || floor_project "$name" || continue
       stage=$(stage_of "$sheet")
       dispatchable "$stage" || continue
@@ -7553,7 +7568,7 @@ t3_rows() {
         gates=${GAT["$name"$'\t'agent$'\t'"$key"]:-}
         [ -z "$gates" ] || [ -z "$(gate_wait "$gates")" ] || continue
         # A gated row starts with no verdict (t3_ready), so only a #tier/3 tag makes one tier 3 here;
-        # an untagged one stays with the worker path, where a worker covers its project.
+        # an untagged one stays with the worker path, where the board worker takes it.
         [ -z "$gates" ] || [ "$t" = 3 ] || continue
         ! floor_pass || floor_row "$name" "$text" "$gates" "$key" || continue
         line=$(row_sig "$text")
@@ -7615,6 +7630,22 @@ cmd_report() {
     sort | awk -F'\t' '{ printf "%-9s %-2s t%-2s %-16s %-6s %-12s %s\n           %s\n", $1, $2, $3, $4, $5, $6, substr($7, 1, 90), $8 }'
 }
 
+# cmd_covered -> the projects whose agent rows an untagged worker takes, one a line: each project of
+# DISPATCH_PROFILES at stage dev or later (dispatchable), with a repo, and not off (off_project); none
+# when no untagged worker reads the agent lane. inbox-triage's lane rule reads it, so a line for one
+# of them is filed where the worker reads.
+cmd_covered() {
+  local prof name sheet repo _v
+  untagged_reads "$(workers)" agent || return 0
+  for prof in $DISPATCH_PROFILES; do
+    while IFS=$'\t' read -r name sheet _v _; do
+      [ -n "$name" ] && [ -z "$(off_project "$name")" ] && dispatchable "$(stage_of "$sheet")" || continue
+      repo=$(repo_dir "$name")
+      [ -n "$repo" ] && [ -d "$repo" ] && echo "$name"
+    done < <(notes --profile "$prof" projects 2>/dev/null)
+  done | sort -u
+}
+
 # cmd_verdicts -- latest_verdicts, each with plan: true when it is a skip by one of
 # DISPATCH_PLAN_RULES (a row skip_exits sends for a plan); fleet-bench's next_up_blocked reads it
 cmd_verdicts() {
@@ -7638,7 +7669,8 @@ main() {
       # read every board a second time beside the one running.
       [ "$DRY" = 1 ] || ! flock -n 9 2>/dev/null || candidates_write || true
       return "$rc" ;;
-    candidates) load_pool_idle; cmd_candidates ;;
+    candidates) load_pool_idle; OFF_SAY=1 cmd_candidates ;;
+    covered) cmd_covered ;;
     suggest) shift; if [ "${1:-}" = --write ]; then candidates_write; else cmd_suggest "$@"; fi ;;
     fill) shift; cmd_fill "$@" ;;
     promote) shift; PULL=$(start_pull) cmd_promote "$@" ;;

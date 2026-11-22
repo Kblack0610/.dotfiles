@@ -75,6 +75,7 @@
 #   stats [--json] [--flow] [--since YYYY-MM-DD|Nd|N]    Nd and N: that many days ago, a local day
 #   admission [--json]    the runnable items, the cap an add is admitted under, and the adds held in 7 days
 #   mix [--json]          each class of service: share, runnable, started in its window, and the starved ones
+#   lock-miss [--hours H] [--max N]   the queue lock timeouts in the last H hours (1) against N (3); exit 1 over it
 # Starts at add (fleet-dispatch start --item, see start_at_add): an urgent or high plan item, and, from
 # the human at hand (human_at_hand), an urgent oneshot and each queued phase of an urgent or high --plan.
 # The queue holds no gated work: an add that waits on a hold or an after: item not done is filed as its
@@ -88,6 +89,7 @@
 # have finished; see nightly_pending) and ask:<id>[=<option>[+<option>]] (until the human answers that agent-ask,
 # with one of those options when named, or in free text; see ask_pending) and hold:<resource> (while agent-hold holds it; see
 # hold_pending) and rbw:<folder>/<name> (until rbw lists that entry; see rbw_pending). A start on a later day is the dated form, never a held session.
+# A queued item whose body's last Blocked heading has no Unblocked one after it holds too (ITEM_JQ).
 #
 # One file per item under $AGENT_QUEUE_DIR/<state>/. Design: ~/.config/agentctl/QUEUE.md.
 set -uo pipefail
@@ -307,13 +309,42 @@ lock_miss() {
         printf 'proc\t%s\t%s\t%s\n' "$f" "$p" "$(tr '\0' ' ' < "/proc/$p/cmdline" | cut -c1-300)"
       done
     done
-  } 2>/dev/null | jq -Rnc --arg ts "$(date -Is)" --arg mode "$([ "$1" = -s ] && echo shared || echo exclusive)" \
+  } 2>/dev/null | jq -Rnc --arg ts "$(date -u -Is)" --arg mode "$([ "$1" = -s ] && echo shared || echo exclusive)" \
     --argjson wait "$LOCK_WAIT" --arg cmd "$(tr '\0' ' ' < /proc/$$/cmdline | cut -c1-300)" \
     --arg caller "$(tr '\0' ' ' < /proc/$PPID/cmdline | cut -c1-300)" \
     '[inputs | split("\t")] | {ts: $ts, mode: $mode, wait: $wait, cmd: $cmd, caller: $caller,
       locks: map(select(.[0] == "lock") | .[1]),
       procs: map(select(.[0] == "proc") | {file: .[1], pid: (.[2] | tonumber), cmd: .[3]})}' \
     >> "$AQ_LOCK_MISS_LOG" 2>/dev/null || true
+}
+
+# lock-miss [--hours H] [--max N] -> one line: the lock timeouts lock_miss logged in the last H hours
+# (AQ_LOCK_MISS_HOURS, 1) against the bound N (AQ_LOCK_MISS_MAX, 3), with the latest one's command
+# and caller; exit 1 when over the bound, 2 when the log cannot be read. The rotated .1 counts too.
+# The watch queue-lock-miss runs it: a miss is a line in a file, no event, so the watch samples the rate.
+# lock_miss writes ts in UTC (`date -u -Is`) and the log syncs with the store, so lines from every host
+# and either side of a DST change compare as strings against a UTC cutoff; lines before 2026-11-21
+# carry -08:00 and are all from 2026-11-18. Bound: no hour had a miss but 2026-11-18T11, which had 364.
+cmd_lock_miss() {
+  local hours="${AQ_LOCK_MISS_HOURS:-1}" max="${AQ_LOCK_MISS_MAX:-3}" cut out n
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --hours) hours="${2:?--hours needs a number}"; shift 2 ;;
+      --max) max="${2:?--max needs a number}"; shift 2 ;;
+      *) die "usage: agent-queue lock-miss [--hours H] [--max N]" ;;
+    esac
+  done
+  [[ "$hours" =~ ^[0-9]+$ && "$max" =~ ^[0-9]+$ ]] || die "lock-miss: --hours and --max are whole numbers"
+  cut=$(date -u -Is -d "-$hours hours")
+  # A missing log (or no .1 yet) is no misses: only a jq failure is unreadable.
+  out=$({ cat "$AQ_LOCK_MISS_LOG.1" "$AQ_LOCK_MISS_LOG" 2>/dev/null || :; } | jq -nrR --arg cut "$cut" '
+    [inputs | fromjson? | objects | select((.ts // "") >= $cut)] | "\(length)\t\(last // {} | "\(.ts): \(.cmd) from \(.caller)")"') ||
+    { echo "unreadable: $AQ_LOCK_MISS_LOG"; return 2; }
+  n="${out%%$'\t'*}"
+  printf '%s queue lock misses in the last %sh (bound %s)' "$n" "$hours" "$max"
+  [ "$n" -eq 0 ] || printf '; the latest at %s (%s)' "${out#*$'\t'}" "$AQ_LOCK_MISS_LOG"
+  echo
+  [ "$n" -le "$max" ]
 }
 
 items_in() { # state-dir -> item files, oldest first
@@ -413,7 +444,8 @@ finished_row_ok() {
 # that has a row to its board, so they go in without the queue growing; so does pull-after's pull of a
 # row an ok close cleared (AGENT_QUEUE_PULL=after).
 # Provisional, confidence low (rules.jsonl): 50 is about 7h of wait at the 180 starts a day of
-# 2026-11-17, inside the 12h queued bound; revisit when queued age p90 stays over 12h at the cap.
+# 2026-11-17, the queued bound (step_age_p90_queued_max, 420m since ar-4471); revisit when queued age p90
+# stays over it at the cap.
 AQ_EX_HELD=5
 AQ_CAP="${AGENT_QUEUE_CAP:-50}"
 AQ_HELD_DAYS=7
@@ -768,6 +800,20 @@ stack_row() {
   STK_SLUG=""
 }
 
+# after_fix <id> -> "; <the gate it should be>" for an #after/ id no board row has, when the id says
+# what was meant: a date or a time is an #at/ gate, and a queue item's slug is #after/ its row. Nothing
+# otherwise. Why: 2026-11-21, ucp-2891 waited #after/2026-11-23 and ucp-2786 #after/<a slug>, and
+# starved named both dead with only the generic fix (ar-4471).
+after_fix() {
+  local f row
+  if [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then printf '; a date is an at gate: #at/%s/HHMM' "$1"; return; fi
+  if [[ "$1" =~ ^[0-9]{4}$ ]]; then printf '; a time is an at gate: #at/%s' "$1"; return; fi
+  f="$(find_item "$1" any)" && [ -n "$f" ] || return 0
+  row="$(item_row "$f")"
+  [ -n "$row" ] && printf '; %s is a queue item, its row is #after/%s' "$1" "${row#*:}"
+  return 0
+}
+
 # gate [--json] (--all | <tag>...) -- each board gate tag clear, pending (why, in hold_for's words) or
 # dead (it can never clear: take it off the row, or settle what it names), and any other tag none.
 # after/<row-id> is clear once that row closed done (within AQ_GATE_DONE_DAYS), dead once it was
@@ -827,7 +873,7 @@ cmd_gate() {
           # that PR; agent-land merges it once the item closed ok). `stack` names the item for promote.
           stack_row "$id"
           [ -z "$STK" ] || { st=clear why="stacked on $STK" stack="$STK_SLUG"; } ;;
-        *) if [ "$brd" = 1 ]; then st=dead why="after $id: no board row has that id"
+        *) if [ "$brd" = 1 ]; then st=dead why="after $id: no board row has that id$(after_fix "$id")"
            else st=pending why="after $id (notes board --json failed)"; fi ;;
       esac
     elif gate_queue_tag "$t"; then
@@ -1119,6 +1165,10 @@ item_recs() {
 # hold that released by an event (ask answered, PR merged) leaves ready at queued: its time is not
 # recorded. The one rule for an item's wait: `stats` medians it, the hub shows it, fleet-bench ages the
 # queued step from it.
+# A queued item whose body's last Blocked or Unblocked heading is `## Blocked ...` (a session's
+# blocked note, landing.md) holds on it, so dispatch never starts it and the age check does not age
+# it; a later `## Unblocked ...` heading releases it. Why: binks-zai-rate-limit sat 6 days in
+# queued/ with a Blocked section, read as runnable and aged as a stuck queue (ar-4471).
 # An item with no weight line gets weight_of's answer, so every reader sees a weight, and one with
 # no priority line reads high, add's default: a missing key there broke every read of the queue (ar-1399).
 # `row` is the "<board>:<key>" of the sheet row the item closes on merge, the board being the item's
@@ -1143,6 +1193,10 @@ ITEM_JQ='def lepoch($s): ($s + ":00Z" | fromdateiso8601) as $l | ($l - (($l | lo
     + {weight: (if $f[3] != "" then $f[3] else $x.weight end), state: $f[0], file: $f[1], task: $f[2]}
     + (if ($x.hold // "") == "" then {} else {hold: $x.hold} end)
     + (if ($x.stack // "") == "" then {} else {stacked_on: $x.stack} end)
+  | (if .state == "queued" and (.hold // "") == "" then
+      ([.task | scan("(?m)^## (?:[Uu]n)?[Bb]locked\\b[^\n]*")] | last) as $h
+      | if $h != null and ($h | test("^## [Bb]locked")) then .hold = "blocked: \"\($h)\" in its body; a later \"## Unblocked\" heading releases it" else . end
+    else . end)
   | .priority //= "high"
   | (if (.origin // "") == "" then . else .by = ('"$ORIGIN_BY"'[.origin] // .origin) end)
   | (if (.hold // "") != "" then null
@@ -3743,6 +3797,7 @@ cmd_backfill_briefs() {
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
   add | list | next | show | mine | claim | cancel | return | bump | set | retask | attribute | move | requeue | start | reopen | stats | admission | mix | gate) v="$1"; shift; "cmd_$v" "$@" ;;
+  lock-miss) shift; cmd_lock_miss "$@" ;;
   credit-of) shift; cmd_credit_of "$@" ;;
   ask-holds) shift; cmd_ask_holds "$@" ;;
   backfill-briefs) shift; cmd_backfill_briefs "$@" ;;

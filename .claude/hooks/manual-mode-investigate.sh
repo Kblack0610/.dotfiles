@@ -5,30 +5,14 @@
 # and bypass stay untouched. Shift+Tab changes the mode mid-session, so this reads the live
 # `permission_mode` from each hook payload instead of deciding once at SessionStart.
 #
-# UserPromptSubmit: inject the investigate posture, which outranks the global plan-first and
-# land-changes rules while the mode lasts, once, and again after a compaction or a prompt made in
-# another mode.
-# PreToolUse (Edit|Write|MultiEdit|NotebookEdit|EnterPlanMode): deny, on every call.
-# The settings allowlist has Edit(**), so manual mode would otherwise edit without a prompt.
+# PreToolUse (Edit|Write|MultiEdit|NotebookEdit|EnterPlanMode): deny, on every call, with the
+# posture in the reason. The settings allowlist has Edit(**), so manual mode would otherwise edit
+# without a prompt. No prompt-time inject: it went into 420 prompts for 5 denies (2026-11-21), and
+# the deny reason reaches the session at the one moment the posture matters.
 set -uo pipefail
-
-MARK="Manual mode is investigate-only."
-# shellcheck source=lib/injected.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib/injected.sh" || exit 0
 
 INPUT=$(cat)
 [ "$(jq -r '.permission_mode // empty' <<<"$INPUT" 2>/dev/null)" = default ] || exit 0
-
-case "$(jq -r '.hook_event_name // empty' <<<"$INPUT")" in
-  UserPromptSubmit)
-    # With no transcript there is no way to tell, so the posture is sent.
-    tp=$(jq -r '.transcript_path // empty' <<<"$INPUT")
-    [ -n "$tp" ] && [ -r "$tp" ] && injected_since_compact "$tp" "$MARK" default && exit 0
-    jq -nc --arg c "$MARK Investigate the question and answer it with evidence (file:line, command output, docs). Read, search and run read-only commands freely; use Explore agents for broad sweeps. Do not edit or write files, commit, push, open PRs, enter plan mode, write a plan, or add board rows. This overrides the global CLAUDE.md plan-mode-default and land-changes rules while the session is in manual mode. If a fix is warranted, name it in one line, then end on the answer rather than an offer; the human switches mode (Shift+Tab) when they want changes." \
-      '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $c}}'
-    ;;
-  PreToolUse)
-    jq -nc '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "manual-mode-investigate: Manual mode is investigate-only: answer without changing anything. The human switches mode (Shift+Tab) to allow edits or a plan."}}'
-    ;;
-esac
+[ "$(jq -r '.hook_event_name // empty' <<<"$INPUT")" = PreToolUse ] || exit 0
+jq -nc '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "manual-mode-investigate: Manual mode is investigate-only: answer the question with evidence (file:line, command output) and change nothing: no edits, plan, commit, PR or board row. This overrides the global plan-first and land-changes rules while the mode lasts; end on the answer, not an offer. The human switches mode (Shift+Tab) to allow edits or a plan."}}'
 exit 0

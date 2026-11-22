@@ -8,6 +8,7 @@
 #   dotfiles-autopull --now <path>  agent-land's post-merge step: no throttle, only the checkout whose
 #                                   repo holds <path> (a worktree of it counts), one line saying what
 #                                   happened; nothing for a repo that is not one of the checkouts
+#   dotfiles-autopull --now <path> --bg   the same pass detached, one line logged when it ends
 #   dotfiles-autopull --lock-secs   print how long a --now pass waits for the pass before it, the
 #                                   grace dotfiles-drift gives a merge before it counts it as BEHIND
 #
@@ -383,14 +384,29 @@ pull() {
 }
 
 if [ "${1:-}" = --now ]; then
-  common=$(git -C "${2:-.}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 0
+  set -- --now "${2:-.}" "${3:-}"
+  common=$(git -C "$2" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 0
   common=$(phys "$common") || exit 0
   for repo in "${REPOS[@]}"; do
     [ -d "$repo/.git" ] && [ "$(phys "$repo/.git")" = "$common" ] || continue
+    # --bg, agent-land's form: the pass runs detached so its builds never hold a landing, holding a
+    # shared lock on bg.lock until it ends (a caller that must see it done takes that lock exclusive),
+    # and logs its result as one line. It drops every other descriptor it inherited, as store-sync's
+    # fork does, so it holds no lock of its caller's. No setsid (macOS): the pass runs here.
+    if [ "${3:-}" = --bg ] && command -v setsid >/dev/null 2>&1; then
+      mkdir -p "$CACHE_DIR" 2>/dev/null
+      exec 9>>"$CACHE_DIR/bg.lock" && { flock -s 9 2>/dev/null || :; }
+      ( for a in /dev/fd/*; do a="${a##*/}"; [ "$a" -gt 2 ] && [ "$a" != 9 ] && eval "exec $a>&-"; done
+        DOTFILES_AUTOPULL_BG=1 exec setsid -f bash "${BASH_SOURCE[0]}" --now "$2" </dev/null >/dev/null 2>&1 ) 2>/dev/null
+      echo "~: the pass runs in the background; its result is logged to ${LOG/#"$HOME"/\~}"
+      exit 0
+    fi
+    set -- --now "$2"
     run_locked -w "$LOCK_SECS" -- "$@"
     line=$(pull "$repo")
     echo "$line"
     attach_all
+    [ -z "${DOTFILES_AUTOPULL_BG:-}" ] || log "--now $2 (background): done; $line"
     exit 0
   done
   exit 0

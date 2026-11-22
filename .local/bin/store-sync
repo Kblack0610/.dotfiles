@@ -192,7 +192,8 @@ apply_merge_drivers() {
 # pr: and merged: on a running item while razer-laptop's session set open_pr: and branch: on the next
 # lines, and the text merge stuck that store 35 minutes (2026-11-21, ar-3439). A key both sides set
 # differently still conflicts, and so does a repeated key, a line that is not `key: value`, or a side
-# with no `---` (an empty base, both sides adding the item, is fine). Any other clash exits 1.
+# with no `---` (an empty base, both sides adding the item, is fine) keeps this side whole and the other
+# as a lost file (keep_ours).
 cmd_merge_item() {
   [ $# -eq 4 ] || die "merge-item needs <base> <ours> <theirs> <path>"
   local tmp f
@@ -205,7 +206,7 @@ cmd_merge_item() {
   settled "$2" && [ "$(status_of "$3")" = failed ] && { rm -rf "$tmp"; return 0; }
   settled "$3" && [ "$(status_of "$2")" = failed ] && { cat "$3" > "$2"; rm -rf "$tmp"; return 0; }
   grep -qx -- '---' "$2" && grep -qx -- '---' "$3" && { [ ! -s "$1" ] || grep -qx -- '---' "$1"; } ||
-    { rm -rf "$tmp"; return 1; }
+    { rm -rf "$tmp"; keep_ours "$3" "$4"; return; }
   for f in 1 2 3; do sed -n '/^---$/,$p' "${!f}" > "$tmp/rest$f"; done
   # An empty base has no lines, so each file is told by its name.
   if awk 'FILENAME == ARGV[1] {s = 1} FILENAME == ARGV[2] {s = 2} FILENAME == ARGV[3] {s = 3}
@@ -225,7 +226,24 @@ cmd_merge_item() {
     cat "$tmp/out" > "$2"; rm -rf "$tmp"; return 0
   fi
   rm -rf "$tmp"
-  return 1
+  keep_ours "$3" "$4"
+}
+
+# keep_ours <theirs> <path>: the last resort of merge-item. The local copy stands whole and the remote
+# one is kept as $SYNC_DIR/lost/<path, / as __>.lost-<its blob hash>, named by content, so a merge
+# retried, or the in-memory merge-tree run before the real merge, finds it and logs nothing more;
+# store-sync-age reads any file there as red until someone settles it
+# (re-applies what the remote side should have kept, with agent-queue set) and deletes it. Exit 1,
+# the conflict as before, only when the file cannot be written. Logged, never printed: a driver's
+# stdout is git's. Why: one item set two ways on two hosts stopped every sync of the store until a
+# human resolved it, with no record of which side lost (ar-3439 measured 35 minutes on 2026-11-21; ar-4471).
+keep_ours() {
+  local h lost
+  h=$(git hash-object -- "$1" 2>/dev/null) || return 1
+  lost="$SYNC_DIR/lost/${2//\//__}.lost-${h:0:12}"
+  [ -e "$lost" ] && return 0
+  mkdir -p "${lost%/*}" && cp -- "$1" "$lost" || return 1
+  QUIET=1 log "merge-item: $2 differs on both sides past what merges; kept this side's copy, the other is in ${lost/#"$HOME"/\~}"
 }
 
 # cmd_merge_derived <base> <ours> <theirs> <path>: the driver, leaving the result in <ours>. A JSON
