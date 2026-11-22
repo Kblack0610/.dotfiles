@@ -5012,7 +5012,7 @@ chained_item() {
     "$2" > "$HOME/.agent/queue/$1/20261103-090000-$2.md"
 }
 
-@test "end to end: a red gate line is CI running while its item is after: a live item, red once that item is done (ar-4314)" {
+@test "end to end: a red gate line is CI running while its item is after: an open item, red once that item is done (ar-4314)" {
   # 2026-11-21 unity-core-playground #3076 and #3083 read STALLED CI red: each item was stacked on an open
   # item, so agent-land held it (exit 4) before a gate was dispatched and Checks' Merge gate line stayed red.
   landed_fixture
@@ -5036,10 +5036,11 @@ chained_item() {
   ledger feat/x '[]'; open_pr FAIL 78
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
-  # a dependency that is only queued has no PR to stack on
+  # a queued dependency holds it too: stack_gate refuses any after: item not closed ok (ar-4420)
   rm -r "$HOME/.agent/queue/review" "$HOME/.agent/queue/running"; chained_item queued dep-item
+  ledger feat/x '[]'; open_pr FAIL 77
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
   # a dependency that is the session's own item waits on nobody else
   rm -r "$HOME/.agent/queue/queued"; chained_item running dep-item
   sed -i 's/^session: lab:s2$/session: lab:s1/' "$HOME/.agent/queue/running/20261103-090000-dep-item.md"
