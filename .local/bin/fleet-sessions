@@ -16,7 +16,8 @@
 #                                     session's labels; each change also lands on its tmux window
 #   fleet-sessions tick               --write after a fetch, plus the stage changes since the
 #                                     last tick appended to watch.log (fleet-state.service, every
-#                                     minute and on each ask change); the hub Sessions tab
+#                                     minute and on each ask change); the hub Sessions tab. Only
+#                                     the fleet lease holder ticks; elsewhere it skips, exit 0
 #   fleet-sessions explain <who>      one session from the state document: its task, plan, PRs,
 #                                     where its time went, and what it is doing
 #   fleet-sessions close [--json]     the close analysis from the state document: each session's
@@ -2941,7 +2942,13 @@ main() {
     mark) holds || return; shift; mark "$@"; return ;;
     escalate) holds || return; shift; escalate "$@"; return ;;
     label) shift; label "$@"; return ;;
-    tick) tick; return ;;
+    # The ledger is the fleet's one copy (shepherd/ in the ~/.agent store), so only the lease holder
+    # ticks it: a hand tick on razer-laptop wrote its own rows over the holder's watch.state, logged
+    # every fleet-home session gone, and the store merge stuck on it (2026-11-21, ar-3439).
+    tick)
+      "${FLEET_LEASE:-fleet-lease}" held >/dev/null 2>&1 ||
+        { echo "fleet-sessions: tick skipped: this machine does not hold the fleet lease (fleet-lease status)" >&2; return 0; }
+      tick; return ;;
     explain) shift; explain "$@"; return ;;
     stages) shift; python3 "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-stages.py" --log "$LEDGER/watch.log" --state "$STATE_FILE" "$@"; return ;;
     close)
