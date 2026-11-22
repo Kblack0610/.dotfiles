@@ -222,8 +222,8 @@ function runnerExtras(x) {
     case "sentinel-watches": {
       // Every watch, its state and owner are on Alerts; Runners keeps the count, and a tripped one
       // is a warn line that sends you there. `tripped` is hub-core's count (runner::tripped), the
-      // Alerts card's Watches tripped figure.
-      const trip = x.tripped;
+      // Alerts card's Watches tripped figure; a payload without it reads ?, never 0.
+      const trip = x.tripped ?? "?";
       return secHead("", "Watches", x.watches.length, trip ? "warn" : "") +
         (trip ? `<div class="cline warn"><a href="#alerts/watches">${trip} tripped</a></div>` : "");
     }

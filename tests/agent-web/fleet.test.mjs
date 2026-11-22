@@ -489,6 +489,9 @@ test("the sentinel page counts its watches, a tripped one a warn line linking to
   const quiet = await openPage("sentinel", { sentinel: runnerPage("sentinel", { extras: { kind: "sentinel-watches", watches: [w("b", "OK")], tripped: 0 } }) });
   assert.match(quiet, /<h2 class="sec">Watches <span class="n">1<\/span><\/h2>/);
   assert.doesNotMatch(quiet, /Watches <span class="n">1<\/span><\/h2><div class="cline warn">/, "no warn line while nothing is tripped");
+  // A payload without the figure reads ?, never a quiet 0.
+  const old = await openPage("sentinel", { sentinel: runnerPage("sentinel", { extras: { kind: "sentinel-watches", watches: [w("a", "TRIP")] } }) });
+  assert.match(old, /<a href="#alerts\/watches">\? tripped<\/a>/);
 });
 
 test("a runner with no runs says no run in 14 days, not an error", async () => {

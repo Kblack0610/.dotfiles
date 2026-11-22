@@ -46,10 +46,11 @@ rows="$(jq -r '
 overall="$(jq -r 'first(.data.result[] | select(.metric.__name__ == "cc:overall_status") | .value[1] | tonumber | floor) // 1' <<< "$raw")"
 
 # down, warn, up as published, each - when no live topic sends it. Only the lease holder sends
-# summary/cards; while a lease move leaves two topics live, each figure is the larger.
+# summary/cards; while a lease move leaves two topics live that disagree, a figure is !, since
+# Prometheus does not say which is newer.
 read -r -a figs < <(jq -r '[.data.result[]] as $r | ["down", "warn", "up"]
   | map(. as $l | [$r[] | select(.metric.__name__ == "mqtt_figures_infra_domains_" + $l) | .value[1] | tonumber | floor]
-        | max // "-") | @tsv' <<< "$raw")
+        | unique | if length > 1 then "!" else .[0] // "-" end) | @tsv' <<< "$raw")
 
 width="$(cut -f2 <<< "$rows" | wc -L)"
 dots='' body=''
@@ -63,6 +64,8 @@ done <<< "$rows"
 head=''
 if [[ " ${figs[*]} " == *" - "* || ${#figs[@]} -ne 3 ]]; then
   head="$(paint "$C_YEL" "no published counts (summary/cards)")"
+elif [[ " ${figs[*]} " == *" ! "* ]]; then
+  head="$(paint "$C_YEL" "two machines publish different counts (summary/cards)")"
 else
   for i in 0 1 2; do
     ((figs[i] == 0)) || head+="${head:+, }${figs[i]} ${WORD[2 - i],,}"

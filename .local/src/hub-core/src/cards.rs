@@ -305,6 +305,16 @@ pub fn queue(
 /// Alerts: what fires now that needs the human (no owner, a fix that did not hold, a fix that
 /// waits or is past its due), by the hue the Alerts tab gives each row; a red with its fix in
 /// hand on time counts as being fixed, in the bar's green and as its own part, never as red.
+/// A count, or `reading::NOT_READ` when the join's errors say its source (by the error's prefix)
+/// was not read.
+fn read_or(a: &crate::alerts::Alerts, source: &str, n: usize) -> String {
+    if a.errors.iter().any(|e| e.starts_with(source)) {
+        crate::reading::NOT_READ.to_string()
+    } else {
+        n.to_string()
+    }
+}
+
 pub fn alerts(a: &crate::alerts::Alerts) -> Card {
     let by = |l: Level| {
         a.firing
@@ -330,11 +340,13 @@ pub fn alerts(a: &crate::alerts::Alerts) -> Card {
     .part("No owner", k.no_owner, lvl(k.no_owner, Level::Warn))
     .part("Fixes open", k.fixes_open, Level::Ok)
     .part("Firing", k.firing, Level::Nodata)
-    .part("Red now", k.red_now, lvl(k.red_now, Level::Red))
+    // Uncoloured like Firing: Need you and Being fixed say whether a red waits on the human. A
+    // source that did not answer reads not read, never 0 (rule 6).
+    .part("Red now", read_or(a, "prometheus:", k.red_now), Level::Nodata)
     .part(
         "Watches tripped",
-        k.watches_tripped,
-        lvl(k.watches_tripped, Level::Warn),
+        read_or(a, "watches:", k.watches_tripped),
+        Level::Nodata,
     );
     // Nothing needing the human is green when every source answered; the tab's own level says
     // which, and a tab that is red only for rows being fixed is green here.
@@ -1260,6 +1272,24 @@ mod tests {
             "nothing firing but a source unread is no green bar"
         );
         assert_eq!(c.error.as_deref(), Some("reds: no answer"));
+        // Prometheus or the watches unread: their counts read not read, never 0 (rule 6).
+        let says = |a: &crate::alerts::Alerts, label: &str| {
+            let c = alerts(a);
+            c.parts
+                .iter()
+                .find(|p| p.label == label)
+                .unwrap()
+                .value
+                .clone()
+        };
+        assert_eq!(
+            says(&a, "Red now"),
+            "0",
+            "a reds read failure is not Prometheus's"
+        );
+        a.errors = vec!["prometheus: timeout".into(), "watches: gone".into()];
+        assert_eq!(says(&a, "Red now"), crate::reading::NOT_READ);
+        assert_eq!(says(&a, "Watches tripped"), crate::reading::NOT_READ);
         a.level = Level::Ok;
         a.errors.clear();
         a.counts.watches = 9;

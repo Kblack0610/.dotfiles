@@ -93,11 +93,15 @@ pulse() { printf "<span color='%s'>%s</span>" "$1" "$ICON"; }
   assert_line --index 1 "<tt>prod  <span color='$Y'>warn</span>"
 }
 
-@test "two live summary/cards topics during a lease move: each figure is the larger" {
+@test "two live summary/cards topics during a lease move: agreeing figures print, differing ones say so in amber" {
+  feed o=2 d:ci=2 f:down=1 f:warn=0 f:up=0 f:down:old=1 f:warn:old=0 f:up:old=0
+  run "$MODULE"
+  run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
+  assert_line --index 0 "<b>System</b>  $(dot "$R")  1 down"
   feed o=2 d:ci=2 f:down=1 f:warn=0 f:up=0 f:down:old=0 f:warn:old=0 f:up:old=4
   run "$MODULE"
   run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
-  assert_line --index 0 "<b>System</b>  $(dot "$R")  1 down, 4 up"
+  assert_line --index 0 "<b>System</b>  $(dot "$R")  <span color='$Y'>two machines publish different counts (summary/cards)</span>"
 }
 
 @test "a system no watch explains names its failing components" {
