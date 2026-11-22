@@ -1442,6 +1442,8 @@ async fn answer(Json(b): Json<AnswerBody>) -> ApiResult<StatusCode> {
     }
     let out = tokio::process::Command::new("agent-ask")
         .args(["answer", &b.id, &answer])
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("AGENT_QUEUE_ITEM")
         .output()
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, format!("agent-ask: {e}")))?;
