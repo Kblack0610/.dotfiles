@@ -523,6 +523,22 @@ PROM
 )"
 }
 
+@test "a snapshot on a machine that does not hold the fleet lease (another holds it, or it is no peer) publishes no day_log.prom" {
+  mkdir -p "$PROM_TEXTFILE_DIR"
+  local rc
+  for rc in 1 2; do
+    FLEET_LEASE_STUB_RC=$rc run "$SUBJECT" snapshot
+    assert_success
+    # The record is still written; only the publish is the holder's.
+    [ -s "$output" ]
+    [ ! -e "$PROM_TEXTFILE_DIR/day_log.prom" ]
+  done
+  # The holder (the stub's default) publishes.
+  run "$SUBJECT" snapshot
+  assert_success
+  [ -s "$PROM_TEXTFILE_DIR/day_log.prom" ]
+}
+
 @test "a snapshot of a past day does not overwrite today's metrics" {
   mkdir -p "$PROM_TEXTFILE_DIR"
   run "$SUBJECT" snapshot --date 2026-10-27
