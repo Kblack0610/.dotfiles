@@ -47,6 +47,10 @@
 #   archive <path>    save a HELD tree (nobody in it, work on no remote) to a verified bundle
 #                     under ~/.agent/archive/worktrees/<repo>/, uncommitted work included,
 #                     then remove it. Refuses a landed or claimed tree. rc 1 kept, 2 failed.
+#   bundle-state <file.bundle>
+#                     print whether the commits an archive bundle holds have landed: `landed`,
+#                     `unlanded<TAB><n><TAB><branch>` or `unknown<TAB><why>`, rc 0, 1, 2. The
+#                     gc runner deletes an old bundle only on `landed`.
 #   gc [<repo>] [-n] [--tsv]
 #                     reap every eligible worktree and NAME the ones it kept, one state word
 #                     per tree (README: "Worktree states"). With no repo, everything under
@@ -340,13 +344,20 @@ wt_work_reason_fetched() {
 # Fails closed: no gh, no jq, a non-GitHub origin, a detached HEAD or a network error all
 # answer "not landed", which only ever keeps a worktree.
 wt_pr_merged_at_head() {
-  local branch head slug
+  local branch head
   branch=$(git -C "$1" symbolic-ref --short -q HEAD) || return 1
   head=$(git -C "$1" rev-parse HEAD 2>/dev/null) || return 1
+  wt_pr_merged_at "$1" "$branch" "$head"
+}
+
+# wt_pr_merged_at <dir> <branch> <head> -- true when GitHub has a MERGED PR on <branch> whose head
+# is <head>, for the repo <dir>'s origin names. The same fail-closed answer as above.
+wt_pr_merged_at() {
+  local slug
   slug=$(origin_repo "$1" github.com) || return 1
   panel_have gh && panel_have jq || return 1
-  timeout 20 gh pr list -R "$slug" --head "$branch" --state merged --json headRefName,headRefOid,state 2>/dev/null |
-    jq -e --arg b "$branch" --arg h "$head" \
+  timeout 20 gh pr list -R "$slug" --head "$2" --state merged --json headRefName,headRefOid,state 2>/dev/null |
+    jq -e --arg b "$2" --arg h "$3" \
       'any(.[]; .state == "MERGED" and .headRefName == $b and .headRefOid == $h)' >/dev/null 2>&1
 }
 
@@ -1517,6 +1528,50 @@ wt_archive_tree() {
   printf 'archived %s to %s\n' "$name" "$file"
 }
 
+# cmd_bundle_state <file.bundle> -- whether the commits an archive bundle holds have landed, read
+# from the repo the bundle was cut from, so the runner that prunes old bundles never deletes the
+# only copy of unlanded work (ar-4470). Landed: the tree's HEAD at archive time is on the trunk,
+# on a remote branch, or is the head of a merged PR (a squash merge leaves the commits on no remote).
+# Prints `landed`, `unlanded<TAB><commits><TAB><branch|detached>` or `unknown<TAB><why>`; rc 0, 1, 2.
+# Uncommitted work in the bundle is not counted: only unlanded commits are the trap's subject.
+cmd_bundle_state() {
+  local file="${1:?usage: wt bundle-state <file.bundle>}" name main repo heads ref branch='' head def base n lock rc=0
+  [ -f "$file" ] || { printf 'unknown\tno such bundle\n'; return 2; }
+  name=${file##*/}
+  name=${name%@*}
+  main=$(wt_repo_of_name "$name") || { printf 'unknown\tno repo cuts worktrees named like %s\n' "$name"; return 2; }
+  repo=$(wt_repo_name "$main")
+  git -C "$main" bundle verify -q "$file" >/dev/null 2>&1 || { printf 'unknown\tthe bundle does not verify against %s\n' "$main"; return 2; }
+  heads=$(git -C "$main" bundle list-heads "$file") || { printf 'unknown\tcannot read the bundle\n'; return 2; }
+  ref=$(awk -v p="$WT_ARCHIVE_REFS/" '$2 ~ "^" p "(branch/|detached$)" { print $2; exit }' <<<"$heads")
+  [ -n "$ref" ] || { printf 'unknown\tnot a wt archive\n'; return 2; }
+  case "$ref" in "$WT_ARCHIVE_REFS"/branch/*) branch=${ref#"$WT_ARCHIVE_REFS"/branch/} ;; esac
+  lock=$(wt_archive_lock "$repo")
+  wt_lock "$lock" || { printf 'unknown\tan archive or revive of %s is running\n' "$repo"; return 2; }
+  wt_archive_refs_clear "$main"
+  if git -C "$main" fetch -q "$file" "+$ref:$ref" 2>/dev/null &&
+    head=$(git -C "$main" rev-parse --verify "$ref^" 2>/dev/null); then
+    def=$(wt_default_branch "$main") && base=$(wt_base_ref "$main" "$def") || base=''
+    n=$(git -C "$main" rev-list --count "$head" --not --remotes 2>/dev/null) || n=''
+    if [ -z "$n" ]; then
+      printf 'unknown\tcannot count its commits\n'
+      rc=2
+    elif [ "$n" -eq 0 ] || { [ -n "$base" ] && git -C "$main" merge-base --is-ancestor "$head" "$base"; } ||
+      { [ -n "$branch" ] && wt_pr_merged_at "$main" "$branch" "$head"; }; then
+      printf 'landed\n'
+    else
+      printf 'unlanded\t%s\t%s\n' "$n" "${branch:-detached}"
+      rc=1
+    fi
+  else
+    printf 'unknown\tcannot read the archive commit\n'
+    rc=2
+  fi
+  wt_archive_refs_clear "$main"
+  rm -f "$lock"
+  return "$rc"
+}
+
 # wt_revive_bundle <bundle> -- put an archived tree back at $WT_ROOT/<name> from the bundle
 # `wt archive` wrote: its branch (or detached HEAD) at the archived commit, and its uncommitted
 # work back in the files, uncommitted again. The bundle stays, its mtime reset so the runner's
@@ -2034,6 +2089,10 @@ revive)
 archive)
   shift
   cmd_archive "$@"
+  ;;
+bundle-state)
+  shift
+  cmd_bundle_state "$@"
   ;;
 gc)
   shift
