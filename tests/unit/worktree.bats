@@ -2040,7 +2040,7 @@ archived_bundle() { # <branch> -> archives repo-agent-1 holding one local commit
   archived_bundle feat/x
   run cmd_bundle_state "$BUNDLE"
   assert_failure 1
-  assert_output $'unlanded\t1\tfeat/x'
+  assert_output $'unlanded\t1 commits\tfeat/x'
   assert_equal "$(git -C "$MAIN" for-each-ref refs/wt-archive)" ''
   [ -f "$BUNDLE" ]
 }
@@ -2068,7 +2068,7 @@ archived_bundle() { # <branch> -> archives repo-agent-1 holding one local commit
   assert_output 'landed'
 }
 
-@test "bundle-state reads a bundle holding only uncommitted work on a landed HEAD as landed, and a file that is no archive as unknown" {
+@test "bundle-state keeps a bundle holding uncommitted work even when its HEAD has landed, and reads a file that is no archive as unknown" {
   make_repo
   export WT_ARCHIVE_DIR="$SANDBOX/archive"
   printf '{"paths":{"%s":"repo"}}\n' "$MAIN" > "$WT_PROJECT_MAP"
@@ -2077,8 +2077,8 @@ archived_bundle() { # <branch> -> archives repo-agent-1 holding one local commit
   run cmd_archive "$WT_ROOT/repo-agent-1"
   assert_success
   run cmd_bundle_state "$(ls "$SANDBOX"/archive/repo/repo-agent-1@*.bundle)"
-  assert_success
-  assert_output 'landed'
+  assert_failure 1
+  assert_output $'unlanded\tuncommitted work\tdetached'
   printf 'junk\n' > "$SANDBOX/archive/repo/repo-agent-2@1.bundle"
   run cmd_bundle_state "$SANDBOX/archive/repo/repo-agent-2@1.bundle"
   assert_failure 2

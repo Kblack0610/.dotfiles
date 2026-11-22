@@ -49,7 +49,7 @@
 #                     then remove it. Refuses a landed or claimed tree. rc 1 kept, 2 failed.
 #   bundle-state <file.bundle>
 #                     print whether the commits an archive bundle holds have landed: `landed`,
-#                     `unlanded<TAB><n><TAB><branch>` or `unknown<TAB><why>`, rc 0, 1, 2. The
+#                     `unlanded<TAB><what><TAB><branch>` (what: n commits, uncommitted work, or both) or `unknown<TAB><why>`, rc 0, 1, 2. The
 #                     gc runner deletes an old bundle only on `landed`.
 #   gc [<repo>] [-n] [--tsv]
 #                     reap every eligible worktree and NAME the ones it kept, one state word
@@ -1535,7 +1535,7 @@ wt_archive_tree() {
 # Prints `landed`, `unlanded<TAB><commits><TAB><branch|detached>` or `unknown<TAB><why>`; rc 0, 1, 2.
 # Uncommitted work in the bundle is not counted: only unlanded commits are the trap's subject.
 cmd_bundle_state() {
-  local file="${1:?usage: wt bundle-state <file.bundle>}" name main repo heads ref branch='' head def base n lock rc=0
+  local file="${1:?usage: wt bundle-state <file.bundle>}" name main repo heads ref branch='' head def base n what lock rc=0
   [ -f "$file" ] || { printf 'unknown\tno such bundle\n'; return 2; }
   name=${file##*/}
   name=${name%@*}
@@ -1556,12 +1556,21 @@ cmd_bundle_state() {
     if [ -z "$n" ]; then
       printf 'unknown\tcannot count its commits\n'
       rc=2
-    elif [ "$n" -eq 0 ] || { [ -n "$base" ] && git -C "$main" merge-base --is-ancestor "$head" "$base"; } ||
-      { [ -n "$branch" ] && wt_pr_merged_at "$main" "$branch" "$head"; }; then
-      printf 'landed\n'
     else
-      printf 'unlanded\t%s\t%s\n' "$n" "${branch:-detached}"
-      rc=1
+      # The archive commit sits on HEAD with the uncommitted files in its tree: that work is on no
+      # remote whatever HEAD's state, so it alone keeps the bundle.
+      what=''
+      if [ "$n" -gt 0 ] && ! { [ -n "$base" ] && git -C "$main" merge-base --is-ancestor "$head" "$base"; } &&
+        ! { [ -n "$branch" ] && wt_pr_merged_at "$main" "$branch" "$head"; }; then
+        what="$n commits"
+      fi
+      git -C "$main" diff --quiet "$head" "$ref" 2>/dev/null || what="${what:+$what and }uncommitted work"
+      if [ -z "$what" ]; then
+        printf 'landed\n'
+      else
+        printf 'unlanded\t%s\t%s\n' "$what" "${branch:-detached}"
+        rc=1
+      fi
     fi
   else
     printf 'unknown\tcannot read the archive commit\n'
