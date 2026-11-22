@@ -66,7 +66,8 @@
 #   attribute <slug> < changed-paths    credit the item to the registry project whose path owns most of its PR
 #   credit-of <project> < changed-paths  print what attribute would record ("<winner>\t<touches>"), writing nothing
 #   requeue <slug> --hold <resource> [--class c] | --ask <id>   a started item back to its board row, gated on that agent-hold
-#       or ask (#hold/<res>, #ask/<id>): the item closes returned, and dispatch promotes the row once the gate clears
+#       or ask (#hold/<res>, #ask/<id>): the item closes returned, and dispatch promotes the row once the gate clears;
+#       an item with no row (hand-queued) gets a story row filed first (story_row_for), refused only when none can be
 #   handoff <slug> --note <file> [--dir <checkout>]   a running item to a fresh session with its work pushed: salvage: (or its pr:),
 #       handoff: <note>, back to queued with end_reason: handoff (unrated), AGENT_HANDOFF_MAX (2) per item; see cmd_handoff
 #   start <slug>   start a queued item's session now, through add's start guards (a low one, a desk wait or the dispatch hold keep it queued)
@@ -3364,6 +3365,19 @@ check_tags() {
   done
 }
 
+# story_row_for <slug> <file> -- file the story row of an item that has none, from its title, priority and
+# brief (file_story, started with the item), and link it with `set row=`. Fails when no row was filed or linked.
+# Called without the lock: file_story runs notes, and set takes the lock itself.
+story_row_for() {
+  local slug=$1 f=$2 title prio proj board prof id
+  title="$(fm_get "$f" title)"; [ -n "$title" ] || title="$(fm_body "$f" | head -1)"
+  prio="$(fm_get "$f" priority)"; proj="$(fm_get "$f" project)"
+  IFS=$'\t' read -r board prof id < <(file_story "$proj" "$title" "${prio:-high}" "" "" "$(fm_body "$f")" "" "" "$(fm_get "$f" tags)" </dev/null)
+  [ -n "$id" ] || return 1
+  "$0" set "$slug" row="$board:$id" lane=agent profile="$prof" </dev/null >/dev/null ||
+    { echo "agent-queue: row $board:$id filed but not linked to $slug; link it with agent-queue set $slug row=$board:$id" >&2; return 1; }
+}
+
 # requeue <slug> --hold <resource> | --ask <id>[=<option>] -- send an active item back to its board row,
 # gated on an agent-hold resource or on an agent-ask the human has not answered. --hold is for a session that
 # finds a resource it needs held by another (`agent-hold claim` said busy); --ask for a headless run
@@ -3399,8 +3413,16 @@ cmd_requeue() {
   fi
   lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
-  # The wait is the board row's (cmd_add): an item with none has nowhere to wait.
-  [ -n "$(item_row "$f")" ] || die "$slug has no board row to wait on $tag: give it one (agent-queue set $slug row=<board>:<id>) and requeue again"
+  # The wait is the board row's (cmd_add). A hand-queued item may have none (add --running filed no row,
+  # or its story row was refused): file one from the item, as backfill-briefs does, so the return has a
+  # row to gate. notes writes it and may call agent-queue, so the lock goes first.
+  if [ -z "$(item_row "$f")" ]; then
+    unlock
+    story_row_for "$slug" "$f" ||
+      die "$slug has no board row to wait on $tag, and none could be filed for it: give it one (agent-queue set $slug row=<board>:<id>) and requeue again"
+    lock
+    f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
+  fi
   tags="$(fm_get "$f" tags)"
   local want="$tags"
   case " $want " in *" $tag "*) ;; *) want="${want:+$want }$tag" ;; esac

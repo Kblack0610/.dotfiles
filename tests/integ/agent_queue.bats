@@ -1223,6 +1223,34 @@ gate_rbw() {
   assert_failure
 }
 
+@test "requeue --hold of a hand-queued item with no board row files its story row, then returns it behind the resource (ar-4237)" {
+  story_notes
+  export AGENT_HOLD_DIR="$SANDBOX/holds"
+  # The row write is refused at add (a shortlist, a failed notes), so the item starts with none.
+  echo 1 > "$NOTES_FIXTURE/story.rc"; echo "notes failed" > "$NOTES_FIXTURE/story.out"
+  "$AQ" add --project level --running --slug hand "feat(menu): fill the store forms" >/dev/null 2>&1
+  rm "$NOTES_FIXTURE/story.rc"
+  [ -z "$(field "$(item running hand)" row)" ] || fail "the item already has a row"
+  "$REPO_ROOT/.local/bin/agent-hold" claim mac-desktop --by other "steam forms" >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" requeue hand --hold mac-desktop
+  assert_success
+  # The row is filed from the item, then gated while still started, and un-started.
+  assert_called "ptask level --agent add"
+  assert_called "ptask level --agent tag --add hold/mac-desktop lv-9"
+  assert_called "ptask level --agent unstart lv-9"
+  [ -z "$(item queued hand 2>/dev/null)" ]
+  f="$(ls "$AGENT_QUEUE_DIR"/done/*/*-hand.md)"
+  [ "$(field "$f" end_reason)" = returned ]
+  [ "$(field "$f" row)" = level:lv-9 ]
+  # Negative control: when no row can be filed, it is refused and the item stays running.
+  echo 1 > "$NOTES_FIXTURE/story.rc"
+  "$AQ" add --project level --running --slug hand2 "feat(menu): again" >/dev/null 2>&1
+  run "$AQ" requeue hand2 --hold mac-desktop
+  assert_failure; assert_output --partial "has no board row to wait on hold:mac-desktop, and none could be filed"
+  [ -n "$(item running hand2)" ]
+}
+
 @test "one waiter per release: the best desk class starts, the rest wait behind it, desk:auth only while the human is here" {
   # A pinned clock: at-tonight's at:23:59 is due on a wall clock at 23:59, and then it heads the auth class.
   export AGENT_HOLD_DIR="$SANDBOX/holds" AGENT_QUEUE_NOW=12:00
