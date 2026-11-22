@@ -3241,6 +3241,22 @@ cells() { printf '%s\t%s\tcurrent\tno\tclean\t#1 open\t%s\t1/2\t-\t%s\t-\t5m\t1h
   grep -q 'quality - -> simplifying' "$FLEET_SHEPHERD_DIR/watch.log"
 }
 
+@test "a tick whose lease lapses during its pass leaves the shared ledger alone (ar-3439)" {
+  bats_require_minimum_version 1.5.0
+  landed_fixture
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  cp "$FLEET_SHEPHERD_DIR/watch.state" "$SANDBOX/holder.state"
+  "$REPO_ROOT/.local/bin/fleet-sessions" label s1 +quality:simplifying >/dev/null
+  # Held for the first read only (the entry check), lapsed by the write.
+  printf '#!/usr/bin/env bash\n[ -e %q ] || exit 1\nrm %q\n' "$SANDBOX/lease-once" "$SANDBOX/lease-once" > "$SANDBOX/bin/fleet-lease"
+  : > "$SANDBOX/lease-once"
+  run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [[ "$stderr" == *"tick skipped: the fleet lease moved during this pass"* ]]
+  cmp "$SANDBOX/holder.state" "$FLEET_SHEPHERD_DIR/watch.state"
+  [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
+}
+
 # interrupt_pass <signal>: start a pass whose agent-queue read hangs, send <signal> to the
 # fleet-sessions pid alone (a caller forwarding it, or `timeout`), and check the pass ends with
 # every process it started and leaves no scratch dir (nc-42).

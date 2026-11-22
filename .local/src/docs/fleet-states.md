@@ -6,7 +6,7 @@ Every view of the agent fleet (phone and Home Assistant, the shepherd, fleet-ben
 ~/.local/state/fleet/state.json        ($FLEET_STATE_FILE)
 ```
 
-`fleet-sessions --write` is the only writer; `fleet-sessions tick` is `--write` after a fetch of each repo, and also appends the stage changes since its last pass to `~/.agent/shepherd/watch.log`. They run on these triggers:
+`fleet-sessions --write` is the only writer; `fleet-sessions tick` is `--write` after a fetch of each repo, and also appends the stage changes since its last pass to `~/.agent/shepherd/watch.log`. Only the fleet lease holder ticks, a hand run included, and it reads the lease again before the ledger write; elsewhere `tick` skips with a stderr line and exit 0 (ar-3439). They run on these triggers:
 
 | Trigger | When | Why |
 | --- | --- | --- |
