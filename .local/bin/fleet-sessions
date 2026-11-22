@@ -2208,14 +2208,9 @@ collect() {
     # A gate or test running in the worktree is a wait whatever the transcript's open job says.
     live=""
     if [ "$host" = - ] && [ "$status" = shell ] && { [ "$ojob" = jobs ] || [ "$ojob" = none ] || [ "$ojob" = gate ]; }; then
-      live="$(live_wait "$cwd" "$cpid")"
-      # a transcript job that already reads gate keeps its class: the probe only adds the queue case
+      live="$(live_wait "$cwd" "$cpid")"; [ -n "$live" ] || [ "$ojob" = gate ] || live="$(watched_gate "$transcript")"
+      # watched_gate: a pgrep loop on a gate outside the claude's tree is its wait (ar-2121); a transcript job that already reads gate keeps its class: the probes only add the queue case
       [ "$ojob" != gate ] || [ "$live" = queue ] || live=""
-      ojob="${live:-$ojob}"
-    fi
-    # A pgrep loop on a gate that runs outside the claude's own tree is that gate's wait (ar-2121).
-    if [ "$host" = - ] && [ "$status" = shell ] && { [ "$ojob" = jobs ] || [ "$ojob" = none ]; }; then
-      live="$(watched_gate "$transcript")"
       ojob="${live:-$ojob}"
     fi
     # A shell waiting on itself is hung whatever the transcript's open job says: its command line may
