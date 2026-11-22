@@ -4745,6 +4745,21 @@ explain_state() {
   assert_equal "$(jq -c '.counts | [.LANDED, .STALLED, length]' "$XDG_STATE_HOME/fleet/state.json")" '[1,0,7]'
 }
 
+@test "--write: a machine without the fleet lease writes the document but no fleet_sessions.prom (ar-4375)" {
+  landed_fixture
+  mkdir -p "$PROM_TEXTFILE_DIR"
+  rm "$SANDBOX/lease-held"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  [ -e "$XDG_STATE_HOME/fleet/state.json" ]
+  [ ! -e "$PROM_TEXTFILE_DIR/fleet_sessions.prom" ]
+  # negative control: the holder publishes
+  : > "$SANDBOX/lease-held"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  [ -e "$PROM_TEXTFILE_DIR/fleet_sessions.prom" ]
+}
+
 @test "--write: the shepherd pass (label shepherd) is listed with its label but counted nowhere" {
   landed_fixture
   mkdir -p "$PROM_TEXTFILE_DIR" "$FLEET_SHEPHERD_DIR/labels"

@@ -6,7 +6,7 @@
 #   fleet-sessions --write            --json, and the fleet state document every view renders
 #                                     ($FLEET_STATE_FILE; schema and vocabulary in
 #                                     .local/src/docs/fleet-states.md), each session with its
-#                                     eta from `fleet-bench eta`, and fleet_sessions.prom
+#                                     eta from `fleet-bench eta`, and fleet_sessions.prom (lease holder only)
 #   fleet-sessions mark <sid> <fact>  record that <fact> was nudged, so it is nudged once
 #   fleet-sessions mark --close <sid>  record that the session was typed its close, once for good
 #   fleet-sessions escalate <sid> <fact>  record that <fact> went to the human, so it pages once
@@ -43,7 +43,7 @@
 
 set -uo pipefail
 
-# --write also publishes the rows to Prometheus (fleet_sessions.prom).
+# --write also publishes the rows to Prometheus (fleet_sessions.prom), on the fleet-lease holder only.
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
 # The board counts a session's PRs the way the nightly outcomes do (so_transcript_metrics).
@@ -3338,8 +3338,14 @@ write_state() {
   prev="$(jq -r '.generated_epoch // 0' "$STATE_FILE" 2>/dev/null)"
   if [ "${prev:-0}" -gt "$t" ] 2>/dev/null; then rm -f "$tmp"; return 0; fi
   mv -f "$tmp" "$STATE_FILE" || return 1
-  prom_textfile fleet_sessions.prom sessions_prom "$STATE_FILE" ||
-    echo "fleet-sessions: could not write fleet_sessions.prom" >&2
+  # Only the fleet-lease holder publishes: a hand --write on another host, or a pass that outlived
+  # its lease, would write the copy fleet-lease renew just removed there (ar-4375).
+  if lease_held; then
+    prom_textfile fleet_sessions.prom sessions_prom "$STATE_FILE" ||
+      echo "fleet-sessions: could not write fleet_sessions.prom" >&2
+  else
+    echo "fleet-sessions: fleet_sessions.prom not published: this machine does not hold the fleet lease" >&2
+  fi
   tmux_project "$STATE_FILE"
   worker_state_push "$STATE_FILE"
 }
