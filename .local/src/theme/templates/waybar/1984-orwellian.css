@@ -101,7 +101,7 @@ button:hover {
 #custom-media,
 #tray,
 #mode,
-#idle_inhibitor,
+#custom-caffeine,
 #scratchpad,
 #power-profiles-daemon,
 #custom-power,
@@ -188,12 +188,12 @@ button:hover {
     margin-right: 4px;
 }
 
-#idle_inhibitor {
+#custom-caffeine {
     background-color: rgba(252, 211, 149, 0.2);
     color: #fcd395;
 }
 
-#idle_inhibitor.activated {
+#custom-caffeine.activated {
     background-color: rgba(76, 182, 5, 0.2);
     color: #4cb605;
 }

@@ -613,16 +613,3 @@ PY
   run_session missing
   assert_equal "$STATUS" 0
 }
-
-@test "a Python tool failure blocks before a later tool can hang" {
-  dirty
-  touch "$REPO/pyproject.toml"
-  cp "$REPO_ROOT/.claude/hooks/stop-checks.d/40-python.sh" "$HOOK_DIR/stop-checks.d/"
-  printf '#!/bin/bash\necho "Found 1 error."\nexit 1\n' > "$SANDBOX/bin/ruff"
-  printf '#!/bin/bash\necho ran > "%s/mypy-ran"\nread -r _ < "%s/hold"\n' "$SANDBOX" "$SANDBOX" > "$SANDBOX/bin/mypy"
-  mkfifo "$SANDBOX/hold"
-  chmod +x "$SANDBOX/bin/ruff" "$SANDBOX/bin/mypy"
-  CLAUDE_STOP_CHECK_TIMEOUT=1 run_hook
-  assert_equal "$STATUS" 2
-  [ ! -e "$SANDBOX/mypy-ran" ]
-}

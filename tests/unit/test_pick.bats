@@ -1,74 +1,29 @@
 #!/usr/bin/env bats
-# 60-shell-tests.sh: WHEN does the Stop hook run this suite.
-#
-# The contract is identity -- "is the project under test this repo" -- and for two weeks the
-# guard asked existence instead: `[ -d "${CLAUDE_PROJECT_DIR:-$PWD}/tests" ]`. `~/tests` is a
-# stow symlink onto .dotfiles/tests and `-d` follows symlinks, so it was TRUE from $HOME.
-# The Stop hook is wired globally (matcher ""), every headless runner works from $HOME, and
-# so all 507 tests ran at every Stop of every project. That is the delivery mechanism for
-# the agentctl state leak pinned in unit/sandbox_isolation.bats.
-#
-# `make` is stubbed: this asserts the hook's DECISION, never the suite running inside it.
+# .local/lib/test-pick.sh: which fast-tier test files a change can affect. tests/pick.sh (the PR
+# gate) and fleet-bench's hold check both read it, so a miss here is a test that skips and a red
+# that reaches main.
 
 setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
-  load '../helpers/sandbox'
-  sandbox_init basic
-
-  HOOK="$REPO_ROOT/.claude/hooks/stop-checks.d/60-shell-tests.sh"
-
-  # The marker. If the guard lets go, the hook shells out to make and this appears.
-  cat > "$SANDBOX/bin/make" <<'EOF'
-#!/usr/bin/env bash
-echo "DISPATCHED: make $*"
-EOF
-  chmod +x "$SANDBOX/bin/make"
-}
-
-# a throwaway git repo that is NOT this one
-foreign_repo() {
-  local d="$SANDBOX/foreign"
-  mkdir -p "$d"
-  git -C "$d" init -q .
-  git -C "$d" config user.email t@example.com
-  git -C "$d" config user.name tester
-  mkdir -p "$d/tests"
-  touch "$d/tests/Makefile"
-  echo one > "$d/a.txt"
-  git -C "$d" add -A
-  git -C "$d" commit -qm one
-  printf '%s' "$d"
-}
-
-@test "runs when the project IS this repo" {
-  SHELL_TESTS_CHANGED=tests/helpers/sandbox.bash CLAUDE_PROJECT_DIR="$REPO_ROOT" run bash "$HOOK"
-  assert_output --partial 'DISPATCHED: make'
-  assert_output --partial "$REPO_ROOT/tests"
-}
-
-# WHICH files run. The whole tier outgrew the 300s Stop budget, so the hook picks the files
-# a change can affect and CI runs the rest. The dispatched FILES list is the assertion.
-fast_files() { ls "$REPO_ROOT"/tests/unit/*.bats "$REPO_ROOT"/tests/integ/*.bats | wc -l; }
-
-@test "picker: a change to the shared harness picks every fast-tier file" {
-  SHELL_TESTS_CHANGED=tests/helpers/sandbox.bash CLAUDE_PROJECT_DIR="$REPO_ROOT" run bash "$HOOK"
-  assert_output --partial "$(fast_files) of $(fast_files) fast-tier files picked"
-  assert_output --partial 'test-files FILES='
+  REPO_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
 }
 
 @test "picker: a script change picks the tests that name it, and only those" {
-  SHELL_TESTS_CHANGED=.local/bin/fleet-bench CLAUDE_PROJECT_DIR="$REPO_ROOT" run bash "$HOOK"
-  assert_output --partial "tests/unit/fleet_bench.bats"
-  refute_output --partial "tests/unit/theme_generated.bats"
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  run test_picked .local/bin/fleet-bench tests/unit/fleet_bench.bats <"$REPO_ROOT/tests/unit/fleet_bench.bats"
+  assert_success
+  run test_picked .local/bin/fleet-bench tests/unit/theme_generated.bats <"$REPO_ROOT/tests/unit/theme_generated.bats"
+  assert_failure
 }
 
 # A test that globs a directory names no file in it: stop_hook_quiet.bats greps
 # .claude/hooks/stop-post.d/*.sh and never names 80-session-register.sh. test-pick.sh reads
 # `<dir>/` and `<dir>/*` as a reference to every file under <dir>.
 @test "picker: a change under a directory picks the test that globs that directory" {
-  SHELL_TESTS_CHANGED=.claude/hooks/stop-post.d/80-session-register.sh CLAUDE_PROJECT_DIR="$REPO_ROOT" run bash "$HOOK"
-  assert_output --partial "tests/integ/stop_hook_quiet.bats"
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  run test_picked .claude/hooks/stop-post.d/80-session-register.sh tests/integ/stop_hook_quiet.bats <"$REPO_ROOT/tests/integ/stop_hook_quiet.bats"
+  assert_success
 }
 
 @test "picker: a path through a directory is not a reference to the whole directory" {
@@ -116,6 +71,71 @@ fast_files() { ls "$REPO_ROOT"/tests/unit/*.bats "$REPO_ROOT"/tests/integ/*.bats
     assert_success
   done
   [ "$n" -gt 1 ]
+}
+
+@test "picker: a stub's body naming its own fake does not pick the test; another name in it does (ar-3036)" {
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  run test_picked .local/bin/store-sync tests/x.bats <<<"  stub store-sync 'echo \"store-sync \$*\" >> \"\$NOTES_FIXTURE/calls.log\"'"
+  assert_failure
+  # Negative controls: the fake runs the real command, a longer name only contains it, and a
+  # later line runs it.
+  run test_picked .local/bin/store-sync tests/x.bats <<<"  stub fleet-bench 'exec store-sync \"\$@\"'"
+  assert_success
+  run test_picked .local/bin/store-sync tests/x.bats <<<"  stub store-sync-age 'echo store-sync'"
+  assert_success
+  run test_picked .local/bin/store-sync tests/x.bats <<<$'  stub store-sync \'exit 0\'\n  run store-sync join'
+  assert_success
+  run test_picked .local/bin/store-sync tests/x.bats <<<"  stub store-sync 'exit 0'; run store-sync join"
+  assert_success
+  # A passthrough fake runs the real script by path, so it is a use.
+  run test_picked .local/bin/agent-hold tests/x.bats <<<'  stub agent-hold "exec \"$REPO_ROOT/.local/bin/agent-hold\" \"\$@\""'
+  assert_success
+  # The real file: fleet_dispatch.bats only fakes store-sync (fleet_dispatch/common.bash).
+  run test_picked .local/bin/store-sync tests/unit/fleet_dispatch.bats <"$REPO_ROOT/tests/unit/fleet_dispatch.bats"
+  assert_failure
+}
+
+@test "picker: a fixture change picks the tests that name its entry, not the whole tier; basic is the harness (ar-3036)" {
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  local ch=tests/fixtures/comms/lab-status/fail/new.txt t
+  for t in 'for f in "$REPO_ROOT"/tests/fixtures/comms/*/*/*; do' 'ls "$REPO_ROOT/tests/fixtures/comms"' \
+    'cp "$BATS_TEST_DIRNAME/../fixtures/comms/x" .' '  sandbox_init comms'; do
+    run test_picked "$ch" tests/x.bats <<<"$t"
+    assert_success
+  done
+  # Negative controls: a longer entry name and a test that names no fixture.
+  for t in 'ls "$REPO_ROOT/tests/fixtures/comms-old"' '  sandbox_init basic; run comms-lint'; do
+    run test_picked "$ch" tests/x.bats <<<"$t"
+    assert_failure
+  done
+  # sandbox_init seeds every sandbox from basic by default, so it still picks every file.
+  run test_picked tests/fixtures/basic/notes.md tests/x.bats <<<'run true'
+  assert_success
+  # The real files, through tests/pick.sh: comms_lint.bats in, fleet_dispatch.bats out, and no full run.
+  run env PICK_CHANGED="$ch" "$REPO_ROOT/tests/pick.sh" unit HEAD
+  assert_success
+  assert_line unit/comms_lint.bats
+  refute_line unit/fleet_dispatch.bats
+  refute_output --partial 'full:'
+}
+
+@test "picker: a shared basename named as the tail of another tracked file's path does not pick it (ar-3036)" {
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  local ch=.local/src/hub-core/src/projects.rs t
+  [ -f "$REPO_ROOT/.local/src/notes-cli/src/projects.rs" ]
+  [ -f "$REPO_ROOT/$ch" ]
+  run test_picked "$ch" tests/x.bats <<<'sed -n p "$REPO_ROOT/.local/src/notes-cli/src/projects.rs"'
+  assert_failure
+  # Negative controls: the changed file's own path, a path the picker cannot place, and a bare
+  # parent/name all still pick it.
+  for t in 'cat "$REPO_ROOT/.local/src/hub-core/src/projects.rs"' 'cat "$CRATE/src/projects.rs"' 'cat src/projects.rs'; do
+    run test_picked "$ch" tests/x.bats <<<"$t"
+    assert_success
+  done
+  run test_picked "$ch" tests/unit/fleet_dispatch.bats <"$REPO_ROOT/tests/unit/fleet_dispatch.bats"
+  assert_failure
+  run test_picked .local/src/notes-cli/src/projects.rs tests/unit/fleet_dispatch.bats <"$REPO_ROOT/tests/unit/fleet_dispatch.bats"
+  assert_success
 }
 
 @test "picker: a file a test loads picks it, with or without .bash, and so does a file that one loads" {
@@ -193,87 +213,14 @@ EOF
 }
 
 @test "picker: a changed test file picks itself" {
-  SHELL_TESTS_CHANGED=tests/integ/shell_tests_scope.bats CLAUDE_PROJECT_DIR="$REPO_ROOT" run bash "$HOOK"
-  assert_output --partial "tests/integ/shell_tests_scope.bats"
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  run test_picked tests/unit/test_pick.bats tests/unit/test_pick.bats <"$BATS_TEST_FILENAME"
+  assert_success
 }
 
-@test "picker: a change no test names runs nothing, and says so" {
+@test "picker: a change no test names picks nothing" {
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
   # Built at runtime: written out literally, this file would name it and pick itself.
-  SHELL_TESTS_CHANGED="docs/$(printf 'unnamed%s' -doc).md" CLAUDE_PROJECT_DIR="$REPO_ROOT" run bash "$HOOK"
-  assert_success
-  refute_output --partial 'DISPATCHED'
-  assert_output --partial 'no fast-tier test names a changed file (1 changed)'
-}
-
-# THE REGRESSION. A directory that is not a repo but carries a `tests` symlink into this
-# one -- which is exactly what $HOME is, and exactly what the old guard accepted.
-@test "SKIPS a non-repo directory that merely carries a tests symlink into this repo" {
-  local d="$SANDBOX/homelike"
-  mkdir -p "$d"
-  ln -sfn "$REPO_ROOT/tests" "$d/tests"
-
-  [ -d "$d/tests" ]                       # the old guard's condition still holds...
-
-  CLAUDE_PROJECT_DIR="$d" run bash "$HOOK"
-  assert_success
-  refute_output --partial 'DISPATCHED'    # ...and must no longer be sufficient
-}
-
-@test "SKIPS a different repository, even one carrying its own tests/Makefile" {
-  local d
-  d="$(foreign_repo)"
-
-  CLAUDE_PROJECT_DIR="$d" run bash "$HOOK"
-  assert_success
-  refute_output --partial 'DISPATCHED'
-}
-
-@test "SKIPS a directory that is not a git repository at all" {
-  local d="$SANDBOX/loose"
-  mkdir -p "$d/tests"
-  touch "$d/tests/Makefile"
-
-  CLAUDE_PROJECT_DIR="$d" run bash "$HOOK"
-  assert_success
-  refute_output --partial 'DISPATCHED'
-}
-
-# Worktrees are the convention here for multi-step work, so the identity check must be
-# worktree-stable. --git-common-dir is what makes it so; --show-toplevel would not be, and
-# would silently stop testing every branch developed in a worktree.
-@test "the identity check is worktree-stable: a worktree of this repo is IN scope" {
-  WT_PATH="$SANDBOX/wt"
-  git -C "$REPO_ROOT" worktree add -q --detach "$WT_PATH" HEAD
-
-  CLAUDE_PROJECT_DIR="$WT_PATH" run bash "$HOOK"
-
-  # tests/vendor is gitignored, so a fresh worktree has no bats and the hook stops at the
-  # bootstrap arm. That message IS the assertion: it is reachable only after the scope
-  # guard has accepted the project. A rejected project exits 0 having printed nothing, so
-  # accept and reject stay distinguishable without needing the suite to run.
-  refute_output ''
-  assert_output --partial 'bats not vendored yet'
-}
-
-# Registering a worktree writes into the REAL repo's .git/worktrees, so it has to come back
-# out even when the test above fails. $SANDBOX is deleted either way; prune clears the entry
-# that deletion would otherwise strand.
-teardown() {
-  if [ -n "${WT_PATH:-}" ]; then
-    git -C "$REPO_ROOT" worktree remove --force "$WT_PATH" 2>/dev/null || true
-    git -C "$REPO_ROOT" worktree prune 2>/dev/null || true
-  fi
-}
-
-@test "session paths take precedence over branch and worktree dirt" {
-  STOP_CHANGED_FILES=tests/integ/shell_tests_scope.bats CLAUDE_PROJECT_DIR="$REPO_ROOT" run bash "$HOOK"
-  assert_success
-  assert_output --partial 'tests/integ/shell_tests_scope.bats'
-  refute_output --partial 'tests/integ/stop_hook_quiet.bats'
-}
-
-@test "an empty session change list dispatches nothing" {
-  STOP_CHANGED_FILES='' CLAUDE_PROJECT_DIR="$REPO_ROOT" run bash "$HOOK"
-  assert_success
-  refute_output --partial 'DISPATCHED'
+  run test_picked "docs/$(printf 'unnamed%s' -doc).md" tests/unit/test_pick.bats <"$BATS_TEST_FILENAME"
+  assert_failure
 }
