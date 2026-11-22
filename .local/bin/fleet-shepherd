@@ -897,6 +897,7 @@ close_sample() {
     fi
     if [ -n "$how" ]; then
       # Shown (its session attached and its window the current one), not Claude in front, or a turn running.
+      # tmux session_attached and window_active, read live here, are the live form of the row's `attached`; session-close-overdue skips such a row (ar-4271).
       [ "${att:-1}" != 0 ] && [ "${wa:-1}" = 1 ] && continue
       if [ "$close" != PARKED ]; then
         case "$fg" in claude|node) ;; *) continue ;; esac
