@@ -256,7 +256,7 @@ tag_pane() {
 
 # The shepherd skill's nudge rules (steps 3 and 4), over the document, by each bucket's actor in
 # the fleet-states.md bucket table and the row's close verdict (`close`, the close flow there): a
-# manual row is never moved; a row whose close verdict is now is close_sample's alone (it types the
+# manual row is not nudged (its close verdict keeps it until quiet FLEET_CHAT_CLOSE_H, then close_sample owns it); a row whose close verdict is now is close_sample's alone (it types the
 # close; a pass sends none), and a row holding an open ask it filed is otherwise left alone, its window
 # being where the question waits; a STALLED row not yet closable gets its bucket nudge once, and so
 # does a DONE or LANDED row the close flow keeps for work left here (`close.left`: its own item still
@@ -267,11 +267,11 @@ tag_pane() {
 # and its sessions are told once; only one with no owner escalates.
 # PARKED is fleet-pace's, below.
 # CLOSE_NUDGE_JQ: close_nudge -> CLOSE, DONE, CHAT or PARKED for a session row a close is owed to (its close
-# verdict now, its close not yet sent, not manual; CLOSE when it holds an open ask it filed; PARKED when
+# verdict now, its close not yet sent (a manual row reads now only once quiet FLEET_CHAT_CLOSE_H); CLOSE when it holds an open ask it filed; PARKED when
 # its claude is gone and nothing is left to land, so there is nothing to type into), null
 # otherwise. close_sample types it, and cmd_due gives a pass no line for it; one rule for both.
 CLOSE_NUDGE_JQ='def close_nudge:
-  if ((.labels // []) | index("manual")) or .close_sent or ((.close.verdict // "") != "now") then null
+  if .close_sent or ((.close.verdict // "") != "now") then null
   elif .bucket == "PARKED" then "PARKED"
   elif (.own_asks // 0) > 0 then "CLOSE"
   elif .bucket == "CHAT" then "CHAT"
@@ -279,7 +279,7 @@ CLOSE_NUDGE_JQ='def close_nudge:
   else null end;'
 # CLOSE_REFUSED_JQ: close_refused -> true for a session row typed its close that is still open: its
 # close sent (close_sample's claim), its close verdict still now (CLOSE_JQ in fleet-sessions keeps
-# every fact that would lose work or a prompt, and now needs FLEET_IDLE_CLOSE_MIN quiet), not manual;
+# every fact that would lose work or a prompt, and now needs FLEET_IDLE_CLOSE_MIN quiet);
 # open plan phases hold nothing, since reap files them. An open ask of its own holds nothing either:
 # close_sample sets each to reopen the session on the answer first, the step /wind-down auto takes.
 # A NEEDS row reaches a close verdict of now only on its own ask (CLOSE_JQ keeps a dialog). Since
@@ -287,7 +287,7 @@ CLOSE_NUDGE_JQ='def close_nudge:
 # human every day (2026-11-18: hub/dotfiles:3 turned down its close on a retired coordinator
 # keep, and the shepherd paged "close its window" instead).
 CLOSE_REFUSED_JQ='def close_refused:
-  ((.labels // []) | index("manual") | not) and .close_sent and (.close.verdict // "") == "now"
+  .close_sent and (.close.verdict // "") == "now"
   and (.bucket | IN("DONE","LANDED","STALLED","CHAT","NEEDS","PARKED"));'
 # TAKEOVER_JQ (after the two above): takeover_row -> true for a STALLED row whose nudge survived and that
 # is not the human's or another machine's (manual, plan mode, a fleet worker's row, an open ask) and not
@@ -897,6 +897,7 @@ close_sample() {
     fi
     if [ -n "$how" ]; then
       # Shown (its session attached and its window the current one), not Claude in front, or a turn running.
+      # tmux session_attached and window_active, read live here, are the live form of the row's `attached`; session-close-overdue skips such a row (ar-4271).
       [ "${att:-1}" != 0 ] && [ "${wa:-1}" = 1 ] && continue
       if [ "$close" != PARKED ]; then
         case "$fg" in claude|node) ;; *) continue ;; esac
@@ -1024,7 +1025,7 @@ remind_decision() {
     *"is running here") echo "have it carry its queue item on to a PR, or move the item done or waiting" ;;
     DONE:*) echo "nothing is left; close its window" ;;
     LANDED:*) echo "close its window; fleet-dispatch files its open phases" ;;
-    CHAT:*) echo "close the chat, or label it chat (kept until quiet 24h) or manual to keep it" ;;
+    CHAT:*) echo "close the chat, or label it chat or manual (kept until quiet 24h) to keep it" ;;
     *"green, not merged"*) echo "merge PR $pr or close it" ;;
     *"nightly red"*) echo "say who fixes the nightly red, or that it is not this PR's" ;;
     *"CI red"*) echo "have PR $pr fixed, or close it" ;;
