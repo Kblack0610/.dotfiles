@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# test-pick.sh - which fast-tier test files a change can affect: the Stop hook's 60-shell-tests.sh
+# test-pick.sh - which fast-tier test files a change can affect: tests/pick.sh (the PR gate)
 # picks by it, and fleet-bench's hold check reads a merge's "area tests" by it.
 
 # _test_pick_names <changed paths>: the words and parent/name paths test_picked matches, built
