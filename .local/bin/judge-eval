@@ -9,12 +9,12 @@
 #   judge-eval kpi [--json]
 #       fleet-bench's judge KPIs over 7 and 28 days, every prompt.
 #   SENTINEL_SINCE (an epoch, set by a Sentinel probe) starts every window no earlier than a watch's fix.
-#   judge-eval log [answered|would-answer|passed|wrong] [--level L] [--days N] [--limit N] [--json]
+#   judge-eval log [answered|would-answer|passed|wrong] [--level L] [--human-only] [--days N] [--limit N] [--json]
 #       the answer judge's verdicts, newest first and under any prompt: what it said, why, the
-#       quote behind it, its impact level, its call id (calls.jsonl .raw) and what you did. The
-#       same rows reach Log's Judges' verdicts section.
+#       quote behind it, its impact level, whether a human-stop rule made it human-only, its call
+#       id (calls.jsonl .raw) and what you did. The same rows reach Log's Judges' verdicts section.
 #   judge-eval cells [--any-prompt] [--days N] [--json]
-#       the answer judge per type and impact level (self, repo, fleet, critical): verdicts, scored,
+#       the answer judge per type and impact level (self, repo, fleet): verdicts, scored,
 #       precision with its 95% interval, pending, whether the cell is live (a DELAY_RULES row names
 #       its type at or above its level), the live answers you reviewed (by message or audit), and
 #       how often a floor raised the judge's level. A live answer you never reviewed
@@ -23,7 +23,7 @@
 #   judge-eval promote [--any-prompt] [--ask] [--json]
 #       each shadow cell of the answer judge against the bar for its level: PROMOTE_BARS in
 #       ask-judge.conf, `<level>=<percent>`, the Wilson 95% lower bound its precision must reach.
-#       A level with no bar (fleet), critical and a hard-stop type are never candidates, and a
+#       A level with no bar (fleet) and a hard-stop type are never candidates, and a
 #       cell is held while a narrower cell of its type is shadow with scored answers under its
 #       own bar, since a row's level is a ceiling that opens every level under it. --ask posts
 #       one approval ask per candidate (the briefing runs it on Mondays), unless one for that
@@ -177,7 +177,12 @@ JQ_EVAL="$JQ_EPOCH"'
        elif ($a.judge_type // "") == "" then "untyped deferral"
        elif ($a.recommend // "") == "" then "no recommendation" else null end) as $why
     | {agent: $by["ask-answers"], id: $a.id, project: $a.project, question: $a.question, rule: ($a.judge_rule // ""),
-       type: ($a.judge_type // ""), level: ($a.judge_level // ""), level_raised: ($a.judge_level_raised == "true"),
+       # An ask judged before the human-only flag (ar-4352, 2026-11-21) recorded it as level
+       # `critical`, with the level the judge gave lost; it reads as human-only with no level. The clause
+       # goes once those asks age out of the 28-day KPI window, 2026-12-19.
+       type: ($a.judge_type // ""), level: (($a.judge_level // "") | if . == "critical" then "" else . end),
+       level_raised: ($a.judge_level_raised == "true"),
+       human_only: ($a.judge_human_only == "true" or $a.judge_level == "critical"),
        kind: $kind, live: ($a.answered_by == "judge"),
        assumed: ($a.answered_by == "judge" and ($a.assume_at // "") != ""), want: $want,
        human: (if $a.answered_by == "judge" then $a.judge_override // "" else $human // $a.answer // "" end),
@@ -302,6 +307,8 @@ JQ_EVAL="$JQ_EPOCH"'
       | {verdicts: ($r | length), errors: $err,
          answered: ($r | map(select(.kind == "answer")) | length),
          live_answered: ($r | map(select(.live == true)) | length),
+         human_only: ($r | map(select(.human_only == true)) | length),
+         human_only_live: ($r | map(select(.human_only == true and .live == true)) | length),
          assumed: ($r | map(select(.assumed == true)) | length),
          assumed_overridden: ($r | map(select(.assumed == true and .outcome == "fp")) | length),
          deferred: ($r | map(select(.kind == "defer")) | length),
@@ -322,7 +329,7 @@ JQ_EVAL="$JQ_EPOCH"'
                   (([$j[] | ($call[.judge_call].cost_usd // 0) / $share[.judge_call]] | add) / ($j | length) * 10000 | round) / 10000 end)});
 
   # One row of the verdict list: what the judge said, and what became of it in plain words.
-  def listed: {id, project, question, rule, type, level, level_raised, call: .judge_call, judge: .want, reason, evidence,
+  def listed: {id, project, question, rule, type, level, level_raised, human_only, call: .judge_call, judge: .want, reason, evidence,
         said: (if .kind == "error" then "error" elif .live then "answered"
                elif .kind == "answer" then "would answer" else "passed" end),
         you: (if .outcome == "pending" then "pending" elif .live and .outcome == "tp" then "kept"
@@ -429,10 +436,13 @@ kpi_json() {
             judge_precision: ([.agents[] | select(.score | IN("ask-answers", "dispatch-queue")) | .rules[]
               | select(.tp + .fp >= $min) | .precision] | min),
             ask_answered_pct: (.agents[] | select(.score == "ask-answers") | .total.live_pct),
-            # The share of critical verdicts the judge answered itself: never, by DELAY_RULES.
-            judge_critical_live_pct: (.agents[] | select(.score == "ask-answers")
-              | [.cells[] | select(.level == "critical")] as $c | ($c | map(.verdicts) | add // 0) as $n
-              | if $n > 0 then (($c | map(.live_answered) | add) * 1000 / $n | round) / 10 else null end),
+            # The share of human-only verdicts the judge answered itself: never, by the rule and
+            # the flag check in live_answer, so any one is a trip.
+            judge_human_only_live_pct: (.agents[] | select(.score == "ask-answers") | .total
+              | if .human_only > 0 then (.human_only_live * 1000 / .human_only | round) / 10 else null end),
+            # The share of judged asks a human-stop rule sent to the human; read, no bar of its own.
+            ask_human_only_pct: (.agents[] | select(.score == "ask-answers") | .total
+              | if .verdicts - .errors > 0 then (.human_only * 1000 / (.verdicts - .errors) | round) / 10 else null end),
             ask_unclear_pct: (.agents[] | select(.score == "ask-answers") | .total as $t
               | (.rules | map(select(.rule == "unclear-ask") | .verdicts) | add // 0) as $u
               | if $t.verdicts - $t.errors > 0 then ($u * 1000 / ($t.verdicts - $t.errors) | round) / 10 else null end),
@@ -444,29 +454,30 @@ kpi_json() {
     ($a | k) as $x | ($b | k) as $y | $x | keys_unsorted | map({(.): {"7d": $x[.], "28d": $y[.]}}) | add'
 }
 
-# log [filter] [--level L] [--days N] [--limit N] [--json]: see the header.
+# log [filter] [--level L] [--human-only] [--days N] [--limit N] [--json]: see the header.
 log() {
-  local said="" level="" days="" limit="$LOG_LIMIT" json=0 out
+  local said="" level="" ho=false days="" limit="$LOG_LIMIT" json=0 out
   while [ $# -gt 0 ]; do
     case "$1" in
       answered|would-answer|passed|wrong) said="$1"; shift ;;
       --level) [[ " $JUDGE_LEVELS " == *" ${2:-x} "* ]] || { say "--level takes one of: $JUDGE_LEVELS"; return 2; }; level="$2"; shift 2 ;;
+      --human-only) ho=true; shift ;;
       --days) [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { say "--days takes a day count"; return 2; }; days="$2"; shift 2 ;;
       --limit) [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { say "--limit takes a count"; return 2; }; limit="$2"; shift 2 ;;
       --json) json=1; shift ;;
-      *) say "usage: judge-eval log [answered|would-answer|passed|wrong] [--level L] [--days N] [--limit N] [--json]"; return 2 ;;
+      *) say "usage: judge-eval log [answered|would-answer|passed|wrong] [--level L] [--human-only] [--days N] [--limit N] [--json]"; return 2 ;;
     esac
   done
   # Filtered before the limit, so the whole list is read rather than the dashboards' slice.
-  out="$(VERDICTS=1000000 eval_json ask-judge 1 "$days" | jq -c --arg f "$said" --arg l "$level" --argjson n "$limit" '
+  out="$(VERDICTS=1000000 eval_json ask-judge 1 "$days" | jq -c --arg f "$said" --arg l "$level" --argjson ho "$ho" --argjson n "$limit" '
     .agents[0].verdicts | map(select($f == "" or (if $f == "wrong" then .score == "wrong"
-      else .said == ($f | sub("-"; " ")) end)) | select($l == "" or .level == $l)) | .[0:$n]')" || { say "could not read the sources"; return 1; }
+      else .said == ($f | sub("-"; " ")) end)) | select($l == "" or .level == $l) | select(($ho | not) or .human_only)) | .[0:$n]')" || { say "could not read the sources"; return 1; }
   if [ "$json" = 1 ]; then printf '%s\n' "$out"; return; fi
   jq -r 'if length == 0 then "no verdicts" else .[] |
       "\(.at | if . then localtime | strftime("%m-%d %H:%M") else "-" end)  \(.project)  \(if .type == "" then .rule else .type end)  \(.said)  you: \(.you | .[0:40])  \(.score)",
       "    \(.question | .[0:100])",
       "    \(if .rule == "" then "" else .rule + ": " end)\(.reason)\(if .evidence == "" then "" else "  \"\(.evidence)\"" end)",
-      "    level \(if .level == "" then "-" else .level end)\(if .level_raised then " (raised)" else "" end)  call \(if .call == "" then "-" else .call end)" end' <<<"$out"
+      "    level \(if .level == "" then "-" else .level end)\(if .level_raised then " (raised)" else "" end)\(if .human_only then "  human-only" else "" end)  call \(if .call == "" then "-" else .call end)" end' <<<"$out"
 }
 
 # ask_cells <any-prompt 0|1> <days or empty>: the answer judge's cells, as `cells --json` prints them.
@@ -502,7 +513,7 @@ cells() {
 # status (candidate, below, held) and why. The bars are the conf's; none set promotes nothing.
 promote_json() {
   local bars
-  bars="$(jq -cn --arg s "$(judge_conf PROMOTE_BARS "" | tr ',' ' ')" --arg l "${JUDGE_LEVELS% critical}" '
+  bars="$(jq -cn --arg s "$(judge_conf PROMOTE_BARS "" | tr ',' ' ')" --arg l "$JUDGE_LEVELS" '
     [$s | splits(" +") | select(test("^[a-z]+=[0-9]+$")) | split("=") | select(.[0] as $x | $l | split(" ") | index($x))
      | {(.[0]): (.[1] | tonumber)}] | add // {}')"
   # Demoted: in the demote list and still opened by a row, so deleting the line is all approval takes.
@@ -518,7 +529,6 @@ promote_json() {
       | {type, level, tp, fp, precision, precision_lo, precision_hi, bar: $bars[.level],
          demoted: ($demoted | contains(" \($c.type)@\($c.level) "))}
       | . + (if ($hard | split(" ") | index($c.type)) then {status: "held", why: "a hard stop: the human answers it by rule"}
-             elif .level == "critical" then {status: "held", why: "critical: always the human"}
              elif .bar == null then {status: "held", why: "no bar for \(.level): only the human promotes it"}
              elif ($c | under) then {status: "below", why: (if .tp + .fp == 0 then "no scored answers yet"
                else "low bound \(.precision_lo)% under the \(.bar)% bar" end)}

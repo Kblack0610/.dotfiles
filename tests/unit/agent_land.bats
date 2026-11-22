@@ -643,7 +643,6 @@ notes ingest record --stage queue --action item-set --from dotfiles --item ship 
 gh api repos/o/r/pulls/42/files --paginate --jq .[].filename
 notes ingest record --stage queue --action item-moved --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --to done --why running -> done (ok) -- ship
 notes projects --prios
-notes board --json
 notes ptask dotfiles --agent done ship it --proof pr:o/r#42 commit:fedcba987654
 EOF
 }
@@ -1002,6 +1001,22 @@ EOF
   run "$LAND" 42 --item ship
   assert_failure 1
   assert_output --partial 'shape failed: shape-grow 5eedbase5eedbase HEAD: shape-grow: git diff origin/main HEAD: bad revision'
+}
+
+@test "tier 3: a playground fix(ci) item the tier-3 gate queued is refused without a Review: line, and lands with one and green checks" {
+  ITEM_PROJECT=unity-core-playground item fix-ci-probe 'human'
+  agent-queue set fix-ci-probe tags=tier3 >/dev/null
+  run "$LAND" 42 --item fix-ci-probe
+  assert_failure 1
+  assert_output --partial 'review failed: tier-3 item fix-ci-probe: no "Review: /code-review <level>'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+  printf 'fix(ci): retry the flaky runner probe\n\nReview: /code-review high, 1 finding fixed\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item fix-ci-probe
+  assert_success
+  assert_output --partial 'review: present (tier 3)'
+  assert_output --partial 'checks: green'
+  assert_output --partial 'merge: #42 MERGED'
 }
 
 @test "tier 3: an item tagged tier1 on agent-runtime, or an untiered one elsewhere, lands without a Review: line" {

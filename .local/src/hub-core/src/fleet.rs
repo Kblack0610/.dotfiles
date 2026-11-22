@@ -341,7 +341,7 @@ impl Judge {
     }
 }
 
-/// judge-eval's numbers for one type at one impact level (self, repo, fleet, critical): what a
+/// judge-eval's numbers for one type at one impact level (self, repo, fleet): what a
 /// promotion is weighed on. A live cell scores only the answers the human reviewed (`audited`).
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
 #[serde(default)]
