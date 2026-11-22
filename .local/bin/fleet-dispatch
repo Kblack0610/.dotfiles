@@ -4159,7 +4159,8 @@ item_row() {
     | [(.profile // ""), ($r | split(":")[0]), (.lane // "agent"), ($r | split(":")[1:] | join(":"))] | join("\u001f")' <<<"$1"
 }
 
-# close_row <slug> -- an item with a row, done ok, whose row is still started: the session died before
+# close_row <slug> [open] -- an item with a row, done ok, whose row is still started (or, with `open`, not
+# started yet: a row gated on a cancelled ask, settle_answered_gates): the session died before
 # agent-land closed it, or closed the item before its PR merged (land_orphan). Closed only on merge proof (agent-merge-proof.sh) of the item's
 # merged: commit in the checkout of the repo its PR names, with proof "pr:<N> commit:<sha12>"; with no proof the
 # row is left started and the reason logged once (reap_stuck), so a false close never happens.
@@ -4169,7 +4170,8 @@ close_row() {
   row=$(item_row "$it"); [ -n "$row" ] || return 0
   IFS=$'\x1f' read -r prof project lane key <<<"$row"
   [ "$lane" = agent ] && flag=(--agent)
-  [[ "$(row_line "$prof" "$project" "$lane" "$key")" == '- [/]'* ]] || { reap_unstuck "$1"; return 0; }
+  r=$(row_line "$prof" "$project" "$lane" "$key")
+  [[ $r == '- [/]'* || ( "${2:-}" = open && $r == '- [ ]'* ) ]] || { reap_unstuck "$1"; return 0; }
   # The row closes on the item's first PR: pr: and merged: are lists in step, one PR per repo.
   oid=$(jq -r '.merged // "" | split(" ")[0] // empty' <<<"$it"); pr=$(jq -r '.pr // "" | split(" ")[0] // empty' <<<"$it")
   dir=$(pr_repo_dir "$pr" "$project")
@@ -4247,16 +4249,18 @@ item_pr_state() {
     "select(any(.body | split(\"\n\")[] | rtrimstr(\"\r\"); . == \"Item: $1\")) | $PR_STATE_JQ"
 }
 
-# land_orphan <slug> -- a started row whose item ended ok before its PR merged (closed by hand
+# land_orphan <slug> [open] -- a started row whose item ended ok before its PR merged (closed by hand
 # before agent-queue refused that): the row goes by that PR, not by the orphan timer. A merged:
 # commit, or a PR its forge reads as MERGED (item_pr_state, then recorded), goes to close_row; OPEN leaves it started for the
-# merge. Returns 1 when no PR holds the row, so the timer decides: no PR, closed unmerged, or unreadable.
+# merge. Returns 1 when no PR holds the row, so the timer decides: no PR or closed unmerged; 2 when
+# the forge did not answer. `open` lets close_row close a row not started (settle_answered_gates).
 land_orphan() {
   local it oid info state
   it=$(agent-queue show "$1" --json 2>/dev/null) || return 1
   oid=$(jq -r '.merged // ""' <<<"$it")
   if [ -z "$oid" ]; then
-    info=$(item_pr_state "$1" "$it") || return 1
+    [ -n "$(jq -r '.pr // ""' <<<"$it")" ] || return 1
+    info=$(item_pr_state "$1" "$it") || return 2
     read -r state oid _ <<<"$info"; oid=${oid#-}
     case "$state" in
     OPEN) return 0 ;;
@@ -4264,7 +4268,7 @@ land_orphan() {
     *) return 1 ;;
     esac
   fi
-  close_row "$1"
+  close_row "$1" "${2:-}"
 }
 
 # unstart_orphans -- an agent-lane row started with no active queue item naming it (its `row`)
@@ -6134,8 +6138,8 @@ cmd_starved() {
 
 # dead_holds -> one line per open board row gated on what can never clear, each gate `agent-queue gate`
 # calls dead (load_gates): an #after/ on a row that was dropped or does not exist, an #ask/ the human
-# cancelled, that no longer exists, or that was answered with another option (reap holds, moves or drops
-# an agent row on the human's answer or cancel: settle_answered_gates). Nothing promotes such a row, so it
+# cancelled, that no longer exists, or that was answered with another option (reap holds or drops an
+# agent row on the human's answer, and closes, moves or asks again on a cancel: settle_answered_gates). Nothing promotes such a row, so it
 # waits for good unless someone sees it: this is where they surface. On 2026-11-07 trader's Kalshi
 # phases sat behind cancelled ask ybXZIM and nothing named them.
 dead_holds() {
@@ -6622,11 +6626,13 @@ ask_failed_rows() {
 # #hold/row-<row id>, an agent-hold the human releases to start it. A missing ask, a
 # judge's answer and a human-sheet row stay in dead_holds for a person. A cancelled ask (nobody
 # decided: agent-ask cancel has no actor) leaves its rows dead the same way (ar-3863, 2026-11-19):
-# one cancelled because it joined an older ask moves its rows' gate to that ask; any other cancel
-# holds the row as a not-yet answer does, so the human sees it in agent-hold and decides.
+# one cancelled because it joined an older ask moves its rows' gate to that ask. Any other cancel
+# sets no hold, which only a person clears (ar-4646: ucp-463 sat held on work #2129 had merged): a
+# done queue item on the row whose PR merged closes it on merge proof (land_orphan), and otherwise
+# the ask is posed again (repose_ask) and the row gated on the new one.
 SETTLE_SKIP_RE='\b(skip|skipped|drop|cancel|cancelled|abandon|scrap|not needed|no longer needed)\b'
 settle_answered_gates() {
-  local board prof p id t g aid ask st by ans why hold had rsn to
+  local board prof p id t g aid ask st by ans why hold had rsn to done_items='' got_done='' slug rc
   load_gates
   [ -z "$GATES_FAILED" ] || return 0
   board=$(notes board --json 2>/dev/null) || return 0
@@ -6649,14 +6655,29 @@ settle_answered_gates() {
           fi
           continue 2
         fi
-        why="ask $aid was cancelled${rsn:+ ($rsn)}, so nobody decided, and #$g waited on it"
+        # Read once a pass, and only for a cancel: about 2 s over every done item.
+        if [ -z "$got_done" ]; then
+          done_items=$(agent-queue list --json --state done --since 3650d 2>/dev/null |
+            jq -c 'select((.row // "") != "" and (.pr // "") != "")') ||
+            { say "settle_answered_gates: could not read the done queue items"; return 0; }
+          got_done=1
+        fi
+        slug=$(jq -rs --arg r "$p:$id" 'map(select(.row == $r)) | sort_by(.finished // "") | last | .slug // empty' <<<"$done_items")
+        if [ -n "$slug" ]; then
+          # 0: closed, or its PR is open or its proof is not in yet (reap_stuck says why); 2: the forge
+          # did not answer, so the next pass reads it again. 1: no merged PR, so the work is not done.
+          rc=0; land_orphan "$slug" open || rc=$?
+          [ "$rc" = 1 ] || continue 2
+        fi
+        repose_ask "$prof" "$p" "$id" "$g" "$aid" "$ask" "$rsn"
+        continue 2
       else
         [ "$st" = answered ] && { [ -z "$by" ] || [ "$by" = human ]; } || continue
       fi
       # The answer goes into a marker or a hold line: one line of plain ASCII, no # (a tag) or <> (a marker end).
       ans=$(sed -n '/^answer: */{s///p;q;}' <<<"$ask" | tr -cd ' -~' | tr -d '#<>' | cut -c1-160)
-      [ "$st" = cancelled ] || why="the human answered \"$ans\" to ask $aid, and #$g waited on another answer"
-      if [ "$st" = answered ] && grep -Eiq "$SETTLE_SKIP_RE" <<<"$ans"; then
+      why="the human answered \"$ans\" to ask $aid, and #$g waited on another answer"
+      if grep -Eiq "$SETTLE_SKIP_RE" <<<"$ans"; then
         if np "$prof" ptask "$p" --agent drop "$id" --why "$why" </dev/null >/dev/null 2>&1; then
           logline "dropped $p row $id: $why"
         else
@@ -6683,6 +6704,43 @@ settle_answered_gates() {
   done < <(jq -r '.rows[]? | select(.state == "open" and .lane == "agent" and .id != null)
     | "\(.profile // "")\u001f\(.project)\u001f\(.id)\u001f\((.tags_cased // .tags // []) | join(" "))"' <<<"$board")
   return 0
+}
+
+# repose_ask <profile> <project> <row id> <gate> <ask id> <ask file> <closed reason> -- the cancelled
+# ask posed again from its own fields, and the row's gate moved to the new ask with its option, so the
+# human decides (lesson 2026-09-16: a cancel is nobody deciding). Once: an ask this posed, cancelled
+# again, is left dead, and dead_holds lists it (queue-starved). A post or retag that fails leaves the
+# gate for the next pass; a post whose retag failed is cancelled.
+REPOSED_MARK='Re-posed by fleet-dispatch:'
+repose_ask() {
+  local prof=$1 p=$2 id=$3 g=$4 aid=$5 ask=$6 rsn=$7 f q kind ap opts='' o n ctx new
+  local -A A=()
+  for f in question kind project options option_notes context recommend recommend_why; do
+    A[$f]=$(sed -n "/^$f: */{s///p;q;}" <<<"$ask")
+  done
+  ctx=${A[context]}
+  [[ $ctx != "$REPOSED_MARK"* ]] || return 0
+  q=${A[question]} kind=${A[kind]:-question} ap=${A[project]:-$p}
+  [ -n "$q" ] || { say "settle_answered_gates: cancelled ask $aid has no question to pose again ($p row $id)"; return 0; }
+  # `options:` holds the slugs and `option_notes:` their meanings, pipe-aligned; post takes slug=meaning.
+  if [ -n "${A[options]}" ]; then
+    local -a os ns
+    IFS='|' read -r -a os <<<"${A[options]}"; IFS='|' read -r -a ns <<<"${A[option_notes]}"
+    for n in "${!os[@]}"; do o="${os[n]}=${ns[n]:-}"; opts+="${opts:+|}$o"; done
+  fi
+  ctx="$REPOSED_MARK ask $aid was cancelled (${rsn:-no reason given}) before anyone answered it, and board row $id ($p) waits on this answer.${ctx:+ $ctx}"
+  new=$(env -u CLAUDE_CODE_SESSION_ID -u TMUX -u TMUX_PANE -u AGENTCTL_NAME agent-ask post --kind "$kind" --project "$ap" ${prof:+--profile "$prof"} \
+      ${opts:+--options "$opts"} ${A[recommend]:+--recommend "${A[recommend]}"} ${A[recommend_why]:+--why "${A[recommend_why]}"} \
+      --context "$ctx" -- "$q" </dev/null 2>/dev/null | tail -n 1)
+  [[ $new =~ ^[A-Za-z0-9_-]+$ ]] && agent-ask show "$new" </dev/null >/dev/null 2>&1 ||
+    { say "settle_answered_gates: could not pose cancelled ask $aid again for $p row $id"; return 0; }
+  if np "$prof" ptask "$p" --agent tag --add "ask/$new${g#ask/$aid}" --remove "$g" "$id" </dev/null >/dev/null 2>&1; then
+    logline "posed cancelled ask $aid again as $new: $p row $id waits on it"
+    echo "asked again about $p: $id (ask $aid was cancelled, now ask $new)"
+  else
+    agent-ask cancel "$new" "fleet-dispatch could not gate row $id on it" </dev/null >/dev/null 2>&1
+    say "settle_answered_gates: could not retag $p row $id from #$g to #ask/$new"
+  fi
 }
 
 # reconcile_plans -- file an approved plan its session left behind on the board: one low row naming
