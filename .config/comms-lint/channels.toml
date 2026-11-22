@@ -123,6 +123,9 @@ prose = true
 max_item = 200
 # A section is a heading or a "Done:" label, so a one-line lab status passes in the same shape.
 require = [['(?im)^#*\s*done\b|\bDone:', 'Done section'], ['(?im)^#*\s*next\b|\bNext:', 'Next section']]
+# A merge ask under Needs you: dispatch owns a queue item's open PR (own_parked_pr stamps pr_owner),
+# so the land path merges it; the PR goes under Doing, a real wait on the human is a filed ask (ar-3975).
+forbid = [['(?im)^#*\s*needs you:?[ \t]*\n?(?:[ \t]*-[^\n]*\n)*?(?![ \t]*(?:done|doing|next):)[ \t]*-?(?![^\n]*\bask [A-Za-z0-9]{6}\b)[^\n]*\bmerge\b[^\n]*(?:#|\bPR[ \t]*|pull/)\d+', 'a merge ask under Needs you: the land path merges the PR of a queue item, so it goes under Doing (a merge the human owns is an ask: name its id)']]
 source = { kind = "files", glob = "~/.agent/sessions/*/*-wind-down.md" }
 
 # A lab project's STATUS block (summary.md), the shape `notes projects --stats --json` reads into
