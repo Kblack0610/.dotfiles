@@ -28,6 +28,7 @@
 #                                   load|resource|claim keeps that kind (a hold with no kind line
 #                                   reads as the kind set would give it)
 #   agent-hold show <resource>      print the hold file
+#   agent-hold aged [--days N]      each hold set N days ago or longer (7), exit 1 when any; never releases
 #
 # One file per hold in ~/.agent/holds/ (AGENT_HOLD_DIR overrides), flat `key: value`.
 # A hold is state, not a message, because shell loops have no inbox and new sessions miss
@@ -429,6 +430,34 @@ cmd_list() {
   done
 }
 
+# aged [--days N] -> one line per hold set N days ago or longer (AGENT_HOLD_AGE_DAYS, 7), its age,
+# who set it and why, then how to end it; exit 1 when any, 0 when none. It reads and never releases:
+# a hold is the human's word, so its age is a page, never a timeout (ask GwQIYE, 2026-11-21). The
+# watch hold-age runs it. Event-free by necessity: a hold growing old has no event, so the watch samples.
+cmd_aged() {
+  local days="${AGENT_HOLD_AGE_DAYS:-7}" f since s age now n=0
+  case "${1:-}" in
+    '') ;;
+    --days) [[ "${2:-}" =~ ^[0-9]+$ ]] || { echo "agent-hold aged: --days takes a whole number" >&2; exit 2; }; days="$2" ;;
+    *) echo "agent-hold aged: unknown argument $1" >&2; exit 2 ;;
+  esac
+  [ -d "$HOLD_ROOT" ] || return 0
+  now=$(date +%s)
+  for f in "$HOLD_ROOT"/*; do
+    [ -f "$f" ] || continue
+    since="$(field "$f" since)"
+    # A since no date reads is a hold nobody can age: it shows, since it is as old as anything.
+    s=$(date -d "$since" +%s 2>/dev/null) || s=0
+    age=$(( (now - s) / 86400 ))
+    [ "$age" -ge "$days" ] || continue
+    n=$((n + 1))
+    printf '%s: held %sd, since %s by %s: %s\n' "${f##*/}" "$age" "${since:-an unreadable time}" "$(field "$f" by)" "$(field "$f" reason)"
+  done
+  [ "$n" -gt 0 ] || return 0
+  echo "$n hold(s) set $days days ago or longer; release each that is done (agent-hold release <resource>) or ask its setter; nothing releases them on age"
+  return 1
+}
+
 cmd_show() {
   local resource="${1:-}"
   need_resource "$resource"
@@ -437,7 +466,7 @@ cmd_show() {
 
 cmd_classes() { printf '%s\n' "$DESK_CLASSES"; }
 
-usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; }
 
 verb="${1:-}"; shift || true
 case "$verb" in
@@ -448,6 +477,7 @@ case "$verb" in
   release) cmd_release "$@" ;;
   check)   cmd_check "$@" ;;
   list)    cmd_list "$@" ;;
+  aged)    cmd_aged "$@" ;;
   classes) cmd_classes ;;
   show)    cmd_show "$@" ;;
   -h|--help|help) usage ;;

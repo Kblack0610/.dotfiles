@@ -67,6 +67,23 @@ setup() {
   assert_output --partial 'by coordinator: 96 C, too many editors'
 }
 
+@test "aged names each hold set 7 days ago or longer and exits 1, and releases none (ar-4471)" {
+  run "$HOLD" aged
+  assert_success
+  "$HOLD" set fresh --by human "new"
+  "$HOLD" set old --by human "kept on purpose"
+  sed -i "s/^since: .*/since: $(date -d '-8 days' +%Y-%m-%dT%H:%M:%S%z)/" "$AGENT_HOLD_DIR/old"
+  run "$HOLD" aged
+  assert_failure 1
+  assert_line --index 0 --regexp '^old: held 8d, since .* by human: kept on purpose$'
+  assert_line --index 1 --partial '1 hold(s) set 7 days ago or longer'
+  refute_output --partial 'fresh'
+  run "$HOLD" check old
+  assert_failure 1
+  run "$HOLD" aged --days 9
+  assert_success
+}
+
 @test "a hold on one resource leaves another free" {
   "$HOLD" set unity-tests --by c "hot"
   run "$HOLD" check gpu
