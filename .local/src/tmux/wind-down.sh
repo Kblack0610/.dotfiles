@@ -69,8 +69,9 @@ cmd_arm() {
 
   # First, whatever TMUX says: a TMUX a background session inherited names the foreground claude's
   # pane, never its own.
-  if [ "${CLAUDE_CODE_SESSION_KIND:-}" = bg ]; then
-    arm_bg "$scope"
+  local job
+  if job=$(own_bg_job); then
+    arm_bg "$scope" "$job"
     return
   fi
 
@@ -118,14 +119,25 @@ cmd_arm() {
   fi
 }
 
-# arm_bg <scope>: arm the end of this background session. The job is the daemon's own key for it
-# (CLAUDE_JOB_DIR=<config>/jobs/<short>), which `claude stop` takes; the sentinel is keyed by the
-# session id, as the Stop hook looks it up.
+# own_bg_job: print this session's daemon job, rc 1 when this is not a background session. The job
+# is the daemon's own key for it (CLAUDE_JOB_DIR=<config>/jobs/<short>), the id `claude stop` takes.
+# It counts only when the job's state names this session: a claude started from inside a background
+# session inherits its KIND and JOB_DIR with a session id of its own, and must never stop its parent.
+own_bg_job() {
+  local sid="${CLAUDE_CODE_SESSION_ID:-}" dir="${CLAUDE_JOB_DIR:-}" job
+  dir="${dir%/}"; job="${dir##*/}"
+  [ "${CLAUDE_CODE_SESSION_KIND:-}" = bg ] && is_session_id "$sid" && [[ "$job" =~ ^[0-9a-f]{8}$ ]] || return 1
+  [ "$(jq -r '.sessionId // empty' "$dir/state.json" 2>/dev/null)" = "$sid" ] || return 1
+  echo "$job"
+}
+
+# arm_bg <scope> <job>: arm `claude stop <job>` for this background session, keyed by the session id
+# as the Stop hook looks it up. It needs setsid for the detached stop (Linux; macOS has none), so
+# without one it refuses here rather than leave a sentinel whose fire can schedule nothing.
 arm_bg() {
-  local sid="${CLAUDE_CODE_SESSION_ID:-}" job="${CLAUDE_JOB_DIR:-}" sentinel
-  job="${job%/}"; job="${job##*/}"
-  if ! is_session_id "$sid" || [[ ! "$job" =~ ^[0-9a-f]{8}$ ]]; then
-    echo "wind-down: background session without a session id or daemon job (CLAUDE_JOB_DIR): nothing armed." >&2
+  local sid="$CLAUDE_CODE_SESSION_ID" job="$2" sentinel
+  if ! command -v setsid >/dev/null 2>&1; then
+    echo "wind-down: no setsid here to stop background session '$job' detached: nothing armed; end it with: claude stop $job" >&2
     return 1
   fi
   mkdir -p "$SPIN_DIR"
@@ -348,16 +360,20 @@ fire_bg() {
   reopen_asks "$sid" "$logf"
   kill_cmd="$(printf '%q' "$claude_bin") stop '$target'"
   # The session's screen, as capture-pane saves a window's: in the detached job right before the
-  # stop, so it never holds the Stop hook; best effort, and never an empty file.
+  # stop, so it never holds the Stop hook; best effort, and never an empty file. `claude logs` prints
+  # the recent output and exits (it has no follow mode); the timeout only bounds a wedged daemon.
   if mkdir -p "$HISTORY_DIR" 2>/dev/null; then
     prune_history
     hist="$(printf '%q' "$HISTORY_DIR/$(date +%F-%H%M%S)-${label//[^A-Za-z0-9_-]/_}-${sid:-nosid}.txt")"
-    save_cmd="timeout 10 $(printf '%q' "$claude_bin") logs '$target' > $hist 2>/dev/null; [ -s $hist ] || rm -f -- $hist; "
+    save_cmd="$(printf '%q' "$claude_bin") logs '$target' > $hist 2>/dev/null; [ -s $hist ] || rm -f -- $hist; "
+    command -v timeout >/dev/null 2>&1 && save_cmd="timeout 10 $save_cmd"
   fi
   # setsid: `claude stop` ends this session's process tree, the hook included, and the reap and
   # scratchpad removal chained behind it must outlive that. `sleep 1` lets the Stop pipeline finish
   # first, as the tmux path's does. `cd /`: the job would hold the worktree against the reap.
-  setsid -f bash -c "cd /; sleep 1; $save_cmd$kill_cmd >> '$logf' 2>&1; echo \"[\$(date +%H:%M:%S)] ran: $kill_cmd\" >> '$logf'$(after_kill "$worktree" "$sid" "$logf")" </dev/null >/dev/null 2>&1
+  # Reap and scratchpad only after a stop that worked: with no tmux session behind it, `wt reap` has
+  # no live-session guard for a background session that is still running.
+  setsid -f bash -c "cd /; sleep 1; $save_cmd if $kill_cmd >> '$logf' 2>&1; then echo \"[\$(date +%H:%M:%S)] ran: claude stop $target\" >> '$logf'$(after_kill "$worktree" "$sid" "$logf"); else echo \"[\$(date +%H:%M:%S)] claude stop $target failed: worktree and scratchpad kept\" >> '$logf'; fi" </dev/null >/dev/null 2>&1
   local sched_rc=$?
   [ "$sched_rc" = 0 ] && WD_SCHEDULED=1
   printf '[%s] fire: scheduled rc=%s cmd=%s\n' "$(date '+%F %T' 2>/dev/null)" "$sched_rc" "$kill_cmd" >> "$logf" 2>/dev/null || true

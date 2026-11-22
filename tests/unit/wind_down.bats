@@ -672,49 +672,76 @@ bg_stubs() {
   export PATH="$bin:$PATH"
 }
 
+# The daemon's job dir for <sid>, as `claude daemon` writes it; JOB is its path.
+mk_job() {
+  JOB="$HOME/.claude-x/jobs/72e3cb7a"
+  mkdir -p "$JOB"
+  printf '{"state":"working","sessionId":"%s","daemonShort":"72e3cb7a"}\n' "$1" > "$JOB/state.json"
+}
+
+# arm as a background session: KIND=bg, this sid, the job dir; extra env as leading args.
+bg_arm() { run env CLAUDE_CODE_SESSION_KIND=bg CLAUDE_CODE_SESSION_ID="$SID_A" CLAUDE_JOB_DIR="$JOB" "$@"; }
+
 @test "arm in a background session records its daemon job and touches no tmux" {
-  TMUX="" TMUX_PANE="%29" CLAUDE_CODE_SESSION_KIND=bg CLAUDE_CODE_SESSION_ID="$SID_A" \
-    CLAUDE_JOB_DIR="$HOME/.claude-x/jobs/72e3cb7a" wd arm
+  bg_stubs; mk_job "$SID_A"
+  bg_arm TMUX="" TMUX_PANE="%29" bash "$WIND_DOWN" arm
   assert_success
   assert_output --partial "background session '72e3cb7a' will stop"
   run grep -E '^(scope|target|sid)=' "$SPIN_DIR/$SID_A.request"
   assert_output "$(printf 'scope=bg\ntarget=72e3cb7a\nsid=%s' "$SID_A")"
-  run grep tmux "$NOTES_FIXTURE/calls.log"
+  run grep '^tmux ' "$NOTES_FIXTURE/calls.log"
   assert_failure
 }
 
 @test "arm in a background session that inherited TMUX still arms the stop, never the pane" {
   # The daemon can carry the TMUX and TMUX_PANE of the foreground claude that spawned it.
-  TMUX="fake" TMUX_PANE="%29" CLAUDE_CODE_SESSION_KIND=bg CLAUDE_CODE_SESSION_ID="$SID_A" \
-    CLAUDE_JOB_DIR="$HOME/.claude-x/jobs/72e3cb7a" wd arm --session
+  bg_stubs; mk_job "$SID_A"
+  bg_arm TMUX="fake" TMUX_PANE="%29" bash "$WIND_DOWN" arm --session
   assert_success
   assert_output --partial 'only it stops'
   run grep -E '^(scope|target|pane)=' "$SPIN_DIR/$SID_A.request"
   assert_output "$(printf 'scope=bg\ntarget=72e3cb7a')"
-  run grep tmux "$NOTES_FIXTURE/calls.log"
+  run grep '^tmux ' "$NOTES_FIXTURE/calls.log"
   assert_failure
 }
 
+@test "a claude started inside a background session never arms a stop of its parent's job" {
+  # It inherits KIND and JOB_DIR with a session id of its own: its own window closes, as any.
+  bg_stubs; mk_job "$SID_B"
+  bg_arm bash "$WIND_DOWN" arm
+  assert_success
+  run grep -E '^scope=' "$SPIN_DIR/$SID_A.request"
+  assert_output 'scope=window'
+  bg_arm TMUX="" TMUX_PANE="" bash "$WIND_DOWN" arm
+  assert_failure
+  assert_output --partial 'not inside tmux'
+}
+
 @test "arm in a background session records the worktree it runs in" {
-  mk_worktree
+  bg_stubs; mk_job "$SID_A"; mk_worktree
   cd "$HOME/.worktrees/repo-agent-1"
-  TMUX="" CLAUDE_CODE_SESSION_KIND=bg CLAUDE_CODE_SESSION_ID="$SID_A" \
-    CLAUDE_JOB_DIR="$HOME/.claude-x/jobs/72e3cb7a" wd arm
+  bg_arm TMUX="" bash "$WIND_DOWN" arm
   assert_success
   run grep '^worktree=' "$SPIN_DIR/$SID_A.request"
   assert_output "worktree=$HOME/.worktrees/repo-agent-1"
 }
 
-@test "arm in a background session with no job or session id arms nothing" {
-  TMUX="" CLAUDE_CODE_SESSION_KIND=bg CLAUDE_CODE_SESSION_ID="$SID_A" CLAUDE_JOB_DIR='' wd arm
+@test "arm in a background session with no job dir, or with no setsid to detach the stop, arms nothing" {
+  bg_stubs; mk_job "$SID_A"
+  run env CLAUDE_CODE_SESSION_KIND=bg CLAUDE_CODE_SESSION_ID="$SID_A" CLAUDE_JOB_DIR='' TMUX='' bash "$WIND_DOWN" arm
   assert_failure
-  TMUX="" CLAUDE_CODE_SESSION_KIND=bg CLAUDE_CODE_SESSION_ID='' CLAUDE_JOB_DIR="$HOME/jobs/72e3cb7a" wd arm
+  rm "$BATS_TEST_TMPDIR/bin/setsid"
+  # A PATH with bash, jq and git but no setsid.
+  local bin="$BATS_TEST_TMPDIR/nosetsid"; mkdir -p "$bin"
+  local t; for t in bash jq git dirname readlink mkdir date cat basename; do ln -s "$(command -v "$t")" "$bin/$t"; done
+  bg_arm TMUX='' PATH="$bin" bash "$WIND_DOWN" arm
   assert_failure
+  assert_output --partial 'claude stop 72e3cb7a'
   run bash -c 'ls "$1"/*.request 2>/dev/null | wc -l' _ "$SPIN_DIR"
   assert_output '0'
 }
 
-@test "fire on a background session saves its screen, then stops it detached, reap and scratchpad after" {
+@test "fire on a background session saves its screen, stops it detached, and reaps only after a stop that worked" {
   bg_stubs
   mk_worktree
   mk_sentinel <<EOF
@@ -734,16 +761,46 @@ EOF
   assert_output --partial "logs '72e3cb7a' > $(printf '%q' "$HOME/.local/share/tmux-history/")"
   assert_output --partial "bg-72e3cb7a-$SID_A.txt"
   [[ "${chain%%" stop '72e3cb7a'"*}" == *" logs '72e3cb7a'"* ]] || fail "the screen is saved after the stop"
-  assert_output --partial "wt reap --after-kill '$HOME/.worktrees/repo-agent-1'"
-  assert_output --partial "/*/'$SID_A'"
-  local before_stop="${chain%%" stop '72e3cb7a'"*}"
-  [ "$before_stop" != "$chain" ] || fail "no stop in the chain at all"
-  case "$before_stop" in
-    *"wt reap"*|*"rm -rf"*) fail "the reap or scratchpad removal runs before the stop" ;;
-  esac
+  # The reap and the scratchpad removal sit in the branch a successful stop takes, and the
+  # failed branch keeps both.
+  local ok_branch="${chain#*"; then "}"; ok_branch="${ok_branch%%"; else "*}"
+  [[ "$ok_branch" == *"wt reap --after-kill '$HOME/.worktrees/repo-agent-1'"* ]] || fail "no reap after a stop that worked"
+  [[ "$ok_branch" == *"/*/'$SID_A'"* ]] || fail "no scratchpad removal after a stop that worked"
+  local fail_branch="${chain#*"; else "}"
+  [[ "$fail_branch" != *"wt reap"* && "$fail_branch" != *"rm -rf"* ]] || fail "a failed stop still reaps"
+  [[ "${chain%%"; then "*}" == *" stop '72e3cb7a'"* ]] || fail "the branch does not test the stop"
   # Nothing ran in the foreground: logs and stop are the detached job's, and no pane is killed.
   run grep -E '^(claude|tmux) ' "$NOTES_FIXTURE/calls.log"
   assert_failure
+}
+
+@test "the detached background chain runs: a failed stop keeps the worktree, a stop that worked reaps it" {
+  # The chain setsid is handed, run for real with a claude stub whose stop fails, then succeeds.
+  bg_stubs
+  mk_worktree
+  mk_sentinel <<EOF
+scope=bg
+target=72e3cb7a
+label=bg-72e3cb7a
+worktree=$HOME/.worktrees/repo-agent-1
+sid=$SID_A
+EOF
+  local stub="$BATS_TEST_TMPDIR/bin/setsid"
+  printf '#!/bin/sh\nshift\nexec "$@"\n' > "$stub"
+  # No real `sleep 1` in the test: the chain's sleep is a stub too.
+  printf '#!/bin/sh\nexit 0\n' > "$BATS_TEST_TMPDIR/bin/sleep"; chmod +x "$BATS_TEST_TMPDIR/bin/sleep"
+  printf '#!/bin/sh\necho "claude $*" >> "$NOTES_FIXTURE/calls.log"\n[ "$1" = stop ] && exit "${STOP_RC:-0}"\nexit 0\n' > "$BATS_TEST_TMPDIR/bin/claude"
+  cp "$SENTINEL" "$SENTINEL.keep"
+  STOP_RC=1 run bash "$WIND_DOWN" fire "$SENTINEL"
+  assert_success
+  run grep -c '^wt reap' "$SPIN_DIR/fire.log"
+  assert_output '0'
+  run grep 'claude stop 72e3cb7a failed' "$SPIN_DIR/fire.log"
+  assert_success
+  STOP_RC=0 run bash "$WIND_DOWN" fire "$SENTINEL.keep"
+  assert_success
+  run grep -c "^wt reap --after-kill $HOME/.worktrees/repo-agent-1" "$SPIN_DIR/fire.log"
+  assert_output '1'
 }
 
 @test "fire on a background sentinel with a malformed job stops nothing" {
