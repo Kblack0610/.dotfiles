@@ -729,6 +729,36 @@ Task: ar-1
 EOF
 }
 
+@test "item-line: a MERGED PR's Item line naming another item is left alone (ar-4252)" {
+  # NEGATIVE CONTROL: before ar-4252 this rewrote #42's "Item: old-slug" to "Item: ship", cutting old-slug's link.
+  item old-slug 'board:dotfiles:the first item'
+  printf 'MERGED\n' >"$NOTES_FIXTURE/state"
+  printf 'The change.\nItem: old-slug\nTask: ar-1\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item ship
+  assert_output --partial 'item-line: merged body names another item (old-slug), left as is'
+  run grep -c 'pr edit' "$LOG"
+  assert_output 0
+  run cat "$NOTES_FIXTURE/body"
+  assert_output - <<'EOF2'
+The change.
+Item: old-slug
+Task: ar-1
+EOF2
+}
+
+@test "item-line: a MERGED PR's placeholder or unknown Item line is still rewritten (ar-4252)" {
+  printf 'MERGED\n' >"$NOTES_FIXTURE/state"
+  printf 'The change.\nItem: <slug>\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item ship
+  refute_output --partial 'left as is'
+  run grep -cx 'Item: ship' "$NOTES_FIXTURE/body"
+  assert_output 1
+  printf 'The change.\nItem: no-such-item\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item ship
+  run grep -cx 'Item: ship' "$NOTES_FIXTURE/body"
+  assert_output 1
+}
+
 @test "item-line: a body that cannot be edited stops before the checks and the merge" {
   cp "$NOTES_FIXTURE/gh.script" "$NOTES_FIXTURE/gh.real"
   gh_script <<'EOF'
