@@ -284,6 +284,10 @@ pub fn queue(
         "queued"
     }
     .into();
+    // Items that only wait on someone are Needs you's to say: the card is read and fine, not empty.
+    if c.level == Level::Nodata && !q.items.is_empty() {
+        c.level = Level::Ok;
+    }
     c.first_head = "Bottleneck";
     let read = pipeline.map(Result::as_ref);
     let bottleneck = match read {
@@ -473,6 +477,7 @@ pub fn health(i: &crate::infra::Infra) -> Card {
         .part("Runners down", down, lvl(down, Level::Red))
         .part("CI busy", g.units_line(), Level::Ok)
         .part("CI queued", g.queued, Level::Ok)
+        .part("No runner", i.ci.red.len(), lvl(i.ci.red.len(), Level::Red))
         .part("Stuck", stuck, lvl(stuck, Level::Red))
         .part("Domains down", d_down, lvl(d_down, Level::Red))
         .part("Domains warn", d_warn, lvl(d_warn, Level::Warn))
@@ -529,10 +534,10 @@ pub fn health(i: &crate::infra::Infra) -> Card {
         )
     });
     c.first(
-        stuck_rows
-            .chain(red)
-            .chain(runners)
+        runners
             .chain(machines)
+            .chain(red)
+            .chain(stuck_rows)
             .collect::<Vec<_>>(),
     )
 }
@@ -746,6 +751,9 @@ pub fn projects(p: &crate::projects::Projects) -> Card {
     c.unit = "lab projects".into();
     if !p.errors.is_empty() {
         c.error = Some(p.errors.join("; "));
+        if c.level == Level::Ok {
+            c.level = Level::Warn;
+        }
     }
     c.first_head = "In flight";
     let mut look: Vec<_> = cards.iter().filter(|c| c.in_flight()).collect();
@@ -1328,6 +1336,12 @@ mod tests {
         assert!(c.first.is_empty());
         assert_eq!(c.level, Level::Ok);
         assert!(c.bar.iter().all(|s| s.level != Level::Red));
+        // Only an item that waits on the human: the card is read, never no data.
+        let mut only = q();
+        only.items
+            .retain(|i| i.state == crate::queue::State::Waiting);
+        assert!(!only.items.is_empty());
+        assert_eq!(queue(&only, None).level, Level::Ok);
     }
 
     #[test]
@@ -1553,9 +1567,20 @@ mod tests {
             .iter()
             .map(|f| (f.text.as_str(), f.sub.as_str()))
             .collect();
+        // In flight is the one definition the phone and the Projects tab share; the sub says what
+        // ran, so a project that only waits reads "none running", never a blank.
         assert_eq!(rows, [("busy", "3 running"), ("binks", "none running")]);
         assert_eq!(c.first[0].link.as_ref().unwrap().href(), "#projects/busy");
         assert_eq!(projects(&Default::default()).level, Level::Nodata);
+        // A read that failed is said, and a green card never hides it.
+        let c = projects(&crate::projects::Projects {
+            errors: vec!["notes projects: exit 1".into()],
+            ..ps
+        });
+        assert_eq!(
+            (c.level, c.error.as_deref()),
+            (Level::Warn, Some("notes projects: exit 1"))
+        );
     }
 
     #[test]
@@ -1613,6 +1638,12 @@ mod tests {
             .count();
         assert_eq!((pill.value.as_str(), rows), ("2", 2));
         assert_eq!(c.level, Level::Red);
+        // A red CI check is a pill and the first row, so the red level is never unexplained.
+        i.ci.red = vec!["Checks main".into()];
+        let c = health(&i);
+        let red = c.parts.iter().find(|p| p.label == "No runner").unwrap();
+        assert_eq!(red.value, "1");
+        assert_eq!(c.first[0].text, "Checks main");
     }
 
     #[test]
