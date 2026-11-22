@@ -326,16 +326,17 @@ item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
 }
 
 @test "pull-after starts every high row gated on the closed row, though a start reads stdin" {
-  # 2026-11-20: ar-4068 closed, its pull-after started ar-4069, and ar-4071 (#high #after/ar-4068 too)
-  # was never read: the start ate the rest of the loop's candidate list on stdin (chain-after-stuck).
+  # Every row gated on the closed one is read, whatever a start reads from stdin (chain-after-stuck).
   project game beta "$SANDBOX/repos/game"
   row game agent ga-1 "- [/] feat(game): the map first <!-- id:ga-1 -->"
   row game agent ga-2 "- [ ] feat(game): then its doors $T #high #after/ga-1 <!-- id:ga-2 -->"
-  row game agent ga-3 "- [ ] feat(game): then its roof $T #high #after/ga-1 <!-- id:ga-3 -->"
+  row game agent ga-3 "- [ ] feat(game): the paint $T #low #after/ga-1 <!-- id:ga-3 -->"
+  row game agent ga-4 "- [ ] feat(game): then its roof $T #high #after/ga-1 <!-- id:ga-4 -->"
   cmd_start() { cat >/dev/null; echo "start $*" >> "$NOTES_FIXTURE/started"; }
   run cmd_pull_after ga-1
   assert_success
-  assert_equal "$(paste -sd, "$NOTES_FIXTURE/started")" "start --item ga-2,start --item ga-3"
+  assert_equal "$(paste -sd, "$NOTES_FIXTURE/started")" "start --item ga-2,start --item ga-4"
+  assert_equal "$(agent-queue list --state queued --json | jq -r .slug | sort | paste -sd,)" "ga-2,ga-3,ga-4"
 }
 
 @test "row gates: cleared gates commit an agent row only, the human's row still needs its verdict, and a gated row keeps its verdict's area" {
