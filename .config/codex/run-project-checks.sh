@@ -38,7 +38,6 @@ if [ -f "package.json" ]; then
         grep -q '"typecheck"' package.json 2>/dev/null && { echo "Running typecheck..." >&2; pnpm typecheck 2>&1 || failed=1; }
         grep -q '"lint"' package.json 2>/dev/null && { echo "Running lint..." >&2; pnpm lint 2>&1 || failed=1; }
     fi
-    grep -q '"knip"' package.json 2>/dev/null && { echo "Running knip (advisory)..." >&2; pnpm knip 2>&1 || echo "Knip found issues (advisory only)" >&2; }
 elif [ -f "Cargo.toml" ]; then
     echo "Running cargo check..." >&2
     cargo check 2>&1 || failed=1

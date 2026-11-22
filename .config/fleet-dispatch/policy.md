@@ -50,7 +50,7 @@ A skip does not park a row: `fleet-dispatch` gives each agent-lane skip the exit
 - (personal) Anything about the human's personal machine or personal config.
 - (bundle) Rows that bundle several tasks, or that are long lists of things to check.
 - (multi-area) Rows spanning more than one area (see Fields).
-- (waits) Rows that wait on something else, such as "after agent-24 PR lands" or "after feat/x lands". You cannot tell whether it has landed.
+- (waits) Rows that wait on something else, such as "after agent-24 PR lands" or "after feat/x lands". The queue holds the row on an `after` or `pr:` gate until that lands, so name what it waits on.
 
 ## Size
 
