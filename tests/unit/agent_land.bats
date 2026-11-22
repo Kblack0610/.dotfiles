@@ -1515,9 +1515,76 @@ repo_map() {
   ITEM_PROJECT=tools item tool 'board:tools:tool fix' agent
   printf 'https://github.com/o/r/pull/43\n' >"$NOTES_FIXTURE/url"
   printf 'OPEN\n' >"$NOTES_FIXTURE/state"
+  # #43 is another PR, with its own body: #42's carries "Item: store" now.
+  printf 'The change and why.\n' >"$NOTES_FIXTURE/body"
   AGENT_QUEUE_ITEM=tool run "$LAND" 43
   assert_success
   assert_output --partial 'item: tool done with pr:o/r#43'
+}
+
+# untouched <slug> -> asserts nothing past the refusal ran: no body edit, check, merge or board write, and the item has no PR
+untouched() {
+  run grep -c 'pr edit\|pr checks\|pr merge' "$LOG"
+  assert_output 0
+  run board_calls
+  assert_output ''
+  run agent-queue show "$1" --json
+  assert_equal "$(jq -r '.state + " " + (.pr // "")' <<<"$output")" 'running '
+  run grep -c '^Item:' "$NOTES_FIXTURE/body"
+  assert_output 0
+}
+
+@test "a sibling subagent's item that agent-queue mine returns refuses this PR while its own PR is open (ar-3047)" {
+  # home-config #1195, 2026-11-18: two subagents of one coordinator share its session id; one added
+  # its item and started agent-land on its PR, and the other's bare agent-land took that item.
+  item qualify
+  agent-queue claim qualify --sid sid-coord >/dev/null
+  agent-queue set qualify open_pr=o/r#41 >/dev/null
+  CLAUDE_CODE_SESSION_ID=sid-coord run "$LAND" 42
+  assert_failure 2
+  assert_output --partial "#42 (o/r#42) is not qualify's work, taken from agent-queue mine: qualify's open PR is o/r#41. Pass --item <slug>"
+  untouched qualify
+  # NEGATIVE CONTROL: named by --item, the same PR lands on it.
+  CLAUDE_CODE_SESSION_ID=sid-coord run "$LAND" 42 --item qualify --partial
+  assert_success
+}
+
+@test "an item taken from the session refuses a PR whose body names another item, and takes one that names it (ar-3047)" {
+  item fix-crash
+  printf 'The change.\n\nItem: other-item\n' >"$NOTES_FIXTURE/body"
+  AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42
+  assert_failure 2
+  assert_output --partial 'its body names its item, other-item. Pass --item other-item for the item #42 is the work of'
+  run grep -c 'pr edit\|pr checks\|pr merge\|^notes' <(not_recorded)
+  assert_output 0
+  # NEGATIVE CONTROL: a body that names this item lands, though its open_pr names an earlier PR.
+  agent-queue set fix-crash open_pr=o/r#41 >/dev/null
+  printf 'The change.\n\nItem: fix-crash\n' >"$NOTES_FIXTURE/body"
+  AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42
+  assert_success
+  assert_output --partial 'item: fix-crash done with pr:o/r#42'
+}
+
+@test "an item taken from the session refuses a PR from another branch than its run pushed, and takes its own (ar-3047)" {
+  item fix-crash
+  agent-queue set fix-crash branch=agent-3-x@0123456789abcdef >/dev/null
+  AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42
+  assert_failure 2
+  assert_output --partial "fix-crash's run pushed agent-3-x, and #42 is from pr-42"
+  untouched fix-crash
+  # NEGATIVE CONTROL: the PR from that branch lands with no --item and no Item: line.
+  printf 'agent-3-x\n' >"$NOTES_FIXTURE/head.ref"
+  AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42
+  assert_success
+  assert_output --partial 'item: fix-crash done with pr:o/r#42'
+}
+
+@test "a re-run on the PR the item records as open lands, whatever its branch (ar-3047)" {
+  item fix-crash
+  agent-queue set fix-crash open_pr=o/r#42 branch=elsewhere@0123 >/dev/null
+  AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42
+  assert_success
+  assert_output --partial 'item: fix-crash done with pr:o/r#42'
 }
 
 @test "an agent-lane board item closes its row with --agent" {

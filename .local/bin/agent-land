@@ -34,7 +34,8 @@
 # The item is --item, else $AGENT_QUEUE_ITEM (set in a session fleet-dispatch started), else the
 # one this session added or claimed (`agent-queue mine`). No item, no landing: every merged PR
 # is a unit of work on the work ledger, so add one first (`agent-queue add --running`). An item
-# taken from the session, not named by --item, takes only a PR in its project's repo (own_project).
+# taken from the session, not named by --item, takes only a PR in its project's repo (own_project), and
+# none whose body names another item, or that is not the item's own open PR or from its pushed branch (own_item).
 # Exit 0 landed, 1 a step failed, 2 usage, 3 a catch-up merge of origin/<base> that conflicts
 # (before or after the checks): resolve it and re-run, 4 an item stacked on an item that has not closed ok (stack_gate). A head pushed after the checks waits on its own
 # checks before it merges; the local gate script runs again on a merge of <base> only when the repo's CI
@@ -749,6 +750,36 @@ own_project() {
   die "#$pr is in ${pr_ref%#*} ($got), and $item, taken from $implied, is a $project item in $want: a PR outside the item's repo names its item. Pass --item $item if this PR is that item's work (with --partial while its own PR is still to land), or give it its own item (agent-queue add --running --project $got \"<type(area): title>\") and pass --item <that slug>"
 }
 
+# own_item: an item this run did not name is only the session's guess, and parallel subagents of one
+# coordinator share its Claude session id, so `agent-queue mine` can return a sibling's item. Before
+# anything is touched, a PR that names another item, or an item whose own open PR or pushed branch is
+# another, is refused; one the item records, or whose body names it, lands. Neither is a first landing
+# and lands as before. Why: home-config #1195 got a sibling subagent's "Item:" line (2026-11-18, ar-3047).
+own_item() {
+  [ -n "$implied" ] || return 0
+  local ref refs open br named why=''
+  read -ra refs <<<"$it_pr"
+  open=$(jq -r '.open_pr // ""' <<<"$it")
+  for ref in "${refs[@]}" $open; do
+    [ "$ref" = "$pr_ref" ] || { [[ "$ref" != */*#* || "$pr_ref" != */*#* ]] && [ "${ref##*#}" = "$pr" ]; } || continue
+    return 0
+  done
+  body=$(pr_view body .body 2>&1) || fail item-line "$api pr view: $(lastline "$body")"
+  named=$(tr -d '\r' <<<"$body" | sed -n 's/^Item: *\([^[:space:]]*\).*/\1/p' | head -n 1)
+  br=$(jq -r '.branch // ""' <<<"$it")
+  br=${br%@*}
+  if [ -n "$named" ]; then
+    [ "$named" != "$item" ] || return 0
+    why="its body names its item, $named"
+  elif [ -n "$open" ] && [ "$partial" -eq 0 ] && [ "$(jq -r '.partial // ""' <<<"$it")" != yes ] && [[ " $it_pr " != *" $open "* ]]; then
+    why="$item's open PR is $open"
+  elif [ -n "$br" ] && [ "$br" != "$head_ref" ]; then
+    why="$item's run pushed $br, and #$pr is from $head_ref"
+  fi
+  [ -n "$why" ] || return 0
+  die "#$pr ($pr_ref) is not $item's work, taken from $implied: $why. Pass --item ${named:-<slug>} for the item #$pr is the work of, or --item $item if it is this item's"
+}
+
 # own_merged: a MERGED PR skips own_head, which is what ties an open PR to this checkout. So it must
 # be the item's some other way: the item records it (a re-run, or a --pr-only item; a bare ref by its
 # number, as once_done reads it), its body has "Item: <slug>" (one-shot writes it, and this script
@@ -1052,6 +1083,7 @@ done_as=''
 it_pr=$(jq -r '.pr // ""' <<<"$it")
 own_repo
 own_project
+own_item
 done_as=$(item_pr_gate) || exit $?
 # settle_prior: pr: and merged: are lists in step, so each earlier PR an open item records needs its
 # merge commit before this one joins them. One recorded with none (its pr= set while it was open, or
