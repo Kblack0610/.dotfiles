@@ -541,11 +541,7 @@ fn downtime(h: &HostHistory, p: Palette, now: i64, w: usize) -> Vec<Line<'static
     if h.down.is_empty() {
         return vec![heading("DOWNTIME", "no record in the window", p)];
     }
-    let mut out = vec![heading(
-        "DOWNTIME",
-        format!("{} records", h.down.len()),
-        p,
-    )];
+    let mut out = vec![heading("DOWNTIME", format!("{} records", h.down.len()), p)];
     out.extend(
         Table {
             header: vec!["FROM", "TO", "TOOK", "CAUSE", "WHY"],
