@@ -1709,13 +1709,22 @@ SH
   # 2026-11-10 agent-92: gate-and-land.sh sat 2h in the landing-slot wait behind #2103, printing a line a minute,
   # and the row read STALLED by the transcript's idle minutes.
   landed_fixture
-  local out="$SANDBOX/tasks/b1.output" done="$SANDBOX/tasks/b0.output"
+  local out="$SANDBOX/tasks/b1.output" done="$SANDBOX/tasks/b0.output" srv="$SANDBOX/tasks/b2.output"
   mkdir -p "$SANDBOX/tasks"
-  printf '==> landing slot: #2103 holds main\n' > "$out"; : > "$done"
+  export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
+  printf 'gate gate-and-land.sh\ntest bats\n' > "$FLEET_TIME_USE_CONF"
+  printf '==> landing slot: #2103 holds main\n' > "$out"; : > "$done"; : > "$srv"
+  # launch <tool id> <command> <output file> <result text>: a Bash call and the result naming its output file,
+  # in Claude Code's own wording (a run_in_background call, or one moved to the background at its timeout)
+  launch() {
+    printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"%s","name":"Bash","input":{"command":"%s"}}]}}\n' "$1" "$2"
+    printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"%s","content":"%s Output is being written to: %s. You will be notified"}]}}\n' "$1" "$4" "$3"
+  }
   {
-    printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t0","content":"Command running in background with ID: b0. Output is being written to: %s. You will be notified"}]}}\n' "$done"
+    launch t0 'bats tests/unit' "$done" 'Command running in background with ID: b0.'
     printf '{"type":"user","message":{"content":"<task-notification>\\n<task-id>b0</task-id>\\n<output-file>%s</output-file>\\n<status>completed</status>"}}\n' "$done"
-    printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"Command running in background with ID: b1. Output is being written to: %s. You will be notified"}]}}\n' "$out"
+    launch t1 'scripts/git/gate-and-land.sh 2182' "$out" 'Command did not complete within its 120s timeout and was moved to the background (ID: b1).'
+    launch t2 'npm run dev' "$srv" 'Command running in background with ID: b2.'
   } > "$SANDBOX/t.jsonl"
   PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" PANEL_STATUS=shell PANEL_JOB=gate PANEL_IDLE_S=$((200 * 60)) panel "$SANDBOX/wt" "$SANDBOX/plan.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
@@ -1728,11 +1737,14 @@ SH
   assert_success
   [ "$(jq -r .bucket <<<"$output")" = "LANDED" ]
   jq -r .reason <<<"$output" | grep -q 'background shell idle over 120m'
-  # negative control: a task the transcript saw finish does not count, however fresh its file
-  touch "$done"
+  # negative controls: a fresh file of a task the transcript saw finish, or of an open task that is not a gate
+  # or test (a dev server beside a hung gate), does not count
+  touch "$done" "$srv"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   [ "$(jq -r .bucket <<<"$output")" = "LANDED" ]
+  run open_outputs "$SANDBOX/t.jsonl"
+  assert_output "$out"
   # a gate that redirects into Logs/gate-and-land.out (a FLEET_GATE_LOGS default) counts the same way
   mkdir -p "$SANDBOX/wt/Logs"; : > "$SANDBOX/wt/Logs/gate-and-land.out"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
