@@ -1982,6 +1982,29 @@ make_unity_tree() {
   [ ! -e "$SANDBOX/archive/repo" ] || [ -z "$(ls "$SANDBOX/archive/repo")" ]
 }
 
+@test "archive keeps a tree holding an untracked nested git clone, whose files add -A would not save (ar-3313)" {
+  make_repo
+  export WT_ARCHIVE_DIR="$SANDBOX/archive"
+  local wt="$WT_ROOT/repo-agent-1"
+  git -C "$MAIN" worktree add --quiet "$wt" -b feat origin/main
+  git -C "$wt" commit --quiet --allow-empty -m work # on no remote
+  mkdir -p "$wt/vendor"
+  git clone --quiet "$ORIGIN" "$wt/vendor/lib"
+  printf 'local\n' > "$wt/vendor/lib/edit.txt"
+  run cmd_archive "$wt"
+  assert_failure 1
+  assert_output --partial 'kept repo-agent-1: nested git repo vendor/lib is no submodule'
+  assert_equal "$(cat "$wt/vendor/lib/edit.txt")" local
+  [ -d "$wt/vendor/lib/.git" ]
+  assert_equal "$(git -C "$MAIN" for-each-ref refs/wt-archive)" ''
+  [ ! -e "$SANDBOX/archive/repo" ] || [ -z "$(ls "$SANDBOX/archive/repo")" ]
+  # NEGATIVE CONTROL: the same tree with the clone gone archives.
+  rm -rf "$wt/vendor"
+  run cmd_archive "$wt"
+  assert_success
+  [ ! -e "$wt" ]
+}
+
 @test "archive keeps the tree and no bundle when the bundle does not verify" {
   make_repo
   export WT_ARCHIVE_DIR="$SANDBOX/archive"

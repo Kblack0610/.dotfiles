@@ -1449,7 +1449,7 @@ wt_archive_refs_clear() {
 # The bundle holds that commit and its history minus what any remote has, at
 # $WT_ARCHIVE_DIR/<repo>/<name>@<UTC stamp>.bundle; `wt revive <bundle>` puts it back. The tree
 # goes only once `git bundle verify` passes. rc 1 when the policy keeps the tree (landed,
-# claimed, a submodule holds work), 2 when its state cannot be read or the bundle could not be
+# claimed, a submodule holds work, a nested repo is no submodule), 2 when its state cannot be read or the bundle could not be
 # written or verified.
 cmd_archive() {
   local path name work rc occ main repo out sub lock
@@ -1483,6 +1483,17 @@ cmd_archive() {
   return "$rc"
 }
 
+# wt_unsaved_gitlinks <path> <tree> -- each gitlink path in <tree> that <path>'s .gitmodules does
+# not name; cmd_archive has checked each named one clean and pushed. A path git quotes never
+# matches, so an odd name is refused, never passed.
+wt_unsaved_gitlinks() {
+  local ls
+  ls=$(git -C "$1" ls-tree -r "$2") || return 1
+  # The leading blank line keeps the first file non-empty, so NR == FNR never spills into the second.
+  awk -F'\t' 'NR == FNR { ok[$0] = 1; next } substr($1, 1, 7) == "160000 " && !($2 in ok) { print $2 }' \
+    <(echo; wt_submodule_list "$1" | cut -f2) <(printf '%s\n' "$ls")
+}
+
 # wt_archive_tree <path> <main> <repo> -- cmd_archive's bundle-verify-remove, under its lock.
 wt_archive_tree() {
   local path="$1" main="$2" repo="$3" name branch head ref tree idx snap dir file out rc
@@ -1502,6 +1513,10 @@ wt_archive_tree() {
     panel_fail "kept $name: could not snapshot its uncommitted work"
     return 2
   fi
+  # add -A stores a nested repo that is no submodule as a bare gitlink, its files and history
+  # left out, and the forced remove below would delete them (ar-3313).
+  out=$(wt_unsaved_gitlinks "$path" "$tree") || { panel_fail "kept $name: cannot list the repos nested in it"; return 2; }
+  [ -z "$out" ] || { panel_fail "kept $name: nested git repo ${out//$'\n'/, } is no submodule, so its bundle would not save it"; return 1; }
   # Made even when the files match HEAD: an empty commit still names HEAD as its parent.
   snap=$(git -C "$path" commit-tree "$tree" -p "$head" -m "wt archive: $name, uncommitted work included") &&
     git -C "$main" update-ref "$ref" "$snap" ||
