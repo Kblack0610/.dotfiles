@@ -147,17 +147,15 @@ alias websnap='ffmpeg -f v4l2 -i /dev/video0 -vf "select=gte(n\,5)" -frames:v 1 
 alias icat='kitten icat --passthrough=tmux'
 alias img='chafa'
 
-# Notion MCP is work-only, so it is off by default. This loads it for one session.
-# The flag goes last because --mcp-config is variadic and would swallow a prompt argument.
 # MCP servers are per repo (.mcp.json); the rarely used ones load on demand from
 # ~/.claude/mcp-optional/<name>.json. Usage: claude-mcp context7 playwright -- [claude args]
+# The flag goes last because --mcp-config is variadic and would swallow a prompt argument.
 claude-mcp() {
   local -a cfg=()
   while (( $# )) && [[ "$1" != -- ]]; do cfg+=(--mcp-config ~/.claude/mcp-optional/"$1".json); shift; done
   [[ "$1" == -- ]] && shift
   claude "$@" "${cfg[@]}"
 }
-claude-notion() { claude-mcp notion -- "$@"; }
 
 # --- Bottom Prompt (Ergonomic) ---
 # Push prompt to bottom of terminal on new shell
