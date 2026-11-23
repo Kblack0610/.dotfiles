@@ -169,14 +169,14 @@ spent() {
   assert_output --partial 'budget:      none (a hand run)'
 }
 
-@test "the first stop of the day pages once, naming the raise; a second stop does not page" {
+@test "the first stop of the day pages once at high priority, naming the raise; a second stop does not page" {
   spent judge 11 "$(date -Iseconds)"
   run "$RUN" --agent judge -p x
   assert_failure 75
   assert_output --partial 'To go on today: agentctl budget judge raise <usd>'
   run "$RUN" --agent judge -p x
   assert_failure 75
-  run grep -c '^agent-notify .*judge stopped at its budget' "$NOTES_FIXTURE/calls.log"
+  run grep -c '^agent-notify .*-p high .*-k decision .*judge stopped at its budget' "$NOTES_FIXTURE/calls.log"
   assert_output 1
 }
 
