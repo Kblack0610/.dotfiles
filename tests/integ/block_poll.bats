@@ -150,9 +150,14 @@ rd() { jq -nc --arg f "$1" '{tool_name:"Read", tool_input:{file_path:$f}}' | pyt
   allowed
 }
 
-@test "settings.json runs block-poll on Read as well as Bash" {
+@test "settings.json runs block-poll on Read; on Bash walker-guards runs it, with the same deny" {
   run jq -r '.hooks.PreToolUse[] | select(.hooks[].command | test("block-poll")) | .matcher' "$BATS_TEST_DIRNAME/../../.claude/settings.json"
-  assert_output 'Bash|Read'
+  assert_output 'Read'
+  W="${GUARD%/*}/walker-guards.py"
+  GUARD=$W run fg 'until false; do sleep 5; done'
+  denied
+  GUARD=$W run bg 'until false; do sleep 5; done'
+  allowed
 }
 
 @test "negative control: a Monitor until-loop, the sanctioned wait, is allowed" {

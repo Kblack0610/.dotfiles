@@ -31,14 +31,22 @@ prom_label_re() {
   jq -r 'map(tostring | gsub("[^A-Za-z0-9_-]"; "") | select(. != "")) | join("|")' <<<"$1" 2>/dev/null
 }
 
-# prom_q <promql> [epoch] -> the raw /api/v1/query JSON, or rc 1 when it did not answer success.
-# PROM_TIMEOUT: the board waits 10s; a bar module sets less, so a dead endpoint cannot
+# _prom_get <api path> <curl args...> -> the raw /api/v1/<path> JSON, or rc 1 when it did not answer
+# success. PROM_TIMEOUT: the board waits 10s; a bar module sets less, so a dead endpoint cannot
 # stall the bar.
-prom_q() {
-  local out
-  out="$(curl -sf -m "${PROM_TIMEOUT:-10}" -G "$PROM_URL/api/v1/query" --data-urlencode "query=$1" ${2:+--data-urlencode "time=$2"} 2>/dev/null)" || return 1
+_prom_get() {
+  local path=$1 out; shift
+  out="$(curl -sf -m "${PROM_TIMEOUT:-10}" -G "$PROM_URL/api/v1/$path" "$@" 2>/dev/null)" || return 1
   [ "$(jq -r .status <<< "$out" 2>/dev/null)" = success ] || return 1
   printf '%s' "$out"
+}
+
+# prom_q <promql> [epoch] -> an instant query's JSON.
+prom_q() { _prom_get query --data-urlencode "query=$1" ${2:+--data-urlencode "time=$2"}; }
+
+# prom_range <promql> <start> <end> <step> -> a range query's JSON (epochs, step in seconds).
+prom_range() {
+  _prom_get query_range --data-urlencode "query=$1" --data-urlencode "start=$2" --data-urlencode "end=$3" --data-urlencode "step=$4"
 }
 
 # prom_dur <seconds> -> 45s, 36m, 2h28m, 3d4h; - for anything that is not a number.

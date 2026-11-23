@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """PreToolUse(Bash) guard: a python write Edit or Write would make one-for-one, of a file an Edit/Write guard checks, is denied.
+walker-guards.py runs it.
 
 The Edit/Write guards (manual-mode-investigate and hosted-runner-guard before, context-budget-guard
 after) match those tools only, and settings.json allows all of Bash, so a python heredoc that
@@ -47,6 +48,7 @@ PATCH_METHODS = {"read", "read_text", "write", "write_text", "replace", "count",
                  "startswith", "endswith", "encode", "decode"}
 SCRATCH = None  # the scratch roots, normalised and resolved, built on first need
 WORKFLOW = None  # hosted-runner-guard's workflow path pattern, loaded on first need
+FORGE = None  # loaded past decide's prefilter, or set by walker-guards.py
 DENIED = None  # settings.json's Edit/Write permission denies as path regexes, built on first need
 
 VERB = {"Edit": "patches", "Write": "writes a literal string to"}
@@ -368,28 +370,33 @@ def guarded(target):
 
 
 def reason(cmd, cwd, manual):
-    global ast, shlex, warnings
+    global ast, shlex, warnings, FORGE
     import ast
     import shlex
     import warnings
 
-    forge = _load("forge_guard", "forge-guard.py")
+    FORGE = FORGE or _load("forge_guard", "forge-guard.py")
     poll = _load("block_poll", "block-poll.py")
-    for code, d in codes(cmd, cwd, forge, poll):
-        r = verdict(code, d, manual, forge.resolve)
+    for code, d in codes(cmd, cwd, FORGE, poll):
+        r = verdict(code, d, manual, FORGE.resolve)
         if r:
             return r
     return None
 
 
-def main():
-    data = json.load(sys.stdin)
-    if data.get("tool_name", "Bash") != "Bash":
-        return
+def decide(data):
+    """The deny reason for one PreToolUse payload, or None. walker-guards.py calls this. Claude only:
+    Codex, whose hooks carry CODEX_THREAD_ID (scratch-rm-guard reads it too), has no Edit tool."""
+    if data.get("tool_name", "Bash") != "Bash" or os.environ.get("CODEX_THREAD_ID"):
+        return None
     cmd = (data.get("tool_input") or {}).get("command") or ""
     if "python" not in cmd or not any(w in cmd for w in ("open(", "write_text", "write_bytes")):
-        return
-    r = reason(cmd, data.get("cwd") or os.getcwd(), data.get("permission_mode") == "default")
+        return None
+    return reason(cmd, data.get("cwd") or os.getcwd(), data.get("permission_mode") == "default")
+
+
+def main():
+    r = decide(json.load(sys.stdin))
     if r:
         print(json.dumps({"hookSpecificOutput": {
             "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": r}}))

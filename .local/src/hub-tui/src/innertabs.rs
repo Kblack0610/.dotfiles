@@ -63,39 +63,26 @@ pub fn strip_totals(
     spans(inner, on, total, false, p, w)
 }
 
-/// [`strip_of`] with a break (` |`) before the inner tab `at`, between two groups. Too wide for
-/// `w` on one line, the second group takes a line of its own, and a group wider than `w` wraps,
-/// so no tab is ever clipped away.
-pub fn strip_split(
+/// [`strip_of`] wrapped: too wide for `w` on one line, a tab that does not fit starts the next,
+/// so no tab is ever clipped away. `hint` names the keys that switch.
+pub fn strip_flow(
     inner: &[Inner],
     on: &str,
-    at: &str,
     count: impl Fn(&Inner) -> usize,
+    hint: &str,
     p: Palette,
     w: usize,
 ) -> Vec<Line<'static>> {
-    let n = |i: &Inner| Some(count(i)).filter(|n| *n > 0);
-    let k = inner.iter().position(|i| i.id == at).unwrap_or(0);
-    if k == 0 {
-        return vec![spans(inner, on, n, true, p, w)];
+    let mut s = labels(inner, on, |i| Some(count(i)).filter(|n| *n > 0), true, p);
+    s.push(Span::styled(hint.to_string(), p.dim()));
+    if w == 0 {
+        return vec![Line::from(s)];
     }
-    let first = labels(&inner[..k], on, n, true, p);
-    let mut second = vec![Span::styled(" |", p.dim())];
-    second.extend(labels(&inner[k..], on, n, true, p));
-    second.push(Span::styled(HINT, p.dim()));
-    let wide: usize = first.iter().chain(&second).map(|s| s.width()).sum();
-    if w == 0 || wide <= w {
-        let mut one = first;
-        one.extend(second);
-        return vec![Line::from(one)];
-    }
-    let mut out = flow(first, w);
-    out.extend(flow(second, w));
-    out
+    flow(s, w)
 }
 
-/// `spans` as lines no wider than `w`: a tab that does not fit starts the next line, so a group
-/// of nine department tabs wraps at 80 columns and none is clipped away.
+/// `spans` as lines no wider than `w`: a tab that does not fit starts the next line, so a strip
+/// wraps at 80 columns and none is clipped away.
 fn flow(spans: Vec<Span<'static>>, w: usize) -> Vec<Line<'static>> {
     let mut lines: Vec<Vec<Span<'static>>> = vec![vec![]];
     let mut at = 0;
@@ -113,7 +100,7 @@ fn flow(spans: Vec<Span<'static>>, w: usize) -> Vec<Line<'static>> {
         .collect()
 }
 
-const HINT: &str = "  <- -> switch";
+pub const HINT: &str = "  <- -> switch";
 
 /// The strip, a number beside each inner tab `n` gives one; `hot`: that number needs a look.
 fn spans(

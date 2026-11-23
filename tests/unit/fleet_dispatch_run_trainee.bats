@@ -606,6 +606,26 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   assert_output --regexp '^its diff touches web/(build.sh|package.json), '
 }
 
+@test "trainee floor: a row is judged with its full brief, as promote queues it; one whose detail lines name a path outside the repo is not promoted (ar-2488)" {
+  trainee_ready
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_LOW_WATER=0 DISPATCH_DETAIL_CHARS=20
+  fleet_state 8
+  row game agent tr-brief "- [ ] fix(menu): tidy the pause menu #pts/1 #high $T <!-- id:tr-brief -->"
+  row game agent tr-plain "- [ ] fix(menu): fix the pause title #pts/1 #low $T <!-- id:tr-plain -->"
+  # The path sits past DISPATCH_DETAIL_CHARS, so only the full brief from the board read shows it.
+  board_row game agent tr-brief '[]' '["goal: compare the last two runs", "approach: read the report under ~/.agent/outcomes"]'
+  board_row game agent tr-plain '[]' '["goal: fix the title"]'
+  verdict game agent tr-brief dispatch
+  verdict game agent tr-plain dispatch
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool --json
+  assert_success
+  assert_equal "$(jq -c '[.eligible, (.refused | map(.why))]' <<<"$output")" '[1,["it names a file which the repo does not track"]]'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'trainee floor: promoted row tr-plain to queue item tr-plain for gotrain'
+  refute_output --partial 'promoted row tr-brief'
+}
+
 @test "trainee floor: a harness with a slot and no row it takes marks the pool dry, starved names it past DISPATCH_STARVED_MIN, and a start clears it (ar-4739)" {
   trainee_ready
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_LOW_WATER=0

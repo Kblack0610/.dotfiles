@@ -44,6 +44,7 @@ async function deptRead(key) {
 const deptOf = (key, id) => deptGot[key]?.data?.product?.depts?.find((d) => d.id === id) || null;
 // The strip's count on a department: what needs the human there, as the TUI counts it.
 const deptCounts = (key) => deptGot[key]?.data?.dept_needs || {};
+const deptTotal = (key) => Object.values(deptCounts(key)).reduce((a, n) => a + n, 0);
 
 const D_PART = {
   "-needs": (d, sec) => secHead(sec, "Needs you", d.needs.length, d.needs[0]?.level) + (d.needs.length
@@ -73,14 +74,14 @@ const D_PART = {
     : `<div class="card muted">No pipeline in departments.tsv feeds ${esc(d.title)}.</div>`),
 };
 
-// A department pane: its question, then each section PROJECT_PAGE gives it, in that order.
+// A department pane: its question, then each section PROJECT_DEPTS gives it, in that order.
 function deptPane(key, id) {
   const got = deptGot[key];
   if (!got) return `<div class="muted">Reading the departments...</div>`;
   if (got.err) return `<div class="panel down">${esc(got.err)}</div>`;
   const d = deptOf(key, id);
   if (!d) return `<div class="card muted">${esc(got.data.says || NOT_READ)}</div>`;
-  const secs = PROJECT_PAGE.find((t) => t[0] === id)[2];
+  const secs = PROJECT_DEPTS.find((t) => t[0] === id)[2];
   return `<div class="muted qstats">${esc(d.question)}</div>` +
     secs.map((s) => D_PART[s.slice(s.lastIndexOf("-"))](d, s)).join("");
 }

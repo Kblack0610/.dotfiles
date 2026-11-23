@@ -265,7 +265,7 @@ test("an inner tab is in the URL, a deep link opens on it, and a system opens De
     assert.equal(vm.runInContext(`pst.open + "|" + pst.inner`, ctx), "bnb/demo|rows", arg);
   }
   // NEGATIVE CONTROL: an unknown tail is no inner tab, and no project matches it.
-  assert.deepEqual(JSON.parse(vm.runInContext(`JSON.stringify(pSplit("bnb/demo/nope"))`, ctx)), { key: "bnb/demo/nope", inner: "overview" });
+  assert.deepEqual(JSON.parse(vm.runInContext(`JSON.stringify(pSplit("bnb/demo/nope"))`, ctx)), { key: "bnb/demo/nope", inner: "overview", dept: "" });
   vm.runInContext(`pInner("overview"); st.views.projects = "";`, ctx);
   ctx.sent = [];
   ctx.answers["/api/deliverables?dq=sys%3Aui&scope=bnb%2Fdemo"] = deliv();
@@ -762,37 +762,51 @@ const depts = () => ({
 });
 const DEPT_API = "/api/projects/bnb%2Fdemo/departments";
 
-test("a project's page has the work tabs, then the department tabs its card names, their needs on Overview, and Legal says what is missing", async () => {
+test("a project's page has the work tabs, then one Departments tab with a chip per department its card names, their needs on Overview, and Legal says what is missing", async () => {
   // A list read an earlier test left in flight lands first, so it cannot replace this card.
   await settle(); await settle();
   ctx.answers = { "/api/projects/demo/page": { ...page, need_count: 7 }, [DEPT_API]: depts() };
   draw(list([card({ dept_tabs: ["analytics", "marketing", "legal", "support", "money"] })]), "bnb/demo");
   await settle(); await settle();
   const { head, pane } = read();
-  assert.match(head, /data-ptab="overview"[^>]*>Overview <span class="pill warn">7<\/span><\/button><button[^>]*data-ptab="sprint"[^>]*>Sprint<\/button><button[^>]*data-ptab="rows"[^>]*>Rows[^<]*(<span[^>]*>[^<]*<\/span>)?<\/button><button[^>]*data-ptab="deliverables".*data-ptab="stage".*data-ptab="activity"[^>]*>Activity<\/button><span class="isep" aria-hidden="true"><\/span><button[^>]*data-ptab="analytics"[^>]*>Analytics<\/button><button[^>]*data-ptab="marketing"[^>]*>Marketing <span class="pill warn">1<\/span><\/button><button[^>]*data-ptab="legal"[^>]*>Legal <span class="pill warn">1<\/span><\/button><button[^>]*data-ptab="support"[^>]*>Support<\/button><button[^>]*data-ptab="money"[^>]*>Money<\/button><\/div>/, "Overview, the work tabs, a break, then the departments to the end");
+  assert.match(head, /data-ptab="overview"[^>]*>Overview <span class="pill warn">7<\/span><\/button><button[^>]*data-ptab="sprint"[^>]*>Sprint<\/button><button[^>]*data-ptab="rows"[^>]*>Rows[^<]*(<span[^>]*>[^<]*<\/span>)?<\/button><button[^>]*data-ptab="deliverables".*data-ptab="stage".*data-ptab="activity"[^>]*>Activity<\/button><button[^>]*data-ptab="departments"[^>]*>Departments <span class="pill warn">2<\/span><\/button><\/div>$/, "Overview, the work tabs, then one Departments tab counting the departments' needs");
+  assert.doesNotMatch(head, /data-ptab="(product|engineering|ops|design|analytics|marketing|legal|support|money)"|isep/, "a department is a chip, not a tab");
   const over = pinOf(pane, "overview");
   assert.match(over, /id="sec-p-needs">Needs you <span class="n">7<\/span>/, "the page's 5 needs and the departments' 2");
-  assert.match(over, /<b>Legal: 1<\/b> <a href="#" data-pgo="legal">open Legal<\/a>.*<b>Marketing: 1<\/b> <a href="#" data-pgo="marketing">open Marketing<\/a>/s, "each department with needs is a fold linking to its tab, red first");
+  assert.match(over, /<b>Legal: 1<\/b> <a href="#" data-pgo="departments\/legal">open Legal<\/a>.*<b>Marketing: 1<\/b> <a href="#" data-pgo="departments\/marketing">open Marketing<\/a>/s, "each department with needs is a fold linking to its tab, red first");
   assert.doesNotMatch(over, /departments (not read|: reading)/, "a read product leaves no note");
-  const legal = pinOf(pane, "legal");
-  assert.match(legal, /^<div data-pin="legal" hidden><div class="muted qstats">Is Legal in hand\?<\/div>/);
+  const dp = pinOf(pane, "departments");
+  assert.match(dp, /^<div data-pin="departments" hidden><h2 class="sec" id="sec-p-departments">Departments <span class="n">2<\/span><\/h2><div class="dchips"><div class="seg fseg istrip" role="tablist"><button role="tab" data-pdept="analytics" class="on"[^>]*>Analytics<\/button><button[^>]*data-pdept="marketing"[^>]*>Marketing <span class="pill warn">1<\/span><\/button><button[^>]*data-pdept="legal"[^>]*>Legal <span class="pill warn">1<\/span><\/button><button[^>]*data-pdept="support"[^>]*>Support<\/button><button[^>]*data-pdept="money"[^>]*>Money<\/button><\/div><\/div>/, "one chip per department the card names, the first open");
+  const chip = (id) => dp.match(new RegExp(`<div data-pdp="${id}"[^>]*>.*?(?=<div data-pdp="|$)`, "s"))[0];
+  const legal = chip("legal");
+  assert.match(legal, /^<div data-pdp="legal" hidden><div class="muted qstats">Is Legal in hand\?<\/div>/);
   assert.match(legal, /<h2 class="sec bad" id="sec-p-legal-needs">Needs you <span class="n">1<\/span><\/h2><div class="card"><div class="bad">privacy policy: no privacyUrl in game.json<\/div>/);
   assert.match(legal, /id="sec-p-legal-checks">Checklist <span class="n">1 of 2<\/span>.*<td class="bad">gap<\/td>.*<a class="tl" href="https:\/\/example.com\/support" target="_blank"/s, "a required gap is red, a probed URL its evidence");
   assert.match(legal, /id="sec-p-legal-numbers">Numbers <span class="n">1<\/span>.*<b>reviews<\/b> 3 store reviews.*trends in Grafana/s);
   assert.match(legal, /id="sec-p-legal-pipes">Pipelines <span class="n">1<\/span>.*every product.*<td class="warn">never ran<\/td>/s, "a shared pipeline missing here is amber");
-  assert.match(pinOf(pane, "analytics"), /<div class="card muted">Nothing\.<\/div>.*no kb_project_number series for it.*No pipeline in departments.tsv feeds Analytics\./s, "an empty department says so, section by section");
-  const mk = pinOf(pane, "marketing");
+  assert.match(chip("analytics"), /^<div data-pdp="analytics"><div class="muted qstats">.*<div class="card muted">Nothing\.<\/div>.*no kb_project_number series for it.*No pipeline in departments.tsv feeds Analytics\./s, "an empty department says so, section by section");
+  const mk = chip("marketing");
   assert.match(mk, /id="sec-p-marketing-needs">Needs you <span class="n">1<\/span><\/h2><div class="card"><div class="[^"]*warn[^"]*">post &quot;devlog&quot; on reddit has waited 9 days on your review/, "a stale review is an amber need");
   assert.match(mk, /id="sec-p-marketing-outbound">Outbound <span class="n">1 sent in 30d<\/span>.*<td>reddit<\/td><td>post<\/td><td class="wrap">devlog <span class="muted">261115-aaaaaa<\/span><\/td><td>-<\/td><td class="warn">review<\/td><td>-<\/td>.*<a class="tl" href="https:\/\/bsky.app\/x"[^>]*>clip<\/a>.*<td>hand by human<\/td><td class="">sent<\/td><td>9 wishlist adds 7d, so far to 2026-11-16<\/td>/s, "open items and sends, a send linked to its post and its numbers");
   assert.match(mk, /sec-p-marketing-needs.*sec-p-marketing-outbound.*sec-p-marketing-numbers/s, "Outbound sits under Needs you");
   // The retired inner id lands on Deliverables, in the URL too.
   vm.runInContext(`pInner("build")`, ctx);
   assert.equal(vm.runInContext(`pst.inner + "|" + st.arg`, ctx), "deliverables|bnb/demo/deliverables");
-  assert.deepEqual(JSON.parse(vm.runInContext(`JSON.stringify(pSplit("bnb/demo/build"))`, ctx)), { key: "bnb/demo", inner: "deliverables" });
+  assert.deepEqual(JSON.parse(vm.runInContext(`JSON.stringify(pSplit("bnb/demo/build"))`, ctx)), { key: "bnb/demo", inner: "deliverables", dept: "" });
+  // A chip is in the URL; an old department id lands on Departments under that chip, a chip the card lacks on its first.
+  vm.runInContext(`pInner("departments/legal")`, ctx);
+  assert.equal(vm.runInContext(`pst.inner + "|" + pst.dept + "|" + st.arg`, ctx), "departments|legal|bnb/demo/departments/legal");
+  vm.runInContext(`pInner("marketing")`, ctx);
+  assert.equal(vm.runInContext(`pst.inner + "|" + pst.dept`, ctx), "departments|marketing");
+  vm.runInContext(`pInner("departments/design")`, ctx);
+  assert.equal(vm.runInContext(`pst.dept`, ctx), "analytics", "design is not this card's: its first chip");
+  for (const [arg, want] of [["bnb/demo/departments/legal", { key: "bnb/demo", inner: "departments", dept: "legal" }], ["bnb/demo/legal", { key: "bnb/demo", inner: "departments", dept: "legal" }], ["bnb/demo/departments", { key: "bnb/demo", inner: "departments", dept: "" }]]) {
+    assert.deepEqual(JSON.parse(vm.runInContext(`JSON.stringify(pSplit(${JSON.stringify(arg)}))`, ctx)), want, arg);
+  }
   vm.runInContext(`pGo(null);`, ctx);
 });
 
-test("an infra project gets the engineering and ops tabs only, and a department link it lacks lands on Overview", async () => {
+test("an infra project gets the engineering and ops chips only, and a chip it lacks lands on its first", async () => {
   await settle(); await settle();
   const infra = card({ dept_tabs: ["engineering", "ops"] });
   ctx.answers = {
@@ -803,11 +817,13 @@ test("an infra project gets the engineering and ops tabs only, and a department 
   draw(list([infra]), "bnb/demo");
   await settle(); await settle();
   const { head, pane } = read();
-  assert.match(head, /data-ptab="engineering"[^>]*>Engineering<\/button><button[^>]*data-ptab="ops"[^>]*>Ops<\/button>/);
-  assert.doesNotMatch(head, /data-ptab="(product|design|analytics|marketing|legal|support|money)"/);
-  assert.match(pinOf(pane, "engineering"), /^<div data-pin="engineering" hidden><div class="muted qstats">Is Engineering in hand\?/);
+  assert.match(head, /data-ptab="departments"/);
+  const depts = pinOf(pane, "departments");
+  assert.match(depts, /data-pdept="engineering"[^>]*>Engineering<\/button><button[^>]*data-pdept="ops"[^>]*>Ops<\/button><\/div>/);
+  assert.doesNotMatch(depts, /data-pdept="(product|design|analytics|marketing|legal|support|money)"/);
+  assert.match(depts, /<div data-pdp="engineering"><div class="muted qstats">Is Engineering in hand\?/);
   vm.runInContext(`pInner("legal")`, ctx);
-  assert.equal(vm.runInContext(`pst.inner + "|" + st.arg`, ctx), "overview|bnb/demo");
+  assert.equal(vm.runInContext(`pst.inner + "|" + pst.dept + "|" + st.arg`, ctx), "departments|engineering|bnb/demo/departments/engineering");
   vm.runInContext(`pGo(null);`, ctx);
 });
 
@@ -818,7 +834,9 @@ test("a project with no type has no department tabs and reads no departments", a
   draw(list([card()]), "bnb/demo");
   await settle();
   const { head } = read();
-  assert.doesNotMatch(head, /data-ptab="(product|engineering|ops|design|analytics|marketing|legal|support|money)"|isep/);
+  assert.doesNotMatch(head, /data-ptab="(departments|product|engineering|ops|design|analytics|marketing|legal|support|money)"|isep/);
+  vm.runInContext(`pInner("legal")`, ctx);
+  assert.equal(vm.runInContext(`pst.inner + "|" + st.arg`, ctx), "overview|bnb/demo", "an untyped project has no Departments: Overview");
   assert.ok(!ctx.sent.some((s) => s.u.includes("/departments")), "an untyped project reads no departments");
   assert.doesNotMatch(pinOf(read().pane, "overview"), /departments/, "nor waits on them");
   vm.runInContext(`pGo(null);`, ctx);
@@ -851,7 +869,7 @@ const coverage = () => ({
   ],
   head: "1 red  |  2 amber  |  8 off", says: [], red: 1, amber: 2, off: 8, failing: 1,
   departments: [["product", "Product"], ["engineering", "Engineering"], ["ops", "Ops"], ["design", "Design"], ["analytics", "Analytics"], ["marketing", "Marketing"], ["legal", "Legal"], ["support", "Support"], ["money", "Money"]],
-  table: { ...listTable([]), total: 2, shown: 2, legend: "red: a required department has a gap", links: [{ project: "#projects/bnb%2Fdemo", legal: "#projects/bnb%2Fdemo%2Flegal" }, { project: "#projects/personal%2Fhome-config" }],
+  table: { ...listTable([]), total: 2, shown: 2, legend: "red: a required department has a gap", links: [{ project: "#projects/bnb%2Fdemo", legal: "#projects/bnb%2Fdemo%2Fdepartments%2Flegal" }, { project: "#projects/personal%2Fhome-config" }],
     columns: ["project", "type", "stage", "product", "engineering", "ops", "design", "analytics", "marketing", "legal", "support", "money"].map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })) },
 });
 
@@ -863,7 +881,7 @@ test("Coverage is one row per typed project, a cell its department's word linked
   const cov = box("p-cov").innerHTML;
   assert.ok(ctx.sent.some((s) => s.u === "/api/coverage"), "Coverage reads only while it shows");
   assert.match(cov, /<h2 class="sec bad" id="sec-coverage">Coverage <span class="n">1 red  \|  2 amber  \|  8 off<\/span><\/h2>/);
-  assert.match(cov, /data-open="bnb\/demo"><td><a class="tl" href="#projects\/bnb%2Fdemo">demo<\/a><\/td><td>game<\/td><td>beta<\/td>(<td class="muted">off<\/td>){6}<td class="bad"><a class="tl" href="#projects\/bnb%2Fdemo%2Flegal">red<\/a><\/td><td class="warn">amber<\/td><td>ok<\/td><\/tr>/);
+  assert.match(cov, /data-open="bnb\/demo"><td><a class="tl" href="#projects\/bnb%2Fdemo">demo<\/a><\/td><td>game<\/td><td>beta<\/td>(<td class="muted">off<\/td>){6}<td class="bad"><a class="tl" href="#projects\/bnb%2Fdemo%2Fdepartments%2Flegal">red<\/a><\/td><td class="warn">amber<\/td><td>ok<\/td><\/tr>/);
   assert.match(cov, /data-open="personal\/home-config"><td><a class="tl" href="#projects\/personal%2Fhome-config">home-config<\/a><\/td><td>infra<\/td><td>beta<\/td><td class="muted">off<\/td><td>ok<\/td><td class="warn">amber<\/td>(<td class="muted">off<\/td>){6}<\/tr>/, "infra has engineering and ops cells and the rest off");
   assert.match(cov, /red: a required department has a gap/);
   assert.match(box("p-strip").innerHTML, /data-itab="coverage" class="on"[^>]*>Coverage <span class="muted">1<\/span>/, "the strip counts products with a red cell");
