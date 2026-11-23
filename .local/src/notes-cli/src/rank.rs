@@ -117,7 +117,7 @@ pub(crate) const DUE_LATER: u8 = 3;
 pub(crate) struct Rank {
     /// 0 overdue, 1 due today, 2 due within [`DUE_SOON_DAYS`], [`DUE_LATER`] later or no due date.
     pub due: u8,
-    /// Index into [`md::PRIORITIES`]: 0 `#urgent`, 1 `#high`, 2 `#low`; untagged is
+    /// Index into [`md::PRIORITIES`]: 0 `#urgent`, 1 `#high`, 2 `#normal`, 3 `#low`; untagged is
     /// [`md::DEFAULT_PRIORITY`].
     pub prio: u8,
     /// 0 when the human asked for it.
@@ -222,8 +222,22 @@ mod tests {
     fn an_untagged_row_ranks_as_the_default_priority() {
         assert_eq!(
             of("- [ ] bare", d(TODAY)).prio,
-            of("- [ ] tagged #high", d(TODAY)).prio
+            of("- [ ] tagged #normal", d(TODAY)).prio
         );
+    }
+
+    #[test]
+    fn an_untagged_row_ranks_after_high_and_before_low() {
+        // Negative control: on the three-level table (bare row ranked as #high) the first
+        // assertion fails.
+        let out = sorted(&[
+            "- [ ] low #low #c1001",
+            "- [ ] bare #c1001",
+            "- [ ] high #high #c1001",
+            "- [ ] normal #normal #c1002",
+            "- [ ] fire #urgent #c1001",
+        ]);
+        assert_eq!(out, ["fire", "high", "bare", "normal", "low"]);
     }
 
     #[test]
