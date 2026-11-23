@@ -307,7 +307,7 @@ _vim_edit() {
 # A pane ensure has only just made is in no mode, so its startup send-keys skips this.
 _type() {
   local srv="$1" t="$2"; shift 2
-  leave_mode "$srv" "$t" || { echo "tmx: $t is stuck in a tmux mode; typed nothing" >&2; return 1; }
+  leave_mode "$srv" "$t" || { echo "tmx: $t is stuck in a tmux mode, or its mode cannot be read; typed nothing" >&2; return 1; }
   tmux -L "$srv" send-keys -t "$t" "$@"
 }
 

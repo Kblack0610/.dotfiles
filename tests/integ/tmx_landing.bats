@@ -143,6 +143,19 @@ left_mode_first() {
   refute_output --partial 'send-keys'
 }
 
+@test "a pane stuck in stacked tmux modes, or one whose mode cannot be read, gets nothing typed into it" {
+  local m
+  # #{pane_in_mode} counts the stacked modes (tree mode over copy mode reads 2, ar-3942); only 0 is out of every one.
+  for m in 2 ''; do
+    in_landing lab lab
+    : > "$NOTES_FIXTURE/calls.log"
+    STUB_PANE_CMD=nvim STUB_PANE_IN_MODE="$m" run "$TMX" land lab root
+    assert_output --partial 'stuck in a tmux mode'
+    run calls
+    refute_output --partial 'send-keys'
+  done
+}
+
 # --- the shell case, unchanged ---
 
 @test "a pane back at a shell re-runs the manifest's startup command" {

@@ -50,6 +50,7 @@ setup() {
       [ -n "$EXISTING_EDITOR" ] && printf '%s\n' "$EXISTING_EDITOR"
       ;;
     *pane_current_command*) printf '%s\n' "$PANE_CMD" ;;
+    *pane_in_mode*) printf '0\n' ;;   # tmux-pane.sh leave_mode: out of every mode, as real tmux reads one
     *session_name*) printf 'work\n' ;;
     *new-window*) printf '@9\n' ;;
     *session_path*) printf '%s\n' "$SANDBOX" ;;
