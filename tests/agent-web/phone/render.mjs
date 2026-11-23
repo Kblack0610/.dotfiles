@@ -18,7 +18,8 @@
 // a tap opens every group and tab, Escape closes it; at a desktop width the sidebar shows.
 // --no-kit answers kb-shell.js with a 404 and fails unless the nav check reports no menu button.
 // The cards check: Home at phone width shows every card, two across, and Needs you's head inside the
-// first screen; under --control it forces one card per row and fails unless that is reported.
+// first screen, and at phone and desk width each card starts one gap under the card above it; under
+// --control it forces one card per row and the unpacked grid, and fails unless both are reported.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -334,12 +335,15 @@ async function navCheck(browser, page0) {
 }
 
 // Home's cards at phone width: every card shown (none inside a closed fold), two across, the whole
-// grid and the Needs you head under it inside the first screen (dashboards.md, Tile and Needs-you patterns). `css`
-// is the --control breakage: one card per row, which must be reported.
+// grid and the Needs you head under it inside the first screen (dashboards.md, Tile and Needs-you patterns).
+// At phone and desk width each card starts one gap under the card above it in its column (cards.js
+// packCards), never under the tallest card of a grid row. `css` is the --control breakage: one card
+// per row on the phone and the unpacked grid on the desk, each of which must be reported.
 const CARDS_CONTROL_CSS = "#home .kgrid { grid-template-columns: 1fr !important; }";
-async function cardsCheck(browser, page0, css = null) {
+const PACK_CONTROL_CSS = "#home .kgrid.packed { grid-auto-rows: auto !important; row-gap: 10px !important; } #home .kcard { grid-row-end: auto !important; }";
+async function homeCards(browser, page0, viewport, phone, css, shot, judge) {
   const errors = [];
-  const { context, page, seen } = await openPage(browser, page0, VIEWPORT, true);
+  const { context, page, seen } = await openPage(browser, page0, viewport, phone);
   try {
     await page.goto(`${ORIGIN}/#home`, { waitUntil: "load" });
     await page.waitForLoadState("networkidle");
@@ -349,24 +353,37 @@ async function cardsCheck(browser, page0, css = null) {
     const c = await page.evaluate(() => {
       const all = [...document.querySelectorAll("#home .kcard")];
       const box = (e) => e.getBoundingClientRect();
-      const shown = all.filter((e) => box(e).height > 0 && !e.closest("details:not([open])"));
-      const tops = new Set(shown.map((e) => Math.round(box(e).top + window.scrollY)));
+      const shown = all.filter((e) => box(e).height > 0 && !e.closest("details:not([open])")).map((e) => ({ card: e.dataset.card, b: box(e) }));
+      const grid = document.querySelector("#home .kgrid");
+      const gap = grid ? parseFloat(getComputedStyle(grid).columnGap) || 0 : 0;
+      const col = (x) => Math.round(x.b.left);
+      // Each card's space above it: to the bottom of the nearest card above it in its column.
+      const gaps = shown.map((x) => {
+        const above = shown.filter((o) => col(o) === col(x) && o.b.bottom <= x.b.top + 0.5);
+        return above.length ? { card: x.card, px: Math.round(x.b.top - Math.max(...above.map((o) => o.b.bottom))) } : null;
+      }).filter((g) => g && g.px > gap + 1.5);
       const need = document.getElementById("home-need-head");
-      return { all: all.length, shown: shown.length, rows: tops.size, bottom: shown.length ? Math.round(Math.max(...shown.map((e) => box(e).bottom + window.scrollY))) : null,
+      return { all: all.length, shown: shown.length, cols: new Set(shown.map(col)).size, gap, gaps,
+        bottom: shown.length ? Math.round(Math.max(...shown.map((x) => x.b.bottom + window.scrollY))) : null,
         need: need ? Math.round(box(need).bottom + window.scrollY) : null };
     });
-    if (c.shown < c.all || !c.all) errors.push(`${c.shown} of ${c.all} cards shown`);
-    if (c.shown && c.rows > Math.ceil(c.shown / 2)) errors.push(`${c.shown} cards take ${c.rows} rows, not two across`);
-    if (c.bottom > VIEWPORT.height) errors.push(`the cards end at ${c.bottom}px, past the first screen (${VIEWPORT.height}px)`);
-    if (c.need == null || c.need > VIEWPORT.height) errors.push(`the Needs you head ends at ${c.need}px, not inside the first screen`);
+    errors.push(...judge(c));
+    for (const g of c.gaps) errors.push(`${viewport.width}px: the ${g.card} card starts ${g.px}px under the card above it, not one ${c.gap}px gap`);
   } catch (e) {
     errors.push(e.message.split("\n")[0]);
   }
-  await page.screenshot({ path: join(out, "home-cards.png") }).catch((e) => errors.push(`screenshot: ${e.message}`));
+  await page.screenshot({ path: join(out, shot) }).catch((e) => errors.push(`screenshot: ${e.message}`));
   errors.push(...seen.errors, ...seen.drift);
   await context.close();
   return errors;
 }
+const cardsCheck = (browser, page0, css = null) => homeCards(browser, page0, VIEWPORT, true, css, "home-cards.png", (c) => [
+  ...(c.shown < c.all || !c.all ? [`${c.shown} of ${c.all} cards shown`] : []),
+  ...(c.shown > 1 && c.cols !== 2 ? [`${c.shown} cards in ${c.cols} column(s), not two across`] : []),
+  ...(c.bottom > VIEWPORT.height ? [`the cards end at ${c.bottom}px, past the first screen (${VIEWPORT.height}px)`] : []),
+  ...(c.need == null || c.need > VIEWPORT.height ? [`the Needs you head ends at ${c.need}px, not inside the first screen`] : []),
+]);
+const packCheck = (browser, page0, css = null) => homeCards(browser, page0, DESK, false, css, "home-cards-desk.png", (c) => (c.all ? [] : ["no cards drawn"]));
 
 // The shared pager (table.js tblPager over hub_core::table::page), on Stack Rules: the server's
 // first page only, every page reachable, next reads page 2 with the page in the URL, and a search
@@ -452,19 +469,22 @@ async function main() {
   const browser = await pw.chromium.launch({ headless: true, executablePath: chromium(pw) });
   const slot = limiter(PAGES_AT_ONCE);
   // --control proves the overflow detector alone; the nav check has its own control, --no-kit.
-  const [navErrors, cardErrors, pagerErrors, results, heights] = await Promise.all([
+  const [navErrors, phoneCardErrors, deskCardErrors, pagerErrors, results, heights] = await Promise.all([
     control || wide ? [] : slot(() => navCheck(browser, page)),
     wide || noKit ? [] : slot(() => cardsCheck(browser, page, control ? CARDS_CONTROL_CSS : null)),
+    wide || noKit ? [] : slot(() => packCheck(browser, page, control ? PACK_CONTROL_CSS : null)),
     wide || noKit ? [] : slot(() => pagerCheck(browser, page, control)),
     noKit ? [] : Promise.all(TABS.map((spec) => slot(() => renderTab(browser, spec, page)))),
     noKit ? [] : Promise.all(TALL.map((spec) => slot(() => heightOf(browser, spec, page)))),
   ]);
   await browser.close();
+  const cardErrors = [...phoneCardErrors, ...deskCardErrors];
   for (const e of navErrors) console.log(`NAV ${e}`);
   for (const e of cardErrors) console.log(`CARDS ${e}`);
   for (const e of pagerErrors) console.log(`PAGER ${e}`);
   if (control && !pagerErrors.some((e) => e.includes("no pager"))) { console.log("FAIL: --control: the pager check did not report the missing pager"); process.exit(1); }
   if (control && !cardErrors.some((e) => e.includes("not two across"))) { console.log("FAIL: --control: the cards check did not report one card per row"); process.exit(1); }
+  if (control && !deskCardErrors.some((e) => e.includes("under the card above it"))) { console.log("FAIL: --control: the cards check did not report the unpacked grid's gaps"); process.exit(1); }
   if (noKit) {
     if (!navErrors.some((e) => e.includes("no menu button"))) { console.log("FAIL: --no-kit control: the nav check did not report the missing menu button"); process.exit(1); }
     console.log("no-kit control ok: the nav check reported the missing menu button");
@@ -474,7 +494,7 @@ async function main() {
   if (navErrors.length) fail.push(`nav check, ${navErrors.length} error(s)`);
   else if (!control && !wide) console.log("nav ok: phone menu opens and closes, wide sidebar shows");
   if (!control && cardErrors.length) fail.push(`Home cards check, ${cardErrors.length} error(s)`);
-  else if (!control && !wide) console.log("cards ok: Home's cards show two across, they and the Needs you head inside the first screen");
+  else if (!control && !wide) console.log("cards ok: Home's cards show two across, they and the Needs you head inside the first screen, each one gap under the card above it");
   if (!control && pagerErrors.length) fail.push(`pager check, ${pagerErrors.length} error(s)`);
   else if (!control && !wide) console.log(`pager ok: Stack Rules pages ${pageRows("rules")} rows at a time, next reads page 2 into the URL, a search opens page 1`);
   writeFileSync(join(out, "numbers.json"), JSON.stringify(results, null, 2) + "\n");
