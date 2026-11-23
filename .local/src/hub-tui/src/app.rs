@@ -6817,7 +6817,7 @@ mod tests {
             queue["items"][0]["unit"]
                 .as_str()
                 .unwrap()
-                .starts_with("queued"),
+                .starts_with("running"),
             "{queue}"
         );
         // A card whose read has not come back says reading, never a number.
@@ -6845,7 +6845,7 @@ mod tests {
         );
         // The Queue card counts the queue Home holds; the others read until their tab answers.
         assert!(
-            s.contains("QUEUE  2 queued")
+            s.contains("QUEUE  1 running")
                 && s.contains("Running 1  On a PR 0")
                 && !s.contains("Ready")
                 && !s.contains("Held")
