@@ -31,7 +31,7 @@ Each row comes with its project's stage, its lane and its tagged tier:
 
 - `prod` (live users): bugs and small fixes only. No new features, no flags turned on, nothing touching production data.
 - `beta`: bugs, and small features that are fully described in the row.
-- `alpha`: only small rows that need no design choice; most alpha work still needs planning, so skip it. A clear, size `S` `#requested` row counts as one of these.
+- `alpha`: judged as `beta`. Size and clarity are the size and unclear rules' to judge, not the stage's.
 - (stage) The row is more than its project's stage allows above.
 
 ## Always skip
