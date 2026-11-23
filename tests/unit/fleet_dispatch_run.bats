@@ -210,11 +210,13 @@ bats_require_minimum_version 1.5.0
   assert_success
   refute_output --partial 'game is 1 under its min_live'
   [ -z "$(grep -l 'a new map' "$AGENT_QUEUE_DIR"/queued/*.md 2>/dev/null)" ] || fail "the floor read the board with the game minimum met"
-  # Under it (2 wanted, g1 is 1): the floor promotes the game row and not the app one.
+  # Under it: the pass above started g1 in a sandbox session that does not live on, so this pass's
+  # reap fails it and the game class counts 0 of 2. The floor promotes the game row and not the app one.
   class_floors 0 0 2
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_output --partial 'game is 1 under its min_live, topping game rows up from the board'
+  assert_output --partial 'failed queue item g1'
+  assert_output --partial 'game is 2 under its min_live, topping game rows up from the board'
   f=$(grep -l 'a new map' "$AGENT_QUEUE_DIR"/queued/*.md 2>/dev/null)
   [ -n "$f" ] || fail "the project floor did not promote the game row: $(ls "$AGENT_QUEUE_DIR"/*/)"
   assert_equal "$(qfield "$f" project)" game
