@@ -97,7 +97,8 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
   needs   Home's NEEDS YOU as {needs, errors, figures}, ranked, each row with the score it counted;
           figures are the Needs you card's whole numbers (needs_headline, needs_only_you, ...)
           --page sends one grouped page for the new rows over the
-          bar in channels.toml [pager.needs] (fleet-state.service runs it after every pass)
+          bar in channels.toml [pager.needs], and once more for an ask still open in its
+          repage window (fleet-state.service runs it after every pass)
   ui-text every text Home, the board, the projects cards and the briefing send, one JSON line each
           ({ts, path, role, text}), what comms-lint grades under its `ui` channel
   bar     what the queue and sessions chip hovers lay out as {as_of, sessions, ready,

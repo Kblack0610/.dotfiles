@@ -520,13 +520,12 @@ typed() { cat "$HOME/panel.calls" 2>/dev/null; }
 
 @test "a close whose pane another send holds (agent-panel send exit 75) types no keys of its own and gives its claim back" {
   doc "[$(crow 1 DONE now)]"
-  # The claim fleet-sessions mark --close takes (a stub here).
-  mkdir -p "$FLEET_SHEPHERD_DIR/.closed"; : > "$FLEET_SHEPHERD_DIR/.closed/1"
   STUB_PANEL_RC=75 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   run typed
   assert_output 'send --wait 0 --pane lab/%1 /wind-down auto'
   grep -q 'close: lab/1:1 DONE: another send held its pane; the next check types it' "$FLEET_SHEPHERD_DIR/log.md"
-  [ ! -e "$FLEET_SHEPHERD_DIR/.closed/1" ]
+  # The claim goes back through fleet-sessions (a stub here), which logs the release (ar-461).
+  grep -qx 'mark --release 1' "$HOME/sessions.calls"
   ! grep -q 'typed /wind-down' "$FLEET_SHEPHERD_DIR/log.md"
   run grep -c 'send-keys' "$HOME/tmux.calls"
   assert_output 0
@@ -589,11 +588,11 @@ typed() { cat "$HOME/panel.calls" 2>/dev/null; }
   grep -q '^razer tmux -L lab capture-pane' "$HOME/ssh.calls"
   grep -q 'close: razer@lab/7:1 DONE: typed /wind-down auto' "$FLEET_SHEPHERD_DIR/log.md"
   # ssh failing (255): nothing typed, the claim is given back for the next check.
-  : > "$HOME/panel.calls"; mkdir -p "$FLEET_SHEPHERD_DIR/.closed"; : > "$FLEET_SHEPHERD_DIR/.closed/8"
+  : > "$HOME/panel.calls"
   doc "[$(crow 8 DONE now '{"target":"razer@lab/8:1","host":"razer"}')]"
   STUB_SSH_FAIL=agent-panel STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   [ -z "$(typed)" ]
-  [ ! -e "$FLEET_SHEPHERD_DIR/.closed/8" ]
+  grep -qx 'mark --release 8' "$HOME/sessions.calls"
   grep -q 'close: razer@lab/8:1 DONE: its machine did not answer over ssh; the next check types it' "$FLEET_SHEPHERD_DIR/log.md"
   # A local row never goes through ssh.
   : > "$HOME/ssh.calls"; doc "[$(crow 9 DONE now)]"
