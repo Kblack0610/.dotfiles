@@ -181,14 +181,6 @@ watch() {
   assert_output --partial 'cannot read the parts list'
 }
 
-@test "health --json carries the verdict, each part with its watches, and the stale names" {
-  watch old-watch OK '[Nope]'
-  run "$SUBJECT" health --json
-  assert_success
-  run jq -r '[.parts[0].part, .parts[0].state, (.parts[0].watches | map(.watch + "=" + .state) | join(",")), .stale[0].name, (.verdict | startswith("fleet health GAPS"))] | join(" ")' <<<"$output"
-  assert_output 'Runners OK runner-watch=OK Nope true'
-}
-
 @test "health: an unknown flag is a usage error" {
   run "$SUBJECT" health --nope
   assert_failure 2
@@ -243,8 +235,8 @@ watch() {
   assert_output 'Lifecycle'
 }
 
-@test "health: --coverage with --json is a usage error, not a silent choice" {
-  run "$SUBJECT" health --coverage --json
+@test "health: --json, which nothing read, is a usage error" {
+  run "$SUBJECT" health --json
   assert_failure 2
 }
 

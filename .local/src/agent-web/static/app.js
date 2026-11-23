@@ -329,15 +329,15 @@ const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "
   "releases/builds": ["infra", "runs"], "releases/tests": ["infra", "tests"] };
 // hub_core::layout's inner tabs: a strip of sub-views inside one tab, each a group of its sections.
 // assets.rs `inner_tabs_are_the_layout` fails when this line drifts.
-const INNER_TABS = {"log":{"tabs":[["work","Work",["work"]],["day","Day",["day","history"]],["actions","Actions",["actions"]],["changes","Changes",["changes"]],["rundowns","Rundowns",["rundowns"]],["judges","Judges",["verdicts"]],["ranked","Ranked",["ranked","forecast"]]]},"sessions":{"tabs":[["sessions","Sessions",["sessions","detail"]],["runners","Runners",["fleet"]],["shepherd","Shepherd",["shepherd"]]]},"projects":{"tabs":[["list","Projects",["cards"]],["all","Board",["board"]],["deliverables","Deliverables",["deliverables"]],["coverage","Coverage",["coverage"]],["ladder","Ladder",["stages","requirements"]]]},"releases":{"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]],["flow","Flow",["swimlanes"]]]},"alerts":{"tabs":[["firing","Firing",["health","firing"]],["fixes","Fixes",["fixes"]],["watches","Watches",["watches"]],["history","History",["history"]]]},"infra":{"tabs":[["machines","Machines",["machines","pools"]],["runners","Runners",["ci","waiting","local"]],["runs","Runs",["runs"]],["pipelines","Pipelines",["pipelines"]],["tests","Tests",["tests","quarantine"]],["jobs","Jobs",["jobs"]]]},"costs":{"tabs":[["spend","Spend",["totals","sessions","spend","table"]],["limits","Limits",["burn","consumers"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"stack":{"tabs":[["flows","Flows",["flows"]],["skills","Skills",["skills"]],["agents","Agents",["agents"]],["hooks","Hooks",["hooks"]],["rules","Rules",["rules"]]]}};
+const INNER_TABS = {"log":{"tabs":[["work","Work",["work"]],["day","Day",["day","history"]],["actions","Actions",["actions"]],["changes","Changes",["changes"]],["rundowns","Rundowns",["rundowns"]],["judges","Judges",["verdicts"]],["ranked","Ranked",["ranked","forecast"]]]},"sessions":{"tabs":[["sessions","Sessions",["sessions","detail"]],["runners","Runners",["fleet"]],["shepherd","Shepherd",["shepherd"]]]},"projects":{"tabs":[["list","Projects",["cards"]],["all","Board",["board"]],["sprints","Sprints",["sprints"]],["deliverables","Deliverables",["deliverables"]],["coverage","Coverage",["coverage"]],["ladder","Ladder",["stages","requirements"]]]},"releases":{"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]],["flow","Flow",["swimlanes"]]]},"alerts":{"tabs":[["firing","Firing",["health","firing"]],["fixes","Fixes",["fixes"]],["watches","Watches",["watches"]],["history","History",["history"]]]},"infra":{"tabs":[["machines","Machines",["machines","pools"]],["runners","Runners",["ci","waiting","local"]],["runs","Runs",["runs"]],["pipelines","Pipelines",["pipelines"]],["tests","Tests",["tests","quarantine"]],["jobs","Jobs",["jobs"]]]},"costs":{"tabs":[["spend","Spend",["totals","sessions","spend","table"]],["limits","Limits",["burn","consumers"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"stack":{"tabs":[["flows","Flows",["flows"]],["skills","Skills",["skills"]],["agents","Agents",["agents"]],["hooks","Hooks",["hooks"]],["rules","Rules",["rules"]]]}};
 // hub_core::layout::PROJECT_PAGE: an opened project's inner tabs (`#projects/<profile>/<name>/<id>`),
 // Overview first. assets.rs `project_page_is_the_layout` fails when this line drifts.
-const PROJECT_PAGE = [["overview","Overview",["p-needs","p-flight","p-systems"]],["rows","Rows",["p-rows"]],["deliverables","Deliverables",["p-build"]],["releases","Releases",["p-versions","p-apps","p-legacy"]],["stage","Stage",["p-stage"]],["activity","Activity",["p-shipped","p-timeline","p-note"]],["product","Product",["p-product-needs","p-product-numbers","p-product-pipes"]],["engineering","Engineering",["p-engineering-needs","p-engineering-numbers","p-engineering-pipes"]],["ops","Ops",["p-ops-needs","p-ops-numbers","p-ops-pipes"]],["design","Design",["p-design-needs","p-design-numbers","p-design-pipes"]],["analytics","Analytics",["p-analytics-needs","p-analytics-numbers","p-analytics-pipes"]],["marketing","Marketing",["p-marketing-needs","p-marketing-outbound","p-marketing-numbers","p-marketing-pipes"]],["legal","Legal",["p-legal-needs","p-legal-checks","p-legal-numbers","p-legal-pipes"]],["support","Support",["p-support-needs","p-support-numbers","p-support-pipes"]],["money","Money",["p-money-needs","p-money-numbers","p-money-pipes"]]];
-// hub_core::layout::PROJECT_DEPTS and PROJECT_RETIRED: the department tabs run from the first to
-// the page's end, after the work, and an old inner id lands on its new one.
+const PROJECT_PAGE = [["overview","Overview",["p-needs","p-flight","p-systems"]],["sprint","Sprint",["p-sprint","p-sprint-queued","p-sprint-past"]],["rows","Rows",["p-rows"]],["deliverables","Deliverables",["p-build"]],["releases","Releases",["p-versions","p-apps","p-legacy"]],["stage","Stage",["p-stage"]],["activity","Activity",["p-shipped","p-timeline","p-note"]],["departments","Departments",["p-departments"]]];
+// hub_core::layout::PROJECT_DEPTS and PROJECT_RETIRED: the chips of the Departments tab, and an old inner id
+// (a retired department tab lands on `departments/<dept>`) on its new one.
 // assets.rs `project_page_is_the_layout` fails when these lines drift.
-const PROJECT_DEPTS = "product";
-const PROJECT_RETIRED = {"build":"deliverables"};
+const PROJECT_DEPTS = [["product","Product",["p-product-needs","p-product-numbers","p-product-pipes"]],["engineering","Engineering",["p-engineering-needs","p-engineering-numbers","p-engineering-pipes"]],["ops","Ops",["p-ops-needs","p-ops-numbers","p-ops-pipes"]],["design","Design",["p-design-needs","p-design-numbers","p-design-pipes"]],["analytics","Analytics",["p-analytics-needs","p-analytics-numbers","p-analytics-pipes"]],["marketing","Marketing",["p-marketing-needs","p-marketing-outbound","p-marketing-numbers","p-marketing-pipes"]],["legal","Legal",["p-legal-needs","p-legal-checks","p-legal-numbers","p-legal-pipes"]],["support","Support",["p-support-needs","p-support-numbers","p-support-pipes"]],["money","Money",["p-money-needs","p-money-numbers","p-money-pipes"]]];
+const PROJECT_RETIRED = {"analytics":"departments/analytics","build":"deliverables","design":"departments/design","engineering":"departments/engineering","legal":"departments/legal","marketing":"departments/marketing","money":"departments/money","ops":"departments/ops","product":"departments/product","support":"departments/support"};
 // hub_core::links::PAGES and RETIRED_PAGES: a record's page inside an inner tab, by its
 // `#tab/<word>/<id>` word (`ci` is a run page's old word), and the inner tab it opens on.
 // assets.rs `entity_pages_are_the_links` fails when this line drifts.
@@ -488,13 +488,13 @@ function innerGo(tab, id) {
 // sections need a look (`flagged`: section ids, or `counts` by inner id) and only above zero.
 const innerStrip = (tab, flagged, counts) => stripHtml(INNER_TABS[tab].tabs, innerOf(tab, st.arg)[0], "itab", flagged, counts);
 // A strip's html: `tabs` are [id, title, sections] (an INNER_TABS or PROJECT_PAGE list), `on` the
-// open id, `attr` the data- key its buttons carry (itab, or ptab on a project's page). A count
-// comes from `flagged` (section ids) or from `counts` by id, and shows only above zero. A rule
-// goes before id `brk` (a product page's first department tab), splitting the strip in two groups.
-function stripHtml(tabs, on, attr, flagged, counts, brk) {
-  return `<div class="seg fseg istrip" role="tablist">` + tabs.map(([id, title, secs], i) => {
+// open id, `attr` the data- key its buttons carry (itab, or ptab on a project's page, pdept for
+// its department chips). A count comes from `flagged` (section ids) or from `counts` by id, and
+// shows only above zero.
+function stripHtml(tabs, on, attr, flagged, counts) {
+  return `<div class="seg fseg istrip" role="tablist">` + tabs.map(([id, title, secs]) => {
     const n = (counts && counts[id]) || secs.filter((s) => (flagged || []).includes(s)).length;
-    return (i && id === brk ? `<span class="isep" aria-hidden="true"></span>` : "") + `<button role="tab" data-${attr}="${id}" class="${id === on ? "on" : ""}" aria-selected="${id === on}" tabindex="${id === on ? 0 : -1}">${title}${n ? ` <span class="pill warn">${n}</span>` : ""}</button>`;
+    return `<button role="tab" data-${attr}="${id}" class="${id === on ? "on" : ""}" aria-selected="${id === on}" tabindex="${id === on ? 0 : -1}">${title}${n ? ` <span class="pill warn">${n}</span>` : ""}</button>`;
   }).join("") + `</div>`;
 }
 // Mark strip button `id` open among the `attr` buttons inside `root`, for a strip that flips in place.
@@ -524,15 +524,15 @@ function innerHide(tab, section, el) {
   el.hidden = !innerShown(tab, home);
 }
 // A strip's click, and the ARIA tabs keys: Left and Right move between tabs, Home and End go to
-// the ends. A project page's strip (data-ptab) is the same keys; its click is projects.js's.
+// the ends. A project page's strips (data-ptab, and data-pdept for its department chips) are the same keys; its click is projects.js's.
 document.addEventListener("click", (e) => {
   const b = e.target.closest && e.target.closest("[data-itab]");
   if (b) innerGo(st.tab, b.dataset.itab);
 });
 document.addEventListener("keydown", (e) => {
-  const b = e.target.closest && e.target.closest("[data-itab],[data-ptab]");
+  const b = e.target.closest && e.target.closest("[data-itab],[data-ptab],[data-pdept]");
   if (!b) return;
-  const attr = b.dataset.itab ? "itab" : "ptab";
+  const attr = b.dataset.itab ? "itab" : b.dataset.ptab ? "ptab" : "pdept";
   const all = [...b.parentNode.querySelectorAll(`[data-${attr}]`)], i = all.indexOf(b);
   const to = { ArrowRight: (i + 1) % all.length, ArrowLeft: (i + all.length - 1) % all.length, Home: 0, End: all.length - 1 }[e.key];
   if (to === undefined) return;

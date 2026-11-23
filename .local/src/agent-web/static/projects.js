@@ -13,12 +13,12 @@
 // a time, so a move between them leaves the view behind.
 
 // page: the opened card's page by project name, {data} or {err}; folds: which of its folds are open;
-// viewed: the view pst.data was read under; inner: the opened page's inner tab (PROJECT_PAGE).
+// viewed: the view pst.data was read under; inner: the opened page's inner tab (PROJECT_PAGE), dept: the department chip open on Departments (PROJECT_DEPTS).
 // The read is the tab's own (refreshProjects): with something open it reads every card.
 const pst = tblTab({
   tab: "projects", id: "projects", el: "p-cards", refresh: () => refreshProjects(),
   shown: () => st.tab === "projects" && !pst.open && pTab() === "list", wait: "Reading notes projects...", hint: "search, or stage:alpha profile:personal -prio:low",
-  state: { open: null, inner: "overview", unlinked: true, page: {}, folds: {}, viewed: "" },
+  state: { open: null, inner: "overview", dept: "", unlinked: true, page: {}, folds: {}, viewed: "" },
   head: (t) => secHead("cards", "Projects", tblCount(t.data.table)) + (t.data.errors || []).map((e) => `<div class="panel down">${esc(e)}</div>`).join(""),
   body: () => pList(),
 });
@@ -79,7 +79,7 @@ const pTab = () => (P_TABS.includes(st.arg) ? st.arg : "list");
 const pProj = () => (P_TABS.includes(st.arg) ? "" : st.arg);
 // Each inner tab's total, its table's once read (Board's is the agent board, `totals.agent`, from any read that carries
 // it): a count, not a flag, so it is never amber.
-const pCount = { all: null, deliverables: null, coverage: null, ladder: null };
+const pCount = { all: null, sprints: null, deliverables: null, coverage: null, ladder: null };
 function pStrip() {
   const tabs = INNER_TABS.projects.tabs.map(([id, title, secs]) =>
     [id, title + (pCount[id] == null ? "" : ` <span class="muted">${pCount[id]}</span>`), secs]);
@@ -113,25 +113,31 @@ let pOn = "list", pOpenQ = null;
 const pKey = (c) => c.profile + "/" + c.name;
 // The card `want` names, by `<profile>/<name>` or the name alone.
 const pCard = (want) => pst.data && pst.data.cards.find((x) => pKey(x) === want || x.name === want);
-// The page's inner ids; a retired one (`build`) lands on its new one (PROJECT_RETIRED).
+// The page's inner ids. A word (a retired id such as `build`, or an old department tab such as
+// `legal`) is an inner id and a chip, `departments/legal` (PROJECT_RETIRED): pWord splits it.
 const P_INNER = PROJECT_PAGE.map((t) => t[0]);
-const pInnerOf = (w) => PROJECT_RETIRED[w] || w;
-// The department tabs follow the work, to the page's end; a card's own are its `dept_tabs`
-// (hub_core::layout::dept_tabs: all nine for a game or app, engineering and ops for infra, none untyped).
-const P_DEPTS = PROJECT_PAGE.slice(P_INNER.indexOf(PROJECT_DEPTS)).map((t) => t[0]);
+const P_DEPT_TAB = "departments";
+const pWord = (w) => { w = PROJECT_RETIRED[w] || w || ""; const at = w.indexOf("/"); return at < 0 ? [w, ""] : [w.slice(0, at), w.slice(at + 1)]; };
+// A card's own department chips are its `dept_tabs` (hub_core::layout::dept_tabs: all nine for a
+// game or app, engineering and ops for infra, none untyped); a card with none has no Departments tab.
 const pDepts = (c) => (c && c.dept_tabs) || [];
-const pPage = (c) => PROJECT_PAGE.filter((t) => !P_DEPTS.includes(t[0]) || pDepts(c).includes(t[0]));
-// Card c's inner tab for word w: a retired word lands on its new id, and a tab c lacks (a
-// department its type does not get) on Overview.
-const pInnerFor = (c, w) => { w = pInnerOf(w); return pPage(c).some((t) => t[0] === w) ? w : "overview"; };
-// Projects' URL arg as the project and its inner tab: `<key>/<inner>` when the last word is an
-// inner tab and the whole arg is no project's name, else the arg alone on Overview.
+const pChips = (c) => PROJECT_DEPTS.filter((t) => pDepts(c).includes(t[0]));
+const pPage = (c) => PROJECT_PAGE.filter((t) => t[0] !== P_DEPT_TAB || pDepts(c).length);
+// Card c's inner tab for word w: a retired word lands on its new id, and a tab c lacks (Departments
+// on an untyped project) on Overview. Its chip: the one named when c has it, else the first.
+const pInnerFor = (c, w) => { const t = pWord(w)[0]; return pPage(c).some((x) => x[0] === t) ? t : "overview"; };
+const pDeptFor = (c, w) => { const d = pChips(c); return d.some((x) => x[0] === w) ? w : (d[0] || [""])[0]; };
+// Projects' URL arg as the project, its inner tab and department: `<key>/<inner>` (or
+// `<key>/departments/<dept>`) when the tail is an inner tab and the whole arg is no project's
+// name, else the arg alone on Overview.
 function pSplit(arg) {
-  const at = arg.lastIndexOf("/"), tail = pInnerOf(arg.slice(at + 1).toLowerCase());
-  return at > 0 && P_INNER.includes(tail) && !pCard(arg) ? { key: arg.slice(0, at), inner: tail } : { key: arg, inner: "overview" };
+  const low = arg.toLowerCase(), m = /^(.+)\/departments\/([a-z]+)$/.exec(low);
+  if (m && !pCard(arg)) return { key: arg.slice(0, m[1].length), inner: P_DEPT_TAB, dept: m[2] };
+  const at = arg.lastIndexOf("/"), [tail, dept] = pWord(arg.slice(at + 1).toLowerCase());
+  return at > 0 && P_INNER.includes(tail) && !pCard(arg) ? { key: arg.slice(0, at), inner: tail, dept } : { key: arg, inner: "overview", dept: "" };
 }
 // The arg naming what is open: the project, and its inner tab unless that is Overview.
-const pArg = () => pst.open + (pst.inner === "overview" ? "" : "/" + pst.inner);
+const pArg = () => pst.open + (pst.inner === "overview" ? "" : "/" + pst.inner + (pst.inner === P_DEPT_TAB && pst.dept ? "/" + pst.dept : ""));
 
 // The opened card's top: its name and chips, profile and prio, then the release window (a meter
 // of delivered over committed rows and hub_core's cell; neither with no window, which the summary says), and hub_core's
@@ -179,15 +185,15 @@ function pOpened(c) {
     html += `<div class="cline${pg.gate && pg.gate.fail ? " warn" : ""}">next stage: <a href="#" data-pgo="stage">${esc(pg.next_says)}</a></div>`;
     html += pg.errors.map((e) => `<div class="panel down">${esc(e)}</div>`).join("");
   } else if (got && got.err) html += `<div class="panel down">${esc(got.err)}</div>`;
-  const counts = { ...deptCounts(pKey(c)), ...(pg ? { overview: pg.need_count, stage: pg.gate ? pg.gate.fail : 0 } : {}) };
-  return html + `</div>` + stripHtml(pPage(c), pst.inner, "ptab", [], counts, pDepts(c)[0] || null);
+  const counts = { departments: deptTotal(pKey(c)), ...(pg ? { overview: pg.need_count, stage: pg.gate ? pg.gate.fail : 0 } : {}) };
+  return html + `</div>` + stripHtml(pPage(c), pst.inner, "ptab", [], counts);
 }
 
 // What needs the human, grouped by kind: the work's (hub_core::page::need_groups, the next stage's
 // failing and human checks last), then each department's (Product::need_groups, kind `dept:<id>`,
 // from the departments read). A stage group links to Stage, a department's to its tab. Verify
 // links nowhere: its epics include closed ones, which Deliverables (open epics) lacks.
-const pNeedGo = (kind) => kind === "stage" ? { pgo: "stage" } : kind.startsWith("dept:") ? { pgo: kind.slice(5) } : null;
+const pNeedGo = (kind) => kind === "stage" ? { pgo: "stage" } : kind.startsWith("dept:") ? { pgo: P_DEPT_TAB + "/" + kind.slice(5) } : null;
 const pNeedGroups = (pg, key) => [...pg.need_groups, ...(deptGot[key]?.data?.need_groups || [])].map((g) => ({ ...g, go: pNeedGo(g.kind) }));
 // Why Overview lacks the department needs a typed page should have, as the TUI says it; null
 // when they are there or the page has no departments.
@@ -199,7 +205,7 @@ const pDeptNote = (c) => {
   return got.data.product ? null : `departments not read: ${got.data.says || NOT_READ}`;
 };
 // A link that moves the page to an inner tab, `open <its title>`.
-const pGoLink = (go) => `<a href="#" data-pgo="${go.pgo}">open ${esc((PROJECT_PAGE.find((t) => t[0] === go.pgo) || [, go.pgo])[1])}</a>`;
+const pGoLink = (go) => { const [t, d] = pWord(go.pgo), at = (d ? PROJECT_DEPTS : PROJECT_PAGE).find((x) => x[0] === (d || t)); return `<a href="#" data-pgo="${go.pgo}">open ${esc(at ? at[1] : go.pgo)}</a>`; };
 
 // Overview: what needs the human (each kind one shut fold of its items, with the inner tab that
 // acts on it), what is in flight, and one table row per system; a system opens Deliverables
@@ -284,17 +290,38 @@ function pActivity(c, pg) {
     : `<div class="card muted">No agent note.</div>`);
 }
 
+// The Sprint inner tab: the project's open window, the ones queued behind it (the rest of a shrunk
+// or locked sprint), then its scored past, each in its own section (sprints.js draws the tables).
+function pSprint(c, pg) {
+  const d = sprData();
+  if (!d) return sprst.err ? `<div class="panel down">${esc(sprst.err)}</div>` : `<div class="muted">Reading the sprints...</div>`;
+  const open = d.rows.filter((r) => !r.queued), queued = d.rows.filter((r) => r.queued);
+  const none = (what) => `<div class="card muted">${what}</div>`;
+  const past = pg ? pg.sprint_past : null;
+  return secHead("p-sprint", "Sprint", open.length) + (open.length ? sprTable(d, open, true) : none("No window is open.")) +
+    secHead("p-sprint-queued", "Queued", queued.length) + (queued.length ? sprTable(d, queued, true) : none("No window is queued.")) +
+    secHead("p-sprint-past", "Past", past ? past.length : null) + (past ? sprPast(past) : `<div class="muted">Reading the page...</div>`);
+}
+
+// Departments: one chip per department the project's type gets (the count on a chip is its
+// open needs), then each chip's pane, the open chip's showing (pShow flips them in place).
+function pDepartments(c) {
+  const key = pKey(c), n = deptCounts(key);
+  return secHead("p-departments", "Departments", deptTotal(key) || null) +
+    `<div class="dchips">${stripHtml(pChips(c), pst.dept, "pdept", [], n)}</div>` +
+    pChips(c).map(([id]) => `<div data-pdp="${id}"${pst.dept === id ? "" : " hidden"}>${deptPane(key, id)}</div>`).join("");
+}
+
 // The inner tabs' own panes, each in its data-pin group, around the board's (Rows) and
 // Deliverables' elements, in the strip's order: `p-pane` holds Overview,
-// a product's departments and the Rows head, `p-pane2` Releases, Stage and Activity. One that needs the page
+// the Sprint tab, a product's departments and the Rows head, `p-pane2` Releases, Stage and Activity. One that needs the page
 // says it is reading or why it failed.
 function pPanes(c) {
   const got = pst.page[c.name], pg = got && got.data;
   // A failed read is the header's to say, once.
   const wait = got && got.err ? "" : `<div class="muted">Reading the page...</div>`;
   const pin = (id, html) => `<div data-pin="${id}"${pst.inner === id ? "" : " hidden"}>${html}</div>`;
-  const depts = pDepts(c).map((id) => pin(id, deptPane(pKey(c), id))).join("");
-  return [pin("overview", pOverview(c, pg) + (pg ? "" : wait)) + depts +
+  return [pin("overview", pOverview(c, pg) + (pg ? "" : wait)) + (pDepts(c).length ? pin(P_DEPT_TAB, pDepartments(c)) : "") + pin("sprint", pSprint(c, pg)) +
     pin("rows", secHead("p-rows", "Rows", c.progress.open)),
   pin("releases", pg ? pReleases(pg) : wait) + pin("stage", pg ? pStage(pg) : wait) + pin("activity", pActivity(c, pg) + (pg ? "" : wait))];
 }
@@ -323,19 +350,20 @@ function pList() {
 // inner tab after it or not, opens that project's page, once the cards say which project it is.
 function pDeep() {
   if (!pProj()) return;
-  const { key, inner } = pSplit(pProj()), c = pCard(key);
+  const { key, inner, dept } = pSplit(pProj()), c = pCard(key);
   if (!c) return;
-  if (pst.open !== pKey(c)) pOpen(pKey(c), inner);
-  else if (pst.inner !== inner) pInner(inner);
+  if (pst.open !== pKey(c)) pOpen(pKey(c), inner, dept);
+  else if (pst.inner !== inner || (inner === P_DEPT_TAB && dept && pst.dept !== pDeptFor(c, dept))) pInner(inner === P_DEPT_TAB ? inner + "/" + dept : inner);
 }
 
 // The opened page: the card and strip on top, then the inner tab's pane. The rows are read for
 // this project, under the view already in the URL, Deliverables for it when it shows, and a
 // product's departments. An inner tab this project lacks (a department on infra) is Overview.
-function pOpen(key, inner) {
-  const c = pCard(key);
+function pOpen(key, inner, dept) {
+  const c = pCard(key), [t, d] = pWord(inner);
   pst.open = key;
-  pst.inner = pInnerFor(c, inner);
+  pst.inner = pInnerFor(c, t);
+  pst.dept = pDeptFor(c, dept || d);
   bst.draft.key = key;
   if (c) { delete pst.page[c.name]; pReadPage(c.name); }
   if (pDepts(c).length) deptRead(key);
@@ -346,21 +374,27 @@ function pOpen(key, inner) {
   renderProjects();
   refreshBoard();
   if (pst.inner === "deliverables") dst.refresh();
+  if (pst.inner === "sprint") refreshSprints();
 }
 
 // Show inner tab `id` of the opened page in place: the URL follows (no history entry, as a tab
 // button), the panes flip without a repaint, and Deliverables reads its rows for this project.
 function pInner(id) {
-  pst.inner = pInnerFor(pCard(pst.open), id);
+  const c = pCard(pst.open), [t, d] = pWord(id);
+  pst.inner = pInnerFor(c, t);
+  if (d || !pst.dept) pst.dept = pDeptFor(c, d);
   st.arg = lastInner.projects = pArg();
   showUrl();
   pShow();
   if (pst.inner === "deliverables") dst.refresh();
   if (pst.inner === "rows") renderBoard();
+  if (pst.inner === "sprint") refreshSprints();
 }
 function pShow() {
   for (const e of $("p-rows").querySelectorAll("[data-pin]")) e.hidden = e.dataset.pin !== pst.inner;
   stripMark($("p-head"), "ptab", pst.inner);
+  stripMark($("p-rows"), "pdept", pst.dept);
+  for (const e of $("p-rows").querySelectorAll("[data-pdp]")) e.hidden = e.dataset.pdp !== pst.dept;
 }
 
 // A click moves the tab: the URL names what is open and the old view's query goes with it, and
@@ -387,6 +421,7 @@ function pRead() {
   if (top === "list") refreshProjects();
   if (top === "all" || pst.open) refreshBoard();
   if (dShown()) dst.refresh();
+  if (sprShown()) refreshSprints();
   cRead();
   lRead();
 }
@@ -404,6 +439,7 @@ function renderProjects() {
   pStripPaint();
   innerHide("projects", "cards", $("p-cards"));
   innerHide("projects", "board", $("p-all"));
+  innerHide("projects", "sprints", $("p-sprints"));
   innerHide("projects", "deliverables", $("p-dtop"));
   innerHide("projects", "coverage", $("p-cov"));
   innerHide("projects", "stages", $("p-lstages"));
@@ -412,6 +448,7 @@ function renderProjects() {
   if (!pst.open) {
     const top = pOn = pTab();
     if (top === "all") renderBoard();
+    if (top === "sprints") paint($("p-sprints"), sprData() ? sprAll(sprData()) : sprst.err ? `<div class="panel down">${esc(sprst.err)}</div>` : `<div class="muted">Reading the sprints...</div>`, pst.folds);
     if (top === "list") pst.render(); else if (top === "deliverables") dst.render();
     else if (top === "coverage") covst.render();
     else if (top === "ladder") { ladst.render(); reqst.render(); }
@@ -435,6 +472,8 @@ $("projects").addEventListener("click", (e) => {
   if (e.target.id === "p-back") { e.preventDefault(); pGo(null); return; }
   const tab = e.target.closest("[data-ptab]");
   if (tab) { pInner(tab.dataset.ptab); return; }
+  const chip = e.target.closest("[data-pdept]");
+  if (chip) { pInner(P_DEPT_TAB + "/" + chip.dataset.pdept); return; }
   const go = e.target.closest("[data-pgo]");
   if (go) {
     e.preventDefault();
@@ -497,6 +536,7 @@ TABS.projects = {
     if (["watch", "queue", "resync"].includes(ev.kind)) {
       if (pTab() === "list") refreshProjects();
       if (dShown()) dst.refresh();
+      if (sprShown()) refreshSprints();
     }
     if (ev.kind === "resync") refreshBoard();
     if (["stages", "resync"].includes(ev.kind)) lRead();

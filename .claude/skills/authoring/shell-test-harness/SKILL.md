@@ -24,7 +24,7 @@ The founding incident: writing the tmux UI tests destroyed every live tmux sessi
 
 ## Scope and triggers
 
-Test a shell or TUI surface in this repo correctly, then land it. Covers the three-tier bats suite in `tests/` (unit = sourced functions, integ = the `$SELF --verb` contract, ui = a REAL tmux server), the hard rule that anything starting a real server/daemon runs ONLY in the disposable container, the mandatory negative control (a test that cannot fail is not a test), and the pre-flight checks that stop you clobbering a concurrent session. Use when adding or changing any script under `.local/src/tmux/`, `.local/bin/`, `.config/shared-hooks/`, or a stop-hook check; when asked to "add tests for X", "is X tested", "harness this", "make sure this is tested properly"; or before landing shell work. Do NOT run the ui tier on this machine (it starts real tmux servers and has destroyed live sessions), do NOT trust `TMUX_TMPDIR` or `command tmux` as isolation, do NOT let a gate report success on an empty input list, and do NOT claim a test works until you have watched it fail. Hands landing off to ingest-worktree (fan a dirty tree into PRs) and dotfiles-land (public/private routing).
+Test a shell or TUI surface in this repo correctly, then land it. Covers the three-tier bats suite in `tests/` (unit = sourced functions, integ = the `$SELF --verb` contract, ui = a REAL tmux server), the hard rule that anything starting a real server/daemon runs ONLY in the disposable container, the mandatory negative control (a test that cannot fail is not a test), and the pre-flight checks that stop you clobbering a concurrent session. Use when adding or changing any script under `.local/src/tmux/`, `.local/bin/`, `.config/shared-hooks/`, or a stop-hook check; when asked to "add tests for X", "is X tested", "harness this", "make sure this is tested properly"; or before landing shell work. Do NOT run the ui tier on this machine (it starts real tmux servers and has destroyed live sessions), do NOT trust `TMUX_TMPDIR` or `command tmux` as isolation, do NOT let a gate report success on an empty input list, and do NOT claim a test works until you have watched it fail. Hands landing off to ingest-prs (its Dirty working tree section fans a dirty tree into PRs) and dotfiles-land (public/private routing).
 
 ## 0. Pre-flight: are you alone in this checkout?
 
@@ -145,7 +145,7 @@ The `rust` job runs `make test-rust CRATES=...` on what `tests/pick.sh rust` pic
 
 One concern per PR. Hand off rather than improvising:
 
-- **`ingest-worktree`** - fan a mixed dirty tree into scoped PRs.
+- **`ingest-prs`** ("Dirty working tree") - fan a mixed dirty tree into scoped PRs.
 - **`dotfiles-land`** - decide public `~/.dotfiles` vs private `~/.dotfiles-private` (`git check-ignore` decides; a cross-repo change is two PRs).
 - **`gh-workflows`** - PR mechanics.
 
