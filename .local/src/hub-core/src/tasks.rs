@@ -26,8 +26,8 @@ pub struct Project {
     pub open: usize,
     /// The agent sheet's open rows on its board: the backlog tier (`agent_backlog`) left out.
     pub agent_open: usize,
-    /// The agent sheet's open rows the sweep put on the backlog tier (`tier:backlog`, past the
-    /// project's days budget (`agent_board_days`)): still on the sheet, off the board dispatch reads.
+    /// The agent sheet's open rows still carrying the retired `tier:backlog` token, which the sweep
+    /// strips.
     pub agent_backlog: usize,
     /// The human sheet's open feature epics aimed at a release (`#vX.Y.Z`), and the untagged
     /// ones aimed at none; standing `<system> to standard` epics are in neither.
@@ -124,7 +124,7 @@ pub struct Row {
     /// The state of the queue item whose `row:` names it (`queued`, `running`, `waiting`,
     /// `review`), set by `queue_states`.
     pub queue: Option<String>,
-    /// The agent row is on the backlog tier (`tier:backlog`): past its project's board budget, so
+    /// The agent row carries the retired `tier:backlog` token, which the sweep strips, so
     /// no Board count holds it, and its `section` is `backlog`, after the board's `board` rows.
     pub backlog: bool,
 }
@@ -519,6 +519,8 @@ pub struct SprintRow {
     pub done: String,
     /// `none`, `held`, `queued`, `building` or `built`.
     pub build: String,
+    /// The next version's sprint, locked while the open one runs: it has not started.
+    pub queued: bool,
     pub tasks: Vec<SprintTask>,
 }
 
@@ -819,6 +821,7 @@ impl Feed {
                 times: s.times(now),
                 done: format!("{}/{}", s.done, s.committed),
                 build: s.build.clone(),
+                queued: s.queued,
                 tasks: sprint_tasks(&s.tasks),
             })
             .collect()

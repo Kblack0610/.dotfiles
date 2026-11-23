@@ -155,86 +155,36 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   run "$AGENT_ASK" show "$d"; assert_line 'answered_by: human'
 }
 
-# An agent answer to a held ask would close it while the gate it holds stays shut for good.
-@test "answer: an agent answer to an ask a board row or queue item waits on is refused and leaves it pending" {
-  local opts='go=run it now|later=run it later' a b c
+# An agent answers what does not need the human, and its answer releases what the ask holds
+# (2026-11-23: routine retry asks held 40+ rows on the human's list).
+@test "answer: an agent answer releases a held ask; an approval, a human-only ask and one at the human floor stay the human's" {
+  local opts='go=run it now|later=run it later' a b c d e
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
-  a="$("$AGENT_ASK" post --project demo --options "$opts" 'row held?')"
-  b="$("$AGENT_ASK" post --project demo --options "$opts" 'item held?')"
-  printf '{"rows":[{"project":"demo","id":"dm-1","state":"open","tags":["ask/%s/go"],"tags_cased":["ask/%s/go"]}],"done":[]}\n' "$(tr A-Z a-z <<<"$a")" "$a" > "$NOTES_FIXTURE/board.json"
-  AQ="$AGENT_ASK_QUEUE_CMD" legacy held "tags: ask:$b=go" --project demo "the next phase" >/dev/null
+  a="$("$AGENT_ASK" post --project demo --options "$opts" 'item held?')"
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy held "tags: ask:$a=go" --project demo "the next phase" >/dev/null
+  run "$AGENT_ASK_QUEUE_CMD" gate --json "ask/$a/go"
+  [[ "$output" == *'"state":"pending"'* ]]
   run env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer "$a" go
-  assert_failure 1
-  assert_output --partial "$a holds dm-1, which only the human's answer releases"
-  run "$AGENT_ASK" show "$a"; assert_line 'status: pending'
+  assert_success
+  run "$AGENT_ASK" show "$a"; assert_line 'status: answered'; assert_line 'answered_by: agent'
+  run "$AGENT_ASK_QUEUE_CMD" gate --json "ask/$a/go"
+  [[ "$output" == *'"state":"clear"'* ]]
+  # An approval is the human's: refused, still pending.
+  b="$("$AGENT_ASK" post --project demo --kind approval --options "$opts" 'approve the plan?')"
   run env CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" answer "$b" go
   assert_failure 1
-  assert_output --partial "$b holds held, which only the human's answer releases"
+  assert_output --partial "$b needs the human (it is an approval)"
   run "$AGENT_ASK" show "$b"; assert_line 'status: pending'
-  # The human's answer from a board still releases it.
+  # An ask the judge marked human-only is the human's.
+  c="$("$AGENT_ASK" post --project demo --options "$opts" 'rotate the key?')"
+  printf 'judge_human_only: true\n' >> "$(ask_file "$c")"
+  run env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer "$c" go
+  assert_failure 1
+  assert_output --partial "$c needs the human (the judge marked it human-only)"
+  # Negative control: the human's answer to an approval still lands.
   run "$AGENT_ASK" answer "$b" go
   assert_success
   run "$AGENT_ASK" show "$b"; assert_line 'answered_by: human'
-  # Negative control: an ask nothing waits on takes an agent answer.
-  c="$("$AGENT_ASK" post --project demo --options "$opts" 'free?')"
-  run env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer "$c" go
-  assert_success
-  run "$AGENT_ASK" show "$c"; assert_line 'answered_by: agent'
-  # A queue it cannot read hides any holder, so the agent answer is refused.
-  c="$("$AGENT_ASK" post --project demo --options "$opts" 'unreadable?')"
-  run env AGENT_ASK_QUEUE_CMD=false AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer "$c" go
-  assert_failure 1
-  assert_output --partial 'cannot read the queue'
-  run "$AGENT_ASK" show "$c"; assert_line 'status: pending'
-}
-
-# A hold added after an agent answered (2026-11-22: XqrCXG and three more were answered before the
-# guard above) left the ask closed while its row waits, and off every Needs you list.
-@test "assume-due puts an agent-answered ask a board row or queue item holds back to pending" {
-  local opts='go=run it now|later=run it later' a b c d e
-  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
-  a="$("$AGENT_ASK" post --project demo --options "$opts" 'row held later?')"
-  b="$("$AGENT_ASK" post --project demo --options "$opts" 'item held later?')"
-  c="$("$AGENT_ASK" post --project demo --options "$opts" 'free?')"
-  d="$("$AGENT_ASK" post --project demo --options "$opts" 'human answered?')"
-  for x in "$a" "$b" "$c"; do env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer "$x" later 2>/dev/null; done
-  "$AGENT_ASK" answer "$d" go 2>/dev/null
-  "$AGENT_ASK" deliver --all 2>/dev/null
-  printf '{"rows":[{"project":"demo","id":"dm-1","state":"open","tags":["ask/%s/go","ask/%s"],"tags_cased":["ask/%s/go","ask/%s"]}],"done":[]}\n' \
-    "$(tr A-Z a-z <<<"$a")" "$(tr A-Z a-z <<<"$d")" "$a" "$d" > "$NOTES_FIXTURE/board.json"
-  AQ="$AGENT_ASK_QUEUE_CMD" legacy held "tags: ask:$b=go" --project demo "the next phase" >/dev/null
-  # A queue it cannot read reopens nothing.
-  AGENT_ASK_QUEUE_CMD=false run "$AGENT_ASK" assume-due
-  run "$AGENT_ASK" show "$a"; assert_line 'status: answered'
-  run --separate-stderr "$AGENT_ASK" assume-due
-  [[ "$stderr" == *"$a is pending again: an agent answered later"* ]]
-  for x in "$a" "$b"; do
-    run "$AGENT_ASK" show "$x"
-    assert_line 'status: pending'
-    assert_line 'answered_by: '
-    assert_line --regexp '^agent_answer: later \(.+\)$'
-    refute_line --regexp '^delivery'
-  done
-  run "$AGENT_ASK" list demo --pending
-  assert_line --partial "$a"$'\t'
-  assert_line --partial "$b"$'\t'
-  run "$AGENT_ASK" card "$a"; assert_output --partial 'an agent picked: later'
-  # The agent's answer ran the resume; the human's later answer must run it again.
-  e="$("$AGENT_ASK" post --project demo --options "$opts" --resume 'true' 'resumed?')"
-  env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer "$e" later 2>/dev/null
-  "$AGENT_ASK" mark-resumed "$e" 2>/dev/null
-  AQ="$AGENT_ASK_QUEUE_CMD" legacy held2 "tags: ask:$e" --project demo "after the resume" >/dev/null
-  # A delivery still going out is left to finish; the next pass takes it.
-  run "$AGENT_ASK" show "$e"; assert_line 'delivery: queued'
-  "$AGENT_ASK" assume-due 2>/dev/null
-  run "$AGENT_ASK" show "$e"; assert_line 'status: answered'
-  "$AGENT_ASK" deliver "$e" 2>/dev/null
-  run "$AGENT_ASK" show "$e"; assert_line --regexp '^resumed_at: .+'
-  "$AGENT_ASK" assume-due 2>/dev/null
-  run "$AGENT_ASK" show "$e"; assert_line 'status: pending'; assert_line 'resumed_at: '
-  # Negative controls: an agent answer nothing holds, and the human's answer, stand.
-  run "$AGENT_ASK" show "$c"; assert_line 'status: answered'; assert_line 'answered_by: agent'
-  run "$AGENT_ASK" show "$d"; assert_line 'status: answered'; assert_line 'answered_by: human'
 }
 
 @test "another session, or a post with no session id, is not held by someone else's ask" {
@@ -632,16 +582,15 @@ SH
   assert_equal "$(grep -c 'agentctl start' "$NOTES_FIXTURE/calls.log")" 1
 }
 
-@test "answer: the judge's answer to an ask queue items hold releases nothing, starts nothing and files the override row (negative control)" {
+@test "answer: the judge's answer to an ask queue items hold releases them like the human's" {
   unset AGENT_ASK_NO_RESUME
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   local a
   a="$("$AGENT_ASK" post --project demo --options 'go=run it now|later=run it later' 'held?')"
   AQ="$AGENT_ASK_QUEUE_CMD" legacy held "tags: ask:$a=go+later" --project demo "the next phase" >/dev/null
+  [ -n "$("$AGENT_ASK_QUEUE_CMD" show held --json | jq -r '.hold // empty')" ] || fail "the pending ask did not hold the item"
   "$AGENT_ASK" answer --by judge "$a" go 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
-  assert_not_called 'agentctl start'
-  assert_called "(the judge; to override: agent-ask answer $a <option>)"
-  [ -n "$("$AGENT_ASK_QUEUE_CMD" show held --json | jq -r '.hold // empty')" ] || fail "a judge answer released the held item"
+  [ -z "$("$AGENT_ASK_QUEUE_CMD" show held --json | jq -r '.hold // empty')" ] || fail "a judge answer left the item held"
 }
 
 @test "decision: the human's answer with its meaning, and nothing before that or from the judge" {
@@ -2129,7 +2078,7 @@ SH
 
 # 2026-11-07: the judge answered itX9A3 under a queued phase, and agent-queue releases an ask only
 # on the human's answer, so the phase would have waited for good.
-@test "sweep never answers live an ask a queue item waits on; the human keeps it" {
+@test "sweep answers live an ask a queue item waits on, as it does a free one" {
   export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0 AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   local held free
   held="$("$AGENT_ASK" post --project demo --options 'fix=fix it|wait=wait' --recommend fix 'fix the flake?')"
@@ -2138,9 +2087,7 @@ SH
   fake_judge "$(score ship_deploy "" "rules say fix failing CI yourself.")"
   run "$AGENT_ASK" sweep --all
   assert_success
-  assert_line --regexp "^demo	$held	yours	ship_deploy	"
-  run "$AGENT_ASK" show "$held"; assert_line 'status: pending'
-  # Negative control: the same verdict on an ask no item waits on answers it.
+  run "$AGENT_ASK" show "$held"; assert_line 'answered_by: judge'
   run "$AGENT_ASK" show "$free"; assert_line 'answered_by: judge'
 }
 

@@ -13,11 +13,11 @@ metadata:
 
 One pass that leaves the agent boards smaller and every open row at the row standard. It runs the cleanup tools that already exist, in order, over every board. Its in-flight, baseline, re-measure, report and next-pass steps follow `~/.local/src/docs/analysis-streams.md`; read it first. It lands no PRs, so the rank, lever, PR and proposal rules there do not apply. It writes no rows of its own: every edit is the `notes` CLI's, recorded in `~/.notes` git, so any one of them can be reverted.
 
-The row standard is the notes-cli README, "The task row": `type(area): title` under 80 chars, one priority, `#size/` from `#pts/`, an epic (`#of/`), detail on indented lines. `notes doctor --projects` checks it. The board-size KPI is `board_days` in `fleet-bench room`, the board's weight in days of what the profile ships, against `board_days_max` (`~/.config/agentctl/kpi-thresholds`), alerted by the board-open watch; the sweep keeps each project's unpinned rows to `agent_board_days` of its own shipped weight.
+The row standard is the notes-cli README, "The task row": `type(area): title` under 80 chars, one priority, `#size/` from `#pts/`, an epic (`#of/`), detail on indented lines. `notes doctor --projects` checks it. The board-size KPI is `board_days` in `fleet-bench room`, the board's weight in days of what the profile ships: how long the fleet takes to clear every planned row at its current rate. It has no limit, since the board is all planned work; a cleanup lowers it by dropping rows not worth doing or moving a nice-to-have to `improvements.md`.
 
 ## Scope and triggers
 
-- The human says the board is full, asks for a board audit or cleanup, or the board-open watch fires.
+- The human says the board is full or asks for a board audit or cleanup.
 - `notes doctor --projects` reports a board over its size budget or duplicate rows.
 
 Not for a raw pile of new wants (`process-requests`), which rows dispatch runs next (`fleet-dispatch`), or the queue's depth and load (`fleet-pace`).

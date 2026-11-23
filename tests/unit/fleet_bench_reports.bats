@@ -4113,13 +4113,13 @@ esac'
     echo "{\"id\":\"r3\",\"ts\":\"$now_iso\",\"lane\":\"trainee\",\"ran\":\"beam\",\"harness\":\"ocfree\",\"outcome\":\"failed\"}"
     echo "{\"id\":\"r4\",\"ts\":\"$now_iso\",\"lane\":\"opus\",\"ran\":\"opus\",\"outcome\":\"ok\"}"
   } > "$BENCH_LANE_LOG"
-  printf '#!/usr/bin/env bash\necho %s\n' "'{\"rows\":9,\"eligible\":0,\"floor\":{\"state\":\"shut\",\"why\":\"k3s domain red, and the gateway is not ready\"},\"refused\":[{\"count\":4,\"why\":\"it names no file\"}]}'" > "$SANDBOX/bin/pool-stub"
+  printf '#!/usr/bin/env bash\necho %s\n' "'{\"rows\":9,\"eligible\":0,\"floor\":{\"state\":\"shut\",\"why\":\"k3s domain red, and the gateway is not ready\"},\"refused\":[{\"count\":4,\"why\":\"it carries no #pts/N\"}]}'" > "$SANDBOX/bin/pool-stub"
   chmod +x "$SANDBOX/bin/pool-stub"
   export BENCH_TRAINEE_CMD=pool-stub
   rowj 'phases_done: 1' > "$SNAP"; sample_at 0
   BENCH_NOW=$T0 "$SUBJECT" scorecard
   run sed -n '/^## Trainee/,/^## Sources/p' "$BENCH_SCORECARD_DIR/latest.md"
-  assert_output --partial '- Pool: 0 of 9 open agent-board rows, most turned away: it names no file (4)'
+  assert_output --partial '- Pool: 0 of 9 open agent-board rows, most turned away: it carries no #pts/N (4)'
   assert_output --partial '- Floor now: shut, k3s domain red, and the gateway is not ready'
   assert_output --partial '| opencode-go:glm | 2 | 1 | 1 | 1 | 0 | 1 |'
   assert_output --partial '| ocfree:beam | 1 | 0 | 0 | 0 | 0 | 0 |'

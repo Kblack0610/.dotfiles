@@ -116,7 +116,6 @@ Media/Music
 !.claude/skills/messaging/comms-standard/
 !.claude/skills/messaging/catch-up/
 !.claude/skills/messaging/inbox-report/
-!.claude/skills/messaging/work-update/
 !.claude/skills/monitoring/fleet-bench/
 !.claude/skills/monitoring/day-log/
 !.claude/skills/monitoring/fleet-dispatch/
@@ -128,7 +127,6 @@ Media/Music
 !.claude/skills/monitoring/fix-red/
 !.claude/skills/monitoring/fleet-runners/
 !.claude/skills/monitoring/fleet-asks/
-!.claude/skills/monitoring/fleet-accounts/
 !.claude/skills/monitoring/fleet-queue/
 !.claude/skills/ops/game-eval/
 !.claude/skills/ops/debug/
@@ -165,7 +163,6 @@ Media/Music
 !.claude/skills/workstreams/final-pass/
 !.claude/skills/workstreams/go/
 !.claude/skills/workstreams/ingest-prs/
-!.claude/skills/workstreams/ingest-worktree/
 !.claude/skills/workstreams/one-shot/
 !.claude/skills/workstreams/rigor/
 !.claude/skills/workstreams/sprint/
