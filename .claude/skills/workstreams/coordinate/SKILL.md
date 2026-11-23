@@ -121,6 +121,7 @@ On the human's "validated", drop the hold (step 6 already stopped the watch):
 ```bash
 fleet-sessions label self -manual -coordinator
 rm -f ~/.local/state/coord-watch/<plan basename>.ts   # the watch's cursor
+rm -f ~/.local/state/coord-watch/session-"$CLAUDE_CODE_SESSION_ID".plan   # the plan the Stop check reads
 ```
 
 End on one line saying the hold is dropped. The normal quiet timer closes the window; the human's own `/wind-down` closes it at once.

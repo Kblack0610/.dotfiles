@@ -10,8 +10,9 @@
 # Counts the trailing wakes since the last real prompt (the human, a peer message, a background
 # event with content) that were a "Monitor expired ... with no events" notice. A compaction, a
 # skill load and a Stop-hook note neither count nor reset. At EMPTY_WAKE_MAX it labels the session
-# `spinning` (the Sessions board shows it) and blocks the turn once with the step to take; at twice
-# that, the block did not take, so it pages the human once. A coordinator (label `coordinator`) is
+# `spinning` (the Sessions board shows it) and blocks each such wake's turn end once with the step
+# to take; from twice that, the block did not take, so it pages the human once per run (a marker in
+# EMPTY_WAKE_STATE, cleared with the label). A coordinator (label `coordinator`) is
 # exempt: its expiry is the stall check of an open ledger (coordinate step 5), and
 # 89-coord-watch.sh owns that mode. Removes `spinning` once a real prompt resets the count.
 
@@ -22,6 +23,9 @@ set -uo pipefail
 EMPTY_WAKE_MAX="${EMPTY_WAKE_MAX:-4}"
 # Wakes are a few dozen lines each; this many from the end always holds 2 x EMPTY_WAKE_MAX of them.
 TAIL_LINES=4000
+# The last wake is this close to the end: a session whose tail has no expiry skips the full count.
+RECENT_LINES=200
+EMPTY_WAKE_STATE="${EMPTY_WAKE_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/empty-wakes}"
 
 [ "${CLAUDE_CODE_SESSION_ATTENDED:-0}" = 1 ] || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
@@ -37,6 +41,17 @@ case "$SID" in ''|*/*|.|..) exit 0 ;; esac
 
 LABELS="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}/labels/$SID"
 grep -qxF coordinator "$LABELS" 2>/dev/null && exit 0
+
+PAGED="$EMPTY_WAKE_STATE/$SID.paged"
+spinning=0
+grep -qxF spinning "$LABELS" 2>/dev/null && spinning=1
+end_run() {
+  [ "$spinning" = 1 ] && fleet-sessions label "$SID" -spinning >/dev/null 2>&1
+  rm -f "$PAGED"
+  exit 0
+}
+# Most turns are no expiry wake: one cheap look at the end before the count.
+tail -n "$RECENT_LINES" "$TRANSCRIPT" | grep -aq 'Monitor expired after' || end_run
 
 # One pass over the tail: E for an empty expiry wake, R for a real prompt, nothing for the rest.
 n=$(tail -n "$TAIL_LINES" "$TRANSCRIPT" | grep -a '"type":"user"' | jq -rR '
@@ -55,15 +70,11 @@ n=$(tail -n "$TAIL_LINES" "$TRANSCRIPT" | grep -a '"type":"user"' | jq -rR '
     else "R" end' 2>/dev/null | awk '$0 == "R" { n = 0; next } { n++ } END { print n + 0 }')
 [[ "$n" =~ ^[0-9]+$ ]] || exit 0
 
-spinning=0
-grep -qxF spinning "$LABELS" 2>/dev/null && spinning=1
-if [ "$n" -lt "$EMPTY_WAKE_MAX" ]; then
-  [ "$spinning" = 1 ] && fleet-sessions label "$SID" -spinning >/dev/null 2>&1
-  exit 0
-fi
+[ "$n" -ge "$EMPTY_WAKE_MAX" ] || end_run
 
 [ "$spinning" = 1 ] || fleet-sessions label "$SID" +spinning >/dev/null 2>&1
-if [ "$n" -eq $((EMPTY_WAKE_MAX * 2)) ] && command -v agent-notify >/dev/null 2>&1; then
+if [ "$n" -ge $((EMPTY_WAKE_MAX * 2)) ] && [ ! -e "$PAGED" ] && command -v agent-notify >/dev/null 2>&1; then
+  mkdir -p "$EMPTY_WAKE_STATE" && : > "$PAGED"
   agent-notify -p high -t 'Session spinning on empty watches' \
     "Session ${SID:0:8} ($(basename "$(jq -r '.cwd // empty' <<<"$PAYLOAD" 2>/dev/null)")) woke $n times in a row on a watch that delivered nothing and keeps re-arming it. Close it or tell it what it waits for." \
     >/dev/null 2>&1 || true

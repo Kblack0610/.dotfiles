@@ -96,10 +96,15 @@ case "${1:-}" in
     # A ledger with every line ticked tracks nothing, so a watch on it is a 30 minute timer that only wakes
     # the session: 2026-11-22 a coordinator re-armed one 58 times over 29h waiting on its validation ask.
     # The validation wait is coordinate step 6 (the ask with reopen-on-answer), not a watch.
-    [ -n "$(ids "$plan")" ] || {
+    open="$(ids "$plan")" || exit $?
+    mkdir -p "$COORD_WATCH_STATE"
+    # The session's plan, kept past the watch's exit (the mark below goes with it), so the Stop check
+    # can tell a ticked ledger from a missing watch. Coordinate step 7 removes it.
+    [ -z "${CLAUDE_CODE_SESSION_ID:-}" ] ||
+      printf '%s\n' "$(cd "$(dirname "$plan")" && pwd)/$(basename "$plan")" > "$COORD_WATCH_STATE/session-$CLAUDE_CODE_SESSION_ID.plan"
+    [ -n "$open" ] || {
       echo "coord-watch: no open line under '## Follow-through' in $plan, so there is nothing to watch; the validation wait is coordinate step 6" >&2
       exit 3; }
-    mkdir -p "$COORD_WATCH_STATE"
     # The armed mark: stop-post.d/89-coord-watch.sh blocks a coordinator's turn end while no live
     # watch of its own session is recorded here. A kill that skips the trap leaves the file; the
     # reader checks the pid is a live coord-watch, so a stale file never passes. A re-arm overlaps

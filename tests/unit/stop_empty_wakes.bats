@@ -8,7 +8,7 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
   CHECK="$REPO_ROOT/.claude/hooks/stop-post.d/86-empty-wakes.sh"
-  export CLAUDE_CODE_SESSION_ATTENDED=1 FLEET_SHEPHERD_DIR="$SANDBOX/shep" EMPTY_WAKE_MAX=3
+  export CLAUDE_CODE_SESSION_ATTENDED=1 FLEET_SHEPHERD_DIR="$SANDBOX/shep" EMPTY_WAKE_MAX=3 EMPTY_WAKE_STATE="$SANDBOX/ew"
   mkdir -p "$FLEET_SHEPHERD_DIR/labels" "$SANDBOX/bin"
   TX="$SANDBOX/t.jsonl"; : > "$TX"
   # The label and page commands record their calls; the label stub also edits the file as the real one does.
@@ -36,16 +36,22 @@ run_check() { run bash "$CHECK" <<<"$(jq -cn --arg t "$TX" '{session_id: "sid-1"
   [ "$(jq -r .decision <<<"$output")" = block ]
   [[ "$(jq -r .reason <<<"$output")" == "empty-wakes: this is wake 3 in a row"*"TaskStop"*"reopen-on-answer"*"background Bash"* ]]
   grep -qxF spinning "$FLEET_SHEPHERD_DIR/labels/sid-1"
-  ! grep -q notify "$SANDBOX/calls"
+  run grep -q notify "$SANDBOX/calls"
+  assert_failure
 }
 
-@test "at twice the limit the block did not take: the human is paged once" {
-  user "go"; for _ in 1 2 3 4 5 6; do wake; done
+@test "from twice the limit the block did not take: the human is paged once per run, and a new run pages again" {
+  user "go"; for _ in 1 2 3 4 5; do wake; done
   run_check
   [ "$(jq -r .decision <<<"$output")" = block ]
-  [ "$(grep -c notify "$SANDBOX/calls")" = 1 ]
+  run grep -c notify "$SANDBOX/calls"; assert_output 0
   wake; run_check
-  [ "$(grep -c notify "$SANDBOX/calls")" = 1 ]
+  run grep -c notify "$SANDBOX/calls"; assert_output 1
+  wake; run_check; wake; run_check
+  run grep -c notify "$SANDBOX/calls"; assert_output 1
+  user "keep going"; run_check
+  for _ in 1 2 3 4 5 6; do wake; done; run_check
+  run grep -c notify "$SANDBOX/calls"; assert_output 2
 }
 
 @test "a compaction, a skill load and a Stop-hook note neither count nor reset the run" {
@@ -61,7 +67,8 @@ run_check() { run bash "$CHECK" <<<"$(jq -cn --arg t "$TX" '{session_id: "sid-1"
   wake; user "ok stop"; wake
   printf 'spinning\n' > "$FLEET_SHEPHERD_DIR/labels/sid-1"
   run_check; assert_output ''
-  ! grep -qxF spinning "$FLEET_SHEPHERD_DIR/labels/sid-1"
+  run grep -qxF spinning "$FLEET_SHEPHERD_DIR/labels/sid-1"
+  assert_failure
   wake; wake; user $'<task-notification>\n<task-id>b3</task-id>\n<status>completed</status>\n</task-notification>'; wake
   run_check; assert_output ''
 }

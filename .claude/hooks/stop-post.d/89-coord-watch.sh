@@ -29,6 +29,8 @@ grep -qxF coordinator "$LABELS" 2>/dev/null || exit 0
 MARK="${COORD_WATCH_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/coord-watch}/session-$SID.pid"
 PID="" PLAN=""
 [ -f "$MARK" ] && read -r PID PLAN < "$MARK"
+# The mark goes when the watch exits; the plan file stays until coordinate step 7.
+[ -n "$PLAN" ] || { [ -f "${MARK%.pid}.plan" ] && read -r PLAN < "${MARK%.pid}.plan"; }
 # Live means the recorded pid is still coord-watch in follow mode: its program or script argument
 # is coord-watch and the next word is a plan, not `ids` or `filter`. A recycled pid running
 # something else is not. argv comes from /proc (NUL-separated, so a path with a space stays one
@@ -50,7 +52,8 @@ fi
 
 # Every ledger line ticked: there is nothing to watch (coord-watch exits 3), so the wait for the human is
 # coordinate step 6, never a re-armed watch (2026-11-22: 58 empty re-arms over 29h).
-if [ -f "$PLAN" ] && ! coord-watch ids "$PLAN" 2>/dev/null | grep -q .; then
+# Only a clean read of an empty ledger counts: a missing section, plan or command is not "all ticked".
+if [ -f "$PLAN" ] && OPEN=$(coord-watch ids "$PLAN" 2>/dev/null) && [ -z "$OPEN" ]; then
   jq -n --arg plan "$PLAN" '{decision: "block", reason: (
     "coord-watch: every line in " + $plan + "'"'"'s ledger is ticked, so there is nothing to watch. Coordinate step 6: "
     + "fleet-sessions label self -coordinator (keep manual), post the validation ask and run agent-ask reopen-on-answer <id>; do not re-arm.")}'
