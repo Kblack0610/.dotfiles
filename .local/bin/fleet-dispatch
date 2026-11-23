@@ -8484,7 +8484,8 @@ main() {
   # Dispatch is a singleton: on any machine but the fleet lease's holder the verbs that start and
   # reap sessions stand down before they read anything.
   case "${1:-}" in
-    run | kick) lease_guard "$1" || return $(($? == 2)) ;;   # another holder is no fault, a lease no remote can say is; the kick unit and the pass share the lease
+    run) lease_guard "$1" || return $(($? == 2)) ;;   # another holder is no fault, a lease no remote can say is
+    kick) lease_guard "$1" || return $(($? == 2)) ;;   # the kick unit and the pass share the lease, and its rcs
     reap | start | fill | promote | pull-after | exits) lease_guard "$1" || return 1 ;;
   esac
   case "${1:-}" in
