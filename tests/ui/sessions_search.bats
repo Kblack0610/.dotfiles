@@ -40,7 +40,7 @@ teardown() { ui_teardown; }
   wait_until 'screen_has "$TITLE"'
   tmux_keys C-t
   wait_until 'screen_has "move the agent chips left"'
-  screen_has 'enter read from here | esc back'
+  screen_has 'enter jump to it in the pane | ctrl-r read from here | esc back'
 }
 
 @test "at a narrow width the title wraps instead of being cut" {

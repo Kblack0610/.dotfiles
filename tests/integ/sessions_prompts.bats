@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 # `sessions prompts`, behind ctrl-t in prefix R: one row per prompt the human typed, oldest
 # first, with tool results, meta records and harness wrappers left out; a slash command
-# shows as its name. Piped, it prints the plain list.
+# shows as its name. Piped, it prints the plain list. `_jump`, enter on a row, goes to the live
+# pane in copy mode at that prompt, or reads the session in less when it is open nowhere.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -67,5 +68,26 @@ setup() {
 
 @test "an unknown id fails" {
   run "$SUBJECT" prompts ffffffff
+  assert_failure
+}
+
+@test "enter jumps to the prompt in the live pane: copy mode, search back for its first line" {
+  mkdir -p "$HOME/.claude/sessions"
+  printf '%s\n' '{"sessionId":"dddddddd-1","pid":4242,"cwd":"/w"}' > "$HOME/.claude/sessions/4242.json"
+  printf '%s\n' '4242 work:2 %7' > "$NOTES_FIXTURE/tmux.panes"
+  TMUX=/tmp/sock,1,0 run "$SUBJECT" _jump dddddddd-1 '2026-11-20 09:40:00' 'make the labels'
+  assert_success
+  run cat "$NOTES_FIXTURE/calls.log"
+  assert_output --partial 'select-window -t work:2 ; select-pane -t %7 ; switch-client -t work ; copy-mode -t %7 ; send-keys -t %7 -X history-bottom ; send-keys -t %7 -X search-backward-text make the labels'
+  assert_output --partial 'display-popup -C'
+}
+
+@test "enter on a session open nowhere reads it in less from that prompt" {
+  printf '#!/bin/sh\nprintf "USER 2026-11-20 09:40:00\\nthe body\\n"\n' > "$SANDBOX/bin/recall-stub"
+  chmod +x "$SANDBOX/bin/recall-stub"
+  TMUX= CLAUDE_RECALL="$SANDBOX/bin/recall-stub" run "$SUBJECT" _jump dddddddd-1 '2026-11-20 09:40:00' 'make the labels'
+  assert_success
+  assert_output --partial 'the body'
+  run grep -s copy-mode "$NOTES_FIXTURE/calls.log"
   assert_failure
 }

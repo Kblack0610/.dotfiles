@@ -425,8 +425,8 @@ esac'
   [ ! -s "$FLEET_SHEPHERD_DIR/.shared" ]
 }
 
-@test "a manual row is never due, and an all-quiet document exits 1" {
-  doc "[$(row a STALLED false false '["manual"]'), $(row b WORKING false false)]"
+@test "a manual or stay row is never due, and an all-quiet document exits 1" {
+  doc "[$(row a STALLED false false '["manual"]'), $(row c STALLED false false '["stay"]'), $(row b WORKING false false)]"
   run "$SH" due
   assert_failure
   assert_output ''
@@ -638,8 +638,9 @@ typed() { cat "$HOME/panel.calls" 2>/dev/null; }
         $(crow 4 CHAT after), $(crow 5 LANDED after), $(crow 6 NEEDS after '{"own_asks":1}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   [ -z "$(typed)" ]
-  # A manual row the close flow reads now (quiet FLEET_CHAT_CLOSE_H, ar-4041) is typed its close like any row.
-  doc "[$(crow 8 DONE now '{"labels":["manual"]}')]"
+  # A stay row the close flow reads now (quiet FLEET_CHAT_CLOSE_H, ar-4041) is typed its close like any row;
+  # a manual row never reads now (ar-4124, fleet_sessions.bats close verdict).
+  doc "[$(crow 8 DONE now '{"labels":["stay"]}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   run typed
   assert_line 'send --wait 0 --pane lab/%8 /wind-down auto'
@@ -757,10 +758,10 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
   # Unshown and between turns, it is closed whatever its prompt holds.
   STUB_PANE="${IDLE/$'\xc2\xa0'/$'\xc2\xa0'half a thought}" "$SH" check >/dev/null || true
   [ -n "$(closes)" ]
-  # A manual row quiet past FLEET_CHAT_CLOSE_H reads now and is closed like any other (ar-4041).
+  # A stay row quiet past FLEET_CHAT_CLOSE_H reads now and is closed like any other (ar-4041).
   : > "$HOME/wind-down.calls"
   nudged_ago 30 11
-  doc "[$(crow 11 DONE now '{"nudged":true,"close_sent":true,"idle_min":2000,"labels":["manual"]}')]"
+  doc "[$(crow 11 DONE now '{"nudged":true,"close_sent":true,"idle_min":2000,"labels":["stay"]}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   [ -n "$(closes)" ]
 }

@@ -9,7 +9,9 @@
 # File order is the order `machine-mode next` and the chip's click walk. The last row is the
 # mode with nothing set, so it must stay what the machine does with no mode at all.
 
-full|1|2|high
+# Human, 2026-11-23: this workstation takes no pool CI jobs in any mode; the other hosts' runners carry CI.
+# Turn it back on by setting full's runners to 1.
+full|0|2|high
 reserved|0|1|low
 shared|0|2|mid
 open|0|2|mid

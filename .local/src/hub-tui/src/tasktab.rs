@@ -169,7 +169,7 @@ impl TaskView {
                 format!("add to {at} ({})", r.lane),
                 Verb::Add {
                     text: p.text,
-                    priority: "high".into(),
+                    priority: tasks::DEFAULT_PRIORITY.into(),
                     to: None,
                     game: r.game.clone().filter(|_| r.lane == "playtest"),
                 },
@@ -629,7 +629,7 @@ fn status_line(v: &TaskView, p: Palette, w: usize) -> Line<'static> {
     let l = if let Some(pr) = &v.prompt {
         let what = match pr.kind {
             Kind::Add => format!(
-                "Add to {} ({}), #urgent or #low to set it: ",
+                "Add to {} ({}), #urgent, #high or #low to set it: ",
                 group(&pr.row),
                 pr.row.lane
             ),
