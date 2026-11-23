@@ -6579,6 +6579,14 @@ JSONL
   run sibling_pr "$SANDBOX/one" "$prs"
   assert_output "$(printf 'o/three\t3\tFAIL\tabc123')"
   [ "$(jq -r "$CI_JQ"' red' "$SANDBOX/view.json")" = 21 ]
+  # a cancelled matrix job of an older run of its workflow, kept under its template name, is no red
+  # (dotfiles#2437, ar-3095); one of the newest run still is
+  view "$(check 'fast (${{ matrix.n }})' CI CANCELLED 2026-11-14T17:26:46Z 31 30)" "$(check 'fast (1)' CI SUCCESS 2026-11-14T17:27:29Z 41 40)"
+  run sibling_pr "$SANDBOX/one" "$prs"
+  assert_output "$(printf 'o/three\t3\tPASS\tabc123')"
+  view "$(check 'fast (${{ matrix.n }})' CI CANCELLED 2026-11-14T17:26:46Z 41 40)" "$(check 'fast (1)' CI SUCCESS 2026-11-14T17:27:29Z 31 30)"
+  run sibling_pr "$SANDBOX/one" "$prs"
+  assert_output "$(printf 'o/three\t3\tFAIL\tabc123')"
 }
 
 @test "self_wait reads a tail --pid on another process as an event wait, and the row stays WORKING (ar-2426)" {
