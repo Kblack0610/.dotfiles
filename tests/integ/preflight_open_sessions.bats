@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
-# session-preflight.sh: a new session sees how many other sessions are still open on its project,
-# sibling worktrees included, read from the fleet state file, so it is not blind to a conversation the human is
-# having in another window.
+# session-preflight.sh: a new session sees how many other sessions are still open on its
+# project, sibling worktrees included, read from the fleet state file, so it is not blind to a
+# conversation the human is having in another window.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -83,6 +83,26 @@ context() {
   assert_success
   assert_output --partial '1 other session(s) open on repo - `fleet-sessions` lists them.'
   refute_output --partial 'in this checkout'
+}
+
+@test "a checkout row with no project still counts, beside a sibling worktree (ar-3879)" {
+  state "$(date +%s)" \
+    "$(row hhhhhhhh-here CHAT 2 'no project here')" \
+    "$(row wwwwwwww-sib WORKING 2 'sibling' /elsewhere/repo-agent-7 | jq -c '.project = "repo"')"
+  run context
+  assert_success
+  assert_output --partial '2 other session(s) open on repo (1 in this checkout) - `fleet-sessions` lists them.'
+}
+
+@test "an unscoped session counts only its own checkout (ar-3879)" {
+  mkdir -p "$SANDBOX/scratch" && cd "$SANDBOX/scratch"
+  export CLAUDE_PROJECT_DIR="$SANDBOX/scratch" PROJECT_MAP_FILE="$SANDBOX/none.json"
+  state "$(date +%s)" \
+    "$(row uuuuuuuu-oth CHAT 2 'unrelated' /elsewhere/scratch | jq -c '.project = "_unscoped"')"
+  run context
+  assert_success
+  assert_output --partial 'Session Preflight: _unscoped'
+  refute_output --partial 'other session(s) open'
 }
 
 @test "a session in a subdirectory counts" {
