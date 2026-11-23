@@ -2009,3 +2009,30 @@ rollup_setup() {
   assert_output --partial 'left its unfinished work on branch feat/menu at abc123 on origin'
   [[ "$output" == *"read /home/u/.claude/plans/fix-menu.md first"*"left its unfinished work on branch feat/menu"* ]] || fail "the note is not named before the salvage branch"
 }
+
+@test "start never runs a validate item as its author: no author item, itself, the author's conversation or session (ar-1689)" {
+  project game beta "$SANDBOX/repos/game"
+  started_item fix-crash lab:game-agent-9 run
+  sed -i 's/^---$/sessions: abc-123\n---/' "$(qitem running fix-crash)"
+  # vq <slug> <after> -> a queued validate item
+  vq() { started_item "$1" '' '' '' auto:validate queued; sed -i "s/^---\$/tags: validate\n${2:+after: $2\n}---/" "$(qitem queued "$1")"; }
+  vq validate-none ''
+  run cmd_start --item validate-none
+  assert_failure 2
+  assert_output --partial 'validate-none is a validate item whose after: names no author item but itself'
+  vq validate-self validate-self
+  run cmd_start --item validate-self
+  assert_failure 2
+  assert_output --partial 'validate-self is a validate item whose after: names no author item but itself'
+  vq validate-fix-crash-01234567 fix-crash
+  run cmd_start --server default --session s9 --cwd "$SANDBOX/repos/game" --resume abc-123 --item validate-fix-crash-01234567
+  assert_failure 2
+  assert_output --partial 'validates fix-crash, which conversation abc-123 worked: a second agent validates it, never its author'
+  run cmd_start --server lab --session game-agent-9 --cwd "$SANDBOX/repos/game" --resume other-1 --item validate-fix-crash-01234567
+  assert_failure 2
+  assert_output --partial 'validates fix-crash, whose session is lab:game-agent-9'
+  # A fresh start is a new conversation: the check passes it on (here to the after: hold).
+  run cmd_start --item validate-fix-crash-01234567
+  refute_output --partial 'never its author'
+  assert_not_called 'claude --resume abc-123'
+}

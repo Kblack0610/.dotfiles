@@ -1105,3 +1105,21 @@ esac'
   assert_failure
   assert_not_called 'gh pr list'
 }
+
+@test "reap: a green PR parked in review whose validate item is live gets no lander; that item's session lands it (ar-1689)" {
+  local h1=1111111111111111111111111111111111111111
+  pr_item OPEN
+  run cmd_reap
+  started_item validate-fix-crash-11111111 "" "" "" auto:validate queued
+  agent-queue set fix-crash validate=validate-fix-crash-11111111 >/dev/null
+  fix_ended "$h1" PASS
+  run cmd_reap
+  assert_success
+  refute_output --partial 'land queue item fix-crash'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
+  # once it is done, a green PR with nobody on it gets its lander again
+  agent-queue cancel validate-fix-crash-11111111 --why test >/dev/null
+  fix_ended "$h1" PASS
+  run cmd_reap
+  assert_output --partial "land queue item fix-crash (PR o/game#12 green at ${h1:0:12}, try 1 of 2)"
+}

@@ -185,6 +185,8 @@ EOF
   printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/fleet-dispatch"; chmod +x "$SANDBOX/bin/fleet-dispatch"
   export AGENT_QUEUE_DIR="$SANDBOX/queue" AGENT_QUEUE_START=0
   export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh"
+  # validate_gate reads the repo's ask policy and a sandbox ask store (judge_work_level).
+  export AGENT_ASK_PROMPT="$REPO_ROOT/.config/agent-ask/policy.md" AGENT_ASK_ROOT="$SANDBOX/asks"
   unset CLAUDE_CODE_SESSION_ID
 
   # The item most cases land: an agent-lane board row's. Every landing needs one.
@@ -604,6 +606,7 @@ item-line: added "Item: ship" to the body
 shape: clean
 checks: green
 fetch: current with origin/main
+validate: repo work, no second agent needed
 merge: #42 MERGED at 01234567
 body: passes comms-lint --channel pr-body
 proof: evidence commit 0123456789abcdef is an ancestor of origin/main
@@ -631,6 +634,7 @@ gh pr checks 42 --json name,bucket,workflow -q map(select(.bucket == "cancel"))
 git fetch -q origin
 git rev-list --count HEAD..origin/main
 git rev-parse HEAD
+gh api repos/o/r/pulls/42/files --paginate --jq .[].filename
 gh pr merge 42 --squash --match-head-commit 0123456789abcdef
 gh pr view 42 --json state -q .state
 gh pr view 42 --json body -q .body
@@ -646,7 +650,6 @@ dotfiles-autopull --now . --bg
 schedules-sync sync-prs o/r
 notes ingest record --stage land --action merged --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 -- ship
 notes ingest record --stage queue --action item-set --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --why pr=o/r#42 merged=fedcba9876543210fedcba9876543210fedcba98 partial= open_pr= closing_pr=o/r#42 -- ship
-gh api repos/o/r/pulls/42/files --paginate --jq .[].filename
 notes ingest record --stage queue --action item-moved --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --to done --why running -> done (ok) -- ship
 notes projects --prios
 notes ptask dotfiles --agent done ship it --proof pr:o/r#42 commit:fedcba987654
@@ -1511,14 +1514,15 @@ EOF2
   assert_line --index 3 --partial 'shape: shape-grow $(git merge-base HEAD origin/<base>) HEAD'
   assert_line --index 4 --partial 'checks: gh pr checks 42 --watch'
   assert_line --index 5 --partial 'fetch: git fetch origin'
-  assert_line --index 6 --partial 'merge: gh pr merge 42 --squash --match-head-commit'
-  assert_line --index 7 --partial 'body: gh pr view 42 --json body | comms-lint --channel pr-body -'
-  assert_line --index 8 --partial 'proof: gh pr view 42 --json mergeCommit'
-  assert_line --index 9 --partial 'live: dotfiles-autopull --now .'
-  assert_line --index 10 --partial 'prs: schedules-sync sync-prs <owner>/<repo>'
-  assert_line --index 11 'item: agent-queue set ship pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute ship && agent-queue move ship done --status ok'
-  assert_line --index 12 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
-  assert_line --index 13 --partial 'plan: tick'
+  assert_line --index 6 --partial 'validate: gh api repos/<owner>/<repo>/pulls/42/files | judge_work_level'
+  assert_line --index 7 --partial 'merge: gh pr merge 42 --squash --match-head-commit'
+  assert_line --index 8 --partial 'body: gh pr view 42 --json body | comms-lint --channel pr-body -'
+  assert_line --index 9 --partial 'proof: gh pr view 42 --json mergeCommit'
+  assert_line --index 10 --partial 'live: dotfiles-autopull --now .'
+  assert_line --index 11 --partial 'prs: schedules-sync sync-prs <owner>/<repo>'
+  assert_line --index 12 'item: agent-queue set ship pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute ship && agent-queue move ship done --status ok'
+  assert_line --index 13 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
+  assert_line --index 14 --partial 'plan: tick'
   run ran
   assert_output ''
   run grep -c '^- \[x\] 6' "$PLAN"
@@ -1538,8 +1542,8 @@ EOF2
   item tidy-loader
   CLAUDE_CODE_SESSION_ID=sid-l run "$LAND" 42 --item tidy-loader
   assert_success
-  assert_line --index 7 'item: tidy-loader done with pr:o/r#42'
-  assert_line --index 8 'landed #42'
+  assert_line --index 8 'item: tidy-loader done with pr:o/r#42'
+  assert_line --index 9 'landed #42'
   run board_calls
   assert_output ''
   run agent-queue show tidy-loader --json
@@ -1631,7 +1635,7 @@ EOF2
   agent-queue set menus row=db:db-12
   run "$LAND" 42 --item menus
   assert_success
-  assert_line --index 8 'board: closed "db-12" with pr:o/r#42 commit:fedcba987654'
+  assert_line --index 9 'board: closed "db-12" with pr:o/r#42 commit:fedcba987654'
   run board_calls
   assert_output 'notes --profile bnb ptask db --agent done db-12 --proof pr:o/r#42 commit:fedcba987654'
 }
@@ -1644,7 +1648,7 @@ EOF2
   printf 'The change.\n\nItem: by-hand\n' >"$NOTES_FIXTURE/body"
   run "$LAND" 42
   assert_success
-  assert_line --index 7 'item: by-hand done with pr:o/r#42'
+  assert_line --index 8 'item: by-hand done with pr:o/r#42'
   run agent-queue show by-hand --json
   assert_equal "$(jq -r '"\(.state) \(.pr)"' <<<"$output")" 'done o/r#42'
 }
@@ -1669,7 +1673,7 @@ EOF2
   printf 'The change.\n\nItem: fix-crash\n' >"$NOTES_FIXTURE/body"
   AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42
   assert_success
-  assert_line --index 8 'board: closed "fix crash: on load" with pr:o/r#42 commit:fedcba987654'
+  assert_line --index 9 'board: closed "fix crash: on load" with pr:o/r#42 commit:fedcba987654'
   run board_calls
   assert_output 'notes --profile bnb ptask game done fix crash: on load --proof pr:o/r#42 commit:fedcba987654'
 }
@@ -1792,8 +1796,8 @@ untouched() {
   item tidy 'board:dotfiles:tidy it' agent
   run "$LAND" 42 --item tidy --dry-run
   assert_success
-  assert_line --index 11 'item: agent-queue set tidy pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute tidy && agent-queue move tidy done --status ok'
-  assert_line --index 12 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
+  assert_line --index 12 'item: agent-queue set tidy pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute tidy && agent-queue move tidy done --status ok'
+  assert_line --index 13 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
   run agent-queue show tidy --json
   assert_equal "$(jq -r .state <<<"$output")" running
 }
@@ -2172,6 +2176,8 @@ real_notes_board() {
 @test "files that cannot be read leave the item's project and never fail the landing" {
   item unread
   touch "$NOTES_FIXTURE/files.fail"
+  # Already merged: on an open PR unreadable files refuse the merge (validate_gate, its own case).
+  printf 'MERGED\n' >"$NOTES_FIXTURE/state"
   run "$LAND" 42 --item unread
   assert_success
   assert_line 'item: unread done with pr:o/r#42, not credited (gh api: HTTP 502)'
@@ -3273,4 +3279,138 @@ EOF
   assert_output --partial 'the rollup gave no verdict'
   run grep -c 'pr merge' "$LOG"
   assert_output 0
+}
+
+# --- validate_gate: critical work merges only on a second agent's pass (ar-1689) ---
+
+# fm <slug> <key: value>... -> those header lines added to the queue item's file
+fm() {
+  local f; f=$(ls "$AGENT_QUEUE_DIR"/*/*-"$1".md); shift
+  for kv in "$@"; do sed -i "0,/^---\$/s//$kv\n---/" "$f"; done
+}
+# vitem <slug> <author> [key: value]... -> a running validate item for <author>
+vitem() {
+  local s=$1 a=$2; shift 2
+  mkdir -p "$AGENT_QUEUE_DIR/running"
+  printf 'slug: %s\nproject: dotfiles\nmode: oneshot\npriority: high\nfrom: auto:validate\nagent: claude\ntags: validate\nafter: %s\nqueued: 2026-11-03T10:00:00Z\nstarted: 2026-11-03T10:00:00Z\n---\nreview\n' "$s" "$a" >"$AGENT_QUEUE_DIR/running/20261103-100000-$s.md"
+  [ $# -eq 0 ] || fm "$s" "$@"
+}
+merges() { grep -c 'pr merge' "$LOG" || true; }
+
+@test "validate: a diff touching a Judge authority name does not merge; it queues one validate item and exits 5, and a re-run waits on it" {
+  item crit
+  printf '%s\n' README.md .local/lib/judge.sh >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item crit
+  assert_failure 5
+  assert_output --partial 'is critical (the diff touches .local/lib/judge.sh, a Judge authority name in'
+  assert_output --partial 'queued validate-crit-01234567'
+  assert_equal "$(merges)" 0
+  run agent-queue show validate-crit-01234567 --json
+  assert_success
+  assert_equal "$(jq -r '"\(.state) \(.tags) \(.after) \(.from) \(.priority)"' <<<"$output")" 'queued validate crit auto:validate high'
+  assert_equal "$(jq -r .task <<<"$output" | grep -c 'agent-land 42 --repo o/r --item crit')" 1
+  run agent-queue show crit --json
+  assert_equal "$(jq -r '"\(.state) \(.validate)"' <<<"$output")" 'running validate-crit-01234567'
+
+  run "$LAND" 42 --item crit
+  assert_failure 5
+  assert_output --partial 'so it waits on validate-crit-01234567'
+  assert_equal "$(merges)" 0
+  assert_equal "$(ls "$AGENT_QUEUE_DIR"/*/*-validate-crit-* | wc -l)" 1
+}
+
+@test "validate: an item carrying out an ask the judge flagged human-only is critical whatever its diff" {
+  item ext ask:a1
+  mkdir -p "$AGENT_ASK_ROOT/dotfiles"
+  printf 'id: a1\njudge_human_only: true\njudge_human_only_evidence: it sends mail to a customer\n' >"$AGENT_ASK_ROOT/dotfiles/a1.md"
+  printf 'README.md\n' >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item ext
+  assert_failure 5
+  assert_output --partial 'it carries out ask a1, which the judge flagged human-only: it sends mail to a customer'
+  assert_equal "$(merges)" 0
+  run agent-queue show validate-ext-01234567 --json
+  assert_equal "$(jq -r .state <<<"$output")" queued
+}
+
+@test "validate: repo- and fleet-level work merges as before, with no validate item" {
+  printf 'README.md\n' >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'validate: repo work, no second agent needed'
+  assert_line 'landed #42'
+  item rules
+  printf 'CLAUDE.md\n' >"$NOTES_FIXTURE/files"
+  printf 'OPEN\n' >"$NOTES_FIXTURE/state"
+  run "$LAND" 42 --item rules
+  assert_success
+  assert_line 'validate: fleet work, no second agent needed'
+  run bash -c "ls '$AGENT_QUEUE_DIR'/*/*-validate-* 2>/dev/null | wc -l"
+  assert_output 0
+}
+
+@test "validate: a pass verdict on this head from another agent's session merges" {
+  item crit
+  fm crit 'sessions: s-author' 'validate: validate-crit-01234567'
+  vitem validate-crit-01234567 crit 'verdict: pass' 'verdict_head: 0123456789abcdef' 'sessions: s-validator' 'note: read the diff, tests green'
+  printf '.local/lib/judge.sh\n' >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item crit
+  assert_success
+  assert_line --partial 'validate: pass from validate-crit-01234567 on 01234567 (critical: the diff touches .local/lib/judge.sh'
+  assert_line 'landed #42'
+  assert_equal "$(merges)" 1
+}
+
+@test "validate: a fail verdict leaves the PR open and sends the author item back to the queue with the findings" {
+  item crit
+  fm crit 'sessions: s-author' 'validate: validate-crit-01234567'
+  vitem validate-crit-01234567 crit 'verdict: fail' 'verdict_head: 0123456789abcdef' 'sessions: s-validator' 'note: judge_conf drops an empty override'
+  printf '.local/lib/judge.sh\n' >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item crit
+  assert_failure 1
+  assert_output --partial 'validate failed: validate-crit-01234567 failed #42 on 01234567; #42 stays open and crit is back in the queue'
+  assert_equal "$(merges)" 0
+  run agent-queue show crit --json
+  assert_equal "$(jq -r .state <<<"$output")" queued
+  assert_equal "$(jq -r .note <<<"$output")" 'validation failed on #42 at 01234567 (validate-crit-01234567): judge_conf drops an empty override'
+}
+
+@test "validate: a missing verdict, one from the author's own session or one no session gave fails closed" {
+  item crit
+  fm crit 'sessions: s-author' 'validate: validate-crit-01234567'
+  vitem validate-crit-01234567 crit
+  printf '.local/lib/judge.sh\n' >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item crit
+  assert_failure 5
+  assert_output --partial 'waits on validate-crit-01234567'
+  fm validate-crit-01234567 'verdict: pass' 'verdict_head: 0123456789abcdef' 'sessions: s-author'
+  run "$LAND" 42 --item crit
+  assert_failure 1
+  assert_output --partial 'was worked by session s-author, which also worked crit: the verdict must come from another agent'
+  sed -i '/^sessions: s-author$/d' "$AGENT_QUEUE_DIR"/running/*-validate-crit-01234567.md
+  run "$LAND" 42 --item crit
+  assert_failure 1
+  assert_output --partial 'records a pass verdict, but no session worked it'
+  assert_equal "$(merges)" 0
+}
+
+@test "validate: a pass on an older head does not count; the new head gets its own validate item" {
+  item crit
+  fm crit 'sessions: s-author' 'validate: validate-crit-aaaaaaaa'
+  vitem validate-crit-aaaaaaaa crit 'verdict: pass' 'verdict_head: aaaaaaaabbbbbbbb' 'sessions: s-validator'
+  touch "$NOTES_FIXTURE/head.foreign"
+  printf '.local/lib/judge.sh\n' >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item crit
+  assert_failure 5
+  assert_output --partial 'queued validate-crit-01234567'
+  assert_equal "$(merges)" 0
+  run agent-queue show crit --json
+  assert_equal "$(jq -r .validate <<<"$output")" validate-crit-01234567
+}
+
+@test "validate: files that cannot be read on an open PR refuse the merge" {
+  touch "$NOTES_FIXTURE/files.fail"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial "validate failed: could not read #42's changed files"
+  assert_equal "$(merges)" 0
 }
