@@ -572,7 +572,7 @@ pub struct DayRow {
     pub date: String,
     pub live: bool,
     pub merged: usize,
-    /// Merged PRs per `area`, the coarse grouping `~/.config/day-log/groups` assigns.
+    /// Merged PRs per `area`, the coarse grouping `~/.config/areas/groups` assigns.
     pub areas: std::collections::BTreeMap<String, usize>,
     pub repos: usize,
     /// The `TOTAL` row of `usage`, when the day has one.

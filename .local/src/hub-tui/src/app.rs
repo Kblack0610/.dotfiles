@@ -421,6 +421,9 @@ pub enum Msg {
     StagesFile,
     /// `fleet-bench epics --json` for the Projects tab's Deliverables section, or why it failed.
     Deliverables(Result<hub_core::deliverables::Deliverables, String>),
+    /// An opened project's sprint page (hub_core::sprint_page::read): its version, then the page
+    /// or why it failed.
+    SprintPage(String, Box<Result<hub_core::sprint_page::Page, String>>),
     /// The Costs tab's one read of every source it cuts (hub_core::costs::read).
     Costs(Box<hub_core::costs::Costs>),
     /// The Stack tab's read of what the agent system is made of (hub_core::stack::read).
@@ -1008,6 +1011,50 @@ impl App {
         {
             self.read_deliverables();
         }
+    }
+
+    /// An opened sprint page reads once, when Enter or a link opens it (or `[`/`]` step to the
+    /// next version): the notes read behind it has no file to watch, and the rows of a window
+    /// that is not the one running do not move.
+    fn read_sprint_due(&mut self) {
+        let Some((profile, project)) = self.tv.project.clone() else {
+            return;
+        };
+        if self.tab != Tab::Projects || !self.pv.open || self.pv.inner != "sprint" {
+            return;
+        }
+        let Some(so) = self.pv.sprint.as_mut() else {
+            return;
+        };
+        if so.page.is_some() || so.busy {
+            return;
+        }
+        so.busy = true;
+        let version = so.version.clone();
+        let windows: Vec<String> = self
+            .feed()
+            .map(|f| {
+                f.sprint_rows(
+                    Some((&profile, &project)),
+                    chrono::Local::now().naive_local(),
+                )
+                .into_iter()
+                .map(|r| r.version)
+                .collect()
+            })
+            .unwrap_or_default();
+        let (tx, runner) = (self.tx.clone(), self.runner.clone());
+        std::thread::spawn(move || {
+            let r = hub_core::sprint_page::read(
+                runner.as_ref(),
+                hub_core::areas::Areas::load(),
+                &profile,
+                &project,
+                &version,
+                &windows,
+            );
+            let _ = tx.send(Msg::SprintPage(version, Box::new(r)));
+        });
     }
 
     /// The Ladder reads when it comes into view, on `r`, and on a new stages.json while it shows;
@@ -2060,6 +2107,7 @@ impl App {
             self.read_deliverables_due();
             self.read_ladder_due();
             self.read_coverage_due();
+            self.read_sprint_due();
         }
     }
 
@@ -2300,6 +2348,15 @@ impl App {
                 if self.coverage_read.done() && self.coverage_shown() {
                     self.read_coverage();
                 }
+            }
+            Msg::SprintPage(version, r) => {
+                if let Some(so) = self.pv.sprint.as_mut() {
+                    so.busy = false;
+                    if so.version == version {
+                        so.page = Some(*r);
+                    }
+                }
+                self.read_sprint_due();
             }
             Msg::StagesFile => {
                 if self.ladder_shown() {
@@ -3235,8 +3292,13 @@ impl App {
                 .proj_page
                 .as_ref()
                 .filter(|pg| Some(&pg.project) == name.as_ref());
-            if self.pv.page_key(&mut self.tv, k, pg, self.page) {
+            let feed = match &self.tasks {
+                Some(Ok(f)) => Some(f),
+                _ => None,
+            };
+            if self.pv.page_key(&mut self.tv, k, pg, feed, self.page) {
                 self.scroll = 0;
+                self.read_sprint_due();
                 return true;
             }
         }

@@ -449,43 +449,10 @@ pub struct SprintLine {
     pub queued: bool,
     /// When a queued sprint starts, `YYYY-MM-DDTHH:MM`: the cut of the window before it.
     pub start: Option<String>,
-    pub tasks: Vec<SprintTask>,
     /// The weight of the tasks still open or in progress.
     pub remaining_weight: u32,
     /// The project's shipped weight per hour over the last 7 days; 0.0 with no history.
     pub rate_per_hour: f64,
-}
-
-/// One row a release window holds (notes-cli `window::Task`).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct SprintTask {
-    pub id: Option<String>,
-    /// The row's whole line, as the opened task shows it.
-    pub text: String,
-    /// What a reader leads the task with, as the Board titles its row; set by `Feed::titles`.
-    pub title: String,
-    /// What the title leaves out, the muted second line; set by `Feed::titles`.
-    pub summary: String,
-    /// `open`, `doing`, `done`, `dropped`, `deferred` or `gone`.
-    pub state: String,
-    pub weight: u32,
-    /// It entered after the window opened.
-    pub interrupt: bool,
-    /// The active queue item working it (`queued`, `running`, `waiting`, `review`), set by
-    /// `queue_states`.
-    pub queue: Option<String>,
-    /// `urgent`, `high` or `low`, as the board reads the row.
-    pub priority: String,
-    /// Its row on the Board (`Kind::Row`), set by [`Feed::sprint_rows`]; none for a row with no id.
-    pub href: Option<String>,
-}
-
-impl SprintTask {
-    /// The state a reader shows: the queue's word while an item works it, else the row's.
-    pub fn shown_state(&self) -> &str {
-        self.queue.as_deref().unwrap_or(&self.state)
-    }
 }
 
 /// A sprint row's times, in the words every surface shows ([`SprintLine::times`]).
@@ -506,8 +473,8 @@ pub struct SprintTimes {
     pub late: bool,
 }
 
-/// One row of the Sprints table: a release window with its times worked out at one moment, and
-/// the tasks it opens to. Built by [`Feed::sprint_rows`]; both surfaces draw it as it is.
+/// One row of the Sprints table: a release window with its times worked out at one moment, its
+/// version linking to the window's page. Built by [`Feed::sprint_rows`]; both surfaces draw it as it is.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct SprintRow {
     pub profile: String,
@@ -521,7 +488,6 @@ pub struct SprintRow {
     pub build: String,
     /// The next version's sprint, locked while the open one runs: it has not started.
     pub queued: bool,
-    pub tasks: Vec<SprintTask>,
 }
 
 impl crate::table::Row for SprintRow {
@@ -549,6 +515,16 @@ impl crate::table::Row for SprintRow {
     }
     fn in_state(&self, s: &str) -> bool {
         s == "late" && self.times.late
+    }
+    /// The window opens on its own page, from either surface.
+    fn link(&self, col: &str) -> Option<crate::links::Link> {
+        use crate::links::{Kind, Link};
+        let key = format!("{}/{}", self.profile, self.project);
+        match col {
+            "version" => Some(Link::to(Kind::Sprint, format!("{key}/{}", self.version))),
+            "project" => Some(Link::to(Kind::Project, key)),
+            _ => None,
+        }
     }
 }
 
@@ -738,14 +714,11 @@ impl Feed {
         rows
     }
 
-    /// Give every row and sprint task its [`row_title`] (plan files under `home`), and each row
+    /// Give every row its [`row_title`] (plan files under `home`), and each row
     /// under an epic that epic's title.
     pub fn titles(&mut self, home: &str) {
         for r in self.rows.iter_mut().chain(&mut self.done) {
             (r.title, r.summary) = row_title(home, &r.text);
-        }
-        for t in self.sprints.iter_mut().flat_map(|s| &mut s.tasks) {
-            (t.title, t.summary) = row_title(home, &t.text);
         }
         let by: std::collections::HashMap<(String, String), String> = self
             .rows
@@ -787,13 +760,6 @@ impl Feed {
                 r.queue = by.get(&(p, id)).map(|w| (*w).to_string());
             }
         }
-        for s in &mut self.sprints {
-            for t in &mut s.tasks {
-                if let Some(id) = t.id.as_deref() {
-                    t.queue = by.get(&(s.project.as_str(), id)).map(|w| (*w).to_string());
-                }
-            }
-        }
     }
 
     /// The release windows: every project's, or one project's from its (profile, project).
@@ -822,7 +788,6 @@ impl Feed {
                 done: format!("{}/{}", s.done, s.committed),
                 build: s.build.clone(),
                 queued: s.queued,
-                tasks: sprint_tasks(&s.tasks),
             })
             .collect()
     }
@@ -852,37 +817,6 @@ fn row_title(home: &str, text: &str) -> (String, String) {
         false => t.title,
     };
     (title, t.summary)
-}
-
-/// A window's tasks as a reader shows them: open before closed, most urgent first within each (the window's own order within a
-/// priority), each with the link to its Board row.
-fn sprint_tasks(tasks: &[SprintTask]) -> Vec<SprintTask> {
-    use crate::links::{Kind, Link};
-    let rank = |p: &str| {
-        PRIORITIES
-            .iter()
-            .position(|w| *w == p)
-            .unwrap_or(PRIORITIES.len())
-    };
-    let mut out: Vec<SprintTask> = tasks
-        .iter()
-        .map(|t| SprintTask {
-            // A `gone` row is on neither sheet: the Board has nothing to open.
-            href: t
-                .id
-                .as_deref()
-                .filter(|_| t.state != "gone")
-                .map(|id| Link::to(Kind::Row, id).href()),
-            ..t.clone()
-        })
-        .collect();
-    out.sort_by_key(|t| {
-        (
-            !matches!(t.state.as_str(), "open" | "doing"),
-            rank(&t.priority),
-        )
-    });
-    out
 }
 
 pub fn feed(runner: &dyn Runner) -> Result<Feed, String> {
@@ -984,7 +918,7 @@ fn one_line(s: &str) -> bool {
     !s.trim().is_empty() && !s.contains(['\n', '\r'])
 }
 
-fn is_version(s: &str) -> bool {
+pub(crate) fn is_version(s: &str) -> bool {
     let Some(v) = s.strip_prefix('v') else {
         return false;
     };
@@ -1346,82 +1280,6 @@ mod tests {
         chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M").unwrap()
     }
 
-    #[test]
-    fn a_sprint_task_shows_the_queue_state_of_the_item_working_it() {
-        let mut f = Feed::default();
-        let task = |id: &str| SprintTask {
-            id: Some(id.into()),
-            state: "open".into(),
-            ..Default::default()
-        };
-        let mut s = sprint(None, 0, 0.0);
-        s.tasks = vec![task("de-1"), task("de-2")];
-        let mut other = s.clone();
-        other.project = "other".into();
-        f.sprints = vec![s, other];
-        let item = |row: &str| crate::queue::Item {
-            row: Some(row.into()),
-            state: crate::queue::State::Review,
-            ..Default::default()
-        };
-        f.queue_states(&[item("demo:de-1")]);
-        let shown: Vec<&str> = f.sprints[0].tasks.iter().map(|t| t.shown_state()).collect();
-        assert_eq!(shown, ["review", "open"]);
-        // NEGATIVE CONTROL: the same id in another project's window is another row.
-        assert_eq!(f.sprints[1].tasks[0].shown_state(), "open");
-        assert_eq!(f.sprints_in(Some(("bnb", "other"))).len(), 1);
-    }
-
-    #[test]
-    fn a_sprints_tasks_read_most_urgent_first_each_linked_to_its_row() {
-        let task = |id: Option<&str>, priority: &str, state: &str| SprintTask {
-            id: id.map(Into::into),
-            text: format!("{id:?}"),
-            priority: priority.into(),
-            state: state.into(),
-            ..Default::default()
-        };
-        let mut f = Feed::default();
-        let mut s = sprint(None, 0, 0.0);
-        s.tasks = vec![
-            task(Some("de-5"), "urgent", "done"),
-            task(Some("de-1"), "low", "open"),
-            task(Some("de-2"), "high", "doing"),
-            task(None, "urgent", "open"),
-            task(Some("de-6"), "high", "gone"),
-            task(Some("de-4"), "high", "open"),
-        ];
-        f.sprints = vec![s];
-        let rows = f.sprint_rows(None, at("2026-11-19T15:10"));
-        let got: Vec<(Option<&str>, &str)> = rows[0]
-            .tasks
-            .iter()
-            .map(|t| (t.id.as_deref(), t.priority.as_str()))
-            .collect();
-        // Open work first, then closed, each most urgent first; within a priority the
-        // window's own order holds: de-2 before de-4.
-        assert_eq!(
-            got,
-            [
-                (None, "urgent"),
-                (Some("de-2"), "high"),
-                (Some("de-4"), "high"),
-                (Some("de-1"), "low"),
-                (Some("de-5"), "urgent"),
-                (Some("de-6"), "high"),
-            ]
-        );
-        let href = |i: usize| rows[0].tasks[i].href.as_deref();
-        assert_eq!(href(1), Some("#projects/all?q=id:=de-2"));
-        assert_eq!(
-            href(4),
-            Some("#projects/all?q=id:=de-5"),
-            "a closed row is still on the Board"
-        );
-        // NEGATIVE CONTROL: a row with no id, or one gone from both sheets, has nothing to open.
-        assert_eq!((href(0), href(5)), (None, None));
-    }
-
     /// A queued sprint starts at the open one's cut, reads `queued` until a roll opens it, and
     /// projects its finish from its start.
     #[test]
@@ -1766,8 +1624,7 @@ mod tests {
                 row("ar-4381", "feat(hub): no-such-plan-file P3: Words, then more"),
                 row("ar-4382", "feat(look): ucp-145 P2: Menus, then maps"),
                 row("ar-4383", "feat(hub): can-we-add-more-jaunty-moonbeam P3: #size/s"),
-            ],
-            "sprints": [{"project": "agent-runtime", "tasks": [{"id": "ar-4379", "text": phase, "state": "doing"}]}],
+            ]
         }))
         .unwrap();
         f.titles(home.to_str().unwrap());
@@ -1804,12 +1661,6 @@ mod tests {
             got(&f.rows[4]).0,
             "can-we-add-more-jaunty-moonbeam P3",
             "a phase with no words is never a blank title"
-        );
-        let t = &f.sprints[0].tasks[0];
-        assert_eq!(
-            (t.title.as_str(), t.summary.as_str()),
-            got(&f.rows[0]),
-            "a sprint task reads as its Board row"
         );
         let sent = serde_json::to_string(&f).unwrap();
         for said in [

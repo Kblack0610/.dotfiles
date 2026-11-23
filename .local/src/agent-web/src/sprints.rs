@@ -1,8 +1,9 @@
 //! Projects' Sprints inner tab and an opened project's Sprint inner tab (`/api/sprints`): the
 //! open and queued release windows with their times worked out now (`hub_core::tasks::SprintRow`,
 //! once Board's table) and, unscoped, each project's last score from the kept projects read. A
-//! project's scored past rides its page (`hub_core::page::Page::sprint_past`). The words are
-//! hub-core's, so the TUI's tab says the same.
+//! project's scored past rides its page (`hub_core::page::Page::sprint_past`). `/api/sprints/page`
+//! is one window's own page (`hub_core::sprint_page`), its rows under the table's `sp`-prefixed
+//! view. The words are hub-core's, so the TUI's tab says the same.
 
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -10,7 +11,7 @@ use axum::Json;
 use hub_core::session_actions::System;
 use hub_core::table::View;
 use hub_core::tasks::{self, Feed};
-use hub_core::{project_sprints, projects};
+use hub_core::{project_sprints, projects, sprint_page};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -59,6 +60,76 @@ pub async fn get(State(s): State<Shared>, Query(q): Query<SprintsQuery>) -> ApiR
         out["last"] = json!(project_sprints::last_scores(&cards.cards));
     }
     Ok(Json(out))
+}
+
+/// One window's page: whose it is, and the rows' view under the `sp` key prefix so it never
+/// reads the Rows tab's (`q`, `s`, `sort`, `dir`).
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct PageQuery {
+    profile: String,
+    project: String,
+    version: String,
+    spq: String,
+    sps: String,
+    spsort: String,
+    spdir: String,
+}
+
+/// The page the rows are narrowed on: the header, the By area rollup of every row, then the rows
+/// the view keeps. `asked` echoes the version, so a late answer for another page is never drawn.
+fn page_json(mut page: sprint_page::Page, q: &PageQuery) -> Value {
+    let rows = std::mem::take(&mut page.rows);
+    let view = View::new::<sprint_page::SprintRow>(&q.spq, &q.sps, &q.spsort, &q.spdir);
+    let (kept, table) = view.summary(&rows);
+    let heads: serde_json::Map<String, Value> = sprint_page::area_heads(&page.state)
+        .into_iter()
+        .map(|(k, h)| (k.to_string(), json!(h)))
+        .collect();
+    json!({
+        "asked": q.version,
+        "page": page,
+        "rows": kept,
+        "table": table,
+        "area_heads": heads,
+    })
+}
+
+pub async fn page(State(s): State<Shared>, Query(q): Query<PageQuery>) -> ApiResult<Json<Value>> {
+    let queue = s.queue.queue().await;
+    let read = move || {
+        // The open and queued windows are the feed's: they are the neighbours a scored history lacks.
+        let mut note = None;
+        let windows: Vec<String> = match hub_core::sheet_view::feed_with(&System, &queue) {
+            Ok(f) => f
+                .sprint_rows(
+                    Some((&q.profile, &q.project)),
+                    chrono::Local::now().naive_local(),
+                )
+                .into_iter()
+                .map(|r| r.version)
+                .collect(),
+            Err(e) => {
+                note = Some(e);
+                Vec::new()
+            }
+        };
+        let mut page = sprint_page::read(
+            &System,
+            hub_core::areas::Areas::load(),
+            &q.profile,
+            &q.project,
+            &q.version,
+            &windows,
+        )?;
+        page.errors.extend(note);
+        Ok::<_, String>(page_json(page, &q))
+    };
+    tokio::task::spawn_blocking(read)
+        .await
+        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map(Json)
+        .map_err(|e| bad(StatusCode::BAD_GATEWAY, e))
 }
 
 #[cfg(test)]
@@ -114,5 +185,35 @@ mod tests {
             shown(&windowed(), Some(("bnb", "demo")), at(2))["rows"][0]["version"],
             "v0.3.0"
         );
+    }
+
+    #[test]
+    fn a_window_page_sends_the_rollup_of_every_row_and_the_rows_the_view_keeps() {
+        let json = r#"{"version":"v0.5.5","state":"open","opened":"2026-11-19","committed":2,
+            "delivered":1,"open":1,"dropped":0,"interrupted":0,
+            "rows":[{"id":"a-1","type":"fix","area":"ci","title":"x","pts":2,"state":"done","outcome":"delivered","interrupt":false},
+                    {"id":"a-2","type":"feat","area":"gameplay","title":"y","pts":3,"state":"open","outcome":"open","interrupt":false}]}"#;
+        let areas = hub_core::areas::Areas::parse("ci  Tests\ngameplay  Engine\n");
+        let page = sprint_page::build(json, &areas, "bnb", "unity", vec![]).unwrap();
+        let q = PageQuery {
+            version: "v0.5.5".into(),
+            spq: "group:Engine".into(),
+            ..Default::default()
+        };
+        let out = page_json(page, &q);
+        assert_eq!(out["asked"], "v0.5.5");
+        assert_eq!(
+            out["rows"].as_array().unwrap().len(),
+            1,
+            "the view narrows the rows"
+        );
+        assert_eq!(
+            out["page"]["by_area"].as_array().unwrap().len(),
+            2,
+            "never the rollup"
+        );
+        assert_eq!(out["table"]["total"], 2);
+        assert_eq!(out["area_heads"]["pending"], "OPEN");
+        assert!(out["page"].get("rows").is_none() || out["page"]["rows"] == json!([]));
     }
 }
