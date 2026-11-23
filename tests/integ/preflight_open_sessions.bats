@@ -95,8 +95,8 @@ context() {
 }
 
 @test "an unscoped session counts only its own checkout (ar-3879)" {
-  mkdir -p "$SANDBOX/scratch" && cd "$SANDBOX/scratch"
-  export CLAUDE_PROJECT_DIR="$SANDBOX/scratch" PROJECT_MAP_FILE="$SANDBOX/none.json"
+  mkdir -p "$SANDBOX/scratch" && cd "$SANDBOX/scratch" && echo "{}" > "$SANDBOX/none.json"
+  export CLAUDE_PROJECT_DIR="$SANDBOX/scratch" PROJECT_MAP_FILE="$SANDBOX/none.json" TMPDIR="$SANDBOX"
   state "$(date +%s)" \
     "$(row uuuuuuuu-oth CHAT 2 'unrelated' /elsewhere/scratch | jq -c '.project = "_unscoped"')"
   run context
