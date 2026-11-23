@@ -19,7 +19,7 @@ setup() {
     list) grep -q unreadable "$NOTES_FIXTURE/queue.jsonl" 2>/dev/null && exit 1; cat "$NOTES_FIXTURE/queue.jsonl" 2>/dev/null ;;
     add) printf "agent-queue %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; printf "writer name=%s item=%s session=%s\n" "${AGENTCTL_NAME-}" "${AGENT_QUEUE_ITEM-}" "${CLAUDE_CODE_SESSION_ID-}" >> "$NOTES_FIXTURE/calls.log" ;;
   esac; exit 0'
-  # A full board: the picker must not ask, and files regardless (the board-open watch alerts instead).
+  # A full board: the picker must not ask, and files regardless, since the board has no limit.
   stub fleet-bench 'echo "fleet-bench $*" >> "$NOTES_FIXTURE/calls.log"; echo "full: board_days 4 past board_days_max 2, board_open 9 (backlog 0)"; exit 1'
   repo hot 6; repo cold 1; repo other 1
   mkdir -p "$SANDBOX/excluded"
@@ -246,7 +246,7 @@ repo() {
 # tagged #interrupt, so the sprint keeps it off tier:backlog, which dispatch never starts.
 # NEGATIVE CONTROL: the same add at --priority low without the tag, as the pick was filed before,
 # lands in tier:backlog. The CI rust job builds notes and sets NOTES_BIN.
-@test "end to end on the real notes: under a locked sprint the pick's row joins it as #interrupt; a #low row without the tag goes to tier:backlog" {
+@test "end to end on the real notes: under a locked sprint the pick's row joins it as #interrupt; a #low row without the tag waits for the next window" {
   [ -n "${NOTES_BIN:-}" ] || skip "NOTES_BIN names no built notes"
   ln -sf "$NOTES_BIN" "$SANDBOX/bin/notes"
   ln -sf "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
@@ -267,7 +267,7 @@ repo() {
     notes --profile personal ptask hot --agent done ht-1 --proof pr:9 >/dev/null
     notes --profile personal ptask hot --agent add -- "fix(core): the committed row #high #size/s" >/dev/null
     notes --profile personal projects --commit hot --hours 24 ) || fail "the sprint did not lock"
-  # row <id>: the board line of row <id>, as the sheet holds it (ptask list leaves the backlog out).
+  # row <id>: the board line of row <id>, as the sheet holds it.
   row() { grep -E "id:$1( |-->)" "$dir/agent/README.md"; }
 
   AGENTCTL_NAME=dream CLAUDE_CODE_SESSION_ID=sid run "$PICK" run
@@ -287,7 +287,8 @@ repo() {
   id="$(sed -n 's/^held research-old -> hot:\(ht-[0-9]*\)$/\1/p' <<<"$output")"
   r="$(row "$id")"
   [ -n "$r" ] || fail "no control row on the board: $output"
-  [[ "$r" == *'tier:backlog'* ]] || fail "the #low control row is not in the backlog: $r"
+  [[ "$r" != *'#interrupt'* && "$r" == *'#v1.0.1'* ]] || fail "the #low control row joined the sprint: $r"
+  [[ "$r" != *'tier:backlog'* ]] || fail "the retired backlog token is back: $r"
 
   # A #low row aimed at the next window is no twin of a pick with its words, so the pick files its
   # own #interrupt row, which the sprint takes.

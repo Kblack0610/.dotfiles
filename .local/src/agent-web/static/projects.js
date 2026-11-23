@@ -79,7 +79,7 @@ const pTab = () => (P_TABS.includes(st.arg) ? st.arg : "list");
 const pProj = () => (P_TABS.includes(st.arg) ? "" : st.arg);
 // Each inner tab's total, its table's once read (Board's is the agent board, `totals.agent`, from any read that carries
 // it): a count, not a flag, so it is never amber.
-const pCount = { all: null, deliverables: null, coverage: null, ladder: null };
+const pCount = { all: null, sprints: null, deliverables: null, coverage: null, ladder: null };
 function pStrip() {
   const tabs = INNER_TABS.projects.tabs.map(([id, title, secs]) =>
     [id, title + (pCount[id] == null ? "" : ` <span class="muted">${pCount[id]}</span>`), secs]);
@@ -284,9 +284,22 @@ function pActivity(c, pg) {
     : `<div class="card muted">No agent note.</div>`);
 }
 
+// The Sprint inner tab: the project's open window, the ones queued behind it (the rest of a shrunk
+// or locked sprint), then its scored past, each in its own section (sprints.js draws the tables).
+function pSprint(c, pg) {
+  const d = sprData();
+  if (!d) return sprst.err ? `<div class="panel down">${esc(sprst.err)}</div>` : `<div class="muted">Reading the sprints...</div>`;
+  const open = d.rows.filter((r) => !r.queued), queued = d.rows.filter((r) => r.queued);
+  const none = (what) => `<div class="card muted">${what}</div>`;
+  const past = pg ? pg.sprint_past : null;
+  return secHead("p-sprint", "Sprint", open.length) + (open.length ? sprTable(d, open, true) : none("No window is open.")) +
+    secHead("p-sprint-queued", "Queued", queued.length) + (queued.length ? sprTable(d, queued, true) : none("No window is queued.")) +
+    secHead("p-sprint-past", "Past", past ? past.length : null) + (past ? sprPast(past) : `<div class="muted">Reading the page...</div>`);
+}
+
 // The inner tabs' own panes, each in its data-pin group, around the board's (Rows) and
 // Deliverables' elements, in the strip's order: `p-pane` holds Overview,
-// a product's departments and the Rows head, `p-pane2` Releases, Stage and Activity. One that needs the page
+// the Sprint tab, a product's departments and the Rows head, `p-pane2` Releases, Stage and Activity. One that needs the page
 // says it is reading or why it failed.
 function pPanes(c) {
   const got = pst.page[c.name], pg = got && got.data;
@@ -294,7 +307,7 @@ function pPanes(c) {
   const wait = got && got.err ? "" : `<div class="muted">Reading the page...</div>`;
   const pin = (id, html) => `<div data-pin="${id}"${pst.inner === id ? "" : " hidden"}>${html}</div>`;
   const depts = pDepts(c).map((id) => pin(id, deptPane(pKey(c), id))).join("");
-  return [pin("overview", pOverview(c, pg) + (pg ? "" : wait)) + depts +
+  return [pin("overview", pOverview(c, pg) + (pg ? "" : wait)) + depts + pin("sprint", pSprint(c, pg)) +
     pin("rows", secHead("p-rows", "Rows", c.progress.open)),
   pin("releases", pg ? pReleases(pg) : wait) + pin("stage", pg ? pStage(pg) : wait) + pin("activity", pActivity(c, pg) + (pg ? "" : wait))];
 }
@@ -346,6 +359,7 @@ function pOpen(key, inner) {
   renderProjects();
   refreshBoard();
   if (pst.inner === "deliverables") dst.refresh();
+  if (pst.inner === "sprint") refreshSprints();
 }
 
 // Show inner tab `id` of the opened page in place: the URL follows (no history entry, as a tab
@@ -357,6 +371,7 @@ function pInner(id) {
   pShow();
   if (pst.inner === "deliverables") dst.refresh();
   if (pst.inner === "rows") renderBoard();
+  if (pst.inner === "sprint") refreshSprints();
 }
 function pShow() {
   for (const e of $("p-rows").querySelectorAll("[data-pin]")) e.hidden = e.dataset.pin !== pst.inner;
@@ -387,6 +402,7 @@ function pRead() {
   if (top === "list") refreshProjects();
   if (top === "all" || pst.open) refreshBoard();
   if (dShown()) dst.refresh();
+  if (sprShown()) refreshSprints();
   cRead();
   lRead();
 }
@@ -404,6 +420,7 @@ function renderProjects() {
   pStripPaint();
   innerHide("projects", "cards", $("p-cards"));
   innerHide("projects", "board", $("p-all"));
+  innerHide("projects", "sprints", $("p-sprints"));
   innerHide("projects", "deliverables", $("p-dtop"));
   innerHide("projects", "coverage", $("p-cov"));
   innerHide("projects", "stages", $("p-lstages"));
@@ -412,6 +429,7 @@ function renderProjects() {
   if (!pst.open) {
     const top = pOn = pTab();
     if (top === "all") renderBoard();
+    if (top === "sprints") paint($("p-sprints"), sprData() ? sprAll(sprData()) : sprst.err ? `<div class="panel down">${esc(sprst.err)}</div>` : `<div class="muted">Reading the sprints...</div>`, pst.folds);
     if (top === "list") pst.render(); else if (top === "deliverables") dst.render();
     else if (top === "coverage") covst.render();
     else if (top === "ladder") { ladst.render(); reqst.render(); }
@@ -497,6 +515,7 @@ TABS.projects = {
     if (["watch", "queue", "resync"].includes(ev.kind)) {
       if (pTab() === "list") refreshProjects();
       if (dShown()) dst.refresh();
+      if (sprShown()) refreshSprints();
     }
     if (ev.kind === "resync") refreshBoard();
     if (["stages", "resync"].includes(ev.kind)) lRead();

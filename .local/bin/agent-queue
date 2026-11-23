@@ -473,7 +473,7 @@ admission_now() {
 
 # make_room <priority> <tags> <slug> -> at the cap, an urgent or `red` add, or the pull of a row whose
 # #after/ an ok close just cleared (AGENT_QUEUE_PULL=after, fleet-dispatch pull-after: held, that row
-# waited for a pass, and a pass never takes the backlog tier; 2026-11-20, chain-after-stuck), returns
+# waited for a pass, and a pass then never took the backlog tier, retired by ar-4626; 2026-11-20, chain-after-stuck), returns
 # the last-ranked runnable item to its board row (cmd_return: lossless, the row is un-started and dispatch promotes it
 # again), so the add goes in under the cap. Never chosen: urgent or red work, the human's (human_work),
 # an item with no row to return to, a chain's head. No such item: nothing moves, and admit holds the add
@@ -510,7 +510,7 @@ make_room() {
 # phase's brief ("Phase N of the plan <path>", "Phases N and M ..."), naming a plan file that exists,
 # which a phase it filed on its board row behind #after/ still carries when fleet-dispatch pull-after
 # pulls that row. The cap passes a --plan's phases, so it passes this pull too: held, a phase on the
-# backlog tier was never pulled again, since a pass skips that tier and a pass's fill stops at the cap
+# backlog tier (retired, ar-4626) was never pulled again, since a pass skipped that tier and a pass's fill stops at the cap
 # (2026-11-18: six plan phases sat behind closed rows, chain-after-stuck). add_plan writes the path
 # through realpath, so it is absolute; the test files its brief through add_plan itself.
 plan_phase_task() {
@@ -1674,7 +1674,7 @@ overflow_row() {
 # <want> is the channel of a human's want, or empty: the notes writer then stamps #requested.
 # <keep> non-empty files the row un-started (an add over the cap, see overflow_row). <gates>, board gate
 # tags with no #, go on the row it files, and onto an open twin it links (gate_row). <tags>, the item's,
-# add `interrupt` to those when they hold it (interrupt_tag), so a twin left in tier:backlog joins too.
+# add `interrupt` to those when they hold it (interrupt_tag), so an open twin joins too.
 # Who files it, for `notes ptask add --origin`: a plan's phases (AQ_ITEM_PLAN, or AQ_FILE_ORIGIN=plan
 # for the plan's own row) file directly, and so does the row of an item being worked (<keep> empty:
 # its own record, not a follow-up). A kept row from a queue item or runner is its follow-up: notes sends
@@ -1838,8 +1838,8 @@ add_row_prio() {
 # landing_after <item slug> <text> -> the blockers of <slug>'s own `after:` that would hold a new add, when
 # <text> says land and the item has a PR recorded (pr: or open_pr:, landing.md sets it first): the add is
 # that item's landing. A landing follow-up its session files without --after carries no trigger, so triage
-# files it #low, the sweep puts it on the backlog tier and a pass never takes that tier: ucp-2567, 2568
-# and 2569 sat on one for 11 hours (2026-11-21, ar-4451). Gated on what its item waited on, it is pinned
+# files it #low, which ranks last (before ar-4626 the sweep put it on a backlog tier no pass took: ucp-2567, 2568
+# and 2569 sat there for 11 hours, 2026-11-21, ar-4451). Gated on what its item waited on, it is pinned
 # (gate_open) and pull-after starts it when that blocker closes ok. A blocker that closed, died or is
 # stacked on (open PR: it holds nothing, hold_for) is no gate. Nothing for any other follow-up.
 landing_after() {
