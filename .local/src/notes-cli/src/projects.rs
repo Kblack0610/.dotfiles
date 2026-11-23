@@ -279,7 +279,7 @@ pub fn stages() {
 /// Unset is normal. `fleet-dispatch` and `agent-queue` rank a project's work by it, focus
 /// first, then high, normal, low, and start a lower tier only when no higher one can; nothing
 /// is held back. The `prio/` prefix keeps it apart from a row's
-/// `#high` / `#low` priority words.
+/// `#high` / `#normal` / `#low` priority words.
 pub(crate) const PRIOS: [&str; 3] = ["prio/focus", "prio/high", "prio/low"];
 
 // -- stage and group: hashtags on the project's front page --------------------
@@ -1246,9 +1246,9 @@ fn summary_findings(content: &str) -> Vec<String> {
     out
 }
 
-/// Priority words no reader knows. A row carrying one sorts as untagged (high), so the
+/// Priority words no reader knows. A row carrying one sorts as untagged (normal), so the
 /// word looks meaningful and is not.
-const RETIRED_PRIORITIES: &[&str] = &["normal", "medium", "p0", "p1", "p2", "p3"];
+const RETIRED_PRIORITIES: &[&str] = &["medium", "p0", "p1", "p2", "p3"];
 
 /// Why an edit from `old` to `new` is refused: `new` carries a [`RETIRED_PRIORITIES`] word,
 /// before its marker, that `old` did not. A row that already had one still takes an edit, so
@@ -1264,7 +1264,7 @@ pub(crate) fn refuse_retired_priority(old: &str, new: &str) -> anyhow::Result<()
     let had = retired(old);
     match retired(new).into_iter().find(|t| !had.contains(t)) {
         Some(t) => anyhow::bail!(
-            "#{t} is not a priority (urgent, high or low; quote it in backticks to mean the word), so nothing was written"
+            "#{t} is not a priority (urgent, high, normal or low; quote it in backticks to mean the word), so nothing was written"
         ),
         None => Ok(()),
     }
@@ -1408,7 +1408,7 @@ pub(crate) fn row_findings(content: &str, agent: bool) -> Vec<String> {
         for t in &tags {
             if RETIRED_PRIORITIES.contains(&t.as_str()) {
                 out.push(format!(
-                    "line {n}: #{t} is not a priority (urgent, high or low)"
+                    "line {n}: #{t} is not a priority (urgent, high, normal or low)"
                 ));
             } else if RETIRED_TAGS.contains(&t.as_str()) {
                 out.push(format!("line {n}: #{t} is retired (nothing reads it)"));
@@ -1516,7 +1516,7 @@ pub(crate) fn untriaged_finding(content: &str, today: chrono::NaiveDate) -> Opti
     }
     let first = rows.first()?;
     Some(format!(
-        "{} untriaged open row(s) with no #urgent, #high or #low, {old} older than a day (first: line {first}; `agentctl-inbox-triage --backlog --priority` ranks them)",
+        "{} untriaged open row(s) with no #urgent, #high, #normal or #low, {old} older than a day (first: line {first}; `agentctl-inbox-triage --backlog --priority` ranks them)",
         rows.len()
     ))
 }
@@ -3695,6 +3695,7 @@ struct SheetCounts {
     done: usize,
     urgent: usize,
     high: usize,
+    normal: usize,
     low: usize,
     planned: usize,
 }
@@ -3716,6 +3717,7 @@ fn sheet_counts(content: &str, cur: Option<V>) -> SheetCounts {
             match md::task_priority(l) {
                 Some("#urgent") => c.urgent += 1,
                 Some("#high") => c.high += 1,
+                Some("#normal") => c.normal += 1,
                 Some("#low") => c.low += 1,
                 _ => {}
             }
@@ -3747,6 +3749,8 @@ struct ProjectStats {
     done: usize,
     urgent: usize,
     high: usize,
+    /// JSON only: the TSV keeps its columns.
+    normal: usize,
     low: usize,
     planned: usize,
     agent: usize,
@@ -4021,6 +4025,7 @@ pub(crate) struct KindCount {
     /// Open rows per priority tag; a row with none counts in no bucket.
     pub urgent: usize,
     pub high: usize,
+    pub normal: usize,
     pub low: usize,
     pub done: usize,
     pub closed_28d: usize,
@@ -4163,6 +4168,7 @@ impl Progress {
             match prio {
                 Some("#urgent") => k.urgent += 1,
                 Some("#high") => k.high += 1,
+                Some("#normal") => k.normal += 1,
                 Some("#low") => k.low += 1,
                 _ => {}
             }
@@ -4319,6 +4325,7 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
         done: c.done,
         urgent: c.urgent,
         high: c.high,
+        normal: c.normal,
         low: c.low,
         planned: c.planned,
         agent: sheet_counts(
@@ -5468,6 +5475,7 @@ Version: v0.2.0
                 open_weight: 4,
                 urgent: 1,
                 high: 0,
+                normal: 0,
                 low: 1,
                 done: 1,
                 closed_28d: 1,
@@ -6634,7 +6642,8 @@ mod move_layout_tests {
     fn row_lint_flags_retired_priorities_bad_tiers_and_unproven_agent_done_rows() {
         let sheet = "## Tasks\n\
             - [ ] fine #urgent #tier/3 #tierlist\n\
-            - [ ] old word #normal\n\
+            - [ ] old word #medium\n\
+            - [ ] four levels #normal\n\
             - [ ] squashed #tier3\n\
             - [ ] too high #tier/4\n\
             - [x] closed by hand <!-- carried:2 -->\n\
@@ -6646,12 +6655,12 @@ mod move_layout_tests {
         assert_eq!(
             got,
             [
-                "line 3: #normal is not a priority (urgent, high or low)",
-                "line 4: #tier3 is not a tier (#tier/1, 2 or 3)",
-                "line 5: #tier/4 is not a tier (#tier/1, 2 or 3)",
-                "line 6: done with no proof marker (<!-- pr:N -->)",
-                "4 open row(s) not in `type(area): title` form (first: line 2; `notes doctor --projects --untyped` proposes each)",
-                "4 open row(s) with no id (<!-- id:<code>-<n> -->; `ptask add` stamps one) (first: line 2)",
+                "line 3: #medium is not a priority (urgent, high, normal or low)",
+                "line 5: #tier3 is not a tier (#tier/1, 2 or 3)",
+                "line 6: #tier/4 is not a tier (#tier/1, 2 or 3)",
+                "line 7: done with no proof marker (<!-- pr:N -->)",
+                "5 open row(s) not in `type(area): title` form (first: line 2; `notes doctor --projects --untyped` proposes each)",
+                "5 open row(s) with no id (<!-- id:<code>-<n> -->; `ptask add` stamps one) (first: line 2)",
             ]
         );
         assert_eq!(
@@ -6676,7 +6685,7 @@ mod move_layout_tests {
             \x20 - [ ] a child row is not a row\n";
         assert_eq!(
             untriaged_finding(sheet, today).unwrap(),
-            "3 untriaged open row(s) with no #urgent, #high or #low, 2 older than a day (first: line 3; `agentctl-inbox-triage --backlog --priority` ranks them)"
+            "3 untriaged open row(s) with no #urgent, #high, #normal or #low, 2 older than a day (first: line 3; `agentctl-inbox-triage --backlog --priority` ranks them)"
         );
         assert_eq!(untriaged_finding("- [ ] fine #high\n", today), None);
     }
@@ -6916,6 +6925,7 @@ mod stats_tests {
                 done: 1,
                 urgent: 1,
                 high: 1,
+                normal: 0,
                 low: 1,
                 planned: 2,
             }

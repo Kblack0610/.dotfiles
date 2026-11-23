@@ -56,17 +56,18 @@ struct Ticket {
 
 /// Map a ClickUp priority word to the note's priority hashtag.
 ///
-/// ClickUp's default is `normal`, and ours is `#high` (`md::DEFAULT_PRIORITY`), so `normal`
-/// maps to the default rather than to no tag. The two defaults have to agree: ClickUp is by
-/// far the biggest producer of tickets nobody has prioritized, and mapping them to nothing
-/// would leave the note's largest population of tasks outside the ordering the default exists
-/// to give them.
+/// The four words are ours too, and ClickUp's default `normal` is ours (`md::DEFAULT_PRIORITY`).
+/// A word ClickUp leaves empty or we do not know maps to the default rather than to no tag:
+/// ClickUp is by far the biggest producer of tickets nobody has prioritized, and mapping them
+/// to nothing would leave the note's largest population of tasks outside the ordering the
+/// default exists to give them.
 fn priority_tag(word: &str) -> &'static str {
     match word.trim().to_lowercase().as_str() {
         "urgent" => "#urgent",
         "high" => "#high",
+        "normal" => "#normal",
         "low" => "#low",
-        _ => md::default_priority(), // "normal" / "none" / unknown
+        _ => md::default_priority(), // "none" / unknown
     }
 }
 
@@ -464,12 +465,13 @@ mod tests {
         assert_eq!(priority_tag("High"), "#high");
         // ClickUp's default and ours have to agree, or the biggest population of
         // unprioritized tickets lands outside the ordering the default exists to give them.
-        assert_eq!(priority_tag("normal"), "#high");
-        assert_eq!(priority_tag("none"), "#high");
+        assert_eq!(priority_tag("normal"), "#normal");
+        assert_eq!(priority_tag("normal"), md::default_priority());
+        assert_eq!(priority_tag("none"), "#normal");
         assert_eq!(priority_tag("low"), "#low");
         // an absent priority is the same case: unknown means unprioritized means default
-        assert_eq!(priority_tag(""), "#high");
-        assert_eq!(priority_tag("bogus"), "#high");
+        assert_eq!(priority_tag(""), "#normal");
+        assert_eq!(priority_tag("bogus"), "#normal");
     }
 
     #[test]

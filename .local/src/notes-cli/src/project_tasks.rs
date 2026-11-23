@@ -657,7 +657,7 @@ fn self_check(
     checked: &[String],
 ) -> Result<std::result::Result<Vec<String>, i32>> {
     if md::task_priority(row).is_none() {
-        bail!("a row from a session carries #urgent, #high or #low, judged by triage's priority_rule (agentctl-inbox-triage), so nothing was added");
+        bail!("a row from a session carries #urgent, #high, #normal or #low, judged by triage's priority_rule (agentctl-inbox-triage), so nothing was added");
     }
     if crate::epics::is_epic(row) && standing_title(row) {
         bail!("a standing epic (`<system> to standard`) is filed by notes and project-stage-check, never by a session, so nothing was added");
@@ -2388,7 +2388,7 @@ pub(crate) fn tag_token(t: &str) -> Result<String> {
 }
 
 /// `line` with `remove` dropped and `add` added. A row has one size and one priority, so
-/// adding a `#size/<s>` or a `#urgent`/`#high`/`#low` replaces the one it had. It has one
+/// adding a `#size/<s>` or a `#urgent`/`#high`/`#normal`/`#low` replaces the one it had. It has one
 /// estimate too: adding a `#pts/<n>` replaces its old points and sets its `#size/` to the
 /// band they fall in ([`crate::epics::POINTS`]), over any `#size/` added beside them; adding a
 /// bare `#size/<s>` drops the points, which no longer hold. So the two never disagree. It has one
@@ -5622,6 +5622,12 @@ mod inbox_tests {
         // NEGATIVE CONTROL: the row that already had #p1 still takes a tag.
         assert_eq!(tag_as(&id("sc-2"), "size/s").unwrap(), 0);
         assert!(v.read().contains("#size/s"));
+        // #normal is a priority again (ar-4884): an edit writing it is accepted, and it
+        // replaces the row's #low rather than joining it.
+        assert_eq!(tag_as(&id("sc-1"), "normal").unwrap(), 0);
+        let after = v.read();
+        let row = after.lines().find(|l| l.contains("id:sc-1")).unwrap();
+        assert!(row.contains("#normal") && !row.contains("#low"), "{row}");
     }
 
     #[test]

@@ -17,6 +17,7 @@ use crate::release_graph::pr_ref;
 use crate::session_actions::Runner;
 use crate::text::{cap, headline, TITLE_MAX};
 
+/// A queue item's priorities, as `agent-queue` takes them. A board row's are `tasks::PRIORITIES`.
 pub const PRIORITIES: [&str; 3] = ["urgent", "high", "low"];
 
 /// The harness of an item, or a session, that names none.
