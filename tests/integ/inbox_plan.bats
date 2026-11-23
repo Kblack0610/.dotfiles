@@ -296,6 +296,33 @@ hold_stubs() {
   grep -q 'agentctl@inbox-plan' "$NOTES_FIXTURE/systemctl.log" || fail "a row to plan did not start the unit"
 }
 
+@test "kick: at its budget a row to plan starts no pass and pages once; under it, or with a held row's slot, it does" {
+  hold_stubs
+  printf '#!/usr/bin/env bash\necho "$*" >> "$NOTES_FIXTURE/notify.log"\n' >"$SANDBOX/bin/agent-notify"
+  chmod +x "$SANDBOX/bin/agent-notify"
+  printf 'NAME=inbox-plan\nBUDGET_DAY_USD=5\nMAX_CALLS_HOUR=6\n' >"$AGENTCTL_CONF_DIR/inbox-plan.conf"
+  calls="$HOME/.local/state/agentctl/calls.jsonl"
+  mkdir -p "$(dirname "$calls")"
+  jq -cn --arg at "$(date -Iseconds)" '{agent: "inbox-plan", at: $at, cost_usd: 6}' >"$calls"
+  sheet '- [ ] fix(b): two #plan <!-- id:sc-2 -->\n'
+  # The caller's own caps (inbox-triage's unit environment) are not inbox-plan's.
+  BUDGET_DAY_USD=100 run "$PLAN" --kick
+  assert_success
+  assert_output --partial 'at its budget, not started: over its daily budget: $6 of $5'
+  [ ! -e "$NOTES_FIXTURE/systemctl.log" ] || fail "a kick at its budget started the unit"
+  run "$PLAN" --kick
+  [ "$(wc -l <"$NOTES_FIXTURE/notify.log")" = 1 ] || fail "the stop paged more than once a day"
+  [ ! -e "$HOME/.local/state/agentctl/inbox-plan/activity.log" ] || fail "a kick wrote an outcome line"
+  sheet '- [ ] feat(a): one #plan #requested <!-- id:sc-1 -->\n- [ ] fix(b): two #plan <!-- id:sc-2 -->\n'
+  run "$PLAN" --kick
+  grep -q 'agentctl@inbox-plan' "$NOTES_FIXTURE/systemctl.log" || fail "a held row with a slot did not start the unit"
+  rm "$NOTES_FIXTURE/systemctl.log"
+  sheet '- [ ] fix(b): two #plan <!-- id:sc-2 -->\n'
+  jq -cn '{agent: "inbox-plan", at: "2026-01-01T00:00:00-08:00", cost_usd: 6}' >"$calls"
+  run "$PLAN" --kick
+  grep -q 'agentctl@inbox-plan' "$NOTES_FIXTURE/systemctl.log" || fail "a kick under its budget did not start the unit"
+}
+
 @test "hold: a row whose own item already finished ok is a refusal, not a failure: BLOCKED, recorded, not tried again" {
   hold_stubs
   sheet '- [ ] feat(a): one #plan #requested <!-- id:sc-1 -->\n'
