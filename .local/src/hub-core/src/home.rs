@@ -16,7 +16,7 @@
 //! from facts (who can act, whether it stops running work, what it holds, how long it waited, a
 //! sheet row's own priority), never a model's number.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -918,8 +918,18 @@ pub fn running(state: &Value, q: &Queue, board: Option<&Feed>) -> Vec<Running> {
         .collect()
 }
 
-/// One pending ask's row: its record rides along as `ask`, the card's source.
-fn ask_need(a: &Value, target: Option<String>, since: Option<i64>, score: Score) -> Need {
+/// One pending ask's row: its record rides along as `ask`, the card's source. The waiting queue
+/// item it holds (`item`) shows here, first in `holds`, and nowhere else.
+fn ask_need(
+    a: &Value,
+    item: Option<&Item>,
+    target: Option<String>,
+    since: Option<i64>,
+    mut score: Score,
+) -> Need {
+    if let Some(i) = item.filter(|i| i.state == State::Waiting) {
+        score.holding(&i.slug);
+    }
     let recommend = str_of(a, "recommend");
     Need {
         kind: Kind::Ask,
@@ -934,6 +944,59 @@ fn ask_need(a: &Value, target: Option<String>, since: Option<i64>, score: Score)
         target,
         since,
     }
+}
+
+/// The waiting item ask `a` holds once its session is gone: the one tagged `ask:<id>`, or the one
+/// whose last session is the ask's `claude_session`, unless an ask before it took that item (`asked`).
+fn held_item<'a>(items: &[&'a Item], a: &Value, asked: &HashSet<String>) -> Option<&'a Item> {
+    let (id, owner) = (str_of(a, "id"), str_of(a, "claude_session"));
+    items.iter().copied().find(|i| {
+        i.state == State::Waiting
+            && !asked.contains(&i.slug)
+            && (i.held_on(id) || (!owner.is_empty() && i.last_session() == Some(owner)))
+    })
+}
+
+/// Each Claude session's latest answer time, from the state's `answered_asks`. An answer whose
+/// delivery failed decides nothing yet: a board shows the failed delivery.
+fn answered_by_session(state: &Value) -> HashMap<&str, i64> {
+    let mut by: HashMap<&str, i64> = HashMap::new();
+    for a in state["answered_asks"].as_array().into_iter().flatten() {
+        let sid = str_of(a, "claude_session");
+        let failed = str_of(a, "delivery") == "failed";
+        if let Some(at) = a["answered_at"]
+            .as_i64()
+            .filter(|_| !sid.is_empty() && !failed)
+        {
+            by.entry(sid)
+                .and_modify(|e| *e = (*e).max(at))
+                .or_insert(at);
+        }
+    }
+    by
+}
+
+/// The waiting items that have had their decision: each one's last session's ask was answered
+/// after its wait began (its `waiting:` stamp, else `started:`), so the resume moves it, not the
+/// human. One with no wait start at all is not taken as decided.
+fn decided(state: &Value, items: &[&Item]) -> HashSet<String> {
+    let answered = answered_by_session(state);
+    items
+        .iter()
+        .filter(|i| i.state == State::Waiting)
+        .filter(|i| {
+            i.last_session()
+                .and_then(|sid| answered.get(sid))
+                .is_some_and(|&at| {
+                    i.waiting
+                        .as_deref()
+                        .or(i.started.as_deref())
+                        .and_then(ts)
+                        .is_some_and(|w| w <= at)
+                })
+        })
+        .map(|i| i.slug.clone())
+        .collect()
 }
 
 /// NEEDS YOU from fleet-sessions' `state.json` (null when missing), the queue, the board feed and
@@ -985,8 +1048,9 @@ pub fn needs(
     };
     let mut out = hold_needs(state); // the first conditions: the sort keeps their push order
     let mut shown: HashSet<String> = HashSet::new();
-    // The slugs of the queue items an ask already stands for, by its live owner or its `task`.
-    let mut asked: HashSet<String> = HashSet::new();
+    // The slugs of the queue items an ask already stands for: an answered one (`decided`), or a
+    // pending one by its live owner, its `task` or its hold (`held_item`).
+    let mut asked: HashSet<String> = decided(state, &items);
     // The board rows (`<project>:<id>`) an ask, session or queue row above already stands for.
     let mut worked: HashSet<String> = HashSet::new();
     fn work(worked: &mut HashSet<String>, i: Option<&Item>) {
@@ -1029,35 +1093,23 @@ pub fn needs(
         if !task.is_empty() {
             worked.insert(format!("{}:{task}", str_of(a, "project")));
         }
-        // Its queue item: the live owner's, else the one its `task` names, else the waiting one
-        // held on it or that ran in its Claude session, so an ask whose owner died still stands
-        // for the item waiting on it: one decision, one row.
-        let by_task = items
-            .iter()
-            .copied()
-            .find(|i| !task.is_empty() && i.slug == task);
+        // Its queue item: the live owner's, else the one its `task` names, else the waiting one it
+        // holds (`held_item`), so an ask whose owner died still stands for it: one decision, one row.
+        let by_task = items.iter().copied().find(|i| i.slug == task);
         work(&mut worked, by_task);
-        let id = str_of(a, "id");
-        let held = items.iter().copied().find(|i| {
-            i.state == State::Waiting
-                && !asked.contains(&i.slug)
-                && (i.held_on(id) || (!owner.is_empty() && i.last_session() == Some(owner)))
-        });
-        let item = item_of(session).or(by_task).or(held);
+        let item = item_of(session)
+            .or(by_task)
+            .or_else(|| held_item(&items, a, &asked));
         work(&mut worked, item);
         asked.extend(item.map(|i| i.slug.clone()));
-        let mut score = Score::new(
+        let score = Score::new(
             !machine_can_answer(str_of(a, "kind"), str_of(a, "judge")),
             target.is_some(),
             left(target.as_ref()),
             dependents(item.map(|i| i.slug.as_str())),
             age_min(since),
         );
-        // The waiting item it holds shows here, under its ask, and nowhere else.
-        if let Some(i) = item.filter(|i| i.state == State::Waiting) {
-            score.holding(&i.slug);
-        }
-        out.push(ask_need(a, target, since, score));
+        out.push(ask_need(a, item, target, since, score));
     }
     for s in &sessions {
         let target = str_of(s, "target");
@@ -1089,38 +1141,8 @@ pub fn needs(
             )),
         });
     }
-    // When the Claude session behind each answered ask was last answered: an item that session
-    // left waiting, with no wait begun since, has had its decision and is the resume's to move.
-    let mut answered: std::collections::HashMap<&str, i64> = Default::default();
-    for a in state["answered_asks"].as_array().into_iter().flatten() {
-        let sid = str_of(a, "claude_session");
-        // An answer that never reached its session decides nothing yet: a board shows the failed delivery.
-        let failed = str_of(a, "delivery") == "failed";
-        if let Some(at) = a["answered_at"]
-            .as_i64()
-            .filter(|_| !sid.is_empty() && !failed)
-        {
-            answered
-                .entry(sid)
-                .and_modify(|e| *e = (*e).max(at))
-                .or_insert(at);
-        }
-    }
-    let decided = |i: &Item| {
-        i.last_session()
-            .and_then(|sid| answered.get(sid))
-            .is_some_and(|&at| {
-                // An item with no `waiting:` stamp waits since it started; with neither, it is not decided.
-                i.waiting
-                    .as_deref()
-                    .or(i.started.as_deref())
-                    .and_then(ts)
-                    .is_some_and(|w| w <= at)
-            })
-    };
     for i in items.iter().filter(|i| i.state == State::Waiting) {
         if asked.contains(&i.slug)
-            || decided(i)
             || i.session
                 .as_deref()
                 .is_some_and(|s| shown.contains(tmux_name(s)))
@@ -1471,7 +1493,7 @@ mod tests {
 
     #[test]
     fn an_ask_row_keeps_the_state_documents_audit_of_for_the_pager() {
-        let row = |a: Value| ask_need(&a, None, None, Score::new(true, true, 0, 0, 120));
+        let row = |a: Value| ask_need(&a, None, None, None, Score::new(true, true, 0, 0, 120));
         let audit = row(json!({"id": "au", "project": "p", "question": "q?", "audit_of": "q1"}));
         assert_eq!(audit.ask.unwrap().audit_of, "q1");
         let plain = row(json!({"id": "a1", "project": "p", "question": "q?"}));
