@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-# QUEUE.md (private overlay, ~/.config/agentctl/) defines ten rows of ARCHITECTURE.md's Flows
-# table: Work intake, Queue states, Admission, Dispatch, the Fleet lease, Intake channels, Outbox to
+# QUEUE.md (private overlay, ~/.config/agentctl/) defines nine rows of ARCHITECTURE.md's Flows
+# table: Work intake, Queue states, Admission, the Fleet lease, Intake channels, Outbox to
 # board, Red triage, Alert ownership and Proposals. Each test here reads
 # one section's enumerable facts (a state, a source, a verb, a default, a lane) and the code that
 # implements it, from the files as text, so the section cannot drift from agent-queue,
@@ -78,9 +78,9 @@ doc_states() {
   [ "$(grep -oE '`AGENT_QUEUE_CAP` \(default [0-9]+\)' <<<"$body" | grep -oE '[0-9]+')" = "$(default_of "$AQ" AQ_CAP)" ]
 }
 
-@test "Dispatch: each verb the section leads a bullet with is a fleet-dispatch verb, and the low water is the agentctl conf's" {
+@test "Dispatch: each verb fleet-dispatch.md leads a bullet with is a fleet-dispatch verb, and the low water is the agentctl conf's" {
   local verbs v body
-  body=$(section 'The dispatcher: `fleet-dispatch`')
+  body=$(cat "$PUB/.local/src/docs/fleet-dispatch.md")
   verbs=$(grep -oE '^- `[a-z-]+[ `]' <<<"$body" | sed -E 's/^- `//; s/[ `]$//')
   [ -n "$verbs" ]
   for v in $verbs; do
