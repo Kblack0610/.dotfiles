@@ -2881,7 +2881,7 @@ rules_gates() {
   [ "${#files[@]}" -gt 0 ] || { say "rules --gates: no gate code under $root"; return 1; }
   for f in "${files[@]}"; do
     while IFS=: read -r n line; do
-      id=$(sed -nE "s/${GATE_MARKER_ERE}/\\1/p" <<<"$line" | head -1)
+      id=$(sed -nE "s/${GATE_MARKER_ERE}/\\1/p" <<<"$line" | awk 'NR==1')
       [ "$n" -le 1 ] || ! sed -n "$((n - 1))p" "$root/$f" | grep -qE '\\$' ||
         out+="misplaced gate: $f:$n: the marker sits inside a continued command, which it would swallow; put it above the command"$'\n'
       [ "$id" = none ] || grep -qxF -- "$id" <<<"$ids" || out+="unregistered gate: $f:$n: gate: $id has no row in the register"$'\n'
