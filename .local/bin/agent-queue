@@ -55,12 +55,14 @@
 #   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID; that own claim starts a queued item)
 #   mine [--session s | --sid id] [--newest]  the slug of the running, waiting or review item this session records;
 #       exit 2 when more than one does, unless --newest: a running one before the rest, then the one whose file changed last
-#   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--end <reason>] [--why <text>] [--ask <id>] [--if <state>]
+#   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--end <reason>] [--cause <cause>] [--why <text>] [--ask <id>] [--if <state>]
 #       set title= retitles an item, a done one too, on one line as add --title writes it
 #       --why and --ask are cancel's: with --status cancelled they record and guard as cancel does, and are refused on any other close
 #       move <slug> running of a queued item is refused while its hold is pending (after:, a tag gate), as add --running --after is
 #       --end records why a run ended (end_reason:), one of END_REASONS (lib/end-reasons.sh). An
-#       UNRATED_ENDS one is not the model's doing, so the run's model-lane outcome is not filed.
+#       UNRATED_ENDS one is not the model's doing, so the run's model-lane outcome is filed unrated, that end its cause.
+#       --cause (a requeue) tells the run's outcome why it went back, one of MOVE_CAUSES (lib/end-reasons.sh); an
+#       UNRATED_CAUSES one (a green PR handed to a lander, a lost host) files it unrated. Every outcome carries a cause.
 #   backfill-briefs [--dry-run | --check]    each open agent row with no brief gets the brief of the item that worked it, and an open
 #       item with no row (not canary or trainee) gets a story row with its brief: the row is the one record of a brief
 #   retask <slug> [task...]    replace a queued item's task (the brief its session gets) and its board row's brief, from args or stdin
@@ -3219,20 +3221,23 @@ cancel_stamp() {
 # move happens only while the item is still in the state the caller read, so a pass that read it a
 # moment ago never undoes a move made since (a requeue, the session's own close).
 cmd_move() {
-  local slug="${1:?usage: agent-queue move <slug> <state> [--status s] [--end reason] [--if state]}" to="${2:?usage: agent-queue move <slug> <state>}"
-  local status="" end="" expect="" why="" ask="" f from dest run tags
+  local slug="${1:?usage: agent-queue move <slug> <state> [--status s] [--end reason] [--cause c] [--if state]}" to="${2:?usage: agent-queue move <slug> <state>}"
+  local status="" end="" cause="" expect="" why="" ask="" f from dest run tags
   shift 2
   while [ $# -gt 0 ]; do
     case "$1" in
       --status) status="${2:?--status needs a value}"; shift 2 ;;
       --end) end="${2:?--end needs a reason}"; check_end "$end"; shift 2 ;;
       --if) expect="${2:?--if needs a state}"; shift 2 ;;
+      --cause) cause="${2:?--cause needs a cause}"; shift 2
+        case " $MOVE_CAUSES " in *" $cause "*) ;; *) die "--cause is one of $MOVE_CAUSES (lib/end-reasons.sh), not $cause" ;; esac ;;
       --why) why="${2:?--why needs a reason}"; shift 2 ;;
       --ask) ask="${2:?--ask needs an ask id}"; shift 2 ;;
-      *) die "usage: agent-queue move <slug> <state> [--status s] [--end reason] [--why text] [--ask id] [--if state]" ;;
+      *) die "usage: agent-queue move <slug> <state> [--status s] [--end reason] [--cause c] [--why text] [--ask id] [--if state]" ;;
     esac
   done
   case "$to" in queued | running | waiting | review | done) ;; *) die "state is queued, running, waiting, review or done, not $to" ;; esac
+  [ -z "$cause" ] || [ "$to" = queued ] || die "--cause says why a started item goes back to the queue: use it with move <slug> queued"
   if [ "$to" = "done" ]; then
     case "$status" in ok | failed | cancelled) ;; *) die "move to done needs --status ok, failed or cancelled" ;; esac
   fi
@@ -3313,7 +3318,7 @@ cmd_move() {
   dest="$(move_to "$f" "$to")" || die "could not move $f"
   item_event item-moved "$dest" --to "$to" --why "$from -> $to${status:+ ($status)}${why:+: $why}"
   echo "$slug: $from -> $to"
-  lane_outcome "$run" "$from" "$to" "$status" "$end"
+  lane_outcome "$run" "$from" "$to" "$status" "$end" "$cause"
   # The row's section follows the item: Now while it runs or waits on someone, Next up once back in
   # the queue. waiting and review keep the mark: the item started.
   case "$to" in running) mark_row "$dest" run ;; queued) mark_row "$dest" start ;; esac
@@ -3686,22 +3691,25 @@ cmd_reopen() {
   echo "$slug: board row ${row#*:} started again"
 }
 
-# lane_outcome <lane_run> <from> <to> <status> [end] -- the model-lane run a dispatch start logged gets
-# what became of it: done ok is ok, done failed is failed, and a started item put back in the queue
-# is redo. Every close goes through move (agent-land, the reap, a hand close), so this is the one
-# place outcomes are reported. A run whose end says nothing about the model (UNRATED_ENDS) files no
-# outcome, on a close or a requeue. A cancel says nothing about the model; a model-lane error never
-# fails the move.
+# lane_outcome <lane_run> <from> <to> <status> [end] [cause] -- the model-lane run a dispatch start logged
+# gets what became of it and why (CAUSES, lib/end-reasons.sh): done ok is ok and done failed is failed
+# (close), and a started item put back in the queue is redo, with the cause its mover passed (--cause)
+# or requeue. Every close goes through move (agent-land, the reap, a hand close), so this is the one
+# place outcomes are reported. A run whose end says nothing about the model (UNRATED_ENDS, its own
+# cause), a cancel and an UNRATED_CAUSES requeue file the run unrated: counted, never scored. A
+# model-lane error never fails the move.
 lane_outcome() {
-  local o=''
+  local o='' c=${6:-}
   [ -n "$1" ] || return 0
-  ! unrated_end "${5:-}" || return 0
   case "$3:$4" in
-    done:ok) o=ok ;;
-    done:failed) o=failed ;;
-    queued:) case "$2" in running | waiting | review) o=redo ;; esac ;;
+    done:ok) o=ok c=close ;;
+    done:failed) o=failed c=close ;;
+    done:cancelled) o=unrated c=cancel ;;
+    queued:) case "$2" in running | waiting | review) o=redo c=${c:-requeue} ;; *) return 0 ;; esac ;;
+    *) return 0 ;;
   esac
-  [ -z "$o" ] || model-lane outcome "$1" "$o" >/dev/null 2>&1 || echo "agent-queue: model-lane outcome $1 $o failed" >&2
+  if unrated_end "${5:-}"; then o=unrated c=$5; elif unrated_cause "$c"; then o=unrated; fi
+  model-lane outcome "$1" "$o" --cause "$c" >/dev/null 2>&1 || echo "agent-queue: model-lane outcome $1 $o --cause $c failed" >&2
 }
 
 # waits_on <file> <slug> -- the item's `after:` names that slug.

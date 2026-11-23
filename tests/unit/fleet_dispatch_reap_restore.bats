@@ -187,7 +187,7 @@ load 'fleet_dispatch/common'
   grep -qF -- '- [ ] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail "row still started"
 }
 
-@test "reap: a Codex run that hit its usage limit goes back to the queue with end_reason limit and model-lane gets no outcome" {
+@test "reap: a Codex run that hit its usage limit goes back to the queue with end_reason limit and model-lane files it unrated, the limit its cause" {
   codex_end_item th-lim '{"type":"task_complete","error":{"message":"x","codex_error_info":"usage_limit_exceeded"}}'
   run cmd_reap
   assert_output --partial 'requeued queue item cx (game-agent-1 ended: the plan'"'"'s usage limit)'
@@ -196,7 +196,7 @@ load 'fleet_dispatch/common'
   assert_equal "$(qfield "$f" end_reason) $(qfield "$f" session)" 'limit '
   assert_equal "$(qfield "$f" note)" "session game-agent-1 ended: the plan's usage limit; requeued (end_reason: limit)"
   run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
-  assert_failure
+  assert_output 'model-lane outcome r-cx unrated --cause limit'
 }
 
 @test "reap: a Codex run on a fleet worker that hit its usage limit is read on the worker, whose ~/.codex holds the rollout, and goes back to the queue" {
@@ -237,7 +237,7 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-cx.md)
   assert_equal "$(qfield "$f" status) $(qfield "$f" end_reason)" 'failed stopped'
   run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
-  assert_output 'model-lane outcome r-cx failed'
+  assert_output 'model-lane outcome r-cx failed --cause close'
 }
 
 @test "reap: a Codex rollout cut mid-turn is a cut, or a timeout once the launcher's timeout has run; a provider error is provider; neither rates the model" {
@@ -258,7 +258,8 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   run cmd_reap
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-cx.md)" end_reason)" provider
   run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
-  assert_output 'model-lane outcome r-cx failed'   # only the timeout rated: it is the run's own length
+  # only the timeout rated: it is the run's own length; the rest are counted by their end
+  assert_output $'model-lane outcome r-cx unrated --cause cut\nmodel-lane outcome r-cx failed --cause close\nmodel-lane outcome r-cx unrated --cause provider\nmodel-lane outcome r-cx unrated --cause provider'
 }
 
 @test "reap: an opencode run's last assistant row is classified: a quota end is provider, never requeued, and unrated; a key refusal is refused" {
@@ -267,7 +268,7 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-oc.md)
   assert_equal "$(qfield "$f" status) $(qfield "$f" end_reason)" 'failed provider'
   run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
-  assert_failure
+  assert_output 'model-lane outcome r-oc unrated --cause provider'
   rm -rf "$AGENT_QUEUE_DIR/done"
   oc_end_item ses_evala 'error|provider.auth'
   run cmd_reap
@@ -335,7 +336,7 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-oc.md)
   assert_equal "$(qfield "$f" status) $(qfield "$f" end_reason)" 'failed stopped'
   run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
-  assert_output 'model-lane outcome r-oc failed'
+  assert_output 'model-lane outcome r-oc failed --cause close'
 }
 
 @test "reap: an opencode run killed mid-work is a cut, or a timeout once the launcher's timeout has run; a provider fault is provider; a request the provider rejects is stopped" {

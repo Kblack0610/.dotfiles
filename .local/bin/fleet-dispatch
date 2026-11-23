@@ -4626,7 +4626,7 @@ settle_item() {
     # (10-git-workflow.sh). A review item is parked, not running: own_parked_pr owns its PR.
     if [ -n "${3:-}" ] && { [ "$st" = running ] || [ "$st" = waiting ]; }; then
       local br sids
-      agent-queue move "$1" queued --if "$st" >/dev/null || return 0
+      agent-queue move "$1" queued --cause lost --if "$st" >/dev/null || return 0
       br=$(jq -r 'select((.pr // "") == "") | .branch // empty' <<<"$it")
       sids=$(jq -r '.sessions // ""' <<<"$it")
       agent-queue set "$1" "lost=$3${sids:+ $sids}" ${br:+"salvage=$br"} >/dev/null ||
@@ -4775,7 +4775,7 @@ takeover_branch() {
   agent-queue set "$slug" "salvage=$br" "takeover_tries=$((tries + 1))" >/dev/null || return 1
   # Moved on by someone else meanwhile (its session closed it, a human requeued it): theirs, not a
   # failure, and the stamps go back as they were, so its next start is not told to resume this branch.
-  agent-queue move "$slug" queued "$@" --if "$st" >/dev/null || {
+  agent-queue move "$slug" queued "$@" --cause takeover --if "$st" >/dev/null || {
     agent-queue set "$slug" "salvage=$sv" "takeover_tries=$([ "$tries" = 0 ] || echo "$tries")" >/dev/null
     return 0
   }
@@ -4804,11 +4804,13 @@ takeover_branch() {
 # on its ask by settle_item before this runs. A session reap cannot witness (`unrecorded`, a cloud run)
 # is never read as gone here.
 own_parked_pr() {
-  local slug=$1 it=$3 head=$4 owner verb color tries human hhead howners pr project note trn held where why='' clear=()
+  local slug=$1 it=$3 head=$4 owner verb color cause tries human hhead howners pr project note trn held where why='' clear=()
+  # cause: the requeue's cause on the run's outcome (MOVE_CAUSES): a green PR's lander is the system's
+  # step after a --pr-only run, so that run is filed unrated (land); a red or conflicting PR rates as redo.
   case "${6:-}:$5" in
-  CONFLICTING:*) owner=land verb=land color='in conflict with its base' why=' conflict' ;;
-  *:FAIL) owner=fix verb=fix-ci color=red ;;
-  *:PASS) owner=land verb=land color=green ;;
+  CONFLICTING:*) owner=land verb=land color='in conflict with its base' why=' conflict' cause=conflict ;;
+  *:FAIL) owner=fix verb=fix-ci color=red cause=fix-ci ;;
+  *:PASS) owner=land verb=land color=green cause=land ;;
   *) return 0 ;;
   esac
   [ -n "$head" ] && [ "$2" != unrecorded ] || return 0
@@ -4838,7 +4840,7 @@ own_parked_pr() {
     [ "$owner" != land ] || [ "$(item_tier "$it")" != 3 ] || clear+=(agent=claude)
     agent-queue set "$slug" "${owner}_tries=$((tries + 1)) $head$why" "pr_owner=$owner" mode=oneshot "${clear[@]}" \
       "note=PR $pr $color at ${head:0:12}; $verb try $((tries + 1)) of $DISPATCH_FIX_TRIES" >/dev/null || return 0
-    agent-queue move "$slug" queued --if review >/dev/null || return 0
+    agent-queue move "$slug" queued --cause "$cause" --if review >/dev/null || return 0
     logline "reaped $2: queue item $slug requeued for $verb, PR $pr $color at ${head:0:12} (try $((tries + 1)) of $DISPATCH_FIX_TRIES)"
     dispatch_event requeued "$project" "PR $color with nobody on it: $verb try $((tries + 1))" --item "$slug" --pr "$pr" --sha "$head"
     echo "$verb queue item $slug (PR $pr $color at ${head:0:12}, try $((tries + 1)) of $DISPATCH_FIX_TRIES)"

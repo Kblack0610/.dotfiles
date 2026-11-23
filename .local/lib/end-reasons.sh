@@ -18,3 +18,17 @@ unrated_end() { case " $UNRATED_ENDS " in *" ${1:-none} "*) return 0 ;; *) retur
 
 # unrated_json -- UNRATED_ENDS as a JSON array, for jq (--argjson, or spliced into a def).
 unrated_json() { local s; printf -v s '"%s",' $UNRATED_ENDS; printf '[%s]' "${s%,}"; }
+
+# CAUSES: why a run's outcome is what it is, filed with it (model-lane outcome --cause), so each harness:model
+# pair's outcomes are counted by cause, never inferred. agent-queue's lane_outcome derives close (done ok or
+# failed), cancel (done cancelled), requeue (any other requeue of a started item: by hand, the ladder, a
+# trainee reject) and an UNRATED_ENDS reason (its own cause); MOVE_CAUSES are the ones only the mover knows
+# (`agent-queue move --cause`): fleet-dispatch's reap requeues a red PR to fix-ci, one in conflict to merge
+# its base, a green one to a lander (land), a branch left with no PR to a takeover, and a lost host's run.
+# UNRATED_CAUSES file the run unrated: a cancel, a lost host (the run went with the machine, as a cut does),
+# and a land handoff, the system's step after a headless tier-3 run's --pr-only, not the model's.
+MOVE_CAUSES="fix-ci conflict land takeover lost"
+UNRATED_CAUSES="cancel land lost"
+
+# unrated_cause <cause> -- 0 when a run with that cause is counted and never scored.
+unrated_cause() { case " $UNRATED_CAUSES " in *" ${1:-none} "*) return 0 ;; *) return 1 ;; esac; }
