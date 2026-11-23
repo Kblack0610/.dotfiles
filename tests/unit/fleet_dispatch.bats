@@ -1999,6 +1999,54 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   assert_equal "$(jq -r '[.could_start, .held] | @tsv' <<<"$output")" $'0\tpace target: 0 live sessions, the away target is 0'
 }
 
+# 2026-11-17 (ar-2851): the 0.9 pace held 150+ runnable items for an hour on a load average a spike
+# and disk waits held up, with the CPU 66% idle. The pace reads the lower of load and the cores busy now.
+@test "the load pace judges the cores busy now: a high load average with an idle CPU holds no start, a busy CPU does" {
+  two_items
+  local c; c=$(nproc)
+  echo '99.0 99.0 99.0 1/1 1' > "$DISPATCH_LOADAVG"
+  echo "$(( $(date +%s) - 60 )) 0 0" > "$DISPATCH_CPU_SAMPLES"
+  echo 'cpu  60 20 20 800 100 0 0 0 0 0' > "$DISPATCH_PROC_STAT"   # 100 of 1000 jiffies busy, iowait idle
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_success
+  local busy; busy=$(awk -v c="$c" 'BEGIN { printf "%.1f", c * 0.1 }')
+  jq -e --argjson b "$busy" '.could_start == 2 and .held == null and .load == $b and .load1 == 99 and .cpu_busy == $b' <<<"$output" >/dev/null ||
+    fail "the pace did not read the $busy cores busy: $output"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
+  assert_output --regexp "\(1-min load 99(\.0)?, [0-9.]+ cores busy; the pace reads the lower\)"
+  # Every core busy: the CPU is at the pace too, so load holds and the reason names both.
+  echo 'cpu  900 50 50 0 0 0 0 0 0 0' > "$DISPATCH_PROC_STAT"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.could_start, .held] | @tsv' <<<"$output")" "$(printf '0\tload 99.0 with %s.0 cores busy on %s cores is over the 0.7 pace' "$c" "$c")"
+}
+
+@test "the load pace reads load average alone when no CPU sample is from the last minutes, or one is too young to read" {
+  two_items
+  echo '99.0 99.0 99.0 1/1 1' > "$DISPATCH_LOADAVG"
+  echo 'cpu  60 20 20 800 100 0 0 0 0 0' > "$DISPATCH_PROC_STAT"
+  local now; now=$(date +%s)
+  for t in $(( now - 400 )) $(( now - 5 )); do
+    echo "$t 0 0" > "$DISPATCH_CPU_SAMPLES"
+    run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+    jq -e '.could_start == 0 and .cpu_busy == null' <<<"$output" >/dev/null || fail "a sample at $t read as busy: $output"
+    assert_equal "$(jq -r .held <<<"$output")" "load 99.0 on $(nproc) cores is over the 0.7 pace"
+  done
+  # The newest sample old enough wins over an older one, and a younger one is passed over.
+  printf '%s 0 0\n%s 50 500\n%s 99 990\n' $(( now - 200 )) $(( now - 60 )) $(( now - 5 )) > "$DISPATCH_CPU_SAMPLES"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  jq -e --argjson b "$(awk -v c="$(nproc)" 'BEGIN { printf "%.1f", c * 50 / 500 }')" '.cpu_busy == $b' <<<"$output" >/dev/null ||
+    fail "the pace did not read the sample of 60 s ago: $output"
+}
+
+@test "the minute record keeps the last five CPU samples for the load pace" {
+  for i in 1 2 3 4 5 6; do echo "$i 0 0"; done > "$DISPATCH_CPU_SAMPLES"
+  echo 'cpu  60 20 20 800 100 0 0 0 0 0' > "$DISPATCH_PROC_STAT"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" record --here
+  assert_equal "$(wc -l < "$DISPATCH_CPU_SAMPLES")" 5
+  assert_equal "$(head -n 1 "$DISPATCH_CPU_SAMPLES")" '3 0 0'
+  assert_equal "$(tail -n 1 "$DISPATCH_CPU_SAMPLES" | cut -d' ' -f2-)" '100 1000'
+}
+
 @test "headroom counts live sessions started by hand apart from run slots, and names the held kind" {
   two_items
   started_item run-one lab:lab-run-1 run
