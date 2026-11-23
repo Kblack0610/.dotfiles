@@ -1567,9 +1567,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("notes-window-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("agent")).unwrap();
+        // A focus lasts only to its end, so the fixture's runs far past any test day.
+        let until = if prio.contains("focus") {
+            "Focus until: 2099-01-01 00:00 +0000\n"
+        } else {
+            ""
+        };
         fs::write(
             dir.join("README.md"),
-            format!("# demo\nVersion: v0.2.0 #alpha {prio}\n\n## Tasks\n{human}"),
+            format!("# demo\nVersion: v0.2.0 #alpha {prio}\n{until}\n## Tasks\n{human}"),
         )
         .unwrap();
         fs::write(

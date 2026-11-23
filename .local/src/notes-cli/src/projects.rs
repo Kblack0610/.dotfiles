@@ -5180,7 +5180,12 @@ mod stage_tag_tests {
             one.contains("Version: v1.0.0 #alpha #tooling #prio/focus\n"),
             "{one}"
         );
-        assert_eq!(prio_of_str(&one), "focus");
+        assert_eq!(head_tag(&one, &PRIOS).as_deref(), Some("prio/focus"));
+        assert_eq!(
+            prio_of_str(&one),
+            "high",
+            "a focus with no end reads as high"
+        );
         let two = replace_head_tag(&one, &PRIOS, Some("prio/low")).unwrap();
         assert_eq!(two.matches("#prio/").count(), 1, "{two}");
         assert_eq!(prio_of_str(&two), "low");
