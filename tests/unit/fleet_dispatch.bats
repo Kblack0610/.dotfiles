@@ -1902,7 +1902,7 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   row game agent gm-1 "- [ ] feat(game): the base $T <!-- id:gm-1 -->"
   row game agent gm-2 "- [ ] feat(game): waits on the base $T #after/gm-1 <!-- id:gm-2 -->"
   row game agent gm-3 "- [ ] feat(game): waits on a row nobody filed $T #after/gm-404 <!-- id:gm-3 -->"
-  row game agent gm-5 "- [x] feat(game): a row that was dropped $T <!-- id:gm-5 dropped -->"
+  row game agent gm-5 "- [x] feat(game): a row that was dropped $T <!-- id:gm-5 dropped: stale -->"
   row game agent gm-4 "- [ ] feat(game): waits on a dropped row $T #after/gm-5 <!-- id:gm-4 -->"
   echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   run cmd_starved
