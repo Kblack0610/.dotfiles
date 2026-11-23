@@ -450,7 +450,6 @@ finished_ok() {
   done
 }
 
-
 # Admission: the queue holds at most AQ_CAP items, every queued one counted, since each can start (a gated
 # add queues nothing: its board row takes the gate, cmd_add). The board is the ranked backlog, the queue the
 # ready buffer dispatch pulls from, so an add over the cap leaves its board row un-started with its
