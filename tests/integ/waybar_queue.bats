@@ -2,8 +2,8 @@
 # queue.sh: the waybar queue chip, the one chip for agent work flowing. The bar is two labelled totals,
 # Q ready to start and D shipped today (merged a PR), with Q in the Queue card's level colour. The hover
 # lays out hub-core's Queue and Done cards from summary/cards: the Flow rows first ("Queue: Flowing." or
-# the worst exception and its Do, then the rest), then Up next (the ready items by name from summary/bar,
-# then the board rows after them), In flight, Today, Room and the card's as-of time.
+# the worst exception and its Do, then the rest), then Up next (the rows of the card's own Up next list,
+# then the board rows after them from summary/bar), In flight, Today, Room and the card's as-of time.
 # What these pin: every figure and sentence is the card's, coloured by the card's own levels, and the
 # chip reads no Prometheus; the newest retained card wins; no card, an old card or a card with no Queue
 # reads Q? in amber with why; a part the card lacks reads -, never 0; a missing summary/bar is one amber
@@ -36,11 +36,13 @@ STUB
 broker() { cat "$FX"/cards.msg "$FX"/bar.msg 2>/dev/null > "$MQTT_SUB_FIXTURE" || true; }
 
 # cardfeed [age=<s>] [host=<h>] [level=<lvl>] [pill=<Card>.<Label>=<value>:<lvl>] [nopill=<Card>.<Label>]
-# ['flow=<lvl>|<text>|<do>' ...] [noflow] [err=<text>] [noqueue] [nodone] [add] -> the retained
+# ['flow=<lvl>|<text>|<do>' ...] [noflow] ['up=<prio>|<project>|<text>|<age>' ...] [noup] [ready=<n>]
+# [err=<text>] [noqueue] [nodone] [add] -> the retained
 # summary/cards message, `hub cards --json --figures` built <age> seconds ago (60 by default) on h1, as
 # widget_doc.rs lays it out. The default is a queue that flows: 39 on deck (32 urgent, 7 high), 14
 # running, 6 on a PR, 2 failed in 24h, 21 of 24 sessions, load 27 of 36, and 12 shipped and 9 checks
-# today. A flow= replaces the default "Flowing" row; add appends a second host's copy instead of
+# today. A flow= replaces the default "Flowing" row; up= replaces the default two Up next rows (ready=
+# is the count in the list's head, 39 by default); add appends a second host's copy instead of
 # replacing the message. `cardfeed -` leaves no card on the broker.
 cardfeed() {
   python3 - "$FX/cards.msg" "$@" <<'PY'
@@ -50,6 +52,7 @@ if args == ["-"]:
     os.path.exists(path) and os.remove(path)
     sys.exit()
 age, host, level, flows, errs, mode = 60, "h1", "ok", None, [], "w"
+ups, ready = None, 39
 pills = {
     "queue": [["Running", "14", "ok"], ["On a PR", "6", "ok"], ["On deck", "39", "ok"], ["Held", "3", "ok"],
               ["Urgent", "32", "ok"], ["High", "7", "ok"], ["Failed 24h", "2", "warn"],
@@ -64,6 +67,9 @@ for a in args:
     elif k == "level": level = v
     elif k == "flow": flows = (flows or []) + [v.split("|")]
     elif k == "noflow": flows = []
+    elif k == "up": ups = (ups or []) + [v.split("|")]
+    elif k == "noup": ups = []
+    elif k == "ready": ready = int(v)
     elif k == "err": errs.append(v)
     elif k == "noqueue": cards.discard("queue")
     elif k == "nodone": cards.discard("done")
@@ -76,6 +82,8 @@ for a in args:
             value, _, lvl = val.rpartition(":")
             pills[card].append([label, value, lvl])
 if flows is None: flows = [["ok", "Flowing", ""]]
+if ups is None: ups = [["urgent", "dotfiles", "fix(waybar): both hovers rewritten", "20m"],
+                       ["high", "playground", "feat(ui): chip art pass", "2h15m"]]
 def pill(p): return {"kind": "pill", "label": p[0], "value": p[1], "level": p[2]}
 def row(text, sub, lvl):
     r = {"kind": "row", "text": text, "level": lvl}
@@ -86,6 +94,12 @@ if "queue" in cards:
     items = [{"kind": "metric", "value": "39", "unit": "on deck", "level": level},
              {"kind": "bar", "segments": [{"level": "ok", "n": 59}]}] + [pill(p) for p in pills["queue"]]
     items += [row(e, "", "warn") for e in errs]
+    # Running and On a PR are lists of the card's own, which the chip counts as pills and never reads.
+    items += [{"kind": "text", "text": "Running"}, row("run item", "dotfiles - 5m", "ok"),
+              {"kind": "text", "text": "On a PR"}, row("parked item", "#7", "ok")]
+    head = f"Up next: {ready} ready, {sum(u[0] == 'urgent' for u in ups)} urgent, {sum(u[0] == 'high' for u in ups)} high"
+    items += [{"kind": "text", "text": head}]
+    items += [row(t, f"{pr} - {proj} - {age}", "ok") for pr, proj, t, age in ups] or [row("Nothing ready", "", "ok")]
     if flows: items += [{"kind": "text", "text": "Flow"}] + [row(t, d, l) for l, t, d in flows]
     items.append({"kind": "text", "text": "agent-queue items by state (agent-queue list)"})
     sections.append({"id": "queue", "title": "Queue", "level": level, "actions": [], "items": items})
@@ -101,11 +115,10 @@ PY
   broker
 }
 
-# barfeed [age=<s>] [err=<text>] [drain=<text>] [total=<n>] ['prio|project|kind|area|title|ready_min' ...]
-# ['cand:key|title' ...] -> the retained summary/bar message, `hub bar --json` built <age> seconds ago
-# (60 by default): ready items in the order given (hub-core's start order), total their count unless
-# total= says more, and the board candidates. With no arguments: two items, one candidate, "6h +18/-30
-# shrinking". `barfeed -` leaves no message on the broker.
+# barfeed [age=<s>] [err=<text>] [drain=<text>] ['cand:key|title' ...] -> the retained summary/bar message,
+# `hub bar --json` built <age> seconds ago (60 by default): the board candidates and the drain, the two
+# parts the chip reads from it. With no arguments: one candidate, "6h +18/-30 shrinking". `barfeed -`
+# leaves no message on the broker.
 barfeed() {
   python3 - "$FX/bar.msg" "$@" <<'PY'
 import json, os, sys
@@ -114,27 +127,18 @@ if args == ["-"]:
     os.path.exists(path) and os.remove(path)
     sys.exit()
 if not args:
-    args = ["urgent|dotfiles|fix|waybar|both hovers rewritten|20", "high|playground|feat|ui|chip art pass|135",
-            "cand:ar-4400|retire the CI governor", "drain=6h +18/-30 shrinking"]
+    args = ["cand:ar-4400|retire the CI governor", "drain=6h +18/-30 shrinking"]
 doc = {"as_of": 100000 - 60, "sessions": [], "ready": {"total": 0, "urgent": 0, "high": 0, "items": []},
        "candidates": [], "drain": None, "errors": []}
-total = None
 for a in args:
     if a.startswith("age="): doc["as_of"] = 100000 - int(a[4:]); continue
     if a.startswith("err="): doc["errors"].append(a[4:]); continue
     if a.startswith("drain="): doc["drain"] = a[6:]; continue
-    if a.startswith("total="): total = int(a[6:]); continue
     if a.startswith("cand:"):
         key, title = a[5:].split("|")
         doc["candidates"].append({"project": "dotfiles", "key": key, "priority": "high", "title": title})
         continue
-    prio, proj, kind, area, title, mins = a.split("|")
-    doc["ready"]["items"].append({"slug": "s", "project": proj, "priority": prio, "kind": kind, "area": area,
-                                  "title": title, "ready_min": int(mins)})
-r = doc["ready"]
-r["total"] = total if total is not None else len(r["items"])
-r["urgent"] = sum(i["priority"] == "urgent" for i in r["items"])
-r["high"] = sum(i["priority"] == "high" for i in r["items"])
+    sys.exit(f"barfeed: unknown argument {a}")
 open(path, "w").write(f"agents/h1/summary/bar {json.dumps(doc)}\n")
 PY
   broker
@@ -171,8 +175,9 @@ PACE_DO='See the fleet-pace skill'
   assert_output "<b>Queue:</b> $(g Flowing.)
 
 <b>Up next</b>  39 ready (32 urgent, 7 high)
-<tt>  urgent  dotfiles    $(printf '%-90s' 'fix(waybar): both hovers rewritten')  20m
-  high    playground  $(printf '%-90s' 'feat(ui): chip art pass')  2h15m</tt>
+<tt>  fix(waybar): both hovers rewritten  urgent - dotfiles - 20m
+  feat(ui): chip art pass  high - playground - 2h15m</tt>
++37 more ready: click for the Queue tab
 Then from the board: ar-4400 retire the CI governor
 <b>In flight</b>  14 running, 6 on a PR
 
@@ -308,21 +313,19 @@ As of 03:45, as the hub Queue tab read it then."
 
 @test "more ready than the rows shown is a +N line pointing at the Queue tab" {
   local rows=() i
-  for i in $(seq 1 8); do rows+=("low|dotfiles|chore||item $i|$i"); done
-  barfeed total=39 "${rows[@]}"
+  for i in $(seq 1 3); do rows+=("up=low|dotfiles|chore: item $i|${i}m"); done
+  cardfeed ready=39 "${rows[@]}"
   run "$MODULE"
   run tip
-  assert_output --partial "chore: item 5"
-  refute_output --partial "item 6"
-  assert_line "+34 more ready: click for the Queue tab"
-  refute_output --partial "Then from the board"
+  assert_output --partial "chore: item 3"
+  assert_line "+36 more ready: click for the Queue tab"
 }
 
 @test "Up next rows shrink to the bar channel's line cap, never past it" {
   printf '[channel.bar]\nmax_lines = 14\nmax_line = 120\n' > "$BATS_TEST_TMPDIR/channels.toml"
   local rows=() i
-  for i in $(seq 1 8); do rows+=("low|dotfiles|chore||item $i|$i"); done
-  barfeed total=8 "${rows[@]}"
+  for i in $(seq 1 8); do rows+=("up=low|dotfiles|chore: item $i|${i}m"); done
+  cardfeed ready=8 "${rows[@]}"
   COMMS_CHANNELS="$BATS_TEST_TMPDIR/channels.toml" run "$MODULE"
   run tip
   assert_output --partial "item 1"
@@ -334,9 +337,8 @@ As of 03:45, as the hub Queue tab read it then."
 @test "Flow rows come out of the Up next rows, so the cap still holds" {
   printf '[channel.bar]\nmax_lines = 14\nmax_line = 120\n' > "$BATS_TEST_TMPDIR/channels.toml"
   local rows=() i
-  for i in $(seq 1 8); do rows+=("low|dotfiles|chore||item $i|$i"); done
-  barfeed total=8 "${rows[@]}"
-  cardfeed level=warn 'flow=warn|Paused: no account has room|' 'flow=neutral|a1: no room, pace|' \
+  for i in $(seq 1 8); do rows+=("up=low|dotfiles|chore: item $i|${i}m"); done
+  cardfeed level=warn ready=8 "${rows[@]}" 'flow=warn|Paused: no account has room|' 'flow=neutral|a1: no room, pace|' \
     'flow=neutral|a2: no room, pace|' 'flow=neutral|a3: no room, pace|'
   COMMS_CHANNELS="$BATS_TEST_TMPDIR/channels.toml" run "$MODULE"
   run tip
@@ -353,6 +355,9 @@ As of 03:45, as the hub Queue tab read it then."
 $(y 'No item detail: no summary/bar on mqtt.test')
 
 <b>Up next</b>  39 ready (32 urgent, 7 high)
+<tt>  fix(waybar): both hovers rewritten  urgent - dotfiles - 20m
+  feat(ui): chip art pass  high - playground - 2h15m</tt>
++37 more ready: click for the Queue tab
 <b>In flight</b>  14 running, 6 on a PR
 
 <b>Today</b>  12 shipped (merged a PR), 9 checks closed with no merge, $(y 2) failed in 24h
@@ -361,24 +366,24 @@ As of 03:45, as the hub Queue tab read it then."
 }
 
 @test "an old summary/bar says how old in amber and names no item from it" {
-  barfeed age=900 'urgent|dotfiles|fix||old item|20'
+  barfeed age=900 'cand:ar-9|old board row'
   run "$MODULE"
   run tip
   assert_line --index 1 --partial "<span color='$Y'>No item detail: summary/bar is 15m old: is agent-mqtt-publish running"
-  refute_output --partial "old item"
+  refute_output --partial "old board row"
 }
 
 @test "a source summary/bar could not read is an amber line beside the items it has" {
-  barfeed 'err=notes ptask: exit 2' 'urgent|dotfiles|fix||an item|20'
+  barfeed 'err=notes ptask: exit 2' 'cand:ar-8|a board row'
   run "$MODULE"
   run tip
   assert_line --index 1 "$(y 'Item detail incomplete: notes ptask: exit 2')"
-  assert_output --partial "fix: an item"
+  assert_output --partial "ar-8 a board row"
 }
 
 @test "a title or Flow row with markup, a newline or a non-ASCII character stays one escaped ASCII line" {
-  barfeed $'urgent|dotfiles|fix||a <b> & \xe2\x80\x94 one\ntwo|20' 'cand:ar-1|<i>board</i>'
-  cardfeed level=warn $'flow=warn|Urgent item waiting 3h: fix: a <b> &\ntwo|'
+  barfeed 'cand:ar-1|<i>board</i>'
+  cardfeed level=warn $'flow=warn|Urgent item waiting 3h: fix: a <b> &\ntwo|' $'up=urgent|dotfiles|fix: a <b> & \xe2\x80\x94 one\ntwo|20m'
   run "$MODULE"
   run tip
   assert_output --partial "fix: a &lt;b&gt; &amp; ? one two"
@@ -395,7 +400,7 @@ As of 03:45, as the hub Queue tab read it then."
   run "$MODULE"
   run tip
   assert_output --partial "; queue 6h +5/-5 even"
-  barfeed 'urgent|dotfiles|fix||x|1'
+  barfeed 'cand:ar-1|x'
   run "$MODULE"
   run tip
   assert_line "<b>Today</b>  12 shipped (merged a PR), 9 checks closed with no merge, $(y 2) failed in 24h"
@@ -418,8 +423,8 @@ As of 03:45, as the hub Queue tab read it then."
 @test "every line fits the bar channel's width, even with long Flow rows, Dos and titles at once" {
   local long; long="$(printf 'word %.0s' $(seq 1 60))"
   cardfeed level=bad "flow=bad|$long|Run systemctl --user status agentctl-fleet-dispatch.timer" "flow=warn|$long|" \
-    "err=$long"
-  barfeed "urgent|unity-core-playground-long|feat|area|$long|20" "cand:ar-1|$long" "cand:ar-2|$long" "err=$long"
+    "err=$long" "up=urgent|unity-core-playground-long|feat(area): $long|20m"
+  barfeed "cand:ar-1|$long" "cand:ar-2|$long" "err=$long"
   run "$MODULE"
   run plain
   assert_equal "$(awk 'length > 120' <<< "$output")" ""
@@ -430,10 +435,10 @@ As of 03:45, as the hub Queue tab read it then."
 # hover against a channel with fewer lines than it has, which must fail.
 @test "the hover passes comms-lint --channel bar, and a channel with fewer lines fails it" {
   local rows=() i
-  for i in $(seq 1 9); do rows+=("high|dotfiles|feat|area|item $i|$i"); done
-  cardfeed level=warn "flow=warn|$PAUSE_LINE|$PACE_DO" 'flow=warn|2 item(s) flapping: a writer undoes reap'"'"'s moves|Run agentctl logs fleet-dispatch' \
+  for i in $(seq 1 9); do rows+=("up=high|dotfiles|feat(area): item $i|${i}m"); done
+  cardfeed level=warn "${rows[@]}" "flow=warn|$PAUSE_LINE|$PACE_DO" 'flow=warn|2 item(s) flapping: a writer undoes reap'"'"'s moves|Run agentctl logs fleet-dispatch' \
     'flow=neutral|main: no room, pace|'
-  barfeed total=39 "${rows[@]}" 'cand:ar-1|one' 'cand:ar-2|two' 'drain=6h +122/-97 growing'
+  barfeed 'cand:ar-1|one' 'cand:ar-2|two' 'drain=6h +122/-97 growing'
   run "$MODULE"
   plain > "$BATS_TEST_TMPDIR/hover.txt"
   run "$REPO_ROOT/.local/bin/comms-lint" --channel bar "$BATS_TEST_TMPDIR/hover.txt"
