@@ -229,14 +229,21 @@ off_project() {
   [[ " $DISPATCH_OFF_PROJECTS " != *" $1 "* ]] || echo "no worker covers $1: it is on DISPATCH_OFF_PROJECTS, so its rows stay with the human"
 }
 
-prio_rank() {
+# Each row helper a board walk (cmd_candidates, t3_rows) calls once a row has a `_set` form that sets a
+# global, as tag_of sets TAG, and the plain form prints it. A walk calls the `_set` form, so a row costs
+# no fork: a fat process forking about 37 subshells a row held a dispatch pass at 10 to 17 min of CPU
+# (ar-4512).
+
+# prio_rank <text> -> 0 urgent, 1 high, 3 low; prio_rank_set sets PRIO.
+prio_rank_set() {
   case "$1" in
-    *'#urgent'*) echo 0 ;;
-    *'#high'*) echo 1 ;;
-    *'#low'*) echo 3 ;;
-    *) echo 1 ;;   # a bare row is high: the row grammar's default, and the queue priority it gets
+    *'#urgent'*) PRIO=0 ;;
+    *'#high'*) PRIO=1 ;;
+    *'#low'*) PRIO=3 ;;
+    *) PRIO=1 ;;   # a bare row is high: the row grammar's default, and the queue priority it gets
   esac
 }
+prio_rank() { prio_rank_set "$1"; echo "$PRIO"; }
 
 # prio_of <listed path> -> focus|high|low from the `#prio/<word>` the human set in the front page's
 # head (`notes projects --prio`), nothing for a normal project. The head is above the first `## `.
@@ -246,7 +253,7 @@ prio_of() {
 
 # The one rank every caller sorts by (the judge's cap, picks, fill --dry-run): a row an open sprint holds
 # (`sprint` 0, row_sprint), its committed rows before the open version's rows it did not commit (`uncommitted`
-# 1, row_uncommitted), then cleanup of an AI system (cleanup_row), then the project's #prio, then, while
+# 1, UNCOMMITTED, row_sprint_set), then cleanup of an AI system (cleanup_row), then the project's #prio, then, while
 # any row's repo gates on an idle pool (`pool_idle`, load_pool_idle), the head of the feed rank (frank's
 # millions: due bucket, priority, #requested, notes-cli Rank::key) and then such a row (pool_term, a
 # tie-breaker below every human rank and above age; with no pool idle it orders nothing), then the row's
@@ -333,13 +340,16 @@ tag_of() {
 }
 
 # row_tier <text> -> 1|2|3, or nothing when the row carries no tier. A row typed or scoped ci
-# or infra (`ci:`, `ci(area):`, `fix(ci):`) is tier 3 however it is tagged.
-row_tier() {
+# or infra (`ci:`, `ci(area):`, `fix(ci):`) is tier 3 however it is tagged. row_tier_set sets TIER
+# (empty, rc 1, for none).
+row_tier_set() {
   local body="${1#- \[?\] }"
-  case "${body,,}" in ci:* | ci\(* | infra:* | infra\(* | *\(ci\):* | *\(infra\):*) echo 3; return ;; esac
+  TIER=''
+  case "${body,,}" in ci:* | ci\(* | infra:* | infra\(* | *\(ci\):* | *\(infra\):*) TIER=3; return 0 ;; esac
   tag_of "$1" tier
-  case "$TAG" in 1 | 2 | 3) echo "$TAG" ;; *) return 1 ;; esac
+  case "$TAG" in 1 | 2 | 3) TIER=$TAG ;; *) return 1 ;; esac
 }
+row_tier() { row_tier_set "$1" || return 1; echo "$TIER"; }
 
 # The kind registry, kinds.json, is keyed by notes-cli's ROW_TYPES (a bats test pins the two): per
 # type its `rank` within a priority, the `label` why names, the `entry` skill a session starts on,
@@ -370,17 +380,21 @@ load_kinds() {
 
 # row_kind <text> -> the row's type, from the grammar's one home (`notes row parse`); nothing for a
 # bare or unknown row. ROW_KIND holds the rows a pass has loaded (row_kinds_load), so a lookup in a
-# `$(...)` costs no fork; a row not in it is parsed on the spot.
+# lookup costs no parse; a row not in it is parsed on the spot, and kept. row_kind_set sets KIND.
 declare -gA ROW_KIND=()
-row_kind() {
-  local t
+# The board extras' names (load_extras): a walk takes them as loaded when one is declared (trainee_rows), so none comes in from the environment.
+unset DET PLN PAR RNK GAT RLD
+row_kind_set() {
+  KIND=''
   [ -n "$1" ] || return 0
-  if [ -n "${ROW_KIND[$1]+x}" ]; then t=${ROW_KIND[$1]}
-  else t=$(printf '%s\n' "${1//$'\n'/ }" | notes row parse 2>/dev/null | cut -f1) || t=''
+  if [ -n "${ROW_KIND[$1]+x}" ]; then KIND=${ROW_KIND[$1]}
+  elif KIND=$(printf '%s\n' "${1//$'\n'/ }" | notes row parse 2>/dev/null | cut -f1); then ROW_KIND[$1]=$KIND
+  else KIND=''
   fi
-  [ "$t" = - ] || [ -z "$t" ] || printf '%s\n' "$t"
+  [ "$KIND" != - ] || KIND=''
   return 0
 }
+row_kind() { row_kind_set "$1"; [ -z "$KIND" ] || printf '%s\n' "$KIND"; }
 
 # row_kinds_load -- the `key TAB text` lines of `rows` on stdin: every text's type into ROW_KIND with
 # one `notes row parse`, which answers a line per line. A parse that fails or answers short loads
@@ -399,16 +413,18 @@ row_kinds_load() {
 }
 
 # kind_off <kind> -> why the registry keeps a row of that kind from dispatching, nothing when it may:
-# the kind is off. The project's stage is dispatchable's to read, once.
-kind_off() {
+# the kind is off. The project's stage is dispatchable's to read, once. kind_off_set sets KIND_OFF.
+kind_off_set() {
   local k="$1"
+  KIND_OFF=''
   [ -n "$k" ] && [ -n "${KIND_ON[$k]+x}" ] || return 0
-  [ "${KIND_ON[$k]}" = true ] || echo "kind $k is off"
+  [ "${KIND_ON[$k]}" = true ] || KIND_OFF="kind $k is off"
 }
+kind_off() { kind_off_set "$1"; [ -z "$KIND_OFF" ] || echo "$KIND_OFF"; }
 
-# row_size <text> -> S, M, L or XL from the row's `#size/` tag, nothing when it has none: the one
+# row_size_set <text> -> sets SIZE to S, M, L or XL from the row's `#size/` tag, '' when it has none: the one
 # size a sized row has. The judge sizes only the rest (size_back writes its answer onto the row).
-row_size() { tag_of "$1" size; case "${TAG,,}" in s | m | l | xl) echo "${TAG^^}" ;; esac; }
+row_size_set() { tag_of "$1" size; SIZE=''; case "${TAG,,}" in s | m | l | xl) SIZE=${TAG^^} ;; esac; }
 
 # workers -> one line per worker in registry order: rank, name, max tier capped at the ceiling,
 # only_tag, lane, untagged. "-" stands for empty, because read collapses empty tab fields.
@@ -419,13 +435,13 @@ workers() {
     "$DISPATCH_WORKERS" 2>/dev/null
 }
 
-# row_worker <workers> <lane> <row text> -> "<rank> <worker> <tier>" for the first worker
-# that may take the row, nothing when none may. A row with no tier tag counts as the highest tier
+# row_worker <workers> <lane> <row text> -> sets W_RANK, W_NAME and W_TIER for the first worker
+# that may take the row, rc 1 when none may. A row with no tier tag counts as the highest tier
 # an untagged worker takes, and the judge must read it no higher.
 row_worker() {
   local lane="$2" text="$3" tag row_t t rank name max only wlane untagged
   tag_of "$text" worker; tag=$TAG
-  row_t=$(row_tier "$text")
+  row_tier_set "$text"; row_t=$TIER
   while IFS=$'\t' read -r rank name max only wlane untagged; do
     if [ "$untagged" = true ]; then [ -z "$tag" ] || continue; else [ "$tag" = "$name" ] || continue; fi
     [ "$only" = - ] || [[ " $text " == *" #$only "* ]] || continue
@@ -433,7 +449,7 @@ row_worker() {
     t=$row_t
     [ -n "$t" ] || [ "$untagged" != true ] || t=$max
     [ -n "$t" ] && [ "$t" -le "$max" ] || continue
-    echo "$rank $name $t"
+    W_RANK=$rank W_NAME=$name W_TIER=$t
     return 0
   done <<<"$1"
   return 1
@@ -442,16 +458,19 @@ row_worker() {
 # cleanup_row <project> <row text> -> 0 when the row cleans up an AI system: its project is in
 # DISPATCH_CLEANUP_PROJECTS and its kind is cleanup in kinds.json (KIND_CLEANUP: true, or a pattern
 # the body matches too) and the body names no shared infrastructure (DISPATCH_CLEANUP_NOT), else 1.
-# RANK_JQ's `cleanup`; the one source.
-cleanup_row() {
-  local body="${2%%<!--*}" k c
-  [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $1 "* ]] || { echo 1; return; }
+# RANK_JQ's `cleanup`; the one source. cleanup_row_set sets CLEANUP.
+cleanup_row_set() {
+  local body="${2%%<!--*}" c
+  CLEANUP=1
+  [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $1 "* ]] || return 0
   load_kinds
-  k=$(row_kind "$2")
-  c=${KIND_CLEANUP[${k:-_}]:-}
+  row_kind_set "$2"
+  c=${KIND_CLEANUP[${KIND:-_}]:-}
   body=${body#- \[?\] }
-  if { [ "$c" = true ] || { [ -n "$c" ] && grep -qiE -- "$c" <<<"$body"; }; } && ! grep -qiE -- "$DISPATCH_CLEANUP_NOT" <<<"$body"; then echo 0; else echo 1; fi
+  if { [ "$c" = true ] || { [ -n "$c" ] && grep -qiE -- "$c" <<<"$body"; }; } && ! grep -qiE -- "$DISPATCH_CLEANUP_NOT" <<<"$body"; then CLEANUP=0; fi
+  return 0
 }
+cleanup_row() { cleanup_row_set "$@"; echo "$CLEANUP"; }
 
 # untagged_reads <workers> <lane> -> 0 when an untagged worker reads the lane (its own, or every lane), else 1.
 untagged_reads() {
@@ -467,35 +486,69 @@ untagged_reads() {
 # tier-3 gate takes it (t3_rows) unless a DISPATCH_T3_SKIP word keeps it with the human; no untagged
 # worker reads its lane; its tier is past the unattended ceiling (a human-lane row); or its tags and
 # tier fit none. A project off_project names never gets here: candidates gives that reason instead.
-nobody_why() {
+# nobody_why_set sets NOBODY.
+nobody_why_set() {
   local lane="$2" text="$3" covers=0 t m
   ! untagged_reads "$1" "$lane" || covers=1
-  t=$(row_tier "$text")
+  row_tier_set "$text"; t=$TIER
   if [ "$lane" = agent ] && { [ "$t" = 3 ] || { [ -z "$t" ] && [ "$covers" = 0 ]; }; }; then
     m=$(grep -oiE -m1 -- "$DISPATCH_T3_SKIP" <<<"${text%%<!--*}" | awk 'NR==1')
-    if [ -n "$m" ]; then echo "tier3 skip: $m"
-    elif [ "$t" = 3 ]; then echo "tier3 only: the tier-3 gate takes it"
-    else echo "tier3 only: no day worker reads the $lane lane"; fi
-    return
+    if [ -n "$m" ]; then NOBODY="tier3 skip: $m"
+    elif [ "$t" = 3 ]; then NOBODY="tier3 only: the tier-3 gate takes it"
+    else NOBODY="tier3 only: no day worker reads the $lane lane"; fi
+    return 0
   fi
-  if [ "$covers" = 0 ]; then echo "no untagged worker reads the $lane lane"; return; fi
-  if [ -n "$t" ] && [ "$t" -gt "$UNATTENDED_TIER_CEILING" ]; then echo "tier $t: past the unattended ceiling"; return; fi
-  echo "no worker takes its tags or tier"
+  if [ "$covers" = 0 ]; then NOBODY="no untagged worker reads the $lane lane"; return 0; fi
+  if [ -n "$t" ] && [ "$t" -gt "$UNATTENDED_TIER_CEILING" ]; then NOBODY="tier $t: past the unattended ceiling"; return 0; fi
+  NOBODY="no worker takes its tags or tier"
 }
+nobody_why() { nobody_why_set "$@"; echo "$NOBODY"; }
 
 sig() { sha256sum | cut -c1-12; }
+
+# SIG_OF[<string>]: its sig, as sig prints it, for the strings a board read hashed in one batch
+# (sigs_load), so a walk's row_sig and detail_sig cost no fork; a string not in it is hashed on the spot.
+declare -gA SIG_OF=()
+# sigs_load <string>... -- their sigs into SIG_OF with one hasher process; a string with a newline is
+# left to sig_set. A hasher that fails or answers short loads nothing, and sig_set then hashes string by string.
+sigs_load() {
+  local -a ss=() hs=()
+  local s i
+  for s in "$@"; do [ -n "$s" ] && [[ "$s" != *$'\n'* ]] && [ -z "${SIG_OF[$s]+x}" ] && ss+=("$s"); done
+  [ ${#ss[@]} -gt 0 ] || return 0
+  mapfile -t hs < <(printf '%s\n' "${ss[@]}" | python3 -c 'import hashlib, sys
+for s in sys.stdin.buffer.read().split(b"\n")[:-1]: print(hashlib.sha256(s).hexdigest()[:12])' 2>/dev/null)
+  [ ${#hs[@]} -eq ${#ss[@]} ] || return 0
+  for i in "${!ss[@]}"; do SIG_OF[${ss[$i]}]=${hs[$i]}; done
+}
+# sig_set <string> -> sets SIG, the sig of the string: SIG_OF's, else hashed now.
+sig_set() {
+  if [ -n "$1" ] && [ -n "${SIG_OF[$1]+x}" ]; then SIG=${SIG_OF[$1]}; else SIG=$(printf '%s' "$1" | sig); fi
+}
 
 # row_sig <row text> -> a verdict's cache key: the sig of the text the judge rules on, whitespace
 # squeezed. The trailing <!-- --> comment, #of/ links and the priority tags (#urgent #high #low) are
 # left out: no verdict field reads them, and triage's --backlog --link and --priority passes add them
-# to hundreds of rows at once. The type(area) prefix stays: area is judged. Pure bash: it runs per row.
-row_sig() {
+# to hundreds of rows at once. The type(area) prefix stays: area is judged. sig_text sets SIG_TEXT, the
+# text it hashes; row_sig_set sets SIG.
+sig_text() {
   local w o="" t=()
   read -ra t <<<"${1%%<!--*}"
   for w in "${t[@]+"${t[@]}"}"; do
     case "$w" in '#of/'*|'#urgent'|'#high'|'#low') ;; *) o+="${o:+ }$w" ;; esac
   done
-  printf '%s' "$o" | sig
+  SIG_TEXT=$o
+}
+row_sig_set() { sig_text "$1"; sig_set "$SIG_TEXT"; }
+row_sig() { row_sig_set "$1"; echo "$SIG"; }
+
+# row_sigs_load -- the `key TAB text` lines of `rows` on stdin: every text's row_sig into SIG_OF, in one
+# batch (sigs_load), as row_kinds_load loads their kinds.
+row_sigs_load() {
+  local key text
+  local -a ts=()
+  while IFS=$'\t' read -r key text; do [ -z "$text" ] || { sig_text "$text"; ts+=("$SIG_TEXT"); }; done
+  sigs_load "${ts[@]+"${ts[@]}"}"
 }
 
 # policy_sig -> changes whenever the policy does. It dates a verdict (fresh or stale), it does not void
@@ -528,8 +581,9 @@ def eff_size($d): if (.row_size // "") != "" then .row_size else ($d.size // "")
 def row_area($d; $games): ((.text // "") | split("<!--") | .[0] // "" | ascii_downcase) as $t
   | (first(($games[.project] // [])[] | select(. as $g | $t | test("\\b\($g)\\b"))) // (if ($d.area | type) == "string" then $d.area | ascii_downcase else "" end));'
 
-# detail_sig <details json> -> the dsig of a row's details; "none" for a row with none
-detail_sig() { if [ "$1" = '""' ]; then echo none; else printf '%s' "$1" | sig; fi; }
+# detail_sig <details json> -> the dsig of a row's details; "none" for a row with none. detail_sig_set sets DSIG.
+detail_sig_set() { if [ "$1" = '""' ]; then DSIG=none; else sig_set "$1"; DSIG=$SIG; fi; }
+detail_sig() { detail_sig_set "$1"; echo "$DSIG"; }
 
 # load_gates -- GATE_ST, GATE_WHY, GATE_Q and GATE_STACK by board gate tag: its state (clear, pending or dead),
 # hold_for's words, its queue form, and the slug of the item an #after/ gate cleared as stacked on (its open PR), for every gate an open row carries, from one
@@ -584,6 +638,10 @@ load_extras() {
   done < <(jq -r --argjson n "$DISPATCH_DETAIL_CHARS" "$ROW_JQ"'
     .rows[]? | select(.id != null)
     | "\(.project)\t\(.lane)\t\(.id)\t\(.rank // "-")\t\(.release_due // "-")\t\(if plan_tagged then 1 else 0 end)\t\(if planned then 1 else 0 end)\t\(details_json($n))"' <<<"$board")
+  # Every row's dsig in one batch, so a walk hashes no details row by row (ar-4512).
+  local -a ds=()
+  for d in "${DET[@]}"; do d=${d#*$'\t'}; [ "$d" = '""' ] || ds+=("$d"); done
+  sigs_load "${ds[@]+"${ds[@]}"}"
   while read -r i; do
     [ -n "$i" ] && PAR[$i]=1
   done < <(jq -r '.rows[]? | select(.state == "open" or .state == "doing") | .tags[]? | select(startswith("of/")) | .[3:]' <<<"$board")
@@ -600,7 +658,7 @@ load_extras() {
 # sprint has not started), read by load_sprints from the one board read load_extras makes, or on first use:
 # 1 for a row its window holds (`tasks`, the snapshot and its interrupts), 2 for one of the open version's
 # unstarted agent rows it does not (`uncommitted`, notes-cli window::open_window), so a row that unblocks
-# mid-sprint ranks as sprint at once, after the committed ones (row_uncommitted), with no relock. While only
+# mid-sprint ranks as sprint at once, after the committed ones (row_sprint_set's UNCOMMITTED), with no relock. While only
 # the snapshot counted, 20 open v0.5.5 rows waited on a human relock (2026-11-21, ar-4331).
 # SPRINT_PROJECT[<project>]: a project one of whose open sprint's rows nobody has started yet (`open` or
 # `uncommitted`, not `doing`), the projects the sprint floor's board scan reads (sprint_top_up).
@@ -630,10 +688,14 @@ sprint_rows_ready() {
 
 # row_sprint <project> <id> -> 0 when an open sprint holds the row (SPRINT_ROW), else 1: a candidate's
 # `sprint`, which RANK_JQ ranks first as `cleanup` ranks a cleanup row, and promote tags the item with.
-row_sprint() { if [ -n "${SPRINT_ROW["$1"$'\t'"$2"]:-}" ]; then echo 0; else echo 1; fi; }
-# row_uncommitted <project> <id> -> 1 for a sprint row its window did not commit (SPRINT_ROW 2), else 0: the
-# rank key after `sprint`, so committed rows rank first within the sprint.
-row_uncommitted() { if [ "${SPRINT_ROW["$1"$'\t'"$2"]:-}" = 2 ]; then echo 1; else echo 0; fi; }
+row_sprint() { row_sprint_set "$1" "$2"; echo "$SPRINT"; }
+# row_sprint_set <project> <id> -> sets SPRINT as row_sprint prints it, and UNCOMMITTED: 1 for a sprint row its
+# window did not commit (SPRINT_ROW 2), else 0, the rank key after `sprint`, so committed rows rank first within the sprint.
+row_sprint_set() {
+  local v=${SPRINT_ROW["$1"$'\t'"$2"]:-}
+  if [ -n "$v" ]; then SPRINT=0; else SPRINT=1; fi
+  if [ "$v" = 2 ]; then UNCOMMITTED=1; else UNCOMMITTED=0; fi
+}
 
 # game_areas < candidate lines -> {"<project>": ["<game>", ...]}: the game directories under the
 # Assets/Games of each candidate's repo, lowercased. ROW_JQ's row_area locks the game a row names, so a
@@ -694,21 +756,26 @@ load_focus() {
   FOCUS_PROJECTS=$(notes projects --prios 2>/dev/null | awk -F '\t' '$2 == "focus" { printf "%s%s", (n++ ? " " : ""), $1 }')
 }
 
-# row_off <project> <key> <text> -> why the row may not dispatch whatever the judge says:
+# row_off_set <project> <key> <text> -> sets OFF to why the row may not dispatch whatever the judge says:
 # its kind (kind_off), or it is a parent, which closes when its children do. Nothing when it may. A
 # hand `fleet-dispatch start` reads none of this. Every open agent row is planned work, so no tier
-# bars one: work never stops while a row is open (the human, 2026-11-23).
-row_off() {
-  local why
-  why=$(kind_off "$(row_kind "$3")")
-  [ -n "$why" ] || [ -z "${PAR[$2]:-}" ] || why="a parent: open rows name it in #of/"
-  printf '%s' "$why"
+# bars one: work never stops while a row is open (the human, 2026-11-23). It leaves KIND set (row_kind_set).
+row_off_set() {
+  row_kind_set "$3"; kind_off_set "$KIND"
+  OFF=$KIND_OFF
+  [ -n "$OFF" ] || [ -z "${PAR[$2]:-}" ] || OFF="a parent: open rows name it in #of/"
 }
 
-# held <judged> <project> <lane> <key> <line> <dsig> -- a judged_keys line still covers the row
+# held_load <judged> -- the judged_keys lines into HELD, which held reads; a walk loads them once.
+held_load() {
+  local l
+  declare -gA HELD=()
+  while IFS= read -r l; do [ -z "$l" ] || HELD[$l]=1; done <<<"$1"
+}
+# held <project> <lane> <key> <line> <dsig> -- a judged_keys line (HELD) still covers the row
 held() {
-  local k="$2"$'\t'"$3"$'\t'"$4"
-  grep -qxF -e "$k"$'\t'"$5"$'\t'"$6" -e "$k"$'\t'"$5"$'\t*' -e "$k"$'\t*\t*' <<<"$1"
+  local k="$1"$'\t'"$2"$'\t'"$3"
+  [ -n "${HELD["$k"$'\t'"$4"$'\t'"$5"]+x}" ] || [ -n "${HELD["$k"$'\t'"$4"$'\t*']+x}" ] || [ -n "${HELD["$k"$'\t*\t*']+x}" ]
 }
 
 # np <profile> <args...> -> notes, under that profile, or notes' own default when it is empty
@@ -1654,13 +1721,21 @@ row_lane() {
 
 # row_priority <raw line> [project] -> the queue priority the row asks for: a bare row is high, the
 # default of the row grammar and of agent-queue alike, and so is a cleanup row whatever its #low.
-row_priority() {
-  case "$(prio_rank "$1")" in
-    0) echo urgent ;;
-    3) if [ -n "${2:-}" ] && [ "$(cleanup_row "$2" "$1")" = 0 ]; then echo high; else echo low; fi ;;
-    *) echo high ;;
+# row_priority_set sets PRIORITY; prio_word_set <prio_rank> <cleanup_row> sets it from the two, which a walk has.
+prio_word_set() {
+  case "$1" in
+    0) PRIORITY=urgent ;;
+    3) if [ "$2" = 0 ]; then PRIORITY=high; else PRIORITY=low; fi ;;
+    *) PRIORITY=high ;;
   esac
 }
+row_priority_set() {
+  local c=1
+  prio_rank_set "$1"
+  if [ "$PRIO" = 3 ] && [ -n "${2:-}" ]; then cleanup_row_set "$2" "$1"; c=$CLEANUP; fi
+  prio_word_set "$PRIO" "$c"
+}
+row_priority() { row_priority_set "$@"; echo "$PRIORITY"; }
 
 # IN_FORCE_JQ: in_force($tries), of one row's verdict records in file order, the ones still in force.
 # A `failed` record (its item ended failed, or its row sat orphaned) expires every verdict before it,
@@ -1705,13 +1780,17 @@ judged_keys() {
 # command, and a pass's one judge read, so not once per read), and suggest lists its agent rows with that reason.
 cmd_candidates() {
   local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today nobody active poff
-  local x planned dj dsig plan off kind board gates gwait pidle
-  local -A DET=() PLN=() PAR=() RNK=() GAT=() RLD=()
+  local x planned dj dsig plan off kind board gates gwait pidle fgates prio priority cleanup sprint uncommitted rsize
   today=${DISPATCH_TODAY:-$(date +%F)}
   judged=$(judged_keys)
   table=$(workers)
   [ -n "$table" ] || return 0
-  load_extras
+  held_load "$judged"
+  # A caller that walks many times (trainee_rows) declares and loads the extras once for every walk.
+  if ! declare -p DET >/dev/null 2>&1; then
+    local -A DET=() PLN=() PAR=() RNK=() GAT=() RLD=()
+    load_extras
+  fi
   [ -z "${GATES_FAILED:-}" ] || [ "${SUGGEST:-0}" = 1 ] || return 0
   load_kinds
   for prof in $DISPATCH_PROFILES; do
@@ -1733,38 +1812,47 @@ cmd_candidates() {
       for lane in human agent; do
         board=$(rows "$prof" "$name" "$lane")
         row_kinds_load <<<"$board"
+        row_sigs_load <<<"$board"
+        # Each value below comes from a _set helper, never $(...): a row costs no subshell (ar-4512).
         while IFS=$'\t' read -r key text; do
           [ -n "$key" ] || continue
           case "$text" in '- [ ]'*) ;; *) continue ;; esac
           plan=${PLN["$name"$'\t'"$lane"$'\t'"$key"]:-0}
           [ "$plan" = 0 ] || [ "${SUGGEST:-0}" = 1 ] || continue
-          off=$(row_off "$name" "$key" "$text")
+          row_off_set "$name" "$key" "$text"; off=$OFF kind=$KIND
           [ -z "$off" ] || [ "${SUGGEST:-0}" = 1 ] || continue
           gates=${GAT["$name"$'\t'"$lane"$'\t'"$key"]:-}
           gwait=''; [ -z "$gates" ] || gwait=$(gate_wait "$gates")
           [ -z "$gwait" ] || [ "${SUGGEST:-0}" = 1 ] || continue
-          kind=$(row_kind "$text")
-          ! floor_pass || floor_row "$name" "$text" "$([ "$lane" = agent ] && [ -z "$gwait" ] && printf %s "$gates")" "$key" || continue
+          fgates=''; [ "$lane" != agent ] || [ -n "$gwait" ] || fgates=$gates
+          ! floor_pass || floor_row "$name" "$text" "$fgates" "$key" || continue
           nobody=''
-          if [ -n "$poff" ] || ! read -r rank worker tier < <(row_worker "$table" "$lane" "$text"); then
+          if [ -n "$poff" ] || ! row_worker "$table" "$lane" "$text"; then
             # suggest shows the agent rows no worker takes too, after the ones one does.
             [ "${SUGGEST:-0}" = 1 ] && [ "$lane" = agent ] || continue
-            rank=99 worker='' tier=$(row_tier "$text"); tier=${tier:-null}
-            nobody=${poff:-$(nobody_why "$table" "$lane" "$text")}
+            rank=99 worker=''; row_tier_set "$text"; tier=${TIER:-null}
+            if [ -n "$poff" ]; then nobody=$poff; else nobody_why_set "$table" "$lane" "$text"; nobody=$NOBODY; fi
+          else
+            rank=$W_RANK worker=$W_NAME tier=$W_TIER
           fi
-          line=$(row_sig "$text")
+          row_sig_set "$text"; line=$SIG
           x=${DET["$name"$'\t'"$lane"$'\t'"$key"]:-$'0\t""'}
           planned=${x%%$'\t'*} dj=${x#*$'\t'}
-          dsig=$(detail_sig "$dj")
-          held "$judged" "$name" "$lane" "$key" "$line" "$dsig" && continue
+          detail_sig_set "$dj"; dsig=$DSIG
+          held "$name" "$lane" "$key" "$line" "$dsig" && continue
+          prio_rank_set "$text"; prio=$PRIO
+          cleanup_row_set "$name" "$text"; cleanup=$CLEANUP
+          prio_word_set "$prio" "$cleanup"; priority=$PRIORITY
+          row_sprint_set "$name" "$key"; sprint=$SPRINT uncommitted=$UNCOMMITTED
+          row_size_set "$text"; rsize=$SIZE
           jq -cn --arg profile "$prof" --arg project "$name" --arg stage "$stage" \
             --arg lane "$lane" --arg key "$key" --arg text "$text" --arg repo "$repo" \
             --argjson details "$dj" --arg dsig "$dsig" --argjson planned "$planned" --argjson plan "$plan" \
-            --arg line "$line" --argjson prio "$(prio_rank "$text")" --arg priority "$(row_priority "$text" "$name")" --argjson tier "$tier" \
+            --arg line "$line" --argjson prio "$prio" --arg priority "$priority" --argjson tier "$tier" \
             --arg worker "$worker" --argjson wrank "$rank" --arg today "$today" --arg pprio "$pprio" \
-            --argjson cleanup "$(cleanup_row "$name" "$text")" --argjson sprint "$(row_sprint "$name" "$key")" --argjson uncommitted "$(row_uncommitted "$name" "$key")" --arg nobody "$nobody" --argjson active "$active" \
+            --argjson cleanup "$cleanup" --argjson sprint "$sprint" --argjson uncommitted "$uncommitted" --arg nobody "$nobody" --argjson active "$active" \
             --arg kind "$kind" --argjson krank "${KIND_RANK[${kind:-_}]:-1}" --arg klabel "${KIND_LABEL[${kind:-_}]:-}" \
-            --arg rsize "$(row_size "$text")" --arg off "$off" --argjson frank "${RNK["$name"$'\t'"$lane"$'\t'"$key"]:-null}" \
+            --arg rsize "$rsize" --arg off "$off" --argjson frank "${RNK["$name"$'\t'"$lane"$'\t'"$key"]:-null}" \
             --arg gates "$gates" --arg gwait "$gwait" --arg rdue "${RLD["$name"$'\t'"$lane"$'\t'"$key"]:-}" --arg pidle "$pidle" \
             "$RANK_JQ"'{profile: $profile, project: $project, stage: $stage, lane: $lane, key: $key,
               text: $text, repo: $repo, prio: $prio, priority: $priority, tier: $tier, line: $line,
@@ -5264,7 +5352,10 @@ trainee_rows() {
   # BENCH_TRAINEE_CMD timeout, agent-runtime's 1,409 agent rows the long pole (2026-11-23, ar-3988).
   # The gates are read once, before the walks fork: each walk read them itself, about 18 s each.
   # Each walk writes its own file: a row line can pass PIPE_BUF, so one pipe could tear it.
-  load_gates
+  # The board extras too (load_extras, and with them the gates): each walk read the whole board again
+  # for them, 36 reads a pass (ar-4512). The forked walks see these locals, and so load none.
+  local -A DET=() PLN=() PAR=() RNK=() GAT=() RLD=()
+  load_extras
   mapfile -t projects < <(for prof in $DISPATCH_PROFILES; do notes --profile "$prof" projects 2>/dev/null | cut -f1; done | awk 'NF && !seen[$0]++')
   order=$(jq -r '[.rows[]? | select(.state == "open") | .project] as $r
     | $ARGS.positional | to_entries | sort_by(.value as $p | [-($r | map(select(. == $p)) | length), .key]) | .[].value' "$d/board" --args "${projects[@]}" 2>/dev/null) &&
@@ -6128,7 +6219,7 @@ item_headline() {
 
 # item_size <item json> -> s, m or l from the `#size/` tag in its task, which promote copies from the
 # board row (size_back tags the row with the judge's size, so the row's tag is the effective size);
-# any case, as row_size reads it; nothing for an unsized or `xl` item, a size model-lane does not
+# any case, as row_size_set reads it; nothing for an unsized or `xl` item, a size model-lane does not
 # take. The one read lane_pick and start's `size=` header share.
 item_size() { jq -r '[(.task // "") | match("#size/([sml])\\b"; "i").captures[0].string | ascii_downcase][0] // empty' <<<"$1"; }
 
@@ -6615,7 +6706,7 @@ board_starved() {
 
 # sprint-stalled -- rc 1 naming each agent-lane row of an open sprint (SPRINT_ROW) left DISPATCH_STARVED_MIN
 # minutes or longer unstarted (so no session holds it), with no active queue item on it and nothing it waits on:
-# no gate pending or dead (a dead one is queue-starved's, dead_holds) and nothing row_off names. A verdict
+# no gate pending or dead (a dead one is queue-starved's, dead_holds) and nothing row_off_set names. A verdict
 # holding the row, or no worker taking it, is the stall itself, so rows are read as suggest reads them, verdicts
 # ignored, and each line names the row's last verdict. First sightings live in $DIR/sprint-stalled.tsv, as
 # unstart_orphans keeps its own; a row that stops being one counts again from its next sighting. A dispatch
@@ -7857,12 +7948,13 @@ floor_project() {
 # floor_row <project> <row> [gates] [id] -> 0 for a row a floor pass may read: a `#requested` row when the
 # requested floor is under, a cleanup row of DISPATCH_CLEANUP_PROJECTS when the cleanup floor is, an
 # agent row whose gates all cleared (<gates>, cmd_candidates' `gated`) under GATED_ONLY, and a row an
-# open sprint holds (row_sprint on <id>) under SPRINT_ONLY.
+# open sprint holds (row_sprint on <id>) under SPRINT_ONLY. It sets SPRINT, CLEANUP and KIND (row_sprint_set,
+# cleanup_row_set), so a walk copies its own before it calls this.
 floor_row() {
   [ -n "${GATED_ONLY:-}" ] && [ -n "${3:-}" ] && return 0
   [ -n "${REQUESTED_ONLY:-}" ] && [[ "${2%%<!--*}" =~ (^|[[:space:]])#requested([[:space:]]|$) ]] && return 0
-  [ -n "${SPRINT_ONLY:-}" ] && [ -n "${4:-}" ] && [ "$(row_sprint "$1" "$4")" = 0 ] && return 0
-  [ -n "${CLEANUP_ONLY:-}" ] && [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $1 "* ]] && [ "$(cleanup_row "$1" "$2")" = 0 ]
+  [ -n "${SPRINT_ONLY:-}" ] && [ -n "${4:-}" ] && row_sprint_set "$1" "$4" && [ "$SPRINT" = 0 ] && return 0
+  [ -n "${CLEANUP_ONLY:-}" ] && [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $1 "* ]] && cleanup_row_set "$1" "$2" && [ "$CLEANUP" = 0 ]
 }
 
 # take_epic <profile> <project> <epic id> [repeat] -- take an epic row on by lifecycle.md "Taking an
@@ -8198,8 +8290,12 @@ cmd_fill() {
 # `gated` (cmd_candidates); none when the gates could not be read (GATES_FAILED). ONLY_PROJECT: that project alone.
 t3_rows() {
   local judged="$1" prof name sheet _v stage repo key text body t line n x planned dj dsig board gates pidle pprio
-  local -A DET=() PLN=() PAR=() RNK=() GAT=() RLD=()
-  load_extras
+  local prio priority cleanup sprint uncommitted rsize
+  held_load "$judged"
+  if ! declare -p DET >/dev/null 2>&1; then
+    local -A DET=() PLN=() PAR=() RNK=() GAT=() RLD=()
+    load_extras
+  fi
   [ -z "${GATES_FAILED:-}" ] || return 0
   load_kinds
   for prof in $DISPATCH_PROFILES; do
@@ -8217,34 +8313,40 @@ t3_rows() {
       n=0
       board=$(rows "$prof" "$name" agent)
       row_kinds_load <<<"$board"
+      row_sigs_load <<<"$board"
       while IFS=$'\t' read -r key text; do
         [ -n "$key" ] || continue
         n=$(( n + 1 ))
         case "$text" in '- [ ]'*) ;; *) continue ;; esac
-        t=$(row_tier "$text")
+        row_tier_set "$text"; t=$TIER
         [ -z "$t" ] || [ "$t" = 3 ] || continue
         body=${text#- \[ \] }
         grep -qiE -- "$DISPATCH_T3_SKIP" <<<"${body%%<!--*}" && continue
         [ -z "${PLN["$name"$'\t'agent$'\t'"$key"]:-}" ] || continue
-        [ -z "$(row_off "$name" "$key" "$text")" ] || continue
+        row_off_set "$name" "$key" "$text"; [ -z "$OFF" ] || continue
         gates=${GAT["$name"$'\t'agent$'\t'"$key"]:-}
         [ -z "$gates" ] || [ -z "$(gate_wait "$gates")" ] || continue
         # A gated row starts with no verdict (t3_ready), so only a #tier/3 tag makes one tier 3 here;
         # an untagged one stays with the worker path, where the board worker takes it.
         [ -z "$gates" ] || [ "$t" = 3 ] || continue
         ! floor_pass || floor_row "$name" "$text" "$gates" "$key" || continue
-        line=$(row_sig "$text")
+        row_sig_set "$text"; line=$SIG
         x=${DET["$name"$'\t'agent$'\t'"$key"]:-$'0\t""'}
         planned=${x%%$'\t'*} dj=${x#*$'\t'}
-        dsig=$(detail_sig "$dj")
-        held "$judged" "$name" agent "$key" "$line" "$dsig" && continue
+        detail_sig_set "$dj"; dsig=$DSIG
+        held "$name" agent "$key" "$line" "$dsig" && continue
+        prio_rank_set "$text"; prio=$PRIO
+        cleanup_row_set "$name" "$text"; cleanup=$CLEANUP
+        prio_word_set "$prio" "$cleanup"; priority=$PRIORITY
+        row_sprint_set "$name" "$key"; sprint=$SPRINT uncommitted=$UNCOMMITTED
+        row_size_set "$text"; rsize=$SIZE
         jq -cn --arg project "$name" --arg stage "$stage" --arg key "$key" --arg text "$text" \
           --argjson details "$dj" --arg dsig "$dsig" --argjson planned "$planned" \
-          --arg body "$body" --arg repo "$repo" --arg line "$line" --argjson prio "$(prio_rank "$text")" \
-          --arg priority "$(row_priority "$text" "$name")" --argjson order "$n" --arg obs "$DISPATCH_T3_OBSERVER" \
-          --arg profile "$prof" --arg rsize "$(row_size "$text")" --arg pprio "$pprio" \
-          --argjson cleanup "$(cleanup_row "$name" "$text")" --argjson frank "${RNK["$name"$'\t'agent$'\t'"$key"]:-null}" \
-          --argjson sprint "$(row_sprint "$name" "$key")" --argjson uncommitted "$(row_uncommitted "$name" "$key")" --arg gates "$gates" --arg pidle "$pidle" \
+          --arg body "$body" --arg repo "$repo" --arg line "$line" --argjson prio "$prio" \
+          --arg priority "$priority" --argjson order "$n" --arg obs "$DISPATCH_T3_OBSERVER" \
+          --arg profile "$prof" --arg rsize "$rsize" --arg pprio "$pprio" \
+          --argjson cleanup "$cleanup" --argjson frank "${RNK["$name"$'\t'agent$'\t'"$key"]:-null}" \
+          --argjson sprint "$sprint" --argjson uncommitted "$uncommitted" --arg gates "$gates" --arg pidle "$pidle" \
           '{profile: $profile, project: $project, stage: $stage, lane: "agent", key: $key,
             text: $text, repo: $repo, prio: $prio, priority: $priority, tier: 3, line: $line, order: $order, wrank: 0, frank: $frank, row_size: $rsize,
             cleanup: $cleanup, sprint: $sprint, uncommitted: $uncommitted, project_prio: $pprio,

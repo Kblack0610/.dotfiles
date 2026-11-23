@@ -37,6 +37,42 @@ bats_require_minimum_version 1.5.0
   assert_equal "$(grep -c '^notes row parse' "$NOTES_FIXTURE/calls.log")" 1
 }
 
+@test "candidates: a row costs no hasher of its own: line and details sigs come in one batch, and held reads a map (ar-4512)" {
+  local u=$'\xc3\xbcn\xc3\xafcode'   # multibyte text, which the batch must hash byte for byte
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 "- [ ] fix(game): one $T <!-- id:gm-1 -->"
+  row game agent gm-2 "- [ ] chore(game): two #low $T <!-- id:gm-2 -->"
+  row game agent gm-3 "- [ ] feat(game): three $u \$HOME [x] $T <!-- id:gm-3 -->"
+  board_row game agent gm-1 '[]' '["the jump clips on ledges", "repro: level 2"]'
+  board_row game agent gm-3 '[]' "[\"$u: a \\\"quoted\\\" word\"]"
+  verdict game agent gm-2 skip
+  # The batch hash is the one sig gives, string by string.
+  for s in 'fix(game): one' "$u \$HOME [x] * @" '["a", "b\\nc"]'; do
+    SIG_OF=(); sigs_load "$s"; sig_set "$s"
+    assert_equal "$SIG" "$(printf '%s' "$s" | sig)"
+  done
+  # The baseline, every sig made by a fork: then each row's sig must match it.
+  SIG_OF=()
+  local want; want=$(cmd_candidates | jq -c '[.key, .line, .dsig]')
+  stub sha256sum "echo x >> $(printf %q "$SANDBOX/sha.calls"); exec $(command -v sha256sum) \"\$@\""
+  SIG_OF=()
+  run cmd_candidates
+  assert_success
+  assert_equal "$(jq -c '[.key, .line, .dsig]' <<<"$output")" "$want"
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'gm-1,gm-3'
+  # One hash, the policy's (judged_keys), however many rows.
+  assert_equal "$(wc -l < "$SANDBOX/sha.calls")" 1
+  # held: a verdict's exact line and dsig, its line with any details, or a failure's "*" for both.
+  held_load "$(printf '%s\n' $'p\tagent\tk1\tL\tD' $'p\tagent\tk2\tL\t*' $'p\tagent\tk3\t*\t*')"
+  held p agent k1 L D
+  ! held p agent k1 L E
+  ! held p agent k1 M D
+  held p agent k2 L E
+  ! held p agent k2 M E
+  held p agent k3 M E
+  ! held p human k3 M E
+}
+
 @test "candidates: a dev project is built by agents; a project with no stage is not" {
   project build dev "$SANDBOX/repos/game"
   project unset '' "$SANDBOX/repos/app"
