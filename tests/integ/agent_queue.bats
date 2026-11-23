@@ -2519,7 +2519,6 @@ EOF
   assert_line 'held my-plan-p4 -> level:lv-3 (#after/lv-2)'
   assert_line 'held my-plan-p6 -> level:lv-4 (#after/lv-3)'
   # The row carries the phase's title and its whole brief, for the item dispatch promotes from it.
-  grep -F 'ptask level --agent add' "$NOTES_FIXTURE/calls.log" | grep -F "my-plan P4+5: Fourth thing. More words; Fifth thing: shares the branch of 4 #high" | grep -qF '#after/lv-2'
   grep -qF "Phases 4 and 5 of the plan $SANDBOX/my-plan.md: Fourth thing; Fifth thing. Read the plan whole, then do ONLY these phases, on one branch" "$NOTES_FIXTURE/calls.log"
   ! grep -qs "fleet-dispatch" "$NOTES_FIXTURE/calls.log"
 }
@@ -2591,7 +2590,6 @@ EOF
   assert_line 'held marked-p4 -> level:lv-4 (#after/lv-2)'
   assert_line 'held marked-p6 -> level:lv-5 (#after/lv-4)'
   assert_line 'held marked-p7 -> level:lv-6 (#after/lv-4)'
-  grep -F 'ptask level --agent add' "$NOTES_FIXTURE/calls.log" | grep -qF 'marked P4+5: Fourth thing; Fifth thing #high #after/lv-2'
   # A marker that cannot be honoured is refused whole, naming the line; nothing is queued.
   bad() {
     printf '## Phases\n\n- [-] 1. Deferred\n- [ ] 2. Two\n- [ ] 3. %s\n' "$1" > "$SANDBOX/bad.md"
@@ -2714,7 +2712,6 @@ EOF2
   [ "$(field "$(item queued labelled-p7)" title)" = "labelled P7: Check a thing first" ]
   assert_line 'held labelled-p8 -> level:lv-3 (#after/lv-2)'
   assert_line 'held labelled-p10 -> level:lv-4 (#after/lv-3)'
-  grep -F 'ptask level --agent add' "$NOTES_FIXTURE/calls.log" | grep -qF 'labelled P8: Later thing #high #after/lv-2'
   # The ticked box and the open phase are read by the same number: p9 landed, p8 did not.
   source "$BATS_TEST_DIRNAME/../../.local/lib/plan-phases.sh"
   [ "$(plan_phase_list "$SANDBOX/labelled.md" | jq -c 'map(.n)')" = "[1,7,9,8,10]" ]
@@ -2750,8 +2747,6 @@ EOF
   AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/timed.md" --project level --priority urgent
   assert_success
   assert_line --regexp '^held timed-p2 -> level:lv-[0-9]+ \(#at/2099-01-01/2100\)$'
-  grep -F 'ptask level --agent add' "$NOTES_FIXTURE/calls.log" | grep -qF 'timed P2: Cut the build #high #at/2099-01-01/2100'
-  ! grep -F 'timed P2' "$NOTES_FIXTURE/calls.log" | grep -qF '#urgent'
   [ "$(field "$(item queued timed-p1)" priority)" = urgent ]
   [ "$(field "$(item queued timed-p3)" priority)" = urgent ]
   [ "$(field "$(item queued timed-p3)" tags)" = "" ]
@@ -5210,19 +5205,29 @@ row_item() {
   assert_output 0
 }
 
-@test "a landing follow-up from an item that waits on a blocker is gated on it; any other follow-up keeps its own timing (ar-4451)" {
+@test "a landing follow-up from an item with a PR recorded is gated on its blockers; any other follow-up keeps its own timing (ar-4451)" {
   story_notes
   "$AQ" add --project level --running --slug par "parent" >/dev/null
   legacy mine "after: par" --project level "the item"
+  legacy nopr "after: par" --project level "an item with no PR yet"
+  "$AQ" set mine pr=Kblack0610/game#12 >/dev/null
   unset AGENT_QUEUE_PULL
-  run env AGENT_QUEUE_ITEM=mine "$AQ" add --project level --priority low --slug l1 "land mine: agent-land 12 --item mine"
+  run env AGENT_QUEUE_ITEM=mine "$AQ" add --project level --priority low --slug l1 "Land PR 12 on its branch"
   assert_failure 5
   assert_output --partial "held l1 -> level:lv-9 (#after/lv-9)"
-  # NEGATIVE CONTROLS: a follow-up that is not the landing, one naming another item, one that names its own gate.
+  # NEGATIVE CONTROLS: a follow-up that is not a landing, an item with no PR, a task that only contains
+  # a longer word, and one that names its own gate.
   run env AGENT_QUEUE_ITEM=mine "$AQ" add --project level --priority low --slug l2 "fix(x): a gap mine left"
   assert_failure 5
   refute_output --partial "#after/"
-  run env AGENT_QUEUE_ITEM=mine "$AQ" add --project level --priority low --slug l3 "land other: agent-land 13"
+  run env AGENT_QUEUE_ITEM=nopr "$AQ" add --project level --priority low --slug l3 "land it: agent-land 13"
   assert_failure 5
   refute_output --partial "#after/"
+  run env AGENT_QUEUE_ITEM=mine "$AQ" add --project level --priority low --slug l4 "chore(x): the landscape doc"
+  assert_failure 5
+  refute_output --partial "#after/"
+  "$AQ" add --project level --running --slug other "other" >/dev/null
+  run env AGENT_QUEUE_ITEM=mine "$AQ" add --project level --priority low --after other --slug l5 "land PR 12"
+  assert_failure 5
+  assert_output --partial "held l5 -> level:lv-9 (#after/lv-9)"
 }

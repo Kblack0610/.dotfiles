@@ -17,7 +17,7 @@
 #       --plan queues at high at most: urgent stays for the human's own add, a red, and dispatch's promote.
 #       The human's own add that links a row (--row, the title's row) with an explicit --priority retags that row.
 #       --after holds the item until every slug it names closed ok: a comma or space list, and it repeats.
-#       A queue item's session adding the landing of that item (the task names its slug and says land) with no --after is gated on the item's own live `after:` blockers (landing_after).
+#       A queue item's session adding a task that says land, from an item with a PR recorded, with no --after is gated on that item's own live `after:` blockers (landing_after).
 #       A slug whose item is live with an open PR (open_pr:, set by agent-land before its checks, or a --pr-only run's pr:) does not hold: the item is stacked on it
 #       (hold_for HOLD_STACK, `stacked_on` in list --json; gate after/<row-id> clears with stack: <slug>), fleet-dispatch starts it in a worktree cut from that PR's
 #       head, and agent-land refuses it (exit 4) until that slug closed ok. A dependency closed unmerged stays a dead hold.
@@ -1831,19 +1831,24 @@ add_row_prio() {
   row_prio_write "$1" "$2"
 }
 
-# landing_after <item slug> <text> -> the blockers still live that <slug>'s own `after:` names, when <text>
-# is the landing of that item (it names the slug and says land): a landing follow-up its session files
-# (one-shot landing.md) and does not gate carries no trigger, so triage files it #low, the sweep puts it
-# on the backlog tier and a pass never takes that tier: ucp-2567, 2568 and 2569 sat on one for 11 hours
-# (2026-11-21, ar-4451). Gated on what its item waited on, it is pinned (gate_open) and pull-after starts
-# it the moment that blocker closes ok. Nothing for any other follow-up, which keeps its own timing.
+# landing_after <item slug> <text> -> the blockers of <slug>'s own `after:` that would hold a new add, when
+# <text> says land and the item has a PR recorded (pr: or open_pr:, landing.md sets it first): the add is
+# that item's landing. A landing follow-up its session files without --after carries no trigger, so triage
+# files it #low, the sweep puts it on the backlog tier and a pass never takes that tier: ucp-2567, 2568
+# and 2569 sat on one for 11 hours (2026-11-21, ar-4451). Gated on what its item waited on, it is pinned
+# (gate_open) and pull-after starts it when that blocker closes ok. A blocker that closed, died or is
+# stacked on (open PR: it holds nothing, hold_for) is no gate. Nothing for any other follow-up.
 landing_after() {
   local f s out=''
   [ -n "$1" ] || return 0
   f="$(find_item "$1")" && [ -n "$f" ] || return 0
-  [[ "$2" == *"$1"* && "$2" =~ ([Aa]gent-land|(^|[^a-z])[Ll]and([^a-z]|$)) ]] || return 0
+  [ -n "$(fm_get "$f" pr)$(fm_get "$f" open_pr)" ] || return 0
+  [[ "$2" =~ (^|[^A-Za-z])[Ll]and(ing)?([^A-Za-z]|$) ]] || return 0
   for s in $(word_list "$(fm_get "$f" after)"); do
-    [ -z "$(find_item "$s")" ] || out+="${out:+ }$s"
+    after_status "$s"
+    [ -z "$AST" ] || continue
+    stack_pr "$s"
+    [ -n "$STK" ] || out+="${out:+ }$s"
   done
   printf '%s' "$out"
 }
