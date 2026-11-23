@@ -370,33 +370,26 @@ EOF
   assert_equal "$(cat "$SANDBOX/hook.log")" ""
 }
 
-@test "agent-queue and agent-ask ended by a signal start no write hook (ar-4685)" {
-  # systemd's stop sweep TERMs a runner's cgroup once. A hook started from the EXIT trap after it
-  # is never signalled: it sat in flock -w on the sync lock until the stop timeout SIGKILLed it.
-  mkdir -p "$SANDBOX/bin" "$HOME/.agent/queue" "$HOME/.agent/asks"
-  printf '#!/bin/sh\necho "$0 $*" >> "%s"\n' "$SANDBOX/hook.log" > "$SANDBOX/bin/store-sync"
-  chmod +x "$SANDBOX/bin/store-sync"
-  # Each tool blocks in a command its list runs after the hook is armed (agent-queue jq, agent-ask
-  # find); the fifo says it got there, so no sleep times the kill.
-  # Opened read-write, so the open does not block and the read's -t guards a stub never reached.
-  mkfifo "$SANDBOX/ready"
-  exec {ready}<>"$SANDBOX/ready"
-  export AGENT_STORE_DIR="$HOME/.agent"
-  local tool stub pid
-  for tool in agent-queue:jq agent-ask:find; do
-    stub="${tool#*:}" tool="${tool%:*}"
-    mkdir -p "$SANDBOX/$stub"
-    printf '#!/bin/sh\necho x > "%s"\nexec sleep 30\n' "$SANDBOX/ready" > "$SANDBOX/$stub/$stub"
-    chmod +x "$SANDBOX/$stub/$stub"
-    PATH="$SANDBOX/$stub:$SANDBOX/bin:$PATH" setsid "$REPO_ROOT/.local/bin/$tool" list >/dev/null 2>&1 &
-    pid=$!
-    read -r -t 20 -u "$ready" _ || fail "$tool never reached its $stub stub"
-    # The whole process group, as the sweep signals the whole cgroup.
-    kill -TERM -- "-$pid"
-    wait "$pid" || true
-  done
-  exec {ready}<&-
-  assert_equal "$(cat "$SANDBOX/hook.log" 2>/dev/null)" ""
+@test "under a unit the background sync gets its own scope, outside one a plain setsid (ar-4685)" {
+  # In the runner's cgroup, a fork started after systemd's stop sweep (the EXIT hook of an agent-queue
+  # the sweep TERMed) sat in flock -w unsignalled until the stop timeout SIGKILLed it and failed the
+  # unit. The stubs log the detach and start nothing, so no sync runs behind the test.
+  mkdir -p "$SANDBOX/bin"
+  printf '#!/bin/sh\necho "systemd-run $*" >> "%s"\n' "$SANDBOX/detach.log" > "$SANDBOX/bin/systemd-run"
+  printf '#!/bin/sh\necho "setsid $*" >> "%s"\n' "$SANDBOX/detach.log" > "$SANDBOX/bin/setsid"
+  chmod +x "$SANDBOX/bin/systemd-run" "$SANDBOX/bin/setsid"
+  peer a
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  INVOCATION_ID=abc STORE_SYNC_FG=0 PATH="$SANDBOX/bin:$PATH" run on a --now --bg
+  assert_success
+  run cat "$SANDBOX/detach.log"
+  assert_equal "${#lines[@]}" 1
+  assert_line --index 0 --regexp "^systemd-run --user --scope --quiet setsid -f .*store-sync --store [a-z]+ --now$"
+  : > "$SANDBOX/detach.log"
+  ( unset INVOCATION_ID; STORE_SYNC_FG=0 PATH="$SANDBOX/bin:$PATH" on a --now --bg )
+  run cat "$SANDBOX/detach.log"
+  assert_equal "${#lines[@]}" 1
+  assert_line --index 0 --regexp "^setsid -f .*store-sync --store [a-z]+ --now$"
 }
 
 @test "a store-sync that writes the queue or the asks runs once per write, never starting itself again (ar-4241)" {
