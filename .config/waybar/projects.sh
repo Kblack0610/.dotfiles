@@ -62,8 +62,9 @@ body="$(jq -r --arg g "$C_GRN" --arg y "$C_YEL" --arg r "$C_RED" --arg d "$C_DIM
   | ([$shown[] | run | length] | max // 0) as $rw
   | ([$shown[] | wait | length] | max // 0) as $ww
   | ($shown[] | ([(.name | esc | pad($w)),
-        (run | cell($g; $rw)),
-        (wait | cell($y; $ww)),
+        # A column no row fills (nothing waiting anywhere) is left out, not drawn as a gap.
+        (if $rw > 0 then run | cell($g; $rw) else empty end),
+        (if $ww > 0 then wait | cell($y; $ww) else empty end),
         (if due then (hue as $h | st | paint($h)) + " " + (.window_says | esc) else "" end)]
       | join("  ") | sub(" +$"; "")),
       (areas | select(. != "") | "  " + .)),

@@ -88,7 +88,7 @@ Not running: done, base</tt>"
   feed '[]' "$(card web alpha - 5 9 0 '' '' '[{"area":"a","n":3},{"area":"b","n":2},{"area":"c","n":1},{"area":"d","n":1},{"area":"e","n":1},{"area":"no epic","n":1}]')"
   run "$MODULE"
   run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
-  assert_line "  a 3, b 2, c 1, d 1, +1 more, <span color=\"$D\">no epic 1</span>"
+  assert_line "  a 3, b 2, c 1, d 1, +1 more, <span color=\"$D\">no epic 1</span></tt>"
 }
 
 @test "nothing in flight: the icon alone, no count" {
