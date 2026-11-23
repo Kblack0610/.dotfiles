@@ -13,6 +13,7 @@ setup() {
   # no runs when there is none, and fails like a stale sync while $LEDGER_DIR/FAIL exists.
   # The PR store stand-in: `prs <repo>` answers $LEDGER_DIR/prs_<owner_repo>.tsv, else prs.tsv
   # (rows "branch \t number \t state \t ci \t head \t red \t merged_at \t title \t labels, comma-joined"), no PRs when there is neither,
+  # `sync-prs [--wait] <repo>` (the poll catching up) copies $LEDGER_DIR/after_sync_<owner_repo>.tsv over that repo's rows, and fails while $LEDGER_DIR/SYNC_FAIL exists;
   # fails like a stale store while $LEDGER_DIR/PRS_FAIL exists, or PRS_FAIL_<x> for a repo whose
   # owner_repo name ends in <x>, and lists no
   # repo (exit 3) while $LEDGER_DIR/PRS_UNLISTED does.
@@ -41,6 +42,10 @@ case "$1" in
     jq -Rn '[inputs | split("\t") | {branch: .[0], number: (.[1] | tonumber), state: .[2], ci: .[3],
       head_sha: .[4], red: (.[5] // "-"), merged_at: (.[6] // "" | if . == "" then null else . end), title: .[7],
       labels: (.[8] // "" | split(",") | map(select(. != "")))}]' "$f" ;;
+  sync-prs)
+    [ "$2" != --wait ] || set -- "$1" "${@:3}"
+    [ ! -e "$LEDGER_DIR/SYNC_FAIL" ] || { echo "$2: forge unreachable" >&2; exit 1; }
+    f="$LEDGER_DIR/after_sync_${2//\//_}.tsv"; [ ! -f "$f" ] || cp "$f" "$LEDGER_DIR/prs_${2//\//_}.tsv" ;;
   *) exit 2 ;;
 esac
 SS
@@ -4238,6 +4243,89 @@ pr_store() {
   assert_success
   assert_output ""
   [ ! -s "$SANDBOX/gh.log" ]
+}
+
+# a Forgejo checkout (origin on a listed host) whose store rows still read its PR open, with the merge one sync-prs away
+forgejo_stale_fixture() {
+  git init -q "$SANDBOX/fjwt"; git -C "$SANDBOX/fjwt" remote add origin https://fj.example/o/r.git
+  export SO_FORGEJO_HOSTS="fj.example" MAIN_CACHE="$SANDBOX/main"
+  CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  printf 'feat/x\t11\tOPEN\tPENDING\tabc\t-\t\n' > "$LEDGER_DIR/prs_fj.example_o_r.tsv"
+  printf 'feat/x\t11\tMERGED\tPASS\tabc\t-\t2026-11-19T06:45:00Z\n' > "$LEDGER_DIR/after_sync_fj.example_o_r.tsv"
+}
+
+@test "close --self: a Forgejo PR merged since the store's last poll reads merged, the store asked to read the forge once (ar-2786)" {
+  forgejo_stale_fixture
+  CLOSE_SELF=sid-1 run prs_for "$SANDBOX/fjwt"
+  assert_output "$(printf 'feat/x\t11\tMERGED\tPASS\tabc\t-')"
+  [ "$(grep -c '^sync-prs --wait fj.example/o/r$' "$LEDGER_DIR/calls")" -eq 1 ]
+  # the session's own PR list shares the one refresh
+  CLOSE_SELF=sid-1 pr_states fj.example/o/r >/dev/null
+  [ "$(grep -c '^sync-prs ' "$LEDGER_DIR/calls")" -eq 1 ]
+  # NEGATIVE CONTROL: a plain pass keeps the poll's answer and never writes the store
+  rm -rf "$CACHE"; mkdir -p "$CACHE"; printf 'feat/x\t11\tOPEN\tPENDING\tabc\t-\t\n' > "$LEDGER_DIR/prs_fj.example_o_r.tsv"; : > "$LEDGER_DIR/calls"
+  CLOSE_SELF= run prs_for "$SANDBOX/fjwt"
+  assert_output "$(printf 'feat/x\t11\tOPEN\tPENDING\tabc\t-')"
+  ! grep -q '^sync-prs' "$LEDGER_DIR/calls"
+}
+
+@test "close --self: a store that cannot read the forge makes the row blind, not a stale open (ar-2786)" {
+  forgejo_stale_fixture
+  touch "$LEDGER_DIR/SYNC_FAIL"
+  CLOSE_SELF=sid-1 prs_for "$SANDBOX/fjwt" >/dev/null
+  [ -f "$CACHE/blind_row" ]
+  grep -q '^PR store refresh (fj.example/o/r): fj.example/o/r: forge unreachable' "$CACHE/unreadable"
+  # a later read of the same repo in the pass is blind too, and the sync is not asked again
+  rm -f "$CACHE/blind_row"; : > "$LEDGER_DIR/calls"
+  CLOSE_SELF=sid-1 pr_states fj.example/o/r >/dev/null
+  [ -f "$CACHE/blind_row" ]
+  [ ! -s "$LEDGER_DIR/calls" ] || ! grep -q '^sync-prs' "$LEDGER_DIR/calls"
+  # a repo the store does not list is no fault
+  rm -f "$LEDGER_DIR/SYNC_FAIL" "$CACHE/blind_row" "$CACHE"/refreshed_*
+  printf '#!/usr/bin/env bash\n[ "$1" = sync-prs ] && exit 3\necho "[]"\n' > "$SCHEDULES_SYNC"
+  rm -f "$CACHE"/*_origin
+  CLOSE_SELF=sid-1 prs_for "$SANDBOX/fjwt" >/dev/null
+  [ ! -f "$CACHE/blind_row" ]
+}
+
+@test "store_key: a Forgejo alias host is the store's host, any other repo as given (ar-2786)" {
+  printf '{"forges":{"forgejo":"store.example"}}\n' > "$SANDBOX/map.json"
+  export SO_PROJECT_MAP="$SANDBOX/map.json" SO_FORGEJO_HOSTS="store.example alias.example"
+  run store_key alias.example/o/r
+  assert_output store.example/o/r
+  run store_key store.example/o/r
+  assert_output store.example/o/r
+  run store_key o/r
+  assert_output o/r
+  run store_key other.example/o/r
+  assert_output other.example/o/r
+}
+
+@test "session_prs: a PR printed under a Forgejo alias host is read under the store's host (ar-2786)" {
+  printf '{"forges":{"forgejo":"store.example"}}\n' > "$SANDBOX/map.json"
+  export SO_PROJECT_MAP="$SANDBOX/map.json" SO_FORGEJO_HOSTS="store.example alias.example"
+  {
+    echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"curl -s -X POST -d @pr.json https://alias.example/api/v1/repos/o/r/pulls"}}]}}'
+    echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"https://alias.example/o/r/pulls/12"}]}}'
+  } > "$SANDBOX/t.jsonl"
+  printf -- '-\t12\tMERGED\tPASS\t-\t-\t2026-11-19T06:45:00Z\n' > "$LEDGER_DIR/prs_store.example_o_r.tsv"
+  CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  run session_prs "$SANDBOX/t.jsonl"
+  assert_success
+  [ "$(jq -c 'map([.repo, .number, .state])' <<<"$output")" = '[["store.example/o/r",12,"MERGED"]]' ]
+}
+
+@test "session_prs: a project map that cannot be read makes the row blind, not a session with no PRs (ar-2786)" {
+  printf '{not json\n' > "$SANDBOX/map.json"
+  export SO_PROJECT_MAP="$SANDBOX/map.json" SO_FORGEJO_HOSTS="store.example"
+  {
+    echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"curl -s -X POST -d @pr.json https://store.example/api/v1/repos/o/r/pulls"}}]}}'
+    echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"https://store.example/o/r/pulls/12"}]}}'
+  } > "$SANDBOX/t.jsonl"
+  CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  run session_prs "$SANDBOX/t.jsonl"
+  assert_output '[]'
+  grep -q '^PR claims' "$CACHE/unreadable"
 }
 
 @test "sibling_pr: the last open PR in another repo, its CI from one cached gh pr view; a failed view is unreadable, asked once a pass" {
