@@ -124,6 +124,14 @@ project_of_code() {
     "$map_file" 2>/dev/null || true
 }
 
+# project_codes -> every row-id code the trackers name, `|`-joined (`ar|hc|ucp`), or "".
+project_codes() {
+  local map_file; map_file="$(project_map_file)"
+  [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 0
+  jq -r '[.trackers // {} | to_entries[] | .value | objects | .code // empty | select(test("^[a-z][a-z0-9]*$"))] | unique | join("|")' \
+    "$map_file" 2>/dev/null || true
+}
+
 # resolve_project [dir] -> the canonical project for <dir> (default $PWD). The one entry point
 # for a script that wants "the project I am in"; four scripts each wrapped resolve_project_name
 # with their own copy and their own basename fallback. A hook passes "${CLAUDE_PROJECT_DIR:-$PWD}".
