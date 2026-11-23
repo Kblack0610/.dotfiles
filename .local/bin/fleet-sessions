@@ -196,7 +196,8 @@ BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 #                 own:<slug>[,<slug>...] while one runs here, moved:<slug> (<where>) once it is done,
 #                 requeued or running in another session, here:<slug> waiting here,
 #                 review:<slug> pr <n|-> parked here in review (<n>, the item's PR, is handed off), or ->
-#                [<landing wait: "train #T", the open landing train the OPEN PR rides (train_of), "the landing queue" (queued_in), or ->]
+#                [<landing wait: "train #T", the open landing train the OPEN PR rides (train_of), "the landing queue" (queued_in),
+#                 "slot holder #H", the PR whose slot refused it (slot_refuser), or ->]
 #                [<cron: yes when a recurring cron the session scheduled is still live (wake_facts), or ->]
 #                [<merged PRs: work_blockers' 23rd, - here>]
 #                [<carried: the live items its own running items filed (carried_by), comma-separated, or ->]
@@ -1438,14 +1439,15 @@ critical_rows() {
 
 # critical_of <wait_on> <item row> <dir> <pr> -> "<rows> TAB <place>", or "- TAB -": a PR held by the landing slot
 # (collect's wait_on) whose item came from a board row is the critical path of the #high and #urgent rows gated
-# #after/ on that row (critical_rows), and where it stands (queue_place, or the train it rides), so the shepherd
+# #after/ on that row (critical_rows), and where it stands (queue_place, the train it rides, or the slot holder that
+# refused it), so the shepherd
 # names the wait (critical_due) instead of reading it as plain WORKING (ar-3761). One printf argument, two row columns.
 critical_of() {
   local crit=- place=-
   if [ -n "$1" ] && [ "$2" != - ]; then
     crit="$(critical_rows "${2#*:}")"; crit="${crit:--}"
     if [ "$crit" != - ]; then
-      case "$1" in "train #"*) place="rides $1" ;; *) place="$(queue_place "$3" "$4")" ;; esac
+      case "$1" in "train #"*) place="rides $1" ;; "slot holder #"*) place="behind the $1" ;; *) place="$(queue_place "$3" "$4")" ;; esac
     fi
   fi
   printf '%s\t%s\n' "$crit" "$place"
@@ -1563,6 +1565,43 @@ gate_line_only() {
             | if length == 0 then "-" else .[] end')" && [ -n "$steps" ] || return 1
     while IFS= read -r n; do [[ "$n" =~ $FLEET_GATE_LINE_STEPS ]] || return 1; done <<<"$steps"
   done
+}
+
+# refused_by <dir> <job id> -> the PR number a job's "landing slot: #N holds main" annotation names (gate-line.py
+# slot_problem, the text its --rerun-refused matches), or nothing. A refusal found is kept in MAIN_CACHE, since a
+# finished job's annotations never change; no refusal is kept for this pass only, so annotations not yet readable
+# when the job turned red are read again next pass. Returns 1 (and marks the row blind) when gh cannot read them.
+refused_by() {
+  local file="$MAIN_CACHE/job_refused_$2" pass="$CACHE/job_refused_$2" out
+  [ ! -s "$file" ] || { cat "$file"; return; }
+  [ ! -f "$pass" ] || { cat "$pass"; return; }
+  out="$(cd "$1" && gh api "repos/{owner}/{repo}/check-runs/$2/annotations" \
+    -q 'first(.[].message | capture("^landing slot: #(?<n>[0-9]+) holds main") | .n) // ""' 2>/dev/null)" \
+    || { unreadable "gh api check-runs/$2/annotations ($(basename "$1"))"; blind_row; return 1; }
+  if [ -n "$out" ]; then mkdir -p "$MAIN_CACHE"; printf '%s\n' "$out" > "$file.$$" && mv "$file.$$" "$file"
+  else : > "$pass"; fi
+  printf '%s\n' "$out"
+}
+
+# slot_refuser <dir> <pr> <red job ids> -> the number of the open PR holding the landing slot (FLEET_SLOT_LABEL in the PR store)
+# when PR #<pr>'s only red is the gate line, and each red job's annotation says that PR's slot refused it, else
+# nothing (rc 1). That red is no fault of the branch: gate-line.py's --rerun-refused runs its Checks again once the
+# holder lets go, so the PR waits on the holder with no gate of its own running and no landing-queue label (ar-3596:
+# 2026-11-19 agent-23 ucp#2913, refused by train #2918, read STALLED CI red). A holder the store no longer shows
+# holding is no wait: the red is the session's again.
+slot_refuser() {
+  local key red="${3:--}" id n h=""
+  [ -n "$FLEET_SLOT_LABEL" ] && [ -n "$FLEET_GATE_LINE_STEPS" ] || return 1
+  key="$(prs_key "$1")" || return 1
+  # Cheapest first: another PR holds the slot, then the steps (job_facts), then one annotations read a job.
+  [ "$red" != - ] && [ -f "$key.slot" ] && grep -vqxF "$2" "$key.slot" && gate_line_only "$1" "$red" || return 1
+  for id in ${red//,/ }; do
+    n="$(refused_by "$1" "$id")" && [ -n "$n" ] && [ "$n" != "$2" ] || return 1
+    [ -z "$h" ] || [ "$h" = "$n" ] || return 1
+    h="$n"
+  done
+  grep -qxF "$h" "$key.slot" || return 1
+  printf '%s\n' "$h"
 }
 
 # pr_made_here <dir> <N> <branch> <session_prs JSON> <transcript> <plan|-> [<other plans>] -> true
@@ -2039,13 +2078,18 @@ git_facts() {
 # The gate runs are on the PR's head branch, which a reused slot or a stacked branch does not share.
 # A PR queued for the landing slot (queued_in) waits as a queued gate shell does: a red that is only the gate line is
 # the slot refusing it, and any other red is the PR's own (ar-1285). A PR whose item waits on an `after:` item that is not done
-# (<chain>, chain_hold) waits the same way: its gate is not dispatched until that item lands (ar-4314). A red whose
-# jobs ran no steps is NOSTART.
+# (<chain>, chain_hold) waits the same way: its gate is not dispatched until that item lands (ar-4314), and so does one
+# the slot holder refused (slot_refuser, ar-3596): when that refusal alone turns its FAIL to PENDING (no gate on its head
+# runs), the holder goes in <prs_key>.refused for pr_wait. A red whose jobs ran no steps is NOSTART.
 open_pr_ci() {
-  local d="$1" prb="$2" pr="$3" oid="$4" ci="$5" red="$6" shell="$7" chain="${8:-}"
+  local d="$1" prb="$2" pr="$3" oid="$4" ci="$5" red="$6" shell="$7" chain="${8:-}" h key
   [ -z "$FLEET_QUEUE_LABEL" ] || ! queued_in "$d" "$pr" || shell=queue
   [ -z "$chain" ] || [ "$shell" = gate ] || shell=queue
   ci="$(gate_ci "$d" "$prb" "$oid" "$ci" "$red" "$shell")"
+  if [ "$ci" = FAIL ] && [ "$shell" != gate ] && [ "$shell" != queue ] && h="$(slot_refuser "$d" "$pr" "$red")"; then
+    ci="$(gate_ci "$d" "$prb" "$oid" FAIL "$red" queue)"
+    [ "$ci" != PENDING ] || ! key="$(prs_key "$d")" || printf '%s\t%s\n' "$pr" "$h" >> "$key.refused"
+  fi
   [ "$ci" = FAIL ] && jobs_unstarted "$d" "$red" && ci=NOSTART
   printf '%s\n' "$ci"
 }
@@ -2258,18 +2302,26 @@ chain_hold() {
     | first($all[] | select(.state != "done" and (.slug as $s | $deps | any(. == $s))) | .slug) // empty' <<<"$1" 2>/dev/null
 }
 
+# refused_wait <dir> <pr> -> the slot holder open_pr_ci found PR #<pr> waiting on this pass, or nothing.
+refused_wait() {
+  local key
+  key="$(prs_key "$1")" && [ -f "$key.refused" ] || return 0
+  awk -F'\t' -v p="$2" '$1 == p { h = $2 } END { if (h != "") print h }' "$key.refused"
+}
+
 # pr_wait <git> <pr state> <sibling repo> <clone> <ci> <pr> <head oid> <chain> -> two lines: the landing-slot wait, then
 # the wait the bucket reads (empty when none). A PR of this clone's repo riding an open landing train waits on that
-# train's gate, and one queued for the landing slot waits its turn, unless its own Checks are red past the slot's
-# refusal (git_facts left ci FAIL). A green or unknown-CI PR whose item is `after:` an item that is not done (<chain>,
+# train's gate, one queued for the landing slot waits its turn, and one the slot holder refused waits on that holder
+# (slot_refuser), unless its own Checks are red past the slot's refusal (git_facts left ci FAIL). A green or unknown-CI PR whose item is `after:` an item that is not done (<chain>,
 # chain_hold) waits on it, not STALLED green, not merged (ar-4420); its red gate line is open_pr_ci's.
 pr_wait() {
-  local g="$1" state="$2" xr="$3" gd="$4" ci="$5" pr="$6" oid="$7" chain="$8" tn="" land="" w
+  local g="$1" state="$2" xr="$3" gd="$4" ci="$5" pr="$6" oid="$7" chain="$8" tn="" land="" w h
   [ "$g" = 1 ] && [ "$state" = OPEN ] && [ "$xr" = - ] || { printf '\n\n'; return 0; }
   if [ "$gd" != - ]; then
     [ "$oid" = - ] || tn="$(train_of "$gd" "$pr" "$oid")"
     if [ -n "$tn" ]; then land="train #$tn"
-    elif [ "$ci" != FAIL ] && [ -n "$FLEET_QUEUE_LABEL" ] && queued_in "$gd" "$pr"; then land="the landing queue"; fi
+    elif [ "$ci" != FAIL ] && [ -n "$FLEET_QUEUE_LABEL" ] && queued_in "$gd" "$pr"; then land="the landing queue"
+    elif [ "$ci" = PENDING ] && h="$(refused_wait "$gd" "$pr")" && [ -n "$h" ]; then land="slot holder #$h"; fi
   fi
   w="$land"
   if [ -z "$w" ] && [ -n "$chain" ]; then case "$ci" in FAIL | PENDING | NOSTART) ;; *) w="after: $chain" ;; esac; fi

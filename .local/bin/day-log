@@ -85,7 +85,7 @@ ledger_prs() {
 # usage_json <since> <until> -> the window's spend from the fleet cost (agent-usage fleet-cost, the base of
 # the hub Costs figure): its by_project rows, a "(no session)" row for the dollars no session carries
 # (its total.unattributed: the gateway's metered line, the helper estimate), and a TOTAL row, the fleet
-# total with its measured and estimated parts. A live day reads up to now. [] when it cannot be read.
+# total with its two parts by who bills them, API cash and subscription burn. A live day reads up to now. [] when it cannot be read.
 usage_json() {
   local before=()
   [ "$2" -lt "$(now)" ] && before=(--before "$(date -d "@$2" -Iseconds)")
@@ -95,7 +95,7 @@ usage_json() {
       | sort_by(-.cost_usd)
       + (if $t.unattributed > 0 then [{project: "(no session)", sessions: 0, tokens: 0, cost_usd: $t.unattributed}] else [] end)
       + [{project: "TOTAL", sessions: $t.sessions, tokens: $t.tokens,
-          cost_usd: $t.usd, measured_usd: $t.measured, estimated_usd: $t.estimated}]' 2>/dev/null || echo '[]'
+          cost_usd: $t.usd, cash_usd: $t.cash, burn_usd: $t.burn}]' 2>/dev/null || echo '[]'
 }
 
 # store_prs <out> <from> <to> <prs args...> -> <out>: DAYLOG_AUTHOR's GitHub PRs in the PR store, in the
@@ -322,10 +322,10 @@ def money: if . == null then "-" else "$\(. * 100 | round / 100)" end;
 def tok: if . >= 1e9 then "\(. / 1e8 | floor / 10)B" elif . >= 1e6 then "\(. / 1e5 | floor / 10)M" else "\(.)" end;
 # The day'\''s spend: the usage TOTAL row, the fleet cost total (null when it could not be read).
 def spend: (.usage // []) | map(select(.project == "TOTAL")) | first
-  | if . then {cost: .cost_usd, measured: .measured_usd, estimated: .estimated_usd, tokens: .tokens, sessions: .sessions} else null end;
-# The headline clause; a record gathered before the fleet cost (no measured part) reads as it was.
+  | if . then {cost: .cost_usd, cash: .cash_usd, burn: .burn_usd, tokens: .tokens, sessions: .sessions} else null end;
+# The headline clause; a record gathered before the two parts (no burn part) reads as it was.
 def spent: if . == null then "the fleet cost was unreadable"
-  elif .measured == null then "\(.sessions) sessions spent \(.cost | money)"
+  elif .burn == null then "\(.sessions) sessions spent \(.cost | money)"
   else "\(.sessions) sessions spent about \(.cost | money)" end;
 def clip($n): if length > $n then .[:$n - 3] + "..." else . end;
 def cap: (.[:1] | ascii_upcase) + .[1:];
@@ -408,7 +408,7 @@ markdown() {
       "## Spend by project", "", "| Project | Sessions | Tokens | Cost |", "|---|---|---|---|",
       ((.usage // [])[] | "| \(.project) | \(.sessions) | \(.tokens | tok) | \(.cost_usd | money) |"),
       (if (.usage // []) == [] then "| - | - | - | the fleet cost was unreadable |" else empty end), "",
-      ($u | if .measured then "- The fleet cost, about \(.cost | money): \(.measured | money) measured, \(.estimated | money) estimated (agent-usage fleet-cost).", "" else empty end),
+      ($u | if .burn then "- The fleet cost, about \(.cost | money): \(.cash | money) API cash, \(.burn | money) subscription burn (agent-usage fleet-cost).", "" else empty end),
       (if .work then "## Flow", "",
         (.work.queue | if . then "- Queue: \(.queued // 0) queued, \(.started // 0) started, \(.waiting // 0) moved to waiting, \(.done // 0) done (\(.failed // 0) failed); lead p50 \(.lead_minutes.p50 // "-") min, wait p50 \(.wait_minutes.p50 // "-") min" else empty end),
         (.work.board | if . then "- Board: \(.opened // "-") rows opened, \(.closed // "-") closed, \(.open_end // "-") open" else empty end),

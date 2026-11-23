@@ -17,6 +17,7 @@
 #       --plan queues at high at most: urgent stays for the human's own add, a red, and dispatch's promote.
 #       The human's own add that links a row (--row, the title's row) with an explicit --priority retags that row.
 #       --after holds the item until every slug it names closed ok: a comma or space list, and it repeats.
+#       A queue item's session adding a task that says land, from an item with a PR recorded, with no --after is gated on that item's own live `after:` blockers (landing_after).
 #       A slug whose item is live with an open PR (open_pr:, set by agent-land before its checks, or a --pr-only run's pr:) does not hold: the item is stacked on it
 #       (hold_for HOLD_STACK, `stacked_on` in list --json; gate after/<row-id> clears with stack: <slug>), fleet-dispatch starts it in a worktree cut from that PR's
 #       head, and agent-land refuses it (exit 4) until that slug closed ok. A dependency closed unmerged stays a dead hold.
@@ -27,7 +28,7 @@
 #       An add over the cap (AGENT_QUEUE_CAP runnable items) is not queued: its board row is left un-started, brief and all (exit AQ_EX_HELD); see admit.
 #   add --plan <plan.md> [--dry-run | --check] [--project p] [--priority p] [--tags t] [--weight w] [--after slug[,slug...]] [--slug prefix] [--repeat]
 #       one oneshot item per unchecked `## Phases` line, each after the one before, unless its line says
-#       `(independent)` (after --after alone) or `(after N; needs <result>)` (after phase N's item; `(after N, M; needs ...)` after several), where `needs` names the output the phase consumes: a missing `needs`, a shared-file reason (`edits`, `same file`, `conflicts`) or a marker that does not parse is refused; `(with N)` joins phase N's item; `(at YYYY-MM-DD HH:MM)` holds that phase alone until then (its at: tag) at no more than high priority; an `(independent)` marker may carry a note, `(independent; why)`; `--check` only reads and validates the markers. A phase that says `takes <row-id>` (or `takes board row <row-id>`) is filed at the higher of the plan's priority and that row's, and agent-land closes the row when the phase merges. A line opening `P<N>` is phase N, else its place counts; a `1b.` line is a sub-phase: it takes no place and is not queued
+#       `(independent)` (after --after alone) or `(after N; needs <result>)` (after phase N's item; `(after N, M; needs ...)` after several), where `needs` names the output the phase consumes: a missing `needs`, a shared-file reason (`edits`, `same file`, `conflicts`) or a marker that does not parse is refused; `(with N)` joins phase N's item; `(at YYYY-MM-DD HH:MM)` holds that phase alone until then (its at: tag) at no more than high priority; an `(independent)` marker may carry a note, `(independent; why)`; `--check` only reads and validates the markers. A phase that says `takes <row-id>` (or `takes board row <row-id>`) is filed at the higher of the plan's priority and that row's, and agent-land closes the row when the phase merges; its newly filed story row carries `#takes/<id>` (docs/agent-queue.md). A line opening `P<N>` is phase N, else its place counts; a `1b.` line is a sub-phase: it takes no place and is not queued
 #   list [--json [--points]] [--state queued|running|waiting|review|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD|Nd|N]
 #       list joins each item's board row (`notes board --json`, one read of the whole board): the text list ends in a
 #       `<band>/<points>` column (`m/5`, the band alone when the row is unscored, `-` with none); --json joins
@@ -1669,6 +1670,7 @@ overflow_row() {
 # row with the same text is linked instead of written twice. A project with no lab sheet or no row
 # code files nothing, and a failed write never stops the add. The row is the task: the item's
 # <body> is its brief (row_brief), and the item keeps a snapshot of it beside the run.
+# A plan phase's row also carries `#takes/<id>` for each row it takes (AQ_ITEM_TAKES, ar-3886).
 # <want> is the channel of a human's want, or empty: the notes writer then stamps #requested.
 # <keep> non-empty files the row un-started (an add over the cap, see overflow_row). <gates>, board gate
 # tags with no #, go on the row it files, and onto an open twin it links (gate_row). <tags>, the item's,
@@ -1693,6 +1695,9 @@ file_story() {
   [ -n "$lab" ] && [ -n "$code" ] || return 0
   command -v notes >/dev/null || { echo "agent-queue: no story row filed: no notes on PATH" >&2; return 0; }
   [ "${4%-*}" = "$code" ] && of=" #of/$4"
+  # A plan phase that takes rows (add_plan sets AQ_ITEM_TAKES) tags its new row #takes/<id> for each: the taken row is handed
+  # over. A twin row linked instead of filed keeps its own tags.
+  for g in ${AQ_ITEM_TAKES:-}; do [[ "$g" =~ ^[a-z0-9]+-[0-9]+$ ]] && of+=" #takes/$g"; done
   # The row's words: no markers or #tags of the task's own. The board refuses untyped text, so the
   # row is `notes`'s typed form of them, cut to the board's 80.
   text="$(bare_words <<<"$text")"
@@ -1830,6 +1835,28 @@ add_row_prio() {
   row_prio_write "$1" "$2"
 }
 
+# landing_after <item slug> <text> -> the blockers of <slug>'s own `after:` that would hold a new add, when
+# <text> says land and the item has a PR recorded (pr: or open_pr:, landing.md sets it first): the add is
+# that item's landing. A landing follow-up its session files without --after carries no trigger, so triage
+# files it #low, the sweep puts it on the backlog tier and a pass never takes that tier: ucp-2567, 2568
+# and 2569 sat on one for 11 hours (2026-11-21, ar-4451). Gated on what its item waited on, it is pinned
+# (gate_open) and pull-after starts it when that blocker closes ok. A blocker that closed, died or is
+# stacked on (open PR: it holds nothing, hold_for) is no gate. Nothing for any other follow-up.
+landing_after() {
+  local f s out=''
+  [ -n "$1" ] && [ -z "${AGENT_QUEUE_PULL:-}" ] || return 0
+  f="$(find_item "$1")" && [ -n "$f" ] || return 0
+  [ -n "$(fm_get "$f" pr)$(fm_get "$f" open_pr)" ] || return 0
+  [[ "$2" =~ (^|[^A-Za-z])[Ll]and(ing)?([^A-Za-z]|$) ]] || return 0
+  for s in $(word_list "$(fm_get "$f" after)"); do
+    after_status "$s"
+    [ -z "$AST" ] || continue
+    stack_pr "$s"
+    [ -n "$STK" ] || out+="${out:+ }$s"
+  done
+  printf '%s' "$out"
+}
+
 cmd_add() {
   local project="" mode=oneshot priority=high tags="" after="" from=human agent=claude slug=""
   local running="" session="" task=() tag planf="" dry="" check="" weight="" title="" epic="" repeat="" from_given="" want="" row="" priority_given=""
@@ -1940,7 +1967,7 @@ cmd_add() {
     [ -z "$HOLD" ] || die "$slug waits on $HOLD, so it cannot start --running: add it without --running, and it starts once that clears"
   fi
   if [ -z "$running" ] && { [ -z "${AGENT_QUEUE_PULL:-}" ] || [[ "$from" != board:* ]]; }; then
-    add_gates "$slug" "$after" "$tags"; after="$AFTER_ITEMS"
+    add_gates "$slug" "${after:-$(landing_after "${AGENT_QUEUE_ITEM:-}" "$text")}" "$tags"; after="$AFTER_ITEMS"
   fi
   # Admission: every add that is not running or the board's own pull counts against the cap
   # (see admit); a queue item's session adding without --from is recorded as from the item.
@@ -2346,7 +2373,7 @@ add_plan() {
       printf 'would queue %s\tphases %s\tafter %s%s%s\n  %s\n' "$s" "$ph" "${wait:--}" "$(takes_suffix "$ranked" "$s")" "${at:+$'\t'$at $pprio}" "$text"
     else
       rc=0
-      out="$(AQ_ITEM_PLAN="$planf" AQ_ITEM_PHASES="$ph" AQ_ROWS_FILED="${key[*]}" \
+      out="$(AQ_ITEM_PLAN="$planf" AQ_ITEM_PHASES="$ph" AQ_ROWS_FILED="${key[*]}" AQ_ITEM_TAKES="$(takes_field "$ranked" "$s" 2)" \
         cmd_add_one ${project:+--project "$project"} --priority "$pprio" ${ptags:+--tags "$ptags"} ${weight:+--weight "$weight"} \
           --from "$from" --agent "$agent" --slug "$s" --title "$ttl" ${wait:+--after "$wait"} ${repeat:+--repeat} -- "$text")" || rc=$?
       [ -z "$out" ] || printf '%s\n' "$out"

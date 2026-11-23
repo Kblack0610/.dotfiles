@@ -409,10 +409,21 @@ pub struct Snapshot {
 /// Read the sessions (live and parked), their queue items and the account names. A queue
 /// that cannot be listed leaves every `item` empty, so cancel is simply not offered.
 pub fn gather(runner: &dyn Runner) -> Snapshot {
+    let items = queue::list(runner, "active").unwrap_or_default();
+    let mut snap = gather_unjoined(runner);
+    let mut sessions = snap.sessions();
+    with_items(&mut sessions, &items);
+    for ((_, s), joined) in snap.agents.iter_mut().zip(sessions) {
+        s.items = joined.items;
+    }
+    snap
+}
+
+/// The sessions and accounts with no queue item joined (`with_items`), so a reader that keeps
+/// the read can join the items it holds now to a read made before them.
+pub fn gather_unjoined(runner: &dyn Runner) -> Snapshot {
     let agents = agent::collect_all();
     let mut sessions: Vec<Session> = agents.iter().map(Session::from).collect();
-    let items = queue::list(runner, "active").unwrap_or_default();
-    with_items(&mut sessions, &items);
     for (a, s) in agents.iter().zip(sessions.iter_mut()) {
         // Only a session in plan mode can show the dialog, so only those panes are captured.
         if a.mode == agent_core::transcript::Mode::Plan

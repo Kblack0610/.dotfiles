@@ -5,7 +5,8 @@
 #   agent-mqtt-publish --full     republish everything (the timer; refreshes expire_after)
 #   agent-mqtt-publish --dry-run  print `topic<TAB>payload` lines, touch nothing
 #
-# One topic is not an HA entity: agents/<host>/summary/bar, the lease holder's `hub bar --json` for the chip hovers.
+# Two topics are not HA entities: agents/<host>/summary/bar, the lease holder's `hub bar --json` for the chip
+# hovers, and agents/<host>/summary/feed, whether this host holds the fleet lease (feed_lines).
 # Entities use HA MQTT discovery: runners, watches, open asks, the dispatch queue, the pager, live sessions, the fleet overview and the fleet cards (hub's widget document) appear as
 # sensors with no HA-side config, and one that disappears is deleted, not left as a ghost.
 # mqtt2prom keeps only numeric and boolean keys, so each text fact Prometheus needs has a
@@ -61,7 +62,7 @@ for a in "$@"; do
         --full) mode=full ;;
         --dry-run) mode=dry ;;
         --quiet) quiet=1 ;;
-        -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) printf 'agent-mqtt-publish: unknown arg %s\n' "$a" >&2; exit 2 ;;
     esac
 done
@@ -211,6 +212,18 @@ cards_lines() {
     cards="$(cat <&"$fd")"; exec {fd}<&-
     jq -e '.sections | arrays' <<< "$cards" >/dev/null 2>&1 &&
         emit summary cards mdi:view-grid "$cards"
+}
+
+# feed_lines -> the summary/feed line: {"lease_holder": true|false}, from `fleet-lease held`. mqtt2prom
+# exports it as mqtt_lease_holder, so home-config's AgentFeedFrozen counts only the holder's feed and a
+# no-lease peer's event publish cannot hide a dead holder (ar-3920, the gap home-config #1314 named).
+# Every host sends it, a peer false rather than nothing: an exporter keeps a gauge whose topic stops, so a
+# former holder's retained true must be overwritten. The payload is stable, so a diff run sends it only on
+# a lease change and the holder's 5-min --full run is the heartbeat the rule reads.
+feed_lines() {
+    local held=false
+    fleet-lease held >/dev/null 2>&1 && held=true
+    printf '%s\t{"lease_holder":%s}\n' "agents/$HOST_ID/summary/feed" "$held"
 }
 
 snapshot() {
@@ -396,7 +409,7 @@ main() {
     local snap topic payload f
 
     if [ "$mode" = dry ]; then
-        snapshot
+        snapshot; feed_lines
         return 0
     fi
 
@@ -409,7 +422,7 @@ main() {
     # republishes everything, and the next fleet-state pass any change.
     exec 9>"$CACHE/lock"
     flock -w 20 9 || { say "lock busy"; return 0; }
-    snap="$(snapshot)"
+    snap="$(snapshot; feed_lines)"
 
     local -A want=()
     local sent=0 reloaded=0

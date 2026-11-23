@@ -52,7 +52,8 @@ _test_pick_aliases() {
 # changed, or its text with what it loads names a changed file's basename (not as a stub or a
 # directory) or a directory a changed file sits under as `<dir>/` or `<dir>/*...` (a glob such as
 # `.claude/hooks/stop-post.d/*.sh`), or a script it runs as `$REPO_ROOT/<path>` (or through a
-# helper's variable for one) names a changed path in its code, or it names a changed fixture
+# helper's variable for one) names a changed path in its code, or a test-side file it runs as
+# `$BATS_TEST_DIRNAME/../<dir>/<file>` changed or names that directory, or it names a changed fixture
 # entry; a change to the shared harness (helpers, vendor, fixtures/basic, Makefile, run-bats.sh)
 # picks every file.
 
@@ -175,6 +176,25 @@ test_picked() {
     done < <(sed -nE "s/^[[:space:]]*load[[:space:]]+['\"]?([^'\" ]+).*/\1/p" <<<"$new")
     text+=$more new=$more
   done
+  # A test-side file the test runs from a sibling directory of tests/ (`node --test
+  # "$BATS_TEST_DIRNAME/../agent-web/readers.test.mjs"`) picks the test when it changes, and the
+  # directories it names count as the test's (the last check below): readers.test.mjs reads
+  # .local/src/agent-web/src/, so #3200's change there was not picked and went red on main
+  # (ar-4674). Its words do not count: the node tests quote `agent-ask` as text a card shows. helpers
+  # and vendor are the harness above; a fixture is data, matched below. A file directly in tests/
+  # (pick.sh, shard.sh) is one the test names by basename already; read for its directories, it
+  # would pick pick.bats and shard.bats on almost every change.
+  local up=${2%/*} side=
+  case $up in */*) up=${up%/*} ;; *) up=. ;; esac
+  while read -r rel; do
+    case $rel in helpers/* | vendor/* | fixtures/* | */) continue ;; */*) ;; *) continue ;; esac
+    inc="$up/$rel"
+    grep -qxF "$inc" <<<"$1" && return 0
+    [ -f "$_TEST_PICK_REPO/$inc" ] || continue
+    [[ $seen == *$'\n'"$inc"$'\n'* ]] && continue
+    seen+=$inc$'\n'
+    side+=$'\n'"$(cat "$_TEST_PICK_REPO/$inc")"
+  done < <(grep -oE '\$\{?BATS_TEST_DIRNAME\}?/\.\./[A-Za-z0-9_-][A-Za-z0-9._/-]*' <<<"$text" | sed -E 's#^[^/]*/\.\./##' | sort -u)
   # A script the shared helpers name for every test (sandbox.bash: AGENT_ASK="$REPO_ROOT/.local/bin/
   # agent-ask") is named where the test's code uses its variable: questions_panel.bats runs agent-ask
   # only as "$AGENT_ASK", so #2385's agent-ask change was not picked and went red on main (ar-4309).
@@ -233,5 +253,5 @@ test_picked() {
   # or the line end, so `<dir>/<file>` is a path to one file, not to the directory.
   local start='(^|[^A-Za-z0-9._/-]|(\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"?|~|\.\.?|\))/)'
   local after='($|[*"'"'"'[:space:]);])'
-  grep -qE "$start($_TEST_PICK_DIRS)/$after" <<<"$text"
+  grep -qE "$start($_TEST_PICK_DIRS)/$after" <<<"$text$side"
 }

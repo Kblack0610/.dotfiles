@@ -6,6 +6,7 @@ paths:
   - ".local/bin/agent-queue"
   - ".local/bin/agent-land"
   - ".config/agentctl/QUEUE.md"
+  - ".local/src/docs/agent-queue.md"
 metadata:
   category: monitoring
   tags: [agent-queue, agent-land, queue, holds, plan]
@@ -15,7 +16,7 @@ metadata:
 
 # fleet-queue
 
-The agent-queue is the one intake for agent work: one file per item under `~/.agent/queue/<state>/`, and the item is the only record of that work. `agent-queue` is its only writer. `~/.config/agentctl/QUEUE.md` owns the design, the item fields and where each record lives; read it for the fields. This skill is the operator path: file an item, see why it is not running, close it.
+The agent-queue is the one intake for agent work: one file per item under `~/.agent/queue/<state>/`, and the item is the only record of that work. `agent-queue` is its only writer. `~/.config/agentctl/QUEUE.md` owns the design, the item fields and where each record lives; read it for the fields. `~/.local/src/docs/agent-queue.md` lists every verb. This skill is the operator path: file an item, see why it is not running, close it.
 
 ## Scope and triggers
 

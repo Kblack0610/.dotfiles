@@ -62,7 +62,7 @@ The class column tells you how each consumer can be stopped:
 | `shell` | a tmux pane with no Claude, usually a suite loop | the hold at the resource gate, or a kill. It has no inbox |
 | `agentctl` | an agentctl unit | `agentctl stop <name>` |
 | `unit` | another systemd user service (its name in the session column) | `systemctl --user stop <name>` |
-| `ci` | a job of this host's CI runner pool (cgroup under `ci.slice`; the runner slice is in the session column) | `machine-mode` runner slots: a busy runner finishes its job, then takes no new one. A stuck job: cancel its run (`gh run cancel`), never a kill |
+| `ci` | a job of this host's CI runner pool (cgroup under `ci.slice`; the runner slice is in the session column) | `machine-mode` runner slots: a busy runner finishes its job, then takes no new one. A stuck job: cancel its run (`gh run cancel <id>  # stuck: <live step>`), never a kill |
 | `orphan` | reparented to init, its driver gone | nothing will reap it; a kill, with the human's OK. What a closed pane left in its scope, `orphan-gc` ends within 15 minutes (`wt orphans -n` lists it) |
 
 ## Verdicts

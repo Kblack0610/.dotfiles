@@ -41,6 +41,7 @@ bats_require_minimum_version 1.5.0
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
+  refute_output --partial 'jq:'
   assert_output --partial 'queued game: gm-1'
   assert_output --partial 'started game-agent-1'
   assert_called 'ptask game --exact start -- - [ ] fix crash on load'

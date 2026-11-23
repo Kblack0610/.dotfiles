@@ -15,7 +15,12 @@ metadata:
       use: "diagnose the red first (`fix-ci`; a runner slot fault across runs: `ci-cleanup`). Rerun only for an infra fault the log names (runner lost, registry 5xx, rate limit), once per PR tip, and name it on the command: `gh run rerun <id> --failed  # infra: <fault>`"
       mode: deny
       unless: '#\s*infra:\s*[A-Za-z]'
-      why: a blind rerun hides a real red or a broken runner slot (PR #2095 reran twice on a slot missing its job-end hook, 2026-11-18)
+      why: "a blind rerun hides a real red or a broken runner slot (PR #2095 reran twice on a slot missing its job-end hook, 2026-11-18)"
+    - match: '(?:^|[;&|(){}\s/])gh(?:\s+(?:-R|--repo)[\s=]\S+)*\s+(?:run\s+cancel(?![\w-])|api\s(?:[^;&|\n]*actions/runs/[^/\s]+/(?:force-)?cancel(?![\w-])))'
+      use: "a lander never cancels another PR's run to jump the runner queue: queue order is the pool's job (ci.md). Cancel only a superseded run of your own PR (`# own: <pr>`) or a hung job whose live step you read (`# stuck: <step>`), and say which on the command: `gh run cancel <id>  # own: #<N> superseded`"
+      mode: deny
+      unless: '#\s*(?:own|stuck):\s*[A-Za-z0-9#]'
+      why: "the #2526 session cancelled 19 other PRs' runs in two rounds on 2026-11-18 (#2530 twice), their landers re-pushed and the pool churned (ar-3299)"
 ---
 
 # gh-workflows
@@ -81,7 +86,7 @@ gh run view <run-id>
 gh run view <run-id> --log-failed
 gh-run-wait <run-id> [label]          # wait on the run (foreground with timeout: 600000 under 10 min, else in the background); exit code is its result (gh run watch is denied: this skill's metadata.replaces)
 gh pr checks <number> --watch --fail-fast
-gh run cancel <run-id>
+gh run cancel <run-id>  # own: #<N> superseded   (only your own PR's run, or `# stuck: <live step>`; another PR's run never)
 
 gh workflow list
 gh workflow run <workflow.yml> -f key=value

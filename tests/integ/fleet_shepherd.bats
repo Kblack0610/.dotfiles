@@ -2053,17 +2053,20 @@ phases_doc() { doc "$(jq -s . "$HOME/rows")"; verdicts; }
     {target:\"lab/ucp-3:2\", session_id:\"s3\", bucket:\"WORKING\", labels:[], pr:\"2941\", wait_min:59, idle_min:200, critical:$q},
     {target:\"lab/ucp-4:2\", session_id:\"s4\", bucket:\"WORKING\", labels:[\"manual\"], pr:\"2942\", wait_min:300, critical:$q},
     {target:\"lab/ucp-5:2\", session_id:\"s5\", bucket:\"PARKED\", labels:[], pr:\"2943\", wait_min:300, critical:$q},
-    {target:\"lab/ucp-6:2\", session_id:\"s6\", bucket:\"WORKING\", labels:[], pr:\"2944\", wait_min:300, critical:null}]")"
+    {target:\"lab/ucp-6:2\", session_id:\"s6\", bucket:\"WORKING\", labels:[], pr:\"2944\", wait_min:300, critical:null},
+    {target:\"lab/ucp-7:2\", session_id:\"s7\", bucket:\"WORKING\", labels:[], pr:\"2913\", idle_min:90, critical:{rows:[\"ucp-2901 #high\"], place:\"behind the slot holder #2918\"}}]")"
   run "$SH" due
   assert_success
   assert_line 'critical: lab/ucp-1:2 [%12] PR #2935 about 3 of 4 in the landing queue, waited 300m; ucp-2712 #high wait on it; then: agent-queue bump ucp-2709-p1 urgent (gate-line.py seats an urgent item first from its next poll; read the place next pass), or take its landing over from its worktree'
   assert_line 'critical: lab/ucp-2:2 PR #2940 holds the landing slot, idle 75m; ucp-2720 #urgent wait on it; then: read what holds the slot; if it is not moving, take its landing over from its worktree'
+  # a PR the slot refused points at the holder, not its own landing (ar-3596)
+  assert_line 'critical: lab/ucp-7:2 PR #2913 behind the slot holder #2918, idle 90m; ucp-2901 #high wait on it; then: read #2918, the PR whose landing slot refused this one: if it is not moving, take its landing over from its worktree; the refused PR runs its Checks again once it lets go'
   # under the hour (wait_min wins over idle_min), the human's, or parked: no line
   refute_output --partial 'critical: lab/ucp-3:'
   refute_output --partial 'critical: lab/ucp-4:'
   refute_output --partial 'critical: lab/ucp-5:'
   refute_output --partial 'critical: lab/ucp-6:'
-  [ "$(grep -c '^critical: ' <<<"$output")" = 2 ]
+  [ "$(grep -c '^critical: ' <<<"$output")" = 3 ]
   # the line routes to the shepherd
   run "$SH" route 'critical: lab/ucp-1:2 [%12] PR #2935 about 3 of 4 in the landing queue, waited 300m'
   assert_output --partial shepherd

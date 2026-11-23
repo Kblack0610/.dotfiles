@@ -23,7 +23,7 @@ fn asks_human(text: &str) -> bool {
 }
 
 /// What a session is asking the human, for a card.
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct Question {
     /// `choice` (an AskUserQuestion dialog, answered with its number key), `plan` (an
     /// ExitPlanMode dialog, its plan as the text), `tool` (a call waiting on permission) or

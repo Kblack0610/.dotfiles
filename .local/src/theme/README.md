@@ -1,4 +1,4 @@
-# theme — unified dotfiles theme switcher
+# theme - unified dotfiles theme switcher
 
 Single-command color theme switcher across kitty, nvim (with lualine and
 neo-tree), starship, lazygit, waybar, hyprland, and wallpaper.
@@ -38,7 +38,7 @@ State lives at `~/.config/theme/current` (single-line file).
 
 ## One-off: recolor a single terminal (`--here`)
 
-A normal `theme-switch <name>` is **global** — it rewrites shared config files,
+A normal `theme-switch <name>` is **global**: it rewrites shared config files,
 saves state, and reloads every kitty window. To give just **one** terminal a
 different theme for a one-off (without touching the global theme or any other
 window), use `--here`:
@@ -49,22 +49,22 @@ theme-switch --here --reset      # restore that window to its configured colors
 theme-switch tokyonight --here --dry-run   # preview the colors it would send
 ```
 
-`--here` is kitty-only and writes **nothing** — no config files, no
+`--here` is kitty-only and writes **nothing**: no config files, no
 `~/.config/theme/current`. It recolors the live window by emitting standard
-terminal color OSC sequences (background → OSC 11, foreground → OSC 10,
-cursor → OSC 12, selection → OSC 17/19, palette → OSC 4) read from
+terminal color OSC sequences (background -> OSC 11, foreground -> OSC 10,
+cursor -> OSC 12, selection -> OSC 17/19, palette -> OSC 4) read from
 `templates/kitty/<name>.conf`. kitty colors are per-OS-window, so only the
 window you're in changes; opening a new window shows the global theme again.
 
 Inside tmux the sequences are wrapped in the tmux passthrough envelope, so this
 relies on `set -g allow-passthrough on` in `.tmux.conf` (already enabled). It
 also works outside tmux (sequences are emitted raw). Note `--here` only changes
-terminal colors — nvim/starship/etc. are per-process and unaffected.
+terminal colors: nvim/starship/etc. are per-process and unaffected.
 
 ## Automatic day/night switching (systemd timers)
 
 Two user-level systemd timers flip the theme on schedule. Each timer
-invokes `theme-switch` with an **explicit theme name** — there's no
+invokes `theme-switch` with an **explicit theme name**: there's no
 clock-based decision in the systemd path, so a `Persistent=true` catch-up
 always applies the intended theme regardless of when catch-up actually
 runs:
@@ -85,14 +85,14 @@ picks (`setup_theme` in both installers), so a new Mac starts on `batman`; it
 just never moves off it on its own.
 
 The clock-based picker (`theme-switch --auto`) is for **manual** invocation
-only — it picks based on the hour at the moment you run it. The window
+only: it picks based on the hour at the moment you run it. The window
 is hardcoded in `theme-switch` near the top:
 
 ```bash
 AUTO_DAY_THEME="batman"
 AUTO_NIGHT_THEME="arthur"
-AUTO_DAY_START=7    # inclusive — 07:00
-AUTO_NIGHT_START=19 # exclusive — 19:00
+AUTO_DAY_START=7    # inclusive - 07:00
+AUTO_NIGHT_START=19 # exclusive - 19:00
 ```
 
 ### Inspect
@@ -127,7 +127,7 @@ systemctl --user disable --now theme-day.timer theme-night.timer
 ```
 .local/src/theme/
 ├── theme-switch          # the switcher (symlinked into ~/.local/bin/)
-├── palettes/             # <name>.sh — sourceable color variables
+├── palettes/             # <name>.sh - sourceable color variables
 │   ├── jackie-brown.sh
 │   └── tokyonight.sh
 ├── templates/            # full-file replacements per tool

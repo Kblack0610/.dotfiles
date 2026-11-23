@@ -49,8 +49,11 @@ struct Coverage {
 #[serde(default)]
 struct Whole {
     usd: f64,
-    measured: f64,
     estimated: f64,
+    /// API cash, the gateway's metered line; None in a file written before the split.
+    cash: Option<f64>,
+    /// Subscription burn, the list-price value of work on the logins and flat plans.
+    burn: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
@@ -96,8 +99,9 @@ pub fn load(path: &Path) -> Result<File, String> {
 pub struct FleetCost {
     pub why: Option<String>,
     pub usd: String,
-    pub measured: String,
-    pub estimated: String,
+    /// The two parts by who bills them, `-` when the file has no split.
+    pub cash: String,
+    pub burn: String,
     pub as_of: Option<i64>,
     pub stale: bool,
     pub coverage: String,
@@ -113,8 +117,8 @@ pub fn build(f: &File, now: i64) -> FleetCost {
     FleetCost {
         why: None,
         usd: format!("about {}", usd_est(t.usd)),
-        measured: usd_est(t.measured),
-        estimated: usd_est(t.estimated),
+        cash: t.cash.map_or_else(|| "-".into(), usd_est),
+        burn: t.burn.map_or_else(|| "-".into(), usd_est),
         as_of: Some(f.as_of_epoch),
         stale: f.stale(now),
         coverage: c.estimated_token_share.map_or_else(
@@ -162,7 +166,7 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "as_of_epoch": NOW - 600,
             "coverage": {"estimated_token_share": 0.7, "sessions": 300, "sessions_estimated": 200},
-            "total": {"usd": 200.0, "measured": 90.0, "estimated": 110.0},
+            "total": {"usd": 200.0, "measured": 90.0, "estimated": 110.0, "cash": 30.0, "burn": 170.0},
             "by_runner": {"dream": {"usd": 15.0, "measured": 15.0, "estimated": 0.0, "sessions": 20}},
             "by_session": [{"sid": "s1", "usd": 150.0, "measured": 50.0, "origin": "queue"}],
             "unpriced": {"claude-sonnet-4-6": {"tokens": 31500000.0, "sessions": 3, "why": "no billed sessions"}}
@@ -175,8 +179,8 @@ mod tests {
         let f = file();
         let b = build(&f, NOW);
         assert_eq!(
-            (b.usd.as_str(), b.measured.as_str(), b.estimated.as_str()),
-            ("about $200", "$90", "$110")
+            (b.usd.as_str(), b.cash.as_str(), b.burn.as_str()),
+            ("about $200", "$30", "$170")
         );
         assert_eq!(f.figure(), (200.0, 110.0));
         assert_eq!(f.by_session[0].sid, "s1");
