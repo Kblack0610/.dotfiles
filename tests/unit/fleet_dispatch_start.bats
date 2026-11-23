@@ -1192,7 +1192,8 @@ trainee_start_ready() {
   stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-reject t-one --why "edits the wrong menu"
   assert_success
-  grep -qx 'model-lane outcome run-7 redo --why edits the wrong menu' "$NOTES_FIXTURE/calls.log" || fail "the reject filed no why on the run: $(cat "$NOTES_FIXTURE/calls.log" 2>/dev/null)"
+  grep -qx 'model-lane outcome run-7 redo --why edits the wrong menu --cause reject' "$NOTES_FIXTURE/calls.log" || fail "the reject filed no why on the run: $(cat "$NOTES_FIXTURE/calls.log" 2>/dev/null)"
+  grep -qx 'model-lane outcome run-7 redo --cause reject' "$NOTES_FIXTURE/calls.log" || fail "the reject's requeue filed no reject cause"
   it=$(agent-queue show t-one --json)
   assert_equal "$(jq -r .state <<<"$it")" queued
   assert_equal "$(jq -r .note <<<"$it")" 'trainee paid:glm rejected: edits the wrong menu'

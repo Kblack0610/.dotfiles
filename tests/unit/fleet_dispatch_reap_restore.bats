@@ -19,6 +19,24 @@ load 'fleet_dispatch/common'
   assert_equal "$(agent-queue show fix-crash --json | jq -r .agent)" claude
 }
 
+@test "reap: a green PR's lander files the run unrated with cause land; a red PR's fix-ci files a redo with cause fix-ci (ar-4725)" {
+  pr_item OPEN
+  stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\"dispatch_model\":\"opus\"}"'
+  run cmd_reap
+  fix_ended 1111111111111111111111111111111111111111 PASS
+  agent-queue set fix-crash lane_run=r-green >/dev/null
+  run cmd_reap
+  assert_output --partial 'land queue item fix-crash'
+  agent-queue move fix-crash running >/dev/null
+  agent-queue set fix-crash session=lab:game-agent-1 lane_run=r-red >/dev/null
+  agent-queue move fix-crash review >/dev/null
+  fix_ended 2222222222222222222222222222222222222222 FAIL
+  run cmd_reap
+  assert_output --partial 'fix-ci queue item fix-crash'
+  run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
+  assert_output $'model-lane outcome r-green unrated --cause land\nmodel-lane outcome r-red redo --cause fix-ci'
+}
+
 @test "reap: a trainee's green PR gets its lander past the admission cap" {
   pr_item OPEN
   run cmd_reap
@@ -1165,7 +1183,8 @@ lost_host_item() {
 
 @test "reap: an item on a lost host with an open PR is requeued without salvage, its brief continuing the PR" {
   lost_host_item
-  agent-queue set fix-crash pr=o/game#12 >/dev/null
+  stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\"dispatch_model\":\"opus\"}"'
+  agent-queue set fix-crash pr=o/game#12 lane_run=r-lost >/dev/null
   printf "OPEN -\n" > "$NOTES_FIXTURE/pr.state"
   gh_script 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; cat "$NOTES_FIXTURE/pr.state"'
   run cmd_reap
@@ -1174,6 +1193,8 @@ lost_host_item() {
   assert_output --partial 'requeued queue item fix-crash (its host razer-laptop is lost)'
   it=$(agent-queue show fix-crash --json)
   assert_equal "$(jq -r '[.state, .salvage // "-", .lost] | join("|")' <<<"$it")" 'queued|-|razer-laptop sid-a'
+  # The run went with the machine: counted by its cause, never scored (ar-4725).
+  assert_called 'model-lane outcome r-lost unrated --cause lost'
   run item_brief "$it"
   assert_output --partial 'already opened o/game#12'
   refute_output --partial 'left its unfinished work on branch'

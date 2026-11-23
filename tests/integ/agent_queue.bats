@@ -1708,7 +1708,7 @@ notes --profile bnb ptask game --agent run gm-9"
   "$AQ" move red review >/dev/null; "$AQ" move cfl review >/dev/null; "$AQ" move grn review >/dev/null
   run "$AQ" move grn queued --cause green
   assert_failure
-  assert_output --partial '--cause is one of fix-ci conflict land takeover lost'
+  assert_output --partial '--cause is one of fix-ci conflict land takeover lost reject'
   run "$AQ" move grn done --status ok --cause land
   assert_failure
   assert_output --partial 'use it with move <slug> queued'

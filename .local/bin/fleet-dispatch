@@ -3154,8 +3154,8 @@ cmd_trainee_reject() {
   # The why goes on the trainee's run, the reject reason `model-lane score` prints per pair; the requeue
   # below files the same redo again, which model-lane checks no bar for twice.
   run=$(jq -r '.lane_run // empty' <<<"$it")
-  [ -z "$run" ] || model-lane outcome "$run" redo --why "$why" >/dev/null 2>&1 || logline "model-lane outcome $run redo failed; $slug's reject reason is in its note only"
-  ladder_back "$slug" "trainee $trn rejected: $why" || { say "trainee-reject: could not send $slug back to the queue"; return 1; }
+  [ -z "$run" ] || model-lane outcome "$run" redo --why "$why" --cause reject >/dev/null 2>&1 || logline "model-lane outcome $run redo failed; $slug's reject reason is in its note only"
+  ladder_back "$slug" "trainee $trn rejected: $why" reject || { say "trainee-reject: could not send $slug back to the queue"; return 1; }
   rm -f "$TRAINEE_DIR/$slug.patch" "$TRAINEE_DIR/$slug.base"
   say "trainee-reject: $slug is back in the queue, on claude: $why"
 }
@@ -3255,10 +3255,11 @@ rollup_done() {
   [ "$2" != FAILED ]
 }
 
-# ladder_back <slug> <note> -- a ladder run's row back to the normal queue on claude, the note saying
-# why; agent-queue move reads the running -> queued step as a redo on the run, which model-lane counts.
+# ladder_back <slug> <note> [cause] -- a ladder run's row back to the normal queue on claude, the note saying
+# why; agent-queue move reads the running -> queued step as a redo on the run, which model-lane counts, with
+# that cause (MOVE_CAUSES; requeue when none).
 ladder_back() {
-  agent-queue set "$1" agent=claude model= routed= "note=$2" >/dev/null && agent-queue move "$1" queued >/dev/null
+  agent-queue set "$1" agent=claude model= routed= "note=$2" >/dev/null && agent-queue move "$1" queued ${3:+--cause "$3"} >/dev/null
 }
 
 # DIRECT_GUARDED: paths a direct run's diff may not touch, as an ERE on the repo-relative path. Its
@@ -4805,8 +4806,8 @@ takeover_branch() {
 # is never read as gone here.
 own_parked_pr() {
   local slug=$1 it=$3 head=$4 owner verb color cause tries human hhead howners pr project note trn held where why='' clear=()
-  # cause: the requeue's cause on the run's outcome (MOVE_CAUSES): a green PR's lander is the system's
-  # step after a --pr-only run, so that run is filed unrated (land); a red or conflicting PR rates as redo.
+  # cause: the requeue's cause on the run's outcome (MOVE_CAUSES): a green PR's lander merges the run's
+  # diff unchanged, so that run is filed unrated (land); a red or conflicting PR rates as redo.
   case "${6:-}:$5" in
   CONFLICTING:*) owner=land verb=land color='in conflict with its base' why=' conflict' cause=conflict ;;
   *:FAIL) owner=fix verb=fix-ci color=red cause=fix-ci ;;
