@@ -123,6 +123,10 @@ esac
 # nudged each one.
 : "${RESTORE_PROMPT:=fleet-dispatch restore reopened this session after its tmux server was lost (a crash or reboot). Carry on with queue item %s from where you stopped; first check what changed while you were down (git status, your PR, agent-queue show %s).}"
 : "${DISPATCH_JUDGE_CMD:=agentctl-run --agent dispatch-judge}"
+# Projects whose work runs on the home cluster: only their items wait while the k3s domain is red or
+# unreadable (cluster_item, pick_item). On 2026-11-23 a failing cluster-janitor watch turned it red twice for 15
+# minutes and the machine-wide gate held every start, Unity included.
+: "${DISPATCH_CLUSTER_PROJECTS:=home-config}"
 : "${DISPATCH_PLAN_RULES:=unclear bundle too-big multi-area stage-scope question tier-above unknown}"   # policy rules whose skip sends an agent row to inbox-plan (skip_exits)
 : "${DISPATCH_HUMAN_RULES:=needs-person release prod-write compliance personal design}"   # policy rules whose skip moves an agent row to the human sheet or improvements.md (skip_exits)
 # The judge's policy is its agent conf's PROMPT (agentctl-run puts it ahead of the rows); read
@@ -194,7 +198,6 @@ PROVIDER_ENDS="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/pro
 # (t3_picks, in day_picks) merge behind the red-fix gate, which agent-land enforces.
 UNATTENDED_TIER_CEILING=2
 LANE_CACHE="$DIR/lane-cache"   # <day> TAB <slug> TAB <verdict json>: the verdict of an item no source could take, for the rest of the day
-unset GATEWAY_FLOOR   # set only by floor_gate and the floors (gate), never inherited
 unset TRAINEE_GATE    # set only by trainee_floor_why, never inherited
 NO_ROUTE=()   # this pass's "<slug> (<why>)" for items no source with room could take; NO_ROOM, the account reason
 
@@ -1256,7 +1259,7 @@ watch_reds() {
 # red_floor_open -- a red start is due past the machine gates: RED_PASS says the start is a red item,
 # and the live red sessions plus the reds this pass started are under DISPATCH_RED_FLOOR plus one for
 # each tripped watch's red item. The pace target, load, fleet-assess and the weekly pace do not hold it;
-# agent-hold, the reserve, the cluster and the github budget still do. RED_LIVE and RED_WATCH are
+# agent-hold, the reserve and the github budget still do. RED_LIVE and RED_WATCH are
 # cmd_run's counts before its first start, as FLOOR_LIVE.
 red_floor_open() {
   [ "${RED_PASS:-0}" = 1 ] || return 1
@@ -5033,10 +5036,10 @@ other_source_start() {
 # in queue order like any item, the class mix (classes.json `cleanup`, tag `canary`) keeping their class
 # from falling behind. While the fleet share is full only the lanes on their own source queue (--off-claude:
 # a Claude lane's canary would wait at the cap). Skipped in a dry run, at 0, and while floor_gate is shut
-# (a red cluster with the gateway up still queues them), dispatch's hold included;
+# (a red cluster with the gateway down), dispatch's hold included;
 # a failure is said once, never the end of the pass.
 canary_top_up() {
-  local live have want out rc=0 note='' FLOOR_WHY GATEWAY_ONLY
+  local live have want out rc=0 note='' FLOOR_WHY
   [ "$DRY" = 0 ] && [ "${DISPATCH_CANARY_KEEP:-0}" -gt 0 ] 2>/dev/null || return 0
   # A canary the fleet share holds is not counted: it cannot start, so it keeps no lane busy.
   share_state
@@ -5045,7 +5048,7 @@ canary_top_up() {
   live=$(live_tagged canary | grep -c . || true)
   want=$(( DISPATCH_CANARY_KEEP - have - live ))
   [ "$want" -gt 0 ] || return 0
-  floor_gate; [ -z "$FLOOR_WHY" ] || return 0   # only when canaries are missing: it reads gate and the cluster
+  floor_gate; [ -z "$FLOOR_WHY" ] || return 0   # only when canaries are missing: it reads gate and the gateway
   # While the share is full a Claude lane's canary would wait in queued/, so only the lanes on their own source queue (SHARE_JQ).
   local off=(); if share_full; then off=(--off-claude); note=", the fleet share full: no Claude lane"; fi
   out=$(AGENT_QUEUE_PULL=dispatch fleet-bench canary queue --max "$want" "${off[@]}" 2>&1) || rc=$?
@@ -5055,13 +5058,13 @@ canary_top_up() {
 }
 
 # trainee_floor_why -> FLOOR_WHY, why the trainee floor is shut now (no trainee: lane, else floor_gate's
-# answer on the trainee's own resources, TRAINEE_GATE=1: the agent-hold, the cluster or gateway and the
+# answer on the trainee's own resources, TRAINEE_GATE=1: the agent-hold, the gateway and the
 # GitHub budget; no Claude account, no load here), empty when it may start; trainee-pool reads it too,
 # so the readout and the pass say one thing.
 trainee_floor_why() {
   trainee_load
   jq -e '[.candidates[]?.harness] | length > 0' <<<"$TRAINEE_CONF" >/dev/null 2>&1 ||
-    { FLOOR_WHY="lanes.yaml has no trainee: lane (model-lane trainee)"; GATEWAY_ONLY=0; return 0; }
+    { FLOOR_WHY="lanes.yaml has no trainee: lane (model-lane trainee)"; return 0; }
   TRAINEE_GATE=1 floor_gate
 }
 
@@ -5081,18 +5084,14 @@ trainee_floor_start() {
   trainee_floor_why; why=$FLOOR_WHY
   # A shut floor is no dry pool: its hold or gate is what starved and the Stopped line name.
   [ -z "$why" ] || { rm -f "$TRAINEE_DRY"; say "trainee floor: shut, $why"; return "$FLOOR_SHUT"; }
-  # The batch review and a trainee PR's owner run on claude, which the cluster gate still holds, and so
-  # do this machine's load (machine_here_why) and unreadable account usage, which the trainee's own gate
-  # skips: start_item would settle the whole pass BLOCKED on it. With no account room the owner waits in route
-  # and the batch review goes to reviewer_fallback (trainee_reviewer_pin).
-  local cwhy=''
-  if [ "$GATEWAY_ONLY" = 0 ]; then
-    cwhy=$(machine_here_why)
-    [ -n "$cwhy" ] || cwhy=$(acct_room; [ $? = 2 ] && printf 'account usage unreadable (%s)' "$ACCT_WHY")
-  fi
-  if [ "$GATEWAY_ONLY" = 1 ]; then rc=$FLOOR_SHUT
-    [ -z "$(trainee_waiting)" ] || say "trainee floor: the cluster is red and the gateway answers, so gateway trainees start and the batch review (claude) waits"
-  elif [ -n "$cwhy" ]; then rc=$FLOOR_SHUT
+  # The batch review and a trainee PR's owner run on claude, which this machine's load (machine_here_why)
+  # and unreadable account usage hold, and the trainee's own gate skips: start_item would settle the
+  # whole pass BLOCKED on it. With no account room the owner waits in route and the batch review goes
+  # to reviewer_fallback (trainee_reviewer_pin).
+  local cwhy
+  cwhy=$(machine_here_why)
+  [ -n "$cwhy" ] || cwhy=$(acct_room; [ $? = 2 ] && printf 'account usage unreadable (%s)' "$ACCT_WHY")
+  if [ -n "$cwhy" ]; then rc=$FLOOR_SHUT
     [ -z "$(trainee_waiting)$(trainee_land_items)" ] || say "trainee floor: the batch review and a trainee PR's owner (claude) wait: $cwhy; the trainee slots still fill"
   else
     trainee_land_start; rc=$?
@@ -5104,7 +5103,6 @@ trainee_floor_start() {
   queued=${NEXT_QUEUED-$(next_items --points)}
   for h in "${hs[@]}"; do
     [ -n "$(harness_sandbox "$h")" ] || { shut+=("$h runs in no lane sandbox"); continue; }
-    [ "$GATEWAY_ONLY" = 0 ] || harness_spends_gateway "$h" || { shut+=("$h does not spend the gateway, and the cluster is red"); continue; }
     why=$(ladder_open_why "$h") || { shut+=("$why"); continue; }
     it=$(trainee_queued_pick "$h" "$queued")
     if [ -z "$it" ]; then
@@ -5120,7 +5118,7 @@ trainee_floor_start() {
       it=$(agent-queue show "$PROMOTED" --json --points)
       say "trainee floor: promoted row $key to queue item $PROMOTED for $h"
     fi
-    GATEWAY_FLOOR=$GATEWAY_ONLY TRAINEE_PASS=1 TRAINEE_HARNESS=$h FLOOR_QUIET=1 UNITS_FREE=2 start_items "$it" 1; rc=$?
+    TRAINEE_PASS=1 TRAINEE_HARNESS=$h FLOOR_QUIET=1 UNITS_FREE=2 start_items "$it" 1; rc=$?
     [ "$rc" = 0 ] || return "$rc"
     queued=$(jq -c --arg s "$(jq -r .slug <<<"$it")" 'select(.slug != $s)' <<<"$queued")
   done
@@ -5303,7 +5301,7 @@ cmd_trainee_pool() {
       eligible=$(jq -c --arg k "$(jq -r .key <<<"$it")" --arg p "$(jq -r .project <<<"$it")" 'select(.key != $k or .project != $p)' <<<"$eligible")
     else nexts+=("$(jq -nc --arg h "$h" '{harness: $h, from: null}')"); fi
   done
-  # The floor's own gate, read now: shut with its reason, or open (gateway-only when k3s is red). Its
+  # The floor's own gate, read now: shut with its reason, or open. Its
   # room read (ACCT_ROWS), when it made one, gives the sources their slots; room --json exits 1 with no
   # account to pick, its answer still whole, so only an unreadable answer leaves the slots unknown.
   rooms=${ACCT_ROWS:-$(claude-acct room --json 2>/dev/null)}
@@ -5311,8 +5309,7 @@ cmd_trainee_pool() {
     { echo "trainee pool: claude-acct room --json gave no answer, so no source shows its slots" >&2; rooms=null; }
   trainee_floor_why
   local floor=open floor_why=$FLOOR_WHY
-  if [ -n "$floor_why" ]; then floor=shut
-  elif [ "$GATEWAY_ONLY" = 1 ]; then floor_why="the cluster is red and the gateway answers, so only gateway trainees start"; fi
+  [ -z "$floor_why" ] || floor=shut
   srcs=$(printf '%s\n' "${nexts[@]}" | jq -sc --slurpfile H "$HARNESSES" --argjson rooms "$rooms" '
     group_by($H[0].harnesses[.harness].source // "")
     | map((.[0].harness | $H[0].harnesses[.].source // "") as $s | ($rooms.sources // [] | map(select(.name == $s)) | first) as $r
@@ -5569,7 +5566,7 @@ load_findings() {
 # project while the other 40 waited on account pace, which the message never named.
 pick_item() {
   local items="$1" it why need free host mwhy='' mread=0 fhit=0 uwait=0 held=() waits="every queue item waits" reserved='' kept=''
-  local shold=0 sfirst='' shost='' swhy='' mhit=0 ppass='' uheld='' uneed=0
+  local shold=0 sfirst='' shost='' swhy='' mhit=0 ppass='' uheld='' uneed=0 chit=0 cread=0 cwords=''
   share_state   # in this shell, so every share_why reads one count
   if [ "${RED_PASS:-0}" = 1 ]; then waits="every red item waits; the rest wait on ${FLOOR_GATE:-the gate}"
   elif [ "${TRAINEE_PASS:-0}${BATCH_PASS:-0}" != 00 ]; then waits="the trainee floor's item waits"; fi
@@ -5589,6 +5586,11 @@ pick_item() {
     else why="$mwhy, and no fleet worker takes it"; PICK_FULL=0 mhit=1
     fi
     ppass=''
+    # Cluster work waits while the k3s domain is red or unreadable, read once a pick; nothing else does.
+    if [ -z "$why" ] && cluster_item "$it"; then
+      [ "$cread" = 1 ] || { cwords=$(fleet-shepherd infra 2>/dev/null); cread=1; }
+      [ -z "$cwords" ] || { why="$cwords, and this is cluster work (DISPATCH_CLUSTER_PROJECTS)"; PICK_FULL=0 chit=1; }
+    fi
     if [ -z "$why" ]; then
       why=$(held_by "$it" "$FIRING")
       if pool_pass "$it" "$why"; then ppass=$why why=''; fi
@@ -5643,6 +5645,7 @@ pick_item() {
   fi
   if [ "$PICK_FULL" = 1 ]; then PICK_WHY="run units: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
   elif [ "$fhit" = 1 ]; then PICK_WHY="finding firing: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
+  elif [ "$chit" = 1 ] && [ "$shold$mhit" = 00 ]; then PICK_WHY="cluster: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
   # The share names the pass only when load held none of the rest: a pass read "fleet share full" and
   # settled NOOP while load held 22 other items (2026-11-21, ar-4450).
   elif [ "$shold" -gt 0 ] && [ "$mhit" = 0 ]; then PICK_WHY="fleet share full: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
@@ -6176,6 +6179,7 @@ route() {
     [ "$hl" = 0 ] || [ -n "$erc" ] || { excl=$(excluded_kind "$it"); erc=$?; }   # once, and only for a headless one
     overflow=0; [ "$pinned" = 0 ] && harness_flag "$h" metered && overflow=1
     if [ -z "$src" ]; then why+=("$h: no source in $HARNESSES")
+    elif harness_spends_gateway "$h" && { load_gateway_down; [ -n "$GATEWAY_DOWN" ]; }; then why+=("$h: $GATEWAY_DOWN")
     elif ! pwhy=$(harness_project_why "$HARNESSES" "$h" "$project"); then why+=("$h: $pwhy")
     elif ! pwhy=$(harness_tier_why "$h" "$it"); then why+=("$h: $pwhy")
     elif [ -n "$(harness_sandbox "$h")" ] && ! pwhy=$(sandbox_item_why "$it" "$h" "$m" "$verdict"); then why+=("$h: $pwhy")
@@ -7345,19 +7349,29 @@ gateway_why() {
   echo "the gateway is not ready ($url/health/readiness: ${said:-no answer})"
 }
 
-# floor_gate -- the gate for a floor whose gateway harnesses depend on the LiteLLM gateway, not the whole
-# cluster domain: FLOOR_WHY is gate's answer with a red `fleet-shepherd infra` traded for gateway_why
-# (account, hold, machine and GitHub checks stay; GATEWAY_FLOOR=1 gate), and GATEWAY_ONLY=1 when the
-# cluster is red and the gateway answers, so only a harness that spends the gateway
-# (harness_spends_gateway) may start; a claude, codex or cloud start still waits on the cluster. The
-# floor passes GATEWAY_FLOOR=$GATEWAY_ONLY to start_items, so each later start reads the cluster and
-# the gateway again. The trainee's real dependency is the gateway, and a red k3s domain shut every
-# trainee start on 11-19 while the gateway answered (ar-3699).
+# floor_gate -- FLOOR_WHY, why a floor of gateway harnesses (trainees, canaries) is shut: gate's
+# answer, else the gateway when the cluster is red or unreadable (load_gateway_down). The gateway is the
+# floor's one cluster dependency: a red k3s domain shut every trainee start on 11-19 while it answered (ar-3699).
 floor_gate() {
-  GATEWAY_ONLY=0
-  FLOOR_WHY=$(GATEWAY_FLOOR=1 gate)
-  [ -n "$FLOOR_WHY" ] || [ -z "$(fleet-shepherd infra 2>/dev/null)" ] || GATEWAY_ONLY=1
+  FLOOR_WHY=$(gate)
+  [ -n "$FLOOR_WHY" ] || { load_gateway_down; FLOOR_WHY=$GATEWAY_DOWN; }
   return 0
+}
+
+# cluster_item <item json> -- rc 0 for cluster work: an item of a project DISPATCH_CLUSTER_PROJECTS
+# names, which waits while the k3s domain is red or unreadable (pick_item). Every other item starts
+# whatever the cluster says.
+cluster_item() { [[ " $DISPATCH_CLUSTER_PROJECTS " == *" $(jq -r '.project // ""' <<<"$1") "* ]]; }
+
+# load_gateway_down -- GATEWAY_DOWN, read once a pass (cmd_run clears GATEWAY_READ): "<infra words>,
+# and <gateway_why>" when the cluster is red or unreadable and the LiteLLM gateway does not answer
+# ready, else nothing. A start that spends the gateway waits on it (floor_gate, route).
+load_gateway_down() {
+  local infra
+  [ "${GATEWAY_READ:-0}" = 1 ] && return 0
+  GATEWAY_READ=1 GATEWAY_DOWN=''
+  infra=$(fleet-shepherd infra 2>/dev/null); [ -n "$infra" ] || return 0
+  GATEWAY_DOWN=$(gateway_why); [ -z "$GATEWAY_DOWN" ] || GATEWAY_DOWN="$infra, and $GATEWAY_DOWN"
 }
 
 # gate -> why this pass must not start anything, or nothing when it may. Anything it cannot read
@@ -7372,7 +7386,7 @@ floor_gate() {
 # host it places on. The dispatcher's own load and an unreadable Claude usage shut it on 11-18 while
 # every trainee run went to razer-laptop at load 4 (ar-3507).
 gate() {
-  local load infra github rc out hold why=()
+  local load github rc out hold why=()
   # A hold names who set it and why ("by <who>: <reason>"), which the Stopped line shows.
   hold=$(agent-hold check dispatch 2>/dev/null) ||
     { hold=$(sed -nE '1s/^held: [^ ]+ since [^ ]+ //p' <<<"$hold"); echo "held (agent-hold dispatch)${hold:+ $hold}"; return; }
@@ -7390,12 +7404,8 @@ gate() {
     mach=$(machine_here_why)
     [ -z "$mach" ] || why+=("$mach")
   fi
-  # Cluster only, not every urgent trip: a red nightly is urgent, and new sessions do not worsen it.
-  # A floor whose starts spend only the gateway (GATEWAY_FLOOR=1, floor_gate) reads the gateway instead.
-  infra=$(fleet-shepherd infra 2>/dev/null)
-  if [ -n "$infra" ] && [ "${GATEWAY_FLOOR:-0}" = 1 ]; then
-    out=$(gateway_why); [ -z "$out" ] || why+=("$infra, and $out")
-  elif [ -n "$infra" ]; then why+=("$infra"); fi
+  # The cluster is no gate here: a red k3s domain holds only cluster work (cluster_item, in pick_item)
+  # and starts that spend the gateway (load_gateway_down, in route and floor_gate).
   github=$(fleet-assess --github 2>/dev/null)
   case "$github" in
     '' | *unreadable*) why+=("github budget unreadable") ;;
@@ -7468,7 +7478,7 @@ cmd_run() {
   # write gates onto the rows they un-start (agent-queue return_gates).
   GATES_LOADED=''; load_gates
   HUMAN_PASS=0 SPRINT_PASS=0 PLAN_PASS=0 PLAN_STARTED=0 PLANS_STARTED=''
-  QUEUE_HELD='' SHARE_HELD='' SHARE_STATE='' PREEMPTED=0 STARTED=0 RED_STARTED=0 RED_PASS=0 RUN_GATED=0 FLOOR_HELD=0 FLOOR_GATE='' JUDGE_RC= JUDGE_WHY= PLAN_TAGGED=0 TRIAGE_FAILED= NO_ROOM=
+  QUEUE_HELD='' SHARE_HELD='' SHARE_STATE='' PREEMPTED=0 STARTED=0 RED_STARTED=0 RED_PASS=0 RUN_GATED=0 FLOOR_HELD=0 FLOOR_GATE='' GATEWAY_READ=0 JUDGE_RC= JUDGE_WHY= PLAN_TAGGED=0 TRIAGE_FAILED= NO_ROOM=
   NO_ROUTE=(); unset NEXT_QUEUED   # set once a pass has read the queue (trainee or sprint floor), even to nothing
   [ "$DRY" = 1 ] || triage_pass
   # Each skip takes the exit its rule names (plan, the human, a gate); a dry run only reads.

@@ -5,12 +5,22 @@
 
 load 'fleet_dispatch/common'
 
-@test "run starts nothing while the cluster is red or unreadable, and says why" {
-  game_ready
+# 2026-11-23: a failing cluster-janitor watch turned the k3s domain red and the machine-wide gate held every
+# start, Unity included (ar-4889). Only a DISPATCH_CLUSTER_PROJECTS item waits on it now.
+@test "a red or unreadable k3s domain holds only cluster work: a home-config item waits and says why, a game item starts" {
+  project game beta "$SANDBOX/repos/game"
+  project home-config beta "$SANDBOX/repos/home-config"
   stub fleet-shepherd 'echo "infra: k3s domain red"'
+  agent-queue add --project home-config --slug fix-hc --priority high "fix the cluster janitor" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'infra: k3s domain red'
+  assert_output --partial 'cluster: fix-hc (infra: k3s domain red, and this is cluster work (DISPATCH_CLUSTER_PROJECTS))'
   assert_not_called 'wt new'
+  agent-queue add --project game --slug fix-game --priority low "fix the game" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item fix-game'
+  refute_output --partial 'started queue item fix-hc'
+  [ -n "$(qitem queued fix-hc)" ] || fail "the home-config item left the queue on a red cluster"
 }
 
 @test "under DISPATCH_RUN_FLOOR a run start goes past the weekly pace, and says so" {
