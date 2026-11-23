@@ -2087,8 +2087,8 @@ pub(crate) mod tests {
         assert_eq!(
             s[at.unwrap() - 2].split_whitespace().collect::<Vec<_>>(),
             [
-                "demo", "no", "window", "personal", "alpha", "-", "-", "2", "0", "0", "0", "2",
-                "0", "2", "no", "window", "-", "1.0", "0", "0", "0", "0", "-"
+                "demo", "flow", "personal", "alpha", "-", "-", "2", "0", "0", "0", "2", "0", "2",
+                "no", "window", "-", "1.0", "0", "0", "0", "0", "-"
             ]
         );
         let tail = s.join("\n");
