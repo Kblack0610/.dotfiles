@@ -18,7 +18,7 @@ import { execFile } from "node:child_process";
 import type { HunkExtensionAPI } from "hunkdiff/extension";
 
 const TAG = /#task(?::([\w.-]+))?\b/;
-const PRIORITY = /(^|\s)#(urgent|high|low)\b/;
+const PRIORITY = /(^|\s)#(urgent|high|normal|low)\b/;
 // Timeout guard on each external call, so a wedged `notes` cannot hold a handler forever.
 const EXEC_TIMEOUT_MS = 10_000;
 
@@ -65,7 +65,7 @@ export function located(text: string, filePath: string, line: number): string {
   return `${text} (${toAsciiLine(filePath)}:${line})`;
 }
 
-/** A board row defaults to #low: a bare `ptask add` is tagged #high, which means "nobody decided". */
+/** A board row from a diff note defaults to #low: it is a follow-up nobody has judged yet, and triage can raise it. */
 export function withPriority(text: string): string {
   return PRIORITY.test(text) ? text : `${text} #low`;
 }
