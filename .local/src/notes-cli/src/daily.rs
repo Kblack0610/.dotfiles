@@ -1013,11 +1013,52 @@ pub(crate) fn all_project_dirs() -> Vec<(String, PathBuf)> {
         .collect()
 }
 
-/// Days of filings the page's kept-as-filed count covers.
-const KEPT_DAYS: i64 = 7;
-
 pub(crate) fn inbox_page(p: &Profile) -> status::Page {
-    inbox_page_in(p, &all_project_dirs())
+    inbox_page_in(
+        p,
+        &all_project_dirs(),
+        triage_score(JUDGE_EVAL_BIN).as_deref(),
+    )
+}
+
+/// The one scorer of every runner lane, inbox-triage's included (`~/.local/src/docs/judges.md`).
+const JUDGE_EVAL_BIN: &str = "judge-eval";
+
+/// inbox-triage's 7d score as `<bin> inbox-triage --json` words it in its `score_7d`, the cell
+/// agent-web's Workers table shows: `<text> (<title>)`, such as `87% untouched (7d, 407 of 470
+/// right, 283 pending, triage-untouched)`. None, with the reason on stderr, when judge-eval
+/// gives no such cell: the page then shows no score rather than one counted a second way.
+fn triage_score(bin: &str) -> Option<String> {
+    let why = match std::process::Command::new(bin)
+        .args(["inbox-triage", "--json"])
+        .output()
+    {
+        Ok(o) if o.status.success() => {
+            let cell = serde_json::from_slice::<serde_json::Value>(&o.stdout)
+                .ok()
+                .and_then(|v| {
+                    v.get("agents")?
+                        .as_array()?
+                        .iter()
+                        .find(|a| a.get("agent").and_then(|n| n.as_str()) == Some("inbox-triage"))?
+                        .get("score_7d")
+                        .cloned()
+                });
+            let field = |k: &str| cell.as_ref()?.get(k)?.as_str().map(str::to_string);
+            match (field("text"), field("title")) {
+                (Some(text), Some(title)) => return Some(format!("{text} ({title})")),
+                _ => format!("{bin} inbox-triage --json gave no score_7d"),
+            }
+        }
+        Ok(o) => format!(
+            "{bin} inbox-triage exited {}: {}",
+            o.status,
+            String::from_utf8_lossy(&o.stderr).trim()
+        ),
+        Err(e) => format!("{bin}: {e}"),
+    };
+    eprintln!("(no triage score on the inbox page: {why})");
+    None
 }
 
 /// The inbox status page: what the intake sweep did today and what still waits on the human.
@@ -1035,20 +1076,14 @@ pub(crate) fn inbox_page(p: &Profile) -> status::Page {
 ///   reads as one row, the filing.
 /// - Waiting in project inboxes: each sheet whose `## Inbox` holds lines, with the count.
 ///
-/// Each project is found in `dirs` (project name, dir), which the kept count reads too.
-fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
+/// Each project is found in `dirs` (project name, dir). The stat line ends with `score`, the
+/// triage lane's score from [`triage_score`], when there is one.
+fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)], score: Option<&str>) -> status::Page {
     use crate::agent_sheet::Lane;
     let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
     // The queue, dispatch and land steps share the record but are not intake.
     let mut events = crate::ingest::on_day(p, &today);
     events.retain(crate::ingest::Event::is_intake);
-    let week = crate::ingest::since(p, KEPT_DAYS);
-    let ids: std::collections::HashSet<&str> = week
-        .iter()
-        .filter(|e| e.action == "filed")
-        .filter_map(|e| e.id.as_deref())
-        .collect();
-    let (kept, scored) = crate::ingest::kept(&week, &crate::ingest::find_rows(dirs, &ids));
     let sheet = |name: &str, lane: Lane| {
         dirs.iter()
             .find(|(n, _)| n == name)
@@ -1248,11 +1283,7 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
         stat: Some(format!(
             "{today}: {filed} filed, {joined} joined, {planned} planned, {added} added by sessions, {left} left, {asked} asked you, {refused} refused, {} in the outbox, {captured} captured{}",
             waiting.len(),
-            if scored > 0 {
-                format!("; triage kept {kept} of {scored} as filed ({KEPT_DAYS}d)")
-            } else {
-                String::new()
-            }
+            score.map(|s| format!("; triage score {s}")).unwrap_or_default()
         )),
         rows,
         reviewed,
@@ -3061,7 +3092,7 @@ mod tests {
         assert_eq!(lines[0], "dm-4 demo: run a home server or not (urgent, 0d)");
         assert_eq!(lines[DECISIONS_SHOWN], "... and 5 more: big 3, demo 2");
         // On the page: its own section after Needs you, the answer form first.
-        let out = status::render(&p.root, &p.daily, &inbox_page_in(&p, &dirs));
+        let out = status::render(&p.root, &p.daily, &inbox_page_in(&p, &dirs, None));
         let at = |h: &str| out.find(h).unwrap_or_else(|| panic!("{h} missing:\n{out}"));
         assert!(at("## Needs you") < at("## Decisions for you"));
         assert!(at("## Decisions for you") < at("## Handled today"));
@@ -3149,7 +3180,11 @@ mod tests {
         .unwrap();
         // The human read the joined row: it folds into `+1 reviewed`, still tickable.
         crate::inbox_ack::mark(&p, &dup.ts, true).unwrap();
-        let page = inbox_page_in(&p, &[("demo".into(), demo)]);
+        let page = inbox_page_in(
+            &p,
+            &[("demo".into(), demo)],
+            Some("87% untouched (7d, 7 of 8 right, 1 pending, triage-untouched)"),
+        );
         let out = status::render(&p.root, &p.daily, &page);
         // Every event row leads with its HH:MM and a handled one ends with its event's ts, both
         // the test's clock: mask them.
@@ -3194,7 +3229,7 @@ mod tests {
 "
         );
         assert!(page.stat.unwrap().ends_with(
-            ": 2 filed, 1 joined, 1 planned, 1 added by sessions, 1 left, 0 asked you, 1 refused, 2 in the outbox, 0 captured; triage kept 1 of 2 as filed (7d)"
+            ": 2 filed, 1 joined, 1 planned, 1 added by sessions, 1 left, 0 asked you, 1 refused, 2 in the outbox, 0 captured; triage score 87% untouched (7d, 7 of 8 right, 1 pending, triage-untouched)"
         ));
         assert!(
             out.contains("\nfiled: made a new row - joined:"),

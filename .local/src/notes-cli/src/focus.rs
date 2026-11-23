@@ -327,7 +327,7 @@ mod tests {
         add(&p, &log, "a new thing").unwrap();
         done(&p, &log, "keep this").unwrap();
         rm(&p, &log, "drop this").unwrap();
-        let events = crate::ingest::since(&p, 1);
+        let events = crate::ingest::all(&p);
         let got: Vec<(&str, &str)> = events
             .iter()
             .map(|e| (e.action.as_str(), e.from.as_str()))
@@ -591,7 +591,7 @@ after
         assert_eq!(waiting[0].details, ["fold queue stats"]);
         // a word that matches nothing changes nothing and says so
         assert_eq!(ingest(&p, &log, "dry run").unwrap(), 1);
-        let events = crate::ingest::since(&p, 1);
+        let events = crate::ingest::all(&p);
         assert!(events.iter().any(|e| e.action == "removed"
             && e.from == "focus"
             && e.why.as_deref() == Some("to the outbox")));

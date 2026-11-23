@@ -3,7 +3,7 @@
 //! row shows, so a row is told apart from another of the same words. `notes inbox ack` is its one
 //! writer and the inbox page its reader. Runtime state, outside the vault, like the record.
 //! Kept apart from the ingest record: a read mark is not something that happened to a line,
-//! so it stays out of `notes log` and the kept score.
+//! so it stays out of `notes log` and the judge-eval triage score that reads it.
 
 use crate::config::Profile;
 use anyhow::{bail, Context, Result};
