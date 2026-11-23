@@ -32,7 +32,7 @@ pub async fn read(s: &Shared) -> Vec<Card> {
         s.infra.infra(),
         s.queue.queue(),
         crate::queue::verdict(),
-        s.session_table.read(),
+        s.session_table.read(s),
         s.alerts.read(&s.infra),
         crate::costs::read(),
         s.schedules.read(&s.alerts),

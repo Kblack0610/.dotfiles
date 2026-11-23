@@ -6,7 +6,7 @@ use std::sync::Arc;
 use hub_core::boards;
 use hub_core::capacity::{self, Capacity};
 use hub_core::layout;
-use hub_core::session_actions::{self as actions, System};
+use hub_core::session_actions::System;
 use hub_core::session_page::{self, SessionPage};
 use hub_core::session_table::{self, SessionRow};
 use hub_core::table::{self, Summary, View};
@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::cache::{off, ReadCache};
+use crate::Shared;
 
 /// Folds concurrent tabs, quick reloads and every keystroke in the search into one read.
 const CACHE_SECS: u64 = 15;
@@ -101,30 +102,50 @@ fn failed(e: String) -> String {
 }
 
 impl Cache {
-    pub(crate) async fn read(&self) -> Result<Arc<Read>, String> {
-        let read = off(|| {
-            let (state, vocab, silent) = session_table::read_state(&boards::fleet_state());
-            let feed = session_table::feed(&System, &session_table::registry());
-            Read {
-                rows: session_table::rows(&state, &vocab, &feed, &actions::gather(&System).agents),
-                state,
-                buckets: vocab.buckets().to_vec(),
-                errors: feed.errors.into_iter().chain(silent).collect(),
-            }
-        });
+    /// The table's rows: the sessions are the sidebar's read (`live.rs`) and the queue items are
+    /// the Queue tab's (`queue::Cache`), so this runs neither `collect_all` nor `agent-queue`.
+    pub(crate) async fn read(&self, s: &Shared) -> Result<Arc<Read>, String> {
+        // Fetched inside the kept read, so a table that is fresh touches neither source.
+        let s = s.clone();
+        let read = async move {
+            let (live, queue) =
+                tokio::join!(s.live.get((), crate::read_live), s.queue.feed_items());
+            let live = live?;
+            off(move || {
+                let (state, vocab, silent) = session_table::read_state(&boards::fleet_state());
+                let active = queue
+                    .as_deref()
+                    .map(hub_core::queue::active)
+                    .unwrap_or_default();
+                let agents: Vec<_> = live
+                    .rows
+                    .iter()
+                    .map(|r| r.agent.clone())
+                    .zip(live.joined(&active))
+                    .collect();
+                let feed = session_table::feed_with(&System, &session_table::registry(), queue);
+                Read {
+                    rows: session_table::rows(&state, &vocab, &feed, &agents),
+                    state,
+                    buckets: vocab.buckets().to_vec(),
+                    errors: feed.errors.into_iter().chain(silent).collect(),
+                }
+            })
+            .await
+        };
         self.table.get((), read).await
     }
 
     /// The view `q` asks for; every view is applied to the shared read outside the lock.
-    pub async fn table(&self, q: TableQuery) -> String {
-        self.read().await.map_or_else(failed, |r| render(&r, &q))
+    pub async fn table(&self, s: &Shared, q: TableQuery) -> String {
+        self.read(s).await.map_or_else(failed, |r| render(&r, &q))
     }
 
     /// One session's page, or None when nothing names `id`. The open page refreshes with the
     /// list, so the last one is kept as the list's read is; a None is not kept.
-    pub async fn page(&self, id: String) -> Result<Arc<Option<SessionPage>>, String> {
+    pub async fn page(&self, s: &Shared, id: String) -> Result<Arc<Option<SessionPage>>, String> {
         let key = id.clone();
-        let table = self.read().await?;
+        let table = self.read(s).await?;
         let read = off(move || {
             session_page::read(
                 &System,
