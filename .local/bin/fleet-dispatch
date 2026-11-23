@@ -29,6 +29,7 @@
 #   fleet-dispatch trainee-pool [--json]  the board rows a trainee takes, how many each refusal turns away, and the floor open or shut
 #   fleet-dispatch trainee-review SLUG  a trainee run's tail, in its worktree: its diff to a patch that waits for a batch review
 #   fleet-dispatch trainee-reject SLUG --why TEXT  send a trainee's row back to the normal queue, on claude
+#   fleet-dispatch validate SLUG --pr OWNER/REPO#N --head SHA --why TEXT  queue a second agent's review of an item's critical PR (agent-land)
 #   fleet-dispatch trainee-rollup [--dry]  each trainee reject cause seen DISPATCH_ROLLUP_MIN times in DISPATCH_ROLLUP_DAYS: one fix row on the board, joined night to night by its cause (nightly-measure runs it)
 #   fleet-dispatch direct-land SLUG [--rc N]  a direct run's tail, in its worktree: a clean run's diff committed, a PR opened and landed on CI
 #   fleet-dispatch start --project P [--profile X] [--agent] [--model M] [--harness H]
@@ -2730,8 +2731,8 @@ item_points() { jq -r 'first((.points | tostring | select(test("^[0-9]+$"))), ((
 ladder_row_why() {
   local it="$1" who="$2" tiers="${3:-1}" share="${4:-0}" tags tier kind prev
   tags=" $(jq -r '.tags // ""' <<<"$it") "
-  ! is_canary "$it" && [[ "$tags" != *" trainee-review "* && "$tags" != *" verify "* ]] ||
-    { echo "it is a canary, verify or review item"; return 1; }
+  ! is_canary "$it" && [[ "$tags" != *" trainee-review "* && "$tags" != *" verify "* && "$tags" != *" validate "* ]] ||
+    { echo "it is a canary, verify, validate or review item"; return 1; }
   prev=$(jq -r '.trainee // .direct // empty' <<<"$it")
   [ -z "$prev" ] || { echo "a ladder run took it once already ($prev)"; return 1; }
   trainee_load
@@ -3160,6 +3161,72 @@ cmd_trainee_reject() {
   say "trainee-reject: $slug is back in the queue, on claude: $why"
 }
 
+# cmd_validate <slug> --pr <owner>/<repo>#<N> --head <sha> --why <text>: agent-land's hand-off of a
+# critical landing (validate_gate). It files validate-<slug>-<head:0:8>, a second agent's review of that
+# head, which records its verdict on its own item and runs agent-land again. It is `after:` the author
+# item, live with that open PR, so its worktree is cut from the PR's head (stack_base). From
+# auto:validate, so admission never holds it. One already filed for the head is left as it is.
+cmd_validate() {
+  local slug="${1:?validate: needs a slug}" ref='' head='' why='' vslug it out rc=0
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --pr) ref=${2:-} ;;
+      --head) head=${2:-} ;;
+      --why) why=${2:-} ;;
+      *) say "validate: unknown argument: $1"; return 2 ;;
+    esac
+    shift 2 || { say "validate: $1 needs a value"; return 2; }
+  done
+  [[ "$ref" =~ ^[^/]+/[^/#]+#[0-9]+$ && "$head" =~ ^[0-9a-f]{8,40}$ ]] && [ -n "$why" ] ||
+    { say "validate: needs --pr <owner>/<repo>#<N>, --head <sha> and --why <text>"; return 2; }
+  it=$(agent-queue show "$slug" --json 2>/dev/null) && [ -n "$it" ] || { say "validate: no queue item $slug"; return 1; }
+  vslug="validate-$slug-${head:0:8}"
+  # A live one is filed already; one closed with no verdict (its session died) is filed again.
+  [[ ! "$(item_state "$vslug")" =~ ^(queued|running|waiting|review)$ ]] || { say "validate: $vslug is filed already"; return 0; }
+  out=$(validate_task "$vslug" "$slug" "$ref" "$head" "$why" | AGENT_QUEUE_PULL=dispatch AGENT_QUEUE_START=0 agent-queue add \
+    --project "$(jq -r .project <<<"$it")" --slug "$vslug" --after "$slug" --priority high --tags validate --from auto:validate \
+    --title "check(validate): $slug, ${ref##*/}" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || { say "validate: could not queue $vslug: ${out##*$'\n'}"; return 1; }
+  logline "queued $vslug: $ref is critical ($why)"
+  say "validate: queued $vslug"
+}
+
+# validate_self_why <item json> <resume sid> <session> -> rc 1 and why, when a validate item (cmd_validate)
+# would run as its author: no author item (`after:`) or itself, or a resume of a conversation, or into
+# a tmux session, that worked the author item. A fresh start is a new conversation. agent-land checks
+# the same on the verdict (validate_gate: no shared session).
+validate_self_why() {
+  local slug author a as
+  [[ " $(jq -r '.tags // ""' <<<"$1") " == *" validate "* ]] || return 0
+  slug=$(jq -r .slug <<<"$1"); author=$(jq -r '.after // ""' <<<"$1")
+  [ -n "$author" ] && [ "$author" != "$slug" ] || { echo "is a validate item whose after: names no author item but itself, so it validates nothing"; return 1; }
+  [ -n "$2$3" ] || return 0
+  a=$(agent-queue show "$author" --json 2>/dev/null) || a=''
+  [ -z "$2" ] || [[ " $(jq -r '.sessions // ""' <<<"${a:-null}") " != *" $2 "* ]] ||
+    { echo "validates $author, which conversation $2 worked: a second agent validates it, never its author"; return 1; }
+  as=$(jq -r '.session // ""' <<<"${a:-null}")   # <server>:<session>
+  if [ -n "$3" ] && [ -n "$as" ] && { [ "$3" = "$as" ] || [ "$3" = "${as#*:}" ]; }; then
+    echo "validates $author, whose session is $as: a second agent validates it, never its author"; return 1
+  fi
+}
+
+# validate_task <validate slug> <author slug> <owner/repo#N> <head> <why>: a validate item's whole brief
+# (item_brief passes it as it stands).
+validate_task() {
+  local n=${3##*#} repo=${3%#*}
+  cat <<EOF
+This is agent-queue item $1: a review by a second agent of PR $3, the work of queue item $2, before it lands. The work is critical ($5), so agent-land merges it only on your pass verdict. You did not write it: review it as a stranger, and do not fix it yourself; the author makes any fix.
+
+1. Work at the PR's head $4. Your worktree is cut from it; if \`git rev-parse HEAD\` differs, run \`gh pr checkout $n -R $repo --detach\`.
+2. Read what it was asked to do (\`agent-queue show $2\`) and the change (\`gh pr view $n -R $repo\`, \`gh pr diff $n -R $repo\`). Run /code-review high on it, and the tests that cover what it changed.
+3. Pass only when the diff does what its item asks, correctly, with no finding left unanswered; else fail. Record it on this item, with what you checked or the findings on one line:
+   \`agent-queue set $1 verdict=<pass|fail> verdict_head=\$(git rev-parse HEAD) note="<what you checked, or the findings>"\`
+4. Run \`agent-land $n --repo $repo --item $2\` from this worktree. On a pass it merges the PR and closes $2; on a fail it leaves the PR open and sends $2 back to the queue with your note.
+5. Run \`agent-queue move $1 done --status ok\`, then wind down.
+EOF
+}
+
 # rollup_causes <since> <stamps json> -> one TSV line per trainee reject cause in LANE_RUNS since <since>
 # (UTC, YYYY-MM-DDTHH:MM:SS): the cause, its row title, its count, the per-pair counts, the harnesses, and
 # one reason as written. A reject is a lane trainee run with an outcome of redo or failed. Its cause is
@@ -3298,7 +3365,14 @@ cmd_direct_land() {
   url=$(gh pr create --head "$branch" --title "$title" --body "$(direct_pr_body "$it" "$drc" "$key")") ||
     { git push -q origin --delete "$branch"; direct_back "gh pr create failed"; return; }
   pr=${url##*/}
-  if agent-land "$pr" --item "$slug" --ran-checks; then say "direct-land: $slug landed as #$pr, by $drc with no review"; return 0; fi
+  local lrc=0
+  agent-land "$pr" --item "$slug" --ran-checks || lrc=$?
+  [ "$lrc" != 0 ] || { say "direct-land: $slug landed as #$pr, by $drc with no review"; return 0; }
+  # Exit 5: critical work waits on its validate item, whose session lands it; the PR stays open.
+  if [ "$lrc" = 5 ]; then
+    agent-queue move "$slug" review >/dev/null || say "direct-land: could not park $slug in review; it stays running"
+    say "direct-land: #$pr is critical, so it waits on a second agent's review; $slug is in review"; return 0
+  fi
   # agent-land can fail after its merge (the record, the row); the work is in, so nothing is redone.
   [ "$(gh pr view "$pr" --json state -q .state 2>/dev/null)" != MERGED ] ||
     { say "direct-land: #$pr merged, but agent-land failed after it; $slug stays running: agent-land $pr --item $slug records it"; return 1; }
@@ -3520,7 +3594,7 @@ cmd_start() {
   if [ -n "$item" ]; then
     # --points: a trainee row's points may live on its board row alone (item_points), as in runnable.
     it=$(agent-queue show "$item" --json --points 2>/dev/null) || { say "start: no queue item: $item"; return 2; }
-    st=$(jq -r .state <<<"$it")
+    st=$(jq -r .state <<<"$it"); hwhy=$(validate_self_why "$it" "$resume" "$session") || { say "start: $item $hwhy"; return 2; }
     if [ -n "$resume" ]; then
       case "$st" in running | waiting | review) ;; *) say "start: $item is $st; --resume re-attaches an item already started"; return 1 ;; esac
       rh=$(jq -r '.agent // "claude"' <<<"$it")
@@ -4009,7 +4083,7 @@ ask_decisions() {
 item_brief() {
   local it="$1" harness="${2:-claude}" slug mode tags pr_only='' row key kind entry='' exit_='' nopr=''
   slug=$(jq -r .slug <<<"$it"); mode=$(jq -r .mode <<<"$it"); tags=" $(jq -r '.tags // ""' <<<"$it") "
-  if is_canary "$it" || [[ "$tags" == *" trainee-review "* ]]; then
+  if is_canary "$it" || [[ "$tags" == *" trainee-review "* || "$tags" == *" validate "* ]]; then
     jq -r .task <<<"$it"
     [[ "$tags" != *" trainee-batch "* ]] || ! headless "$harness" || trainee_batch_headless "$slug"
     return 0
@@ -4811,6 +4885,9 @@ own_parked_pr() {
   *:PASS) owner=land verb=land color=green ;;
   *) return 0 ;;
   esac
+  # A green critical PR waiting on its validate item has a lander: that item's session (agent-land validate_gate).
+  [ "$color" != green ] || [ -z "$(jq -r '.validate // ""' <<<"$it")" ] ||
+    ! [[ "$(item_state "$(jq -r .validate <<<"$it")")" =~ ^(queued|running|waiting|review)$ ]] || return 0
   [ -n "$head" ] && [ "$2" != unrecorded ] || return 0
   IFS=$'\x1f' read -r tries human pr project note trn < <(jq -r --arg f "${owner}_tries" '[.[$f] // "", .fix_human // "", .pr, .project // "", .note // "", .trainee // ""] | join("\u001f")' <<<"$it")
   tries=${tries%% *}
@@ -8136,6 +8213,7 @@ main() {
     trainee-pool) shift; cmd_trainee_pool "$@" ;;
     trainee-review) shift; cmd_trainee_review "$@" ;;
     trainee-reject) shift; cmd_trainee_reject "$@" ;;
+    validate) shift; cmd_validate "$@" ;;
     trainee-rollup) shift; cmd_trainee_rollup "$@" ;;
     direct-land) shift; cmd_direct_land "$@" ;;
     hosts) shift; cmd_hosts "$@" ;;
