@@ -782,39 +782,65 @@ pub(crate) struct Tally {
     pub interrupted: usize,
 }
 
+/// How a window's rows stand against its snapshot, as sets of row keys: the one place a row is
+/// classed, so [`tally`] and [`page`] cannot disagree.
+struct Classes {
+    shipped: HashSet<String>,
+    open: HashSet<String>,
+    interrupted: HashSet<String>,
+}
+
+impl Classes {
+    fn of(snap: &Snapshot, rows: &Rows) -> Classes {
+        let shipped = rows
+            .closed
+            .iter()
+            .filter(|l| !md::is_dropped(l))
+            .map(|l| key(l))
+            .collect();
+        let open = rows
+            .open
+            .iter()
+            .chain(&rows.later)
+            .map(|l| key(l))
+            .collect();
+        let interrupted = rows
+            .open
+            .iter()
+            .chain(rows.closed.iter().filter(|l| !md::is_dropped(l)))
+            .filter(|l| has_interrupt(l))
+            .map(|l| key(l))
+            .filter(|k| !snap.keys.contains(k))
+            .collect();
+        Classes {
+            shipped,
+            open,
+            interrupted,
+        }
+    }
+
+    /// What became of a committed row: delivered, still open (carried once the window is cut), or
+    /// dropped, which includes a row gone from both lanes.
+    fn committed(&self, k: &str) -> Outcome {
+        if self.shipped.contains(k) {
+            Outcome::Delivered
+        } else if self.open.contains(k) {
+            Outcome::Open
+        } else {
+            Outcome::Dropped
+        }
+    }
+}
+
 fn tally(snap: &Snapshot, rows: &Rows) -> Tally {
-    let shipped: HashSet<String> = rows
-        .closed
-        .iter()
-        .filter(|l| !md::is_dropped(l))
-        .map(|l| key(l))
-        .collect();
-    let open: HashSet<String> = rows
-        .open
-        .iter()
-        .chain(&rows.later)
-        .map(|l| key(l))
-        .collect();
-    let interrupted: HashSet<String> = rows
-        .open
-        .iter()
-        .chain(rows.closed.iter().filter(|l| !md::is_dropped(l)))
-        .filter(|l| has_interrupt(l))
-        .map(|l| key(l))
-        .filter(|k| !snap.keys.contains(k))
-        .collect();
-    let delivered = snap.keys.iter().filter(|k| shipped.contains(*k)).count();
-    let still = snap
-        .keys
-        .iter()
-        .filter(|k| !shipped.contains(*k) && open.contains(*k))
-        .count();
+    let c = Classes::of(snap, rows);
+    let count = |o: Outcome| snap.keys.iter().filter(|k| c.committed(k) == o).count();
     Tally {
         committed: snap.keys.len(),
-        delivered,
-        open: still,
-        dropped: snap.keys.len() - delivered - still,
-        interrupted: interrupted.len(),
+        delivered: count(Outcome::Delivered),
+        open: count(Outcome::Open),
+        dropped: count(Outcome::Dropped),
+        interrupted: c.interrupted.len(),
     }
 }
 
@@ -1045,6 +1071,16 @@ fn uncommitted(tasks: &[Task], rows: &Rows) -> Vec<String> {
 }
 
 fn window_tasks(snap: &Snapshot, rows: &Rows) -> Vec<Task> {
+    window_lines(snap, rows)
+        .into_iter()
+        .map(|(state, line, interrupt)| Task::of(&line, state, interrupt))
+        .collect()
+}
+
+/// The window's rows as [`window_tasks`] and [`page`] list them: each one's state, its line as it
+/// stands now (the snapshot's own when it is on neither sheet), and whether it entered as an
+/// interrupt.
+fn window_lines(snap: &Snapshot, rows: &Rows) -> Vec<(&'static str, String, bool)> {
     let state = |l: &str| {
         if md::is_dropped(l) {
             "dropped"
@@ -1064,13 +1100,13 @@ fn window_tasks(snap: &Snapshot, rows: &Rows) -> Vec<Task> {
             .or_else(|| hit(&rows.later).map(|l| ("deferred", l)))
     };
     let mut seen = HashSet::new();
-    let mut out: Vec<Task> = snap
+    let mut out: Vec<(&'static str, String, bool)> = snap
         .rows
         .iter()
         .filter(|r| seen.insert(key(r)))
         .map(|r| match find(&key(r)) {
-            Some((st, l)) => Task::of(&l, st, false),
-            None => Task::of(r, "gone", false),
+            Some((st, l)) => (st, l, false),
+            None => ("gone", r.clone(), false),
         })
         .collect();
     let entered = rows
@@ -1080,10 +1116,123 @@ fn window_tasks(snap: &Snapshot, rows: &Rows) -> Vec<Task> {
         .filter(|l| has_interrupt(l));
     for l in entered {
         if seen.insert(key(l)) {
-            out.push(Task::of(l, state(l), true));
+            out.push((state(l), l.clone(), true));
         }
     }
     out
+}
+
+/// What became of a row of a window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Outcome {
+    Delivered,
+    /// Still open: carried once the window is cut.
+    Open,
+    Carried,
+    Dropped,
+}
+
+/// One row of a sprint page: where it came out. `state` is the row as it stands now, `gone` for a
+/// committed row on neither sheet nor in the done archive (counted dropped, shown as unknown).
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct PageRow {
+    pub id: Option<String>,
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
+    pub area: Option<String>,
+    pub title: String,
+    pub pts: u32,
+    pub state: &'static str,
+    pub outcome: Outcome,
+    /// Done in the window but not committed: it entered after the lock.
+    pub interrupt: bool,
+}
+
+/// A sprint's page, as `notes projects --sprints <p> --version <v> --json` emits it: the window's
+/// head, its frozen `## Score` when it was cut, and every row with its outcome. The counts are
+/// [`tally`]'s over the same rows, read live, so the outcomes of the committed rows sum to them.
+/// A cut window's rows keep moving after the cut (a carried row ships, a drop is swept), so its
+/// live counts drift from the frozen `score` and the page shows both.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct Page {
+    pub version: String,
+    /// `open`, `queued` (behind the open version) or `closed` (cut, it has a score).
+    pub state: &'static str,
+    pub opened: String,
+    pub due: Option<String>,
+    pub locked: Option<String>,
+    /// The cut: the day it ran once closed, else a locked sprint's planned moment.
+    pub cut: Option<String>,
+    pub timing: Option<String>,
+    #[serde(flatten)]
+    pub tally: Tally,
+    /// The score a cut froze, `None` while the window runs.
+    pub score: Option<Past>,
+    pub rows: Vec<PageRow>,
+}
+
+/// Version `cur`'s sprint page. An error when it has no sprint file: a version that never
+/// recorded a window is not an empty one.
+pub(crate) fn page(dir: &Path, cur: V) -> Result<Page> {
+    let ver = projects::fmt_version(cur);
+    let snap = read(dir, cur).ok_or_else(|| anyhow::anyhow!("no sprint file for {ver}"))?;
+    let ix = Index::of(dir, Some(cur));
+    let rows = rows_for(dir, cur, &ix, &snap);
+    let classes = Classes::of(&snap, &rows);
+    let score = history(dir).into_iter().find(|p| p.version == ver);
+    let cut = |o: Outcome| match (o, score.is_some()) {
+        (Outcome::Open, true) => Outcome::Carried,
+        _ => o,
+    };
+    let page_rows = window_lines(&snap, &rows)
+        .into_iter()
+        .map(|(state, line, interrupt)| {
+            let k = key(&line);
+            let outcome = if interrupt {
+                if classes.shipped.contains(&k) {
+                    Outcome::Delivered
+                } else {
+                    Outcome::Open
+                }
+            } else {
+                classes.committed(&k)
+            };
+            let (kind, area) = projects::row_type_area(&line).unzip();
+            PageRow {
+                id: md::row_id(&line),
+                kind,
+                area,
+                title: projects::row_title(&line),
+                pts: projects::size_weight(&line),
+                state,
+                outcome: cut(outcome),
+                interrupt,
+            }
+        })
+        .collect();
+    let state = if score.is_some() {
+        "closed"
+    } else if is_queued(dir, cur) {
+        "queued"
+    } else {
+        "open"
+    };
+    Ok(Page {
+        version: ver,
+        state,
+        opened: snap.opened.to_string(),
+        due: snap.due.map(|d| d.to_string()),
+        locked: snap.locked.map(|c| c.format(CUT_FORMAT).to_string()),
+        cut: score
+            .as_ref()
+            .and_then(|p| p.cut.clone())
+            .or_else(|| snap.cut.map(|c| c.format(CUT_FORMAT).to_string())),
+        timing: score.as_ref().and_then(|p| p.timing.clone()),
+        tally: tally(&snap, &rows),
+        score,
+        rows: page_rows,
+    })
 }
 
 /// Where a window's build stands, read off its cut row (the `release(...)` row the release skill
@@ -2113,6 +2262,87 @@ mod tests {
         );
         let on_time = cut_line(&snap, &t, day("2026-11-26"), None);
         assert!(on_time.ends_with("cut 2026-11-26 (on time)"), "{on_time}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A sprint page lists every committed row and every interrupt with its outcome, and the
+    /// committed outcomes sum to the Score line the cut froze. A version with no sprint file is
+    /// an error, not an empty page.
+    #[test]
+    fn a_sprint_page_outcomes_sum_to_its_score() {
+        let dir = project("page", "", HUMAN, BOARD);
+        let v = (0, 2, 0);
+        let ix = Index::of(&dir, Some(v));
+        record(
+            &dir,
+            "demo",
+            v,
+            day("2026-11-19"),
+            Some(day("2026-11-26")),
+            &ix,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("README.md"),
+            "# demo\nVersion: v0.2.0\n\n## Tasks\n\
+             - [x] feat(ui): menu #pts/5 <!-- id:db-1 done:2026-11-20 -->\n\
+             - [x] fix(ui): hotfix #interrupt <!-- id:db-7 done:2026-11-21 -->\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("agent/README.md"),
+            "## Tasks\n\
+             - [x] fix(ci): flaky <!-- id:db-5 dropped: dup -->\n\
+             - [ ] chore(docs): no id row #high\n\
+             - [ ] fix(red): main red #interrupt <!-- id:db-8 -->\n",
+        )
+        .unwrap();
+        let open = page(&dir, v).unwrap();
+        assert_eq!((open.state, open.score.is_none()), ("open", true));
+        let line = score(&dir, v, &ix, day("2026-11-28"), None).unwrap();
+        write_score(&dir, v, &line).unwrap();
+        let p = page(&dir, v).unwrap();
+        assert_eq!(p.state, "closed");
+        let n = |o: Outcome, interrupt: bool| {
+            p.rows
+                .iter()
+                .filter(|r| r.outcome == o && r.interrupt == interrupt)
+                .count()
+        };
+        let score = p.score.as_ref().unwrap();
+        assert_eq!(
+            (
+                n(Outcome::Delivered, false),
+                n(Outcome::Carried, false),
+                n(Outcome::Dropped, false),
+                p.rows.iter().filter(|r| r.interrupt).count()
+            ),
+            (
+                score.delivered,
+                score.carried,
+                score.dropped,
+                score.interrupted
+            ),
+            "{p:?}"
+        );
+        assert_eq!(p.rows.len(), score.committed + score.interrupted);
+        let menu = p
+            .rows
+            .iter()
+            .find(|r| r.id.as_deref() == Some("db-1"))
+            .unwrap();
+        assert_eq!(
+            (
+                menu.kind.as_deref(),
+                menu.area.as_deref(),
+                menu.title.as_str(),
+                menu.pts
+            ),
+            (Some("feat"), Some("ui"), "menu", 5)
+        );
+        // NEGATIVE CONTROL: a version never recorded is an error, not an empty list.
+        let err = page(&dir, (0, 2, 1)).unwrap_err().to_string();
+        assert!(err.contains("no sprint file for v0.2.1"), "{err}");
         let _ = fs::remove_dir_all(&dir);
     }
 
