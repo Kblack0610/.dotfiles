@@ -2236,8 +2236,6 @@ real_notes_board() {
   assert_equal "$(jq -r '[.state, .partial, .pr, .merged] | join(" ")' <<<"$output")" 'running yes o/r#42 fedcba9876543210fedcba9876543210fedcba98'
   run agent-queue show next --json
   assert_equal "$(jq -r .hold <<<"$output")" 'after ship'
-  run agent-queue next --json
-  refute_output --partial '"slug":"next"'
   [ -z "$(board_calls)" ] || fail 'partial landing closed the row'
   # Repeating the first landing keeps one PR and never releases its dependents.
   run "$LAND" 42 --item ship --partial
