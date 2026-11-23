@@ -859,8 +859,20 @@ fn cut_line(snap: &Snapshot, t: &Tally, cut: NaiveDate, target: Option<(V, Naive
 }
 
 /// The score line a cut of version `cur` on `cut` writes, `None` when the window was never
-/// recorded. Read before the cut moves a row.
-pub(crate) fn score(
+/// recorded. Read before the cut moves a row. A window kept outside `sprints/` is moved there
+/// first, so its score is not lost.
+pub(crate) fn scored(
+    dir: &Path,
+    cur: V,
+    ix: &Index,
+    cut: NaiveDate,
+    target: Option<(V, NaiveDate)>,
+) -> Result<Option<String>> {
+    migrate_sprints(dir)?;
+    Ok(score(dir, cur, ix, cut, target))
+}
+
+fn score(
     dir: &Path,
     cur: V,
     ix: &Index,
@@ -873,7 +885,7 @@ pub(crate) fn score(
 }
 
 /// Write `line` as the `## Score` of version `cur`'s sprint file.
-pub(crate) fn write_score(dir: &Path, cur: V, line: &str) -> Result<()> {
+fn write_score(dir: &Path, cur: V, line: &str) -> Result<()> {
     let project = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
     put_section(
         &sprint_path(dir, cur),
@@ -884,8 +896,18 @@ pub(crate) fn write_score(dir: &Path, cur: V, line: &str) -> Result<()> {
     )
 }
 
-/// The line a frozen version note keeps in place of the score: a link to the window's file.
-pub(crate) fn frozen_link(cur: V) -> String {
+/// Write the `score` of version `cur` to its sprint file, before the freeze so a failure leaves
+/// no row moved, and return the line the frozen version note keeps in its place (a link to the
+/// window's file; empty when the window was never recorded).
+pub(crate) fn record_score(dir: &Path, cur: V, score: Option<&str>) -> Result<String> {
+    let Some(line) = score else {
+        return Ok(String::new());
+    };
+    write_score(dir, cur, line)?;
+    Ok(frozen_link(cur))
+}
+
+fn frozen_link(cur: V) -> String {
     let v = projects::fmt_version(cur);
     format!("\nSprint: [{v}](../{SPRINTS_DIR}/{v}.md)\n")
 }

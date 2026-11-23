@@ -2668,9 +2668,7 @@ pub fn release(
     // The window's score, read before anything below moves a row.
     let today = chrono::Local::now().date_naive();
     let promised = target_of(&content).filter(|t| t.0 == cur);
-    // A window recorded before `sprints/` is moved there first, so its score is not lost.
-    crate::window::migrate_sprints(&dir)?;
-    let score = crate::window::score(&dir, cur, &ix, today, promised);
+    let score = crate::window::scored(&dir, cur, &ix, today, promised)?;
 
     // The tag freezes what it shipped: each closed row goes by the first tag containing its
     // commit (`shipped`), so a late close of an earlier tag's work goes to that tag and a merge
@@ -2740,14 +2738,8 @@ pub fn release(
             .chain(agent_rows.iter().map(String::as_str)),
     );
     let frozen_body = with_carried(frozen_body, &carried, next);
-    let link = score
-        .as_ref()
-        .map_or_else(String::new, |_| crate::window::frozen_link(cur));
+    let link = crate::window::record_score(&dir, cur, score.as_deref())?;
     let frozen_body = format!("{}\n{prs}{link}", frozen_body.trim_end());
-    // The score goes to the window's own file before the freeze, so a failure leaves no row moved.
-    if let Some(line) = &score {
-        crate::window::write_score(&dir, cur, line)?;
-    }
     // Stamp WHEN this version was frozen: that epoch is the boundary between one version's
     // work and the next, and consumers scope "what happened this version" by it. Written
     // here rather than read from the file's mtime, because regenerating an old note's
@@ -3661,6 +3653,16 @@ pub fn show_roadmap(p: &Profile, name: &str, json: bool) -> Result<()> {
 /// TSV `version<TAB>opened<TAB>cut<TAB>committed<TAB>delivered<TAB>carried<TAB>dropped<TAB>
 /// interrupted<TAB>timing` (`-` for a missing day or timing); with `json`, one array of
 /// [`crate::window::Past`], adding each score line.
+/// Print the one read-only view `--stats` or `--sprints` asks for; false when neither is set.
+pub fn print_view(p: &Profile, stats_: bool, sprints: Option<&str>, json: bool) -> Result<bool> {
+    match (sprints, stats_) {
+        (Some(n), _) => show_sprints(p, n, json)?,
+        (None, true) => stats(json)?,
+        (None, false) => return Ok(false),
+    }
+    Ok(true)
+}
+
 pub fn show_sprints(p: &Profile, name: &str, json: bool) -> Result<()> {
     let past = crate::window::history(&project_dir(p, name)?);
     if json {

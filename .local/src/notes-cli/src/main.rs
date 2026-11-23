@@ -2044,12 +2044,7 @@ fn main() -> Result<()> {
             if json && !stats && roadmap.is_none() && sprints.is_none() {
                 anyhow::bail!("--json goes with --stats, --roadmap or --sprints");
             }
-            if let Some(n) = sprints {
-                projects::show_sprints(&prof, &n, json)?;
-                std::process::exit(0);
-            }
-            if stats {
-                projects::stats(json)?;
+            if projects::print_view(&prof, stats, sprints.as_deref(), json)? {
                 std::process::exit(0);
             }
             // lifecycle/version flags take precedence over the read paths
