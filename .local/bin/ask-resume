@@ -84,16 +84,20 @@ run_resume() { # $1=id $2=project $3=command
     return 0
   fi
   # A run that opened a PR and did not land it leaves the item in review, where reap settles it by
-  # that PR; done refuses an item whose PR has not merged.
+  # that PR; done refuses an item whose PR has not merged. ar-4681: a close once reached agent-queue
+  # with an empty state and the item stayed open; the cause was not reproduced. close() passes the state
+  # as literal arguments from each call site and logs the very arguments it passed, so a repeat shows
+  # what agent-queue was given.
   # shellcheck disable=SC2016 # the inner shell's $1..$4: the prompt, max turns, the item and its session id
   "${detach[@]}" env AGENT_QUEUE_ITEM="$slug" bash -c '
     agentctl-run --agent ask-resume -p "$1" --max-turns "$2" ${4:+--session-id "$4"}; rc=$?
-    it="$(agent-queue show "$3" --json 2>/dev/null)"
+    item="$3"
+    close() { agent-queue move "$item" "$@" >/dev/null || echo "ask-resume: $item is left open: agent-queue move $item $*" >&2; }
+    it="$(agent-queue show "$item" --json 2>/dev/null)"
     [ "$(jq -r .state <<<"$it")" = running ] || exit "$rc"
-    if [ -n "$(jq -r ".pr // empty" <<<"$it")" ]; then to=(review)
-    elif [ "$rc" = 0 ]; then to=(done --status ok)
-    else to=(done --status failed); fi
-    agent-queue move "$3" "${to[@]}" >/dev/null || echo "ask-resume: $3 is left open: agent-queue move $3 ${to[*]}" >&2
+    if [ -n "$(jq -r ".pr // empty" <<<"$it")" ]; then close review
+    elif [ "$rc" = 0 ]; then close done --status ok
+    else close done --status failed; fi
     exit "$rc"' ask-resume "$cmd" "${ASK_RESUME_MAX_TURNS:-60}" "$slug" "$sid" \
     >>"$log/${project}.log" 2>&1 </dev/null
 }
