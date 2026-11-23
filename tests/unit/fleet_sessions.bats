@@ -6880,7 +6880,7 @@ notice_line() {   # <ts> <task id> <status>
   run ahead_files "$sm" origin/master; assert_output 1                               # the old read: off master
   gh_script 'exit 1'; MAIN_CACHE="$SANDBOX/main"; touch "$LEDGER_DIR/prs.tsv"
   unlanded() { git_facts "$1" | cut -d' ' -f3; }
-  run submodule_pin "$sm"; assert_output "$(git -C "$sm" rev-parse HEAD)"
+  run submodule_pin "$sm" pass_base; assert_output "$(git -C "$sm" rev-parse HEAD)"
   [ "$(unlanded "$sm")" = 0 ]
   # close --self from the superproject, in the reported shape (ar-2518, ucp agent-14 at 50758455: pin-merge pushed):
   # no unlanded blocker. The pin clears it, not the push, which leaves the read unchanged.
@@ -6892,10 +6892,10 @@ notice_line() {   # <ts> <task id> <status>
   run edited_work_blockers "$SANDBOX/wt" "$sm/g"; assert_output "STALLED unlanded work in $sm: 1 file(s) not on the default branch, no PR"
   # merged to the submodule's master but not yet pinned: landed, not unlanded
   "${g[@]}" -C "$sm" push -q origin HEAD:master 2>/dev/null; "${g[@]}" -C "$sm" fetch -q origin
-  run ahead_files "$sm" "$(submodule_pin "$sm")"; assert_output 1
+  run ahead_files "$sm" "$(submodule_pin "$sm" pass_base)"; assert_output 1
   [ "$(unlanded "$sm")" = 0 ]
   # outside a submodule there is no pin and the base is the base
-  run submodule_pin "$SANDBOX/wt"; assert_output ''
+  run submodule_pin "$SANDBOX/wt" pass_base; assert_output ''
 }
 
 @test "an open PR whose red jobs ran no steps is WORKING, waiting on billing; a job with a step is a real red (ar-2606)" {

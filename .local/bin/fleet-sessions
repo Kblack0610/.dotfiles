@@ -76,7 +76,7 @@ set -uo pipefail
 # merge_proof_branch and merge_proof_ref: the one reader of a repo's default branch (default_base, off_default_checkouts, wp_base).
 # shellcheck source=../lib/agent-merge-proof.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-merge-proof.sh"
-# ahead_files, dirty_paths and submodule_pin: one definition, which the worker panel read runs on each worker too.
+# ahead_files, unlanded_files and dirty_paths: one definition, which the worker panel read runs on each worker too.
 # shellcheck source=../lib/fleet-worker-panel.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-worker-panel.sh"
 
@@ -1849,6 +1849,9 @@ dirty_names() {
     END { if (n > k) s = s ", +" (n - k) " more"; print (n ? s : "-") }' <<<"$1"
 }
 
+# pass_base <dir>: default_base after this pass's fetch of <dir>; the base reader a pass hands unlanded_files.
+pass_base() { fetch_once "$1"; default_base "$1"; }
+
 # fetch_once <dir>: with FLEET_FETCH=1 (tick sets it), fetch the canonical remote once per repo per pass,
 # so behind and conflicts are measured against the remote tip, not the last manual fetch.
 # Worktrees of one repo share its refs, so one fetch covers them all.
@@ -1976,7 +1979,7 @@ pr_holding_head() {
 # "git dirty ahead pr state ci in_pr branch behind conflicts fork oid names". <shell job> is the
 # open job of the session's background shell, for gate_ci (- when it has none); <chain> is chain_hold's answer.
 git_facts() {
-  local d="$1" edited="${2:-}" shell="${3:--}" chain="${4:-}" branch dirty=0 paths ahead pahead pin base prb pr state ci oid red inpr=1 head
+  local d="$1" edited="${2:-}" shell="${3:--}" chain="${4:-}" branch dirty=0 paths ahead base prb pr state ci oid red inpr=1 head
   [ -d "$d" ] || { echo "gone 0 0 - - - 1 - - - - - -"; return; }
   git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo "0 0 0 - - - 1 - - - - - -"; return; }
   branch="$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)"
@@ -1986,13 +1989,7 @@ git_facts() {
   paths="$(dirty_paths "$d" "$edited")"
   [ -n "$paths" ] && dirty="$(wc -l <<<"$paths")"
   base="$(default_base "$d")"
-  ahead="$(ahead_files "$d" "$base")"
-  # In a submodule, work is landed once it is on the default branch or pinned by the superproject's: unlanded only when neither.
-  pin="$(submodule_pin "$d")"
-  if [ -n "$pin" ] && [ "$ahead" -gt 0 ]; then
-    pahead="$(ahead_files "$d" "$pin")"
-    [ "$pahead" -lt "$ahead" ] && ahead="$pahead"
-  fi
+  ahead="$(unlanded_files "$d" "$base" pass_base)"
   IFS=$'\t' read -r prb pr state ci oid red < <(pr_for_head "$d" "$branch" "$ahead")
   [ "${state:-}" = OPEN ] && ci="$(open_pr_ci "$d" "$prb" "$pr" "$oid" "$ci" "$red" "$shell" "$chain")"
   if [ -n "${oid:-}" ]; then
@@ -3135,7 +3132,7 @@ on_worker() {
 # worker's transcript, so what will wake this session (pending_wakes) is read here too, from agent-panel's
 # transcript and start for it.
 close_self_held() {
-  local f doc age row cwd dirty=0 ahead=0 tx started wake pin pahead
+  local f doc age row cwd dirty=0 ahead=0 tx started wake
   f="$(holder_state_file)"
   doc="$(jq -c . "$f" 2>/dev/null)" && [ -n "$doc" ] \
     || { echo "after: the lease holder has sent no state to this worker yet ($f); ask again in a minute"; return 1; }
@@ -3148,12 +3145,7 @@ close_self_held() {
   cwd="$(jq -r '.cwd // empty' <<<"$row")"
   if [ -d "$cwd" ] && git -C "$cwd" rev-parse --git-dir >/dev/null 2>&1; then
     dirty="$(dirty_paths "$cwd" "" | grep -c .)" || dirty=0
-    ahead="$(ahead_files "$cwd" "$(wp_base "$cwd")")"
-    pin="$(submodule_pin "$cwd")"
-    if [ -n "$pin" ] && [ "$ahead" -gt 0 ]; then
-      pahead="$(ahead_files "$cwd" "$pin")"
-      [ "$pahead" -lt "$ahead" ] && ahead="$pahead"
-    fi
+    ahead="$(unlanded_files "$cwd" "$(wp_base "$cwd")")"
   fi
   IFS=$'\t' read -r tx started < <("${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null | jq -rn --arg s "$CLOSE_SELF" '
     [inputs | select(.session_id == $s)][0] // {} | [(.transcript // "-"), (.started_at // "-" | tostring)] | @tsv')

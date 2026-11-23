@@ -15,7 +15,7 @@
 # head, upstream, unpushed, ahead, dirty}: main is the repo's main checkout (a worker clones each repo at
 # the path the workstation has it, so it names the clone there), unpushed the commits on HEAD that no
 # remote ref holds, ahead and dirty as ahead_files and dirty_paths count them against origin's default
-# branch (in a submodule: off both its default branch and the superproject's pin).
+# branch (unlanded_files: in a submodule, off both its default branch and the superproject's pin).
 #
 # wp_base needs merge_proof_ref (agent-merge-proof.sh) defined first: fleet-sessions sources both
 # files, and fleet_host_panel sends both texts.
@@ -43,27 +43,39 @@ ahead_files() {
   grep -c . <<<"$changed" || true
 }
 
-# submodule_pin <dir> -> the commit the superproject's default branch pins for <dir> (when <dir> is a
-# submodule and this clone has that commit), else nothing. A submodule's own default branch says nothing
-# about what landed: the pin may sit on a pin-merge commit another session owns, off master by design
-# (2026-11-16 unity-core-playground-agent-20 read STALLED "3 file(s) not on the default branch" with a
-# clean tree and HEAD the pin on origin/main).
+# submodule_pin <dir> [<base reader>] -> the commit the superproject's default branch pins for <dir> (when
+# <dir> is a submodule and this clone has that commit), else nothing. <base reader> names that branch for
+# the superproject: wp_base by default, and fleet-sessions' pass_base in a pass. A submodule's own default
+# branch says nothing about what landed: the pin may sit on a pin-merge commit another session owns, off
+# master by design (2026-11-16 unity-core-playground-agent-20 read STALLED "3 file(s) not on the default
+# branch" with a clean tree and HEAD the pin on origin/main).
 submodule_pin() {
-  local d="$1" sup top rel pin base
+  local d="$1" read_base="${2:-wp_base}" sup top rel base pin
   sup="$(git -C "$d" rev-parse --show-superproject-working-tree 2>/dev/null)"
   [ -n "$sup" ] || return 0
   top="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)"
   rel="${top#"$sup"/}"
-  command -v fetch_once >/dev/null && fetch_once "$sup"
-  if command -v default_base >/dev/null && [ -n "${CACHE:-}" ]; then
-    base="$(default_base "$sup")"
-  else
-    base="$(wp_base "$sup")"
-  fi
+  base="$("$read_base" "$sup")"
   [ -n "$base" ] || return 0
   pin="$(git -C "$sup" ls-tree "$base" -- "$rel" 2>/dev/null | awk '$2 == "commit" { print $3; exit }')"
   [ -n "$pin" ] && git -C "$d" cat-file -e "$pin^{commit}" 2>/dev/null && echo "$pin"
   return 0
+}
+
+# unlanded_files <dir> <base> [<base reader>] -> ahead_files against <base>, except that in a submodule
+# work is landed once it is on <base> or pinned by the superproject's default branch (submodule_pin, with
+# <base reader>): the files off both. The one count every reader of "not on the default branch" takes.
+unlanded_files() {
+  local d="$1" base="$2" ahead pin pahead
+  ahead="$(ahead_files "$d" "$base")"
+  if [ "$ahead" -gt 0 ]; then
+    pin="$(submodule_pin "$d" "${3:-wp_base}")"
+    if [ -n "$pin" ]; then
+      pahead="$(ahead_files "$d" "$pin")"
+      [ "$pahead" -lt "$ahead" ] && ahead="$pahead"
+    fi
+  fi
+  echo "$ahead"
 }
 
 # dirty_paths <dir> <edited files, one absolute path per line>: the session's dirty files,
@@ -133,7 +145,7 @@ empty_submodule() {
 
 # wp_git <dir> <edited files> -> the row's `git` object.
 wp_git() {
-  local d="$1" edited="$2" common main base up origin ahead pin pahead
+  local d="$1" edited="$2" common main base up origin
   [ -n "$d" ] && [ -d "$d" ] || { echo '{"in":"gone"}'; return; }
   git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo '{"in":0}'; return; }
   # A credential in an https remote stays on the worker: the rows are published (worker-panel.json).
@@ -143,12 +155,6 @@ wp_git() {
   case "$common" in */.git) main="${common%/.git}" ;; *) main="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" ;; esac
   base="$(wp_base "$d")"
   up="$(git -C "$d" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)"
-  ahead="$(ahead_files "$d" "$base")"
-  pin="$(submodule_pin "$d")"
-  if [ -n "$pin" ] && [ "$ahead" -gt 0 ]; then
-    pahead="$(ahead_files "$d" "$pin")"
-    [ "$pahead" -lt "$ahead" ] && ahead="$pahead"
-  fi
   dirty_paths "$d" "$edited" | jq -Rsc \
     --arg main "$main" \
     --arg origin "$origin" \
@@ -156,7 +162,7 @@ wp_git() {
     --arg head "$(git -C "$d" rev-parse -q --verify HEAD 2>/dev/null)" \
     --arg up "${up#*/}" \
     --arg unpushed "$(git -C "$d" rev-list --count HEAD --not --remotes 2>/dev/null)" \
-    --arg ahead "$ahead" \
+    --arg ahead "$(unlanded_files "$d" "$base")" \
     '{in: 1, $main, $origin, $branch, $head, upstream: $up, unpushed: ($unpushed | tonumber? // 0),
       ahead: ($ahead | tonumber? // 0), dirty: (split("\n") | map(select(. != "")))}'
 }
