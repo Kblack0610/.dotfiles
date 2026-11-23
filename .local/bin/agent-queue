@@ -418,6 +418,7 @@ done_status() {
 # too: two tasks can share a 40-character slug and be different work. Refused adds exit
 # AQ_EX_FINISHED. On 2026-11-06 a plan's re-queue ran an ok phase again (id-like-to-setup-abundant-seahor-p8).
 AQ_EX_FINISHED=4
+# gate: aq-finished-ok
 finished_ok() {
   local f
   f="$(latest_done "$1")"
@@ -431,6 +432,7 @@ finished_ok() {
 # finished ok on that row, as finished_ok reads the slug's. finished_ok keys on the slug, and a hand start slugs
 # `<project>-<key>` where promote slugs the row `<key>`, so a done row's refill slipped past it
 # (2026-11-07: trader tr-58 queued again after #635 merged). Refused adds exit AQ_EX_FINISHED.
+# gate: aq-finished-row-ok
 finished_row_ok() {
   local key="${1#board:}" f
   [ "$key" != "$1" ] || return 0
@@ -578,6 +580,7 @@ running_from() {
   else echo human; fi
 }
 # pull_ok <running> <from> <from_given> -> true when this add may go into the queue at all.
+# gate: aq-pull-ok
 pull_ok() { [ -n "$1" ] || [ -n "${AGENT_QUEUE_PULL:-}" ] || hand_caller "$2" "$3"; }
 # board_only_say -> the one line every add the board takes instead prints first.
 board_only_say() {
@@ -675,6 +678,7 @@ stack_pr() {
 # hold_for <after> <tags> [<file>] -> sets HOLD to hold_reason's answer for these
 # header values, HOLD_DEAD to 1 when that hold can never release (cmd_gate reads it), and
 # HOLD_STACK to "<slug>=<PR>" for each after: slug that is live with an open PR (stacked: no hold).
+# gate: aq-hold-for
 hold_for() {
   local after="$1" tags="$2" tag now stamp nday MEMO_V AST s live=""
   local -a afters
@@ -1053,6 +1057,7 @@ rbw_listing() {
 # started on their own. Pending, cancelled, no such ask, an empty answer, an answer naming another
 # option or several, and any other answer to an ask that lists no options all hold. 2026-11-12: three
 # Shape City items failed on free-text answers to e76omL, xTxBqv and zIi8Xc.
+# gate: aq-ask-pending
 ask_pending() {
   local id="${1%%=*}" want="" f st ans names
   [[ "$1" == *=* ]] && want="${1#*=}"
@@ -1770,6 +1775,7 @@ area_held() {
 # `cause:`, so one red has one owner: triage's red fixes, fix-red's hand-queued ones and a session's
 # own claim all come through add, and set and reopen check it too. A later phase of the same plan
 # (AQ_ITEM_PLAN, add --plan) is the same work. Under the lock, so two filers cannot both pass.
+# gate: aq-cause-owner
 cause_owner() {
   local c own rows
   [[ " $1 " == *" cause:"?* ]] || return 0
@@ -3190,6 +3196,7 @@ cancel_check() {
 # item records it as the decision. The human at a terminal or the Queue tab's button is not held.
 # 2026-11-12: two cleanups cancelled 220 from: human items, one on an ask the judge answered in 20 s,
 # the other by looping a dead chain.
+# gate: aq-cancel-guard
 cancel_guard() {
   local slug pend
   slug="$(fm_get "$1" slug)"
@@ -3372,6 +3379,7 @@ word_list() {
 
 # check_after <slugs> [<own slug>] -- die on an `after:` slug no item has, or one naming the item
 # itself, since neither ever releases: add, add --plan and `set after=` check.
+# gate: aq-check-after
 check_after() {
   local s
   for s in $1; do
@@ -3382,6 +3390,7 @@ check_after() {
 
 # check_tags <tags> -- die on a hold tag the queue could not read, so a gate is never silently
 # open or shut: add and `set tags=` both check.
+# gate: aq-check-tags
 check_tags() {
   local tag why opts rest opt
   for tag in $1; do
