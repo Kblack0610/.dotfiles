@@ -199,9 +199,24 @@ item_stub() { # <title>
                {session_id: "me-0000-0000", bucket: "WORKING", idle_min: 0, topic: "me", cwd: $c}]}' > "$FLEET_STATE_FILE"
   run context
   assert_success
-  assert_output --partial '2 other session(s) open in this checkout'
+  assert_output --partial '2 other session(s) open on toolrepo (2 in this checkout)'
   refute_output --partial 'a private topic'
   refute_output --partial 'Open sessions'
+}
+
+@test "open sessions count a sibling worktree of the project, not another project's (ar-3879)" {
+  jq -n --argjson e "$(date +%s)" --arg c "$REPO" '{generated_epoch: $e,
+    vocab: {buckets: ["WORKING","DONE"], finished: ["DONE"]},
+    sessions: [{session_id: "aaaaaaaa-1", bucket: "WORKING", project: "toolrepo", cwd: "/elsewhere/toolrepo-agent-7"},
+               {session_id: "bbbbbbbb-2", bucket: "WORKING", project: "toolrepo", cwd: "/elsewhere/toolrepo-agent-8"},
+               {session_id: "cccccccc-3", bucket: "DONE", project: "toolrepo", cwd: "/elsewhere/toolrepo-agent-9"},
+               {session_id: "dddddddd-4", bucket: "WORKING", project: "otherproj", cwd: "/elsewhere/other-agent-1"},
+               {session_id: "eeeeeeee-5", bucket: "WORKING", project: "toolrepo", host: "razer", cwd: "/elsewhere/toolrepo-agent-2"},
+               {session_id: "me-0000-0000", bucket: "WORKING", project: "toolrepo", cwd: $c}]}' > "$FLEET_STATE_FILE"
+  run context
+  assert_success
+  assert_output --partial '2 other session(s) open on toolrepo - `fleet-sessions` lists them.'
+  refute_output --partial 'in this checkout'
 }
 
 # -- anchor --------------------------------------------------------------------------------
