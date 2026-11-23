@@ -377,7 +377,7 @@ test("Vitals folds to its head when all are on target, and shows nothing until i
 
 // Cards as hub_core::cards serializes them: a link is its href.
 const card = (tab, o = {}) => ({ tab, title: tab[0].toUpperCase() + tab.slice(1), big: "3", unit: "live", level: "ok", bar: [{ level: "ok", n: 2 }, { level: "red", n: 1 }],
-  parts: [{ label: "Working", value: "2", level: "ok" }], first_head: "Where to look first", first: [], counted: `counted on ${tab}`, error: null, link: `#${tab}`, ...o });
+  parts: [{ label: "Working", value: "2", level: "ok" }], lists: [], counted: `counted on ${tab}`, error: null, link: `#${tab}`, ...o });
 // The grid's order, read from hub-core (hub_core::cards::ORDER after its two widget-led cards), so the page draws what the widgets and the TUI draw.
 const TABS = [...readFileSync(new URL("../../.local/src/hub-core/src/cards.rs", import.meta.url), "utf8").match(/pub const ORDER: &\[&str\] = &\[([^\]]*)\]/)[1].matchAll(/"(\w+)"/g)].map((m) => m[1]).slice(2);
 const cards = () => TABS.map((t) => card(t));
@@ -400,8 +400,8 @@ test("the cards lead Home, one per tab, each title opening its tab with what it 
 
 test("a look-first row opens its record, and is pilled only when it is not ok", () => {
   const first = [{ text: "trader-x", sub: "stalled 3h", level: "red", link: "#sessions/trader-x" }, { text: "binks", sub: "", level: "ok", link: null }];
-  const html = drawCards([card("sessions", { first })]);
-  assert.match(html, /<div class="kfh">Where to look first<\/div><a class="kf" href="#sessions\/trader-x"><span><b>trader-x<\/b><small>stalled 3h<\/small><\/span><em class="bad">broken<\/em><\/a>/);
+  const html = drawCards([card("sessions", { lists: [{ head: "Where to look first", rows: first }] })]);
+  assert.match(html, /<div class="kl"><div class="kfh">Where to look first<\/div><a class="kf" href="#sessions\/trader-x"><span><b>trader-x<\/b><small>stalled 3h<\/small><\/span><em class="bad">broken<\/em><\/a>/);
   assert.match(html, /<a class="kf" href="#sessions"><span><b>binks<\/b><\/span><\/a>/, "no record: the row opens the tab, and an ok row has no pill");
 });
 

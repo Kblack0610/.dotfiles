@@ -495,9 +495,9 @@ const tests = {
 };
 
 // /api/home/cards: hub_core::cards::grid, one card per tab, a link as its href.
-const kcard = (tab, title, big, unit, level, bar, parts, first = [], o = {}) => ({ tab, title, big, unit, level,
+const kcard = (tab, title, big, unit, level, bar, parts, first = [], { first_head = "Where to look first", ...o } = {}) => ({ tab, title, big, unit, level,
   bar: bar.map(([l, n]) => ({ level: l, n })), parts: parts.map(([label, value, l = "ok"]) => ({ label, value, level: l })),
-  first_head: "Where to look first", first: first.map(([text, sub, l = "warn"]) => ({ text, sub, level: l, link: null })),
+  lists: [{ head: first_head, rows: first.map(([text, sub, l = "warn"]) => ({ text, sub, level: l, link: null })) }],
   counted: `counted by the ${title} tab`, error: null, link: `#${tab}`, ...o });
 const GRID_CARDS = [
   kcard("needs", "Needs you", "5", "waiting on you", "warn", [["warn", 5]], [["Asks", "3", "warn"], ["Sessions", "1", "warn"], ["Queue", "1", "warn"]],
