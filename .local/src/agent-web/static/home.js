@@ -342,6 +342,7 @@ function drawHome() {
   const grid = hst.cards ? cardsHtml(hst.cards) : `<div class="empty">${esc(hst.cardsErr || "Reading the tabs.")}</div>`;
   const vfold = v ? pfold("home-vitals", `<span class="${v.all_ok ? "muted" : "warn"}">Vitals: ${esc(v.head)}</span>`, vitals) : "";
   paint(el, errs + grid + vfold + needs + parkedSection() + nightSection() + propSection(h) + running, askst.open);
+  packCards(el);
 }
 // Session events re-render this often; keep a reply that is being typed, and a table's search
 // or dropdown in use, around which only that table's rows and chips repaint.
