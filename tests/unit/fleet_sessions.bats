@@ -2872,6 +2872,42 @@ research_item() {
   [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
 }
 
+@test "end to end: own_asks counts a pending ask on the session's queue item even when an earlier session filed it (ar-4650)" {
+  # ar-4650: agent-1 read STALLED on ar-4640 while waiting on onC7wY filed by an earlier session
+  clean_fixture
+  export ASK_ROOT="$HOME/.agent/asks"
+  mkdir -p "$ASK_ROOT/apociseum" "$HOME/.agent/queue/running"
+  printf 'id: onC7wY\nstatus: pending\nsession: s0\nclaude_session: sid-0\n' > "$ASK_ROOT/apociseum/onC7wY.md"
+  printf 'slug: ar-4640\nproject: apociseum\nmode: oneshot\npriority: high\ntags: ask:onC7wY\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s1\nsessions: sid-9\n---\nar-4640 task\n' \
+    > "$HOME/.agent/queue/running/20261103-100000-ar-4640.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, no plan file, its item ar-4640 is running here' ]
+  [ "$(jq -r .own_asks <<<"$output")" = 1 ]
+  [ "$(jq -r .asks <<<"$output")" = 0 ]
+
+  # Once the ask is answered, own_asks drops back to 0
+  printf 'id: onC7wY\nstatus: answered\nsession: s0\nclaude_session: sid-0\n' > "$ASK_ROOT/apociseum/onC7wY.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .own_asks <<<"$output")" = 0 ]
+
+  # Also when the ask is on the item via task: in the pending ask
+  printf 'id: onC7wY\nstatus: pending\nsession: s0\nclaude_session: sid-0\ntask: ar-4640\n' > "$ASK_ROOT/apociseum/onC7wY.md"
+  sed -i '/tags: ask:onC7wY/d' "$HOME/.agent/queue/running/20261103-100000-ar-4640.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .own_asks <<<"$output")" = 1 ]
+
+  # The case that read STALLED: the item waits here on the ask through its ask: field, the ask names no task
+  printf 'id: onC7wY\nstatus: pending\nsession: s0\nclaude_session: sid-0\n' > "$ASK_ROOT/apociseum/onC7wY.md"
+  mkdir -p "$HOME/.agent/queue/waiting"
+  sed 's/^from: human$/from: human\nask: onC7wY/' "$HOME/.agent/queue/running/20261103-100000-ar-4640.md" \
+    > "$HOME/.agent/queue/waiting/20261103-100000-ar-4640.md"
+  rm "$HOME/.agent/queue/running/20261103-100000-ar-4640.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .item.slug <<<"$output")" = ar-4640 ]
+  [ "$(jq -r .own_asks <<<"$output")" = 1 ]
+}
+
 @test "end to end: a landed session whose next phases are other queue items is DONE once its own item is done; that item is not a next phase" {
   landed_fixture
   # its own item names the plan: still LANDED, told to queue the rest
