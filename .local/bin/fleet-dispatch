@@ -7718,7 +7718,8 @@ cmd_kick() {
 kick_start() {
   local live room gap
   fleet_hosts >/dev/null
-  if agent-hold check dispatch >/dev/null 2>&1; then settle NOOP "kick: held (agent-hold dispatch), starting nothing"; return 0; fi
+  # `agent-hold check` exits 0 when nothing holds dispatch, as cmd_run reads it.
+  agent-hold check dispatch >/dev/null 2>&1 || { settle NOOP "kick: held (agent-hold dispatch), starting nothing"; return 0; }
   GATES_LOADED=''; load_gates
   pass_reset
   pace_target
