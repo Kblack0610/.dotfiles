@@ -312,7 +312,9 @@ hold_stubs() {
   [ ! -e "$NOTES_FIXTURE/systemctl.log" ] || fail "a kick at its budget started the unit"
   run "$PLAN" --kick
   [ "$(wc -l <"$NOTES_FIXTURE/notify.log")" = 1 ] || fail "the stop paged more than once a day"
-  [ ! -e "$HOME/.local/state/agentctl/inbox-plan/activity.log" ] || fail "a kick wrote an outcome line"
+  run cat "$HOME/.local/state/agentctl/inbox-plan/activity.log"
+  assert_line --partial 'outcome=BLOCKED budget: over its daily budget: $6 of $5 (BUDGET_DAY_USD) why: at its budget cap'
+  [ "${#lines[@]}" = 1 ] || fail "two kicks at one stop wrote ${#lines[@]} outcome lines"
   sheet '- [ ] feat(a): one #plan #requested <!-- id:sc-1 -->\n- [ ] fix(b): two #plan <!-- id:sc-2 -->\n'
   run "$PLAN" --kick
   grep -q 'agentctl@inbox-plan' "$NOTES_FIXTURE/systemctl.log" || fail "a held row with a slot did not start the unit"

@@ -24,6 +24,7 @@ BUDGET_DEFAULT_CALLS_HOUR=20
 . "$(dirname "${BASH_SOURCE[0]}")/../../../lib/agent-proof.sh"
 # shellcheck source=calls.sh
 . "$(dirname "${BASH_SOURCE[0]}")/calls.sh"
+AGENTCTL_CONF_DIR="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}"
 budget_state() { printf '%s/%s' "$(proof_state_dir)" "$1"; }
 # The reason a budget stop holds its name with (agent-proof's held_why); a call let through ends it.
 BUDGET_HELD_WHY="at its budget cap"
@@ -88,7 +89,7 @@ budget_spent() {
 budget_conf() {
   ( set +eu; unset BUDGET_CALL_USD BUDGET_DAY_USD MAX_CALLS_HOUR
     # shellcheck disable=SC1090
-    . "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/$1.conf" >/dev/null 2>&1
+    . "$AGENTCTL_CONF_DIR/$1.conf" >/dev/null 2>&1
     printf '%s\n' "${BUDGET_CALL_USD:-}" "${BUDGET_DAY_USD:-}" "${MAX_CALLS_HOUR:-}" )
 }
 
@@ -115,6 +116,17 @@ budget_page() {
     agent-notify -t "$1 stopped at its budget" "$1 $2. To go on today: agentctl budget $1 raise <usd>" >/dev/null 2>&1 || true
   fi
   return 0
+}
+
+# budget_skip <name> <why>: a caller that would start <name>'s unit at its budget starts none. The
+# stop is recorded as budget_stop records it, once: a later skip for the same cap finds it already
+# the newest outcome line (the hub's budget signal and the hold read that line). It pages too.
+budget_skip() {
+  if ! tail -n 1 "$(budget_state "$1")/activity.log" 2>/dev/null | grep -qF "outcome=BLOCKED budget: ${2%%:*}:"; then
+    proof_why "$BUDGET_HELD_WHY"
+    proof_report "$1" BLOCKED "budget: $2" || true
+  fi
+  budget_page "$1" "$2"
 }
 
 # budget_stop <name> <why>: the call is not made, the runner's state says so, and it pages

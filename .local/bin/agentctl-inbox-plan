@@ -245,16 +245,16 @@ main() {
   fi
   # The unit by name, not $NAME: a caller's AGENTCTL_NAME is its own. Held rows past the cap are no
   # work, so they start no pass; a queue that cannot be read does, and that pass reports it. A row to
-  # plan needs a model call, so at the conf's budget it starts none and the kick pages as a stop
-  # would: kicks come after every triage pass, and 1,379 of 1,608 passes to 2026-11-23 were budget
-  # stops that planned nothing. A held row costs no call, so it still starts one.
+  # plan needs a model call, so at the conf's budget it starts none (budget_skip): kicks come after
+  # every triage pass, and each would be a pass that plans nothing. A held row costs no call, so it
+  # still starts one.
   if [ "$KICK" = 1 ]; then
     if grep -q '"hold":false' <<<"$rows"; then
       local over v=()
       mapfile -t v < <(budget_conf inbox-plan)
       if over="$(BUDGET_DAY_USD="${v[1]:-}" MAX_CALLS_HOUR="${v[2]:-}" budget_over inbox-plan)"; then
         say "at its budget, not started: $over"
-        budget_page inbox-plan "$over"
+        budget_skip inbox-plan "$over"
       else
         want=1
       fi
