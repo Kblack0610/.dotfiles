@@ -192,6 +192,12 @@ intake_files() {
   done
 }
 
+@test "Proposals: the expiry ask QUEUE.md promises is the one agent-propose sends" {
+  grep -qF '(`ask_expiring`)' "$DOC" || { echo "QUEUE.md Proposals no longer names ask_expiring: update this test with it"; return 1; }
+  grep -qE '^ask_expiring\(\)' "$PUB/.local/bin/agent-propose" || { echo "agent-propose has no ask_expiring, which QUEUE.md Proposals names"; return 1; }
+  grep -qE 'ask="\$\(ask_expiring ' "$PUB/.local/bin/agent-propose" || { echo "agent-propose sweep no longer asks on expiry"; return 1; }
+}
+
 @test "Flows: the intake rows are in ARCHITECTURE.md, each at the heading that defines it" {
   local arch="$PRIV/.config/agentctl/ARCHITECTURE.md" a
   for a in intake-channels outbox-to-board red-triage alert-ownership; do
