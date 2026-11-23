@@ -18,6 +18,10 @@ setup() {
 printf '%s|%s\n' "${GH_TOKEN:-none}" "$*" >> "$BATS_TEST_TMPDIR/real.log"
 case "$*" in *--body-file\ -*) cat >> "$BATS_TEST_TMPDIR/stdin.log" ;; esac
 case "$*" in 'api rate_limit'*) [ -f "$BATS_TEST_TMPDIR/rate" ] && cat "$BATS_TEST_TMPDIR/rate"; exit 0 ;; esac
+# FAIL5=<n>: the first n calls fail like a GitHub 5xx, body on stdout and status on stderr.
+if [ -n "${FAIL5:-}" ] && [ "$(grep -vc '^[^|]*|api rate_limit' "$BATS_TEST_TMPDIR/real.log")" -le "$FAIL5" ]; then
+  echo '{"message":"Server Error"}'; echo "gh: Server Error (HTTP ${FAIL5_CODE:-504})" >&2; exit 1
+fi
 # A refusal: `gh api` prints the error body on stdout, unterminated, and the status on stderr.
 if [ -n "${DENY:-}" ] && [ "${GH_TOKEN:-}" = tok-acme ]; then
   [ "$1" != api ] || printf '{"message":"%s"}' "$DENY"
@@ -37,6 +41,7 @@ SH
   chmod +x "$STUB/real-gh" "$STUB/gh-app" "$STUB/getent"
   export PATH="$STUB:$PATH" GH_REAL="$STUB/real-gh" GH_CALLS_DIR="$BATS_TEST_TMPDIR/calls" BATS_TEST_TMPDIR
   unset GH_TOKEN GITHUB_TOKEN GH_REPO GH_WRAPPED AGENT_QUEUE_ITEM
+  export GH_RETRY_BASE_S=0 # a retry's backoff is a real sleep; the tests check the count, not the wait
   # The reserve programs the tests name, so a suite run under a real one (a night lane) still sees its waits.
   export GH_RESERVE_CALLERS="gate-line.py ci-gate.sh agent-land"
   cd "$BATS_TEST_TMPDIR"
@@ -379,4 +384,55 @@ gh_calls() { { grep -vc '^none|api rate_limit' "$BATS_TEST_TMPDIR/real.log" || t
   exec 8>"$GH_CALLS_DIR/budget.lock"; flock -n 8                    # another process holds the renewal
   run -75 as_caller schedules-sync api repos/other/x/pulls/5
   exec 8>&-
+}
+
+# ar-4701: a lone 5xx on a read must not fail the caller (schedules-sync.service failed 3 times on a 504).
+calls() { grep -vc '^[^|]*|api rate_limit' "$BATS_TEST_TMPDIR/real.log" || true; } # the budget probe is not a read
+
+@test "retry: a read that fails with a 5xx once is run again and answers once, on both tokens" {
+  FAIL5=1 REAL_OUT=ok run --separate-stderr "$WRAP" api repos/acme/x/pulls
+  assert_success
+  assert_output ok
+  assert_equal "$(calls)" 2
+  : > "$BATS_TEST_TMPDIR/real.log"
+  FAIL5=1 REAL_OUT=ok run --separate-stderr "$WRAP" pr list -R other/x --json number
+  assert_success
+  assert_output ok
+  assert_equal "$(calls)" 2
+}
+
+@test "retry: it is bounded by GH_RETRY_TRIES and then fails with gh's own status, body and message once" {
+  FAIL5=99 GH_RETRY_TRIES=3 run --separate-stderr "$WRAP" api repos/other/x/pulls
+  assert_failure 1
+  assert_equal "$(calls)" 3
+  assert_output '{"message":"Server Error"}'
+  [[ "$stderr" == *"Server Error (HTTP 504)"* ]]
+  FAIL5=99 GH_RETRY_TRIES=1 run "$WRAP" api repos/other/x/pulls
+  assert_equal "$(calls)" 4
+}
+
+@test "retry: a write, a 4xx, a --watch and a read of a terminal's stdout are never run again" {
+  FAIL5=99 run "$WRAP" pr merge 5 -R other/x --squash
+  assert_equal "$(calls)" 1
+  FAIL5=99 run "$WRAP" api -X POST repos/other/x/issues
+  assert_equal "$(calls)" 2
+  FAIL5=99 FAIL5_CODE=404 run "$WRAP" api repos/other/x/pulls/9
+  assert_equal "$(calls)" 3
+  FAIL5=99 run "$WRAP" pr checks 5 -R other/x --watch
+  assert_equal "$(calls)" 4
+}
+
+@test "retry: a routed read is rerun on the same App token and stays logged as app" {
+  FAIL5=1 run "$WRAP" run view 5 -R acme/x --json status
+  assert_success
+  assert_equal "$(calls)" 2
+  assert_equal "$(token)" tok-acme
+  assert_equal "$(bucket)" app:acme
+}
+
+@test "retry: a failed read leaves no temp directory behind" {
+  export TMPDIR="$BATS_TEST_TMPDIR/tmp"
+  mkdir -p "$TMPDIR"
+  FAIL5=99 run "$WRAP" api repos/acme/x/pulls
+  assert_equal "$(ls "$TMPDIR" | wc -l)" 0
 }

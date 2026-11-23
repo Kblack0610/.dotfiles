@@ -17,11 +17,18 @@
 # GH_BUDGET_RESERVE calls left, refuses every read (exit 75, bucket user:deferred) but the human's at
 # a terminal and one with a GH_RESERVE_CALLERS program above it, so gates, agent-land and the night
 # keep what is left. Writes never wait.
+# Retry: a read (is_read) whose stdout is not a terminal is buffered and run again, up to GH_RETRY_TRIES
+# runs in all, when it fails with HTTP 5xx on stderr, waiting GH_RETRY_BASE_S seconds and doubling up to
+# GH_RETRY_CAP_S (api-clients.md). A write is never retried: a 5xx does not say whether it landed.
+# gh does not print the response headers on an error, so a Retry-After cannot be honored here.
 # Docs: docs/operations/github-app.md.
 set -u
 
 : "${GH_BUDGET_RESERVE:=1000}"  # calls left under which a read waits for the reset
 : "${GH_BUDGET_STALE_S:=30}"    # age of the shared reading before one rate_limit call renews it
+: "${GH_RETRY_TRIES:=4}"        # runs of a read that keeps failing with a 5xx; 1 turns the retry off
+: "${GH_RETRY_BASE_S:=2}"       # seconds before the first rerun, whole seconds
+: "${GH_RETRY_CAP_S:=10}"       # the longest single wait
 # The programs whose reads spend the reserve: a gate, a merge, the night. A read with one of them
 # anywhere above it (through timeout, bash -c or xargs) goes through; every other read waits. A list
 # of who waits let each new script spend the reserve: ci-cost.py took it to 14 on 2026-11-17.
@@ -248,6 +255,43 @@ defer_read() {
   echo "gh: $rem REST calls left, under the $GH_BUDGET_RESERVE kept for gates and merges; $who waits for the reset at $(date -d "@$reset" +%H:%M)" >&2
 }
 
+# retryable <gh args>: a read that can be buffered and run again. A terminal's stdout keeps gh's own
+# colors and pager, and a --watch or --web is a long or interactive call.
+retryable() {
+  local a
+  { [ "$GH_RETRY_TRIES" -gt 1 ] 2>/dev/null && [ ! -t 1 ] && is_read "$@"; } || return 1
+  for a in "$@"; do case "$a" in --watch | --web | -w) return 1 ;; esac; done
+}
+
+# exec_once <token or ""> <gh args>: the real gh once, on that token or on gh's own.
+exec_once() {
+  local t="$1"
+  shift
+  if [ -n "$t" ]; then GH_TOKEN="$t" "$real" "$@"; else "$real" "$@"; fi
+}
+
+# exec_retry <token or ""> <gh args>: exec_once, and for a retryable read, again after a 5xx. The failed
+# run's output is dropped, so a caller sees one answer, never a failure body followed by the retry's.
+rtmp=""
+exec_retry() {
+  local t="$1" n=1 pause="$GH_RETRY_BASE_S" r
+  shift
+  retryable "$@" || { exec_once "$t" "$@"; return; }
+  [ -n "$rtmp" ] || rtmp=$(mktemp -d "${TMPDIR:-/tmp}/gh-retry.XXXXXX") || { exec_once "$t" "$@"; return; }
+  while :; do
+    exec_once "$t" "$@" >"$rtmp/out" 2>"$rtmp/err"
+    r=$?
+    [ "$r" -ne 0 ] && [ "$n" -lt "$GH_RETRY_TRIES" ] && grep -qE 'HTTP 5[0-9]{2}' "$rtmp/err" || break
+    echo "gh: HTTP 5xx on a read, run $((n + 1)) of $GH_RETRY_TRIES in ${pause}s" >&2
+    sleep "$pause"
+    pause=$((pause * 2 > GH_RETRY_CAP_S ? GH_RETRY_CAP_S : pause * 2))
+    n=$((n + 1))
+  done
+  cat "$rtmp/out"
+  cat "$rtmp/err" >&2
+  return "$r"
+}
+
 bucket=user
 tok=""
 if [ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]; then
@@ -268,6 +312,8 @@ if [ -z "$tok" ] && [ "$bucket" != env ] && defer_read "$@"; then
 fi
 
 export GH_WRAPPED=1 GH_REAL="$real"
+err="" out=""
+trap 'rm -f -- "$err" "$out"; rm -rf -- "$rtmp"' EXIT # a caller's timeout kills this mid-call
 if [ -n "$tok" ]; then
   # A refused App token (uninstalled, revoked, a missing permission, its own limit spent) must
   # not fail the read: rerun it on the user. stderr is held so only the answer that counts shows,
@@ -275,25 +321,23 @@ if [ -n "$tok" ]; then
   # read therefore arrives whole once gh exits, never streamed. Other commands print errors on
   # stderr only, so their stdout streams as before.
   err=$(mktemp "${TMPDIR:-/tmp}/gh-err.XXXXXX")
-  out=""
-  trap 'rm -f -- "$err" ${out:+"$out"}' EXIT # a caller's timeout kills this mid-call
   if [ "${1:-}" = api ]; then
     out=$(mktemp "${TMPDIR:-/tmp}/gh-out.XXXXXX")
-    GH_TOKEN="$tok" "$real" "$@" 2>"$err" >"$out"
+    exec_retry "$tok" "$@" 2>"$err" >"$out"
   else
-    GH_TOKEN="$tok" "$real" "$@" 2>"$err"
+    exec_retry "$tok" "$@" 2>"$err"
   fi
   rc=$?
   if [ "$rc" -ne 0 ] && grep -qE 'HTTP 40[13]|Bad credentials|not accessible by integration' "$err"; then
     bucket="user:app-denied"
-    "$real" "$@"
+    exec_retry "" "$@"
     rc=$?
   else
     [ -z "$out" ] || cat "$out"
     cat "$err" >&2
   fi
 else
-  "$real" "$@"
+  exec_retry "" "$@"
   rc=$?
 fi
 { log_call "$@"; } 2>/dev/null || true
