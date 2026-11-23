@@ -43,3 +43,12 @@ watch_is_stale() {
   [[ "$lastrun" =~ ^[0-9]+$ ]] || return 1
   (( now - lastrun > WATCH_STALE_FACTOR * $(watch_interval_secs "$1") ))
 }
+
+# watch_quarantined <state dir> <name> [now] -> exit 0 while <name>.quarantine holds: its first
+# field (UNTIL, epoch, written by `watch-companion-loop quarantine`) is ahead of now. A quarantined
+# red counts as a warning, not red, until then; past UNTIL it reads red again.
+watch_quarantined() {
+  local until="" now="${3:-$(date +%s)}"
+  [ -r "$1/$2.quarantine" ] && read -r until _ < "$1/$2.quarantine"
+  [[ "$until" =~ ^[0-9]+$ ]] && (( 10#$until > 10#$now ))
+}

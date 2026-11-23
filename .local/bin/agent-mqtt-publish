@@ -275,11 +275,9 @@ snapshot() {
     for f in "$WATCHES"/*.yaml "$WATCHES"/*.yaml.paused; do
         [ -f "$f" ] || continue
         name="$(basename "$f")"; name="${name%.paused}"; name="${name%.yaml}"
-        local ws paused=false lr stale=false since qu= quarantined=false
+        local ws paused=false lr stale=false since quarantined=false
         ws="$(cat "$WSTATE/$name.state" 2>/dev/null)"
-        # `watch-companion-loop quarantine` writes `UNTIL OWNER AT WHY`: in force while UNTIL is ahead.
-        [ -r "$WSTATE/$name.quarantine" ] && read -r qu _ < "$WSTATE/$name.quarantine"
-        [[ "$qu" =~ ^[0-9]+$ ]] && [ "$qu" -gt "$qnow" ] && quarantined=true
+        watch_quarantined "$WSTATE" "$name" "$qnow" && quarantined=true
         since="$(cat "$WSTATE/$name.since" 2>/dev/null)"
         lr="$(cat "$WSTATE/$name.lastrun" 2>/dev/null)"
         case "$f" in *.paused) paused=true; ws=PAUSED ;; esac
