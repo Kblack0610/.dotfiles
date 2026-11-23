@@ -303,7 +303,7 @@ test("Proposals is one row per stream with its count and ages; a click searches 
   const click = (q) => { vm.runInContext(`hst.data.proposals_table.q = ${JSON.stringify(q)}`, ctx); on.click.forEach((f) => f({ target: { dataset: {}, closest: (sel) => (sel === "tr.pstream" ? row : null) }, preventDefault() {} })); };
   click("");
   click("stream:=dream");
-  assert.deepEqual(views, [{ q: "stream:=dream", s: "" }, { q: "", s: "" }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(views)), [{ q: "stream:=dream", s: "" }, { q: "", s: "" }]);
 });
 
 const vitals = (o = {}) => ({ head: "1 of 2 off target", line: "1 of 2 off target: Outcome", all_ok: false, rows: [
