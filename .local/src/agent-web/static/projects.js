@@ -497,7 +497,7 @@ $("projects").addEventListener("change", (e) => {
 $("projects").addEventListener("click", (e) => {
   if (e.target.id === "p-back") { e.preventDefault(); pGo(null); return; }
   if (e.target.dataset.pfclear) { pFocusSet(e.target.dataset.pfclear, "high"); return; }
-  if (e.target.hasAttribute("data-pfset")) {
+  if (e.target.dataset.pfset != null) {
     const box = e.target.closest(".pfocus");
     pFocusSet(box.querySelector("[data-pfpick=key]").value, "focus", box.querySelector("[data-pfpick=hours]").value);
     return;
