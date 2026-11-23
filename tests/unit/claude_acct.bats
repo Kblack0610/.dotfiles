@@ -701,6 +701,25 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   assert_line 'claude_account_five_hour_resets_timestamp_seconds{account="main",kind="claude"} 1793763599'
 }
 
+@test "textfile: every claude_account_ row carries the account's email, and a row with none carries no email label" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 30 84
+  week alt 40 84
+  echo '{"oauthAccount":{"emailAddress":"m@x"}}' > "$HOME/.claude.json"
+  rm -f "$ALT/.claude.json"
+  mkdir -p "$SANDBOX/tf"
+  run "$ACCT" textfile "$SANDBOX/tf"
+  assert_success
+  run cat "$SANDBOX/tf/claude_acct.prom"
+  assert_line 'claude_account_week_used_percent{account="main",kind="claude",email="m@x"} 30'
+  assert_line --regexp '^claude_account_(burn_points_per_hour|resets_timestamp_seconds|room_reason)\{account="main",kind="claude",email="m@x"'
+  # every main row has it; the parent row too
+  [ "$(grep -c '^claude_account_.*account="main"' <<< "$output")" = "$(grep -c '^claude_account_.*account="main".*email="m@x"' <<< "$output")" ]
+  # negative control: alt has no .claude.json, so no email label on any of its rows
+  refute_line --regexp 'account="alt".*email='
+  assert_line 'claude_account_week_used_percent{account="alt",kind="claude"} 40'
+}
+
 @test "room: the emptier account under pace wins; main prints empty, alt its dir" {
   export CLAUDE_ACCT_NOW=$NOW
   week main 40 84
