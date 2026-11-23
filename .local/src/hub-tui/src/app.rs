@@ -4949,10 +4949,9 @@ impl App {
             (Tab::Projects, ..) if !self.pv.open => match &self.projects {
                 None => reading("notes projects"),
                 Some(_) => {
-                    let feed = self.feed();
                     let (l, at) = projtab::page(
                         &self.cards(),
-                        feed,
+                        self.feed(),
                         self.deliverables.as_ref(),
                         self.coverage.as_ref(),
                         self.ladder.as_ref(),
@@ -4968,11 +4967,9 @@ impl App {
             (Tab::Projects, ..) => {
                 let mut l = vec![];
                 if self.tv.project.is_none() {
-                    let feed = self.feed();
-                    let dl = self.deliverables.as_ref();
                     l.push(projtab::top_strip(
-                        feed,
-                        dl,
+                        self.feed(),
+                        self.deliverables.as_ref(),
                         self.coverage.as_ref(),
                         self.ladder.as_ref(),
                         "all",
@@ -7129,13 +7126,11 @@ mod tests {
             s.lines().last().unwrap().contains("<- -> inner tabs"),
             "{s}"
         );
-        // Row keys do nothing off Rows; Right steps to Sprint, and again to Rows.
         a.handle(key('x'));
-        assert!(a.tv.prompt.is_none());
-        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Right))));
-        assert_eq!(a.pv.inner, "sprint");
-        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Right))));
-        assert_eq!(a.pv.inner, "rows");
+        assert!(a.tv.prompt.is_none(), "row keys do nothing off Rows");
+        a.handle(arrow(KeyCode::Right));
+        a.handle(arrow(KeyCode::Right));
+        assert_eq!(a.pv.inner, "rows", "Right steps Overview, Sprint, Rows");
         let s = screen(&mut a, 140, 30);
         assert!(
             at_line(&s, "Projects > demo  bnb, alpha") < at_line(&s, "ROWS  4 of 4 rows"),

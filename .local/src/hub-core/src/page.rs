@@ -604,20 +604,19 @@ pub fn read_with(
             None
         }
     };
-    let ladder: Vec<String> =
-        match runner.run(&["notes".into(), "projects".into(), "--stages".into()]) {
-            Ok(o) => o
-                .lines()
-                .next()
-                .unwrap_or("")
-                .split_whitespace()
-                .map(String::from)
-                .collect(),
-            Err(e) => {
-                p.errors.push(format!("notes projects --stages: {e}"));
-                vec![]
-            }
-        };
+    let ladder = match runner.run(&["notes".into(), "projects".into(), "--stages".into()]) {
+        Ok(o) => o
+            .lines()
+            .next()
+            .unwrap_or("")
+            .split_whitespace()
+            .map(String::from)
+            .collect::<Vec<String>>(),
+        Err(e) => {
+            p.errors.push(format!("notes projects --stages: {e}"));
+            vec![]
+        }
+    };
     // NO_NEXT only for the ladder's last stage: an unread ladder, or a stage it lacks, is unread.
     p.next_says = if ladder.iter().any(|s| s == stage) {
         NO_NEXT.into()
