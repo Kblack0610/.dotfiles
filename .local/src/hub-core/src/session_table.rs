@@ -318,8 +318,14 @@ fn ended_since(out: &str, since: i64) -> Vec<Ended> {
 
 /// Read the feed. A source that fails leaves its part empty and says so in `errors`.
 pub fn feed(runner: &dyn Runner, registry: &Path) -> Feed {
+    feed_with(runner, registry, queue::list(runner, "all"))
+}
+
+/// `feed` over the queue read the caller already holds (agent-web keeps it), so no
+/// `agent-queue list` runs. `items` is that read as `queue::list(runner, "all")` returns it.
+pub fn feed_with(runner: &dyn Runner, registry: &Path, items: Result<Vec<Item>, String>) -> Feed {
     let mut errors = vec![];
-    let items = queue::list(runner, "all")
+    let items = items
         .map_err(|e| errors.push(format!("agent-queue: {e}")))
         .unwrap_or_default();
     let since = crate::text::local_day_start(chrono::Local::now().timestamp());

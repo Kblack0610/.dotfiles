@@ -29,6 +29,7 @@ mod fleet;
 mod focus;
 mod infra;
 mod jobs;
+mod live;
 mod outbox;
 mod outcomes;
 mod pipelines;
@@ -121,8 +122,8 @@ struct AppState {
     fleet: fleet::Cache,
     /// `fleet-shepherd stats`, which Log's Rundowns and Sessions' Shepherd read (`shepherd.rs`).
     shepherd: shepherd::Cache,
-    /// `/api/agents` as served, the sidebar every page draws first.
-    agents: cache::EventCache<Bytes, AGENTS_SECS>,
+    /// The one read of the sessions, which `/api/agents` (the sidebar every page draws first) and the Sessions table share.
+    live: cache::EventCache<live::Live, AGENTS_SECS>,
     /// Home's own reads (`HomeParts`), joined with the queue and infra caches per request.
     home: cache::EventCache<HomeParts, HOME_SECS>,
     /// Wakes the Tilecast push sender (`push::run`).
@@ -174,7 +175,7 @@ async fn main() -> Result<()> {
         queue: queue::Cache::new(&events),
         fleet: fleet::Cache::new(events.subscribe()),
         shepherd: shepherd::Cache::new(events.subscribe()),
-        agents: cache::EventCache::new(events.subscribe(), &AGENTS_KINDS, "agents"),
+        live: cache::EventCache::new(events.subscribe(), &AGENTS_KINDS, "agents"),
         home: cache::EventCache::new(events.subscribe(), &HOME_KINDS, "home"),
         watch: cache::EventCache::new(events.subscribe(), &WATCH_KINDS, "watch"),
         events,
@@ -772,7 +773,7 @@ async fn wrote(State(s): State<Shared>, req: Request, next: Next) -> Response {
     let write = req.method() == axum::http::Method::POST && req.uri().path() != "/api/send";
     let res = next.run(req).await;
     if write && res.status().is_success() {
-        s.agents.clear();
+        s.live.clear();
         s.home.clear();
         s.watch.clear();
         projects::GATHERED.clear();
@@ -1093,71 +1094,55 @@ async fn find_any(target: &str) -> ApiResult<agent::Agent> {
         .ok_or_else(|| bad(StatusCode::NOT_FOUND, format!("no session at {target}")))
 }
 
-/// The sidebar every page draws first, from memory: a session event outdates it, and it is
-/// refreshed behind the answer.
+/// The sidebar every page draws first, from memory: a session event outdates the read of the
+/// sessions, and it is refreshed behind the answer. The queue items in each pane are joined on
+/// each request from the queue's own kept read, so a queue change shows without a new read.
 async fn agents(State(s): State<Shared>) -> Response {
-    let body = s
-        .agents
-        .get((), read_agents)
-        .await
-        .map_or_else(|_| Bytes::from_static(b"[]"), |b| (*b).clone());
+    let (live, items) = tokio::join!(s.live.get((), read_live), s.queue.active());
+    let body = live.map_or_else(|_| Bytes::from_static(b"[]"), |l| agents_body(&l, &items));
     ([(header::CONTENT_TYPE, "application/json")], body).into_response()
 }
 
-/// `/api/agents`' body. Blocking: the dialog is a transcript read, done only for agents that have
-/// one open.
-fn read_agents() -> Bytes {
-    let out: Vec<AgentOut> = {
-        let state = std::fs::read_to_string(boards::fleet_state())
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or(serde_json::Value::Null);
-        let mut phases = boards::phases(&state);
-        actions::gather(&actions::System)
-            .agents
-            .into_iter()
-            .map(|(a, s)| {
-                let question = match (a.status.as_str(), &a.jsonl) {
-                    ("waiting", Some(p)) => agent_core::transcript::open_question_at(p),
-                    _ => None,
-                };
-                AgentOut {
-                    phases: phases.remove(&a.target),
-                    actions: actions::available(&s)
-                        .into_iter()
-                        .map(Action::name)
-                        .collect(),
-                    items: s.items,
-                    account: a.account,
-                    attached: a.attached,
-                    parked: a.parked,
-                    plan: a.plan_slug,
-                    ask: a.ask,
-                    need: question
-                        .as_ref()
-                        .map(|q| hub_core::home::NeedKind::of_dialog(q.kind).tag()),
-                    question,
-                    wrote: a.jsonl.as_ref().and_then(|p| {
-                        std::fs::metadata(p)
-                            .and_then(|m| m.modified())
-                            .ok()
-                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                            .map(|d| d.as_secs())
-                    }),
-                    target: a.target,
-                    short: a.short_target,
-                    project: a.project,
-                    repo: a.repo_full,
-                    status: a.status,
-                    summary: a.summary,
-                    session: a.session_id,
-                    tags: a.tags,
-                    host: None,
-                }
-            })
-            .chain(worker_agents().iter().map(worker_agent))
-            .collect()
-    };
+/// The one read of the sessions the sidebar and the Sessions table share (`live.rs`). Blocking.
+pub(crate) fn read_live() -> live::Live {
+    live::Live::read(worker_agents())
+}
+
+/// `/api/agents`' body: the sessions with their queue items, then the workers' rows.
+fn agents_body(live: &live::Live, items: &[hub_core::queue::Item]) -> Bytes {
+    let sessions = live.joined(items);
+    let local = live.rows.iter().zip(sessions).map(|(r, s)| {
+        let a = &r.agent;
+        AgentOut {
+            phases: r.phases.clone(),
+            actions: actions::available(&s)
+                .into_iter()
+                .map(Action::name)
+                .collect(),
+            items: s.items,
+            account: a.account.clone(),
+            attached: a.attached,
+            parked: a.parked,
+            plan: a.plan_slug.clone(),
+            ask: a.ask.clone(),
+            need: r
+                .question
+                .as_ref()
+                .map(|q| hub_core::home::NeedKind::of_dialog(q.kind).tag()),
+            question: r.question.clone(),
+            wrote: r.wrote,
+            target: a.target.clone(),
+            short: a.short_target.clone(),
+            project: a.project.clone(),
+            repo: a.repo_full.clone(),
+            status: a.status.clone(),
+            summary: a.summary.clone(),
+            session: a.session_id.clone(),
+            tags: a.tags.clone(),
+            host: None,
+        }
+    });
+    let out: Vec<AgentOut> = local.chain(live.workers.iter().map(worker_agent)).collect();
     serde_json::to_vec(&out).map_or_else(|_| Bytes::from_static(b"[]"), Bytes::from)
 }
 
@@ -1681,7 +1666,7 @@ async fn warm(s: Shared) {
     let built = async { builds::current(s.queue.items().await).await };
     let tests = async { suites::keep_newest(s.queue.items().await).await };
     let _ = tokio::join!(
-        s.agents.get((), read_agents),
+        s.live.get((), read_live),
         s.watch.get_if((), read_watch, |(_, keep)| *keep),
         s.queue.recent(),
         home_read(&s),
@@ -2011,7 +1996,7 @@ async fn sessions_table(
 ) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
-        s.session_table.table(q).await,
+        s.session_table.table(&s, q).await,
     )
         .into_response()
 }
@@ -2022,7 +2007,7 @@ async fn sessions_page(
 ) -> ApiResult<Json<serde_json::Value>> {
     let page = s
         .session_table
-        .page(q.t)
+        .page(&s, q.t)
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let page = (*page)
@@ -2119,7 +2104,7 @@ mod tests {
 
     /// The caches `warm` fills, directly or through a read it makes (Home's cards fill projects,
     /// costs, schedules, alerts and the session table).
-    const WARMED: [&str; 23] = [
+    const WARMED: [&str; 22] = [
         "actions",
         "agents",
         "alerts",
@@ -2132,7 +2117,6 @@ mod tests {
         "judge-eval",
         "projects",
         "queue",
-        "queue-since",
         "queue-stats",
         "ranked",
         "releases-card",
