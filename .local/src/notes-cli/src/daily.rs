@@ -3108,7 +3108,7 @@ mod tests {
             decisions(&dirs, &bare),
             vec![
                 "dm-4 demo: run a home server or not (urgent, 0d)",
-                "dm-9 demo (agent board): which lane a game takes (high, 0d)",
+                "dm-9 demo (agent board): which lane a game takes (normal, 0d)",
                 "dm-1 demo: followers that fight with you (low, 0d)",
             ]
         );

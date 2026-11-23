@@ -505,7 +505,7 @@ mod tests {
             title: "loose task".into(),
         };
         let line = new_focus_line(&t, d("2026-07-22"));
-        assert_eq!(line, "- [/] loose task #c0722 #high <!-- cu:z9 -->");
-        assert_eq!(md::task_priority(&line), Some("#high"));
+        assert_eq!(line, "- [/] loose task #c0722 #normal <!-- cu:z9 -->");
+        assert_eq!(md::task_priority(&line), Some("#normal"));
     }
 }

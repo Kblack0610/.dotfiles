@@ -2121,7 +2121,7 @@ mod tests {
                     raw: "not a row".into(),
                 },
             ),
-            w("human", add("x", "normal", None, None)),
+            w("human", add("x", "medium", None, None)),
             w("human", add("  ", "high", None, None)),
             w("human", add("x", "high", Some("next"), None)),
             w("playtest", add("x", "high", Some("v1.0.0"), None)),
