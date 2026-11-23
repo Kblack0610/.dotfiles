@@ -21,7 +21,15 @@ SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]
 
 SESS_ROOT="$HOME/.agent/sessions"
 LIVE_ROOT="$HOME/.claude/sessions"
-PROJECTS_ROOT="$HOME/.claude/projects"
+# Every Claude account's transcript dirs, as claude-recall (by path beside this script) reads them.
+projects_roots() { "$(dirname "$SELF")/claude-recall" roots | cut -f1; }
+# find_transcripts <name glob> [find actions] -> the matching transcripts across those dirs, one find
+find_transcripts() {
+  local roots
+  mapfile -t roots < <(projects_roots)
+  [ "${#roots[@]}" -gt 0 ] || return 0
+  find "${roots[@]}" -maxdepth 2 -name "$1" "${@:2}" 2>/dev/null
+}
 DEFAULT_LIMIT=25
 TAB="$(printf '\t')"
 
@@ -208,7 +216,7 @@ transcript_path() {
   local id="$1" t
   t="$(lookup_field "$id" transcript)"
   [ -n "$t" ] && [ -f "$t" ] && { printf '%s\n' "$t"; return; }
-  find "$PROJECTS_ROOT" -maxdepth 2 -name "${id}.jsonl" -print -quit 2>/dev/null
+  find_transcripts "${id}.jsonl" -print -quit
 }
 
 resolve_id() {
@@ -223,7 +231,7 @@ resolve_id() {
   # killed before it got going is exactly the one you most need to pick back up.
   # Fall back to the transcripts on disk.
   if [ -z "$matches" ]; then
-    matches=$(find "$PROJECTS_ROOT" -maxdepth 2 -name "${want}*.jsonl" 2>/dev/null \
+    matches=$(find_transcripts "${want}*.jsonl" \
       | while read -r f; do b="${f##*/}"; printf '%s\n' "${b%.jsonl}"; done | sort -u)
   fi
   n=$(printf '%s\n' "$matches" | grep -c .)
