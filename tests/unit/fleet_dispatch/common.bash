@@ -166,7 +166,8 @@ started_item() {
 # unchanged: the row whose line is the query under --exact, else the one with that id, else the
 # first whose key contains it. A row going to [/] with no id gets the next gm-N and the id goes
 # out on its own line, unless the fixture says the project has no code (nocode.<project>).
-# `board --json` lists each row with its #tags, an [x] one under `done` as the real board does;
+# `board --json` lists each row with its #tags, an [x] one under `done` as the real board does, and
+# `--id` those rows by id;
 # `tag (--add|--remove <tag>)... <id>` edits the row's tags.
 stub_notes() {
   cat > "$SANDBOX/bin/notes" <<'EOF'
@@ -202,10 +203,15 @@ case "${args[0]}" in
             tags_cased: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0]],
             tags: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0] | ascii_downcase],
             since: ((.[1] | capture("since:(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2})") | .d) // null),
-            marker: ((.[1] | capture("<!--.* (?<m>dropped)") | .m) // ""),
+            marker: ((.[1] | capture("<!--.* (?<m>dropped:)") | .m) // ""),
             state: (if (.[1] | startswith("- [/]")) then "doing" elif (.[1] | startswith("- [x]")) then "done" else "open" end)}' < "$f"
       done | jq -sc '{rows: map(select(.state != "done")), done: map(select(.state == "done"))}'
-    fi; } | if [ -f "$F/board.sprints" ]; then jq -c --slurpfile s "$F/board.sprints" '. + {sprints: $s[0]}'; else jq -c '. + {sprints: (.sprints // [])}'; fi ;;
+    fi; } | if [ -f "$F/board.sprints" ]; then jq -c --slurpfile s "$F/board.sprints" '. + {sprints: $s[0]}'; else jq -c '. + {sprints: (.sprints // [])}'; fi |
+    # --id <ID>...: `{today, rows}` of every row, open or closed, with one of those ids, as the real lookup.
+    if [[ " ${args[*]} " == *" --id "* ]]; then
+      ids=(); for ((i = 1; i < ${#args[@]}; i++)); do [ "${args[i]}" != --id ] || ids+=("${args[i+1]}"); done
+      jq -c --args '$ARGS.positional as $ids | {today: "", rows: [(.rows + .done)[] | select(.id as $i | $ids | index($i))]}' "${ids[@]}"
+    else cat; fi ;;
   ptask)
     p="${args[1]}"; f="$F/rows.$p.$lane"
     [ "${args[2]}" != add ] || [ ! -f "$F/refuse.$p" ] || exit 1   # a sheet that refuses the row: touch $F/refuse.<project>
