@@ -457,7 +457,7 @@ fn health_line(chips: &[Chip], p: Palette, w: usize) -> Line<'static> {
 
 /// HEALTH: every domain chip (`health_line`) on one line, which says what is not green. A row per
 /// not-green component repeated it (seven `<domain>/watches WARN` rows under a line naming the same
-/// domains), so there is none (plan waht-noise-would-you-jolly-cosmos p2).
+/// domains), so there is none.
 fn health(a: &Alerts, p: Palette, w: usize) -> Vec<Line<'static>> {
     vec![health_line(&a.health, p, w)]
 }

@@ -343,7 +343,7 @@ pub fn machinery(infra: &Infra) -> Vec<String> {
 /// One repo with runs waiting and stuck (`waiting{stuck="true"}`): its branches, its oldest age and
 /// its runs' workflows. The exporter has a series per workflow run and a push starts several, so one
 /// row each read as one run listed 2-4 times (ar-4358); one row per branch still listed a repo's
-/// ghost runs as 11 high rows of one fault (plan waht-noise-would-you-jolly-cosmos p2). Alerts' rows
+/// ghost runs as 11 high rows of one fault. Alerts' rows
 /// and the CI card's Stuck count both read this one list.
 #[derive(Debug, PartialEq)]
 pub struct StuckRun<'a> {

@@ -182,13 +182,18 @@ pub fn read(runner: &dyn Runner) -> Result<Reds, String> {
 /// The source every `read` error opens with: a card that is not Alerts tells the red by it.
 pub const SOURCE: &str = "fleet-bench reds";
 
-/// `fleet-bench reds: <why>`. fleet-bench's stderr already opens with its own name and the verb
-/// (`say`: `fleet-bench: reds: ...`), which are cut so the source is said once: Alerts read
-/// `fleet-bench reds: fleet-bench: reds: notes row parse failed` (plan waht-noise p2).
+/// `fleet-bench reds: <why>`. Each line of fleet-bench's stderr opens with its own name and the
+/// verb (`say`: `fleet-bench: reds: ...`), which are cut so the source is said once, and its lines
+/// join on `; `: Alerts read `fleet-bench reds: fleet-bench: reds: notes row parse failed`.
 fn failed(e: &str) -> String {
-    let why = e.strip_prefix("fleet-bench: ").unwrap_or(e);
-    let why = why.strip_prefix("reds: ").unwrap_or(why);
-    format!("{SOURCE}: {why}")
+    let why: Vec<&str> = e
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|l| l.strip_prefix("fleet-bench: ").unwrap_or(l))
+        .map(|l| l.strip_prefix("reds: ").unwrap_or(l))
+        .collect();
+    format!("{SOURCE}: {}", why.join("; "))
 }
 
 /// A route from `fleet-bench triage`'s table (TRIAGE_ROUTES), as `--route` prints it: where a red
@@ -408,6 +413,13 @@ mod tests {
         assert_eq!(e, "fleet-bench reds: cannot read the queue");
         let e = read(&fixed(Err("fleet-bench: exit status: 1"))).unwrap_err();
         assert_eq!(e, "fleet-bench reds: exit status: 1");
+        // Every stderr line is cut, not only the first: jq's own error leads the say line.
+        let two = "jq: error (at <stdin>:0): short\nfleet-bench: reds: notes row parse failed\n";
+        let e = read(&fixed(Err(two))).unwrap_err();
+        assert_eq!(
+            e,
+            "fleet-bench reds: jq: error (at <stdin>:0): short; notes row parse failed"
+        );
         let bad = concat!(
             r#"{"slug":"ar-1","red":"watch a","outcome":"fixed"}"#,
             "\nnot json\n"
