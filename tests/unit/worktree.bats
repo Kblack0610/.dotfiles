@@ -2263,7 +2263,7 @@ archived_bundle() { # <branch> -> archives repo-agent-1 holding one local commit
   assert_failure 2
 }
 
-# ── tests/vendor: a new tree gets the main checkout's bats ──
+# tests/vendor: a new tree gets the main checkout's bats
 
 @test "wt_prepare links tests/vendor to the main checkout's when the repo ignores it, and only then" {
   make_repo
