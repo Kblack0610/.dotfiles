@@ -4999,12 +4999,11 @@ trainee_reason_key() {
 trainee_rows() {
   local d prof w i k projects=() order
   d=$(mktemp -d) || return 1
-  # Each walk reads the whole board one row at a time and the board grows, so each runs once per
-  # project (ONLY_PROJECT), up to 8 at once, the biggest board first: agent-runtime's 1,409 open agent
-  # rows were the long pole of both whole-board walks, which with the gates read took 157 of
-  # trainee-pool's 172 s, past fleet-bench's BENCH_TRAINEE_CMD timeout (2026-11-23, ar-3988). The gates
-  # are read once before the walks fork (load_gates), about 18 s each walk read them in. Each walk writes its
-  # own file: a row line can pass PIPE_BUF, so one pipe could tear it.
+  # Both walks go one row at a time, so each runs once per project (ONLY_PROJECT), up to 8 at once,
+  # the biggest board first. Whole-board, the two took 157 of trainee-pool's 172 s, past fleet-bench's
+  # BENCH_TRAINEE_CMD timeout, agent-runtime's 1,409 agent rows the long pole (2026-11-23, ar-3988).
+  # The gates are read once, before the walks fork: each walk read them itself, about 18 s each.
+  # Each walk writes its own file: a row line can pass PIPE_BUF, so one pipe could tear it.
   load_gates
   mapfile -t projects < <(for prof in $DISPATCH_PROFILES; do notes --profile "$prof" projects 2>/dev/null | cut -f1; done | awk 'NF && !seen[$0]++')
   order=$(notes board --json 2>/dev/null | jq -r --args '[.rows[]? | select(.state == "open") | .project] as $r
