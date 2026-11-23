@@ -21,7 +21,7 @@ const refreshSprints = coalesce(async () => {
       sprst.data = got; sprst.scope = scope; sprst.err = null;
       if (!scope) pCountSet("sprints", got.rows.length);
     }
-  } catch (e) { if (scope === sprScope()) sprst.err = e.message; }
+  } catch (e) { if (scope === sprScope()) { sprst.err = e.message; sprst.data = null; } }
   if (st.tab === "projects") renderProjects();
 });
 

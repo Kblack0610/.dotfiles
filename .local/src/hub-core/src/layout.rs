@@ -541,7 +541,7 @@ pub const PROJECT_PAGE: [Inner; 16] = [
         sections: &["p-needs", "p-flight", "p-systems"],
     },
     // The project's sprints: the open window with its committed rows, the ones queued behind it,
-    // and the scored past (`hub_core::project_sprints`), once only a table on Projects > Board.
+    // and the scored past (`hub_core::project_sprints`); the open and queued rows were Board's table.
     Inner {
         id: "sprint",
         title: "Sprint",
