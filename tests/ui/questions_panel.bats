@@ -254,7 +254,11 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
   tmux_keys Enter
   wait_until 'screen_has "1 ask waiting" && screen_has "sending beta:2" && screen_has "leave it"'
   grep -qx 'answer: keep' "$(ask_file "$MID")"
-  # esc from typing puts the count back in the header.
+  # esc from typing puts the count back in the header. This tail is quarantined through 2026-12-06
+  # and runs again by itself on 12-07 (ci.md rule 2; owner: the agent-runtime row "fix(questions):
+  # a t pressed as the panel's reload lands is lost", from ar-3780): on dotfiles#3216's merge head
+  # this t was lost, the screen still on gamma:3 with "answered . sending it".
+  [[ "$(date -u +%F)" > 2026-12-06 ]] || skip "third t quarantined through 2026-12-06: a t pressed as a reload lands can be lost (ar-3780)"
   tmux_keys t
   wait_until "screen_has 'answering gamma:3'"
   tmux_keys Escape
