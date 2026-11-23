@@ -33,7 +33,7 @@ The tmux cockpit (`.tmux.conf`, `.local/src/tmux/`, `.config/tmux-servers/`) has
 
 - Build: nothing for the scripts. The Rust parts (`agent-panel`, `hub`) are built by the installer, or `cargo build --release` in their crate under `.local/src/`.
 - Run: `stow --no-folding .`, then `tmx ensure hub` and `tmx hop hub`. `Prefix+r` re-reads the config.
-- Test: a PR's CI runs the files its change can affect (`tests/pick.sh` lists them), and an agent session tests only that way. In your own terminal: `make -C tests bootstrap` once, then `make -C tests test-pr` (the same picks, host-safe; `test-fast` runs every file). The tmux ui tier runs only in the container: `make -C tests test-ui`.
+- Test: a PR's CI runs the files its change can affect (`tests/pick.sh unit origin/main` lists them), and an agent session tests only that way. In your own terminal: `make -C tests bootstrap` once, then `make -C tests test-pr` (the same picks, host-safe; `test-fast` runs every file). The tmux ui tier runs only in the container: `make -C tests test-ui`.
 - Standards: `.local/src/tmux/CONVENTIONS.md` (panel rules, each with the test that enforces it).
 
 ## Agent runtime

@@ -41,7 +41,10 @@ decision() {
       './run-bats.sh x' 'bats tests/unit' 'env FOO=1 bats x' 'sudo -E bats x' 'x; tests/vendor/bats-core/bin/bats f' \
       'tests/docker.sh test-container' 'tests/docker.sh lint' 'tests/rust.sh' 'tests/lint.sh' \
       'tests/fleet-agent-smoke.sh' 'cargo test' 'cd .local/src/notes-cli && cargo test --release' \
-      'cargo +stable test' 'cargo nextest run' 'bash -c "make -C tests test-pr"'; do
+      'cargo +stable test' 'cargo nextest run' 'bash -c "make -C tests test-pr"' \
+      'bash tests/run-bats.sh x' 'bash tests/docker.sh lint' 'sh -x tests/rust.sh' 'for f in a; do bats $f; done' \
+      'if bats x; then :; fi' 'while make test; do :; done' 'xargs bats < list' 'xargs -r bats' '! bats x' \
+      'exec bats x' 'command bats x'; do
       run decision "$w" "$c"
       assert_output deny
     done
@@ -59,13 +62,32 @@ decision() {
 
 @test "negative control: the picker, bootstrap, a build, a search and quoted text pass" {
   local c
-  for c in 'tests/pick.sh' 'make -C tests bootstrap' 'make -C tests help' 'make -C tests clean' 'make -C tests' \
+  for c in 'tests/pick.sh unit origin/main' 'for f in a; do echo $f; done' 'make -C tests bootstrap' 'make -C tests help' 'make -C tests clean' 'make -C tests' \
     'cargo build --release' 'cargo check' 'cargo clippy --tests' 'cargo build --tests' \
     'ls tests/unit/*.bats' 'grep -rn bats tests' 'rg -n docker.sh .' 'rg test-pr .' 'git log --grep test' \
     'git diff tests/run-bats.sh' 'sed -n 1p tests/lint.sh' 'vim tests/unit/x.bats' 'echo make test' \
     'git commit -m "make -C tests test-pr is denied"' $'cat <<EOF\nbats tests/unit\nEOF' 'gh pr checks 12'; do
     run decision "$WT" "$c"
     assert_output allow
+  done
+}
+
+@test "from any cwd, a run that names a dotfiles tests path or cds into a checkout first is denied" {
+  local c w
+  for w in /tmp /home/u /home/u/.worktrees/home-config-agent-1; do
+    for c in 'make -C ~/.dotfiles/tests test-pr' 'make -C /home/u/.worktrees/dotfiles-agent-3/tests test-fast' \
+      '~/.dotfiles/tests/vendor/bats-core/bin/bats x' 'bash ~/.dotfiles/tests/run-bats.sh x' \
+      'cd ~/.dotfiles && make -C tests test-pr' 'cd ~/.dotfiles/tests; make -j4 test-pr' \
+      'cd /home/u/.worktrees/dotfiles-x/.local/src/hub && cargo test'; do
+      run decision "$w" "$c"
+      assert_output deny
+    done
+    # NEGATIVE CONTROL: a non-test target, a read, the private overlay, a cd with no run.
+    for c in 'make -C ~/.dotfiles/tests bootstrap' 'cat ~/.dotfiles/tests/run-bats.sh' 'make -C ~/.dotfiles-private/tests test' \
+      'cd ~/.dotfiles && git status' 'rg bats ~/.dotfiles/tests'; do
+      run decision "$w" "$c"
+      assert_output allow
+    done
   done
 }
 

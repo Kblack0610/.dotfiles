@@ -8,26 +8,33 @@ metadata:
   system: [tests]
   reviewed: "2026-11-23"
   # The local test runs CI replaces; hand_methods.py denies them in an agent session (a human
-  # terminal never reaches the hook). The three rows share one command-position prefix (after a
-  # separator, sudo, nice, time, env, timeout or VAR=x): change all three together.
+  # terminal never reaches the hook). The four rows share one command-position prefix (after a
+  # separator, a shell, sudo, xargs, a loop or if keyword, or VAR=x): change all four together.
   replaces:
     - match: |-
-        (?:^|[;&|(){}`\n])\s*(?:(?:sudo(?:\s+-\S+)*|nice|time|env|timeout\s+\S+|nice\s+-n\s*\S+|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:\S*/)?g?make(?=\s)[^;&|()`\n]{0,300}?\s(?:test(?:-[\w-]+)?|lint)(?=[\s;&|)]|$)
-      use: &ci "push the branch and let the PR's CI run it: `shell tests` runs what `tests/pick.sh` picks (run `tests/pick.sh` to see the list; the picks are on the run's Summary page), `rust` the crates, `lint` the lint, and agent-land waits for those checks. A negative control is a pushed commit that breaks the subject, read red in CI, then reverted (shell-test-harness section 3)"
+        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:\S*/)?g?make(?=\s)[^;&|()`\n]{0,300}?\s(?:test(?:-[\w-]+)?|lint)(?=[\s;&|)]|$)
+      use: &ci "push the branch and let the PR's CI run it: `shell tests` runs what `tests/pick.sh` picks (`tests/pick.sh unit origin/main`, and `integ`, lists them without running; the picks are on the run's Summary page), `rust` the crates, `lint` the lint, and agent-land waits for those checks. A negative control is a pushed commit that breaks the subject, read red in CI, then reverted (shell-test-harness section 3)"
       mode: deny
       where: &dotfiles '(?:^|/)(?:\.dotfiles|\.worktrees/dotfiles-(?!private-)[^/]+)(?:/|$)'
       why: &load "agent test runs held the workstation at load 40 on 28 cores, about 500% CPU of bats in dotfiles worktrees, which holds dispatch (2026-11-23, epic ar-4846); CI runs the same files off it"
     - match: |-
-        (?:^|[;&|(){}`\n])\s*(?:(?:sudo(?:\s+-\S+)*|nice|time|env|timeout\s+\S+|nice\s+-n\s*\S+|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:\S*/)?(?:bats|run-bats\.sh|docker\.sh|rust\.sh|rust-crates\.sh|lint\.sh|lint-files\.sh|fleet-agent-smoke\.sh)(?=[\s;&|)]|$)
+        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:\S*/)?(?:bats|run-bats\.sh|docker\.sh|rust\.sh|rust-crates\.sh|lint\.sh|lint-files\.sh|fleet-agent-smoke\.sh)(?=[\s;&|)]|$)
       use: *ci
       mode: deny
       where: *dotfiles
       why: *load
     - match: |-
-        (?:^|[;&|(){}`\n])\s*(?:(?:sudo(?:\s+-\S+)*|nice|time|env|timeout\s+\S+|nice\s+-n\s*\S+|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:\S*/)?cargo(?=\s)[^;&|()`\n]{0,200}?\s(?:test|nextest)(?=[\s;&|)]|$)
+        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:\S*/)?cargo(?=\s)[^;&|()`\n]{0,200}?\s(?:test|nextest)(?=[\s;&|)]|$)
       use: *ci
       mode: deny
       where: *dotfiles
+      why: *load
+    # From any cwd: a dotfiles tests path named in the command (`make -C ~/.dotfiles/tests`, the
+    # suite scripts by path, or a `cd` into a dotfiles checkout before the run).
+    - match: |-
+        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:(?:\S*/)?g?make(?=\s)[^;&|()`\n]{0,300}?\s-C\s*\S*(?:\.dotfiles|\.worktrees/dotfiles-(?!private-)[^/\s]+)/tests/?\s[^;&|()`\n]{0,300}?(?<=\s)(?:test(?:-[\w-]+)?|lint)(?=[\s;&|)]|$)|\S*(?:\.dotfiles|\.worktrees/dotfiles-(?!private-)[^/\s]+)/tests/(?:vendor/bats-core/bin/bats|run-bats\.sh|docker\.sh|rust\.sh|rust-crates\.sh|lint\.sh|lint-files\.sh|fleet-agent-smoke\.sh)(?=[\s;&|)]|$)|cd\s+\S*(?:\.dotfiles|\.worktrees/dotfiles-(?!private-)[^/\s]+)\S*\s*(?:&&|;)\s*(?:\S*/)?(?:g?make(?=\s)[^;&|()`\n]{0,300}?\s(?:test(?:-[\w-]+)?|lint)|(?:\S*/)?(?:bats|run-bats\.sh)|cargo(?=\s)[^;&|()`\n]{0,200}?\s(?:test|nextest))(?=[\s;&|)]|$))
+      use: *ci
+      mode: deny
       why: *load
 ---
 
@@ -44,7 +51,7 @@ The founding incident: writing the tmux UI tests destroyed every live tmux sessi
                    container-only?                   (not optional)
 ```
 
-**CI is the gate, and the only place an agent session runs a test.** The PR's CI run of what `tests/pick.sh` picks is the test run; nothing runs on the workstation first. The forms that would run one here (`make -C tests test-*` and `lint`, `tests/run-bats.sh`, a direct `bats`, `tests/docker.sh`, `tests/rust.sh`, `cargo test`) are this skill's `metadata.replaces` rows, which `hand_methods.py` denies in an agent session inside a dotfiles checkout; a human's own terminal never reaches the hook. Why: on 2026-11-23 agent test runs held the workstation at load 40 on 28 cores (about 500% CPU of bats), which held dispatch, while CI already ran the same files (epic ar-4846). `tests/pick.sh` with no run still prints what the PR will pick.
+**CI is the gate, and the only place an agent session runs a test.** The PR's CI run of what `tests/pick.sh` picks is the test run; nothing runs on the workstation first. The forms that would run one here (`make -C tests test-*` and `lint`, `tests/run-bats.sh`, a direct `bats`, `tests/docker.sh`, `tests/rust.sh`, `cargo test`) are this skill's `metadata.replaces` rows, which `hand_methods.py` denies in an agent session inside a dotfiles checkout; a human's own terminal never reaches the hook. Why: on 2026-11-23 agent test runs held the workstation at load 40 on 28 cores (about 500% CPU of bats), which held dispatch, while CI already ran the same files (epic ar-4846). `tests/pick.sh unit origin/main` (and `integ`, `rust`) prints what the PR will pick without running it.
 
 ## Scope and triggers
 
@@ -132,7 +139,7 @@ gh pr checks <N>              # it MUST go red, and the run's Summary must name 
 git revert --no-edit HEAD && git push   # the PR's next run is green again
 ```
 
-The PR body names the red run as the proof. A guard's own close-but-wrong inputs (a quoted phrase, a near-miss path) go in the test as allow cases beside the deny ones, so that half of the control runs in every CI run.
+Do it before `agent-land`, never during it: a PR head that is red while you work on it is normal, and `agent-land` waits only on the head it lands, the revert's green run. A break that needs the test and the subject changed together goes in the same commit and the same revert. The PR body names the red run as the proof. A guard's own close-but-wrong inputs (a quoted phrase, a near-miss path) go in the test as allow cases beside the deny ones, so that half of the control runs in every CI run.
 
 This is not ceremony. Real results from doing it:
 
