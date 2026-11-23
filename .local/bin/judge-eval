@@ -74,10 +74,11 @@ LEVELS_JSON="$(jq -cn --arg l "$JUDGE_LEVELS" '$l | split(" ")')"
 # line, as agentctl-run records it on a call (lib prompt-render.sh, prompt_sha). A lane that runs
 # several passes has one prompt per pass, and a call under any of them is under the current prompt.
 lane_shas() {
-  local list p
-  list="$( . "$CONF_DIR/$1.conf" 2>/dev/null; printf '%s' "${PROMPT:-}")"
-  IFS=: read -ra list <<<"$list"
-  for p in "${list[@]+"${list[@]}"}"; do prompt_sha "$p" 2>/dev/null || true; done
+  local prompt p
+  local -a files
+  prompt="$( . "$CONF_DIR/$1.conf" 2>/dev/null; printf '%s' "${PROMPT:-}")"
+  IFS=: read -ra files <<<"$prompt"
+  for p in "${files[@]+"${files[@]}"}"; do prompt_sha "$p" 2>/dev/null || true; done
 }
 
 # The scored lanes, the registry: every runner conf that names a SCORE.
