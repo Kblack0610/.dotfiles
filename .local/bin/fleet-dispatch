@@ -116,7 +116,7 @@ esac
 
 : "${FLEET_STATE_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 : "${DISPATCH_PROC_STAT:=/proc/stat}"   # the CPU busy the load pace reads (cpu_busy)
-: "${DISPATCH_CPU_SAMPLES:=${XDG_RUNTIME_DIR:-/tmp}/fleet-dispatch-cpu}"   # this machine's, never ~/.agent, which syncs: the minute record's /proc/stat samples (cpu_sample)
+: "${DISPATCH_CPU_SAMPLES:=$HOME/.cache/fleet-dispatch/cpu-samples}"   # this machine's, never ~/.agent, which syncs: the minute record's /proc/stat samples (cpu_sample)
 : "${DISPATCH_TRAINEE_REPOS:=$HOME/.dotfiles}"   # the checkouts a trainee may work in, space-separated: its provider is a free one that sees the row and the repo, so public repos only (trainee_public_why)
 : "${PLANNED_REBOOT_WINDOW_S:=1800}"   # a lost server this soon after a planned reboot's boot does not page (planned_reboot)
 # The first message restore types into a reopened conversation whose queue item is running (each %s: the
@@ -3850,7 +3850,7 @@ fans_out() { fleet-lease held >/dev/null 2>&1; }
 cmd_record() {
   local here=''
   [ "${1:-}" != --here ] || here=1
-  cpu_sample
+  [ -n "$here" ] || cpu_sample   # the lease holder's tick, on the machine whose pass reads it; a worker's pace reads load average
   record_here || return 1
   restore_tick
   [ -n "$here" ] || ! fans_out || on_workers --quiet record
@@ -6774,7 +6774,7 @@ cmd_stats() {
       # The room the last pass had, with why it was held as a 0/1 per kind.
       + (if $hr == null then {} else
           {room_live_runs: $hr.live_runs, room_max_live: $hr.max_live, room_live_hand: ($hr.live_hand // null),
-           room_load: $hr.load, room_load_cap: $hr.load_cap,
+           room_load: $hr.load, room_load_cap: $hr.load_cap, room_load1: ($hr.load1 // null), room_cpu_busy: ($hr.cpu_busy // null),
            room_run_floor: ($hr.run_floor // null), room_floor_live: ($hr.floor_live // null), room_total_live: ($hr.total_live // null)}
           + (["slots", "load", "account", "assess", "other"]
              | map({key: "room_held_\(.)", value: (if $hr.held_kind == . then 1 else 0 end)}) | from_entries) end)'
@@ -7263,21 +7263,22 @@ pending_load() {
 
 # load_why <red 0|1> -> why this machine's load holds a start, or nothing; a red floor start goes past it.
 # over_pace <load> <cores> [pending] -- that load, plus what recent starts will add, is over the
-# MAX_LOAD pace per core. This machine's gate and each fleet worker's read it the same way.
+# MAX_LOAD pace per core. This machine's gate (its load from pace_load) and each fleet worker's
+# (its probe's 1-min load, host_why) read it the same way.
 over_pace() { awk -v l="$1" -v c="$2" -v p="${3:-0}" -v m="$MAX_LOAD" 'BEGIN { exit !((l + p) / c > m) }'; }
 
-# cpu_jiffies -> "<busy> <total>" since boot from the aggregate cpu line of /proc/stat. Iowait is idle:
-# a thread waiting on a disk uses no CPU (it is load average's other half).
-cpu_jiffies() { awk '$1 == "cpu" { b = $2 + $3 + $4 + $7 + $8 + $9; printf "%.0f %.0f\n", b, b + $5 + $6; exit }' "$DISPATCH_PROC_STAT" 2>/dev/null; }
+# cpu_jiffies -> "<busy> <total>" since boot from the aggregate cpu line of /proc/stat. Iowait counts
+# busy: a CPU waiting on a disk has no room a new session's git and installs would not fight for.
+cpu_jiffies() { awk '$1 == "cpu" { b = $2 + $3 + $4 + $6 + $7 + $8 + $9; printf "%.0f %.0f\n", b, b + $5; exit }' "$DISPATCH_PROC_STAT" 2>/dev/null; }
 
-# cpu_sample -- keep this machine's last CPU_SAMPLES /proc/stat readings in DISPATCH_CPU_SAMPLES,
-# "<epoch> <busy> <total>" a line, oldest first. The minute record (cmd_record) takes one, so the
-# load pace reads CPU busy over the last minute or two without waiting for a sample of its own.
-CPU_SAMPLES=5
+# cpu_sample -- add this machine's /proc/stat reading to DISPATCH_CPU_SAMPLES, "<epoch> <busy> <total>"
+# a line, oldest first, keeping those of the last CPU_SPAN_MAX seconds. The minute record (cmd_record)
+# takes one, so the load pace reads CPU busy over the last minute or so without a sample of its own.
 cpu_sample() {
   local j f="$DISPATCH_CPU_SAMPLES"
   j=$(cpu_jiffies) && [ -n "$j" ] || return 0
-  { { tail -n $(( CPU_SAMPLES - 1 )) "$f" 2>/dev/null; echo "$(date +%s) $j"; } > "$f.$$" && mv -f "$f.$$" "$f"; } 2>/dev/null || rm -f "$f.$$"
+  mkdir -p "${f%/*}" 2>/dev/null
+  { { awk -v now="$(date +%s)" -v hi="$CPU_SPAN_MAX" 'NF == 3 && now - $1 <= hi' "$f" 2>/dev/null; echo "$(date +%s) $j"; } > "$f.$$" && mv -f "$f.$$" "$f"; } 2>/dev/null || rm -f "$f.$$"
 }
 
 # cpu_busy <cores> -> the cores busy now, from the /proc/stat delta since the newest sample
@@ -7293,11 +7294,11 @@ cpu_busy() {
     END { split(j, n, " "); if (got && n[2] > t) printf "%.1f\n", (n[1] - b) / (n[2] - t) * c }' "$DISPATCH_CPU_SAMPLES" 2>/dev/null
 }
 
-# pace_load <cores> -> "<load> <load1> <busy>": the load the pace judges, the lower of the 1-min load
-# average and the cores busy now (cpu_busy), then each reading ("-" for one unread). Load average
-# lags a spike by minutes and counts threads blocked on I/O, which use no CPU: on 2026-11-17 the
-# 0.9 pace held 150+ runnable items for an hour with the CPU 66% idle (ar-2851). A CPU at the pace
-# reads busy there too, and fleet-assess's HOLD still judges load average alone.
+# pace_load <cores> -> "<load> <load1> <busy>": the load this machine's pace judges, the lower of the
+# 1-min load average and the cores busy now (cpu_busy), then each reading ("-" for one unread). Load
+# average lags a spike by minutes and counts threads blocked in the kernel, which use no CPU: on
+# 2026-11-17 the 0.9 pace held 150+ runnable items for an hour with the CPU 66% idle (ar-2851). A CPU
+# at the pace, or waiting on its disks, reads busy too, and fleet-assess's HOLD still judges load average alone.
 pace_load() {
   local load1 busy
   load1=$(cut -d' ' -f1 "$DISPATCH_LOADAVG" 2>/dev/null)
@@ -7315,7 +7316,7 @@ load_why() {
   read -r load load1 busy < <(pace_load "$cores")
   read -r starts pend < <(pending_load)
   [ "$1" = 0 ] && over_pace "$load" "$cores" "$pend" &&
-    echo "load ${load1}$([ "$busy" = - ] || echo " with $busy cores busy")$([ "$starts" = 0 ] || echo " plus $pend for $starts started in the last ${DISPATCH_START_LOAD_MIN} min") on ${cores} cores is over the ${MAX_LOAD} pace"
+    echo "load ${load}$([ "$busy" = - ] || echo " (1-min load $load1, $busy cores busy; the pace reads the lower)")$([ "$starts" = 0 ] || echo " plus $pend for $starts started in the last ${DISPATCH_START_LOAD_MIN} min") on ${cores} cores is over the ${MAX_LOAD} pace"
   return 0
 }
 
