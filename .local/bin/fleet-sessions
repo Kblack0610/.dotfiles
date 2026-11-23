@@ -76,7 +76,7 @@ set -uo pipefail
 # merge_proof_branch and merge_proof_ref: the one reader of a repo's default branch (default_base, off_default_checkouts, wp_base).
 # shellcheck source=../lib/agent-merge-proof.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-merge-proof.sh"
-# ahead_files and dirty_paths: one definition, which the worker panel read runs on each worker too.
+# ahead_files, unlanded_files and dirty_paths: one definition, which the worker panel read runs on each worker too.
 # shellcheck source=../lib/fleet-worker-panel.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-worker-panel.sh"
 
@@ -1849,22 +1849,8 @@ dirty_names() {
     END { if (n > k) s = s ", +" (n - k) " more"; print (n ? s : "-") }' <<<"$1"
 }
 
-# submodule_pin <dir> -> the commit the superproject's default branch pins for <dir> (when <dir> is a
-# submodule and this clone has that commit), else nothing. A submodule's own default branch says nothing
-# about what landed: the pin may sit on a pin-merge commit another session owns, off master by design
-# (2026-11-16 unity-core-playground-agent-20 read STALLED "3 file(s) not on the default branch" with a
-# clean tree and HEAD the pin on origin/main).
-submodule_pin() {
-  local d="$1" sup top rel pin
-  sup="$(git -C "$d" rev-parse --show-superproject-working-tree 2>/dev/null)"
-  [ -n "$sup" ] || return 0
-  top="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)"
-  rel="${top#"$sup"/}"
-  fetch_once "$sup"
-  pin="$(git -C "$sup" ls-tree "$(default_base "$sup")" -- "$rel" 2>/dev/null | awk '$2 == "commit" { print $3; exit }')"
-  [ -n "$pin" ] && git -C "$d" cat-file -e "$pin^{commit}" 2>/dev/null && echo "$pin"
-  return 0
-}
+# pass_base <dir>: default_base after this pass's fetch of <dir>; the base reader a pass hands unlanded_files.
+pass_base() { fetch_once "$1"; default_base "$1"; }
 
 # fetch_once <dir>: with FLEET_FETCH=1 (tick sets it), fetch the canonical remote once per repo per pass,
 # so behind and conflicts are measured against the remote tip, not the last manual fetch.
@@ -1993,7 +1979,7 @@ pr_holding_head() {
 # "git dirty ahead pr state ci in_pr branch behind conflicts fork oid names". <shell job> is the
 # open job of the session's background shell, for gate_ci (- when it has none); <chain> is chain_hold's answer.
 git_facts() {
-  local d="$1" edited="${2:-}" shell="${3:--}" chain="${4:-}" branch dirty=0 paths ahead pahead pin base prb pr state ci oid red inpr=1 head
+  local d="$1" edited="${2:-}" shell="${3:--}" chain="${4:-}" branch dirty=0 paths ahead base prb pr state ci oid red inpr=1 head
   [ -d "$d" ] || { echo "gone 0 0 - - - 1 - - - - - -"; return; }
   git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo "0 0 0 - - - 1 - - - - - -"; return; }
   branch="$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)"
@@ -2003,13 +1989,7 @@ git_facts() {
   paths="$(dirty_paths "$d" "$edited")"
   [ -n "$paths" ] && dirty="$(wc -l <<<"$paths")"
   base="$(default_base "$d")"
-  ahead="$(ahead_files "$d" "$base")"
-  # In a submodule, work is landed once it is on the default branch or pinned by the superproject's: unlanded only when neither.
-  pin="$(submodule_pin "$d")"
-  if [ -n "$pin" ] && [ "$ahead" -gt 0 ]; then
-    pahead="$(ahead_files "$d" "$pin")"
-    [ "$pahead" -lt "$ahead" ] && ahead="$pahead"
-  fi
+  ahead="$(unlanded_files "$d" "$base" pass_base)"
   IFS=$'\t' read -r prb pr state ci oid red < <(pr_for_head "$d" "$branch" "$ahead")
   [ "${state:-}" = OPEN ] && ci="$(open_pr_ci "$d" "$prb" "$pr" "$oid" "$ci" "$red" "$shell" "$chain")"
   if [ -n "${oid:-}" ]; then
@@ -3165,7 +3145,7 @@ close_self_held() {
   cwd="$(jq -r '.cwd // empty' <<<"$row")"
   if [ -d "$cwd" ] && git -C "$cwd" rev-parse --git-dir >/dev/null 2>&1; then
     dirty="$(dirty_paths "$cwd" "" | grep -c .)" || dirty=0
-    ahead="$(ahead_files "$cwd" "$(wp_base "$cwd")")"
+    ahead="$(unlanded_files "$cwd" "$(wp_base "$cwd")")"
   fi
   IFS=$'\t' read -r tx started < <("${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null | jq -rn --arg s "$CLOSE_SELF" '
     [inputs | select(.session_id == $s)][0] // {} | [(.transcript // "-"), (.started_at // "-" | tostring)] | @tsv')
