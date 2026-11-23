@@ -99,6 +99,7 @@ def check(head, argv, env, cwd):
 
 
 def decide(data):
+    # gate: hook-checkout-guard
     """The deny reason for one PreToolUse payload, or None. walker-guards.py calls this."""
     global FORGE
     if data.get("tool_name", "Bash") != "Bash":
