@@ -6834,13 +6834,14 @@ notice_line() {   # <ts> <task id> <status>
   unlanded() { git_facts "$1" | cut -d' ' -f3; }
   run submodule_pin "$sm"; assert_output "$(git -C "$sm" rev-parse HEAD)"
   [ "$(unlanded "$sm")" = 0 ]
-  # close --self from the superproject, the pin-merge branch pushed: no unlanded blocker (ar-2518, ucp agent-14 at 50758455)
+  # close --self from the superproject, in the reported shape (ar-2518, ucp agent-14 at 50758455: pin-merge pushed):
+  # no unlanded blocker. The pin clears it, not the push, which leaves the read unchanged.
   "${g[@]}" -C "$sm" push -q origin pin-merge 2>/dev/null; "${g[@]}" -C "$sm" fetch -q origin
   run edited_work_blockers "$SANDBOX/wt" "$sm/f"; assert_output ''
   # a commit past the pin that is on neither branch is unlanded work
   echo 2 > "$sm/g"; "${g[@]}" -C "$sm" add g; "${g[@]}" -C "$sm" commit -q -m extra
   [ "$(unlanded "$sm")" = 1 ]
-  run edited_work_blockers "$SANDBOX/wt" "$sm/g"; assert_output --partial "$sm: 1 file(s) not on the default branch, no PR"
+  run edited_work_blockers "$SANDBOX/wt" "$sm/g"; assert_output "STALLED unlanded work in $sm: 1 file(s) not on the default branch, no PR"
   # merged to the submodule's master but not yet pinned: landed, not unlanded
   "${g[@]}" -C "$sm" push -q origin HEAD:master 2>/dev/null; "${g[@]}" -C "$sm" fetch -q origin
   run ahead_files "$sm" "$(submodule_pin "$sm")"; assert_output 1
