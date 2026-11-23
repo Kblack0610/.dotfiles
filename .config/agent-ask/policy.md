@@ -46,6 +46,8 @@ Pick the widest level the decision reaches, and quote the words that show it. Th
 
 An ask naming any of these is about the judge's own authority, so `agent-ask` posts it as an approval for the human and it never reaches you.
 
+The same list gates landing, apart from anything you score: a PR with a changed path (a rename's old path included) that contains one of these names, or whose item carries out an ask flagged human-only, is critical work and merges only on a second agent's pass (`judge_work_level` in `judge.sh`, checked by `agent-land`'s validate_gate).
+
 - `ask-judge`
 - `ask judge`
 - `answer judge`
