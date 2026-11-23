@@ -215,36 +215,36 @@ week() { for d in 25 26 27 28 29 30 31; do day "2025-12-$d" 100000 0.15 40000; d
 
 @test "check: within the band of the 7-day median is quiet (negative control)" {
   week; day 2026-01-01 120000 0.17 44000
-  run "$AU" tokens check
+  run "$AU" tokens check --drift
   assert_success
   assert_output --partial 'carried share 0.17 vs 7-day median 0.15 (+13%)'
 }
 
 @test "check: a rise past the band against the 7-day median trips, naming the number" {
   week; day 2026-01-01 100000 0.3 40000
-  run "$AU" tokens check
+  run "$AU" tokens check --drift
   assert_failure 1
   assert_output '2026-01-01: worse past 25%: carried share 0.3 vs 7-day median 0.15 (+100%)'
   day 2026-01-01 127000 0.15 40000
-  run "$AU" tokens check
+  run "$AU" tokens check --drift
   assert_failure 1
   assert_output --partial 'worse past 25%: context per response 127,000 vs 7-day median 100,000 (+27%)'
 }
 
 @test "check: a drop is an improvement and stays quiet, unless it is past 50% and reads as a broken counter" {
   week; day 2026-01-01 73000 0.15 40000
-  run "$AU" tokens check
+  run "$AU" tokens check --drift
   assert_success
   assert_output --partial 'context per response 73,000 vs 7-day median 100,000 (-27%)'
   day 2026-01-01 40000 0.15 40000
-  run "$AU" tokens check
+  run "$AU" tokens check --drift
   assert_failure 1
   assert_output --partial 'better past 50%, measurement suspect: context per response 40,000 vs 7-day median 100,000 (-60%)'
 }
 
 @test "check: fewer than 3 earlier days is a baseline still building, not a drift" {
   day 2025-12-31 100000 0.15 40000; day 2026-01-01 300000 0.6 90000
-  run "$AU" tokens check
+  run "$AU" tokens check --drift
   assert_success
   assert_output --partial '(baseline 1 days)'
 }
@@ -270,6 +270,28 @@ week() { for d in 25 26 27 28 29 30 31; do day "2025-12-$d" 100000 0.15 40000; d
   assert_equal "$(snap '[.langfuse, .totals.responses > 0, (.errors | map(select(startswith("langfuse: "))) | length)]')" '[null,true,1]'
 }
 
+# check with no flag: the gateway-errors watch runs all three, and any one tripping trips it.
+@test "check: no flag runs drift, langfuse and gateway errors, and one tripping trips the whole check" {
+  week; day 2026-01-01 100000 0.15 40000
+  run "$AU" tokens check
+  assert_success
+  assert_output --partial 'carried share 0.15 vs 7-day median 0.15'
+  assert_output --partial 'langfuse read ok'
+  assert_output --partial 'no gateway figures'
+  jq -c '.langfuse = {gateway: {calls: 100, errors: 2, by_error: {BadRequestError: 2}}}' "$TOKENS_DIR/2026-01-01.json" > "$BATS_TEST_TMPDIR/s"
+  mv "$BATS_TEST_TMPDIR/s" "$TOKENS_DIR/2026-01-01.json"
+  run "$AU" tokens check
+  assert_failure 1
+  assert_output --partial 'gateway BadRequestError x2'
+  assert_output --partial 'carried share 0.15 vs 7-day median 0.15'
+  run "$AU" tokens check --drift
+  assert_success
+  day 2026-01-01 100000 0.3 40000
+  run "$AU" tokens check
+  assert_failure 1
+  assert_output --partial 'worse past 25%: carried share 0.3'
+}
+
 # check --langfuse: the read-health watch trips on two nights of a null section in a row.
 lf_day() {
   mkdir -p "$TOKENS_DIR"
@@ -284,7 +306,7 @@ lf_nokey() { mkdir -p "$TOKENS_DIR"; echo "{\"date\":\"$1\",\"errors\":[]}" > "$
   assert_output 'langfuse unread on 2025-12-31 and 2026-01-01: no key (rbw langfuse-api)'
 }
 
-@test "check --langfuse: figures on either night are quiet, and the plain check is unchanged (negative control)" {
+@test "check --langfuse: figures on either night are quiet (negative control)" {
   lf_day 2025-12-31 '{"gateway":{"calls":3}}' '[]'; lf_day 2026-01-01 null '["langfuse: curl exit 7"]'
   run "$AU" tokens check --langfuse
   assert_success
@@ -413,12 +435,14 @@ gw_live() {
   assert_output --partial 'no BadRequestError'
 }
 
-@test "check --gateway-errors: no or a stale snapshot still exits 2, and it excludes --langfuse" {
+@test "check --gateway-errors: no or a stale snapshot still exits 2, and it combines with --langfuse" {
   gw_day 2026-01-01 1 '{"BadRequestError":1}'
   TOKENS_TODAY=2026-01-05 run "$AU" tokens check --gateway-errors
   assert_failure 2
   run "$AU" tokens check --gateway-errors --langfuse
-  assert_failure 2
+  assert_failure 1
+  assert_output --partial 'langfuse read ok'
+  assert_output --partial 'BadRequestError x1'
   rm "$TOKENS_DIR"/*.json
   run "$AU" tokens check --gateway-errors
   assert_failure 2
