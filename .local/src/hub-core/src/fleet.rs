@@ -641,7 +641,8 @@ pub struct Conf {
 }
 
 impl Conf {
-    /// A lane `judge-eval prompts` lists, as it decides: a conf with a SCORE or a PROMPT.
+    /// A lane, as judges.md defines it and judge-eval's `prompt_lanes` lists it: a conf with a
+    /// SCORE or a PROMPT.
     pub fn instructed(&self) -> bool {
         !self.score.is_empty() || !self.prompt.is_empty()
     }
