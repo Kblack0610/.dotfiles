@@ -1099,7 +1099,12 @@ async fn find_any(target: &str) -> ApiResult<agent::Agent> {
 /// each request from the queue's own kept read, so a queue change shows without a new read.
 async fn agents(State(s): State<Shared>) -> Response {
     let (live, items) = tokio::join!(s.live.get((), read_live), s.queue.active());
-    let body = live.map_or_else(|_| Bytes::from_static(b"[]"), |l| agents_body(&l, &items));
+    // The build clones and serializes every session, so it runs off the async workers.
+    let body = match live {
+        Ok(l) => cache::off(move || agents_body(&l, &items)).await,
+        Err(e) => Err(e),
+    }
+    .unwrap_or_else(|_| Bytes::from_static(b"[]"));
     ([(header::CONTENT_TYPE, "application/json")], body).into_response()
 }
 
@@ -1215,6 +1220,7 @@ struct ActionBody {
 /// parked sessions and the account against the accounts file, then runs the command that owns
 /// the action (claude-acct, agent-queue, tmux); its stderr comes back as the error.
 async fn session_action(
+    State(s): State<Shared>,
     UrlPath((target, action)): UrlPath<(String, String)>,
     Json(b): Json<ActionBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
@@ -1229,6 +1235,8 @@ async fn session_action(
     .await
     .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     .map_err(|e| bad(StatusCode::BAD_REQUEST, e))?;
+    // A cancel or a stop changes a queue item, and the sidebar joins the Queue cache's items.
+    s.queue.clear();
     Ok(Json(
         serde_json::json!({ "action": act.name(), "output": out }),
     ))

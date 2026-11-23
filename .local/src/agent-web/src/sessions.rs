@@ -105,28 +105,34 @@ impl Cache {
     /// The table's rows: the sessions are the sidebar's read (`live.rs`) and the queue items are
     /// the Queue tab's (`queue::Cache`), so this runs neither `collect_all` nor `agent-queue`.
     pub(crate) async fn read(&self, s: &Shared) -> Result<Arc<Read>, String> {
-        let (live, queue) = tokio::join!(s.live.get((), crate::read_live), s.queue.feed_items());
-        let live = live?;
-        let read = off(move || {
-            let (state, vocab, silent) = session_table::read_state(&boards::fleet_state());
-            let active = queue
-                .as_deref()
-                .map(hub_core::queue::active)
-                .unwrap_or_default();
-            let agents: Vec<_> = live
-                .rows
-                .iter()
-                .map(|r| r.agent.clone())
-                .zip(live.joined(&active))
-                .collect();
-            let feed = session_table::feed_with(&System, &session_table::registry(), queue);
-            Read {
-                rows: session_table::rows(&state, &vocab, &feed, &agents),
-                state,
-                buckets: vocab.buckets().to_vec(),
-                errors: feed.errors.into_iter().chain(silent).collect(),
-            }
-        });
+        // Fetched inside the kept read, so a table that is fresh touches neither source.
+        let s = s.clone();
+        let read = async move {
+            let (live, queue) =
+                tokio::join!(s.live.get((), crate::read_live), s.queue.feed_items());
+            let live = live?;
+            off(move || {
+                let (state, vocab, silent) = session_table::read_state(&boards::fleet_state());
+                let active = queue
+                    .as_deref()
+                    .map(hub_core::queue::active)
+                    .unwrap_or_default();
+                let agents: Vec<_> = live
+                    .rows
+                    .iter()
+                    .map(|r| r.agent.clone())
+                    .zip(live.joined(&active))
+                    .collect();
+                let feed = session_table::feed_with(&System, &session_table::registry(), queue);
+                Read {
+                    rows: session_table::rows(&state, &vocab, &feed, &agents),
+                    state,
+                    buckets: vocab.buckets().to_vec(),
+                    errors: feed.errors.into_iter().chain(silent).collect(),
+                }
+            })
+            .await
+        };
         self.table.get((), read).await
     }
 

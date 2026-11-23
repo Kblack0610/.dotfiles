@@ -956,7 +956,7 @@ pub fn done_day(item: &Item) -> Option<&str> {
     item.extra
         .get("file")
         .and_then(Value::as_str)
-        .and_then(|f| f.split("/done/").nth(1))
+        .and_then(|f| f.rsplit_once("/done/").map(|(_, rest)| rest))
         .and_then(|rest| rest.split('/').next())
         .filter(|d| d.len() == 10)
 }
@@ -1920,6 +1920,13 @@ mod tests {
                 Some("2026-11-16"),
                 None
             ]
+        );
+        let under_done =
+            parse(r#"{"slug":"x","state":"done","file":"/srv/done/q/done/2026-11-22/x.md"}"#);
+        assert_eq!(
+            done_day(&under_done[0]),
+            Some("2026-11-22"),
+            "a queue root under a done dir"
         );
     }
 
