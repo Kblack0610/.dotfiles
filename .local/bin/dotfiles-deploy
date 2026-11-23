@@ -55,7 +55,8 @@
 #      the way `stow --no-folding` lays it out: a link per deploy path, the ignored runtime
 #      entries moved out of the checkout into $HOME, the other repo's twins removed. A build
 #      cache (a directory holding a CACHEDIR.TAG, as cargo's target/ does) stays in the checkout:
-#      its build runs there, and links point into it. A tracked absolute link stow ignores (an enable into /usr/lib) is kept as it is; any other
+#      dotfiles-autopull builds there, and ~/.local/bin links point into it. A tracked absolute
+#      link stow ignores (an enable into /usr/lib) is kept as it is; any other
 #      tracked path stow ignores blocks it. Only a full --apply does it, never --missing. See unfold.
 #   7. A STALE link (dangling, into a repo) is removed; --missing does that too.
 #   8. A RUNTIME directory (a link to a checkout directory no repo tracks) moves out of the
@@ -439,11 +440,11 @@ untracked_under() {
 }
 
 # is_cache <path> - a real directory tagged per the Cache Directory Tagging Specification
-# (bford.info/cachedir), as cargo tags target/. Its build ran in the checkout, not through a
-# fold, and links point into it (~/.local/bin/<tool> -> <checkout>/.../target/release/<tool>),
+# (bford.info/cachedir), as cargo tags target/. dotfiles-autopull builds in the checkout, not
+# through a fold, and links point into it (~/.local/bin/<tool> -> <checkout>/.../target/release/<tool>),
 # so an unfold leaves it where it is: moved, those links dangle and the next build starts cold.
 is_cache() {
-  [ -d "$1" ] && [ ! -L "$1" ] && [ -f "$1/CACHEDIR.TAG" ] &&
+  [ -d "$1" ] && [ ! -L "$1" ] && [ -f "$1/CACHEDIR.TAG" ] && [ ! -L "$1/CACHEDIR.TAG" ] &&
     [ "$(head -c 43 -- "$1/CACHEDIR.TAG" 2>/dev/null)" = 'Signature: 8a477f597d28d172789f06886806bc55' ]
 }
 
@@ -956,8 +957,9 @@ report_text() {
   ABSLINK -> --apply rewrites the absolute link as the relative one stow writes, so
              `stow --no-folding .` stops aborting on it.
   FOLDED  -> --apply unfolds it: a link per file, runtime entries moved out of the checkout
-             into $HOME (a CACHEDIR.TAG build cache stays). An untracked file git does not ignore blocks it; commit, ignore or
-             move that file. Close an app whose state lives there first, or use --only.
+             into $HOME (a CACHEDIR.TAG build cache stays). An untracked file git does not
+             ignore blocks it; commit, ignore or move that file. Close an app whose state
+             lives there first, or use --only.
   STALE   -> --apply (and --missing) removes the dangling link.
   RUNTIME -> --apply moves the directory out of the checkout to where its link stood.
 
