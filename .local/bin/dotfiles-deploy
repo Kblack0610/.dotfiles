@@ -53,8 +53,9 @@
 #      and one link serves it. See fold_point.
 #   6. A FOLDED directory (a directory link into a repo that tools write through) is unfolded
 #      the way `stow --no-folding` lays it out: a link per deploy path, the ignored runtime
-#      entries moved out of the checkout into $HOME, the other repo's twins removed. A tracked
-#      absolute link stow ignores (an enable into /usr/lib) is kept as it is; any other
+#      entries moved out of the checkout into $HOME, the other repo's twins removed. A build
+#      cache (a directory holding a CACHEDIR.TAG, as cargo's target/ does) stays in the checkout:
+#      its build runs there, and links point into it. A tracked absolute link stow ignores (an enable into /usr/lib) is kept as it is; any other
 #      tracked path stow ignores blocks it. Only a full --apply does it, never --missing. See unfold.
 #   7. A STALE link (dangling, into a repo) is removed; --missing does that too.
 #   8. A RUNTIME directory (a link to a checkout directory no repo tracks) moves out of the
@@ -437,6 +438,15 @@ untracked_under() {
   git -C "$1" ls-files -z --others --directory -- ":(literal)$2" 2>/dev/null
 }
 
+# is_cache <path> - a real directory tagged per the Cache Directory Tagging Specification
+# (bford.info/cachedir), as cargo tags target/. Its build ran in the checkout, not through a
+# fold, and links point into it (~/.local/bin/<tool> -> <checkout>/.../target/release/<tool>),
+# so an unfold leaves it where it is: moved, those links dangle and the next build starts cold.
+is_cache() {
+  [ -d "$1" ] && [ ! -L "$1" ] && [ -f "$1/CACHEDIR.TAG" ] &&
+    [ "$(head -c 43 -- "$1/CACHEDIR.TAG" 2>/dev/null)" = 'Signature: 8a477f597d28d172789f06886806bc55' ]
+}
+
 declare -A FOLDED_AT=()
 fold_findings() {
   local lp repo n o
@@ -708,7 +718,7 @@ move_entry() {
 unfold() {
   local lp="$1" repo="$2" new="$HOME/$1.unfold-$STAMP" old="$HOME/$1.folded-$STAMP"
   local rec path dir e c i src backup ndone=0
-  local -a links=() queue=() twins=() moves=() blockers=() expanded=() moved=() keeps=()
+  local -a links=() queue=() twins=() moves=() blockers=() expanded=() moved=() keeps=() caches=()
   UNFOLD_OTHER=()
   for rec in "${MANIFEST[@]}"; do
     IFS="$SEP" read -r path _ dir _ <<< "$rec"
@@ -734,7 +744,7 @@ unfold() {
         < <(find "$repo/$e" -mindepth 1 -maxdepth 1 -print0 | sort -z)
     elif [ -d "$repo/$e" ] && [ ! -L "$repo/$e" ]; then
       if [ -z "$(git -C "$repo" ls-files --others --exclude-standard -- ":(literal)$e/" 2>/dev/null)" ]; then
-        moves+=("$e")
+        if is_cache "$repo/$e"; then caches+=("$e"); else moves+=("$e"); fi
       else
         blockers+=("$e/")
       fi
@@ -819,11 +829,13 @@ unfold() {
   # A tool that wrote through the old link during the swap left its entry in the checkout.
   while IFS= read -r -d '' e; do
     e="${e%/}"
-    [ -z "${UNFOLD_OTHER[$e]:-}" ] && git -C "$repo" check-ignore -q -- "$e" 2>/dev/null &&
+    [ -z "${UNFOLD_OTHER[$e]:-}" ] && ! is_cache "$repo/$e" && git -C "$repo" check-ignore -q -- "$e" 2>/dev/null &&
       move_entry "$repo/$e" "$HOME/$e" && moved+=("$e")
   done < <(untracked_under "$repo" "$lp")
-  printf '  unfolded  ~/%s: %s link(s), %s runtime entr(ies) moved out of the checkout, %s twin(s) removed\n' \
+  printf '  unfolded  ~/%s: %s link(s), %s runtime entr(ies) moved out of the checkout, %s twin(s) removed' \
     "$lp" "$(( ${#links[@]} + ${#keeps[@]} ))" "${#moved[@]}" "${#twins[@]}"
+  [ "${#caches[@]}" -eq 0 ] || printf ', %s build cache(s) kept in the checkout' "${#caches[@]}"
+  printf '\n'
   APPLIED=$((APPLIED + 1)); return 0
 }
 
@@ -944,7 +956,7 @@ report_text() {
   ABSLINK -> --apply rewrites the absolute link as the relative one stow writes, so
              `stow --no-folding .` stops aborting on it.
   FOLDED  -> --apply unfolds it: a link per file, runtime entries moved out of the checkout
-             into $HOME. An untracked file git does not ignore blocks it; commit, ignore or
+             into $HOME (a CACHEDIR.TAG build cache stays). An untracked file git does not ignore blocks it; commit, ignore or
              move that file. Close an app whose state lives there first, or use --only.
   STALE   -> --apply (and --missing) removes the dangling link.
   RUNTIME -> --apply moves the directory out of the checkout to where its link stood.
