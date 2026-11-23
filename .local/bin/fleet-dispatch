@@ -1119,9 +1119,13 @@ pace_target() {
 # way while the fleet held 79% of them (plan swhow-me-asll-data-modular-otter P3). A canary pinned to a
 # harness with its own source ($s.sourced, harnesses.json `source`) passes, as a trainee start does: it
 # spends no Claude session, and held, the week's set never ran while the fleet sat over its share (ask
-# GDUmQQ, ar-4554). The one test share_why and queue_depth apply.
+# GDUmQQ, ar-4554). An item that lands or fixes its own open PR (`pr` and `pr_owner`, stamped by the
+# land and fix-ci requeue) passes too: its work is done and paid for, and held, share_return sent it back
+# to its row and stranded the green PR (hc-857, home-config#1406, 2026-11-23). The one test share_why
+# and queue_depth apply.
 # shellcheck disable=SC2016
 SHARE_JQ='def share_held($s): (.project // "") as $p | (.agent // "claude") as $a | $s.full and any($s.projects[]; . == $p)
+  and (((.pr // "") != "" and (.pr_owner // "") != "") | not)
   and ((.priority == "urgent" and (.from // "human") == "human") | not)
   and ((" " + (.tags // "") + " ") | test(" #?(red|requested) ") | not)
   and (((" " + (.tags // "") + " ") | contains(" canary ")) and any(($s.sourced // [])[]; . == $a) | not);'

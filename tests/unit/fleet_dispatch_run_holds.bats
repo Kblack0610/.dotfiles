@@ -822,6 +822,13 @@ share_history() {
   [ -n "$(qitem queued "$fresh")" ] || fail "the item held under DISPATCH_STARVED_MIN left the queue"
   # A sprint row is its floor's to start.
   [ -n "$(qitem queued "$sprint")" ] || fail "the sprint item went back to its row"
+  # An item that lands its own open PR keeps its place: hc-857 went back with home-config#1406 green.
+  local land; land=$fresh
+  agent-queue set "$land" pr=o/game#7 pr_owner=land "land_tries=1 abc123" >/dev/null
+  sed -i 's/^queued: .*/queued: 2026-01-01T00:00:00Z/' "$(qitem queued "$land")"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial "returned queue item $land"
+  [ -n "$(agent-queue list --json --state active 2>/dev/null | jq -r --arg s "$land" 'select(.slug == $s) | .slug')" ] || fail "the item landing its PR went back to its row"
 }
 
 @test "fleet share: while the share is full the canary top-up asks for no Claude lane" {
