@@ -33,6 +33,9 @@ HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 . "$HERE/../lib/agent-proof.sh"
 # shellcheck source=/dev/null
 . "$HERE/../lib/plan-phases.sh"
+# systems_of: the board's system ids, the area vocabulary its rows are filed in.
+# shellcheck source=/dev/null
+. "$HERE/../lib/inbox-epics.sh"
 # The registry's resolver: this tree's project-name.sh (PROJECT_NAME_LIB when the script runs
 # outside it, as fleet-dispatch and agent-queue take it).
 # shellcheck source=../../.config/shared-hooks/project-name.sh
@@ -221,7 +224,10 @@ $open_rows
 $prs
 
 ## Row types
-$TYPES"
+$TYPES
+
+## Systems
+$(systems_of "$board")"
   wd="$(mktemp -d)"
   # shellcheck disable=SC2086 # a word list by design, overridable in tests
   # An empty directory, so no repo's Stop hook answers in place of the model. The prompt goes on
