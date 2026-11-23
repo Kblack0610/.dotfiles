@@ -29,10 +29,10 @@ raw="$("$HUB" projects --json 2>&1)" || unknown "hub projects failed: ${raw:0:20
 jq -e '.cards | type == "array"' <<< "$raw" > /dev/null 2>&1 || unknown "hub projects: not JSON"
 
 # The hover body: one row per project in flight (running or waiting), in hub's order, with its
-# counts and, when it has a window, its state in its hue and the window; then one line of its
+# counts and, when it is due (on track, at risk, late), its state in its hue and its window; then one line of its
 # running work by category, the system of each item's epic (hub's `running_areas`, `no epic`
-# dim), the top AREAS and +N past them. A project with a window and nothing in flight keeps a
-# row, so a late window never hides. The rest are one line of names, by stage. Names are escaped
+# dim), the top AREAS and +N past them. A due project with nothing in flight keeps a row, so a
+# late release never hides, window or not. The rest are one line of names, by stage. Names are escaped
 # here, colours come from pango.sh.
 AREAS=4
 body="$(jq -r --arg g "$C_GRN" --arg y "$C_YEL" --arg r "$C_RED" --arg d "$C_DIM" --argjson top "$AREAS" '
@@ -44,6 +44,9 @@ body="$(jq -r --arg g "$C_GRN" --arg y "$C_YEL" --arg r "$C_RED" --arg d "$C_DIM
   def hue: {"ok": $g, "warn": $y, "bad": $r}[.state_level // ""] // $d;
   # An unread queue states no card (hub_core::projects::build): a dash, not a blank.
   def st: if (.state // "") == "" then "-" else .state end;
+  # A release state (hub_core::projects::state): late or at risk can come from the target day
+  # with no window, so a row shows it whenever the card is due, not only with a window.
+  def due: .window != null or (.state | IN("on track", "at risk", "late"));
   def run: if (.running | length) > 0 then "\(.running | length) running" else "" end;
   def wait: if .waiting > 0 then "\(.waiting) waiting" else "" end;
   # A count painted, then padded outside its span so a row ends without trailing spaces.
@@ -54,17 +57,17 @@ body="$(jq -r --arg g "$C_GRN" --arg y "$C_YEL" --arg r "$C_RED" --arg d "$C_DIM
         (($sys | length) - $top | select(. > 0) | "+\(.) more"),
         ($a[] | select(.area == "no epic") | "no epic \(.n)" | paint($d)) ] | join(", ");
   .cards as $all
-  | [$all[] | select(.in_flight or .window != null)] as $shown
-  | ([$shown[].name | length] | max // 0) as $w
+  | [$all[] | select(.in_flight or due)] as $shown
+  | ([$shown[].name | esc | length] | max // 0) as $w
   | ([$shown[] | run | length] | max // 0) as $rw
   | ([$shown[] | wait | length] | max // 0) as $ww
   | ($shown[] | ([(.name | esc | pad($w)),
         (run | cell($g; $rw)),
         (wait | cell($y; $ww)),
-        (if .window != null then (hue as $h | st | paint($h)) + " " + (.window_says | esc) else "" end)]
+        (if due then (hue as $h | st | paint($h)) + " " + (.window_says | esc) else "" end)]
       | join("  ") | sub(" +$"; "")),
       (areas | select(. != "") | "  " + .)),
-    ([$all[] | select((.in_flight or .window != null) | not)] | sort_by([rank, .name]) | map(.name | esc)) as $rest
+    ([$all[] | select((.in_flight or due) | not)] | sort_by([rank, .name]) | map(.name | esc)) as $rest
     | if ($rest | length) > 0
       then "Not running: " + ($rest[:4] | join(", ")) + (if ($rest | length) > 4 then ", +\(($rest | length) - 4)" else "" end)
       else empty end,

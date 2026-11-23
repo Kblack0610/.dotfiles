@@ -558,14 +558,15 @@ pub fn state_level(state: &str) -> Option<Level> {
     crate::vocab::tone(STATE_TONES, state)
 }
 
-/// The state, then the window when there is one: what the phone row and the anchor's Lab line
-/// say, `state_says` in `--json`. With no window the state alone (`flow`, `idle`); a card
-/// [`build`] has not stated is its window.
+/// The state, then the window: what the phone row and the anchor's Lab line say, `state_says` in
+/// `--json`. A quiet or flowing state with no window is said alone (`flow`, `idle`, `parked`);
+/// `late` and `at risk` keep `no window`, the cause to close. A card [`build`] has not stated is
+/// its window.
 pub fn state_says(c: &Card) -> String {
     let window = window_short(c);
     if c.state.is_empty() {
         window
-    } else if c.window.is_none() {
+    } else if c.window.is_none() && ![LATE, AT_RISK].contains(&c.state) {
         c.state.to_string()
     } else {
         format!("{}, {window}", c.state)
@@ -1623,6 +1624,13 @@ mod tests {
             ..short
         };
         assert_eq!(state_says(&short), "at risk, 16/20 due 11-22");
+        // A target past with no window keeps the cause; a flowing card says its state alone.
+        let late = Card {
+            state: LATE,
+            window: None,
+            ..short
+        };
+        assert_eq!(state_says(&late), "late, no window");
     }
 
     #[test]

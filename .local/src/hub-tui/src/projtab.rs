@@ -554,8 +554,12 @@ pub(crate) fn wrapped(
         .collect()
 }
 
-/// A project state's hue (`projects::state_level`), grey for `parked`.
+/// A project state's hue (`projects::state_level`): plain for `flow`, which is active and
+/// warns of nothing, grey for `parked`.
 fn state_style(c: &Card, p: Palette) -> ratatui::style::Style {
+    if c.state == projects::FLOW {
+        return ratatui::style::Style::default();
+    }
     projects::state_level(c.state).map_or_else(|| p.dim(), |l| crate::releases::level(l, p))
 }
 

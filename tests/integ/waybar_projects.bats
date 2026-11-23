@@ -61,23 +61,26 @@ class() { jq -r .class <<< "$output"; }
     "$(card shop prod 130/250 4 0 0 late bad)" \
     "$(card zeta draft 1/10 3 0 0 parked null)" \
     "$(card done prod - 0 0 0)" \
-    "$(card base dev - 2 0 0 idle warn)"
+    "$(card base dev - 2 0 0 idle warn)" \
+    "$(card ship beta - 2 0 0 late bad)"
   run "$MODULE"
   assert_success
   assert_equal "$(text)" "$ICON 2"
   assert_equal "$(class)" ok
   local want
-  want="<b>Projects</b>  2 in flight, 6 total
+  want="<b>Projects</b>  2 in flight, 7 total
 
 <tt>web   <span color=\"$G\">2 running</span>  <span color=\"$Y\">1 waiting</span>  <span color=\"$G\">on track</span> 21/60 due 11-22
   dispatch 1, <span color=\"$D\">no epic 1</span>
 game$(sp 13)<span color=\"$Y\">1 waiting</span>
 shop$(sp 24)<span color=\"$R\">late</span> 130/250 due 11-22
 zeta$(sp 24)<span color=\"$D\">parked</span> 1/10 due 11-22
+ship$(sp 24)<span color=\"$R\">late</span> no window
 Not running: done, base</tt>"
   assert_equal "$(jq -r .tooltip <<< "$output")" "$want"
-  # NEGATIVE CONTROL: a project in flow says no state and no window anywhere.
-  refute_output --partial "no window"
+  # NEGATIVE CONTROL: a project in flow says no state and no window; only the late one with no
+  # window says it, as the cause.
+  assert_equal "$(grep -o 'no window' <<< "$output" | wc -l)" 1
   refute_output --partial "flow"
 }
 
