@@ -186,6 +186,11 @@ case "${args[0]}" in
     case " ${args[*]} " in
       *" --prios "*) cat "$F/prios" 2>/dev/null ;;
       *" --stats "*) [ -f "$F/stats.json" ] && cat "$F/stats.json" || echo '[]' ;;
+      # `--front-page <dir>`: the sheet cases of projects.rs::sheet_path, else summary.md, as the shared stub answers
+      *" --front-page "*) d="${args[2]%/}"
+        if grep -q '^Version:' "$d/README.md" 2>/dev/null; then echo "$d/README.md"
+        elif [ -f "$d/tasks.md" ]; then echo "$d/tasks.md"
+        else echo "$d/summary.md"; fi ;;
       *) cat "$F/projects" 2>/dev/null ;;
     esac ;;
   row)   # `row parse`: a stand-in for the grammar's home (notes-cli), enough for these fixtures: type(area): with a type in kinds.json
