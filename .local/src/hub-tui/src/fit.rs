@@ -282,9 +282,10 @@ impl Table {
 
     /// The columns that hold one text in every row, in `keep` order. The first `keep` column (the
     /// lead), the flex column, the sorted column, a column with no header or a blank or long value
-    /// never qualify, nor does a table of fewer than two rows (one row is constant everywhere).
+    /// never qualify, nor does a table of fewer than three rows, nor a column reading `not read` or `no data` (a failed
+    /// read is a fault to see, not a fact about the table).
     fn constants(&self) -> Vec<usize> {
-        if self.rows.len() < 2 {
+        if self.rows.len() < 3 {
             return vec![];
         }
         let text = |r: &Vec<Cell>, j: usize| r.get(j).map_or(String::new(), |c| c.text.clone());
@@ -298,6 +299,8 @@ impl Table {
                     && self.mark.is_none_or(|(c, _)| c != j)
                     && !self.header[j].is_empty()
                     && !first.is_empty()
+                    && first != hub_core::reading::NOT_READ
+                    && first != hub_core::reading::NO_DATA
                     && len(&first) <= CONST_MAX
                     && self.rows.iter().all(|r| {
                         text(r, j) == first
@@ -805,12 +808,12 @@ mod tests {
 
     #[test]
     fn a_column_with_one_value_in_every_row_moves_into_the_header() {
-        let mut tb = t(&[&["a", "7", "x"], &["b", "7", "y"]]);
+        let mut tb = t(&[&["a", "7", "x"], &["b", "7", "y"], &["c", "7", "z"]]);
         tb.keep = vec![0, 1, 2];
         assert_eq!(
             texts(&tb, 0),
-            ["NAME  NOTE | n: 7", "a     x", "b     y"],
-            "N holds 7 in both rows, so it leaves the table"
+            ["NAME  NOTE | n: 7", "a     x", "b     y", "c     z"],
+            "N holds 7 in every row, so it leaves the table"
         );
         let (lines, _) = tb.fit_wrapped(30, Style::new());
         assert_eq!(plain(&lines[0]), "NAME  NOTE | n: 7");
@@ -819,15 +822,18 @@ mod tests {
 
     #[test]
     fn a_column_that_differs_in_any_row_stays() {
-        let tb = t(&[&["a", "7", "x"], &["b", "8", "y"]]);
-        assert_eq!(texts(&tb, 0), ["NAME  N  NOTE", "a     7  x", "b     8  y"]);
+        let tb = t(&[&["a", "7", "x"], &["b", "7", "y"], &["c", "8", "z"]]);
+        assert_eq!(
+            texts(&tb, 0),
+            ["NAME  N  NOTE", "a     7  x", "b     7  y", "c     8  z"]
+        );
     }
 
     #[test]
     fn one_row_the_lead_the_sorted_column_and_a_blank_or_long_value_never_hide() {
-        let one = t(&[&["a", "7", "x"]]);
-        assert_eq!(texts(&one, 0)[0], "NAME  N  NOTE");
-        let mut tb = t(&[&["a", "7", "x"], &["a", "7", "y"]]);
+        let two = t(&[&["a", "7", "x"], &["b", "7", "y"]]);
+        assert_eq!(texts(&two, 0)[0], "NAME  N  NOTE", "two rows prove nothing");
+        let mut tb = t(&[&["a", "7", "x"], &["a", "7", "y"], &["a", "7", "z"]]);
         assert_eq!(
             texts(&tb, 0)[0],
             "NAME  NOTE | n: 7",
@@ -840,13 +846,23 @@ mod tests {
             "the sorted column is shown"
         );
         tb.mark = None;
-        tb.rows[0][1] = "".into();
-        tb.rows[1][1] = "".into();
+        for r in &mut tb.rows {
+            r[1] = "".into();
+        }
         assert_eq!(texts(&tb, 0)[0], "NAME  N  NOTE", "blank is not a value");
         let long = "z".repeat(CONST_MAX + 1);
-        tb.rows[0][1] = long.as_str().into();
-        tb.rows[1][1] = long.as_str().into();
+        for r in &mut tb.rows {
+            r[1] = long.as_str().into();
+        }
         assert_eq!(texts(&tb, 0)[0].split_whitespace().count(), 3);
+        for r in &mut tb.rows {
+            r[1] = hub_core::reading::NOT_READ.into();
+        }
+        assert_eq!(
+            texts(&tb, 0)[0].split_whitespace().count(),
+            4,
+            "a failed read stays a column to see"
+        );
     }
 
     #[test]
@@ -856,6 +872,7 @@ mod tests {
             rows: vec![
                 vec!["a".into(), "7".into(), "x".into()],
                 vec!["b".into(), "7".into(), "y".into()],
+                vec!["c".into(), "7".into(), "z".into()],
             ],
             keep: vec![0, 1, 2],
             ..Default::default()
@@ -863,14 +880,18 @@ mod tests {
         assert_eq!(texts(&tb, 14)[0], "NAME  M | n: 7");
         assert_eq!(
             texts(&tb, 13),
-            ["NAME  N  M", "a     7  x", "b     7  y"],
+            ["NAME  N  M", "a     7  x", "b     7  y", "c     7  z"],
             "no room for the note, so no value is dropped"
         );
     }
 
     #[test]
     fn the_note_rides_in_a_flex_column_that_has_columns_after_it() {
-        let mut tb = t(&[&["a", "7", "one two"], &["b", "7", "three"]]);
+        let mut tb = t(&[
+            &["a", "7", "one two"],
+            &["b", "7", "three"],
+            &["c", "7", "four"],
+        ]);
         tb.header = vec!["NOTE", "NAME", "N"];
         tb.rows = tb
             .rows

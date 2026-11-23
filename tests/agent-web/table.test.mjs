@@ -175,10 +175,10 @@ const constTable = (labels, rows, extra = []) => {
 const hidden = (t) => t.rows.slice(1).map((r) => r.cells.map((c) => !!c.classList.tconst));
 
 test("a column with one value in every row hides, and its value goes in a note above the table", () => {
-  const t = constTable(["Name", "Owner", "State"], [["a", "none", "run"], ["b", "none", "done"]]);
+  const t = constTable(["Name", "Owner", "State"], [["a", "none", "run"], ["b", "none", "done"], ["c", "none", "wait"]]);
   ctx.subject = t;
   run("tblConstants(subject)");
-  assert.deepEqual(hidden(t), [[false, true, false], [false, true, false]]);
+  assert.deepEqual(hidden(t), [[false, true, false], [false, true, false], [false, true, false]]);
   assert.equal(t.rows[0].cells[1].classList.tconst, true, "its header hides with it");
   assert.equal(t.noted[0].textContent, "owner: none");
   assert.equal(t.noted[0].className, "tconsts muted");
@@ -186,31 +186,32 @@ test("a column with one value in every row hides, and its value goes in a note a
 
 test("a table keeps a column that differs in any row, a lone row, the lead, a blank, a long value, a sorted or faceted column, and one holding a control", () => {
   const note = (t) => { ctx.subject = t; run("tblConstants(subject)"); return t.noted.length; };
-  assert.equal(note(constTable(["Name", "Owner"], [["a", "x"], ["b", "y"]])), 0, "differs");
-  assert.equal(note(constTable(["Name", "Owner"], [["a", "x"]])), 0, "one row is constant everywhere");
-  assert.equal(note(constTable(["Name", "Owner"], [["a", "x"], ["a", "y"]])), 0, "the lead never hides");
-  assert.equal(note(constTable(["Name", "Owner"], [["a", ""], ["b", ""]])), 0, "blank is not a value");
-  assert.equal(note(constTable(["Name", "Owner"], [["a", "z".repeat(33)], ["b", "z".repeat(33)]])), 0, "long is data");
-  assert.equal(note(constTable(["Name", ""], [["a", "x"], ["b", "x"]])), 0, "no header to name it");
-  const sorted = constTable(["Name", "Owner"], [["a", "x"], ["b", "x"]]);
+  assert.equal(note(constTable(["Name", "Owner"], [["a", "x"], ["b", "x"], ["c", "y"]])), 0, "differs");
+  assert.equal(note(constTable(["Name", "Owner"], [["a", "x"], ["b", "x"]])), 0, "two rows prove nothing");
+  assert.equal(note(constTable(["Name", "Owner"], [["a", "x"], ["a", "y"], ["a", "z"]])), 0, "the lead never hides");
+  assert.equal(note(constTable(["Name", "Owner"], [["a", ""], ["b", ""], ["c", ""]])), 0, "blank is not a value")
+  assert.equal(note(constTable(["Name", "Owner"], [["a", "not read"], ["b", "not read"], ["c", "not read"]])), 0, "a failed read stays a column");
+  assert.equal(note(constTable(["Name", "Owner"], [["a", "z".repeat(33)], ["b", "z".repeat(33)], ["c", "z".repeat(33)]])), 0, "long is data");
+  assert.equal(note(constTable(["Name", ""], [["a", "x"], ["b", "x"], ["c", "x"]])), 0, "no header to name it");
+  const sorted = constTable(["Name", "Owner"], [["a", "x"], ["b", "x"], ["c", "x"]]);
   sorted.rows[0].cells[1].getAttribute = (k) => (k === "aria-sort" ? "ascending" : null);
   assert.equal(note(sorted), 0, "the sorted column is shown");
-  const ctl = constTable(["Name", "Owner"], [["a", "x"], ["b", "x"]]);
+  const ctl = constTable(["Name", "Owner"], [["a", "x"], ["b", "x"], ["c", "x"]]);
   ctl.rows[2].cells[1].querySelector = () => ({});
   assert.equal(note(ctl), 0, "a control is never hidden");
   const filters = trOf([cell(""), Object.assign(cell(""), { querySelector: (q) => (q === ".tfacet" ? {} : null) })]);
   filters.dataset.phone = "filters";
-  assert.equal(note(constTable(["Name", "Owner"], [["a", "x"], ["b", "x"]], [filters])), 0, "a filter pill stays so the filter can come off");
+  assert.equal(note(constTable(["Name", "Owner"], [["a", "x"], ["b", "x"], ["c", "x"]], [filters])), 0, "a filter pill stays so the filter can come off");
 });
 
 test("a table drawn again with a differing row shows the column again", () => {
-  const t = constTable(["Name", "Owner"], [["a", "x"], ["b", "x"]]);
+  const t = constTable(["Name", "Owner"], [["a", "x"], ["b", "x"], ["c", "x"]]);
   ctx.subject = t;
   run("tblConstants(subject)");
   assert.equal(t.rows[1].cells[1].classList.tconst, true);
   t.rows[2].cells[1].textContent = "y";
   run("tblConstants(subject)");
-  assert.deepEqual(hidden(t), [[false, false], [false, false]]);
+  assert.deepEqual(hidden(t), [[false, false], [false, false], [false, false]]);
 });
 
 test("a pfold is always open on a wide screen, and on a phone is a closed line until opened", () => {

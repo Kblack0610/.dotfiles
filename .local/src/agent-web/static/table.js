@@ -399,18 +399,19 @@ if (typeof document !== "undefined" && document.addEventListener) {
 // state: not read`, so nothing is dropped. The same rule as the hub's `fit::Table`. Never hidden:
 // the lead (first) column, the sorted one, one with no header or a filter pill (a filter ticked on
 // a column makes it constant, and its pill must stay to take the filter off), a blank or long
-// value, or a cell holding a control or link; nor a table of fewer than two rows, whose every column is constant.
+// value, or a cell holding a control or link; nor a table of fewer than three rows, nor a value that says a read failed
+// (NOT_READ, NO_DATA: a fault to see, not a fact about the table).
 const TBL_CONST_MAX = 32;
 
 // The columns of `heads` that hold one value in every one of `rows`: [[index, header, value]];
 // `faceted` is the set of column indexes that carry a filter pill.
 function tblConstCols(heads, rows, faceted = new Set()) {
-  if (rows.length < 2) return [];
+  if (rows.length < 3) return [];
   const out = [];
   for (let i = 1; i < heads.length; i++) {
     const h = heads[i], label = (h.dataset?.label ?? h.textContent ?? "").trim();
     const v = (rows[0].cells[i].textContent || "").trim();
-    if (faceted.has(i) || !label || !v || v.length > TBL_CONST_MAX || h.getAttribute?.("aria-sort")) continue;
+    if (faceted.has(i) || !label || !v || v === NOT_READ || v === NO_DATA || v.length > TBL_CONST_MAX || h.getAttribute?.("aria-sort")) continue;
     if (rows.every((r) => (r.cells[i].textContent || "").trim() === v && r.cells[i].innerHTML === rows[0].cells[i].innerHTML && !r.cells[i].querySelector("a, button, select, input"))) out.push([i, label.toLowerCase(), v]);
   }
   return out;
