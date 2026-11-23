@@ -539,6 +539,7 @@ offkind_fixture() {
 
 @test "skip_exits: an agent row of a kind kinds.json turns off leaves the lane, #high to the human sheet and #low to improvements.md; an epic, a parent and a fix stay" {
   offkind_fixture
+  : > "$NOTES_FIXTURE/calls.log"
   run skip_exits --dry-run
   assert_success
   assert_output 'sheet	game	gd-1	kind
@@ -554,10 +555,16 @@ exits: improve 1 sheet 1'
   assert_equal "$(jq -r 'select(.exit) | "\(.key)=\(.exit)"' "$FLEET_DISPATCH_DIR/verdicts.jsonl" | paste -sd,)" 'gd-1=sheet,gd-2=improve'
   run grep -E 'gd-[345]' "$NOTES_FIXTURE/calls.log"
   assert_failure
-  # a row whose drop failed is on record, so a second pass files no second copy
+  # each exit is on record, so a second pass over the same board (as after a drop that failed) files no copy
   : > "$NOTES_FIXTURE/calls.log"
   skip_exits
   assert_equal "$EXITS_TAKEN" 0
+  # nor does a row whose latest verdict carries an earlier judge exit (a waits skip sent to a plan)
+  verdict game agent gd-1 skip
+  jq -c 'if .key == "gd-1" and .verdict == "skip" and .rule != "kind" then .rule = "waits" | .exit = "plan" else . end' \
+    "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  run skip_exits --dry-run
+  refute_output --partial 'gd-1'
 }
 
 @test "skip_exits: every skip rule in the shipped policy has exactly one exit" {

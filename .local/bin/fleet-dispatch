@@ -1909,15 +1909,18 @@ skip_exits() {
   room=$(( DISPATCH_PLAN_BACKLOG - ${room:-0} ))
   while IFS= read -r id; do [ -z "$id" ] || ids[$id]=1; done < <(jq -r '.rows[]? | select(.id != null) | .id' <<<"$board")
   # A row of a kind kinds.json turns off (not epic) never reaches the judge, so it has no verdict: it
-  # takes the human exit as rule `kind`, its line `-` (no verdict to hold), unless it is a parent or a
-  # kind exit is already on record for it (a drop that failed: no second copy).
+  # takes the human exit as rule `kind`, its line `-` (no verdict to hold), unless it is a parent or its
+  # latest verdict already carries an exit, of any rule (a drop that failed: no second copy).
+  local kinds
+  kinds=$(jq -ce 'objects' "$DISPATCH_KINDS" 2>/dev/null) ||
+    { say "skip_exits: no kind registry at $DISPATCH_KINDS: no kind exit this pass"; kinds='{}'; }
   rows=$(jq -r --argjson prules "$(policy_rules)" --argjson n "$DISPATCH_DETAIL_CHARS" \
-      --argjson kinds "$(jq -c . "$DISPATCH_KINDS" 2>/dev/null || echo '{}')" \
+      --argjson kinds "$kinds" \
       --arg at "$(date -Iseconds)" --arg sig "$(policy_sig)" \
       --slurpfile v <(latest_verdicts) "$ROW_JQ"'
     ($v | map(select(.lane == "agent" and .verdict == "skip" and .exit == null and usable($prules)))
        | map({key: "\(.project)\t\(.key)", value: .}) | from_entries) as $by
-    | ($v | map(select(.lane == "agent" and .rule == "kind" and .exit != null))
+    | ($v | map(select(.lane == "agent" and .exit != null))
        | map({key: "\(.project)\t\(.key)", value: true}) | from_entries) as $gone
     | ($kinds | to_entries | map(select(.value.enabled == false and .key != "epic") | {key, value: true}) | from_entries) as $off
     | ([.rows[]? | select(.state == "open") | .tags[]? | select(startswith("of/")) | {key: .[3:], value: true}] | from_entries) as $parents
