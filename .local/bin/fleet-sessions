@@ -1231,11 +1231,8 @@ asks_for() {
   awk -F'\t' -v s="$1" '$1 == s { print $2 }' <<<"${PENDING_ASKS-$(pending_asks)}"
 }
 
-# item_asks <live items, jsonl> <item_of's answer> <this session id> <panel rows, jsonl> -> the ids of the pending asks
-# an earlier session of this session's live item filed, one per line. A later session of one item (a restart, a
-# resume, a handed-over run) waits on the question the item's earlier session asked, as much as on its own; asks_for
-# keys on the asking session alone, so that session read STALLED with the human's answer outstanding (ar-4650: agent-1
-# on ar-4640, waiting on onC7wY). Only a session no panel row shows live counts: a live one still owns its ask.
+# item_asks <live items, jsonl> <item_of's answer> <this session id> <panel rows, jsonl> -> the pending asks the item's
+# earlier sessions filed (sessions: order), one id per line, skipping any a panel row shows live: it owns its ask (ar-4650).
 item_asks() {
   case "${2:-}" in own:* | here:*) ;; *) return 0 ;; esac
   local slugs="${2#*:}" sib x
@@ -1243,7 +1240,8 @@ item_asks() {
   sib="$(jq -rn --arg own ",$slugs," --arg me "$3" --slurpfile pan <(printf '%s\n' "${4:-}") '
     ([$pan[] | .session_id // empty | tostring]) as $live
     | [inputs | select(.slug as $s | $own | contains("," + $s + ","))
-      | (.sessions // "") | split(" ")[] | select(. != "" and . != $me and (. as $x | $live | index($x) | not))]
+      | (.sessions // "" | split(" ") | map(select(. != ""))) as $l | ($l | index($me)) as $i
+      | ($l | if $i == null then . else .[:$i] end)[] | select(. as $x | $live | index($x) | not)]
     | unique[]' <<<"$1" 2>/dev/null)"
   while IFS= read -r x; do [ -z "$x" ] || asks_for "$x"; done <<<"$sib"
   return 0
@@ -2532,10 +2530,10 @@ collect() {
     local solo item
     solo="$(jq -r --arg k "${target%:*}" 'select((.target | sub(":[^:]*$"; "")) == $k) | .target' <<<"$panel" 2>/dev/null | wc -l)"
     item="$(item_of "$qitems" "$sid" "${target%%/*}:$tsess" "$solo" "$started")"
-    # Every ask this session filed and nobody answered (ownask), the ones a queue item carries on
-    # included, and the ones an earlier session of its live item filed (item_asks): the session may close
-    # (bucket), and the close verdict says whether its window must stay open for the answer (the close step
-    # "its own asks are its only blockers"). askids are the ones still its own to wait on.
+    # Every ask this session filed and nobody answered (ownask), the ones a queue item carries on included, and its
+    # item's earlier sessions' (item_asks): the session may close (bucket), and the close verdict says whether its
+    # window must stay open for the answer (the close step "its own asks are its only blockers").
+    # askids are the ones still its own to wait on.
     local ownids; ownids="$({ asks_for "$sid"; item_asks "$qjson" "$item" "$sid" "$panel"; } | grep . | sort -u)"
     ownask=0; [ -n "$ownids" ] && ownask="$(wc -l <<<"$ownids")"; ownask=$((ownask + 0))
     askids="$(grep . <<<"$ownids" | { if [ -n "$qheld" ]; then grep -vxF "$qheld"; else cat; fi; } | paste -sd, -)"

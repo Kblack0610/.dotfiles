@@ -2888,6 +2888,12 @@ research_item() {
   [ "$(jq -r .own_asks <<<"$output")" = 1 ]
   [ "$(jq -r .bucket <<<"$output")" = NEEDS ]
   [ "$(jq -r '.blockers[0]' <<<"$output")" = 'open ask Old1' ]
+  # a later session of the item does not lend its ask to an earlier one
+  printf 'id: Late\nstatus: pending\nsession: s3\nclaude_session: sid-late\n' > "$ASK_ROOT/apociseum/Late.md"
+  sed -i 's/^sessions: .*/sessions: sid-old sid-9 sid-late/' "$HOME/.agent/queue/running/20261103-100000-fix-wave-save.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .own_asks <<<"$output")" = 1 ]
+  [ "$(jq -r '.blockers[0]' <<<"$output")" = 'open ask Old1' ]
   # a session of another item does not lend its ask
   printf 'id: Other\nstatus: pending\nsession: s2\nclaude_session: sid-else\n' > "$ASK_ROOT/apociseum/Other.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
