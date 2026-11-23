@@ -8035,25 +8035,42 @@ esac'
   assert_failure 2
 }
 
-@test "canary shepherd: the shepherd's pass lanes compare by model over the window, from passes.tsv's lane columns" {
+@test "canary shepherd: the shepherd's pass lanes compare by model over the span every lane ran, from passes.tsv's lane columns" {
   export TZ=UTC FLEET_SHEPHERD_DIR="$SANDBOX/shepherd" BENCH_NOW=$(date -d 2026-11-07T12:00:00Z +%s)
   mkdir -p "$FLEET_SHEPHERD_DIR"
   printf '%s\n' \
+    $'2026-11-06 09:50\tp9\tWORKED\tpass p9: 1 due, 4m\tclaude-sonnet-5-5\t1\t0\t0\t0\t0' \
     $'2026-11-06 10:00\tp1\tWORKED\tpass p1: 2 due, 9m\tclaude-opus-5-5\t2\t0\t0\t0\t1' \
     $'2026-11-06 10:15\tp2\tNOOP\tpass p2: 0 due, 3m\tclaude-opus-5-5\t0\t0\t0\t0\t0' \
     $'2026-11-06 10:30\tp3\tWORKED\tpass p3: 3 due, 8m\tclaude-sonnet-5-5\t2\t1\t1\t1\t1' \
     $'2026-11-06 10:45\tp4\tWORKED\tpass p4: 1 due, 5m' \
+    $'2026-11-06 10:50\tp5\tWORKED\tpass p5: 1 due, 5m\t-\t1\t0\t0\t0\t0' \
+    $'2026-11-06 11:30\tp6\tWORKED\tpass p6: 4 due, 9m\tclaude-opus-5-5\t1\t1\t3\t0\t0' \
+    $'2026-10-20 09:00\tq0\tWORKED\tpass q0: 1 due, 9m\tclaude-opus-5-5\t1\t0\t0\t0\t0' \
     $'2026-10-20 10:00\tp0\tWORKED\tpass p0: 5 due, 9m\tclaude-sonnet-5-5\t5\t5\t5\t0\t0' > "$FLEET_SHEPHERD_DIR/passes.tsv"
+  # p9 runs before Opus's first pass and p6 after Sonnet's last: both fall outside the shared span;
+  # p4 (no lane columns) and p5 (model -) are no lane at all. Without the span cut Opus would read 1 missed a pass.
   run "$SUBJECT" canary shepherd --json
   assert_success
-  assert_equal "$(jq -sc . <<<"$output")" '[{"model":"claude-opus-5-5","passes":2,"noop_share":0.5,"nudges":2,"progress_share":1,"missed_per_pass":0,"wrong_parks":0,"parks":1},{"model":"claude-sonnet-5-5","passes":1,"noop_share":0,"nudges":2,"progress_share":0.5,"missed_per_pass":1,"wrong_parks":1,"parks":1}]'
+  assert_equal "$(jq -sc . <<<"$output")" '[{"model":"claude-opus-5-5","from":"2026-11-06 10:00","to":"2026-11-06 10:30","passes":2,"noop_share":0.5,"nudges":2,"progress_share":1,"missed_per_pass":0,"wrong_parks":0,"parks":1},{"model":"claude-sonnet-5-5","from":"2026-11-06 10:00","to":"2026-11-06 10:30","passes":1,"noop_share":0,"nudges":2,"progress_share":0.5,"missed_per_pass":1,"wrong_parks":1,"parks":1}]'
   run "$SUBJECT" canary shepherd
-  assert_line $'claude-sonnet-5-5\t1 passes\tnoop 0\t2 nudges\tprogress 0.5\tmissed/pass 1\twrong parks 1/1'
-  # the window reaches back to the old sonnet row only when asked
+  assert_line $'claude-sonnet-5-5\t1 passes\tnoop 0\t2 nudges\tprogress 0.5\tmissed/pass 1\twrong parks 1/1\t2026-11-06 10:00 to 2026-11-06 10:30'
+  # the window reaches back to the old rows only when asked, and the span starts at the later lane's first
   run "$SUBJECT" canary shepherd --days 30 --json
-  assert_equal "$(jq -s 'map(select(.model == "claude-sonnet-5-5")) | .[0].passes' <<<"$output")" 2
+  assert_equal "$(jq -sc 'map({model, passes, from})' <<<"$output")" '[{"model":"claude-opus-5-5","passes":2,"from":"2026-10-20 10:00"},{"model":"claude-sonnet-5-5","passes":3,"from":"2026-10-20 10:00"}]'
   run "$SUBJECT" canary shepherd --days x
   assert_failure 2
+  # one lane alone is its own span
+  printf '%s\n' $'2026-11-06 10:00\tp1\tWORKED\tpass p1: 2 due, 9m\tclaude-opus-5-5\t2\t0\t0\t0\t1' \
+    $'2026-11-06 11:00\tp2\tWORKED\tpass p2: 2 due, 9m\tclaude-opus-5-5\t2\t0\t2\t0\t1' > "$FLEET_SHEPHERD_DIR/passes.tsv"
+  run "$SUBJECT" canary shepherd --json
+  assert_equal "$(jq -c '[.passes, .missed_per_pass, .from, .to]' <<<"$output")" '[2,1,"2026-11-06 10:00","2026-11-06 11:00"]'
+  # lanes that never overlap are refused, not scored against each other's hours
+  printf '%s\n' $'2026-11-06 10:00\tp1\tWORKED\tpass p1: 2 due, 9m\tclaude-opus-5-5\t2\t0\t0\t0\t1' \
+    $'2026-11-06 11:00\tp2\tWORKED\tpass p2: 2 due, 9m\tclaude-sonnet-5-5\t2\t0\t2\t0\t1' > "$FLEET_SHEPHERD_DIR/passes.tsv"
+  run "$SUBJECT" canary shepherd
+  assert_failure 1
+  assert_output --partial 'the lanes share no span (claude-opus-5-5 2026-11-06 10:00 to 2026-11-06 10:00, claude-sonnet-5-5 2026-11-06 11:00 to 2026-11-06 11:00): widen --days'
   rm "$FLEET_SHEPHERD_DIR/passes.tsv"
   run "$SUBJECT" canary shepherd
   assert_failure 1
