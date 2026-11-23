@@ -15,7 +15,7 @@
 #   fleet-dispatch headroom [--json] how many more queue items could start now, and the margin under each limit
 #   fleet-dispatch idle-cap          rc 1 when live sessions are at the pace target with under DISPATCH_IDLE_CAP_PCT of them busy,
 #                                    naming the idle ones; rc 2 when the fleet state cannot be read (watch fleet-cap-mostly-idle)
-#   fleet-dispatch starved           rc 1 naming an urgent or high queue item no pass has started in DISPATCH_STARVED_MIN,
+#   fleet-dispatch starved           rc 1 naming an urgent, high or normal queue item no pass has started in DISPATCH_STARVED_MIN,
 #                                    an urgent one from the human even under a dispatch hold or load,
 #                                    or board rows no pass has judged in that time (the human here or away; not at a full fleet),
 #                                    or a queue under DISPATCH_LOW_WATER with rows to pick and no start in twice that,
@@ -234,13 +234,13 @@ off_project() {
 # no fork: a fat process forking about 37 subshells a row held a dispatch pass at 10 to 17 min of CPU
 # (ar-4512).
 
-# prio_rank <text> -> 0 urgent, 1 high, 3 low; prio_rank_set sets PRIO.
+# prio_rank <text> -> 0 urgent, 1 high, 2 normal, 3 low; prio_rank_set sets PRIO.
 prio_rank_set() {
   case "$1" in
     *'#urgent'*) PRIO=0 ;;
     *'#high'*) PRIO=1 ;;
     *'#low'*) PRIO=3 ;;
-    *) PRIO=1 ;;   # a bare row is high: the row grammar's default, and the queue priority it gets
+    *) PRIO=2 ;;   # #normal, or a bare row: the row grammar's default (priority.md), and the queue priority it gets
   esac
 }
 prio_rank() { prio_rank_set "$1"; echo "$PRIO"; }
@@ -293,7 +293,7 @@ def rank_fields($today; $pprio):
                  elif .due_in == 0 then "\($rel)due today" else "\($rel)due in \(.due_in)d" end),
                 (if .req == 0 then "requested" else empty end),
                 (if (.worker // "") != "" then .worker else empty end),
-                ({"0": "#urgent", "1": "#high", "3": "#low"}[(.prio | tostring)] // empty),
+                ({"0": "#urgent", "1": "#high", "2": "#normal", "3": "#low"}[(.prio | tostring)] // empty),
                 (.klabel // "" | select(. != "")),
                 .stage,
                 (if .age > 0 then "\(.age)d old" else empty end)] | join(", "))};
@@ -537,7 +537,7 @@ sig_set() {
 }
 
 # row_sig <row text> -> a verdict's cache key: the sig of the text the judge rules on, whitespace
-# squeezed. The trailing <!-- --> comment, #of/ links and the priority tags (#urgent #high #low) are
+# squeezed. The trailing <!-- --> comment, #of/ links and the priority tags (#urgent #high #normal #low) are
 # left out: no verdict field reads them, and triage's --backlog --link and --priority passes add them
 # to hundreds of rows at once. The type(area) prefix stays: area is judged. sig_text sets SIG_TEXT, the
 # text it hashes; row_sig_set sets SIG.
@@ -545,7 +545,7 @@ sig_text() {
   local w o="" t=()
   read -ra t <<<"${1%%<!--*}"
   for w in "${t[@]+"${t[@]}"}"; do
-    case "$w" in '#of/'*|'#urgent'|'#high'|'#low') ;; *) o+="${o:+ }$w" ;; esac
+    case "$w" in '#of/'*|'#urgent'|'#high'|'#normal'|'#low') ;; *) o+="${o:+ }$w" ;; esac
   done
   SIG_TEXT=$o
 }
@@ -1729,14 +1729,15 @@ row_lane() {
   fi
 }
 
-# row_priority <raw line> [project] -> the queue priority the row asks for: a bare row is high, the
-# default of the row grammar and of agent-queue alike, and so is a cleanup row whatever its #low.
+# row_priority <raw line> [project] -> the queue priority the row asks for: a bare row is normal, the
+# row grammar's default, and a cleanup row is high whatever its #low (agent-queue's ORDER ranks it so).
 # row_priority_set sets PRIORITY; prio_word_set <prio_rank> <cleanup_row> sets it from the two, which a walk has.
 prio_word_set() {
   case "$1" in
     0) PRIORITY=urgent ;;
+    1) PRIORITY=high ;;
     3) if [ "$2" = 0 ]; then PRIORITY=high; else PRIORITY=low; fi ;;
-    *) PRIORITY=high ;;
+    *) PRIORITY=normal ;;
   esac
 }
 row_priority_set() {
@@ -2040,7 +2041,7 @@ verdict_errors() {
 #    row, so the judge reads it again with the plan. A row the rest wait behind keeps its verdict and
 #    is tagged on a later pass. A row inbox-plan already planned (a `goal:` detail) that the judge,
 #    reading that plan, still skips by such a rule takes the human exit: a second plan would not help.
-#  - human (DISPATCH_HUMAN_RULES): an #urgent, #high, bare or #requested row is filed on the human sheet
+#  - human (DISPATCH_HUMAN_RULES): an #urgent, #high, #normal, bare or #requested row is filed on the human sheet
 #    (human_sheet_row), a #low one kept in improvements.md (`notes improve`) unless an open row gates
 #    #after/ on it (then the sheet, whose row follow_moved_gates moves that gate to), its #worker/ tag off
 #    so no worker takes it there; then the agent row is dropped with a --why naming where it went.
@@ -2123,7 +2124,7 @@ skip_exits() {
     fi
     if [ "$e" = human ]; then
       prio=$(prio_rank "$body")
-      if [ "$req" = true ] || [ "$prio" -le 1 ] || [ -n "${gated[$id]-}" ]; then e=sheet; else e=improve; fi
+      if [ "$req" = true ] || [ "$prio" -le 2 ] || [ -n "${gated[$id]-}" ]; then e=sheet; else e=improve; fi
     fi
     if [ "$e" = plan ] && [ "$room" -le 0 ]; then
       [ -z "$dry" ] || { printf 'plan-wait\t%s\t%s\t%s\n' "$p" "$id" "$rule"; n[plan-wait]=$(( ${n[plan-wait]:-0} + 1 )); }
@@ -5841,7 +5842,7 @@ preempt_victims() {
         and (.agent // "claude") == "claude" and (runs_now($now; $h) | not)
         and ((.session // "") | index(":")) != null))
     | sort_by([(if (.weight // "light") == "heavy" then 2 else 1 end) >= $u,
-               ({"high": 1, "low": 2}[.priority // "high"] // 1), (.started // "")]) | reverse
+               ({"high": 1, "normal": 2, "low": 3}[.priority // "high"] // 1), (.started // "")]) | reverse
     | .[] | (.session | index(":")) as $i | "\(.slug) \(.session[:$i]) \(.session[$i + 1:])"' 2>/dev/null
   return 0
 }
@@ -6539,7 +6540,7 @@ cmd_stopped() {
   return 1
 }
 
-# starved -- rc 1 when urgent or high queue items have been runnable (no hold) for over
+# starved -- rc 1 when urgent, high or normal queue items have been runnable (no hold) for over
 # DISPATCH_STARVED_MIN minutes and no run pass has started a queue item in that time: it names them
 # and the last pass's outcome. A standing hold past that long trips it too, led by the Stopped line,
 # and no run start clears it then: a run-floor start goes past an account hold, and on 11-05/06 one
@@ -6599,7 +6600,7 @@ cmd_starved() {
   pace_target
   [ "$qrc" = 0 ] || { echo "agent-queue unreadable"; return 1; }
   items=$(jq -cs --argjson cut "$cut" '
-    [.[] | select((.priority == "urgent" or .priority == "high") and .t != null and .t < $cut)]
+    [.[] | select((.priority == "urgent" or .priority == "high" or .priority == "normal") and .t != null and .t < $cut)]
     | sort_by(.t) | .[] | . + {line: "\(.slug) (\(.priority)\(if ((" " + (.tags // "") + " ") | contains(" red ")) then ", red" else "" end), queued \(.queued)"}' <<<"$queue") || { echo "agent-queue unreadable"; return 1; }
   # Each item names the firing finding that holds it (held_by, as pick_item reads it): the last pass's
   # line names another item's start when the passes go past this one. On 11-22 an urgent item sat
@@ -8261,7 +8262,8 @@ cmd_pull_after() {
     kept="$kept $PROMOTED"
     [ -z "$queue_only" ] || continue
     pri=$(agent-queue show "$PROMOTED" --json 2>/dev/null | jq -r '.priority // empty')
-    if [ "$pri" = low ]; then say "pull-after $id: $PROMOTED is low priority, so a pass starts it in its turn"; continue; fi
+    # Normal and low wait for a pass, as at agent-queue add (waits_turn): only urgent and high jump.
+    case "$pri" in normal|low) say "pull-after $id: $PROMOTED is $pri priority, so a pass starts it in its turn"; continue ;; esac
     cmd_start --item "$PROMOTED" </dev/null 3<&- || say "pull-after $id: $PROMOTED could not start now, so it stays queued for a pass"
   done 3< <(jq -c --arg g "after/$id" '.rows[]? | select(.state == "open" and .id != null and ((.tags // []) | index($g)))
     | {profile: (.profile // ""), project, lane, key: .id, raw: (.raw // .text // "")}' <<<"$board")

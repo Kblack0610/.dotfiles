@@ -675,7 +675,7 @@ fn status_line(v: &TaskView, p: Palette, w: usize) -> Line<'static> {
     let l = if let Some(pr) = &v.prompt {
         let what = match pr.kind {
             Kind::Add => format!(
-                "Add to {} ({}), #urgent, #high or #low to set it: ",
+                "Add to {} ({}), #urgent, #high, #normal or #low to set it: ",
                 group(&pr.row),
                 pr.row.lane
             ),

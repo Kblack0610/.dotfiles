@@ -293,11 +293,12 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
 @test "list orders by priority, then queued time, and next is the head" {
   "$AQ" add --project game --slug b-bare "b"
   "$AQ" add --project game --slug c-low --priority low "c"
+  "$AQ" add --project game --slug f-normal --priority normal "f"
   "$AQ" add --project game --slug d-urgent --priority urgent "d"
   "$AQ" add --project game --slug e-high --priority high "e"
   run bash -c "'$AQ' list --json | jq -r .slug"
-  # A bare add is high, so it queues with the explicit high one, in queued order.
-  assert_output $'d-urgent\nb-bare\ne-high\nc-low'
+  # A bare add by hand is high, so it queues with the explicit high one, in queued order; normal sits between high and low.
+  assert_output $'d-urgent\nb-bare\ne-high\nf-normal\nc-low'
   run "$AQ" next --json
   assert_success
   [ "$(jq -r .slug <<<"$output")" = d-urgent ]
@@ -1632,10 +1633,14 @@ notes --profile bnb ptask game --agent run gm-9"
   [ "$("$AQ" next --json | jq -r .slug)" = b ]
   run "$AQ" bump b soon
   assert_failure
-  # NEGATIVE CONTROL: normal is retired; urgent|high|low is the whole set, as on the sheets.
+  # normal is a word again (priority.md): it takes, and ranks between high and low.
   run "$AQ" bump b normal
-  assert_failure; assert_output --partial "urgent, high or low"
-  run "$AQ" add --project game --priority normal "x"
+  assert_success
+  [ "$("$AQ" next --json | jq -r .slug)" = a ]
+  # NEGATIVE CONTROL: a retired word (medium) is refused; urgent|high|normal|low is the whole set, as on the sheets.
+  run "$AQ" bump b medium
+  assert_failure; assert_output --partial "urgent, high, normal or low"
+  run "$AQ" add --project game --priority medium "x"
   assert_failure
 }
 
@@ -2317,7 +2322,7 @@ handoff_repo() {
   [ -z "$(field "$(item queued cx)" account)" ]
 }
 
-@test "an urgent or high plan item starts its session at once, a low one waits its turn; a failed start leaves it queued; AGENT_QUEUE_START=0 only queues; a dispatch hold only queues" {
+@test "an urgent or high plan item starts its session at once, a normal or low one waits its turn; a failed start leaves it queued; AGENT_QUEUE_START=0 only queues; a dispatch hold only queues" {
   run "$AQ" add --project game --mode plan --slug p1 "plan this"
   assert_success
   assert_called 'fleet-dispatch start --item p1'
@@ -2336,6 +2341,11 @@ handoff_repo() {
   assert_output --partial 'lp is low priority, so a dispatch pass starts it in its turn'
   assert_not_called 'start --item lp'
   [ -f "$(item queued lp)" ]
+  # A normal one waits its turn too (priority.md: normal waits its turn).
+  run "$AQ" add --project game --mode plan --priority normal --slug np "plan, normal"
+  assert_success
+  assert_output --partial 'np is normal priority, so a dispatch pass starts it in its turn'
+  assert_not_called 'start --item np'
   run "$AQ" add --project game --mode plan --priority urgent --slug up "plan, urgent"
   assert_called 'fleet-dispatch start --item up'
   # 2026-11-12: an urgent plan item started under the human's dispatch hold.
@@ -5257,7 +5267,7 @@ row_item() {
   [ "$(field "$(item queued rowed)" priority)" = low ]
   run "$AQ" set rowed priority=soon
   assert_failure
-  assert_output --partial "urgent, high or low"
+  assert_output --partial "urgent, high, normal or low"
   # NEGATIVE CONTROL: an item with no row has only its own line to change.
   : > "$NOTES_FIXTURE/calls.log"
   "$AQ" bump plain low >/dev/null
