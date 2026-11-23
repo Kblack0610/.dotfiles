@@ -118,9 +118,9 @@ load 'fleet_dispatch/common'
   run ask_failed_rows
   assert_success
   assert_output 'asked about game: gm-1 (failed 2 times, ask ask1)'
-  # the ask carries both reasons and is the human's (approval), with retry and drop
+  # the ask carries both reasons and is a gate the judge answers, with retry and drop
   local post; post=$(grep '^agent-ask post' "$NOTES_FIXTURE/calls.log")
-  [[ $post == *'--kind approval --project game'* ]] || fail "not an approval for game: $post"
+  [[ $post == *'--kind gate --project game'* ]] || fail "not a gate for game: $post"
   [[ $post == *'retry=judge the row again and start it, with 2 more tries|drop=drop the row from the board'* ]] || fail "options: $post"
   [[ $post == *'queue item gm-1 ended failed, timeout; started 72h with no queue item'* ]] || fail "reasons: $post"
   [[ $post == *'Start board row gm-1 again after its last 2 runs failed?'* ]] || fail "question: $post"

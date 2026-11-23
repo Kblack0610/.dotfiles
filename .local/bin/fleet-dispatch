@@ -11,7 +11,7 @@
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
 #   fleet-dispatch promote --project P [--profile X] [--agent] [--dispatch] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item; --dispatch makes it a capped pull like dispatch's own
 #   fleet-dispatch pull-after [--queue-only] ID  promote, and start unless low or --queue-only, the open rows gated #after/ID: agent-queue runs it when ID's item closes ok
-#   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session; a row whose #ask/ gate the human answered another way is held or dropped, one on a cancelled ask closes on its done item's merged PR, follows the ask it joined, or is asked again
+#   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session; a row whose #ask/ gate was answered another way is held or dropped, one on a cancelled ask closes on its done item's merged PR, follows the ask it joined, or is asked again
 #   fleet-dispatch headroom [--json] how many more queue items could start now, and the margin under each limit
 #   fleet-dispatch idle-cap          rc 1 when live sessions are at the pace target with under DISPATCH_IDLE_CAP_PCT of them busy,
 #                                    naming the idle ones; rc 2 when the fleet state cannot be read (watch fleet-cap-mostly-idle)
@@ -6798,7 +6798,7 @@ ask_failed_rows() {
 # the ask is posed again (repose_ask) and the row gated on the new one.
 SETTLE_SKIP_RE='\b(skip|skipped|drop|cancel|cancelled|abandon|scrap|not needed|no longer needed)\b'
 settle_answered_gates() {
-  local board prof p id t g aid ask st ans why hold had rsn to rc
+  local board prof p id t g aid ask st ans who why hold had rsn to rc
   load_gates
   [ -z "$GATES_FAILED" ] || return 0
   board=$(notes board --json 2>/dev/null) || return 0
@@ -6832,7 +6832,8 @@ settle_answered_gates() {
       fi
       # The answer goes into a marker or a hold line: one line of plain ASCII, no # (a tag) or <> (a marker end).
       ans=$(sed -n '/^answer: */{s///p;q;}' <<<"$ask" | tr -cd ' -~' | tr -d '#<>' | cut -c1-160)
-      why="the human answered \"$ans\" to ask $aid, and #$g waited on another answer"
+      who=$(sed -n '/^answered_by: */{s///p;q;}' <<<"$ask"); case "$who" in ''|human) who="the human" ;; *) who="the $who" ;; esac
+      why="$who answered \"$ans\" to ask $aid, and #$g waited on another answer"
       if grep -Eiq "$SETTLE_SKIP_RE" <<<"$ans"; then
         if np "$prof" ptask "$p" --agent drop "$id" --why "$why" </dev/null >/dev/null 2>&1; then
           logline "dropped $p row $id: $why"
