@@ -412,29 +412,36 @@ done_status() {
   [ -n "$f" ] && fm_get "$f" status
 }
 
-# finished_ok <slug> [<task>] -> why an add under this slug is refused: its latest done item closed ok,
-# so a second item would do landed work again. A failed or cancelled one is a retry and passes. A
-# recurring item (a nightly pass, a shared red that came back) is new work and says so with --repeat.
-# A slug cut from the task's words (pass the task) is refused only when the words are that item's
-# too: two tasks can share a 40-character slug and be different work. Refused adds exit
-# AQ_EX_FINISHED. On 2026-11-06 a plan's re-queue ran an ok phase again (id-like-to-setup-abundant-seahor-p8).
-AQ_EX_FINISHED=4
-finished_ok() {
-  local f
-  f="$(latest_done "$1")"
-  [ -n "$f" ] && [ "$(fm_get "$f" status)" = ok ] || return 0
-  [ -z "${2-}" ] || [ "$(fm_body "$f" | awk 'NR==1')" = "$(head -1 <<<"$2")" ] || return 0
-  printf '%s already finished ok (%s%s): pass --repeat to queue it again as new work\n' \
-    "$1" "$(fm_get "$f" finished)" "$(fm_get "$f" pr | sed 's/^./, PR &/')"
+# start_gate <slug> <after> <tags> <verb> <fix> -- a start by hand (add --running, move running of a
+# queued item) waits on what holds the item, as the queue does: a live or dead after: or a tag gate
+# that is not clear refuses it, naming <fix> (ar-3260).
+start_gate() {
+  local HOLD HOLD_DEAD
+  hold_for "$2" "$3"
+  [ -z "$HOLD_DEAD" ] || die "$1 cannot $4: $HOLD"
+  [ -z "$HOLD" ] || die "$1 waits on $HOLD, so it cannot $4: $5"
 }
 
-# finished_row_ok <from> -> why an add from a board row is refused: an item under another slug already
-# finished ok on that row, as finished_ok reads the slug's. finished_ok keys on the slug, and a hand start slugs
-# `<project>-<key>` where promote slugs the row `<key>`, so a done row's refill slipped past it
-# (2026-11-07: trader tr-58 queued again after #635 merged). Refused adds exit AQ_EX_FINISHED.
-finished_row_ok() {
-  local key="${1#board:}" f
-  [ "$key" != "$1" ] || return 0
+# finished_ok <slug> [<task>] [<from>] -> why an add is refused: the slug's latest done item closed ok,
+# or, from a board row, an item under any slug closed ok on that row. A second item would do landed
+# work again. A failed or cancelled one is a retry and passes. A recurring item (a nightly pass, a
+# shared red that came back) is new work and says so with --repeat. A slug cut from the task's words
+# (pass the task) is refused only when the words are that item's too: two tasks can share a
+# 40-character slug and be different work. The row is read too because a hand start slugs
+# `<project>-<key>` where promote slugs the row `<key>` (2026-11-07: trader tr-58 queued again after
+# #635 merged). Refused adds exit AQ_EX_FINISHED. On 2026-11-06 a plan's re-queue ran an ok phase
+# again (id-like-to-setup-abundant-seahor-p8).
+AQ_EX_FINISHED=4
+finished_ok() {
+  local f from="${3-}" key
+  key="${from#board:}"
+  f="$(latest_done "$1")"
+  if [ -n "$f" ] && [ "$(fm_get "$f" status)" = ok ] && { [ -z "${2-}" ] || [ "$(fm_body "$f" | awk 'NR==1')" = "$(head -1 <<<"$2")" ]; }; then
+    printf '%s already finished ok (%s%s): pass --repeat to queue it again as new work\n' \
+      "$1" "$(fm_get "$f" finished)" "$(fm_get "$f" pr | sed 's/^./, PR &/')"
+    return 0
+  fi
+  [ "$key" != "$from" ] || return 0
   grep -lxF -e "from: board:$key" -e "row: $key" "$AQ_DIR"/done/*/*.md 2>/dev/null | while IFS= read -r f; do
     [ "$(fm_get "$f" status)" = ok ] || continue
     printf '%s already finished ok on its own item %s (%s%s): pass --repeat to queue it again as new work\n' \
@@ -442,6 +449,7 @@ finished_row_ok() {
     break
   done
 }
+
 
 # Admission: the queue holds at most AQ_CAP items, every queued one counted, since each can start (a gated
 # add queues nothing: its board row takes the gate, cmd_add). The board is the ranked backlog, the queue the
@@ -488,7 +496,7 @@ make_room() {
   [ "$1" = urgent ] || [[ " $2 " == *" red "* ]] || pr="$(prio_rank "$1" || echo 1)"
   [ -z "$(find_item "$3")" ] || return 0
   ( cause_owner "$2" ) >/dev/null 2>&1 || return 0
-  [ -n "${repeat:-}" ] || [ -z "$(finished_ok "$3" "${slug_from_text:+$text}")$(finished_row_ok "${from:-}")" ] || return 0
+  [ -n "${repeat:-}" ] || [ -z "$(finished_ok "$3" "${slug_from_text:+$text}" "${from:-}")" ] || return 0
   now="$(admission_now)" && read -r r l <<<"$now" && [[ "$r" =~ ^[0-9]+$ ]] && [ "$r" -ge "$l" ] || return 0
   victim="$(collect queued | jq -r --argjson pr "$pr" --arg keep " ${AQ_ROOM_KEEP:-} " '
     ([.[] | (.after // "") | splits("[ ,]+") | select(. != "")]) as $heads
@@ -1960,11 +1968,8 @@ cmd_add() {
   # (promote) judged that row's gates clear the moment before, so none is read twice.
   local GATES='' AFTER_ITEMS=''
   if [ -n "$running" ] && [ -n "$after" ]; then
-    local HOLD HOLD_DEAD
     check_after "$after" "$slug"
-    hold_for "$after" ""
-    [ -z "$HOLD_DEAD" ] || die "$slug cannot start --running: $HOLD"
-    [ -z "$HOLD" ] || die "$slug waits on $HOLD, so it cannot start --running: add it without --running, and it starts once that clears"
+    start_gate "$slug" "$after" "" "start --running" "add it without --running, and it starts once that clears"
   fi
   if [ -z "$running" ] && { [ -z "${AGENT_QUEUE_PULL:-}" ] || [[ "$from" != board:* ]]; }; then
     add_gates "$slug" "${after:-$(landing_after "${AGENT_QUEUE_ITEM:-}" "$text")}" "$tags"; after="$AFTER_ITEMS"
@@ -1983,8 +1988,7 @@ cmd_add() {
   local why
   cause_owner "$tags"
   # Checked before slug is reused below: an explicit --slug is the same work by name.
-  [ -n "$repeat" ] || why="$(finished_ok "$slug" "${slug_from_text:+$text}")"
-  [ -n "$repeat" ] || [ -n "${why:-}" ] || why="$(finished_row_ok "$from")"
+  [ -n "$repeat" ] || why="$(finished_ok "$slug" "${slug_from_text:+$text}" "$from")"
   [ -z "${why:-}" ] || { echo "agent-queue: $why" >&2; exit "$AQ_EX_FINISHED"; }
   # Under the lock, so two filers at once cannot both pass on the same count.
   local hold_title="${title:-$(head -1 <<<"$text")}"
@@ -3242,10 +3246,7 @@ cmd_move() {
   # that records a session: fleet-dispatch start set it after the launch, and judged the hold before it,
   # so a gh or rbw blip read here would leave that live session on an item still queued.
   if [ "$to" = running ] && [ "$from" = queued ] && [ -z "$(fm_get "$f" session)" ]; then
-    local HOLD HOLD_DEAD
-    hold_for "$(fm_get "$f" after)" "$(fm_get "$f" tags)"
-    [ -z "$HOLD_DEAD" ] || die "$slug cannot start: $HOLD"
-    [ -z "$HOLD" ] || die "$slug waits on $HOLD, so it cannot start: dispatch starts it once that clears, or clear it first (agent-queue set $slug after= or tags= without it)"
+    start_gate "$slug" "$(fm_get "$f" after)" "$(fm_get "$f" tags)" start "dispatch starts it once that clears, or clear it first (agent-queue set $slug after= or tags= without it)"
   fi
   if [ "$status" = cancelled ]; then cancel_guard "$f" "$ask"; why="$(cancel_why "$why" "$ask")"; fi
   if [ "$to" = done ] && [ "$status" = ok ] && [ "$(fm_get "$f" partial)" = yes ]; then
