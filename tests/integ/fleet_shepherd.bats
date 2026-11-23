@@ -852,6 +852,11 @@ nudge_ago() { printf 'fact: STALLED f-%s\nat: %s\n' "$2" "$(date -Iseconds -d "$
   STUB_MODE_STICKY=1 STUB_IN_MODE=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   [ -z "$(closes)" ]
   grep -q 'copy-mode -q -t %1' "$HOME/tmux.calls"
+  # #{pane_in_mode} counts stacked modes: tree mode over copy mode that will not leave reads 2, still in one (ar-3942).
+  rm -f "$HOME/.mode-left" "$HOME/tmux.calls"
+  STUB_MODE_STICKY=1 STUB_IN_MODE=2 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  grep -q 'copy-mode -q -t %1' "$HOME/tmux.calls"
 }
 
 @test "takeover leaves a row alone that is not its to move: manual, plan mode, another host, an ask, not yet old enough, a draft in the prompt" {
