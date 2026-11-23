@@ -522,7 +522,7 @@ pub struct Projects {
     /// The agent board's rows, `notes board --json` `totals.agent`, so the Projects strip shows
     /// the Board its tiers line names without reading the rows. `None` when the feed failed.
     pub board_open: Option<usize>,
-    /// `totals.backlog`, the agent rows past their project's board budget, shown beside it.
+    /// `totals.backlog`, the agent rows still carrying the retired backlog token, shown beside it.
     pub board_backlog: Option<usize>,
 }
 

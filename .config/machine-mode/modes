@@ -1,7 +1,7 @@
 # Who gets this workstation, read by .local/lib/machine-mode.sh.
 # Format:  mode|runners|unity_slots|level
 #   mode         the word you type and the chip shows
-#   runners      pool runners on this host taking new jobs (the governor's slot pin)
+#   runners      pool runners on this host taking new jobs (the governor's slot pin), and how many of its Unity slots run
 #   unity_slots  local Unity runs the governor grants a seat at once (its local pin, same key)
 #   level        how fast the fleet starts work, a row of the levels file; mid is the confs' own numbers.
 #                No mode pauses dispatch; `agent-hold set dispatch` is the one full stop.
