@@ -96,6 +96,15 @@ fn page_json(mut page: sprint_page::Page, q: &PageQuery) -> Value {
 }
 
 pub async fn page(State(s): State<Shared>, Query(q): Query<PageQuery>) -> ApiResult<Json<Value>> {
+    if !hub_core::projects::safe_name(&q.profile)
+        || !hub_core::projects::safe_name(&q.project)
+        || !sprint_page::safe_version(&q.version)
+    {
+        return Err(bad(
+            StatusCode::BAD_REQUEST,
+            format!("refusing {}/{}/{}", q.profile, q.project, q.version),
+        ));
+    }
     let queue = s.queue.queue().await;
     let read = move || {
         // The open and queued windows are the feed's: they are the neighbours a scored history lacks.

@@ -42,7 +42,7 @@ function spgHead(d) {
     (g.errors || []).map((e) => `<div class="panel down">${esc(e)}</div>`).join("") +
     secHead("p-sprint-areas", "By area", g.by_area.length) +
     (g.by_area.length
-      ? `<div class="panel scroll"><table class="tbl"><tr>${keys.map((k) => `<th${k === "group" ? "" : ` class="n"`}>${esc(heads[k])}</th>`).join("")}</tr>${g.by_area.map(area).join("")}</table></div>`
+      ? `<div class="panel scroll" data-tbl="sp"><table class="tbl"><tr>${keys.map((k) => `<th${k === "group" ? "" : ` class="n"`}>${esc(heads[k])}</th>`).join("")}</tr>${g.by_area.map(area).join("")}</table></div>`
       : `<div class="card muted">No row in this window.</div>`) +
     secHead("p-sprint-rows", "Rows", d.table.total);
 }

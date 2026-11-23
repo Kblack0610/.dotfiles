@@ -1057,12 +1057,12 @@ impl App {
         });
     }
 
-    /// A sprint page's read came back: kept only when it is still the version the view wants,
-    /// and the next read (a page the view moved to meanwhile) starts.
+    /// A sprint page's read came back: kept only when it is still the version the view wants. A
+    /// stale answer leaves `busy` alone, since the read for the version now shown is still out.
     fn sprint_page_in(&mut self, version: String, r: Result<hub_core::sprint_page::Page, String>) {
         if let Some(so) = self.pv.sprint.as_mut() {
-            so.busy = false;
             if so.version == version {
+                so.busy = false;
                 so.page = Some(r);
             }
         }
