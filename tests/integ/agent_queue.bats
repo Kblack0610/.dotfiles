@@ -5272,7 +5272,7 @@ row_item() {
   assert_output --partial "held l5 -> level:lv-9 (#after/lv-9)"
 }
 
-@test "a hand add --after an item running with an open PR is held on its row until that item closed ok; a plan phase's add stacks; a landing follow-up waits on it too (ar-4537)" {
+@test "a hand add --after an item running with an open PR is held on its row until that item closed ok; a plan phase's or validate item's add stacks; a landing follow-up waits on it too (ar-4537)" {
   story_notes; stack_gh
   # The incident: base came from the board (no row: line), runs with an open PR recorded (a partial
   # landing leaves its other PRs so), and the human's own session adds a landing after it.
@@ -5293,6 +5293,10 @@ row_item() {
   run env CLAUDE_CODE_ENTRYPOINT= "$AQ" add --project level --after base --slug phase "Phase 2 of the plan $SANDBOX/p.md: b"
   assert_success
   assert_equal "$("$AQ" show phase --json | jq -r '"\(.hold // "")|\(.stacked_on)"')" "|base=Org/game#7"
+  # So does fleet-dispatch validate's item, which reviews base's open PR before it lands (ar-1689).
+  run env AGENT_QUEUE_PULL=dispatch AGENT_QUEUE_START=0 CLAUDE_CODE_ENTRYPOINT= "$AQ" add --project level --slug validate-base --after base --tags validate --from auto:validate "review PR 7"
+  assert_success
+  assert_equal "$("$AQ" show validate-base --json | jq -r '"\(.hold // "")|\(.stacked_on)"')" "|base=Org/game#7"
   # The phase's landing follow-up waits on base too: a landing is no plan phase.
   "$AQ" set phase pr=Org/game#8 >/dev/null
   run env AGENT_QUEUE_ITEM=phase CLAUDE_CODE_ENTRYPOINT= "$AQ" add --project level --priority low --slug l1 "land PR 8"
