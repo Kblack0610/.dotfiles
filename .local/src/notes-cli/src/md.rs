@@ -1990,6 +1990,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_default_indices_name_their_levels() {
+        // Indices into PRIORITIES: a level inserted before them shifts them silently.
+        assert_eq!(PRIORITIES[DEFAULT_PRIORITY].0, "normal");
+        assert_eq!(PRIORITIES[FOCUS_DEFAULT_PRIORITY].0, "low");
+    }
+
+    #[test]
     fn a_task_has_a_one_character_box_and_a_link_bullet_does_not() {
         for l in ["- [ ] a", "- [x] a", "  - [/] a", "- [~] a", "- [ ]"] {
             assert!(is_task(l), "{l}");

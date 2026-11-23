@@ -340,7 +340,11 @@ impl crate::table::Row for Row {
                 .as_deref()
                 .or(self.closed.as_deref())
                 .map_or(Val::None, |d| Val::Text(d.to_string())),
-            "priority" => at(&["low", "normal", "high", "urgent"], &self.priority),
+            // Ascending sorts low first: the reverse of `PRIORITIES`, most urgent first.
+            "priority" => PRIORITIES
+                .iter()
+                .position(|p| *p == self.priority)
+                .map_or(Val::None, |i| Val::Num((PRIORITIES.len() - 1 - i) as f64)),
             "size" => self
                 .size
                 .as_deref()

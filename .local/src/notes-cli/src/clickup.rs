@@ -62,13 +62,11 @@ struct Ticket {
 /// to nothing would leave the note's largest population of tasks outside the ordering the
 /// default exists to give them.
 fn priority_tag(word: &str) -> &'static str {
-    match word.trim().to_lowercase().as_str() {
-        "urgent" => "#urgent",
-        "high" => "#high",
-        "normal" => "#normal",
-        "low" => "#low",
-        _ => md::default_priority(), // "none" / unknown
-    }
+    let word = word.trim().to_lowercase();
+    md::PRIORITIES
+        .iter()
+        .find(|(w, _, _)| *w == word)
+        .map_or(md::default_priority(), |(_, tag, _)| tag)
 }
 
 /// Parse the TSV cache. Phase 2 format is 4-col `id<TAB>priority<TAB>status<TAB>title`; a
@@ -465,7 +463,6 @@ mod tests {
         assert_eq!(priority_tag("High"), "#high");
         // ClickUp's default and ours have to agree, or the biggest population of
         // unprioritized tickets lands outside the ordering the default exists to give them.
-        assert_eq!(priority_tag("normal"), "#normal");
         assert_eq!(priority_tag("normal"), md::default_priority());
         assert_eq!(priority_tag("none"), "#normal");
         assert_eq!(priority_tag("low"), "#low");

@@ -224,17 +224,16 @@ return {
       -- wrapping: one press too many should not flip a task from most-urgent to least. The
       -- old ring had a `false` slot for "clear the tag"; clearing now means "default", which
       -- is a real level, so the slot is gone. Matches the tW/tw release ladder.
-      local PRIORITY_RING = PRIORITIES
       local function step_priority(current, dir)
         local idx
-        for i, lvl in ipairs(PRIORITY_RING) do
+        for i, lvl in ipairs(PRIORITIES) do
           if lvl == current then
             idx = i
             break
           end
         end
         idx = idx or (function()
-          for i, lvl in ipairs(PRIORITY_RING) do
+          for i, lvl in ipairs(PRIORITIES) do
             if lvl == DEFAULT_PRIORITY then
               return i
             end
@@ -242,10 +241,10 @@ return {
           return 1
         end)()
         local nxt = idx + dir
-        if nxt < 1 or nxt > #PRIORITY_RING then
+        if nxt < 1 or nxt > #PRIORITIES then
           return current or DEFAULT_PRIORITY -- clamped: stay put
         end
-        return PRIORITY_RING[nxt]
+        return PRIORITIES[nxt]
       end
 
       -- Overlay colors for the priority tags (matchadd draws above treesitter).
@@ -1170,13 +1169,9 @@ return {
           -- each_tag's glue and run-on rules, any case: no `#` glued to a word, and no tag
           -- that runs on (`#high-priority` is not `#high`, a sentence-final `#high.` is).
           -- A regex cannot see code spans, so `` `#high` `` still colours.
-          for _, m in ipairs {
-            { "TaskPriorityUrgent", "urgent" },
-            { "TaskPriorityHigh", "high" },
-            { "TaskPriorityNormal", "normal" },
-            { "TaskPriorityLow", "low" },
-          } do
-            vim.fn.matchadd(m[1], [[\c\%([[:alnum:]_/.[#]\)\@<!#]] .. m[2] .. [[\%([-/.]*[[:alnum:]_]\)\@!]])
+          for _, lvl in ipairs(PRIORITIES) do
+            local group = "TaskPriority" .. lvl:sub(1, 1):upper() .. lvl:sub(2)
+            vim.fn.matchadd(group, [[\c\%([[:alnum:]_/.[#]\)\@<!#]] .. lvl .. [[\%([-/.]*[[:alnum:]_]\)\@!]])
           end
           -- `#p:<name>`, the same glue and run-on rules; the name is a project word (letters, digits, `-`, `_`).
           vim.fn.matchadd("TaskProjectTag", [[\c\%([[:alnum:]_/.[#]\)\@<!#p:[[:alnum:]_-]\+\%([-/.]*[[:alnum:]_]\)\@!]])

@@ -25,7 +25,7 @@ use crate::infra::Infra;
 use crate::proposals::Proposal;
 use crate::queue::{Item, Queue, State};
 use crate::reading::State as Reading;
-use crate::tasks::{Feed, Row};
+use crate::tasks::{self, Feed, Row};
 
 /// The health chips, in the order the strip shows them (the `cc:domain_status` domains).
 pub const DOMAINS: [&str; 12] = [
@@ -468,14 +468,13 @@ impl Score {
     }
 
     /// Where the row ranks among the human's: 0 a live wait (an ask, a session, a queue item),
-    /// which stops running work; 1 an `urgent` sheet to-do; 2 a `high` one; 3 a `normal` one.
+    /// which stops running work; then a sheet to-do by its priority, `urgent` 1, `high` 2,
+    /// `normal` 3 (`tasks::PRIORITIES` order).
     fn tier(&self) -> u8 {
-        match self.priority.as_deref() {
-            None => 0,
-            Some("urgent") => 1,
-            Some("high") => 2,
-            Some(_) => 3,
-        }
+        self.priority.as_deref().map_or(0, |p| {
+            let i = tasks::PRIORITIES.iter().position(|w| *w == p);
+            1 + i.unwrap_or(tasks::PRIORITIES.len()) as u8
+        })
     }
 }
 
