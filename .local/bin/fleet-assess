@@ -4,7 +4,6 @@
 #   fleet-assess                 headroom, GitHub API budget, holds, verdict, one row per heavy process
 #   fleet-assess --watch-probe   one line; exit 1 on HOLD (fleet-dispatch's load gate)
 #   fleet-assess --thermal-probe the same, and a tripped `fleet-thermal` counts as a hold (that watch's probe)
-#   fleet-assess --load-probe    the same over the high mark alone, no hold read (agent-hold check's load gate)
 #   fleet-assess --github        one line: the GitHub budget, with LOW when it is
 #   fleet-assess --gate          one line: slots busy and queued, recent results, branches the gate keeps re-running unmerged
 #   fleet-assess --fleet         every host's busy share and whether each agent host's CPU cap is live, over Prometheus and ssh
@@ -28,7 +27,7 @@ set -uo pipefail
                                  # still reads fine (2026-11-06: 48% free, 63G in zram, kswapd0 at 95% CPU).
                                  # Provisional: revisit if fleet-thermal pages on a stall HOLD with no swap-in activity.
 : "${FLEET_CLEAR_STALL_PCT:=5}"  # stall under this -> may CLEAR
-: "${FLEET_HOT_TCTL:=95}"        # Tctl at the throttle point ...
+# FLEET_HOT_TCTL, Tctl at the throttle point ..., is set in .local/lib/cpu-temp.sh, shared with boot-cause
 : "${FLEET_HOT_LOAD_X:=1.5}"     # ... with load at least this -> HOLD
 # roots whose subtree sum alone never earns a row (comm of tmux's server is "tmux:")
 : "${FLEET_ROW_TREE_SKIP:=systemd init tmux: kthreadd}"
@@ -54,6 +53,8 @@ _fa_lib="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib"
 . "$_fa_lib/fleet-hosts.sh"
 # shellcheck source=../lib/agent-merge-proof.sh
 . "$_fa_lib/agent-merge-proof.sh"   # merge_proof_ref, the base branch_merged reads
+# shellcheck source=../lib/cpu-temp.sh
+. "$_fa_lib/cpu-temp.sh"            # read_tctl
 WATCH_TRIP_FILE="${SENTINEL_STATE:-$HOME/.local/state/watch-companion}/fleet-thermal.state"
 
 # fleet_verdict <load1> <cores> <tctl|-> <mem_avail_pct> <held 0|1> [<mem_stall_pct>] -> "VERDICT reason"
@@ -80,20 +81,6 @@ fleet_verdict() {
 # --- readings ---------------------------------------------------------------------------
 read_load()  { cut -d' ' -f1 /proc/loadavg 2>/dev/null || echo 0; }
 read_cores() { nproc 2>/dev/null || echo 1; }
-
-# Tctl from the k10temp hwmon (AMD), else the hottest thermal zone, else "-".
-read_tctl() {
-  local h
-  for h in /sys/class/hwmon/hwmon*; do
-    [ "$(cat "$h/name" 2>/dev/null)" = k10temp ] || continue
-    awk '{ printf "%.1f\n", $1 / 1000 }' "$h/temp1_input" 2>/dev/null && return
-  done
-  local z max=""
-  for z in /sys/class/thermal/thermal_zone*/temp; do
-    [ -r "$z" ] && max="$(awk -v a="${max:-0}" '{ print ($1 > a ? $1 : a) }' "$z")"
-  done
-  if [ -n "$max" ] && [ "$max" != 0 ]; then awk -v v="$max" 'BEGIN { printf "%.1f\n", v / 1000 }'; else echo -; fi
-}
 
 read_mem_pct() {
   awk '/^MemTotal:/ { t = $2 } /^MemAvailable:/ { a = $2 }
@@ -632,16 +619,14 @@ main() {
   fi
   local load cores tctl mem stall held=0 verdict blocked
   load="$(read_load)"; cores="$(read_cores)"; tctl="$(read_tctl)"; mem="$(read_mem_pct)"; stall="$(read_mem_stall)"
-  # The load probe is agent-hold check's: a hold there is its own answer, and asking agent-hold
-  # back from inside its check would loop.
-  [ "${1:-}" = --load-probe ] || ! holds_set || held=1
+  ! holds_set || held=1
   # The watch's own trip counts as a hold, so it clears at the low mark. With no hold set it
   # cleared at the first dip under 1.75x: about 31 trips and 63 pages in the 7 days to 2026-11-06.
   # Only the watch: fleet-dispatch's gate on --watch-probe keeps the high mark.
   [ "${1:-}" != --thermal-probe ] || [ "$(cat "$WATCH_TRIP_FILE" 2>/dev/null)" != TRIP ] || held=1
   verdict="$(fleet_verdict "$load" "$cores" "$tctl" "$mem" "$held" "$stall")"
 
-  if [ "${1:-}" = --watch-probe ] || [ "${1:-}" = --thermal-probe ] || [ "${1:-}" = --load-probe ]; then
+  if [ "${1:-}" = --watch-probe ] || [ "${1:-}" = --thermal-probe ]; then
     echo "$verdict (load $load/$cores, tctl ${tctl} C, mem ${mem}% free, stall ${stall}%)"
     case "$verdict" in HOLD*) return 1 ;; *) return 0 ;; esac
   fi

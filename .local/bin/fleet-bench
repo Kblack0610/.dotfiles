@@ -32,11 +32,14 @@
 #                                asks, open board rows; --check fails when one may only shrink grew,
 #                                or on --unlisted's lines: a launch file with no row in the PIPELINES.md
 #                                launch table (LEDGER_PIPELINES), or a row whose file no longer launches
-#   fleet-bench rules [--json|--check|--scenarios|--changed SINCE]
+#   fleet-bench rules [--json|--check|--scenarios|--gates [BASE]|--changed SINCE]
 #                                the rule register (RULES_REGISTER): kinds, confidence, actions, and each
 #                                rule's number re-measured; --check fails when one moved against its
 #                                recorded confidence, its measure died, or a rule's text left its source;
 #                                --scenarios lists the hard scenarios a context trim must keep, 1 when any is stale;
+#                                --gates lists the gate markers (# gate: <id>) with no register row, a hook that denies with none, and a refusal
+#                                a diff against BASE (default origin/main) added with none: 1 when any; --check fails a gate row with no valid
+#                                asked_by, or an agent-asked routes: human row that no removal item covers;
 #                                --changed lists every rule line a PR merged since SINCE (epoch or a date) added
 #                                or removed, read from GitHub, one tab-separated line each (the briefing's list)
 #   fleet-bench kpi [--json] [--vitals | --at T | --trend DAYS | --check [ERE]]
@@ -250,6 +253,16 @@ set -uo pipefail
 # role, shared-docs), as repo paths, and the generated copies of them that would list a change twice.
 : "${RULES_CHANGED_ERE:=(^|/)(CLAUDE|AGENTS)\.md$|(^|/)SKILL\.md$|^\.claude/rules/|^\.config/rulesync-global/|^\.local/src/docs/|^\.config/agentctl/(roles|prompts)/|(^|/)docs/([^/]+/)*[^/]*standards\.md$}"
 : "${RULES_CHANGED_SKIP_ERE:=^\.config/opencode/}"
+# rules --gates: the code that holds a gate (a refusal, a deny, a block or a route to the human). Each
+# one names its register row beside the refusal with `# gate: <id>`; `# gate: none` says an added
+# refusal is a usage error, not a gate. GATE_ROOT is the repo they live in.
+: "${GATE_ROOT:=$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../.." && pwd)}"
+: "${GATE_TOOLS:=.local/bin/agent-ask .local/bin/agent-propose .local/bin/agent-queue .local/bin/agent-hold .local/bin/agent-land .local/bin/fleet-dispatch}"
+: "${GATE_HOOKS_DIR:=.claude/hooks}"
+: "${GATE_MARKER_ERE:=^[[:space:]]*#[[:space:]]*gate:[[:space:]]*([a-z0-9][a-z0-9-]*)[[:space:]]*$}"   # a line of its own
+: "${GATE_DENY_ERE:=permissionDecision.+deny|\"?decision\"?[: ]+\"block\"|exit 2}"   # a hook file that holds one needs a marker
+: "${GATE_REFUSE_ERE:=(^|[^[:alnum:]_.-])(die|refuse|deny|denied)[ (]|refuses |refused|permissionDecision|exit 2}"   # an added line in a tool that holds one needs a marker within GATE_NEAR lines above
+: "${GATE_NEAR:=6}"
 : "${RULES_CHANGED_NOISE_ERE:=^(reviewed|last_reviewed): }"   # frontmatter dates, not rule text
 export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${RULES_CHANGED_MAX_PRS:=300}"     # merged PRs one repo's list reads per call
@@ -2769,13 +2782,24 @@ rules_states() {
 
 # rules_problems <states array> -> one line per row --check fails on: its `state`, which Stack shows too.
 rules_problems() {
-  jq -r '.[] | (.source | split("/") | last) as $f
+  jq -r 'def rules_gate_problem:
+      (.id) as $id
+      | if ((.asked_by // "") | test("^(ask:[A-Za-z0-9_-]+|human:.{8,}|agent:.{2,})$") | not)
+        then "gate asked_by: \($id): \(.asked_by // "missing") is not ask:<id>, human:<their words or the rule that says it> or agent:<PR or incident>"
+        elif .routes == "human" and (.asked_by | startswith("agent:")) then
+          if (.remove_item // "") == "" or (.remove_by // "") == "" then
+            "agent route: \($id): it routes work to the human and an agent added it; remove it, get the human'"'"'s ask, or name the item that removes it (remove_item, remove_by)"
+          elif .remove_by < $today then "agent route: \($id): its removal by \(.remove_item) was due \(.remove_by); delete the gate"
+          else empty end
+        else empty end;
+    .[] | (.source | split("/") | last) as $f
     | if .state == "stale" then "stale: \($f): \(.anchor)"
       elif .state == "dead" then "dead measure: \($f): \(.anchor)"
       elif .state == "restates" then "restates: \($f): \(.anchor): its bound is a copy of the number its measure reads from \($f); drop max/min, the reading is the number"
       elif .state == "moved" then "moved: \($f): \(.anchor): \(.value) against \(if .max != null then "max \(.max)" else "min \(.min)" end), recorded \(.confidence)"
       else empty end,
-    (select(.form | IN("rule", "mechanism") | not) | "form: \($f): \(.anchor): \(.form) is neither rule nor mechanism")' <<<"$1"
+    (select(.form | IN("rule", "mechanism") | not) | "form: \($f): \(.anchor): \(.form) is neither rule nor mechanism"),
+    (select(.id != null) | rules_gate_problem)' --arg today "$(date -u +%F)" <<<"$1"
 }
 
 # rules_summary <states array> -> the counts, key=value.
@@ -2845,9 +2869,47 @@ rules_changed() {
   done
 }
 
+# rules_gates [<base>] -> one line per problem the code has against the register, 1 when any: a marker
+# naming a row that does not exist, a hook that denies or blocks and names no row, and, against the merge
+# base with <base> (default origin/main; no base, no diff check), an added refusal in a gate tool with no
+# marker within GATE_NEAR lines above it. A gate cannot merge without a row, and a row says who asked.
+rules_gates() {
+  local base="${1:-origin/main}" root="$GATE_ROOT" ids f n id mb out="" line files=()
+  ids=$(jq -r 'select(.id != null) | .id' "$RULES_REGISTER" 2>/dev/null)
+  for f in $GATE_TOOLS; do [ -f "$root/$f" ] && files+=("$f"); done
+  while IFS= read -r f; do files+=("$f"); done < <(cd "$root" 2>/dev/null && find "$GATE_HOOKS_DIR" -type f \( -name '*.py' -o -name '*.sh' \) 2>/dev/null | sort)
+  [ "${#files[@]}" -gt 0 ] || { say "rules --gates: no gate code under $root"; return 1; }
+  for f in "${files[@]}"; do
+    while IFS=: read -r n line; do
+      id=$(sed -nE "s/${GATE_MARKER_ERE}/\\1/p" <<<"$line" | awk 'NR==1')
+      [ "$n" -le 1 ] || ! sed -n "$((n - 1))p" "$root/$f" | grep -qE '\\$' ||
+        out+="misplaced gate: $f:$n: the marker sits inside a continued command, which it would swallow; put it above the command"$'\n'
+      [ "$id" = none ] || grep -qxF -- "$id" <<<"$ids" || out+="unregistered gate: $f:$n: gate: $id has no row in the register"$'\n'
+    done < <(grep -nE "$GATE_MARKER_ERE" "$root/$f")
+    case "$f" in "$GATE_HOOKS_DIR"/*)
+      if grep -qE "$GATE_DENY_ERE" "$root/$f" && ! grep -qE "$GATE_MARKER_ERE" "$root/$f"; then
+        out+="unmarked gate: $f: it denies or blocks and names no register row (# gate: <id>)"$'\n'
+      fi ;;
+    esac
+  done
+  if mb=$(git -C "$root" merge-base HEAD "$base" 2>/dev/null); then
+    local d dfile=""
+    while IFS=$'\t' read -r dfile n line; do
+      [ -n "$dfile" ] || continue
+      sed -n "$(( n > GATE_NEAR ? n - GATE_NEAR : 1 )),${n}p" "$root/$dfile" | grep -qE "$GATE_MARKER_ERE" ||
+        out+="unmarked refusal: $dfile:$n: an added refusal names no register row; add # gate: <id> (or # gate: none for a usage error) above it: ${line:0:90}"$'\n'
+    done < <(git -C "$root" diff --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ -U0 "$mb" -- "${files[@]}" | awk -v re="$GATE_REFUSE_ERE" '
+      /^\+\+\+ b\// { file = substr($0, 7); next }
+      /^@@/ { match($0, /\+[0-9]+/); n = substr($0, RSTART + 1, RLENGTH - 1) + 0; next }
+      /^\+/ { t = substr($0, 2); if (t !~ /^[[:space:]]*#/ && t ~ re) printf "%s\t%d\t%s\n", file, n, t; n++ }')
+  fi
+  [ -z "$out" ] || { printf '%s' "$out"; return 1; }
+}
+
 cmd_rules() {
   local states problems
   [ "${1:-}" != --changed ] || { rules_changed "${2:?rules --changed needs a since time}"; return; }
+  [ "${1:-}" != --gates ] || { rules_gates "${2:-}"; return; }
   states=$(rules_states | jq -s .)
   problems=$(rules_problems "$states")
   case "${1:-}" in
@@ -3895,6 +3957,11 @@ cmd_effect() {
 # kpi-thresholds cannot turn a flat result into a pass.
 IMPROVE_JQ='
 def live: group_by([.subject, .kpi]) | map(sort_by(.at) | last | select(.type == "claim"));
+# the live claims whose row or item has not closed, by the closes improve_closes prints: the WIP cap
+# counts only these, as a shipped claim only waits out BENCH_EFFECT_DAYS for its verdict (ar-4768)
+def open_live($c): [$c[] | (select(.action | IN("done", "dropped", "dup")) | .id),
+    (select(.item != null and ((.action == "item-moved" and .to == "done") or .action == "item-cancelled")) | "item:\(.item)")] as $x
+  | live | map(select(.subject | IN($x[]) | not));
 def last_verdict($k): map(select(.type == "verdict" and .kpi == $k)) | sort_by(.at) | last
   | if . == null then null else {subject, verdict} end;
 # how far past its threshold a KPI is, relative to the threshold
@@ -3904,15 +3971,46 @@ def gap: (.threshold | fabs | if . == 0 then 1 else . end) as $d
 
 effect_lines() { cat "$EFFECT" 2>/dev/null || true; }
 
+# improve_closes <live claims json> -> the record of how each claim's subject closed, one notes-log
+# line each: the log since the oldest claim, plus for a row the log has no close for, its close from
+# the feed (`notes board --json --id`, whose marker holds every close however it was made). Why:
+# ar-579 and ar-596 closed with no log line, so their claims never got a verdict and held the cap
+# (ar-4768). Fails when the log cannot be read; an unreadable feed adds nothing.
+improve_closes() {
+  local days log feed='{"rows":[]}' i
+  local -a ids=()
+  days=$(jq -r --argjson now "$(now)" 'if length == 0 then 1 else ($now - (map(.at) | min)) / 86400 | floor + 2 end' <<<"$1") || return 1
+  log=$($BENCH_LOG_CMD --days "$days") || return 1
+  while IFS= read -r i; do ids+=(--id "$i"); done < <(jq -r '[.[].subject | select(startswith("item:") | not)] | unique | .[]' <<<"$1")
+  [ "${#ids[@]}" = 0 ] || feed=$($BENCH_NOTES_CMD board --json "${ids[@]}" 2>/dev/null) || feed='{"rows":[]}'
+  jq -e '.rows | type == "array"' >/dev/null 2>&1 <<<"$feed" || feed='{"rows":[]}'
+  # A row with an open copy has not closed (a reopened row's old close stays in its version note). A
+  # feed close is a date, so it is read as that day's end, which never starts the verdict wait early.
+  jq -c --slurpfile log <(printf '%s\n' "$log") '
+    ($log | map(select(.action | IN("done", "dropped", "dup")) | .id)) as $logged
+    | [.rows[] | select(.state != "done") | .id] as $reopened
+    | $log[], (.rows[] | select(.state == "done" and .closed != null and (.id | IN($logged[]) | not) and (.id | IN($reopened[]) | not))
+        | {id, ts: "\(.closed)T23:59:59Z",
+           action: (if ((.marker // "") | test("(^| )dropped")) then "dropped" elif .dup then "dup" else "done" end),
+           why: (if (.prs // []) == [] then null else "pr:\(.prs[-1])" end)})' <<<"$feed"
+}
+
+# improve_live_closes -> improve_closes for the live claims; [] when none or the log cannot be read
+improve_live_closes() {
+  local claims
+  claims=$(effect_lines | jq -sc "$IMPROVE_JQ"'live') && [ "$claims" != "[]" ] && improve_closes "$claims" || true
+}
+
 # improve_pick <kpi json> -> the KPI furthest past its threshold that no live claim owns, as
-# {kpi, value, threshold, bound, last}; nothing when none is, or BENCH_IMPROVE_MAX claims are live.
+# {kpi, value, threshold, bound, last}; nothing when none is, or BENCH_IMPROVE_MAX claims are live
+# on rows or items still open (open_live).
 # board_days and board_open are never picked: a session whose job is shrinking the board would
 # delete rows the human filled on purpose. Nor is
 # systems_no_skill: it is report-only, since a system with no skill yet is a gap to read, not a red.
 improve_pick() {
-  jq -c --slurpfile e <(effect_lines) --argjson max "$BENCH_IMPROVE_MAX" "$IMPROVE_JQ"'
+  jq -c --slurpfile e <(effect_lines) --slurpfile c <(improve_live_closes) --argjson max "$BENCH_IMPROVE_MAX" "$IMPROVE_JQ"'
     ($e | live) as $live | ($live | map(.kpi)) as $owned
-    | if ($live | length) >= $max then empty else
+    | if ($e | open_live($c) | length) >= $max then empty else
         [to_entries[] | select(.value.status == "past" and (.key | IN("board_days", "board_open", "systems_no_skill") | not) and (.key | IN($owned[]) | not))
          | {kpi: .key, value: .value["7d"], threshold: .value.threshold, bound: .value.bound, gap: (.value | gap)}]
         | sort_by(-.gap) | first // empty
@@ -3925,12 +4023,12 @@ improve_pick() {
 # hold it, and one subject may claim each KPI its lever moves.
 improve_target() {
   local why
-  why=$(jq -r --arg k "$2" --arg s "${3:-}" --slurpfile e <(effect_lines) --argjson max "$BENCH_IMPROVE_MAX" "$IMPROVE_JQ"'
-    ($e | live) as $live | .[$k] as $v
+  why=$(jq -r --arg k "$2" --arg s "${3:-}" --slurpfile e <(effect_lines) --slurpfile c <(improve_live_closes) --argjson max "$BENCH_IMPROVE_MAX" "$IMPROVE_JQ"'
+    ($e | live) as $live | ($e | open_live($c)) as $open | .[$k] as $v
     | if $v == null then "no KPI named \($k)"
       elif $v.status != "past" then "\($k) is not past its threshold (\($v.status))"
       elif ($live | any(.kpi == $k)) then "\($k) is already claimed by \([$live[] | select(.kpi == $k) | .subject] | first)"
-      elif $s == "" and ($live | length) >= $max then "\($live | length) claims are live (BENCH_IMPROVE_MAX \($max)); one must end first"
+      elif $s == "" and ($open | length) >= $max then "\($open | length) claims on open work are live (BENCH_IMPROVE_MAX \($max)); one must end first"
       else empty end' <<<"$1") || return 1
   [ -z "$why" ] || { say "improve: $why"; return 1; }
   jq -c --arg k "$2" '.[$k] | {kpi: $k, value: .["7d"], threshold, bound}' <<<"$1"
@@ -3997,12 +4095,13 @@ improve_claim() {
 # improve list [--json]: the live claims with their age, and the newest verdicts
 improve_list() {
   local rows
-  rows=$(effect_lines | jq -sc --argjson now "$(now)" "$IMPROVE_JQ"'
-    {live: (live | map(. + {age_d: (($now - .at) / 86400 | floor)})),
+  rows=$(effect_lines | jq -sc --argjson now "$(now)" --slurpfile c <(improve_live_closes) "$IMPROVE_JQ"'
+    (open_live($c) | map(.subject)) as $open
+    | {live: (live | map(. + {age_d: (($now - .at) / 86400 | floor), open: (.subject | IN($open[]))})), open_n: ($open | length),
      verdicts: (map(select(.type == "verdict")) | sort_by(.at) | reverse | .[:20])}') || return 1
   if [ "$1" = --json ]; then printf '%s\n' "$rows"; return 0; fi
-  jq -r --argjson max "$BENCH_IMPROVE_MAX" '"live claims: \(.live | length) of \($max)",
-    (.live[] | "  \(.subject) \(.kpi) from \(.from) (\(.bound) \(.threshold)), \(.age_d)d"),
+  jq -r --argjson max "$BENCH_IMPROVE_MAX" '"live claims: \(.live | length), \(.open_n) on open work of \($max)",
+    (.live[] | "  \(.subject) \(.kpi) from \(.from) (\(.bound) \(.threshold)), \(.age_d)d\(if .open then "" else ", closed: waits for its verdict" end)"),
     "verdicts:", (.verdicts[] | "  \(.subject) \(.kpi) \(.verdict) \(.from) -> \(.after // "-")\(if .pr then " (pr:\(.pr))" else "" end)")' <<<"$rows"
 }
 
@@ -4013,12 +4112,11 @@ improve_list() {
 # and unproven end the claim, so the pick names the KPI again. Leaves IMPROVE_LINE (the outcome
 # part), IMPROVE_WHY (when nothing was checked) and IMPROVE_FAIL.
 improve_check() {
-  local claims days log json v line verdict id n=0 imp=0 flt=0 reg=0 unp=0
+  local claims log json v line verdict id n=0 imp=0 flt=0 reg=0 unp=0
   IMPROVE_LINE='' IMPROVE_WHY='' IMPROVE_FAIL=''
   claims=$(effect_lines | jq -sc "$IMPROVE_JQ"'live') || { IMPROVE_FAIL="effect ledger unreadable"; return 1; }
   if [ "$claims" = "[]" ]; then IMPROVE_WHY="no live improvement claim"; return 0; fi
-  days=$(jq -r --argjson now "$(now)" '($now - (map(.at) | min)) / 86400 | floor + 2' <<<"$claims")
-  log=$($BENCH_LOG_CMD --days "$days") || { IMPROVE_FAIL="notes log unreadable"; return 1; }
+  log=$(improve_closes "$claims") || { IMPROVE_FAIL="notes log unreadable"; return 1; }
   json=$(kpi_now "$(now)") || { IMPROVE_FAIL="kpi unreadable"; return 1; }
   v=$(jq -c --argjson now "$(now)" --argjson d "$BENCH_EFFECT_DAYS" --argjson flat "$BENCH_EFFECT_FLAT" \
       --argjson k "$json" --slurpfile log <(printf '%s\n' "$log") "$JQ_LIB"'

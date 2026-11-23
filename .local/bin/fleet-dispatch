@@ -917,6 +917,7 @@ reap_seen() { [ ! -e "$DIR/reap-miss/$1" ] || rm -f "$DIR/reap-miss/$1"; }
 # human-sheet row says what to do, or one page when the sheet refuses it (keyed needs:dispatch:stuck:<slug>:<title hash>, so agent-notify drops a repeat of one fact for a day), then nothing more while it
 # stands. $DIR/stuck/<slug> holds "<first epoch> <filed 0|1>" and the title; each pass rewrites it, so
 # a marker no pass has seen in a day is pruned by cmd_reap. reap_unstuck clears it once the item settles.
+# gate: fd-reap-stuck
 reap_stuck() {
   local f="$DIR/stuck/$1" first='' filed=0 was='' now where
   now=$(date +%s)
@@ -1120,9 +1121,14 @@ pace_target() {
 # way while the fleet held 79% of them (plan swhow-me-asll-data-modular-otter P3). A canary pinned to a
 # harness with its own source ($s.sourced, harnesses.json `source`) passes, as a trainee start does: it
 # spends no Claude session, and held, the week's set never ran while the fleet sat over its share (ask
-# GDUmQQ, ar-4554). The one test share_why and queue_depth apply.
+# GDUmQQ, ar-4554). A land or fix-ci requeue of an item's own PR (`pr`, `pr_owner` and its
+# `<owner>_tries` stamp, the test item_brief reads) passes too: it starts a Claude session, but a stranded
+# PR costs more than one, and DISPATCH_FIX_TRIES bounds the tries; held, share_return sent hc-857 back to
+# its row and left home-config#1406 green and unmerged (2026-11-23). The one test share_why and
+# queue_depth apply.
 # shellcheck disable=SC2016
 SHARE_JQ='def share_held($s): (.project // "") as $p | (.agent // "claude") as $a | $s.full and any($s.projects[]; . == $p)
+  and (((.pr // "") != "" and (.pr_owner // "") != "" and (.[.pr_owner + "_tries"] // "") != "") | not)
   and ((.priority == "urgent" and (.from // "human") == "human") | not)
   and ((" " + (.tags // "") + " ") | test(" #?(red|requested) ") | not)
   and (((" " + (.tags // "") + " ") | contains(" canary ")) and any(($s.sourced // [])[]; . == $a) | not);'
@@ -1171,8 +1177,8 @@ share_count() {
 # share_full -- rc 0 while the fleet share is at or over its cap.
 share_full() { share_state; [ "$(jq -r .full <<<"$SHARE_STATE")" = true ]; }
 
-# share_why <item json> -> why the fleet share cap holds the item, or nothing: share_held, outside the
-# human and sprint floors (HUMAN_PASS), which are the human's own work and never cut off, and outside the
+# share_why <item json> -> why the fleet share cap holds the item, or nothing: share_held (which passes a
+# land or fix-ci requeue of the item's own PR, SHARE_JQ), outside the human and sprint floors (HUMAN_PASS), which are the human's own work and never cut off, and outside the
 # trainee floor (TRAINEE_PASS), whose start runs on a free trainee key and spends no session the cap
 # guards. A Claude canary waits like any fleet item. pick_item lets the first held item go when nothing
 # else can start, so the cap never leaves a slot idle.
@@ -1893,8 +1899,9 @@ verdict_errors() {
 #    is tagged on a later pass. A row inbox-plan already planned (a `goal:` detail) that the judge,
 #    reading that plan, still skips by such a rule takes the human exit: a second plan would not help.
 #  - human (DISPATCH_HUMAN_RULES): an #urgent, #high, bare or #requested row is filed on the human sheet
-#    (human_sheet_row), a #low one kept in improvements.md (`notes improve`), its #worker/ tag off so no
-#    worker takes it there; then the agent row is dropped with a --why naming where it went.
+#    (human_sheet_row), a #low one kept in improvements.md (`notes improve`) unless an open row gates
+#    #after/ on it (then the sheet, whose row follow_moved_gates moves that gate to), its #worker/ tag off
+#    so no worker takes it there; then the agent row is dropped with a --why naming where it went.
 #  - waits: gated #after/<row> on the first open row its verdict's reason, else its text, names (its
 #    own id and #of/ links aside) or #pr/<owner>/<repo>/<N> on a PR named so, when the judge read the
 #    rest of it as one it would start (S or M, clear, agent-only, one area): a cleared gate starts a
@@ -1921,6 +1928,11 @@ skip_exits() {
   room=$(jq -r "$ROW_JQ"'[.rows[]? | select(plan_tagged)] | length' <<<"$board")
   room=$(( DISPATCH_PLAN_BACKLOG - ${room:-0} ))
   while IFS= read -r id; do [ -z "$id" ] || ids[$id]=1; done < <(jq -r '.rows[]? | select(.id != null) | .id' <<<"$board")
+  # gated[<row id>]: an open row waits on it (#after/), so its exit must leave a row for that gate to
+  # follow (follow_moved_gates); improvements.md leaves none, and the gate would read dead (ar-1380).
+  local -A gated=()
+  while IFS= read -r id; do [ -z "$id" ] || gated[$id]=1; done < <(jq -r '.rows[]? | select(.state == "open" or .state == "doing")
+    | (.tags_cased // .tags // [])[] | select(startswith("after/")) | .[6:]' <<<"$board")
   # A row of a kind kinds.json turns off (not epic) never reaches the judge, so it has no verdict: it
   # takes the human exit as rule `kind`, its line `-` (no verdict to hold), unless it is a parent or its
   # latest verdict already carries an exit, of any rule (a drop that failed: no second copy).
@@ -1969,7 +1981,7 @@ skip_exits() {
     fi
     if [ "$e" = human ]; then
       prio=$(prio_rank "$body")
-      if [ "$req" = true ] || [ "$prio" -le 1 ]; then e=sheet; else e=improve; fi
+      if [ "$req" = true ] || [ "$prio" -le 1 ] || [ -n "${gated[$id]-}" ]; then e=sheet; else e=improve; fi
     fi
     if [ "$e" = plan ] && [ "$room" -le 0 ]; then
       [ -z "$dry" ] || { printf 'plan-wait\t%s\t%s\t%s\n' "$p" "$id" "$rule"; n[plan-wait]=$(( ${n[plan-wait]:-0} + 1 )); }
@@ -3155,8 +3167,8 @@ cmd_trainee_reject() {
   # The why goes on the trainee's run, the reject reason `model-lane score` prints per pair; the requeue
   # below files the same redo again, which model-lane checks no bar for twice.
   run=$(jq -r '.lane_run // empty' <<<"$it")
-  [ -z "$run" ] || model-lane outcome "$run" redo --why "$why" >/dev/null 2>&1 || logline "model-lane outcome $run redo failed; $slug's reject reason is in its note only"
-  ladder_back "$slug" "trainee $trn rejected: $why" || { say "trainee-reject: could not send $slug back to the queue"; return 1; }
+  [ -z "$run" ] || model-lane outcome "$run" redo --why "$why" --cause reject >/dev/null 2>&1 || logline "model-lane outcome $run redo failed; $slug's reject reason is in its note only"
+  ladder_back "$slug" "trainee $trn rejected: $why" reject || { say "trainee-reject: could not send $slug back to the queue"; return 1; }
   rm -f "$TRAINEE_DIR/$slug.patch" "$TRAINEE_DIR/$slug.base"
   say "trainee-reject: $slug is back in the queue, on claude: $why"
 }
@@ -3322,10 +3334,11 @@ rollup_done() {
   [ "$2" != FAILED ]
 }
 
-# ladder_back <slug> <note> -- a ladder run's row back to the normal queue on claude, the note saying
-# why; agent-queue move reads the running -> queued step as a redo on the run, which model-lane counts.
+# ladder_back <slug> <note> [cause] -- a ladder run's row back to the normal queue on claude, the note saying
+# why; agent-queue move reads the running -> queued step as a redo on the run, which model-lane counts, with
+# that cause (MOVE_CAUSES; requeue when none).
 ladder_back() {
-  agent-queue set "$1" agent=claude model= routed= "note=$2" >/dev/null && agent-queue move "$1" queued >/dev/null
+  agent-queue set "$1" agent=claude model= routed= "note=$2" >/dev/null && agent-queue move "$1" queued ${3:+--cause "$3"} >/dev/null
 }
 
 # DIRECT_GUARDED: paths a direct run's diff may not touch, as an ERE on the repo-relative path. Its
@@ -4132,7 +4145,7 @@ item_brief() {
   pr_line "$it"
   [[ "$tags" != *" red "* ]] || echo "This is a red: read ~/.claude/skills/fix-red/SKILL.md first and work to it."
   [[ "$tags" != *" escalate "* ]] || echo "Its earlier fixes did not hold (retry: names them), so this is its escalation: before any fix, do the root-cause pass of fix-red section 3 through debug, and say on the item why each earlier try did not hold. If this one does not hold either, triage asks the human once, pointing at what this item found."
-  [[ "$tags" == *" red "* || -n "$pr_only" || -n "$nopr" || "$(item_tier "$it")" != 3 ]] || echo "This is tier 3 (harness or tooling), and it merges only behind the red-fix gate: step 5 of ~/.claude/skills/fix-red/SKILL.md (/code-review high, each finding fixed or answered in the PR, the line \"Review: /code-review high, <what it found and what you did>\" in the PR body). agent-land refuses a tier-3 PR without that line or without checks that ran green. Before agent-land, run the bats files the Stop hook picks for the files you changed and put the result in the PR body."
+  [[ "$tags" == *" red "* || -n "$pr_only" || -n "$nopr" || "$(item_tier "$it")" != 3 ]] || echo "This is tier 3 (harness or tooling), and it merges only behind the red-fix gate: step 5 of ~/.claude/skills/fix-red/SKILL.md (/code-review high, each finding fixed or answered in the PR, the line \"Review: /code-review high, <what it found and what you did>\" in the PR body). agent-land refuses a tier-3 PR without that line or without checks that ran green. Run no test on the workstation: the PR's CI is its test run, so put that run's result in the PR body."
   row=$(item_row "$it")
   key=$(cut -d$'\x1f' -f4 <<<"$row")
   if [ "$exit_" = doc+ask ]; then
@@ -4700,7 +4713,7 @@ settle_item() {
     # (10-git-workflow.sh). A review item is parked, not running: own_parked_pr owns its PR.
     if [ -n "${3:-}" ] && { [ "$st" = running ] || [ "$st" = waiting ]; }; then
       local br sids
-      agent-queue move "$1" queued --if "$st" >/dev/null || return 0
+      agent-queue move "$1" queued --cause lost --if "$st" >/dev/null || return 0
       br=$(jq -r 'select((.pr // "") == "") | .branch // empty' <<<"$it")
       sids=$(jq -r '.sessions // ""' <<<"$it")
       agent-queue set "$1" "lost=$3${sids:+ $sids}" ${br:+"salvage=$br"} >/dev/null ||
@@ -4849,7 +4862,7 @@ takeover_branch() {
   agent-queue set "$slug" "salvage=$br" "takeover_tries=$((tries + 1))" >/dev/null || return 1
   # Moved on by someone else meanwhile (its session closed it, a human requeued it): theirs, not a
   # failure, and the stamps go back as they were, so its next start is not told to resume this branch.
-  agent-queue move "$slug" queued "$@" --if "$st" >/dev/null || {
+  agent-queue move "$slug" queued "$@" --cause takeover --if "$st" >/dev/null || {
     agent-queue set "$slug" "salvage=$sv" "takeover_tries=$([ "$tries" = 0 ] || echo "$tries")" >/dev/null
     return 0
   }
@@ -4878,11 +4891,13 @@ takeover_branch() {
 # on its ask by settle_item before this runs. A session reap cannot witness (`unrecorded`, a cloud run)
 # is never read as gone here.
 own_parked_pr() {
-  local slug=$1 it=$3 head=$4 owner verb color tries human hhead howners pr project note trn held where why='' clear=()
+  local slug=$1 it=$3 head=$4 owner verb color cause tries human hhead howners pr project note trn held where why='' clear=()
+  # cause: the requeue's cause on the run's outcome (MOVE_CAUSES): a green PR's lander merges the run's
+  # diff unchanged, so that run is filed unrated (land); a red or conflicting PR rates as redo.
   case "${6:-}:$5" in
-  CONFLICTING:*) owner=land verb=land color='in conflict with its base' why=' conflict' ;;
-  *:FAIL) owner=fix verb=fix-ci color=red ;;
-  *:PASS) owner=land verb=land color=green ;;
+  CONFLICTING:*) owner=land verb=land color='in conflict with its base' why=' conflict' cause=conflict ;;
+  *:FAIL) owner=fix verb=fix-ci color=red cause=fix-ci ;;
+  *:PASS) owner=land verb=land color=green cause=land ;;
   *) return 0 ;;
   esac
   # A green critical PR waiting on its validate item has a lander: that item's session (agent-land validate_gate).
@@ -4915,7 +4930,7 @@ own_parked_pr() {
     [ "$owner" != land ] || [ "$(item_tier "$it")" != 3 ] || clear+=(agent=claude)
     agent-queue set "$slug" "${owner}_tries=$((tries + 1)) $head$why" "pr_owner=$owner" mode=oneshot "${clear[@]}" \
       "note=PR $pr $color at ${head:0:12}; $verb try $((tries + 1)) of $DISPATCH_FIX_TRIES" >/dev/null || return 0
-    agent-queue move "$slug" queued --if review >/dev/null || return 0
+    agent-queue move "$slug" queued --cause "$cause" --if review >/dev/null || return 0
     logline "reaped $2: queue item $slug requeued for $verb, PR $pr $color at ${head:0:12} (try $((tries + 1)) of $DISPATCH_FIX_TRIES)"
     dispatch_event requeued "$project" "PR $color with nobody on it: $verb try $((tries + 1))" --item "$slug" --pr "$pr" --sha "$head"
     echo "$verb queue item $slug (PR $pr $color at ${head:0:12}, try $((tries + 1)) of $DISPATCH_FIX_TRIES)"
@@ -5548,7 +5563,8 @@ load_findings() {
 # holds, except that the first urgent item or fresh ask (runs_now) waiting only on run units (PICK_RESERVED, which
 # preempt_pick may make room for) keeps the free ones: a later item that would use them waits too. Rc 1 with the reason in PICK_WHY when every one is held, or the findings cannot be read.
 # PICK_NOTE names the items ahead of PICKED that the fleet share cap held (share_why), so the start's
-# activity.log line shows the hold firing, or that the cap let PICKED go.
+# activity.log line shows the hold firing, or that the cap let PICKED go. The cap never lets go onto
+# this machine's units while an item it does not hold waits on them (uheld).
 # The place is this machine while the item fits in UNITS_FREE and, when there are fleet workers to
 # go to, its own pace is open (machine_why); else the first worker that takes it (place_host), in
 # PLACE_HOST. A canary item goes to a worker whose fleet_first names its class ahead of
@@ -5559,7 +5575,7 @@ load_findings() {
 # project while the other 40 waited on account pace, which the message never named.
 pick_item() {
   local items="$1" it why need free host mwhy='' mread=0 fhit=0 uwait=0 held=() waits="every queue item waits" reserved='' kept=''
-  local shold=0 sfirst='' shost='' swhy='' mhit=0 ppass=''
+  local shold=0 sfirst='' shost='' swhy='' mhit=0 ppass='' uheld='' uneed=0
   share_state   # in this shell, so every share_why reads one count
   if [ "${RED_PASS:-0}" = 1 ]; then waits="every red item waits; the rest wait on ${FLOOR_GATE:-the gate}"
   elif [ "${TRAINEE_PASS:-0}${BATCH_PASS:-0}" != 00 ]; then waits="the trainee floor's item waits"; fi
@@ -5599,6 +5615,13 @@ pick_item() {
     elif [ -z "$kept" ] && [ "$uwait" = 1 ] && [ "$need" -le "$TARGET" ] && short_item "$it" && [ -z "$(finding_hold "$it")" ] && [ -z "$(share_why "$it")" ]; then
       kept=$(jq -r .slug <<<"$it")
     fi
+    # The first item the share does not hold that waits only on run units it could fit: the share's
+    # let-go leaves those units to it. Without this a light fleet item took the one free unit each pass
+    # while heavy Unity items waited for two: 86 of 124 fleet Claude starts in 24h to 2026-11-23 went
+    # out on the let-go, all 77 local ones with other projects' heavy items queued (ar-4499).
+    if [ "${SHARE_LET_GO:-0}" = 1 ] && [ -z "$uheld" ] && [ "$uwait" = 1 ] && [ "$need" -le "$TARGET" ] && [ -z "$(finding_hold "$it")" ] && [ -z "$(share_why "$it")" ]; then
+      uheld=$(jq -r .slug <<<"$it") uneed=$need
+    fi
     if [ -z "$why" ]; then
       PICKED=$it PLACE_HOST=$host
       [ "$shold" = 0 ] || PICK_NOTE="; passed $shold item$([ "$shold" = 1 ] || echo s) held by $swhy"
@@ -5609,11 +5632,20 @@ pick_item() {
     held+=("$(jq -r .slug <<<"$it") ($why)")
   done <<<"$items"
   # The fleet share cap lets go when nothing else can start: the first item it held takes the place
-  # it had, unless the free units wait for a reserved item. Only the start after the fill (SHARE_LET_GO) lets go:
+  # it had, unless the free units wait for a reserved item or one the share does not hold (uheld); a
+  # fleet worker's place it takes either way. Only the start after the fill (SHARE_LET_GO) lets go:
   # the queue pass first tops the board up with other projects' rows, and a floor's list is filtered, so a hold there is no proof.
-  if [ -n "$sfirst" ] && [ "${SHARE_LET_GO:-0}" = 1 ] && { [ -z "$reserved$kept" ] || [ -n "$shost" ]; }; then
-    PICKED=$sfirst PLACE_HOST=$shost PICK_NOTE="; the fleet share cap let it go, as nothing else could start ($swhy)"
-    return 0
+  if [ -n "$sfirst" ] && [ "${SHARE_LET_GO:-0}" = 1 ]; then
+    if [ -z "$reserved$uheld" ] || [ -n "$shost" ]; then
+      PICKED=$sfirst PLACE_HOST=$shost PICK_NOTE="; the fleet share cap let it go, as nothing else could start ($swhy)"
+      return 0
+    fi
+    # A wait for units is a full fleet (NOOP), as when units alone hold every item; with a finding or
+    # load holding another item the ladder below names that instead (ar-4450).
+    if [ -n "$uheld" ] && [ "$fhit$mhit" = 00 ]; then
+      PICK_FULL=1 PICK_WHY="run units: $uheld needs $uneed, $free free, so the fleet share cap does not let $(jq -r .slug <<<"$sfirst") go to them; $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
+      return 1
+    fi
   fi
   if [ "$PICK_FULL" = 1 ]; then PICK_WHY="run units: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
   elif [ "$fhit" = 1 ]; then PICK_WHY="finding firing: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
@@ -7042,8 +7074,9 @@ settle_answered_gates() {
 
 # follow_moved_gates -- each open agent- or human-lane row gated #after/<id> on a row that reads dead
 # (dropped, or gone from the board) follows that row to where its work went: the open human-sheet row
-# of the same profile and project whose text says "(agent row <id>)", which skip_exits files as it
-# drops the agent row. The gate becomes #after/<that row's id>, so the row waits on the work, not on a
+# of the same profile, on any project's sheet, whose text says "(agent row <id>)", which skip_exits
+# files on the dropped row's own sheet (a row id is unique, and a gate may cross projects: apo-181 waits
+# on ucp-2631, ar-4768). The gate becomes #after/<that row's id>, so the row waits on the work, not on a
 # closed copy. A dead gate with no such row, or whose copy has closed (whatever its marker), stays for
 # dead_holds and a person. Why: on 2026-11-22 ucp-2693 and ucp-2984 waited on ucp-2691 and ucp-2688,
 # both sent to the sheet as ucp-2983 and ucp-2988, and queue-starved paged (ar-3172).
@@ -7057,9 +7090,9 @@ follow_moved_gates() {
     for g in $t; do
       [[ $g == after/?* ]] && [ "${GATE_ST[$g]:-}" = dead ] || continue
       old=${g#after/}
-      to=$(jq -r --arg m "(agent row $old)" --arg self "$id" --arg pr "$prof" --arg p "$p" 'first(.rows[]?
+      to=$(jq -r --arg m "(agent row $old)" --arg self "$id" --arg pr "$prof" 'first(.rows[]?
         | select(.lane == "human" and .state == "open" and .id != null and .id != $self
-            and (.profile // "") == $pr and .project == $p and ((.raw // "") | contains($m)))) | .id' <<<"$board")
+            and (.profile // "") == $pr and ((.raw // "") | contains($m)))) | .id' <<<"$board")
       [ -n "$to" ] || continue
       lf=(); [ "$lane" != agent ] || lf=(--agent)
       if np "$prof" ptask "$p" "${lf[@]}" tag --remove "$g" --add "after/$to" "$id" </dev/null >/dev/null 2>&1; then

@@ -39,6 +39,16 @@ pub struct First {
     pub link: Option<Link>,
 }
 
+/// One headed list of rows on a card.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Rows {
+    pub head: String,
+    pub rows: Vec<First>,
+}
+
+/// The heading over a card's one list when it has nothing more particular to say.
+pub const FIRST_HEAD: &str = "Where to look first";
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Card {
     /// The card's id: the `hub_core::layout` tab it opens, or for a card with no tab of its own
@@ -53,9 +63,9 @@ pub struct Card {
     pub level: Level,
     pub bar: Vec<Seg>,
     pub parts: Vec<Part>,
-    /// The heading over `first` ("Where to look first", "Bottleneck").
-    pub first_head: &'static str,
-    pub first: Vec<First>,
+    /// The row lists under the parts, each under its own heading, in order ("Where to look
+    /// first", "Flow"). A list with no rows draws nothing.
+    pub lists: Vec<Rows>,
     /// What was counted, the card's (i) (rule 6).
     pub counted: String,
     /// Why the reader could not answer; the card then says NO DATA, never green.
@@ -73,8 +83,7 @@ impl Card {
             level: Level::Nodata,
             bar: vec![],
             parts: vec![],
-            first_head: "Where to look first",
-            first: vec![],
+            lists: vec![],
             counted: counted.into(),
             error: None,
             link: Link::tab(opens(tab)),
@@ -135,9 +144,22 @@ impl Card {
         self
     }
 
-    fn first(mut self, rows: impl IntoIterator<Item = First>) -> Card {
-        self.first = rows.into_iter().take(SHOWN_FIRST).collect();
+    /// The card's list of the first `SHOWN_FIRST` of `rows` under `head`.
+    fn list(self, head: impl Into<String>, rows: impl IntoIterator<Item = First>) -> Card {
+        self.rows(head, rows.into_iter().take(SHOWN_FIRST).collect())
+    }
+
+    /// A list of exactly `rows`, for one that must not be cut.
+    fn rows(mut self, head: impl Into<String>, rows: Vec<First>) -> Card {
+        self.lists.push(Rows {
+            head: head.into(),
+            rows,
+        });
         self
+    }
+
+    fn first(self, rows: impl IntoIterator<Item = First>) -> Card {
+        self.list(FIRST_HEAD, rows)
     }
 }
 
@@ -250,10 +272,12 @@ pub fn sessions(rows: &[crate::session_table::SessionRow]) -> Card {
     }))
 }
 
-/// Queue: the items by state, and whether work flows (`queue_verdict`): the head verdict, then the
-/// item a hold keeps waiting and each other exception, each with its Do, as the rows, worst first;
-/// the card wears the worst. The waybar queue chip lays this card out from summary/cards, and the
-/// Queue tabs draw the same lines, so the three agree.
+/// Queue: the work, then whether it flows. The big number is what runs now; the lists name the
+/// running items, the ones parked on a PR and the next to start (`bar::ready`, in start order), each
+/// `SHOWN_FIRST` rows, then Flow (`queue_verdict`): the head verdict, then the item a hold keeps
+/// waiting and each other exception, each with its Do, worst first, uncapped; the card wears the
+/// worst. The waybar queue chip lays this card out from summary/cards, and the Queue tabs draw the
+/// same lines, so the three agree.
 pub fn queue(
     q: &crate::queue::Queue,
     pipeline: Option<&Result<Option<crate::pipeline::Pipeline>, String>>,
@@ -287,17 +311,13 @@ pub fn queue(
             .part("On deck", d as usize, Level::Ok)
             .part("Held", h as usize, Level::Ok);
     }
-    c.big = on_deck.map_or(queued, |n| n as usize).to_string();
-    c.unit = if on_deck.is_some() {
-        "on deck"
-    } else {
-        "queued"
-    }
-    .into();
+    c.big = running.to_string();
+    c.unit = "running".into();
     // Items that only wait on someone are Needs you's to say: the card is read and fine, not empty.
     if c.level == Level::Nodata && !q.items.is_empty() {
         c.level = Level::Ok;
     }
+    let at = chrono::DateTime::from_timestamp(now, 0).unwrap_or_default();
     let ready = crate::bar::ready(q, now);
     c = c
         .part("Urgent", ready.urgent, Level::Ok)
@@ -306,19 +326,76 @@ pub fn queue(
         let n = r.failed_24h as usize;
         c = c.part("Failed 24h", n, lvl(n, Level::Warn));
     }
-    c.first_head = "Flow";
+    let item_link =
+        |i: &crate::queue::Item| Some(Link::to(crate::links::Kind::Queue, i.slug.clone()));
+    let said = |rows: Vec<First>, empty: &str| {
+        if rows.is_empty() {
+            vec![row(empty, String::new(), Level::Ok, None)]
+        } else {
+            rows
+        }
+    };
+    let working = q.in_state(State::Running).map(|i| {
+        let sub = format!(
+            "{} - {}",
+            i.project.trim(),
+            crate::display::fmt::dur_min(i.timing(at).in_state)
+        );
+        row(i.title(), sub, Level::Ok, item_link(i))
+    });
+    let parked = q.in_state(State::Review).map(|i| {
+        let pr = i.pr_refs().next().and_then(crate::queue::pr_link_of);
+        let (sub, link) = match pr {
+            Some((label, Some(url))) => (label, Some(Link::Url(url))),
+            Some((label, None)) => (label, item_link(i)),
+            None => (i.project.trim().to_string(), item_link(i)),
+        };
+        row(i.title(), sub, Level::Ok, link)
+    });
+    let next = ready.items.iter().map(|i| {
+        let sub = format!(
+            "{} - {} - {}",
+            i.priority,
+            i.project.trim(),
+            crate::display::fmt::dur_min(i.ready_min)
+        );
+        let link = Link::to(crate::links::Kind::Queue, i.slug.clone());
+        let what = match (i.kind.as_str(), i.area.as_str()) {
+            ("", _) => i.title.clone(),
+            (k, "") => format!("{k}: {}", i.title),
+            (k, a) => format!("{k}({a}): {}", i.title),
+        };
+        row(what, sub, Level::Ok, Some(link))
+    });
+    c = c
+        .list(
+            "Running",
+            said(working.take(SHOWN_FIRST).collect(), "Nothing running"),
+        )
+        .list(
+            "On a PR",
+            said(parked.take(SHOWN_FIRST).collect(), "Nothing on a PR"),
+        )
+        .rows(
+            format!(
+                "Up next: {} ready, {} urgent, {} high",
+                ready.total, ready.urgent, ready.high
+            ),
+            said(next.take(SHOWN_FIRST).collect(), "Nothing ready"),
+        );
+    let mut flow = vec![];
     if let Some(v) = &q.verdict {
         c = room(c, v);
         // Every line, uncapped: a hidden exception is one the human cannot act on.
-        c.first = v
+        flow = v
             .lines(|| &ready)
             .into_iter()
             .map(|l| row(l.text, l.act, l.level, None))
             .collect();
-        let flow = v.level();
+        let verdict = v.level();
         let rank = crate::queue_verdict::rank;
-        if c.level == Level::Nodata || rank(flow) > rank(c.level) {
-            c.level = flow;
+        if c.level == Level::Nodata || rank(verdict) > rank(c.level) {
+            c.level = verdict;
         }
     }
     let read = pipeline.map(Result::as_ref);
@@ -333,8 +410,9 @@ pub fn queue(
             Some(a) => format!("Bottleneck: {step}, {a}"),
             None => format!("Bottleneck: {step}"),
         };
-        c.first.push(row(text, String::new(), Level::Warn, None));
+        flow.push(row(text, String::new(), Level::Warn, None));
     }
+    c = c.rows("Flow", flow);
     // A pipeline that could not be read is said, so it never reads as no bottleneck.
     let pipe_err = match read {
         Some(Err(e)) => Some(format!("pipeline: {e}")),
@@ -497,8 +575,8 @@ pub fn done(d: Option<&crate::phone::Done>) -> Card {
     if !unread.is_empty() {
         c.error = Some(unread.join("; "));
     }
-    c.first_head = "By project";
-    c.first(
+    c.list(
+        "By project",
         d.by.iter()
             .map(|(name, t, prs)| {
                 row(
@@ -649,7 +727,6 @@ pub fn costs(k: &crate::costs::Costs) -> Card {
         )
         .part("API cash", &fc.cash, Level::Ok)
         .part("Sub burn", &fc.burn, Level::Ok);
-    c.first_head = "Burn";
     let needs = k
         .budget
         .needs
@@ -667,7 +744,8 @@ pub fn costs(k: &crate::costs::Costs) -> Card {
     } else if !k.errors.is_empty() && c.level == Level::Ok {
         c.level = Level::Warn;
     }
-    c.first(
+    c.list(
+        "Burn",
         // The top session comes last, so it never pushes a budget need off the card.
         head.into_iter()
             .chain(needs)
@@ -830,21 +908,23 @@ pub fn projects(p: &crate::projects::Projects) -> Card {
             c.level = Level::Warn;
         }
     }
-    c.first_head = "In flight";
     let mut look: Vec<_> = cards.iter().filter(|c| c.in_flight()).collect();
     look.sort_by_key(|a| std::cmp::Reverse(a.running.len()));
-    c.first(look.into_iter().map(|p| {
-        let sub = match p.running.len() {
-            0 => "none running".to_string(),
-            n => format!("{n} running"),
-        };
-        row(
-            p.name.clone(),
-            sub,
-            Level::Ok,
-            Some(Link::to(crate::links::Kind::Project, p.name.clone())),
-        )
-    }))
+    c.list(
+        "In flight",
+        look.into_iter().map(|p| {
+            let sub = match p.running.len() {
+                0 => "none running".to_string(),
+                n => format!("{n} running"),
+            };
+            row(
+                p.name.clone(),
+                sub,
+                Level::Ok,
+                Some(Link::to(crate::links::Kind::Project, p.name.clone())),
+            )
+        }),
+    )
 }
 
 /// Board: every open row on the boards (an agent row with the retired `tier:backlog` token is
@@ -914,9 +994,7 @@ pub fn board(f: &crate::tasks::Feed) -> Card {
     // feed carries and the web's does not, and no count on this card uses them.
     // Up next fills the list only when nothing is late or asked for, under its own head.
     let urgent = n_late + n_asked > 0;
-    if !urgent {
-        c.first_head = "Up next";
-    }
+    let head = if urgent { FIRST_HEAD } else { "Up next" };
     let mut look: Vec<_> = looked
         .into_iter()
         .filter_map(|(r, l)| l.map(|l| (r, l)))
@@ -928,26 +1006,29 @@ pub fn board(f: &crate::tasks::Feed) -> Card {
         Level::Warn => 1,
         _ => 2,
     });
-    c.first(look.into_iter().map(|(r, level)| {
-        let place = r.project.as_deref().unwrap_or(&r.profile);
-        let section = crate::tasks::section_title(r.section.as_deref()).to_lowercase();
-        let due = r
-            .due
-            .as_deref()
-            .map(|d| format!(", due {}", crate::text::short_day(d)))
-            .unwrap_or_default();
-        let link = match (&r.id, &r.project) {
-            (Some(id), _) => Some(Link::to(crate::links::Kind::Row, id.clone())),
-            (None, Some(p)) => Some(Link::to(crate::links::Kind::Project, p.clone())),
-            _ => None,
-        };
-        row(
-            r.title.clone(),
-            format!("{place} - {section}{due}"),
-            level,
-            link,
-        )
-    }))
+    c.list(
+        head,
+        look.into_iter().map(|(r, level)| {
+            let place = r.project.as_deref().unwrap_or(&r.profile);
+            let section = crate::tasks::section_title(r.section.as_deref()).to_lowercase();
+            let due = r
+                .due
+                .as_deref()
+                .map(|d| format!(", due {}", crate::text::short_day(d)))
+                .unwrap_or_default();
+            let link = match (&r.id, &r.project) {
+                (Some(id), _) => Some(Link::to(crate::links::Kind::Row, id.clone())),
+                (None, Some(p)) => Some(Link::to(crate::links::Kind::Project, p.clone())),
+                _ => None,
+            };
+            row(
+                r.title.clone(),
+                format!("{place} - {section}{due}"),
+                level,
+                link,
+            )
+        }),
+    )
 }
 
 /// One tab's read as the grid gets it: None while it has not answered, else its answer.
@@ -1000,27 +1081,29 @@ pub fn needs(home: &crate::home::Home, now: i64) -> Card {
             c.level = Level::Warn;
         }
     }
-    c.first_head = "Oldest";
     let mut old: Vec<&crate::home::Need> = home.needs.iter().collect();
     old.sort_by_key(|n| n.since.unwrap_or(i64::MAX));
-    c.first(old.into_iter().map(|n| {
-        let waited = n
-            .since
-            .map(|t| crate::display::fmt::age(now - t))
-            .unwrap_or_default();
-        let sub = [waited.as_str(), n.project.trim_start_matches('.')]
-            .iter()
-            .filter(|s| !s.is_empty())
-            .copied()
-            .collect::<Vec<_>>()
-            .join(" ");
-        row(
-            crate::text::cap(&n.text, 60),
-            sub,
-            Level::Warn,
-            Some(n.link()),
-        )
-    }))
+    c.list(
+        "Oldest",
+        old.into_iter().map(|n| {
+            let waited = n
+                .since
+                .map(|t| crate::display::fmt::age(now - t))
+                .unwrap_or_default();
+            let sub = [waited.as_str(), n.project.trim_start_matches('.')]
+                .iter()
+                .filter(|s| !s.is_empty())
+                .copied()
+                .collect::<Vec<_>>()
+                .join(" ");
+            row(
+                crate::text::cap(&n.text, 60),
+                sub,
+                Level::Warn,
+                Some(n.link()),
+            )
+        }),
+    )
 }
 
 /// Main red: the repos whose nightly on main is red.
@@ -1041,8 +1124,10 @@ pub fn main_red(home: &crate::home::Home) -> Card {
             c.level = Level::Warn;
         }
     }
-    c.first_head = "Red";
-    c.first(red.iter().map(|r| row(*r, "nightly", Level::Red, None)))
+    c.list(
+        "Red",
+        red.iter().map(|r| row(*r, "nightly", Level::Red, None)),
+    )
 }
 
 /// Home's card order on every surface. Needs you and Main red lead the widgets; on the web and the TUI
@@ -1129,6 +1214,13 @@ mod tests {
     use super::*;
     use crate::session_table::{SessionRow, Source};
 
+    /// The Queue card's Flow rows: its last list.
+    fn flow(c: &Card) -> &[First] {
+        let l = c.lists.last().expect("the Queue card's lists");
+        assert_eq!(l.head, "Flow");
+        &l.rows
+    }
+
     fn live(bucket: &str, task: &str) -> SessionRow {
         SessionRow {
             bucket: bucket.into(),
@@ -1175,11 +1267,15 @@ mod tests {
             ]
         );
         assert_eq!(
-            c.first.iter().map(|f| f.text.as_str()).collect::<Vec<_>>(),
+            c.lists[0]
+                .rows
+                .iter()
+                .map(|f| f.text.as_str())
+                .collect::<Vec<_>>(),
             ["c", "b"]
         );
         assert_eq!(
-            c.first[0].link.as_ref().unwrap().href(),
+            c.lists[0].rows[0].link.as_ref().unwrap().href(),
             "#sessions/sessions/hub%2Fc%3A1"
         );
         assert!(c.parts.iter().all(|p| p.label != "Ended today"));
@@ -1375,35 +1471,39 @@ mod tests {
             board(&w).counted
         );
         // Late, then requested; Up next rows wait until neither is left, and doing is never listed.
-        let first: Vec<_> = c.first.iter().map(|f| (f.text.as_str(), f.level)).collect();
+        let first: Vec<_> = c.lists[0]
+            .rows
+            .iter()
+            .map(|f| (f.text.as_str(), f.level))
+            .collect();
         assert_eq!(first, [("row db-4", Level::Red), ("row db-3", Level::Warn)]);
-        assert_eq!(c.first_head, "Where to look first");
+        assert_eq!(c.lists[0].head, "Where to look first");
         // A late row already started is still late.
         f.rows[3].state = "doing".into();
-        assert_eq!(board(&f).first[0].text, "row db-4");
+        assert_eq!(board(&f).lists[0].rows[0].text, "row db-4");
         f.rows[3].state = "open".into();
-        assert_eq!(c.first[0].sub, "db - backlog, due 11-17");
+        assert_eq!(c.lists[0].rows[0].sub, "db - backlog, due 11-17");
         assert_eq!(
-            c.first[0].link.as_ref().unwrap().href(),
+            c.lists[0].rows[0].link.as_ref().unwrap().href(),
             "#projects/all?q=id:=db-4"
         );
         // Nothing late or asked for: the card says what is up next.
         f.rows[2].requested = false;
         f.rows[3].due = None;
         let c = board(&f);
-        assert_eq!((c.first_head, c.level), ("Up next", Level::Ok));
-        assert_eq!(c.first[0].text, "row db-2");
+        assert_eq!((c.lists[0].head.as_str(), c.level), ("Up next", Level::Ok));
+        assert_eq!(c.lists[0].rows[0].text, "row db-2");
         // A row on the backlog tier is not a place to look: Up next is the next board row.
         f.rows[1].backlog = true;
-        assert_eq!(board(&f).first[0].text, "row db-5");
+        assert_eq!(board(&f).lists[0].rows[0].text, "row db-5");
     }
 
     #[test]
     fn queue_names_the_bottleneck_step_and_never_counts_who_waits_on_you() {
         use crate::flow::tests::{pipe, queue as q};
-        // No stats read: every queued item is counted and the unit says queued, never on deck.
+        // No stats read: the big number is the running count, with no Held or On deck part.
         let c = queue(&q(), Some(&Ok(Some(pipe(2.25)))), 0);
-        assert_eq!((c.big.as_str(), c.unit.as_str()), ("2", "queued"));
+        assert_eq!((c.big.as_str(), c.unit.as_str()), ("1", "running"));
         assert!(c
             .parts
             .iter()
@@ -1417,7 +1517,7 @@ mod tests {
             ..Default::default()
         });
         let c = queue(&held, Some(&Ok(Some(pipe(2.25)))), 0);
-        assert_eq!((c.big.as_str(), c.unit.as_str()), ("1", "on deck"));
+        assert_eq!((c.big.as_str(), c.unit.as_str()), ("1", "running"));
         let parts: Vec<_> = c
             .parts
             .iter()
@@ -1437,20 +1537,20 @@ mod tests {
         // A waiting item is Needs you's fact (Blocked), so it is no red segment here: one reader.
         assert_eq!(bar, [(Level::Ok, 3)]);
         // With no verdict read the bottleneck is the only row, after where the flow lines go.
-        assert_eq!(c.first_head, "Flow");
+        assert_eq!(c.lists.last().unwrap().head, "Flow");
         assert_eq!(
-            (c.first[0].text.as_str(), c.first[0].sub.as_str()),
+            (flow(&c)[0].text.as_str(), flow(&c)[0].sub.as_str()),
             ("Bottleneck: needs you, age p90 9h00m (bound 4h00m)", "")
         );
         // A snapshot that could not be read is said on the card, never as no bottleneck.
         let c = queue(&held, Some(&Err("state.json: bad json".into())), 0);
-        assert!(c.first.is_empty());
+        assert!(flow(&c).is_empty());
         assert_eq!(c.error.as_deref(), Some("pipeline: state.json: bad json"));
         // No snapshot read: no rows, and the item that waits on the human (q() has one) is no
         // segment or row of this card, since Needs you counts it as Blocked.
         let c = queue(&q(), None, 0);
         assert_eq!(c.error, None);
-        assert!(c.first.is_empty());
+        assert!(flow(&c).is_empty());
         assert_eq!(c.level, Level::Ok);
         assert!(c.bar.iter().all(|s| s.level != Level::Red));
         // Only an item that waits on the human: the card is read, never no data.
@@ -1459,6 +1559,61 @@ mod tests {
             .retain(|i| i.state == crate::queue::State::Waiting);
         assert!(!only.items.is_empty());
         assert_eq!(queue(&only, None, 0).level, Level::Ok);
+    }
+
+    #[test]
+    fn queue_lists_the_running_the_parked_and_the_next_with_an_empty_state_for_each() {
+        use crate::flow::tests::queue as q;
+        use crate::queue::State;
+        let mut full = q();
+        for i in &mut full.items {
+            i.project = "dotfiles".into();
+            i.title = format!("work {}", i.slug);
+            i.priority = "high".into();
+        }
+        full.items[0].started = Some("1970-01-01T00:00:00Z".into());
+        full.items[4].pr = Some("owner/repo#7".into());
+        let c = queue(&full, None, 3600);
+        let heads: Vec<_> = c.lists.iter().map(|l| l.head.as_str()).collect();
+        assert_eq!(
+            heads,
+            [
+                "Running",
+                "On a PR",
+                "Up next: 2 ready, 0 urgent, 2 high",
+                "Flow"
+            ]
+        );
+        let list = |n: usize| -> Vec<(&str, &str)> {
+            c.lists[n]
+                .rows
+                .iter()
+                .map(|r| (r.text.as_str(), r.sub.as_str()))
+                .collect()
+        };
+        assert_eq!((c.big.as_str(), c.unit.as_str()), ("1", "running"));
+        assert_eq!(list(0), [("work a", "dotfiles - 1h00m")]);
+        assert_eq!(list(1), [("work e", "repo#7")]);
+        assert_eq!(
+            list(2).iter().map(|r| r.0).collect::<Vec<_>>(),
+            ["work b", "work c"]
+        );
+        assert!(list(2)[0].1.starts_with("high - dotfiles - "));
+        // Nothing running or parked: Running reads 0 and each list says so, never goes missing.
+        full.items
+            .retain(|i| i.state != State::Running && i.state != State::Review);
+        let c = queue(&full, None, 3600);
+        assert_eq!(c.big, "0");
+        assert_eq!(c.lists[0].rows[0].text, "Nothing running");
+        assert_eq!(c.lists[1].rows[0].text, "Nothing on a PR");
+        // Long lists show SHOWN_FIRST rows each.
+        let mut many = q();
+        for n in 0..6 {
+            let mut i = many.items[0].clone();
+            i.slug = format!("r{n}");
+            many.items.push(i);
+        }
+        assert_eq!(queue(&many, None, 0).lists[0].rows.len(), SHOWN_FIRST);
     }
 
     #[test]
@@ -1492,8 +1647,7 @@ mod tests {
         ));
         let c = queue(&held, Some(&Ok(Some(pipe(2.25)))), 1000);
         assert_eq!(c.level, Level::Red, "a hold that starved the queue is red");
-        let rows: Vec<_> = c
-            .first
+        let rows: Vec<_> = flow(&c)
             .iter()
             .map(|r| (r.level, r.text.as_str(), r.sub.as_str()))
             .collect();
@@ -1537,7 +1691,7 @@ mod tests {
         let c = queue(&held, None, 1000);
         assert_eq!(c.level, Level::Ok);
         assert_eq!(
-            c.first.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            flow(&c).iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
             ["Flowing"]
         );
         assert!(c.parts.iter().all(|p| p.label != "Sessions"));
@@ -1680,8 +1834,8 @@ mod tests {
             (part("Being fixed"), part("Firing")),
             ("1".into(), "2".into())
         );
-        let first: Vec<(&str, &str, Level)> = c
-            .first
+        let first: Vec<(&str, &str, Level)> = c.lists[0]
+            .rows
             .iter()
             .map(|f| (f.text.as_str(), f.sub.as_str(), f.level))
             .collect();
@@ -1738,10 +1892,10 @@ mod tests {
         };
         let c = schedules(&sch);
         assert_eq!(c.level, Level::Red);
-        assert_eq!(c.first.len(), SHOWN_FIRST);
-        assert_eq!(c.first[0].sub, "timer - failed 2 in a row");
+        assert_eq!(c.lists[0].rows.len(), SHOWN_FIRST);
+        assert_eq!(c.lists[0].rows[0].sub, "timer - failed 2 in a row");
         // Negative control: the row with no purpose (b) is on no row, part or level here.
-        assert!(c.first.iter().all(|f| f.text != "b"));
+        assert!(c.lists[0].rows.iter().all(|f| f.text != "b"));
         assert!(c.parts.iter().all(|p| p.label != "No purpose"));
         assert_eq!(
             c.bar,
@@ -1783,15 +1937,18 @@ mod tests {
             .iter()
             .all(|p| p.label != "Waiting" && p.label != "Hot"));
         assert_eq!((c.level, c.bar.is_empty()), (Level::Ok, true));
-        let rows: Vec<_> = c
-            .first
+        let rows: Vec<_> = c.lists[0]
+            .rows
             .iter()
             .map(|f| (f.text.as_str(), f.sub.as_str()))
             .collect();
         // In flight is the one definition the phone and the Projects tab share; the sub says what
         // ran, so a project that only waits reads "none running", never a blank.
         assert_eq!(rows, [("busy", "3 running"), ("binks", "none running")]);
-        assert_eq!(c.first[0].link.as_ref().unwrap().href(), "#projects/busy");
+        assert_eq!(
+            c.lists[0].rows[0].link.as_ref().unwrap().href(),
+            "#projects/busy"
+        );
         assert_eq!(projects(&Default::default()).level, Level::Nodata);
         // A read that failed is said, and a green card never hides it.
         let c = projects(&crate::projects::Projects {
@@ -1864,7 +2021,7 @@ mod tests {
         let c = health(&i);
         let red = c.parts.iter().find(|p| p.label == "No runner").unwrap();
         assert_eq!(red.value, "1");
-        assert_eq!(c.first[0].text, "Checks main");
+        assert_eq!(c.lists[0].rows[0].text, "Checks main");
     }
 
     #[test]
@@ -1948,9 +2105,9 @@ mod tests {
             .map(|p| (p.label.as_str(), p.value.as_str()))
             .collect();
         assert_eq!(parts, [("Your turn", "4"), ("Only you", "4")]);
-        let first: Vec<_> = c.first.iter().map(|f| f.text.as_str()).collect();
+        let first: Vec<_> = c.lists[0].rows.iter().map(|f| f.text.as_str()).collect();
         assert_eq!(first, ["old session", "budget", "new ask"]);
-        assert_eq!(c.first[0].sub, "2h dotfiles");
+        assert_eq!(c.lists[0].rows[0].sub, "2h dotfiles");
         // Each count opens Home's list filtered to its kind, as its tile does; a session and a
         // queue item open their own record, anything else its kind's filtered list.
         let to = |l: &Option<Link>| l.as_ref().map(Link::href);
@@ -1958,7 +2115,11 @@ mod tests {
             to(&c.parts[0].link).as_deref(),
             Some("#home?ns=Your%20turn")
         );
-        let opens: Vec<_> = c.first.iter().map(|f| to(&f.link).unwrap()).collect();
+        let opens: Vec<_> = c.lists[0]
+            .rows
+            .iter()
+            .map(|f| to(&f.link).unwrap())
+            .collect();
         assert_eq!(
             opens,
             [
@@ -1994,7 +2155,7 @@ mod tests {
         let c = main_red(&home);
         assert_eq!((c.big.as_str(), c.level), ("1", Level::Red));
         assert!(c.bar.is_empty());
-        assert_eq!(c.first[0].text, "dotfiles");
+        assert_eq!(c.lists[0].rows[0].text, "dotfiles");
         assert_eq!(main_red(&Home::default()).level, Level::Ok);
         // Negative control: a Home whose reads failed is no all-clear on main.
         let unread = Home {
@@ -2027,19 +2188,28 @@ mod tests {
         });
         let c = costs(&k);
         assert!(
-            c.first.iter().any(|f| f.text == "$12.50 top"),
+            c.lists[0].rows.iter().any(|f| f.text == "$12.50 top"),
             "{:?}",
-            c.first
+            c.lists
         );
         // A budget need outranks it: with three rows to show, the need stays and the session goes.
         k.burn.head = "burning 2x".into();
         k.budget.needs = vec!["over cap".into(), "projected over".into()];
-        let rows: Vec<_> = costs(&k).first.into_iter().map(|f| f.text).collect();
+        let rows: Vec<_> = costs(&k)
+            .lists
+            .remove(0)
+            .rows
+            .into_iter()
+            .map(|f| f.text)
+            .collect();
         assert_eq!(rows, ["burning 2x", "over cap", "projected over"]);
         k.budget.needs.clear();
         // Negative control: no live file is no line, never an old one.
         k.live = None;
-        assert!(costs(&k).first.iter().all(|f| !f.text.starts_with('$')));
+        assert!(costs(&k).lists[0]
+            .rows
+            .iter()
+            .all(|f| !f.text.starts_with('$')));
     }
 
     #[test]

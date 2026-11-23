@@ -33,6 +33,7 @@ def bare(text):
     return any(not UV.search(text[: m.start()]) for m in PIP.finditer(text))
 
 
+# gate: hook-block-pip
 def decide(data):
     """The deny reason for one PreToolUse payload, or None. walker-guards.py calls this."""
     global HM
