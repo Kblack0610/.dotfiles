@@ -32,7 +32,7 @@
 #                                asks, open board rows; --check fails when one may only shrink grew,
 #                                or on --unlisted's lines: a launch file with no row in the PIPELINES.md
 #                                launch table (LEDGER_PIPELINES), or a row whose file no longer launches
-#   fleet-bench rules [--json|--check|--scenarios|--gates [BASE]|--changed SINCE]
+#   fleet-bench rules [--json|--check|--scenarios|--gates [BASE]|--changed SINCE|--new [--days N|--since T] [--until D] [--json|--line]]
 #                                the rule register (RULES_REGISTER): kinds, confidence, actions, and each
 #                                rule's number re-measured; --check fails when one moved against its
 #                                recorded confidence, its measure died, or a rule's text left its source;
@@ -41,7 +41,10 @@
 #                                a diff against BASE (default origin/main) added with none: 1 when any; --check fails a gate row with no valid
 #                                asked_by, or an agent-asked routes: human row that no removal item covers;
 #                                --changed lists every rule line a PR merged since SINCE (epoch or a date) added
-#                                or removed, read from GitHub, one tab-separated line each (the briefing's list)
+#                                or removed, read from GitHub, one tab-separated line each (the briefing's list);
+#                                --new lists the gate rows whose `added` date is in the window (default the last 7 days),
+#                                agent-added first: added, id, asked_by, repo #PR, rule; --line is the one sentence the
+#                                briefing and day-log print ("N gates added since D, K by an agent without your ask"), none when no gate
 #   fleet-bench kpi [--json] [--vitals | --at T | --trend DAYS | --check [ERE]]
 #                                KPIs over 7d and 28d of human sessions (the token ones from the
 #                                nightly token-usage snapshots, sandboxed_lane_pct from BENCH_CALLS, pool_busy_share from Prometheus),
@@ -2791,7 +2794,9 @@ rules_problems() {
             "agent route: \($id): it routes work to the human and an agent added it; remove it, get the human'"'"'s ask, or name the item that removes it (remove_item, remove_by)"
           elif .remove_by < $today then "agent route: \($id): its removal by \(.remove_item) was due \(.remove_by); delete the gate"
           else empty end
-        else empty end;
+        else empty end,
+      (if (.added // "") | (try (strptime("%Y-%m-%d") | mktime | strftime("%Y-%m-%d")) catch "") as $d | $d == "" or . != $d
+        then "gate added: \($id): \(.added // "missing") is not the YYYY-MM-DD the gate first merged, which rules --new reads" else empty end);
     .[] | (.source | split("/") | last) as $f
     | if .state == "stale" then "stale: \($f): \(.anchor)"
       elif .state == "dead" then "dead measure: \($f): \(.anchor)"
@@ -2906,9 +2911,67 @@ rules_gates() {
   [ -z "$out" ] || { printf '%s' "$out"; return 1; }
 }
 
+# rules_new [--days N | --since T] [--until D] [--json | --line] -> the gate rows (those with an id) whose
+# `added` date, the local day the gate first merged, is in the window: N local days ending today (default
+# 7), or from the day of T (epoch or a date) on, up to D when given. Agent-added first, newest first in each.
+# A date has no time, so a gate that merged on T's own day is listed even when it merged before T: shown
+# twice beats missed. Text is one tab-separated line a gate (added, id, asked_by, repo #PR or -, rule);
+# --json the rows plus by_agent and pr; --line the one sentence for the briefing and day-log, nothing
+# when no gate is new. Reads the register alone, no measure, so a 5-minute day-log pass can call it.
+rules_new() {
+  local days="" since="" until="" mode=text from to window list
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --days|--since|--until) [ -n "${2:-}" ] || { say "rules --new: $1 needs a value"; return 2; } ;;&
+      --days) days="$2"; shift 2 ;;
+      --since) since="$2"; shift 2 ;;
+      --until) until="$2"; shift 2 ;;
+      --json|--line) mode="${1#--}"; shift ;;
+      *) say "rules --new: unknown option $1"; return 2 ;;
+    esac
+  done
+  [ -z "$since" ] || [ -z "$days" ] || { say "rules --new: give --days or --since, not both"; return 2; }
+  [ -n "$since" ] || [ -z "$until" ] || { say "rules --new: --until bounds a --since window; --days always ends today"; return 2; }
+  [ -s "$RULES_REGISTER" ] || { say "rules --new: no register at $RULES_REGISTER"; return 1; }
+  if [ -n "$since" ]; then
+    [[ "$since" =~ ^[0-9]+$ ]] && since="@$since"
+    from=$(date -d "$since" +%F 2>/dev/null) || { say "rules --new: not a time: $since"; return 2; }
+    list="--since $from"
+  else
+    days="${days:-7}"
+    [[ "$days" =~ ^[1-9][0-9]*$ ]] || { say "rules --new: --days takes a whole number of days, 1 or more: $days"; return 2; }
+    from=$(date -d "$((days - 1)) days ago" +%F)
+    list="--days $days"
+  fi
+  to=$(date -d "${until:-today}" +%F 2>/dev/null) || { say "rules --new: not a date: $until"; return 2; }
+  [ -z "$until" ] || list+=" --until $to"
+  if [ "$from" = "$to" ]; then window="on $from"; elif [ -n "$until" ]; then window="from $from to $to"
+  elif [ -n "$since" ]; then window="since $from"; else window="in $days days"; fi
+  jq -rs --arg from "$from" --arg to "$to" --arg mode "$mode" --arg window "$window" --arg list "$list" '
+    def by_agent: (.asked_by // "") | startswith("agent:");
+    def repo: .source // "" | sub("^~/"; "") | ltrimstr(env.HOME + "/") | split("/")[0] | ltrimstr(".");
+    def pr: (((.asked_by // "") | capture("^agent:#(?<n>[0-9]+)")? | .n) // null) as $n | if $n then "\(repo) #\($n)" else null end;
+    def gates($n): if $n == 1 then "1 gate" else "\($n) gates" end;
+    [.[] | select(.id != null and (.added // "") >= $from and (.added // "") <= $to)]
+    | sort_by(.added, .id) | reverse | sort_by(by_agent | not)
+    | if $mode == "json" then map(. + {by_agent: by_agent, pr: pr})
+      elif $mode == "text" then .[] | [.added, .id, .asked_by, (pr // "-"), (.rule // "" | gsub("[\t\n]"; " "))] | @tsv
+      elif length == 0 then empty
+      else map(select(by_agent)) as $a | ($a | length) as $k
+        | ($a[:5] | map("\(.id) (\(pr // (.asked_by | ltrimstr("agent:") | sub(" [(].*$"; ""))))") | join(", ")) as $names
+        | "\(gates(length)) added \($window), "
+          + (if $k == 0 then (if length == 1 then "on your ask" else "all on your ask" end)
+             elif $k == length and $k == 1 then "by an agent without your ask: \($names)"
+             else "\($k) by an agent without your ask: \($names)" end)
+          + (if $k > 5 then ", and \($k - 5) more" else "" end)
+          + ". List: fleet-bench rules --new \($list)."
+      end' "$RULES_REGISTER"
+}
+
 cmd_rules() {
   local states problems
   [ "${1:-}" != --changed ] || { rules_changed "${2:?rules --changed needs a since time}"; return; }
+  [ "${1:-}" != --new ] || { shift; rules_new "$@"; return; }
   [ "${1:-}" != --gates ] || { rules_gates "${2:-}"; return; }
   states=$(rules_states | jq -s .)
   problems=$(rules_problems "$states")
@@ -3957,6 +4020,11 @@ cmd_effect() {
 # kpi-thresholds cannot turn a flat result into a pass.
 IMPROVE_JQ='
 def live: group_by([.subject, .kpi]) | map(sort_by(.at) | last | select(.type == "claim"));
+# the live claims whose row or item has not closed, by the closes improve_closes prints: the WIP cap
+# counts only these, as a shipped claim only waits out BENCH_EFFECT_DAYS for its verdict (ar-4768)
+def open_live($c): [$c[] | (select(.action | IN("done", "dropped", "dup")) | .id),
+    (select(.item != null and ((.action == "item-moved" and .to == "done") or .action == "item-cancelled")) | "item:\(.item)")] as $x
+  | live | map(select(.subject | IN($x[]) | not));
 def last_verdict($k): map(select(.type == "verdict" and .kpi == $k)) | sort_by(.at) | last
   | if . == null then null else {subject, verdict} end;
 # how far past its threshold a KPI is, relative to the threshold
@@ -3966,15 +4034,46 @@ def gap: (.threshold | fabs | if . == 0 then 1 else . end) as $d
 
 effect_lines() { cat "$EFFECT" 2>/dev/null || true; }
 
+# improve_closes <live claims json> -> the record of how each claim's subject closed, one notes-log
+# line each: the log since the oldest claim, plus for a row the log has no close for, its close from
+# the feed (`notes board --json --id`, whose marker holds every close however it was made). Why:
+# ar-579 and ar-596 closed with no log line, so their claims never got a verdict and held the cap
+# (ar-4768). Fails when the log cannot be read; an unreadable feed adds nothing.
+improve_closes() {
+  local days log feed='{"rows":[]}' i
+  local -a ids=()
+  days=$(jq -r --argjson now "$(now)" 'if length == 0 then 1 else ($now - (map(.at) | min)) / 86400 | floor + 2 end' <<<"$1") || return 1
+  log=$($BENCH_LOG_CMD --days "$days") || return 1
+  while IFS= read -r i; do ids+=(--id "$i"); done < <(jq -r '[.[].subject | select(startswith("item:") | not)] | unique | .[]' <<<"$1")
+  [ "${#ids[@]}" = 0 ] || feed=$($BENCH_NOTES_CMD board --json "${ids[@]}" 2>/dev/null) || feed='{"rows":[]}'
+  jq -e '.rows | type == "array"' >/dev/null 2>&1 <<<"$feed" || feed='{"rows":[]}'
+  # A row with an open copy has not closed (a reopened row's old close stays in its version note). A
+  # feed close is a date, so it is read as that day's end, which never starts the verdict wait early.
+  jq -c --slurpfile log <(printf '%s\n' "$log") '
+    ($log | map(select(.action | IN("done", "dropped", "dup")) | .id)) as $logged
+    | [.rows[] | select(.state != "done") | .id] as $reopened
+    | $log[], (.rows[] | select(.state == "done" and .closed != null and (.id | IN($logged[]) | not) and (.id | IN($reopened[]) | not))
+        | {id, ts: "\(.closed)T23:59:59Z",
+           action: (if ((.marker // "") | test("(^| )dropped")) then "dropped" elif .dup then "dup" else "done" end),
+           why: (if (.prs // []) == [] then null else "pr:\(.prs[-1])" end)})' <<<"$feed"
+}
+
+# improve_live_closes -> improve_closes for the live claims; [] when none or the log cannot be read
+improve_live_closes() {
+  local claims
+  claims=$(effect_lines | jq -sc "$IMPROVE_JQ"'live') && [ "$claims" != "[]" ] && improve_closes "$claims" || true
+}
+
 # improve_pick <kpi json> -> the KPI furthest past its threshold that no live claim owns, as
-# {kpi, value, threshold, bound, last}; nothing when none is, or BENCH_IMPROVE_MAX claims are live.
+# {kpi, value, threshold, bound, last}; nothing when none is, or BENCH_IMPROVE_MAX claims are live
+# on rows or items still open (open_live).
 # board_days and board_open are never picked: a session whose job is shrinking the board would
 # delete rows the human filled on purpose. Nor is
 # systems_no_skill: it is report-only, since a system with no skill yet is a gap to read, not a red.
 improve_pick() {
-  jq -c --slurpfile e <(effect_lines) --argjson max "$BENCH_IMPROVE_MAX" "$IMPROVE_JQ"'
+  jq -c --slurpfile e <(effect_lines) --slurpfile c <(improve_live_closes) --argjson max "$BENCH_IMPROVE_MAX" "$IMPROVE_JQ"'
     ($e | live) as $live | ($live | map(.kpi)) as $owned
-    | if ($live | length) >= $max then empty else
+    | if ($e | open_live($c) | length) >= $max then empty else
         [to_entries[] | select(.value.status == "past" and (.key | IN("board_days", "board_open", "systems_no_skill") | not) and (.key | IN($owned[]) | not))
          | {kpi: .key, value: .value["7d"], threshold: .value.threshold, bound: .value.bound, gap: (.value | gap)}]
         | sort_by(-.gap) | first // empty
@@ -3987,12 +4086,12 @@ improve_pick() {
 # hold it, and one subject may claim each KPI its lever moves.
 improve_target() {
   local why
-  why=$(jq -r --arg k "$2" --arg s "${3:-}" --slurpfile e <(effect_lines) --argjson max "$BENCH_IMPROVE_MAX" "$IMPROVE_JQ"'
-    ($e | live) as $live | .[$k] as $v
+  why=$(jq -r --arg k "$2" --arg s "${3:-}" --slurpfile e <(effect_lines) --slurpfile c <(improve_live_closes) --argjson max "$BENCH_IMPROVE_MAX" "$IMPROVE_JQ"'
+    ($e | live) as $live | ($e | open_live($c)) as $open | .[$k] as $v
     | if $v == null then "no KPI named \($k)"
       elif $v.status != "past" then "\($k) is not past its threshold (\($v.status))"
       elif ($live | any(.kpi == $k)) then "\($k) is already claimed by \([$live[] | select(.kpi == $k) | .subject] | first)"
-      elif $s == "" and ($live | length) >= $max then "\($live | length) claims are live (BENCH_IMPROVE_MAX \($max)); one must end first"
+      elif $s == "" and ($open | length) >= $max then "\($open | length) claims on open work are live (BENCH_IMPROVE_MAX \($max)); one must end first"
       else empty end' <<<"$1") || return 1
   [ -z "$why" ] || { say "improve: $why"; return 1; }
   jq -c --arg k "$2" '.[$k] | {kpi: $k, value: .["7d"], threshold, bound}' <<<"$1"
@@ -4059,12 +4158,13 @@ improve_claim() {
 # improve list [--json]: the live claims with their age, and the newest verdicts
 improve_list() {
   local rows
-  rows=$(effect_lines | jq -sc --argjson now "$(now)" "$IMPROVE_JQ"'
-    {live: (live | map(. + {age_d: (($now - .at) / 86400 | floor)})),
+  rows=$(effect_lines | jq -sc --argjson now "$(now)" --slurpfile c <(improve_live_closes) "$IMPROVE_JQ"'
+    (open_live($c) | map(.subject)) as $open
+    | {live: (live | map(. + {age_d: (($now - .at) / 86400 | floor), open: (.subject | IN($open[]))})), open_n: ($open | length),
      verdicts: (map(select(.type == "verdict")) | sort_by(.at) | reverse | .[:20])}') || return 1
   if [ "$1" = --json ]; then printf '%s\n' "$rows"; return 0; fi
-  jq -r --argjson max "$BENCH_IMPROVE_MAX" '"live claims: \(.live | length) of \($max)",
-    (.live[] | "  \(.subject) \(.kpi) from \(.from) (\(.bound) \(.threshold)), \(.age_d)d"),
+  jq -r --argjson max "$BENCH_IMPROVE_MAX" '"live claims: \(.live | length), \(.open_n) on open work of \($max)",
+    (.live[] | "  \(.subject) \(.kpi) from \(.from) (\(.bound) \(.threshold)), \(.age_d)d\(if .open then "" else ", closed: waits for its verdict" end)"),
     "verdicts:", (.verdicts[] | "  \(.subject) \(.kpi) \(.verdict) \(.from) -> \(.after // "-")\(if .pr then " (pr:\(.pr))" else "" end)")' <<<"$rows"
 }
 
@@ -4075,12 +4175,11 @@ improve_list() {
 # and unproven end the claim, so the pick names the KPI again. Leaves IMPROVE_LINE (the outcome
 # part), IMPROVE_WHY (when nothing was checked) and IMPROVE_FAIL.
 improve_check() {
-  local claims days log json v line verdict id n=0 imp=0 flt=0 reg=0 unp=0
+  local claims log json v line verdict id n=0 imp=0 flt=0 reg=0 unp=0
   IMPROVE_LINE='' IMPROVE_WHY='' IMPROVE_FAIL=''
   claims=$(effect_lines | jq -sc "$IMPROVE_JQ"'live') || { IMPROVE_FAIL="effect ledger unreadable"; return 1; }
   if [ "$claims" = "[]" ]; then IMPROVE_WHY="no live improvement claim"; return 0; fi
-  days=$(jq -r --argjson now "$(now)" '($now - (map(.at) | min)) / 86400 | floor + 2' <<<"$claims")
-  log=$($BENCH_LOG_CMD --days "$days") || { IMPROVE_FAIL="notes log unreadable"; return 1; }
+  log=$(improve_closes "$claims") || { IMPROVE_FAIL="notes log unreadable"; return 1; }
   json=$(kpi_now "$(now)") || { IMPROVE_FAIL="kpi unreadable"; return 1; }
   v=$(jq -c --argjson now "$(now)" --argjson d "$BENCH_EFFECT_DAYS" --argjson flat "$BENCH_EFFECT_FLAT" \
       --argjson k "$json" --slurpfile log <(printf '%s\n' "$log") "$JQ_LIB"'

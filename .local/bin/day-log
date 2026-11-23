@@ -155,6 +155,9 @@ gather() {
   { grep -F "$day " "$DAYLOG_WATCH_LOG" 2>/dev/null | grep "^$day " | tail -n 50; } | jq -Rn '[inputs]' > "$tmp/timeline"
   usage_json "$s" "$e" > "$tmp/usage"
   $DAYLOG_USAGE_CMD tokens line --date "$day" 2>/dev/null | jq -Rs 'rtrimstr("\n") | if . == "" then null else . end' > "$tmp/tokens"
+  # The gates agents added that day and whether the human asked (the rule register); no gate is null.
+  { $DAYLOG_BENCH_CMD rules --new --since "$day" --until "$day" --line 2>/dev/null || echo FAILED; } |
+    jq -Rs 'rtrimstr("\n") | if . == "" then null else . end' > "$tmp/gates"
   ledger_prs "$day" > "$tmp/ledger" 2>/dev/null || rm -f "$tmp/ledger"
   groups_json > "$tmp/groups"
   # the project each PR's repo belongs to (the project registry), merged and open alike
@@ -175,6 +178,7 @@ gather() {
      --slurpfile donefig <(cat "$tmp/done" 2>/dev/null || echo '{}') \
      --slurpfile timeline "$tmp/timeline" --slurpfile usage "$tmp/usage" \
      --slurpfile ledger <(cat "$tmp/ledger" 2>/dev/null || echo null) --slurpfile groups "$tmp/groups" --slurpfile tokens "$tmp/tokens" \
+     --slurpfile gates "$tmp/gates" \
      --slurpfile projects "$tmp/projects" \
      --arg stale "$(sort -u "$tmp/merged.stale" "$tmp/open.stale" 2>/dev/null | paste -sd, -)" '
     ($prev[0] // {}) as $p | $groups[0] as $g | $state[0] as $st | $projects[0] as $pm
@@ -194,7 +198,8 @@ gather() {
                      if $live and $st == null then "fleet state" else empty end,
                      if $live and $needq == "?" then "Needs you figure" else empty end,
                      if $live and (($sessfig[0] // {}) | length) < 5 then "Sessions figure" else empty end,
-                     if $live and (($donefig[0] // {}) | length) < 2 then "Done figure" else empty end]),
+                     if $live and (($donefig[0] // {}) | length) < 2 then "Done figure" else empty end,
+                     if $gates[0] == "FAILED" then "gate register" else empty end]),
        merged: (if $m == null then ($p.merged // [])
          else ($stale | split(",") | map(sub("^.*/"; ""))) as $sb
            | [$m[] | .repository.name as $r | ($by["\($r)#\(.number)"] // {}) as $i
@@ -232,6 +237,7 @@ gather() {
          else ($p.bench // null) end),
        usage: $usage[0],
        tokens: ($tokens[0] // $p.tokens // null),
+       gates: (if $gates[0] == "FAILED" then ($p.gates // null) else $gates[0] end),
        timeline: (if ($timeline[0] | length) > 0 then $timeline[0] else ($p.timeline // []) end)}' |
     "$SNAPSHOTS" enrich --start "$s" --end "$e" --prev "$prev" ${DAYLOG_CI_FILE:+--ci-file "$DAYLOG_CI_FILE"}
 }
@@ -327,6 +333,7 @@ markdown() {
     | "# Day log, \(.date)", "",
       "\(.merged | length) PRs merged in \(.merged | map(.repo) | unique | length) repos; \(if .done then "\(.done.shipped // "?") shipped and \(.done.checks // "?") checks (queue items, hub-core Done today); " else "" end)\($u | spent). Gathered \(.gathered_at[0:16] | sub("T"; " ")) by `day-log` (deterministic: the PR store, the fleet state document, fleet-bench, agent-usage).", "",
       (if .tokens then .tokens, "" else empty end),
+      (if .gates then .gates, "" else empty end),
       "## Done", "",
       (if (.merged | length) == 0 then "- Nothing merged.", "" else empty end),
       (.merged | group_by(.area)[] | "### \(.[0].area) (\(length))", "",
