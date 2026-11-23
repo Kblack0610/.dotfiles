@@ -120,12 +120,24 @@ cp "$stage_dir/AGENTS.md" "$OPENCODE_HOME/AGENTS.md"
 AGY_CONFIG_DIR="$GEMINI_HOME/config"
 mkdir -p "$AGY_CONFIG_DIR/rules"
 { printf -- '---\ntrigger: always_on\n---\n\n'; cat "$stage_dir/AGENTS.md"; } > "$AGY_CONFIG_DIR/rules/fleet.md"
-agy_skills="$AGY_CONFIG_DIR/skills.json"
-agy_skills_cur='{}'
-[ -s "$agy_skills" ] && agy_skills_cur=$(cat "$agy_skills")
-jq --arg p "$CLAUDE_HOME/skills" \
-    '.entries = ([(.entries // [])[] | select(.path != $p)] + [{path: $p}])' <<<"$agy_skills_cur" > "$agy_skills.tmp" &&
-    mv "$agy_skills.tmp" "$agy_skills"
+python3 - "$AGY_CONFIG_DIR/skills.json" "$CLAUDE_HOME/skills" <<'PY'
+import json, os, sys
+path, corpus = sys.argv[1], sys.argv[2]
+try:
+    cur = json.load(open(path)) if os.path.getsize(path) else {}
+except FileNotFoundError:
+    cur = {}
+except ValueError as e:
+    sys.exit(f"agy: {path} is not JSON ({e}); left as it is, fix it by hand")
+if not isinstance(cur, dict) or not isinstance(cur.get("entries", []), list):
+    sys.exit(f"agy: {path} has no entries list; left as it is, fix it by hand")
+keep = [e for e in cur.get("entries", []) if not (isinstance(e, dict) and e.get("path") == corpus)]
+cur["entries"] = keep + [{"path": corpus}]
+with open(path + ".tmp", "w") as f:
+    json.dump(cur, f, indent=2)
+    f.write("\n")
+os.replace(path + ".tmp", path)
+PY
 
 {
     echo "$START_MARKER"

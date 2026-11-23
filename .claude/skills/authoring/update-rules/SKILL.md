@@ -23,9 +23,9 @@ Use for "add a rule", "from now on always X", "update CLAUDE.md", "register a ne
 
 **The rule CONTENT lives in the PRIVATE overlay. This SKILL lives in the PUBLIC repo.**
 
-`~/.dotfiles-private` holds every rule file - `CLAUDE.md`, `AGENTS.md`, and the whole rulesync tree. `~/.dotfiles` holds this skill and the sync script. If you go looking for a rule file under `~/.dotfiles/`, you will not find it.
+`~/.dotfiles-private` holds every global rule file - `CLAUDE.md`, `AGENTS.md`, and the whole rulesync tree. `~/.dotfiles` holds this skill and the sync script. Under `~/.dotfiles/` there are only this repo's own rules: `AGENTS.md`, which `CLAUDE.md` imports.
 
-There is no `~/.dotfiles/.claude/CLAUDE.md`, no `~/.dotfiles/AGENTS.md`, and no `~/.dotfiles/.config/rulesync-global/`. <!-- skill-drift: ignore (this line asserts these paths are ABSENT) -->
+There is no `~/.dotfiles/.claude/CLAUDE.md` and no `~/.dotfiles/.config/rulesync-global/`. <!-- skill-drift: ignore (this line asserts these paths are ABSENT) -->
 
 Practical consequence: **a rule change plus a skill change is a cross-repo change = two PRs.** Use `dotfiles-land` to route it.
 
@@ -40,7 +40,7 @@ Ask first: **which repos does this rule apply in, and which tools should obey it
 | Claude-only (user-global) | `~/.dotfiles-private/.claude/CLAUDE.md` | Claude Code (symlinked to `~/.claude/CLAUDE.md`) |
 | Codex-only (repo root) | `~/.dotfiles-private/AGENTS.md` | Codex CLI (auto-loaded from repo root) |
 | One project | `<project>/CLAUDE.md` (or `@AGENTS.md` plus Claude-only lines when the repo has an AGENTS.md) | Only that repo |
-| This dotfiles repo | `~/.dotfiles/CLAUDE.md` (public, excluded from stow) | Sessions in `~/.dotfiles` |
+| This dotfiles repo | `~/.dotfiles/AGENTS.md` (public, excluded from stow; Claude-only lines in its `CLAUDE.md`) | Sessions of every CLI in `~/.dotfiles` |
 | MCP server for Claude | the committed `.mcp.json` of the repo that uses it, or `~/.dotfiles-private/.claude/mcp-optional/<name>.json` for on-demand use (`claude-mcp <name>`) | That repo / sessions that ask for it |
 | MCP server for Codex / Gemini / OpenCode / agy | `~/.dotfiles-private/.config/rulesync-global/.rulesync/mcp.json` + run sync | Those tools' MCP configs |
 
