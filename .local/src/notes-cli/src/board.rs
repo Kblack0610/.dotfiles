@@ -777,6 +777,8 @@ struct FeedRow {
     closed: Option<String>,
     /// The PRs the marker names (`pr:<n>`).
     prs: Vec<String>,
+    /// `dup:<id>`: the row a dup close folded this one into, which owns its work from then on.
+    dup: Option<String>,
 }
 
 /// One project in the feed, rows or not: a UI needs every project to offer `add` on it.
@@ -1197,6 +1199,9 @@ fn feed_row(
         weight: crate::projects::size_weight(line),
         closed: project_tasks::done_on(line).map(|d| d.format("%Y-%m-%d").to_string()),
         prs: md::pr_refs(line),
+        dup: md::marker_token(line, "dup:")
+            .filter(|d| md::is_row_id(d))
+            .map(str::to_string),
     }
 }
 
@@ -1424,6 +1429,157 @@ fn done_for_dir(
     }
     out.sort_by_key(|r| std::cmp::Reverse(r.closed.clone()));
     out
+}
+
+/// The rows of one project dir whose id is in `ids`, wherever they sit: open in any version or
+/// closed (dropped and dup-closed too) on either lane's sheet, then rolled into
+/// `agent/versions/` or frozen into `versions/`. Live sheets come first, so a reader taking the
+/// first match per id sees the row as it stands now.
+fn rows_by_id(
+    profile: &str,
+    project: &str,
+    dir: &std::path::Path,
+    today: chrono::NaiveDate,
+    ids: &[String],
+) -> Vec<FeedRow> {
+    let wanted = |l: &str| md::row_id(l).is_some_and(|id| ids.contains(&id));
+    let mut out = Vec::new();
+    let closed = |o: &Origin, lines: &[&str], r: std::ops::Range<usize>| {
+        let details = lines[r.start + 1..r.end]
+            .iter()
+            .map(|l| l.trim().to_string())
+            .collect();
+        feed_row(o, (r.start + 1, lines[r.start]), details, today)
+    };
+    let lane_name = |lane: Lane| {
+        if lane == Lane::Human {
+            "human"
+        } else {
+            "agent"
+        }
+    };
+    for lane in [Lane::Human, Lane::Agent] {
+        let ldir = lane.dir(dir);
+        let Some(path) = project_tasks::task_sheet(&ldir) else {
+            continue;
+        };
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let cur = project_tasks::open_version_for(&ldir);
+        let lines: Vec<&str> = content.lines().collect();
+        let version_of =
+            |l: &str| crate::projects::version_or_default(crate::sheet::version_of(l, cur));
+        for (n, l) in crate::sheet::open_rows(&content) {
+            if !wanted(l) {
+                continue;
+            }
+            let v = version_of(l);
+            let o = Origin {
+                profile,
+                project: Some(project),
+                lane: lane_name(lane),
+                version: Some(&v),
+                game: None,
+                sheet: &path,
+                sheet_row: true,
+                aim: None,
+            };
+            out.push(feed_row(
+                &o,
+                (n, l),
+                md::brief_details(&lines, n - 1),
+                today,
+            ));
+        }
+        for r in project_tasks::done_rows(&content) {
+            if !wanted(lines[r.start]) {
+                continue;
+            }
+            let v = version_of(lines[r.start]);
+            let o = Origin {
+                profile,
+                project: Some(project),
+                lane: lane_name(lane),
+                version: Some(&v),
+                game: None,
+                sheet: &path,
+                sheet_row: true,
+                aim: None,
+            };
+            out.push(closed(&o, &lines, r));
+        }
+    }
+    // The agent note holds both lanes' rolled-off rows, the human sheet's under its own
+    // section; a frozen release note holds the human sheet as it shipped.
+    let notes = [
+        (crate::projects::agent_dir(dir).join("versions"), true),
+        (dir.join("versions"), false),
+    ];
+    for (vdir, agent_note) in notes {
+        for (v, note) in crate::projects::version_notes(&vdir) {
+            let Ok(content) = fs::read_to_string(&note) else {
+                continue;
+            };
+            let lines: Vec<&str> = content.lines().collect();
+            let sheet_span = md::section_span(&lines, project_tasks::SHEET_DONE_ROWS);
+            let version = crate::projects::fmt_version(v);
+            for r in project_tasks::done_rows(&content) {
+                if !wanted(lines[r.start]) {
+                    continue;
+                }
+                let human =
+                    !agent_note || sheet_span.as_ref().is_some_and(|s| s.contains(&r.start));
+                let o = Origin {
+                    profile,
+                    project: Some(project),
+                    lane: if human { "human" } else { "agent" },
+                    version: Some(&version),
+                    game: None,
+                    sheet: &note,
+                    sheet_row: true,
+                    aim: None,
+                };
+                out.push(closed(&o, &lines, r));
+            }
+        }
+    }
+    out
+}
+
+/// `notes board --json --id <ID>...` - the rows with these ids wherever they sit, in every
+/// profile ([`rows_by_id`]), as `{today, rows: [...]}`. READ-ONLY. For a caller that holds
+/// an id the open board may not list: a row aimed at a later release, or one closed into
+/// another (`dup`), which the caller follows to the row that owns the work now.
+pub fn print_ids(ids: &[String]) -> Result<i32> {
+    #[derive(serde::Serialize)]
+    struct IdFeed {
+        today: String,
+        rows: Vec<FeedRow>,
+    }
+    let today = Local::now().date_naive();
+    let mut rows = Vec::new();
+    for name in config::all_profile_names()? {
+        let Ok(p) = config::resolve(Some(&name)) else {
+            continue;
+        };
+        let automation = config::automation(&name);
+        for (proj, summary) in daily::discover_project_dirs(&p) {
+            let Some(dir) = summary.parent() else {
+                continue;
+            };
+            for mut r in rows_by_id(&name, &proj, dir, today, ids) {
+                r.automation = automation;
+                rows.push(r);
+            }
+        }
+    }
+    let feed = IdFeed {
+        today: today.format("%Y-%m-%d").to_string(),
+        rows,
+    };
+    println!("{}", serde_json::to_string(&feed)?);
+    Ok(0)
 }
 
 /// A profile's open Focus rows from today's daily note, lane `focus`, no project. Read-only
@@ -1738,6 +1894,59 @@ mod tests {
         // at is empty.
         let (open, closed) = release_rows(RELEASE_SHEET, cur, (2, 0, 0));
         assert!(open.is_empty() && closed.is_empty());
+    }
+
+    #[test]
+    fn an_id_lookup_finds_a_row_in_any_version_open_or_closed_and_names_its_dup() {
+        let dir = sheet(
+            "byid",
+            "# demo\nVersion: v0.5.5\n\n## Tasks\n- [ ] fix(a): human row <!-- id:dm-9 -->\n",
+        );
+        write_agent_sheet(
+            &dir,
+            "# demo - agent board\nVersion: v0.5.5\n\n## Tasks\n\
+             - [ ] fix(a): now <!-- id:dm-1 -->\n\
+             - [ ] fix(b): later #v0.5.6 <!-- id:dm-2 -->\n  goal: the later one\n\
+             - [x] fix(c): folded <!-- id:dm-3 dup:dm-1 -->\n\
+             - [x] fix(d): dropped <!-- id:dm-4 dropped: stale -->\n",
+        );
+        std::fs::create_dir_all(dir.join("agent/versions")).unwrap();
+        std::fs::write(
+            dir.join("agent/versions/v0.5.4.md"),
+            "# demo v0.5.4\n\n## Done rows\n- [x] fix(e): rolled <!-- id:dm-5 dup:dm-2 -->\n",
+        )
+        .unwrap();
+        let today = Local::now().date_naive();
+        let ids: Vec<String> = ["dm-2", "dm-3", "dm-4", "dm-5"].map(String::from).to_vec();
+        let rows = rows_by_id("bnb", "demo", &dir, today, &ids);
+        let got: Vec<_> = rows
+            .iter()
+            .map(|r| {
+                (
+                    r.id.clone().unwrap(),
+                    r.state,
+                    r.lane,
+                    r.version.clone().unwrap(),
+                    r.dup.clone(),
+                )
+            })
+            .collect();
+        let dup = |s: &str| Some(s.to_string());
+        assert_eq!(
+            got,
+            vec![
+                ("dm-2".into(), "open", "agent", "v0.5.6".into(), None),
+                ("dm-3".into(), "done", "agent", "v0.5.5".into(), dup("dm-1")),
+                ("dm-4".into(), "done", "agent", "v0.5.5".into(), None),
+                ("dm-5".into(), "done", "agent", "v0.5.4".into(), dup("dm-2")),
+            ]
+        );
+        assert_eq!(rows[0].details, vec!["goal: the later one"]);
+        assert!(rows[0].raw.ends_with("<!-- id:dm-2 -->"), "{}", rows[0].raw);
+        // NEGATIVE CONTROL: an id that is not asked for, open on the board, is not printed.
+        assert!(rows.iter().all(|r| r.id.as_deref() != Some("dm-1")));
+        assert!(rows_by_id("bnb", "demo", &dir, today, &["dm-77".into()]).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
