@@ -167,8 +167,9 @@ KINDS="${DISPATCH_KINDS:-$HOME/.config/fleet-dispatch/kinds.json}"
 # Such a session has no claude, so agent-panel cannot list it; the pass lists it from here.
 PARKED_DIR="${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"
 # Labels say what git, gh and the transcript cannot: a human's `manual` (the shepherd
-# leaves that session alone; a session sets it on itself only on the human's order to stay
-# open, wind-down step 0), a session's own `quality:<step>` while a cleanup pass runs, or
+# leaves that session alone and never closes it; `label self` cannot set it), a session's own
+# `stay` on the human's order to stay open (wind-down step 0, coordinate; it keeps until quiet
+# FLEET_CHAT_CLOSE_H), a session's own `quality:<step>` while a cleanup pass runs, or
 # `shepherd` on the fleet-shepherd pass itself, which is listed but left out of every count.
 # One file per session id, one label per line. Stages are derived every pass, never stored.
 LABELS="$LEDGER/labels"
@@ -1146,10 +1147,21 @@ prune_labels() {
 }
 
 # label <who> [+name|-name|^name ...]: add, remove or flip labels, then print the session's labels.
-# ^name lets a key binding (agent-panel ctrl-t) flip one without reading it first.
+# ^name lets a key binding (agent-panel ctrl-t) flip one without reading it first. `manual` is the
+# human's and never expires, so the literal `label self` may not add it: a session held open on the
+# human's order takes `stay`, which expires once quiet FLEET_CHAT_CLOSE_H (ar-4124). The check is on the
+# word `self`, the form every skill gives a session; it stops a stale instruction, not a session that
+# names its own target on purpose.
 label() {
   local who="${1:-}" sid op name tmp add
   [ -n "$who" ] || { echo "usage: fleet-sessions label <who> [+name|-name|^name ...]" >&2; return 2; }
+  if [ "$who" = self ]; then
+    for op in "${@:2}"; do
+      case "$op" in +manual|^manual)
+        echo "fleet-sessions: manual is the human's label; a session held open on the human's order takes +stay" >&2; return 2 ;;
+      esac
+    done
+  fi
   sid="$(resolve_sid "$who")" || return 2
   case "$sid" in ''|*/*|.|..) echo "fleet-sessions: bad session id" >&2; return 2 ;; esac
   shift
@@ -3104,13 +3116,14 @@ explain() {
 # close flow of .local/src/docs/fleet-states.md, each branch tagged `# step:<id>` with the Step
 # of its table row (tests/unit/fleet_states_doc.bats keeps the two in order): a session stays
 # only while closing it would lose something (its claude is elsewhere, the human labelled it
-# manual or chat and quiet under FLEET_CHAT_CLOSE_H, a prompt in its pane, a turn under way, unlanded
+# manual, or it is stay or chat and quiet under FLEET_CHAT_CLOSE_H, a prompt in its pane, a turn under way, unlanded
 # work) or until one named step (close its item); otherwise it closes once quiet FLEET_IDLE_CLOSE_MIN.
 # The three work-left steps also set `left`, the blocker that holds the session, which fleet-shepherd
 # nudges a DONE or LANDED row on. Open plan phases hold nothing: once the window is gone,
-# fleet-dispatch reap files them (reconcile_plans), the one filer of a plan. A manual row asked by
-# `--self` reads quiet 0 mid-turn and keeps, so past the timer the shepherd's typed close is declined
-# and its window is closed by close_sample an hour later, never by the session itself.
+# fleet-dispatch reap files them (reconcile_plans), the one filer of a plan. A manual row always
+# keeps, `--self` too: the human set it and only the human ends it (asked 2026-11-20, ar-4124). A stay
+# row asked by `--self` reads quiet 0 mid-turn and keeps, so past the timer the shepherd's typed close
+# is declined and its window is closed by close_sample an hour later, never by the session itself.
 # Unlanded work reads from `blockers` (work_blockers), not raw git counts: a squash-merged branch
 # stays `ahead` of main with nothing left to land. A null age_min reads 0. A row fleet-dispatch restore
 # reopened adds quiet_before_min, the quiet it had when its server was last seen, to its age: its claude
@@ -3131,8 +3144,9 @@ CLOSE_JQ='
     | (if .bucket == "PARKED" then (.idle_min // 0) else $quiet end) as $quiet
     | if .bucket == "PARKED" and ($unlanded or $held or ((.blockers // []) | any(test("^(open ask |[0-9]+ open ask)")))) then {verdict: "keep", why: "parked: its claude is gone, work is left here"} # step:parked
       elif .activity == "done" then {verdict: "keep", why: "headless run: fleet-dispatch reap closes its replay once its item leaves review"} # step:headless
-      elif ((.labels // []) | index("manual")) and $quiet < $chat_close_h * 60 # step:manual
-        then {verdict: "keep", why: "manual: the human keeps it, quiet \($quiet)m of \($chat_close_h)h"}
+      elif ((.labels // []) | index("manual")) then {verdict: "keep", why: "manual: the human keeps it"} # step:manual
+      elif ((.labels // []) | index("stay")) and $quiet < $chat_close_h * 60 # step:stay
+        then {verdict: "keep", why: "stay: kept open as the human asked, quiet \($quiet)m of \($chat_close_h)h"}
       elif ((.labels // []) | index("chat")) and ($me | not) and $quiet < $chat_close_h * 60 # step:chat
         then {verdict: "keep", why: "chat: quiet \($quiet)m of \($chat_close_h)h"}
       elif .in_plan_mode then {verdict: "keep", why: "plan mode: the human approves or ends it"} # step:plan-mode

@@ -254,7 +254,7 @@ tag_pane() {
 
 # The shepherd skill's nudge rules (steps 3 and 4), over the document, by each bucket's actor in
 # the fleet-states.md bucket table and the row's close verdict (`close`, the close flow there): a
-# manual row is not nudged (its close verdict keeps it until quiet FLEET_CHAT_CLOSE_H, then close_sample owns it); a row whose close verdict is now is close_sample's alone (it types the
+# kept row (KEPT_JQ: manual or stay) is not nudged (its close verdict keeps manual for good and stay until quiet FLEET_CHAT_CLOSE_H, then close_sample owns it); a row whose close verdict is now is close_sample's alone (it types the
 # close; a pass sends none), and a row holding an open ask it filed is otherwise left alone, its window
 # being where the question waits; a STALLED row not yet closable gets its bucket nudge once, and so
 # does a DONE or LANDED row the close flow keeps for work left here (`close.left`: its own item still
@@ -265,7 +265,7 @@ tag_pane() {
 # and its sessions are told once; only one with no owner escalates.
 # PARKED is fleet-pace's, below.
 # CLOSE_NUDGE_JQ: close_nudge -> CLOSE, DONE, CHAT or PARKED for a session row a close is owed to (its close
-# verdict now, its close not yet sent (a manual row reads now only once quiet FLEET_CHAT_CLOSE_H); CLOSE when it holds an open ask it filed; PARKED when
+# verdict now, its close not yet sent (a manual row never reads now, a stay row only once quiet FLEET_CHAT_CLOSE_H); CLOSE when it holds an open ask it filed; PARKED when
 # its claude is gone and nothing is left to land, so there is nothing to type into), null
 # otherwise. close_sample types it, and cmd_due gives a pass no line for it; one rule for both.
 CLOSE_NUDGE_JQ='def close_nudge:
@@ -287,11 +287,17 @@ CLOSE_NUDGE_JQ='def close_nudge:
 CLOSE_REFUSED_JQ='def close_refused:
   .close_sent and (.close.verdict // "") == "now"
   and (.bucket | IN("DONE","LANDED","STALLED","CHAT","NEEDS","PARKED"));'
+# KEPT_JQ: kept -> true for a row held open on the human's word: `manual`, set by the human, or `stay`, set
+# by a session on the human's order to stay open (wind-down step 0, the coordinate skill). The shepherd
+# sends such a row no nudge, overdue, landing, critical, limit, park or budget line, and takes none over;
+# whether it closes is its close verdict's (CLOSE_JQ in fleet-sessions: manual never, stay once quiet
+# FLEET_CHAT_CLOSE_H).
+KEPT_JQ='def kept: (.labels // []) | any(. == "manual" or . == "stay");'
 # TAKEOVER_JQ (after the two above): takeover_row -> true for a STALLED row whose nudge survived and that
-# is not the human's or another machine's (manual, plan mode, a fleet worker's row, an open ask) and not
+# is not the human's or another machine's (kept, plan mode, a fleet worker's row, an open ask) and not
 # already on the close path above. takeover_sample reads it.
-TAKEOVER_JQ='def takeover_row:
-  .bucket == "STALLED" and .nudged and ((.labels // []) | index("manual") | not)
+TAKEOVER_JQ="$KEPT_JQ"'def takeover_row:
+  .bucket == "STALLED" and .nudged and (kept | not)
   and ((.in_plan_mode // false) | not) and .host == null and (.own_asks // 0) == 0
   and close_nudge == null and (close_refused | not);'
 
@@ -309,7 +315,7 @@ HELD_JQ='def held: (.bucket | IN("DONE","LANDED")) and (.close.left // null) != 
 cmd_due() {
   [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
   local out
-  out="$(jq -r --argjson items "$(shared_items)" "$CLOSE_NUDGE_JQ$PANE_TAG_JQ$HELD_JQ"'
+  out="$(jq -r --argjson items "$(shared_items)" "$KEPT_JQ$CLOSE_NUDGE_JQ$PANE_TAG_JQ$HELD_JQ"'
     ( (.main // [])[] | select((.escalated | not) and (.owners // []) == [])
       | "nightly red: \(.repo) (\(.reason // "-"))" )
   , ( (.shared // [])[] | select(.escalated | not) | . as $r
@@ -325,7 +331,7 @@ cmd_due() {
           "nudge SHARED: \(.test) is owned by queue item \($item); tell \(.owners | join(",")): do not gate again on it, merge main once \($item) lands; then: fleet-sessions mark \(.id) \"\(.fact)\""
         else empty end )
   , ( (.sessions // [])[]
-      | select((.labels // []) | index("manual") | not)
+      | select(kept | not)
       | ((.own_asks // 0) > 0) as $ask
       | if close_nudge then empty
         elif (.bucket | IN("DONE","LANDED","STALLED","CHAT")) and (.nudged | not) then
@@ -368,9 +374,9 @@ cmd_due() {
     for f in "${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"/*; do
       [ -f "$f" ] && owned+="$(awk -F= '$1=="why"{w=$2} $1=="target"{t=$2} END{if (w!="" && w!="park") print t}' "$f")"$'\n'
     done
-    parked="$(jq -r --arg owned "$owned" "$PANE_TAG_JQ"'
+    parked="$(jq -r --arg owned "$owned" "$KEPT_JQ$PANE_TAG_JQ"'
       ($owned | split("\n")) as $owned
-      | [(.sessions // [])[] | select(.bucket == "PARKED" and ((.labels // []) | index("manual") | not)
+      | [(.sessions // [])[] | select(.bucket == "PARKED" and (kept | not)
           and (.target as $t | $owned | index($t) | not))
         | "\(.target)\(ptag)"] | join(", ")' "$STATE_FILE" 2>/dev/null)"
     [ -z "$parked" ] || out+="${out:+$'\n'}pace: parked $parked while the machine reads CLEAR with no hold; then: claude-acct unpark each"
@@ -435,7 +441,7 @@ improve_due() {
 # overdue_due -> a line per session whose `overdue` verdict is set (fleet-sessions overdue_of holds the
 # rule: twice its fleet-bench estimate and at least FLEET_OVERDUE_MIN, not while a landing wait or a queue
 # gate holds it, on the session running the phase) and that can take a nudge now: WORKING, or NEEDS
-# carrying on past its question, not mid-turn (activity busy), not manual. No other line looks at a
+# carrying on past its question, not mid-turn (activity busy), not kept (KEPT_JQ). No other line looks at a
 # WORKING row: on 2026-11-03 agent-53 sat 22h at 0/4 and agent-8 at 1/8 and no pass named either. The
 # fact is the phase, so it is nudged once; once the nudge is escalate_min old (a phase-length, at least
 # the floor) and the phase has not moved, it goes to the human, once.
@@ -458,9 +464,9 @@ overdue_due() {
     else
       printf 'overdue: %s; then: fleet-sessions mark %s "%s"\n' "${line#*$'\x1f'}" "$sid" "$key"
     fi
-  done < <(jq -r "$PANE_TAG_JQ"'
+  done < <(jq -r "$KEPT_JQ$PANE_TAG_JQ"'
     (.sessions // [])[]
-    | select(.overdue != null and .activity != "busy" and ((.labels // []) | index("manual") | not)
+    | select(.overdue != null and .activity != "busy" and (kept | not)
              and (.bucket == "WORKING" or (.bucket == "NEEDS" and ((.reason // "") | endswith("carrying on")))))
     | .overdue as $v
     | [.session_id, "overdue \($v.phase)",
@@ -472,12 +478,12 @@ overdue_due() {
 # session's oldest queue gate has run) is FLEET_SHEPHERD_LANDING_WAIT_MIN or more, with how many of its
 # sessions wait their turn and how many PRs carry the landing-queue label (landing_queue). overdue_due
 # leaves these rows out, so without this a multi-hour wait behind a stuck slot holder is named by no
-# line (ar-2525). A manual session is the human's, as in overdue_due. The line is keyed by its project
+# line (ar-2525). A kept session is the human's, as in overdue_due. The line is keyed by its project
 # alone (due_key): a skip holds while the queue stays slow, not until the head waiter changes.
 landing_due() {
-  jq -r --argjson min "$FLEET_SHEPHERD_LANDING_WAIT_MIN" "$PANE_TAG_JQ"'
+  jq -r --argjson min "$FLEET_SHEPHERD_LANDING_WAIT_MIN" "$KEPT_JQ$PANE_TAG_JQ"'
     [(.sessions // [])[] | select(.bucket != "PARKED" and .wait_min != null
-                                  and ((.labels // []) | index("manual") | not))]
+                                  and (kept | not))]
     | group_by(.project // "-")[]
     | max_by(.wait_min) as $l
     | select($l.wait_min >= $min)
@@ -498,11 +504,11 @@ landing_due() {
 # ("idle"): a PR with no gate driving it has no measured wait, and the store keeps no label time. Its bucket reads WORKING (a queue gate, or
 # "waiting on the landing queue"), so without this the rows behind it are named by no line (ar-3761: on 2026-11-19
 # P1 #2935 read WORKING while ucp-2712 waited 5h). A PR the slot refused (`behind the slot holder #H`, ar-3596) points
-# at #H, since its own landing cannot move until #H lets go. A manual session is the human's. Keyed by target and PR (due_key),
+# at #H, since its own landing cannot move until #H lets go. A kept session is the human's. Keyed by target and PR (due_key),
 # so the line holds while its place moves.
 critical_due() {
-  jq -r --argjson min "$FLEET_SHEPHERD_CRITICAL_MIN" "$PANE_TAG_JQ"'
-    (.sessions // [])[] | select(.critical != null and .bucket != "PARKED" and ((.labels // []) | index("manual") | not))
+  jq -r --argjson min "$FLEET_SHEPHERD_CRITICAL_MIN" "$KEPT_JQ$PANE_TAG_JQ"'
+    (.sessions // [])[] | select(.critical != null and .bucket != "PARKED" and (kept | not))
     | (.wait_min // .idle_min // 0) as $w | select($w >= $min)
     | .critical.place as $p
     | "critical: \(.target)\(ptag) PR #\(.pr) \($p), \(if .wait_min != null then "waited" else "idle" end) \($w)m; \(.critical.rows | join(", ")) wait on it; then: "
@@ -533,9 +539,9 @@ limit_due() {
     + (if any((.sources // [])[]; .kind == "litellm-team" and .room.capped) then ["gateway"] else [] end)' <<<"${rows:-null}" 2>/dev/null)" || capped='[]'
   room_name="$(jq -r '.pick // empty' <<<"${rows:-null}" 2>/dev/null)"
   if [ "${capped:-[]}" != '[]' ]; then
-    jq -r --argjson capped "$capped" --arg room "$room_name" "$PANE_TAG_JQ"'
+    jq -r --argjson capped "$capped" --arg room "$room_name" "$KEPT_JQ$PANE_TAG_JQ"'
       (.sessions // []) | map((.account // "") as $a
-        | select(((.labels // []) | index("manual") | not) and ($capped | index($a)) != null))
+        | select((kept | not) and ($capped | index($a)) != null))
       | (.[] | select(.activity == "idle" and $room != "")
              | "limit: \(.target)\(ptag) idle on \(.account), out of usage; then: claude-acct move \(.target) --to \($room)"),
         (.[] | select(.activity == "waiting")
@@ -556,8 +562,8 @@ limit_due() {
     else
       echo "limit: $target [$pane] stopped on the usage limit"
     fi
-  done < <(jq -r --argjson idle "$FLEET_SHEPHERD_LIMIT_IDLE" --argjson capped "${capped:-[]}" '(.sessions // [])[]
-    | select((.labels // []) | index("manual") | not)
+  done < <(jq -r --argjson idle "$FLEET_SHEPHERD_LIMIT_IDLE" --argjson capped "${capped:-[]}" "$KEPT_JQ"'(.sessions // [])[]
+    | select(kept | not)
     | select((.account // "") as $a | ($capped | index($a)) == null)
     | select(((.idle_min // 0) | tonumber? // 0) >= $idle and (.escalated | not) and (.pane // "") != "")
     | [.target, .pane, (.account // "")] | @tsv' "$STATE_FILE" 2>/dev/null)
@@ -731,7 +737,7 @@ budget_sample() {
     else
       budget_mark "$slug" "$n" left "budget: could not park $target ($why): ${out##*: }"
     fi
-  done < <(jq -r '(.sessions // [])[] | select(.dispatch != null and ((.labels // []) | index("manual") | not))
+  done < <(jq -r "$KEPT_JQ"'(.sessions // [])[] | select(.dispatch != null and (kept | not))
     | [.target, .bucket, (.dispatch | sub("^[^:]*: "; "")), (.session_id // "")] | @tsv' "$STATE_FILE" 2>/dev/null)
 }
 
@@ -805,7 +811,7 @@ takeover_sample() {
 # item, still open with every phase done or queued (`close.items`, CLOSE_JQ's only-item step), once quiet
 # FLEET_IDLE_CLOSE_MIN gets `agent-queue move <slug> done --status ok --if running`, so its close verdict
 # reads now and close_sample closes it in the same pass (2026-11-18: agent-22 sat 7h on its item, nudged
-# and never closed). Not manual (its verdict is keep), not a worker's row (its queue is on its machine),
+# and never closed). Not manual (its verdict is keep, as is a fresh stay), not a worker's row (its queue is on its machine),
 # AGENT_QUEUE_START=0 (the shepherd starts nothing; the close still queues the rows after its item, pull_after). agent-queue refuses an item with a partial landing or
 # an open PR: that refusal is logged and left to the nudge and escalation, and tried again after FLEET_IDLE_CLOSE_MIN
 # (a marker file in .item-close-failed/). A row that wakes itself (`wake`) keeps its item: its wake needs it.
