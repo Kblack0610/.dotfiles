@@ -1322,8 +1322,8 @@ store_key() {
 # so every row on that repo is blind (close keeps), never a stale OPEN taken as fact.
 store_refresh() {
   [ -n "${CLOSE_SELF:-}" ] || return 0
-  local f="$CACHE/refreshed_${1//\//_}" out rc=0
-  f="${f,,}"
+  local key="${1//\//_}" f out rc=0
+  f="$CACHE/refreshed_${key,,}"
   if [ ! -e "$f" ]; then
     : > "$f"
     out="$("$SCHEDULES_SYNC" sync-prs --wait "$1" 2>&1)" || rc=$?
