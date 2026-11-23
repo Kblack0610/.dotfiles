@@ -318,16 +318,15 @@ pr_repo_dir() { PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" so_pr_dir "$@"; }
 # settle on the chain log; it has no queue item or session of its own, so it names itself.
 dispatch_event() { chain_event dispatch "$@" --by fleet-dispatch; }
 
-# tag_value <text> <namespace> -> the value of the row's first `#<namespace>/<value>` tag.
-# Only the text before a `<!--` marker counts: a tag inside a proof stamp is record, not routing.
-# tag_of sets TAG to it instead, with no fork: the board walks read several tags a row (ar-3988).
+# tag_of <text> <namespace> -> sets TAG to the value of the row's first `#<namespace>/<value>` tag,
+# or empty. Only the text before a `<!--` marker counts: a tag inside a proof stamp is record, not
+# routing. It sets a global, with no fork: the board walks read several tags a row (ar-3988).
 tag_of() {
   local body=" ${1%%<!--*}" re="[[:space:]]#$2/([A-Za-z0-9_.-]+)"
   TAG=''
   [[ "$body" =~ $re ]] && TAG=${BASH_REMATCH[1]}
   return 0
 }
-tag_value() { tag_of "$1" "$2"; [ -z "$TAG" ] || printf '%s\n' "$TAG"; }
 
 # row_tier <text> -> 1|2|3, or nothing when the row carries no tier. A row typed or scoped ci
 # or infra (`ci:`, `ci(area):`, `fix(ci):`) is tier 3 however it is tagged.
@@ -5019,7 +5018,7 @@ trainee_rows() {
       for k in t3 open; do
         if [ "$n" -ge "$w" ]; then wait -n; n=$((n - 1)); fi
         if [ "$k" = t3 ]; then
-          ONLY_PROJECT=${projects[$i]} BACKLOG_OK=1 t3_rows '' | jq -c '. + {worker: "tier3", t3rank: [.rank, .prio, (0 - .order)]}' >"$d/t3.$i" &
+          { ONLY_PROJECT=${projects[$i]} BACKLOG_OK=1 t3_rows '' | jq -c '. + {worker: "tier3", t3rank: [.rank, .prio, (0 - .order)]}' >"$d/t3.$i" || : >"$d/failed"; } &
         else
           { ONLY_PROJECT=${projects[$i]} BACKLOG_OK=1 all_open >"$d/open.$i" || : >"$d/failed"; } &
         fi
@@ -5028,7 +5027,7 @@ trainee_rows() {
     done
     wait
   )
-  [ ! -e "$d/failed" ] || { echo "fleet-dispatch: trainee_rows: the open-row read failed" >&2; rm -rf "$d"; return 1; }
+  [ ! -e "$d/failed" ] || { echo "fleet-dispatch: trainee_rows: a board walk failed" >&2; rm -rf "$d"; return 1; }
   for i in "${!projects[@]}"; do cat "$d/t3.$i" 2>/dev/null; done >"$d/t3"
   for i in "${!projects[@]}"; do cat "$d/open.$i" 2>/dev/null; done >"$d/open"
   # t3 first: unique_by keeps a row's first copy, and a tier-3 row's copy carries its worker.
