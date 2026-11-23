@@ -67,6 +67,16 @@ guard() {
     run guard "$c"
     assert_output deny
   done
+  # wrappers with flags, the other player scripts, and an allowed segment beside a denied one
+  for c in 'env -i scripts/test/run.sh --filter A' 'nice -n 10 scripts/test/run.sh --filter A' \
+           'echo A | xargs -n1 scripts/test/run.sh --filter' 'time -p scripts/test/run.sh --filter A' \
+           '! scripts/test/run.sh --filter A' 'command scripts/test/run.sh --filter A' \
+           'bash -x scripts/test/run.sh --filter A' 'scripts/test/two-process.sh --server p --filter A' \
+           'scripts/test/multi-process.sh --filter A' 'scripts/test/suite.sh --classes f; scripts/test/suite.sh' \
+           'scripts/test/in-docker.sh --build' 'scripts/test/in-docker.sh --suite --method A.B.C'; do
+    run guard "$c"
+    assert_output deny
+  done
   # the pool forms, an editor method or build in docker, and reading or linting the scripts
   for c in 'scripts/test/suite.sh --classes f.txt' 'scripts/test/suite.sh --editmode-classes e --classes f' \
            'scripts/test/in-docker.sh --method A.B.C' 'scripts/test/gate-and-land.sh --title t --item s' \
