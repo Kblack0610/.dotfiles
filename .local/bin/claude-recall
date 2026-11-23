@@ -2,8 +2,8 @@
 """claude-recall - search / list / show raw Claude Code transcripts.
 
 On-demand pull-recall over the verbatim session record that Claude Code writes
-to ~/.claude/projects/**/*.jsonl (and Claude Cowork's local-agent-mode-sessions
-on macOS, when present). No index, no daemon, no cloud: it reads the .jsonl on
+to <account dir>/projects/**/*.jsonl, for every account in claude-acct's accounts
+file (and Claude Cowork's local-agent-mode-sessions on macOS, when present). No index, no daemon, no cloud: it reads the .jsonl on
 each call. ripgrep is used as a fast prefilter when available.
 
 This is the local, skill-friendly equivalent of local-claude-chat-history-mcp:
@@ -20,6 +20,7 @@ Usage:
                                                            body,read,script,mention]
                       [--origin interactive|auto|all] [--by week|project] [--top K]
                       [--min N] [--min-words N] [--project P] [--json]
+  claude-recall roots     # the dirs read, one per account, with session counts
   claude-recall answer-lag [--days N | --since DATE|ISO] [--over N] [--project P] [--json]
   claude-recall tool-output [--days N | --since DATE|ISO]
                             [--by tool|command|filetype|kind|day|week|project]...
@@ -51,13 +52,43 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 HOME = Path.home()
-# CLAUDE_TRANSCRIPTS (colon-separated) replaces the default roots; skill-drift uses the same
-# variable, so a test or a caller points both tools at one corpus. The bnb and personal
-# accounts symlink their projects/ to ~/.claude/projects; the work account does not.
+
+
+def account_roots():
+    """Every Claude account's transcript dirs: <dir>/projects for each account in claude-acct's
+    accounts file (the one list of accounts; `-` is the main one, ~/.claude), plus any
+    .pre-share-<date>/projects copy `claude-acct link` parked when it linked that account's
+    projects/ to main's. A linked account resolves to main's dir and is read once."""
+    conf = Path(os.environ.get("CLAUDE_ACCT_CONFIG")
+                or Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "claude-acct" / "accounts")
+    dirs = [HOME / ".claude"]   # the main account, which a machine has before the file is stowed
+    try:
+        for line in conf.read_text().splitlines():
+            parts = line.split()
+            if len(parts) < 2 or parts[0].startswith("#"):
+                continue
+            d = parts[1]
+            dirs.append(HOME / ".claude" if d == "-" else Path(os.path.expanduser(d)))
+    except OSError:
+        pass
+    found = []
+    for d in dirs:
+        found += [d / "projects", *sorted(d.glob(".pre-share-*/projects"))]
+    roots = []
+    for r in found:
+        r = r.resolve()
+        if r.is_dir() and r not in roots:
+            roots.append(r)
+    # A root inside another would yield its files twice.
+    return [r for r in roots if not any(o != r and r.is_relative_to(o) for o in roots)]
+
+
+# CLAUDE_TRANSCRIPTS (colon-separated) replaces the account roots; skill-drift uses the same
+# variable, so a test or a caller points both tools at one corpus.
 if os.environ.get("CLAUDE_TRANSCRIPTS"):
     ROOTS = [Path(p) for p in os.environ["CLAUDE_TRANSCRIPTS"].split(":") if p]
 else:
-    ROOTS = [HOME / ".claude" / "projects", HOME / ".claude-work" / "projects"]
+    ROOTS = account_roots()
 COWORK = HOME / "Library" / "Application Support" / "Claude" / "local-agent-mode-sessions"
 if COWORK.exists():
     ROOTS.append(COWORK)
@@ -2233,6 +2264,14 @@ def cmd_answer_lag(a):
     return 0
 
 
+def cmd_roots(a):
+    """Each transcript dir this machine reads, with its session count: how to tell whether an
+    account's sessions are covered. Another fleet machine's sessions are in its own dirs."""
+    for r in ROOTS:
+        n = sum(1 for _ in r.glob("*/*.jsonl")) if r.is_dir() else 0
+        print(f"{r}\t{n} sessions")
+
+
 def main():
     p = argparse.ArgumentParser(prog="claude-recall", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -2325,6 +2364,9 @@ def main():
     al.add_argument("--project", "-p", help="substring match on repo")
     al.add_argument("--json", action="store_true")
     al.set_defaults(func=cmd_answer_lag)
+
+    rt = sub.add_parser("roots", help="the transcript dirs read here (every Claude account's), with session counts")
+    rt.set_defaults(func=cmd_roots)
 
     a = p.parse_args()
     sys.exit(a.func(a) or 0)
