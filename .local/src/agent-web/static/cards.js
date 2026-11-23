@@ -22,3 +22,21 @@ function cardHtml(c) {
     (c.error ? `<div class="cline warn">${esc(c.error)}</div>` : "") +
     lists + "</section>";
 }
+
+// Home's grid packed (app.css .kgrid.packed): each card spans its own height plus the column gap in
+// 1px rows, so it starts one gap under the card above it, not under the tallest card of a row.
+// One observer for the grid on screen; it respans a card whenever its height changes, a width
+// change that rewraps it included, and its first answer comes before the first paint.
+let cardPacker = null;
+function packCards(root) {
+  if (typeof ResizeObserver !== "function") return;
+  const grid = root.querySelector(".kgrid");
+  cardPacker?.disconnect();
+  if (!grid) return;
+  cardPacker = new ResizeObserver((seen) => {
+    const gap = parseFloat(getComputedStyle(grid).columnGap) || 0;
+    for (const e of seen) e.target.style.gridRowEnd = `span ${Math.ceil(e.borderBoxSize[0].blockSize + gap)}`;
+  });
+  for (const c of grid.querySelectorAll(".kcard")) cardPacker.observe(c);
+  grid.classList.add("packed");
+}
