@@ -2795,7 +2795,7 @@ rules_problems() {
           elif .remove_by < $today then "agent route: \($id): its removal by \(.remove_item) was due \(.remove_by); delete the gate"
           else empty end
         else empty end,
-      (if (.added // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$") | not
+      (if (.added // "") | (try (strptime("%Y-%m-%d") | mktime | strftime("%Y-%m-%d")) catch "") as $d | . != $d
         then "gate added: \($id): \(.added // "missing") is not the YYYY-MM-DD the gate first merged, which rules --new reads" else empty end);
     .[] | (.source | split("/") | last) as $f
     | if .state == "stale" then "stale: \($f): \(.anchor)"
@@ -2919,7 +2919,7 @@ rules_gates() {
 # --json the rows plus by_agent and pr; --line the one sentence for the briefing and day-log, nothing
 # when no gate is new. Reads the register alone, no measure, so a 5-minute day-log pass can call it.
 rules_new() {
-  local days=7 since="" until="" mode=text from to window list
+  local days="" since="" until="" mode=text from to window list
   while [ $# -gt 0 ]; do
     case "$1" in
       --days|--since|--until) [ -n "${2:-}" ] || { say "rules --new: $1 needs a value"; return 2; } ;;&
@@ -2930,12 +2930,15 @@ rules_new() {
       *) say "rules --new: unknown option $1"; return 2 ;;
     esac
   done
+  [ -z "$since" ] || [ -z "$days" ] || { say "rules --new: give --days or --since, not both"; return 2; }
+  [ -n "$since" ] || [ -z "$until" ] || { say "rules --new: --until bounds a --since window; --days always ends today"; return 2; }
   [ -s "$RULES_REGISTER" ] || { say "rules --new: no register at $RULES_REGISTER"; return 1; }
   if [ -n "$since" ]; then
     [[ "$since" =~ ^[0-9]+$ ]] && since="@$since"
     from=$(date -d "$since" +%F 2>/dev/null) || { say "rules --new: not a time: $since"; return 2; }
     list="--since $from"
   else
+    days="${days:-7}"
     [[ "$days" =~ ^[1-9][0-9]*$ ]] || { say "rules --new: --days takes a whole number of days, 1 or more: $days"; return 2; }
     from=$(date -d "$((days - 1)) days ago" +%F)
     list="--days $days"
@@ -2947,7 +2950,7 @@ rules_new() {
   jq -rs --arg from "$from" --arg to "$to" --arg mode "$mode" --arg window "$window" --arg list "$list" '
     def by_agent: (.asked_by // "") | startswith("agent:");
     def repo: .source // "" | sub("^~/"; "") | ltrimstr(env.HOME + "/") | split("/")[0] | ltrimstr(".");
-    def pr: ((.asked_by // "") | capture("^agent:#(?<n>[0-9]+)")? | .n) as $n | if $n then "\(repo) #\($n)" else null end;
+    def pr: (((.asked_by // "") | capture("^agent:#(?<n>[0-9]+)")? | .n) // null) as $n | if $n then "\(repo) #\($n)" else null end;
     def gates($n): if $n == 1 then "1 gate" else "\($n) gates" end;
     [.[] | select(.id != null and (.added // "") >= $from and (.added // "") <= $to)]
     | sort_by(.added, .id) | reverse | sort_by(by_agent | not)

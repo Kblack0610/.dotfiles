@@ -407,10 +407,12 @@ real_register() { [ -s "$REAL" ] || skip "no register at $REAL"; }
   gate_repo
   gate_row undated-gate 'agent:#3' '{"added": null}'
   gate_row loose-gate 'agent:#4' '{"added": "Nov 20"}'
+  gate_row no-such-day 'agent:#5' '{"added": "2026-11-31"}'
   run "$SUBJECT" rules --check
   assert_failure 1
   assert_output --partial 'gate added: undated-gate: missing is not the YYYY-MM-DD'
   assert_output --partial 'gate added: loose-gate: Nov 20 is not the YYYY-MM-DD'
+  assert_output --partial 'gate added: no-such-day: 2026-11-31 is not the YYYY-MM-DD'
   refute_output --partial 'tool-refuse'
 }
 
@@ -431,9 +433,9 @@ real_register() { [ -s "$REAL" ] || skip "no register at $REAL"; }
   run "$SUBJECT" rules --new --since 2026-11-21 --until 2026-11-21 --line
   assert_output '1 gate added on 2026-11-21, on your ask. List: fleet-bench rules --new --since 2026-11-21 --until 2026-11-21.'
   run "$SUBJECT" rules --new --since 2026-11-20 --until 2026-11-22 --json
-  assert_output --partial '"by_agent": true'
-  run jq -r '.[0].pr' <<<"$output"
-  assert_output 'dotfiles #30'
+  assert_success
+  run jq -c 'map([.id, .by_agent, .pr])' <<<"$output"
+  assert_output '[["agent-late",true,"dotfiles #30"],["agent-early",true,null],["human-gate",false,null]]'
 }
 
 @test "rules --new: --days ends today; a window with no new gate prints no line, and bad input is a usage error (negative control)" {
@@ -449,6 +451,10 @@ real_register() { [ -s "$REAL" ] || skip "no register at $REAL"; }
   run "$SUBJECT" rules --new --days 0
   assert_failure 2
   run "$SUBJECT" rules --new --since soon
+  assert_failure 2
+  run "$SUBJECT" rules --new --days 3 --until 2026-11-10
+  assert_failure 2
+  run "$SUBJECT" rules --new --days 3 --since 2026-11-10
   assert_failure 2
   : > "$RULES_REGISTER"
   run "$SUBJECT" rules --new --line
