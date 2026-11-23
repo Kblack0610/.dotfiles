@@ -344,7 +344,6 @@ snapshot() {
     [ -n "$ofd" ] && overview_lines "$ofd"
     [ -n "$bfd" ] && bar_lines "$bfd"
     [ -n "$cfd" ] && cards_lines "$cfd"
-    feed_lines
 
     # Interactive sessions: live Claude panes from `agent-panel list`. Glyphs are agent-panel's
     # own: `~` working, `!` needs you, anything else idle. One summary sensor, plus one sensor
@@ -410,7 +409,7 @@ main() {
     local snap topic payload f
 
     if [ "$mode" = dry ]; then
-        snapshot
+        snapshot; feed_lines
         return 0
     fi
 
@@ -423,7 +422,7 @@ main() {
     # republishes everything, and the next fleet-state pass any change.
     exec 9>"$CACHE/lock"
     flock -w 20 9 || { say "lock busy"; return 0; }
-    snap="$(snapshot)"
+    snap="$(snapshot; feed_lines)"
 
     local -A want=()
     local sent=0 reloaded=0
