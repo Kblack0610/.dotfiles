@@ -88,7 +88,7 @@ judge_work_level() {
     for f in "$asks"/*/"$id".md; do
       [ -f "$f" ] && grep -qx 'judge_human_only: true' "$f" || continue
       printf 'critical\tit carries out ask %s, which the judge flagged human-only: %s\n' "$id" \
-        "$(sed -n 's/^judge_human_only_evidence: //p' "$f" | head -1)"
+        "$(sed -n '/^judge_human_only_evidence: /{s///p;q;}' "$f")"
       return 0
     done
   done
