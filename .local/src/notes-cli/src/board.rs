@@ -1443,21 +1443,33 @@ fn rows_by_id(
     ids: &[String],
 ) -> Vec<FeedRow> {
     let wanted = |l: &str| md::row_id(l).is_some_and(|id| ids.contains(&id));
-    let mut out = Vec::new();
-    let closed = |o: &Origin, lines: &[&str], r: std::ops::Range<usize>| {
-        let details = lines[r.start + 1..r.end]
+    // A closed row's details are its indented block, trimmed, as `done` reads them.
+    let block = |lines: &[&str], r: &std::ops::Range<usize>| -> Vec<String> {
+        lines[r.start + 1..r.end]
             .iter()
             .map(|l| l.trim().to_string())
-            .collect();
-        feed_row(o, (r.start + 1, lines[r.start]), details, today)
+            .collect()
     };
-    let lane_name = |lane: Lane| {
-        if lane == Lane::Human {
-            "human"
-        } else {
-            "agent"
-        }
-    };
+    // One looked-up row (1-based line, text, details) as a feed row of `sheet`.
+    fn row_of(
+        o: (&str, &str, Lane, &str, &std::path::Path),
+        (n, line, details): (usize, &str, Vec<String>),
+        today: chrono::NaiveDate,
+    ) -> FeedRow {
+        let (profile, project, lane, version, sheet) = o;
+        let o = Origin {
+            profile,
+            project: Some(project),
+            lane: lane.name(),
+            version: Some(version),
+            game: None,
+            sheet,
+            sheet_row: true,
+            aim: None,
+        };
+        feed_row(&o, (n, line), details, today)
+    }
+    let mut out = Vec::new();
     for lane in [Lane::Human, Lane::Agent] {
         let ldir = lane.dir(dir);
         let Some(path) = project_tasks::task_sheet(&ldir) else {
@@ -1468,46 +1480,17 @@ fn rows_by_id(
         };
         let cur = project_tasks::open_version_for(&ldir);
         let lines: Vec<&str> = content.lines().collect();
-        let version_of =
-            |l: &str| crate::projects::version_or_default(crate::sheet::version_of(l, cur));
-        for (n, l) in crate::sheet::open_rows(&content) {
-            if !wanted(l) {
-                continue;
-            }
-            let v = version_of(l);
-            let o = Origin {
-                profile,
-                project: Some(project),
-                lane: lane_name(lane),
-                version: Some(&v),
-                game: None,
-                sheet: &path,
-                sheet_row: true,
-                aim: None,
-            };
-            out.push(feed_row(
-                &o,
-                (n, l),
-                md::brief_details(&lines, n - 1),
-                today,
-            ));
-        }
-        for r in project_tasks::done_rows(&content) {
-            if !wanted(lines[r.start]) {
-                continue;
-            }
-            let v = version_of(lines[r.start]);
-            let o = Origin {
-                profile,
-                project: Some(project),
-                lane: lane_name(lane),
-                version: Some(&v),
-                game: None,
-                sheet: &path,
-                sheet_row: true,
-                aim: None,
-            };
-            out.push(closed(&o, &lines, r));
+        let open = crate::sheet::open_rows(&content)
+            .into_iter()
+            .filter(|(_, l)| wanted(l))
+            .map(|(n, l)| (n, l, md::brief_details(&lines, n - 1)));
+        let done = project_tasks::done_rows(&content)
+            .into_iter()
+            .filter(|r| wanted(lines[r.start]))
+            .map(|r| (r.start + 1, lines[r.start], block(&lines, &r)));
+        for row in open.chain(done).collect::<Vec<_>>() {
+            let v = crate::projects::version_or_default(crate::sheet::version_of(row.1, cur));
+            out.push(row_of((profile, project, lane, &v, &path), row, today));
         }
     }
     // The agent note holds both lanes' rolled-off rows, the human sheet's under its own
@@ -1530,17 +1513,13 @@ fn rows_by_id(
                 }
                 let human =
                     !agent_note || sheet_span.as_ref().is_some_and(|s| s.contains(&r.start));
-                let o = Origin {
-                    profile,
-                    project: Some(project),
-                    lane: if human { "human" } else { "agent" },
-                    version: Some(&version),
-                    game: None,
-                    sheet: &note,
-                    sheet_row: true,
-                    aim: None,
-                };
-                out.push(closed(&o, &lines, r));
+                let lane = if human { Lane::Human } else { Lane::Agent };
+                let row = (r.start + 1, lines[r.start], block(&lines, &r));
+                out.push(row_of(
+                    (profile, project, lane, &version, &note),
+                    row,
+                    today,
+                ));
             }
         }
     }
