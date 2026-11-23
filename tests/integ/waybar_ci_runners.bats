@@ -13,6 +13,8 @@ setup() {
   sandbox_init basic
   MODULE="$REPO_ROOT/.config/waybar/ci_runners.sh"
   export FX="$BATS_TEST_TMPDIR" HUB="$BATS_TEST_TMPDIR/hub"
+  # No palette file, so the labels are C_DIM whatever this clone generated.
+  export PANGO_PALETTE="$BATS_TEST_TMPDIR/palette.css"
   cat > "$HUB" <<'STUB'
 #!/usr/bin/env bash
 [ "$*" = "ci --json" ] || exit 2

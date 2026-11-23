@@ -11,8 +11,8 @@
 # A unit in the hover is one slot a machine really has (a Unity slot, a gate slot, a macos
 # runner), never a runner registration.
 # Hover: the title with each machine's cells, a group per machine (a whole busy unit full, the
-# taken fraction as an eighth block on the dim colour, the rest dim), then the same head line as the
-# board (jobs running, queued, backlog units and drain time, done in 24h, pass rate
+# taken fraction as an eighth block on the dim colour, the rest dim), then the board's head line less its runner count
+# (jobs running, queued, backlog units and drain time, done in 24h, pass rate
 # painted red under 70% and amber under 90%), the ci domain's parts and why runner rows may be
 # short, then jobs by kind (running, waiting, oldest, done, pass), one row per machine: TAKEN
 # (units taken of its capacity, then its cells like the title's), RUNNING (each job by kind and
