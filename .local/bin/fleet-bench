@@ -141,7 +141,7 @@
 #                                each finding episode of the last 7d: minutes to its first response
 #                                that is not a page, and DARK when it reached the human with only pages;
 #                                --firing prints one sentence per dark episode still firing
-#   fleet-bench throughput [--from T]
+#   fleet-bench throughput [--from T] [--to T]
 #                                runs/h, failures, merges/h, pool wait and load on every host, and a
 #                                `wait <pool>:` line for each exporter wait with no slots (unity-gate)
 #   fleet-bench flow [--from T] [--to T] [--json] [--hourly]
@@ -5647,16 +5647,17 @@ throughput_epoch() { [[ "$1" =~ ^[0-9]+$ ]] && printf '%s' "$1" || date -d "$1" 
 # The before and after any slot, hold or pace change has to state: load and idle are proxies, and the
 # outcome is merges per hour and queue wait (dotfiles lessons, 2026-10-30).
 cmd_throughput() {
-  local from='' to snap='null' merges queue=''
+  local from='' to='' snap='null' merges queue=''
   while [ $# -gt 0 ]; do
     case "$1" in
       --from) from=$(throughput_epoch "${2:-}") || return 2; shift 2 ;;
-      *) say "usage: fleet-bench throughput [--from T]"; return 2 ;;
+      --to) to=$(throughput_epoch "${2:-}") || return 2; shift 2 ;;
+      *) say "usage: fleet-bench throughput [--from T] [--to T]"; return 2 ;;
     esac
   done
-  to=$(now)
+  [ -n "$to" ] || to=$(now)
   [ -n "$from" ] || from=$((to - 7200))
-  [ "$to" -gt "$from" ] || { say "--from must be in the past"; return 2; }
+  [ "$to" -gt "$from" ] || { say "--to must be after --from"; return 2; }
   snap=$(prom_snapshot "$to") || snap='null'
   merges=$(merge_rows "$to" "$from")
   # The exporter's own quantiles over the jobs finished in 24h; a recorded fixture has none.

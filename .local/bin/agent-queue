@@ -34,7 +34,7 @@
 #       `<band>/<points>` column (`m/5`, the band alone when the row is unscored, `-` with none); --json joins
 #       only with --points, which adds `points` and the row's current `size`. Ordering items that work a row reads the
 #       board once more for those rows' priority (row_prios, ar-3011); done items and rowless ones pay no board read
-#   show <slug> [--json [--points]] (the board join list --points does) | cancel <slug> [--why <text>] [--ask <id>] | bump <slug> <priority>
+#   next [--json] | show <slug> [--json [--points]] (the board join list --points does) | cancel <slug> [--why <text>] [--ask <id>] | bump <slug> <priority>
 #       cancel records cancelled_by: (the session id, else the item slug the caller works) and cancel_why:;
 #       --why is required from a session or script ($CLAUDE_CODE_SESSION_ID or $AGENT_QUEUE_ITEM set)
 #       work the human asked for (from: human, or a #requested row) cancels, returns with --drop, or returns with no
@@ -1282,7 +1282,7 @@ item_json() {
 # Queue order: a `red` item first (something is broken), then an urgent one, then a `sprint` one (its row
 # is held by an open sprint, fleet-dispatch promote), then the project's `#prio`
 # (order_filter: focus, high, normal, low), then priority; inside each of those buckets the class mix
-# (MIX_JQ) when AQ_CLASSES is on; then queued time. The one queue order: every reader (list,
+# (MIX_JQ) when AQ_CLASSES is on; then queued time. The one queue order: every reader (next, list,
 # fleet-dispatch next_items) takes it as is, so a lower tier starts only when no item of a higher one
 # can: a pass takes the first it can place. Nothing is held for a focus (the human, 2026-11-13).
 # `after` and other tags hold, not reorder. Cleanup gets its turns from the mix's cleanup share.
@@ -1313,7 +1313,7 @@ ORDER='def untagged($t): ((.tags // "") | if type == "array" then join(" ") else
 # is lowest against its `share`, the count being its items started in the last `window_days` (mix_json)
 # plus the places this order already gave it; ties go in file order, and the oldest item of the class
 # takes the place. Counts carry from bucket to bucket; a held item takes a place and adds no count, as
-# it starts nothing (dispatch skips it). A class with no share goes after every class with one, and a
+# it starts nothing (next skips it). A class with no share goes after every class with one, and a
 # class with nothing in the bucket takes no place, so its turns go to the rest by their shares.
 # `lag_places` bounds what the window's history can do (the human, ask EF60vp: elastic, no rigidness):
 # at each bucket's start every class with a runnable item in it has its count cut to at most
@@ -2510,6 +2510,13 @@ cmd_list() {
     | [.state, .priority, .slug, .project, .mode,
        (.hold // .status // .session // ""), (.tags // ""), .from,
        (if .size and .points then "\(.size)/\(.points)" else (.size // "") end)] | map(if . == "" then "-" else . end) | @tsv' <<<"$items"
+}
+
+cmd_next() {
+  local items
+  items="$(collect queued | jq -c '[.[] | select(.hold == null)] | first // empty')" || die "could not read the queue"
+  [ -n "$items" ] || return 1
+  if [ "${1:-}" = --json ]; then printf '%s\n' "$items"; else jq -r .file <<<"$items"; fi
 }
 
 cmd_show() {
@@ -3962,7 +3969,7 @@ cmd_backfill_briefs() {
   trap 'AGENT_STORE_HOOK=1 store-sync --now --bg 8>&- 2>/dev/null' EXIT
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
-  add | list | show | mine | claim | cancel | return | bump | set | retask | attribute | move | requeue | handoff | start | reopen | stats | admission | mix | gate) v="$1"; shift; "cmd_$v" "$@" ;;
+  add | list | next | show | mine | claim | cancel | return | bump | set | retask | attribute | move | requeue | handoff | start | reopen | stats | admission | mix | gate) v="$1"; shift; "cmd_$v" "$@" ;;
   lock-miss) shift; cmd_lock_miss "$@" ;;
   credit-of) shift; cmd_credit_of "$@" ;;
   ask-holds) shift; cmd_ask_holds "$@" ;;

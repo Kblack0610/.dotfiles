@@ -1486,7 +1486,7 @@ live_merges() {
 
 @test "throughput: --from older than a day counts the whole window" {
   live_merges
-  BENCH_NOW=$T0 run "$SUBJECT" throughput --from $((T0 - 120000))
+  BENCH_NOW=$T0 run "$SUBJECT" throughput --from $((T0 - 120000)) --to "$T0"
   assert_output --partial 'merges/h: platform 0.1'
 }
 
@@ -1577,9 +1577,9 @@ live_merges() {
 
 @test "throughput: an empty window and a backwards one are told apart" {
   use_fixture
-  BENCH_NOW=$T0 run "$SUBJECT" throughput --from $((T0 + 10))
+  run "$SUBJECT" throughput --from $((T0 + 10)) --to "$T0"
   assert_failure 2
-  BENCH_NOW=$((T0 - 86400)) run "$SUBJECT" throughput --from $((T0 - 90000))
+  run "$SUBJECT" throughput --from $((T0 - 90000)) --to $((T0 - 86400))
   assert_success
   assert_output --partial 'local runs: none recorded'
   assert_output --partial 'merges: none'
@@ -1590,7 +1590,7 @@ live_merges() {
   export BENCH_MERGES_TSV="$SANDBOX/merges-big.tsv"
   awk -v t="$T0" 'BEGIN { for (i = 0; i < 20000; i++) printf "notes\t%d\n", t - 3600 - i }' > "$BENCH_MERGES_TSV"
   [ "$(wc -c < "$BENCH_MERGES_TSV")" -gt 131072 ]
-  BENCH_NOW=$T0 run "$SUBJECT" throughput --from $((T0 - 432000))
+  run "$SUBJECT" throughput --from $((T0 - 432000)) --to "$T0"
   assert_success
   assert_output --partial 'merges/h: notes 166.7'
 }
