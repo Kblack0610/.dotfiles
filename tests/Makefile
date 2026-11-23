@@ -5,8 +5,8 @@
 #   integ  the `$SELF --verb` contract, as a subprocess    ~5s   host-safe
 #   ui     driven through a real tmux server               ~1-2min  CONTAINER ONLY
 #
-# The first two tiers never start a tmux server, so they run anywhere -- they are what the
-# stop-hook gates on. The ui tier starts real servers and sends real keys, so it runs ONLY
+# The first two tiers never start a tmux server, so they run anywhere -- they are CI's `fast`
+# job (an agent session runs none of this on the workstation). The ui tier starts real servers and sends real keys, so it runs ONLY
 # inside the disposable container (see Dockerfile for the full why: env-var isolation in
 # tmux fails silently, and a stray kill-server on a real machine takes out live sessions).
 # `make test-ui` therefore delegates to docker.sh rather than running bats directly.
@@ -54,7 +54,7 @@ help:
 	@echo "host-safe (no tmux server started):"
 	@echo "  make test-pr      the files the PR gate picks for this change (PR_BASE=<rev>, default the merge-base with origin/main)"
 	@echo "  make test-fast    unit + integ, every file (main and the nightly run it; CI shards it: shard.sh)"
-	@echo "  make test-files   FILES=... only these (the stop-hook picks them)"
+	@echo "  make test-files   FILES=... only these (CI's shards call it)"
 	@echo "  make test-unit    sourced-function tests"
 	@echo "  make test-integ   --verb contract tests"
 	@echo "  make lint         shellcheck + house rules over tracked shell scripts"

@@ -361,6 +361,7 @@ no_checks() {
 # no_checks_refusal: sets refusal to why a head with no checks reported cannot land, or returns 1
 # when it lands on the local gate. Called outside a subshell, so checks_policy reads the base once.
 refusal=''
+# gate: al-no-checks
 no_checks_refusal() {
   if [ "$tier" = 3 ]; then
     refusal="none reported, and a tier-3 item lands only on checks that ran green"
@@ -429,6 +430,7 @@ fj_wait_checks() {
 # own_head: the merge pins HEAD (--match-head-commit), so a cwd that is not on the PR's head would
 # reach the merge and be refused as "Head branch was modified", which reads as a race. Say where the
 # PR's branch is checked out instead. A fork's branch name proves nothing about a local checkout.
+# gate: al-own-head
 own_head() {
   local here wt top
   here=$(git rev-parse HEAD 2>&1) || fail head "git rev-parse: $(lastline "$here")"
@@ -746,6 +748,7 @@ once_done() {
 }
 
 # item_pr_gate: enforce the one-PR-per-repo rule on done items and on open items without --partial.
+# gate: al-item-pr-gate
 item_pr_gate() {
   if [ "$(jq -r .state <<<"$it")" = done ]; then
     once_done || return $?
@@ -839,6 +842,7 @@ own_project() {
 # run that re-cuts its branch lands from the new one in the same turn. Why: home-config #1195 got a
 # sibling subagent's "Item:" line on 2026-11-18 (ar-3047), and unity-core-playground#2985, an iOS
 # side fix with no "Item:" line, closed its session's overnight release watch on 2026-11-20 (ar-3970).
+# gate: al-own-item
 own_item() {
   [ -n "$implied" ] || return 0
   local ref refs named rc=1
@@ -966,6 +970,7 @@ link_task_row() {
 # Checked on the item, not where it was queued, so `agent-queue add` cannot skip it. An unreadable
 # tier counts as 3, the side that waits.
 tier='' body=''
+# gate: al-review-gate
 review_gate() {
   tier=$("$(dirname "$(readlink -f "$0")")/fleet-dispatch" item-tier "$item" 2>/dev/null) || tier=3
   [ "$tier" = 3 ] || return 0
@@ -985,6 +990,7 @@ review_gate() {
 # exit 3. A dependency that closed any other
 # way never releases: the same refusal says so. Its own `open_pr:` is set first, so a phase stacked on
 # this item can start while these checks run.
+# gate: al-stack-gate
 stack_gate() {
   local s dep st
   [ -n "$done_as" ] || aq_retry set "$item" "open_pr=$pr_ref" >/dev/null 2>&1 ||
@@ -1074,6 +1080,7 @@ covers() {
 # grown function, so a made-up or closed id is no escape. Measured from the merge-base, so what
 # <base> changed since never reads as this PR's growth. Why: 2026-11-18 ci-runner-governor's
 # decide() grew 34 -> 269 lines over 35 sessions, a few lines a PR, and no review read the whole.
+# gate: al-shape-gate
 shape_gate() {
   local out rc=0 mb list id row miss
   mb=$(git merge-base HEAD "$remote/$base" 2>&1) || fail shape "git merge-base HEAD $remote/$base: $(lastline "$mb")"
@@ -1107,6 +1114,7 @@ item_watch() {
 # which records the merge as the fix watermark (a windowed probe counts only events after it, fix-red
 # step 5) and rechecks; a bare #N with no repo rechecks only. Still red means the fix did not clear
 # it, or waits on a deploy: re-running agent-land once it clears closes the item and its board row.
+# gate: al-watch-gate
 watch_gate() {
   local w rc=0 out verb
   w=$(item_watch "$1")

@@ -113,6 +113,7 @@ def main():
     if public(f"{owner}/{repo}"):
         return
     reason = MSG.format(repo=f"{owner}/{repo}", path=rel, label=hit.group(0))
+    # gate: hook-hosted-runner-guard
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                              "permissionDecisionReason": reason}}))
 

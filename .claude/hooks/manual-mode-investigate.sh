@@ -14,5 +14,6 @@ set -uo pipefail
 INPUT=$(cat)
 [ "$(jq -r '.permission_mode // empty' <<<"$INPUT" 2>/dev/null)" = default ] || exit 0
 [ "$(jq -r '.hook_event_name // empty' <<<"$INPUT")" = PreToolUse ] || exit 0
+# gate: hook-manual-mode-investigate
 jq -nc '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "manual-mode-investigate: Manual mode is investigate-only: answer the question with evidence (file:line, command output) and change nothing: no edits, plan, commit, PR or board row. This overrides the global plan-first and land-changes rules while the mode lasts; end on the answer, not an offer. The human switches mode (Shift+Tab) to allow edits or a plan."}}'
 exit 0
