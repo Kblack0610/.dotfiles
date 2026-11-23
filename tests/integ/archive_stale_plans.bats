@@ -2,6 +2,7 @@
 # archive-stale-plans.sh: a stale project dir moves into _archive/, one level deeper, and its
 # entries are relative links into _live (85-sync-plans.sh). A link left as it was would point at
 # _archive/_live and break silently, and archiving _live itself would empty the plan store.
+# A finished plan in _live (every phase done, untouched 14 days) moves to _archive/_live, its links with it.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -38,4 +39,43 @@ setup() {
   assert_success
   assert_output --partial '_archive/old exists'
   [[ "$(readlink "$ROOT/old/old.md")" == ../_live/old.md ]]
+}
+
+# finished_plan <name> <checklist line> [date]: a _live plan with one phase, dated (default 2020).
+finished_plan() {
+  printf '# %s\n\n## Phases\n\n%s\n' "$1" "$2" > "$LIVE/$1.md"
+  touch -d "${3:-2020-01-01}" "$LIVE/$1.md"
+}
+
+@test "a finished _live plan moves to _archive/_live, and an open, fresh or unchecked one stays" {
+  finished_plan done '- [x] P1 ship it (#1)'
+  finished_plan open '- [ ] P1 ship it'
+  finished_plan young '- [x] P1 ship it (#1)' "$(date -d '-3 days' +%F)"
+  run "$SCRIPT" --yes
+  assert_success
+  [[ -f "$ROOT/_archive/_live/done.md" && ! -e "$LIVE/done.md" ]]
+  [[ -f "$LIVE/open.md" && -f "$LIVE/young.md" && -f "$LIVE/old.md" ]]   # old.md has no checklist
+}
+
+@test "an archived _live plan takes its links: a project's goes, an archived project's and an alias still reach it" {
+  finished_plan done '- [x] P1 ship it (#1)'
+  mkdir -p "$ROOT/proj" "$ROOT/_archive/gone"
+  ln -s ../_live/done.md "$ROOT/proj/done.md"
+  ln -s ../_live/fresh.md "$ROOT/proj/fresh.md"
+  ln -s ../../_live/done.md "$ROOT/_archive/gone/done.md"
+  ln -s done.md "$LIVE/alias.md"
+  run "$SCRIPT" --yes
+  assert_success
+  [[ ! -e "$ROOT/proj/done.md" && ! -L "$ROOT/proj/done.md" && -L "$ROOT/proj/fresh.md" ]]
+  [[ "$(readlink "$ROOT/_archive/gone/done.md")" == ../_live/done.md && -f "$ROOT/_archive/gone/done.md" ]]
+  [[ ! -L "$LIVE/alias.md" && "$(cat "$ROOT/_archive/_live/alias.md")" == "$(cat "$ROOT/_archive/_live/done.md")" ]]
+}
+
+@test "a finished plan whose _archive/_live name is taken is left in place" {
+  finished_plan done '- [x] P1 ship it (#1)'
+  mkdir -p "$ROOT/_archive/_live"; echo other > "$ROOT/_archive/_live/done.md"
+  run "$SCRIPT" --yes
+  assert_success
+  assert_output --partial '_archive/_live/done.md exists'
+  [[ -f "$LIVE/done.md" && "$(cat "$ROOT/_archive/_live/done.md")" == other ]]
 }
