@@ -1317,15 +1317,19 @@ store_key() {
 # store_refresh <store key>: close --self only. The store is polled every 10 minutes, so a PR merged since the
 # last poll still reads OPEN with its CI running, and holds a session that landed it (hc-658, tc-24: Forgejo
 # PRs read "open, CI PENDING" after agent-land). Ask the store to read the forge now, as agent-land does after
-# a merge; once a pass per repo. A repo the store does not list (rc 3) is no fault; any other failure leaves the
-# store stale, so the row is blind (close keeps), never a stale OPEN taken as fact.
+# a merge, but --wait: a poll mid-read holds the store lock, and its read is the answer wanted. Once a pass per
+# repo (case-blind). A repo the store does not list (rc 3) is no fault; any other failure leaves the store stale,
+# so every row on that repo is blind (close keeps), never a stale OPEN taken as fact.
 store_refresh() {
   [ -n "${CLOSE_SELF:-}" ] || return 0
   local f="$CACHE/refreshed_${1//\//_}" out rc=0
-  [ ! -e "$f" ] || return 0
-  : > "$f"
-  out="$("$SCHEDULES_SYNC" sync-prs "$1" 2>&1)" || rc=$?
-  [ "$rc" = 0 ] || [ "$rc" = 3 ] || { unreadable "PR store refresh ($1): ${out##*$'\n'}"; blind_row; }
+  f="${f,,}"
+  if [ ! -e "$f" ]; then
+    : > "$f"
+    out="$("$SCHEDULES_SYNC" sync-prs --wait "$1" 2>&1)" || rc=$?
+    [ "$rc" = 0 ] || [ "$rc" = 3 ] || { : > "$f.failed"; unreadable "PR store refresh ($1): ${out##*$'\n'}"; }
+  fi
+  [ ! -e "$f.failed" ] || blind_row
 }
 
 # PRs for one repo, cached per pass: "branch \t number \t state \t ci \t head_oid \t red job ids", newest first,
@@ -1737,7 +1741,8 @@ merged_prs() {
 session_prs() {
   local f="$1" prs repo
   [ -f "$f" ] || { echo '[]'; return; }
-  prs="$(so_transcript_metrics "$f" | so_canon_claims "${SO_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}" | jq -c '.prs // []')"
+  prs="$(so_transcript_metrics "$f" | so_canon_claims "${SO_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}" | jq -c '.prs // []')" \
+    || { unreadable "PR claims (project map or alias list)"; blind_row; echo '[]'; return; }
   [ -n "$prs" ] || { echo '[]'; return; }
   # a repo's whole PR list goes through a pipe, never argv: it outgrows an argument's 128 KB
   while IFS= read -r repo; do
@@ -2348,6 +2353,8 @@ collect() {
   . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh" || return 1
   now="$(date +%s)"
   heavy="$(heavy_panes)"
+  # The alias list and the store's host, read once and inherited by every row's session_prs (so_canon_claims).
+  so_canon_init "${SO_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}" 2>/dev/null || :
   local panel items qjson qall qitems off qheld qhand
   PROC_SNAP="$CACHE/procs"   # live_wait reads /proc into it on its first call
   off="$(off_default_checkouts)"

@@ -4257,7 +4257,7 @@ forgejo_stale_fixture() {
   forgejo_stale_fixture
   CLOSE_SELF=sid-1 run prs_for "$SANDBOX/fjwt"
   assert_output "$(printf 'feat/x\t11\tMERGED\tPASS\tabc\t-')"
-  [ "$(grep -c '^sync-prs fj.example/o/r$' "$LEDGER_DIR/calls")" -eq 1 ]
+  [ "$(grep -c '^sync-prs --wait fj.example/o/r$' "$LEDGER_DIR/calls")" -eq 1 ]
   # the session's own PR list shares the one refresh
   CLOSE_SELF=sid-1 pr_states fj.example/o/r >/dev/null
   [ "$(grep -c '^sync-prs ' "$LEDGER_DIR/calls")" -eq 1 ]
@@ -4274,6 +4274,11 @@ forgejo_stale_fixture() {
   CLOSE_SELF=sid-1 prs_for "$SANDBOX/fjwt" >/dev/null
   [ -f "$CACHE/blind_row" ]
   grep -q '^PR store refresh (fj.example/o/r): fj.example/o/r: forge unreachable' "$CACHE/unreadable"
+  # a later read of the same repo in the pass is blind too, and the sync is not asked again
+  rm -f "$CACHE/blind_row"; : > "$LEDGER_DIR/calls"
+  CLOSE_SELF=sid-1 pr_states fj.example/o/r >/dev/null
+  [ -f "$CACHE/blind_row" ]
+  [ ! -s "$LEDGER_DIR/calls" ] || ! grep -q '^sync-prs' "$LEDGER_DIR/calls"
   # a repo the store does not list is no fault
   rm -f "$LEDGER_DIR/SYNC_FAIL" "$CACHE/blind_row" "$CACHE"/refreshed_*
   printf '#!/usr/bin/env bash\n[ "$1" = sync-prs ] && exit 3\necho "[]"\n' > "$SCHEDULES_SYNC"
@@ -4307,6 +4312,19 @@ forgejo_stale_fixture() {
   run session_prs "$SANDBOX/t.jsonl"
   assert_success
   [ "$(jq -c 'map([.repo, .number, .state])' <<<"$output")" = '[["store.example/o/r",12,"MERGED"]]' ]
+}
+
+@test "session_prs: a project map that cannot be read makes the row blind, not a session with no PRs (ar-2786)" {
+  printf '{not json\n' > "$SANDBOX/map.json"
+  export SO_PROJECT_MAP="$SANDBOX/map.json" SO_FORGEJO_HOSTS="store.example"
+  {
+    echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"curl -s -X POST -d @pr.json https://store.example/api/v1/repos/o/r/pulls"}}]}}'
+    echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"https://store.example/o/r/pulls/12"}]}}'
+  } > "$SANDBOX/t.jsonl"
+  CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  run session_prs "$SANDBOX/t.jsonl"
+  assert_output '[]'
+  grep -q '^PR claims' "$CACHE/unreadable"
 }
 
 @test "sibling_pr: the last open PR in another repo, its CI from one cached gh pr view; a failed view is unreadable, asked once a pass" {
