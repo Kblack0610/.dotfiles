@@ -265,7 +265,7 @@ test("an inner tab is in the URL, a deep link opens on it, and a system opens De
     assert.equal(vm.runInContext(`pst.open + "|" + pst.inner`, ctx), "bnb/demo|rows", arg);
   }
   // NEGATIVE CONTROL: an unknown tail is no inner tab, and no project matches it.
-  assert.deepEqual(JSON.parse(vm.runInContext(`JSON.stringify(pSplit("bnb/demo/nope"))`, ctx)), { key: "bnb/demo/nope", inner: "overview", dept: "" });
+  assert.deepEqual(JSON.parse(vm.runInContext(`JSON.stringify(pSplit("bnb/demo/nope"))`, ctx)), { key: "bnb/demo/nope", inner: "overview", dept: "", sprint: "" });
   vm.runInContext(`pInner("overview"); st.views.projects = "";`, ctx);
   ctx.sent = [];
   ctx.answers["/api/deliverables?dq=sys%3Aui&scope=bnb%2Fdemo"] = deliv();
@@ -346,7 +346,7 @@ test("Projects > Sprints is one row per window, its version a link to its page, 
   await settle(); await settle();
   const html = box("p-sprints").innerHTML;
   assert.match(html, /<h2 class="sec" id="sec-sprints">Sprints <span class="n">3<\/span><\/h2>/);
-  assert.match(html, /<td>v0\.3\.1<\/td><td>11-19 15:59<\/td><td>11-20 15:59<\/td><td class="muted">queued<\/td>/, "a queued sprint starts at the open one's cut");
+  assert.match(html, /<td><a class="tl" href="#projects\/bnb%2Fdemo\/sprint\/v0\.3\.1">v0\.3\.1<\/a><\/td><td>11-19 15:59<\/td><td>11-20 15:59<\/td><td class="muted">queued<\/td>/, "a queued sprint starts at the open one's cut");
   assert.match(html, />FINISH \(7d rate\)</);
   assert.match(html, /<td>11-19 14:25<\/td><td>11-19 15:59<\/td><td>49m<\/td><td>0\/2<\/td><td>~15:40<\/td><td>-<\/td>/);
   assert.match(html, /<td class="warn">over<\/td>.*<td class="warn">~11-20 09:00 late<\/td>/s, "a finish after the cut is marked late");
@@ -781,7 +781,7 @@ test("a project's page has the work tabs, then one Departments tab with a chip p
   // The retired inner id lands on Deliverables, in the URL too.
   vm.runInContext(`pInner("build")`, ctx);
   assert.equal(vm.runInContext(`pst.inner + "|" + st.arg`, ctx), "deliverables|bnb/demo/deliverables");
-  assert.deepEqual(JSON.parse(vm.runInContext(`JSON.stringify(pSplit("bnb/demo/build"))`, ctx)), { key: "bnb/demo", inner: "deliverables", dept: "" });
+  assert.deepEqual(JSON.parse(vm.runInContext(`JSON.stringify(pSplit("bnb/demo/build"))`, ctx)), { key: "bnb/demo", inner: "deliverables", dept: "", sprint: "" });
   // A chip is in the URL; an old department id lands on Departments under that chip, a chip the card lacks on its first.
   vm.runInContext(`pInner("departments/legal")`, ctx);
   assert.equal(vm.runInContext(`pst.inner + "|" + pst.dept + "|" + st.arg`, ctx), "departments|legal|bnb/demo/departments/legal");
@@ -789,7 +789,7 @@ test("a project's page has the work tabs, then one Departments tab with a chip p
   assert.equal(vm.runInContext(`pst.inner + "|" + pst.dept`, ctx), "departments|marketing");
   vm.runInContext(`pInner("departments/design")`, ctx);
   assert.equal(vm.runInContext(`pst.dept`, ctx), "analytics", "design is not this card's: its first chip");
-  for (const [arg, want] of [["bnb/demo/departments/legal", { key: "bnb/demo", inner: "departments", dept: "legal" }], ["bnb/demo/legal", { key: "bnb/demo", inner: "departments", dept: "legal" }], ["bnb/demo/departments", { key: "bnb/demo", inner: "departments", dept: "" }]]) {
+  for (const [arg, want] of [["bnb/demo/departments/legal", { key: "bnb/demo", inner: "departments", dept: "legal", sprint: "" }], ["bnb/demo/legal", { key: "bnb/demo", inner: "departments", dept: "legal", sprint: "" }], ["bnb/demo/departments", { key: "bnb/demo", inner: "departments", dept: "", sprint: "" }]]) {
     assert.deepEqual(JSON.parse(vm.runInContext(`JSON.stringify(pSplit(${JSON.stringify(arg)}))`, ctx)), want, arg);
   }
   vm.runInContext(`pGo(null);`, ctx);
