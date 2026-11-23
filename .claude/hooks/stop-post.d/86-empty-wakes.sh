@@ -87,6 +87,7 @@ fi
 coord=false
 grep -qxF coordinator "$LABELS" 2>/dev/null && coord=true
 mkdir -p "$EMPTY_WAKE_STATE" && : > "$BLOCKED"
+# gate: hook-stop-empty-wakes
 jq -n --argjson n "$n" --argjson coord "$coord" '{decision: "block", reason: (
   "empty-wakes: this is wake \($n) in a row on a Monitor expiry with no events since the last real prompt, so the watch is only a timer that re-reads the whole context every 30 minutes. "
   + "Stop it (TaskStop) and do not re-arm. "

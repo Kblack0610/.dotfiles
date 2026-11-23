@@ -11,10 +11,8 @@
      cannot fail is not a test. If something could not be verified, say so
      explicitly rather than leaving it implied. -->
 
-- [ ] `make -C tests test-pr` (the files the PR gate picks for this change)
-- [ ] `tests/docker.sh lint` if any shell changed
-- [ ] `tests/docker.sh test-ui` if anything under `.local/src/tmux/` changed
-      (the ui tier starts real tmux servers and must NOT run on a dev box)
+- [ ] CI `gate` green: it is red unless `fast` (what `tests/pick.sh` picks), `ui`, `rust`, `notes`, `skills` and `lint` all ran and passed, so a `.local/src/tmux/` change gets the ui tier without asking (an agent session runs no test on the workstation)
+- [ ] A new test's negative control: the CI run that went red on the commit breaking its subject
 
 ## Skills
 
