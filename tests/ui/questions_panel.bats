@@ -239,10 +239,6 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
 }
 
 @test "a second typed answer starts on an empty line, not the last one's text" {
-  # Quarantined until 2026-12-06, when it runs again by itself (ci.md rule 2; owner: the
-  # fix(questions) row filed by ar-3780): on dotfiles#3216's merge head the third t was lost, its
-  # screen still on gamma:3 with "answered . sending it", likely a key landing as a reload is held.
-  [[ "$(date -u +%F)" > 2026-12-06 ]] || skip "quarantined until 2026-12-06: a t pressed as a reload lands can be lost (ar-3780)"
   TM_WIDTH=80 TM_HEIGHT=24 open_panel
   wait_until 'screen_has "list on top, card below"'
   tmux_keys t
@@ -258,7 +254,11 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
   tmux_keys Enter
   wait_until 'screen_has "1 ask waiting" && screen_has "sending beta:2" && screen_has "leave it"'
   grep -qx 'answer: keep' "$(ask_file "$MID")"
-  # esc from typing puts the count back in the header.
+  # esc from typing puts the count back in the header. This tail is quarantined through 2026-12-06
+  # and runs again by itself on 12-07 (ci.md rule 2; owner: the agent-runtime row "fix(questions):
+  # a t pressed as the panel's reload lands is lost", from ar-3780): on dotfiles#3216's merge head
+  # this t was lost, the screen still on gamma:3 with "answered . sending it".
+  [[ "$(date -u +%F)" > 2026-12-06 ]] || skip "third t quarantined through 2026-12-06: a t pressed as a reload lands can be lost (ar-3780)"
   tmux_keys t
   wait_until "screen_has 'answering gamma:3'"
   tmux_keys Escape
