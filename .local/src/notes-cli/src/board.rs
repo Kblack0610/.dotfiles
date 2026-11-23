@@ -1789,7 +1789,7 @@ mod tests {
     /// focus stay on disk but show nowhere on the board.
     #[test]
     fn only_a_focus_project_shows_sprints() {
-        let focus = "# demo\nVersion: v0.2.0 #alpha #prio/focus\n\n## Tasks\n";
+        let focus = "# demo\nVersion: v0.2.0 #alpha #prio/focus\nFocus until: 2099-01-01 00:00\n\n## Tasks\n";
         let dir = sheet("feed-sprints-focus", focus);
         // The shipped row today gives the lock its capacity ([`crate::window::capacity`]).
         let today = chrono::Local::now().date_naive();

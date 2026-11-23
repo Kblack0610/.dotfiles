@@ -98,6 +98,8 @@ pub struct Stats {
     pub stage: String,
     /// `focus`, `high`, `low`, empty for normal: the sheet's `#prio/<word>`.
     pub prio: String,
+    /// When the focus ends (`YYYY-MM-DD HH:MM`), while `prio` is focus; past it notes reads high.
+    pub focus_until: Option<String>,
     pub version: Option<String>,
     pub goal: String,
     pub progress: Progress,
@@ -224,29 +226,38 @@ pub fn note_says(c: &Card) -> String {
     }
 }
 
-/// `notes projects --prio <name> --profile <profile> --set <value>`: the one writer.
+/// `notes projects --prio <name> --profile <profile> --set <value> [--hours H]`: the one
+/// writer. `hours` is how long a focus lasts; `None` takes notes' default.
 pub fn set_prio(
     runner: &dyn Runner,
     profile: &str,
     name: &str,
     value: &str,
+    hours: Option<u32>,
 ) -> Result<String, String> {
     if !safe_name(profile)
         || !safe_name(name)
         || !["focus", "high", "low", "normal"].contains(&value)
+        || hours.is_some_and(|h| value != "focus" || !(1..=24).contains(&h))
     {
         return Err(format!("refusing prio {value} for {profile}/{name}"));
     }
-    runner.run(&[
-        "notes".into(),
-        "projects".into(),
-        "--prio".into(),
-        name.into(),
-        "--profile".into(),
-        profile.into(),
-        "--set".into(),
-        value.into(),
-    ])
+    let mut argv: Vec<String> = [
+        "notes",
+        "projects",
+        "--prio",
+        name,
+        "--profile",
+        profile,
+        "--set",
+        value,
+    ]
+    .map(String::from)
+    .to_vec();
+    if let Some(h) = hours {
+        argv.extend(["--hours".into(), h.to_string()]);
+    }
+    runner.run(&argv)
 }
 
 pub fn stats(runner: &dyn Runner) -> Result<Vec<Stats>, String> {
@@ -292,6 +303,7 @@ pub struct Card {
     pub name: String,
     pub stage: String,
     pub prio: String,
+    pub focus_until: Option<String>,
     pub version: Option<String>,
     pub goal: String,
     pub progress: Progress,
@@ -374,6 +386,7 @@ impl Card {
             name: s.name.clone(),
             stage: s.stage.clone(),
             prio: s.prio.clone(),
+            focus_until: s.focus_until.clone(),
             version: s.version.clone(),
             goal: s.goal.clone(),
             progress: s.progress.clone(),
@@ -1082,6 +1095,49 @@ pub fn gather() -> Projects {
 /// the same words the TUI does and computes nothing, and `figures`, the Projects card's whole
 /// numbers by name (`widget_doc::figures`, absent with any read error), the counts the waybar
 /// projects chip shows.
+/// The hours a surface offers a focus for, shortest first; notes caps a focus at 24 and its
+/// default is 4, which a surface preselects.
+pub const FOCUS_HOURS: [u32; 4] = [2, 4, 8, 24];
+pub const FOCUS_DEFAULT_HOURS: u32 = 4;
+
+/// The Focus strip over every card, never a view's: the projects on focus now with when each
+/// ends, the line that names them, and every project a focus may be set on.
+pub fn focus_json(cards: &[Card]) -> Value {
+    let on: Vec<&Card> = cards.iter().filter(|c| c.prio == "focus").collect();
+    // `YYYY-MM-DD HH:MM` less its year: a focus lasts at most a day.
+    let ends = |c: &Card| {
+        c.focus_until
+            .as_deref()
+            .map(|u| u.get(5..).unwrap_or(u).to_string())
+            .unwrap_or_default()
+    };
+    let says = if on.is_empty() {
+        "No project is on focus. Each project's work ranks by its own prio.".to_string()
+    } else {
+        let named: Vec<String> = on
+            .iter()
+            .map(|c| {
+                format!("{} until {}", c.name, ends(c))
+                    .trim_end_matches(" until ")
+                    .to_string()
+            })
+            .collect();
+        format!(
+            "On focus: {}. Its work starts ahead of every other project's; past its end it ranks as high.",
+            named.join(", ")
+        )
+    };
+    let who =
+        |c: &Card| serde_json::json!({"profile": c.profile, "name": c.name, "until": ends(c)});
+    serde_json::json!({
+        "says": says,
+        "on": on.iter().map(|c| who(c)).collect::<Vec<_>>(),
+        "all": cards.iter().filter(|c| c.prio != "focus").map(who).collect::<Vec<_>>(),
+        "hours": FOCUS_HOURS,
+        "default_hours": FOCUS_DEFAULT_HOURS,
+    })
+}
+
 pub fn to_json(p: &Projects) -> Value {
     let mut v = serde_json::to_value(p).unwrap_or_default();
     v["figures"] = serde_json::json!(crate::widget_doc::figures(&[crate::cards::projects(p)]));
@@ -1331,7 +1387,7 @@ mod tests {
         assert_eq!(next_prio("high"), "low");
         assert_eq!(next_prio("low"), "normal");
         let r = Argv(Default::default());
-        set_prio(&r, "bnb", "shape-city", "focus").unwrap();
+        set_prio(&r, "bnb", "shape-city", "focus", None).unwrap();
         assert_eq!(
             *r.0.borrow(),
             [
@@ -1347,9 +1403,50 @@ mod tests {
         );
         // nothing that could read as a flag, and no value outside the vocabulary, reaches argv
         r.0.borrow_mut().clear();
-        assert!(set_prio(&r, "bnb", "--all", "focus").is_err());
-        assert!(set_prio(&r, "bnb", "demo", "urgent").is_err());
-        assert!(r.0.borrow().is_empty());
+        assert!(set_prio(&r, "bnb", "--all", "focus", None).is_err());
+        assert!(set_prio(&r, "bnb", "demo", "urgent", None).is_err());
+        // hours go with a focus only, and only up to a day
+        assert!(set_prio(&r, "bnb", "demo", "high", Some(2)).is_err());
+        assert!(set_prio(&r, "bnb", "demo", "focus", Some(25)).is_err());
+        assert!(set_prio(&r, "bnb", "demo", "focus", Some(0)).is_err());
+        assert!(r.0.borrow().is_empty(), "a refused write runs nothing");
+        set_prio(&r, "bnb", "demo", "focus", Some(2)).unwrap();
+        assert_eq!(r.0.borrow()[8..], ["--hours", "2"]);
+    }
+
+    #[test]
+    fn the_focus_strip_names_each_focus_and_its_end_and_offers_the_rest() {
+        let card = |name: &str, prio: &str, until: Option<&str>| Card {
+            profile: "bnb".into(),
+            name: name.into(),
+            prio: prio.into(),
+            focus_until: until.map(str::to_string),
+            ..Default::default()
+        };
+        let f = focus_json(&[
+            card("a", "focus", Some("2026-11-23 18:00")),
+            card("b", "high", None),
+        ]);
+        assert_eq!(f["on"][0]["until"], "11-23 18:00");
+        assert!(
+            f["says"]
+                .as_str()
+                .unwrap()
+                .starts_with("On focus: a until 11-23 18:00."),
+            "{f}"
+        );
+        assert_eq!(f["all"].as_array().unwrap().len(), 1);
+        assert_eq!(f["all"][0]["name"], "b");
+        // NEGATIVE CONTROL: no focus says so, and offers every project.
+        let f = focus_json(&[card("b", "high", None)]);
+        assert!(f["on"].as_array().unwrap().is_empty());
+        assert!(
+            f["says"]
+                .as_str()
+                .unwrap()
+                .starts_with("No project is on focus"),
+            "{f}"
+        );
     }
 
     #[test]

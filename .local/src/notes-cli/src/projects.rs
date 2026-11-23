@@ -520,9 +520,31 @@ pub fn group(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Resu
     tag_verb(p, log, name, &refs, value)
 }
 
-/// `notes projects --prio <name> [--set focus|high|low|normal]`: read or set a project's
-/// priority. `normal` clears the tag. Reading prints the bare word, empty for normal.
-pub fn prio(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Result<()> {
+/// The head line a focus ends on: `Focus until: YYYY-MM-DD HH:MM`, local time.
+const FOCUS_UNTIL: &str = "Focus until:";
+/// How long a focus lasts when `--hours` is not given, and the most it may be set for. A focus
+/// is a short push, never a standing state: past its end it reads as high.
+const FOCUS_HOURS: f64 = 4.0;
+const FOCUS_MAX_HOURS: f64 = 24.0;
+const FOCUS_FMT: &str = "%Y-%m-%d %H:%M";
+
+/// When the head's focus ends; `None` with no line or a malformed one, which reads as ended.
+fn focus_until_of(content: &str) -> Option<chrono::NaiveDateTime> {
+    head_field(content, FOCUS_UNTIL)
+        .and_then(|t| chrono::NaiveDateTime::parse_from_str(t, FOCUS_FMT).ok())
+}
+
+/// `notes projects --prio <name> [--set focus|high|low|normal] [--hours H]`: read or set a
+/// project's priority. `normal` clears the tag. Focus lasts `--hours` (default
+/// [`FOCUS_HOURS`], at most [`FOCUS_MAX_HOURS`]) and records its end on a `Focus until:` head
+/// line; any other prio drops the line. Reading prints the bare word, empty for normal.
+pub fn prio(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    value: Option<&str>,
+    hours: Option<f64>,
+) -> Result<()> {
     let dir = project_dir(p, name)?;
     let page = front_page(&dir);
     let content =
@@ -536,12 +558,29 @@ pub fn prio(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Resul
         "normal" => None,
         _ => bail!("unknown priority '{v}' (want: focus, high, low, normal)"),
     };
-    let updated = replace_head_tag(&content, &PRIOS, tag.as_deref())?;
+    let until = if v == "focus" {
+        let h = hours.unwrap_or(FOCUS_HOURS);
+        if !(h > 0.0 && h <= FOCUS_MAX_HOURS) {
+            bail!("a focus lasts more than 0 and at most {FOCUS_MAX_HOURS} hours, not {h}");
+        }
+        let end = chrono::Local::now().naive_local() + chrono::Duration::minutes((h * 60.0) as i64);
+        Some(end.format(FOCUS_FMT).to_string())
+    } else {
+        if hours.is_some() {
+            bail!("--hours goes with --set focus only");
+        }
+        None
+    };
+    let tagged = replace_head_tag(&content, &PRIOS, tag.as_deref())?;
+    let updated = set_head_line(&tagged, FOCUS_UNTIL, until.clone())?;
     if updated != content {
-        fs::write(&page, &updated)?;
+        md::write_atomic(&page, &updated)?;
         log.info("projects", &format!("{name}: prio {v}"));
     }
-    println!("{} prio {v}", page.display());
+    match until {
+        Some(u) => println!("{} prio focus until {u}", page.display()),
+        None => println!("{} prio {v}", page.display()),
+    }
     Ok(())
 }
 
@@ -566,11 +605,28 @@ pub fn prios() -> Result<()> {
     Ok(())
 }
 
-/// The priority word a head declares (`focus`, `high`, `low`), empty for normal.
+/// The priority word a head declares (`focus`, `high`, `low`), empty for normal. A focus whose
+/// `Focus until:` has passed, or that has none, reads as high: focus never stays on by itself.
 fn prio_of_str(content: &str) -> String {
-    head_tag(content, &PRIOS)
+    prio_at(content, chrono::Local::now().naive_local())
+}
+
+fn prio_at(content: &str, now: chrono::NaiveDateTime) -> String {
+    let word = head_tag(content, &PRIOS)
         .and_then(|t| t.strip_prefix("prio/").map(str::to_string))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if word == "focus" && focus_until_of(content).is_none_or(|end| end <= now) {
+        return "high".into();
+    }
+    word
+}
+
+/// When a live focus ends (`YYYY-MM-DD HH:MM`), `None` when the project is not on focus now.
+pub(crate) fn focus_until(dir: &Path) -> Option<String> {
+    let content = fs::read_to_string(front_page(dir)).ok()?;
+    (prio_of_str(&content) == "focus")
+        .then(|| focus_until_of(&content).map(|t| t.format(FOCUS_FMT).to_string()))
+        .flatten()
 }
 
 /// A project's declared priority word, empty for normal.
@@ -630,36 +686,39 @@ pub(crate) fn target_of(content: &str) -> Option<Target> {
 /// Replace the head's `Target:` line with `target`, or drop it for `None`. It goes directly
 /// under `Version:`, so a sheet never carries two and the promise sits beside the version.
 fn set_target_line(content: &str, target: Option<Target>) -> Result<String> {
+    set_head_line(content, TARGET, target.map(fmt_target))
+}
+
+/// Replace the head line that starts with `key` with `key value`, or drop it for `None`. A new
+/// line goes directly under `Version:`; one already set keeps its slot.
+fn set_head_line(content: &str, key: &str, value: Option<String>) -> Result<String> {
     let head_len = head_lines(content).count();
-    let is_target = |i: usize, l: &str| i < head_len && l.trim_start().starts_with(TARGET);
+    let is_key = |i: usize, l: &str| i < head_len && l.trim_start().starts_with(key);
     // A line already set keeps its slot: the board's `Agents:` and `Docs:` lines also go
     // under `Version:` (`agent_sheet::with_head`), so re-inserting at `Version:`+1 would
     // swap the two writers' lines on every call.
-    let kept = content
-        .lines()
-        .enumerate()
-        .position(|(i, l)| is_target(i, l));
+    let kept = content.lines().enumerate().position(|(i, l)| is_key(i, l));
     let mut lines: Vec<String> = content
         .lines()
         .enumerate()
-        .filter(|(i, l)| !is_target(*i, l))
+        .filter(|(i, l)| !is_key(*i, l))
         .map(|(_, l)| l.to_string())
         .collect();
-    if let Some(t) = target {
+    if let Some(v) = value {
         let at = match kept {
             Some(at) => at,
             None => {
-                let Some(v) = lines
+                let Some(at) = lines
                     .iter()
                     .take(head_len)
                     .position(|l| l.trim_start().starts_with("Version:"))
                 else {
-                    bail!("no `Version:` line in the sheet's head to set a target beside");
+                    bail!("no `Version:` line in the sheet's head to set `{key}` beside");
                 };
-                v + 1
+                at + 1
             }
         };
-        lines.insert(at, format!("{TARGET} {}", fmt_target(t)));
+        lines.insert(at, format!("{key} {v}"));
     }
     let mut out = lines.join("\n");
     if content.ends_with('\n') {
@@ -3739,6 +3798,8 @@ struct ProjectStats {
     /// The head's `#prio/<word>` (`focus`, `high`, `low`), empty for normal. JSON only: the
     /// TSV keeps its columns, which several scripts read by position.
     prio: String,
+    /// When the focus ends (`YYYY-MM-DD HH:MM`, local), while `prio` is focus; null otherwise.
+    focus_until: Option<String>,
     version: String,
     /// The project whose open version this is, for a game with no number of its own
     /// ([`version_parent_dir`]); null otherwise. JSON only: `project_version_owner` reads it.
@@ -4312,6 +4373,7 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
         dir: dir.to_path_buf(),
         stage,
         prio: prio_of(dir),
+        focus_until: focus_until(dir),
         version: version_str(dir),
         version_parent: version_parent_dir(dir)
             .and_then(|p| Some(p.file_name()?.to_str()?.to_string())),
