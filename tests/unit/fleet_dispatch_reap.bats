@@ -764,6 +764,23 @@ OUT
   assert_not_called 'notes --profile bnb ptask game add'
 }
 
+# ucp-2587, 2026-11-21 to 11-23: notes refused the close (two open child rows) and every pass logged a
+# bare "closing ... failed", 157 lines that never said why and never reached anyone.
+@test "reap: a close notes refuses logs its error once, row left started" {
+  pr_item MERGED
+  echo 'error: fix crash has 2 open child row(s) (gm-7, gm-8); finish them first' > "$NOTES_FIXTURE/ptask.done.fail"
+  run cmd_reap
+  assert_success
+  refute_output --partial 'closed game'
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)" status)" ok
+  grep -qF 'closing game row fix crash failed: fix crash has 2 open child row(s) (gm-7, gm-8)' "$FLEET_DISPATCH_DIR"/log.md || fail "no reason logged: $(cat "$FLEET_DISPATCH_DIR"/log.md)"
+  run close_row fix-crash
+  run close_row fix-crash
+  assert_equal "$(grep -c 'closing game row fix crash failed' "$FLEET_DISPATCH_DIR"/log.md)" 1
+  assert_not_called 'notes --profile bnb ptask game add'
+  grep -qF -- '- [/] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail "row moved"
+}
+
 @test "reap: a gone session's open PR moves its item to review once, row untouched" {
   pr_item OPEN
   run cmd_reap
