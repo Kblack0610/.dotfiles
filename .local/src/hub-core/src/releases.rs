@@ -1497,9 +1497,9 @@ mod tests {
             ]
         );
         assert!(
-            card.first.iter().all(|f| f.text != "old"),
+            card.lists[0].rows.iter().all(|f| f.text != "old"),
             "{:?}",
-            card.first
+            card.lists[0].rows
         );
         // A tripped watch on a legacy channel is a fault in what runs: it still shows.
         let mut tripped = marked("old", "drift", "legacy");

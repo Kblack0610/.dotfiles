@@ -32,7 +32,7 @@ tip() { jq -r .tooltip <<< "$output"; }
 # send <host> <as_of> <count> <level> [error]: one host's overview with its needs card.
 send() {
   local err=null; [ -n "${5:-}" ] && err="\"$5\""
-  printf 'agents/%s/summary/overview\t{"state":"warn","rows":[],"as_of":%s,"needs":{"big":"%s","level":"%s","error":%s,"parts":[{"label":"Question","value":"%s","level":"%s"}],"first":[{"text":"Answer the <deploy> ask","sub":"2h dotfiles","level":"warn"}]}}\n' \
+  printf 'agents/%s/summary/overview\t{"state":"warn","rows":[],"as_of":%s,"needs":{"big":"%s","level":"%s","error":%s,"parts":[{"label":"Question","value":"%s","level":"%s"}],"lists":[{"head":"Oldest","rows":[{"text":"Answer the <deploy> ask","sub":"2h dotfiles","level":"warn"}]}]}}\n' \
     "$1" "$2" "$3" "$4" "$err" "$3" "$4" >> "$FX/msgs"
 }
 
@@ -98,7 +98,7 @@ send() {
 }
 
 @test "nothing waiting with a source unread still says what, in amber" {
-  printf 'agents/main/summary/overview\t{"as_of":99940,"needs":{"big":"0","level":"warn","error":"agent-ask could not be read","parts":[],"first":[]}}\n' > "$FX/msgs"
+  printf 'agents/main/summary/overview\t{"as_of":99940,"needs":{"big":"0","level":"warn","error":"agent-ask could not be read","parts":[],"lists":[]}}\n' > "$FX/msgs"
   run "$MODULE"
   assert_equal "$(text)" "<span color='$Y'>!:0</span>"
   run tip

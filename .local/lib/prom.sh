@@ -35,8 +35,8 @@ prom_label_re() {
 # success. PROM_TIMEOUT: the board waits 10s; a bar module sets less, so a dead endpoint cannot
 # stall the bar.
 _prom_get() {
-  local path=$1 out; shift
-  out="$(curl -sf -m "${PROM_TIMEOUT:-10}" -G "$PROM_URL/api/v1/$path" "$@" 2>/dev/null)" || return 1
+  local api=$1 out; shift   # not `path`: zsh ties $path to PATH, so a zsh caller lost curl
+  out="$(curl -sf -m "${PROM_TIMEOUT:-10}" -G "$PROM_URL/api/v1/$api" "$@" 2>/dev/null)" || return 1
   [ "$(jq -r .status <<< "$out" 2>/dev/null)" = success ] || return 1
   printf '%s' "$out"
 }

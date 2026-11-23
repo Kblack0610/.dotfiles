@@ -53,7 +53,7 @@ case "$level" in ok) lv=0 ;; red) lv=2 ;; *) lv=1 ;; esac
 tip="<b>Needs you</b>  $count waiting on you"
 [ -n "$split" ] && tip+=$'\n'"$(pango_esc "$split")"
 [ -n "$error" ] && tip+=$'\n'"$(paint "$C_YEL" "$(pango_esc "not all read: $error")")"
-rows="$(jq -r '.doc.needs.first[] | "\(.text)\t\(.sub)"' <<< "$best")"
+rows="$(jq -r '.doc.needs.lists[]? | select(.head == "Oldest") | .rows[] | "\(.text)\t\(.sub)"' <<< "$best")"
 if [ -n "$rows" ]; then
   tip+=$'\n\n'"<b>Oldest</b>"
   while IFS=$'\t' read -r text sub; do
