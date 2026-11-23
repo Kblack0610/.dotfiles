@@ -862,7 +862,14 @@ pub fn runner_page(
     out.extend(registry(&r.registry, p, now, w));
     out.extend(extras(&r.extras, p, now, w));
 
-    out.push(Line::raw(""));
+    out.extend(conf(r, p, w));
+    out.extend(instructions(r, p, w));
+    out
+}
+
+/// The runner's conf as agentctl sources it, one `KEY=value` a line.
+fn conf(r: &Runner, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let mut out = vec![Line::raw("")];
     out.push(clip_line(
         heading(
             "CONF",
@@ -880,7 +887,6 @@ pub fn runner_page(
             w,
         ));
     }
-    out.extend(instructions(r, p, w));
     out
 }
 

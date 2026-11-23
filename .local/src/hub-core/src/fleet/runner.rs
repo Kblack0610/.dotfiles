@@ -319,7 +319,8 @@ fn runner_with(
         }
     };
 
-    let instructions = instructions(paths, &c, &mut errors);
+    let (instructions, e) = instructions(paths, &c);
+    errors.extend(e);
     let next = timers
         .get(&format!("{AGENTCTL_PREFIX}{name}.service"))
         .copied()
@@ -361,15 +362,19 @@ fn runner_with(
     })
 }
 
-/// A lane's `judge-eval prompts` text (`Conf::instructed`), each problem an `instructions:` error;
-/// empty for any other runner.
-fn instructions(paths: &Paths, c: &Conf, errors: &mut Vec<String>) -> String {
+/// A lane's `judge-eval prompts` text (`Conf::instructed`) and each problem as an `instructions:`
+/// error; nothing for any other runner.
+fn instructions(paths: &Paths, c: &Conf) -> (String, Vec<String>) {
     if !c.instructed() {
-        return String::new();
+        return Default::default();
     }
     let (text, e) = super::judge_prompts(paths, &c.name);
-    errors.extend(e.into_iter().map(|e| format!("instructions: {e}")));
-    text
+    (
+        text,
+        e.into_iter()
+            .map(|e| format!("instructions: {e}"))
+            .collect(),
+    )
 }
 
 /// A conf key whose value the page must not show.
