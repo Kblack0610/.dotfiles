@@ -987,7 +987,7 @@ def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
 def print_fleet_cost(d):
     t, c = d["total"], d["coverage"]
     print(f"fleet cost {d['window']['start']} to {d['window']['end']}: about ${t['usd']:,.0f} "
-          f"(measured ${t['measured']:,.0f}, estimated ${t['estimated']:,.0f})")
+          f"(API cash ${t['cash']:,.0f}, subscription burn ${t['burn']:,.0f}; ${t['measured']:,.0f} measured, ${t['estimated']:,.0f} estimated)")
     if c["estimated_token_share"] is not None:
         print(f"{c['estimated_token_share']:.0%} of tokens estimated: {c['sessions_estimated']} of {c['sessions']} sessions have no cost telemetry")
     for k, v in d["by_origin"].items():
@@ -1010,7 +1010,7 @@ def main():
     ap.add_argument("--sort", choices=("cost", "turns", "context"), default="cost",
                     help="order of the by-session table and its --json: fleet cost (default), turns, or context tokens")
     ap.add_argument("--json", action="store_true")
-    ap.add_argument("--fleet-cost", action="store_true", help="the whole fleet's measured and estimated dollars")
+    ap.add_argument("--fleet-cost", action="store_true", help="the whole fleet's dollars: API cash and subscription burn, each measured or estimated")
     a = ap.parse_args()
     end = ts(a.before) if a.before else dt.datetime.now().timestamp()
     if end is None:

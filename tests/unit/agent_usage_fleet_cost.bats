@@ -187,6 +187,8 @@ PY
   # API cash is the gateway's metered line; the Codex plan's priced work is subscription burn
   run cost '[.total.cash == .other_harness.gateway.usd, .total.cash > 0, .total.burn - .total.claude_measured, .total.cash + .total.burn == .total.usd]'
   assert_output '[true,true,3.5,true]'
+  run "$AU" fleet-cost
+  assert_output --regexp 'about \$[0-9]+ \(API cash \$[0-9]+, subscription burn \$[0-9]+; \$18 measured, \$4 estimated\)'
   echo 'prom_q() { return 1; }' > "$PROM_LIB"
   run "$AU" fleet-cost --json
   assert_failure
