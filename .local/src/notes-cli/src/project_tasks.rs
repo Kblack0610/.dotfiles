@@ -5162,7 +5162,7 @@ mod inbox_tests {
             Lane::Human,
         )
         .unwrap();
-        let ev = crate::ingest::since(&v.p, 1);
+        let ev = crate::ingest::all(&v.p);
         let got: Vec<(&str, Option<&str>, &str)> = ev
             .iter()
             .map(|e| (e.action.as_str(), e.id.as_deref(), e.lane.as_str()))
@@ -6300,7 +6300,7 @@ mod inbox_tests {
         unstart(&v.p, &v.log, "scratch", &one, Lane::Human).unwrap();
         unstart(&v.p, &v.log, "scratch", &one, Lane::Human).unwrap();
         assert!(v.read().contains("- [ ] fix(ui): flicker"), "{}", v.read());
-        let ev: Vec<String> = crate::ingest::since(&v.p, 1)
+        let ev: Vec<String> = crate::ingest::all(&v.p)
             .into_iter()
             .map(|e| e.action)
             .collect();
