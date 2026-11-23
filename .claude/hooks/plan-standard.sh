@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
-# plan-standard.sh - holds plans to ~/.local/src/docs/planning.md, read at the two moments a
-# plan forms:
-#   UserPromptSubmit in plan mode: inject the sections this project's type requires.
+# plan-standard.sh - holds plans to three rules of ~/.local/src/docs/planning.md (Epic, Phases,
+# Chain), read at the two moments a plan forms:
+#   UserPromptSubmit in plan mode: inject those three rules.
 #   PreToolUse on ExitPlanMode: deny, naming each gap, before the human sees the plan.
-# The doc's tables are the standard, so nothing here restates a section or a label. A rule
-# that must be recalled at a trigger does not hold, which is why this is a check.
-# Fails open: a missing doc or an empty plan passes. The gate proves a section is present
-# and answered, never that it is true. "plan-standard:" opens every deny; session outcomes
-# count on it.
+# The doc's Sections table is the written standard and is not checked here (the human released
+# that gate, 2026-11-22). A rule that must be recalled at a trigger does not hold, which is why
+# these three are a check. Fails open: a missing doc or an empty plan passes. "plan-standard:"
+# opens every deny; session outcomes count on it.
 
 DOC="$HOME/.local/src/docs/planning.md"
-CLIENT_DOC="$HOME/.config/agentctl/PLANNING-CLIENT.md"
 
 INPUT=$(cat)
 event=$(jq -r '.hook_event_name // empty' <<<"$INPUT" 2>/dev/null)
@@ -26,20 +24,7 @@ esac
 cwd=$(jq -r '.cwd // empty' <<<"$INPUT")
 [ -n "$cwd" ] || cwd=$PWD
 project=$(resolve_project_name "$cwd")
-type=$(project_inherited "$project" type)
-client=$(project_inherited "$project" client)
-label="$project${type:+ ($type)}"
-
-# rows -> "<section><TAB><must answer>" for each row of the tables that applies here.
-rows() {
-  cat "$DOC" "$CLIENT_DOC" 2>/dev/null | awk -F' *[|] *' -v want=" base $type $client " '
-    /^[|] `## / {
-      n = split($3, applies, /, */)
-      for (i = 1; i <= n; i++) if (index(want, " " applies[i] " ")) {
-        name = $2; gsub(/`|## /, "", name); print name "\t" $4; break
-      }
-    }'
-}
+label=$project
 
 # epic_checked: the Epic: rule applies only to a project with a board (client work is tracked
 # elsewhere) on a machine with lab sheets to check the id against (not a fleet worker).
@@ -50,13 +35,11 @@ if [ "$event" = UserPromptSubmit ]; then
   # ExitPlanMode check below names any gap anyway.
   tp=$(jq -r '.transcript_path // empty' <<<"$INPUT")
   [ -n "$tp" ] && [ -r "$tp" ] && grep -qF "Plan standard for $label." "$tp" && exit 0
-  sections=$(rows | awk -F'\t' '{print "- ## " $1 ": " $2}')
   # A rule's "Why:" history is for editing the doc; the deny below names any gap.
-  rules=$(grep -E '^(Scaling|Depth|Chain): ' "$DOC")
+  rules=$(grep -E '^(Chain|Phases): ' "$DOC")
   ! epic_checked || rules+=$'\n'$(grep -E '^Epic: ' "$DOC")
   rules=$(sed -E 's/ Why: .*//' <<<"$rules")
-  jq -nc --arg c "Plan standard for $label. The plan must carry these sections, and ExitPlanMode is denied without them:
-$sections
+  jq -nc --arg c "Plan standard for $label. ExitPlanMode is denied unless the plan meets these three rules:
 $rules
 Full text and where to look: $DOC" \
     '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $c}}'
@@ -66,33 +49,10 @@ fi
 plan=$(jq -r '.tool_input.plan // empty' <<<"$INPUT")
 [ -n "$plan" ] || exit 0
 
-# Both skip fenced code, so a heading in an example is not a section.
-headings() { awk '/^```/ {f = !f} !f && /^## / {sub(/[ \t]+$/, ""); print}' <<<"$plan"; }
-body() {
-  awk -v h="## $1" '/^```/ {f = !f}
-    !f && /^## / {if (on) exit; sub(/[ \t]+$/, ""); on = ($0 == h); next}
-    on && NF' <<<"$plan"
-}
-label_line() { grep -E "^[[:space:]]*([-*][[:space:]]+)?(\*\*)?$1" <<<"$2"; }
-
-# path_exists <text> -> does any path-shaped token in it exist, from $HOME or the cwd?
-path_exists() {
-  local tok
-  while IFS= read -r tok; do
-    case "$tok" in
-      "~/"*) tok="$HOME/${tok#\~/}" ;;
-      /*) ;;
-      *) tok="$cwd/$tok" ;;
-    esac
-    [ -e "$tok" ] && return 0
-  done < <(grep -oE '[~./A-Za-z0-9_-]*/[./A-Za-z0-9_-]+' <<<"$1")
-  return 1
-}
-
-all_headings=$(headings)
-phased=$(grep -m1 '^## Phases' <<<"$all_headings")
+# phased: a `## Phases` heading outside code fences, so a heading in an example is no section.
+phased=$(awk '/^```/ {f = !f} !f && /^## Phases/' <<<"$plan" | head -n1)
 # multi: a plan with more than one phase is a feature (planning.md, Phases). The one-phase checklist
-# one-shot writes on every plan is not, so it keeps n/a sections and may name a standing epic.
+# one-shot writes on every plan is not, so it may name a standing epic.
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.local/lib/plan-phases.sh" 2>/dev/null
 multi=''
@@ -103,35 +63,6 @@ else
   multi=$phased   # no parser: the stricter old rule, never a silent pass
 fi
 gaps=()
-while IFS=$'\t' read -r name must; do
-  [ -n "$name" ] || continue
-  if ! grep -qxF "## $name" <<<"$all_headings"; then
-    gaps+=("Missing ## $name: $must"); continue
-  fi
-  text=$(body "$name")
-  if [ -z "$text" ]; then
-    gaps+=("## $name is empty: $must"); continue
-  fi
-  if grep -qiE '^[[:space:]]*n/a' <<<"${text%%$'\n'*}"; then
-    if [ "$name" = Changes ] || [ "$name" = Context ] || [ "$name" = Verification ]; then
-      gaps+=("## $name cannot be n/a: $must")
-    elif [ -n "$multi" ]; then
-      gaps+=("## $name cannot be n/a in a plan with more than one phase: $must")
-    elif ! grep -qiE '^[[:space:]]*n/a:[[:space:]]*[^[:space:]]' <<<"${text%%$'\n'*}"; then
-      gaps+=("## $name needs a reason: write n/a: <reason>")
-    fi
-    continue
-  fi
-  while IFS= read -r want; do
-    [ -n "$want" ] || continue
-    line=$(label_line "$want" "$text")
-    if [ -z "$line" ]; then
-      gaps+=("## $name has no $want line: $must")
-    elif [ "$want" = Standards: ] && ! path_exists "$line"; then
-      gaps+=("## $name: no path on the Standards: line exists. List the docs read as paths, on that line")
-    fi
-  done < <(grep -oE '`[A-Z][a-z]+:`' <<<"$must" | tr -d '`')
-done < <(rows)
 
 # The doc's Chain: rule. Only a sentence that runs, does or takes the work in one session
 # counts, read outside code, quotes and backticks and never a negated one, so "answers given in

@@ -522,15 +522,14 @@ cmd_post() {
       return 2
     fi
   fi
-  # Every term the human reads before the context (the question, each option's meaning, the
-  # why) is named in --context, which opens with one plain-words line saying what each is.
-  # 2026-11-09: YVyqvq led with scale.net.botsPredicted, its context with "ucp-526 phase 3",
-  # and the human could only reply "whats happening here?".
+  # A term the human reads before the context (the question, each option's meaning, the why)
+  # that --context never names is a warning, not a refusal (the human released that gate,
+  # 2026-11-22: it refused 318 posts). 2026-11-09: YVyqvq led with scale.net.botsPredicted, its
+  # context with "ucp-526 phase 3", and the human could only reply "whats happening here?".
   local undefined
   undefined="$(undefined_terms "$context" "$question" "${option_notes//|/ }" "$why" | paste -sd, - | sed 's/,/, /g')"
   if [ -n "$undefined" ]; then
-    echo "agent-ask post: the human reads this ask cold, so define its session terms ($undefined): open --context with one plain-words line naming each and saying what it is and why it matters to them, or say it in plain words instead." >&2
-    return 2
+    echo "agent-ask post: warning: the human reads this ask cold, and its session terms ($undefined) are not defined: open --context with one plain-words line naming each and saying what it is and why it matters to them, or say it in plain words instead." >&2
   fi
   if [ -n "$project" ]; then
     # An explicit --project must be the canonical name, or the ask files where no reader looks

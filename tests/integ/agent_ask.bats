@@ -29,28 +29,30 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert [ -f "$HOME/.agent/asks/demo/$id.md" ]
 }
 
-@test "post refuses session terms its --context does not define, and files one that does" {
+@test "post warns of session terms its --context does not define, and still files the ask" {
   # 2026-11-09 YVyqvq: the question led with a flag name, the why cited a doc, and the context
   # opened with an item id, so the human could only ask what was going on.
   local q='Which game should turn scale.net.botsPredicted off next?'
   local opts='a=keep botsPredicted on until you play one|b=turn it off now'
   run --separate-stderr "$AGENT_ASK" post --project demo --options "$opts" --recommend a \
     --why 'scaling-net.md says play first' --context 'ucp-526 phase 3 is in' "$q"
-  [ "$status" -eq 2 ]
-  [[ "$stderr" == *"scale.net.botsPredicted, botsPredicted, scaling-net.md"* ]]
+  assert_success
+  [[ "$stderr" == *"warning: "*"scale.net.botsPredicted, botsPredicted, scaling-net.md"* ]]
   [[ "$stderr" == *"open --context with one plain-words line"* ]]
-  [ -z "$(ls "$HOME/.agent/asks/demo" 2>/dev/null)" ]
+  [ -n "$(ls "$HOME/.agent/asks/demo" 2>/dev/null)" ]
+  # Defined terms warn of nothing (negative control).
   run --separate-stderr "$AGENT_ASK" post --project demo --options "$opts" --recommend a \
     --why 'scaling-net.md says play first' \
     --context 'scale.net.botsPredicted is the switch that runs bots on your machine; scaling-net.md is the netcode doc' "$q"
   assert_success
+  [[ "$stderr" != *warning* ]]
   # Plain words and quoted text need no definitions (negative control).
   run "$AGENT_ASK" post --project demo 'PR #1036 is green, merge it after "fix ar-12 in foo.md", e.g. today in utf-8?'
   assert_success
   # A term counts as named only whole: ucp-5260 in the context does not name ucp-526.
   run --separate-stderr "$AGENT_ASK" post --project demo --context 'ucp-5260 is a row' 'land ucp-526?'
-  [ "$status" -eq 2 ]
-  [[ "$stderr" == *"(ucp-526)"* ]]
+  assert_success
+  [[ "$stderr" == *"warning: "*"(ucp-526)"* ]]
 }
 
 @test "a new ask starts pending" {
@@ -2741,10 +2743,10 @@ judged_ask() {
   assert_success; [[ "$stderr" == *"names no option of ask N1"* ]]
   run "$AGENT_ASK" show N1; refute_line --partial 'judge_override'
   # an audit that cannot post says why and marks the answer unaudited, never silently skipped
-  # (an option note with a term its context never names, which post refuses)
-  judged_ask P1 repo; sed -i 's/^option_notes: fix the test/option_notes: fix it with retryLoop/' "$d/P1.md"
+  # (a project that is not canonical, which post refuses)
+  judged_ask P1 repo; sed -i 's/^project: demo/project: notaproject/' "$d/P1.md"
   run --separate-stderr "$AGENT_ASK" answer --by judge P1 fix
-  assert_success; [[ "$stderr" == *"audit of ask P1 not posted: "*"define its session terms (retryLoop)"* ]]
+  assert_success; [[ "$stderr" == *"audit of ask P1 not posted: "*"'notaproject' is not a canonical project"* ]]
   run "$AGENT_ASK" show P1; assert_line 'judge_audit: failed'
 }
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-# plan-standard.sh: the gate reads planning.md, so these run against the real doc. A row
-# edit that drops a section or label from a type goes red here.
+# plan-standard.sh: the gate reads planning.md, so these run against the real doc. It checks the
+# Epic, Phases and Chain rules only; a plan with thin or missing sections passes.
 
 load '../vendor/bats-support/load'
 load '../vendor/bats-assert/load'
@@ -64,6 +64,15 @@ EOF
 # without <section> reads a plan on stdin and drops that section.
 without() { awk -v h="## $1" '/^## /{skip = ($0 == h)} !skip'; }
 
+@test "the sections table is not checked: a plan with none of them passes" {
+  run gate aninfra "$(printf '# A plan\n\nDo the thing.\n')"
+  assert_output ''
+  run gate game "$(base | without Verification | without Risks)"
+  assert_output ''
+  run gate aninfra "$(base | sed 's/^Small, and reversible\.$/n\/a/' | sed '/Standards:/d')"
+  assert_output ''
+}
+
 gate() { # gate <project> <plan>
   jq -nc --arg c "$HOME/work/$1" --arg p "$2" \
     '{hook_event_name: "PreToolUse", tool_name: "ExitPlanMode", cwd: $c, tool_input: {plan: $p}}' \
@@ -81,86 +90,6 @@ prompt() { # prompt <project> <mode>
   assert_output ''
 }
 
-@test "each base section is required" {
-  for s in Changes Context Approach Reviewed Risks Verification; do
-    run gate untyped "$(base | without "$s")"
-    assert_output --partial 'plan-standard:'
-    assert_output --partial "Missing ## $s"
-  done
-}
-
-@test "an empty section is denied" {
-  run gate untyped "$(base | sed 's/^Small, and reversible\.$//')"
-  assert_output --partial '## Risks is empty'
-}
-
-@test "infra adds Source of truth, Telemetry and Target, and not Playtest" {
-  run gate aninfra "$(base)"
-  assert_output --partial 'Missing ## Source of truth'
-  assert_output --partial 'Missing ## Telemetry'
-  assert_output --partial 'Missing ## Target'
-  refute_output --partial 'Playtest'
-  refute_output --partial 'Release'
-}
-
-@test "app adds Source of truth, Telemetry and Release" {
-  run gate anapp "$(base)"
-  assert_output --partial 'Missing ## Source of truth'
-  assert_output --partial 'Missing ## Telemetry'
-  assert_output --partial 'Missing ## Release'
-  refute_output --partial 'Target'
-}
-
-@test "game adds Playtest and Release, and not Source of truth or Telemetry" {
-  run gate agame "$(base)"
-  assert_output --partial 'Missing ## Playtest'
-  assert_output --partial 'Missing ## Release'
-  refute_output --partial 'Source of truth'
-  refute_output --partial 'Telemetry'
-  run gate agame "$(base; printf '\n## Playtest\n\nWhich game, and how.\n\n## Release\n\nSteam beta, rollback to the previous BuildID.\n')"
-  assert_output ''
-}
-
-@test "the Changes ledger needs each of its labels and cannot be n/a" {
-  for l in Adds Removes Files Net; do
-    run gate untyped "$(base | sed "/^$l:/d")"
-    assert_output --partial "## Changes has no $l: line"
-  done
-  run gate untyped "$(base | sed '/^Adds:/,/^Net:/c\n/a: a small fix')"
-  assert_output --partial '## Changes cannot be n/a'
-}
-
-@test "n/a with a reason passes" {
-  run gate untyped "$(base | sed 's/^Small, and reversible\.$/n\/a: a one-line typo fix/')"
-  assert_output ''
-}
-
-@test "n/a without a reason is denied" {
-  run gate untyped "$(base | sed 's/^Small, and reversible\.$/n\/a/')"
-  assert_output --partial '## Risks needs a reason'
-}
-
-@test "Context and Verification cannot be n/a" {
-  run gate untyped "$(base | sed 's/^The ask, and what done looks like\.$/n\/a: obvious/')"
-  assert_output --partial '## Context cannot be n/a'
-  run gate untyped "$(base | sed 's/^Real surface.*$/n\/a: obvious/')"
-  assert_output --partial '## Verification cannot be n/a'
-}
-
-@test "a plan with more than one phase cannot use n/a" {
-  run gate untyped "$(base | sed 's/^Small, and reversible\.$/n\/a: small/'; printf '\n## Phases\n\n- [ ] one\n- [ ] two\n')"
-  assert_output --partial 'cannot be n/a in a plan with more than one phase'
-}
-
-@test "an example checklist inside a code fence is not a second phase" {
-  run gate untyped "$(base | sed 's/^Small, and reversible\.$/n\/a: small/'; printf '\n## Phases\n\n- [ ] one\n\n```\n- [ ] a\n- [ ] b\n```\n')"
-  refute_output --partial 'cannot be n/a'
-}
-
-@test "a one-phase checklist, which one-shot writes on every plan, may use n/a" {
-  run gate untyped "$(base | sed 's/^Small, and reversible\.$/n\/a: small/'; printf '\n## Phases\n\n- [ ] one\n')"
-  refute_output --partial 'cannot be n/a'
-}
 
 # phases <n> -> a ## Phases section with n open lines and one ticked one.
 phases() { printf '\n## Phases\n\n- [x] P1 done (#1)\n'; for i in $(seq "$1"); do printf -- '- [ ] P%s p\n' "$((i + 1))"; done; }
@@ -212,46 +141,15 @@ phases() { printf '\n## Phases\n\n- [x] P1 done (#1)\n'; for i in $(seq "$1"); d
   assert_output ''
 }
 
-@test "each label is required" {
-  run gate untyped "$(base | sed '/^Rejected:/d')"
-  assert_output --partial '## Approach has no Rejected: line'
-  run gate untyped "$(base | sed '/Overlap:/d')"
-  assert_output --partial '## Reviewed has no Overlap: line'
-  run gate untyped "$(base | sed '/Existing:/d')"
-  assert_output --partial '## Reviewed has no Existing: line'
-  run gate untyped "$(base | sed '/Standards:/d')"
-  assert_output --partial '## Reviewed has no Standards: line'
-}
-
-@test "a Standards path that does not exist is denied" {
-  run gate untyped "$(base | sed 's/docs\/standards\.md/docs\/gone.md/')"
-  assert_output --partial 'no path on the Standards: line exists'
-}
-
-@test "a heading inside a code fence is not a section" {
-  plan="$(base | without Risks; printf '\n```\n## Risks\n\nexample\n```\n')"
-  run gate untyped "$plan"
-  assert_output --partial 'Missing ## Risks'
-}
-
-@test "client rows apply only to the project with that client" {
-  printf '| `## Ticket` | acme | The ticket | Existing rule |\n| `## Other` | globex | Theirs | Existing rule |\n' > "$HOME/.config/agentctl/PLANNING-CLIENT.md"
-  run gate gig "$(base)"
-  assert_output --partial 'Missing ## Ticket'
-  refute_output --partial '## Other'
-  run gate untyped "$(base)"
-  assert_output ''
-}
-
-@test "plan mode gets the sections for its type" {
+@test "plan mode gets the Chain and Phases rules, and no section list" {
   run prompt aninfra plan
   assert_success
   assert_output --partial 'additionalContext'
-  assert_output --partial '## Target'
-  assert_output --partial 'Depth:'
   assert_output --partial 'Chain: a plan with more than one'
+  assert_output --partial 'Phases: a plan with more than one'
   refute_output --partial 'Epic:'
-  refute_output --partial '## Playtest'
+  refute_output --partial '## Target'
+  refute_output --partial 'Depth:'
   # The rule lines arrive without their Why: history.
   refute_output --partial 'Why:'
 }
