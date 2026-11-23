@@ -2762,9 +2762,11 @@ usage() {
 
 # A write here reaches the other machines at once: store-sync pushes the queue and asks (it does
 # nothing when they are clean, or when these asks are not the store's). AGENT_STORE_HOOK: as in
-# agent-queue, a write under the hook's own sync starts none.
-[[ "$ASKS_ROOT/" != "${AGENT_STORE_DIR:-$HOME/.agent}/"* ]] || [ -n "${AGENT_STORE_HOOK:-}" ] ||
+# agent-queue, a write under the hook's own sync starts none, and a signal drops the hook (ar-4685).
+if [[ "$ASKS_ROOT/" == "${AGENT_STORE_DIR:-$HOME/.agent}/"* ]] && [ -z "${AGENT_STORE_HOOK:-}" ]; then
   trap 'AGENT_STORE_HOOK=1 store-sync --now --bg 2>/dev/null' EXIT
+  trap 'trap - EXIT; exit 143' TERM HUP INT
+fi
 sub="${1:-list}"; shift 2>/dev/null || true
 case "$sub" in
   post)   cmd_post "$@" ;;

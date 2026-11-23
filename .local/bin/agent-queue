@@ -3961,8 +3961,13 @@ cmd_backfill_briefs() {
 # AGENT_STORE_HOOK: a write made under the hook's own sync starts none, so a sync that writes the
 # queue cannot start itself again; a bats stub of store-sync that called agent-queue did, ~600
 # processes that outlived their run and orphan-gc's SIGTERM (ar-4050).
-[[ "$AQ_DIR/" != "${AGENT_STORE_DIR:-$HOME/.agent}/"* ]] || [ -n "${AGENT_STORE_HOOK:-}" ] ||
+# A signal drops the hook: bash runs an EXIT trap on SIGTERM too, so a call that systemd's stop
+# sweep or a caller's timeout ended started a sync after the sweep, and it sat in flock -w on the
+# sync lock in the runner's cgroup until the stop timeout SIGKILLed it and failed the unit (ar-4685).
+if [[ "$AQ_DIR/" == "${AGENT_STORE_DIR:-$HOME/.agent}/"* ]] && [ -z "${AGENT_STORE_HOOK:-}" ]; then
   trap 'AGENT_STORE_HOOK=1 store-sync --now --bg 8>&- 2>/dev/null' EXIT
+  trap 'trap - EXIT; exit 143' TERM HUP INT
+fi
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
   add | list | next | show | mine | claim | cancel | return | bump | set | retask | attribute | move | requeue | handoff | start | reopen | stats | admission | mix | gate) v="$1"; shift; "cmd_$v" "$@" ;;
