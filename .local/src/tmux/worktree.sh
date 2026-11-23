@@ -1267,7 +1267,21 @@ wt_prepare() {
     # A fresh tree leaves its submodules to the repo's own setup, which needs a working URL.
     wt_heal_submodule_urls "$path"
   fi
+  wt_link_vendor "$main" "$path"
   wt_hold "$path"
+}
+
+# wt_link_vendor <main> <path> -- link the tree's tests/vendor (bats and its helpers, git-ignored,
+# cloned once into the main checkout by `make -C tests bootstrap`) to the main checkout's, so
+# tests/run-bats.sh runs there with no search. Sessions in trees without it hunted for bats with
+# `find /` (109 hand-methods denies in 7 days to 2026-11-23). Nothing to do when the main checkout
+# has none, the tree has one already, or the repo does not ignore the path (a link would be dirt).
+wt_link_vendor() {
+  local src="$1/tests/vendor" v="$2/tests/vendor"
+  [ -d "$src" ] && [ -d "$2/tests" ] && [ ! -e "$v" ] && [ ! -L "$v" ] || return 0
+  git -C "$2" check-ignore -q tests/vendor || return 0
+  ln -s -- "$src" "$v" || panel_warn "could not link $v to $src"
+  return 0
 }
 
 # cmd_prepare <main> <path> <n> <kind> [<cmd>] -- `_prepare`, the first pane of a session

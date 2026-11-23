@@ -236,16 +236,7 @@
         ]
       },
       {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.claude/hooks/block-pip.sh"
-          }
-        ]
-      },
-      {
-        "matcher": "Bash|Read",
+        "matcher": "Read",
         "hooks": [
           {
             "type": "command",
@@ -271,16 +262,6 @@
             "type": "command",
             "command": "python3 ~/.claude/hooks/walker-guards.py || true",
             "timeout": 30
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/python-write-guard.py || true",
-            "timeout": 5
           }
         ]
       }

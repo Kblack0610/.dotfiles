@@ -21,13 +21,13 @@ metadata:
       mode: deny
       why: "the same kill as a pkill of the interpreter, by its PIDs (the pkill -x node incident of 2026-11-12)"
     - match: |-
-        (?:^|[^A-Za-z0-9_.-])pkill(?:[ \t]+[^;&|\s]+)*[ \t]+(?:-[a-eg-zA-Z0-9]*f[A-Za-z0-9]*|--full)(?:[ \t;&|)"']|$)
-      use: "kill a PID you hold: `$!`, a pidfile, or the process you started; `pkill -x <name>` only for a name no other session runs, never an interpreter. To search or write about the command, break the phrase, e.g. `rg 'pkill[ ]-f'`"
+        (?:^|[^A-Za-z0-9_.-])pkill(?:[ \t]+[^;&|\s]+)*[ \t]+(?:-[a-eg-zA-Z0-9]*f[A-Za-z0-9]*|--full)(?![ \t]+(?:\^?\$\{?PWD\}?|\^[^\s;&|)]*/\.worktrees/[^/\s;&|)]+|\^/(?:var/)?tmp)/[^\s;&|)])(?:[ \t;&|)"']|$)
+      use: "kill a PID you hold: `$!`, a pidfile, or the process you started; `pkill -x <name>` only for a name no other session runs, never an interpreter. A -f pattern passes unquoted when it starts with `$PWD/` (the shell's argv holds `$PWD`, not its expansion) or is ^-anchored on this tree or /tmp: `pkill -f $PWD/tests/x`, `pkill -f ^/tmp/mine/`. To search or write about the command, break the phrase, e.g. `rg 'pkill[ ]-f'`"
       mode: deny
-      why: "a -f pattern also matches this command's own shell and other sessions' processes, so it kills them (a test-file pattern once killed every worktree's bats run; 291 session-days of the lesson before the guard)"
+      why: "a -f pattern also matches this command's own shell (whose argv holds the command text) and other sessions' processes, so it kills them (a test-file pattern once killed every worktree's bats run; 291 session-days of the lesson before the guard)"
     - match: |-
-        (?m)\A(?=.*(?:^|[;&|(`]|\$\(|xargs(?:\s+[^;&|\s]+)*)[ \t]*(?:sudo[ \t]+)?kill(?:\s|$))(?=.*(?:^|[^A-Za-z0-9_.-])pgrep(?:[ \t]+[^;&|\s]+)*[ \t]+(?:-[a-eg-zA-Z0-9]*f[A-Za-z0-9]*|--full)(?:[ \t;&|)"']|$))
-      use: "`pgrep -x <name>`, or a PID you hold, before `kill`"
+        (?m)\A(?=.*(?:^|[;&|(`]|\$\(|xargs(?:\s+[^;&|\s]+)*)[ \t]*(?:sudo[ \t]+)?kill(?:\s|$))(?=.*(?:^|[^A-Za-z0-9_.-])pgrep(?:[ \t]+[^;&|\s]+)*[ \t]+(?:-[a-eg-zA-Z0-9]*f[A-Za-z0-9]*|--full)(?![ \t]+(?:\^?\$\{?PWD\}?|\^[^\s;&|)]*/\.worktrees/[^/\s;&|)]+|\^/(?:var/)?tmp)/[^\s;&|)])(?:[ \t;&|)"']|$))
+      use: "`pgrep -x <name>`, or a PID you hold, before `kill`; a -f pattern starting with `$PWD/`, or ^-anchored on this tree or /tmp, unquoted, passes"
       mode: deny
       why: "the -f pattern is on the shell's own command line, so the pgrep matches that shell and the kill takes it down"
     - match: |-
