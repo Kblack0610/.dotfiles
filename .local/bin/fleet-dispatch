@@ -7470,6 +7470,10 @@ cmd_run() {
   [ "$DRY" = 1 ] || triage_pass
   # Each skip takes the exit its rule names (plan, the human, a gate); a dry run only reads.
   [ "$DRY" = 1 ] || ! agent-hold check dispatch >/dev/null 2>&1 || skip_exits
+  # The judge runs every pass, before any gate: a verdict is a model call, not a start. Inside the fill
+  # alone it ran only on passes that reached the board, so on 2026-11-23 a flapping k3s red and the load
+  # gate left 1,855 rows unjudged. A failed judge is the pass's outcome (settle); the fill does not judge again.
+  [ "$DRY" = 1 ] || ! agent-hold check dispatch >/dev/null 2>&1 || { load_pool_idle; judge_once; } || true
   pace_target
   [ -n "$TOTAL_LIVE" ] || { settle BLOCKED "live sessions unreadable: the fleet state document ($FLEET_STATE_FILE) is missing or older than $DISPATCH_STATE_FRESH_MIN min, so the pace target cannot be read"; return 0; }
   say "pace target: $TOTAL_LIVE of $TARGET live sessions (the human is $TARGET_WHEN: the live ones plus the Opus sessions the Claude spend has spare at pace, at most present $DISPATCH_TARGET_PRESENT, away $DISPATCH_TARGET_AWAY)$NEEDS_NOTE"
