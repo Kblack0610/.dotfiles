@@ -143,12 +143,33 @@ repo() {
   assert_not_called 'research(roster)'
 }
 
+@test "an open roster row is seen as the board lists it: scope rewritten to the area, text reworded (ar-4422)" {
+  stub notes 'case "$4" in
+    list) printf "p\t1\tr\t- [ ] research(notes): add a x facet to research-facets.json or list it under exclude #research\n" ;;
+    add) printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log" ;;
+  esac; exit 0'
+  run "$PICK" run
+  assert_success
+  assert_output --partial 'coverage: other uncovered, a roster row is already open'
+  assert_not_called 'ptask agent-runtime --agent add'
+}
+
+@test "an open row that only mentions the roster file is not a roster row (ar-4422)" {
+  stub notes 'case "$4" in
+    list) printf "p\t1\tr\t- [ ] research(notes): document the research-facets.json schema #research\n" ;;
+    add) printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log" ;;
+  esac; exit 0'
+  run "$PICK" run
+  assert_success
+  assert_output --partial 'coverage: filed a roster row for other'
+}
+
 @test "an open roster row on a long board is seen with SIGPIPE ignored, as under systemd" {
   # The row comes first and 5000 more follow (about 130 KB, past the 64 KB pipe buffer), so a
   # reader that stops at the first hit leaves the writer an EPIPE; before, pipefail read that
   # as "none open" and the log said "picked".
   stub notes 'case "$4" in
-    list) printf "p\t1\tr\tresearch(roster): add a facet for x\n"; for i in $(seq 5000); do printf "p\t%s\tr\tfiller row %s\n" "$i" "$i"; done ;;
+    list) printf "p\t1\tr\t- [ ] research(notes): add a personal-sites facet to research-facets.json or list it under exclude #research\n"; for i in $(seq 5000); do printf "p\t%s\tr\tfiller row %s\n" "$i" "$i"; done ;;
     add) printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; exit 3 ;;
   esac; exit 0'
   run bash -c 'trap "" PIPE; exec "$0" run' "$PICK"
