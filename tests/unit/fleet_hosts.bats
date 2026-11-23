@@ -358,37 +358,16 @@ exit \"\$(cat \"\$NOTES_FIXTURE/panel.rc\" 2>/dev/null || echo 0)\""
   source "$REPO_ROOT/.local/lib/agent-merge-proof.sh"
   # shellcheck source=/dev/null
   source "$REPO_ROOT/.local/lib/fleet-worker-panel.sh"
-  local gitc=(git -c user.email=t@t -c user.name=t -c protocol.file.allow=always)
-  local sup="$HOME/.worktrees/sup"
-  local sub="$sup/module"
-  git init -q --bare "$SANDBOX/sub.git"
-  git clone -q "$SANDBOX/sub.git" "$SANDBOX/subw" 2>/dev/null
-  "${gitc[@]}" -C "$SANDBOX/subw" commit -q --allow-empty -m s0
-  git -C "$SANDBOX/subw" push -q origin HEAD:master 2>/dev/null
-
-  git init -q -b main "$sup"
-  "${gitc[@]}" -C "$sup" commit -q --allow-empty -m init
-  git -C "$sup" -c protocol.file.allow=always submodule -q add "$SANDBOX/sub.git" module 2>/dev/null
-  "${gitc[@]}" -C "$sup" commit -q -m pin
-  git -C "$sup" update-ref refs/remotes/origin/main HEAD
-
-  # Submodule has a pin-merge commit that the superproject's main pins
-  git -C "$sub" checkout -q -b pin-merge
-  echo 1 > "$sub/f"; "${gitc[@]}" -C "$sub" add f; "${gitc[@]}" -C "$sub" commit -q -m pm
-  git -C "$sup" add module; "${gitc[@]}" -C "$sup" commit -q -m 'pin the pin-merge'
-  git -C "$sup" update-ref refs/remotes/origin/main HEAD
-
-  # Master in the submodule moves ahead, so the pin is behind master
-  "${gitc[@]}" -C "$SANDBOX/subw" commit -q --allow-empty -m s1
-  git -C "$SANDBOX/subw" push -q origin HEAD:master 2>/dev/null
-  git -C "$sub" fetch -q origin
+  load '../helpers/submodule'
+  local sub="$HOME/.worktrees/sup/module"
+  pinned_submodule "$HOME/.worktrees/sup"
 
   run wp_git "$sub" ''
   assert_success
   assert_equal "$(jq -r .ahead <<<"$output")" 0
 
   # Negative control: an extra unpinned commit counts ahead
-  echo 2 > "$sub/extra"; "${gitc[@]}" -C "$sub" add extra; "${gitc[@]}" -C "$sub" commit -q -m extra
+  unpinned_commit "$sub"
   run wp_git "$sub" ''
   assert_success
   assert_equal "$(jq -r .ahead <<<"$output")" 1
