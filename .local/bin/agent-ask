@@ -997,13 +997,16 @@ cmd_answer() {
     echo "agent-ask: $id is $(field "$f" status); an agent answer does not replace one" >&2; return 1
   fi
   # Only the human's answer releases a gate (released_by), so an agent answer to an ask a queue
-  # item or board row waits on would close the ask, drop it off the human's list, and leave the gate
-  # shut for good. 2026-11-22: a cleanup answered XqrCXG, Kx1MNl, 79LHB7 and 9TksjR that way, and
-  # queue-starved tripped on tr-186, ucp-1816, ucp-1548 and bk-111 (ar-3172, ar-4682).
-  local holders
-  if [ "$by" = agent ] && holders="$(queue_holders "$id" | cut -f1 | paste -sd' ')" && [ -n "$holders" ]; then
-    echo "agent-ask: $id holds $holders, which only the human's answer releases; it stays pending for them (agent-ask recommend $id <option> sets your pick)" >&2
-    return 1
+  # item or board row waits on would close the ask, drop it off the human's list, and leave the
+  # gate shut for good. A queue that cannot be read refuses too, since it hides any holder.
+  if [ "$by" = agent ]; then
+    load_queue_asks
+    [ -n "$QUEUE_READ" ] || { echo "agent-ask: cannot read the queue's holds ($AGENT_ASK_QUEUE_CMD ask-holds), so $id stays pending" >&2; return 1; }
+    local holders; holders="$(queue_holders "$id" | cut -f1 | paste -sd' ')"
+    if [ -n "$holders" ]; then
+      echo "agent-ask: $id holds $holders, which only the human's answer releases; it stays pending for them (agent-ask recommend $id <option> sets your pick)" >&2
+      return 1
+    fi
   fi
 
   # A human answer is the review of any judge answer. One given after the judge's stands beside

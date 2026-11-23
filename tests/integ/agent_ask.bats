@@ -152,8 +152,7 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   run "$AGENT_ASK" show "$d"; assert_line 'answered_by: human'
 }
 
-# 2026-11-22: a cleanup session answered four asks that board rows waited on; each read answered,
-# left the human's list, and its row could never start, so queue-starved tripped (ar-3172).
+# An agent answer to a held ask would close it while the gate it holds stays shut for good.
 @test "answer: an agent answer to an ask a board row or queue item waits on is refused and leaves it pending" {
   local opts='go=run it now|later=run it later' a b c
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
@@ -167,7 +166,7 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   run "$AGENT_ASK" show "$a"; assert_line 'status: pending'
   run env CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" answer "$b" go
   assert_failure 1
-  assert_output --partial "$b holds held,"
+  assert_output --partial "$b holds held, which only the human's answer releases"
   run "$AGENT_ASK" show "$b"; assert_line 'status: pending'
   # The human's answer from a board still releases it.
   run "$AGENT_ASK" answer "$b" go
@@ -178,6 +177,12 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   run env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer "$c" go
   assert_success
   run "$AGENT_ASK" show "$c"; assert_line 'answered_by: agent'
+  # A queue it cannot read hides any holder, so the agent answer is refused.
+  c="$("$AGENT_ASK" post --project demo --options "$opts" 'unreadable?')"
+  run env AGENT_ASK_QUEUE_CMD=false AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer "$c" go
+  assert_failure 1
+  assert_output --partial 'cannot read the queue'
+  run "$AGENT_ASK" show "$c"; assert_line 'status: pending'
 }
 
 @test "another session, or a post with no session id, is not held by someone else's ask" {
