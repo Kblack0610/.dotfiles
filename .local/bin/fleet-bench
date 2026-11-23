@@ -416,18 +416,22 @@ with_reads() {
 
 # bench_read <cmd...> -> the command's output and status. Under with_reads each distinct command
 # line runs once and every later caller gets that answer, a concurrent section included (it waits
-# on the lock); outside one, the command just runs. The queue's done read alone is about 3 s and
-# 10 MB, and the KPIs took it four times (ar-4590).
+# on the lock); outside one, the command just runs. A failed read is not kept, so the next caller
+# tries it again. The queue's done read alone is about 3 s and 10 MB, and the KPIs took it four
+# times (ar-4590).
 bench_read() {
   [ -n "${BENCH_READ_CACHE:-}" ] && command -v flock >/dev/null || { "$@"; return; }
-  local f
-  f="$BENCH_READ_CACHE/read.$(printf '%s\n' "$*" | cksum | tr ' ' .)"
+  local f rc=0
+  f="$BENCH_READ_CACHE/read.$(printf '%s\0' "$@" | sha1sum | cut -d' ' -f1)"
   {
     flock 9
-    [ -e "$f.rc" ] || { "$@" >"$f.out" 9>&-; echo "$?" >"$f.rc"; }
+    if [ ! -e "$f.ok" ]; then
+      "$@" >"$f.out" 9>&- || rc=$?
+      [ "$rc" -ne 0 ] || : >"$f.ok"
+    fi
+    cat "$f.out"   # under the lock: a caller retrying a failed read rewrites the file
   } 9>"$f.lock"
-  cat "$f.out"
-  return "$(cat "$f.rc")"
+  return "$rc"
 }
 
 # Concurrent sections, inside with_reads: par_open (after `local PAR PAR_PIDS`) makes the caller's
@@ -4846,13 +4850,14 @@ hold_runs() {
 # log, a commit's files, a file at a sha): a red stands for many passes and every hub refresh and KPI
 # sample reads it, on the REST budget of 2026-10-29. A failed read is not kept.
 hold_memo() {
-  local file="$MAIN_CACHE/hold_$1" out
+  local file="$MAIN_CACHE/hold_$1" out tmp
   shift
   [ -e "$file" ] && { cat "$file"; return; }
   out=$("$@") || return 1
   mkdir -p "$MAIN_CACHE"
   find "$MAIN_CACHE" -maxdepth 1 -name 'hold_*' -mtime +"$REDS_DAYS" -delete
-  printf '%s\n' "$out" > "$file.$$" && mv "$file.$$" "$file"
+  # mktemp, not $$: concurrent sections (par_go) share the parent's $$
+  tmp=$(mktemp "$file.XXXXXX") && printf '%s\n' "$out" > "$tmp" && mv "$tmp" "$file"
   printf '%s\n' "$out"
 }
 
