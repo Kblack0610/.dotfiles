@@ -36,3 +36,9 @@ setup() {
   assert_success
   assert_line $'remote-screen-opaque\tclass=^([Rr]ustdesk|com\\.freerdp\\.client\\.sdl3|Vncviewer|scrcpy|com\\.moonlight_stream\\.Moonlight)$\t\topaque=true'
 }
+
+@test "the Mac remote screen (RustDesk on Wayland or XWayland, or VNC) opens on 5" {
+  run hypr_dump rules
+  assert_success
+  assert_line $'mac-remote-ws5\tclass=^([Rr]ustdesk|Vncviewer)$\t5\t'
+}

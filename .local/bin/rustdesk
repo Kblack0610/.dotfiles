@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# rustdesk - start RustDesk under XWayland. It is first on PATH, so the menu entry
+# (Exec=rustdesk), terminals and scripts all come here.
+#
+# Why: under native Wayland on the NVIDIA desktop its Flutter window fails
+# "Failed to initialize GLArea: No available configurations for the given pixel
+# format" and opens empty, showing the blur behind it (2026-11-23, RustDesk 1.5.3).
+exec env GDK_BACKEND=x11 /usr/bin/rustdesk "$@"
