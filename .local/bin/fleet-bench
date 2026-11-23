@@ -2795,7 +2795,7 @@ rules_problems() {
           elif .remove_by < $today then "agent route: \($id): its removal by \(.remove_item) was due \(.remove_by); delete the gate"
           else empty end
         else empty end,
-      (if (.added // "") | (try (strptime("%Y-%m-%d") | mktime | strftime("%Y-%m-%d")) catch "") as $d | . != $d
+      (if (.added // "") | (try (strptime("%Y-%m-%d") | mktime | strftime("%Y-%m-%d")) catch "") as $d | $d == "" or . != $d
         then "gate added: \($id): \(.added // "missing") is not the YYYY-MM-DD the gate first merged, which rules --new reads" else empty end);
     .[] | (.source | split("/") | last) as $f
     | if .state == "stale" then "stale: \($f): \(.anchor)"

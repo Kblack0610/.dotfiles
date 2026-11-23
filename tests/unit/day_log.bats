@@ -599,7 +599,7 @@ EOF
   assert_output --partial '1 gate added on 2026-10-28, on your ask.'
   run rec -c 'any(.unreadable[]; . == "gate register")' 2026-10-28
   assert_output 'true'
-  rm "$SANDBOX/gates.fail" "$SANDBOX/gates"
+  rm "$SANDBOX/gates.fail"; : > "$SANDBOX/gates"
   "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
   run rec -c .gates 2026-10-28
   assert_output 'null'
