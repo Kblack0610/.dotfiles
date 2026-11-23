@@ -839,19 +839,42 @@ gate_board_tag() {
 }
 
 # stack_row <row id> -> sets STK to the open PR of the live item working that row (stack_pr) and
-# STK_SLUG to its slug; both empty when no live item of that row has one.
+# STK_SLUG to its slug; both empty when no live item of that row has one. The caller (cmd_gate)
+# declares ROW_LIVE and ROW_LIVE_READ; the live items' rows are read once into it (row_live_load).
 stack_row() {
-  local d f
+  local s
   STK="" STK_SLUG=""
-  for d in running waiting review; do
-    for f in "$AQ_DIR/$d"/*; do
-      [ -f "$f" ] && [[ "$(item_row "$f")" == *:"$1" ]] || continue
-      STK_SLUG="$(fm_get "$f" slug)"
-      stack_pr "$STK_SLUG"
-      [ -z "$STK" ] || return 0
-    done
+  row_live_load
+  for s in ${ROW_LIVE[$1]-}; do
+    STK_SLUG="$s"
+    stack_pr "$STK_SLUG"
+    [ -z "$STK" ] || return 0
   done
   STK_SLUG=""
+}
+
+# row_live_load -- ROW_LIVE[<row id>]: the slugs of the running, waiting and review items working that row
+# (item_row's row, read as fm_get reads a header), in that order, from one awk over every live item.
+# A gate --all asked item_row of every live item for each open #after/ row: 32 of its 34 s (ar-4911).
+row_live_load() {
+  [ -z "${ROW_LIVE_READ-}" ] || return 0
+  ROW_LIVE_READ=1
+  local d f s r
+  local -a files=()
+  for d in running waiting review; do for f in "$AQ_DIR/$d"/*; do [ -f "$f" ] && files+=("$f"); done; done
+  [ "${#files[@]}" -gt 0 ] || return 0
+  while IFS=$'\x1f' read -r s r; do
+    [ -n "$s" ] && [ -n "$r" ] || continue
+    ROW_LIVE[${r##*:}]+="${ROW_LIVE[${r##*:}]:+ }$s"
+  done < <(awk 'function out() { if (on) { r = row; if (r == "" && from ~ /^board:/) r = substr(from, 7); if (r ~ /:/) printf "%s\037%s\n", slug, r } }
+    function val(k) { v = substr($0, length(k) + 2); sub(/^ +/, "", v); return v }
+    FNR == 1 { out(); on = 1; hd = 1; slug = row = from = ""; gs = gr = gf = 0 }
+    !hd { next }
+    $0 == "---" { hd = 0; next }
+    !gs && index($0, "slug:") == 1 { slug = val("slug"); gs = 1 }
+    !gr && index($0, "row:") == 1 { row = val("row"); gr = 1 }
+    !gf && index($0, "from:") == 1 { from = val("from"); gf = 1 }
+    END { out() }' "${files[@]}" 2>/dev/null)
 }
 
 # after_fix <id> -> "; <the gate it should be>" for an #after/ id no board row has, when the id says
@@ -910,7 +933,8 @@ cmd_gate() {
   local usage="usage: agent-queue gate [--json] (--all | <tag>...)"
   local json="" all="" board="" unread="" t q st why id r via hop rc=0 GQ HOLD HOLD_DEAD stack STK STK_SLUG
   local -a tags=() ids=()
-  local -A RS=() NOPHASE=()
+  local -A RS=() NOPHASE=() ROW_LIVE=()
+  local ROW_LIVE_READ=''
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) json=1; shift ;;
