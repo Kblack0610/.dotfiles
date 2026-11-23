@@ -1171,9 +1171,9 @@ pub fn main_red(home: &crate::home::Home) -> Card {
     )
 }
 
-/// Home's card order on every surface. Needs you and Main red lead the widgets and the web Home
-/// (agent-web `cards::read`); the TUI Home has them as its Needs you list, so it draws `grid`, the
-/// rest of this list.
+/// Home's card order on every surface. Needs you and Main red lead the widgets, and Needs you the
+/// web Home (agent-web `cards::page`, where Main red is Needs you's red rows); the TUI Home has
+/// both as its Needs you list, so it draws `grid`, the rest of this list.
 pub const ORDER: &[&str] = &[
     "needs",
     "red",

@@ -1,7 +1,7 @@
-//! `/api/home/cards`: Home's status cards (`hub_core::cards`) in `cards::ORDER`: Needs you and Main
-//! red from Home's read, then the grid, one card per tab (and Done today), each from that tab's own
-//! kept read, so a card and its tab show the same numbers. The page, the widget and the push all
-//! read this one list. It is its own read beside `/api/home` because it runs ten readers and a
+//! `/api/home/cards`: Home's status cards (`hub_core::cards`) in `cards::ORDER`: Needs you from
+//! Home's read, then the grid, one card per tab (and Done today), each from that tab's own kept
+//! read, so a card and its tab show the same numbers. The widget and the push read the same list
+//! with Main red after Needs you (`read`); the page leaves Main red out (`PAGE_SKIPS`). It is its own read beside `/api/home` because it runs ten readers and a
 //! Home build (`home_read`, the build `/api/home` and the badge each run), and Home's Needs you
 //! table must not wait on them. The Board card maps the board Home itself keeps (`HomeParts`), so
 //! the grid adds no `notes board` read.
@@ -25,12 +25,24 @@ fn got<T: ?Sized, P: std::ops::Deref<Target = T>>(r: &Result<P, String>) -> card
     Some(r.as_ref().map(|p| &**p).map_err(String::as_str))
 }
 
+/// Main red's repos are Needs you rows of kind `red` on the page, and a part of its Needs you
+/// card; without it the grid keeps the rows `tests/agent-web/phone/render.mjs` holds it to (the
+/// first phone screen, three screens at 1400x900).
+const PAGE_SKIPS: &[&str] = &["red"];
+
 pub async fn get(State(s): State<Shared>) -> Json<Vec<Card>> {
-    Json(read(&s).await)
+    Json(page(read(&s).await))
 }
 
-/// Every Home card, in Home's order: Needs you and Main red, then the grid. `/api/home/cards`
-/// sends it whole and the widget picks its cards from it.
+/// The cards Home's page draws: every card but `PAGE_SKIPS`, in order.
+fn page(all: Vec<Card>) -> Vec<Card> {
+    all.into_iter()
+        .filter(|c| !PAGE_SKIPS.contains(&c.tab))
+        .collect()
+}
+
+/// Every Home card, in Home's order: Needs you and Main red, then the grid. The widget picks its
+/// cards from it and `/api/home/cards` sends its `page`.
 pub(crate) async fn read(s: &Shared) -> Vec<Card> {
     let (grid, home) = tokio::join!(grid(s), crate::home_read(s));
     let mut all = home_cards(home, hub_core::jobs::now());
@@ -104,14 +116,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn needs_you_and_main_red_lead_in_homes_order() {
+    fn needs_you_leads_the_page_and_needs_and_red_the_widget() {
         let mut all = home_cards(Ok(hub_core::home::Home::default()), 0);
         all.extend(cards::grid(&Default::default()));
         let tabs: Vec<_> = all.iter().map(|c| c.tab).collect();
-        assert_eq!(
-            tabs,
-            cards::ORDER,
-            "the page and the widget draw every card, Needs you first"
+        assert_eq!(tabs, cards::ORDER, "the widget reads every card");
+        let drawn: Vec<_> = page(all).iter().map(|c| c.tab).collect();
+        assert_eq!(drawn[0], "needs", "Needs you leads the page");
+        assert_eq!(drawn.len(), cards::ORDER.len() - 1);
+        assert!(
+            !drawn.contains(&"red"),
+            "Main red is Needs you's red rows on the page"
         );
     }
 
