@@ -782,18 +782,19 @@ mod tests {
     fn the_grid_is_two_across_at_eighty_and_four_from_one_sixty() {
         let all = hub_core::cards::grid(&Default::default());
         let at80 = grid_text(&all, 80);
-        // Ten cards, two across: five rows of four lines and a blank.
-        assert_eq!(at80.len(), 5 * 5, "{at80:#?}");
+        // Eleven cards, two across: six rows of four lines and a blank.
+        assert_eq!(at80.len(), 6 * 5, "{at80:#?}");
         assert!(
             at80[0].starts_with("DONE TODAY  - reading") && at80[0].contains("HEALTH  - reading")
         );
         assert_eq!(at80[0].find("HEALTH"), Some(39 + 2), "{:?}", at80[0]);
-        assert!(at80[20].starts_with("SCHEDULES") && at80[20].contains("PROJECTS"));
+        assert!(at80[20].starts_with("RELEASES") && at80[20].contains("SCHEDULES"));
+        assert!(at80[25].starts_with("PROJECTS"));
         assert!(at80.iter().all(|l| l.chars().count() <= 80));
         let at160 = grid_text(&all, 160);
         assert_eq!(at160.len(), 3 * 5);
         assert!(at160[0].contains("SESSIONS") && at160[5].contains("ALERTS"));
-        assert!(at160[10].starts_with("SCHEDULES"));
+        assert!(at160[10].starts_with("RELEASES") && at160[10].contains("SCHEDULES"));
         assert!(at160.iter().all(|l| l.chars().count() <= 160));
     }
 

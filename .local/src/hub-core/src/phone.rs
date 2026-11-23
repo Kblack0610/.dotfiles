@@ -1589,20 +1589,17 @@ mod tests {
     }
 
     #[test]
-    fn health_reads_ci_from_the_glance_the_ci_row_reads() {
+    fn the_ci_card_reads_the_glance_the_ci_row_reads_and_health_keeps_the_vitals() {
         let up = metric(
             "x",
             json!({"host": "box", "name": "box-1", "state": "running"}),
             "1",
         );
         let inf = infra(vec![("runners", vec![up])]);
-        let c = crate::cards::health(&inf);
-        assert_eq!(
-            (c.tab, c.title, c.link.href()),
-            ("health", "Health", "#infra".into())
-        );
+        let c = crate::cards::ci(&inf);
+        assert_eq!((c.tab, c.title, c.link.href()), ("ci", "CI", "#ci".into()));
         let part = |l: &str| c.parts.iter().find(|p| p.label == l).unwrap();
-        let running = &part("CI running").value;
+        let running = &c.big;
         assert_eq!(*running, inf.ci.glance.busy.to_string());
         let up = &part("Runners up").value;
         assert_eq!(*up, inf.ci.glance.up_line());
@@ -1611,10 +1608,14 @@ mod tests {
             ci.starts_with(&format!("CI: {running} running")) && ci.contains(&format!("{up} up")),
             "{ci} vs {running}, {up}"
         );
+        let h = crate::cards::health(&inf);
         let vitals = crate::vitals::read(&inf).unwrap();
-        assert_eq!(part("Vitals").value, vitals.tally());
+        assert_eq!(
+            h.parts.iter().find(|p| p.label == "Vitals").unwrap().value,
+            vitals.tally()
+        );
         if !vitals.all_ok {
-            assert_ne!(c.level, Level::Ok);
+            assert_ne!(h.level, Level::Ok);
         }
     }
 

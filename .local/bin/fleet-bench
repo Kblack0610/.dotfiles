@@ -3716,11 +3716,11 @@ cmd_sources() {
 # median work over the median of the calibrated weight-1 size with the most items. Percentiles
 # are nearest rank. .bands is the median work of each #pts band (s, m, l: notes-cli
 # epics::POINTS) over the items closed ok in the last BENCH_BANDS_DAYS whose row carries #pts (a
-# bare #size/ tag is not scored by size_rule, and most closes have only that), whether they
+# bare #size/ tag is not scored by the size rubric, and most closes have only that), whether they
 # climb: inverted when l is not slower than m or m not slower than s (a tie counts), each pair
 # read only when both its bands have BENCH_SIZES_MIN items; thin when no pair is out of order
 # but a band is under that.
-# size_rule's minutes in agentctl-inbox-triage are provisional on that order.
+# the size rubric's minutes (.config/inbox-size/prompt.md, agentctl-inbox-triage) are provisional on that order.
 sizes_json() {
   local since bands_since rows projects p items
   since=$(( $1 - BENCH_SIZES_DAYS * 86400 )) bands_since=$(( $1 - BENCH_BANDS_DAYS * 86400 ))
@@ -6099,7 +6099,7 @@ cmd_flow() {
 # --- canary: a fixed eval set run weekly, so "the agents got better" reads apart from "the task
 # mix changed". A task is one merged PR as data in BENCH_CANARY_DIR/<id>.json: {id, project, pr,
 # base (the commit before it), merge, task (its row text), pts (its size on the board's #pts/ scale,
-# scored by agentctl-inbox-triage's size_rule; a score row never copies it), accept (the oracle's test names),
+# scored by the size rubric, .config/inbox-size/prompt.md; a score row never copies it), accept (the oracle's test names),
 # oracle: {paths, cmd}}. The oracle is the PR's own tests, laid over the session's tree from
 # merge, so a session can neither see nor edit what scores it. A cmd run from tests/vendor (bats) needs the
 # link canary start, score and verify lay (canary_vendor); by hand, link the main checkout's tests/vendor first. A task with no merged PR (a known-answer

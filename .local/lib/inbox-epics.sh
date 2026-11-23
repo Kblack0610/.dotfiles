@@ -45,11 +45,6 @@ systems_of() {
   done
 }
 
-# new_epic_rule: the prompt text that lets an answer carry a new feature epic (epic_new files it).
-new_epic_rule() {
-  printf '%s' "When the work is a new capability the person could check by using it and no open epic covers it, the answer may carry \"epic\": \"epic(<system>): <that outcome, in the person's words>\", <system> being one of the project's systems; that epic is filed first, tagged #new, and the rows go under it. Never an epic for a fix, a chore or one small change."
-}
-
 # untagged <text>: the words without their hashtags (`#p:`, `#from/`, a priority), one space apart.
 untagged() { sed -E 's/(^| )#[A-Za-z][A-Za-z0-9_/:.-]*//g; s/ +/ /g; s/^ //; s/ $//' <<<"$1"; }
 

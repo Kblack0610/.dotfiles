@@ -12,7 +12,7 @@
 
 # AGENTCTL_CONF_DIR, the roster, and the budget keys are lib/budget.sh's (budget_conf).
 
-# agent_load <name> -> AGENT_KIND AGENT_ROLE AGENT_MODEL AGENT_PROMPT AGENT_SCHEMA AGENT_PROMPT_SHA
+# agent_load <name> -> AGENT_KIND AGENT_ROLE AGENT_MODEL AGENT_PROMPTS AGENT_PROMPT AGENT_SCHEMA AGENT_PROMPT_SHA
 #                      AGENT_ROUTE AGENT_DATA_CLASS AGENT_DELAY_RULES AGENT_HARNESS AGENT_SOURCE AGENT_CALL_CONTEXT, and for
 #                      the raw harness AGENT_MAX_TOKENS AGENT_TEMPERATURE, or exit 78; and the
 #                      conf's budget (lib/budget.sh), which replaces a parent runner's
@@ -54,25 +54,64 @@ add a KIND=call conf for it - see ~/.config/agentctl/README.md, \"What an agent 
   AGENT_CALL_CONTEXT="${v[13]:-}"
   case "$AGENT_CALL_CONTEXT" in ''|lean) ;; *) role_die "agent '$name' CALL_CONTEXT='$AGENT_CALL_CONTEXT' is not empty or lean ($conf)" ;; esac
   [ -n "$AGENT_ROLE" ] || role_die "agent '$name' declares no ROLE ($conf)"
-  AGENT_PROMPT_SHA=""
-  if [ -n "$AGENT_PROMPT" ]; then
-    [ -r "$AGENT_PROMPT" ] || role_die "agent '$name' PROMPT=$AGENT_PROMPT is not readable"
+  # PROMPT names one file, or several (colon-separated, as PATH) when the agent runs more than one pass:
+  # inbox-priority's priority and link batches. Each pass's call says which with --rendered-prompt.
+  local p
+  IFS=: read -ra AGENT_PROMPTS <<<"$AGENT_PROMPT"
+  for p in "${AGENT_PROMPTS[@]+"${AGENT_PROMPTS[@]}"}"; do
+    prompt_expand "$p" >/dev/null || role_die "agent '$name' PROMPT=$p is not readable ($conf)"
+  done
+  AGENT_PROMPT_SHA="" AGENT_PROMPT_RENDERED=""
+  if [ "${#AGENT_PROMPTS[@]}" = 1 ]; then
+    AGENT_PROMPT="${AGENT_PROMPTS[0]}"
     # The git blob hash: the same id `git log --find-object` answers for, so a score can be
-    # tied to the exact prompt text without storing it twice.
-    AGENT_PROMPT_SHA="$(git hash-object "$(readlink -f "$AGENT_PROMPT")")"
+    # tied to the exact prompt text without storing it twice (lib prompt-render.sh, prompt_sha).
+    AGENT_PROMPT_SHA="$(prompt_sha "$AGENT_PROMPT")"
+  else
+    AGENT_PROMPT=""
   fi
 }
 
-# agent_prompt_args <args...> -> AGENT_ARGS, with the PROMPT file put ahead of the -p text
+# agent_rendered <file>: this call's input is <file>, one of the conf's PROMPT files, already
+# filled in by its caller (a template, lib prompt-render.sh). The call line records that file and
+# its sha, so each pass of a several-prompt agent is scored against its own prompt, and nothing
+# is put ahead of the input.
+agent_rendered() {
+  local want p
+  want="$(readlink -f "$1")" || want=""
+  for p in "${AGENT_PROMPTS[@]+"${AGENT_PROMPTS[@]}"}"; do
+    if [ -n "$want" ] && [ "$(readlink -f "$p")" = "$want" ]; then
+      AGENT_PROMPT="$p" AGENT_PROMPT_RENDERED=1
+      AGENT_PROMPT_SHA="$(prompt_sha "$p")"
+      return 0
+    fi
+  done
+  role_die "--rendered-prompt $1 is not one of agent '$AGENTCTL_AGENT's PROMPT files (${AGENT_PROMPTS[*]:-none}): name it in the conf"
+}
+
+# agent_prompt_check: a prompt reaches the model only as text. Several PROMPT files need the
+# call to say which, and a template (one holding {{name}}) needs its caller to fill it.
+agent_prompt_check() {
+  [ -z "${AGENT_PROMPT_RENDERED:-}" ] || return 0
+  [ "${#AGENT_PROMPTS[@]}" -le 1 ] \
+    || role_die "agent '$AGENTCTL_AGENT' names ${#AGENT_PROMPTS[@]} PROMPT files: its caller passes --rendered-prompt <file> with the one it filled in"
+  [ -n "${AGENT_PROMPT:-}" ] || return 0
+  if prompt_has_vars "$AGENT_PROMPT"; then
+    role_die "agent '$AGENTCTL_AGENT' PROMPT=$AGENT_PROMPT is a template: its caller fills it (prompt_render) and passes --rendered-prompt"
+  fi
+}
+
+# agent_prompt_args <args...> -> AGENT_ARGS, with the PROMPT file put ahead of the -p text, unless
+# the input is that file rendered (--rendered-prompt)
 agent_prompt_args() {
   local i n=$# a=("$@") done=0
   AGENT_ARGS=("$@")
-  [ -n "${AGENT_PROMPT:-}" ] || return 0
+  [ -n "${AGENT_PROMPT:-}" ] && [ -z "${AGENT_PROMPT_RENDERED:-}" ] || return 0
   for ((i = 0; i < n; i++)); do
     case "${a[i]}" in
       -p|--print)
         [ $((i + 1)) -lt "$n" ] || break
-        AGENT_ARGS[i + 1]="$(cat "$AGENT_PROMPT")
+        AGENT_ARGS[i + 1]="$(prompt_expand "$AGENT_PROMPT")
 
 ${a[i + 1]}"
         done=1; break ;;
