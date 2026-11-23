@@ -731,11 +731,6 @@ pub fn project_target(word: &str) -> Option<(&'static Inner, Option<&'static str
         })
 }
 
-/// The project-page inner tab `word` names (`project_target`'s first half).
-pub fn project_inner(word: &str) -> Option<&'static Inner> {
-    project_target(word).map(|t| t.0)
-}
-
 /// The layout's tabs the TUI's number row leaves off: Daily, which only agent-web lists.
 pub const OFF_BAR: [&str; 1] = ["daily"];
 
@@ -1169,7 +1164,8 @@ mod tests {
     }
 
     #[test]
-    fn a_project_page_has_one_departments_tab_with_the_chips_its_type_gets_and_old_ids_land_there() {
+    fn a_project_page_has_one_departments_tab_with_the_chips_its_type_gets_and_old_ids_land_there()
+    {
         let ids = |p: Vec<Inner>| p.iter().map(|i| i.id).collect::<Vec<_>>();
         let nine: Vec<&str> = [
             "product",
@@ -1224,7 +1220,10 @@ mod tests {
         assert_eq!(at("build"), Some(("deliverables", None)));
         assert_eq!(at("p-build"), Some(("deliverables", None)));
         assert_eq!(at("departments"), Some(("departments", None)));
-        assert_eq!(at("departments/legal"), Some(("departments", Some("legal"))));
+        assert_eq!(
+            at("departments/legal"),
+            Some(("departments", Some("legal")))
+        );
         assert_eq!(at("Departments/nope"), Some(("departments", None)));
         for d in &nine {
             assert_eq!(at(d), Some(("departments", Some(*d))), "old id {d}");
@@ -1234,7 +1233,7 @@ mod tests {
             at("p-marketing-outbound"),
             Some(("departments", Some("marketing")))
         );
-        assert_eq!(project_inner("legal").map(|i| i.id), Some("departments"));
+        assert_eq!(project_target("legal").map(|t| t.0.id), Some("departments"));
         assert_eq!(at("nope"), None);
         let mut all: Vec<&str> = PROJECT_PAGE
             .iter()

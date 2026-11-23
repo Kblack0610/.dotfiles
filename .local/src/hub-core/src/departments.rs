@@ -372,9 +372,10 @@ impl Row for Product {
     fn link(&self, col: &str) -> Option<Link> {
         match col {
             "project" => Some(Link::to(Kind::Project, self.key())),
-            d if self.dept(d).is_some() => {
-                Some(Link::to(Kind::Project, format!("{}/departments/{d}", self.key())))
-            }
+            d if self.dept(d).is_some() => Some(Link::to(
+                Kind::Project,
+                format!("{}/departments/{d}", self.key()),
+            )),
             _ => None,
         }
     }

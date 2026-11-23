@@ -126,7 +126,7 @@ const pPage = (c) => PROJECT_PAGE.filter((t) => t[0] !== P_DEPT_TAB || pDepts(c)
 // Card c's inner tab for word w: a retired word lands on its new id, and a tab c lacks (Departments
 // on an untyped project) on Overview. Its chip: the one named when c has it, else the first.
 const pInnerFor = (c, w) => { const t = pWord(w)[0]; return pPage(c).some((x) => x[0] === t) ? t : "overview"; };
-const pDeptFor = (c, w) => pChips(c).some((x) => x[0] === w) ? w : (pChips(c)[0] || [""])[0];
+const pDeptFor = (c, w) => { const d = pChips(c); return d.some((x) => x[0] === w) ? w : (d[0] || [""])[0]; };
 // Projects' URL arg as the project, its inner tab and department: `<key>/<inner>` (or
 // `<key>/departments/<dept>`) when the tail is an inner tab and the whole arg is no project's
 // name, else the arg alone on Overview.
@@ -185,7 +185,7 @@ function pOpened(c) {
     html += `<div class="cline${pg.gate && pg.gate.fail ? " warn" : ""}">next stage: <a href="#" data-pgo="stage">${esc(pg.next_says)}</a></div>`;
     html += pg.errors.map((e) => `<div class="panel down">${esc(e)}</div>`).join("");
   } else if (got && got.err) html += `<div class="panel down">${esc(got.err)}</div>`;
-  const counts = { departments: Object.values(deptCounts(pKey(c))).reduce((a, n) => a + n, 0), ...(pg ? { overview: pg.need_count, stage: pg.gate ? pg.gate.fail : 0 } : {}) };
+  const counts = { departments: deptTotal(pKey(c)), ...(pg ? { overview: pg.need_count, stage: pg.gate ? pg.gate.fail : 0 } : {}) };
   return html + `</div>` + stripHtml(pPage(c), pst.inner, "ptab", [], counts);
 }
 
@@ -307,7 +307,7 @@ function pSprint(c, pg) {
 // open needs), then each chip's pane, the open chip's showing (pShow flips them in place).
 function pDepartments(c) {
   const key = pKey(c), n = deptCounts(key);
-  return secHead("p-departments", "Departments", Object.values(n).reduce((a, x) => a + x, 0) || null) +
+  return secHead("p-departments", "Departments", deptTotal(key) || null) +
     `<div class="dchips">${stripHtml(pChips(c), pst.dept, "pdept", [], n)}</div>` +
     pChips(c).map(([id]) => `<div data-pdp="${id}"${pst.dept === id ? "" : " hidden"}>${deptPane(key, id)}</div>`).join("");
 }

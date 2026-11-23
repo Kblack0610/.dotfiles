@@ -159,14 +159,9 @@ impl ProjView {
 
     /// `[` and `]` step the open department chip, wrapping at the ends.
     fn step_dept(&mut self, back: bool) {
-        let n = self.tabs.len();
-        let at = self
-            .tabs
-            .iter()
-            .position(|id| *id == self.dept)
-            .unwrap_or(0);
-        if n > 0 {
-            self.dept = self.tabs[if back { (at + n - 1) % n } else { (at + 1) % n }];
+        let to = crate::innertabs::step_of(&layout::project_depts(&self.tabs), self.dept, back);
+        if !to.is_empty() {
+            self.dept = to;
         }
     }
 
@@ -494,8 +489,8 @@ fn split_target(word: &str) -> (&str, Option<(&'static str, Option<&'static str>
         let (n, t) = rest.rsplit_once('/')?;
         t.eq_ignore_ascii_case(layout::DEPT_TAB).then_some((n, c))
     });
-    if let Some((n, c)) = chip {
-        if let Some((i, d)) = layout::project_target(&format!("{}/{c}", layout::DEPT_TAB)) {
+    if let Some((n, _)) = chip {
+        if let Some((i, d)) = layout::project_target(&word[n.len() + 1..]) {
             return (n, Some((i.id, d)));
         }
     }
