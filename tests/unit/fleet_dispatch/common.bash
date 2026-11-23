@@ -235,7 +235,8 @@ case "${args[0]}" in
           { print }' "$f" > "$f.new" && mv "$f.new" "$f"
         [ -f "$f.out" ] || { echo "no open task matches" >&2; exit 1; }
         cat "$f.out"; rm -f "$f.out" ;;
-      done)   # closed rows leave `list`, as the real board's do
+      done)   # closed rows leave `list`, as the real board's do; $NOTES_FIXTURE/ptask.done.fail refuses with its text
+        [ ! -f "$NOTES_FIXTURE/ptask.done.fail" ] || { cat "$NOTES_FIXTURE/ptask.done.fail" >&2; exit 1; }
         Q="${args[3]}" awk -F'\t' -v OFS='\t' '
           !hit && $2 ~ /^- \[[ \/]\]/ && (index($2, "id:" ENVIRON["Q"] " ") || index($1, ENVIRON["Q"])) { hit = 1; sub(/^- \[[ \/]\]/, "- [x]", $2) }
           { print }' "$f" > "$f.new" && mv "$f.new" "$f" ;;

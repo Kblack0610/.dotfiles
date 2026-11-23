@@ -1,23 +1,14 @@
 #!/usr/bin/env bash
-# Waybar custom/passthrough: show when keys are NOT reaching Hyprland, hidden otherwise.
+# Waybar custom/passthrough: show while keys are NOT reaching Hyprland, hidden otherwise.
+# That is the `passthru` submap (Super+` or Ctrl+Alt+Shift+G in, Super+Esc or
+# Ctrl+Alt+Shift+G out): every Hyprland bind but the way out is dead.
 #
-#   VDI  - the `passthru` submap (Super+` in, Super+Esc out): every Hyprland bind is dead.
-#   GRAB - binds:disable_keybind_grabbing is false (Ctrl+Alt+Shift+G): apps holding the
-#          keyboard-shortcuts-inhibit grab (RustDesk, Moonlight) get every key.
-#
-# No polling: Hyprland emits no event when an option changes, so whatever flips either
-# state runs `desk signal custom/passthrough`, SIGRTMIN+11 under waybar (the binds in hypr/conf/keybindings.lua, rustdesk-grab-toggle.sh,
-# and the config.reloaded hook in hypr/conf/autostart.lua, since a reload resets both).
+# No polling: Hyprland emits no event on a submap change here, so whatever flips it runs
+# `desk signal custom/passthrough`, SIGRTMIN+11 under waybar (the binds in
+# hypr/conf/keybindings.lua, and the config.reloaded hook in hypr/conf/autostart.lua,
+# since a reload resets the submap).
 
-out=()
-[[ "$(hyprctl submap 2>/dev/null)" == passthru ]] && out+=(VDI)
-[[ "$(hyprctl getoption binds:disable_keybind_grabbing -j 2>/dev/null | jq -r '.bool')" == false ]] && out+=(GRAB)
+[[ "$(hyprctl submap 2>/dev/null)" == passthru ]] || exit 0  # empty stdout: waybar hides it
 
-# Empty stdout: waybar hides the module.
-((${#out[@]})) || exit 0
-
-text="${out[*]}"
-tip="Keys are passing through to the focused window."
-[[ " $text " == *" VDI "* ]] && tip+="\\nVDI submap: Super+Esc to exit."
-[[ " $text " == *" GRAB "* ]] && tip+="\\nRustDesk grab: Ctrl+Alt+Shift+G to toggle, Ctrl+Alt+Shift+Esc to step out."
-printf '{"text":"PASS %s","tooltip":"%s","class":"active"}\n' "$text" "$tip"
+printf '{"text":"PASS","tooltip":"%s","class":"active"}\n' \
+  "Keys are passing through to the focused window.\\nSuper+Esc or Ctrl+Alt+Shift+G to exit."

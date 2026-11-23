@@ -575,11 +575,12 @@ mod tests {
             .iter()
             .map(|(o, n)| (o.to_string(), serde_json::json!(n)))
             .collect();
+        let chips: Vec<serde_json::Value> = hub_core::layout::PROJECT_DEPTS
+            .iter()
+            .map(|i| serde_json::json!([i.id, i.title, i.sections]))
+            .collect();
         for want in [
-            format!(
-                "const PROJECT_DEPTS = \"{}\";",
-                hub_core::layout::PROJECT_DEPTS
-            ),
+            format!("const PROJECT_DEPTS = {};", serde_json::Value::Array(chips)),
             format!(
                 "const PROJECT_RETIRED = {};",
                 serde_json::Value::Object(retired)
@@ -587,19 +588,20 @@ mod tests {
         ] {
             assert!(APP_JS.contains(&want), "app.js lacks {want}");
         }
-        // Every section a group names is an anchor projects.js draws, or a department section
+        // Every section a group names is an anchor projects.js draws; a chip's section is one
         // departments.js draws by its suffix (D_PART).
         let js = include_str!("../static/projects.js");
         let depts = include_str!("../static/departments.js");
         for i in hub_core::layout::PROJECT_PAGE {
             for s in i.sections {
-                let dept = hub_core::layout::dept_tab_ids().any(|d| d == i.id);
-                let drawn = if dept {
-                    s.strip_prefix(&format!("p-{}", i.id))
-                        .is_some_and(|suffix| depts.contains(&format!("\"{suffix}\": ")))
-                } else {
-                    js.contains(&format!("\"{s}\""))
-                };
+                assert!(js.contains(&format!("\"{s}\"")), "no script draws {s}");
+            }
+        }
+        for i in hub_core::layout::PROJECT_DEPTS {
+            for s in i.sections {
+                let drawn = s
+                    .strip_prefix(&format!("p-{}", i.id))
+                    .is_some_and(|suffix| depts.contains(&format!("\"{suffix}\": ")));
                 assert!(drawn, "no script draws {s}");
             }
         }

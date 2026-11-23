@@ -1,12 +1,12 @@
 ---
 name: work-comms
 description: >-
-  Draft work messages in the user's voice: warm, short, technical. Use for "draft a reply to <name>", "help me write a Slack/email", "tighten this message", "draft a ClickUp comment". AI-tell cleanup: de-ai-writing.
+  Draft work messages in the user's voice: warm, short, technical, plus client EOD and weekly updates (was work-update). Use for "draft a reply to <name>", "tighten this message", "write my EOD", "draft the weekly". AI-tell cleanup: de-ai-writing.
 metadata:
   category: messaging
-  tags: [writing, voice, work]
+  tags: [writing, voice, work, status, client]
   system: [any]
-  reviewed: "2026-09-16"
+  reviewed: "2026-11-23"
 ---
 
 # work-comms
@@ -69,6 +69,21 @@ For a ticket comment, findings review, or status write-up the user posts as-is. 
 - Before emitting, run the draft through `python3 ~/.claude/skills/de-ai-writing/scripts/check.py -` and fix true positives. Suspect words and rhythm flags are judgment calls.
 
 Markdown is fine here (headings, bullets, tables) since these go to a ticket or doc, and the plain-ASCII rule still holds. Keep bold for the rare word that truly needs emphasis. After emitting, offer to tune (shorter / drier / more or less technical) the same way reply mode does.
+
+## Client EOD and weekly (was work-update)
+
+"write my EOD", "EOD for <job>", "draft the weekly", "I sent it, here is what went out". The `work-update` CLI turns a day of work into a Slack-ready EOD, or a week of EODs into a weekly recap, for any job. The draft is saved under the job's notes, linted on the job's channel, and never sent. A reply to one person or a ticket comment is the modes above; the fleet's own status is `comms-standard`.
+
+A job is `~/.config/comms-lint/jobs/<job>.toml` over `_default.toml` (private overlay; `work-update config <job>` prints the merge). Keys: `notes_profile` (the `notes` profile whose root holds the daily notes; drafts go to `<root>/updates/` unless `updates_dir`), `repos` (day-log repo names that count), `section_names` (repo -> the section header the client knows it by), `eod_channel` and `weekly_channel` (the `comms-lint` channel each draft is linted on), `eod_prompt` and `weekly_prompt` (prompt files relative to the jobs dir: tone, greeting, emoji budget, sections, what never goes in), `weekly_day`. A new job is one file: copy the nearest, set `notes_profile` and `repos`, point at `_default`'s prompts or its own.
+
+1. **Facts.** `work-update facts <job> eod [--date D]` prints the merged PRs with their section names, the work items from the agent-queue ledger (longest first, with minutes and a day total), the daily note, the channel and the prompt path. `facts <job> weekly` adds each day's EOD, preferring the text that was sent. Add the human's raw notes when given. Where a PR title is too thin, read its body (`gh pr view`) or diff.
+2. **Draft.** Follow the job's prompt file: one section per project, plain lines, nothing copied from a PR title or commit message. Name the behavior the client can see; leave file names out. Never put another job's work, an internal id the client cannot open, or anything from the private fleet into a client update.
+3. **Save and lint.** `work-update save <job> eod [--date D] <file|->`. The draft is saved whatever the result; fix each finding and save again. Exit 1 means findings are open.
+4. **Hand it over.** Show the draft and its path. The human sends it; never post to Slack, email or any client channel, and never say one was sent.
+5. **Kept.** When the human pastes what they sent, `work-update kept <job> eod [--date D] -` saves `<date>-eod.sent.md` and appends the edit size to `updates/kept.jsonl`. A repeated edit means changing the job's prompt file in the private overlay, not this skill.
+6. **Weekly.** On `weekly_day`, after that day's EOD: `facts <job> weekly`, synthesize the week, do not retell it day by day, `save <job> weekly`. Write it from the saved EODs, never from memory or chat history.
+
+`work-update report [--since 30d]` lists drafts, kept updates and the median edit size per job; `comms-lint report --channel client-eod` scores drafts. A job's name, client, tone or prompt never goes in this skill or a public file.
 
 ## Conventions
 
