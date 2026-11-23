@@ -688,6 +688,12 @@ stack_dependent() {
   else [ -n "${AQ_ADD_STACKS-}" ]; fi
 }
 
+# add_stacks <text> <tags> -- prints 1 when the add under way may stack on its after: item's open PR
+# (stack_dependent's no-file case): a --plan phase (AQ_ITEM_PLAN), a validate item, or a phase brief.
+add_stacks() {
+  if [ -n "${AQ_ITEM_PLAN:-}" ] || [[ " $2 " == *" validate "* ]] || plan_phase_task "$1"; then echo 1; fi
+}
+
 # hold_for <after> <tags> [<file>] [<item file>] -> sets HOLD to hold_reason's answer for these
 # header values, HOLD_DEAD to 1 when that hold can never release (cmd_gate reads it), and
 # HOLD_STACK to "<slug>=<PR>" for each after: slug that is live with an open PR, when the item waiting
@@ -2014,9 +2020,7 @@ cmd_add() {
   # (QUEUE.md "Admission"). A --running record is already started, so it files no gate: an --after it
   # names must already have closed ok, or the add is refused (ar-3260). Dispatch's pull of a board row
   # (promote) judged that row's gates clear the moment before, so none is read twice.
-  local GATES='' AFTER_ITEMS='' AQ_ADD_STACKS=''
-  # Only a plan phase or a validate item stacks on its after: item's open PR (stack_dependent).
-  if [ -n "${AQ_ITEM_PLAN:-}" ] || [[ " $tags " == *" validate "* ]] || plan_phase_task "$text"; then AQ_ADD_STACKS=1; fi
+  local GATES='' AFTER_ITEMS='' AQ_ADD_STACKS="$(add_stacks "$text" "$tags")"
   if [ -n "$running" ] && [ -n "$after" ]; then
     local HOLD HOLD_DEAD
     check_after "$after" "$slug"
