@@ -1259,7 +1259,7 @@ watch_reds() {
 # red_floor_open -- a red start is due past the machine gates: RED_PASS says the start is a red item,
 # and the live red sessions plus the reds this pass started are under DISPATCH_RED_FLOOR plus one for
 # each tripped watch's red item. The pace target, load, fleet-assess and the weekly pace do not hold it;
-# agent-hold, the reserve and the github budget still do. RED_LIVE and RED_WATCH are
+# agent-hold, the reserve and the github budget still do, and a red cluster still holds cluster work. RED_LIVE and RED_WATCH are
 # cmd_run's counts before its first start, as FLOOR_LIVE.
 red_floor_open() {
   [ "${RED_PASS:-0}" = 1 ] || return 1
