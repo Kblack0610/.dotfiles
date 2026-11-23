@@ -164,7 +164,8 @@ impl Card {
 }
 
 /// The tab a card id opens: Needs you and Main red are Home's own lists, Done today is the
-/// queue's done items and Health the Infra tab; every other card is its tab's.
+/// queue's done items and Health the Infra tab; CI is `ci`, the retired tab name that lands on
+/// Infra's Runners tab (`layout::RETIRED`, `layout::section`); every other card is its tab's.
 fn opens(id: &str) -> &str {
     match id {
         "needs" | "red" => "home",
@@ -595,7 +596,7 @@ pub fn done(d: Option<&crate::phone::Done>) -> Card {
 /// vitals. CI is its own card (`ci`). It opens the Infra tab.
 pub fn health(i: &crate::infra::Infra) -> Card {
     const COUNTED: &str = "machines with a reading and the cc:domain_status domains from \
-         Prometheus; vitals are fleet-bench's KPIs against their targets";
+         Prometheus, a domain down turning the card red; vitals are fleet-bench's KPIs against their targets";
     if !i.ok {
         return Card::failed(
             "health",
@@ -656,7 +657,7 @@ pub fn health(i: &crate::infra::Infra) -> Card {
 /// CI: the jobs running now and the ones waiting, from the CI glance the bar's `CI r:N q:N`
 /// and the phone's CI row read, the runners up of the roster, the queued jobs no runner takes
 /// and what is stuck. Red only on a runner down, a job no runner takes or a stuck run
-/// (`Glance::alert`'s rule), never queue depth. It opens Infra's Runners tab.
+/// (`Glance::alert`'s rule plus Alerts' stuck runs), never queue depth. It opens Infra's Runners tab.
 pub fn ci(i: &crate::infra::Infra) -> Card {
     const COUNTED: &str = "CI running is the jobs on a runner now, Queued the jobs waiting and \
          Runners up the runners up of the roster, all from the CI glance; No runner is the \
