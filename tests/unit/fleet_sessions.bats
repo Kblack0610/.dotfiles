@@ -5453,6 +5453,19 @@ GH
   [ "$(jq -r .ci <<<"$output")" = PENDING ]
   # the rows it keeps waiting see where it stands (ar-3761)
   [ "$(jq -c .critical <<<"$output")" = '{"rows":["ucp-2901 #high"],"place":"behind the slot holder #2918"}' ]
+  # a gate running on its head is CI running, whatever the refusal said
+  ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$oid" 5)]"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2913 CI running' ]
+  ledger feat/x '[]'
+  # an annotation not yet readable is read again on the next pass, not kept empty for good
+  job 81 'Merge gate line:failure'; jq -n '[]' > "$SANDBOX/notes_81.json"
+  store landing-slot 81
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2913 CI red' ]
+  note 81 'landing slot: #2918 holds main until 08:10, and landing this would void its gate (PlayMode).'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2913 waiting on slot holder #2918' ]
 
   # negative controls: the holder let the slot go, a red of its own past the refusal, a gate line red for another
   # reason, a red with no job, or the knob off
