@@ -457,13 +457,13 @@ row_worker() {
 
 # re_icase <text> <ERE> -> 0 when the ERE matches the one-line text case-blind, as `grep -qiE` does, with
 # no fork: bash's =~ is the same glibc regex, \b included. A board walk asked grep 8,400 times a pass (ar-4911).
-re_icase() { local r; shopt -s nocasematch; [[ $1 =~ $2 ]]; r=$?; shopt -u nocasematch; return "$r"; }
+re_icase() { local r on=; shopt -q nocasematch && on=1; shopt -s nocasematch; [[ $1 =~ $2 ]]; r=$?; [ -n "$on" ] || shopt -u nocasematch; return "$r"; }
 
 # A board walk's rows as records, a row's fields split by ROW_US and each row ended by ROW_RS (no row
 # text holds either), so one jq a board builds every row's object: rows_recs(f) runs f on each row's
 # field array. A row f fails on is named on stderr and left out, as its own jq call left it out.
 ROW_US=$'\x1f' ROW_RS=$'\x1e'
-ROW_RECS_JQ='def rows_recs(f): split("\u001e")[:-1][] | split("\u001f") | try f catch ("fleet-dispatch: a board row left out: \(.)\n" | stderr | empty);'
+ROW_RECS_JQ='def rows_recs(f): split("\u001e")[:-1][] | split("\u001f") | . as $r | try f catch ("fleet-dispatch: board row \($r[0]) left out: \(.)\n" | stderr | empty);'
 
 # cleanup_row <project> <row text> -> 0 when the row cleans up an AI system: its project is in
 # DISPATCH_CLEANUP_PROJECTS and its kind is cleanup in kinds.json (KIND_CLEANUP: true, or a pattern
@@ -8390,9 +8390,11 @@ main() {
     run)
       PASS_TIMES='' PASS_MARK=$SECONDS
       shift; cmd_run "$@"; local rc=$?
+      local ran=$PASS_TIMES   # empty when the pass lost the lock (a NOOP) or left before the gates
       pass_mark "pass (${STARTED:-0} started)"
       # After the pass, so the floors and the cap's let-go have started what they would; under its lock.
       [ "$DRY" = 1 ] || ! flock -n 9 2>/dev/null || share_return
+      pass_mark share
       # The judge after the pass, so no start waits on a model call: inside the fill alone it ran only on
       # passes that reached the board, and on 2026-11-23 a flapping k3s red and the load gate left 1,855
       # rows unjudged. A pass whose fill judged already does not judge again (judge_once).
@@ -8404,7 +8406,7 @@ main() {
       # read every board a second time beside the one running.
       [ "$DRY" = 1 ] || ! flock -n 9 2>/dev/null || candidates_write || true
       pass_mark "headroom and candidates"
-      say "pass steps: $PASS_TIMES; ${SECONDS}s in all"
+      [ -z "$ran" ] || say "pass steps: $PASS_TIMES; ${SECONDS}s in all"
       return "$rc" ;;
     candidates) load_pool_idle; OFF_SAY=1 cmd_candidates ;;
     covered) cmd_covered ;;

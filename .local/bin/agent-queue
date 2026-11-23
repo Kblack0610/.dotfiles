@@ -864,7 +864,7 @@ row_live_load() {
   for d in running waiting review; do for f in "$AQ_DIR/$d"/*; do [ -f "$f" ] && files+=("$f"); done; done
   [ "${#files[@]}" -gt 0 ] || return 0
   while IFS=$'\x1f' read -r s r; do
-    [ -n "$s" ] && [ -n "$r" ] || continue
+    [ -n "$s" ] && [ -n "${r##*:}" ] || continue
     ROW_LIVE[${r##*:}]+="${ROW_LIVE[${r##*:}]:+ }$s"
   done < <(awk 'function out() { if (on) { r = row; if (r == "" && from ~ /^board:/) r = substr(from, 7); if (r ~ /:/) printf "%s\037%s\n", slug, r } }
     function val(k) { v = substr($0, length(k) + 2); sub(/^ +/, "", v); return v }
