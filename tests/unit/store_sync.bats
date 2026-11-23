@@ -610,6 +610,45 @@ pages() { grep -c '^agent-notify' "$NOTES_FIXTURE/calls.log" 2>/dev/null || true
   assert_equal "$(show "$ORIGIN" queue/item.md)" "state: open"
 }
 
+# add_shim <fails>: a git on PATH whose first <fails> `add` calls die as a file vanishing mid-walk does.
+add_shim() {
+  local real; real=$(command -v git)
+  mkdir -p "$SANDBOX/shim"
+  cat > "$SANDBOX/shim/git" <<SH
+#!/bin/bash
+for a in "\$@"; do
+  if [ "\$a" = add ]; then
+    n=\$(cat "$SANDBOX/adds" 2>/dev/null || echo 0)
+    echo \$((n + 1)) > "$SANDBOX/adds"
+    if [ "\$n" -lt "$1" ]; then echo "fatal: unable to stat 'queue/gone.md': No such file or directory" >&2; exit 128; fi
+    break
+  fi
+done
+exec "$real" "\$@"
+SH
+  chmod +x "$SANDBOX/shim/git"
+}
+
+@test "a file that vanishes while git add walks the tree costs a retry, never the unit (ar-4583)" {
+  peer a
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  add_shim 2
+  PATH="$SANDBOX/shim:$PATH" run on a
+  assert_success
+  assert_equal "$(cat "$SANDBOX/adds")" 3
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: done"
+}
+
+@test "a git add that keeps failing still fails the unit with 3 (ar-4583)" {
+  peer a
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  add_shim 99
+  PATH="$SANDBOX/shim:$PATH" run on a
+  assert_failure 3
+  assert_output --partial "ERROR: could not commit ."
+  assert_equal "$(cat "$SANDBOX/adds")" 3
+}
+
 @test "a held or young index.lock stays, and the commit it blocks fails the unit with 3" {
   peer a
   local lk="$SANDBOX/a/.git/index.lock" fd
