@@ -181,6 +181,7 @@ ask_expiring() {
   # caller (dream's add) is not that session, so only a failure's reason is shown.
   local out err rc
   err="$(mktemp)"
+  # gate: ap-approval
   out="$(env -u CLAUDE_CODE_SESSION_ID -u TMUX -u TMUX_PANE -u AGENTCTL_NAME "$AP_ASK_CMD" post --kind approval \
     --project "$(jq -r .project "$f")" --options "accept=$does|reject=drop it, it is not proposed again" \
     --context "$context" --resume 'run: agent-propose answered' -- "$q" 2>"$err" 9>&-)"

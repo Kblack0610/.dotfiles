@@ -54,6 +54,7 @@ fi
 # coordinate step 6, never a re-armed watch (2026-11-22: 58 empty re-arms over 29h).
 # Only a clean read of an empty ledger counts: a missing section, plan or command is not "all ticked".
 if [ -f "$PLAN" ] && OPEN=$(coord-watch ids "$PLAN" 2>/dev/null) && [ -z "$OPEN" ]; then
+  # gate: hook-stop-coord-watch
   jq -n --arg plan "$PLAN" '{decision: "block", reason: (
     "coord-watch: every line in " + $plan + "'"'"'s ledger is ticked, so there is nothing to watch. Coordinate step 6: "
     + "fleet-sessions label self -coordinator (keep manual), post the validation ask and run agent-ask reopen-on-answer <id>; do not re-arm.")}'
