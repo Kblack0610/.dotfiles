@@ -494,3 +494,34 @@ S
   assert_success
   assert_output ''
 }
+
+# ── lab_front_page: notes names the file, the shell keeps no copy (ar-4945) ──────────
+
+@test "lab_front_page prints the file notes names, so a game its parent versions reads its README" {
+  mk_summary game <<'S'
+# game
+S
+  mk_sheet game <<'S'
+# game #alpha
+S
+  printf '%s\n' "$PROJ/game/README.md" >"$NOTES_FIXTURE/front-page.game"
+  run lab_front_page "$PROJ/game/"
+  assert_success
+  assert_output "$PROJ/game/README.md"
+  assert_equal "$(lab_head_tag "$output" draft dev alpha beta prod)" alpha
+  # NEGATIVE CONTROL: with no answer from notes for it, the same README is no sheet.
+  rm "$NOTES_FIXTURE/front-page.game"
+  run lab_front_page "$PROJ/game"
+  assert_output "$PROJ/game/summary.md"
+}
+
+@test "lab_front_page fails and says so when notes prints no path, never reads as no stage" {
+  mk_summary game <<'S'
+# game #alpha
+S
+  printf '#!/bin/sh\necho "unexpected argument --front-page" >&2\nexit 2\n' >"$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  run lab_front_page "$PROJ/game"
+  assert_failure
+  assert_output --partial 'lab_front_page: notes projects --front-page printed no path'
+}

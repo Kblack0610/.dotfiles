@@ -1664,7 +1664,8 @@ fn a_game_with_no_version_of_its_own_is_on_its_parents_version_and_window() {
 #[test]
 fn a_game_its_parent_versions_declares_itself_on_its_readme() {
     let h = Home::new("front-page");
-    let game = with_game(&h, "");
+    // notes prints the canonical path, so compare against it.
+    let game = fs::canonicalize(with_game(&h, "")).unwrap();
     let front = |h: &Home| {
         let out = h.run(&["projects", "--front-page", game.to_str().unwrap()]);
         ok(&out);

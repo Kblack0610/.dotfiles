@@ -2008,6 +2008,11 @@ fn main() -> Result<()> {
                 std::process::exit(0);
             }
             if let Some(d) = front_page {
+                // Absolute, so `.` or a trailing slash still names the project dir the
+                // registry looks up by name.
+                let Ok(d) = std::fs::canonicalize(&d) else {
+                    bail!("--front-page: no project dir {}", d.display());
+                };
                 println!("{}", projects::front_page(&d).display());
                 std::process::exit(0);
             }

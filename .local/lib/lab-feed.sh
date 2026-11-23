@@ -242,8 +242,13 @@ lab_feed_gist() {
 # writes to that file, so a reader looking at any other would report a stage nobody set. A
 # copy of the rule kept here missed the version-parent case and read summary.md for every
 # playground game, so dispatch saw no stage and took none of their rows (ar-4945).
+# Fails, saying why, when notes prints no path (missing, or a binary older than the flag):
+# a caller must not read that as "no stage declared".
 lab_front_page() {
-  notes projects --front-page "${1%/}" 2>/dev/null
+  local page
+  page="$(notes projects --front-page "${1%/}")" && [ -n "$page" ] ||
+    { echo "lab_front_page: notes projects --front-page printed no path for ${1:-}" >&2; return 1; }
+  printf '%s' "$page"
 }
 
 # lab_head_tag <file> <vocab...> -> the first hashtag from `vocab` in the file's HEAD.

@@ -271,7 +271,8 @@ file_gaps() {
     # prod has no next: it checks itself.
     if [ -z "$TARGET" ]; then
       # shellcheck disable=SC2086 # the ladder is a word list on purpose
-      declared="$(lab_head_tag "$(lab_front_page "$LAB")" $ladder)"
+      page="$(lab_front_page "$LAB")" || exit 2
+      declared="$(lab_head_tag "$page" $ladder)"
       [ -n "$declared" ] || { echo "project-stage-check: \"$NAME\" declares no stage; pass --stage" >&2; exit 2; }
       TARGET="$(jq -r --arg ladder "$ladder" --arg d "$declared" '($ladder | split(" ")) as $l
         | ($l | index($d)) as $i | [([$i + 1, ($l | length) - 1] | min)]
@@ -790,7 +791,7 @@ LAB_STAGES="${LAB_STAGES:-$(notes projects --stages 2>/dev/null || true)}"
 
 if [ -z "$TARGET" ]; then
   # shellcheck disable=SC2086 # the ladder is a word list on purpose
-  [ -n "$LAB" ] && TARGET="$(lab_head_tag "$(lab_front_page "$LAB")" $LAB_STAGES)"
+  if [ -n "$LAB" ]; then page="$(lab_front_page "$LAB")" || exit 2; TARGET="$(lab_head_tag "$page" $LAB_STAGES)"; fi
   [ -n "$TARGET" ] || { echo "project-stage-check: \"$NAME\" declares no stage; pass --stage" >&2; exit 2; }
 fi
 lab_stage_at_least "$TARGET" "${LAB_STAGES%% *}" || { echo "project-stage-check: unknown stage \"$TARGET\" (want: $LAB_STAGES)" >&2; exit 2; }
