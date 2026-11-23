@@ -3077,7 +3077,7 @@ picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | 
   assert_success
 }
 
-@test "stopped: a finding names its items without their pools, a long reason is cut at a clause, --json carries the line" {
+@test "stopped: a finding names its items without their pools, a long reason is cut at a clause, --json carries the line and the whole reason" {
   hold_for 90 'finding firing: dbs-7-boss (starved pool:other), house-sleep-dinner (starved pool:other), 5 more, every queue item waits'
   run cmd_stopped
   assert_failure
@@ -3089,6 +3089,10 @@ picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | 
   assert_output --partial 'Dispatch stopped 2d2h: no account has room; bnb is the closest, 98% of its week used'
   run cmd_stopped --json
   jq -e '.runner == "fleet-dispatch" and (.line | startswith("Dispatch stopped 2d2h")) and (.since | type == "number")' <<<"$output"
+  # NEGATIVE CONTROL for the cut: the line is cut to 160, why is the whole reason, past the cut (ar-4985)
+  run jq -r '.why, .clears' <<<"$output"
+  assert_line 'no account has room; bnb is the closest, 98% of its week used, inside the last 15% kept for the human, and a great many more words that will not fit'
+  assert_line 'Clears when an account is back under its pace'
 }
 
 @test "stopped: the human's agent-hold reads as held with its own reason and how to release it" {

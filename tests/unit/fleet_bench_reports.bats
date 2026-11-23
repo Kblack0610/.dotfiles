@@ -159,7 +159,7 @@ lead_fixture() {
   run "$SUBJECT" pipeline --json
   assert_success
   run jq -c '[.steps[] | [.step, .wip, .age_p90_min, .in_1h, .out_24h, .ratio]], .drift, .bottleneck' <<<"$output"
-  assert_output "$(printf '%s\n' '[["inbox",3,null,2,4,null],["backlog",1,4560,0,1,null],["queued",1,120,1,1,0.67],["running",1,60,1,1,0.5],["review",1,30,1,0,null],["waiting",1,10,1,0,null],["done",1,null,1,0,null]]' 0 null)"
+  assert_output "$(printf '%s\n' '[["inbox",3,null,2,4,null],["backlog",1,4560,0,1,null],["admission",null,null,null,null,null],["queued",1,120,1,1,0.67],["dispatch",null,null,null,null,null],["running",1,60,1,1,0.5],["review",1,30,1,0,null],["waiting",1,10,1,0,null],["done",1,null,1,0,null]]' 0 null)"
   run "$SUBJECT" pipeline
   assert_success
   assert_line 'queued       1        2h    2h      2h         1/0         2/1        16m   20m      3h'
@@ -569,10 +569,78 @@ STUB
   run "$SUBJECT" pipeline --json
   assert_success
   run jq -c '[.steps[] | [.step, .problems_n, (.problems | length), .blocked]]' <<<"$output"
-  assert_output '[["inbox",null,0,null],["backlog",null,0,null],["queued",null,0,"Dispatch stopped"],["running",1,1,null],["review",null,0,null],["waiting",null,0,null],["done",null,0,null]]'
+  assert_output '[["inbox",null,0,null],["backlog",null,0,null],["admission",null,0,null],["queued",null,0,"Dispatch stopped"],["dispatch",null,0,null],["running",1,1,null],["review",null,0,null],["waiting",null,0,null],["done",null,0,null]]'
   run "$SUBJECT" pipeline
   assert_line 'blocked at queued: Dispatch stopped'
   assert_line 'problems over 24h: running 1'
+}
+
+@test "pipeline: dispatch reads held, not stopped, while floors start under the main lane's hold, and the headline says so (ar-4985)" {
+  pipeline_fixture
+  lt() { date -u -d "@$((T0 - $1))" +%Y-%m-%dT%H:%M:%S%:z; }
+  stop_stub "$((T0 - 3840))" 'pace target: 41 live sessions, the present target is 40' 'Clears when a live session ends'
+  jq -cn --argjson s "$((T0 - 3840))" '{runnable: 50, held: "pace target: 41 live sessions, the present target is 40", held_kind: "slots", held_since: $s, starved_min: 60}' > "$BENCH_HEADROOM"
+  {
+    echo "[$(lt 5000)] outcome=WORKED started queue item f0 on the run floor"
+    for a in 3000 2400 1800; do echo "[$(lt $a)] outcome=BLOCKED why: tagged 3 for a plan; pace target: 41 live sessions"; done
+    for a in 2000 1500 900; do echo "[$(lt $a)] outcome=WORKED started queue item f$a on the run floor"; done
+    echo "[$(lt 600)] outcome=WORKED under-used: started 1, room on bnb"
+  } > "$BENCH_DISPATCH_LOG"
+  run "$SUBJECT" pipeline --json
+  assert_success
+  run jq -c '.steps[] | select(.step == "dispatch") | [.wip, .held_min, .measure_bound, .score, .verdict, .floor_starts, .held_kind, .clears, .why]' <<<"$output"
+  assert_output '[50,64,60,1.07,"over",4,"slots","Clears when a live session ends",[{"reason":"started on a floor, the main lane held","n":4},{"reason":"pace target","n":3}]]'
+  run "$SUBJECT" pipeline --json
+  run jq -r '.headline.text' <<<"$output"
+  assert_output 'dispatch, main lane held 1h04m, floors started 4 (107% of 1h00m): pace target: 41 live sessions, the present target is 40. Clears when a live session ends.'
+  # NEGATIVE CONTROL: the same hold with no start under it is stopped
+  grep -v WORKED "$BENCH_DISPATCH_LOG" > "$BENCH_DISPATCH_LOG.new"; mv "$BENCH_DISPATCH_LOG.new" "$BENCH_DISPATCH_LOG"
+  run "$SUBJECT" pipeline --json
+  run jq -r '(.steps[] | select(.step == "dispatch") | .verdict), .headline.text' <<<"$output"
+  assert_line 'stopped'
+  assert_line 'dispatch, stopped 1h04m (107% of 1h00m): pace target: 41 live sessions, the present target is 40. Clears when a live session ends.'
+}
+
+@test "pipeline: the dispatch stop reason reaches the snapshot whole, past the 160 the stop line keeps (ar-4985)" {
+  pipeline_fixture
+  why="no account has room; bnb is the closest, 98% of its week used, inside the last 15% kept for the human, and $(printf 'a great many more words %.0s' 1 2 3 4 5)"
+  why=${why% }
+  stop_stub "$((T0 - 600))" "$why" 'Clears when an account is back under its pace' 'Dispatch stopped 10m: no account has room'
+  run "$SUBJECT" pipeline --json
+  assert_success
+  json=$output
+  run jq -r '.steps[] | select(.step == "dispatch") | .held' <<<"$json"
+  assert_output "$why"
+  run jq -r '.headline.text' <<<"$json"
+  assert_output "dispatch, stopped 10m: $why. Clears when an account is back under its pace."
+  run jq -r '.steps[] | select(.step == "queued") | .blocked' <<<"$json"
+  assert_output 'Dispatch stopped 10m: no account has room'
+  # NEGATIVE CONTROL: the reason is past the cut, so a 160 cut would have lost its tail
+  [ "${#why}" -gt 160 ]
+}
+
+@test "pipeline: admission counts the rows the cap held in 24h, and a step with no bound reads -, never ok (ar-4985)" {
+  pipeline_fixture
+  lat() { date -u -d "@$((T0 - $1))" +%Y-%m-%dT%H:%M:%SZ; }
+  {
+    jq -cn --arg a "$(lat 600)" '{at: $a, project: "game", slug: "a1", why: "cap"}'
+    jq -cn --arg a "$(lat 1200)" '{at: $a, project: "game", slug: "a1", why: "cap"}'
+    jq -cn --arg a "$(lat 1800)" '{at: $a, project: "game", slug: "a2", why: "returned"}'
+    jq -cn --arg a "$(lat 2400)" '{at: $a, project: "game", slug: "a3", why: "gated"}'
+    jq -cn --arg a "$(lat 90000)" '{at: $a, project: "game", slug: "a5", why: "cap"}'
+  } > "$BENCH_ADMISSION_LOG"
+  run "$SUBJECT" pipeline --json
+  assert_success
+  run jq -c '.steps[] | select(.step == "admission" or .step == "done" or .step == "inbox") | [.step, .measure, .measure_bound, .score, .verdict]' <<<"$output"
+  assert_output "$(printf '%s\n' '["inbox",null,null,null,"-"]' '["admission",2,null,null,"-"]' '["done",null,null,null,"-"]')"
+  run "$SUBJECT" pipeline --json
+  run jq -c '.steps[] | select(.step == "admission") | .why' <<<"$output"
+  assert_output '[{"reason":"cap","n":1},{"reason":"gated","n":1},{"reason":"returned","n":1}]'
+  # NEGATIVE CONTROL: with a bound, the same count scores against it and reads ok
+  echo admission_held_24h_max=4 >> "$KPI_THRESHOLDS"
+  run "$SUBJECT" pipeline --json
+  run jq -c '.steps[] | select(.step == "admission") | [.score, .verdict]' <<<"$output"
+  assert_output '[0.5,"ok"]'
 }
 
 @test "pipeline: a tick writes the snapshot before the gauges, even with no session progress" {
@@ -581,7 +649,7 @@ STUB
   [ ! -s "$PROGRESS" ]
   publish_window "$T0"
   run jq -c '[.as_of, (.steps | length)]' "$PIPELINE_SNAPSHOT"
-  assert_output "[$T0,7]"
+  assert_output "[$T0,9]"
 }
 
 @test "pipeline: no problems and no stop leave a clean snapshot, and a failed write keeps the last one" {
@@ -617,6 +685,7 @@ STUB
   assert_success
   assert_line 'agent_chain_wip{step="backlog"} 1'
   assert_line 'agent_chain_age_ratio{step="running"} 0.5'
+  assert_line 'agent_chain_score{step="queued"} 0.67'
   assert_line 'agent_chain_moves{step="inbox",dir="in"} 2'
   assert_line 'agent_chain_drift 0'
   refute_output --regexp '^agent_chain_(age_minutes|dwell_minutes)'
