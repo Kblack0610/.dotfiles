@@ -45,28 +45,27 @@ const NEED = ["plan", "ask", "perm", "turn", "blocked", "red"];
 // The wording the server sends beside each kind (hub_core::home NeedKind::label).
 const NEED_LABELS = ["Plan to approve", "Question", "Permission", "Your turn", "Blocked", "Failing"];
 // Every capped Home list holds more rows than the page draws (hub_core::home SHOWN), the Needs you list at the 83 that read 2783 px live (ar-2038): Home must stay under budget however long they run.
-const NEEDS = 83, RUNNING = 12, PROPOSALS = 12;
+const NEEDS = 83, PROPOSALS = 12;
 // The page size the server sends, read from hub-core so a change to it moves the fixture too.
 const HOME_SHOWN = Number(readFileSync(new URL("../../../.local/src/hub-core/src/home.rs", import.meta.url), "utf8").match(/pub const SHOWN: usize = (\d+);/)[1]);
 const home = {
-  errors: [], grafana: "https://grafana.example", sessions: "39 live, 3 need you, 2 stalled",
+  errors: [], grafana: "https://grafana.example",
   health: [{ name: "dispatch", level: "ok" }, { name: "shepherd", level: "warn" }, { name: "sentinel", level: "ok" }],
   vitals: null,
-  running: rows(RUNNING, (i) => ({ project: pick(PROJECTS, i), title: pick(TEXT, i), slug: `${pick(SLUGS, i)}-${i}`, started: iso(ago(40 + i * 10)), phases: { done: 1 + (i % 4), total: 4, next: "wire the renderer", eta: "20m", eta_epoch: NOW + 1200 }, target: i ? undefined : `lab/dotfiles-agent-${i}:1`, row: `ar-${1400 + i}`, epic: "ar-1292", pr: `#${1870 + i}`, pr_url: `https://github.com/${pick(REPOS, i)}/pull/${1870 + i}`, pr_state: "open", ci: pick(["fail", "pass"], i), ci_url: `https://github.com/${pick(REPOS, i)}/pull/${1870 + i}/checks` })),
-  running_table: table(RUNNING, ["item", "project", "row", "epic", "phase", "eta", "pr", "ci", "since"], ["all", "Overdue", "CI failing", "No session"], { project: PROJECTS.slice(0, 2), epic: ["ar-1292"], ci: ["fail", "pass"] }),
   table: table(NEEDS, ["rank", "kind", "project", "waited", "holds", "what"], ["all", "Plan to approve", "Question", "Permission", "Your turn", "Blocked", "To do", "Failing", "Stopped"], { project: PROJECTS.slice(0, 3) }),
   needs: rows(NEEDS, (i) => ({ kind: i % 2 ? "ask" : "session", id: `need-${i}`, need: pick(NEED, i), label: pick(NEED_LABELS, i), holds: `${3 - (i % 3)} waiting`, holds_line: `holds ${3 - (i % 3)}, ${i % 2 ? "high" : "normal"}`, what: "", rank: i + 1, project: pick(PROJECTS, i), since: ago(25 + i * 37), score: { holds: 3 - (i % 3), priority: i % 2 ? "high" : "normal" }, text: pick(TEXT, i), target: `agent-${i}` })),
   proposals: rows(PROPOSALS, (i) => ({ id: `prop-${i}`, stream: pick(["dream", "skill-refine", "sentinel"], i), project: pick(PROJECTS, i), title: pick(TEXT, i + 2), created: iso(ago(120 + i * 60)), error: null, why: pick(TEXT, i), evidence: "", does: "queue", expires: null, verb: "queue" })),
+  // One row per stream (hub_core::proposals::by_stream), what the page draws of the proposals.
+  streams: ["dream", "skill-refine", "sentinel"].map((stream, i) => ({ stream, project: pick(PROJECTS, i), count: PROPOSALS / 3, newest: NOW - 600 * (i + 1), oldest: NOW - 86400 * (i + 1) })),
   proposals_head: `${PROPOSALS} from 3 streams`, proposals_failed: false,
   proposals_table: table(PROPOSALS, ["stream", "project", "proposal", "created", "verb"], ["all", "queue", "row", "mem0", "none"], { stream: ["dream", "skill-refine"], project: PROJECTS.slice(0, 2) }),
 };
 // What the server sends of them (agent-web main.rs home_shown): Needs you and Proposals page 1 at
-// SHOWN, Running its first SHOWN (the page links the rest on Queue).
+// SHOWN.
 for (const [k, t] of [["needs", "table"], ["proposals", "proposals_table"]]) {
   home[t] = { ...home[t], pager: { page: 1, pages: Math.ceil(home[k].length / HOME_SHOWN), per: HOME_SHOWN } };
   home[k] = home[k].slice(0, HOME_SHOWN);
 }
-home.running = home.running.slice(0, HOME_SHOWN);
 const briefing = {
   since: iso(ago(600)), since_label: "since last night", errors: [], ok_line: "4 more lanes green",
   rows: rows(3, (i) => ({ name: pick(["dispatch", "ci", "spend"], i), link: "", level: pick(["warn", "bad", "ok"], i), line: TEXT[i + 3], details: [], fix: null })),

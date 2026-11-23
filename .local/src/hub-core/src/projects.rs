@@ -1009,7 +1009,7 @@ fn queue(c: &Card) -> String {
     )
 }
 
-/// The card's In flight as Home's Running table draws it, scoped to the project: the same
+/// The card's In flight as the Running table draws it, scoped to the project: the same
 /// [`Running`] row type, so the same columns and each cell's links. It is a fixed list on the
 /// project page (no query, sort or filter to give), so it sends no facets or state chips.
 pub fn running_table(c: &Card) -> crate::table::Summary {

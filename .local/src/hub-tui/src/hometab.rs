@@ -1,7 +1,8 @@
 //! The Home tab: a status card per tab (`hub_core::cards`), the vitals, what needs you, what
-//! changed since last night, what analysis proposes and what is running (with the session
-//! counts), from `hub_core::home` and `hub_core::briefing` (the readers agent-web's Home uses too). The machines, pools and CI that sat
-//! under it until phase 4 are the Infra tab's (`hub_core::layout`).
+//! changed since last night and what analysis proposes, one row per stream, from `hub_core::home`
+//! and `hub_core::briefing` (the readers agent-web's Home uses too). What is running is the Queue
+//! tab's. The machines, pools and CI that sat under it until phase 4 are the Infra tab's
+//! (`hub_core::layout`).
 
 use std::collections::BTreeMap;
 
@@ -17,28 +18,16 @@ use crate::fit::{cell, clip_line, Cell, Table};
 use crate::fmt::{clock, Palette};
 use hub_core::display::fmt::dur_since;
 
-/// Home's two tables and which has the keys: Needs you, or Running once Tab moves them there.
+/// Home's one table with a view: Needs you.
 #[derive(Debug, Default)]
 pub struct HomeView {
     pub needs: DataTable,
-    pub running: DataTable,
-    /// Running has the keys: j/k pick a row and Enter opens it.
-    pub on_running: bool,
-    /// A key moved Running's selection, so the next draw keeps it in view.
-    pub follow: bool,
 }
 
 impl HomeView {
-    /// A query is being typed into either table.
+    /// A query is being typed into the table.
     pub fn typing(&self) -> bool {
-        self.needs.typing.is_some() || self.running.typing.is_some()
-    }
-
-    /// Running's rows as drawn: its view over them, at most `SHOWN`.
-    pub fn running_rows<'a>(&self, h: &'a Home) -> Vec<&'a Running> {
-        let mut rows = self.running.view.apply(&h.running);
-        rows.truncate(SHOWN);
-        rows
+        self.needs.typing.is_some()
     }
 }
 
@@ -329,7 +318,7 @@ fn card_lines(c: &Card, p: Palette, cw: usize) -> [Line<'static>; 4] {
         )
     };
     let mut parts = vec![];
-    for (i, x) in c.parts.iter().enumerate() {
+    for (i, x) in c.parts.iter().filter(|x| !x.is_zero()).enumerate() {
         if i > 0 {
             parts.push(Span::raw("  "));
         }
@@ -360,8 +349,7 @@ fn card_lines(c: &Card, p: Palette, cw: usize) -> [Line<'static>; 4] {
                 p.dim(),
             ),
         ]),
-        (None, None) if c.level == Level::Nodata => Line::raw(""),
-        (None, None) => Line::styled("nothing to look at first", p.dim()),
+        (None, None) => Line::raw(""),
     };
     [head, bar, Line::from(parts), last].map(|l| clip_line(l, cw))
 }
@@ -390,8 +378,8 @@ pub fn cards(cards: &[Card], p: Palette, w: usize) -> Vec<Line<'static>> {
     out
 }
 
-/// The running items as one table: Home's Running and a project page's In flight alike, so the
-/// two never word a phase or an estimate apart (the PHASE cell is `Phases::shown`). `mark` is the
+/// The running items as one table: a project page's In flight, so it
+/// never words a phase or an estimate apart from the Queue tab (the PHASE cell is `Phases::shown`). `mark` is the
 /// sort column of `Row::COLUMNS` with its direction. `scoped` is one project's table: no PROJECT
 /// column, which every row would repeat.
 pub(crate) fn running_table(
@@ -456,7 +444,7 @@ pub(crate) fn running_table(
     t
 }
 
-/// Home as lines, and the line Running's selected row starts on while Running has the keys.
+/// Home as lines.
 pub fn page(
     h: &Home,
     grid: &[Card],
@@ -465,7 +453,7 @@ pub fn page(
     p: Palette,
     now: i64,
     w: usize,
-) -> (Vec<Line<'static>>, Option<usize>) {
+) -> Vec<Line<'static>> {
     let mut out = vec![];
     for e in &h.errors {
         out.push(clip_line(Line::styled(e.clone(), p.warn()), w));
@@ -503,105 +491,33 @@ pub fn page(
             format!("PROPOSALS ({})", h.proposals_head),
             p.head(),
         ));
+        // One row per stream (`hub_core::proposals::by_stream`); Enter opens the records.
         let t = Table {
             mark: None,
-            header: vec!["STREAM", "PROJECT", "AGE", "PROPOSAL"],
-            rows: h
-                .proposals
+            header: vec!["STREAM", "PROJECT", "NEWEST", "OLDEST", "COUNT"],
+            rows: hub_core::proposals::by_stream(&h.proposals)
                 .iter()
-                .take(SHOWN)
                 .map(|r| {
                     vec![
                         r.stream.clone().into(),
                         r.project.clone().into(),
-                        dur_since(r.at(), now).into(),
-                        r.title.clone().into(),
+                        dur_since(r.newest, now).into(),
+                        dur_since(r.oldest, now).into(),
+                        r.count.to_string().into(),
                     ]
                 })
                 .collect(),
-            keep: vec![3, 2, 0, 1],
-            flex: Some(3),
-            flexmin: 20,
+            keep: vec![4, 0, 1],
+            flex: Some(1),
+            flexmin: 12,
             flexkeep: true,
-            right: vec![2],
-            cap: vec![(0, 18), (1, 18)],
+            right: vec![2, 3, 4],
+            cap: vec![(0, 18), (1, 24)],
         };
         out.extend(t.fit_wrapped(w, p.dim()).0);
-        more(&mut out, h.proposals.len(), SHOWN, "more", p);
     }
 
-    out.push(Line::raw(""));
-    // The session counts head the list they count: beside the heading when they fit, else on a
-    // line under it (clipping would cut the counts that matter, need you and stalled).
-    let counts = if h.sessions.is_empty() {
-        String::new()
-    } else {
-        format!("sessions: {}", h.sessions)
-    };
-    let running_head = |head: Vec<Span<'static>>, out: &mut Vec<Line<'static>>| {
-        let n: usize = head.iter().map(|s| s.content.chars().count()).sum();
-        if counts.is_empty() {
-            out.push(Line::from(head));
-        } else if n + 3 + counts.chars().count() <= w {
-            let mut line = head;
-            line.push(Span::styled(format!("   {counts}"), p.dim()));
-            out.push(Line::from(line));
-        } else {
-            out.push(clip_line(Line::from(head), w));
-            out.push(clip_line(Line::styled(format!("  {counts}"), p.dim()), w));
-        }
-    };
-    let mut sel = None;
-    if h.running.is_empty() {
-        running_head(
-            vec![
-                Span::styled("RUNNING  ", p.head()),
-                Span::styled("nothing running from the queue", p.dim()),
-            ],
-            &mut out,
-        );
-    } else {
-        let rv = &view.running;
-        let kept = rv.view.apply(&h.running);
-        let all = kept.len();
-        let count = if all == h.running.len() {
-            all.to_string()
-        } else {
-            format!("{all} of {}", h.running.len())
-        };
-        running_head(
-            vec![Span::styled(format!("RUNNING ({count})"), p.head())],
-            &mut out,
-        );
-        out.push(clip_line(Line::from(rv.chips::<Running>(&h.running, p)), w));
-        let asked = rv.asked::<Running>(p);
-        if !asked.is_empty() {
-            out.push(clip_line(Line::from(asked), w));
-        }
-        let rows = &kept[..all.min(SHOWN)];
-        if rows.is_empty() {
-            out.push(Line::styled(
-                "no running item matches (/ query, f state, x clears)",
-                p.dim(),
-            ));
-            return (out, None);
-        }
-        let t = running_table(rows, p, now, rv.mark::<Running>(), false);
-        let (mut lines, starts) = t.fit_wrapped(w, p.dim());
-        // While Running has the keys its selected row is marked, every line it wraps onto.
-        if view.on_running {
-            let i = rv.sel.min(starts.len() - 1);
-            let end = starts.get(i + 1).copied().unwrap_or(lines.len());
-            for l in &mut lines[starts[i]..end] {
-                l.style = p.sel();
-            }
-            sel = Some(out.len() + starts[i]);
-        }
-        out.extend(lines);
-        more(&mut out, all, SHOWN, "more on the Queue tab", p);
-    }
-
-    (out, sel)
+    out
 }
 
 #[cfg(test)]
@@ -627,7 +543,6 @@ mod tests {
                 recommend: None,
                 score: Some(Score::new(true, true, 3, 0, 2)),
             }],
-            sessions: "3 working, 1 need you, 0 stalled".into(),
             ..Default::default()
         }
     }
@@ -648,7 +563,6 @@ mod tests {
         let v = NightView { night: n, fixes };
         let grid = hub_core::cards::grid(&Default::default());
         page(h, &grid, view, &v, Palette { no_color: true }, 1_000, w)
-            .0
             .iter()
             .map(plain)
             .collect::<Vec<_>>()
@@ -746,7 +660,7 @@ mod tests {
     }
 
     #[test]
-    fn the_cards_lead_and_the_session_counts_head_running() {
+    fn the_cards_lead_and_home_lists_nothing_the_queue_tab_lists() {
         let out = text(&home());
         // The cards lead, Done today first, reading until each read answers; no Flow or Spend
         // line (HEALTH is now a card's title, so it is no longer a sign of the old Health line).
@@ -754,9 +668,7 @@ mod tests {
         for gone in ["FLOW", "SPEND"] {
             assert!(!out.contains(gone), "{gone}: {out}");
         }
-        let head =
-            "RUNNING  nothing running from the queue   sessions: 3 working, 1 need you, 0 stalled";
-        assert!(out.contains(head), "the session counts head Running: {out}");
+        assert!(!out.contains("RUNNING"), "Running is the Queue tab's: {out}");
         assert!(out.find("PROJECTS").unwrap() < out.find("NEEDS YOU (1)").unwrap());
         assert!(out.contains("Question") && out.contains("dodginballs") && out.contains("2m"));
     }
@@ -822,20 +734,21 @@ mod tests {
         assert_eq!(out[3], "prometheus: timeout");
     }
 
-    #[test]
-    fn narrow_session_counts_drop_under_the_running_heading_whole() {
-        let out = viewed(&home(), &HomeView::default(), 60);
-        assert!(
-            out.contains("RUNNING  nothing running from the queue\n  sessions: 3 working, 1 need you, 0 stalled"),
-            "{out}"
-        );
-        assert!(out.lines().all(|l| l.chars().count() <= 60), "{out}");
+    /// A running item as the one table both Home once drew and a project's In flight still does.
+    fn running_lines(r: &Running, w: usize) -> String {
+        let p = Palette { no_color: true };
+        running_table(&[r], p, 1_000, None, false)
+            .fit_wrapped(w, p.dim())
+            .0
+            .iter()
+            .map(plain)
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]
     fn a_running_row_shows_its_row_epic_pr_and_ci_and_narrows_to_what_is_late_or_red() {
-        let mut h = home();
-        h.running = vec![hub_core::home::Running {
+        let mut r = hub_core::home::Running {
             slug: "s1".into(),
             title: "fix(x): the thing".into(),
             project: "dotfiles".into(),
@@ -844,8 +757,8 @@ mod tests {
             pr: Some("#1871".into()),
             ci: Some("fail".into()),
             ..Default::default()
-        }];
-        let out = viewed(&h, &HomeView::default(), 160);
+        };
+        let out = running_lines(&r, 160);
         assert!(
             out.contains("ROW")
                 && out.contains("EPIC")
@@ -859,54 +772,62 @@ mod tests {
                 .all(|s| out.contains(s)),
             "{out}"
         );
-        let narrow = viewed(&h, &HomeView::default(), 50);
+        let narrow = running_lines(&r, 50);
         assert!(
             narrow.contains("fail") && !narrow.contains("ar-1292"),
             "{narrow}"
         );
         // A title wider than the page wraps under ITEM instead of pushing CI off.
-        h.running[0].title = "fix(red): ".to_string() + &"word ".repeat(30);
-        let long = viewed(&h, &HomeView::default(), 80);
+        r.title = "fix(red): ".to_string() + &"word ".repeat(30);
+        let long = running_lines(&r, 80);
         assert!(long.contains("fail") && long.contains("#1871"), "{long}");
     }
 
     #[test]
-    fn running_marks_its_selected_row_only_while_it_has_the_keys() {
-        let mut h = home();
-        h.running = ["fix(a): one", "fix(b): two"]
-            .iter()
-            .map(|t| hub_core::home::Running {
-                slug: t.to_string(),
-                title: t.to_string(),
-                project: "dotfiles".into(),
-                ..Default::default()
-            })
-            .collect();
-        let at = |v: &HomeView| {
-            let (lines, sel) = page(
-                &h,
-                &[],
-                v,
-                &NightView {
-                    night: None,
-                    fixes: &Fixes::new(),
-                },
-                Palette { no_color: true },
-                1_000,
-                120,
-            );
-            sel.map(|i| (plain(&lines[i]), lines[i].style))
+    fn a_card_draws_no_chip_for_a_count_of_none_and_no_filler_under_it() {
+        let mut c = card("alerts", Level::Ok, &[(Level::Ok, 4)]);
+        let part = |label: &str, value: &str| hub_core::cards::Part {
+            label: label.into(),
+            value: value.into(),
+            level: Level::Ok,
+            link: None,
         };
-        let mut v = HomeView::default();
-        assert_eq!(at(&v), None, "Needs you has the keys: no row is marked");
-        v.on_running = true;
-        v.running.sel = 1;
-        let (line, style) = at(&v).unwrap();
-        assert!(line.contains("fix(b): two"), "{line}");
-        assert_eq!(style, Palette { no_color: true }.sel());
-        // A selection past the rows a re-read left is drawn on the last.
-        v.running.sel = 9;
-        assert!(at(&v).unwrap().0.contains("fix(b): two"));
+        c.parts = vec![part("Unfixed", "0"), part("Firing", "36"), part("Stuck", "0")];
+        let out = grid_text(&[c.clone()], 60);
+        assert_eq!(out[2], "Firing 36", "{out:?}");
+        assert!(out[0].starts_with("ALERTS  3 firing"), "the headline stays: {out:?}");
+        assert_eq!(out[3], "", "nothing to look at first is not said: {out:?}");
+        c.parts = vec![part("Unfixed", "0")];
+        assert_eq!(grid_text(&[c], 60)[2], "", "a card of only zeros has no chip line text");
+    }
+
+    #[test]
+    fn proposals_are_one_row_per_stream_with_their_count_and_ages() {
+        let mut h = home();
+        let prop = |id: &str, created: &str| hub_core::proposals::Proposal {
+            id: id.into(),
+            stream: "ci-failures".into(),
+            project: "unity-core-playground".into(),
+            title: format!("Fix {id}"),
+            created: created.into(),
+            ..Default::default()
+        };
+        h.proposals = vec![
+            prop("a1", "1970-01-01T00:10:00Z"),
+            prop("a2", "1970-01-01T00:05:00Z"),
+            prop("a3", "1970-01-01T00:00:00Z"),
+        ];
+        h.proposals_head = hub_core::proposals::heading(&h.proposals);
+        let out = text(&h);
+        let row = out
+            .lines()
+            .find(|l| l.contains("unity-core-playground"))
+            .unwrap_or_else(|| panic!("{out}"));
+        assert!(row.starts_with("ci-failures"), "{out}");
+        assert!(row.trim_end().ends_with(" 3"), "the count: {out}");
+        assert!(out.contains("NEWEST") && out.contains("OLDEST"), "{out}");
+        assert_eq!(out.matches("ci-failures").count(), 1, "one row, not three: {out}");
+        assert!(!out.contains("Fix a1"), "the records open on Enter: {out}");
     }
 
     #[test]

@@ -23,7 +23,7 @@ fn got<T: ?Sized, P: std::ops::Deref<Target = T>>(r: &Result<P, String>) -> card
 }
 
 pub async fn get(State(s): State<Shared>) -> Json<Vec<Card>> {
-    Json(read(&s).await)
+    Json(read(&s).await.into_iter().map(Card::drawn).collect())
 }
 
 /// The grid as `/api/home/cards` sends it; the widget picks its cards from the same read.

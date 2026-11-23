@@ -238,8 +238,8 @@ function etaText(p) {
   if (o) return `<span class="qlate" title="estimate ${esc(p.eta || "-")}; ${esc(o.phase || "")} open ${ageMin(o.age_min)}, expected ${ageMin(o.expected_min)}">overdue ${ageMin(o.age_min)}${eta ? ` (${eta})` : ""}</span>`;
   return eta ? `<span title="estimate ${esc(p.eta || "")}">${eta}</span>` : "";
 }
-// The running queue items (hub_core::home::Running) as one table, Home's Running and a project
-// page's In flight alike. Each row opens its session page, or its queue item when no session runs
+// The running queue items (hub_core::home::Running) as one table, a project page's In flight.
+// Each row opens its session page, or its queue item when no session runs
 // it, and each cell that names a record links to that record's page (`l`: tblLinks for the row).
 // The PHASE cell is hub_core's `Phases::shown`, the next phase a muted line under the item.
 // `scoped` is a table of one project: no PROJECT column, no sortable headers (a fixed list has no

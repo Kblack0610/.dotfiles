@@ -30,6 +30,13 @@ pub struct Part {
     pub link: Option<Link>,
 }
 
+impl Part {
+    /// A count of none: a surface draws no chip for it (`Card::drawn`).
+    pub fn is_zero(&self) -> bool {
+        self.value == "0"
+    }
+}
+
 /// A "where to look first" row: what it is, a line under it, and the record it opens.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct First {
@@ -88,6 +95,15 @@ impl Card {
             error: None,
             link: Link::tab(opens(tab)),
         }
+    }
+
+    /// The card as Home's grid draws it: a chip counting none is left out, since a count of zero
+    /// says nothing is there, and only the headline (`big`) stays when it is zero. Every reader
+    /// that looks a part up by its label (the widget, the phone, the waybar chips) takes the
+    /// whole card, so this is applied only where a grid is drawn.
+    pub fn drawn(mut self) -> Card {
+        self.parts.retain(|p| !p.is_zero());
+        self
     }
 
     /// The card of a reader that did not answer.
@@ -2015,14 +2031,10 @@ mod tests {
             s("hub/shepherd:1", "NEEDS", &["shepherd"]),
             s("hub/c:1", "WORKING", &[]),
         ];
-        let counts = json!({"WORKING": 1, "NEEDS": 2, "STALLED": 0});
-        let state = json!({"sessions": doc, "counts": counts, "generated_epoch": 1000});
         let rows = crate::session_table::rows(&doc, &Default::default(), &Default::default(), &[]);
         let c = sessions(&rows);
         let pill = c.parts.iter().find(|p| p.label == "Need you").unwrap();
-        let home = crate::home::build(Some(&state), None, None, None, 1000);
-        assert_eq!(home.sessions, "1 working, 2 need you, 0 stalled");
-        assert_eq!(pill.value, "2", "the card reads Home's count");
+        assert_eq!(pill.value, "2", "the card counts the sessions that need you");
         assert_eq!(c.big, "3", "the shepherd is no live session of the card");
     }
 

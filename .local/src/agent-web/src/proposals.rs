@@ -5,7 +5,7 @@ use axum::extract::Query;
 use axum::http::StatusCode;
 use axum::Json;
 use hub_core::home::{Home, SHOWN};
-use hub_core::proposals::{self, Proposal};
+use hub_core::proposals::{self, Proposal, StreamRow};
 use hub_core::table::{self, Summary, View};
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +29,8 @@ pub struct HomePage {
     #[serde(flatten)]
     home: Home,
     proposals_table: Summary,
+    /// Every open proposal one row per stream, whatever the view keeps (`proposals::by_stream`).
+    streams: Vec<StreamRow>,
     /// Grafana's base for the flow strip's graph link, as `/api/flow` sends it.
     grafana: Option<String>,
 }
@@ -39,6 +41,7 @@ pub fn page(mut home: Home, q: &ViewQuery) -> HomePage {
     HomePage {
         home,
         proposals_table: kept.proposals_table,
+        streams: kept.streams,
         grafana: hub_core::infra::grafana(),
     }
 }
@@ -50,6 +53,7 @@ pub struct ProposalsPage {
     proposals: Vec<Proposal>,
     proposals_head: String,
     proposals_table: Summary,
+    streams: Vec<StreamRow>,
 }
 
 /// One page of `SHOWN` rows: no other tab lists every proposal, so Home's glance pages them.
@@ -64,6 +68,7 @@ pub fn rows(open: &[Proposal], q: &ViewQuery) -> ProposalsPage {
     );
     ProposalsPage {
         proposals_head: hub_core::proposals::heading(open),
+        streams: proposals::by_stream(open),
         proposals: kept.into_iter().cloned().collect(),
         proposals_table,
     }
@@ -134,10 +139,10 @@ mod tests {
         let open = home().proposals;
         let v = serde_json::to_value(rows(&open, &q)).unwrap();
         let full = serde_json::to_value(page(home(), &q)).unwrap();
-        for k in ["proposals", "proposals_head", "proposals_table"] {
+        for k in ["proposals", "proposals_head", "proposals_table", "streams"] {
             assert_eq!(v[k], full[k], "{k}");
         }
-        assert_eq!(v.as_object().unwrap().len(), 3);
+        assert_eq!(v.as_object().unwrap().len(), 4);
     }
 
     #[test]
@@ -170,6 +175,7 @@ mod tests {
         let v = serde_json::to_value(page(home(), &ViewQuery::default())).unwrap();
         assert_eq!(v["proposals"].as_array().unwrap().len(), 2);
         assert_eq!(v["proposals_table"]["total"], 2);
+        assert_eq!(v["streams"].as_array().unwrap().len(), 1, "one row per stream");
         assert!(v["needs"].is_array());
     }
 }
