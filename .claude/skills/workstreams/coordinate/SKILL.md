@@ -110,7 +110,7 @@ agent-ask post --options 'a=validated: drop the hold and let the window close|b=
 agent-ask reopen-on-answer <id>
 ```
 
-Then end the turn and wait with nothing armed: no Monitor, cron or wakeup. The answer reaches this session by itself: `agent-ask deliver` types it into the live pane, and if the window closed on its quiet timer meanwhile, `reopen-on-answer` starts it again with the answer. `manual` keeps the window until quiet `FLEET_CHAT_CLOSE_H`. The ask (the `!N` count and the asks list) is what shows the wait. A re-armed watch on a ticked ledger is only a timer: 2026-11-22 one woke 58 times over 29h (about $7) and repeated the question each time. `stop-post.d/86-empty-wakes.sh` blocks that after 4 empty expiries.
+Then end the turn and wait with nothing armed: no Monitor, cron or wakeup. The answer reaches this session by itself: `agent-ask deliver` types it into the live pane, and if the window closed on its quiet timer meanwhile, `reopen-on-answer` starts it again with the answer. `manual` keeps the window until quiet `FLEET_CHAT_CLOSE_H`. The ask (the `!N` count and the asks list) is what shows the wait. A re-armed watch on a ticked ledger is only a timer: 2026-11-22 one woke 58 times over 29h and repeated the question each time. `stop-post.d/86-empty-wakes.sh` blocks that after 4 empty expiries.
 
 A "not yet" adds its lines to the ledger, then `fleet-sessions label self +coordinator` and arm the watch again (step 3); steps 4 and 5 carry them.
 
