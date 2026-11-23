@@ -1316,18 +1316,24 @@ short_item() { jq -e '.short == true' <<<"$1" >/dev/null 2>&1; }
 short_floor_open() { [ "${SHORT_PASS:-0}" = 1 ]; }
 
 # pass_order <item json lines> -> the order a pass tries them in: the reds the red floor has slots for
-# (red_floor_slots, a tripped watch's first, as red_items), then the short items (short_item), then the
-# rest in agent-queue's order. agent-queue lists every red first, so reds past the floor and cleanup
-# took a pass's start cap before a class under its min_live (ar-4890: 1 unity of its 6 live, the pass
-# stopped on load after reds and a cleanup row).
+# (red_floor_slots, a tripped watch's first, as red_items), then the human's urgent items and fresh asks
+# that are not red (runs_now), then the short items (short_item), then the rest in agent-queue's order.
+# agent-queue lists every red first, so reds past the floor and cleanup took a pass's start cap before
+# a class under its min_live (ar-4890: 1 unity of its 6 live, the pass stopped on load after reds and a
+# cleanup row). A red is urgent at add, so only a non-red runs_now item keeps its place ahead of them.
+# Input jq cannot read is named and passed on in queue order, so the pass says why it is unsorted.
 pass_order() {
   [ -n "$1" ] || return 0
-  jq -sc --argjson n "$(red_floor_slots)" '
+  jq -sc --argjson n "$(red_floor_slots)" --argjson now "$(date +%s)" --argjson h "$DISPATCH_ASK_FRESH_H" "$ASK_JQ"'
     def has($t): (" " + (.tags // "") + " ") | contains(" \($t) ");
     ([.[] | select(has("red"))] | sort_by(has("watch") | not) | .[:$n]) as $reds
     | ($reds | map(.slug)) as $floor
     | [.[] | select(.slug as $s | $floor | index([$s]) | not)] as $rest
-    | ($reds + [$rest[] | select(.short == true)] + [$rest[] | select(.short != true)])[]' <<<"$1"
+    | [$rest[] | select((has("red") | not) and runs_now($now; $h))] as $human
+    | ($human | map(.slug)) as $first
+    | [$rest[] | select(.slug as $s | $first | index([$s]) | not)] as $rest
+    | ($reds + $human + [$rest[] | select(.short == true)] + [$rest[] | select(.short != true)])[]' <<<"$1" \
+    || { say "pass_order: jq could not read the queue items, so they start in queue order"; printf '%s\n' "$1"; }
 }
 
 # runs_now_label <item json> -> "urgent" or "ask", the word the run log names it by.
@@ -5504,8 +5510,9 @@ run_queue() {
     # under its min_live fills its gap past the weekly pace alone; the rest of the queue stays held.
     local reds='' frc before=${STARTED:-0}; is_red "$head" && reds=$(red_items "$items")
     if red_floor_due "$reds"; then
+      # A floor that started nothing has settled its own verdict (a full fleet is NOOP), so it ends the pass.
       red_floor_start "$reds" "$2" "$why"; frc=$?
-      [ "$frc" = 0 ] || return "$frc"
+      [ "$frc" = 0 ] && [ "${STARTED:-0}" -gt "$before" ] || return "$frc"
     else
       human_floor_start "$items" "$2" "$why"; frc=$?
       [ "$frc" = "$FLOOR_SHUT" ] || return "$frc"

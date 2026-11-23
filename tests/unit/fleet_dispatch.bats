@@ -3823,6 +3823,20 @@ short_game_classes() {
   assert_equal "$(pass_order '')" ''
 }
 
+@test "pass order: the human's urgent item keeps its place ahead of the short items; an urgent red past the floor does not" {
+  local items
+  items=$(printf '%s\n' '{"slug":"r1","tags":"red","priority":"urgent"}' '{"slug":"r2","tags":"red","priority":"urgent"}' \
+    '{"slug":"h1","priority":"urgent"}' '{"slug":"u1","short":true}' '{"slug":"c1","tags":"cleanup"}')
+  red_floor_slots() { echo 1; }
+  assert_equal "$(pass_order "$items" | jq -r .slug | tr '\n' ' ')" 'r1 h1 u1 r2 c1 '
+  # Negative control: h1 at high is no runs_now item, so the short item goes ahead of it.
+  assert_equal "$(pass_order "$(jq -c 'if .slug == "h1" then .priority = "high" else . end' <<<"$items")" | jq -r .slug | tr '\n' ' ')" 'r1 u1 r2 h1 c1 '
+  # Input jq cannot read is named and passed on in queue order, never dropped.
+  run pass_order 'not json'
+  assert_output --partial 'pass_order: jq could not read'
+  assert_output --partial 'not json'
+}
+
 @test "pass order: a run pass fills a short class's gap ahead of a red past the red floor and a cleanup row" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
