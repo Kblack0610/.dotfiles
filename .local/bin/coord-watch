@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# coord-watch - the event stream a /coordinate session arms under Monitor: one line per chain
-# event (~/.local/state/notes/ingest.jsonl) on a row, item or PR the session still tracks.
+# coord-watch - the event stream a /coordinate session waits on: one line per chain event
+# (~/.local/state/notes/ingest.jsonl) on a row, item or PR the session still tracks.
 #
+#   coord-watch --until <plan.md> [--from <writer>]...   print the first events, then exit 0 (exit 3: no open line)
 #   coord-watch <plan.md> [--from <writer>]...   follow the record, one line per event (exit 3: no open line)
 #   coord-watch filter <plan.md> [--from w]... [--since ts] [--cursor file]   the filter over stdin
 #   coord-watch ids <plan.md>                    the tracked tokens, one per line
@@ -19,10 +20,13 @@ set -euo pipefail
 : "${COORD_WATCH_STATE:=${XDG_STATE_HOME:-$HOME/.local/state}/coord-watch}"
 # Lines re-read on each arm before the cursor filter: about two weeks of the record's usual rate.
 REPLAY_LINES=20000
+# --until: after the first event, how long to keep reading so a burst (merged, done) wakes the
+# session once. A cap on one batch, not a poll: the wait for the first event has no timeout.
+: "${COORD_WATCH_BATCH_S:=5}"
 # Actions that record bookkeeping, not progress: never a coordinator's cue.
 NOISE='["item-set","tagged","edited","detailed","sweep","sweep-stopped","item-claimed","running"]'
 
-usage() { sed -n '5,7p' "$0" | sed 's/^#   //' >&2; exit 2; }
+usage() { sed -n '5,8p' "$0" | sed 's/^#   //' >&2; exit 2; }
 
 ids() {
   [ -f "$1" ] || { echo "coord-watch: no plan at $1" >&2; exit 2; }
@@ -38,7 +42,7 @@ filter() {
   # printed: each match already printed. A prune replaces the record and `tail -F` re-reads it
   # whole, so a match seen again is a replay. A set, not a newest ts: two writers can append out
   # of ts order, and a newest-ts skip would drop the later-written one.
-  local writers=("") since="" cursor="" tracked kind ts out
+  local writers=("") since="" cursor="" batch="" deadline="" left tracked kind ts out
   local -A printed=()
   [ -n "${AGENT_QUEUE_ITEM:-}" ] && writers+=("$AGENT_QUEUE_ITEM")
   [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && writers+=("${CLAUDE_CODE_SESSION_ID:0:8}")
@@ -47,6 +51,7 @@ filter() {
       --from) [ -n "${2:-}" ] || usage; writers+=("$2"); shift 2 ;;
       --since) since="${2:-}"; shift 2 ;;
       --cursor) [ -n "${2:-}" ] || usage; cursor="$2"; shift 2 ;;
+      --batch) [[ "${2:-}" =~ ^[0-9]+$ ]] || usage; batch="$2"; shift 2 ;;
       *) usage ;;
     esac
   done
@@ -55,7 +60,9 @@ filter() {
   # empty ts): R ts for a skip, E ts text for a match, so the
   # cursor advances past every event read, matched or not. ts compares as text: the record writes
   # one local ISO form, off by the hour only across a DST change.
-  jq --unbuffered -rR --argjson ids "$tracked" --argjson noise "$NOISE" --arg since "$since" \
+  # A process substitution, not a pipe, so a --batch loop that ends can kill jq: a pipeline would
+  # wait on jq, which waits on a quiet tail -F forever.
+  events() { jq --unbuffered -rR --argjson ids "$tracked" --argjson noise "$NOISE" --arg since "$since" \
     --argjson writers "$(printf '%s\n' "${writers[@]}" | jq -R 'select(. != "")' | jq -sc .)" '
     def s: if . == null then "" else tostring end;
     fromjson? // empty
@@ -74,8 +81,16 @@ filter() {
              (if (.to | s) != "" then "to=\(.to)" else empty end),
              (if $why != "" then "why=\($why[0:300])" else empty end),
              "| \($text[0:160])"] | join(" ") | gsub("[\n\u001f]"; " "))
-      end' |
-  while IFS=$'\x1f' read -r kind ts out; do
+      end'; }
+  while :; do
+    # --batch: the first match starts the window; reading stops at its end, so the cursor stays
+    # on the last event read and a re-arm replays whatever came after.
+    if [ -n "$deadline" ]; then
+      left=$((deadline - EPOCHSECONDS))
+      [ "$left" -gt 0 ] && IFS=$'\x1f' read -r -t "$left" kind ts out || break
+    else
+      IFS=$'\x1f' read -r kind ts out || break
+    fi
     [ -n "$cursor" ] && [ -n "$ts" ] && printf '%s\n' "$ts" > "$cursor"
     [ "$kind" = E ] || continue
     if [ -n "$ts" ]; then
@@ -83,7 +98,10 @@ filter() {
       printed["$ts $out"]=1
     fi
     printf '%s\n' "$out"
-  done
+    [ -z "$batch" ] || [ -n "$deadline" ] || deadline=$((EPOCHSECONDS + batch))
+  done < <(events)
+  # The subshell running this still waits on jq at exit, and jq waits on a quiet tail -F.
+  [ -z "$batch" ] || kill "$!" 2>/dev/null || true
   return 0
 }
 
@@ -92,6 +110,8 @@ case "${1:-}" in
   ids) [ -n "${2:-}" ] || usage; ids "$2" ;;
   filter) [ -n "${2:-}" ] || usage; shift; filter "$@" ;;
   *)
+    until=""
+    if [ "$1" = --until ]; then until=1; shift; [ -n "${1:-}" ] || usage; fi
     plan="$1"; shift
     # A ledger with every line ticked tracks nothing, so a watch on it is a 30 minute timer that only wakes
     # the session: 2026-11-22 a coordinator re-armed one 58 times over 29h waiting on its validation ask.
@@ -105,6 +125,21 @@ case "${1:-}" in
     [ -n "$open" ] || {
       echo "coord-watch: no open line under '## Follow-through' in $plan, so there is nothing to watch; the validation wait is coordinate step 6" >&2
       exit 3; }
+    # An id-shaped ledger word (one with a digit) that no event ever carried and no board row has can
+    # never match: 2026-11-23 a ledger named a phase by a slug its item never had (the events carried
+    # ar-4707), and its coordinator waited on it all day. An owner/repo#N is a PR, matched on pr words.
+    unknown="$(grep -v '/.*#' <<<"$open" | grep '[0-9]' || true)"
+    if [ -n "$unknown" ]; then
+      seen="$(grep -ohF -f <(sed 's/.*/"&"/' <<<"$unknown") "$COORD_WATCH_LOG" 2>/dev/null | tr -d '"' | sort -u || true)"
+      unknown="$(grep -vxF -f <(printf '%s\n' "$seen") <<<"$unknown" || true)"
+    fi
+    if [ -n "$unknown" ] && command -v notes >/dev/null 2>&1; then
+      rows="$(notes board --json 2>/dev/null | jq -r '.. | objects | select(has("id") and has("text")) | .id' 2>/dev/null | sort -u || true)"
+      unknown="$(grep -vxF -f <(printf '%s\n' "$rows") <<<"$unknown" || true)"
+    fi
+    [ -z "$unknown" ] || {
+      echo "coord-watch: no event or board row carries $(paste -sd' ' <<<"$unknown") in $plan, so those lines can never match; name the row id (ar-N) the chain events carry" >&2
+      exit 2; }
     # The armed mark: stop-post.d/89-coord-watch.sh blocks a coordinator's turn end while no live
     # watch of its own session is recorded here. A kill that skips the trap leaves the file; the
     # reader checks the pid is a live coord-watch, so a stale file never passes. A re-arm overlaps
@@ -118,11 +153,15 @@ case "${1:-}" in
     fi
     cursor="$COORD_WATCH_STATE/$(basename "$plan" .md).ts"
     since="$(cat "$cursor" 2>/dev/null || date +%Y-%m-%dT%H:%M:%S.%N%:z)"
-    # The pipeline runs in the background so a TERM (the Monitor's expiry, TaskStop) ends this
-    # script at once: bash defers a trap while a foreground pipeline runs, and a script left alive
-    # would keep the mark of a watch the harness no longer reads.
-    tail -n "$REPLAY_LINES" -F "$COORD_WATCH_LOG" 2>/dev/null |
-      filter "$plan" "$@" --since "$since" --cursor "$cursor" &
-    trap 'kill $(jobs -p) 2>/dev/null; exit 143' TERM INT HUP
-    wait "$!" ;;
+    # The filter runs in the background so a TERM (TaskStop, a Monitor's expiry) ends this script at
+    # once: bash defers a trap while a foreground command runs, and a script left alive would keep
+    # the mark of a watch nobody reads. tail is a process substitution, not a pipe, because a wait
+    # on a pipeline waits for all of it, and tail -F on a quiet record never ends.
+    exec 5< <(tail -n "$REPLAY_LINES" -F "$COORD_WATCH_LOG" 2>/dev/null)
+    tailpid=$!
+    filter "$plan" "$@" --since "$since" --cursor "$cursor" ${until:+--batch "$COORD_WATCH_BATCH_S"} <&5 5<&- &
+    trap 'kill "$tailpid" $(jobs -p) 2>/dev/null; exit 143' TERM INT HUP
+    rc=0; wait "$!" || rc=$?
+    kill "$tailpid" 2>/dev/null || true
+    exit "$rc" ;;
 esac

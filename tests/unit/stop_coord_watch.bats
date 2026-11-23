@@ -36,7 +36,7 @@ live_watch() {
   run bash "$CHECK" <<<"$(stop_payload)"
   assert_success
   [ "$(jq -r .decision <<<"$output")" = block ]
-  [[ "$(jq -r .reason <<<"$output")" == "coord-watch: "*"ledger"*"step 2"*'`coord-watch <that plan>`'*"timeout_ms 1800000"* ]]
+  [[ "$(jq -r .reason <<<"$output")" == "coord-watch: "*"ledger"*"step 2"*'`coord-watch --until <that plan>`'*"run_in_background, never Monitor"* ]]
 }
 
 @test "a coordinator whose recorded watch is live passes" {
@@ -50,7 +50,7 @@ live_watch() {
   printf '999999999 /plans/p.md\n' > "$COORD_WATCH_STATE/session-sid-1.pid"
   run bash "$CHECK" <<<"$(stop_payload)"
   [ "$(jq -r .decision <<<"$output")" = block ]
-  [[ "$(jq -r .reason <<<"$output")" == *'`coord-watch /plans/p.md`'* ]]
+  [[ "$(jq -r .reason <<<"$output")" == *'`coord-watch --until /plans/p.md`'* ]]
   live_watch other
   run bash "$CHECK" <<<"$(stop_payload)"
   [ "$(jq -r .decision <<<"$output")" = block ]
@@ -68,13 +68,20 @@ live_watch() {
   printf '# p\n## Follow-through\n- [ ] ar-1 open\n' > "$SANDBOX/p.md"
   printf '%s\n' "$SANDBOX/p.md" > "$COORD_WATCH_STATE/session-sid-1.plan"
   PATH="$REPO_ROOT/.local/bin:$PATH" run bash "$CHECK" <<<"$(stop_payload)"
-  [[ "$(jq -r .reason <<<"$output")" == *"Start Monitor with command"* ]]
+  [[ "$(jq -r .reason <<<"$output")" == *'Run `coord-watch --until'* ]]
   printf '# p\n' > "$SANDBOX/p.md"
   PATH="$REPO_ROOT/.local/bin:$PATH" run bash "$CHECK" <<<"$(stop_payload)"
-  [[ "$(jq -r .reason <<<"$output")" == *"Start Monitor with command"* ]]
+  [[ "$(jq -r .reason <<<"$output")" == *'Run `coord-watch --until'* ]]
   printf '# p\n## Follow-through\n- [x] ar-1 live\n' > "$SANDBOX/p.md"
   PATH="/usr/bin:/bin" run bash "$CHECK" <<<"$(stop_payload)"
-  [[ "$(jq -r .reason <<<"$output")" == *"Start Monitor with command"* ]]
+  [[ "$(jq -r .reason <<<"$output")" == *'Run `coord-watch --until'* ]]
+}
+
+@test "a live coord-watch --until (the background wait) counts as armed" {
+  live_watch coord-watch --until
+  run bash "$CHECK" <<<"$(stop_payload)"
+  assert_success
+  assert_output ''
 }
 
 @test "a live coord-watch in a one-shot mode (ids, filter) is not a watch" {
