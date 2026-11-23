@@ -315,6 +315,7 @@ fn head_tag(content: &str, vocab: &[&str]) -> Option<String> {
 
 /// The file a project declares itself on: its working sheet, else its summary. A
 /// summary-only project (a prose brief, an archived stub) still gets to carry a tag.
+/// `notes projects --front-page` prints it, so the shell's head-tag readers never keep a copy.
 pub(crate) fn front_page(dir: &Path) -> PathBuf {
     editable_sheet(dir).unwrap_or_else(|| dir.join("summary.md"))
 }

@@ -15,6 +15,7 @@
 #   path.<profile>.<kind>       the root `notes --profile P path <kind>` prints
 #   stages                      the ladder `notes projects --stages` prints
 #   prios                       name  prio, what `notes projects --prios` prints
+#   front-page.<project>        the file `notes projects --front-page <dir>` prints for that dir
 #   board.json                  what `notes board --json` prints; its .elsewhere rows only --id finds
 #   ptask.added                 what `notes ptask <name> add` prints (the row, with its id)
 #   ptask.agent.added           what `notes ptask <name> --agent add` prints
@@ -77,6 +78,18 @@ case "${1:-}" in
       # `notes projects --prios` -> name TAB prio, every project that declares one
       --prios) emit prios ;;
       --version-of) emit "version-of.${3:-}" ;;
+      # `notes projects --front-page <dir>` -> the front-page.<project> fixture, else the README or
+      # tasks.md that carries a `Version:` line, else summary.md: the sheet cases only. The
+      # version-parent case is the registry's, so a test of it seeds the fixture.
+      --front-page)
+        d="${3%/}"
+        if [ -f "$FIX/front-page.${d##*/}" ]; then emit "front-page.${d##*/}"
+        else
+          for f in README.md tasks.md summary.md; do
+            [ "$f" = summary.md ] || grep -q '^Version:' "$d/$f" 2>/dev/null || continue
+            printf '%s\n' "$d/$f"; break
+          done
+        fi ;;
       # `notes projects --stage <name>` -> the bare stage tag, or nothing if undeclared
       --stage) emit "stage.${3:-}" ;;
       # `notes projects --roadmap <name>` -> version TAB state TAB open TAB done TAB open_weight TAB done_weight TAB unsized_open
