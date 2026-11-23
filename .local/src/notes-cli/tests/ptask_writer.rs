@@ -1656,8 +1656,8 @@ fn a_game_with_no_version_of_its_own_is_on_its_parents_version_and_window() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("demo's window"));
     // The parent's window commits the game's agent row beside its own.
     ok(&h.run(&["projects", "--commit", "demo"]));
-    let note = fs::read_to_string(h.0.join("notes/projects/current/demo/agent/versions/v0.1.0.md"))
-        .unwrap();
+    let note =
+        fs::read_to_string(h.0.join("notes/projects/current/demo/sprints/v0.1.0.md")).unwrap();
     assert!(note.contains("id:gm-2"), "{note}");
 }
 
@@ -1677,8 +1677,8 @@ fn a_game_that_keeps_its_own_version_stays_out_of_its_parents_window() {
     let out = h.run(&["projects", "--stats", "--json"]);
     assert!(String::from_utf8_lossy(&out.stdout).contains(r#""version_parent":null"#));
     ok(&h.run(&["projects", "--commit", "demo"]));
-    let note = fs::read_to_string(h.0.join("notes/projects/current/demo/agent/versions/v0.1.0.md"))
-        .unwrap();
+    let note =
+        fs::read_to_string(h.0.join("notes/projects/current/demo/sprints/v0.1.0.md")).unwrap();
     assert!(!note.contains("id:gm-2"), "{note}");
 }
 
