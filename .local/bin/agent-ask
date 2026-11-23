@@ -443,6 +443,16 @@ render_ask() {
 
 # --- post ------------------------------------------------------------------
 
+# question_form_ok <question>: the one-line, ends-in-? form; says why and returns 1 when it is not.
+question_form_ok() {
+  local question="$1"
+  # gate: aa-question-form
+  if [ "${question: -1}" != "?" ] || [ "${#question}" -gt "$AGENT_ASK_QUESTION_MAX" ]; then
+    echo "agent-ask post: the question is one line ending in '?', at most $AGENT_ASK_QUESTION_MAX characters (this one is ${#question}). Put the background in --context \"...\", what each option does in --options 'slug=meaning|slug=meaning', and why you recommend one in --why \"...\"." >&2
+    return 1
+  fi
+}
+
 cmd_post() {
   local project="" profile="" session="" agent="" task="" kind="question" \
         options="" recommend="" why="" resume="" wait=0 question="" context="" audit_of="" previews="" blocker=""
@@ -472,10 +482,7 @@ cmd_post() {
   done
   [ -n "$question" ] || { echo "agent-ask post: no question given" >&2; return 2; }
   question="$(oneline "$question")"
-  if [ "${question: -1}" != "?" ] || [ "${#question}" -gt "$AGENT_ASK_QUESTION_MAX" ]; then
-    echo "agent-ask post: the question is one line ending in '?', at most $AGENT_ASK_QUESTION_MAX characters (this one is ${#question}). Put the background in --context \"...\", what each option does in --options 'slug=meaning|slug=meaning', and why you recommend one in --why \"...\"." >&2
-    return 2
-  fi
+  question_form_ok "$question" || return 2
   # `slug=meaning` options: the slugs alone stay in `options:`, the meanings go pipe-aligned
   # into `option_notes:`.
   local option_notes="" o bare=""
@@ -983,6 +990,7 @@ cmd_answer() {
   if [ "$by" = agent ]; then
     local mine
     if [ "$(field "$f" kind)" = approval ]; then mine="it is an approval"
+    # gate: aa-human-only
     elif [ "$(field "$f" judge_human_only)" = true ]; then mine="the judge marked it human-only"
     else mine="$(human_floor "$(field "$f" question) $(field "$f" options)")" && mine="it ${mine%$'\n'}" || mine=""; fi
     if [ -n "$mine" ]; then
