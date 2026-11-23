@@ -282,14 +282,15 @@ function renderRunner(el) {
 
   h += secHead("", "Registry") + `<div class="panel">${registryLine(g)}${g.eval ? evalTable({ ...g.eval, rules: pageRows(g.eval.rules, "eval") }) : ""}</div>` +
     (g.eval ? pageMore(g.eval.rules, "eval") : "");
-  // A lane's full instruction set, as `judge-eval prompts <name>` prints it: long, so folded.
-  if (r.instructions) {
-    h += fold("sec-d", secHead("", "Instructions"), `<div class="panel"><div class="muted">judge-eval prompts ${esc(r.name)}: its prompt files, schema and the gates it is held to</div>` +
-      `<div class="md">${md(r.instructions)}</div></div>`, { k: "instructions", open: !!rst.folds.instructions });
-  }
   h += runnerExtras(r.extras);
   const conf = pageRows(r.conf, "conf").map((c) => `<tr><td>${esc(c.key)}</td><td class="wrap muted">${esc(c.value)}</td></tr>`).join("");
   h += secHead("", "Conf") + `<div class="panel scroll">${conf ? `<table class="tbl">${conf}</table>` : `<div class="empty">Empty.</div>`}</div>` + pageMore(r.conf, "conf");
+  // A lane's full instruction set, last and folded: `judge-eval prompts <name>` as it prints, the
+  // CLI's and the hub's text, so banners, conf lines and grep lines stay as they are.
+  if (r.instructions) {
+    h += fold("sec-d", secHead("", "Instructions"), `<div class="panel"><div class="muted">judge-eval prompts ${esc(r.name)}: its prompt files, schema and the gates it is held to</div>` +
+      `<pre class="instr">${esc(r.instructions)}</pre></div>`, { k: "instructions", open: !!rst.folds.instructions });
+  }
   paint(el, h);
 }
 

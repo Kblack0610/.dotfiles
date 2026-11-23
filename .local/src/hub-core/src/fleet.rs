@@ -471,7 +471,7 @@ pub fn judge_eval(paths: &Paths) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// `judge-eval prompts <lane>`, a fraction of a second: the lane's full instruction set, and each
+/// `judge-eval prompts <lane>`, about 0.3 s (measured at load 28, 2026-11-23): the lane's full instruction set, and each
 /// problem judge-eval names on stderr when it fails (a PROMPT file it cannot read). The text it
 /// could read still shows beside them.
 pub fn judge_prompts(paths: &Paths, lane: &str) -> (String, Vec<String>) {

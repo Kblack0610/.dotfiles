@@ -370,11 +370,29 @@ fn instructions(paths: &Paths, c: &Conf) -> (String, Vec<String>) {
     }
     let (text, e) = super::judge_prompts(paths, &c.name);
     (
-        text,
+        masked(&text),
         e.into_iter()
             .map(|e| format!("instructions: {e}"))
             .collect(),
     )
+}
+
+/// The text with each `KEY=value` line whose key is a `secret` masked, as the conf table masks it:
+/// judge-eval prints a caller conf's gate lines as they are.
+fn masked(text: &str) -> String {
+    text.lines()
+        .map(|l| match l.split_once('=') {
+            Some((k, _)) if is_key(k) && secret(k) => format!("{k}=(set)\n"),
+            _ => format!("{l}\n"),
+        })
+        .collect()
+}
+
+/// A shell variable name in agentctl's conf style: upper case, digits and underscores.
+fn is_key(k: &str) -> bool {
+    k.starts_with(|c: char| c.is_ascii_uppercase())
+        && k.chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
 /// A conf key whose value the page must not show.
@@ -1107,6 +1125,15 @@ mod tests {
             }
             e => panic!("{e:?}"),
         }
+    }
+
+    #[test]
+    fn instructions_mask_a_secret_looking_conf_line_as_the_conf_table_does() {
+        let text = "--- gates in fleet-dispatch.conf (its caller) ---\nAPI_TOKEN=abc\nDB_PASSWORD=x y\nMAX_SLOTS=4\n  prose with FOO_KEY=v in it\n";
+        assert_eq!(
+            masked(text),
+            "--- gates in fleet-dispatch.conf (its caller) ---\nAPI_TOKEN=(set)\nDB_PASSWORD=(set)\nMAX_SLOTS=4\n  prose with FOO_KEY=v in it\n"
+        );
     }
 
     #[test]
