@@ -928,6 +928,66 @@ set_key() {
   assert_line 'note: c'
 }
 
+# run_item <machine> <slug>: a running item with a run header, as a worker's start writes it. The body
+# is load-bearing: it keeps a requeued copy above git's 50% rename similarity, so the driver sees one item.
+run_item() {
+  mkdir -p "$SANDBOX/$1/queue/running"
+  { printf 'slug: %s\nproject: p\nagent: ocfree\nqueued: 2026-11-23T21:19:07Z\nlane: agent\n' "$2"
+    printf 'session: lab:w-29\naccount: ocfree\norigin: run\nmodel: beam\nhost: b\nstarted: 2026-11-23T21:38:06Z\n'
+    printf 'sessions: ses_1\nlane_run: caff\n---\nfix(x): a task title long enough to read as one item\n'
+    printf 'The body of the item, so a requeue that drops the run header is still the same file to git rename detection.\n'; } > "$SANDBOX/$1/queue/running/$2.md"
+  on "$1" --now >/dev/null
+}
+
+# requeue_item <machine> <slug>: what agent-queue move <slug> queued does after a run, plus the route reset.
+requeue_item() {
+  local f="$SANDBOX/$1/queue/running/$2.md"
+  mkdir -p "$SANDBOX/$1/queue/queued"
+  sed -e '/^\(session\|origin\|host\|started\|lane_run\): /d' -e 's/^agent: .*/agent: claude/' \
+    -e 's/^model: .*/model: /' -e 's/^---$/routed: \nrequeued: 2026-11-23T21:40:16Z\n---/' "$f" > "$SANDBOX/$1/queue/queued/$2.md"
+  rm "$f"
+}
+
+# route_item <machine> <slug>: the other machine records the route and a PR on the running item.
+route_item() {
+  sed -i 's/^---$/routed: ocfree\npr: o#5\n---/' "$SANDBOX/$1/queue/running/$2.md"
+}
+
+@test "a key set two ways on an item one side requeued takes the requeue's value and keeps the other side's other keys, whichever syncs first (ar-3439)" {
+  local s
+  # razer-laptop requeued ar-3010 while the fleet home set routed: on its run (2026-11-23)
+  peer a; run_item a q1; peer b
+  route_item a q1; requeue_item b q1
+  peer c; run_item c q2; peer d
+  route_item d q2; requeue_item c q2
+  on a --now; run on b --now
+  assert_success
+  on c --now; run on d --now
+  assert_success
+  for s in q1 q2; do
+    run show "$ORIGIN" "queue/queued/$s.md"
+    assert_line 'routed: '
+    assert_line 'requeued: 2026-11-23T21:40:16Z'
+    assert_line 'agent: claude'
+    assert_line 'pr: o#5'
+    assert_line 'sessions: ses_1'
+    refute_line --partial 'started:'
+    refute_line --partial 'host:'
+    refute_output --partial '<<<<<<<'
+    run git -C "$ORIGIN" ls-tree -r --name-only master -- queue/running
+    assert_output ''
+  done
+  [ ! -d "$SANDBOX/b/.sync/lost" ] || [ -z "$(ls -A "$SANDBOX/b/.sync/lost")" ]
+  [ ! -d "$SANDBOX/d/.sync/lost" ] || [ -z "$(ls -A "$SANDBOX/d/.sync/lost")" ]
+  # negative control: the same clash with no requeue on either side still keeps a lost copy
+  peer e; run_item e q3; peer f
+  route_item e q3; sed -i 's/^---$/routed: \n---/' "$SANDBOX/f/queue/running/q3.md"
+  on e --now; run on f --now
+  assert_success
+  run cat "$SANDBOX/f/.sync/lost/"queue__running__q3.md.lost-*
+  assert_line 'routed: ocfree'
+}
+
 @test "a clone set up with the old close driver moves to the item driver" {
   peer a
   printf 'queue/done/*/*.md merge=close\n' > "$SANDBOX/a/.git/info/attributes"
