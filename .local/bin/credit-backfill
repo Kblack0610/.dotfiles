@@ -22,7 +22,7 @@ CB_PLANS="${CREDIT_BACKFILL_PLANS:-$HOME/.agent/plans}"
 CB_LIVE_PLANS="${CREDIT_BACKFILL_LIVE_PLANS:-$HOME/.claude/plans}"
 HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 SYSTEMS_MD="${CREDIT_BACKFILL_SYSTEMS:-$HERE/../src/docs/systems.md}"
-SYSTEM_CHECK="${CREDIT_BACKFILL_SYSTEM_CHECK:-$HERE/project-system-check}"
+SYSTEM_CHECK="${CREDIT_BACKFILL_SYSTEM_CHECK:-$HERE/project-stage-check}"
 # A story's size from its PR's diff (additions plus deletions): up to S_MAX is s, up to M_MAX m, else l.
 S_MAX=150 M_MAX=800
 # A plan's open phase is filed when an item is on it or the plan changed in the last FRESH_DAYS:
@@ -253,7 +253,7 @@ propose_criteria() {
   local m json
   for m in "$@"; do
     [ -n "$(project_field "$m" type)" ] && [ -n "$(project_field "$m" code)" ] || continue
-    json="$("$SYSTEM_CHECK" "$m" --json 2>/dev/null)" || [ -n "$json" ] || continue
+    json="$("$SYSTEM_CHECK" "$m" --systems --json 2>/dev/null)" || [ -n "$json" ] || continue
     jq -r --arg m "$m" '.systems[] | .id as $s | [.criteria[] | select(.result == "FAIL")] | select(length > 0)
       | (["epic", "std:\($m):\($s)", $m, $s, "-", "open", "-", "-", "\($s) to standard", ""] | @tsv),
         (.[] | ["story", "std:\($m):\($s)", $m, "-", "s", "open", "-", "-", "\($s): \(.criterion | gsub("`"; ""))", ""] | @tsv)' <<<"$json"

@@ -758,8 +758,8 @@ struct FeedRow {
     /// ([`project_sweep::section_of`]). `None` on a Focus or playtest row, which no sheet
     /// section holds.
     section: Option<&'static str>,
-    /// An agent-board row past the board budget: its marker carries `tier:backlog`
-    /// ([`project_sweep::BACKLOG`]), which dispatch does not pull from and Board does not count.
+    /// An agent-board row carrying the retired `tier:backlog` token ([`project_sweep::BACKLOG`]),
+    /// which the sweep strips, so it reads false once a board is swept.
     backlog: bool,
     /// [`crate::rank`] as one number, smaller sooner: within a section, the sheet's order.
     /// Comparable across sheets, so a reader sorts by it instead of deriving its own order.
@@ -2198,8 +2198,8 @@ mod tests {
             .collect();
         assert_eq!(
             open_agent,
-            [Some("board"), Some("backlog")],
-            "an agent row is under the heading its tier names, as on the sheet"
+            [Some("board"), Some("board")],
+            "every open agent row is under Board, as on the swept sheet, a retired token or not"
         );
 
         let r = &rows[0];

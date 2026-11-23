@@ -59,7 +59,7 @@
 # tests/skill-lint.baseline; all other static findings are hard errors. --ratchet is
 # what makes that file shrink-only, and --lint names any line whose debt is gone.
 #
-# ENVIRONMENTAL - need a real machine, so they stay local (report/--quiet/--json):
+# ENVIRONMENTAL - need a real machine, so they stay local (report/--json):
 #
 #   DEADPATH   a ~/ or $HOME/ path named in a SKILL.md does not exist. This is
 #              the update-rules class and the reason this script exists.
@@ -97,26 +97,17 @@
 #
 # Deliberately trivial and dependency-free: a checker that needs a working
 # environment cannot report a broken one. CI runs --lint and the nightly docs-cleanup
-# runner reads --json and --docs --json. The 12h sentinel watch on --quiet was deleted 2026-11-02: it was red
-# for 84 days, 33 of its 53 NEW findings UNUSED (a signal, not drift) and the rest
-# false positives, so nobody read it.
+# runner reads --json and --docs --json. The 12h sentinel watch on --quiet was deleted 2026-11-02 (red
+# 84 days, nobody read it), and --quiet, --new and the ~/.agent/skill-drift.baseline they read went
+# 2026-11-23 with no caller left: the report always shows every finding.
 #
 # Escape hatch: a line containing `skill-drift: ignore` is skipped entirely.
 # Hostnames of the form *.example.internal are SANITIZATION for the public repo
 # (see dotfiles-land), never drift - paths containing them are skipped.
 #
-# A BASELINE is what makes this adoptable. The first run found 60+ real findings
-# across skills written over months; a watch that is red from birth is a watch
-# nobody reads. `--write-baseline` freezes today's known debt, after which
-# --quiet trips only on drift that is NEW. The full report always shows
-# everything, baselined or not, so the debt stays visible instead of forgotten.
-#
 # Usage:
 #   skill-drift                  human-readable report (everything)
-#   skill-drift --quiet          print nothing; exit 1 on NEW drift only
-#   skill-drift --json           machine-readable (everything, with "new": true|false)
-#   skill-drift --new            human-readable, NEW findings only
-#   skill-drift --write-baseline freeze current findings as accepted
+#   skill-drift --json           machine-readable (everything)
 #   skill-drift --lint [DIR] [--profile full|project] [--allow-empty]
 #                                STATIC checks only, over DIR/.claude. What CI runs:
 #                                no deployed tree, no private repo and no CLAUDE.md
@@ -194,7 +185,6 @@ PRIV="${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}"
 AGENTCTL_DIR="${AGENTCTL_CONF:-$HOME/.config/agentctl}"
 COMMANDS="${CLAUDE_COMMANDS:-$HOME/.claude/commands}"
 CLAUDE_MD="${CLAUDE_MD:-$HOME/.claude/CLAUDE.md}"
-BASELINE="${SKILL_DRIFT_BASELINE:-$HOME/.agent/skill-drift.baseline}"
 STALE_DAYS="${SKILL_STALE_DAYS:-180}"
 USAGE_DAYS="${SKILL_USAGE_DAYS:-90}"
 TOGGLE_DAYS="${SKILL_TOGGLE_DAYS:-30}"
@@ -246,10 +236,7 @@ HEADING='## Scope and triggers'
 
 MODE=report LINT_DIR="" DOCS_JSON=0 PROFILE=full RATCHET_BASE=origin/main ALLOW_EMPTY=0
 case "${1:-}" in
-  --quiet)          MODE=quiet ;;
   --json)           MODE=json ;;
-  --new)            MODE=new ;;
-  --write-baseline) MODE=write_baseline ;;
   --lint)                MODE=lint ;;
   --write-lint-baseline) MODE=write_lint_baseline ;;
   --ratchet)             MODE=ratchet ;;
@@ -1414,21 +1401,13 @@ else
   check_listing
 fi
 
-# Sorting keeps the baseline file stable across runs, so `git diff` on it shows
-# real change instead of reordering noise. Guarded on non-empty: `printf '%s\n'`
+# Sorted, so two runs list their findings in the same order. Guarded on non-empty: `printf '%s\n'`
 # with no arguments still prints ONE blank line, which turned a clean run into a
-# single empty "finding" and made --quiet exit 1 while the report said clean.
+# single empty "finding" while the report said clean.
 if [ ${#FINDINGS[@]} -gt 0 ]; then
   mapfile -t FINDINGS < <(printf '%s\n' "${FINDINGS[@]}" | sort)
 fi
 n=${#FINDINGS[@]}
-
-if [ "$MODE" = write_baseline ]; then
-  mkdir -p "$(dirname "$BASELINE")"
-  [ "$n" -gt 0 ] && printf "%s\n" "${FINDINGS[@]}" > "$BASELINE" || : > "$BASELINE"
-  echo "skill-drift: baselined $n finding(s) -> ${BASELINE/#$HOME/\~}"
-  exit 0
-fi
 
 # --- lint (what CI runs) ------------------------------------------------------
 #
@@ -1503,46 +1482,26 @@ fi
 # shellcheck source=../lib/fmt.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fmt.sh"
 
-is_new() { [ -f "$BASELINE" ] || return 0; ! grep -qxF "$1" "$BASELINE"; }
-
-NEW=()
-for f in ${FINDINGS[@]+"${FINDINGS[@]}"}; do
-  is_new "$f" && NEW+=("$f")
-done
-nnew=${#NEW[@]}
-
-case "$MODE" in
-  quiet) [ "$nnew" -eq 0 ] && exit 0 || exit 1 ;;
-  json)
-    printf '{"drift":%s,"new":%s,"findings":[' "$n" "$nnew"
-    for i in "${!FINDINGS[@]}"; do
-      IFS='|' read -r t s p d <<< "${FINDINGS[$i]}"
-      [ "$i" -gt 0 ] && printf ','
-      printf '{"type":"%s","skill":"%s","item":"%s","detail":"%s","new":%s}' \
-        "$t" "$s" "$(json_esc "$p")" "$(json_esc "$d")" "$(is_new "${FINDINGS[$i]}" && echo true || echo false)"
-    done
-    printf ']}\n'
-    [ "$nnew" -eq 0 ] && exit 0 || exit 1 ;;
-esac
-
-if [ "$MODE" = new ]; then
-  if [ "$nnew" -eq 0 ]; then echo "skill-drift: no NEW drift since the baseline"; exit 0; fi
-  printf 'skill-drift: %s NEW finding(s) since the baseline\n\n' "$nnew"
-  for f in "${NEW[@]}"; do
-    IFS='|' read -r t s p d <<< "$f"
-    printf '  %-13s %-24s %-46s %s\n' "$t" "$s" "$p" "$d"
+if [ "$MODE" = json ]; then
+  printf '{"drift":%s,"findings":[' "$n"
+  for i in "${!FINDINGS[@]}"; do
+    IFS='|' read -r t s p d <<< "${FINDINGS[$i]}"
+    [ "$i" -gt 0 ] && printf ','
+    printf '{"type":"%s","skill":"%s","item":"%s","detail":"%s"}' \
+      "$t" "$s" "$(json_esc "$p")" "$(json_esc "$d")"
   done
-  exit 1
+  printf ']}\n'
+  [ "$n" -eq 0 ] && exit 0 || exit 1
 fi
 
 if [ "$n" -eq 0 ]; then
   echo "skill-drift: clean - every skill still describes a system that exists"
   exit 0
 fi
-printf 'skill-drift: %s finding(s) (%s new since the baseline)\n\n' "$n" "$nnew"
+printf 'skill-drift: %s finding(s)\n\n' "$n"
 for f in "${FINDINGS[@]}"; do
   IFS='|' read -r t s p d <<< "$f"
-  printf '  %-13s %-24s %-46s %s%s\n' "$t" "$s" "$p" "$d" "$(is_new "$f" && echo '  <-- NEW')"
+  printf '  %-13s %-24s %-46s %s\n' "$t" "$s" "$p" "$d"
 done
 cat <<'EOF'
 
@@ -1553,7 +1512,7 @@ cat <<'EOF'
   BADNAME    -> rename the directory or the frontmatter so the two agree
   DUPNAME    -> one flat namespace across both repos; rename one of them
   BADMETA    -> fix the metadata block (see ~/.local/src/docs/skills.md)
-  SYSTEM     -> name the systems the skill works on (`project-system-check <project> --list`
+  SYSTEM     -> name the systems the skill works on (`project-stage-check <project> --list`
                 prints a project's ids), or [any] for a skill every system uses
   BADYAML    -> use a `description: >-` block; a bare `: ` in the value breaks the parse
   CATCOLLIDE -> rename the category; it cannot share a name with a skill

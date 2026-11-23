@@ -781,7 +781,6 @@ JSONL
   CLAUDE_SKILLS="$HOME/empty/skills" DOTFILES="$HOME/empty/pub" \
   DOTFILES_PRIVATE="$HOME/empty/priv" \
   CLAUDE_MD="$HOME/empty/CLAUDE.md" CLAUDE_TRANSCRIPTS="$HOME/empty/tx" \
-  SKILL_DRIFT_BASELINE="$HOME/empty/baseline" \
     run "$DRIFT"
   assert_output --regexp 'UNUSED +idle '
   refute_output --regexp 'UNUSED +by-slash '
@@ -811,7 +810,7 @@ listing_report() {
   CLAUDE_SKILLS="$HOME/empty/skills" CLAUDE_COMMANDS="$HOME/empty/commands" \
   DOTFILES="$HOME/empty/pub" DOTFILES_PRIVATE="$HOME/empty/priv" \
   CLAUDE_MD="$HOME/empty/CLAUDE.md" CLAUDE_TRANSCRIPTS="$HOME/empty/tx" \
-  SKILL_DRIFT_BASELINE="$HOME/empty/baseline" SKILL_LISTING_MAX="$1" \
+  SKILL_LISTING_MAX="$1" \
     run "$DRIFT" "${@:2}"
 }
 
