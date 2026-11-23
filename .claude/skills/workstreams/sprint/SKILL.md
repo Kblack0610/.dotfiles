@@ -25,7 +25,7 @@ Not for fixing or re-sending a release the system cut (builds, Steam upload, the
 
 ## Where a sprint lives
 
-- The snapshot is the `## Committed` section of the window's own file, `<project>/sprints/<vX.Y.Z>.md`; `notes projects --sprints <project> [--json]` lists the scored past windows. The head line carries `opened=`, `due=`, and for a locked sprint `locked=` and `cut=`.
+- The snapshot is the `## Committed` section of the window's own file, `<project>/sprints/<vX.Y.Z>.md`; `notes projects --sprints <project> [--json]` lists the scored past windows, and `--version vX.Y.Z --json` adds one sprint's rows with their outcomes. The head line carries `opened=`, `due=`, and for a locked sprint `locked=` and `cut=`.
 - Only a `#prio/focus` project runs sprints (`stages.md`, "Release windows"). `notes board --json` lists its open window, and the next one queued behind it, under `.sprints`: `project`, `profile`, `version`, `committed`, `done`, `carried`, `opened`, `locked`, `cut`, `due`, `remaining_weight`, `rate_per_hour`, `tasks`, `uncommitted`, `queued`, `start`. Projects > Board shows the same rows in its Sprints table.
 - A project with no entry there has no sprint: either it is not focus (its window, if any, still scores its cut and sets its state word) or it has no window (state `flow`, `stages.md`, "Project state"). To give a project a sprint, the human makes it focus first: `notes projects --prio <project> --set focus`.
 - A project name resolves across profiles, so `--profile` is not needed.
