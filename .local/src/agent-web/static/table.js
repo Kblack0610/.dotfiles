@@ -411,13 +411,13 @@ function tblConstCols(heads, rows, faceted = new Set()) {
     const h = heads[i], label = (h.dataset?.label ?? h.textContent ?? "").trim();
     const v = (rows[0].cells[i].textContent || "").trim();
     if (faceted.has(i) || !label || !v || v.length > TBL_CONST_MAX || h.getAttribute?.("aria-sort")) continue;
-    if (rows.every((r) => (r.cells[i].textContent || "").trim() === v && !r.cells[i].querySelector("a, button, select, input"))) out.push([i, label.toLowerCase(), v]);
+    if (rows.every((r) => (r.cells[i].textContent || "").trim() === v && r.cells[i].innerHTML === rows[0].cells[i].innerHTML && !r.cells[i].querySelector("a, button, select, input"))) out.push([i, label.toLowerCase(), v]);
   }
   return out;
 }
 
 function tblConstants(table) {
-  table.querySelectorAll?.(".tconst").forEach((c) => c.classList.remove("tconst"));
+  for (const tr of table.rows) for (const c of tr.cells) c.classList.remove("tconst");
   const prev = table.previousElementSibling;
   if (prev?.classList?.contains("tconsts")) prev.remove();
   const [head, ...all] = table.rows, heads = [...(head?.cells || [])];

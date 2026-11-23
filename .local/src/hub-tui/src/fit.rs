@@ -299,7 +299,10 @@ impl Table {
                     && !self.header[j].is_empty()
                     && !first.is_empty()
                     && len(&first) <= CONST_MAX
-                    && self.rows.iter().all(|r| text(r, j) == first)
+                    && self.rows.iter().all(|r| {
+                        text(r, j) == first
+                            && r.get(j).map(|c| c.style) == self.rows[0].get(j).map(|c| c.style)
+                    })
             })
             .collect()
     }
@@ -484,12 +487,11 @@ impl Table {
     }
 }
 
-/// The header line with the constants note after its last label, dim.
+/// The header line with the constants note after its last label, in the header's style like the
+/// flex slot's.
 fn end_note(mut line: Line<'static>, note: &str, head: Style) -> Line<'static> {
-    line.spans.push(Span::styled(
-        format!("{NOTE_SEP}{note}"),
-        head.add_modifier(ratatui::style::Modifier::DIM),
-    ));
+    line.spans
+        .push(Span::styled(format!("{NOTE_SEP}{note}"), head));
     line
 }
 
