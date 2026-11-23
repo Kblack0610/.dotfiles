@@ -1,9 +1,10 @@
 //! `/api/home/cards`: Home's status cards (`hub_core::cards`) in `cards::ORDER`: Needs you and Main
 //! red from Home's read, then the grid, one card per tab (and Done today), each from that tab's own
 //! kept read, so a card and its tab show the same numbers. The page, the widget and the push all
-//! read this one list. It is its own read beside `/api/home` because it runs ten readers, and
-//! Home's Needs you table must not wait on them. The Board
-//! card maps the board Home itself keeps (`HomeParts`), so the grid adds no `notes board` read.
+//! read this one list. It is its own read beside `/api/home` because it runs ten readers and a
+//! Home build (`home_read`, the build `/api/home` and the badge each run), and Home's Needs you
+//! table must not wait on them. The Board card maps the board Home itself keeps (`HomeParts`), so
+//! the grid adds no `notes board` read.
 
 use axum::extract::State;
 use axum::Json;
