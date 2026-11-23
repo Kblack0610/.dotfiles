@@ -2004,7 +2004,8 @@ ledger_systems() {
 }
 
 # The work chain, intake -> backlog row -> queue item -> session -> PR -> merge -> closed row, as
-# counts taken now; each is 0 (or 1 for a share) when every link holds. ledger_coverage and
+# counts taken now; each is 0 (or 1 for a share) when every link holds. A backlog size or age here
+# (requested_unstarted_h, next_up_blocked) has no bar in kpi-thresholds, so it prints but never trips --check. ledger_coverage and
 # untracked_merged_prs: of the PRs merged in the last CHAIN_DAYS (pr-ci.jsonl), how many an item
 # names (owner/repo#N, a forge URL, or a bare N by number). board_orphan_started: started agent rows
 # no active item names. merged_open_rows: done items with merge proof whose row is still open.
