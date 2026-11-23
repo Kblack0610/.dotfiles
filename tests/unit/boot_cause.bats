@@ -10,7 +10,7 @@ setup() {
   ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
   BC="$ROOT/.local/bin/boot-cause"
   FIX="$BATS_TEST_TMPDIR/fix"; BIN="$BATS_TEST_TMPDIR/bin"
-  mkdir -p "$FIX" "$BIN" "$FIX/pstore" "$FIX/power/AC0" "$FIX/power/BAT0" "$FIX/thermal/thermal_zone0"
+  mkdir -p "$FIX" "$BIN" "$FIX/pstore" "$FIX/power/AC0" "$FIX/power/BAT0" "$FIX/thermal/thermal_zone0" "$FIX/hwmon"
   printf '%s\n' '#!/bin/bash
 args="$*"
 [ -e "$FIX/noprev" ] && exit 1
@@ -29,7 +29,7 @@ case $1 in -l) echo myups ;; *) case $2 in ups.status) sed -n 1p "$FIX/ups" ;; b
   export FIX PATH="$BIN:$PATH"
   export BOOT_CAUSE_HOST=testhost BOOT_CAUSE_BOOT_ID=boot-now BOOT_CAUSE_BOOT_EPOCH=1795000600
   export BOOT_CAUSE_DIR="$BATS_TEST_TMPDIR/rec" BOOT_CAUSE_STATE="$BATS_TEST_TMPDIR/state"
-  export BOOT_CAUSE_PSTORE="$FIX/pstore" BOOT_CAUSE_POWER="$FIX/power" BOOT_CAUSE_THERMAL="$FIX/thermal"
+  export BOOT_CAUSE_PSTORE="$FIX/pstore" BOOT_CAUSE_POWER="$FIX/power" BOOT_CAUSE_THERMAL="$FIX/thermal" BOOT_CAUSE_HWMON="$FIX/hwmon"
   echo Mains > "$FIX/power/AC0/type"; echo 1 > "$FIX/power/AC0/online"
   echo Battery > "$FIX/power/BAT0/type"; echo 90 > "$FIX/power/BAT0/capacity"; echo Discharging > "$FIX/power/BAT0/status"
   echo 51000 > "$FIX/thermal/thermal_zone0/temp"
@@ -134,10 +134,13 @@ cause() { last_row | jq -r .cause; }
 }
 
 # samples.log line: sample_line <epoch> <ac true|false> <battery pct> [ups status]
+# sample_line <epoch> <ac> <battery%> [<ups status>] [<cpu C|null>] [<kernel>] [<load1>]
 sample_line() {
   mkdir -p "$BOOT_CAUSE_STATE"
-  jq -nc --argjson e "$1" --argjson ac "$2" --argjson p "$3" --arg u "${4-}" \
-    '{epoch:$e, ac_online:$ac, battery_pct:$p, ups:(if $u == "" then null else {status:$u} end)}' >> "$BOOT_CAUSE_STATE/samples.log"
+  jq -nc --argjson e "$1" --argjson ac "$2" --argjson p "$3" --arg u "${4-}" --argjson t "${5:-null}" --arg k "${6-}" \
+    --argjson l "${7:-1}" \
+    '{epoch:$e, ac_online:$ac, battery_pct:$p, ups:(if $u == "" then null else {status:$u} end), cpu_temp_c:$t, load1:$l}
+     + (if $k == "" then {} else {kernel:$k} end)' >> "$BOOT_CAUSE_STATE/samples.log"
 }
 
 @test "a clean shutdown whose last line is only the power-off target is still clean" {
@@ -188,7 +191,59 @@ sample_line() {
   run "$BC" sample
   assert_success
   assert_equal "$(wc -l < "$BOOT_CAUSE_STATE/samples.log")" 1
-  assert_equal "$(jq -r .temp_c_max "$BOOT_CAUSE_STATE/samples.log")" 51
+  assert_equal "$(jq -r .cpu_temp_c "$BOOT_CAUSE_STATE/samples.log")" 51
+}
+
+@test "the k10temp hwmon is the CPU temperature, over every thermal zone" {
+  mkdir -p "$FIX/hwmon/hwmon0" "$FIX/hwmon/hwmon1"
+  echo nvme > "$FIX/hwmon/hwmon0/name"; echo 99000 > "$FIX/hwmon/hwmon0/temp1_input"
+  echo k10temp > "$FIX/hwmon/hwmon1/name"; echo 88500 > "$FIX/hwmon/hwmon1/temp1_input"
+  run "$BC" sample
+  assert_success
+  assert_equal "$(jq -r .cpu_temp_c "$BOOT_CAUSE_STATE/samples.log")" 88.5
+  assert_equal "$(jq -r .kernel "$BOOT_CAUSE_STATE/samples.log")" "$(uname -r)"
+}
+
+@test "a box with no k10temp and no thermal zone reads the CPU as unread, not 0" {
+  rm -rf "$FIX/thermal/thermal_zone0"
+  run "$BC" sample
+  assert_success
+  assert_equal "$(jq -r .cpu_temp_c "$BOOT_CAUSE_STATE/samples.log")" null
+}
+
+@test "a silent death whose last sample was at the throttle point is thermal-suspect" {
+  journal_end 'app: working'
+  jq -n '{status:"success",data:{result:[]}}' > "$FIX/prom.json"
+  sample_line 1795000590 true 100 '' 96.5
+  run "$BC" record
+  assert_equal "$(cause)" thermal-suspect
+  run jq -r '.evidence[]' <<<"$(last_row)"
+  assert_output --partial '96.5 C'
+}
+
+@test "a last sample under the throttle point stays a silent death" {
+  journal_end 'app: working'
+  jq -n '{status:"success",data:{result:[]}}' > "$FIX/prom.json"
+  sample_line 1795000590 true 100 '' 80
+  run "$BC" record
+  assert_equal "$(cause)" silent-death
+}
+
+@test "the record names the kernel and how many boots on it ended unclean, and the peak before death" {
+  journal_end 'app: working'
+  jq -n '{status:"success",data:{result:[]}}' > "$FIX/prom.json"
+  mkdir -p "$BOOT_CAUSE_DIR"
+  for sd in unclean unclean clean; do
+    jq -nc --arg s "$sd" '{boot_id:"old", previous:{shutdown:$s, kernel:"7.3.5-1"}}' >> "$BOOT_CAUSE_DIR/testhost.jsonl"
+  done
+  jq -nc '{boot_id:"older", previous:{shutdown:"unclean", kernel:"7.3.4-1"}}' >> "$BOOT_CAUSE_DIR/testhost.jsonl"
+  sample_line 1795000530 true 100 '' 70 7.3.5-1 39.4
+  sample_line 1795000590 true 100 '' 81 7.3.5-1 22
+  run "$BC" record
+  assert_equal "$(last_row | jq -r .previous.kernel)" 7.3.5-1
+  run jq -r '.evidence[]' <<<"$(last_row)"
+  assert_output --partial 'kernel 7.3.5-1: 3 of 4 recorded boots on it ended unclean'
+  assert_output --partial 'peak over the last 2 samples: load 39.4, CPU 81 C'
 }
 
 @test "a device battery and an offline USB port do not make the host look like it is on battery" {
