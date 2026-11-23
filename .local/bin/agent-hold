@@ -378,6 +378,7 @@ cmd_release() {
 # set (2026-11-17: 22 sessions woken at once reran their Unity gates into load 127 on 32 cores, no
 # hold set). A hold file is the pacer's own answer, grants included, so this reads only without one.
 # No fleet-assess (a Mac runner) holds nothing.
+# gate: ah-load-gated
 load_check() {
   local out
   in_list "$1" "$LOAD_GATED" || return 0
