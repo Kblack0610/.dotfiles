@@ -3216,7 +3216,7 @@ validate_self_why() {
 validate_task() {
   local n=${3##*#} repo=${3%#*}
   cat <<EOF
-This is agent-queue item $1: a second agent's review of PR $3, the work of queue item $2, before it lands. The work is critical ($5), so agent-land merges it only on your pass verdict. You did not write it: review it as a stranger, and do not fix it yourself; a fix is the author's.
+This is agent-queue item $1: a review by a second agent of PR $3, the work of queue item $2, before it lands. The work is critical ($5), so agent-land merges it only on your pass verdict. You did not write it: review it as a stranger, and do not fix it yourself; the author makes any fix.
 
 1. Work at the PR's head $4. Your worktree is cut from it; if \`git rev-parse HEAD\` differs, run \`gh pr checkout $n -R $repo --detach\`.
 2. Read what it was asked to do (\`agent-queue show $2\`) and the change (\`gh pr view $n -R $repo\`, \`gh pr diff $n -R $repo\`). Run /code-review high on it, and the tests that cover what it changed.
