@@ -398,8 +398,7 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_success
   run cat "$NOTES_FIXTURE/prompt.two"
   assert_output --partial $'## Systems\ntwo: ci, views (also: hub=views, waybar=views)'
-  run cat "$NOTES_FIXTURE/prompt.board"
-  assert_output --regexp $'## Systems\n?$'
+  assert_equal "$(tail -n 1 "$NOTES_FIXTURE/prompt.board")" '## Systems'
 }
 
 @test "a board whose open rows pass 128 KiB still reaches the model: the prompt goes on stdin" {
