@@ -5,7 +5,7 @@ How mature a project is, what it must have at each stage, and which check proves
 - The stage is a hashtag on the lab sheet's `Version:` line, for example `Version: v0.3.0 #alpha`. Its one writer is `notes projects --stage <name> --set <stage>`; a hand edit works too, and the nightly `project-map-doctor` catches a sheet that drifts.
 - The ladder itself has one definition, `STAGES` in `.local/src/notes-cli/src/projects.rs`. Shell readers get it from `notes projects --stages` (or `lab_stages` and `lab_stage_at_least` in `.local/lib/lab-feed.sh`) and never keep a copy.
 - The project type (`game`, `app`, `infra`) comes from `type` in `project-map.json`, the same field `planning.md` reads.
-- A project's type standard is its systems and their criteria, base plus its type's overlay, in `systems.md`; `project-system-check <name>` reports met/total per system.
+- A project's type standard is its systems and their criteria, base plus its type's overlay, in `systems.md`; `project-stage-check <name> --systems` reports met/total per system.
 
 ## The ladder
 

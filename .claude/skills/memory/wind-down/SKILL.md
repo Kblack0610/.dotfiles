@@ -160,8 +160,7 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
    pre-existing WIP that was already dirty when the session started.
 2. **Land this session's work.** For the changes this session made, follow the repo's normal
    flow: branch off the default branch (never commit straight to `main`/`develop`), group by
-   concern into scoped conventional commits, push, and open a PR. Prefer the `ingest-worktree`
-   skill when the session touched several unrelated concerns - it fans a mixed tree into
+   concern into scoped conventional commits, push, and open a PR. Prefer the `ingest-prs` skill ("Dirty working tree") when the session touched several unrelated concerns - it fans a mixed tree into
    correctly-scoped PRs and holds ephemeral/secret-bearing churn back.
 3. **Do NOT force-commit unrelated WIP.** Pre-existing uncommitted work that this session did
    not touch stays as-is. Never `git add -A` a mixed tree. If landing the session's work is
