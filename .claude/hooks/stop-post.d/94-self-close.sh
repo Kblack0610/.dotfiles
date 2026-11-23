@@ -44,6 +44,7 @@ verdict=$("${FLEET_SESSIONS_BIN:-fleet-sessions}" close --self "$SID" 2>/dev/nul
 mkdir -p "$MARKS" 2>/dev/null && : > "$MARKS/$SID"
 find "$MARKS" -type f -mtime +7 -delete 2>/dev/null || true
 
+# gate: hook-stop-self-close
 jq -n --arg i "$item" --arg v "$(head -n1 <<<"$verdict")" '{decision: "block", reason: (
   "self-close: your queue item \($i) is closed and your close verdict reads \($v). "
   + "Your report is already written, so do not repeat it: run /wind-down auto now, in this turn, so the shepherd does not type it an hour from now into a cold context.")}'

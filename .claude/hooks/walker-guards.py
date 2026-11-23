@@ -45,6 +45,7 @@ def main():
     rs = reasons(json.load(sys.stdin))
     if rs:
         print(json.dumps({"hookSpecificOutput": {
+            # gate: hook-walker-guards
             "hookEventName": "PreToolUse", "permissionDecision": "deny",
             "permissionDecisionReason": "\n\n".join(rs)}}))
 

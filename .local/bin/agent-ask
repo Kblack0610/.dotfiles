@@ -109,6 +109,7 @@
 # which also types the answer into the session), or drops it. A human-only action the session
 # will not wait on is a human-sheet row, not an ask.
 #
+# gate: aa-question-form
 # A QUESTION IS ONE LINE. `post` refuses a question that does not end in `?` or runs past
 # AGENT_ASK_QUESTION_MAX characters: the background goes in --context and what each option
 # does in `--options 'slug=meaning|...'`. 2026-11-05: JSVBgC was one paragraph with bare slugs
@@ -247,6 +248,7 @@ queue_holders() {
 # Every form a session words a cancel in: a word that only looks like one (dropdown) stays out, and
 # an extra match only sends an ask to the human, never past them.
 HUMAN_CANCEL_VERBS='cancel[a-z]*|drop|drops|dropped|dropping|abandon[a-z]*|remove|removes|removed|removing|delete|deletes|deleted|deleting|kill|kills|killed|killing|prune|prunes|pruned|pruning|retire|retires|retired|retiring|scrap|scraps|scrapped|scrapping|discard[a-z]*|withdraw[a-z]*'
+# gate: aa-human-cancel
 human_cancel() {
   [[ " ${1,,} " =~ [^a-z]($HUMAN_CANCEL_VERBS)[^a-z] ]] || return 1
   local slugs hit
@@ -1005,6 +1007,7 @@ cmd_answer() {
   if [ "$by" = agent ]; then
     local mine
     if [ "$(field "$f" kind)" = approval ]; then mine="it is an approval"
+    # gate: aa-human-only
     elif [ "$(field "$f" judge_human_only)" = true ]; then mine="the judge marked it human-only"
     else mine="$(human_floor "$(field "$f" question) $(field "$f" options)")" && mine="it ${mine%$'\n'}" || mine=""; fi
     if [ -n "$mine" ]; then
@@ -1489,6 +1492,7 @@ judge_demote_check() {
 # only, never silence. N is AUDIT_RATES in ask-judge.conf, `<level>=<N>`; a level it does not
 # name is audited every time. Only an answer that is one of the ask's options can be reviewed,
 # so only those are counted. The count per level is runtime state beside the demote list.
+# gate: aa-audit-sample
 audit_sample() {
   local f="$1" level ans opts n rate kv id q
   level="$(field "$f" judge_level)"; ans="$(field "$f" answer)"; opts="$(field "$f" options)"
@@ -2208,6 +2212,7 @@ review_judge_answer() {
     queue_changed
   elif [ -n "$pending" ] && [ -z "$pick" ]; then
     # once: a disarmed ask has no assume_at left, and every later prompt would rewrite it again
+    # gate: aa-disarm-on-human
     if [ -z "${ASK[assume_disarmed]:-}" ]; then
       set_field "$f" assume_disarmed "$(now_iso)"
       drop_field "$f" assume_at

@@ -80,6 +80,7 @@ if [ "$n" -ge $((EMPTY_WAKE_MAX * 2)) ] && [ ! -e "$PAGED" ] && command -v agent
     >/dev/null 2>&1 || true
 fi
 
+# gate: hook-stop-empty-wakes
 jq -n --argjson n "$n" '{decision: "block", reason: (
   "empty-wakes: this is wake \($n) in a row on a Monitor expiry with no events since the last real prompt, so the watch is only a timer that re-reads the whole context every 30 minutes. "
   + "Stop it (TaskStop) and do not re-arm. Waiting on the human: the pending ask carries the answer (agent-ask reopen-on-answer <id> if the window may close). "

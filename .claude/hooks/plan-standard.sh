@@ -144,5 +144,6 @@ reason="plan-standard: ${#gaps[@]} gap(s) for $label. Fix the plan file and call
 for g in "${gaps[@]}"; do reason+=$'\n'"- $g"; done
 reason+=$'\n'"Standard: $DOC"
 jq -nc --arg r "$reason" \
+  # gate: hook-plan-standard
   '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $r}}'
 exit 0

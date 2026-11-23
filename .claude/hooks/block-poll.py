@@ -203,6 +203,7 @@ def live_reason(text):
     return LIVE_MSG.format(id=sorted(live)[0]) if live else None
 
 
+# gate: hook-block-poll
 def deny(reason):
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "block-poll: " + reason}}))

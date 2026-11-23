@@ -285,6 +285,7 @@ def literal(node):
 
 
 def verdict(code, cwd, manual, resolve):
+    # gate: hook-python-write-guard
     """The deny reason for one block of python code, or None. resolve(cwd, path) is forge-guard's:
     None for a path it cannot place."""
     try:

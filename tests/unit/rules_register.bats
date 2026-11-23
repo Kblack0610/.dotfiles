@@ -226,6 +226,110 @@ gh_stub() { gh_script "echo $(printf %q "$1") >&2; exit 1"; }
   assert_output --partial 'stale: rules.md: Always force push.'
 }
 
+# gate_repo: a git repo of gate code under $SANDBOX/g: one tool with a marked refusal and eight lines after it (past GATE_NEAR), one hook that denies
+# with its marker, committed as the base the diff check reads against. GATE_* point fleet-bench at it.
+gate_repo() {
+  G="$SANDBOX/g"
+  mkdir -p "$G/.local/bin" "$G/.claude/hooks"
+  { printf '#!/bin/bash\n# gate: tool-refuse\ndie "no"\n'; printf '# filler\n%.0s' 1 2 3 4 5 6 7 8; } > "$G/.local/bin/agent-x"
+  printf 'import json\n# gate: hook-deny\nprint(json.dumps({"permissionDecision": "deny"}))\n' > "$G/.claude/hooks/h.py"
+  git -C "$G" init -q -b main
+  git -C "$G" -c user.name=t -c user.email=t@t add -A
+  git -C "$G" -c user.name=t -c user.email=t@t commit -qm base
+  git -C "$G" branch -q work && git -C "$G" checkout -q work
+  export GATE_ROOT="$G" GATE_TOOLS=".local/bin/agent-x"
+  gate_row tool-refuse 'agent:#1' ''
+  gate_row hook-deny 'agent:#2' ''
+}
+
+# gate_row <id> <asked_by> <extra json object or ''>: a gate row on the sandbox repo.
+gate_row() {
+  jq -nc --arg id "$1" --arg a "$2" --argjson x "${3:-null}" \
+    '{source: "~/g/x", anchor: ("# gate: " + $id), rule: "a refusal", kind: "provisional", confidence: "low", action: "keep", id: $id, asked_by: $a} + ($x // {})' >> "$RULES_REGISTER"
+}
+
+@test "rules --gates: every marker has a row and every denying hook has a marker" {
+  gate_repo
+  run "$SUBJECT" rules --gates main
+  assert_success
+  assert_output ''
+}
+
+@test "rules --gates: a marker whose id has no row fails, naming the file, line and id" {
+  gate_repo
+  printf '# gate: ghost-gate\ndie "x"\n' >> "$G/.local/bin/agent-x"
+  run "$SUBJECT" rules --gates main
+  assert_failure 1
+  assert_output --partial 'unregistered gate: .local/bin/agent-x:12: gate: ghost-gate has no row in the register'
+}
+
+@test "rules --gates: a hook that denies with no marker fails (negative control)" {
+  gate_repo
+  printf 'import json\nprint(json.dumps({"permissionDecision": "deny"}))\n' > "$G/.claude/hooks/new.py"
+  run "$SUBJECT" rules --gates main
+  assert_failure 1
+  assert_output --partial 'unmarked gate: .claude/hooks/new.py'
+}
+
+@test "rules --gates: a refusal the branch adds with no marker fails; a marker, gate: none or a comment passes" {
+  gate_repo
+  printf 'if bad; then\n  die "new refusal"\nfi\n' >> "$G/.local/bin/agent-x"
+  run "$SUBJECT" rules --gates main
+  assert_failure 1
+  assert_output --partial 'unmarked refusal: .local/bin/agent-x:13: an added refusal names no register row'
+  git -C "$G" checkout -q -- .local/bin/agent-x
+  printf 'if bad; then\n  # gate: none\n  die "usage: agent-x <id>"\nfi\n# a comment that says die "x" is no refusal\n' >> "$G/.local/bin/agent-x"
+  run "$SUBJECT" rules --gates main
+  assert_success
+  git -C "$G" checkout -q -- .local/bin/agent-x
+  printf 'if bad; then\n  # gate: tool-refuse\n  die "same gate, second site"\nfi\n' >> "$G/.local/bin/agent-x"
+  run "$SUBJECT" rules --gates main
+  assert_success
+}
+
+@test "rules --gates: no base to diff against is no failure, the marker checks still run" {
+  gate_repo
+  printf 'die "new refusal"\n' >> "$G/.local/bin/agent-x"
+  run "$SUBJECT" rules --gates no-such-ref
+  assert_success
+}
+
+@test "rules --check: a gate row needs asked_by as an ask id, the human's words, or agent:" {
+  gate_repo
+  gate_row bare-gate '' ''
+  gate_row typo-gate 'somebody' ''
+  gate_row ask-gate 'ask:YVyqvq' ''
+  gate_row human-gate 'human:2026-11-23 "no gate without my ask"' ''
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'gate asked_by: bare-gate'
+  assert_output --partial 'gate asked_by: typo-gate'
+  refute_output --partial 'ask-gate'
+  refute_output --partial 'human-gate'
+}
+
+@test "rules --check: a gate an agent added that routes work to the human fails unless an unexpired removal covers it" {
+  gate_repo
+  gate_row route-gate 'agent:#9' '{"routes": "human"}'
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'agent route: route-gate: it routes work to the human and an agent added it'
+  : > "$RULES_REGISTER"
+  gate_row route-gate 'agent:#9' '{"routes": "human", "remove_item": "ar-1", "remove_by": "2999-01-01"}'
+  run "$SUBJECT" rules --check
+  assert_success
+  : > "$RULES_REGISTER"
+  gate_row route-gate 'agent:#9' '{"routes": "human", "remove_item": "ar-1", "remove_by": "2020-01-01"}'
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'agent route: route-gate: its removal by ar-1 was due 2020-01-01; delete the gate'
+  : > "$RULES_REGISTER"
+  gate_row route-gate 'ask:YVyqvq' '{"routes": "human"}'
+  gate_row own-rule 'human:~/.claude/CLAUDE.md "approvals are mine"' '{"routes": "human"}'
+  run "$SUBJECT" rules --check
+  assert_success
+}
+
 @test "rules: no register is an empty count, not an error" {
   run "$SUBJECT" rules
   assert_success
@@ -278,4 +382,15 @@ real_register() { [ -s "$REAL" ] || skip "no register at $REAL"; }
   assert_output ''
   # A pass above means nothing if no source resolved: the rows must have been read.
   [ "$(jq '[.[] | select(.anchored == true)] | length' <<<"$states")" -gt 0 ]
+}
+
+@test "register: every gate in the code has a row, every denying hook a marker, and every gate row says who asked" {
+  real_register
+  RULES_REGISTER="$REAL" GATE_ROOT="$REPO_ROOT" run "$SUBJECT" rules --gates "${GATE_BASE:-origin/main}"
+  assert_output ''
+  # Only the gate rows' own problems: another row moving is the scorecard's line, not this PR's.
+  PATH="$REAL_PATH" HOME="$REAL_HOME" XDG_CONFIG_HOME="$REAL_HOME/.config" RULES_REGISTER="$REAL" run "$SUBJECT" rules --check
+  run grep -E '^(gate asked_by|agent route):' <<<"$output"
+  assert_output ''
+  [ "$(jq -s '[.[] | select(.id != null)] | length' "$REAL")" -gt 0 ]
 }
