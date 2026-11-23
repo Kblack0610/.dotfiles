@@ -654,7 +654,7 @@ seed_bar() {
 }
 
 # An exporter keeps a gauge whose topic stops, so losing the lease overwrites the retained true, never retracts it.
-@test "feed: a machine that loses the fleet lease overwrites its true with false, and a diff run resends nothing else" {
+@test "feed: a machine that loses the fleet lease overwrites its true with false, never empties it, and a repeat run sends nothing" {
   "$PUB" --quiet
   : > "$PUBLOG"
   FLEET_LEASE_RC=1 run "$PUB" --quiet

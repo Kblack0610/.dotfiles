@@ -62,7 +62,7 @@ for a in "$@"; do
         --full) mode=full ;;
         --dry-run) mode=dry ;;
         --quiet) quiet=1 ;;
-        -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) printf 'agent-mqtt-publish: unknown arg %s\n' "$a" >&2; exit 2 ;;
     esac
 done
