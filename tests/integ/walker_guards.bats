@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # walker-guards.py: the Bash guards (forge, checkout, release, scratch-rm, gh-login, block-pip,
-# block-poll) run in one process, each still refusing what it refused as its own hook. Each guard's
+# block-poll, python-write-guard) run in one process, each still refusing what it refused as its own hook. Each guard's
 # own cases are in its <name>_guard.bats; this checks the dispatch. The repos, the gh dir and the
 # cache are fixtures under the test dir; the other session is a real process holding a fixture id,
 # killed in teardown.
@@ -41,14 +41,14 @@ at() { jq -nc --arg c "$2" --arg d "$1" --arg s "$ME" '{tool_name:"Bash", sessio
 
 denied_by() { assert_success; assert_output --partial '"deny"'; assert_output --partial "$1:"; }
 
-@test "Claude's settings.json and Codex's hooks.json run the one process on every Bash call, fail-open, and none of the seven" {
+@test "Claude's settings.json and Codex's hooks.json run the one process on every Bash call, fail-open, and none of the eight" {
   run jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command | select(test("walker-guards|(forge|checkout|release|scratch-rm|gh-login|python-write)-guard|block-p(ip|oll)"))' "$ROOT/.claude/settings.json"
   assert_output 'python3 ~/.claude/hooks/walker-guards.py || true'
   run jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command | select(test("walker-guards|(forge|checkout|release|scratch-rm|gh-login|python-write)-guard|block-p(ip|oll)"))' "$ROOT/.config/codex/hooks.json"
   assert_output 'python3 $HOME/.claude/hooks/walker-guards.py || true'
 }
 
-@test "each of the seven guards still denies through the one process" {
+@test "each of the eight guards still denies through the one process" {
   run at "$T/game" 'gh pr merge 12 --squash'
   denied_by forge-guard
   run at "$T/dots" 'git checkout -b feat/x'
@@ -64,6 +64,8 @@ denied_by() { assert_success; assert_output --partial '"deny"'; assert_output --
   denied_by block-pip
   run at /tmp 'until false; do sleep 5; done'
   denied_by block-poll
+  run at /tmp "python3 -c 'open(\"/w/CLAUDE.md\", \"w\").write(\"x\")'"
+  denied_by python-write-guard
 }
 
 @test "a command two guards refuse names both in the one deny; a plain command passes with no output" {
