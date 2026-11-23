@@ -123,10 +123,6 @@ pub struct Item {
     pub partial: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
-    /// The Claude session ids it ran in, oldest first, space-separated as the store writes them:
-    /// an ask's `claude_session` names one, which ties the ask to this item after that session ends.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sessions: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queued: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -257,18 +253,19 @@ impl Item {
         self.tags.split_whitespace()
     }
 
-    /// Whether Claude session `id` is one it ran in (`sessions`).
-    pub fn ran_in(&self, id: &str) -> bool {
-        !id.is_empty()
-            && self
-                .sessions
-                .as_deref()
-                .is_some_and(|s| s.split_whitespace().any(|x| x == id))
+    /// The Claude session ids it ran in, oldest first (its `sessions:` header, space- or
+    /// comma-separated): an ask's `claude_session` names one, which ties the ask to this item
+    /// after that session ends.
+    pub fn session_ids(&self) -> impl Iterator<Item = &str> {
+        self.extra_str("sessions")
+            .unwrap_or("")
+            .split([',', ' '])
+            .filter(|s| !s.is_empty())
     }
 
     /// The Claude session it ran in last: the one whose end left it waiting.
     pub fn last_session(&self) -> Option<&str> {
-        self.sessions.as_deref()?.split_whitespace().last()
+        self.session_ids().last()
     }
 
     /// Whether it is held on ask `id` (an `ask:<id>` or `ask:<id>=<options>` tag, agent-queue's hold).

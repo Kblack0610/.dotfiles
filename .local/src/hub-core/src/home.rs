@@ -1681,7 +1681,9 @@ mod tests {
         let mut st = state();
         st["asks"][0]["claude_session"] = json!("sid-gone");
         let mut by_session = item("held", State::Waiting, Some("lab:repo-agent-9"));
-        by_session.sessions = Some("sid-old sid-gone".into());
+        by_session
+            .extra
+            .insert("sessions".into(), json!("sid-old sid-gone"));
         let q = Queue {
             items: vec![by_session.clone()],
             ..Default::default()
@@ -1701,7 +1703,9 @@ mod tests {
         assert!(!h.needs.iter().any(|n| n.kind == Kind::Queue));
         // Negative controls: an item resumed in a later session waits on that one, not the ask,
         let mut resumed = by_session.clone();
-        resumed.sessions = Some("sid-gone sid-later".into());
+        resumed
+            .extra
+            .insert("sessions".into(), json!("sid-gone sid-later"));
         let q = Queue {
             items: vec![resumed],
             ..Default::default()
@@ -1712,7 +1716,9 @@ mod tests {
             .iter()
             .any(|n| n.kind == Kind::Queue && n.id == "held"));
         // and an item another session ran in is its own row.
-        by_session.sessions = Some("sid-other".into());
+        by_session
+            .extra
+            .insert("sessions".into(), json!("sid-other"));
         let q = Queue {
             items: vec![by_session],
             ..Default::default()
@@ -1735,7 +1741,7 @@ mod tests {
         st["answered_asks"] =
             json!([{"id": "x", "claude_session": "sid-x", "answered_at": NOW - 600}]);
         let mut done = item("decided", State::Waiting, Some("lab:repo-agent-9"));
-        done.sessions = Some("sid-x".into());
+        done.extra.insert("sessions".into(), json!("sid-x"));
         // No `waiting:` stamp: it waits since it started, before the answer.
         done.started = Some("2026-11-05T16:00:00Z".into()); // NOW - 3600
         let shown = |q: Item, st: &Value| {
@@ -1762,7 +1768,7 @@ mod tests {
         again.waiting = Some("2026-11-05T16:55:00Z".into()); // NOW - 300
         assert!(shown(again, &st));
         // And an answer to an earlier session of it decides nothing for the last one.
-        done.sessions = Some("sid-x sid-y".into());
+        done.extra.insert("sessions".into(), json!("sid-x sid-y"));
         assert!(shown(done, &st));
     }
 
