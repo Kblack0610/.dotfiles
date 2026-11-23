@@ -1157,7 +1157,7 @@ pub(crate) struct PageRow {
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct Page {
     pub version: String,
-    /// `open`, `queued` (behind the open version) or `closed` (cut, it has a score).
+    /// `open`, `queued` (behind the open version) or `closed` (cut, or below the open version).
     pub state: &'static str,
     pub opened: String,
     pub due: Option<String>,
@@ -1181,7 +1181,9 @@ pub(crate) fn page(dir: &Path, cur: V) -> Result<Page> {
     let rows = rows_for(dir, cur, &ix, &snap);
     let classes = Classes::of(&snap, &rows);
     let score = history(dir).into_iter().find(|p| p.version == ver);
-    let cut = |o: Outcome| match (o, score.is_some()) {
+    // A window below the open version is over, scored or not: what it left open was carried.
+    let over = score.is_some() || projects::open_version(dir).is_some_and(|o| cur < o);
+    let cut = |o: Outcome| match (o, over) {
         (Outcome::Open, true) => Outcome::Carried,
         _ => o,
     };
@@ -1211,7 +1213,7 @@ pub(crate) fn page(dir: &Path, cur: V) -> Result<Page> {
             }
         })
         .collect();
-    let state = if score.is_some() {
+    let state = if over {
         "closed"
     } else if is_queued(dir, cur) {
         "queued"

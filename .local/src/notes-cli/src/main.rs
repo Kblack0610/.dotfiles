@@ -470,8 +470,8 @@ enum Cmd {
         /// `agent/versions/<vX.Y.Z>.md`
         #[arg(long, value_name = "NAME")]
         agent_note: Option<String>,
-        /// With --agent-note: which version (defaults to the open one). With --sprints: the one
-        /// sprint to print, required
+        /// With --agent-note: which version (defaults to the open one). With --sprints --json: print only
+        /// this sprint's page; without it, list every scored window
         #[arg(long, value_name = "VERSION")]
         version: Option<String>,
     },
