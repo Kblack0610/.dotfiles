@@ -144,7 +144,6 @@ AQ_DESK_START_MIN=10
 # An `rbw:<folder>/<name>` item waits until this rbw lists that Bitwarden entry.
 AQ_RBW="${AGENT_QUEUE_RBW:-rbw}"
 AQ_RBW_TIMEOUT_S=5
-AQ_GATE_DONE_DAYS=3650   # days of closed rows a gate's after/<row-id> lookup reads (cmd_gate): a row closed before that reads as no such row
 AQ_ASK="$AQ_BIN/agent-ask"
 # waiting: its session needs the human (a plan, a dialog, an ask). review: its session ended or
 # stopped at an open PR, which reap closes on the merge. They are two states so "needs you" counts
@@ -832,19 +831,43 @@ after_fix() {
   return 0
 }
 
+# rows_state <id>... -- RS[<id>] for each row `notes board --json --id` finds: open (open or doing),
+# done, dropped, or dup:<row> when it was folded into another row, whose state it reads too (one hop).
+# An id listed twice (a sheet and a version note) reads open, then done, then dup, then dropped. An id
+# it does not find gets no entry. Fails when the board cannot be read.
+rows_state() {
+  local -a more=()
+  local i st
+  rows_state_read "$@" || return 1
+  for i in "${RS[@]}"; do [[ "$i" != dup:?* ]] || [ -n "${RS[${i#dup:}]-}" ] || more+=("${i#dup:}"); done
+  [ "${#more[@]}" -eq 0 ] || rows_state_read "${more[@]}"
+}
+rows_state_read() {
+  local -a args=()
+  local i st feed
+  for i in "$@"; do args+=(--id "$i"); done
+  feed="$(notes board --json "${args[@]}" 2>/dev/null)" && [ -n "$feed" ] || return 1
+  while IFS=$'\t' read -r i st; do RS[$i]=$st; done < <(jq -r '[.rows[]? | select(.id != null)] | group_by(.id)[]
+    | map(if .state == "open" or .state == "doing" then "open"
+          elif ((.marker // "") | test("(^| )dropped:")) then "dropped"
+          elif .dup != null then "dup:\(.dup)" else "done" end) as $s
+    | "\(.[0].id)\t\(if any($s[]; . == "open") then "open" elif any($s[]; . == "done") then "done"
+        else (($s | map(select(startswith("dup:"))))[0] // "dropped") end)"' <<<"$feed")
+}
+
 # gate [--json] (--all | <tag>...) -- each board gate tag clear, pending (why, in hold_for's words) or
 # dead (it can never clear: take it off the row, or settle what it names), and any other tag none.
-# after/<row-id> is clear once that row closed done (within AQ_GATE_DONE_DAYS), dead once it was
-# dropped or when no row has that id, pending while it is open or the board cannot be read. One board
-# read and one rbw list serve every tag; --all reads the open board, and the closed rows only once an
-# after/ names a row that is not open (about 0.15s more, 2026-11-18). --all answers every gate tag on the board's open rows, and
+# after/<row-id> is clear once that row closed done, dead once it was dropped or when no row has that
+# id, pending while it is open or the board cannot be read; a dup-closed row reads as the row it was
+# folded into. One `notes board --json --id` read (rows_state) and one rbw list serve every tag; --all
+# also reads the open board for its tags. --all answers every gate tag on the board's open rows, and
 # only those: fleet-dispatch's one call a pass (a board it cannot read fails it). --json: one {tag,
 # state, why, queue} line per tag, queue the hold tags it means (gate_queue_tag), which fleet-dispatch
 # promote puts on the row's item. Exit 0 when every gate is clear, else 3.
 cmd_gate() {
   local usage="usage: agent-queue gate [--json] (--all | <tag>...)"
-  local json="" all="" board="" brd=0 full=1 rsl="" t q st why id r pass rc=0 GQ HOLD HOLD_DEAD stack STK STK_SLUG
-  local -a tags=()
+  local json="" all="" board="" unread="" t q st why id r via rc=0 GQ HOLD HOLD_DEAD stack STK STK_SLUG
+  local -a tags=() ids=()
   local -A RS=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -857,42 +880,32 @@ cmd_gate() {
   [ -n "$all" ] || [ "${#tags[@]}" -gt 0 ] || die "$usage"
   if [ -n "$all" ]; then
     board="$(notes board --json 2>/dev/null)" && [ -n "$board" ] || die "gate --all: notes board --json failed"
-    brd=1 full=""
     mapfile -t -O "${#tags[@]}" tags < <(jq -r "$ROW_TAGS_JQ"'[.rows[]? | select(.state == "open" or .state == "doing") | row_tags[]] | unique | .[]' <<<"$board")
   fi
   local -A LIST_MEMO=()
   local LIST_MEMO_ON=1
+  # Every after/ id in one `notes board --json --id` read: it finds a row wherever it sits (open in any
+  # version, closed, dropped or dup-closed, either lane, rolled into a version note), which the open
+  # board and its done feed do not (2026-11-23: a human row aimed at a later version and two dropped
+  # agent rows all read "no board row has that id", and queue-starved tripped on them).
+  for t in "${tags[@]}"; do t="${t#\#}"; if [[ "$t" == after/?* ]]; then ids+=("${t#after/}"); fi; done
+  [ "${#ids[@]}" -eq 0 ] || rows_state "${ids[@]}" || unread=1
   for t in "${tags[@]}"; do
     t="${t#\#}" q="" why="" stack=""
     if [[ "$t" == after/?* ]]; then
-      id="${t#after/}"
-      if [ "$brd" = 0 ]; then
-        if board="$(notes board --json --done-days "$AQ_GATE_DONE_DAYS" 2>/dev/null)"; then brd=1; else brd=2; fi
-      fi
-      # Every row's state in one jq pass, the first time an after/ asks; and once more with the closed
-      # rows, the first time one names a row the open board lacks (--all).
-      for pass in open closed; do
-        if [ "$brd" = 1 ] && [ -z "$rsl" ]; then
-          rsl=1
-          # A row in a queued sprint is listed only under .sprints[].tasks (2026-11-20: eight after/ links
-          # to v0.5.5 rows read dead), so those come first and a rows or done entry for the same id wins.
-          while IFS=$'\t' read -r r st; do RS[$r]=$st; done < <(jq -r '((.sprints // [])[] | (.tasks // [])[]
-              | select(.state != "gone")), (.rows // [])[], (.done // [])[]
-            | select(.id != null) | "\(.id)\t\(if .state == "done" then (if ((.marker // "") | test("(^| )dropped")) then "dropped" else "done" end) else "open" end)"' <<<"$board")
-        fi
-        [ "$brd" = 1 ] && [ -z "$full" ] && [ -z "${RS[$id]-}" ] || break
-        if board="$(notes board --json --done-days "$AQ_GATE_DONE_DAYS" 2>/dev/null)"; then full=1 rsl=""; else brd=2; fi
-      done
-      case "${RS[$id]-}" in
+      id="${t#after/}" r="${RS[$id]-}" via=""
+      # A dup-closed row is the row it was folded into, one hop.
+      if [[ "$r" == dup:?* ]]; then via=" (folded into ${r#dup:})" id="${r#dup:}" r="${RS[${r#dup:}]-}"; fi
+      case "$r" in
         done) st=clear ;;
-        dropped) st=dead why="after $id: that row was dropped, so it never closes done; take the tag off the row" ;;
-        open) st=pending why="after $id (open)"
+        dropped) st=dead why="after ${t#after/}$via: that row was dropped, so it never closes done; take the tag off the row" ;;
+        open) st=pending why="after ${t#after/}$via (open)"
           # The row's item is live with an open PR: stacked, which clears the gate (the phase builds on
           # that PR; agent-land merges it once the item closed ok). `stack` names the item for promote.
           stack_row "$id"
           [ -z "$STK" ] || { st=clear why="stacked on $STK" stack="$STK_SLUG"; } ;;
-        *) if [ "$brd" = 1 ]; then st=dead why="after $id: no board row has that id$(after_fix "$id")"
-           else st=pending why="after $id (notes board --json failed)"; fi ;;
+        *) if [ -z "$unread" ]; then st=dead why="after ${t#after/}$via: no board row has that id$(after_fix "$id")"
+           else st=pending why="after ${t#after/} (notes board --json failed)"; fi ;;
       esac
     elif gate_queue_tag "$t"; then
       q="$GQ"
