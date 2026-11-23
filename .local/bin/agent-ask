@@ -84,7 +84,8 @@
 #                                       on the same question (see "SETTLED ALREADY")
 #   agent-ask assume-due                answer every armed ask whose wait has passed, once it
 #                                       re-checks, and every gh-login ask whose host's gh auth
-#                                       status is clean; run `expire`; put an agent-answered ask
+#                                       status is clean; judge once more one ask whose judge
+#                                       call post's guard ended; run `expire`; put an agent-answered ask
 #                                       something still holds back to pending; sweep once when the
 #                                       human has set a new hold (fleet-state.service, each pass)
 #   agent-ask expire [--dry-run]        cancel each ask on a board row the human answered since it
@@ -670,13 +671,10 @@ cmd_post() {
 
   # The judge runs before the asker is told anything: a type it answers live comes back as the
   # answer, and the asker goes on. The timeout is a guard on an external model call (a stuck one
-  # leaves today's pending ask with an error verdict), not a wait for an event.
+  # leaves the pending ask an error verdict, which the next assume-due pass judges once more), not
+  # a wait for an event.
   if [ -z "${AGENT_ASK_NO_JUDGE:-}" ]; then
-    timeout --kill-after=5 "$AGENT_ASK_JUDGE_TIMEOUT" "${BASH_SOURCE[0]}" judge "$id" >/dev/null 2>&1 < /dev/null
-    case $? in
-      124|137) [ -n "$(field "$file" judge)" ] ||
-        judge_record "$file" error "" "the judge call timed out after ${AGENT_ASK_JUDGE_TIMEOUT}s" "" ;;
-    esac
+    judge_guarded "$file" "$(timed_out_reason)"
     # A hold the human set, or an older ask on the same question, settles it before any answer
     # of the judge's own; a joined ask prints the one it joined, as a shared blocker does.
     local settled
@@ -1368,26 +1366,67 @@ told_at_post() {
   start_resume "$(field "$f" id)"
 }
 
-# cmd_sweep [project|--all]: judge every pending ask again and answer or arm the live ones as the
-# judge, through cmd_answer's delivery (typed into a live session, else a board row, then resume).
+# judge_guarded <file> <reason>: judge the ask behind AGENT_ASK_JUDGE_TIMEOUT. A call the guard
+# ends leaves the ask an error verdict with <reason>, unless the judge wrote one first.
+judge_guarded() {
+  timeout --kill-after=5 "$AGENT_ASK_JUDGE_TIMEOUT" "${BASH_SOURCE[0]}" judge "$(field "$1" id)" >/dev/null 2>&1 < /dev/null
+  case $? in
+    124|137) [ -n "$(field "$1" judge)" ] || judge_record "$1" error "" "$2" "" ;;
+  esac
+}
+
+# timed_out_reason [again]: the judge_reason of a call the guard ended, at post or (again) on the
+# pass that judged it once more (rejudge_timed_out), which tries only the first.
+timed_out_reason() {
+  printf 'the judge call timed out after %ss%s' "$AGENT_ASK_JUDGE_TIMEOUT" "${1:+, at post and again on the next pass}"
+}
+
+# rejudge <file> [guard reason]: judge the pending ask again (behind the guard when a reason is
+# given) and act on the verdict: settled by a hold or an older ask, else a live answer through
+# cmd_answer's delivery (typed into a live session, else a board row, then resume), or armed when
+# its type waits. Prints the settle, `answered <x>`, `armed <x>`, or `yours`.
+rejudge() {
+  local f="$1" id ans settled said=yours
+  id="$(field "$f" id)"
+  if [ -n "${2:-}" ]; then judge_guarded "$f" "$2"
+  else "${BASH_SOURCE[0]}" judge "$id" >/dev/null 2>&1 < /dev/null; fi
+  if settled="$(settle_by_verdict "$f" sweep)"; then
+    said="$settled"
+  elif ans="$(live_answer "$f")"; then
+    if ! live_due "$f" "$ans"; then said="armed $ans"
+    elif cmd_answer --by judge "$id" "$ans" 2>/dev/null; then said="answered $ans"; fi
+  fi
+  printf '%s\n' "$said"
+}
+
+# rejudge_timed_out: judge once more a pending ask whose judge call post's guard ended. Nothing
+# else judged one again but a hand-run sweep, so it stayed the human's: 12 asks from 2026-11-05 to
+# 11-23, 6 of them ended before the model call began (ar-2553). A second timeout is not tried again.
+# One ask a pass: each call can take the guard plus its kill wait, inside fleet-state's
+# TimeoutStartSec, and the pass runs every minute.
+rejudge_timed_out() {
+  local f want; want="$(timed_out_reason)"
+  while IFS= read -r f; do
+    [ "$(field "$f" judge_reason)" = "$want" ] && ! is_parked "$f" || continue
+    rejudge "$f" "$(timed_out_reason again)" >/dev/null
+    return 0
+  done < <(ask_files --all | xargs -r -d '\n' grep -lx 'judge: error' 2>/dev/null |
+    xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null)
+}
+
+# cmd_sweep [project|--all]: judge every pending ask again and answer or arm the live ones (rejudge).
 cmd_sweep() {
-  local scope="${1:---all}" f id ans said settled
+  local scope="${1:---all}" f id said
   load_queue_asks
   while IFS= read -r f; do
     [ "$(field "$f" status)" = pending ] || continue
-    id="$(field "$f" id)"; said=yours
+    id="$(field "$f" id)"
     if gh_login_settle "$f" 2>/dev/null; then
       printf '%s\t%s\t%s\t%s\t%s\n' "$(field "$f" project)" "$id" "answered gh-login" gh-login "$(field "$f" judge_reason)"
       continue
     fi
     is_parked "$f" && continue
-    "${BASH_SOURCE[0]}" judge "$id" >/dev/null 2>&1 < /dev/null
-    if settled="$(settle_by_verdict "$f" sweep)"; then
-      said="$settled"
-    elif ans="$(live_answer "$f")"; then
-      if ! live_due "$f" "$ans"; then said="armed $ans"
-      elif cmd_answer --by judge "$id" "$ans" 2>/dev/null; then said="answered $ans"; fi
-    fi
+    said="$(rejudge "$f")"
     printf '%s\t%s\t%s\t%s\t%s\n' "$(field "$f" project)" "$id" "$said" "$(field "$f" judge_rule)" "$(field "$f" judge_reason)"
   done < <(ask_files "$scope" | sort)
 }
@@ -1414,6 +1453,7 @@ cmd_assume_due() {
     cmd_answer --by judge "${ASK[id]}" "$ans"
   done < <(ask_files --all | xargs -r -d '\n' grep -l '^assume_at: .' 2>/dev/null |
     xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null)
+  rejudge_timed_out
   cmd_expire
   sweep_on_new_hold
 }
