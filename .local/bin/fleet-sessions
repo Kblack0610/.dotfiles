@@ -1741,7 +1741,7 @@ merged_prs() {
 session_prs() {
   local f="$1" prs repo
   [ -f "$f" ] || { echo '[]'; return; }
-  prs="$(so_transcript_metrics "$f" | so_canon_claims "${SO_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}" | jq -c '.prs // []')" \
+  prs="$(so_transcript_metrics "$f" | so_canon_claims "${SO_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}" 2>/dev/null | jq -c '.prs // []')" \
     || { unreadable "PR claims (project map or alias list)"; blind_row; echo '[]'; return; }
   [ -n "$prs" ] || { echo '[]'; return; }
   # a repo's whole PR list goes through a pipe, never argv: it outgrows an argument's 128 KB
