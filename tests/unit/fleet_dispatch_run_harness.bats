@@ -633,14 +633,15 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   assert_called 'curl -sS -f -m 10 https://gw.test/health/readiness'
   refute_output --partial 'the batch review (claude) waits'
   assert_output --regexp 'started queue item t-one on gotrain \((glm|kimi)\), a trainee run .*, on the trainee floor'
-  # A plain game item with room starts on the red cluster; a home-config one, cluster work, waits (ar-4889).
+  # A plain game item is judged on its route, not the red cluster; a home-config one, cluster work, waits on it (ar-4889).
   agent-queue move t-one done --status ok >/dev/null
   fleet_state 0
   project home-config beta "$SANDBOX/repos/home-config"
   agent-queue add --project home-config --slug hc --priority high "fix the cluster janitor" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'started queue item fix-menu'
+  assert_output --partial 'queue item fix-menu has no source with room it may run on'
+  assert_output --partial 'cluster: hc (infra: k3s domain red, and this is cluster work (DISPATCH_CLUSTER_PROJECTS))'
+  refute_output --partial 'fix-menu (infra: k3s domain red'
   refute_output --partial 'started queue item hc'
   [ -n "$(qitem queued hc)" ] || fail "the home-config item left the queue on a red cluster"
 }
