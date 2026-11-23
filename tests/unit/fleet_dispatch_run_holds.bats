@@ -959,12 +959,12 @@ min_live_classes() {
 
 # 2026-11-23: the judge ran only inside the board fill, so a pass a gate held judged nothing and
 # 1,855 rows waited unjudged behind a flapping k3s red and the load gate.
-@test "a pass the cluster gate holds still judges the new rows, and starts nothing" {
+@test "a pass a gate holds still judges the new rows, and starts nothing" {
   game_ready
   row game human 'add a new map' "- [ ] add a new map $T"
-  stub fleet-shepherd 'echo "infra: k3s domain red"'
+  stub fleet-assess '[ "$1" = --github ] && echo "github: 10/5000 REST calls left, resets 13:00, LOW"; exit 0'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'infra: k3s domain red'
+  assert_output --partial 'LOW'
   assert_called 'judge called'
   assert_not_called 'wt new'
 }
