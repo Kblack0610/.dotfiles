@@ -372,12 +372,7 @@ pub fn with_items(sessions: &mut [Session], items: &[queue::Item]) {
         if i.slug.is_empty() || i.state == queue::State::Queued {
             continue;
         }
-        let ids: Vec<&str> = i
-            .extra
-            .get("sessions")
-            .and_then(|v| v.as_str())
-            .map(|v| v.split_whitespace().collect())
-            .unwrap_or_default();
+        let ids: Vec<&str> = i.session_ids().collect();
         let tmux = i
             .session
             .as_deref()

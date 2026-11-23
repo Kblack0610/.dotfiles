@@ -455,6 +455,16 @@ row_worker() {
   return 1
 }
 
+# re_icase <text> <ERE> -> 0 when the ERE matches the one-line text case-blind, as `grep -qiE` does, with
+# no fork: bash's =~ is the same glibc regex, \b included. A board walk asked grep 8,400 times a pass (ar-4911).
+re_icase() { local r on=; shopt -q nocasematch && on=1; shopt -s nocasematch; [[ $1 =~ $2 ]]; r=$?; [ -n "$on" ] || shopt -u nocasematch; return "$r"; }
+
+# A board walk's rows as records, a row's fields split by ROW_US and each row ended by ROW_RS (no row
+# text holds either), so one jq a board builds every row's object: rows_recs(f) runs f on each row's
+# field array. A row f fails on is named on stderr and left out, as its own jq call left it out.
+ROW_US=$'\x1f' ROW_RS=$'\x1e'
+ROW_RECS_JQ='def rows_recs(f): split("\u001e")[:-1][] | split("\u001f") | . as $r | try f catch ("fleet-dispatch: board row \($r[0]) left out: \(.)\n" | stderr | empty);'
+
 # cleanup_row <project> <row text> -> 0 when the row cleans up an AI system: its project is in
 # DISPATCH_CLEANUP_PROJECTS and its kind is cleanup in kinds.json (KIND_CLEANUP: true, or a pattern
 # the body matches too) and the body names no shared infrastructure (DISPATCH_CLEANUP_NOT), else 1.
@@ -467,7 +477,7 @@ cleanup_row_set() {
   row_kind_set "$2"
   c=${KIND_CLEANUP[${KIND:-_}]:-}
   body=${body#- \[?\] }
-  if { [ "$c" = true ] || { [ -n "$c" ] && grep -qiE -- "$c" <<<"$body"; }; } && ! grep -qiE -- "$DISPATCH_CLEANUP_NOT" <<<"$body"; then CLEANUP=0; fi
+  if { [ "$c" = true ] || { [ -n "$c" ] && re_icase "$body" "$c"; }; } && ! re_icase "$body" "$DISPATCH_CLEANUP_NOT"; then CLEANUP=0; fi
   return 0
 }
 cleanup_row() { cleanup_row_set "$@"; echo "$CLEANUP"; }
@@ -1779,7 +1789,7 @@ judged_keys() {
 # that can hold one (floor_project); ONLY_PROJECT reads that one project alone (trainee_rows' split). A project off_project names is no candidate: it says why under OFF_SAY (the `candidates`
 # command, and a pass's one judge read, so not once per read), and suggest lists its agent rows with that reason.
 cmd_candidates() {
-  local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today nobody active poff
+  local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today nobody active poff recs
   local x planned dj dsig plan off kind board gates gwait pidle fgates prio priority cleanup sprint uncommitted rsize
   today=${DISPATCH_TODAY:-$(date +%F)}
   judged=$(judged_keys)
@@ -1814,6 +1824,9 @@ cmd_candidates() {
         row_kinds_load <<<"$board"
         row_sigs_load <<<"$board"
         # Each value below comes from a _set helper, never $(...): a row costs no subshell (ar-4512).
+        # A row's fields go into one record (ROW_RS, ROW_US) and one jq a board builds every object:
+        # a jq a row was 3,704 forks a pass and most of a walk's time (ar-4911).
+        recs=''
         while IFS=$'\t' read -r key text; do
           [ -n "$key" ] || continue
           case "$text" in '- [ ]'*) ;; *) continue ;; esac
@@ -1845,16 +1858,21 @@ cmd_candidates() {
           prio_word_set "$prio" "$cleanup"; priority=$PRIORITY
           row_sprint_set "$name" "$key"; sprint=$SPRINT uncommitted=$UNCOMMITTED
           row_size_set "$text"; rsize=$SIZE
-          jq -cn --arg profile "$prof" --arg project "$name" --arg stage "$stage" \
-            --arg lane "$lane" --arg key "$key" --arg text "$text" --arg repo "$repo" \
-            --argjson details "$dj" --arg dsig "$dsig" --argjson planned "$planned" --argjson plan "$plan" \
-            --arg line "$line" --argjson prio "$prio" --arg priority "$priority" --argjson tier "$tier" \
-            --arg worker "$worker" --argjson wrank "$rank" --arg today "$today" --arg pprio "$pprio" \
-            --argjson cleanup "$cleanup" --argjson sprint "$sprint" --argjson uncommitted "$uncommitted" --arg nobody "$nobody" --argjson active "$active" \
-            --arg kind "$kind" --argjson krank "${KIND_RANK[${kind:-_}]:-1}" --arg klabel "${KIND_LABEL[${kind:-_}]:-}" \
-            --arg rsize "$rsize" --arg off "$off" --argjson frank "${RNK["$name"$'\t'"$lane"$'\t'"$key"]:-null}" \
-            --arg gates "$gates" --arg gwait "$gwait" --arg rdue "${RLD["$name"$'\t'"$lane"$'\t'"$key"]:-}" --arg pidle "$pidle" \
-            "$RANK_JQ"'{profile: $profile, project: $project, stage: $stage, lane: $lane, key: $key,
+          recs+="$key$ROW_US$text$ROW_US$dj$ROW_US$dsig$ROW_US$planned$ROW_US$plan$ROW_US$line$ROW_US$prio$ROW_US"
+          recs+="$priority$ROW_US$tier$ROW_US$worker$ROW_US$rank$ROW_US$cleanup$ROW_US$sprint$ROW_US$uncommitted$ROW_US$nobody$ROW_US"
+          recs+="$kind$ROW_US${KIND_RANK[${kind:-_}]:-1}$ROW_US${KIND_LABEL[${kind:-_}]:-}$ROW_US$rsize$ROW_US$off$ROW_US"
+          recs+="${RNK["$name"$'\t'"$lane"$'\t'"$key"]:-null}$ROW_US$gates$ROW_US$gwait$ROW_US${RLD["$name"$'\t'"$lane"$'\t'"$key"]:-}$ROW_RS"
+        done <<<"$board"
+        [ -z "$recs" ] || jq -Rsc --arg profile "$prof" --arg project "$name" --arg stage "$stage" \
+          --arg lane "$lane" --arg repo "$repo" --arg today "$today" --arg pprio "$pprio" \
+          --argjson active "$active" --arg pidle "$pidle" "$RANK_JQ$ROW_RECS_JQ"'rows_recs(
+            .[0] as $key | .[1] as $text | (.[2] | fromjson) as $details | .[3] as $dsig
+            | (.[4] | fromjson) as $planned | (.[5] | fromjson) as $plan | .[6] as $line | (.[7] | fromjson) as $prio
+            | .[8] as $priority | (.[9] | fromjson) as $tier | .[10] as $worker | (.[11] | fromjson) as $wrank
+            | (.[12] | fromjson) as $cleanup | (.[13] | fromjson) as $sprint | (.[14] | fromjson) as $uncommitted
+            | .[15] as $nobody | .[16] as $kind | (.[17] | fromjson) as $krank | .[18] as $klabel | .[19] as $rsize
+            | .[20] as $off | (.[21] | fromjson) as $frank | .[22] as $gates | .[23] as $gwait | .[24] as $rdue
+            | {profile: $profile, project: $project, stage: $stage, lane: $lane, key: $key,
               text: $text, repo: $repo, prio: $prio, priority: $priority, tier: $tier, line: $line,
               worker: $worker, wrank: $wrank, frank: $frank, cleanup: $cleanup, sprint: $sprint, uncommitted: $uncommitted, details: $details, dsig: $dsig, planned: ($planned == 1),
               kind: $kind, krank: $krank, klabel: $klabel, row_size: $rsize}
@@ -1863,8 +1881,7 @@ cmd_candidates() {
               + (if $rdue != "" then {release_due: $rdue} else {} end)
               + (if $pidle != "" then {pool_idle: $pidle} else {} end)
               + (if $gwait != "" then {gate_wait: $gwait} elif $gates != "" and $lane == "agent" then {gated: true, gates: $gates} else {} end)
-              + (if $nobody != "" then {nobody: $nobody, active: $active} else {} end) | rank_fields($today; $pprio)'
-        done <<<"$board"
+              + (if $nobody != "" then {nobody: $nobody, active: $active} else {} end) | rank_fields($today; $pprio))' <<<"$recs"
       done
     done < <(notes --profile "$prof" projects 2>/dev/null)
   done
@@ -7661,6 +7678,10 @@ triage_pass() {
   out=$(AGENTCTL_NAME=fleet-bench fleet-bench triage 2>&1) || TRIAGE_FAILED=$(tail -n 1 <<<"$out" | cut -c1-100)
 }
 
+# pass_mark <step> -- add "<step> <s>s", the seconds since the last mark, to PASS_TIMES; main says the
+# whole line when the pass ends, so a slow pass names its slow step (ar-4911: 6 to 16 min a pass).
+pass_mark() { PASS_TIMES+="${PASS_TIMES:+, }$1 $(( SECONDS - ${PASS_MARK:-0} ))s"; PASS_MARK=$SECONDS; }
+
 cmd_run() {
   local why live room
   fleet_hosts >/dev/null   # once, so each subshell of the pass inherits the roster
@@ -7671,14 +7692,14 @@ cmd_run() {
   # A NOOP that never read the gates leaves a standing hold as it is (PROOF_HELD_KEEP, agent-proof.sh).
   flock -n 9 || { PROOF_HELD_KEEP=1 settle NOOP "another pass is running"; return 0; }
 
-  [ "$DRY" = 1 ] || { cmd_reap; provider_hold_scan; }   # the scan reads the runs the reap just closed
+  [ "$DRY" = 1 ] || { cmd_reap; pass_mark reap; provider_hold_scan; pass_mark scan; }   # the scan reads the runs the reap just closed
   # Once a pass, so each subshell of the pass reads the same gates; after the reap, whose returns
   # write gates onto the rows they un-start (agent-queue return_gates).
-  GATES_LOADED=''; load_gates
+  GATES_LOADED=''; load_gates; pass_mark gates
   HUMAN_PASS=0 SPRINT_PASS=0 PLAN_PASS=0 PLAN_STARTED=0 PLANS_STARTED=''
   QUEUE_HELD='' SHARE_HELD='' SHARE_STATE='' PREEMPTED=0 STARTED=0 RED_STARTED=0 RED_PASS=0 RUN_GATED=0 FLOOR_HELD=0 FLOOR_GATE='' JUDGE_RC= JUDGE_WHY= PLAN_TAGGED=0 TRIAGE_FAILED= NO_ROOM=
   NO_ROUTE=(); unset NEXT_QUEUED   # set once a pass has read the queue (trainee or sprint floor), even to nothing
-  [ "$DRY" = 1 ] || triage_pass
+  [ "$DRY" = 1 ] || { triage_pass; pass_mark triage; }
   # Each skip takes the exit its rule names (plan, the human, a gate); a dry run only reads.
   [ "$DRY" = 1 ] || ! agent-hold check dispatch >/dev/null 2>&1 || skip_exits
   pace_target
@@ -8321,7 +8342,7 @@ cmd_fill() {
 # A row with a gate not yet clear is left out, as a #plan row is, and one whose gates all cleared is
 # `gated` (cmd_candidates); none when the gates could not be read (GATES_FAILED). ONLY_PROJECT: that project alone.
 t3_rows() {
-  local judged="$1" prof name sheet _v stage repo key text body t line n x planned dj dsig board gates pidle pprio
+  local judged="$1" prof name sheet _v stage repo key text body t line n x planned dj dsig board gates pidle pprio recs
   local prio priority cleanup sprint uncommitted rsize
   held_load "$judged"
   if ! declare -p DET >/dev/null 2>&1; then
@@ -8346,6 +8367,7 @@ t3_rows() {
       board=$(rows "$prof" "$name" agent)
       row_kinds_load <<<"$board"
       row_sigs_load <<<"$board"
+      recs=''   # one record a row, one jq a board (ROW_RECS_JQ), as cmd_candidates
       while IFS=$'\t' read -r key text; do
         [ -n "$key" ] || continue
         n=$(( n + 1 ))
@@ -8353,7 +8375,7 @@ t3_rows() {
         row_tier_set "$text"; t=$TIER
         [ -z "$t" ] || [ "$t" = 3 ] || continue
         body=${text#- \[ \] }
-        grep -qiE -- "$DISPATCH_T3_SKIP" <<<"${body%%<!--*}" && continue
+        re_icase "${body%%<!--*}" "$DISPATCH_T3_SKIP" && continue
         [ -z "${PLN["$name"$'\t'agent$'\t'"$key"]:-}" ] || continue
         row_off_set "$name" "$key" "$text"; [ -z "$OFF" ] || continue
         gates=${GAT["$name"$'\t'agent$'\t'"$key"]:-}
@@ -8372,21 +8394,23 @@ t3_rows() {
         prio_word_set "$prio" "$cleanup"; priority=$PRIORITY
         row_sprint_set "$name" "$key"; sprint=$SPRINT uncommitted=$UNCOMMITTED
         row_size_set "$text"; rsize=$SIZE
-        jq -cn --arg project "$name" --arg stage "$stage" --arg key "$key" --arg text "$text" \
-          --argjson details "$dj" --arg dsig "$dsig" --argjson planned "$planned" \
-          --arg body "$body" --arg repo "$repo" --arg line "$line" --argjson prio "$prio" \
-          --arg priority "$priority" --argjson order "$n" --arg obs "$DISPATCH_T3_OBSERVER" \
-          --arg profile "$prof" --arg rsize "$rsize" --arg pprio "$pprio" \
-          --argjson cleanup "$cleanup" --argjson frank "${RNK["$name"$'\t'agent$'\t'"$key"]:-null}" \
-          --argjson sprint "$sprint" --argjson uncommitted "$uncommitted" --arg gates "$gates" --arg pidle "$pidle" \
-          '{profile: $profile, project: $project, stage: $stage, lane: "agent", key: $key,
+        recs+="$key$ROW_US$text$ROW_US$dj$ROW_US$dsig$ROW_US$planned$ROW_US$body$ROW_US$line$ROW_US$prio$ROW_US$priority$ROW_US"
+        recs+="$n$ROW_US$rsize$ROW_US$cleanup$ROW_US${RNK["$name"$'\t'agent$'\t'"$key"]:-null}$ROW_US$sprint$ROW_US$uncommitted$ROW_US$gates$ROW_RS"
+      done <<<"$board"
+      [ -z "$recs" ] || jq -Rsc --arg project "$name" --arg stage "$stage" --arg repo "$repo" \
+        --arg obs "$DISPATCH_T3_OBSERVER" --arg profile "$prof" --arg pprio "$pprio" --arg pidle "$pidle" \
+        "$ROW_RECS_JQ"'rows_recs(
+          .[0] as $key | .[1] as $text | (.[2] | fromjson) as $details | .[3] as $dsig | (.[4] | fromjson) as $planned
+          | .[5] as $body | .[6] as $line | (.[7] | fromjson) as $prio | .[8] as $priority | (.[9] | fromjson) as $order
+          | .[10] as $rsize | (.[11] | fromjson) as $cleanup | (.[12] | fromjson) as $frank | (.[13] | fromjson) as $sprint
+          | (.[14] | fromjson) as $uncommitted | .[15] as $gates
+          | {profile: $profile, project: $project, stage: $stage, lane: "agent", key: $key,
             text: $text, repo: $repo, prio: $prio, priority: $priority, tier: 3, line: $line, order: $order, wrank: 0, frank: $frank, row_size: $rsize,
             cleanup: $cleanup, sprint: $sprint, uncommitted: $uncommitted, project_prio: $pprio,
             details: $details, dsig: $dsig, planned: ($planned == 1),
             rank: (if ($body | test("(^| )#requested( |$)")) then -1 elif ($body | test($obs; "i")) then 0 else 1 end)}
             + (if $pidle != "" then {pool_idle: $pidle} else {} end)
-            + (if $gates != "" then {gated: true, gates: $gates} else {} end)'
-      done <<<"$board"
+            + (if $gates != "" then {gated: true, gates: $gates} else {} end))' <<<"$recs"
     done < <(notes --profile "$prof" projects 2>/dev/null)
   done
 }
@@ -8458,18 +8482,25 @@ main() {
   esac
   case "${1:-}" in
     run)
+      PASS_TIMES='' PASS_MARK=$SECONDS
       shift; cmd_run "$@"; local rc=$?
+      local ran=$PASS_TIMES   # empty when the pass lost the lock (a NOOP) or left before the gates
+      pass_mark "pass (${STARTED:-0} started)"
       # After the pass, so the floors and the cap's let-go have started what they would; under its lock.
       [ "$DRY" = 1 ] || ! flock -n 9 2>/dev/null || share_return
+      pass_mark share
       # The judge after the pass, so no start waits on a model call: inside the fill alone it ran only on
       # passes that reached the board, and on 2026-11-23 a flapping k3s red and the load gate left 1,855
       # rows unjudged. A pass whose fill judged already does not judge again (judge_once).
       [ "$DRY" = 1 ] || ! flock -n 9 2>/dev/null || ! agent-hold check dispatch >/dev/null 2>&1 || { load_pool_idle; judge_once; } || true
+      pass_mark judge
       # After the pass, so it counts what the pass left: stats reads this, never the gates itself.
       [ "$DRY" = 1 ] || { cmd_headroom --json > "$HEADROOM.$$" 2>/dev/null && mv -f "$HEADROOM.$$" "$HEADROOM" || rm -f "$HEADROOM.$$"; }
       # The candidates snapshot too, but only from the pass that holds the lock: a skipped pass would
       # read every board a second time beside the one running.
       [ "$DRY" = 1 ] || ! flock -n 9 2>/dev/null || candidates_write || true
+      pass_mark "headroom and candidates"
+      [ -z "$ran" ] || say "pass steps: $PASS_TIMES; ${SECONDS}s in all"
       return "$rc" ;;
     candidates) load_pool_idle; OFF_SAY=1 cmd_candidates ;;
     covered) cmd_covered ;;
