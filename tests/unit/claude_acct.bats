@@ -713,7 +713,7 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   run cat "$SANDBOX/tf/claude_acct.prom"
   assert_line 'claude_account_week_used_percent{account="main",kind="claude",email="m@x"} 30'
   assert_line --regexp '^claude_account_(burn_points_per_hour|resets_timestamp_seconds|room_reason)\{account="main",kind="claude",email="m@x"'
-  # every main row has it; the parent row too
+  # every main row has it
   [ "$(grep -c '^claude_account_.*account="main"' <<< "$output")" = "$(grep -c '^claude_account_.*account="main".*email="m@x"' <<< "$output")" ]
   # negative control: alt has no .claude.json, so no email label on any of its rows
   refute_line --regexp 'account="alt".*email='
