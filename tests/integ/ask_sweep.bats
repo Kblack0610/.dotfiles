@@ -387,6 +387,20 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_equal "$(sort -u "$NOTES_FIXTURE/gh.log" | paste -sd,)" "$R/board,$R/two"
 }
 
+# 2026-11-23 (ar-4669): told "one short lowercase word", the model filed areas like cluster and
+# gameplay, and the nightly --link pass swapped 25 of them to a system id, each a scored miss.
+@test "each board's prompt names its systems, the area vocabulary; a board with none gets an empty list" {
+  message 'board words'
+  message 'two words' two
+  stub project-stage-check '[ "$1 $2" = "two --list" ] && printf "ci\tdoc\t\tBuild\nviews\tdoc\thub,waybar\tViews\n"; exit 0'
+  answer
+  run "$SWEEP" run
+  assert_success
+  run cat "$NOTES_FIXTURE/prompt.two"
+  assert_output --partial $'## Systems\ntwo: ci, views (also: hub=views, waybar=views)'
+  assert_equal "$(tail -n 1 "$NOTES_FIXTURE/prompt.board")" '## Systems'
+}
+
 @test "a board whose open rows pass 128 KiB still reaches the model: the prompt goes on stdin" {
   # 2026-11-12: agent-runtime's 780 open rows made one argument too long (E2BIG, exit 126).
   message 'two words' two
