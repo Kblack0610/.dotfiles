@@ -5586,11 +5586,11 @@ esac'
 }
 
 # stub_fleet_cost [as_of]: the sampler's fleet-cost.json (sessions s1 $12.345 and nosample $5), and the
-# hub Costs figures hub-figure prints from it: about $18, $13 measured, $5 estimated
+# hub Costs figures hub-figure prints from it: about $18, $3 API cash, $15 subscription burn
 stub_fleet_cost() {
   jq -cn --argjson at "${1:-$((T0 + 3000))}" '{as_of_epoch: $at, total: {usd: 18.2, measured: 13.1, estimated: 5.1},
     by_session: [{sid: "s1", usd: 12.345}, {sid: "nosample", usd: 5}]}' > "$BENCH_FLEET_COST_FILE"
-  printf '#!/usr/bin/env bash\ncase "$1" in costs_headline) echo 18 ;; costs_measured) echo 13 ;; costs_estimated) echo 5 ;; *) echo "?"; exit 1 ;; esac\n' \
+  printf '#!/usr/bin/env bash\ncase "$1" in costs_headline) echo 18 ;; costs_api_cash) echo 3 ;; costs_sub_burn) echo 15 ;; *) echo "?"; exit 1 ;; esac\n' \
     > "$SANDBOX/bin/fig-stub"
   chmod +x "$SANDBOX/bin/fig-stub"
   export BENCH_HUB_FIGURE_CMD=fig-stub
@@ -5629,7 +5629,7 @@ scorecard_with_data() {
   stub_breakdown
   scorecard_with_data
   run sed -n '/^## Where/,/^## Sessions/p' "$BENCH_SCORECARD_DIR/latest.md"
-  assert_output --partial 'Agent spend over 24h: about $18 (measured $13, estimated $5), the hub Costs figure; $6 of it on sessions no sample saw, the gateway and helper calls.'
+  assert_output --partial 'Agent spend over 24h: about $18 (API cash $3, subscription burn $15), the hub Costs figure; $6 of it on sessions no sample saw, the gateway and helper calls.'
   assert_output --partial '| game | 1 | 0.2 | 0.2 | 0.2 | $12.35 | 3.5 | 2.5 | 2 |'
   run sed -n '/^## Sessions/,+6p' "$BENCH_SCORECARD_DIR/latest.md"
   assert_output --partial 'Cost 24h'
@@ -5641,7 +5641,7 @@ scorecard_with_data() {
   stub_fleet_cost $((T0 + 3600 - 7201))   # past four of the 30-minute sampler's tries
   scorecard_with_data
   run sed -n '/^## Where/,/^## Sessions/p' "$BENCH_SCORECARD_DIR/latest.md"
-  assert_output --partial 'Agent spend over 24h: about $18 (measured $13, estimated $5), the hub Costs figure.'
+  assert_output --partial 'Agent spend over 24h: about $18 (API cash $3, subscription burn $15), the hub Costs figure.'
   refute_output --partial 'no sample saw'
   assert_output --partial '| game | 1 | 0.2 | 0.2 | 0.2 | - |'
   BENCH_HUB_FIGURE_CMD=false BENCH_NOW=$((T0 + 3600)) "$SUBJECT" scorecard >/dev/null
