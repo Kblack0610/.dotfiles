@@ -563,6 +563,50 @@ PROM
   refute_output --partial 'tokens 2026-10-28'
 }
 
+# gates_stub: fleet-bench's `rules` serves $SANDBOX/gates (fails with $SANDBOX/gates.fail) and logs its args;
+# every other call goes to the setup's bench-stub.
+gates_stub() {
+  mv "$SANDBOX/bin/bench-stub" "$SANDBOX/bin/bench-orig"
+  cat > "$SANDBOX/bin/bench-stub" <<EOF
+#!/usr/bin/env bash
+[ "\$1" = rules ] || exec bench-orig "\$@"
+echo "\$*" >> "$SANDBOX/rules-args"
+[ ! -e "$SANDBOX/gates.fail" ] || exit 1
+cat "$SANDBOX/gates" 2>/dev/null
+EOF
+  chmod +x "$SANDBOX/bin/bench-stub"
+}
+
+@test "the day carries the gates line fleet-bench rules --new gives for that day, and show prints it under the header" {
+  gates_stub
+  echo '1 gate added on 2026-10-28, by an agent without your ask: al-x (dotfiles #9). List: fleet-bench rules --new --since 2026-10-28 --until 2026-10-28.' > "$SANDBOX/gates"
+  "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
+  run cat "$SANDBOX/rules-args"
+  assert_output 'rules --new --since 2026-10-28 --until 2026-10-28 --line'
+  run rec -r .gates 2026-10-28
+  assert_output --partial '1 gate added on 2026-10-28, by an agent without your ask: al-x (dotfiles #9).'
+  run "$SUBJECT" show --date 2026-10-28
+  assert_line --index 2 '1 gate added on 2026-10-28, by an agent without your ask: al-x (dotfiles #9). List: fleet-bench rules --new --since 2026-10-28 --until 2026-10-28.'
+}
+
+@test "an unreadable register keeps the day's last gates line and names it; a day with no new gate prints none" {
+  gates_stub
+  echo '1 gate added on 2026-10-28, on your ask. List: fleet-bench rules --new --since 2026-10-28 --until 2026-10-28.' > "$SANDBOX/gates"
+  "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
+  touch "$SANDBOX/gates.fail"
+  "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
+  run rec -r .gates 2026-10-28
+  assert_output --partial '1 gate added on 2026-10-28, on your ask.'
+  run rec -c 'any(.unreadable[]; . == "gate register")' 2026-10-28
+  assert_output 'true'
+  rm "$SANDBOX/gates.fail"; : > "$SANDBOX/gates"
+  "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
+  run rec -c .gates 2026-10-28
+  assert_output 'null'
+  run "$SUBJECT" show --date 2026-10-28
+  refute_output --partial 'gate added'
+}
+
 @test "work: queue flow for the local day, merges per repo and area, plan phases from fleet-bench flow, stages from fleet-sessions" {
   pr game 1 'feat(raiders): one' 2026-10-28T17:00:00Z > "$SANDBOX/p1"
   pr web 3 'docs: three' 2026-10-28T19:00:00Z > "$SANDBOX/p3"

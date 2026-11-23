@@ -1396,7 +1396,7 @@ esac'
   assert_failure
 }
 
-@test "reap moves an #after/ gate on a row sent to the human sheet to the sheet row, in either lane, and leaves every other gate (ar-3172)" {
+@test "reap moves an #after/ gate on a row sent to the human sheet to the sheet row, in either lane and across projects, and leaves every other gate (ar-3172, ar-4768)" {
   project game beta "$SANDBOX/repos/game"
   row game agent gm-1 "- [ ] feat(game): the base $T <!-- id:gm-1 -->"
   row game human hm-1 "- [ ] feat(game): a copy of an open row (agent row gm-1) <!-- id:hm-1 -->"
@@ -1407,9 +1407,10 @@ esac'
   row game human hm-7 "- [ ] feat(game): rolled augments (agent row gm-7) <!-- id:hm-7 -->"
   row game human hm-8 "- [ ] feat(game): augments in the bag #after/gm-7 (agent row gm-8) <!-- id:hm-8 -->"
   row game agent gm-3 "- [ ] feat(game): waits on a row nobody filed $T #after/gm-404 <!-- id:gm-3 -->"
-  # a copy on another project's sheet, and a copy the human already closed, are not where the work went
-  row app human ap-9 "- [ ] feat(app): same words (agent row gm-9) <!-- id:ap-9 -->"
-  row game agent gm-10 "- [ ] feat(game): waits on gm-9 $T #after/gm-9 <!-- id:gm-10 -->"
+  # a gate on another project's row follows it to that project's sheet (apo-181 on ucp-2631, ar-4768)
+  row app human ap-9 "- [ ] feat(app): store upload (agent row ap-8) <!-- id:ap-9 -->"
+  row game agent gm-10 "- [ ] feat(game): waits on app's ap-8 $T #after/ap-8 <!-- id:gm-10 -->"
+  # a copy the human already closed is not where the work went
   row game human hm-11 "- [x] feat(game): closed copy (agent row gm-11) <!-- id:hm-11 -->"
   row game agent gm-12 "- [ ] feat(game): waits on gm-11 $T #after/gm-11 <!-- id:gm-12 -->"
   run follow_moved_gates
@@ -1422,7 +1423,9 @@ esac'
   # an open gate stays though a copy names it; a dead one with no copy stays for dead_holds
   grep -q '^- \[ \] feat(game): waits on an open row .*#after/gm-1 <!-- id:gm-2 -->' <<<"$agent"
   grep -q '^- \[ \] feat(game): waits on a row nobody filed .*#after/gm-404 <!-- id:gm-3 -->' <<<"$agent"
-  grep -q '^- \[ \] feat(game): waits on gm-9 .*#after/gm-9 <!-- id:gm-10 -->' <<<"$agent"
+  # NEGATIVE CONTROL: before ar-4768 the copy had to sit on the gated row's own project, so this stayed #after/ap-8
+  grep -q '^- \[ \] feat(game): waits on app.s ap-8 .*#after/ap-9 <!-- id:gm-10 -->' <<<"$agent"
+  [[ $agent != *'#after/ap-8'* ]]
   grep -q '^- \[ \] feat(game): waits on gm-11 .*#after/gm-11 <!-- id:gm-12 -->' <<<"$agent"
   run cmd_starved
   assert_output --partial 'gm-3 (game, #after/gm-404: '
