@@ -613,3 +613,22 @@ PY
   run_session missing
   assert_equal "$STATUS" 0
 }
+
+# Claude Code reads a Stop hook's stdout as one JSON document: two blocks back to back void both.
+@test "two post scripts that block print one decision, the first; the second still runs and is logged" {
+  dirty
+  mkdir -p "$HOOK_DIR/stop-post.d"
+  for n in 86-a 89-b; do
+    printf '#!/bin/bash\ntouch "$HOME/%s.ran"\necho "{\\"decision\\": \\"block\\", \\"reason\\": \\"from %s\\"}"\n' "$n" "$n" > "$HOOK_DIR/stop-post.d/$n.sh"
+    chmod +x "$HOOK_DIR/stop-post.d/$n.sh"
+  done
+  run_session aaa
+  run cat "$OUTF"
+  assert_output '{"decision": "block", "reason": "from 86-a"}'
+  [ -e "$HOME/86-a.ran" ] && [ -e "$HOME/89-b.ran" ]
+  # negative control: one blocking script prints its decision unchanged
+  rm "$HOOK_DIR/stop-post.d/86-a.sh"
+  run_session aaa
+  run cat "$OUTF"
+  assert_output '{"decision": "block", "reason": "from 89-b"}'
+}

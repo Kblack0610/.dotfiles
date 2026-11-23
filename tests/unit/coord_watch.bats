@@ -24,6 +24,9 @@ setup() {
 - [ ] ar-12 not the ledger either
 EOF
   export AGENT_QUEUE_ITEM= CLAUDE_CODE_SESSION_ID=abcdef12-0000-0000-0000-000000000000
+  # The record has carried every id-shaped ledger word once, so the arm check knows them.
+  export COORD_WATCH_LOG="$SANDBOX/ingest.jsonl"
+  printf '%s\n' '{"action":"added","id":"ar-10"}' '{"action":"item-added","id":"ar-13","item":"fix-gov-p1"}' > "$COORD_WATCH_LOG"
 }
 
 ev() { printf '%s\n' "$@" | "$CW" filter "$PLAN"; }
@@ -168,5 +171,76 @@ ev() { printf '%s\n' "$@" | "$CW" filter "$PLAN"; }
   local rc=0
   wait "$pid" || rc=$?
   assert_equal "$rc" 143
+  [ ! -e "$SANDBOX/cw/session-abcdef12-0000-0000-0000-000000000000.pid" ]
+}
+
+# 2026-11-23: a Monitor expires every 30 minutes, so coordinators waiting on asks woke 4 to 221 times
+# each. --until runs under Bash run_in_background: no expiry, one wake per event batch.
+@test "--until waits through untracked events, prints the first batch, exits 0 and leaves no tail or mark" {
+  local stubs="$SANDBOX/cw-stubs"; mkdir -p "$stubs"; mkfifo "$SANDBOX/hold"
+  # The stub tail replays one untracked event, then relays what the test writes, like tail -F.
+  cat > "$stubs/tail" <<'STUB'
+#!/bin/bash
+echo $$ > "$TAILPID"
+echo '{"ts":"2026-11-23T10:00:00.0-08:00","action":"merged","id":"ar-99"}'
+exec 3<>"$HOLD"
+while read -r -u 3 l; do printf '%s\n' "$l"; done
+STUB
+  chmod +x "$stubs/tail"
+  # A cursor before the events: with none, the watch starts at now and drops these fixed-ts events
+  # as already read once the clock passes them (it hung CI on 2026-11-23).
+  mkdir -p "$SANDBOX/cw"; echo '2026-11-23T09:00:00.0-08:00' > "$SANDBOX/cw/plan.ts"
+  # timeout: a regression fails this test, not the whole shard at the job limit.
+  PATH="$stubs:$PATH" COORD_WATCH_STATE="$SANDBOX/cw" COORD_WATCH_BATCH_S=1 TAILPID="$SANDBOX/tailpid" HOLD="$SANDBOX/hold" \
+    timeout 20 "$CW" --until "$PLAN" > "$SANDBOX/out" 2>&1 &
+  local pid=$!
+  exec 4<>"$SANDBOX/hold"
+  printf '%s\n' '{"ts":"2026-11-23T10:01:00.0-08:00","action":"land-failed","id":"ar-10"}' \
+    '{"ts":"2026-11-23T10:01:01.0-08:00","action":"done","item":"fix-gov-p1"}' >&4
+  local rc=0; wait "$pid" || rc=$?
+  exec 4>&-
+  assert_equal "$rc" 0
+  assert_equal "$(cat "$SANDBOX/out")" $'land-failed ar-10 | \ndone fix-gov-p1 | '
+  run kill -0 "$(cat "$SANDBOX/tailpid")"
+  assert_failure
+  [ ! -e "$SANDBOX/cw/session-abcdef12-0000-0000-0000-000000000000.pid" ]
+  assert_equal "$(cat "$SANDBOX/cw/plan.ts")" '2026-11-23T10:01:01.0-08:00'
+}
+
+# 2026-11-23: a ledger named a phase by a slug its item never had; the events carried ar-4707.
+@test "an id-shaped ledger word no event or board row carries is an error at arm, naming it" {
+  local stubs="$SANDBOX/cw-stubs"; mkdir -p "$stubs"
+  printf '#!/bin/sh\necho "{\\"rows\\":[{\\"id\\":\\"ar-77\\",\\"text\\":\\"x\\"}]}"\n' > "$stubs/notes"; chmod +x "$stubs/notes"
+  printf '#!/bin/sh\n[ "$2" = queued-item-p1 ]\n' > "$stubs/agent-queue"; chmod +x "$stubs/agent-queue"
+  sed -i '/^## Results/i - [ ] plan-slug-p2 a slug nothing carries\n- [ ] ar-77 a board row with no event yet\n- [ ] queued-item-p1 a queue item with no event yet' "$PLAN"
+  run env PATH="$stubs:$PATH" COORD_WATCH_STATE="$SANDBOX/cw" "$CW" --until "$PLAN"
+  assert_failure 2
+  assert_output --partial 'no event, board row or queue item carries plan-slug-p2 in'
+  refute_output --partial 'ar-77'
+  refute_output --partial 'queued-item-p1'
+  [ ! -e "$SANDBOX/cw/session-abcdef12-0000-0000-0000-000000000000.pid" ]
+  # A board that cannot be read refuses nothing: the watch arms and says what went unchecked.
+  printf '#!/bin/sh\nexit 1\n' > "$stubs/notes"; printf '#!/bin/bash\nexit 0\n' > "$stubs/tail"; chmod +x "$stubs/tail"
+  run env PATH="$stubs:$PATH" COORD_WATCH_STATE="$SANDBOX/cw" timeout 20 "$CW" --until "$PLAN"
+  assert_failure 4
+  assert_output --partial 'gave no rows, so plan-slug-p2 ar-77 queued-item-p1 went unchecked'
+}
+
+@test "negative control: a PR, outbox text lines (one with a digit) and ids the record carries pass the arm check" {
+  local stubs="$SANDBOX/cw-stubs"; mkdir -p "$stubs"
+  printf '#!/bin/bash\necho armed > "$SEEN"\n' > "$stubs/tail"; chmod +x "$stubs/tail"
+  sed -i '/^## Results/i - [ ] fix(ci): an outbox line triage has not filed\n- [ ] 2FA login fix, outbox text' "$PLAN"
+  run env PATH="$stubs:$PATH" COORD_WATCH_STATE="$SANDBOX/cw" SEEN="$SANDBOX/seen" "$CW" --until "$PLAN"
+  refute_output --partial 'no event, board row or queue item carries'
+  assert_equal "$(cat "$SANDBOX/seen")" armed
+}
+
+# An exit 0 on a dead tail would wake the coordinator with nothing, and its re-arm would loop.
+@test "--until whose record stream ends before any event exits 4 and says so, not 0" {
+  local stubs="$SANDBOX/cw-stubs"; mkdir -p "$stubs"
+  printf '#!/bin/bash\nexit 0\n' > "$stubs/tail"; chmod +x "$stubs/tail"
+  run env PATH="$stubs:$PATH" COORD_WATCH_STATE="$SANDBOX/cw" timeout 20 "$CW" --until "$PLAN"
+  assert_failure 4
+  assert_output --partial 'the record stream ended with no event'
   [ ! -e "$SANDBOX/cw/session-abcdef12-0000-0000-0000-000000000000.pid" ]
 }

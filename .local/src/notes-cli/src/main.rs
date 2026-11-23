@@ -801,7 +801,8 @@ enum PtaskCmd {
         game: Option<String>,
     },
     /// Change the first matching open task's text in place: its place on the sheet,
-    /// its checkbox state and its dates, priority and sizing (#size, #pts) stay as they were;
+    /// its checkbox state and its dates, priority, parent link (#of/) and sizing (#size, #pts)
+    /// stay as they were, and a #c or #of/ tag typed in --text is dropped when the row has one;
     /// any other tag is what --text types
     Edit {
         /// The task's new text
