@@ -3676,10 +3676,6 @@ impl App {
         }
     }
 
-    /// Home's own keys. The page: F queues a fix for Since last night's next bad area. Needs you:
-    /// its table keys (/ f s S x, Esc clears its view first) and Enter opens the proposals table.
-    /// The proposals table: the table keys, j/k, Enter the record, a accept, d reject; Esc steps
-    /// back out.
     /// Home from the reads held, as the page draws it.
     fn home_build(&self) -> hub_core::home::Home {
         hub_core::home::build(
@@ -3790,6 +3786,10 @@ impl App {
         });
     }
 
+    /// Home's own keys. The page: F queues a fix for Since last night's next bad area. Needs you:
+    /// its table keys (/ f s S x, Esc clears its view first) and Enter opens the proposals table.
+    /// The proposals table: the table keys, j/k, Enter the record, a accept, d reject; Esc steps
+    /// back out.
     fn home_key(&mut self, k: KeyEvent) -> bool {
         if !self.prv.open {
             if !self.hv.typing() && k.code == KeyCode::Char('F') {

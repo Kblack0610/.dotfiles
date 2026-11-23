@@ -156,9 +156,9 @@ function propBody(h) {
 const propHead = (h) => secHead("proposals", "Proposals", h.proposals_table.total ? tblCount(h.proposals_table) : null, h.proposals_failed ? "warn" : null);
 
 // One row per stream (hub_core::proposals::by_stream), so a wall of one stream is one line. A row
-// opens that stream's proposals under it as the table's own `stream:` search, and a second click
+// opens that stream's proposals under it as the table's own whole-value `stream:=` search, and a second click
 // clears it; any other search in force opens the same table.
-const openStream = (h) => /^stream:(\S+)$/.exec(h.proposals_table.q)?.[1] || "";
+const openStream = (h) => /^stream:=(\S+)$/.exec(h.proposals_table.q)?.[1] || "";
 const streamRow = (r, open) => `<tr class="jr pstream${r.stream === open ? " sel" : ""}" data-stream="${esc(r.stream)}"><td>${esc(r.stream)}</td><td>${esc(r.project)}</td>` +
   `<td class="n">${r.newest == null ? "-" : esc(ago(r.newest))}</td><td class="n">${r.oldest == null ? "-" : esc(ago(r.oldest))}</td><td class="n">${r.count}</td></tr>`;
 
@@ -166,7 +166,7 @@ function propSection(h) {
   const t = h.proposals_table;
   if (!t.total) return propHead(h) + `<div class="empty">${h.proposals_failed ? `${NOT_READ}: proposals, the reason is at the top of this page.` : "Nothing proposed."}</div>`;
   const open = openStream(h);
-  const streams = `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">stream</th><th data-role="glance">project</th><th class="n">newest</th><th class="n">oldest</th><th class="n">count</th></tr>${h.streams.map((r) => streamRow(r, open)).join("")}</table></div>`;
+  const streams = `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">stream</th><th data-role="glance">project</th><th class="n">newest</th><th class="n">oldest</th><th class="n">count</th></tr>${(h.streams || []).map((r) => streamRow(r, open)).join("")}</table></div>`;
   const records = t.q || t.state
     ? tblBar("home-prop", t, "search, or stream:dream project:dotfiles") + `<div id="home-prop-body">${tblPaged(t, () => propBody(h))}</div>` : "";
   return `<div id="home-prop-head">${propHead(h)}</div>` + streams + records;
@@ -348,7 +348,7 @@ $("home").addEventListener("click", (e) => {
   if (t.dataset.accept) { propDecide("accept", t.dataset.accept); return; }
   if (t.dataset.reject) { propDecide("reject", t.dataset.reject); return; }
   const srow = t.closest("tr.pstream");
-  if (srow) { propT.view({ q: openStream(hst.data) === srow.dataset.stream ? "" : `stream:${srow.dataset.stream}`, s: "" }); return; }
+  if (srow) { propT.view({ q: openStream(hst.data) === srow.dataset.stream ? "" : `stream:=${srow.dataset.stream}`, s: "" }); return; }
   const prow = t.closest("tr.prop");
   if (prow && !t.closest("a")) {
     hst.prop.open = hst.prop.open === prow.dataset.prop ? null : prow.dataset.prop;

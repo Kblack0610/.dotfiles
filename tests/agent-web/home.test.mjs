@@ -292,7 +292,7 @@ test("Proposals is one row per stream with its count and ages; a click searches 
   assert.match(html, /<tr class="jr pstream" data-stream="dream"><td>dream<\/td><td>dotfiles<\/td><td class="n">10m<\/td><td class="n">24h<\/td><td class="n">2<\/td><\/tr>/);
   assert.doesNotMatch(html, /data-accept=/, "the records open from a row, not before");
   assert.doesNotMatch(html, /home-prop-q/, "no search bar until one is asked for");
-  const open = draw(home({ proposals: rows, proposals_head: "3 from 2 streams", proposals_table: { ...table(3), q: "stream:dream" } }));
+  const open = draw(home({ proposals: rows, proposals_head: "3 from 2 streams", proposals_table: { ...table(3), q: "stream:=dream" } }));
   assert.match(open, /<tr class="jr pstream sel" data-stream="dream">/);
   assert.match(open, /data-accept="a1"/);
   // The row's click puts its stream in the search; a second click clears it.
@@ -302,8 +302,8 @@ test("Proposals is one row per stream with its count and ages; a click searches 
   const row = { dataset: { stream: "dream" } };
   const click = (q) => { vm.runInContext(`hst.data.proposals_table.q = ${JSON.stringify(q)}`, ctx); on.click.forEach((f) => f({ target: { dataset: {}, closest: (sel) => (sel === "tr.pstream" ? row : null) }, preventDefault() {} })); };
   click("");
-  click("stream:dream");
-  assert.deepEqual(views, [{ q: "stream:dream", s: "" }, { q: "", s: "" }]);
+  click("stream:=dream");
+  assert.deepEqual(views, [{ q: "stream:=dream", s: "" }, { q: "", s: "" }]);
 });
 
 const vitals = (o = {}) => ({ head: "1 of 2 off target", line: "1 of 2 off target: Outcome", all_ok: false, rows: [
@@ -441,13 +441,13 @@ test("a retired tab name lands on its new tab, and anything unknown on the landi
 test("Proposals is one line when empty and follows Needs you", () => {
   const html = draw(home());
   assert.match(html, /Nothing proposed\./);
-  assert.ok(html.indexOf("Needs you") < html.indexOf("Proposals") && html.indexOf("Proposals") > 0, html);
+  assert.ok(html.indexOf("Needs you") < html.indexOf("Proposals") && html.indexOf("Proposals") !== -1, html);
   assert.doesNotMatch(html, /home-prop-q/);
 });
 
 test("a proposal row carries both actions; past one page the server's pager follows", () => {
   const rows = Array.from({ length: 6 }, (_, i) => prop(`p${i}`));
-  const html = draw(home({ proposals: rows, proposals_head: "10 from 1 stream", proposals_table: { ...table(10), q: "stream:dream", pager: { page: 1, pages: 2, per: 6 } } }));
+  const html = draw(home({ proposals: rows, proposals_head: "10 from 1 stream", proposals_table: { ...table(10), q: "stream:=dream", pager: { page: 1, pages: 2, per: 6 } } }));
   assert.match(html, /<div id="home-prop-head"><h2 class="sec" id="sec-proposals">Proposals <span class="n">10<\/span><\/h2><\/div>/);
   assert.match(html, /data-accept="p0".*data-reject="p0"/s);
   assert.equal((html.match(/data-accept=/g) || []).length, 6);
@@ -459,7 +459,7 @@ test("an opened proposal says why and exactly what accept runs, and escapes it",
   const p = prop("aa", { why: "<b>why</b>", evidence: "https://x.test/r", error: "boom" });
   ctx.input = p.id;
   vm.runInContext("hst.prop.open = input", ctx);
-  const html = draw(home({ proposals: [p], proposals_head: "1 from 1 stream", proposals_table: { ...table(1), q: "stream:dream" } }));
+  const html = draw(home({ proposals: [p], proposals_head: "1 from 1 stream", proposals_table: { ...table(1), q: "stream:=dream" } }));
   vm.runInContext("hst.prop.open = null", ctx);
   assert.match(html, /Accept runs.*agent-queue add --project dotfiles -- x/s);
   assert.match(html, /&lt;b&gt;why&lt;\/b&gt;/);
@@ -471,7 +471,7 @@ test("evidence that is not a web link is text, never an href", () => {
   const p = prop("aa", { evidence: "javascript:alert(1)" });
   ctx.input = p.id;
   vm.runInContext("hst.prop.open = input", ctx);
-  const html = draw(home({ proposals: [p], proposals_head: "1 from 1 stream", proposals_table: { ...table(1), q: "stream:dream" } }));
+  const html = draw(home({ proposals: [p], proposals_head: "1 from 1 stream", proposals_table: { ...table(1), q: "stream:=dream" } }));
   vm.runInContext("hst.prop.open = null", ctx);
   assert.doesNotMatch(html, /href="javascript/);
 });

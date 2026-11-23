@@ -175,7 +175,11 @@ mod tests {
         let v = serde_json::to_value(page(home(), &ViewQuery::default())).unwrap();
         assert_eq!(v["proposals"].as_array().unwrap().len(), 2);
         assert_eq!(v["proposals_table"]["total"], 2);
-        assert_eq!(v["streams"].as_array().unwrap().len(), 1, "one row per stream");
+        assert_eq!(
+            v["streams"].as_array().unwrap().len(),
+            1,
+            "one row per stream"
+        );
         assert!(v["needs"].is_array());
     }
 }

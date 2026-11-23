@@ -2034,7 +2034,10 @@ mod tests {
         let rows = crate::session_table::rows(&doc, &Default::default(), &Default::default(), &[]);
         let c = sessions(&rows);
         let pill = c.parts.iter().find(|p| p.label == "Need you").unwrap();
-        assert_eq!(pill.value, "2", "the card counts the sessions that need you");
+        assert_eq!(
+            pill.value, "2",
+            "the card counts the sessions that need you"
+        );
         assert_eq!(c.big, "3", "the shepherd is no live session of the card");
     }
 

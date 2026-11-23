@@ -242,7 +242,9 @@ mod tests {
         let got = by_stream(&rows);
         let at = |c: &str| p("", "", c).at();
         assert_eq!(
-            got.iter().map(|r| (r.stream.as_str(), r.count)).collect::<Vec<_>>(),
+            got.iter()
+                .map(|r| (r.stream.as_str(), r.count))
+                .collect::<Vec<_>>(),
             [("dream", 1), ("ci-failures", 3)]
         );
         assert_eq!(got[0].project, "dotfiles");

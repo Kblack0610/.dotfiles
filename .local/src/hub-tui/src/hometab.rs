@@ -318,7 +318,8 @@ fn card_lines(c: &Card, p: Palette, cw: usize) -> [Line<'static>; 4] {
         )
     };
     let mut parts = vec![];
-    for (i, x) in c.parts.iter().filter(|x| !x.is_zero()).enumerate() {
+    let drawn = c.clone().drawn();
+    for (i, x) in drawn.parts.iter().enumerate() {
         if i > 0 {
             parts.push(Span::raw("  "));
         }
@@ -668,7 +669,10 @@ mod tests {
         for gone in ["FLOW", "SPEND"] {
             assert!(!out.contains(gone), "{gone}: {out}");
         }
-        assert!(!out.contains("RUNNING"), "Running is the Queue tab's: {out}");
+        assert!(
+            !out.contains("RUNNING"),
+            "Running is the Queue tab's: {out}"
+        );
         assert!(out.find("PROJECTS").unwrap() < out.find("NEEDS YOU (1)").unwrap());
         assert!(out.contains("Question") && out.contains("dodginballs") && out.contains("2m"));
     }
@@ -792,13 +796,24 @@ mod tests {
             level: Level::Ok,
             link: None,
         };
-        c.parts = vec![part("Unfixed", "0"), part("Firing", "36"), part("Stuck", "0")];
+        c.parts = vec![
+            part("Unfixed", "0"),
+            part("Firing", "36"),
+            part("Stuck", "0"),
+        ];
         let out = grid_text(&[c.clone()], 60);
         assert_eq!(out[2], "Firing 36", "{out:?}");
-        assert!(out[0].starts_with("ALERTS  3 firing"), "the headline stays: {out:?}");
+        assert!(
+            out[0].starts_with("ALERTS  3 firing"),
+            "the headline stays: {out:?}"
+        );
         assert_eq!(out[3], "", "nothing to look at first is not said: {out:?}");
         c.parts = vec![part("Unfixed", "0")];
-        assert_eq!(grid_text(&[c], 60)[2], "", "a card of only zeros has no chip line text");
+        assert_eq!(
+            grid_text(&[c], 60)[2],
+            "",
+            "a card of only zeros has no chip line text"
+        );
     }
 
     #[test]
@@ -826,7 +841,11 @@ mod tests {
         assert!(row.starts_with("ci-failures"), "{out}");
         assert!(row.trim_end().ends_with(" 3"), "the count: {out}");
         assert!(out.contains("NEWEST") && out.contains("OLDEST"), "{out}");
-        assert_eq!(out.matches("ci-failures").count(), 1, "one row, not three: {out}");
+        assert_eq!(
+            out.matches("ci-failures").count(),
+            1,
+            "one row, not three: {out}"
+        );
         assert!(!out.contains("Fix a1"), "the records open on Enter: {out}");
     }
 
