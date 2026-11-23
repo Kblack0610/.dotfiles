@@ -1899,8 +1899,9 @@ verdict_errors() {
 #    is tagged on a later pass. A row inbox-plan already planned (a `goal:` detail) that the judge,
 #    reading that plan, still skips by such a rule takes the human exit: a second plan would not help.
 #  - human (DISPATCH_HUMAN_RULES): an #urgent, #high, bare or #requested row is filed on the human sheet
-#    (human_sheet_row), a #low one kept in improvements.md (`notes improve`), its #worker/ tag off so no
-#    worker takes it there; then the agent row is dropped with a --why naming where it went.
+#    (human_sheet_row), a #low one kept in improvements.md (`notes improve`) unless an open row gates
+#    #after/ on it (then the sheet, whose row follow_moved_gates moves that gate to), its #worker/ tag off
+#    so no worker takes it there; then the agent row is dropped with a --why naming where it went.
 #  - waits: gated #after/<row> on the first open row its verdict's reason, else its text, names (its
 #    own id and #of/ links aside) or #pr/<owner>/<repo>/<N> on a PR named so, when the judge read the
 #    rest of it as one it would start (S or M, clear, agent-only, one area): a cleared gate starts a
@@ -1927,6 +1928,11 @@ skip_exits() {
   room=$(jq -r "$ROW_JQ"'[.rows[]? | select(plan_tagged)] | length' <<<"$board")
   room=$(( DISPATCH_PLAN_BACKLOG - ${room:-0} ))
   while IFS= read -r id; do [ -z "$id" ] || ids[$id]=1; done < <(jq -r '.rows[]? | select(.id != null) | .id' <<<"$board")
+  # gated[<row id>]: an open row waits on it (#after/), so its exit must leave a row for that gate to
+  # follow (follow_moved_gates); improvements.md leaves none, and the gate would read dead (ar-1380).
+  local -A gated=()
+  while IFS= read -r id; do [ -z "$id" ] || gated[$id]=1; done < <(jq -r '.rows[]? | select(.state == "open" or .state == "doing")
+    | (.tags_cased // .tags // [])[] | select(startswith("after/")) | .[6:]' <<<"$board")
   # A row of a kind kinds.json turns off (not epic) never reaches the judge, so it has no verdict: it
   # takes the human exit as rule `kind`, its line `-` (no verdict to hold), unless it is a parent or its
   # latest verdict already carries an exit, of any rule (a drop that failed: no second copy).
@@ -1975,7 +1981,7 @@ skip_exits() {
     fi
     if [ "$e" = human ]; then
       prio=$(prio_rank "$body")
-      if [ "$req" = true ] || [ "$prio" -le 1 ]; then e=sheet; else e=improve; fi
+      if [ "$req" = true ] || [ "$prio" -le 1 ] || [ -n "${gated[$id]-}" ]; then e=sheet; else e=improve; fi
     fi
     if [ "$e" = plan ] && [ "$room" -le 0 ]; then
       [ -z "$dry" ] || { printf 'plan-wait\t%s\t%s\t%s\n' "$p" "$id" "$rule"; n[plan-wait]=$(( ${n[plan-wait]:-0} + 1 )); }

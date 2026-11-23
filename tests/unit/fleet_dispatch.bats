@@ -681,6 +681,18 @@ ptask game --agent tag --add plan --add go ga-7'
   assert_output 0
 }
 
+@test "skip_exits: a #low row an open row gates #after/ on goes to the human sheet, not improvements.md, so the gate has a row to follow" {
+  exits_fixture
+  row game agent gx-8 "- [ ] row gx-8 #after/gx-3 $T <!-- id:gx-8 -->"
+  board_row game agent gx-8 '["after/gx-3"]' '[]'
+  skip_exits
+  grep -qxF 'notes --profile bnb ptask game add row gx-3 #low #tier/1 (agent row gx-3) --origin fleet-dispatch' "$NOTES_FIXTURE/calls.log"
+  grep -q 'id:gx-3 dropped: on the game sheet' "$NOTES_FIXTURE/rows.game.agent"
+  run grep -c 'improve game' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  assert_equal "$(jq -r 'select(.key == "gx-3") | .exit // empty' "$FLEET_DISPATCH_DIR/verdicts.jsonl")" sheet
+}
+
 @test "skip_exits: exits takes --dry-run or nothing; any other argument is a usage error that moves no row" {
   exits_fixture
   run skip_exits --dryrun
