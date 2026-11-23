@@ -1367,9 +1367,18 @@ watch_reds() {
 # cmd_run's counts before its first start, as FLOOR_LIVE.
 red_floor_open() {
   [ "${RED_PASS:-0}" = 1 ] || return 1
-  [ "${DISPATCH_RED_FLOOR:-0}" -gt 0 ] 2>/dev/null || return 1
-  local live=${RED_LIVE:-$(live_reds | grep -c . || true)} watch=${RED_WATCH:-$(watch_reds)}
-  [ $(( live + ${RED_STARTED:-0} )) -lt $(( DISPATCH_RED_FLOOR + watch )) ]
+  [ "$(red_floor_slots)" -gt 0 ]
+}
+
+# red_floor_slots -> how many more red starts the red floor takes now: DISPATCH_RED_FLOOR plus one for
+# each tripped watch's red item, less the live red sessions and the reds this pass started; 0 when
+# DISPATCH_RED_FLOOR is 0. red_floor_open, the full-target path and pass_order read this one count.
+red_floor_slots() {
+  [ "${DISPATCH_RED_FLOOR:-0}" -gt 0 ] 2>/dev/null || { echo 0; return 0; }
+  local live=${RED_LIVE:-$(live_reds | grep -c . || true)} watch=${RED_WATCH:-$(watch_reds)} n
+  n=$(( DISPATCH_RED_FLOOR + watch - live - ${RED_STARTED:-0} ))
+  [ "$n" -gt 0 ] || n=0
+  echo "$n"
 }
 
 # plan_load_floor_open -- an approved plan phase's start is due past this machine's load: PLAN_PASS says
@@ -1405,6 +1414,33 @@ runs_now() {
 
 # short_item <item json> -- the item is in a class under its classes.json min_live (agent-queue marks it `short`).
 short_item() { jq -e '.short == true' <<<"$1" >/dev/null 2>&1; }
+
+# short_floor_open -- SHORT_PASS says the start is a short item (short_item; start_item sets it per item,
+# short_floor_start for its pass): an account refused for its weekly pace alone takes it, as on the run
+# floor (acct_room). The reserve, the 5h window, committed burn, load, fleet-assess, agent-hold and
+# the github budget still hold it (ar-4890: unity at 1 of its min_live 6 while the pace held every start).
+short_floor_open() { [ "${SHORT_PASS:-0}" = 1 ]; }
+
+# pass_order <item json lines> -> the order a pass tries them in: the reds the red floor has slots for
+# (red_floor_slots, a tripped watch's first, as red_items), then the human's urgent items and fresh asks
+# that are not red (runs_now), then the short items (short_item), then the rest in agent-queue's order.
+# agent-queue lists every red first, so reds past the floor and cleanup took a pass's start cap before
+# a class under its min_live (ar-4890: 1 unity of its 6 live, the pass stopped on load after reds and a
+# cleanup row). A red is urgent at add, so only a non-red runs_now item keeps its place ahead of them.
+# Input jq cannot read is named and passed on in queue order, so the pass says why it is unsorted.
+pass_order() {
+  [ -n "$1" ] || return 0
+  jq -sc --argjson n "$(red_floor_slots)" --argjson now "$(date +%s)" --argjson h "$DISPATCH_ASK_FRESH_H" "$ASK_JQ"'
+    def has($t): (" " + (.tags // "") + " ") | contains(" \($t) ");
+    ([.[] | select(has("red"))] | sort_by(has("watch") | not) | .[:$n]) as $reds
+    | ($reds | map(.slug)) as $floor
+    | [.[] | select(.slug as $s | $floor | index([$s]) | not)] as $rest
+    | [$rest[] | select((has("red") | not) and runs_now($now; $h))] as $human
+    | ($human | map(.slug)) as $first
+    | [$rest[] | select(.slug as $s | $first | index([$s]) | not)] as $rest
+    | ($reds + $human + [$rest[] | select(.short == true)] + [$rest[] | select(.short != true)])[]' <<<"$1" \
+    || { say "pass_order: jq could not read the queue items, so they start in queue order"; printf '%s\n' "$1"; }
+}
 
 # runs_now_label <item json> -> "urgent" or "ask", the word the run log names it by.
 runs_now_label() { if [ "$(jq -r .priority <<<"$1")" = urgent ]; then echo urgent; else echo ask; fi; }
@@ -1580,7 +1616,7 @@ acct_room() {
   if ! jq -e '.accounts | type == "array"' <<<"$ACCT_ROWS" >/dev/null 2>&1; then
     ACCT_ROWS='' ACCT_WHY="claude-acct room --json gave no answer"; return 2
   fi
-  if floor_open || red_floor_open || human_floor_open; then lift=true; fi
+  if floor_open || red_floor_open || human_floor_open || short_floor_open; then lift=true; fi
   pick=$(jq -r --argjson lift "$lift" '[(.pick as $p | .accounts[] | select(.name == $p) | "0 \(.dir)"),
       (select($lift) | .accounts | sort_by(.rank)[] | select(.room.reasons == ["pace"]) | "1 \(.dir)")]
     | first // empty' <<<"$ACCT_ROWS")
@@ -5597,18 +5633,41 @@ run_queue() {
   why=$(gate)
   if [ -n "$why" ]; then
     RUN_GATED=1
-    # A red the machine gates hold may still start on the red floor; then only reds start this pass,
+    # A red the machine gates hold may still start on the red floor; then no other red starts this pass,
     # a tripped watch's first, so the floor slot its item adds is not taken by another red.
     # Its start goes past those gates without proving them open, so the hold stands (start_item).
-    local reds=''; is_red "$head" && reds=$(red_items "$items")
-    if red_floor_due "$reds"; then red_floor_start "$reds" "$2" "$why"; return; fi
-    # The human's urgent items go past the weekly pace alone; the rest of the queue stays held.
-    local hrc; human_floor_start "$items" "$2" "$why"; hrc=$?
-    [ "$hrc" = "$FLOOR_SHUT" ] || return "$hrc"
+    # Else the human's urgent items go past the weekly pace alone. Then, with the room left, a class
+    # under its min_live fills its gap past the weekly pace alone; the rest of the queue stays held.
+    local reds='' frc before=${STARTED:-0}; is_red "$head" && reds=$(red_items "$items")
+    if red_floor_due "$reds"; then
+      # A floor that started nothing has settled its own verdict (a full fleet is NOOP), so it ends the pass.
+      red_floor_start "$reds" "$2" "$why"; frc=$?
+      [ "$frc" = 0 ] && [ "${STARTED:-0}" -gt "$before" ] || return "$frc"
+    else
+      human_floor_start "$items" "$2" "$why"; frc=$?
+      [ "$frc" = "$FLOOR_SHUT" ] || return "$frc"
+    fi
+    short_floor_start "$items" $(( $2 - ${STARTED:-0} + before )) "$why"; frc=$?
+    [ "$frc" = "$FLOOR_SHUT" ] || return "$frc"
+    [ "${STARTED:-0}" -eq "$before" ] || return 0
     settle BLOCKED "$why, queue item $(jq -r .slug <<<"$head") waits"
     [ "$DRY" = 1 ] || return 0
   fi
-  start_items "$items" "$2"
+  start_items "$(pass_order "$items")" "$2"
+}
+
+# short_floor_start <item json lines> <room> <why> -- start the short items among them (short_item) past
+# <why>, the gates that held the pass, once nothing but the weekly pace holds them (short_floor_open);
+# the hold stands (start_item). Rc FLOOR_SHUT when there is no room, none is short or another gate holds.
+short_floor_start() {
+  local short rc
+  [ "${2:-0}" -gt 0 ] || return "$FLOOR_SHUT"
+  short=$(jq -c 'select(.short == true)' <<<"$1" 2>/dev/null)
+  [ -n "$short" ] && [ -z "$(SHORT_PASS=1 gate)" ] || return "$FLOOR_SHUT"
+  say "$3; the items of a class under its classes.json min_live start past the weekly pace"
+  SHORT_PASS=1 FLOOR_GATE=$3; start_items "$short" "$2"; rc=$?
+  SHORT_PASS=0 FLOOR_GATE=''
+  return "$rc"
 }
 
 # start_items <item json lines> <room> -- past the pass's gate: start up to <room> items in
@@ -6359,9 +6418,10 @@ route() {
 # a pinned harness whose source is spent): the pass goes on to the next item, which may.
 start_item() {
   local it="$1" slug rc verdict='' cached floor='' keep=0 harness=claude
-  local ACCT_ROWS='' ACCT_DIR ACCT_WHY ACCT_PAST_PACE ACCT_RC=0
+  local ACCT_ROWS='' ACCT_DIR ACCT_WHY ACCT_PAST_PACE ACCT_RC=0 SHORT_PASS=${SHORT_PASS:-0}
   slug=$(jq -r .slug <<<"$it")
   if [ "$DRY" = 1 ]; then say "would start queue item $slug: $(jq -r '"\(.project) \(.mode) \(.priority)"' <<<"$it")"; return 0; fi
+  ! short_item "$it" || SHORT_PASS=1
   # Asked again here, as launch does: the gate's answer may be minutes old. ACCT_WHY names the
   # closest account and why its verdict refuses, as in gate. ACCT_ROWS is local, so a later gate
   # asks afresh after this start.
@@ -6401,6 +6461,8 @@ start_item() {
       [ -z "$(jq -r '.plan // ""' <<<"$it")" ] || floor=" on the human floor, past the weekly pace: a ready phase of a plan the human approved"
       keep=$ACCT_PAST_PACE
       [ -z "$plan_past" ] || { floor="$floor$plan_past"; keep=1; }
+    elif short_floor_open && [ "$ACCT_PAST_PACE" = 1 ]; then
+      floor=" on the class floor, past the weekly pace: its class is under its classes.json min_live"; keep=1
     elif floor_open; then
       floor=" on the run floor (DISPATCH_RUN_FLOOR=$DISPATCH_RUN_FLOOR)"
       keep=$ACCT_PAST_PACE
@@ -7710,7 +7772,7 @@ cmd_run() {
     # a fleet over its target started no red for 21h while 20 watch reds waited (ar-1531 wants an
     # owner on each the hour it trips). Its own bound, DISPATCH_RED_FLOOR plus one per tripped watch
     # (red_floor_open, read again each start), caps what starts; the run units it lifts here.
-    local reds queued='' slots=$(( DISPATCH_RED_FLOOR + ${RED_WATCH:-0} - ${RED_LIVE:-0} ))
+    local reds queued='' slots; slots=$(red_floor_slots)
     [ "$PER_PASS" -gt 0 ] && [ "$slots" -gt "$PER_PASS" ] && slots=$PER_PASS
     if [ "$slots" -gt 0 ]; then queued=${NEXT_QUEUED-$(next_items --points)}; reds=$(red_items "$queued"); fi
     if [ "$slots" -gt 0 ] && red_floor_due "$reds"; then
@@ -7774,7 +7836,7 @@ cmd_run() {
   # Past the gates already: what fill promoted starts now, through the same start as any item.
   items=$(next_items --points)
   [ -n "$items" ] || { settle_board NOOP "no row qualifies this pass"; return 0; }
-  SHARE_LET_GO=$let_go start_items "$items" "$room"   # the one unfiltered start the fleet share cap may let go in
+  SHARE_LET_GO=$let_go start_items "$(pass_order "$items")" "$room"   # the one unfiltered start the fleet share cap may let go in
 }
 
 # low_water_floors <requested gap> <cleanup gap> -> the classes a run pass over the low water still
