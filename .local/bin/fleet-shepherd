@@ -980,6 +980,7 @@ pane_takes_keys() {
     [ "$h" = - ] || return 1
     [ "${att:-1}" = 0 ] || [ "${wa:-1}" != 1 ] || return 1
     leave_mode "$s" "$p" || return 1
+    # Not the verb "takeover": cmd_stats counts that verb, and this line is no takeover (ar-4619).
     cmd_log "mode-left: $s/$p: left its tmux mode on an unwatched pane" >/dev/null
   fi
   idle_prompt "$(pane_tmux "$h" "$s" capture-pane -p -t "$p" 2>/dev/null)"

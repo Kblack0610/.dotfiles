@@ -859,6 +859,12 @@ nudge_ago() { printf 'fact: STALLED f-%s\nat: %s\n' "$2" "$(date -Iseconds -d "$
   STUB_MODE_STICKY=1 STUB_IN_MODE=2 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   [ -z "$(closes)" ]
   grep -q 'copy-mode -q -t %1' "$HOME/tmux.calls"
+  # A mode left on a pane that is then not at an idle prompt closes nothing and is no takeover (ar-4619).
+  rm -f "$HOME/.mode-left" "$HOME/tmux.calls" "$FLEET_SHEPHERD_DIR/log.md" "$FLEET_SHEPHERD_DIR/.takeover"
+  STUB_IN_MODE=1 STUB_PANE="working on it" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  grep -q 'mode-left: lab/%1' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_equal "$("$SH" stats | jq -c '[.takeovers_24h, .takeovers_failed_24h]')" '[0,0]'
 }
 
 @test "takeover leaves a row alone that is not its to move: manual, plan mode, another host, an ask, not yet old enough, a draft in the prompt" {
