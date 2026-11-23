@@ -11,7 +11,7 @@ and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the convention
 
 | Script | Keybinding | Description |
 |--------|------------|-------------|
-| `editor.sh` | `Prefix+Space` | ONE editor per session, at window 1, rooted where the session was born. Press it anywhere to go there, press it again to come back to the exact window you left. Created lazily on the first press, so a session you never edit in never pays for one. Space because its stock binding (next-layout) is the only one nothing here wanted — no existing key was moved. |
+| `editor.sh` | `Prefix+Space` | ONE editor per session, at window 1, rooted where the session was born. Press it anywhere to go there, press it again to come back to the exact window you left. Created lazily on the first press, so a session you never edit in never pays for one. Space because its stock binding (next-layout) is the only one nothing here wanted: no existing key was moved. |
 | `sessionizer.sh` | `Prefix+f` | Jump to a repo or a worktree. The list is git repos under the search roots, the directories the manifests declare, and everything in `~/.worktrees` - not every directory under the roots. `ctrl-n` on a row starts a new Claude in a fresh worktree of it (`wt new --claude`). |
 | `worktree.sh` (`wt`) | `Prefix+F` / `Prefix+X` | One worktree per piece of work. `F` cuts a fresh worktree off the repo the current pane is in and lands you in a session named after it; `X` tears the current one down - kills the session and reaps the worktree, safe to press from inside it. No pickers. |
 | `servers.sh` (`tmx`) | `Prefix+P` / `C-h` / `N` / `H` | Server layer: one tree of every world, session and window (collapsed to the worlds); toggle hub <-> lab; today's daily; the lab projects index |
@@ -35,8 +35,8 @@ agents can tell them apart. A tag is a tmux **window user-option** (`@tag_*`),
 not part of the window name: the `.zshrc` precmd hook rewrites window names to
 the git branch on every prompt, so a name-based marker never survives.
 
-- `Prefix+t` then `i` important · `p` pinned · `a` agent · `g` group:<name> ·
-  `x` clear · `l` list. It is a native one-shot key table, so one key and you
+- `Prefix+t` then `i` important, `p` pinned, `a` agent, `g` group:<name>,
+  `x` clear, `l` list. It is a native one-shot key table, so one key and you
   are back to normal.
 - Status bar shows `*` for important and `+` for pinned.
 - `Prefix+w` is the window chooser with a tag column; `Prefix+C-w` filters to
@@ -491,4 +491,4 @@ Under zsh, write `${c}` rather than `$c` before a colon in a refspec: `$c:r` is 
 - `!n` = n waiting on you: Home's Needs you figure (`hub-figure needs_headline`: questions, your turn, blocked, to do), the one count the hub, phone and this bar share; `!?` when Home cannot be read. The Prefix y panel lists only the asks and dialogs it can answer, so its header count is smaller
 - `~n` = working (n agents)
 - `✓n` = idle between turns (n agents). This is the live `activity`, not the delivery `bucket`: a session that is idle here can still be NEEDS or STALLED in `fleet-sessions` (vocabulary: `.local/src/docs/fleet-states.md`)
-- `·n` = Claude panes found but none classified
+- a middot followed by n = Claude panes found but none classified
