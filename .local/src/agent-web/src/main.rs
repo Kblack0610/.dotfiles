@@ -44,6 +44,7 @@ mod schedules;
 mod sessions;
 mod setup;
 mod shepherd;
+mod sprints;
 mod stack;
 mod stages;
 mod suites;
@@ -261,6 +262,7 @@ fn router(state: Shared) -> Router {
         .route("/api/pipelines/detail", get(pipelines_detail))
         .route("/api/tests/cases", get(tests_cases))
         .route("/api/board", get(board::feed).post(board::write))
+        .route("/api/sprints", get(sprints::get))
         .route("/api/deliverables", get(deliverables::get))
         .route("/api/stages", get(stages::get))
         .route("/api/stages/requirements", get(stages::get_requirements))

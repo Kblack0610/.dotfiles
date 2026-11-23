@@ -129,6 +129,9 @@ pub struct Page {
     pub releases: Option<crate::releases::Badge>,
     /// The Releases inner tab: the project's versions, its apps and the Legacy fold.
     pub release_tab: crate::project_releases::Tab,
+    /// The project's scored sprints, newest first (`project_sprints::past`), the Sprint inner tab's
+    /// Past sprints. The open and queued windows are the feed's, which a page read does not hold.
+    pub sprint_past: Vec<crate::project_sprints::Past>,
     /// `3 watches, 1 firing` over the watches that name this project, linking to the Alerts tab
     /// filtered to it; None when no watch does.
     pub alerts: Option<crate::releases::Badge>,
@@ -601,20 +604,19 @@ pub fn read_with(
             None
         }
     };
-    let ladder: Vec<String> =
-        match runner.run(&["notes".into(), "projects".into(), "--stages".into()]) {
-            Ok(o) => o
-                .lines()
-                .next()
-                .unwrap_or("")
-                .split_whitespace()
-                .map(String::from)
-                .collect(),
-            Err(e) => {
-                p.errors.push(format!("notes projects --stages: {e}"));
-                vec![]
-            }
-        };
+    let ladder = match runner.run(&["notes".into(), "projects".into(), "--stages".into()]) {
+        Ok(o) => o
+            .lines()
+            .next()
+            .unwrap_or("")
+            .split_whitespace()
+            .map(String::from)
+            .collect::<Vec<String>>(),
+        Err(e) => {
+            p.errors.push(format!("notes projects --stages: {e}"));
+            vec![]
+        }
+    };
     // NO_NEXT only for the ladder's last stage: an unread ladder, or a stage it lacks, is unread.
     p.next_says = if ladder.iter().any(|s| s == stage) {
         NO_NEXT.into()
@@ -666,13 +668,14 @@ pub fn read_with(
         .cloned()
         .collect();
     p.releases = crate::releases::badge(&channels);
-    let reg = project_map::cached();
     p.release_tab = crate::project_releases::build(
         name,
         &rel,
-        &crate::version_page::labs(reg.as_deref(), name, &[]),
+        &crate::version_page::labs(project_map::cached().as_deref(), name, &[]),
         roadmap.as_ref(),
     );
+    let sprints = crate::project_sprints::past(runner, name);
+    p.sprint_past = sprints.map_err(|e| p.errors.push(e)).unwrap_or_default();
     p.alerts = crate::alerts::project_badge_here(name);
     if !channels.is_empty() {
         p.check_groups = crate::app_status::groups(name, &channels);
@@ -928,6 +931,11 @@ mod tests {
                 ),
                 ("notes projects --roadmap game", 0, roadmap.into()),
                 (
+                    "notes projects --sprints game",
+                    0,
+                    r#"[{"version":"v0.5.3","committed":5,"delivered":4,"line":"x"}]"#.into(),
+                ),
+                (
                     "release-state show --json",
                     0,
                     r#"{"rows":[{"project":"game","id":"game-prod","status":"drift"}]}"#.into(),
@@ -1016,6 +1024,7 @@ mod tests {
         let f = fake(0);
         let p = read(&f, "game", "alpha", NOW);
         assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert_eq!(p.sprint_past.len(), 1, "the scored windows join the page");
         assert_eq!(
             p.flow_line.as_deref(),
             Some("ideas 3 | briefs 1 | plans 1 | epics 3 | rows 5 | landed 1 | verified 1")
