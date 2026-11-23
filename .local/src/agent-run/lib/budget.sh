@@ -24,6 +24,7 @@ BUDGET_DEFAULT_CALLS_HOUR=20
 . "$(dirname "${BASH_SOURCE[0]}")/../../../lib/agent-proof.sh"
 # shellcheck source=calls.sh
 . "$(dirname "${BASH_SOURCE[0]}")/calls.sh"
+AGENTCTL_CONF_DIR="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}"
 budget_state() { printf '%s/%s' "$(proof_state_dir)" "$1"; }
 # The reason a budget stop holds its name with (agent-proof's held_why); a call let through ends it.
 BUDGET_HELD_WHY="at its budget cap"
@@ -83,34 +84,67 @@ budget_spent() {
     | "\(.[0] * 100 | round / 100) \(.[1])"' "$AGENTCTL_CALLS"
 }
 
-# budget_stop <name> <why>: the call is not made, the runner's state says so, and the first
-# stop of the day pages with the raise. The detail starts "budget:", which the briefing reads.
-budget_stop() {
-  local raise="agentctl budget $1 raise <usd>" seen
-  echo "agentctl-run: $1 $2; not calling. To go on today: $raise" >&2
-  proof_why "$BUDGET_HELD_WHY"
-  proof_report "$1" BLOCKED "budget: $2" || true
-  seen="$(budget_state "$1")/budget-paged"
+# budget_conf <name> -> the name's BUDGET_CALL_USD, BUDGET_DAY_USD and MAX_CALLS_HOUR from its conf, one a
+# line, empty for a key it leaves out. A subshell, so no other conf key leaks into the caller.
+budget_conf() {
+  ( set +eu; unset BUDGET_CALL_USD BUDGET_DAY_USD MAX_CALLS_HOUR
+    # shellcheck disable=SC1090
+    . "$AGENTCTL_CONF_DIR/$1.conf" >/dev/null 2>&1
+    printf '%s\n' "${BUDGET_CALL_USD:-}" "${BUDGET_DAY_USD:-}" "${MAX_CALLS_HOUR:-}" )
+}
+
+# budget_over <name> -> why, and success, when the name is over its day or hour cap (budget_caps,
+# from the environment); nothing, and failure, when it may call.
+budget_over() {
+  local usd hour day cap
+  read -r day cap < <(budget_caps "$1")
+  read -r usd hour < <(budget_spent "$1")
+  if awk -v u="$usd" -v d="$day" 'BEGIN { exit !(u >= d) }'; then
+    printf 'over its daily budget: $%s of $%s (BUDGET_DAY_USD)\n' "$usd" "$day"
+  elif [ "$hour" -ge "$cap" ]; then
+    printf 'rate: %s calls in the last hour, cap %s (MAX_CALLS_HOUR)\n' "$hour" "$cap"
+  else
+    return 1
+  fi
+}
+
+# budget_page <name> <why>: the first stop of the day pages once, naming the raise.
+budget_page() {
+  local seen; seen="$(budget_state "$1")/budget-paged"
   if [ "$(cat "$seen" 2>/dev/null)" != "$(date +%F)" ] && command -v agent-notify >/dev/null 2>&1; then
     mkdir -p "$(dirname "$seen")" && date +%F > "$seen"
-    agent-notify -t "$1 stopped at its budget" "$1 $2. To go on today: $raise" >/dev/null 2>&1 || true
+    agent-notify -t "$1 stopped at its budget" "$1 $2. To go on today: agentctl budget $1 raise <usd>" >/dev/null 2>&1 || true
   fi
+  return 0
+}
+
+# budget_skip <name> <why>: a caller that would start <name>'s unit at its budget starts none. The
+# stop is recorded as budget_stop records it, once: a later skip for the same cap finds it already
+# the newest outcome line (the hub's budget signal and the hold read that line). It pages too.
+budget_skip() {
+  if ! tail -n 1 "$(budget_state "$1")/activity.log" 2>/dev/null | grep -qF "outcome=BLOCKED budget: ${2%%:*}:"; then
+    proof_why "$BUDGET_HELD_WHY"
+    proof_report "$1" BLOCKED "budget: $2" || true
+  fi
+  budget_page "$1" "$2"
+}
+
+# budget_stop <name> <why>: the call is not made, the runner's state says so, and it pages
+# (budget_page). The detail starts "budget:", which the briefing reads.
+budget_stop() {
+  echo "agentctl-run: $1 $2; not calling. To go on today: agentctl budget $1 raise <usd>" >&2
+  proof_why "$BUDGET_HELD_WHY"
+  proof_report "$1" BLOCKED "budget: $2" || true
+  budget_page "$1" "$2"
   exit "$EX_BUDGET"
 }
 
 # budget_check: refuse a named call that is over its day or hour budget
 budget_check() {
-  local name usd hour day cap
+  local name why
   name="$(calls_name)"
   [ -n "$name" ] || return 0
-  read -r day cap < <(budget_caps "$name")
-  read -r usd hour < <(budget_spent "$name")
-  if awk -v u="$usd" -v d="$day" 'BEGIN { exit !(u >= d) }'; then
-    budget_stop "$name" "over its daily budget: \$$usd of \$$day (BUDGET_DAY_USD)"
-  fi
-  if [ "$hour" -ge "$cap" ]; then
-    budget_stop "$name" "rate: $hour calls in the last hour, cap $cap (MAX_CALLS_HOUR)"
-  fi
+  if why="$(budget_over "$name")"; then budget_stop "$name" "$why"; fi
   proof_unhold "$name" "$BUDGET_HELD_WHY"
   return 0
 }
