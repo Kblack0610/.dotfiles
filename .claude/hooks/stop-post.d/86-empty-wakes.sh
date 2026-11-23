@@ -3,8 +3,8 @@
 #
 # A Monitor expires every 30 minutes at most, and its expiry is a turn that re-reads the whole
 # context. A session that re-arms a watch nothing arrives on spends a turn every half hour doing
-# nothing, and each turn resets its quiet clock, so no close timer ever fires and a `manual` row is
-# skipped by the shepherd: 2026-11-22 a coordinator re-armed one 58 times over 29h (about $7) while
+# nothing, and each turn resets its quiet clock, so no close timer ever fires and a kept row (`manual` or
+# `stay`) is skipped by the shepherd: 2026-11-22 a coordinator re-armed one 58 times over 29h (about $7) while
 # it waited on a validation ask the answer would have delivered by itself.
 #
 # Counts the trailing wakes since the last real prompt (the human, a peer message, a background
