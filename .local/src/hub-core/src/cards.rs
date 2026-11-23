@@ -1397,7 +1397,7 @@ mod tests {
         assert_eq!((g[1].big.as_str(), g[1].unit.as_str()), ("-", "reading"));
         assert_eq!(g[1].level, Level::Nodata);
         assert_eq!(
-            (g[6].tab, g[6].big.as_str(), g[6].error.as_deref()),
+            (g[7].tab, g[7].big.as_str(), g[7].error.as_deref()),
             ("costs", "NO DATA", Some("prometheus: timeout"))
         );
         // Every card opens its tab: Done the Queue, Health the Infra tab.
