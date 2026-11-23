@@ -247,6 +247,7 @@ queue_holders() {
 # Every form a session words a cancel in: a word that only looks like one (dropdown) stays out, and
 # an extra match only sends an ask to the human, never past them.
 HUMAN_CANCEL_VERBS='cancel[a-z]*|drop|drops|dropped|dropping|abandon[a-z]*|remove|removes|removed|removing|delete|deletes|deleted|deleting|kill|kills|killed|killing|prune|prunes|pruned|pruning|retire|retires|retired|retiring|scrap|scraps|scrapped|scrapping|discard[a-z]*|withdraw[a-z]*'
+# gate: aa-human-cancel
 human_cancel() {
   [[ " ${1,,} " =~ [^a-z]($HUMAN_CANCEL_VERBS)[^a-z] ]] || return 1
   local slugs hit
@@ -465,6 +466,16 @@ render_ask() {
 
 # --- post ------------------------------------------------------------------
 
+# question_form_ok <question>: the one-line, ends-in-? form; says why and returns 1 when it is not.
+question_form_ok() {
+  local question="$1"
+  # gate: aa-question-form
+  if [ "${question: -1}" != "?" ] || [ "${#question}" -gt "$AGENT_ASK_QUESTION_MAX" ]; then
+    echo "agent-ask post: the question is one line ending in '?', at most $AGENT_ASK_QUESTION_MAX characters (this one is ${#question}). Put the background in --context \"...\", what each option does in --options 'slug=meaning|slug=meaning', and why you recommend one in --why \"...\"." >&2
+    return 1
+  fi
+}
+
 cmd_post() {
   local project="" profile="" session="" agent="" task="" kind="question" \
         options="" recommend="" why="" resume="" wait=0 question="" context="" audit_of="" previews="" blocker=""
@@ -494,10 +505,7 @@ cmd_post() {
   done
   [ -n "$question" ] || { echo "agent-ask post: no question given" >&2; return 2; }
   question="$(oneline "$question")"
-  if [ "${question: -1}" != "?" ] || [ "${#question}" -gt "$AGENT_ASK_QUESTION_MAX" ]; then
-    echo "agent-ask post: the question is one line ending in '?', at most $AGENT_ASK_QUESTION_MAX characters (this one is ${#question}). Put the background in --context \"...\", what each option does in --options 'slug=meaning|slug=meaning', and why you recommend one in --why \"...\"." >&2
-    return 2
-  fi
+  question_form_ok "$question" || return 2
   # `slug=meaning` options: the slugs alone stay in `options:`, the meanings go pipe-aligned
   # into `option_notes:`.
   local option_notes="" o bare=""
@@ -1005,6 +1013,7 @@ cmd_answer() {
   if [ "$by" = agent ]; then
     local mine
     if [ "$(field "$f" kind)" = approval ]; then mine="it is an approval"
+    # gate: aa-human-only
     elif [ "$(field "$f" judge_human_only)" = true ]; then mine="the judge marked it human-only"
     else mine="$(human_floor "$(field "$f" question) $(field "$f" options)")" && mine="it ${mine%$'\n'}" || mine=""; fi
     if [ -n "$mine" ]; then
@@ -1232,14 +1241,6 @@ cmd_wait_delivered() {
 
 # --- live answers ----------------------------------------------------------
 #
-# judge_conf <key> <default>: AGENT_ASK_<key> when set, else ask-judge.conf's <key>, else the
-# default. The conf is sourced in a subshell, so nothing else it sets reaches this one.
-judge_conf() {
-  local env="AGENT_ASK_$1"
-  if [ -n "${!env+x}" ]; then printf '%s' "${!env}"; return 0; fi
-  ( . "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/ask-judge.conf" 2>/dev/null; printf '%s' "${!1:-$2}" )
-}
-
 # ask-judge.conf's DELAY_RULES is `<type>@<level>=<minutes>` per type the judge may answer, and
 # the level is its ceiling: the row answers that type at every impact level up to it (self, repo,
 # fleet; JUDGE_LEVELS), so a type is proven where a wrong answer reaches least before it answers
@@ -1489,6 +1490,7 @@ judge_demote_check() {
 # only, never silence. N is AUDIT_RATES in ask-judge.conf, `<level>=<N>`; a level it does not
 # name is audited every time. Only an answer that is one of the ask's options can be reviewed,
 # so only those are counted. The count per level is runtime state beside the demote list.
+# gate: aa-audit-sample
 audit_sample() {
   local f="$1" level ans opts n rate kv id q
   level="$(field "$f" judge_level)"; ans="$(field "$f" answer)"; opts="$(field "$f" options)"
@@ -2208,6 +2210,7 @@ review_judge_answer() {
     queue_changed
   elif [ -n "$pending" ] && [ -z "$pick" ]; then
     # once: a disarmed ask has no assume_at left, and every later prompt would rewrite it again
+    # gate: aa-disarm-on-human
     if [ -z "${ASK[assume_disarmed]:-}" ]; then
       set_field "$f" assume_disarmed "$(now_iso)"
       drop_field "$f" assume_at

@@ -75,4 +75,5 @@ fi
     echo "pointer to the winner (ranks: instruction-homes.json; on a pick, choose one and delete the other)."
   fi
 } >&2
+# gate: hook-context-budget-guard
 exit 2

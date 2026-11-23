@@ -1626,6 +1626,7 @@ ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)"
   [ -s "$NOTES_FIXTURE/model.log" ] || fail "a typed session line took the no-model path"
   grep -qE '^1	sc-4	[0-9]+	human	fix\(ui\): the pause menu flickers when resuming' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
   grep -q 'Closest open rows to each inbox line' "$NOTES_FIXTURE/prompt.txt"
+  grep -qF 'adds a refusal, a gate or a human route' "$NOTES_FIXTURE/prompt.txt" || fail "the session rule lost the gate question"
   run grep -c 'volume slider' "$NOTES_FIXTURE/prompt.txt"
   assert_output 0   # the unrelated row is not in the model's view
   run inbox
@@ -1645,6 +1646,7 @@ ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)"
   run grep -c 'volume slider' "$NOTES_FIXTURE/prompt.txt"
   assert_output 0   # the unrelated row is not in the model's view
   refute grep -q 'A line tagged #from/<writer>' "$NOTES_FIXTURE/prompt.txt"   # the session rule stays off for the person's line
+  refute grep -qF 'adds a refusal, a gate or a human route' "$NOTES_FIXTURE/prompt.txt"   # so does its gate question
   grep -q '  was: the pause menu flickers on resume' "$SHEET" || fail "$(cat "$SHEET")"
 }
 

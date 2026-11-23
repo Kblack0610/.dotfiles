@@ -322,6 +322,7 @@ POST_RC=$?
 # --- Phase 3: aggregated exit ---
 # The armed retry is still the loop guard's Stop: it never blocks.
 [ -z "$ARMED_RETRY" ] || exit 0
+# gate: hook-pre-stop-checks
 if [ $CONTENT_BLOCKED -eq 1 ]; then exit 2; fi
 [ "$POST_RC" -gt 1 ] && exit "$POST_RC"
 exit 0

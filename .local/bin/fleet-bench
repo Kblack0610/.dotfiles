@@ -32,11 +32,14 @@
 #                                asks, open board rows; --check fails when one may only shrink grew,
 #                                or on --unlisted's lines: a launch file with no row in the PIPELINES.md
 #                                launch table (LEDGER_PIPELINES), or a row whose file no longer launches
-#   fleet-bench rules [--json|--check|--scenarios|--changed SINCE]
+#   fleet-bench rules [--json|--check|--scenarios|--gates [BASE]|--changed SINCE]
 #                                the rule register (RULES_REGISTER): kinds, confidence, actions, and each
 #                                rule's number re-measured; --check fails when one moved against its
 #                                recorded confidence, its measure died, or a rule's text left its source;
 #                                --scenarios lists the hard scenarios a context trim must keep, 1 when any is stale;
+#                                --gates lists the gate markers (# gate: <id>) with no register row, a hook that denies with none, and a refusal
+#                                a diff against BASE (default origin/main) added with none: 1 when any; --check fails a gate row with no valid
+#                                asked_by, or an agent-asked routes: human row that no removal item covers;
 #                                --changed lists every rule line a PR merged since SINCE (epoch or a date) added
 #                                or removed, read from GitHub, one tab-separated line each (the briefing's list)
 #   fleet-bench kpi [--json] [--vitals | --at T | --trend DAYS | --check [ERE]]
@@ -250,6 +253,16 @@ set -uo pipefail
 # role, shared-docs), as repo paths, and the generated copies of them that would list a change twice.
 : "${RULES_CHANGED_ERE:=(^|/)(CLAUDE|AGENTS)\.md$|(^|/)SKILL\.md$|^\.claude/rules/|^\.config/rulesync-global/|^\.local/src/docs/|^\.config/agentctl/(roles|prompts)/|(^|/)docs/([^/]+/)*[^/]*standards\.md$}"
 : "${RULES_CHANGED_SKIP_ERE:=^\.config/opencode/}"
+# rules --gates: the code that holds a gate (a refusal, a deny, a block or a route to the human). Each
+# one names its register row beside the refusal with `# gate: <id>`; `# gate: none` says an added
+# refusal is a usage error, not a gate. GATE_ROOT is the repo they live in.
+: "${GATE_ROOT:=$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../.." && pwd)}"
+: "${GATE_TOOLS:=.local/bin/agent-ask .local/bin/agent-propose .local/bin/agent-queue .local/bin/agent-hold .local/bin/agent-land .local/bin/fleet-dispatch}"
+: "${GATE_HOOKS_DIR:=.claude/hooks}"
+: "${GATE_MARKER_ERE:=^[[:space:]]*#[[:space:]]*gate:[[:space:]]*([a-z0-9][a-z0-9-]*)[[:space:]]*$}"   # a line of its own
+: "${GATE_DENY_ERE:=permissionDecision.+deny|\"?decision\"?[: ]+\"block\"|exit 2}"   # a hook file that holds one needs a marker
+: "${GATE_REFUSE_ERE:=(^|[^[:alnum:]_.-])(die|refuse|deny|denied)[ (]|refuses |refused|permissionDecision|exit 2}"   # an added line in a tool that holds one needs a marker within GATE_NEAR lines above
+: "${GATE_NEAR:=6}"
 : "${RULES_CHANGED_NOISE_ERE:=^(reviewed|last_reviewed): }"   # frontmatter dates, not rule text
 export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${RULES_CHANGED_MAX_PRS:=300}"     # merged PRs one repo's list reads per call
@@ -2769,13 +2782,24 @@ rules_states() {
 
 # rules_problems <states array> -> one line per row --check fails on: its `state`, which Stack shows too.
 rules_problems() {
-  jq -r '.[] | (.source | split("/") | last) as $f
+  jq -r 'def rules_gate_problem:
+      (.id) as $id
+      | if ((.asked_by // "") | test("^(ask:[A-Za-z0-9_-]+|human:.{8,}|agent:.{2,})$") | not)
+        then "gate asked_by: \($id): \(.asked_by // "missing") is not ask:<id>, human:<their words or the rule that says it> or agent:<PR or incident>"
+        elif .routes == "human" and (.asked_by | startswith("agent:")) then
+          if (.remove_item // "") == "" or (.remove_by // "") == "" then
+            "agent route: \($id): it routes work to the human and an agent added it; remove it, get the human'"'"'s ask, or name the item that removes it (remove_item, remove_by)"
+          elif .remove_by < $today then "agent route: \($id): its removal by \(.remove_item) was due \(.remove_by); delete the gate"
+          else empty end
+        else empty end;
+    .[] | (.source | split("/") | last) as $f
     | if .state == "stale" then "stale: \($f): \(.anchor)"
       elif .state == "dead" then "dead measure: \($f): \(.anchor)"
       elif .state == "restates" then "restates: \($f): \(.anchor): its bound is a copy of the number its measure reads from \($f); drop max/min, the reading is the number"
       elif .state == "moved" then "moved: \($f): \(.anchor): \(.value) against \(if .max != null then "max \(.max)" else "min \(.min)" end), recorded \(.confidence)"
       else empty end,
-    (select(.form | IN("rule", "mechanism") | not) | "form: \($f): \(.anchor): \(.form) is neither rule nor mechanism")' <<<"$1"
+    (select(.form | IN("rule", "mechanism") | not) | "form: \($f): \(.anchor): \(.form) is neither rule nor mechanism"),
+    (select(.id != null) | rules_gate_problem)' --arg today "$(date -u +%F)" <<<"$1"
 }
 
 # rules_summary <states array> -> the counts, key=value.
@@ -2845,9 +2869,47 @@ rules_changed() {
   done
 }
 
+# rules_gates [<base>] -> one line per problem the code has against the register, 1 when any: a marker
+# naming a row that does not exist, a hook that denies or blocks and names no row, and, against the merge
+# base with <base> (default origin/main; no base, no diff check), an added refusal in a gate tool with no
+# marker within GATE_NEAR lines above it. A gate cannot merge without a row, and a row says who asked.
+rules_gates() {
+  local base="${1:-origin/main}" root="$GATE_ROOT" ids f n id mb out="" line files=()
+  ids=$(jq -r 'select(.id != null) | .id' "$RULES_REGISTER" 2>/dev/null)
+  for f in $GATE_TOOLS; do [ -f "$root/$f" ] && files+=("$f"); done
+  while IFS= read -r f; do files+=("$f"); done < <(cd "$root" 2>/dev/null && find "$GATE_HOOKS_DIR" -type f \( -name '*.py' -o -name '*.sh' \) 2>/dev/null | sort)
+  [ "${#files[@]}" -gt 0 ] || { say "rules --gates: no gate code under $root"; return 1; }
+  for f in "${files[@]}"; do
+    while IFS=: read -r n line; do
+      id=$(sed -nE "s/${GATE_MARKER_ERE}/\\1/p" <<<"$line" | awk 'NR==1')
+      [ "$n" -le 1 ] || ! sed -n "$((n - 1))p" "$root/$f" | grep -qE '\\$' ||
+        out+="misplaced gate: $f:$n: the marker sits inside a continued command, which it would swallow; put it above the command"$'\n'
+      [ "$id" = none ] || grep -qxF -- "$id" <<<"$ids" || out+="unregistered gate: $f:$n: gate: $id has no row in the register"$'\n'
+    done < <(grep -nE "$GATE_MARKER_ERE" "$root/$f")
+    case "$f" in "$GATE_HOOKS_DIR"/*)
+      if grep -qE "$GATE_DENY_ERE" "$root/$f" && ! grep -qE "$GATE_MARKER_ERE" "$root/$f"; then
+        out+="unmarked gate: $f: it denies or blocks and names no register row (# gate: <id>)"$'\n'
+      fi ;;
+    esac
+  done
+  if mb=$(git -C "$root" merge-base HEAD "$base" 2>/dev/null); then
+    local d dfile=""
+    while IFS=$'\t' read -r dfile n line; do
+      [ -n "$dfile" ] || continue
+      sed -n "$(( n > GATE_NEAR ? n - GATE_NEAR : 1 )),${n}p" "$root/$dfile" | grep -qE "$GATE_MARKER_ERE" ||
+        out+="unmarked refusal: $dfile:$n: an added refusal names no register row; add # gate: <id> (or # gate: none for a usage error) above it: ${line:0:90}"$'\n'
+    done < <(git -C "$root" diff --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ -U0 "$mb" -- "${files[@]}" | awk -v re="$GATE_REFUSE_ERE" '
+      /^\+\+\+ b\// { file = substr($0, 7); next }
+      /^@@/ { match($0, /\+[0-9]+/); n = substr($0, RSTART + 1, RLENGTH - 1) + 0; next }
+      /^\+/ { t = substr($0, 2); if (t !~ /^[[:space:]]*#/ && t ~ re) printf "%s\t%d\t%s\n", file, n, t; n++ }')
+  fi
+  [ -z "$out" ] || { printf '%s' "$out"; return 1; }
+}
+
 cmd_rules() {
   local states problems
   [ "${1:-}" != --changed ] || { rules_changed "${2:?rules --changed needs a since time}"; return; }
+  [ "${1:-}" != --gates ] || { rules_gates "${2:-}"; return; }
   states=$(rules_states | jq -s .)
   problems=$(rules_problems "$states")
   case "${1:-}" in
