@@ -353,6 +353,26 @@ exit \"\$(cat \"\$NOTES_FIXTURE/panel.rc\" 2>/dev/null || echo 0)\""
   assert_output ''
 }
 
+@test "wp_git in a submodule: a pin behind origin/master that the superproject pins counts ahead 0 (ar-2445)" {
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/.local/lib/agent-merge-proof.sh"
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/.local/lib/fleet-worker-panel.sh"
+  load '../helpers/submodule'
+  local sub="$HOME/.worktrees/sup/module"
+  pinned_submodule "$HOME/.worktrees/sup"
+
+  run wp_git "$sub" ''
+  assert_success
+  assert_equal "$(jq -r .ahead <<<"$output")" 0
+
+  # Negative control: an extra unpinned commit counts ahead
+  unpinned_commit "$sub"
+  run wp_git "$sub" ''
+  assert_success
+  assert_equal "$(jq -r .ahead <<<"$output")" 1
+}
+
 @test "a session's worker row is the first worker listing it; this machine is never asked, and a down worker is skipped" {
   export FLEET_HOST=razer-laptop
   # hp-victus lists s1; razer-laptop (this machine) would too, but is never asked.
