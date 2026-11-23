@@ -868,6 +868,15 @@ gate_ledger() {
   assert_output ""
 }
 
+@test "gate_line: no slots dir prints no gate line, never a guessed outside-a-seat count" {
+  slot_fixture
+  editor_parents
+  rm -r "$SLOT_DIR"
+  run gate_line
+  assert_success
+  assert_output ""
+}
+
 @test "textfile: with no dir it writes into the one the machine's node_exporter reads, a k3s node's included" {
   local ws="$BATS_TEST_TMPDIR/node_exporter/textfile" k3s="$BATS_TEST_TMPDIR/node-exporter-textfile"
   unset PROM_TEXTFILE_DIR
