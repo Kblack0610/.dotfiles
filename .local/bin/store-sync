@@ -82,6 +82,8 @@ STALE_LOCK_MIN=10
 # A sync that could not commit exits this, outside the unit's SuccessExitStatus=1, so the unit
 # fails: on 2026-11-18 a stale index.lock failed every ~/.agent commit for two hours as clean runs.
 EXIT_NO_COMMIT=3
+# git add walks a live tree; a file that moves mid-walk fails one pass (commit_paths).
+ADD_TRIES=3
 HOST_TAG="$(uname -n | cut -d. -f1)"
 LOG="$SYNC_DIR/sync.log"
 PEER="$SYNC_DIR/peer"
@@ -325,7 +327,14 @@ commit_paths() {
   shift
   for p in "$@"; do [ -e "$STORE/$p" ] || g ls-files --error-unmatch -- "$p" >/dev/null 2>&1 && have+=("$p"); done
   [ "${#have[@]}" -gt 0 ] || return 0
-  g add -A -- "${have[@]}" || return 1
+  # Queue items and spin-down markers move while the walk runs, and git add aborts on one that
+  # vanished between its readdir and its stat ("unable to stat ...: No such file"): the next walk
+  # no longer sees it. Retry the add; a failure that repeats is real (a lock, a full disk).
+  local try=0
+  until g add -A -- "${have[@]}"; do
+    try=$((try + 1))
+    [ "$try" -lt "$ADD_TRIES" ] || return 1
+  done
   g diff --cached --quiet && return 0
   g -c core.hooksPath=/dev/null commit -q -m "$msg" >/dev/null
 }
