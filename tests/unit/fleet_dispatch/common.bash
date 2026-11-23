@@ -215,8 +215,6 @@ case "${args[0]}" in
   ptask)
     p="${args[1]}"; f="$F/rows.$p.$lane"
     [ "${args[2]}" != add ] || [ ! -f "$F/refuse.$p" ] || exit 1   # a sheet that refuses the row: touch $F/refuse.<project>
-    # the row lines `ptask add` prints, as notes does (its first line carries the new id): $F/ptask.added.<project>
-    [ "${args[2]}" != add ] || [ ! -f "$F/ptask.added.$p" ] || { cat "$F/ptask.added.$p"; exit 0; }
     [ -f "$f" ] || exit 0
     case "${args[2]}" in
       list) awk -F'\t' -v f="$f" '$2 ~ /^- \[[ \/]\]/ { print f "\t" NR "\t" $1 "\t" $2 }' "$f" ;;

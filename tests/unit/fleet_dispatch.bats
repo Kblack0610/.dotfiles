@@ -681,30 +681,16 @@ ptask game --agent tag --add plan --add go ga-7'
   assert_output 0
 }
 
-@test "skip_exits: a #low row others gate #after/ on goes to the human sheet, and each gate is repointed at the new row" {
+@test "skip_exits: a #low row an open row gates #after/ on goes to the human sheet, not improvements.md, so the gate has a row to follow" {
   exits_fixture
   row game agent gx-8 "- [ ] row gx-8 #after/gx-3 $T <!-- id:gx-8 -->"
   board_row game agent gx-8 '["after/gx-3"]' '[]'
-  printf '%s\n' '- [ ] row gx-3 #low (agent row gx-3) <!-- id:gh-1 -->' '  - origin: fleet-dispatch' > "$NOTES_FIXTURE/ptask.added.game"
   skip_exits
   grep -qxF 'notes --profile bnb ptask game add row gx-3 #low #tier/1 (agent row gx-3) --origin fleet-dispatch' "$NOTES_FIXTURE/calls.log"
+  grep -q 'id:gx-3 dropped: on the game sheet' "$NOTES_FIXTURE/rows.game.agent"
   run grep -c 'improve game' "$NOTES_FIXTURE/calls.log"
   assert_output 0
-  grep -qxF 'notes --profile bnb ptask game --agent tag --remove after/gx-3 --add after/gh-1 gx-8' "$NOTES_FIXTURE/calls.log"
-  grep -q '#after/gh-1 .*id:gx-8 ' "$NOTES_FIXTURE/rows.game.agent"
-  run grep -c 'after/gx-3' "$NOTES_FIXTURE/rows.game.agent"
-  assert_output 0
-}
-
-@test "skip_exits: a gated-on row whose sheet row lands in the outbox says its dependents need a hand repoint" {
-  exits_fixture
-  row game agent gx-8 "- [ ] row gx-8 #after/gx-3 $T <!-- id:gx-8 -->"
-  board_row game agent gx-8 '["after/gx-3"]' '[]'
-  np() { [[ " $* " != *" ptask game add "* ]] || return 4; local p=$1; shift; notes --profile "$p" "$@"; }
-  run skip_exits
-  assert_output --partial 'skip_exits: game gx-8 still waits on #after/gx-3, which went in the outbox for the game sheet: repoint it by hand'
-  run grep -c 'tag --remove after/gx-3' "$NOTES_FIXTURE/calls.log"
-  assert_output 0
+  assert_equal "$(jq -r 'select(.key == "gx-3") | .exit // empty' "$FLEET_DISPATCH_DIR/verdicts.jsonl")" sheet
 }
 
 @test "skip_exits: exits takes --dry-run or nothing; any other argument is a usage error that moves no row" {
