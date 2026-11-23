@@ -2872,6 +2872,38 @@ research_item() {
   [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
 }
 
+@test "end to end: an earlier session of the live item filed a pending ask, it is this session's own ask too (ar-4650)" {
+  # ar-4640: agent-1 carried on an item whose first session asked onC7wY, and read STALLED with the answer outstanding.
+  landed_fixture
+  export ASK_ROOT="$HOME/.agent/asks"
+  mkdir -p "$ASK_ROOT/apociseum"
+  printf 'id: Old1\nstatus: pending\nsession: s0\nclaude_session: sid-old\n' > "$ASK_ROOT/apociseum/Old1.md"
+  queue_item running lab:s1
+  # negative control: the item records no earlier session, the ask is nobody's here
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .own_asks <<<"$output")" = 0 ]
+  # the item records both sessions: the earlier one's pending ask is this session's own
+  sed -i '/^---$/i sessions: sid-old sid-9' "$HOME/.agent/queue/running/20261103-100000-fix-wave-save.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .own_asks <<<"$output")" = 1 ]
+  [ "$(jq -r .bucket <<<"$output")" = NEEDS ]
+  [ "$(jq -r '.blockers[0]' <<<"$output")" = 'open ask Old1' ]
+  # a later session of the item does not lend its ask to an earlier one
+  printf 'id: Late\nstatus: pending\nsession: s3\nclaude_session: sid-late\n' > "$ASK_ROOT/apociseum/Late.md"
+  sed -i 's/^sessions: .*/sessions: sid-old sid-9 sid-late/' "$HOME/.agent/queue/running/20261103-100000-fix-wave-save.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .own_asks <<<"$output")" = 1 ]
+  [ "$(jq -r '.blockers[0]' <<<"$output")" = 'open ask Old1' ]
+  # a session of another item does not lend its ask
+  printf 'id: Other\nstatus: pending\nsession: s2\nclaude_session: sid-else\n' > "$ASK_ROOT/apociseum/Other.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .own_asks <<<"$output")" = 1 ]
+  # answered: nothing left to wait on
+  sed -i 's/^status: pending/status: answered/' "$ASK_ROOT/apociseum/Old1.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .own_asks <<<"$output")" = 0 ]
+}
+
 @test "end to end: a landed session whose next phases are other queue items is DONE once its own item is done; that item is not a next phase" {
   landed_fixture
   # its own item names the plan: still LANDED, told to queue the rest
