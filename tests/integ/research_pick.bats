@@ -19,7 +19,7 @@ setup() {
     list) grep -q unreadable "$NOTES_FIXTURE/queue.jsonl" 2>/dev/null && exit 1; cat "$NOTES_FIXTURE/queue.jsonl" 2>/dev/null ;;
     add) printf "agent-queue %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; printf "writer name=%s item=%s session=%s\n" "${AGENTCTL_NAME-}" "${AGENT_QUEUE_ITEM-}" "${CLAUDE_CODE_SESSION_ID-}" >> "$NOTES_FIXTURE/calls.log" ;;
   esac; exit 0'
-  # A full board: the picker must not ask, and files regardless (the board-open watch alerts instead).
+  # A full board: the picker must not ask, and files regardless, since the board has no limit.
   stub fleet-bench 'echo "fleet-bench $*" >> "$NOTES_FIXTURE/calls.log"; echo "full: board_days 4 past board_days_max 2, board_open 9 (backlog 0)"; exit 1'
   repo hot 6; repo cold 1; repo other 1
   mkdir -p "$SANDBOX/excluded"
