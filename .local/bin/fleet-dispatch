@@ -1739,7 +1739,7 @@ judged_keys() {
 # an agent-lane row whose gates all cleared is `gated`: committed work, which picks takes with no verdict
 # (a human-lane row is still judged, since only the verdict says the human's row is agent work). When the
 # gates could not be read (GATES_FAILED) it lists no row but under suggest. CLEANUP_ONLY,
-# REQUESTED_ONLY, GATED_ONLY and SPRINT_ONLY (fill_day's floors) read only their rows (floor_row), in the projects
+# REQUESTED_ONLY, GATED_ONLY, SPRINT_ONLY and FLOOR_PROJECTS (fill_day's floors) read only their rows (floor_row), in the projects
 # that can hold one (floor_project); ONLY_PROJECT reads that one project alone (trainee_rows' split). A project off_project names is no candidate: it says why under OFF_SAY (the `candidates`
 # command, and a pass's one judge read, so not once per read), and suggest lists its agent rows with that reason.
 cmd_candidates() {
@@ -7695,7 +7695,7 @@ cmd_run() {
   # unity items kept every pass off the board for 7h: the rows filed to fix the hold never started,
   # and 220 rows sat unjudged. Above the low water, a floor still reads the board for its own rows
   # only (low_water_floors).
-  local items rc depth want cgap rgap only=''; items=${NEXT_QUEUED-$(next_items --points)}
+  local items rc depth want cgap rgap pgaps only=''; items=${NEXT_QUEUED-$(next_items --points)}
   if [ -n "$items" ]; then
     HELD_FALLS_THROUGH=1; run_queue "$items" "$room"; rc=$?; HELD_FALLS_THROUGH=0
     if [ -z "$QUEUE_HELD$SHARE_HELD" ]; then
@@ -7704,8 +7704,8 @@ cmd_run() {
       if [ "$depth" -lt "$DISPATCH_LOW_WATER" ]; then
         say "runnable $depth is under the low water $DISPATCH_LOW_WATER, topping the queue up from the board"
       else
-        rgap=$(class_gap requested requested); cgap=$(class_gap cleanup cleanup)
-        only=$(low_water_floors "$rgap" "$cgap"); [ -n "$only" ] || return 0
+        rgap=$(class_gap requested requested); cgap=$(class_gap cleanup cleanup); pgaps=$(project_gaps)
+        only=$(low_water_floors "$rgap" "$cgap" "$pgaps"); [ -n "$only" ] || return 0
       fi
     fi
   fi
@@ -7722,6 +7722,7 @@ cmd_run() {
     want=0
     [[ " $only " != *" requested "* ]] || want=$rgap
     [[ " $only " != *" cleanup "* ]] || want=$(( want + cgap ))
+    want=$(( want + $(awk '{ n += $1 } END { print n + 0 }' <<<"$pgaps") ))
   fi
   # The floors and the low water top up under the cap, never past it; committed rows take what it leaves.
   local qroom; qroom=$(queue_headroom); [ "$want" -le "$qroom" ] || want=$qroom
@@ -7738,9 +7739,10 @@ cmd_run() {
   SHARE_LET_GO=$let_go start_items "$items" "$room"   # the one unfiltered start the fleet share cap may let go in
 }
 
-# low_water_floors <requested gap> <cleanup gap> -> the classes a run pass over the low water still
+# low_water_floors <requested gap> <cleanup gap> [project gaps] -> the classes a run pass over the low water still
 # reads the board for, space-separated: `requested` and `cleanup` while their class is under its classes.json
-# min_live (class_gap), and `gated` on every pass, for committed rows (an agent row whose #at/, #after/
+# min_live (class_gap), `project:<name>` for each project of a project class under its min_live
+# (project_gaps' lines), and `gated` on every pass, for committed rows (an agent row whose #at/, #after/
 # or other gates all cleared), which wait on no depth: on 2026-11-19, with 38 items runnable, ar-2894
 # sat 10h past its #at/ and seven #after/ rows past the rows they waited on.
 low_water_floors() {
@@ -7753,6 +7755,12 @@ low_water_floors() {
     only="${only:+$only }cleanup"
     say "cleanup is $2 under its min_live, topping cleanup up from the board"
   fi
+  local gap ps p
+  while read -r gap ps; do
+    [ -n "$ps" ] || continue
+    say "$ps is $gap under its min_live, topping $ps rows up from the board"
+    for p in $ps; do only="${only:+$only }project:$p"; done
+  done <<<"${3:-}"
   only="${only:+$only }gated"
   printf %s "$only"
 }
@@ -7804,15 +7812,16 @@ row_task() { jq -r .text <<<"$1" | sed 's/^- \[.\] //'; }
 # with <cap room> (a run pass's queue headroom) every committed (`gated`) pick goes too, ahead of the
 # <room> others and up to <cap room> in all, since its gates clearing is its start. A cleanup
 # row's item is tagged `cleanup` (the floor counts them), and every item `tier<N>` (item_tier). With
-# `cleanup`, `requested`, `gated` or `sprint` (the floors: over the low water, and sprint_top_up's on every
+# `cleanup`, `requested`, `gated`, `sprint` or `project:<name>` (the floors: over the low water, and sprint_top_up's on every
 # pass) every scan under it, the judge's included when this pass has not judged yet, reads only those rows
 # (floor_row). A full fleet share (share_full) leaves the fleet's rows out, the tier-3 gate's too.
 fill_day() {
   local picked c tags pl CLEANUP_ONLY=${CLEANUP_ONLY:-} REQUESTED_ONLY=${REQUESTED_ONLY:-}
   [[ " ${2:-} " != *" cleanup "* ]] || CLEANUP_ONLY=1
   [[ " ${2:-} " != *" requested "* ]] || REQUESTED_ONLY=1
-  local GATED_ONLY=${GATED_ONLY:-} SPRINT_ONLY=${SPRINT_ONLY:-}
+  local GATED_ONLY=${GATED_ONLY:-} SPRINT_ONLY=${SPRINT_ONLY:-} FLOOR_PROJECTS=${FLOOR_PROJECTS:-} f
   [[ " ${2:-} " != *" gated "* ]] || GATED_ONLY=1
+  for f in ${2:-}; do [[ "$f" != project:* ]] || FLOOR_PROJECTS="${FLOOR_PROJECTS:+$FLOOR_PROJECTS }${f#project:}"; done
   [[ " ${2:-} " != *" sprint "* ]] || SPRINT_ONLY=1
   FILLED=0
   # Committed rows alone want no judge: a gated row is never judged (unjudged_rows).
@@ -7858,6 +7867,24 @@ fill_day() {
 # item_tag_depth <tag> -> the runnable items carrying <tag>: what a class top-up (cleanup, requested) measures.
 item_tag_depth() { runnable 2>/dev/null | jq -c --arg t " $1 " 'select((" " + (.tags // "") + " ") | contains($t))' | grep -c . || true; }
 
+# project_gaps -> one `<gap> <project>...` line per classes.json class that names `projects` and sets a
+# min_live (unity, trader), while its projects' live items (running or waiting) and runnable ones
+# (queued, no hold) together are fewer than that min_live: the project floor's top-up above the low
+# water, so a project the human did not put on focus still has sessions while a focus project fills the
+# queue (plan fleet-product-work-first P4: at 14:03 on 2026-11-23, 34 Unity items queued and no trader
+# one). It counts a project's items whatever class they rank in, as the floor is that project's
+# sessions: a #requested trader item ranks in `requested` and is still a trader session. Nothing when
+# the mix is off or either read fails.
+project_gaps() {
+  local mix active
+  mix=$(agent-queue mix --json 2>/dev/null) && active=$(agent-queue list --json --state active 2>/dev/null) || return 0
+  jq -rs --argjson m "$mix" 'if $m.on != true then empty else . as $it
+    | $m.classes[] | select(.min_live > 0 and ((.projects // []) | length) > 0) | .projects as $ps
+    | ([$it[] | select((.project // "") as $p | any($ps[]; . == $p))
+        | select(.state == "running" or .state == "waiting" or (.state == "queued" and .hold == null))] | length) as $n
+    | select(.min_live > $n) | "\(.min_live - $n) \($ps | join(" "))" end' <<<"$active" 2>/dev/null || true
+}
+
 # class_gap <class> <tag> -> how many runnable items carrying <tag> the class lacks under its classes.json
 # min_live (the number the mix and this top-up share), 0 when the mix is off, the class has none, or
 # `agent-queue mix` cannot be read. The tag, not the class, counts the items: a cleanup row of kind fix
@@ -7871,26 +7898,28 @@ class_gap() {
 }
 
 # floor_pass -> 0 when fill_day reads the board for its floors' rows alone (CLEANUP_ONLY, REQUESTED_ONLY,
-# GATED_ONLY, SPRINT_ONLY), which every scan under it then filters by floor_project and floor_row.
-floor_pass() { [ -n "${CLEANUP_ONLY:-}${REQUESTED_ONLY:-}${GATED_ONLY:-}${SPRINT_ONLY:-}" ]; }
+# GATED_ONLY, SPRINT_ONLY, FLOOR_PROJECTS), which every scan under it then filters by floor_project and floor_row.
+floor_pass() { [ -n "${CLEANUP_ONLY:-}${REQUESTED_ONLY:-}${GATED_ONLY:-}${SPRINT_ONLY:-}${FLOOR_PROJECTS:-}" ]; }
 
 # floor_project <project> -> 0 for a project a floor pass may find a row in: any under the requested or
-# gated floor, one of DISPATCH_CLEANUP_PROJECTS under the cleanup floor, one with an unstarted open sprint
-# row (SPRINT_PROJECT) under the sprint floor.
+# gated floor, one of DISPATCH_CLEANUP_PROJECTS under the cleanup floor, one of FLOOR_PROJECTS under its
+# project floor, one with an unstarted open sprint row (SPRINT_PROJECT) under the sprint floor.
 floor_project() {
   [ -n "${REQUESTED_ONLY:-}${GATED_ONLY:-}" ] && return 0
   [ -n "${CLEANUP_ONLY:-}" ] && [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $1 "* ]] && return 0
+  [ -n "${FLOOR_PROJECTS:-}" ] && [[ " $FLOOR_PROJECTS " == *" $1 "* ]] && return 0
   [ -n "${SPRINT_ONLY:-}" ] && [ -n "${SPRINT_PROJECT[$1]:-}" ]
 }
 
 # floor_row <project> <row> [gates] [id] -> 0 for a row a floor pass may read: a `#requested` row when the
 # requested floor is under, a cleanup row of DISPATCH_CLEANUP_PROJECTS when the cleanup floor is, an
-# agent row whose gates all cleared (<gates>, cmd_candidates' `gated`) under GATED_ONLY, and a row an
-# open sprint holds (row_sprint on <id>) under SPRINT_ONLY. It sets SPRINT, CLEANUP and KIND (row_sprint_set,
+# agent row whose gates all cleared (<gates>, cmd_candidates' `gated`) under GATED_ONLY, any row of a
+# FLOOR_PROJECTS project under its project floor, and a row an open sprint holds (row_sprint on <id>) under SPRINT_ONLY. It sets SPRINT, CLEANUP and KIND (row_sprint_set,
 # cleanup_row_set), so a walk copies its own before it calls this.
 floor_row() {
   [ -n "${GATED_ONLY:-}" ] && [ -n "${3:-}" ] && return 0
   [ -n "${REQUESTED_ONLY:-}" ] && [[ "${2%%<!--*}" =~ (^|[[:space:]])#requested([[:space:]]|$) ]] && return 0
+  [ -n "${FLOOR_PROJECTS:-}" ] && [[ " $FLOOR_PROJECTS " == *" $1 "* ]] && return 0
   [ -n "${SPRINT_ONLY:-}" ] && [ -n "${4:-}" ] && row_sprint_set "$1" "$4" && [ "$SPRINT" = 0 ] && return 0
   [ -n "${CLEANUP_ONLY:-}" ] && [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $1 "* ]] && cleanup_row_set "$1" "$2" && [ "$CLEANUP" = 0 ]
 }
