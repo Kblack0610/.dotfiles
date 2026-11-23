@@ -634,6 +634,40 @@ seed_bar() {
   assert_equal "$(wc -l < "$NOTES_FIXTURE/bar.runs")" 2
 }
 
+# ar-3920: summary/feed says whether this host holds the fleet lease, so home-config's AgentFeedFrozen
+# can count only the holder's feed (mqtt_lease_holder) and a no-lease peer cannot hide a dead holder.
+@test "feed: the lease holder marks its feed lease_holder true, retained with no HA entity" {
+  run "$PUB" --quiet
+  assert_success
+  assert_equal "$(payload agents/testhost/summary/feed)" '{"lease_holder":true}'
+  [ -z "$(payload homeassistant/sensor/agent_testhost_summary_feed/config)" ]
+}
+
+# Negative control: a peer still sends its feed, marked false, so its event publishes are not the holder's.
+@test "feed: a machine that does not hold the fleet lease marks its feed lease_holder false" {
+  FLEET_LEASE_RC=1 run "$PUB" --quiet
+  assert_success
+  assert_equal "$(payload agents/testhost/summary/feed)" '{"lease_holder":false}'
+  FLEET_LEASE_RC=2 run "$PUB" --dry-run
+  assert_success
+  assert_line --partial $'agents/testhost/summary/feed\t{"lease_holder":false}'
+}
+
+# An exporter keeps a gauge whose topic stops, so losing the lease overwrites the retained true, never retracts it.
+@test "feed: a machine that loses the fleet lease overwrites its true with false, and a diff run resends nothing else" {
+  "$PUB" --quiet
+  : > "$PUBLOG"
+  FLEET_LEASE_RC=1 run "$PUB" --quiet
+  assert_success
+  assert_equal "$(payload agents/testhost/summary/feed)" '{"lease_holder":false}'
+  # The feed topic is never emptied: the false is the one message on it.
+  assert_equal "$(grep -c '^agents/testhost/summary/feed'$'\t' "$PUBLOG")" 1
+  : > "$PUBLOG"
+  FLEET_LEASE_RC=1 run "$PUB" --quiet
+  assert_success
+  [ ! -s "$PUBLOG" ]
+}
+
 # Tilecast push: each run pokes agent-web, broker or not, with the widget key on stdin. The stub
 # signals a FIFO when it has run, since the poke is in the background.
 @test "push: a run pokes agent-web's push-send with the widget key, even with no broker" {
