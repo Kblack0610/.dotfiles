@@ -1006,7 +1006,9 @@ MODEL_WEIGHT_SONNET="$(pace_get MODEL_WEIGHT_SONNET)"
 MODEL_WEIGHT_HAIKU="$(pace_get MODEL_WEIGHT_HAIKU)"
 CLAUDE_SESSION_RATE="${CLAUDE_ACCT_SESSION_RATE:-$(pace_get CLAUDE_SESSION_RATE)}"
 ACTIVE_MIN="$(pace_get ACTIVE_MIN)"
-[[ -n "$PACE_SLACK_PCT" && -n "$RESERVE_PCT" && -n "$SESSION_RATE" && -n "$CLAUDE_SESSION_RATE" && -n "$MODEL_WEIGHT_SONNET" && -n "$MODEL_WEIGHT_HAIKU" && -n "$ACTIVE_MIN" ]] || exit 1
+# exported: room and FLEET_JQ read it as $ENV.CLAUDE_ACCT_BURN_OVER_PCT (def over)
+export CLAUDE_ACCT_BURN_OVER_PCT="${CLAUDE_ACCT_BURN_OVER_PCT:-$(pace_get BURN_OVER_PCT)}"
+[[ -n "$PACE_SLACK_PCT" && -n "$RESERVE_PCT" && -n "$SESSION_RATE" && -n "$CLAUDE_SESSION_RATE" && -n "$MODEL_WEIGHT_SONNET" && -n "$MODEL_WEIGHT_HAIKU" && -n "$ACTIVE_MIN" && -n "$CLAUDE_ACCT_BURN_OVER_PCT" ]] || exit 1
 RATE_TTL="${CLAUDE_ACCT_RATE_TTL:-3600}"
 # The one bash Prometheus reader (prom_q, PROM_URL from the hub's own env file). A dead endpoint
 # costs a start 5s at most, and only the spend paths ask.
@@ -1177,6 +1179,8 @@ usage_json() {
             # already empty before the reset ranks behind every one with room, and among those the
             # one its sessions empty last goes first. A 5h window near full goes last.
             # Points an hour the rest of the week can carry to the reset, landing at 100% on it.
+            # BURN_OVER_PCT: how far past what the week sustains the working sessions may burn before committed refuses
+            def over: 1 + ($ENV.CLAUDE_ACCT_BURN_OVER_PCT | tonumber) / 100;
             def sustain: (100 - (.week_used // 0)) / (if .resets == null then $window / 3600 else ([(.resets - $now) / 3600, 0.1] | max) end);
             # When used falls back to the week gone plus the slack, the moment room drops `pace`:
             # with no spend the clock catches up at 100 points a week; at this burn, only when burn
@@ -1209,7 +1213,7 @@ usage_json() {
             # refusal, in this order: unread, capped (window empty, or the plan says its limit is
             # reached), reserve (inside the last of the window), pace (past the line after slack),
             # five_hour (its window inside the reserve), committed (its working sessions already use the
-            # rest of the window), max_live (as many running items as the source allows); reason is
+            # rest of the window, past BURN_OVER_PCT), max_live (as many running items as the source allows); reason is
             # the first, or ok. A source whose parent pool is spent also gets `parent`, after reserve
             # (all_json). A dollar budget (paced false) has no pace line and no committed burn. A
             # dispatch floor may lift pace only, so it reads reasons == ["pace"]. over_points is the points past the
@@ -1222,7 +1226,7 @@ usage_json() {
                       if $u != null and $u >= 100 - $reserve and $u < 100 then "reserve" else empty end,
                       if .paced and $u != null and $u > $g + $slack then "pace" else empty end,
                       if $f >= 100 - $reserve then "five_hour" else empty end,
-                      if .paced and sustain <= .burn then "committed" else empty end,
+                      if .paced and sustain * over <= .burn then "committed" else empty end,
                       if .max_live != null and .live >= .max_live then "max_live" else empty end]
                    end) as $no
                 | {ok: ($no == []), reason: ($no[0] // "ok"), reasons: $no,
@@ -1384,9 +1388,10 @@ on_pace_word() {
 # burn the pool carries without going into the reserve: the lowest of each step's points over its
 # hours from now, and of what the weeks give an hour for good, the reserve kept. `runs_out` is when this burn empties the pool into the reserve, null when it
 # lasts to the last account's reset (the horizon: past it every week is fresh, and keeps says whether
-# the burn fits). 2026-11-10: keeps was each account's points left over its own reset, which read
+# the burn fits). `spare` is the sessions more that keeps times BURN_OVER_PCT's allowance carries. 2026-11-10: keeps was each account's points left over its own reset, which read
 # 1.9/h with no reset counted, while the four weeks carried 2.1/h (ar-1529).
-FLEET_JQ='def fleet($now): [.[] | select(.kind == "claude")] as $c
+FLEET_JQ='def over: 1 + ($ENV.CLAUDE_ACCT_BURN_OVER_PCT | tonumber) / 100;
+def fleet($now): [.[] | select(.kind == "claude")] as $c
     | [$c[] | select(.state == "ok" and .week_used != null and .paced)] as $a
     | ([$a[] | select(.resets != null)
         | ((.resets - $now) / 3600) as $at | (.window / 3600) as $h | (100 - .reserve) as $w
@@ -1402,7 +1407,7 @@ FLEET_JQ='def fleet($now): [.[] | select(.kind == "claude")] as $c
     | {live: ([$c[].live] | add // 0), working: ([$c[].working] | add // 0), working_cost: ([$c[].working_cost] | add // 0),
        rows: $a, rate: $rate, burn: $burn, keeps: $keeps,
        unread: [$c[] | select(.state == "unread") | {name, working, since: .read_at}],
-       spare: (if $keeps == null or $burn == null or ($rate // 0) <= 0 then null else ($keeps - $burn) / $rate | floor end),
+       spare: (if $keeps == null or $burn == null or ($rate // 0) <= 0 then null else ($keeps * over - $burn) / $rate | floor end),
        runs_out: (if $p == [] or $burn == null or $burn <= 0 then null
                   else first($steps[] | select(.has / $burn < .at) | $now + .has / $burn * 3600 | floor) // null end)};'
 

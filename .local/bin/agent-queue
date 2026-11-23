@@ -18,9 +18,9 @@
 #       The human's own add that links a row (--row, the title's row) with an explicit --priority retags that row.
 #       --after holds the item until every slug it names closed ok: a comma or space list, and it repeats.
 #       A queue item's session adding a task that says land, from an item with a PR recorded, with no --after is gated on that item's own live `after:` blockers (landing_after).
-#       A slug whose item is live with an open PR (open_pr:, set by agent-land before its checks, or a --pr-only run's pr:) does not hold: the item is stacked on it
+#       A plan phase or validate item (stack_dependent) after a slug whose item is live with an open PR (open_pr:, set by agent-land before its checks, or a --pr-only run's pr:) does not hold: it is stacked on it
 #       (hold_for HOLD_STACK, `stacked_on` in list --json; gate after/<row-id> clears with stack: <slug>), fleet-dispatch starts it in a worktree cut from that PR's
-#       head, and agent-land refuses it (exit 4) until that slug closed ok. A dependency closed unmerged stays a dead hold.
+#       head, and agent-land refuses it (exit 4) until that slug closed ok. A dependency closed unmerged stays a dead hold. Any other --after holds until that slug closed ok, open PR or not.
 #       --row names the open agent board row this item works on: see link_row. With no --row,
 #       --epic or --want, a title whose subject is one open row id works that row too (named_row).
 #       Any other item not from the board files its own story row: see file_story. A slug that already
@@ -411,13 +411,14 @@ done_status() {
   [ -n "$f" ] && fm_get "$f" status
 }
 
-# start_gate <slug> <after> <tags> <verb> <fix> -- a start by hand (add --running, move running of a
-# queued item) waits on what holds the item, as the queue does: a live or dead after: or a tag gate
-# that is not clear refuses it, naming <fix> (ar-3260).
+# start_gate <slug> <after> <tags> <verb> <fix> [<item file>] -- a start by hand (add --running, move
+# running of a queued item) waits on what holds the item, as the queue does: a live or dead after: or a
+# tag gate that is not clear refuses it, naming <fix> (ar-3260). <item file>: the queued item, for
+# stack_dependent; none for an add.
 # gate: aq-hold-for
 start_gate() {
   local HOLD HOLD_DEAD
-  hold_for "$2" "$3"
+  hold_for "$2" "$3" "" "${6-}"
   [ -z "$HOLD_DEAD" ] || die "$1 cannot $4: $HOLD"
   [ -z "$HOLD" ] || die "$1 waits on $HOLD, so it cannot $4: $5"
 }
@@ -682,12 +683,33 @@ stack_pr() {
   done
 }
 
-# hold_for <after> <tags> [<file>] -> sets HOLD to hold_reason's answer for these
+# stack_dependent [<item file>] -- the item waiting may stack on its after: item's open PR (hold_for,
+# cmd_gate): a plan phase, which builds on its dependency's code (ar-3852), or a `validate` item, which
+# reviews its author's open PR before it lands (fleet-dispatch validate, ar-1689). An item file: its
+# `plan:` line, its `validate` tag, else its brief (plan_phase_task: a phase promoted from its row). No
+# file: the add under way (AQ_ADD_STACKS, which cmd_add sets). Any other after: means "once it lands"
+# and holds until that item closed ok. Why: 2026-11-21 a hand `add --after ucp-2567`, running with open
+# PR #3076, started its dependent at once on #3076's head, three hours before #3076 merged (ar-4537).
+stack_dependent() {
+  if [ -n "${1-}" ]; then
+    [ -n "$(fm_get "$1" plan)" ] || [[ " $(fm_get "$1" tags) " == *" validate "* ]] || plan_phase_task "$(fm_body "$1")"
+  else [ -n "${AQ_ADD_STACKS-}" ]; fi
+}
+
+# add_stacks <text> <tags> -- prints 1 when the add under way may stack on its after: item's open PR
+# (stack_dependent's no-file case): a --plan phase (AQ_ITEM_PLAN), a validate item, or a phase brief.
+add_stacks() {
+  if [ -n "${AQ_ITEM_PLAN:-}" ] || [[ " $2 " == *" validate "* ]] || plan_phase_task "$1"; then echo 1; fi
+}
+
+# hold_for <after> <tags> [<file>] [<item file>] -> sets HOLD to hold_reason's answer for these
 # header values, HOLD_DEAD to 1 when that hold can never release (cmd_gate reads it), and
-# HOLD_STACK to "<slug>=<PR>" for each after: slug that is live with an open PR (stacked: no hold).
+# HOLD_STACK to "<slug>=<PR>" for each after: slug that is live with an open PR, when the item waiting
+# is a plan phase or validate item (stacked: no hold, stack_dependent). <file> is that item, which also names the human's
+# work in a dead hold; <item file> names it for the stack check alone.
 # gate: aq-hold-for
 hold_for() {
-  local after="$1" tags="$2" tag now stamp nday MEMO_V AST s live=""
+  local after="$1" tags="$2" dep="${4:-${3-}}" tag now stamp nday MEMO_V AST s live=""
   local -a afters
   HOLD="" HOLD_DEAD="" HOLD_STACK=""
   # Every slug in after: must have closed ok. The hold names the slugs still live; a dead one wins,
@@ -698,6 +720,7 @@ hold_for() {
     case "$AST" in
       ok) ;;
       "") stack_pr "$s"
+        [ -z "$STK" ] || stack_dependent "$dep" || STK=""
         if [ -n "$STK" ]; then HOLD_STACK="$HOLD_STACK${HOLD_STACK:+ }$s=$STK"; else live="$live${live:+ }$s"; fi ;;
       # Any other close releases only if that slug is queued again and closes ok: say so, so the
       # list and the hub show a dead hold apart from a live one.
@@ -885,7 +908,7 @@ cmd_gate() {
   local usage="usage: agent-queue gate [--json] (--all | <tag>...)"
   local json="" all="" board="" unread="" t q st why id r via hop rc=0 GQ HOLD HOLD_DEAD stack STK STK_SLUG
   local -a tags=() ids=()
-  local -A RS=()
+  local -A RS=() NOPHASE=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) json=1; shift ;;
@@ -898,6 +921,13 @@ cmd_gate() {
   if [ -n "$all" ]; then
     board="$(notes board --json 2>/dev/null)" && [ -n "$board" ] || die "gate --all: notes board --json failed"
     mapfile -t -O "${#tags[@]}" tags < <(jq -r "$ROW_TAGS_JQ"'[.rows[]? | select(.state == "open" or .state == "doing") | row_tags[]] | unique | .[]' <<<"$board")
+    # Each after/ tag an open row carries whose brief is no plan phase's: that tag never clears as stacked.
+    local brief
+    while IFS=$'\x1f' read -r t brief; do
+      [ -n "$t" ] && ! plan_phase_task "$brief" && NOPHASE[$t]=1
+    done < <(jq -r "$ROW_TAGS_JQ"'.rows[]? | select(.state == "open" or .state == "doing")
+      | ([.text // "", (.details // [])[]] | join(" ") | gsub("[\n\u001f]"; " ")) as $b
+      | row_tags[] | select(startswith("after/")) | "\(.)\u001f\($b)"' <<<"$board")
   fi
   local -A LIST_MEMO=()
   local LIST_MEMO_ON=1
@@ -921,10 +951,16 @@ cmd_gate() {
         done) st=clear ;;
         dropped) st=dead why="after ${t#after/}$via: that row was dropped, so it never closes done; take the tag off the row" ;;
         open) st=pending why="after ${t#after/}$via (open)"
-          # The row's item is live with an open PR: stacked, which clears the gate (the phase builds on
-          # that PR; agent-land merges it once the item closed ok). `stack` names the item for promote.
+          # The row's item is live with an open PR: stacked, which clears the gate for a plan phase (it
+          # builds on that PR; agent-land merges it once the item closed ok). `stack` names the item for
+          # promote. With --all, only when every open row carrying the tag is a phase; one tag asked
+          # alone, when the add asking stacks (stack_dependent). Any other row waits for the close (ar-4537).
           stack_row "$id"
-          [ -z "$STK" ] || { st=clear why="stacked on $STK" stack="$STK_SLUG"; } ;;
+          if [ -n "$STK" ]; then
+            if { [ -n "$all" ] && [ -z "${NOPHASE[$t]-}" ]; } || { [ -z "$all" ] && stack_dependent; }; then
+              st=clear why="stacked on $STK" stack="$STK_SLUG"
+            else why="after ${t#after/}$via (open; its item's open PR $STK is a base only for a plan phase)"; fi
+          fi ;;
         *) if [ -z "$unread" ]; then st=dead why="after ${t#after/}$via: no board row has that id$(after_fix "$id")"
            else st=pending why="after ${t#after/} (notes board --json failed)"; fi ;;
       esac
@@ -993,7 +1029,7 @@ desk_head() {
     [[ " $tags " == *" hold:$res "* ]] || continue
     cls="$(desk_class "$tags")"
     [ "$cls" = auth ] && [ -n "$away" ] && continue
-    HOLD=""; hold_for "$after" "$tags"
+    HOLD=""; hold_for "$after" "$tags" "" "$f"
     [ -z "$HOLD" ] || continue
     rank="$(awk -F'\t' -v c="$cls" '$1 == c { print $2 }' <<<"$ranks")"
     case "$pri" in urgent) p=0 ;; low) p=2 ;; *) p=1 ;; esac
@@ -1876,8 +1912,8 @@ add_row_prio() {
 # that item's landing. A landing follow-up its session files without --after carries no trigger, so triage
 # files it #low, which ranks last (before ar-4626 the sweep put it on a backlog tier no pass took: ucp-2567, 2568
 # and 2569 sat there for 11 hours, 2026-11-21, ar-4451). Gated on what its item waited on, it is pinned
-# (gate_open) and pull-after starts it when that blocker closes ok. A blocker that closed, died or is
-# stacked on (open PR: it holds nothing, hold_for) is no gate. Nothing for any other follow-up.
+# (gate_open) and pull-after starts it when that blocker closes ok. A blocker that closed or died is no
+# gate; one with an open PR still is, since a landing is no plan phase (stack_dependent). Nothing for any other follow-up.
 landing_after() {
   local f s out=''
   [ -n "$1" ] && [ -z "${AGENT_QUEUE_PULL:-}" ] || return 0
@@ -1886,9 +1922,7 @@ landing_after() {
   [[ "$2" =~ (^|[^A-Za-z])[Ll]and(ing)?([^A-Za-z]|$) ]] || return 0
   for s in $(word_list "$(fm_get "$f" after)"); do
     after_status "$s"
-    [ -z "$AST" ] || continue
-    stack_pr "$s"
-    [ -n "$STK" ] || out+="${out:+ }$s"
+    [ -n "$AST" ] || out+="${out:+ }$s"
   done
   printf '%s' "$out"
 }
@@ -1994,7 +2028,7 @@ cmd_add() {
   # (QUEUE.md "Admission"). A --running record is already started, so it files no gate: an --after it
   # names must already have closed ok, or the add is refused (ar-3260). Dispatch's pull of a board row
   # (promote) judged that row's gates clear the moment before, so none is read twice.
-  local GATES='' AFTER_ITEMS=''
+  local GATES='' AFTER_ITEMS='' AQ_ADD_STACKS="$(add_stacks "$text" "$tags")"
   if [ -n "$running" ] && [ -n "$after" ]; then
     check_after "$after" "$slug"
     start_gate "$slug" "$after" "" "start --running" "add it without --running, and it starts once that clears"
@@ -2921,7 +2955,7 @@ cmd_set() {
     for kv in "$@"; do
       case "$kv" in after=*) new_after="$(word_list "${kv#*=}")" ;; tags=*) new_tags="${kv#*=}" ;; esac
     done
-    hold_for "$new_after" "$new_tags"
+    hold_for "$new_after" "$new_tags" "" "$f"
     [ -z "$HOLD" ] || die "$slug has no board row to wait on its gate ($HOLD): give it one (agent-queue set $slug row=<board>:<id>) first; the queue holds only work that can start"
   fi
   # The row it works before the set, with the profile and lane that row is on (item_row).
@@ -2970,7 +3004,7 @@ cmd_set() {
   # there carrying it (return_gates).
   case " $* " in *" tags="* | *" after="*) ;; *) return 0 ;; esac
   [ "$(state_of "$f")" = queued ] || return 0
-  hold_for "$(fm_get "$f" after)" "$(fm_get "$f" tags)"
+  hold_for "$(fm_get "$f" after)" "$(fm_get "$f" tags)" "" "$f"
   [ -n "$HOLD" ] || return 0
   [ -n "${AQ_LOCKED-}" ] || unlock
   ( cmd_return "$slug" --why "the set gave it a gate ($HOLD): it waits on its board row" ) ||
@@ -3266,7 +3300,7 @@ cmd_move() {
   # does not leave it stranded where it was.
   if [ "$to" = queued ]; then
     local HOLD HOLD_DEAD
-    hold_for "$(fm_get "$f" after)" "$(fm_get "$f" tags)"
+    hold_for "$(fm_get "$f" after)" "$(fm_get "$f" tags)" "" "$f"
     if [ -n "$HOLD" ]; then
       [ -n "$(item_row "$f")" ] && [ -z "${AQ_LOCKED-}" ] ||
         die "$slug waits on $HOLD, and the queue holds only work that can start: give it a board row (agent-queue set $slug row=<board>:<id>) and return it (agent-queue return $slug --why <why>)"
@@ -3282,7 +3316,7 @@ cmd_move() {
   # that records a session: fleet-dispatch start set it after the launch, and judged the hold before it,
   # so a gh or rbw blip read here would leave that live session on an item still queued.
   if [ "$to" = running ] && [ "$from" = queued ] && [ -z "$(fm_get "$f" session)" ]; then
-    start_gate "$slug" "$(fm_get "$f" after)" "$(fm_get "$f" tags)" start "dispatch starts it once that clears, or clear it first (agent-queue set $slug after= or tags= without it)"
+    start_gate "$slug" "$(fm_get "$f" after)" "$(fm_get "$f" tags)" start "dispatch starts it once that clears, or clear it first (agent-queue set $slug after= or tags= without it)" "$f"
   fi
   if [ "$status" = cancelled ]; then cancel_guard "$f" "$ask"; why="$(cancel_why "$why" "$ask")"; fi
   if [ "$to" = done ] && [ "$status" = ok ] && [ "$(fm_get "$f" partial)" = yes ]; then
