@@ -23,7 +23,12 @@
 # the part's mode applies at the first retry after they are away. Inside a part nothing else runs,
 # so a hand switch stands until the next part begins.
 #
-# A mode sets two things, its numbers in .config/machine-mode/modes:
+# A mode sets three things, its numbers in .config/machine-mode/modes:
+#   runners      also how many of this host's Unity slots run: written to the slot count file,
+#                which each slot's unit reads before it starts (home-config site.yml,
+#                unity_ci_slot_count_owner). Slots at or under it are started; one over it is
+#                stopped now when idle, or by a waiter once its job ends. A host Ansible has not
+#                set up for it has no count directory, and this part is skipped.
 #   runners and unity_slots
 #                {"slots": N, "local": M, "by": "machine-mode <mode>"} as this host's "<host>.slots"
 #                key in the ci-runner-governor-override ConfigMap, merge-patched so no other
@@ -52,6 +57,11 @@ here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 
 STATE="$MACHINE_MODE_STATE"
 RUNNER_UNITS="${MACHINE_MODE_RUNNER_UNITS:-/etc/systemd/system/actions.runner.*-unity-pool-*.service}"
+# The count file and the job-end waiter Ansible installs (home-config ci-host defaults).
+SLOT_FILE="${MACHINE_MODE_SLOT_FILE:-/var/lib/ci-slots/slots}"
+WAIT_WORKER="${MACHINE_MODE_WAIT_WORKER:-/usr/local/bin/ci-wait-worker-exit}"
+# How long a waiter waits on a busy slot's job: GitHub's default job timeout, 360 minutes.
+DRAIN_TIMEOUT=21600
 CONFIGMAP=ci-runner-governor-override
 NAMESPACE=monitoring
 HOST="$(uname -n)"
@@ -93,6 +103,34 @@ put_key() {
 pin_host() {
   [ -n "${CC_KUBE_CONTEXT:-}" ] || { echo "CC_KUBE_CONTEXT is not set in ~/.config/command-center/env" >&2; return 1; }
   put_key "$HOST.slots" "$(jq -cn --argjson n "$1" --argjson l "$2" --arg by "machine-mode $3" '{slots: $n, local: $l, by: $by}')"
+}
+
+# run_slots <count>: write the count file, start the slots at or under it, and stop the ones over
+# it, an idle one now and a busy one once its Runner.Worker exits (a user unit per slot,
+# machine-mode-drain-<n>, which a later switch that runs the slot again cancels). Returns 1 when
+# a write or a start or stop failed, after trying every slot.
+run_slots() {
+  local count="$1" path unit n pat rc=0
+  [ -d "${SLOT_FILE%/*}" ] || return 0
+  { printf '%s\n' "$count" > "$SLOT_FILE.tmp" && mv "$SLOT_FILE.tmp" "$SLOT_FILE"; } \
+    || { echo "machine-mode: could not write $SLOT_FILE" >&2; return 1; }
+  for path in $RUNNER_UNITS; do
+    unit="${path##*/}" n="${path##*-unity-pool-}" n="${n%.service}"
+    if [ "$n" -le "$count" ]; then
+      systemctl --user stop "machine-mode-drain-$n" 2>/dev/null
+      systemctl --no-ask-password start "$unit" || rc=1
+    elif ! systemctl is-active -q "$unit" || systemctl --user is-active -q "machine-mode-drain-$n"; then
+      continue
+    elif pat="^$(systemctl show -p WorkingDirectory --value "$unit")/bin[^/]*/Runner.Worker" && pgrep -f "$pat" >/dev/null; then
+      systemd-run --user --quiet --collect --unit "machine-mode-drain-$n" /bin/sh -c \
+        '"$0" "$1" "$2" && systemctl --no-ask-password stop "$3"' "$WAIT_WORKER" "$pat" "$DRAIN_TIMEOUT" "$unit" \
+        && echo "$unit: stops when its job ends" || rc=1
+    else
+      systemctl --no-ask-password stop "$unit" || rc=1
+    fi
+  done
+  [ "$rc" = 0 ] || echo "machine-mode: a Unity slot did not start or stop; is home-config's site.yml applied here (its polkit rule)?" >&2
+  return "$rc"
 }
 
 # release_lane [<host> --until <time> | --clear <host>]: see the header. Writes or removes only
@@ -257,6 +295,7 @@ switch() {
     pinned=no rc=1
     echo "machine-mode: could not reach the cluster, so the runners and local Unity runs did not change. The level is set to $mode." >&2
   fi
+  run_slots "$runners" || pinned=no rc=1
   write_state "$mode" "$pinned" "$by" "$part" || die "could not write $STATE"
   "$HOME/.local/bin/desk" signal custom/machine-mode 2>/dev/null || true
   status

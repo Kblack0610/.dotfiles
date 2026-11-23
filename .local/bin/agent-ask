@@ -52,8 +52,9 @@
 #                                       -> answered_by. Inside an agent session
 #                                       (CLAUDE_CODE_SESSION_ID or AGENT_QUEUE_ITEM set) the
 #                                       default is agent and --by human is refused; an agent
-#                                       answer to an ask a queue item or board row waits on is
-#                                       refused, since only the human's answer releases it
+#                                       answer to an approval, a judge human-only ask or one at
+#                                       the human floor is refused. Any answer releases what the
+#                                       ask holds (agent-queue ask_pending).
 #   agent-ask deliver <id> | --all      deliver a recorded answer: typed into its live session,
 #                                       else a board row, then its `resume` (via ask-resume).
 #                                       agent-ask-deliver.path runs --all on each answer
@@ -215,10 +216,9 @@ JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 
 # --- helpers ---------------------------------------------------------------
 
 # queue_waits <id>: whether an active agent-queue item is held behind this ask (an `ask:<id>` tag).
-# Such an ask gates queued work, and agent-queue releases it only on the human's answer, so the
-# judge never answers it live and a session reply never cancels it: on 2026-11-07 a reply cancelled
-# KZhaE0 under upwork-p2..p5, and the judge answered itX9A3 under a vast-clarke phase, and each item
-# would have waited for good. The ids come from `agent-queue ask-holds`, read once per run (load_queue_asks).
+# Such an ask gates queued work, so a session reply never cancels it and no closer expires it: on
+# 2026-11-07 a reply cancelled KZhaE0 under upwork-p2..p5 and the item would have waited for good.
+# Its answer, the judge's included, releases the work (agent-queue ask_pending). The ids come from `agent-queue ask-holds`, read once per run (load_queue_asks).
 queue_waits() {
   load_queue_asks
   [[ "$QUEUE_ASKS" == *" $1 "* ]]
@@ -456,9 +456,6 @@ render_ask() {
   echo
   ctx="${ASK[context]:-}"
   [ -n "$ctx" ] && { printf '%s' "$d"; wrap "     " "$ctx" | sed '1s/^     /why: /'; printf '%s' "$x"; }
-  # An agent's answer reopened for the human (reopen_held_agent_answers) shows as its pick.
-  [ "$st" != pending ] || [ -z "${ASK[agent_answer]:-}" ] ||
-    { printf '%s' "$d"; wrap "     " "an agent picked: ${ASK[agent_answer]}; only your answer releases it" | sed '1s/^ *//'; printf '%s' "$x"; }
   if [ "$st" != pending ]; then
     [ -n "${ASK[answer]:-}" ] && { printf '%s' "$b"; wrap "        " "answer: ${ASK[answer]}" | sed '1s/^ *//'; printf '%s' "$x"; }
   fi
@@ -1002,15 +999,16 @@ cmd_answer() {
   if [ "$by" = agent ] && [ "$(field "$f" status)" != pending ]; then
     echo "agent-ask: $id is $(field "$f" status); an agent answer does not replace one" >&2; return 1
   fi
-  # Only the human's answer releases a gate (released_by), so an agent answer to an ask a queue
-  # item or board row waits on would close the ask, drop it off the human's list, and leave the
-  # gate shut for good. A queue that cannot be read refuses too, since it hides any holder.
+  # An agent answers what does not need the human; its answer releases what the ask holds, as the
+  # judge's does. An approval, an ask the judge marked human-only and one at the human floor
+  # (human_floor: the judge's own reach, a cancel of the human's work) take only the human's.
   if [ "$by" = agent ]; then
-    load_queue_asks
-    [ -n "$QUEUE_READ" ] || { echo "agent-ask: cannot read the queue's holds ($AGENT_ASK_QUEUE_CMD ask-holds), so $id stays pending" >&2; return 1; }
-    local holders; holders="$(queue_holders "$id" | cut -f1 | paste -sd' ')"
-    if [ -n "$holders" ]; then
-      echo "agent-ask: $id holds $holders, which only the human's answer releases; it stays pending for them (agent-ask recommend $id <option> sets your pick)" >&2
+    local mine
+    if [ "$(field "$f" kind)" = approval ]; then mine="it is an approval"
+    elif [ "$(field "$f" judge_human_only)" = true ]; then mine="the judge marked it human-only"
+    else mine="$(human_floor "$(field "$f" question) $(field "$f" options)")" && mine="it ${mine%$'\n'}" || mine=""; fi
+    if [ -n "$mine" ]; then
+      echo "agent-ask: $id needs the human ($mine); it stays pending for them (agent-ask recommend $id <option> sets your pick)" >&2
       return 1
     fi
   fi
@@ -1062,7 +1060,7 @@ start_resume() {
   fi
 }
 
-# released_by <id> <answer>: the queue items this human answer releases, one slug a line: those held on
+# released_by <id> <answer>: the queue items this answer releases, one slug a line: those held on
 # the ask with no option named, or with the answer's first word among theirs (agent-queue ask_pending).
 released_by() {
   local pick="${2%% *}"; pick="${pick%[.,;:!]}"
@@ -1147,11 +1145,10 @@ deliver_one() {
     r="$(live_row "$sid")"; [ -z "$r" ] || rows+=("$r")
   done < <(ask_sessions "$f")
   row="${rows[0]:-}"
-  # A human answer that releases queue items held on the ask is their restart (start_held), so it files
+  # An answer that releases queue items held on the ask is their restart (start_held), so it files
   # no row: the row was a second copy of work the queue already holds. An answer they do not wait for
-  # releases nothing and still files one. A judge's answer does not release them
-  # (agent-queue ask_pending), so its row stays the human's way to override.
-  [ "$by" != human ] || held="$(released_by "$id" "$answer")"
+  # releases nothing and still files one. Any answer releases (agent-queue ask_pending).
+  held="$(released_by "$id" "$answer")"
   # went: where the answer went, each place named only when it was used.
   local went=() resume="" why
   [ -n "$beside" ] || resume="$(field "$f" resume)"
@@ -1309,7 +1306,6 @@ live_answer() {
   [ "$(field "$f" kind)" != approval ] || return 1
   [ "$(field "$f" judge_human_only)" != true ] || return 1
   [ -z "$(field "$f" assume_disarmed)" ] || return 1
-  ! queue_waits "$(field "$f" id)" || return 1
   judge="$(field "$f" judge)"; rule="$(field "$f" judge_rule)"
   case "$judge" in
     take-recommend) ans="$(field "$f" recommend)" ;;
@@ -1418,39 +1414,7 @@ cmd_assume_due() {
   done < <(ask_files --all | xargs -r -d '\n' grep -l '^assume_at: .' 2>/dev/null |
     xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null)
   cmd_expire
-  reopen_held_agent_answers
   sweep_on_new_hold
-}
-
-# reopen_held_agent_answers: an ask answered by an agent session that a queue item or board row still
-# holds goes back to pending. Only the human's answer releases a hold (agent-queue ask_pending), so the
-# agent's answer released nothing and only took the ask off the human's list: 2026-11-22, XqrCXG,
-# Kx1MNl, 79LHB7 and 9TksjR were answered by an agent before `answer` refused that (ar-3172), and a
-# hold added after an agent answer (agent-queue requeue) leaves the same state. The agent's pick
-# stays as `agent_answer`. A queue that cannot be read reopens nothing.
-reopen_held_agent_answers() {
-  local f id pick tmp
-  load_queue_asks
-  [ -n "$QUEUE_READ" ] || return 0
-  while IFS= read -r f; do
-    id="$(field "$f" id)"
-    [ -n "$(queue_holders "$id")" ] || continue
-    pick="$(field "$f" answer)"
-    (
-      command -v flock >/dev/null 2>&1 && flock 9
-      [ "$(field "$f" status)" = answered ] && [ "$(field "$f" answered_by)" = agent ] || exit 1
-      # A delivery still going out reads the answer after its claim; the next pass takes the ask.
-      case "$(field "$f" delivery)" in queued|delivering) exit 1 ;; esac
-      # resumed_at too: the agent's answer may have run the resume, and the human's must run it again.
-      write_fields "$f" status pending answer "" answered_at "" answered_by "" resumed_at "" \
-        ${pick:+agent_answer "$pick ($(field "$f" answered_at))"}
-      tmp="$(mktemp)"
-      awk '{ p = index($0, ": ") } !(p && substr($0, 1, p - 1) ~ /^delivery(_at|_note|_skip)?$/)' "$f" > "$tmp" && mv "$tmp" "$f"
-    ) 9>"$(dirname "$f")/.lock" || continue
-    queue_changed
-    echo "agent-ask: $id is pending again: an agent answered ${pick:-it}, but only the human's answer releases what holds it" >&2
-  done < <(ask_files --all | xargs -r -d '\n' grep -lx 'answered_by: agent' 2>/dev/null |
-    xargs -r -d '\n' grep -lx 'status: answered' 2>/dev/null)
 }
 
 # sweep_on_new_hold: a hold the human set since the last pass can settle asks posted before it
@@ -2342,7 +2306,7 @@ cmd_unpark() {
 #     DATED_HOURS have passed since it was posted (96uJW2 asked for Steam keys for a playtest
 #     and was still pending two days on), unless a live session waits on it or it has a resume
 #     command of its own.
-#   Neither touches an ask a queue item waits on (the queue releases only on the human's answer).
+#   Neither touches an ask a queue item waits on (a cancel would leave the item held for good).
 #   - An audit (`audit_of:`) unreviewed after park.conf's AUDIT_HOURS is cancelled. It labels a
 #     judge answer the asker already acted on, and only a human review scores, so it ends as silence.
 #   - An ask past IDLE_DAYS that no live session and no queue item waits on is parked for its
@@ -2714,7 +2678,7 @@ joinable() {
 # ask pending), told to the asker at post and delivered at sweep. `ask:<id>`: an older
 # joinable ask asks the same, so this ask's sessions wait on that one and this one is cancelled.
 # Prints `hold <name>` or `joined <id>`. Fails, changing nothing, on any other verdict or a premise gone. Never an
-# approval, an audit, an ask a queue item waits on (the queue releases only on the human's answer),
+# approval, an audit, an ask a queue item waits on (a join cancels it, which leaves the item held),
 # or one with a resume command of its own.
 settle_by_verdict() {
   local f="$1" mode="$2" by id

@@ -948,7 +948,7 @@ check_fixture() {
   assert_output 1
 }
 
-@test "scorecard carries the KPI table right after the headline, then the forecast, before the breakdown, the queue, the epics, the release windows, the models, the trainee line, the sources, the canary lanes, the task matrix, the sizes, the sections and the sessions" {
+@test "scorecard carries the KPI table right after the headline, then the forecast, before the breakdown, the queue, the epics, the release windows, the models, the trainee line, the sources, the canary lanes, the task matrix, the sizes, the sections, the agent depth and the session time" {
   kpi_setup; kpi_fixture
   export BENCH_SCORECARD_DIR="$HOME/lab/bench"
   rowj 'phases_done: 1' > "$SNAP"; sample_at 0
@@ -969,9 +969,9 @@ check_fixture() {
   assert_line --index 12 '## Task matrix'
   assert_line --index 13 '## Sizes and kinds'
   assert_line --index 14 '## Sections'
-  assert_line --index 15 '## Sessions'
-  assert_line --index 16 '## Agent depth'
-  assert_line --index 17 '## Session time'
+  assert_line --index 15 '## Agent depth'
+  assert_line --index 16 '## Session time'
+  refute_line '## Sessions'
 }
 
 @test "scorecard KPIs end with calls per passing wake and per wake, from agent-usage wakes" {
@@ -1651,19 +1651,19 @@ scorecard_with_data() {
 @test "breakdown: where the time went has spend, editor-hours and merges per project, and unknowns stay unknown" {
   stub_breakdown
   scorecard_with_data
-  run sed -n '/^## Where/,/^## Sessions/p' "$BENCH_SCORECARD_DIR/latest.md"
+  run sed -n '/^## Where/,/^## Queue/p' "$BENCH_SCORECARD_DIR/latest.md"
   assert_output --partial 'Agent spend over 24h: about $18 (API cash $3, subscription burn $15), the hub Costs figure; $6 of it on sessions no sample saw, the gateway and helper calls.'
   assert_output --partial '| game | 1 | 0.2 | 0.2 | 0.2 | $12.35 | 3.5 | 2.5 | 2 |'
-  run sed -n '/^## Sessions/,+6p' "$BENCH_SCORECARD_DIR/latest.md"
-  assert_output --partial 'Cost 24h'
-  assert_output --partial '$12.35'
+  # Per session the cost is fleet-bench sessions' row, which day-log's Sessions table reads.
+  BENCH_NOW=$((T0 + 3600)) run "$SUBJECT" sessions --json
+  assert_output --partial '"cost_24h":12.35'
 }
 
 @test "breakdown negative controls: a stale fleet-cost file prices no session, and an unreadable hub figure says so" {
   stub_breakdown
   stub_fleet_cost $((T0 + 3600 - 7201))   # past four of the 30-minute sampler's tries
   scorecard_with_data
-  run sed -n '/^## Where/,/^## Sessions/p' "$BENCH_SCORECARD_DIR/latest.md"
+  run sed -n '/^## Where/,/^## Queue/p' "$BENCH_SCORECARD_DIR/latest.md"
   assert_output --partial 'Agent spend over 24h: about $18 (API cash $3, subscription burn $15), the hub Costs figure.'
   refute_output --partial 'no sample saw'
   assert_output --partial '| game | 1 | 0.2 | 0.2 | 0.2 | - |'
@@ -1677,7 +1677,7 @@ scorecard_with_data() {
   printf '#!/usr/bin/env bash\necho "$*" >> "%s/fc-args"\necho %s\n' "$SANDBOX" "'{\"by_session\":[{\"sid\":\"s1\",\"usd\":7.5}]}'" > "$SANDBOX/bin/fc-stub"
   chmod +x "$SANDBOX/bin/fc-stub"
   BENCH_WINDOW_H=48 BENCH_FLEET_COST_CMD=fc-stub scorecard_with_data
-  run sed -n '/^## Where/,/^## Sessions/p' "$BENCH_SCORECARD_DIR/latest.md"
+  run sed -n '/^## Where/,/^## Queue/p' "$BENCH_SCORECARD_DIR/latest.md"
   assert_output --partial '| game | 1 | 0.2 | 0.2 | 0.2 | $7.5 |'
   run cat "$SANDBOX/fc-args"
   assert_output --partial "--since $(date -d "@$((T0 + 3600 - 48 * 3600))" -Iseconds) --before $(date -d "@$((T0 + 3600))" -Iseconds)"
@@ -4113,13 +4113,13 @@ esac'
     echo "{\"id\":\"r3\",\"ts\":\"$now_iso\",\"lane\":\"trainee\",\"ran\":\"beam\",\"harness\":\"ocfree\",\"outcome\":\"failed\"}"
     echo "{\"id\":\"r4\",\"ts\":\"$now_iso\",\"lane\":\"opus\",\"ran\":\"opus\",\"outcome\":\"ok\"}"
   } > "$BENCH_LANE_LOG"
-  printf '#!/usr/bin/env bash\necho %s\n' "'{\"rows\":9,\"eligible\":0,\"floor\":{\"state\":\"shut\",\"why\":\"k3s domain red, and the gateway is not ready\"},\"refused\":[{\"count\":4,\"why\":\"it names no file\"}]}'" > "$SANDBOX/bin/pool-stub"
+  printf '#!/usr/bin/env bash\necho %s\n' "'{\"rows\":9,\"eligible\":0,\"floor\":{\"state\":\"shut\",\"why\":\"k3s domain red, and the gateway is not ready\"},\"refused\":[{\"count\":4,\"why\":\"it carries no #pts/N\"}]}'" > "$SANDBOX/bin/pool-stub"
   chmod +x "$SANDBOX/bin/pool-stub"
   export BENCH_TRAINEE_CMD=pool-stub
   rowj 'phases_done: 1' > "$SNAP"; sample_at 0
   BENCH_NOW=$T0 "$SUBJECT" scorecard
   run sed -n '/^## Trainee/,/^## Sources/p' "$BENCH_SCORECARD_DIR/latest.md"
-  assert_output --partial '- Pool: 0 of 9 open agent-board rows, most turned away: it names no file (4)'
+  assert_output --partial '- Pool: 0 of 9 open agent-board rows, most turned away: it carries no #pts/N (4)'
   assert_output --partial '- Floor now: shut, k3s domain red, and the gateway is not ready'
   assert_output --partial '| opencode-go:glm | 2 | 1 | 1 | 1 | 0 | 1 |'
   assert_output --partial '| ocfree:beam | 1 | 0 | 0 | 0 | 0 | 0 |'

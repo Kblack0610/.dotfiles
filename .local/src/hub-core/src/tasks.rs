@@ -519,6 +519,8 @@ pub struct SprintRow {
     pub done: String,
     /// `none`, `held`, `queued`, `building` or `built`.
     pub build: String,
+    /// The next version's sprint, locked while the open one runs: it has not started.
+    pub queued: bool,
     pub tasks: Vec<SprintTask>,
 }
 
@@ -819,6 +821,7 @@ impl Feed {
                 times: s.times(now),
                 done: format!("{}/{}", s.done, s.committed),
                 build: s.build.clone(),
+                queued: s.queued,
                 tasks: sprint_tasks(&s.tasks),
             })
             .collect()

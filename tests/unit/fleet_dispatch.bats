@@ -405,7 +405,7 @@ item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
   assert_equal "$(jq -r '"\(.key) \(.area)"' <<<"$output")" 'ga-2 wilds'
 }
 
-@test "row gates: #ask/<id> holds until the human answers; the judge's answer never releases it, and the cleared ask goes onto the item" {
+@test "row gates: #ask/<id> holds until the ask is answered, the judge's answer too, and the cleared ask goes onto the item" {
   project game beta "$SANDBOX/repos/game"
   row game agent ga-1 "- [ ] feat(game): ship it $T #ask/a1 <!-- id:ga-1 -->"
   gate_ask a1 pending
@@ -414,12 +414,6 @@ item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
   run cmd_suggest --json
   assert_equal "$(jq -r 'select(.key == "ga-1") | .blocked | join("; ")' <<<"$output")" 'waits on ask a1 (pending)'
   gate_ask a1 answered judge
-  run cmd_candidates
-  assert_output ''
-  run cmd_suggest --json
-  assert_equal "$(jq -r 'select(.key == "ga-1") | .blocked | join("; ")' <<<"$output")" \
-    'gate #ask/a1 never clears: ask:a1: that ask can never release it (answered by judge, not the human); post a new one with agent-ask post --kind approval, which the judge never answers'
-  gate_ask a1 answered human
   DRY=0 JUDGE_RC='' fill_day 2
   [[ " $(item_tags ga-1) " == *" ask:a1 "* ]]
 }
@@ -519,6 +513,52 @@ exits: gate 2 improve 1 plan 2 sheet 1'
   assert_output --partial 'plan	game	gx-6	waits'
   refute_output --partial 'gx-5'
   refute_output --partial 'after/'
+}
+
+# offkind_fixture -- agent rows of kinds kinds.json turns off (decide #high, design #low), an epic, a decide
+# parent an open row names in #of/, and a plain fix; none judged
+offkind_fixture() {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gd-1 "- [ ] decide(game): pick the map $T #high <!-- id:gd-1 -->"
+  row game agent gd-2 "- [ ] design(game): a new menu look $T #low <!-- id:gd-2 -->"
+  row game agent gd-3 "- [ ] epic(game): the whole season #high <!-- id:gd-3 -->"
+  row game agent gd-4 "- [ ] decide(game): a parent call #high <!-- id:gd-4 -->"
+  row game agent gd-5 "- [ ] fix(game): a child of gd-4 $T #of/gd-4 <!-- id:gd-5 -->"
+  : > "$NOTES_FIXTURE/board.rows"
+  board_row game agent gd-1 '[]' '[]'; board_row game agent gd-2 '[]' '[]'; board_row game agent gd-3 '[]' '[]'
+  board_row game agent gd-4 '[]' '[]'; board_row game agent gd-5 '["of/gd-4"]' '[]'
+  jq -c '.type = (.raw | capture("^- \\[ \\] (?<t>[a-z]+)\\(").t)' "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b"
+  mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"
+}
+
+@test "skip_exits: an agent row of a kind kinds.json turns off leaves the lane, #high to the human sheet and #low to improvements.md; an epic, a parent and a fix stay" {
+  offkind_fixture
+  : > "$NOTES_FIXTURE/calls.log"
+  run skip_exits --dry-run
+  assert_success
+  assert_output 'sheet	game	gd-1	kind
+improve	game	gd-2	kind
+exits: improve 1 sheet 1'
+  run grep -E 'improve|ptask game add|drop' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+  skip_exits
+  assert_equal "$EXITS_TAKEN" 2
+  grep -qxF 'notes --profile bnb ptask game add decide(game): pick the map #tier/1 #high (agent row gd-1) --origin fleet-dispatch' "$NOTES_FIXTURE/calls.log"
+  grep -qxF 'notes --profile bnb improve game --why dispatch never starts it: kind design is off (kinds.json) -- design(game): a new menu look #tier/1 #low' "$NOTES_FIXTURE/calls.log"
+  grep -q 'id:gd-1 dropped: on the game sheet: dispatch never starts it: kind decide is off' "$NOTES_FIXTURE/rows.game.agent"
+  assert_equal "$(jq -r 'select(.exit) | "\(.key)=\(.exit)"' "$FLEET_DISPATCH_DIR/verdicts.jsonl" | paste -sd,)" 'gd-1=sheet,gd-2=improve'
+  run grep -E 'gd-[345]' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+  # each exit is on record, so a second pass over the same board (as after a drop that failed) files no copy
+  : > "$NOTES_FIXTURE/calls.log"
+  skip_exits
+  assert_equal "$EXITS_TAKEN" 0
+  # nor does a row whose latest verdict carries an earlier judge exit (a waits skip sent to a plan)
+  verdict game agent gd-1 skip
+  jq -c 'if .key == "gd-1" and .verdict == "skip" and .rule != "kind" then .rule = "waits" | .exit = "plan" else . end' \
+    "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  run skip_exits --dry-run
+  refute_output --partial 'gd-1'
 }
 
 @test "skip_exits: every skip rule in the shipped policy has exactly one exit" {
@@ -780,6 +820,23 @@ private_or_skip() {
   agent-queue move other-work done --status ok >/dev/null
   run picks "$(c_area k 1)" 1
   assert_equal "$(jq -r .key <<<"$output")" k
+}
+
+@test "picks: a row that names a game holds that game, not the system word of its prefix" {
+  project game beta "$SANDBOX/repos/game"
+  mkdir -p "$SANDBOX/repos/game/Assets/Games/ShapeCity" "$SANDBOX/repos/game/Assets/Games/DodginBalls" "$SANDBOX/repos/game/Assets/Games/Vehicles3D"
+  ct() { jq -cn --arg k "$1" --arg t "$2" --arg r "$SANDBOX/repos/game" '{profile: "bnb", project: "game", repo: $r, stage: "beta", lane: "agent", key: $k, frank: 1, tier: 2, line: "", text: $t}'; }
+  local k
+  for k in dodge shape cars plain; do verdict game agent "$k" dispatch S 1 gameplay; done
+  # An item in ShapeCity holds ShapeCity alone; two other games start side by side, stamped with their game.
+  started_item other-work lab:game-agent-3 run shapecity
+  run picks "$(ct dodge '- [ ] fix(gameplay): DodginBalls bots miss'; ct shape '- [ ] fix(gameplay): ShapeCity bots throw'; ct cars '- [ ] fix(gameplay): vehicles3d wheels <!-- id:x -->')" 3
+  assert_equal "$(jq -r .key <<<"$output" | sort | paste -sd' ')" 'cars dodge'
+  assert_equal "$(jq -r .area <<<"$output" | sort | paste -sd' ')" 'dodginballs vehicles3d'
+  # A row that names no game keeps the verdict's area, and an item on that area holds it.
+  started_item gp-work lab:game-agent-4 run gameplay
+  run picks "$(ct plain '- [ ] fix(gameplay): shared ball physics'; ct dodge '- [ ] fix(gameplay): DodginBalls bots miss')" 2
+  assert_equal "$(jq -r .key <<<"$output")" dodge
 }
 
 @test "picks: the same area name in another project is not busy" {
