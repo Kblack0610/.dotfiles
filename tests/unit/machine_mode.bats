@@ -121,13 +121,13 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
   assert_equal "$(pin)" '{"slots":0,"local":2,"by":"machine-mode open"}'
 }
 
-@test "full is one runner at the high level, and one click from it is reserved" {
+@test "full takes no runner here, at the high level, and one click from it is reserved" {
   run "$MM" full
   assert_success
   assert_line "mode: full"
   assert_line "level: high"
   assert_line "new agent sessions: as today"
-  assert_equal "$(pin)" '{"slots":1,"local":2,"by":"machine-mode full"}'
+  assert_equal "$(pin)" '{"slots":0,"local":2,"by":"machine-mode full"}'
   # The local seat pin goes to the governor's key, never to the state file.
   run grep -c UNITY "$STATE"
   assert_output 0
