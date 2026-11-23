@@ -22,7 +22,7 @@ setup() {
   # a pass's measured cost (pass_cost); unset is a session with none
   stub agent-usage '[ "$1 $3" = "session --json" ] || exit 2
 if [ -n "${STUB_USAGE:-}" ]; then printf "%s" "$STUB_USAGE"; else printf "{\"session_id\":\"%s\",\"usage_source\":\"none\"}" "$2"; fi'
-  stub agent-notify 'echo "$*" >> "$HOME/pages"'
+  stub agent-notify '[ -z "${STUB_NOTIFY_FAIL:-}" ] || exit 1; echo "$*" >> "$HOME/pages"'
   # hub-core's figures: Only you (STUB_ONLY_YOU) and the Sessions card's Working part (STUB_WORKING, else the state document's WORKING rows, as the fixture's card), each "unread" for one hub could not give
   stub hub-figure 'case "$*" in "--fresh needs_only_you") v="${STUB_ONLY_YOU:-0}" ;; "--fresh sessions_working") v="${STUB_WORKING:-$(jq "[.sessions[] | select(.bucket == \"WORKING\")] | length" "$FLEET_STATE_FILE")}" ;; *) exit 2 ;; esac; [ "$v" = unread ] && exit 1; echo "$v"'
   stub watch-companion-loop 'case "$1" in tripped) printf "%b" "${STUB_TRIPPED:-}" ;; quarantined) printf "%b" "${STUB_QUARANTINED:-}" ;; esac'
@@ -532,7 +532,7 @@ typed() { cat "$HOME/panel.calls" 2>/dev/null; }
   # An Enter the pane did not take (exit 3) leaves the text in its box: logged as such.
   doc "[$(crow 2 DONE now)]"
   STUB_PANEL_RC=3 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
-  grep -q 'close: lab/2:1 DONE: typed /wind-down auto, but its Enter was not taken; the escalation carries it' "$FLEET_SHEPHERD_DIR/log.md"
+  grep -q 'close: lab/2:1 DONE: typed /wind-down auto, but its Enter was not taken; the window close after 60m carries it' "$FLEET_SHEPHERD_DIR/log.md"
 }
 
 @test "a close-now row in manual (investigate-only) mode has its window closed, typed nothing (ar-4046)" {
@@ -668,7 +668,7 @@ nudged_ago() {
   done
 }
 
-@test "check closes the window of a nudged session whose verdict is still now, then refreshes the document and pages nobody" {
+@test "check closes the window of a nudged session whose verdict is still now, then refreshes the document, and pages only a close that fails" {
   nudged_ago 30 1 2 3
   # The refresh drops a closed session's row, as the real collect does once its window is gone.
   stub fleet-sessions 'echo "$*" >> "$HOME/sessions.calls"
@@ -687,12 +687,26 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
   grep -q 'close: lab/1:1: closed its window, still due 60m after its close was typed (DONE f-1)' "$FLEET_SHEPHERD_DIR/log.md"
   [ "$(grep -c -- '--write' "$HOME/sessions.calls")" = 2 ]
   [ -z "$(typed)" ]
-  # Negative control: a close that fails (a protected window) is logged once per fact.
+  # Negative control: a close that fails (a protected window) is logged and paged once per fact.
+  ! grep -q 'its window will not close' "$HOME/pages"
   : > "$HOME/wind-down.calls"; doc "[$row1]"
   STUB_WD_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   STUB_WD_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
-  [ "$(grep -c 'close: lab/1:1: closing its window failed; the escalation carries it' "$FLEET_SHEPHERD_DIR/log.md")" = 1 ]
+  [ "$(grep -c 'close: lab/1:1: closing its window failed' "$FLEET_SHEPHERD_DIR/log.md")" = 1 ]
   [ "$(grep -c . "$HOME/wind-down.calls")" = 1 ]
+  [ "$(grep -c 'its window will not close' "$HOME/pages")" = 1 ]
+  grep -q 'lab/1:1 is done but closing its window failed' "$HOME/pages"
+  grep -q 'close-failed: lab/1:1: paged' "$FLEET_SHEPHERD_DIR/log.md"
+}
+
+@test "a refused close page is tried again at the next check, and a paged close is not paged twice" {
+  nudged_ago 30 1
+  doc "[$(crow 1 DONE now '{"nudged":true,"close_sent":true,"idle_min":2000}')]"
+  STUB_NOTIFY_FAIL=1 STUB_WD_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  ! grep -q 'its window will not close' "$HOME/pages" 2>/dev/null
+  STUB_WD_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  STUB_WD_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ "$(grep -c 'its window will not close' "$HOME/pages")" = 1 ]
 }
 
 @test "check closes the window of a NEEDS row that turned down its close, setting its own asks to reopen it first" {
