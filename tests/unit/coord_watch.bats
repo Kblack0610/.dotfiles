@@ -75,6 +75,26 @@ ev() { printf '%s\n' "$@" | "$CW" filter "$PLAN"; }
   assert_output --partial "no '## Follow-through' section"
 }
 
+@test "follow mode on a ledger with every line ticked exits 3 and writes no mark: a watch on nothing is a timer" {
+  export COORD_WATCH_STATE="$SANDBOX/cw" COORD_WATCH_LOG="$SANDBOX/ingest.jsonl"
+  : > "$COORD_WATCH_LOG"
+  sed -i 's/^- \[ \] /- [x] /' "$PLAN"
+  sed -i 's/^- \[x\] ar-1 /- [ ] ar-1 /; s/^- \[x\] ar-12 /- [ ] ar-12 /' "$PLAN"
+  run "$CW" "$PLAN"
+  assert_failure 3
+  assert_output --partial "nothing to watch"
+  assert_output --partial "coordinate step 6"
+  [ ! -e "$COORD_WATCH_STATE/session-$CLAUDE_CODE_SESSION_ID.pid" ]
+  [ "$(cat "$COORD_WATCH_STATE/session-$CLAUDE_CODE_SESSION_ID.plan")" = "$PLAN" ]
+}
+
+@test "follow mode on a missing plan or one with no ledger keeps its error and exit 2, not the empty-ledger exit 3" {
+  export COORD_WATCH_STATE="$SANDBOX/cw"
+  run "$CW" "$SANDBOX/nope.md"
+  assert_failure 2
+  refute_output --partial "nothing to watch"
+}
+
 # A Monitor re-arm leaves a gap; a land-failed in it was lost before the cursor (code review, #2675).
 @test "--since drops what was already read and --cursor records the last event read, matched or not" {
   run bash -c 'printf "%s\n" "$3" "$4" "$5" | "$1" filter "$2" --since 2026-11-19T10:00:00.0-08:00 --cursor "$6"' _ "$CW" "$PLAN" \
