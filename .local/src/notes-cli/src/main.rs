@@ -295,6 +295,7 @@ enum Cmd {
     /// List the indexed projects behind the board and the daily note's footer link.
     /// No arg lists each as `name<TAB>summary-path<TAB>status`; `<name>` lists that
     /// project's note files as `path<TAB>label` (summary first).
+    #[command(group(clap::ArgGroup::new("hours_with").args(["commit", "prio"]).multiple(true)))]
     Projects {
         /// Project to list files for. Omit to list all indexed projects.
         name: Option<String>,
@@ -456,7 +457,7 @@ enum Cmd {
         /// weight, #urgent and in-progress rows first, and records the cut (`cut=` in the head).
         /// With --prio --set focus: how long the focus lasts (default 4, at most 24); past its
         /// end the project reads as high
-        #[arg(long, value_name = "H")]
+        #[arg(long, value_name = "H", requires = "hours_with")]
         hours: Option<f64>,
         /// With --commit --hours: queue a sprint behind the open one while it runs: the patch after
         /// the last sprint already queued, so any number chain, or the version named
@@ -1994,9 +1995,6 @@ fn main() -> Result<()> {
                     lab_refresh::kick();
                 }
                 std::process::exit(0);
-            }
-            if hours.is_some() && commit.is_none() && prio.is_none() {
-                anyhow::bail!("--hours goes with --commit or --prio <name> --set focus");
             }
             // Handled before the match below because both take a VALUE (`--set`), which the
             // name-keyed tuple has no room for.
