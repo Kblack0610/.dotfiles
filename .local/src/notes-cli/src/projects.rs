@@ -3648,20 +3648,41 @@ pub fn show_roadmap(p: &Profile, name: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// `notes projects --sprints <name> [--json]`: the project's scored windows, oldest cut first, as
-/// TSV `version<TAB>opened<TAB>cut<TAB>committed<TAB>delivered<TAB>carried<TAB>dropped<TAB>
-/// interrupted<TAB>timing` (`-` for a missing day or timing); with `json`, one array of
-/// [`crate::window::Past`], adding each score line.
 /// Print the one read-only view `--stats` or `--sprints` asks for; false when neither is set.
-pub fn print_view(p: &Profile, stats_: bool, sprints: Option<&str>, json: bool) -> Result<bool> {
+pub fn print_view(
+    p: &Profile,
+    stats_: bool,
+    sprints: Option<&str>,
+    version: Option<&str>,
+    json: bool,
+) -> Result<bool> {
     match (sprints, stats_) {
-        (Some(n), _) => show_sprints(p, n, json)?,
+        (Some(n), _) => match version {
+            Some(v) => show_sprint_page(p, n, v, json)?,
+            None => show_sprints(p, n, json)?,
+        },
         (None, true) => stats(json)?,
         (None, false) => return Ok(false),
     }
     Ok(true)
 }
 
+/// `notes projects --sprints <name> --version <v> --json`: one sprint's page.
+pub fn show_sprint_page(p: &Profile, name: &str, version: &str, json: bool) -> Result<()> {
+    if !json {
+        anyhow::bail!("--sprints with --version goes with --json");
+    }
+    let v = parse_version(version.trim())
+        .ok_or_else(|| anyhow::anyhow!("not a version: '{version}' (want vX.Y.Z)"))?;
+    let page = crate::window::page(&project_dir(p, name)?, v)?;
+    println!("{}", serde_json::to_string(&page)?);
+    Ok(())
+}
+
+/// `notes projects --sprints <name> [--json]`: the project's scored windows, oldest cut first, as
+/// TSV `version<TAB>opened<TAB>cut<TAB>committed<TAB>delivered<TAB>carried<TAB>dropped<TAB>
+/// interrupted<TAB>timing` (`-` for a missing day or timing); with `json`, one array of
+/// [`crate::window::Past`], adding each score line.
 pub fn show_sprints(p: &Profile, name: &str, json: bool) -> Result<()> {
     let past = crate::window::history(&project_dir(p, name)?);
     if json {

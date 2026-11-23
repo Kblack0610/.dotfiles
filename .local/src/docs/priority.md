@@ -85,5 +85,5 @@ Measured 2026-11-21; each line leaves this table when its fix lands (epic ar-434
 
 - A scale this doc misses shows up as a new hit of `rg -ln "^priority:|^severity:|^PRIORITY=|judge_level" ~/.agent/watches ~/.config/agentctl`: a file that is neither a watch manifest, a runner conf nor a queue item is a new scale and gets a row.
 - The watch levels in use: `grep -h '^severity:' ~/.agent/watches/*.yaml | sort | uniq -c`. `SENTINEL.md` keeps no list of them.
-- `fleet-bench kpi` carries `stale_urgent_d`, `buzzes_per_day` and `requested_unstarted_h`; their thresholds are in `~/.config/agentctl/kpi-thresholds`. This doc adds none.
+- `fleet-bench kpi` carries `stale_urgent_d`, `buzzes_per_day` and `requested_unstarted_h`. The first two have thresholds in `~/.config/agentctl/kpi-thresholds`; `requested_unstarted_h` is report-only, a backlog age with no bar. This doc adds none.
 - `tests/unit/lsd_index.bats` checks this doc has its row in `README.md`.
