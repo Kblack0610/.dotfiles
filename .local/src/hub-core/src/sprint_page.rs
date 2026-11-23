@@ -375,11 +375,11 @@ mod tests {
         assert_eq!(
             by,
             [
-                ("Engine", 1, 0, 1, 0, "0/5".to_string()),
                 ("Tests, CI and benches", 3, 2, 0, 1, "3/5".to_string()),
+                ("Engine", 1, 0, 1, 0, "0/5".to_string()),
                 ("Unsorted", 1, 1, 0, 0, "1/1".to_string()),
             ],
-            "ci and tests are one group, a repo-name scope is Unsorted, Unsorted is last"
+            "ci and tests are one group, the tie on points goes to more rows, a repo-name scope is Unsorted, Unsorted is last"
         );
         assert_eq!(
             p.by_area.iter().map(|a| a.rows).sum::<usize>(),
@@ -421,22 +421,23 @@ mod tests {
             p.next.unwrap().href(),
             "#projects/bnb%2Funity/sprint/v0.5.6"
         );
+        let ten = PAGE.replace("v0.5.5", "v0.5.10");
         let p = build(
-            PAGE,
+            &ten,
             &areas(),
             "bnb",
             "unity",
-            vec!["v0.5.10".into(), "v0.5.9".into()],
+            vec!["v0.5.9".into(), "v0.5.11".into(), "v0.5.2".into()],
         )
         .unwrap();
         assert_eq!(
             p.prev.unwrap().href(),
-            "#projects/bnb%2Funity/sprint/v0.5.9"
+            "#projects/bnb%2Funity/sprint/v0.5.9",
+            "numbers, not text"
         );
         assert_eq!(
             p.next.unwrap().href(),
-            "#projects/bnb%2Funity/sprint/v0.5.10",
-            "numbers, not text"
+            "#projects/bnb%2Funity/sprint/v0.5.11"
         );
         let alone = build(PAGE, &areas(), "bnb", "unity", vec![]).unwrap();
         assert!(alone.prev.is_none() && alone.next.is_none());

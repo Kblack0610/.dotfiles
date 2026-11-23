@@ -348,6 +348,11 @@ impl ProjView {
                 Some(Ok(p)) => so.rows.view.apply(&p.rows).len(),
                 _ => 0,
             };
+            // The rows hide an empty state chip, so `f` steps over the chips the page has.
+            if let (KeyCode::Char('f'), None, Some(Ok(p))) = (k.code, &so.rows.typing, &so.page) {
+                so.rows.view.cycle_shown(&p.rows);
+                return true;
+            }
             if so.rows.key::<SprintRow>(k.code) != Took::No || so.rows.moves(k, n, page) {
                 return true;
             }
