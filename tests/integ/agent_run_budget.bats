@@ -176,7 +176,7 @@ spent() {
   assert_output --partial 'To go on today: agentctl budget judge raise <usd>'
   run "$RUN" --agent judge -p x
   assert_failure 75
-  run grep -c '^agent-notify -p high -t judge stopped at its budget' "$NOTES_FIXTURE/calls.log"
+  run grep -c '^agent-notify .*-p high .*-k decision .*judge stopped at its budget' "$NOTES_FIXTURE/calls.log"
   assert_output 1
 }
 
