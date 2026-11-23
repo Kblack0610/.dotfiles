@@ -764,8 +764,7 @@ OUT
   assert_not_called 'notes --profile bnb ptask game add'
 }
 
-# ucp-2587, 2026-11-21 to 11-23: notes refused the close (two open child rows) and every pass logged a
-# bare "closing ... failed", 157 lines that never said why and never reached anyone.
+# A close notes refuses was a bare "failed" line on every pass that never said why (ucp-2587).
 @test "reap: a close notes refuses logs its error once, row left started" {
   pr_item MERGED
   echo 'error: fix crash has 2 open child row(s) (gm-7, gm-8); finish them first' > "$NOTES_FIXTURE/ptask.done.fail"
@@ -779,6 +778,22 @@ OUT
   assert_equal "$(grep -c 'closing game row fix crash failed' "$FLEET_DISPATCH_DIR"/log.md)" 1
   assert_not_called 'notes --profile bnb ptask game add'
   grep -qF -- '- [/] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail "row moved"
+  # The error changing (a child closed) is the same fact: no new line.
+  echo 'error: fix crash has 1 open child row(s) (gm-8); finish them first' > "$NOTES_FIXTURE/ptask.done.fail"
+  run close_row fix-crash
+  assert_equal "$(grep -c 'closing game row fix crash failed' "$FLEET_DISPATCH_DIR"/log.md)" 1
+  # Past the orphan window it reaches the human sheet once.
+  DISPATCH_ORPHAN_HOURS=0
+  run close_row fix-crash
+  run close_row fix-crash
+  assert_equal "$(grep -c 'ptask game add chore(board): dispatch cannot close game row fix crash' "$NOTES_FIXTURE/calls.log")" 1
+  # Once notes accepts the close, the row closes and the stuck marker goes.
+  assert [ -e "$FLEET_DISPATCH_DIR/stuck/fix-crash" ]
+  rm "$NOTES_FIXTURE/ptask.done.fail"
+  run close_row fix-crash
+  assert_output --partial 'closed game: fix crash'
+  assert [ ! -e "$FLEET_DISPATCH_DIR/stuck/fix-crash" ]
+  grep -qF -- '- [x] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail "row not closed"
 }
 
 @test "reap: a gone session's open PR moves its item to review once, row untouched" {
