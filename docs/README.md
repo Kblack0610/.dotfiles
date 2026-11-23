@@ -18,7 +18,7 @@ What lives in this repo's `docs/` tree. Cross-repo rules (CI, plans, skills, UI,
 
 - [operations/boot-cause.md](operations/boot-cause.md): how each boot records how the one before it ended.
 - [operations/claude-acct-tokens.md](operations/claude-acct-tokens.md): the long-lived token each Claude account holds.
-- [operations/claude-acct-usage.md](operations/claude-acct-usage.md): `claude-acct` usage reads, source kinds, and adding a source.
+- [operations/claude-acct-usage.md](operations/claude-acct-usage.md): adding a `claude-acct` usage source, such as a LiteLLM route plus a `litellm-key` row.
 - [operations/deploy.md](operations/deploy.md): deploying the cockpit and agent-runtime.
 - [operations/event-catalogue.md](operations/event-catalogue.md): the list of events each product sends.
 - [operations/git-hooks.md](operations/git-hooks.md): the global git hook dispatcher.
