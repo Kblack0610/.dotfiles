@@ -216,6 +216,12 @@ enum Cmd {
         /// results here. Ignored without --agent or --version.
         #[arg(long = "project")]
         projects: Vec<String>,
+        /// With --json: print only the rows with this id (repeatable) as `{today, rows}`,
+        /// wherever each sits: open in any version or closed (dropped and dup-closed too), on
+        /// either lane's sheet or rolled into a version note. A dup-closed row's `dup` names
+        /// the row it was folded into. READ-ONLY
+        #[arg(long = "id", value_name = "ID", requires = "json", conflicts_with_all = ["agent", "version", "done_days"])]
+        ids: Vec<String>,
     },
     /// Triage the dated-capture inbox (list / add / archive), and mark inbox page rows
     /// reviewed (ack). No subcommand = list.
@@ -1754,9 +1760,12 @@ fn main() -> Result<()> {
             agent,
             version,
             projects,
+            ids,
         } => {
             if let Some(v) = version {
                 board::print_version(&v, &projects, json)?
+            } else if !ids.is_empty() {
+                board::print_ids(&ids)?
             } else if json {
                 board::print_json(done_days)?
             } else if agent {
