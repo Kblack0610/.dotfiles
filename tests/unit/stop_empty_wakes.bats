@@ -40,7 +40,9 @@ run_check() { run bash "$CHECK" <<<"$(jq -cn --arg t "$TX" '{session_id: "sid-1"
   assert_failure
 }
 
-@test "from twice the limit the block did not take: the human is paged once per run, and a new run pages again" {
+# A run's first block pages nothing, even past twice the limit: the guard fired first on loops already
+# 41 to 66 wakes long (2026-11-23), and a page then is about a block nobody has seen yet.
+@test "from twice the limit, once a block did not take: the human is paged once per run, and a new run pages again" {
   user "go"; for _ in 1 2 3 4 5; do wake; done
   run_check
   [ "$(jq -r .decision <<<"$output")" = block ]
@@ -51,6 +53,8 @@ run_check() { run bash "$CHECK" <<<"$(jq -cn --arg t "$TX" '{session_id: "sid-1"
   run grep -c notify "$SANDBOX/calls"; assert_output 1
   user "keep going"; run_check
   for _ in 1 2 3 4 5 6; do wake; done; run_check
+  run grep -c notify "$SANDBOX/calls"; assert_output 1
+  wake; run_check
   run grep -c notify "$SANDBOX/calls"; assert_output 2
 }
 
@@ -73,11 +77,28 @@ run_check() { run bash "$CHECK" <<<"$(jq -cn --arg t "$TX" '{session_id: "sid-1"
   run_check; assert_output ''
 }
 
-@test "negative control: a coordinator, the loop guard and a headless run pass" {
+# 2026-11-23: `tail | grep -q` under pipefail SIGPIPEd tail on real transcripts, whose lines run to
+# hundreds of KB, so the guard never fired outside these tests' small files.
+@test "a transcript with large lines after the expiries still blocks" {
+  user "go"; wake; wake; wake
+  { printf '{"type":"assistant","message":{"content":[{"type":"text","text":"'; head -c 300000 /dev/zero | tr '\0' x; printf '"}]}}\n'; } >> "$TX"
+  run_check
+  [ "$(jq -r .decision <<<"$output")" = block ]
+}
+
+# 2026-11-23: four coordinators were exempt and looped 4 to 221 times while their lines waited on asks.
+@test "a coordinator still re-arming a Monitor is blocked too, and told the background coord-watch --until" {
   user "go"; wake; wake; wake
   printf 'manual\ncoordinator\n' > "$FLEET_SHEPHERD_DIR/labels/sid-1"
-  run_check; assert_output ''
-  rm "$FLEET_SHEPHERD_DIR/labels/sid-1"
+  run_check
+  [ "$(jq -r .decision <<<"$output")" = block ]
+  [[ "$(jq -r .reason <<<"$output")" == *"run_in_background on \`coord-watch --until <plan>\`"* ]]
+}
+
+@test "negative control: a non-coordinator's block does not name coord-watch; the loop guard and a headless run pass" {
+  user "go"; wake; wake; wake
+  run_check
+  [[ "$(jq -r .reason <<<"$output")" != *"coord-watch"* ]]
   run bash "$CHECK" <<<"$(jq -cn --arg t "$TX" '{session_id: "sid-1", transcript_path: $t, stop_hook_active: true}')"
   assert_output ''
   CLAUDE_CODE_SESSION_ATTENDED=0 run_check; assert_output ''
