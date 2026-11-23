@@ -113,6 +113,16 @@ load 'fleet_dispatch/common'
   [ -n "$(qitem queued fix-game)" ] || fail "the held item stays queued"
 }
 
+@test "a pool starved on admission holds its repo's items as capacity does" {
+  two_items
+  # ar-3132: withheld or offline runners shrank the pool, so another session's gate would queue too.
+  findings "$(finding starved pool:unity '["game"]' admission)"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: app: fix-app'
+  [ -n "$(qitem queued fix-game)" ] || fail "the held item stays queued"
+}
+
 # 2026-11-22: the hold kept urgent ucp-3033 queued 100 min while 25 other items started (ar-3172).
 @test "an urgent item goes past a pool starved on capacity, one a pass; a high one and another finding still hold" {
   project game beta "$SANDBOX/repos/game"

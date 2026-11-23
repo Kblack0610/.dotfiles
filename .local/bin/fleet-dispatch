@@ -5764,7 +5764,7 @@ finding_hold() {
 
 # held_by <item json> <findings> -> "<rule> <scope>" of each firing finding that holds this item,
 # comma-joined, else nothing. A starved pool holds the items whose repo has jobs waiting in it (all
-# of them when the finding names no repos), and only when capacity binds: a pool starved on labels
+# of them when the finding names no repos), and only when capacity or admission binds: a pool starved on labels
 # (bind "labels": slots sit free, or the jobs are pinned to one host) gains nothing from a session
 # not starting, since its gate asks for a different label. On 2026-11-05 a frame sweep pinned to the
 # razer laptop held 6 unity-core-playground items for 7h with the box 80% idle.
