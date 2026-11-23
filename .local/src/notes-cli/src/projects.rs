@@ -1072,9 +1072,9 @@ pub fn new_project(p: &Profile, log: &Logger, name: &str, o: &Overlays) -> Resul
     Ok(())
 }
 
-/// The dirs a project root may hold besides its files: the agent board, frozen versions, and
-/// `docs/`, which takes everything else.
-const ROOT_DIRS: [&str; 3] = ["agent", "versions", "docs"];
+/// The dirs a project root may hold besides its files: the agent board, frozen versions, the
+/// release windows (`sprints/`), and `docs/`, which takes everything else.
+const ROOT_DIRS: [&str; 4] = ["agent", "versions", "sprints", "docs"];
 
 /// What a project's [`SHAPE`] check finds, one line per finding:
 ///
@@ -2668,6 +2668,8 @@ pub fn release(
     // The window's score, read before anything below moves a row.
     let today = chrono::Local::now().date_naive();
     let promised = target_of(&content).filter(|t| t.0 == cur);
+    // A window recorded before `sprints/` is moved there first, so its score is not lost.
+    crate::window::migrate_sprints(&dir)?;
     let score = crate::window::score(&dir, cur, &ix, today, promised);
 
     // The tag freezes what it shipped: each closed row goes by the first tag containing its
@@ -2883,6 +2885,8 @@ pub fn commit_window(
     writer: &crate::project_tasks::Writer,
 ) -> Result<()> {
     let dir = project_dir(p, name)?;
+    // An earlier window is moved into `sprints/` before this one reads or locks it.
+    crate::window::migrate_sprints(&dir)?;
     let content = read_or_empty(sheet_path(&dir));
     let cur = sheet_version(&content).ok_or_else(|| match version_parent_dir(&dir) {
         Some(up) => anyhow::anyhow!(
@@ -3775,7 +3779,7 @@ struct ProjectStats {
     /// The open version's release window counted against its snapshot; null when none was
     /// recorded. JSON only.
     window: Option<crate::window::OpenWindow>,
-    /// The last cut's `## Window` score; null when that cut had no snapshot. JSON only.
+    /// The last cut's `## Score` line; null when that cut had no snapshot. JSON only.
     last_window: Option<crate::window::LastWindow>,
     /// `[projects] idle_days`: days with no close before the hub reads the project as idle.
     /// JSON only.
@@ -4518,7 +4522,7 @@ fn collect_project_files(dir: &Path, out: &mut Vec<(PathBuf, String)>) {
             // `agent/versions/`, mirroring the human's side. Everything else is flat.
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             match name {
-                "versions" | "changelog" => collect_md(&path, name, out),
+                "versions" | "changelog" | "sprints" => collect_md(&path, name, out),
                 "agent" => {
                     collect_md(&path, name, out);
                     collect_md(&path.join("versions"), "agent/versions", out);
@@ -7106,6 +7110,45 @@ mod shape_tests {
         assert!(board.contains("## Tasks"), "{board}");
         let index = fs::read_to_string(s.p.project_index.as_ref().unwrap()).unwrap();
         assert_eq!(index.matches("|demo]]").count(), 1, "{index}");
+    }
+
+    #[test]
+    fn a_sprints_dir_is_in_the_shape_and_a_cut_moves_an_old_window_there_first() {
+        let s = sandbox("sprintsdir");
+        new_project(&s.p, &s.log, "demo", &Overlays::default()).unwrap();
+        let dir = s.p.projects.as_ref().unwrap().join("demo");
+        fs::create_dir_all(dir.join("sprints")).unwrap();
+        fs::write(dir.join("sprints/v0.1.0.md"), "# demo v0.1.0 sprint\n").unwrap();
+        assert!(shape_findings(&dir, "demo", &Overlays::default()).is_empty());
+        // NEGATIVE CONTROL: a dir outside the shape is still loose.
+        fs::create_dir_all(dir.join("shots")).unwrap();
+        let f = shape_findings(&dir, "demo", &Overlays::default());
+        assert_eq!(f, ["loose shots/ (move it to docs/)"], "{f:?}");
+        // A window still in the agent note is moved to sprints/ by the cut, so it is scored.
+        let sheet = |rows: &str| format!("# demo\nVersion: v0.3.0 #beta\n\n## Tasks\n{rows}");
+        fs::write(
+            dir.join("README.md"),
+            sheet("- [x] fix(a): ships <!-- id:dm-1 pr:5 -->\n"),
+        )
+        .unwrap();
+        let day = chrono::Local::now().date_naive();
+        fs::create_dir_all(dir.join("agent/versions")).unwrap();
+        fs::write(
+            dir.join("agent/versions/v0.3.0.md"),
+            format!("# n\n\n## Committed\n<!-- window: opened={day} due={day} -->\n- fix(a): ships <!-- id:dm-1 -->\n<!-- /window -->\n"),
+        )
+        .unwrap();
+        release(
+            &s.p, &s.log, "demo", None, false, true, None, false, None, None,
+        )
+        .unwrap();
+        let w = crate::window::history(&dir);
+        assert_eq!(
+            (w.len(), w[0].committed, w[0].delivered),
+            (1, 1, 1),
+            "{w:?}"
+        );
+        let _ = fs::remove_dir_all(&s.root);
     }
 
     #[test]

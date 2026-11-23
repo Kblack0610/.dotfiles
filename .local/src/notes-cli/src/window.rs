@@ -324,12 +324,13 @@ fn sprint_header(project: &str, ver: &str) -> String {
 fn put_section(path: &Path, project: &str, ver: &str, heading: &str, body: &str) -> Result<()> {
     let note = match fs::read_to_string(path) {
         Ok(n) => n,
-        Err(_) => {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)?;
             }
             sprint_header(project, ver)
         }
+        Err(e) => return Err(e.into()),
     };
     let lines: Vec<&str> = note.lines().collect();
     let kept = match md::section_span(&lines, heading) {
@@ -1283,7 +1284,8 @@ pub(crate) fn migrate_sprints(dir: &Path) -> Result<Migrated> {
 }
 
 /// How many windows of project `dir` still sit outside `sprints/`: an agent note holding a
-/// `## Committed` or a frozen note holding a `## Window`. What `notes projects --migrate` moves.
+/// `## Committed` or a frozen note holding a `## Window`, with no such section in its sprint file
+/// yet. What `notes projects --migrate` moves.
 pub(crate) fn unmigrated(dir: &Path) -> usize {
     let has = |path: PathBuf, heading: &str| {
         fs::read_to_string(path).is_ok_and(|n| {
@@ -1291,14 +1293,18 @@ pub(crate) fn unmigrated(dir: &Path) -> usize {
                 .any(|l| l.strip_prefix("## ").is_some_and(|h| h.trim() == heading))
         })
     };
+    // A window whose sprint file already holds the section is one `migrate_sprints` leaves.
+    let scored = |v: V| {
+        fs::read_to_string(sprint_path(dir, v)).is_ok_and(|t| md::section_text(&t, SCORE).is_some())
+    };
     let agent = projects::agent_dir(dir).join("versions");
     let committed = projects::version_notes(&agent)
         .into_iter()
-        .filter(|(_, p)| has(p.clone(), COMMITTED));
-    let scored = projects::version_notes(&dir.join("versions"))
+        .filter(|(v, p)| read(dir, *v).is_none() && has(p.clone(), COMMITTED));
+    let windows = projects::version_notes(&dir.join("versions"))
         .into_iter()
-        .filter(|(_, p)| has(p.clone(), "Window"));
-    committed.count() + scored.count()
+        .filter(|(v, p)| !scored(*v) && has(p.clone(), "Window"));
+    committed.count() + windows.count()
 }
 
 /// One scored window, as `notes projects --sprints` lists it: the numbers its `## Score` line
