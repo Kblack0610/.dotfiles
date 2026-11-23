@@ -764,6 +764,45 @@ share_history() {
   [[ "$PICK_WHY" == "fleet share full: fix-game (fleet share: "* ]] || fail "a pass the share alone held read: $PICK_WHY"
 }
 
+# 2026-11-23 (ar-4499): 86 of 124 fleet Claude starts in 24h went out on the let-go, a light fleet item
+# taking the one free unit each pass while other projects' heavy items waited for two.
+@test "fleet share: the cap does not let go onto the run units another project's item waits on" {
+  local fleet='{"slug":"fix-game","project":"game"}' heavy='{"slug":"build-app","project":"app","weight":"heavy"}'
+  HOST_PROBE=()
+  load_findings() { FIRING=''; }
+  share_state() { :; }
+  held_by() { :; }
+  finding_hold() { :; }
+  place_host() { return 1; }
+  share_why() { if [ "$(jq -r .project <<<"$1")" = game ]; then echo "fleet share: 3 of 4 starts are fleet work"; fi; }
+  TARGET=4 DRY=0 UNITS_FREE=1 SHARE_LET_GO=1
+  # The heavy app item needs 2 units and 1 is free: the light game item, held by the share, waits too.
+  pick_item "$heavy"$'\n'"$fleet" && fail "the let-go took the units build-app waits on: $(jq -r .slug <<<"$PICKED")"
+  [[ "$PICK_WHY" == "run units: build-app needs 2, 1 free, so the fleet share cap does not let fix-game go to them; "* ]] || fail "the wait read: $PICK_WHY"
+  assert_equal "$PICK_FULL" 1
+  # A finding holding another item names the pass, never a full fleet's NOOP.
+  held_by() { [ "$(jq -r .slug <<<"$1")" != hold-app ] || echo "finding ci-red"; }
+  pick_item "$heavy"$'\n'"$fleet"$'\n''{"slug":"hold-app","project":"app"}' && fail "an item was picked past the finding"
+  [[ "$PICK_WHY" == "finding firing: "* ]] || fail "a pass a finding held read: $PICK_WHY"
+  assert_equal "$PICK_FULL" 0
+  held_by() { :; }
+  # Off the let-go pass the share's hold names it, as before.
+  SHARE_LET_GO=0 pick_item "$heavy"$'\n'"$fleet" && fail "an item was picked off the let-go pass"
+  [[ "$PICK_WHY" == "fleet share full: "* ]] || fail "a pass off the let-go read: $PICK_WHY"
+  # A fleet worker's place the let-go still takes: it spends none of this machine's units.
+  place_host() { [ "$(jq -r .project <<<"$1")" = game ] && [ "${2:-}" = first ] && echo razer-laptop; }
+  pick_item "$heavy"$'\n'"$fleet" || fail "the let-go held a fleet worker's start: $PICK_WHY"
+  assert_equal "$(jq -r .slug <<<"$PICKED") $PLACE_HOST" "fix-game razer-laptop"
+  # The negative control: with nothing else waiting on the units, the cap lets the fleet item go.
+  place_host() { return 1; }
+  pick_item "$fleet" || fail "the let-go held with nothing else waiting: $PICK_WHY"
+  assert_equal "$(jq -r .slug <<<"$PICKED")" fix-game
+  [[ "$PICK_NOTE" == "; the fleet share cap let it go, as nothing else could start (fleet share: "* ]] || fail "the let-go note read: $PICK_NOTE"
+  # A heavy item the share holds, or one too heavy for the target, keeps no units.
+  pick_item '{"slug":"big-game","project":"game","weight":"heavy"}'$'\n'"$fleet" || fail "a share-held heavy item kept the units: $PICK_WHY"
+  TARGET=1 pick_item "$heavy"$'\n'"$fleet" || fail "an item over the target kept the units: $PICK_WHY"
+}
+
 @test "fleet share: a full share passes a #requested fleet row through the fill, not an #urgent one" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
