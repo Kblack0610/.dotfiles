@@ -1231,6 +1231,24 @@ asks_for() {
   awk -F'\t' -v s="$1" '$1 == s { print $2 }' <<<"${PENDING_ASKS-$(pending_asks)}"
 }
 
+# item_asks <live items, jsonl> <item_of's answer> <this session id> <panel rows, jsonl> -> the ids of the pending asks
+# an earlier session of this session's live item filed, one per line. A later session of one item (a restart, a
+# resume, a handed-over run) waits on the question the item's earlier session asked, as much as on its own; asks_for
+# keys on the asking session alone, so that session read STALLED with the human's answer outstanding (ar-4650: agent-1
+# on ar-4640, waiting on onC7wY). Only a session no panel row shows live counts: a live one still owns its ask.
+item_asks() {
+  case "${2:-}" in own:* | here:*) ;; *) return 0 ;; esac
+  local slugs="${2#*:}" sib x
+  slugs="${slugs%% *}"
+  sib="$(jq -rn --arg own ",$slugs," --arg me "$3" --slurpfile pan <(printf '%s\n' "${4:-}") '
+    ([$pan[] | .session_id // empty | tostring]) as $live
+    | [inputs | select(.slug as $s | $own | contains("," + $s + ","))
+      | (.sessions // "") | split(" ")[] | select(. != "" and . != $me and (. as $x | $live | index($x) | not))]
+    | unique[]' <<<"$1" 2>/dev/null)"
+  while IFS= read -r x; do [ -z "$x" ] || asks_for "$x"; done <<<"$sib"
+  return 0
+}
+
 # pending_asks -> "<claude session>\t<ask id>" per pending ask, per owner line (a blocker ask names
 # every session it stops). agent-ask decides which asks are pending: a parked one (`parked_until`
 # still ahead) waits on the human's later step, so it holds no session in NEEDS. A failed read
@@ -2511,17 +2529,18 @@ collect() {
     tsess="${target#*/}"; tsess="${tsess%:*}"
     idle=$(( (now - since) / 60 )); bidle="$(gate_log_idle "$host" "$status" "$ojob" "$cwd" "$idle" "$transcript")"
     age=-; [[ "$started" =~ ^[0-9]+$ ]] && age=$(( (now - started) / 60 ))
+    local solo item
+    solo="$(jq -r --arg k "${target%:*}" 'select((.target | sub(":[^:]*$"; "")) == $k) | .target' <<<"$panel" 2>/dev/null | wc -l)"
+    item="$(item_of "$qitems" "$sid" "${target%%/*}:$tsess" "$solo" "$started")"
     # Every ask this session filed and nobody answered (ownask), the ones a queue item carries on
-    # included: the session may close (bucket), and the close verdict says whether its window must
-    # stay open for the answer (the close step "its own asks are its only blockers"). askids are the ones still its own to wait on.
-    local ownids; ownids="$(asks_for "$sid")"
+    # included, and the ones an earlier session of its live item filed (item_asks): the session may close
+    # (bucket), and the close verdict says whether its window must stay open for the answer (the close step
+    # "its own asks are its only blockers"). askids are the ones still its own to wait on.
+    local ownids; ownids="$({ asks_for "$sid"; item_asks "$qjson" "$item" "$sid" "$panel"; } | grep . | sort -u)"
     ownask=0; [ -n "$ownids" ] && ownask="$(wc -l <<<"$ownids")"; ownask=$((ownask + 0))
     askids="$(grep . <<<"$ownids" | { if [ -n "$qheld" ]; then grep -vxF "$qheld"; else cat; fi; } | paste -sd, -)"
     asks=0; [ -n "$askids" ] && asks="$(tr ',' '\n' <<<"$askids" | wc -l)"
     hv=0; [ "$host" = - ] && [ -n "$pane" ] && grep -qxF "${target%%/*}/$pane" <<<"$heavy" && hv=1
-    local solo item
-    solo="$(jq -r --arg k "${target%:*}" 'select((.target | sub(":[^:]*$"; "")) == $k) | .target' <<<"$panel" 2>/dev/null | wc -l)"
-    item="$(item_of "$qitems" "$sid" "${target%%/*}:$tsess" "$solo" "$started")"
     [ -z "$qblind" ] || blind_row
     local hask hdoc
     IFS=$'\t' read -r hask hdoc < <(handoff_of "$qhand" "$item")
