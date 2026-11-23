@@ -59,6 +59,13 @@
 #                          half its finished jobs failed, cancel it, record it against the finding
 #                          (fleet-bench respond ... cancelled) and print who to tell; exit 0 when it
 #                          cancelled, 1 naming why it left the pool alone
+#   fleet-shepherd ghost-runs
+#                          judge each GitHub run the runner exporter lists as stuck (queued, no jobs)
+#                          for FLEET_SHEPHERD_GHOST_AGE_H or more, as GitHub reads it now: still
+#                          queued, made that long ago and with no job is a ghost. Each verdict is a
+#                          line of $LEDGER/ghost-runs.tsv; a ghost is cancelled only with
+#                          FLEET_SHEPHERD_GHOST_CANCEL=1, else logged as would-cancel (dry run). Every
+#                          run calls it first; exit 1 when the exporter is unreadable
 #   fleet-shepherd lease   record that this session is the shepherd pass running now and tag its
 #                          tmux pane @shepherd; every pass calls it first (fleet-lead, pass step 0)
 #   fleet-shepherd holds   exit 0 when this session may act for the shepherd, 3 naming the pass
@@ -109,6 +116,7 @@ PAGED="$LEDGER/.paged"       # <key>: unhandled lines already paged, kept while 
 UNHANDLED="$LEDGER/.unhandled"  # <key>\t<checks>: each owed line and how many checks in a row (that would start a pass) found it unhandled
 PASS="$LEDGER/.pass"          # <id>\t<start epoch>\t<due count>\t<pane>: the pass running now
 NOROOM="$LEDGER/.noroom"      # present while no account has room, so that is paged once
+GHOSTS="$LEDGER/ghost-runs.tsv" # <epoch>\t<verdict>\t<run url>\t<why>: every run ghost-runs judged
 PASSES="$LEDGER/passes.tsv"   # <start>\t<id>\t<verdict>\t<detail>\t<lane_cols>: every pass, once scored; fleet-bench canary shepherd reads the lane columns by position
 # shellcheck source=../lib/tmux-servers.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/tmux-servers.sh" || exit 1   # tmux_servers_all
@@ -135,6 +143,13 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 # (critical_due): an hour is more than a slot turn's 45m plus the merge. Confidence low, from one incident (2026-11-19:
 # ucp-2712 waited 5h on P1 #2935 in the slot); revisit when SLOT_MINUTES moves or critical lines are mostly skipped.
 : "${FLEET_SHEPHERD_CRITICAL_MIN:=60}"
+# A run GitHub lists as queued with no job this long is a ghost: no runner will ever take it, and
+# each one is a high row on Alerts (plan waht-noise-would-you-jolly-cosmos p2: 23 runs 10 to 12 days
+# old on 2026-11-23). A run queued for a busy self-hosted pool has jobs, so the age and "no jobs"
+# must both hold. Cancels are off until a day of the dry-run log (GHOSTS) has been read; the conf
+# turns them on.
+: "${FLEET_SHEPHERD_GHOST_AGE_H:=24}"
+: "${FLEET_SHEPHERD_GHOST_CANCEL:=0}"
 : "${FLEET_SHEPHERD_UNHANDLED_MIN:=60}" # a due line left this long with no answer pages the human, once; DEBOUNCE_MIN more for a line the debounce can hold
 # A skip lasts while its line is due, and at most this long; then the line goes to the next pass
 # plain, with the old why in the log, to act on or skip again. Provisional, 2026-11-18: %247 sat
@@ -598,6 +613,72 @@ infra_now() {
     2) echo "infra: k3s domain red" ;;
     none) echo "infra: no k3s status series" ;;
   esac
+}
+
+# ghost_candidates -> "<owner/repo> <run id>" for each GitHub run the runner exporter lists as stuck
+# (queued with no jobs, `waiting{stuck="true"}`, whose value is its age) for GHOST_AGE_H or more, once
+# each: a run has a series per workflow job name. Exit 2 when the exporter cannot be read.
+ghost_candidates() {
+  local json
+  # shellcheck source=/dev/null
+  . "${PROM_LIB:-$HOME/.local/lib/prom.sh}" 2>/dev/null || return 2
+  json="$(prom_q "github_actions_job_waiting{stuck=\"true\",forge=\"github\"} >= $((FLEET_SHEPHERD_GHOST_AGE_H * 3600))")" || return 2
+  jq -r '.data.result[] | (.metric.url // "") | capture("github\\.com/(?<slug>[^/]+/[^/]+)/actions/runs/(?<id>[0-9]+)")? | "\(.slug) \(.id)"' <<<"$json" | sort -u
+}
+
+# ghost_check <owner/repo> <run id> -> the run's age in hours when GitHub says it is still queued, was
+# made GHOST_AGE_H or more ago and has no job; else why it is no ghost, exit 1. Exit 2 when GitHub
+# cannot be read, so the run is asked about again next time rather than judged.
+ghost_check() {
+  local run status created age jobs
+  run="$(gh api "repos/$1/actions/runs/$2" --jq '[.status, .created_at] | @tsv' 2>/dev/null)" || { echo "run unreadable"; return 2; }
+  IFS=$'\t' read -r status created <<<"$run"
+  [ "$status" = queued ] || { echo "status $status"; return 1; }
+  created="$(date -d "$created" +%s 2>/dev/null)" || { echo "no created_at"; return 2; }
+  age=$(( ($(date +%s) - created) / 3600 ))
+  [ "$age" -ge "$FLEET_SHEPHERD_GHOST_AGE_H" ] || { echo "queued ${age}h"; return 1; }
+  jobs="$(gh api "repos/$1/actions/runs/$2/jobs" --jq .total_count 2>/dev/null)" || { echo "jobs unreadable"; return 2; }
+  [ "$jobs" = 0 ] || { echo "$jobs jobs"; return 1; }
+  echo "${age}h"
+}
+
+# ghost_judged <run url> -> exit 0 when the run was judged in the last GHOST_AGE_H hours and that
+# verdict still stands: any verdict in a dry run, and any but would-cancel once cancels are on, so the
+# first live run ends what the dry runs found. A run is asked about at most once a GHOST_AGE_H, which
+# keeps GitHub calls to the new ghosts and each kept run's log to a line a day.
+ghost_judged() {
+  [ -s "$GHOSTS" ] || return 1
+  awk -F'\t' -v u="$1" -v since="$(( $(date +%s) - FLEET_SHEPHERD_GHOST_AGE_H * 3600 ))" -v live="$FLEET_SHEPHERD_GHOST_CANCEL" '
+    $3 == u { t = $1; v = $2 }
+    END { exit !(t >= since && !(live == 1 && v == "would-cancel")) }' "$GHOSTS"
+}
+
+# A ghost run is the reaper's to end: nothing else ever finishes it, and Alerts shows it high until
+# someone does. A dry run (GHOST_CANCEL unset) logs what it would do. GitHub's cancel is tried
+# first; a run it refuses (a ghost often is) gets force-cancel, the API's call for a run that no
+# longer answers cancel, and the log says which one ended it.
+cmd_ghost_runs() {
+  local cand slug id url why rc verdict
+  mkdir -p "$LEDGER" || die "cannot create $LEDGER"
+  cand="$(ghost_candidates)" || { echo "ghost-runs: the runner exporter is unreadable, so no run was judged"; return 1; }
+  while read -r slug id; do
+    [ -n "$id" ] || continue
+    url="https://github.com/$slug/actions/runs/$id"
+    ! ghost_judged "$url" || continue
+    why="$(ghost_check "$slug" "$id")"; rc=$?
+    case $rc in
+      0)
+        if [ "$FLEET_SHEPHERD_GHOST_CANCEL" != 1 ]; then verdict=would-cancel
+        elif gh api -X POST "repos/$slug/actions/runs/$id/cancel" >/dev/null 2>&1; then verdict=cancelled
+        elif gh api -X POST "repos/$slug/actions/runs/$id/force-cancel" >/dev/null 2>&1; then verdict=force-cancelled
+        else verdict=cancel-failed
+        fi ;;
+      1) verdict=kept ;;
+      *) echo "ghost-runs: $url: $why, asked again next run"; continue ;;
+    esac
+    printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$verdict" "$url" "$why" >> "$GHOSTS"
+    echo "ghost-runs: $verdict $url ($why)"
+  done <<<"$cand"
 }
 
 # sweep_holder <pool> -> "<owner/repo> <run id> <branch> <held> <busy>" for the workflow_dispatch run
@@ -1929,6 +2010,8 @@ cmd_run() {
   [ -n "$SERVER" ] || die "no world declares session $SESSION"
   mkdir -p "$LEDGER" || die "cannot create $LEDGER"
   local id start n pane st busy sv="" sd=""
+  # Ghost runs first: deterministic, and owed every run whether or not a pass starts.
+  cmd_ghost_runs
   # Never two passes at once: the holder mid-sweep finishes, and the next run looks again.
   if busy="$(sweeping)"; then
     IFS=$'\t' read -r id st n <<<"$busy"
@@ -2121,6 +2204,7 @@ case "${1:-}" in
   skip)  cmd_holds || exit; shift; cmd_skip "$@" ;;
   log)   cmd_holds || exit; shift; cmd_log "$@" ;;
   sweep-cancel) cmd_holds || exit; shift; cmd_sweep_cancel "$@" ;;
+  ghost-runs) cmd_ghost_runs ;;
   -h|--help|"") sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) die "unknown verb: $1 (run|open|passes|stats|budget|stuck|check|due|skip|infra|lease|holds|log|sweep-cancel)" ;;
+  *) die "unknown verb: $1 (run|open|passes|stats|budget|stuck|check|due|skip|infra|lease|holds|log|sweep-cancel|ghost-runs)" ;;
 esac
