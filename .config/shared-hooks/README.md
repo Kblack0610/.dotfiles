@@ -44,4 +44,4 @@ An empty or truncated result means a partial deploy, not an empty project.
 
 `tests/unit/session_preflight.bats` covers each turn-1 cut with a negative control; `tests/integ/preflight_focus.bats` covers what turn 1 carries: the byte budget, the lessons lane, and that the board, the Focus list and an unscoped commit list stay out.
 
-Run them with `make -C tests test-files FILES="unit/session_preflight.bats integ/preflight_focus.bats"`. See the `shell-test-harness` skill before adding more.
+A PR's CI runs them; in your own terminal, `make -C tests test-files FILES="unit/session_preflight.bats integ/preflight_focus.bats"`. See the `shell-test-harness` skill before adding more.
