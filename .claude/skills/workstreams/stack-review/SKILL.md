@@ -116,7 +116,7 @@ In the chat reply give the top findings per tier with their why, the verified/un
 ## fix
 
 1. Re-read the report; take only safe-tier rows with verdict `verified`.
-2. Group by concern; one branch + PR per concern, cut from the remote tip in a worktree (`ingest-worktree` for a mixed tree; the repo's own landing rules otherwise).
+2. Group by concern; one branch + PR per concern, cut from the remote tip in a worktree (`ingest-prs` "Dirty working tree" for a mixed tree; the repo's own landing rules otherwise).
 3. Each fix lands with the check that proves it (a test, a timing, a unit that now starts). A perf fix states before/after numbers in the PR body.
 4. Update the report's rows with the PR reference. Anything that turned out bigger than safe goes back to `plan`.
 

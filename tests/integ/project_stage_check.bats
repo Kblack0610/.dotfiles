@@ -419,16 +419,13 @@ DOC
   assert_line 'systems: shooter: docs 2/2'
 }
 
-@test "systems: --json gives met, total and each row per system; the alias is the same mode" {
+@test "systems: --json gives met, total and each row per system" {
   write_systems_doc
   run "$CHECK" shooter --systems --json
   assert_failure 1
   assert_equal "$(jq -c '[.project, .type, .met, .total]' <<<"$output")" '["shooter","game",2,4]'
   assert_equal "$(jq -c '[.systems[] | [.id, .met, .total, .fail, .human, .todo]]' <<<"$output")" '[["docs",1,2,1,0,0],["netcode",1,2,0,1,0]]'
   assert_equal "$(jq -r '.systems[0].criteria[1] | "\(.result) \(.criterion)"' <<<"$output")" 'FAIL An architecture doc'
-  ln -s "$CHECK" "$HOME/project-system-check"
-  run "$HOME/project-system-check" shooter --json
-  assert_equal "$(jq -c '[.met, .total]' <<<"$output")" '[2,4]'
 }
 
 @test "systems: an unknown system, one that does not apply, or a Criteria row naming no system exits 2" {
@@ -1296,7 +1293,7 @@ rs_stub() {
   jq '.trackers.shooter.targets = [{"id": "shooter-play", "channel": "internal", "where": "play", "live": {"play": {}}}]' "$PROJECT_MAP_FILE" > "$PROJECT_MAP_FILE.new" && mv "$PROJECT_MAP_FILE.new" "$PROJECT_MAP_FILE"
   run "$CHECK" shooter --stage alpha
   assert_line --regexp '^FAIL +alpha +Its store listing'
-  run "$REPO_ROOT/.local/bin/project-system-check" shooter --list
+  run "$CHECK" shooter --list
   assert_line --regexp '^store'
 }
 

@@ -136,7 +136,6 @@
     "blind-review": "name-only",
     "changelog-draft": "name-only",
     "claude-api": "name-only",
-    "clickup-ops": "name-only",
     "compact-prep": "name-only",
     "compliance": "name-only",
     "content-rating": "name-only",
@@ -146,12 +145,12 @@
     "figma-use": "name-only",
     "fleet-env-rebuild": "name-only",
     "flow-review": "name-only",
-    "ingest-worktree": "name-only",
     "init": "name-only",
     "jira-ticket-pipeline": "name-only",
     "keybindings-help": "name-only",
     "marp-slide": "name-only",
     "meeting-ingest": "name-only",
+    "metavr-cli": "name-only",
     "plugin-authoring": "name-only",
     "prod-smoke-suite": "name-only",
     "quick-demo": "name-only",
@@ -161,8 +160,7 @@
     "schedule": "name-only",
     "scope": "name-only",
     "security-review": "name-only",
-    "ui-audit": "name-only",
-    "work-update": "name-only"
+    "ui-audit": "name-only"
   },
   "hooks": {
     "PostToolUse": [
