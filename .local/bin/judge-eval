@@ -613,12 +613,13 @@ RUNNER_KEYS=' NAME KIND SCOPE AUTOSTART ENABLED DESCRIPTION SKILL EFFECT LANE DE
   ROLE PRIORITY TIER OVERSEES HARNESS MODEL ROUTE DATA_CLASS CALL_CONTEXT SCORE PROMPT SCHEMA CALLER
   BUDGET_CALL_USD BUDGET_DAY_USD MAX_CALLS_HOUR '
 # The settings of a judge's own conf that gate what its verdict does.
-LANE_GATE_RE='^(DELAY_RULES|AUDIT_RATES|PROMOTE_BARS|PRECEDENTS)='
+LANE_GATE_VARS='DELAY_RULES AUDIT_RATES PROMOTE_BARS PRECEDENTS'
 # The data files a calling runner's decisions read, colon-separated, by caller (JUDGE_EVAL_GATE_FILES_<CALLER>,
 # hyphens to underscores): fleet-dispatch reads its kind and class registries.
-: "${JUDGE_EVAL_GATE_FILES_FLEET_DISPATCH:=$HOME/.config/fleet-dispatch/kinds.json:$HOME/.config/fleet-dispatch/classes.json}"
-# The scripts a lane is called from: this directory and its lib.
+: "${JUDGE_EVAL_GATE_FILES_FLEET_DISPATCH:=${DISPATCH_KINDS:-$HOME/.config/fleet-dispatch/kinds.json}:${DISPATCH_CLASSES:-$HOME/.config/fleet-dispatch/classes.json}:${DISPATCH_WORKERS:-$HOME/.config/fleet-dispatch/workers.json}}"
+# The directories a lane is called from, colon-separated: this script's directory and its lib.
 BIN_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+: "${JUDGE_EVAL_CALL_DIRS:=$BIN_DIR:$BIN_DIR/../lib}"
 
 # prompt_lanes: every runner conf that names a SCORE or a PROMPT, one per line.
 prompt_lanes() {
@@ -655,9 +656,16 @@ prompt_lane() {
     if [ -r "$schema" ]; then printf '\n--- SCHEMA %s ---\n%s\n' "$schema" "$(cat -- "$schema")"
     else say "$a: SCHEMA=$schema is not a readable file"; rc=1; fi
   fi
-  gates="$(grep -E "$LANE_GATE_RE" "$conf" 2>/dev/null)"
+  # the values as the conf sets them (a wrapped value is whole), not its first physical line
+  gates=""
+  for k in $LANE_GATE_VARS; do
+    v="$(conf_var "$a" "$k")"; [ -n "$v" ] && gates+="${gates:+$'\n'}$k=\"$v\""
+  done
   [ -n "$(conf_var "$a" DELAY_RULES)" ] && gates+="${gates:+$'\n'}JUDGE_HARD_STOPS=\"$JUDGE_HARD_STOPS\""
   printf '\n--- gates in %s.conf ---\n%s\n' "$a" "${gates:-none}"
+  if [ -n "$caller" ] && [ ! -f "$CONF_DIR/$caller.conf" ]; then
+    printf '\n--- gates in %s.conf (its caller) ---\nno conf named %s (it is a script)\n' "$caller" "$caller"
+  fi
   if [ -n "$caller" ] && [ -f "$CONF_DIR/$caller.conf" ]; then
     cc="$(grep -E '^[A-Z][A-Z0-9_]*=' "$CONF_DIR/$caller.conf" | while IFS= read -r l; do
       k="${l%%=*}"; [[ "$RUNNER_KEYS" == *[[:space:]]"$k"[[:space:]]* ]] || printf '%s\n' "$l"; done)"
@@ -675,9 +683,10 @@ prompt_lane() {
   # where the call's input is built: the lines that name this lane, and the lines that run the command
   # variable such a line sets (`: "${AGENT_ASK_JUDGE_CMD:=agentctl-run --agent ask-judge}"`)
   printf '\n--- called from ---\n'
-  sites="$(grep -rnE -- "--agent[ =]\"?$a([^a-z0-9-]|\$)" "$BIN_DIR" "$BIN_DIR/../lib" 2>/dev/null | grep -v -e '/agentctl-run:' -e '/judge-eval:')"
+  IFS=: read -ra files <<<"$JUDGE_EVAL_CALL_DIRS"
+  sites="$(grep -rnE -- "--agent[ =]\"?$a([^a-z0-9-]|\$)" "${files[@]}" 2>/dev/null | grep -v -e '/agentctl-run:' -e '/judge-eval:')"
   {
-    printf '%s\n' "$sites" | awk 'NR <= 8'
+    printf '%s\n' "$sites" | awk -v n=8 'NR <= n { print } END { if (NR == 0) print "(none found)"; else if (NR > n) print "(" NR - n " more not shown)" }'
     while IFS=: read -r f _ l; do
       [ -n "$f" ] || continue
       v="$(sed -n 's/^: "\${\([A-Z_]*\):=agentctl-run --agent .*/\1/p' <<<"$l")"

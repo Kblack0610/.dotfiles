@@ -682,6 +682,9 @@ prompts_fixture() {
   printf '# the judge - decides things.\n#\n# Called by pro-caller.\n\nSCORE=ask-answers\nMODEL=m-judge\nPROMPT="%s"\nSCHEMA="%s"\nCALLER=pro-caller\nDELAY_RULES=fast@repo=0\nAUDIT_RATES="self=10"\n' \
     "$HOME/tpl/policy.md" "$HOME/tpl/verdict.schema.json" > "$AGENTCTL_CONF_DIR/the-judge.conf"
   printf '# the runner - two passes.\nSCORE=triage-untouched\nMODEL=m-run\nPROMPT="%s:%s"\n' "$HOME/tpl/route.md" "$HOME/tpl/ask.md" > "$AGENTCTL_CONF_DIR/the-runner.conf"
+  mkdir -p "$HOME/callers"
+  printf ': "${X_CMD:=agentctl-run --agent the-judge}"\nout=$($X_CMD -p "$prompt")\n' > "$HOME/callers/pro-caller"
+  export JUDGE_EVAL_CALL_DIRS="$HOME/callers"
   printf 'NAME=pro-caller\nCOMMAND=x\nBUDGET_DAY_USD=5\nPRO_GATE_MAX=7\n' > "$AGENTCTL_CONF_DIR/pro-caller.conf"
   echo 'EFFECT=acts' > "$AGENTCTL_CONF_DIR/shepherd.conf"
 }
@@ -743,4 +746,23 @@ prompts_fixture() {
   assert_failure 1
   assert_line '=== bare ==='
   [[ "$stderr" == *"bare: its conf names no PROMPT"* ]]
+}
+
+@test "prompts: a lane lists the lines that call it, and the lines that run its command variable" {
+  prompts_fixture
+  run "$JUDGE_EVAL" prompts the-judge
+  assert_success
+  assert_line --partial 'callers/pro-caller:1:: "${X_CMD:=agentctl-run --agent the-judge}"'
+  assert_line --partial 'callers/pro-caller:2:out=$($X_CMD -p "$prompt")'
+  run "$JUDGE_EVAL" prompts the-runner
+  assert_line '(none found)'
+}
+
+@test "prompts: a caller with no conf says so, and a wrapped gate value prints whole" {
+  prompts_fixture
+  printf 'SCORE=ask-answers\nPROMPT="%s"\nCALLER=a-script\nDELAY_RULES="a@repo=0\n  b@repo=0"\n' "$HOME/tpl/ask.md" > "$AGENTCTL_CONF_DIR/wrapped.conf"
+  run "$JUDGE_EVAL" prompts wrapped
+  assert_success
+  assert_line 'no conf named a-script (it is a script)'
+  assert_line --partial 'b@repo=0"'
 }
