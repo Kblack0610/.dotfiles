@@ -1158,7 +1158,7 @@ TWIN_NEW_FAST=$(twin_entry 'fast tier (unit 1)' 'shell tests' SUCCESS 101 10)
   fake_sleep
   run "$LAND" 42 --item ship
   assert_success
-  assert_line 'checks: green (cancelled: fast tier (${{ matrix.tier }} ${{ matrix.shard }}), in an older run of its workflow on the head)'
+  assert_line 'checks: green (cancelled: fast tier (${{ matrix.tier }} ${{ matrix.shard }}), a matrix job of an older run of its workflow on the head)'
   assert_line 'landed #42'
   run grep -c 'pr checks 42 --watch' "$LOG"
   assert_output 1
@@ -1173,6 +1173,29 @@ TWIN_NEW_FAST=$(twin_entry 'fast tier (unit 1)' 'shell tests' SUCCESS 101 10)
   AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=1 run "$LAND" 42 --item ship
   assert_failure 1
   assert_output --partial 'checks failed: cancelled: fast tier (${{ matrix.tier }} ${{ matrix.shard }}), and no run of its workflow is left on the head to replace it'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "a cancelled matrix job of an older run whose newer run has no job matching its template stays the verdict (ar-3095)" {
+  printf '%s\n' "$TWIN_CANCELLED" >"$NOTES_FIXTURE/checks.cancelled"
+  # the newer run is another event's, with only its gate: nothing in it replaced the matrix job
+  twin_rollup "$TWIN_TEMPLATE" "$TWIN_NEW_GATE" "$(twin_entry 'fast tierX' 'shell tests' SUCCESS 101 13)"
+  fake_sleep
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=1 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: cancelled: fast tier (${{ matrix.tier }} ${{ matrix.shard }}), and no run of its workflow is left on the head'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "a cancelled check the rollup does not list is never green on the rollup (ar-3095)" {
+  printf '%s\n' '[{"name":"lint","bucket":"cancel","workflow":"shell tests"}]' >"$NOTES_FIXTURE/checks.cancelled"
+  twin_rollup "$TWIN_NEW_GATE" "$TWIN_NEW_FAST"
+  fake_sleep
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=1 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: cancelled: lint, and no run of its workflow is left on the head'
   run grep -c 'pr merge' "$LOG"
   assert_output 0
 }

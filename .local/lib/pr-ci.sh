@@ -10,11 +10,11 @@
 # the old one beside it: platform#1551's failed `Task line` stayed next to the passing one 40s later and
 # read CI red while `gh pr checks` was all green (2026-11-14). A check is its workflow plus its name, and
 # only its entries from the newest Actions run (the run id in detailsUrl) count, so matrix shards that
-# share a name all stay; a status or an entry with no run id is kept as it is. A cancelled entry of a run
-# older than its workflow's newest run on the commit goes too, whatever its name: a PR opened and pushed
-# to in the same second gets two pull_request runs on one head, concurrency cancels the older, and its
-# matrix job, cancelled before it expanded, keeps a template name no newer entry shares (dotfiles#2437
-# runs 44346646978 and 44346649779, 2026-11-18, ar-3095). A failed entry of an older run stays red.
+# share a name all stay; a status or an entry with no run id is kept as it is. A cancelled matrix job
+# that never expanded keeps its template name (`fast (${{ matrix.n }})`), which no newer entry shares: it
+# goes once an entry of a newer run of its workflow matches the template. A PR opened and pushed to in the
+# same second gets two pull_request runs on one head and concurrency cancels the older (dotfiles#2437
+# runs 44346646978 and 44346649779, 2026-11-18, ar-3095).
 # ci -> NONE, PENDING, FAIL or PASS: red only once every check has finished.
 # red -> the red checks' Actions job ids, comma-separated, - for one that is not a job (fleet-sessions'
 # gate_ci reads their steps for a gate-line-only red).
@@ -25,8 +25,12 @@ CI_JQ='def red_re: "FAIL|ERROR|CANCEL|TIMED_OUT|ACTION_REQUIRED";
     | (map(select(._run != null)) | group_by([.workflowName // "", .name // ""])
        | map(map(._run) as $r | .[] | select(._run == ($r | max))))
       + map(select(._run == null))
-    | (reduce (.[] | select(._run != null)) as $e ({}; .[$e.workflowName // ""] |= ([., $e._run] | max))) as $newest
-    | map(select(._run == null or ((.conclusion // "") | test("CANCEL") | not) or ._run == $newest[.workflowName // ""]))
+    | . as $all
+    | map(select(. as $e | if $e._run != null and ($e.conclusion // "" | test("CANCEL")) and ($e.name // "" | test("[$][{][{]"))
+        then ("^" + ($e.name | gsub("[$][{][{][^}]*[}][}]"; "\u0001") | gsub("(?<c>[.*+?()\\[\\]{}|^$\\\\])"; "\\\(.c)")
+          | gsub("\u0001"; ".+")) + "$") as $re
+          | $all | any(.workflowName == $e.workflowName and (._run // 0) > $e._run and (.name // "" | test($re))) | not
+        else true end))
     | map(del(._run));
   def ci: checks | map(.conclusion // .state // "") as $c
   | if ($c | length) == 0 then "NONE"

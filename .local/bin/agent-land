@@ -15,7 +15,7 @@
 # checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (a head behind origin/<base> is merged up to it, each clean submodule checkout on its old pin moved to the merged one (submodule_follow), and pushed, before the checks and again after them if the base moved on during them; a head pushed after them waits on its own checks before it merges, and on a base without strict checks a second move lands that green head behind it, catch_up), item-line
 # (before the checks, the PR body gets the line "Item: <slug>" unless it has it, so a reader holding
 # only the PR finds its work item; a stale "Item:" line is rewritten, except on a merged PR where another queue item's line stays), review (a tier-3 item's body has a
-# "Review:" line, review_gate), shape (no function over 150 lines gets longer unless the body has a "Split: <row id>" line, shape_gate), checks (the PR's checks pass: CI, a required check; a cancelled check is no pass, waited on while a run on the head goes on, and on GitHub so is a failed one while a run of its workflow and event started after it goes on, and a cancelled check of an older run of its workflow is no verdict (pr-ci.sh); a tier-3 item, or one landed with --ran-checks, needs checks that ran), merge (--squash, or with --merge-commit a merge commit,
+# "Review:" line, review_gate), shape (no function over 150 lines gets longer unless the body has a "Split: <row id>" line, shape_gate), checks (the PR's checks pass: CI, a required check; a cancelled check is no pass, waited on while a run on the head goes on, and on GitHub so is a failed one while a run of its workflow and event started after it goes on, and a cancelled matrix job of an older run of its workflow is no verdict (pr-ci.sh); a tier-3 item, or one landed with --ran-checks, needs checks that ran), merge (--squash, or with --merge-commit a merge commit,
 # for a landing train whose member PRs read MERGED only while their heads stay reachable; --admin adds gh's --admin, which skips a required approving review on a repo whose owner allows it, never the checks step above; --match-head-commit HEAD, then gh pr view must say MERGED), proof (the PR's merge commit is
 # on origin/<base>, by agent-merge-proof.sh), live (dotfiles-autopull --now --bg fast-forwards, in the background, the stowed
 # checkout when this repo is ~/.dotfiles or ~/.dotfiles-private, links what it added, rebuilds the
@@ -266,18 +266,20 @@ wait_checks() {
         sleep "$CHECKS_QUEUED_POLL"
         continue
       fi
-      # gh keeps the most recently started check of a name, so a cancelled job of an older run of its
-      # workflow on the head can stay listed after the newer run went green; pr-ci.sh's reading of the
-      # rollup drops it (dotfiles#2437, ar-3095).
-      gh_read rollup pr view "$pr" "${R[@]}" --json statusCheckRollup || {
-        net_error "$gh_err" || fail checks "reading the checks: $(lastline "$gh_err")"
+      # A cancelled matrix job of an older run of its workflow on the head, which never expanded and kept
+      # its template name, stays listed after the newer run went green; pr-ci.sh's reading of the rollup
+      # drops it (dotfiles#2437, ar-3095). Green only when the rollup lists every cancelled name; a lost
+      # connection reads again, and any other failed read leaves the cancelled check as the verdict.
+      if gh_read rollup pr view "$pr" "${R[@]}" --json statusCheckRollup; then
+        if [ "$(jq -r --argjson c "$cancelled" "$CI_JQ"' if ([.statusCheckRollup[]?.name] as $n | $c | all(.name as $k | $n | index([$k])))
+            then ci else "MISSING" end' <<<"$rollup" 2>/dev/null)" = PASS ]; then
+          echo "checks: green (cancelled: $names, a matrix job of an older run of its workflow on the head)"
+          had_checks=yes
+          return 0
+        fi
+      elif net_error "$gh_err"; then
         net_retry "$gh_err"
         continue
-      }
-      if [ "$(jq -r "$CI_JQ"' ci' <<<"$rollup" 2>/dev/null)" = PASS ]; then
-        echo "checks: green (cancelled: $names, in an older run of its workflow on the head)"
-        had_checks=yes
-        return 0
       fi
       [ "$try" -lt "$CHECKS_TRIES" ] || fail checks "cancelled: $names, and no run of its workflow is left on the head to replace it: gh run rerun it, then re-run"
       sleep "$CHECKS_POLL"
