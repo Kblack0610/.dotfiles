@@ -887,7 +887,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn health_names_the_domains_then_each_component_that_is_not_green() {
+    fn health_is_one_line_of_domain_chips_and_lists_no_component() {
         let mut i = crate::board::tests::fixture();
         i.instant.get_mut("cc").unwrap().extend(
             hub_core::prom::flatten(&serde_json::json!({"status": "success", "data":
@@ -906,7 +906,7 @@ pub(crate) mod tests {
         let (s, _) = page(&AlertsView::default(), &a, 160);
         let at = |w: &str| s.find(w).unwrap_or_else(|| panic!("no {w} in {s}"));
         assert!(at("HEALTH") < at("llm RED"), "{s}");
-        assert!(s.contains("   RED  llm/gateway"), "{s}");
+        assert!(!s.contains("llm/gateway"), "{s}");
     }
 
     #[test]
