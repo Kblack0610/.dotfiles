@@ -1645,6 +1645,93 @@ human_hold() {
   grep -qx 'status: pending' "$(ask_file "$a")"
 }
 
+# row_map: a registry whose trackers give the row-id codes ar and hc.
+row_map() {
+  export PROJECT_MAP_FILE="$SANDBOX/project-map.json"
+  printf '%s\n' '{"trackers":{"agent-runtime":{"code":"ar"},"home-config":{"code":"hc"},"demo":{}}}' > "$PROJECT_MAP_FILE"
+}
+# rpost <project> [flags...] <question>: post with the question as its context, which names its row ids.
+rpost() { "$AGENT_ASK" post --project "$1" --context "About: ${*: -1}" "${@:2}"; }
+
+@test "expire cancels an ask on a row the human answered after it was posted, however worded; not before, not another row, not a live or held one" {
+  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
+  row_map
+  mkdir -p "$HOME/.claude/sessions"
+  printf '{"pid":%d,"sessionId":"sid-live"}\n' "$$" > "$HOME/.claude/sessions/$$.json"
+  local first dup audit live held other two inword later id
+  first="$(rpost home-config --kind approval 'CI row hc-820 is moot since lending was deleted; drop it?')"
+  dup="$(CLAUDE_CODE_SESSION_ID=sid-gone rpost home-config --kind approval 'Cancel hc-820 as moot, since PR 1355 deleted seat lending?')"
+  audit="$(rpost home-config --kind approval --audit-of q1 --options 'a=keep|b=override' 'The judge answered "CI row hc-820 is moot; drop it?" with "a"; your pick?')"
+  live="$(CLAUDE_CODE_SESSION_ID=sid-live rpost home-config 'Is hc-820 still needed?')"
+  held="$(rpost home-config 'Close hc-820 now?')"
+  # agent-queue wants a checkout for a project the registry names, so the item is filed with none.
+  PROJECT_MAP_FILE= AQ="$AGENT_ASK_QUEUE_CMD" legacy held "tags: ask:$held=approve" --project other "the hc-820 work" >/dev/null
+  other="$(rpost agent-runtime 'Start board row ar-4328 again after its last 2 runs failed?')"
+  two="$(rpost home-config 'Fold hc-820 into hc-821?')"
+  # A row id inside another word is not the row.
+  inword="$(rpost home-config 'Merge the xhc-820 and hc-820b notes?')"
+  for id in "$dup" "$audit" "$live" "$held" "$other" "$two" "$inword"; do aged "$id" '-1 hour'; done
+  "$AGENT_ASK" answer --by human "$first" approve 2>/dev/null
+  # Posted after the answer: a new question on the row, not a duplicate.
+  later="$(rpost home-config 'hc-820 cancel failed again; retry it?')"
+  aged "$later" '+1 hour'
+  run "$AGENT_ASK" expire --dry-run
+  assert_success
+  assert_line "home-config	$dup	cancel	duplicate of $first: the human answered \"approve\" on row hc-820 after this was asked"
+  assert_line --regexp "^home-config	$audit	cancel	duplicate of $first: "
+  for id in "$live" "$held" "$other" "$two" "$inword" "$later"; do refute_output --partial "$id"; done
+  grep -qx 'status: pending' "$(ask_file "$dup")"
+  run "$AGENT_ASK" expire
+  run "$AGENT_ASK" show "$dup"
+  assert_line 'status: cancelled'
+  assert_line --regexp "^closed_reason: duplicate of $first: "
+  for id in "$live" "$held" "$other" "$two" "$inword" "$later"; do grep -qx 'status: pending' "$(ask_file "$id")"; done
+  # Only the human's answer settles a row: the judge's or an agent's does not.
+  local q77 r77 q78 r78
+  q77="$(rpost agent-runtime 'Cancel ar-77 as built?')"; r77="$(rpost agent-runtime 'Retry ar-77?')"
+  q78="$(rpost agent-runtime 'Cancel ar-78 as built?')"; r78="$(rpost agent-runtime 'Retry ar-78?')"
+  aged "$r77" '-1 hour'; aged "$r78" '-1 hour'
+  "$AGENT_ASK" answer --by judge "$q77" yes 2>/dev/null
+  "$AGENT_ASK" answer --by agent "$q78" yes 2>/dev/null
+  run "$AGENT_ASK" expire --dry-run
+  refute_output --partial "$r77"; refute_output --partial "$r78"
+  # A registry with no tracker codes names no rows.
+  local bare; bare="$(rpost agent-runtime 'Drop ar-4328 for good?')"
+  aged "$bare" '-1 hour'
+  "$AGENT_ASK" answer --by human "$other" retry 2>/dev/null
+  printf '{"trackers":{}}\n' > "$PROJECT_MAP_FILE"
+  run "$AGENT_ASK" expire --dry-run
+  refute_output --partial "$bare"
+  # Negative control: the same tree with the codes back closes it.
+  row_map
+  run "$AGENT_ASK" expire --dry-run
+  assert_line --regexp "^agent-runtime	$bare	cancel	duplicate of $other: "
+}
+
+@test "expire cancels a today or tonight ask once its day is over and DATED_HOURS have passed; an undated or held one stays" {
+  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
+  local past fresh late plain held id
+  past="$("$AGENT_ASK" post --project demo 'Who gets a Steam key for todays playtest?')"
+  fresh="$("$AGENT_ASK" post --project demo 'Ship the build tonight?')"
+  late="$("$AGENT_ASK" post --project demo 'Run the backup this evening?')"
+  plain="$("$AGENT_ASK" post --project demo 'Which playtest build ships?')"
+  held="$("$AGENT_ASK" post --project other 'Start the today phase?')"
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy held "tags: ask:$held=approve" --project other "the today phase" >/dev/null
+  aged "$past" '-2 days'; aged "$plain" '-2 days'; aged "$held" '-2 days'
+  # Posted at the end of yesterday: its day is over, so DATED_HOURS since the post decide it.
+  sed -i "s/^created: .*/created: $(date -d 'yesterday 23:59' +%Y-%m-%dT%H:%M:%S%z)/" "$(ask_file "$late")"
+  printf 'DATED_HOURS=48\n' > "$BATS_TEST_TMPDIR/park.conf"
+  export AGENT_ASK_PARK_CONF="$BATS_TEST_TMPDIR/park.conf"
+  run "$AGENT_ASK" expire
+  assert_success
+  assert_output "demo	$past	cancel	expired: it asked about today on $(date -d '-2 days' +%F), which has passed"
+  grep -qx 'status: cancelled' "$(ask_file "$past")"
+  printf 'DATED_HOURS=0\n' > "$AGENT_ASK_PARK_CONF"
+  run "$AGENT_ASK" expire
+  assert_output --regexp "^demo	$late	cancel	expired: it asked about this evening on [0-9-]+, which has passed$"
+  for id in "$fresh" "$plain" "$held"; do grep -qx 'status: pending' "$(ask_file "$id")"; done
+}
+
 @test "a verdict settled by a live hold the human set answers the ask by it; an agent's hold or a gone one does not" {
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   unset AGENT_ASK_NO_JUDGE
