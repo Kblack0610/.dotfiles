@@ -1306,6 +1306,32 @@ prs_key() {
   printf '%s\n' "$CACHE/${slug}_$(canonical_remote "$1")"
 }
 
+# store_key <repo> -> the PR-store key of a repo: a Forgejo repo (host/owner/repo) under the store's host, since a
+# clone's remote may be on an alias of it (the public ROOT_URL host, not the store's), which the store does not list
+# and which read as "no PR" (so_store_key is the one alias rule, agent-land's too). Any other repo as given.
+store_key() {
+  [[ "$1" == */*/* ]] || { printf '%s\n' "$1"; return; }
+  so_store_key "${SO_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}" "$1"
+}
+
+# store_refresh <store key>: close --self only. The store is polled every 10 minutes, so a PR merged since the
+# last poll still reads OPEN with its CI running, and holds a session that landed it (hc-658, tc-24: Forgejo
+# PRs read "open, CI PENDING" after agent-land). Ask the store to read the forge now, as agent-land does after
+# a merge, but --wait: a poll mid-read holds the store lock, and its read is the answer wanted. Once a pass per
+# repo (case-blind). A repo the store does not list (rc 3) is no fault; any other failure leaves the store stale,
+# so every row on that repo is blind (close keeps), never a stale OPEN taken as fact.
+store_refresh() {
+  [ -n "${CLOSE_SELF:-}" ] || return 0
+  local key="${1//\//_}" f out rc=0
+  f="$CACHE/refreshed_${key,,}"
+  if [ ! -e "$f" ]; then
+    : > "$f"
+    out="$("$SCHEDULES_SYNC" sync-prs --wait "$1" 2>&1)" || rc=$?
+    [ "$rc" = 0 ] || [ "$rc" = 3 ] || { : > "$f.failed"; unreadable "PR store refresh ($1): ${out##*$'\n'}"; }
+  fi
+  [ ! -e "$f.failed" ] || blind_row
+}
+
 # PRs for one repo, cached per pass: "branch \t number \t state \t ci \t head_oid \t red job ids", newest first,
 # from the PR store (`schedules-sync prs --checks`, unreadable once 30 minutes stale): ci is the run ledger's
 # reading of the head commit, red the job archive's failed job ids (- for none it has yet). The repo is
@@ -1323,8 +1349,9 @@ prs_for() {
   key="$(prs_key "$dir")" || return 0
   if [ ! -f "$key" ]; then
     repo="$(forge_of "$dir")"
-    if [ "$repo" != origin ]; then repo="${repo#* }"
+    if [ "$repo" != origin ]; then repo="$(store_key "${repo#* }")"
     else repo="$(origin_repo "$dir")" || return 0; fi
+    store_refresh "$repo"
     out="$("$SCHEDULES_SYNC" prs "$repo" --checks 2>/dev/null)" || rc=$?
     if [ "$rc" = 0 ] && jq -r '.[] | [.branch // "-", .number, .state, .ci, .head_sha // "-", .red] | @tsv' \
          <<<"$out" > "$key" 2>/dev/null; then
@@ -1672,6 +1699,7 @@ pr_states() {
   local repo="$1" file
   file="$CACHE/prs_${repo//\//_}.json"
   if [ ! -f "$file" ]; then
+    store_refresh "$repo"
     "$SCHEDULES_SYNC" prs "$repo" 2>/dev/null | jq -c 'map({number, state, mergedAt: .merged_at})' > "$file" 2>/dev/null
   fi
   [ -s "$file" ] && cat "$file"
@@ -1709,11 +1737,13 @@ merged_prs() {
 }
 
 # session_prs <transcript> -> the PRs this session opened or merged, as a JSON array of
-# {repo, number, state, merged_at}. A PR its repo's list does not reach has a null state.
+# {repo, number, state, merged_at}. A PR its repo's list does not reach has a null state. A Forgejo alias host is
+# read as the store's (so_canon_claims); collect runs so_canon_init once, so each row inherits the alias list.
 session_prs() {
   local f="$1" prs repo
   [ -f "$f" ] || { echo '[]'; return; }
-  prs="$(so_transcript_metrics "$f" | jq -c '.prs // []')"
+  prs="$(so_transcript_metrics "$f" | so_canon_claims "${SO_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}" 2>/dev/null | jq -c '.prs // []')" \
+    || { unreadable "PR claims (project map or alias list)"; blind_row; echo '[]'; return; }
   [ -n "$prs" ] || { echo '[]'; return; }
   # a repo's whole PR list goes through a pipe, never argv: it outgrows an argument's 128 KB
   while IFS= read -r repo; do
@@ -2323,7 +2353,7 @@ collect() {
   # shellcheck source=/dev/null
   . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh" || return 1
   now="$(date +%s)"
-  heavy="$(heavy_panes)"
+  heavy="$(heavy_panes)"; so_canon_init "${SO_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}" 2>/dev/null || :
   local panel items qjson qall qitems off qheld qhand
   PROC_SNAP="$CACHE/procs"   # live_wait reads /proc into it on its first call
   off="$(off_default_checkouts)"
