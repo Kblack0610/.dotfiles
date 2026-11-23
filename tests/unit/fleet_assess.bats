@@ -704,7 +704,7 @@ fake_proc() {
   assert_output --regexp '^orphan'
 }
 
-@test "classify: a CI pool job under ci.slice is ci, by runner slice, not an orphan (ar-1652)" {
+@test "classify: a CI pool job or runner under ci.slice is ci, by runner slice, not an orphan (ar-1652, ar-111)" {
   export FLEET_PROC="$BATS_TEST_TMPDIR/proc"
   # a docker-run Unity job: containerd-shim reparented to init, so the parent chain says nothing
   fake_proc 90 1 containerd-shim "/ci.slice/ci-unity.slice/ci-unity-2.slice/docker-f303.scope"
@@ -715,6 +715,10 @@ fake_proc() {
   fake_proc 95 1 dockerd-job "/ci.slice/docker-10f3.scope"
   run classify 95
   assert_output "$(printf 'ci\tci.slice\t-')"
+  # the runner itself (ar-111): a system service under the slice, ci, not a unit or an orphan
+  fake_proc 96 1 Runner.Listener "/ci.slice/ci-unity.slice/ci-unity-1.slice/actions.runner.host-unity-pool-1.service"
+  run classify 96
+  assert_output "$(printf 'ci\tci-unity-1.slice\t-')"
   # the same chain outside ci.slice is still an orphan
   fake_proc 99 1 Unity "/system.slice/docker-abcd.scope"
   run classify 99
