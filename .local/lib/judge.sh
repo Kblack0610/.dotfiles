@@ -60,6 +60,45 @@ judge_floor_hit() {
   return 1
 }
 
+# judge_conf <key> <default>: AGENT_ASK_<key> when set, else ask-judge.conf's <key>, else the
+# default. The conf is sourced in a subshell, so nothing else it sets reaches this one.
+judge_conf() {
+  local env="AGENT_ASK_$1"
+  if [ -n "${!env+x}" ]; then printf '%s' "${!env}"; return 0; fi
+  ( . "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/ask-judge.conf" 2>/dev/null; printf '%s' "${!1:-$2}" )
+}
+
+# judge_work_level <policy> <asks root> <item json>: a queue item's work, its PR's changed paths on
+# stdin, rated on the ask levels, out one line "<level><TAB><evidence>". critical is what no judge
+# ever decides: a path a "Judge authority" name matches (an ask naming one goes to the human as an
+# approval), or an item carrying out an ask (`from: ask:<id>`, a tag `ask:<id>`) that the judge
+# flagged judge_human_only (external met or reversible not). fleet is a "Fleet floor" match, else
+# repo. rc 2 when the policy cannot be read: a failed read must not open the door (JUDGE_HARD_STOPS).
+# agent-land holds a critical landing for a second agent's verdict (validate_gate).
+judge_work_level() {
+  local policy="$1" asks="$2" it="$3" paths hit id f
+  [ -r "$policy" ] && [ -n "$(judge_floor "$policy" "Judge authority")" ] || return 2
+  paths=$(cat)
+  if hit=$(judge_floor_hit "$policy" "$paths" "Judge authority"); then
+    printf 'critical\tthe diff touches %s, a Judge authority name in %s\n' "$(grep -iF -m1 -- "$hit" <<<"$paths")" "$policy"
+    return 0
+  fi
+  for id in $(jq -r '[(.from // "" | select(startswith("ask:")) | .[4:]),
+      ((.tags // "") | split(" ")[] | select(startswith("ask:")) | .[4:] | sub("=.*"; ""))] | unique[]' <<<"$it" 2>/dev/null); do
+    for f in "$asks"/*/"$id".md; do
+      [ -f "$f" ] && grep -qx 'judge_human_only: true' "$f" || continue
+      printf 'critical\tit carries out ask %s, which the judge flagged human-only: %s\n' "$id" \
+        "$(sed -n '/^judge_human_only_evidence: /{s///p;q;}' "$f")"
+      return 0
+    done
+  done
+  if hit=$(judge_floor_hit "$policy" "$paths" "Fleet floor"); then
+    printf 'fleet\tthe diff touches %s, a Fleet floor name\n' "$(grep -iF -m1 -- "$hit" <<<"$paths")"
+  else
+    printf 'repo\tno floor name in the diff\n'
+  fi
+}
+
 # judge_derive: an ask-judge reply on stdin (verdict.schema.json), out one line of JSON: `rule`,
 # what decides it (the human criterion met, or the needed one missing; else the ask's type, so a
 # type is what goes live), `answerable`, `type`, the criteria that held, `met`, `evidence`, the
