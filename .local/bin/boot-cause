@@ -9,8 +9,10 @@
 # from what survives, in this order: a pstore dump or a kernel fault in the last kernel log, the last
 # power sample (AC, battery, UPS) the minute timer saved before the log stopped, and a house power
 # event seen from outside (other hosts whose node_boot_time_seconds is in the same window, from
-# Prometheus). A death with none of those is still recorded, as `silent-death` with the journal's
-# last line and `gaps` naming what could not be checked, never as an unknown.
+# Prometheus), then a last sample at the CPU throttle point (`thermal-suspect`). A death with none of
+# those is still recorded, as `silent-death` with the journal's last line and `gaps` naming what could
+# not be checked, never as an unknown. Each sample also carries the CPU temperature and the kernel, so
+# a record names the kernel it died on and how many boots on that kernel ended unclean.
 #
 # Files: $BOOT_CAUSE_DIR/<host>.jsonl (the record, one line per boot), $BOOT_CAUSE_STATE/samples.log
 # (the last SAMPLE_KEEP samples). Why and the reading guide: docs/operations/boot-cause.md.
@@ -22,10 +24,13 @@ DIR=${BOOT_CAUSE_DIR:-$HOME/.agent/boots}
 STATE=${BOOT_CAUSE_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/boot-cause}
 PSTORE=${BOOT_CAUSE_PSTORE:-/var/lib/systemd/pstore}
 POWER=${BOOT_CAUSE_POWER:-/sys/class/power_supply}
-THERMAL=${BOOT_CAUSE_THERMAL:-/sys/class/thermal}
+export CPU_TEMP_THERMAL=${BOOT_CAUSE_THERMAL:-/sys/class/thermal} CPU_TEMP_HWMON=${BOOT_CAUSE_HWMON:-/sys/class/hwmon}
+_bc_lib="$(dirname "$(readlink -f "$0")")/../lib"
 # The one bash Prometheus reader; the endpoint is CC_PROM_URL in ~/.config/command-center/env (private overlay).
 # shellcheck source=/dev/null
-. "$(dirname "$(readlink -f "$0")")/../lib/prom.sh"
+. "$_bc_lib/prom.sh"
+# shellcheck source=../lib/cpu-temp.sh
+. "$_bc_lib/cpu-temp.sh"   # read_tctl, the CPU temperature fleet-assess reads too
 BOOT_ID=${BOOT_CAUSE_BOOT_ID:-$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)}
 
 # The last samples kept. One a minute is the one timer cadence (boot-cause-sample.timer): no event
@@ -46,6 +51,8 @@ UPS_TIMEOUT=5
 KERN_LINES=40
 # A sample older than this before the log stopped says nothing about the death (the timer had stopped).
 SAMPLE_FRESH=300
+# A last sample at or over FLEET_HOT_TCTL (C, set in cpu-temp.sh, the one fleet-assess holds at) makes
+# an otherwise silent death thermal-suspect.
 
 die() { printf 'boot-cause: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "$1 not found"; }
@@ -75,7 +82,7 @@ ups_on_battery() { [[ $1 =~ (^|[[:space:]])(OB|LB|ONBATT|LOWBATT)([[:space:]]|$)
 cmd_sample() {
   need jq
   mkdir -p "$STATE" || die "cannot create $STATE"
-  local ac=null bat_pct=null bat_status='' d t v temp=0 u ups_name='' ups_status='' ups_charge=''
+  local ac=null bat_pct=null bat_status='' d temp u ups_name='' ups_status='' ups_charge=''
   for d in "$POWER"/*; do
     [ -r "$d/type" ] || continue
     # A wireless mouse or controller battery is scope Device, not this host's power.
@@ -87,20 +94,15 @@ cmd_sample() {
         [ -r "$d/status" ] && bat_status=$(cat "$d/status") ;;
     esac
   done
-  for t in "$THERMAL"/thermal_zone*/temp; do
-    # Some zones answer a read with an error; an empty or non-numeric one is skipped, not fatal.
-    v=$(cat "$t" 2>/dev/null)
-    [[ $v =~ ^-?[0-9]+$ ]] || continue
-    d=$((v / 1000))
-    [ "$d" -gt "$temp" ] && temp=$d
-  done
+  temp=$(read_tctl)
   if u=$(ups_state); then IFS=$'\t' read -r ups_name ups_status ups_charge <<<"$u"; fi
   local line
   line=$(jq -nc --arg host "$HOST" --arg boot "$BOOT_ID" --argjson epoch "$(date +%s)" \
-    --argjson ac "$ac" --argjson bat "$bat_pct" --arg bats "$bat_status" --argjson temp "$temp" \
-    --arg load1 "$(cut -d' ' -f1 /proc/loadavg)" \
+    --argjson ac "$ac" --argjson bat "$bat_pct" --arg bats "$bat_status" --arg temp "$temp" \
+    --arg load1 "$(cut -d' ' -f1 /proc/loadavg)" --arg kernel "$(uname -r)" \
     --arg un "$ups_name" --arg us "$ups_status" --arg uc "$ups_charge" \
-    '{epoch:$epoch, boot_id:$boot, ac_online:$ac, battery_pct:$bat, battery_status:$bats, temp_c_max:$temp, load1:($load1|tonumber),
+    '{epoch:$epoch, boot_id:$boot, ac_online:$ac, battery_pct:$bat, battery_status:$bats,
+      cpu_temp_c:(($temp | tonumber? | . + 0) // null), load1:($load1|tonumber), kernel:$kernel,
       ups:(if $us == "" then null else {name:$un, status:$us, charge_pct:($uc|tonumber? // null)} end)}') || die "sample failed"
   { [ -f "$STATE/samples.log" ] && tail -n "$((SAMPLE_KEEP - 1))" "$STATE/samples.log"; printf '%s\n' "$line"; } >"$STATE/samples.log.tmp" \
     && mv "$STATE/samples.log.tmp" "$STATE/samples.log"
@@ -121,6 +123,8 @@ co_reboot() {
 cmd_record() {
   need jq
   need journalctl
+  # Checked here, not at the top: a bad threshold must not stop the sample timer too.
+  [[ $FLEET_HOT_TCTL =~ ^[0-9]+([.][0-9]+)?$ ]] || die "FLEET_HOT_TCTL must be a number of degrees C, not '$FLEET_HOT_TCTL'"
   mkdir -p "$DIR" || die "cannot create $DIR"
   local rec="$DIR/$HOST.jsonl"
   # One record per boot: the user manager can restart inside a boot, and this runs again.
@@ -129,7 +133,7 @@ cmd_record() {
     return 0
   fi
 
-  local boot_epoch now gaps=() evidence=() cause confidence shutdown tail kern last_epoch last_line gap_s
+  local boot_epoch now gaps=() evidence=() cause confidence shutdown tail kern last_epoch last_line gap_s kernel=''
   now=$(date +%s)
   boot_epoch=${BOOT_CAUSE_BOOT_EPOCH:-$(awk '$1 == "btime" { print $2 }' /proc/stat)}
 
@@ -164,6 +168,11 @@ cmd_record() {
   sample=$(jq -c --argjson b "$boot_epoch" --argjson e "$last_epoch" --argjson f "$SAMPLE_FRESH" \
     'select(.epoch < $b and ($e - .epoch) <= $f)' "$STATE/samples.log" 2>/dev/null | tail -n1)
   [ -n "$sample" ] || sample='null'
+  # The kernel it ran, on every record, so a run of deaths on one kernel shows (2026-11-19: every boot on
+  # 7.3.5 died, the 7.3.4 boot before it ran 40 h clean).
+  kernel=$(jq -r '.kernel // empty' <<<"$sample" 2>/dev/null)
+  # No fresh sample: the dead boot's own kernel banner, when the journal still holds its start.
+  [ -n "$kernel" ] || kernel=$(journalctl -b -1 -k -o cat --no-pager 2>/dev/null | awk '/^Linux version / { print $3; exit }')
 
   if [ "$shutdown" = unclean ]; then
     evidence+=("journal stopped at $(date -d "@$last_epoch" '+%F %T %Z') with no shutdown target; $((gap_s / 60)) min before this boot")
@@ -202,6 +211,9 @@ cmd_record() {
     elif [ "${co_n:-null}" != null ] && [ "$co_n" -ge "$CO_MIN" ]; then
       cause=house-power-event confidence=medium
       evidence+=("$co_n other hosts booted within $((CO_WINDOW / 60)) min of this one")
+    elif jq -e --argjson h "$FLEET_HOT_TCTL" '(.cpu_temp_c // 0) >= $h' <<<"$sample" >/dev/null 2>&1; then
+      cause=thermal-suspect confidence=medium
+      evidence+=("last sample read the CPU at $(jq -r .cpu_temp_c <<<"$sample") C, at or over the $FLEET_HOT_TCTL C throttle point, with no other cause")
     else
       cause=silent-death confidence=low
       evidence+=("no panic, no pstore dump, no kernel fault, no low battery or UPS alarm, no other host rebooting with it: a freeze, a hard reset or a power cut that took only this host")
@@ -211,8 +223,19 @@ cmd_record() {
     elif [ -z "$sample_ups" ]; then
       gaps+=("no UPS reachable from this host (no NUT or apcupsd): UPS state at death is unknown")
     fi
-    if [ "$cause" = silent-death ] && [ "$sample" != null ]; then
+    if { [ "$cause" = silent-death ] || [ "$cause" = thermal-suspect ]; } && [ "$sample" != null ]; then
       evidence+=("last sample: $(jq -c 'del(.boot_id,.host)' <<<"$sample")")
+    fi
+    local peak
+    peak=$(jq -rs --argjson b "$boot_epoch" '[.[] | select(.epoch < $b)] | select(length > 0)
+      | "peak over the last \(length) samples: load \(map(.load1 // 0) | max), CPU \(map(.cpu_temp_c // empty) | max // "unread") C"' \
+      "$STATE/samples.log" 2>/dev/null)
+    [ -z "$peak" ] || [ "$sample" = null ] || evidence+=("$peak")
+    if [ -n "$kernel" ]; then
+      local runs
+      runs=$(jq -rs --arg k "$kernel" '[.[] | select(.previous.kernel == $k)]
+        | "\((map(select(.previous.shutdown == "unclean")) | length) + 1) of \(length + 1)"' "$rec" 2>/dev/null) || runs='1 of 1'
+      evidence+=("kernel $kernel: $runs recorded boots on it ended unclean")
     fi
     write_record "$co_n"
   else
@@ -231,7 +254,9 @@ write_record() {
     --arg cause "$cause" --arg conf "$confidence" --arg shutdown "$shutdown" \
     --argjson last "${last_epoch:-0}" --argjson gap "${gap_s:-0}" --argjson ev "$ev" --argjson gaps "$gp" \
     --argjson co "$co" --argjson sample "${sample:-null}" --argjson log "${lines:-[]}" \
-    '{host:$host, boot_id:$boot, recorded_epoch:$at, boot_epoch:$boot_epoch, previous:{shutdown:$shutdown, last_log_epoch:$last, gap_s:$gap},
+    --arg kernel "${kernel:-}" \
+    '{host:$host, boot_id:$boot, recorded_epoch:$at, boot_epoch:$boot_epoch,
+      previous:{shutdown:$shutdown, last_log_epoch:$last, gap_s:$gap, kernel:(if $kernel == "" then null else $kernel end)},
       cause:$cause, confidence:$conf, evidence:$ev, gaps:$gaps, hosts_rebooted_with:$co, last_sample:$sample, last_log:$log}' \
     >>"$DIR/$HOST.jsonl" || die "could not write $DIR/$HOST.jsonl"
   printf 'boot-cause: previous boot ended %s (%s): %s\n' "$cause" "$confidence" "${evidence[0]-}"

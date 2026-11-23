@@ -809,7 +809,11 @@ share_history() {
   local srow; srow=$(qfield "$(qitem queued "$sprint")" from); srow=${srow#board:game:}
   jq -nc --arg id "$srow" '[{project: "game", queued: false, tasks: [{id: $id, state: "open"}]}]' > "$NOTES_FIXTURE/board.sprints"
   agent-queue set "$sprint" tags=sprint >/dev/null
-  sed -i 's/^queued: .*/queued: 2026-01-01T00:00:00Z/' "$(qitem queued "$old")" "$(qitem queued "$sprint")"
+  # A land requeue of its own open PR (hc-857 went back with home-config#1406 green) keeps its place.
+  local land=land-it
+  agent-queue add --project game --slug "$land" --from board:game:gm-99 "land the crash fix" >/dev/null
+  agent-queue set "$land" pr=o/game#7 pr_owner=land "land_tries=1 abc123" >/dev/null
+  sed -i 's/^queued: .*/queued: 2026-01-01T00:00:00Z/' "$(qitem queued "$old")" "$(qitem queued "$sprint")" "$(qitem queued "$land")"
   export DISPATCH_STARVED_MIN=60 DISPATCH_TARGET_AWAY=0
   # The negative control: with the share under its cap nothing goes back.
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -822,6 +826,9 @@ share_history() {
   [ -n "$(qitem queued "$fresh")" ] || fail "the item held under DISPATCH_STARVED_MIN left the queue"
   # A sprint row is its floor's to start.
   [ -n "$(qitem queued "$sprint")" ] || fail "the sprint item went back to its row"
+  # The land requeue stayed, while old, the same age with no PR to land, went back.
+  refute_output --partial "returned queue item $land"
+  [ -n "$(qitem queued "$land")" ] || fail "the item landing its PR left queued/"
 }
 
 @test "fleet share: while the share is full the canary top-up asks for no Claude lane" {

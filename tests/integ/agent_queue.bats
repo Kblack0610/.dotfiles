@@ -1062,42 +1062,61 @@ gate_rbw() {
   assert_line "clear    rbw/infra/x"
 }
 
-@test "gate after/<row-id> clears once that row closed done, and --all answers every open row's gates from the open board" {
+@test "gate after/<row-id> reads each row by id wherever it sits, and --all answers every open row's gates" {
   gate_rbw
   # .tags is what notes lower-cases for grouping; .tags_cased is as written. A gate reads tags_cased, so
   # the ask id keeps its case (2026-11-18: every #ask/ gate on the board read "no agent-ask has that id").
   export AGENT_ASK_ROOT="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_ROOT/game"
   printf 'id: AbC12x\nstatus: pending\noptions: a|b\n' > "$AGENT_ASK_ROOT/game/AbC12x.md"
+  # .elsewhere is what only --id finds: a row aimed at a later version and a dropped one (the open
+  # board and its done feed list neither: 2026-11-23, queue-starved tripped on both), a dup-closed one.
   jq -n '{rows: ([{id: "ar-1", state: "open", tags: ["after/ar-2", "size/s"]}, {id: "ar-2", state: "doing", tags: ["rbw/infra/x"]},
                  {id: "ar-9", state: "open", tags: ["after/ar-4"]},
                  {id: "ar-7", state: "open", tags: ["ask/abc12x/a"], tags_cased: ["ask/AbC12x/a"]}]),
-          done: [{id: "ar-3", state: "done", marker: "id:ar-3 done:2026-11-01", tags: ["rbw/infra/gone"]},
-                 {id: "ar-4", state: "done", marker: "id:ar-4 done:2026-11-01 dropped: a duplicate"}]}' > "$NOTES_FIXTURE/board.json"
-  run "$AQ" gate --json after/ar-2 after/ar-3 after/ar-4 after/ar-404
+          done: [{id: "ar-3", state: "done", marker: "id:ar-3 done:2026-11-01", tags: ["rbw/infra/gone"]}],
+          elsewhere: [{id: "ar-4", state: "done", marker: "id:ar-4 filed:2026-11-01 dropped: on the game sheet"},
+                      {id: "ar-5", state: "open", version: "v0.9.0", marker: "id:ar-5"},
+                      {id: "ar-6", state: "done", marker: "id:ar-6 dup:ar-5", dup: "ar-5"},
+                      {id: "ar-12", state: "done", marker: "id:ar-12 dup:ar-13", dup: "ar-13"},
+                      {id: "ar-13", state: "done", marker: "id:ar-13 dup:ar-3", dup: "ar-3"},
+                      {id: "ar-14", state: "done", marker: "id:ar-14 dup:ar-15", dup: "ar-15"},
+                      {id: "ar-15", state: "done", marker: "id:ar-15 dup:ar-14", dup: "ar-14"}]}' > "$NOTES_FIXTURE/board.json"
+  run "$AQ" gate --json after/ar-2 after/ar-3 after/ar-4 after/ar-5 after/ar-6 after/ar-404
   assert_failure 3
   st() { jq -r --arg t "$1" 'select(.tag == $t) | "\(.state)|\(.why)"' <<<"$output"; }
   [ "$(st after/ar-2)" = "pending|after ar-2 (open)" ]
   [ "$(st after/ar-3)" = "clear|" ]
   [[ "$(st after/ar-4)" == "dead|after ar-4: that row was dropped"* ]]
+  [ "$(st after/ar-5)" = "pending|after ar-5 (open)" ]
+  [ "$(st after/ar-6)" = "pending|after ar-6 (folded into ar-5) (open)" ]
   [[ "$(st after/ar-404)" == "dead|after ar-404: no board row"* ]]
-  [ "$(grep -c '^notes board --json --done-days' "$NOTES_FIXTURE/calls.log")" = 1 ]
-  # The open rows' gates only, no other tag and no closed row's, from one board read.
+  # Every id in one read: ar-6's dup target was asked for already.
+  [ "$(grep -c '^notes board' "$NOTES_FIXTURE/calls.log")" = 1 ]
+  grep -qx 'notes board --json --id ar-2 --id ar-3 --id ar-4 --id ar-5 --id ar-6 --id ar-404' "$NOTES_FIXTURE/calls.log"
+  # A dup target no tag names is read too, hop by hop, and the last row's state is the gate's.
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" gate --json after/ar-12
+  assert_success
+  [ "$(st after/ar-12)" = "clear|" ]
+  [ "$(grep -c '^notes board --json --id' "$NOTES_FIXTURE/calls.log")" = 3 ]
+  # A dup cycle ends at the hop cap, dead, never in a loop.
+  run "$AQ" gate --json after/ar-14
+  assert_failure 3
+  [[ "$(st after/ar-14)" == "dead|after ar-14 (folded into ar-15) (folded into ar-14)"*"folded more than"* ]]
+  # A feed jq cannot read is an unread board, so the gate holds pending, never dead.
+  cp "$NOTES_FIXTURE/board.json" "$SANDBOX/good.json"; echo 'not json' > "$NOTES_FIXTURE/board.json"
+  run "$AQ" gate after/ar-2
+  assert_failure 3
+  assert_output --partial "pending  after/ar-2: after ar-2 (notes board --json failed)"
+  mv "$SANDBOX/good.json" "$NOTES_FIXTURE/board.json"
+  # --all: the open rows' gates only, no other tag and no closed row's: the open board, then one --id read.
   : > "$NOTES_FIXTURE/calls.log"
   run "$AQ" gate --json --all
   assert_failure 3
   [ "$(jq -sr 'map(.tag) | sort | join(" ")' <<<"$output")" = "after/ar-2 after/ar-4 ask/AbC12x/a rbw/infra/x" ]
   [ "$(st ask/AbC12x/a)" = "pending|ask AbC12x=a (pending)" ]
-  [ "$(grep -c 'board' "$NOTES_FIXTURE/calls.log")" = 1 ]
-  # Every after/ there names a row the open board lists, so no closed row is read.
-  [ "$(grep -c 'board --json --done-days' "$NOTES_FIXTURE/calls.log")" = 0 ]
-  # One it lacks reads the closed rows, once however many tags name such a row.
-  jq '.rows += [{id: "ar-8", state: "open", tags: ["after/ar-404", "after/ar-405"]}]' "$NOTES_FIXTURE/board.json" > "$SANDBOX/b.json" && mv "$SANDBOX/b.json" "$NOTES_FIXTURE/board.json"
-  : > "$NOTES_FIXTURE/calls.log"
-  run "$AQ" gate --json --all
-  assert_failure 3
-  [[ "$(st after/ar-405)" == "dead|after ar-405: no board row"* ]]
-  [ "$(grep -c 'board --json --done-days' "$NOTES_FIXTURE/calls.log")" = 1 ]
-  [ "$(grep -c 'board' "$NOTES_FIXTURE/calls.log")" = 2 ]
+  [ "$(grep -c '^notes board --json$' "$NOTES_FIXTURE/calls.log")" = 1 ]
+  [ "$(grep -c '^notes board --json --id' "$NOTES_FIXTURE/calls.log")" = 1 ]
   # Once ar-2 closes done, ar-1's gate clears.
   jq '.done += [.rows[1] | .state = "done" | .marker = "id:ar-2 done:2026-11-18"] | .rows |= map(select(.id != "ar-2"))' \
     "$NOTES_FIXTURE/board.json" > "$SANDBOX/b.json" && mv "$SANDBOX/b.json" "$NOTES_FIXTURE/board.json"
@@ -4509,20 +4528,6 @@ a"
   assert_failure 5
   run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
   assert_output "gm-7,gm-9"
-}
-
-@test "gate after/<row-id> reads a row in a queued sprint, which the board lists only under its sprint's tasks" {
-  gate_rbw
-  # 2026-11-20: after/ucp-2282 and seven more links to v0.5.5 rows read dead, though each row was open.
-  jq -n '{rows: [{id: "ar-1", state: "open", tags: ["after/ucp-5", "after/ucp-6", "after/ucp-7"]}], done: [],
-          sprints: [{tasks: [{id: "ucp-5", state: "doing"}, {id: "ucp-6", state: "done"}, {id: "ucp-7", state: "gone"}]}]}' > "$NOTES_FIXTURE/board.json"
-  run "$AQ" gate --json --all
-  assert_failure 3
-  st() { jq -r --arg t "$1" 'select(.tag == $t) | "\(.state)|\(.why)"' <<<"$output"; }
-  [ "$(st after/ucp-5)" = "pending|after ucp-5 (open)" ]
-  [ "$(st after/ucp-6)" = "clear|" ]
-  # Negative control: a task the sprint marks gone is no row, so its link is still dead.
-  [[ "$(st after/ucp-7)" == "dead|after ucp-7: no board row"* ]]
 }
 
 @test "make_room returns an item held to a clock time, moves nothing for an add the lock refuses, and never returns an item that started" {
