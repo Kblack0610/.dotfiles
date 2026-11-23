@@ -1452,8 +1452,11 @@ cmd_textfile() {
     fi
     tmp=$(mktemp "$dir/.claude_acct.prom.XXXXXX") || return 1
     if all_json | jq -rs --argjson now "${CLAUDE_ACCT_NOW:-$(date +%s)}" "$FLEET_JQ"'
+        # the Anthropic account rides every series as email, so usage history follows the account and
+        # not the folder name; a row with no known email (non-Claude kinds, a logged-out dir) has none
+        def lbls: "account=\"\(.name)\",kind=\"\(.kind)\"" + (if (.email // "") != "" then ",email=\"\(.email | gsub("\\\\"; "\\\\") | gsub("\""; "\\\"") | gsub("\n"; "\\n"))\"" else "" end);
         def rows($metric; f):
-            .[] | f as $v | select($v != null) | "\($metric){account=\"\(.name)\",kind=\"\(.kind)\"} \($v)";
+            .[] | f as $v | select($v != null) | "\($metric){\(lbls)} \($v)";
         (rows("claude_account_read_ok"; if .state == "unread" then 0 else 1 end)),
         (rows("claude_account_week_used_percent"; .week_used)),
         (rows("claude_account_week_gone_percent"; .week_gone)),
@@ -1462,10 +1465,10 @@ cmd_textfile() {
         (rows("claude_account_reserve_percent"; .room.reserve)),
         # 0 for a dollar budget, which has no pace line: its burn, keeps and back-on-pace are not read
         (rows("claude_account_paced"; if .paced == false then 0 else 1 end)),
-        (.[] | select(.parent != null) | "claude_account_parent{account=\"\(.name)\",kind=\"\(.kind)\",parent=\"\(.parent)\"} 1"),
+        (.[] | select(.parent != null) | "claude_account_parent{\(lbls),parent=\"\(.parent)\"} 1"),
         # each refusal as a label, 1 on every reason that holds the account now (ok when it has room)
-        (.[] | select(.state != "unread") | .name as $n | .kind as $k | (.room.reasons | if . == [] then ["ok"] else . end)[]
-            | "claude_account_room_reason{account=\"\($n)\",kind=\"\($k)\",reason=\"\(.)\"} 1"),
+        (.[] | select(.state != "unread") | lbls as $l | (.room.reasons | if . == [] then ["ok"] else . end)[]
+            | "claude_account_room_reason{\($l),reason=\"\(.)\"} 1"),
         (rows("claude_account_five_hour_percent"; .five_hour)),
         (rows("claude_account_five_hour_resets_timestamp_seconds"; .five_hour_resets)),
         (rows("claude_account_resets_timestamp_seconds"; .resets)),

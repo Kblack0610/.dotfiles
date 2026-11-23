@@ -2,6 +2,8 @@
 
 `claude-acct` turns every model pool, the Claude subscription accounts and every other source, into one usage row for `status`, `room`, `check pace`, `textfile` (`claude_acct.prom`) and the Costs tab. Claude accounts are listed in `~/.config/claude-acct/accounts` (tokens: [claude-acct-tokens.md](claude-acct-tokens.md)), and every other source in `~/.config/claude-acct/sources`. The format of a sources row, its kinds and its options, and every command are documented once, in the header of `.local/bin/claude-acct`.
 
+Every `claude_account_*` series carries `email="<the account's login>"` beside `account` and `kind`, so usage history follows the Anthropic account when a folder is re-logged in; a row with no known email (a non-Claude kind, a dir with no `.claude.json`) has no `email` label. A login change or a failed `.claude.json` read changes the labelset, so a query that does not aggregate `email` away (`max by (account)`) sees a new series for up to the 5-minute staleness window.
+
 ## Add a source
 
 A provider behind the LiteLLM gateway (a z.ai plan, say) needs no new kind and no code: it is a gateway route plus a `litellm-key` row.
