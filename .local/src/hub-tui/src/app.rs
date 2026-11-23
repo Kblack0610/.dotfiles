@@ -3162,6 +3162,7 @@ impl App {
             let cards = self.cards().cards;
             if k.code == KeyCode::Char('P')
                 && self.pv.table.typing.is_none()
+                && !self.pv.sfocus
                 && !self.pv.dfocus
                 && !self.pv.cfocus
                 && !self.pv.lfocus
@@ -3204,6 +3205,14 @@ impl App {
                 }
                 if let KeyCode::Esc | KeyCode::Char('d') = k.code {
                     self.pv.dfocus = false;
+                    return true;
+                }
+                return false;
+            }
+            // Sprints takes no key of its own: Esc goes back to the list.
+            if self.pv.sfocus {
+                if k.code == KeyCode::Esc {
+                    self.pv.sfocus = false;
                     return true;
                 }
                 return false;
@@ -4774,6 +4783,9 @@ impl App {
             {
                 "type, Enter submits, Esc cancels".into()
             }
+            Tab::Projects if self.pv.sfocus && !self.pv.open => format!(
+                "<- -> inner tabs  Esc back  r refresh  {tabs} tabs  q quit"
+            ),
             Tab::Projects if self.pv.lfocus && !self.pv.open => format!(
                 "<- -> inner tabs  j/k pick  Enter the project's Stage  t other table  / search  f chip  s sort  S flip  x clear  Esc back  r refresh  {tabs} tabs  q quit"
             ),
@@ -4967,8 +4979,18 @@ impl App {
                         .find(|c| c.profile == *profile && c.name == *name)
                     {
                         let pg = self.proj_page.as_ref().filter(|pg| pg.project == c.name);
-                        let (page, at) =
-                            projtab::open_lines(c, pg, self.coverage.as_ref(), &self.pv, self.p, w);
+                        let (page, at) = projtab::open_lines(
+                            c,
+                            pg,
+                            self.coverage.as_ref(),
+                            match &self.tasks {
+                                Some(Ok(f)) => Some(f),
+                                _ => None,
+                            },
+                            &self.pv,
+                            self.p,
+                            w,
+                        );
                         if !self.pv.rows_shown(&self.tv) {
                             return (page, at.map(|a| ("", a)).into_iter().collect());
                         }
@@ -7050,7 +7072,7 @@ mod tests {
         let s = screen(&mut a, 140, 30);
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing:\n{s}"));
         assert!(
-            at("[Projects] Board 1  Deliverables") < at("PROJECT "),
+            at("[Projects] Board 1  Sprints 0  Deliverables") < at("PROJECT "),
             "{s}"
         );
         assert!(
@@ -7101,9 +7123,11 @@ mod tests {
             s.lines().last().unwrap().contains("<- -> inner tabs"),
             "{s}"
         );
-        // Row keys do nothing off Rows; Right opens Rows.
+        // Row keys do nothing off Rows; Right steps to Sprint, and again to Rows.
         a.handle(key('x'));
         assert!(a.tv.prompt.is_none());
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Right))));
+        assert_eq!(a.pv.inner, "sprint");
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Right))));
         assert_eq!(a.pv.inner, "rows");
         let s = screen(&mut a, 140, 30);
@@ -9200,7 +9224,12 @@ mod tests {
         a.handle(arrow(KeyCode::Right));
         assert_eq!(on(&a), Some("all"));
         let s = screen(&mut a, 140, 30);
-        assert!(s.contains(" Projects [Board 1] Deliverables "), "{s}");
+        assert!(
+            s.contains(" Projects [Board 1] Sprints 0  Deliverables "),
+            "{s}"
+        );
+        a.handle(arrow(KeyCode::Right));
+        assert_eq!(on(&a), Some("sprints"));
         a.handle(arrow(KeyCode::Right));
         assert_eq!(on(&a), Some("deliverables"));
         assert!(!a.coverage_read.busy, "Coverage reads only once it shows");

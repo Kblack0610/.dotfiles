@@ -129,6 +129,9 @@ pub struct Page {
     pub releases: Option<crate::releases::Badge>,
     /// The Releases inner tab: the project's versions, its apps and the Legacy fold.
     pub release_tab: crate::project_releases::Tab,
+    /// The project's scored sprints, newest first (`project_sprints::past`), the Sprint inner tab's
+    /// Past sprints. The open and queued windows are the feed's, which a page read does not hold.
+    pub sprint_past: Vec<crate::project_sprints::Past>,
     /// `3 watches, 1 firing` over the watches that name this project, linking to the Alerts tab
     /// filtered to it; None when no watch does.
     pub alerts: Option<crate::releases::Badge>,
@@ -673,6 +676,10 @@ pub fn read_with(
         &crate::version_page::labs(reg.as_deref(), name, &[]),
         roadmap.as_ref(),
     );
+    match crate::project_sprints::past(runner, name) {
+        Ok(v) => p.sprint_past = v,
+        Err(e) => p.errors.push(e),
+    }
     p.alerts = crate::alerts::project_badge_here(name);
     if !channels.is_empty() {
         p.check_groups = crate::app_status::groups(name, &channels);
@@ -928,6 +935,11 @@ mod tests {
                 ),
                 ("notes projects --roadmap game", 0, roadmap.into()),
                 (
+                    "notes projects --sprints game",
+                    0,
+                    r#"[{"version":"v0.5.3","committed":5,"delivered":4,"line":"x"}]"#.into(),
+                ),
+                (
                     "release-state show --json",
                     0,
                     r#"{"rows":[{"project":"game","id":"game-prod","status":"drift"}]}"#.into(),
@@ -1016,6 +1028,7 @@ mod tests {
         let f = fake(0);
         let p = read(&f, "game", "alpha", NOW);
         assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert_eq!(p.sprint_past.len(), 1, "the scored windows join the page");
         assert_eq!(
             p.flow_line.as_deref(),
             Some("ideas 3 | briefs 1 | plans 1 | epics 3 | rows 5 | landed 1 | verified 1")
