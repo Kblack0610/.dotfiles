@@ -5,7 +5,7 @@
 #   sessions list [project] [--all] [-n N]   show registered sessions (newest first)
 #   sessions live                            only the sessions running right now
 #   sessions resume <id|prefix|--pick>       reopen a session (claude-acct run -r), cd'ing to its repo
-#   sessions prompts <id|prefix>             every prompt you typed in it; enter reads the session from there
+#   sessions prompts <id|prefix>             every prompt you typed in it; enter jumps to it in the live pane
 #   sessions compact <id|prefix|--pick>      distill a transcript into a digest .md
 #
 # Registry: ~/.agent/sessions/{project}/sessions.jsonl (one JSON line/session).
@@ -589,8 +589,10 @@ cmd_search() {
 # ---------------------------------------------------------------- prompts ---
 
 prompt_rows() {
-  # $1 = transcript -> "utc_stamp \t local time  prompt" per prompt the human typed, in order.
-  # The utc stamp is the key into `claude-recall show`, whose USER headers carry it. Tool
+  # $1 = transcript -> "utc_stamp \t local time  prompt \t needle" per prompt the human typed,
+  # in order. The utc stamp is the key into `claude-recall show`, whose USER headers carry it.
+  # The needle is the prompt's first line cut to 40 characters, short enough that Claude never
+  # wraps it, which `_jump` searches the pane's scrollback for. Tool
   # results, sidechains, meta records, compaction summaries and the harness wrappers seen in
   # real transcripts (task-notification, local-command-*, bash-stdout/stderr, system-reminder)
   # are skipped. A slash command shows as its name and arguments, wherever the harness put
@@ -611,13 +613,15 @@ prompt_rows() {
     | select(($p | gsub("\\s"; "")) != "")
     | (.timestamp[0:19] | sub("T"; " ")) as $utc
     | [$utc, ((.timestamp[0:19] + "Z" | fromdateiso8601 | strflocaltime("%m-%d %H:%M")) + "  "
-              + ($p | gsub("\\s+"; " ") | .[0:160]))] | @tsv' "$1" 2>/dev/null
+              + ($p | gsub("\\s+"; " ") | .[0:160])),
+       ($p | sub("^\\s+"; "") | split("\n")[0] | gsub("\t"; " ") | .[0:40] | sub("\\s+$"; ""))] | @tsv' "$1" 2>/dev/null
 }
 
 cmd_prompts() {
-  # $1 = id or prefix. A terminal gets a window over the prompts, where enter opens the
-  # whole session in less at that prompt and esc goes back; a pipe gets the plain list.
-  # Read-only: to carry on from a prompt, resume the session and pick it with Esc Esc.
+  # $1 = id or prefix. A terminal gets a window over the prompts; a pipe gets the plain list.
+  # In the window, enter jumps to that prompt in the session's live pane (`_jump`), ctrl-r
+  # reads the whole session in less from that prompt, and esc goes back. To carry on from
+  # an old prompt, resume the session and pick it with Esc Esc.
   local id t rows
   [ -n "${1:-}" ] || return 0   # ctrl-t on an empty result list
   id="$(resolve_id "$1")" || return 1
@@ -626,15 +630,42 @@ cmd_prompts() {
   rows="$(prompt_rows "$t")"
   [ -n "$rows" ] || return 0
   if [ ! -t 1 ] || ! command -v fzf >/dev/null 2>&1; then
-    printf '%s\n' "$rows" | cut -f2-
+    printf '%s\n' "$rows" | cut -f2
     return 0
   fi
   printf '%s\n' "$rows" | fzf \
-      --delimiter="$TAB" --with-nth=2.. --wrap --no-sort --tac \
-      --bind="enter:execute('$RECALL' show $id 2>&1 | less -R -p \"^USER \"{1})" \
+      --delimiter="$TAB" --with-nth=2 --wrap --no-sort --tac \
+      --bind="enter:execute('$SELF' _jump $id {1} {3})" \
+      --bind="ctrl-r:execute('$SELF' _read $id {1})" \
       --prompt="prompt> " \
-      --header="enter read from here | esc back | to carry on: resume, then Esc Esc to this prompt" \
+      --header="enter jump to it in the pane | ctrl-r read from here | esc back | to carry on: resume, then Esc Esc" \
     >/dev/null
+  return 0
+}
+
+cmd_read() {
+  # $1 = id, $2 = utc stamp -> the whole session in less, opened at that prompt.
+  "$RECALL" show "$1" 2>&1 | less -R -p "^USER $2"
+}
+
+cmd_jump() {
+  # $1 = id, $2 = utc stamp, $3 = needle. A session open in a pane of this tmux server: go to
+  # that pane, put it in copy mode and search its scrollback back from the bottom for the
+  # prompt, then close the popup this runs in. Claude renders in the normal screen ("tui":
+  # "default"), so the conversation is in the scrollback. A session open nowhere has no
+  # scrollback, so it reads in less instead; a prompt past history-limit or before a /clear
+  # leaves copy mode at the bottom with tmux's "Search failed".
+  local id="$1" at win pane
+  at="$(session_pane "$id")"
+  if [ -z "$at" ] || [ -z "${3:-}" ]; then
+    cmd_read "$id" "$2"
+    return
+  fi
+  win="${at%% *}" pane="${at#* }"
+  tmux select-window -t "$win" \; select-pane -t "$pane" \; switch-client -t "${win%%:*}" \
+    \; copy-mode -t "$pane" \; send-keys -t "$pane" -X history-bottom \
+    \; send-keys -t "$pane" -X search-backward-text "$3" 2>/dev/null
+  tmux display-popup -C 2>/dev/null
   return 0
 }
 
@@ -666,22 +697,28 @@ _ppid_of() {
   awk '/^PPid:/ {print $2; exit}' "/proc/${1:-0}/status" 2>/dev/null
 }
 
-session_window() {
-  # $1 = session id -> "tmux_session:window_index" if a live pane owns it.
+session_pane() {
+  # $1 = session id -> "tmux_session:window_index pane_id" if a live pane of this server owns it.
   # The Claude process is a child of the pane's shell, so walk up the ppid chain
   # until we land on a known pane_pid.
   local id="$1" pid p i panes
   [ -n "${TMUX:-}" ] || return 0
   pid=$(live_lines | awk -F"$TAB" -v i="$id" '$1==i {print $6; exit}')
   [ -n "$pid" ] || return 0
-  panes="$(tmux list-panes -a -F '#{pane_pid} #{session_name}:#{window_index}' 2>/dev/null)" || return 0
+  panes="$(tmux list-panes -a -F '#{pane_pid} #{session_name}:#{window_index} #{pane_id}' 2>/dev/null)" || return 0
   p="$pid"
   for i in 1 2 3 4 5 6 7 8; do
     [ -n "$p" ] && [ "$p" != 0 ] && [ "$p" != 1 ] || return 0
-    local hit; hit="$(printf '%s\n' "$panes" | awk -v q="$p" '$1==q {print $2; exit}')"
+    local hit; hit="$(printf '%s\n' "$panes" | awk -v q="$p" '$1==q {print $2, $3; exit}')"
     [ -n "$hit" ] && { printf '%s\n' "$hit"; return 0; }
     p="$(_ppid_of "$p")"
   done
+}
+
+session_window() {
+  # $1 = session id -> "tmux_session:window_index" if a live pane owns it.
+  local at; at="$(session_pane "$1")"
+  [ -z "$at" ] || printf '%s\n' "${at%% *}"
 }
 
 # open_window <id> <dir> -- a window running claude-acct run -r, in the world and session that directory
@@ -800,8 +837,10 @@ it has carried, its first and last prompt, the files it touched, project and
 branch - which is why "email" finds the session that now goes by "aerc-nested-
 folders-config". In the window: the bottom pane is `sessions show` for the row
 under the cursor, enter resumes, ctrl-t lists that session's prompts (enter on
-one reads the session from there, read-only), ctrl-g escalates the query to a
-full-text sweep. To carry on from an old prompt: resume, then Esc Esc to it.
+one jumps to it in the session's live pane, in copy mode; ctrl-r reads the
+session from there in less, which is what enter does for a session not open),
+ctrl-g escalates the query to a full-text sweep. To carry on from an old
+prompt: resume, then Esc Esc to it.
 
 -w/--window opens the chosen session in a NEW tmux window rather than in place.
 That is what `prefix R` uses: exec'ing inside a display-popup would trap a live
@@ -835,6 +874,8 @@ case "$sub" in
   _window)       session_window "$(resolve_id "${1:-}" 2>/dev/null)" ;;
   show)          cmd_show "$@" ;;
   prompts)       cmd_prompts "$@" ;;
+  _jump)         cmd_jump "$@" ;;
+  _read)         cmd_read "$@" ;;
   resume)        cmd_resume "$@" ;;
   compact)       cmd_compact "$@" ;;
   -h|--help|help) usage ;;
