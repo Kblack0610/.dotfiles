@@ -32,11 +32,12 @@ AP_MEM0_LIB="${AGENT_PROPOSE_MEM0_LIB:-$HOME/.local/lib/mem0.sh}"
 
 die() { echo "agent-propose: $*" >&2; exit 1; }
 AP_W="$(jq -cn --arg w "$AP_WINDOWS" '[$w | splits(" +") | select(. != "") | split("=")
-  | {(.[0]): (.[1] | tonumber)}] | add // {}' 2>/dev/null)" || die "AGENT_PROPOSE_WINDOWS is not stream=days ...: $AP_WINDOWS"
+  | {(.[0]): (.[1] | tonumber | if . > 0 then . else error("\(.) days") end)}] | add // {}' 2>&1)" \
+  || die "AGENT_PROPOSE_WINDOWS is not stream=days ... with days above 0: $AP_WINDOWS ($AP_W)"
 # state: the status a reader sees, so a windowed proposal is expired the moment it passes, before
 # any sweep has written it. jq runs it with --argjson w "$AP_W".
-AP_STATE='def state: if .status == "open" and $w[.stream] != null
-  and .created < (now - $w[.stream] * 86400 | todate) then "expired" else .status end;'
+AP_STATE='def state: $w[.stream // ""] as $d | if .status == "open" and $d != null
+  and .created < (now - $d * 86400 | todate) then "expired" else .status end;'
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 records() { find "$AP_DIR" -maxdepth 1 -name '*.json' -print0 2>/dev/null | xargs -0 -r cat; }
 
@@ -165,8 +166,11 @@ decide() { # <accepted|rejected|expired> [--by who] <id>
   [ -n "$id" ] || die "$status: which proposal? give its id"
   f="$(record "$id")" || exit 1
   lock
-  st="$(jq -r --argjson w "$AP_W" "$AP_STATE"'state' "$f")"   # one past its window is already expired
-  case "$st" in open | asked) ;; *) die "$id is already $st" ;; esac
+  # One past its window is already expired, but expire by hand may still record its fix (--by pr:N).
+  # expire takes an open one only: an asked one waits on the human's answer to its ask.
+  if [ "$status" = expired ]; then st="$(jq -r .status "$f")"; else st="$(jq -r --argjson w "$AP_W" "$AP_STATE"'state' "$f")"; fi
+  case "$status $st" in "expired open" | "accepted open" | "accepted asked" | "rejected open" | "rejected asked") ;;
+    *) die "$id is already $st" ;; esac
   if [ "$status" = accepted ]; then
     # A failed verb leaves it open with the reason, so the accept can be tried again.
     if ! result="$(apply "$f" 2>&1 9>&-)"; then  # 9>&-: a child must not keep the store lock

@@ -320,10 +320,31 @@ add_ci() { "$AP" add --stream ci-failures --project p --verb row --arg "ci(infra
   run "$AP" expire --by pr:42
   assert_failure
   assert_output --partial "give its id"
+  # one already past its window, not yet swept, still records its fix
+  old="$(add_ci 4)"; aged "$old" 4
+  run "$AP" expire --by pr:43 "$old"
+  assert_success
+  assert_equal "$(jq -r '.status + " " + .decided_by' "$AGENT_PROPOSE_DIR/$old.json")" "expired pr:43"
+  # an asked one waits on its ask's answer
+  asked="$(add_queue)"; past_due "$asked"; "$AP" expire
+  run "$AP" expire --by pr:44 "$asked"
+  assert_failure
+  assert_output --partial "already asked"
 }
 
-@test "a window that is not stream=days is refused" {
+@test "a window that is not stream=days, or not above 0 days, is refused" {
   AGENT_PROPOSE_WINDOWS="ci-failures" run "$AP" count
   assert_failure
   assert_output --partial "AGENT_PROPOSE_WINDOWS is not stream=days"
+  AGENT_PROPOSE_WINDOWS="ci-failures=0" run "$AP" count
+  assert_failure
+  assert_output --partial "0 days"
+}
+
+@test "a record with no stream does not break list or count" {
+  id="$(add_ci 5)"
+  jq -c 'del(.stream)' "$AGENT_PROPOSE_DIR/$id.json" > "$BATS_TEST_TMPDIR/r" && cp "$BATS_TEST_TMPDIR/r" "$AGENT_PROPOSE_DIR/$id.json"
+  assert_equal "$("$AP" count)" 1
+  run "$AP" list --json
+  assert_success
 }
