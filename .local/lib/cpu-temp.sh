@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # cpu-temp.sh - the one CPU temperature reader, sourced by fleet-assess and boot-cause.
 #
 # read_tctl -> Tctl from the k10temp hwmon (AMD), else the hottest thermal zone, else "-", in C to one
