@@ -38,15 +38,16 @@ bats_require_minimum_version 1.5.0
 }
 
 @test "candidates: a row costs no hasher of its own: line and details sigs come in one batch, and held reads a map (ar-4512)" {
+  local u=$'\xc3\xbcn\xc3\xafcode'   # multibyte text, which the batch must hash byte for byte
   project game beta "$SANDBOX/repos/game"
   row game agent gm-1 "- [ ] fix(game): one $T <!-- id:gm-1 -->"
   row game agent gm-2 "- [ ] chore(game): two #low $T <!-- id:gm-2 -->"
-  row game agent gm-3 "- [ ] feat(game): three ünïcode \$HOME [x] $T <!-- id:gm-3 -->"
+  row game agent gm-3 "- [ ] feat(game): three $u \$HOME [x] $T <!-- id:gm-3 -->"
   board_row game agent gm-1 '[]' '["the jump clips on ledges", "repro: level 2"]'
-  board_row game agent gm-3 '[]' '["café: a \"quoted\" word"]'
+  board_row game agent gm-3 '[]' "[\"$u: a \\\"quoted\\\" word\"]"
   verdict game agent gm-2 skip
   # The batch hash is the one sig gives, string by string.
-  for s in 'fix(game): one' 'ünïcode $HOME [x] * @' '["a", "b\\nc"]'; do
+  for s in 'fix(game): one' "$u \$HOME [x] * @" '["a", "b\\nc"]'; do
     SIG_OF=(); sigs_load "$s"; sig_set "$s"
     assert_equal "$SIG" "$(printf '%s' "$s" | sig)"
   done
