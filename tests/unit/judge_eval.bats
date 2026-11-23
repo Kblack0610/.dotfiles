@@ -702,7 +702,7 @@ prompts_fixture() {
   assert_line 'judge policy body'
   assert_output --partial "(sha $(git hash-object "$HOME/tpl/policy.md"))"
   assert_line --partial 'verdict-schema'
-  assert_line 'DELAY_RULES=fast@repo=0'
+  assert_line 'DELAY_RULES="fast@repo=0"'
   assert_line 'AUDIT_RATES="self=10"'
   assert_line --regexp '^JUDGE_HARD_STOPS="[^"]*external'
   # the second lane's two prompt files, the first with its include in place

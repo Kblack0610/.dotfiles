@@ -686,7 +686,8 @@ prompt_lane() {
   IFS=: read -ra files <<<"$JUDGE_EVAL_CALL_DIRS"
   sites="$(grep -rnE -- "--agent[ =]\"?$a([^a-z0-9-]|\$)" "${files[@]}" 2>/dev/null | grep -v -e '/agentctl-run:' -e '/judge-eval:')"
   {
-    printf '%s\n' "$sites" | awk -v n=8 'NR <= n { print } END { if (NR == 0) print "(none found)"; else if (NR > n) print "(" NR - n " more not shown)" }'
+    if [ -z "$sites" ]; then echo "(none found)"
+    else printf '%s\n' "$sites" | awk -v n=8 'NR <= n { print } END { if (NR > n) print "(" NR - n " more not shown)" }'; fi
     while IFS=: read -r f _ l; do
       [ -n "$f" ] || continue
       v="$(sed -n 's/^: "\${\([A-Z_]*\):=agentctl-run --agent .*/\1/p' <<<"$l")"
