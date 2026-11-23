@@ -636,6 +636,43 @@ systemd_fold() {
   assert_equal "$(git -C "$PUB" ls-files --others -- .config)" ''
 }
 
+@test "an unfold leaves a CACHEDIR.TAG build cache in the checkout, so a tool linked into it still runs" {
+  world
+  radd "$PUB" .local/src/tool/Cargo.toml 'crate'
+  printf '%s\n' '/.local/src/tool/target/' '/.local/src/tool/__pycache__/' >> "$PUB/.git/info/exclude"
+  mkdir -p "$HOME/.local/src"
+  stow_link "$HOME/.local/src/tool" "$PUB/.local/src/tool"
+  # cargo builds in the checkout and tags target/; install links the binary by absolute path.
+  mkdir -p "$PUB/.local/src/tool/target/release" "$PUB/.local/src/tool/__pycache__"
+  printf 'Signature: 8a477f597d28d172789f06886806bc55\n# cargo\n' > "$PUB/.local/src/tool/target/CACHEDIR.TAG"
+  printf 'bin\n' > "$PUB/.local/src/tool/target/release/tool"
+  printf 'pyc\n' > "$PUB/.local/src/tool/__pycache__/m.pyc"
+  ln -s "$PUB/.local/src/tool/target/release/tool" "$HOME/.local/bin/tool"
+  run "$DEPLOY" --apply
+  assert_success
+  assert_output --partial 'unfolded  ~/.local/src/tool: 1 link(s), 1 runtime entr(ies) moved out of the checkout, 0 twin(s) removed, 1 build cache(s) kept in the checkout'
+  [ ! -L "$HOME/.local/src/tool" ] || fail 'still folded'
+  assert_equal "$(cat "$HOME/.local/bin/tool")" 'bin'
+  [ ! -e "$HOME/.local/src/tool/target" ] || fail 'the build cache was copied or moved into $HOME'
+  assert_equal "$(cat "$HOME/.local/src/tool/__pycache__/m.pyc")" 'pyc'
+  run "$DEPLOY" --check
+  assert_success
+}
+
+@test "negative control: a CACHEDIR.TAG without the spec's signature is runtime, and moves" {
+  world
+  radd "$PUB" .local/src/tool/Cargo.toml 'crate'
+  printf '%s\n' '/.local/src/tool/target/' >> "$PUB/.git/info/exclude"
+  mkdir -p "$HOME/.local/src" "$PUB/.local/src/tool/target"
+  stow_link "$HOME/.local/src/tool" "$PUB/.local/src/tool"
+  printf 'not a cache tag\n' > "$PUB/.local/src/tool/target/CACHEDIR.TAG"
+  run "$DEPLOY" --apply
+  assert_success
+  assert_output --partial '1 runtime entr(ies) moved out of the checkout, 0 twin(s) removed'
+  refute_output --partial 'build cache'
+  [ -f "$HOME/.local/src/tool/target/CACHEDIR.TAG" ] || fail 'an untagged directory stayed in the checkout'
+}
+
 @test "an unfold keeps a tracked absolute enable that stow ignores" {
   systemd_fold
   # Stow refuses an absolute link into /usr/lib, so the repo ignores it (git and stow) and force-adds it; the fold served it.
