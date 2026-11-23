@@ -8819,6 +8819,10 @@ mod tests {
         Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char(c))))
     }
 
+    fn arrow(c: KeyCode) -> Msg {
+        Msg::Input(Event::Key(KeyEvent::from(c)))
+    }
+
     #[test]
     fn a_tab_request_switches_the_running_board() {
         let mut a = app(Tab::Home);
@@ -9219,7 +9223,6 @@ mod tests {
         a.projects_read.busy = true;
         a.handle(Msg::Tasks(Box::new(Ok(crate::tasktab::tests::fixture()))));
         a.handle(Msg::Projects(Box::new(loaded())));
-        let arrow = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
         let on = |a: &App| a.pv.top(&a.tv);
         assert_eq!(on(&a), Some("list"));
         a.handle(arrow(KeyCode::Right));
