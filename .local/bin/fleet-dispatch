@@ -692,23 +692,14 @@ load_focus() {
   FOCUS_PROJECTS=$(notes projects --prios 2>/dev/null | awk -F '\t' '$2 == "focus" { printf "%s%s", (n++ ? " " : ""), $1 }')
 }
 
-# in_backlog <line> -- the row's trailing `<!-- ... -->` marker carries the `tier:backlog` token.
-in_backlog() {
-  [[ $1 == *'<!--'*'-->'* ]] || return 1
-  local m=${1##*<!--}
-  [[ " ${m%%-->*} " == *' tier:backlog '* ]]
-}
-
 # row_off <project> <key> <text> -> why the row may not dispatch whatever the judge says:
-# its kind (kind_off), it is a parent, which closes when its children do, or the sweep put it on the
-# backlog tier (`tier:backlog`, notes project_sweep), off the board until it climbs back into the
-# budget. Nothing when it may. A hand `fleet-dispatch start` reads none of this. With BACKLOG_OK set
-# (trainee_rows) the backlog tier is no bar: that budget paces claude's work, not a free trainee key's.
+# its kind (kind_off), or it is a parent, which closes when its children do. Nothing when it may. A
+# hand `fleet-dispatch start` reads none of this. Every open agent row is planned work, so no tier
+# bars one: work never stops while a row is open (the human, 2026-11-23).
 row_off() {
   local why
   why=$(kind_off "$(row_kind "$3")")
   [ -n "$why" ] || [ -z "${PAR[$2]:-}" ] || why="a parent: open rows name it in #of/"
-  [ -n "$why" ] || [ -n "${BACKLOG_OK:-}" ] || ! in_backlog "$3" || why="on the backlog tier: past the board budget"
   printf '%s' "$why"
 }
 
@@ -1912,7 +1903,7 @@ verdict_errors() {
 # Each exit taken appends the verdict again with `exit` (and `exit_at`) to verdicts.jsonl, so counting
 # exits is a jq query, and that latest verdict, carrying its exit, is not taken again. At most
 # DISPATCH_EXIT_MAX exits a pass (0 is no cap), so a backlog of skips drains over passes, not in one. A
-# backlog-tier row is left alone, and so is one already started: dispatch does not pull it. --dry-run writes
+# row already started is left alone. --dry-run writes
 # nothing and prints `<exit> TAB <project> TAB <id> TAB <rule>` per row (`plan-wait` for a plan row
 # past the room), then the counts. Sets PLAN_TAGGED and EXITS_TAKEN.
 skip_exits() {
@@ -1945,7 +1936,7 @@ skip_exits() {
        | map({key: "\(.project)\t\(.key)", value: true}) | from_entries) as $gone
     | ($kinds | to_entries | map(select(.value.enabled == false and .key != "epic") | {key, value: true}) | from_entries) as $off
     | ([.rows[]? | select(.state == "open") | .tags[]? | select(startswith("of/")) | {key: .[3:], value: true}] | from_entries) as $parents
-    | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and .backlog != true and (plan_tagged | not))
+    | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and (plan_tagged | not))
     | $by["\(.project)\t\(.id)"] as $d
     | if $d != null then
         "\(.profile)\t\(.project)\t\(.id)\t\($d.line)\t\($d.dsig // "-")\t\(details_json($n))\t\($d.rule)\t\(.requested == true)\t\(planned)\t\($d | tojson)\t\(.raw)"
@@ -5118,8 +5109,7 @@ trainee_reason_key() {
 }
 
 # trainee_rows -> the board rows the trainee floor weighs, in RANK_JQ order: every open agent-lane row a
-# worker takes (all_open) and the tier-3 rows (t3_rows), judged or not and the backlog tier included
-# (BACKLOG_OK), since trainee_row_why is the trainee's rule and the promoted item still meets
+# worker takes (all_open) and the tier-3 rows (t3_rows), judged or not, since trainee_row_why is the trainee's rule and the promoted item still meets
 # item_tier and trainee_public_why. The judged rows alone (day_picks) were about 9 a day of 653 open
 # #pts/1-3 rows (2026-11-19). A verdict still holds a row as picks and t3_ready read it: `failed` (its
 # session died), and a `skip` the policy still defines for the row's current text, unless the row is
@@ -5149,9 +5139,9 @@ trainee_rows() {
       for k in t3 open; do
         if [ "$n" -ge "$w" ]; then wait -n; n=$((n - 1)); fi
         if [ "$k" = t3 ]; then
-          { ONLY_PROJECT=${projects[$i]} BACKLOG_OK=1 t3_rows '' | jq -c '. + {worker: "tier3", t3rank: [.rank, .prio, (0 - .order)]}' >"$d/t3.$i" || : >"$d/failed"; } &
+          { ONLY_PROJECT=${projects[$i]} t3_rows '' | jq -c '. + {worker: "tier3", t3rank: [.rank, .prio, (0 - .order)]}' >"$d/t3.$i" || : >"$d/failed"; } &
         else
-          { ONLY_PROJECT=${projects[$i]} BACKLOG_OK=1 all_open >"$d/open.$i" || : >"$d/failed"; } &
+          { ONLY_PROJECT=${projects[$i]} all_open >"$d/open.$i" || : >"$d/failed"; } &
         fi
         n=$((n + 1))
       done
@@ -6632,7 +6622,7 @@ last_run_start() {
 # in an hour), so a reap misreading the panel the same way is not caught here; a start (hand,
 # run, redispatch) sets running, and a session moving itself (to review, say) is not an undo;
 # the agent board's open rows (`notes board --json` totals: board_agent the agent board (Today),
-# board_backlog the agent rows past the board budget, counted in neither), left out when the board
+# board_backlog the agent rows still carrying the retired backlog token, counted in neither), left out when the board
 # is unreadable, so the chip reads - and never 0; held_s, how long a
 # hold has stopped the passes (0 with none, so the series never goes stale; its words are `stopped`'s).
 # The starved verdict is not here: the queue-starved watch publishes it (watch/queue_starved), and
@@ -7651,7 +7641,7 @@ floor_row() {
 #     as reconcile_plans reads it) is queued as its chain (agent-queue add --plan --from auto:epics);
 #     any other (not approved, or its own session still holds it) holds the epic for the human.
 #  3. the board: its agent-lane leaves stay there, and dispatch takes them leaf by leaf. The human's
-#     own Start ([repeat], cmd_promote) tags each open s or m one off the backlog tier whose kind dispatches
+#     own Start ([repeat], cmd_promote) tags each open s or m one whose kind dispatches
 #     (kind_off) #requested, so the requested floor takes them first; an l or xl leaf is named
 #     as needing a plan (skip_exits plans it as it does any l row).
 # rc 1, the why said, when nothing is taken; else rc 0 with nothing for the caller to start, and what
@@ -7704,7 +7694,7 @@ take_epic() {
     case "$size" in l | xl) big+=("$k"); continue ;; esac
     [ -z "$(kind_off "$kind")" ] || continue
     taggable+=("$k")
-  done < <(jq -r 'select(.lane == "agent" and .state == "open" and .type != "epic" and .requested != true and .backlog != true)
+  done < <(jq -r 'select(.lane == "agent" and .state == "open" and .type != "epic" and .requested != true)
     | [.id, (.type // "-"), ((.size // "-") | ascii_downcase)] | @tsv' <<<"$leaves")
   if [ -n "$repeat" ]; then
     for k in "${taggable[@]}"; do
@@ -7885,7 +7875,7 @@ cmd_promote() {
 # closed ok (agent-queue pull_after), so a plan's next phase takes the slot the closing session frees and
 # waits for no pass. Each is promoted as a pass would (its other gates still hold it: promote), its add
 # a pull of AGENT_QUEUE_PULL=after, for which agent-queue's cap makes room (make_room) rather than hold
-# it, since a held row waits for a pass and a pass never takes the backlog tier; a row it could not
+# it, since a held row waits for a pass; a row it could not
 # queue gets a log line. An urgent or high one started at once (start --item); a low one waits for a
 # pass in its turn (agent-queue waits_turn). The row it waited on may still read open (an item with a PR
 # closes its row at the merge, after this move), so its after/ counts clear here: the ok close is the

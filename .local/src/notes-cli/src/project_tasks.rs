@@ -148,8 +148,7 @@ pub(crate) fn current_rows_for_dir(dir: &Path) -> Option<OpenRows> {
         open: cur,
         rewrite: false,
         systems: Vec::new(),
-        board_weight: None,
-        window: None,
+        tiered: false,
         aim: None,
     };
     let lines: Vec<&str> = content.lines().collect();
@@ -3176,7 +3175,7 @@ pub(crate) fn sweep_file(
 }
 
 /// What a sweep of `content`, a sheet under `dir`, is measured against: today, the `[sheet]`
-/// shape (on the agent lane, its board budget) and the open version, read from `content` itself so an editor buffer's unsaved
+/// shape (on the agent lane, its tier) and the open version, read from `content` itself so an editor buffer's unsaved
 /// `Version:` bump counts (an agent board's comes from the human sheet).
 pub(crate) fn sweep_ctx(
     dir: &Path,
@@ -3194,11 +3193,7 @@ pub(crate) fn sweep_ctx(
     project_sweep::Ctx {
         today: chrono::Local::now().date_naive(),
         shape,
-        board_weight: (lane == Lane::Agent).then(|| board_budget(dir, shape.agent_board_days)),
-        window: (lane == Lane::Agent)
-            .then_some(open)
-            .flatten()
-            .and_then(|v| crate::window::read(&crate::window::home(dir), v).map(|s| (v, s.keys))),
+        tiered: lane == Lane::Agent,
         aim: crate::rank::Aim::of_swept(dir, lane == Lane::Agent, content),
         open,
         rewrite,
@@ -3209,9 +3204,9 @@ pub(crate) fn sweep_ctx(
 /// The days of shipped work a budget is measured over.
 pub(crate) const BUDGET_WINDOW_DAYS: u32 = 7;
 
-/// A project's agent-board budget in weight: `days` of the weight its agent rows shipped with a
-/// PR over the last [`BUDGET_WINDOW_DAYS`] days, rounded up; `agent_board_floor` covers a
-/// project that shipped nothing.
+/// A project's work capacity in weight: `days` of the weight its agent rows shipped with a PR
+/// over the last [`BUDGET_WINDOW_DAYS`] days, rounded up, which sizes a release window's commit
+/// (`window::record`); `agent_board_floor` covers a project that shipped nothing.
 pub(crate) fn board_budget(dir: &Path, days: u32) -> u32 {
     let name = dir
         .file_name()
@@ -4012,8 +4007,7 @@ Version: v1.13.0
             open: ROADMAP_CUR,
             rewrite: true,
             systems: vec![],
-            board_weight: None,
-            window: None,
+            tiered: false,
             aim: None,
         };
         let swept = project_sweep::sweep_sheet(&new, &ctx).map_or(new.clone(), |(c, _)| c);
