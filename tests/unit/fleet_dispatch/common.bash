@@ -177,7 +177,12 @@ while [ $# -gt 0 ]; do
   case "$1" in --profile) shift 2 ;; --agent) lane=agent; shift ;; --exact) exact=1; shift ;; --) shift ;; *) args+=("$1"); shift ;; esac
 done
 case "${args[0]}" in
-  projects) if [[ " ${args[*]} " == *" --prios "* ]]; then cat "$F/prios" 2>/dev/null; else cat "$F/projects" 2>/dev/null; fi ;;
+  projects)
+    case " ${args[*]} " in
+      *" --prios "*) cat "$F/prios" 2>/dev/null ;;
+      *" --stats "*) [ -f "$F/stats.json" ] && cat "$F/stats.json" || echo '[]' ;;
+      *) cat "$F/projects" 2>/dev/null ;;
+    esac ;;
   row)   # `row parse`: a stand-in for the grammar's home (notes-cli), enough for these fixtures: type(area): with a type in kinds.json
     while IFS= read -r l; do
       t=$(sed -nE 's/^(- \[.\] )?([a-z]+)\([a-z0-9-]+\):.*/\2/p' <<<"$l")

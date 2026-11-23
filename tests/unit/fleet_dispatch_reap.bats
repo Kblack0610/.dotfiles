@@ -139,13 +139,8 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
 }
 
-# epics_fixture <json> -- what `notes projects --stats --json` prints: the stateful notes stub answers
-# every other call.
-epics_fixture() {
-  [ -f "$SANDBOX/bin/notes.rows" ] || mv "$SANDBOX/bin/notes" "$SANDBOX/bin/notes.rows"
-  printf '%s\n' "$1" > "$NOTES_FIXTURE/stats.json"
-  stub notes '[[ " $* " == *" projects --stats --json "* ]] && { cat "$NOTES_FIXTURE/stats.json"; exit 0; }; exec notes.rows "$@"'
-}
+# epics_fixture <json> -- what `notes projects --stats --json` prints (the notes stub reads it).
+epics_fixture() { printf '%s\n' "$1" > "$NOTES_FIXTURE/stats.json"; }
 
 @test "reap queues one verify item per epic whose leaves have all landed, once per landing round" {
   project game beta "$SANDBOX/repos/game"
