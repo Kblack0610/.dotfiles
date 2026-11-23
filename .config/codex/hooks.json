@@ -12,8 +12,6 @@
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "python3 $HOME/.claude/hooks/block-poll.py || true", "timeout": 10 },
-          { "type": "command", "command": "bash $HOME/.claude/hooks/block-pip.sh", "timeout": 10 },
           { "type": "command", "command": "python3 $HOME/.claude/hooks/hand_methods.py || true", "timeout": 10 },
           { "type": "command", "command": "python3 $HOME/.claude/hooks/walker-guards.py || true", "timeout": 30 },
           { "type": "command", "command": "python3 $HOME/.claude/hooks/deny-list-guard.py || true", "timeout": 10 }

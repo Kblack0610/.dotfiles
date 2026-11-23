@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-# walker-guards.py: the five guards on forge-guard's walker (forge, checkout, release, scratch-rm,
-# gh-login) run in one process, each still refusing what it refused as its own hook. Each guard's
+# walker-guards.py: the Bash guards (forge, checkout, release, scratch-rm, gh-login, block-pip,
+# block-poll, python-write-guard) run in one process, each still refusing what it refused as its own hook. Each guard's
 # own cases are in its <name>_guard.bats; this checks the dispatch. The repos, the gh dir and the
 # cache are fixtures under the test dir; the other session is a real process holding a fixture id,
 # killed in teardown.
@@ -41,14 +41,14 @@ at() { jq -nc --arg c "$2" --arg d "$1" --arg s "$ME" '{tool_name:"Bash", sessio
 
 denied_by() { assert_success; assert_output --partial '"deny"'; assert_output --partial "$1:"; }
 
-@test "Claude's settings.json and Codex's hooks.json run the one process on every Bash call, fail-open, and none of the five" {
-  run jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command | select(test("walker-guards|(forge|checkout|release|scratch-rm|gh-login)-guard"))' "$ROOT/.claude/settings.json"
+@test "Claude's settings.json and Codex's hooks.json run the one process on every Bash call, fail-open, and none of the eight" {
+  run jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command | select(test("walker-guards|(forge|checkout|release|scratch-rm|gh-login|python-write)-guard|block-p(ip|oll)"))' "$ROOT/.claude/settings.json"
   assert_output 'python3 ~/.claude/hooks/walker-guards.py || true'
-  run jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command | select(test("walker-guards|(forge|checkout|release|scratch-rm|gh-login)-guard"))' "$ROOT/.config/codex/hooks.json"
+  run jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command | select(test("walker-guards|(forge|checkout|release|scratch-rm|gh-login|python-write)-guard|block-p(ip|oll)"))' "$ROOT/.config/codex/hooks.json"
   assert_output 'python3 $HOME/.claude/hooks/walker-guards.py || true'
 }
 
-@test "each of the five guards still denies through the one process" {
+@test "each of the eight guards still denies through the one process" {
   run at "$T/game" 'gh pr merge 12 --squash'
   denied_by forge-guard
   run at "$T/dots" 'git checkout -b feat/x'
@@ -60,6 +60,12 @@ denied_by() { assert_success; assert_output --partial '"deny"'; assert_output --
   assert_output --partial "$OTHER"
   run at /tmp 'gh auth logout'
   denied_by gh-login-guard
+  run at /tmp 'pip install x'
+  denied_by block-pip
+  run at /tmp 'until false; do sleep 5; done'
+  denied_by block-poll
+  run at /tmp "python3 -c 'open(\"/w/CLAUDE.md\", \"w\").write(\"x\")'"
+  denied_by python-write-guard
 }
 
 @test "a command two guards refuse names both in the one deny; a plain command passes with no output" {
@@ -73,10 +79,11 @@ denied_by() { assert_success; assert_output --partial '"deny"'; assert_output --
 
 @test "a guard that raises is skipped and the others still run (each fails open on its own)" {
   mkdir "$T/hooks"
-  cp "$HOOKS"/{walker-guards,forge-guard,release-guard,scratch-rm-guard,gh-login-guard,block-poll}.py "$T/hooks/"
+  cp "$HOOKS"/*.py "$T/hooks/"
   printf 'def decide(data):\n    raise RuntimeError("broken")\n' > "$T/hooks/checkout-guard.py"
   WALKER="$T/hooks/walker-guards.py" run at "$T/dots" 'git checkout -b feat/x && gh auth logout'
   denied_by gh-login-guard
   refute_output --partial 'checkout-guard:'
   assert_output --partial 'walker-guards: checkout-guard skipped'
+  [ "$(grep -c ' skipped, it raised' <<<"$output")" -eq 1 ]
 }

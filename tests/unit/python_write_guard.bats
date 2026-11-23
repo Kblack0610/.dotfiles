@@ -148,9 +148,15 @@ denied() { assert_output --partial 'python-write-guard: '; }
   assert_output allow
 }
 
-@test "settings.json runs the hook on Bash, fail-open" {
-  run jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command' "$BATS_TEST_DIRNAME/../../.claude/settings.json"
-  assert_output --partial 'python3 ~/.claude/hooks/python-write-guard.py || true'
+@test "walker-guards runs it on Bash with the same deny, never in a Codex run; fail-open" {
+  run decision "python3 -c 'open(\"/w/CLAUDE.md\", \"w\").write(\"hello\")'"
+  denied
+  HOOK="${HOOK%/*}/walker-guards.py" run decision "python3 -c 'open(\"/w/CLAUDE.md\", \"w\").write(\"hello\")'"
+  denied
+  export CODEX_THREAD_ID=cx
+  HOOK="${HOOK%/*}/walker-guards.py" run decision "python3 -c 'open(\"/w/CLAUDE.md\", \"w\").write(\"hello\")'"
+  unset CODEX_THREAD_ID
+  assert_output allow
   run bash -c "echo 'not json' | python3 '$HOOK'"
   assert_success
   assert_output ''
