@@ -1,0 +1,1 @@
+When the person's words name the file, command or doc the work changes, the title keeps that name by its repo path or command name (src/foo.ts, docs/ci.md). Never add or guess one the words do not name: a row about no named file (a report, a measure, a plan's phase) names none.

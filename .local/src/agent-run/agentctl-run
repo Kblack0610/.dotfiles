@@ -25,6 +25,8 @@
 #   agentctl-run --agent ask-judge -p "<input>"   # a registered agent: its conf sets role, model, prompt
 #   agentctl-run --agent dispatch-judge --schema <file> -p "<rows>"   # this call's reply shape over the conf's SCHEMA
 #   agentctl-run --agent inbox-triage --role observe --context full -p "<line>"   # this call's context (lean|full) over the conf's CALL_CONTEXT
+#   agentctl-run --agent inbox-plan --rendered-prompt <file> -p "<filled template>"   # one of the conf's PROMPT files, filled by the caller: recorded, not prepended
+#   agentctl-run --agent dream --call-model <id> -p "<input>" # this call's model over the conf's MODEL (dream's trial arm)
 #   agentctl-run --explain build            # print the resolved invocation, run nothing
 #
 # Roles:    ~/.config/agentctl/roles/<role>.role   (override: $AGENTCTL_ROLES)
@@ -38,6 +40,7 @@ SELF_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 . "$SELF_DIR/lib/scrub.sh"
 . "$SELF_DIR/lib/route.sh"
 . "$SELF_DIR/lib/agent.sh"
+. "$SELF_DIR/../../lib/prompt-render.sh"
 . "$SELF_DIR/lib/calls.sh"
 . "$SELF_DIR/lib/budget.sh"
 . "$SELF_DIR/lib/sandbox.sh"
@@ -48,7 +51,7 @@ role="${ROLE:-${AGENTCTL_ROLE:-}}"
 AGENTCTL_MODEL="${AGENTCTL_MODEL:-${MODEL:-}}"
 harness="${HARNESS:-${AGENTCTL_HARNESS:-claude}}"
 args=()
-agent="" cli_role="" cli_route="" cli_class="" cli_harness="" cli_schema="" cli_context=""
+agent="" cli_role="" cli_route="" cli_class="" cli_harness="" cli_schema="" cli_context="" cli_rendered="" cli_model=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -58,6 +61,8 @@ while [ $# -gt 0 ]; do
     --data-class) cli_class="${2:?--data-class needs a value}"; shift 2 ;;
     --harness) cli_harness="${2:?--harness needs a value}"; harness="$cli_harness"; shift 2 ;;
     --schema)  cli_schema="${2:?--schema needs a value}"; shift 2 ;;
+    --rendered-prompt) cli_rendered="${2:?--rendered-prompt needs a file}"; shift 2 ;;
+    --call-model) cli_model="${2:?--call-model needs a value}"; shift 2 ;;
     --context) cli_context="${2:?--context needs a value}"; shift 2
                case "$cli_context" in lean|full) ;; *) role_die "--context '$cli_context' is not lean or full" ;; esac ;;
     --explain) AGENTCTL_EXPLAIN=1; [ -n "${2:-}" ] && [ "${2:0:1}" != "-" ] && { cli_role="$2"; shift; }; shift ;;
@@ -92,7 +97,10 @@ if [ -n "$agent" ]; then
   SOURCE="$AGENT_SOURCE"
   AGENTCTL_ROUTE="" AGENTCTL_DATA_CLASS=""
   [ -n "$AGENT_HARNESS" ] && [ -z "$cli_harness" ] && harness="$AGENT_HARNESS"
-  export AGENTCTL_AGENT="$agent" AGENTCTL_NAME="$agent" AGENT_PROMPT AGENT_PROMPT_SHA AGENT_SCHEMA \
+  export AGENTCTL_AGENT="$agent" AGENTCTL_NAME="$agent"
+  [ -z "$cli_rendered" ] || agent_rendered "$cli_rendered"
+  agent_prompt_check
+  export AGENT_PROMPT AGENT_PROMPT_SHA AGENT_PROMPT_RENDERED AGENT_SCHEMA \
     AGENT_MAX_TOKENS AGENT_TEMPERATURE AGENT_CALL_CONTEXT
   agent_otel_runner "$agent"
   # raw sends the PROMPT file as the system message itself (harnesses/raw.sh)
@@ -101,6 +109,8 @@ if [ -n "$agent" ]; then
     args=("${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}")
   fi
 fi
+[ -z "$cli_rendered" ] || [ -n "$agent" ] || role_die "--rendered-prompt needs --agent: the file must be one of its conf's PROMPT files"
+[ -n "$cli_model" ] && AGENTCTL_MODEL="$cli_model"
 [ -n "$cli_role" ]  && role="$cli_role"
 [ -n "$cli_route" ] && AGENTCTL_ROUTE="$cli_route"
 [ -n "$cli_class" ] && AGENTCTL_DATA_CLASS="$cli_class"
@@ -199,7 +209,8 @@ _model="$(role_run_model)"
 if [ -n "$AGENTCTL_EXPLAIN" ]; then
   if [ -n "$agent" ]; then
     printf 'agent:       %s (%s)\n' "$agent" "${AGENT_KIND:-?}"
-    printf 'prompt:      %s\n' "${AGENT_PROMPT:+$AGENT_PROMPT  sha ${AGENT_PROMPT_SHA:0:12}}"
+    printf 'prompt:      %s\n' "${AGENT_PROMPT:+$AGENT_PROMPT  sha ${AGENT_PROMPT_SHA:0:12}${AGENT_PROMPT_RENDERED:+  (rendered by the caller)}}"
+    [ "${#AGENT_PROMPTS[@]}" -le 1 ] || printf 'prompts:     %s\n' "${AGENT_PROMPTS[*]}"
     printf 'schema:      %s\n' "${AGENT_SCHEMA:-(none)}"
     printf 'delay rules: %s\n' "${AGENT_DELAY_RULES:-(none)}"
     printf 'call log:    %s\n' "$AGENTCTL_CALLS"
