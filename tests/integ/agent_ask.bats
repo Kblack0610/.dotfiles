@@ -110,6 +110,7 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
 
 @test "answer: from an agent session it records agent, and --by human is refused; a board's call records human" {
   local a b c d
+  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   for v in CLAUDE_CODE_SESSION_ID=sid-9 AGENT_QUEUE_ITEM=ar-1; do
     a="$(post demo 'run it?')"
     run env "$v" "$AGENT_ASK" answer "$a" go
