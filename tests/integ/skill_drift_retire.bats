@@ -11,7 +11,7 @@ setup() {
   sandbox_init basic
   DRIFT="$REPO_ROOT/.local/bin/skill-drift"
   export CLAUDE_SKILLS="$SANDBOX/skills" CLAUDE_MD="$SANDBOX/CLAUDE.md" XDG_CACHE_HOME="$SANDBOX/cache"
-  export DOTFILES="$SANDBOX/pub" DOTFILES_PRIVATE="$SANDBOX/priv" SKILL_DRIFT_BASELINE="$SANDBOX/baseline"
+  export DOTFILES="$SANDBOX/pub" DOTFILES_PRIVATE="$SANDBOX/priv"
   mkdir -p "$DOTFILES" "$DOTFILES_PRIVATE"
   echo '# rules' > "$CLAUDE_MD"
   for s in owner plain used; do
