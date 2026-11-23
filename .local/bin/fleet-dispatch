@@ -1888,6 +1888,8 @@ verdict_errors() {
 #    own id and #of/ links aside) or #pr/<owner>/<repo>/<N> on a PR named so, when the judge read the
 #    rest of it as one it would start (S or M, clear, agent-only, one area): a cleared gate starts a
 #    row with no verdict. Any other waits skip takes the plan exit.
+#  - kind: a row of a kind kinds.json turns off (epic aside, and not a parent) never reaches the judge,
+#    so with no verdict it takes the human exit, as rule `kind`: no worker or judge reads it on the lane.
 # Each exit taken appends the verdict again with `exit` (and `exit_at`) to verdicts.jsonl, so counting
 # exits is a jq query, and that latest verdict, carrying its exit, is not taken again. At most
 # DISPATCH_EXIT_MAX exits a pass (0 is no cap), so a backlog of skips drains over passes, not in one. A
@@ -1908,19 +1910,35 @@ skip_exits() {
   room=$(jq -r "$ROW_JQ"'[.rows[]? | select(plan_tagged)] | length' <<<"$board")
   room=$(( DISPATCH_PLAN_BACKLOG - ${room:-0} ))
   while IFS= read -r id; do [ -z "$id" ] || ids[$id]=1; done < <(jq -r '.rows[]? | select(.id != null) | .id' <<<"$board")
+  # A row of a kind kinds.json turns off (not epic) never reaches the judge, so it has no verdict: it
+  # takes the human exit as rule `kind`, its line `-` (no verdict to hold), unless it is a parent or its
+  # latest verdict already carries an exit, of any rule (a drop that failed: no second copy).
+  local kinds
+  kinds=$(jq -ce 'objects' "$DISPATCH_KINDS" 2>/dev/null) ||
+    { say "skip_exits: no kind registry at $DISPATCH_KINDS: no kind exit this pass"; kinds='{}'; }
   rows=$(jq -r --argjson prules "$(policy_rules)" --argjson n "$DISPATCH_DETAIL_CHARS" \
+      --argjson kinds "$kinds" \
+      --arg at "$(date -Iseconds)" --arg sig "$(policy_sig)" \
       --slurpfile v <(latest_verdicts) "$ROW_JQ"'
     ($v | map(select(.lane == "agent" and .verdict == "skip" and .exit == null and usable($prules)))
        | map({key: "\(.project)\t\(.key)", value: .}) | from_entries) as $by
+    | ($v | map(select(.lane == "agent" and .exit != null))
+       | map({key: "\(.project)\t\(.key)", value: true}) | from_entries) as $gone
+    | ($kinds | to_entries | map(select(.value.enabled == false and .key != "epic") | {key, value: true}) | from_entries) as $off
+    | ([.rows[]? | select(.state == "open") | .tags[]? | select(startswith("of/")) | {key: .[3:], value: true}] | from_entries) as $parents
     | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and .backlog != true and (plan_tagged | not))
-    | $by["\(.project)\t\(.id)"] as $d | select($d != null)
-    | "\(.profile)\t\(.project)\t\(.id)\t\($d.line)\t\($d.dsig // "-")\t\(details_json($n))\t\($d.rule)\t\(.requested == true)\t\(planned)\t\($d | tojson)\t\(.raw)"' <<<"$board")
+    | $by["\(.project)\t\(.id)"] as $d
+    | if $d != null then
+        "\(.profile)\t\(.project)\t\(.id)\t\($d.line)\t\($d.dsig // "-")\t\(details_json($n))\t\($d.rule)\t\(.requested == true)\t\(planned)\t\($d | tojson)\t\(.raw)"
+      elif $off[.type // ""] and ($parents[.id] | not) and ($gone["\(.project)\t\(.id)"] | not) then
+        "\(.profile)\t\(.project)\t\(.id)\t-\t-\t\(details_json($n))\tkind\t\(.requested == true)\tfalse\t\({project, lane: "agent", key: .id, verdict: "skip", rule: "kind", reason: "kind \(.type) is off", at: $at, policy: $sig} | tojson)\t\(.raw)"
+      else empty end' <<<"$board")
   # raw last: read hands it the rest of the line; details_json and the verdict are JSON, with no bare
   # tab. No field is empty: a tab is IFS whitespace, so read would fold an empty one into its neighbour
   while IFS=$'\t' read -r prof p id line dsig dj rule req planned d raw; do
     [ -n "$id" ] || continue
     # the verdict must still hold for the row as it reads now (ROW_JQ holds)
-    [ "$(row_sig "$raw")" = "$line" ] || continue
+    [ "$rule" = kind ] || [ "$(row_sig "$raw")" = "$line" ] || continue
     [ "$dsig" = - ] || [ "$(detail_sig "$dj")" = "$dsig" ] || continue
     body=${raw#- \[?\] }; body=${body%%<!--*}; body=${body%"${body##*[![:space:]]}"}
     e='' gate=''
@@ -1930,7 +1948,7 @@ skip_exits() {
       [ -n "$gate" ] && jq -e '(.size | IN("S", "M")) and .clear == true and .agent_only == true and ((.area // "") != "")' <<<"$d" >/dev/null || gate=''
       if [ -n "$gate" ]; then e=gate; else e=plan; fi
     elif [[ " $DISPATCH_PLAN_RULES " == *" $rule "* ]]; then e=plan
-    elif [[ " $DISPATCH_HUMAN_RULES " == *" $rule "* ]]; then e=human
+    elif [[ " $DISPATCH_HUMAN_RULES " == *" $rule "* ]] || [ "$rule" = kind ]; then e=human
     fi
     [ -n "$e" ] || continue
     if [ "$e" = plan ] && [ "$planned" = true ]; then
@@ -1952,7 +1970,8 @@ skip_exits() {
       continue
     fi
     [ "$DISPATCH_EXIT_MAX" = 0 ] || [ "$EXITS_TAKEN" -lt "$DISPATCH_EXIT_MAX" ] || break
-    why="dispatch skipped it ($rule): $(jq -r '.reason // ""' <<<"$d")"
+    if [ "$rule" = kind ]; then why="dispatch never starts it: $(jq -r '.reason // ""' <<<"$d") (kinds.json)"
+    else why="dispatch skipped it ($rule): $(jq -r '.reason // ""' <<<"$d")"; fi
     case "$e" in
       plan)
         add=(--add plan); [ "$req" = true ] && add+=(--add go)
@@ -1976,6 +1995,7 @@ skip_exits() {
           say "skip_exits: $p $id is $where, but the agent row would not drop: drop it by hand" ;;
     esac
     EXITS_TAKEN=$(( EXITS_TAKEN + 1 ))
+    mkdir -p "$DIR"   # a kind exit can be the first verdict on record
     jq -c --arg e "$e" --arg at "$(date -Iseconds)" '. + {exit: $e, exit_at: $at}' <<<"$d" >> "$VERDICTS"
   done <<<"$rows"
   if [ -n "$dry" ]; then
