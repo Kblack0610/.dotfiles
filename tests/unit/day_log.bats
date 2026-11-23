@@ -181,14 +181,14 @@ EOF
 # day_record <day> <jq filter over {merged: []}>: a stored record, for the week
 day_record() { jq -n "{schema: 2, date: \"$1\", merged: []} | $2" > "$DAYLOG_DIR/$1.json"; }
 
-# fleet_cost <measured> <estimated> <project:usd:tokens>...: the agent-usage fleet-cost answer the
+# fleet_cost <cash> <burn> <project:usd:tokens>...: the agent-usage fleet-cost answer the
 # usage-stub serves, one session row per argument grouped into by_project as fleet_cost does; the total
-# is measured plus estimated, and what the rows do not carry is its unattributed part.
+# is cash plus burn, and what the rows do not carry is its unattributed part.
 fleet_cost() {
   local m="$1" e="$2"; shift 2
   printf '%s\n' "$@" | jq -Rn --argjson m "$m" --argjson e "$e" '[inputs | split(":")
     | {sid: "s\(input_line_number)", project: .[0], usd: (.[1] | tonumber), tokens: (.[2] | tonumber)}] as $s
-    | {total: {usd: ($m + $e), measured: $m, estimated: $e, sessions: ($s | length), tokens: ($s | map(.tokens) | add),
+    | {total: {usd: ($m + $e), cash: $m, burn: $e, sessions: ($s | length), tokens: ($s | map(.tokens) | add),
                unattributed: ($m + $e - ($s | map(.usd) | add))},
        by_project: ($s | group_by(.project) | map({key: .[0].project,
          value: {usd: (map(.usd) | add), sessions: length, tokens: (map(.tokens) | add)}}) | from_entries),
@@ -370,11 +370,11 @@ fleet_cost() {
 }
 
 @test "spend is the fleet cost: a row a project, the dollars no session carries, and the total with its parts" {
-  fleet_cost 12 4 game:5:1000000 game:5:500000 game:2.5:500000 tools:2.5:1000000
+  fleet_cost 4 12 game:5:1000000 game:5:500000 game:2.5:500000 tools:2.5:1000000
   run "$SUBJECT" show
   assert_success
   assert_output --partial '4 sessions spent about $16.'
-  assert_output --partial '- The fleet cost, about $16: $12 measured, $4 estimated (agent-usage fleet-cost).'
+  assert_output --partial '- The fleet cost, about $16: $4 API cash, $12 subscription burn (agent-usage fleet-cost).'
   assert_output --partial '| game | 3 | 2M | $12.5 |'
   assert_output --partial '| (no session) | 0 | 0 | $1 |'
   assert_output --partial '| TOTAL | 4 | 3M | $16 |'
@@ -521,6 +521,22 @@ agent_day_cost_usd{project="game"} 12.5
 agent_day_cost_usd{project="web"} 0.25
 PROM
 )"
+}
+
+@test "a snapshot on a machine that does not hold the fleet lease (another holds it, or it is no peer) publishes no day_log.prom" {
+  mkdir -p "$PROM_TEXTFILE_DIR"
+  local rc
+  for rc in 1 2; do
+    FLEET_LEASE_STUB_RC=$rc run "$SUBJECT" snapshot
+    assert_success
+    # The record is still written; only the publish is the holder's.
+    [ -s "$output" ]
+    [ ! -e "$PROM_TEXTFILE_DIR/day_log.prom" ]
+  done
+  # The holder (the stub's default) publishes.
+  run "$SUBJECT" snapshot
+  assert_success
+  [ -s "$PROM_TEXTFILE_DIR/day_log.prom" ]
 }
 
 @test "a snapshot of a past day does not overwrite today's metrics" {
@@ -679,15 +695,13 @@ ci pass --since $since --until $until --branch trunk"
   assert_output --partial '- CI game: 2 red of 10 runs, 1 on main, gate wall p50 40 min, 3.5 runner-hours, 1 branches re-gated'
 }
 
-@test "negative control: a failed hub ci hosts is named unreadable and writes no host series" {
+@test "negative control: a failed hub ci hosts is named unreadable and records no hosts" {
   mkdir -p "$PROM_TEXTFILE_DIR"
   echo 1 > "$SANDBOX/hosts-rc"
   run "$SUBJECT" nightly
   assert_failure 1
   run rec -c '.ci | [.hosts, [.unreadable[] | select(startswith("hub ci hosts"))]]' 2026-10-27
   assert_output '[null,["hub ci hosts: exit 1"]]'
-  run grep -c '^agent_ci_host_' "$PROM_TEXTFILE_DIR/day_log_rollup.prom"
-  assert_output 0
 }
 
 @test "nightly: a failed hub ci pass is named unreadable and leaves the pass out, the ci-failures counts stay" {
@@ -745,30 +759,20 @@ EOF
   assert_output '[3.5,[]]'
 }
 
-@test "nightly: the prom lines cover CI, usage, flow and the week" {
+@test "nightly: the record keeps CI per workflow and host, usage, flow and the week" {
   ci_clone
   mkdir -p "$PROM_TEXTFILE_DIR"
   echo '{"totals":{"context":900,"sessions":4},"cost_per_merged_pr":2.5,"by_kind":{"agent":{"sessions":3}},"by_account":{"bnb":{"sessions":4}}}' > "$SANDBOX/tokjson-2026-10-27"
   # the ledger spells the repo in its own case; a workflow whose runs all cancelled has no pass
   echo '{"github:o/GAME":{"runs":8,"green":6,"pass":0.75,"workflows":{"Tests":{"runs":8,"green":6,"pass":0.75},"Docs":{"runs":0,"green":0,"pass":null}}}}' > "$SANDBOX/pass"
   "$SUBJECT" nightly
-  run cat "$PROM_TEXTFILE_DIR/day_log_rollup.prom"
-  assert_line 'agent_ci_pass_rate{repo="O/game",workflow="Tests"} 0.75'
-  refute_line --partial 'workflow="Docs"'
-  assert_line 'agent_ci_main_red{repo="O/game"} 1'
-  assert_line 'agent_ci_gate_wall_minutes{repo="O/game",quantile="0.9"} 70'
-  assert_line 'agent_ci_gate_wait_minutes{repo="O/game",quantile="0.5"} 5'
-  assert_line 'agent_ci_host_pass_rate{slots="aws-burst-1-unity-pool"} 0.84'
-  assert_line 'agent_ci_host_jobs{slots="mac-mini-mac"} 3'
-  assert_line 'agent_ci_runner_hours{repo="O/game"} 3.5'
-  refute_line --regexp '^(# TYPE )?agent_asks_open'   # fleet-sessions owns that series
-  assert_line 'agent_ci_regated_branches{repo="O/game"} 1'
-  assert_line 'agent_ci_quarantine_open{repo="O/game"} 6'
-  assert_line 'agent_usage_sessions{kind="agent"} 3'
-  assert_line 'agent_usage_account_sessions{account="bnb"} 4'
-  assert_line 'agent_usage_cost_per_merged_pr_usd 2.5'
-  assert_line 'agent_phases_ticked 5'
-  assert_line 'agent_week_value{metric="ci.game.runs"} 10'
+  run rec -c '[.ci.repos["O/game"] | .workflows.Tests.pass, .workflows.Docs.pass, .main.red, .cost.regates.branches_regated]' 2026-10-27
+  assert_output '[0.75,null,1,1]'
+  run rec -c '[.ci.hosts["aws-burst-1-unity-pool"].pass, .ci.hosts["mac-mini-mac"].runs, .agents.by_kind.agent.sessions, .agents.cost_per_merged_pr, .work.phases.ticked]' 2026-10-27
+  assert_output '[0.84,3,3,2.5,5]'
+  run jq -c '.metrics["ci.game.runs"].value' "$DAYLOG_DIR/weeks/2026-10-27.json"
+  assert_output '10'
+  [ ! -e "$PROM_TEXTFILE_DIR/day_log_rollup.prom" ]
 }
 
 @test "nightly: a repo it cannot read is named, the rest still closes, and the run fails so the runner reports it" {

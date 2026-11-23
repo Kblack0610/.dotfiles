@@ -2,7 +2,7 @@
 # tmx from the desktop: with no $TMUX and no terminal of its own (a Hyprland key, a waybar
 # click), a hop drives the terminal you typed in last instead of attaching where it stands;
 # `tmx client` names that terminal and `tmx popup` shows a command on it. Recording tmux stub;
-# sockets are real files so panel_live_servers sees the worlds; kitty, setsid, hyprctl stubbed.
+# sockets are real files so tmux_live_servers sees the worlds; kitty, setsid, hyprctl stubbed.
 
 setup() {
   load '../vendor/bats-support/load'

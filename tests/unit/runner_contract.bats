@@ -8,19 +8,15 @@
 # A runner that writes nothing leaves the fleet view answering "is the unit active"
 # rather than "what is it doing".
 #
-# The conformance test below is the part that matters long-term: it is what stops the
-# fleet drifting back to one adopter.
+# Which runners publish is not checked here: the roster is the private overlay's confs, so
+# tests/runner-outcome.bats in ~/.dotfiles-private checks that every enabled runner's COMMAND
+# declares an outcome (agentctl report, proof_report, proof_outcome or proof_runner_outcome).
 
 setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
-  # The real HOME, captured BEFORE the sandbox redirects it. The conformance test below
-  # deliberately inspects the machine's actual roster - a fixture roster could only ever
-  # confirm the fixture.
-  REAL_HOME="$HOME"
   load '../helpers/sandbox'
   sandbox_init basic
-  export REAL_HOME
 }
 
 # ── the glyph precedence ─────────────────────────────────────────────────────
@@ -61,37 +57,6 @@ _glyph_for() {
   # The helper above is a model of the real chain; this pins the real chain to it.
   run grep -F 'r_state" = working' "$FLEET"
   assert_success
-}
-
-# ── conformance: is the fleet still on the contract? ─────────────────────────
-
-# There are TWO publishing mechanisms and they are complementary, not rivals:
-#
-#   agentctl report -> <state-dir>/<name>/status
-#       state|project|item|detail|updated. Answers "what is this doing RIGHT NOW", and is
-#       the only way to say `blocked` - a healthy process waiting on a human.
-#
-#   proof_report    -> <state-dir>/<name>/{last-outcome,activity.log}
-#       WORKED|NOOP|STALLED. Answers "did the last run accomplish anything", which is the
-#       anti-stall question systemd cannot answer either (a plan-mode run exits 0 having
-#       done nothing). fleet.sh already tails activity.log when `item` is empty.
-#
-# A runner is conformant if it publishes through EITHER. Requiring `agentctl report`
-# specifically would flag four runners that adopted the newer proof contract, which would
-# be a false positive - the point of this test is drift, not uniformity for its own sake.
-_publishes() { # <script path>
-  grep -qE 'agentctl report|proof_report' "$1" 2>/dev/null
-}
-
-# Runners that publish through neither. Each needs a reason; an empty list is the goal.
-#
-# The silent one is `comms`. The roster-wide assertion that would catch it ships with the
-# PRIVATE change which fixes it - that script and the conf dir both live in the private
-# overlay, and a test that is red the day it lands only teaches people to ignore red.
-_known_non_adopters() {
-  cat <<'EOF'
-comms
-EOF
 }
 
 # ── one launcher ─────────────────────────────────────────────────────────────

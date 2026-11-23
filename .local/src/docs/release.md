@@ -4,7 +4,7 @@ This page is the one home for release doctrine across every repo that ships: gam
 
 ## What a release is held to
 
-- A release is graded on one thing: the right commit, built clean, is live where it was meant to go, with proof and a way back. Why: feature-work checks (tests, review, a PR) say nothing about what players have (the `release` skill).
+- A release is graded on one thing: the right commit, built clean, is live where it was meant to go, with proof and a way back. Why: feature-work checks (tests, review, a PR) say nothing about what players have.
 - Build once, from a tag, on the hosts the repo names. Never build a release from a worktree, a local checkout or an untagged commit. Why: a build nobody can trace to a commit cannot be rebuilt or blamed (playground `builds-and-releases.md`, `BUILD_INFO.txt`).
 - Each platform is built once per tag, and every channel of that platform ships the artifact the gate passed: a promotion moves a build across tracks and branches, and nothing is rebuilt for each store. Why: a rebuild is a new untested binary (playground Steam and Forgejo ship one zip; platform promotes the same image tag and the same Play `versionCode`).
 - A tag ships only when its commit has a green full run of the repo's whole suite, with no override; a merge gate's affected subset does not count. Why: rc3 and rc4 shipped with no run and rc6 on a red one while this rule was only text (playground `release-gate.sh`). An extended suite that sits outside the nightly core, such as the playground's Multi, is not part of the gate until it passes its re-admission bar.
@@ -13,11 +13,11 @@ This page is the one home for release doctrine across every repo that ships: gam
 - A green workflow is not live. Live is the store's own record showing the build (the Steam BuildID on the branch, the Play track's release, the processed TestFlight build, the App Store version, the running image in the cluster) plus a launch on a real client. Why: every Android release from v1.6.0 to v1.8.0 uploaded as a draft and reached no one while CI was green (platform `MOBILE_CICD.md`).
 - A tester track is not the public: internal or TestFlight green says nothing about production or the App Store. Each public step is proved on its own. Why: platform releases built and verified for months while the public apps stayed behind (`MOBILE_CICD.md`, "Did it reach the public").
 - Every step after the build (the store upload, the deployment record) is its own job or reusable workflow that reads the artifact the build uploaded, so a failed upload reruns alone (`gh run rerun <id> --failed  # infra: <fault>`, or steam.yml's dispatch with `run-id`) and never rebuilds. Why: ios-release.yml ran `altool` inside its build job, so a failed App Store upload cost a full iOS build (ucp-2876); phone-release.yml `play-upload` and steam.yml already split it.
-- The rollback is named before the upload, and the BuildID or version being replaced is recorded. Why: a way back worked out during a bad release is slower and riskier than one written down before it (the `release` skill).
+- The rollback is named before the upload, and the BuildID or version being replaced is recorded. Why: a way back worked out during a bad release is slower and riskier than one written down before it.
 - A rerun never sets an older build live unless it says it is a rollback. Why: a retried old run can quietly downgrade a branch (playground `steam.yml` newest-wins step).
 - Each upload records a deployment (a GitHub Deployment per target, or the cluster manifest commit), written only by the release workflow's own run; one a person wrote or a hand tag after the line starts reads `outside` and pages the drift check, and a store branch moved by hand drifts from its pin and pages as drift. A drift check compares cut, desired and live. Why: production stayed on v1.9.0 for about 40 hours after a cut with nothing reporting it (platform `release-drift.yml`).
-- For an online game, the server must accept the client's protocol before the client ships. Why: a client that cannot reach its server is broken on install (the `release` skill).
-- Main keeps moving through a cut. The tag fixes what builds, so nothing pauses and late work rides the next release. Cut at the newest commit with a green full run, which may trail the tip. Why: a cut reserves its build lane and leaves the codebase open, and a paused main stalls every session on the repo (the `release` skill; ucp-2709 P1).
+- For an online game, the server must accept the client's protocol before the client ships. Why: a client that cannot reach its server is broken on install.
+- Main keeps moving through a cut. The tag fixes what builds, so nothing pauses and late work rides the next release. Cut at the newest commit with a green full run, which may trail the tip. Why: a cut reserves its build lane and leaves the codebase open, and a paused main stalls every session on the repo (ucp-2709 P1).
 
 ## Tags and versions
 
@@ -48,7 +48,7 @@ The public step is the person's unless this table names a dated standing permiss
 - Branches: `development` is alpha, `beta` is beta, `default` is prod (`stages.md`). `none` uploads without setting anything live.
 - A branch must exist before anything sets it live, and a new app has no branch list until `default` has a build. So the first upload uses `none`, and that BuildID goes live on `default` by hand. Why: `SetLive` to a missing branch fails the commit after a good upload.
 - On "Failed to commit build", read the partner builds page before anything else: the upload usually worked and only `SetLive` failed. Never retry blind.
-- Uploads log in as a dedicated build account with a saved login (`config.vdf`) held as a secret, on a hosted runner. The login is never on a pool host or the agent machine. Why: a second copy of the login drifts (the `release` skill).
+- Uploads log in as a dedicated build account with a saved login (`config.vdf`) held as a secret, on a hosted runner. The login is never on a pool host or the agent machine. Why: a second copy of the login drifts.
 - Rollback: set the previous BuildID live on the branch. On a beta branch, `ISteamApps/SetAppBuildLive` does this with the publisher key. On `default` it is a click.
 
 ### Google Play

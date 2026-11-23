@@ -32,6 +32,10 @@ pub struct Config {
     pub max_buzz_day: usize,
     /// How many rows one page names.
     pub top: usize,
+    /// An ask paged before pages once more once it has waited this many minutes.
+    pub repage_after_min: i64,
+    /// The re-page's end: an ask waiting this many minutes or more does not page again.
+    pub repage_before_min: i64,
     /// The priorities that buzz (`[report] buzz`).
     #[serde(skip)]
     pub buzz: Vec<String>,
@@ -74,45 +78,75 @@ pub struct Page {
     pub reference: Option<String>,
 }
 
-/// What to send, and the ids the paged file keeps after it.
+/// What to send, and the lines the paged file keeps after it: ids and `repage:<id>` marks.
 #[derive(Debug, PartialEq)]
 pub struct Decision {
     pub page: Option<Page>,
     pub paged: Vec<String>,
 }
 
+/// The paged file's mark for an ask that has had its one re-page.
+const REPAGE_PREFIX: &str = "repage:";
+
+fn repage_key(id: &str) -> String {
+    format!("{REPAGE_PREFIX}{id}")
+}
+
+fn in_repage_window(n: &Need, cfg: &Config) -> bool {
+    n.kind == Kind::Ask
+        && n.score
+            .as_ref()
+            .is_some_and(|s| (cfg.repage_after_min..cfg.repage_before_min).contains(&s.age_min))
+}
+
 /// The page for `needs` (in their rank order) given the ids already paged and how many of
 /// this sender's pages buzzed in the last day. The paged ids keep only rows still listed, so
-/// an answered ask leaves the file and a new ask with its id would page again.
+/// an answered ask leaves the file and a new ask with its id would page again. An ask paged
+/// before pages once more inside `repage_after_min..repage_before_min`, so a blocking ask is
+/// not silent between its first page and the day nobody reads it.
 pub fn decide(needs: &[Need], paged: &HashSet<String>, buzzed: usize, cfg: &Config) -> Decision {
     let human: Vec<&Need> = needs
         .iter()
         .filter(|n| n.score.as_ref().is_some_and(|s| s.human))
         .collect();
-    let fresh: Vec<&Need> = human
+    let due: Vec<&Need> = human
         .iter()
         .copied()
         .filter(|n| n.score.as_ref().is_some_and(|s| s.value >= cfg.min_score))
-        .filter(|n| !paged.contains(&n.id))
         // The judge's audit sample is a review, not a blocking decision: it waits on Home.
         .filter(|n| n.ask.as_ref().is_none_or(|a| a.audit_of.is_empty()))
+        .filter(|n| {
+            !paged.contains(&n.id)
+                || (in_repage_window(n, cfg) && !paged.contains(&repage_key(&n.id)))
+        })
         .collect();
     let listed: HashSet<&str> = needs.iter().map(|n| n.id.as_str()).collect();
     let mut keep: Vec<String> = paged
         .iter()
-        .filter(|id| listed.contains(id.as_str()))
+        .filter(|id| listed.contains(id.strip_prefix(REPAGE_PREFIX).unwrap_or(id.as_str())))
         .cloned()
-        .chain(fresh.iter().map(|n| n.id.clone()))
+        .chain(due.iter().flat_map(|n| {
+            let mut keys = vec![n.id.clone()];
+            if in_repage_window(n, cfg) {
+                keys.push(repage_key(&n.id));
+            }
+            keys
+        }))
         .collect();
     keep.sort();
     keep.dedup();
-    let page = fresh.first().map(|top| Page {
+    let page = due.first().map(|top| Page {
         priority: if buzzed < cfg.max_buzz_day {
             "high"
         } else {
             "normal"
         },
-        text: text(&fresh, human.len(), cfg.top.max(1)),
+        text: text(
+            &due,
+            due.iter().filter(|n| paged.contains(&n.id)).count(),
+            human.len(),
+            cfg.top.max(1),
+        ),
         reference: match top.kind {
             Kind::Ask => Some(format!("ask:{}", top.id)),
             _ => top.target.as_ref().map(|t| format!("tmux:{t}")),
@@ -122,14 +156,28 @@ pub fn decide(needs: &[Need], paged: &HashSet<String>, buzzed: usize, cfg: &Conf
 }
 
 /// "2 new need you, 5 waiting. First: <ask> (dotfiles, 2h, holds session). Then: <ask>. List:
-/// hub Home." The lead says the count; rows past `top`, or past the page's length, fold into
-/// "+N more" (comms-standard: group, then point at the list).
-fn text(fresh: &[&Need], waiting: usize, top: usize) -> String {
+/// hub Home." The lead says the count, and `again` of them as paged before ("1 needs you
+/// again"); rows past `top`, or past the page's length, fold into "+N more" (comms-standard:
+/// group, then point at the list).
+fn text(fresh: &[&Need], again: usize, waiting: usize, top: usize) -> String {
     let n = fresh.len();
-    let lead = format!(
-        "{} you, {waiting} waiting.",
-        crate::display::fmt::plural(n, "new needs", "new need")
-    );
+    let new = n - again;
+    let mut parts: Vec<String> = Vec::new();
+    if new > 0 {
+        parts.push(crate::display::fmt::plural(
+            new,
+            "new needs you",
+            "new need you",
+        ));
+    }
+    if again > 0 {
+        parts.push(crate::display::fmt::plural(
+            again,
+            "needs you again",
+            "need you again",
+        ));
+    }
+    let lead = format!("{}, {waiting} waiting.", parts.join(", "));
     let first = fresh[0];
     let s = first.score.clone().unwrap_or_default();
     let mut about: Vec<String> = Vec::new();
@@ -195,7 +243,8 @@ pub struct Paths {
     pub config: PathBuf,
     /// agent-notify's ledger (`AGENT_NOTIFY_LOG`).
     pub ledger: PathBuf,
-    /// The ids already paged, one a line; the pager is its only writer.
+    /// The ids already paged, one a line, and a `repage:<id>` line for an ask re-paged once;
+    /// the pager is its only writer.
     pub paged: PathBuf,
 }
 
@@ -278,7 +327,7 @@ mod tests {
     fn cfg() -> Config {
         config(
             "[report]\nbuzz = [\"high\", \"urgent\"]\n\
-             [pager.needs]\nmin_score = 60\nmax_buzz_day = 6\ntop = 3\n",
+             [pager.needs]\nmin_score = 60\nmax_buzz_day = 6\ntop = 3\nrepage_after_min = 1440\nrepage_before_min = 20160\n",
         )
         .unwrap()
     }
@@ -382,6 +431,73 @@ mod tests {
     }
 
     #[test]
+    fn an_ask_open_past_a_day_and_under_14_days_re_pages_once_at_high() {
+        let mut ask = row(Kind::Ask, "a1", true, 1_440);
+        ask.score.as_mut().unwrap().age_min = cfg().repage_after_min;
+        let mut session = row(Kind::Session, "s1", true, 1_440);
+        session.score.as_mut().unwrap().age_min = cfg().repage_after_min;
+
+        let d = decide(
+            &[ask.clone(), session.clone()],
+            &set(&["a1", "s1"]),
+            0,
+            &cfg(),
+        );
+        let p = d.page.unwrap();
+        assert_eq!(p.priority, "high");
+        assert_eq!(p.reference.as_deref(), Some("ask:a1"));
+        assert!(
+            p.text.starts_with("1 needs you again, 2 waiting."),
+            "{}",
+            p.text
+        );
+        assert_eq!(d.paged, ["a1", "repage:a1", "s1"]);
+
+        // Once re-paged, the next pass stays quiet.
+        let again = decide(
+            &[ask, session.clone()],
+            &set(&["a1", "repage:a1", "s1"]),
+            1,
+            &cfg(),
+        );
+        assert_eq!(again.page, None);
+        assert_eq!(again.paged, ["a1", "repage:a1", "s1"]);
+
+        // Answering the ask drops both its id and its repage marker.
+        let cleared = decide(&[session], &set(&["a1", "repage:a1", "s1"]), 1, &cfg());
+        assert_eq!(cleared.page, None);
+        assert_eq!(cleared.paged, ["s1"]);
+    }
+
+    #[test]
+    fn an_ask_at_14_days_does_not_re_page_and_an_unpaged_day_old_ask_pages_once() {
+        let mut old = row(Kind::Ask, "old", true, cfg().repage_before_min);
+        old.score.as_mut().unwrap().age_min = cfg().repage_before_min;
+        let d = decide(&[old], &set(&["old"]), 0, &cfg());
+        assert_eq!(d.page, None);
+        assert_eq!(d.paged, ["old"]);
+
+        let mut fresh_day = row(Kind::Ask, "a2", true, cfg().repage_after_min + 60);
+        fresh_day.score.as_mut().unwrap().age_min = cfg().repage_after_min + 60;
+        let d = decide(std::slice::from_ref(&fresh_day), &set(&[]), 0, &cfg());
+        assert_eq!(d.page.unwrap().reference.as_deref(), Some("ask:a2"));
+        assert_eq!(d.paged, ["a2", "repage:a2"]);
+    }
+
+    #[test]
+    fn a_page_with_a_new_row_and_a_re_page_says_both() {
+        let mut old = row(Kind::Ask, "a1", true, 2_000);
+        old.score.as_mut().unwrap().age_min = cfg().repage_after_min;
+        let new = row(Kind::Ask, "a2", true, 90);
+        let d = decide(&[old, new], &set(&["a1"]), 0, &cfg());
+        let text = d.page.unwrap().text;
+        assert!(
+            text.starts_with("1 new needs you, 1 needs you again, 2 waiting."),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn a_row_a_machine_can_answer_never_pages_however_old() {
         // Negative control: ten days old, far over the bar, and the judge said take-recommend.
         let needs = [row(Kind::Ask, "auto", false, 14_400 * 2)];
@@ -463,7 +579,7 @@ mod tests {
         let config = dir.join("channels.toml");
         std::fs::write(
             &config,
-            "[report]\nbuzz = [\"high\", \"urgent\"]\n[pager.needs]\nmin_score = 60\nmax_buzz_day = 6\ntop = 3\n",
+            "[report]\nbuzz = [\"high\", \"urgent\"]\n[pager.needs]\nmin_score = 60\nmax_buzz_day = 6\ntop = 3\nrepage_after_min = 1440\nrepage_before_min = 20160\n",
         )
         .unwrap();
         Paths {

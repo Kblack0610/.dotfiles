@@ -144,11 +144,13 @@ item_stub() { # <title>
   hold unity-tests --by cap "96 C, 16 editors"
   hold row-x-1 --kind resource --by fleet-dispatch "keep the console step held (otherproj)"
   hold toolrepo-freeze --kind resource --by human "no merges to toolrepo until the human says"
+  sed -i "s/^since: .*/since: $(date -d '-2 days' +%Y-%m-%dT%H:%M:%S%z)/" "$AGENT_HOLD_DIR/toolrepo-freeze"
   run context
   assert_success
   assert_output --partial 'Active holds'
-  assert_output --partial 'unity-tests since'
-  assert_output --partial 'toolrepo-freeze since'
+  assert_output --regexp 'unity-tests since [^ ]+ \(held 0h\) by cap'
+  # Its age shows beside the stamp, so a hold that stood for days reads as old (ar-4645).
+  assert_output --regexp 'toolrepo-freeze since [^ ]+ \(held 2d\) by human'
   refute_output --partial 'row-x-1'
   refute_output --partial 'console step'
   assert_output --partial '+1 hold(s) for other projects or claims'
@@ -197,9 +199,24 @@ item_stub() { # <title>
                {session_id: "me-0000-0000", bucket: "WORKING", idle_min: 0, topic: "me", cwd: $c}]}' > "$FLEET_STATE_FILE"
   run context
   assert_success
-  assert_output --partial '2 other session(s) open in this checkout'
+  assert_output --partial '2 other session(s) open on toolrepo (2 in this checkout)'
   refute_output --partial 'a private topic'
   refute_output --partial 'Open sessions'
+}
+
+@test "open sessions count a sibling worktree of the project, not another project's (ar-3879)" {
+  jq -n --argjson e "$(date +%s)" --arg c "$REPO" '{generated_epoch: $e,
+    vocab: {buckets: ["WORKING","DONE"], finished: ["DONE"]},
+    sessions: [{session_id: "aaaaaaaa-1", bucket: "WORKING", project: "toolrepo", cwd: "/elsewhere/toolrepo-agent-7"},
+               {session_id: "bbbbbbbb-2", bucket: "WORKING", project: "toolrepo", cwd: "/elsewhere/toolrepo-agent-8"},
+               {session_id: "cccccccc-3", bucket: "DONE", project: "toolrepo", cwd: "/elsewhere/toolrepo-agent-9"},
+               {session_id: "dddddddd-4", bucket: "WORKING", project: "otherproj", cwd: "/elsewhere/other-agent-1"},
+               {session_id: "eeeeeeee-5", bucket: "WORKING", project: "toolrepo", host: "razer", cwd: "/elsewhere/toolrepo-agent-2"},
+               {session_id: "me-0000-0000", bucket: "WORKING", project: "toolrepo", cwd: $c}]}' > "$FLEET_STATE_FILE"
+  run context
+  assert_success
+  assert_output --partial '2 other session(s) open on toolrepo - `fleet-sessions` lists them.'
+  refute_output --partial 'in this checkout'
 }
 
 # -- anchor --------------------------------------------------------------------------------

@@ -963,6 +963,10 @@ def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
                   "measured": round(measured_usd + gateway, 2), "claude_measured": round(measured_usd, 2),
                   "estimated": round(estimated_usd + helper_usd + priced_other, 2),
                   "helper_usd": round(helper_usd, 2), "helper_range": [0, round(estimated_usd * top, 2)],
+                  # Who bills it: API cash is the gateway's metered line, the only dollars a meter bills
+                  # (whose allowance pays it is the budget ledger's paid_by). Subscription burn is the rest,
+                  # the list-price value of work on the Claude logins and the flat-plan harnesses.
+                  "cash": round(gateway, 2), "burn": round(round(total_usd, 2) - round(gateway, 2), 2),
                   # The session rows' count and tokens, and the dollars no row carries (the gateway's metered
                   # line, the helper estimate, a harness line with no session id).
                   "sessions": len(by_session), "tokens": sum(r["tokens"] or 0 for r in by_session),
@@ -983,7 +987,7 @@ def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
 def print_fleet_cost(d):
     t, c = d["total"], d["coverage"]
     print(f"fleet cost {d['window']['start']} to {d['window']['end']}: about ${t['usd']:,.0f} "
-          f"(measured ${t['measured']:,.0f}, estimated ${t['estimated']:,.0f})")
+          f"(API cash ${t['cash']:,.0f}, subscription burn ${t['burn']:,.0f}; ${t['measured']:,.0f} measured, ${t['estimated']:,.0f} estimated)")
     if c["estimated_token_share"] is not None:
         print(f"{c['estimated_token_share']:.0%} of tokens estimated: {c['sessions_estimated']} of {c['sessions']} sessions have no cost telemetry")
     for k, v in d["by_origin"].items():
@@ -1006,7 +1010,7 @@ def main():
     ap.add_argument("--sort", choices=("cost", "turns", "context"), default="cost",
                     help="order of the by-session table and its --json: fleet cost (default), turns, or context tokens")
     ap.add_argument("--json", action="store_true")
-    ap.add_argument("--fleet-cost", action="store_true", help="the whole fleet's measured and estimated dollars")
+    ap.add_argument("--fleet-cost", action="store_true", help="the whole fleet's dollars: API cash and subscription burn, each measured or estimated")
     a = ap.parse_args()
     end = ts(a.before) if a.before else dt.datetime.now().timestamp()
     if end is None:

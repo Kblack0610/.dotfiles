@@ -110,6 +110,8 @@ UNHANDLED="$LEDGER/.unhandled"  # <key>\t<checks>: each owed line and how many c
 PASS="$LEDGER/.pass"          # <id>\t<start epoch>\t<due count>\t<pane>: the pass running now
 NOROOM="$LEDGER/.noroom"      # present while no account has room, so that is paged once
 PASSES="$LEDGER/passes.tsv"   # <start>\t<id>\t<verdict>\t<detail>\t<lane_cols>: every pass, once scored; fleet-bench canary shepherd reads the lane columns by position
+# shellcheck source=../lib/tmux-servers.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/tmux-servers.sh" || exit 1   # tmux_servers_all
 # agentctl-run's lib, beside this script: calls.sh writes each pass's cost line (pass_cost) and
 # budget.sh checks the conf's day and hour caps over those lines before a pass starts.
 AGENT_RUN_LIB="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/agent-run/lib"
@@ -230,20 +232,17 @@ cmd_holds() {
 # one tmux session holds many agents, and a session option reads as set on every pane in it.
 # Readers show the tag only while that is in the future (.tmux.conf @shepherd_live, agent-panel),
 # so a shepherd that stopped renewing drops its tag with no cleanup. Every server in the socket
-# dir is swept, found the way agent-panel finds them (tmux.rs socket_dir). The pane argument is a
+# dir is swept, found by tmux_servers_all. The pane argument is a
 # pane on $SERVER: the runner tags the pass it starts, so the tag is there before the pass's own
 # lease call. A lease taken outside tmux has no pane, so it only clears.
 tag_pane() {
-  local dir sock pid val
-  dir="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
-  [ -z "${TMUX:-}" ] || dir="$(dirname "${TMUX%%,*}")"
-  for sock in "$dir"/*; do
-    [ -S "$sock" ] || continue
-    tmux -S "$sock" list-panes -a -F '#{pane_id} #{@shepherd}' 2>/dev/null |
+  local srv pid val
+  while IFS= read -r srv; do
+    tmux -L "$srv" list-panes -a -F '#{pane_id} #{@shepherd}' 2>/dev/null |
       while read -r pid val; do
-        [ -z "$val" ] || tmux -S "$sock" set-option -p -t "$pid" -u @shepherd 2>/dev/null
+        [ -z "$val" ] || tmux -L "$srv" set-option -p -t "$pid" -u @shepherd 2>/dev/null
       done
-  done
+  done < <(tmux_servers_all)
   if [ -n "${2:-}" ]; then
     tmux -L "$SERVER" set-option -p -t "$2" @shepherd "$1" 2>/dev/null || true
     return 0
@@ -484,7 +483,9 @@ landing_due() {
     | select($l.wait_min >= $min)
     | ([.[].landing_queue | numbers] | max) as $d
     | "landing: \($l.project // "-") longest wait \($l.target)\($l | ptag)"
-      + (if ($l.pr // "-") != "-" then " PR #\($l.pr)" else "" end) + " \($l.wait_min)m"
+      + (if $l.wait_repo != null then (if $l.wait_pr != null then " PR \($l.wait_repo)#\($l.wait_pr)" else " gate in \($l.wait_repo)" end)
+         elif $l.wait_pr != null then " PR #\($l.wait_pr)"
+         elif ($l.pr // "-") != "-" then " PR #\($l.pr)" else "" end) + " \($l.wait_min)m"
       + ", \(length) waiting their landing turn"
       + (if $d != null then ", \($d) PRs in the landing queue" else "" end)
       + "; then: read what holds the landing slot and its session; when it is moving, fleet-shepherd skip this line naming it"' \
@@ -496,7 +497,8 @@ landing_due() {
 # FLEET_SHEPHERD_CRITICAL_MIN: its queue gate's wait (wait_min, "waited"), else how long the session has been idle
 # ("idle"): a PR with no gate driving it has no measured wait, and the store keeps no label time. Its bucket reads WORKING (a queue gate, or
 # "waiting on the landing queue"), so without this the rows behind it are named by no line (ar-3761: on 2026-11-19
-# P1 #2935 read WORKING while ucp-2712 waited 5h). A manual session is the human's. Keyed by target and PR (due_key),
+# P1 #2935 read WORKING while ucp-2712 waited 5h). A PR the slot refused (`behind the slot holder #H`, ar-3596) points
+# at #H, since its own landing cannot move until #H lets go. A manual session is the human's. Keyed by target and PR (due_key),
 # so the line holds while its place moves.
 critical_due() {
   jq -r --argjson min "$FLEET_SHEPHERD_CRITICAL_MIN" "$PANE_TAG_JQ"'
@@ -506,6 +508,8 @@ critical_due() {
     | "critical: \(.target)\(ptag) PR #\(.pr) \($p), \(if .wait_min != null then "waited" else "idle" end) \($w)m; \(.critical.rows | join(", ")) wait on it; then: "
       + (if ($p | test("^(about|waiting)")) then
            "agent-queue bump \(.item.slug // "<its item>") urgent (gate-line.py seats an urgent item first from its next poll; read the place next pass), or take its landing over from its worktree"
+         elif ($p | test("^behind the slot holder #")) then
+           "read #\($p | capture("#(?<h>[0-9]+)$").h), the PR whose landing slot refused this one: if it is not moving, take its landing over from its worktree; the refused PR runs its Checks again once it lets go"
          else "read what holds the slot; if it is not moving, take its landing over from its worktree" end)' \
     "$STATE_FILE" 2>/dev/null || true
 }
@@ -653,12 +657,16 @@ cmd_infra() {
 # shepherd heard urgent only, so queue-starved (high) never reached it. Every other trip is owned by
 # its fleet-bench triage red item, or by the human sheet on a human route, so it raises no line here.
 # A watch whose `red` item is running or queued unheld has an owner, so it raises no line either; a
-# held one does not, as fleet-dispatch watch_reds gives it no slot.
+# held one does not, as fleet-dispatch watch_reds gives it no slot. A watch with an unexpired
+# quarantine (`watch-companion-loop quarantined`, in force only) is owned by the ask or row it names,
+# so it raises none either until the quarantine ends (an `alert:` silence row names no watch, so it
+# owns none; the call is bounded, as it asks Alertmanager too); then it is a due line like any red (ar-4585).
 infra_sample() {
   local owned
-  owned=$(agent-queue list --json 2>/dev/null | jq -r 'select(((" " + (.tags // "") + " ") | contains(" red ")))
+  owned=$({ agent-queue list --json 2>/dev/null | jq -r 'select(((" " + (.tags // "") + " ") | contains(" red ")))
     | select(.state != "queued" or (.hold // "") == "") | .task' \
-    | sed -n 's/^check(watch): \([^ ]*\) tripped.*/\1/p')
+    | sed -n 's/^check(watch): \([^ ]*\) tripped.*/\1/p'
+    timeout 20 watch-companion-loop quarantined 2>/dev/null | cut -f1; })
   {
     infra_now
     watch-companion-loop tripped 2>/dev/null | awk -F'\t' -v owned="$owned" '
@@ -824,6 +832,18 @@ close_items_sample() {
   [ -z "$acted" ] || fleet-sessions --write >/dev/null || true
 }
 
+# close_page <sid> <target> <fact>: the page for a window close that failed. Once per session: nothing
+# escalates a DONE, LANDED or CHAT row any more (#2806), so this page is the only one it gets. One agent-notify
+# refused is not recorded in .close-paged, so the next check tries it again.
+close_page() {
+  local sid="$1" target="$2" fact="$3" paged="$LEDGER/.close-paged"
+  grep -qxF "$sid" "$paged" 2>/dev/null && return 0
+  agent-notify -p high -k decision -t "$target: its window will not close" -r "tmux:$target" \
+    "Closing the window of $target failed ($fact). Look at it and close it by hand." >/dev/null 2>&1 || return 0
+  printf '%s\n' "$sid" >> "$paged"
+  cmd_log "close-failed: $target: paged, closing its window failed ($fact)" >/dev/null
+}
+
 # close_sample: the timer closer. Every row it reads already has a close verdict of now (CLOSE_JQ in
 # fleet-sessions: quiet FLEET_IDLE_CLOSE_MIN, nothing that would lose work), so it re-proves none of it.
 # - Empty prompt, nothing typed yet: claim (mark --close, once per session) and type /wind-down auto,
@@ -837,7 +857,7 @@ close_items_sample() {
 # A window closes only unshown, with Claude in front (an editor's buffer is not in the scrollback) and
 # no turn running in its footer, by wind-down.sh close (scrollback, window, a reap that refuses a dirty
 # tree), its own open asks set to reopen it first (logged once in .reopen-failed when one cannot be).
-# A failed close is logged once in .close-failed and left to the escalation. A worker's pane goes over
+# A failed close is recorded in .close-failed (not tried again) and paged once (close_page). A worker's pane goes over
 # ssh (pane_run). Having acted, it refreshes the document so cmd_due reads it.
 close_sample() {
   local sid target pane close fact asks nasks man host server cmd when now rc wdc how st mode att wa fg screen
@@ -874,7 +894,7 @@ close_sample() {
         case "$fg" in claude|node) ;; *) continue ;; esac
         working_footer "$screen" && continue
       fi
-      grep -qxF "$sid" "$failed" 2>/dev/null && continue
+      if grep -qxF "$sid" "$failed" 2>/dev/null; then close_page "$sid" "$target" "$fact"; continue; fi
       if ! reopen_own_asks "$sid" "$asks" "$nasks"; then
         if ! grep -qxF "$sid $asks" "$LEDGER/.reopen-failed" 2>/dev/null; then
           printf '%s %s\n' "$sid" "$asks" >> "$LEDGER/.reopen-failed"
@@ -893,7 +913,8 @@ close_sample() {
         cmd_log "close: $target: its machine did not answer over ssh; the next check closes its window ($fact)" >/dev/null
       else
         printf '%s\n' "$sid" >> "$failed"
-        cmd_log "close: $target: closing its window failed; the escalation carries it ($fact)" >/dev/null
+        cmd_log "close: $target: closing its window failed ($fact)" >/dev/null
+        close_page "$sid" "$target" "$fact"
       fi
       continue
     fi
@@ -904,14 +925,14 @@ close_sample() {
     rc=0; pane_run "$host" agent-panel send --wait 0 --pane "$server/$pane" "$cmd" >/dev/null 2>&1 || rc=$?
     case "$rc" in
       0) acted=1; cmd_log "close: $target $close: typed $cmd ($fact)" >/dev/null ;;
-      3) acted=1; cmd_log "close: $target $close: typed $cmd, but its Enter was not taken; the escalation carries it" >/dev/null ;;
-      75) rm -f "$LEDGER/.closed/$sid" && acted=1
+      3) acted=1; cmd_log "close: $target $close: typed $cmd, but its Enter was not taken; the window close, ${FLEET_IDLE_CLOSE_MIN:-60}m on if it is still due, carries it" >/dev/null ;;
+      75) fleet-sessions mark --release "$sid" && acted=1
           cmd_log "close: $target $close: another send held its pane; the next check types it" >/dev/null ;;
       # ssh failed (255). A link dropped after the keys landed would see them typed twice, but by
       # then the pane is busy or gone, and the next check types only into an idle, empty prompt.
-      255) rm -f "$LEDGER/.closed/$sid" && acted=1
+      255) fleet-sessions mark --release "$sid" && acted=1
           cmd_log "close: $target $close: its machine did not answer over ssh; the next check types it" >/dev/null ;;
-      *) cmd_log "close: $target $close: marked, but typing $cmd failed ($rc); the escalation carries it" >/dev/null ;;
+      *) cmd_log "close: $target $close: marked, but typing $cmd failed ($rc); the window close, ${FLEET_IDLE_CLOSE_MIN:-60}m on if it is still due, carries it" >/dev/null ;;
     esac
   done < <(jq -r "$CLOSE_NUDGE_JQ$CLOSE_REFUSED_JQ"'(.sessions // [])[]
     | (close_nudge // (if close_refused then "WINDOW" else null end)) as $close | select($close)
@@ -972,7 +993,8 @@ pane_takes_keys() {
     [ "$h" = - ] || return 1
     [ "${att:-1}" = 0 ] || [ "${wa:-1}" != 1 ] || return 1
     leave_mode "$s" "$p" || return 1
-    cmd_log "takeover: $s/$p: left its tmux mode on an unwatched pane" >/dev/null
+    # Not the verb "takeover": cmd_stats counts that verb, and this line is no takeover (ar-4619).
+    cmd_log "mode-left: $s/$p: left its tmux mode on an unwatched pane" >/dev/null
   fi
   idle_prompt "$(pane_tmux "$h" "$s" capture-pane -p -t "$p" 2>/dev/null)"
 }

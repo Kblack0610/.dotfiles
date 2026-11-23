@@ -94,7 +94,7 @@ _all_servers() {
     case "$seen" in *" $s "*) continue ;; esac
     seen="$seen$s "
     printf '%s\n' "$s"
-  done < <(known_servers; panel_live_servers)
+  done < <(known_servers; tmux_live_servers)
 }
 
 # ls -- every known server plus any live one, with session counts.
@@ -307,7 +307,7 @@ _vim_edit() {
 # A pane ensure has only just made is in no mode, so its startup send-keys skips this.
 _type() {
   local srv="$1" t="$2"; shift 2
-  leave_mode "$srv" "$t" || { echo "tmx: $t is stuck in a tmux mode; typed nothing" >&2; return 1; }
+  leave_mode "$srv" "$t" || { echo "tmx: $t is stuck in a tmux mode, or its mode cannot be read; typed nothing" >&2; return 1; }
   tmux -L "$srv" send-keys -t "$t" "$@"
 }
 
@@ -477,7 +477,7 @@ _newest_client() {
   while IFS= read -r s; do
     [ -n "$s" ] && tmux -L "$s" list-clients \
       -F "#{client_activity} $s #{client_name} #{client_pid}" 2>/dev/null
-  done < <(panel_live_servers) | sort -rn | awk 'NR==1' | cut -d' ' -f2-
+  done < <(tmux_live_servers) | sort -rn | awk 'NR==1' | cut -d' ' -f2-
 }
 
 # _drive_newest <server> <mode> -- hop the newest client to <server> and focus its terminal.
@@ -732,7 +732,7 @@ _recent_session() {
 _is_world() {
   world_hidden "$1" && return 0
   known_servers | grep -Fx -- "$1" >/dev/null && return 0
-  panel_live_servers | grep -Fx -- "$1" >/dev/null
+  tmux_live_servers | grep -Fx -- "$1" >/dev/null
 }
 
 # Anything else is a typo or a key still bound to a removed verb. It stops here: _enter
@@ -1172,7 +1172,7 @@ cmd_reload() {
   local s conf="${TMUX_CONF:-$HOME/.tmux.conf}"
   while IFS= read -r s; do
     [ -n "$s" ] && tmux -L "$s" source-file "$conf"
-  done < <(panel_live_servers)
+  done < <(tmux_live_servers)
   [ -n "${TMUX:-}" ] && tmux display-message "tmx: reloaded $conf on every server"
   return 0
 }

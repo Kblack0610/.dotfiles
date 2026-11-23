@@ -28,7 +28,8 @@
 #                                   load|resource|claim keeps that kind (a hold with no kind line
 #                                   reads as the kind set would give it)
 #   agent-hold show <resource>      print the hold file
-#   agent-hold aged [--days N]      each hold set N days ago or longer (7), exit 1 when any; never releases
+#   agent-hold aged [--days N]      each resource or human-set hold set N days ago or longer (1),
+#                                   then `page: high`, exit 1 when any; never releases
 #
 # One file per hold in ~/.agent/holds/ (AGENT_HOLD_DIR overrides), flat `key: value`.
 # A hold is state, not a message, because shell loops have no inbox and new sessions miss
@@ -430,12 +431,15 @@ cmd_list() {
   done
 }
 
-# aged [--days N] -> one line per hold set N days ago or longer (AGENT_HOLD_AGE_DAYS, 7), its age,
-# who set it and why, then how to end it; exit 1 when any, 0 when none. It reads and never releases:
-# a hold is the human's word, so its age is a page, never a timeout (ask GwQIYE, 2026-11-21). The
-# watch hold-age runs it. Event-free by necessity: a hold growing old has no event, so the watch samples.
+# aged [--days N] -> one line per standing hold set N days ago or longer (AGENT_HOLD_AGE_DAYS, 1), its
+# age, who set it and why, then how to end it and `page: high`; exit 1 when any, 0 when none. A
+# standing hold is one only the human ends: a resource hold, or any hold `by: human`. A load hold
+# (the shepherd lifts it once the machine reads CLEAR) and a claim (it ends with its skill) are
+# exempt. It reads and never releases: a hold is the human's word, so its age is a page, never a
+# timeout (ask GwQIYE, 2026-11-21). The watch hold-age runs it at severity high, since only the human
+# releases one (priority.md). Event-free by necessity: a hold growing old has no event, so the watch samples.
 cmd_aged() {
-  local days="${AGENT_HOLD_AGE_DAYS:-7}" f since s age now n=0
+  local days="${AGENT_HOLD_AGE_DAYS:-1}" f since s age now n=0 kind
   case "${1:-}" in
     '') ;;
     --days) [[ "${2:-}" =~ ^[0-9]+$ ]] || { echo "agent-hold aged: --days takes a whole number" >&2; exit 2; }; days="$2" ;;
@@ -445,6 +449,8 @@ cmd_aged() {
   now=$(date +%s)
   for f in "$HOLD_ROOT"/*; do
     [ -f "$f" ] || continue
+    kind="$(hold_kind "$f")"
+    [ "$kind" = resource ] || { [ "$kind" != claim ] && [ "$(field "$f" by)" = human ]; } || continue
     since="$(field "$f" since)"
     # A since no date reads is a hold nobody can age: it shows, since it is as old as anything. An
     # empty one too: `date -d ""` reads as today's midnight.
@@ -455,7 +461,8 @@ cmd_aged() {
     printf '%s: held %sd, since %s by %s: %s\n' "${f##*/}" "$age" "${since:-an unreadable time}" "$(field "$f" by)" "$(field "$f" reason)"
   done
   [ "$n" -gt 0 ] || return 0
-  echo "$n hold(s) set $days days ago or longer; release each that is done (agent-hold release <resource>) or ask its setter; nothing releases them on age"
+  echo "$n hold(s) set $days day(s) ago or longer; release each that is done (agent-hold release <resource>) or ask its setter; nothing releases them on age"
+  echo "page: high"
   return 1
 }
 
@@ -467,7 +474,7 @@ cmd_show() {
 
 cmd_classes() { printf '%s\n' "$DESK_CLASSES"; }
 
-usage() { sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; }
 
 verb="${1:-}"; shift || true
 case "$verb" in

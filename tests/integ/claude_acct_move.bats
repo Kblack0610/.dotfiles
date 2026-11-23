@@ -143,7 +143,7 @@ STUB
 
 q() { printf %q "$1"; }
 
-# socket <server> -- a socket file where tmux_servers looks; nothing listens on it
+# socket <server> -- a socket file where tmux_servers_all looks; nothing listens on it
 socket() {
   mkdir -p "$TMUX_TMPDIR/tmux-$(id -u)"
   python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TMUX_TMPDIR/tmux-$(id -u)/$1"
@@ -839,7 +839,7 @@ trust_prompt() {
   echo tree-mode > "$FIX/mode"; touch "$FIX/mode-stuck"
   run "$ACCT" unpark agent-4
   assert_failure
-  assert_output --partial 'in a tmux mode that did not close; typed nothing'
+  assert_output --partial 'in a tmux mode that did not close, or its mode cannot be read; typed nothing'
   [ ! -e "$FIX/mode-keys" ]
   [ -e "$(PARKED_LEDGER agent-4)" ]
 }
@@ -858,7 +858,7 @@ trust_prompt() {
   echo tree-mode > "$FIX/mode"; touch "$FIX/mode-stuck"
   run "$ACCT" park agent-5 --server lab
   assert_failure
-  assert_output --partial 'in a tmux mode that did not close; typed nothing'
+  assert_output --partial 'in a tmux mode that did not close, or its mode cannot be read; typed nothing'
   [ ! -e "$FIX/mode-keys" ]
   [ ! -e "$(PARKED_LEDGER agent-5)" ]
 }

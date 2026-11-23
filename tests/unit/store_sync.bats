@@ -370,6 +370,46 @@ EOF
   assert_equal "$(cat "$SANDBOX/hook.log")" ""
 }
 
+@test "in a service's cgroup the background sync gets its own scope, elsewhere a plain setsid (ar-4685)" {
+  # In the runner's cgroup, a fork started after systemd's stop sweep (the EXIT hook of an agent-queue
+  # the sweep TERMed) sat in flock -w unsignalled until the stop timeout SIGKILLed it and failed the
+  # unit. The stubs log the detach and start nothing, so no sync runs behind the test.
+  local det="$SANDBOX/detach.log" cg="$SANDBOX/cgroup"
+  mkdir -p "$SANDBOX/bin"
+  printf '#!/bin/sh\necho "systemd-run $*" >> "%s"\nexit "${STUB_RC:-0}"\n' "$det" > "$SANDBOX/bin/systemd-run"
+  printf '#!/bin/sh\necho "setsid $*" >> "%s"\n' "$det" > "$SANDBOX/bin/setsid"
+  chmod +x "$SANDBOX/bin/systemd-run" "$SANDBOX/bin/setsid"
+  peer a
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  fork_sync() { STORE_SYNC_CGROUP="$cg" STORE_SYNC_FG=0 PATH="$SANDBOX/bin:$PATH" on a --now --bg; }
+
+  echo '0::/user.slice/user-1000.slice/user@1000.service/app.slice/agentctl@comms.service' > "$cg"
+  run fork_sync
+  assert_success
+  run cat "$det"
+  assert_equal "${#lines[@]}" 1
+  assert_line --index 0 --regexp "^systemd-run --user --scope --quiet setsid -f .*store-sync --store [a-z]+ --now$"
+
+  # A session a unit's tmux spawned carries INVOCATION_ID but lives in its own scope.
+  : > "$det"
+  echo '0::/user.slice/user-1000.slice/user@1000.service/app.slice/tmux-spawn-1.scope' > "$cg"
+  INVOCATION_ID=abc run fork_sync
+  run cat "$det"
+  assert_equal "${#lines[@]}" 1
+  assert_line --index 0 --regexp "^setsid -f .*store-sync --store [a-z]+ --now$"
+
+  # No user bus: the sync still forks, and the log says it runs in the service's cgroup.
+  : > "$det"
+  echo '0::/system.slice/some.service' > "$cg"
+  STUB_RC=1 run fork_sync
+  run cat "$det"
+  assert_equal "${#lines[@]}" 2
+  assert_line --index 0 --regexp "^systemd-run "
+  assert_line --index 1 --regexp "^setsid -f .*store-sync --store [a-z]+ --now$"
+  run grep -c "WARN: systemd-run gave the background sync no scope; it runs in /system.slice/some.service" "$SANDBOX/a/.sync/sync.log"
+  assert_output 1
+}
+
 @test "a store-sync that writes the queue or the asks runs once per write, never starting itself again (ar-4241)" {
   # The loop a bats fixture's stub made (ar-4050, ar-4241): a sync that calls agent-queue started the
   # hook again, and ~300 to ~2,000 processes outlived their run. The stub calls its writer back on
@@ -608,6 +648,45 @@ pages() { grep -c '^agent-notify' "$NOTES_FIXTURE/calls.log" 2>/dev/null || true
   refute_output --partial "removed"
   [ -e "$lk" ]
   assert_equal "$(show "$ORIGIN" queue/item.md)" "state: open"
+}
+
+# add_shim <fails>: a git on PATH whose first <fails> `add` calls die as a file vanishing mid-walk does.
+add_shim() {
+  local real; real=$(command -v git)
+  mkdir -p "$SANDBOX/shim"
+  cat > "$SANDBOX/shim/git" <<SH
+#!/bin/bash
+for a in "\$@"; do
+  if [ "\$a" = add ]; then
+    n=\$(cat "$SANDBOX/adds" 2>/dev/null || echo 0)
+    echo \$((n + 1)) > "$SANDBOX/adds"
+    if [ "\$n" -lt "$1" ]; then echo "fatal: unable to stat 'queue/gone.md': No such file or directory" >&2; exit 128; fi
+    break
+  fi
+done
+exec "$real" "\$@"
+SH
+  chmod +x "$SANDBOX/shim/git"
+}
+
+@test "a file that vanishes while git add walks the tree costs a retry, never the unit (ar-4583)" {
+  peer a
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  add_shim 2
+  PATH="$SANDBOX/shim:$PATH" run on a
+  assert_success
+  assert_equal "$(cat "$SANDBOX/adds")" 3
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: done"
+}
+
+@test "a git add that keeps failing still fails the unit with 3 (ar-4583)" {
+  peer a
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  add_shim 99
+  PATH="$SANDBOX/shim:$PATH" run on a
+  assert_failure 3
+  assert_output --partial "ERROR: could not commit ."
+  assert_equal "$(cat "$SANDBOX/adds")" 3
 }
 
 @test "a held or young index.lock stays, and the commit it blocks fails the unit with 3" {

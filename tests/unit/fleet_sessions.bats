@@ -13,6 +13,7 @@ setup() {
   # no runs when there is none, and fails like a stale sync while $LEDGER_DIR/FAIL exists.
   # The PR store stand-in: `prs <repo>` answers $LEDGER_DIR/prs_<owner_repo>.tsv, else prs.tsv
   # (rows "branch \t number \t state \t ci \t head \t red \t merged_at \t title \t labels, comma-joined"), no PRs when there is neither,
+  # `sync-prs [--wait] <repo>` (the poll catching up) copies $LEDGER_DIR/after_sync_<owner_repo>.tsv over that repo's rows, and fails while $LEDGER_DIR/SYNC_FAIL exists;
   # fails like a stale store while $LEDGER_DIR/PRS_FAIL exists, or PRS_FAIL_<x> for a repo whose
   # owner_repo name ends in <x>, and lists no
   # repo (exit 3) while $LEDGER_DIR/PRS_UNLISTED does.
@@ -41,6 +42,10 @@ case "$1" in
     jq -Rn '[inputs | split("\t") | {branch: .[0], number: (.[1] | tonumber), state: .[2], ci: .[3],
       head_sha: .[4], red: (.[5] // "-"), merged_at: (.[6] // "" | if . == "" then null else . end), title: .[7],
       labels: (.[8] // "" | split(",") | map(select(. != "")))}]' "$f" ;;
+  sync-prs)
+    [ "$2" != --wait ] || set -- "$1" "${@:3}"
+    [ ! -e "$LEDGER_DIR/SYNC_FAIL" ] || { echo "$2: forge unreachable" >&2; exit 1; }
+    f="$LEDGER_DIR/after_sync_${2//\//_}.tsv"; [ ! -f "$f" ] || cp "$f" "$LEDGER_DIR/prs_${2//\//_}.tsv" ;;
   *) exit 2 ;;
 esac
 SS
@@ -404,6 +409,31 @@ ledger() {
   run carried_by "$q" sidA own:other lab:me
   [ "$output" = - ]
   run carried_by "$q" sidA 'moved:coord moved on (done)' lab:me
+  [ "$output" = - ]
+}
+
+@test "a queued <slug>-close item held by its at: time carries the open item, so the session is not STALLED (ar-4582)" {
+  local q
+  q='{"slug":"ar-4554","state":"running","sessions":"sidA"}
+{"slug":"ar-4554-close","state":"queued","ready":"2099-01-01T00:00:00Z"}
+{"slug":"ar-4555-close","state":"queued","ready":"2099-01-01T00:00:00Z"}
+{"slug":"ar-4556-close","state":"done","ready":"2099-01-01T00:00:00Z"}
+{"state":"queued"}'
+  run carried_by "$q" sidA own:ar-4554 lab:me
+  assert_output 'ar-4554-close'
+  run carried_by "$q" sidA own:ar-4556 lab:me
+  [ "$output" = - ]
+  # a slugless queued row does not drop a running carrier
+  q="$q"$'\n''{"slug":"fix-1","state":"running","from":"item:ar-4554","sessions":"sidB"}'
+  run carried_by "$q" sidA own:ar-4554 lab:me
+  assert_output 'ar-4554-close,fix-1'
+  # every phase done or queued, a merged PR, and the close item held: WORKING, not the nudged STALLED
+  run b idle 0 0 0 30 1 0 0 7 MERGED PASS 1 - 2/2 - - - - - 'own:ar-4554' - - - ar-4554-close
+  assert_output 'WORKING PR #7 merged, tree clean, its item ar-4554 is carried by live items: ar-4554-close'
+  # its at: time passed and it is still queued (starved), or it has no ready time: not carried
+  q='{"slug":"ar-4554-close","state":"queued","ready":"2020-01-01T00:00:00Z"}
+{"slug":"ar-4554-close","state":"queued"}'
+  run carried_by "$q" sidA own:ar-4554 lab:me
   [ "$output" = - ]
 }
 
@@ -1079,7 +1109,7 @@ MD
   kill "$pid"; wait "$pid" 2>/dev/null || true
 }
 
-@test "queue_wait_min: the minutes the session's oldest queue gate has run, and nothing without one (ar-2525)" {
+@test "queue_gate_of: the minutes the session's oldest queue gate has run, and nothing without one (ar-2525)" {
   # 2026-11-15 unity-core-playground-agent-3's gate-and-land.sh sat 3.5h in the landing-slot queue, and no line named the wait.
   mkdir -p "$SANDBOX/wt/scripts/test"
   printf 'sleep 60\n' > "$SANDBOX/wt/scripts/test/gate-and-land.sh"
@@ -1087,10 +1117,11 @@ MD
   printf 'gate gh-run-wait\n' > "$SANDBOX/time-use.conf"
   export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
   local gate other
+  queue_gate_min() { queue_gate_of "$@" | cut -f1; }
   # ps answers the age of the pids it is asked about: the gate 3.5h, anything else 5h
   ps() {
-    if [ "${1:-}" = -o ] && [ "${2:-}" = etimes= ]; then
-      local p; for p in ${4//,/ }; do [ "$p" = "$gate" ] && echo ' 12600' || echo ' 18000'; done
+    if [ "${1:-}" = -o ] && [ "${2:-}" = etimes=,pid= ]; then
+      local p; for p in ${4//,/ }; do [ "$p" = "$gate" ] && echo " 12600 $p" || echo " 18000 $p"; done
     else command ps "$@"; fi
   }
   # a gate that is not queue-shaped has no landing wait, however old
@@ -1098,20 +1129,78 @@ MD
   other=$!
   until grep -q gh-run-wait "/proc/$other/cmdline" 2>/dev/null; do :; done
   LIVE_PIDS="$other"
-  run queue_wait_min "$SANDBOX/wt"
+  run queue_gate_min "$SANDBOX/wt"
   assert_output ''
   (cd "$SANDBOX/wt" && exec -a x bash scripts/test/gate-and-land.sh) >/dev/null 2>&1 3>&- &
   gate=$!
   until grep -q gate-and-land.sh "/proc/$gate/cmdline" 2>/dev/null; do :; done
   LIVE_PIDS="$other $gate"
-  run queue_wait_min "$SANDBOX/wt"
+  run queue_gate_min "$SANDBOX/wt"
   assert_output '210'
   # negative controls: another worktree, and the knob naming no gate
   mkdir -p "$SANDBOX/other"
-  run queue_wait_min "$SANDBOX/other"
+  run queue_gate_min "$SANDBOX/other"
   assert_output ''
-  FLEET_QUEUE_GATES='nothing-like-it' run queue_wait_min "$SANDBOX/wt"
+  FLEET_QUEUE_GATES='nothing-like-it' run queue_gate_min "$SANDBOX/wt"
   assert_output ''
+}
+
+@test "queue_gate_of: the oldest gate's minutes, the repo it lands in and the PR agent-land names (ar-4303)" {
+  # 2026-11-21 lab/dotfiles-agent-24 waited on a lander for unity-core-playground #2492 and its line read dotfiles #2492.
+  mkdir -p "$SANDBOX/wt"
+  git -C "$SANDBOX/wt" init -q
+  git -C "$SANDBOX/wt" remote add origin https://github.com/o/ucp.git
+  printf 'sleep 60\n' > "$SANDBOX/wt/agent-land"
+  printf 'gate gh-run-wait\n' > "$SANDBOX/time-use.conf"
+  export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
+  local gate
+  ps() {
+    if [ "${1:-}" = -o ] && [ "${2:-}" = etimes=,pid= ]; then
+      local p; for p in ${4//,/ }; do echo " 600 $p"; done
+    else command ps "$@"; fi
+  }
+  # the checkout's own origin and the number agent-land names
+  (cd "$SANDBOX/wt" && exec -a x bash agent-land 2492 --item x) >/dev/null 2>&1 3>&- &
+  gate=$!
+  until grep -q 'agent-land' "/proc/$gate/cmdline" 2>/dev/null; do :; done
+  LIVE_PIDS="$gate"
+  run queue_gate_of "$SANDBOX/wt"
+  assert_output "$(printf '10\to/ucp\t2492')"
+  kill "$gate"; wait "$gate" 2>/dev/null || true
+  # --repo outranks the checkout, and a gate that names no number reads -
+  (cd "$SANDBOX/wt" && exec -a x bash agent-land --repo a/b) >/dev/null 2>&1 3>&- &
+  gate=$!
+  until grep -q 'a/b' "/proc/$gate/cmdline" 2>/dev/null; do :; done
+  LIVE_PIDS="$gate"
+  run queue_gate_of "$SANDBOX/wt"
+  assert_output "$(printf '10\ta/b\t-')"
+  kill "$gate"; wait "$gate" 2>/dev/null || true
+  # flags before the number, and a number inside --phase text, are not the PR; the item's own pr: names the repo
+  qall='{"slug":"it","pr":"x/y#5 a/c#2492"}'
+  (cd "$SANDBOX/wt" && exec -a x bash agent-land --item it 2492 --phase "Phase 3 of 4") >/dev/null 2>&1 3>&- &
+  gate=$!
+  until grep -q 'Phase' "/proc/$gate/cmdline" 2>/dev/null; do :; done
+  LIVE_PIDS="$gate"
+  run queue_gate_of "$SANDBOX/wt"
+  assert_output "$(printf '10\ta/c\t2492')"
+  kill "$gate"; wait "$gate" 2>/dev/null || true
+  qall=""
+  (cd "$SANDBOX/wt" && exec -a x bash agent-land --item it --phase "Phase 3 of 4") >/dev/null 2>&1 3>&- &
+  gate=$!
+  until grep -q 'Phase' "/proc/$gate/cmdline" 2>/dev/null; do :; done
+  LIVE_PIDS="$gate"
+  run queue_gate_of "$SANDBOX/wt"
+  assert_output "$(printf '10\to/ucp\t-')"
+  kill "$gate"; wait "$gate" 2>/dev/null || true
+  # a checkout with no origin has no repo
+  rm -rf "$SANDBOX/wt/.git"
+  (cd "$SANDBOX/wt" && exec -a x bash agent-land 7) >/dev/null 2>&1 3>&- &
+  gate=$!
+  until grep -q 'agent-land' "/proc/$gate/cmdline" 2>/dev/null; do :; done
+  LIVE_PIDS="$gate"
+  run queue_gate_of "$SANDBOX/wt"
+  assert_output "$(printf '10\t-\t7')"
+  kill "$gate"; wait "$gate" 2>/dev/null || true
 }
 
 @test "queue_match takes a gate-and-land.sh, ci-gate.sh, agent-land or gate-line.py --recheck argument, and not a reader of its log (ar-2346)" {
@@ -1440,6 +1529,45 @@ MD
   run mark --close sid-8
   assert_failure 1
   assert_output --partial 'already sent its close nudge'
+}
+
+@test "each claim mark takes is appended to nudges.jsonl, keyed by session, and a refused one is not (ar-461)" {
+  mkdir -p "$(dirname "$STATE_FILE")"
+  jq -n '{sessions: [{session_id: "sid-1", target: "lab/dotfiles-agent-3:1", project: "dotfiles", bucket: "STALLED"}]}' > "$STATE_FILE"
+  mark sid-1 'STALLED PR #9 CI red @feat/x'
+  run mark sid-1 'STALLED PR #9 CI red @feat/x'
+  assert_failure 1
+  mark sid-1 'LANDED PR #9 merged, tree clean @feat/x'
+  mark --close sid-1
+  run mark --close sid-1
+  assert_failure 1
+  # a close nothing was typed into is given back, and logged as such; the next claim is a new line
+  mark --release sid-1
+  mark --release sid-1
+  mark --close sid-1
+  # a row the document no longer lists is still logged, with no row fields
+  mark sid-gone 'DONE clean, no plan file'
+  run jq -sc 'map([.sid, .kind, .fact, .target, .project, .bucket])' "$FLEET_SHEPHERD_DIR/nudges.jsonl"
+  assert_output '[["sid-1","nudge","STALLED PR #9 CI red @feat/x","lab/dotfiles-agent-3:1","dotfiles","STALLED"],["sid-1","nudge","LANDED PR #9 merged, tree clean @feat/x","lab/dotfiles-agent-3:1","dotfiles","STALLED"],["sid-1","close",null,"lab/dotfiles-agent-3:1","dotfiles","STALLED"],["sid-1","close-released",null,"lab/dotfiles-agent-3:1","dotfiles","STALLED"],["sid-1","close",null,"lab/dotfiles-agent-3:1","dotfiles","STALLED"],["sid-gone","nudge","DONE clean, no plan file",null,null,null]]'
+  run jq -se 'all(.at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}([+-][0-9]{2}:[0-9]{2}|Z)$"))' "$FLEET_SHEPHERD_DIR/nudges.jsonl"
+  assert_success
+  # an unreadable document is not a lost nudge
+  rm -f "$STATE_FILE"
+  mark sid-2 'STALLED PR #10 CI red @feat/y'
+  echo '{not json' > "$STATE_FILE"
+  mark sid-3 'STALLED PR #11 CI red @feat/z'
+  run jq -c 'select(.sid == "sid-2" or .sid == "sid-3") | [.kind, .target]' "$FLEET_SHEPHERD_DIR/nudges.jsonl"
+  assert_output $'["nudge",null]\n["nudge",null]'
+  # a log it cannot append to is reported, and the claim still stands
+  rm -f "$FLEET_SHEPHERD_DIR/nudges.jsonl"; mkdir "$FLEET_SHEPHERD_DIR/nudges.jsonl"
+  run mark sid-4 'STALLED PR #12 CI red @feat/w'
+  assert_success
+  assert_output --partial 'could not append the nudge for sid-4'
+  run nudged sid-4 'STALLED PR #12 CI red @feat/w'
+  assert_success
+  # a release refused for a bad id, like the claim
+  run mark --release ../x
+  assert_failure 2
 }
 
 @test "a NEEDS fact is one key across branch and head, and leaving NEEDS releases its escalation (ar-233)" {
@@ -2742,6 +2870,38 @@ research_item() {
   # the ask is still the session's own, so the shepherd leaves the window alone (2026-11-07)
   [ "$(jq -r .own_asks <<<"$output")" = 1 ]
   [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
+}
+
+@test "end to end: an earlier session of the live item filed a pending ask, it is this session's own ask too (ar-4650)" {
+  # ar-4640: agent-1 carried on an item whose first session asked onC7wY, and read STALLED with the answer outstanding.
+  landed_fixture
+  export ASK_ROOT="$HOME/.agent/asks"
+  mkdir -p "$ASK_ROOT/apociseum"
+  printf 'id: Old1\nstatus: pending\nsession: s0\nclaude_session: sid-old\n' > "$ASK_ROOT/apociseum/Old1.md"
+  queue_item running lab:s1
+  # negative control: the item records no earlier session, the ask is nobody's here
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .own_asks <<<"$output")" = 0 ]
+  # the item records both sessions: the earlier one's pending ask is this session's own
+  sed -i '/^---$/i sessions: sid-old sid-9' "$HOME/.agent/queue/running/20261103-100000-fix-wave-save.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .own_asks <<<"$output")" = 1 ]
+  [ "$(jq -r .bucket <<<"$output")" = NEEDS ]
+  [ "$(jq -r '.blockers[0]' <<<"$output")" = 'open ask Old1' ]
+  # a later session of the item does not lend its ask to an earlier one
+  printf 'id: Late\nstatus: pending\nsession: s3\nclaude_session: sid-late\n' > "$ASK_ROOT/apociseum/Late.md"
+  sed -i 's/^sessions: .*/sessions: sid-old sid-9 sid-late/' "$HOME/.agent/queue/running/20261103-100000-fix-wave-save.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .own_asks <<<"$output")" = 1 ]
+  [ "$(jq -r '.blockers[0]' <<<"$output")" = 'open ask Old1' ]
+  # a session of another item does not lend its ask
+  printf 'id: Other\nstatus: pending\nsession: s2\nclaude_session: sid-else\n' > "$ASK_ROOT/apociseum/Other.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .own_asks <<<"$output")" = 1 ]
+  # answered: nothing left to wait on
+  sed -i 's/^status: pending/status: answered/' "$ASK_ROOT/apociseum/Old1.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .own_asks <<<"$output")" = 0 ]
 }
 
 @test "end to end: a landed session whose next phases are other queue items is DONE once its own item is done; that item is not a next phase" {
@@ -4117,6 +4277,89 @@ pr_store() {
   [ ! -s "$SANDBOX/gh.log" ]
 }
 
+# a Forgejo checkout (origin on a listed host) whose store rows still read its PR open, with the merge one sync-prs away
+forgejo_stale_fixture() {
+  git init -q "$SANDBOX/fjwt"; git -C "$SANDBOX/fjwt" remote add origin https://fj.example/o/r.git
+  export SO_FORGEJO_HOSTS="fj.example" MAIN_CACHE="$SANDBOX/main"
+  CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  printf 'feat/x\t11\tOPEN\tPENDING\tabc\t-\t\n' > "$LEDGER_DIR/prs_fj.example_o_r.tsv"
+  printf 'feat/x\t11\tMERGED\tPASS\tabc\t-\t2026-11-19T06:45:00Z\n' > "$LEDGER_DIR/after_sync_fj.example_o_r.tsv"
+}
+
+@test "close --self: a Forgejo PR merged since the store's last poll reads merged, the store asked to read the forge once (ar-2786)" {
+  forgejo_stale_fixture
+  CLOSE_SELF=sid-1 run prs_for "$SANDBOX/fjwt"
+  assert_output "$(printf 'feat/x\t11\tMERGED\tPASS\tabc\t-')"
+  [ "$(grep -c '^sync-prs --wait fj.example/o/r$' "$LEDGER_DIR/calls")" -eq 1 ]
+  # the session's own PR list shares the one refresh
+  CLOSE_SELF=sid-1 pr_states fj.example/o/r >/dev/null
+  [ "$(grep -c '^sync-prs ' "$LEDGER_DIR/calls")" -eq 1 ]
+  # NEGATIVE CONTROL: a plain pass keeps the poll's answer and never writes the store
+  rm -rf "$CACHE"; mkdir -p "$CACHE"; printf 'feat/x\t11\tOPEN\tPENDING\tabc\t-\t\n' > "$LEDGER_DIR/prs_fj.example_o_r.tsv"; : > "$LEDGER_DIR/calls"
+  CLOSE_SELF= run prs_for "$SANDBOX/fjwt"
+  assert_output "$(printf 'feat/x\t11\tOPEN\tPENDING\tabc\t-')"
+  ! grep -q '^sync-prs' "$LEDGER_DIR/calls"
+}
+
+@test "close --self: a store that cannot read the forge makes the row blind, not a stale open (ar-2786)" {
+  forgejo_stale_fixture
+  touch "$LEDGER_DIR/SYNC_FAIL"
+  CLOSE_SELF=sid-1 prs_for "$SANDBOX/fjwt" >/dev/null
+  [ -f "$CACHE/blind_row" ]
+  grep -q '^PR store refresh (fj.example/o/r): fj.example/o/r: forge unreachable' "$CACHE/unreadable"
+  # a later read of the same repo in the pass is blind too, and the sync is not asked again
+  rm -f "$CACHE/blind_row"; : > "$LEDGER_DIR/calls"
+  CLOSE_SELF=sid-1 pr_states fj.example/o/r >/dev/null
+  [ -f "$CACHE/blind_row" ]
+  [ ! -s "$LEDGER_DIR/calls" ] || ! grep -q '^sync-prs' "$LEDGER_DIR/calls"
+  # a repo the store does not list is no fault
+  rm -f "$LEDGER_DIR/SYNC_FAIL" "$CACHE/blind_row" "$CACHE"/refreshed_*
+  printf '#!/usr/bin/env bash\n[ "$1" = sync-prs ] && exit 3\necho "[]"\n' > "$SCHEDULES_SYNC"
+  rm -f "$CACHE"/*_origin
+  CLOSE_SELF=sid-1 prs_for "$SANDBOX/fjwt" >/dev/null
+  [ ! -f "$CACHE/blind_row" ]
+}
+
+@test "store_key: a Forgejo alias host is the store's host, any other repo as given (ar-2786)" {
+  printf '{"forges":{"forgejo":"store.example"}}\n' > "$SANDBOX/map.json"
+  export SO_PROJECT_MAP="$SANDBOX/map.json" SO_FORGEJO_HOSTS="store.example alias.example"
+  run store_key alias.example/o/r
+  assert_output store.example/o/r
+  run store_key store.example/o/r
+  assert_output store.example/o/r
+  run store_key o/r
+  assert_output o/r
+  run store_key other.example/o/r
+  assert_output other.example/o/r
+}
+
+@test "session_prs: a PR printed under a Forgejo alias host is read under the store's host (ar-2786)" {
+  printf '{"forges":{"forgejo":"store.example"}}\n' > "$SANDBOX/map.json"
+  export SO_PROJECT_MAP="$SANDBOX/map.json" SO_FORGEJO_HOSTS="store.example alias.example"
+  {
+    echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"curl -s -X POST -d @pr.json https://alias.example/api/v1/repos/o/r/pulls"}}]}}'
+    echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"https://alias.example/o/r/pulls/12"}]}}'
+  } > "$SANDBOX/t.jsonl"
+  printf -- '-\t12\tMERGED\tPASS\t-\t-\t2026-11-19T06:45:00Z\n' > "$LEDGER_DIR/prs_store.example_o_r.tsv"
+  CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  run session_prs "$SANDBOX/t.jsonl"
+  assert_success
+  [ "$(jq -c 'map([.repo, .number, .state])' <<<"$output")" = '[["store.example/o/r",12,"MERGED"]]' ]
+}
+
+@test "session_prs: a project map that cannot be read makes the row blind, not a session with no PRs (ar-2786)" {
+  printf '{not json\n' > "$SANDBOX/map.json"
+  export SO_PROJECT_MAP="$SANDBOX/map.json" SO_FORGEJO_HOSTS="store.example"
+  {
+    echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"curl -s -X POST -d @pr.json https://store.example/api/v1/repos/o/r/pulls"}}]}}'
+    echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"https://store.example/o/r/pulls/12"}]}}'
+  } > "$SANDBOX/t.jsonl"
+  CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  run session_prs "$SANDBOX/t.jsonl"
+  assert_output '[]'
+  grep -q '^PR claims' "$CACHE/unreadable"
+}
+
 @test "sibling_pr: the last open PR in another repo, its CI from one cached gh pr view; a failed view is unreadable, asked once a pass" {
   git init -q "$SANDBOX/one"; git -C "$SANDBOX/one" remote add origin git@github.com:o/One.git
   gh_script <<'SH'
@@ -4134,13 +4377,17 @@ SH
   [ "$(grep -c 'pr view 3 --repo o/three' "$SANDBOX/gh.log")" -eq 1 ] # reused across passes
   run sibling_pr "$SANDBOX/one" '[{"repo":"o/one","number":5,"state":"OPEN"}]'
   assert_output ''
-  # A view gh cannot answer adopts nothing, is named unreadable, and is not asked again this pass.
+  # A view gh cannot answer adopts the PR with CI unknown (-), is named unreadable, and is not asked again this pass.
   export VIEW_FAIL=1 FLEET_MAIN_TTL=0
   run sibling_pr "$SANDBOX/one" "$prs"
-  assert_output ''
+  assert_output "$(printf 'o/three\t3\t-\t-')"
   run sibling_pr "$SANDBOX/one" "$prs"
+  assert_output "$(printf 'o/three\t3\t-\t-')"
   [ "$(grep -c 'pr view 3' "$SANDBOX/gh.log")" -eq 2 ]
   grep -qx 'gh pr view o/three#3' "$CACHE/unreadable"
+  # The store's state decides what is open: a PR it lists as merged or closed is never adopted on a failed view.
+  run sibling_pr "$SANDBOX/one" '[{"repo":"o/three","number":3,"state":"MERGED"},{"repo":"o/four","number":4,"state":"CLOSED"}]'
+  assert_output ''
 }
 
 @test "end to end: an open PR in a sibling repo is the session's PR, its CI deciding the bucket (ar-349)" {
@@ -4183,6 +4430,33 @@ SH
   : > "$SANDBOX/t.jsonl"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = CHAT ]
+}
+
+@test "end to end: a sibling-repo PR whose gh pr view fails is adopted with CI unknown and read as unlanded (ar-4257)" {
+  git init -q --bare "$SANDBOX/origin.git"
+  git clone -q "$SANDBOX/origin.git" "$SANDBOX/wt" 2>/dev/null
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  git -C "$SANDBOX/wt" push -q origin HEAD:main 2>/dev/null
+  git -C "$SANDBOX/wt" checkout -q -b feat/x
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"gh pr create -t x"}}]}}' > "$SANDBOX/t.jsonl"
+  echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"https://github.com/o/other/pull/42"}]}}' >> "$SANDBOX/t.jsonl"
+  local since=$(( $(date +%s) - 3600 ))
+  printf '#!/usr/bin/env bash\necho %q\n' \
+    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"idle\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$SANDBOX/wt\",\"idle_since\":$since,\"context_tokens\":5,\"plan_file\":\"\",\"transcript\":\"$SANDBOX/t.jsonl\"}" \
+    > "$SANDBOX/bin/agent-panel"
+  printf -- '-\t42\tOPEN\tNONE\t-\t-\n' > "$LEDGER_DIR/prs_o_other.tsv"
+  gh_script 'exit 1'
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-bench"
+  chmod +x "$SANDBOX/bin/fleet-assess" "$SANDBOX/bin/fleet-bench"
+  export SANDBOX XDG_CACHE_HOME="$SANDBOX/xdg"
+
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -c '[.bucket, .pr, .pr_state, .ci, .finished, .close.verdict]' <<<"$output")" = '["STALLED","42","OPEN",null,false,"keep"]' ]
+  [ "$(jq -r .close.why <<<"$output")" = 'land it: PR o/other#42 open, CI -' ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR o/other#42 open, CI unknown, not merged' ]
+  [ "$(jq -c .blockers <<<"$output")" = '["PR o/other#42 open, CI -","no plan file and nothing merged"]' ]
 }
 
 @test "pr_made_here: its own PR by session_prs, plan Phases, URL or a push of the branch; nothing else (ar-455)" {
@@ -4655,6 +4929,21 @@ explain_state() {
   assert_equal "$(jq -c '.counts | [.LANDED, .STALLED, length]' "$XDG_STATE_HOME/fleet/state.json")" '[1,0,7]'
 }
 
+@test "--write: a machine without the fleet lease writes the document but no fleet_sessions.prom (ar-4375)" {
+  landed_fixture
+  mkdir -p "$PROM_TEXTFILE_DIR"
+  rm "$SANDBOX/lease-held"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  [ -e "$XDG_STATE_HOME/fleet/state.json" ]
+  [ ! -e "$PROM_TEXTFILE_DIR/fleet_sessions.prom" ]
+  # negative control: the holder publishes
+  : > "$SANDBOX/lease-held"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  [ -e "$PROM_TEXTFILE_DIR/fleet_sessions.prom" ]
+}
+
 @test "--write: the shepherd pass (label shepherd) is listed with its label but counted nowhere" {
   landed_fixture
   mkdir -p "$PROM_TEXTFILE_DIR" "$FLEET_SHEPHERD_DIR/labels"
@@ -4714,9 +5003,6 @@ agent_session_behind{target="lab/game-agent-2:1",project="game-agent-2",bucket="
 # TYPE agent_session_dirty gauge
 agent_session_dirty{target="hub/dot\"files:1",project="dotfiles",bucket="NEEDS"} 0
 agent_session_dirty{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 5
-# HELP agent_session_conflicts 1 when the branch of the session conflicts with its base.
-# TYPE agent_session_conflicts gauge
-agent_session_conflicts{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 1
 # HELP agent_session_info Joins a session target to its Claude Code session_id; always 1.
 # TYPE agent_session_info gauge
 agent_session_info{target="lab/game-agent-2:1",project="game-agent-2",session_id="s-123"} 1
@@ -4913,6 +5199,89 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red, background shell idle over 30m' ]
 }
 
+# chained_item <state> <dep slug>: session s1's running item, after: <dep slug>, and that dependency's own item
+chained_item() {
+  mkdir -p "$HOME/.agent/queue/running" "$HOME/.agent/queue/$1"
+  printf 'slug: fix-wave-save\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s1\nafter: %s\n---\nfix wave save\n' \
+    "$2" > "$HOME/.agent/queue/running/20261103-100000-fix-wave-save.md"
+  printf 'slug: %s\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T09:00:00Z\nsession: lab:s2\n---\nthe dependency\n' \
+    "$2" > "$HOME/.agent/queue/$1/20261103-090000-$2.md"
+}
+
+@test "end to end: a red gate line is CI running while its item is after: an open item, red once that item is done (ar-4314)" {
+  # 2026-11-21 unity-core-playground #3076 and #3083 read STALLED CI red: each item was stacked on an open
+  # item, so agent-land held it (exit 4) before a gate was dispatched and Checks' Merge gate line stayed red.
+  landed_fixture
+  local oid; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"
+  job 77 'Harness tests:success' 'Merge gate line:failure'
+  ledger feat/x '[]'; open_pr FAIL 77
+  chained_item review dep-item
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
+
+  # negative controls: the dependency is done, a gate already red on the head, another step is red, no after:
+  rm -r "$HOME/.agent/queue/review"; chained_item done dep-item
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+  rm -r "$HOME/.agent/queue/done"; chained_item review dep-item
+  ledger feat/x "[$(gate 'Tests (affected)' completed failure "$oid" 5)]"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+  job 78 'Docs within their budgets:failure' 'Merge gate line:failure'
+  ledger feat/x '[]'; open_pr FAIL 78
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+  # a queued dependency holds it too: stack_gate refuses any after: item not closed ok (ar-4420)
+  rm -r "$HOME/.agent/queue/review" "$HOME/.agent/queue/running"; chained_item queued dep-item
+  ledger feat/x '[]'; open_pr FAIL 77
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
+  # a dependency that is the session's own item waits on nobody else
+  rm -r "$HOME/.agent/queue/queued"; chained_item running dep-item
+  sed -i 's/^session: lab:s2$/session: lab:s1/' "$HOME/.agent/queue/running/20261103-090000-dep-item.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+  rm -rf "$HOME/.agent/queue/review" "$HOME/.agent/queue/running"; queue_item running lab:s1
+  ledger feat/x '[]'; open_pr FAIL 77
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+}
+
+@test "end to end: a green PR whose item is after: an open prereq is WORKING waiting on it, not STALLED green-not-merged (ar-4420)" {
+  landed_fixture
+  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"
+  ledger feat/x '[]'; open_pr PASS
+  chained_item review dep-item
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 waiting on after: dep-item' ]
+  jq -e '.blockers | index("PR #9 open, waiting on after: dep-item")' <<<"$output" >/dev/null
+  [ "$(jq -r .landing_queue <<<"$output")" = null ]
+
+  # a queued after: prereq also blocks agent-land's stack_gate
+  rm -r "$HOME/.agent/queue/review"; chained_item queued dep-item
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 waiting on after: dep-item' ]
+
+  # negative controls: prereq is done, prereq is the session's own item, or no after:
+  rm -r "$HOME/.agent/queue/queued"; chained_item done dep-item
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+  rm -r "$HOME/.agent/queue/done"; chained_item running dep-item
+  sed -i 's/^session: lab:s2$/session: lab:s1/' "$HOME/.agent/queue/running/20261103-090000-dep-item.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+  rm -rf "$HOME/.agent/queue/running"; queue_item running lab:s1
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+}
+
 @test "end to end: a PR riding an open landing train is WORKING waiting on the train, not CI red (ar-2160)" {
   # 2026-11-13 agent-7 #2415, agent-28 #2417 and agent-31 #2444 read STALLED CI red and were nudged:
   # each rode train #2467 (train.py), whose PlayMode shard sat queued on a full unity pool, and each
@@ -4998,8 +5367,9 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   printf -- '-\t9\tCLOSED\tPASS\t-\t-\n' > "$LEDGER_DIR/prs_o_two.tsv"
   PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" panel "$SANDBOX/wt"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  # (the transcript does not name #2166, so pr_made_here drops it; the open o/one#7 keeps #2178 out)
-  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, no plan file, its item ucp-342 moved on (done)' ]
+  # (the transcript does not name #2166, so pr_made_here drops it; the open o/one#7 keeps #2178 out and stays unlanded)
+  [ "$(jq -r .reason <<<"$output")" = 'PR o/one#7 open, CI unknown, not merged' ]
+  [ "$(jq -r .finished <<<"$output")" = false ]
   panel "$SANDBOX/wt"
   rm -r "$d"; mkdir -p "$HOME/.agent/queue/running"
   printf 'slug: ucp-342\nproject: shape-city\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-08T02:51:57Z\nsessions: sid-9\npr: o/r#2178\n---\nskater\n' \
@@ -5071,6 +5441,75 @@ GH
   store FAIL landing-queue
   FLEET_QUEUE_LABEL='' run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #2149 CI red' ]
+}
+
+@test "end to end: a PR the slot holder refused is WORKING waiting on that holder, not CI red (ar-3596)" {
+  # 2026-11-19 agent-23 ucp#2913 read STALLED CI red: its only red was the Merge gate line, the landing slot that
+  # train #2918 held refusing it, with no gate of its own running and no landing-queue label.
+  landed_fixture
+  local oid
+  oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  # store <labels of #2918> [<red job ids of #2913>]: the slot holder, and the session's PR with no label.
+  store() {
+    printf 'train/x\t2918\tOPEN\tPENDING\t1111111111111111111111111111111111111111\t-\t\ttrain\t%s\n' "$1" > "$LEDGER_DIR/prs.tsv"
+    printf 'feat/x\t2913\tOPEN\tFAIL\t%s\t%s\t\tmine\t\n' "$oid" "${2:-78}" >> "$LEDGER_DIR/prs.tsv"
+  }
+  # note <job id> <message>: the job's check-run annotation
+  note() { jq -n --arg m "$2" '[{message: $m}]' > "$SANDBOX/notes_$1.json"; }
+  job 78 'Docs within their budgets:success' 'Merge gate line:failure'
+  job 79 'Build:failure' 'Merge gate line:failure'
+  job 80 'Merge gate line:failure'
+  note 78 'landing slot: #2918 holds main until 08:10, and landing this would void its gate (PlayMode).'
+  note 79 'landing slot: #2918 holds main until 08:10, and landing this would void its gate (PlayMode).'
+  note 80 'no CI gate green: line in the PR body'
+  gh_script <<GH
+case "\$1 \${2:-}" in
+  "api "*/actions/jobs/*) jq -r "\${@: -1}" "$SANDBOX/job_\${2##*/}.json"; exit ;;
+  "api "*/check-runs/*/annotations) id="\${2%/annotations}"; jq -r "\${@: -1}" "$SANDBOX/notes_\${id##*/}.json"; exit ;;
+esac
+exit 1
+GH
+  mkdir -p "$HOME/.agent/queue/running"
+  printf 'slug: ucp-2900\nproject: unity-core-playground\nmode: oneshot\npriority: high\nfrom: board:unity-core-playground:ucp-2900\nagent: claude\nqueued: 2026-11-19T02:51:57Z\nsessions: sid-9\n---\nx\n' \
+    > "$HOME/.agent/queue/running/20261119-025157-ucp-2900.md"
+  jq -n '{rows: [{project: "unity-core-playground", id: "ucp-2901", state: "open", priority: "high", tags: ["after/ucp-2900"]}], done: []}' \
+    > "$NOTES_FIXTURE/board.json"
+  store landing-slot
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2913 waiting on slot holder #2918' ]
+  [ "$(jq -r .ci <<<"$output")" = PENDING ]
+  # the rows it keeps waiting see where it stands (ar-3761)
+  [ "$(jq -c .critical <<<"$output")" = '{"rows":["ucp-2901 #high"],"place":"behind the slot holder #2918"}' ]
+  # a gate running on its head is CI running, whatever the refusal said
+  ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$oid" 5)]"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2913 CI running' ]
+  ledger feat/x '[]'
+  # an annotation not yet readable is read again on the next pass, not kept empty for good
+  job 81 'Merge gate line:failure'; jq -n '[]' > "$SANDBOX/notes_81.json"
+  store landing-slot 81
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2913 CI red' ]
+  note 81 'landing slot: #2918 holds main until 08:10, and landing this would void its gate (PlayMode).'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2913 waiting on slot holder #2918' ]
+
+  # negative controls: the holder let the slot go, a red of its own past the refusal, a gate line red for another
+  # reason, a red with no job, or the knob off
+  store ''
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2913 CI red' ]
+  for red in 79 80 78,80 78,-; do
+    store landing-slot "$red"
+    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+    [ "$(jq -r .reason <<<"$output")" = 'PR #2913 CI red' ] || fail "red $red: $(jq -r .reason <<<"$output")"
+  done
+  store landing-slot
+  FLEET_SLOT_LABEL='' run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2913 CI red' ]
 }
 
 @test "end to end: a PR held by the landing slot names the #high rows gated after its row and its place (ar-3761)" {
@@ -5689,6 +6128,16 @@ verdict() {
   AGENT_PANEL="$SANDBOX/bin/panel-w" run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
   assert_failure 1
   assert_output --partial "keep: it wakes itself: a one-shot cron a318 at "
+  # An armed Monitor keeps it until TaskStop ends it (ar-4158, ar-4304).
+  result_line "$(date -u -d "@$(( now - 60 ))" +%Y-%m-%dT%H:%M:%SZ)" 'Monitor started (task m1, expires in 30m unless the source ends first).' \
+    '{"taskId":"m1","timeoutMs":1800000,"persistent":false}' > "$tx"
+  AGENT_PANEL="$SANDBOX/bin/panel-w" run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_failure 1
+  assert_output --partial "keep: it wakes itself: a Monitor m1 until "
+  result_line "$(date -u -d "@$(( now - 30 ))" +%Y-%m-%dT%H:%M:%SZ)" 'Successfully stopped task: m1' '{}' >> "$tx"
+  AGENT_PANEL="$SANDBOX/bin/panel-w" run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_success
+  assert_output "now: quiet 0m, nothing to land"
   # Every other step still holds it, and the row's blockers are named.
   holder_doc "$now" '{"session_id":"sid-w","host":"razer-laptop","bucket":"WORKING","blockers":["PR #9 open"]}'
   run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
@@ -5733,6 +6182,33 @@ verdict() {
   rm "$f"
   FLEET_HOST=elsewhere run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions" close --self
   [[ "$stderr" == *"no live session sid-w"* ]]
+}
+
+@test "close --self on a fleet worker: a submodule pin behind master is not unlanded work (ar-2445)" {
+  rm -f "$SANDBOX/lease-held"
+  bats_require_minimum_version 1.5.0
+  export CLAUDE_CODE_SESSION_ID=sid-w FLEET_HOST=razer-laptop FLEET_STATE_FILE="$SANDBOX/state/state.json"
+  mkdir -p "$SANDBOX/state"
+  local f="$SANDBOX/state/holder-state.json" now; now="$(date +%s)"
+  worker_ssh
+  holder_doc() { jq -nc --argjson t "$1" --argjson r "$2" '{generated_epoch: $t, sessions: [$r]}' > "$f"; }
+
+  load '../helpers/submodule'
+  local sub="$HOME/.worktrees/sup/module"
+  pinned_submodule "$HOME/.worktrees/sup"
+
+  # The lease holder's row for this session in the submodule
+  holder_doc "$now" '{"session_id":"sid-w","host":"razer-laptop","bucket":"WORKING","blockers":[],"cwd":"'"$sub"'"}'
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/schedules-sync"
+  SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync" run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_success
+  assert_output "now: quiet 0m, nothing to land"
+
+  # Negative control: extra unlanded work in the submodule blocks close
+  unpinned_commit "$sub"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_failure 1
+  assert_line --index 0 --partial "keep: land it: 1 file(s) not on the default branch here since the lease holder last read"
 }
 
 @test "the lease holder pushes each worker its own rows, and no one else (ar-3356)" {
@@ -6201,6 +6677,14 @@ JSONL
   run sibling_pr "$SANDBOX/one" "$prs"
   assert_output "$(printf 'o/three\t3\tFAIL\tabc123')"
   [ "$(jq -r "$CI_JQ"' red' "$SANDBOX/view.json")" = 21 ]
+  # a cancelled matrix job of an older run of its workflow, kept under its template name, is no red
+  # (dotfiles#2437, ar-3095); one of the newest run still is
+  view "$(check 'fast (${{ matrix.n }})' CI CANCELLED 2026-11-14T17:26:46Z 31 30)" "$(check 'fast (1)' CI SUCCESS 2026-11-14T17:27:29Z 41 40)"
+  run sibling_pr "$SANDBOX/one" "$prs"
+  assert_output "$(printf 'o/three\t3\tPASS\tabc123')"
+  view "$(check 'fast (${{ matrix.n }})' CI CANCELLED 2026-11-14T17:26:46Z 41 40)" "$(check 'fast (1)' CI SUCCESS 2026-11-14T17:27:29Z 31 30)"
+  run sibling_pr "$SANDBOX/one" "$prs"
+  assert_output "$(printf 'o/three\t3\tFAIL\tabc123')"
 }
 
 @test "self_wait reads a tail --pid on another process as an event wait, and the row stays WORKING (ar-2426)" {
@@ -6569,17 +7053,22 @@ notice_line() {   # <ts> <task id> <status>
   run ahead_files "$sm" origin/master; assert_output 1                               # the old read: off master
   gh_script 'exit 1'; MAIN_CACHE="$SANDBOX/main"; touch "$LEDGER_DIR/prs.tsv"
   unlanded() { git_facts "$1" | cut -d' ' -f3; }
-  run submodule_pin "$sm"; assert_output "$(git -C "$sm" rev-parse HEAD)"
+  run submodule_pin "$sm" pass_base; assert_output "$(git -C "$sm" rev-parse HEAD)"
   [ "$(unlanded "$sm")" = 0 ]
+  # close --self from the superproject, in the reported shape (ar-2518, ucp agent-14 at 50758455: pin-merge pushed):
+  # no unlanded blocker. The pin clears it, not the push, which leaves the read unchanged.
+  "${g[@]}" -C "$sm" push -q origin pin-merge 2>/dev/null; "${g[@]}" -C "$sm" fetch -q origin
+  run edited_work_blockers "$SANDBOX/wt" "$sm/f"; assert_output ''
   # a commit past the pin that is on neither branch is unlanded work
   echo 2 > "$sm/g"; "${g[@]}" -C "$sm" add g; "${g[@]}" -C "$sm" commit -q -m extra
   [ "$(unlanded "$sm")" = 1 ]
+  run edited_work_blockers "$SANDBOX/wt" "$sm/g"; assert_output "STALLED unlanded work in $sm: 1 file(s) not on the default branch, no PR"
   # merged to the submodule's master but not yet pinned: landed, not unlanded
   "${g[@]}" -C "$sm" push -q origin HEAD:master 2>/dev/null; "${g[@]}" -C "$sm" fetch -q origin
-  run ahead_files "$sm" "$(submodule_pin "$sm")"; assert_output 1
+  run ahead_files "$sm" "$(submodule_pin "$sm" pass_base)"; assert_output 1
   [ "$(unlanded "$sm")" = 0 ]
   # outside a submodule there is no pin and the base is the base
-  run submodule_pin "$SANDBOX/wt"; assert_output ''
+  run submodule_pin "$SANDBOX/wt" pass_base; assert_output ''
 }
 
 @test "an open PR whose red jobs ran no steps is WORKING, waiting on billing; a job with a step is a real red (ar-2606)" {

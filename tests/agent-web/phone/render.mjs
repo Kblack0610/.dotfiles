@@ -335,7 +335,7 @@ async function navCheck(browser, page0) {
 }
 
 // Home's cards at phone width: every card shown (none inside a closed fold), two across, the whole
-// grid and the Needs you head under it inside the first screen (dashboards.md, the Home row). `css`
+// grid and the Needs you head under it inside the first screen (dashboards.md, Tile and Needs-you patterns). `css`
 // is the --control breakage: one card per row, which must be reported.
 const CARDS_CONTROL_CSS = "#home .kgrid { grid-template-columns: 1fr !important; }";
 async function cardsCheck(browser, page0, css = null) {

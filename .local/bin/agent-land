@@ -15,7 +15,7 @@
 # checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (a head behind origin/<base> is merged up to it, each clean submodule checkout on its old pin moved to the merged one (submodule_follow), and pushed, before the checks and again after them if the base moved on during them; a head pushed after them waits on its own checks before it merges, and on a base without strict checks a second move lands that green head behind it, catch_up), item-line
 # (before the checks, the PR body gets the line "Item: <slug>" unless it has it, so a reader holding
 # only the PR finds its work item; a stale "Item:" line is rewritten, except on a merged PR where another queue item's line stays), review (a tier-3 item's body has a
-# "Review:" line, review_gate), shape (no function over 150 lines gets longer unless the body has a "Split: <row id>" line, shape_gate), checks (the PR's checks pass: CI, a required check; a cancelled check is no pass, waited on while a run on the head goes on, and on GitHub so is a failed one while a run of its workflow and event started after it goes on; a tier-3 item, or one landed with --ran-checks, needs checks that ran), merge (--squash, or with --merge-commit a merge commit,
+# "Review:" line, review_gate), shape (no function over 150 lines gets longer unless the body has a "Split: <row id>" line, shape_gate), checks (the PR's checks pass: CI, a required check; a cancelled check is no pass, waited on while a run on the head goes on, and on GitHub so is a failed one while a run of its workflow and event started after it goes on, and a cancelled matrix job of an older run of its workflow is no verdict (pr-ci.sh); a tier-3 item, or one landed with --ran-checks, needs checks that ran), merge (--squash, or with --merge-commit a merge commit,
 # for a landing train whose member PRs read MERGED only while their heads stay reachable; --admin adds gh's --admin, which skips a required approving review on a repo whose owner allows it, never the checks step above; --match-head-commit HEAD, then gh pr view must say MERGED), proof (the PR's merge commit is
 # on origin/<base>, by agent-merge-proof.sh), live (dotfiles-autopull --now --bg fast-forwards, in the background, the stowed
 # checkout when this repo is ~/.dotfiles or ~/.dotfiles-private, links what it added, rebuilds the
@@ -124,6 +124,8 @@ aq_retry() {
 CHECKS_POLL="${AGENT_LAND_CHECKS_POLL:-10}"
 CHECKS_QUEUED_POLL="${AGENT_LAND_CHECKS_QUEUED_POLL:-60}"
 CHECKS_WATCH_INTERVAL=30 # gh's default is 10s; a check takes minutes
+CHECKS_WATCH_TIMEOUT="${AGENT_LAND_CHECKS_WATCH_TIMEOUT:-600}" # bound one gh pr checks --watch (a check left IN_PROGRESS with conclusion SUCCESS never exits)
+CHECKS_WAIT_TIMEOUT="${AGENT_LAND_CHECKS_WAIT_TIMEOUT:-3600}"  # the cap on one whole checks wait, either forge (the slowest PR run seen: 42m, playground 2026-11-22)
 CHECKS_TRIES="${AGENT_LAND_CHECKS_TRIES:-12}"
 # GitHub opens a PR's pull_request run only once it has built the merge ref: seconds on most PRs,
 # minutes on some (80 dotfiles PRs to 2026-11-21: p90 5s, then 111s, 192s, 949s). #1710's came 213s
@@ -163,9 +165,9 @@ net_retry() {
 # cancels fails its aggregate check, so it predates that red (train #3108, 2026-11-21 22:25 local, 06:25Z, ar-2940).
 newer_runs() {
   local runs
-  runs=$(gh run list "${R[@]}" --commit "$(git rev-parse HEAD)" --json databaseId,status,workflowName,event,createdAt,startedAt 2>&1) || { printf '%s' "$runs"; return 1; }
+  runs=$(gh run list "${R[@]}" --commit "$(git rev-parse HEAD)" --json databaseId,status,conclusion,workflowName,event,createdAt,startedAt 2>&1) || { printf '%s' "$runs"; return 1; }
   jq -r --argjson c "$1" 'def run_id: ((.link // "") | capture("/actions/runs/(?<id>[0-9]+)") | .id | tonumber) // 0;
-    [.[] | select(.status != "completed") | . as $r
+    [.[] | select(.status != "completed" and (.conclusion // "") == "") | . as $r
     | select($c | any(.workflow == $r.workflowName and (.bucket != "fail" or
         (((.event // "") == "" or .event == $r.event) and (([$r.createdAt, $r.startedAt] | map(. // "") | max) > (.completedAt // "~")
           or (run_id > 0 and ($r.databaseId // 0) > run_id))))))] | length' <<<"$runs"
@@ -183,12 +185,60 @@ gh_read() {
   printf -v "$var" '%s' "$got"
   return "$rc"
 }
+# checks_by_conclusion: after `gh pr checks --watch` times out (rc 124), e.g. on a check run left
+# IN_PROGRESS with a conclusion set (unity-core-playground#3115), judge the PR's statusCheckRollup by
+# each check's conclusion through pr-ci.sh's ci. Returns 0 when green (sets had_checks=yes), 1 to
+# watch again (still pending, or a red that a newer run on HEAD supersedes, as newer_runs reads it),
+# 2 when none is reported (sets out). Any other red, or a verdict it cannot read, stops at checks.
+checks_by_conclusion() {
+  local rollup red queued
+  until gh_read rollup pr view "$pr" "${R[@]}" --json statusCheckRollup; do
+    net_error "$gh_err" || fail checks "reading the checks after the watch timed out: $(lastline "$gh_err")"
+    net_retry "$gh_err"
+  done
+  case "$(jq -r "$CI_JQ"' ci' <<<"$rollup")" in
+  PASS)
+    echo "checks: green"
+    had_checks=yes
+    return 0
+    ;;
+  PENDING)
+    echo "checks: the watch timed out with checks still pending; continuing"
+    return 1
+    ;;
+  NONE)
+    out='no checks reported'
+    return 2
+    ;;
+  FAIL)
+    red=$(jq -c "$CI_JQ"' [checks | .[] | select((.conclusion // .state // "") | test(red_re))
+      | {name: (.name // .context // "check"), workflow: (.workflowName // ""), completedAt, link: .detailsUrl,
+         bucket: (if (.conclusion // .state // "") | test("CANCEL") then "cancel" else "fail" end)}]' <<<"$rollup")
+    queued=$(newer_runs "$red") || {
+      net_error "$queued" || fail checks "$(jq -r 'map(.name) | join(", ")' <<<"$red") (reading the runs on the head: $(lastline "$queued"))"
+      net_retry "$queued"
+      return 1
+    }
+    if [[ $queued =~ ^[1-9][0-9]*$ ]]; then
+      echo "checks: red: $(jq -r 'map(.name) | join(", ")' <<<"$red"); waiting on the newer run of its workflow on the head"
+      sleep "$CHECKS_QUEUED_POLL"
+      return 1
+    fi
+    fail checks "$(jq -r 'map(.name) | join(", ")' <<<"$red")"
+    ;;
+  *) fail checks "reading the checks after the watch timed out: the rollup gave no verdict" ;;
+  esac
+}
 had_checks=''
 wait_checks() {
   [ -z "$fj" ] || { fj_wait_checks; return; }
-  local try out failed cancelled names queued read_err stale
+  local try out rc left failed cancelled names queued rollup read_err stale deadline=$((SECONDS + CHECKS_WAIT_TIMEOUT))
   for ((try = 1; ; try++)); do
-    out=$(gh pr checks "$pr" "${R[@]}" --watch --fail-fast -i "$CHECKS_WATCH_INTERVAL" 2>&1) && {
+    left=$((deadline - SECONDS))
+    [ "$left" -gt 0 ] || fail checks "timed out waiting for checks after ${CHECKS_WAIT_TIMEOUT}s"
+    rc=0
+    out=$(timeout "$((left < CHECKS_WATCH_TIMEOUT ? left : CHECKS_WATCH_TIMEOUT))" gh pr checks "$pr" "${R[@]}" --watch --fail-fast -i "$CHECKS_WATCH_INTERVAL" 2>&1) || rc=$?
+    if [ "$rc" -eq 0 ]; then
       # gh counts a cancelled check as neither failed nor pending, so a watch whose only Checks is
       # a cancelled run exits 0 while the newer run on the head has no check yet, and GitHub then
       # refuses the merge (unity-core-playground#2166). An open run of its workflow on HEAD is that
@@ -216,10 +266,33 @@ wait_checks() {
         sleep "$CHECKS_QUEUED_POLL"
         continue
       fi
+      # A cancelled matrix job of an older run of its workflow on the head, which never expanded and kept
+      # its template name, stays listed after the newer run went green; pr-ci.sh's reading of the rollup
+      # drops it (dotfiles#2437, ar-3095). Green only when the rollup lists every cancelled name; a lost
+      # connection reads again, and any other failed read leaves the cancelled check as the verdict.
+      if gh_read rollup pr view "$pr" "${R[@]}" --json statusCheckRollup; then
+        if [ "$(jq -r --argjson c "$cancelled" "$CI_JQ"' if ([.statusCheckRollup[]?.name] as $n | $c | all(.name as $k | $n | index([$k])))
+            then ci else "MISSING" end' <<<"$rollup" 2>/dev/null)" = PASS ]; then
+          echo "checks: green (cancelled: $names, a matrix job of an older run of its workflow on the head)"
+          had_checks=yes
+          return 0
+        fi
+      elif net_error "$gh_err"; then
+        net_retry "$gh_err"
+        continue
+      fi
       [ "$try" -lt "$CHECKS_TRIES" ] || fail checks "cancelled: $names, and no run of its workflow is left on the head to replace it: gh run rerun it, then re-run"
       sleep "$CHECKS_POLL"
       continue
-    }
+    fi
+    if [ "$rc" -eq 124 ]; then
+      rc=0
+      checks_by_conclusion && return 0 || rc=$?
+      if [ "$rc" -eq 1 ]; then
+        try=0
+        continue
+      fi
+    fi
     case "$out" in
     *'no checks reported'*) ;;
     *)
@@ -261,7 +334,7 @@ wait_checks() {
     esac
     # A failed read is not "0 queued": it would reach no_checks and land on the local gate with a run
     # still queued. A count that is not a number is a failed read too.
-    gh_read queued run list "${R[@]}" --commit "$(git rev-parse HEAD)" --json status -q '[.[] | select(.status != "completed")] | length' && [[ $queued =~ ^[0-9]+$ ]] || {
+    gh_read queued run list "${R[@]}" --commit "$(git rev-parse HEAD)" --json status,conclusion -q '[.[] | select(.status != "completed" and (.conclusion // "") == "")] | length' && [[ $queued =~ ^[0-9]+$ ]] || {
       [ -n "$gh_err" ] || gh_err="not a count: $queued"
       net_error "$gh_err" || fail checks "reading the runs on the head: $(lastline "$gh_err")"
       net_retry "$gh_err"
@@ -321,9 +394,10 @@ first_run_wait() {
 # commit status is read once per CHECKS_WATCH_INTERVAL while a status is pending, and CHECKS_POLL
 # apart while none is reported yet, through so_forgejo_checks and pr-ci.sh's ci (warning passes).
 fj_wait_checks() {
-  local try st head
+  local try st head deadline=$((SECONDS + CHECKS_WAIT_TIMEOUT))
   head=$(git rev-parse HEAD)
   for ((try = 1; ; try++)); do
+    [ "$SECONDS" -lt "$deadline" ] || fail checks "timed out waiting for checks after ${CHECKS_WAIT_TIMEOUT}s"
     st=$(so_forgejo_checks "$fj" "$head" 2>&1) || {
       net_error "$st" || fail checks "Forgejo status read: $(lastline "$st")"
       net_retry "$st"
@@ -1212,7 +1286,10 @@ live=$("${DOTFILES_AUTOPULL:-$(dirname "$(readlink -f "$0")")/dotfiles-autopull}
 # reads the merge.
 if [[ "$pr_ref" == */*#* ]]; then
   store=${pr_ref%#*} host=$(url_host "$url")
-  [ "$host" = github.com ] || store="$host/$store"
+  # html_url carries the public host; the store keys a Forgejo repo by the project map's
+  # forges.forgejo host, so map the alias or sync-prs exits 3, unseen (ar-4530).
+  [ "$host" = github.com ] ||
+    store=$(so_store_key "${SO_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}" "$host/$store")
   rc=0; out=$("${SCHEDULES_SYNC:-schedules-sync}" sync-prs "$store" 2>&1) || rc=$?
   [ "$rc" = 0 ] || [ "$rc" = 3 ] || echo "prs: $store not refreshed ($(lastline "$out")); its next poll reads the merge" >&2
 fi

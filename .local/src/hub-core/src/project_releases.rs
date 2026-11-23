@@ -1,4 +1,4 @@
-//! An opened project's Releases inner tab (docs/dashboards.md row 6), both surfaces: the project's
+//! An opened project's Releases inner tab (docs/dashboards.md, "Project Releases tab"), both surfaces: the project's
 //! versions newest first, each with its status (the version page's rule, `version_page::verdict`),
 //! its place on the release line, its rows done and its newest cut, linked to its version page;
 //! then the apps whose cuts are the project's (`version_page::owned`) with the words Releases >

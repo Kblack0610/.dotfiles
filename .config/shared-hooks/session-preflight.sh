@@ -161,7 +161,15 @@ HEADER=$(
           if [ "$pre" != "$head300" ] && [ "${#pre}" -ge 39 ]; then reason="$pre."
           else reason="${reason:0:297}"; reason="${reason% *}..."; fi
         fi
-        HOLD_SHOWN+=("$(printf '  %s since %s by %s: %s' "$res" "$(sed -n 's/^since: //p' "$hold")" \
+        # Its age beside the stamp, in hours under a day, so a hold that has stood for days reads
+        # as old at a glance (ar-4645); a since no date reads, or one ahead of this clock, shows none.
+        since="$(sed -n 's/^since: //p' "$hold")" age=""
+        if [ -n "$since" ] && held_s=$(date -d "$since" +%s 2>/dev/null); then
+          held_s=$(( $(date +%s) - held_s ))
+          if [ "$held_s" -lt 0 ]; then age=""
+          elif [ "$held_s" -ge 86400 ]; then age=" (held $((held_s / 86400))d)"; else age=" (held $((held_s / 3600))h)"; fi
+        fi
+        HOLD_SHOWN+=("$(printf '  %s since %s%s by %s: %s' "$res" "$since" "$age" \
           "$(sed -n 's/^by: //p' "$hold")" "$reason")")
       else
         HOLD_OTHER=$((HOLD_OTHER + 1))
@@ -242,28 +250,37 @@ startup_mark facts
 # and the ones it printed were other projects' (the dotfiles repo joins to two lab projects).
 # A dispatched session gets its own queue item's row, read below with the lessons' work text.
 
-# One count line for the other sessions still open in this checkout, read from the fleet state
+# One count line for the other sessions still open on this project, read from the fleet state
 # file that `fleet-sessions --write` keeps (one writer; this only reads it). A new session
 # should know it is not alone (2026-11-19: the Pi power session was open and mid-answer), but a
-# list of up to 8 topics was paid on every start; `fleet-sessions` has the list. Only this host's
-# sessions in this checkout or below it; the document's own `vocab` says which buckets are
-# finished, and PARKED is left out too, as its claude is gone. A state file older than
-# OPEN_MAX_AGE seconds shows nothing, since a stopped writer would count sessions long closed.
-# No session id (a manual run): no line, since the session could not leave itself out.
+# list of up to 8 topics was paid on every start; `fleet-sessions` has the list. The project is
+# the one a row carries (resolve_project_name of its cwd, the same call as PROJECT_NAME), so a
+# sibling worktree (`dotfiles-agent-7`) counts, not only this checkout (ar-3879); a session in
+# this checkout or below it counts too, for an app whose name differs from its repo's. Only this
+# host's sessions; the document's own `vocab` says which buckets are finished, and PARKED is left
+# out too, as its claude is gone. A state file older than OPEN_MAX_AGE seconds shows nothing,
+# since a stopped writer would count sessions long closed. The project is the cwd's (a monorepo
+# root resolves by branch, so a sibling on another app's branch is missed: a count, not a lock),
+# and the reserved `_unscoped` matches by checkout only, since its sessions are unrelated. No
+# session id (a manual run): no line, since the session could not leave itself out.
 OPEN_MAX_AGE=600
 FLEET_STATE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 SEC_OPEN=""
 if [ -n "$HOOK_SID" ] && [ -f "$FLEET_STATE" ] && command -v jq >/dev/null 2>&1; then
   SEC_OPEN=$(jq -r --arg cwd "$(realpath "$PROJECT_DIR" 2>/dev/null || printf '%s' "$PROJECT_DIR")" \
-    --arg me "$HOOK_SID" --argjson now "$(date +%s)" --argjson age "$OPEN_MAX_AGE" '
+    --arg proj "$([ "$PROJECT_NAME" = _unscoped ] || printf '%s' "$PROJECT_NAME")" --arg me "$HOOK_SID" --argjson now "$(date +%s)" --argjson age "$OPEN_MAX_AGE" '
     select($now - (.generated_epoch // 0) <= $age)
     | ((.vocab.finished // []) + ["PARKED"]) as $gone
     | [.sessions[]? | select((.session_id | type) == "string" and .session_id != $me
                              and .host == null
-                             and (.cwd == $cwd or ((.cwd // "") | startswith($cwd + "/")))
-                             and ((.bucket // "") as $b | $gone | index($b) | not))]
-    | select(length > 0)
-    | "\(length) other session(s) open in this checkout - `fleet-sessions` lists them."
+                             and ((.bucket // "") as $b | $gone | index($b) | not))
+                    | {here: ((.cwd // "") | . == $cwd or startswith($cwd + "/")), proj: ($proj != "" and .project == $proj)}
+                    | select(.here or .proj)] as $open
+    | select(($open | length) > 0)
+    | ($open | map(select(.here)) | length) as $n
+    | if $proj == "" then "\($open | length) other session(s) open in this checkout"
+      else "\($open | length) other session(s) open on \($proj)\(if $n > 0 then " (\($n) in this checkout)" else "" end)" end
+      + " - `fleet-sessions` lists them."
     ' "$FLEET_STATE" 2>/dev/null) || SEC_OPEN=""
 fi
 startup_mark open

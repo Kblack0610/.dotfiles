@@ -32,7 +32,7 @@ const SITES = [
   { file: "cli.rs", fn: "put", n: 1, by: "keeps: the `notes` write spawn" },
   { file: "jobs.rs", fn: "log", n: 1, by: "keeps: parses the row's own log reference; hub_core reads the log" },
   { file: "main.rs", fn: "watch", n: 1, by: "keeps: file-watcher targets, not a store read" },
-  { file: "main.rs", fn: "read_agents", n: 3, by: "P3: sidebar join moves to hub_core::session_table" },
+  { file: "live.rs", fn: "read", n: 3, by: "P3: sidebar join moves to hub_core::session_table" },
   { file: "main.rs", fn: "worker_agents", n: 1, by: "P3: worker panel moves to hub_core::session_table" },
   { file: "main.rs", fn: "run_cmd", n: 1, by: "keeps: runs an action's command, never a read" },
   { file: "main.rs", fn: "ask_preview", n: 1, by: "keeps: serves the bytes of the file hub_core::outbound names" },

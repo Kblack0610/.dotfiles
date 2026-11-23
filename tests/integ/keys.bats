@@ -29,7 +29,7 @@ setup() {
 exit 1
 EOF
 
-  # tmux: every call is logged. `-S <sock> list-sessions` succeeds only for a socket named in
+  # tmux: every call is logged. `-L <name> has-session` succeeds only for a socket named in
   # $FX/live. The binds are a prefix table with one noted and one plain key, a root key, and both
   # copy-mode tables, of which only copy-mode-vi is live (mode-keys vi).
   export TMUX_TMPDIR="$FX/sock"
@@ -37,9 +37,9 @@ EOF
   : > "$FX/live"
   tmux_script <<'EOF'
 printf '%s\n' "$*" >> "$FX/tmux.log"
-[ "$1" = -S ] && { sock="$2"; shift 2; }
+{ [ "$1" = -S ] || [ "$1" = -L ]; } && { sock="$2"; shift 2; }
 case "$*" in
-  list-sessions) grep -qxF "${sock##*/}" "$FX/live" && { echo "s: 1 windows"; exit 0; }; exit 1 ;;
+  has-session) grep -qxF "${sock##*/}" "$FX/live" && { echo "s: 1 windows"; exit 0; }; exit 1 ;;
   "show-options -gv mode-keys") echo vi ;;
   list-keys) printf '%s\n' 'bind-key -T prefix K display-popup keys' 'bind-key -T prefix x kill-pane' \
                'bind-key -T root M-h select-pane -L' 'bind-key -T copy-mode-vi v send-keys -X begin-selection' \
@@ -67,7 +67,7 @@ EOF
   chmod +x "$SANDBOX/bin/hyprctl" "$SANDBOX/bin/nvim"
 }
 
-# live_socket <name> -- a real socket file in the tmux dir, answering list-sessions.
+# live_socket <name> -- a real socket file in the tmux dir, answering has-session.
 live_socket() {
   python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TMUX_TMPDIR/tmux-$(id -u)/$1"
   echo "$1" >> "$FX/live"

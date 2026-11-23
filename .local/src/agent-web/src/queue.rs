@@ -30,20 +30,23 @@ const KINDS: [&str; 1] = ["queue"];
 type Read<T> = Result<T, String>;
 
 /// Every agent-queue read the pages make, kept until the queue changes. Home, the pipeline
-/// line, this tab's list and its stats each ran agent-queue (one to four seconds apiece on a
-/// loaded machine) on every queue event, once per open page; now one read per change serves
-/// them all. A failed read is shown and not kept.
+/// line, this tab's list, the sessions table and its stats each ran agent-queue (one to four
+/// seconds apiece on a loaded machine) on every queue event, once per open page. Now one list
+/// read, every active item and each finished in the last `DONE_DAYS` days, is filtered in this
+/// process for today's list, the tab's and the active items, so none runs its own. `stats` stays
+/// a read of its own, because its medians and rates are agent-queue's to compute. A failed read
+/// is shown and not kept.
 pub struct Cache {
-    all: EventCache<Read<Vec<Item>>, QUEUE_SECS>,
-    since: EventCache<Read<Vec<Item>>, QUEUE_SECS, String>,
+    /// `list --state all --since <the oldest day the tab shows>`, kept for that day, so a new
+    /// day reads again.
+    list: EventCache<Read<Vec<Item>>, QUEUE_SECS, String>,
     stats: EventCache<Read<Stats>, QUEUE_SECS>,
 }
 
 impl Cache {
     pub fn new(events: &broadcast::Sender<String>) -> Self {
         Cache {
-            all: EventCache::new(events.subscribe(), &KINDS, "queue"),
-            since: EventCache::new(events.subscribe(), &KINDS, "queue-since"),
+            list: EventCache::new(events.subscribe(), &KINDS, "queue"),
             stats: EventCache::new(events.subscribe(), &KINDS, "queue-stats"),
         }
     }
@@ -55,12 +58,23 @@ impl Cache {
         r.await.and_then(|s| (*s).clone())
     }
 
-    /// Every item, the cached `agent-queue list all`.
+    /// What `pick` takes from the kept list, which is read once for every view of it.
+    async fn pick(&self, pick: impl FnOnce(&[Item]) -> Vec<Item>) -> Read<Vec<Item>> {
+        let since = hub_queue::days_ago(DONE_DAYS - 1);
+        let key = since.clone();
+        let read = move || hub_queue::list_since(&System, "all", &since);
+        let got = self.list.get_if(key, read, Result::is_ok).await?;
+        match &*got {
+            Ok(items) => Ok(pick(items)),
+            Err(e) => Err(e.clone()),
+        }
+    }
+
+    /// Every active item and today's finished ones, what `agent-queue list --state all` prints.
     async fn all(&self) -> Read<Vec<Item>> {
-        let r = self
-            .all
-            .get_if((), || hub_queue::list(&System, "all"), Result::is_ok);
-        r.await.and_then(|l| (*l).clone())
+        let today = hub_queue::days_ago(0);
+        self.pick(move |items| hub_queue::done_since(items, &today))
+            .await
     }
 
     /// The items the release graph joins on, with no stats read, and why there are none when
@@ -72,7 +86,19 @@ impl Cache {
         }
     }
 
-    /// `hub_queue::Queue::read`, as Home and the pipeline line draw it.
+    /// `all` as `session_table::feed_with` takes it.
+    pub(crate) async fn feed_items(&self) -> Read<Vec<Item>> {
+        self.all().await
+    }
+
+    /// The queued, running, waiting and review items, what `agent-queue list --state active`
+    /// prints; none when agent-queue failed, as a session's items are then simply not offered.
+    pub(crate) async fn active(&self) -> Vec<Item> {
+        self.pick(hub_queue::active).await.unwrap_or_default()
+    }
+
+    /// `hub_queue::Queue::read` with no flow verdict, as Home and the pipeline line draw it; the
+    /// cards add theirs (`verdict`).
     pub async fn queue(&self) -> hub_queue::Queue {
         let (all, stats) = tokio::join!(self.all(), self.stats());
         hub_queue::Queue::from_reads(all, stats)
@@ -80,20 +106,13 @@ impl Cache {
 
     /// Every item active or finished since `DONE_DAYS` ago, the tab's list.
     pub(crate) async fn recent(&self) -> Read<Vec<Item>> {
-        let since = hub_queue::days_ago(DONE_DAYS - 1);
-        let key = since.clone();
-        let read = move || hub_queue::list_since(&System, "all", &since);
-        self.since
-            .get_if(key, read, Result::is_ok)
-            .await
-            .and_then(|l| (*l).clone())
+        self.pick(<[Item]>::to_vec).await
     }
 
     /// After a write from this page or the board (a start queues an item), so its own refresh
     /// shows it.
     pub(crate) fn clear(&self) {
-        self.all.clear();
-        self.since.clear();
+        self.list.clear();
         self.stats.clear();
         crate::epics::clear();
     }
@@ -113,23 +132,40 @@ pub struct QueueQuery {
     pub sel: String,
 }
 
+/// The flow verdict now, off the async workers and beside the items' read (a Prometheus call); a
+/// read that died says so in its one line, so the items still show. The tab and the Queue card read it.
+pub(crate) async fn verdict() -> hub_core::queue_verdict::Verdict {
+    let now = chrono::Utc::now().timestamp();
+    tokio::task::spawn_blocking(move || hub_core::queue_verdict::Verdict::read(now))
+        .await
+        .unwrap_or_else(|e| hub_core::queue_verdict::Verdict {
+            error: Some(format!("the verdict read died: {e}")),
+            ..Default::default()
+        })
+}
+
 /// Every active item plus those finished in the last `DONE_DAYS` days, read through hub-core,
 /// then filtered and sorted by `hub_core::table` so the page only draws (`render`), and the last
-/// dispatch pass's verdict (`dispatch`: its line and whether it is amber), the line over the
-/// table. The Candidates counts are their own read (`candidates?counts=1`), so the items never
+/// flow verdict (`flow`: hub-core `queue_verdict` lines, each its sentence and level, the lines the
+/// Queue card and the waybar chip carry) over the table. The Candidates counts are their own read (`candidates?counts=1`), so the items never
 /// wait on the snapshot's parse.
 pub async fn list(
     State(s): State<Shared>,
     Query(q): Query<QueueQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let mut v = s
-        .queue
-        .recent()
-        .await
-        .map(|items| render(items, &q, chrono::Utc::now()))
-        .map_err(|e| bad(StatusCode::BAD_REQUEST, e))?;
-    let d = hub_core::capacity::Dispatch::now();
-    v["dispatch"] = serde_json::json!({ "line": d.line(), "warn": d.warn() });
+    let now = chrono::Utc::now();
+    let (items, verdict) = tokio::join!(s.queue.recent(), verdict());
+    let hq = hub_queue::Queue {
+        items: items.map_err(|e| bad(StatusCode::BAD_REQUEST, e))?,
+        ..Default::default()
+    };
+    let flow: serde_json::Value = verdict
+        .lines(|| hub_core::bar::ready(&hq, now.timestamp()))
+        .iter()
+        .map(|l| serde_json::json!({ "line": l.said(), "level": l.level }))
+        .collect();
+    let mut v = render(hq.items, &q, now);
+    v["flow"] = flow;
     Ok(Json(v))
 }
 
@@ -450,7 +486,7 @@ mod tests {
     /// `sheet_view::feed`, which runs `agent-queue list` and `stats` per request: 4 to 19 s.
     /// The hub-core calls that run `agent-queue list` or `stats`, under any `use` alias
     /// (`hub_queue::list(` and `hub_core::queue::list(` both hold `queue::list(`).
-    const RUNS_AGENT_QUEUE: [&str; 7] = [
+    const RUNS_AGENT_QUEUE: [&str; 8] = [
         "Queue::read(",
         "sheet_view::feed(",
         "queue::list(",
@@ -458,6 +494,7 @@ mod tests {
         "queue::stats(",
         "queue_items(",
         "actions::read(",
+        "session_table::feed(",
     ];
 
     fn runs_agent_queue(text: &str) -> Vec<&'static str> {
@@ -508,6 +545,12 @@ mod tests {
             ["actions::read("]
         );
         assert!(runs_agent_queue("sheet_view::feed_with(&System, &queue)").is_empty());
+        // The sessions table once ran its own list through `feed`.
+        assert_eq!(
+            runs_agent_queue("session_table::feed(&System, &registry)"),
+            ["session_table::feed("]
+        );
+        assert!(runs_agent_queue("session_table::feed_with(&System, &r, items)").is_empty());
     }
 
     #[test]

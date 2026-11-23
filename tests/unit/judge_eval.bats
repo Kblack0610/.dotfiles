@@ -448,6 +448,10 @@ cell() {
     ev filed t-late "$(ago '-5 days')"; ev dropped t-late "$(ago '-2 days')"
     ev filed t-moved "$(ago '-4 days')" by=human; ev rehomed t-moved "$(ago '-4 days +1 hour')"
     ev filed t-young "$(ago '-1 hour')"
+    # a young row is pending even once touched: a miss counts only once a right answer could too
+    ev filed t-young-edited "$(ago '-1 hour')"; ev edited t-young-edited "$(ago '-30 min')" by=human
+    # a later line joined to the row as a dup repeats it, and corrects nothing
+    ev filed t-dup "$(ago '-3 days')"; ev dup t-dup "$(ago '-3 days +1 hour')"
     ev filed t-session "$(ago '-3 days')" by=ab12cd34
     ev filed t-sized "$(ago '-3 days')"; ev tagged t-sized "$(ago '-3 days +1 hour')" by=inbox-size 'why=+#pts/3'
     ev filed t-held "$(ago '-3 days')"; ev tagged t-held "$(ago '-3 days +1 hour')" by=ab12cd34 'why=+#hold/critical +#after/ar-1 +#ask/abc +#desk/human +#plan +#go -#size/s +#size/m'
@@ -458,9 +462,10 @@ cell() {
   } > "$INGEST"
   run "$JUDGE_EVAL" inbox-triage --json
   assert_success
-  # tp: t-kept, t-late (dropped after the window), t-planned, t-sized and t-held (a pass's sizing or gating re-tag is no correction); fp: t-edited, t-moved, t-resized (a human's), t-mixed (a non-pass word); pending: t-young
+  # tp: t-kept, t-late (dropped after the window), t-planned, t-sized, t-held (a pass's sizing or gating re-tag is no correction) and t-dup;
+  # fp: t-edited, t-moved, t-resized (a human's), t-mixed (a non-pass word); pending: t-young, t-young-edited
   run jq -c '.agents[0] | [.total | .verdicts, .tp, .fp, .pending, .scored, .precision], (.misses | map([.id, .answer]) | sort)' <<<"$output"
-  assert_line '[10,5,4,1,9,55.6]'
+  assert_line '[12,6,4,2,10,60]'
   assert_line '[["t-edited","edited by ab12cd34"],["t-mixed","tagged by inbox-size"],["t-moved","rehomed"],["t-resized","tagged by human"]]'
 }
 
@@ -472,6 +477,7 @@ cell() {
     ev tagged p-legacy "$(ago '-4 days')" by=inbox-triage 'why=+#high'
     ev tagged p-retag "$(ago '-5 days')" by=inbox-priority 'why=+#high'; ev tagged p-retag "$(ago '-5 days +1 hour')" by=inbox-priority 'why=+#low'
     ev tagged p-young "$(ago '-1 hour')" by=inbox-priority 'why=+#urgent'
+    ev tagged p-young-moved "$(ago '-1 hour')" by=inbox-priority 'why=+#low'; ev tagged p-young-moved "$(ago '-30 min')" by=human 'why=+#urgent'
     # a human change before the next pass still counts against the first; the same priority again is no change
     ev tagged p-over "$(ago '-3 days')" by=inbox-priority 'why=+#low'; ev tagged p-over "$(ago '-3 days +1 hour')" by=human 'why=+#urgent'
     ev tagged p-over "$(ago '-3 days +2 hours')" by=inbox-priority 'why=+#low'
@@ -483,9 +489,9 @@ cell() {
   run "$JUDGE_EVAL" inbox-priority --json
   assert_success
   # tp: p-kept, p-size, p-legacy, p-retag (its second tag), t-prio, p-over (its second), p-same; fp: p-moved, p-over (its first)
-  # pending: p-young; p-other is no priority
+  # pending: p-young, p-young-moved (its window is still open); p-other is no priority
   run jq -c '.agents[0] | [.total | .verdicts, .tp, .fp, .pending], (.misses | map([.id, .answer]) | sort), (.rules | map([.rule, .tp, .fp]) | sort)' <<<"$output"
-  assert_line '[10,7,2,1]'
+  assert_line '[11,7,2,2]'
   assert_line '[["p-moved","+#urgent by human"],["p-over","+#urgent by human"]]'
   assert_line '[["high",3,0],["low",4,2],["urgent",0,0]]'
   run "$JUDGE_EVAL" inbox-triage --json
@@ -583,13 +589,15 @@ cell() {
     v skip before '-5 days'
     v skip quiet '-5 days'
     v skip young '-1 hour'
+    v skip young-hand '-1 hour'
   } > "$FLEET_DISPATCH_DIR/verdicts.jsonl"
-  { st hand '-3 days' ''; st button '-4 days' hand; st run '-4 days' dispatch; st resume '-4 days' resume; st before '-6 days' ''; } > "$QUEUE"
+  { st hand '-3 days' ''; st button '-4 days' hand; st run '-4 days' dispatch; st resume '-4 days' resume; st before '-6 days' ''; st young-hand '-30 min' ''; } > "$QUEUE"
   run "$JUDGE_EVAL" dispatch-judge --json
   assert_success
-  # fn: hand (a later skip does not hide the start), button; tn: run, resume, before, quiet; pending: young
+  # fn: hand (a later skip does not hide the start), button; tn: run, resume, before, quiet;
+  # pending: young, young-hand (started by hand inside its window, which has not ended)
   run jq -c '.agents[0].total | [.deferred, .fn, .tn, .pending, .false_defer_pct]' <<<"$output"
-  assert_output '[7,2,4,1,33.3]'
+  assert_output '[8,2,4,2,33.3]'
   # 6 scored defers is under the KPI's floor of 10, where one defer swings it 10+ points
   run "$JUDGE_EVAL" kpi --json
   assert_equal "$(jq -c '.dispatch_false_defer_pct' <<<"$output")" '{"7d":null,"28d":null}'
@@ -618,4 +626,25 @@ cell() {
   printf '{"verdict":"error","project":"p","key":"k2","at":"%s"}\n' "$(date -Iseconds)" >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
   SENTINEL_SINCE="$(date -d '-1 day' +%s)" run "$JUDGE_EVAL" kpi --json
   assert_equal "$(jq -c '.judge_errors' <<<"$output")" '{"7d":1,"28d":1}'
+}
+
+@test "SENTINEL_SINCE: a window younger than the settle time scores no lane from its misses alone (runner-score, ar-2553)" {
+  local i
+  # 30 rows filed after a fix a day ago, a third of them edited: none has had 48h to be right
+  for i in $(seq 1 30); do
+    ev filed "t-$i" "$(ago '-20 hours')"
+    if [ $((i % 3)) -eq 0 ]; then ev edited "t-$i" "$(ago '-19 hours')" by=human; fi
+  done > "$INGEST"
+  SENTINEL_SINCE="$(date -d '-1 day' +%s)" run "$JUDGE_EVAL" kpi --json
+  assert_success
+  assert_equal "$(jq -c '.runner_score_inbox_triage' <<<"$output")" '{"7d":null,"28d":null}'
+  SENTINEL_SINCE="$(date -d '-1 day' +%s)" run "$JUDGE_EVAL" inbox-triage --json
+  assert_equal "$(jq -c '.agents[0].total | [.tp, .fp, .pending]' <<<"$output")" '[0,0,30]'
+  # negative control: the same rows once settled score their misses, a third wrong
+  for i in $(seq 1 30); do
+    ev filed "t-$i" "$(ago '-3 days')"
+    if [ $((i % 3)) -eq 0 ]; then ev edited "t-$i" "$(ago '-3 days +1 hour')" by=human; fi
+  done > "$INGEST"
+  run "$JUDGE_EVAL" kpi --json
+  assert_equal "$(jq -c '.runner_score_inbox_triage' <<<"$output")" '{"7d":66.7,"28d":66.7}'
 }

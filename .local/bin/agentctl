@@ -1167,11 +1167,6 @@ cmd_reload() {
     printf '\n'
 }
 
-cmd_watch() {
-    command -v watch >/dev/null || die "watch(1) not found (install procps-ng)"
-    exec watch -n 2 -c -t -- agentctl list
-}
-
 cmd_help() {
     cat <<'EOF'
 agentctl — manage named long-running Claude agents via systemd
@@ -1195,7 +1190,6 @@ Usage:
   agentctl resume                Undo pause
   agentctl logs <name> [-f]      Tail merged stdout+stderr+inbox (use -f to follow)
   agentctl reload [--if-stale]   Rescan agents/, regenerate timers, daemon-reload; --if-stale only when a timer lags its conf
-  agentctl watch                 Refreshing dashboard (Ctrl-C to exit)
 
 Configs live at ~/.config/agentctl/agents/<name>.conf.
 See ~/.config/agentctl/README.md for the schema.
@@ -1245,10 +1239,7 @@ cmd_budget() {
 # keys and no call today never calls a model, so it is left out.
 _budget_row() {
     local v=() usd hour day cap
-    mapfile -t v < <(set +eu; unset BUDGET_CALL_USD BUDGET_DAY_USD MAX_CALLS_HOUR
-        # shellcheck disable=SC1090
-        . "$CONFIG_DIR/$1.conf" >/dev/null 2>&1
-        printf '%s\n' "${BUDGET_CALL_USD:-}" "${BUDGET_DAY_USD:-}" "${MAX_CALLS_HOUR:-}")
+    mapfile -t v < <(AGENTCTL_CONF_DIR="$CONFIG_DIR" budget_conf "$1")
     read -r usd hour < <(budget_spent "$1")
     [ -n "${v[0]}${v[1]}${v[2]}" ] || [ "$usd" != 0 ] || [ "$hour" != 0 ] || return 0
     read -r day cap < <(BUDGET_DAY_USD="${v[1]}" MAX_CALLS_HOUR="${v[2]}" budget_caps "$1")
@@ -1275,7 +1266,6 @@ case "${1:-}" in
     liveness)          cmd_liveness ;;
     logs)              shift; cmd_logs "$@" ;;
     reload)            shift; cmd_reload "$@" ;;
-    watch)             cmd_watch ;;
     help|--help|-h|"") cmd_help ;;
     *)                 die "unknown subcommand: $1 (see 'agentctl help')" ;;
 esac

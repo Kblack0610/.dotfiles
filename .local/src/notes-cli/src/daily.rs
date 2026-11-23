@@ -1013,11 +1013,83 @@ pub(crate) fn all_project_dirs() -> Vec<(String, PathBuf)> {
         .collect()
 }
 
-/// Days of filings the page's kept-as-filed count covers.
-const KEPT_DAYS: i64 = 7;
-
+/// The inbox page, its score read only when the page will be published ([`inbox_present`]).
 pub(crate) fn inbox_page(p: &Profile) -> status::Page {
-    inbox_page_in(p, &all_project_dirs())
+    let score = inbox_present(p)
+        .then(|| triage_score(p, JUDGE_EVAL_BIN, JUDGE_EVAL_TIMEOUT))
+        .flatten();
+    inbox_page_in(p, &all_project_dirs(), score.as_deref())
+}
+
+/// The one scorer of every runner lane, inbox-triage's included (`~/.local/src/docs/judges.md`).
+const JUDGE_EVAL_BIN: &str = "judge-eval";
+/// A timeout guard: judge-eval reads in about 4s (2026-11-22), and a stuck one must not hold
+/// the page, the sweep step or `notes inbox ack` that publishes it.
+const JUDGE_EVAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// inbox-triage's 7d score as `<bin> inbox-triage --json` words it in its `score_7d`, the cell
+/// agent-web's Workers table shows: `<text> (<title>)`, such as `87% untouched (7d, 407 of 470
+/// right, 283 pending, triage-untouched)`. judge-eval reads `p`'s record (`NOTES_PROFILE`).
+/// None, with the reason on stderr, when judge-eval gives no such cell within `limit`: the page
+/// then shows no score rather than one counted a second way.
+fn triage_score(p: &Profile, bin: &str, limit: std::time::Duration) -> Option<String> {
+    let why = match read_bounded(
+        std::process::Command::new(bin)
+            .args(["inbox-triage", "--json"])
+            .env("NOTES_PROFILE", &p.name),
+        limit,
+    ) {
+        Ok(out) => {
+            let cell = serde_json::from_slice::<serde_json::Value>(&out)
+                .ok()
+                .and_then(|v| {
+                    v.get("agents")?
+                        .as_array()?
+                        .iter()
+                        .find(|a| a.get("agent").and_then(|n| n.as_str()) == Some("inbox-triage"))?
+                        .get("score_7d")
+                        .cloned()
+                });
+            let field = |k: &str| cell.as_ref()?.get(k)?.as_str().map(str::to_string);
+            match (field("text"), field("title")) {
+                (Some(text), Some(title)) => return Some(format!("{text} ({title})")),
+                _ => format!("{bin} inbox-triage --json gave no score_7d"),
+            }
+        }
+        Err(why) => why,
+    };
+    eprintln!("(no triage score on the inbox page: {why})");
+    None
+}
+
+/// `cmd`'s stdout once it exits 0, its stderr passed through; killed past `limit`.
+fn read_bounded(
+    cmd: &mut std::process::Command,
+    limit: std::time::Duration,
+) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let name = cmd.get_program().to_string_lossy().into_owned();
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{name}: {e}"))?;
+    let mut stdout = child.stdout.take().expect("stdout is piped");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout.read_to_end(&mut buf);
+        let _ = tx.send(buf);
+    });
+    let Ok(out) = rx.recv_timeout(limit) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("{name} gave no answer in {}s", limit.as_secs()));
+    };
+    match child.wait() {
+        Ok(st) if st.success() => Ok(out),
+        Ok(st) => Err(format!("{name} exited {st}")),
+        Err(e) => Err(format!("{name}: {e}")),
+    }
 }
 
 /// The inbox status page: what the intake sweep did today and what still waits on the human.
@@ -1035,20 +1107,14 @@ pub(crate) fn inbox_page(p: &Profile) -> status::Page {
 ///   reads as one row, the filing.
 /// - Waiting in project inboxes: each sheet whose `## Inbox` holds lines, with the count.
 ///
-/// Each project is found in `dirs` (project name, dir), which the kept count reads too.
-fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
+/// Each project is found in `dirs` (project name, dir). The stat line ends with `score`, the
+/// triage lane's score from [`triage_score`], when there is one.
+fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)], score: Option<&str>) -> status::Page {
     use crate::agent_sheet::Lane;
     let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
     // The queue, dispatch and land steps share the record but are not intake.
     let mut events = crate::ingest::on_day(p, &today);
     events.retain(crate::ingest::Event::is_intake);
-    let week = crate::ingest::since(p, KEPT_DAYS);
-    let ids: std::collections::HashSet<&str> = week
-        .iter()
-        .filter(|e| e.action == "filed")
-        .filter_map(|e| e.id.as_deref())
-        .collect();
-    let (kept, scored) = crate::ingest::kept(&week, &crate::ingest::find_rows(dirs, &ids));
     let sheet = |name: &str, lane: Lane| {
         dirs.iter()
             .find(|(n, _)| n == name)
@@ -1248,11 +1314,7 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
         stat: Some(format!(
             "{today}: {filed} filed, {joined} joined, {planned} planned, {added} added by sessions, {left} left, {asked} asked you, {refused} refused, {} in the outbox, {captured} captured{}",
             waiting.len(),
-            if scored > 0 {
-                format!("; triage kept {kept} of {scored} as filed ({KEPT_DAYS}d)")
-            } else {
-                String::new()
-            }
+            score.map(|s| format!("; triage score {s}")).unwrap_or_default()
         )),
         rows,
         reviewed,
@@ -3061,7 +3123,7 @@ mod tests {
         assert_eq!(lines[0], "dm-4 demo: run a home server or not (urgent, 0d)");
         assert_eq!(lines[DECISIONS_SHOWN], "... and 5 more: big 3, demo 2");
         // On the page: its own section after Needs you, the answer form first.
-        let out = status::render(&p.root, &p.daily, &inbox_page_in(&p, &dirs));
+        let out = status::render(&p.root, &p.daily, &inbox_page_in(&p, &dirs, None));
         let at = |h: &str| out.find(h).unwrap_or_else(|| panic!("{h} missing:\n{out}"));
         assert!(at("## Needs you") < at("## Decisions for you"));
         assert!(at("## Decisions for you") < at("## Handled today"));
@@ -3149,7 +3211,11 @@ mod tests {
         .unwrap();
         // The human read the joined row: it folds into `+1 reviewed`, still tickable.
         crate::inbox_ack::mark(&p, &dup.ts, true).unwrap();
-        let page = inbox_page_in(&p, &[("demo".into(), demo)]);
+        let page = inbox_page_in(
+            &p,
+            &[("demo".into(), demo)],
+            Some("87% untouched (7d, 7 of 8 right, 1 pending, triage-untouched)"),
+        );
         let out = status::render(&p.root, &p.daily, &page);
         // Every event row leads with its HH:MM and a handled one ends with its event's ts, both
         // the test's clock: mask them.
@@ -3194,12 +3260,59 @@ mod tests {
 "
         );
         assert!(page.stat.unwrap().ends_with(
-            ": 2 filed, 1 joined, 1 planned, 1 added by sessions, 1 left, 0 asked you, 1 refused, 2 in the outbox, 0 captured; triage kept 1 of 2 as filed (7d)"
+            ": 2 filed, 1 joined, 1 planned, 1 added by sessions, 1 left, 0 asked you, 1 refused, 2 in the outbox, 0 captured; triage score 87% untouched (7d, 7 of 8 right, 1 pending, triage-untouched)"
         ));
         assert!(
             out.contains("\nfiled: made a new row - joined:"),
             "the guide line:\n{out}"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_triage_score_is_judge_evals_cell_for_the_pages_profile_or_none() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("inbox-score-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let p = crate::config::test_profile(&root.to_string_lossy());
+        let stub = |name: &str, body: &str| {
+            let f = root.join(name);
+            std::fs::write(&f, format!("#!/usr/bin/env bash\n{body}\n")).unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+            f.to_string_lossy().into_owned()
+        };
+        let limit = std::time::Duration::from_secs(20);
+        let cell = stub(
+            "cell",
+            r#"[ "$*" = "inbox-triage --json" ] || exit 2
+printf '{"agents":[{"agent":"ask-judge","score_7d":{"text":"x","title":"y"}},{"agent":"inbox-triage","score_7d":{"text":"n<30","title":"7d, 3 of 4 right, %s"}}]}' "$NOTES_PROFILE""#,
+        );
+        assert_eq!(
+            triage_score(&p, &cell, limit).as_deref(),
+            Some(format!("n<30 (7d, 3 of 4 right, {})", p.name).as_str())
+        );
+        let other_lane = stub(
+            "other",
+            r#"echo '{"agents":[{"agent":"ask-judge","score_7d":{"text":"x","title":"y"}}]}'"#,
+        );
+        assert_eq!(triage_score(&p, &other_lane, limit), None);
+        assert_eq!(
+            triage_score(&p, &stub("fails", "echo '{}'; exit 1"), limit),
+            None
+        );
+        assert_eq!(
+            triage_score(&p, &root.join("none").to_string_lossy(), limit),
+            None
+        );
+        // A judge-eval that never answers is killed at the guard, not waited on.
+        let stuck = stub("stuck", "exec tail -f /dev/null");
+        let start = std::time::Instant::now();
+        assert_eq!(
+            triage_score(&p, &stuck, std::time::Duration::from_millis(300)),
+            None
+        );
+        assert!(start.elapsed() < limit, "waited {:?}", start.elapsed());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

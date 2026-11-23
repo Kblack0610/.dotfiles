@@ -216,6 +216,12 @@ enum Cmd {
         /// results here. Ignored without --agent or --version.
         #[arg(long = "project")]
         projects: Vec<String>,
+        /// With --json: print only the rows with this id (repeatable) as `{today, rows}`,
+        /// wherever each sits: open in any version or closed (dropped and dup-closed too), on
+        /// either lane's sheet or rolled into a version note. A dup-closed row's `dup` names
+        /// the row it was folded into. READ-ONLY
+        #[arg(long = "id", value_name = "ID", requires = "json", conflicts_with_all = ["agent", "version", "done_days"])]
+        ids: Vec<String>,
     },
     /// Triage the dated-capture inbox (list / add / archive), and mark inbox page rows
     /// reviewed (ack). No subcommand = list.
@@ -400,13 +406,18 @@ enum Cmd {
         /// unsized_open`, both lanes' leaf rows; --json adds closes, scope growth and epics)
         #[arg(long, value_name = "NAME")]
         roadmap: Option<String>,
+        /// Print a project's past sprints, oldest cut first (TSV: `version<TAB>opened<TAB>cut<TAB>
+        /// committed<TAB>delivered<TAB>carried<TAB>dropped<TAB>interrupted<TAB>timing`), one per
+        /// scored `sprints/vX.Y.Z.md`; --json adds each score line
+        #[arg(long, value_name = "NAME")]
+        sprints: Option<String>,
         /// Every profile's indexed projects with their open work, for the projects popup
         /// (TSV: `profile<TAB>name<TAB>stage<TAB>version<TAB>open<TAB>urgent<TAB>high<TAB>
         /// low<TAB>planned<TAB>agent<TAB>sheet`; the counts are the open version's, planned
         /// is the rows aimed at a later release, agent is the agent board's)
         #[arg(long)]
         stats: bool,
-        /// With --stats or --roadmap: one JSON array instead. For --stats it adds each project's dir, done count, progress, epics, size weights, STATUS line and date, and summary path
+        /// With --stats, --roadmap or --sprints: one JSON array instead. For --stats it adds each project's dir, done count, progress, epics, size weights, STATUS line and date, and summary path
         #[arg(long)]
         json: bool,
         /// Print a project's maturity stage; with --set, declare it (a move up runs project-stage-check first).
@@ -435,7 +446,7 @@ enum Cmd {
         #[arg(long, value_name = "NAME")]
         target: Option<String>,
         /// Record the rows the open version commits to (its release window: the rows that fit its
-        /// capacity), once, in the `## Committed` section of its agent note. A cut records the next
+        /// capacity), once, in the `## Committed` section of its `sprints/<version>.md`. A cut records the next
         /// window itself; this is for a window already open. On a focus project a later add then
         /// goes to the next window unless it is an interrupt (stages.md, "Release windows")
         #[arg(long, value_name = "NAME")]
@@ -1754,9 +1765,12 @@ fn main() -> Result<()> {
             agent,
             version,
             projects,
+            ids,
         } => {
             if let Some(v) = version {
                 board::print_version(&v, &projects, json)?
+            } else if !ids.is_empty() {
+                board::print_ids(&ids)?
             } else if json {
                 board::print_json(done_days)?
             } else if agent {
@@ -1925,6 +1939,7 @@ fn main() -> Result<()> {
             checkout,
             version_of,
             roadmap,
+            sprints,
             stats,
             json,
             agent_note,
@@ -2026,11 +2041,10 @@ fn main() -> Result<()> {
                 lab_refresh::kick();
                 std::process::exit(0);
             }
-            if json && !stats && roadmap.is_none() {
-                anyhow::bail!("--json goes with --stats or --roadmap");
+            if json && !stats && roadmap.is_none() && sprints.is_none() {
+                anyhow::bail!("--json goes with --stats, --roadmap or --sprints");
             }
-            if stats {
-                projects::stats(json)?;
+            if projects::print_view(&prof, stats, sprints.as_deref(), json)? {
                 std::process::exit(0);
             }
             // lifecycle/version flags take precedence over the read paths

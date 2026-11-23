@@ -400,7 +400,7 @@ declare_game_in_hub() {
 }
 
 @test "new does not recycle a worktree whose session is live on ANOTHER server" {
-  # The real socket path, end to end: panel_live_servers finds lab's socket, and the stub
+  # The real socket path, end to end: tmux_live_servers finds lab's socket, and the stub
   # says lab holds repo-agent-1. Short path, a unix socket path is capped near 104 bytes.
   command -v python3 >/dev/null || skip "python3 needed to make a socket"
   make_repo

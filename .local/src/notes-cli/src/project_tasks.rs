@@ -4904,9 +4904,10 @@ Version: v0.0.1
         let (root, dir) = board_project("rehome", "v0.3.0");
         let versions = dir.join("agent/versions");
         fs::create_dir_all(&versions).unwrap();
+        fs::create_dir_all(dir.join("sprints")).unwrap();
         fs::write(
-            versions.join("v0.3.0.md"),
-            "# demo v0.3.0 - agent notes\n\n## Notes\n\n## Committed\n<!-- window: opened=2026-11-19 due=2026-11-19 -->\n- a row <!-- id:c-1 -->\n<!-- /window -->\n",
+            dir.join("sprints/v0.3.0.md"),
+            "# demo v0.3.0 sprint\n\n## Committed\n<!-- window: opened=2026-11-19 due=2026-11-19 -->\n- a row <!-- id:c-1 -->\n<!-- /window -->\n",
         )
         .unwrap();
         fs::write(
@@ -5162,7 +5163,7 @@ mod inbox_tests {
             Lane::Human,
         )
         .unwrap();
-        let ev = crate::ingest::since(&v.p, 1);
+        let ev = crate::ingest::all(&v.p);
         let got: Vec<(&str, Option<&str>, &str)> = ev
             .iter()
             .map(|e| (e.action.as_str(), e.id.as_deref(), e.lane.as_str()))
@@ -6300,7 +6301,7 @@ mod inbox_tests {
         unstart(&v.p, &v.log, "scratch", &one, Lane::Human).unwrap();
         unstart(&v.p, &v.log, "scratch", &one, Lane::Human).unwrap();
         assert!(v.read().contains("- [ ] fix(ui): flicker"), "{}", v.read());
-        let ev: Vec<String> = crate::ingest::since(&v.p, 1)
+        let ev: Vec<String> = crate::ingest::all(&v.p)
             .into_iter()
             .map(|e| e.action)
             .collect();

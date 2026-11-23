@@ -200,7 +200,7 @@ make_repo() {
   # as idle while a Claude worked in it, and `new` would have switched its branch.
   make_repo
   git -C "$MAIN" worktree add --quiet "$WT_ROOT/platform-agent-1" -b agent-1 origin/main
-  panel_live_servers() { printf 'lab\n'; }
+  tmux_live_servers() { printf 'lab\n'; }
   printf 'platform-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   run wt_next_slot platform "$MAIN"
   assert_success
@@ -213,7 +213,7 @@ make_repo() {
   # showed nothing for ~9s. The session lookup is 45ms and answers the same question.
   make_repo
   git -C "$MAIN" worktree add --quiet "$WT_ROOT/platform-agent-1" -b agent-1 origin/main
-  panel_live_servers() { printf 'lab\n'; }
+  tmux_live_servers() { printf 'lab\n'; }
   printf 'platform-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   wt_work_reason() { echo "$1" >>"$SANDBOX/work.log"; }
   run wt_next_slot platform "$MAIN"
@@ -225,7 +225,7 @@ make_repo() {
 @test "a pane on ANOTHER tmux server inside a worktree keeps it from being recycled" {
   make_repo
   git -C "$MAIN" worktree add --quiet "$WT_ROOT/platform-agent-1" -b agent-1 origin/main
-  panel_live_servers() { printf 'lab\n'; }
+  tmux_live_servers() { printf 'lab\n'; }
   : > "$NOTES_FIXTURE/tmux.sessions.lab"
   printf '%s\n' "$WT_ROOT/platform-agent-1" > "$NOTES_FIXTURE/tmux.panes.lab"
   run wt_next_slot platform "$MAIN"
@@ -236,7 +236,7 @@ make_repo() {
 @test "the current server is not asked twice when it is also in the socket list" {
   # $TMUX names the socket we are on; wt_other_servers drops it so every other server is
   # asked exactly once.
-  panel_live_servers() { printf 'hub\nlab\n'; }
+  tmux_live_servers() { printf 'hub\nlab\n'; }
   TMUX=/tmp/tmux-1000/hub,1,0 run wt_other_servers
   assert_success
   assert_output 'lab'
@@ -1206,10 +1206,10 @@ Description=tmux child pane 40 launched by process 95
 ControlGroup=/s/mute
 EOF
   mkdir -p "$TMUX_TMPDIR/tmux-$(id -u)" "$SANDBOX/fakes"
-  : > "$TMUX_TMPDIR/tmux-$(id -u)/hub"
+  python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TMUX_TMPDIR/tmux-$(id -u)/hub"
   echo '81 10' > "$SANDBOX/panes.hub"
   printf '#!/bin/sh\ncat %q\n' "$SANDBOX/scopes" > "$SANDBOX/fakes/systemctl"
-  # list-panes for the socket after -S, from panes.<socket>; no such file is a server that is silent
+  # list-panes for the server after -L, from panes.<server>; no such file is a server that is silent
   tmux_script "$(printf 'cat %q/panes.$(basename "$2")' "$SANDBOX")"
   chmod +x "$SANDBOX/fakes/systemctl"
   WT_SYSTEMCTL="$SANDBOX/fakes/systemctl" WT_TMUX="$SANDBOX/bin/tmux"

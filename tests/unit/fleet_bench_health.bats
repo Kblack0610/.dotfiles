@@ -102,6 +102,39 @@ watch() {
   assert_line --partial 'fleet health RED: 4 parts, 1 OK, 2 TRIP, 0 ERROR, 1 UNCOVERED (down: Asks, Dispatch)'
 }
 
+@test "health: a quarantined red reads TRIP/Q, a warning that turns no part red, and a live TRIP still wins" {
+  printf TRIP > "$TRIAGE_WATCH_STATE/queue-watch.state"
+  printf '%s ar-1 %s waits on a fix\n' "$(( $(date +%s) + 3600 ))" "$(date +%s)" > "$TRIAGE_WATCH_STATE/queue-watch.quarantine"
+  run "$SUBJECT" health
+  assert_line --regexp '^Dispatch +TRIP/Q +queue-watch=TRIP/Q$'
+  assert_line --partial 'fleet health GAPS: 4 parts, 1 OK, 0 TRIP, 0 ERROR, 1 UNCOVERED, 2 TRIP/Q (quarantined: Asks, Dispatch)'
+  watch live-red TRIP '[Dispatch]'
+  run "$SUBJECT" health
+  assert_failure
+  assert_line --regexp '^Dispatch +TRIP '
+  assert_line --partial '1 TRIP/Q (down: Dispatch) (quarantined: Asks)'
+}
+
+@test "health: every part covered with one quarantined reads GAPS, not GREEN, and exits 0; a zero-padded UNTIL is decimal" {
+  watch lifecycle-watch OK '[Lifecycle]'
+  printf TRIP > "$TRIAGE_WATCH_STATE/runner-watch.state"
+  printf '0%s ar-1 %s waits on a fix\n' "$(( $(date +%s) + 3600 ))" "$(date +%s)" > "$TRIAGE_WATCH_STATE/runner-watch.quarantine"
+  run "$SUBJECT" health
+  assert_success
+  assert_line --regexp '^Runners +TRIP/Q '
+  assert_line --partial 'fleet health GAPS: 4 parts, 3 OK, 0 TRIP, 0 ERROR, 0 UNCOVERED, 1 TRIP/Q (quarantined: Runners)'
+}
+
+@test "health negative control: a quarantine past its UNTIL reads red again" {
+  printf TRIP > "$TRIAGE_WATCH_STATE/queue-watch.state"
+  printf '%s ar-1 %s waits on a fix\n' "$(( $(date +%s) - 60 ))" "$(( $(date +%s) - 7200 ))" > "$TRIAGE_WATCH_STATE/queue-watch.quarantine"
+  run "$SUBJECT" health
+  assert_failure
+  assert_line --regexp '^Dispatch +TRIP +queue-watch=TRIP$'
+  assert_line --partial 'fleet health RED: 4 parts, 1 OK, 2 TRIP'
+  refute_output --partial 'quarantined:'
+}
+
 @test "health: a part takes its worst live watch, ERROR over TRIP over OK" {
   watch second OK '[Runners]'
   watch third TRIP '[Runners]'
@@ -146,14 +179,6 @@ watch() {
   run "$SUBJECT" health
   assert_failure
   assert_output --partial 'cannot read the parts list'
-}
-
-@test "health --json carries the verdict, each part with its watches, and the stale names" {
-  watch old-watch OK '[Nope]'
-  run "$SUBJECT" health --json
-  assert_success
-  run jq -r '[.parts[0].part, .parts[0].state, (.parts[0].watches | map(.watch + "=" + .state) | join(",")), .stale[0].name, (.verdict | startswith("fleet health GAPS"))] | join(" ")' <<<"$output"
-  assert_output 'Runners OK runner-watch=OK Nope true'
 }
 
 @test "health: an unknown flag is a usage error" {
@@ -210,8 +235,8 @@ watch() {
   assert_output 'Lifecycle'
 }
 
-@test "health: --coverage with --json is a usage error, not a silent choice" {
-  run "$SUBJECT" health --coverage --json
+@test "health: --json, which nothing read, is a usage error" {
+  run "$SUBJECT" health --json
   assert_failure 2
 }
 

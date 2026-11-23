@@ -99,7 +99,7 @@ case "$verb" in
     # `-L <server>` with a tmux.sessions.<server> fixture answers from that file alone,
     # ahead of the global switches below, so one server can hold a session the current
     # one does not.
-    # No -t is panel_live_servers asking "is this server up?": the fixture says it is.
+    # No -t is tmux_live_servers asking "is this server up?": the fixture says it is.
     if [ -n "$server" ] && [ -f "$FIX/tmux.sessions.$server" ]; then
       [ -z "$target" ] && exit 0
       grep -qxF -- "${target#=}" "$FIX/tmux.sessions.$server"
@@ -196,8 +196,8 @@ case "$verb" in
     elif printf '%s ' "$@" | grep -q 'pane_id'; then
       echo "${STUB_PANE_ID:-%12}"
     elif printf '%s ' "$@" | grep -q 'pane_in_mode'; then
-      # tmux-pane.sh leave_mode reads it after `copy-mode -q`: 1 is a pane stuck in a mode.
-      echo "${STUB_PANE_IN_MODE:-0}"
+      # tmux-pane.sh leave_mode reads it after `copy-mode -q`: only 0 is a pane out of every mode (it counts stacked modes).
+      echo "${STUB_PANE_IN_MODE-0}"
     elif printf '%s ' "$@" | grep -q 'pane_current_command'; then
       # servers.sh `_refresh_landing` branches on this: a shell means re-run the
       # manifest's startup command, nvim means `:e` the world's page. Default is a shell,

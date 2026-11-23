@@ -946,6 +946,42 @@ pub fn list_since(runner: &dyn Runner, state: &str, since: &str) -> Result<Vec<I
         .map(|out| parse(&out))
 }
 
+/// The local day (`YYYY-MM-DD`) a done item moved to done: the `done/<day>/` directory its
+/// `file` is in. None for an item that is not done or has no `file` (`finished` is UTC, which is
+/// not the day agent-queue filed it under).
+pub fn done_day(item: &Item) -> Option<&str> {
+    if item.state != State::Done {
+        return None;
+    }
+    item.extra
+        .get("file")
+        .and_then(Value::as_str)
+        .and_then(|f| f.rsplit_once("/done/").map(|(_, rest)| rest))
+        .and_then(|rest| rest.split('/').next())
+        .filter(|d| d.len() == 10)
+}
+
+/// The items `list_since(runner, "all", since)` returns, picked from a list made with `since` or
+/// earlier: every item not done, and the done ones that moved to done on `since` or later, in
+/// `list`'s order. A done item with no known day is dropped. So one read serves `list_since` and
+/// `list(runner, "all")` (today's) both.
+pub fn done_since(items: &[Item], since: &str) -> Vec<Item> {
+    items
+        .iter()
+        .filter(|i| i.state != State::Done || done_day(i).is_some_and(|d| d >= since))
+        .cloned()
+        .collect()
+}
+
+/// The items `list(runner, "active")` returns, picked from a list that holds them.
+pub fn active(items: &[Item]) -> Vec<Item> {
+    items
+        .iter()
+        .filter(|i| i.state != State::Done)
+        .cloned()
+        .collect()
+}
+
 /// The local date `days` before today, as `list_since` takes it.
 pub fn days_ago(days: i64) -> String {
     (chrono::Local::now().date_naive() - chrono::Days::new(days.max(0) as u64))
@@ -958,13 +994,13 @@ pub fn stats(runner: &dyn Runner) -> Result<Stats, String> {
     serde_json::from_str(&out).map_err(|e| format!("agent-queue stats: {e}"))
 }
 
-/// What a Queue view shows: the items (`all`), the week's stats, the last dispatch pass's
-/// verdict (the line over the table), and what could not be read.
+/// What a Queue view shows: the items (`all`), the week's stats, whether work flows
+/// (`queue_verdict`, the lines over the table), and what could not be read.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Queue {
     pub items: Vec<Item>,
     pub stats: Option<Stats>,
-    pub dispatch: Option<crate::capacity::Dispatch>,
+    pub verdict: Option<crate::queue_verdict::Verdict>,
     pub errors: Vec<String>,
     /// Each item's own session as fleet-sessions last saw it (`sessions`), None when that state
     /// was not read fresh, so a running row then says only `running`.
@@ -1053,14 +1089,21 @@ impl Queue {
     }
 
     pub fn read(runner: &dyn Runner) -> Queue {
-        Queue {
-            dispatch: Some(crate::capacity::Dispatch::now()),
-            sessions: sessions(
-                &crate::boards::fleet_state(),
-                chrono::Utc::now().timestamp(),
-            ),
-            ..Queue::from_reads(list(runner, "all"), stats(runner))
-        }
+        let now = chrono::Utc::now().timestamp();
+        // The verdict is a Prometheus call, so it runs beside agent-queue's two reads.
+        std::thread::scope(|s| {
+            let verdict = s.spawn(|| crate::queue_verdict::Verdict::read(now));
+            let q = Queue::from_reads(list(runner, "all"), stats(runner));
+            Queue {
+                verdict: Some(
+                    verdict
+                        .join()
+                        .unwrap_or_else(|e| std::panic::resume_unwind(e)),
+                ),
+                sessions: sessions(&crate::boards::fleet_state(), now),
+                ..q
+            }
+        })
     }
 
     /// The view over a `list` and a `stats` read made elsewhere (agent-web keeps both), each
@@ -1841,6 +1884,64 @@ mod tests {
             tags: tags.into(),
             task: task.into(),
         }
+    }
+
+    /// A `list --state all --since 2026-11-16` made of every kind: active items, done ones on
+    /// three days, and one done item with no `file`.
+    const SNAPSHOT: &str = concat!(
+        r#"{"slug":"r","state":"running","file":"/q/running/r.md"}"#,
+        "\n",
+        r#"{"slug":"q","state":"queued","file":"/q/queued/q.md"}"#,
+        "\n",
+        r#"{"slug":"d22","state":"done","file":"/q/done/2026-11-22/a-d22.md"}"#,
+        "\n",
+        r#"{"slug":"d21","state":"done","file":"/q/done/2026-11-21/a-d21.md"}"#,
+        "\n",
+        r#"{"slug":"d16","state":"done","file":"/q/done/2026-11-16/a-d16.md"}"#,
+        "\n",
+        r#"{"slug":"nofile","state":"done","finished":"2026-11-22T01:02:03Z"}"#,
+    );
+
+    fn slugs(items: &[Item]) -> Vec<&str> {
+        items.iter().map(|i| i.slug.as_str()).collect()
+    }
+
+    #[test]
+    fn a_done_item_is_dated_by_its_done_directory() {
+        let items = parse(SNAPSHOT);
+        let days: Vec<_> = items.iter().map(done_day).collect();
+        assert_eq!(
+            days,
+            [
+                None,
+                None,
+                Some("2026-11-22"),
+                Some("2026-11-21"),
+                Some("2026-11-16"),
+                None
+            ]
+        );
+        let under_done =
+            parse(r#"{"slug":"x","state":"done","file":"/srv/done/q/done/2026-11-22/x.md"}"#);
+        assert_eq!(
+            done_day(&under_done[0]),
+            Some("2026-11-22"),
+            "a queue root under a done dir"
+        );
+    }
+
+    #[test]
+    fn one_since_read_serves_today_the_tab_and_the_active_items() {
+        let items = parse(SNAPSHOT);
+        // `list --state all`: every active item and today's done ones.
+        assert_eq!(slugs(&done_since(&items, "2026-11-22")), ["r", "q", "d22"]);
+        // The tab's week.
+        assert_eq!(
+            slugs(&done_since(&items, "2026-11-16")),
+            ["r", "q", "d22", "d21", "d16"]
+        );
+        // `list --state active`.
+        assert_eq!(slugs(&active(&items)), ["r", "q"]);
     }
 
     #[test]

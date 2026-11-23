@@ -9,8 +9,9 @@
 # an approach, checks, a size and a split. Every write is the CLI's: `ptask edit --exact` takes
 # #plan off and adds the plan as detail lines, `ptask add` adds each split row. A refusal is in
 # the ingest record, so later passes skip the row until its words change. `--kick` starts this
-# runner's unit, without waiting, when a row waits; the inbox sweep and fleet-dispatch's skip_exits
-# call it after they tag rows. How it all fits: notes-cli README, "Intake".
+# runner's unit, without waiting, when a row waits and its budget has room for the call; the inbox
+# sweep and fleet-dispatch's skip_exits call it after they tag rows. How it all fits: notes-cli
+# README, "Intake".
 #
 # A row the person asked for (#requested) is theirs to review: unless it carries #go, it is held
 # instead, `fleet-dispatch start --mode plan` opening a plan-mode session that writes a phased plan
@@ -243,9 +244,21 @@ main() {
     fi
   fi
   # The unit by name, not $NAME: a caller's AGENTCTL_NAME is its own. Held rows past the cap are no
-  # work, so they start no pass; a queue that cannot be read does, and that pass reports it.
+  # work, so they start no pass; a queue that cannot be read does, and that pass reports it. A row to
+  # plan needs a model call, so at the conf's budget it starts none (budget_skip): kicks come after
+  # every triage pass, and each would be a pass that plans nothing. A held row costs no call, so it
+  # still starts one.
   if [ "$KICK" = 1 ]; then
-    grep -q '"hold":false' <<<"$rows" && want=1
+    if grep -q '"hold":false' <<<"$rows"; then
+      local over v=()
+      mapfile -t v < <(budget_conf inbox-plan)
+      if over="$(BUDGET_DAY_USD="${v[1]:-}" MAX_CALLS_HOUR="${v[2]:-}" budget_over inbox-plan)"; then
+        say "at its budget, not started: $over"
+        budget_skip inbox-plan "$over"
+      else
+        want=1
+      fi
+    fi
     grep -q '"hold":true' <<<"$rows" && { [ -n "$blind" ] || [ "$slots" -gt 0 ]; } && want=1
     [ -n "$want" ] || return 0
     systemctl --user start --no-block agentctl@inbox-plan.service || { say "could not start inbox-plan"; return 1; }

@@ -1,7 +1,7 @@
 //! The Home tab: a status card per tab (`hub_core::cards`), the vitals, what needs you, what
 //! changed since last night, what analysis proposes and what is running (with the session
 //! counts), from `hub_core::home` and `hub_core::briefing` (the readers agent-web's Home uses too). The machines, pools and CI that sat
-//! under it until phase 4 are the Infra tab's (docs/dashboards.md "Hub layout").
+//! under it until phase 4 are the Infra tab's (`hub_core::layout`).
 
 use std::collections::BTreeMap;
 
@@ -275,7 +275,7 @@ fn card_cols(w: usize) -> usize {
 
 const CARD_GAP: usize = 2;
 
-fn level_style(l: Level, p: Palette) -> ratatui::style::Style {
+pub(crate) fn level_style(l: Level, p: Palette) -> ratatui::style::Style {
     match l {
         Level::Ok => p.good(),
         Level::Warn => p.warn(),

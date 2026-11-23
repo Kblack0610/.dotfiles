@@ -263,7 +263,7 @@
         "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab 'infra machines'",
         "tooltip": true
     },
-    // CI: busy/slots and queued on the bar; runners by machine and the last day's finished
+    // CI: jobs running and queued on the bar (CI r:N q:N), no runner count or red; runners by machine and the last day's finished
     // jobs on hover (ci_runners.sh). 60s because the exporter and rules move once a minute.
     "custom/ci": {
         "format": "{}",

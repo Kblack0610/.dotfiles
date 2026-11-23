@@ -29,28 +29,30 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert [ -f "$HOME/.agent/asks/demo/$id.md" ]
 }
 
-@test "post refuses session terms its --context does not define, and files one that does" {
+@test "post warns of session terms its --context does not define, and still files the ask" {
   # 2026-11-09 YVyqvq: the question led with a flag name, the why cited a doc, and the context
   # opened with an item id, so the human could only ask what was going on.
   local q='Which game should turn scale.net.botsPredicted off next?'
   local opts='a=keep botsPredicted on until you play one|b=turn it off now'
   run --separate-stderr "$AGENT_ASK" post --project demo --options "$opts" --recommend a \
     --why 'scaling-net.md says play first' --context 'ucp-526 phase 3 is in' "$q"
-  [ "$status" -eq 2 ]
-  [[ "$stderr" == *"scale.net.botsPredicted, botsPredicted, scaling-net.md"* ]]
+  assert_success
+  [[ "$stderr" == *"warning: "*"scale.net.botsPredicted, botsPredicted, scaling-net.md"* ]]
   [[ "$stderr" == *"open --context with one plain-words line"* ]]
-  [ -z "$(ls "$HOME/.agent/asks/demo" 2>/dev/null)" ]
+  [ -n "$(ls "$HOME/.agent/asks/demo" 2>/dev/null)" ]
+  # Defined terms warn of nothing (negative control).
   run --separate-stderr "$AGENT_ASK" post --project demo --options "$opts" --recommend a \
     --why 'scaling-net.md says play first' \
     --context 'scale.net.botsPredicted is the switch that runs bots on your machine; scaling-net.md is the netcode doc' "$q"
   assert_success
+  [[ "$stderr" != *warning* ]]
   # Plain words and quoted text need no definitions (negative control).
   run "$AGENT_ASK" post --project demo 'PR #1036 is green, merge it after "fix ar-12 in foo.md", e.g. today in utf-8?'
   assert_success
   # A term counts as named only whole: ucp-5260 in the context does not name ucp-526.
   run --separate-stderr "$AGENT_ASK" post --project demo --context 'ucp-5260 is a row' 'land ucp-526?'
-  [ "$status" -eq 2 ]
-  [[ "$stderr" == *"(ucp-526)"* ]]
+  assert_success
+  [[ "$stderr" == *"warning: "*"(ucp-526)"* ]]
 }
 
 @test "a new ask starts pending" {
@@ -110,6 +112,7 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
 
 @test "answer: from an agent session it records agent, and --by human is refused; a board's call records human" {
   local a b c d
+  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   for v in CLAUDE_CODE_SESSION_ID=sid-9 AGENT_QUEUE_ITEM=ar-1; do
     a="$(post demo 'run it?')"
     run env "$v" "$AGENT_ASK" answer "$a" go
@@ -150,6 +153,88 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   run "$AGENT_ASK" answer --by human "$d" go
   assert_success
   run "$AGENT_ASK" show "$d"; assert_line 'answered_by: human'
+}
+
+# An agent answer to a held ask would close it while the gate it holds stays shut for good.
+@test "answer: an agent answer to an ask a board row or queue item waits on is refused and leaves it pending" {
+  local opts='go=run it now|later=run it later' a b c
+  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
+  a="$("$AGENT_ASK" post --project demo --options "$opts" 'row held?')"
+  b="$("$AGENT_ASK" post --project demo --options "$opts" 'item held?')"
+  printf '{"rows":[{"project":"demo","id":"dm-1","state":"open","tags":["ask/%s/go"],"tags_cased":["ask/%s/go"]}],"done":[]}\n' "$(tr A-Z a-z <<<"$a")" "$a" > "$NOTES_FIXTURE/board.json"
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy held "tags: ask:$b=go" --project demo "the next phase" >/dev/null
+  run env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer "$a" go
+  assert_failure 1
+  assert_output --partial "$a holds dm-1, which only the human's answer releases"
+  run "$AGENT_ASK" show "$a"; assert_line 'status: pending'
+  run env CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" answer "$b" go
+  assert_failure 1
+  assert_output --partial "$b holds held, which only the human's answer releases"
+  run "$AGENT_ASK" show "$b"; assert_line 'status: pending'
+  # The human's answer from a board still releases it.
+  run "$AGENT_ASK" answer "$b" go
+  assert_success
+  run "$AGENT_ASK" show "$b"; assert_line 'answered_by: human'
+  # Negative control: an ask nothing waits on takes an agent answer.
+  c="$("$AGENT_ASK" post --project demo --options "$opts" 'free?')"
+  run env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer "$c" go
+  assert_success
+  run "$AGENT_ASK" show "$c"; assert_line 'answered_by: agent'
+  # A queue it cannot read hides any holder, so the agent answer is refused.
+  c="$("$AGENT_ASK" post --project demo --options "$opts" 'unreadable?')"
+  run env AGENT_ASK_QUEUE_CMD=false AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer "$c" go
+  assert_failure 1
+  assert_output --partial 'cannot read the queue'
+  run "$AGENT_ASK" show "$c"; assert_line 'status: pending'
+}
+
+# A hold added after an agent answered (2026-11-22: XqrCXG and three more were answered before the
+# guard above) left the ask closed while its row waits, and off every Needs you list.
+@test "assume-due puts an agent-answered ask a board row or queue item holds back to pending" {
+  local opts='go=run it now|later=run it later' a b c d e
+  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
+  a="$("$AGENT_ASK" post --project demo --options "$opts" 'row held later?')"
+  b="$("$AGENT_ASK" post --project demo --options "$opts" 'item held later?')"
+  c="$("$AGENT_ASK" post --project demo --options "$opts" 'free?')"
+  d="$("$AGENT_ASK" post --project demo --options "$opts" 'human answered?')"
+  for x in "$a" "$b" "$c"; do env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer "$x" later 2>/dev/null; done
+  "$AGENT_ASK" answer "$d" go 2>/dev/null
+  "$AGENT_ASK" deliver --all 2>/dev/null
+  printf '{"rows":[{"project":"demo","id":"dm-1","state":"open","tags":["ask/%s/go","ask/%s"],"tags_cased":["ask/%s/go","ask/%s"]}],"done":[]}\n' \
+    "$(tr A-Z a-z <<<"$a")" "$(tr A-Z a-z <<<"$d")" "$a" "$d" > "$NOTES_FIXTURE/board.json"
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy held "tags: ask:$b=go" --project demo "the next phase" >/dev/null
+  # A queue it cannot read reopens nothing.
+  AGENT_ASK_QUEUE_CMD=false run "$AGENT_ASK" assume-due
+  run "$AGENT_ASK" show "$a"; assert_line 'status: answered'
+  run --separate-stderr "$AGENT_ASK" assume-due
+  [[ "$stderr" == *"$a is pending again: an agent answered later"* ]]
+  for x in "$a" "$b"; do
+    run "$AGENT_ASK" show "$x"
+    assert_line 'status: pending'
+    assert_line 'answered_by: '
+    assert_line --regexp '^agent_answer: later \(.+\)$'
+    refute_line --regexp '^delivery'
+  done
+  run "$AGENT_ASK" list demo --pending
+  assert_line --partial "$a"$'\t'
+  assert_line --partial "$b"$'\t'
+  run "$AGENT_ASK" card "$a"; assert_output --partial 'an agent picked: later'
+  # The agent's answer ran the resume; the human's later answer must run it again.
+  e="$("$AGENT_ASK" post --project demo --options "$opts" --resume 'true' 'resumed?')"
+  env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer "$e" later 2>/dev/null
+  "$AGENT_ASK" mark-resumed "$e" 2>/dev/null
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy held2 "tags: ask:$e" --project demo "after the resume" >/dev/null
+  # A delivery still going out is left to finish; the next pass takes it.
+  run "$AGENT_ASK" show "$e"; assert_line 'delivery: queued'
+  "$AGENT_ASK" assume-due 2>/dev/null
+  run "$AGENT_ASK" show "$e"; assert_line 'status: answered'
+  "$AGENT_ASK" deliver "$e" 2>/dev/null
+  run "$AGENT_ASK" show "$e"; assert_line --regexp '^resumed_at: .+'
+  "$AGENT_ASK" assume-due 2>/dev/null
+  run "$AGENT_ASK" show "$e"; assert_line 'status: pending'; assert_line 'resumed_at: '
+  # Negative controls: an agent answer nothing holds, and the human's answer, stand.
+  run "$AGENT_ASK" show "$c"; assert_line 'status: answered'; assert_line 'answered_by: agent'
+  run "$AGENT_ASK" show "$d"; assert_line 'status: answered'; assert_line 'answered_by: human'
 }
 
 @test "another session, or a post with no session id, is not held by someone else's ask" {
@@ -1611,6 +1696,97 @@ human_hold() {
   grep -qx 'status: pending' "$(ask_file "$a")"
 }
 
+# row_map: a registry whose trackers give the row-id codes ar and hc.
+row_map() {
+  export PROJECT_MAP_FILE="$SANDBOX/project-map.json"
+  printf '%s\n' '{"trackers":{"agent-runtime":{"code":"ar"},"home-config":{"code":"hc"},"demo":{}}}' > "$PROJECT_MAP_FILE"
+}
+# rpost <project> [flags...] <question>: post with the question as its context, which names its row ids.
+rpost() { "$AGENT_ASK" post --project "$1" --context "About: ${*: -1}" "${@:2}"; }
+
+@test "expire cancels an ask on a row the human answered after it was posted, however worded; not before, not another row, not a live or held one" {
+  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
+  row_map
+  mkdir -p "$HOME/.claude/sessions"
+  printf '{"pid":%d,"sessionId":"sid-live"}\n' "$$" > "$HOME/.claude/sessions/$$.json"
+  local first dup audit live held other two inword later id
+  first="$(rpost home-config --kind approval 'CI row hc-820 is moot since lending was deleted; drop it?')"
+  dup="$(CLAUDE_CODE_SESSION_ID=sid-gone rpost home-config --kind approval 'Cancel hc-820 as moot, since PR 1355 deleted seat lending?')"
+  audit="$(rpost home-config --kind approval --audit-of q1 --options 'a=keep|b=override' 'The judge answered "CI row hc-820 is moot; drop it?" with "a"; your pick?')"
+  live="$(CLAUDE_CODE_SESSION_ID=sid-live rpost home-config 'Is hc-820 still needed?')"
+  held="$(rpost home-config 'Close hc-820 now?')"
+  # agent-queue wants a checkout for a project the registry names, so the item is filed with none.
+  PROJECT_MAP_FILE= AQ="$AGENT_ASK_QUEUE_CMD" legacy held "tags: ask:$held=approve" --project other "the hc-820 work" >/dev/null
+  other="$(rpost agent-runtime 'Start board row ar-4328 again after its last 2 runs failed?')"
+  two="$(rpost home-config 'Fold hc-820 into hc-821?')"
+  # A row id inside another word is not the row.
+  inword="$(rpost home-config 'Merge the xhc-820 and hc-820b notes?')"
+  for id in "$dup" "$audit" "$live" "$held" "$other" "$two" "$inword"; do aged "$id" '-1 hour'; done
+  "$AGENT_ASK" answer --by human "$first" approve 2>/dev/null
+  # Posted after the answer: a new question on the row, not a duplicate.
+  later="$(rpost home-config 'hc-820 cancel failed again; retry it?')"
+  aged "$later" '+1 hour'
+  run "$AGENT_ASK" expire --dry-run
+  assert_success
+  assert_line "home-config	$dup	cancel	duplicate of $first: the human answered \"approve\" on row hc-820 after this was asked"
+  assert_line --regexp "^home-config	$audit	cancel	duplicate of $first: "
+  for id in "$live" "$held" "$other" "$two" "$inword" "$later"; do refute_output --partial "$id"; done
+  grep -qx 'status: pending' "$(ask_file "$dup")"
+  run "$AGENT_ASK" expire
+  run "$AGENT_ASK" show "$dup"
+  assert_line 'status: cancelled'
+  assert_line --regexp "^closed_reason: duplicate of $first: "
+  for id in "$live" "$held" "$other" "$two" "$inword" "$later"; do grep -qx 'status: pending' "$(ask_file "$id")"; done
+  # Only the human's answer settles a row: the judge's or an agent's does not.
+  local q77 r77 q78 r78
+  q77="$(rpost agent-runtime 'Cancel ar-77 as built?')"; r77="$(rpost agent-runtime 'Retry ar-77?')"
+  q78="$(rpost agent-runtime 'Cancel ar-78 as built?')"; r78="$(rpost agent-runtime 'Retry ar-78?')"
+  aged "$r77" '-1 hour'; aged "$r78" '-1 hour'
+  "$AGENT_ASK" answer --by judge "$q77" yes 2>/dev/null
+  "$AGENT_ASK" answer --by agent "$q78" yes 2>/dev/null
+  run "$AGENT_ASK" expire --dry-run
+  refute_output --partial "$r77"; refute_output --partial "$r78"
+  # A registry with no tracker codes names no rows.
+  local bare; bare="$(rpost agent-runtime 'Drop ar-4328 for good?')"
+  aged "$bare" '-1 hour'
+  "$AGENT_ASK" answer --by human "$other" retry 2>/dev/null
+  printf '{"trackers":{}}\n' > "$PROJECT_MAP_FILE"
+  run "$AGENT_ASK" expire --dry-run
+  refute_output --partial "$bare"
+  # Negative control: the same tree with the codes back closes it.
+  row_map
+  run "$AGENT_ASK" expire --dry-run
+  assert_line --regexp "^agent-runtime	$bare	cancel	duplicate of $other: "
+}
+
+@test "expire cancels a today or tonight ask once its day is over and DATED_HOURS have passed; an undated or held one stays" {
+  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
+  mkdir -p "$HOME/.claude/sessions"
+  printf '{"pid":%d,"sessionId":"sid-live"}\n' "$$" > "$HOME/.claude/sessions/$$.json"
+  local past fresh late plain held live resumes id
+  past="$(CLAUDE_CODE_SESSION_ID=sid-gone "$AGENT_ASK" post --project demo --resume 'run: agent-ask reopen' 'Who gets a Steam key for todays playtest?')"
+  live="$(CLAUDE_CODE_SESSION_ID=sid-live "$AGENT_ASK" post --project demo 'Hand out the keys today?')"
+  resumes="$("$AGENT_ASK" post --project demo --resume 'run: true' 'Cut the build today?')"
+  fresh="$("$AGENT_ASK" post --project demo 'Ship the build tonight?')"
+  late="$("$AGENT_ASK" post --project demo 'Run the backup this evening?')"
+  plain="$("$AGENT_ASK" post --project demo 'Which playtest build ships?')"
+  held="$("$AGENT_ASK" post --project other 'Start the today phase?')"
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy held "tags: ask:$held=approve" --project other "the today phase" >/dev/null
+  for id in "$past" "$plain" "$held" "$live" "$resumes"; do aged "$id" '-2 days'; done
+  # Posted at the end of yesterday: its day is over, so DATED_HOURS since the post decide it.
+  sed -i "s/^created: .*/created: $(date -d 'yesterday 23:59' +%Y-%m-%dT%H:%M:%S%z)/" "$(ask_file "$late")"
+  printf 'DATED_HOURS=48\n' > "$BATS_TEST_TMPDIR/park.conf"
+  export AGENT_ASK_PARK_CONF="$BATS_TEST_TMPDIR/park.conf"
+  run "$AGENT_ASK" expire
+  assert_success
+  assert_output "demo	$past	cancel	expired: it asked about today on $(date -d '-2 days' +%F), which has passed"
+  grep -qx 'status: cancelled' "$(ask_file "$past")"
+  printf 'DATED_HOURS=0\n' > "$AGENT_ASK_PARK_CONF"
+  run "$AGENT_ASK" expire
+  assert_output --regexp "^demo	$late	cancel	expired: it asked about this evening on [0-9-]+, which has passed$"
+  for id in "$fresh" "$plain" "$held" "$live" "$resumes"; do grep -qx 'status: pending' "$(ask_file "$id")"; done
+}
+
 @test "a verdict settled by a live hold the human set answers the ask by it; an agent's hold or a gone one does not" {
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   unset AGENT_ASK_NO_JUDGE
@@ -1638,6 +1814,11 @@ human_hold() {
   # Nor does an answer naming no option, or a hold on an ask the human disarmed.
   fake_judge "$(score external 'skip it' | jq -c '.settled_by = "hold:release-cut"')"
   id="$("$AGENT_ASK" post --project demo --options "$opts" --recommend tag 'cut the tag, skip?' 2>/dev/null)"
+  grep -qx 'status: pending' "$(ask_file "$id")"
+  # An empty answer is no pick: the recommendation is what the asker wants, and a hold can forbid exactly
+  # that (PZLBaS, 2026-11-20), so the human answers instead of the hold taking it (ar-4236).
+  fake_judge "$(score external "" | jq -c '.settled_by = "hold:release-cut"')"
+  id="$("$AGENT_ASK" post --project demo --options "$opts" --recommend tag 'cut the tag, no pick?' 2>/dev/null)"
   grep -qx 'status: pending' "$(ask_file "$id")"
   id="$(AGENT_ASK_NO_JUDGE=1 "$AGENT_ASK" post --project disarmed --options "$opts" --recommend tag 'tag it, disarmed?')"
   printf 'assume_disarmed: 2026-11-19T10:00:00-0800\n' >> "$(ask_file "$id")"
@@ -2562,10 +2743,11 @@ judged_ask() {
   assert_success; [[ "$stderr" == *"names no option of ask N1"* ]]
   run "$AGENT_ASK" show N1; refute_line --partial 'judge_override'
   # an audit that cannot post says why and marks the answer unaudited, never silently skipped
-  # (an option note with a term its context never names, which post refuses)
-  judged_ask P1 repo; sed -i 's/^option_notes: fix the test/option_notes: fix it with retryLoop/' "$d/P1.md"
+  # (a project that is not canonical, which post refuses once a project map exists)
+  printf '{"paths": {}, "trackers": {"demo": {}}}\n' > "$BATS_TEST_TMPDIR/map.json"; export PROJECT_MAP_FILE="$BATS_TEST_TMPDIR/map.json"
+  judged_ask P1 repo; sed -i 's/^project: demo/project: notaproject/' "$d/P1.md"
   run --separate-stderr "$AGENT_ASK" answer --by judge P1 fix
-  assert_success; [[ "$stderr" == *"audit of ask P1 not posted: "*"define its session terms (retryLoop)"* ]]
+  assert_success; [[ "$stderr" == *"audit of ask P1 not posted: "*"'notaproject' is not a canonical project"* ]]
   run "$AGENT_ASK" show P1; assert_line 'judge_audit: failed'
 }
 

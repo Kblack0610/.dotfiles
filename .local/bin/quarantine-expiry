@@ -4,9 +4,12 @@
 # An ended quarantine entry counts as red in every gate and nightly again, and is never renewed
 # (playground docs/operations/ci.md rule 2). For each owner row `hub quarantine soon` lists
 # (entries ending within hub_core::quarantine::SOON_DAYS), this adds one `quarantine ends <date>:`
-# detail line to the row when it is open on the board, once per row and end date. A closed or
-# missing row cannot take a note, so it is listed: its entries have no open owner. It never
-# touches the quarantine. The Sentinel `quarantine-expiry` watch runs it (ar-4025).
+# detail line to the row that owns them, once per row and end date. The row is looked up through
+# the notes feed wherever it sits (`notes board --json --id`: any version, open or closed); a row
+# closed as a dup (`dup:<id>`) hands its entries to the row it was folded into, followed up to
+# DUP_HOPS deep. A closed or missing owner cannot take a note, so it is listed: its entries have
+# no open owner. It never touches the quarantine. The Sentinel `quarantine-expiry` watch runs it
+# (ar-4025).
 #
 # Usage: quarantine-expiry [--dry-run]     --dry-run: print, note nothing
 # Prints one line per ending owner row, then the totals as the last line.
@@ -32,52 +35,137 @@ if [ -z "$soon" ] && [ "$rc" = 0 ]; then
   echo "No quarantine entry is about to end"
   exit 0
 fi
-board='{"rows":[]}'
-if [ -n "$soon" ] && { ! board="$(notes board --json 2>&1)" || ! jq -e '.rows | type == "array"' >/dev/null 2>&1 <<<"$board"; }; then
-  echo "unreadable: notes board --json: ${board:0:200}"
-  exit 2
-fi
+DUP_HOPS=5   # a dup chain longer than this is a sheet fault, read as the closed row it stops at
+
+# The feed rows of these ids, wherever each sits; fails with the reason on stdout.
+lookup() {
+  local args=() id out
+  for id; do args+=(--id "$id"); done
+  if ! out="$(notes board --json "${args[@]}" 2>&1)" || ! jq -e '.rows | type == "array"' >/dev/null 2>&1 <<<"$out"; then
+    echo "${out:0:200}"
+    return 1
+  fi
+  jq -c .rows <<<"$out"
+}
+# Every owner id, then each dup target not yet asked for, one hop at a time
+found='[]' asked='[]'
+mapfile -t want < <(cut -f2 <<<"$soon" | grep . | sort -u)
+for ((hop = 0; hop <= DUP_HOPS && ${#want[@]}; hop++)); do
+  if ! got="$(lookup "${want[@]}")"; then
+    echo "unreadable: notes board --json --id: $got"
+    exit 2
+  fi
+  found="$(jq -c --argjson more "$got" '. + $more' <<<"$found")"
+  asked="$(jq -c '. + $ARGS.positional' --args "${want[@]}" <<<"$asked")"
+  mapfile -t want < <(jq -r --argjson asked "$asked" '[.[] | select(.state == "done") | .dup // empty | select(. as $d | $asked | index([$d]) | not)] | unique[]' <<<"$found")
+done
+# The row that owns $id's entries: {id, row, via}, id the last one looked up, row its feed row
+# (null when no sheet has it) and via the dup-closed ids passed on the way. An open copy wins over
+# a closed one: a reopened row's old close is still in its version note.
+resolve() {
+  jq -c --arg id "$1" --argjson hops "$DUP_HOPS" '
+    . as $rows
+    | def pick($i): first($rows[] | select(.id == $i and .state != "done")) // first($rows[] | select(.id == $i)) // null;
+      def follow($i; $via): pick($i) as $r
+        | if $r != null and $r.state == "done" and $r.dup != null and ($via | length) < $hops
+             and (($via + [$i]) | index([$r.dup]) | not)
+          then follow($r.dup; $via + [$i]) else {id: $i, row: $r, via: $via} end;
+      follow($id; [])' <<<"$found"
+}
 
 today="$(date +%F)"
 field() { jq -r ".$1" <<<"$r"; }   # a field of the row in hand, $r
 n_rows() { if [ "$1" = 1 ]; then echo "1 owner row"; else echo "$1 owner rows"; fi; }
-rows=0 entries=0 noted=0 closed=0 failed=0 next=""
+# Pass 1: each owner row and the row that owns its entries; entries summed per owning row and
+# end date, so a row that took several dups is noted once with all of them.
 # Tab is IFS whitespace, so `read` would merge an empty row field into the next: split on \037
+lines=() owners=()
+declare -A total=() via_ids=() via_n=() via_seen=() outcome=()
+VIA_SHOWN=5   # dup-closed ids a note names before it says "and N more"
 while IFS=$'\037' read -r repo row n ends left; do
   [ -n "$repo" ] || continue
+  res='{"id":"","row":null,"via":[]}'
+  [ -z "$row" ] || res="$(resolve "$row")"
+  lines+=("$repo"$'\037'"$row"$'\037'"$n"$'\037'"$ends"$'\037'"$left")
+  owners+=("$res")
+  oid="$(jq -r 'select(.row != null and .row.state != "done") | .row.id' <<<"$res")"
+  [ -n "$oid" ] || continue
+  total["$oid|$ends"]=$(( ${total["$oid|$ends"]:-0} + n ))
+  [ "$oid" != "$row" ] && [ -z "${via_seen["$oid|$ends|$row"]:-}" ] || continue
+  via_seen["$oid|$ends|$row"]=1
+  via_n["$oid|$ends"]=$(( ${via_n["$oid|$ends"]:-0} + 1 ))
+  [ "${via_n["$oid|$ends"]}" -gt "$VIA_SHOWN" ] || via_ids["$oid|$ends"]+="${via_ids["$oid|$ends"]:+, }$row"
+done < <(tr '\t' '\037' <<<"$soon")
+
+rows=0 entries=0 noted=0 closed=0 failed=0 next=""
+for i in "${!lines[@]}"; do
+  IFS=$'\037' read -r repo row n ends left <<<"${lines[$i]}"
+  res="${owners[$i]}"
   rows=$((rows + 1)) entries=$((entries + n))
   [ -n "$next" ] || next="$ends, ${left}d"
-  if [ "$n" = 1 ]; then they="1 entry ends" its="1 entry of this row stops being quarantined then and counts"
-  else they="$n entries end" its="$n entries of this row stop being quarantined then and count"; fi
+  if [ "$n" = 1 ]; then they="1 entry ends"; else they="$n entries end"; fi
   what="${row:-no owner row}: $they $ends (${left}d) in $repo"
-  r="$(jq -c --arg id "$row" 'first(.rows[] | select($id != "" and .id == $id)) // empty' <<<"$board")"
-  if [ -z "$r" ]; then
+  r="$(jq -c .row <<<"$res")"
+  via="$(jq -r '.via | join(" -> ")' <<<"$res")"
+  oid="$(jq -r .id <<<"$res")"
+  if [ -z "$row" ]; then
     closed=$((closed + 1))
-    if [ -n "$row" ]; then echo "$what; the row is not open on the board, so no open row owns them"
-    else echo "$what; no row owns them"; fi
+    echo "$what; no row owns them"
     continue
   fi
-  key="quarantine ends $ends:"
-  if jq -e --arg k "$key" 'any(.details[]?; startswith($k))' >/dev/null <<<"$r"; then
-    noted=$((noted + 1))
-    echo "$what; noted"
+  if [ "$r" = null ]; then
+    closed=$((closed + 1))
+    if [ -n "$via" ]; then echo "$what; closed as a dup of $oid, which is on no sheet, so no open row owns them"
+    else echo "$what; the row is on no sheet, so no open row owns them"; fi
     continue
   fi
-  note="$key $its as red in every gate and nightly again. Lift each that meets the bar (quarantine.py lift) or fix it before then; an entry is never renewed (Sentinel quarantine-expiry, $today)"
+  if [ "$(field state)" = done ]; then
+    closed=$((closed + 1))
+    cut_at="$(field 'dup // empty')"
+    if [ -n "$cut_at" ] && [ "$(jq '.via | length' <<<"$res")" -ge "$DUP_HOPS" ]; then
+      echo "$what; closed into a dup chain over $DUP_HOPS deep ($via -> $oid -> $cut_at), so no open row owns them"
+    elif [ -n "$cut_at" ]; then echo "$what; closed into a dup loop ($via -> $oid -> $cut_at), so no open row owns them"
+    elif [ -n "$via" ]; then echo "$what; closed as a dup of $oid, which is closed too, so no open row owns them"
+    else echo "$what; the row is closed, so no open row owns them"; fi
+    continue
+  fi
+  owned=""
+  if [ "$via" = "$row" ]; then owned="; $oid owns them ($row was closed as its dup)"
+  elif [ -n "$via" ]; then owned="; $oid owns them (closed into it: $via -> $oid)"; fi
+  key="$oid|$ends"
+  if [ -n "${outcome[$key]:-}" ]; then
+    case "${outcome[$key]}" in noted*) noted=$((noted + 1)) ;; would*) ;; *) failed=$((failed + 1)) ;; esac
+    echo "$what$owned; ${outcome[$key]}"
+    continue
+  fi
+  mark="quarantine ends $ends:"
+  if jq -e --arg k "$mark" 'any(.details[]?; startswith($k))' >/dev/null <<<"$r"; then
+    noted=$((noted + 1)) outcome[$key]=noted
+    echo "$what$owned; noted"
+    continue
+  fi
+  t="${total[$key]}"
+  if [ "$t" = 1 ]; then its="1 entry of this row"; else its="$t entries of this row"; fi
+  more=$(( ${via_n[$key]:-0} - VIA_SHOWN ))
+  [ "$more" -le 0 ] || via_ids[$key]+=" and $more more"
+  [ -z "${via_ids[$key]:-}" ] || its+=" and of the rows closed into it as dups (${via_ids[$key]})"
+  if [ "$t" = 1 ]; then its+=" stops being quarantined then and counts"; else its+=" stop being quarantined then and count"; fi
+  note="$mark $its as red in every gate and nightly again. Lift each that meets the bar (quarantine.py lift) or fix it before then; an entry is never renewed (Sentinel quarantine-expiry, $today)"
   if [ "$dry" = 1 ]; then
-    echo "$what; would note"
+    outcome[$key]="would note"
+    echo "$what$owned; would note"
     continue
   fi
   agent=""
   [ "$(field lane)" = agent ] && agent=--agent
   if err="$(notes --profile "$(field profile)" ptask "$(field project)" ${agent:+"$agent"} --exact edit --detail "$note" -- "$(field raw)" 2>&1 >/dev/null </dev/null)"; then
-    noted=$((noted + 1))
-    echo "$what; noted on the row now"
+    noted=$((noted + 1)) outcome[$key]="noted on the row now"
+    echo "$what$owned; noted on the row now"
   else
-    failed=$((failed + 1))
-    echo "$what; could not note the row: ${err//$'\n'/; }"
+    failed=$((failed + 1)) outcome[$key]="could not note the row: ${err//$'\n'/; }"
+    echo "$what$owned; ${outcome[$key]}"
   fi
-done < <(tr '\t' '\037' <<<"$soon")
+done
 undated=0
 while IFS= read -r e; do
   undated=$((undated + 1))
@@ -86,7 +174,7 @@ done <"$errs"
 
 if [ "$rows" = 0 ]; then line="No quarantine entry with a date ends soon"
 else line="$entries quarantine entries over $(n_rows "$rows") end soon (next $next): $noted noted"; fi
-[ "$closed" = 0 ] || line+=", $closed not open on the board"
+[ "$closed" = 0 ] || line+=", $closed with no open owner row"
 [ "$failed" = 0 ] || line+=", $failed could not be noted"
 [ "$undated" = 0 ] || line+="; $(n_rows "$undated") with an end that is not a date"
 echo "$line"
