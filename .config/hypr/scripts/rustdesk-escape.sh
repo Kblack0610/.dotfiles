@@ -10,11 +10,11 @@
 set -euo pipefail
 
 active_class=$(hyprctl activewindow -j | jq -r '.class // empty')
-[ "$active_class" = "rustdesk" ] || exit 0
+[ "${active_class,,}" = "rustdesk" ] || exit 0
 
-# Most-recently-used non-RustDesk window = lowest focusHistoryID that isn't rustdesk.
+# Most-recently-used non-RustDesk window. The class is "rustdesk" on Wayland, "Rustdesk" on XWayland.
 target=$(hyprctl clients -j | jq -r '
-  [ .[] | select(.class != "rustdesk") ] | sort_by(.focusHistoryID) | .[0].address // empty')
+  [ .[] | select((.class | ascii_downcase) != "rustdesk") ] | sort_by(.focusHistoryID) | .[0].address // empty')
 
 if [ -n "$target" ]; then
   hyprctl dispatch "hl.dsp.focus({ window = \"address:$target\" })"

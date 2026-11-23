@@ -2006,9 +2006,9 @@ mod tests {
     #[test]
     fn a_version_feed_project_has_its_rows_and_window_days_and_none_with_no_row() {
         let dir = sheet("relfeed", RELEASE_SHEET);
-        std::fs::create_dir_all(dir.join("agent/versions")).unwrap();
+        std::fs::create_dir_all(dir.join("sprints")).unwrap();
         std::fs::write(
-            dir.join("agent/versions/v1.13.0.md"),
+            dir.join("sprints/v1.13.0.md"),
             "# n\n\n## Committed\n<!-- window: opened=2026-11-18 due=2026-11-19 -->\n- open now\n",
         )
         .unwrap();

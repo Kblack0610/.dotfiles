@@ -4904,9 +4904,10 @@ Version: v0.0.1
         let (root, dir) = board_project("rehome", "v0.3.0");
         let versions = dir.join("agent/versions");
         fs::create_dir_all(&versions).unwrap();
+        fs::create_dir_all(dir.join("sprints")).unwrap();
         fs::write(
-            versions.join("v0.3.0.md"),
-            "# demo v0.3.0 - agent notes\n\n## Notes\n\n## Committed\n<!-- window: opened=2026-11-19 due=2026-11-19 -->\n- a row <!-- id:c-1 -->\n<!-- /window -->\n",
+            dir.join("sprints/v0.3.0.md"),
+            "# demo v0.3.0 sprint\n\n## Committed\n<!-- window: opened=2026-11-19 due=2026-11-19 -->\n- a row <!-- id:c-1 -->\n<!-- /window -->\n",
         )
         .unwrap();
         fs::write(

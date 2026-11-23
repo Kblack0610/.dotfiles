@@ -81,7 +81,7 @@ pub struct Window {
     pub days_left: Option<i64>,
 }
 
-/// The last cut's window score, the `## Window` line of its frozen note (`window::LastWindow`).
+/// The last cut's window score, the `## Score` line of its `sprints/` file (`window::LastWindow`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LastWindow {
