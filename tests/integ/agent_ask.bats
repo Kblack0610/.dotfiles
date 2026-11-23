@@ -186,6 +186,55 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   run "$AGENT_ASK" show "$c"; assert_line 'status: pending'
 }
 
+# A hold added after an agent answered (2026-11-22: XqrCXG and three more were answered before the
+# guard above) left the ask closed while its row waits, and off every Needs you list.
+@test "assume-due puts an agent-answered ask a board row or queue item holds back to pending" {
+  local opts='go=run it now|later=run it later' a b c d e
+  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
+  a="$("$AGENT_ASK" post --project demo --options "$opts" 'row held later?')"
+  b="$("$AGENT_ASK" post --project demo --options "$opts" 'item held later?')"
+  c="$("$AGENT_ASK" post --project demo --options "$opts" 'free?')"
+  d="$("$AGENT_ASK" post --project demo --options "$opts" 'human answered?')"
+  for x in "$a" "$b" "$c"; do env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer "$x" later 2>/dev/null; done
+  "$AGENT_ASK" answer "$d" go 2>/dev/null
+  "$AGENT_ASK" deliver --all 2>/dev/null
+  printf '{"rows":[{"project":"demo","id":"dm-1","state":"open","tags":["ask/%s/go","ask/%s"],"tags_cased":["ask/%s/go","ask/%s"]}],"done":[]}\n' \
+    "$(tr A-Z a-z <<<"$a")" "$(tr A-Z a-z <<<"$d")" "$a" "$d" > "$NOTES_FIXTURE/board.json"
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy held "tags: ask:$b=go" --project demo "the next phase" >/dev/null
+  # A queue it cannot read reopens nothing.
+  AGENT_ASK_QUEUE_CMD=false run "$AGENT_ASK" assume-due
+  run "$AGENT_ASK" show "$a"; assert_line 'status: answered'
+  run --separate-stderr "$AGENT_ASK" assume-due
+  [[ "$stderr" == *"$a is pending again: an agent answered later"* ]]
+  for x in "$a" "$b"; do
+    run "$AGENT_ASK" show "$x"
+    assert_line 'status: pending'
+    assert_line 'answered_by: '
+    assert_line --regexp '^agent_answer: later \(.+\)$'
+    refute_line --regexp '^delivery'
+  done
+  run "$AGENT_ASK" list demo --pending
+  assert_line --partial "$a"$'\t'
+  assert_line --partial "$b"$'\t'
+  run "$AGENT_ASK" card "$a"; assert_output --partial 'an agent picked: later'
+  # The agent's answer ran the resume; the human's later answer must run it again.
+  e="$("$AGENT_ASK" post --project demo --options "$opts" --resume 'true' 'resumed?')"
+  env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer "$e" later 2>/dev/null
+  "$AGENT_ASK" mark-resumed "$e" 2>/dev/null
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy held2 "tags: ask:$e" --project demo "after the resume" >/dev/null
+  # A delivery still going out is left to finish; the next pass takes it.
+  run "$AGENT_ASK" show "$e"; assert_line 'delivery: queued'
+  "$AGENT_ASK" assume-due 2>/dev/null
+  run "$AGENT_ASK" show "$e"; assert_line 'status: answered'
+  "$AGENT_ASK" deliver "$e" 2>/dev/null
+  run "$AGENT_ASK" show "$e"; assert_line --regexp '^resumed_at: .+'
+  "$AGENT_ASK" assume-due 2>/dev/null
+  run "$AGENT_ASK" show "$e"; assert_line 'status: pending'; assert_line 'resumed_at: '
+  # Negative controls: an agent answer nothing holds, and the human's answer, stand.
+  run "$AGENT_ASK" show "$c"; assert_line 'status: answered'; assert_line 'answered_by: agent'
+  run "$AGENT_ASK" show "$d"; assert_line 'status: answered'; assert_line 'answered_by: human'
+}
+
 @test "another session, or a post with no session id, is not held by someone else's ask" {
   CLAUDE_CODE_SESSION_ID=sid-1 post demo 'merge it?' >/dev/null
   run env CLAUDE_CODE_SESSION_ID=sid-2 "$AGENT_ASK" post --project demo 'ship it?'

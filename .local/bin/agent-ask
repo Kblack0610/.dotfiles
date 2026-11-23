@@ -83,8 +83,9 @@
 #                                       on the same question (see "SETTLED ALREADY")
 #   agent-ask assume-due                answer every armed ask whose wait has passed, once it
 #                                       re-checks, and every gh-login ask whose host's gh auth
-#                                       status is clean; run `expire`; sweep once when the human
-#                                       has set a new hold (fleet-state.service, each pass)
+#                                       status is clean; run `expire`; put an agent-answered ask
+#                                       something still holds back to pending; sweep once when the
+#                                       human has set a new hold (fleet-state.service, each pass)
 #   agent-ask expire [--dry-run]        cancel each ask on a board row the human answered since it
 #                                       was posted, each today or tonight ask once its day is over
 #                                       (DATED_HOURS), and each audit older than AUDIT_HOURS; park
@@ -455,6 +456,9 @@ render_ask() {
   echo
   ctx="${ASK[context]:-}"
   [ -n "$ctx" ] && { printf '%s' "$d"; wrap "     " "$ctx" | sed '1s/^     /why: /'; printf '%s' "$x"; }
+  # An agent's answer reopened for the human (reopen_held_agent_answers) shows as its pick.
+  [ "$st" != pending ] || [ -z "${ASK[agent_answer]:-}" ] ||
+    { printf '%s' "$d"; wrap "     " "an agent picked: ${ASK[agent_answer]}; only your answer releases it" | sed '1s/^ *//'; printf '%s' "$x"; }
   if [ "$st" != pending ]; then
     [ -n "${ASK[answer]:-}" ] && { printf '%s' "$b"; wrap "        " "answer: ${ASK[answer]}" | sed '1s/^ *//'; printf '%s' "$x"; }
   fi
@@ -1415,7 +1419,39 @@ cmd_assume_due() {
   done < <(ask_files --all | xargs -r -d '\n' grep -l '^assume_at: .' 2>/dev/null |
     xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null)
   cmd_expire
+  reopen_held_agent_answers
   sweep_on_new_hold
+}
+
+# reopen_held_agent_answers: an ask answered by an agent session that a queue item or board row still
+# holds goes back to pending. Only the human's answer releases a hold (agent-queue ask_pending), so the
+# agent's answer released nothing and only took the ask off the human's list: 2026-11-22, XqrCXG,
+# Kx1MNl, 79LHB7 and 9TksjR were answered by an agent before `answer` refused that (ar-3172), and a
+# hold added after an agent answer (agent-queue requeue) leaves the same state. The agent's pick
+# stays as `agent_answer`. A queue that cannot be read reopens nothing.
+reopen_held_agent_answers() {
+  local f id pick tmp
+  load_queue_asks
+  [ -n "$QUEUE_READ" ] || return 0
+  while IFS= read -r f; do
+    id="$(field "$f" id)"
+    [ -n "$(queue_holders "$id")" ] || continue
+    pick="$(field "$f" answer)"
+    (
+      command -v flock >/dev/null 2>&1 && flock 9
+      [ "$(field "$f" status)" = answered ] && [ "$(field "$f" answered_by)" = agent ] || exit 1
+      # A delivery still going out reads the answer after its claim; the next pass takes the ask.
+      case "$(field "$f" delivery)" in queued|delivering) exit 1 ;; esac
+      # resumed_at too: the agent's answer may have run the resume, and the human's must run it again.
+      write_fields "$f" status pending answer "" answered_at "" answered_by "" resumed_at "" \
+        ${pick:+agent_answer "$pick ($(field "$f" answered_at))"}
+      tmp="$(mktemp)"
+      awk '{ p = index($0, ": ") } !(p && substr($0, 1, p - 1) ~ /^delivery(_at|_note|_skip)?$/)' "$f" > "$tmp" && mv "$tmp" "$f"
+    ) 9>"$(dirname "$f")/.lock" || continue
+    queue_changed
+    echo "agent-ask: $id is pending again: an agent answered ${pick:-it}, but only the human's answer releases what holds it" >&2
+  done < <(ask_files --all | xargs -r -d '\n' grep -lx 'answered_by: agent' 2>/dev/null |
+    xargs -r -d '\n' grep -lx 'status: answered' 2>/dev/null)
 }
 
 # sweep_on_new_hold: a hold the human set since the last pass can settle asks posted before it
