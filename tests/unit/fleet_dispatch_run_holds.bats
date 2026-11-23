@@ -856,17 +856,18 @@ share_history() {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
   export DISPATCH_NOTES_INGEST="$SANDBOX/ingest.jsonl" DISPATCH_LOW_WATER=4
-  # A session's `--want human` (wind-down) is the agent's; a voice note is the human's.
-  jq -cn '{id: "tidy the hook", action: "added", want: "human", by: "agent", session_id: "s-1"}' > "$DISPATCH_NOTES_INGEST"
-  jq -cn '{id: "fix crash on load", action: "added", want: "voice"}' >> "$DISPATCH_NOTES_INGEST"
+  # A session's `--want human` (wind-down) is the agent's; a voice note is the human's. Each row carries
+  # its id, which the pick's key and promote's stamp both are, as on the agent board.
+  jq -cn '{id: "ga-1", action: "added", want: "human", by: "agent", session_id: "s-1"}' > "$DISPATCH_NOTES_INGEST"
+  jq -cn '{id: "ga-2", action: "added", want: "voice"}' >> "$DISPATCH_NOTES_INGEST"
   # A script logs no session either, so a sessionless `--want human` is the human's only with no named tool.
-  jq -cn '{id: "retry the probe", action: "added", want: "human", by: "fleet-dispatch"}' >> "$DISPATCH_NOTES_INGEST"
-  row game human 'retry the probe' "- [ ] retry the probe #high #requested $T"
-  verdict game human 'retry the probe' dispatch
-  row game human 'tidy the hook' "- [ ] tidy the hook #high #requested $T"
-  verdict game human 'tidy the hook' dispatch
-  row game human 'fix crash on load' "- [ ] fix crash on load #high #requested $T"
-  verdict game human 'fix crash on load' dispatch
+  jq -cn '{id: "ga-3", action: "added", want: "human", by: "fleet-dispatch"}' >> "$DISPATCH_NOTES_INGEST"
+  row game human ga-3 "- [ ] retry the probe #high #requested $T <!-- id:ga-3 -->"
+  verdict game human ga-3 dispatch
+  row game human ga-1 "- [ ] tidy the hook #high #requested $T <!-- id:ga-1 -->"
+  verdict game human ga-1 dispatch
+  row game human ga-2 "- [ ] fix crash on load #high #requested $T <!-- id:ga-2 -->"
+  verdict game human ga-2 dispatch
   row app human 'fix app crash' "- [ ] fix app crash #low $T"
   verdict app human 'fix app crash' dispatch
   share_history 1 0
