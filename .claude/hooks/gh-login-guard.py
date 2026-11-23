@@ -175,6 +175,7 @@ def redirects(cmd, cwd):
 
 
 def decide(data):
+    # gate: hook-gh-login-guard
     """The deny reason for one PreToolUse payload, or None. walker-guards.py calls this."""
     global FORGE
     if data.get("tool_name", "Bash") != "Bash":

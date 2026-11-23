@@ -138,6 +138,7 @@ def cat_targets(cmd, cwd):
     return out
 
 
+# gate: hook-large-read-guard
 def deny(reason):
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}}))

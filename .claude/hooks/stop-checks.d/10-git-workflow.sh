@@ -102,6 +102,7 @@ if [ "${AHEAD:-0}" -gt 0 ] 2>/dev/null; then
   fi
 fi
 
+# gate: hook-stop-git-workflow
 [ $FAILED -eq 1 ] && exit 2
 [ $WARN -eq 1 ] && exit 1
 exit 0

@@ -211,6 +211,7 @@ def main():
         return
     cmd = (data.get("tool_input") or {}).get("command") or ""
     for r in matches(cmd, data.get("cwd") or os.getcwd(), load_rules()):
+        # gate: hook-hand-methods
         if r["mode"] == "deny":
             print(json.dumps({"hookSpecificOutput": {
                 "hookEventName": "PreToolUse", "permissionDecision": "deny",

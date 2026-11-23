@@ -385,6 +385,7 @@ def reason(cmd, cwd, check=check):
 
 
 def decide(data):
+    # gate: hook-forge-guard
     """The deny reason for one PreToolUse payload, or None. walker-guards.py calls this."""
     if data.get("tool_name", "Bash") != "Bash":
         return None
