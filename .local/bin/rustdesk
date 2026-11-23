@@ -2,7 +2,11 @@
 # rustdesk - start RustDesk under XWayland. It is first on PATH, so the menu entry
 # (Exec=rustdesk), terminals and scripts all come here.
 #
-# Why: under native Wayland on the NVIDIA desktop its Flutter window fails
-# "Failed to initialize GLArea: No available configurations for the given pixel
-# format" and opens empty, showing the blur behind it (2026-11-23, RustDesk 1.5.3).
+# Why: on native Wayland its Flutter (GTK3) window fails "Failed to initialize GLArea:
+# No available configurations for the given pixel format" and opens empty. The cause is
+# Mesa 26.3.1: GTK3 asks EGL for a config without naming an API, the default is OpenGL ES 1,
+# and Mesa offers no ES 1 config (2026-11-23, RustDesk 1.5.3). Drop this wrapper once a Mesa
+# release offers one again: `eglinfo -p wayland` shows a y under es.
+# Under XWayland it cannot take the Wayland shortcuts grab, so full keyboard passthrough is
+# the Hyprland `passthru` submap (hypr/conf/keybindings.lua).
 exec env GDK_BACKEND=x11 /usr/bin/rustdesk "$@"
