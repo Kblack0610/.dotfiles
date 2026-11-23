@@ -443,13 +443,7 @@ fn health_line(chips: &[Chip], p: Palette, w: usize) -> Line<'static> {
         ));
     } else {
         for c in &bad {
-            let v = match c.level {
-                Level::Ok => Some(0.0),
-                Level::Warn => Some(1.0),
-                Level::Red => Some(2.0),
-                Level::Nodata => None,
-            };
-            let (style, word) = p.status(v);
+            let (style, word) = p.status(status(c.level));
             strip.push(Span::styled(format!(" {} {word} ", c.name), style));
             strip.push(Span::raw(" "));
         }
@@ -461,21 +455,11 @@ fn health_line(chips: &[Chip], p: Palette, w: usize) -> Line<'static> {
     clip_line(Line::from(strip), w)
 }
 
-/// HEALTH: every domain chip (`health_line`), then why: each component not green.
+/// HEALTH: every domain chip (`health_line`) on one line, which says what is not green. A row per
+/// not-green component repeated it (seven `<domain>/watches WARN` rows under a line naming the same
+/// domains), so there is none (plan waht-noise-would-you-jolly-cosmos p2).
 fn health(a: &Alerts, p: Palette, w: usize) -> Vec<Line<'static>> {
-    let mut out = vec![health_line(&a.health, p, w)];
-    for c in &a.components {
-        let (style, word) = p.status(status(c.level));
-        out.push(clip_line(
-            Line::from(vec![
-                Span::raw("  "),
-                Span::styled(format!(" {word} "), style),
-                Span::raw(format!(" {}/{}", c.domain, c.name)),
-            ]),
-            w,
-        ));
-    }
-    out
+    vec![health_line(&a.health, p, w)]
 }
 
 /// FIXES: each red the triage queued as a fix in the window (`hub_core::reds`, which orders the
@@ -930,7 +914,7 @@ pub(crate) mod tests {
         let a = hub_core::alerts::join(
             &crate::board::tests::fixture(),
             Err("no such dir".into()),
-            Err("exit 1".into()),
+            Err("fleet-bench reds: exit 1".into()),
             Ok(String::new()),
             Ok(vec![]),
             NOW,

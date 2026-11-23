@@ -167,17 +167,25 @@ fn argv() -> Vec<String> {
 }
 
 /// `fleet-bench reds --json --days DAYS`, split. A failed run or a line that is not a row is an
-/// error, never an empty (green-looking) list.
+/// error, never an empty (green-looking) list. The error is worded here, once, as
+/// `fleet-bench reds: <why>`, and every surface shows it as it is.
 pub fn read(runner: &dyn Runner) -> Result<Reds, String> {
-    let out = runner.run(&argv())?;
+    let out = runner.run(&argv()).map_err(|e| failed(&e))?;
     let rows = out
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| {
-            serde_json::from_str::<Red>(l).map_err(|e| format!("fleet-bench reds --json: {e}"))
-        })
+        .map(|l| serde_json::from_str::<Red>(l).map_err(|e| failed(&format!("--json: {e}"))))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(split(rows))
+}
+
+/// `fleet-bench reds: <why>`. fleet-bench's stderr already opens with its own name and the verb
+/// (`say`: `fleet-bench: reds: ...`), which are cut so the source is said once: Alerts read
+/// `fleet-bench reds: fleet-bench: reds: notes row parse failed` (plan waht-noise p2).
+fn failed(e: &str) -> String {
+    let why = e.strip_prefix("fleet-bench: ").unwrap_or(e);
+    let why = why.strip_prefix("reds: ").unwrap_or(why);
+    format!("fleet-bench reds: {why}")
 }
 
 /// A route from `fleet-bench triage`'s table (TRIAGE_ROUTES), as `--route` prints it: where a red
@@ -392,14 +400,17 @@ mod tests {
 
     #[test]
     fn a_failed_run_or_a_bad_line_is_an_error_never_an_empty_list() {
-        let e = read(&fixed(Err("reds: cannot read the queue"))).unwrap_err();
-        assert!(e.contains("cannot read the queue"), "{e}");
+        // fleet-bench's own `say` prefix is cut, so the source is named once.
+        let e = read(&fixed(Err("fleet-bench: reds: cannot read the queue"))).unwrap_err();
+        assert_eq!(e, "fleet-bench reds: cannot read the queue");
+        let e = read(&fixed(Err("fleet-bench: exit status: 1"))).unwrap_err();
+        assert_eq!(e, "fleet-bench reds: exit status: 1");
         let bad = concat!(
             r#"{"slug":"ar-1","red":"watch a","outcome":"fixed"}"#,
             "\nnot json\n"
         );
         let e = read(&fixed(Ok(bad))).unwrap_err();
-        assert!(e.starts_with("fleet-bench reds --json:"), "{e}");
+        assert!(e.starts_with("fleet-bench reds: --json:"), "{e}");
         let e = read(&fixed(Ok(r#"{"slug":"ar-1","red":"watch a"}"#))).unwrap_err();
         assert!(
             e.contains("outcome"),

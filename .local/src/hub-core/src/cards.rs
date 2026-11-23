@@ -2027,7 +2027,7 @@ mod tests {
     }
 
     #[test]
-    fn ci_stuck_is_alerts_stuck_runs_one_per_branch() {
+    fn ci_stuck_is_alerts_stuck_runs_one_per_repo() {
         use crate::prom::Series;
         let run = |branch: &str, wf: &str| Series {
             labels: [
@@ -2046,7 +2046,7 @@ mod tests {
             ok: true,
             ..Default::default()
         };
-        // Three runs on two branches: Alerts has two rows, so CI says two, never three or 0.
+        // Three runs on two branches of one repo: Alerts has one row, so CI says one, never 2, 3 or 0.
         i.instant.insert(
             "waiting",
             vec![run("main", "CI"), run("main", "Checks"), run("feat", "CI")],
@@ -2057,7 +2057,7 @@ mod tests {
             .iter()
             .filter(|l| l.starts_with("stuck run"))
             .count();
-        assert_eq!((pill.value.as_str(), rows), ("2", 2));
+        assert_eq!((pill.value.as_str(), rows), ("1", 1));
         assert_eq!(c.level, Level::Red);
         // The stuck runs are CI's, not Health's: Health stays machines, domains and vitals.
         let h = health(&i);
