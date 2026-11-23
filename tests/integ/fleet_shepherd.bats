@@ -2686,6 +2686,9 @@ esac'
   assert_output 1
   run grep -c 'cancel' "$HOME/gh.calls"
   assert_output 0
+  # A verdict is no act: the rundown gets nothing from a dry run.
+  run grep -c 'ghost run' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output 0
   assert_equal "$(cut -f2,3 "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" | sort | tr '\t\n' ' |')" \
     'kept https://github.com/o/r/actions/runs/2|kept https://github.com/o/r/actions/runs/3|would-cancel https://github.com/o/r/actions/runs/1|'
   # Judged runs are not asked about again inside the age.
@@ -2706,6 +2709,8 @@ esac'
   assert_output 'ghost-runs: cancelled https://github.com/o/r/actions/runs/1 (48h)'
   run grep -x 'api -X POST repos/o/r/actions/runs/1/cancel' "$HOME/gh.calls"
   assert_success
+  run grep -c 'ghost run https://github.com/o/r/actions/runs/1: cancelled, queued 48h with no jobs' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output 1
   run grep -c 'runs/[23]' "$HOME/gh.calls"
   assert_output 0
   # A run cancel refuses gets force-cancel.

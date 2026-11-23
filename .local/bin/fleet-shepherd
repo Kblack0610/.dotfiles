@@ -145,9 +145,12 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 : "${FLEET_SHEPHERD_CRITICAL_MIN:=60}"
 # A run GitHub lists as queued with no job this long is a ghost: no runner will ever take it, and
 # each one is a high row on Alerts (plan waht-noise-would-you-jolly-cosmos p2: 23 runs 10 to 12 days
-# old on 2026-11-23). A run queued for a busy self-hosted pool has jobs, so the age and "no jobs"
-# must both hold. Cancels are off until a day of the dry-run log (GHOSTS) has been read; the conf
-# turns them on.
+# old on 2026-11-23, every one made 2026-11-11 or 11-13 and still on GitHub, so the exporter was right).
+# A run queued for a busy self-hosted pool has jobs, so the age and "no jobs" must both hold. Only
+# forge="github" rows: a Forgejo row is stuck because no live runner takes its labels, a runner to
+# bring back, and is never cancelled. A jobless run has no test job, so it is no gate on any branch
+# (ci.md). Provisional, 2026-11-23: 24h is the plan's floor (the exporter calls a jobless run stuck at
+# 1h). Cancels are off until a day of the dry-run log (GHOSTS) has been read; the conf turns them on.
 : "${FLEET_SHEPHERD_GHOST_AGE_H:=24}"
 : "${FLEET_SHEPHERD_GHOST_CANCEL:=0}"
 : "${FLEET_SHEPHERD_UNHANDLED_MIN:=60}" # a due line left this long with no answer pages the human, once; DEBOUNCE_MIN more for a line the debounce can hold
@@ -677,6 +680,8 @@ cmd_ghost_runs() {
       *) echo "ghost-runs: $url: $why, asked again next run"; continue ;;
     esac
     printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$verdict" "$url" "$why" >> "$GHOSTS"
+    # A cancel is an act, so the rundown carries it as sweep-cancel's does; a verdict alone stays in GHOSTS.
+    case $verdict in *cancel*) [ "$verdict" = would-cancel ] || cmd_log "ghost run $url: $verdict, queued $why with no jobs" ;; esac
     echo "ghost-runs: $verdict $url ($why)"
   done <<<"$cand"
 }
@@ -2204,7 +2209,7 @@ case "${1:-}" in
   skip)  cmd_holds || exit; shift; cmd_skip "$@" ;;
   log)   cmd_holds || exit; shift; cmd_log "$@" ;;
   sweep-cancel) cmd_holds || exit; shift; cmd_sweep_cancel "$@" ;;
-  ghost-runs) cmd_ghost_runs ;;
+  ghost-runs) cmd_holds || exit; cmd_ghost_runs ;;
   -h|--help|"") sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown verb: $1 (run|open|passes|stats|budget|stuck|check|due|skip|infra|lease|holds|log|sweep-cancel|ghost-runs)" ;;
 esac
