@@ -125,6 +125,8 @@ if [ "$1" = ptask ] && [ "$3" != --agent ]; then   # a human sheet: home-config'
     done) [ "$5" = --proof ] || exit 8; awk -F'\t' -v q="$4" 'index($3, tolower(q)) != 1' "$H" > "$H.new" && mv "$H.new" "$H" ;; esac
   exit 0
 fi
+# `notes board --json --id ...`: the rows of $B.feed, the closes the feed holds (improve_closes)
+if [ "$1 $2" = "board --json" ]; then cat "$B.feed" 2>/dev/null || echo '{"rows":[]}'; exit 0; fi
 [ "$1 $2 $3" = "ptask agent-runtime --agent" ] || exit 9
 case "$4" in
   list) cat "$B" ;;
