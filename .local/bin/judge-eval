@@ -92,7 +92,7 @@ eval_json() {
   jq -sc '[.[] | objects]' "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$tmp/verdicts" 2>/dev/null
   $JUDGE_EVAL_QUEUE_CMD 2>/dev/null | jq -sc '[.[] | objects | select(((.from // "") | startswith("board:")) or .row != null)]' > "$tmp/queue" 2>/dev/null
   $JUDGE_EVAL_INGEST_CMD 2>/dev/null | jq -sc --arg sweepre "$SWEEP_ROW_RE" '[.[] | objects | select(.id != null) | select((.action | IN("filed", "planned", "edited",
-    "dropped", "rehomed", "tagged", "dup")) or (.action == "added" and ((.text // "") | contains("#of/") or test($sweepre))))
+    "dropped", "rehomed", "tagged")) or (.action == "added" and ((.text // "") | contains("#of/") or test($sweepre))))
     | {ts, action, id, by, from, to, text, why}]' > "$tmp/ingest" 2>/dev/null
   for a in asks calls verdicts queue ingest; do [ -s "$tmp/$a" ] || echo '[]' > "$tmp/$a"; done
   jq -c '.[]' "$tmp/asks" > "$tmp/asklines"
@@ -221,7 +221,8 @@ JQ_EVAL="$JQ_EPOCH"'
    def pass_only: prio_only or (.action == "tagged" and ((.by // "") | IN("", "human") | not)
        and (((.why // "") | split(" ") | map(select(length > 0))) as $w
        | ($w | length) > 0 and ($w | all(test("^[+-]#(urgent|high|low|pts/[0-9]+|size/[sml]|plan|go|hold/[^ ]+|after/[^ ]+|ask/[^ ]+|desk/[^ ]+)$")))));
-   ($ev | map(select((.action | IN("edited", "dropped", "rehomed", "tagged", "dup")) and (pass_only | not))) | bykey(.id)) as $touch
+   # A dup is a later line joined to the row: it repeats the row, so it corrects nothing.
+   ($ev | map(select((.action | IN("edited", "dropped", "rehomed", "tagged")) and (pass_only | not))) | bykey(.id)) as $touch
    # Priority: each priority the priority pass set (`by` inbox-priority, or inbox-triage on a
    # priority-only re-tag from before the pass named itself), right when nobody else changes the
    # priority of the row for the settle window. A later pass on the row inside the window supersedes
@@ -241,16 +242,19 @@ JQ_EVAL="$JQ_EPOCH"'
          question: ($s.text // ""), rule: $set, kind: "answer", want: $set,
          human: (if $t == null then "" else ($t.why // "") + (if ($t.by // "") == "" then "" else " by \($t.by)" end) end),
          reason: "", at: $s.ts, answered_at: (if $t == null then null else $t.ts end), judge_call: "",
-         outcome: (if $t != null then "fp" elif ($now - $s.e) >= $settle then "tp" else "pending" end)}] as $priorows
+         outcome: (if $now < $end then "pending" elif $t != null then "fp" else "tp" end)}] as $priorows
    # A row a runner wrote is right when nothing edits, drops, moves or re-tags it for the settle
    # window, writes by the planner aside; untouched($src) makes the verdict for the lane scored by $src.
+   # Each settle-window verdict here (and the priority and defer ones) stays pending until its window
+   # ends, wrong or right: a miss known early would fill a young window (a fix watermark) with misses
+   # alone, since a right answer needs the whole window (runner-score at 21% on an 87% lane, 2026-11-22).
    | def untouched($src): . as $f
       | ([($touch[$f.id] // [])[] | select(.e > $f.e and .e <= ($f.e + $settle) and (planner($f.id; .e) | not))] | first) as $t
       | {agent: $by[$src], id: $f.id, project: (if ($f.to // "") == "" then $f.from else $f.to end),
          question: ($f.text // ""), rule: "", kind: "answer", want: "untouched",
          human: (if $t == null then "" else $t.action + (if ($t.by // "") == "" then "" else " by \($t.by)" end) end), reason: "", at: $f.ts,
          answered_at: (if $t == null then null else $t.ts end), judge_call: "",
-         outcome: (if $t != null then "fp" elif ($now - $f.e) >= $settle then "tp" else "pending" end)};
+         outcome: (if ($now - $f.e) < $settle then "pending" elif $t != null then "fp" else "tp" end)};
    # Triage: each row the triager filed (`by` its runner name, or no writer on events from before
    # the record named the runner).
    [$ev[] | select(.action == "filed" and ((.by // "human") | IN("", "human", "inbox-triage"))) | untouched("triage-untouched")] as $triagerows
@@ -284,7 +288,7 @@ JQ_EVAL="$JQ_EPOCH"'
               human: (if $fail then "failed" elif $v.verdict == "skip" and $hand != null then "started by hand" else $st end),
               reason: ($v.reason // ""), at: $v.at, answered_at: null, judge_call: ($v.judge_call // ""),
               outcome: (if $v.verdict == "skip" then
-                  (if $hand != null then "fn" elif ($now - $skip0) >= $settle then "tn" else "pending" end)
+                  (if ($now - $skip0) < $settle then "pending" elif $hand != null then "fn" else "tn" end)
                 elif $fail or ($st | test("^done/(failed|cancelled)")) then "fp"
                 elif $st == "done/ok" then "tp" else "pending" end)})] + $triagerows + $planrows + $priorows + $sweeprows)
   | map(select(.agent != null)) as $all
