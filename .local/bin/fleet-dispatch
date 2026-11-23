@@ -18,7 +18,8 @@
 #   fleet-dispatch starved           rc 1 naming an urgent or high queue item no pass has started in DISPATCH_STARVED_MIN,
 #                                    an urgent one from the human even under a dispatch hold or load,
 #                                    or board rows no pass has judged in that time (the human here or away; not at a full fleet),
-#                                    or a queue under DISPATCH_LOW_WATER with rows to pick and no start in twice that
+#                                    or a queue under DISPATCH_LOW_WATER with rows to pick and no start in twice that,
+#                                    or a trainee pool dry that long while a trainee harness has a slot
 #   fleet-dispatch sprint-stalled    rc 1 naming each agent row of an open sprint with no queue item, session or open gate
 #                                    for DISPATCH_STARVED_MIN (watch sprint-stalled); rc 2 when a read fails
 #   fleet-dispatch stopped [--json]  rc 1 and one line when a hold has stopped every pass for DISPATCH_STARVED_MIN:
@@ -182,6 +183,7 @@ MATRIX="${BENCH_MATRIX:-$HOME/.config/fleet-bench/matrix.json}"   # fleet-bench'
 HEADROOM="$DIR/headroom.json"   # the last real pass's `headroom --json`, which stats publishes
 CANDIDATES="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/candidates.jsonl"   # the last real pass's `suggest --json`, which the hub Candidates fold reads (hub_core::queue::candidates); derived, so out of the autocommitted ~/.agent
 TRAINEE_DIR="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/trainee"   # <slug>.patch and <slug>.base: the diff a trainee run left and its base, which a batch review applies (cmd_trainee_review, trainee_batch_start)
+TRAINEE_DRY="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/trainee-dry"   # <harness> TAB <epoch> a line: since when each trainee harness with a slot has found no queued or board row it takes (trainee_floor_start), which starved reads
 PROVIDER_ENDS="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/provider-ends.tsv"   # <slug>@<last session id> TAB <source> TAB <hold until epoch, 0 for a run that did not end on the provider>: each recent ended run provider_hold_scan classified, so a run's end is read once
 
 # Tier 3 (CI, gates, runners, build and deploy, harness, tooling) never gets a merging session from a
@@ -2789,16 +2791,18 @@ trainee_why() {
   ladder_open_why "$h"
 }
 
-# trainee_public_why <item json> [names] -> why a trainee may not see or do the row, rc 1, or nothing. Its
+# trainee_public_why <item json> -> why a trainee may not see or do the row, rc 1, or nothing. Its
 # provider is a free one, which sees the row and its repo, and its gateway sandbox builds no cargo or npm.
 # So the row's repo is one of DISPATCH_TRAINEE_REPOS, its words match none of that repo's
 # .githooks/sensitive-tokens.txt, and each file it names (row_paths) is tracked there, a markdown file, or
 # a shell or bats file outside any cargo or npm tree; a directory, every file under it. A bare word the repo
 # does not track (a jq .field, a runtime state.json) is no file the row names, so it is skipped; a path
-# with a slash is refused. With `names` it must name one tracked file: the trainee floor promotes no
-# row that does not show its work stays in that repo.
+# with a slash is refused. A row that names no file passes: the lane sandbox (sandbox/gateway.json,
+# agy.json) denies every read outside the worktree, so the work stays in the repo whatever the row
+# says, and cmd_trainee_review checks the files the diff touched (trainee_diff_why). Until 2026-11-23
+# such a row was refused, and the floor ran dry with 332 of them open (ar-4739).
 trainee_public_why() {
-  local it="$1" repo text toks tok files f n=0 manifests
+  local it="$1" repo text toks tok files f manifests
   repo=$(repo_dir "$(jq -r '.project // ""' <<<"$it")")
   [ -n "$repo" ] && [[ " $DISPATCH_TRAINEE_REPOS " == *" $repo "* ]] ||
     { echo "its repo ${repo:-(none)} is not one a trainee may see (DISPATCH_TRAINEE_REPOS)"; return 1; }
@@ -2807,7 +2811,7 @@ trainee_public_why() {
   ! grep -qEf <(grep -vE '^[[:space:]]*(#|$)' "$repo/.githooks/sensitive-tokens.txt") <<<"$text" ||
     { echo "its words match $repo/.githooks/sensitive-tokens.txt"; return 1; }
   toks=$(row_paths "$text" "$repo")
-  manifests=$(git -C "$repo" ls-files -- 'Cargo.toml' '*/Cargo.toml' 'package.json' '*/package.json' 2>/dev/null | sed -E 's#/[^/]+$##; t; s#.*#.#')
+  manifests=$(trainee_manifests "$repo")
   while IFS= read -r tok; do
     [ -n "$tok" ] || continue
     files=$(git -C "$repo" ls-files -- "$tok" 2>/dev/null)
@@ -2817,9 +2821,28 @@ trainee_public_why() {
     while IFS= read -r f; do
       trainee_file_ok "$repo" "$f" "$manifests" || { echo "it names $f, which is no markdown file, nor a shell or bats file outside a cargo or npm tree"; return 1; }
     done <<<"$files"
-    n=$((n + 1))
   done <<<"$toks"
-  [ "${2:-}" != names ] || [ "$n" -gt 0 ] || { echo "it names no file, so nothing shows its work stays in $repo"; return 1; }
+}
+
+# trainee_manifests <repo> -> the directories a Cargo.toml or package.json is tracked in, "." for the
+# root, one a line: trainee_file_ok refuses any file at or under one.
+trainee_manifests() {
+  git -C "$1" ls-files -- 'Cargo.toml' '*/Cargo.toml' 'package.json' '*/package.json' 2>/dev/null | sed -E 's#/[^/]+$##; t; s#.*#.#'
+}
+
+# trainee_diff_why <repo> <base> -> the first file the staged diff against <base> touches that
+# trainee_file_ok refuses, as a reject reason, rc 1; nothing, rc 0, when every file passes. The row's
+# words no longer have to name its files (trainee_public_why), so the diff is where the sandbox's
+# limit (no cargo or npm build) is held. A deleted file, or a rename's source, is judged by its path alone.
+trainee_diff_why() {
+  local f manifests
+  manifests=$(trainee_manifests "$1")
+  # --no-renames lists a rename's source too, and -z keeps a path with non-ASCII bytes unquoted.
+  while IFS= read -r -d '' f; do
+    [ -n "$f" ] || continue
+    trainee_file_ok "$1" "$f" "$manifests" ||
+      { echo "its diff touches $f, which is no markdown file, nor a shell or bats file outside a cargo or npm tree, so the sandbox could not build it"; return 1; }
+  done < <(git -C "$1" diff --cached --name-only --no-renames -z "$2" 2>/dev/null)
 }
 
 # row_paths <text> <repo> -> the files and directories a row names, one a line: each word with a slash
@@ -2963,7 +2986,7 @@ linked_base() {
 # item with a note, for the next batch review (trainee_batch_start). No diff, or no reviewer lane
 # (lanes.yaml trainee:), is a reject (cmd_trainee_reject).
 cmd_trainee_review() {
-  local slug="${1:?trainee-review: needs a slug}" it trn base patch
+  local slug="${1:?trainee-review: needs a slug}" it trn base patch why
   it=$(agent-queue show "$slug" --json 2>/dev/null) && [ -n "$it" ] || { say "trainee-review: no queue item $slug"; return 1; }
   trn=$(jq -r '.trainee // empty' <<<"$it")
   [ -n "$trn" ] || { say "trainee-review: no trainee ran $slug"; return 2; }
@@ -2975,6 +2998,10 @@ cmd_trainee_review() {
   git add -A && git diff --cached --binary "$base" >"$patch" && echo "$base" >"$TRAINEE_DIR/$slug.base" ||
     { say "trainee-review: could not save the diff $trn left on $slug"; return 1; }
   [ -s "$patch" ] || { cmd_trainee_reject "$slug" --why "$(trainee_empty_why "$it" "$trn")"; return; }
+  why=$(trainee_diff_why "$(git rev-parse --show-toplevel)" "$base") ||
+    { cmd_trainee_reject "$slug" --why "$why" || return  # still running: the worktree keeps the diff
+      git reset -q --hard "$base" && git clean -fdq || say "trainee-review: could not put $PWD back at $base, so wt reap leaves it"
+      return 0; }
   # The worktree goes back to its base only once the row waits in review: until then it holds the diff too.
   trainee_load
   if [ -z "$(jq -r '.reviewer_model // empty' <<<"$TRAINEE_CONF")" ]; then
@@ -4966,11 +4993,12 @@ trainee_floor_why() {
 # is: a silent starved floor goes unseen. Rc FLOOR_SHUT when nothing started.
 # Off with lanes.yaml trainee `candidates: []`.
 trainee_floor_start() {
-  local before=${STARTED:-0} why h hs=() shut=() queued board='' bread=0 it c key rc
+  local before=${STARTED:-0} why h hs=() shut=() dry=() queued board='' bread=0 bfail=0 it c key rc
   trainee_load
   mapfile -t hs < <(jq -r '[.candidates[]?.harness] | unique[]' <<<"$TRAINEE_CONF")
   trainee_floor_why; why=$FLOOR_WHY
-  [ -z "$why" ] || { say "trainee floor: shut, $why"; return "$FLOOR_SHUT"; }
+  # A shut floor is no dry pool: its hold or gate is what starved and the Stopped line name.
+  [ -z "$why" ] || { rm -f "$TRAINEE_DRY"; say "trainee floor: shut, $why"; return "$FLOOR_SHUT"; }
   # The batch review and a trainee PR's owner run on claude, which the cluster gate still holds, and so
   # do this machine's load (machine_here_why) and unreadable account usage, which the trainee's own gate
   # skips: start_item would settle the whole pass BLOCKED on it. With no account room the owner waits in route
@@ -4998,9 +5026,9 @@ trainee_floor_start() {
     why=$(ladder_open_why "$h") || { shut+=("$why"); continue; }
     it=$(trainee_queued_pick "$h" "$queued")
     if [ -z "$it" ]; then
-      [ "$bread" = 1 ] || { board=$(trainee_rows) || say "trainee floor: the board read failed"; bread=1; }
+      [ "$bread" = 1 ] || { board=$(trainee_rows) || { say "trainee floor: the board read failed"; bfail=1; }; bread=1; }
       c=$(trainee_board_pick "$h" "$board")
-      [ -n "$c" ] || { shut+=("$h has a slot, and no queued or board row is one it takes"); continue; }
+      [ -n "$c" ] || { shut+=("$h has a slot, and no queued or board row is one it takes"); dry+=("$h"); continue; }
       key=$(jq -r .key <<<"$c")
       board=$(jq -c --arg k "$key" --arg p "$(jq -r .project <<<"$c")" 'select(.key != $k or .project != $p)' <<<"$board")
       if [ "$DRY" = 1 ]; then say "trainee floor: would promote $(jq -r .project <<<"$c") row $key and start it on $h"; continue; fi
@@ -5015,7 +5043,25 @@ trainee_floor_start() {
     queued=$(jq -c --arg s "$(jq -r .slug <<<"$it")" 'select(.slug != $s)' <<<"$queued")
   done
   [ "${#shut[@]}" -eq 0 ] || { why=$(printf '%s; ' "${shut[@]}"); say "trainee floor: ${why%; }"; }
+  # Each harness with a slot and no row it takes is dry since the first pass that found it so, one line
+  # a harness; a harness that started or was shut for another reason drops its line. starved reads the
+  # ages. A failed board read says nothing about the pool, so it leaves the marks as they were. On
+  # 2026-11-23 it ran dry at 06:21 with free slots on go and ocfree, and nothing said so (ar-4739).
+  [ "$DRY" = 1 ] || [ "$bfail" = 1 ] || trainee_dry_mark "${dry[@]}"
   [ "${STARTED:-0}" -gt "$before" ] || return "$FLOOR_SHUT"
+}
+
+# trainee_dry_mark <harness>... -- TRAINEE_DRY holds one "<harness> TAB <epoch>" line for each harness
+# named: its old epoch when it was dry already, else now. Every other harness's line goes, and with
+# none named the file goes.
+trainee_dry_mark() {
+  local h since out=''
+  [ "$#" -gt 0 ] || { rm -f "$TRAINEE_DRY"; return 0; }
+  for h in "$@"; do
+    since=$(awk -F'\t' -v h="$h" '$1 == h && $2 ~ /^[0-9]+$/ { print $2; exit }' "$TRAINEE_DRY" 2>/dev/null)
+    out+="$h"$'\t'"${since:-$(date +%s)}"$'\n'
+  done
+  mkdir -p "${TRAINEE_DRY%/*}" && printf '%s' "$out" >"$TRAINEE_DRY.tmp" && mv "$TRAINEE_DRY.tmp" "$TRAINEE_DRY"
 }
 
 # trainee_ok <item json> <harness> -- rc 0 when the trainee harness may run the row: trainee_why (no
@@ -5037,8 +5083,7 @@ trainee_queued_pick() {
 }
 
 # trainee_board_pick <harness> <trainee_rows> -> the first row, in their rank, the harness's trainees
-# may run once promoted (its item as row_item builds it, trainee_ok) and that names the files it
-# changes (trainee_public_why names).
+# may run once promoted (its item as row_item builds it, trainee_row_why).
 trainee_board_pick() {
   local c
   while IFS= read -r c; do
@@ -5049,14 +5094,12 @@ trainee_board_pick() {
 }
 
 # trainee_row_why <candidate row> <harness>... -> why no trainee takes the board row, rc 1, or nothing
-# (rc 0): the first refusal of trainee_why, then trainee_public_why `names` (the floor promotes no row
-# that names no file), then each harness's projects allowlist. The verdict trainee_board_pick reads per
-# harness, asked once for them all.
+# (rc 0): the first refusal of trainee_why (which holds trainee_public_why), then each harness's projects
+# allowlist. The verdict trainee_board_pick reads per harness, asked once for them all.
 trainee_row_why() {
   local ri h row="$1"; shift
   ri=$(row_item "$row")
   trainee_why "$ri" || return 1
-  trainee_public_why "$ri" names || return 1
   for h in "$@"; do harness_project_why "$HARNESSES" "$h" "$(jq -r '.project // ""' <<<"$ri")" >/dev/null && return 0; done
   echo "no trainee harness takes its project"; return 1
 }
@@ -5067,7 +5110,6 @@ trainee_reason_key() {
   sed -E 's#^its repo .* is not one a trainee#its repo is not one a trainee#
     s#^.* has no \.githooks/sensitive-tokens\.txt.*#its repo has no .githooks/sensitive-tokens.txt#
     s#^its words match .*#its words match the repo sensitive-tokens.txt#
-    s#^it names no file, .*#it names no file, so nothing shows its work stays in the repo#
     s#^it names [^,]*, which [^ ]+ does not track#it names a file which the repo does not track#
     s#^it names [^,]*, which (.*)#it names a file which \1#
     s#^its kind .* opens no PR#its kind opens no PR#
@@ -6228,7 +6270,7 @@ cmd_stopped() {
 # low water starves: runnable under DISPATCH_LOW_WATER, rows a pass would pick, and no run start in
 # twice DISPATCH_STARVED_MIN (low_starved), which is a fill that has stopped filling.
 cmd_starved() {
-  local items board low last cut started why stopped dead queue qrc human mine
+  local items board low last cut started why stopped dead dry side queue qrc human mine
   load_gates   # once, for the picks and unjudged rows it counts
   cut=$(( $(date +%s) - DISPATCH_STARVED_MIN * 60 ))
   queue=$(runnable); qrc=$?
@@ -6253,13 +6295,16 @@ cmd_starved() {
     echo "board rows gated on what can never clear: (notes ptask <project> --agent tag --remove <gate> <id>, plus --add the gate that replaced it, or drop the row)"
     sed 's/^/  /' <<<"$dead"
   fi
+  dry=$(trainee_dry "$cut")
+  [ -z "$dry" ] || echo "$dry"
+  side=$dead$dry
   # A run start in the window proves the passes move the queue, which clears the high items they work
   # through in order. It does not clear an urgent item they passed over: that one sits first in the
   # order, so a pass that started others and not it is held by something specific to it (2026-11-10:
   # four human urgent items sat 2h behind a weekly pace while run-floor starts kept this healthy).
   if [ -z "$stopped" ] && [ -n "$started" ] && [ "$(date -d "$started" +%s 2>/dev/null || echo 0)" -ge "$cut" ] &&
     ! jq -e --argjson cut "$cut" 'select(.priority == "urgent" and .t != null and .t < $cut)' <<<"$queue" >/dev/null 2>&1; then
-    [ -z "$dead" ]; return
+    [ -z "$side" ]; return
   fi
   # Away, the target's carry and gate share one room read (ACCT_ROWS); here, a full fleet reads none.
   local ACCT_ROWS='' ACCT_DIR ACCT_WHY ACCT_PAST_PACE room=0
@@ -6285,7 +6330,7 @@ cmd_starved() {
   # A fleet at its pace target never reaches the fill, so its unjudged rows wait (below): no scan.
   board=''; [ -n "$TOTAL_LIVE" ] && [ "$TOTAL_LIVE" -ge "$TARGET" ] || board=$(board_starved "$cut")
   low=$(low_starved "$(( cut - DISPATCH_STARVED_MIN * 60 ))")
-  [ -n "$stopped$items$board$low" ] || { [ -z "$dead" ]; return; }
+  [ -n "$stopped$items$board$low" ] || { [ -z "$side" ]; return; }
   # A full fleet is working, not blocked (cmd_run): at its pace target no pass starts a high item,
   # so one waits on sessions finishing, and no pass reaches the fill there, so unjudged board rows
   # wait too (board_starved is not read). Only that case holds: an urgent item may preempt a runner session there, and the red
@@ -6295,7 +6340,7 @@ cmd_starved() {
   if [ -n "$TOTAL_LIVE" ] && [ "$TOTAL_LIVE" -ge "$TARGET" ] && [ -z "$stopped$low" ] &&
     ! grep -qE '\(urgent, |, red, ' <<<"$items"; then
     echo "held by a full fleet ($TOTAL_LIVE live sessions, the $TARGET_WHEN pace target is $TARGET$NEEDS_NOTE), so nothing is starved"
-    [ -z "$dead" ]; return
+    [ -z "$side" ]; return
   fi
   # Held by load only when every closed gate is a load gate; an account with no room still starves,
   # and gate leaves that one out while another source has room, so room is read here from the verdict
@@ -6312,7 +6357,7 @@ cmd_starved() {
     if [ "${DISPATCH_PLAN_LOAD_FLOOR:-0}" -gt 0 ] 2>/dev/null && [ "$live_pl" -ge "$DISPATCH_PLAN_LOAD_FLOOR" ]; then
       human=$(jq -r 'select((.plan // "") == "") | '"$fmt" <<<"$mine")
     fi
-    [ -n "$human" ] || { echo "held by load ($why), so nothing is starved ($note)"; [ -z "$dead" ]; return; }
+    [ -n "$human" ] || { echo "held by load ($why), so nothing is starved ($note)"; [ -z "$side" ]; return; }
     echo "held by load ($why), and the human's urgent items wait on it ($note):"
     sed 's/^/  /' <<<"$human"
   fi
@@ -6328,6 +6373,18 @@ cmd_starved() {
   [ -z "$low" ] || echo "$low"
   echo "last run start: ${started:-none in the log}; last pass: ${last:-none recorded}"
   return 1
+}
+
+# trainee_dry <cut epoch> -> one line per harness dry since before <cut>: it had a slot and found no
+# queued or board row it takes on every pass since (TRAINEE_DRY, trainee_dry_mark), so its free key
+# sit idle. A dry pool is a supply fault no run start clears, so starved reports it beside the dead holds.
+trainee_dry() {
+  local h since
+  [ -s "$TRAINEE_DRY" ] || return 0
+  while IFS=$'\t' read -r h since; do
+    [[ "$since" =~ ^[0-9]+$ ]] && [ "$since" -le "$1" ] || continue
+    echo "trainee pool dry since $(date -d "@$since" '+%F %H:%M'): $h had a slot and no queued or board row a trainee takes (fleet-dispatch trainee-pool names each refusal)"
+  done <"$TRAINEE_DRY"
 }
 
 # dead_holds -> one line per open board row gated on what can never clear, each gate `agent-queue gate`
