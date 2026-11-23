@@ -1214,10 +1214,27 @@ fired() { eval_at "$@"; open_at "$@"; }
   run jq -r 'select(.scope == "pool:unity") | .bind' "$FLEET_BENCH_DIR/findings.jsonl"
   assert_output labels
   rm "$FLEET_BENCH_DIR/findings.jsonl"
-  # The runners that have them are all down: capacity, not labels.
+  # The runners that have them are all down: admission (host health), not labels.
   { cat "$FX/prom.tsv"
     printf 'cc:pool_match_slots\tunity\t%s\t0\ncc:pool_match_busy\tunity\t%s\t0\ncc:pool_match_runners\tunity\t%s\t2\n' "$(clock 09:30)" "$(clock 09:30)" "$(clock 09:30)"; } > "$SANDBOX/prom.tsv"
   BENCH_PROM_TSV="$SANDBOX/prom.tsv" eval_at 09:30
+  run jq -r 'select(.scope == "pool:unity") | .bind' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output admission
+}
+
+@test "findings: full matching slots with most runners that fit withheld or offline read admission, not demand" {
+  use_fixture
+  # ar-3132, 2026-11-18: a playground gate waited 4h41m with 3 of about 13 Unity runners admitted, all busy.
+  { cat "$FX/prom.tsv"
+    printf 'cc:pool_match_slots\tunity\t%s\t3\ncc:pool_match_busy\tunity\t%s\t3\ncc:pool_match_runners\tunity\t%s\t13\n' "$(clock 09:30)" "$(clock 09:30)" "$(clock 09:30)"
+    printf 'cc:pool_match_labels\tunity/unity,unity-gate\t%s\t1\n' "$(clock 09:30)"; } > "$SANDBOX/prom.tsv"
+  BENCH_PROM_TSV="$SANDBOX/prom.tsv" eval_at 09:30
+  run jq -r 'select(.scope == "pool:unity") | "\(.bind) \(.evidence.numbers.runners) \(.conclusion)"' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output "admission 13 oldest job waited 1.1h with 3/3 slots busy among those matching its labels (unity,unity-gate), 5/6 in the fleet: only 3 of the 13 runners with its labels are admitted, the rest withheld, parked or offline: admission or host health binds, not demand"
+  rm "$FLEET_BENCH_DIR/findings.jsonl"
+  # One pinned slot out of 13 (the workstation under machine-mode) is still demand over capacity.
+  sed 's/^\(cc:pool_match_slots\tunity\t[0-9]*\t\)3$/\112/; s/^\(cc:pool_match_busy\tunity\t[0-9]*\t\)3$/\112/' "$SANDBOX/prom.tsv" > "$SANDBOX/most.tsv"
+  BENCH_PROM_TSV="$SANDBOX/most.tsv" eval_at 09:30
   run jq -r 'select(.scope == "pool:unity") | .bind' "$FLEET_BENCH_DIR/findings.jsonl"
   assert_output capacity
 }

@@ -5232,7 +5232,7 @@ FINDING_REQUIRED='["cc:host_load1","cc:host_cores","cc:host_cpu_busy_ratio","cc:
 FINDING_SAMPLE_S=600   # snapshots this far apart: the sampler's cadence, so "on 2 samples" holds on replay
 # Starting points set from the 10-29 replay; kpi-thresholds overrides any of them.
 FINDING_DEFAULTS='{"finding_pool_wait_s":3600,
-  "finding_pool_idle_share":0.75,"finding_merge_ratio":0.5,"finding_demand_ratio":0.7,"finding_merge_floor_h":2,
+  "finding_pool_idle_share":0.75,"finding_pool_admitted_share":0.5,"finding_merge_ratio":0.5,"finding_demand_ratio":0.7,"finding_merge_floor_h":2,
   "finding_host_load_per_core":2,"finding_clear_min":60,"finding_human_after_min":60}'
 
 finding_limits() {
@@ -5360,18 +5360,22 @@ finding_rows() {
             # The fleet total covers hosts that cannot take the job, so it never decides labels: only the matching slots do.
             # bind: capacity when the slots that fit are full, labels when slots sit free, none can
             # take the job, or the jobs carry no pool label (pool "other": pinned to one host, say), so
-            # more sessions add no demand to it.
+            # more sessions add no demand to it. admission when the slots that fit are full but most runners
+            # with the labels are withheld or offline: on 2026-11-18 a playground gate waited 4h41m on 3
+            # admitted of about 13 Unity runners, read as demand, and nobody looked at the hosts (ar-3132).
             | (if $pool == "other" or ($ms != null and $k.s == 0 and $mr == 0) or ($ms != null and $k.u != null and $k.s != null and $k.s > 0 and ($k.u / $k.s) < $l.finding_pool_idle_share)
-               then "labels" else "capacity" end) as $bind
+               then "labels"
+               elif $ms != null and $mr != null and $mr > 0 and ($ms / $mr) < $l.finding_pool_admitted_share then "admission"
+               else "capacity" end) as $bind
             # Jobs pinned to a host (a host-<name> label) wait on the slots of that host by choice:
             # with those all busy, no label or admission is wrong.
             | ($pool == "other" and $ms != null and $ms > 0 and $mu >= $ms
                and (($want // "") | split(" | ") | length > 0 and all(.[]; test("(^|,)host-")))) as $pinned
             | row("starved"; "pool:\($pool)"; "shepherd"; {waiting: $n, busy: $k.u, slots: $k.s, oldest_s: $w}
-                + (if $ms != null then {fleet_taken: $fu.u, fleet_units: $fu.s, labels: $want} else {} end); "now"; "cc:pool_*";
+                + (if $ms != null then {fleet_taken: $fu.u, fleet_units: $fu.s, labels: $want, runners: $mr} else {} end); "now"; "cc:pool_*";
                 "oldest job waited \($w | dur) with \($k.u | units)/\($k.s | units) slots busy"
                 + (if $ms != null then " among those matching its labels (\($want // "?")), \($fu.u | units)/\($fu.s | units) in the fleet" else "" end) + ": "
-                + (if $pinned then "the jobs are pinned to a host, so the slots of the pin bind, not the pool" elif $bind == "labels" then "admission or labels bind, not capacity" else "demand is over the \(if $ms != null then "matching slots'"'"'" else "pool'"'"'s" end) capacity" end);
+                + (if $pinned then "the jobs are pinned to a host, so the slots of the pin bind, not the pool" elif $bind == "labels" then "admission or labels bind, not capacity" elif $bind == "admission" then "only \($ms) of the \($mr) runners with its labels are admitted, the rest withheld, parked or offline: admission or host health binds, not demand" else "demand is over the \(if $ms != null then "matching slots'"'"'" else "pool'"'"'s" end) capacity" end);
                 "\($n) jobs waiting") + {repos: $repos, bind: $bind} ),
           ( ($a["cc:host_load1"] // {}) | to_entries[] | .key as $h | .value as $v | ($a["cc:host_cores"][$h]) as $n
             | select($n != null and $n > 0)
