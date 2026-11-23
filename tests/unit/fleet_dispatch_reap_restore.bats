@@ -1359,8 +1359,9 @@ esac'
   grep -qF -- '--kind gate --project game --profile bnb --options approve=as\ the\ asker\ offered\ it\|hold=as\ the\ asker\ offered\ it' "$NOTES_FIXTURE/calls.log"
   grep -qF 'agent-ask post --kind question --project game --profile bnb --context Re-posed\ by\ fleet-dispatch:\ ask\ gone1\ was\ cancelled\ \(superseded\ by\ later\)' "$NOTES_FIXTURE/calls.log"
   grep -q 'posed cancelled ask gone1 again as rep1: game row gm-4 waits on it' "$FLEET_DISPATCH_DIR/log.md"
-  # a judge's answer, a gate the answer releases and a human-sheet row are left alone
-  grep -q '^- \[ \] feat(game): judge answered .*#ask/judge1/a' <<<"$rows"
+  # a judge's answer settles like the human's: a skip drops it, worded as the judge's
+  grep -q '^- \[x\] feat(game): judge answered .*dropped: the judge answered "b: skip it" to ask judge1' <<<"$rows"
+  # a gate the answer releases and a human-sheet row are left alone
   grep -q '^- \[ \] feat(game): still waits .*#ask/hold1/a' <<<"$rows"
   cut -f2 "$NOTES_FIXTURE/rows.game.human" | grep -q '^- \[ \] feat(game): the human'
   grep -q 'held game row gm-1 until agent-hold release row-gm-1' "$FLEET_DISPATCH_DIR/log.md"

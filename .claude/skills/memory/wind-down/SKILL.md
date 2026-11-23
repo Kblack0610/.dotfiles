@@ -134,7 +134,7 @@ add writes no row: it prints `inboxed` and exits 4, and inbox-triage files the l
 its twin about 30s later, so it is sent, not filed. From a session the human opened, it runs the
 self-check first: it needs the priority tag, and exit 5 lists the similar open rows on both lanes;
 join the one that is this work, or rerun with `--checked <every id shown>`. Check both lanes for the same thing first and
-skip the add if it is already there. A follow-up nobody asked for is `#low`; a full board does not hold it (the board-open watch alerts). Skip it entirely when the session has no
+skip the add if it is already there. A follow-up nobody asked for is `#low`; a full board does not hold it. Skip it entirely when the session has no
 meaningful next step. "Pull the main checkout" is not a task: do it, or say it in the note.
 
 Every form of wind-down, including one the human asked for, also files what did not land. Read back what the human typed this session: anything they asked for that no merged or open PR delivers gets a row in their words (`notes ptask <project> --agent add --want human "<ask, with their words and date> #ask"`): `--want` is the human's channel: the add tags it `#requested` after the same self-check in a session the human opened, and from an unattended one it goes to the outbox with its channel for inbox-triage to file. Clauses of a long message and findings on an artifact page count; a page or a plan is not a home. Your plan's unticked phases get one row, never one per phase: `chore(plan): finish <plan slug>: <n> phases left, next: <phase>` (the board refuses untyped text), added with the same `--want human`. Check both lanes first and skip what is already there. A delivered ask gets no row, because the PR is its record. Closing a `#requested` row needs proof of every clause, and what is left goes on a new `#requested` row. Why: 2026-10-30 an audit of 352 asks stayed on one page and its ask went stale with the session, with no row filed.
@@ -160,8 +160,7 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
    pre-existing WIP that was already dirty when the session started.
 2. **Land this session's work.** For the changes this session made, follow the repo's normal
    flow: branch off the default branch (never commit straight to `main`/`develop`), group by
-   concern into scoped conventional commits, push, and open a PR. Prefer the `ingest-worktree`
-   skill when the session touched several unrelated concerns - it fans a mixed tree into
+   concern into scoped conventional commits, push, and open a PR. Prefer the `ingest-prs` skill ("Dirty working tree") when the session touched several unrelated concerns - it fans a mixed tree into
    correctly-scoped PRs and holds ephemeral/secret-bearing churn back.
 3. **Do NOT force-commit unrelated WIP.** Pre-existing uncommitted work that this session did
    not touch stays as-is. Never `git add -A` a mixed tree. If landing the session's work is

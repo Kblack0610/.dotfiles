@@ -1,12 +1,12 @@
 ---
 name: ingest-prs
 description: >-
-  Triage and land the open PR queue: define every open PR with a verdict first, then act. Use for "what are all these open PRs", "drain the PR queue", "land the open PRs". A local dirty tree: ingest-worktree.
+  Triage and land the open PR queue (define every PR first, then act), or fan a dirty working tree into scoped PRs (was ingest-worktree). Use for "what are all these open PRs", "drain the PR queue", "land the worktree", "get my hanging changes in".
 metadata:
   category: workstreams
   tags: [git, pull-requests, triage]
   system: [dispatch]
-  reviewed: "2026-08-17"
+  reviewed: "2026-11-23"
 ---
 
 # ingest-prs
@@ -25,7 +25,7 @@ list -> DEFINE every PR (mandatory table) -> tier + blocker per PR -> verdict ->
 
 ## Scope and triggers
 
-Triage and land the open pull-request queue on the forge. Its FIRST and mandatory output is a definition table naming every open PR - number, title, author, age, head -> base, what it does, why it exists, where it lands, size, review tier, CI, conflict state, and a per-PR verdict (LAND / FIX-THEN-LAND / DRAFT / CLOSE / KEEP) - because you cannot decide what to close until every PR is defined. Only after that table is on screen may it propose merging, drafting, or closing anything. Use when the user says "what are all these open PRs", "define every open PR", "should I close all of these", "drain the PR queue", "land the open PRs", "why is this still open", "what's blocking these", or points at a list/screenshot of PRs. Also answers "what should be on my env branch" by checking which PR heads are already contained in it. Differs from pr-review (ONE PR, deep review + bot comments), agent-land (lands ONE gated PR), release-ingest (batch-lands WITH version/CHANGELOG/tag discipline for a release cut), and ingest-worktree (LOCAL dirty working tree, not the forge). Do NOT merge a conflicted or failing-CI PR, do NOT self-merge or --admin anything in the repo's human-approval tier, and NEVER `gh pr close --delete-branch` an unmerged PR.
+Triage and land the open pull-request queue on the forge. Its FIRST and mandatory output is a definition table naming every open PR - number, title, author, age, head -> base, what it does, why it exists, where it lands, size, review tier, CI, conflict state, and a per-PR verdict (LAND / FIX-THEN-LAND / DRAFT / CLOSE / KEEP) - because you cannot decide what to close until every PR is defined. Only after that table is on screen may it propose merging, drafting, or closing anything. Use when the user says "what are all these open PRs", "define every open PR", "should I close all of these", "drain the PR queue", "land the open PRs", "why is this still open", "what's blocking these", or points at a list/screenshot of PRs. Also answers "what should be on my env branch" by checking which PR heads are already contained in it. Differs from pr-review (ONE PR, deep review + bot comments), agent-land (lands ONE gated PR), release-ingest (batch-lands WITH version/CHANGELOG/tag discipline for a release cut), and, as the last section, a LOCAL dirty working tree ("Dirty working tree", was ingest-worktree). Do NOT merge a conflicted or failing-CI PR, do NOT self-merge or --admin anything in the repo's human-approval tier, and NEVER `gh pr close --delete-branch` an unmerged PR.
 
 ## 1. Collect, in as few calls as possible
 
@@ -124,10 +124,24 @@ Land in dependency order: disjoint file sets merge in any order, overlapping one
 
 Per PR: landed (link + state), drafted, closed (with the disposition), or held (with the one blocker). Then: the new base SHA, branches pruned, and - the part that matters most - **what is still blocked on a human**, named explicitly. A queue that is blocked on review does not get better by closing PRs, and saying so is the useful output.
 
+## Dirty working tree (was ingest-worktree)
+
+Pointed at your own dirty tree ("get my hanging changes in", "land the worktree", "clean up my git status into PRs") instead of the forge: land it as one PR per concern, nothing mixed, nothing unsafe. The definition table, confirm step and Boundaries below belong to the PR-queue flow and do not apply here. Invoking this IS the authorization to push and merge; asking again is the failure mode it exists to fix. Stop and ask only for an untracked file whose secret scan is not clearly clean, and a HELD item you think should ship anyway.
+
+1. **Survey.** `git status --short`, `git diff --stat`, `git ls-files --others --exclude-standard`; read the diffs, never trust filenames.
+2. **Check the base first.** `git fetch origin; git rev-list --count HEAD..origin/main`. A non-zero count means every pending edit was written against a file that may have changed, and reapplying it blind reverts what landed since. Per modified file compare `git show origin/main:<path>` with the working copy: already landed (drop it), landed differently (keep the base, re-derive your delta), or still absent (land it at the path the base uses now; `git cat-file -e origin/main:<path>` fails when it moved). A CLOSED-unmerged PR on a local branch means superseded or orphaned; only reading the base settles which.
+3. **Classify by concern.** Every changed file in exactly one bucket (a file in two PRs collides on merge), one conventional-commit subject per bucket in the repo's `git log` style. Two filters first:
+   - Ephemeral or machine-local churn is HELD: anything a timer, daemon or generator writes (a commit like "applied by X.timer", a color-palette-only diff). `.termux/colors.properties` is the one tracked theme-switch render; `theme-switch <name> --only termux` owns it. Surface HELD items in the report.
+   - Untracked files are read for secrets before they are committed; a real key, token or password blocks. A README that only mentions "key" is fine.
+4. **Land each concern**, merged as you go so no committed file vanishes from the live tree: `base=$(git branch --show-current)` once (usually `main`), then per concern `git switch -c pr/<concern> "$base"`, `git add <exact paths>`, commit, push, `gh pr create`, then `agent-land <N> --item <slug> --partial` (the last concern drops `--partial`; `agent-queue add --running` first when the session has no item), then `git switch "$base" && git pull --ff-only`. Never `gh pr merge`, which records nothing. If the user chose "leave PRs open", skip the merge and cut the next branch off `base`.
+5. **Report** per concern the PR link and merge state, then the HELD items and why.
+
+Never `git add -A` or `git commit -am` a mixed tree; never commit churn or unscanned untracked files; never reapply a stale edit blind. It lands changes and authors no feature work.
+
 ## Triggers
 
 - Manual: `/ingest-prs`, or the phrases in the description. Typically when the queue has outgrown the user's head, before a release cut, or when a user is angry that a known fix has not shipped.
-- Pairs with `pr-review` (go deep on one row of the table), `gh-workflows` (PR mechanics), `release-ingest` (when the batch is a release and needs version/CHANGELOG/tag discipline), and `ingest-worktree` (the local-tree mirror of this skill).
+- Pairs with `pr-review` (go deep on one row of the table), `gh-workflows` (PR mechanics), `release-ingest` (when the batch is a release and needs version/CHANGELOG/tag discipline), and `wind-down` (land before teardown).
 
 ## Boundaries
 
