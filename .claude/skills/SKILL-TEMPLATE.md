@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: <authoring|memory|messaging|monitoring|ops|reference|research|tickets|workstreams>
   tags: [<tag>, <tag>]
-  # The systems it works on (`project-system-check <project> --list`), or [any] alone.
+  # The systems it works on (`project-stage-check <project> --list`), or [any] alone.
   system: [<system-id>]
   reviewed: "<YYYY-MM-DD>"
   # Only when the skill stands in for a command sequence (~/.local/src/docs/skills.md); else delete.

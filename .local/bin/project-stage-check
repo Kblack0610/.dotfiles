@@ -2,7 +2,7 @@
 # project-stage-check - does a project meet its stage, and its systems' criteria?
 #
 #   project-stage-check <name> [--stage <stage>] [--by-dept | --json]
-#   project-stage-check <name> --systems [--system <id>] [--json]   (alias: project-system-check)
+#   project-stage-check <name> --systems [--system <id>] [--json]
 #   project-stage-check <name> [--stage <stage> | --systems [--system <id>]] --file [--json]
 #   project-stage-check <name> --list [--json]
 #   project-stage-check --requirements [--json]
@@ -47,7 +47,6 @@ set -uo pipefail
 usage() { sed -n '2,/^[^#]/{/^#/s/^# \{0,1\}//p}' "$0"; exit "${1:-2}"; }
 
 NAME="" TARGET="" SYSTEMS="" ONLY="" JSON="" FILE="" LIST="" REQS="" BY_DEPT=""
-[ "$(basename "$0")" = project-system-check ] && SYSTEMS=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --stage) TARGET="${2:-}"; shift 2 || usage ;;
