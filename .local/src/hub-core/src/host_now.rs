@@ -177,8 +177,6 @@ impl Row for Proc {
 /// (`agent-<project>-<item>-<pid>.scope`), with the test runs inside it.
 #[derive(Serialize, Debug, PartialEq, Clone, Default)]
 pub struct Session {
-    /// The scope's unit name, which names the session on its machine.
-    pub scope: String,
     pub project: String,
     /// Its agent-queue item; empty for a hand start.
     pub item: String,
@@ -186,8 +184,9 @@ pub struct Session {
     pub cpu: Option<f64>,
     /// Resident memory, bytes.
     pub mem: Option<f64>,
-    /// Cores each test command in it (bats, Unity, cargo, a node test runner) used, the busiest first.
-    pub tests: Vec<(String, f64)>,
+    /// Cores each test command in it (bats, Unity, cargo, a node test runner) used, the busiest
+    /// first: `bats 1.20, Unity 0.40`.
+    pub tests: String,
 }
 
 impl Row for Session {
@@ -208,22 +207,13 @@ impl Row for Session {
             "item" => text(&self.item),
             "cpu" => self.cpu.into(),
             "mem" => self.mem.into(),
-            "tests" => text(&tests_text(&self.tests)),
+            "tests" => text(&self.tests),
             _ => Val::None,
         }
     }
     fn in_state(&self, _: &str) -> bool {
         false
     }
-}
-
-/// A session's test runs as a reader says them: `bats 1.20, Unity 0.40`.
-pub fn tests_text(tests: &[(String, f64)]) -> String {
-    tests
-        .iter()
-        .map(|(c, v)| format!("{c} {v:.2}"))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 /// One machine now.
@@ -555,14 +545,17 @@ pub fn build(
             Session {
                 cpu: scpu.get(&scope).copied(),
                 mem: smem.get(&scope).copied(),
-                tests: t,
-                scope,
+                tests: t
+                    .iter()
+                    .map(|(c, v)| format!("{c} {v:.2}"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 project,
                 item,
             }
         })
         .collect();
-    busiest(&mut sessions, |x| (x.cpu, x.mem, &x.scope));
+    busiest(&mut sessions, |x| (x.cpu, x.mem, &x.project));
     let total = of("node_processes_total");
     HostNow {
         devices: devices(sensors),
@@ -797,7 +790,7 @@ mod tests {
         assert_eq!(h.sessions[0].project, "dotfiles");
         assert_eq!(h.sessions[0].item, "ar-1");
         assert_eq!(h.sessions[0].cpu, Some(2.5));
-        assert_eq!(tests_text(&h.sessions[0].tests), "bats 1.20, Unity 0.40");
+        assert_eq!(h.sessions[0].tests, "bats 1.20, Unity 0.40");
         assert_eq!(
             (h.sessions[1].item.as_str(), h.sessions[1].cpu),
             ("", None),

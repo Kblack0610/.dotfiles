@@ -491,7 +491,7 @@ const SESSION_CELLS = {
   item: (r) => td("wrap", r.item ? esc(r.item) : "-"),
   cpu: (r) => td("n", cpuCores(r.cpu)),
   mem: (r) => td("n", bytes(r.mem)),
-  tests: (r) => td("muted wrap", r.tests.length ? esc(r.tests.map(([c, v]) => `${c} ${v.toFixed(2)}`).join(", ")) : "-"),
+  tests: (r) => td("muted wrap", r.tests ? esc(r.tests) : "-"),
 };
 
 // One column per hour: the CPU's hottest sensor, amber from HOT_C.

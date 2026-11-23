@@ -1329,7 +1329,8 @@ cmd_run() {
 # session's CPU and memory with its project and queue item, and agent-host-budget's agent-.scope
 # drop-in holds it to the agent CPUs. systemd-run execs the command, so its pid (a dispatch pane's
 # pid) stays the same. In a tmux pane the description reads as tmux's own, "tmux child pane <pid> ...
-# launched by process <server pid>", so `wt orphans` ends what the session left once the pane closes.
+# launched by process <server pid>", so `wt orphans` ends what the session left once the pane closes
+# (worktree.sh wt_closed_pane_scopes reads both pids by word position: keep the shape).
 # With no user manager (macOS, a shell with no XDG_RUNTIME_DIR) it runs unscoped, and on Linux says so.
 cmd_scope() {
     [[ $# -gt 0 ]] || { echo "claude-acct scope: name a command" >&2; return 2; }

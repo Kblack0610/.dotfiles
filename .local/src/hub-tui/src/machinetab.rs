@@ -5,7 +5,7 @@
 //! the alerts that name it. agent-web draws the same page at `#infra/machines/<host>`.
 
 use hub_core::host_history::{HostHistory, Hour, PowerHistory, DAYS};
-use hub_core::host_now::{bytes, tests_text, HostNow, Proc, Session, HOT_C};
+use hub_core::host_now::{bytes, HostNow, Proc, Session, HOT_C};
 use hub_core::machine_page::{MachinePage, RecentJob};
 use hub_core::table::Row as _;
 use ratatui::text::{Line, Span};
@@ -502,7 +502,7 @@ fn sessions(rows: &[Session], p: Palette, w: usize) -> Vec<Line<'static>> {
                     dash(&x.item),
                     cores(x.cpu).into(),
                     x.mem.map_or("-".into(), |m| bytes(m).into()),
-                    dash(&tests_text(&x.tests)),
+                    dash(&x.tests),
                 ]
             })
             .collect(),
@@ -845,12 +845,11 @@ mod tests {
                 }],
                 processes_total: Some(612.0),
                 sessions: vec![Session {
-                    scope: "agent-dotfiles-ar\\x2d4859-10.scope".into(),
                     project: "dotfiles".into(),
                     item: "ar-4859".into(),
                     cpu: Some(1.5),
                     mem: Some(2e9),
-                    tests: vec![("bats".into(), 1.2)],
+                    tests: "bats 1.20".into(),
                 }],
                 inventory: true,
                 unread: Default::default(),

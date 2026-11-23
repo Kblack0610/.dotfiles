@@ -316,7 +316,7 @@ mod tests {
                 services: vec!["nfs-server".into()],
                 sessions: vec![hub_core::host_now::Session {
                     project: "dotfiles".into(),
-                    tests: vec![("bats".into(), 1.2)],
+                    tests: "bats 1.20".into(),
                     ..Default::default()
                 }],
                 inventory: true,
