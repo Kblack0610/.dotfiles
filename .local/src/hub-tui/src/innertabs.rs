@@ -214,9 +214,9 @@ mod tests {
             [
                 "[Projects]",
                 "Board 12",
+                "Sprints",
                 "Deliverables",
-                "Coverage",
-                "Ladder"
+                "Coverage"
             ],
             "no number until read"
         );
