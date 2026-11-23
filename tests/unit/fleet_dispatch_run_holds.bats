@@ -828,6 +828,53 @@ share_history() {
   [ -z "$(agent-queue list --json --state active 2>/dev/null | jq -r 'select(.project == "game") | .slug')" ] || fail "the #urgent fleet row was promoted past the cap"
 }
 
+# ar-4912: every `--want` stamps #requested, a session's wind-down leftovers included, so an item an
+# agent filed (asker=agent) counts under the cap; the human's own (asker=human) still passes it.
+@test "fleet share: a #requested item an agent filed (asker=agent) waits at the cap; the human's starts" {
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  share_history 1 1
+  agent-queue add --project game --slug follow-up --priority high --tags requested "an agent's follow-up" >/dev/null
+  agent-queue set follow-up asker=agent >/dev/null
+  agent-queue add --project app --slug fix-app --priority low "fix the app" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: app: fix-app'
+  assert_output --partial 'held by fleet share'
+  [ -n "$(qitem queued follow-up)" ] || fail "the agent's #requested item started past the cap"
+  # The control: the same item in the human's words passes the cap, with other work still queued.
+  agent-queue move fix-app done --status cancelled >/dev/null
+  agent-queue add --project app --slug fix-app-2 --priority low "fix the app" >/dev/null
+  agent-queue set follow-up asker=human >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: game: follow-up'
+  refute_output --partial 'held by fleet share'
+}
+
+@test "fleet share: a full share's fill passes over a #requested fleet row an agent filed, by notes' ingest record" {
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  export DISPATCH_NOTES_INGEST="$SANDBOX/ingest.jsonl" DISPATCH_LOW_WATER=3
+  # A session's `--want human` (wind-down) is the agent's; a voice note is the human's.
+  jq -cn '{id: "tidy the hook", action: "added", want: "human", by: "agent", session_id: "s-1"}' > "$DISPATCH_NOTES_INGEST"
+  jq -cn '{id: "fix crash on load", action: "added", want: "voice"}' >> "$DISPATCH_NOTES_INGEST"
+  row game human 'tidy the hook' "- [ ] tidy the hook #high #requested $T"
+  verdict game human 'tidy the hook' dispatch
+  row game human 'fix crash on load' "- [ ] fix crash on load #high #requested $T"
+  verdict game human 'fix crash on load' dispatch
+  row app human 'fix app crash' "- [ ] fix app crash #low $T"
+  verdict app human 'fix app crash' dispatch
+  share_history 1 0
+  DISPATCH_PER_PASS=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" fill
+  assert_success
+  assert_output --partial "so the board fills from other projects"
+  [ -z "$(grep -rl 'tidy the hook' "$AGENT_QUEUE_DIR" 2>/dev/null)" ] || fail "the agent's #requested fleet row was promoted past the cap"
+  local f; f=$(grep -rl 'fix crash on load' "$AGENT_QUEUE_DIR" 2>/dev/null | head -n1)
+  [ -n "$f" ] || fail "the human's #requested fleet row was left out of the fill: $output"
+  grep -q '^asker: human$' "$f" || fail "promote did not stamp the row's asker: $(cat "$f")"
+}
+
 # 2026-11-21 (ar-4554): five fleet rows a let-go fill promoted waited 9h in queued/ behind every other
 # project's fresh row, and the queued age p90 read 494m against its 420m bound (watch queue-age).
 @test "fleet share: a board item the cap has held DISPATCH_STARVED_MIN goes back to its row; a fresh one stays" {
