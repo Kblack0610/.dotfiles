@@ -159,7 +159,11 @@ impl ProjView {
 
     /// `[` and `]` step the open department chip, wrapping at the ends.
     fn step_dept(&mut self, back: bool) {
-        let to = crate::innertabs::step_of(&layout::project_depts(&self.tabs), self.dept, back);
+        let to = crate::innertabs::step_of(
+            &layout::project_depts(&self.tabs),
+            self.dept().unwrap_or(""),
+            back,
+        );
         if !to.is_empty() {
             self.dept = to;
         }
@@ -322,11 +326,17 @@ impl ProjView {
                 return;
             }
         }
-        let (name, target) = split_target(name);
-        let named = |c: &Card| {
+        let is_card = |name: &str, c: &Card| {
             c.name.eq_ignore_ascii_case(name)
                 || format!("{}/{}", c.profile, c.name).eq_ignore_ascii_case(name)
         };
+        // A project named like an inner tab (`bnb/ops`) is the project, not a chip of `bnb`.
+        let (name, target) = if cards.iter().any(|c| is_card(name, c)) {
+            (name, None)
+        } else {
+            split_target(name)
+        };
+        let named = |c: &Card| is_card(name, c);
         match cards.iter().find(|c| named(c)) {
             Some(c) => {
                 if let Some(i) = self.shown(cards).iter().position(|s| named(s)) {
@@ -2499,6 +2509,17 @@ pub(crate) mod tests {
             (pv.inner, pv.dept()),
             (layout::DEPT_TAB, Some("engineering"))
         );
+
+        // A project named like a chip is the project: `bnb/ops` is not chip `ops` of `bnb`.
+        let mut ops = pr.cards[1].clone();
+        (ops.profile, ops.name) = ("bnb".into(), "ops".into());
+        let cards = [pr.cards[0].clone(), ops];
+        pv.go(&mut tv, &cards, "bnb/ops");
+        assert!(
+            pv.open && tv.table.view.q.is_empty(),
+            "bnb/ops opens the project, not a search"
+        );
+        pv.go(&mut tv, &pr.cards, "demo/build");
 
         // The retired `build` opens Deliverables, as an old `#projects/<p>/build` link does.
         pv.go(&mut tv, &pr.cards, "demo/build");

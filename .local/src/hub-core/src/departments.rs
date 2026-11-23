@@ -374,7 +374,7 @@ impl Row for Product {
             "project" => Some(Link::to(Kind::Project, self.key())),
             d if self.dept(d).is_some() => Some(Link::to(
                 Kind::Project,
-                format!("{}/departments/{d}", self.key()),
+                format!("{}/{}/{d}", self.key(), crate::layout::DEPT_TAB),
             )),
             _ => None,
         }
