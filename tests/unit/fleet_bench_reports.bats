@@ -3892,7 +3892,7 @@ STUB
     done > "$ITEMS"
   }
   # climbs: s 10, m 30, l 90; ar-4 has a #size/s and no #pts, so its slow closes are not in s; the l item 8 days back is outside the 7-day window, and failed
-  # closes are not among the ok closes size_rule's minutes came from
+  # closes are not among the ok closes the size rubric's minutes came from
   items ar-1:10:1 ar-1:10:2 ar-2:30:1 ar-2:30:2 ar-3:90:1 ar-3:90:2 ar-3:5:192 ar-3:1:1:failed ar-3:1:2:failed ar-4:500:1 ar-4:500:2 ar-4:500:3
   run env BENCH_NOW=$T0 "$SUBJECT" sizes --check
   assert_success
