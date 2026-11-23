@@ -1568,7 +1568,7 @@ pub fn task_text(line: &str) -> String {
 }
 
 /// Replace a task line's text with `text`, keeping everything that is not the text:
-/// indentation, the checkbox state (`[/]` included), created, due, priority and release tags,
+/// indentation, the checkbox state (`[/]` included), created, due, priority, release and parent (`#of/`) tags,
 /// a legacy trailing day count and the marker comment. Non-task lines pass through unchanged.
 ///
 /// The text [`task_text`] reads is almost always a prefix of the line after the checkbox,
@@ -1582,11 +1582,17 @@ pub fn task_text(line: &str) -> String {
 pub fn retext_task(line: &str, text: &str) -> String {
     // The row keeps its one created stamp: a stamp typed in the new words would ride in front
     // of the old one and leave two (nc-83). A row with none takes the typed one.
+    // The parent link is kept the same way: a retyped `#of/` would land beside the kept one.
     let typed = text.trim();
     let text = if split_created(line).1.is_some() {
         cut_tags(typed, |t| is_created_tag(&t.to_lowercase())).0
     } else {
         typed.to_string()
+    };
+    let text = if split_parent(line).1.is_some() {
+        split_parent(&text).0
+    } else {
+        text
     };
     let text = text.trim();
     if !is_task(line) || text.is_empty() {
@@ -2364,6 +2370,21 @@ after
             retext_task("- [ ] old words #high", "new words #c1105"),
             "- [ ] new words #c1105 #high",
             "a row with no stamp takes the typed one"
+        );
+        // nc-108: a retyped `#of/` never makes a second link, on either path
+        let kid = "- [ ] old words #of/nc-90 #high <!-- id:nc-108 -->";
+        assert_eq!(
+            retext_task(kid, "new words #of/nc-90"),
+            "- [ ] new words #of/nc-90 #high <!-- id:nc-108 -->"
+        );
+        assert_eq!(
+            retext_task("- [ ] old #high words #of/nc-90", "new #of/nc-90 words"),
+            "- [ ] new words #high #of/nc-90"
+        );
+        assert_eq!(
+            retext_task("- [ ] old words #high", "new words #of/nc-90"),
+            "- [ ] new words #of/nc-90 #high",
+            "a row with no parent takes the typed one"
         );
     }
 
