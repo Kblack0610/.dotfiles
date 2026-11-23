@@ -28,3 +28,41 @@ setup() {
   [ -f "$OPENCODE_HOME/agents/pub.md" ]
   [ -f "$OPENCODE_HOME/commands/remember.md" ]
 }
+
+@test "a command dir stow folded into a dir link is mirrored, its path kept" {
+  mkdir -p "$T/pub/commands/ns"
+  printf -- '---\ndescription: Foo\n---\nfoo body\n' > "$T/pub/commands/ns/foo.md"
+  ln -s "$T/pub/commands/ns" "$HOME/.claude/commands/ns"
+  run "$SUBJECT"
+  assert_success
+  [ -f "$OPENCODE_HOME/commands/ns/foo.md" ]
+}
+
+@test "a source with no agents or commands fails and leaves the mirror as it was" {
+  run "$SUBJECT"
+  assert_success
+  rm "$HOME"/.claude/agents/* "$HOME"/.claude/commands/*
+  run "$SUBJECT"
+  assert_failure
+  assert_output --partial "has stow run?"
+  [ -f "$OPENCODE_HOME/agents/priv.md" ]
+}
+
+@test "a broken link fails before anything is deleted" {
+  run "$SUBJECT"
+  assert_success
+  rm "$T/priv/agents/priv.md"
+  run "$SUBJECT"
+  assert_failure
+  assert_output --partial "Broken links"
+  [ -f "$OPENCODE_HOME/agents/priv.md" ]
+}
+
+@test "a re-run drops the copy of a removed source" {
+  run "$SUBJECT"
+  assert_success
+  rm "$HOME/.claude/agents/pub.md"
+  run "$SUBJECT"
+  assert_success
+  [ ! -e "$OPENCODE_HOME/agents/pub.md" ]
+}

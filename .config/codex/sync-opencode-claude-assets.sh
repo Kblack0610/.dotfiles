@@ -17,18 +17,34 @@
 #              Subdirectories are preserved: Claude's /a:b becomes
 #              OpenCode's /a/b.
 #
+# Source: CLAUDE_SRC, default the deployed ~/.claude, where stow merges the public and private
+# agents and commands (as file links, or a folded dir link for a dir only one repo has), so stow
+# must have run first. A source with no agent or command, or a broken link in it, fails before
+# anything is deleted.
+#
 # Generated files are tracked in a manifest so re-runs clean up renames/removals
 # without touching natively-authored OpenCode agents/commands.
 set -euo pipefail
 
-# The deployed tree, where stow merges the public and private agents and commands: the public
-# checkout alone left out the private ones (Explore, general-purpose, kb-*, remember).
+# The public checkout alone left out the private agents and commands (Explore, general-purpose, kb-*, remember).
 CLAUDE_SRC="${CLAUDE_SRC:-$HOME/.claude}"
 OPENCODE_HOME="${OPENCODE_HOME:-$HOME/.config/opencode}"
 MANIFEST="$OPENCODE_HOME/.claude-assets-manifest"
 
 if [ ! -d "$CLAUDE_SRC" ]; then
     echo "Missing Claude source directory: $CLAUDE_SRC" >&2
+    exit 1
+fi
+src_dirs=()
+for d in "$CLAUDE_SRC/agents" "$CLAUDE_SRC/commands"; do [ -d "$d" ] && src_dirs+=("$d"); done
+if [ "${#src_dirs[@]}" = 0 ] || [ -z "$(find -L "${src_dirs[@]}" -name '*.md' -print -quit 2>/dev/null)" ]; then
+    echo "No agents or commands under $CLAUDE_SRC (has stow run?); opencode's mirror left as it is" >&2
+    exit 1
+fi
+broken=$(find -L "${src_dirs[@]}" -type l 2>/dev/null)
+if [ -n "$broken" ]; then
+    echo "Broken links under $CLAUDE_SRC; opencode's mirror left as it is:" >&2
+    printf '  %s\n' $broken >&2
     exit 1
 fi
 
@@ -103,7 +119,9 @@ if agents_src.is_dir():
 
 commands_src = src / "commands"
 if commands_src.is_dir():
-    for f in sorted(commands_src.rglob("*.md")):
+    # os.walk with followlinks: stow folds a dir only one repo has into a dir link, which rglob skips.
+    found = [pathlib.Path(d) / n for d, _, ns in os.walk(commands_src, followlinks=True) for n in ns if n.endswith(".md")]
+    for f in sorted(found):
         try:
             data, body = split_frontmatter(f.read_text())
         except OSError:
