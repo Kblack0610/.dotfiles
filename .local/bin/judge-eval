@@ -677,11 +677,11 @@ prompt_lane() {
   printf '\n--- called from ---\n'
   sites="$(grep -rnE -- "--agent[ =]\"?$a([^a-z0-9-]|\$)" "$BIN_DIR" "$BIN_DIR/../lib" 2>/dev/null | grep -v -e '/agentctl-run:' -e '/judge-eval:')"
   {
-    printf '%s\n' "$sites" | head -8
+    printf '%s\n' "$sites" | awk 'NR <= 8'
     while IFS=: read -r f _ l; do
       [ -n "$f" ] || continue
       v="$(sed -n 's/^: "\${\([A-Z_]*\):=agentctl-run --agent .*/\1/p' <<<"$l")"
-      [ -n "$v" ] && grep -nE "[$][{(]?$v([^A-Z_:=]|\$)" "$f" | grep -v ':= *agentctl-run' | head -4 | sed "s#^#$f:#"
+      [ -n "$v" ] && grep -nE "[$][{(]?$v([^A-Z_:=]|\$)" "$f" | grep -v ':= *agentctl-run' | awk 'NR <= 4' | sed "s#^#$f:#"
     done <<<"$sites"
   } | sed 's#^.*/\(\.local/\)#\1#' | cut -c1-200
   printf '\n'
