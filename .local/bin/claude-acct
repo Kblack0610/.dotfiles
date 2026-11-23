@@ -1323,42 +1323,47 @@ cmd_run() {
     cmd_scope claude "$@"
 }
 
-# cmd_scope <command...>: exec the command in its own systemd user scope, named
+# cmd_scope <command...>: move this process into its own systemd user scope, named
 # agent-<project>-<item>-<pid>.scope (each part systemd-escaped, so a literal '-' only separates them;
-# the item is empty for a hand start), so node-inventory-metrics (home-config) reports each agent
-# session's CPU and memory with its project and queue item, and agent-host-budget's agent-.scope
-# drop-in holds it to the agent CPUs. systemd-run execs the command, so its pid (a dispatch pane's
-# pid) stays the same. In a tmux pane the description reads as tmux's own, "tmux child pane <pid> ...
-# launched by process <server pid>", so `wt orphans` ends what the session left once the pane closes
-# (worktree.sh wt_closed_pane_scopes reads both pids by word position: keep the shape).
-# With no user manager (macOS, a shell with no XDG_RUNTIME_DIR) it runs unscoped, and on Linux says so.
+# the item is empty for a hand start), then exec the command, so its pid (a dispatch pane's pid) stays
+# the same. node-inventory-metrics (home-config) reports each scope's CPU and memory with its project
+# and queue item, and agent-host-budget's agent-.scope drop-in holds it to the agent CPUs. In a tmux
+# pane the description reads as tmux's own, "tmux child pane <pid> ... launched by process <server
+# pid>", so `wt orphans` ends what the session left once the pane closes (worktree.sh
+# wt_closed_pane_scopes reads both pids by word position: keep the shape).
+# A hand start outside tmux is the human's own terminal session: it stays in that terminal's scope,
+# which agent-hold never lowers and the agent CPU cap never holds. With no user manager (macOS, a
+# shell with no XDG_RUNTIME_DIR), or when the manager refuses the scope, the command runs unscoped,
+# and on Linux says so.
 cmd_scope() {
     [[ $# -gt 0 ]] || { echo "claude-acct scope: name a command" >&2; return 2; }
     [[ "$(uname -s)" == Linux ]] || exec "$@"
-    if ! command -v systemd-run >/dev/null || [[ ! -S "${XDG_RUNTIME_DIR:-/nonexistent}/systemd/private" ]]; then
-        echo "claude-acct scope: no systemd user manager here, so $1 runs in no agent scope" >&2
-        exec "$@"
-    fi
     local p i u d spid pane pp
-    # shellcheck disable=SC2016
-    p=$(bash -c '. "$1" && resolve_project_name "$2"' _ "${PROJECT_NAME_LIB:-$HOME/.config/shared-hooks/project-name.sh}" "$PWD" 2>/dev/null)
     i=${AGENT_QUEUE_ITEM:-}
-    u="agent-$(systemd-escape -- "$p")-$(systemd-escape -- "$i")-$$.scope"
-    # A scope of that name left alive by a process the last holder of this pid started.
-    if [[ "$(systemctl --user show -p LoadState --value "$u" 2>/dev/null)" != not-found ]]; then
-        echo "claude-acct scope: $u already exists, so $1 runs in no agent scope" >&2
-        exec "$@"
-    fi
-    d="$1 for ${p:-no project}${i:+ item $i}"
     if [[ -n "${TMUX:-}" ]]; then
         # TMUX is "<socket>,<server pid>,<session>"; the pane's pid is the ancestor the server started.
         spid=${TMUX#*,}; spid=${spid%%,*}; pane=$$
         while pp=$(awk '/^PPid:/ { print $2 }' "/proc/$pane/status" 2>/dev/null) && [[ -n "$pp" && "$pp" != "$spid" && "$pp" -gt 1 ]]; do
             pane=$pp
         done
-        [[ "$pp" != "$spid" ]] || d="tmux child pane $pane runs $d launched by process $spid"
     fi
-    exec systemd-run --user --scope --quiet --collect --unit="$u" --description="$d" -- "$@"
+    [[ -n "$i" || "${pp:-}" == "${spid:-x}" ]] || exec "$@"
+    if ! command -v busctl >/dev/null || [[ ! -S "${XDG_RUNTIME_DIR:-/nonexistent}/systemd/private" ]]; then
+        echo "claude-acct scope: no systemd user manager here, so this session runs in no agent scope" >&2
+        exec "$@"
+    fi
+    # shellcheck disable=SC2016
+    p=$(bash -c '. "$1" && resolve_project_name "$2"' _ "${PROJECT_NAME_LIB:-$HOME/.config/shared-hooks/project-name.sh}" "$PWD" 2>/dev/null)
+    u="agent-$(systemd-escape -- "$p")-$(systemd-escape -- "$i")-$$.scope"
+    d="agent session for ${p:-no project}${i:+ item $i}"
+    [[ "${pp:-}" != "${spid:-x}" ]] || d="tmux child pane $pane runs $d launched by process $spid"
+    # systemd-run --scope would exec the command itself, and a scope it fails to start (a name a
+    # leftover scope still holds, a manager that refuses it) would then start no session at all.
+    busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager \
+        StartTransientUnit 'ssa(sv)a(sa(sv))' "$u" fail 3 PIDs au 1 "$$" Description s "$d" \
+        CollectMode s inactive-or-failed 0 >/dev/null ||
+        echo "claude-acct scope: the user manager did not start $u, so this session runs in no agent scope" >&2
+    exec "$@"
 }
 
 cmd_status() {

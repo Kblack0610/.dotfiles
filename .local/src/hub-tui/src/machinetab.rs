@@ -521,11 +521,15 @@ fn sessions(rows: &[Session], p: Palette, w: usize) -> Vec<Line<'static>> {
 /// running services.
 fn inventory(live: &HostNow, p: Palette, w: usize) -> Vec<Line<'static>> {
     if let Some(why) = unread(live, "inventory") {
-        return vec![heading("CONTAINERS, PROCESSES, SERVICES", why, p)];
+        return vec![heading(
+            "CONTAINERS, PROCESSES, AGENT SESSIONS, SERVICES",
+            why,
+            p,
+        )];
     }
     if !live.inventory {
         return vec![heading(
-            "CONTAINERS, PROCESSES, SERVICES",
+            "CONTAINERS, PROCESSES, AGENT SESSIONS, SERVICES",
             "not collected: no node_inventory.prom (home-config role node-inventory-metrics)",
             p,
         )];
@@ -1024,7 +1028,11 @@ mod tests {
             ..MachinePage::default()
         };
         let t = text(&page_lines(&page));
-        for h in ["SENSORS", "PODS", "CONTAINERS, PROCESSES, SERVICES"] {
+        for h in [
+            "SENSORS",
+            "PODS",
+            "CONTAINERS, PROCESSES, AGENT SESSIONS, SERVICES",
+        ] {
             assert!(
                 t.contains(&format!("{h}  not read: prometheus down")),
                 "{h}: {t}"

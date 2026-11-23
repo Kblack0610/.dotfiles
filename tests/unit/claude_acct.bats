@@ -1131,81 +1131,95 @@ seen_claude() {
   assert_failure
 }
 
-# scope: claude in its own systemd user scope, named for its project and queue item. systemd-run is
-# stubbed to print its arguments and exec the command, so no real scope starts.
+# scope: claude in its own systemd user scope, named for its project and queue item. busctl is
+# stubbed to print its arguments (exit $SCOPE_BUS_RC), so no real scope starts; claude prints its pid,
+# which is the pid the scope was asked to take.
 scope_env() {
   [[ "$(uname -s)" == Linux ]] || skip "systemd scopes are Linux only"
   mkdir -p "$XDG_RUNTIME_DIR/systemd" "$SANDBOX/repo/unity-core-playground"
   rm -f "$XDG_RUNTIME_DIR/systemd/private"
   python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$XDG_RUNTIME_DIR/systemd/private"
-  cat > "$SANDBOX/bin/systemd-run" <<'STUB'
+  cat > "$SANDBOX/bin/busctl" <<'STUB'
 #!/bin/sh
-while [ $# -gt 0 ]; do a=$1; shift; [ "$a" = -- ] && break; echo "run: $a"; done
-exec "$@"
+for a; do echo "bus: $a"; done
+exit "${SCOPE_BUS_RC:-0}"
 STUB
   cat > "$SANDBOX/bin/systemd-escape" <<'STUB'
 #!/bin/sh
 printf '%s\n' "$2" | sed 's/-/\\x2d/g'
 STUB
-  cat > "$SANDBOX/bin/systemctl" <<'STUB'
-#!/bin/sh
-echo "${SCOPE_LOADSTATE:-not-found}"
-STUB
   cat > "$SANDBOX/bin/claude" <<'STUB'
 #!/bin/sh
 echo "claude $*"
+echo "pid $$"
 STUB
-  chmod +x "$SANDBOX/bin/systemd-run" "$SANDBOX/bin/systemd-escape" "$SANDBOX/bin/systemctl" "$SANDBOX/bin/claude"
+  chmod +x "$SANDBOX/bin/busctl" "$SANDBOX/bin/systemd-escape" "$SANDBOX/bin/claude"
 }
 
-@test "scope: a session runs in agent-<project>-<item>-<pid>.scope, each part escaped" {
+# scoped_pid -> the pid the stubbed busctl was asked to move, after "PIDs au 1".
+scoped_pid() { awk '/^bus: PIDs$/ { n = 3 } n && !--n { print $2 }' <<<"$output"; }
+
+@test "scope: a session moves into agent-<project>-<item>-<pid>.scope, each part escaped, then runs claude as that pid" {
   scope_env
   cd "$SANDBOX/repo/unity-core-playground"
   AGENT_QUEUE_ITEM=ar-4859 TMUX='' run --separate-stderr "$ACCT" scope claude -c
   assert_success
-  assert_line --regexp '^run: --unit=agent-unity\\x2dcore\\x2dplayground-ar\\x2d4859-[0-9]+\.scope$'
-  assert_line 'run: --description=claude for unity-core-playground item ar-4859'
-  assert_line 'run: --user'
-  assert_line 'run: --scope'
-  assert_line 'run: --collect'
+  assert_line --regexp '^bus: agent-unity\\x2dcore\\x2dplayground-ar\\x2d4859-[0-9]+\.scope$'
+  assert_line 'bus: agent session for unity-core-playground item ar-4859'
+  assert_line 'bus: StartTransientUnit'
+  assert_line 'bus: inactive-or-failed'
   assert_line 'claude -c'
+  local pid
+  pid=$(scoped_pid)
+  [ -n "$pid" ]
+  assert_line "pid $pid"
+  assert_line --regexp "^bus: agent-.*-$pid\.scope\$"
 }
 
-@test "scope: a hand start has an empty item, and in a tmux pane it reads as the pane's own scope" {
+@test "scope: a hand start in a tmux pane has an empty item and reads as the pane's own scope" {
   scope_env
   cd "$SANDBOX/repo/unity-core-playground"
   # The pane's pid is the ancestor the server started: bash -c execs claude-acct, so it is its own.
   run --separate-stderr env -u AGENT_QUEUE_ITEM bash -c 'TMUX="/tmp/s,$PPID,0" exec "$1" scope claude' _ "$ACCT"
   assert_success
-  assert_line --regexp '^run: --unit=agent-unity\\x2dcore\\x2dplayground--[0-9]+\.scope$'
-  assert_line --regexp '^run: --description=tmux child pane [0-9]+ runs claude for unity-core-playground launched by process [0-9]+$'
-  local unit pane
-  unit=$(sed -n 's/^run: --unit=.*-\([0-9]*\)\.scope$/\1/p' <<<"$output")
-  pane=$(sed -n 's/^run: --description=tmux child pane \([0-9]*\) .*/\1/p' <<<"$output")
-  [ -n "$pane" ] && [ "$pane" = "$unit" ]
+  assert_line --regexp '^bus: agent-unity\\x2dcore\\x2dplayground--[0-9]+\.scope$'
+  assert_line --regexp '^bus: tmux child pane [0-9]+ runs agent session for unity-core-playground launched by process [0-9]+$'
+  local pane
+  pane=$(sed -n 's/^bus: tmux child pane \([0-9]*\) .*/\1/p' <<<"$output")
+  [ -n "$pane" ] && [ "$pane" = "$(scoped_pid)" ]
 }
 
-@test "scope: with no user manager, or a scope of that name alive, claude runs unscoped and says why" {
+@test "scope: a hand start outside tmux stays in its terminal's scope, the human's" {
+  scope_env
+  run --separate-stderr env -u AGENT_QUEUE_ITEM TMUX= "$ACCT" scope claude -c
+  assert_success
+  refute_line --partial 'bus:'
+  assert_line 'claude -c'
+  [ -z "$stderr" ]
+}
+
+@test "scope: with no user manager, or one that refuses the scope, claude still runs, unscoped, and says why" {
   scope_env
   rm "$XDG_RUNTIME_DIR/systemd/private"
-  run --separate-stderr "$ACCT" scope claude -c
+  AGENT_QUEUE_ITEM=x run --separate-stderr "$ACCT" scope claude -c
   assert_success
-  assert_output 'claude -c'
-  [[ "$stderr" == *'no systemd user manager here, so claude runs in no agent scope'* ]]
+  refute_line --partial 'bus:'
+  assert_line 'claude -c'
+  [[ "$stderr" == *'no systemd user manager here, so this session runs in no agent scope'* ]]
   scope_env
-  SCOPE_LOADSTATE=loaded run --separate-stderr "$ACCT" scope claude -c
+  AGENT_QUEUE_ITEM=x SCOPE_BUS_RC=1 run --separate-stderr "$ACCT" scope claude -c
   assert_success
-  assert_output 'claude -c'
-  [[ "$stderr" == *'already exists, so claude runs in no agent scope'* ]]
+  assert_line 'claude -c'
+  [[ "$stderr" == *'did not start agent-'*', so this session runs in no agent scope'* ]]
 }
 
 @test "run starts claude through scope" {
   scope_env
   usage main 10 80
   usage alt 50 50
-  run --separate-stderr "$ACCT" run -r sid-1
+  AGENT_QUEUE_ITEM=x run --separate-stderr "$ACCT" run -r sid-1
   assert_success
-  assert_line --regexp '^run: --unit=agent-'
+  assert_line --regexp '^bus: agent-'
   assert_line 'claude -r sid-1'
 }
 
