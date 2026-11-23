@@ -880,25 +880,35 @@ pub fn runner_page(
             w,
         ));
     }
-    if !r.instructions.is_empty() {
-        out.push(Line::raw(""));
-        out.push(clip_line(
+    out.extend(instructions(r, p, w));
+    out
+}
+
+/// A lane's instructions (`judge-eval prompts`) under their heading, each line wrapped to the pane;
+/// nothing for any other runner.
+fn instructions(r: &Runner, p: Palette, w: usize) -> Vec<Line<'static>> {
+    if r.instructions.is_empty() {
+        return vec![];
+    }
+    let mut out = vec![
+        Line::raw(""),
+        clip_line(
             heading(
                 "INSTRUCTIONS",
                 format!("  judge-eval prompts {}", r.name),
                 p,
             ),
             w,
+        ),
+    ];
+    for l in r.instructions.lines() {
+        out.extend(crate::projtab::wrapped(
+            "  ",
+            l,
+            ratatui::style::Style::default(),
+            p,
+            w,
         ));
-        for l in r.instructions.lines() {
-            out.extend(crate::projtab::wrapped(
-                "  ",
-                l,
-                ratatui::style::Style::default(),
-                p,
-                w,
-            ));
-        }
     }
     out
 }
