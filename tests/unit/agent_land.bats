@@ -1141,6 +1141,65 @@ fake_sleep() {
   assert_output 'sleep 0'
 }
 
+# A PR opened and pushed to in the same second got two pull_request runs on one head; concurrency
+# cancelled the older, whose gate failed on its cancelled needs and whose matrix job, cancelled before
+# it expanded, kept its template name, so gh still listed it after the newer run went green
+# (dotfiles#2437 runs 44346646978 and 44346649779, 2026-11-18, ar-3095).
+TWIN_CANCELLED='[{"name":"fast tier (${{ matrix.tier }} ${{ matrix.shard }})","bucket":"cancel","workflow":"shell tests"}]'
+twin_entry() { printf '{"name":"%s","workflowName":"%s","status":"COMPLETED","conclusion":"%s","detailsUrl":"https://github.com/o/r/actions/runs/%s/job/%s"}' "$@"; }   # <name> <workflow> <conclusion> <run> <job>
+twin_rollup() { printf '{"statusCheckRollup":[%s]}\n' "$(IFS=,; echo "$*")" >"$NOTES_FIXTURE/checks.rollup"; }
+TWIN_TEMPLATE=$(twin_entry 'fast tier (${{ matrix.tier }} ${{ matrix.shard }})' 'shell tests' CANCELLED 100 7)
+TWIN_OLD_GATE=$(twin_entry gate 'shell tests' FAILURE 100 8)
+TWIN_NEW_GATE=$(twin_entry gate 'shell tests' SUCCESS 101 9)
+TWIN_NEW_FAST=$(twin_entry 'fast tier (unit 1)' 'shell tests' SUCCESS 101 10)
+@test "a cancelled check of an older run of its workflow on the head is no verdict: it lands on the newer run's green (ar-3095)" {
+  printf '%s\n' "$TWIN_CANCELLED" >"$NOTES_FIXTURE/checks.cancelled"
+  twin_rollup "$TWIN_TEMPLATE" "$TWIN_OLD_GATE" "$TWIN_NEW_GATE" "$TWIN_NEW_FAST"
+  fake_sleep
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: green (cancelled: fast tier (${{ matrix.tier }} ${{ matrix.shard }}), in an older run of its workflow on the head)'
+  assert_line 'landed #42'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 1
+  run grep -c '^sleep' "$LOG"
+  assert_output 0
+}
+
+@test "a cancelled check of its workflow's newest run on the head stays the verdict, whatever another workflow's newer run did (ar-3095)" {
+  printf '%s\n' "$TWIN_CANCELLED" >"$NOTES_FIXTURE/checks.cancelled"
+  twin_rollup "$TWIN_TEMPLATE" "$(twin_entry 'fast tier (unit 1)' 'shell tests' SUCCESS 100 11)" "$(twin_entry deploy Deploy SUCCESS 101 12)"
+  fake_sleep
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=1 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: cancelled: fast tier (${{ matrix.tier }} ${{ matrix.shard }}), and no run of its workflow is left on the head to replace it'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "after a watch timeout, the older twin run's cancelled jobs and failed gate are no verdict (ar-3095)" {
+  twin_rollup "$TWIN_TEMPLATE" "$TWIN_OLD_GATE" "$TWIN_NEW_GATE" "$TWIN_NEW_FAST"
+  printf '#!/usr/bin/env bash\nexit 124\n' >"$SANDBOX/bin/timeout"
+  chmod +x "$SANDBOX/bin/timeout"
+  fake_sleep
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: green'
+  assert_line 'landed #42'
+}
+
+@test "after a watch timeout, a failed check of an older run that no newer entry shares a name with stays red (ar-3095)" {
+  twin_rollup "$(twin_entry 'only in the old run' 'shell tests' FAILURE 100 7)" "$TWIN_NEW_GATE" "$TWIN_NEW_FAST"
+  printf '#!/usr/bin/env bash\nexit 124\n' >"$SANDBOX/bin/timeout"
+  chmod +x "$SANDBOX/bin/timeout"
+  fake_sleep
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: only in the old run'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
 # The edit that adds the gate line re-runs Checks; a watch read seconds later still saw the old red,
 # and unity-core-playground#2492 gave its landing slot back (2026-11-21, ar-3447).
 STALE='[{"name":"Checks","bucket":"fail","workflow":"Checks","event":"pull_request","completedAt":"2026-11-21T15:05:34Z"}]'
