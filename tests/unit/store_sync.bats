@@ -956,12 +956,14 @@ route_item() {
 @test "a key set two ways on an item one side requeued takes the requeue's value and keeps the other side's other keys, whichever syncs first (ar-3439)" {
   local s
   # razer-laptop requeued ar-3010 while the fleet home set routed: on its run (2026-11-23)
+  # Each pair settles before the next starts: a requeue of the only running item reads to git as a
+  # running/ -> queued/ directory rename, which would move another pair's new running item with it.
   peer a; run_item a q1; peer b
   route_item a q1; requeue_item b q1
-  peer c; run_item c q2; peer d
-  route_item d q2; requeue_item c q2
   on a --now; run on b --now
   assert_success
+  peer c; run_item c q2; peer d
+  route_item d q2; requeue_item c q2
   on c --now; run on d --now
   assert_success
   for s in q1 q2; do
