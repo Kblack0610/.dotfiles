@@ -5,7 +5,9 @@
 //! itself, so it is pure and both surfaces get the same rows in the same order.
 //!
 //! One row per thing that waits: a session with a pending ask shows the ask, not the session as
-//! well, and a queue item waiting on a session already shown adds nothing. Sessions are matched
+//! well, and a queue item waiting on a session already shown adds nothing. A waiting item an ask
+//! holds (its `ask:<id>` tag, or the ask's Claude session in its `sessions`) shows on the ask's row
+//! after that session ends, and one whose last session's ask was answered leaves the list. Sessions are matched
 //! to a queue item by their tmux session name, the one name an item and a state row carry; an ask
 //! finds its session by `claude_session` alone (the state row's `session_id`), never by name.
 //!
@@ -463,6 +465,15 @@ impl Score {
             holds: words.join(", "),
             priority: None,
         }
+    }
+
+    /// Name the waiting queue item an ask holds first in `holds`, so the item shows once, on its ask's row.
+    pub fn holding(&mut self, slug: &str) {
+        self.holds = if self.holds.is_empty() {
+            slug.to_string()
+        } else {
+            format!("{slug}, {}", self.holds)
+        };
     }
 
     /// Where the row ranks among the human's: 0 a live wait (an ask, a session, a queue item),
@@ -1018,23 +1029,33 @@ pub fn needs(
         if !task.is_empty() {
             worked.insert(format!("{}:{task}", str_of(a, "project")));
         }
-        // Its queue item: the live owner's, else the one its `task` names, so an ask whose owner
-        // died still stands for the item waiting on it.
+        // Its queue item: the live owner's, else the one its `task` names, else the waiting one
+        // held on it or that ran in its Claude session, so an ask whose owner died still stands
+        // for the item waiting on it: one decision, one row.
         let by_task = items
             .iter()
             .copied()
             .find(|i| !task.is_empty() && i.slug == task);
         work(&mut worked, by_task);
-        let item = item_of(session).or(by_task);
+        let id = str_of(a, "id");
+        let held = items
+            .iter()
+            .copied()
+            .find(|i| i.state == State::Waiting && (i.held_on(id) || i.ran_in(owner)));
+        let item = item_of(session).or(by_task).or(held);
         work(&mut worked, item);
         asked.extend(item.map(|i| i.slug.clone()));
-        let score = Score::new(
+        let mut score = Score::new(
             !machine_can_answer(str_of(a, "kind"), str_of(a, "judge")),
             target.is_some(),
             left(target.as_ref()),
             dependents(item.map(|i| i.slug.as_str())),
             age_min(since),
         );
+        // The waiting item it holds shows here, under its ask, and nowhere else.
+        if let Some(i) = item.filter(|i| i.state == State::Waiting) {
+            score.holding(&i.slug);
+        }
         out.push(ask_need(a, target, since, score));
     }
     for s in &sessions {
@@ -1067,8 +1088,26 @@ pub fn needs(
             )),
         });
     }
+    // When the Claude session behind each answered ask was last answered: an item that session
+    // left waiting, with no wait begun since, has had its decision and is the resume's to move.
+    let mut answered: std::collections::HashMap<&str, i64> = Default::default();
+    for a in state["answered_asks"].as_array().into_iter().flatten() {
+        let sid = str_of(a, "claude_session");
+        if let Some(at) = a["answered_at"].as_i64().filter(|_| !sid.is_empty()) {
+            answered
+                .entry(sid)
+                .and_modify(|e| *e = (*e).max(at))
+                .or_insert(at);
+        }
+    }
+    let decided = |i: &Item| {
+        i.last_session()
+            .and_then(|sid| answered.get(sid))
+            .is_some_and(|&at| i.waiting.as_deref().and_then(ts).is_none_or(|w| w <= at))
+    };
     for i in items.iter().filter(|i| i.state == State::Waiting) {
         if asked.contains(&i.slug)
+            || decided(i)
             || i.session
                 .as_deref()
                 .is_some_and(|s| shown.contains(tmux_name(s)))
@@ -1599,6 +1638,80 @@ mod tests {
             ]
         );
         assert!(!h.errors.iter().any(|e| e.contains("something-else")));
+    }
+
+    #[test]
+    fn a_waiting_item_an_ask_holds_shows_once_under_the_ask() {
+        // The asker ended: no live owner and no `task`, as an ask filed from a dispatched session.
+        let mut st = state();
+        st["asks"][0]["claude_session"] = json!("sid-gone");
+        let mut by_session = item("held", State::Waiting, Some("lab:repo-agent-9"));
+        by_session.sessions = Some("sid-old sid-gone".into());
+        let q = Queue {
+            items: vec![by_session.clone()],
+            ..Default::default()
+        };
+        let h = build(Some(&st), Some(&q), None, None, NOW);
+        assert!(!h.needs.iter().any(|n| n.kind == Kind::Queue));
+        let ask = h.needs.iter().find(|n| n.id == "a1").unwrap();
+        assert_eq!(ask.holds_line(), "holds held");
+        // Its `ask:<id>=<options>` tag holds it the same way, whatever sessions it ran in.
+        let mut by_tag = item("held", State::Waiting, None);
+        by_tag.tags = "tier2 ask:a1=retry".into();
+        let q = Queue {
+            items: vec![by_tag],
+            ..Default::default()
+        };
+        let h = build(Some(&st), Some(&q), None, None, NOW);
+        assert!(!h.needs.iter().any(|n| n.kind == Kind::Queue));
+        // Negative control: an item another session ran in is its own row.
+        by_session.sessions = Some("sid-other".into());
+        let q = Queue {
+            items: vec![by_session],
+            ..Default::default()
+        };
+        let h = build(Some(&st), Some(&q), None, None, NOW);
+        assert!(h
+            .needs
+            .iter()
+            .any(|n| n.kind == Kind::Queue && n.id == "held"));
+        assert_eq!(
+            h.needs.iter().find(|n| n.id == "a1").unwrap().holds_line(),
+            ""
+        );
+    }
+
+    #[test]
+    fn an_answered_asks_waiting_item_leaves_needs_you() {
+        let mut st = state();
+        st["asks"] = json!([]);
+        st["answered_asks"] =
+            json!([{"id": "x", "claude_session": "sid-x", "answered_at": NOW - 600}]);
+        let mut done = item("decided", State::Waiting, Some("lab:repo-agent-9"));
+        done.sessions = Some("sid-x".into());
+        let q = Queue {
+            items: vec![done.clone()],
+            ..Default::default()
+        };
+        let h = build(Some(&st), Some(&q), None, None, NOW);
+        assert!(!h.needs.iter().any(|n| n.id == "decided"));
+        // Negative control: it began waiting again after the answer, so it waits on something new.
+        let mut again = done.clone();
+        again.waiting = Some("2026-11-05T16:55:00Z".into()); // NOW - 300
+        let q = Queue {
+            items: vec![again],
+            ..Default::default()
+        };
+        let h = build(Some(&st), Some(&q), None, None, NOW);
+        assert!(h.needs.iter().any(|n| n.id == "decided"));
+        // And an answer to an earlier session of it decides nothing for the last one.
+        done.sessions = Some("sid-x sid-y".into());
+        let q = Queue {
+            items: vec![done],
+            ..Default::default()
+        };
+        let h = build(Some(&st), Some(&q), None, None, NOW);
+        assert!(h.needs.iter().any(|n| n.id == "decided"));
     }
 
     #[test]

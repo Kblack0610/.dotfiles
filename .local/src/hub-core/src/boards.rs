@@ -114,6 +114,17 @@ pub fn state_with(
             unreadable(&mut state, "agent-ask");
         }
     }
+    // The answered ones, so an item an answer released leaves NEEDS YOU before its resume moves it.
+    match ask_list(r, AskSet::Answered)
+        .ok()
+        .and_then(|asks| serde_json::to_value(asks).ok())
+    {
+        Some(asks) => state["answered_asks"] = asks,
+        None => {
+            state["answered_asks"] = json!([]);
+            unreadable(&mut state, "agent-ask");
+        }
+    }
     crate::signals::join(&mut state, signals, r, now);
     state
 }
@@ -221,6 +232,9 @@ pub struct Ask {
     pub judge: String,
     /// When it was filed, unix seconds.
     pub created: Option<i64>,
+    /// When it was answered, unix seconds; None while it waits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_at: Option<i64>,
     /// The question's first sentence, and the question after it (`text::headline`). A first
     /// sentence too long for headline's cap makes the whole question the title (a TSV row is one
     /// line): a card wraps, so it never shows a cut title over the same question again.
@@ -330,6 +344,7 @@ pub fn parse_asks(tsv: &str) -> Vec<Ask> {
                 task: col(7),
                 recommend: col(10),
                 created: crate::fleet::ts(at(11)),
+                answered_at: crate::fleet::ts(at(8)),
                 session: col(12),
                 claude_session: col(15),
                 judge: col(16),
@@ -366,7 +381,14 @@ pub enum AskSet {
     Parked,
     /// Every ask, closed ones too: a session's page counts what it filed.
     All,
+    /// The asks answered in the last `ANSWERED_DAYS`: the queue items they held are no longer the
+    /// human's (`home::needs`).
+    Answered,
 }
+
+/// How far back `AskSet::Answered` reads. An item still waiting longer than this after its answer
+/// is a stuck resume, and shows again as the human's.
+pub const ANSWERED_DAYS: u32 = 14;
 
 /// The asks of `set`, read through `agent-ask list`: the one reader of the store.
 pub fn ask_list(r: &dyn Runner, set: AskSet) -> Result<Vec<Ask>, String> {
@@ -375,6 +397,11 @@ pub fn ask_list(r: &dyn Runner, set: AskSet) -> Result<Vec<Ask>, String> {
         AskSet::Pending => argv.push("--pending".into()),
         AskSet::Parked => argv.push("--parked".into()),
         AskSet::All => {}
+        AskSet::Answered => argv.extend([
+            "--answered".into(),
+            "--since".into(),
+            format!("{ANSWERED_DAYS}d"),
+        ]),
     }
     r.run(&argv).map(|tsv| parse_asks(&tsv))
 }
@@ -1573,8 +1600,14 @@ mod tests {
             if argv[0] == "notes" {
                 return Ok("/nonexistent".into());
             }
-            assert_eq!(argv.join(" "), "agent-ask list --all --pending");
-            self.0.clone()
+            match argv.join(" ").as_str() {
+                "agent-ask list --all --pending" => self.0.clone(),
+                // The answered read: the same failure, else none answered.
+                "agent-ask list --all --answered --since 14d" => {
+                    self.0.clone().map(|_| String::new())
+                }
+                other => panic!("unexpected command: {other}"),
+            }
         }
     }
 
@@ -1626,9 +1659,15 @@ mod tests {
         assert_eq!(s["asks"][0]["task"], "");
         assert_eq!(s["asks"][0]["recommend"], "a");
         assert_eq!(s["asks"][0]["judge"], "take-recommend");
+        assert_eq!(s["answered_asks"], json!([]));
         let s = state(&f, &Fixed(Err("agent-ask: not found".into())));
         assert_eq!(s["asks"], json!([]));
-        assert_eq!(s["unreadable"], json!(["agent-ask"]));
+        assert_eq!(s["answered_asks"], json!([]));
+        assert_eq!(
+            s["unreadable"],
+            json!(["agent-ask"]),
+            "named once for both reads"
+        );
         std::fs::write(
             &f,
             r#"{"sessions":[{"target":"hub/a:1","bucket":"NEEDS"}]}"#,
@@ -1886,7 +1925,12 @@ mod tests {
             }
         }
         let r = Seen(Default::default());
-        for set in [AskSet::Pending, AskSet::Parked, AskSet::All] {
+        for set in [
+            AskSet::Pending,
+            AskSet::Parked,
+            AskSet::All,
+            AskSet::Answered,
+        ] {
             assert!(ask_list(&r, set).is_err());
         }
         assert_eq!(
@@ -1894,7 +1938,8 @@ mod tests {
             [
                 "agent-ask list --all --pending",
                 "agent-ask list --all --parked",
-                "agent-ask list --all"
+                "agent-ask list --all",
+                "agent-ask list --all --answered --since 14d"
             ]
         );
     }
