@@ -112,7 +112,7 @@
 #                                tags, filing nothing, and exits 2 when TRIAGE_ROUTES cannot be read; --causes prints, for each red it would queue, the
 #                                tags it files the fix with and its key (fix-red step 5 tags a fix
 #                                queued by hand with them)
-#   fleet-bench health [--coverage] [--json]
+#   fleet-bench health [--coverage]
 #                                one row for each part of the fleet (the sections above the
 #                                ARCHITECTURE Flows table and its rows): the Sentinel watches whose
 #                                `flows:` names it and their state, then one verdict line. A part is
@@ -1126,7 +1126,7 @@ fleet_cost_figure() {
 }
 
 # session_rows <now> -> one JSON object per session in the window, most working time first:
-# the scorecard's Sessions table, joined to session-outcomes and the CI reds.
+# what `fleet-bench sessions --json` prints (day-log's Sessions table), joined to session-outcomes and the CI reds.
 session_rows() {
   local t="$1" spend
   spend=$(spend_by_session "$t") || spend=null
@@ -1237,15 +1237,6 @@ cmd_scorecard() {
     sizes_section "$t"
     echo
     sections_section "$t"
-    echo
-    echo "## Sessions"
-    echo
-    echo "Counted from samples every 10 minutes over the last ${BENCH_WINDOW_H}h, never graded by a model. Waiting on you is time a session sat in NEEDS, kept apart so your answer time is not counted against an agent. Fields and formulas: the fleet-bench skill."
-    echo
-    echo "| Session | Phase now | Ticked | Working h | Waiting on you h | Stalled h | Nudges | Peak context | PRs merged | CI reds | Reverts | Cost ${BENCH_WINDOW_H}h | Cost to last nightly |"
-    echo "|---|---|---|---|---|---|---|---|---|---|---|---|---|"
-    session_rows "$t" | jq -r '
-      "| \(.target) | \(.phase) | \(.ticked) | \(.working_h) | \(.waiting_h) | \(.stalled_h) | \(.nudges) | \(.peak_k)k | \(.prs_merged // "-") | \(.ci_reds // "-") | \(.reverts // "-") | \(if .cost_24h then "$\(.cost_24h)" else "-" end) | \(if .cost_usd then "$\(.cost_usd)" else "-" end) |"'
     echo
     depth_section "$t"
     echo
@@ -5316,16 +5307,14 @@ health_rows() {
 }
 
 cmd_health() {
-  local rows json=0 cov=0 verdict
+  local rows cov=0 verdict
   while [ $# -gt 0 ]; do
     case "$1" in
-      --json) json=1 ;;
       --coverage) cov=1 ;;
-      *) say "usage: fleet-bench health [--coverage] [--json]"; return 2 ;;
+      *) say "usage: fleet-bench health [--coverage]"; return 2 ;;
     esac
     shift
   done
-  [ "$json$cov" != 11 ] || { say "health: --coverage prints a list of names, so it takes no --json"; return 2; }
   rows=$(health_rows) || return 1
   if [ "$cov" = 1 ]; then
     rows=$(awk -F'\t' '$1 == "!" { print "stale flows name: " $2 " names " $3; next } $2 == "UNCOVERED" { print $1 }' <<<"$rows")
@@ -5344,19 +5333,11 @@ cmd_health() {
       if (q != "") printf " (quarantined: %s)", q
       if (stale > 0) printf ", %d stale flows names", stale
       printf "\n" }' <<<"$rows")
-  if [ "$json" = 1 ]; then
-    jq -Rn --arg verdict "$verdict" '
-      [inputs | split("\t")] as $r
-      | {verdict: $verdict,
-         parts: [$r[] | select(.[0] != "!") | {part: .[0], state: .[1], watches: (if .[2] == "-" then [] else (.[2] | split(", ") | map(split("=") | {watch: .[0], state: .[1]})) end)}],
-         stale: [$r[] | select(.[0] == "!") | {watch: .[1], name: .[2]}]}' <<<"$rows"
-  else
-    awk -F'\t' '{ a[NR] = $1; b[NR] = $2; c[NR] = $3; if ($1 != "!" && length($1) > w) w = length($1) }
-      END { for (i = 1; i <= NR; i++)
-        if (a[i] == "!") printf "%-*s  %-9s  %s\n", w, "?", "STALE", b[i] " names " c[i]
-        else printf "%-*s  %-9s  %s\n", w, a[i], b[i], c[i] }' <<<"$rows"
-    echo "$verdict"
-  fi
+  awk -F'\t' '{ a[NR] = $1; b[NR] = $2; c[NR] = $3; if ($1 != "!" && length($1) > w) w = length($1) }
+    END { for (i = 1; i <= NR; i++)
+      if (a[i] == "!") printf "%-*s  %-9s  %s\n", w, "?", "STALE", b[i] " names " c[i]
+      else printf "%-*s  %-9s  %s\n", w, a[i], b[i], c[i] }' <<<"$rows"
+  echo "$verdict"
   grep -qE $'\t(TRIP|ERROR)\t' <<<"$rows" && return 1
   return 0
 }

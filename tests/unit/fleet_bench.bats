@@ -516,8 +516,12 @@ past_scores() {
   day=$(date -d "@$((T0 + 600))" +%F)
   assert_output "$BENCH_SCORECARD_DIR/$day.md"
   cmp "$BENCH_SCORECARD_DIR/$day.md" "$BENCH_SCORECARD_DIR/latest.md"
-  run grep '^| lab/game-agent-1:1 ' "$BENCH_SCORECARD_DIR/latest.md"
-  assert_output '| lab/game-agent-1:1 | 2/4 | 1 | 0.1 | 0 | 0 | 0 | 0k | 3 | - | 1 | - | $9.99 |'
+  # The per-session join is fleet-bench sessions' row (day-log's Sessions table); the scorecard has no Sessions table.
+  run grep -c '^| lab/game-agent-1:1 ' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output 0
+  BENCH_NOW=$((T0 + 600)) run "$SUBJECT" sessions --json
+  run jq -c '[.target, .phase, .ticked, .prs_merged, .reverts, .cost_usd]' <<<"$output"
+  assert_output '["lab/game-agent-1:1","2/4",1,3,1,9.99]'
 }
 
 @test "scorecard: a rule's problem line keeps its = sign, and the counts become bullets" {
