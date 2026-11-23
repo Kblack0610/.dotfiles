@@ -399,7 +399,7 @@ item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
   assert_equal "$(jq -r '"\(.key) \(.area)"' <<<"$output")" 'ga-2 wilds'
 }
 
-@test "row gates: #ask/<id> holds until the human answers; the judge's answer never releases it, and the cleared ask goes onto the item" {
+@test "row gates: #ask/<id> holds until the ask is answered, the judge's answer too, and the cleared ask goes onto the item" {
   project game beta "$SANDBOX/repos/game"
   row game agent ga-1 "- [ ] feat(game): ship it $T #ask/a1 <!-- id:ga-1 -->"
   gate_ask a1 pending
@@ -408,12 +408,6 @@ item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
   run cmd_suggest --json
   assert_equal "$(jq -r 'select(.key == "ga-1") | .blocked | join("; ")' <<<"$output")" 'waits on ask a1 (pending)'
   gate_ask a1 answered judge
-  run cmd_candidates
-  assert_output ''
-  run cmd_suggest --json
-  assert_equal "$(jq -r 'select(.key == "ga-1") | .blocked | join("; ")' <<<"$output")" \
-    'gate #ask/a1 never clears: ask:a1: that ask can never release it (answered by judge, not the human); post a new one with agent-ask post --kind approval, which the judge never answers'
-  gate_ask a1 answered human
   DRY=0 JUDGE_RC='' fill_day 2
   [[ " $(item_tags ga-1) " == *" ask:a1 "* ]]
 }

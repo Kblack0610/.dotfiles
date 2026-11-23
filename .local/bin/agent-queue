@@ -94,7 +94,7 @@
 # A partial: yes item stays open until agent-land without --partial finishes it; if its session ends first, reap requeues it once for that.
 # Holds: `after <slug>...` (until every slug named closed ok), and the tags at:HH:MM (that time of day), at:YYYY-MM-DDTHH:MM (that moment)
 # pr:<owner>/<repo>#<N> (until that PR merges; closed unmerged, it says it never releases) and nightly:<repo> (until the scheduled runs of that repo on its at: date, else today,
-# have finished; see nightly_pending) and ask:<id>[=<option>[+<option>]] (until the human answers that agent-ask,
+# have finished; see nightly_pending) and ask:<id>[=<option>[+<option>]] (until that agent-ask is answered, by the human, the judge or an agent,
 # with one of those options when named, or in free text; see ask_pending) and hold:<resource> (while agent-hold holds it; see
 # hold_pending) and rbw:<folder>/<name> (until rbw lists that entry; see rbw_pending). A start on a later day is the dated form, never a held session.
 # A queued item whose body's last Blocked heading has no Unblocked one after it holds too (ITEM_JQ).
@@ -1022,7 +1022,7 @@ rbw_listing() {
 }
 
 # ask_pending <id>[=<option>[+<option>]] -> why that agent-ask still holds an item, or nothing once
-# the human answered it: with one of those options when named (the answer's first word, else the one
+# it is answered: with one of those options when named (the answer's first word, else the one
 # option the answer names, agent-ask answer-names), or in free text, an answer that names no option,
 # which reaches the work through the item's brief (fleet-dispatch ask_decisions). A phase gated on the
 # human's decision (live money, a vendor) is queued behind its ask instead of held by an open
@@ -1031,16 +1031,16 @@ rbw_listing() {
 # option or several, and any other answer to an ask that lists no options all hold. 2026-11-12: three
 # Shape City items failed on free-text answers to e76omL, xTxBqv and zIi8Xc.
 ask_pending() {
-  local id="${1%%=*}" want="" f st by ans names
+  local id="${1%%=*}" want="" f st ans names
   [[ "$1" == *=* ]] && want="${1#*=}"
   [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "not an ask id"; return; }
   f="$(compgen -G "$AQ_ASKS/*/$id.md" | awk 'NR==1')"
   [ -n "$f" ] || { echo "no such ask"; return; }
   st="$(sed -n '/^status: /{s///p;q;}' "$f")"
   [ "$st" = answered ] || { echo "${st:-unreadable}"; return; }
-  # A judge or shepherd answer is not the human's decision; legacy answers carry an empty by.
-  by="$(sed -n '/^answered_by: */{s///p;q;}' "$f")"
-  [ -z "$by" ] || [ "$by" = human ] || { echo "answered by $by, not the human"; return; }
+  # Any answer releases: the human's, the judge's or an agent's. Who may answer is agent-ask's call
+  # (an approval, a judge human-only ask or one at the human floor takes only the human's), so the
+  # gate does not ask again. 2026-11-23: routine retry and drop asks held 40+ rows on the human.
   [ -n "$want" ] || return 0
   ans="$(sed -n '/^answer: /{s///p;q;}' "$f")"; ans="${ans%% *}"; ans="${ans%[.,;:!]}"
   case "+${want,,}+" in *"+${ans,,}+"*) return 0 ;; esac
@@ -3171,7 +3171,11 @@ cancel_guard() {
     [[ "$2" =~ ^[A-Za-z0-9_-]+$ ]] || die "--ask takes an ask id, not $2"
     pend="$(ask_pending "$2")"
     [ -z "$pend" ] || die "$slug: ask $2 is $pend: --ask names an ask the human answered"
-    grep -qwF -- "$slug" "$(compgen -G "$AQ_ASKS/*/$2.md" | awk 'NR == 1')" ||
+    # ask_pending takes any answer; cancelling the human's work takes theirs (an empty by is legacy).
+    local f by; f="$(compgen -G "$AQ_ASKS/*/$2.md" | awk 'NR == 1')"
+    by="$(sed -n '/^answered_by: */{s///p;q;}' "$f")"
+    [ -z "$by" ] || [ "$by" = human ] || die "$slug: ask $2 is answered by $by, not the human: --ask names an ask the human answered"
+    grep -qwF -- "$slug" "$f" ||
       die "$slug: ask $2 does not name $slug: --ask names the human's answer about this item"
     return 0
   fi
@@ -3361,14 +3365,14 @@ check_tags() {
       pr:*) [[ "$tag" =~ ^pr:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$ ]] || die "a PR tag is pr:<owner>/<repo>#<N>, not $tag" ;;
       nightly:*) [[ "$tag" =~ ^nightly:[A-Za-z0-9_.-]+$ ]] || die "a nightly tag is nightly:<repo>, the repo's name, not $tag" ;;
       ask:*) [[ "$tag" =~ ^ask:[A-Za-z0-9_-]+(=[^[:space:]]+)?$ ]] || die "an ask tag is ask:<id>[=<option>[+<option>]], not $tag"
-        # An ask already cancelled, or answered by the judge or another option, can never release
+        # An ask already cancelled, or answered with another option, can never release
         # the item: on 2026-11-07 can-we-get-cloud-vast-clarke-p3-live was queued behind an ask the
         # judge had answered at post, and upwork-p2..p5 behind one cancelled later.
         why="$(ask_pending "${tag#ask:}")"
         case "$why" in
           "" | pending) ;;
           "no such ask") die "$tag: no agent-ask has that id; post the ask first" ;;
-          *) die "$tag: that ask can never release it ($why); post a new one with agent-ask post --kind approval, which the judge never answers" ;;
+          *) die "$tag: that ask can never release it ($why); post a new one with agent-ask post" ;;
         esac
         # With no option named, every answer releases the item, a "stop" among them.
         # A name the ask does not offer can never match an answer, so the item would wait for good.
@@ -3533,7 +3537,7 @@ cmd_handoff() {
 # Why: agent-ask asks this on every card and answer, and `list --json` builds every item's whole
 # record for it, 1.7 s against a few ms (2026-11-13). A board row gated #ask/<id>[/<option>...] is held
 # on it the same way, `<row id><TAB><ask id><TAB><options>`: the work waits there, not in the queue
-# (cmd_add), and agent-ask's guards (the judge never answers it, an answer starts a dispatch pass) read
+# (cmd_add), and agent-ask's guards (no closer cancels it, an answer starts a dispatch pass) read
 # both. A board that cannot be read lists the items alone.
 cmd_ask_holds() {
   local id="${1:-}" FILES=()
