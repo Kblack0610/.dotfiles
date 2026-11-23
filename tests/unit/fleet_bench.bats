@@ -8070,7 +8070,7 @@ esac'
     $'2026-11-06 11:00\tp2\tWORKED\tpass p2: 2 due, 9m\tclaude-sonnet-5-5\t2\t0\t2\t0\t1' > "$FLEET_SHEPHERD_DIR/passes.tsv"
   run "$SUBJECT" canary shepherd
   assert_failure 1
-  assert_output --partial 'the lanes share no span (claude-opus-5-5 2026-11-06 10:00 to 2026-11-06 10:00, claude-sonnet-5-5 2026-11-06 11:00 to 2026-11-06 11:00): widen --days'
+  assert_output --partial 'the lanes share no span (claude-opus-5-5 2026-11-06 10:00 to 2026-11-06 10:00, claude-sonnet-5-5 2026-11-06 11:00 to 2026-11-06 11:00): they never ran together in these 7 days'
   rm "$FLEET_SHEPHERD_DIR/passes.tsv"
   run "$SUBJECT" canary shepherd
   assert_failure 1

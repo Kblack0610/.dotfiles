@@ -6578,11 +6578,10 @@ canary_dream() {
 # (model, nudges, survived, missed, wrong parks, parks; read by position here): passes,
 # NOOP share, the nudges they made and the share that moved their session (no escalation due by
 # the next run), lines left unhandled per pass, and parks made on a clear machine of all parks.
-# Rows from before the lane columns, or with model `-` (launched by the old code), are left out. With two or more models, every lane is cut to the
-# span all of them ran in (latest first row to earliest last row; from/to on each row), since a lane
-# switched off mid-window would otherwise be scored against hours it never ran (2026-11-22: Sonnet,
-# off from 11-20, read 0.556 missed a pass against Opus's 0.623 over 7 days, 0.302 over the span both ran).
-# Promote the canary model only on equal scores.
+# Rows from before the lane columns, or with model `-` (launched by the old code), are left out.
+# Every lane is cut to the span all of them ran in (latest first row to earliest last row, printed as
+# from/to on each row), since a lane switched off mid-window would otherwise be scored against hours
+# it never ran; lanes that never ran together are refused. Promote the canary model only on equal scores.
 canary_shepherd() {
   local days=7 json="" since
   while [ $# -gt 0 ]; do
@@ -6594,13 +6593,13 @@ canary_shepherd() {
   done
   [ -r "$SHEPHERD_PASSES" ] || { say "canary shepherd: no $SHEPHERD_PASSES"; return 1; }
   since="$(date -u -d "@$(( $(now) - days * 86400 ))" '+%F %H:%M')"
-  jq -Rnc --arg since "$since" "$JQ_LIB"'
+  jq -Rnc --arg since "$since" --arg days "$days" "$JQ_LIB"'
     [inputs | split("\t") | select(length >= 10 and .[0] >= $since and .[4] != "" and .[4] != "-")
      | {verdict: .[2], model: .[4], nudges: (.[5] | tonumber), survived: (.[6] | tonumber),
         missed: (.[7] | tonumber), wrong: (.[8] | tonumber), parks: (.[9] | tonumber), at: .[0]}]
     | group_by(.model) as $lanes
     | ($lanes | map(map(.at) | min) | max) as $from | ($lanes | map(map(.at) | max) | min) as $to
-    | if $from > $to then "fleet-bench: canary shepherd: the lanes share no span (\($lanes | map("\(.[0].model) \(map(.at) | min) to \(map(.at) | max)") | join(", "))): widen --days\n" | halt_error(1) else . end
+    | if $from > $to then "fleet-bench: canary shepherd: the lanes share no span (\($lanes | map("\(.[0].model) \(map(.at) | min) to \(map(.at) | max)") | join(", "))): they never ran together in these \($days) days\n" | halt_error(1) else . end
     | $lanes | map(map(select(.at >= $from and .at <= $to))) | map(
         (map(.nudges) | add) as $n | (map(.parks) | add) as $p
         | {model: .[0].model, from: $from, to: $to, passes: length, noop_share: ratio(map(select(.verdict == "NOOP")) | length; length),
