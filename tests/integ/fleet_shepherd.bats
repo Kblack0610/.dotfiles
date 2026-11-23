@@ -2651,7 +2651,9 @@ STUB
 
 # ghost_setup: the exporter lists runs 1 (a ghost: queued 48h, no job), 2 (queued 1h by GitHub's clock)
 # and 3 (queued 48h, one job) as stuck, run 1 under two job names. gh answers a run and its jobs from
-# those facts, records every call, and refuses /cancel when STUB_CANCEL_REFUSED is set.
+# those facts and records every call. STUB_CANCEL_REFUSED refuses /cancel with HTTP 409 (not
+# cancellable), STUB_CANCEL_DENIED with 403 and refuses force-cancel too, and STUB_GH_DOWN fails every
+# run read.
 ghost_setup() {
   cat > "$PROM_LIB" <<'STUB'
 prom_q() {
@@ -2664,12 +2666,15 @@ prom_q() {
 STUB
   gh_script 'echo "$*" >> "$HOME/gh.calls"
 old="$(date -u -d "48 hours ago" +%FT%TZ)" new="$(date -u -d "1 hour ago" +%FT%TZ)"
+[ -z "${STUB_GH_DOWN:-}" ] || { echo "gh: HTTP 502" >&2; exit 1; }
 case "$*" in
   "api repos/o/r/actions/runs/1 "*|"api repos/o/r/actions/runs/3 "*) printf "queued\t%s\n" "$old" ;;
   "api repos/o/r/actions/runs/2 "*) printf "queued\t%s\n" "$new" ;;
   "api repos/o/r/actions/runs/1/jobs "*|"api repos/o/r/actions/runs/2/jobs "*) echo 0 ;;
   "api repos/o/r/actions/runs/3/jobs "*) echo 1 ;;
-  *"/cancel") [ -z "${STUB_CANCEL_REFUSED:-}" ] ;;
+  *"/cancel") [ -z "${STUB_CANCEL_DENIED:-}" ] || { echo "gh: Forbidden (HTTP 403)" >&2; exit 1; }
+              [ -z "${STUB_CANCEL_REFUSED:-}" ] || { echo "gh: Cannot cancel a workflow run that is completed. (HTTP 409)" >&2; exit 1; } ;;
+  *"/force-cancel") [ -z "${STUB_CANCEL_DENIED:-}" ] ;;
 esac'
 }
 
@@ -2720,6 +2725,30 @@ esac'
   assert_success
   run grep -c 'runs/[23]/.*cancel' "$HOME/gh.calls"
   assert_output 0
+}
+
+@test "ghost-runs: a cancel refused for another reason is cancel-failed, logged once and tried again; GitHub down judges nothing" {
+  ghost_setup
+  export FLEET_SHEPHERD_GHOST_CANCEL=1 STUB_CANCEL_DENIED=1
+  run "$SH" ghost-runs
+  assert_line 'ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h)'
+  # A 403 is no "not cancellable": force-cancel is for a run that ignores cancel.
+  run grep -c 'force-cancel' "$HOME/gh.calls"
+  assert_output 0
+  run "$SH" ghost-runs
+  assert_line 'ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h)'
+  run grep -c 'ghost run https://github.com/o/r/actions/runs/1: cancel-failed' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output 1
+  # GitHub not answering writes no verdict, and one line names every run asked again.
+  rm -f "$FLEET_SHEPHERD_DIR/ghost-runs.tsv"
+  STUB_GH_DOWN=1 run "$SH" ghost-runs
+  assert_success
+  assert_output 'ghost-runs: GitHub did not answer, asked again next run: https://github.com/o/r/actions/runs/1 (run unreadable) https://github.com/o/r/actions/runs/2 (run unreadable) https://github.com/o/r/actions/runs/3 (run unreadable)'
+  [ ! -s "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" ]
+  # A value that is not 0 or 1 says so and runs dry.
+  FLEET_SHEPHERD_GHOST_CANCEL=yes run "$SH" ghost-runs
+  assert_line "ghost-runs: FLEET_SHEPHERD_GHOST_CANCEL is 'yes', not 0 or 1, so this is a dry run"
+  assert_line 'ghost-runs: would-cancel https://github.com/o/r/actions/runs/1 (48h)'
 }
 
 @test "ghost-runs: an unreadable exporter judges nothing, and every shepherd run calls it" {

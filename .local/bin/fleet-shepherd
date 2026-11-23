@@ -653,16 +653,25 @@ ghost_judged() {
   [ -s "$GHOSTS" ] || return 1
   awk -F'\t' -v u="$1" -v since="$(( $(date +%s) - FLEET_SHEPHERD_GHOST_AGE_H * 3600 ))" -v live="$FLEET_SHEPHERD_GHOST_CANCEL" '
     $3 == u { t = $1; v = $2 }
-    END { exit !(t >= since && !(live == 1 && v == "would-cancel")) }' "$GHOSTS"
+    END { exit !(t >= since && !(live == 1 && (v == "would-cancel" || v == "cancel-failed"))) }' "$GHOSTS"
 }
+
+# ghost_last <run url> -> the run's last verdict in GHOSTS, or nothing.
+ghost_last() { awk -F'\t' -v u="$1" '$3 == u { v = $2 } END { print v }' "$GHOSTS" 2>/dev/null; }
 
 # A ghost run is the reaper's to end: nothing else ever finishes it, and Alerts shows it high until
 # someone does. A dry run (GHOST_CANCEL unset) logs what it would do. GitHub's cancel is tried
-# first; a run it refuses (a ghost often is) gets force-cancel, the API's call for a run that no
-# longer answers cancel, and the log says which one ended it.
+# first; a run it refuses as not cancellable (HTTP 409; a ghost often is) gets force-cancel, the
+# API's call for a run that no longer answers cancel, and the log says which one ended it. Any
+# other refusal (auth, rate limit) is cancel-failed and tried again next run, logged once.
 cmd_ghost_runs() {
-  local cand slug id url why rc verdict
+  local cand slug id url why rc verdict out unread=""
   mkdir -p "$LEDGER" || die "cannot create $LEDGER"
+  case "$FLEET_SHEPHERD_GHOST_CANCEL" in
+    0|1) ;;
+    *) echo "ghost-runs: FLEET_SHEPHERD_GHOST_CANCEL is '$FLEET_SHEPHERD_GHOST_CANCEL', not 0 or 1, so this is a dry run"
+       FLEET_SHEPHERD_GHOST_CANCEL=0 ;;
+  esac
   cand="$(ghost_candidates)" || { echo "ghost-runs: the runner exporter is unreadable, so no run was judged"; return 1; }
   while read -r slug id; do
     [ -n "$id" ] || continue
@@ -672,18 +681,24 @@ cmd_ghost_runs() {
     case $rc in
       0)
         if [ "$FLEET_SHEPHERD_GHOST_CANCEL" != 1 ]; then verdict=would-cancel
-        elif gh api -X POST "repos/$slug/actions/runs/$id/cancel" >/dev/null 2>&1; then verdict=cancelled
-        elif gh api -X POST "repos/$slug/actions/runs/$id/force-cancel" >/dev/null 2>&1; then verdict=force-cancelled
+        elif out="$(gh api -X POST "repos/$slug/actions/runs/$id/cancel" 2>&1 >/dev/null)"; then verdict=cancelled
+        elif [[ "$out" == *"HTTP 409"* ]] && gh api -X POST "repos/$slug/actions/runs/$id/force-cancel" >/dev/null 2>&1; then verdict=force-cancelled
         else verdict=cancel-failed
         fi ;;
       1) verdict=kept ;;
-      *) echo "ghost-runs: $url: $why, asked again next run"; continue ;;
+      *) unread+=" $url ($why)"; continue ;;
+    esac
+    # A cancel is an act, so the rundown carries it as sweep-cancel's does, a failed one once; a
+    # verdict alone stays in GHOSTS.
+    case $verdict in
+      cancelled|force-cancelled) cmd_log "ghost run $url: $verdict, queued $why with no jobs" ;;
+      cancel-failed) [ "$(ghost_last "$url")" = cancel-failed ] || cmd_log "ghost run $url: cancel-failed, queued $why with no jobs; tried again each run" ;;
     esac
     printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$verdict" "$url" "$why" >> "$GHOSTS"
-    # A cancel is an act, so the rundown carries it as sweep-cancel's does; a verdict alone stays in GHOSTS.
-    case $verdict in *cancel*) [ "$verdict" = would-cancel ] || cmd_log "ghost run $url: $verdict, queued $why with no jobs" ;; esac
     echo "ghost-runs: $verdict $url ($why)"
   done <<<"$cand"
+  # One line for every run GitHub did not answer about: none is judged, each is asked again next run.
+  [ -z "$unread" ] || echo "ghost-runs: GitHub did not answer, asked again next run:$unread"
 }
 
 # sweep_holder <pool> -> "<owner/repo> <run id> <branch> <held> <busy>" for the workflow_dispatch run
