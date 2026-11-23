@@ -1228,7 +1228,7 @@ lost_host_item() {
 paced_restore() {
   restore_setup
   G="$SANDBOX/repos/game"
-  export AGENT_HOLD_DIR="$SANDBOX/holds" AGENT_HOLD_ASSESS="$SANDBOX/none"
+  export AGENT_HOLD_DIR="$SANDBOX/holds"
   LOST="$FLEET_DISPATCH_DIR/panes/hub.lost.json"; mkdir -p "${LOST%/*}"
   stub agent-hold "exec '$REPO_ROOT/.local/bin/agent-hold' \"\$@\""
   stub systemctl 'echo "systemctl $*" >> "$NOTES_FIXTURE/calls.log"'

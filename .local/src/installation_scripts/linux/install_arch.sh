@@ -867,7 +867,7 @@ setup_freerdp_avd() {
 # Static-check tools for the trader repo (Kblack0610/freqtrade_trading_attempt).
 #
 # Its package.json runs `python -m mypy` and `python -m ruff`, and the
-# 20-node-checks stop hook runs those through `pnpm typecheck` / `pnpm lint` on the
+# local `pnpm typecheck` / `pnpm lint` (a session's validate step) runs those on the
 # system python, which ships neither. The pins live in the repo's
 # lab/requirements-dev.txt (CI installs the same file), so this reads that file
 # instead of copying the versions. The system python is externally managed, so the
