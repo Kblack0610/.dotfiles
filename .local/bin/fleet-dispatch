@@ -923,7 +923,7 @@ reap_stuck() {
   { read -r first filed && IFS= read -r was; } 2>/dev/null < "$f"
   if [ "$was" != "$5" ] || [ -z "$first" ]; then first=$now filed=0; logline "$4"; fi
   if [ "$filed" != 1 ] && [ $(( now - first )) -ge $(( $3 * 3600 )) ]; then
-    filed=1 where=$(human_sheet_row "$2" "$5 (queue item $1) #size/s")
+    human_sheet_row "$2" "$5 (queue item $1) #size/s"; filed=1 where=$SHEET_WHERE
     logline "queue item $1: $where: $5"
     case "$where" in "not filed"*) agent-notify -t 'Needs you' -d "needs:dispatch:stuck:$1:$(printf %s "$5" | cksum | cut -d" " -f1)" "$5 (queue item $1; $where)" >/dev/null 2>&1 ;; esac
     echo "human row for queue item $1 ($where)"
@@ -932,20 +932,23 @@ reap_stuck() {
 }
 reap_unstuck() { [ ! -e "$DIR/stuck/$1" ] || rm -f "$DIR/stuck/$1"; }
 
-# human_sheet_row <item json> <row text> -> where the row went: the human sheet of the board the item
-# came from (a dotfiles item's row is on agent-runtime), else its project's. fleet-dispatch is a
-# direct filer (its stamp files each escalation once, and triage could drop one that waits on the
-# human), so the row goes on the sheet; exit 4 is a vouch notes could not make.
+# human_sheet_row <item json> <row text> -- file the row on the human sheet of the board the item
+# came from (a dotfiles item's row is on agent-runtime), else its project's, and set SHEET_WHERE to
+# where it went and SHEET_ROW_ID to the new row's id (empty when notes printed none: the outbox).
+# fleet-dispatch is a direct filer (its stamp files each escalation once, and triage could drop one
+# that waits on the human), so the row goes on the sheet; exit 4 is a vouch notes could not make.
 human_sheet_row() {
-  local prof sheet row rc=0
+  local prof sheet row out rc=0
+  SHEET_WHERE='' SHEET_ROW_ID=''
   IFS=$'\x1f' read -r prof sheet < <(jq -r '[.profile // "", .project // ""] | join("\u001f")' <<<"$1")
   row=$(item_row "$1")
   [ -z "$row" ] || IFS=$'\x1f' read -r prof sheet _ <<<"$row"
-  np "$prof" ptask "$sheet" add "$2" --origin fleet-dispatch >/dev/null 2>&1 || rc=$?
+  out=$(np "$prof" ptask "$sheet" add "$2" --origin fleet-dispatch 2>/dev/null) || rc=$?
   case "$rc" in
-    0) echo "on the $sheet sheet" ;;
-    4) echo "in the outbox for the $sheet sheet" ;;
-    *) echo "not filed: the $sheet sheet refused the row" ;;
+    0) SHEET_WHERE="on the $sheet sheet"
+       SHEET_ROW_ID=$(sed -nE '1s/.*<!-- id:([^ ]+).*/\1/p' <<<"$out") ;;
+    4) SHEET_WHERE="in the outbox for the $sheet sheet" ;;
+    *) SHEET_WHERE="not filed: the $sheet sheet refused the row" ;;
   esac
 }
 
@@ -1926,6 +1929,15 @@ skip_exits() {
   room=$(jq -r "$ROW_JQ"'[.rows[]? | select(plan_tagged)] | length' <<<"$board")
   room=$(( DISPATCH_PLAN_BACKLOG - ${room:-0} ))
   while IFS= read -r id; do [ -z "$id" ] || ids[$id]=1; done < <(jq -r '.rows[]? | select(.id != null) | .id' <<<"$board")
+  # deps[<row id>]: the open rows gated #after/ on it, "<profile>\t<project>\t<lane>\t<id>" a line.
+  local gid dprof dp dlane did
+  local -a dl
+  local -A deps=()
+  while IFS=$'\t' read -r gid dprof dp dlane did; do
+    [ -z "$did" ] || deps[$gid]+="$dprof"$'\t'"$dp"$'\t'"$dlane"$'\t'"$did"$'\n'
+  done < <(jq -r '.rows[]? | select(.id != null and (.state == "open" or .state == "doing")) | . as $r
+    | (.tags_cased // .tags // [])[] | select(startswith("after/"))
+    | "\(.[6:])\t\($r.profile // "")\t\($r.project)\t\($r.lane)\t\($r.id)"' <<<"$board")
   # A row of a kind kinds.json turns off (not epic) never reaches the judge, so it has no verdict: it
   # takes the human exit as rule `kind`, its line `-` (no verdict to hold), unless it is a parent or its
   # latest verdict already carries an exit, of any rule (a drop that failed: no second copy).
@@ -1974,7 +1986,9 @@ skip_exits() {
     fi
     if [ "$e" = human ]; then
       prio=$(prio_rank "$body")
-      if [ "$req" = true ] || [ "$prio" -le 1 ]; then e=sheet; else e=improve; fi
+      # A row others gate #after/ on goes to the sheet whatever its priority: improvements.md has no row
+      # for their gates to wait on.
+      if [ "$req" = true ] || [ "$prio" -le 1 ] || [ -n "${deps[$id]-}" ]; then e=sheet; else e=improve; fi
     fi
     if [ "$e" = plan ] && [ "$room" -le 0 ]; then
       [ -z "$dry" ] || { printf 'plan-wait\t%s\t%s\t%s\n' "$p" "$id" "$rule"; n[plan-wait]=$(( ${n[plan-wait]:-0} + 1 )); }
@@ -1999,7 +2013,8 @@ skip_exits() {
       sheet | improve)
         body=$(sed -E 's/(^|[[:space:]])#worker\/[^[:space:]]+//g; s/^[[:space:]]+//' <<<"$body")
         if [ "$e" = sheet ]; then
-          where=$(human_sheet_row "$(jq -cn --arg pr "$prof" --arg p "$p" '{profile: $pr, project: $p}')" "$body (agent row $id)")
+          human_sheet_row "$(jq -cn --arg pr "$prof" --arg p "$p" '{profile: $pr, project: $p}')" "$body (agent row $id)"
+          where=$SHEET_WHERE
           case "$where" in "not filed"*) say "skip_exits: $p $id $where"; continue ;; esac
         else
           np "$prof" improve "$p" --why "$why" -- "$body" >/dev/null 2>&1 || { say "skip_exits: notes improve refused $p $id"; continue; }
@@ -2008,7 +2023,19 @@ skip_exits() {
         # Filed is the exit: a drop that fails is said and its exit recorded all the same, so a later pass
         # files no second copy; the agent row stays open for a hand drop.
         np "$prof" ptask "$p" --agent drop "$id" --why "$where: $why" >/dev/null 2>&1 ||
-          say "skip_exits: $p $id is $where, but the agent row would not drop: drop it by hand" ;;
+          say "skip_exits: $p $id is $where, but the agent row would not drop: drop it by hand"
+        # The rows gated #after/ on it now wait on the human row, which closes done when the work does;
+        # left on the dropped id, each gate reads dead and queue-starved trips (2026-11-23, ar-1380).
+        while IFS=$'\t' read -r dprof dp dlane did; do
+          [ -n "$did" ] || continue
+          if [ -z "$SHEET_ROW_ID" ]; then
+            say "skip_exits: $dp $did still waits on #after/$id, which went $where: repoint it by hand"
+            continue
+          fi
+          dl=(); [ "$dlane" != agent ] || dl=(--agent)
+          np "$dprof" ptask "$dp" "${dl[@]}" tag --remove "after/$id" --add "after/$SHEET_ROW_ID" "$did" >/dev/null 2>&1 ||
+            say "skip_exits: could not repoint $dp $did from #after/$id to #after/$SHEET_ROW_ID"
+        done <<<"${deps[$id]-}" ;;
     esac
     EXITS_TAKEN=$(( EXITS_TAKEN + 1 ))
     mkdir -p "$DIR"   # a kind exit can be the first verdict on record
@@ -4931,7 +4958,7 @@ own_parked_pr() {
   agent-queue set "$slug" "fix_human=$head${howners:+ $howners} $owner" >/dev/null || return 0
   local title="fix(ci): PR $pr is $color at ${head:0:12} after $tries fix-ci tries; fix it"
   [ "$owner" = fix ] || title="chore(review): PR $pr is $color at ${head:0:12} after $tries land tries; land it"
-  where=$(human_sheet_row "$it" "$title or close it (queue item $slug) #size/s")
+  human_sheet_row "$it" "$title or close it (queue item $slug) #size/s"; where=$SHEET_WHERE
   agent-queue set "$slug" "note=PR $pr $color at ${head:0:12} after $tries $verb tries; $where" >/dev/null
   agent-notify -t 'Needs you' -d "needs:dispatch:pr:$pr:$owner:${head:0:12}" "PR $pr $color after $tries $verb tries ($where)" >/dev/null 2>&1
   logline "queue item $slug: PR $pr $color at ${head:0:12} after $tries $verb tries, $where"
