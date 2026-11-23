@@ -1263,7 +1263,7 @@ trainee_start_ready() {
 
 @test "direct-land: the diff is committed, pushed, opened as a PR and landed by agent-land; a failed run, no diff, a hook or CI path, or a failed landing sends the row back on claude, and a merged one stays" {
   trainee_start_ready
-  for s in d-one d-empty d-rc d-hook d-fail d-merged; do
+  for s in d-one d-empty d-rc d-hook d-fail d-merged d-crit; do
     agent-queue add --project game --slug "$s" --priority high --tags tier1 "Fix the menu for $s #pts/3" >/dev/null
     agent-queue set "$s" agent=paid model=glm direct=paid:glm row=game:ar-9 >/dev/null; agent-queue move "$s" running >/dev/null
   done
@@ -1315,6 +1315,13 @@ trainee_start_ready() {
   LAND_RC=1 PR_STATE=MERGED land d-merged
   assert_failure 1; assert_output --partial 'direct-land: #77 merged, but agent-land failed after it; d-merged stays running'
   assert_equal "$(jq -r .state <<<"$(agent-queue show d-merged --json)")" running
+  # Critical work (agent-land exit 5) waits on its validate item: the PR stays open, the row in review.
+  w="$SANDBOX/wt4" && git -C "$m" worktree add -q -b game-c "$w" 2>/dev/null; printf 'k\n' > "$w/menu.txt"
+  : > "$NOTES_FIXTURE/calls.log"
+  LAND_RC=5 land d-crit
+  assert_success; assert_output --partial 'direct-land: #77 is critical, so it waits on a second agent'"'"'s review; d-crit is in review'
+  assert_not_called 'gh pr close'
+  assert_equal "$(jq -r .state <<<"$(agent-queue show d-crit --json)")" review
   # A row no direct run took, and one not running, are no run's tail.
   land t-one
   assert_failure 2; assert_output --partial 'direct-land: no direct run took t-one'

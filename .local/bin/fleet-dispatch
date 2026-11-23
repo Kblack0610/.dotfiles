@@ -3125,7 +3125,8 @@ cmd_validate() {
     { say "validate: needs --pr <owner>/<repo>#<N>, --head <sha> and --why <text>"; return 2; }
   it=$(agent-queue show "$slug" --json 2>/dev/null) && [ -n "$it" ] || { say "validate: no queue item $slug"; return 1; }
   vslug="validate-$slug-${head:0:8}"
-  [ -z "$(agent-queue show "$vslug" --json 2>/dev/null)" ] || { say "validate: $vslug is filed already"; return 0; }
+  # A live one is filed already; one closed with no verdict (its session died) is filed again.
+  [[ ! "$(item_state "$vslug")" =~ ^(queued|running|waiting|review)$ ]] || { say "validate: $vslug is filed already"; return 0; }
   out=$(validate_task "$vslug" "$slug" "$ref" "$head" "$why" | AGENT_QUEUE_PULL=dispatch AGENT_QUEUE_START=0 agent-queue add \
     --project "$(jq -r .project <<<"$it")" --slug "$vslug" --after "$slug" --priority high --tags validate --from auto:validate \
     --title "check(validate): $slug, ${ref##*/}" 2>&1) || rc=$?
@@ -3307,7 +3308,14 @@ cmd_direct_land() {
   url=$(gh pr create --head "$branch" --title "$title" --body "$(direct_pr_body "$it" "$drc" "$key")") ||
     { git push -q origin --delete "$branch"; direct_back "gh pr create failed"; return; }
   pr=${url##*/}
-  if agent-land "$pr" --item "$slug" --ran-checks; then say "direct-land: $slug landed as #$pr, by $drc with no review"; return 0; fi
+  local lrc=0
+  agent-land "$pr" --item "$slug" --ran-checks || lrc=$?
+  [ "$lrc" != 0 ] || { say "direct-land: $slug landed as #$pr, by $drc with no review"; return 0; }
+  # Exit 5: critical work waits on its validate item, whose session lands it; the PR stays open.
+  if [ "$lrc" = 5 ]; then
+    agent-queue move "$slug" review >/dev/null || say "direct-land: could not park $slug in review; it stays running"
+    say "direct-land: #$pr is critical, so it waits on a second agent's review; $slug is in review"; return 0
+  fi
   # agent-land can fail after its merge (the record, the row); the work is in, so nothing is redone.
   [ "$(gh pr view "$pr" --json state -q .state 2>/dev/null)" != MERGED ] ||
     { say "direct-land: #$pr merged, but agent-land failed after it; $slug stays running: agent-land $pr --item $slug records it"; return 1; }
@@ -4817,7 +4825,7 @@ own_parked_pr() {
   *) return 0 ;;
   esac
   # A green critical PR waiting on its validate item has a lander: that item's session (agent-land validate_gate).
-  [ "$owner" != land ] || [ -z "$(jq -r '.validate // ""' <<<"$it")" ] ||
+  [ "$color" != green ] || [ -z "$(jq -r '.validate // ""' <<<"$it")" ] ||
     ! [[ "$(item_state "$(jq -r .validate <<<"$it")")" =~ ^(queued|running|waiting|review)$ ]] || return 0
   [ -n "$head" ] && [ "$2" != unrecorded ] || return 0
   IFS=$'\x1f' read -r tries human pr project note trn < <(jq -r --arg f "${owner}_tries" '[.[$f] // "", .fix_human // "", .pr, .project // "", .note // "", .trainee // ""] | join("\u001f")' <<<"$it")

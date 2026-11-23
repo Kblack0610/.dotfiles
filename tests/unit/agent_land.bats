@@ -634,7 +634,7 @@ gh pr checks 42 --json name,bucket,workflow -q map(select(.bucket == "cancel"))
 git fetch -q origin
 git rev-list --count HEAD..origin/main
 git rev-parse HEAD
-gh api repos/o/r/pulls/42/files --paginate --jq .[].filename
+gh api repos/o/r/pulls/42/files --paginate --jq .[] | .filename, (.previous_filename // empty)
 gh pr merge 42 --squash --match-head-commit 0123456789abcdef
 gh pr view 42 --json state -q .state
 gh pr view 42 --json body -q .body
@@ -3412,5 +3412,31 @@ merges() { grep -c 'pr merge' "$LOG" || true; }
   run "$LAND" 42 --item ship
   assert_failure 1
   assert_output --partial "validate failed: could not read #42's changed files"
+  assert_equal "$(merges)" 0
+}
+
+@test "validate: a validate item closed with no verdict (its session died) is filed again, not waited on" {
+  item crit
+  fm crit 'sessions: s-author' 'validate: validate-crit-01234567'
+  vitem validate-crit-01234567 crit
+  mkdir -p "$AGENT_QUEUE_DIR/done"
+  mv "$AGENT_QUEUE_DIR"/running/*-validate-crit-01234567.md "$AGENT_QUEUE_DIR/done/"
+  printf '.local/lib/judge.sh\n' >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item crit
+  assert_failure 5
+  assert_output --partial 'queued validate-crit-01234567'
+  run agent-queue show validate-crit-01234567 --json
+  assert_equal "$(jq -r .state <<<"$output")" queued
+  assert_equal "$(merges)" 0
+}
+
+@test "validate: the landing session is put on the author item first, so its own pass on the validate item never counts" {
+  item crit
+  fm crit 'validate: validate-crit-01234567'
+  vitem validate-crit-01234567 crit 'verdict: pass' 'verdict_head: 0123456789abcdef' 'sessions: s-hand'
+  printf '.local/lib/judge.sh\n' >"$NOTES_FIXTURE/files"
+  CLAUDE_CODE_SESSION_ID=s-hand AGENT_QUEUE_ITEM=crit run "$LAND" 42 --item crit
+  assert_failure 1
+  assert_output --partial 'was worked by session s-hand, which also worked crit'
   assert_equal "$(merges)" 0
 }

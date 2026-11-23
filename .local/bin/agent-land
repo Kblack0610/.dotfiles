@@ -701,12 +701,13 @@ pr_merge() {
   [ -n "$fj" ] || { gh pr merge "$pr" "${R[@]}" "$method" ${admin[@]+"${admin[@]}"} --match-head-commit "$1"; return; }
   fj_send POST "pulls/$pr/merge" "$(jq -nc --arg do "${method#--}" --arg h "$1" '{Do: $do, head_commit_id: $h}')"
 }
-# pr_files: the PR's changed paths, one a line.
+# pr_files: the PR's changed paths, one a line, a rename's old path too (moving a file out of a
+# Judge authority name is critical, validate_gate).
 pr_files() {
-  [ -n "$fj" ] || { gh api "repos/${pr_ref%#*}/pulls/$pr/files" --paginate --jq '.[].filename'; return; }
+  [ -n "$fj" ] || { gh api "repos/${pr_ref%#*}/pulls/$pr/files" --paginate --jq '.[] | .filename, (.previous_filename // empty)'; return; }
   local page=1 got
   while got=$(so_forgejo_get "$fj" "pulls/$pr/files?limit=$SO_FORGEJO_PAGE&page=$page"); do
-    jq -r '.[].filename' <<<"$got"
+    jq -r '.[] | .filename, (.previous_filename // empty)' <<<"$got"
     [ "$(jq length <<<"$got")" -ge "$SO_FORGEJO_PAGE" ] || return 0
     page=$((page + 1))
   done
@@ -1014,10 +1015,17 @@ validate_gate() {
   local files lv ev vslug vit v vh vses ases s out
   files=$(pr_files 2>&1) || fail validate "could not read #$pr's changed files ($(lastline "$files")), so whether its work is critical is unknown; re-run"
   PR_FILES=$files
-  out=$(judge_work_level "$(judge_conf PROMPT "")" "${AGENT_ASK_ROOT:-$HOME/.agent/asks}" "$it" <<<"$files") ||
+  out=$(judge_work_level "$(judge_conf PROMPT "$(dirname "$(readlink -f "$0")")/../../.config/agent-ask/policy.md")" \
+    "${AGENT_ASK_ROOT:-$HOME/.agent/asks}" "$it" <<<"$files") ||
     fail validate "could not read the ask policy (ask-judge.conf PROMPT), so whether #$pr is critical is unknown"
   IFS=$'\t' read -r lv ev <<<"$out"
   [ "$lv" = critical ] || { echo "validate: $lv work, no second agent needed"; return 0; }
+  # This session is the author's unless it is the validate item's: on the item now, so a later
+  # verdict from it reads as the author's (a hand start may not have claimed it yet).
+  if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && [[ "${AGENT_QUEUE_ITEM:-}" != "validate-$item-"* ]] && ! { [ "$partial" -eq 1 ] && other_session; }; then
+    aq_retry claim "$item" >/dev/null 2>&1 || echo "validate: could not record this session on $item" >&2
+    it=$(aq_retry show "$item" --json 2>/dev/null) || fail validate "could not re-read $item"
+  fi
   vslug=$(jq -r '.validate // ""' <<<"$it")
   vit=''; [ -z "$vslug" ] || vit=$(aq_retry show "$vslug" --json 2>/dev/null) || vit=''
   IFS=$'\t' read -r v vh vses < <(jq -r '[.verdict // "", .verdict_head // "", .sessions // ""] | @tsv' <<<"${vit:-null}")
