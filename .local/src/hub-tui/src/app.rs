@@ -3296,10 +3296,7 @@ impl App {
                 .proj_page
                 .as_ref()
                 .filter(|pg| Some(&pg.project) == name.as_ref());
-            let feed = match &self.tasks {
-                Some(Ok(f)) => Some(f),
-                _ => None,
-            };
+            let feed = self.tasks.as_ref().and_then(|t| t.as_ref().ok());
             if self.pv.page_key(&mut self.tv, k, pg, feed, self.page) {
                 self.scroll = 0;
                 self.read_sprint_due();
