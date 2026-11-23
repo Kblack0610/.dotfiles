@@ -25,8 +25,9 @@ joins them. Who owns which number:
 A day is the local calendar day, the window both tools are given exactly.
 
 check with no flag runs --drift, --langfuse and --gateway-errors in that order, each printing its
-line, and exits with the highest of their codes; one or more flags run only those. The
-gateway-errors watch runs the no-flag form.
+line, and exits with the highest of their codes; one or more flags run only those. With more than
+one check, a last line `reason: ` names each failing check's line and its code, which is the page
+detail the watch shows. The gateway-errors watch runs the no-flag form.
 
 check --drift exits 0 unless a watched number moved the worse way by more than TOKENS_DRIFT_PCT of the
 median of the TOKENS_BASELINE_DAYS days before it, or the better way by more than TOKENS_SUSPECT_PCT
@@ -49,7 +50,9 @@ rule runs on a live Langfuse read from that moment to now instead, so a resolved
 once and trips again only on errors after the fix; 2 when that read fails.
 """
 import argparse
+import contextlib
 import datetime as dt
+import io
 import json
 import math
 import os
@@ -399,7 +402,7 @@ def gateway_errors_check(_files, newest):
         return gateway_verdict(label, gw)
     gw = (newest.get("langfuse") or {}).get("gateway")
     if not gw:
-        print(f"{newest['date']}: no gateway figures in the snapshot (langfuse unread; check --langfuse watches that)")
+        print(f"{newest['date']}: no gateway figures in the snapshot (langfuse unread; the langfuse check names why)")
         return 0
     return gateway_verdict(newest["date"], gw)
 
@@ -419,7 +422,21 @@ def check(drift=False, langfuse=False, gateway_errors=False):
         return 2
     checks = [(drift_check, drift), (langfuse_check, langfuse), (gateway_errors_check, gateway_errors)]
     picked = [f for f, on in checks if on] or [f for f, _ in checks]
-    return max([f(files, newest) for f in picked])
+    if len(picked) == 1:
+        return picked[0](files, newest)
+    worst, failed = 0, []
+    for f in picked:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = f(files, newest)
+        print(buf.getvalue(), end="")
+        worst = max(worst, rc)
+        if rc:
+            failed.append(f"{buf.getvalue().strip()} (exit {rc})")
+    if failed:
+        # the watch's page detail: watch-companion-loop reads a reason: line, so every failing check is named
+        print("reason: " + "; ".join(failed))
+    return worst
 
 
 def drift_check(files, newest):

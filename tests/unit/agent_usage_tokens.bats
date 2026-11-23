@@ -278,18 +278,21 @@ week() { for d in 25 26 27 28 29 30 31; do day "2025-12-$d" 100000 0.15 40000; d
   assert_output --partial 'carried share 0.15 vs 7-day median 0.15'
   assert_output --partial 'langfuse read ok'
   assert_output --partial 'no gateway figures'
+  refute_output --partial 'reason: '
   jq -c '.langfuse = {gateway: {calls: 100, errors: 2, by_error: {BadRequestError: 2}}}' "$TOKENS_DIR/2026-01-01.json" > "$BATS_TEST_TMPDIR/s"
   mv "$BATS_TEST_TMPDIR/s" "$TOKENS_DIR/2026-01-01.json"
   run "$AU" tokens check
   assert_failure 1
   assert_output --partial 'gateway BadRequestError x2'
   assert_output --partial 'carried share 0.15 vs 7-day median 0.15'
+  assert_equal "${lines[-1]}" 'reason: 2026-01-01: gateway BadRequestError x2 (0 other errors, not listed) (exit 1)'
   run "$AU" tokens check --drift
   assert_success
   day 2026-01-01 100000 0.3 40000
   run "$AU" tokens check
   assert_failure 1
   assert_output --partial 'worse past 25%: carried share 0.3'
+  assert_equal "${lines[-1]}" 'reason: 2026-01-01: worse past 25%: carried share 0.3 vs 7-day median 0.15 (+100%) (exit 1)'
 }
 
 # check --langfuse: the read-health watch trips on two nights of a null section in a row.
