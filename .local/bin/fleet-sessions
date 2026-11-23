@@ -2532,8 +2532,7 @@ collect() {
     item="$(item_of "$qitems" "$sid" "${target%%/*}:$tsess" "$solo" "$started")"
     # Every ask this session filed and nobody answered (ownask), the ones a queue item carries on included, and its
     # item's earlier sessions' (item_asks): the session may close (bucket), and the close verdict says whether its
-    # window must stay open for the answer (the close step "its own asks are its only blockers").
-    # askids are the ones still its own to wait on.
+    # window must stay open for the answer (the close step "its own asks are its only blockers"). askids: still its own.
     local ownids; ownids="$({ asks_for "$sid"; item_asks "$qjson" "$item" "$sid" "$panel"; } | grep . | sort -u)"
     ownask=0; [ -n "$ownids" ] && ownask="$(wc -l <<<"$ownids")"; ownask=$((ownask + 0))
     askids="$(grep . <<<"$ownids" | { if [ -n "$qheld" ]; then grep -vxF "$qheld"; else cat; fi; } | paste -sd, -)"
