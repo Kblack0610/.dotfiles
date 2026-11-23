@@ -320,18 +320,22 @@ dispatch_event() { chain_event dispatch "$@" --by fleet-dispatch; }
 
 # tag_value <text> <namespace> -> the value of the row's first `#<namespace>/<value>` tag.
 # Only the text before a `<!--` marker counts: a tag inside a proof stamp is record, not routing.
-tag_value() {
-  local body="${1%%<!--*}"
-  grep -oE "(^|[[:space:]])#$2/[A-Za-z0-9_.-]+" <<<"$body" | awk 'NR==1' | sed "s|.*#$2/||"
+# tag_of sets TAG to it instead, with no fork: the board walks read several tags a row (ar-3988).
+tag_of() {
+  local body=" ${1%%<!--*}" re="[[:space:]]#$2/([A-Za-z0-9_.-]+)"
+  TAG=''
+  [[ "$body" =~ $re ]] && TAG=${BASH_REMATCH[1]}
+  return 0
 }
+tag_value() { tag_of "$1" "$2"; [ -z "$TAG" ] || printf '%s\n' "$TAG"; }
 
 # row_tier <text> -> 1|2|3, or nothing when the row carries no tier. A row typed or scoped ci
 # or infra (`ci:`, `ci(area):`, `fix(ci):`) is tier 3 however it is tagged.
 row_tier() {
-  local body
-  body=$(sed 's/^- \[.\] //' <<<"$1" | tr '[:upper:]' '[:lower:]')
-  case "$body" in ci:* | ci\(* | infra:* | infra\(* | *\(ci\):* | *\(infra\):*) echo 3; return ;; esac
-  tag_value "$1" tier | grep -xE '[123]'
+  local body="${1#- \[?\] }"
+  case "${body,,}" in ci:* | ci\(* | infra:* | infra\(* | *\(ci\):* | *\(infra\):*) echo 3; return ;; esac
+  tag_of "$1" tier
+  case "$TAG" in 1 | 2 | 3) echo "$TAG" ;; *) return 1 ;; esac
 }
 
 # The kind registry, kinds.json, is keyed by notes-cli's ROW_TYPES (a bats test pins the two): per
@@ -401,7 +405,7 @@ kind_off() {
 
 # row_size <text> -> S, M, L or XL from the row's `#size/` tag, nothing when it has none: the one
 # size a sized row has. The judge sizes only the rest (size_back writes its answer onto the row).
-row_size() { tag_value "$1" size | grep -xiE 's|m|l|xl' | tr '[:lower:]' '[:upper:]'; }
+row_size() { tag_of "$1" size; case "${TAG,,}" in s | m | l | xl) echo "${TAG^^}" ;; esac; }
 
 # workers -> one line per worker in registry order: rank, name, max tier capped at the ceiling,
 # only_tag, lane, untagged. "-" stands for empty, because read collapses empty tab fields.
@@ -417,7 +421,7 @@ workers() {
 # an untagged worker takes, and the judge must read it no higher.
 row_worker() {
   local lane="$2" text="$3" tag row_t t rank name max only wlane untagged
-  tag=$(tag_value "$text" worker)
+  tag_of "$text" worker; tag=$TAG
   row_t=$(row_tier "$text")
   while IFS=$'\t' read -r rank name max only wlane untagged; do
     if [ "$untagged" = true ]; then [ -z "$tag" ] || continue; else [ "$tag" = "$name" ] || continue; fi
@@ -1642,7 +1646,7 @@ judged_keys() {
 # (a human-lane row is still judged, since only the verdict says the human's row is agent work). When the
 # gates could not be read (GATES_FAILED) it lists no row but under suggest. CLEANUP_ONLY,
 # REQUESTED_ONLY, GATED_ONLY and SPRINT_ONLY (fill_day's floors) read only their rows (floor_row), in the projects
-# that can hold one (floor_project). A project off_project names is no candidate: it says why under OFF_SAY (the `candidates`
+# that can hold one (floor_project); ONLY_PROJECT reads that one project alone (trainee_rows' split). A project off_project names is no candidate: it says why under OFF_SAY (the `candidates`
 # command, and a pass's one judge read, so not once per read), and suggest lists its agent rows with that reason.
 cmd_candidates() {
   local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today nobody active poff
@@ -1658,6 +1662,7 @@ cmd_candidates() {
   for prof in $DISPATCH_PROFILES; do
     while IFS=$'\t' read -r name sheet _v _; do
       [ -n "$name" ] || continue
+      [ -z "${ONLY_PROJECT:-}" ] || [ "$name" = "$ONLY_PROJECT" ] || continue
       ! floor_pass || floor_project "$name" || continue
       stage=$(stage_of "$sheet")
       dispatchable "$stage" || continue
@@ -4992,14 +4997,41 @@ trainee_reason_key() {
 # named and an active item holds (queue_areas) is skipped, except on a tier-3 row, which gets
 # t3_picks' worker and no area hold.
 trainee_rows() {
-  local d pid
+  local d prof w i k projects=() order
   d=$(mktemp -d) || return 1
-  # The two reads share nothing and each walks the whole board (about 50 s and 35 s, 2026-11-19), so
-  # they run at once, each to its own file: a row line can pass PIPE_BUF, so one pipe could tear it.
-  # The pid is kept at once: t3_rows' process substitutions move $!.
-  BACKLOG_OK=1 all_open >"$d/open" & pid=$!
-  BACKLOG_OK=1 t3_rows '' | jq -c '. + {worker: "tier3", t3rank: [.rank, .prio, (0 - .order)]}' >"$d/t3"
-  wait "$pid" || { echo "fleet-dispatch: trainee_rows: the open-row read failed" >&2; rm -rf "$d"; return 1; }
+  # Each walk reads the whole board one row at a time and the board grows, so each runs once per
+  # project (ONLY_PROJECT), up to 8 at once, the biggest board first: agent-runtime's 1,409 open agent
+  # rows were the long pole of both whole-board walks, which with the gates read took 157 of
+  # trainee-pool's 172 s, past fleet-bench's BENCH_TRAINEE_CMD timeout (2026-11-23, ar-3988). The gates
+  # are read once before the walks fork (load_gates), about 18 s each walk read them in. Each walk writes its
+  # own file: a row line can pass PIPE_BUF, so one pipe could tear it.
+  load_gates
+  mapfile -t projects < <(for prof in $DISPATCH_PROFILES; do notes --profile "$prof" projects 2>/dev/null | cut -f1; done | awk 'NF && !seen[$0]++')
+  order=$(notes board --json 2>/dev/null | jq -r --args '[.rows[]? | select(.state == "open") | .project] as $r
+    | $ARGS.positional | to_entries | sort_by(.value as $p | [-($r | map(select(. == $p)) | length), .key]) | .[].value' "${projects[@]}" 2>/dev/null) &&
+    [ -n "$order" ] || order=$(printf '%s\n' "${projects[@]}")
+  mapfile -t projects <<<"$order"
+  w=$(nproc 2>/dev/null || echo 1); [ "$w" -le 8 ] || w=8
+  # In a subshell, so wait -n waits on these walks alone, never on a job of the caller's.
+  (
+    n=0
+    for i in "${!projects[@]}"; do
+      [ -n "${projects[$i]}" ] || continue
+      for k in t3 open; do
+        if [ "$n" -ge "$w" ]; then wait -n; n=$((n - 1)); fi
+        if [ "$k" = t3 ]; then
+          ONLY_PROJECT=${projects[$i]} BACKLOG_OK=1 t3_rows '' | jq -c '. + {worker: "tier3", t3rank: [.rank, .prio, (0 - .order)]}' >"$d/t3.$i" &
+        else
+          { ONLY_PROJECT=${projects[$i]} BACKLOG_OK=1 all_open >"$d/open.$i" || : >"$d/failed"; } &
+        fi
+        n=$((n + 1))
+      done
+    done
+    wait
+  )
+  [ ! -e "$d/failed" ] || { echo "fleet-dispatch: trainee_rows: the open-row read failed" >&2; rm -rf "$d"; return 1; }
+  for i in "${!projects[@]}"; do cat "$d/t3.$i" 2>/dev/null; done >"$d/t3"
+  for i in "${!projects[@]}"; do cat "$d/open.$i" 2>/dev/null; done >"$d/open"
   # t3 first: unique_by keeps a row's first copy, and a tier-3 row's copy carries its worker.
   jq -sc --arg today "${DISPATCH_TODAY:-$(date +%F)}" --argjson prules "$(policy_rules)" \
     --argjson busy "$(queue_areas | jq -Rsc 'split("\n") | map(select(length > 0) | ascii_downcase)')" \
@@ -7794,9 +7826,9 @@ cmd_fill() {
 # row's place on its board, newest first; `rank` puts what the human asked for, then observer rows,
 # first (cleanup rows rank by kinds.json like any other, in t3_picks).
 # A row with a gate not yet clear is left out, as a #plan row is, and one whose gates all cleared is
-# `gated` (cmd_candidates); none when the gates could not be read (GATES_FAILED).
+# `gated` (cmd_candidates); none when the gates could not be read (GATES_FAILED). ONLY_PROJECT: that project alone.
 t3_rows() {
-  local judged="$1" prof name sheet _v stage repo key text body t line n x planned dj dsig board gates pidle
+  local judged="$1" prof name sheet _v stage repo key text body t line n x planned dj dsig board gates pidle pprio
   local -A DET=() PLN=() PAR=() RNK=() GAT=() RLD=()
   load_extras
   [ -z "${GATES_FAILED:-}" ] || return 0
@@ -7804,6 +7836,7 @@ t3_rows() {
   for prof in $DISPATCH_PROFILES; do
     while IFS=$'\t' read -r name sheet _v _; do
       [ -n "$name" ] || continue
+      [ -z "${ONLY_PROJECT:-}" ] || [ "$name" = "$ONLY_PROJECT" ] || continue
       [ -z "$(off_project "$name")" ] || continue
       ! floor_pass || floor_project "$name" || continue
       stage=$(stage_of "$sheet")
@@ -7811,6 +7844,7 @@ t3_rows() {
       repo=$(repo_dir "$name")
       [ -n "$repo" ] && [ -d "$repo" ] || continue
       pidle=$(pool_idle_of "$name")
+      pprio=$(prio_of "$sheet")
       n=0
       board=$(rows "$prof" "$name" agent)
       row_kinds_load <<<"$board"
@@ -7839,7 +7873,7 @@ t3_rows() {
           --argjson details "$dj" --arg dsig "$dsig" --argjson planned "$planned" \
           --arg body "$body" --arg repo "$repo" --arg line "$line" --argjson prio "$(prio_rank "$text")" \
           --arg priority "$(row_priority "$text" "$name")" --argjson order "$n" --arg obs "$DISPATCH_T3_OBSERVER" \
-          --arg profile "$prof" --arg rsize "$(row_size "$text")" --arg pprio "$(prio_of "$sheet")" \
+          --arg profile "$prof" --arg rsize "$(row_size "$text")" --arg pprio "$pprio" \
           --argjson cleanup "$(cleanup_row "$name" "$text")" --argjson frank "${RNK["$name"$'\t'agent$'\t'"$key"]:-null}" \
           --argjson sprint "$(row_sprint "$name" "$key")" --argjson uncommitted "$(row_uncommitted "$name" "$key")" --arg gates "$gates" --arg pidle "$pidle" \
           '{profile: $profile, project: $project, stage: $stage, lane: "agent", key: $key,
