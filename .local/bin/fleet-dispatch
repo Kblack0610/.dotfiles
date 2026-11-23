@@ -3594,8 +3594,7 @@ cmd_start() {
   if [ -n "$item" ]; then
     # --points: a trainee row's points may live on its board row alone (item_points), as in runnable.
     it=$(agent-queue show "$item" --json --points 2>/dev/null) || { say "start: no queue item: $item"; return 2; }
-    st=$(jq -r .state <<<"$it")
-    hwhy=$(validate_self_why "$it" "$resume" "$session") || { say "start: $item $hwhy"; return 2; }
+    st=$(jq -r .state <<<"$it"); hwhy=$(validate_self_why "$it" "$resume" "$session") || { say "start: $item $hwhy"; return 2; }
     if [ -n "$resume" ]; then
       case "$st" in running | waiting | review) ;; *) say "start: $item is $st; --resume re-attaches an item already started"; return 1 ;; esac
       rh=$(jq -r '.agent // "claude"' <<<"$it")
