@@ -1,6 +1,6 @@
 # Linux reqs
 have various build scripts to install tools and dependencies. need to clean up flow for that.
--  install picom, spicetify (for spotify), i3, and i3status 
+-  install picom, i3, and i3status 
 
 Need to install dconf for linux, set up flatpak and brew process for any remaining work needed
 
