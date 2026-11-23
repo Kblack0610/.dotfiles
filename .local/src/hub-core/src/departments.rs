@@ -373,7 +373,7 @@ impl Row for Product {
         match col {
             "project" => Some(Link::to(Kind::Project, self.key())),
             d if self.dept(d).is_some() => {
-                Some(Link::to(Kind::Project, format!("{}/{d}", self.key())))
+                Some(Link::to(Kind::Project, format!("{}/departments/{d}", self.key())))
             }
             _ => None,
         }
@@ -1686,7 +1686,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(
             cov.products[0].link("legal").unwrap().href(),
-            "#projects/bnb%2Flisted%2Flegal"
+            "#projects/bnb%2Flisted%2Fdepartments%2Flegal"
         );
         assert_eq!(
             cov.product("listed").map(|p| p.key()),

@@ -211,7 +211,7 @@ mod tests {
         );
         assert_eq!(red["rows"].as_array().unwrap().len(), 1);
         let links = red["table"]["links"].to_string();
-        assert!(links.contains("#projects/bnb%2Flisted%2Flegal"), "{links}");
+        assert!(links.contains("#projects/bnb%2Flisted%2Fdepartments%2Flegal"), "{links}");
     }
 
     #[test]

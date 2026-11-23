@@ -4649,6 +4649,7 @@ impl App {
             match self.pv.inner {
                 "overview" => "j/k pick a system  Enter its epics  F lists Needs you  Esc back  ",
                 "deliverables" => "j/k pick  Enter the epic's rows  / search  f chip  s sort  S flip  x clear  Esc clear, back  ",
+                "departments" => "[ ] pick a department  j/k scroll  Esc back  ",
                 _ => "j/k scroll  Esc back  ",
             }
         ),
