@@ -1160,7 +1160,7 @@ STUB
 bus_out() { output+=$'\n'"$(cat "$BUS_LOG")"; mapfile -t lines <<<"$output"; }
 
 # scoped_pid -> the pid the stubbed busctl was asked to move, after "PIDs au 1".
-scoped_pid() { awk '/^bus: PIDs$/ { n = 3 } n && !--n { print $2 }' <<<"$output"; }
+scoped_pid() { awk '/^bus: PIDs$/ { n = NR + 3 } NR == n { print $2 }' <<<"$output"; }
 
 @test "scope: a session moves into agent-<project>-<item>-<pid>.scope, each part escaped, then runs claude as that pid" {
   scope_env
