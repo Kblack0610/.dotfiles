@@ -1013,28 +1013,34 @@ pub(crate) fn all_project_dirs() -> Vec<(String, PathBuf)> {
         .collect()
 }
 
+/// The inbox page, its score read only when the page will be published ([`inbox_present`]).
 pub(crate) fn inbox_page(p: &Profile) -> status::Page {
-    inbox_page_in(
-        p,
-        &all_project_dirs(),
-        triage_score(JUDGE_EVAL_BIN).as_deref(),
-    )
+    let score = inbox_present(p)
+        .then(|| triage_score(p, JUDGE_EVAL_BIN, JUDGE_EVAL_TIMEOUT))
+        .flatten();
+    inbox_page_in(p, &all_project_dirs(), score.as_deref())
 }
 
 /// The one scorer of every runner lane, inbox-triage's included (`~/.local/src/docs/judges.md`).
 const JUDGE_EVAL_BIN: &str = "judge-eval";
+/// A timeout guard: judge-eval reads in about 4s (2026-11-22), and a stuck one must not hold
+/// the page, the sweep step or `notes inbox ack` that publishes it.
+const JUDGE_EVAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// inbox-triage's 7d score as `<bin> inbox-triage --json` words it in its `score_7d`, the cell
 /// agent-web's Workers table shows: `<text> (<title>)`, such as `87% untouched (7d, 407 of 470
-/// right, 283 pending, triage-untouched)`. None, with the reason on stderr, when judge-eval
-/// gives no such cell: the page then shows no score rather than one counted a second way.
-fn triage_score(bin: &str) -> Option<String> {
-    let why = match std::process::Command::new(bin)
-        .args(["inbox-triage", "--json"])
-        .output()
-    {
-        Ok(o) if o.status.success() => {
-            let cell = serde_json::from_slice::<serde_json::Value>(&o.stdout)
+/// right, 283 pending, triage-untouched)`. judge-eval reads `p`'s record (`NOTES_PROFILE`).
+/// None, with the reason on stderr, when judge-eval gives no such cell within `limit`: the page
+/// then shows no score rather than one counted a second way.
+fn triage_score(p: &Profile, bin: &str, limit: std::time::Duration) -> Option<String> {
+    let why = match read_bounded(
+        std::process::Command::new(bin)
+            .args(["inbox-triage", "--json"])
+            .env("NOTES_PROFILE", &p.name),
+        limit,
+    ) {
+        Ok(out) => {
+            let cell = serde_json::from_slice::<serde_json::Value>(&out)
                 .ok()
                 .and_then(|v| {
                     v.get("agents")?
@@ -1050,15 +1056,40 @@ fn triage_score(bin: &str) -> Option<String> {
                 _ => format!("{bin} inbox-triage --json gave no score_7d"),
             }
         }
-        Ok(o) => format!(
-            "{bin} inbox-triage exited {}: {}",
-            o.status,
-            String::from_utf8_lossy(&o.stderr).trim()
-        ),
-        Err(e) => format!("{bin}: {e}"),
+        Err(why) => why,
     };
     eprintln!("(no triage score on the inbox page: {why})");
     None
+}
+
+/// `cmd`'s stdout once it exits 0, its stderr passed through; killed past `limit`.
+fn read_bounded(
+    cmd: &mut std::process::Command,
+    limit: std::time::Duration,
+) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let name = cmd.get_program().to_string_lossy().into_owned();
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{name}: {e}"))?;
+    let mut stdout = child.stdout.take().expect("stdout is piped");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout.read_to_end(&mut buf);
+        let _ = tx.send(buf);
+    });
+    let Ok(out) = rx.recv_timeout(limit) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("{name} gave no answer in {}s", limit.as_secs()));
+    };
+    match child.wait() {
+        Ok(st) if st.success() => Ok(out),
+        Ok(st) => Err(format!("{name} exited {st}")),
+        Err(e) => Err(format!("{name}: {e}")),
+    }
 }
 
 /// The inbox status page: what the intake sweep did today and what still waits on the human.
@@ -3235,6 +3266,53 @@ mod tests {
             out.contains("\nfiled: made a new row - joined:"),
             "the guide line:\n{out}"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_triage_score_is_judge_evals_cell_for_the_pages_profile_or_none() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("inbox-score-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let p = crate::config::test_profile(&root.to_string_lossy());
+        let stub = |name: &str, body: &str| {
+            let f = root.join(name);
+            std::fs::write(&f, format!("#!/usr/bin/env bash\n{body}\n")).unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+            f.to_string_lossy().into_owned()
+        };
+        let limit = std::time::Duration::from_secs(20);
+        let cell = stub(
+            "cell",
+            r#"[ "$*" = "inbox-triage --json" ] || exit 2
+printf '{"agents":[{"agent":"ask-judge","score_7d":{"text":"x","title":"y"}},{"agent":"inbox-triage","score_7d":{"text":"n<30","title":"7d, 3 of 4 right, %s"}}]}' "$NOTES_PROFILE""#,
+        );
+        assert_eq!(
+            triage_score(&p, &cell, limit).as_deref(),
+            Some(format!("n<30 (7d, 3 of 4 right, {})", p.name).as_str())
+        );
+        let other_lane = stub(
+            "other",
+            r#"echo '{"agents":[{"agent":"ask-judge","score_7d":{"text":"x","title":"y"}}]}'"#,
+        );
+        assert_eq!(triage_score(&p, &other_lane, limit), None);
+        assert_eq!(
+            triage_score(&p, &stub("fails", "echo '{}'; exit 1"), limit),
+            None
+        );
+        assert_eq!(
+            triage_score(&p, &root.join("none").to_string_lossy(), limit),
+            None
+        );
+        // A judge-eval that never answers is killed at the guard, not waited on.
+        let stuck = stub("stuck", "exec tail -f /dev/null");
+        let start = std::time::Instant::now();
+        assert_eq!(
+            triage_score(&p, &stuck, std::time::Duration::from_millis(300)),
+            None
+        );
+        assert!(start.elapsed() < limit, "waited {:?}", start.elapsed());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

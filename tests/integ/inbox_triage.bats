@@ -30,6 +30,9 @@ setup() {
   # The planner's start, recorded: no unit ever starts from a test.
   printf '#!/usr/bin/env bash\necho "$*" >> "$NOTES_FIXTURE/systemctl.log"\n' >"$SANDBOX/bin/systemctl"
   chmod +x "$SANDBOX/bin/systemctl"
+  # The inbox page's triage score: judge-eval's cell, canned in judge.json; none written, no score.
+  printf '#!/usr/bin/env bash\n[ "$*" = "inbox-triage --json" ] && cat "$NOTES_FIXTURE/judge.json" 2>/dev/null\n' >"$SANDBOX/bin/judge-eval"
+  chmod +x "$SANDBOX/bin/judge-eval"
   systems ''
 }
 
@@ -737,10 +740,7 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   outbox '- [ ] chore(build): drop the old cache #low #p:scratch\n- [ ] stays for the model\n'
   answer '{"n": 1, "action": "skip", "why": "no project named"}'
   # The page's triage score is judge-eval's inbox-triage cell, read as given: never counted again.
-  printf '#!/usr/bin/env bash\n[ "$*" = "inbox-triage --json" ] || exit 2\necho %s\n' \
-    "'{\"agents\":[{\"agent\":\"inbox-triage\",\"score_7d\":{\"text\":\"n<30\",\"title\":\"7d, 1 of 1 right, 0 pending, triage-untouched\"}}]}'" \
-    >"$SANDBOX/bin/judge-eval"
-  chmod +x "$SANDBOX/bin/judge-eval"
+  echo '{"agents":[{"agent":"inbox-triage","score_7d":{"text":"n<30","title":"7d, 1 of 1 right, 0 pending, triage-untouched"}}]}' >"$NOTES_FIXTURE/judge.json"
   run "$TRIAGE"
   assert_success
   assert_output --partial 'moved 1 from the outbox, filed 1, left 1, refused 0'
@@ -760,7 +760,7 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   assert_output --partial '  - why: no project named'
   assert_output --partial '; triage score n<30 (7d, 1 of 1 right, 0 pending, triage-untouched)'
   # judge-eval giving no cell leaves the score off the page, not a second count in its place.
-  printf '#!/usr/bin/env bash\nexit 1\n' >"$SANDBOX/bin/judge-eval"
+  rm "$NOTES_FIXTURE/judge.json"
   run notes ingest page
   assert_success
   assert_output --partial 'no triage score on the inbox page'
