@@ -12,7 +12,7 @@
 // write, on resync, and on Refresh.
 
 const B_LANES = ["human", "agent", "playtest"];
-const B_PRIORITIES = ["urgent", "high", "low"];
+const B_PRIORITIES = ["urgent", "high", "normal", "low"];
 // One view serves both places, both on Projects, so what it reads follows the one showing.
 const bOnBoard = () => st.tab === "projects" && !pst.open && pTab() === "all";
 const bScope = () => (bOnBoard() ? "all" : pst.open);
@@ -23,7 +23,7 @@ const bst = tblTab({
   shown: () => bOnBoard() || (st.tab === "projects" && !!pst.open), hint: "search, or lane:agent priority:high size:s -tag:ai",
   state: {
     feed: null, busy: false, msg: "",
-    draft: { key: "", lane: "human", priority: "high", to: "", game: "", text: "" },
+    draft: { key: "", lane: "human", priority: "normal", to: "", game: "", text: "" },
     // `sel` is the opened row (bSel); `form` the one row whose done, drop, move, edit or tags form
     // is open: { k, kind }.
     form: null, controlsKey: "",

@@ -397,6 +397,20 @@ test("a lane's rows past a placeholder row it leaves out carry their own lines, 
   assert.equal(sent.length, 2);
 });
 
+test("+ on the Normal lane tags #normal, and a row that names #normal keeps it", async () => {
+  const note = "## Focus\n### Normal\n\n### Low\n";
+  const v = { ...live, note: { ...live.note, markdown: note }, sections: [],
+    focus: { lanes: [lane("Normal", "", 0, 0, 1, []), lane("Low", "", 0, 0, 3, [])], rollup: "", open: 0, done: 0 } };
+  draw(v);
+  const sent = [];
+  ctx.fetch = async (url, opts) => { sent.push(JSON.parse(opts.body)); return reply(200, v)(); };
+  await run(`addTask("Normal", "f")`);
+  assert.deepEqual(lines(sent[0].text).slice(1, 3), ["### Normal", "- [ ] f #normal"]);
+  draw(v);
+  await run(`addTask("Low", "g #normal")`);
+  assert.deepEqual(lines(sent[1].text).slice(3, 5), ["### Low", "- [ ] g #normal"]);
+});
+
 test("a note changed since the read writes nothing and is shown as it is now; a moved row writes nothing", async () => {
   draw(live);
   const sent = putting(409);
