@@ -5414,6 +5414,62 @@ GH
   [ "$(jq -r .reason <<<"$output")" = 'PR #2149 CI red' ]
 }
 
+@test "end to end: a PR the slot holder refused is WORKING waiting on that holder, not CI red (ar-3596)" {
+  # 2026-11-19 agent-23 ucp#2913 read STALLED CI red: its only red was the Merge gate line, the landing slot that
+  # train #2918 held refusing it, with no gate of its own running and no landing-queue label.
+  landed_fixture
+  local oid
+  oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  # store <labels of #2918> [<red job ids of #2913>]: the slot holder, and the session's PR with no label.
+  store() {
+    printf 'train/x\t2918\tOPEN\tPENDING\t1111111111111111111111111111111111111111\t-\t\ttrain\t%s\n' "$1" > "$LEDGER_DIR/prs.tsv"
+    printf 'feat/x\t2913\tOPEN\tFAIL\t%s\t%s\t\tmine\t\n' "$oid" "${2:-78}" >> "$LEDGER_DIR/prs.tsv"
+  }
+  # note <job id> <message>: the job's check-run annotation
+  note() { jq -n --arg m "$2" '[{message: $m}]' > "$SANDBOX/notes_$1.json"; }
+  job 78 'Docs within their budgets:success' 'Merge gate line:failure'
+  job 79 'Build:failure' 'Merge gate line:failure'
+  job 80 'Merge gate line:failure'
+  note 78 'landing slot: #2918 holds main until 08:10, and landing this would void its gate (PlayMode).'
+  note 79 'landing slot: #2918 holds main until 08:10, and landing this would void its gate (PlayMode).'
+  note 80 'no CI gate green: line in the PR body'
+  gh_script <<GH
+case "\$1 \${2:-}" in
+  "api "*/actions/jobs/*) jq -r "\${@: -1}" "$SANDBOX/job_\${2##*/}.json"; exit ;;
+  "api "*/check-runs/*/annotations) id="\${2%/annotations}"; jq -r "\${@: -1}" "$SANDBOX/notes_\${id##*/}.json"; exit ;;
+esac
+exit 1
+GH
+  mkdir -p "$HOME/.agent/queue/running"
+  printf 'slug: ucp-2900\nproject: unity-core-playground\nmode: oneshot\npriority: high\nfrom: board:unity-core-playground:ucp-2900\nagent: claude\nqueued: 2026-11-19T02:51:57Z\nsessions: sid-9\n---\nx\n' \
+    > "$HOME/.agent/queue/running/20261119-025157-ucp-2900.md"
+  jq -n '{rows: [{project: "unity-core-playground", id: "ucp-2901", state: "open", priority: "high", tags: ["after/ucp-2900"]}], done: []}' \
+    > "$NOTES_FIXTURE/board.json"
+  store landing-slot
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2913 waiting on slot holder #2918' ]
+  [ "$(jq -r .ci <<<"$output")" = PENDING ]
+  # the rows it keeps waiting see where it stands (ar-3761)
+  [ "$(jq -c .critical <<<"$output")" = '{"rows":["ucp-2901 #high"],"place":"behind the slot holder #2918"}' ]
+
+  # negative controls: the holder let the slot go, a red of its own past the refusal, a gate line red for another
+  # reason, a red with no job, or the knob off
+  store ''
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2913 CI red' ]
+  for red in 79 80 78,80 78,-; do
+    store landing-slot "$red"
+    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+    [ "$(jq -r .reason <<<"$output")" = 'PR #2913 CI red' ] || fail "red $red: $(jq -r .reason <<<"$output")"
+  done
+  store landing-slot
+  FLEET_SLOT_LABEL='' run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2913 CI red' ]
+}
+
 @test "end to end: a PR held by the landing slot names the #high rows gated after its row and its place (ar-3761)" {
   # 2026-11-19: P1 #2935 sat in the unity-core-playground landing queue reading WORKING while ucp-2712, a #high row
   # gated #after/ on P1's row, waited 5h; nothing joined the row to the held PR.
