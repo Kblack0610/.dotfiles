@@ -139,6 +139,30 @@ hook() { (cd "$W" && .githooks/pre-push </dev/null); }
   [ ! -s "$CALLS" ]
 }
 
+@test "a push of a bare slot branch named agent-N is refused, while a stamped branch is allowed" {
+  mkrepo; stubs
+  printf 'y\n' >"$W/a.sh" && git -C "$W" add a.sh && git -C "$W" commit -qm a
+  sha=$(git -C "$W" rev-parse HEAD) zero=0000000000000000000000000000000000000000
+
+  # Bare agent-N remote ref is refused
+  run --separate-stderr bash -c "cd '$W' && printf 'refs/heads/b $sha refs/heads/agent-1 $zero\n' | .githooks/pre-push"
+  assert_failure 1
+  [[ "$stderr" == *"refusing to push bare slot branch 'agent-1'"* ]]
+
+  # Bare agent-N local ref is refused
+  run --separate-stderr bash -c "cd '$W' && printf 'refs/heads/agent-2 $sha refs/heads/b $zero\n' | .githooks/pre-push"
+  assert_failure 1
+  [[ "$stderr" == *"refusing to push bare slot branch 'agent-2'"* ]]
+
+  # Deleting a remote bare agent-N is allowed
+  run --separate-stderr bash -c "cd '$W' && printf 'refs/heads/agent-1 $zero refs/heads/agent-1 $sha\n' | .githooks/pre-push"
+  assert_success
+
+  # Stamped slot branch (agent-N-<stamp>) is allowed
+  run --separate-stderr bash -c "cd '$W' && printf 'refs/heads/agent-1-261110-120000 $sha refs/heads/agent-1-261110-120000 $zero\n' | .githooks/pre-push"
+  assert_success
+}
+
 # have_toolchain: the pinned rust toolchain runs, by rust.sh's own check (the fast tier's runner
 # may have the rustup proxy only, or a listed but partial toolchain). A test never installs one.
 have_toolchain() { "$REPO/tests/rust.sh" --toolchain-ready; }
