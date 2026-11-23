@@ -1076,11 +1076,11 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   run cmd_reap
   printf '%s 0\n%s\n' "$(( $(date +%s) - DISPATCH_ORPHAN_HOURS * 3600 ))" "$(sed -n 2p "$FLEET_DISPATCH_DIR/stuck/fix-crash")" > "$FLEET_DISPATCH_DIR/stuck/fix-crash"
   run cmd_reap
-  assert_output --partial 'agent row for queue item fix-crash (not filed: the game board refused the row (notes exit 1))'
-  assert_output --partial 'fleet-dispatch: the game board refused (notes exit 1): chore(review): reap has not read PR o/game#12'
+  assert_output --partial 'agent row for queue item fix-crash (not filed: the game board did not take the row (notes exit 1))'
+  assert_output --partial 'fleet-dispatch: the game board did not take the row (notes exit 1): chore(review): reap has not read PR o/game#12'
   # NEGATIVE CONTROL: a refused row is not marked filed, so the next pass tries again
   run cmd_reap
-  assert_output --partial 'not filed: the game board refused the row'
+  assert_output --partial 'not filed: the game board did not take the row'
   rm "$NOTES_FIXTURE/refuse.game"
   run cmd_reap
   assert_output --partial 'agent row for queue item fix-crash (on the game board)'

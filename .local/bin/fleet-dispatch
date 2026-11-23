@@ -949,7 +949,7 @@ file_row() {
     0) echo "on the $sheet $what" ;;
     3) echo "joined its twin on the $sheet $what" ;;
     4) echo "in the outbox for the $sheet $what" ;;
-    *) echo "not filed: the $sheet $what refused the row (notes exit $rc)"; say "the $sheet $what refused (notes exit $rc): $3" ;;
+    *) echo "not filed: the $sheet $what did not take the row (notes exit $rc)"; say "the $sheet $what did not take the row (notes exit $rc): $3" ;;
   esac
 }
 

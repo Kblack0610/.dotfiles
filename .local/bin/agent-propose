@@ -227,6 +227,7 @@ cmd_answered() {
   [ -n "$id" ] || die "no proposal waits on ask $ask"
   [ "$st" = asked ] || { echo "$id already $st"; return 0; }
   names="$("$AP_ASK_CMD" answer-names "$ask")" || die "cannot read the answer to ask $ask"
+  # gate: ap-ruling
   by="$("$AP_ASK_CMD" show "$ask")" || die "cannot read ask $ask"
   by="$(sed -n '/^answered_by: */{s///p;q;}' <<<"$by")"
   by=${by:-human}

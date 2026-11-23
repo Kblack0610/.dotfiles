@@ -922,7 +922,7 @@ OUT
   run cmd_reap
   touch "$NOTES_FIXTURE/refuse.game"
   for _ in 1 2 3; do fix_ended "$h1" FAIL; run cmd_reap; done
-  assert_output --partial 'agent row for queue item fix-crash (PR o/game#12 red after 2 fix-ci tries, not filed: the game board refused the row (notes exit 1))'
+  assert_output --partial 'agent row for queue item fix-crash (PR o/game#12 red after 2 fix-ci tries, not filed: the game board did not take the row (notes exit 1))'
   assert_equal "$(agent-queue show fix-crash --json | jq -r '.fix_human // ""')" ""
   rm "$NOTES_FIXTURE/refuse.game"
   fix_ended "$h1" FAIL; run cmd_reap

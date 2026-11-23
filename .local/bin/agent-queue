@@ -3195,22 +3195,22 @@ cancel_check() {
 # or shepherd's own answer is no ruling, so only the judge's or the human's counts. The human at
 # a terminal or the Queue tab's button is not held. 2026-11-12: two cleanups cancelled 220 from: human
 # items, one by looping a dead chain.
-# gate: aq-cancel-guard
 cancel_guard() {
-  local slug pend
+  local slug pend f by
   slug="$(fm_get "$1" slug)"
   if [ -n "$2" ]; then
     [[ "$2" =~ ^[A-Za-z0-9_-]+$ ]] || die "--ask takes an ask id, not $2"
     pend="$(ask_pending "$2")"
+    # gate: aq-cancel-guard
     [ -z "$pend" ] || die "$slug: ask $2 is $pend: --ask names an answered ask"
     # An empty by is legacy (before answered_by), when every answer was the human's.
-    local f by; f="$(compgen -G "$AQ_ASKS/*/$2.md" | awk 'NR == 1')"
+    f="$(compgen -G "$AQ_ASKS/*/$2.md" | awk 'NR == 1')"
     by="$(sed -n '/^answered_by: */{s///p;q;}' "$f")"
     case "$by" in '' | human | judge) ;; *) die "$slug: ask $2 is answered by $by: --ask names an ask the judge or the human answered" ;; esac
-    grep -qwF -- "$slug" "$f" ||
-      die "$slug: ask $2 does not name $slug: --ask names the answer about this item"
+    grep -qwF -- "$slug" "$f" || die "$slug: ask $2 does not name $slug: --ask names the answer about this item"
     return 0
   fi
+  # gate: aq-cancel-guard
   [ -n "$(cancel_who)" ] || return 0
   human_work "$(fm_get "$1" from)" "$(fm_get "$1" tags)" || return 0
   die "$slug is work the human asked for: a session or script cancels it only with --ask <id>, an answered ask naming it (agent-ask post), or the human cancels it from a terminal or the Queue tab"
