@@ -170,6 +170,32 @@ ALPHA='{ "alpha": { "repo": "mono-canon", "path": "apps/alpha" } }'
   assert_output 'alpha'
 }
 
+@test "at the repo root a release/<app>-v<version> branch names the app" {
+  git_repo; write_map "$APPS"
+  git -C "$REPO" checkout -q -b release/alpha-v1.4.2
+  run resolve_project_name "$REPO"
+  assert_success
+  assert_output 'alpha'
+}
+
+@test "a release branch's app with a surface suffix resolves, and only the last -v<digit> is the version" {
+  git_repo; write_map "$APPS"
+  git -C "$REPO" checkout -q -b release/beta-web-v1.0
+  run resolve_project_name "$REPO"
+  assert_output 'beta'
+  git -C "$REPO" checkout -q -b release/beta-web-v1.0-v2
+  run resolve_project_name "$REPO"
+  assert_output 'mono-canon'
+}
+
+@test "a release/<name>-v<version> branch for an unregistered name stays on the repo" {
+  git_repo; write_map "$APPS"
+  git -C "$REPO" checkout -q -b release/packages-v2.0.0
+  run resolve_project_name "$REPO"
+  assert_success
+  assert_output 'mono-canon'
+}
+
 @test "a branch whose second segment is NOT a registered app falls through to the repo" {
   # refactor/packages/... must not mint a "packages" project.
   git_repo; write_map "$APPS"
