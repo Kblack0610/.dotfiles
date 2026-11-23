@@ -1355,6 +1355,14 @@ impl App {
         }
     }
 
+    /// The agent board's feed as last read; none before the first read lands or when it failed.
+    fn feed(&self) -> Option<&hub_core::tasks::Feed> {
+        match &self.tasks {
+            Some(Ok(f)) => Some(f),
+            _ => None,
+        }
+    }
+
     /// The queue's items as last read, none before the first read lands.
     fn queue_items(&self) -> Vec<hub_core::queue::Item> {
         self.queue
@@ -4610,6 +4618,49 @@ impl App {
         Line::from(s)
     }
 
+    /// The Projects tab's hint line: the focused inner tab's keys, else the open project's.
+    fn projects_hint(&self) -> String {
+        let tabs = "0-9";
+        match () {
+        _ if self.tv.typing()
+                || self.pv.table.typing.is_some()
+                || self.pv.dv.typing.is_some()
+                || self.pv.bv.typing.is_some()
+                || self.pv.lv.typing.is_some()
+                || self.pv.cv.typing.is_some()
+                || self.pv.rv.typing.is_some() =>
+        {
+            "type, Enter submits, Esc cancels".into()
+        }
+        _ if self.pv.sfocus && !self.pv.open => format!(
+            "<- -> inner tabs  Esc back  r refresh  {tabs} tabs  q quit"
+        ),
+        _ if self.pv.lfocus && !self.pv.open => format!(
+            "<- -> inner tabs  j/k pick  Enter the project's Stage  t other table  / search  f chip  s sort  S flip  x clear  Esc back  r refresh  {tabs} tabs  q quit"
+        ),
+        _ if self.pv.cfocus && !self.pv.open => format!(
+            "<- -> inner tabs  j/k pick  Enter open the product's page  / search  f chip  s sort  S flip  x clear  Esc back  r refresh  {tabs} tabs  q quit"
+        ),
+        _ if self.pv.dfocus && !self.pv.open => format!(
+            "<- -> inner tabs  j/k pick  Enter open the epic's project  / search  f chip  s sort  S flip  x clear  d/Esc back to projects  r refresh  {tabs} tabs  q quit"
+        ),
+        _ if self.pv.open && !self.pv.rows_shown(&self.tv) => format!(
+            "<- -> inner tabs  {}r refresh  {tabs} tabs  q quit",
+            match self.pv.inner {
+                "overview" => "j/k pick a system  Enter its epics  F lists Needs you  Esc back  ",
+                "deliverables" => "j/k pick  Enter the epic's rows  / search  f chip  s sort  S flip  x clear  Esc clear, back  ",
+                _ => "j/k scroll  Esc back  ",
+            }
+        ),
+        _ if self.pv.open => format!(
+            "<- -> inner tabs  j/k pick  / search  f chip  c sort  S flip  a add  s start  d done  D unverified  x drop  X dup  m move  e edit  t/T tag  +/- release  o open  Esc clear, back  r refresh  {tabs} tabs  q quit"
+        ),
+        _ => format!(
+            "<- -> inner tabs  j/k pick  Enter open  a board  d deliverables  / search  f chip  s sort  S flip  x clear  P priority  r refresh  {tabs} tabs  q quit"
+        ),
+        }
+    }
+
     fn hints(&self) -> String {
         let tabs = "0-9";
         let runs = self.infra_open == Some(Opened::Runs);
@@ -4772,43 +4823,7 @@ impl App {
             Tab::Queue => format!(
                 "j/k PgUp/PgDn ^d/^u pick  Enter detail  [ ] step  {{ }} problem  / f s S x table  c cancel  +/- priority  C candidates  p promote  o Grafana  r refresh  {tabs} tabs  q quit"
             ),
-            Tab::Projects
-                if self.tv.typing()
-                    || self.pv.table.typing.is_some()
-                    || self.pv.dv.typing.is_some()
-                    || self.pv.bv.typing.is_some()
-                    || self.pv.lv.typing.is_some()
-                    || self.pv.cv.typing.is_some()
-                    || self.pv.rv.typing.is_some() =>
-            {
-                "type, Enter submits, Esc cancels".into()
-            }
-            Tab::Projects if self.pv.sfocus && !self.pv.open => format!(
-                "<- -> inner tabs  Esc back  r refresh  {tabs} tabs  q quit"
-            ),
-            Tab::Projects if self.pv.lfocus && !self.pv.open => format!(
-                "<- -> inner tabs  j/k pick  Enter the project's Stage  t other table  / search  f chip  s sort  S flip  x clear  Esc back  r refresh  {tabs} tabs  q quit"
-            ),
-            Tab::Projects if self.pv.cfocus && !self.pv.open => format!(
-                "<- -> inner tabs  j/k pick  Enter open the product's page  / search  f chip  s sort  S flip  x clear  Esc back  r refresh  {tabs} tabs  q quit"
-            ),
-            Tab::Projects if self.pv.dfocus && !self.pv.open => format!(
-                "<- -> inner tabs  j/k pick  Enter open the epic's project  / search  f chip  s sort  S flip  x clear  d/Esc back to projects  r refresh  {tabs} tabs  q quit"
-            ),
-            Tab::Projects if self.pv.open && !self.pv.rows_shown(&self.tv) => format!(
-                "<- -> inner tabs  {}r refresh  {tabs} tabs  q quit",
-                match self.pv.inner {
-                    "overview" => "j/k pick a system  Enter its epics  F lists Needs you  Esc back  ",
-                    "deliverables" => "j/k pick  Enter the epic's rows  / search  f chip  s sort  S flip  x clear  Esc clear, back  ",
-                    _ => "j/k scroll  Esc back  ",
-                }
-            ),
-            Tab::Projects if self.pv.open => format!(
-                "<- -> inner tabs  j/k pick  / search  f chip  c sort  S flip  a add  s start  d done  D unverified  x drop  X dup  m move  e edit  t/T tag  +/- release  o open  Esc clear, back  r refresh  {tabs} tabs  q quit"
-            ),
-            Tab::Projects => format!(
-                "<- -> inner tabs  j/k pick  Enter open  a board  d deliverables  / search  f chip  s sort  S flip  x clear  P priority  r refresh  {tabs} tabs  q quit"
-            ),
+            Tab::Projects => self.projects_hint(),
             Tab::Home if self.hv.on_running && !self.home_build().running.is_empty() => format!(
                 "Running: j/k pick  Enter open  / query  f state  s/S sort  x clear  Esc/Tab Needs you  F fix  {tabs} pages  r refresh  q quit"
             ),
@@ -4934,10 +4949,7 @@ impl App {
             (Tab::Projects, ..) if !self.pv.open => match &self.projects {
                 None => reading("notes projects"),
                 Some(_) => {
-                    let feed = match &self.tasks {
-                        Some(Ok(f)) => Some(f),
-                        _ => None,
-                    };
+                    let feed = self.feed();
                     let (l, at) = projtab::page(
                         &self.cards(),
                         feed,
@@ -4956,10 +4968,7 @@ impl App {
             (Tab::Projects, ..) => {
                 let mut l = vec![];
                 if self.tv.project.is_none() {
-                    let feed = match &self.tasks {
-                        Some(Ok(f)) => Some(f),
-                        _ => None,
-                    };
+                    let feed = self.feed();
                     let dl = self.deliverables.as_ref();
                     l.push(projtab::top_strip(
                         feed,
@@ -4983,10 +4992,7 @@ impl App {
                             c,
                             pg,
                             self.coverage.as_ref(),
-                            match &self.tasks {
-                                Some(Ok(f)) => Some(f),
-                                _ => None,
-                            },
+                            self.feed(),
                             &self.pv,
                             self.p,
                             w,

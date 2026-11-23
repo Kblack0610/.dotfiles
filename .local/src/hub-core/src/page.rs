@@ -669,17 +669,14 @@ pub fn read_with(
         .cloned()
         .collect();
     p.releases = crate::releases::badge(&channels);
-    let reg = project_map::cached();
     p.release_tab = crate::project_releases::build(
         name,
         &rel,
-        &crate::version_page::labs(reg.as_deref(), name, &[]),
+        &crate::version_page::labs(project_map::cached().as_deref(), name, &[]),
         roadmap.as_ref(),
     );
-    match crate::project_sprints::past(runner, name) {
-        Ok(v) => p.sprint_past = v,
-        Err(e) => p.errors.push(e),
-    }
+    let sprints = crate::project_sprints::past(runner, name);
+    p.sprint_past = sprints.map_err(|e| p.errors.push(e)).unwrap_or_default();
     p.alerts = crate::alerts::project_badge_here(name);
     if !channels.is_empty() {
         p.check_groups = crate::app_status::groups(name, &channels);
