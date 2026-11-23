@@ -108,12 +108,14 @@ budget_over() {
   fi
 }
 
-# budget_page <name> <why>: the first stop of the day pages once, naming the raise.
+# budget_page <name> <why>: the first stop of the day pages once, naming the raise, at high
+# priority as a decision (only the human raises a cap), so the FYI buzz budget never silences it.
+# Why: inbox-plan sat at its cap for 7 days on a normal page while rows waited on it.
 budget_page() {
   local seen; seen="$(budget_state "$1")/budget-paged"
   if [ "$(cat "$seen" 2>/dev/null)" != "$(date +%F)" ] && command -v agent-notify >/dev/null 2>&1; then
     mkdir -p "$(dirname "$seen")" && date +%F > "$seen"
-    agent-notify -t "$1 stopped at its budget" "$1 $2. To go on today: agentctl budget $1 raise <usd>" >/dev/null 2>&1 || true
+    agent-notify -p high -k decision -t "$1 stopped at its budget" "$1 $2. To go on today: agentctl budget $1 raise <usd>" >/dev/null 2>&1 || true
   fi
   return 0
 }
