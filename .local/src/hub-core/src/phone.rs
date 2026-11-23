@@ -899,8 +899,8 @@ mod tests {
     fn read_costs() -> crate::costs::Costs {
         let mut costs = crate::costs::Costs::default();
         costs.fleet_cost.usd = "about $1,203".into();
-        costs.fleet_cost.measured = "$403".into();
-        costs.fleet_cost.estimated = "$800".into();
+        costs.fleet_cost.cash = "$403".into();
+        costs.fleet_cost.burn = "$800".into();
         costs
     }
 

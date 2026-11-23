@@ -109,7 +109,7 @@ function costsTiles(d) {
 function fleetTile(f) {
   if (f.why) return tile("FLEET 24H", "-", "var(--c2)", `<span class="warn">${esc(f.why)}</span>`);
   const age = f.stale ? `<span class="warn">stale, as of ${when(f.as_of)}</span>` : `as of ${when(f.as_of)}`;
-  return tile("FLEET 24H", esc(f.usd), "var(--c2)", `whole fleet, measured ${esc(f.measured)}, estimated ${esc(f.estimated)}, ${age}`);
+  return tile("FLEET 24H", esc(f.usd), "var(--c2)", `whole fleet, API cash ${esc(f.cash)}, subscription burn ${esc(f.burn)}, ${age}`);
 }
 
 // The Budget inner tab (hub_core::budget, the TUI's coststab.rs `budget`): this month's cash, what

@@ -184,6 +184,9 @@ PY
   # a price table is an estimate; only the gateway's dollars are metered
   run cost '[.total.measured, .total.estimated]'
   assert_output '[17.5,3.5]'
+  # API cash is the gateway's metered line; the Codex plan's priced work is subscription burn
+  run cost '[.total.cash == .other_harness.gateway.usd, .total.cash > 0, .total.burn - .total.claude_measured, .total.cash + .total.burn == .total.usd]'
+  assert_output '[true,true,3.5,true]'
   echo 'prom_q() { return 1; }' > "$PROM_LIB"
   run "$AU" fleet-cost --json
   assert_failure

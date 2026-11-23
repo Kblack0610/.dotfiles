@@ -647,8 +647,8 @@ pub fn costs(k: &crate::costs::Costs) -> Card {
             &k.budget.projected,
             lvl(k.budget.needs.len(), Level::Warn),
         )
-        .part("Measured", &fc.measured, Level::Ok)
-        .part("Estimated", &fc.estimated, Level::Ok);
+        .part("API cash", &fc.cash, Level::Ok)
+        .part("Sub burn", &fc.burn, Level::Ok);
     c.first_head = "Burn";
     let needs = k
         .budget

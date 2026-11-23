@@ -963,6 +963,10 @@ def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
                   "measured": round(measured_usd + gateway, 2), "claude_measured": round(measured_usd, 2),
                   "estimated": round(estimated_usd + helper_usd + priced_other, 2),
                   "helper_usd": round(helper_usd, 2), "helper_range": [0, round(estimated_usd * top, 2)],
+                  # Who bills it: API cash is the gateway's metered line, the only dollars a meter bills
+                  # (whose allowance pays it is the budget ledger's paid_by). Subscription burn is the rest,
+                  # the list-price value of work on the Claude logins and the flat-plan harnesses.
+                  "cash": round(gateway, 2), "burn": round(round(total_usd, 2) - round(gateway, 2), 2),
                   # The session rows' count and tokens, and the dollars no row carries (the gateway's metered
                   # line, the helper estimate, a harness line with no session id).
                   "sessions": len(by_session), "tokens": sum(r["tokens"] or 0 for r in by_session),
