@@ -964,7 +964,7 @@ pub mod tests {
             ..Feed::default()
         });
         assert_eq!(c.rows().len(), 2, "the table opens on the two live rows");
-        for _ in 0..5 {
+        while c.table.view.state != "all" {
             press(&mut c, KeyCode::Char('f'));
         }
         assert_eq!(
