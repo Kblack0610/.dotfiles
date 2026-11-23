@@ -183,7 +183,7 @@ MATRIX="${BENCH_MATRIX:-$HOME/.config/fleet-bench/matrix.json}"   # fleet-bench'
 HEADROOM="$DIR/headroom.json"   # the last real pass's `headroom --json`, which stats publishes
 CANDIDATES="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/candidates.jsonl"   # the last real pass's `suggest --json`, which the hub Candidates fold reads (hub_core::queue::candidates); derived, so out of the autocommitted ~/.agent
 TRAINEE_DIR="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/trainee"   # <slug>.patch and <slug>.base: the diff a trainee run left and its base, which a batch review applies (cmd_trainee_review, trainee_batch_start)
-TRAINEE_DRY="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/trainee-dry"   # <epoch> TAB <harnesses>: since when a trainee harness with a slot has found no queued or board row it takes (trainee_floor_start), which starved reads
+TRAINEE_DRY="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/trainee-dry"   # <harness> TAB <epoch> a line: since when each trainee harness with a slot has found no queued or board row it takes (trainee_floor_start), which starved reads
 PROVIDER_ENDS="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/provider-ends.tsv"   # <slug>@<last session id> TAB <source> TAB <hold until epoch, 0 for a run that did not end on the provider>: each recent ended run provider_hold_scan classified, so a run's end is read once
 
 # Tier 3 (CI, gates, runners, build and deploy, harness, tooling) never gets a merging session from a
@@ -2794,15 +2794,16 @@ trainee_manifests() {
 # trainee_diff_why <repo> <base> -> the first file the staged diff against <base> touches that
 # trainee_file_ok refuses, as a reject reason, rc 1; nothing, rc 0, when every file passes. The row's
 # words no longer have to name its files (trainee_public_why), so the diff is where the sandbox's
-# limit (no cargo or npm build) is held. A deleted file is judged by its path alone.
+# limit (no cargo or npm build) is held. A deleted file, or a rename's source, is judged by its path alone.
 trainee_diff_why() {
   local f manifests
   manifests=$(trainee_manifests "$1")
-  while IFS= read -r f; do
+  # --no-renames lists a rename's source too, and -z keeps a path with non-ASCII bytes unquoted.
+  while IFS= read -r -d '' f; do
     [ -n "$f" ] || continue
     trainee_file_ok "$1" "$f" "$manifests" ||
       { echo "its diff touches $f, which is no markdown file, nor a shell or bats file outside a cargo or npm tree, so the sandbox could not build it"; return 1; }
-  done < <(git -C "$1" diff --cached --name-only "$2" 2>/dev/null)
+  done < <(git -C "$1" diff --cached --name-only --no-renames -z "$2" 2>/dev/null)
 }
 
 # row_paths <text> <repo> -> the files and directories a row names, one a line: each word with a slash
@@ -2959,7 +2960,9 @@ cmd_trainee_review() {
     { say "trainee-review: could not save the diff $trn left on $slug"; return 1; }
   [ -s "$patch" ] || { cmd_trainee_reject "$slug" --why "$(trainee_empty_why "$it" "$trn")"; return; }
   why=$(trainee_diff_why "$(git rev-parse --show-toplevel)" "$base") ||
-    { cmd_trainee_reject "$slug" --why "$why"; git reset -q --hard "$base" && git clean -fdq; return; }
+    { cmd_trainee_reject "$slug" --why "$why" || return  # still running: the worktree keeps the diff
+      git reset -q --hard "$base" && git clean -fdq || say "trainee-review: could not put $PWD back at $base, so wt reap leaves it"
+      return 0; }
   # The worktree goes back to its base only once the row waits in review: until then it holds the diff too.
   trainee_load
   if [ -z "$(jq -r '.reviewer_model // empty' <<<"$TRAINEE_CONF")" ]; then
@@ -4951,11 +4954,12 @@ trainee_floor_why() {
 # is: a silent starved floor goes unseen. Rc FLOOR_SHUT when nothing started.
 # Off with lanes.yaml trainee `candidates: []`.
 trainee_floor_start() {
-  local before=${STARTED:-0} why h hs=() shut=() dry=() queued board='' bread=0 it c key rc
+  local before=${STARTED:-0} why h hs=() shut=() dry=() queued board='' bread=0 bfail=0 it c key rc
   trainee_load
   mapfile -t hs < <(jq -r '[.candidates[]?.harness] | unique[]' <<<"$TRAINEE_CONF")
   trainee_floor_why; why=$FLOOR_WHY
-  [ -z "$why" ] || { say "trainee floor: shut, $why"; return "$FLOOR_SHUT"; }
+  # A shut floor is no dry pool: its hold or gate is what starved and the Stopped line name.
+  [ -z "$why" ] || { rm -f "$TRAINEE_DRY"; say "trainee floor: shut, $why"; return "$FLOOR_SHUT"; }
   # The batch review and a trainee PR's owner run on claude, which the cluster gate still holds, and so
   # do this machine's load (machine_here_why) and unreadable account usage, which the trainee's own gate
   # skips: start_item would settle the whole pass BLOCKED on it. With no account room the owner waits in route
@@ -4983,7 +4987,7 @@ trainee_floor_start() {
     why=$(ladder_open_why "$h") || { shut+=("$why"); continue; }
     it=$(trainee_queued_pick "$h" "$queued")
     if [ -z "$it" ]; then
-      [ "$bread" = 1 ] || { board=$(trainee_rows) || say "trainee floor: the board read failed"; bread=1; }
+      [ "$bread" = 1 ] || { board=$(trainee_rows) || { say "trainee floor: the board read failed"; bfail=1; }; bread=1; }
       c=$(trainee_board_pick "$h" "$board")
       [ -n "$c" ] || { shut+=("$h has a slot, and no queued or board row is one it takes"); dry+=("$h"); continue; }
       key=$(jq -r .key <<<"$c")
@@ -5000,13 +5004,25 @@ trainee_floor_start() {
     queued=$(jq -c --arg s "$(jq -r .slug <<<"$it")" 'select(.slug != $s)' <<<"$queued")
   done
   [ "${#shut[@]}" -eq 0 ] || { why=$(printf '%s; ' "${shut[@]}"); say "trainee floor: ${why%; }"; }
-  # The pool is dry while a harness has a slot and no row it takes and none started: starved reads
-  # since when. On 2026-11-23 it ran dry at 06:21 with free slots on go and ocfree, and nothing said so (ar-4739).
-  if [ "$DRY" != 1 ]; then
-    if [ "${STARTED:-0}" -gt "$before" ] || [ "${#dry[@]}" -eq 0 ]; then rm -f "$TRAINEE_DRY"
-    elif [ ! -s "$TRAINEE_DRY" ]; then mkdir -p "${TRAINEE_DRY%/*}" && printf '%s\t%s\n' "$(date +%s)" "${dry[*]}" >"$TRAINEE_DRY"; fi
-  fi
+  # Each harness with a slot and no row it takes is dry since the first pass that found it so, one line
+  # a harness; a harness that started or was shut for another reason drops its line. starved reads the
+  # ages. A failed board read says nothing about the pool, so it leaves the marks as they were. On
+  # 2026-11-23 it ran dry at 06:21 with free slots on go and ocfree, and nothing said so (ar-4739).
+  [ "$DRY" = 1 ] || [ "$bfail" = 1 ] || trainee_dry_mark "${dry[@]}"
   [ "${STARTED:-0}" -gt "$before" ] || return "$FLOOR_SHUT"
+}
+
+# trainee_dry_mark <harness>... -- TRAINEE_DRY holds one "<harness> TAB <epoch>" line for each harness
+# named: its old epoch when it was dry already, else now. Every other harness's line goes, and with
+# none named the file goes.
+trainee_dry_mark() {
+  local h since out=''
+  [ "$#" -gt 0 ] || { rm -f "$TRAINEE_DRY"; return 0; }
+  for h in "$@"; do
+    since=$(awk -F'\t' -v h="$h" '$1 == h && $2 ~ /^[0-9]+$/ { print $2; exit }' "$TRAINEE_DRY" 2>/dev/null)
+    out+="$h"$'\t'"${since:-$(date +%s)}"$'\n'
+  done
+  mkdir -p "${TRAINEE_DRY%/*}" && printf '%s' "$out" >"$TRAINEE_DRY.tmp" && mv "$TRAINEE_DRY.tmp" "$TRAINEE_DRY"
 }
 
 # trainee_ok <item json> <harness> -- rc 0 when the trainee harness may run the row: trainee_why (no
@@ -5055,7 +5071,6 @@ trainee_reason_key() {
   sed -E 's#^its repo .* is not one a trainee#its repo is not one a trainee#
     s#^.* has no \.githooks/sensitive-tokens\.txt.*#its repo has no .githooks/sensitive-tokens.txt#
     s#^its words match .*#its words match the repo sensitive-tokens.txt#
-    s#^it names no file, .*#it names no file, so nothing shows its work stays in the repo#
     s#^it names [^,]*, which [^ ]+ does not track#it names a file which the repo does not track#
     s#^it names [^,]*, which (.*)#it names a file which \1#
     s#^its kind .* opens no PR#its kind opens no PR#
@@ -6321,14 +6336,16 @@ cmd_starved() {
   return 1
 }
 
-# trainee_dry <cut epoch> -> one line when the trainee pool has been dry since before <cut>: a harness
-# with a slot found no queued or board row it takes on every pass since (TRAINEE_DRY), so the free keys
+# trainee_dry <cut epoch> -> one line per harness dry since before <cut>: it had a slot and found no
+# queued or board row it takes on every pass since (TRAINEE_DRY, trainee_dry_mark), so its free key
 # sit idle. A dry pool is a supply fault no run start clears, so starved reports it beside the dead holds.
 trainee_dry() {
-  local since hs
-  [ -s "$TRAINEE_DRY" ] && IFS=$'\t' read -r since hs <"$TRAINEE_DRY" && [[ "$since" =~ ^[0-9]+$ ]] || return 0
-  [ "$since" -le "$1" ] || return 0
-  echo "trainee pool dry since $(date -d "@$since" '+%F %H:%M'): $hs had a slot and no queued or board row a trainee takes (fleet-dispatch trainee-pool names each refusal)"
+  local h since
+  [ -s "$TRAINEE_DRY" ] || return 0
+  while IFS=$'\t' read -r h since; do
+    [[ "$since" =~ ^[0-9]+$ ]] && [ "$since" -le "$1" ] || continue
+    echo "trainee pool dry since $(date -d "@$since" '+%F %H:%M'): $h had a slot and no queued or board row a trainee takes (fleet-dispatch trainee-pool names each refusal)"
+  done <"$TRAINEE_DRY"
 }
 
 # dead_holds -> one line per open board row gated on what can never clear, each gate `agent-queue gate`

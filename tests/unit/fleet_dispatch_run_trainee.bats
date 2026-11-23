@@ -620,12 +620,13 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'gotrain has a slot, and no queued or board row is one it takes'
   [ -s "$TRAINEE_DRY" ] || fail "the dry pool was not marked"
-  assert_equal "$(cut -f2 "$TRAINEE_DRY")" gotrain
-  # A second dry pass keeps the first mark, so the age counts from when it ran dry.
-  printf '%s\tgotrain\n' "$(( $(date +%s) - DISPATCH_STARVED_MIN * 60 - 60 ))" > "$TRAINEE_DRY"
-  since=$(cut -f1 "$TRAINEE_DRY")
+  assert_equal "$(cut -f1 "$TRAINEE_DRY")" gotrain
+  # A second dry pass keeps the harness's first mark, so the age counts from when it ran dry; a
+  # harness this pass did not find dry loses its line.
+  printf 'gotrain\t%s\nother\t1\n' "$(( $(date +%s) - DISPATCH_STARVED_MIN * 60 - 60 ))" > "$TRAINEE_DRY"
+  since=$(awk -F'\t' '$1 == "gotrain" { print $2 }' "$TRAINEE_DRY")
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_equal "$(cut -f1 "$TRAINEE_DRY")" "$since"
+  assert_equal "$(cat "$TRAINEE_DRY")" "gotrain	$since"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" starved
   assert_failure
   assert_output --partial 'trainee pool dry since '
@@ -639,4 +640,11 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'trainee floor: promoted row tr-ok to queue item tr-ok for gotrain'
   [ ! -e "$TRAINEE_DRY" ] || fail "a start left the dry mark: $(cat "$TRAINEE_DRY")"
+  # A shut floor is no dry pool: its gate is what starved names.
+  printf 'gotrain\t1\n' > "$TRAINEE_DRY"
+  stub fleet-shepherd 'echo "infra: k3s domain red"'
+  stub curl 'exit 7'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'trainee floor: shut, infra: k3s domain red'
+  [ ! -e "$TRAINEE_DRY" ] || fail "a shut floor left the dry mark: $(cat "$TRAINEE_DRY")"
 }
