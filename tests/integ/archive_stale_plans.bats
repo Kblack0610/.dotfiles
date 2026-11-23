@@ -79,3 +79,22 @@ finished_plan() {
   assert_output --partial '_archive/_live/done.md exists'
   [[ -f "$LIVE/done.md" && "$(cat "$ROOT/_archive/_live/done.md")" == other ]]
 }
+
+@test "an alias whose name is taken in _archive/_live stays in _live and still reaches its plan; a glob name matches only itself" {
+  finished_plan 'p[1]' '- [x] P1 ship it (#1)'
+  mkdir -p "$ROOT/proj" "$ROOT/_archive/_live"
+  ln -s '../_live/p[1].md' "$ROOT/proj/p[1].md"
+  ln -s ../_live/fresh.md "$ROOT/proj/p1.md"   # what the pattern [1] would match
+  ln -s 'p[1].md' "$LIVE/alias.md"; echo other > "$ROOT/_archive/_live/alias.md"
+  run "$SCRIPT" --yes
+  assert_success
+  [[ ! -L "$ROOT/proj/p[1].md" && -L "$ROOT/proj/p1.md" ]]
+  [[ "$(readlink "$LIVE/alias.md")" == '../_archive/_live/p[1].md' && -f "$LIVE/alias.md" ]]
+}
+
+@test "a LIVE_DAYS that is not a whole number stops the run before it moves anything" {
+  LIVE_DAYS=abc run "$SCRIPT" --yes
+  assert_failure
+  assert_output --partial 'LIVE_DAYS must be a whole number'
+  [[ -d "$ROOT/old" ]]
+}

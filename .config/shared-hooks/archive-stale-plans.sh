@@ -3,8 +3,8 @@
 # the _live store into _archive/_live/. Idempotent. Interactive by default; --yes for non-interactive.
 #
 # A subdir is "stale" if its newest *.md (recursive) is older than $STALE_DAYS. A _live plan is
-# finished when every phase of its checklist is done (plan_left, .local/lib/plan-phases.sh) and it
-# has not changed in $LIVE_DAYS.
+# finished when every phase of its checklist is done (plan_left, .local/lib/plan-phases.sh: deferred
+# phases and a superseded plan count as done) and it has not changed in more than $LIVE_DAYS days.
 
 set -uo pipefail
 
@@ -14,7 +14,9 @@ STALE_DAYS="${STALE_DAYS:-60}"
 LIVE_DAYS="${LIVE_DAYS:-14}"
 LIVE_DIR="$PLANS_DIR/_live"
 # shellcheck source=../../.local/lib/plan-phases.sh
-. "${PLAN_PHASES_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.local/lib/plan-phases.sh}"
+. "${PLAN_PHASES_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.local/lib/plan-phases.sh}" \
+  || { echo "archive-stale-plans: cannot load plan-phases.sh" >&2; exit 1; }
+case "$LIVE_DAYS" in ''|*[!0-9]*) echo "archive-stale-plans: LIVE_DAYS must be a whole number" >&2; exit 1 ;; esac
 ASSUME_YES=0
 
 for arg in "$@"; do
@@ -72,22 +74,32 @@ done
 # the project's list is its open work; an archived project's entry (../../_live/<name>) drops a ../
 # to reach _archive/_live; an alias in _live itself moves along beside its plan.
 if [ -d "$LIVE_DIR" ]; then
-  echo "=== scanning _live for finished plans untouched > ${LIVE_DAYS}d ==="
+  echo "=== scanning _live for finished plans untouched more than ${LIVE_DAYS}d ==="
   # fd 3 carries the list, so confirm still reads the terminal on stdin.
   while IFS= read -r -d '' f <&3; do
     [ "$(plan_left "$f")" = 0 ] || continue
-    name=$(basename "$f")
-    [ -e "$ARCHIVE_DIR/_live/$name" ] && { echo "  _archive/_live/$name exists, left as is"; continue; }
+    name=$(basename "$f") dest="$ARCHIVE_DIR/_live/$(basename "$f")"
+    { [ -e "$dest" ] || [ -L "$dest" ]; } && { echo "  _archive/_live/$name exists, left as is"; continue; }
     confirm "  move _live/$name -> _archive/_live/ ?" || continue
     mkdir -p "$ARCHIVE_DIR/_live"
-    mv "$f" "$ARCHIVE_DIR/_live/$name" || continue
+    mv "$f" "$dest" || continue
     echo "  archived _live/$name"
-    find "$PLANS_DIR" -mindepth 2 -maxdepth 2 ! -path "$PLANS_DIR/_*" -type l -lname "../_live/$name" -delete
-    find "$ARCHIVE_DIR" -mindepth 2 -maxdepth 2 -type l -lname "../../_live/$name" -exec ln -sfn "../_live/$name" {} \;
-    while IFS= read -r -d '' a <&4; do
-      [ -e "$ARCHIVE_DIR/_live/${a##*/}" ] && continue
-      mv "$a" "$ARCHIVE_DIR/_live/" && ln -sfn "$name" "$ARCHIVE_DIR/_live/${a##*/}"
-    done 4< <(find "$LIVE_DIR" -maxdepth 1 -type l \( -lname "$name" -o -lname "$LIVE_DIR/$name" \) -print0)
+    # Links are matched by exact readlink, never a find pattern, so a name's glob characters match only themselves.
+    for l in "$PLANS_DIR"/[!_]*/"$name"; do
+      [ -L "$l" ] && [ "$(readlink "$l")" = "../_live/$name" ] && rm -f "$l"
+    done
+    for l in "$ARCHIVE_DIR"/*/"$name"; do
+      [ -L "$l" ] && [ "$(readlink "$l")" = "../../_live/$name" ] && ln -sfn "../_live/$name" "$l"
+    done
+    for a in "$LIVE_DIR"/*; do
+      [ -L "$a" ] || continue
+      case "$(readlink "$a")" in "$name"|"$LIVE_DIR/$name") ;; *) continue ;; esac
+      if [ -e "$ARCHIVE_DIR/_live/${a##*/}" ] || [ -L "$ARCHIVE_DIR/_live/${a##*/}" ]; then
+        ln -sfn "../_archive/_live/$name" "$a"   # its name is taken there: it stays, still reaching the plan
+      else
+        mv "$a" "$ARCHIVE_DIR/_live/" && ln -sfn "$name" "$ARCHIVE_DIR/_live/${a##*/}"
+      fi
+    done
   done 3< <(find "$LIVE_DIR" -maxdepth 1 -type f -name '*.md' -mtime +"$LIVE_DAYS" -print0 | sort -z)
 fi
 
