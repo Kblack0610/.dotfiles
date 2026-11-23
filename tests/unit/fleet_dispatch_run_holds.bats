@@ -946,3 +946,15 @@ min_live_classes() {
   assert_success
   [ -n "$(qitem running small-rest)" ] || fail "the light item waited for a class already at its minimum"
 }
+
+# 2026-11-23: the judge ran only inside the board fill, so a pass a gate held judged nothing and
+# 1,855 rows waited unjudged behind a flapping k3s red and the load gate.
+@test "a pass the cluster gate holds still judges the new rows, and starts nothing" {
+  game_ready
+  row game human 'add a new map' "- [ ] add a new map $T"
+  stub fleet-shepherd 'echo "infra: k3s domain red"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'infra: k3s domain red'
+  assert_called 'judge called'
+  assert_not_called 'wt new'
+}
