@@ -87,6 +87,7 @@ def release_tag(ref):
     return bool(RELEASE_TAG.search(ref.removeprefix("refs/tags/")))
 
 
+# gate: hook-release-guard
 def deny(what, does):
     return MSG.format(what="`%s`" % what, does=does)
 

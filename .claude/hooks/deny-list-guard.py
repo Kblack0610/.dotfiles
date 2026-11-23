@@ -101,6 +101,7 @@ def main():
     r = cmd.strip() and reason(cmd, settings)
     if r:
         print(json.dumps({"hookSpecificOutput": {
+            # gate: hook-deny-list-guard
             "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": r}}))
 
 
