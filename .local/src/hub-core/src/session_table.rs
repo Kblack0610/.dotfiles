@@ -992,7 +992,11 @@ mod tests {
         };
         assert_eq!(keys("item:none"), ["lab/d:2"]);
         assert_eq!(keys("pr:open project:dotfiles"), ["lab/d:2"]);
-        assert_eq!(keys("source:outcome"), ["h1"]);
+        // An ended row is under `all`; the opening view is the live rows.
+        let all = View::new::<SessionRow>("source:outcome", "all", "", "");
+        let ended: Vec<_> = all.apply(&r).iter().map(|x| x.key.clone()).collect();
+        assert_eq!(ended, ["h1"]);
+        assert!(keys("source:outcome").is_empty());
         assert_eq!(keys("item:own"), ["lab/d:1"]);
     }
 

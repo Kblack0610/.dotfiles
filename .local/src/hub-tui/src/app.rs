@@ -6198,7 +6198,7 @@ mod tests {
         assert!(lines[0].contains("4 Sessions"), "{s}");
         assert!(lines[1].starts_with("[Sessions] Runners  Shepherd"), "{s}");
         assert!(lines[2].contains("Reading the board files..."), "{s}");
-        assert!(lines[3].starts_with("all 2  running"), "{s}");
+        assert!(lines[3].starts_with("live 2  running"), "{s}");
         assert!(
             lines[4].starts_with("STAGE") && lines[4].contains("ACCOUNT"),
             "{s}"
