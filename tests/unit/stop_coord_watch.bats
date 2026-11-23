@@ -56,6 +56,27 @@ live_watch() {
   [ "$(jq -r .decision <<<"$output")" = block ]
 }
 
+@test "a coordinator whose plan has every ledger line ticked is told step 6, not to re-arm, with the watch's mark gone" {
+  printf '# p\n## Follow-through\n- [x] ar-1 live\n' > "$SANDBOX/p.md"
+  printf '%s\n' "$SANDBOX/p.md" > "$COORD_WATCH_STATE/session-sid-1.plan"
+  PATH="$REPO_ROOT/.local/bin:$PATH" run bash "$CHECK" <<<"$(stop_payload)"
+  [ "$(jq -r .decision <<<"$output")" = block ]
+  [[ "$(jq -r .reason <<<"$output")" == *"nothing to watch"*"step 6"*"-coordinator"*"reopen-on-answer"*"do not re-arm"* ]]
+}
+
+@test "negative control: an open line, a plan with no ledger, or no coord-watch on PATH is a missing watch, not a ticked ledger" {
+  printf '# p\n## Follow-through\n- [ ] ar-1 open\n' > "$SANDBOX/p.md"
+  printf '%s\n' "$SANDBOX/p.md" > "$COORD_WATCH_STATE/session-sid-1.plan"
+  PATH="$REPO_ROOT/.local/bin:$PATH" run bash "$CHECK" <<<"$(stop_payload)"
+  [[ "$(jq -r .reason <<<"$output")" == *"Start Monitor with command"* ]]
+  printf '# p\n' > "$SANDBOX/p.md"
+  PATH="$REPO_ROOT/.local/bin:$PATH" run bash "$CHECK" <<<"$(stop_payload)"
+  [[ "$(jq -r .reason <<<"$output")" == *"Start Monitor with command"* ]]
+  printf '# p\n## Follow-through\n- [x] ar-1 live\n' > "$SANDBOX/p.md"
+  PATH="/usr/bin:/bin" run bash "$CHECK" <<<"$(stop_payload)"
+  [[ "$(jq -r .reason <<<"$output")" == *"Start Monitor with command"* ]]
+}
+
 @test "a live coord-watch in a one-shot mode (ids, filter) is not a watch" {
   live_watch coord-watch filter
   run bash "$CHECK" <<<"$(stop_payload)"
