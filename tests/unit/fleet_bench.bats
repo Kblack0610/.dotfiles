@@ -5188,7 +5188,7 @@ episode() { jq -r --arg k "$1" 'select("\(.rule) \(.scope)" == $k) | .episode' "
     printf 'cc:pool_match_labels\tunity/unity,unity-gate\t%s\t1\n' "$(clock 09:30)"; } > "$SANDBOX/prom.tsv"
   BENCH_PROM_TSV="$SANDBOX/prom.tsv" eval_at 09:30
   run jq -r 'select(.scope == "pool:unity") | "\(.bind) \(.evidence.numbers.runners) \(.conclusion)"' "$FLEET_BENCH_DIR/findings.jsonl"
-  assert_output "admission 13 oldest job waited 1.1h with 3/3 slots busy among those matching its labels (unity,unity-gate), 5/6 in the fleet: only 3 of the 13 runners with its labels are admitted, the rest withheld or offline: admission or host health binds, not demand"
+  assert_output "admission 13 oldest job waited 1.1h with 3/3 slots busy among those matching its labels (unity,unity-gate), 5/6 in the fleet: only 3 of the 13 runners with its labels are admitted, the rest withheld, parked or offline: admission or host health binds, not demand"
   rm "$FLEET_BENCH_DIR/findings.jsonl"
   # One pinned slot out of 13 (the workstation under machine-mode) is still demand over capacity.
   sed 's/^\(cc:pool_match_slots\tunity\t[0-9]*\t\)3$/\112/; s/^\(cc:pool_match_busy\tunity\t[0-9]*\t\)3$/\112/' "$SANDBOX/prom.tsv" > "$SANDBOX/most.tsv"

@@ -5375,7 +5375,7 @@ finding_rows() {
                 + (if $ms != null then {fleet_taken: $fu.u, fleet_units: $fu.s, labels: $want, runners: $mr} else {} end); "now"; "cc:pool_*";
                 "oldest job waited \($w | dur) with \($k.u | units)/\($k.s | units) slots busy"
                 + (if $ms != null then " among those matching its labels (\($want // "?")), \($fu.u | units)/\($fu.s | units) in the fleet" else "" end) + ": "
-                + (if $pinned then "the jobs are pinned to a host, so the slots of the pin bind, not the pool" elif $bind == "labels" then "admission or labels bind, not capacity" elif $bind == "admission" then "only \($ms) of the \($mr) runners with its labels are admitted, the rest withheld or offline: admission or host health binds, not demand" else "demand is over the \(if $ms != null then "matching slots'"'"'" else "pool'"'"'s" end) capacity" end);
+                + (if $pinned then "the jobs are pinned to a host, so the slots of the pin bind, not the pool" elif $bind == "labels" then "admission or labels bind, not capacity" elif $bind == "admission" then "only \($ms) of the \($mr) runners with its labels are admitted, the rest withheld, parked or offline: admission or host health binds, not demand" else "demand is over the \(if $ms != null then "matching slots'"'"'" else "pool'"'"'s" end) capacity" end);
                 "\($n) jobs waiting") + {repos: $repos, bind: $bind} ),
           ( ($a["cc:host_load1"] // {}) | to_entries[] | .key as $h | .value as $v | ($a["cc:host_cores"][$h]) as $n
             | select($n != null and $n > 0)
