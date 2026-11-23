@@ -1655,6 +1655,24 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
   assert_output 'o/game: a pass holds the PR store'
 }
 
+@test "sync-prs: a lagging page's row updated before the stored one is dropped, so a merged PR never reads OPEN again (ar-3413)" {
+  # NEGATIVE CONTROL: without older_pr in sync_prs, #7's OPEN row from the lagging page is appended
+  # after its MERGED row, `prs` reads it OPEN, and no later window re-reads a PR nothing updates.
+  mkdir -p "$XDG_STATE_HOME/ci"; echo '{"exporter":{"repos":["o/game"]}}' > "$XDG_STATE_HOME/ci/sync.json"
+  prs_page o/game "$(gh_pr 7 closed 2025-11-06T10:00:00Z feat-x)"
+  run "$SUBJECT" sync-prs o/game
+  assert_success
+  printf '[%s,%s]' "$(gh_pr 8 open null feat-y)" \
+    "$(gh_pr 7 open null feat-x '' '' old7 | jq -c '.updated_at = "2025-11-06T06:30:00Z"')" | serve "$(pulls o/game 1)"
+  run "$SUBJECT" sync-prs o/game
+  assert_success
+  run "$SUBJECT" prs o/game
+  assert_success
+  assert_equal "$(jq -c 'map([.number, .state, .head_sha])' <<<"$output")" '[[8,"OPEN","h8"],[7,"MERGED","h7"]]'
+  run wc -l < "$PRS/o__game.jsonl"
+  assert_output 2
+}
+
 @test "sync-prs --wait waits out a pass that holds the store, and refreshes it once the pass lets go" {
   # NEGATIVE CONTROL: with wait=False here, as agent-land's sync-prs runs, this fails at once with
   # "a pass holds the PR store", and a boot catch-up of fleet-bench review reads a stale store.

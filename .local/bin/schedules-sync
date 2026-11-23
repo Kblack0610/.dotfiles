@@ -103,7 +103,8 @@ takes passes; a 429 or 5xx ends the pass's reads and is recorded as the repo's `
 
 Each pass also refreshes the PR store, SCHEDULES_PRS_DIR (~/.agent/prs), one file per repo of the
 list (a prs-only repo is read for this alone: no runs, schedules or quarantine), <owner>__<repo>.jsonl (Forgejo: <host>__<owner>__<repo>.jsonl), one JSON row per PR each time
-it changes, kept forever and compacted like the ledger. It reads pulls?state=all newest update
+it changes, kept forever and compacted like the ledger; a row updated before the one the store holds
+(a lagging page) is dropped, never appended. It reads pulls?state=all newest update
 first back to the last sync less an hour, the whole history on a cold start or, in a pass (never agent-land's sync-prs), once its row shape (PR_ROW) changed; GitHub's first page
 is conditional on the ETag in the store's sync.json (a 304 when no PR changed), Forgejo's is one
 page; a Forgejo pull mirror, whose PRs are off, is synced with none. A Forgejo PR the store holds OPEN
@@ -976,6 +977,14 @@ def fj_vanished(host, repo, name, last, got):
     return rows
 
 
+def older_pr(r, had):
+    """Whether `r` was updated before the row the store holds for its PR. A lagging list page hands
+    back an old row (dotfiles#2573 read OPEN at 02:54:01Z after its MERGED row at 03:10:16Z), and kept
+    as the last row it reads OPEN for good: no later window reaches a PR nothing updates (ar-3413)."""
+    new, old = when((r or {}).get("updated_at")), when((had or {}).get("updated_at"))
+    return bool(new and old and new < old)
+
+
 def sync_prs(forge, repo, host, t, wait=True):
     """Refresh one repo's PR store and its entry in the store's sync.json, under the store's lock
     (a pass and agent-land's `sync-prs` may run at once). -> the error, or None. With wait False a held lock is that error at once:
@@ -1002,6 +1011,7 @@ def sync_prs(forge, repo, host, t, wait=True):
                 rows += fj_vanished(host, repo, name, last, got or [])
             else:
                 rows = [gh_pr_row(name, p) for p in got or [] if "number" in p]
+            rows = [r for r in rows if not older_pr(r, last.get(r["number"]))]
             write_ledger(last, n, torn, rows, t, pr_file(name), pr_key, None)
             entry.update(etag=etag, synced_at=iso(t), error=None)  # the ETag only once its rows are kept
             if not since:  # a whole read: its rows have this shape
