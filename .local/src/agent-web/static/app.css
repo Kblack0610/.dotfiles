@@ -169,16 +169,16 @@ details.csec > summary h2.sec { display: inline-flex; gap: 6px; margin: 12px 0 8
 .flow { margin: 0 0 10px; overflow-wrap: anywhere; } .fnote { font-size: var(--fs-sm); }
 /* Home's status grid (hub_core::cards): one card per tab, a hairline box with no shadow (ui.md
    rule 2); the label is the KPI tile's small uppercase (rule 6) and the number wears its hue. */
-.kgrid { display: grid; gap: 12px; grid-template-columns: 1fr; margin: 0 0 12px; }
+.kgrid { display: grid; gap: 10px; grid-template-columns: 1fr; margin: 0 0 12px; }
 @media (min-width: 600px) { .kgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (min-width: 1200px) { .kgrid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
-.kcard { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.kcard { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; min-width: 0; display: flex; flex-direction: column; gap: 0; }
 .kt { display: flex; justify-content: space-between; font-size: var(--fs-xs); font-weight: 650; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); text-decoration: none; }
 .kt:hover { color: var(--ink); }
 .kbig { font-size: 28px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; color: var(--ink); }
 .kbig.ok { color: var(--b-done); } .kbig.warn { color: var(--b-stalled); } .kbig.bad { color: var(--b-needs); }
 .ku { font-size: var(--fs-sm); font-weight: 400; color: var(--muted); margin-left: 6px; }
-.kbar { display: flex; gap: 2px; height: 6px; margin: 4px 0; }
+.kbar { display: flex; gap: 2px; height: 6px; margin: 2px 0; }
 .kbar i { flex: 1; border-radius: 3px; background: var(--line); }
 .kbar i.ok { background: var(--b-done); } .kbar i.warn { background: var(--b-stalled); } .kbar i.bad { background: var(--b-needs); }
 .kbar i.doing { background: var(--b-working); } .kbar i.dropped { background: var(--b-parked); }
@@ -187,7 +187,7 @@ details.csec > summary h2.sec { display: inline-flex; gap: 6px; margin: 12px 0 8
 .kp b { font-size: var(--fs-sm); color: var(--ink); font-variant-numeric: tabular-nums; }
 .kp b.warn { color: var(--b-stalled); } .kp b.bad { color: var(--b-needs); }
 .kl { display: contents; }
-.kfh { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--line); font-size: var(--fs-xs); font-weight: 650; color: var(--muted); }
+.kfh { margin-top: 2px; padding-top: 2px; border-top: 1px solid var(--line); font-size: var(--fs-xs); font-weight: 650; color: var(--muted); }
 .kf { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; text-decoration: none; color: var(--ink); font-size: var(--fs-sm); padding: 1px 0; min-width: 0; }
 .kf > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kf small { margin-left: 6px; color: var(--muted); font-size: var(--fs-xs); }
@@ -487,8 +487,8 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
 @media (max-width: 760px) {
   /* Home's cards two across and compact: title, number, bar, its first two counts and its first look-first row
      (with its level word, so a state never rests on colour alone); the rest is the tab a tap opens. */
-  .kgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 10px; }
-  .kcard { padding: 8px 10px; }
+  .kgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin-bottom: 10px; }
+  .kcard { padding: 6px 10px; }
   .kbig { font-size: 22px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .kbig .ku { display: block; margin: 0; overflow: hidden; text-overflow: ellipsis; }
   .kparts { flex-wrap: nowrap; overflow: hidden; gap: 0 10px; }

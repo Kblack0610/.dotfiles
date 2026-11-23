@@ -90,6 +90,10 @@ setup() {
   export DISPATCH_LOADAVG="$SANDBOX/loadavg"
   export DISPATCH_JUDGE_CMD=judge-stub   # on PATH: the command is a word list, and the sandbox path has a space
   echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
+  # No CPU sample unless a test is about it (cpu_busy), so the pace reads load average alone, as the
+  # runner's own /proc/stat would otherwise decide the load cases.
+  export DISPATCH_CPU_SAMPLES="$SANDBOX/cpu.samples" DISPATCH_PROC_STAT="$SANDBOX/stat"
+  echo 'cpu  0 0 0 0 0 0 0 0 0 0' > "$DISPATCH_PROC_STAT"
   export DISPATCH_CANARY_KEEP=0   # off unless a test is about it ("canary top-up:"), so no pass asks fleet-bench for canaries
   export DISPATCH_FLEET_SHARE=0   # off unless a test is about it ("fleet share:"), so a fleet project's item starts in queue order
   export DISPATCH_START_LOAD=0   # a start adds no pending load unless a test is about it, whatever the runner's cores

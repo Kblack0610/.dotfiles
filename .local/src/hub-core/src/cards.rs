@@ -164,7 +164,8 @@ impl Card {
 }
 
 /// The tab a card id opens: Needs you and Main red are Home's own lists, Done today is the
-/// queue's done items and Health the Infra tab; every other card is its tab's.
+/// queue's done items and Health the Infra tab; CI is `ci`, the retired tab name that lands on
+/// Infra's Runners tab (`layout::RETIRED`, `layout::section`); every other card is its tab's.
 fn opens(id: &str) -> &str {
     match id {
         "needs" | "red" => "home",
@@ -590,15 +591,12 @@ pub fn done(d: Option<&crate::phone::Done>) -> Card {
     )
 }
 
-/// Health: the machines Prometheus reads, the CI pool from the CI glance (the one the bar and
-/// the phone's CI row read), what is stuck, the System domains (`cc:domain_status`,
+/// Health: the machines Prometheus reads, the System domains (`cc:domain_status`,
 /// `Infra::domains`) the waybar health chip and the phone's System line show, and fleet-bench's
-/// vitals. It opens the Infra tab.
+/// vitals. CI is its own card (`ci`). It opens the Infra tab.
 pub fn health(i: &crate::infra::Infra) -> Card {
-    const COUNTED: &str = "machines with a reading, CI runners and the cc:domain_status domains \
-         from Prometheus; CI running is the jobs on a runner now and Runners up the runners up of the \
-         roster, both from the CI glance, which alone turns the card red for CI; \
-         vitals are fleet-bench's KPIs against their targets";
+    const COUNTED: &str = "machines with a reading and the cc:domain_status domains from \
+         Prometheus, a domain down turning the card red; vitals are fleet-bench's KPIs against their targets";
     if !i.ok {
         return Card::failed(
             "health",
@@ -611,26 +609,9 @@ pub fn health(i: &crate::infra::Infra) -> Card {
     }
     let up = i.machines.iter().filter(|m| m.state == "up").count();
     let unread = i.machines.iter().filter(|m| m.state == NO_DATA).count();
-    let down = i.runners_down().len();
-    // Alerts' stuck runs, the one list its rows read: one number for one fact.
-    let runs = crate::alerts::stuck_runs(i);
-    let stuck = runs.len();
-    let g = &i.ci.glance;
     let (d_down, d_warn, d_up) = i.domains();
     let mut c = Card::new("health", "Health", COUNTED)
         .bar(up, i.machines.len() - up - unread, unread)
-        .part("CI running", g.busy, Level::Ok)
-        .part("CI queued", g.queued, Level::Ok)
-        .part(
-            "Runners up",
-            g.up_line(),
-            match g.expected {
-                0 => Level::Nodata,
-                _ => lvl(down, Level::Red),
-            },
-        )
-        .part("No runner", i.ci.red.len(), lvl(i.ci.red.len(), Level::Red))
-        .part("Stuck", stuck, lvl(stuck, Level::Red))
         .part("Domains down", d_down, lvl(d_down, Level::Red))
         .part("Domains warn", d_warn, lvl(d_warn, Level::Warn))
         .part("Domains up", d_up, Level::Ok);
@@ -647,7 +628,7 @@ pub fn health(i: &crate::infra::Infra) -> Card {
             c.level = Level::Warn;
         }
     }
-    if down + stuck + i.ci.red.len() > 0 {
+    if d_down > 0 {
         c.level = Level::Red;
     }
     c.big = format!("{up} of {}", i.machines.len());
@@ -665,7 +646,60 @@ pub fn health(i: &crate::infra::Infra) -> Card {
             Some(Link::to(crate::links::Kind::Machine, m.host.clone())),
         )
     });
-    let runners = i.runners_down().into_iter().map(|s| {
+    let domains = i
+        .health()
+        .into_iter()
+        .filter(|d| d.level == Level::Red)
+        .map(|d| row(d.name, "domain down", Level::Red, None));
+    c.first(machines.chain(domains).collect::<Vec<_>>())
+}
+
+/// CI: the jobs running now and the ones waiting, from the CI glance the bar's `CI r:N q:N`
+/// and the phone's CI row read, the runners up of the roster, the queued jobs no runner takes
+/// and what is stuck. Red only on a runner down, a job no runner takes or a stuck run
+/// (`Glance::alert`'s rule plus Alerts' stuck runs), never queue depth. It opens Infra's Runners tab.
+pub fn ci(i: &crate::infra::Infra) -> Card {
+    const COUNTED: &str = "CI running is the jobs on a runner now, Queued the jobs waiting and \
+         Runners up the runners up of the roster, all from the CI glance; No runner is the \
+         queued jobs no online runner can take and Stuck the runs Alerts lists; only a runner \
+         down, a job with no runner or a stuck run turns the card red";
+    if !i.ok {
+        return Card::failed(
+            "ci",
+            "CI",
+            COUNTED,
+            i.error
+                .clone()
+                .unwrap_or("Prometheus did not answer".into()),
+        );
+    }
+    let down = i.runners_down();
+    // Alerts' stuck runs, the one list its rows read: one number for one fact.
+    let runs = crate::alerts::stuck_runs(i);
+    let g = &i.ci.glance;
+    let mut c = Card::new("ci", "CI", COUNTED)
+        .bar(g.up as usize, 0, down.len())
+        .part("Queued", g.queued, Level::Ok)
+        .part(
+            "Runners up",
+            g.up_line(),
+            match g.expected {
+                0 => Level::Nodata,
+                _ => lvl(down.len(), Level::Red),
+            },
+        )
+        .part("No runner", i.ci.red.len(), lvl(i.ci.red.len(), Level::Red))
+        .part("Stuck", runs.len(), lvl(runs.len(), Level::Red));
+    if down.len() + runs.len() + i.ci.red.len() > 0 {
+        c.level = Level::Red;
+    }
+    c.big = g.busy.to_string();
+    c.unit = "CI running".into();
+    let red =
+        i.ci.red
+            .iter()
+            .map(|r| row(r.clone(), "no runner takes it", Level::Red, None));
+    let runners = down.iter().map(|s| {
         row(
             format!("{} down", s.label("runner")),
             "CI runner",
@@ -673,11 +707,7 @@ pub fn health(i: &crate::infra::Infra) -> Card {
             None,
         )
     });
-    let red =
-        i.ci.red
-            .iter()
-            .map(|r| row(r.clone(), "CI", Level::Red, None));
-    let stuck_rows = runs.iter().map(|s| {
+    let stuck = runs.iter().map(|s| {
         row(
             s.name(),
             format!("stuck run, {}", s.age_text()),
@@ -685,11 +715,22 @@ pub fn health(i: &crate::infra::Infra) -> Card {
             None,
         )
     });
+    let oldest = g.next.first().map(|q| {
+        row(
+            format!("{} {}", q.repo, q.job).trim().to_string(),
+            format!(
+                "oldest queued, {} x{}",
+                crate::display::fmt::age(q.wait),
+                q.n
+            ),
+            Level::Ok,
+            None,
+        )
+    });
     c.first(
-        runners
-            .chain(machines)
-            .chain(red)
-            .chain(stuck_rows)
+        red.chain(runners)
+            .chain(stuck)
+            .chain(oldest)
             .collect::<Vec<_>>(),
     )
 }
@@ -1137,6 +1178,7 @@ pub const ORDER: &[&str] = &[
     "red",
     "done",
     "health",
+    "ci",
     "sessions",
     "queue",
     "board",
@@ -1198,6 +1240,7 @@ pub fn grid(r: &Reads) -> Vec<Card> {
     vec![
         done_today,
         one(r.infra, "health", "Health", health),
+        one(r.infra, "ci", "CI", ci),
         one(r.sessions, "sessions", "Sessions", sessions),
         one(r.queue, "queue", "Queue", |q| queue(q, r.pipeline, r.now)),
         one(r.board, "board", "Board", board),
@@ -1354,7 +1397,7 @@ mod tests {
         assert_eq!((g[1].big.as_str(), g[1].unit.as_str()), ("-", "reading"));
         assert_eq!(g[1].level, Level::Nodata);
         assert_eq!(
-            (g[6].tab, g[6].big.as_str(), g[6].error.as_deref()),
+            (g[7].tab, g[7].big.as_str(), g[7].error.as_deref()),
             ("costs", "NO DATA", Some("prometheus: timeout"))
         );
         // Every card opens its tab: Done the Queue, Health the Infra tab.
@@ -1984,7 +2027,7 @@ mod tests {
     }
 
     #[test]
-    fn health_stuck_is_alerts_stuck_runs_one_per_branch() {
+    fn ci_stuck_is_alerts_stuck_runs_one_per_branch() {
         use crate::prom::Series;
         let run = |branch: &str, wf: &str| Series {
             labels: [
@@ -2003,12 +2046,12 @@ mod tests {
             ok: true,
             ..Default::default()
         };
-        // Three runs on two branches: Alerts has two rows, so Health says two, never three or 0.
+        // Three runs on two branches: Alerts has two rows, so CI says two, never three or 0.
         i.instant.insert(
             "waiting",
             vec![run("main", "CI"), run("main", "Checks"), run("feat", "CI")],
         );
-        let c = health(&i);
+        let c = ci(&i);
         let pill = c.parts.iter().find(|p| p.label == "Stuck").unwrap();
         let rows = crate::alerts::machinery(&i)
             .iter()
@@ -2016,12 +2059,60 @@ mod tests {
             .count();
         assert_eq!((pill.value.as_str(), rows), ("2", 2));
         assert_eq!(c.level, Level::Red);
-        // A red CI check is a pill and the first row, so the red level is never unexplained.
+        // The stuck runs are CI's, not Health's: Health stays machines, domains and vitals.
+        let h = health(&i);
+        assert!(h.parts.iter().all(|p| p.label != "Stuck"));
+        assert_ne!(h.level, Level::Red);
+        // A job no runner takes is a pill and the first row, so the red level is never unexplained.
         i.ci.red = vec!["Checks main".into()];
-        let c = health(&i);
+        let c = ci(&i);
         let red = c.parts.iter().find(|p| p.label == "No runner").unwrap();
         assert_eq!(red.value, "1");
         assert_eq!(c.lists[0].rows[0].text, "Checks main");
+    }
+
+    #[test]
+    fn the_ci_card_reads_the_glance_and_is_red_only_for_a_fault_never_queue_depth() {
+        let mut i = crate::infra::Infra {
+            ok: true,
+            ..Default::default()
+        };
+        i.ci.glance.busy = 4;
+        i.ci.glance.queued = 23;
+        i.ci.glance.up = 5;
+        i.ci.glance.expected = 5;
+        i.ci.glance.next = vec![crate::ci::Queued {
+            job: "build".into(),
+            repo: "app".into(),
+            n: 2,
+            wait: 600,
+            ..Default::default()
+        }];
+        let c = ci(&i);
+        assert_eq!(
+            (c.tab, c.big.as_str(), c.unit.as_str(), c.link.href()),
+            ("ci", "4", "CI running", "#ci".into())
+        );
+        let part = |l: &str| c.parts.iter().find(|p| p.label == l).unwrap().value.clone();
+        assert_eq!(
+            (part("Queued"), part("Runners up")),
+            ("23".into(), "5/5".into())
+        );
+        // A deep queue is information: green, with the oldest queued job as the one row.
+        assert_eq!(c.level, Level::Ok);
+        assert_eq!(c.lists[0].rows[0].text, "app build");
+        // A job no runner takes turns CI red and leaves Health green.
+        i.ci.red = vec!["Checks main".into()];
+        assert_eq!(ci(&i).level, Level::Red);
+        assert_ne!(health(&i).level, Level::Red);
+        // A reader that did not answer is no data with why, never a green zero.
+        i.ok = false;
+        i.error = Some("timeout".into());
+        let c = ci(&i);
+        assert_eq!(
+            (c.big.as_str(), c.level, c.error.as_deref()),
+            ("NO DATA", Level::Nodata, Some("timeout"))
+        );
     }
 
     #[test]
