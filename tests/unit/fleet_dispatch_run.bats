@@ -221,6 +221,16 @@ bats_require_minimum_version 1.5.0
   [ -z "$(grep -l 'crash on load' "$AGENT_QUEUE_DIR"/queued/*.md 2>/dev/null)" ] || fail "the game floor promoted an app row"
 }
 
+@test "share_let_go: a project floor counts as gated, so the share cap lets go only for a requested or cleanup floor" {
+  run -1 share_let_go "project:game gated" 0
+  run share_let_go "project:game gated" 1
+  assert_output 0
+  run share_let_go "requested project:game gated" 0
+  assert_output 1
+  run share_let_go "gated" 1
+  assert_output 0
+}
+
 @test "run with the cleanup class at its min_live does not read the board, so a fresh cleanup row waits" {
   export DISPATCH_CLEANUP_PROJECTS=game DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=1
   class_floors 0 2
