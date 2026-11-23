@@ -32,7 +32,7 @@
 #                                asks, open board rows; --check fails when one may only shrink grew,
 #                                or on --unlisted's lines: a launch file with no row in the PIPELINES.md
 #                                launch table (LEDGER_PIPELINES), or a row whose file no longer launches
-#   fleet-bench rules [--json|--check|--scenarios|--gates [BASE]|--changed SINCE]
+#   fleet-bench rules [--json|--check|--scenarios|--gates [BASE]|--changed SINCE|--new [--days N|--since T] [--until D] [--json|--line]]
 #                                the rule register (RULES_REGISTER): kinds, confidence, actions, and each
 #                                rule's number re-measured; --check fails when one moved against its
 #                                recorded confidence, its measure died, or a rule's text left its source;
@@ -41,7 +41,10 @@
 #                                a diff against BASE (default origin/main) added with none: 1 when any; --check fails a gate row with no valid
 #                                asked_by, or an agent-asked routes: human row that no removal item covers;
 #                                --changed lists every rule line a PR merged since SINCE (epoch or a date) added
-#                                or removed, read from GitHub, one tab-separated line each (the briefing's list)
+#                                or removed, read from GitHub, one tab-separated line each (the briefing's list);
+#                                --new lists the gate rows whose `added` date is in the window (default the last 7 days),
+#                                agent-added first: added, id, asked_by, repo #PR, rule; --line is the one sentence the
+#                                briefing and day-log print ("N gates added since D, K by an agent without your ask"), none when no gate
 #   fleet-bench kpi [--json] [--vitals | --at T | --trend DAYS | --check [ERE]]
 #                                KPIs over 7d and 28d of human sessions (the token ones from the
 #                                nightly token-usage snapshots, sandboxed_lane_pct from BENCH_CALLS, pool_busy_share from Prometheus),
@@ -2791,7 +2794,9 @@ rules_problems() {
             "agent route: \($id): it routes work to the human and an agent added it; remove it, get the human'"'"'s ask, or name the item that removes it (remove_item, remove_by)"
           elif .remove_by < $today then "agent route: \($id): its removal by \(.remove_item) was due \(.remove_by); delete the gate"
           else empty end
-        else empty end;
+        else empty end,
+      (if (.added // "") | (try (strptime("%Y-%m-%d") | mktime | strftime("%Y-%m-%d")) catch "") as $d | $d == "" or . != $d
+        then "gate added: \($id): \(.added // "missing") is not the YYYY-MM-DD the gate first merged, which rules --new reads" else empty end);
     .[] | (.source | split("/") | last) as $f
     | if .state == "stale" then "stale: \($f): \(.anchor)"
       elif .state == "dead" then "dead measure: \($f): \(.anchor)"
@@ -2906,9 +2911,67 @@ rules_gates() {
   [ -z "$out" ] || { printf '%s' "$out"; return 1; }
 }
 
+# rules_new [--days N | --since T] [--until D] [--json | --line] -> the gate rows (those with an id) whose
+# `added` date, the local day the gate first merged, is in the window: N local days ending today (default
+# 7), or from the day of T (epoch or a date) on, up to D when given. Agent-added first, newest first in each.
+# A date has no time, so a gate that merged on T's own day is listed even when it merged before T: shown
+# twice beats missed. Text is one tab-separated line a gate (added, id, asked_by, repo #PR or -, rule);
+# --json the rows plus by_agent and pr; --line the one sentence for the briefing and day-log, nothing
+# when no gate is new. Reads the register alone, no measure, so a 5-minute day-log pass can call it.
+rules_new() {
+  local days="" since="" until="" mode=text from to window list
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --days|--since|--until) [ -n "${2:-}" ] || { say "rules --new: $1 needs a value"; return 2; } ;;&
+      --days) days="$2"; shift 2 ;;
+      --since) since="$2"; shift 2 ;;
+      --until) until="$2"; shift 2 ;;
+      --json|--line) mode="${1#--}"; shift ;;
+      *) say "rules --new: unknown option $1"; return 2 ;;
+    esac
+  done
+  [ -z "$since" ] || [ -z "$days" ] || { say "rules --new: give --days or --since, not both"; return 2; }
+  [ -n "$since" ] || [ -z "$until" ] || { say "rules --new: --until bounds a --since window; --days always ends today"; return 2; }
+  [ -s "$RULES_REGISTER" ] || { say "rules --new: no register at $RULES_REGISTER"; return 1; }
+  if [ -n "$since" ]; then
+    [[ "$since" =~ ^[0-9]+$ ]] && since="@$since"
+    from=$(date -d "$since" +%F 2>/dev/null) || { say "rules --new: not a time: $since"; return 2; }
+    list="--since $from"
+  else
+    days="${days:-7}"
+    [[ "$days" =~ ^[1-9][0-9]*$ ]] || { say "rules --new: --days takes a whole number of days, 1 or more: $days"; return 2; }
+    from=$(date -d "$((days - 1)) days ago" +%F)
+    list="--days $days"
+  fi
+  to=$(date -d "${until:-today}" +%F 2>/dev/null) || { say "rules --new: not a date: $until"; return 2; }
+  [ -z "$until" ] || list+=" --until $to"
+  if [ "$from" = "$to" ]; then window="on $from"; elif [ -n "$until" ]; then window="from $from to $to"
+  elif [ -n "$since" ]; then window="since $from"; else window="in $days days"; fi
+  jq -rs --arg from "$from" --arg to "$to" --arg mode "$mode" --arg window "$window" --arg list "$list" '
+    def by_agent: (.asked_by // "") | startswith("agent:");
+    def repo: .source // "" | sub("^~/"; "") | ltrimstr(env.HOME + "/") | split("/")[0] | ltrimstr(".");
+    def pr: (((.asked_by // "") | capture("^agent:#(?<n>[0-9]+)")? | .n) // null) as $n | if $n then "\(repo) #\($n)" else null end;
+    def gates($n): if $n == 1 then "1 gate" else "\($n) gates" end;
+    [.[] | select(.id != null and (.added // "") >= $from and (.added // "") <= $to)]
+    | sort_by(.added, .id) | reverse | sort_by(by_agent | not)
+    | if $mode == "json" then map(. + {by_agent: by_agent, pr: pr})
+      elif $mode == "text" then .[] | [.added, .id, .asked_by, (pr // "-"), (.rule // "" | gsub("[\t\n]"; " "))] | @tsv
+      elif length == 0 then empty
+      else map(select(by_agent)) as $a | ($a | length) as $k
+        | ($a[:5] | map("\(.id) (\(pr // (.asked_by | ltrimstr("agent:") | sub(" [(].*$"; ""))))") | join(", ")) as $names
+        | "\(gates(length)) added \($window), "
+          + (if $k == 0 then (if length == 1 then "on your ask" else "all on your ask" end)
+             elif $k == length and $k == 1 then "by an agent without your ask: \($names)"
+             else "\($k) by an agent without your ask: \($names)" end)
+          + (if $k > 5 then ", and \($k - 5) more" else "" end)
+          + ". List: fleet-bench rules --new \($list)."
+      end' "$RULES_REGISTER"
+}
+
 cmd_rules() {
   local states problems
   [ "${1:-}" != --changed ] || { rules_changed "${2:?rules --changed needs a since time}"; return; }
+  [ "${1:-}" != --new ] || { shift; rules_new "$@"; return; }
   [ "${1:-}" != --gates ] || { rules_gates "${2:-}"; return; }
   states=$(rules_states | jq -s .)
   problems=$(rules_problems "$states")
