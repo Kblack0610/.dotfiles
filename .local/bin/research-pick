@@ -130,13 +130,15 @@ add() {
   notes ptask "$1" --agent add "$2" --origin research-pick >/dev/null 2>&1
 }
 
-# roster_open: 0 when a research(roster) row is open on the agent-runtime board, 1 when none
-# is, 2 when the board cannot be read. The list is read whole first: a reader that stops at
+# roster_open: 0 when a roster row is open on the agent-runtime board, 1 when none is, 2 when the
+# board cannot be read. The board rewrites the row's scope to its area (research(roster): lists as
+# research(notes):) and cleanup rewords it, so a row is a research(<scope>): row that names
+# research-facets.json, not one with our exact text. The list is read whole first: a reader that stops at
 # the first hit (grep -q) leaves the writer an EPIPE, which pipefail turns into "none open".
 roster_open() {
   local rows
   rows=$(notes ptask agent-runtime --agent list 2>/dev/null) || return 2
-  awk -F'\t' 'index($4, "research(roster):") { hit = 1 } END { exit !hit }' <<<"$rows"
+  awk -F'\t' '$4 ~ /research\([^)]*\):.*research-facets\.json/ { hit = 1 } END { exit !hit }' <<<"$rows"
 }
 
 # uncovered: project-map projects on disk that no facet's repo lies in or under and the roster
