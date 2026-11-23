@@ -5645,7 +5645,8 @@ load_findings() {
 # holds, except that the first urgent item or fresh ask (runs_now) waiting only on run units (PICK_RESERVED, which
 # preempt_pick may make room for) keeps the free ones: a later item that would use them waits too. Rc 1 with the reason in PICK_WHY when every one is held, or the findings cannot be read.
 # PICK_NOTE names the items ahead of PICKED that the fleet share cap held (share_why), so the start's
-# activity.log line shows the hold firing, or that the cap let PICKED go.
+# activity.log line shows the hold firing, or that the cap let PICKED go. The cap never lets go onto
+# this machine's units while an item it does not hold waits on them (uheld).
 # The place is this machine while the item fits in UNITS_FREE and, when there are fleet workers to
 # go to, its own pace is open (machine_why); else the first worker that takes it (place_host), in
 # PLACE_HOST. A canary item goes to a worker whose fleet_first names its class ahead of
@@ -5656,7 +5657,7 @@ load_findings() {
 # project while the other 40 waited on account pace, which the message never named.
 pick_item() {
   local items="$1" it why need free host mwhy='' mread=0 fhit=0 uwait=0 held=() waits="every queue item waits" reserved='' kept=''
-  local shold=0 sfirst='' shost='' swhy='' mhit=0 ppass=''
+  local shold=0 sfirst='' shost='' swhy='' mhit=0 ppass='' uheld='' uneed=0
   share_state   # in this shell, so every share_why reads one count
   if [ "${RED_PASS:-0}" = 1 ]; then waits="every red item waits; the rest wait on ${FLOOR_GATE:-the gate}"
   elif [ "${TRAINEE_PASS:-0}${BATCH_PASS:-0}" != 00 ]; then waits="the trainee floor's item waits"; fi
@@ -5696,6 +5697,13 @@ pick_item() {
     elif [ -z "$kept" ] && [ "$uwait" = 1 ] && [ "$need" -le "$TARGET" ] && short_item "$it" && [ -z "$(finding_hold "$it")" ] && [ -z "$(share_why "$it")" ]; then
       kept=$(jq -r .slug <<<"$it")
     fi
+    # The first item the share does not hold that waits only on run units it could fit: the share's
+    # let-go leaves those units to it. Without this a light fleet item took the one free unit each pass
+    # while heavy Unity items waited for two: 86 of 124 fleet Claude starts in 24h to 2026-11-23 went
+    # out on the let-go, all 77 local ones with other projects' heavy items queued (ar-4499).
+    if [ "${SHARE_LET_GO:-0}" = 1 ] && [ -z "$uheld" ] && [ "$uwait" = 1 ] && [ "$need" -le "$TARGET" ] && [ -z "$(finding_hold "$it")" ] && [ -z "$(share_why "$it")" ]; then
+      uheld=$(jq -r .slug <<<"$it") uneed=$need
+    fi
     if [ -z "$why" ]; then
       PICKED=$it PLACE_HOST=$host
       [ "$shold" = 0 ] || PICK_NOTE="; passed $shold item$([ "$shold" = 1 ] || echo s) held by $swhy"
@@ -5706,11 +5714,20 @@ pick_item() {
     held+=("$(jq -r .slug <<<"$it") ($why)")
   done <<<"$items"
   # The fleet share cap lets go when nothing else can start: the first item it held takes the place
-  # it had, unless the free units wait for a reserved item. Only the start after the fill (SHARE_LET_GO) lets go:
+  # it had, unless the free units wait for a reserved item or one the share does not hold (uheld); a
+  # fleet worker's place it takes either way. Only the start after the fill (SHARE_LET_GO) lets go:
   # the queue pass first tops the board up with other projects' rows, and a floor's list is filtered, so a hold there is no proof.
-  if [ -n "$sfirst" ] && [ "${SHARE_LET_GO:-0}" = 1 ] && { [ -z "$reserved$kept" ] || [ -n "$shost" ]; }; then
-    PICKED=$sfirst PLACE_HOST=$shost PICK_NOTE="; the fleet share cap let it go, as nothing else could start ($swhy)"
-    return 0
+  if [ -n "$sfirst" ] && [ "${SHARE_LET_GO:-0}" = 1 ]; then
+    if [ -z "$reserved$uheld" ] || [ -n "$shost" ]; then
+      PICKED=$sfirst PLACE_HOST=$shost PICK_NOTE="; the fleet share cap let it go, as nothing else could start ($swhy)"
+      return 0
+    fi
+    # A wait for units is a full fleet (NOOP), as when units alone hold every item; with a finding or
+    # load holding another item the ladder below names that instead (ar-4450).
+    if [ -n "$uheld" ] && [ "$fhit$mhit" = 00 ]; then
+      PICK_FULL=1 PICK_WHY="run units: $uheld needs $uneed, $free free, so the fleet share cap does not let $(jq -r .slug <<<"$sfirst") go to them; $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
+      return 1
+    fi
   fi
   if [ "$PICK_FULL" = 1 ]; then PICK_WHY="run units: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
   elif [ "$fhit" = 1 ]; then PICK_WHY="finding firing: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
