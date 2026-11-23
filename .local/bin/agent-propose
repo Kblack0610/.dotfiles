@@ -166,9 +166,9 @@ decide() { # <accepted|rejected> [--by who] <id>
   echo "$id $status"
 }
 
-# ask_expiring <record file>: one approval ask for a proposal that went its TTL unread, whose answer
-# comes back through `answered` (ask-resume runs the `run:` resume with the ask id). Not this
-# caller's session or pane: the ask is the proposal's, and a sweep may post several. Prints the id.
+# ask_expiring <record file>: one gate ask for a proposal that went its TTL unread, which the judge
+# accepts or declines under its policy like any gate (ar-4765). Its answer comes back through
+# `answered` (ask-resume runs the `run:` resume with the ask id). Not this caller's session or pane: the ask is the proposal's, and a sweep may post several. Prints the id.
 ask_expiring() {
   local f="$1" title does q context
   title="$(jq -r .title "$f")"
@@ -181,7 +181,7 @@ ask_expiring() {
   # caller (dream's add) is not that session, so only a failure's reason is shown.
   local out err rc
   err="$(mktemp)"
-  out="$(env -u CLAUDE_CODE_SESSION_ID -u TMUX -u TMUX_PANE -u AGENTCTL_NAME "$AP_ASK_CMD" post --kind approval \
+  out="$(env -u CLAUDE_CODE_SESSION_ID -u TMUX -u TMUX_PANE -u AGENTCTL_NAME "$AP_ASK_CMD" post --kind gate \
     --project "$(jq -r .project "$f")" --options "accept=$does|reject=drop it, it is not proposed again" \
     --context "$context" --resume 'run: agent-propose answered' -- "$q" 2>"$err" 9>&-)"
   rc=$?
@@ -219,17 +219,19 @@ sweep() {
 # the human's; an answer naming neither or both leaves it asked and says so. One already decided
 # another way (accept or reject by hand) is a no-op.
 cmd_answered() {
-  local ask="${1:-}" id st names acc rej
+  local ask="${1:-}" id st names acc rej by
   [ -n "$ask" ] || die "answered needs an ask id"
   read -r id st < <(records | jq -rs --arg a "$ask" 'map(select(.ask == $a)) | (map(select(.status == "asked")) + .) | first | "\(.id // "") \(.status // "")"')
   [ -n "$id" ] || die "no proposal waits on ask $ask"
   [ "$st" = asked ] || { echo "$id already $st"; return 0; }
   names="$("$AP_ASK_CMD" answer-names "$ask")" || die "cannot read the answer to ask $ask"
+  # who answered it (the judge or the human) decides it, as the ask records
+  by="$("$AP_ASK_CMD" show "$ask" 2>/dev/null | sed -n 's/^answered_by: //p' | head -n1)"
   grep -qx accept <<<"$names" && acc=a || acc=
   grep -qx reject <<<"$names" && rej=r || rej=
   case "$acc$rej" in
-    a) decide accepted --by human "$id" ;;
-    r) decide rejected --by human "$id" ;;
+    a) decide accepted --by "${by:-human}" "$id" ;;
+    r) decide rejected --by "${by:-human}" "$id" ;;
     ar) die "ask $ask names both accept and reject; $id stays asked: decide it with agent-propose accept or reject" ;;
     *) die "ask $ask names neither accept nor reject; $id stays asked: decide it with agent-propose accept or reject" ;;
   esac

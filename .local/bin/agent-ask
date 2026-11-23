@@ -13,7 +13,7 @@
 #     --blocker r:c     what stops it outside the session, <owner/repo>:<cause> (billing, quota,
 #                       outage, auth): a pending ask on the same blocker takes this session instead
 #                       of a new ask, and post prints its id (see "A BLOCKER IS ONE ASK")
-#     --audit-of <id>   the live judge answer this ask audits (audit_sample posts these); its
+#     --audit-of <id>   the live judge answer this ask audits (audits posted before ar-4765); its
 #                       answer is that answer's review, not a decision of its own
 #     --preview <file>  an image the card shows above the answers, repeatable; agent-web serves
 #                       one only from under the outbound ledger dir, where `mkt draft` puts them
@@ -133,8 +133,8 @@
 #
 # A gate/approval is just an ask with kind=gate or kind=approval (options default approve|hold),
 # e.g. "PR #1036 is green, merge it?". A gate is a session's own stop, and the judge rules on it as
-# on a question; an approval (a plan, an outbox line's project, an audit, the judge's own
-# authority, a cancel of work the human asked for: human_floor) is the human's by rule.
+# on a question; an approval (a plan, an outbox line's project, the judge's own authority:
+# human_floor) is the human's by rule.
 
 # PARKED is not a status. A pending ask with `parked_until` still ahead waits on something the
 # human will do later (plug in a headset, order parts): `list --pending` and `count` leave it out,
@@ -194,8 +194,6 @@ JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 
 # falls under AGENT_ASK_DEMOTE_PRECISION percent, counted once it has AGENT_ASK_DEMOTE_MIN.
 : "${AGENT_ASK_DEMOTE_PRECISION:=85}" "${AGENT_ASK_DEMOTE_MIN:=10}"
 : "${AGENT_ASK_DEMOTED:=$HOME/.local/state/agent-ask/demoted}"
-# The audit sample's count of live answers per level (audit_sample).
-: "${AGENT_ASK_AUDIT_DIR:=$HOME/.local/state/agent-ask/audit}"
 # The names of the human's holds at the last assume-due pass (sweep_on_new_hold).
 : "${AGENT_ASK_HOLDS_SEEN:=$HOME/.local/state/agent-ask/holds-seen}"
 : "${AGENT_ASK_JUDGE_BOARD:=agent-runtime}"
@@ -237,35 +235,15 @@ queue_holders() {
   awk -F'\t' -v OFS='\t' -v id="$1" '$2 == id { print $1, $3 }' <<<"$QUEUE_HOLDS"
 }
 
-# human_cancel <text>: when the text proposes taking work off the queue (a cancel, drop, removal,
-# prune, kill or retire, any of HUMAN_CANCEL_VERBS), the first active queue item the
-# human asked for (`agent-queue human-work`) it names as a whole word; fails on any other text.
-# agent-queue's cancel_guard cancels that work only on the human's answer to an ask naming it, so a
-# judge's answer is one the queue refuses: post makes the ask an approval, and judge sends one posted
-# before to the human (ar-3917; on 2026-11-12 a cleanup cancelled the human's items on an ask the
-# judge answered in 20 s). A queue that cannot be read names none, and the guard still holds.
-# Every form a session words a cancel in: a word that only looks like one (dropdown) stays out, and
-# an extra match only sends an ask to the human, never past them.
-HUMAN_CANCEL_VERBS='cancel[a-z]*|drop|drops|dropped|dropping|abandon[a-z]*|remove|removes|removed|removing|delete|deletes|deleted|deleting|kill|kills|killed|killing|prune|prunes|pruned|pruning|retire|retires|retired|retiring|scrap|scraps|scrapped|scrapping|discard[a-z]*|withdraw[a-z]*'
-human_cancel() {
-  [[ " ${1,,} " =~ [^a-z]($HUMAN_CANCEL_VERBS)[^a-z] ]] || return 1
-  local slugs hit
-  slugs="$($AGENT_ASK_QUEUE_CMD human-work 2>/dev/null)" && [ -n "$slugs" ] || return 1
-  hit="$(grep -owF -f <(printf '%s\n' "$slugs") <<<"$1" | head -n1)"
-  [ -n "$hit" ] && printf '%s\n' "$hit"
-}
-
 # human_floor <text>: why an ask with this text is the human's by rule, worded to follow "the ask";
-# fails when it is not. Two rules: the ask names the judge's own reach (the policy's "Judge
-# authority" list), which the judge never rules on, or it would cancel work the human asked for
-# (human_cancel). post makes such an ask an approval, and judge holds one posted before to it.
+# fails when it is not. The rule: the ask names the judge's own reach (the policy's "Judge
+# authority" list), which the judge never rules on. post makes such an ask an approval, and judge
+# holds one posted before to it. A cancel of the human's work is judged like any ask: the policy's
+# reversible criterion sends a bulk one (10 or more records) to the human.
 human_floor() {
   local hit
-  if hit="$(judge_floor_hit "$(judge_conf PROMPT "")" "$1" "Judge authority")"; then
-    printf "names %s, the judge's own authority\n" "$hit"
-  elif hit="$(human_cancel "$1")"; then
-    printf 'would cancel %s, work the human asked for\n' "$hit"
-  else return 1; fi
+  hit="$(judge_floor_hit "$(judge_conf PROMPT "")" "$1" "Judge authority")" || return 1
+  printf "names %s, the judge's own authority\n" "$hit"
 }
 
 # collapse a value to a single physical line (files are one key:value per line)
@@ -832,12 +810,12 @@ gh_clean_on() {
 
 # gh_login_settle <file>: answer a pending gh-login ask as the judge when gh auth status is clean on
 # its host, a parked one too, since what it waits on is done. Left to the human, as live_answer
-# leaves them: an approval, an audit, an ask the human disarmed, one a queue item holds. The verdict
+# leaves them: an approval, an audit, one a queue item holds. The verdict
 # replaces the post-time judge's whole cell, so an override of this answer counts against no type.
 gh_login_settle() {
   local f="$1" host ans
   [ "$(field "$f" status)" = pending ] && [ "$(field "$f" login)" = gh ] || return 1
-  [ "$(field "$f" kind)" != approval ] && [ -z "$(field "$f" audit_of)" ] && [ -z "$(field "$f" assume_disarmed)" ] || return 1
+  [ "$(field "$f" kind)" != approval ] && [ -z "$(field "$f" audit_of)" ] || return 1
   host="$(field "$f" host)"
   [ -n "$host" ] && ! queue_waits "$(field "$f" id)" && gh_clean_on "$host" || return 1
   ans="gh is signed in again on $host (gh auth status clean at $(date +%H:%M)). Rerun the step that needed it."
@@ -1001,7 +979,7 @@ cmd_answer() {
   fi
   # An agent answers what does not need the human; its answer releases what the ask holds, as the
   # judge's does. An approval, an ask the judge marked human-only and one at the human floor
-  # (human_floor: the judge's own reach, a cancel of the human's work) take only the human's.
+  # (human_floor: the judge's own reach) take only the human's.
   if [ "$by" = agent ]; then
     local mine
     if [ "$(field "$f" kind)" = approval ]; then mine="it is an approval"
@@ -1049,7 +1027,6 @@ record_answer() {
     write_fields "$f" status answered answer "$answer" answered_at "$(now_iso)" answered_by "$by" "$@"
   ) 9>"$(dirname "$f")/.lock" || return 1
   queue_changed
-  [ "$by" != judge ] || audit_sample "$f"
 }
 
 # start_resume <id>: answering IS starting (see header). ask-resume marks before it runs and
@@ -1246,8 +1223,8 @@ judge_conf() {
 # where it reaches most. A type it does not list stays shadow. At
 # 0 the judge answers at post: the asker gets the answer in place of the question and goes on.
 # Above 0 the ask is armed: the human keeps the question and its deadline until `assume-due`
-# fires the answer. Either way the human's messages review it (review_judge_answer), and so does
-# the audit sample (audit_sample): naming another option records judge_override, and enough
+# fires the answer. Either way the human's messages review it (review_judge_answer): naming
+# another option records judge_override, and enough
 # overrides demote the cell, its type at its level (judge_demote_check). A demote is runtime
 # state, not a conf edit: a script writing the tracked conf would leave the private repo's main
 # checkout dirty, so the demote list subtracts from DELAY_RULES until the human re-promotes or
@@ -1298,14 +1275,12 @@ live_rules() { delay_rows | awk '{ print $1 "@" $2 }'; }
 delay_of() { delay_rows | awk -v r="$1" -v l="$2" '$1 == r && $2 == l && !found { print $3; found = 1 } END { exit !found }'; }
 
 # live_answer <file>: print the answer the judge gives this ask when its rule is live. Fails on
-# anything else: an approval, a human-only ask, a human or error call, a shadow rule, an ask the
-# human disarmed. The one place that decides; a gate is answered like a question, under its
-# cell's level ceiling.
+# anything else: an approval, a human-only ask, a human or error call, a shadow rule. The one
+# place that decides; a gate is answered like a question, under its cell's level ceiling.
 live_answer() {
   local f="$1" judge rule ans
   [ "$(field "$f" kind)" != approval ] || return 1
   [ "$(field "$f" judge_human_only)" != true ] || return 1
-  [ -z "$(field "$f" assume_disarmed)" ] || return 1
   judge="$(field "$f" judge)"; rule="$(field "$f" judge_rule)"
   case "$judge" in
     take-recommend) ans="$(field "$f" recommend)" ;;
@@ -1481,51 +1456,6 @@ judge_demote_check() {
   notes ptask "$AGENT_ASK_JUDGE_BOARD" --agent add \
     "check(judge): ask-judge $cell went back to shadow after the override on ask $id ($why); re-promote by deleting its line in $AGENT_ASK_DEMOTED, or lower or drop the $rule row in DELAY_RULES in ask-judge.conf by PR #size/s" \
     --origin agent-ask >/dev/null 2>&1 || true
-}
-
-# audit_sample <file>: after a live answer, every Nth one at its level goes back to the human as an
-# approval offering the ask's own options (audit_answer reads the pick), so a live cell keeps a
-# label once nobody answers its asks by hand: a live cell's precision counts reviewed answers
-# only, never silence. N is AUDIT_RATES in ask-judge.conf, `<level>=<N>`; a level it does not
-# name is audited every time. Only an answer that is one of the ask's options can be reviewed,
-# so only those are counted. The count per level is runtime state beside the demote list.
-audit_sample() {
-  local f="$1" level ans opts n rate kv id q
-  level="$(field "$f" judge_level)"; ans="$(field "$f" answer)"; opts="$(field "$f" options)"
-  [ -n "$level" ] && [ -n "$ans" ] && [[ "|${opts,,}|" == *"|${ans,,}|"* ]] || return 0
-  rate=1
-  for kv in $(tr ',' ' ' <<<"$(judge_conf AUDIT_RATES "")"); do
-    [[ "$kv" =~ ^$level=([1-9][0-9]*)$ ]] && rate="${BASH_REMATCH[1]}"
-  done
-  mkdir -p "$AGENT_ASK_AUDIT_DIR" 2>/dev/null || return 0
-  n="$( (
-    command -v flock >/dev/null 2>&1 && flock 9
-    n="$(cat "$AGENT_ASK_AUDIT_DIR/$level" 2>/dev/null)"; [[ "$n" =~ ^[0-9]+$ ]] || n=0
-    echo $((n + 1)) > "$AGENT_ASK_AUDIT_DIR/$level"; echo $((n + 1))
-  ) 9>"$AGENT_ASK_AUDIT_DIR/.lock")"
-  [[ "$n" =~ ^[0-9]+$ ]] && [ $((n % rate)) -eq 0 ] || return 0
-  id="$(field "$f" id)"
-  # The asker's question in double quotes, which post reads as quoted text, cut to fit one line.
-  q="$(field "$f" question | tr '"' "'")"
-  local head="The judge answered \"" tail="\" with \"$ans\"; your pick?"
-  local room=$((AGENT_ASK_QUESTION_MAX - ${#head} - ${#tail}))
-  [ "${#q}" -le "$room" ] || q="${q:0:$((room - 3))}..."
-  local o notes=() parts=() options=""
-  IFS='|' read -r -a parts <<<"$opts"; IFS='|' read -r -a notes <<<"$(field "$f" option_notes)"
-  for o in "${!parts[@]}"; do options+="${options:+|}${parts[$o]}=${notes[$o]:-as the asker offered it}"; done
-  local audit err; err="$(mktemp)"
-  audit="$( unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED TMUX TMUX_PANE AGENTCTL_NAME
-    cmd_post --project "$(field "$f" project)" --profile "$(field "$f" profile)" --kind approval \
-      --task "audit of the judge's live answer on ask $id" --audit-of "$id" --options "$options" \
-      --context "An audit of the answer judge: it answered ask $id on its own ($(field "$f" judge_rule) at level $level, 1 in $rate of its live answers there is checked). Pick what you would have answered; the judge's own option keeps it, another one overrides it and goes to the asker. $(field "$f" context)" \
-      "$head$q$tail" 2>"$err")" || {
-    # A post that fails leaves its reason and a mark, so an unaudited answer never passes for audited.
-    echo "agent-ask: audit of ask $id not posted: $(head -1 "$err")" >&2
-    rm -f "$err"; set_field "$f" judge_audit failed; return 0
-  }
-  rm -f "$err"
-  [ -n "$audit" ] && set_field "$f" judge_audit "$audit"
-  return 0
 }
 
 # audit_answer <audit file> <id of the ask it audits> <answer> <by>: the audit's answer is the
@@ -2175,8 +2105,8 @@ cmd_settle_session() {
 # answered, or is waiting to assume, on this ask. <where> is "in session" or "from a board". Naming
 # one other option records judge_override (the label judge-eval scores) and runs the demote check.
 # Naming the judge's own records `kept`, the only review judge-eval scores as agreement. On a
-# pending ask, naming no option disarms it: the human is here, so nothing is assumed, and
-# `assume_answer` stays so a later pick still counts.
+# pending ask, a message naming no option changes nothing: the answer stays armed until the human
+# answers that ask (a message about other work is no answer to it).
 #
 # After an answer at post, the first message in the session naming no option closes the review
 # with `none`, which is silence, not agreement, so later ones about other things cannot read as an
@@ -2206,14 +2136,7 @@ review_judge_answer() {
   elif [ -n "$pick" ]; then
     set_field "$f" judge_override kept judge_override_note "$where: $text" judge_override_at "$(now_iso)"
     queue_changed
-  elif [ -n "$pending" ] && [ -z "$pick" ]; then
-    # once: a disarmed ask has no assume_at left, and every later prompt would rewrite it again
-    if [ -z "${ASK[assume_disarmed]:-}" ]; then
-      set_field "$f" assume_disarmed "$(now_iso)"
-      drop_field "$f" assume_at
-      queue_changed
-    fi
-  elif [ -n "$pending" ] || [ "$where" = "in session" ]; then
+  elif [ -z "$pending" ] && [ "$where" = "in session" ]; then
     set_field "$f" judge_override none
   fi
 }
@@ -2688,8 +2611,6 @@ settle_by_verdict() {
   case "$by" in
     hold:?*)
       local name="${by#hold:}" reason ans note queued=() opts="${ASK[options]:-}"
-      # The human disarmed the judge's answers on this ask; a hold answer is one too.
-      [ -z "${ASK[assume_disarmed]:-}" ] || return 1
       reason="$(human_holds | awk -F'\t' -v n="$name" '$1 == n { print $2; found = 1; exit } END { exit !found }')" || return 1
       # The option the hold picks, named by the judge: never the recommendation, which is what the
       # asker wants, and a hold can forbid exactly that (PZLBaS, 2026-11-20: the critical hold bans

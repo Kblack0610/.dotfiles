@@ -908,13 +908,14 @@ reap_confirm() {
 }
 reap_seen() { [ ! -e "$DIR/reap-miss/$1" ] || rm -f "$DIR/reap-miss/$1"; }
 
-# reap_stuck <slug> <item json> <hours> <reason> <human-sheet title> -- reap cannot settle the item
+# reap_stuck <slug> <item json> <hours> <reason> <row title> -- reap cannot settle the item
 # this pass, and nothing will change that on its own: a partial landing nobody finishes, a PR its forge
 # cannot read, a row with no merge proof. The reason is logged when the title changes, never on every
 # pass (2026-11-16 to 11-18: 526 identical lines from 6 sessions and 2 items; the title, not the reason,
 # so a new session name in the reason is no change), and once it has stood <hours> (0: at once) one
-# human-sheet row says what to do, or one page when the sheet refuses it (keyed needs:dispatch:stuck:<slug>:<title hash>, so agent-notify drops a repeat of one fact for a day), then nothing more while it
-# stands. $DIR/stuck/<slug> holds "<first epoch> <filed 0|1>" and the title; each pass rewrites it, so
+# agent row (#red, so fix-red works it) says what to do, then nothing more while it stands; no
+# human-sheet row and no page (ar-4765: a stuck item is the fleet's to fix, and triage asks the human
+# once when the fix does not hold). A board that refuses the row is said on stderr. $DIR/stuck/<slug> holds "<first epoch> <filed 0|1>" and the title; each pass rewrites it, so
 # a marker no pass has seen in a day is pruned by cmd_reap. reap_unstuck clears it once the item settles.
 reap_stuck() {
   local f="$DIR/stuck/$1" first='' filed=0 was='' now where
@@ -922,29 +923,32 @@ reap_stuck() {
   { read -r first filed && IFS= read -r was; } 2>/dev/null < "$f"
   if [ "$was" != "$5" ] || [ -z "$first" ]; then first=$now filed=0; logline "$4"; fi
   if [ "$filed" != 1 ] && [ $(( now - first )) -ge $(( $3 * 3600 )) ]; then
-    filed=1 where=$(human_sheet_row "$2" "$5 (queue item $1) #size/s")
+    filed=1 where=$(board_row agent "$2" "$5 (queue item $1) #red #size/s")
     logline "queue item $1: $where: $5"
-    case "$where" in "not filed"*) agent-notify -t 'Needs you' -d "needs:dispatch:stuck:$1:$(printf %s "$5" | cksum | cut -d" " -f1)" "$5 (queue item $1; $where)" >/dev/null 2>&1 ;; esac
-    echo "human row for queue item $1 ($where)"
+    case "$where" in "not filed"*) say "queue item $1: $where: $5" ;; esac
+    echo "agent row for queue item $1 ($where)"
   fi
   mkdir -p "${f%/*}" && printf '%s %s\n%s\n' "$first" "$filed" "$5" > "$f"
 }
 reap_unstuck() { [ ! -e "$DIR/stuck/$1" ] || rm -f "$DIR/stuck/$1"; }
 
-# human_sheet_row <item json> <row text> -> where the row went: the human sheet of the board the item
-# came from (a dotfiles item's row is on agent-runtime), else its project's. fleet-dispatch is a
-# direct filer (its stamp files each escalation once, and triage could drop one that waits on the
-# human), so the row goes on the sheet; exit 4 is a vouch notes could not make.
-human_sheet_row() {
-  local prof sheet row rc=0
-  IFS=$'\x1f' read -r prof sheet < <(jq -r '[.profile // "", .project // ""] | join("\u001f")' <<<"$1")
-  row=$(item_row "$1")
+# board_row <human|agent> <item json> <row text> -> where the row went: that side (the human sheet or
+# the agent board) of the board the item came from (a dotfiles item's row is on agent-runtime), else
+# its project's. fleet-dispatch is a direct filer (its stamp files each escalation once, and triage
+# could drop one that waits on the human), so the row is filed, not sent to the outbox; exit 3 is a
+# twin already open, exit 4 a vouch notes could not make.
+board_row() {
+  local prof sheet row rc=0 lane=() what=sheet
+  [ "$1" = human ] || lane=(--agent) what=board
+  IFS=$'\x1f' read -r prof sheet < <(jq -r '[.profile // "", .project // ""] | join("\u001f")' <<<"$2")
+  row=$(item_row "$2")
   [ -z "$row" ] || IFS=$'\x1f' read -r prof sheet _ <<<"$row"
-  np "$prof" ptask "$sheet" add "$2" --origin fleet-dispatch >/dev/null 2>&1 || rc=$?
+  np "$prof" ptask "$sheet" "${lane[@]}" add "$3" --origin fleet-dispatch >/dev/null 2>&1 || rc=$?
   case "$rc" in
-    0) echo "on the $sheet sheet" ;;
-    4) echo "in the outbox for the $sheet sheet" ;;
-    *) echo "not filed: the $sheet sheet refused the row" ;;
+    0) echo "on the $sheet $what" ;;
+    3) echo "joined its twin on the $sheet $what" ;;
+    4) echo "in the outbox for the $sheet $what" ;;
+    *) echo "not filed: the $sheet $what refused the row" ;;
   esac
 }
 
@@ -1892,7 +1896,7 @@ verdict_errors() {
 #    is tagged on a later pass. A row inbox-plan already planned (a `goal:` detail) that the judge,
 #    reading that plan, still skips by such a rule takes the human exit: a second plan would not help.
 #  - human (DISPATCH_HUMAN_RULES): an #urgent, #high, bare or #requested row is filed on the human sheet
-#    (human_sheet_row), a #low one kept in improvements.md (`notes improve`), its #worker/ tag off so no
+#    (board_row human), a #low one kept in improvements.md (`notes improve`), its #worker/ tag off so no
 #    worker takes it there; then the agent row is dropped with a --why naming where it went.
 #  - waits: gated #after/<row> on the first open row its verdict's reason, else its text, names (its
 #    own id and #of/ links aside) or #pr/<owner>/<repo>/<N> on a PR named so, when the judge read the
@@ -1993,7 +1997,7 @@ skip_exits() {
       sheet | improve)
         body=$(sed -E 's/(^|[[:space:]])#worker\/[^[:space:]]+//g; s/^[[:space:]]+//' <<<"$body")
         if [ "$e" = sheet ]; then
-          where=$(human_sheet_row "$(jq -cn --arg pr "$prof" --arg p "$p" '{profile: $pr, project: $p}')" "$body (agent row $id)")
+          where=$(board_row human "$(jq -cn --arg pr "$prof" --arg p "$p" '{profile: $pr, project: $p}')" "$body (agent row $id)")
           case "$where" in "not filed"*) say "skip_exits: $p $id $where"; continue ;; esac
         else
           np "$prof" improve "$p" --why "$why" -- "$body" >/dev/null 2>&1 || { say "skip_exits: notes improve refused $p $id"; continue; }
@@ -4796,10 +4800,12 @@ takeover_branch() {
 # queued/ (--if review) as a oneshot stamped `<fix|land>_tries: <n> <head>[ conflict]` and `pr_owner`, which
 # item_brief reads, and the next pass starts it behind every gate a queued item waits on (agent-hold,
 # the weekly pace, load, the run gate); while the agent-queue cap holds adds it waits in
-# review/. DISPATCH_FIX_TRIES tries of each, then one human-sheet row and a page keyed needs:dispatch:pr:<pr>:<owner>:<head> (a new head is a new fact; agent-notify drops a repeat within a day) (fleet-bench triage instead
-# escalates a red, then asks once), stamped `fix_human: <head> <owner>...`; a head that
-# moves after that row (the human pushed) starts the count again. The stamp quiets only the owners it
-# names, so a head whose fix-ci row went to the human and that later reads green still gets a lander,
+# review/. DISPATCH_FIX_TRIES tries of each, then one agent row tagged
+# #red #escalate (board_row agent: fix-red's root-cause pass, not a third try of the same brief; no
+# human-sheet row and no page since ar-4765, and fleet-bench triage asks the human once if that does not
+# hold), stamped `fix_human: <head> <owner>...` (the name kept: hub-core reads it); a head that
+# moves after that row (a push) starts the count again. The stamp quiets only the owners it
+# names, so a head whose fix-ci row was escalated and that later reads green still gets a lander,
 # and the reverse (#2182 sat in review green with nobody on it). A lander that asks the human is held
 # on its ask by settle_item before this runs. A session reap cannot witness (`unrecorded`, a cloud run)
 # is never read as gone here.
@@ -4844,16 +4850,16 @@ own_parked_pr() {
     echo "$verb queue item $slug (PR $pr $color at ${head:0:12}, try $((tries + 1)) of $DISPATCH_FIX_TRIES)"
     return 0
   fi
-  # The sheet (human_sheet_row): the stamp goes first, so a failed write never files the row twice; a
-  # sheet that refuses the row still gets the page, once.
+  # The agent row (board_row): the stamp goes first, so a failed write never files the row twice; a
+  # board that refuses the row is said on stderr and in the item's note.
   agent-queue set "$slug" "fix_human=$head${howners:+ $howners} $owner" >/dev/null || return 0
   local title="fix(ci): PR $pr is $color at ${head:0:12} after $tries fix-ci tries; fix it"
   [ "$owner" = fix ] || title="chore(review): PR $pr is $color at ${head:0:12} after $tries land tries; land it"
-  where=$(human_sheet_row "$it" "$title or close it (queue item $slug) #size/s")
+  where=$(board_row agent "$it" "$title or close it (queue item $slug) #red #escalate #size/s")
   agent-queue set "$slug" "note=PR $pr $color at ${head:0:12} after $tries $verb tries; $where" >/dev/null
-  agent-notify -t 'Needs you' -d "needs:dispatch:pr:$pr:$owner:${head:0:12}" "PR $pr $color after $tries $verb tries ($where)" >/dev/null 2>&1
+  case "$where" in "not filed"*) say "queue item $slug: PR $pr $color after $tries $verb tries, $where" ;; esac
   logline "queue item $slug: PR $pr $color at ${head:0:12} after $tries $verb tries, $where"
-  echo "human row for queue item $slug (PR $pr $color after $tries $verb tries, $where)"
+  echo "agent row for queue item $slug (PR $pr $color after $tries $verb tries, $where)"
 }
 
 # settle_sessionless <slug> <started> -- a started item recording no session, tmux or Claude: nothing
