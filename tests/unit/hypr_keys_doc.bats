@@ -18,6 +18,8 @@ setup() {
   assert_line --regexp $'^\tSUPER \\+ Q\tclose the window$'
   assert_line $'passthru\tSUPER + Escape\tpassthrough off'
   assert_line $'passthru\tCTRL + ALT + SHIFT + G\tpassthrough off'
+  assert_line $'\tCTRL + ALT + SHIFT + G\tpassthrough on'
+  assert_line $'passthru\tCTRL + ALT + SHIFT + Escape\tpassthrough off and escape from RustDesk'
   assert_line --regexp $'^pinbar\tk\t.+'
   assert_line --regexp $'^pinbar-keys\th\t.+'
 }
