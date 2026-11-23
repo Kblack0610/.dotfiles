@@ -1547,8 +1547,8 @@ mod tests {
             .map(|p| (p.label.as_str(), p.value.as_str()))
             .collect();
         assert_eq!(parts, [("Shipped", "2"), ("Checks", "1")]);
-        let rows: Vec<_> = c
-            .first
+        let rows: Vec<_> = c.lists[0]
+            .rows
             .iter()
             .map(|f| (f.text.as_str(), f.sub.as_str()))
             .collect();
