@@ -9,7 +9,7 @@
 #   agent-usage wakes [--since 24h] [--project S] [--json]   API calls per wake-up, by what woke the agent
 #   agent-usage burn [--days 7|--since T] [--before DATE] [--top N] [--sort cost|turns|context] [--json]   where the window's tokens went, by session too (usage-cleanup)
 #   agent-usage tokens snapshot|line|json|check [--langfuse|--gateway-errors] [--date D]  the nightly token-usage record per day
-#   agent-usage fleet-cost [--days 1] [--before DATE] [--json]    the whole fleet's measured and estimated dollars
+#   agent-usage fleet-cost [--days 1] [--before DATE] [--json]    the whole fleet's dollars: API cash and subscription burn
 #   agent-usage spend check <window> <max-usd>                    fleet spend over a window vs a ceiling (the claude-spend-* watches)
 #   agent-usage export check [<age>]                              every queue session past <age> (1h) exports telemetry (the queue-cost-export watch)
 #   agent-usage budget [--json] / budget check                     this month's cash per bill, split by project and lane; check = needs a look

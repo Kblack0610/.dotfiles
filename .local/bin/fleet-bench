@@ -350,7 +350,7 @@ FIX_SINCE=0; if [[ "${SENTINEL_SINCE:-}" =~ ^[0-9]+$ ]]; then FIX_SINCE=$SENTINE
 : "${BENCH_FLEET_COST_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/fleet-cost.json}"
 : "${BENCH_FLEET_COST_EVERY_MIN:=30}"
 : "${BENCH_FLEET_COST_TIMEOUT:=240}"
-: "${BENCH_HUB_FIGURE_CMD:=hub-figure}"   # the hub Costs card's figures (costs_headline, costs_measured, costs_estimated): the fleet's 24h dollars
+: "${BENCH_HUB_FIGURE_CMD:=hub-figure}"   # the hub Costs card's figures (costs_headline, costs_api_cash, costs_sub_burn): the fleet's 24h dollars
 : "${BENCH_BUDGET_CMD:=agent-usage budget --json}"   # this month's cash, by bill: the Costs Budget tab and fleet-budget-pace read the file
 : "${BENCH_BUDGET_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/budget.json}"
 : "${BENCH_BUDGET_EVERY_MIN:=30}"
@@ -1093,13 +1093,13 @@ spend_by_session() {
   fi
 }
 
-# fleet_cost_figure -> {usd, measured, estimated}: the hub Costs card's figures (whole dollars, the
+# fleet_cost_figure -> {usd, cash, burn}: the hub Costs card's figures (whole dollars, the
 # last 24h); rc 1 when hub-figure cannot read one.
 fleet_cost_figure() {
-  local u m e
-  u=$($BENCH_HUB_FIGURE_CMD costs_headline 2>/dev/null) && m=$($BENCH_HUB_FIGURE_CMD costs_measured 2>/dev/null) &&
-    e=$($BENCH_HUB_FIGURE_CMD costs_estimated 2>/dev/null) || return 1
-  jq -cen --arg u "$u" --arg m "$m" --arg e "$e" '{usd: ($u | tonumber), measured: ($m | tonumber), estimated: ($e | tonumber)}' 2>/dev/null
+  local u c b
+  u=$($BENCH_HUB_FIGURE_CMD costs_headline 2>/dev/null) && c=$($BENCH_HUB_FIGURE_CMD costs_api_cash 2>/dev/null) &&
+    b=$($BENCH_HUB_FIGURE_CMD costs_sub_burn 2>/dev/null) || return 1
+  jq -cen --arg u "$u" --arg c "$c" --arg b "$b" '{usd: ($u | tonumber), cash: ($c | tonumber), burn: ($b | tonumber)}' 2>/dev/null
 }
 
 # session_rows <now> -> one JSON object per session in the window, most working time first:
@@ -1372,7 +1372,7 @@ time_section() {
     | ($rows | map(select((.[0] | startswith("!") | not) and (.[1] | tonumber) > $since and (.[1] | tonumber) <= $t)) | group_by(.[0])
        | map({key: .[0][0], value: length}) | from_entries) as $merged
     | (if $fig == null then "Agent spend: the hub Costs figure is unreadable."
-       else "Agent spend over 24h: about $\($fig.usd) (measured $\($fig.measured), estimated $\($fig.estimated)), the hub Costs figure"
+       else "Agent spend over 24h: about $\($fig.usd) (API cash $\($fig.cash), subscription burn $\($fig.burn)), the hub Costs figure"
          + (if $spend == null then "." else "; $\([$fig.usd - ($w | map($spend[.session_id] // 0) | add // 0), 0] | max | round) of it on sessions no sample saw, the gateway and helper calls." end) end),
       "",
       "| Project | Sessions | Working h | Waiting h | Stalled h | Spend | Editor h | Editor h not passed | Commits on main |",

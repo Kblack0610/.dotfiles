@@ -614,13 +614,13 @@ test("a snapshot from before the reader has no langfuse key and still draws the 
 });
 
 test("the fleet figure is Spend's first tile, and its coverage words sit under the spend table; every % is of the fleet", () => {
-  const fleet_cost = { why: null, usd: "about $849", measured: "$310", estimated: "$538", as_of: 1700000000, stale: false,
+  const fleet_cost = { why: null, usd: "about $849", cash: "$310", burn: "$538", as_of: 1700000000, stale: false,
     coverage: "71% of tokens estimated: 280 of 458 sessions have no cost telemetry",
     unpriced: ["claude-sonnet-4-6: 32M tokens in 3 sessions not in the total, no billed sessions"],
     foot: "% is of the whole fleet's figure for the day. \"est.\" is priced from tokens at rates fitted to measured sessions." };
   const h = show(board({ fleet_cost, day: liveDay() }));
   assert.ok(h.indexOf("FLEET 24H") < h.indexOf("SPEND 7D") && h.indexOf("sec-sessions") < h.indexOf("sec-burn"), "the whole figure is the first answer");
-  assert.match(h, /<span class="tl">FLEET 24H<\/span><span class="tv">about \$849<\/span><span class="ts1">whole fleet, measured \$310, estimated \$538, as of /, "a shared tile");
+  assert.match(h, /<span class="tl">FLEET 24H<\/span><span class="tv">about \$849<\/span><span class="ts1">whole fleet, API cash \$310, subscription burn \$538, as of /, "a shared tile");
   assert.match(h, /<div class="muted">71% of tokens estimated: 280 of 458 sessions/, "the live day carries the coverage words");
   assert.match(h, /not in the total/);
   assert.match(h, /% is of the whole fleet&#39;s figure for the day/);
@@ -778,7 +778,7 @@ test("a missing or unknown inner tab opens Spend, and the fleet figure shows on 
   const fleet = ctx.route("#costs/fleet");
   assert.deepEqual([fleet.arg, fleet.section], ["", undefined], "the retired fleet link opens Spend, which holds the table now");
   run("st.arg = ''; st.section = null");
-  const h = show(board({ fleet_cost: { why: null, usd: "$9", measured: "$9", estimated: "$0", as_of: 1700000000, stale: false, coverage: "", unpriced: [], foot: "" }, day: liveDay() }));
+  const h = show(board({ fleet_cost: { why: null, usd: "$9", cash: "$0", burn: "$9", as_of: 1700000000, stale: false, coverage: "", unpriced: [], foot: "" }, day: liveDay() }));
   assert.ok(shown(h, "spend") && !shown(h, "limits") && !shown(h, "models"));
   const groupOf = (needle) => { const at = h.indexOf(needle); return h.slice(h.lastIndexOf("data-in=", at), at).match(/data-in="([a-z]+)"/)[1]; };
   assert.equal(groupOf("FLEET 24H"), "spend", "the tile is in Spend's group");
@@ -887,7 +887,7 @@ test("the Budget inner tab is this month's cash: head, what needs a look, the bi
 
 test("every Costs section is drawn in the layout's order, so each inner tab's group reads top to bottom", () => {
   run("st.arg = ''; st.section = null; cost.open = {}");
-  const fleet_cost = { why: null, usd: "$9", measured: "$9", estimated: "$0", as_of: 1700000000, stale: false, coverage: "", unpriced: [], foot: "" };
+  const fleet_cost = { why: null, usd: "$9", cash: "$0", burn: "$9", as_of: 1700000000, stale: false, coverage: "", unpriced: [], foot: "" };
   const h = show(board({ fleet_cost, day: liveDay(), tokens: tokens({ langfuse: { figures: lfFigures(), why: null } }) }));
   const order = JSON.parse(run("JSON.stringify(INNER_TABS.costs.tabs.flatMap((t) => t[2]))"));
   const drawn = order.filter((id) => h.includes(`id="sec-${id}"`));

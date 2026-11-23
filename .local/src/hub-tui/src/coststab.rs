@@ -1351,7 +1351,7 @@ fn fleet_head(f: &FleetCost, p: Palette, now: i64) -> Line<'static> {
         title,
         Span::raw(format!("{}  ", f.usd)),
         Span::styled(
-            format!("measured {}  estimated {}  ", f.measured, f.estimated),
+            format!("API cash {}  sub burn {}  ", f.cash, f.burn),
             p.dim(),
         ),
         Span::styled(age, style),
@@ -1754,8 +1754,8 @@ mod tests {
     fn fleet_block() -> FleetCost {
         FleetCost {
             usd: "about $849".into(),
-            measured: "$310".into(),
-            estimated: "$538".into(),
+            cash: "$310".into(),
+            burn: "$538".into(),
             as_of: Some(1_000_000),
             coverage: "71% of tokens estimated: 280 of 458 sessions have no cost telemetry".into(),
             unpriced: vec![
@@ -2294,7 +2294,7 @@ mod tests {
                     .lines()
                     .nth(1)
                     .unwrap()
-                    .starts_with("FLEET 24H about $849  measured $310  estimated $538  as of "),
+                    .starts_with("FLEET 24H about $849  API cash $310  sub burn $538  as of "),
             "{spend}"
         );
         assert!(

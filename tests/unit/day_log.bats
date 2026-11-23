@@ -181,14 +181,14 @@ EOF
 # day_record <day> <jq filter over {merged: []}>: a stored record, for the week
 day_record() { jq -n "{schema: 2, date: \"$1\", merged: []} | $2" > "$DAYLOG_DIR/$1.json"; }
 
-# fleet_cost <measured> <estimated> <project:usd:tokens>...: the agent-usage fleet-cost answer the
+# fleet_cost <cash> <burn> <project:usd:tokens>...: the agent-usage fleet-cost answer the
 # usage-stub serves, one session row per argument grouped into by_project as fleet_cost does; the total
-# is measured plus estimated, and what the rows do not carry is its unattributed part.
+# is cash plus burn, and what the rows do not carry is its unattributed part.
 fleet_cost() {
   local m="$1" e="$2"; shift 2
   printf '%s\n' "$@" | jq -Rn --argjson m "$m" --argjson e "$e" '[inputs | split(":")
     | {sid: "s\(input_line_number)", project: .[0], usd: (.[1] | tonumber), tokens: (.[2] | tonumber)}] as $s
-    | {total: {usd: ($m + $e), measured: $m, estimated: $e, sessions: ($s | length), tokens: ($s | map(.tokens) | add),
+    | {total: {usd: ($m + $e), cash: $m, burn: $e, sessions: ($s | length), tokens: ($s | map(.tokens) | add),
                unattributed: ($m + $e - ($s | map(.usd) | add))},
        by_project: ($s | group_by(.project) | map({key: .[0].project,
          value: {usd: (map(.usd) | add), sessions: length, tokens: (map(.tokens) | add)}}) | from_entries),
@@ -370,11 +370,11 @@ fleet_cost() {
 }
 
 @test "spend is the fleet cost: a row a project, the dollars no session carries, and the total with its parts" {
-  fleet_cost 12 4 game:5:1000000 game:5:500000 game:2.5:500000 tools:2.5:1000000
+  fleet_cost 4 12 game:5:1000000 game:5:500000 game:2.5:500000 tools:2.5:1000000
   run "$SUBJECT" show
   assert_success
   assert_output --partial '4 sessions spent about $16.'
-  assert_output --partial '- The fleet cost, about $16: $12 measured, $4 estimated (agent-usage fleet-cost).'
+  assert_output --partial '- The fleet cost, about $16: $4 API cash, $12 subscription burn (agent-usage fleet-cost).'
   assert_output --partial '| game | 3 | 2M | $12.5 |'
   assert_output --partial '| (no session) | 0 | 0 | $1 |'
   assert_output --partial '| TOTAL | 4 | 3M | $16 |'
