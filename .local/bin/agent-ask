@@ -456,6 +456,9 @@ render_ask() {
   echo
   ctx="${ASK[context]:-}"
   [ -n "$ctx" ] && { printf '%s' "$d"; wrap "     " "$ctx" | sed '1s/^     /why: /'; printf '%s' "$x"; }
+  # An agent's answer reopened for the human (reopen_held_agent_answers) shows as its pick.
+  [ "$st" != pending ] || [ -z "${ASK[agent_answer]:-}" ] ||
+    { printf '%s' "$d"; wrap "     " "an agent picked: ${ASK[agent_answer]}; only your answer releases it" | sed '1s/^ *//'; printf '%s' "$x"; }
   if [ "$st" != pending ]; then
     [ -n "${ASK[answer]:-}" ] && { printf '%s' "$b"; wrap "        " "answer: ${ASK[answer]}" | sed '1s/^ *//'; printf '%s' "$x"; }
   fi
@@ -1437,12 +1440,16 @@ reopen_held_agent_answers() {
     (
       command -v flock >/dev/null 2>&1 && flock 9
       [ "$(field "$f" status)" = answered ] && [ "$(field "$f" answered_by)" = agent ] || exit 1
-      write_fields "$f" status pending agent_answer "$pick ($(field "$f" answered_at))" answer "" answered_at "" answered_by ""
+      # A delivery still going out reads the answer after its claim; the next pass takes the ask.
+      case "$(field "$f" delivery)" in queued|delivering) exit 1 ;; esac
+      # resumed_at too: the agent's answer may have run the resume, and the human's must run it again.
+      write_fields "$f" status pending answer "" answered_at "" answered_by "" resumed_at "" \
+        ${pick:+agent_answer "$pick ($(field "$f" answered_at))"}
       tmp="$(mktemp)"
-      awk '{ p = index($0, ": ") } !(p && substr($0, 1, p - 1) ~ /^delivery(_at|_note)?$/)' "$f" > "$tmp" && mv "$tmp" "$f"
+      awk '{ p = index($0, ": ") } !(p && substr($0, 1, p - 1) ~ /^delivery(_at|_note|_skip)?$/)' "$f" > "$tmp" && mv "$tmp" "$f"
     ) 9>"$(dirname "$f")/.lock" || continue
     queue_changed
-    echo "agent-ask: $id is pending again: an agent answered $pick, but only the human's answer releases what holds it" >&2
+    echo "agent-ask: $id is pending again: an agent answered ${pick:-it}, but only the human's answer releases what holds it" >&2
   done < <(ask_files --all | xargs -r -d '\n' grep -lx 'answered_by: agent' 2>/dev/null |
     xargs -r -d '\n' grep -lx 'status: answered' 2>/dev/null)
 }
