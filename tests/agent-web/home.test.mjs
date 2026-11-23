@@ -378,8 +378,8 @@ test("Vitals folds to its head when all are on target, and shows nothing until i
 // Cards as hub_core::cards serializes them: a link is its href.
 const card = (tab, o = {}) => ({ tab, title: tab[0].toUpperCase() + tab.slice(1), big: "3", unit: "live", level: "ok", bar: [{ level: "ok", n: 2 }, { level: "red", n: 1 }],
   parts: [{ label: "Working", value: "2", level: "ok" }], lists: [], counted: `counted on ${tab}`, error: null, link: `#${tab}`, ...o });
-// The grid's order, read from hub-core (hub_core::cards::ORDER after its two widget-led cards), so the page draws what the widgets and the TUI draw.
-const TABS = [...readFileSync(new URL("../../.local/src/hub-core/src/cards.rs", import.meta.url), "utf8").match(/pub const ORDER: &\[&str\] = &\[([^\]]*)\]/)[1].matchAll(/"(\w+)"/g)].map((m) => m[1]).slice(2);
+// The page's cards, read from hub-core (hub_core::cards::ORDER, Needs you first, without Main red: agent-web cards.rs PAGE_SKIPS).
+const TABS = [...readFileSync(new URL("../../.local/src/hub-core/src/cards.rs", import.meta.url), "utf8").match(/pub const ORDER: &\[&str\] = &\[([^\]]*)\]/)[1].matchAll(/"(\w+)"/g)].map((m) => m[1]).filter((t) => t !== "red");
 const cards = () => TABS.map((t) => card(t));
 function drawCards(list, o = {}) {
   ctx.list = list;
