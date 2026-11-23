@@ -6731,8 +6731,10 @@ cmd_reap() {
 }
 
 # ask_failed_rows -- an open agent-board row its failures hold (in_force: DISPATCH_FIX_TRIES failed
-# records since its last `cleared`, or one marked `hold`) gets one approval ask carrying each
-# failure's reason: start it again, or drop it. The row is gated on the ask (#ask/<id>/retry) and a
+# records since its last `cleared`, or one marked `hold`) gets one ask carrying each
+# failure's reason: start it again, or drop it. It is a gate, not an approval: the judge answers it
+# by its policy, and only one the judge sends on reaches the human (2026-11-23: these filled the
+# human's list with retry picks no human needed to make). The row is gated on the ask (#ask/<id>/retry) and a
 # `cleared` record naming the ask ends the hold, so only the answer decides: retry clears the gate,
 # and the row is judged (or, gated, picked) again with DISPATCH_FIX_TRIES more tries; drop settles
 # it (settle_answered_gates, agent lane only). The `cleared` goes in before the tag, so a tag that
@@ -6760,7 +6762,7 @@ ask_failed_rows() {
     why=${why:0:600} rec=retry
     [ "$hold" != true ] || rec=drop
     ctx="$key is a row on the $p board: \"$text\". Its last $n runs failed: $why. Dispatch holds it until this is answered."
-    aid=$(env -u CLAUDE_CODE_SESSION_ID -u TMUX -u TMUX_PANE -u AGENTCTL_NAME agent-ask post --kind approval --project "$p" ${prof:+--profile "$prof"} \
+    aid=$(env -u CLAUDE_CODE_SESSION_ID -u TMUX -u TMUX_PANE -u AGENTCTL_NAME agent-ask post --kind gate --project "$p" ${prof:+--profile "$prof"} \
         --options "retry=judge the row again and start it, with $DISPATCH_FIX_TRIES more tries|drop=drop the row from the board" \
         --recommend "$rec" --why "each try is a fresh session, and $DISPATCH_FIX_TRIES more failures ask again" --context "$ctx" \
         -- "Start board row $key again after its last $n runs failed?" </dev/null 2>/dev/null | tail -n 1)
@@ -6787,8 +6789,8 @@ ask_failed_rows() {
 # kept held, dept-tabs-p6-posthog skipped, both rows sat in dead_holds). An answer that says to skip
 # the work (SETTLE_SKIP_RE) drops the row, the answer as its why. Any other answer only says not this
 # way or not yet, and a drop cannot be undone from here, so the row stays: its gate is swapped for
-# #hold/row-<row id>, an agent-hold the human releases to start it. A missing ask, a
-# judge's answer and a human-sheet row stay in dead_holds for a person. A cancelled ask (nobody
+# #hold/row-<row id>, an agent-hold the human releases to start it. A missing ask and a
+# human-sheet row stay in dead_holds for a person. A cancelled ask (nobody
 # decided: agent-ask cancel has no actor) leaves its rows dead the same way (ar-3863, 2026-11-19):
 # one cancelled because it joined an older ask moves its rows' gate to that ask. Any other cancel
 # sets no hold, which only a person clears (ar-4646: ucp-463 sat held on work #2129 had merged): a
@@ -6796,7 +6798,7 @@ ask_failed_rows() {
 # the ask is posed again (repose_ask) and the row gated on the new one.
 SETTLE_SKIP_RE='\b(skip|skipped|drop|cancel|cancelled|abandon|scrap|not needed|no longer needed)\b'
 settle_answered_gates() {
-  local board prof p id t g aid ask st by ans why hold had rsn to rc
+  local board prof p id t g aid ask st ans why hold had rsn to rc
   load_gates
   [ -z "$GATES_FAILED" ] || return 0
   board=$(notes board --json 2>/dev/null) || return 0
@@ -6806,8 +6808,7 @@ settle_answered_gates() {
       aid=${g#ask/}; aid=${aid%%/*}
       ask=$(agent-ask show "$aid" </dev/null 2>/dev/null) || continue
       st=$(sed -n '/^status: */{s///p;q;}' <<<"$ask")
-      by=$(sed -n '/^answered_by: */{s///p;q;}' <<<"$ask")
-      # The human's answer only, as ask_pending reads it: an empty by is a legacy human answer.
+      # Any answer, as ask_pending reads it: the human's, the judge's or an agent's.
       if [ "$st" = cancelled ]; then
         rsn=$(sed -n '/^closed_reason: */{s///p;q;}' <<<"$ask" | tr -cd ' -~' | tr -d '#<>' | cut -c1-160)
         # join_ask moved the asker's sessions to the older ask: the gate follows, options and all.
@@ -6827,7 +6828,7 @@ settle_answered_gates() {
         repose_ask "$prof" "$p" "$id" "$g" "$aid" "$ask" "$rsn"
         continue 2
       else
-        [ "$st" = answered ] && { [ -z "$by" ] || [ "$by" = human ]; } || continue
+        [ "$st" = answered ] || continue
       fi
       # The answer goes into a marker or a hold line: one line of plain ASCII, no # (a tag) or <> (a marker end).
       ans=$(sed -n '/^answer: */{s///p;q;}' <<<"$ask" | tr -cd ' -~' | tr -d '#<>' | cut -c1-160)
@@ -6913,6 +6914,9 @@ repose_ask() {
   new=$(cat "$REPOSED/$aid" 2>/dev/null)
   if ! { [[ $new =~ ^[A-Za-z0-9_-]+$ ]] && agent-ask show "$new" </dev/null >/dev/null 2>&1; }; then
     q=${A[question]} kind=${A[kind]:-question} ap=${A[project]:-$p}
+    # A retry-or-drop ask ask_failed_rows posted (a `cleared` verdict names it) goes back as the gate it
+    # is now, so the judge answers it; ones posted before 2026-11-23 were approvals.
+    [ "$kind" != approval ] || ! jq -Rne --arg a "$aid" 'any(inputs | fromjson? | objects; .verdict == "cleared" and .ask == $a)' "$VERDICTS" >/dev/null 2>&1 || kind=gate
     [ -n "$q" ] || { say "settle_answered_gates: cancelled ask $aid has no question to pose again ($p row $id)"; return 0; }
     # `options:` holds the slugs and `option_notes:` their meanings, pipe-aligned; post takes slug=meaning
     # and refuses a bare slug, so a missing meaning (a gate's default approve|hold) reads as agent-ask's audit words.
