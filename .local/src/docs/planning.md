@@ -26,7 +26,7 @@ Scaling: a section that does not apply says `n/a: <reason>`, except Changes, Con
 
 Depth: a plan with phases or one that crosses systems runs the standards, telemetry and overlap checks as parallel Explore agents before writing, and cites what they found in `## Reviewed`.
 
-Chain: a plan with more than one open `- [ ]` phase runs as a chain, one fresh session per phase; how to file it is the `go` skill, step 3. A plan whose text says it runs or does its work in this session or one session is denied. Why: 2026-11-18 one session held four phases through 5 compactions, and another started five phases at once.
+Chain: a plan with more than one open `- [ ]` phase runs as a chain, one fresh session per phase (`agent-queue add --plan`, `~/.local/src/docs/lifecycle.md`, "Taking an epic on"). A plan whose text says it runs or does its work in this session or one session is denied. Why: 2026-11-18 one session held four phases through 5 compactions, and another started five phases at once.
 
 Phases: a plan with more than one phase carries a `## Phases` checklist, one line per phase: `- [ ] <name>` open, `- [x] <name> (#PR)` landed, `- [-] <name>: <why>, <board row>` deferred by the human. `fleet-sessions` reads it, and the session winds down when none is unchecked and no ask is open. A PR that supersedes a plan writes `Superseded by #N` as the first line under its title (`fleet-states.md`).
 
