@@ -53,17 +53,18 @@ reason() {
   done
 }
 
-@test "a -f pattern on \$PWD, or ^-anchored on a worktree or /tmp, passes unquoted; a bare absolute path or a quoted one stays denied" {
-  for c in 'pkill -f $PWD/tests/x.bats' 'pkill -f ${PWD}/sandbox' 'pkill -9 -f ^$PWD/bin/srv' 'pkill -f ^/tmp/mine/srv' \
-    'pkill -f ^/home/u/.worktrees/dotfiles-agent-3/x' 'kill $(pgrep -f $PWD/x)' 'pgrep -f ^/var/tmp/run/ | xargs kill' \
-    'cd /w && pkill -f $PWD/a; pkill -x foo'; do
+@test "a -f pattern on \$PWD passes unquoted; a bare, quoted, or other tree's or /tmp path stays denied" {
+  for c in 'pkill -f $PWD/tests/x.bats' 'pkill -f ${PWD}/sandbox' 'pkill -9 -f ^$PWD/bin/srv' 'kill $(pgrep -f $PWD/x)' \
+    'pgrep -f ^$PWD/run/ | xargs kill' 'cd /tmp/mine && pkill -f $PWD/srv' 'cd /w && pkill -f $PWD/a; pkill -x foo'; do
     run decision "$c"
     assert_output allow
   done
   # NEGATIVE CONTROL: the shell's own argv holds a literal path, so an unanchored one matches it;
+  # an anchored path names no owner, so another session's tree or /tmp run would match too;
   # quoted text is blanked before the row reads it; a later clause with a bare pattern still counts.
   for c in 'pkill -f /home/u/wt/sandbox' 'pkill -f python' 'pkill -f "$PWD/x"' 'pkill -f $PWDX/x' 'pkill -f ^/usr/bin/node' \
-    'pkill -f ^/tmp' 'pkill -f $PWD/a; pkill -f foo' 'kill $(pgrep -f /home/u/wt/x)' 'pkill -f -- $PWD/x'; do
+    'pkill -f ^/tmp/mine/srv' 'pkill -f ^/home/u/.worktrees/other-agent-3/x' 'pgrep -f ^/var/tmp/run/ | xargs kill' \
+    'pkill -f $PWD/a; pkill -f foo' 'kill $(pgrep -f /home/u/wt/x)' 'pkill -f -- $PWD/x'; do
     run decision "$c"
     assert_output deny
   done

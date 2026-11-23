@@ -79,10 +79,11 @@ denied_by() { assert_success; assert_output --partial '"deny"'; assert_output --
 
 @test "a guard that raises is skipped and the others still run (each fails open on its own)" {
   mkdir "$T/hooks"
-  cp "$HOOKS"/{walker-guards,forge-guard,release-guard,scratch-rm-guard,gh-login-guard,block-poll}.py "$T/hooks/"
+  cp "$HOOKS"/*.py "$T/hooks/"
   printf 'def decide(data):\n    raise RuntimeError("broken")\n' > "$T/hooks/checkout-guard.py"
   WALKER="$T/hooks/walker-guards.py" run at "$T/dots" 'git checkout -b feat/x && gh auth logout'
   denied_by gh-login-guard
   refute_output --partial 'checkout-guard:'
   assert_output --partial 'walker-guards: checkout-guard skipped'
+  [ "$(grep -c ' skipped, it raised' <<<"$output")" -eq 1 ]
 }
