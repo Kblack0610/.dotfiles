@@ -76,17 +76,6 @@ agent_bench_waiting_hours{project="web"} 0
 # TYPE agent_bench_stalled_hours gauge
 agent_bench_stalled_hours{project="game"} 0.33
 agent_bench_stalled_hours{project="web"} 0
-# HELP agent_bench_eta_ratio Median actual over predicted duration of ETAs scored in the last 24h.
-# TYPE agent_bench_eta_ratio gauge
-agent_bench_eta_ratio{project="game"} 2
-# HELP agent_bench_ci_reds_before_merge CI reds on PRs merged in the last 24h, before they merged.
-# TYPE agent_bench_ci_reds_before_merge gauge
-agent_bench_ci_reds_before_merge{project="game"} 2
-# HELP agent_bench_loop_dark_episodes Finding episodes begun in the last 7d that reached the human with nothing but pages.
-# TYPE agent_bench_loop_dark_episodes gauge
-agent_bench_loop_dark_episodes 0
-# HELP agent_bench_loop_first_response_minutes Median minutes from a finding episode to its first response that is not a page, last 7d.
-# TYPE agent_bench_loop_first_response_minutes gauge
 # HELP agent_bench_kpi The KPIs `fleet-bench kpi` prints, by window.
 # TYPE agent_bench_kpi gauge
 agent_bench_kpi{kpi="sessions",window="7d"} 0
@@ -104,7 +93,6 @@ agent_bench_kpi{kpi="human_answered_per_day",window="28d"} 0
 agent_bench_kpi{kpi="runners_bad",window="7d"} 0
 agent_bench_kpi{kpi="failed_unexplained",window="7d"} 0
 agent_bench_kpi{kpi="loop_dark",window="7d"} 0
-agent_bench_kpi{kpi="loop_dark_7d",window="7d"} 0
 agent_bench_kpi{kpi="ownerless_running",window="7d"} 0
 agent_bench_kpi{kpi="plans_unqueued",window="7d"} 0
 agent_bench_kpi{kpi="routes_unresolved",window="7d"} 0
@@ -128,27 +116,16 @@ agent_bench_vital{question="outcome",kpi="landed_unverified"} 3
 agent_bench_vital{question="quality",kpi="rework_candidate_7d"} 4
 agent_bench_vital{question="quality",kpi="first_pass_share"} 5
 agent_bench_vital{question="cost",kpi="cost_per_merged_item"} 6
-# HELP agent_bench_improve Improvement claims live now, and verdicts of each kind, from effect.jsonl.
-# TYPE agent_bench_improve gauge
-agent_bench_improve{state="live"} 0
-agent_bench_improve{state="improved"} 0
-agent_bench_improve{state="flat"} 0
-agent_bench_improve{state="regressed"} 0
-agent_bench_improve{state="unproven"} 0
 # HELP agent_chain_wip Items at each step of the work chain now, from the state files.
 # TYPE agent_chain_wip gauge
 agent_chain_wip{step="queued"} 0
 agent_chain_wip{step="running"} 0
 agent_chain_wip{step="review"} 0
 agent_chain_wip{step="waiting"} 0
-# HELP agent_chain_age_minutes Minutes the items at each step have sat there, p50 and p90.
-# TYPE agent_chain_age_minutes gauge
 # HELP agent_chain_age_ratio Each step's age p90 over its bound in kpi-thresholds; past 1 is a bottleneck.
 # TYPE agent_chain_age_ratio gauge
 # HELP agent_chain_moves Items each step took in and let out over the last hour, from the record.
 # TYPE agent_chain_moves gauge
-# HELP agent_chain_dwell_minutes Minutes in the step of the items that left it in the last 24h, p50 and p90.
-# TYPE agent_chain_dwell_minutes gauge
 # HELP agent_chain_drift Queue items the record and the queue folders place at different steps.
 # TYPE agent_chain_drift gauge
 PROM
@@ -3255,13 +3232,13 @@ loop_fixture() {
   assert_equal "$(jq -r .kpi <<<"$output")" loop_dark
 }
 
-@test "kpi: loop_dark_7d keeps a dark episode that cleared; loop_dark reads only the one still firing" {
+@test "kpi: loop_dark reads only the dark episode still firing, the cleared one is left out" {
   kpi_setup; loop_fixture
   frow starved pool:old -200000 -200000 shepherd; frow starved pool:old -200000 -190000 human
   BENCH_NOW=$((T0 - 190000)) "$SUBJECT" respond "starved pool:old @$((T0 - 200000))" shepherd paged
   run "$SUBJECT" kpi --json
   assert_success
-  assert_equal "$(jq -c '[.loop_dark["7d"], .loop_dark_7d["7d"]]' <<<"$output")" '[1,2]'
+  assert_equal "$(jq -c '[.loop_dark["7d"], has("loop_dark_7d")]' <<<"$output")" '[1,false]'
 }
 
 @test "kpi: interrupts_per_day holds when sessions go up 4x and the count is flat (negative control)" {

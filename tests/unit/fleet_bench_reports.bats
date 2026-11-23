@@ -610,17 +610,16 @@ STUB
   [ "$(cat "$PIPELINE_SNAPSHOT")" = "$before" ]
 }
 
-@test "pipeline: the gauges carry WIP, age, moves, dwell and drift per step" {
+@test "pipeline: the gauges carry WIP, the age ratio, moves and drift per step" {
   pipeline_fixture
   source "$SUBJECT"
   run bench_prom "$T0" "$(pipeline_json "$T0")"
   assert_success
   assert_line 'agent_chain_wip{step="backlog"} 1'
-  assert_line 'agent_chain_age_minutes{step="queued",quantile="p90"} 120'
   assert_line 'agent_chain_age_ratio{step="running"} 0.5'
   assert_line 'agent_chain_moves{step="inbox",dir="in"} 2'
-  assert_line 'agent_chain_dwell_minutes{step="queued",quantile="p50"} 16'
   assert_line 'agent_chain_drift 0'
+  refute_output --regexp '^agent_chain_(age_minutes|dwell_minutes)'
   assert_line 'agent_bench_kpi{kpi="step_age_p90_queued",window="7d"} 120'
   assert_line 'agent_bench_kpi_limit{kpi="chain_drift"} 0'
 }
@@ -895,19 +894,6 @@ check_fixture() {
   assert_failure
   run outcome
   assert_output --partial 'FAILED'
-}
-
-@test "improve: the gauge counts live claims and each verdict kind" {
-  kpi_setup; kpi_fixture; check_fixture
-  "$SUBJECT" retro
-  source "$SUBJECT"
-  run bench_prom "$T0" '{"steps": []}'
-  assert_success
-  assert_line 'agent_bench_improve{state="live"} 3'
-  assert_line 'agent_bench_improve{state="improved"} 2'
-  assert_line 'agent_bench_improve{state="flat"} 1'
-  assert_line 'agent_bench_improve{state="regressed"} 1'
-  assert_line 'agent_bench_improve{state="unproven"} 1'
 }
 
 @test "retro keeps one guard row per lesson whose sig recurred in 2+ sessions, refreshed in place; one session is not enough" {

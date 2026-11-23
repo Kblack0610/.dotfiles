@@ -372,22 +372,15 @@ slot_counts() {
   echo "$units $busy $queued $(unslotted_editors "$(slot_holders)")"
 }
 
-# ledger_stats [<window s>] -> "<result> <count>" for each result, then "p50 <s>" and "p90 <s>" of
-# run time, over runs that ended in the last LEDGER_WINDOW_SECS (or the window given).
+# ledger_stats [<window s>] -> "<result> <count>" for each result, over runs that ended in the
+# last LEDGER_WINDOW_SECS (or the window given).
 ledger_stats() {
   # No ledger yet (no run since slots.sh began writing one) reads as no runs, not a failure.
   local f="$RUN_LEDGER"; [ -r "$f" ] || f=/dev/null
   awk -F'\t' -v since="$(( $(date +%s) - ${1:-$LEDGER_WINDOW_SECS} ))" -v results="$LEDGER_RESULTS" '
     BEGIN { split(results, rs, " "); for (i in rs) c[rs[i]] = 0 }
-    $1 >= since && ($3 in c) { c[$3]++; d[++n] = $1 - $2 }
-    END {
-      for (r in c) print r, c[r]
-      if (!n) exit
-      for (i = 2; i <= n; i++) { v = d[i]; for (j = i - 1; j > 0 && d[j] > v; j--) d[j + 1] = d[j]; d[j + 1] = v }
-      print "p50", d[rank(0.5)]; print "p90", d[rank(0.9)]
-    }
-    # Nearest rank: the smallest run time that q of the runs are at or under.
-    function rank(q,  i) { i = int(q * n); if (i < q * n) i++; return i < 1 ? 1 : i }' "$f" | sort
+    $1 >= since && ($3 in c) { c[$3]++ }
+    END { for (r in c) print r, c[r] }' "$f" | sort
 }
 
 # ledger_hours -> the same runs as prom lines by the hour they ended (its start, epoch seconds):
@@ -527,7 +520,7 @@ gate_line() {
   stats="$(ledger_stats "$GATE_WINDOW_SECS")"
   while read -r res n; do
     case "$res" in
-      p[0-9]*|"") ;;
+      "") ;;
       pass|fail) line="$line $n $res," ;;
       *) [ "$n" = 0 ] || rest="$rest $n $res," ;;
     esac
@@ -600,20 +593,10 @@ write_textfile() {
       echo '# TYPE fleet_run_units_max gauge'
       echo "fleet_run_units_max $max"
     fi
-    # The governor already exports this host's units and the local backlog (ci_governor_*), so the
-    # textfile adds only what it cannot see: editors running outside any seat.
-    if [ -d "$SLOT_DIR" ]; then
-      echo '# HELP fleet_local_unslotted_editors Headless Unity editors running outside any slot (started by hand or another tool).'
-      echo '# TYPE fleet_local_unslotted_editors gauge'
-      echo "fleet_local_unslotted_editors $(unslotted_editors "$(slot_holders)")"
-    fi
     stats="$(ledger_stats)"
     echo '# HELP fleet_local_gate_finished Local Unity runs that ended in the last 24h, by result (playground run ledger).'
     echo '# TYPE fleet_local_gate_finished gauge'
-    awk '$1 !~ /^p[0-9]/ { printf "fleet_local_gate_finished{result=\"%s\"} %s\n", $1, $2 }' <<< "$stats"
-    echo '# HELP fleet_local_gate_duration_seconds Run time of those runs.'
-    echo '# TYPE fleet_local_gate_duration_seconds gauge'
-    awk '$1 ~ /^p[0-9]/ { printf "fleet_local_gate_duration_seconds{quantile=\"0.%s\"} %s\n", substr($1, 2, 1), $2 }' <<< "$stats"
+    awk '{ printf "fleet_local_gate_finished{result=\"%s\"} %s\n", $1, $2 }' <<< "$stats"
     hours="$(ledger_hours)"
     echo '# HELP fleet_local_gate_by_hour Those runs by the hour they ended; hour = its start, epoch seconds.'
     echo '# TYPE fleet_local_gate_by_hour gauge'

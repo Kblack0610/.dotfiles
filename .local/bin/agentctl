@@ -1245,10 +1245,7 @@ cmd_budget() {
 # keys and no call today never calls a model, so it is left out.
 _budget_row() {
     local v=() usd hour day cap
-    mapfile -t v < <(set +eu; unset BUDGET_CALL_USD BUDGET_DAY_USD MAX_CALLS_HOUR
-        # shellcheck disable=SC1090
-        . "$CONFIG_DIR/$1.conf" >/dev/null 2>&1
-        printf '%s\n' "${BUDGET_CALL_USD:-}" "${BUDGET_DAY_USD:-}" "${MAX_CALLS_HOUR:-}")
+    mapfile -t v < <(AGENTCTL_CONF_DIR="$CONFIG_DIR" budget_conf "$1")
     read -r usd hour < <(budget_spent "$1")
     [ -n "${v[0]}${v[1]}${v[2]}" ] || [ "$usd" != 0 ] || [ "$hour" != 0 ] || return 0
     read -r day cap < <(BUDGET_DAY_USD="${v[1]}" MAX_CALLS_HOUR="${v[2]}" budget_caps "$1")
