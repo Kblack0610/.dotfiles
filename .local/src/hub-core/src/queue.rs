@@ -254,6 +254,30 @@ impl Item {
         self.tags.split_whitespace()
     }
 
+    /// The Claude session ids it ran in, oldest first (its `sessions:` header, space- or
+    /// comma-separated): an ask's `claude_session` names one, which ties the ask to this item
+    /// after that session ends.
+    pub fn session_ids(&self) -> impl Iterator<Item = &str> {
+        self.extra_str("sessions")
+            .unwrap_or("")
+            .split([',', ' '])
+            .filter(|s| !s.is_empty())
+    }
+
+    /// The Claude session it ran in last: the one whose end left it waiting.
+    pub fn last_session(&self) -> Option<&str> {
+        self.session_ids().last()
+    }
+
+    /// Whether it is held on ask `id` (an `ask:<id>` or `ask:<id>=<options>` tag, agent-queue's hold).
+    pub fn held_on(&self, id: &str) -> bool {
+        !id.is_empty()
+            && self.tag_list().any(|t| {
+                t.strip_prefix("ask:")
+                    .is_some_and(|a| a.split('=').next() == Some(id))
+            })
+    }
+
     /// The item's stages in order, each with the minutes since the one before it: queued, ready,
     /// started, waiting, finished, then `merged` (the ledger keeps a sha, so no time or gap).
     /// A stage the item has not reached is left out. The one reader of this for both surfaces.
