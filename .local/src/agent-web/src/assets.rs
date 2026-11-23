@@ -580,10 +580,7 @@ mod tests {
             .map(|i| serde_json::json!([i.id, i.title, i.sections]))
             .collect();
         for want in [
-            format!(
-                "const PROJECT_DEPTS = {};",
-                serde_json::Value::Array(chips)
-            ),
+            format!("const PROJECT_DEPTS = {};", serde_json::Value::Array(chips)),
             format!(
                 "const PROJECT_RETIRED = {};",
                 serde_json::Value::Object(retired)

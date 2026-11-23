@@ -2407,7 +2407,7 @@ pub(crate) mod tests {
         let s = t
             .iter()
             .position(|s| s.contains("[Departments]"))
-            .expect(&format!("{t:#?}"));
+            .unwrap_or_else(|| panic!("{t:#?}"));
         assert!(t[s].contains("[Departments]"), "{t:#?}");
         let chips = t[s + 1..].join("");
         assert!(
