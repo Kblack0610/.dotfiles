@@ -3767,12 +3767,23 @@ empty_submodule_fixture() {
 }
 
 @test "label adds, removes and prints a session's labels, by target, tmux session or self" {
+  bats_require_minimum_version 1.5.0
   landed_fixture
   run "$REPO_ROOT/.local/bin/fleet-sessions" label s1:1 +manual
   assert_output manual
   run "$REPO_ROOT/.local/bin/fleet-sessions" label s1 +quality:simplifying
   assert_output manual,quality:simplifying
   CLAUDE_CODE_SESSION_ID=sid-9 run "$REPO_ROOT/.local/bin/fleet-sessions" label self -manual
+  assert_output quality:simplifying
+  # manual is the human's: a session cannot add it to itself, and is pointed at stay (ar-4124)
+  CLAUDE_CODE_SESSION_ID=sid-9 run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions" label self +manual
+  assert_failure 2
+  [[ "$stderr" == *"takes +stay"* ]]
+  CLAUDE_CODE_SESSION_ID=sid-9 run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions" label self ^manual
+  assert_failure 2
+  CLAUDE_CODE_SESSION_ID=sid-9 run "$REPO_ROOT/.local/bin/fleet-sessions" label self +stay
+  assert_output quality:simplifying,stay
+  CLAUDE_CODE_SESSION_ID=sid-9 run "$REPO_ROOT/.local/bin/fleet-sessions" label self -stay
   assert_output quality:simplifying
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -c .labels <<<"$output")" = '["quality:simplifying"]' ]
@@ -3786,9 +3797,9 @@ empty_submodule_fixture() {
   landed_fixture
   # the env id differs from the row's transcript id, as on hub/dotfiles:3 (2026-11-20)
   TMUX="$SANDBOX/tmux/lab,1,0" TMUX_PANE=%7 CLAUDE_CODE_SESSION_ID=sid-env \
-    run "$REPO_ROOT/.local/bin/fleet-sessions" label self +manual
+    run "$REPO_ROOT/.local/bin/fleet-sessions" label self +stay
   assert_success
-  assert_output manual
+  assert_output stay
   [ -f "$FLEET_SHEPHERD_DIR/labels/sid-9" ]
   [ ! -e "$FLEET_SHEPHERD_DIR/labels/sid-env" ]
   # a pane with no live row is refused, not filed under the env id
@@ -3803,7 +3814,7 @@ empty_submodule_fixture() {
   # a pane no row holds (a popup) falls back to the env id only when a live row carries it
   TMUX="$SANDBOX/tmux/lab,1,0" TMUX_PANE=%99 CLAUDE_CODE_SESSION_ID=sid-9 \
     run "$REPO_ROOT/.local/bin/fleet-sessions" label self +chat
-  assert_output manual,chat
+  assert_output stay,chat
   "$REPO_ROOT/.local/bin/fleet-sessions" label s1 -chat >/dev/null
   # NEGATIVE CONTROL: outside tmux the env id is the only identity
   CLAUDE_CODE_SESSION_ID=sid-env run "$REPO_ROOT/.local/bin/fleet-sessions" label self +chat
@@ -5931,8 +5942,9 @@ verdict() {
   [ "$(verdict '{bucket: "PARKED", blockers: ["open ask Ab12"]}')" = "keep: parked: its claude is gone, work is left here" ]
   [ "$(verdict '{bucket: "PARKED", idle_min: 9000, age_min: null}')" = "now: quiet 9000m, nothing to land" ]
   [ "$(verdict '{bucket: "PARKED", idle_min: 5, age_min: null}')" = "after: quiet 5m of 60m" ]
-  [ "$(verdict '{bucket: "PARKED", idle_min: 9000, labels: ["manual"]}')" = "now: quiet 9000m, nothing to land" ]
-  [ "$(verdict '{bucket: "PARKED", idle_min: 100, labels: ["manual"]}')" = "keep: manual: the human keeps it, quiet 100m of 24h" ]
+  [ "$(verdict '{bucket: "PARKED", idle_min: 9000, labels: ["manual"]}')" = "keep: manual: the human keeps it" ]
+  [ "$(verdict '{bucket: "PARKED", idle_min: 9000, labels: ["stay"]}')" = "now: quiet 9000m, nothing to land" ]
+  [ "$(verdict '{bucket: "PARKED", idle_min: 100, labels: ["stay"]}')" = "keep: stay: kept open as the human asked, quiet 100m of 24h" ]
   # An open plan phase holds nothing, as for a live row; only the item to close is left: after, for the shepherd to close.
   [ "$(verdict '{bucket: "PARKED", idle_min: 9000, blockers: ["next phase: 3"]}')" = "now: quiet 9000m, nothing to land" ]
   [ "$(verdict '{bucket: "PARKED", idle_min: 9000, blockers: ["its item s is still open with every phase done or queued"]}')" = "after: close its item s (agent-land its last PR without --partial, or agent-queue move <slug> done; the shepherd moves it done once quiet): every phase is done or queued" ]
@@ -5949,11 +5961,13 @@ verdict() {
   [ "$(verdict '{host: "ms-a2", idle_min: 5}')" = "after: quiet 5m of 60m" ]
   [ "$(SELF=s1 verdict '{host: "ms-a2", session_id: "s1", idle_min: 5}')" = "now: quiet 5m, nothing to land" ]
   # The human's explicit keep, and a prompt in its pane.
-  [ "$(verdict '{labels: ["manual"]}')" = "keep: manual: the human keeps it, quiet 90m of 24h" ]
-  # A manual label expires like chat: held until quiet FLEET_CHAT_CLOSE_H, then the rest of the chain reads it (ar-4041).
-  [ "$(verdict '{labels: ["manual"], idle_min: 1439, age_min: 2000}')" = "keep: manual: the human keeps it, quiet 1439m of 24h" ]
-  [ "$(verdict '{labels: ["manual"], idle_min: 1440, age_min: 2000}')" = "now: quiet 1440m, nothing to land" ]
-  [ "$(verdict '{labels: ["manual"], idle_min: 1500, age_min: 2000, blockers: ["PR #9 open"]}')" = "keep: land it: PR #9 open" ]
+  [ "$(verdict '{labels: ["manual"]}')" = "keep: manual: the human keeps it" ]
+  # The human's manual never expires, however long it is quiet (ar-4124).
+  [ "$(verdict '{labels: ["manual"], idle_min: 9000, age_min: 9000}')" = "keep: manual: the human keeps it" ]
+  # A session's own stay expires like chat: held until quiet FLEET_CHAT_CLOSE_H, then the rest of the chain reads it (ar-4041).
+  [ "$(verdict '{labels: ["stay"], idle_min: 1439, age_min: 2000}')" = "keep: stay: kept open as the human asked, quiet 1439m of 24h" ]
+  [ "$(verdict '{labels: ["stay"], idle_min: 1440, age_min: 2000}')" = "now: quiet 1440m, nothing to land" ]
+  [ "$(verdict '{labels: ["stay"], idle_min: 1500, age_min: 2000, blockers: ["PR #9 open"]}')" = "keep: land it: PR #9 open" ]
   [ "$(verdict '{in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
   [ "$(verdict '{bucket: "CHAT", finished: false, idle_min: 1500, age_min: 2000, in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
   [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "waiting on a prompt or permission", own_asks: 1, blockers: ["open ask Ab12"]}')" = "keep: a dialog waits on the human" ]
@@ -6076,7 +6090,8 @@ verdict() {
   [ "$(SELF=s2 verdict '{bucket: "WORKING", session_id: "s1"}')" = "keep: working" ]
   [ "$(SELF=s2 verdict '{session_id: "s1", idle_min: 5}')" = "after: quiet 5m of 60m" ]
   # Every other keep still holds it.
-  [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", labels: ["manual"]}')" = "keep: manual: the human keeps it, quiet 90m of 24h" ]
+  [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", labels: ["manual"], idle_min: 9000, age_min: 9000}')" = "keep: manual: the human keeps it" ]
+  [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", labels: ["stay"]}')" = "keep: stay: kept open as the human asked, quiet 90m of 24h" ]
   [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
   [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", blockers: ["PR #9 open"]}')" = "keep: land it: PR #9 open" ]
 }

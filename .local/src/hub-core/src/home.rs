@@ -25,7 +25,7 @@ use crate::infra::Infra;
 use crate::proposals::Proposal;
 use crate::queue::{Item, Queue, State};
 use crate::reading::State as Reading;
-use crate::tasks::{Feed, Row};
+use crate::tasks::{self, Feed, Row};
 
 /// The health chips, in the order the strip shows them (the `cc:domain_status` domains).
 pub const DOMAINS: [&str; 12] = [
@@ -36,7 +36,8 @@ pub const DOMAINS: [&str; 12] = [
 /// A human-sheet row of another type is work an agent can take, so it never needs the human.
 pub const HUMAN_TYPES: [&str; 3] = ["run", "decide", "check"];
 /// The priorities a human-sheet row needs before it joins NEEDS YOU; a `#low` row waits on the sheet.
-pub const SHEET_PRIORITIES: [&str; 2] = ["urgent", "high"];
+/// `normal` is an untagged row's too (notes-cli `md::DEFAULT_PRIORITY`).
+pub const SHEET_PRIORITIES: [&str; 3] = ["urgent", "high", "normal"];
 /// The domains shown even when Prometheus has no status for them, so a missing one reads as no data:
 /// k3s and ci are the platform, and projects holds the playground and dotfiles CI watches that left ci.
 pub(crate) const ALWAYS: [&str; 3] = ["k3s", "ci", "projects"];
@@ -431,9 +432,10 @@ pub struct Score {
     pub value: i64,
     /// What it holds, in words: "session, 3 phases, 2 queued", empty when nothing.
     pub holds: String,
-    /// A sheet row's priority (`urgent` or `high`). Every sheet row ranks after every live wait
-    /// with the same `human`, since a live wait stops work already running and a to-do does not;
-    /// among sheet rows, `high` follows `urgent`. A live wait has none.
+    /// A sheet row's priority (`urgent`, `high` or `normal`). Every sheet row ranks after every
+    /// live wait with the same `human`, since a live wait stops work already running and a to-do
+    /// does not; among sheet rows, `high` follows `urgent` and `normal` follows `high`. A live
+    /// wait has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<String>,
 }
@@ -466,13 +468,13 @@ impl Score {
     }
 
     /// Where the row ranks among the human's: 0 a live wait (an ask, a session, a queue item),
-    /// which stops running work; 1 an `urgent` sheet to-do; 2 a `high` one.
+    /// which stops running work; then a sheet to-do by its priority, `urgent` 1, `high` 2,
+    /// `normal` 3 (`tasks::PRIORITIES` order).
     fn tier(&self) -> u8 {
-        match self.priority.as_deref() {
-            None => 0,
-            Some("high") => 2,
-            Some(_) => 1,
-        }
+        self.priority.as_deref().map_or(0, |p| {
+            let i = tasks::PRIORITIES.iter().position(|w| *w == p);
+            1 + i.unwrap_or(tasks::PRIORITIES.len()) as u8
+        })
     }
 }
 
@@ -799,7 +801,7 @@ fn pr_item_failed(i: &Item) -> bool {
         && i.tag_list().any(|t| t == "tier3")
 }
 
-/// A human-sheet row that needs the human: open, `#urgent` or `#high`, of a `HUMAN_TYPES` type.
+/// A human-sheet row that needs the human: open, not `#low`, of a `HUMAN_TYPES` type.
 fn needs_the_human(r: &Row) -> bool {
     r.lane == "human"
         && r.state == "open"
@@ -1786,7 +1788,11 @@ mod tests {
             ..Default::default()
         };
         let mut feed = board().unwrap();
-        feed.rows[6].parent = Some("tr-1".into());
+        feed.rows
+            .iter_mut()
+            .find(|r| r.id.as_deref() == Some("tr-9"))
+            .unwrap()
+            .parent = Some("tr-1".into());
         let h = build(Some(&st), Some(&q), Some(&Ok(feed)), None, NOW);
         let r = &h.running[0];
         assert_eq!(
@@ -2140,6 +2146,8 @@ mod tests {
         Ok(Feed {
             rows: vec![
                 sheet("tr-117", "human", "run", "high", "2026-11-01"),
+                // An untagged row reads normal: it still needs the human, after #high.
+                sheet("tr-120", "human", "run", "normal", "2026-10-20"),
                 sheet("tr-50", "human", "run", "urgent", "2026-11-04"),
                 // Worked by the queue item behind ask a1, so the ask stands for it.
                 sheet("tr-51", "human", "decide", "urgent", "2026-11-04"),
@@ -2165,8 +2173,8 @@ mod tests {
         let h = build_all(Some(&state()), Some(&q), Some(&board()), None, NOW);
         let rows: Vec<(Kind, &str)> = h.needs.iter().map(|n| (n.kind, n.id.as_str())).collect();
         // The #urgent row has waited longer than the ask, but every live wait leads: it stops
-        // running work and a to-do does not. The #high row follows the #urgent one; conditions
-        // stay last.
+        // running work and a to-do does not. The #high row follows the #urgent one, and the
+        // older normal one follows both; conditions stay last.
         assert_eq!(
             rows,
             [
@@ -2174,6 +2182,7 @@ mod tests {
                 (Kind::Session, "hub/dotfiles:2"),
                 (Kind::Sheet, "tr-50"),
                 (Kind::Sheet, "tr-117"),
+                (Kind::Sheet, "tr-120"),
                 (Kind::Nightly, "repo"),
             ]
         );
@@ -2209,7 +2218,7 @@ mod tests {
             .filter(|n| n.kind == Kind::Sheet)
             .map(|n| n.id)
             .collect();
-        assert_eq!(ids, ["tr-51", "tr-117"]);
+        assert_eq!(ids, ["tr-51", "tr-117", "tr-120"]);
         let h = build(
             Some(&state()),
             None,

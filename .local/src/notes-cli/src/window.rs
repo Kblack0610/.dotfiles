@@ -2422,7 +2422,7 @@ mod tests {
         assert_eq!(ts[1].weight, projects::size_weight("#size/m"));
         assert_eq!(ts[3].text, "fix(red): main red");
         // A tagged row reads its tag; an untagged one the board's default.
-        assert_eq!((ts[0].priority, ts[1].priority), ("urgent", "high"));
+        assert_eq!((ts[0].priority, ts[1].priority), ("urgent", "normal"));
         // A closed row carries its merge commit; a row with none carries none.
         assert_eq!(
             (ts[1].commit.as_deref(), ts[3].commit.as_deref()),
