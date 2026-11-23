@@ -648,3 +648,24 @@ cell() {
   run "$JUDGE_EVAL" kpi --json
   assert_equal "$(jq -c '.runner_score_inbox_triage' <<<"$output")" '{"7d":66.7,"28d":66.7}'
 }
+
+@test "a lane with two PROMPT files counts calls under either as current, and an included rule changed resets both" {
+  mkdir -p "$HOME/tpl/rules"
+  echo 'priority rule v1' > "$HOME/tpl/rules/prio.md"
+  printf 'Priority pass.\n{{> rules/prio.md}}\n' > "$HOME/tpl/priority.md"
+  printf 'Area pass.\n' > "$HOME/tpl/area.md"
+  printf 'PROMPT="%s:%s"\nSCORE=priority-kept\n' "$HOME/tpl/priority.md" "$HOME/tpl/area.md" > "$AGENTCTL_CONF_DIR/inbox-priority.conf"
+  . "$REPO_ROOT/.local/lib/prompt-render.sh"
+  local p a
+  p="$(prompt_sha "$HOME/tpl/priority.md")"; a="$(prompt_sha "$HOME/tpl/area.md")"
+  { call p1 inbox-priority "$p" 100 0.01; call a1 inbox-priority "$a" 100 0.01; call o1 inbox-priority older 100 0.01; } > "$AGENTCTL_CALLS"
+  run "$JUDGE_EVAL" inbox-priority --json
+  assert_success
+  assert_equal "$(jq -r '.agents[0].calls.n' <<<"$output")" 2
+  assert_equal "$(jq -r '.agents[0].prompt_sha' <<<"$output")" "$p $a"
+  run "$JUDGE_EVAL" inbox-priority
+  assert_line --regexp "^inbox-priority  prompt ${p:0:7},${a:0:7}  "
+  echo 'priority rule v2' > "$HOME/tpl/rules/prio.md"
+  run "$JUDGE_EVAL" inbox-priority --json
+  assert_equal "$(jq -r '.agents[0].calls.n' <<<"$output")" 1
+}
