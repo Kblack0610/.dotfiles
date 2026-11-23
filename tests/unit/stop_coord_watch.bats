@@ -11,7 +11,7 @@ setup() {
   CHECK="$REPO_ROOT/.claude/hooks/stop-post.d/89-coord-watch.sh"
   export CLAUDE_CODE_SESSION_ATTENDED=1 FLEET_SHEPHERD_DIR="$SANDBOX/shep" COORD_WATCH_STATE="$SANDBOX/cw"
   mkdir -p "$FLEET_SHEPHERD_DIR/labels" "$COORD_WATCH_STATE"
-  printf 'manual\ncoordinator\n' > "$FLEET_SHEPHERD_DIR/labels/sid-1"
+  printf 'stay\ncoordinator\n' > "$FLEET_SHEPHERD_DIR/labels/sid-1"
   HOLDER=""
 }
 
@@ -97,10 +97,10 @@ live_watch() {
   [ "$(jq -r .decision <<<"$output")" = block ]
 }
 
-@test "negative control: no coordinator label, a manual-only keep, the loop guard and headless runs all pass" {
+@test "negative control: no coordinator label, a stay-only keep, the loop guard and headless runs all pass" {
   run bash "$CHECK" <<<"$(stop_payload sid-none)"
   assert_output ''
-  printf 'manual\n' > "$FLEET_SHEPHERD_DIR/labels/sid-1"
+  printf 'stay\n' > "$FLEET_SHEPHERD_DIR/labels/sid-1"
   run bash "$CHECK" <<<"$(stop_payload)"
   assert_output ''
   printf 'coordinator\n' > "$FLEET_SHEPHERD_DIR/labels/sid-1"

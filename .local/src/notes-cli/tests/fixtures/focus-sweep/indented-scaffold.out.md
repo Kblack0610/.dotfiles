@@ -3,6 +3,8 @@
 
 ### High
 
+### Normal
+
 ### Low
 - [ ] a #low
     ---
