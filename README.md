@@ -33,7 +33,7 @@ The tmux cockpit (`.tmux.conf`, `.local/src/tmux/`, `.config/tmux-servers/`) has
 
 - Build: nothing for the scripts. The Rust parts (`agent-panel`, `hub`) are built by the installer, or `cargo build --release` in their crate under `.local/src/`.
 - Run: `stow --no-folding .`, then `tmx ensure hub` and `tmx hop hub`. `Prefix+r` re-reads the config.
-- Test: a PR's CI runs the files its change can affect (`tests/pick.sh unit origin/main` lists them), and an agent session tests only that way. In your own terminal: `make -C tests bootstrap` once, then `make -C tests test-pr` (the same picks, host-safe; `test-fast` runs every file). The tmux ui tier runs only in the container: `make -C tests test-ui`.
+- Test: a PR's CI runs the files its change can affect (`tests/pick.sh unit origin/main` lists them), and an agent session runs no suite but that one (one named file to iterate passes). In your own terminal: `make -C tests bootstrap` once, then `make -C tests test-pr` (the same picks, host-safe; `test-fast` runs every file). The tmux ui tier runs only in the container: `make -C tests test-ui`.
 - Standards: `.local/src/tmux/CONVENTIONS.md` (panel rules, each with the test that enforces it).
 
 ## Agent runtime
@@ -42,7 +42,7 @@ The agent fleet (`agentctl` runners, `agentctl-run`, `agent-queue`, `fleet-dispa
 
 - Build: nothing for the scripts. The views (`agent-web`, `hub`, `agent-panel`) are built by the installer, or `cargo build --release` in their crate under `.local/src/`.
 - Run: `stow --no-folding .` in both repos, then `agentctl reload` and `agentctl list`. `agentctl pause` stops every oneshot runner, `agentctl resume` lifts it.
-- Test: a PR's CI is the test run (agent sessions test only that way). In your own terminal: `make -C tests bootstrap` once, then `make -C tests test-pr` for your change, or `make -C tests test-files FILES=unit/runner_contract.bats` for one file. `make -C tests test-rust` covers the crates.
+- Test: a PR's CI is the test run (an agent session runs at most one named file here). In your own terminal: `make -C tests bootstrap` once, then `make -C tests test-pr` for your change, or `make -C tests test-files FILES=unit/runner_contract.bats` for one file. `make -C tests test-rust` covers the crates.
 - Standards: `.local/src/docs/standards.md` (each invariant with the test that holds it).
 
 ## Submodules

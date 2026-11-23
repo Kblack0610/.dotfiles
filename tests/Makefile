@@ -92,14 +92,10 @@ test-fast: test-unit test-integ
 # per-test path. Three wall-clock budgets (agent_ask, questions_panel, agentctl_report) run at
 # one job per core, so they share a core no more than serially. A test that shares a fixed
 # path, a port or setup_file state with another breaks that, and goes red here first.
-# Jobs are the cores free now, not every core: on 2026-11-07 three local gates at --jobs 24
-# each held a 24-core box at 54% sys and 8% idle, which shut the dispatcher's idle gate for
-# every other session (ar-885). Locally that number is `auto`, and run-bats.sh sizes it once
-# its slot is granted (unit-jobs.awk, UNIT_LOADAVG: ar-3403): sized here, at parse time, it was
-# read before the wait for the slot, and suites released together all forked that many workers.
-# On CI (CI set, as GitHub Actions does) the runner is the job's own machine and its load is its
-# own setup, which gave a 4-core runner 2 jobs: it gets nproc, and run-bats.sh takes no slot.
-UNIT_JOBS ?= $(if $(CI),$(shell nproc 2>/dev/null || echo 2),auto)
+# Jobs are every core: a suite runs on a CI runner, the job's own machine, and an agent session
+# runs none on the workstation (the shell-test-harness skill's rows deny it, ar-4862), so the
+# cores-free sizing and the run-bats.sh slot it waited for (ar-3277, ar-3403) went.
+UNIT_JOBS ?= $(shell nproc 2>/dev/null || echo 2)
 FAST_PAR  := $(if $(shell command -v parallel 2>/dev/null),--jobs $(UNIT_JOBS))
 
 test-unit: $(BATS)
