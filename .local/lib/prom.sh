@@ -41,6 +41,16 @@ prom_q() {
   printf '%s' "$out"
 }
 
+# prom_range <promql> <start> <end> <step> -> the raw /api/v1/query_range JSON (epochs, step in
+# seconds), or rc 1 when it did not answer success.
+prom_range() {
+  local out
+  out="$(curl -sf -m "${PROM_TIMEOUT:-10}" -G "$PROM_URL/api/v1/query_range" --data-urlencode "query=$1" \
+    --data-urlencode "start=$2" --data-urlencode "end=$3" --data-urlencode "step=$4" 2>/dev/null)" || return 1
+  [ "$(jq -r .status <<< "$out" 2>/dev/null)" = success ] || return 1
+  printf '%s' "$out"
+}
+
 # prom_dur <seconds> -> 45s, 36m, 2h28m, 3d4h; - for anything that is not a number.
 prom_dur() {
   local s="${1%%.*}"
