@@ -15,12 +15,12 @@ metadata:
       use: "diagnose the red first (`fix-ci`; a runner slot fault across runs: `ci-cleanup`). Rerun only for an infra fault the log names (runner lost, registry 5xx, rate limit), once per PR tip, and name it on the command: `gh run rerun <id> --failed  # infra: <fault>`"
       mode: deny
       unless: '#\s*infra:\s*[A-Za-z]'
-      why: a blind rerun hides a real red or a broken runner slot (PR #2095 reran twice on a slot missing its job-end hook, 2026-11-18)
-    - match: '(?:^|[;&|(){}\s/])gh\s+(?:run\s+cancel(?![\w-])|api\s(?:[^;&|\n]*actions/runs/[^/\s]+/(?:force-)?cancel(?![\w-])))'
+      why: "a blind rerun hides a real red or a broken runner slot (PR #2095 reran twice on a slot missing its job-end hook, 2026-11-18)"
+    - match: '(?:^|[;&|(){}\s/])gh(?:\s+(?:-R|--repo)[\s=]\S+)*\s+(?:run\s+cancel(?![\w-])|api\s(?:[^;&|\n]*actions/runs/[^/\s]+/(?:force-)?cancel(?![\w-])))'
       use: "a lander never cancels another PR's run to jump the runner queue: queue order is the pool's job (ci.md). Cancel only a superseded run of your own PR (`# own: <pr>`) or a hung job whose live step you read (`# stuck: <step>`), and say which on the command: `gh run cancel <id>  # own: #<N> superseded`"
       mode: deny
-      unless: '#\s*(?:own|stuck):\s*[A-Za-z#]'
-      why: the #2526 session cancelled 19 other PRs' runs in two rounds on 2026-11-18 (#2530 twice), their landers re-pushed and the pool churned (ar-3299)
+      unless: '#\s*(?:own|stuck):\s*[A-Za-z0-9#]'
+      why: "the #2526 session cancelled 19 other PRs' runs in two rounds on 2026-11-18 (#2530 twice), their landers re-pushed and the pool churned (ar-3299)"
 ---
 
 # gh-workflows

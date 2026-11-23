@@ -121,12 +121,28 @@ allowed() { assert_success; assert_output ""; }
   denied
   run run_guard '/usr/bin/gh run cancel 1 # own:'
   denied
+  run run_guard 'gh run cancel 1 -R o/r'
+  denied
+  run run_guard 'gh -R o/r run cancel 1'
+  denied
+  run run_guard 'gh --repo=o/r run cancel 1'
+  denied
+  run run_guard 'gh api -X POST "repos/o/r/actions/runs/1/cancel"'
+  denied
+}
+
+@test "the cancel denial carries its full why" {
+  run run_guard 'gh run cancel 1'
+  denied
+  assert_output --partial 'ar-3299'
 }
 
 @test "a cancel that names its own superseded run or a stuck step is allowed; view and quoted mentions are too" {
   run run_guard 'gh run cancel 1  # own: #2526 superseded'
   allowed
   run run_guard 'gh api -X POST repos/o/r/actions/runs/1/cancel # stuck: Run tests, 40 min'
+  allowed
+  run run_guard 'gh run cancel 12 -R o/r # own: 2526'
   allowed
   run run_guard 'gh run view 1'
   allowed
