@@ -600,21 +600,29 @@ board_only_say() {
 # admission [--json] -> admission_now, the items the cap held and the adds sent to the board (the
 # board-only rule) in the last AQ_HELD_DAYS, each counted once however often its filer retried, and
 # the items an urgent or red add returned to the board (make_room), so urgent inflation shows.
+# --json adds `day`, the last 24h: `held` as held_7d counts it, and `why`, the distinct items per
+# reason (a line from before the log kept its reason is a cap hold); the pipeline's admission step.
 cmd_admission() {
-  local json='' now r l since held=0 boarded=0 returned=0
+  local json='' now r l since held=0 boarded=0 returned=0 day=''
   case "${1:-}" in --json) json=1 ;; '') ;; *) die "unknown option: $1" ;; esac
   now="$(admission_now)" || die "the queue could not be read"
   read -r r l <<<"$now"
   since="$(admission_since)"
   if [ -s "$AQ_ADMISSION_LOG" ]; then
-    read -r held boarded returned < <(jq -rs --arg s "$since" '[.[] | select(.at >= $s)] as $w
-      | ([$w[] | select(.why | IN("board-only", "gated", "returned") | not) | [.project, .slug]] | unique | length)
+    read -r held boarded returned day < <(jq -rs --arg s "$since" --arg d "$(date -u -d '1 day ago' +%Y-%m-%dT%H:%M:%SZ)" '
+      def items: map([.project, .slug]) | unique | length;
+      def held: map(select(.why | IN("board-only", "gated", "returned") | not));
+      [.[] | select(.at >= $s)] as $w | [$w[] | select(.at >= $d)] as $x
+      | ($w | held | items)
       , ([$w[] | select(.why | IN("board-only", "gated")) | [.project, .slug, .title]] | unique | length)
-      , ([$w[] | select(.why == "returned")] | length)' "$AQ_ADMISSION_LOG" 2>/dev/null | paste -sd' ')
+      , ([$w[] | select(.why == "returned")] | length)
+      , ({held: ($x | held | items), why: ($x | group_by(.why // "cap") | map({key: (.[0].why // "cap"), value: items}) | from_entries)} | tojson)' \
+      "$AQ_ADMISSION_LOG" 2>/dev/null | paste -sd' ')
   fi
   if [ -n "$json" ]; then
     jq -nc --argjson r "$r" --argjson l "$l" --argjson h "${held:-0}" --argjson b "${boarded:-0}" --argjson x "${returned:-0}" --argjson on "$([ "$AQ_CAP" != 0 ] && echo true || echo false)" \
-      '{on: $on, runnable: $r, limit: $l, held_7d: $h, boarded_7d: $b, returned_7d: $x, admits: (($on | not) or $r < $l)}'
+      --argjson day "${day:-null}" \
+      '{on: $on, runnable: $r, limit: $l, held_7d: $h, boarded_7d: $b, returned_7d: $x, day: ($day // {held: 0, why: {}}), admits: (($on | not) or $r < $l)}'
   else
     printf 'admission: %s, %s can start now against a cap of %s; %s adds held, %s sent to the board and %s returned for urgent work in %s days\n' \
       "$([ "$AQ_CAP" != 0 ] && { [ "$r" -lt "$l" ] && echo admitting || echo holding; } || echo off)" "$r" "$l" "${held:-0}" "${boarded:-0}" "${returned:-0}" "$AQ_HELD_DAYS"
