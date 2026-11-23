@@ -100,29 +100,25 @@ say() { printf 'inbox-triage: %s\n' "$*" >&2; }
 # clean <width>: model text as one printable ASCII line, punctuation folded rather than dropped.
 clean() { md_ascii | tr -cd ' -~' | cut -c1-"$1"; }
 
-# render <template> <label>: the template filled from the caller's variables, into its `prompt`. A
-# template that does not render is this script's fault, so the pass fails and no line is refused.
-render() {
-  prompt_render_into prompt "$1" && return 0
-  say "$2: its prompt $1 did not render"
-  proof_why "$2: its prompt did not render"
-  return 1
-}
-
-# ask <template> <prompt> <items> <label> [cmd [sized]]: one model call over <items> lines or rows,
-# <prompt> being <template> rendered (agentctl-run records the template's sha), its answer in OUT. A
-# failed call keeps its stderr in the log and its first words (a usage limit, an auth error) as
-# the pass's reason; one stopped at the per-call cap (CALLS_RC_CAPPED) halves the next batch, and
-# a clean one lets it grow. It runs from an empty directory, so no repo's Stop hook answers in
-# place of the model. A call with its own <cmd> (a #ask answer) leaves the batch size alone, unless
-# it passes sized (a --backlog, --priority, --link or --size batch).
+# ask <template> <items> <label> [cmd [sized]]: one model call over <items> lines or rows, its
+# prompt <template> filled from the caller's variables (agentctl-run records the template's sha),
+# its answer in OUT. A template that does not render is this script's fault, so the pass fails and
+# no line is refused. A failed call keeps its stderr in the log and its first words (a usage limit,
+# an auth error) as the pass's reason; one stopped at the per-call cap (CALLS_RC_CAPPED) halves the
+# next batch, and a clean one lets it grow. It runs from an empty directory, so no repo's Stop hook
+# answers in place of the model. A call with its own <cmd> (a #ask answer) leaves the batch size
+# alone, unless it passes sized (a --backlog, --priority, --link or --size batch).
 ask() {
-  local wd err rc first tpl="$1" cmd="${5:-$INBOX_TRIAGE_CMD}" sized=1
-  shift
+  local wd err rc first prompt cmd="${4:-$INBOX_TRIAGE_CMD}" sized=1
   [ -n "${4:-}" ] && [ "${5:-}" != sized ] && sized=0
+  if ! prompt_render_into prompt "$1"; then
+    say "$3: its prompt $1 did not render"
+    proof_why "$3: its prompt did not render"
+    return 1
+  fi
   wd="$(mktemp -d)"; err="$(mktemp)"
   # shellcheck disable=SC2086 # a word list by design, overridable in tests
-  OUT="$(cd "$wd" && $cmd --rendered-prompt "$tpl" -p <<<"$1" 2>"$err")"; rc=$?
+  OUT="$(cd "$wd" && $cmd --rendered-prompt "$1" -p <<<"$prompt" 2>"$err")"; rc=$?
   [ -s "$err" ] && head -n 20 "$err" >&2
   case "$rc" in
     0) [ "$sized" = 1 ] && budget_batch_note "$NAME" ok "$2" ;;
@@ -163,7 +159,7 @@ answered() {
 # answer that came back without its block, a call too big for its cap, or a line with no question
 # is recorded refused so the line waits for the person.
 ask_line() {
-  local look="$1" raw="$2" text="$4" details="$5" q reply rc cmd lines investigate="" evidence_lines prompt
+  local look="$1" raw="$2" text="$4" details="$5" q reply rc cmd lines investigate="" evidence_lines
   case "$look" in
     investigate) cmd="$INBOX_INVESTIGATE_CMD" lines=30 investigate=1 ;;
     *)           cmd="$INBOX_ASK_CMD" lines=12 ;;
@@ -172,8 +168,7 @@ ask_line() {
   q="$(md_ascii <<<"$3" | tr -cd ' -~' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
   if [ -z "$q" ]; then note refused outbox "the #$look line holds no question" "$text"; FAILED=$((FAILED + 1)); return 1; fi
   if [ "$DRY" = 1 ]; then printf 'would %s [outbox] %s\n' "${look/#ask/answer}" "$raw"; ANSWERED=$((ANSWERED + 1)); return 0; fi
-  render "$ASK_PROMPT" "$look" || return 1
-  ask "$ASK_PROMPT" "$prompt" 1 "$look" "$cmd"; rc=$?
+  ask "$ASK_PROMPT" 1 "$look" "$cmd"; rc=$?
   if [ "$rc" != 0 ]; then
     # A cap is recorded refused; any other failure (a usage limit, the budget) leaves the line for the next sweep.
     [ "$rc" = "$CALLS_RC_CAPPED" ] && { note refused outbox "the answer call stopped at the per-call cap" "$text"; FAILED=$((FAILED + 1)); }
@@ -315,18 +310,6 @@ is_session() { [[ "$1" =~ $SESSION_RE ]]; }
 # An epic a session proposes: a session line whose words are `epic(<system>): <outcome>`. An
 # unattended writer's epic reaches the outbox as one (`notes ptask add` exits 4), never the sheet.
 is_proposal() { is_session "$1" && [[ "$(untagged "$1")" == epic\(* ]]; }
-
-# session_kinds <line text>...: sets the caller's session_line when one of them is a session's line
-# and proposal_line when one is a proposed epic, the two paragraphs rules/session.md adds.
-session_kinds() {
-  local t
-  session_line="" proposal_line=""
-  for t in "$@"; do
-    is_session "$t" && session_line=1
-    is_proposal "$t" && proposal_line=1
-  done
-  return 0
-}
 
 # apply_proposal <action> <id> <project> <rows> <why> <how> <epics> <board>: the model's verdict on
 # an epic proposal, with route's line (n, from, raw, text) in scope. file: the epic goes through
@@ -510,7 +493,7 @@ row_types() {
 # route <lines json> <board json>: the one model call for a sweep's untyped lines, each
 # {from, raw, text, details}, `from` being `outbox` or the project whose inbox holds it.
 route() {
-  local lines="$1" board="$2" names shared_repos srcs wide batch open epics systems prompt out types unattended
+  local lines="$1" board="$2" names shared_repos srcs wide batch open epics systems out types unattended
   types="$(row_types)" || return 1
   names="$(jq -r '[.projects[] | "\(.project) (\(.profile))"] | unique | join(", ")' <<<"$board")"
   shared_repos="$(shared_repos)"
@@ -544,10 +527,13 @@ route() {
   mapfile -t sysp < <(jq -r --argjson src "$srcs" --argjson wide "$wide" \
     'if $wide then [.projects[].project] else $src - ["outbox"] end | unique[]' <<<"$board")
   systems="$(systems_of "${sysp[@]}")"
-  local session_line proposal_line
-  session_kinds "${texts[@]}"
-  render "$ROUTE_PROMPT" route || return 1
-  ask "$ROUTE_PROMPT" "$prompt" "${#raws[@]}" route || return
+  # The two paragraphs rules/session.md adds: one when a line is a session's, one when it proposes an epic.
+  local session_line="" proposal_line="" t
+  for t in "${texts[@]}"; do
+    is_session "$t" && session_line=1
+    is_proposal "$t" && proposal_line=1
+  done
+  ask "$ROUTE_PROMPT" "${#raws[@]}" route || return
   answered route || return 1
   out="$OUT"
   local n action id of dest lane plan why how epic rows cands r from raw text src eid ctx k near go own_plan
@@ -756,7 +742,7 @@ backlog() {
 # backlog_batch <project> <lane> <batch json> <names> <shared repos> <epics>: one call
 # over the batch, each answer applied by backlog_row; a --dry-run keeps the answers in backlog_cache.
 backlog_batch() {
-  local p="$1" lane="$2" batch="$3" names="$4" shared_repos="$5" epics="$6" listing prompt out cache
+  local p="$1" lane="$2" batch="$3" names="$4" shared_repos="$5" epics="$6" listing out cache
   local types="$TYPES" project_systems project_epics
   local -a raws ids states kids
   mapfile -d '' -t raws < <(jq -j '.[] | .raw, "\u0000"' <<<"$batch")
@@ -766,8 +752,7 @@ backlog_batch() {
   # A row's own priority follows its text (none shown: untriaged), so a raise can be judged against it.
   listing="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.id)]\(if .value.state == "doing" then " (doing)" else "" end)\(if .value.untriaged or .value.priority == null then "" else " (#" + .value.priority + ")" end) \(.value.text)", (.value.kids[] | "   - " + .)' <<<"$batch" | cut -c1-400)"
   project_systems="$(systems_of "$p")"; project_epics="$(epics_of "$p" "$epics")"
-  render "$BACKLOG_PROMPT" "$p ($lane)" || return 1
-  ask "$BACKLOG_PROMPT" "$prompt" "${#raws[@]}" "$p ($lane)" "$INBOX_BACKLOG_CMD" sized || return
+  ask "$BACKLOG_PROMPT" "${#raws[@]}" "$p ($lane)" "$INBOX_BACKLOG_CMD" sized || return
   answered "$p ($lane)" || return 1
   out="$OUT" cache="$(backlog_cache "$p")"
   local n action id dest row why epic prio all
@@ -1029,13 +1014,12 @@ PRIORITY_JQ='fromjson? | select(type == "object" and (.n | type) == "number")
 # priority_batch <project> <lane> <batch json>: one call gives each row a priority, and
 # `ptask tag` writes each that differs from the row's own (a new priority replaces the old).
 priority_batch() {
-  local p="$1" lane="$2" batch="$3" listing prompt n prio
+  local p="$1" lane="$2" batch="$3" listing n prio
   local -a ids cur
   mapfile -t ids < <(jq -r '.[] | .id' <<<"$batch")
   mapfile -t cur < <(jq -r '.[] | if .untriaged then "" else .priority end' <<<"$batch")
   listing="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.id)] \(.value.text)"' <<<"$batch" | cut -c1-300)"
-  render "$PRIORITY_PROMPT" "$p ($lane) priority" || return 1
-  ask "$PRIORITY_PROMPT" "$prompt" "${#ids[@]}" "$p ($lane) priority" "$INBOX_PRIORITY_CMD" sized || return
+  ask "$PRIORITY_PROMPT" "${#ids[@]}" "$p ($lane) priority" "$INBOX_PRIORITY_CMD" sized || return
   answered "$p ($lane) priority" || return 1
   local -a seen=()
   while IFS=$'\x1f' read -r n prio; do
@@ -1098,12 +1082,11 @@ SIZE_JQ='fromjson? | select(type == "object" and (.n | type) == "number" and (.p
 # size_batch <project> <lane> <batch json>: one call gives each row its points, and `ptask tag`
 # writes each (`--add pts/<n>`, which also sets the row's #size/ to their band).
 size_batch() {
-  local p="$1" lane="$2" batch="$3" listing prompt n pts
+  local p="$1" lane="$2" batch="$3" listing n pts
   local -a ids
   mapfile -t ids < <(jq -r '.[] | .id' <<<"$batch")
   listing="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.id)] \(.value.text)" + (([.value.details[] | select(. != "")]) as $d | if ($d | length) > 0 then "\n   " + ($d[:4] | join("\n   ")) else "" end)' <<<"$batch" | cut -c1-300)"
-  render "$SIZE_PROMPT" "$p ($lane) size" || return 1
-  ask "$SIZE_PROMPT" "$prompt" "${#ids[@]}" "$p ($lane) size" "$INBOX_SIZE_CMD" sized || return
+  ask "$SIZE_PROMPT" "${#ids[@]}" "$p ($lane) size" "$INBOX_SIZE_CMD" sized || return
   answered "$p ($lane) size" || return 1
   local -a seen=()
   while IFS=$'\x1f' read -r n pts; do
@@ -1213,14 +1196,13 @@ link_row() {
 # link_batch <project> <lane> <batch json> <epics> <systems tsv>: one call names each row's system
 # and epic; a --dry-run keeps the answers in link_cache.
 link_batch() {
-  local p="$1" lane="$2" batch="$3" epics="$4" tsv="$5" listing prompt n sys of epic cache project_systems feature_epics
+  local p="$1" lane="$2" batch="$3" epics="$4" tsv="$5" listing n sys of epic cache project_systems feature_epics
   local -a raws
   mapfile -d '' -t raws < <(jq -j '.[] | .raw, "\u0000"' <<<"$batch")
   listing="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.id)] \(.value.text)"' <<<"$batch" | cut -c1-300)"
   project_systems="$(systems_of "$p")"
   feature_epics="$(epics_of "$p" "$epics" | grep -viE ' to standard$')"
-  render "$LINK_PROMPT" "$p ($lane) link" || return 1
-  ask "$LINK_PROMPT" "$prompt" "${#raws[@]}" "$p ($lane) link" "$INBOX_PRIORITY_CMD" sized || return
+  ask "$LINK_PROMPT" "${#raws[@]}" "$p ($lane) link" "$INBOX_PRIORITY_CMD" sized || return
   answered "$p ($lane) link" || return 1
   cache="$(link_cache "$p")"
   local -a seen=()
