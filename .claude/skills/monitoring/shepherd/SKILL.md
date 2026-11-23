@@ -85,4 +85,4 @@ The fleet-wide list is in `fleet-lead`; these are this role's own.
 - `fleet-comms`: message wording.
 - `fleet-bench`: the phase estimates fleet-sessions measures the `overdue` verdict against, and the board's eta column.
 - `one-shot`: the delivery tail (gate, PR, merge, board done, pull, wind-down) a nudge points a session along.
-- `wind-down`: what a DONE or CLOSE session runs as `/wind-down auto`; it checks `fleet-sessions close --self` reads `now`, that no question to the human is open, and that the human did not order the window kept open (then it labels itself `manual`) before closing. A human-asked wind-down skips all three checks.
+- `wind-down`: what a DONE or CLOSE session runs as `/wind-down auto`; it checks `fleet-sessions close --self` reads `now`, that no question to the human is open, and that the human did not order the window kept open (then it labels itself `stay`) before closing. A human-asked wind-down skips all three checks.

@@ -1148,8 +1148,10 @@ prune_labels() {
 
 # label <who> [+name|-name|^name ...]: add, remove or flip labels, then print the session's labels.
 # ^name lets a key binding (agent-panel ctrl-t) flip one without reading it first. `manual` is the
-# human's and never expires, so `label self` may not add it: a session held open on the human's order
-# takes `stay`, which expires once quiet FLEET_CHAT_CLOSE_H (ar-4124).
+# human's and never expires, so the literal `label self` may not add it: a session held open on the
+# human's order takes `stay`, which expires once quiet FLEET_CHAT_CLOSE_H (ar-4124). The check is on the
+# word `self`, the form every skill gives a session; it stops a stale instruction, not a session that
+# names its own target on purpose.
 label() {
   local who="${1:-}" sid op name tmp add
   [ -n "$who" ] || { echo "usage: fleet-sessions label <who> [+name|-name|^name ...]" >&2; return 2; }
