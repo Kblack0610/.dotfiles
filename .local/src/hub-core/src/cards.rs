@@ -847,8 +847,8 @@ pub fn projects(p: &crate::projects::Projects) -> Card {
     }))
 }
 
-/// Board: every open row on the boards (an agent row past its project's budget is Backlog's
-/// part, never listed), the feed's `totals` (`tasks::Totals`, the waybar hover's `all lanes`
+/// Board: every open row on the boards (an agent row with the retired `tier:backlog` token is
+/// Backlog's part, never listed), the feed's `totals` (`tasks::Totals`, the waybar hover's `all lanes`
 /// count too), the rows Projects' Board lists. Late rows (past their `#due`) and rows the human
 /// asked for that nothing has started come first.
 pub fn board(f: &crate::tasks::Feed) -> Card {
@@ -887,8 +887,8 @@ pub fn board(f: &crate::tasks::Feed) -> Card {
         "board",
         "Board",
         "open rows on every sheet, human, agent and playtest (notes board); requested is asked \
-         for and not started, late is past its due day; backlog is the agent rows past their \
-         project's board budget (tier:backlog), counted in none of the others; sprint is the \
+         for and not started, late is past its due day; backlog is the agent rows still \
+         carrying the retired tier:backlog token, counted in none of the others; sprint is the \
          release windows' rows still open of the rows they hold, left out when none is recorded",
     )
     .bar(n_open.saturating_sub(n_late + n_asked), n_asked, n_late)
