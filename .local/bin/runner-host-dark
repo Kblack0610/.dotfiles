@@ -61,29 +61,25 @@ stop=$(prom_q "max by (host) (last_over_time(ci_governor_power_state{state!=\"ru
 out=$(jq -rn --argjson r "$online" --argjson reg "$reg" --argjson gov "$gov" --argjson stop "$stop" \
   --argjson start "$start" --argjson end "$end" --argjson step "$STEP" --arg win "$win" --arg known "$KNOWN" '
   def by_host($j): [$j.data.result[] | {key: .metric.host, value: (.value[1] | tonumber)}] | from_entries;
-  ($r.data.result) as $series
-  | ([$series[].values[][0]] | unique) as $ts
+  [$r.data.result[].values[][0]] as $ts
   | [$gov.data.result[].metric.host] | unique as $hosts
   | if ($hosts | length) == 0 then "unreadable: the governor reported no host in the last \($known) (ci_governor_rate_usd_per_hour)"
     elif ($ts | length) == 0 or ($ts | max) < $end - $step then "unreadable: the runner exporter gave no online count (github_runner_pool_online) now"
     else
-      by_host($reg) as $regd | by_host($stop) as $off | ($ts | min) as $first
-      | ($series | map({key: .metric.host, value: [.values[] | select((.[1] | tonumber) > 0)]}) | from_entries) as $up
-      | $hosts[] as $h
-      | ($regd[$h] // 0) as $n
-      | ($up[$h] // []) as $u
-      | if $off[$h] then "skip: \($h) is powered off by the governor"
-        elif $n == 0 then "skip: \($h) has no registered runner"
-        elif ($u | length) > 0 and ($u | last | .[0]) >= ($ts | max) then "ok: \($h) \($u | last | .[1]) of \($n) online"
-        elif ($u | length) > 0 then "ok: \($h) all \($n) offline, for under \($win)"
-        elif $first > $start + $step then "ok: \($h) all \($n) offline, but the exporter readings start inside the window"
-        else "dark: \($h) all \($n) runners offline for \($win) or more"
-        end
+      by_host($reg) as $regd | by_host($stop) as $off | ($ts | min) as $first | ($ts | max) as $last
+      # Each host'"'"'s last reading with a runner online, null when none in the window.
+      | ($r.data.result | map({key: .metric.host, value: ([.values[] | select((.[1] | tonumber) > 0)] | last)}) | from_entries) as $up
+      | [$hosts[] as $h | ($regd[$h] // 0) as $n | $up[$h] as $u
+         | if $off[$h] then "skip: \($h) is powered off by the governor"
+           elif $n == 0 then "skip: \($h) has no registered runner"
+           elif $u != null and $u[0] >= $last then "ok: \($h) \($u[1]) of \($n) online"
+           elif $u != null then "ok: \($h) all \($n) offline, for under \($win)"
+           elif $first > $start + $step then "ok: \($h) all \($n) offline, but the exporter readings start inside the window"
+           else {host: $h, n: $n} end] as $rows
+      | ($rows[] | if type == "object" then "dark: \(.host) all \(.n) runners offline for \($win) or more" else . end),
+        ([$rows[] | objects | "\(.host) (\(.n) runners)"] | select(length > 0) | "reason: \(join(", ")) offline for \($win) or more")
     end')
 
 printf '%s\n' "$out"
-grep -q '^unreadable: ' <<<"$out" && exit 1
-dark=$(sed -n 's/^dark: \([^ ]*\) all \([0-9]*\) .*/\1 (\2 runners)/p' <<<"$out" | paste -sd, - | sed 's/,/, /g')
-[ -z "$dark" ] && exit 0
-echo "reason: $dark offline for $win or more"
-exit 1
+grep -qE '^(unreadable|reason): ' <<<"$out" && exit 1
+exit 0
