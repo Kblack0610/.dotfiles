@@ -110,7 +110,7 @@ POST_DIR="$HOOK_DIR/stop-post.d"
 # fresh verdict, as 88 blocks only once a turn. Stdout goes through a file, not $(...), so a
 # background child holding the pipe cannot stall the hook.
 run_post() {
-  local dir="$1" worst=0 rc out blocked=""
+  local dir="$1" worst=0 rc out blocked="" decided=""
   [ -d "$dir" ] || return 0
   out=$(mktemp "$CACHE_DIR/post-out.XXXXXX" 2>/dev/null) || out=""
   for s in "$dir"/*.sh; do
@@ -125,8 +125,15 @@ run_post() {
     if [ -n "$out" ]; then
       bash "$s" < <(printf '%s' "$PAYLOAD") >"$out"
       rc=$?
-      cat "$out"
-      grep -q '"decision": *"block"' "$out" && blocked=1
+      # One decision per Stop: Claude Code parses stdout as one JSON document, so a second block
+      # printed after the first (86 and 89 both block a coordinator on an expired Monitor) would
+      # void both. Its script still ran; its text goes to the log.
+      if grep -q '"decision": *"block"' "$out"; then
+        blocked=1
+        if [ -n "$decided" ]; then note "${s##*/} also blocked; the first block stands: $(head -c 300 "$out")"; else cat "$out"; decided=1; fi
+      else
+        cat "$out"
+      fi
     else
       bash "$s" < <(printf '%s' "$PAYLOAD")
       rc=$?
