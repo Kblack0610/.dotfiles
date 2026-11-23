@@ -3830,3 +3830,107 @@ picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | 
   run cmd_stats
   assert_equal "$(jq -c '[.focus_projects, has("held_focus")]' <<<"$output")" '[1,false]'
 }
+
+# --- pass order: a class under its min_live (ar-4890) ------------------------------------------
+
+# ar-4890, 2026-11-23 13:25: unity at 1 of its min_live 6 while the pass spent its start cap on four
+# reds and a cleanup row first, agent-queue listing every red at the top. game is a class with a
+# minimum; app's reds and cleanup row are in other classes.
+short_game_classes() {
+  export AGENT_QUEUE_CLASSES="$SANDBOX/classes.json"
+  jq -n --argjson m "$1" '{on: true, window_days: 7, classes: [
+    {name: "bug", share: 15, tags: ["red"]},
+    {name: "cleanup", share: 10, tags: ["cleanup"]},
+    {name: "unity", share: 20, projects: ["game"], min_live: $m},
+    {name: "rest", share: 10, default: true}]}' > "$AGENT_QUEUE_CLASSES"
+}
+
+@test "pass order: the reds the red floor has slots for, then the short items, then reds past the floor and cleanup" {
+  local items
+  items=$(printf '%s\n' '{"slug":"r1","tags":"red"}' '{"slug":"w1","tags":"red watch"}' '{"slug":"r2","tags":"red"}' \
+    '{"slug":"c1","tags":"cleanup tier3"}' '{"slug":"u1","tags":"","short":true}' '{"slug":"u2","short":true}')
+  red_floor_slots() { echo 2; }
+  assert_equal "$(pass_order "$items" | jq -r .slug | tr '\n' ' ')" 'w1 r1 u1 u2 r2 c1 '
+  # No red floor slot (DISPATCH_RED_FLOOR=0, or the floor full): the short items lead every red.
+  red_floor_slots() { echo 0; }
+  assert_equal "$(pass_order "$items" | jq -r .slug | tr '\n' ' ')" 'u1 u2 r1 w1 r2 c1 '
+  # Negative control: with no short item and no slot the order is agent-queue's.
+  assert_equal "$(pass_order "$(jq -c 'del(.short)' <<<"$items")" | jq -r .slug | tr '\n' ' ')" 'r1 w1 r2 c1 u1 u2 '
+  assert_equal "$(pass_order '')" ''
+}
+
+@test "pass order: the human's urgent item keeps its place ahead of the short items; an urgent red past the floor does not" {
+  local items
+  items=$(printf '%s\n' '{"slug":"r1","tags":"red","priority":"urgent"}' '{"slug":"r2","tags":"red","priority":"urgent"}' \
+    '{"slug":"h1","priority":"urgent"}' '{"slug":"u1","short":true}' '{"slug":"c1","tags":"cleanup"}')
+  red_floor_slots() { echo 1; }
+  assert_equal "$(pass_order "$items" | jq -r .slug | tr '\n' ' ')" 'r1 h1 u1 r2 c1 '
+  # Negative control: h1 at high is no runs_now item, so the short item goes ahead of it.
+  assert_equal "$(pass_order "$(jq -c 'if .slug == "h1" then .priority = "high" else . end' <<<"$items")" | jq -r .slug | tr '\n' ' ')" 'r1 u1 r2 h1 c1 '
+  # Input jq cannot read is named and passed on in queue order, never dropped.
+  run pass_order 'not json'
+  assert_output --partial 'pass_order: jq could not read'
+  assert_output --partial 'not json'
+}
+
+@test "pass order: a run pass fills a short class's gap ahead of a red past the red floor and a cleanup row" {
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  export DISPATCH_RED_FLOOR=1 DISPATCH_PER_PASS=2
+  agent-queue add --project app --slug r1 --tags 'red cause:a' "fix r1" >/dev/null
+  agent-queue add --project app --slug r2 --tags 'red cause:b' "fix r2" >/dev/null
+  agent-queue add --project app --slug c1 --priority high --tags 'cleanup tier3' "chore: c1" >/dev/null
+  agent-queue add --project game --slug g1 --priority low "game g1" >/dev/null
+  # Negative control first: no minimum, so the pass's two starts go in agent-queue's order, reds first.
+  short_game_classes 0
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_success
+  assert_equal "$(grep -o 'would start queue item [a-z0-9]*' <<<"$output" | tr '\n' ' ')" 'would start queue item r1 would start queue item r2 '
+  short_game_classes 1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item r1'
+  assert_output --partial 'started queue item g1'
+  refute_output --partial 'started queue item r2'
+  refute_output --partial 'started queue item c1'
+}
+
+@test "pass order: a short class's item starts past the weekly pace alone; a plain item waits" {
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  acct alt:pace:/home/u/.claude-personal
+  export DISPATCH_RUN_FLOOR=0 DISPATCH_RED_FLOOR=0 DISPATCH_PER_PASS=3
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  agent-queue add --project app --slug p --priority high "plain p" >/dev/null
+  agent-queue add --project game --slug g1 --priority low "game g1" >/dev/null
+  # Negative control first: the class at its minimum, so the weekly pace holds every item.
+  short_game_classes 0
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'over its weekly pace'
+  assert_not_called 'wt new'
+  short_game_classes 1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'the items of a class under its classes.json min_live start past the weekly pace'
+  assert_output --partial 'started queue item g1 on the class floor, past the weekly pace'
+  refute_output --partial 'started queue item p'
+  assert_called 'CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --model'
+}
+
+@test "pass order: the class floor lifts the pace reason alone: the reserve, the 5h window, committed burn and load still hold" {
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_RUN_FLOOR=0 DISPATCH_RED_FLOOR=0
+  short_game_classes 1
+  agent-queue add --project game --slug g1 --priority low "game g1" >/dev/null
+  for r in pace,five_hour pace,committed reserve,pace; do
+    acct "alt:$r:/home/u/.claude-personal"
+    run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+    assert_output --partial 'no account has room; alt is the closest'
+    assert_not_called 'wt new'
+  done
+  acct alt:pace:/home/u/.claude-personal
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'is over the'
+  assert_not_called 'wt new'
+}
