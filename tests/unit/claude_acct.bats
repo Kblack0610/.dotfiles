@@ -17,6 +17,8 @@ setup() {
   # The host's own claude processes count as live sessions, which now move the rank.
   export CLAUDE_ACCT_PROC="$SANDBOX/proc"
   export CLAUDE_ACCT_CONFIG="$SANDBOX/accounts"
+  # the verdicts below are at a week held to its reset; pace.conf's allowance has its own test
+  export CLAUDE_ACCT_BURN_OVER_PCT=0
   printf 'main -\nalt %s\n' "$ALT" > "$CLAUDE_ACCT_CONFIG"
   printf '#!/usr/bin/env bash\nexit 22\n' > "$SANDBOX/bin/curl"
   printf '#!/usr/bin/env bash\necho "2.1.0 (Claude Code)"\n' > "$SANDBOX/bin/claude"
@@ -614,6 +616,24 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   run --separate-stderr "$ACCT" status --json
   [ "$(field alt .working <<<"$output")" = 12 ]
   [ "$(field alt .room.reason <<<"$output")" = committed ]
+}
+
+@test "BURN_OVER_PCT lets working sessions burn past what the week sustains before committed refuses" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_PROC="$SANDBOX/proc" CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 50 50
+  week alt 50 50   # 1 point an hour to spare
+  mkdir -p "$HOME/.claude/sessions"
+  local pid
+  for pid in 1 2 3 4 5 6 7 8 9 10 11 12; do   # 12 working x 0.1 = 1.2/h, past the 1/h it sustains
+    mkdir -p "$SANDBOX/proc/$pid"
+    echo claude > "$SANDBOX/proc/$pid/comm"
+    printf 'CLAUDE_CONFIG_DIR=%s\0' "$ALT" > "$SANDBOX/proc/$pid/environ"
+    printf '{"pid":%s,"kind":"interactive","status":"busy","statusUpdatedAt":%s}\n' "$pid" "$((NOW * 1000))" > "$HOME/.claude/sessions/$pid.json"
+  done
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field alt .room.reason <<<"$output")" = committed ]
+  CLAUDE_ACCT_BURN_OVER_PCT=50 run --separate-stderr "$ACCT" status --json
+  [ "$(field alt .room.ok <<<"$output")" = true ]
 }
 
 @test "a busy or shell session whose status is older than ACTIVE_MIN is live but not working (ar-1018)" {
