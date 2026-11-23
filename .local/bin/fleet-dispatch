@@ -122,7 +122,7 @@ esac
 # nudged each one.
 : "${RESTORE_PROMPT:=fleet-dispatch restore reopened this session after its tmux server was lost (a crash or reboot). Carry on with queue item %s from where you stopped; first check what changed while you were down (git status, your PR, agent-queue show %s).}"
 : "${DISPATCH_JUDGE_CMD:=agentctl-run --agent dispatch-judge}"
-: "${DISPATCH_PLAN_RULES:=unclear bundle too-big multi-area stage question tier-above unknown}"   # policy rules whose skip sends an agent row to inbox-plan (skip_exits)
+: "${DISPATCH_PLAN_RULES:=unclear bundle too-big multi-area stage-scope question tier-above unknown}"   # policy rules whose skip sends an agent row to inbox-plan (skip_exits)
 : "${DISPATCH_HUMAN_RULES:=needs-person release prod-write compliance personal design}"   # policy rules whose skip moves an agent row to the human sheet or improvements.md (skip_exits)
 # The judge's policy is its agent conf's PROMPT (agentctl-run puts it ahead of the rows); read
 # here so a policy edit re-judges rows (policy_sig), and for the rule ids a verdict may name.
@@ -1818,7 +1818,7 @@ There are $n rows above. Return exactly $n verdicts in the structured output, on
   # Claude Code checks the reply against this schema and hands a short one back to the model in
   # the same call, so a dropped row is usually answered there; judge asks once more for the rest.
   if [ -n "$DISPATCH_SCHEMA" ]; then
-    # The rule is held to the policy's ids too: "(stage)", copied with the policy's parentheses, was
+    # The rule is held to the policy's ids too: "(stage)" (now stage-scope), copied with the policy's parentheses, was
     # an error verdict on 2026-11-14 that kept runner-score red for a day.
     jq --argjson n "$n" --argjson rules "$3" '.properties.verdicts += {minItems: $n, maxItems: $n}
         | if ($rules | length) > 0 then .properties.verdicts.items.properties.rule += {enum: $rules} else . end' "$DISPATCH_SCHEMA" > "$wd/schema.json" ||
