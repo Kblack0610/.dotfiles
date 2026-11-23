@@ -1480,7 +1480,7 @@ EOF
   c() { jq -cn --arg k "$1" '{project: "game", stage: "beta", lane: "human", key: $k, text: "- [ ] \($k)", tier: 1, line: $k}'; }
   run judge "$(c a; c b; c c)"
   assert_equal "$(jq -c '.properties.verdicts | [.minItems, .maxItems]' "$NOTES_FIXTURE/schema.json")" '[3,3]'
-  # the rule is one of the policy's ids, so "(stage)" with the policy's parentheses cannot be answered
+  # the rule is one of the policy's ids, so "(stage-scope)" with the policy's parentheses cannot be answered
   assert_equal "$(jq -c '.properties.verdicts.items.properties.rule.enum' "$NOTES_FIXTURE/schema.json")" \
     '["fits","unclear"]'
   # the rest is the conf's schema, unchanged
