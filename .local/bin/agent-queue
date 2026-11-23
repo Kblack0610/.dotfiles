@@ -3159,7 +3159,8 @@ cancel_check() {
 # cancel_guard <file> <ask> -> die when a session or script cancels work the human asked for (human_work)
 # without an answered ask that names the item: an answer about other work is not one about this. Any
 # --ask is checked so, since the item records it as the decision. The judge answers such an ask like
-# any other, and its policy sends a bulk one (10 or more records) to the human (ar-4765). The human at
+# any other, and its policy sends a bulk one (10 or more records) to the human (ar-4765); a session's
+# or shepherd's own answer is no ruling, so only the judge's or the human's counts. The human at
 # a terminal or the Queue tab's button is not held. 2026-11-12: two cleanups cancelled 220 from: human
 # items, one by looping a dead chain.
 cancel_guard() {
@@ -3169,7 +3170,10 @@ cancel_guard() {
     [[ "$2" =~ ^[A-Za-z0-9_-]+$ ]] || die "--ask takes an ask id, not $2"
     pend="$(ask_pending "$2")"
     [ -z "$pend" ] || die "$slug: ask $2 is $pend: --ask names an answered ask"
-    local f; f="$(compgen -G "$AQ_ASKS/*/$2.md" | awk 'NR == 1')"
+    # An empty by is legacy (before answered_by), when every answer was the human's.
+    local f by; f="$(compgen -G "$AQ_ASKS/*/$2.md" | awk 'NR == 1')"
+    by="$(sed -n '/^answered_by: */{s///p;q;}' "$f")"
+    case "$by" in '' | human | judge) ;; *) die "$slug: ask $2 is answered by $by: --ask names an ask the judge or the human answered" ;; esac
     grep -qwF -- "$slug" "$f" ||
       die "$slug: ask $2 does not name $slug: --ask names the answer about this item"
     return 0
@@ -3561,7 +3565,6 @@ cmd_ask_holds() {
     /^tags: / { tags = substr($0, 7) }
     END { flush() }' "${FILES[@]}"
 }
-
 
 # reopen <slug> [--to running|waiting] [--why <text>] -- put back an item a false close finished,
 # such as a reap that read a live session as gone (ar-900, 2026-11-07: the shepherd had to move the

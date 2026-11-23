@@ -3162,6 +3162,12 @@ chain_plan() {  # <name>: a four-phase plan, each phase after the one before
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" move mkt-18 done --status cancelled --why "dead chain" --ask h1
   assert_success
   [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-mkt-18.md)" cancel_why)" = "dead chain (ask h1)" ]
+  # A session's own answer is no ruling, even on an ask naming the item.
+  ask a1 answered a agent
+  echo "question: drop mkt-19? it waits on mkt-16, which you cancelled" >> "$AGENT_ASK_ROOT/game/a1.md"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-19 --why "dead chain" --ask a1
+  assert_failure; assert_output --partial "ask a1 is answered by agent"
+  [ -n "$(item queued mkt-19)" ]
   # The judge's answer to an ask naming the item lets it go the same way (ar-4765).
   ask j1 answered a judge
   echo "question: drop mkt-19? it waits on mkt-16, which you cancelled" >> "$AGENT_ASK_ROOT/game/j1.md"

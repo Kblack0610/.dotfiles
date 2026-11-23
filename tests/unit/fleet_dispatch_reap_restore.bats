@@ -1077,7 +1077,7 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   printf '%s 0\n%s\n' "$(( $(date +%s) - DISPATCH_ORPHAN_HOURS * 3600 ))" "$(sed -n 2p "$FLEET_DISPATCH_DIR/stuck/fix-crash")" > "$FLEET_DISPATCH_DIR/stuck/fix-crash"
   run cmd_reap
   assert_output --partial 'agent row for queue item fix-crash (not filed: the game board refused the row)'
-  assert_output --partial 'fleet-dispatch: queue item fix-crash: not filed: the game board refused the row'
+  assert_output --partial 'fleet-dispatch: the game board refused: chore(review): reap has not read PR o/game#12'
   run cmd_reap
   refute_output --partial 'agent row'
   assert_equal "$(grep -c 'agent-notify' "$NOTES_FIXTURE/calls.log")" 0

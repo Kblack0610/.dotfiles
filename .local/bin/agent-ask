@@ -2110,9 +2110,8 @@ cmd_settle_session() {
 #
 # After an answer at post, the first message in the session naming no option closes the review
 # with `none`, which is silence, not agreement, so later ones about other things cannot read as an
-# override. After an assumed answer the human may
-# not have seen the question yet, so a later pick still counts; so does a board answer on any
-# judge answer, which names its ask. Free text naming no option is never guessed at.
+# override. After an assumed answer the human may not have seen the question yet, so a later pick
+# still counts; so does a board answer on any judge answer, which names its ask. Free text naming no option is never guessed at.
 review_judge_answer() {
   local f="$1" text="$2" where="$3" said pick pending=""
   load_ask "$f"
