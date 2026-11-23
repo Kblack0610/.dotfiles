@@ -1710,14 +1710,18 @@ rpost() { "$AGENT_ASK" post --project "$1" --context "About: ${*: -1}" "${@:2}";
 
 @test "expire cancels a today or tonight ask once its day is over and DATED_HOURS have passed; an undated or held one stays" {
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
-  local past fresh late plain held id
-  past="$("$AGENT_ASK" post --project demo 'Who gets a Steam key for todays playtest?')"
+  mkdir -p "$HOME/.claude/sessions"
+  printf '{"pid":%d,"sessionId":"sid-live"}\n' "$$" > "$HOME/.claude/sessions/$$.json"
+  local past fresh late plain held live resumes id
+  past="$(CLAUDE_CODE_SESSION_ID=sid-gone "$AGENT_ASK" post --project demo --resume 'run: agent-ask reopen' 'Who gets a Steam key for todays playtest?')"
+  live="$(CLAUDE_CODE_SESSION_ID=sid-live "$AGENT_ASK" post --project demo 'Hand out the keys today?')"
+  resumes="$("$AGENT_ASK" post --project demo --resume 'run: true' 'Cut the build today?')"
   fresh="$("$AGENT_ASK" post --project demo 'Ship the build tonight?')"
   late="$("$AGENT_ASK" post --project demo 'Run the backup this evening?')"
   plain="$("$AGENT_ASK" post --project demo 'Which playtest build ships?')"
   held="$("$AGENT_ASK" post --project other 'Start the today phase?')"
   AQ="$AGENT_ASK_QUEUE_CMD" legacy held "tags: ask:$held=approve" --project other "the today phase" >/dev/null
-  aged "$past" '-2 days'; aged "$plain" '-2 days'; aged "$held" '-2 days'
+  for id in "$past" "$plain" "$held" "$live" "$resumes"; do aged "$id" '-2 days'; done
   # Posted at the end of yesterday: its day is over, so DATED_HOURS since the post decide it.
   sed -i "s/^created: .*/created: $(date -d 'yesterday 23:59' +%Y-%m-%dT%H:%M:%S%z)/" "$(ask_file "$late")"
   printf 'DATED_HOURS=48\n' > "$BATS_TEST_TMPDIR/park.conf"
@@ -1729,7 +1733,7 @@ rpost() { "$AGENT_ASK" post --project "$1" --context "About: ${*: -1}" "${@:2}";
   printf 'DATED_HOURS=0\n' > "$AGENT_ASK_PARK_CONF"
   run "$AGENT_ASK" expire
   assert_output --regexp "^demo	$late	cancel	expired: it asked about this evening on [0-9-]+, which has passed$"
-  for id in "$fresh" "$plain" "$held"; do grep -qx 'status: pending' "$(ask_file "$id")"; done
+  for id in "$fresh" "$plain" "$held" "$live" "$resumes"; do grep -qx 'status: pending' "$(ask_file "$id")"; done
 }
 
 @test "a verdict settled by a live hold the human set answers the ask by it; an agent's hold or a gone one does not" {
