@@ -11,6 +11,7 @@ Notable changes to the dotfiles and the agent runtime built on them, newest firs
 
 ### Changed
 
+- `plan-standard.sh`, `agent-ask`: the ExitPlanMode gate checks only a plan's epic, phases and chain, and no longer its Sections table (planning.md stays the written standard); `agent-ask post` warns of session terms its `--context` does not define instead of refusing (ar-4712).
 - `schedules-sync`, `hub`, `agent-web`: a public Forgejo repo's runs archive their jobs, steps and failed log (a private repo's jobs, no steps), and the run page reads them (ar-3715).
 - `agent-queue`, `plan-standard.sh`: a plan phase `(after N)` must name what it consumes, `(after N, M; needs <result>)`; `add --plan` refuses one with no `needs`, a shared-file reason or no parse, and the ExitPlanMode gate runs the same parser through `add --plan --check` (ar-3851).
 - `.githooks/pre-push`: a push runs the house rules and shellcheck on the changed shell files, `cargo fmt` and clippy on the picked crates, and refuses a red (the unit bats stay CI only); `tests/lint.sh --only` and `RUST_TESTS=0` back it (prepush-every-repo phase 3, ar-3792).

@@ -39,7 +39,7 @@ if [ "$event" = UserPromptSubmit ]; then
   rules=$(grep -E '^(Chain|Phases): ' "$DOC")
   ! epic_checked || rules+=$'\n'$(grep -E '^Epic: ' "$DOC")
   rules=$(sed -E 's/ Why: .*//' <<<"$rules")
-  jq -nc --arg c "Plan standard for $label. ExitPlanMode is denied unless the plan meets these three rules:
+  jq -nc --arg c "Plan standard for $label. ExitPlanMode is denied unless the plan meets these rules:
 $rules
 Full text and where to look: $DOC" \
     '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $c}}'
@@ -50,7 +50,7 @@ plan=$(jq -r '.tool_input.plan // empty' <<<"$INPUT")
 [ -n "$plan" ] || exit 0
 
 # phased: a `## Phases` heading outside code fences, so a heading in an example is no section.
-phased=$(awk '/^```/ {f = !f} !f && /^## Phases/' <<<"$plan" | head -n1)
+phased=$(awk '/^```/ {f = !f} !f && /^## Phases[ \t]*$/' <<<"$plan" | head -n1)
 # multi: a plan with more than one phase is a feature (planning.md, Phases). The one-phase checklist
 # one-shot writes on every plan is not, so it may name a standing epic.
 # shellcheck source=/dev/null

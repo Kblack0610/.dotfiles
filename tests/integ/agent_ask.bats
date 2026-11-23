@@ -2743,7 +2743,8 @@ judged_ask() {
   assert_success; [[ "$stderr" == *"names no option of ask N1"* ]]
   run "$AGENT_ASK" show N1; refute_line --partial 'judge_override'
   # an audit that cannot post says why and marks the answer unaudited, never silently skipped
-  # (a project that is not canonical, which post refuses)
+  # (a project that is not canonical, which post refuses once a project map exists)
+  printf '{"paths": {}, "trackers": {"demo": {}}}\n' > "$BATS_TEST_TMPDIR/map.json"; export PROJECT_MAP_FILE="$BATS_TEST_TMPDIR/map.json"
   judged_ask P1 repo; sed -i 's/^project: demo/project: notaproject/' "$d/P1.md"
   run --separate-stderr "$AGENT_ASK" answer --by judge P1 fix
   assert_success; [[ "$stderr" == *"audit of ask P1 not posted: "*"'notaproject' is not a canonical project"* ]]

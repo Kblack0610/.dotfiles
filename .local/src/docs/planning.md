@@ -1,6 +1,6 @@
 # Plan standard
 
-What every plan answers, at any scale, plus the sections a project's type adds. `.claude/hooks/plan-standard.sh` checks only the `Chain:`, `Phases:` and `Epic:` rules below: it injects them while a plan forms and denies `ExitPlanMode` when a plan breaks one. The Sections table is the written standard, read by the author and the human, and no hook checks it (the human released that gate, 2026-11-22). Each row holds a real failure; a new row must cite one, and a row that catches nothing gets removed.
+What every plan answers, at any scale, plus the sections a project's type adds. `.claude/hooks/plan-standard.sh` checks only the `Chain:`, `Phases:` and `Epic:` rules below: it injects them while a plan forms and denies `ExitPlanMode` when a plan breaks one. The Sections table is the written standard, read by the author and the human, and no hook checks it (the human released that gate, 2026-11-22). Each row holds a real failure; a new row must cite one, and a row whose failure has not recurred gets removed in a cleanup pass.
 
 The type comes from `type` in `project-map.json`, or the one type shared by the projects under a repo. A project with no type gets the base only. Overlays only add sections.
 
@@ -22,9 +22,9 @@ Backticked labels in `Must answer` belong in that section. In `Applies`, `base` 
 | `## Release` | app, game | Store impact, risk lane, regulated data, critical e2e paths. A plan that cuts or uploads a build is held to the bar in `~/.claude/skills/release/SKILL.md` | Skipped lanes reach users: `release-coordinator`, `compliance`, `bnb-quality-gates`, `release` |
 | `## Playtest` | game | Which game, gate class, multiplayer proof, what only human play can judge, perf or look evidence, rating impact | 11-02: physics feel is only found by playing |
 
-Scaling: a section that does not apply says `n/a: <reason>`, except Changes, Context and Verification, which always have content. A plan with more than one phase may not use `n/a`; a one-phase checklist (one-shot writes one on every plan) may.
+Scaling (advisory, unchecked): a section that does not apply says `n/a: <reason>`, except Changes, Context and Verification, which always have content. A plan with more than one phase may not use `n/a`; a one-phase checklist (one-shot writes one on every plan) may.
 
-Depth: a plan with phases or one that crosses systems runs the standards, telemetry and overlap checks as parallel Explore agents before writing, and cites what they found in `## Reviewed`.
+Depth (advisory, unchecked): a plan with phases or one that crosses systems runs the standards, telemetry and overlap checks as parallel Explore agents before writing, and cites what they found in `## Reviewed`.
 
 Chain: a plan with more than one open `- [ ]` phase runs as a chain, one fresh session per phase (`agent-queue add --plan`, `~/.local/src/docs/lifecycle.md`, "Taking an epic on"). A plan whose text says it runs or does its work in this session or one session is denied. Why: 2026-11-18 one session held four phases through 5 compactions, and another started five phases at once.
 

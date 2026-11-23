@@ -67,7 +67,7 @@ without() { awk -v h="## $1" '/^## /{skip = ($0 == h)} !skip'; }
 @test "the sections table is not checked: a plan with none of them passes" {
   run gate aninfra "$(printf '# A plan\n\nDo the thing.\n')"
   assert_output ''
-  run gate game "$(base | without Verification | without Risks)"
+  run gate agame "$(base | without Verification | without Risks)"
   assert_output ''
   run gate aninfra "$(base | sed 's/^Small, and reversible\.$/n\/a/' | sed '/Standards:/d')"
   assert_output ''
@@ -147,6 +147,7 @@ phases() { printf '\n## Phases\n\n- [x] P1 done (#1)\n'; for i in $(seq "$1"); d
   assert_output --partial 'additionalContext'
   assert_output --partial 'Chain: a plan with more than one'
   assert_output --partial 'Phases: a plan with more than one'
+  refute_output --partial 'three rules'
   refute_output --partial 'Epic:'
   refute_output --partial '## Target'
   refute_output --partial 'Depth:'
@@ -184,6 +185,12 @@ labbed() {
   labbed
   run gate labbed "$(printf '```\nepic: lb-1\n```\n\n'; base)"
   assert_output --partial 'No epic: <id> line'
+}
+
+@test "an example checklist inside a code fence is not a second phase, so its epic may be a standing one" {
+  labbed
+  run gate labbed "$(printf 'epic: lb-1\n\n'; base; printf '\n## Phases\n\n- [ ] one\n\n```\n- [ ] a\n- [ ] b\n```\n')"
+  assert_output ''
 }
 
 @test "a plan with Phases needs a feature epic, not a standing to-standard one" {
