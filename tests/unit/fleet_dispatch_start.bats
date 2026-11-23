@@ -1117,13 +1117,13 @@ trainee_start_ready() {
   agent-queue add --project game --slug t-empty --priority high --tags tier1 "Fix the save title #pts/1" >/dev/null
   for s in t-one t-empty; do agent-queue set "$s" agent=paid model=glm trainee=paid:glm >/dev/null; agent-queue move "$s" running >/dev/null; done
   # The run's worktree is a linked one: in the main checkout the review refuses, since its reset would discard work there.
-  m="$SANDBOX/main" && git init -q "$m" && printf 'a\n' > "$m/menu.txt"
-  git -C "$m" add menu.txt && git -C "$m" -c user.name=t -c user.email=t@t commit -qm base
-  printf 'mine\n' > "$m/menu.txt"
+  m="$SANDBOX/main" && git init -q "$m" && printf 'a\n' > "$m/menu.md"
+  git -C "$m" add menu.md && git -C "$m" -c user.name=t -c user.email=t@t commit -qm base
+  printf 'mine\n' > "$m/menu.md"
   run bash -c "cd $(printf %q "$m") && $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") trainee-review t-one"
   assert_failure 1; assert_output --partial 'is no linked worktree'
-  assert_equal "$(cat "$m/menu.txt")" mine
-  git -C "$m" checkout -q -- menu.txt
+  assert_equal "$(cat "$m/menu.md")" mine
+  git -C "$m" checkout -q -- menu.md
   w="$SANDBOX/wt" && git -C "$m" worktree add -q "$w" 2>/dev/null
   base=$(git -C "$w" rev-parse HEAD)
   # No diff: a reject, the row back in the queue on claude, its trainee kept so no trainee takes it again.
@@ -1137,14 +1137,25 @@ trainee_start_ready() {
   [ -z "$(agent-queue show review-t-empty --json 2>/dev/null)" ] || fail "a review item for no diff"
   run trainee_why "$(agent-queue show t-empty --json)"
   assert_failure; assert_output 'a ladder run took it once already (paid:glm)'
+  # A diff touching a file the sandbox could not build is a reject too, named by the file, and the
+  # worktree goes back to its base (ar-4739: the row's words no longer have to name its files).
+  agent-queue add --project game --slug t-py --priority high --tags tier1 "Fix the save tool #pts/1" >/dev/null
+  agent-queue set t-py agent=paid model=glm trainee=paid:glm >/dev/null; agent-queue move t-py running >/dev/null
+  printf 'print(1)\n' > "$w/tool.py"
+  run bash -c "cd $(printf %q "$w") && $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") trainee-review t-py"
+  assert_success
+  assert_output --partial 'trainee-reject: t-py is back in the queue, on claude: its diff touches tool.py, which is no markdown file'
+  [ -n "$(qitem queued t-py)" ] || fail "the row whose diff touched tool.py did not go back to the queue"
+  [ ! -e "$HOME/.local/state/agentctl/dispatch/trainee/t-py.patch" ] || fail "the rejected diff's patch is still there"
+  assert_equal "$(git -C "$w" status --porcelain)" ''
   # A row that cannot move to review stays running, the diff in the worktree as well as the patch.
-  printf 'b\n' > "$w/menu.txt"; printf 'new\n' > "$w/title.txt"
+  printf 'b\n' > "$w/menu.md"; printf 'new\n' > "$w/title.md"
   mkdir -p "$SANDBOX/aqfail"
   printf '#!/usr/bin/env bash\n[ "$1 $3" != "move review" ] || exit 1\nexec %q "$@"\n' "$SANDBOX/bin/agent-queue" > "$SANDBOX/aqfail/agent-queue"
   chmod +x "$SANDBOX/aqfail/agent-queue"
   PATH="$SANDBOX/aqfail:$PATH" run bash -c "cd $(printf %q "$w") && $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") trainee-review t-one"
   assert_failure 1; assert_output --partial 'could not move t-one to review; it stays running'
-  assert_equal "$(cat "$w/menu.txt")" b
+  assert_equal "$(cat "$w/menu.md")" b
   assert_equal "$(jq -r .state <<<"$(agent-queue show t-one --json)")" running
   # A diff, an edit and a new file: saved as a patch beside its base, the worktree put back, and no
   # review item of its own: the row waits in review for the next batch review.
@@ -1152,7 +1163,7 @@ trainee_start_ready() {
   assert_success
   patch="$HOME/.local/state/agentctl/dispatch/trainee/t-one.patch"
   assert_output --partial "trainee-review: t-one's diff is $patch; it waits for the next batch review"
-  grep -q '^+++ b/title.txt' "$patch" || fail "the new file is not in the patch: $(cat "$patch")"
+  grep -q '^+++ b/title.md' "$patch" || fail "the new file is not in the patch: $(cat "$patch")"
   assert_equal "$(cat "${patch%.patch}.base")" "$base"
   assert_equal "$(git -C "$w" status --porcelain)" ''
   assert_equal "$(git -C "$w" rev-parse HEAD)" "$base"
