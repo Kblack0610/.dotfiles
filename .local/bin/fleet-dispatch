@@ -518,7 +518,11 @@ def plan_tagged: any(.tags[]?; . == "plan");
 def holds($c): .line == $c.line and (.dsig == null or .dsig == $c.dsig);
 # usable($rs): a judged verdict (not error or failed) naming a rule the policy still defines, whatever policy it was made under
 def usable($rs): (.verdict == "dispatch" or .verdict == "skip") and (.rule as $r | $rs | index($r) != null);
-def eff_size($d): if (.row_size // "") != "" then .row_size else ($d.size // "") end;'
+def eff_size($d): if (.row_size // "") != "" then .row_size else ($d.size // "") end;
+# row_area($d; $games): the area a row holds: the first game of its project ($games, game_areas) its text
+# names before the trailing comment, else the area verdict $d named, lowercased; "" with neither.
+def row_area($d; $games): ((.text // "") | split("<!--") | .[0] // "" | ascii_downcase) as $t
+  | (first(($games[.project] // [])[] | select(. as $g | $t | test("\\b\($g)\\b"))) // (if ($d.area | type) == "string" then $d.area | ascii_downcase else "" end));'
 
 # detail_sig <details json> -> the dsig of a row's details; "none" for a row with none
 detail_sig() { if [ "$1" = '""' ]; then echo none; else printf '%s' "$1" | sig; fi; }
@@ -626,6 +630,21 @@ row_sprint() { if [ -n "${SPRINT_ROW["$1"$'\t'"$2"]:-}" ]; then echo 0; else ech
 # row_uncommitted <project> <id> -> 1 for a sprint row its window did not commit (SPRINT_ROW 2), else 0: the
 # rank key after `sprint`, so committed rows rank first within the sprint.
 row_uncommitted() { if [ "${SPRINT_ROW["$1"$'\t'"$2"]:-}" = 2 ]; then echo 1; else echo 0; fi; }
+
+# game_areas < candidate lines -> {"<project>": ["<game>", ...]}: the game directories under the
+# Assets/Games of each candidate's repo, lowercased. ROW_JQ's row_area locks the game a row names, so a
+# fix in one game does not hold every row of the system word its prefix names: on 2026-11-23 one
+# fix(gameplay) item in one game held all 97 playground gameplay rows. No Assets/Games, no entry.
+game_areas() {
+  local name repo g gs
+  jq -r 'select((.repo // "") != "") | "\(.project)\t\(.repo)"' 2>/dev/null | awk '!seen[$0]++' |
+    while IFS=$'\t' read -r name repo; do
+      [ -d "$repo/Assets/Games" ] || continue
+      gs=()
+      for g in "$repo"/Assets/Games/*/; do g=${g%/}; g=${g##*/}; [[ $g =~ ^[A-Za-z0-9]+$ ]] && gs+=("${g,,}"); done
+      if [ "${#gs[@]}" -gt 0 ]; then jq -cn --arg p "$name" '{($p): $ARGS.positional}' --args "${gs[@]}"; fi
+    done | jq -sc 'add // {}'
+}
 
 # POOL_IDLE["<repo>"]=<pool>: each repo whose CI gates on an idle pool, read once a pass (its entry point
 # calls load_pool_idle before its subshells, as load_gates) from Prometheus, the source the starved-pool
@@ -2035,11 +2054,11 @@ cmd_suggest() {
   load_gates; load_pool_idle
   cands=$(SUGGEST=1 VERDICTS=/dev/null cmd_candidates)
   [ -n "$cands" ] || { [ "${1:-}" = --json ] || echo "suggest: no open agent row"; return 0; }
-  jq -sc --arg sig "$(policy_sig)" --argjson prules "$(policy_rules)" --slurpfile v <(latest_verdicts) \
+  jq -sc --arg sig "$(policy_sig)" --argjson games "$(game_areas <<<"$cands")" --argjson prules "$(policy_rules)" --slurpfile v <(latest_verdicts) \
     --argjson busy "$(queue_areas | jq -Rsc 'split("\n") | map(select(length > 0) | ascii_downcase)')" "$RANK_JQ$ROW_JQ"'
     ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
     | map(. as $c | $by[[.project, .lane, .key] | tostring] as $d
-      | . + {auto: (.worker != ""), area: (($d.area // "") | ascii_downcase), stale: ($d != null and $d.verdict != "failed" and $d.policy != $sig),
+      | . + {auto: (.worker != ""), area: row_area($d; $games), stale: ($d != null and $d.verdict != "failed" and $d.policy != $sig),
              verdict: (if $d == null then "unjudged" elif $d.verdict == "failed" then "failed"
                        elif ($d | usable($prules) | not) or ($d | holds($c) | not) then "unjudged" else $d.verdict end)}
       | . + {held: (.area != "" and $d.tier != 3 and ("\(.project | ascii_downcase)/\(.area)" as $a | $busy | index($a)) != null),
@@ -2099,19 +2118,19 @@ latest_verdicts() {
 picks() {
   local cands="$1" room="$2"
   [ "$room" -gt 0 ] && [ -n "$cands" ] || return 0
-  jq -sc --argjson room "$room" --argjson prules "$(policy_rules)" --argjson max "$UNATTENDED_TIER_CEILING" \
+  jq -sc --argjson room "$room" --argjson games "$(game_areas <<<"$cands")" --argjson prules "$(policy_rules)" --argjson max "$UNATTENDED_TIER_CEILING" \
     --argjson busy "$(queue_areas | jq -Rsc 'split("\n") | map(select(length > 0) | ascii_downcase)')" \
     --slurpfile v <(latest_verdicts) "$RANK_JQ$ROW_JQ"'
     ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
     | map(. as $c | $by[[.project, .lane, .key] | tostring] as $d
       | if $c.gated == true then
-          select(($d == null or $d.verdict != "failed") and ($c.tier | type) == "number" and $c.tier <= $max) | . + {area: (if ($d.area | type) == "string" then $d.area | ascii_downcase else "" end)}
+          select(($d == null or $d.verdict != "failed") and ($c.tier | type) == "number" and $c.tier <= $max) | . + {area: row_area($d; $games)}
         else
           select($d != null and $d.verdict == "dispatch" and (eff_size($d) | IN("S", "M"))
               and $d.clear == true and $d.agent_only == true and ($d | usable($prules)) and ($d | holds($c))
               and ($d.tier | type) == "number" and $d.tier <= $c.tier and $c.tier <= $max
               and ($d.area | type) == "string" and $d.area != "")
-          | . + {area: ($d.area | ascii_downcase)} end)
+          | . + {area: row_area($d; $games)} end)
     | map(select(.area == "" or ("\(.project | ascii_downcase)/\(.area)" as $a | $busy | index($a) | not)))
     | rank | unique_by([.project, area_key]) | rank
     | .[:$room] | .[]' <<<"$cands"
@@ -5101,14 +5120,14 @@ trainee_rows() {
   for i in "${!projects[@]}"; do cat "$d/t3.$i" 2>/dev/null; done >"$d/t3"
   for i in "${!projects[@]}"; do cat "$d/open.$i" 2>/dev/null; done >"$d/open"
   # t3 first: unique_by keeps a row's first copy, and a tier-3 row's copy carries its worker.
-  jq -sc --arg today "${DISPATCH_TODAY:-$(date +%F)}" --argjson prules "$(policy_rules)" \
+  jq -sc --arg today "${DISPATCH_TODAY:-$(date +%F)}" --argjson prules "$(policy_rules)" --argjson games "$(cat "$d/t3" "$d/open" | game_areas)" \
     --argjson busy "$(queue_areas | jq -Rsc 'split("\n") | map(select(length > 0) | ascii_downcase)')" \
     --slurpfile v <(latest_verdicts) "$RANK_JQ$ROW_JQ"'
     ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
     | map(select(.lane == "agent") | . as $c | $by[[.project, .lane, .key] | tostring] as $d
       | select($d == null or ($d.verdict != "failed" and ($c.gated == true or $d.verdict != "skip"
           or (($d | usable($prules)) and ($d | holds($c))) == false)))
-      | . + {area: (if ($d.area | type) == "string" then $d.area | ascii_downcase else "" end)}
+      | . + {area: row_area($d; $games)}
       | select(.area == "" or .worker == "tier3" or ("\(.project | ascii_downcase)/\(.area)" as $a | $busy | index($a) | not))
       | if .pprio == null then rank_fields($today; .project_prio // "") else . end)
     | unique_by([.project, .key]) | rank | .[]' "$d/t3" "$d/open"
@@ -7958,16 +7977,16 @@ t3_rows() {
 # A `gated` row needs no verdict, as in picks: only a `failed` one (its session died) holds it.
 t3_ready() {
   [ -n "$1" ] || return 0
-  jq -sc --argjson prules "$(policy_rules)" --slurpfile v <(latest_verdicts) "$ROW_JQ"'
+  jq -sc --argjson prules "$(policy_rules)" --argjson games "$(game_areas <<<"$1")" --slurpfile v <(latest_verdicts) "$ROW_JQ"'
     ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
     | .[] | . as $c | $by[[.project, .lane, .key] | tostring] as $d
-    | if $c.gated == true then select($d == null or $d.verdict != "failed") | . + {area: (if ($d.area | type) == "string" then $d.area | ascii_downcase else "" end)}
+    | if $c.gated == true then select($d == null or $d.verdict != "failed") | . + {area: row_area($d; $games)}
       else
         select($d != null and $d.verdict == "dispatch" and $d.tier == 3
           and (eff_size($d) | IN("S", "M")) and $d.clear == true and $d.agent_only == true
           and ($d | usable($prules)) and ($d | holds($c))
           and ($d.area | type) == "string" and $d.area != "")
-        | . + {area: ($d.area | ascii_downcase)} end' <<<"$1"
+        | . + {area: row_area($d; $games)} end' <<<"$1"
 }
 
 # t3_picks <rows> -> the t3_ready rows a session may take, in RANK_JQ order with the project's #prio
