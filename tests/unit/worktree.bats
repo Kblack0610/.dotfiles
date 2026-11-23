@@ -2262,3 +2262,26 @@ archived_bundle() { # <branch> -> archives repo-agent-1 holding one local commit
   run cmd_bundle_state "$SANDBOX/archive/repo/nope@1.bundle"
   assert_failure 2
 }
+
+# tests/vendor: a new tree gets the main checkout's bats
+
+@test "wt_prepare links tests/vendor to the main checkout's when the repo ignores it, and only then" {
+  make_repo
+  mkdir -p "$MAIN/tests/vendor/bats-core/bin"
+  printf 'tests/vendor\n' > "$MAIN/.gitignore"
+  : > "$MAIN/tests/x.bats"
+  git -C "$MAIN" add .gitignore tests/x.bats
+  git -C "$MAIN" commit --quiet -m tests
+  git -C "$MAIN" push --quiet origin main
+  run wt_prepare "$MAIN" "$WT_ROOT/platform-agent-1" 1 fresh
+  assert_success
+  assert_equal "$(readlink "$WT_ROOT/platform-agent-1/tests/vendor")" "$MAIN/tests/vendor"
+  [ -z "$(git -C "$WT_ROOT/platform-agent-1" status --porcelain)" ] || fail "the link shows as dirt"
+  # NEGATIVE CONTROL: a repo that does not ignore tests/vendor gets no link, and the cut still succeeds.
+  git -C "$MAIN" rm --quiet .gitignore
+  git -C "$MAIN" commit --quiet -m unignore
+  git -C "$MAIN" push --quiet origin main
+  run wt_prepare "$MAIN" "$WT_ROOT/platform-agent-2" 2 fresh
+  assert_success
+  [ ! -e "$WT_ROOT/platform-agent-2/tests/vendor" ] && [ ! -L "$WT_ROOT/platform-agent-2/tests/vendor" ] || fail "linked an unignored path"
+}
