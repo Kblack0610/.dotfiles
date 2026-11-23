@@ -43,7 +43,7 @@ The ledger is a `## Follow-through` section in the plan file the work serves (`~
 - [ ] Kblack0610/.dotfiles-private#1089 runs-on-light
 ```
 
-A row id, a queue item slug or a PR as `owner/repo#N`. Fill it from what this conversation already filed (the plan's Results, `inboxed` lines, PRs opened) and from `agent-queue list --json` filtered on the plan. An outbox follow-up has no id until triage files it: leave it as its text for now; step 4 swaps in the id. It is not `## Phases`, so reap and the phase counters never read it.
+A row id, a queue item slug or a PR as `owner/repo#N`. A queued phase goes in by its row id (`ar-4707`), the key its chain events carry; a slug you made up from the plan name matches nothing, and `coord-watch` refuses an id-shaped word no event or board row carries. Fill it from what this conversation already filed (the plan's Results, `inboxed` lines, PRs opened) and from `agent-queue list --json` filtered on the plan. An outbox follow-up has no id until triage files it: leave it as its text for now; step 4 swaps in the id. It is not `## Phases`, so reap and the phase counters never read it.
 
 Sprint mode is the literal form `sprint <project>`, where `<project>` is listed under `.sprints` in `notes board --json`; any other argument is a goal. Its ledger is the open sprint's committed rows, whoever filed them. When `~/.claude/plans/sprint-<project>-<version>.md` exists (a resumed window), keep it and add only the row ids it lacks; otherwise write it (Context: the version, its cut, done of committed) and fill `## Follow-through` from the board:
 
@@ -58,9 +58,9 @@ A new ask you give this window goes through `sprint` step 5: the next window unl
 
 ### 3. Arm the watch
 
-Start `Monitor` with command `coord-watch <plan file>`, `timeout_ms` 1800000 and a description naming the plan. `coord-watch` (`~/.local/bin/coord-watch`) tails the chain event log and prints one line per event on an open ledger line, or on triage acting on your outbox lines (`#from/<your writer>`); it reads the ledger at start, so every re-arm picks up the lines you added, and it keeps a cursor per plan, so a re-arm first replays whatever landed while no watch ran. It exits 2 when the plan has no `## Follow-through` heading; the id is the first word of the line, so keep it bare.
+Run `coord-watch --until <plan file>` with Bash `run_in_background`, never under Monitor: a Monitor expires every 30 minutes, and coordinators waiting on asks woke 4 to 221 times each on those expiries (2026-11-23). `coord-watch` (`~/.local/bin/coord-watch`) tails the chain event log, waits with no timeout for an event on an open ledger line or on triage acting on your outbox lines (`#from/<your writer>`), prints it and any that follow within a few seconds, and exits 0, which wakes you once. It reads the ledger at start, so every re-arm picks up the lines you added, and it keeps a cursor per plan, so a re-arm first replays whatever landed while no watch ran. It exits 2 when the plan has no `## Follow-through` heading or names an id no event, board row or queue item carries (the id is the first word of the line, so keep it bare), and 4 when the record stream ended with no event: re-arm on a 4.
 
-It is the one watch: its `land-failed`, `merged` and `done` events already carry each PR's state, so never write a gh poll loop of your own. While the `coordinator` label is on, the Stop check `stop-post.d/89-coord-watch.sh` blocks a turn that ends with no live `coord-watch` of this session (it writes `~/.local/state/coord-watch/session-<id>.pid` while it runs), so a compaction or a missed expiry cannot leave the window unwatched.
+It is the one watch: its `land-failed`, `merged` and `done` events already carry each PR's state, so never write a gh poll loop of your own. While the `coordinator` label is on, the Stop check `stop-post.d/89-coord-watch.sh` blocks a turn that ends with no live `coord-watch` of this session (it writes `~/.local/state/coord-watch/session-<id>.pid` while it runs), so a compaction cannot leave the window unwatched.
 
 ### 4. Act on each event
 
@@ -73,27 +73,19 @@ It is the one watch: its `land-failed`, `merged` and `done` events already carry
 | `added`, `started`, `item-moved`, `planned`, `settled` | Progress; nothing to say unless the human asked for it. |
 | `merged` | One PR of the line merged; a row can carry several. Nothing to tick yet. |
 | `done` (or `item-moved` with `to=done`) | The line's work is closed: prove it live the way that repo goes live (deploy, autopull, a release), then tick it. Merge is not live. |
-| `land-failed`, `item-cancelled`, `reopened`, `unstarted`, `refused`, `reaped`, or any action not listed here | Read the item (`agent-queue show <slug>`) or the row and the `why`; fix the cause, re-file it, or take the step over (step 5). |
+| `land-failed`, `item-cancelled`, `reopened`, `unstarted`, `refused`, `reaped`, or any action not listed here | Read the item (`agent-queue show <slug>`) or the row and the `why`; fix the cause, re-file it, or take the step over: get the item session's go-ahead over SendMessage and push, fix CI or land from its worktree, never report "waiting on" it. |
 
-Tell the human one line per tick or intervention, never per event.
+Tell the human one line per tick or intervention, never per event. Then arm `coord-watch --until` again (step 3); a wake whose events changed nothing ends its turn with no text.
 
-### 5. On each Monitor expiry: the stall check, then re-arm
+### 5. Stalls and waits reach you as events
 
-A stall makes no event, so the 30 minute expiry is the check. For each open line with no event since the last arm:
-
-- A running item: `agent-queue show <slug>` and its session in `fleet-sessions`. Idle at a prompt, held on a slot, or no push in a while: get its go-ahead over SendMessage and take the step over from its worktree (push, fix CI, land), never report "waiting on" it.
-- A row nobody starts: why dispatch skipped it is the `fleet-dispatch` skill's question; fix the row (size, gate, tag) rather than waiting.
-- A pending ask: `agent-ask show <id>`; relay it once in plain words if the human has not seen it, never again on a later expiry.
-
-In sprint mode, also re-read the project's non-queued `.version` from the board: a version other than the plan's is the roll, so go to step 6.
-
-Then arm `coord-watch` again. An expiry that found no stall and changed nothing ends its turn with no text: the human reads nothing new, and a repeated status or question is noise.
+You run no timed stall check. A stalled item session is the shepherd's to find: it nudges it, then closes its window, and the `unstarted`, `item-cancelled` or `reopened` that follows reaches you through step 4. A pending ask needs no watch either: relay it once in plain words, and `agent-ask deliver` types the answer into this window. A row dispatch never starts is the `fleet-dispatch` skill's question when the human asks why it is slow. While every open line waits on the human, the window wakes zero times, which is the point.
 
 ### 6. Validate with the human
 
-In sprint mode the version roll ends the follow-through: rows still open then carry to the next window (`sprint` step 6), so strike them as `carried to <next version>` and put the window score in the final report.
+In sprint mode the version roll ends the follow-through (when the human asks where the sprint is, re-read the project's non-queued `.version` from the board: a version other than the plan's is the roll): rows still open then carry to the next window (`sprint` step 6), so strike them as `carried to <next version>` and put the window score in the final report.
 
-Every ledger line is ticked (merged and live, or dropped with a reason the human accepted). Merged and live is not done: the human validates it. A ticked line is no longer watched (`coord-watch` reads only open lines and exits 3 on a ledger with none), so the watch ends here: stop the Monitor (TaskStop) and drop the mode label, keeping the hold:
+Every ledger line is ticked (merged and live, or dropped with a reason the human accepted). Merged and live is not done: the human validates it. A ticked line is no longer watched (`coord-watch` reads only open lines and exits 3 on a ledger with none), so the watch ends here: stop the background `coord-watch` (TaskStop) and drop the mode label, keeping the hold:
 
 ```bash
 fleet-sessions label self -coordinator   # keep manual; the Stop check 89-coord-watch.sh reads this label
@@ -110,7 +102,7 @@ agent-ask post --options 'a=validated: drop the hold and let the window close|b=
 agent-ask reopen-on-answer <id>
 ```
 
-Then end the turn and wait with nothing armed: no Monitor, cron or wakeup. The answer reaches this session by itself: `agent-ask deliver` types it into the live pane, and if the window closed on its quiet timer meanwhile, `reopen-on-answer` starts it again with the answer. `manual` keeps the window until quiet `FLEET_CHAT_CLOSE_H`. The ask (the `!N` count and the asks list) is what shows the wait. A re-armed watch on a ticked ledger is only a timer: 2026-11-22 one woke 58 times over 29h and repeated the question each time. `stop-post.d/86-empty-wakes.sh` blocks that after 4 empty expiries.
+Then end the turn and wait with nothing armed: no watch, cron or wakeup. The answer reaches this session by itself: `agent-ask deliver` types it into the live pane, and if the window closed on its quiet timer meanwhile, `reopen-on-answer` starts it again with the answer. `manual` keeps the window until quiet `FLEET_CHAT_CLOSE_H`. The ask (the `!N` count and the asks list) is what shows the wait. A re-armed watch on a ticked ledger is only a timer: 2026-11-22 one woke 58 times over 29h and repeated the question each time. `stop-post.d/86-empty-wakes.sh` blocks any session, a coordinator included, after 4 empty Monitor expiries.
 
 A "not yet" adds its lines to the ledger, then `fleet-sessions label self +coordinator` and arm the watch again (step 3); steps 4 and 5 carry them.
 

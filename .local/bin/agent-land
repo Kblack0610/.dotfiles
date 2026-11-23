@@ -15,7 +15,7 @@
 # checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (a head behind origin/<base> is merged up to it, each clean submodule checkout on its old pin moved to the merged one (submodule_follow), and pushed, before the checks and again after them if the base moved on during them; a head pushed after them waits on its own checks before it merges, and on a base without strict checks a second move lands that green head behind it, catch_up), item-line
 # (before the checks, the PR body gets the line "Item: <slug>" unless it has it, so a reader holding
 # only the PR finds its work item; a stale "Item:" line is rewritten, except on a merged PR where another queue item's line stays), review (a tier-3 item's body has a
-# "Review:" line, review_gate), shape (no function over 150 lines gets longer unless the body has a "Split: <row id>" line, shape_gate), checks (the PR's checks pass: CI, a required check; a cancelled check is no pass, waited on while a run on the head goes on, and on GitHub so is a failed one while a run of its workflow and event started after it goes on, and a cancelled matrix job of an older run of its workflow is no verdict (pr-ci.sh); a tier-3 item, or one landed with --ran-checks, needs checks that ran), merge (--squash, or with --merge-commit a merge commit,
+# "Review:" line, review_gate), shape (no function over 150 lines gets longer unless the body has a "Split: <row id>" line, shape_gate), checks (the PR's checks pass: CI, a required check; a cancelled check is no pass, waited on while a run on the head goes on, and on GitHub so is a failed one while a run of its workflow and event started after it goes on, and a cancelled matrix job of an older run of its workflow is no verdict (pr-ci.sh); a tier-3 item, or one landed with --ran-checks, needs checks that ran), validate (critical work by judge.sh judge_work_level merges only on a second agent's pass verdict on this head, validate_gate), merge (--squash, or with --merge-commit a merge commit,
 # for a landing train whose member PRs read MERGED only while their heads stay reachable; --admin adds gh's --admin, which skips a required approving review on a repo whose owner allows it, never the checks step above; --match-head-commit HEAD, then gh pr view must say MERGED), proof (the PR's merge commit is
 # on origin/<base>, by agent-merge-proof.sh), live (dotfiles-autopull --now --bg fast-forwards, in the background, the stowed
 # checkout when this repo is ~/.dotfiles or ~/.dotfiles-private, links what it added, rebuilds the
@@ -37,7 +37,7 @@
 # taken from the session, not named by --item, takes only a PR in its project's repo (own_project), and
 # only one it records or whose body names it on an "Item: <slug>" line (own_item).
 # Exit 0 landed, 1 a step failed, 2 usage, 3 a catch-up merge of origin/<base> that conflicts
-# (before or after the checks): resolve it and re-run, 4 an item stacked on an item that has not closed ok (stack_gate). A head pushed after the checks waits on its own
+# (before or after the checks): resolve it and re-run, 4 an item stacked on an item that has not closed ok (stack_gate), 5 critical work waiting on its validate item (validate_gate): that session lands it on a pass, so the author winds down. A head pushed after the checks waits on its own
 # checks before it merges; the local gate script runs again on a merge of <base> only when the repo's CI
 # doc says it needs one.
 # An already MERGED PR skips checks, fetch and merge, so a re-run finishes a failed record step.
@@ -68,6 +68,8 @@ usage() {
 . "$(dirname "$(readlink -f "$0")")/../lib/submodule-follow.sh"
 # shellcheck source=../lib/plan-phases.sh
 . "$(dirname "$(readlink -f "$0")")/../lib/plan-phases.sh"
+# shellcheck source=../lib/judge.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/judge.sh"
 die() {
   printf 'agent-land: %s\n' "$1" >&2
   exit 2
@@ -699,12 +701,13 @@ pr_merge() {
   [ -n "$fj" ] || { gh pr merge "$pr" "${R[@]}" "$method" ${admin[@]+"${admin[@]}"} --match-head-commit "$1"; return; }
   fj_send POST "pulls/$pr/merge" "$(jq -nc --arg do "${method#--}" --arg h "$1" '{Do: $do, head_commit_id: $h}')"
 }
-# pr_files: the PR's changed paths, one a line.
+# pr_files: the PR's changed paths, one a line, a rename's old path too (moving a file out of a
+# Judge authority name is critical, validate_gate).
 pr_files() {
-  [ -n "$fj" ] || { gh api "repos/${pr_ref%#*}/pulls/$pr/files" --paginate --jq '.[].filename'; return; }
+  [ -n "$fj" ] || { gh api "repos/${pr_ref%#*}/pulls/$pr/files" --paginate --jq '.[] | .filename, (.previous_filename // empty)'; return; }
   local page=1 got
   while got=$(so_forgejo_get "$fj" "pulls/$pr/files?limit=$SO_FORGEJO_PAGE&page=$page"); do
-    jq -r '.[].filename' <<<"$got"
+    jq -r '.[] | .filename, (.previous_filename // empty)' <<<"$got"
     [ "$(jq length <<<"$got")" -ge "$SO_FORGEJO_PAGE" ] || return 0
     page=$((page + 1))
   done
@@ -996,6 +999,75 @@ stack_gate() {
   done
 }
 
+# validate_gate: critical work (judge_work_level, the ask judge's levels in judge.sh and the
+# policy's floor lists) merges only on a second agent's pass verdict. Checked once the checks are
+# green and the head caught up, on the head that would merge. The author item's `validate:` names
+# its validate item, validate-<item>-<head>, which `fleet-dispatch validate` files for the head;
+# that session reviews the PR, records `verdict` (pass or fail) and `verdict_head` on its own item,
+# and runs this landing again. A pass on this head, or on one this head only merged <base> into,
+# from an item none of the author's sessions worked, merges. A fail leaves the PR open and sends the
+# author item back to the queue with the findings (its note). Anything else, a verdict missing,
+# pending or on an older head included, files or names the validate item and exits 5: nothing
+# merges. Unreadable files or policy refuse the same way. Why: the human, 2026-11-11, "maybe
+# another agent to validate critical work" (ar-1689).
+VALIDATE_WAIT=5
+validate_gate() {
+  local files lv ev vslug vit v vh vses ases s out
+  files=$(pr_files 2>&1) || fail validate "could not read #$pr's changed files ($(lastline "$files")), so whether its work is critical is unknown; re-run"
+  PR_FILES=$files
+  out=$(judge_work_level "$(judge_conf PROMPT "$(dirname "$(readlink -f "$0")")/../../.config/agent-ask/policy.md")" \
+    "${AGENT_ASK_ROOT:-$HOME/.agent/asks}" "$it" <<<"$files") ||
+    fail validate "could not read the ask policy (ask-judge.conf PROMPT), so whether #$pr is critical is unknown"
+  IFS=$'\t' read -r lv ev <<<"$out"
+  [ "$lv" = critical ] || { echo "validate: $lv work, no second agent needed"; return 0; }
+  # This session is the author's unless it is the validate item's: on the item now, so a later
+  # verdict from it reads as the author's (a hand start may not have claimed it yet).
+  if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && [[ "${AGENT_QUEUE_ITEM:-}" != "validate-$item-"* ]] && ! { [ "$partial" -eq 1 ] && other_session; }; then
+    aq_retry claim "$item" >/dev/null 2>&1 || echo "validate: could not record this session on $item" >&2
+    it=$(aq_retry show "$item" --json 2>/dev/null) || fail validate "could not re-read $item"
+  fi
+  vslug=$(jq -r '.validate // ""' <<<"$it")
+  vit=''; [ -z "$vslug" ] || vit=$(aq_retry show "$vslug" --json 2>/dev/null) || vit=''
+  IFS=$'\t' read -r v vh vses < <(jq -r '[.verdict // "", .verdict_head // "", .sessions // ""] | @tsv' <<<"${vit:-null}")
+  if [ -n "$v" ] && covers "$vh"; then
+    [ -n "$vses" ] || fail validate "$vslug records a $v verdict, but no session worked it: a verdict comes from a second agent's session"
+    ases=" $(jq -r '.sessions // ""' <<<"$it") "
+    for s in $vses; do
+      [[ "$ases" != *" $s "* ]] || fail validate "$vslug was worked by session $s, which also worked $item: the verdict must come from another agent"
+    done
+    if [ "$v" = pass ]; then
+      echo "validate: pass from $vslug on ${vh:0:8} (critical: $ev)"
+      return 0
+    fi
+    out=$(aq_retry set "$item" "note=validation failed on #$pr at ${vh:0:8} ($vslug): $(jq -r '.note // "no findings recorded"' <<<"$vit")" 2>&1) &&
+      out=$(aq_retry move "$item" queued 2>&1) || fail validate "$vslug failed #$pr, and $item could not go back to the queue: $(lastline "$out")"
+    printf 'agent-land: validate failed: %s failed #%s on %s; #%s stays open and %s is back in the queue with its findings\n' "$vslug" "$pr" "${vh:0:8}" "$pr" "$item" >&2
+    land_failed validate "$vslug failed it"
+    exit 1
+  fi
+  if [ -n "$vit" ] && [ -z "$v" ] && [[ "$(jq -r .state <<<"$vit")" =~ ^(queued|running|waiting|review)$ ]]; then
+    if covers "${vslug##*-}"; then
+      printf 'agent-land: #%s is critical (%s), so it waits on %s, a second agent reviewing it; that session lands it on a pass\n' "$pr" "$ev" "$vslug" >&2
+      exit "$VALIDATE_WAIT"
+    fi
+    aq_retry cancel "$vslug" --why "#$pr moved on to ${head:0:8}, which a new validate item reviews" >/dev/null 2>&1 ||
+      echo "validate: could not cancel $vslug, which reviews an older head of #$pr" >&2
+  fi
+  vslug="validate-$item-${head:0:8}"
+  out=$("$(dirname "$(readlink -f "$0")")/fleet-dispatch" validate "$item" --pr "$pr_ref" --head "$head" --why "$ev" 2>&1) &&
+    out=$(aq_retry set "$item" "validate=$vslug" 2>&1) || fail validate "#$pr is critical ($ev), and its validate item could not be filed: $(lastline "$out")"
+  printf 'agent-land: #%s is critical (%s), so it merges only on a second agent'"'"'s pass: queued %s, whose session reviews it and lands it on a pass\n' "$pr" "$ev" "$vslug" >&2
+  exit "$VALIDATE_WAIT"
+}
+# covers <sha>: the head that would merge is <sha>, or adds to it nothing but merges of <base>
+# (catch_up's clean merges), so a verdict on <sha> still reads its diff.
+covers() {
+  [ -n "$1" ] || return 1
+  [[ "$head" == "$1"* ]] && return 0
+  git merge-base --is-ancestor "$1" HEAD 2>/dev/null &&
+    [ "$(git rev-list --count --no-merges HEAD "^$1" "^$remote/$base" 2>/dev/null)" = 0 ]
+}
+
 # shape_gate: a function over shape-grow's limit does not get longer. The fix is in the PR: extract
 # the new logic as a pure function and call it. When that cannot be done here, the body names the
 # board row that will split the function, "Split: <row id>", open on a lab sheet and naming each
@@ -1060,7 +1132,8 @@ watch_gate() {
 credit() {
   local files out
   [[ "$pr_ref" == */*#* ]] || { echo ", not credited (no repo on #$pr)"; return 0; }
-  files=$(pr_files 2>&1) || { echo ", not credited ($api api: $(lastline "$files"))"; return 0; }
+  # validate_gate read them already on a merge this run made (PR_FILES), the same files squashed.
+  files=${PR_FILES-$(pr_files 2>&1)} || { echo ", not credited ($api api: $(lastline "$files"))"; return 0; }
   out=$(printf '%s\n' "$files" | agent-queue attribute "$item" 2>&1) || { echo ", not credited ($(lastline "$out"))"; return 0; }
   [ -z "$out" ] || echo ", $out"
 }
@@ -1162,6 +1235,7 @@ if [ "$dry" -eq 1 ]; then
   echo "shape: shape-grow \$(git merge-base HEAD origin/<base>) HEAD  (no function over 150 lines gets longer, unless the body has a \"Split: <row id>\" line naming an open row that names each function)"
   echo "checks: gh pr checks $pr${repo:+ -R $repo} --watch --fail-fast -i $CHECKS_WATCH_INTERVAL  (must pass, or report none on a tier 1 or 2 item; a land that would refuse none, on a head with workflow files, first waits up to $CHECKS_FIRST_RUN_TRIES x ${CHECKS_QUEUED_POLL}s for its first run, AGENT_LAND_CHECKS_FIRST_RUN_TRIES)"
   echo "fetch: git fetch origin && git rev-list --count HEAD..origin/<base of #$pr>  (0 before the checks; after them git merge origin/<base> && git push, then the checks again on that head)"
+  echo "validate: gh api repos/<owner>/<repo>/pulls/$pr/files | judge_work_level  (critical: merges only on a pass verdict from the item's validate item on this head, else fleet-dispatch validate $item and exit $VALIDATE_WAIT)"
   echo "merge: gh pr merge $pr${repo:+ -R $repo} $method${admin[*]:+ ${admin[*]}} --match-head-commit \$(git rev-parse HEAD) && gh pr view $pr${repo:+ -R $repo} --json state  (must be MERGED)"
   echo "body: gh pr view $pr${repo:+ -R $repo} --json body | comms-lint --channel pr-body -  (a score, never a gate; first a ~/.cache/*.md or *.txt whose text is the body is deleted)"
   echo "proof: gh pr view $pr${repo:+ -R $repo} --json mergeCommit, then merge_proof: an ancestor of origin/<base>"
@@ -1260,6 +1334,7 @@ else
   done
 
   head=$(git rev-parse HEAD)
+  validate_gate
   out=$(pr_merge "$head" 2>&1) || fail merge "$(lastline "$out")"
   state=$(pr_view state .state 2>&1) || fail merge "$api pr view: $(lastline "$state")"
   [ "$state" = MERGED ] || fail merge "#$pr reads $state, not MERGED"
@@ -1298,7 +1373,8 @@ chain_event land merged "$(jq -r .project <<<"$it")" "$(jq -r '.title // ((.task
 
 case "$done_as" in
 '')
-  if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && ! { [ "$partial" -eq 1 ] && other_session; }; then
+  # The validate session that landed it (validate_gate) is in landed_by, never in the author's sessions.
+  if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && [[ "${AGENT_QUEUE_ITEM:-}" != "validate-$item-"* ]] && ! { [ "$partial" -eq 1 ] && other_session; }; then
     aq_retry claim "$item" >/dev/null 2>&1 || echo "item: could not record this session on $item (agent-queue claim)" >&2
   fi
   # Re-read so earlier partial landings survive, including a re-run of this PR.

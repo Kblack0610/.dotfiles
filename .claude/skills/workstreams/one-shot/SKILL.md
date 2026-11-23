@@ -51,7 +51,8 @@ Not for a pile of tasks (`fleet-queue`), a release (the system cuts it; `release
    - `landed #N`: go to step 7.
    - A red gate: back to step 3, commit, push, and start the same command. A call that ran past its timeout is not a red: it is in the background, so wait for its notice.
    - Exit 3: the branch was behind before the checks, or a base that moved during them does not merge cleanly (a clean one `agent-land` merges, pushes, and lands once that head's checks are green). Merge `origin/<base>` (unity-core-playground: `scripts/git/merge-main.sh`), resolve, push, and start the same command.
-   - Exit 1 names the failed step. Fix it and re-run; a PR already merged skips straight to recording.
+   - Exit 1 names the failed step. Fix it and re-run; a PR already merged skips straight to recording. "validate failed" is a second agent's fail verdict on critical work: the item is back in the queue with its findings, so wind down without `auto` and leave the fix to its next run.
+   - Exit 5: the work is critical (its diff touches a policy.md "Judge authority" name, or it carries out a human-only ask), so `agent-land` queued a validate item whose session reviews the PR and lands it on a pass. This is "Blocked on another queue item" with nothing to queue: wind down without `auto`.
    - A sheet row the human wrote for this work: also `notes ptask <project> done "<row>" --proof pr:<N>`.
    - Work that can only run after a set time, a day of data or a night's log: land what is done and queue the rest, never `sleep`; read `references/landing.md` "Work that can only run later".
    - Work blocked on another queue item (one that fixes its red, or a PR that must land first): do not wait in this session; read `references/landing.md` "Blocked on another queue item".
