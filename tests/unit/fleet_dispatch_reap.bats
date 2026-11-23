@@ -1001,15 +1001,19 @@ OUT
 @test "reap: takeover: a PR in conflict with its base gets a lander told to merge the base in, whatever its checks read" {
   local h1=1111111111111111111111111111111111111111
   pr_item OPEN
+  stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\"dispatch_model\":\"opus\"}"'
   run cmd_reap
   # mergeable, checks not finished: still parked, no owner
   fix_ended "$h1" "NONE MERGEABLE"
   run cmd_reap
   assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
   fix_ended "$h1" "NONE CONFLICTING"
+  agent-queue set fix-crash lane_run=r-cfl >/dev/null
   run cmd_reap
   assert_success
   assert_output --partial "land queue item fix-crash (PR o/game#12 in conflict with its base at ${h1:0:12}, try 1 of 2)"
+  # A conflict is the run's own: it rates redo, with its cause (ar-4725).
+  assert_called 'model-lane outcome r-cfl redo --cause conflict'
   assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .pr_owner, .land_tries] | join("|")')" "queued|land|1 $h1 conflict"
   run item_brief "$(agent-queue show fix-crash --json)"
   assert_line --index 0 --partial 'Its PR o/game#12 is open and in conflict with its base at 111111111111'
@@ -1049,9 +1053,12 @@ takeover_item() {
 
 @test "reap: takeover: an item with no PR whose session pushed work its trunk lacks is requeued from that branch twice, then fails" {
   takeover_item
+  stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\"dispatch_model\":\"opus\"}"'
+  agent-queue set tk lane_run=r-tk >/dev/null
   run cmd_reap
   assert_success
   assert_output --partial "takeover queue item tk (branch work at ${WORK:0:12}, try 1 of 2)"
+  assert_called 'model-lane outcome r-tk redo --cause takeover'
   assert_equal "$(agent-queue show tk --json | jq -r '[.state, .salvage, .takeover_tries] | join("|")')" "queued|work@$WORK|1"
   assert_equal "$(agent-queue show tk --json | jq -r .note)" "session game-agent-1 ended with its work on branch work at ${WORK:0:12}, not on origin/main; requeued from it (takeover 1 of 2)"
   run item_brief "$(agent-queue show tk --json)"
