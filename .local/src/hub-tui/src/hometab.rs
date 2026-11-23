@@ -341,9 +341,13 @@ fn card_lines(c: &Card, p: Palette, cw: usize) -> [Line<'static>; 4] {
         };
         parts.push(Span::styled(x.value.clone(), style));
     }
-    let last = match (&c.error, c.first.first()) {
+    // The worst row of any list, else the last list's first (the verdict list, as the web's compact card): the heads are the web's, 38 columns keep the row.
+    let rows = || c.lists.iter().flat_map(|l| l.rows.iter());
+    let look = rows()
+        .find(|f| f.level != Level::Ok)
+        .or_else(|| c.lists.last().and_then(|l| l.rows.first()));
+    let last = match (&c.error, look) {
         (Some(e), _) => Line::styled(e.clone(), p.warn()),
-        // The head ("Where to look first") is the web's; 38 columns keep the row itself.
         (None, Some(f)) => Line::from(vec![
             Span::styled("> ", p.dim()),
             Span::styled(f.text.clone(), level_style(f.level, p)),
