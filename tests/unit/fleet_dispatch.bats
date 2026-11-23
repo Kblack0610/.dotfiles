@@ -231,22 +231,16 @@ bats_require_minimum_version 1.5.0
   assert_equal "$(jq -r 'select(.key == "ga-2") | .blocked | length' <<<"$output")" 0
 }
 
-@test "candidates: a backlog-tier row is off the board until the sweep lifts its token; suggest says so" {
+@test "candidates: a row with the retired backlog token is a candidate like any board row, so work never stops" {
   project game beta "$SANDBOX/repos/game"
-  row game agent ga-1 "- [ ] past the budget $T <!-- id:ga-1 tier:backlog -->"
+  row game agent ga-1 "- [ ] nice to have #low $T <!-- id:ga-1 tier:backlog -->"
   row game agent ga-2 "- [ ] on the board $T <!-- id:ga-2 -->"
-  row game agent ga-3 "- [ ] names the tier in its title tier:backlog $T <!-- id:ga-3 -->"
   run cmd_candidates
   assert_success
-  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'ga-2,ga-3'
+  assert_equal "$(jq -r .key <<<"$output" | sort | paste -sd,)" 'ga-1,ga-2'
   run cmd_suggest --json
   assert_success
-  assert_equal "$(jq -r 'select(.key == "ga-1") | .blocked | join("; ")' <<<"$output")" 'on the backlog tier: past the board budget'
-  # Negative control: the same row without the token is a candidate again.
-  : > "$NOTES_FIXTURE/rows.game.agent"
-  row game agent ga-1 "- [ ] past the budget $T <!-- id:ga-1 -->"
-  run cmd_candidates
-  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'ga-1'
+  assert_equal "$(jq -r 'select(.key == "ga-1") | .blocked | length' <<<"$output")" 0
 }
 
 # --- row gates (queue-held-to-board, ar-3121): a row waits on the board, not in the queue ----------
@@ -555,16 +549,6 @@ ptask game --agent tag --add plan ga-7'
   assert_failure
   # ga-6 already waits, so inbox-plan's unit is started
   grep -qx -- '--user start --no-block agentctl@inbox-plan.service' "$NOTES_FIXTURE/systemctl.log"
-}
-
-@test "skip_exits: a backlog-tier row takes no exit, since dispatch does not pull it" {
-  plan_fixture
-  jq -c 'if .id == "ga-1" or .id == "ga-2" then .backlog = true else . end' "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b"
-  mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"
-  skip_exits
-  assert_equal "$EXITS_TAKEN" 1
-  run grep -o 'ptask game --agent tag --add plan [a-z0-9-]*' "$NOTES_FIXTURE/calls.log"
-  assert_output 'ptask game --agent tag --add plan ga-7'
 }
 
 @test "skip_exits: a requested row gets #go beside #plan, so inbox-plan does not hold it for the person's review" {
@@ -1734,20 +1718,19 @@ EOF
 }
 
 # epic_fixture [leaf...] -- epic gm-20 on the human sheet and the named leaves under it (#of/gm-20) on
-# the agent board, each `<id>:<type>:<size>[:backlog]` (`:backlog` puts it on the sweep's backlog
-# tier), in the shape notes board --json gives them.
+# the agent board, each `<id>:<type>:<size>`, in the shape notes board --json gives them.
 epic_fixture() {
-  local l id type size tier
+  local l id type size
   project game beta "$SANDBOX/repos/game"
   export PLAN_DIRS="$SANDBOX/plans"; mkdir -p "$PLAN_DIRS"
   row game human gm-20 '- [ ] epic(ui): players see their rank #size/l <!-- id:gm-20 -->'
   : > "$NOTES_FIXTURE/board.rows"
   jq -cn '{profile: "bnb", project: "game", lane: "human", id: "gm-20", state: "open", type: "epic", size: "l", parent: null, tags: []}' >> "$NOTES_FIXTURE/board.rows"
   for l in "$@"; do
-    IFS=: read -r id type size tier <<<"$l"
-    row game agent "$id" "- [ ] $type(ui): story $id #size/$size #of/gm-20 <!-- id:$id${tier:+ tier:$tier} -->"
-    jq -cn --arg i "$id" --arg t "$type" --arg s "$size" --arg b "$tier" \
-      '{profile: "bnb", project: "game", lane: "agent", id: $i, state: "open", type: $t, size: $s, parent: "gm-20", requested: false, backlog: ($b == "backlog"), tags: ["of/gm-20"]}' >> "$NOTES_FIXTURE/board.rows"
+    IFS=: read -r id type size <<<"$l"
+    row game agent "$id" "- [ ] $type(ui): story $id #size/$size #of/gm-20 <!-- id:$id -->"
+    jq -cn --arg i "$id" --arg t "$type" --arg s "$size" \
+      '{profile: "bnb", project: "game", lane: "agent", id: $i, state: "open", type: $t, size: $s, parent: "gm-20", requested: false, tags: ["of/gm-20"]}' >> "$NOTES_FIXTURE/board.rows"
   done
 }
 epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human", key: "gm-20"}')" "" "epic(ui): players see their rank" "$@"; }
@@ -1755,7 +1738,7 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
 # lifecycle.md "Taking an epic on" (take_epic). NEGATIVE CONTROL: before ar-2977 the human's Start
 # queued the epic row as one item, gm-20, whose one session held the whole epic.
 @test "promote: an epic on the board path is never one item; the human's Start tags its s and m stories #requested" {
-  epic_fixture gm-21:feat:s gm-22:fix:m gm-23:feat:l gm-25:design:s gm-26:feat:s:backlog
+  epic_fixture gm-21:feat:s gm-22:fix:m gm-23:feat:l gm-25:design:s
   epic_take repeat > "$SANDBOX/out" || fail "promote failed: $(cat "$SANDBOX/out")"
   grep -qF 'took game epic gm-20: its stories dispatch leaf by leaf from the board, 2 tagged #requested; gm-23 need a plan' "$SANDBOX/out" ||
     fail "no took line: $(cat "$SANDBOX/out")"
@@ -1765,7 +1748,6 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   assert_equal "$(grep -c '#requested' "$NOTES_FIXTURE/rows.game.agent")" 2
   grep -F 'gm-23' "$NOTES_FIXTURE/rows.game.agent" | grep -qvF '#requested' || fail "the l story was tagged #requested"
   grep -F 'gm-25' "$NOTES_FIXTURE/rows.game.agent" | grep -qvF '#requested' || fail "a story whose kind does not dispatch was tagged #requested"
-  grep -F 'gm-26' "$NOTES_FIXTURE/rows.game.agent" | grep -qvF '#requested' || fail "a story on the backlog tier was tagged #requested"
   # a take that is not the human's Start (a pull after its gate cleared) tags nothing
   epic_fixture gm-31:feat:s
   epic_take > "$SANDBOX/out" || fail "promote failed: $(cat "$SANDBOX/out")"

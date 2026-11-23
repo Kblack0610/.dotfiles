@@ -12,7 +12,7 @@
 # research item is still queued, running or waiting, or a picked row is still on the board, nothing
 # new is queued, so at most one is ever in flight. The roster grows by rows: a project-map project
 # that no facet covers and the roster does not exclude gets one "add a facet" row on the agent-runtime
-# board, for the human to accept or exclude. A full board does not hold it: the board-open watch alerts.
+# board, for the human to accept or exclude. A full board does not hold it.
 #
 # picks.jsonl under RESEARCH_DIR is the record of what was picked, when, and the board row it went
 # to; this is its only writer.
