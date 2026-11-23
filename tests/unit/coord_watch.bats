@@ -187,8 +187,12 @@ exec 3<>"$HOLD"
 while read -r -u 3 l; do printf '%s\n' "$l"; done
 STUB
   chmod +x "$stubs/tail"
+  # A cursor before the events: with none, the watch starts at now and drops these fixed-ts events
+  # as already read once the clock passes them (it hung CI on 2026-11-23).
+  mkdir -p "$SANDBOX/cw"; echo '2026-11-23T09:00:00.0-08:00' > "$SANDBOX/cw/plan.ts"
+  # timeout: a regression fails this test, not the whole shard at the job limit.
   PATH="$stubs:$PATH" COORD_WATCH_STATE="$SANDBOX/cw" COORD_WATCH_BATCH_S=1 TAILPID="$SANDBOX/tailpid" HOLD="$SANDBOX/hold" \
-    "$CW" --until "$PLAN" > "$SANDBOX/out" 2>&1 &
+    timeout 20 "$CW" --until "$PLAN" > "$SANDBOX/out" 2>&1 &
   local pid=$!
   exec 4<>"$SANDBOX/hold"
   printf '%s\n' '{"ts":"2026-11-23T10:01:00.0-08:00","action":"land-failed","id":"ar-10"}' \
