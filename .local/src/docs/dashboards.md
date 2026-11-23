@@ -51,6 +51,10 @@ To set Tilecast up on a phone: open agent-web on the phone, sign in with Forgejo
 
 The tabs, their groups and order, the retired names that still resolve (`RETIRED`, `PROJECT_RETIRED`) and the card aliases (`hub_core::cards::ALIASES`) are in `hub-core/src/layout.rs`, which owns them. The TUI's `the_tabs_are_the_layout_and_each_digit_its_place`, agent-web's `tab_names_are_the_layout` and each surface's `log_folds_are_the_layout` fail when a surface drifts from it. What a tab shows is its hub-core reader; why one moved is in `git log`. TUI digits follow the bar, which is the order less Daily: 1 for the first, 0 for the tenth; a tab past the tenth has no digit.
 
+### Projects
+
+- Sprints are two inner tabs, never Board's: Projects > Sprints (every project's open and queued windows, then each project's last score) and an opened project's Sprint tab (its open window with its tasks, the ones queued behind it, then its scored past, newest first, one row per `sprints/vX.Y.Z.md`). Both surfaces draw `hub_core::tasks::SprintRow` (the windows, read from the board feed) and `hub_core::project_sprints` (the past, from `notes projects --sprints`, carried on the page as `sprint_past`). agent-web gets the windows from `/api/sprints`; Board shows rows only. Why: a window is a question of its own (what ships by when), and a project's history belongs on its page, not under a table of rows.
+
 ### Log
 
 - Merges by hour are per project, on both surfaces: one row (TUI) or one stacked colour (web) per project, the busiest first, with the hourly total last. Both draw `hub_core::boards::merges_by_hour` over the server's local hours; the web gets it in `/api/log` (`hours`, `projects`).

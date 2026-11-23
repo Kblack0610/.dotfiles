@@ -812,6 +812,23 @@ private_or_skip() {
   assert_equal "$(jq -r .key <<<"$output")" k
 }
 
+@test "picks: a row that names a game holds that game, not the system word of its prefix" {
+  project game beta "$SANDBOX/repos/game"
+  mkdir -p "$SANDBOX/repos/game/Assets/Games/ShapeCity" "$SANDBOX/repos/game/Assets/Games/DodginBalls" "$SANDBOX/repos/game/Assets/Games/Vehicles3D"
+  ct() { jq -cn --arg k "$1" --arg t "$2" --arg r "$SANDBOX/repos/game" '{profile: "bnb", project: "game", repo: $r, stage: "beta", lane: "agent", key: $k, frank: 1, tier: 2, line: "", text: $t}'; }
+  local k
+  for k in dodge shape cars plain; do verdict game agent "$k" dispatch S 1 gameplay; done
+  # An item in ShapeCity holds ShapeCity alone; two other games start side by side, stamped with their game.
+  started_item other-work lab:game-agent-3 run shapecity
+  run picks "$(ct dodge '- [ ] fix(gameplay): DodginBalls bots miss'; ct shape '- [ ] fix(gameplay): ShapeCity bots throw'; ct cars '- [ ] fix(gameplay): vehicles3d wheels <!-- id:x -->')" 3
+  assert_equal "$(jq -r .key <<<"$output" | sort | paste -sd' ')" 'cars dodge'
+  assert_equal "$(jq -r .area <<<"$output" | sort | paste -sd' ')" 'dodginballs vehicles3d'
+  # A row that names no game keeps the verdict's area, and an item on that area holds it.
+  started_item gp-work lab:game-agent-4 run gameplay
+  run picks "$(ct plain '- [ ] fix(gameplay): shared ball physics'; ct dodge '- [ ] fix(gameplay): DodginBalls bots miss')" 2
+  assert_equal "$(jq -r .key <<<"$output")" dodge
+}
+
 @test "picks: the same area name in another project is not busy" {
   verdict other agent k dispatch S 1 wilds
   started_item other-work lab:game-agent-3 run wilds
