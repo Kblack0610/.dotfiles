@@ -409,7 +409,8 @@ enum Cmd {
         roadmap: Option<String>,
         /// Print a project's past sprints, oldest cut first (TSV: `version<TAB>opened<TAB>cut<TAB>
         /// committed<TAB>delivered<TAB>carried<TAB>dropped<TAB>interrupted<TAB>timing`), one per
-        /// scored `sprints/vX.Y.Z.md`; --json adds each score line
+        /// scored `sprints/vX.Y.Z.md`; --json adds each score line. With --version vX.Y.Z (and
+        /// --json): that one sprint's page instead, its head and every row with its outcome
         #[arg(long, value_name = "NAME")]
         sprints: Option<String>,
         /// Every profile's indexed projects with their open work, for the projects popup
@@ -472,7 +473,8 @@ enum Cmd {
         /// `agent/versions/<vX.Y.Z>.md`
         #[arg(long, value_name = "NAME")]
         agent_note: Option<String>,
-        /// With --agent-note: which version (defaults to the open one)
+        /// With --agent-note: which version (defaults to the open one). With --sprints --json: print only
+        /// this sprint's page; without it, list every scored window
         #[arg(long, value_name = "VERSION")]
         version: Option<String>,
     },
@@ -2048,7 +2050,7 @@ fn main() -> Result<()> {
             if json && !stats && roadmap.is_none() && sprints.is_none() {
                 anyhow::bail!("--json goes with --stats, --roadmap or --sprints");
             }
-            if projects::print_view(&prof, stats, sprints.as_deref(), json)? {
+            if projects::print_view(&prof, stats, sprints.as_deref(), version.as_deref(), json)? {
                 std::process::exit(0);
             }
             // lifecycle/version flags take precedence over the read paths
