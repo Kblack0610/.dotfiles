@@ -799,11 +799,11 @@ mix_classes() { jq --argjson on "$1" '.on = $on | del(.classes[].min_live)' "$RE
   ask a1 cancelled
   run "$AQ" next --json
   assert_failure
-  # A machine answer is not the human's decision.
+  # Any answer releases it, the judge's and an agent's too (agent-ask decides who may answer).
   ask a1 answered 'a' judge
   run "$AQ" next --json
-  assert_failure
-  ask a1 answered 'A, go live' human
+  [ "$(jq -r .slug <<<"$output")" = money ]
+  ask a1 answered 'A, go live' agent
   run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = money ]
   ask a2 pending
@@ -902,13 +902,13 @@ mix_classes() { jq --argjson on "$1" '.on = $on | del(.classes[].min_live)' "$RE
   legacy four "tags: ask:o3=anything" --project game "x"
 }
 
-@test "add and set tags= refuse an ask that can never release the item: cancelled, the judge's answer, another option" {
+@test "add and set tags= refuse an ask that can never release the item: cancelled, another option" {
   export AGENT_ASK_ROOT="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_ROOT/game"
   ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_ROOT/game/$1.md"; }
   ask dead cancelled
   ask judged answered a judge
   ask other answered 'b, stay' human
-  for t in ask:dead ask:judged=a ask:other=a; do
+  for t in ask:dead ask:other=a; do
     run "$AQ" add --project game --slug nope --tags "$t" "x"
     assert_failure; assert_output --partial 'can never release it'
   done
@@ -917,6 +917,8 @@ mix_classes() { jq --argjson on "$1" '.on = $on | del(.classes[].min_live)' "$RE
   legacy p3 "tags: tier3 ask:live=a" --project game "go live"
   ask yes answered 'a' human
   legacy p4 "tags: ask:yes=a" --project game "the next"
+  # The judge's answer naming that option releases it too, so it is accepted.
+  legacy p5 "tags: ask:judged=a" --project game "the judged next"
   # Re-pointing an item off a dead ask goes through set, which checks the same way.
   run "$AQ" set p3 tags="tier3 ask:dead"
   assert_failure; assert_output --partial 'can never release it (cancelled)'
@@ -1046,8 +1048,8 @@ gate_rbw() {
   [[ "$(st at/2599)" == dead"|"*"a time tag is at:HH:MM"* ]]
   [ "$(st at/2026-01-02/0900)" = "clear||at:2026-01-02T09:00" ]
   [[ "$(st ask/a1/a)" == "pending|ask a1=a (pending)|ask:a1=a" ]]
-  # A judge's answer is not the human's: it never releases the gate.
-  [[ "$(st ask/a2/a)" == dead"|"*"answered by judge"* ]]
+  # A judge's answer releases the gate like the human's.
+  [ "$(st ask/a2/a)" = "clear||ask:a2=a" ]
   # No option named on an ask that offers some: every option releases it.
   [ "$(st ask/a3)" = "clear||ask:a3=a+b" ]
   [[ "$(st ask/a3/a)" == dead"|"*"answered b"* ]]

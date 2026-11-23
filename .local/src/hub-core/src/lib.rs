@@ -55,6 +55,7 @@ pub mod pipelines;
 pub mod plans;
 pub mod pool_page;
 pub mod project_releases;
+pub mod project_sprints;
 pub mod projects;
 pub mod prom;
 pub mod proposals;
