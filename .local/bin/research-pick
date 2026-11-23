@@ -138,7 +138,7 @@ add() {
 roster_open() {
   local rows
   rows=$(notes ptask agent-runtime --agent list 2>/dev/null) || return 2
-  awk -F'\t' '$4 ~ /research\([^)]*\):.*research-facets\.json/ { hit = 1 } END { exit !hit }' <<<"$rows"
+  awk -F'\t' '$4 ~ /research\([^)]*\): add a .*facet.*research-facets\.json/ { hit = 1 } END { exit !hit }' <<<"$rows"
 }
 
 # uncovered: project-map projects on disk that no facet's repo lies in or under and the roster

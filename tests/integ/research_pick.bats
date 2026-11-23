@@ -154,6 +154,16 @@ repo() {
   assert_not_called 'ptask agent-runtime --agent add'
 }
 
+@test "an open row that only mentions the roster file is not a roster row (ar-4422)" {
+  stub notes 'case "$4" in
+    list) printf "p\t1\tr\t- [ ] research(notes): document the research-facets.json schema #research\n" ;;
+    add) printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log" ;;
+  esac; exit 0'
+  run "$PICK" run
+  assert_success
+  assert_output --partial 'coverage: filed a roster row for other'
+}
+
 @test "an open roster row on a long board is seen with SIGPIPE ignored, as under systemd" {
   # The row comes first and 5000 more follow (about 130 KB, past the 64 KB pipe buffer), so a
   # reader that stops at the first hit leaves the writer an EPIPE; before, pipefail read that
