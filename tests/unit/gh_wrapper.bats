@@ -411,7 +411,7 @@ calls() { grep -vc '^[^|]*|api rate_limit' "$BATS_TEST_TMPDIR/real.log" || true;
   assert_equal "$(calls)" 4
 }
 
-@test "retry: a write, a 4xx, a --watch and a read of a terminal's stdout are never run again" {
+@test "retry: a write, a 4xx and a --watch are never run again" {
   FAIL5=99 run "$WRAP" pr merge 5 -R other/x --squash
   assert_equal "$(calls)" 1
   FAIL5=99 run "$WRAP" api -X POST repos/other/x/issues
@@ -420,6 +420,25 @@ calls() { grep -vc '^[^|]*|api rate_limit' "$BATS_TEST_TMPDIR/real.log" || true;
   assert_equal "$(calls)" 3
   FAIL5=99 run "$WRAP" pr checks 5 -R other/x --watch
   assert_equal "$(calls)" 4
+}
+
+@test "retry: a read on a terminal, a download and a --log read are never run again" {
+  FAIL5=99 run script -qec "$WRAP api repos/other/x/pulls" /dev/null
+  assert_equal "$(calls)" 1
+  FAIL5=99 run script -qec "$WRAP api repos/acme/x/pulls" /dev/null # routed: gh's stdout is a file there
+  assert_equal "$(calls)" 2
+  FAIL5=99 run "$WRAP" run download 9 -R other/x
+  assert_equal "$(calls)" 3
+  FAIL5=99 run "$WRAP" run view 9 -R other/x --log
+  assert_equal "$(calls)" 4
+}
+
+@test "retry: a recovered read prints nothing extra on stderr, a failed one says it gave up" {
+  FAIL5=1 REAL_OUT=ok run --separate-stderr "$WRAP" api repos/other/x/pulls
+  assert_equal "$stderr" ""
+  : > "$BATS_TEST_TMPDIR/real.log"
+  FAIL5=99 GH_RETRY_TRIES=2 run --separate-stderr "$WRAP" api repos/other/x/pulls
+  [[ "$stderr" == *"still failing after 2 runs"* ]]
 }
 
 @test "retry: a routed read is rerun on the same App token and stays logged as app" {
