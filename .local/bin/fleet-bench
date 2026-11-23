@@ -4351,7 +4351,7 @@ triage_alert_rows() {
 # FAILED, a failed unit and a high or urgent watch are #high. Sentinel stays observe-only: this
 # reads its state files.
 triage_rows() {
-  local c name sd v detail u res load f n since sev what why t qu
+  local c name sd v detail u res load f n since sev what why t
   t=$(now)
   proof_lib && sd=$(proof_state_dir)
   for c in "$LEDGER_CONF_DIR"/*.conf; do
@@ -4378,8 +4378,7 @@ triage_rows() {
     since=$(watch_tripped_since "$n" "$t") || continue
     # A quarantine (`watch-companion-loop quarantine`, a line `UNTIL OWNER AT WHY`) names the red's
     # owner and expiry, so it files no row until UNTIL; then it is filed like any other red.
-    qu=; [ -r "$TRIAGE_WATCH_STATE/$n.quarantine" ] && read -r qu _ < "$TRIAGE_WATCH_STATE/$n.quarantine"
-    [[ "$qu" =~ ^[0-9]+$ ]] && [ "$qu" -gt "$t" ] && continue
+    watch_quarantined "$TRIAGE_WATCH_STATE" "$n" "$t" && continue
     sev=$(watch_sev "$n")
     # The aggregate Alertmanager watch files one row a firing alert instead of its own.
     if [ "$n" = "$TRIAGE_ALERT_WATCH" ] && triage_alert_rows "$since" "$sev"; then continue; fi
@@ -5318,16 +5317,18 @@ health_rows() {
     s=new; [ -r "$TRIAGE_WATCH_STATE/$w.state" ] && read -r s <"$TRIAGE_WATCH_STATE/$w.state"
     lastrun=""; [ -r "$TRIAGE_WATCH_STATE/$w.lastrun" ] && read -r lastrun <"$TRIAGE_WATCH_STATE/$w.lastrun"
     case "$s" in OK|TRIP|ERROR) watch_is_stale "$TRIAGE_WATCHES/$w.yaml" "$lastrun" "${BENCH_NOW:-}" && s=STALE ;; esac
+    # A quarantined red (sentinel-watch.sh) is a warning: TRIP/Q, which ranks above OK and turns no part red.
+    [ "$s" != TRIP ] || ! watch_quarantined "$TRIAGE_WATCH_STATE" "$w" "${BENCH_NOW:-}" || s=TRIP/Q
     printf '%s\t%s\t%s\n' "$w" "$p" "${s:-new}"
   done <<<"$tags")
   awk -F'\t' -v OFS='\t' '
     NR == FNR { if ($0 != "") order[++n] = $0; known[$0] = 1; next }
     { if (!($2 in known)) { stale[++ns] = $1 OFS $2; next }
       list[$2] = list[$2] (list[$2] == "" ? "" : ", ") $1 "=" $3
-      r = ($3 == "ERROR" || $3 == "STALE") ? 3 : ($3 == "TRIP") ? 2 : ($3 == "OK") ? 1 : 0
+      r = ($3 == "ERROR" || $3 == "STALE") ? 4 : ($3 == "TRIP") ? 3 : ($3 == "TRIP/Q") ? 2 : ($3 == "OK") ? 1 : 0
       if (r > worst[$2]) worst[$2] = r }
     END {
-      split("UNCOVERED OK TRIP ERROR", name, " ")
+      split("UNCOVERED OK TRIP/Q TRIP ERROR", name, " ")
       for (i = 1; i <= n; i++) print order[i], name[worst[order[i]] + 1], (order[i] in list ? list[order[i]] : "-")
       for (i = 1; i <= ns; i++) print "!", stale[i]
     }' <(printf '%s\n' "$parts") <(printf '%s' "$tags")
@@ -5352,11 +5353,13 @@ cmd_health() {
   fi
   verdict=$(awk -F'\t' '
     $1 == "!" { stale++; next }
-    { n++; c[$2]++; if ($2 == "TRIP" || $2 == "ERROR") bad = bad (bad == "" ? "" : ", ") $1 }
+    { n++; c[$2]++; if ($2 == "TRIP" || $2 == "ERROR") bad = bad (bad == "" ? "" : ", ") $1
+      if ($2 == "TRIP/Q") q = q (q == "" ? "" : ", ") $1 }
     END {
       v = (c["TRIP"] + c["ERROR"] > 0) ? "RED" : (c["UNCOVERED"] + stale > 0) ? "GAPS" : "GREEN"
       printf "fleet health %s: %d parts, %d OK, %d TRIP, %d ERROR, %d UNCOVERED", v, n, c["OK"], c["TRIP"], c["ERROR"], c["UNCOVERED"]
       if (bad != "") printf " (down: %s)", bad
+      if (q != "") printf " (quarantined: %s)", q
       if (stale > 0) printf ", %d stale flows names", stale
       printf "\n" }' <<<"$rows")
   if [ "$json" = 1 ]; then

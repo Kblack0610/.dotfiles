@@ -102,6 +102,29 @@ watch() {
   assert_line --partial 'fleet health RED: 4 parts, 1 OK, 2 TRIP, 0 ERROR, 1 UNCOVERED (down: Asks, Dispatch)'
 }
 
+@test "health: a quarantined red reads TRIP/Q, a warning that turns no part red, and a live TRIP still wins" {
+  printf TRIP > "$TRIAGE_WATCH_STATE/queue-watch.state"
+  printf '%s ar-1 %s waits on a fix\n' "$(( $(date +%s) + 3600 ))" "$(date +%s)" > "$TRIAGE_WATCH_STATE/queue-watch.quarantine"
+  run "$SUBJECT" health
+  assert_line --regexp '^Dispatch +TRIP/Q +queue-watch=TRIP/Q$'
+  assert_line --partial 'fleet health GAPS: 4 parts, 1 OK, 0 TRIP, 0 ERROR, 1 UNCOVERED (quarantined: Asks, Dispatch)'
+  watch live-red TRIP '[Dispatch]'
+  run "$SUBJECT" health
+  assert_failure
+  assert_line --regexp '^Dispatch +TRIP '
+  assert_line --partial '(down: Dispatch) (quarantined: Asks)'
+}
+
+@test "health negative control: a quarantine past its UNTIL reads red again" {
+  printf TRIP > "$TRIAGE_WATCH_STATE/queue-watch.state"
+  printf '%s ar-1 %s waits on a fix\n' "$(( $(date +%s) - 60 ))" "$(( $(date +%s) - 7200 ))" > "$TRIAGE_WATCH_STATE/queue-watch.quarantine"
+  run "$SUBJECT" health
+  assert_failure
+  assert_line --regexp '^Dispatch +TRIP +queue-watch=TRIP$'
+  assert_line --partial 'fleet health RED: 4 parts, 1 OK, 2 TRIP'
+  refute_output --partial 'quarantined:'
+}
+
 @test "health: a part takes its worst live watch, ERROR over TRIP over OK" {
   watch second OK '[Runners]'
   watch third TRIP '[Runners]'
