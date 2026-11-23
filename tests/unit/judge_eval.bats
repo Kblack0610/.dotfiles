@@ -669,3 +669,78 @@ cell() {
   run "$JUDGE_EVAL" inbox-priority --json
   assert_equal "$(jq -r '.agents[0].calls.n' <<<"$output")" 1
 }
+
+# prompts: what each lane is told and held to, from its conf (ar-4775)
+prompts_fixture() {
+  export AGENTCTL_CONF_DIR="$HOME/pconf"
+  mkdir -p "$AGENTCTL_CONF_DIR" "$HOME/tpl/rules" "$HOME/gates"
+  echo 'judge policy body' > "$HOME/tpl/policy.md"
+  printf 'route head\n{{> rules/one.md}}\n' > "$HOME/tpl/route.md"; echo 'rule one body' > "$HOME/tpl/rules/one.md"
+  echo 'ask body' > "$HOME/tpl/ask.md"; echo '{"type":"object","title":"verdict-schema"}' > "$HOME/tpl/verdict.schema.json"
+  echo '{"kind":"fix"}' > "$HOME/gates/kinds.json"; echo '{"pool":1}' > "$HOME/gates/classes.json"
+  export JUDGE_EVAL_GATE_FILES_PRO_CALLER="$HOME/gates/kinds.json:$HOME/gates/classes.json"
+  printf '# the judge - decides things.\n#\n# Called by pro-caller.\n\nSCORE=ask-answers\nMODEL=m-judge\nPROMPT="%s"\nSCHEMA="%s"\nCALLER=pro-caller\nDELAY_RULES=fast@repo=0\nAUDIT_RATES="self=10"\n' \
+    "$HOME/tpl/policy.md" "$HOME/tpl/verdict.schema.json" > "$AGENTCTL_CONF_DIR/the-judge.conf"
+  printf '# the runner - two passes.\nSCORE=triage-untouched\nMODEL=m-run\nPROMPT="%s:%s"\n' "$HOME/tpl/route.md" "$HOME/tpl/ask.md" > "$AGENTCTL_CONF_DIR/the-runner.conf"
+  printf 'NAME=pro-caller\nCOMMAND=x\nBUDGET_DAY_USD=5\nPRO_GATE_MAX=7\n' > "$AGENTCTL_CONF_DIR/pro-caller.conf"
+  echo 'EFFECT=acts' > "$AGENTCTL_CONF_DIR/shepherd.conf"
+}
+
+@test "prompts --all: every lane with a SCORE or a PROMPT, each prompt in full with its gates" {
+  prompts_fixture
+  run "$JUDGE_EVAL" prompts --all
+  assert_success
+  assert_line '=== the-judge ==='
+  assert_line '=== the-runner ==='
+  refute_output --partial '=== shepherd ==='
+  assert_line 'the judge - decides things.'
+  assert_line 'model: m-judge'
+  assert_line 'scored by: ask-answers'
+  assert_line 'judge policy body'
+  assert_output --partial "(sha $(git hash-object "$HOME/tpl/policy.md"))"
+  assert_line --partial 'verdict-schema'
+  assert_line 'DELAY_RULES=fast@repo=0'
+  assert_line 'AUDIT_RATES="self=10"'
+  assert_line --regexp '^JUDGE_HARD_STOPS="[^"]*external'
+  # the second lane's two prompt files, the first with its include in place
+  assert_line 'route head'
+  assert_line 'rule one body'
+  assert_line 'ask body'
+  refute_output --partial '{{>'
+  # the caller's settings are gates, its run mechanics are not
+  assert_line 'PRO_GATE_MAX=7'
+  refute_output --partial 'BUDGET_DAY_USD=5'
+  assert_line '{"kind":"fix"}'
+  assert_line '{"pool":1}'
+}
+
+@test "prompts <lane>: one lane, and an unknown one is refused with the lanes" {
+  prompts_fixture
+  run "$JUDGE_EVAL" prompts the-runner
+  assert_success
+  assert_line '=== the-runner ==='
+  refute_output --partial '=== the-judge ==='
+  run "$JUDGE_EVAL" prompts nope
+  assert_failure 2
+  assert_output --partial 'lanes: the-judge the-runner'
+}
+
+@test "prompts: a missing PROMPT file is an error and the other lanes still print (negative control)" {
+  prompts_fixture
+  rm "$HOME/tpl/ask.md"
+  run --separate-stderr "$JUDGE_EVAL" prompts --all
+  assert_failure 1
+  assert_line '=== the-judge ==='
+  assert_line '=== the-runner ==='
+  assert_line 'route head'
+  [[ "$stderr" == *"the-runner: PROMPT=$HOME/tpl/ask.md is not a readable file"* ]]
+}
+
+@test "prompts: a lane with no PROMPT is an error, not a skipped lane" {
+  prompts_fixture
+  echo 'SCORE=plan-dispatched' > "$AGENTCTL_CONF_DIR/bare.conf"
+  run --separate-stderr "$JUDGE_EVAL" prompts --all
+  assert_failure 1
+  assert_line '=== bare ==='
+  [[ "$stderr" == *"bare: its conf names no PROMPT"* ]]
+}
