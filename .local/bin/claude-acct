@@ -2345,7 +2345,7 @@ park_flow() {
         echo "  then: write $PARKED/$key; claude-acct unpark $key resumes it with $base, on the account with room then"
     fi
     ((dry)) && return 0
-    leave_mode "$server" "$pane" || { refuse "pane $pane is in a tmux mode that did not close; typed nothing"; return; }
+    leave_mode "$server" "$pane" || { refuse "pane $pane is in a tmux mode that did not close, or its mode cannot be read; typed nothing"; return; }
 
     # Written beside the ledger and renamed into place once the claude is gone, so a reader
     # never sees half of one, and a claude that would not exit leaves none.
@@ -2437,7 +2437,7 @@ unpark_ledger() {
         tmux -L "$server" set-option -p -u -t "$pane" remain-on-exit
     else
         leave_mode "$server" "$pane" ||
-            { refuse "pane $pane is in a tmux mode that did not close; typed nothing ($file is kept)"; return; }
+            { refuse "pane $pane is in a tmux mode that did not close, or its mode cannot be read; typed nothing ($file is kept)"; return; }
         tmux -L "$server" send-keys -t "$pane" -l "$cmd"
         tmux -L "$server" send-keys -t "$pane" Enter
     fi
