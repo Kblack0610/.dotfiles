@@ -151,13 +151,14 @@ takes_flock() {
 # where it is checked out, the private repo's bin. A symlink into a checked-out submodule (.local/bin/muxpoon) is skipped: the submodule's
 # code is another repo's, and CI has no checkout of it, so the test must read the same on both.
 owned_files() {
-  local f sm s t
-  mapfile -t sm < <(git -C "$REPO_ROOT" config -f .gitmodules --get-regexp '\.path$' | awk '{print $2}')
+  local f sm s t real
+  real=$(realpath -m "$REPO_ROOT")
+  mapfile -t sm < <(git -C "$REPO_ROOT" config -f .gitmodules --get-regexp '\.path$' 2>/dev/null | awk '{print $2}')
   git -C "$REPO_ROOT" ls-files -- "$REPO_ROOT/.local/bin/" "$REPO_ROOT/.local/lib/" "$REPO_ROOT/.local/src/" "$REPO_ROOT/.config/shared-hooks/" "$REPO_ROOT/.claude/" |
     grep -vE '\.(md|svg|bats)$' | while IFS= read -r f; do
       if [ -L "$REPO_ROOT/$f" ]; then
         t=$(realpath -m "$REPO_ROOT/$f")
-        for s in "${sm[@]}"; do [[ $t == "$REPO_ROOT/$s"/* ]] && continue 2; done
+        for s in "${sm[@]}"; do [[ $t == "$real/$s" || $t == "$real/$s"/* ]] && continue 2; done
       fi
       printf '%s/%s\n' "$REPO_ROOT" "$f"
     done
