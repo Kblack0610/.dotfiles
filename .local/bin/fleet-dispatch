@@ -5474,7 +5474,7 @@ load_findings() {
 # project while the other 40 waited on account pace, which the message never named.
 pick_item() {
   local items="$1" it why need free host mwhy='' mread=0 fhit=0 uwait=0 held=() waits="every queue item waits" reserved='' kept=''
-  local shold=0 sfirst='' shost='' swhy='' mhit=0 ppass='' uheld=''
+  local shold=0 sfirst='' shost='' swhy='' mhit=0 ppass='' uheld='' uneed=0
   share_state   # in this shell, so every share_why reads one count
   if [ "${RED_PASS:-0}" = 1 ]; then waits="every red item waits; the rest wait on ${FLOOR_GATE:-the gate}"
   elif [ "${TRAINEE_PASS:-0}${BATCH_PASS:-0}" != 00 ]; then waits="the trainee floor's item waits"; fi
@@ -5519,7 +5519,7 @@ pick_item() {
     # while heavy Unity items waited for two: 86 of 124 fleet Claude starts in 24h to 2026-11-23 went
     # out on the let-go, all 77 local ones with other projects' heavy items queued (ar-4499).
     if [ "${SHARE_LET_GO:-0}" = 1 ] && [ -z "$uheld" ] && [ "$uwait" = 1 ] && [ "$need" -le "$TARGET" ] && [ -z "$(finding_hold "$it")" ] && [ -z "$(share_why "$it")" ]; then
-      uheld=$(jq -r .slug <<<"$it")
+      uheld=$(jq -r .slug <<<"$it") uneed=$need
     fi
     if [ -z "$why" ]; then
       PICKED=$it PLACE_HOST=$host
@@ -5539,9 +5539,10 @@ pick_item() {
       PICKED=$sfirst PLACE_HOST=$shost PICK_NOTE="; the fleet share cap let it go, as nothing else could start ($swhy)"
       return 0
     fi
-    # A wait for units, so the pass is a full fleet (NOOP), as when units alone hold every item.
-    if [ -n "$uheld" ]; then
-      PICK_FULL=1 PICK_WHY="run units: the $free free run units wait for $uheld, so the fleet share cap does not let $(jq -r .slug <<<"$sfirst") go; $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
+    # A wait for units is a full fleet (NOOP), as when units alone hold every item; with a finding or
+    # load holding another item the ladder below names that instead (ar-4450).
+    if [ -n "$uheld" ] && [ "$fhit$mhit" = 00 ]; then
+      PICK_FULL=1 PICK_WHY="run units: $uheld needs $uneed, $free free, so the fleet share cap does not let $(jq -r .slug <<<"$sfirst") go to them; $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
       return 1
     fi
   fi

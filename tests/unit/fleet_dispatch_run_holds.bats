@@ -778,8 +778,17 @@ share_history() {
   TARGET=4 DRY=0 UNITS_FREE=1 SHARE_LET_GO=1
   # The heavy app item needs 2 units and 1 is free: the light game item, held by the share, waits too.
   pick_item "$heavy"$'\n'"$fleet" && fail "the let-go took the units build-app waits on: $(jq -r .slug <<<"$PICKED")"
-  [[ "$PICK_WHY" == "run units: the 1 free run units wait for build-app, so the fleet share cap does not let fix-game go; "* ]] || fail "the wait read: $PICK_WHY"
+  [[ "$PICK_WHY" == "run units: build-app needs 2, 1 free, so the fleet share cap does not let fix-game go to them; "* ]] || fail "the wait read: $PICK_WHY"
   assert_equal "$PICK_FULL" 1
+  # A finding holding another item names the pass, never a full fleet's NOOP.
+  held_by() { [ "$(jq -r .slug <<<"$1")" != hold-app ] || echo "finding ci-red"; }
+  pick_item "$heavy"$'\n'"$fleet"$'\n''{"slug":"hold-app","project":"app"}' && fail "an item was picked past the finding"
+  [[ "$PICK_WHY" == "finding firing: "* ]] || fail "a pass a finding held read: $PICK_WHY"
+  assert_equal "$PICK_FULL" 0
+  held_by() { :; }
+  # Off the let-go pass the share's hold names it, as before.
+  SHARE_LET_GO=0 pick_item "$heavy"$'\n'"$fleet" && fail "an item was picked off the let-go pass"
+  [[ "$PICK_WHY" == "fleet share full: "* ]] || fail "a pass off the let-go read: $PICK_WHY"
   # A fleet worker's place the let-go still takes: it spends none of this machine's units.
   place_host() { [ "$(jq -r .project <<<"$1")" = game ] && [ "${2:-}" = first ] && echo razer-laptop; }
   pick_item "$heavy"$'\n'"$fleet" || fail "the let-go held a fleet worker's start: $PICK_WHY"
