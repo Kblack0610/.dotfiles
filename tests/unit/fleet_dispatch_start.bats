@@ -1858,7 +1858,9 @@ stacked_pair() {
   echo 0123456789abcdef0123456789abcdef01234567 > "$NOTES_FIXTURE/pr7.head"
   agent-queue add --project game --slug base --running "first phase"
   agent-queue set base open_pr=Org/game#7
-  legacy second "after: base" --project game "second phase"
+  # Only a plan phase stacks (ar-4537): second's brief names its plan.
+  printf '# P\n' > "$SANDBOX/p.md"
+  legacy second "after: base" --project game "Phase 2 of the plan $SANDBOX/p.md: second phase"
 }
 
 @test "start --item of a phase stacked on an open PR cuts its worktree from that PR's head; no stack, no --base (ar-3852)" {
