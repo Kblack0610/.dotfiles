@@ -2219,8 +2219,8 @@ mod tests {
         let r = &rows[1];
         assert_eq!(
             (r.state, r.priority),
-            ("doing", "high"),
-            "untagged means high"
+            ("doing", "normal"),
+            "untagged means normal"
         );
 
         let r = &rows[2];

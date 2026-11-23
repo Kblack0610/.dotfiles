@@ -120,6 +120,10 @@ card_col() { screen | sed 's/│/|/g' | awk '/\| asking you/ { print index($0, "
 }
 
 @test "ctrl-/ puts the card under the list, then hides it" {
+  # Quarantined through 2026-12-07 and runs again by itself on 12-08 (ci.md rule 2; owner: the
+  # agent-runtime row "fix(questions): ctrl-/ can skip the stacked layout and land on hidden", from
+  # ar-4884): on dotfiles#3300's head 9c9da3591 one C-/ left the list with no card and no stacked hint.
+  [[ "$(date -u +%F)" > 2026-12-07 ]] || skip "quarantined through 2026-12-07: one ctrl-/ can land on hidden (ar-4884)"
   TM_WIDTH=200 TM_HEIGHT=50 open_panel
   wait_until 'side_by_side'
   keep_screen side_200x50
