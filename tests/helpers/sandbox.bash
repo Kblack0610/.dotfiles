@@ -294,7 +294,7 @@ sandbox_fixture() {
 # sandbox_deployed -> the deployed lib links and the agentctl and watch state roots
 sandbox_deployed() {
   # fleet.sh's four data roots. They already default under $HOME, so the HOME redirect in sandbox_home
-  # above relocates them for free; they are exported explicitly anyway so a test can point
+  # relocates them for free; they are exported explicitly anyway so a test can point
   # one at an empty dir to exercise the "nothing here" branch without touching the others.
   # Mirror the DEPLOYED lib path. Several subjects source ~/.local/lib/*.sh directly
   # (agent-proof.sh has no env override and is sourced by five runners), and
