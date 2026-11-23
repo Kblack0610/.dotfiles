@@ -245,7 +245,7 @@ gate_repo() {
 # gate_row <id> <asked_by> <extra json object or ''>: a gate row on the sandbox repo.
 gate_row() {
   jq -nc --arg id "$1" --arg a "$2" --argjson x "${3:-null}" \
-    '{source: "~/g/x", anchor: ("# gate: " + $id), rule: "a refusal", kind: "provisional", confidence: "low", action: "keep", id: $id, asked_by: $a} + ($x // {})' >> "$RULES_REGISTER"
+    '{source: "~/g/x", anchor: ("# gate: " + $id), rule: "a refusal", kind: "provisional", confidence: "low", action: "keep", id: $id, asked_by: $a, added: "2026-11-20"} + ($x // {})' >> "$RULES_REGISTER"
 }
 
 @test "rules --gates: every marker has a row and every denying hook has a marker" {
@@ -401,4 +401,57 @@ real_register() { [ -s "$REAL" ] || skip "no register at $REAL"; }
   run grep -E '^(gate asked_by|agent route):' <<<"$output"
   assert_output ''
   [ "$(jq -s '[.[] | select(.id != null)] | length' "$REAL")" -gt 0 ]
+}
+
+@test "rules --check: a gate row needs the date it was added" {
+  gate_repo
+  gate_row undated-gate 'agent:#3' '{"added": null}'
+  gate_row loose-gate 'agent:#4' '{"added": "Nov 20"}'
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'gate added: undated-gate: missing is not the YYYY-MM-DD'
+  assert_output --partial 'gate added: loose-gate: Nov 20 is not the YYYY-MM-DD'
+  refute_output --partial 'tool-refuse'
+}
+
+@test "rules --new: the gates added in the window, agent-added first, newest first, each with its PR" {
+  gate_row old-gate 'agent:#1' '{"added": "2026-11-01"}'
+  gate_row human-gate 'human:2026-11-19 "hold the release"' '{"added": "2026-11-21", "source": "~/.dotfiles-private/x"}'
+  gate_row agent-late 'agent:#30' '{"added": "2026-11-22", "source": "~/.dotfiles/x"}'
+  gate_row agent-early 'agent:abc1234 (before PR numbers)' '{"added": "2026-11-20"}'
+  jq -nc '{source: "~/r.md", anchor: "a rule", kind: "provisional", added: "2026-11-21"}' >> "$RULES_REGISTER"
+  run "$SUBJECT" rules --new --since 2026-11-20 --until 2026-11-22
+  assert_success
+  assert_output "$(printf '%s\t%s\t%s\t%s\t%s\n' \
+    2026-11-22 agent-late 'agent:#30' 'dotfiles #30' 'a refusal' \
+    2026-11-20 agent-early 'agent:abc1234 (before PR numbers)' - 'a refusal' \
+    2026-11-21 human-gate 'human:2026-11-19 "hold the release"' - 'a refusal')"
+  run "$SUBJECT" rules --new --since 2026-11-20 --until 2026-11-22 --line
+  assert_output '3 gates added from 2026-11-20 to 2026-11-22, 2 by an agent without your ask: agent-late (dotfiles #30), agent-early (abc1234). List: fleet-bench rules --new --since 2026-11-20 --until 2026-11-22.'
+  run "$SUBJECT" rules --new --since 2026-11-21 --until 2026-11-21 --line
+  assert_output '1 gate added on 2026-11-21, on your ask. List: fleet-bench rules --new --since 2026-11-21 --until 2026-11-21.'
+  run "$SUBJECT" rules --new --since 2026-11-20 --until 2026-11-22 --json
+  assert_output --partial '"by_agent": true'
+  run jq -r '.[0].pr' <<<"$output"
+  assert_output 'dotfiles #30'
+}
+
+@test "rules --new: --days ends today; a window with no new gate prints no line, and bad input is a usage error (negative control)" {
+  gate_row today-gate 'agent:#5' "$(jq -nc --arg d "$(date +%F)" '{added: $d}')"
+  gate_row old-gate 'agent:#1' '{"added": "2020-01-01"}'
+  run "$SUBJECT" rules --new --days 7
+  assert_success
+  assert_output --partial 'today-gate'
+  refute_output --partial 'old-gate'
+  run "$SUBJECT" rules --new --since 2030-01-01 --line
+  assert_success
+  assert_output ''
+  run "$SUBJECT" rules --new --days 0
+  assert_failure 2
+  run "$SUBJECT" rules --new --since soon
+  assert_failure 2
+  : > "$RULES_REGISTER"
+  run "$SUBJECT" rules --new --line
+  assert_failure 1
+  assert_output --partial 'no register'
 }
