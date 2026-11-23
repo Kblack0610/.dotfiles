@@ -3619,3 +3619,52 @@ LIB
   assert_failure 1
   assert_output "$(printf '%s\n' 'ledger_coverage 0.5 (min 0.95)' 'untracked_merged_prs 1 (max 0)')"
 }
+
+@test "read cache: under with_reads each distinct command runs once, a failed read is tried again, and outside one it always runs" {
+  source "$SUBJECT"
+  n="$SANDBOX/calls"
+  counted() { echo "$*" >> "$n"; [ "$1" != fail ] || { [ -e "$n.failed" ] && echo ok-now && return 0; : > "$n.failed"; return 3; }; echo "out $*"; }
+  reads() {
+    bench_read counted a b; bench_read counted a b; bench_read counted "a b"
+    bench_read counted fail; echo "rc $?"; bench_read counted fail; echo "rc $?"
+    echo "cache $BENCH_READ_CACHE" > "$SANDBOX/dir"
+  }
+  run with_reads reads
+  assert_success
+  assert_output "$(printf 'out a b\nout a b\nout a b\nrc 3\nok-now\nrc 0')"
+  run cat "$n"
+  assert_output "$(printf 'a b\na b\nfail\nfail')"
+  [ ! -e "$(cut -d' ' -f2 "$SANDBOX/dir")" ]
+  : > "$n"
+  bench_read counted a >/dev/null; bench_read counted a >/dev/null
+  [ "$(wc -l < "$n")" -eq 2 ]
+}
+
+@test "read cache: with_reads nested joins the open cache and gives the caller its traps back" {
+  source "$SUBJECT"
+  inner() { echo "$BENCH_READ_CACHE"; }
+  outer() { echo "$BENCH_READ_CACHE"; with_reads inner; }
+  run with_reads outer
+  assert_success
+  [ "${lines[0]}" = "${lines[1]}" ]
+  trap 'echo mine' TERM
+  with_reads true
+  run trap -p TERM
+  assert_output "trap -- 'echo mine' SIGTERM"
+  trap - TERM
+}
+
+@test "concurrent sections: par_go output prints in the caller's order, whichever section ends first" {
+  source "$SUBJECT"
+  mkfifo "$SANDBOX/gate"
+  first() { read -r _ < "$SANDBOX/gate"; echo first; }
+  second() { echo go > "$SANDBOX/gate"; echo second; }
+  both() {
+    local PAR PAR_PIDS s
+    par_open; par_go 1 first; par_go 2 second; par_wait
+    for s in 1 2; do cat "$PAR/$s"; done
+  }
+  run with_reads both
+  assert_success
+  assert_output "$(printf 'first\nsecond')"
+}
