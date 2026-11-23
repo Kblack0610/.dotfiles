@@ -30,20 +30,23 @@ const KINDS: [&str; 1] = ["queue"];
 type Read<T> = Result<T, String>;
 
 /// Every agent-queue read the pages make, kept until the queue changes. Home, the pipeline
-/// line, this tab's list and its stats each ran agent-queue (one to four seconds apiece on a
-/// loaded machine) on every queue event, once per open page; now one read per change serves
-/// them all. A failed read is shown and not kept.
+/// line, this tab's list, the sessions table and its stats each ran agent-queue (one to four
+/// seconds apiece on a loaded machine) on every queue event, once per open page. Now one list
+/// read, every active item and each finished in the last `DONE_DAYS` days, is filtered in this
+/// process for today's list, the tab's and the active items, so none runs its own. `stats` stays
+/// a read of its own, because its medians and rates are agent-queue's to compute. A failed read
+/// is shown and not kept.
 pub struct Cache {
-    all: EventCache<Read<Vec<Item>>, QUEUE_SECS>,
-    since: EventCache<Read<Vec<Item>>, QUEUE_SECS, String>,
+    /// `list --state all --since <the oldest day the tab shows>`, kept for that day, so a new
+    /// day reads again.
+    list: EventCache<Read<Vec<Item>>, QUEUE_SECS, String>,
     stats: EventCache<Read<Stats>, QUEUE_SECS>,
 }
 
 impl Cache {
     pub fn new(events: &broadcast::Sender<String>) -> Self {
         Cache {
-            all: EventCache::new(events.subscribe(), &KINDS, "queue"),
-            since: EventCache::new(events.subscribe(), &KINDS, "queue-since"),
+            list: EventCache::new(events.subscribe(), &KINDS, "queue"),
             stats: EventCache::new(events.subscribe(), &KINDS, "queue-stats"),
         }
     }
@@ -55,12 +58,23 @@ impl Cache {
         r.await.and_then(|s| (*s).clone())
     }
 
-    /// Every item, the cached `agent-queue list all`.
+    /// What `pick` takes from the kept list, which is read once for every view of it.
+    async fn pick(&self, pick: impl FnOnce(&[Item]) -> Vec<Item>) -> Read<Vec<Item>> {
+        let since = hub_queue::days_ago(DONE_DAYS - 1);
+        let key = since.clone();
+        let read = move || hub_queue::list_since(&System, "all", &since);
+        let got = self.list.get_if(key, read, Result::is_ok).await?;
+        match &*got {
+            Ok(items) => Ok(pick(items)),
+            Err(e) => Err(e.clone()),
+        }
+    }
+
+    /// Every active item and today's finished ones, what `agent-queue list --state all` prints.
     async fn all(&self) -> Read<Vec<Item>> {
-        let r = self
-            .all
-            .get_if((), || hub_queue::list(&System, "all"), Result::is_ok);
-        r.await.and_then(|l| (*l).clone())
+        let today = hub_queue::days_ago(0);
+        self.pick(move |items| hub_queue::done_since(items, &today))
+            .await
     }
 
     /// The items the release graph joins on, with no stats read, and why there are none when
@@ -72,6 +86,17 @@ impl Cache {
         }
     }
 
+    /// `all` as `session_table::feed_with` takes it.
+    pub(crate) async fn feed_items(&self) -> Read<Vec<Item>> {
+        self.all().await
+    }
+
+    /// The queued, running, waiting and review items, what `agent-queue list --state active`
+    /// prints; none when agent-queue failed, as a session's items are then simply not offered.
+    pub(crate) async fn active(&self) -> Vec<Item> {
+        self.pick(hub_queue::active).await.unwrap_or_default()
+    }
+
     /// `hub_queue::Queue::read` with no flow verdict, as Home and the pipeline line draw it; the
     /// cards add theirs (`verdict`).
     pub async fn queue(&self) -> hub_queue::Queue {
@@ -81,20 +106,13 @@ impl Cache {
 
     /// Every item active or finished since `DONE_DAYS` ago, the tab's list.
     pub(crate) async fn recent(&self) -> Read<Vec<Item>> {
-        let since = hub_queue::days_ago(DONE_DAYS - 1);
-        let key = since.clone();
-        let read = move || hub_queue::list_since(&System, "all", &since);
-        self.since
-            .get_if(key, read, Result::is_ok)
-            .await
-            .and_then(|l| (*l).clone())
+        self.pick(<[Item]>::to_vec).await
     }
 
     /// After a write from this page or the board (a start queues an item), so its own refresh
     /// shows it.
     pub(crate) fn clear(&self) {
-        self.all.clear();
-        self.since.clear();
+        self.list.clear();
         self.stats.clear();
         crate::epics::clear();
     }
@@ -468,7 +486,7 @@ mod tests {
     /// `sheet_view::feed`, which runs `agent-queue list` and `stats` per request: 4 to 19 s.
     /// The hub-core calls that run `agent-queue list` or `stats`, under any `use` alias
     /// (`hub_queue::list(` and `hub_core::queue::list(` both hold `queue::list(`).
-    const RUNS_AGENT_QUEUE: [&str; 7] = [
+    const RUNS_AGENT_QUEUE: [&str; 8] = [
         "Queue::read(",
         "sheet_view::feed(",
         "queue::list(",
@@ -476,6 +494,7 @@ mod tests {
         "queue::stats(",
         "queue_items(",
         "actions::read(",
+        "session_table::feed(",
     ];
 
     fn runs_agent_queue(text: &str) -> Vec<&'static str> {
@@ -526,6 +545,12 @@ mod tests {
             ["actions::read("]
         );
         assert!(runs_agent_queue("sheet_view::feed_with(&System, &queue)").is_empty());
+        // The sessions table once ran its own list through `feed`.
+        assert_eq!(
+            runs_agent_queue("session_table::feed(&System, &registry)"),
+            ["session_table::feed("]
+        );
+        assert!(runs_agent_queue("session_table::feed_with(&System, &r, items)").is_empty());
     }
 
     #[test]
