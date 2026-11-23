@@ -1057,6 +1057,18 @@ impl App {
         });
     }
 
+    /// A sprint page's read came back: kept only when it is still the version the view wants,
+    /// and the next read (a page the view moved to meanwhile) starts.
+    fn sprint_page_in(&mut self, version: String, r: Result<hub_core::sprint_page::Page, String>) {
+        if let Some(so) = self.pv.sprint.as_mut() {
+            so.busy = false;
+            if so.version == version {
+                so.page = Some(r);
+            }
+        }
+        self.read_sprint_due();
+    }
+
     /// The Ladder reads when it comes into view, on `r`, and on a new stages.json while it shows;
     /// its Requirements are stages.md read live, which nothing watches, so a visit reads them.
     fn read_ladder_due(&mut self) {
@@ -2349,15 +2361,7 @@ impl App {
                     self.read_coverage();
                 }
             }
-            Msg::SprintPage(version, r) => {
-                if let Some(so) = self.pv.sprint.as_mut() {
-                    so.busy = false;
-                    if so.version == version {
-                        so.page = Some(*r);
-                    }
-                }
-                self.read_sprint_due();
-            }
+            Msg::SprintPage(version, r) => self.sprint_page_in(version, *r),
             Msg::StagesFile => {
                 if self.ladder_shown() {
                     self.read_ladder();
