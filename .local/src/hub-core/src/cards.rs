@@ -1063,7 +1063,7 @@ pub const ORDER: &[&str] = &[
 ];
 
 /// Old card ids and the card each now names, so a saved `?cards=` list keeps its card
-/// (dashboards.md, Retired names).
+/// (`layout.rs` holds the retired tab names beside this).
 pub const ALIASES: &[(&str, &str)] = &[("infra", "health")];
 
 /// The card id `name` stands for: itself, or the card an old id was renamed to.
