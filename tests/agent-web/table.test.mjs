@@ -204,6 +204,15 @@ test("a table keeps a column that differs in any row, a lone row, the lead, a bl
   assert.equal(note(constTable(["Name", "Owner"], [["a", "x"], ["b", "x"], ["c", "x"]], [filters])), 0, "a filter pill stays so the filter can come off");
 });
 
+test("a paged table is left whole, whatever one page holds", () => {
+  const t = constTable(["Name", "Owner"], [["a", "x"], ["b", "x"], ["c", "x"]]);
+  t.closest = () => ({ querySelector: (q) => (q === ".tpager" ? {} : null) });
+  ctx.subject = t;
+  run("tblConstants(subject)");
+  assert.equal(t.noted.length, 0);
+  assert.deepEqual(hidden(t), [[false, false], [false, false], [false, false]]);
+});
+
 test("a table drawn again with a differing row shows the column again", () => {
   const t = constTable(["Name", "Owner"], [["a", "x"], ["b", "x"], ["c", "x"]]);
   ctx.subject = t;

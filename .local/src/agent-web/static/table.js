@@ -399,7 +399,7 @@ if (typeof document !== "undefined" && document.addEventListener) {
 // state: not read`, so nothing is dropped. The same rule as the hub's `fit::Table`. Never hidden:
 // the lead (first) column, the sorted one, one with no header or a filter pill (a filter ticked on
 // a column makes it constant, and its pill must stay to take the filter off), a blank or long
-// value, or a cell holding a control or link; nor a table of fewer than three rows, nor a value that says a read failed
+// value, or a cell holding a control or link; nor a paged table (one page cannot say what the rest holds), nor one of fewer than three rows, nor a value that says a read failed
 // (NOT_READ, NO_DATA: a fault to see, not a fact about the table).
 const TBL_CONST_MAX = 32;
 
@@ -421,6 +421,9 @@ function tblConstants(table) {
   for (const tr of table.rows) for (const c of tr.cells) c.classList.remove("tconst");
   const prev = table.previousElementSibling;
   if (prev?.classList?.contains("tconsts")) prev.remove();
+  // A paged table shows one page of rows, so a column constant on it may vary on the next: it is left whole.
+  const block = table.closest?.("[data-tbl]") || table.parentNode?.parentNode;
+  if (block?.querySelector?.(".tpager")) return;
   const [head, ...all] = table.rows, heads = [...(head?.cells || [])];
   // The data rows: the filter row and a detail or total row with another cell count are not.
   const rows = all.filter((tr) => tr.cells.length === heads.length && tr.dataset?.phone !== "filters");
