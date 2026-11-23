@@ -917,6 +917,7 @@ reap_seen() { [ ! -e "$DIR/reap-miss/$1" ] || rm -f "$DIR/reap-miss/$1"; }
 # human-sheet row says what to do, or one page when the sheet refuses it (keyed needs:dispatch:stuck:<slug>:<title hash>, so agent-notify drops a repeat of one fact for a day), then nothing more while it
 # stands. $DIR/stuck/<slug> holds "<first epoch> <filed 0|1>" and the title; each pass rewrites it, so
 # a marker no pass has seen in a day is pruned by cmd_reap. reap_unstuck clears it once the item settles.
+# gate: fd-reap-stuck
 reap_stuck() {
   local f="$DIR/stuck/$1" first='' filed=0 was='' now where
   now=$(date +%s)

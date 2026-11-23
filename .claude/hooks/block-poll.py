@@ -204,6 +204,7 @@ def live_reason(text):
     return LIVE_MSG.format(id=sorted(live)[0]) if live else None
 
 
+# gate: hook-block-poll
 def decide(data):
     """The deny reason for one PreToolUse payload, or None. walker-guards.py calls this for Bash;
     main() serves the Read hook, which walker-guards does not run on."""

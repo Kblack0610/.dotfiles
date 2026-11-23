@@ -28,6 +28,7 @@ if [ -f "turbo.json" ] || echo "$PKG" | grep -q '"turbo"'; then
       echo "Scoping checks to changed apps: $CHANGED_APPS" >&2
     fi
   fi
+  # gate: hook-stop-node-checks
   pnpm turbo run typecheck lint $TURBO_FILTER --output-logs=errors-only 2>&1 || exit 2
   FMT_OUT=$(mktemp)
   pnpm format:check >"$FMT_OUT" 2>&1 || { cat "$FMT_OUT" >&2; rm -f "$FMT_OUT"; exit 2; }
