@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
-# QUEUE.md (private overlay, ~/.config/agentctl/) defines nine rows of ARCHITECTURE.md's Flows
+# QUEUE.md (private overlay, ~/.config/agentctl/) defines eight rows of ARCHITECTURE.md's Flows
 # table: Work intake, Queue states, Admission, the Fleet lease, Intake channels, Outbox to
-# board, Red triage, Alert ownership and Proposals. Each test here reads
+# board, Red triage and Alert ownership. Its Proposals section is no Flows row: no watch could
+# probe it (QUEUE.md "Proposals"). Each test here reads
 # one section's enumerable facts (a state, a source, a verb, a default, a lane) and the code that
 # implements it, from the files as text, so the section cannot drift from agent-queue,
 # fleet-dispatch or fleet-lease unseen. Change the code and its section together.
@@ -191,9 +192,15 @@ intake_files() {
   done
 }
 
+@test "Proposals: the expiry ask QUEUE.md promises is the one agent-propose sends" {
+  grep -qF '(`ask_expiring`)' "$DOC" || { echo "QUEUE.md Proposals no longer names ask_expiring: update this test with it"; return 1; }
+  grep -qE '^ask_expiring\(\)' "$PUB/.local/bin/agent-propose" || { echo "agent-propose has no ask_expiring, which QUEUE.md Proposals names"; return 1; }
+  grep -qE 'ask="\$\(ask_expiring ' "$PUB/.local/bin/agent-propose" || { echo "agent-propose sweep no longer asks on expiry"; return 1; }
+}
+
 @test "Flows: the intake rows are in ARCHITECTURE.md, each at the heading that defines it" {
   local arch="$PRIV/.config/agentctl/ARCHITECTURE.md" a
-  for a in intake-channels outbox-to-board red-triage alert-ownership proposals; do
+  for a in intake-channels outbox-to-board red-triage alert-ownership; do
     grep -qF "QUEUE.md#$a" "$arch" || { echo "ARCHITECTURE.md has no Flows row for QUEUE.md#$a"; return 1; }
   done
 }
