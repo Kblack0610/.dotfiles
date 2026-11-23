@@ -18,7 +18,7 @@ This section is the one definition of the tiers. Humans tagging rows, agents fil
 - `2`: an ordinary product change in product code, a small feature or bug fix that the row fully describes.
 - Tiers 1 and 2 merge on your `dispatch`. Measure: reverts and CI reds of the merged sessions (`fleet-bench` scorecard). Revisit when a merged tier 1 or 2 session is reverted.
 - `3`: shared infrastructure. CI and workflows, test gates and test runners, the build, deploy or release pipeline, runner machines, agent harness and tooling (hooks, skills, scripts other sessions run), dependencies and version pins, schema or data migrations. Judge a tier 3 row like any other: a `dispatch` sends it to the tier-3 gate below, never to a plain merge. A queue item on agent-runtime or notes-cockpit with no tier counts as tier 3, so an item a session queued by hand gets the same gate.
-- Tier-3 gate: a `red` item (a fix `fleet-bench triage` queued from a route) and a tier 3 row you `dispatch` of any project at stage `dev` or later, run at any hour and merge their own PR behind the red-fix gate (fix-red step 5): `/code-review high` with a `Review:` line in the PR body and the bats files the Stop hook picks for the change, then `agent-land`, which refuses a tier-3 PR without that line or without checks that ran green. Only the human-merge list never starts unattended: release cuts, secrets and auth, and production data migrations (`DISPATCH_T3_SKIP`, ask BwiKfB 2026-11-21), plus money rows and every row of a project that stays with the human, finance (`DISPATCH_T3_HUMAN_PROJECTS`). A row whose `#after` gates cleared starts without a verdict, so the gate takes it only with a `#tier/3` tag. A cleanup row (`kinds.json` `cleanup`: `fix`, `chore`, a `refactor` that deletes, removes, drops, retires, prunes or strips) on agent-runtime or notes-cockpit ranks first. Measure: `fleet-bench reds` (each merged red fix `fixed`, `still red` or `came back`), and per merged tier-3 item whether a check green at the merge SHA is red after it; a check already red at the merge is not that merge's regression. Revisit when one merge turns a green check red, or when `reds_unfixed` on `fleet-bench chain` is above 0.
+- Tier-3 gate: a `red` item (a fix `fleet-bench triage` queued from a route) and a tier 3 row you `dispatch` of any project at stage `dev` or later, run at any hour and merge their own PR behind the red-fix gate (fix-red step 5): `/code-review high` with a `Review:` line in the PR body and the PR's own CI as its test run, with no test run on the workstation, then `agent-land`, which refuses a tier-3 PR without that line or without checks that ran green. Only the human-merge list never starts unattended: release cuts, secrets and auth, and production data migrations (`DISPATCH_T3_SKIP`, ask BwiKfB 2026-11-21), plus money rows and every row of a project that stays with the human, finance (`DISPATCH_T3_HUMAN_PROJECTS`). A row whose `#after` gates cleared starts without a verdict, so the gate takes it only with a `#tier/3` tag. A cleanup row (`kinds.json` `cleanup`: `fix`, `chore`, a `refactor` that deletes, removes, drops, retires, prunes or strips) on agent-runtime or notes-cockpit ranks first. Measure: `fleet-bench reds` (each merged red fix `fixed`, `still red` or `came back`), and per merged tier-3 item whether a check green at the merge SHA is red after it; a check already red at the merge is not that merge's regression. Revisit when one merge turns a green check red, or when `reds_unfixed` on `fleet-bench chain` is above 0.
 
 Judge the tier from what the change touches, not from the tag. A row tagged `#tier/1` that changes a test gate is tier 3.
 
@@ -32,12 +32,12 @@ Each row comes with its project's stage, its lane and its tagged tier:
 - `prod` (live users): bugs and small fixes only. No new features, no flags turned on, nothing touching production data.
 - `beta`: bugs, and small features that are fully described in the row.
 - `alpha`: judged as `beta`; `too-big` and `unclear` decide size and clarity, not the stage.
-- (stage) The row is more than its project's stage allows above.
+- (stage-scope) The row is more than its project's stage allows above.
 
 ## Always skip
 
 A skip does not park a row: `fleet-dispatch` gives each agent-lane skip the exit its rule names (`skip_exits`), so pick the rule that names the real blocker.
-- plan: `unclear`, `bundle`, `too-big`, `multi-area`, `stage`, `question`, `tier-above` and `unknown` tag the row `#plan`, and inbox-plan splits or rewrites it.
+- plan: `unclear`, `bundle`, `too-big`, `multi-area`, `stage-scope`, `question`, `tier-above` and `unknown` tag the row `#plan`, and inbox-plan splits or rewrites it.
 - human: `needs-person`, `release`, `prod-write`, `compliance`, `personal` and `design` move the row off the agent lane: an `#urgent`, `#high`, bare or `#requested` row to the human sheet, a `#low` one to `improvements.md`.
 - `waits`: an `#after/<row>` or `#pr/<owner>/<repo>/<N>` gate on the row or PR your reason names, when the row otherwise fits; else plan. Name the row id or `owner/repo#N` in the reason when you know it.
 
@@ -67,7 +67,7 @@ A skip does not park a row: `fleet-dispatch` gives each agent-lane skip the exit
 - `agent_only`: true only if no step needs the human (see Always skip).
 - `verdict`: `dispatch` only when size is `S` or `M`, clear is true, agent_only is true, area is one word and your tier is no higher than the row's `tier`. Otherwise `skip`.
 - `reason`: one short sentence a human can scan, naming the deciding fact.
-- `rule`: the id, written without its parentheses (`stage`, never `(stage)`), of the one rule that decided the verdict, from the rules below and above.
+- `rule`: the id, written without its parentheses (`stage-scope`, never `(stage-scope)`), of the one rule that decided the verdict, from the rules below and above.
 
 ## Rules for the verdict
 

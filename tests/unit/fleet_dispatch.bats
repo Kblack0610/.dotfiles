@@ -1516,7 +1516,7 @@ EOF
   c() { jq -cn --arg k "$1" '{project: "game", stage: "beta", lane: "human", key: $k, text: "- [ ] \($k)", tier: 1, line: $k}'; }
   run judge "$(c a; c b; c c)"
   assert_equal "$(jq -c '.properties.verdicts | [.minItems, .maxItems]' "$NOTES_FIXTURE/schema.json")" '[3,3]'
-  # the rule is one of the policy's ids, so "(stage)" with the policy's parentheses cannot be answered
+  # the rule is one of the policy's ids, so "(stage-scope)" with the policy's parentheses cannot be answered
   assert_equal "$(jq -c '.properties.verdicts.items.properties.rule.enum' "$NOTES_FIXTURE/schema.json")" \
     '["fits","unclear"]'
   # the rest is the conf's schema, unchanged
@@ -2406,6 +2406,24 @@ J
   # The edit voids nothing: the old verdict still counts as the row's verdict.
   run cmd_suggest --json
   assert_equal "$(jq -r .verdict <<<"$output")" skip
+}
+
+@test "policy rename: a verdict whose rule id left the policy reads unjudged and is judged again, one whose id stays keeps its verdict (ar-4831)" {
+  # #3255 removed the alpha rule but kept the id (stage), so 576 rows kept their "Size M at alpha" skip. A changed rule gets a new id.
+  printf '%s\n' '- (stage-scope) the row is more than its project stage allows' >> "$DISPATCH_POLICY"
+  project game alpha "$SANDBOX/repos/game"
+  row game agent 'kept' "- [ ] kept $T"
+  row game agent 'stale' "- [ ] stale $T"
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  jq -cn --arg sig "made-under-an-older-policy" --arg k kept --arg l "$(line_of game agent kept)" \
+    '{project: "game", lane: "agent", key: $k, verdict: "skip", rule: "stage-scope", reason: "r", policy: $sig, line: $l}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  jq -cn --arg sig "made-under-an-older-policy" --arg k stale --arg l "$(line_of game agent stale)" \
+    '{project: "game", lane: "agent", key: $k, verdict: "skip", rule: "stage", reason: "Size M at alpha", policy: $sig, line: $l}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  run cmd_candidates
+  assert_success
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'stale'
+  run cmd_suggest --json
+  assert_equal "$(jq -r '"\(.key)=\(.verdict)"' <<<"$output" | paste -sd' ')" 'kept=skip stale=unjudged'
 }
 
 @test "judge: a reply that names no rule is an error record, and the verdict from an older policy stays in force" {
