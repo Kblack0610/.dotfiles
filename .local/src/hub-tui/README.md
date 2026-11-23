@@ -28,7 +28,7 @@ The tmux keys run `hub tab <name>; tmx goto hub hub:board`. The running hub list
 
 ## Tabs
 
-A new tab or section follows `../docs/dashboards.md` (the dashboard standards, and the layout both hub surfaces are moving to).
+A new tab or section follows `../docs/dashboards.md` (the dashboard standards; the tab layout is `hub_core::layout`).
 
 | Tab | What it shows | Grafana (`o`) |
 |---|---|---|
