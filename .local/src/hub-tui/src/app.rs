@@ -7422,7 +7422,7 @@ mod tests {
     fn home_shows_proposals_and_enter_opens_the_table_and_the_record() {
         let mut a = app(Tab::Home);
         a.proposals = Some(Ok(vec![proposal("aa", "dream"), proposal("bb", "ci")]));
-        let s = screen(&mut a, 120, 40);
+        let s = screen(&mut a, 120, 46);
         assert!(
             s.contains("PROPOSALS (2 from 2 streams)") && s.contains("Do aa"),
             "{s}"

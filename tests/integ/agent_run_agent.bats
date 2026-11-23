@@ -317,3 +317,74 @@ raw_agent() {
   refute_output --partial 'SUMMARY-OK'
   assert_equal "$(jq -r '[.exit, .is_error] | @tsv' "$CALLS")" "$(printf '1\ttrue')"
 }
+
+# A conf whose PROMPT names two template files, the shape of inbox-triage (route.md:ask.md).
+two_prompt_agent() {
+  mkdir -p "$SANDBOX/tpl dir/rules"
+  printf 'Rule: one row per line.\n' > "$SANDBOX/tpl dir/rules/row.md"
+  printf 'Route {{line}}.\n{{> rules/row.md}}\n' > "$SANDBOX/tpl dir/route.md"
+  printf 'Ask {{line}}.\n' > "$SANDBOX/tpl dir/ask.md"
+  printf 'NAME=tri\nKIND=call\nLANE=observe\nROLE=watcher\nDESCRIPTION=x\nPROMPT="%s:%s"\n' \
+    "$SANDBOX/tpl dir/route.md" "$SANDBOX/tpl dir/ask.md" > "$AGENTCTL_CONF_DIR/tri.conf"
+}
+
+@test "--rendered-prompt records that file's sha and sends the caller's text alone" {
+  two_prompt_agent
+  run "$RUN" --agent tri --rendered-prompt "$SANDBOX/tpl dir/ask.md" -p "Ask the row."
+  assert_success
+  assert_equal "$(cat "$SANDBOX/claude.stdin")" "Ask the row."
+  assert_equal "$(jq -r .prompt_sha "$CALLS")" "$(git hash-object "$SANDBOX/tpl dir/ask.md")"
+  assert_equal "$(jq -r .prompt "$CALLS")" "$SANDBOX/tpl dir/ask.md"
+}
+
+@test "a template's sha covers its includes: an included rule changed is a new prompt version" {
+  two_prompt_agent
+  run "$RUN" --agent tri --rendered-prompt "$SANDBOX/tpl dir/route.md" -p x
+  assert_success
+  before="$(jq -r .prompt_sha "$CALLS")"
+  assert_equal "$before" "$(printf 'Route {{line}}.\nRule: one row per line.\n' | git hash-object --stdin)"
+  printf 'Rule: two rows per line.\n' > "$SANDBOX/tpl dir/rules/row.md"
+  run "$RUN" --agent tri --rendered-prompt "$SANDBOX/tpl dir/route.md" -p x
+  assert_success
+  refute [ "$(tail -1 "$CALLS" | jq -r .prompt_sha)" = "$before" ]
+}
+
+@test "--rendered-prompt with a file the conf does not name is refused before the harness runs (negative control)" {
+  two_prompt_agent
+  printf 'Other.\n' > "$SANDBOX/other.md"
+  run "$RUN" --agent tri --rendered-prompt "$SANDBOX/other.md" -p x
+  assert_failure
+  assert_output --partial 'is not one of agent'
+  assert [ ! -e "$SANDBOX/claude.argv" ]
+}
+
+@test "a two-PROMPT agent called without --rendered-prompt is refused (negative control)" {
+  two_prompt_agent
+  run "$RUN" --agent tri -p x
+  assert_failure
+  assert_output --partial 'names 2 PROMPT files'
+  assert [ ! -e "$SANDBOX/claude.argv" ]
+}
+
+@test "a template PROMPT is never prepended unfilled (negative control)" {
+  printf 'Judge {{line}}.\n' > "$PROMPT_FILE"
+  run "$RUN" --agent judge -p x
+  assert_failure
+  assert_output --partial 'is a template'
+  assert [ ! -e "$SANDBOX/claude.argv" ]
+}
+
+@test "--rendered-prompt without --agent is refused (negative control)" {
+  run "$RUN" --role watcher --rendered-prompt "$PROMPT_FILE" -p x
+  assert_failure
+  assert_output --partial 'needs --agent'
+}
+
+@test "--call-model replaces the conf's MODEL for that call; a harness --model still passes through" {
+  echo 'MODEL=claude-sonnet-5-5' >> "$AGENTCTL_CONF_DIR/judge.conf"
+  run "$RUN" --agent judge --call-model claude-haiku-5-5 --explain
+  assert_success
+  assert_line --regexp '^model: +claude-haiku-5-5'
+  run "$RUN" --agent judge --explain
+  assert_line --regexp '^model: +claude-sonnet-5-5'
+}
