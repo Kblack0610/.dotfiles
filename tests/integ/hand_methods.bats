@@ -110,6 +110,32 @@ allowed() { assert_success; assert_output ""; }
   allowed
 }
 
+@test "gh run cancel and gh api .../runs/<id>/cancel are denied unless the command says own or stuck" {
+  run run_guard 'gh run cancel 1'
+  denied
+  run run_guard 'for r in $(gh run list -q ".[].databaseId"); do gh run cancel "$r"; done'
+  denied
+  run run_guard 'gh api -X POST repos/o/r/actions/runs/1/cancel'
+  denied
+  run run_guard 'gh api -X POST repos/o/r/actions/runs/1/force-cancel'
+  denied
+  run run_guard '/usr/bin/gh run cancel 1 # own:'
+  denied
+}
+
+@test "a cancel that names its own superseded run or a stuck step is allowed; view and quoted mentions are too" {
+  run run_guard 'gh run cancel 1  # own: #2526 superseded'
+  allowed
+  run run_guard 'gh api -X POST repos/o/r/actions/runs/1/cancel # stuck: Run tests, 40 min'
+  allowed
+  run run_guard 'gh run view 1'
+  allowed
+  run run_guard 'gh api repos/o/r/actions/runs/1'
+  allowed
+  run run_guard 'git commit -m "never gh run cancel another PR"'
+  allowed
+}
+
 @test "a substitution inside single quotes is literal; one inside double quotes runs" {
   run run_guard "git commit -m 'drop \`gh run watch\` and \$(gh run watch)'"
   allowed
