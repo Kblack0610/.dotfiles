@@ -1536,17 +1536,33 @@ MD
   mark --close sid-1
   run mark --close sid-1
   assert_failure 1
+  # a close nothing was typed into is given back, and logged as such; the next claim is a new line
+  mark --release sid-1
+  mark --release sid-1
+  mark --close sid-1
   # a row the document no longer lists is still logged, with no row fields
   mark sid-gone 'DONE clean, no plan file'
   run jq -sc 'map([.sid, .kind, .fact, .target, .project, .bucket])' "$FLEET_SHEPHERD_DIR/nudges.jsonl"
-  assert_output '[["sid-1","nudge","STALLED PR #9 CI red @feat/x","lab/dotfiles-agent-3:1","dotfiles","STALLED"],["sid-1","nudge","LANDED PR #9 merged, tree clean @feat/x","lab/dotfiles-agent-3:1","dotfiles","STALLED"],["sid-1","close",null,"lab/dotfiles-agent-3:1","dotfiles","STALLED"],["sid-gone","nudge","DONE clean, no plan file",null,null,null]]'
+  assert_output '[["sid-1","nudge","STALLED PR #9 CI red @feat/x","lab/dotfiles-agent-3:1","dotfiles","STALLED"],["sid-1","nudge","LANDED PR #9 merged, tree clean @feat/x","lab/dotfiles-agent-3:1","dotfiles","STALLED"],["sid-1","close",null,"lab/dotfiles-agent-3:1","dotfiles","STALLED"],["sid-1","close-released",null,"lab/dotfiles-agent-3:1","dotfiles","STALLED"],["sid-1","close",null,"lab/dotfiles-agent-3:1","dotfiles","STALLED"],["sid-gone","nudge","DONE clean, no plan file",null,null,null]]'
   run jq -se 'all(.at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}([+-][0-9]{2}:[0-9]{2}|Z)$"))' "$FLEET_SHEPHERD_DIR/nudges.jsonl"
   assert_success
   # an unreadable document is not a lost nudge
   rm -f "$STATE_FILE"
   mark sid-2 'STALLED PR #10 CI red @feat/y'
-  run jq -c 'select(.sid == "sid-2") | [.kind, .target]' "$FLEET_SHEPHERD_DIR/nudges.jsonl"
-  assert_output '["nudge",null]'
+  echo '{not json' > "$STATE_FILE"
+  mark sid-3 'STALLED PR #11 CI red @feat/z'
+  run jq -c 'select(.sid == "sid-2" or .sid == "sid-3") | [.kind, .target]' "$FLEET_SHEPHERD_DIR/nudges.jsonl"
+  assert_output $'["nudge",null]\n["nudge",null]'
+  # a log it cannot append to is reported, and the claim still stands
+  rm -f "$FLEET_SHEPHERD_DIR/nudges.jsonl"; mkdir "$FLEET_SHEPHERD_DIR/nudges.jsonl"
+  run mark sid-4 'STALLED PR #12 CI red @feat/w'
+  assert_success
+  assert_output --partial 'could not append the nudge for sid-4'
+  run nudged sid-4 'STALLED PR #12 CI red @feat/w'
+  assert_success
+  # a release refused for a bad id, like the claim
+  run mark --release ../x
+  assert_failure 2
 }
 
 @test "a NEEDS fact is one key across branch and head, and leaving NEEDS releases its escalation (ar-233)" {

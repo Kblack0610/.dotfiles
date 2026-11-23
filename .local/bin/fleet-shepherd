@@ -910,11 +910,11 @@ close_sample() {
     case "$rc" in
       0) acted=1; cmd_log "close: $target $close: typed $cmd ($fact)" >/dev/null ;;
       3) acted=1; cmd_log "close: $target $close: typed $cmd, but its Enter was not taken; the escalation carries it" >/dev/null ;;
-      75) rm -f "$LEDGER/.closed/$sid" && acted=1
+      75) fleet-sessions mark --release "$sid" && acted=1
           cmd_log "close: $target $close: another send held its pane; the next check types it" >/dev/null ;;
       # ssh failed (255). A link dropped after the keys landed would see them typed twice, but by
       # then the pane is busy or gone, and the next check types only into an idle, empty prompt.
-      255) rm -f "$LEDGER/.closed/$sid" && acted=1
+      255) fleet-sessions mark --release "$sid" && acted=1
           cmd_log "close: $target $close: its machine did not answer over ssh; the next check types it" >/dev/null ;;
       *) cmd_log "close: $target $close: marked, but typing $cmd failed ($rc); the escalation carries it" >/dev/null ;;
     esac
