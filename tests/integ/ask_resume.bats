@@ -340,12 +340,18 @@ EOF
   AQ_MOVE_FAIL=1 _closing 0
   run cat "$log"
   assert_output "ask-resume: $slug is left open: agent-queue move $slug done --status ok"
+  run grep -c "^agent-queue move $slug done --status ok " "$NOTES_FIXTURE/calls.log"
+  assert_output 1
   AQ_MOVE_FAIL=1 _closing 7
   run cat "$log"
   assert_output "ask-resume: $slug is left open: agent-queue move $slug done --status failed"
+  run grep -c "^agent-queue move $slug done --status failed " "$NOTES_FIXTURE/calls.log"
+  assert_output 1
   AQ_MOVE_FAIL=1 AQ_PR='o/r#9' _closing 0
   run cat "$log"
   assert_output "ask-resume: $slug is left open: agent-queue move $slug review"
+  run grep -c "^agent-queue move $slug review " "$NOTES_FIXTURE/calls.log"
+  assert_output 1
 }
 
 @test "an item agent-queue refuses leaves the ask resumable and runs no model" {
