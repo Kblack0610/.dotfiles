@@ -459,6 +459,31 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   grep -q 'sc-9	scratch	epic(audio): the sound pass' "$NOTES_FIXTURE/prompt.txt" || fail "the epics never reached the model"
 }
 
+@test "--backlog: a rewrite moves a row off its standing epic onto the feature epic it names, through tag" {
+  # edit keeps a row's parent and refuses an #of/ naming another (#3267), so the parent goes on with tag
+  sheet '' '- [ ] epic(audio): audio to standard <!-- id:sc-5 -->\n- [ ] epic(audio): the sound pass #size/l <!-- id:sc-9 -->\n- [ ] gun sound is off #low #of/sc-5 <!-- id:sc-1 -->\n'
+  answer '{"n": 1, "action": "keep"}' '{"n": 2, "action": "keep"}' \
+    '{"n": 3, "action": "rewrite", "row": "fix(audio): the gun sound is off #size/s #of/sc-9"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_success
+  refute_output --partial 'refused:'
+  run tasks
+  assert_output --regexp 'fix\(audio\): the gun sound is off .*#of/sc-9 .*id:sc-1'
+  refute_line --regexp 'gun sound is off .*#of/sc-5'
+}
+
+@test "--backlog: negative control: a rewrite of a row under a feature epic keeps its parent" {
+  sheet '' '- [ ] epic(audio): the sound pass #size/l <!-- id:sc-9 -->\n- [ ] epic(audio): the gun pass #size/l <!-- id:sc-8 -->\n- [ ] gun sound is off #low #of/sc-8 <!-- id:sc-1 -->\n'
+  answer '{"n": 1, "action": "keep"}' '{"n": 2, "action": "keep"}' \
+    '{"n": 3, "action": "rewrite", "row": "fix(audio): the gun sound is off #size/s #of/sc-9"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_success
+  refute_output --partial 'refused:'
+  run tasks
+  assert_output --regexp 'fix\(audio\): the gun sound is off .*#of/sc-8 .*id:sc-1'
+  refute_output --partial '#of/sc-9'
+}
+
 @test "--backlog: a plan's finish row stays on its board, and a rewrite must keep its plan slug, which ask-sweep finds it by" {
   sheet '' '- [ ] finish alpha-plan-lazy-otter: 2 phases left, next: p3 the gate #requested <!-- id:sc-1 -->\n- [ ] finish beta-plan-tidy-crow: 1 phases left, next: p2 docs #requested <!-- id:sc-2 -->\n- [ ] finish gamma_plan.v2: 3 phases left, next: p1 #requested <!-- id:sc-3 -->\n'
   # sorted by text: alpha (sc-1), beta (sc-2), gamma (sc-3)

@@ -7,7 +7,8 @@
 # Per row (INBOX_PLAN_MAX a pass, oldest first) one model call (the conf's MODEL) reads the row,
 # its details, its project's open rows and, read-only, the project's code, and proposes a goal,
 # an approach, checks, a size and a split. Every write is the CLI's: `ptask edit --exact` takes
-# #plan off and adds the plan as detail lines, `ptask add` adds each split row. A refusal is in
+# #plan off and adds the plan as detail lines, `ptask tag` puts the row under the epic the plan
+# names (reparent_args), `ptask add` adds each split row. A refusal is in
 # the ingest record, so later passes skip the row until its words change. `--kick` starts this
 # runner's unit, without waiting, when a row waits and its budget has room for the call; the inbox
 # sweep and fleet-dispatch's skip_exits call it after they tag rows. How it all fits: notes-cli
@@ -64,10 +65,13 @@ WAITING_JQ='[.rows[] | select(.state == "open" and .id != null and (.text | test
 # shellcheck disable=SC2016 # jq source, not shell
 REVIEWS_JQ='[.[] | select(.mode == "plan" and ((.tags // "") | test("(^| )#?requested( |$)")))] | length'
 
-# seen: the record's refused rows, by project and words.
+# seen: the record's refused rows, by project and words. A refusal for an #of/ in --text was this
+# script's fault, not the row's (it typed the plan's epic there before reparent_args), so it holds
+# no row, and the rows it refused are planned again.
 seen() {
   [ -s "$RECORD" ] || { echo '{}'; return; }
-  jq -cn '[inputs | select(.action == "refused") | {key: (.from + "\t" + .text), value: true}]
+  jq -cn '[inputs | select(.action == "refused" and ((.why // "") | contains("edit keeps its parent") | not))
+    | {key: (.from + "\t" + .text), value: true}]
     | from_entries' "$RECORD" 2>/dev/null || echo '{}'
 }
 
@@ -135,16 +139,27 @@ plan_row() {
   if [[ "$size" =~ ^[sml]$ ]]; then
     new="$(sed -E 's/(^| )#size\/[a-z]+( |$)/ /g; s/  +/ /g; s/ $//' <<<"$new") #size/$size"
   fi
+  # The epic the plan names goes on with `tag` once the words are in (reparent_args), never in
+  # --text: the board's text carries no #of/, and edit refuses one naming another parent.
   epic="$(jq -r '.epic // "" | tostring' <<<"$ans")"
-  if [[ " $new " != *" #of/"* ]] && epic_known "$epic" "$p" "$epics"; then new="$new #of/$epic"; fi
+  local parent; parent="$(jq -r '.parent // ""' <<<"$row")"
+  local -a tags=()
+  mapfile -t tags < <(reparent_args "$p" "$parent" "$epic" "$epics")
   if [ "$DRY" = 1 ]; then
-    printf 'would plan [%s] %s -> %s:' "$p" "$id" "$new"; printf ' %q' "${dets[@]}" "${rows[@]}"; echo; return 0
+    printf 'would plan [%s] %s -> %s:' "$p" "$id" "$new"; printf ' %q' "${dets[@]}" "${rows[@]}"
+    [ "${#tags[@]}" = 0 ] || { printf ' then tag'; printf ' %q' "${tags[@]}"; }
+    echo; return 0
   fi
   local err rc
   if ! { err="$(notes ptask "$p" "${lanes[@]}" --exact edit --text "$new" "${dets[@]}" -- "$raw" 2>&1 1>&3)"; } 3>&1; then
     refused "$p" "$(tail -n 1 <<<"${err:-not edited}" | clean 160)" "$text"; return 1
   fi
   PLANNED=$((PLANNED + 1))
+  if [ "${#tags[@]}" -gt 0 ] && ! notes ptask "$p" "${lanes[@]}" tag "${tags[@]}" -- "$id" >/dev/null; then
+    say "$p $id: planned, but not put under $epic"; proof_why "$p $id: tag refused of/$epic"; FAILED=$((FAILED + 1))
+  elif [ "${#tags[@]}" = 0 ] && [ -n "$parent" ] && [ -n "$epic" ] && [ "$epic" != "$parent" ]; then
+    say "$p $id: stays under $parent, not the plan's $epic"
+  fi
   for r in "${rows[@]}"; do
     r="$(clean 150 <<<"$r")"; [ -n "$r" ] || continue
     notes ptask "$p" "${lanes[@]}" add -- "$r #of/$id" >/dev/null 2>&1

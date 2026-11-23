@@ -90,6 +90,47 @@ record() { cat "$HOME/.local/state/notes/ingest.jsonl" 2>/dev/null; }
   assert_output --partial '  goal: the gun plays on time'
 }
 
+@test "a plan moves a row off its standing epic onto the feature epic it names, through tag, and refuses nothing" {
+  # 2026-11-23: the planner typed its epic into --text on rows that already had a parent, and the
+  # #3267 guard refused all 31 of them in a day.
+  sheet '- [ ] epic(ui): ui to standard <!-- id:sc-5 -->\n- [ ] epic(ui): the pause menu #size/l <!-- id:sc-9 -->\n- [ ] fix(ui): the menu lags #size/s #plan #of/sc-5 <!-- id:sc-1 -->\n'
+  answer '{"goal": "the menu opens at once", "approach": ["profile it"], "checks": ["it opens"], "size": "s", "split": [], "epic": "sc-9"}'
+  run "$PLAN"
+  assert_success
+  assert_output --partial 'planned 1'
+  assert_output --partial 'refused 0'
+  run cat "$SHEET"
+  assert_output --regexp 'fix\(ui\): the menu lags .*#of/sc-9 .*id:sc-1'
+  refute_line --regexp 'menu lags .*#of/sc-5'
+  assert_output --partial '  goal: the menu opens at once'
+}
+
+@test "negative control: a row under a chosen parent (a split's row, no epic) keeps it, and says so" {
+  sheet '- [ ] epic(ui): the pause menu #size/l <!-- id:sc-9 -->\n- [ ] feat(ui): a pause menu #size/l <!-- id:sc-2 -->\n- [ ] fix(ui): the menu lags #size/s #plan #of/sc-2 <!-- id:sc-1 -->\n'
+  answer '{"goal": "the menu opens at once", "approach": ["profile it"], "checks": ["it opens"], "size": "s", "split": [], "epic": "sc-9"}'
+  run "$PLAN"
+  assert_success
+  assert_output --partial 'planned 1'
+  assert_output --partial 'sc-1: stays under sc-2, not the plan'
+  run cat "$SHEET"
+  assert_output --regexp 'fix\(ui\): the menu lags .*#of/sc-2 .*id:sc-1'
+  refute_output --partial '#of/sc-9'
+}
+
+@test "a refusal for an #of/ in --text holds no row: the row is planned again" {
+  sheet '- [ ] epic(ui): ui to standard <!-- id:sc-5 -->\n- [ ] fix(ui): the menu lags #size/s #plan #of/sc-5 <!-- id:sc-1 -->\n'
+  text="$(notes board --json | jq -r '.rows[] | select(.id == "sc-1") | .text')"
+  [ -n "$text" ] || fail "the board never listed sc-1"
+  notes ingest record --action refused --from scratch \
+    --why 'Error: the row is under #of/sc-5, and edit keeps its parent: #of/sc-9 in --text would be dropped.' -- "$text"
+  answer '{"goal": "the menu opens at once", "approach": ["profile it"], "checks": ["it opens"], "size": "s", "split": []}'
+  run "$PLAN"
+  assert_success
+  assert_output --partial 'planned 1'
+  run cat "$SHEET"
+  refute_output --partial '#plan'
+}
+
 @test "a notes with no row types asks no model and leaves the row as it was" {
   sheet '- [ ] feat(brand): a brand kit #size/s #plan #high <!-- id:sc-1 -->\n'
   answer '{"goal": "one kit", "approach": ["collect"], "checks": ["renders"], "size": "s", "split": []}'
