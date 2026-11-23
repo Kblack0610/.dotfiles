@@ -152,6 +152,34 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   run "$AGENT_ASK" show "$d"; assert_line 'answered_by: human'
 }
 
+# 2026-11-22: a cleanup session answered four asks that board rows waited on; each read answered,
+# left the human's list, and its row could never start, so queue-starved tripped (ar-3172).
+@test "answer: an agent answer to an ask a board row or queue item waits on is refused and leaves it pending" {
+  local opts='go=run it now|later=run it later' a b c
+  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
+  a="$("$AGENT_ASK" post --project demo --options "$opts" 'row held?')"
+  b="$("$AGENT_ASK" post --project demo --options "$opts" 'item held?')"
+  printf '{"rows":[{"project":"demo","id":"dm-1","state":"open","tags":["ask/%s/go"],"tags_cased":["ask/%s/go"]}],"done":[]}\n' "$(tr A-Z a-z <<<"$a")" "$a" > "$NOTES_FIXTURE/board.json"
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy held "tags: ask:$b=go" --project demo "the next phase" >/dev/null
+  run env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer "$a" go
+  assert_failure 1
+  assert_output --partial "$a holds dm-1, which only the human's answer releases"
+  run "$AGENT_ASK" show "$a"; assert_line 'status: pending'
+  run env CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" answer "$b" go
+  assert_failure 1
+  assert_output --partial "$b holds held,"
+  run "$AGENT_ASK" show "$b"; assert_line 'status: pending'
+  # The human's answer from a board still releases it.
+  run "$AGENT_ASK" answer "$b" go
+  assert_success
+  run "$AGENT_ASK" show "$b"; assert_line 'answered_by: human'
+  # Negative control: an ask nothing waits on takes an agent answer.
+  c="$("$AGENT_ASK" post --project demo --options "$opts" 'free?')"
+  run env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer "$c" go
+  assert_success
+  run "$AGENT_ASK" show "$c"; assert_line 'answered_by: agent'
+}
+
 @test "another session, or a post with no session id, is not held by someone else's ask" {
   CLAUDE_CODE_SESSION_ID=sid-1 post demo 'merge it?' >/dev/null
   run env CLAUDE_CODE_SESSION_ID=sid-2 "$AGENT_ASK" post --project demo 'ship it?'

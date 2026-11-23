@@ -51,7 +51,9 @@
 #                                       --by human (default from a board) | judge | shepherd | agent
 #                                       -> answered_by. Inside an agent session
 #                                       (CLAUDE_CODE_SESSION_ID or AGENT_QUEUE_ITEM set) the
-#                                       default is agent and --by human is refused
+#                                       default is agent and --by human is refused; an agent
+#                                       answer to an ask a queue item or board row waits on is
+#                                       refused, since only the human's answer releases it
 #   agent-ask deliver <id> | --all      deliver a recorded answer: typed into its live session,
 #                                       else a board row, then its `resume` (via ask-resume).
 #                                       agent-ask-deliver.path runs --all on each answer
@@ -994,6 +996,15 @@ cmd_answer() {
   if [ "$by" = agent ] && [ "$(field "$f" status)" != pending ]; then
     echo "agent-ask: $id is $(field "$f" status); an agent answer does not replace one" >&2; return 1
   fi
+  # Only the human's answer releases a gate (released_by), so an agent answer to an ask a queue
+  # item or board row waits on would close the ask, drop it off the human's list, and leave the gate
+  # shut for good. 2026-11-22: a cleanup answered XqrCXG, Kx1MNl, 79LHB7 and 9TksjR that way, and
+  # queue-starved tripped on tr-186, ucp-1816, ucp-1548 and bk-111 (ar-3172, ar-4682).
+  local holders
+  if [ "$by" = agent ] && holders="$(queue_holders "$id" | cut -f1 | paste -sd' ')" && [ -n "$holders" ]; then
+    echo "agent-ask: $id holds $holders, which only the human's answer releases; it stays pending for them (agent-ask recommend $id <option> sets your pick)" >&2
+    return 1
+  fi
 
   # A human answer is the review of any judge answer. One given after the judge's stands beside
   # it: the judge's stays what judge-eval and the precedents read, so the override is what counts.
@@ -1017,9 +1028,6 @@ cmd_answer() {
   # No page: only the human answers, so "ask answered" told them what they just did. The
   # producer learns from the file (post --wait), deliver_to_session, and ask-resume.
   echo "answered $id: $answer" >&2
-  # An agent answer releases no gate: only the human's does (released_by).
-  [ "$by" != agent ] || [ -z "$(queue_holders "$id")" ] ||
-    echo "agent-ask: queue items held on $id stay held until the human answers it from a board" >&2
 }
 
 # record_answer <file> <by> <answer> [<key> <value>...]: the ask's answer fields, and any others
