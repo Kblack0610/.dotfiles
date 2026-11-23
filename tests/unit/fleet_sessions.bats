@@ -13,7 +13,7 @@ setup() {
   # no runs when there is none, and fails like a stale sync while $LEDGER_DIR/FAIL exists.
   # The PR store stand-in: `prs <repo>` answers $LEDGER_DIR/prs_<owner_repo>.tsv, else prs.tsv
   # (rows "branch \t number \t state \t ci \t head \t red \t merged_at \t title \t labels, comma-joined"), no PRs when there is neither,
-  # `sync-prs <repo>` (the poll catching up) copies $LEDGER_DIR/after_sync_<owner_repo>.tsv over that repo's rows, and fails while $LEDGER_DIR/SYNC_FAIL exists;
+  # `sync-prs [--wait] <repo>` (the poll catching up) copies $LEDGER_DIR/after_sync_<owner_repo>.tsv over that repo's rows, and fails while $LEDGER_DIR/SYNC_FAIL exists;
   # fails like a stale store while $LEDGER_DIR/PRS_FAIL exists, or PRS_FAIL_<x> for a repo whose
   # owner_repo name ends in <x>, and lists no
   # repo (exit 3) while $LEDGER_DIR/PRS_UNLISTED does.
@@ -43,6 +43,7 @@ case "$1" in
       head_sha: .[4], red: (.[5] // "-"), merged_at: (.[6] // "" | if . == "" then null else . end), title: .[7],
       labels: (.[8] // "" | split(",") | map(select(. != "")))}]' "$f" ;;
   sync-prs)
+    [ "$2" != --wait ] || set -- "$1" "${@:3}"
     [ ! -e "$LEDGER_DIR/SYNC_FAIL" ] || { echo "$2: forge unreachable" >&2; exit 1; }
     f="$LEDGER_DIR/after_sync_${2//\//_}.tsv"; [ ! -f "$f" ] || cp "$f" "$LEDGER_DIR/prs_${2//\//_}.tsv" ;;
   *) exit 2 ;;
