@@ -2727,31 +2727,20 @@ pub fn retext(
             // A row that has its parent keeps it ([`md::retext_task`]), so a standing epic
             // filed for it would have no child.
             if md::split_parent(&row).1.is_some() {
-                return retext(
-                    p,
-                    log,
-                    name,
-                    pick,
-                    Some(t),
-                    append,
-                    details,
-                    false,
-                    None,
-                    lane,
-                    writer,
-                );
-            }
-            let proj_dir = projects::project_dir(p, name)?;
-            linked = link_standing(p, log, name, &proj_dir, &[t.to_string()], bin)?;
-            match &linked {
-                Some(l) => Some(l[0].as_str()),
-                None if crate::standing::wants_link(t).is_some() => {
-                    eprintln!(
+                Some(t)
+            } else {
+                let proj_dir = projects::project_dir(p, name)?;
+                linked = link_standing(p, log, name, &proj_dir, &[t.to_string()], bin)?;
+                match &linked {
+                    Some(l) => Some(l[0].as_str()),
+                    None if crate::standing::wants_link(t).is_some() => {
+                        eprintln!(
                         "--link: '{t}' names no system of {name} (or {name} has no systems list), so nothing was edited"
                     );
-                    return Ok(1);
+                        return Ok(1);
+                    }
+                    None => Some(t),
                 }
-                None => Some(t),
             }
         }
         _ => text,
@@ -2762,13 +2751,7 @@ pub fn retext(
     }
     if let Some(t) = text {
         let row = sheet_and_content(p, name, lane)?.and_then(|(_, c)| find_open(&c, pick));
-        let kept = row.and_then(|r| md::split_parent(&r).1);
-        let typed = md::split_parent(t).1;
-        if let (Some(kept), Some(typed)) = (kept, typed) {
-            if kept != typed {
-                bail!("the row is under #of/{kept}, and edit keeps its parent: #of/{typed} in --text would be dropped. Re-parent with `notes ptask {name} tag <id> --remove of/{kept} --add of/{typed}`, so nothing was edited");
-            }
-        }
+        refuse_reparent(row.as_deref(), name, t)?;
     }
     if let Some(t) = text.filter(|t| crate::epics::is_epic(t)) {
         refuse_epic_on_board(lane, &[t])?;
@@ -2780,32 +2763,16 @@ pub fn retext(
         }
     }
     if has_details {
-        let Some((sheet, content)) = sheet_and_content(p, name, lane)? else {
-            bail!("'{name}' has no task sheet yet");
-        };
-        let Some(new) = md::append_details(&content, sheet::TASKS, |l| pick.hits(l), details)
-        else {
-            eprintln!("no open task matches '{pick}' in {name}");
-            return Ok(1);
-        };
-        write_sheet(&sheet, &new)?;
-        log.info(
-            "ptask",
-            &format!("detailed in {} ({name})", sheet.display()),
-        );
-        let row = content.lines().find(|l| pick.hits(l));
-        let mut ev = crate::ingest::Event::row(
-            "detailed",
+        if let Some(rc) = write_details(
+            p,
+            log,
             name,
-            "",
-            lane.name(),
-            row.unwrap_or(&pick.to_string()),
-        );
-        ev.why = Some(details.join("; "));
-        crate::ingest::record(p, &ev);
-        if text.or(append).is_none_or(str::is_empty) {
-            println!("detailed '{pick}'");
-            return Ok(0);
+            pick,
+            lane,
+            details,
+            text.or(append).is_none_or(str::is_empty),
+        )? {
+            return Ok(rc);
         }
     }
     let new_row = |l: &str| {
@@ -2820,6 +2787,58 @@ pub fn retext(
         new_row(l).unwrap_or_default()
     })?;
     Ok(edit(p, log, name, pick, "edited", None, lane, new_row)?.0)
+}
+
+/// `edit` keeps a row's `#of/` ([`md::retext_task`]), so a `--text` naming another parent would
+/// be dropped in silence: refused, with the command that does re-parent.
+fn refuse_reparent(row: Option<&str>, name: &str, text: &str) -> Result<()> {
+    let kept = row.and_then(|r| md::split_parent(r).1);
+    if let (Some(kept), Some(typed)) = (kept, md::split_parent(text).1) {
+        if kept != typed {
+            bail!("the row is under #of/{kept}, and edit keeps its parent: #of/{typed} in --text would be dropped. Re-parent with `notes ptask {name} tag <id> --remove of/{kept} --add of/{typed}`, so nothing was edited");
+        }
+    }
+    Ok(())
+}
+
+/// `edit --detail`: the lines go at the end of the row's block, and the call is done there
+/// (`Some(exit code)`) when no new text comes with them.
+fn write_details(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    pick: &Pick,
+    lane: Lane,
+    details: &[String],
+    only_details: bool,
+) -> Result<Option<i32>> {
+    let Some((sheet, content)) = sheet_and_content(p, name, lane)? else {
+        bail!("'{name}' has no task sheet yet");
+    };
+    let Some(new) = md::append_details(&content, sheet::TASKS, |l| pick.hits(l), details) else {
+        eprintln!("no open task matches '{pick}' in {name}");
+        return Ok(Some(1));
+    };
+    write_sheet(&sheet, &new)?;
+    log.info(
+        "ptask",
+        &format!("detailed in {} ({name})", sheet.display()),
+    );
+    let row = content.lines().find(|l| pick.hits(l));
+    let mut ev = crate::ingest::Event::row(
+        "detailed",
+        name,
+        "",
+        lane.name(),
+        row.unwrap_or(&pick.to_string()),
+    );
+    ev.why = Some(details.join("; "));
+    crate::ingest::record(p, &ev);
+    if only_details {
+        println!("detailed '{pick}'");
+        return Ok(Some(0));
+    }
+    Ok(None)
 }
 
 /// `notes ptask <name> start <query>` - mark the first matching open task in progress (`[/]`).
