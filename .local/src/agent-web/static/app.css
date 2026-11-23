@@ -487,8 +487,8 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
 @media (max-width: 760px) {
   /* Home's cards two across and compact: title, number, bar, its first two counts and its first look-first row
      (with its level word, so a state never rests on colour alone); the rest is the tab a tap opens. */
-  .kgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 10px; }
-  .kcard { padding: 8px 10px; }
+  .kgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin-bottom: 10px; }
+  .kcard { padding: 6px 10px; gap: 0; }  /* eleven cards (CI apart from Health) still end inside the first screen */
   .kbig { font-size: 22px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .kbig .ku { display: block; margin: 0; overflow: hidden; text-overflow: ellipsis; }
   .kparts { flex-wrap: nowrap; overflow: hidden; gap: 0 10px; }
