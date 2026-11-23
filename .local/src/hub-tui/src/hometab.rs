@@ -508,7 +508,7 @@ pub fn page(
                     ]
                 })
                 .collect(),
-            keep: vec![4, 0, 1],
+            keep: vec![0, 4, 1, 3, 2],
             flex: Some(1),
             flexmin: 12,
             flexkeep: true,

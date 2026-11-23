@@ -6744,7 +6744,8 @@ mod tests {
         // The Queue card counts the queue Home holds; the others read until their tab answers.
         assert!(
             s.contains("QUEUE  1 running")
-                && s.contains("Running 1  On a PR 0")
+                && s.contains("Running 1")
+                && !s.contains("On a PR")
                 && !s.contains("Ready")
                 && !s.contains("Held")
                 && s.contains("SESSIONS  - reading"),
@@ -7187,8 +7188,10 @@ mod tests {
         a.proposals = Some(Ok(vec![proposal("aa", "dream"), proposal("bb", "ci")]));
         let s = screen(&mut a, 120, 46);
         assert!(
-            s.contains("PROPOSALS (2 from 2 streams)") && s.contains("Do aa"),
-            "{s}"
+            s.contains("PROPOSALS (2 from 2 streams)")
+                && s.contains("STREAM")
+                && !s.contains("Do aa"),
+            "one row per stream, the records open on Enter: {s}"
         );
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char('j')))));
