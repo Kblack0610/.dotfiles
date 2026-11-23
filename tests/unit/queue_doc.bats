@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
-# QUEUE.md (private overlay, ~/.config/agentctl/) defines nine rows of ARCHITECTURE.md's Flows
+# QUEUE.md (private overlay, ~/.config/agentctl/) defines eight rows of ARCHITECTURE.md's Flows
 # table: Work intake, Queue states, Admission, the Fleet lease, Intake channels, Outbox to
-# board, Red triage, Alert ownership and Proposals. Each test here reads
+# board, Red triage and Alert ownership. Its Proposals section is no Flows row: no watch could
+# probe it (QUEUE.md "Proposals"). Each test here reads
 # one section's enumerable facts (a state, a source, a verb, a default, a lane) and the code that
 # implements it, from the files as text, so the section cannot drift from agent-queue,
 # fleet-dispatch or fleet-lease unseen. Change the code and its section together.
@@ -193,7 +194,7 @@ intake_files() {
 
 @test "Flows: the intake rows are in ARCHITECTURE.md, each at the heading that defines it" {
   local arch="$PRIV/.config/agentctl/ARCHITECTURE.md" a
-  for a in intake-channels outbox-to-board red-triage alert-ownership proposals; do
+  for a in intake-channels outbox-to-board red-triage alert-ownership; do
     grep -qF "QUEUE.md#$a" "$arch" || { echo "ARCHITECTURE.md has no Flows row for QUEUE.md#$a"; return 1; }
   done
 }
