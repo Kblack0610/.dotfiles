@@ -6,7 +6,7 @@
 //!
 //! One row per thing that waits: a session with a pending ask shows the ask, not the session as
 //! well, and a queue item waiting on a session already shown adds nothing. A waiting item an ask
-//! holds (its `ask:<id>` tag, or the ask's Claude session in its `sessions`) shows on the ask's row
+//! holds (its `ask:<id>` tag, or the ask's Claude session last in its `sessions`) shows on the ask's row
 //! after that session ends, and one whose last session's ask was answered leaves the list. Sessions are matched
 //! to a queue item by their tmux session name, the one name an item and a state row carry; an ask
 //! finds its session by `claude_session` alone (the state row's `session_id`), never by name.
@@ -1038,10 +1038,11 @@ pub fn needs(
             .find(|i| !task.is_empty() && i.slug == task);
         work(&mut worked, by_task);
         let id = str_of(a, "id");
-        let held = items
-            .iter()
-            .copied()
-            .find(|i| i.state == State::Waiting && (i.held_on(id) || i.ran_in(owner)));
+        let held = items.iter().copied().find(|i| {
+            i.state == State::Waiting
+                && !asked.contains(&i.slug)
+                && (i.held_on(id) || (!owner.is_empty() && i.last_session() == Some(owner)))
+        });
         let item = item_of(session).or(by_task).or(held);
         work(&mut worked, item);
         asked.extend(item.map(|i| i.slug.clone()));
@@ -1093,7 +1094,12 @@ pub fn needs(
     let mut answered: std::collections::HashMap<&str, i64> = Default::default();
     for a in state["answered_asks"].as_array().into_iter().flatten() {
         let sid = str_of(a, "claude_session");
-        if let Some(at) = a["answered_at"].as_i64().filter(|_| !sid.is_empty()) {
+        // An answer that never reached its session decides nothing yet: a board shows the failed delivery.
+        let failed = str_of(a, "delivery") == "failed";
+        if let Some(at) = a["answered_at"]
+            .as_i64()
+            .filter(|_| !sid.is_empty() && !failed)
+        {
             answered
                 .entry(sid)
                 .and_modify(|e| *e = (*e).max(at))
@@ -1103,7 +1109,14 @@ pub fn needs(
     let decided = |i: &Item| {
         i.last_session()
             .and_then(|sid| answered.get(sid))
-            .is_some_and(|&at| i.waiting.as_deref().and_then(ts).is_none_or(|w| w <= at))
+            .is_some_and(|&at| {
+                // An item with no `waiting:` stamp waits since it started; with neither, it is not decided.
+                i.waiting
+                    .as_deref()
+                    .or(i.started.as_deref())
+                    .and_then(ts)
+                    .is_some_and(|w| w <= at)
+            })
     };
     for i in items.iter().filter(|i| i.state == State::Waiting) {
         if asked.contains(&i.slug)
@@ -1664,7 +1677,19 @@ mod tests {
         };
         let h = build(Some(&st), Some(&q), None, None, NOW);
         assert!(!h.needs.iter().any(|n| n.kind == Kind::Queue));
-        // Negative control: an item another session ran in is its own row.
+        // Negative controls: an item resumed in a later session waits on that one, not the ask,
+        let mut resumed = by_session.clone();
+        resumed.sessions = Some("sid-gone sid-later".into());
+        let q = Queue {
+            items: vec![resumed],
+            ..Default::default()
+        };
+        let h = build(Some(&st), Some(&q), None, None, NOW);
+        assert!(h
+            .needs
+            .iter()
+            .any(|n| n.kind == Kind::Queue && n.id == "held"));
+        // and an item another session ran in is its own row.
         by_session.sessions = Some("sid-other".into());
         let q = Queue {
             items: vec![by_session],
@@ -1689,29 +1714,34 @@ mod tests {
             json!([{"id": "x", "claude_session": "sid-x", "answered_at": NOW - 600}]);
         let mut done = item("decided", State::Waiting, Some("lab:repo-agent-9"));
         done.sessions = Some("sid-x".into());
-        let q = Queue {
-            items: vec![done.clone()],
-            ..Default::default()
+        // No `waiting:` stamp: it waits since it started, before the answer.
+        done.started = Some("2026-11-05T16:00:00Z".into()); // NOW - 3600
+        let shown = |q: Item, st: &Value| {
+            let q = Queue {
+                items: vec![q],
+                ..Default::default()
+            };
+            build(Some(st), Some(&q), None, None, NOW)
+                .needs
+                .iter()
+                .any(|n| n.id == "decided")
         };
-        let h = build(Some(&st), Some(&q), None, None, NOW);
-        assert!(!h.needs.iter().any(|n| n.id == "decided"));
+        assert!(!shown(done.clone(), &st));
+        // Negative controls: an answer whose delivery failed decides nothing yet,
+        let mut failed = st.clone();
+        failed["answered_asks"][0]["delivery"] = json!("failed");
+        assert!(shown(done.clone(), &failed));
+        // and an item with no wait start at all is not taken as decided.
+        let mut unknown = done.clone();
+        unknown.started = None;
+        assert!(shown(unknown, &st));
         // Negative control: it began waiting again after the answer, so it waits on something new.
         let mut again = done.clone();
         again.waiting = Some("2026-11-05T16:55:00Z".into()); // NOW - 300
-        let q = Queue {
-            items: vec![again],
-            ..Default::default()
-        };
-        let h = build(Some(&st), Some(&q), None, None, NOW);
-        assert!(h.needs.iter().any(|n| n.id == "decided"));
+        assert!(shown(again, &st));
         // And an answer to an earlier session of it decides nothing for the last one.
         done.sessions = Some("sid-x sid-y".into());
-        let q = Queue {
-            items: vec![done],
-            ..Default::default()
-        };
-        let h = build(Some(&st), Some(&q), None, None, NOW);
-        assert!(h.needs.iter().any(|n| n.id == "decided"));
+        assert!(shown(done, &st));
     }
 
     #[test]

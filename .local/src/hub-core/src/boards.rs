@@ -235,6 +235,9 @@ pub struct Ask {
     /// When it was answered, unix seconds; None while it waits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answered_at: Option<i64>,
+    /// Where its answer's delivery stands: queued, delivering, done or failed; empty while pending.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub delivery: String,
     /// The question's first sentence, and the question after it (`text::headline`). A first
     /// sentence too long for headline's cap makes the whole question the title (a TSV row is one
     /// line): a card wraps, so it never shows a cut title over the same question again.
@@ -345,6 +348,7 @@ pub fn parse_asks(tsv: &str) -> Vec<Ask> {
                 recommend: col(10),
                 created: crate::fleet::ts(at(11)),
                 answered_at: crate::fleet::ts(at(8)),
+                delivery: col(27),
                 session: col(12),
                 claude_session: col(15),
                 judge: col(16),
@@ -386,8 +390,9 @@ pub enum AskSet {
     Answered,
 }
 
-/// How far back `AskSet::Answered` reads. An item still waiting longer than this after its answer
-/// is a stuck resume, and shows again as the human's.
+/// How far back `AskSet::Answered` reads, in days (agent-ask cuts by calendar day, so a day either
+/// way). An item still waiting longer than this after its answer is a stuck resume, and shows again
+/// as the human's.
 pub const ANSWERED_DAYS: u32 = 14;
 
 /// The asks of `set`, read through `agent-ask list`: the one reader of the store.
