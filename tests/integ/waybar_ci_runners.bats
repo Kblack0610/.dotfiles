@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
 # ci_runners.sh: the waybar CI chip. It renders `hub ci --json` .glance, the slot model
 # hub-core computes for every CI surface. What these pin: the bar is
-# jobs running, the queue and runners up of the roster; its colour and class are glance.alert (red only while a runner is down), never the
-# domain level nor its own judgement; the hover is each machine's cells on the title line, the board's head line in units, jobs by kind, one row per machine with
+# `CI r:<running> q:<queued>` behind dim labels and nothing else; its class is ok whatever the glance alert or domain level says, since a
+# runner or machine down is the health chip's; the hover is each machine's cells on the title line, the board's head line in units, jobs by kind, one row per machine with
 # a cell per capacity unit (a taken fraction as an eighth block), what runs there and the next waiting job that fits it (red past the load chip's HOT_RATIO), the
 # stopped cloud hosts on one line, down and long runs; and a failed hub read shows `CI: prom down`, never the last numbers.
 
@@ -13,6 +13,8 @@ setup() {
   sandbox_init basic
   MODULE="$REPO_ROOT/.config/waybar/ci_runners.sh"
   export FX="$BATS_TEST_TMPDIR" HUB="$BATS_TEST_TMPDIR/hub"
+  # No palette file, so the labels are C_DIM whatever this clone generated.
+  export PANGO_PALETTE="$BATS_TEST_TMPDIR/palette.css"
   cat > "$HUB" <<'STUB'
 #!/usr/bin/env bash
 [ "$*" = "ci --json" ] || exit 2
@@ -52,20 +54,21 @@ deskslim() {
 }
 
 bar()  { jq -r .text <<< "$output"; }
+bare() { bar | sed -E 's/<[^>]+>//g'; }
 tip()  { jq -r .tooltip <<< "$output"; }
 plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
 
-@test "the bar is jobs running, the queue and runners up; a warn domain with every runner up leaves it plain" {
+@test "the bar is CI r:<running> q:<queued> behind dim labels, nothing else" {
   run "$MODULE"
   assert_success
-  assert_equal "$(bar)" "CI 2 run q2 3/3"
+  assert_equal "$(bar)" "<span color='#7f7f7f'>CI r:</span>2 <span color='#7f7f7f'>q:</span>2"
   assert_equal "$(jq -r .class <<< "$output")" ok
 }
 
-@test "an empty queue reads q0 plain" {
+@test "an empty queue reads q:0" {
   glance '{"level": "ok", "queued": 0, "busy": 0}'
   run "$MODULE"
-  assert_equal "$(bar)" "CI 0 run q0 3/3"
+  assert_equal "$(bare)" "CI r:0 q:0"
   assert_equal "$(jq -r .class <<< "$output")" ok
 }
 
@@ -79,7 +82,7 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   assert_line "MACHINE     TAKEN         RUNNING                                                NEXT"
   assert_line "deskslim-1  3.0/3  ███    [unity] unity-core-playground x3                       -"
   assert_line "ms-a2       3.0/5  █████  [unity] platform x3                                    -"
-  assert_line --index 1 "2 running, 2 queued (oldest 15m), 2.0 queued ~12m, 3/3 runners up, 4 done 24h, 75% passed"
+  assert_line --index 1 "2 running, 2 queued (oldest 15m), 2.0 queued ~12m, 4 done 24h, 75% passed"
 }
 
 @test "the title is each machine's cells, a group per machine, so the cells read per machine" {
@@ -100,8 +103,8 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
 @test "the bar never shows slot units or the drain; the hover head keeps the drain" {
   glance '{"level": "ok", "busy": 6, "queued": 9, "units_busy": 6.4, "units": 16, "backlog": 9.2, "drain": 720}'
   run "$MODULE"
-  assert_equal "$(bar | sed -E 's/<[^>]+>//g')" "CI 6 run q9 3/3"
-  assert_equal "$(plain | sed -n 2p)" "6 running, 9 queued (oldest 15m), 9.2 queued ~12m, 3/3 runners up, 4 done 24h, 75% passed"
+  assert_equal "$(bare)" "CI r:6 q:9"
+  assert_equal "$(plain | sed -n 2p)" "6 running, 9 queued (oldest 15m), 9.2 queued ~12m, 4 done 24h, 75% passed"
 }
 
 @test "with no governor unit series every unit field is a dash and no cell is drawn, never a runner count as capacity" {
@@ -109,47 +112,41 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
     {"host": "workstation", "busy": 2, "slots": 2, "running": ["[gates]", "[unity] platform"], "next": null, "load": 0.4, "units": null, "units_busy": null}]}'
   run "$MODULE"
   assert_equal "$(tip | sed -n 1p)" "<b>CI runners</b>"
-  assert_equal "$(plain | sed -n 2p)" "2 running, 2 queued (oldest 15m), - queued -, 3/3 runners up, 4 done 24h, 75% passed"
+  assert_equal "$(plain | sed -n 2p)" "2 running, 2 queued (oldest 15m), - queued -, 4 done 24h, 75% passed"
   run plain
   assert_line "workstation     -         [gates], [unity] platform  -"
 }
 
-@test "a runner down is critical, the label and the up count red, whatever the domain says" {
-  glance '{"level": "ok", "alert": "red", "up": 2, "expected": 3, "down": [{"host": "mac-mini", "state": "offline", "n": 1}]}'
-  run "$MODULE"
-  assert_equal "$(jq -r .class <<< "$output")" critical
-  assert_equal "$(bar)" "<span color='#ef5734'>CI</span> 2 run q2 <span color='#ef5734'>2/3</span>"
-  # A job no online runner can take is red too, with every runner up: the count stays plain and
-  # the hover says which label nobody holds.
-  glance '{"alert": "red"}'
+@test "a runner down or a job nobody can take leaves the bar plain and ok; the hover still names it" {
+  glance '{"level": "red", "alert": "red", "up": 2, "expected": 3, "down": [{"host": "mac-mini", "state": "offline", "n": 1}]}'
   jq '.red = ["Build desktop (game) needs [unity-build]: no online runner holds unity-build"]' "$FX/ci.json" > "$FX/x" && mv "$FX/x" "$FX/ci.json"
   run "$MODULE"
-  assert_equal "$(jq -r .class <<< "$output")" critical
-  assert_equal "$(bar)" "<span color='#ef5734'>CI</span> 2 run q2 3/3"
-  assert_equal "$(tip | sed -n 4p)" "<span color='#ef5734'>Build desktop (game) needs [unity-build]: no online runner holds unity-build</span>"
-  # A red domain with every runner up is the health chip's to say, not this bar's.
-  glance '{"level": "red"}'
-  run "$MODULE"
   assert_equal "$(jq -r .class <<< "$output")" ok
+  assert_equal "$(bare)" "CI r:2 q:2"
+  [[ "$(bar)" != *"#ef5734"* ]]
+  assert_equal "$(tip | sed -n 4p)" "<span color='#ef5734'>Build desktop (game) needs [unity-build]: no online runner holds unity-build</span>"
+  run plain
+  assert_line "DOWN:"
+  assert_line "  mac-mini  1 offline"
 }
 
-@test "no runner read is no data, never green" {
+@test "no runner read still shows the counts and says no data in the hover" {
   glance '{"level": "nodata", "alert": "nodata", "up": 0, "expected": 0, "parts": []}'
   run "$MODULE"
-  assert_equal "$(jq -r .class <<< "$output")" warn
-  assert_equal "$(bar | sed -E 's/<[^>]+>//g')" "CI 2 run q2 -/-"
+  assert_equal "$(jq -r .class <<< "$output")" ok
+  assert_equal "$(bare)" "CI r:2 q:2"
   assert_equal "$(tip | sed -n 3p)" "ci: no data"
 }
 
 @test "the head line is the board's, the pass rate painted amber under 90%" {
   run "$MODULE"
-  assert_equal "$(tip | sed -n 2p)" "2 running, 2 queued (oldest 15m), 2.0 queued ~15m, 3/3 runners up, 4 done 24h, <span color='#ffcc2f'>75% passed</span>"
+  assert_equal "$(tip | sed -n 2p)" "2 running, 2 queued (oldest 15m), 2.0 queued ~15m, 4 done 24h, <span color='#ffcc2f'>75% passed</span>"
   glance '{"pass": 0.5}'
   run "$MODULE"
   [[ "$(tip | sed -n 2p)" == *"<span color='#ef5734'>50% passed</span>" ]]
   glance '{"queued": 0, "pass": 0.95}'
   run "$MODULE"
-  assert_equal "$(plain | sed -n 2p)" "2 running, 0 queued, 3/3 runners up, 4 done 24h, 95% passed"
+  assert_equal "$(plain | sed -n 2p)" "2 running, 0 queued, 4 done 24h, 95% passed"
 }
 
 @test "the parts line paints each level, and a short feed says why in red" {

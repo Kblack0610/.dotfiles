@@ -3,19 +3,16 @@
 # computes for every CI surface (the hub Infra tab and the agent-web infra page draw the same
 # struct), so the bar cannot count slots one way while the board counts them another.
 #
-# Bar: jobs running, jobs queued and runners up of the roster: `CI 4 run q3 12/12`, `-/-` with
-# no runner read. No slot cells on the bar: one per slot ran ~40 wide and pushed the right-side
-# modules into each other.
-# Colour: the CI label and the class take glance.alert, red only while a runner is down or a
-# queued job has no runner that can take it. Queue depth, drain and pass rate never colour the
-# bar; the health chip keeps cc:domain_status{domain="ci"}, queue waits and pass rate included.
-# The up count is red only while a runner is down. A job no online runner can take (hub ci's red
-# lines) is the hover's first line under the parts.
+# Bar: jobs running and jobs queued behind their labels, `CI r:4 q:3`, nothing else, plain like the
+# queue chip. A runner or machine down is the health chip's (cc:domain_status{domain="ci"} goes down
+# on a runners-online watch), so this bar neither counts runners nor turns red; its class is ok
+# unless the read itself fails.
+# A job no online runner can take (hub ci's red lines) is the hover's first line under the parts.
 # A unit in the hover is one slot a machine really has (a Unity slot, a gate slot, a macos
 # runner), never a runner registration.
 # Hover: the title with each machine's cells, a group per machine (a whole busy unit full, the
-# taken fraction as an eighth block on the dim colour, the rest dim), then the same head line as the
-# board (jobs running, queued, backlog units and drain time, runners up, done in 24h, pass rate
+# taken fraction as an eighth block on the dim colour, the rest dim), then the board's head line less its runner count
+# (jobs running, queued, backlog units and drain time, done in 24h, pass rate
 # painted red under 70% and amber under 90%), the ci domain's parts and why runner rows may be
 # short, then jobs by kind (running, waiting, oldest, done, pass), one row per machine: TAKEN
 # (units taken of its capacity, then its cells like the title's), RUNNING (each job by kind and
@@ -49,7 +46,7 @@ raw="$(timeout "$HUB_TIMEOUT" "$HUB" ci --json 2>"$err")" || {
 }
 jq -e '.glance' <<< "$raw" >/dev/null 2>&1 || fail "hub ci: no glance in its output"
 
-jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM" --argjson hot "$HOT_RATIO" '
+jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM" --arg lc "$(label_colour)" --argjson hot "$HOT_RATIO" '
   def esc: tostring | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;");
   def paint($c): "<span color='"'"'\($c)'"'"'>\(.)</span>";
   def pad($n): tostring | . + (" " * ([$n - length, 0] | max));
@@ -92,14 +89,10 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
   [$grn, $yel, $red] as $colour
   | (.red // []) as $nobody
   | .glance as $g
-  | ($g.alert | lvl) as $lv
-  # Glance::up_line: runners up of the roster, -/- with no runner read.
-  | (if ($g.expected // 0) == 0 then "-/-" else "\($g.up)/\($g.expected)" end) as $up
   | (if $g.queued > 0 then (if $g.drain == null then "-" else "~" + ($g.drain | dur) end) else null end) as $drain
   | ("\($g.busy) running, \($g.queued) queued"
      + (if $g.queued > 0 and $g.oldest != null then " (oldest \($g.oldest | dur))" else "" end)
      + (if $drain then ", \($g.backlog | u1) queued \($drain)" else "" end)
-     + ", \($up) runners up"
      + (if $g.done > 0 then ", \($g.done) done 24h"
           + (if $g.pass == null then "" else ", " + ($g.pass | pass_paint(($g.pass | pct) + " passed")) end)
         else "" end)) as $head
@@ -153,11 +146,10 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
     ) as $body
   | ([$ms[] | ubar(.units_busy; .units) | select(. != "")] | join(" ")) as $cells
   | {
-      text: ((if $lv > 0 then "CI" | paint($colour[$lv]) else "CI" end) + " \($g.busy) run q\($g.queued) "
-        + ($up | if ($g.down | length) > 0 then paint($red) else . end)),
+      text: (("CI r:" | paint($lc)) + "\($g.busy) " + ("q:" | paint($lc)) + "\($g.queued)"),
       tooltip: ("<b>CI runners</b>" + (if $cells == "" then "" else "  " + $cells end) + "\n\($head)\nci: \($parts | join(", "))\n"
         + ([$nobody[] | esc | paint($red) | . + "\n"] | join(""))
         + "<tt>\($body | join("\n"))</tt>"),
-      class: (["ok", "warn", "critical"][$lv])
+      class: "ok"
     }
 ' <<< "$raw" || fail "hub ci: unreadable glance"
