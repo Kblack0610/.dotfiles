@@ -1095,7 +1095,25 @@ gate_rbw() {
   assert_failure 3
   [[ "$(st after/ar-405)" == "dead|after ar-405: no board row"* ]]
   [ "$(grep -c 'board --json --done-days' "$NOTES_FIXTURE/calls.log")" = 1 ]
-  [ "$(grep -c 'board' "$NOTES_FIXTURE/calls.log")" = 2 ]
+  # and an id on neither read is looked up by id, once each, wherever it sits
+  [ "$(grep -c 'board --json --id' "$NOTES_FIXTURE/calls.log")" = 2 ]
+  [ "$(grep -c 'board' "$NOTES_FIXTURE/calls.log")" = 4 ]
+  # A row aimed past the open release is on neither feed; --id finds it open, so its gate waits
+  # (ar-4768: apo-181 on ucp-3050, a v0.5.8 row, read dead). NEGATIVE CONTROL: without the --id read it read dead.
+  jq -n '{rows: [{id: "ar-405", state: "open", version: "v9.0.0"}, {id: "ar-404", state: "done", marker: "id:ar-404 done:2026-01-01 dropped: moved"}]}' > "$NOTES_FIXTURE/board.ids.json"
+  run "$AQ" gate --json --all
+  assert_failure 3
+  [ "$(st after/ar-405)" = "pending|after ar-405 (open)" ]
+  [[ "$(st after/ar-404)" == "dead|after ar-404: that row was dropped"* ]]
+  # an --id read that fails holds the gate pending, as an unreadable board does
+  rm "$NOTES_FIXTURE/board.ids.json"
+  mv "$SANDBOX/bin/notes" "$SANDBOX/bin/notes.real"
+  printf '#!/usr/bin/env bash\ncase " $* " in *" --id "*) exit 1 ;; esac\nexec "%s" "$@"\n' "$SANDBOX/bin/notes.real" > "$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  run "$AQ" gate --json --all
+  assert_failure 3
+  [ "$(st after/ar-405)" = "pending|after ar-405 (notes board --json --id failed)" ]
+  mv "$SANDBOX/bin/notes.real" "$SANDBOX/bin/notes"
   # Once ar-2 closes done, ar-1's gate clears.
   jq '.done += [.rows[1] | .state = "done" | .marker = "id:ar-2 done:2026-11-18"] | .rows |= map(select(.id != "ar-2"))' \
     "$NOTES_FIXTURE/board.json" > "$SANDBOX/b.json" && mv "$SANDBOX/b.json" "$NOTES_FIXTURE/board.json"

@@ -16,6 +16,7 @@
 #   stages                      the ladder `notes projects --stages` prints
 #   prios                       name  prio, what `notes projects --prios` prints
 #   board.json                  what `notes board --json` prints
+#   board.ids.json              what `notes board --json --id <id>...` prints (default: no rows)
 #   ptask.added                 what `notes ptask <name> add` prints (the row, with its id)
 #   ptask.agent.added           what `notes ptask <name> --agent add` prints
 #   playtest.<profile>.<project> what `notes ptask <name> --playtest list` prints; with none it fails
@@ -125,8 +126,12 @@ case "${1:-}" in
       types) if [ -f "$FIX/row.types" ]; then cat "$FIX/row.types"; else echo "feat fix chore"; fi ;;
     esac
     ;;
-  # `notes board --json`: the board.json fixture (every open row, both lanes, every profile)
-  board) emit board.json ;;
+  # `notes board --json`: the board.json fixture (every open row, both lanes, every profile);
+  # with --id, board.ids.json (rows aimed past the open release, wherever they sit), else none
+  board) case " $* " in
+           *" --id "*) if [ -f "$FIX/board.ids.json" ]; then emit board.ids.json; else echo '{"rows":[]}'; fi ;;
+           *) emit board.json ;;
+         esac ;;
   today)
     : ;;                           # bootstrap no-op
   *)

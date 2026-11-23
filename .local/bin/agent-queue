@@ -837,10 +837,14 @@ after_fix() {
 # after/<row-id> is clear once that row closed done (within AQ_GATE_DONE_DAYS), dead once it was
 # dropped or when no row has that id, pending while it is open or the board cannot be read. One board
 # read and one rbw list serve every tag; --all reads the open board, and the closed rows only once an
-# after/ names a row that is not open (about 0.15s more, 2026-11-18). --all answers every gate tag on the board's open rows, and
+# after/ names a row that is not open (about 0.15s more, 2026-11-18), and `notes board --json --id` once
+# for an id neither lists: a row aimed past the open release sits on no feed (ar-4768: apo-181 waited
+# on ucp-3050, a v0.5.8 row, and read dead). --all answers every gate tag on the board's open rows, and
 # only those: fleet-dispatch's one call a pass (a board it cannot read fails it). --json: one {tag,
 # state, why, queue} line per tag, queue the hold tags it means (gate_queue_tag), which fleet-dispatch
 # promote puts on the row's item. Exit 0 when every gate is clear, else 3.
+# a feed row's state for an after/ gate: open, done, or dropped (a done row whose marker says so)
+ROW_STATE_JQ='if .state == "done" then (if ((.marker // "") | test("(^| )dropped")) then "dropped" else "done" end) else "open" end'
 cmd_gate() {
   local usage="usage: agent-queue gate [--json] (--all | <tag>...)"
   local json="" all="" board="" brd=0 full=1 rsl="" t q st why id r pass rc=0 GQ HOLD HOLD_DEAD stack STK STK_SLUG
@@ -878,11 +882,17 @@ cmd_gate() {
           # to v0.5.5 rows read dead), so those come first and a rows or done entry for the same id wins.
           while IFS=$'\t' read -r r st; do RS[$r]=$st; done < <(jq -r '((.sprints // [])[] | (.tasks // [])[]
               | select(.state != "gone")), (.rows // [])[], (.done // [])[]
-            | select(.id != null) | "\(.id)\t\(if .state == "done" then (if ((.marker // "") | test("(^| )dropped")) then "dropped" else "done" end) else "open" end)"' <<<"$board")
+            | select(.id != null) | "\(.id)\t\('"$ROW_STATE_JQ"')"' <<<"$board")
         fi
         [ "$brd" = 1 ] && [ -z "$full" ] && [ -z "${RS[$id]-}" ] || break
         if board="$(notes board --json --done-days "$AQ_GATE_DONE_DAYS" 2>/dev/null)"; then full=1 rsl=""; else brd=2; fi
       done
+      # On neither read: the row wherever it sits, once per id (`none` when it is nowhere).
+      if [ "$brd" = 1 ] && [ -z "${RS[$id]-}" ]; then
+        if r="$(notes board --json --id "$id" 2>/dev/null)"; then
+          RS[$id]="$(jq -r --arg id "$id" 'first((.rows // [])[] | select(.id == $id) | '"$ROW_STATE_JQ"') // "none"' <<<"$r")"
+        else RS[$id]=unread; fi
+      fi
       case "${RS[$id]-}" in
         done) st=clear ;;
         dropped) st=dead why="after $id: that row was dropped, so it never closes done; take the tag off the row" ;;
@@ -891,6 +901,7 @@ cmd_gate() {
           # that PR; agent-land merges it once the item closed ok). `stack` names the item for promote.
           stack_row "$id"
           [ -z "$STK" ] || { st=clear why="stacked on $STK" stack="$STK_SLUG"; } ;;
+        unread) st=pending why="after $id (notes board --json --id failed)" ;;
         *) if [ "$brd" = 1 ]; then st=dead why="after $id: no board row has that id$(after_fix "$id")"
            else st=pending why="after $id (notes board --json failed)"; fi ;;
       esac
