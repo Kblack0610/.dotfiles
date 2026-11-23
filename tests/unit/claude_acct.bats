@@ -2924,6 +2924,22 @@ STUB
   assert_output 0
 }
 
+@test "token push: localhost writes the copy here with no ssh, so no host key is needed" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  vault_put claude-oauth-alt "$TOK_ALT"
+  mkdir -p "$HOME/.local/bin"
+  ln -s "$ACCT" "$HOME/.local/bin/claude-acct"
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s/ssh.argv"; exit 255\n' "$SANDBOX" > "$SANDBOX/bin/ssh"; chmod +x "$SANDBOX/bin/ssh"
+  run "$ACCT" token push localhost
+  assert_success
+  assert_output 'localhost: main alt read back'
+  local d="${XDG_CONFIG_HOME:-$HOME/.config}/claude-acct/tokens"
+  [[ "$(cat "$d/alt")" == "$TOK_ALT" ]]
+  [[ "$(stat -c %a "$d/alt")" == 600 ]]
+  [[ ! -e "$SANDBOX/ssh.argv" ]]   # negative control: the failing ssh stub was never called
+}
+
 @test "token push: refuses with rbw locked here, and names an account the host cannot read" {
   rbw_stub
   vault_put claude-oauth-alt "$TOK_ALT"
