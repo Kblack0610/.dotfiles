@@ -93,7 +93,6 @@ k.bind(S .. "mouse_up", "previous workspace", dsp.focus({ workspace = "e-1" }), 
 -- Remote desktop: these fire even while a client inhibits shortcuts.
 local through = { dont_inhibit = true }
 k.exec("CTRL + ALT + SHIFT + Escape", "escape from RustDesk", SCRIPTS .. "rustdesk-escape.sh", through)
-k.exec("CTRL + ALT + SHIFT + G", "full keyboard passthrough to RustDesk on or off", SCRIPTS .. "rustdesk-grab-toggle.sh", through)
 k.exec("CTRL + ALT + SHIFT + B", "fullscreen under the bar or over it", SCRIPTS .. "fullscreen-bar.sh", through)
 
 -- Mouse
@@ -117,14 +116,21 @@ k.exec("XF86AudioPrev", "previous track", "playerctl previous", { locked = true 
 k.exec(S .. "SHIFT + K", "laptop keyboard on or off", SCRIPTS .. "toggle-laptop-keyboard.sh toggle")
 k.exec(S .. "SHIFT + F", "hold the left mouse button or let go", SCRIPTS .. "bg-autoclicker.sh")
 
--- VDI passthrough: a submap with one bind, so every other chord reaches the VDI client.
-k.bind(S .. "grave", "VDI passthrough on", k.run(
-    dsp.submap("passthru"),
-    dsp.exec_cmd([[notify-send -t 2000 "Hyprland" "VDI passthrough ON - Super+Esc to exit"; ~/.local/bin/desk signal custom/passthrough]])),
-    "submap passthru")
+-- Passthrough: a submap whose only binds leave it, so every other chord, Super included,
+-- reaches the focused window (RustDesk, a VDI client). One mechanism for every client: a
+-- client under XWayland cannot take the Wayland shortcuts grab, and RustDesk runs there
+-- (.local/bin/rustdesk). Super+` or Ctrl+Alt+Shift+G in, Super+Esc or Ctrl+Alt+Shift+G out;
+-- Ctrl+Alt+Shift+Esc also leaves it and escapes RustDesk.
+local signal = "~/.local/bin/desk signal custom/passthrough"
+local pass_on = k.run(dsp.submap("passthru"),
+    dsp.exec_cmd([[notify-send -t 2000 "Hyprland" "Passthrough ON - Super+Esc or Ctrl+Alt+Shift+G to exit"; ]] .. signal))
+local off_cmd = [[notify-send -t 2000 "Hyprland" "Passthrough OFF"; ]] .. signal
+local pass_off = k.run(dsp.submap("reset"), dsp.exec_cmd(off_cmd))
+k.bind(S .. "grave", "passthrough on", pass_on, "submap passthru")
+k.bind("CTRL + ALT + SHIFT + G", "passthrough on", pass_on, "submap passthru")
 k.submap("passthru", function()
-    k.bind(S .. "Escape", "VDI passthrough off", k.run(
-        dsp.submap("reset"),
-        dsp.exec_cmd([[notify-send -t 2000 "Hyprland" "VDI passthrough OFF"; ~/.local/bin/desk signal custom/passthrough]])),
-        "submap reset")
+    k.bind(S .. "Escape", "passthrough off", pass_off, "submap reset")
+    k.bind("CTRL + ALT + SHIFT + G", "passthrough off", pass_off, "submap reset")
+    k.bind("CTRL + ALT + SHIFT + Escape", "passthrough off and escape from RustDesk",
+        k.run(dsp.submap("reset"), dsp.exec_cmd(off_cmd .. "; " .. SCRIPTS .. "rustdesk-escape.sh")), "submap reset")
 end)
