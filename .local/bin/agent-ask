@@ -1241,14 +1241,6 @@ cmd_wait_delivered() {
 
 # --- live answers ----------------------------------------------------------
 #
-# judge_conf <key> <default>: AGENT_ASK_<key> when set, else ask-judge.conf's <key>, else the
-# default. The conf is sourced in a subshell, so nothing else it sets reaches this one.
-judge_conf() {
-  local env="AGENT_ASK_$1"
-  if [ -n "${!env+x}" ]; then printf '%s' "${!env}"; return 0; fi
-  ( . "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/ask-judge.conf" 2>/dev/null; printf '%s' "${!1:-$2}" )
-}
-
 # ask-judge.conf's DELAY_RULES is `<type>@<level>=<minutes>` per type the judge may answer, and
 # the level is its ceiling: the row answers that type at every impact level up to it (self, repo,
 # fleet; JUDGE_LEVELS), so a type is proven where a wrong answer reaches least before it answers

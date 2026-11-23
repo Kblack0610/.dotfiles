@@ -32,12 +32,12 @@ Each row comes with its project's stage, its lane and its tagged tier:
 - `prod` (live users): bugs and small fixes only. No new features, no flags turned on, nothing touching production data.
 - `beta`: bugs, and small features that are fully described in the row.
 - `alpha`: judged as `beta`; `too-big` and `unclear` decide size and clarity, not the stage.
-- (stage) The row is more than its project's stage allows above.
+- (stage-scope) The row is more than its project's stage allows above.
 
 ## Always skip
 
 A skip does not park a row: `fleet-dispatch` gives each agent-lane skip the exit its rule names (`skip_exits`), so pick the rule that names the real blocker.
-- plan: `unclear`, `bundle`, `too-big`, `multi-area`, `stage`, `question`, `tier-above` and `unknown` tag the row `#plan`, and inbox-plan splits or rewrites it.
+- plan: `unclear`, `bundle`, `too-big`, `multi-area`, `stage-scope`, `question`, `tier-above` and `unknown` tag the row `#plan`, and inbox-plan splits or rewrites it.
 - human: `needs-person`, `release`, `prod-write`, `compliance`, `personal` and `design` move the row off the agent lane: an `#urgent`, `#high`, bare or `#requested` row to the human sheet, a `#low` one to `improvements.md`.
 - `waits`: an `#after/<row>` or `#pr/<owner>/<repo>/<N>` gate on the row or PR your reason names, when the row otherwise fits; else plan. Name the row id or `owner/repo#N` in the reason when you know it.
 
@@ -67,7 +67,7 @@ A skip does not park a row: `fleet-dispatch` gives each agent-lane skip the exit
 - `agent_only`: true only if no step needs the human (see Always skip).
 - `verdict`: `dispatch` only when size is `S` or `M`, clear is true, agent_only is true, area is one word and your tier is no higher than the row's `tier`. Otherwise `skip`.
 - `reason`: one short sentence a human can scan, naming the deciding fact.
-- `rule`: the id, written without its parentheses (`stage`, never `(stage)`), of the one rule that decided the verdict, from the rules below and above.
+- `rule`: the id, written without its parentheses (`stage-scope`, never `(stage-scope)`), of the one rule that decided the verdict, from the rules below and above.
 
 ## Rules for the verdict
 
