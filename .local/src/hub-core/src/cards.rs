@@ -428,7 +428,8 @@ pub fn queue(
 
 /// The room the last dispatch pass had, as parts: sessions against the target (amber once the run
 /// units fill it, the gates and not the count decide when the machine is full) and load against its
-/// cap (amber from 80%, red past it; none when the pass sent no load), and the focus projects that go
+/// cap (amber from 80%, red past it; none when the pass sent no load; held on load, the load the gate
+/// judged), and the focus projects that go
 /// first. None without a pass.
 fn room(mut c: Card, v: &crate::queue_verdict::Verdict) -> Card {
     let d = |k: &str| v.get(&format!("dispatch.{k}"));
@@ -438,7 +439,13 @@ fn room(mut c: Card, v: &crate::queue_verdict::Verdict) -> Card {
         let ul = if units >= cap { Level::Warn } else { Level::Ok };
         c = c.part("Sessions", format!("{total} of {cap}"), ul);
         let f = |k: &str| v.fact(&format!("dispatch.{k}"));
-        if let (Some(load), Some(lcap)) = (f("room_load"), f("room_load_cap")) {
+        // Held on load, the load is the one the gate judged, as the pause line says it.
+        let load = if d("room_held_load") == Some(1) {
+            f("room_load_at_hold")
+        } else {
+            f("room_load")
+        };
+        if let (Some(load), Some(lcap)) = (load, f("room_load_cap")) {
             let ll = if load > lcap {
                 Level::Red
             } else if load >= lcap * 0.8 {

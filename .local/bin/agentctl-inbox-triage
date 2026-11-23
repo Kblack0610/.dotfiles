@@ -829,7 +829,8 @@ backlog_row() {
       row="$(epic_checked "$(clean 150 <<<"$row")" "${dest:-$p}" "$epics")"
       of="$(parent_word "$row")" row="$(no_parent "$row")"
       if [ -n "$row" ] && [ -n "$epic" ] && eid="$(epic_new "${dest:-$p}" "$(clean 150 <<<"$epic")")"; then
-        of="${of:-$eid}"
+        # the board read before the epic was filed lacks it, and reparent_args checks against it
+        [ -n "$of" ] || { of="$eid"; epics+=$'\n'"$eid"$'\t'"${dest:-$p}"$'\t'"$(untagged "$epic")"; }
       fi
       if [ -n "$row" ] && pt "$p" "$lane" --exact edit --was --text "$row" -- "$raw"; then
         REWROTE=$((REWROTE + 1)) VERDICT=rewrite
