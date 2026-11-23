@@ -85,7 +85,6 @@ __pycache__
 ^/\.config/aerospace$
 ^/\.config/launchd$
 ^/\.config/brewfile$
-^/\.config/spicetify$
 ^/\.config/firefox$
 ^/\.config/Code$
 ^/\.config/Windsurf$
