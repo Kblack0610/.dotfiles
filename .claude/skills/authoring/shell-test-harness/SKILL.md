@@ -13,14 +13,14 @@ metadata:
   # rows are the guard's data list: a suite runner found in another repo (plan P7) is one more row
   # or one more name in a row's group. All rows share one command-position prefix (after a
   # separator, a shell, sudo, xargs, a loop or if keyword, or VAR=x): change them together.
-  # `where` leaves out the repos with no pre-merge CI, whose local run is the only one.
+  # `where` leaves out playtest-bot, which has no pre-merge CI, so its local run is the only one.
   replaces:
-    # make suite targets; lint and test-files are not in the group.
+    # make test and every test-* target but test-files, the next row; lint is not one.
     - match: |-
-        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:[^\s=]*/)?g?make(?=\s)[^;&|()`\n]{0,300}?\s(?:test|test-(?:all|pr|fast|unit|integ|rust|ui|container|docker))(?=[\s;&|)]|$)
+        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:[^\s=]*/)?g?make(?=\s)[^;&|()`\n]{0,300}?\stest(?:-(?!files(?=[\s;&|)]|$))[\w-]+)?(?=[\s;&|)]|$)
       use: &ci "push the branch and let the PR's CI run the suite. To iterate here, name one test file, which passes, and so does lint: `bats <file>.bats`, `tests/run-bats.sh <file>.bats`, `make -C tests test-files FILES=<file>.bats` (unquoted: the guard cannot count files inside quotes), `vitest <file>.test.ts`, `pytest <file>.py`, `cargo test -p <crate> <name>`, `make -C tests lint`. In dotfiles `tests/pick.sh unit origin/main` (and `integ`, `rust`) lists what the PR's `shell tests` job will pick, and agent-land waits for those checks. A negative control is a pushed commit that breaks the subject, read red in CI, then reverted (shell-test-harness section 3)"
       mode: deny
-      where: &has_ci '^(?!.*/(?:playtest-bot|bnb-game-servers)(?:-[^/]*)?(?:/|$))'
+      where: &has_ci '^(?!.*/playtest-bot(?:-[^/]*)?(?:/|$))'
       why: &load "agent test-suite runs held the workstation at load 40 on 28 cores, about 500% CPU of bats in dotfiles worktrees, which holds dispatch (2026-11-23, epic ar-4846); CI runs the same suites off it, and one named file takes seconds of one core"
     # test-files passes with one unquoted FILES=<file>.bats, nothing else.
     - match: |-

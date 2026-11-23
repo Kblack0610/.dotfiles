@@ -1,6 +1,5 @@
 #!/usr/bin/env bats
-# tests/Makefile UNIT_JOBS: bats --jobs is every core, on CI and off it (an agent session runs no
-# suite on the workstation, ar-4862), unless the caller names a number.
+# tests/Makefile UNIT_JOBS: bats --jobs is every core unless the caller names a number.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -9,14 +8,12 @@ setup() {
   CORES=$(nproc)
 }
 
-# unit_jobs [make args...] -> the UNIT_JOBS the Makefile computes, off CI and on it.
-unit_jobs() { env -u CI make -s --no-print-directory -f "$MK" "$@" --eval 'show-unit-jobs: ; @echo $(UNIT_JOBS)' show-unit-jobs; }
+# unit_jobs [make args...] -> the UNIT_JOBS the Makefile computes.
+unit_jobs() { make -s --no-print-directory -f "$MK" "$@" --eval 'show-unit-jobs: ; @echo $(UNIT_JOBS)' show-unit-jobs; }
 
-@test "the jobs are every core, off CI and on it" {
+@test "the jobs are every core" {
   run unit_jobs
   assert_success
-  assert_output "$CORES"
-  run unit_jobs CI=true
   assert_output "$CORES"
 }
 

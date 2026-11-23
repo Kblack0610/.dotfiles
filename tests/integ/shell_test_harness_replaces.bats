@@ -4,7 +4,7 @@
 # test-files with no single unquoted file, a bats or run-bats.sh run naming no .bats file, the
 # harness's docker.sh and rust.sh, cargo test with no filter, a whole vitest, jest or pytest run) is
 # denied and pointed at the PR's CI; one named test file, lint, the picker, a build, a search and
-# quoted text naming the forms pass, and so does every run in a repo with no pre-merge CI. A human
+# quoted text naming the forms pass, and so does every run in playtest-bot, which has no pre-merge CI. A human
 # terminal never reaches the hook, so there is nothing of it to test here (epic ar-4846).
 
 setup() {
@@ -37,7 +37,7 @@ expect() {
 
 SUITES=(
   'make -C tests test-pr' 'make -C tests test-fast' 'make -C tests test-unit' 'make -C tests test-integ'
-  'make -C tests test-ui' 'make -C tests test-rust CRATES=hub' 'make test' 'make -C tests test-files'
+  'make -C tests test-ui' 'make -C tests test-rust CRATES=hub' 'make test' 'make test-e2e' 'make -C tests test-files'
   'make -C tests test-files FILES="unit/a.bats unit/b.bats"' 'make -C tests test-files FILES=unit'
   'make -C tests test-files FILES=unit/*.bats' 'make -C tests test-files FILES=unit/a.bats test-pr'
   'cd tests && make test-pr' '(cd tests; make test-unit)' 'timeout 600 make -C tests test-pr'
@@ -82,13 +82,29 @@ LINT_AND_OTHER=(
   assert_output ""
 }
 
+# One suite run per row: the cwd decides only `where`, so the other repos need not repeat them all.
+ONE_PER_ROW=('make -C tests test-pr' 'make test-files' 'bats tests/unit' 'tests/docker.sh' 'cargo test' 'vitest run' 'pytest')
+
 @test "a test-suite run is denied in any repo, the private overlay and another repo included" {
+  run expect deny "$WT" "${SUITES[@]}"
+  assert_success
   local w
-  for w in "$WT" /home/u/.dotfiles /home/u/.dotfiles-private /home/u/.worktrees/dotfiles-private-x \
-    /home/u/.worktrees/home-config-agent-1 /home/u/src/app /tmp; do
-    run expect deny "$w" "${SUITES[@]}"
+  for w in /home/u/.dotfiles /home/u/.dotfiles-private /home/u/.worktrees/dotfiles-private-x \
+    /home/u/.worktrees/home-config-agent-1 /home/u/dev/bnb/games/bnb-game-servers/registry /home/u/src/app /tmp; do
+    run expect deny "$w" "${ONE_PER_ROW[@]}"
     assert_success
   done
+}
+
+@test "every row starts with the one shared command-position prefix" {
+  local m n=0 first=
+  while IFS= read -r m; do
+    m=${m#"${m%%[! ]*}"} m=${m%%'\s+)*'*}
+    [ -n "$first" ] || first=$m
+    [ "$m" = "$first" ] || { echo "row $((n + 1)) has another prefix: $m" >&2; return 1; }
+    n=$((n + 1))
+  done < <(grep -A1 -e '- match: |-' "$CLAUDE_SKILLS/shell-test-harness/SKILL.md" | grep -v -e '- match: |-' -e '^--$')
+  [ "$n" -ge 8 ]
 }
 
 @test "the deny names the skill, the CI path and how to run one file" {
@@ -121,9 +137,9 @@ LINT_AND_OTHER=(
   assert_success
 }
 
-@test "negative control: a repo with no pre-merge CI keeps its local suite run" {
+@test "negative control: playtest-bot, with no pre-merge CI, keeps its local suite run" {
   local w
-  for w in /home/u/dev/bnb/playtest-bot /home/u/.worktrees/playtest-bot-agent-2 /home/u/dev/bnb/games/bnb-game-servers/registry; do
+  for w in /home/u/dev/bnb/playtest-bot /home/u/.worktrees/playtest-bot-agent-2; do
     run expect allow "$w" 'cargo test --locked' 'make test' 'bats tests'
     assert_success
   done

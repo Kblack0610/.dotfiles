@@ -6,7 +6,8 @@
 #   ui     driven through a real tmux server               ~1-2min  CONTAINER ONLY
 #
 # The first two tiers never start a tmux server, so they run anywhere -- they are CI's `fast`
-# job (an agent session runs none of this on the workstation). The ui tier starts real servers and sends real keys, so it runs ONLY
+# job (an agent session runs one named file of them at most on the workstation). The ui tier starts
+# real servers and sends real keys, so it runs ONLY
 # inside the disposable container (see Dockerfile for the full why: env-var isolation in
 # tmux fails silently, and a stray kill-server on a real machine takes out live sessions).
 # `make test-ui` therefore delegates to docker.sh rather than running bats directly.
@@ -92,9 +93,7 @@ test-fast: test-unit test-integ
 # per-test path. Three wall-clock budgets (agent_ask, questions_panel, agentctl_report) run at
 # one job per core, so they share a core no more than serially. A test that shares a fixed
 # path, a port or setup_file state with another breaks that, and goes red here first.
-# Jobs are every core: a suite runs on a CI runner, the job's own machine, and an agent session
-# runs none on the workstation (the shell-test-harness skill's rows deny it, ar-4862), so the
-# cores-free sizing and the run-bats.sh slot it waited for (ar-3277, ar-3403) went.
+# Jobs are every core: a suite runs on a CI runner, the job's own machine, never on the workstation.
 UNIT_JOBS ?= $(shell nproc 2>/dev/null || echo 2)
 FAST_PAR  := $(if $(shell command -v parallel 2>/dev/null),--jobs $(UNIT_JOBS))
 

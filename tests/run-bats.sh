@@ -35,15 +35,15 @@ fi
 # Every run outside CI is recorded where the hub's Jobs list reads it (source `tests`, hub-core
 # jobs/local.rs): a live file `$LOCAL_TESTS_LIVE/<pid>` while it runs, and one ledger row when it
 # ends, `end start result kind worktree branch repo waited what`, tab-separated (the Unity ledger's
-# columns, then the seconds spent waiting, always 0 since the machine's bats slots went, and the
-# test files). Why: the runs were invisible, so nine stacked suites showed only as a load number
+# columns, then a waited column the reader keeps, always 0 here, and the test files). Why: the runs were invisible, so nine stacked suites showed only as a load number
 # (ar-3291). A nested run (a test of this script) inherits RUN_BATS_OUTER and records nothing, and
 # neither does CI.
-own= sid= rec=
+sid= rec=
+own=$(mktemp -d "${TMPDIR:-/tmp}/bats-run-XXXXXX") || exit 1
 ledger="${LOCAL_TESTS_LEDGER:-${XDG_STATE_HOME:-$HOME/.local/state}/local-tests/runs.tsv}"
 live="${LOCAL_TESTS_LIVE:-${XDG_RUNTIME_DIR:-/tmp}/local-tests}"
-record_live() {   # <state>: this run's live line, replaced whole so a reader never sees half of it
-  printf '%s\t%s\tbats\t%s\t%s\t%s\t%s\n' "$t_run" "$1" "$wt" "$branch" "$repo" "$what" \
+record_live() {   # this run's live line, replaced whole so a reader never sees half of it
+  printf '%s\trunning\tbats\t%s\t%s\t%s\t%s\n' "$t_run" "$wt" "$branch" "$repo" "$what" \
     >"$live/.$$" 2>/dev/null && mv -f -- "$live/.$$" "$live/$$"
 }
 is_run() {        # <pid>: alive and still a run of this script, not a pid reused since a KILL
@@ -74,10 +74,8 @@ if [ -z "${RUN_BATS_OUTER:-}" ] && [ -z "${CI:-}" ]; then
   printf -v t_run '%(%s)T' -1
   mkdir -p "$live" 2>/dev/null
   for f in "$live"/*; do [ -e "$f" ] && ! is_run "${f##*/}" && rm -f -- "$f"; done  # dead runs
-  record_live running
-  trap 'rm -f -- "$live/$$"' EXIT
+  record_live
 fi
-own=$(mktemp -d "${TMPDIR:-/tmp}/bats-run-XXXXXX") || exit 1
 
 # pidwait returns once every process it matched has exited (it waits on pidfds), so nothing of the
 # session still writes into the dir when rm runs.
