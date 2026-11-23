@@ -1737,7 +1737,8 @@ merged_prs() {
 }
 
 # session_prs <transcript> -> the PRs this session opened or merged, as a JSON array of
-# {repo, number, state, merged_at}. A PR its repo's list does not reach has a null state.
+# {repo, number, state, merged_at}. A PR its repo's list does not reach has a null state. A Forgejo alias host is
+# read as the store's (so_canon_claims); collect runs so_canon_init once, so each row inherits the alias list.
 session_prs() {
   local f="$1" prs repo
   [ -f "$f" ] || { echo '[]'; return; }
@@ -2352,9 +2353,7 @@ collect() {
   # shellcheck source=/dev/null
   . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh" || return 1
   now="$(date +%s)"
-  heavy="$(heavy_panes)"
-  # The alias list and the store's host, read once and inherited by every row's session_prs (so_canon_claims).
-  so_canon_init "${SO_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}" 2>/dev/null || :
+  heavy="$(heavy_panes)"; so_canon_init "${SO_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}" 2>/dev/null || :
   local panel items qjson qall qitems off qheld qhand
   PROC_SNAP="$CACHE/procs"   # live_wait reads /proc into it on its first call
   off="$(off_default_checkouts)"
