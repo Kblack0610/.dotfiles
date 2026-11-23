@@ -6,7 +6,29 @@ metadata:
   category: authoring
   tags: [testing, shell, bats, dotfiles]
   system: [tests]
-  reviewed: "2026-07-27"
+  reviewed: "2026-11-23"
+  # The local test runs CI replaces; hand_methods.py denies them in an agent session (a human
+  # terminal never reaches the hook). The three rows share one command-position prefix (after a
+  # separator, sudo, nice, time, env, timeout or VAR=x): change all three together.
+  replaces:
+    - match: |-
+        (?:^|[;&|(){}`\n])\s*(?:(?:sudo(?:\s+-\S+)*|nice|time|env|timeout\s+\S+|nice\s+-n\s*\S+|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:\S*/)?g?make(?=\s)[^;&|()`\n]{0,300}?\s(?:test(?:-[\w-]+)?|lint)(?=[\s;&|)]|$)
+      use: &ci "push the branch and let the PR's CI run it: `shell tests` runs what `tests/pick.sh` picks (run `tests/pick.sh` to see the list; the picks are on the run's Summary page), `rust` the crates, `lint` the lint, and agent-land waits for those checks. A negative control is a pushed commit that breaks the subject, read red in CI, then reverted (shell-test-harness section 3)"
+      mode: deny
+      where: &dotfiles '(?:^|/)(?:\.dotfiles|\.worktrees/dotfiles-(?!private-)[^/]+)(?:/|$)'
+      why: &load "agent test runs held the workstation at load 40 on 28 cores, about 500% CPU of bats in dotfiles worktrees, which holds dispatch (2026-11-23, epic ar-4846); CI runs the same files off it"
+    - match: |-
+        (?:^|[;&|(){}`\n])\s*(?:(?:sudo(?:\s+-\S+)*|nice|time|env|timeout\s+\S+|nice\s+-n\s*\S+|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:\S*/)?(?:bats|run-bats\.sh|docker\.sh|rust\.sh|rust-crates\.sh|lint\.sh|lint-files\.sh|fleet-agent-smoke\.sh)(?=[\s;&|)]|$)
+      use: *ci
+      mode: deny
+      where: *dotfiles
+      why: *load
+    - match: |-
+        (?:^|[;&|(){}`\n])\s*(?:(?:sudo(?:\s+-\S+)*|nice|time|env|timeout\s+\S+|nice\s+-n\s*\S+|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:\S*/)?cargo(?=\s)[^;&|()`\n]{0,200}?\s(?:test|nextest)(?=[\s;&|)]|$)
+      use: *ci
+      mode: deny
+      where: *dotfiles
+      why: *load
 ---
 
 # shell-test-harness
@@ -16,11 +38,13 @@ How shell work gets tested and landed in this repo. The suite lives in `tests/`;
 The founding incident: writing the tmux UI tests destroyed every live tmux session on this machine, twice in one evening. Not because the test code was careless, but because the tests could *reach* the user's sessions at all. Everything below follows from that.
 
 ```
-    pick a tier  ->  write the test  ->  WATCH IT FAIL  ->  run the gates  ->  land
-                          |                    |
-                   host-safe or          negative control
-                   container-only?         (not optional)
+    pick a tier  ->  write the test  ->  push  ->  WATCH IT FAIL in CI  ->  CI green  ->  land
+                          |                              |
+                   host-safe or                    negative control
+                   container-only?                   (not optional)
 ```
+
+**CI is the gate, and the only place an agent session runs a test.** The PR's CI run of what `tests/pick.sh` picks is the test run; nothing runs on the workstation first. The forms that would run one here (`make -C tests test-*` and `lint`, `tests/run-bats.sh`, a direct `bats`, `tests/docker.sh`, `tests/rust.sh`, `cargo test`) are this skill's `metadata.replaces` rows, which `hand_methods.py` denies in an agent session inside a dotfiles checkout; a human's own terminal never reaches the hook. Why: on 2026-11-23 agent test runs held the workstation at load 40 on 28 cores (about 500% CPU of bats), which held dispatch, while CI already ran the same files (epic ar-4846). `tests/pick.sh` with no run still prints what the PR will pick.
 
 ## Scope and triggers
 
@@ -76,13 +100,14 @@ Prefer the cheapest tier that can actually fail. The suite caught a real routing
 
 `require_disposable_host()` enforces it: it **fails** (never skips - a skip is how a safety tier quietly stops running) unless `/.dockerenv` *and* an image-set env marker are both present. There is deliberately **no override flag**.
 
+The suite's entry points, which CI calls and a human may run in their own terminal (an agent session pushes instead):
+
 ```bash
-make -C tests test-pr       # the files the PR gate picks for this change: the local gate
-make -C tests test-fast     # unit + integ, every file: main and the nightly run it, not a session
+make -C tests test-pr       # the files the PR gate picks for this change
+make -C tests test-fast     # unit + integ, every file: main and the nightly run it
 make -C tests test-ui       # delegates to docker.sh; never invokes tmux on the host
 tests/docker.sh test-container   # everything, in the container
 tests/docker.sh lint            # the lint gate, same one CI runs
-tests/docker.sh --shell         # interactive shell in the image, for debugging
 ```
 
 Two "isolation" mechanisms that **do not work** - verified on tmux 3.7b, do not re-derive:
@@ -98,14 +123,16 @@ Exception, and the only one: a subject whose whole job is managing several serve
 
 ## 3. Write the negative control. Not optional.
 
-A test that has never failed is a guess. For every behaviour you claim to cover, break the subject and confirm the test notices:
+A test that has never failed is a guess. For every behaviour you claim to cover, break the subject and confirm the test notices. CI is where it runs:
 
 ```bash
-cp <subject> /tmp/x.bak
-trap 'cp /tmp/x.bak <subject>' EXIT      # restore even if you bail
-# invert a binding / transpose two verbs / drop a field / rename a constant
-<run the tier>                            # it MUST fail, and name the right thing
+# invert a binding / transpose two verbs / drop a field / rename a constant, in the subject only
+git commit -m "test: negative control, breaks <subject>" <subject> && git push
+gh pr checks <N>              # it MUST go red, and the run's Summary must name the right case
+git revert --no-edit HEAD && git push   # the PR's next run is green again
 ```
+
+The PR body names the red run as the proof. A guard's own close-but-wrong inputs (a quoted phrase, a near-miss path) go in the test as allow cases beside the deny ones, so that half of the control runs in every CI run.
 
 This is not ceremony. Real results from doing it:
 
@@ -126,15 +153,11 @@ Every failure mode in this repo's tooling has been *silent success*. Watch for i
 
 ## 5. Run the gates
 
-```bash
-make -C tests test-pr          # the gate: the files the PR picks, as CI does; must be green
-tests/docker.sh test-container # all tiers
-tests/docker.sh lint           # shellcheck at the current ratchet + house rules
-```
+The gate is the PR's CI: push, and `agent-land` waits for the `gate` check, which is red unless every job ran and passed. Nothing runs on the host first.
 
 The lint ratchet lives in `tests/lint.sh` (`SEVERITY`, currently `error`), shared by make and CI so a local green cannot mean a CI red. Move it one notch per PR - `error -> warning -> info -> style` - and re-measure before each step; do not jump to `style`, that is a permanently red check nobody reads.
 
-CI (`.github/workflows/tests.yml`), under the doctrine in `~/.local/src/docs/ci.md`; this repo's PR budget is a p90 of 5 minutes, and each job's own `timeout-minutes` in `tests.yml` is its hang guard, never a lever:
+CI (`.github/workflows/tests.yml`), under the doctrine in `~/.local/src/docs/ci.md`; this repo's PR budget is a p90 of 5 minutes, and each job's own `timeout-minutes` in `tests.yml` is its hang guard, never a lever. The jobs run on GitHub-hosted `ubuntu-24.04`, by decision (2026-11-23, ar-4848): this repo is public, so hosted minutes are free, and a self-hosted runner would run a fork PR's code on the LAN; `hosted-runner-guard.py` passes a public repo for the same reason, so `project-map.json` `github_runners.allow` needs no row for it. A move to private makes the guard deny the labels, and the runner move comes due then.
 - `fast` on the runner. A pull request runs what `tests/pick.sh` picks (the `test_picked` function in `.local/lib/test-pick.sh`) plus `tests/broad.txt`; main, the schedule and a dispatch run the whole tier, and so does a PR that touches the harness or whose diff cannot be read. The pick line ("picked N of M" or "full: <why>") is on the run's Summary page. A PR green and main red means the picker missed a dependency: teach `test_picked` it, with a case in `tests/unit/test_pick.bats`.
 - `tests/shard.sh` splits the files across the matrix by the per-file seconds the `weights` job reads from the newest green main run's JUnit (`shard.sh --junit`), so there is no table to regenerate. Each shard writes its predicted and actual seconds to the Summary. A shard near its cap: split its heaviest file (a file never spans shards) or add a shard: raise the tier's `FAST_SHARDS` in the weights job env (`shard.sh --matrix` sizes the matrix from the pick, one shard per `SHARD_SECONDS`, and `unit/shard.bats` rejects a hand-listed shard).
 - `ui` in the same image you used locally, `lint` likewise, plus a weekly tmux-version drift sweep. `push` is restricted to `main` on purpose - `branches: ['**']` makes every job run twice.
@@ -167,4 +190,5 @@ A guard that **fails open** deserves a test pinning its vocabulary to a literal.
 - Never run the `ui` tier, or any real-server test, outside the container. No override flag exists; do not add one.
 - Never `git checkout-index -a -f` to "tidy up" - it overwrites the working tree from the index and destroys unstaged work. `git reset` (mixed) unstages safely. Tar the dirty tree before any multi-step git surgery.
 - Never push or merge another session's branch to satisfy a hook. Report it instead.
-- Never claim something is verified without the command output. If a tier could not run, say which and why.
+- Never claim something is verified without the CI run that shows it. If a tier could not run, say which and why.
+- Never run a test on the workstation from an agent session, a single file included: push and read CI.
