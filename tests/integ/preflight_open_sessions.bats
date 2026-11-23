@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-# session-preflight.sh: a new session sees how many other sessions are still open in its
-# checkout, read from the fleet state file, so it is not blind to a conversation the human is
+# session-preflight.sh: a new session sees how many other sessions are still open on its project,
+# sibling worktrees included, read from the fleet state file, so it is not blind to a conversation the human is
 # having in another window.
 
 setup() {
@@ -55,7 +55,7 @@ context() {
     "$(row me-0000-0000 WORKING 0 'this very session')"
   run context me-0000-0000
   assert_success
-  assert_output --partial '2 other session(s) open in this checkout - `fleet-sessions` lists them.'
+  assert_output --partial '2 other session(s) open on repo (2 in this checkout) - `fleet-sessions` lists them.'
   # The count, not the topics: `fleet-sessions` has the list.
   refute_output --partial 'CI runners'
   refute_output --partial 'Pi low voltage'
@@ -72,7 +72,17 @@ context() {
   run context
   assert_success
   assert_output --partial 'Session Preflight'
-  refute_output --partial 'open in this checkout'
+  refute_output --partial 'other session(s) open'
+}
+
+@test "a sibling worktree of the same project counts by its project, other projects do not (ar-3879)" {
+  state "$(date +%s)" \
+    "$(row wwwwwwww-sib WORKING 2 'sibling' /elsewhere/repo-agent-7 | jq -c '.project = "repo"')" \
+    "$(row xxxxxxxx-oth WORKING 2 'other' /elsewhere/other-agent-1 | jq -c '.project = "other"')"
+  run context
+  assert_success
+  assert_output --partial '1 other session(s) open on repo - `fleet-sessions` lists them.'
+  refute_output --partial 'in this checkout'
 }
 
 @test "a session in a subdirectory counts" {
@@ -80,7 +90,7 @@ context() {
   state "$(date +%s)" "$(row ssssssss-sub CHAT 3 "$(printf 'first line\nsecond line')" "$REPO/sub")"
   run context
   assert_success
-  assert_output --partial '1 other session(s) open in this checkout'
+  assert_output --partial '1 other session(s) open on repo (1 in this checkout)'
 }
 
 @test "with no session id there is no block, since the session could not leave itself out" {
@@ -88,19 +98,19 @@ context() {
   run bash -c 'bash "$1" </dev/null 2>/dev/null | jq -r .hookSpecificOutput.additionalContext' _ "$DEPLOY/session-preflight.sh"
   assert_success
   assert_output --partial 'Session Preflight'
-  refute_output --partial 'open in this checkout'
+  refute_output --partial 'other session(s) open'
 }
 
 @test "a stale state file shows nothing rather than closed sessions" {
   state "$(( $(date +%s) - 3600 ))" "$(row aaaaaaaa-1111 WORKING 0 'long gone')"
   run context
   assert_success
-  refute_output --partial 'open in this checkout'
+  refute_output --partial 'other session(s) open'
 }
 
 @test "no state file, no block, and the preflight still renders" {
   run context
   assert_success
   assert_output --partial 'Session Preflight'
-  refute_output --partial 'open in this checkout'
+  refute_output --partial 'other session(s) open'
 }

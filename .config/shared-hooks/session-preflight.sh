@@ -250,28 +250,33 @@ startup_mark facts
 # and the ones it printed were other projects' (the dotfiles repo joins to two lab projects).
 # A dispatched session gets its own queue item's row, read below with the lessons' work text.
 
-# One count line for the other sessions still open in this checkout, read from the fleet state
+# One count line for the other sessions still open on this project, read from the fleet state
 # file that `fleet-sessions --write` keeps (one writer; this only reads it). A new session
 # should know it is not alone (2026-11-19: the Pi power session was open and mid-answer), but a
-# list of up to 8 topics was paid on every start; `fleet-sessions` has the list. Only this host's
-# sessions in this checkout or below it; the document's own `vocab` says which buckets are
-# finished, and PARKED is left out too, as its claude is gone. A state file older than
-# OPEN_MAX_AGE seconds shows nothing, since a stopped writer would count sessions long closed.
-# No session id (a manual run): no line, since the session could not leave itself out.
+# list of up to 8 topics was paid on every start; `fleet-sessions` has the list. The project is
+# the one a row carries (resolve_project_name of its cwd, the same call as PROJECT_NAME), so a
+# sibling worktree (`dotfiles-agent-7`) counts, not only this checkout (ar-3879); a session in
+# this checkout or below it counts too, for an app whose name differs from its repo's. Only this
+# host's sessions; the document's own `vocab` says which buckets are finished, and PARKED is left
+# out too, as its claude is gone. A state file older than OPEN_MAX_AGE seconds shows nothing,
+# since a stopped writer would count sessions long closed. No session id (a manual run): no
+# line, since the session could not leave itself out.
 OPEN_MAX_AGE=600
 FLEET_STATE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 SEC_OPEN=""
 if [ -n "$HOOK_SID" ] && [ -f "$FLEET_STATE" ] && command -v jq >/dev/null 2>&1; then
   SEC_OPEN=$(jq -r --arg cwd "$(realpath "$PROJECT_DIR" 2>/dev/null || printf '%s' "$PROJECT_DIR")" \
-    --arg me "$HOOK_SID" --argjson now "$(date +%s)" --argjson age "$OPEN_MAX_AGE" '
+    --arg proj "$PROJECT_NAME" --arg me "$HOOK_SID" --argjson now "$(date +%s)" --argjson age "$OPEN_MAX_AGE" '
     select($now - (.generated_epoch // 0) <= $age)
     | ((.vocab.finished // []) + ["PARKED"]) as $gone
     | [.sessions[]? | select((.session_id | type) == "string" and .session_id != $me
                              and .host == null
-                             and (.cwd == $cwd or ((.cwd // "") | startswith($cwd + "/")))
-                             and ((.bucket // "") as $b | $gone | index($b) | not))]
-    | select(length > 0)
-    | "\(length) other session(s) open in this checkout - `fleet-sessions` lists them."
+                             and ((.bucket // "") as $b | $gone | index($b) | not))
+                    | {here: ((.cwd // "") | . == $cwd or startswith($cwd + "/")), proj: (.project == $proj)}
+                    | select(.here or .proj)] as $open
+    | select(($open | length) > 0)
+    | ($open | map(select(.here)) | length) as $n
+    | "\($open | length) other session(s) open on \($proj)\(if $n > 0 then " (\($n) in this checkout)" else "" end) - `fleet-sessions` lists them."
     ' "$FLEET_STATE" 2>/dev/null) || SEC_OPEN=""
 fi
 startup_mark open
