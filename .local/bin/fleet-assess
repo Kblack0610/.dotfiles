@@ -28,7 +28,7 @@ set -uo pipefail
                                  # still reads fine (2026-11-06: 48% free, 63G in zram, kswapd0 at 95% CPU).
                                  # Provisional: revisit if fleet-thermal pages on a stall HOLD with no swap-in activity.
 : "${FLEET_CLEAR_STALL_PCT:=5}"  # stall under this -> may CLEAR
-: "${FLEET_HOT_TCTL:=95}"        # Tctl at the throttle point ...
+# FLEET_HOT_TCTL, Tctl at the throttle point ..., is set in .local/lib/cpu-temp.sh, shared with boot-cause
 : "${FLEET_HOT_LOAD_X:=1.5}"     # ... with load at least this -> HOLD
 # roots whose subtree sum alone never earns a row (comm of tmux's server is "tmux:")
 : "${FLEET_ROW_TREE_SKIP:=systemd init tmux: kthreadd}"

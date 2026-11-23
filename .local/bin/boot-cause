@@ -9,8 +9,10 @@
 # from what survives, in this order: a pstore dump or a kernel fault in the last kernel log, the last
 # power sample (AC, battery, UPS) the minute timer saved before the log stopped, and a house power
 # event seen from outside (other hosts whose node_boot_time_seconds is in the same window, from
-# Prometheus). A death with none of those is still recorded, as `silent-death` with the journal's
-# last line and `gaps` naming what could not be checked, never as an unknown.
+# Prometheus), then a last sample at the CPU throttle point (`thermal-suspect`). A death with none of
+# those is still recorded, as `silent-death` with the journal's last line and `gaps` naming what could
+# not be checked, never as an unknown. Each sample also carries the CPU temperature and the kernel, so
+# a record names the kernel it died on and how many boots on that kernel ended unclean.
 #
 # Files: $BOOT_CAUSE_DIR/<host>.jsonl (the record, one line per boot), $BOOT_CAUSE_STATE/samples.log
 # (the last SAMPLE_KEEP samples). Why and the reading guide: docs/operations/boot-cause.md.
@@ -49,9 +51,8 @@ UPS_TIMEOUT=5
 KERN_LINES=40
 # A sample older than this before the log stopped says nothing about the death (the timer had stopped).
 SAMPLE_FRESH=300
-# A last sample at or over this CPU temperature (C) makes an otherwise silent death thermal-suspect:
-# the throttle point fleet-assess holds at (FLEET_HOT_TCTL), so one config moves both.
-HOT_C=${FLEET_HOT_TCTL:-95}
+# A last sample at or over FLEET_HOT_TCTL (C, set in cpu-temp.sh, the one fleet-assess holds at) makes
+# an otherwise silent death thermal-suspect.
 
 die() { printf 'boot-cause: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "$1 not found"; }
@@ -122,6 +123,8 @@ co_reboot() {
 cmd_record() {
   need jq
   need journalctl
+  # Checked here, not at the top: a bad threshold must not stop the sample timer too.
+  [[ $FLEET_HOT_TCTL =~ ^[0-9]+([.][0-9]+)?$ ]] || die "FLEET_HOT_TCTL must be a number of degrees C, not '$FLEET_HOT_TCTL'"
   mkdir -p "$DIR" || die "cannot create $DIR"
   local rec="$DIR/$HOST.jsonl"
   # One record per boot: the user manager can restart inside a boot, and this runs again.
@@ -168,6 +171,8 @@ cmd_record() {
   # The kernel it ran, on every record, so a run of deaths on one kernel shows (2026-11-19: every boot on
   # 7.3.5 died, the 7.3.4 boot before it ran 40 h clean).
   kernel=$(jq -r '.kernel // empty' <<<"$sample" 2>/dev/null)
+  # No fresh sample: the dead boot's own kernel banner, when the journal still holds its start.
+  [ -n "$kernel" ] || kernel=$(journalctl -b -1 -k -o cat --no-pager 2>/dev/null | awk '/^Linux version / { print $3; exit }')
 
   if [ "$shutdown" = unclean ]; then
     evidence+=("journal stopped at $(date -d "@$last_epoch" '+%F %T %Z') with no shutdown target; $((gap_s / 60)) min before this boot")
@@ -206,9 +211,9 @@ cmd_record() {
     elif [ "${co_n:-null}" != null ] && [ "$co_n" -ge "$CO_MIN" ]; then
       cause=house-power-event confidence=medium
       evidence+=("$co_n other hosts booted within $((CO_WINDOW / 60)) min of this one")
-    elif jq -e --argjson h "$HOT_C" '(.cpu_temp_c // 0) >= $h' <<<"$sample" >/dev/null 2>&1; then
+    elif jq -e --argjson h "$FLEET_HOT_TCTL" '(.cpu_temp_c // 0) >= $h' <<<"$sample" >/dev/null 2>&1; then
       cause=thermal-suspect confidence=medium
-      evidence+=("last sample read the CPU at $(jq -r .cpu_temp_c <<<"$sample") C, at or over the $HOT_C C throttle point, with no other cause")
+      evidence+=("last sample read the CPU at $(jq -r .cpu_temp_c <<<"$sample") C, at or over the $FLEET_HOT_TCTL C throttle point, with no other cause")
     else
       cause=silent-death confidence=low
       evidence+=("no panic, no pstore dump, no kernel fault, no low battery or UPS alarm, no other host rebooting with it: a freeze, a hard reset or a power cut that took only this host")
@@ -218,7 +223,7 @@ cmd_record() {
     elif [ -z "$sample_ups" ]; then
       gaps+=("no UPS reachable from this host (no NUT or apcupsd): UPS state at death is unknown")
     fi
-    if [ "$cause" = silent-death ] && [ "$sample" != null ]; then
+    if { [ "$cause" = silent-death ] || [ "$cause" = thermal-suspect ]; } && [ "$sample" != null ]; then
       evidence+=("last sample: $(jq -c 'del(.boot_id,.host)' <<<"$sample")")
     fi
     local peak

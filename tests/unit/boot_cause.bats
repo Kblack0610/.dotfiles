@@ -221,6 +221,21 @@ sample_line() {
   assert_output --partial '96.5 C'
 }
 
+@test "a threshold that is not a number stops the record, saying so" {
+  journal_end 'app: working'
+  run env FLEET_HOT_TCTL=95C "$BC" record
+  assert_failure
+  assert_output --partial 'FLEET_HOT_TCTL must be a number'
+}
+
+@test "with no fresh sample the kernel comes from the dead boot's banner" {
+  journal_end 'app: working'
+  jq -n '{status:"success",data:{result:[]}}' > "$FIX/prom.json"
+  echo 'Linux version 7.3.5-1-cachyos (linux-cachyos@cachyos) #1 SMP' > "$FIX/kern"
+  run "$BC" record
+  assert_equal "$(last_row | jq -r .previous.kernel)" 7.3.5-1-cachyos
+}
+
 @test "a last sample under the throttle point stays a silent death" {
   journal_end 'app: working'
   jq -n '{status:"success",data:{result:[]}}' > "$FIX/prom.json"
