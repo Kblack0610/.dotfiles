@@ -2362,11 +2362,8 @@ impl App {
                 }
             }
             Msg::SprintPage(version, r) => self.sprint_page_in(version, *r),
-            Msg::StagesFile => {
-                if self.ladder_shown() {
-                    self.read_ladder();
-                }
-            }
+            Msg::StagesFile if self.ladder_shown() => self.read_ladder(),
+            Msg::StagesFile => {}
             Msg::Deliverables(r) => {
                 self.deliverables = Some(r);
                 self.deliverables_at = Some(std::time::Instant::now());
