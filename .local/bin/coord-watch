@@ -2,9 +2,9 @@
 # coord-watch - the event stream a /coordinate session waits on: one line per chain event
 # (~/.local/state/notes/ingest.jsonl) on a row, item or PR the session still tracks.
 #
-#   coord-watch --until <plan.md> [--from <writer>]...   print the first events, then exit 0 (exit 3: no open line)
+#   coord-watch --until <plan.md> [--from <writer>]...   print the first events, then exit 0 (exit 3: no open line, 4: the record ended first)
 #   coord-watch <plan.md> [--from <writer>]...   follow the record, one line per event (exit 3: no open line)
-#   coord-watch filter <plan.md> [--from w]... [--since ts] [--cursor file]   the filter over stdin
+#   coord-watch filter <plan.md> [--from w]... [--since ts] [--cursor file] [--batch s]   the filter over stdin
 #   coord-watch ids <plan.md>                    the tracked tokens, one per line
 #
 # Tracked: the first word of each open `- [ ]` line under the plan's `## Follow-through`. An event
@@ -26,7 +26,7 @@ REPLAY_LINES=20000
 # Actions that record bookkeeping, not progress: never a coordinator's cue.
 NOISE='["item-set","tagged","edited","detailed","sweep","sweep-stopped","item-claimed","running"]'
 
-usage() { sed -n '5,8p' "$0" | sed 's/^#   //' >&2; exit 2; }
+usage() { grep '^#   coord-watch ' "$0" | sed 's/^#   //' >&2; exit 2; }
 
 ids() {
   [ -f "$1" ] || { echo "coord-watch: no plan at $1" >&2; exit 2; }
@@ -42,7 +42,7 @@ filter() {
   # printed: each match already printed. A prune replaces the record and `tail -F` re-reads it
   # whole, so a match seen again is a replay. A set, not a newest ts: two writers can append out
   # of ts order, and a newest-ts skip would drop the later-written one.
-  local writers=("") since="" cursor="" batch="" deadline="" left tracked kind ts out
+  local writers=("") since="" cursor="" batch="" deadline="" left tracked kind ts out any=
   local -A printed=()
   [ -n "${AGENT_QUEUE_ITEM:-}" ] && writers+=("$AGENT_QUEUE_ITEM")
   [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && writers+=("${CLAUDE_CODE_SESSION_ID:0:8}")
@@ -97,11 +97,14 @@ filter() {
       [ -n "${printed["$ts $out"]+x}" ] && continue
       printed["$ts $out"]=1
     fi
-    printf '%s\n' "$out"
+    printf '%s\n' "$out"; any=1
     [ -z "$batch" ] || [ -n "$deadline" ] || deadline=$((EPOCHSECONDS + batch))
   done < <(events)
   # The subshell running this still waits on jq at exit, and jq waits on a quiet tail -F.
   [ -z "$batch" ] || kill "$!" 2>/dev/null || true
+  # The window opens only on a print, so a --batch loop that printed nothing ended on EOF: the tail
+  # died. An exit 0 there would read as an empty wake, and a re-arm on it as the loop this mode ends.
+  [ -z "$batch" ] || [ -n "$any" ] || { echo "coord-watch: the record stream ended with no event (tail -F of $COORD_WATCH_LOG exited)" >&2; return 4; }
   return 0
 }
 
@@ -125,20 +128,26 @@ case "${1:-}" in
     [ -n "$open" ] || {
       echo "coord-watch: no open line under '## Follow-through' in $plan, so there is nothing to watch; the validation wait is coordinate step 6" >&2
       exit 3; }
-    # An id-shaped ledger word (one with a digit) that no event ever carried and no board row has can
-    # never match: 2026-11-23 a ledger named a phase by a slug its item never had (the events carried
-    # ar-4707), and its coordinator waited on it all day. An owner/repo#N is a PR, matched on pr words.
-    unknown="$(grep -v '/.*#' <<<"$open" | grep '[0-9]' || true)"
+    # A row id or slug (lowercase words joined by '-', one with a digit) that no event ever carried, no
+    # board row has and no queue item is named can never match: 2026-11-23 a ledger named a phase by a
+    # slug its item never had (the events carried ar-4707), and its coordinator waited on it all day.
+    # Outbox text (`2FA`, `v2`) is not that shape, and an owner/repo#N is a PR, matched on pr words.
+    # A board that cannot be read refuses nothing: an unverified id is not a known-bad one.
+    unknown="$(grep -E '^[a-z0-9]+(-[a-z0-9]+)+$' <<<"$open" | grep '[0-9]' || true)"
     if [ -n "$unknown" ]; then
       seen="$(grep -ohF -f <(sed 's/.*/"&"/' <<<"$unknown") "$COORD_WATCH_LOG" 2>/dev/null | tr -d '"' | sort -u || true)"
       unknown="$(grep -vxF -f <(printf '%s\n' "$seen") <<<"$unknown" || true)"
     fi
-    if [ -n "$unknown" ] && command -v notes >/dev/null 2>&1; then
-      rows="$(notes board --json 2>/dev/null | jq -r '.. | objects | select(has("id") and has("text")) | .id' 2>/dev/null | sort -u || true)"
-      unknown="$(grep -vxF -f <(printf '%s\n' "$rows") <<<"$unknown" || true)"
+    if [ -n "$unknown" ]; then
+      if rows="$(notes board --json 2>/dev/null | jq -er '[.. | objects | select(has("id") and has("text")) | .id] | .[]' 2>/dev/null)"; then
+        unknown="$(grep -vxF -f <(printf '%s\n' "$rows") <<<"$unknown" || true)"
+        unknown="$(while read -r w; do agent-queue show "$w" >/dev/null 2>&1 || echo "$w"; done <<<"$unknown")"
+      else
+        echo "coord-watch: notes board gave no rows, so $(paste -sd' ' <<<"$unknown") went unchecked" >&2; unknown=""
+      fi
     fi
     [ -z "$unknown" ] || {
-      echo "coord-watch: no event or board row carries $(paste -sd' ' <<<"$unknown") in $plan, so those lines can never match; name the row id (ar-N) the chain events carry" >&2
+      echo "coord-watch: no event, board row or queue item carries $(paste -sd' ' <<<"$unknown") in $plan, so those lines can never match; name the row id (ar-N) the chain events carry" >&2
       exit 2; }
     # The armed mark: stop-post.d/89-coord-watch.sh blocks a coordinator's turn end while no live
     # watch of its own session is recorded here. A kill that skips the trap leaves the file; the

@@ -211,19 +211,36 @@ STUB
 @test "an id-shaped ledger word no event or board row carries is an error at arm, naming it" {
   local stubs="$SANDBOX/cw-stubs"; mkdir -p "$stubs"
   printf '#!/bin/sh\necho "{\\"rows\\":[{\\"id\\":\\"ar-77\\",\\"text\\":\\"x\\"}]}"\n' > "$stubs/notes"; chmod +x "$stubs/notes"
-  sed -i '/^## Results/i - [ ] plan-slug-p2 a slug nothing carries\n- [ ] ar-77 a board row with no event yet' "$PLAN"
+  printf '#!/bin/sh\n[ "$2" = queued-item-p1 ]\n' > "$stubs/agent-queue"; chmod +x "$stubs/agent-queue"
+  sed -i '/^## Results/i - [ ] plan-slug-p2 a slug nothing carries\n- [ ] ar-77 a board row with no event yet\n- [ ] queued-item-p1 a queue item with no event yet' "$PLAN"
   run env PATH="$stubs:$PATH" COORD_WATCH_STATE="$SANDBOX/cw" "$CW" --until "$PLAN"
   assert_failure 2
-  assert_output --partial 'no event or board row carries plan-slug-p2 in'
+  assert_output --partial 'no event, board row or queue item carries plan-slug-p2 in'
   refute_output --partial 'ar-77'
+  refute_output --partial 'queued-item-p1'
   [ ! -e "$SANDBOX/cw/session-abcdef12-0000-0000-0000-000000000000.pid" ]
+  # A board that cannot be read refuses nothing: the watch arms and says what went unchecked.
+  printf '#!/bin/sh\nexit 1\n' > "$stubs/notes"; printf '#!/bin/bash\nexit 0\n' > "$stubs/tail"; chmod +x "$stubs/tail"
+  run env PATH="$stubs:$PATH" COORD_WATCH_STATE="$SANDBOX/cw" timeout 20 "$CW" --until "$PLAN"
+  assert_failure 4
+  assert_output --partial 'gave no rows, so plan-slug-p2 ar-77 queued-item-p1 went unchecked'
 }
 
-@test "negative control: a PR, a digitless outbox text line and ids the record carries pass the arm check" {
+@test "negative control: a PR, outbox text lines (one with a digit) and ids the record carries pass the arm check" {
   local stubs="$SANDBOX/cw-stubs"; mkdir -p "$stubs"
   printf '#!/bin/bash\necho armed > "$SEEN"\n' > "$stubs/tail"; chmod +x "$stubs/tail"
-  sed -i '/^## Results/i - [ ] fix(ci): an outbox line triage has not filed' "$PLAN"
+  sed -i '/^## Results/i - [ ] fix(ci): an outbox line triage has not filed\n- [ ] 2FA login fix, outbox text' "$PLAN"
   run env PATH="$stubs:$PATH" COORD_WATCH_STATE="$SANDBOX/cw" SEEN="$SANDBOX/seen" "$CW" --until "$PLAN"
-  assert_success
+  refute_output --partial 'no event, board row or queue item carries'
   assert_equal "$(cat "$SANDBOX/seen")" armed
+}
+
+# An exit 0 on a dead tail would wake the coordinator with nothing, and its re-arm would loop.
+@test "--until whose record stream ends before any event exits 4 and says so, not 0" {
+  local stubs="$SANDBOX/cw-stubs"; mkdir -p "$stubs"
+  printf '#!/bin/bash\nexit 0\n' > "$stubs/tail"; chmod +x "$stubs/tail"
+  run env PATH="$stubs:$PATH" COORD_WATCH_STATE="$SANDBOX/cw" timeout 20 "$CW" --until "$PLAN"
+  assert_failure 4
+  assert_output --partial 'the record stream ended with no event'
+  [ ! -e "$SANDBOX/cw/session-abcdef12-0000-0000-0000-000000000000.pid" ]
 }
