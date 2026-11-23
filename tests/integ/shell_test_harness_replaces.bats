@@ -52,7 +52,9 @@ SUITES=(
   'cargo test -- --nocapture' 'cargo nextest run' 'cargo test 2>&1 | tail' 'cargo test --lib'
   'cd .local/src/notes-cli && cargo test --release'
   'vitest' 'vitest run' 'pnpm vitest run' 'npx vitest run --project x' 'pnpm exec vitest' 'npx jest --ci'
-  'vitest run src/**/*.test.ts' 'vitest run --config vitest.config.ts'
+  'vitest run src/**/*.test.ts' 'vitest run --config vitest.config.ts' 'vitest run src/a.test.ts src/'
+  'npx jest src/__tests__/foo.js src' 'bats tests/unit/a.bats tests/unit' 'bats tests/unit/a.bats "$d"'
+  'pytest tests/test_a.py tests/' 'make -C tests test-files FILES=unit/a.bats FILES=unit'
   'pytest' 'pytest tests/' 'python -m pytest -q lab/tests' 'uv run pytest -k foo' 'pytest tests/*.py'
 )
 
@@ -64,6 +66,8 @@ ONE_FILE=(
   'cargo test --test integ_x' 'cargo test -p hub -- name' 'cargo test --no-run' 'cargo test -p hub "a name"'
   'vitest run src/a.test.ts' 'pnpm vitest run apps/x/src/a.spec.tsx' 'npx jest src/__tests__/foo.js'
   'pytest tests/test_a.py' 'pytest tests/test_a.py::test_b -q' 'python -m pytest lab/tests/test_ml.py'
+  'bats -f "a name" --jobs 4 tests/unit/a.bats > /tmp/out 2>&1' 'pytest -k foo tests/test_a.py -x --tb=short'
+  'vitest run --reporter=verbose src/a.test.ts'
 )
 
 LINT_AND_OTHER=(
@@ -105,6 +109,14 @@ ONE_PER_ROW=('make -C tests test-pr' 'make test-files' 'bats tests/unit' 'tests/
     n=$((n + 1))
   done < <(grep -A1 -e '- match: |-' "$CLAUDE_SKILLS/shell-test-harness/SKILL.md" | grep -v -e '- match: |-' -e '^--$')
   [ "$n" -ge 8 ]
+}
+
+@test "a long command decides in well under a second (no backtracking blowup in the rows)" {
+  local c
+  c="bats $(printf '> a.bats %.0s' {1..40})x"
+  run timeout 5 bash -c 'jq -nc --arg c "$1" '"'"'{tool_name:"Bash", cwd:"/tmp", tool_input:{command:$c}}'"'"' | python3 "$2"' _ "$c" "$GUARD"
+  assert_success
+  assert_output --partial '"permissionDecision": "deny"'
 }
 
 @test "the deny names the skill, the CI path and how to run one file" {

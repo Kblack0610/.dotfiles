@@ -22,16 +22,16 @@ metadata:
       mode: deny
       where: &has_ci '^(?!.*/playtest-bot(?:-[^/]*)?(?:/|$))'
       why: &load "agent test-suite runs held the workstation at load 40 on 28 cores, about 500% CPU of bats in dotfiles worktrees, which holds dispatch (2026-11-23, epic ar-4846); CI runs the same suites off it, and one named file takes seconds of one core"
-    # test-files passes with one unquoted FILES=<file>.bats, nothing else.
+    # test-files passes with one unquoted FILES=<file>.bats, given once.
     - match: |-
-        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:[^\s=]*/)?g?make(?=\s)(?![^;&|()`\n]*\sFILES=[^\s;&|()`\n*?'"]*\.bats(?=[\s;&|)]|$))[^;&|()`\n]{0,300}?\stest-files(?=[\s;&|)]|$)
+        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:[^\s=]*/)?g?make(?=\s)(?!(?=[^;&|()`\n]*\sFILES=[^\s;&|()`\n*?'\"]*\.bats(?=[\s;&|)]|$))(?![^;&|()`\n]*\sFILES=[^;&|()`\n]*\sFILES=))[^;&|()`\n]{0,300}?\stest-files(?=[\s;&|)]|$)
       use: *ci
       mode: deny
       where: *has_ci
       why: *load
-    # a bats or run-bats.sh run passes only when it names a .bats file, with no glob and no -r.
+    # a bats or run-bats.sh run passes when every argument is a .bats file (no glob), a flag but -r, a flag's value or a redirection.
     - match: |-
-        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:[^\s=]*/)?(?:bats|run-bats\.sh)(?=[\s;&|)]|$)(?!(?=[^;&|()`\n]*?\s[^\s;&|()`\n*?]*\.bats(?=[\s;&|)]|$))(?![^;&|()`\n]*?(?:\s(?:-r|--recursive)(?=[\s;&|)]|$)|[*?])))
+        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:[^\s=]*/)?(?:bats|run-bats\.sh)(?=[\s;&|)]|$)(?!(?=(?:\s+(?:(?:-f|--filter|-j|--jobs|-F|--formatter|-o|--output|--report-formatter|--filter-tags|--filter-status|--gather-test-outputs-in|--setup-suite-file|--code-quote-style|--line-reference-format)(?:\s+|=)[^\s;&|()`\n]+|(?!(?:-f|--filter|-j|--jobs|-F|--formatter|-o|--output|--report-formatter|--filter-tags|--filter-status|--gather-test-outputs-in|--setup-suite-file|--code-quote-style|--line-reference-format)(?=[\s=;&|)]|$))-(?!(?:r|-recursive)(?=[\s;&|)]|$))[^\s;&|()`\n]*|\d*[<>]+(?:&\d*|\s*[^\s;&|()`\n<>]+)|[^\s;&|()`\n*?<>]*\.bats(?=[\s;&|)]|$)))*?\s+[^\s;&|()`\n*?<>]*\.bats(?=[\s;&|)]|$))(?:\s+(?:(?:-f|--filter|-j|--jobs|-F|--formatter|-o|--output|--report-formatter|--filter-tags|--filter-status|--gather-test-outputs-in|--setup-suite-file|--code-quote-style|--line-reference-format)(?:\s+|=)[^\s;&|()`\n]+|(?!(?:-f|--filter|-j|--jobs|-F|--formatter|-o|--output|--report-formatter|--filter-tags|--filter-status|--gather-test-outputs-in|--setup-suite-file|--code-quote-style|--line-reference-format)(?=[\s=;&|)]|$))-(?!(?:r|-recursive)(?=[\s;&|)]|$))[^\s;&|()`\n]*|\d*[<>]+(?:&\d*|\s*[^\s;&|()`\n<>]+)|[^\s;&|()`\n*?<>]*\.bats(?=[\s;&|)]|$)))*\s*(?=[;&|)`\n]|$))
       use: *ci
       mode: deny
       where: *has_ci
@@ -56,16 +56,16 @@ metadata:
       mode: deny
       where: *has_ci
       why: *load
-    # vitest or jest with no *.test.* / *.spec.* / __tests__ file named.
+    # vitest or jest passes the same way with *.test.*, *.spec.* or __tests__/ files.
     - match: |-
-        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:(?:pnpm|npx|yarn|bunx|(?:pnpm|npm|yarn)\s+(?:exec|dlx))\s+)?(?:[^\s=]*/)?(?:vitest|jest)(?=[\s;&|)]|$)(?![^;&|()`\n]*?\s[^\s;&|()`\n*?]*(?:\.(?:test|spec)\.[cm]?[jt]sx?|__tests__/[^\s;&|()`\n*?]+)(?=[\s;&|)]|$))
+        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:(?:pnpm|npx|yarn|bunx|(?:pnpm|npm|yarn)\s+(?:exec|dlx))\s+)?(?:[^\s=]*/)?(?:vitest|jest)(?=[\s;&|)]|$)(?!(?=(?:\s+(?:(?:-c|--config|--project|--reporter|-t|--testNamePattern|--root|-r|--dir|--environment|--pool|--shard|--selectProjects)(?:\s+|=)[^\s;&|()`\n]+|(?!(?:-c|--config|--project|--reporter|-t|--testNamePattern|--root|-r|--dir|--environment|--pool|--shard|--selectProjects)(?=[\s=;&|)]|$))-(?!(?:r|-recursive)(?=[\s;&|)]|$))[^\s;&|()`\n]*|\d*[<>]+(?:&\d*|\s*[^\s;&|()`\n<>]+)|[^\s;&|()`\n*?<>]*(?:\.(?:test|spec)\.[cm]?[jt]sx?|__tests__/[^\s;&|()`\n*?<>]+)(?=[\s;&|)]|$)|run(?=[\s;&|)]|$)))*?\s+[^\s;&|()`\n*?<>]*(?:\.(?:test|spec)\.[cm]?[jt]sx?|__tests__/[^\s;&|()`\n*?<>]+)(?=[\s;&|)]|$))(?:\s+(?:(?:-c|--config|--project|--reporter|-t|--testNamePattern|--root|-r|--dir|--environment|--pool|--shard|--selectProjects)(?:\s+|=)[^\s;&|()`\n]+|(?!(?:-c|--config|--project|--reporter|-t|--testNamePattern|--root|-r|--dir|--environment|--pool|--shard|--selectProjects)(?=[\s=;&|)]|$))-(?!(?:r|-recursive)(?=[\s;&|)]|$))[^\s;&|()`\n]*|\d*[<>]+(?:&\d*|\s*[^\s;&|()`\n<>]+)|[^\s;&|()`\n*?<>]*(?:\.(?:test|spec)\.[cm]?[jt]sx?|__tests__/[^\s;&|()`\n*?<>]+)(?=[\s;&|)]|$)|run(?=[\s;&|)]|$)))*\s*(?=[;&|)`\n]|$))
       use: *ci
       mode: deny
       where: *has_ci
       why: *load
-    # pytest with no .py file named.
+    # pytest passes the same way with .py files.
     - match: |-
-        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:(?:python3?(?:\.\d+)?|uv\s+run|poetry\s+run|pipenv\s+run)\s+(?:-m\s+)?)?(?:[^\s=]*/)?(?:pytest|py\.test)(?=[\s;&|)]|$)(?![^;&|()`\n]*?\s[^\s;&|()`\n*?]*\.py(?:::[^\s;&|()`\n]*)?(?=[\s;&|)]|$))
+        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:(?:python3?(?:\.\d+)?|uv\s+run|poetry\s+run|pipenv\s+run)\s+(?:-m\s+)?)?(?:[^\s=]*/)?(?:pytest|py\.test)(?=[\s;&|)]|$)(?!(?=(?:\s+(?:(?:-k|-m|-p|-c|-o|-n|-W|--rootdir|--maxfail|--deselect|--ignore|--junitxml|--basetemp|--confcutdir)(?:\s+|=)[^\s;&|()`\n]+|(?!(?:-k|-m|-p|-c|-o|-n|-W|--rootdir|--maxfail|--deselect|--ignore|--junitxml|--basetemp|--confcutdir)(?=[\s=;&|)]|$))-(?!(?:r|-recursive)(?=[\s;&|)]|$))[^\s;&|()`\n]*|\d*[<>]+(?:&\d*|\s*[^\s;&|()`\n<>]+)|[^\s;&|()`\n*?<>]*\.py(?:::[^\s;&|()`\n*?<>]*)?(?=[\s;&|)]|$)))*?\s+[^\s;&|()`\n*?<>]*\.py(?:::[^\s;&|()`\n*?<>]*)?(?=[\s;&|)]|$))(?:\s+(?:(?:-k|-m|-p|-c|-o|-n|-W|--rootdir|--maxfail|--deselect|--ignore|--junitxml|--basetemp|--confcutdir)(?:\s+|=)[^\s;&|()`\n]+|(?!(?:-k|-m|-p|-c|-o|-n|-W|--rootdir|--maxfail|--deselect|--ignore|--junitxml|--basetemp|--confcutdir)(?=[\s=;&|)]|$))-(?!(?:r|-recursive)(?=[\s;&|)]|$))[^\s;&|()`\n]*|\d*[<>]+(?:&\d*|\s*[^\s;&|()`\n<>]+)|[^\s;&|()`\n*?<>]*\.py(?:::[^\s;&|()`\n*?<>]*)?(?=[\s;&|)]|$)))*\s*(?=[;&|)`\n]|$))
       use: *ci
       mode: deny
       where: *has_ci
