@@ -4,7 +4,7 @@ A web view of the Claude agents running in tmux on this machine. From a phone or
 
 It reuses agent-panel's library (the pane x `~/.claude/sessions` join, the tmux wrappers), so the web list and the `Prefix+g` chooser always agree on what an agent is.
 
-A new tab or section follows `../docs/dashboards.md` (the dashboard standards, and the layout both hub surfaces are moving to).
+A new tab or section follows `../docs/dashboards.md` (the dashboard standards; the tab layout is `hub_core::layout`).
 
 ## How it works
 
