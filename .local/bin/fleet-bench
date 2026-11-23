@@ -967,32 +967,18 @@ window_stats() {
      peak_context: (map(.context_tokens // 0) | max), first_epoch: (.[0].epoch), last_epoch: (last.epoch)}'
 }
 
-# bench_prom <now> -> the fleet_bench.prom lines: the scorecard's window per project. Waiting
-# and stalled hours are summed over the project's sessions, the ETA ratio is the median of
-# the ETAs scored in the window (no series when none was), and CI reds count the PRs merged
-# in the window by a session of that project. The KPIs ride along so a reader never runs `kpi`.
+# bench_prom <now> -> the fleet_bench.prom lines: the scorecard's window per project, waiting and
+# stalled hours summed over the project's sessions. The KPIs ride along so a reader never runs `kpi`.
 bench_prom() {
   local t="$1" pl="$2" kpis
   kpis=$(kpi_now "$t") || kpis='{}'
-  jq -rn --arg win "$BENCH_WINDOW_H" --argjson pl "$pl" --slurpfile w <(window_stats "$t") --slurpfile e <(loop_episodes "$t" $((t - LOOP_WINDOW_S))) \
-     --slurpfile s <(in_window "$SCORES" done_epoch "$t") --slurpfile c <(ci_window "$t") --argjson k "$kpis" \
-     --slurpfile ef <(effect_lines) --slurpfile or <(oldest_requested "$t") --arg vitals "$BENCH_VITALS" "$JQ_LIB$IMPROVE_JQ$PROM_JQ$VITALS_JQ"'
+  jq -rn --arg win "$BENCH_WINDOW_H" --argjson pl "$pl" --slurpfile w <(window_stats "$t") --argjson k "$kpis" \
+     --slurpfile or <(oldest_requested "$t") --arg vitals "$BENCH_VITALS" "$JQ_LIB$PROM_JQ$VITALS_JQ"'
     def h: . / 60 * 100 | round / 100;
-    ($w | map({key: .session_id, value: .project}) | from_entries) as $proj
-    | ($w | map(.project) + ($s | map(.project)) | unique) as $ps
-    | gauge("agent_bench_waiting_hours"; "Hours sessions sat in NEEDS over the last \($win)h.";
+    gauge("agent_bench_waiting_hours"; "Hours sessions sat in NEEDS over the last \($win)h.";
         $w | group_by(.project)[] | [{project: .[0].project}, (map(.waiting_min) | add | h)]),
       gauge("agent_bench_stalled_hours"; "Hours sessions sat in STALLED over the last \($win)h.";
         $w | group_by(.project)[] | [{project: .[0].project}, (map(.stalled_min) | add | h)]),
-      gauge("agent_bench_eta_ratio"; "Median actual over predicted duration of ETAs scored in the last \($win)h.";
-        $ps[] | . as $p | [{project: $p}, ($s | map(select(.project == $p) | .ratio // empty) | median)]),
-      gauge("agent_bench_ci_reds_before_merge"; "CI reds on PRs merged in the last \($win)h, before they merged.";
-        $c | map(. + {project: $proj[.session_id]}) | map(select(.project != null)) | group_by(.project)[]
-        | [{project: .[0].project}, (map(.ci_red) | add)]),
-      gauge("agent_bench_loop_dark_episodes"; "Finding episodes begun in the last 7d that reached the human with nothing but pages.";
-        [{}, ($e | map(select(.dark)) | length)]),
-      gauge("agent_bench_loop_first_response_minutes"; "Median minutes from a finding episode to its first response that is not a page, last 7d.";
-        [{}, ($e | map(.first_response_min | numbers) | median)]),
       gauge("agent_bench_kpi"; "The KPIs `fleet-bench kpi` prints, by window.";
         $k | to_entries[] | .key as $n | .value as $v | ("7d", "28d") as $d | [{kpi: $n, window: $d}, $v[$d]]),
       gauge("agent_bench_kpi_limit"; "Each KPI'"'"'s threshold from kpi-thresholds.";
@@ -1003,20 +989,12 @@ bench_prom() {
         $or[] | [{kpi: "requested_unstarted_h", subject: "\(.project):\(.id)"}, 1]),
       gauge("agent_bench_vital"; "The front-page KPIs from BENCH_VITALS, by the question each answers; the value is its row. Read each one from agent_bench_kpi.";
         vitals($vitals) | to_entries[] | [{question: .value.question, kpi: .value.kpi}, .key]),
-      gauge("agent_bench_improve"; "Improvement claims live now, and verdicts of each kind, from effect.jsonl.";
-        [{state: "live"}, ($ef | live | length)],
-        (("improved", "flat", "regressed", "unproven") as $v
-         | [{state: $v}, ([$ef[] | select(.type == "verdict" and .verdict == $v)] | length)])),
       gauge("agent_chain_wip"; "Items at each step of the work chain now, from the state files.";
         $pl.steps[] | [{step}, .wip]),
-      gauge("agent_chain_age_minutes"; "Minutes the items at each step have sat there, p50 and p90.";
-        $pl.steps[] | {step} as $l | (["p50", .age_p50_min], ["p90", .age_p90_min]) | [$l + {quantile: .[0]}, .[1]]),
       gauge("agent_chain_age_ratio"; "Each step'"'"'s age p90 over its bound in kpi-thresholds; past 1 is a bottleneck.";
         $pl.steps[] | [{step}, .ratio]),
       gauge("agent_chain_moves"; "Items each step took in and let out over the last hour, from the record.";
         $pl.steps[] | {step} as $l | (["in", .in_1h], ["out", .out_1h]) | [$l + {dir: .[0]}, .[1]]),
-      gauge("agent_chain_dwell_minutes"; "Minutes in the step of the items that left it in the last 24h, p50 and p90.";
-        $pl.steps[] | {step} as $l | (["p50", .dwell_p50_min], ["p90", .dwell_p90_min]) | [$l + {quantile: .[0]}, .[1]]),
       gauge("agent_chain_drift"; "Queue items the record and the queue folders place at different steps.";
         [{}, $pl.drift])'
 }
@@ -1992,11 +1970,11 @@ ledger_points() {
     | (map(.landed // 0) | add // 0) as $n | if $n > 0 then (map(.points // 0) | add) / $n * 100 | round / 100 else "?" end' 2>/dev/null || echo '?')"
 }
 
-# ledger_local <now> -> loop_dark, loop_dark_7d, lesson_held_share and the worktree counts
+# ledger_local <now> -> loop_dark, lesson_held_share and the worktree counts
 ledger_local() {
   local t=$1
-  # loop_dark is the alert (still firing); loop_dark_7d counts the cleared ones too, which loop_dark reads as ok
-  loop_episodes "$t" $((t - LOOP_WINDOW_S)) | jq -sr '"loop_dark=\(map(select(.dark and .open)) | length)", "loop_dark_7d=\(map(select(.dark)) | length)"'
+  # loop_dark: the dark episodes still firing; `fleet-bench loop` lists every episode, cleared ones too
+  loop_episodes "$t" $((t - LOOP_WINDOW_S)) | jq -sr '"loop_dark=\(map(select(.dark and .open)) | length)"'
   # lesson_held_share: of the lessons with a sig whose before and after windows are both read, the share
   # that held (session-outcomes lessons); ? when none has a verdict yet or the cache cannot be read
   echo "lesson_held_share=$($BENCH_LESSONS_CMD 2>/dev/null | jq -er '(.held + .recurring) as $n
@@ -2893,7 +2871,7 @@ cmd_rules() {
 # judges' from judge-eval (it owns those; ~/.local/src/docs/judges.md), plus counts taken now. Headless runs are left out: they have no human to interrupt and their
 # cost is the fleet's, not a session's. Each threshold is <kpi>_max or <kpi>_min.
 
-KPI_NOW="runners_bad failed_unexplained board_open board_days points_per_pr loop_dark loop_dark_7d $KPI_CHAIN cost_per_merged_item red_fix_min_p50 lesson_held_share worktrees_held worktrees_held_over_7d systems_no_skill"
+KPI_NOW="runners_bad failed_unexplained board_open board_days points_per_pr loop_dark $KPI_CHAIN cost_per_merged_item red_fix_min_p50 lesson_held_share worktrees_held worktrees_held_over_7d systems_no_skill"
 KPI_COMMS="buzzes_per_day comms_pass_pct rows_pass_pct pages_held_per_day"
 KPI_JUDGE="judge_errors judge_precision ask_answered_pct ask_unclear_pct judge_human_only_live_pct ask_human_only_pct dispatch_false_defer_pct"
 KPI_ASKS="human_answered_per_day ask_wait_p90_min"

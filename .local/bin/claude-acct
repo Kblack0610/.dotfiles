@@ -1474,7 +1474,6 @@ cmd_textfile() {
         (rows("claude_account_resets_timestamp_seconds"; .resets)),
         (rows("claude_account_run_out_timestamp_seconds"; .run_out)),
         (rows("claude_account_live_sessions"; .live)),
-        (rows("claude_account_working_sessions"; .working)),
         (rows("claude_account_working_cost"; .working_cost)),
         (rows("claude_account_burn_points_per_hour"; if .week_used == null then null else .burn end)),
         (rows("claude_account_sustain_points_per_hour"; .sustain)),
@@ -1482,7 +1481,7 @@ cmd_textfile() {
         (rows("claude_account_on_pace_burn_timestamp_seconds"; .on_pace_burn)),
         # the fleet sum (FLEET_JQ); no burn or sustain line when no Claude account was summed
         (fleet($now) | (.rate // empty | "claude_fleet_session_rate_points_per_hour \(.)"),
-            "claude_fleet_live_sessions \(.live)", "claude_fleet_working_sessions \(.working)",
+            "claude_fleet_live_sessions \(.live)",
             (.burn // empty | "claude_fleet_burn_points_per_hour \(.)"),
             (.keeps // empty | "claude_fleet_sustain_points_per_hour \(.)"),
             (.runs_out // empty | "claude_fleet_run_out_timestamp_seconds \(.)")),

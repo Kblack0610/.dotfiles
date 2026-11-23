@@ -600,20 +600,10 @@ write_textfile() {
       echo '# TYPE fleet_run_units_max gauge'
       echo "fleet_run_units_max $max"
     fi
-    # The governor already exports this host's units and the local backlog (ci_governor_*), so the
-    # textfile adds only what it cannot see: editors running outside any seat.
-    if [ -d "$SLOT_DIR" ]; then
-      echo '# HELP fleet_local_unslotted_editors Headless Unity editors running outside any slot (started by hand or another tool).'
-      echo '# TYPE fleet_local_unslotted_editors gauge'
-      echo "fleet_local_unslotted_editors $(unslotted_editors "$(slot_holders)")"
-    fi
     stats="$(ledger_stats)"
     echo '# HELP fleet_local_gate_finished Local Unity runs that ended in the last 24h, by result (playground run ledger).'
     echo '# TYPE fleet_local_gate_finished gauge'
     awk '$1 !~ /^p[0-9]/ { printf "fleet_local_gate_finished{result=\"%s\"} %s\n", $1, $2 }' <<< "$stats"
-    echo '# HELP fleet_local_gate_duration_seconds Run time of those runs.'
-    echo '# TYPE fleet_local_gate_duration_seconds gauge'
-    awk '$1 ~ /^p[0-9]/ { printf "fleet_local_gate_duration_seconds{quantile=\"0.%s\"} %s\n", substr($1, 2, 1), $2 }' <<< "$stats"
     hours="$(ledger_hours)"
     echo '# HELP fleet_local_gate_by_hour Those runs by the hour they ended; hour = its start, epoch seconds.'
     echo '# TYPE fleet_local_gate_by_hour gauge'
