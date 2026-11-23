@@ -50,5 +50,5 @@ watch_is_stale() {
 watch_quarantined() {
   local until="" now="${3:-$(date +%s)}"
   [ -r "$1/$2.quarantine" ] && read -r until _ < "$1/$2.quarantine"
-  [[ "$until" =~ ^[0-9]+$ ]] && (( until > now ))
+  [[ "$until" =~ ^[0-9]+$ ]] && (( 10#$until > 10#$now ))
 }

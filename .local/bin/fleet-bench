@@ -116,7 +116,9 @@
 #                                one row for each part of the fleet (the sections above the
 #                                ARCHITECTURE Flows table and its rows): the Sentinel watches whose
 #                                `flows:` names it and their state, then one verdict line. A part is
-#                                TRIP or ERROR on its worst live watch, OK when each is, UNCOVERED
+#                                TRIP or ERROR on its worst live watch, TRIP/Q when its worst is a
+#                                red under a live quarantine (a warning: the verdict reads GAPS),
+#                                OK when each is, UNCOVERED
 #                                when no watch probes it. Exit 1 on any TRIP or ERROR; --coverage
 #                                prints only the UNCOVERED parts and any `flows:` name that is no
 #                                part, and exits 1 on any
@@ -5300,7 +5302,7 @@ cmd_triage() {
 # `flows:` names come from sentinel-manifest, a watch's reading from Sentinel's own <watch>.state
 # (the files triage reads), so this runs no probe and asks no model. A watch with no reading yet
 # (state "new") is not a live probe: it shows beside its part but does not make it covered.
-# Rows: "<part> TAB <OK|TRIP|ERROR|UNCOVERED> TAB <watch=STATE, ...>", then "! TAB <watch> TAB <name>"
+# Rows: "<part> TAB <OK|TRIP/Q|TRIP|ERROR|UNCOVERED> TAB <watch=STATE, ...>", then "! TAB <watch> TAB <name>"
 # for a `flows:` name that is no part (a renamed Flows row, or a part left out of the list).
 health_rows() {
   local parts tags w p s lastrun err
@@ -5317,7 +5319,8 @@ health_rows() {
     s=new; [ -r "$TRIAGE_WATCH_STATE/$w.state" ] && read -r s <"$TRIAGE_WATCH_STATE/$w.state"
     lastrun=""; [ -r "$TRIAGE_WATCH_STATE/$w.lastrun" ] && read -r lastrun <"$TRIAGE_WATCH_STATE/$w.lastrun"
     case "$s" in OK|TRIP|ERROR) watch_is_stale "$TRIAGE_WATCHES/$w.yaml" "$lastrun" "${BENCH_NOW:-}" && s=STALE ;; esac
-    # A quarantined red (sentinel-watch.sh) is a warning: TRIP/Q, which ranks above OK and turns no part red.
+    # A quarantined red (sentinel-watch.sh) is a warning, TRIP/Q: above OK, below TRIP, and the verdict
+    # reads GAPS, not RED. A STALE reading still wins over it: a dead Sentinel is an ERROR.
     [ "$s" != TRIP ] || ! watch_quarantined "$TRIAGE_WATCH_STATE" "$w" "${BENCH_NOW:-}" || s=TRIP/Q
     printf '%s\t%s\t%s\n' "$w" "$p" "${s:-new}"
   done <<<"$tags")
@@ -5356,8 +5359,9 @@ cmd_health() {
     { n++; c[$2]++; if ($2 == "TRIP" || $2 == "ERROR") bad = bad (bad == "" ? "" : ", ") $1
       if ($2 == "TRIP/Q") q = q (q == "" ? "" : ", ") $1 }
     END {
-      v = (c["TRIP"] + c["ERROR"] > 0) ? "RED" : (c["UNCOVERED"] + stale > 0) ? "GAPS" : "GREEN"
+      v = (c["TRIP"] + c["ERROR"] > 0) ? "RED" : (c["UNCOVERED"] + c["TRIP/Q"] + stale > 0) ? "GAPS" : "GREEN"
       printf "fleet health %s: %d parts, %d OK, %d TRIP, %d ERROR, %d UNCOVERED", v, n, c["OK"], c["TRIP"], c["ERROR"], c["UNCOVERED"]
+      if (c["TRIP/Q"] > 0) printf ", %d TRIP/Q", c["TRIP/Q"]
       if (bad != "") printf " (down: %s)", bad
       if (q != "") printf " (quarantined: %s)", q
       if (stale > 0) printf ", %d stale flows names", stale
