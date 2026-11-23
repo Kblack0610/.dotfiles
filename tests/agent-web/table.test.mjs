@@ -164,6 +164,55 @@ test("a hand-written table's labels come from its header text, and a named glanc
   assert.equal(row.cells[2].dataset.label, "", "a label left blank on purpose stays blank");
 });
 
+// A table of header labels and rows of text, as the DOM hands it to tblConstants.
+const cell = (textContent, label, ctl = false) => ({ dataset: label ? { label } : {}, textContent, querySelector: () => (ctl ? {} : null), classList: { add(k) { this[k] = true; }, remove(k) { delete this[k]; } } });
+const constTable = (labels, rows, extra = []) => {
+  const noted = [];
+  const t = { rows: [trOf(labels.map((l) => cell(l, l))), ...rows.map((r) => trOf(r.map((v) => cell(v)))), ...extra], querySelectorAll: () => t.rows.flatMap((r) => r.cells).filter((c) => c.classList.tconst), previousElementSibling: null, parentNode: { insertBefore: (n) => noted.push(n) } };
+  t.noted = noted;
+  return t;
+};
+const hidden = (t) => t.rows.slice(1).map((r) => r.cells.map((c) => !!c.classList.tconst));
+
+test("a column with one value in every row hides, and its value goes in a note above the table", () => {
+  const t = constTable(["Name", "Owner", "State"], [["a", "none", "run"], ["b", "none", "done"]]);
+  ctx.subject = t;
+  run("tblConstants(subject)");
+  assert.deepEqual(hidden(t), [[false, true, false], [false, true, false]]);
+  assert.equal(t.rows[0].cells[1].classList.tconst, true, "its header hides with it");
+  assert.equal(t.noted[0].textContent, "owner: none");
+  assert.equal(t.noted[0].className, "tconsts muted");
+});
+
+test("a table keeps a column that differs in any row, a lone row, the lead, a blank, a long value, a sorted or faceted column, and one holding a control", () => {
+  const note = (t) => { ctx.subject = t; run("tblConstants(subject)"); return t.noted.length; };
+  assert.equal(note(constTable(["Name", "Owner"], [["a", "x"], ["b", "y"]])), 0, "differs");
+  assert.equal(note(constTable(["Name", "Owner"], [["a", "x"]])), 0, "one row is constant everywhere");
+  assert.equal(note(constTable(["Name", "Owner"], [["a", "x"], ["a", "y"]])), 0, "the lead never hides");
+  assert.equal(note(constTable(["Name", "Owner"], [["a", ""], ["b", ""]])), 0, "blank is not a value");
+  assert.equal(note(constTable(["Name", "Owner"], [["a", "z".repeat(33)], ["b", "z".repeat(33)]])), 0, "long is data");
+  assert.equal(note(constTable(["Name", ""], [["a", "x"], ["b", "x"]])), 0, "no header to name it");
+  const sorted = constTable(["Name", "Owner"], [["a", "x"], ["b", "x"]]);
+  sorted.rows[0].cells[1].getAttribute = (k) => (k === "aria-sort" ? "ascending" : null);
+  assert.equal(note(sorted), 0, "the sorted column is shown");
+  const ctl = constTable(["Name", "Owner"], [["a", "x"], ["b", "x"]]);
+  ctl.rows[2].cells[1].querySelector = () => ({});
+  assert.equal(note(ctl), 0, "a control is never hidden");
+  const filters = trOf([cell(""), Object.assign(cell(""), { querySelector: (q) => (q === ".tfacet" ? {} : null) })]);
+  filters.dataset.phone = "filters";
+  assert.equal(note(constTable(["Name", "Owner"], [["a", "x"], ["b", "x"]], [filters])), 0, "a filter pill stays so the filter can come off");
+});
+
+test("a table drawn again with a differing row shows the column again", () => {
+  const t = constTable(["Name", "Owner"], [["a", "x"], ["b", "x"]]);
+  ctx.subject = t;
+  run("tblConstants(subject)");
+  assert.equal(t.rows[1].cells[1].classList.tconst, true);
+  t.rows[2].cells[1].textContent = "y";
+  run("tblConstants(subject)");
+  assert.deepEqual(hidden(t), [[false, false], [false, false]]);
+});
+
 test("a pfold is always open on a wide screen, and on a phone is a closed line until opened", () => {
   const draw = () => run(`pfold("x", "the line", "the part")`);
   assert.equal(draw(), `<details class="pfold" data-pf="x" open><summary>the line</summary>the part</details>`);

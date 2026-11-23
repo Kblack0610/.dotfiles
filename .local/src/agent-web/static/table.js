@@ -394,6 +394,46 @@ if (typeof document !== "undefined" && document.addEventListener) {
   if (typeof window !== "undefined" && window.addEventListener) window.addEventListener("resize", follow);
 }
 
+// A column whose every row holds the same text is not a column: it is one fact about the table.
+// Its cells hide (`tconst`, app.css) and its value goes in a note above the table, `owner: none,
+// state: not read`, so nothing is dropped. The same rule as the hub's `fit::Table`. Never hidden:
+// the lead (first) column, the sorted one, one with no header or a filter pill (a filter ticked on
+// a column makes it constant, and its pill must stay to take the filter off), a blank or long
+// value, or a cell holding a control or link; nor a table of fewer than two rows, whose every column is constant.
+const TBL_CONST_MAX = 32;
+
+// The columns of `heads` that hold one value in every one of `rows`: [[index, header, value]];
+// `faceted` is the set of column indexes that carry a filter pill.
+function tblConstCols(heads, rows, faceted = new Set()) {
+  if (rows.length < 2) return [];
+  const out = [];
+  for (let i = 1; i < heads.length; i++) {
+    const h = heads[i], label = (h.dataset?.label ?? h.textContent ?? "").trim();
+    const v = (rows[0].cells[i].textContent || "").trim();
+    if (faceted.has(i) || !label || !v || v.length > TBL_CONST_MAX || h.getAttribute?.("aria-sort")) continue;
+    if (rows.every((r) => (r.cells[i].textContent || "").trim() === v && !r.cells[i].querySelector("a, button, select, input"))) out.push([i, label.toLowerCase(), v]);
+  }
+  return out;
+}
+
+function tblConstants(table) {
+  table.querySelectorAll?.(".tconst").forEach((c) => c.classList.remove("tconst"));
+  const prev = table.previousElementSibling;
+  if (prev?.classList?.contains("tconsts")) prev.remove();
+  const [head, ...all] = table.rows, heads = [...(head?.cells || [])];
+  // The data rows: the filter row and a detail or total row with another cell count are not.
+  const rows = all.filter((tr) => tr.cells.length === heads.length && tr.dataset?.phone !== "filters");
+  const filters = all.find((tr) => tr.dataset?.phone === "filters");
+  const faceted = new Set([...(filters?.cells || [])].flatMap((c, i) => (c.querySelector?.(".tfacet") ? [i] : [])));
+  const cols = tblConstCols(heads, rows, faceted);
+  if (!cols.length) return;
+  for (const [i] of cols) for (const tr of table.rows) if (tr.cells.length === heads.length) tr.cells[i].classList.add("tconst");
+  const note = document.createElement("div");
+  note.className = "tconsts muted";
+  note.textContent = cols.map(([, h, v]) => `${h}: ${v}`).join(", ");
+  table.parentNode?.insertBefore(note, table);
+}
+
 function tblStampAdded(records) {
   const tables = new Set();
   for (const r of records) for (const n of r.addedNodes) {
@@ -403,6 +443,7 @@ function tblStampAdded(records) {
     if (own) tables.add(own);
     n.querySelectorAll("table.tbl").forEach((t) => tables.add(t));
   }
+  tables.forEach(tblConstants);
   tables.forEach(tblStamp);
 }
 

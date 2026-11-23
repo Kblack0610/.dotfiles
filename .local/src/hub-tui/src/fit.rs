@@ -8,6 +8,21 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const GAP: usize = 2;
 
+/// Between a header's last label and the constants note, and inside the flex header cell.
+const NOTE_SEP: &str = " | ";
+
+/// The longest value a constant column hands to the head; a longer one is data and stays a column.
+const CONST_MAX: usize = 32;
+
+/// Where the constants note sits on the header line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Slot {
+    /// After the flex column's label, inside its cell.
+    Flex,
+    /// After the last label.
+    End,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Cell {
     pub text: String,
@@ -158,8 +173,12 @@ impl Table {
 
     /// The header line (in `head` style) and one line per row, fitted to `w` (0: no limit).
     pub fn fit(&self, w: usize, head: Style) -> Vec<Line<'static>> {
-        let (on, wid) = self.layout(w, false);
-        let header = self.head(head);
+        let (hide, note) = self.hidden(w, false);
+        let (on, wid) = self.layout(w, false, &hide);
+        let mut header = self.head(head);
+        if let (Some((text, Slot::Flex)), Some(f)) = (&note, self.flex) {
+            header[f].text = format!("{}{NOTE_SEP}{text}", header[f].text);
+        }
         // A flex column with columns after it takes the room they leave, clipped and padded
         // to it, so they line up; a last one just runs to the edge.
         let ncol = self.header.len();
@@ -175,13 +194,19 @@ impl Table {
             });
         std::iter::once(&header)
             .chain(&self.rows)
-            .map(|r| {
+            .enumerate()
+            .map(|(i, r)| {
                 let flex = room.map(|(f, n)| {
                     let t = clip(r.get(f).map_or("", |c| c.text.as_str()), n);
                     let pad = n.saturating_sub(len(&t));
                     t + &" ".repeat(pad)
                 });
-                clip_line(self.line(r, &on, &wid, flex), w)
+                let line = self.line(r, &on, &wid, flex);
+                let line = match &note {
+                    Some((text, Slot::End)) if i == 0 => end_note(line, text, head),
+                    _ => line,
+                };
+                clip_line(line, w)
             })
             .collect()
     }
@@ -190,10 +215,18 @@ impl Table {
     /// instead of being clipped, so a row's whole text shows. Also returns the line each row
     /// starts on (the header is line 0).
     pub fn fit_wrapped(&self, w: usize, head: Style) -> (Vec<Line<'static>>, Vec<usize>) {
-        let (on, wid) = self.layout(w, true);
-        let header = self.head(head);
+        let (hide, note) = self.hidden(w, true);
+        let (on, wid) = self.layout(w, true, &hide);
+        let mut header = self.head(head);
+        if let (Some((text, Slot::Flex)), Some(f)) = (&note, self.flex) {
+            header[f].text = format!("{}{NOTE_SEP}{text}", header[f].text);
+        }
+        let at_end = |line: Line<'static>| match &note {
+            Some((text, Slot::End)) => end_note(line, text, head),
+            _ => line,
+        };
         let Some(f) = self.flex.filter(|f| on[*f] && w > 0) else {
-            let mut out = vec![clip_line(self.line(&header, &on, &wid, None), w)];
+            let mut out = vec![clip_line(at_end(self.line(&header, &on, &wid, None)), w)];
             let mut starts = vec![];
             for r in &self.rows {
                 starts.push(out.len());
@@ -219,7 +252,7 @@ impl Table {
         };
         let head_text = header.get(f).map(|c| c.text.clone()).unwrap_or_default();
         let mut out = vec![clip_line(
-            self.line(&header, &on, &wid, Some(pad(head_text))),
+            at_end(self.line(&header, &on, &wid, Some(pad(head_text)))),
             w,
         )];
         let mut starts = vec![];
@@ -247,6 +280,109 @@ impl Table {
         (out, starts)
     }
 
+    /// The columns that hold one text in every row, in `keep` order. The first `keep` column (the
+    /// lead), the flex column, the sorted column, a column with no header or a blank or long value
+    /// never qualify, nor does a table of fewer than two rows (one row is constant everywhere).
+    fn constants(&self) -> Vec<usize> {
+        if self.rows.len() < 2 {
+            return vec![];
+        }
+        let text = |r: &Vec<Cell>, j: usize| r.get(j).map_or(String::new(), |c| c.text.clone());
+        self.keep
+            .iter()
+            .skip(1)
+            .copied()
+            .filter(|&j| {
+                let first = text(&self.rows[0], j);
+                Some(j) != self.flex
+                    && self.mark.is_none_or(|(c, _)| c != j)
+                    && !self.header[j].is_empty()
+                    && !first.is_empty()
+                    && len(&first) <= CONST_MAX
+                    && self.rows.iter().all(|r| text(r, j) == first)
+            })
+            .collect()
+    }
+
+    /// The columns to hide as constants and the note that carries their values, `owner: none, state:
+    /// not read`, with where it sits on the header line. A constant is hidden only when the note
+    /// fits, so no value is ever clipped away: the least important ones stay columns until it does.
+    fn hidden(&self, w: usize, wrapped: bool) -> (Vec<bool>, Option<(String, Slot)>) {
+        let mut cand = self.constants();
+        loop {
+            let mut hide = vec![false; self.header.len()];
+            for &j in &cand {
+                hide[j] = true;
+            }
+            if cand.is_empty() {
+                return (hide, None);
+            }
+            let note = cand
+                .iter()
+                .map(|&j| {
+                    format!(
+                        "{}: {}",
+                        self.header[j].to_lowercase(),
+                        self.rows[0][j].text
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let (on, wid) = self.layout(w, wrapped, &hide);
+            if let Some(slot) = self.slot(&on, &wid, w, wrapped, &note) {
+                return (hide, Some((note, slot)));
+            }
+            cand.pop();
+        }
+    }
+
+    /// Where `note` fits on the header line at width `w`, if anywhere.
+    fn slot(
+        &self,
+        on: &[bool],
+        wid: &[usize],
+        w: usize,
+        wrapped: bool,
+        note: &str,
+    ) -> Option<Slot> {
+        if w == 0 {
+            return Some(Slot::End);
+        }
+        let add = NOTE_SEP.len() + len(note);
+        let ncol = self.header.len();
+        let mut flex_cell = None;
+        if let Some(f) = self.flex.filter(|&f| on[f]) {
+            let label = len(&self.heads()[f]);
+            let room = if (f + 1..ncol).any(|j| on[j]) {
+                let r = self.room(on, wid, f, w);
+                if wrapped {
+                    r
+                } else {
+                    wid[f].min(r)
+                }
+            } else {
+                label
+            };
+            if (f + 1..ncol).any(|j| on[j]) && label + add <= room {
+                return Some(Slot::Flex);
+            }
+            let before: usize = (0..f).filter(|&j| on[j]).map(|j| wid[j] + GAP).sum();
+            if !(f + 1..ncol).any(|j| on[j]) && before + label + add <= w {
+                return Some(Slot::Flex);
+            }
+            flex_cell = Some((f, room));
+        }
+        let used: usize = (0..ncol)
+            .filter(|&j| on[j])
+            .map(|j| match flex_cell {
+                Some((f, room)) if f == j => room + GAP,
+                _ => wid[j] + GAP,
+            })
+            .sum::<usize>()
+            .saturating_sub(GAP);
+        (used + add <= w).then_some(Slot::End)
+    }
+
     /// The columns the flex column `f` has at width `w`: what the other shown columns and their
     /// gaps leave, at least one.
     fn room(&self, on: &[bool], wid: &[usize], f: usize, w: usize) -> usize {
@@ -260,7 +396,8 @@ impl Table {
     /// Which columns show, and each one's width. A clipped flex column asks for its whole
     /// text, so keep columns after it drop to show more of it; a `wrapped` one shows its whole
     /// text anyway, so it asks only `flexmin` and a long cell cannot push the others off.
-    fn layout(&self, w: usize, wrapped: bool) -> (Vec<bool>, Vec<usize>) {
+    fn layout(&self, w: usize, wrapped: bool, hide: &[bool]) -> (Vec<bool>, Vec<usize>) {
+        let keep: Vec<usize> = self.keep.iter().copied().filter(|&j| !hide[j]).collect();
         let ncol = self.header.len();
         let mut wid: Vec<usize> = self.heads().iter().map(|h| len(h)).collect();
         for r in &self.rows {
@@ -280,17 +417,17 @@ impl Table {
         };
         let mut on = vec![false; ncol];
         let mut total: isize = -(GAP as isize);
-        for &j in &self.keep {
+        for &j in &keep {
             on[j] = true;
             total += (ask(j) + GAP) as isize;
         }
         let need = match self.flex {
-            Some(f) if self.flexkeep && !(wrapped && self.keep.contains(&f)) => {
+            Some(f) if self.flexkeep && !(wrapped && keep.contains(&f)) => {
                 (self.flexmin + GAP) as isize
             }
             _ => 0,
         };
-        for &j in self.keep.iter().skip(1).rev() {
+        for &j in keep.iter().skip(1).rev() {
             if w == 0 || total + need <= w as isize {
                 break;
             }
@@ -345,6 +482,15 @@ impl Table {
         }
         trim_end(spans)
     }
+}
+
+/// The header line with the constants note after its last label, dim.
+fn end_note(mut line: Line<'static>, note: &str, head: Style) -> Line<'static> {
+    line.spans.push(Span::styled(
+        format!("{NOTE_SEP}{note}"),
+        head.add_modifier(ratatui::style::Modifier::DIM),
+    ));
+    line
 }
 
 /// `s` cut into pieces of at most `n` columns.
@@ -653,6 +799,91 @@ mod tests {
                 "   ong/path"
             ]
         );
+    }
+
+    #[test]
+    fn a_column_with_one_value_in_every_row_moves_into_the_header() {
+        let mut tb = t(&[&["a", "7", "x"], &["b", "7", "y"]]);
+        tb.keep = vec![0, 1, 2];
+        assert_eq!(
+            texts(&tb, 0),
+            ["NAME  NOTE | n: 7", "a     x", "b     y"],
+            "N holds 7 in both rows, so it leaves the table"
+        );
+        let (lines, _) = tb.fit_wrapped(30, Style::new());
+        assert_eq!(plain(&lines[0]), "NAME  NOTE | n: 7");
+        assert_eq!(plain(&lines[1]), "a     x");
+    }
+
+    #[test]
+    fn a_column_that_differs_in_any_row_stays() {
+        let tb = t(&[&["a", "7", "x"], &["b", "8", "y"]]);
+        assert_eq!(texts(&tb, 0), ["NAME  N  NOTE", "a     7  x", "b     8  y"]);
+    }
+
+    #[test]
+    fn one_row_the_lead_the_sorted_column_and_a_blank_or_long_value_never_hide() {
+        let one = t(&[&["a", "7", "x"]]);
+        assert_eq!(texts(&one, 0)[0], "NAME  N  NOTE");
+        let mut tb = t(&[&["a", "7", "x"], &["a", "7", "y"]]);
+        assert_eq!(
+            texts(&tb, 0)[0],
+            "NAME  NOTE | n: 7",
+            "the lead stays, N goes"
+        );
+        tb.mark = Some((1, " v"));
+        assert_eq!(
+            texts(&tb, 0)[0],
+            "NAME  N v  NOTE",
+            "the sorted column is shown"
+        );
+        tb.mark = None;
+        tb.rows[0][1] = "".into();
+        tb.rows[1][1] = "".into();
+        assert_eq!(texts(&tb, 0)[0], "NAME  N  NOTE", "blank is not a value");
+        let long = "z".repeat(CONST_MAX + 1);
+        tb.rows[0][1] = long.as_str().into();
+        tb.rows[1][1] = long.as_str().into();
+        assert_eq!(texts(&tb, 0)[0].split_whitespace().count(), 3);
+    }
+
+    #[test]
+    fn a_constant_stays_a_column_when_its_note_does_not_fit_the_header() {
+        let tb = Table {
+            header: vec!["NAME", "N", "M"],
+            rows: vec![
+                vec!["a".into(), "7".into(), "x".into()],
+                vec!["b".into(), "7".into(), "y".into()],
+            ],
+            keep: vec![0, 1, 2],
+            ..Default::default()
+        };
+        assert_eq!(texts(&tb, 14)[0], "NAME  M | n: 7");
+        assert_eq!(
+            texts(&tb, 13),
+            ["NAME  N  M", "a     7  x", "b     7  y"],
+            "no room for the note, so no value is dropped"
+        );
+    }
+
+    #[test]
+    fn the_note_rides_in_a_flex_column_that_has_columns_after_it() {
+        let mut tb = t(&[&["a", "7", "one two"], &["b", "7", "three"]]);
+        tb.header = vec!["NOTE", "NAME", "N"];
+        tb.rows = tb
+            .rows
+            .into_iter()
+            .map(|r| vec![r[2].clone(), r[0].clone(), r[1].clone()])
+            .collect();
+        (tb.keep, tb.flex, tb.flexkeep, tb.right) = (vec![1, 2], Some(0), true, vec![]);
+        let (lines, _) = tb.fit_wrapped(40, Style::new());
+        let got: Vec<String> = lines.iter().map(plain).collect();
+        assert!(
+            got[0].starts_with("NOTE | n: 7 ") && got[0].ends_with("NAME"),
+            "{got:?}"
+        );
+        assert!(!got[0].split_whitespace().any(|w| w == "N"), "{got:?}");
+        assert!(got.iter().all(|l| len(l) <= 40));
     }
 
     #[test]

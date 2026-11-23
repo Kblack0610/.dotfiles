@@ -376,6 +376,8 @@ button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 
 .tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .tbl th { text-align: left; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding: 7px 10px; border-bottom: 1px solid color-mix(in srgb, var(--ink) 24%, transparent); white-space: nowrap; }
 .tbl td { padding: 7px 10px; border-bottom: 1px solid color-mix(in srgb, var(--ink) 8%, transparent); white-space: nowrap; }
+.tbl .tconst { display: none !important; }
+.tconsts { font-size: 12px; padding: 4px 10px 0; }
 .tbl tr:last-child > td { border-bottom: 0; }
 .tbl tr:nth-child(odd of :not(.wdet, .rcd, .tfilters, .bopen)):has(> td) { background: color-mix(in srgb, var(--ink) 3%, transparent); }
 .tbl .n { text-align: right; font-family: var(--mono); }
