@@ -4035,10 +4035,10 @@ improve_list() {
   local rows
   rows=$(effect_lines | jq -sc --argjson now "$(now)" --slurpfile c <(improve_live_closes) "$IMPROVE_JQ"'
     (open_live($c) | map(.subject)) as $open
-    | {live: (live | map(. + {age_d: (($now - .at) / 86400 | floor), open: (.subject | IN($open[]))})),
+    | {live: (live | map(. + {age_d: (($now - .at) / 86400 | floor), open: (.subject | IN($open[]))})), open_n: ($open | length),
      verdicts: (map(select(.type == "verdict")) | sort_by(.at) | reverse | .[:20])}') || return 1
   if [ "$1" = --json ]; then printf '%s\n' "$rows"; return 0; fi
-  jq -r --argjson max "$BENCH_IMPROVE_MAX" '"live claims: \(.live | length), \(.live | map(select(.open)) | length) on open work of \($max)",
+  jq -r --argjson max "$BENCH_IMPROVE_MAX" '"live claims: \(.live | length), \(.open_n) on open work of \($max)",
     (.live[] | "  \(.subject) \(.kpi) from \(.from) (\(.bound) \(.threshold)), \(.age_d)d\(if .open then "" else ", closed: waits for its verdict" end)"),
     "verdicts:", (.verdicts[] | "  \(.subject) \(.kpi) \(.verdict) \(.from) -> \(.after // "-")\(if .pr then " (pr:\(.pr))" else "" end)")' <<<"$rows"
 }
