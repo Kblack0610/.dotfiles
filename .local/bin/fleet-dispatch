@@ -5160,11 +5160,11 @@ trainee_rows() {
     --argjson busy "$(queue_areas | jq -Rsc 'split("\n") | map(select(length > 0) | ascii_downcase)')" \
     --slurpfile v <(latest_verdicts) --slurpfile b "$d/board" "$RANK_JQ$ROW_JQ"'
     ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
-    | ($b[0].rows // [] | map({key: ([.project, .id] | tostring), value: ((.details // []) | join("\n"))}) | from_entries) as $briefs
+    | ($b[0].rows // [] | map(select(.id != null) | {key: ([.project, .lane, .id] | tostring), value: ((.details // []) | join("\n"))}) | from_entries) as $briefs
     | map(select(.lane == "agent") | . as $c | $by[[.project, .lane, .key] | tostring] as $d
       | select($d == null or ($d.verdict != "failed" and ($c.gated == true or $d.verdict != "skip"
           or (($d | usable($prules)) and ($d | holds($c))) == false)))
-      | . + {area: row_area($d; $games), brief: ($briefs[[.project, .key] | tostring] // "")}
+      | . + {area: row_area($d; $games), brief: ($briefs[[.project, .lane, .key] | tostring] // "")}
       | select(.area == "" or .worker == "tier3" or ("\(.project | ascii_downcase)/\(.area)" as $a | $busy | index($a) | not))
       | if .pprio == null then rank_fields($today; .project_prio // "") else . end)
     | unique_by([.project, .key]) | rank | .[]' "$d/t3" "$d/open"
@@ -5245,7 +5245,9 @@ cmd_trainee_pool() {
 # row_item <candidate row> -> the queue item promote would make of it, as trainee_why reads one: its id
 # the slug, its words then its full brief (trainee_rows' .brief, the detail lines promote copies) the
 # task, and fill_day's cleanup and tier<N> tags. Judged on the words alone, a row whose brief named
-# ~/.agent/outcomes was promoted for ocfree and then refused at start (ar-2488, 2026-11-23).
+# ~/.agent/outcomes was promoted for ocfree and then refused at start (ar-2488, 2026-11-23). A plan
+# row's brief names its plan, outside the repo, so it is refused too: promote would queue its phase
+# chain under other slugs, never the one item the floor starts. A row with no id gets no brief, as in promote.
 row_item() {
   jq -c '(.text | sub("^- \\[.\\] "; "")) as $t | {slug: .key, project, title: $t, task: ($t + (if (.brief // "") != "" then "\n" + .brief else "" end)), mode: "",
     tags: ([if .cleanup == 0 then "cleanup" else empty end, if .tier then "tier\(.tier)" else empty end] | join(" "))}' <<<"$1"
