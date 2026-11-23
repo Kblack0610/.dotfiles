@@ -19,6 +19,24 @@ load 'fleet_dispatch/common'
   assert_equal "$(agent-queue show fix-crash --json | jq -r .agent)" claude
 }
 
+@test "reap: a green PR's lander files the run unrated with cause land; a red PR's fix-ci files a redo with cause fix-ci (ar-4725)" {
+  pr_item OPEN
+  stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\"dispatch_model\":\"opus\"}"'
+  run cmd_reap
+  fix_ended 1111111111111111111111111111111111111111 PASS
+  agent-queue set fix-crash lane_run=r-green >/dev/null
+  run cmd_reap
+  assert_output --partial 'land queue item fix-crash'
+  agent-queue move fix-crash running >/dev/null
+  agent-queue set fix-crash session=lab:game-agent-1 lane_run=r-red >/dev/null
+  agent-queue move fix-crash review >/dev/null
+  fix_ended 2222222222222222222222222222222222222222 FAIL
+  run cmd_reap
+  assert_output --partial 'fix-ci queue item fix-crash'
+  run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
+  assert_output $'model-lane outcome r-green unrated --cause land\nmodel-lane outcome r-red redo --cause fix-ci'
+}
+
 @test "reap: a trainee's green PR gets its lander past the admission cap" {
   pr_item OPEN
   run cmd_reap
@@ -187,7 +205,7 @@ load 'fleet_dispatch/common'
   grep -qF -- '- [ ] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail "row still started"
 }
 
-@test "reap: a Codex run that hit its usage limit goes back to the queue with end_reason limit and model-lane gets no outcome" {
+@test "reap: a Codex run that hit its usage limit goes back to the queue with end_reason limit and model-lane files it unrated, the limit its cause" {
   codex_end_item th-lim '{"type":"task_complete","error":{"message":"x","codex_error_info":"usage_limit_exceeded"}}'
   run cmd_reap
   assert_output --partial 'requeued queue item cx (game-agent-1 ended: the plan'"'"'s usage limit)'
@@ -196,7 +214,7 @@ load 'fleet_dispatch/common'
   assert_equal "$(qfield "$f" end_reason) $(qfield "$f" session)" 'limit '
   assert_equal "$(qfield "$f" note)" "session game-agent-1 ended: the plan's usage limit; requeued (end_reason: limit)"
   run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
-  assert_failure
+  assert_output 'model-lane outcome r-cx unrated --cause limit'
 }
 
 @test "reap: a Codex run on a fleet worker that hit its usage limit is read on the worker, whose ~/.codex holds the rollout, and goes back to the queue" {
@@ -237,7 +255,7 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-cx.md)
   assert_equal "$(qfield "$f" status) $(qfield "$f" end_reason)" 'failed stopped'
   run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
-  assert_output 'model-lane outcome r-cx failed'
+  assert_output 'model-lane outcome r-cx failed --cause close'
 }
 
 @test "reap: a Codex rollout cut mid-turn is a cut, or a timeout once the launcher's timeout has run; a provider error is provider; neither rates the model" {
@@ -258,7 +276,8 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   run cmd_reap
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-cx.md)" end_reason)" provider
   run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
-  assert_output 'model-lane outcome r-cx failed'   # only the timeout rated: it is the run's own length
+  # only the timeout rated: it is the run's own length; the rest are counted by their end
+  assert_output $'model-lane outcome r-cx unrated --cause cut\nmodel-lane outcome r-cx failed --cause close\nmodel-lane outcome r-cx unrated --cause provider\nmodel-lane outcome r-cx unrated --cause provider'
 }
 
 @test "reap: an opencode run's last assistant row is classified: a quota end is provider, never requeued, and unrated; a key refusal is refused" {
@@ -267,7 +286,7 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-oc.md)
   assert_equal "$(qfield "$f" status) $(qfield "$f" end_reason)" 'failed provider'
   run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
-  assert_failure
+  assert_output 'model-lane outcome r-oc unrated --cause provider'
   rm -rf "$AGENT_QUEUE_DIR/done"
   oc_end_item ses_evala 'error|provider.auth'
   run cmd_reap
@@ -335,7 +354,7 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-oc.md)
   assert_equal "$(qfield "$f" status) $(qfield "$f" end_reason)" 'failed stopped'
   run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
-  assert_output 'model-lane outcome r-oc failed'
+  assert_output 'model-lane outcome r-oc failed --cause close'
 }
 
 @test "reap: an opencode run killed mid-work is a cut, or a timeout once the launcher's timeout has run; a provider fault is provider; a request the provider rejects is stopped" {
@@ -1172,7 +1191,8 @@ lost_host_item() {
 
 @test "reap: an item on a lost host with an open PR is requeued without salvage, its brief continuing the PR" {
   lost_host_item
-  agent-queue set fix-crash pr=o/game#12 >/dev/null
+  stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\"dispatch_model\":\"opus\"}"'
+  agent-queue set fix-crash pr=o/game#12 lane_run=r-lost >/dev/null
   printf "OPEN -\n" > "$NOTES_FIXTURE/pr.state"
   gh_script 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; cat "$NOTES_FIXTURE/pr.state"'
   run cmd_reap
@@ -1181,6 +1201,8 @@ lost_host_item() {
   assert_output --partial 'requeued queue item fix-crash (its host razer-laptop is lost)'
   it=$(agent-queue show fix-crash --json)
   assert_equal "$(jq -r '[.state, .salvage // "-", .lost] | join("|")' <<<"$it")" 'queued|-|razer-laptop sid-a'
+  # The run went with the machine: counted by its cause, never scored (ar-4725).
+  assert_called 'model-lane outcome r-lost unrated --cause lost'
   run item_brief "$it"
   assert_output --partial 'already opened o/game#12'
   refute_output --partial 'left its unfinished work on branch'
@@ -1214,7 +1236,7 @@ lost_host_item() {
 paced_restore() {
   restore_setup
   G="$SANDBOX/repos/game"
-  export AGENT_HOLD_DIR="$SANDBOX/holds" AGENT_HOLD_ASSESS="$SANDBOX/none"
+  export AGENT_HOLD_DIR="$SANDBOX/holds"
   LOST="$FLEET_DISPATCH_DIR/panes/hub.lost.json"; mkdir -p "${LOST%/*}"
   stub agent-hold "exec '$REPO_ROOT/.local/bin/agent-hold' \"\$@\""
   stub systemctl 'echo "systemctl $*" >> "$NOTES_FIXTURE/calls.log"'

@@ -1,6 +1,6 @@
 # Trader static checks (mypy, ruff)
 
-The trader repo (`~/dev/crypto/freqtrade_trading_attempt`) runs `python -m mypy` and `python -m ruff` from its `package.json`. The Claude stop hook `.claude/hooks/stop-checks.d/20-node-checks.sh` runs them through `pnpm typecheck` and `pnpm lint` on the system python, so the system python needs both modules.
+The trader repo (`~/dev/crypto/freqtrade_trading_attempt`) runs `python -m mypy` and `python -m ruff` from its `package.json`. A local `pnpm typecheck` or `pnpm lint` (a session's validate step before its PR) runs them on the system python, so the system python needs both modules.
 
 ## Quick Setup
 
@@ -26,7 +26,7 @@ The pins go into the user site-packages (`~/.local/lib/python3.X/site-packages`)
 
 | Symptom | Fix |
 |---|---|
-| `/usr/bin/python: No module named mypy` in the stop hook | Run the Quick Setup block, or `setup_trader_checks` |
+| `/usr/bin/python: No module named mypy` from `pnpm typecheck` | Run the Quick Setup block, or `setup_trader_checks` |
 | Hook passes locally but CI lint fails | A pin moved in `lab/requirements-dev.txt`; rerun the install, it upgrades to the pin |
 | After a python minor upgrade the modules are gone | The user site path changes with the version; rerun the install |
 | Checkout lives elsewhere | Set `TRADER_DIR=<path>` before running the installer |

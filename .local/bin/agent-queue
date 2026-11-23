@@ -55,12 +55,14 @@
 #   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID; that own claim starts a queued item)
 #   mine [--session s | --sid id] [--newest]  the slug of the running, waiting or review item this session records;
 #       exit 2 when more than one does, unless --newest: a running one before the rest, then the one whose file changed last
-#   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--end <reason>] [--why <text>] [--ask <id>] [--if <state>]
+#   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--end <reason>] [--cause <cause>] [--why <text>] [--ask <id>] [--if <state>]
 #       set title= retitles an item, a done one too, on one line as add --title writes it
 #       --why and --ask are cancel's: with --status cancelled they record and guard as cancel does, and are refused on any other close
 #       move <slug> running of a queued item is refused while its hold is pending (after:, a tag gate), as add --running --after is
 #       --end records why a run ended (end_reason:), one of END_REASONS (lib/end-reasons.sh). An
-#       UNRATED_ENDS one is not the model's doing, so the run's model-lane outcome is not filed.
+#       UNRATED_ENDS one is not the model's doing, so the run's model-lane outcome is filed unrated, that end its cause.
+#       --cause (a requeue) tells the run's outcome why it went back, one of MOVE_CAUSES (lib/end-reasons.sh); an
+#       UNRATED_CAUSES one (a green PR handed to a lander, a lost host) files it unrated. Every outcome carries a cause.
 #   backfill-briefs [--dry-run | --check]    each open agent row with no brief gets the brief of the item that worked it, and an open
 #       item with no row (not canary or trainee) gets a story row with its brief: the row is the one record of a brief
 #   retask <slug> [task...]    replace a queued item's task (the brief its session gets) and its board row's brief, from args or stdin
@@ -409,31 +411,38 @@ done_status() {
   [ -n "$f" ] && fm_get "$f" status
 }
 
-# finished_ok <slug> [<task>] -> why an add under this slug is refused: its latest done item closed ok,
-# so a second item would do landed work again. A failed or cancelled one is a retry and passes. A
-# recurring item (a nightly pass, a shared red that came back) is new work and says so with --repeat.
-# A slug cut from the task's words (pass the task) is refused only when the words are that item's
-# too: two tasks can share a 40-character slug and be different work. Refused adds exit
-# AQ_EX_FINISHED. On 2026-11-06 a plan's re-queue ran an ok phase again (id-like-to-setup-abundant-seahor-p8).
+# start_gate <slug> <after> <tags> <verb> <fix> -- a start by hand (add --running, move running of a
+# queued item) waits on what holds the item, as the queue does: a live or dead after: or a tag gate
+# that is not clear refuses it, naming <fix> (ar-3260).
+# gate: aq-hold-for
+start_gate() {
+  local HOLD HOLD_DEAD
+  hold_for "$2" "$3"
+  [ -z "$HOLD_DEAD" ] || die "$1 cannot $4: $HOLD"
+  [ -z "$HOLD" ] || die "$1 waits on $HOLD, so it cannot $4: $5"
+}
+
+# finished_ok <slug> [<task>] [<from>] -> why an add is refused: the slug's latest done item closed ok,
+# or, from a board row, an item under any slug closed ok on that row. A second item would do landed
+# work again. A failed or cancelled one is a retry and passes. A recurring item (a nightly pass, a
+# shared red that came back) is new work and says so with --repeat. A slug cut from the task's words
+# (pass the task) is refused only when the words are that item's too: two tasks can share a
+# 40-character slug and be different work. The row is read too because a hand start slugs
+# `<project>-<key>` where promote slugs the row `<key>` (2026-11-07: trader tr-58 queued again after
+# #635 merged). Refused adds exit AQ_EX_FINISHED. On 2026-11-06 a plan's re-queue ran an ok phase
+# again (id-like-to-setup-abundant-seahor-p8).
 AQ_EX_FINISHED=4
 # gate: aq-finished-ok
 finished_ok() {
-  local f
+  local f from="${3-}" key
+  key="${from#board:}"
   f="$(latest_done "$1")"
-  [ -n "$f" ] && [ "$(fm_get "$f" status)" = ok ] || return 0
-  [ -z "${2-}" ] || [ "$(fm_body "$f" | awk 'NR==1')" = "$(head -1 <<<"$2")" ] || return 0
-  printf '%s already finished ok (%s%s): pass --repeat to queue it again as new work\n' \
-    "$1" "$(fm_get "$f" finished)" "$(fm_get "$f" pr | sed 's/^./, PR &/')"
-}
-
-# finished_row_ok <from> -> why an add from a board row is refused: an item under another slug already
-# finished ok on that row, as finished_ok reads the slug's. finished_ok keys on the slug, and a hand start slugs
-# `<project>-<key>` where promote slugs the row `<key>`, so a done row's refill slipped past it
-# (2026-11-07: trader tr-58 queued again after #635 merged). Refused adds exit AQ_EX_FINISHED.
-# gate: aq-finished-row-ok
-finished_row_ok() {
-  local key="${1#board:}" f
-  [ "$key" != "$1" ] || return 0
+  if [ -n "$f" ] && [ "$(fm_get "$f" status)" = ok ] && { [ -z "${2-}" ] || [ "$(fm_body "$f" | awk 'NR==1')" = "$(head -1 <<<"$2")" ]; }; then
+    printf '%s already finished ok (%s%s): pass --repeat to queue it again as new work\n' \
+      "$1" "$(fm_get "$f" finished)" "$(fm_get "$f" pr | sed 's/^./, PR &/')"
+    return 0
+  fi
+  [ "$key" != "$from" ] || return 0
   grep -lxF -e "from: board:$key" -e "row: $key" "$AQ_DIR"/done/*/*.md 2>/dev/null | while IFS= read -r f; do
     [ "$(fm_get "$f" status)" = ok ] || continue
     printf '%s already finished ok on its own item %s (%s%s): pass --repeat to queue it again as new work\n' \
@@ -488,7 +497,7 @@ make_room() {
   [ "$1" = urgent ] || [[ " $2 " == *" red "* ]] || pr="$(prio_rank "$1" || echo 1)"
   [ -z "$(find_item "$3")" ] || return 0
   ( cause_owner "$2" ) >/dev/null 2>&1 || return 0
-  [ -n "${repeat:-}" ] || [ -z "$(finished_ok "$3" "${slug_from_text:+$text}")$(finished_row_ok "${from:-}")" ] || return 0
+  [ -n "${repeat:-}" ] || [ -z "$(finished_ok "$3" "${slug_from_text:+$text}" "${from:-}")" ] || return 0
   now="$(admission_now)" && read -r r l <<<"$now" && [[ "$r" =~ ^[0-9]+$ ]] && [ "$r" -ge "$l" ] || return 0
   victim="$(collect queued | jq -r --argjson pr "$pr" --arg keep " ${AQ_ROOM_KEEP:-} " '
     ([.[] | (.after // "") | splits("[ ,]+") | select(. != "")]) as $heads
@@ -1987,11 +1996,8 @@ cmd_add() {
   # (promote) judged that row's gates clear the moment before, so none is read twice.
   local GATES='' AFTER_ITEMS=''
   if [ -n "$running" ] && [ -n "$after" ]; then
-    local HOLD HOLD_DEAD
     check_after "$after" "$slug"
-    hold_for "$after" ""
-    [ -z "$HOLD_DEAD" ] || die "$slug cannot start --running: $HOLD"
-    [ -z "$HOLD" ] || die "$slug waits on $HOLD, so it cannot start --running: add it without --running, and it starts once that clears"
+    start_gate "$slug" "$after" "" "start --running" "add it without --running, and it starts once that clears"
   fi
   if [ -z "$running" ] && { [ -z "${AGENT_QUEUE_PULL:-}" ] || [[ "$from" != board:* ]]; }; then
     add_gates "$slug" "${after:-$(landing_after "${AGENT_QUEUE_ITEM:-}" "$text")}" "$tags"; after="$AFTER_ITEMS"
@@ -2010,8 +2016,7 @@ cmd_add() {
   local why
   cause_owner "$tags"
   # Checked before slug is reused below: an explicit --slug is the same work by name.
-  [ -n "$repeat" ] || why="$(finished_ok "$slug" "${slug_from_text:+$text}")"
-  [ -n "$repeat" ] || [ -n "${why:-}" ] || why="$(finished_row_ok "$from")"
+  [ -n "$repeat" ] || why="$(finished_ok "$slug" "${slug_from_text:+$text}" "$from")"
   [ -z "${why:-}" ] || { echo "agent-queue: $why" >&2; exit "$AQ_EX_FINISHED"; }
   # Under the lock, so two filers at once cannot both pass on the same count.
   local hold_title="${title:-$(head -1 <<<"$text")}"
@@ -3229,20 +3234,23 @@ cancel_stamp() {
 # move happens only while the item is still in the state the caller read, so a pass that read it a
 # moment ago never undoes a move made since (a requeue, the session's own close).
 cmd_move() {
-  local slug="${1:?usage: agent-queue move <slug> <state> [--status s] [--end reason] [--if state]}" to="${2:?usage: agent-queue move <slug> <state>}"
-  local status="" end="" expect="" why="" ask="" f from dest run tags
+  local slug="${1:?usage: agent-queue move <slug> <state> [--status s] [--end reason] [--cause c] [--if state]}" to="${2:?usage: agent-queue move <slug> <state>}"
+  local status="" end="" cause="" expect="" why="" ask="" f from dest run tags
   shift 2
   while [ $# -gt 0 ]; do
     case "$1" in
       --status) status="${2:?--status needs a value}"; shift 2 ;;
       --end) end="${2:?--end needs a reason}"; check_end "$end"; shift 2 ;;
       --if) expect="${2:?--if needs a state}"; shift 2 ;;
+      --cause) cause="${2:?--cause needs a cause}"; shift 2
+        case " $MOVE_CAUSES " in *" $cause "*) ;; *) die "--cause is one of $MOVE_CAUSES (lib/end-reasons.sh), not $cause" ;; esac ;;
       --why) why="${2:?--why needs a reason}"; shift 2 ;;
       --ask) ask="${2:?--ask needs an ask id}"; shift 2 ;;
-      *) die "usage: agent-queue move <slug> <state> [--status s] [--end reason] [--why text] [--ask id] [--if state]" ;;
+      *) die "usage: agent-queue move <slug> <state> [--status s] [--end reason] [--cause c] [--why text] [--ask id] [--if state]" ;;
     esac
   done
   case "$to" in queued | running | waiting | review | done) ;; *) die "state is queued, running, waiting, review or done, not $to" ;; esac
+  [ -z "$cause" ] || [ "$to" = queued ] || die "--cause says why a started item goes back to the queue: use it with move <slug> queued"
   if [ "$to" = "done" ]; then
     case "$status" in ok | failed | cancelled) ;; *) die "move to done needs --status ok, failed or cancelled" ;; esac
   fi
@@ -3274,10 +3282,7 @@ cmd_move() {
   # that records a session: fleet-dispatch start set it after the launch, and judged the hold before it,
   # so a gh or rbw blip read here would leave that live session on an item still queued.
   if [ "$to" = running ] && [ "$from" = queued ] && [ -z "$(fm_get "$f" session)" ]; then
-    local HOLD HOLD_DEAD
-    hold_for "$(fm_get "$f" after)" "$(fm_get "$f" tags)"
-    [ -z "$HOLD_DEAD" ] || die "$slug cannot start: $HOLD"
-    [ -z "$HOLD" ] || die "$slug waits on $HOLD, so it cannot start: dispatch starts it once that clears, or clear it first (agent-queue set $slug after= or tags= without it)"
+    start_gate "$slug" "$(fm_get "$f" after)" "$(fm_get "$f" tags)" start "dispatch starts it once that clears, or clear it first (agent-queue set $slug after= or tags= without it)"
   fi
   if [ "$status" = cancelled ]; then cancel_guard "$f" "$ask"; why="$(cancel_why "$why" "$ask")"; fi
   if [ "$to" = done ] && [ "$status" = ok ] && [ "$(fm_get "$f" partial)" = yes ]; then
@@ -3323,7 +3328,7 @@ cmd_move() {
   dest="$(move_to "$f" "$to")" || die "could not move $f"
   item_event item-moved "$dest" --to "$to" --why "$from -> $to${status:+ ($status)}${why:+: $why}"
   echo "$slug: $from -> $to"
-  lane_outcome "$run" "$from" "$to" "$status" "$end"
+  lane_outcome "$run" "$from" "$to" "$status" "$end" "$cause"
   # The row's section follows the item: Now while it runs or waits on someone, Next up once back in
   # the queue. waiting and review keep the mark: the item started.
   case "$to" in running) mark_row "$dest" run ;; queued) mark_row "$dest" start ;; esac
@@ -3675,22 +3680,25 @@ cmd_reopen() {
   echo "$slug: board row ${row#*:} started again"
 }
 
-# lane_outcome <lane_run> <from> <to> <status> [end] -- the model-lane run a dispatch start logged gets
-# what became of it: done ok is ok, done failed is failed, and a started item put back in the queue
-# is redo. Every close goes through move (agent-land, the reap, a hand close), so this is the one
-# place outcomes are reported. A run whose end says nothing about the model (UNRATED_ENDS) files no
-# outcome, on a close or a requeue. A cancel says nothing about the model; a model-lane error never
-# fails the move.
+# lane_outcome <lane_run> <from> <to> <status> [end] [cause] -- the model-lane run a dispatch start logged
+# gets what became of it and why (CAUSES, lib/end-reasons.sh): done ok is ok and done failed is failed
+# (close), and a started item put back in the queue is redo, with the cause its mover passed (--cause)
+# or requeue. Every close goes through move (agent-land, the reap, a hand close), so this is the one
+# place outcomes are reported. A run whose end says nothing about the model (UNRATED_ENDS, its own
+# cause), a cancel and an UNRATED_CAUSES requeue file the run unrated: counted, never scored. A
+# model-lane error never fails the move.
 lane_outcome() {
-  local o=''
+  local o='' c=${6:-}
   [ -n "$1" ] || return 0
-  ! unrated_end "${5:-}" || return 0
   case "$3:$4" in
-    done:ok) o=ok ;;
-    done:failed) o=failed ;;
-    queued:) case "$2" in running | waiting | review) o=redo ;; esac ;;
+    done:ok) o=ok c=close ;;
+    done:failed) o=failed c=close ;;
+    done:cancelled) o=unrated c=cancel ;;
+    queued:) case "$2" in running | waiting | review) o=redo c=${c:-requeue} ;; *) return 0 ;; esac ;;
+    *) return 0 ;;
   esac
-  [ -z "$o" ] || model-lane outcome "$1" "$o" >/dev/null 2>&1 || echo "agent-queue: model-lane outcome $1 $o failed" >&2
+  if unrated_end "${5:-}"; then o=unrated c=$5; elif unrated_cause "$c"; then o=unrated; fi
+  model-lane outcome "$1" "$o" --cause "$c" >/dev/null 2>&1 || echo "agent-queue: model-lane outcome $1 $o --cause $c failed" >&2
 }
 
 # waits_on <file> <slug> -- the item's `after:` names that slug.

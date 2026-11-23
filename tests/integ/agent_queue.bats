@@ -1663,7 +1663,7 @@ notes --profile bnb ptask game --agent run gm-9"
   [ "$(field "$f" account)" = main ]
 }
 
-@test "a move reports the outcome of the item's model-lane run: ok, failed, redo on a requeue, nothing on a cancel" {
+@test "a move reports the outcome of the item's model-lane run with its cause: ok, failed, redo on a requeue, unrated on a cancel" {
   printf '#!/usr/bin/env bash\necho "model-lane $*" >> "$NOTES_FIXTURE/calls.log"\n' > "$SANDBOX/bin/model-lane"
   chmod +x "$SANDBOX/bin/model-lane"
   for s in ok fl rq cx; do "$AQ" add --project game --running --slug "$s" "$s" >/dev/null; "$AQ" set "$s" "lane_run=r-$s" >/dev/null; done
@@ -1674,12 +1674,12 @@ notes --profile bnb ptask game --agent run gm-9"
   "$AQ" move cx done --status cancelled >/dev/null
   "$AQ" move none done --status ok >/dev/null
   run grep '^model-lane' "$NOTES_FIXTURE/calls.log"
-  assert_output $'model-lane outcome r-ok ok\nmodel-lane outcome r-fl failed\nmodel-lane outcome r-rq redo'
+  assert_output $'model-lane outcome r-ok ok --cause close\nmodel-lane outcome r-fl failed --cause close\nmodel-lane outcome r-rq redo --cause requeue\nmodel-lane outcome r-cx unrated --cause cancel'
   # The requeued item's next start logs a run of its own.
   [ -z "$(field "$(item queued rq)" lane_run)" ]
 }
 
-@test "move --end records why a run ended; a run that ended outside the model files no outcome, on a close or a requeue; timeout and stopped still rate" {
+@test "move --end records why a run ended; a run that ended outside the model files unrated, that end its cause, on a close or a requeue; timeout and stopped still rate" {
   printf '#!/usr/bin/env bash\necho "model-lane $*" >> "$NOTES_FIXTURE/calls.log"\n' > "$SANDBOX/bin/model-lane"
   chmod +x "$SANDBOX/bin/model-lane"
   for s in lim prov cut ref req tmo stp; do "$AQ" add --project game --running --slug "$s" "$s" >/dev/null; "$AQ" set "$s" "lane_run=r-$s" >/dev/null; done
@@ -1691,12 +1691,37 @@ notes --profile bnb ptask game --agent run gm-9"
   "$AQ" move tmo done --status failed --end timeout >/dev/null
   "$AQ" move stp done --status failed --end stopped >/dev/null   # negative control: a stop is the model's own end
   run grep '^model-lane' "$NOTES_FIXTURE/calls.log"
-  assert_output $'model-lane outcome r-tmo failed\nmodel-lane outcome r-stp failed'
+  assert_output $'model-lane outcome r-lim unrated --cause limit\nmodel-lane outcome r-prov unrated --cause provider\nmodel-lane outcome r-cut unrated --cause cut\nmodel-lane outcome r-ref unrated --cause refused\nmodel-lane outcome r-req unrated --cause limit\nmodel-lane outcome r-tmo failed --cause close\nmodel-lane outcome r-stp failed --cause close'
   [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-lim.md)" end_reason)" = limit ]
   [ "$(field "$(item queued req)" end_reason)" = limit ]
   # A new run has not ended: the reason goes when the item runs again.
   "$AQ" move req running >/dev/null
   [ -z "$(field "$(item running req)" end_reason)" ]
+}
+
+@test "move --cause names why a started item went back: a red PR's fix-ci and a conflict rate redo, a green PR's land handoff and a lost host file unrated; refused off a requeue or outside MOVE_CAUSES (ar-4725)" {
+  printf '#!/usr/bin/env bash\necho "model-lane $*" >> "$NOTES_FIXTURE/calls.log"\n' > "$SANDBOX/bin/model-lane"
+  chmod +x "$SANDBOX/bin/model-lane"
+  for s in red cfl grn lst tk; do "$AQ" add --project game --running --slug "$s" "$s" >/dev/null; "$AQ" set "$s" "lane_run=r-$s" >/dev/null; done
+  "$AQ" move red review >/dev/null; "$AQ" move cfl review >/dev/null; "$AQ" move grn review >/dev/null
+  run "$AQ" move grn queued --cause green
+  assert_failure
+  assert_output --partial '--cause is one of fix-ci conflict land takeover lost reject'
+  run "$AQ" move grn done --status ok --cause land
+  assert_failure
+  assert_output --partial 'use it with move <slug> queued'
+  "$AQ" move red queued --cause fix-ci --if review >/dev/null
+  "$AQ" move cfl queued --cause conflict --if review >/dev/null
+  "$AQ" move grn queued --cause land --if review >/dev/null
+  "$AQ" move lst queued --cause lost >/dev/null
+  "$AQ" move tk queued --cause takeover >/dev/null
+  run grep '^model-lane' "$NOTES_FIXTURE/calls.log"
+  assert_output $'model-lane outcome r-red redo --cause fix-ci\nmodel-lane outcome r-cfl redo --cause conflict\nmodel-lane outcome r-grn unrated --cause land\nmodel-lane outcome r-lst unrated --cause lost\nmodel-lane outcome r-tk redo --cause takeover'
+  # An unrated end outranks the mover's cause: the run says why it ended.
+  "$AQ" move red running >/dev/null; "$AQ" set red lane_run=r-red2 >/dev/null
+  "$AQ" move red queued --cause fix-ci --end limit >/dev/null
+  run tail -n 1 "$NOTES_FIXTURE/calls.log"
+  assert_output 'model-lane outcome r-red2 unrated --cause limit'
 }
 
 # handoff_repo: a checkout on branch feat, one commit past origin/main (pushed: main only), and a
@@ -1743,9 +1768,9 @@ handoff_repo() {
   assert_output --partial "h: handed off (1 of 2); end this session now (/wind-down auto): the next start reads $NOTE"
   it=$("$AQ" show h --json)
   assert_equal "$(jq -r '[.state, .salvage, .handoff, .handoffs, .end_reason] | join("|")' <<<"$it")" "queued|feat@$(git -C "$WT" rev-parse HEAD)|$NOTE|1|handoff"
-  # Unrated: the run did not fail, so model-lane hears nothing (a plain move to queued files a redo).
+  # Unrated: the run did not fail, so model-lane counts it by its end and scores nothing (a plain move to queued files a redo).
   run grep '^model-lane' "$NOTES_FIXTURE/calls.log"
-  assert_output ''
+  assert_output 'model-lane outcome r-h unrated --cause handoff'
   run "$AQ" handoff h --note "$NOTE" --dir "$WT"
   assert_failure
   assert_output --partial 'h is queued, not running'
@@ -1913,7 +1938,7 @@ handoff_repo() {
   "$AQ" add --project game --running --slug m "m" >/dev/null; "$AQ" set m lane_run=r1 >/dev/null
   run "$AQ" move m done --status ok
   assert_success
-  assert_output --partial 'model-lane outcome r1 ok failed'
+  assert_output --partial 'model-lane outcome r1 ok --cause close failed'
   [ -f "$(ls "$AGENT_QUEUE_DIR"/done/*/*-m.md)" ]
 }
 
