@@ -25,7 +25,7 @@ Not for fixing or re-sending a release the system cut (builds, Steam upload, the
 
 ## Where a sprint lives
 
-- The snapshot is the `## Committed` section of the open version's agent note. `notes projects --agent-note <project>` prints its path, and creates the note when it is missing, so use it only to read a snapshot step 1 already found; the head line carries `opened=`, `due=`, and for a locked sprint `locked=` and `cut=`.
+- The snapshot is the `## Committed` section of the window's own file, `<project>/sprints/<vX.Y.Z>.md`; `notes projects --sprints <project> [--json]` lists the scored past windows. The head line carries `opened=`, `due=`, and for a locked sprint `locked=` and `cut=`.
 - Only a `#prio/focus` project runs sprints (`stages.md`, "Release windows"). `notes board --json` lists its open window, and the next one queued behind it, under `.sprints`: `project`, `profile`, `version`, `committed`, `done`, `carried`, `opened`, `locked`, `cut`, `due`, `remaining_weight`, `rate_per_hour`, `tasks`, `uncommitted`, `queued`, `start`. Projects > Board shows the same rows in its Sprints table.
 - A project with no entry there has no sprint: either it is not focus (its window, if any, still scores its cut and sets its state word) or it has no window (`no window`, `stages.md`, "Project state"). To give a project a sprint, the human makes it focus first: `notes projects --prio <project> --set focus`.
 - A project name resolves across profiles, so `--profile` is not needed.
@@ -67,7 +67,7 @@ Not for fixing or re-sending a release the system cut (builds, Steam upload, the
    - For a project its git tag owns, when the release tag ships. `agentctl-wave-roll` then rolls the sheet and carries the open rows.
    - For a sheet-counter project, when `agentctl-wave-roll` cuts it after its cadence has passed with done rows.
 
-   The roll writes the score (committed, delivered, carried, dropped, interrupted) under `## Window` in the frozen version note. For a tag-owned project, `notes-roll` by hand refuses to freeze a version no tag ships. That refusal is correct: put the rows on the open version (step 2) instead of forcing a roll.
+   The roll writes the score (committed, delivered, carried, dropped, interrupted) as `## Score` in the window's `sprints/` file; the frozen version note keeps a `Sprint:` link. For a tag-owned project, `notes-roll` by hand refuses to freeze a version no tag ships. That refusal is correct: put the rows on the open version (step 2) instead of forcing a roll.
 
 7. **Queued sprints.** Any number chain behind the open one. Aim the rows at the version first (`notes ptask <p> move <id> --to vX.Y.Z`), then `notes projects --commit <p> --hours <h> --queue` locks the patch after the last queued sprint, starting at its cut. `--queue vX.Y.Z` relocks that one and moves the sprints behind it, and like every relock it is the human's to run and optional (step 4). Queue them in order: a version past the chain's end is refused. Each shows on Projects > Board as a `queued` row (`stages.md`, "Release windows"). When a sprint is shrunk and the rest should wait, tag those rows with the next version and queue it, so the human can see it.
 

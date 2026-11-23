@@ -2668,7 +2668,7 @@ pub fn release(
     // The window's score, read before anything below moves a row.
     let today = chrono::Local::now().date_naive();
     let promised = target_of(&content).filter(|t| t.0 == cur);
-    let window = crate::window::cut_section(&dir, cur, &ix, today, promised);
+    let score = crate::window::score(&dir, cur, &ix, today, promised);
 
     // The tag freezes what it shipped: each closed row goes by the first tag containing its
     // commit (`shipped`), so a late close of an earlier tag's work goes to that tag and a merge
@@ -2738,7 +2738,14 @@ pub fn release(
             .chain(agent_rows.iter().map(String::as_str)),
     );
     let frozen_body = with_carried(frozen_body, &carried, next);
-    let frozen_body = format!("{}\n{prs}{window}", frozen_body.trim_end());
+    let link = score
+        .as_ref()
+        .map_or_else(String::new, |_| crate::window::frozen_link(cur));
+    let frozen_body = format!("{}\n{prs}{link}", frozen_body.trim_end());
+    // The score goes to the window's own file before the freeze, so a failure leaves no row moved.
+    if let Some(line) = &score {
+        crate::window::write_score(&dir, cur, line)?;
+    }
     // Stamp WHEN this version was frozen: that epoch is the boundary between one version's
     // work and the next, and consumers scope "what happened this version" by it. Written
     // here rather than read from the file's mtime, because regenerating an old note's
@@ -2786,7 +2793,7 @@ pub fn release(
     if let Some(archived) = agent {
         println!("agent board: {archived} done row(s) archived");
     }
-    open_next_window(&dir, name, (cur, next), today, &window, log);
+    open_next_window(&dir, name, (cur, next), today, score.as_deref(), log);
     if !carried.is_empty() {
         println!("carried {} open task(s) to {next_s}", carried.len());
         log.info(
@@ -2808,10 +2815,10 @@ fn open_next_window(
     name: &str,
     (cur, next): (V, V),
     today: chrono::NaiveDate,
-    window: &str,
+    score: Option<&str>,
     log: &Logger,
 ) {
-    if let Some(l) = crate::window::frozen_line(window) {
+    if let Some(l) = score {
         println!("window {}: {l}", fmt_version(cur));
     }
     if !agent_dir(dir).is_dir() {
@@ -3268,19 +3275,22 @@ pub fn migrate(p: &Profile, log: &Logger, name: &str) -> Result<()> {
 
     let prs = crate::playtest::fold_inline_prs(&dir)?;
     let board = align_agent_board(&dir)?;
+    let windows = crate::window::migrate_sprints(&dir)?;
 
     log.info(
         "projects",
         &format!(
             "migrated {name}: relocated {relocated}, moved {moved}, \
-             playtest prs {prs}"
+             playtest prs {prs}, windows {}, scores {}",
+            windows.committed, windows.scores
         ),
     );
     if let Some(b) = &board {
         log.info("projects", &format!("migrated {name}: {b}"));
         println!("{name}: {b}");
     }
-    if relocated == 0 && moved == 0 && prs == 0 && board.is_none() {
+    let nothing_moved = windows.committed == 0 && windows.scores == 0;
+    if relocated == 0 && moved == 0 && prs == 0 && board.is_none() && nothing_moved {
         if left.is_empty() {
             println!("{name}: already consolidated - nothing to do");
         } else {
@@ -3290,10 +3300,12 @@ pub fn migrate(p: &Profile, log: &Logger, name: &str) -> Result<()> {
         println!(
             "migrated {name}: {relocated} ai/ note(s) -> agent/versions/, \
              {moved} note(s) -> versions/, \
-             {prs} playtest row(s) -> <!-- pr:N -->"
+             {prs} playtest row(s) -> <!-- pr:N -->, \
+             {} window(s) and {} score(s) -> sprints/",
+            windows.committed, windows.scores
         );
     }
-    for l in &left {
+    for l in windows.kept.iter().chain(&left) {
         println!("  left in place: {l}");
     }
     Ok(())
@@ -3438,6 +3450,12 @@ fn layout_findings_with(p: &Profile, others: &[(String, PathBuf)]) -> Vec<String
                 .filter_map(|e| e.file_name().to_str().map(str::to_string))
                 .collect();
             names.sort();
+            let outside = crate::window::unmigrated(&dir);
+            if outside > 0 {
+                loose.push(format!(
+                    "{rel} has {outside} window(s) outside sprints/ (notes projects --migrate {name})"
+                ));
+            }
             let open = declared_open(&dir);
             for f in names {
                 if is_loose_plan(&f, open) {
@@ -3632,6 +3650,34 @@ pub fn show_roadmap(p: &Profile, name: &str, json: bool) -> Result<()> {
         return Ok(());
     }
     print!("{}", roadmap_tsv(&releases));
+    Ok(())
+}
+
+/// `notes projects --sprints <name> [--json]`: the project's scored windows, oldest cut first, as
+/// TSV `version<TAB>opened<TAB>cut<TAB>committed<TAB>delivered<TAB>carried<TAB>dropped<TAB>
+/// interrupted<TAB>timing` (`-` for a missing day or timing); with `json`, one array of
+/// [`crate::window::Past`], adding each score line.
+pub fn show_sprints(p: &Profile, name: &str, json: bool) -> Result<()> {
+    let past = crate::window::history(&project_dir(p, name)?);
+    if json {
+        println!("{}", serde_json::to_string(&past)?);
+        return Ok(());
+    }
+    let or_dash = |s: &Option<String>| s.clone().unwrap_or_else(|| "-".to_string());
+    for w in &past {
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            w.version,
+            or_dash(&w.opened),
+            or_dash(&w.cut),
+            w.committed,
+            w.delivered,
+            w.carried,
+            w.dropped,
+            w.interrupted,
+            or_dash(&w.timing)
+        );
+    }
     Ok(())
 }
 
@@ -6560,6 +6606,23 @@ mod move_layout_tests {
         );
     }
 
+    #[test]
+    fn a_window_outside_sprints_is_a_layout_finding_until_migrated() {
+        let v = vault("outside");
+        let d = project(&v.personal, "Current", "tidy");
+        fs::create_dir_all(d.join("agent/versions")).unwrap();
+        fs::write(
+            d.join("agent/versions/v0.1.0.md"),
+            "# n\n\n## Committed\n<!-- window: opened=2026-11-18 due=- -->\n- a <!-- id:a-1 -->\n<!-- /window -->\n",
+        )
+        .unwrap();
+        let f = layout_findings_with(&v.personal, &others(&v));
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert!(f[0].contains("1 window(s) outside sprints/"), "{f:?}");
+        crate::window::migrate_sprints(&d).unwrap();
+        assert!(layout_findings_with(&v.personal, &others(&v)).is_empty());
+    }
+
     // Each check fires on its bad row, and the well-formed rows next to them (the negative
     // control) draw nothing: proof in every form ptask stamps, tiers 1-3, a #tierlist word.
     #[test]
@@ -7537,17 +7600,25 @@ mod shape_tests {
         )
         .unwrap();
         let frozen = fs::read_to_string(dir.join("versions/v0.3.0.md")).unwrap();
-        let line = crate::window::frozen_line(&frozen).unwrap_or_else(|| panic!("{frozen}"));
+        assert!(!frozen.contains("## Window"), "{frozen}");
+        assert!(
+            frozen.contains("Sprint: [v0.3.0](../sprints/v0.3.0.md)"),
+            "{frozen}"
+        );
+        let sprint = fs::read_to_string(dir.join("sprints/v0.3.0.md")).unwrap();
+        let line = md::section_text(&sprint, "Score")
+            .unwrap_or_else(|| panic!("{sprint}"))
+            .to_string();
         assert!(
             line.starts_with("committed 2, delivered 1, carried 1, dropped 0, interrupted 1;"),
             "{line}"
         );
         assert!(line.contains("(on time)"), "{line}");
-        // The last cut is the scored note with the latest cut day, not the highest number.
+        // The last cut is the scored window with the latest cut day, not the highest number.
         let note = |v: &str, body: &str| {
             fs::write(
-                dir.join(format!("versions/{v}.md")),
-                format!("# demo\nVersion: {v}\n{body}"),
+                dir.join(format!("sprints/{v}.md")),
+                format!("# demo {v} sprint\n{body}"),
             )
             .unwrap()
         };
@@ -7556,7 +7627,7 @@ mod shape_tests {
             (w.version, w.line)
         };
         let scored = |cut: chrono::NaiveDate| {
-            format!("\n## Window\ncommitted 1, delivered 1, carried 0, dropped 0, interrupted 0; opened {cut}, cut {cut}\n")
+            format!("\n## Score\ncommitted 1, delivered 1, carried 0, dropped 0, interrupted 0; opened {cut}, cut {cut}\n")
         };
         // NEGATIVE CONTROL: a stray unscored note (an old wave file) and a scored one cut earlier
         // both outrank v0.3.0 by number, and neither is the last cut.
@@ -7568,7 +7639,7 @@ mod shape_tests {
         note("v0.1.0", &later);
         assert_eq!(last().0, "v0.1.0");
         for v in ["v1.16.0", "v2.0.0", "v0.1.0"] {
-            fs::remove_file(dir.join(format!("versions/{v}.md"))).unwrap();
+            fs::remove_file(dir.join(format!("sprints/{v}.md"))).unwrap();
         }
         let next = crate::window::read(&dir, (0, 3, 1)).expect("the next window opens");
         assert_eq!(next.opened, day);
@@ -7581,13 +7652,17 @@ mod shape_tests {
         let ix = crate::epics::Index::of(&dir, Some((0, 3, 1)));
         let opened = crate::window::open(&dir, (0, 3, 1), &ix).unwrap();
         assert_eq!(opened.tally.committed, 1);
-        fs::remove_file(agent_note_path(&dir, "v0.3.1")).unwrap();
+        fs::remove_file(crate::window::sprint_path(&dir, (0, 3, 1))).unwrap();
         release(
             &s.p, &s.log, "demo", None, false, true, None, false, None, None,
         )
         .unwrap();
         let frozen = fs::read_to_string(dir.join("versions/v0.3.1.md")).unwrap();
-        assert!(!frozen.contains("## Window"), "{frozen}");
+        assert!(
+            !frozen.contains("## Window") && !frozen.contains("Sprint:"),
+            "{frozen}"
+        );
+        assert!(!dir.join("sprints/v0.3.1.md").exists());
         let _ = fs::remove_dir_all(&s.root);
     }
 

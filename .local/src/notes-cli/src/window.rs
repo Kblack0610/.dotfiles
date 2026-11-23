@@ -2,10 +2,11 @@
 //! opens, the interrupt lane that is the only way into a focus project's open window, and the
 //! score its cut writes into the frozen note.
 //!
-//! The snapshot is a `## Committed` section in the open version's agent note
-//! (`agent/versions/<vX.Y.Z>.md`): one line per row with the row's id kept, under a head marker
-//! with the day the window opened and the day it is due. The cut reads it back to count what
-//! was delivered, carried, dropped and interrupted. Nothing else is stored: carried is the
+//! A window is one file, `<project>/sprints/<vX.Y.Z>.md`. Its `## Committed` section is the
+//! snapshot: one line per row with the row's id kept, under a head marker with the day the
+//! window opened and the day it is due. The cut reads it back to count what was delivered,
+//! carried, dropped and interrupted, and writes the result as `## Score` in the same file; the
+//! frozen version note only links to it. Nothing else is stored: carried is the
 //! committed rows still open at the cut (the rows `carry_open` stamps `carried:N`) or deferred
 //! to a later version.
 
@@ -21,10 +22,12 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// The agent note section holding a window's committed rows.
+/// The sprint file section holding a window's committed rows.
 const COMMITTED: &str = "Committed";
-/// The frozen note section holding a window's score.
-const WINDOW: &str = "Window";
+/// The sprint file section holding a window's score, written by its cut.
+const SCORE: &str = "Score";
+/// The directory of a project holding one file per window.
+pub(crate) const SPRINTS_DIR: &str = "sprints";
 /// The tag a row carries when it entered a frozen window after it opened.
 const INTERRUPT: &str = "#interrupt";
 const HEAD: &str = "<!-- window:";
@@ -155,6 +158,40 @@ fn rows_of(dir: &Path, cur: V, ix: &Index) -> Rows {
     r
 }
 
+/// [`rows_of`] plus the committed rows it cannot find: a row closed and swept into another
+/// version's agent note (the done archive) is looked up by its id there, so it still counts as
+/// delivered instead of dropping out of the window (ar-3826).
+fn rows_for(dir: &Path, cur: V, ix: &Index, snap: &Snapshot) -> Rows {
+    let mut r = rows_of(dir, cur, ix);
+    let seen: HashSet<String> = r
+        .open
+        .iter()
+        .chain(&r.closed)
+        .chain(&r.later)
+        .map(|l| key(l))
+        .collect();
+    let mut lost: HashSet<&String> = snap.keys.iter().filter(|k| !seen.contains(*k)).collect();
+    if lost.is_empty() {
+        return r;
+    }
+    let ver = projects::fmt_version(cur);
+    for home in family(dir) {
+        let notes = projects::version_notes(&projects::agent_dir(&home).join("versions"));
+        for (v, path) in notes {
+            if projects::fmt_version(v) == ver {
+                continue;
+            }
+            let note = fs::read_to_string(path).unwrap_or_default();
+            for l in project_tasks::note_done_rows(&note) {
+                if lost.remove(&key(&l)) {
+                    r.closed.push(l);
+                }
+            }
+        }
+    }
+    r
+}
+
 /// Is version `v` past the project's open version: a queued window ([`queue_sprint`]) until the
 /// open version rolls and `v` opens. Derived, never stored, so a roll rewrites nothing.
 pub(crate) fn is_queued(dir: &Path, v: V) -> bool {
@@ -271,19 +308,48 @@ fn lanes(dir: &Path, cur: V, ix: &Index) -> (Vec<String>, Vec<String>) {
     (human, agent)
 }
 
-/// Set the open version's `## Committed` section to `body`: an earlier section is removed, and
-/// the new one goes at the end of the note.
-fn write_section(dir: &Path, project: &str, cur: V, body: &str) -> Result<()> {
-    let path = projects::ensure_agent_note(dir, project, &projects::fmt_version(cur))?;
-    let note = fs::read_to_string(&path)?;
+/// The sprint file of version `v` in project `dir`: `<project>/sprints/<vX.Y.Z>.md`.
+pub(crate) fn sprint_path(dir: &Path, v: V) -> PathBuf {
+    dir.join(SPRINTS_DIR)
+        .join(format!("{}.md", projects::fmt_version(v)))
+}
+
+/// A sprint file's first lines, before any section.
+fn sprint_header(project: &str, ver: &str) -> String {
+    format!("# {project} {ver} sprint\n")
+}
+
+/// Set section `heading` of the sprint file at `path` to `body`: an earlier section of that name
+/// is removed, and the new one goes at the end. The file is created with its header when absent.
+fn put_section(path: &Path, project: &str, ver: &str, heading: &str, body: &str) -> Result<()> {
+    let note = match fs::read_to_string(path) {
+        Ok(n) => n,
+        Err(_) => {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            sprint_header(project, ver)
+        }
+    };
     let lines: Vec<&str> = note.lines().collect();
-    let kept = match md::section_span(&lines, COMMITTED) {
+    let kept = match md::section_span(&lines, heading) {
         Some(span) => [&lines[..span.start - 1], &lines[span.end..]]
             .concat()
             .join("\n"),
         None => note.clone(),
     };
-    md::write_atomic(&path, &format!("{}\n\n{body}", kept.trim_end()))
+    md::write_atomic(path, &format!("{}\n\n{body}", kept.trim_end()))
+}
+
+/// Set the version's `## Committed` section in its sprint file to `body`.
+fn write_section(dir: &Path, project: &str, cur: V, body: &str) -> Result<()> {
+    put_section(
+        &sprint_path(dir, cur),
+        project,
+        &projects::fmt_version(cur),
+        COMMITTED,
+        body,
+    )
 }
 
 /// What [`lock_sprint`] or [`queue_sprint`] committed: the version, rows, the capacity they
@@ -616,10 +682,10 @@ pub(crate) fn due_on(
     }
 }
 
-/// The snapshot of version `cur`, `None` when its window was never recorded.
+/// The snapshot of version `cur` (the `## Committed` section of its sprint file), `None` when its
+/// window was never recorded.
 pub(crate) fn read(dir: &Path, cur: V) -> Option<Snapshot> {
-    let note =
-        fs::read_to_string(projects::agent_note_path(dir, &projects::fmt_version(cur))).ok()?;
+    let note = fs::read_to_string(sprint_path(dir, cur)).ok()?;
     let lines: Vec<&str> = note.lines().collect();
     let span = md::section_span(&lines, COMMITTED)?;
     let body = &lines[span];
@@ -685,7 +751,7 @@ fn move_start(
         return Ok(cut);
     }
     let new_cut = cut + (to - start);
-    let path = projects::agent_note_path(dir, &projects::fmt_version(v));
+    let path = sprint_path(dir, v);
     let note = fs::read_to_string(&path)?;
     let (old_s, old_c) = (start.format(CUT_FORMAT), cut.format(CUT_FORMAT));
     let (new_s, new_c) = (to.format(CUT_FORMAT), new_cut.format(CUT_FORMAT));
@@ -791,24 +857,36 @@ fn cut_line(snap: &Snapshot, t: &Tally, cut: NaiveDate, target: Option<(V, Naive
     line
 }
 
-/// The `## Window` section a cut of version `cur` on `cut` writes into its frozen note, empty
-/// when the window was never recorded. Read before the cut moves a row.
-pub(crate) fn cut_section(
+/// The score line a cut of version `cur` on `cut` writes, `None` when the window was never
+/// recorded. Read before the cut moves a row.
+pub(crate) fn score(
     dir: &Path,
     cur: V,
     ix: &Index,
     cut: NaiveDate,
     target: Option<(V, NaiveDate)>,
-) -> String {
-    read(dir, cur).map_or_else(String::new, |snap| {
-        let line = cut_line(&snap, &tally(&snap, &rows_of(dir, cur, ix)), cut, target);
-        format!("\n## {WINDOW}\n{line}\n")
-    })
+) -> Option<String> {
+    let snap = read(dir, cur)?;
+    let rows = rows_for(dir, cur, ix, &snap);
+    Some(cut_line(&snap, &tally(&snap, &rows), cut, target))
 }
 
-/// The `## Window` line of a frozen note, `None` when its version had no snapshot.
-pub(crate) fn frozen_line(note: &str) -> Option<String> {
-    md::section_text(note, WINDOW).and_then(|t| t.lines().next().map(str::to_string))
+/// Write `line` as the `## Score` of version `cur`'s sprint file.
+pub(crate) fn write_score(dir: &Path, cur: V, line: &str) -> Result<()> {
+    let project = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    put_section(
+        &sprint_path(dir, cur),
+        project,
+        &projects::fmt_version(cur),
+        SCORE,
+        &format!("## {SCORE}\n{line}\n"),
+    )
+}
+
+/// The line a frozen version note keeps in place of the score: a link to the window's file.
+pub(crate) fn frozen_link(cur: V) -> String {
+    let v = projects::fmt_version(cur);
+    format!("\nSprint: [{v}](../{SPRINTS_DIR}/{v}.md)\n")
 }
 
 /// The open window as `--stats --json` emits it.
@@ -836,7 +914,7 @@ pub(crate) fn open(dir: &Path, cur: V, ix: &Index) -> Option<OpenWindow> {
         due: snap.due.map(|d| d.to_string()),
         cut: snap.cut.map(|c| c.format(CUT_FORMAT).to_string()),
         locked: snap.locked.map(|c| c.format(CUT_FORMAT).to_string()),
-        tally: tally(&snap, &rows_of(dir, cur, ix)),
+        tally: tally(&snap, &rows_for(dir, cur, ix, &snap)),
     })
 }
 
@@ -920,7 +998,7 @@ pub(crate) fn tasks(dir: &Path, cur: V) -> Option<Vec<Task>> {
 /// committing them ([`uncommitted`]): one read of the sheets for both.
 pub(crate) fn open_window(dir: &Path, cur: V) -> Option<(Vec<Task>, Vec<String>)> {
     let snap = read(dir, cur)?;
-    let rows = rows_of(dir, cur, &Index::of(dir, Some(cur)));
+    let rows = rows_for(dir, cur, &Index::of(dir, Some(cur)), &snap);
     let tasks = window_tasks(&snap, &rows);
     let rest = uncommitted(&tasks, &rows);
     Some((tasks, rest))
@@ -1035,7 +1113,7 @@ pub(crate) struct Frame {
 }
 
 /// Version `cur`'s [`Frame`] in project `dir`, `None` when its window was never recorded. The
-/// carried count is the last cut's `## Window` line, `None` before any cut was scored or for a
+/// carried count is the last cut's `## Score` line, `None` before any cut was scored or for a
 /// queued window, which no cut has carried into yet.
 pub(crate) fn frame(dir: &Path, cur: V) -> Option<Frame> {
     let snap = read(dir, cur)?;
@@ -1050,15 +1128,16 @@ pub(crate) fn frame(dir: &Path, cur: V) -> Option<Frame> {
         carried: if queued {
             None
         } else {
-            last(dir).and_then(|w| carried_of(&w.line))
+            last(dir).and_then(|w| count_of(&w.line, "carried"))
         },
     })
 }
 
-/// The `carried N` of a `## Window` line ([`cut_line`]).
-fn carried_of(line: &str) -> Option<usize> {
-    line.split(", ")
-        .find_map(|p| p.strip_prefix("carried "))?
+/// The number after `word` in a score line ([`cut_line`]): `carried 2` is `Some(2)`.
+fn count_of(line: &str, word: &str) -> Option<usize> {
+    line.split([',', ';'])
+        .find_map(|p| p.trim().strip_prefix(word))?
+        .trim_start()
         .split(|c: char| !c.is_ascii_digit())
         .next()?
         .parse()
@@ -1120,21 +1199,178 @@ pub(crate) struct LastWindow {
     pub line: String,
 }
 
-/// The most recent cut's `## Window` line: the scored frozen note with the latest `cut` day, the
-/// higher version on a tie. A note with no `## Window` line (a stray wave file, an unplanned tag
-/// note) is not a scored cut, and the number alone is not the order: `--renumber` cuts a version
-/// above the one it opens.
-pub(crate) fn last(dir: &Path) -> Option<LastWindow> {
-    let (_, v, line) = projects::version_notes(&dir.join("versions"))
-        .into_iter()
-        .filter_map(|(v, path)| {
-            let line = frozen_line(&fs::read_to_string(path).ok()?)?;
-            Some((cut_day(&line), v, line))
+/// What [`migrate_sprints`] moved: committed sections, scores, and sprint files it left alone
+/// because one already existed.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct Migrated {
+    pub committed: usize,
+    pub scores: usize,
+    pub kept: Vec<String>,
+}
+
+/// Move a project's windows into `sprints/`: each `## Committed` out of an agent note
+/// (`agent/versions/<v>.md`) and each `## Window` out of a frozen note (`versions/<v>.md`, where
+/// a link takes its place). Never overwrites a sprint file's section, and a note that moved
+/// nothing is not rewritten, so it is idempotent.
+pub(crate) fn migrate_sprints(dir: &Path) -> Result<Migrated> {
+    let project = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let mut m = Migrated::default();
+    let agent = projects::agent_dir(dir).join("versions");
+    for (v, path) in projects::version_notes(&agent) {
+        let note = fs::read_to_string(&path)?;
+        let lines: Vec<&str> = note.lines().collect();
+        let Some(span) = md::section_span(&lines, COMMITTED) else {
+            continue;
+        };
+        let ver = projects::fmt_version(v);
+        let target = sprint_path(dir, v);
+        if read(dir, v).is_some() {
+            m.kept
+                .push(format!("{ver}: sprints/{ver}.md already has its window"));
+            continue;
+        }
+        let body = format!(
+            "## {COMMITTED}\n{}\n",
+            lines[span.clone()].join("\n").trim()
+        );
+        put_section(&target, project, &ver, COMMITTED, &body)?;
+        let rest = [&lines[..span.start - 1], &lines[span.end..]].concat();
+        md::write_atomic(&path, &format!("{}\n", rest.join("\n").trim_end()))?;
+        m.committed += 1;
+    }
+    for (v, path) in projects::version_notes(&dir.join("versions")) {
+        let note = fs::read_to_string(&path)?;
+        let lines: Vec<&str> = note.lines().collect();
+        let Some(at) = lines
+            .iter()
+            .position(|l| l.strip_prefix("## ").is_some_and(|h| h.trim() == "Window"))
+        else {
+            continue;
+        };
+        let end = lines[at + 1..]
+            .iter()
+            .position(|l| {
+                l.trim().is_empty() || l.trim_start().starts_with("<!--") || l.starts_with("## ")
+            })
+            .map_or(lines.len(), |n| at + 1 + n);
+        let score = lines[at + 1..end].join("\n");
+        if score.trim().is_empty() {
+            continue;
+        }
+        let ver = projects::fmt_version(v);
+        let target = sprint_path(dir, v);
+        let has_score = fs::read_to_string(&target)
+            .ok()
+            .is_some_and(|t| md::section_text(&t, SCORE).is_some());
+        if has_score {
+            m.kept
+                .push(format!("{ver}: sprints/{ver}.md already has its score"));
+            continue;
+        }
+        put_section(
+            &target,
+            project,
+            &ver,
+            SCORE,
+            &format!("## {SCORE}\n{score}\n"),
+        )?;
+        let link = frozen_link(v);
+        let out = [&lines[..at], &[link.trim()], &lines[end..]].concat();
+        md::write_atomic(&path, &format!("{}\n", out.join("\n").trim_end()))?;
+        m.scores += 1;
+    }
+    Ok(m)
+}
+
+/// How many windows of project `dir` still sit outside `sprints/`: an agent note holding a
+/// `## Committed` or a frozen note holding a `## Window`. What `notes projects --migrate` moves.
+pub(crate) fn unmigrated(dir: &Path) -> usize {
+    let has = |path: PathBuf, heading: &str| {
+        fs::read_to_string(path).is_ok_and(|n| {
+            n.lines()
+                .any(|l| l.strip_prefix("## ").is_some_and(|h| h.trim() == heading))
         })
-        .max_by_key(|(day, v, _)| (*day, *v))?;
-    Some(LastWindow {
-        version: projects::fmt_version(v),
-        line,
+    };
+    let agent = projects::agent_dir(dir).join("versions");
+    let committed = projects::version_notes(&agent)
+        .into_iter()
+        .filter(|(_, p)| has(p.clone(), COMMITTED));
+    let scored = projects::version_notes(&dir.join("versions"))
+        .into_iter()
+        .filter(|(_, p)| has(p.clone(), "Window"));
+    committed.count() + scored.count()
+}
+
+/// One scored window, as `notes projects --sprints` lists it: the numbers its `## Score` line
+/// holds, and the line itself.
+#[derive(Debug, PartialEq, serde::Serialize)]
+pub(crate) struct Past {
+    pub version: String,
+    pub opened: Option<String>,
+    /// The day the cut ran.
+    pub cut: Option<String>,
+    pub committed: usize,
+    pub delivered: usize,
+    pub carried: usize,
+    pub dropped: usize,
+    pub interrupted: usize,
+    /// `on time` or `late by N days` against the window's due day; `None` for a window with none.
+    pub timing: Option<String>,
+    pub line: String,
+}
+
+impl Past {
+    fn parse(version: String, line: String) -> Self {
+        let n = |w: &str| count_of(&line, w).unwrap_or(0);
+        let after = |k: &str| {
+            let (_, rest) = line.split_once(k)?;
+            Some(rest.get(..10)?.to_string())
+        };
+        let timing = line
+            .split_once(", cut ")
+            .and_then(|(_, r)| r.split_once(" ("))
+            .and_then(|(_, r)| r.split_once(')'))
+            .map(|(t, _)| t.to_string());
+        Past {
+            version,
+            opened: after("opened "),
+            cut: after(", cut "),
+            committed: n("committed"),
+            delivered: n("delivered"),
+            carried: n("carried"),
+            dropped: n("dropped"),
+            interrupted: n("interrupted"),
+            timing,
+            line,
+        }
+    }
+}
+
+/// Every scored window of project `dir`, oldest cut first (the higher version on a tie): the
+/// sprint files that hold a `## Score`. A window still running, or queued, has none, and a
+/// version that never recorded a window has no file.
+pub(crate) fn history(dir: &Path) -> Vec<Past> {
+    let mut found: Vec<(Option<NaiveDate>, V, Past)> =
+        projects::version_notes(&dir.join(SPRINTS_DIR))
+            .into_iter()
+            .filter_map(|(v, path)| {
+                let note = fs::read_to_string(path).ok()?;
+                let line = md::section_text(&note, SCORE)?.lines().next()?.to_string();
+                let past = Past::parse(projects::fmt_version(v), line);
+                Some((cut_day(&past.line), v, past))
+            })
+            .collect();
+    found.sort_by_key(|(day, v, _)| (*day, *v));
+    found.into_iter().map(|(_, _, p)| p).collect()
+}
+
+/// The most recent cut's `## Score` line: the scored window with the latest `cut` day, the higher
+/// version on a tie. The number alone is not the order: `--renumber` cuts a version above the one
+/// it opens.
+pub(crate) fn last(dir: &Path) -> Option<LastWindow> {
+    history(dir).pop().map(|p| LastWindow {
+        version: p.version,
+        line: p.line,
     })
 }
 
@@ -1530,7 +1766,7 @@ mod tests {
         assert_eq!(keys, ["db-44", "db-48"]);
         let cut = now + chrono::Duration::hours(32);
         assert_eq!(snap.cut, Some(cut));
-        let note = fs::read_to_string(dir.join("agent/versions/v0.2.0.md")).unwrap();
+        let note = fs::read_to_string(sprint_path(&dir, (0, 2, 0))).unwrap();
         assert_eq!(note.matches(&format!("## {COMMITTED}")).count(), 1);
         assert!(
             note.contains(&format!("cut={}", cut.format(CUT_FORMAT))),
@@ -1760,7 +1996,7 @@ mod tests {
         let dir = project("moved", "", HUMAN, BOARD);
         let ix = Index::of(&dir, Some((0, 2, 0)));
         record(&dir, "demo", (0, 2, 0), day("2026-11-19"), None, &ix).unwrap();
-        let note = projects::agent_note_path(&dir, "v0.2.0");
+        let note = sprint_path(&dir, (0, 2, 0));
         let body = fs::read_to_string(&note).unwrap();
         fs::write(&note, format!("{body}- a note someone added later\n")).unwrap();
         let snap = read(&dir, (0, 2, 0)).unwrap();
@@ -2193,7 +2429,164 @@ mod tests {
             day("2026-11-19"),
             None,
         );
-        assert_eq!(carried_of(&line), Some(12));
-        assert_eq!(carried_of("no such field"), None);
+        assert_eq!(count_of(&line, "carried"), Some(12));
+        assert_eq!(count_of("no such field", "carried"), None);
+    }
+
+    /// A lock writes `sprints/<v>.md` and leaves the agent note without a window; a cut's score
+    /// joins it as `## Score`, and `history` lists it. A version with no file has no row.
+    #[test]
+    fn a_lock_writes_the_sprint_file_and_a_score_joins_it() {
+        let dir = project("file", "", HUMAN, BOARD);
+        let ix = Index::of(&dir, Some((0, 2, 0)));
+        record(
+            &dir,
+            "demo",
+            (0, 2, 0),
+            day("2026-11-19"),
+            Some(day("2026-11-20")),
+            &ix,
+        )
+        .unwrap();
+        let file = fs::read_to_string(sprint_path(&dir, (0, 2, 0))).unwrap();
+        assert!(file.starts_with("# demo v0.2.0 sprint"), "{file}");
+        assert!(
+            file.contains("## Committed") && file.contains("opened=2026-11-19"),
+            "{file}"
+        );
+        assert!(!projects::agent_note_path(&dir, "v0.2.0").exists());
+        // A running window is not a past sprint.
+        assert!(history(&dir).is_empty());
+        let line = score(&dir, (0, 2, 0), &ix, day("2026-11-21"), None).unwrap();
+        write_score(&dir, (0, 2, 0), &line).unwrap();
+        write_score(&dir, (0, 2, 0), &line).unwrap();
+        let file = fs::read_to_string(sprint_path(&dir, (0, 2, 0))).unwrap();
+        assert_eq!(file.matches("## Score").count(), 1, "{file}");
+        assert!(
+            read(&dir, (0, 2, 0)).is_some(),
+            "the score keeps the snapshot"
+        );
+        let h = history(&dir);
+        assert_eq!(h.len(), 1);
+        assert_eq!(
+            (
+                h[0].version.as_str(),
+                h[0].committed,
+                h[0].delivered,
+                h[0].carried
+            ),
+            ("v0.2.0", 3, 0, 3)
+        );
+        assert_eq!(h[0].timing.as_deref(), Some("late by 1 day"));
+        assert_eq!(h[0].cut.as_deref(), Some("2026-11-21"));
+        assert_eq!(last(&dir).unwrap().line, line);
+        // NEGATIVE CONTROL: a version never recorded has no file, no score and no row.
+        assert!(score(&dir, (0, 2, 1), &ix, day("2026-11-21"), None).is_none());
+        assert!(!sprint_path(&dir, (0, 2, 1)).exists());
+    }
+
+    /// Past windows come oldest cut first, whatever their numbers.
+    #[test]
+    fn history_orders_by_cut_day_then_version() {
+        let dir = project("hist", "", HUMAN, BOARD);
+        for (v, cut) in [
+            ("v0.2.0", "2026-11-12"),
+            ("v0.1.0", "2026-11-19"),
+            ("v0.3.0", "2026-11-12"),
+        ] {
+            let line = format!(
+                "committed 4, delivered 3, carried 1, dropped 0, interrupted 2; opened 2026-11-05, due 2026-11-12, cut {cut} (on time)"
+            );
+            let ver = projects::parse_version(v).unwrap();
+            write_score(&dir, ver, &line).unwrap();
+        }
+        let order: Vec<String> = history(&dir).into_iter().map(|p| p.version).collect();
+        assert_eq!(order, ["v0.2.0", "v0.3.0", "v0.1.0"]);
+        assert_eq!(last(&dir).unwrap().version, "v0.1.0");
+        assert_eq!(history(&dir)[0].interrupted, 2);
+    }
+
+    /// Migration moves a `## Committed` and a `## Window` into the sprint file, keeps the frozen
+    /// note's other lines, and a second run changes nothing.
+    #[test]
+    fn migration_moves_committed_and_window_and_is_idempotent() {
+        let dir = project("mig", "", HUMAN, BOARD);
+        fs::create_dir_all(dir.join("agent/versions")).unwrap();
+        fs::create_dir_all(dir.join("versions")).unwrap();
+        let committed = "## Committed\n<!-- window: opened=2026-11-05 due=2026-11-12 -->\n- a row <!-- id:db-5 -->\n<!-- /window -->\n";
+        fs::write(
+            dir.join("agent/versions/v0.1.0.md"),
+            format!("# demo v0.1.0 - agent notes\n\n## Notes\nkept\n\n{committed}"),
+        )
+        .unwrap();
+        let score_line = "committed 1, delivered 1, carried 0, dropped 0, interrupted 0; opened 2026-11-05, due 2026-11-12, cut 2026-11-12 (on time)";
+        fs::write(
+            dir.join("versions/v0.1.0.md"),
+            format!("# demo\n- [x] done\n\n## Window\n{score_line}\n\n<!-- rolled: 1 -->\n"),
+        )
+        .unwrap();
+        let m = migrate_sprints(&dir).unwrap();
+        assert_eq!((m.committed, m.scores), (1, 1));
+        let agent = fs::read_to_string(dir.join("agent/versions/v0.1.0.md")).unwrap();
+        assert!(
+            agent.contains("kept") && !agent.contains("Committed"),
+            "{agent}"
+        );
+        let frozen = fs::read_to_string(dir.join("versions/v0.1.0.md")).unwrap();
+        assert!(
+            frozen.contains("Sprint: [v0.1.0](../sprints/v0.1.0.md)")
+                && !frozen.contains("## Window"),
+            "{frozen}"
+        );
+        assert!(
+            frozen.contains("- [x] done") && frozen.contains("<!-- rolled: 1 -->"),
+            "{frozen}"
+        );
+        assert_eq!(read(&dir, (0, 1, 0)).unwrap().keys.len(), 1);
+        assert_eq!(history(&dir)[0].line, score_line);
+        let before = fs::read_to_string(sprint_path(&dir, (0, 1, 0))).unwrap();
+        assert_eq!(migrate_sprints(&dir).unwrap(), Migrated::default());
+        assert_eq!(
+            fs::read_to_string(sprint_path(&dir, (0, 1, 0))).unwrap(),
+            before
+        );
+        // NEGATIVE CONTROL: a sprint file that already has a window is never overwritten.
+        fs::write(
+            dir.join("agent/versions/v0.1.0.md"),
+            format!("# demo\n\n{}", committed.replace("db-5", "db-6")),
+        )
+        .unwrap();
+        let m = migrate_sprints(&dir).unwrap();
+        assert_eq!((m.committed, m.kept.len()), (0, 1));
+        assert!(read(&dir, (0, 1, 0)).unwrap().keys.contains("db-5"));
+    }
+
+    /// A committed row closed and swept into another version's done archive still counts as
+    /// delivered (ar-3826).
+    #[test]
+    fn a_committed_row_swept_to_the_done_archive_is_still_delivered() {
+        let dir = project("arch", "", HUMAN, "- [ ] fix(ci): flaky <!-- id:db-5 -->\n");
+        let ix = Index::of(&dir, Some((0, 2, 0)));
+        record(&dir, "demo", (0, 2, 0), day("2026-11-19"), None, &ix).unwrap();
+        let committed = read(&dir, (0, 2, 0)).unwrap();
+        // db-5 closed and rolled off the board into v0.0.1's done archive; db-1 stays open.
+        fs::write(
+            dir.join("agent/README.md"),
+            "# demo - agent board\n\n## Tasks\n",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.join("agent/versions")).unwrap();
+        fs::write(
+            dir.join("agent/versions/v0.0.1.md"),
+            "# demo v0.0.1 - agent notes\n\n## Done rows\n- [x] fix(ci): flaky <!-- id:db-5 done:2026-11-20 pr:7 -->\n",
+        )
+        .unwrap();
+        let t = tally(&committed, &rows_for(&dir, (0, 2, 0), &ix, &committed));
+        assert_eq!((t.delivered, t.open, t.dropped), (1, 1, 0), "{t:?}");
+        let bare = tally(&committed, &rows_of(&dir, (0, 2, 0), &ix));
+        assert_eq!(
+            bare.delivered, 0,
+            "without the archive lookup the row drops out"
+        );
     }
 }
