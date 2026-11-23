@@ -8367,6 +8367,10 @@ main() {
       shift; cmd_run "$@"; local rc=$?
       # After the pass, so the floors and the cap's let-go have started what they would; under its lock.
       [ "$DRY" = 1 ] || ! flock -n 9 2>/dev/null || share_return
+      # The judge after the pass, so no start waits on a model call: inside the fill alone it ran only on
+      # passes that reached the board, and on 2026-11-23 a flapping k3s red and the load gate left 1,855
+      # rows unjudged. A pass whose fill judged already does not judge again (judge_once).
+      [ "$DRY" = 1 ] || ! flock -n 9 2>/dev/null || ! agent-hold check dispatch >/dev/null 2>&1 || { load_pool_idle; judge_once; } || true
       # After the pass, so it counts what the pass left: stats reads this, never the gates itself.
       [ "$DRY" = 1 ] || { cmd_headroom --json > "$HEADROOM.$$" 2>/dev/null && mv -f "$HEADROOM.$$" "$HEADROOM" || rm -f "$HEADROOM.$$"; }
       # The candidates snapshot too, but only from the pass that holds the lock: a skipped pass would
