@@ -591,8 +591,9 @@ cmd_search() {
 prompt_rows() {
   # $1 = transcript -> "utc_stamp \t local time  prompt \t needle" per prompt the human typed,
   # in order. The utc stamp is the key into `claude-recall show`, whose USER headers carry it.
-  # The needle is the prompt's first line cut to 40 characters, short enough that Claude never
-  # wraps it, which `_jump` searches the pane's scrollback for. Tool
+  # The needle is the prompt's first line cut to 40 characters, trailing ";" and space dropped
+  # (tmux reads a trailing ";" as a command separator), which `_jump` searches the pane's
+  # scrollback for; a pane narrower than the needle wraps it and the search misses. Tool
   # results, sidechains, meta records, compaction summaries and the harness wrappers seen in
   # real transcripts (task-notification, local-command-*, bash-stdout/stderr, system-reminder)
   # are skipped. A slash command shows as its name and arguments, wherever the harness put
@@ -614,7 +615,7 @@ prompt_rows() {
     | (.timestamp[0:19] | sub("T"; " ")) as $utc
     | [$utc, ((.timestamp[0:19] + "Z" | fromdateiso8601 | strflocaltime("%m-%d %H:%M")) + "  "
               + ($p | gsub("\\s+"; " ") | .[0:160])),
-       ($p | sub("^\\s+"; "") | split("\n")[0] | gsub("\t"; " ") | .[0:40] | sub("\\s+$"; ""))] | @tsv' "$1" 2>/dev/null
+       ($p | sub("^\\s+"; "") | split("\n")[0] | gsub("\t"; " ") | .[0:40] | sub("[;\\s]+$"; ""))] | @tsv' "$1" 2>/dev/null
 }
 
 cmd_prompts() {
@@ -654,17 +655,27 @@ cmd_jump() {
   # prompt, then close the popup this runs in. Claude renders in the normal screen ("tui":
   # "default"), so the conversation is in the scrollback. A session open nowhere has no
   # scrollback, so it reads in less instead; a prompt past history-limit or before a /clear
-  # leaves copy mode at the bottom with tmux's "Search failed".
-  local id="$1" at win pane
+  # leaves copy mode at the bottom with tmux's "Search failed". A needle later prompts repeat
+  # ("continue", "yes") is searched once more per later repeat, so the pick lands on its own copy.
+  local id="$1" at win pane t later=0
   at="$(session_pane "$id")"
   if [ -z "$at" ] || [ -z "${3:-}" ]; then
     cmd_read "$id" "$2"
     return
   fi
   win="${at%% *}" pane="${at#* }"
-  tmux select-window -t "$win" \; select-pane -t "$pane" \; switch-client -t "${win%%:*}" \
-    \; copy-mode -t "$pane" \; send-keys -t "$pane" -X history-bottom \
-    \; send-keys -t "$pane" -X search-backward-text "$3" 2>/dev/null
+  t="$(transcript_path "$id")"
+  [ -f "$t" ] && later="$(prompt_rows "$t" | U="$2" N="$3" awk -F"$TAB" \
+    'seen && $3 == ENVIRON["N"] {c++} $1 == ENVIRON["U"] {seen=1} END {print c+0}')"
+  # @tsv doubled each backslash in the needle; the screen has one.
+  if ! tmux select-window -t "$win" \; select-pane -t "$pane" \; switch-client -t "${win%%:*}" \
+      \; copy-mode -t "$pane" \; send-keys -t "$pane" -X history-bottom \
+      \; send-keys -t "$pane" -X search-backward-text "${3//\\\\/\\}" 2>/dev/null; then
+    cmd_read "$id" "$2"
+    return
+  fi
+  [ "${later:-0}" -gt 0 ] && tmux send-keys -t "$pane" -N "$later" -X search-again 2>/dev/null
+  # Close the prefix R popup this runs in; with no popup open it does nothing.
   tmux display-popup -C 2>/dev/null
   return 0
 }
