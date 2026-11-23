@@ -1,6 +1,6 @@
 //! The Daily tab's reader: one note from `notes show --json` (the CLI resolves the target and
 //! keeps it inside the notes), split so both hub surfaces draw the same thing. The daily note's
-//! `## Focus` comes apart into its lanes (`### Urgent`, `### High`, `### Low`, `### Done`; the
+//! `## Focus` comes apart into its lanes (`### Urgent`, `### High`, `### Normal`, `### Low`, `### Done`; the
 //! lines above them read as Low, where the sweep files them), the rollup block another profile's Focus is mirrored into
 //! comes out on its own, and every other `##` section, plus the link footer, is a section to
 //! fold. A note that is not a daily note has no Focus and is all sections.

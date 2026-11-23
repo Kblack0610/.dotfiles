@@ -1546,7 +1546,9 @@ order_filter() {
 # or nothing when no item works a row or notes cannot answer (each item then keeps its own line). The
 # row is where an item's priority lives (ar-3011): ORDER's row_prio reads it, so a retag re-ranks the
 # item. Only the rows items work: the map is bound into the jq program text, and the whole board's
-# (4,700 rows) was past the kernel's argument limit, so every ordered list failed.
+# (4,700 rows) was past the kernel's argument limit, so every ordered list failed. A #normal row, and an
+# untagged one (the feed reads it normal), gives high: the queue has no normal word yet, as fleet-dispatch
+# row_priority maps it.
 row_prios() {
   local keys s f files=()
   for s in "$@"; do
@@ -1558,7 +1560,8 @@ row_prios() {
   [ -n "$keys" ] || return 0
   notes board --json 2>/dev/null | jq -c --arg keys "$keys" '($keys | split("\n") | map({(.): true}) | add) as $want
     | [.rows[]? | select((.state == "open" or .state == "doing") and .project != null and .id != null
-      and (.priority == "urgent" or .priority == "high" or .priority == "low")) | {key: "\(.project):\(.id)", value: .priority}
+      and (.priority == "urgent" or .priority == "high" or .priority == "normal" or .priority == "low"))
+      | {key: "\(.project):\(.id)", value: (if .priority == "normal" then "high" else .priority end)}
       | select($want[.key])] | from_entries' 2>/dev/null
 }
 

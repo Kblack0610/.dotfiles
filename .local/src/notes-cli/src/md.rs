@@ -1038,7 +1038,7 @@ pub const INTAKE_TAGS: &[(&str, &str)] = &[
     ("#agent", "files it on the agent board"),
     ("#plan", "plans it first, the plan held for your review"),
     ("#go", "no review: a plan runs as written"),
-    ("#urgent #high #low", "its priority"),
+    ("#urgent #high #normal #low", "its priority"),
     (
         "#ask",
         "a quick read-only answer in today's notes inbox, no row",
@@ -1332,9 +1332,10 @@ fn strip_trailing_day(s: &str) -> String {
 /// The priority levels, most-urgent first: `(bare-word, #hashtag, lane-heading)`. The SINGLE
 /// source of truth, shared by tag detection here, the Focus lane sweep, and the nvim mirror
 /// (markdown.lua LANES / PRIORITIES).
-pub(crate) const PRIORITIES: [(&str, &str, &str); 3] = [
+pub(crate) const PRIORITIES: [(&str, &str, &str); 4] = [
     ("urgent", "#urgent", "### Urgent"),
     ("high", "#high", "### High"),
+    ("normal", "#normal", "### Normal"),
     ("low", "#low", "### Low"),
 ];
 
@@ -1342,16 +1343,16 @@ pub(crate) const PRIORITIES: [(&str, &str, &str); 3] = [
 ///
 /// Every task carries a priority. Before this, an untagged task meant "unranked" and the
 /// sweep floated it ABOVE `### Urgent` - so a task nobody had thought about outranked one
-/// explicitly marked urgent. A default in the middle of the range fixes the ordering and
-/// leaves room to move in both directions: pump to `#urgent`, push down to `#low`.
-pub(crate) const DEFAULT_PRIORITY: usize = 1; // #high
+/// explicitly marked urgent. Normal is the default for real work (`~/.local/src/docs/priority.md`),
+/// so an untagged row ranks after `#high` and before `#low` (upkeep, cleanup or FYI).
+pub(crate) const DEFAULT_PRIORITY: usize = 2; // #normal
 
 /// The level of a task in `## Focus` that nobody placed in a lane: a line typed or pasted
 /// above the lanes, a row added without a tag. Low, not [`DEFAULT_PRIORITY`], because a line
 /// turned into a task was never ranked, so it must not sit among the ones that were.
-pub(crate) const FOCUS_DEFAULT_PRIORITY: usize = 2; // #low
+pub(crate) const FOCUS_DEFAULT_PRIORITY: usize = 3; // #low
 
-/// The default priority hashtag (`"#high"`).
+/// The default priority hashtag (`"#normal"`).
 pub fn default_priority() -> &'static str {
     PRIORITIES[DEFAULT_PRIORITY].1
 }
@@ -1397,7 +1398,7 @@ pub fn one_priority(line: &str) -> String {
     }
 }
 
-/// Strip every priority hashtag (`#urgent`/`#high`/`#low`, case-insensitive)
+/// Strip every priority hashtag (`#urgent`/`#high`/`#normal`/`#low`, case-insensitive)
 /// from `line`, collapsing the space each one leaves behind, and return the cleaned line
 /// plus the single most-urgent tag found (as `#low` etc.), or `None` if the line has none.
 /// Tag detection mirrors [`find_hashtags`] (heading marker, glued `#`, and code spans skipped).
@@ -1442,14 +1443,14 @@ pub fn strip_priority_tag(line: &str) -> String {
     split_priority(line).0
 }
 
-/// The most-urgent priority tag on a line (`"#urgent"`/`"#high"`/`"#low"`), or
+/// The most-urgent priority tag on a line (`"#urgent"`/`"#high"`/`"#normal"`/`"#low"`), or
 /// `None`. Detection matches [`split_priority`] (heading marker, glued `#`, code spans skipped),
 /// so the Focus lane sweep buckets exactly the tags the editor colors and cycles.
 pub fn task_priority(line: &str) -> Option<&'static str> {
     split_priority(line).1
 }
 
-/// A row's priority as its bare word (`urgent`, `high`, `low`): its tag, else the default.
+/// A row's priority as its bare word (`urgent`, `high`, `normal`, `low`): its tag, else the default.
 pub(crate) fn priority_word(line: &str) -> &'static str {
     let tag = task_priority(line).unwrap_or(default_priority());
     PRIORITIES
@@ -1987,6 +1988,13 @@ fn rejoin(content: &str, out: Vec<String>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_default_indices_name_their_levels() {
+        // Indices into PRIORITIES: a level inserted before them shifts them silently.
+        assert_eq!(PRIORITIES[DEFAULT_PRIORITY].0, "normal");
+        assert_eq!(PRIORITIES[FOCUS_DEFAULT_PRIORITY].0, "low");
+    }
 
     #[test]
     fn a_task_has_a_one_character_box_and_a_link_bullet_does_not() {
