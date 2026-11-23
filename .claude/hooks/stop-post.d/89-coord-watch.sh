@@ -48,10 +48,19 @@ if [[ "$PID" =~ ^[0-9]+$ ]] && following "$PID"; then
   exit 0
 fi
 
+# Every ledger line ticked: there is nothing to watch (coord-watch exits 3), so the wait for the human is
+# coordinate step 6, never a re-armed watch (2026-11-22: 58 empty re-arms over 29h).
+if [ -f "$PLAN" ] && ! coord-watch ids "$PLAN" 2>/dev/null | grep -q .; then
+  jq -n --arg plan "$PLAN" '{decision: "block", reason: (
+    "coord-watch: every line in " + $plan + "'"'"'s ledger is ticked, so there is nothing to watch. Coordinate step 6: "
+    + "fleet-sessions label self -coordinator (keep manual), post the validation ask and run agent-ask reopen-on-answer <id>; do not re-arm.")}'
+  exit 0
+fi
+
 jq -n --arg plan "$PLAN" '{decision: "block", reason: (
   "coord-watch: this session is a coordinator and no coord-watch is armed, so a land-failed or a stall on its ledger reaches nobody. "
   + (if $plan == "" then "Write the `## Follow-through` ledger in the plan (coordinate skill, step 2), then start Monitor with command `coord-watch <that plan>`"
      else "Start Monitor with command `coord-watch " + $plan + "`" end)
   + ", timeout_ms 1800000 (step 3); if a watch just expired, run step 5'"'"'s stall check first. "
-  + "Coordinating is over: step 7 (fleet-sessions label self -manual -coordinator).")}'
+  + "Every line ticked: step 6, not a re-arm. Coordinating is over: step 7 (fleet-sessions label self -manual -coordinator).")}'
 exit 0

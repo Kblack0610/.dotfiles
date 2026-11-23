@@ -56,6 +56,14 @@ live_watch() {
   [ "$(jq -r .decision <<<"$output")" = block ]
 }
 
+@test "a coordinator whose recorded plan has every ledger line ticked is told step 6, not to re-arm" {
+  printf '# p\n## Follow-through\n- [x] ar-1 live\n' > "$SANDBOX/p.md"
+  printf '999999999 %s\n' "$SANDBOX/p.md" > "$COORD_WATCH_STATE/session-sid-1.pid"
+  PATH="$REPO_ROOT/.local/bin:$PATH" run bash "$CHECK" <<<"$(stop_payload)"
+  [ "$(jq -r .decision <<<"$output")" = block ]
+  [[ "$(jq -r .reason <<<"$output")" == *"nothing to watch"*"step 6"*"-coordinator"*"reopen-on-answer"*"do not re-arm"* ]]
+}
+
 @test "a live coord-watch in a one-shot mode (ids, filter) is not a watch" {
   live_watch coord-watch filter
   run bash "$CHECK" <<<"$(stop_payload)"

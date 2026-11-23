@@ -7,7 +7,7 @@ metadata:
   category: workstreams
   tags: [coordinator, session, close-flow, follow-through]
   system: [sessions]
-  reviewed: "2026-11-19"
+  reviewed: "2026-11-23"
 ---
 
 # coordinate
@@ -83,28 +83,40 @@ A stall makes no event, so the 30 minute expiry is the check. For each open line
 
 - A running item: `agent-queue show <slug>` and its session in `fleet-sessions`. Idle at a prompt, held on a slot, or no push in a while: get its go-ahead over SendMessage and take the step over from its worktree (push, fix CI, land), never report "waiting on" it.
 - A row nobody starts: why dispatch skipped it is the `fleet-dispatch` skill's question; fix the row (size, gate, tag) rather than waiting.
-- A pending ask: `agent-ask show <id>`; relay it once in plain words if the human has not seen it.
+- A pending ask: `agent-ask show <id>`; relay it once in plain words if the human has not seen it, never again on a later expiry.
 
 In sprint mode, also re-read the project's non-queued `.version` from the board: a version other than the plan's is the roll, so go to step 6.
 
-Then arm `coord-watch` again.
+Then arm `coord-watch` again. An expiry that found no stall and changed nothing ends its turn with no text: the human reads nothing new, and a repeated status or question is noise.
 
 ### 6. Validate with the human
 
 In sprint mode the version roll ends the follow-through: rows still open then carry to the next window (`sprint` step 6), so strike them as `carried to <next version>` and put the window score in the final report.
 
-Every ledger line is ticked (merged and live, or dropped with a reason the human accepted). Merged and live is not done: the human validates it. Keep the Monitor armed, so a revert or a red on a landed line still reaches you while you wait; write the final report (what landed and how to check each piece, what was dropped and why, what you took over), and in the same turn file the validation ask:
+Every ledger line is ticked (merged and live, or dropped with a reason the human accepted). Merged and live is not done: the human validates it. A ticked line is no longer watched (`coord-watch` reads only open lines and exits 3 on a ledger with none), so the watch ends here: stop the Monitor (TaskStop) and drop the mode label, keeping the hold:
+
+```bash
+fleet-sessions label self -coordinator   # keep manual; the Stop check 89-coord-watch.sh reads this label
+```
+
+Write the final report (what landed and how to check each piece, what was dropped and why, what you took over), and in the same turn file the validation ask and set it to reopen this session:
 
 ```bash
 agent-ask post --options 'a=validated: drop the hold and let the window close|b=not yet: name what is wrong, it joins the ledger' \
   --recommend a --why "every ledger line is merged and live" --context "<plan file>" "Validated <goal>?"
 ```
 
-Keep `manual`: this window stays open until the human answers (past quiet `FLEET_CHAT_CLOSE_H` the label alone no longer holds it; the armed `coord-watch` is its `wake` keep, so a live coordinator stays). Manual rows get no shepherd nudge or reminder, so the ask (the `!N` count and the asks list) is what shows the wait. The answer reaches this pane by itself: `agent-ask deliver` types it into the live session (`agent-ask-deliver.path` runs on each answer), so no `reopen-on-answer` is needed. A "not yet" adds its lines to the ledger, and the armed watch (steps 4 and 5) carries them.
+```bash
+agent-ask reopen-on-answer <id>
+```
+
+Then end the turn and wait with nothing armed: no Monitor, cron or wakeup. The answer reaches this session by itself: `agent-ask deliver` types it into the live pane, and if the window closed on its quiet timer meanwhile, `reopen-on-answer` starts it again with the answer. `manual` keeps the window until quiet `FLEET_CHAT_CLOSE_H`. The ask (the `!N` count and the asks list) is what shows the wait. A re-armed watch on a ticked ledger is only a timer: 2026-11-22 one woke 58 times over 29h (about $7) and repeated the question each time. `stop-post.d/86-empty-wakes.sh` blocks that after 4 empty expiries.
+
+A "not yet" adds its lines to the ledger, then `fleet-sessions label self +coordinator` and arm the watch again (step 3); steps 4 and 5 carry them.
 
 ### 7. Done
 
-On the human's "validated", stop the Monitor (TaskStop) and drop the hold:
+On the human's "validated", drop the hold (step 6 already stopped the watch):
 
 ```bash
 fleet-sessions label self -manual -coordinator

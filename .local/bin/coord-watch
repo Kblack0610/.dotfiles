@@ -2,7 +2,7 @@
 # coord-watch - the event stream a /coordinate session arms under Monitor: one line per chain
 # event (~/.local/state/notes/ingest.jsonl) on a row, item or PR the session still tracks.
 #
-#   coord-watch <plan.md> [--from <writer>]...   follow the record, one line per event
+#   coord-watch <plan.md> [--from <writer>]...   follow the record, one line per event (exit 3: no open line)
 #   coord-watch filter <plan.md> [--from w]... [--since ts] [--cursor file]   the filter over stdin
 #   coord-watch ids <plan.md>                    the tracked tokens, one per line
 #
@@ -93,7 +93,12 @@ case "${1:-}" in
   filter) [ -n "${2:-}" ] || usage; shift; filter "$@" ;;
   *)
     plan="$1"; shift
-    ids "$plan" >/dev/null
+    # A ledger with every line ticked tracks nothing, so a watch on it is a 30 minute timer that only wakes
+    # the session: 2026-11-22 a coordinator re-armed one 58 times over 29h waiting on its validation ask.
+    # The validation wait is coordinate step 6 (the ask with reopen-on-answer), not a watch.
+    [ -n "$(ids "$plan")" ] || {
+      echo "coord-watch: no open line under '## Follow-through' in $plan, so there is nothing to watch; the validation wait is coordinate step 6" >&2
+      exit 3; }
     mkdir -p "$COORD_WATCH_STATE"
     # The armed mark: stop-post.d/89-coord-watch.sh blocks a coordinator's turn end while no live
     # watch of its own session is recorded here. A kill that skips the trap leaves the file; the
