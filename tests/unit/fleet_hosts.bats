@@ -353,6 +353,47 @@ exit \"\$(cat \"\$NOTES_FIXTURE/panel.rc\" 2>/dev/null || echo 0)\""
   assert_output ''
 }
 
+@test "wp_git in a submodule: a pin behind origin/master that the superproject pins counts ahead 0 (ar-2445)" {
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/.local/lib/agent-merge-proof.sh"
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/.local/lib/fleet-worker-panel.sh"
+  local gitc=(git -c user.email=t@t -c user.name=t -c protocol.file.allow=always)
+  local sup="$HOME/.worktrees/sup"
+  local sub="$sup/module"
+  git init -q --bare "$SANDBOX/sub.git"
+  git clone -q "$SANDBOX/sub.git" "$SANDBOX/subw" 2>/dev/null
+  "${gitc[@]}" -C "$SANDBOX/subw" commit -q --allow-empty -m s0
+  git -C "$SANDBOX/subw" push -q origin HEAD:master 2>/dev/null
+
+  git init -q -b main "$sup"
+  "${gitc[@]}" -C "$sup" commit -q --allow-empty -m init
+  git -C "$sup" -c protocol.file.allow=always submodule -q add "$SANDBOX/sub.git" module 2>/dev/null
+  "${gitc[@]}" -C "$sup" commit -q -m pin
+  git -C "$sup" update-ref refs/remotes/origin/main HEAD
+
+  # Submodule has a pin-merge commit that the superproject's main pins
+  git -C "$sub" checkout -q -b pin-merge
+  echo 1 > "$sub/f"; "${gitc[@]}" -C "$sub" add f; "${gitc[@]}" -C "$sub" commit -q -m pm
+  git -C "$sup" add module; "${gitc[@]}" -C "$sup" commit -q -m 'pin the pin-merge'
+  git -C "$sup" update-ref refs/remotes/origin/main HEAD
+
+  # Master in the submodule moves ahead, so the pin is behind master
+  "${gitc[@]}" -C "$SANDBOX/subw" commit -q --allow-empty -m s1
+  git -C "$SANDBOX/subw" push -q origin HEAD:master 2>/dev/null
+  git -C "$sub" fetch -q origin
+
+  run wp_git "$sub" ''
+  assert_success
+  assert_equal "$(jq -r .ahead <<<"$output")" 0
+
+  # Negative control: an extra unpinned commit counts ahead
+  echo 2 > "$sub/extra"; "${gitc[@]}" -C "$sub" add extra; "${gitc[@]}" -C "$sub" commit -q -m extra
+  run wp_git "$sub" ''
+  assert_success
+  assert_equal "$(jq -r .ahead <<<"$output")" 1
+}
+
 @test "a session's worker row is the first worker listing it; this machine is never asked, and a down worker is skipped" {
   export FLEET_HOST=razer-laptop
   # hp-victus lists s1; razer-laptop (this machine) would too, but is never asked.

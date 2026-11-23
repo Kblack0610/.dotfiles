@@ -5998,6 +5998,54 @@ verdict() {
   [[ "$stderr" == *"no live session sid-w"* ]]
 }
 
+@test "close --self on a fleet worker: a submodule pin behind master is not unlanded work (ar-2445)" {
+  rm -f "$SANDBOX/lease-held"
+  bats_require_minimum_version 1.5.0
+  export CLAUDE_CODE_SESSION_ID=sid-w FLEET_HOST=razer-laptop FLEET_STATE_FILE="$SANDBOX/state/state.json"
+  mkdir -p "$SANDBOX/state"
+  local f="$SANDBOX/state/holder-state.json" now; now="$(date +%s)"
+  worker_ssh
+  holder_doc() { jq -nc --argjson t "$1" --argjson r "$2" '{generated_epoch: $t, sessions: [$r]}' > "$f"; }
+
+  local g=(git -c user.email=t@t -c user.name=t -c protocol.file.allow=always)
+  local sup="$HOME/.worktrees/sup"
+  local sub="$sup/module"
+  git init -q --bare "$SANDBOX/sub.git"
+  git clone -q "$SANDBOX/sub.git" "$SANDBOX/subw" 2>/dev/null
+  "${g[@]}" -C "$SANDBOX/subw" commit -q --allow-empty -m s0
+  git -C "$SANDBOX/subw" push -q origin HEAD:master 2>/dev/null
+
+  git init -q -b main "$sup"
+  "${g[@]}" -C "$sup" commit -q --allow-empty -m init
+  git -C "$sup" -c protocol.file.allow=always submodule -q add "$SANDBOX/sub.git" module 2>/dev/null
+  "${g[@]}" -C "$sup" commit -q -m pin
+  git -C "$sup" update-ref refs/remotes/origin/main HEAD
+
+  # Submodule has a pin-merge commit that the superproject's main pins
+  git -C "$sub" checkout -q -b pin-merge
+  echo 1 > "$sub/f"; "${g[@]}" -C "$sub" add f; "${g[@]}" -C "$sub" commit -q -m pm
+  git -C "$sup" add module; "${g[@]}" -C "$sup" commit -q -m 'pin the pin-merge'
+  git -C "$sup" update-ref refs/remotes/origin/main HEAD
+
+  # Master in the submodule moves ahead, so the pin is behind master
+  "${g[@]}" -C "$SANDBOX/subw" commit -q --allow-empty -m s1
+  git -C "$SANDBOX/subw" push -q origin HEAD:master 2>/dev/null
+  git -C "$sub" fetch -q origin
+
+  # The lease holder's row for this session in the submodule
+  holder_doc "$now" '{"session_id":"sid-w","host":"razer-laptop","bucket":"WORKING","blockers":[],"cwd":"'"$sub"'"}'
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/schedules-sync"
+  SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync" run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_success
+  assert_output "now: quiet 0m, nothing to land"
+
+  # Negative control: extra unlanded work in the submodule blocks close
+  echo 2 > "$sub/extra"; "${g[@]}" -C "$sub" add extra; "${g[@]}" -C "$sub" commit -q -m extra
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_failure 1
+  assert_line --index 0 --partial "keep: land it: 1 file(s) not on the default branch here since the lease holder last read"
+}
+
 @test "the lease holder pushes each worker its own rows, and no one else (ar-3356)" {
   rm -f "$SANDBOX/lease-held"
   export FLEET_HOST=state FLEET_STATE_FILE="$SANDBOX/holder/state.json" XDG_STATE_HOME="$SANDBOX/worker-state"
