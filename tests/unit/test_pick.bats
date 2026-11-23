@@ -235,6 +235,27 @@ EOF
   assert_success
 }
 
+# A miss main paid for (ar-4674): agent_web_queue.bats runs node tests from tests/agent-web, and
+# readers.test.mjs reads .local/src/agent-web/src/, so #3200's change there was not picked.
+@test "picker: a node test the bats file runs from a sibling test directory counts for its directories" {
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  local repo="$BATS_TEST_TMPDIR/repo" t='run node --test "$BATS_TEST_DIRNAME/../web/r.test.mjs"'
+  mkdir -p "$repo/tests/web"
+  printf '%s\n' 'const dir = new URL("../../src/web/", import.meta.url);' 'run("agent-ask list")' >"$repo/tests/web/r.test.mjs"
+  _TEST_PICK_REPO=$repo run test_picked src/web/live.rs tests/unit/x.bats <<<"$t"
+  assert_success
+  _TEST_PICK_REPO=$repo run test_picked tests/web/r.test.mjs tests/unit/x.bats <<<"$t"
+  assert_success
+  # Negative controls: a word only the node test quotes, and a directory it does not name.
+  _TEST_PICK_REPO=$repo run test_picked .local/bin/agent-ask tests/unit/x.bats <<<"$t"
+  assert_failure
+  _TEST_PICK_REPO=$repo run test_picked src/other/live.rs tests/unit/x.bats <<<"$t"
+  assert_failure
+  # The real change #3200 made.
+  run test_picked .local/src/agent-web/src/live.rs tests/unit/agent_web_queue.bats <"$REPO_ROOT/tests/unit/agent_web_queue.bats"
+  assert_success
+}
+
 @test "picker: a changed test file picks itself" {
   . "$REPO_ROOT/.local/lib/test-pick.sh"
   run test_picked tests/unit/test_pick.bats tests/unit/test_pick.bats <"$BATS_TEST_FILENAME"
