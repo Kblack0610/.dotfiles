@@ -2631,6 +2631,21 @@ EOF2
   [ "$(field "$(item queued takes-p4)" priority)" = high ]
 }
 
+@test "add --plan: a phase that takes rows files its story row tagged #takes/<id>, and a phase that takes none carries no #takes (ar-3886)" {
+  story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
+  jq -n '{rows: [{project: "level", id: "lv-1", state: "open", priority: "low"},
+                 {project: "level", id: "lv-2", state: "open", priority: "low"}]}' > "$NOTES_FIXTURE/board.json"
+  printf '## Phases\n\n- [ ] P1 First (independent): takes board row lv-1\n- [ ] P2 Second (independent), takes lv-2\n- [ ] P3 Third (independent)\n' > "$SANDBOX/tk.md"
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/tk.md" --project level --priority high
+  assert_success
+  run grep '^notes --profile bnb ptask level --agent add' "$NOTES_FIXTURE/calls.log"
+  assert_line --index 0 --regexp ' #high #takes/lv-1$'
+  assert_line --index 1 --regexp ' #high #takes/lv-2$'
+  # NEGATIVE CONTROL: the phase with no marker files its row with no #takes.
+  assert_line --index 2 --regexp ' #high( #c[0-9]+)?$'
+  refute_line --index 2 --partial '#takes/'
+}
+
 @test "add --plan: a phase that takes a row refuses when the board cannot be read, and queues nothing" {
   story_notes
   rm -f "$NOTES_FIXTURE/board.json"
