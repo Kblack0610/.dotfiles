@@ -157,25 +157,26 @@ load 'fleet_dispatch/common'
   assert_equal "$(judged_keys | awk -F'\t' '$4 == "*" { print $3 }')" ''
 }
 
-@test "ask_failed_rows: a row whose done item's PR merged is closed on merge proof, not asked about; an open PR waits (ar-4678)" {
-  # NEGATIVE CONTROL: before ar-4678 both rows got a retry ask (2026-11-21: ar-4041, ar-225).
+@test "ask_failed_rows: a row whose done item's PR merged is closed on merge proof, not asked about; a failed run's open PR does not hold it (ar-4678)" {
+  # NEGATIVE CONTROL: before ar-4678 the merged row got a retry ask (2026-11-21: ar-4041, ar-225).
   landed_item MERGED
   printf 'fix crash\t- [ ] fix crash\n' > "$NOTES_FIXTURE/rows.game.agent"
-  row game agent gm-2 "- [ ] fix(game): pr still open $T <!-- id:gm-2 -->"
-  agent-queue add --project game --slug gm-2 "pr still open" >/dev/null
-  agent-queue set gm-2 row=game:gm-2 lane=agent pr=o/game#13 >/dev/null
-  agent-queue move gm-2 done --status ok >/dev/null 2>&1 || agent-queue move gm-2 done --status cancelled --why test >/dev/null
+  row game agent gm-3 "- [ ] fix(game): failed run left a pr open $T <!-- id:gm-3 -->"
+  agent-queue add --project game --slug gm-3 "failed run" >/dev/null
+  agent-queue set gm-3 row=game:gm-3 lane=agent pr=o/game#13 >/dev/null
+  run agent-queue move gm-3 done --status failed
+  assert_success
   mkdir -p "$FLEET_DISPATCH_DIR"
   local k
-  for k in 'fix crash' 'fix crash' gm-2 gm-2; do jq -cn --arg k "$k" '{project: "game", lane: "agent", key: $k, verdict: "failed", reason: "r", at: "2026-11-10T00:00:00Z"}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"; done
-  gh_script 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; case "$*" in *13*) echo "OPEN - h1 PASS MERGEABLE" ;; *) cat "$NOTES_FIXTURE/pr.state" ;; esac'
+  for k in 'fix crash' 'fix crash' gm-3 gm-3; do jq -cn --arg k "$k" '{project: "game", lane: "agent", key: $k, verdict: "failed", reason: "r", at: "2026-11-10T00:00:00Z"}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"; done
+  gh_script 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; case " $* " in *" 13 "*) echo "OPEN - h1 PASS MERGEABLE" ;; *) cat "$NOTES_FIXTURE/pr.state" ;; esac'
   stub agent-ask 'printf "%s\n" "agent-ask $*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" = post ] && echo ask1; exit 0'
   run ask_failed_rows
   assert_success
   assert_output --partial 'closed game: fix crash (queue item fix-crash, PR o/game#12 merged)'
-  run grep -c '^agent-ask post' "$NOTES_FIXTURE/calls.log"
-  assert_output 0
-  grep -qF $'gm-2\t- [ ] fix(game): pr still open' "$NOTES_FIXTURE/rows.game.agent" || fail "the row with an open PR changed"
+  run grep '^agent-ask post' "$NOTES_FIXTURE/calls.log"
+  assert_equal "${#lines[@]}" 1
+  assert_output --partial 'failed run left a pr open'
 }
 
 @test "fill --dry-run keys a row by its id and shows the priority it would queue at" {

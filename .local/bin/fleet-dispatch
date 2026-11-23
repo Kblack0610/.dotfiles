@@ -4276,8 +4276,8 @@ settle_row() {
   echo "un-started $project: $key (queue item $1 ended $(jq -r .status <<<"$it")${end:+, $end})"
 }
 
-# row_newer_item <item json> -- another queue item names this item's row and is newer: still active, or
-# finished after it. The row started is that item's, so an older run settling again (reap reads two
+# row_newer_item <item json> -- another queue item names this item's row and holds it: still active (a
+# fill starts the row), or ended ok after it (its landing closes the row: land_orphan). The row started is that item's, so an older run settling again (reap reads two
 # days of ended items) must not un-start it or count its own failure twice: on 2026-11-21 one failed
 # item un-started ar-4041 under its rerun three times, and its two "failures" asked about a row whose
 # PR had merged (ar-4678). A queue that cannot be read reads as none, the behaviour before.
@@ -4287,7 +4287,7 @@ row_newer_item() {
   since=$(date -d "${fin:0:10} -1 day" +%F 2>/dev/null) || since=$(date -d '-2 days' +%F)
   { agent-queue list --json 2>/dev/null; agent-queue list --json --state done --since "$since" 2>/dev/null; } |
     jq -se --arg r "$row" --arg f "$fin" --arg file "$file" \
-      'any(.[]; .row == $r and .file != $file and (.state != "done" or (.finished // "") > $f))' >/dev/null
+      'any(.[]; .row == $r and .file != $file and (.state != "done" or (.status == "ok" and (.finished // "") > $f)))' >/dev/null
 }
 
 # PR_STATE_JSON, PR_STATE_JQ -- what one read of an item's PR asks for, and the line it prints:
@@ -4327,7 +4327,9 @@ land_orphan() {
     info=$(item_pr_state "$1" "$it") || return 2
     read -r state oid _ <<<"$info"; oid=${oid#-}
     case "$state" in
-    OPEN) return 0 ;;
+    # From land_row, an open PR holds the row only for an item that ended ok: a failed or cancelled
+    # run's PR left open is nobody's, and must not keep a held row from its ask.
+    OPEN) [ -z "${3:-}" ] || [ "$(jq -r '.status // ""' <<<"$it")" = ok ] || return 1; return 0 ;;
     MERGED) [ -n "$oid" ] || return 1
       ! own_record "$1" "$it" || agent-queue set "$1" "merged=$oid" >/dev/null || return 1
       it=$(jq -c --arg m "$oid" '.merged = $m' <<<"$it") ;;

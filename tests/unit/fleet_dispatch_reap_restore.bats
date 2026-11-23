@@ -1658,4 +1658,3 @@ rm "$NOTES_FIXTURE/origin-close"; agent-queue set fix-crash "pr=o/game#12" "merg
   assert_output --partial 'requeued queue item cx'
   assert_not_called 'start --item cx'
 }
-
