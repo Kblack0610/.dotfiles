@@ -10,14 +10,14 @@
 #
 # What an agent is: ~/.config/agentctl/README.md, "What an agent is".
 
-AGENTCTL_CONF_DIR="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}"
+# AGENTCTL_CONF_DIR, the roster, and the budget keys are lib/budget.sh's (budget_conf).
 
 # agent_load <name> -> AGENT_KIND AGENT_ROLE AGENT_MODEL AGENT_PROMPT AGENT_SCHEMA AGENT_PROMPT_SHA
 #                      AGENT_ROUTE AGENT_DATA_CLASS AGENT_DELAY_RULES AGENT_HARNESS AGENT_SOURCE AGENT_CALL_CONTEXT, and for
 #                      the raw harness AGENT_MAX_TOKENS AGENT_TEMPERATURE, or exit 78; and the
 #                      conf's budget (lib/budget.sh), which replaces a parent runner's
 agent_load() {
-  local name="$1" conf v=()
+  local name="$1" conf v=() b=()
   [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]] || role_die "--agent '$name' is not an agent name"
   conf="$AGENTCTL_CONF_DIR/$name.conf"
   [ -r "$conf" ] || role_die "no agent '$name' ($conf). Every model call is a registered agent:
@@ -25,13 +25,13 @@ add a KIND=call conf for it - see ~/.config/agentctl/README.md, \"What an agent 
   # A subshell, so the conf's keys never leak into this process except as read below.
   mapfile -t v < <(
     set +eu
-    unset NAME KIND ROLE MODEL PROMPT SCHEMA ROUTE DATA_CLASS DELAY_RULES BUDGET_CALL_USD BUDGET_DAY_USD MAX_CALLS_HOUR \
+    unset NAME KIND ROLE MODEL PROMPT SCHEMA ROUTE DATA_CLASS DELAY_RULES \
       HARNESS MAX_TOKENS TEMPERATURE SOURCE CALL_CONTEXT
     # shellcheck disable=SC1090
     . "$conf" >/dev/null 2>&1
     printf '%s\n' "${NAME:-}" "${KIND:-}" "${ROLE:-}" "${MODEL:-}" "${PROMPT:-}" \
       "${ROUTE:-}" "${DATA_CLASS:-}" "${DELAY_RULES:-}" \
-      "${BUDGET_CALL_USD:-}" "${BUDGET_DAY_USD:-}" "${MAX_CALLS_HOUR:-}" "${SCHEMA:-}" \
+      "${SCHEMA:-}" \
       "${HARNESS:-}" "${MAX_TOKENS:-}" "${TEMPERATURE:-}" "${SOURCE:-}" "${CALL_CONTEXT:-}"
   )
   [ "${v[0]:-}" = "$name" ] || role_die "agent conf $conf has NAME='${v[0]:-}', not '$name'"
@@ -42,15 +42,16 @@ add a KIND=call conf for it - see ~/.config/agentctl/README.md, \"What an agent 
   AGENT_ROUTE="${v[5]:-}"
   AGENT_DATA_CLASS="${v[6]:-}"
   AGENT_DELAY_RULES="${v[7]:-}"
-  BUDGET_CALL_USD="${v[8]:-}" BUDGET_DAY_USD="${v[9]:-}" MAX_CALLS_HOUR="${v[10]:-}"
-  AGENT_SCHEMA="${v[11]:-}"
+  mapfile -t b < <(budget_conf "$name")
+  BUDGET_CALL_USD="${b[0]:-}" BUDGET_DAY_USD="${b[1]:-}" MAX_CALLS_HOUR="${b[2]:-}"
+  AGENT_SCHEMA="${v[8]:-}"
   if [ -n "$AGENT_SCHEMA" ]; then
     jq -e . "$AGENT_SCHEMA" >/dev/null 2>&1 || role_die "agent '$name' SCHEMA=$AGENT_SCHEMA is not a readable JSON file"
   fi
-  AGENT_HARNESS="${v[12]:-}" AGENT_MAX_TOKENS="${v[13]:-}" AGENT_TEMPERATURE="${v[14]:-}"
-  AGENT_SOURCE="${v[15]:-}"
+  AGENT_HARNESS="${v[9]:-}" AGENT_MAX_TOKENS="${v[10]:-}" AGENT_TEMPERATURE="${v[11]:-}"
+  AGENT_SOURCE="${v[12]:-}"
   # CALL_CONTEXT=lean: the call carries its PROMPT and input, not the session context (harnesses/claude.sh)
-  AGENT_CALL_CONTEXT="${v[16]:-}"
+  AGENT_CALL_CONTEXT="${v[13]:-}"
   case "$AGENT_CALL_CONTEXT" in ''|lean) ;; *) role_die "agent '$name' CALL_CONTEXT='$AGENT_CALL_CONTEXT' is not empty or lean ($conf)" ;; esac
   [ -n "$AGENT_ROLE" ] || role_die "agent '$name' declares no ROLE ($conf)"
   AGENT_PROMPT_SHA=""

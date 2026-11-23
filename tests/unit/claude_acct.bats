@@ -1537,8 +1537,7 @@ budget() {
   run cat "$SANDBOX/prom/claude_acct.prom"
   assert_line 'claude_account_read_ok{account="alt",kind="claude"} 0'
   assert_line 'claude_fleet_live_sessions 5'
-  assert_line 'claude_fleet_working_sessions 5'
-  assert_line 'claude_account_working_sessions{account="main",kind="claude"} 3'
+  refute_output --partial 'working_sessions'
   assert_line 'claude_account_working_cost{account="main",kind="claude"} 3'
   assert_line 'claude_fleet_session_rate_points_per_hour 0.1'
   assert_line --regexp '^claude_fleet_burn_points_per_hour 0\.3(0000|$)'

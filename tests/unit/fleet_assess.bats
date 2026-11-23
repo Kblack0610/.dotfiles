@@ -399,33 +399,25 @@ editor_parents() {
   parent_of() { case "$1" in 101) echo 11 ;; 102) echo 50 ;; 50) echo 12 ;; 103) echo 900 ;; 900) echo 1 ;; esac; }
 }
 
-@test "textfile: the governor's units are not republished, only the editors outside a seat" {
+@test "textfile: the governor's units and the editors outside a seat are not republished" {
   textfile_fixture
   slot_fixture
   editor_parents
-  gate_rows() { printf '%s\t%s\t%s\t%s\n' 2160 "$PROJ" PlayMode 101 30 "$PROJ" PlayMode 102; }
   write_textfile "$OUT"
   run cat "$OUT/fleet_local.prom"
   refute_output --partial 'fleet_local_slots'
   refute_output --partial 'fleet_local_queued'
-  assert_line 'fleet_local_unslotted_editors 0'
+  refute_output --partial 'fleet_local_unslotted'
 }
 
-@test "textfile: a batch editor started outside slots.sh is counted apart from the seats" {
+@test "unslotted_editors: an editor under its slot holder is slotted, a batch editor started outside slots.sh is not" {
   textfile_fixture
   slot_fixture
   editor_parents
-  write_textfile "$OUT"
-  run cat "$OUT/fleet_local.prom"
-  assert_line 'fleet_local_unslotted_editors 1'
-}
-
-@test "textfile: no slots dir publishes no unslotted series, never a guessed count" {
-  textfile_fixture
-  slot_fixture
-  rm -r "$SLOT_DIR"
-  write_textfile "$OUT"
-  run grep -c '^fleet_local_unslotted' "$OUT/fleet_local.prom"
+  run unslotted_editors "$(slot_holders)"
+  assert_output 1
+  gate_rows() { printf '%s\t%s\t%s\t%s\n' 2160 "$PROJ" PlayMode 101 30 "$PROJ" PlayMode 102; }
+  run unslotted_editors "$(slot_holders)"
   assert_output 0
 }
 
@@ -467,8 +459,6 @@ editor_parents() {
   assert_line 'fleet_local_gate_finished{result="pass"} 1'
   assert_line 'fleet_local_gate_finished{result="fail"} 1'
   assert_line 'fleet_local_gate_finished{result="timeout"} 0'
-  assert_line 'fleet_local_gate_duration_seconds{quantile="0.5"} 200'
-  assert_line 'fleet_local_gate_duration_seconds{quantile="0.9"} 600'
 }
 
 @test "textfile: a run the kernel killed or the log cap stopped still counts" {
@@ -481,7 +471,6 @@ editor_parents() {
   run cat "$OUT/fleet_local.prom"
   assert_line 'fleet_local_gate_finished{result="killed"} 1'
   assert_line 'fleet_local_gate_finished{result="flood"} 1'
-  assert_line 'fleet_local_gate_duration_seconds{quantile="0.9"} 600'
 }
 
 @test "textfile: runs count in the hour they ended, not the hour they began" {
@@ -526,13 +515,12 @@ editor_parents() {
   refute_output --partial 'fleet_local_gate_failed{'
 }
 
-@test "textfile: no ledger still publishes zero results and no run times" {
+@test "textfile: no ledger still publishes zero results" {
   textfile_fixture
   RUN_LEDGER="$BATS_TEST_TMPDIR/absent.tsv"
   write_textfile "$OUT"
   run cat "$OUT/fleet_local.prom"
   assert_line 'fleet_local_gate_finished{result="pass"} 0'
-  refute_output --partial 'fleet_local_gate_duration_seconds{'
 }
 
 # Lines are `pid ppid etimes stat`, one per thread, as d_sample prints them.
@@ -877,6 +865,15 @@ gate_ledger() {
   assert_output --partial "gate: 2/3 units busy, 2 queued, 2h: 5 fail, 9 pass, 1 killed; 5+ runs, not merged: feat/a x5"
   GOV_ROWS=none
   run main --gate
+  assert_output ""
+}
+
+@test "gate_line: no slots dir prints no gate line, never a guessed outside-a-seat count" {
+  slot_fixture
+  editor_parents
+  rm -r "$SLOT_DIR"
+  run gate_line
+  assert_success
   assert_output ""
 }
 
