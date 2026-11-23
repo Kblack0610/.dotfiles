@@ -8,6 +8,9 @@
 #   claude-acct run [--acct <name>] [claude args]
 #                             # exec claude on the account pick returns: the one launcher for a
 #                             # human start (`cl`, `sessions` resume, the fzf picker, the hub)
+#   claude-acct scope <command...>
+#                             # exec the command in its own systemd user scope, agent-<project>-<item>-<pid>.scope;
+#                             # run and every pane launch line (claude-telemetry.sh) start claude through it
 #   claude-acct setup-token [--renew] [name]
 #                        # walk each account (or the one named): say which email to sign in as, run
 #                        # `claude setup-token`, verify the printed token with one tiny call, and store
@@ -1317,7 +1320,44 @@ cmd_run() {
     if declare -F claude_telemetry_launch >/dev/null; then
         OTEL_RESOURCE_ATTRIBUTES="$(claude_telemetry_launch)"; export OTEL_RESOURCE_ATTRIBUTES
     fi
-    exec claude "$@"
+    cmd_scope claude "$@"
+}
+
+# cmd_scope <command...>: exec the command in its own systemd user scope, named
+# agent-<project>-<item>-<pid>.scope (each part systemd-escaped, so a literal '-' only separates them;
+# the item is empty for a hand start), so node-inventory-metrics (home-config) reports each agent
+# session's CPU and memory with its project and queue item, and agent-host-budget's agent-.scope
+# drop-in holds it to the agent CPUs. systemd-run execs the command, so its pid (a dispatch pane's
+# pid) stays the same. In a tmux pane the description reads as tmux's own, "tmux child pane <pid> ...
+# launched by process <server pid>", so `wt orphans` ends what the session left once the pane closes.
+# With no user manager (macOS, a shell with no XDG_RUNTIME_DIR) it runs unscoped, and on Linux says so.
+cmd_scope() {
+    [[ $# -gt 0 ]] || { echo "claude-acct scope: name a command" >&2; return 2; }
+    [[ "$(uname -s)" == Linux ]] || exec "$@"
+    if ! command -v systemd-run >/dev/null || [[ ! -S "${XDG_RUNTIME_DIR:-/nonexistent}/systemd/private" ]]; then
+        echo "claude-acct scope: no systemd user manager here, so $1 runs in no agent scope" >&2
+        exec "$@"
+    fi
+    local p i u d spid pane pp
+    # shellcheck disable=SC2016
+    p=$(bash -c '. "$1" && resolve_project_name "$2"' _ "${PROJECT_NAME_LIB:-$HOME/.config/shared-hooks/project-name.sh}" "$PWD" 2>/dev/null)
+    i=${AGENT_QUEUE_ITEM:-}
+    u="agent-$(systemd-escape -- "$p")-$(systemd-escape -- "$i")-$$.scope"
+    # A scope of that name left alive by a process the last holder of this pid started.
+    if [[ "$(systemctl --user show -p LoadState --value "$u" 2>/dev/null)" != not-found ]]; then
+        echo "claude-acct scope: $u already exists, so $1 runs in no agent scope" >&2
+        exec "$@"
+    fi
+    d="$1 for ${p:-no project}${i:+ item $i}"
+    if [[ -n "${TMUX:-}" ]]; then
+        # TMUX is "<socket>,<server pid>,<session>"; the pane's pid is the ancestor the server started.
+        spid=${TMUX#*,}; spid=${spid%%,*}; pane=$$
+        while pp=$(awk '/^PPid:/ { print $2 }' "/proc/$pane/status" 2>/dev/null) && [[ -n "$pp" && "$pp" != "$spid" && "$pp" -gt 1 ]]; do
+            pane=$pp
+        done
+        [[ "$pp" != "$spid" ]] || d="tmux child pane $pane runs $d launched by process $spid"
+    fi
+    exec systemd-run --user --scope --quiet --collect --unit="$u" --description="$d" -- "$@"
 }
 
 cmd_status() {
@@ -2549,6 +2589,7 @@ cmd_unpark() {
 case "${1:-}" in
     pick)   shift; cmd_pick "$@" ;;
     run)    shift; cmd_run "$@" ;;
+    scope)  shift; cmd_scope "$@" ;;
     status) shift; cmd_status "$@" ;;
     textfile) shift; cmd_textfile "$@" ;;
     gateway) shift; cmd_gateway "$@" ;;

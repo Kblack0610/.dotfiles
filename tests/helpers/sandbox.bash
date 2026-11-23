@@ -114,8 +114,8 @@ sandbox_tool_files() {
   # agentctl reads the lanes a conf's LANE= may name from lanes.tsv (private, so absent in CI).
   export AGENTCTL_LANES_FILE="$SANDBOX/lanes.tsv"
   cp "$TESTS_DIR/fixtures/lanes.tsv" "$AGENTCTL_LANES_FILE"
-  # hub-figure (a repo bin on PATH) keeps its cache in XDG_RUNTIME_DIR, which is the host's,
-  # and asks the host's `hub` when it is stale: a test with no hub-figure stub read the workstation's
+  # hub-figure (a repo bin on PATH) keeps its cache in XDG_RUNTIME_DIR (the host's until
+  # sandbox_detach_env moves it) and asks the host's `hub` when it is stale: a test with no hub-figure stub read the workstation's
   # live figure (agent_ask.bats count --all printed 31, not ?). Point both inside the sandbox; a
   # hub-figure test sets its own after sandbox_init, and a `hub` stub in $SANDBOX/bin is the one it asks.
   export HUB_FIGURE_CACHE="$SANDBOX/tmp/hub-figure.json" HUB_FIGURE_HUB="$SANDBOX/bin/hub"
@@ -203,6 +203,12 @@ sandbox_detach_env() {
   # A suite run by a systemd unit (CI, a timer) inherits its INVOCATION_ID, and ask-resume reads
   # that as "detach through systemd-run", which would start a real transient scope.
   unset INVOCATION_ID
+
+  # The host's XDG_RUNTIME_DIR holds its live user manager's socket, and `claude-acct scope` (every
+  # claude launch) starts a real transient scope there when it finds one. The sandbox's has none, so a
+  # launch runs unscoped; claude_acct.bats gives one a socket, with systemd-run stubbed.
+  export XDG_RUNTIME_DIR="$SANDBOX/run"
+  mkdir -p "$XDG_RUNTIME_DIR"
 
   # A runner shell that exports NO_COLOR or PANEL_NO_COLOR would blank every palette the
   # colour fixtures assert on (md_render, panel_lib, questions_panel). A test that wants no

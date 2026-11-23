@@ -5,7 +5,7 @@
 //! the alerts that name it. agent-web draws the same page at `#infra/machines/<host>`.
 
 use hub_core::host_history::{HostHistory, Hour, PowerHistory, DAYS};
-use hub_core::host_now::{bytes, HostNow, Proc, HOT_C};
+use hub_core::host_now::{bytes, tests_text, HostNow, Proc, Session, HOT_C};
 use hub_core::machine_page::{MachinePage, RecentJob};
 use hub_core::table::Row as _;
 use ratatui::text::{Line, Span};
@@ -489,7 +489,36 @@ fn procs(rows: &[Proc], image: bool, p: Palette, w: usize) -> Vec<Line<'static>>
     out
 }
 
-/// What runs outside Kubernetes: Docker containers, the busiest processes, running services.
+/// Each agent session in its own scope: project, item, CPU, memory, then its test runs' cores.
+fn sessions(rows: &[Session], p: Palette, w: usize) -> Vec<Line<'static>> {
+    let mut out = Table {
+        header: vec!["PROJECT", "ITEM", "CPU", "MEM", "TESTS"],
+        rows: rows
+            .iter()
+            .take(LIVE_ROWS)
+            .map(|x| {
+                vec![
+                    dash(&x.project),
+                    dash(&x.item),
+                    cores(x.cpu).into(),
+                    x.mem.map_or("-".into(), |m| bytes(m).into()),
+                    dash(&tests_text(&x.tests)),
+                ]
+            })
+            .collect(),
+        keep: vec![0, 1, 2, 3, 4],
+        right: vec![2, 3],
+        flex: Some(4),
+        flexmin: 12,
+        ..Default::default()
+    }
+    .fit(w, p.head());
+    out.extend(more(rows.len(), p));
+    out
+}
+
+/// What runs outside Kubernetes: Docker containers, the busiest processes, agent sessions,
+/// running services.
 fn inventory(live: &HostNow, p: Palette, w: usize) -> Vec<Line<'static>> {
     if let Some(why) = unread(live, "inventory") {
         return vec![heading("CONTAINERS, PROCESSES, SERVICES", why, p)];
@@ -525,6 +554,24 @@ fn inventory(live: &HostNow, p: Palette, w: usize) -> Vec<Line<'static>> {
         p,
     ));
     out.extend(procs(&live.processes, false, p, w));
+    out.push(Line::raw(""));
+    if live.sessions.is_empty() {
+        out.push(heading(
+            "AGENT SESSIONS",
+            "none runs in its own scope here",
+            p,
+        ));
+    } else {
+        out.push(heading(
+            "AGENT SESSIONS",
+            format!(
+                "{} in their own scopes, the busiest first",
+                live.sessions.len()
+            ),
+            p,
+        ));
+        out.extend(sessions(&live.sessions, p, w));
+    }
     out.push(Line::raw(""));
     out.push(heading(
         "SERVICES",
@@ -797,6 +844,14 @@ mod tests {
                     ..Proc::default()
                 }],
                 processes_total: Some(612.0),
+                sessions: vec![Session {
+                    scope: "agent-dotfiles-ar\\x2d4859-10.scope".into(),
+                    project: "dotfiles".into(),
+                    item: "ar-4859".into(),
+                    cpu: Some(1.5),
+                    mem: Some(2e9),
+                    tests: vec![("bats".into(), 1.2)],
+                }],
                 inventory: true,
                 unread: Default::default(),
             }),
@@ -846,6 +901,9 @@ mod tests {
             "PROCESSES",
             "of 612 processes",
             "Unity",
+            "AGENT SESSIONS",
+            "ar-4859",
+            "bats 1.20",
             "SERVICES",
             "nfs-server tailscaled",
             "temp ",
