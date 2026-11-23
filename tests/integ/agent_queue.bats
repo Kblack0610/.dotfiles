@@ -2642,6 +2642,7 @@ EOF2
   assert_line --index 0 --regexp ' #high #takes/lv-1$'
   assert_line --index 1 --regexp ' #high #takes/lv-2$'
   # NEGATIVE CONTROL: the phase with no marker files its row with no #takes.
+  assert_line --index 2 --regexp ' #high( #c[0-9]+)?$'
   refute_line --index 2 --partial '#takes/'
 }
 
