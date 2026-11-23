@@ -401,13 +401,9 @@ fn pr_number(pr: &str) -> String {
     pr.rsplit('#').next().unwrap_or(pr).to_string()
 }
 
-/// The item's `sessions:` ids; the field holds one or a comma-separated list.
+/// The item's `sessions:` ids (`Item::session_ids`).
 fn item_sessions(i: &Item) -> Vec<String> {
-    extra_str(i, "sessions")
-        .split([',', ' '])
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .collect()
+    i.session_ids().map(String::from).collect()
 }
 
 fn extra_str(i: &Item, k: &str) -> String {
