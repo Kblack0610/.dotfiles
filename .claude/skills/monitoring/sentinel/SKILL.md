@@ -40,7 +40,7 @@ manifest CRUD; the running service does the watching.
 | Diagnose a trip / judge a fuzzy watch | the service's bounded agent tier (observe-only) |
 | Act on a notification (fix, roll back, restart) | the **human** - Sentinel only recommends |
 
-- Registry: `~/.agent/watches/*.yaml` (one manifest = one watch; runtime axis, not git-tracked).
+- Registry: `~/.agent/watches/*.yaml` (one manifest = one watch; in the agent store, which store-sync carries to every peer, not in a dotfiles repo). The loop runs only on the fleet-lease holder (`fleet-lease status`).
   Paused watches are renamed `*.yaml.paused` (excluded by the loop's glob).
 - Runtime log: `~/.local/state/agentctl/sentinel/activity.log`; per-watch state in
   `~/.local/state/watch-companion/<name>.state`.
@@ -66,8 +66,8 @@ manifest CRUD; the running service does the watching.
 ## Verb: `watch` / `add`
 
 "Keep an eye on X" -> translate the natural-language ask into a manifest and write it to
-`~/.agent/watches/<name>.yaml`, then ensure the service is up (`agentctl status sentinel`; if not
-running, `agentctl reload`). Confirm the manifest back to the user.
+`~/.agent/watches/<name>.yaml`, then ensure the service is up on the lease holder (`agentctl status sentinel` there; if not
+running, `agentctl reload`). Confirm the manifest back to the user. A command probe new in a merge must be linked on the holder first (`ls ~/.local/bin/<probe>` there; its autopull may lag), or the first pass pages ERROR on exit 127.
 
 Picking the probe (deterministic-first):
 

@@ -6,7 +6,7 @@ metadata:
   category: workstreams
   tags: [review, hygiene, simplify]
   system: [any]
-  reviewed: "2026-10-28"
+  reviewed: "2026-11-23"
 ---
 
 # final-pass
@@ -43,7 +43,7 @@ Not for finding defects - that is `/code-review`. Not for a repo-wide sweep - th
    ```
    A missing CLAUDE.md or AGENTS.md shows as an rg error; that is fine, but do not hide it with `2>/dev/null`, or a typo in a path turns the guard off silently. Read each lessons hit's whole paragraph: the relevant rule is often headed "Rule:" and uses none of the keywords. Anything a lesson or comment calls deliberate is off limits for this pass; list it under "skipped as load-bearing".
 
-3. **Baseline, then built-in `/simplify`.** Run the gate from step 7 once now, so a later red can be blamed on this pass or not. Then invoke `/simplify` with the step-1 range and file list and the step-2 do-not-touch list as its argument; left alone it picks its own range (`@{upstream}...HEAD`), which is wrong in a detached worktree. Re-read what it changed and revert any hunk that touches a step-2 item or changes behavior.
+3. **Baseline, then built-in `/simplify`.** Note the base's gate result now, so a later red can be blamed on this pass or not: for a repo whose gate is its CI (dotfiles) that is the gate workflow's run on the merge base (`gh run list -w tests.yml --commit "$MB" -L 1`; none finished there, then the newest completed one on main before it), never a local run; a repo with a local gate script runs it once. Then invoke `/simplify` with the step-1 range and file list and the step-2 do-not-touch list as its argument; left alone it picks its own range (`@{upstream}...HEAD`), which is wrong in a detached worktree. Re-read what it changed and revert any hunk that touches a step-2 item or changes behavior.
 
 4. **House checks.** For each, the rule lives where the pointer says (Duplication's lives here); apply it, do not restate it.
    - **Duplication.** This bullet is the duplication rule's one home; other skills and agents link here. For every new function or helper, grep the sibling files and the repo for one that already does the job (`rg -n '<verb>_<noun>|<noun>'`) and use or extend it instead of adding a second. A copy, in the repo or repeated inside the diff, is folded into one only when the copies must change together: look-alikes that change for different reasons stay apart, and code with one use gets no abstraction. Leave a copy someone kept on purpose. (memory `reference_adjacent_fix_pattern`)
@@ -58,7 +58,7 @@ Not for finding defects - that is `/code-review`. Not for a repo-wide sweep - th
 
 6. **Commit by concern.** Simplification and house-check fixes are separate `refactor:` commits; hygiene commits split the way code-hygiene step 5 splits them. Skip any concern with nothing in it.
 
-7. **Gate.** Run the repo's merge gate as its CLAUDE.md defines it (one-shot step 4). For dotfiles that is the shell-test-harness gate: `make -C tests test-pr` on the host (the files the PR gate picks for the change; the whole tier is main's job), and the ui tier only through `tests/docker.sh`, never on the host. If the gate goes red and the step-3 baseline was green, revert the hunk that broke it before trying anything else.
+7. **Gate.** Run the repo's merge gate as its CLAUDE.md defines it (one-shot step 4). For dotfiles that is the PR's CI run of what `tests/pick.sh` picks (shell-test-harness, "CI is the gate"), so this pass's commits go in before the push and nothing runs on the host. If the gate goes red and the step-3 baseline was green, revert the hunk that broke it before trying anything else.
 
 8. **Report.**
    ```
