@@ -719,13 +719,14 @@ plans_store() {
         mkdir -p "${main%/*}" && ln -sfn "$live" "$main" || return 1
     fi
     # A project's own copy of a _live plan becomes the link; a newer copy is the one kept, the
-    # older text stays in ~/.agent git.
+    # older text stays in ~/.agent git. The reserved project keys (_unscoped, _runner) are
+    # projects too; only the store and the archive are skipped (ar-3294: 25 _unscoped twins).
     while IFS= read -r f; do
         n=${f##*/}
         [[ -f "$live/$n" && ! -L "$live/$n" ]] || continue
         [[ "$f" -nt "$live/$n" ]] && { cp -p "$f" "$live/$n" || continue; }
         ln -sfn "../_live/$n" "$f"
-    done < <(find "$root" -maxdepth 2 -path "$root/_*" -prune -o -path "$root/*/*" -type f -name '*.md' -print 2>/dev/null)
+    done < <(find "$root" -maxdepth 2 \( -path "$live" -o -path "$root/_archive" \) -prune -o -path "$root/*/*" -type f -name '*.md' -print 2>/dev/null)
 }
 # best -> "score US name US dir US note" of the account whose week is cheapest to spend from,
 # nothing without data
