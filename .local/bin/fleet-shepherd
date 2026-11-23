@@ -832,6 +832,18 @@ close_items_sample() {
   [ -z "$acted" ] || fleet-sessions --write >/dev/null || true
 }
 
+# close_page <sid> <target> <fact>: the page for a window close that failed. Once per session: nothing
+# escalates a DONE, LANDED or CHAT row any more (#2806), so this page is the only one it gets. One agent-notify
+# refused is not recorded in .close-paged, so the next check tries it again.
+close_page() {
+  local sid="$1" target="$2" fact="$3" paged="$LEDGER/.close-paged"
+  grep -qxF "$sid" "$paged" 2>/dev/null && return 0
+  agent-notify -p high -k decision -t "$target: its window will not close" -r "tmux:$target" \
+    "Closing the window of $target failed ($fact). Look at it and close it by hand." >/dev/null 2>&1 || return 0
+  printf '%s\n' "$sid" >> "$paged"
+  cmd_log "close-failed: $target: paged, closing its window failed ($fact)" >/dev/null
+}
+
 # close_sample: the timer closer. Every row it reads already has a close verdict of now (CLOSE_JQ in
 # fleet-sessions: quiet FLEET_IDLE_CLOSE_MIN, nothing that would lose work), so it re-proves none of it.
 # - Empty prompt, nothing typed yet: claim (mark --close, once per session) and type /wind-down auto,
@@ -845,7 +857,7 @@ close_items_sample() {
 # A window closes only unshown, with Claude in front (an editor's buffer is not in the scrollback) and
 # no turn running in its footer, by wind-down.sh close (scrollback, window, a reap that refuses a dirty
 # tree), its own open asks set to reopen it first (logged once in .reopen-failed when one cannot be).
-# A failed close is logged once in .close-failed and left to the escalation. A worker's pane goes over
+# A failed close is recorded in .close-failed (not tried again) and paged once (close_page). A worker's pane goes over
 # ssh (pane_run). Having acted, it refreshes the document so cmd_due reads it.
 close_sample() {
   local sid target pane close fact asks nasks man host server cmd when now rc wdc how st mode att wa fg screen
@@ -882,7 +894,7 @@ close_sample() {
         case "$fg" in claude|node) ;; *) continue ;; esac
         working_footer "$screen" && continue
       fi
-      grep -qxF "$sid" "$failed" 2>/dev/null && continue
+      if grep -qxF "$sid" "$failed" 2>/dev/null; then close_page "$sid" "$target" "$fact"; continue; fi
       if ! reopen_own_asks "$sid" "$asks" "$nasks"; then
         if ! grep -qxF "$sid $asks" "$LEDGER/.reopen-failed" 2>/dev/null; then
           printf '%s %s\n' "$sid" "$asks" >> "$LEDGER/.reopen-failed"
@@ -901,7 +913,8 @@ close_sample() {
         cmd_log "close: $target: its machine did not answer over ssh; the next check closes its window ($fact)" >/dev/null
       else
         printf '%s\n' "$sid" >> "$failed"
-        cmd_log "close: $target: closing its window failed; the escalation carries it ($fact)" >/dev/null
+        cmd_log "close: $target: closing its window failed ($fact)" >/dev/null
+        close_page "$sid" "$target" "$fact"
       fi
       continue
     fi
@@ -912,14 +925,14 @@ close_sample() {
     rc=0; pane_run "$host" agent-panel send --wait 0 --pane "$server/$pane" "$cmd" >/dev/null 2>&1 || rc=$?
     case "$rc" in
       0) acted=1; cmd_log "close: $target $close: typed $cmd ($fact)" >/dev/null ;;
-      3) acted=1; cmd_log "close: $target $close: typed $cmd, but its Enter was not taken; the escalation carries it" >/dev/null ;;
+      3) acted=1; cmd_log "close: $target $close: typed $cmd, but its Enter was not taken; the window close, ${FLEET_IDLE_CLOSE_MIN:-60}m on if it is still due, carries it" >/dev/null ;;
       75) fleet-sessions mark --release "$sid" && acted=1
           cmd_log "close: $target $close: another send held its pane; the next check types it" >/dev/null ;;
       # ssh failed (255). A link dropped after the keys landed would see them typed twice, but by
       # then the pane is busy or gone, and the next check types only into an idle, empty prompt.
       255) fleet-sessions mark --release "$sid" && acted=1
           cmd_log "close: $target $close: its machine did not answer over ssh; the next check types it" >/dev/null ;;
-      *) cmd_log "close: $target $close: marked, but typing $cmd failed ($rc); the escalation carries it" >/dev/null ;;
+      *) cmd_log "close: $target $close: marked, but typing $cmd failed ($rc); the window close, ${FLEET_IDLE_CLOSE_MIN:-60}m on if it is still due, carries it" >/dev/null ;;
     esac
   done < <(jq -r "$CLOSE_NUDGE_JQ$CLOSE_REFUSED_JQ"'(.sessions // [])[]
     | (close_nudge // (if close_refused then "WINDOW" else null end)) as $close | select($close)
@@ -980,7 +993,8 @@ pane_takes_keys() {
     [ "$h" = - ] || return 1
     [ "${att:-1}" = 0 ] || [ "${wa:-1}" != 1 ] || return 1
     leave_mode "$s" "$p" || return 1
-    cmd_log "takeover: $s/$p: left its tmux mode on an unwatched pane" >/dev/null
+    # Not the verb "takeover": cmd_stats counts that verb, and this line is no takeover (ar-4619).
+    cmd_log "mode-left: $s/$p: left its tmux mode on an unwatched pane" >/dev/null
   fi
   idle_prompt "$(pane_tmux "$h" "$s" capture-pane -p -t "$p" 2>/dev/null)"
 }

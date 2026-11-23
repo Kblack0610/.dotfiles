@@ -22,7 +22,7 @@ setup() {
   # a pass's measured cost (pass_cost); unset is a session with none
   stub agent-usage '[ "$1 $3" = "session --json" ] || exit 2
 if [ -n "${STUB_USAGE:-}" ]; then printf "%s" "$STUB_USAGE"; else printf "{\"session_id\":\"%s\",\"usage_source\":\"none\"}" "$2"; fi'
-  stub agent-notify 'echo "$*" >> "$HOME/pages"'
+  stub agent-notify '[ -z "${STUB_NOTIFY_FAIL:-}" ] || exit 1; echo "$*" >> "$HOME/pages"'
   # hub-core's figures: Only you (STUB_ONLY_YOU) and the Sessions card's Working part (STUB_WORKING, else the state document's WORKING rows, as the fixture's card), each "unread" for one hub could not give
   stub hub-figure 'case "$*" in "--fresh needs_only_you") v="${STUB_ONLY_YOU:-0}" ;; "--fresh sessions_working") v="${STUB_WORKING:-$(jq "[.sessions[] | select(.bucket == \"WORKING\")] | length" "$FLEET_STATE_FILE")}" ;; *) exit 2 ;; esac; [ "$v" = unread ] && exit 1; echo "$v"'
   stub watch-companion-loop 'case "$1" in tripped) printf "%b" "${STUB_TRIPPED:-}" ;; quarantined) printf "%b" "${STUB_QUARANTINED:-}" ;; esac'
@@ -532,7 +532,7 @@ typed() { cat "$HOME/panel.calls" 2>/dev/null; }
   # An Enter the pane did not take (exit 3) leaves the text in its box: logged as such.
   doc "[$(crow 2 DONE now)]"
   STUB_PANEL_RC=3 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
-  grep -q 'close: lab/2:1 DONE: typed /wind-down auto, but its Enter was not taken; the escalation carries it' "$FLEET_SHEPHERD_DIR/log.md"
+  grep -q 'close: lab/2:1 DONE: typed /wind-down auto, but its Enter was not taken; the window close, 60m on if it is still due, carries it' "$FLEET_SHEPHERD_DIR/log.md"
 }
 
 @test "a close-now row in manual (investigate-only) mode has its window closed, typed nothing (ar-4046)" {
@@ -668,7 +668,7 @@ nudged_ago() {
   done
 }
 
-@test "check closes the window of a nudged session whose verdict is still now, then refreshes the document and pages nobody" {
+@test "check closes the window of a nudged session whose verdict is still now, then refreshes the document, and pages only a close that fails" {
   nudged_ago 30 1 2 3
   # The refresh drops a closed session's row, as the real collect does once its window is gone.
   stub fleet-sessions 'echo "$*" >> "$HOME/sessions.calls"
@@ -687,12 +687,26 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
   grep -q 'close: lab/1:1: closed its window, still due 60m after its close was typed (DONE f-1)' "$FLEET_SHEPHERD_DIR/log.md"
   [ "$(grep -c -- '--write' "$HOME/sessions.calls")" = 2 ]
   [ -z "$(typed)" ]
-  # Negative control: a close that fails (a protected window) is logged once per fact.
+  # Negative control: a close that fails (a protected window) is logged and paged once per fact.
+  run grep -q 'its window will not close' "$HOME/pages"; assert_failure
   : > "$HOME/wind-down.calls"; doc "[$row1]"
   STUB_WD_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   STUB_WD_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
-  [ "$(grep -c 'close: lab/1:1: closing its window failed; the escalation carries it' "$FLEET_SHEPHERD_DIR/log.md")" = 1 ]
+  [ "$(grep -c 'close: lab/1:1: closing its window failed' "$FLEET_SHEPHERD_DIR/log.md")" = 1 ]
   [ "$(grep -c . "$HOME/wind-down.calls")" = 1 ]
+  [ "$(grep -c 'its window will not close' "$HOME/pages")" = 1 ]
+  grep -q 'Closing the window of lab/1:1 failed' "$HOME/pages"
+  grep -q 'close-failed: lab/1:1: paged' "$FLEET_SHEPHERD_DIR/log.md"
+}
+
+@test "a refused close page is tried again at the next check, and a paged close is not paged twice" {
+  nudged_ago 30 1
+  doc "[$(crow 1 DONE now '{"nudged":true,"close_sent":true,"idle_min":2000}')]"
+  STUB_NOTIFY_FAIL=1 STUB_WD_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  run grep -q 'its window will not close' "$HOME/pages"; assert_failure
+  STUB_WD_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  STUB_WD_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ "$(grep -c 'its window will not close' "$HOME/pages")" = 1 ]
 }
 
 @test "check closes the window of a NEEDS row that turned down its close, setting its own asks to reopen it first" {
@@ -842,7 +856,9 @@ nudge_ago() { printf 'fact: STALLED f-%s\nat: %s\n' "$2" "$(date -Iseconds -d "$
   grep -q 'copy-mode -q -t %1' "$HOME/tmux.calls"
   run closes
   assert_output 'close --server lab --pane %1 --sid 1'
-  grep -q 'takeover: lab/%1: left its tmux mode on an unwatched pane' "$FLEET_SHEPHERD_DIR/log.md"
+  grep -q 'mode-left: lab/%1: left its tmux mode on an unwatched pane' "$FLEET_SHEPHERD_DIR/log.md"
+  # takeovers_24h counts the one closed window, not the leave-mode line (ar-4619).
+  assert_equal "$("$SH" stats | jq -c '[.takeovers_24h, .takeovers_failed_24h]')" '[1,0]'
   # Negative controls: a pane shown to a client keeps its mode, and a mode that will not leave closes nothing.
   rm -f "$HOME/.mode-left" "$HOME/tmux.calls" "$HOME/wind-down.calls" "$FLEET_SHEPHERD_DIR/.takeover"
   STUB_SHOWN="1 1" STUB_IN_MODE=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
@@ -857,6 +873,12 @@ nudge_ago() { printf 'fact: STALLED f-%s\nat: %s\n' "$2" "$(date -Iseconds -d "$
   STUB_MODE_STICKY=1 STUB_IN_MODE=2 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   [ -z "$(closes)" ]
   grep -q 'copy-mode -q -t %1' "$HOME/tmux.calls"
+  # A mode left on a pane that is then not at an idle prompt closes nothing and is no takeover (ar-4619).
+  rm -f "$HOME/.mode-left" "$HOME/tmux.calls" "$FLEET_SHEPHERD_DIR/log.md" "$FLEET_SHEPHERD_DIR/.takeover"
+  STUB_IN_MODE=1 STUB_PANE="working on it" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  grep -q 'mode-left: lab/%1' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_equal "$("$SH" stats | jq -c '[.takeovers_24h, .takeovers_failed_24h]')" '[0,0]'
 }
 
 @test "takeover leaves a row alone that is not its to move: manual, plan mode, another host, an ask, not yet old enough, a draft in the prompt" {
