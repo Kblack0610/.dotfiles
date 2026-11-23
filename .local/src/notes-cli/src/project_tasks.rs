@@ -645,7 +645,7 @@ fn standing_title(line: &str) -> bool {
 }
 
 /// Triage's checks, run by a hand session on its own add before it writes; the twin refusals and
-/// [`projects::row_findings`] ran already. The row carries a priority (triage's `priority_rule`
+/// [`projects::row_findings`] ran already. The row carries a priority (triage's priority rubric, `~/.config/inbox-triage/rules/priority.md`
 /// judges which), a hand session files no standing epic, and every open row on either lane that
 /// [`similar`] lists for it is one the session named in `checked`. Ok(the ids shown) to write;
 /// Err([`EXIT_SHORTLIST`]) with the shortlist printed when one is not named.
@@ -657,7 +657,7 @@ fn self_check(
     checked: &[String],
 ) -> Result<std::result::Result<Vec<String>, i32>> {
     if md::task_priority(row).is_none() {
-        bail!("a row from a session carries #urgent, #high, #normal or #low, judged by triage's priority_rule (agentctl-inbox-triage), so nothing was added");
+        bail!("a row from a session carries #urgent, #high, #normal or #low, judged by triage's priority rubric (~/.config/inbox-triage/rules/priority.md), so nothing was added");
     }
     if crate::epics::is_epic(row) && standing_title(row) {
         bail!("a standing epic (`<system> to standard`) is filed by notes and project-stage-check, never by a session, so nothing was added");

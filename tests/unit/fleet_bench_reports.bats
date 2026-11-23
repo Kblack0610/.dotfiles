@@ -726,9 +726,12 @@ STUB
   assert_output --partial 'already claimed by ar-141'
   run "$SUBJECT" improve claim interrupts_per_day item:judge-stage-3
   assert_success
-  [ ! -e "$NLOG" ]
+  # the only notes call is the feed read for the claims' closes, never a board write
+  [ -f "$NLOG" ]
+  run grep -v '^board --json --id ' "$NLOG"
+  assert_failure 1
   run "$SUBJECT" improve list
-  assert_line 'live claims: 2 of 3'
+  assert_line 'live claims: 2, 2 on open work of 3'
   assert_line '  ar-141 revert_rate from 0.25 (max 0.1), 0d'
   assert_line '  item:judge-stage-3 interrupts_per_day from 0.286 (max 0.2), 0d'
 }
@@ -738,7 +741,7 @@ STUB
   claim ar-7 cost_per_pr 2 max 1 1
   BENCH_IMPROVE_MAX=1 run "$SUBJECT" improve file revert_rate 'another lever'
   assert_failure 1
-  assert_output --partial 'claims are live (BENCH_IMPROVE_MAX 1)'
+  assert_output --partial 'claims on open work are live (BENCH_IMPROVE_MAX 1)'
   BENCH_IMPROVE_MAX=1 run "$SUBJECT" improve claim revert_rate ar-596
   assert_success
   BENCH_IMPROVE_MAX=1 run "$SUBJECT" improve claim interrupts_per_day ar-596
@@ -779,6 +782,9 @@ check_fixture() {
   run "$SUBJECT" retro
   assert_success
   assert_output --partial '5 checked: 2 improved, 1 flat, 1 regressed, 1 unproven'
+  # the log is read back as far as the oldest live claim, and no further
+  run cat "$NOTES_LOG.args"
+  assert_output '--days 32'
   run jq -sc '[.[] | select(.type == "verdict") | [.subject, .verdict, .from, .after, .pr]] | sort' "$FLEET_BENCH_DIR/effect.jsonl"
   assert_output '[["ar-1","improved",0.5,0.25,"981"],["ar-2","flat",0.286,0.286,"982"],["ar-3","regressed",8,2,"983"],["ar-4","unproven",3,null,null],["item:judge-stage-3","improved",4,0.286,990]]'
   run "$SUBJECT" improve list --json
@@ -786,9 +792,32 @@ check_fixture() {
   assert_output '["ar-5","ar-6","ar-92"]'
   run outcome
   assert_output --partial WORKED
-  # the log is read back as far as the oldest live claim, and no further
-  run cat "$NOTES_LOG.args"
-  assert_output '--days 32'
+}
+
+@test "retro check: a row closed with no log line gets its verdict from the feed's close; the cap counts only claims on open work (ar-4768)" {
+  kpi_setup; kpi_fixture
+  claim ar-579 revert_rate 0.5 max 0.1 16
+  claim ar-575 cost_per_pr 3 max 0.2 16
+  claim ar-2777 ci_red_per_pr 9 max 5 2
+  # ar-579 and ar-2777 closed by a path that wrote no log line; only the feed's marker says so
+  jq -n '{rows: [{id: "ar-579", state: "done", closed: "'"$(date -u -d @$((T0 - 15 * 86400)) +%F)"'", marker: "id:ar-579 done pr:1765", prs: ["1765"]},
+                 {id: "ar-2777", state: "done", closed: "'"$(date -u -d @$((T0 - 86400)) +%F)"'", marker: "id:ar-2777 done", prs: ["o/r#3115"]},
+                 {id: "ar-575", state: "done", closed: "'"$(date -u -d @$((T0 - 15 * 86400)) +%F)"'", marker: "id:ar-575 done pr:1700", prs: ["1700"]},
+                 {id: "ar-575", state: "open"}]}' > "$BOARD.feed"
+  # ar-575 was reopened: its old close stays in a version note, but the open copy means it is open
+  # two of the three live claims are on closed rows, so the cap of 2 leaves room for a pick.
+  # NEGATIVE CONTROL: before ar-4768 three live claims held a cap of 2 and nothing was picked.
+  BENCH_IMPROVE_MAX=2 run "$SUBJECT" improve --json
+  assert_success
+  [ "$(jq -r .kpi <<<"$output")" = interrupts_per_day ]
+  run "$SUBJECT" improve list
+  assert_line 'live claims: 3, 1 on open work of 3'
+  assert_line --partial 'ar-579 revert_rate from 0.5 (max 0.1), 16d, closed: waits for its verdict'
+  # ar-579 closed 15d ago: its verdict comes now; ar-2777's is not due, and ar-575 is open
+  run "$SUBJECT" retro
+  assert_success
+  run jq -sc '[.[] | select(.type == "verdict") | [.subject, .verdict, .from, .after, .pr]]' "$FLEET_BENCH_DIR/effect.jsonl"
+  assert_output '[["ar-579","improved",0.5,0.25,"1765"]]'
 }
 
 @test "retro check: regressed files one #high revert row and claims it from the new value; a rerun files nothing" {
@@ -3863,7 +3892,7 @@ STUB
     done > "$ITEMS"
   }
   # climbs: s 10, m 30, l 90; ar-4 has a #size/s and no #pts, so its slow closes are not in s; the l item 8 days back is outside the 7-day window, and failed
-  # closes are not among the ok closes size_rule's minutes came from
+  # closes are not among the ok closes the size rubric's minutes came from
   items ar-1:10:1 ar-1:10:2 ar-2:30:1 ar-2:30:2 ar-3:90:1 ar-3:90:2 ar-3:5:192 ar-3:1:1:failed ar-3:1:2:failed ar-4:500:1 ar-4:500:2 ar-4:500:3
   run env BENCH_NOW=$T0 "$SUBJECT" sizes --check
   assert_success
