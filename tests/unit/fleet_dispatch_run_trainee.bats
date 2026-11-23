@@ -20,9 +20,10 @@ bats_require_minimum_version 1.5.0
   run harness_spends_gateway lazer-reserve; assert_success
   harness_set '.harnesses.gotrain.launcher = "codex"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  # The floor and route let t-one through to the start; what refuses it there is the launcher's own allowlist guard.
   refute_output --partial 'the cluster is red'
   refute_output --partial 'trainee floor: shut'
-  assert_output --partial 'started queue item t-one on gotrain'
+  assert_output --partial 'start: gotrain has a projects allowlist'
 }
 
 @test "trainee floor: the fleet share cap does not hold its start, which runs on a free trainee key, not a session the cap counts" {
