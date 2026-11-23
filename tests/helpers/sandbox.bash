@@ -53,9 +53,6 @@ export FLEET NOTES_ROLL STATUS_SH EDITOR_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN LA
 export STORE_SYNC_FG=1
 unset AGENT_STORE_HOOK
 
-# sandbox_init [fixture-name]
-# Builds $SANDBOX with an isolated HOME/TMPDIR, puts stubs first on PATH, and seeds
-# fixture data by copy (never by running the real tool).
 # sandbox_worlds -- the manifests the fleet scripts ask `tmux-world` about: agents on lab, the
 # human's dotfiles on hub. A test of routing itself writes its own.
 sandbox_worlds() {
@@ -124,26 +121,8 @@ sandbox_tool_files() {
   export HUB_FIGURE_CACHE="$SANDBOX/tmp/hub-figure.json" HUB_FIGURE_HUB="$SANDBOX/bin/hub"
 }
 
-sandbox_init() {
-  local fixture="${1:-basic}"
-
-  # Resolved to its PHYSICAL path. On macOS $BATS_TEST_TMPDIR sits under /var/folders,
-  # and /var is a symlink to /private/var — so the logical path a test registers in
-  # project-map.json ("/var/...") never equals what `git rev-parse --git-common-dir`
-  # hands the subject back ("/private/var/..."), and 8 project-name tests failed on the
-  # exact-path lookup. `pwd -P` is a no-op on Linux, where /tmp is a real directory.
-  SANDBOX="$(cd "${BATS_TEST_TMPDIR}" && pwd -P)/sb space"   # the space is intentional
-  mkdir -p "$SANDBOX"/{home,tmp,bin,fixture}
-  # No suite reaches the real fleet lease: fleet-dispatch's guard (lease_guard) reads this stub,
-  # which says this machine holds it. A test of the guard sets FLEET_LEASE_STUB_RC and _OUT;
-  # tests/unit/fleet_lease.bats runs the real one by path.
-  cat > "$SANDBOX/bin/fleet-lease" <<'EOF'
-#!/usr/bin/env bash
-[ -z "${FLEET_LEASE_STUB_OUT:-}" ] || echo "$FLEET_LEASE_STUB_OUT" >&2
-exit "${FLEET_LEASE_STUB_RC:-0}"
-EOF
-  chmod +x "$SANDBOX/bin/fleet-lease"
-
+# sandbox_home -> $HOME, the XDG homes and TMPDIR inside $SANDBOX
+sandbox_home() {
   export HOME="$SANDBOX/home"
   # HOME isolates ~/.gitconfig but not /etc/gitconfig. GitHub's runners ship one with
   # `filter.lfs.process`, which outranks a test's stubbed `filter.lfs.smudge`: the LFS
@@ -157,14 +136,20 @@ EOF
   # session exports it pointing at the real ~/.local/state.
   export XDG_STATE_HOME="$HOME/.local/state"
   mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$HOME/.agent/asks"
+}
 
+# sandbox_real_tools -> the real tmux and fzf, resolved before the stub dir goes on PATH
+sandbox_real_tools() {
   # Resolve the real binaries BEFORE the stub dir goes on PATH. The UI tier must drive a
   # genuine tmux server; `command tmux` is not enough, since `command` bypasses functions
   # and aliases but still honours PATH and would find the stub.
   REAL_TMUX="${REAL_TMUX:-$(command -v tmux || true)}"
   REAL_FZF="${REAL_FZF:-$(command -v fzf || true)}"
   export REAL_TMUX REAL_FZF
+}
 
+# sandbox_detach_env -> every inherited name a suite must not read as its own: tmux, agentctl, session, notify and transport state
+sandbox_detach_env() {
   # Detach from any inherited tmux session. A test must never be able to address the server
   # its own runner happens to be sitting in.
   #
@@ -250,8 +235,10 @@ EOF
   # Detach from a sandboxed runner's lane keys (lib/sandbox.sh): a suite run inside one would
   # otherwise sandbox, or hand a real token to, every agentctl-run it tests.
   unset SANDBOX_PROFILE GH_TOKEN_FILE AGENTCTL_SANDBOX_DIR GH_TOKEN GITHUB_TOKEN
-  sandbox_tool_files
+}
 
+# sandbox_stubs -> stubs and the repo bins first on PATH
+sandbox_stubs() {
   # Stub dir wins over anything real.
   export PATH="$SANDBOX/bin:$PATH"
   cp "$TESTS_DIR/helpers/stubs/"* "$SANDBOX/bin/"
@@ -285,7 +272,11 @@ EOF
   # The world resolver finds panel-lib beside itself, so it runs from the repo, not a copy.
   printf '#!/bin/sh\nexec "%s/.local/src/tmux/worlds.sh" "$@"\n' "$REPO_ROOT" > "$SANDBOX/bin/tmux-world"
   chmod +x "$SANDBOX/bin/tmux-world"
+}
 
+# sandbox_fixture <name> -> seeds the `notes` and `gh` stubs' fixture dir by copy
+sandbox_fixture() {
+  local fixture="${1:-basic}"
   # Fixture data the `notes` stub reads. Seeded by copy, never by running the real tool.
   export NOTES_FIXTURE="$SANDBOX/fixture"
   if [ -d "$TESTS_DIR/fixtures/$fixture" ]; then
@@ -298,7 +289,10 @@ EOF
   # against gh calls while silently missing tmux ones, or the reverse.
   export GH_FIXTURE="$NOTES_FIXTURE"
   export RBW_FIXTURE="$NOTES_FIXTURE"
+}
 
+# sandbox_deployed -> the deployed lib links and the agentctl and watch state roots
+sandbox_deployed() {
   # fleet.sh's four data roots. They already default under $HOME, so the HOME redirect
   # above relocates them for free; they are exported explicitly anyway so a test can point
   # one at an empty dir to exercise the "nothing here" branch without touching the others.
@@ -320,7 +314,10 @@ EOF
   export WATCH_DIR="$HOME/.agent/watches"
   export WATCH_STATE_DIR="$HOME/.local/state/watch-companion"
   mkdir -p "$AGENTCTL_CONF_DIR" "$AGENTCTL_STATE_DIR" "$WATCH_DIR" "$WATCH_STATE_DIR"
+}
 
+# sandbox_terminal -> deterministic terminal env
+sandbox_terminal() {
   # Deterministic terminal env. fzf's own suite pins glyphs the same way so that
   # assertions never depend on upstream default cosmetics.
   export TERM=xterm-256color
@@ -330,6 +327,39 @@ EOF
   export PS1='' PROMPT_COMMAND='' HISTFILE=''
   unset "${!FZF_@}" 2>/dev/null || true
   export FZF_DEFAULT_OPTS="--no-scrollbar --pointer='>' --marker='>'"
+}
+
+# sandbox_init [fixture-name]
+# Builds $SANDBOX with an isolated HOME/TMPDIR, puts stubs first on PATH, and seeds
+# fixture data by copy (never by running the real tool).
+sandbox_init() {
+  local fixture="${1:-basic}"
+
+  # Resolved to its PHYSICAL path. On macOS $BATS_TEST_TMPDIR sits under /var/folders,
+  # and /var is a symlink to /private/var — so the logical path a test registers in
+  # project-map.json ("/var/...") never equals what `git rev-parse --git-common-dir`
+  # hands the subject back ("/private/var/..."), and 8 project-name tests failed on the
+  # exact-path lookup. `pwd -P` is a no-op on Linux, where /tmp is a real directory.
+  SANDBOX="$(cd "${BATS_TEST_TMPDIR}" && pwd -P)/sb space"   # the space is intentional
+  mkdir -p "$SANDBOX"/{home,tmp,bin,fixture}
+  # No suite reaches the real fleet lease: fleet-dispatch's guard (lease_guard) reads this stub,
+  # which says this machine holds it. A test of the guard sets FLEET_LEASE_STUB_RC and _OUT;
+  # tests/unit/fleet_lease.bats runs the real one by path.
+  cat > "$SANDBOX/bin/fleet-lease" <<'EOF'
+#!/usr/bin/env bash
+[ -z "${FLEET_LEASE_STUB_OUT:-}" ] || echo "$FLEET_LEASE_STUB_OUT" >&2
+exit "${FLEET_LEASE_STUB_RC:-0}"
+EOF
+  chmod +x "$SANDBOX/bin/fleet-lease"
+
+  sandbox_home
+  sandbox_real_tools
+  sandbox_detach_env
+  sandbox_tool_files
+  sandbox_stubs
+  sandbox_fixture "$fixture"
+  sandbox_deployed
+  sandbox_terminal
 }
 
 # seed_runner <name> [activity-line]
