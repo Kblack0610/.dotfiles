@@ -896,15 +896,24 @@ fn write_score(dir: &Path, cur: V, line: &str) -> Result<()> {
     )
 }
 
-/// Write the `score` of version `cur` to its sprint file, before the freeze so a failure leaves
-/// no row moved, and return the line the frozen version note keeps in its place (a link to the
-/// window's file; empty when the window was never recorded).
-pub(crate) fn record_score(dir: &Path, cur: V, score: Option<&str>) -> Result<String> {
-    let Some(line) = score else {
-        return Ok(String::new());
+/// The frozen version note of `cur`: `body` and `prs`, then a link to the window's file in place
+/// of its score (nothing when the window was never recorded). The `score` is written to the
+/// sprint file first, before the freeze, so a failure leaves no row moved.
+pub(crate) fn freeze(
+    dir: &Path,
+    cur: V,
+    body: &str,
+    prs: &str,
+    score: Option<&str>,
+) -> Result<String> {
+    let link = match score {
+        Some(line) => {
+            write_score(dir, cur, line)?;
+            frozen_link(cur)
+        }
+        None => String::new(),
     };
-    write_score(dir, cur, line)?;
-    Ok(frozen_link(cur))
+    Ok(format!("{}\n{prs}{link}", body.trim_end()))
 }
 
 fn frozen_link(cur: V) -> String {

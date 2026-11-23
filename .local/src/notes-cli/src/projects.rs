@@ -2738,8 +2738,7 @@ pub fn release(
             .chain(agent_rows.iter().map(String::as_str)),
     );
     let frozen_body = with_carried(frozen_body, &carried, next);
-    let link = crate::window::record_score(&dir, cur, score.as_deref())?;
-    let frozen_body = format!("{}\n{prs}{link}", frozen_body.trim_end());
+    let frozen_body = crate::window::freeze(&dir, cur, &frozen_body, &prs, score.as_deref())?;
     // Stamp WHEN this version was frozen: that epoch is the boundary between one version's
     // work and the next, and consumers scope "what happened this version" by it. Written
     // here rather than read from the file's mtime, because regenerating an old note's
