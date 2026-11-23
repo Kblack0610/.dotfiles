@@ -3921,12 +3921,16 @@ improve_closes() {
   log=$($BENCH_LOG_CMD --days "$days") || return 1
   while IFS= read -r i; do ids+=(--id "$i"); done < <(jq -r '[.[].subject | select(startswith("item:") | not)] | unique | .[]' <<<"$1")
   [ "${#ids[@]}" = 0 ] || feed=$($BENCH_NOTES_CMD board --json "${ids[@]}" 2>/dev/null) || feed='{"rows":[]}'
+  jq -e '.rows | type == "array"' >/dev/null 2>&1 <<<"$feed" || feed='{"rows":[]}'
+  # A row with an open copy has not closed (a reopened row's old close stays in its version note). A
+  # feed close is a date, so it is read as that day's end, which never starts the verdict wait early.
   jq -c --slurpfile log <(printf '%s\n' "$log") '
     ($log | map(select(.action | IN("done", "dropped", "dup")) | .id)) as $logged
-    | $log[], ((.rows // [])[] | select(.state == "done" and .closed != null and (.id | IN($logged[]) | not))
-        | {id, ts: "\(.closed)T00:00:00Z",
+    | [.rows[] | select(.state != "done") | .id] as $reopened
+    | $log[], (.rows[] | select(.state == "done" and .closed != null and (.id | IN($logged[]) | not) and (.id | IN($reopened[]) | not))
+        | {id, ts: "\(.closed)T23:59:59Z",
            action: (if ((.marker // "") | test("(^| )dropped")) then "dropped" elif .dup then "dup" else "done" end),
-           why: (if (.prs // []) == [] then null else "pr:\(.prs[0])" end)})' <<<"$feed"
+           why: (if (.prs // []) == [] then null else "pr:\(.prs[-1])" end)})' <<<"$feed"
 }
 
 # improve_live_closes -> improve_closes for the live claims; [] when none or the log cannot be read

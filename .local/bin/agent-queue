@@ -847,7 +847,7 @@ after_fix() {
 ROW_STATE_JQ='if .state == "done" then (if ((.marker // "") | test("(^| )dropped")) then "dropped" else "done" end) else "open" end'
 cmd_gate() {
   local usage="usage: agent-queue gate [--json] (--all | <tag>...)"
-  local json="" all="" board="" brd=0 full=1 rsl="" t q st why id r pass rc=0 GQ HOLD HOLD_DEAD stack STK STK_SLUG
+  local json="" all="" board="" brd=0 full=1 rsl="" t q st why id r idst pass rc=0 GQ HOLD HOLD_DEAD stack STK STK_SLUG
   local -a tags=()
   local -A RS=()
   while [ $# -gt 0 ]; do
@@ -887,10 +887,13 @@ cmd_gate() {
         [ "$brd" = 1 ] && [ -z "$full" ] && [ -z "${RS[$id]-}" ] || break
         if board="$(notes board --json --done-days "$AQ_GATE_DONE_DAYS" 2>/dev/null)"; then full=1 rsl=""; else brd=2; fi
       done
-      # On neither read: the row wherever it sits, once per id (`none` when it is nowhere).
+      # On neither read: the row wherever it sits, once per id (`none` when it is nowhere). An open
+      # copy wins, as a reopened row's old close stays in its version note; output jq cannot read is
+      # a failed read, never `none`.
       if [ "$brd" = 1 ] && [ -z "${RS[$id]-}" ]; then
-        if r="$(notes board --json --id "$id" 2>/dev/null)"; then
-          RS[$id]="$(jq -r --arg id "$id" 'first((.rows // [])[] | select(.id == $id) | '"$ROW_STATE_JQ"') // "none"' <<<"$r")"
+        if r="$(notes board --json --id "$id" 2>/dev/null)" && idst="$(jq -er --arg id "$id" '(.rows | arrays) as $r
+            | (first($r[] | select(.id == $id and .state != "done")) // first($r[] | select(.id == $id)) // null)
+            | if . == null then "none" else '"$ROW_STATE_JQ"' end' <<<"$r" 2>/dev/null)"; then RS[$id]=$idst
         else RS[$id]=unread; fi
       fi
       case "${RS[$id]-}" in

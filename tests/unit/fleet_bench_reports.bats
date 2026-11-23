@@ -727,8 +727,9 @@ STUB
   run "$SUBJECT" improve claim interrupts_per_day item:judge-stage-3
   assert_success
   # the only notes call is the feed read for the claims' closes, never a board write
+  [ -f "$NLOG" ]
   run grep -v '^board --json --id ' "$NLOG"
-  assert_failure
+  assert_failure 1
   run "$SUBJECT" improve list
   assert_line 'live claims: 2, 2 on open work of 3'
   assert_line '  ar-141 revert_rate from 0.25 (max 0.1), 0d'
@@ -801,7 +802,9 @@ check_fixture() {
   # ar-579 and ar-2777 closed by a path that wrote no log line; only the feed's marker says so
   jq -n '{rows: [{id: "ar-579", state: "done", closed: "'"$(date -u -d @$((T0 - 15 * 86400)) +%F)"'", marker: "id:ar-579 done pr:1765", prs: ["1765"]},
                  {id: "ar-2777", state: "done", closed: "'"$(date -u -d @$((T0 - 86400)) +%F)"'", marker: "id:ar-2777 done", prs: ["o/r#3115"]},
+                 {id: "ar-575", state: "done", closed: "'"$(date -u -d @$((T0 - 15 * 86400)) +%F)"'", marker: "id:ar-575 done pr:1700", prs: ["1700"]},
                  {id: "ar-575", state: "open"}]}' > "$BOARD.feed"
+  # ar-575 was reopened: its old close stays in a version note, but the open copy means it is open
   # two of the three live claims are on closed rows, so the cap of 2 leaves room for a pick.
   # NEGATIVE CONTROL: before ar-4768 three live claims held a cap of 2 and nothing was picked.
   BENCH_IMPROVE_MAX=2 run "$SUBJECT" improve --json

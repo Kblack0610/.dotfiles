@@ -1102,7 +1102,8 @@ gate_rbw() {
   [ "$(grep -c 'board' "$NOTES_FIXTURE/calls.log")" = 4 ]
   # A row aimed past the open release is on neither feed; --id finds it open, so its gate waits
   # (ar-4768: apo-181 on ucp-3050, a v0.5.8 row, read dead). NEGATIVE CONTROL: without the --id read it read dead.
-  jq -n '{rows: [{id: "ar-405", state: "open", version: "v9.0.0"}, {id: "ar-404", state: "done", marker: "id:ar-404 done:2026-01-01 dropped: moved"}]}' > "$NOTES_FIXTURE/board.ids.json"
+  # ar-405 was reopened: the open copy wins over the old close its version note keeps
+  jq -n '{rows: [{id: "ar-405", state: "done", marker: "id:ar-405 done:2026-01-01"}, {id: "ar-405", state: "open", version: "v9.0.0"}, {id: "ar-404", state: "done", marker: "id:ar-404 done:2026-01-01 dropped: moved"}]}' > "$NOTES_FIXTURE/board.ids.json"
   run "$AQ" gate --json --all
   assert_failure 3
   [ "$(st after/ar-405)" = "pending|after ar-405 (open)" ]
@@ -1112,6 +1113,11 @@ gate_rbw() {
   mv "$SANDBOX/bin/notes" "$SANDBOX/bin/notes.real"
   printf '#!/usr/bin/env bash\ncase " $* " in *" --id "*) exit 1 ;; esac\nexec "%s" "$@"\n' "$SANDBOX/bin/notes.real" > "$SANDBOX/bin/notes"
   chmod +x "$SANDBOX/bin/notes"
+  run "$AQ" gate --json --all
+  assert_failure 3
+  [ "$(st after/ar-405)" = "pending|after ar-405 (notes board --json --id failed)" ]
+  # and so does one that exits 0 with output jq cannot read, never `no board row`
+  printf '#!/usr/bin/env bash\ncase " $* " in *" --id "*) echo "warning: not json"; exit 0 ;; esac\nexec "%s" "$@"\n' "$SANDBOX/bin/notes.real" > "$SANDBOX/bin/notes"
   run "$AQ" gate --json --all
   assert_failure 3
   [ "$(st after/ar-405)" = "pending|after ar-405 (notes board --json --id failed)" ]
