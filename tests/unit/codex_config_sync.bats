@@ -200,3 +200,21 @@ PY
   assert_output "['ctx']"
   [ -f "$OPENCODE_HOME/opencode.json" ]
 }
+
+@test "agy: the shared rules land in its global rules dir as an always-on rule" {
+  run "$SUBJECT"
+  assert_success
+  run cat "$GEMINI_HOME/config/rules/fleet.md"
+  assert_output "$(printf -- '---\ntrigger: always_on\n---\n\nrules')"
+}
+
+@test "agy: skills.json declares the Claude skill corpus once and keeps the human's own entries" {
+  mkdir -p "$GEMINI_HOME/config"
+  echo '{"entries": [{"path": "~/mine"}], "inherits": [{"path": "/x.json"}]}' > "$GEMINI_HOME/config/skills.json"
+  run "$SUBJECT"
+  assert_success
+  run "$SUBJECT"
+  assert_success
+  run jq -c . "$GEMINI_HOME/config/skills.json"
+  assert_output '{"entries":[{"path":"~/mine"},{"path":"'"$CLAUDE_HOME"'/skills"}],"inherits":[{"path":"/x.json"}]}'
+}

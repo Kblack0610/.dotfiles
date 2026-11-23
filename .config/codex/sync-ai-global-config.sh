@@ -112,6 +112,21 @@ if [ "$gemini_rules" = 1 ]; then
 fi
 cp "$stage_dir/AGENTS.md" "$OPENCODE_HOME/AGENTS.md"
 
+# agy (Google's Antigravity CLI) has no rulesync target and reads neither ~/.gemini/GEMINI.md nor
+# ~/.claude: its global customization root is ~/.gemini/config/ (rules/*.md, skills.json). The
+# rules are the same staged AGENTS.md Codex and opencode get; the skills are one declared path to
+# the Claude corpus, so a skill added or removed there needs no sync. Other skills.json entries
+# (the human's own) stay.
+AGY_CONFIG_DIR="$GEMINI_HOME/config"
+mkdir -p "$AGY_CONFIG_DIR/rules"
+{ printf -- '---\ntrigger: always_on\n---\n\n'; cat "$stage_dir/AGENTS.md"; } > "$AGY_CONFIG_DIR/rules/fleet.md"
+agy_skills="$AGY_CONFIG_DIR/skills.json"
+agy_skills_cur='{}'
+[ -s "$agy_skills" ] && agy_skills_cur=$(cat "$agy_skills")
+jq --arg p "$CLAUDE_HOME/skills" \
+    '.entries = ([(.entries // [])[] | select(.path != $p)] + [{path: $p}])' <<<"$agy_skills_cur" > "$agy_skills.tmp" &&
+    mv "$agy_skills.tmp" "$agy_skills"
+
 {
     echo "$START_MARKER"
     # rulesync writes each server's `type` and `description`, which Codex does not know: it lists
@@ -245,8 +260,8 @@ def agy_server(server: dict) -> dict | None:
     return out
 
 
-# agy (Google's Antigravity CLI) has no rulesync target, so its servers come from the rulesync
-# source itself. A server the human added there (`agy mcp add`, unityMCP) stays: the names this
+# agy has no rulesync target, so its servers come from the rulesync source itself (its rules and
+# skills are written above). A server the human added there (`agy mcp add`, unityMCP) stays: the names this
 # sync wrote last time sit in <file>.managed, so only a server dropped from the shared set goes.
 agy_path = Path(os.environ["AGY_MCP_PATH"])
 agy_stage_path = os.environ["AGY_STAGE_PATH"]
@@ -301,7 +316,7 @@ if [ "$gemini_rules" = 1 ] || [ "$gemini_mcp" = 1 ]; then
 else
     echo "  Gemini: skipped (rulesync target 'geminicli' emitted nothing)"
 fi
-echo "  agy:    $AGY_MCP_PATH"
+echo "  agy:    $AGY_CONFIG_DIR/rules/fleet.md, $AGY_CONFIG_DIR/skills.json and $AGY_MCP_PATH"
 echo "  OpenCode: $OPENCODE_HOME/AGENTS.md and $OPENCODE_HOME/opencode.json"
 
 # Unlike Claude's CLAUDE.md (hand-written, never touched above), OpenCode's AGENTS.md is both
