@@ -546,7 +546,8 @@ resolve_project_name() {
             case "$seg" in */*) seg="${seg%/*}" ;; *) seg="" ;; esac
           done
 
-          # (b) ONLY at the worktree root, a <type>/<app>/<rest> branch names the app.
+          # (b) ONLY at the worktree root, a <type>/<app>/<rest> branch, or a
+          #     release/<app>-v<version> one (a release script's bump branch), names the app.
           #     Gated on an empty $rel on purpose: a cwd anywhere inside the tree is
           #     positive evidence about which app is meant, and it must win. Consulting
           #     the branch from apps/beta on a fix/alpha/... branch
@@ -556,17 +557,20 @@ resolve_project_name() {
           #     (refactor/packages/...) falls through to the repo.
           branch=""
           [ -z "$rel" ] && branch=$(git -C "$abs_path" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+          seg=""
           case "$branch" in
-            */*/*)
-              seg="${branch#*/}"; seg="${seg%%/*}"
-              for cand in "$seg" "${seg%-web}" "${seg%-api}" "${seg%-mobile}"; do
-                app=$(jq -r --arg r "$repo_name" --arg a "$cand" \
-                  '.trackers[$a] | objects | select(.repo == $r and (.path // "") != "") | $a' \
-                  "$map_file" 2>/dev/null || true)
-                if [ -n "$app" ]; then echo "$app"; return 0; fi
-              done
-              ;;
+            */*/*) seg="${branch#*/}"; seg="${seg%%/*}" ;;
+            # After */*/* on purpose: a glob * spans "/", so this arm sees one-slash branches only.
+            release/*-v[0-9]*) seg="${branch#release/}"; seg="${seg%-v[0-9]*}" ;;
           esac
+          if [ -n "$seg" ]; then
+            for cand in "$seg" "${seg%-web}" "${seg%-api}" "${seg%-mobile}"; do
+              app=$(jq -r --arg r "$repo_name" --arg a "$cand" \
+                '.trackers[$a] | objects | select(.repo == $r and (.path // "") != "") | $a' \
+                "$map_file" 2>/dev/null || true)
+              if [ -n "$app" ]; then echo "$app"; return 0; fi
+            done
+          fi
         fi
       fi
     fi

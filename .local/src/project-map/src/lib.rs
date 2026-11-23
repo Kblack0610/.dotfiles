@@ -550,10 +550,10 @@ impl Registry {
     /// The project a directory belongs to: the Rust form of `resolve_project_name` in
     /// `project-name.sh`, held to it case by case by `project_for_path_matches_the_shell`. A
     /// worktree is its repo; inside a registered repo the longest repo-relative app `path` wins,
-    /// and at the worktree root a `<type>/<app>/<rest>` branch names the app; a reaped worktree
-    /// under the worktree root is named by the `<repo>-<slug>` convention; a directory outside
-    /// any repo, or in an unregistered repo under the temp dir, is `_unscoped` unless its
-    /// basename is a key.
+    /// and at the worktree root a `<type>/<app>/<rest>` or `release/<app>-v<version>` branch names
+    /// the app; a reaped worktree under the worktree root is named by the `<repo>-<slug>`
+    /// convention; a directory outside any repo, or in an unregistered repo under the temp dir, is
+    /// `_unscoped` unless its basename is a key.
     pub fn project_for_path(&self, abs_path: &str) -> String {
         let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
         let wt_root = env("WT_ROOT")
@@ -586,11 +586,8 @@ impl Registry {
                     }
                     seg = seg.rsplit_once('/').map_or("", |(head, _)| head);
                 }
-                let branch = co
-                    .branch
-                    .as_deref()
-                    .filter(|b| rel.is_empty() && b.matches('/').count() >= 2);
-                if let Some(seg) = branch.and_then(|b| b.split('/').nth(1)) {
+                let branch = co.branch.as_deref().filter(|_| rel.is_empty());
+                if let Some(seg) = branch.and_then(branch_app) {
                     for suffix in ["", "-web", "-api", "-mobile"] {
                         let cand = seg.strip_suffix(suffix).unwrap_or(seg);
                         if self.app_of(cand, rn) {
@@ -647,6 +644,20 @@ impl Registry {
             .max_by_key(|(l, _)| *l)
             .map(|(_, v)| v)
     }
+}
+
+/// The app segment a branch names, matching `resolve_project_name`'s case: the second segment of
+/// `<type>/<app>/<rest>`, or `<app>` of a `release/<app>-v<digit>...` bump branch (the shortest
+/// `-v<digit>...` suffix stripped).
+fn branch_app(branch: &str) -> Option<&str> {
+    if branch.matches('/').count() >= 2 {
+        return branch.split('/').nth(1);
+    }
+    let rest = branch.strip_prefix("release/")?;
+    let (at, _) = rest
+        .rmatch_indices("-v")
+        .find(|(i, _)| rest.as_bytes().get(i + 2).is_some_and(u8::is_ascii_digit))?;
+    Some(&rest[..at]).filter(|app| !app.is_empty())
 }
 
 #[cfg(test)]
@@ -966,6 +977,9 @@ mod tests {
         add_wt(&repos.join("mono-wt2"), "wt2");
         add_wt(&repos.join("mono-wt3"), "fix/alpha/some-bug");
         add_wt(&repos.join("mono-wt4"), "feat/beta-web/thing");
+        add_wt(&repos.join("mono-wt5"), "release/alpha-v1.4.2");
+        add_wt(&repos.join("mono-wt6"), "release/packages-v2.0.0");
+        add_wt(&repos.join("mono-wt7"), "release/beta-web-v1.0-v2");
         add_wt(&wt.join("unrelated-name"), "side");
         // git keeps no empty directory, so a worktree's subdirectories are made by hand.
         for d in [
@@ -1029,6 +1043,9 @@ mod tests {
             (repos.join("mono-wt3"), "alpha"),
             (repos.join("mono-wt3/packages/shared"), "mono-canon"),
             (repos.join("mono-wt4"), "beta"),
+            (repos.join("mono-wt5"), "alpha"),
+            (repos.join("mono-wt6"), "mono-canon"),
+            (repos.join("mono-wt7"), "mono-canon"),
             (wt.join("mono-agent-3"), "mono-canon"),
             (wt.join("mono-fix-thing/Logs"), "mono-canon"),
             (wt.join("monolith-agent-1"), "_unscoped"),
