@@ -1688,7 +1688,7 @@ fn a_new_game_row_from_a_session_waits_for_the_next_window_of_a_focus_parent() {
     let game = with_game(&h, "");
     fs::write(
         h.0.join("notes/projects/current/demo/README.md"),
-        "# demo\nVersion: v0.1.0 #prio/focus\nFocus until: 2099-01-01 00:00\n\n## Inbox\n\n## Tasks\n",
+        "# demo\nVersion: v0.1.0 #prio/focus\nFocus until: 2099-01-01 00:00 +0000\n\n## Inbox\n\n## Tasks\n",
     )
     .unwrap();
     ok(&h.run(&["projects", "--commit", "demo"]));
@@ -1727,7 +1727,7 @@ fn a_focus_ends_on_its_hours_and_then_reads_as_high() {
         .unwrap();
     fs::write(
         &readme,
-        sheet.replace(line, "Focus until: 2020-01-01 00:00"),
+        sheet.replace(line, "Focus until: 2020-01-01 00:00 +0000"),
     )
     .unwrap();
     let prios = String::from_utf8(h.run(&["projects", "--prios"]).stdout).unwrap();
@@ -1757,4 +1757,13 @@ fn a_focus_ends_on_its_hours_and_then_reads_as_high() {
         .status
         .success());
     assert!(!h.run(&["projects", "--hours", "2"]).status.success());
+    // A read with hours is no write, and a focus shorter than a minute is none.
+    assert!(!h
+        .run(&["projects", "--prio", "demo", "--hours", "2"])
+        .status
+        .success());
+    assert!(!h
+        .run(&["projects", "--prio", "demo", "--set", "focus", "--hours", "0.001"])
+        .status
+        .success());
 }

@@ -5746,7 +5746,7 @@ mod inbox_tests {
             &sheet,
             s.replace(
                 "Version: v0.1.0",
-                "Version: v0.1.0 #prio/focus\nFocus until: 2099-01-01 00:00",
+                "Version: v0.1.0 #prio/focus\nFocus until: 2099-01-01 00:00 +0000",
             ),
         )
         .unwrap();
@@ -5828,7 +5828,7 @@ mod inbox_tests {
             v.sheet(),
             s.replace(
                 "Version: v0.1.0",
-                "Version: v0.1.0 #prio/focus\nFocus until: 2099-01-01 00:00",
+                "Version: v0.1.0 #prio/focus\nFocus until: 2099-01-01 00:00 +0000",
             ),
         )
         .unwrap();

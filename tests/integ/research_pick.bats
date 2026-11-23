@@ -256,7 +256,7 @@ repo() {
   mkdir -p "$dir" "$HOME/.config/notes"
   : >"$dir/summary.md"
   printf 'vault = "~/.notes"\n[profile.personal]\nroot = "~/.notes/lab"\n' >"$HOME/.config/notes/config.toml"
-  printf '%s\n' '# hot #prio/focus' '' 'Version: v1.0.0 #beta' 'Focus until: 2099-01-01 00:00' '' '## Inbox' '' '## Tasks' '' >"$dir/README.md"
+  printf '%s\n' '# hot #prio/focus' '' 'Version: v1.0.0 #beta' 'Focus until: 2099-01-01 00:00 +0000' '' '## Inbox' '' '## Tasks' '' >"$dir/README.md"
   export NOTES_CONFIG="$HOME/.config/notes/config.toml" NOTES_NO_LAB_REFRESH=1 PROJECT_MAP_FILE="$RESEARCH_MAP"
   jq -n --arg s "$SANDBOX" '{paths: {($s + "/hot"): "hot"}, trackers: {hot: {code: "ht", lab: "personal"}}}' >"$RESEARCH_MAP"
   jq '.facets |= map(select(.id == "hot"))' "$RESEARCH_FACETS" > "$SANDBOX/f" && mv "$SANDBOX/f" "$RESEARCH_FACETS"

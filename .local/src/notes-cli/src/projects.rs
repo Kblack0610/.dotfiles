@@ -520,18 +520,49 @@ pub fn group(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Resu
     tag_verb(p, log, name, &refs, value)
 }
 
-/// The head line a focus ends on: `Focus until: YYYY-MM-DD HH:MM`, local time.
+/// The head line a focus ends on: `Focus until: YYYY-MM-DD HH:MM +ZZZZ`, local time with its
+/// offset, so a host in another zone reading the synced vault sees the same end.
 const FOCUS_UNTIL: &str = "Focus until:";
 /// How long a focus lasts when `--hours` is not given, and the most it may be set for. A focus
 /// is a short push, never a standing state: past its end it reads as high.
 const FOCUS_HOURS: f64 = 4.0;
 const FOCUS_MAX_HOURS: f64 = 24.0;
-const FOCUS_FMT: &str = "%Y-%m-%d %H:%M";
+const FOCUS_FMT: &str = "%Y-%m-%d %H:%M %z";
 
 /// When the head's focus ends; `None` with no line or a malformed one, which reads as ended.
-fn focus_until_of(content: &str) -> Option<chrono::NaiveDateTime> {
+fn focus_until_of(content: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     head_field(content, FOCUS_UNTIL)
-        .and_then(|t| chrono::NaiveDateTime::parse_from_str(t, FOCUS_FMT).ok())
+        .and_then(|t| chrono::DateTime::parse_from_str(t, FOCUS_FMT).ok())
+        .map(|t| t.with_timezone(&chrono::Utc))
+}
+
+/// `end` as a `Focus until:` value, in this host's zone.
+fn fmt_focus(end: chrono::DateTime<chrono::Utc>) -> String {
+    end.with_timezone(&chrono::Local)
+        .format(FOCUS_FMT)
+        .to_string()
+}
+
+/// A locked sprint on a focus project keeps the focus at least to its cut: a sprint is a time box
+/// the human set, and its row freeze reads the focus (`window::runs_sprints`). A project whose tag
+/// is not focus is left alone; the caller warns that it runs no sprint.
+fn extend_focus(dir: &Path, cut: chrono::NaiveDateTime) -> Result<()> {
+    let page = front_page(dir);
+    let content = fs::read_to_string(&page)?;
+    let Some(cut) = cut.and_local_timezone(chrono::Local).earliest() else {
+        return Ok(());
+    };
+    let cut = cut.with_timezone(&chrono::Utc);
+    if head_tag(&content, &PRIOS).as_deref() != Some("prio/focus")
+        || focus_until_of(&content).is_some_and(|end| end >= cut)
+    {
+        return Ok(());
+    }
+    md::write_atomic(
+        &page,
+        &set_head_line(&content, FOCUS_UNTIL, Some(fmt_focus(cut)))?,
+    )?;
+    Ok(())
 }
 
 /// `notes projects --prio <name> [--set focus|high|low|normal] [--hours H]`: read or set a
@@ -550,6 +581,9 @@ pub fn prio(
     let content =
         fs::read_to_string(&page).map_err(|e| anyhow::anyhow!("{}: {e}", page.display()))?;
     let Some(v) = value else {
+        if hours.is_some() {
+            bail!("--hours goes with --set focus only");
+        }
         println!("{}", prio_of_str(&content));
         return Ok(());
     };
@@ -560,11 +594,13 @@ pub fn prio(
     };
     let until = if v == "focus" {
         let h = hours.unwrap_or(FOCUS_HOURS);
-        if !(h > 0.0 && h <= FOCUS_MAX_HOURS) {
-            bail!("a focus lasts more than 0 and at most {FOCUS_MAX_HOURS} hours, not {h}");
+        let minutes = (h * 60.0).round();
+        if !(minutes >= 1.0 && h <= FOCUS_MAX_HOURS) {
+            bail!("a focus lasts at least a minute and at most {FOCUS_MAX_HOURS} hours, not {h}");
         }
-        let end = chrono::Local::now().naive_local() + chrono::Duration::minutes((h * 60.0) as i64);
-        Some(end.format(FOCUS_FMT).to_string())
+        Some(fmt_focus(
+            chrono::Utc::now() + chrono::Duration::minutes(minutes as i64),
+        ))
     } else {
         if hours.is_some() {
             bail!("--hours goes with --set focus only");
@@ -608,10 +644,10 @@ pub fn prios() -> Result<()> {
 /// The priority word a head declares (`focus`, `high`, `low`), empty for normal. A focus whose
 /// `Focus until:` has passed, or that has none, reads as high: focus never stays on by itself.
 fn prio_of_str(content: &str) -> String {
-    prio_at(content, chrono::Local::now().naive_local())
+    prio_at(content, chrono::Utc::now())
 }
 
-fn prio_at(content: &str, now: chrono::NaiveDateTime) -> String {
+fn prio_at(content: &str, now: chrono::DateTime<chrono::Utc>) -> String {
     let word = head_tag(content, &PRIOS)
         .and_then(|t| t.strip_prefix("prio/").map(str::to_string))
         .unwrap_or_default();
@@ -621,11 +657,12 @@ fn prio_at(content: &str, now: chrono::NaiveDateTime) -> String {
     word
 }
 
-/// When a live focus ends (`YYYY-MM-DD HH:MM`), `None` when the project is not on focus now.
+/// When a live focus ends (`YYYY-MM-DD HH:MM +ZZZZ`, this host's zone), `None` when the
+/// project is not on focus now.
 pub(crate) fn focus_until(dir: &Path) -> Option<String> {
     let content = fs::read_to_string(front_page(dir)).ok()?;
     (prio_of_str(&content) == "focus")
-        .then(|| focus_until_of(&content).map(|t| t.format(FOCUS_FMT).to_string()))
+        .then(|| focus_until_of(&content).map(fmt_focus))
         .flatten()
 }
 
@@ -690,7 +727,7 @@ fn set_target_line(content: &str, target: Option<Target>) -> Result<String> {
 }
 
 /// Replace the head line that starts with `key` with `key value`, or drop it for `None`. A new
-/// line goes directly under `Version:`; one already set keeps its slot.
+/// line goes directly under `Version:`, else under the title; one already set keeps its slot.
 fn set_head_line(content: &str, key: &str, value: Option<String>) -> Result<String> {
     let head_len = head_lines(content).count();
     let is_key = |i: usize, l: &str| i < head_len && l.trim_start().starts_with(key);
@@ -708,14 +745,12 @@ fn set_head_line(content: &str, key: &str, value: Option<String>) -> Result<Stri
         let at = match kept {
             Some(at) => at,
             None => {
-                let Some(at) = lines
+                lines
                     .iter()
                     .take(head_len)
                     .position(|l| l.trim_start().starts_with("Version:"))
-                else {
-                    bail!("no `Version:` line in the sheet's head to set `{key}` beside");
-                };
-                at + 1
+                    .unwrap_or(0)
+                    + 1
             }
         };
         lines.insert(at, format!("{key} {v}"));
@@ -2990,9 +3025,10 @@ pub fn commit_window(
         );
         log.info("projects", &msg);
         println!("{msg}");
+        extend_focus(&dir, l.cut)?;
         if !crate::window::runs_sprints(&dir) {
             let w = format!(
-                "{name} is not #prio/focus, so the board shows no sprint for it; \
+                "{name} is not on focus now, so the board shows no sprint for it; \
                  `notes projects --prio {name} --set focus` makes it one"
             );
             log.warn("projects", &w);
@@ -7849,6 +7885,60 @@ mod shape_tests {
             "prod is 14 days"
         );
         let _ = fs::remove_dir_all(&s.root);
+    }
+
+    #[test]
+    fn a_focus_reads_by_its_end_in_any_zone_and_only_from_the_head() {
+        let at = |s: &str| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .unwrap()
+                .with_timezone(&chrono::Utc)
+        };
+        let page = "# demo\nVersion: v0.1.0 #prio/focus\nFocus until: 2026-11-23 18:00 -0800\n\n## Tasks\n";
+        // 18:00 at -0800 is 02:00 UTC the next day, whatever zone reads it.
+        assert_eq!(prio_at(page, at("2026-11-24T01:59:00Z")), "focus");
+        assert_eq!(prio_at(page, at("2026-11-24T02:00:00Z")), "high");
+        // NEGATIVE CONTROLS: no end, an end with no zone, and a tag below the head.
+        let bare = "# demo\nVersion: v0.1.0 #prio/focus\n\n## Tasks\n";
+        assert_eq!(prio_at(bare, at("2000-01-01T00:00:00Z")), "high");
+        let naive = page.replace(" -0800", "");
+        assert_eq!(prio_at(&naive, at("2000-01-01T00:00:00Z")), "high");
+        let row = "# demo\nVersion: v0.1.0\n\n## Tasks\n- [ ] says #prio/high\n";
+        assert_eq!(prio_at(row, at("2000-01-01T00:00:00Z")), "");
+        // A head with no Version: line takes the end under its title.
+        let titled = set_head_line(
+            "# demo #prio/focus\nGoal: g\n\n## Tasks\n",
+            FOCUS_UNTIL,
+            Some("x".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            titled,
+            "# demo #prio/focus\nFocus until: x\nGoal: g\n\n## Tasks\n"
+        );
+    }
+
+    #[test]
+    fn a_sprint_keeps_its_focus_to_the_cut_and_never_starts_one() {
+        let dir = std::env::temp_dir().join(format!("focus-sprint-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let readme = dir.join("README.md");
+        let cut = chrono::NaiveDate::from_ymd_opt(2099, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        fs::write(&readme, "# demo\nVersion: v0.1.0 #prio/focus\nFocus until: 2000-01-01 00:00 +0000\n\n## Tasks\n").unwrap();
+        extend_focus(&dir, cut).unwrap();
+        let s = fs::read_to_string(&readme).unwrap();
+        assert!(s.contains("Focus until: 2099-06-01 12:00 "), "{s}");
+        assert_eq!(s.matches("Focus until:").count(), 1, "{s}");
+        // NEGATIVE CONTROL: a project not on focus gets no focus from a sprint.
+        fs::write(&readme, "# demo\nVersion: v0.1.0 #prio/high\n\n## Tasks\n").unwrap();
+        extend_focus(&dir, cut).unwrap();
+        assert!(!fs::read_to_string(&readme)
+            .unwrap()
+            .contains("Focus until:"));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

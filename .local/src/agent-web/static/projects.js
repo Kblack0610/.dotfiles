@@ -24,17 +24,18 @@ const pst = tblTab({
 });
 
 // The Focus strip (hub_core::projects::focus_json): who is on focus and until when, Clear (back to
-// high, where an ended focus reads), and a project and hours to focus next. A focus always ends:
+// high, where an ended focus reads), and a project and length to focus (a project already on
+// focus gets a new end; "default length" sends no hours, so notes' default applies). A focus always ends:
 // notes writes its `Focus until:` and past it the project ranks as high. pfocus keeps the picks
 // across a redraw; pfmsg is the last write's refusal.
 pst.pfocus = { key: "", hours: "" }; pst.pfmsg = "";
 function pFocus(f) {
   if (!f) return "";
-  const k = (o) => o.profile + "/" + o.name, pick = pst.pfocus, hours = pick.hours || String(f.default_hours);
+  const k = (o) => o.profile + "/" + o.name, pick = pst.pfocus;
   return `<div class="card pfocus"><div class="cline">${esc(f.says)}</div>` +
     (f.on.length ? `<div class="cline">${f.on.map((o) => `<button class="btn" data-pfclear="${esc(k(o))}" title="back to high">Clear ${esc(o.name)}</button>`).join(" ")}</div>` : "") +
     (f.all.length ? `<div class="cline"><select data-pfpick="key" title="project">${f.all.map((o) => `<option value="${esc(k(o))}"${k(o) === pick.key ? " selected" : ""}>${esc(o.name)}</option>`).join("")}</select> ` +
-      `<select data-pfpick="hours" title="how long the focus lasts">${f.hours.map((h) => `<option value="${h}"${String(h) === hours ? " selected" : ""}>${h} hours</option>`).join("")}</select> ` +
+      `<select data-pfpick="hours" title="how long the focus lasts"><option value="">default length</option>${f.hours.map((h) => `<option value="${h}"${String(h) === pick.hours ? " selected" : ""}>${h} hours</option>`).join("")}</select> ` +
       `<button class="btn" data-pfset>Focus</button></div>` : "") +
     (pst.pfmsg ? `<div class="cline warn">${esc(pst.pfmsg)}</div>` : "") + `</div>`;
 }

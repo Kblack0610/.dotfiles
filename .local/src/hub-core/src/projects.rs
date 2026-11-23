@@ -238,7 +238,7 @@ pub fn set_prio(
     if !safe_name(profile)
         || !safe_name(name)
         || !["focus", "high", "low", "normal"].contains(&value)
-        || hours.is_some_and(|h| value != "focus" || !(1..=24).contains(&h))
+        || (hours.is_some() && value != "focus")
     {
         return Err(format!("refusing prio {value} for {profile}/{name}"));
     }
@@ -1095,20 +1095,21 @@ pub fn gather() -> Projects {
 /// the same words the TUI does and computes nothing, and `figures`, the Projects card's whole
 /// numbers by name (`widget_doc::figures`, absent with any read error), the counts the waybar
 /// projects chip shows.
-/// The hours a surface offers a focus for, shortest first; notes caps a focus at 24 and its
-/// default is 4, which a surface preselects.
-pub const FOCUS_HOURS: [u32; 4] = [2, 4, 8, 24];
-pub const FOCUS_DEFAULT_HOURS: u32 = 4;
+/// The lengths a surface offers a focus besides notes' own default (no `--hours`), which is
+/// notes' alone, as its cap is: notes refuses what it does not take.
+pub const FOCUS_HOURS: [u32; 3] = [2, 8, 24];
 
 /// The Focus strip over every card, never a view's: the projects on focus now with when each
-/// ends, the line that names them, and every project a focus may be set on.
+/// ends, the line that names them, and every project a focus may be set on (one on focus again
+/// re-sets its end, which is how a focus is extended).
 pub fn focus_json(cards: &[Card]) -> Value {
     let on: Vec<&Card> = cards.iter().filter(|c| c.prio == "focus").collect();
-    // `YYYY-MM-DD HH:MM` less its year: a focus lasts at most a day.
+    // `YYYY-MM-DD HH:MM +ZZZZ` as `MM-DD HH:MM`: a focus lasts at most a day, and the stamp
+    // is in the zone of the host that served it.
     let ends = |c: &Card| {
         c.focus_until
             .as_deref()
-            .map(|u| u.get(5..).unwrap_or(u).to_string())
+            .map(|u| u.get(5..16).unwrap_or(u).to_string())
             .unwrap_or_default()
     };
     let says = if on.is_empty() {
@@ -1132,9 +1133,8 @@ pub fn focus_json(cards: &[Card]) -> Value {
     serde_json::json!({
         "says": says,
         "on": on.iter().map(|c| who(c)).collect::<Vec<_>>(),
-        "all": cards.iter().filter(|c| c.prio != "focus").map(who).collect::<Vec<_>>(),
+        "all": cards.iter().map(who).collect::<Vec<_>>(),
         "hours": FOCUS_HOURS,
-        "default_hours": FOCUS_DEFAULT_HOURS,
     })
 }
 
@@ -1405,17 +1405,15 @@ mod tests {
         r.0.borrow_mut().clear();
         assert!(set_prio(&r, "bnb", "--all", "focus", None).is_err());
         assert!(set_prio(&r, "bnb", "demo", "urgent", None).is_err());
-        // hours go with a focus only, and only up to a day
+        // hours go with a focus only; their range is notes' to refuse
         assert!(set_prio(&r, "bnb", "demo", "high", Some(2)).is_err());
-        assert!(set_prio(&r, "bnb", "demo", "focus", Some(25)).is_err());
-        assert!(set_prio(&r, "bnb", "demo", "focus", Some(0)).is_err());
         assert!(r.0.borrow().is_empty(), "a refused write runs nothing");
         set_prio(&r, "bnb", "demo", "focus", Some(2)).unwrap();
         assert_eq!(r.0.borrow()[8..], ["--hours", "2"]);
     }
 
     #[test]
-    fn the_focus_strip_names_each_focus_and_its_end_and_offers_the_rest() {
+    fn the_focus_strip_names_each_focus_and_its_end_and_offers_every_project() {
         let card = |name: &str, prio: &str, until: Option<&str>| Card {
             profile: "bnb".into(),
             name: name.into(),
@@ -1424,7 +1422,7 @@ mod tests {
             ..Default::default()
         };
         let f = focus_json(&[
-            card("a", "focus", Some("2026-11-23 18:00")),
+            card("a", "focus", Some("2026-11-23 18:00 -0800")),
             card("b", "high", None),
         ]);
         assert_eq!(f["on"][0]["until"], "11-23 18:00");
@@ -1435,8 +1433,8 @@ mod tests {
                 .starts_with("On focus: a until 11-23 18:00."),
             "{f}"
         );
-        assert_eq!(f["all"].as_array().unwrap().len(), 1);
-        assert_eq!(f["all"][0]["name"], "b");
+        // A project on focus stays in the picker, so its end can be set again.
+        assert_eq!(f["all"].as_array().unwrap().len(), 2);
         // NEGATIVE CONTROL: no focus says so, and offers every project.
         let f = focus_json(&[card("b", "high", None)]);
         assert!(f["on"].as_array().unwrap().is_empty());
