@@ -11,7 +11,7 @@
 #   day-log finalize [--date D]   re-gather D (default yesterday), write its notes ref
 #                                 refs/<D>/shipped.md, print one summary line
 #   day-log nightly [--date D]    close a finished day (the nightly-measure runner's token-usage step): token
-#                                 snapshot, CI, finalize, the week and day_log_rollup.prom
+#                                 snapshot, CI, finalize and the week
 #   day-log week [--date D] [--json | --line]   "what moved": 7 finished days against the 7 before
 # Deterministic, no model: the PR store (schedules-sync prs), the fleet state document, fleet-bench, agent-usage,
 # agent-hold, hub-figure, the shepherd's watch log and the nightly token-usage snapshot. The live sections (waiting on you, fleet, done,
@@ -266,46 +266,6 @@ day_prom() {
       (.usage // [])[] | select(.project != "TOTAL") | [{project}, .cost_usd])' "$1"
 }
 
-# rollup_prom <record> <week> -> the day_log_rollup.prom lines: the last finished day's CI, usage
-# and flow, and the week's value and delta per metric. A number the day has not got is left out.
-rollup_prom() {
-  jq -r --slurpfile week "$2" "$PROM_JQ"'
-    def quantiles($l): [$l + {quantile: "0.5"}, .p50], [$l + {quantile: "0.9"}, .p90];
-    (.ci.repos // {} | to_entries) as $ci | (.ci.hosts // {} | to_entries) as $hosts | .agents as $a | .work as $w
-    | gauge("agent_ci_pass_rate"; "Green over green plus red runs on the last finished day, by repo and workflow (hub ci pass).";
-        $ci[] | .key as $r | (.value.workflows // {} | to_entries[]) | select(.value.pass != null) | [{repo: $r, workflow: .key}, .value.pass]),
-      gauge("agent_ci_main_red"; "Red runs on the base branch on the last finished day, by repo (hub ci pass --branch).";
-        $ci[] | [{repo: .key}, .value.main.red]),
-      gauge("agent_ci_gate_wall_minutes"; "Gate wall time on the last finished day, by repo (ci-cost).";
-        $ci[] | .key as $r | .value.cost.gate.wall // {} | quantiles({repo: $r})),
-      gauge("agent_ci_gate_wait_minutes"; "Wait for a runner on the last finished day, by repo (ci-cost).";
-        $ci[] | .key as $r | .value.cost.queue.Tests // {} | quantiles({repo: $r})),
-      gauge("agent_ci_runner_hours"; "Pool runner-hours on the last finished day, by repo (ci-cost).";
-        $ci[] | [{repo: .key}, .value.cost.hours.pool]),
-      gauge("agent_ci_regated_branches"; "Branches gated more than once on the last finished day, by repo (ci-cost).";
-        $ci[] | [{repo: .key}, .value.cost.regates.branches_regated]),
-      gauge("agent_ci_quarantine_open"; "Tests in quarantine at the end of the last finished day, by repo (ci-cost).";
-        $ci[] | [{repo: .key}, .value.cost.quarantine.open]),
-      # slots, not host: the scrape adds host="workstation" to every textfile series.
-      gauge("agent_ci_host_pass_rate"; "Green over green plus red of the last 50 jobs on one slot group of a host, at the end of the last finished day (hub ci hosts).";
-        $hosts[] | [{slots: .key}, .value.pass]),
-      gauge("agent_ci_host_jobs"; "Jobs counted in agent_ci_host_pass_rate, at most 50 (hub ci hosts).";
-        $hosts[] | [{slots: .key}, .value.runs]),
-      gauge("agent_usage_sessions"; "Sessions on the last finished day, by kind (agent-usage).";
-        ($a.by_kind // {} | to_entries[]) | [{kind: .key}, .value.sessions]),
-      gauge("agent_usage_account_sessions"; "Sessions on the last finished day, by account (agent-usage).";
-        ($a.by_account // {} | to_entries[]) | [{account: .key}, .value.sessions]),
-      gauge("agent_usage_context_tokens"; "Context tokens on the last finished day (token-usage snapshot)."; [{}, $a.tokens.context]),
-      gauge("agent_usage_cost_per_merged_pr_usd"; "Cost per merged PR on the last finished day (token-usage snapshot)."; [{}, $a.cost_per_merged_pr]),
-      gauge("agent_usage_sessions_no_pr"; "Sessions with no PR on the last finished day (session-outcomes)."; [{}, $a.outcomes.no_pr]),
-      gauge("agent_day_asks_open"; "Asks open at the last gather of the last finished day."; [{}, $a.asks.open]),
-      gauge("agent_phases_ticked"; "Plan phases ticked on the last finished day (fleet-bench flow)."; [{}, $w.phases.ticked]),
-      gauge("agent_week_value"; "A week metric over the last 7 finished days (day-log week).";
-        ($week[0].metrics // {} | to_entries[]) | [{metric: .key}, .value.value]),
-      gauge("agent_week_delta"; "A week metric against the 7 days before, when both read as many days.";
-        ($week[0].metrics // {} | to_entries[]) | [{metric: .key}, .value.delta])' "$1"
-}
-
 # record <day> -> path of the day's record: today is gathered fresh, a past day is read.
 record() {
   local day="$1" f; f="$(record_of "$day")"
@@ -445,8 +405,6 @@ nightly() {
   DAYLOG_CI_FILE="$tmp" finalize "$day" || failed+=(finalize)
   [ -z "$tmp" ] || rm -f "$tmp"
   "$SNAPSHOTS" week --date "$day" --write || failed+=(week)
-  prom_textfile day_log_rollup.prom rollup_prom "$(record_of "$day")" "$DAYLOG_DIR/weeks/$day.json" ||
-    say "could not write day_log_rollup.prom"
   # Each step that failed is named, so the runner's why says where to look.
   [ "${#failed[@]}" = 0 ] || { rc=1; say "nightly $day failed: ${failed[*]}"; }
   why="day-log nightly $day rc=$rc${failed[*]:+, failed: ${failed[*]}}"

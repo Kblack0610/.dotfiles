@@ -39,7 +39,7 @@ UNITS="${FLEET_LEASE_UNITS:-agent-web.service}"
 # from removes them: its lanes no longer run, and a copy left behind is a second, frozen reading
 # of each fleet gauge (razer's fleet_bench.prom from the 2026-11-19 handover, ar-4358). A new
 # writer goes here or in fleet_lease.bats's every-node list, which fails until it is in one.
-TEXTFILES="${FLEET_LEASE_TEXTFILES:-fleet_bench.prom fleet_projects.prom fleet_sessions.prom claude_acct.prom store_reviews.prom store_sales.prom sentry_issues.prom playtest_feedback.prom day_log.prom day_log_rollup.prom}"
+TEXTFILES="${FLEET_LEASE_TEXTFILES:-fleet_bench.prom fleet_projects.prom fleet_sessions.prom claude_acct.prom store_reviews.prom store_sales.prom sentry_issues.prom playtest_feedback.prom day_log.prom}"
 SYNC_DIR="$STORE/.sync"
 PEER="$SYNC_DIR/peer"
 # A peer that must never hold the lease: one without what the holder runs (agent-web, hub, notes).
