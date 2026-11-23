@@ -8923,7 +8923,9 @@ mod tests {
         let m = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
         assert!(matches!(m, Msg::Reds(Ok(_))));
         assert!(screen(&mut a, 160, 20).contains("Reading Prometheus and fleet-bench reds..."));
-        a.handle(Msg::Reds(Err("fleet-bench reds: cannot read the queue".into())));
+        a.handle(Msg::Reds(Err(
+            "fleet-bench reds: cannot read the queue".into()
+        )));
         // Both held, the join is asked for (here: queued behind the one marked running).
         assert!(a.alerts_read.again);
         a.alerts = Some(hub_core::alerts::join(

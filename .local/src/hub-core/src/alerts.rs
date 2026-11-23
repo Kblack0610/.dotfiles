@@ -729,9 +729,7 @@ pub fn join(
     let watches = watches
         .map_err(|e| errors.push(format!("watches: {e}")))
         .ok();
-    let fixes = fixes
-        .map_err(|e| errors.push(e))
-        .ok();
+    let fixes = fixes.map_err(|e| errors.push(e)).ok();
     let open = fixes.as_ref().map(|r| r.open.as_slice());
 
     let mut firing: Vec<Alert> = vec![];

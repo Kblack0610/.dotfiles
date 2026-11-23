@@ -895,8 +895,27 @@ pub fn schedules(s: &crate::schedules::Schedules) -> Card {
     c.big = s.rows.len().to_string();
     c.unit = "scheduled things".into();
     c.counted = s.summary.clone();
-    if !s.errors.is_empty() {
-        c.error = Some(s.errors.join("; "));
+    // The fleet-bench red is Alerts' fact (dashboards rule 2): here it is a count that opens
+    // Alerts, never the card's error line.
+    let (reds, own): (Vec<&String>, Vec<&String>) = s
+        .errors
+        .iter()
+        .partition(|e| e.starts_with(crate::reds::SOURCE));
+    if !reds.is_empty() {
+        c = c.part_to(
+            "Reds not read",
+            reds.len(),
+            Level::Warn,
+            Some(Link::tab("alerts")),
+        );
+    }
+    if !own.is_empty() {
+        c.error = Some(
+            own.iter()
+                .map(|e| e.as_str())
+                .collect::<Vec<_>>()
+                .join("; "),
+        );
     }
     // The rows come ranked failing, stale, never, then no purpose (schedules::rank); the last are
     // not listed.
@@ -1953,6 +1972,32 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[test]
+    fn schedules_say_an_unread_fleet_bench_red_as_a_count_that_opens_alerts() {
+        let sch = crate::schedules::Schedules {
+            errors: vec![
+                "fleet-bench reds: exit status: 1".into(),
+                "k8s: prometheus down".into(),
+            ],
+            ..Default::default()
+        };
+        let c = schedules(&sch);
+        let p = c
+            .parts
+            .iter()
+            .find(|p| p.label == "Reds not read")
+            .expect("the reds part");
+        assert_eq!(
+            (p.value.as_str(), p.link.clone()),
+            ("1", Some(Link::tab("alerts")))
+        );
+        // Negative control: the card's own source stays its error line; Alerts' red is not copied.
+        assert_eq!(c.error.as_deref(), Some("k8s: prometheus down"));
+        let c = schedules(&crate::schedules::Schedules::default());
+        assert!(c.parts.iter().all(|p| p.label != "Reds not read"));
+        assert_eq!(c.error, None);
     }
 
     #[test]

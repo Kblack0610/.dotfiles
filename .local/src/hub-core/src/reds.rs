@@ -179,13 +179,16 @@ pub fn read(runner: &dyn Runner) -> Result<Reds, String> {
     Ok(split(rows))
 }
 
+/// The source every `read` error opens with: a card that is not Alerts tells the red by it.
+pub const SOURCE: &str = "fleet-bench reds";
+
 /// `fleet-bench reds: <why>`. fleet-bench's stderr already opens with its own name and the verb
 /// (`say`: `fleet-bench: reds: ...`), which are cut so the source is said once: Alerts read
 /// `fleet-bench reds: fleet-bench: reds: notes row parse failed` (plan waht-noise p2).
 fn failed(e: &str) -> String {
     let why = e.strip_prefix("fleet-bench: ").unwrap_or(e);
     let why = why.strip_prefix("reds: ").unwrap_or(why);
-    format!("fleet-bench reds: {why}")
+    format!("{SOURCE}: {why}")
 }
 
 /// A route from `fleet-bench triage`'s table (TRIAGE_ROUTES), as `--route` prints it: where a red
