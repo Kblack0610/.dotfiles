@@ -56,7 +56,8 @@ HOME = Path.home()
 
 def account_roots():
     """Every Claude account's transcript dirs: <dir>/projects for each account in claude-acct's
-    accounts file (the one list of accounts; `-` is the main one, ~/.claude), plus any
+    accounts file (`-` is the main one, ~/.claude) and for any other ~/.claude* config dir (one
+    a CLAUDE_CONFIG_DIR set by hand wrote, like ~/.claude-work), plus any
     .pre-share-<date>/projects copy `claude-acct link` parked when it linked that account's
     projects/ to main's. A linked account resolves to main's dir and is read once."""
     conf = Path(os.environ.get("CLAUDE_ACCT_CONFIG")
@@ -71,6 +72,7 @@ def account_roots():
             dirs.append(HOME / ".claude" if d == "-" else Path(os.path.expanduser(d)))
     except OSError:
         pass
+    dirs += sorted(d for d in HOME.glob(".claude*") if d.is_dir())
     found = []
     for d in dirs:
         found += [d / "projects", *sorted(d.glob(".pre-share-*/projects"))]
@@ -100,10 +102,20 @@ def c(code, s):
 DIM, BOLD, CYAN, YEL, GRN, MAG = "2", "1", "36", "33", "32", "35"
 
 
+def first_copies(paths):
+    """Drop a transcript whose path under its root an earlier root already has: a session left in
+    a parked .pre-share copy as well as in main's dir is read once, from the earlier root."""
+    seen = set()
+    for f in paths:
+        root = next((r for r in ROOTS if f.is_relative_to(r)), None)
+        rel = f.relative_to(root) if root else f
+        if rel not in seen:
+            seen.add(rel)
+            yield f
+
+
 def iter_files():
-    for root in ROOTS:
-        if root.exists():
-            yield from sorted(root.rglob("*.jsonl"))
+    yield from first_copies(f for root in ROOTS if root.exists() for f in sorted(root.rglob("*.jsonl")))
 
 
 def parse_line(line):
@@ -196,7 +208,9 @@ def cmd_search(a):
         matcher = re.compile(re.escape(a.term), flags)
 
     candidates = rg_prefilter(a.term, a.regex, a.ignore_case)
-    files = sorted(candidates) if candidates is not None else list(iter_files())
+    files = (sorted(first_copies(sorted(candidates, key=lambda f: next(
+        (i for i, r in enumerate(ROOTS) if f.is_relative_to(r)), len(ROOTS)))))
+        if candidates is not None else list(iter_files()))
 
     results = []
     for path in files:
@@ -2268,7 +2282,7 @@ def cmd_roots(a):
     """Each transcript dir this machine reads, with its session count: how to tell whether an
     account's sessions are covered. Another fleet machine's sessions are in its own dirs."""
     for r in ROOTS:
-        n = sum(1 for _ in r.glob("*/*.jsonl")) if r.is_dir() else 0
+        n = sum(1 for f in r.rglob("*.jsonl") if "subagents" not in f.parts) if r.is_dir() else 0
         print(f"{r}\t{n} sessions")
 
 

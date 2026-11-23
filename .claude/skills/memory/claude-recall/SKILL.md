@@ -135,7 +135,7 @@ sessions compact <id|--pick>        # headless claude -p writes ~/.agent/session
 
 ## Notes
 
-- Reads `<dir>/projects` of every account in claude-acct's accounts file (`~/.config/claude-acct/accounts`; `claude-acct link` points each at `~/.claude/projects`, so one dir usually holds them all), any `.pre-share-<date>/projects` copy that link parked, and Claude Cowork's `local-agent-mode-sessions` on macOS when that directory exists. `claude-recall roots` prints each dir with its session count.
+- Reads `<dir>/projects` of every account in claude-acct's accounts file (`~/.config/claude-acct/accounts`; `claude-acct link` points each at `~/.claude/projects`, so one dir usually holds them all) and of any other `~/.claude*` config dir, any `.pre-share-<date>/projects` copy that link parked (a session also in an earlier dir is read once), and Claude Cowork's `local-agent-mode-sessions` on macOS when that directory exists. `claude-recall roots` prints each dir with its session count.
 - Transcripts are per machine: a session that ran on another fleet machine is only in that machine's dirs, so search it there (`ssh <host> claude-recall search ...`). A session missing here is most often that, not a broken reader.
 - Filenames ARE session ids; `show` accepts a unique prefix.
 - No index means results are always current - a session you closed a minute ago
