@@ -1,10 +1,10 @@
 #!/bin/bash
 # Stop-post: a coordinator never ends a turn with no watch armed.
 #
-# A session labelled `coordinator` (the coordinate skill, step 1) follows its ledger through a
-# `coord-watch <plan>` Monitor, which the harness kills every 30 minutes; the skill re-arms it on
-# each expiry. Remembering that is what failed: 2026-11-19 a coordinator went ten hours with no
-# watch through two compactions, and three land-failed events on its critical PR went unseen.
+# A session labelled `coordinator` (the coordinate skill, step 1) waits on its ledger through a
+# background `coord-watch --until <plan>`, which exits on the first event and is re-armed after it.
+# Remembering the re-arm is what failed: 2026-11-19 a coordinator went ten hours with no watch
+# through two compactions, and three land-failed events on its critical PR went unseen.
 #
 # Fires when the session has a human attached, carries the `coordinator` label in the fleet-sessions
 # labels ledger, and no live coord-watch recorded its own session-<sid>.pid mark (coord-watch writes
@@ -63,8 +63,8 @@ fi
 
 jq -n --arg plan "$PLAN" '{decision: "block", reason: (
   "coord-watch: this session is a coordinator and no coord-watch is armed, so a land-failed or a stall on its ledger reaches nobody. "
-  + (if $plan == "" then "Write the `## Follow-through` ledger in the plan (coordinate skill, step 2), then start Monitor with command `coord-watch <that plan>`"
-     else "Start Monitor with command `coord-watch " + $plan + "`" end)
-  + ", timeout_ms 1800000 (step 3); if a watch just expired, run step 5'"'"'s stall check first. "
+  + (if $plan == "" then "Write the `## Follow-through` ledger in the plan (coordinate skill, step 2), then run `coord-watch --until <that plan>`"
+     else "Run `coord-watch --until " + $plan + "`" end)
+  + " with Bash run_in_background, never Monitor (step 3): it wakes you once, on an event, with no 30 minute expiry. "
   + "Every line ticked: step 6, not a re-arm. Coordinating is over: step 7 (fleet-sessions label self -manual -coordinator).")}'
 exit 0

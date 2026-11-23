@@ -148,8 +148,7 @@ pub(crate) fn current_rows_for_dir(dir: &Path) -> Option<OpenRows> {
         open: cur,
         rewrite: false,
         systems: Vec::new(),
-        board_weight: None,
-        window: None,
+        tiered: false,
         aim: None,
     };
     let lines: Vec<&str> = content.lines().collect();
@@ -2635,6 +2634,8 @@ pub fn rebrief(
 /// checkbox state and its tags stay as they were ([`md::retext_task`]); the one exception is
 /// text-borne tags such as `#plan`, which `--text` drops when it leaves them out, while the
 /// sizing (`#size/x`, `#pts/N`) is kept unless `--text` types its own ([`carry_sizing`]).
+/// A `#c` stamp or `#of/` link typed in `--text` is dropped when the row has one; a typed `#of/`
+/// naming another parent is refused (re-parent with `ptask tag`).
 ///
 /// Each of `details` becomes an indented line at the end of the row's block, after its
 /// existing detail lines and child rows. `--detail` alone leaves the row's own line as it is.
@@ -2723,17 +2724,23 @@ pub fn retext(
             };
             // Refused here too, before the epic is filed, for the same reason.
             projects::refuse_retired_priority(&row, t)?;
-            let proj_dir = projects::project_dir(p, name)?;
-            linked = link_standing(p, log, name, &proj_dir, &[t.to_string()], bin)?;
-            match &linked {
-                Some(l) => Some(l[0].as_str()),
-                None if crate::standing::wants_link(t).is_some() => {
-                    eprintln!(
+            // A row that has its parent keeps it ([`md::retext_task`]), so a standing epic
+            // filed for it would have no child.
+            if md::split_parent(&row).1.is_some() {
+                Some(t)
+            } else {
+                let proj_dir = projects::project_dir(p, name)?;
+                linked = link_standing(p, log, name, &proj_dir, &[t.to_string()], bin)?;
+                match &linked {
+                    Some(l) => Some(l[0].as_str()),
+                    None if crate::standing::wants_link(t).is_some() => {
+                        eprintln!(
                         "--link: '{t}' names no system of {name} (or {name} has no systems list), so nothing was edited"
                     );
-                    return Ok(1);
+                        return Ok(1);
+                    }
+                    None => Some(t),
                 }
-                None => Some(t),
             }
         }
         _ => text,
@@ -2741,6 +2748,10 @@ pub fn retext(
     let has_details = details.iter().any(|d| !d.trim().is_empty());
     if text.or(append).is_none_or(str::is_empty) && !has_details {
         bail!("edit needs the new words: --text \"<new text>\", --append \"<more>\" or --detail \"<line>\"");
+    }
+    if let Some(t) = text {
+        let row = sheet_and_content(p, name, lane)?.and_then(|(_, c)| find_open(&c, pick));
+        refuse_reparent(row.as_deref(), name, t)?;
     }
     if let Some(t) = text.filter(|t| crate::epics::is_epic(t)) {
         refuse_epic_on_board(lane, &[t])?;
@@ -2752,32 +2763,16 @@ pub fn retext(
         }
     }
     if has_details {
-        let Some((sheet, content)) = sheet_and_content(p, name, lane)? else {
-            bail!("'{name}' has no task sheet yet");
-        };
-        let Some(new) = md::append_details(&content, sheet::TASKS, |l| pick.hits(l), details)
-        else {
-            eprintln!("no open task matches '{pick}' in {name}");
-            return Ok(1);
-        };
-        write_sheet(&sheet, &new)?;
-        log.info(
-            "ptask",
-            &format!("detailed in {} ({name})", sheet.display()),
-        );
-        let row = content.lines().find(|l| pick.hits(l));
-        let mut ev = crate::ingest::Event::row(
-            "detailed",
+        if let Some(rc) = write_details(
+            p,
+            log,
             name,
-            "",
-            lane.name(),
-            row.unwrap_or(&pick.to_string()),
-        );
-        ev.why = Some(details.join("; "));
-        crate::ingest::record(p, &ev);
-        if text.or(append).is_none_or(str::is_empty) {
-            println!("detailed '{pick}'");
-            return Ok(0);
+            pick,
+            lane,
+            details,
+            text.or(append).is_none_or(str::is_empty),
+        )? {
+            return Ok(rc);
         }
     }
     let new_row = |l: &str| {
@@ -2792,6 +2787,58 @@ pub fn retext(
         new_row(l).unwrap_or_default()
     })?;
     Ok(edit(p, log, name, pick, "edited", None, lane, new_row)?.0)
+}
+
+/// `edit` keeps a row's `#of/` ([`md::retext_task`]), so a `--text` naming another parent would
+/// be dropped in silence: refused, with the command that does re-parent.
+fn refuse_reparent(row: Option<&str>, name: &str, text: &str) -> Result<()> {
+    let kept = row.and_then(|r| md::split_parent(r).1);
+    if let (Some(kept), Some(typed)) = (kept, md::split_parent(text).1) {
+        if kept != typed {
+            bail!("the row is under #of/{kept}, and edit keeps its parent: #of/{typed} in --text would be dropped. Re-parent with `notes ptask {name} tag <id> --remove of/{kept} --add of/{typed}`, so nothing was edited");
+        }
+    }
+    Ok(())
+}
+
+/// `edit --detail`: the lines go at the end of the row's block, and the call is done there
+/// (`Some(exit code)`) when no new text comes with them.
+fn write_details(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    pick: &Pick,
+    lane: Lane,
+    details: &[String],
+    only_details: bool,
+) -> Result<Option<i32>> {
+    let Some((sheet, content)) = sheet_and_content(p, name, lane)? else {
+        bail!("'{name}' has no task sheet yet");
+    };
+    let Some(new) = md::append_details(&content, sheet::TASKS, |l| pick.hits(l), details) else {
+        eprintln!("no open task matches '{pick}' in {name}");
+        return Ok(Some(1));
+    };
+    write_sheet(&sheet, &new)?;
+    log.info(
+        "ptask",
+        &format!("detailed in {} ({name})", sheet.display()),
+    );
+    let row = content.lines().find(|l| pick.hits(l));
+    let mut ev = crate::ingest::Event::row(
+        "detailed",
+        name,
+        "",
+        lane.name(),
+        row.unwrap_or(&pick.to_string()),
+    );
+    ev.why = Some(details.join("; "));
+    crate::ingest::record(p, &ev);
+    if only_details {
+        println!("detailed '{pick}'");
+        return Ok(Some(0));
+    }
+    Ok(None)
 }
 
 /// `notes ptask <name> start <query>` - mark the first matching open task in progress (`[/]`).
@@ -3176,7 +3223,7 @@ pub(crate) fn sweep_file(
 }
 
 /// What a sweep of `content`, a sheet under `dir`, is measured against: today, the `[sheet]`
-/// shape (on the agent lane, its board budget) and the open version, read from `content` itself so an editor buffer's unsaved
+/// shape (on the agent lane, its tier) and the open version, read from `content` itself so an editor buffer's unsaved
 /// `Version:` bump counts (an agent board's comes from the human sheet).
 pub(crate) fn sweep_ctx(
     dir: &Path,
@@ -3194,11 +3241,7 @@ pub(crate) fn sweep_ctx(
     project_sweep::Ctx {
         today: chrono::Local::now().date_naive(),
         shape,
-        board_weight: (lane == Lane::Agent).then(|| board_budget(dir, shape.agent_board_days)),
-        window: (lane == Lane::Agent)
-            .then_some(open)
-            .flatten()
-            .and_then(|v| crate::window::read(&crate::window::home(dir), v).map(|s| (v, s.keys))),
+        tiered: lane == Lane::Agent,
         aim: crate::rank::Aim::of_swept(dir, lane == Lane::Agent, content),
         open,
         rewrite,
@@ -3209,9 +3252,9 @@ pub(crate) fn sweep_ctx(
 /// The days of shipped work a budget is measured over.
 pub(crate) const BUDGET_WINDOW_DAYS: u32 = 7;
 
-/// A project's agent-board budget in weight: `days` of the weight its agent rows shipped with a
-/// PR over the last [`BUDGET_WINDOW_DAYS`] days, rounded up; `agent_board_floor` covers a
-/// project that shipped nothing.
+/// A project's work capacity in weight: `days` of the weight its agent rows shipped with a PR
+/// over the last [`BUDGET_WINDOW_DAYS`] days, rounded up, which sizes a release window's commit
+/// (`window::record`); `agent_board_floor` covers a project that shipped nothing.
 pub(crate) fn board_budget(dir: &Path, days: u32) -> u32 {
     let name = dir
         .file_name()
@@ -4012,8 +4055,7 @@ Version: v1.13.0
             open: ROADMAP_CUR,
             rewrite: true,
             systems: vec![],
-            board_weight: None,
-            window: None,
+            tiered: false,
             aim: None,
         };
         let swept = project_sweep::sweep_sheet(&new, &ctx).map_or(new.clone(), |(c, _)| c);
@@ -5100,6 +5142,42 @@ mod inbox_tests {
         fn read(&self) -> String {
             fs::read_to_string(self.sheet()).unwrap()
         }
+    }
+
+    #[test]
+    fn edit_text_keeps_the_parent_and_refuses_another() {
+        let v = vault(
+            "parent",
+            "",
+            "- [ ] fix(ui): the menu flickers #high #of/sc-9 <!-- id:sc-1 -->\n",
+        );
+        let one = Pick::Id("sc-1".into());
+        let w = Writer::of(None, None, None, None, &[], false, Vec::new());
+        let go = |text: &str| {
+            retext(
+                &v.p,
+                &v.log,
+                "scratch",
+                &one,
+                Some(text),
+                None,
+                &[],
+                false,
+                None,
+                Lane::Human,
+                &w,
+            )
+        };
+        // nc-108: the same link retyped lands once
+        go("fix(ui): the menu blinks #of/sc-9").unwrap();
+        let sheet = v.read();
+        assert_eq!(sheet.matches("#of/sc-9").count(), 1, "{sheet}");
+        // a different parent is refused, not dropped in silence
+        let err = go("fix(ui): the menu blinks #of/sc-4")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("--remove of/sc-9 --add of/sc-4"), "{err}");
+        assert_eq!(v.read(), sheet, "nothing was edited");
     }
 
     #[test]

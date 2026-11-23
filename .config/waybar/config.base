@@ -164,8 +164,8 @@
             "temperature"
         ]
     },
-    // Shown only while keys bypass Hyprland (VDI submap or RustDesk grab). Not gated:
-    // it is a safety indicator. No interval: the toggles fire RTMIN+11 instead.
+    // Shown only while keys bypass Hyprland (the passthru submap). Not gated:
+    // it is a safety indicator. No interval: the submap binds fire RTMIN+11 instead.
     "custom/passthrough": {
         "format": "{}",
         "return-type": "json",

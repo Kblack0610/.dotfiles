@@ -102,7 +102,7 @@
 #                                matrix is BENCH_MATRIX's kind by stack grid and run modes for one
 #                                harness: each cell proven, failing, excluded, no work, or empty
 #   fleet-bench room             exit 1 while board_days is past board_days_max; information only,
-#                                no filer holds on it (the board-open watch alerts)
+#                                no filer holds on it
 #   fleet-bench triage [--dry-run|--causes|--coverage|--route <key>...]
 #                                one agent-board row per FAILED or STALLED scheduled runner, failed
 #                                user unit, Sentinel watch tripped past TRIAGE_WATCH_AFTER, runner
@@ -1851,10 +1851,10 @@ scheduled_runner() {
 # feeds every profile; BENCH_PROFILE overrides the profile `notes config` names). One profile is the
 # unit dispatch pulls from, so a second profile's boards do not add to it, and a project with
 # automation off is left out. open counts the open and started agent-lane rows on the board; a row
-# the sweep put on the backlog tier (`.backlog`, past its project's budget) is off the board and
+# still carrying the retired backlog token (`.backlog`, which the sweep strips) is off the board and
 # counts in backlog. days is the board's weight over the weight its agent rows closed with a PR
-# shipped a day across the feed's done window (BOARD_SHIP_DAYS), one decimal: the unit the sweep
-# budgets each project in (`agent_board_days`). The rate is floored at one weight a day, so a board
+# shipped a day across the feed's done window (BOARD_SHIP_DAYS), one decimal: the days the fleet
+# takes to clear the board at its current rate. The rate is floored at one weight a day, so a board
 # that shipped nothing in the window reads its whole weight in days and trips, not a quiet ?. ? for
 # a field that cannot be read.
 board_reading() {
@@ -1874,8 +1874,8 @@ board_reading() {
 
 # intake_room -> one line, board_days against board_days_max in KPI_THRESHOLDS, then the board's row
 # and backlog counts; 1 when board_days is past it. Information only: nothing holds a filer on it.
-# A board past its days means dispatch is not pulling, which the board-open watch alerts on; no
-# threshold is no limit.
+# The board is all planned work, so no threshold is set and no threshold is no limit; dispatch not
+# pulling is the queue-starved and sprint-stalled watches' alert.
 intake_room() {
   local n b d max rows
   read -r n b d < <(board_reading)
@@ -3968,8 +3968,8 @@ effect_lines() { cat "$EFFECT" 2>/dev/null || true; }
 
 # improve_pick <kpi json> -> the KPI furthest past its threshold that no live claim owns, as
 # {kpi, value, threshold, bound, last}; nothing when none is, or BENCH_IMPROVE_MAX claims are live.
-# board_days and board_open are never picked: a full board is the board-open watch's alert, and a
-# session whose job is shrinking the board would delete rows the human filled on purpose. Nor is
+# board_days and board_open are never picked: a session whose job is shrinking the board would
+# delete rows the human filled on purpose. Nor is
 # systems_no_skill: it is report-only, since a system with no skill yet is a gap to read, not a red.
 improve_pick() {
   jq -c --slurpfile e <(effect_lines) --argjson max "$BENCH_IMPROVE_MAX" "$IMPROVE_JQ"'

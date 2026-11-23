@@ -1512,7 +1512,7 @@ cat <<'EOF'
   BADNAME    -> rename the directory or the frontmatter so the two agree
   DUPNAME    -> one flat namespace across both repos; rename one of them
   BADMETA    -> fix the metadata block (see ~/.local/src/docs/skills.md)
-  SYSTEM     -> name the systems the skill works on (`project-system-check <project> --list`
+  SYSTEM     -> name the systems the skill works on (`project-stage-check <project> --list`
                 prints a project's ids), or [any] for a skill every system uses
   BADYAML    -> use a `description: >-` block; a bare `: ` in the value breaks the parse
   CATCOLLIDE -> rename the category; it cannot share a name with a skill

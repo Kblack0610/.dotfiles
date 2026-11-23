@@ -11,10 +11,11 @@
 # event with content) that were a "Monitor expired ... with no events" notice. A compaction, a
 # skill load and a Stop-hook note neither count nor reset. At EMPTY_WAKE_MAX it labels the session
 # `spinning` (the Sessions board shows it) and blocks each such wake's turn end once with the step
-# to take; from twice that, the block did not take, so it pages the human once per run (a marker in
-# EMPTY_WAKE_STATE, cleared with the label). A coordinator (label `coordinator`) is
-# exempt: its expiry is the stall check of an open ledger (coordinate step 5), and
-# 89-coord-watch.sh owns that mode. Removes `spinning` once a real prompt resets the count.
+# to take; from twice that, once a block of this run has been given and did not take, it pages the
+# human once per run (markers in EMPTY_WAKE_STATE, cleared with the label). A coordinator is not
+# exempt: its watch is a background `coord-watch --until` with no expiry, so a Monitor still
+# expiring on it is the old 30 minute loop (2026-11-23: four coordinators at 4 to 221 expiries each, all waiting on asks), and
+# its block names that arm. Removes `spinning` once a real prompt resets the count.
 
 set -uo pipefail
 
@@ -40,18 +41,21 @@ case "$SID" in ''|*/*|.|..) exit 0 ;; esac
 [ -f "$TRANSCRIPT" ] || exit 0
 
 LABELS="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}/labels/$SID"
-grep -qxF coordinator "$LABELS" 2>/dev/null && exit 0
 
 PAGED="$EMPTY_WAKE_STATE/$SID.paged"
+# Set on this run's first block: a page means a block was given and the session kept spinning.
+BLOCKED="$EMPTY_WAKE_STATE/$SID.blocked"
 spinning=0
 grep -qxF spinning "$LABELS" 2>/dev/null && spinning=1
 end_run() {
   [ "$spinning" = 1 ] && fleet-sessions label "$SID" -spinning >/dev/null 2>&1
-  rm -f "$PAGED"
+  rm -f "$PAGED" "$BLOCKED"
   exit 0
 }
 # Most turns are no expiry wake: one cheap look at the end before the count.
-tail -n "$RECENT_LINES" "$TRANSCRIPT" | grep -aq 'Monitor expired after' || end_run
+# Not `tail | grep -q`: under pipefail grep's early exit SIGPIPEs tail, and the 141 read as no match
+# on every real transcript (lines run to hundreds of KB), so this guard never fired (2026-11-23).
+grep -aqF 'Monitor expired after' < <(tail -n "$RECENT_LINES" "$TRANSCRIPT") || end_run
 
 # One pass over the tail: E for an empty expiry wake, R for a real prompt, nothing for the rest.
 n=$(tail -n "$TAIL_LINES" "$TRANSCRIPT" | grep -a '"type":"user"' | jq -rR '
@@ -73,16 +77,21 @@ n=$(tail -n "$TAIL_LINES" "$TRANSCRIPT" | grep -a '"type":"user"' | jq -rR '
 [ "$n" -ge "$EMPTY_WAKE_MAX" ] || end_run
 
 [ "$spinning" = 1 ] || fleet-sessions label "$SID" +spinning >/dev/null 2>&1
-if [ "$n" -ge $((EMPTY_WAKE_MAX * 2)) ] && [ ! -e "$PAGED" ] && command -v agent-notify >/dev/null 2>&1; then
+if [ "$n" -ge $((EMPTY_WAKE_MAX * 2)) ] && [ -e "$BLOCKED" ] && [ ! -e "$PAGED" ] && command -v agent-notify >/dev/null 2>&1; then
   mkdir -p "$EMPTY_WAKE_STATE" && : > "$PAGED"
   agent-notify -p high -t 'Session spinning on empty watches' \
     "Session ${SID:0:8} ($(basename "$(jq -r '.cwd // empty' <<<"$PAYLOAD" 2>/dev/null)")) woke $n times in a row on a watch that delivered nothing and keeps re-arming it. Close it or tell it what it waits for." \
     >/dev/null 2>&1 || true
 fi
 
+coord=false
+grep -qxF coordinator "$LABELS" 2>/dev/null && coord=true
+mkdir -p "$EMPTY_WAKE_STATE" && : > "$BLOCKED"
 # gate: hook-stop-empty-wakes
-jq -n --argjson n "$n" '{decision: "block", reason: (
+jq -n --argjson n "$n" --argjson coord "$coord" '{decision: "block", reason: (
   "empty-wakes: this is wake \($n) in a row on a Monitor expiry with no events since the last real prompt, so the watch is only a timer that re-reads the whole context every 30 minutes. "
-  + "Stop it (TaskStop) and do not re-arm. Waiting on the human: the pending ask carries the answer (agent-ask reopen-on-answer <id> if the window may close). "
+  + "Stop it (TaskStop) and do not re-arm. "
+  + (if $coord then "A coordinator waits with Bash run_in_background on `coord-watch --until <plan>` (coordinate step 3): it wakes you once, on an event, with no expiry. " else "" end)
+  + "Waiting on the human: the pending ask carries the answer (agent-ask reopen-on-answer <id> if the window may close). "
   + "Waiting on a run or a PR: a background Bash command that exits on its end wakes you once, with no expiry. Then end the turn with no message.")}'
 exit 0

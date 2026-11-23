@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""PreToolUse(Bash|Read) guard: deny the poll shapes that spend turns on waiting.
+"""PreToolUse(Bash|Read) guard: deny the poll shapes that spend turns on waiting. walker-guards.py
+runs it on Bash; settings.json runs this file on Read.
 
 2026-11-03/04 overnight: 738 of the heavy sessions' turns (14%) were polls, `timeout 590 bash -c
 "until grep ..."` loops and `gh run watch` on top of agent-land's own wait. Each pass blocks the
@@ -204,28 +205,27 @@ def live_reason(text):
 
 
 # gate: hook-block-poll
-def deny(reason):
-    print(json.dumps({"hookSpecificOutput": {
-        "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "block-poll: " + reason}}))
-
-
-def main():
-    data = json.load(sys.stdin)
+def decide(data):
+    """The deny reason for one PreToolUse payload, or None. walker-guards.py calls this for Bash;
+    main() serves the Read hook, which walker-guards does not run on."""
     tool = data.get("tool_name", "Bash")
     tin = data.get("tool_input") or {}
     if tool == "Read":
         reason = live_reason(tin.get("file_path") or "")
-        return deny(reason) if reason else None
-    if tool != "Bash":
-        return
-    texts = code_texts(strip_heredocs(tin.get("command") or ""))
-    if tin.get("run_in_background"):
-        return
-    if any(polls(t) for t in texts):
-        return deny(LOOP_MSG)
-    reason = live_reason(tin.get("command") or "")
-    if reason:
-        return deny(reason)
+    elif tool != "Bash" or tin.get("run_in_background"):
+        return None
+    elif any(polls(t) for t in code_texts(strip_heredocs(tin.get("command") or ""))):
+        reason = LOOP_MSG
+    else:
+        reason = live_reason(tin.get("command") or "")
+    return "block-poll: " + reason if reason else None
+
+
+def main():
+    r = decide(json.load(sys.stdin))
+    if r:
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": r}}))
 
 
 if __name__ == "__main__":

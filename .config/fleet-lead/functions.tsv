@@ -7,13 +7,13 @@
 #              here; the skill is loaded by name.
 #   section    a heading in the skill's SKILL.md (backticks ignored, a prefix of the heading is enough)
 #   invoked    "due line" when the row has prefixes, "by name" when it has none (the test pins this)
-# Spend and accounts (fleet-accounts and fleet-pace both hold claude-acct) stay split here until the sibling plan
+# Spend and accounts (fleet-runners and fleet-pace both hold claude-acct) stay split here until the sibling plan
 # "account and spend pace owner" moves them; so do worktrees ("worktree lifecycle") and runner roles.
 load	fleet-pace	pace:|blocked:|limit:	Pace check	due line
 delivery	shepherd	nudge|escalate|overdue|landing:|critical:|nightly red|shared red	Verb: nudge	due line
 dispatch	fleet-dispatch	watch: queue-starved	Starved queue	due line
 lead	fleet-lead	finding|infra:|watch:|improve:|*	Verb: pass	due line
-accounts	fleet-accounts		Read the room	by name
+accounts	fleet-runners		Account room	by name
 asks	fleet-asks		File an ask	by name
 queue	fleet-queue		File an item	by name
 runners	fleet-runners		Read first	by name
