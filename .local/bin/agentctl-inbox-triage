@@ -30,11 +30,11 @@
 # call per batch on the same lane: the model names the row's system and, when one fits, an open
 # feature epic or a new #new one; a row with neither goes under its system's standing epic
 # (`notes ptask edit --link`). --backlog --size gives each open row with no `#pts/<n>` its
-# points by size_rule, one Sonnet call per batch (the inbox-size agent); the tag sets the row's
+# points by the rubric in .config/inbox-size/prompt.md, one Sonnet call per batch (the inbox-size agent); the tag sets the row's
 # #size/ band too, and keeps no answers: its --dry-run shows the calls, the apply asks again.
 # The plain --backlog and the --link passes' --dry-run keep their answers, so the apply writes
 # what it printed and a dry run stopped at its budget picks up where it stopped. The plain pass
-# judges each row by priority_rule too: raise a fault filed too low, send an agent row that is a
+# judges each row by the priority rubric (.config/inbox-triage/rules/priority.md) too: raise a fault filed too low, send an agent row that is a
 # nice-to-have to improvements.md, close one that says it is done. It never lists a row fleet-bench
 # keys by its prefix (lib/board-keys.sh, backlog_board), whose text fleet-bench alone writes. --backlog --report prints the
 # kept answers of every board by verdict, with no model call, for a person to confirm before the apply.
@@ -69,12 +69,26 @@ LIB="$HERE/../lib"
 . "$LIB/md-render.sh"
 # shellcheck source=/dev/null
 . "$LIB/inbox-epics.sh"
+# shellcheck source=/dev/null
+. "$LIB/prompt-render.sh"
 # shellcheck source=../lib/chain-event.sh
 . "$LIB/chain-event.sh"
 # shellcheck source=../lib/board-keys.sh
 . "$LIB/board-keys.sh"   # BOARD_KEY_ERE: the rows fleet-bench finds by their prefix, which --backlog leaves alone
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-name.sh}"
+
+# Each call's instructions: a template its agent's conf names as PROMPT (judges.md), found beside
+# this script in its repo (the conf's path resolves to the same file once stowed). The rubrics the
+# calls share are included from .config/inbox-triage/rules/, so a rule changed is one edit and a
+# new prompt version for every call that carries it.
+PROMPTS="$HERE/../../.config"
+ROUTE_PROMPT="$PROMPTS/inbox-triage/route.md"        # inbox-triage
+ASK_PROMPT="$PROMPTS/inbox-triage/ask.md"            # inbox-triage, a #ask or #investigate line
+BACKLOG_PROMPT="$PROMPTS/inbox-backlog/prompt.md"    # inbox-backlog
+PRIORITY_PROMPT="$PROMPTS/inbox-priority/priority.md" # inbox-priority
+LINK_PROMPT="$PROMPTS/inbox-priority/area.md"        # inbox-priority, the --link pass
+SIZE_PROMPT="$PROMPTS/inbox-size/prompt.md"          # inbox-size
 
 DRY=0; ONLY=""; BACKLOG=0; PRIORITY=0; SIZE=0; SCORED=0; RETAG_HIGH=0; LINK=0; LINKED=0; STANDING=0; NEW_EPICS=0; declare -A NEW_SEEN=(); TAGGED=0; WATCH=0; WAIT=0; SUMMARY=""; FILED=0; KEPT=0; FAILED=0; ROUTED=0; OVER=0
 REWROTE=0; MOVED=0; DROPPED=0; RAISED=0; CLOSED_DONE=0; REPORT=0; IMPROVED=0; CAPPED=0; BUDGET_STOP=0; ANSWERED=0; ASKED=0; VERDICT=keep; VDEST=""; VPRIO=""
@@ -86,18 +100,25 @@ say() { printf 'inbox-triage: %s\n' "$*" >&2; }
 # clean <width>: model text as one printable ASCII line, punctuation folded rather than dropped.
 clean() { md_ascii | tr -cd ' -~' | cut -c1-"$1"; }
 
-# ask <prompt> <items> <label> [cmd [sized]]: one model call over <items> lines or rows, its answer in OUT. A
-# failed call keeps its stderr in the log and its first words (a usage limit, an auth error) as
-# the pass's reason; one stopped at the per-call cap (CALLS_RC_CAPPED) halves the next batch, and
-# a clean one lets it grow. It runs from an empty directory, so no repo's Stop hook answers in
-# place of the model. A call with its own <cmd> (a #ask answer) leaves the batch size alone, unless
-# it passes sized (a --backlog, --priority, --link or --size batch).
+# ask <template> <items> <label> [cmd [sized]]: one model call over <items> lines or rows, its
+# prompt <template> filled from the caller's variables (agentctl-run records the template's sha),
+# its answer in OUT. A template that does not render is this script's fault, so the pass fails and
+# no line is refused. A failed call keeps its stderr in the log and its first words (a usage limit,
+# an auth error) as the pass's reason; one stopped at the per-call cap (CALLS_RC_CAPPED) halves the
+# next batch, and a clean one lets it grow. It runs from an empty directory, so no repo's Stop hook
+# answers in place of the model. A call with its own <cmd> (a #ask answer) leaves the batch size
+# alone, unless it passes sized (a --backlog, --priority, --link or --size batch).
 ask() {
-  local wd err rc first cmd="${4:-$INBOX_TRIAGE_CMD}" sized=1
+  local wd err rc first prompt cmd="${4:-$INBOX_TRIAGE_CMD}" sized=1
   [ -n "${4:-}" ] && [ "${5:-}" != sized ] && sized=0
+  if ! prompt_render_into prompt "$1"; then
+    say "$3: its prompt $1 did not render"
+    proof_why "$3: its prompt did not render"
+    return 1
+  fi
   wd="$(mktemp -d)"; err="$(mktemp)"
   # shellcheck disable=SC2086 # a word list by design, overridable in tests
-  OUT="$(cd "$wd" && $cmd -p <<<"$1" 2>"$err")"; rc=$?
+  OUT="$(cd "$wd" && $cmd --rendered-prompt "$1" -p <<<"$prompt" 2>"$err")"; rc=$?
   [ -s "$err" ] && head -n 20 "$err" >&2
   case "$rc" in
     0) [ "$sized" = 1 ] && budget_batch_note "$NAME" ok "$2" ;;
@@ -138,24 +159,16 @@ answered() {
 # answer that came back without its block, a call too big for its cap, or a line with no question
 # is recorded refused so the line waits for the person.
 ask_line() {
-  local look="$1" raw="$2" text="$4" details="$5" q reply rc cmd lines more brief
+  local look="$1" raw="$2" text="$4" details="$5" q reply rc cmd lines investigate="" evidence_lines
   case "$look" in
-    investigate)
-      cmd="$INBOX_INVESTIGATE_CMD" lines=30 more=', what is likely behind it, and the next step you would take'
-      brief='You look into one thing a person left in their notes outbox, deeper than a quick answer. Use read-only commands (logs, journalctl, systemctl status, git log and diff, gh run view, kubectl get, describe and logs, reading files and code), as many as the question needs.' ;;
-    *)
-      cmd="$INBOX_ASK_CMD" lines=12 more=''
-      brief='You answer one question a person left in their notes outbox. Look things up with read-only commands (ping, curl, uptime, df, free, systemctl status, git log, kubectl get, reading files) and run at most a handful.' ;;
+    investigate) cmd="$INBOX_INVESTIGATE_CMD" lines=30 investigate=1 ;;
+    *)           cmd="$INBOX_ASK_CMD" lines=12 ;;
   esac
+  evidence_lines=$((lines - 4))
   q="$(md_ascii <<<"$3" | tr -cd ' -~' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
   if [ -z "$q" ]; then note refused outbox "the #$look line holds no question" "$text"; FAILED=$((FAILED + 1)); return 1; fi
   if [ "$DRY" = 1 ]; then printf 'would %s [outbox] %s\n' "${look/#ask/answer}" "$raw"; ANSWERED=$((ANSWERED + 1)); return 0; fi
-  ask "$brief Change nothing: no writes, edits, installs, restarts, deletes or sends, and no command that alters state. If answering needs a write or a decision, say so in one line instead of doing it.
-
-Reply between a line INBOX-ANSWER-START and a line INBOX-ANSWER-END, nothing else outside them. Open with a one-line answer, then at most $((lines - 4)) short lines of evidence$more. Plain ASCII, no markdown.
-
-Question: $q
-$details" 1 "$look" "$cmd"; rc=$?
+  ask "$ASK_PROMPT" 1 "$look" "$cmd"; rc=$?
   if [ "$rc" != 0 ]; then
     # A cap is recorded refused; any other failure (a usage limit, the budget) leaves the line for the next sweep.
     [ "$rc" = "$CALLS_RC_CAPPED" ] && { note refused outbox "the answer call stopped at the per-call cap" "$text"; FAILED=$((FAILED + 1)); }
@@ -297,18 +310,6 @@ is_session() { [[ "$1" =~ $SESSION_RE ]]; }
 # An epic a session proposes: a session line whose words are `epic(<system>): <outcome>`. An
 # unattended writer's epic reaches the outbox as one (`notes ptask add` exits 4), never the sheet.
 is_proposal() { is_session "$1" && [[ "$(untagged "$1")" == epic\(* ]]; }
-
-# session_rules <line text>...: the prompt paragraphs for the session lines among them, a proposed
-# epic's after the follow-up one; nothing when there is none.
-session_rules() {
-  local t sess=0 prop=0
-  for t in "$@"; do
-    is_session "$t" && sess=1
-    is_proposal "$t" && prop=1
-  done
-  if [ "$sess" = 1 ]; then printf '\n%s' "A line tagged #from/<writer> is a follow-up an agent session left, not the person's words, and this paragraph overrides the lane agent and #requested sentences above for it: nobody asked for it, so it is never #requested and its priority is the rule's with no person's ask (#low unless it fixes a red main, a release blocker or something broken now). Each such line waits in a project's inbox and is shown the open rows closest to it under Closest open rows: dup when one of them already asks for the same work (its id), even if the words differ; skip when it asks for no work, or the work is already done or covered by a row you can name (say which, in why); improvement when it is a nice-to-have by the rule above (project: the project it is about); file only what no listed row covers and has a named benefit. Before filing one, ask whether its fix adds a refusal, a gate or a human route (a new check that denies, blocks or holds an agent's work, or a new step that makes work wait on the person's approval; a row for work only the person can do, or a page about a real failure, is neither): file that only when the line names the person's ask for it (an ask id or their quoted words); otherwise file it reworded as the fix to the cause only when the line itself names that cause, and skip it otherwise, saying in why that it adds a gate nobody asked for. A session line is never asked about."; fi
-  if [ "$prop" = 1 ]; then printf '\n%s' "A session line whose words are an epic, epic(<system>): <outcome>, is a proposed epic, not a row. file it only when it is a new capability by the epic rule below, its system is one of its project's ids under Systems, and no epic under Open epics covers that outcome: rows holds that one epic, reworded only to fit the grammar, with no other row and no epic field. dup with the id of the open epic under Open epics that covers it, never a row's id. skip when it is a fix, a chore, one small change or no outcome a person could check by using it; improvement when it is a nice-to-have by the rule above. A skip or an improvement of a proposed epic always says why."; fi
-}
 
 # apply_proposal <action> <id> <project> <rows> <why> <how> <epics> <board>: the model's verdict on
 # an epic proposal, with route's line (n, from, raw, text) in scope. file: the epic goes through
@@ -474,33 +475,10 @@ answer() {
 # The flag every notes inbox writer touches (`ptask add`, the Focus sweep): its stamp, or empty.
 flag_state() { [ -n "$FLAG" ] && cat "$FLAG" 2>/dev/null; }
 
-# The routing rule both model calls carry, from the registry: which projects live in another
-# project's repo, and where a row about one of them, or the code they share, belongs.
-homes_rule() {
-  local homes
-  homes="$(jq -r '[.trackers // {} | to_entries[] | select((.value.repo // .key) != .key) | "\(.key) (in \(.value.repo))"] | join(", ")' "$(project_map_file)" 2>/dev/null)"
-  [ -z "$homes" ] || printf " Projects whose code lives in another project's repo: %s. A row about only one of those belongs on that project, not on the repo's; a row about several of them, or the shared code under them, belongs on the repo's project." "$homes"
-  printf ' A row about a host or the cluster belongs on home-config.'
-}
-
-# priority_rule: what makes a row urgent, high or low, the one rubric the route call files by and
-# the --priority pass tags by. Two rubrics would let the pass re-tag nearly every filed row. Epic
-# membership is no reason for high: every row is filed under an epic, so it would make most rows high.
-priority_rule() {
-  cat <<'RULE'
-urgent: it breaks or blocks the person or production now.
-high: the project's next release needs it, a test or check is red on main (a red main holds every change's gate), or the person asked for it (#requested). Being filed under an open epic (#of/<epic id>) is not a reason: nearly every row is.
-low: real work with a named benefit (what gets better, for whom) that nothing waits on now: a fault that is not blocking anyone, a cleanup with a stated cost it removes, epic work in its turn.
-Not a row at all: a nice-to-have, polish nobody asked for, a "could also", an idea with no named benefit. That is an improvement, and it is kept in the project's improvements.md, never at any priority.
-When unsure between two priorities, pick the lower.
-RULE
-}
-
-# file_rule: a row's title keeps the file its words name, and never invents one. fleet-dispatch's trainee
-# floor (`fleet-dispatch trainee-pool`) turns away a row that names no tracked file, and a guessed path
-# is refused as untracked; a rewrite that dropped the name was one way a small row went ineligible.
-file_rule() {
-  printf "When the person's words name the file, command or doc the work changes, the title keeps that name by its repo path or command name (src/foo.ts, docs/ci.md). Never add or guess one the words do not name: a row about no named file (a report, a measure, a plan's phase) names none."
+# shared_repos: the projects whose code lives in another project's repo, "name (in repo)", from the
+# registry: rules/homes.md says where a row about one of them, or the code they share, belongs.
+shared_repos() {
+  jq -r '[.trackers // {} | to_entries[] | select((.value.repo // .key) != .key) | "\(.key) (in \(.value.repo))"] | join(", ")' "$(project_map_file)" 2>/dev/null
 }
 
 # row_types: the types a row may take, from the grammar's one home (`notes row types`). An
@@ -515,11 +493,11 @@ row_types() {
 # route <lines json> <board json>: the one model call for a sweep's untyped lines, each
 # {from, raw, text, details}, `from` being `outbox` or the project whose inbox holds it.
 route() {
-  local lines="$1" board="$2" names homes srcs wide batch open epics systems prompt out types agent_run
+  local lines="$1" board="$2" names shared_repos srcs wide batch open epics systems out types unattended
   types="$(row_types)" || return 1
   names="$(jq -r '[.projects[] | "\(.project) (\(.profile))"] | unique | join(", ")' <<<"$board")"
-  homes="$(homes_rule)"
-  agent_run="$(agent_run_rule)"
+  shared_repos="$(shared_repos)"
+  unattended="$(unattended_projects)"
   srcs="$(jq -c '[.[].from] | unique' <<<"$lines")"
   wide="$(jq 'any(.[]; .from == "outbox")' <<<"$lines")"
   local -a froms=() raws=() texts=() nears=()
@@ -549,39 +527,13 @@ route() {
   mapfile -t sysp < <(jq -r --argjson src "$srcs" --argjson wide "$wide" \
     'if $wide then [.projects[].project] else $src - ["outbox"] end | unique[]' <<<"$board")
   systems="$(systems_of "${sysp[@]}")"
-  prompt="You route and file a person's raw notes as task rows. Each numbered line says where it waits: [outbox] is a drop box for any project, [<project>] is that project's inbox. Projects (profile): $names.$homes
-
-A row is: type(area): title, then tags. type is one of $types; a bug is fix. area is the system of the project it touches: one of that project's ids under Systems (a word after also: stands for the id after its =). For a project with no line under Systems, one short lowercase word for the part it touches. The title says what to do in plain words, under 80 characters, keeping the person's meaning and not adding scope. $(file_rule) Tags: one priority (#urgent, #high or #low) and one size (#size/s, #size/m or #size/l). A row that breaks these is refused and the line waits for the person.
-The priority, by this rule. A row you put on lane agent is filed #requested, so the person asked for it: it is #high, or #urgent when it breaks or blocks them now, and never goes without one. A lane human row is not #requested; omit its priority only when the rule leaves it open: a later pass with the whole board gives it one.
-$(priority_rule)$(session_rules "${texts[@]}")
-
-For each numbered line, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
-{\"n\": 1, \"action\": \"file\", \"rows\": [\"fix(audio): the gun sound plays late #high #size/s\"], \"project\": \"<project>\", \"own\": \"<project>\", \"lane\": \"human\", \"plan\": false, \"why\": \"<a few words>\"}
-{\"n\": 2, \"action\": \"dup\", \"id\": \"<id of the open row it repeats>\", \"why\": \"<a few words>\"}
-{\"n\": 3, \"action\": \"skip\", \"why\": \"<a few words>\"}
-{\"n\": 4, \"action\": \"file\", \"rows\": [\"feat(ui): a pause menu with resume and quit #high #size/m\"], \"project\": \"<project>\", \"lane\": \"human\", \"plan\": true, \"epic\": \"epic(ui): a pause menu the player can open mid-match\"}
-{\"n\": 5, \"action\": \"dup\", \"line\": 4}
-{\"n\": 6, \"action\": \"ask\", \"projects\": [\"<likeliest project>\", \"<next>\"], \"why\": \"<why the first is likeliest, a few words>\"}
-{\"n\": 7, \"action\": \"improvement\", \"project\": \"<project>\", \"why\": \"<a few words>\"}
-file: rows holds one row, or more only when the line plainly asks for separate things. project is the project the line is about: for an [outbox] line one of the projects above, only when the line or its neighbours point at it; for a project's line that project, unless the line is plainly about another. Lines are in the order the person wrote them, and lines next to each other in one place (two [outbox] lines, or two lines of one inbox) were written together, so read each with its neighbours there: an [outbox] line that names no project is for the project its neighbours are about, or, when they are about several, the one the line plainly fits, else the project of the repo they share. own is a second, separate answer for an [outbox] line: the project its own words point to read alone, with its neighbours ignored (a project it names, or whose systems or open rows its words plainly match), or \"\" when its words alone point to none. Give it honestly even when it differs from project: a line whose own words point to a project is filed there, and its neighbours decide only when own is \"\". A line marked asked before has had its neighbours filed already, so the projects that mark names are its neighbours' projects. lane is agent only when the line asks an agent to do tooling, CI or repo work and a person need not; otherwise human.$agent_run plan is true when the work is more than one small change, or the way to do it is unclear, so it is planned (goal, approach, checks, split into rows) before anyone starts; false for a plain fix or chore.
-why: a few words on a file or a dup too, kept in the ingest record so a misrouted line can be traced: for file what in the line or its neighbours names the project, for dup what it repeats.
-dup: only when an open row below already asks for the same thing (its id), or a line above in this list that you file does (its n as line).
-ask: an [outbox] line that is a task, but neither it nor its neighbours say which project, or it fits two or more about equally: projects holds the two or three it most likely is, likeliest first, and the person is asked. Never guess a project for such a line, and never ask for a line in a project's inbox.
-improvement: only for a line tagged #from/<writer>. A nice-to-have by the rule above is kept in the project's improvements.md and files no row; the person's own line is never one. project is the project the line is about (the line's own project for an inbox line).
-skip: the line is not a task (a thought, a note to self, a question that only asks for information), or you cannot tell what it asks. A question that reports a fault or asks for a change (didn't it reset?, can we have X?) is a task. A line tagged #p:<word> that is no project: pick the project the word most plainly names (a typo or a shortened name), else skip.
-A filed row that belongs to an open feature epic of its project ends with #of/<the epic's id>. Otherwise give it no #of: it goes under its system's standing epic (<system> to standard) by itself. $(new_epic_rule)
-
-## Lines
-$batch
-## Systems (project: ids)
-$systems
-## Open epics (id, project, title)
-$epics
-## Open rows (id, project, lane, text)
-$open${closest:+
-## Closest open rows to each inbox line (line, id, percent shared, lane, text)
-$closest}"
-  ask "$prompt" "${#raws[@]}" route || return
+  # The two paragraphs rules/session.md adds: one when a line is a session's, one when it proposes an epic.
+  local session_line="" proposal_line="" t
+  for t in "${texts[@]}"; do
+    is_session "$t" && session_line=1
+    is_proposal "$t" && proposal_line=1
+  done
+  ask "$ROUTE_PROMPT" "${#raws[@]}" route || return
   answered route || return 1
   out="$OUT"
   local n action id of dest lane plan why how epic rows cands r from raw text src eid ctx k near go own_plan
@@ -746,10 +698,10 @@ pt() {
 # reviewed an answer for them. The apply removes the file after.
 backlog_cache() { printf '%s/inbox-triage/backlog-%s.jsonl' "$STATE" "$1"; }
 
-# backlog <project> <lane> <board json> <project names> <homes> [kept]: one lane's open rows, the
+# backlog <project> <lane> <board json> <project names> <shared repos> [kept]: one lane's open rows, the
 # cached answers in <kept> replayed first, the rest in batches (or left, see answers_left).
 backlog() {
-  local p="$1" lane="$2" board="$3" names="$4" homes="$5" kept="${6:-}" rows ids mine total off=0 size r rc=0 epics
+  local p="$1" lane="$2" board="$3" names="$4" shared_repos="$5" kept="${6:-}" rows ids mine total off=0 size r rc=0 epics
   local raw own state kids action id dest row why epic prio
   epics="$(epics_open "$board")"
   # Each row with its child rows (the indented open rows under it on the sheet), which the
@@ -778,7 +730,7 @@ backlog() {
   # halved size, and a single row that caps alone is passed over.
   while [ "$off" -lt "$total" ]; do
     size="$(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
-    backlog_batch "$p" "$lane" "$(jq -c --argjson o "$off" --argjson m "$size" '.[$o:$o + $m]' <<<"$mine")" "$names" "$homes" "$epics"; r=$?
+    backlog_batch "$p" "$lane" "$(jq -c --argjson o "$off" --argjson m "$size" '.[$o:$o + $m]' <<<"$mine")" "$names" "$shared_repos" "$epics"; r=$?
     [ "$r" = "$CALLS_RC_CAPPED" ] && [ "$size" -gt 1 ] && continue
     [ "$r" = "$EX_BUDGET" ] && break
     [ "$r" = 0 ] || rc=1
@@ -787,10 +739,11 @@ backlog() {
   return "$rc"
 }
 
-# backlog_batch <project> <lane> <batch json> <names> <homes> <epics>: one call
+# backlog_batch <project> <lane> <batch json> <names> <shared repos> <epics>: one call
 # over the batch, each answer applied by backlog_row; a --dry-run keeps the answers in backlog_cache.
 backlog_batch() {
-  local p="$1" lane="$2" batch="$3" names="$4" homes="$5" epics="$6" listing prompt out cache
+  local p="$1" lane="$2" batch="$3" names="$4" shared_repos="$5" epics="$6" listing out cache
+  local types="$TYPES" project_systems project_epics
   local -a raws ids states kids
   mapfile -d '' -t raws < <(jq -j '.[] | .raw, "\u0000"' <<<"$batch")
   mapfile -t ids < <(jq -r '.[] | .id' <<<"$batch")
@@ -798,37 +751,8 @@ backlog_batch() {
   mapfile -t kids < <(jq -r '.[] | .kids | length' <<<"$batch")
   # A row's own priority follows its text (none shown: untriaged), so a raise can be judged against it.
   listing="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.id)]\(if .value.state == "doing" then " (doing)" else "" end)\(if .value.untriaged or .value.priority == null then "" else " (#" + .value.priority + ")" end) \(.value.text)", (.value.kids[] | "   - " + .)' <<<"$batch" | cut -c1-400)"
-  prompt="You clean up one board of a person's project task list. Project: $p. Board: $lane (human: the person's own list; agent: work agents do). Other projects: $names.$homes
-
-A clean row is: type(area): title, then tags. type is one of $TYPES; a bug is fix. area is the system of the project it touches: one of that project's ids under Systems (a word after also: stands for the id after its =). For a project with no line under Systems, one short lowercase word for the part it touches. The title (the words after type(area): , tags aside) says what to do in plain words in 80 characters or fewer, keeping the row's meaning exactly and adding no scope; the old words are kept beside it, so specifics may go. $(file_rule) Where the words are unclear, stay close to them rather than guess, and never turn a question or a complaint into its opposite (\"removed X, why did we do that?\" asks to bring X back or decide on it, not to remove it). Give no priority tag (the row keeps its own); add one size tag (#size/s, #size/m or #size/l) when the row has none. A rewrite with no type(area): is refused and the row stays as it is; a title past 80 characters is cut at a word and its whole text kept on a detail line.
-
-For each numbered row, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
-{\"n\": 1, \"action\": \"rewrite\", \"row\": \"fix(audio): the gun sound plays late #size/s\"}
-{\"n\": 2, \"action\": \"rewrite\", \"row\": \"feat(town): add a jail #size/m\", \"project\": \"<other project>\"}
-{\"n\": 3, \"action\": \"dup\", \"id\": \"<id of the row it repeats>\"}
-{\"n\": 4, \"action\": \"drop\", \"why\": \"<short reason>\"}
-{\"n\": 5, \"action\": \"raise\", \"priority\": \"high\", \"why\": \"<what it breaks or blocks>\"}
-{\"n\": 6, \"action\": \"improvement\", \"why\": \"<why it is a nice-to-have, not work>\"}
-{\"n\": 7, \"action\": \"done\", \"why\": \"<where the row says it is done>\"}
-One action per row. keep: the row is clean already. rewrite: it is not. Either carries project, another project's name, when the row is about that project alone (it names that project, or its places, characters, scenes or tests): the row then moves to that project's board, and its area names a part of that project, never the project itself. A row about several projects, or the shared code under them, stays here.
-dup: only when another row in this list asks for the same thing; never the row's own id.
-done: only when the row itself says it is done, answered or superseded.
-drop: only when the row is empty or is not a task. Never drop a row for being old or unclear.
-raise: the rubric under Priority gives the row a higher priority (high or urgent) than its own, shown in brackets before its text (none shown: untriaged): typically a real fault filed low. Never lower one. A row that needs both a rewrite and a raise gets the raise.
-improvement: only on the agent board, and never for a #requested row (the person asked for it): the rubric calls the row not a row at all, a nice-to-have with no named benefit. It leaves the board for the project's improvements.md, where it can be promoted later; when unsure, keep it.
-A row marked (doing) is in progress: keep, rewrite or raise it only. Indented lines under a row are its child rows: they stay with it, so a row with children is a heading for them; rewrite it as a title that covers them, and never drop it or call it a dup.
-
-A row you rewrite that belongs to an open feature epic below ends with #of/<the epic's id>. Otherwise give it no #of. $(new_epic_rule)
-
-## Priority
-$(priority_rule)
-## Systems (project: ids)
-$(systems_of "$p")
-## Open epics of this project (id, project, title)
-$(epics_of "$p" "$epics")
-## Rows (n. [id] text, child rows indented)
-$listing"
-  ask "$prompt" "${#raws[@]}" "$p ($lane)" "$INBOX_BACKLOG_CMD" sized || return
+  project_systems="$(systems_of "$p")"; project_epics="$(epics_of "$p" "$epics")"
+  ask "$BACKLOG_PROMPT" "${#raws[@]}" "$p ($lane)" "$INBOX_BACKLOG_CMD" sized || return
   answered "$p ($lane)" || return 1
   out="$OUT" cache="$(backlog_cache "$p")"
   local n action id dest row why epic prio all
@@ -1052,11 +976,11 @@ backlog_report() {
 
 # The --backlog pass: every project's two boards, the most open rows first.
 backlog_pass() {
-  local board names homes rc=0 p lane cache kept failed
+  local board names shared_repos rc=0 p lane cache kept failed
   read_board || return 1
   board="$(backlog_board <<<"$BOARD")"
   names="$(jq -r '[.projects[].project] | unique | join(", ")' <<<"$board")"
-  homes="$(homes_rule)"
+  shared_repos="$(shared_repos)"
   TYPES="$(row_types)" || return 1   # once a pass, read by every backlog_batch
   while IFS= read -r p; do
     [ -n "$ONLY" ] && [ "$p" != "$ONLY" ] && continue
@@ -1064,7 +988,7 @@ backlog_pass() {
     cache="$(backlog_cache "$p")" failed="$FAILED"
     kept="$(jq -c '[.rows[] | select(.id != null and (.state == "open" or .state == "doing"))]' <<<"$board" | answers_kept "$cache" "$p")"
     for lane in human agent; do
-      backlog "$p" "$lane" "$board" "$names" "$homes" "$kept" || rc=1
+      backlog "$p" "$lane" "$board" "$names" "$shared_repos" "$kept" || rc=1
       [ "$BUDGET_STOP" = 0 ] || break 2
     done
     answers_done "$p" "$cache" "$failed"
@@ -1090,22 +1014,12 @@ PRIORITY_JQ='fromjson? | select(type == "object" and (.n | type) == "number")
 # priority_batch <project> <lane> <batch json>: one call gives each row a priority, and
 # `ptask tag` writes each that differs from the row's own (a new priority replaces the old).
 priority_batch() {
-  local p="$1" lane="$2" batch="$3" listing prompt n prio
+  local p="$1" lane="$2" batch="$3" listing n prio
   local -a ids cur
   mapfile -t ids < <(jq -r '.[] | .id' <<<"$batch")
   mapfile -t cur < <(jq -r '.[] | if .untriaged then "" else .priority end' <<<"$batch")
   listing="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.id)] \(.value.text)"' <<<"$batch" | cut -c1-300)"
-  prompt="You set the priority of each row on one board of a person's project task list. Project: $p. Board: $lane (human: the person's own list; agent: work agents do).
-
-$(priority_rule)
-Here every row already exists, so a row that is a nice-to-have by this rule: still tag it low here; moving it to improvements.md is the intake sweep's and the plain backlog pass's verdict, not this pass's.
-
-For each numbered row, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
-{\"n\": 1, \"priority\": \"low\"}
-
-## Rows (n. [id] text)
-$listing"
-  ask "$prompt" "${#ids[@]}" "$p ($lane) priority" "$INBOX_PRIORITY_CMD" sized || return
+  ask "$PRIORITY_PROMPT" "${#ids[@]}" "$p ($lane) priority" "$INBOX_PRIORITY_CMD" sized || return
   answered "$p ($lane) priority" || return 1
   local -a seen=()
   while IFS=$'\x1f' read -r n prio; do
@@ -1152,25 +1066,13 @@ priority_pass() {
   return "$rc"
 }
 
-# size_rule: what each point count means, the one rubric the --size pass scores by and a
-# session filing a row reads (notes-cli README, "points"). The scale and its s/m/l bands are
-# notes-cli's epics::POINTS; the minutes are measured agent work, queue start to close, over
-# 1,937 items closed ok 2026-10-20 to 11-12 (p25 10, median 24, p75 54, p90 114 min).
+# The --size rubric, in SIZE_PROMPT: what each point count means, the one rubric the --size pass
+# scores by and a session filing a row reads (notes-cli README, "points"). The scale and its s/m/l
+# bands are notes-cli's epics::POINTS; the minutes are measured agent work, queue start to close,
+# over 1,937 items closed ok 2026-10-20 to 11-12 (p25 10, median 24, p75 54, p90 114 min).
 # Provisional: re-read when the pts-bands Sentinel watch trips (`fleet-bench sizes --check`: over
 # the last 7 days of closes of rows scored #pts, the median l is not slower than m or m not slower than s;
 # only a small share of the 1,937 items had #pts, so the watch checks the order, not these minutes).
-size_rule() {
-  cat <<'RULE'
-Points measure the whole job: the agent's work, the tests it needs, CI and review rounds, and anything it waits on. They are not value or priority.
-1 (size s): a one-line or one-file change with no design and no new test, about 10 minutes.
-2 (size s): one small PR, the fix or change is already clear, about 10 to 25 minutes.
-3 (size m): one PR across a few files or with a test to write, about 25 to 60 minutes.
-5 (size m): one PR with real design, a cross-component change, or a live, device or on-hardware check, about 1 to 2 hours.
-8 (size l): needs a plan: two to four PRs, more than one repo, or a migration, about half a day.
-13 (size l): more than a day of work: it should be split into smaller rows.
-Go one step up when the row waits on a human answer, a device, a store console or a nightly pass. A check row that only reads a state and reports is 1. When unsure between two, pick the higher.
-RULE
-}
 
 # One --size answer line -> n, pts, split by US.
 # shellcheck disable=SC2016 # jq source, not shell
@@ -1180,20 +1082,11 @@ SIZE_JQ='fromjson? | select(type == "object" and (.n | type) == "number" and (.p
 # size_batch <project> <lane> <batch json>: one call gives each row its points, and `ptask tag`
 # writes each (`--add pts/<n>`, which also sets the row's #size/ to their band).
 size_batch() {
-  local p="$1" lane="$2" batch="$3" listing prompt n pts
+  local p="$1" lane="$2" batch="$3" listing n pts
   local -a ids
   mapfile -t ids < <(jq -r '.[] | .id' <<<"$batch")
   listing="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.id)] \(.value.text)" + (([.value.details[] | select(. != "")]) as $d | if ($d | length) > 0 then "\n   " + ($d[:4] | join("\n   ")) else "" end)' <<<"$batch" | cut -c1-300)"
-  prompt="You estimate the effort of each row on one board of a person's project task list, in points. Project: $p. Board: $lane (human: the person's own list; agent: work agents do).
-
-$(size_rule)
-
-For each numbered row, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them; pts is one of 1, 2, 3, 5, 8, 13:
-{\"n\": 1, \"pts\": 3}
-
-## Rows (n. [id] text, then up to four detail lines)
-$listing"
-  ask "$prompt" "${#ids[@]}" "$p ($lane) size" "$INBOX_SIZE_CMD" sized || return
+  ask "$SIZE_PROMPT" "${#ids[@]}" "$p ($lane) size" "$INBOX_SIZE_CMD" sized || return
   answered "$p ($lane) size" || return 1
   local -a seen=()
   while IFS=$'\x1f' read -r n pts; do
@@ -1303,26 +1196,13 @@ link_row() {
 # link_batch <project> <lane> <batch json> <epics> <systems tsv>: one call names each row's system
 # and epic; a --dry-run keeps the answers in link_cache.
 link_batch() {
-  local p="$1" lane="$2" batch="$3" epics="$4" tsv="$5" listing prompt n sys of epic cache
+  local p="$1" lane="$2" batch="$3" epics="$4" tsv="$5" listing n sys of epic cache project_systems feature_epics
   local -a raws
   mapfile -d '' -t raws < <(jq -j '.[] | .raw, "\u0000"' <<<"$batch")
   listing="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.id)] \(.value.text)"' <<<"$batch" | cut -c1-300)"
-  prompt="You file each row of one board of a person's project task list under the part of the project it belongs to. Project: $p. Board: $lane (human: the person's own list; agent: work agents do).
-
-For each row, system: the one of the project's systems below (its ids; a word after also: stands for the id after its =) that the row's work touches. The row's own area word is a hint; when it already is one of the ids or aliases, give that one. Then, only when the row is plainly part of one of the open feature epics below, of: that epic's id. Otherwise leave of out, and the row goes under its system's standing epic, the home for fixes and upkeep. $(new_epic_rule)
-
-For each numbered row, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
-{\"n\": 1, \"system\": \"ui\"}
-{\"n\": 2, \"system\": \"gameplay\", \"of\": \"<open epic id>\"}
-{\"n\": 3, \"system\": \"gameplay\", \"epic\": \"epic(gameplay): <the outcome>\"}
-
-## Systems (project: ids)
-$(systems_of "$p")
-## Open feature epics of this project (id, project, title)
-$(epics_of "$p" "$epics" | grep -viE ' to standard$')
-## Rows (n. [id] text)
-$listing"
-  ask "$prompt" "${#raws[@]}" "$p ($lane) link" "$INBOX_PRIORITY_CMD" sized || return
+  project_systems="$(systems_of "$p")"
+  feature_epics="$(epics_of "$p" "$epics" | grep -viE ' to standard$')"
+  ask "$LINK_PROMPT" "${#raws[@]}" "$p ($lane) link" "$INBOX_PRIORITY_CMD" sized || return
   answered "$p ($lane) link" || return 1
   cache="$(link_cache "$p")"
   local -a seen=()
@@ -1404,14 +1284,11 @@ split_waiting() {
   return "$rc"
 }
 
-# agent_run_rule: the lane sentence for projects an agent-lane worker takes with no tags, as dispatch
-# reads them (`fleet-dispatch covered`: stage, repo, off list): there an agent does the work
-# unattended, so a line files where the worker reads.
-agent_run_rule() {
-  local names
-  names="$(fleet-dispatch covered 2>/dev/null | paste -sd, - | sed 's/,/, /g')"
-  printf ' A line that asks for a credential, token or key for a service we run (minted through its admin path into SOPS, home-config docs/credentials.md) is lane agent, since an agent mints it and the person is never asked; only an outside account (GitHub, a store, a broker, a SaaS) or the persons own login stays lane human.'
-  [ -z "$names" ] || printf ' Except on these projects, where agents do the work unattended, lane is agent unless a step needs a person (a playtest on a device, a release, money, a purchase, a product decision nobody has made): %s.' "$names"
+# unattended_projects: the projects an agent-lane worker takes with no tags, as dispatch reads them
+# (`fleet-dispatch covered`: stage, repo, off list): there an agent does the work unattended, so
+# rules/agent-run.md files a line where the worker reads.
+unattended_projects() {
+  fleet-dispatch covered 2>/dev/null | paste -sd, - | sed 's/,/, /g'
 }
 
 # One sweep's pass: lists split, the outbox, then every inbox.

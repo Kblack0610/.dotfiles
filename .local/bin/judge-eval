@@ -39,6 +39,8 @@ set -uo pipefail
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/agent-ask"
 # shellcheck source=../lib/end-reasons.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/end-reasons.sh"
+# shellcheck source=../lib/prompt-render.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/prompt-render.sh"
 
 : "${FLEET_DISPATCH_DIR:=$HOME/.agent/dispatch}"
 : "${JUDGE_EVAL_QUEUE_CMD:=agent-queue list --json --state all}"
@@ -68,11 +70,15 @@ say() { printf 'judge-eval: %s\n' "$*" >&2; }
 # JUDGE_LEVELS as a JSON array, narrowest first.
 LEVELS_JSON="$(jq -cn --arg l "$JUDGE_LEVELS" '$l | split(" ")')"
 
-# prompt_sha <agent>: the git blob hash of its conf's PROMPT now, as agentctl-run records it.
-prompt_sha() {
-  local p
-  p="$( . "$CONF_DIR/$1.conf" 2>/dev/null; printf '%s' "${PROMPT:-}")"
-  [ -n "$p" ] && [ -r "$p" ] && git hash-object "$(readlink -f "$p")" 2>/dev/null
+# lane_shas <agent>: the sha of each file its conf's PROMPT names now (colon-separated), one per
+# line, as agentctl-run records it on a call (lib prompt-render.sh, prompt_sha). A lane that runs
+# several passes has one prompt per pass, and a call under any of them is under the current prompt.
+lane_shas() {
+  local prompt p
+  local -a files
+  prompt="$( . "$CONF_DIR/$1.conf" 2>/dev/null; printf '%s' "${PROMPT:-}")"
+  IFS=: read -ra files <<<"$prompt"
+  for p in "${files[@]+"${files[@]}"}"; do prompt_sha "$p" 2>/dev/null || true; done
 }
 
 # The scored lanes, the registry: every runner conf that names a SCORE.
@@ -99,8 +105,8 @@ eval_json() {
   answer_picks "$(cat "$tmp/asklines")" > "$tmp/picks"
   src="$(jq -c --arg a "$AGENTS" '. as $m | $a | split(" ") | map({(.): ($m[.] // "")}) | add // {}' <<<"$SCORES")"
   for a in $AGENTS; do
-    sha="$(prompt_sha "$a")"
-    shas="$(jq -c --arg a "$a" --arg s "${sha:-}" '. + {($a): $s}' <<<"$shas")"
+    sha="$(lane_shas "$a")"
+    shas="$(jq -c --arg a "$a" --arg s "$sha" '. + {($a): ($s | split("\n") | map(select(length > 0)))}' <<<"$shas")"
   done
   jq -n --slurpfile A "$tmp/asks" --slurpfile C "$tmp/calls" --slurpfile V "$tmp/verdicts" \
     --slurpfile Q "$tmp/queue" --slurpfile P "$tmp/picks" \
@@ -137,13 +143,15 @@ JQ_EVAL="$JQ_EPOCH"'
      | if $wm > 0 and (. == null or . < $wm) then $wm else . end) as $since
   # A row the ingest record scores has no call of its own: it is under the current prompt when
   # written after the first call made with it since the last call under another prompt.
-  | ($calls | map(select((.prompt_sha // "") != "") | {agent, s: .prompt_sha, e: (.at | epoch)} | select(.e != null))
-     | group_by(.agent) | map(.[0].agent as $a | ([.[] | select(.s != ($shas[$a] // "")) | .e] | max) as $other
-       | {($a): ([.[] | select(.s == ($shas[$a] // "") and ($other == null or .e > $other)) | .e] | min)})
+  # $shas[agent] is every prompt the lane runs now; a lane with none counts the calls that recorded none.
+  | def current($a; $s): ($shas[$a] // []) as $l | if $l == [] then $s == "" else $l | index([$s]) != null end;
+  ($calls | map(select((.prompt_sha // "") != "") | {agent, s: .prompt_sha, e: (.at | epoch)} | select(.e != null))
+     | group_by(.agent) | map(.[0].agent as $a | ([.[] | select(current($a; .s) | not) | .e] | max) as $other
+       | {($a): ([.[] | select(current($a; .s) and ($other == null or .e > $other)) | .e] | min)})
      | add // {}) as $since_sha
   | def inscope($agent): (.at | epoch) as $e
       | ($since == null or ($e != null and $e >= $since))
-        and ($any == 1 or (($call[.judge_call // ""] // {}).prompt_sha // "") == ($shas[$agent] // "-")
+        and ($any == 1 or current($agent; ($call[.judge_call // ""] // {}).prompt_sha // "")
              or ((.judge_call // "") == "" and (($src[$agent] // "") | IN("triage-untouched", "plan-dispatched", "priority-kept", "sweep-untouched"))
                  and $since_sha[$agent] != null and $e != null and $e >= $since_sha[$agent]));
 
@@ -333,13 +341,13 @@ JQ_EVAL="$JQ_EPOCH"'
    agents: [($want | split(" "))[] as $ag
      | ($all | map(select(.agent == $ag and inscope($ag)))) as $mine
      | ($calls | map(select(.agent == $ag and ((.at | epoch) as $e | $since == null or ($e != null and $e >= $since))
-                            and ($any == 1 or (.prompt_sha // "") == ($shas[$ag] // "-"))))) as $cl
+                            and ($any == 1 or current($ag; .prompt_sha // ""))))) as $cl
      | ($src[$ag] // "") as $sc
      | (if $sc == "ask-answers" then $live elif $sc == "dispatch-queue" then ["*"] else [] end) as $lv
      # The word a score cell puts after its percent; a lane with no counted outcome has none.
      | ({"ask-answers": "agree", "dispatch-queue": "merged", "triage-untouched": "untouched",
          "plan-dispatched": "dispatched", "priority-kept": "kept", "sweep-untouched": "untouched"}[$sc]) as $lb
-     | {agent: $ag, prompt_sha: ($shas[$ag] // ""), score: $sc,
+     | {agent: $ag, prompt_sha: ($shas[$ag] // [] | join(" ")), score: $sc,
         truth: ({"ask-answers": "the human answer to the ask, and the review of a live answer (kept or another option; none is not scored)",
                  "dispatch-queue": "the queue item a dispatched row became: done ok landed, failed or cancelled did not; a skip is a false defer when the row is then started by hand",
                  "triage-untouched": "the ingest record: a filed row is right when nothing edits, drops, moves or re-tags it for \($settle / 3600)h",
@@ -401,7 +409,7 @@ report() {
       + (.false_defer_pct | p | lpad(8)) + (.kappa | n | lpad(7)) + (.p95_ms | ms | lpad(7)) + (.cost_per_verdict | money(3) | lpad(7));
     "scope: \(.scope.prompt) prompt\(if .scope.days then ", last \(.scope.days) days" else "" end)",
     (.agents[] | "",
-      "\(.agent)  prompt \(.prompt_sha[0:7] | if . == "" then "none" else . end)  live: \(if .live == ["*"] then "every rule" elif .live == [] then "none" else .live | join(", ") end)",
+      "\(.agent)  prompt \(.prompt_sha | if . == "" then "none" else split(" ") | map(.[0:7]) | join(",") end)  live: \(if .live == ["*"] then "every rule" elif .live == [] then "none" else .live | join(", ") end)",
       "  truth: \(.truth)",
       "  calls \(.calls.n), \(.calls.errors) failed, p50 \(.calls.p50_ms | ms), p95 \(.calls.p95_ms | ms), \(.calls.cost_usd | money(2))",
       (if .total.assumed > 0 then "  assumed \(.total.assumed), \(.total.assumed_overridden) overridden" else empty end),

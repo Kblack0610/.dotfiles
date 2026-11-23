@@ -1,0 +1,1 @@
+{{#shared_repos}} Projects whose code lives in another project's repo: {{shared_repos}}. A row about only one of those belongs on that project, not on the repo's; a row about several of them, or the shared code under them, belongs on the repo's project.{{/shared_repos}} A row about a host or the cluster belongs on home-config.
