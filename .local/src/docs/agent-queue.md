@@ -1,6 +1,6 @@
 # agent-queue
 
-`agent-queue` (`.local/bin/agent-queue`, tests `tests/integ/agent_queue.bats`) is the only program that writes the work queue's store. This doc is its verb reference, kept beside the code so a change to the code and to this page is one PR. The queue's design, the item's fields, the states, the order and tags, Admission, the intake channels and the store sync are in `~/.config/agentctl/QUEUE.md` (the private overlay), which this page cites by section name. How a queued item gets started: [fleet-dispatch.md](fleet-dispatch.md).
+`agent-queue` (`.local/bin/agent-queue`, tests `tests/integ/agent_queue.bats`) is the only program that writes the work queue's store. This doc is the reference for the verbs sessions and operators use (the `case` in the script is the complete list), kept beside the code so a change to the code and to this page is one PR. The queue's design, the item's fields, the states, the order and tags, Admission, the intake channels and the store sync are in `~/.config/agentctl/QUEUE.md` (the private overlay), which this page cites by section name. How a queued item gets started: [fleet-dispatch.md](fleet-dispatch.md).
 
 | Verb | Does |
 | --- | --- |
@@ -34,5 +34,5 @@ Work the human asked for (`from: human`, or a `requested` tag from a #requested 
 - Once `--ask` is given it is checked on every item, human work or not. The ask joins `cancel_why:` as `(ask <id>)`.
 - A caller with neither variable set is not held: the human at a terminal, and the Queue tab's button while the hub or agent-web was started outside a Claude session. A slug with no file left, closed in the chain record only, is not guarded.
 
-A slug is matched by the item's `slug:` header, never by file name alone. Timestamps are UTC (`2026-11-03T18:40:00Z`), so jq can do the arithmetic. `AGENT_QUEUE_DIR` override the defaults; a bare session name is on the world `tmux-world agents` names (`lab`).
+A slug is matched by the item's `slug:` header, never by file name alone. Timestamps are UTC (`2026-11-03T18:40:00Z`), so jq can do the arithmetic. `AGENT_QUEUE_DIR` overrides the store's default directory, `~/.agent/queue/`; a bare session name in `session:` is on the world `tmux-world agents` names (`lab`).
 

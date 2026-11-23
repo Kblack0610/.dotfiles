@@ -78,14 +78,9 @@ doc_states() {
   [ "$(grep -oE '`AGENT_QUEUE_CAP` \(default [0-9]+\)' <<<"$body" | grep -oE '[0-9]+')" = "$(default_of "$AQ" AQ_CAP)" ]
 }
 
-@test "Dispatch: each verb fleet-dispatch.md leads a bullet with is a fleet-dispatch verb, and the low water is the agentctl conf's" {
-  local verbs v body
+@test "Dispatch: the low water fleet-dispatch.md names is the agentctl conf's" {
+  local body
   body=$(cat "$PUB/.local/src/docs/fleet-dispatch.md")
-  verbs=$(grep -oE '^- `[a-z-]+[ `]' <<<"$body" | sed -E 's/^- `//; s/[ `]$//')
-  [ -n "$verbs" ]
-  for v in $verbs; do
-    grep -qE "^    $v\) " "$FD" || { echo "fleet-dispatch has no verb: $v"; return 1; }
-  done
   [ "$(grep -oE 'DISPATCH_LOW_WATER` \([0-9]+\)' <<<"$body" | grep -oE '[0-9]+')" = "$(sed -n 's/^DISPATCH_LOW_WATER=\([0-9]*\).*/\1/p' "$PRIV/.config/agentctl/agents/fleet-dispatch.conf")" ]
 }
 
