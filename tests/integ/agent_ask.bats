@@ -2719,6 +2719,37 @@ judged_ask() {
   assert_line 'status: pending'
 }
 
+@test "assume-due judges a post-timeout ask once more and answers it live; a second timeout is not tried again" {
+  # 2026-11-23 oXQO9i: post's guard ended the call, and nothing judged the ask again, so it
+  # stayed the human's and held the runner-score watch red (ar-2553).
+  unset AGENT_ASK_NO_JUDGE
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0 AGENT_ASK_JUDGE_TIMEOUT=1
+  mkfifo "$BATS_TEST_TMPDIR/never"
+  stuck_judge() {
+    printf '#!/usr/bin/env bash\necho call >> "%s"\nread -r _ < "%s"\n' \
+      "$BATS_TEST_TMPDIR/stuck.calls" "$BATS_TEST_TMPDIR/never" > "$BATS_TEST_TMPDIR/judge"
+    chmod +x "$BATS_TEST_TMPDIR/judge"; export AGENT_ASK_JUDGE_CMD="$BATS_TEST_TMPDIR/judge"
+  }
+  stuck_judge
+  local a b
+  a="$(live_post sid-1 'stuck once?' 2>/dev/null)"
+  run "$AGENT_ASK" show "$a"; assert_line 'judge_reason: the judge call timed out after 1s'
+  fake_judge "$(score ship_deploy "" "rules say fix it yourself.")"
+  "$AGENT_ASK" assume-due 2>/dev/null
+  run "$AGENT_ASK" show "$a"
+  assert_line 'judge: take-recommend'; assert_line 'answered_by: judge'; assert_line 'status: answered'
+  # A call that stalls again keeps the error, says so, and is not tried a third time.
+  stuck_judge
+  b="$(live_post sid-2 'stuck twice?' 2>/dev/null)"
+  "$AGENT_ASK" assume-due 2>/dev/null
+  run "$AGENT_ASK" show "$b"
+  assert_line 'judge_reason: the judge call timed out after 1s, at post and again on the next pass'
+  assert_line 'status: pending'
+  "$AGENT_ASK" assume-due 2>/dev/null
+  # Posts of a and b, then b once more: the third pass called nothing.
+  assert_equal "$(wc -l < "$BATS_TEST_TMPDIR/stuck.calls")" 3
+}
+
 @test "override: the human's next message naming another option labels the live answer; one miss does not demote" {
   unset AGENT_ASK_NO_JUDGE
   export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0
