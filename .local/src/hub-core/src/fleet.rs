@@ -149,6 +149,8 @@ pub struct Worker {
     /// The extras block its page draws, the conf's `DETAIL=` (`runner::DETAILS`); empty for none.
     /// The judge tiles link to the runner whose block they summarise.
     pub detail: String,
+    /// Its page carries its instructions (`Conf::instructed`): Log's Judges links it.
+    pub instructed: bool,
     /// 1 for a supervisor (the conf's `TIER=1`), else 2.
     pub tier: u8,
     /// The live sessions a tier 1 runner counts: `sessions` or `dispatched` (the conf's `OVERSEES=`).
@@ -462,7 +464,38 @@ pub fn files(paths: &Paths) -> Fleet {
 /// `judge-eval --all --json`, the slow part (seconds): agent-web keeps it and hands it to
 /// `files_with` and `runner::read_with`, so only the files are read per request.
 pub fn judge_eval(paths: &Paths) -> Result<String, String> {
-    run_judge_eval(&paths.judge_eval)
+    let out = run_judge_eval(paths, &["--all", "--json"])?;
+    if !out.status.success() {
+        return Err(format!("{} exited {}", paths.judge_eval, out.status));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// `judge-eval prompts <lane>`, a fraction of a second: the lane's full instruction set, and each
+/// problem judge-eval names on stderr when it fails (a PROMPT file it cannot read). The text it
+/// could read still shows beside them.
+pub fn judge_prompts(paths: &Paths, lane: &str) -> (String, Vec<String>) {
+    let out = match run_judge_eval(paths, &["prompts", lane]) {
+        Ok(out) => out,
+        Err(e) => return (String::new(), vec![e]),
+    };
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    if out.status.success() {
+        return (text, vec![]);
+    }
+    let mut errors: Vec<String> = String::from_utf8_lossy(&out.stderr)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect();
+    if errors.is_empty() {
+        errors.push(format!(
+            "{} prompts {lane} exited {}",
+            paths.judge_eval, out.status
+        ));
+    }
+    (text, errors)
 }
 
 /// Every part but judge-eval's, read fresh, with judge-eval's answer given.
@@ -597,12 +630,21 @@ pub struct Conf {
     pub role: String,
     pub model: String,
     pub prompt: String,
+    /// SCORE, the truth source judges.md scores the lane by; empty for an unscored runner.
+    pub score: String,
     pub effect: String,
     /// A call's CALLER; empty on a runner.
     pub caller: String,
     pub detail: String,
     pub tier: u8,
     pub oversees: String,
+}
+
+impl Conf {
+    /// A lane `judge-eval prompts` lists, as it decides: a conf with a SCORE or a PROMPT.
+    pub fn instructed(&self) -> bool {
+        !self.score.is_empty() || !self.prompt.is_empty()
+    }
 }
 
 /// A conf's (or a role's) `KEY=value` lines as agentctl sources them, in file order. Quotes are
@@ -655,6 +697,7 @@ pub fn parse_conf(name: &str, text: &str, home: &str, state: &Path) -> Conf {
             "ROLE",
             "MODEL",
             "PROMPT",
+            "SCORE",
             "EFFECT",
             "CALLER",
             "DETAIL",
@@ -679,6 +722,7 @@ pub fn parse_conf(name: &str, text: &str, home: &str, state: &Path) -> Conf {
         role: get("ROLE"),
         model: get("MODEL"),
         prompt: get("PROMPT"),
+        score: get("SCORE"),
         effect: get("EFFECT"),
         caller: get("CALLER"),
         detail: get("DETAIL"),
@@ -919,6 +963,7 @@ pub fn workers(
         .map(|c| {
             let mine: Vec<&Job> = runs.iter().filter(|j| j.name == c.name).collect();
             let mut w = Worker {
+                instructed: c.instructed(),
                 next: timers
                     .get(&format!("{AGENTCTL_PREFIX}{}.service", c.name))
                     .copied()
@@ -1069,16 +1114,14 @@ pub(crate) fn local_minute(t: i64) -> String {
         .unwrap_or_default()
 }
 
-fn run_judge_eval(cmd: &str) -> Result<String, String> {
-    let out = std::process::Command::new(cmd)
-        .args(["--all", "--json"])
+/// judge-eval run on the confs this reader reads, so both see the same lanes.
+fn run_judge_eval(paths: &Paths, args: &[&str]) -> Result<std::process::Output, String> {
+    std::process::Command::new(&paths.judge_eval)
+        .args(args)
+        .env("AGENTCTL_CONF_DIR", &paths.agents)
         .stdin(std::process::Stdio::null())
         .output()
-        .map_err(|e| format!("{cmd}: {e}"))?;
-    if !out.status.success() {
-        return Err(format!("{cmd} exited {}", out.status));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        .map_err(|e| format!("{}: {e}", paths.judge_eval))
 }
 
 /// The answer judge's tiles, each lane's per-rule table and each lane's score, by agent name.
@@ -1273,6 +1316,21 @@ mod tests {
             PathBuf::from("/home/k/.local/state/agentctl/brief")
         );
         assert_eq!(c.detail, "", "no DETAIL= is no extras block");
+        assert!(
+            !c.instructed(),
+            "no SCORE or PROMPT: judge-eval lists no such lane"
+        );
+        let lane = |text: &str| parse_conf("j", text, "/home/k", Path::new("/st"));
+        assert!(lane("SCORE=ask-answers\n").instructed());
+        let p = lane("PROMPT=\"$HOME/p.md\"\n");
+        assert_eq!(p.prompt, "/home/k/p.md");
+        let ws = workers(vec![p, c], &[], &HashMap::new(), &HashMap::new(), 0);
+        let got: Vec<(&str, bool)> = ws.iter().map(|w| (w.name.as_str(), w.instructed)).collect();
+        assert_eq!(
+            got,
+            [("brief", false), ("j", true)],
+            "Log's Judges links a lane's page"
+        );
         let off = parse_conf("x", "ENABLED=no\n", "/home/k", Path::new("/st"));
         assert!(!off.enabled);
         assert_eq!(

@@ -10,6 +10,7 @@
 //! | status   | agentctl's `<name>/status` (with `next=`, the runner's own next try) and the tail of `<INBOX>/activity.log` |
 //! | calls    | agentctl-run's `calls.jsonl`: totals for 24h and 7d, and the newest `PAGE_CALLS`     |
 //! | extras   | one block the conf's `DETAIL=` key names (`DETAILS`): content is data              |
+//! | instructions | `judge-eval prompts <name>` for a lane (a conf with `SCORE=` or `PROMPT=`): what it is told and held to |
 //!
 //! A runner with no run in the window is an empty `runs`, not an error; an unknown name is.
 
@@ -70,6 +71,9 @@ pub struct Runner {
     pub days: Vec<Day>,
     pub calls: PageCalls,
     pub extras: Extras,
+    /// For a lane, `judge-eval prompts <name>` as printed: its prompt files, schema and gates.
+    /// Empty for any other runner; a lane whose text cannot be read has an `instructions:` error.
+    pub instructions: String,
 }
 
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
@@ -223,11 +227,7 @@ fn runner_with(
     })?;
     let state = &paths.jobs.agentctl;
     let c = parse_conf(name, &text, &home, state);
-    let keys = kv(
-        &text,
-        &["SCORE", "SENTINEL_WATCHES", "SENTINEL_STATE"],
-        &home,
-    );
+    let keys = kv(&text, &["SENTINEL_WATCHES", "SENTINEL_STATE"], &home);
     let key = |k: &str| keys.get(k).cloned().unwrap_or_default();
     let detail = c.detail.clone();
     let mut errors = vec![];
@@ -269,7 +269,7 @@ fn runner_with(
     let page_calls = page_calls(&mine, cut, oldest, at);
 
     // judge-eval is the slow part: only a judge's page asks it.
-    let (judge, evals) = if !key("SCORE").is_empty() || detail == "ask-judge" {
+    let (judge, evals) = if !c.score.is_empty() || detail == "ask-judge" {
         match judge_eval().and_then(|t| judges(&t)) {
             Ok((j, e, _)) => (j, e),
             Err(e) => {
@@ -319,6 +319,14 @@ fn runner_with(
         }
     };
 
+    let instructions = if c.instructed() {
+        let (text, e) = super::judge_prompts(paths, name);
+        errors.extend(e.into_iter().map(|e| format!("instructions: {e}")));
+        text
+    } else {
+        String::new()
+    };
+
     let next = timers
         .get(&format!("{AGENTCTL_PREFIX}{name}.service"))
         .copied()
@@ -356,6 +364,7 @@ fn runner_with(
         days,
         calls: page_calls,
         extras,
+        instructions,
     })
 }
 
@@ -1089,5 +1098,71 @@ mod tests {
             }
             e => panic!("{e:?}"),
         }
+    }
+
+    #[test]
+    fn a_lanes_page_carries_judge_eval_prompts_and_any_other_runner_none() {
+        let (_fx, mut paths) = fixture("instructions");
+        let missing = paths.judge_eval.clone();
+        paths.judge_eval = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/judge-eval")
+            .display()
+            .to_string();
+        for (name, conf) in [
+            ("lane", "PROMPT=\"$HOME/lane.md\"\n"),
+            ("scored", "SCORE=plan-dispatched\n"),
+            ("plain", "DESCRIPTION=no prompt\n"),
+            ("broken", "PROMPT=/gone.md\n"),
+            ("silent", "PROMPT=/x.md\n"),
+        ] {
+            write(&paths.agents.join(format!("{name}.conf")), conf);
+        }
+        let page = |p: &Paths, n: &str| runner(p, n, T, &HashMap::new()).unwrap();
+
+        let r = page(&paths, "lane");
+        assert_eq!(
+            r.instructions,
+            format!("instructions for lane from {}\n", paths.agents.display()),
+            "judge-eval is asked about the confs this page reads"
+        );
+        assert_eq!(r.errors, Vec::<String>::new());
+
+        // SCORE alone makes a lane too (its judges read fails here: the stand-in only does prompts).
+        let r = page(&paths, "scored");
+        assert!(r.instructions.starts_with("instructions for scored"));
+        assert!(
+            !r.errors.iter().any(|e| e.starts_with("instructions")),
+            "{:?}",
+            r.errors
+        );
+
+        let r = page(&paths, "plain");
+        assert_eq!((r.instructions.as_str(), r.errors.len()), ("", 0));
+
+        // A failed read is an error line beside the text it did print, never an empty section.
+        let r = page(&paths, "broken");
+        assert_eq!(r.instructions, "model: sonnet\n");
+        assert_eq!(
+            r.errors,
+            ["instructions: broken: PROMPT=/gone.md is not a readable file"]
+        );
+        let r = page(&paths, "silent");
+        assert_eq!(r.instructions, "");
+        assert_eq!(r.errors.len(), 1);
+        assert!(
+            r.errors[0].starts_with("instructions: ")
+                && r.errors[0].contains("prompts silent exited"),
+            "{:?}",
+            r.errors
+        );
+
+        paths.judge_eval = missing;
+        let r = page(&paths, "lane");
+        assert_eq!(r.instructions, "");
+        assert!(
+            r.errors[0].starts_with(&format!("instructions: {}: ", paths.judge_eval)),
+            "{:?}",
+            r.errors
+        );
     }
 }

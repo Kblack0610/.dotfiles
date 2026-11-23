@@ -303,7 +303,9 @@ const fleet = {
 const RUNNER_ROWS = Number(readFileSync(new URL("../../../.local/src/agent-web/src/fleet.rs", import.meta.url), "utf8").match(/pub const RUNNER_ROWS: usize = (\d+);/)[1]);
 const ACTIVITY = ["moved 0 from the outbox, filed 0, left 0, refused 0, answered 0, asked you 0, batch 40", "2 due, none urgent, last pass 30m ago: no new pass"];
 const score = (rule, i) => ({ rule, verdicts: 6 + i, errors: 0, scored: i, precision: i ? 80 + i : null, false_defer_pct: null, live: i % 2 === 0 });
-const runnerPage = (name, { running, runs, older, calls, conf, rules = 0, extras = { kind: "none" } }) => ({
+// A lane's instructions at the live length (`judge-eval prompts ask-judge`, 360 lines on 2026-11-23); the page folds them.
+const instructions = (name) => `=== ${name} ===\nmodel: claude-opus-5-5\n\n--- PROMPT policy.md ---\n` + rows(120, (i) => `## Rule ${i}\n\n${TEXT[i % TEXT.length]}\n`).join("\n");
+const runnerPage = (name, { running, runs, older, calls, conf, rules = 0, extras = { kind: "none" }, instructed = false }) => ({
   at: NOW, name, shown: RUNNER_ROWS, errors: [], lane: "agent", description: TEXT[7], enabled: true, state: running ? "running" : "idle", running_since: running ? ago(480) : null, next: null,
   registry: { kind: "persistent", trigger: "always on", role: "distill", role_desc: "reads and returns data", caps: "write no, task no, bash no, mcp none", model: "claude-opus-5-5", effect: "acts", prompt: "", calls: { n_24h: calls, errors_24h: 0, cost_24h: 4.86, tokens_24h: 634602, p95_ms: 12568, prompt_sha: "", recent: [] },
     eval: rules ? { prompt_sha: "3fa1c2d", live: [], total: score("", rules), rules: rows(rules, (i) => score(pick(["proceed_or_hold", "credential_or_account", "scope", "agent_policy"], i) + (i >= 4 ? `_${i}` : ""), i)) } : null },
@@ -316,6 +318,7 @@ const runnerPage = (name, { running, runs, older, calls, conf, rules = 0, extras
   calls: { day: { calls, errors: 0, tokens: 634602, cost: calls ? 4.86 : null, p50_ms: 9000 }, week: { calls: calls * 5, errors: 0, tokens: 3e6, cost: calls ? 24.3 : null, p50_ms: 9000 }, partial: false,
     recent: rows(calls, (i) => ({ id: `fac8221${i}`, at: ago(30 + i * 60), ms: 12568, ok: true, model: "claude-opus-5-5", cost: 0.73, tokens: 89929, link: `https://langfuse.example/sessions/${i}` })) },
   extras,
+  instructions: instructed ? instructions(name) : "",
 });
 const ingest = { kind: "ingest", partial: false, counts_7d: { moved: 40, filed: 12, planned: 9, refused: 30 },
   steps: rows(10, (i) => ({ ts: iso(ago(20 + i * 5)), action: pick(["refused", "planned"], i), from: "unity-core-playground", to: "", lane: "", text: `${TEXT[i % TEXT.length]} #size/m #plan`, id: i % 2 ? `ucp-${2277 + i}` : null, why: i % 2 ? "12 plan lines" : `no open task matches '- [ ] ${TEXT[i % TEXT.length]}'`, row: null, by: "inbox-plan" })) };
@@ -329,8 +332,8 @@ const askJudge = { kind: "ask-judge", judge: { ...fleet.judge, verdicts: fleet.j
 export const RUNNER_PAGES = {
   "inbox-triage": runnerPage("inbox-triage", { running: true, runs: 20, older: 12, calls: 20, conf: 20, extras: ingest }),
   shepherd: runnerPage("shepherd", { runs: 20, older: 1118, calls: 0, conf: 22 }),
-  "dispatch-judge": runnerPage("dispatch-judge", { runs: 0, older: 0, calls: 20, conf: 19, rules: 12, extras: dispatchVerdicts }),
-  "ask-judge": runnerPage("ask-judge", { runs: 0, older: 0, calls: 20, conf: 23, rules: 6, extras: askJudge }),
+  "dispatch-judge": runnerPage("dispatch-judge", { runs: 0, older: 0, calls: 20, conf: 19, rules: 12, extras: dispatchVerdicts, instructed: true }),
+  "ask-judge": runnerPage("ask-judge", { runs: 0, older: 0, calls: 20, conf: 23, rules: 6, extras: askJudge, instructed: true }),
 };
 
 // Alerts: hub_core::alerts, the firing rows a hub_core::table view of Alert.
