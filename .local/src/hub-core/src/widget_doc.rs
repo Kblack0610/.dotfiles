@@ -3,8 +3,8 @@
 //! `cards`, no reader of its own: each card is one section, in the order the widget asked for, so
 //! the app drops the last ones first when it runs out of room.
 //!
-//! The mapping: `big` and `unit` are a `metric`, `bar` a `bar`, `parts` `pill`s, `first` `row`s
-//! (a part or row with a link carries an `open` action to it), `first_head` a `text` over the rows
+//! The mapping: `big` and `unit` are a `metric`, `bar` a `bar`, `parts` `pill`s, each list's `row`s
+//! (a part or row with a link carries an `open` action to it), the list's head a `text` over them
 //! and `counted` a `text` last, the card's (i) (dashboards.md rule 6). A card whose reader answered
 //! nothing is a `bad` section saying NO DATA with the reason, never green; one that answered in part
 //! keeps what it read, at warn or worse, with the reason as a `warn` row (as the web's card does).
@@ -303,17 +303,19 @@ fn section(c: &Card, base: Option<&str>) -> Section {
             actions: vec![],
         });
     }
-    if !c.first.is_empty() && !c.first_head.is_empty() {
-        items.push(Item::Text {
-            text: cap(c.first_head, TEXT_MAX),
-        });
+    for list in c.lists.iter().filter(|l| !l.rows.is_empty()) {
+        if !list.head.is_empty() {
+            items.push(Item::Text {
+                text: cap(&list.head, TEXT_MAX),
+            });
+        }
+        items.extend(list.rows.iter().map(|f| Item::Row {
+            text: cap(&f.text, ROW_MAX),
+            sub: cap(&f.sub, ROW_MAX),
+            level: f.level.into(),
+            actions: f.link.as_ref().map_or(vec![], |l| open(l, base)),
+        }));
     }
-    items.extend(c.first.iter().map(|f| Item::Row {
-        text: cap(&f.text, ROW_MAX),
-        sub: cap(&f.sub, ROW_MAX),
-        level: f.level.into(),
-        actions: f.link.as_ref().map_or(vec![], |l| open(l, base)),
-    }));
     items.extend(counted);
     head(level, items)
 }
@@ -346,7 +348,7 @@ fn rfc3339(t: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cards::{First, Part, Seg};
+    use crate::cards::{First, Part, Rows, Seg};
     use serde_json::json;
 
     fn card() -> Card {
@@ -379,11 +381,14 @@ mod tests {
                 link: Some(Link::to(crate::links::Kind::Needs, "Question")),
             },
         ];
-        c.first = vec![First {
-            text: "dotfiles: unit tests".into(),
-            sub: String::new(),
-            level: HubLevel::Red,
-            link: Some(Link::to(crate::links::Kind::Alert, "ci-red")),
+        c.lists = vec![Rows {
+            head: "Where to look first".into(),
+            rows: vec![First {
+                text: "dotfiles: unit tests".into(),
+                sub: String::new(),
+                level: HubLevel::Red,
+                link: Some(Link::to(crate::links::Kind::Alert, "ci-red")),
+            }],
         }];
         c
     }
@@ -512,7 +517,7 @@ mod tests {
         ));
         // A card with nothing to look at sends no heading, but still what it counted.
         let mut calm = card();
-        calm.first.clear();
+        calm.lists.clear();
         let items = &document(&[calm], &[], 0, None).sections[0].items;
         assert!(!items
             .iter()
@@ -602,7 +607,7 @@ mod tests {
     fn strings_are_clipped_to_the_schema_caps() {
         let mut c = card();
         c.big = "1234567890123456789".into();
-        c.first[0].text = "x".repeat(300);
+        c.lists[0].rows[0].text = "x".repeat(300);
         let d = document(&[c], &[], 0, None);
         let Item::Metric { value, .. } = &d.sections[0].items[0] else {
             panic!()
@@ -648,7 +653,7 @@ mod tests {
         let out = std::env::var("TILECAST_DOC_OUT").expect("TILECAST_DOC_OUT");
         let mut long = card();
         long.big = "9".repeat(40);
-        long.first[0].text = "y".repeat(400);
+        long.lists[0].rows[0].text = "y".repeat(400);
         let mut partial = card();
         partial.error = Some("pipeline: timed out".into());
         let cards = [
