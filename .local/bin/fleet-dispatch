@@ -7602,6 +7602,9 @@ triage_pass() {
   out=$(AGENTCTL_NAME=fleet-bench fleet-bench triage 2>&1) || TRIAGE_FAILED=$(tail -n 1 <<<"$out" | cut -c1-100)
 }
 
+# The longest a timed pass waits for a kick's lock: a kick starts a session or two, so well under it.
+KICK_WAIT_S=${KICK_WAIT_S:-120}
+
 # pass_reset -- the per-pass state a `run` pass and a `kick` start from.
 pass_reset() {
   HUMAN_PASS=0 SPRINT_PASS=0 PLAN_PASS=0 PLAN_STARTED=0 PLANS_STARTED=''
@@ -7637,22 +7640,39 @@ pass_room() {
 # stands: no reap, triage, judge, board fill or floor, which the timed `run` keeps. A pass holding the lock
 # already covers the event, so the kick stands down; it publishes no outcome (settle, KICK).
 cmd_kick() {
-  local live room gap
   KICK=1 DRY=0
   mkdir -p "$DIR"
   exec 9>"$DIR/.lock"
   flock -n 9 || { settle NOOP "kick: a pass is running, it covers this"; return 0; }
+  # The mark tells a timed pass that the lock is a kick's, held for seconds: it waits (cmd_run), where a
+  # pass holding the lock is waited on by nobody. Burst kicks would otherwise leave every timed pass a NOOP.
+  : > "$DIR/.kick"
+  local rc; kick_start; rc=$?
+  rm -f "$DIR/.kick"
+  return "$rc"
+}
+
+# kick_start -- cmd_kick past its lock: the gates, the room, the start.
+kick_start() {
+  local live room gap
   fleet_hosts >/dev/null
   if agent-hold check dispatch >/dev/null 2>&1; then settle NOOP "kick: held (agent-hold dispatch), starting nothing"; return 0; fi
   GATES_LOADED=''; load_gates
   pass_reset
   pace_target
   [ -n "$TOTAL_LIVE" ] || { settle NOOP "kick: live sessions unreadable (the fleet state document is missing or stale), the pass reads it"; return 0; }
+  # The state document is a snapshot: sessions started since it was written are not in it, and a burst of
+  # kicks would each see the same gap. Count them as live (a pass starts once a quarter hour, so has no burst).
+  local since fresh_started
+  since=$(jq -r '.generated_epoch // 0' "$FLEET_STATE_FILE" 2>/dev/null)
+  fresh_started=$(agent-queue list --json --state running 2>/dev/null | jq -s --argjson s "${since:-0}" \
+    '[.[] | select(((.started // "") | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch 0) >= $s)] | length' 2>/dev/null)
+  TOTAL_LIVE=$(( TOTAL_LIVE + ${fresh_started:-0} ))
   pass_room
   [ "$room" -gt 0 ] || { settle NOOP "kick: at the pace target ($TOTAL_LIVE of $TARGET live), starting nothing"; return 0; }
   local items; items=$(next_items --points)
   [ -n "$items" ] || { settle NOOP "kick: nothing queued to start"; return 0; }
-  local rc; run_queue "$items" "$room"; rc=$?
+  run_queue "$items" "$room"; local rc=$?
   [ "${STARTED:-0}" -eq 0 ] || say "kick: started $STARTED"
   return "$rc"
 }
@@ -7665,7 +7685,8 @@ cmd_run() {
   mkdir -p "$DIR"
   exec 9>"$DIR/.lock"
   # A NOOP that never read the gates leaves a standing hold as it is (PROOF_HELD_KEEP, agent-proof.sh).
-  flock -n 9 || { PROOF_HELD_KEEP=1 settle NOOP "another pass is running"; return 0; }
+  # A kick holds it for seconds: the pass waits out KICK_WAIT_S for it, never for another pass.
+  flock -n 9 || { [ -e "$DIR/.kick" ] && flock -w "$KICK_WAIT_S" 9; } || { PROOF_HELD_KEEP=1 settle NOOP "another pass is running"; return 0; }
 
   [ "$DRY" = 1 ] || { cmd_reap; provider_hold_scan; }   # the scan reads the runs the reap just closed
   # Once a pass, so each subshell of the pass reads the same gates; after the reap, whose returns
@@ -8453,7 +8474,7 @@ main() {
     trainee-patch) shift; cmd_trainee_patch "$@" ;;
     run-result) shift; cmd_run_result "$@" ;;
     item-end) shift; cmd_item_end "$@" ;;
-    -h | --help) sed -n '2,40p' "$0" ;;
+    -h | --help) sed -n '2,48p' "$0" ;;
     *) sed -n '2,20p' "$0" >&2; return 2 ;;
   esac
 }

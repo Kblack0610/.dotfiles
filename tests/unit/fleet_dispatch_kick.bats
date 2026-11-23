@@ -20,6 +20,7 @@ bats_require_minimum_version 1.5.0
   assert_not_called 'fleet-bench triage'
   [ -z "$(qitem queued gm-1)$(qitem running gm-1)" ] || fail "kick filled the queue from the board"
   [ -z "$(outcome)" ] || fail "kick published an outcome: $(outcome)"
+  [ ! -e "$FLEET_DISPATCH_DIR/.kick" ] || fail "kick left its mark on the lock"
 }
 
 @test "kick starts no more than the room: DISPATCH_PER_PASS caps it as it caps a pass" {
@@ -93,4 +94,17 @@ bats_require_minimum_version 1.5.0
   assert_not_called 'wt new'
   [ -n "$(qitem queued mine)" ] || fail "a stood-down kick moved the item"
   [ ! -e "$FLEET_DISPATCH_DIR/.lock" ] || fail "a stood-down kick took the pass lock"
+}
+
+@test "a burst of kicks counts the sessions the last one started, so the stale fleet state does not let them past the pace target" {
+  two_items
+  export DISPATCH_TARGET_AWAY=6
+  fleet_state 5 1   # five live sessions, written a minute ago: a gap of one, whatever starts after
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" kick
+  assert_success
+  [ -n "$(qitem running fix-game)" ] || fail "the first kick did not start"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" kick
+  assert_success
+  assert_output --partial 'kick: at the pace target (6 of 6 live), starting nothing'
+  [ -n "$(qitem queued fix-app)" ] || fail "the second kick started past the pace target"
 }
