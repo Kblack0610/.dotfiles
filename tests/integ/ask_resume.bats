@@ -33,6 +33,7 @@ case "$1" in
   add) [ -z "${AQ_REFUSE:-}" ] || { echo "agent-queue: unknown project" >&2; exit 1; }
        while [ "$1" != --slug ]; do shift; done; echo "running $(tr A-Z a-z <<<"$2") -> /q/running/x.md" ;;
   show) printf '{"state":"running","pr":"%s"}\n' "${AQ_PR:-}" ;;
+  move) [ -z "${AQ_MOVE_FAIL:-}" ] || exit 1 ;;
 esac
 EOF
   chmod +x "$SANDBOX/bin/agent-queue"
@@ -321,6 +322,30 @@ EOF
   run ask-resume "$id"  # the stub setsid runs it in the foreground, so its exit is the run's
   run grep '^agent-queue move' "$NOTES_FIXTURE/calls.log"
   assert_output --partial "done --status failed"
+}
+
+@test "a close agent-queue refuses is logged with the whole move line it passed, state included" {
+  local id slug
+  mkdir -p "$AGENTCTL_STATE_DIR/ask-resume"
+  _closing() { # $1=agentctl-run exit code; the env of the call is the caller's
+    id="$(gate alpha)"
+    "$AGENT_ASK" answer "$id" approve >/dev/null 2>&1
+    slug="ask-resume-$(tr A-Z a-z <<<"$id")"
+    printf '#!/usr/bin/env bash\nexit %s\n' "$1" > "$SANDBOX/bin/agentctl-run"
+    : > "$AGENTCTL_STATE_DIR/ask-resume/alpha.log"
+    ask-resume "$id" 2>/dev/null || true  # the stub setsid is foreground, so the exit is the run's
+  }
+  # the wrapper's own stderr goes to the project's resume log
+  local log="$AGENTCTL_STATE_DIR/ask-resume/alpha.log"
+  AQ_MOVE_FAIL=1 _closing 0
+  run cat "$log"
+  assert_output "ask-resume: $slug is left open: agent-queue move $slug done --status ok"
+  AQ_MOVE_FAIL=1 _closing 7
+  run cat "$log"
+  assert_output "ask-resume: $slug is left open: agent-queue move $slug done --status failed"
+  AQ_MOVE_FAIL=1 AQ_PR='o/r#9' _closing 0
+  run cat "$log"
+  assert_output "ask-resume: $slug is left open: agent-queue move $slug review"
 }
 
 @test "an item agent-queue refuses leaves the ask resumable and runs no model" {
