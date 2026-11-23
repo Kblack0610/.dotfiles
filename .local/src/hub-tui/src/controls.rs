@@ -410,12 +410,7 @@ impl Controls {
             }
         }
         out.extend(self.feed.errors.iter().chain(&self.silent).map(warn));
-        let mut chips = self.table.status(&self.all, p);
-        let spend = session_table::spend(self.table.view.apply(&self.all));
-        chips.push(Span::raw(format!(
-            " | spend {}",
-            hub_core::display::fmt::usd_opt(Some(spend))
-        )));
+        let chips = self.table.status(&self.all, p);
         out.push(clip_line(Line::from(chips), w));
         out
     }
@@ -968,7 +963,15 @@ pub mod tests {
             items: hub_core::queue::parse(&items.join("\n")),
             ..Feed::default()
         });
-        assert_eq!(c.rows().len(), 252, "two live rows and every ended one");
+        assert_eq!(c.rows().len(), 2, "the table opens on the two live rows");
+        for _ in 0..5 {
+            press(&mut c, KeyCode::Char('f'));
+        }
+        assert_eq!(
+            c.rows().len(),
+            252,
+            "all: two live rows and every ended one"
+        );
         for _ in 0..300 {
             press(&mut c, KeyCode::Char('j'));
         }
@@ -1001,7 +1004,11 @@ pub mod tests {
         press(&mut c, KeyCode::Esc);
         assert_eq!(c.rows().len(), 1);
         press(&mut c, KeyCode::Esc);
-        assert_eq!(c.rows().len(), 3);
+        assert_eq!(
+            c.rows().len(),
+            2,
+            "the live rows, the table's own opening view"
+        );
     }
 
     #[test]

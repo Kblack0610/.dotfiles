@@ -4822,7 +4822,7 @@ impl App {
                 "j/k another row  l link, Enter opens it  c cancel  +/- priority  Esc close  o Grafana  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Queue => format!(
-                "j/k PgUp/PgDn ^d/^u pick  Enter detail  [ ] step  {{ }} problem  / f s S x table  c cancel  +/- priority  C candidates  p promote  o Grafana  r refresh  {tabs} tabs  q quit"
+                "j/k PgUp/PgDn ^d/^u pick  Enter detail  [ ] step  {{ }} problem  / f s S x table  c cancel  +/- priority  C candidates  p promote  ? legend  o Grafana  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Projects => self.projects_hint(),
             Tab::Home if self.hv.on_running && !self.home_build().running.is_empty() => format!(
