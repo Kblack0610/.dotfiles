@@ -2,7 +2,7 @@
 
 A single, profile-aware binary that owns all **journal + zettelkasten** logic for
 the `~/.notes` vault. The git/MQTT **sync layer is separate** (shell + systemd/
-launchd) and untouched — this tool only reads and writes note files.
+launchd) and untouched: this tool only reads and writes note files.
 
 Everything is pure Rust (chrono for dates), so behaviour is identical on macOS and
 Linux: no GNU-vs-BSD `date`/`sed`/`stat` divergence, no Python-on-Mac drift.
@@ -10,7 +10,7 @@ Linux: no GNU-vs-BSD `date`/`sed`/`stat` divergence, no Python-on-Mac drift.
 ## Why it exists
 
 The old journal logic was split across `journal-create` (bash), two Python scripts,
-and shell aliases — each with its **own hardcoded path**, so per-machine roots were
+and shell aliases, each with its **own hardcoded path**, so per-machine roots were
 impossible and failures (a missing note, a mistyped heading) were silent. This binary
 unifies all of it behind one config and adds a `doctor` command so problems are
 visible instead of mysterious.
@@ -29,10 +29,10 @@ It runs `cargo build --release`, copies the binary to `~/.local/lib/notes/notes`
 binary also falls back to `$NOTES_CONFIG` and `~/.dotfiles/.config/notes/config.toml`,
 and to a built-in `personal` default if none exist.
 
-Active profile resolves: `--profile` → `$NOTES_PROFILE` → `[hostname_map]` (by
-`hostname -s`) → `default_profile`. This is what lets a corporate machine root its
+Active profile resolves: `--profile`, then `$NOTES_PROFILE`, then `[hostname_map]` (by
+`hostname -s`), then `default_profile`. This is what lets a corporate machine root its
 daily notes inside `employment/jobs/<job>/` while a personal machine uses
-`journal/daily` — same git repo, different active location.
+`journal/daily`: same git repo, different active location.
 
 **A job is one line.** Every path key defaults to the org convention (`daily/`, `refs/`,
 `backlog.md`, `summaries/`, `daily_archive/`, `permanent/`, `meetings/`, `index/`,
@@ -55,11 +55,11 @@ keeps it.
 | `notes archive [--month M] [--dry-run] [--backfill]` | Roll a month into the monthly summary + move dailies to the archive tree. |
 | `notes backlog [backlog\|scheduled\|recurring]` | Open a standing list (default: the backlog, `backlog.md` beside the daily dir) and print its path. `backlog`/`scheduled` are tidied (sweep checked to `## Done`, restamp day counts); `recurring` is only ensured (never swept: its masters aren't checked off). |
 | `notes backlog --add` | File the task lines on stdin (each with the lines indented under it) into the backlog, stamped `#bYYMMDD`; refuses input holding prose, so nvim's `<leader>tb` deletes nothing it did not file. `notes today` returns a task stamped 90+ days ago to Focus at `#low`; an unstamped one is stamped on first sight. |
-| `notes focus [list]` | List today's open `## Focus` items — the daily cockpit's active-task list. Same items the session-start hook surfaces at turn 1. |
+| `notes focus [list]` | List today's open `## Focus` items: the daily cockpit's active-task list. Same items the session-start hook surfaces at turn 1. |
 | `notes focus add "<text>"` | Add a new open task to today's `## Focus`, freshly day-stamped, in the lane its tag names, else Low. Bootstraps today's note if absent. Keep it a couple words. |
 | `notes focus done <word>` | Check off the first open `## Focus` item whose text matches `<word>` (case-insensitive). |
 | `notes focus --all` | Cross-profile cockpit: aggregate every configured profile's open `## Focus` items as TSV `profile<TAB>file<TAB>line<TAB>key<TAB>text` (for editor/jump integration). Close a row with `notes --profile <p> focus done "<key>"`. |
-| `notes inbox [list]` | Triage view of the dated-capture inbox — pending captures oldest-first with age + title, stale (≥14d) flagged. |
+| `notes inbox [list]` | Triage view of the dated-capture inbox: pending captures oldest-first with age and title, stale (14d or more) flagged. |
 | `notes inbox add "<text>"` | Quick-capture: append a timestamped bullet to today's `inbox/<date>.md`. |
 | `notes inbox archive <file>\|--stale\|--before D` | Drain triaged captures into `inbox/_archive/` (pick one selector). |
 | `notes inbox ack [--undo] <key>` | Mark a Handled-today row of `status/inbox.md` reviewed, or take the mark back, and republish the page. The key is the `ts` of the row's ingest event, which the row carries as `<!-- ack:<ts> -->`; a key that is no event in the record writes nothing. Marks live in `<state_dir>/inbox-ack.jsonl` (append-only, last mark per key wins), and this is its one writer; agent-web's Focus tab ticks through it. |
@@ -302,7 +302,7 @@ Completed items move to a `## Done` section in the same file (history via git +
 **Time-triggered tasks** all live in one `schedule.md` (its `scheduled.md` + `recurring.md`
 ancestors were merged and renamed aside). What a line does is decided by its TOKEN, not by
 which file it sits in: `[YYYY-MM-DD]` fires ONCE within the lead window and the master line is
-consumed; `(every:…)` fires each matching day and the master is kept, so the habit returns
+consumed; `(every:...)` fires each matching day and the master is kept, so the habit returns
 every cycle and missed days are simply skipped. Cadences: `every:fri`, comma lists
 `every:mon,thu`, `every:weekday` (Mon-Fri), `every:day`, and day-of-month `every:1st` /
 `every:15th` / `every:last`. Tagging a surfaced task with a far-future date pushes it back out
@@ -350,6 +350,6 @@ To see them live: `agentctl list` for the agentctl runners, `systemctl --user li
 
 ## Tests
 
-`cargo test` — covers the historically fragile bits: date/day-count stamping,
+`cargo test` covers the historically fragile bits: date/day-count stamping,
 carry-forward filtering, section extraction, profile + hostname resolution,
 backlog sweep, link extraction.
