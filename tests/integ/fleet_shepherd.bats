@@ -842,7 +842,9 @@ nudge_ago() { printf 'fact: STALLED f-%s\nat: %s\n' "$2" "$(date -Iseconds -d "$
   grep -q 'copy-mode -q -t %1' "$HOME/tmux.calls"
   run closes
   assert_output 'close --server lab --pane %1 --sid 1'
-  grep -q 'takeover: lab/%1: left its tmux mode on an unwatched pane' "$FLEET_SHEPHERD_DIR/log.md"
+  grep -q 'mode-left: lab/%1: left its tmux mode on an unwatched pane' "$FLEET_SHEPHERD_DIR/log.md"
+  # takeovers_24h counts the one closed window, not the leave-mode line (ar-4619).
+  assert_equal "$("$SH" stats | jq -c '[.takeovers_24h, .takeovers_failed_24h]')" '[1,0]'
   # Negative controls: a pane shown to a client keeps its mode, and a mode that will not leave closes nothing.
   rm -f "$HOME/.mode-left" "$HOME/tmux.calls" "$HOME/wind-down.calls" "$FLEET_SHEPHERD_DIR/.takeover"
   STUB_SHOWN="1 1" STUB_IN_MODE=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
