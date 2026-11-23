@@ -263,6 +263,14 @@ gate_row() {
   assert_output --partial 'unregistered gate: .local/bin/agent-x:12: gate: ghost-gate has no row in the register'
 }
 
+@test "rules --gates: a marker inside a continued command fails, since it would swallow the next line" {
+  gate_repo
+  printf 'jq -n --arg r "$x" \\\n  # gate: tool-refuse\n  filter\n' >> "$G/.local/bin/agent-x"
+  run "$SUBJECT" rules --gates main
+  assert_failure 1
+  assert_output --partial 'misplaced gate: .local/bin/agent-x:13'
+}
+
 @test "rules --gates: a hook that denies with no marker fails (negative control)" {
   gate_repo
   printf 'import json\nprint(json.dumps({"permissionDecision": "deny"}))\n' > "$G/.claude/hooks/new.py"

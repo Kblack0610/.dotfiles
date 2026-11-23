@@ -109,7 +109,6 @@
 # which also types the answer into the session), or drops it. A human-only action the session
 # will not wait on is a human-sheet row, not an ask.
 #
-# gate: aa-question-form
 # A QUESTION IS ONE LINE. `post` refuses a question that does not end in `?` or runs past
 # AGENT_ASK_QUESTION_MAX characters: the background goes in --context and what each option
 # does in `--options 'slug=meaning|...'`. 2026-11-05: JSVBgC was one paragraph with bare slugs
@@ -496,6 +495,7 @@ cmd_post() {
   done
   [ -n "$question" ] || { echo "agent-ask post: no question given" >&2; return 2; }
   question="$(oneline "$question")"
+  # gate: aa-question-form
   if [ "${question: -1}" != "?" ] || [ "${#question}" -gt "$AGENT_ASK_QUESTION_MAX" ]; then
     echo "agent-ask post: the question is one line ending in '?', at most $AGENT_ASK_QUESTION_MAX characters (this one is ${#question}). Put the background in --context \"...\", what each option does in --options 'slug=meaning|slug=meaning', and why you recommend one in --why \"...\"." >&2
     return 2

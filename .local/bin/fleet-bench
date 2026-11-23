@@ -2882,6 +2882,8 @@ rules_gates() {
   for f in "${files[@]}"; do
     while IFS=: read -r n line; do
       id=$(sed -nE "s/${GATE_MARKER_ERE}/\\1/p" <<<"$line" | head -1)
+      [ "$n" -le 1 ] || ! sed -n "$((n - 1))p" "$root/$f" | grep -qE '\\$' ||
+        out+="misplaced gate: $f:$n: the marker sits inside a continued command, which it would swallow; put it above the command"$'\n'
       [ "$id" = none ] || grep -qxF -- "$id" <<<"$ids" || out+="unregistered gate: $f:$n: gate: $id has no row in the register"$'\n'
     done < <(grep -nE "$GATE_MARKER_ERE" "$root/$f")
     case "$f" in "$GATE_HOOKS_DIR"/*)
@@ -2896,7 +2898,7 @@ rules_gates() {
       [ -n "$dfile" ] || continue
       sed -n "$(( n > GATE_NEAR ? n - GATE_NEAR : 1 )),${n}p" "$root/$dfile" | grep -qE "$GATE_MARKER_ERE" ||
         out+="unmarked refusal: $dfile:$n: an added refusal names no register row; add # gate: <id> (or # gate: none for a usage error) above it: ${line:0:90}"$'\n'
-    done < <(git -C "$root" diff -U0 "$mb" -- "${files[@]}" | awk -v re="$GATE_REFUSE_ERE" '
+    done < <(git -C "$root" diff --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ -U0 "$mb" -- "${files[@]}" | awk -v re="$GATE_REFUSE_ERE" '
       /^\+\+\+ b\// { file = substr($0, 7); next }
       /^@@/ { match($0, /\+[0-9]+/); n = substr($0, RSTART + 1, RLENGTH - 1) + 0; next }
       /^\+/ { t = substr($0, 2); if (t !~ /^[[:space:]]*#/ && t ~ re) printf "%s\t%d\t%s\n", file, n, t; n++ }')
