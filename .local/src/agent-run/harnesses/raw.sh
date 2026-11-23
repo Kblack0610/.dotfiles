@@ -100,7 +100,12 @@ raw_chat() {
   RAW_TMP="$(mktemp -d)" || return 1
   trap 'rm -rf -- "$RAW_TMP"' EXIT
   printf '%s' "$RAW_INPUT" >"$RAW_TMP/in"
-  jq -n --arg m "${LLM_MODEL:-}" --rawfile s "${AGENT_PROMPT:-/dev/null}" --rawfile u "$RAW_TMP/in" \
+  # The PROMPT file is the system message, unless its caller rendered it into the input (--rendered-prompt).
+  : >"$RAW_TMP/sys"
+  if [ -n "${AGENT_PROMPT:-}" ] && [ -z "${AGENT_PROMPT_RENDERED:-}" ]; then
+    prompt_expand "$AGENT_PROMPT" >"$RAW_TMP/sys" || return 78
+  fi
+  jq -n --arg m "${LLM_MODEL:-}" --rawfile s "$RAW_TMP/sys" --rawfile u "$RAW_TMP/in" \
       --slurpfile h "${RAW_MESSAGES:-/dev/null}" --argjson rf "${RAW_RESPONSE_FORMAT:-null}" \
       --argjson mt "${AGENT_MAX_TOKENS:-1024}" --argjson t "${AGENT_TEMPERATURE:-0}" \
       '{model: $m, temperature: $t, max_tokens: $mt, stream: false}
