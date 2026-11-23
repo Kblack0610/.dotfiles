@@ -44,6 +44,7 @@ setup() {
 }
 
 @test "a host that left the inventory and a deleted hyphenated command are retired; what stayed, came back or is a skill is not" {
+  export KNOWLEDGE_RETIRED_ALIASES=/dev/null
   run "$SCRIPT"
   assert_success
   assert_output "$(printf 'host\tmac-studio\tleft the home-config inventory\ncommand\twave-start\twas deleted from %s/.local/bin' "$D")"
@@ -54,4 +55,12 @@ setup() {
   run "$SCRIPT"
   assert_failure
   assert_output --partial 'has no main or master tracking a remote'
+}
+
+@test "a hardware alias is retired with its host, and an alias of a host still in the inventory is not" {
+  printf '# a comment\nmac-studio\tM3 Ultra\nmac-mini\tM4 Pro\n' > "$T/aliases.tsv"
+  KNOWLEDGE_RETIRED_ALIASES="$T/aliases.tsv" run "$SCRIPT"
+  assert_success
+  assert_line "$(printf 'host\tM3 Ultra\tis the hardware of mac-studio, which left the home-config inventory')"
+  refute_output --partial 'M4 Pro'
 }

@@ -7,6 +7,9 @@
 # retired the moment its own source of truth drops it:
 #   host     every host that was ever in the home-config Ansible inventory and is not in it now,
 #            read from the mainline's remote-tracking ref (fleet-hosts.sh), never the working tree;
+#            plus the names the hardware went by (`.config/notes/retired-aliases.tsv`, `host<TAB>alias`):
+#            "M3 Ultra" is the chip of the sold mac-studio and no inventory ever held it, so a page
+#            proposing work on it read as live (ar-3309);
 #   command  every file deleted from `.local/bin` in either dotfiles repo that is not back in one,
 #            not on PATH and not a skill (a page naming `night-shift` means the skill).
 # `notes knowledge lint --retired` counts the knowledge lines that still name one as live, and
@@ -25,8 +28,10 @@ ref=$(fleet_roster_ref "$hc") || { echo "knowledge-retired: $hc has no main or m
 # A ref last fetched long ago lags the forge; refresh it the way fleet_inventory_text does.
 fleet_roster_fresh "$hc"
 
-# Every revision of the inventory on that ref, newest first; the first is the current one.
-python3 -I - "$hc" "$ref" "$INV" <<'PY'
+# Every revision of the inventory on that ref, newest first; the first is the current one. An
+# alias is read only for a host that is retired, so a name outlives its host by no more.
+ALIASES="${KNOWLEDGE_RETIRED_ALIASES:-$(dirname "$(readlink -f "$0")")/../../.config/notes/retired-aliases.tsv}"
+{ python3 -I - "$hc" "$ref" "$INV" <<'PY'
 import subprocess, sys
 try:
     import yaml
@@ -61,6 +66,10 @@ for r in revs[1:]:
 for h in sorted(ever - now):
     print(f"host\t{h}\tleft the home-config inventory")
 PY
+} | awk -F'\t' -v aliases="$ALIASES" '
+    BEGIN { while ((getline line < aliases) > 0) if (line !~ /^#/ && split(line, f, "\t") == 2) a[f[1]] = a[f[1]] f[2] "\n" }
+    { print }
+    $1 == "host" && ($2 in a) { n = split(a[$2], names, "\n"); for (i = 1; i < n; i++) printf "host\t%s\tis the hardware of %s, which left the home-config inventory\n", names[i], $2 }'
 
 # A bare word is too often also a product, team or persona name (binks is all three), so only a
 # hyphenated or underscored name counts as a command. Provisional, confidence medium: on
