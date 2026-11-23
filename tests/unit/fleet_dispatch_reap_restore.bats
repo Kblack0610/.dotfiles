@@ -1441,6 +1441,47 @@ esac'
   assert_failure
 }
 
+# rerun_item <status> -- a later run of fix-crash under the same slug, ended <status> with no PR and
+# finished after the landed one, so agent-queue show reads it, not the item that landed.
+rerun_item() {
+  local f; f=$(grep -rl '^slug: fix-crash' "$AGENT_QUEUE_DIR/done" | head -1)
+  sed -e 's/^status: .*/status: '"$1"'/' -e '/^pr: /d' -e '/^merged: /d' -e 's/^finished: .*/finished: 2099-01-01T00:00:00Z/' "$f" > "${f%/*}/20991231-000000-fix-crash.md"
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.status, .pr // ""] | join("|")')" "$1|"
+}
+
+@test "reap settle: a cancelled ask closes the row from the item that landed, though a later run reused its slug (ar-4678)" {
+  # NEGATIVE CONTROL: before ar-4678 the slug read the rerun, which has no PR, and the ask was posed again (rep1).
+  landed_item MERGED
+  settle_fixture
+  rerun_item failed
+  printf 'fix crash\t- [ ] fix crash #ask/gone1/a\n' > "$NOTES_FIXTURE/rows.game.agent"
+  run settle_answered_gates
+  assert_success
+  assert_output --partial 'closed game: fix crash (queue item fix-crash, PR o/game#12 merged)'
+  run grep -E '^agent-(hold set|ask post) ' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+  # merged: went on the record that landed, never on the rerun the slug reads
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '.merged // ""')" ''
+}
+
+@test "reap: an ended item leaves a row a newer item works: no un-start and no failure counted twice (ar-4678)" {
+  # 2026-11-21: one failed item un-started ar-4041 under its rerun three times, and asked about it after "2 failures".
+  pr_item OPEN
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  agent-queue move fix-crash done --status failed >/dev/null
+  run settle_row fix-crash
+  assert_output --partial 'un-started game: fix crash (queue item fix-crash ended failed)'   # control: its own row
+  assert_equal "$(grep -c '"verdict":"failed"' "$VERDICTS")" 1
+  printf 'fix crash\t- [/] fix crash\n' > "$NOTES_FIXTURE/rows.game.agent"   # the rerun started it again
+  started_item fix-crash-2 lab:game-agent-2 run '' 'board:game:fix crash'
+  agent-queue set fix-crash-2 lane=agent >/dev/null
+  run settle_row fix-crash
+  assert_success
+  assert_output ''
+  grep -qF -- '- [/] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail "un-started the row a newer item works"
+  assert_equal "$(grep -c '"verdict":"failed"' "$VERDICTS")" 1
+}
+
 @test "reap settle: a hold already set is kept, and a failed retag releases only the hold it set" {
   settle_fixture
   row game agent gm-1 "- [ ] feat(game): held by a person $T #ask/hold1/b <!-- id:gm-1 -->"
@@ -1617,3 +1658,4 @@ rm "$NOTES_FIXTURE/origin-close"; agent-queue set fix-crash "pr=o/game#12" "merg
   assert_output --partial 'requeued queue item cx'
   assert_not_called 'start --item cx'
 }
+

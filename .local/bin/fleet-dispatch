@@ -4202,14 +4202,14 @@ item_row() {
     | [(.profile // ""), ($r | split(":")[0]), (.lane // "agent"), ($r | split(":")[1:] | join(":"))] | join("\u001f")' <<<"$1"
 }
 
-# close_row <slug> [open] -- an item with a row, done ok, whose row is still started (or, with `open`, not
-# started yet: a row gated on a cancelled ask, settle_answered_gates): the session died before
+# close_row <slug> [open] [item json] -- an item with a row, done ok, whose row is still started (or, with `open`, not
+# started yet: a row gated on a cancelled ask or held by failures, land_row): the session died before
 # agent-land closed it, or closed the item before its PR merged (land_orphan). Closed only on merge proof (agent-merge-proof.sh) of the item's
 # merged: commit in the checkout of the repo its PR names, with proof "pr:<N> commit:<sha12>"; with no proof the
 # row is left started and the reason logged once (reap_stuck), so a false close never happens.
 close_row() {
-  local it row prof project lane key flag=() oid pr dir out rc=1 info state r line MERGE_PROOF_REMOTE=${MERGE_PROOF_REMOTE:-origin}
-  it=$(agent-queue show "$1" --json 2>/dev/null) || return 0
+  local it=${3:-} row prof project lane key flag=() oid pr dir out rc=1 info state r line MERGE_PROOF_REMOTE=${MERGE_PROOF_REMOTE:-origin}
+  [ -n "$it" ] || it=$(agent-queue show "$1" --json 2>/dev/null) || return 0
   row=$(item_row "$it"); [ -n "$row" ] || return 0
   IFS=$'\x1f' read -r prof project lane key <<<"$row"
   [ "$lane" = agent ] && flag=(--agent)
@@ -4223,7 +4223,7 @@ close_row() {
   if [ -n "$oid" ] && [[ ! "$oid" =~ ^[0-9a-f]+$ ]] && [ "$(jq -r '.pr // "" | split(" ") | length' <<<"$it")" = 1 ] &&
     info=$(item_pr_state "$1" "$it"); then
     read -r state info _ <<<"$info"; info=${info#-}
-    if [ "$state" = MERGED ] && [ -n "$info" ] && agent-queue set "$1" "merged=$info" >/dev/null; then oid=$info; fi
+    if [ "$state" = MERGED ] && [ -n "$info" ] && { ! own_record "$1" "$it" || agent-queue set "$1" "merged=$info" >/dev/null; }; then oid=$info; fi
   fi
   # Proven on the forge's remote, as agent-land proves it: home-config's only remote is forgejo.
   local frc=1
@@ -4253,7 +4253,8 @@ close_row() {
 # and record `failed` with the item and its end reason, so the row is judged again, or held and asked
 # about at DISPATCH_FIX_TRIES failures (in_force, ask_failed_rows). A run that ended for a cause outside the model (unrated_end: a usage limit, a provider
 # fault, a refusal, a cut) records nothing: nothing about the row failed, so it stays a candidate,
-# and a hold earlier real failures left stands. Idempotent: a row no longer started is left alone.
+# and a hold earlier real failures left stands. Idempotent: a row no longer started is left alone, and
+# so is a row a newer item names (row_newer_item).
 settle_row() {
   local it row prof project lane key flag=()
   it=$(agent-queue show "$1" --json 2>/dev/null) || return 0
@@ -4263,6 +4264,7 @@ settle_row() {
   IFS=$'\x1f' read -r prof project lane key <<<"$row"
   [ "$lane" = agent ] && flag=(--agent)
   [[ "$(row_line "$prof" "$project" "$lane" "$key")" == '- [/]'* ]] || return 0
+  ! row_newer_item "$it" || return 0
   np "$prof" ptask "$project" "${flag[@]}" unstart "$key" >/dev/null 2>&1
   local end; end=$(jq -r '.end_reason // ""' <<<"$it")
   unrated_end "$end" ||
@@ -4272,6 +4274,20 @@ settle_row() {
   logline "settled queue item $1: $project $lane row un-started: $key"
   dispatch_event settled "$project" "row un-started: item ended $(jq -r .status <<<"$it")" --item "$1" --id "$key"
   echo "un-started $project: $key (queue item $1 ended $(jq -r .status <<<"$it")${end:+, $end})"
+}
+
+# row_newer_item <item json> -- another queue item names this item's row and is newer: still active, or
+# finished after it. The row started is that item's, so an older run settling again (reap reads two
+# days of ended items) must not un-start it or count its own failure twice: on 2026-11-21 one failed
+# item un-started ar-4041 under its rerun three times, and its two "failures" asked about a row whose
+# PR had merged (ar-4678). A queue that cannot be read reads as none, the behaviour before.
+row_newer_item() {
+  local row fin file since
+  IFS=$'\x1f' read -r row fin file < <(jq -r '[.row // "", .finished // "", .file // ""] | join("\u001f")' <<<"$1")
+  since=$(date -d "${fin:0:10} -1 day" +%F 2>/dev/null) || since=$(date -d '-2 days' +%F)
+  { agent-queue list --json 2>/dev/null; agent-queue list --json --state done --since "$since" 2>/dev/null; } |
+    jq -se --arg r "$row" --arg f "$fin" --arg file "$file" \
+      'any(.[]; .row == $r and .file != $file and (.state != "done" or (.finished // "") > $f))' >/dev/null
 }
 
 # PR_STATE_JSON, PR_STATE_JQ -- what one read of an item's PR asks for, and the line it prints:
@@ -4292,14 +4308,19 @@ item_pr_state() {
     "select(any(.body | split(\"\n\")[] | rtrimstr(\"\r\"); . == \"Item: $1\")) | $PR_STATE_JQ"
 }
 
-# land_orphan <slug> [open] -- a started row whose item ended ok before its PR merged (closed by hand
+# own_record <slug> <item json> -- the slug names this record: agent-queue show and set read a reused
+# slug's newest item, so a write by slug for an older record would land on another item (land_row).
+own_record() { [ "$(agent-queue show "$1" --json 2>/dev/null | jq -r '.file // ""')" = "$(jq -r '.file // ""' <<<"$2")" ]; }
+
+# land_orphan <slug> [open] [item json] -- a started row whose item ended ok before its PR merged (closed by hand
 # before agent-queue refused that): the row goes by that PR, not by the orphan timer. A merged:
 # commit, or a PR its forge reads as MERGED (item_pr_state, then recorded), goes to close_row; OPEN leaves it started for the
 # merge. Returns 1 when no PR holds the row, so the timer decides: no PR or closed unmerged; 2 when
-# the forge did not answer. `open` lets close_row close a row not started (settle_answered_gates).
+# the forge did not answer. `open` lets close_row close a row not started, and the item json reads that
+# record instead of the slug's newest (land_row).
 land_orphan() {
-  local it oid info state
-  it=$(agent-queue show "$1" --json 2>/dev/null) || return 1
+  local it=${3:-} oid info state
+  [ -n "$it" ] || it=$(agent-queue show "$1" --json 2>/dev/null) || return 1
   oid=$(jq -r '.merged // ""' <<<"$it")
   if [ -z "$oid" ]; then
     [ -n "$(jq -r '.pr // ""' <<<"$it")" ] || return 1
@@ -4307,11 +4328,38 @@ land_orphan() {
     read -r state oid _ <<<"$info"; oid=${oid#-}
     case "$state" in
     OPEN) return 0 ;;
-    MERGED) [ -n "$oid" ] && agent-queue set "$1" "merged=$oid" >/dev/null || return 1 ;;
+    MERGED) [ -n "$oid" ] || return 1
+      ! own_record "$1" "$it" || agent-queue set "$1" "merged=$oid" >/dev/null || return 1
+      it=$(jq -c --arg m "$oid" '.merged = $m' <<<"$it") ;;
     *) return 1 ;;
     esac
   fi
-  close_row "$1" "${2:-}"
+  close_row "$1" "${2:-}" "$it"
+}
+
+# land_row <project> <row id> -- an open agent row whose work merged while it stayed open: each done
+# item naming it with a PR, newest first, goes to land_orphan with its own record, so a later run
+# under the same slug (agent-queue show reads the newest) does not hide the one that landed. On
+# 2026-11-22 ar-225's ok item hid behind its failed rerun, ar-3634's behind a re-fill, and both rows
+# were asked about again. A partial landing is not the row's work (ar-1270). Returns land_orphan's
+# 0 (closed, or a PR still open) or 2 (the forge did not answer) from the first item that is not 1;
+# 1 when no PR of any item merged or is open; 3 when the done items cannot be read.
+land_row() {
+  local it rc
+  row_done_items || return 3
+  while IFS= read -r it; do
+    rc=0; land_orphan "$(jq -r .slug <<<"$it")" open "$it" </dev/null || rc=$?
+    [ "$rc" = 1 ] || return "$rc"
+  done < <(jq -sc --arg r "$1:$2" 'map(select(.row == $r and .partial != "yes")) | sort_by(.finished // "") | reverse | .[]' <<<"$ROW_DONE")
+  return 1
+}
+
+# row_done_items -- ROW_DONE: every done queue item that names a row and a PR, a JSON object a line,
+# read once a process (about 2 s over every done item) and only by a pass that needs it.
+row_done_items() {
+  [ -z "${ROW_DONE_READ:-}" ] || return 0
+  ROW_DONE=$(agent-queue list --json --state done --since 3650d 2>/dev/null | jq -c 'select((.row // "") != "" and (.pr // "") != "")') || return 1
+  ROW_DONE_READ=1
 }
 
 # unstart_orphans -- an agent-lane row started with no active queue item naming it (its `row`)
@@ -6690,12 +6738,17 @@ cmd_reap() {
 # done or dropped row, a human-lane row (the human's own Start ignores verdicts) and a row with no id
 # are left alone.
 ask_failed_rows() {
-  local held board prof p key text fails n hold why rec ctx aid
+  local held board prof p key text fails n hold why rec ctx aid rc
   held=$(judged_keys | awk -F'\t' '$2 == "agent" && $4 == "*" && $5 == "*"')
   [ -n "$held" ] || return 0
   board=$(notes board --json 2>/dev/null) || return 0
   while IFS=$'\x1f' read -r prof p key text; do
     grep -qxF "$p"$'\tagent\t'"$key"$'\t*\t*' <<<"$held" || continue
+    # Work that merged though the row stayed open closes it, or waits on its open PR: asking to start
+    # it again would redo landed work (2026-11-21: ar-4041 and ar-225 asked after their PRs merged). A
+    # queue or forge that cannot be read asks as before, since the human decides when nothing proves it.
+    rc=0; land_row "$p" "$key" || rc=$?
+    [ "$rc" != 0 ] || continue
     # The failures since the row's last `cleared`: their count, whether one holds at once, and their reasons.
     fails=$(jq -rRn --arg p "$p" --arg k "$key" \
       '[inputs | fromjson? | objects | select(.project == $p and .lane == "agent" and .key == $k and (.verdict == "failed" or .verdict == "cleared"))]
@@ -6737,11 +6790,11 @@ ask_failed_rows() {
 # decided: agent-ask cancel has no actor) leaves its rows dead the same way (ar-3863, 2026-11-19):
 # one cancelled because it joined an older ask moves its rows' gate to that ask. Any other cancel
 # sets no hold, which only a person clears (ar-4646: ucp-463 sat held on work #2129 had merged): a
-# done queue item on the row whose PR merged closes it on merge proof (land_orphan), and otherwise
+# done queue item on the row whose PR merged closes it on merge proof (land_row), and otherwise
 # the ask is posed again (repose_ask) and the row gated on the new one.
 SETTLE_SKIP_RE='\b(skip|skipped|drop|cancel|cancelled|abandon|scrap|not needed|no longer needed)\b'
 settle_answered_gates() {
-  local board prof p id t g aid ask st by ans why hold had rsn to done_items='' got_done='' slug rc
+  local board prof p id t g aid ask st by ans why hold had rsn to rc
   load_gates
   [ -z "$GATES_FAILED" ] || return 0
   board=$(notes board --json 2>/dev/null) || return 0
@@ -6764,20 +6817,11 @@ settle_answered_gates() {
           fi
           continue 2
         fi
-        # Read once a pass, and only for a cancel: about 2 s over every done item.
-        if [ -z "$got_done" ]; then
-          done_items=$(agent-queue list --json --state done --since 3650d 2>/dev/null |
-            jq -c 'select((.row // "") != "" and (.pr // "") != "")') ||
-            { say "settle_answered_gates: could not read the done queue items"; return 0; }
-          got_done=1
-        fi
-        slug=$(jq -rs --arg r "$p:$id" 'map(select(.row == $r)) | sort_by(.finished // "") | last | .slug // empty' <<<"$done_items")
-        if [ -n "$slug" ]; then
-          # 0: closed, or its PR is open or its proof is not in yet (reap_stuck says why); 2: the forge
-          # did not answer, so the next pass reads it again. 1: no merged PR, so the work is not done.
-          rc=0; land_orphan "$slug" open || rc=$?
-          [ "$rc" = 1 ] || continue 2
-        fi
+        # 0: closed, or a PR is open or its proof is not in yet (reap_stuck says why); 2: the forge
+        # did not answer, so the next pass reads it again. 1: no merged PR, so the work is not done.
+        rc=0; land_row "$p" "$id" || rc=$?
+        [ "$rc" != 3 ] || { say "settle_answered_gates: could not read the done queue items"; return 0; }
+        [ "$rc" = 1 ] || continue 2
         repose_ask "$prof" "$p" "$id" "$g" "$aid" "$ask" "$rsn"
         continue 2
       else
