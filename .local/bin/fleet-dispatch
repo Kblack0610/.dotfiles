@@ -4263,9 +4263,10 @@ item_row() {
 # started yet: a row gated on a cancelled ask or held by failures, land_row): the session died before
 # agent-land closed it, or closed the item before its PR merged (land_orphan). Closed only on merge proof (agent-merge-proof.sh) of the item's
 # merged: commit in the checkout of the repo its PR names, with proof "pr:<N> commit:<sha12>"; with no proof the
-# row is left started and the reason logged once (reap_stuck), so a false close never happens.
+# row is left started and the reason logged once (reap_stuck), so a false close never happens. A close notes
+# refuses (an open child row) goes the same way: its first error line is logged, keyed on the row so a changing error is one fact.
 close_row() {
-  local it=${3:-} row prof project lane key flag=() oid pr dir out rc=1 info state r line MERGE_PROOF_REMOTE=${MERGE_PROOF_REMOTE:-origin}
+  local it=${3:-} row prof project lane key flag=() oid pr dir out err rc=1 info state r line MERGE_PROOF_REMOTE=${MERGE_PROOF_REMOTE:-origin}
   [ -n "$it" ] || it=$(agent-queue show "$1" --json 2>/dev/null) || return 0
   row=$(item_row "$it"); [ -n "$row" ] || return 0
   IFS=$'\x1f' read -r prof project lane key <<<"$row"
@@ -4298,9 +4299,13 @@ close_row() {
       "chore(board): no merge proof for PR $pr ($out); close $project row $key with its proof, or correct the item's merged:"
     return 0
   fi
+  if ! err=$(np "$prof" ptask "$project" "${flag[@]}" done "$key" --proof "pr:$([[ "$pr" == */*#* ]] && echo "$pr" || echo "${pr##*#}") commit:${oid:0:12}" 2>&1); then
+    err=$(grep -m1 . <<<"$err"); err=${err#error: }
+    reap_stuck "$1" "$it" "$DISPATCH_ORPHAN_HOURS" "queue item $1: closing $project row $key failed: ${err:-notes gave no reason}" \
+      "chore(board): dispatch cannot close $project row $key on merged PR $pr; run notes ptask $project done $key to see why, then fix the row or close it"
+    return 0
+  fi
   reap_unstuck "$1"
-  np "$prof" ptask "$project" "${flag[@]}" done "$key" --proof "pr:$([[ "$pr" == */*#* ]] && echo "$pr" || echo "${pr##*#}") commit:${oid:0:12}" >/dev/null 2>&1 ||
-    { logline "queue item $1: closing $project row $key failed"; return 0; }
   logline "closed $project $lane row on merge proof ($out): $key"
   dispatch_event settled "$project" "row closed on merge proof" --item "$1" --id "$key" --pr "$pr" --sha "$oid"
   echo "closed $project: $key (queue item $1, PR $pr merged)"
