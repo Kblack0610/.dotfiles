@@ -30,7 +30,7 @@ rule("scrcpy-ws7",   { class = "^(scrcpy)$" },                    { workspace = 
 
 -- Remote screens draw fully opaque: decoration's 0.9/0.8 window opacity lets the 4-pass blur
 -- show through, which smears the remote desktop.
-rule("remote-screen-opaque", { class = "^(rustdesk|com\\.freerdp\\.client\\.sdl3|Vncviewer|scrcpy|com\\.moonlight_stream\\.Moonlight)$" }, { opaque = true })
+rule("remote-screen-opaque", { class = "^([Rr]ustdesk|com\\.freerdp\\.client\\.sdl3|Vncviewer|scrcpy|com\\.moonlight_stream\\.Moonlight)$" }, { opaque = true })
 
 -- Steam on 9, games on 10 (Super+0); each takes you there. Steam's floating dialogs and toasts
 -- stay on the focused workspace, so a friend-online popup never pulls you away. Proton and
