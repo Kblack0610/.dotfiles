@@ -358,8 +358,7 @@ BENCH_HUB_TIMEOUT_S=30                               # hub projects --json takes
 : "${BENCH_STOPPED_CMD:=fleet-dispatch stopped --json}"   # why nothing is leaving the queue, when dispatch has stopped
 : "${BENCH_HEADROOM:=${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}/headroom.json}"   # the last dispatch pass's gate and its standing hold
 : "${BENCH_DISPATCH_LOG:=${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/fleet-dispatch/activity.log}"   # one line per dispatch pass: how it ended
-: "${BENCH_ADMISSION_LOG:=${AGENT_QUEUE_DIR:-$HOME/.agent/queue}/admission.jsonl}"   # agent-queue's record of each add its cap or gates held
-BENCH_RECORD_TAIL=5000   # lines of the dispatch and admission records pipeline_json reads: more than a day of either (about 1000 passes and 300 holds a day, 2026-11-23)
+BENCH_RECORD_TAIL=5000   # lines of the dispatch record pipeline_json reads: more than a day of passes (about 1000 a day, 2026-11-23)
 : "${PIPELINE_SNAPSHOT:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/pipeline/pipeline.json}"   # what the Queue tab's pipeline line reads
 : "${CHAIN_DAYS:=7}"                 # the merged PRs ledger_coverage counts
 # A Sentinel probe's fix watermark (SENTINEL_SINCE, set by watch-companion-loop resolve), an epoch, 0 for
@@ -2376,7 +2375,7 @@ chain_routes() { echo "routes_unresolved=$(triage_coverage | grep -c .)"; }
 chain_queue() {
   local t=$1 wants held
   if wants=$(wants_stats "$t"); then jq -r '"wants_unstamped=\(if .total == 0 then 0 else (.unstamped / .total * 1000 | round) / 1000 end)"' <<<"$wants"; else echo "wants_unstamped=?"; fi
-  held=$($BENCH_ADMISSION_CMD 2>/dev/null | jq -er '.held_7d | numbers' 2>/dev/null) || held='?'
+  held=$(bench_read $BENCH_ADMISSION_CMD 2>/dev/null | jq -er '.held_7d | numbers' 2>/dev/null) || held='?'
   echo "admission_held=$held"
 }
 
@@ -2398,10 +2397,9 @@ PIPELINE_STEPS="inbox backlog admission queued dispatch running review waiting d
 inbox_lines() {
   local out p
   out=$($BENCH_NOTES_CMD outbox list) || return 1
-  { cut -f2- <<<"$out" | jq -Rc 'select(. != "")'
-    for p in $(bench_read $BENCH_PROJECTS_CMD | jq -r '.[].name'); do
-      $BENCH_NOTES_CMD ptask "$p" inbox --json 2>/dev/null | jq -c '.[] | .text // empty' || :
-    done; } | jq -sc .
+  for p in $(bench_read $BENCH_PROJECTS_CMD | jq -r '.[].name'); do
+    $BENCH_NOTES_CMD ptask "$p" inbox --json 2>/dev/null || :
+  done | jq -sc --arg out "$out" '($out | split("\n") | map(sub("^[^\t]*\t"; "") | select(. != ""))) + [.[][] | .text // empty]'
 }
 
 # pipeline_json <now> -> where every item sits and how each step scores: {since, drift, bottleneck,
@@ -2419,7 +2417,7 @@ inbox_lines() {
 # near at 0.8 or more, ok; "-" with no bound or no measure, never ok), why (the top 3 reasons as
 # {reason, n}, counted from the step's own record) and clears (what ends a stop, in the words of the
 # gate that holds; dispatch only). The measure is the age p90 against step_age_p90_<step>_max in
-# kpi-thresholds (an empty step measures 0), for admission the rows the cap held or returned in 24h
+# kpi-thresholds (an empty step measures 0), for admission the items the queue cap held in 24h (agent-queue admission --json day)
 # against admission_held_24h_max, and for dispatch the minutes the runner's hold has stood
 # (headroom.json held_since; none is 0) against DISPATCH_STARVED_MIN. Dispatch is stopped when
 # `fleet-dispatch stopped` says so and no floor started an item under the hold; with floor starts it
@@ -2435,23 +2433,22 @@ pipeline_json() {
   board=$(bench_read $BENCH_BOARD_CMD 2>/dev/null | jq -ce '.rows | arrays') || board=null
   rec=$($BENCH_STEPS_CMD 2>/dev/null | jq -ce 'select(.steps | arrays)') || rec=null
   inbox=$($BENCH_INBOX_CMD 2>/dev/null | jq -ce 'arrays') || inbox=null
-  verdicts=$($BENCH_VERDICTS_CMD 2>/dev/null | jq -sc .) || verdicts=null
+  verdicts=$(bench_read $BENCH_VERDICTS_CMD 2>/dev/null | jq -sc .) || verdicts=null
+  adm=$(bench_read $BENCH_ADMISSION_CMD 2>/dev/null | jq -ce '.day | objects') || adm=null
   # A headroom.json older than a pass's 45 minutes is no answer (hub_core::capacity::headroom).
   hr=null; [ -n "$(find "$BENCH_HEADROOM" -mmin -45 2>/dev/null)" ] && { hr=$(jq -ce 'objects' "$BENCH_HEADROOM" 2>/dev/null) || hr=null; }
-  # Bounded reads of the records that already exist: the intake and land-failed events, the queue
-  # cap's holds and the dispatch passes; each is cut to its window in the jq below.
+  # Reads of the records that already exist: the intake and land-failed events and the dispatch
+  # passes; each is cut to its window in the jq below.
   ing=null; [ -r "$BENCH_INGEST" ] && ing=$({ grep -hE '"action":"(added|filed|moved|dup|dropped|refused|left|sweep-stopped|land-failed)"' "$BENCH_INGEST" || :; } \
-    | jq -c 'select(.stage == "intake" or .action == "land-failed") | {ts, action, text, why}' | jq -sc .)
-  adm=null; [ -r "$BENCH_ADMISSION_LOG" ] && adm=$(tail -n "$BENCH_RECORD_TAIL" "$BENCH_ADMISSION_LOG" | jq -sc .)
+    | jq -sc 'map(select(.stage == "intake" or .action == "land-failed") | {ts, action, text, why})')
   acts=null; [ -r "$BENCH_DISPATCH_LOG" ] && acts=$(tail -n "$BENCH_RECORD_TAIL" "$BENCH_DISPATCH_LOG" \
-    | jq -Rc 'capture("^\\[(?<ts>[^]]+)\\] outcome=(?<o>[A-Z]+) ?(?<rest>.*)$")' | jq -sc .)
+    | jq -Rnc '[inputs | capture("^\\[(?<ts>[^]]+)\\] outcome=(?<o>[A-Z]+) ?(?<rest>.*)$")]')
   [ -r "$KPI_THRESHOLDS" ] && lim=$(grep -E '^[a-z0-9_]+=' "$KPI_THRESHOLDS" | kv_json)
   jq -cn --argjson t "$t" --arg steps "$PIPELINE_STEPS" --argjson lim "$lim" --argjson stop "${stop:-null}" --argjson hr "${hr:-null}" \
      --slurpfile a <(printf '%s' "$items") --slurpfile d <(printf '%s' "$fin") --slurpfile i <(printf '%s' "$inbox") \
      --slurpfile b <(printf '%s' "$board") --slurpfile r <(printf '%s' "$rec") --slurpfile v <(printf '%s' "${verdicts:-null}") \
      --slurpfile g <(printf '%s' "${ing:-null}") --slurpfile q <(printf '%s' "${adm:-null}") --slurpfile p <(printf '%s' "${acts:-null}") "$JQ_LIB"'
-    def epoch: strings | sub("\\.[0-9]+"; "") | fromdateiso8601? // empty;
-    def lepoch: strings | sub("\\.[0-9]+"; "") | try iso_epoch catch empty;   # a local time with its offset
+    def epoch: strings | sub("\\.[0-9]+"; "") | try iso_epoch catch empty;   # Z or a local offset
     def mins: ($t - .) / 60 | floor;
     def pct($p): sort | if length == 0 then null else .[([length * $p / 100 | ceil, 1] | max) - 1] end;
     def top: group_by(.reason) | map({reason: .[0].reason, n: (map(.n) | add)}) | sort_by(-.n, .reason) | .[:3];
@@ -2469,9 +2466,9 @@ pipeline_json() {
         elif $r | test("human is not away") then "the human is here"
         else $r | sub("^queue item [^ ]+ waits: "; "") | split(";")[0] | split(":")[0] | gsub(" \\([^)]*\\)"; "") | gsub("[0-9]+"; "N") | .[0:60] end;
     $a[0] as $a | $d[0] as $d | $b[0] as $b | $r[0] as $r | $i[0] as $i | $v[0] as $v
-    | ($g[0] | if . == null then null else map(. + {e: (.ts | lepoch)}) end) as $g
-    | ($q[0] | if . == null then null else map(select((.at | epoch) > $t - 86400)) end) as $q
-    | ($p[0] | if . == null then null else map(. + {e: (.ts | lepoch)} | select(.e > $t - 86400)) end) as $p
+    | ($g[0] | if . == null then null else map(. + {e: (.ts | epoch)}) end) as $g
+    | $q[0] as $q
+    | ($p[0] | if . == null then null else map(. + {e: (.ts | epoch)} | select(.e > $t - 86400)) end) as $p
     | def held($s; $f): if $a == null then null else $a | map(select(.state == $s)) | {n: length, ages: map(.[$f] | epoch | mins)} end;
     ($a // [] | map(rowkey | strings) | INDEX(.)) as $live
     | ($b // [] | map(select(.lane == "agent" and .state == "open" and ($live["\(.project):\(.id)"] | not)))) as $open
@@ -2488,14 +2485,11 @@ pipeline_json() {
                  else ($v // [] | map(select(.lane == "agent")) | map({key: "\(.project):\(.key)", value: .}) | from_entries) as $vk
                    | $open | {n: length, ages: map((.since // "") + "T00:00:00Z" | epoch | mins),
                        why: (if $v == null then null else map($vk["\(.project):\(.id)"] | if . then "\(.verdict): \(.rule)" else "no verdict yet" end) | tally end)} end),
-       admission: (if $q == null then null
-                   else ($q | map(select(.why != null))) as $w
-                     | {n: ([$w[] | select(.why | IN("cap", "returned")) | [.project, .slug]] | unique | length), ages: [],
-                        why: ($w | group_by(.why) | map({reason: .[0].why, n: (map([.project, .slug]) | unique | length)}) | top)} end),
+       admission: (if $q == null then null else {n: $q.held, ages: [], why: ($q.why | to_entries | map({reason: .key, n: .value}) | top)} end),
        queued: (held("queued"; "ready") | if . == null then . else . + {why: ($a | map(select(.state == "queued")
                   | .hold // "" | if . == "" then "runnable" else capture("^(hold:)?(?<k>[^ :(]+)").k // "held" end) | tally)} end),
        dispatch: (if $hr == null then null
-                  else {n: $hr.runnable, ages: [], held_min: $held_min,
+                  else {n: $hr.runnable, ages: [],
                         why: (if $p == null then null else ($p | map(select(.e > $t - 3600) | pass_why($since)))
                               | if length == 0 then [{reason: "no pass in the last hour", n: 0}] else tally end end)} end),
        running: (held("running"; "started") | if . == null or $d == null then . else . + {why: ($d | map(select((.finished | epoch) > $t - 86400) | .end_reason | strings) | tally)} end),
@@ -2508,7 +2502,6 @@ pipeline_json() {
        | (($lim["step_age_p90_\($s)_max"] | numbers) // null) as $bound | ($w.ages // [] | pct(90)) as $p90
        | (if $s == "admission" then {m: $w.n, b: (($lim.admission_held_24h_max | numbers) // null)}
           elif $s == "dispatch" then {m: $held_min, b: $hr.starved_min}
-          elif $s == "done" then {m: null, b: null}
           else {m: ($p90 // (if $w.n == 0 then 0 else null end)), b: $bound} end) as $mb
        | (if $mb.m == null or $mb.b == null or $mb.b <= 0 then null else $mb.m / $mb.b * 100 | round / 100 end) as $score
        | {step: $s, wip: $w.n, age_p50_min: ($w.ages // [] | pct(50)), age_p90_min: $p90, oldest_min: ($w.ages // [] | max),
@@ -2521,7 +2514,7 @@ pipeline_json() {
           why: $w.why, clears: (if $s == "dispatch" then $stop.clears else null end),
           problems_n: $f.problems_n, problems: ($f.problems // []),
           blocked: (if $s == "queued" and $stop != null then $stop.line else null end)}
-       + (if $s == "dispatch" then {held: ($stop.why // $hr.held), held_kind: $hr.held_kind, held_min: $held_min, floor_starts: $floors} else {} end)] as $rows
+       + (if $s == "dispatch" then {held: ($stop.why // $hr.held), held_kind: $hr.held_kind, floor_starts: $floors} else {} end)] as $rows
     | (if $a == null or $r == null then null
        else ($r.steps | map(.step as $s | (.items // [])[] | {key: ., value: $s}) | from_entries) as $rec
          | ($a | map({key: .slug, value: .state}) | from_entries) as $st
@@ -2533,10 +2526,10 @@ pipeline_json() {
        headline: ($worst | if . == null then null else
          (if .score == null then "" elif .step == "admission" then " (\(.score * 100 | round)% of \(.measure_bound))"
           else " (\(.score * 100 | round)% of \(.measure_bound | mdur))" end) as $of
-         | (if .step == "dispatch" then (if .held_min == null then "stopped"
-                                         elif .verdict == "stopped" then "stopped \(.held_min | mdur)"
-                                         elif .floor_starts > 0 then "main lane held \(.held_min | mdur), floors started \(.floor_starts)"
-                                         else "held \(.held_min | mdur)" end) + $of
+         | (if .step == "dispatch" then (if .measure == null then "stopped"
+                                         elif .verdict == "stopped" then "stopped \(.measure | mdur)"
+                                         elif .floor_starts > 0 then "main lane held \(.measure | mdur), floors started \(.floor_starts)"
+                                         else "held \(.measure | mdur)" end) + $of
             elif .step == "admission" then "\(.measure) rows held in 24h\($of)"
             else "age p90 \(.measure | mdur)\($of)" end) as $m
          | ((if .step == "dispatch" then .held else null end) // (.why // [] | first | if . then "\(.reason) (\(.n))" else null end)) as $y
@@ -2589,7 +2582,7 @@ cmd_pipeline() {
     *) say "usage: fleet-bench pipeline [--json | --check cap|age|mix|held|owner|chain-lag]"; return 2 ;;
   esac
   json=$(pipeline_json "$(now)") || return 1
-  adm=$($BENCH_ADMISSION_CMD 2>/dev/null | jq -ce 'objects') || adm=null
+  adm=$(bench_read $BENCH_ADMISSION_CMD 2>/dev/null | jq -ce 'objects') || adm=null
   mix=$($BENCH_MIX_CMD 2>/dev/null | jq -ce 'objects') || mix=null
   json=$(jq -c --argjson a "$adm" --argjson m "$mix" '. + {admission: $a, mix: $m}' <<<"$json")
   [ "${1:-}" = --json ] && { printf '%s\n' "$json"; return 0; }

@@ -588,7 +588,7 @@ STUB
   } > "$BENCH_DISPATCH_LOG"
   run "$SUBJECT" pipeline --json
   assert_success
-  run jq -c '.steps[] | select(.step == "dispatch") | [.wip, .held_min, .measure_bound, .score, .verdict, .floor_starts, .held_kind, .clears, .why]' <<<"$output"
+  run jq -c '.steps[] | select(.step == "dispatch") | [.wip, .measure, .measure_bound, .score, .verdict, .floor_starts, .held_kind, .clears, .why]' <<<"$output"
   assert_output '[50,64,60,1.07,"over",4,"slots","Clears when a live session ends",[{"reason":"started on a floor, the main lane held","n":4},{"reason":"pace target","n":3}]]'
   run "$SUBJECT" pipeline --json
   run jq -r '.headline.text' <<<"$output"
@@ -619,23 +619,16 @@ STUB
   [ "${#why}" -gt 160 ]
 }
 
-@test "pipeline: admission counts the rows the cap held in 24h, and a step with no bound reads -, never ok (ar-4985)" {
+@test "pipeline: admission scores the items the queue cap held in 24h, and a step with no bound reads -, never ok (ar-4985)" {
   pipeline_fixture
-  lat() { date -u -d "@$((T0 - $1))" +%Y-%m-%dT%H:%M:%SZ; }
-  {
-    jq -cn --arg a "$(lat 600)" '{at: $a, project: "game", slug: "a1", why: "cap"}'
-    jq -cn --arg a "$(lat 1200)" '{at: $a, project: "game", slug: "a1", why: "cap"}'
-    jq -cn --arg a "$(lat 1800)" '{at: $a, project: "game", slug: "a2", why: "returned"}'
-    jq -cn --arg a "$(lat 2400)" '{at: $a, project: "game", slug: "a3", why: "gated"}'
-    jq -cn --arg a "$(lat 90000)" '{at: $a, project: "game", slug: "a5", why: "cap"}'
-  } > "$BENCH_ADMISSION_LOG"
+  export BENCH_ADMISSION_CMD="echo {\"held_7d\":5,\"day\":{\"held\":2,\"why\":{\"cap\":2,\"gated\":1,\"returned\":1}}}"
   run "$SUBJECT" pipeline --json
   assert_success
-  run jq -c '.steps[] | select(.step == "admission" or .step == "done" or .step == "inbox") | [.step, .measure, .measure_bound, .score, .verdict]' <<<"$output"
+  json=$output
+  run jq -c '.steps[] | select(.step == "admission" or .step == "done" or .step == "inbox") | [.step, .measure, .measure_bound, .score, .verdict]' <<<"$json"
   assert_output "$(printf '%s\n' '["inbox",null,null,null,"-"]' '["admission",2,null,null,"-"]' '["done",null,null,null,"-"]')"
-  run "$SUBJECT" pipeline --json
-  run jq -c '.steps[] | select(.step == "admission") | .why' <<<"$output"
-  assert_output '[{"reason":"cap","n":1},{"reason":"gated","n":1},{"reason":"returned","n":1}]'
+  run jq -c '.steps[] | select(.step == "admission") | .why' <<<"$json"
+  assert_output '[{"reason":"cap","n":2},{"reason":"gated","n":1},{"reason":"returned","n":1}]'
   # NEGATIVE CONTROL: with a bound, the same count scores against it and reads ok
   echo admission_held_24h_max=4 >> "$KPI_THRESHOLDS"
   run "$SUBJECT" pipeline --json
