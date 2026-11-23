@@ -1529,6 +1529,21 @@ live_merges() {
   assert_line 'merges unread: the project map is unreadable'
 }
 
+@test "throughput: a wait with no slot row of its own gets its own line, the gate subset beside the unity pool (ar-3437)" {
+  live_merges
+  jq -n '{status: "success", data: {result: [{metric: {__name__: "cc:pool_slots", pool: "unity"}, value: [1, "20"]}]}}' > "$SANDBOX/slots.json"
+  jq -n '{status: "success", data: {result: [["unity", "0.9", "2400"], ["unity", "0.5", "0"], ["unity-gate", "0.9", "600"],
+    ["unity-gate", "0.5", "0"], ["unity-full", "0.9", "6000"], ["unity-full", "0.5", "420"]]
+    | map({metric: {pool: .[0], quantile: .[1]}, value: [1, .[2]]})}}' > "$SANDBOX/queue.json"
+  stub_prom "case \"\$*\" in *query=github_job_queue_seconds*) cat '$SANDBOX/queue.json' ;; *) cat '$SANDBOX/slots.json' ;; esac"
+  BENCH_NOW=$T0 run "$SUBJECT" throughput
+  assert_success
+  assert_line 'pool unity: 0 waiting, 0 running, finished jobs waited p50 0m, p90 40m (24h)'
+  assert_line 'wait unity-gate: finished jobs waited p50 0m, p90 10m (24h)'
+  assert_line 'wait unity-full: finished jobs waited p50 7m, p90 1.7h (24h)'
+  refute_line --partial 'wait unity:'
+}
+
 @test "findings: a repo that cannot be fetched is blind, its old refs are not read as no merges" {
   live_merges
   git -C "$SANDBOX/plat" remote set-url origin "$SANDBOX/gone.git"

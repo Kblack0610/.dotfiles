@@ -5720,6 +5720,10 @@ cmd_throughput() {
              | "pool \($p): \($s["cc:pool_waiting"][$p] // 0) waiting, \($s["cc:pool_busy"][$p] // 0) running"
                + (if $s["cc:pool_oldest_wait_seconds"][$p] then ", oldest \($s["cc:pool_oldest_wait_seconds"][$p] | dur)" else "" end)
                + (if $wait[$p] then ", finished jobs waited p50 \($wait[$p]["0.5"] | dur), p90 \($wait[$p]["0.9"] | dur) (24h)" else "" end)),
+            # A wait the exporter reports with no slot row of its own: a subset by a shard label (unity-gate,
+            # unity-full) or a pool with no live slots. unity-queue-wait reads the gate one (ar-3437).
+            ($wait | keys[] | . as $p | select(($s["cc:pool_slots"][$p] // 0) == 0 and $wait[$p]["0.9"] != null)
+             | "wait \($p): finished jobs waited p50 \($wait[$p]["0.5"] | dur), p90 \($wait[$p]["0.9"] | dur) (24h)"),
             "hosts, load per core: " + ($s["cc:host_load1"] // {} | to_entries | map(select(($s["cc:host_cores"][.key] // 0) > 0) | {k: .key, v: (.value / $s["cc:host_cores"][.key])})
                | map(select(.v >= 0.5)) | sort_by(-.v) | if length == 0 then "all under 0.5x" else map("\(.k) \(.v | round1)x") | join(", ") end)
        end)'
