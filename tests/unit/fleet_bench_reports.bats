@@ -1533,7 +1533,7 @@ live_merges() {
   live_merges
   jq -n '{status: "success", data: {result: [{metric: {__name__: "cc:pool_slots", pool: "unity"}, value: [1, "20"]}]}}' > "$SANDBOX/slots.json"
   jq -n '{status: "success", data: {result: [["unity", "0.9", "2400"], ["unity", "0.5", "0"], ["unity-gate", "0.9", "600"],
-    ["unity-gate", "0.5", "0"], ["unity-full", "0.9", "6000"], ["unity-full", "0.5", "420"]]
+    ["unity-gate", "0.5", "0"], ["unity-full", "0.9", "6000"], ["unity-full", "0.5", "420"], ["lone", "0.9", "60"]]
     | map({metric: {pool: .[0], quantile: .[1]}, value: [1, .[2]]})}}' > "$SANDBOX/queue.json"
   stub_prom "case \"\$*\" in *query=github_job_queue_seconds*) cat '$SANDBOX/queue.json' ;; *) cat '$SANDBOX/slots.json' ;; esac"
   BENCH_NOW=$T0 run "$SUBJECT" throughput
@@ -1542,6 +1542,14 @@ live_merges() {
   assert_line 'wait unity-gate: finished jobs waited p50 0m, p90 10m (24h)'
   assert_line 'wait unity-full: finished jobs waited p50 7m, p90 1.7h (24h)'
   refute_line --partial 'wait unity:'
+  refute_line --partial 'wait lone'   # a wait missing a quantile is skipped, never a jq error that loses the report
+  # the waits are their own query, so an unreadable snapshot still prints them
+  stub_prom "case \"\$*\" in *query=github_job_queue_seconds*) cat '$SANDBOX/queue.json' ;; *) exit 7 ;; esac"
+  BENCH_NOW=$T0 run "$SUBJECT" throughput
+  assert_success
+  assert_line 'pool and hosts: prometheus unreadable'
+  assert_line 'wait unity-gate: finished jobs waited p50 0m, p90 10m (24h)'
+  assert_line 'wait unity: finished jobs waited p50 0m, p90 40m (24h)'
 }
 
 @test "findings: a repo that cannot be fetched is blind, its old refs are not read as no merges" {
