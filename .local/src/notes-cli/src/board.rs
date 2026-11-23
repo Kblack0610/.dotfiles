@@ -1527,7 +1527,7 @@ fn rows_by_id(
 }
 
 /// `notes board --json --id <ID>...` - the rows with these ids wherever they sit, in every
-/// profile ([`rows_by_id`]), as `{today, rows: [...]}`. READ-ONLY. For a caller that holds
+/// profile in board order ([`rows_by_id`]), as `{today, rows: [...]}`. READ-ONLY. For a caller that holds
 /// an id the open board may not list: a row aimed at a later release, or one closed into
 /// another (`dup`), which the caller follows to the row that owns the work now.
 pub fn print_ids(ids: &[String]) -> Result<i32> {
@@ -1538,7 +1538,8 @@ pub fn print_ids(ids: &[String]) -> Result<i32> {
     }
     let today = Local::now().date_naive();
     let mut rows = Vec::new();
-    for name in config::all_profile_names()? {
+    let layout = config::board_layout().unwrap_or_default();
+    for name in layout.sort(config::all_profile_names()?) {
         let Ok(p) = config::resolve(Some(&name)) else {
             continue;
         };

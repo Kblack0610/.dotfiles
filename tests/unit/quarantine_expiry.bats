@@ -85,7 +85,7 @@ soon() { printf '%s\n' "$@" > "$SANDBOX/soon.tsv"; }
   assert_line --index 2 'ucp-31: 1 entry ends 2026-11-24 (3d) in Org/play; ucp-1 owns them (closed into it: ucp-31 -> ucp-32 -> ucp-1); noted on the row now'
   assert_line --index 3 'ucp-40: 1 entry ends 2026-11-24 (3d) in Org/play; the row is closed, so no open row owns them'
   assert_line --index 4 'ucp-41: 1 entry ends 2026-11-24 (3d) in Org/play; closed as a dup of ucp-99, which is on no sheet, so no open row owns them'
-  assert_line --index 5 'ucp-50: 1 entry ends 2026-11-24 (3d) in Org/play; closed as a dup of ucp-51, which is closed too, so no open row owns them'
+  assert_line --index 5 'ucp-50: 1 entry ends 2026-11-24 (3d) in Org/play; closed into a dup loop (ucp-50 -> ucp-51 -> ucp-50), so no open row owns them'
   assert_line --index -1 '9 quarantine entries over 6 owner rows end soon (next 2026-11-24, 3d): 3 noted, 3 with no open owner row'
   # one note on ucp-1, counting all six entries, and ucp-32 was looked up on the second hop
   run grep -c -- '^--detail$' "$SANDBOX/notes.log"
@@ -95,6 +95,21 @@ soon() { printf '%s\n' "$@" > "$SANDBOX/soon.tsv"; }
   run cat "$SANDBOX/lookups.log"
   assert_line --index 0 'ucp-1 ucp-30 ucp-31 ucp-40 ucp-41 ucp-50'
   assert_line --index 1 'ucp-32 ucp-51 ucp-99'
+}
+
+@test "a dup row listed for two repos is named once, and a chain past DUP_HOPS says it was cut" {
+  jq '.rows += [{id:"ucp-30",state:"done",dup:"ucp-1",details:[],raw:"- [x] a <!-- id:ucp-30 dup:ucp-1 -->"}]
+    + [range(80; 87) | {id: "ucp-\(.)", state: "done", dup: "ucp-\(. + 1)", details: [], raw: "- [x] r"}]
+    + [{id:"ucp-90",state:"done",dup:"ucp-91",details:[],raw:"- [x] s"}, {id:"ucp-91",state:"done",dup:null,details:[],raw:"- [x] t"}]' \
+    "$SANDBOX/board.json" > "$SANDBOX/b" && mv "$SANDBOX/b" "$SANDBOX/board.json"
+  soon $'Org/play\tucp-30\t1\t2026-11-24\t3' $'Org/other\tucp-30\t2\t2026-11-24\t3' $'Org/play\tucp-80\t1\t2026-11-24\t3' \
+    $'Org/play\tucp-90\t1\t2026-11-24\t3'
+  run "$REPO_ROOT/.local/bin/quarantine-expiry"
+  assert_failure 1
+  assert_line --index 2 'ucp-80: 1 entry ends 2026-11-24 (3d) in Org/play; closed into a dup chain over 5 deep (ucp-80 -> ucp-81 -> ucp-82 -> ucp-83 -> ucp-84 -> ucp-85 -> ucp-86), so no open row owns them'
+  assert_line --index 3 'ucp-90: 1 entry ends 2026-11-24 (3d) in Org/play; closed as a dup of ucp-91, which is closed too, so no open row owns them'
+  run cat "$SANDBOX/notes.log"
+  assert_line --partial '3 entries of this row and of the rows closed into it as dups (ucp-30) stop'
 }
 
 @test "an owner row aimed at a later version is noted like an open-version one" {

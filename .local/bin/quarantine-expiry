@@ -80,7 +80,7 @@ n_rows() { if [ "$1" = 1 ]; then echo "1 owner row"; else echo "$1 owner rows"; 
 # end date, so a row that took several dups is noted once with all of them.
 # Tab is IFS whitespace, so `read` would merge an empty row field into the next: split on \037
 lines=() owners=()
-declare -A total=() via_ids=() via_n=() outcome=()
+declare -A total=() via_ids=() via_n=() via_seen=() outcome=()
 VIA_SHOWN=5   # dup-closed ids a note names before it says "and N more"
 while IFS=$'\037' read -r repo row n ends left; do
   [ -n "$repo" ] || continue
@@ -91,7 +91,8 @@ while IFS=$'\037' read -r repo row n ends left; do
   oid="$(jq -r 'select(.row != null and .row.state != "done") | .row.id' <<<"$res")"
   [ -n "$oid" ] || continue
   total["$oid|$ends"]=$(( ${total["$oid|$ends"]:-0} + n ))
-  [ "$oid" != "$row" ] || continue
+  [ "$oid" != "$row" ] && [ -z "${via_seen["$oid|$ends|$row"]:-}" ] || continue
+  via_seen["$oid|$ends|$row"]=1
   via_n["$oid|$ends"]=$(( ${via_n["$oid|$ends"]:-0} + 1 ))
   [ "${via_n["$oid|$ends"]}" -gt "$VIA_SHOWN" ] || via_ids["$oid|$ends"]+="${via_ids["$oid|$ends"]:+, }$row"
 done < <(tr '\t' '\037' <<<"$soon")
@@ -120,7 +121,11 @@ for i in "${!lines[@]}"; do
   fi
   if [ "$(field state)" = done ]; then
     closed=$((closed + 1))
-    if [ -n "$via" ]; then echo "$what; closed as a dup of $oid, which is closed too, so no open row owns them"
+    cut_at="$(field 'dup // empty')"
+    if [ -n "$cut_at" ] && [ "$(jq '.via | length' <<<"$res")" -ge "$DUP_HOPS" ]; then
+      echo "$what; closed into a dup chain over $DUP_HOPS deep ($via -> $oid -> $cut_at), so no open row owns them"
+    elif [ -n "$cut_at" ]; then echo "$what; closed into a dup loop ($via -> $oid -> $cut_at), so no open row owns them"
+    elif [ -n "$via" ]; then echo "$what; closed as a dup of $oid, which is closed too, so no open row owns them"
     else echo "$what; the row is closed, so no open row owns them"; fi
     continue
   fi
