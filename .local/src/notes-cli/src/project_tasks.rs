@@ -2634,6 +2634,8 @@ pub fn rebrief(
 /// checkbox state and its tags stay as they were ([`md::retext_task`]); the one exception is
 /// text-borne tags such as `#plan`, which `--text` drops when it leaves them out, while the
 /// sizing (`#size/x`, `#pts/N`) is kept unless `--text` types its own ([`carry_sizing`]).
+/// A `#c` stamp or `#of/` link typed in `--text` is dropped when the row has one; a typed `#of/`
+/// naming another parent is refused (re-parent with `ptask tag`).
 ///
 /// Each of `details` becomes an indented line at the end of the row's block, after its
 /// existing detail lines and child rows. `--detail` alone leaves the row's own line as it is.
@@ -2722,6 +2724,23 @@ pub fn retext(
             };
             // Refused here too, before the epic is filed, for the same reason.
             projects::refuse_retired_priority(&row, t)?;
+            // A row that has its parent keeps it ([`md::retext_task`]), so a standing epic
+            // filed for it would have no child.
+            if md::split_parent(&row).1.is_some() {
+                return retext(
+                    p,
+                    log,
+                    name,
+                    pick,
+                    Some(t),
+                    append,
+                    details,
+                    false,
+                    None,
+                    lane,
+                    writer,
+                );
+            }
             let proj_dir = projects::project_dir(p, name)?;
             linked = link_standing(p, log, name, &proj_dir, &[t.to_string()], bin)?;
             match &linked {
@@ -2740,6 +2759,16 @@ pub fn retext(
     let has_details = details.iter().any(|d| !d.trim().is_empty());
     if text.or(append).is_none_or(str::is_empty) && !has_details {
         bail!("edit needs the new words: --text \"<new text>\", --append \"<more>\" or --detail \"<line>\"");
+    }
+    if let Some(t) = text {
+        let row = sheet_and_content(p, name, lane)?.and_then(|(_, c)| find_open(&c, pick));
+        let kept = row.and_then(|r| md::split_parent(&r).1);
+        let typed = md::split_parent(t).1;
+        if let (Some(kept), Some(typed)) = (kept, typed) {
+            if kept != typed {
+                bail!("the row is under #of/{kept}, and edit keeps its parent: #of/{typed} in --text would be dropped. Re-parent with `notes ptask {name} tag <id> --remove of/{kept} --add of/{typed}`, so nothing was edited");
+            }
+        }
     }
     if let Some(t) = text.filter(|t| crate::epics::is_epic(t)) {
         refuse_epic_on_board(lane, &[t])?;
@@ -5094,6 +5123,42 @@ mod inbox_tests {
         fn read(&self) -> String {
             fs::read_to_string(self.sheet()).unwrap()
         }
+    }
+
+    #[test]
+    fn edit_text_keeps_the_parent_and_refuses_another() {
+        let v = vault(
+            "parent",
+            "",
+            "- [ ] fix(ui): the menu flickers #high #of/sc-9 <!-- id:sc-1 -->\n",
+        );
+        let one = Pick::Id("sc-1".into());
+        let w = Writer::of(None, None, None, None, &[], false, Vec::new());
+        let go = |text: &str| {
+            retext(
+                &v.p,
+                &v.log,
+                "scratch",
+                &one,
+                Some(text),
+                None,
+                &[],
+                false,
+                None,
+                Lane::Human,
+                &w,
+            )
+        };
+        // nc-108: the same link retyped lands once
+        go("fix(ui): the menu blinks #of/sc-9").unwrap();
+        let sheet = v.read();
+        assert_eq!(sheet.matches("#of/sc-9").count(), 1, "{sheet}");
+        // a different parent is refused, not dropped in silence
+        let err = go("fix(ui): the menu blinks #of/sc-4")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("--remove of/sc-9 --add of/sc-4"), "{err}");
+        assert_eq!(v.read(), sheet, "nothing was edited");
     }
 
     #[test]
