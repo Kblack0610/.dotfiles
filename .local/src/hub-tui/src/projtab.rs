@@ -1493,7 +1493,7 @@ pub(crate) mod tests {
             state: if done > 0 {
                 projects::ON_TRACK
             } else {
-                projects::NO_WINDOW
+                projects::FLOW
             },
             // A window committing what the version holds, due in 7 days; `demo` has none.
             window: (done > 0).then(|| projects::Window {

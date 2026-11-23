@@ -503,6 +503,10 @@ pub struct Running {
     /// The epic the row's `#of/` names, when the board feed was read and has the row.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub epic: Option<String>,
+    /// That epic's system, the area of its `epic(<system>):` row (`dispatch`, `views`): the
+    /// category the Projects chip groups running work by.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub area: Option<String>,
     /// The PR as a row prints it (`#1871`) and its page: the session's, else the item's own.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pr: Option<String>,
@@ -882,6 +886,10 @@ pub fn running(state: &Value, q: &Queue, board: Option<&Feed>) -> Vec<Running> {
             let epic = board_row
                 .zip(board)
                 .and_then(|((p, id), f)| f.row(p, id)?.parent.clone());
+            let area = board_row
+                .zip(board)
+                .zip(epic.as_deref())
+                .and_then(|(((p, _), f), e)| f.row(p, e)?.area.clone());
             let (pr, pr_url) = pr_of(live, i).map_or((None, None), |(l, u)| (Some(l), u));
             let ci = said_lower(live, "ci").filter(|_| pr.is_some());
             Running {
@@ -894,6 +902,7 @@ pub fn running(state: &Value, q: &Queue, board: Option<&Feed>) -> Vec<Running> {
                 target,
                 row: board_row.map(|(_, id)| id.to_string()),
                 epic,
+                area,
                 ci_url: ci
                     .as_ref()
                     .and(pr_url.as_deref())
@@ -1787,8 +1796,13 @@ mod tests {
         };
         let mut feed = board().unwrap();
         feed.rows[6].parent = Some("tr-1".into());
+        // The epic's own row names its system, the area the chip groups running work by.
+        let mut epic = sheet("tr-1", "agent", "epic", "high", "2026-11-01");
+        epic.area = Some("data".into());
+        feed.rows.push(epic);
         let h = build(Some(&st), Some(&q), Some(&Ok(feed)), None, NOW);
         let r = &h.running[0];
+        assert_eq!(r.area.as_deref(), Some("data"));
         assert_eq!(
             (
                 r.row.as_deref(),
@@ -1818,7 +1832,11 @@ mod tests {
             )
         );
         let l = &h.running[1];
-        assert_eq!((l.row.as_deref(), l.epic.as_deref()), (Some("tr-50"), None));
+        assert_eq!(
+            (l.row.as_deref(), l.epic.as_deref(), l.area.as_deref()),
+            (Some("tr-50"), None, None),
+            "a row under no epic has no area, never its own scope"
+        );
         assert_eq!(
             (l.pr.as_deref(), l.ci.as_deref(), l.ci_url.as_deref()),
             (Some("#3"), None, None)
@@ -1827,8 +1845,12 @@ mod tests {
         // Without the board the epic is blank, never guessed; the rest still joins.
         let bare = running(&st, &q, None);
         assert_eq!(
-            (bare[0].epic.as_deref(), bare[0].row.as_deref()),
-            (None, Some("tr-9"))
+            (
+                bare[0].epic.as_deref(),
+                bare[0].area.as_deref(),
+                bare[0].row.as_deref()
+            ),
+            (None, None, Some("tr-9"))
         );
         // Overdue is fleet-sessions' verdict, never a past ETA against a clock of Home's own.
         let mut calm = st.clone();
