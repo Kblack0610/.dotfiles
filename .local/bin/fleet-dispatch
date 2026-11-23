@@ -915,7 +915,8 @@ reap_seen() { [ ! -e "$DIR/reap-miss/$1" ] || rm -f "$DIR/reap-miss/$1"; }
 # so a new session name in the reason is no change), and once it has stood <hours> (0: at once) one
 # agent row (#red, so fix-red works it) says what to do, then nothing more while it stands; no
 # human-sheet row and no page (ar-4765: a stuck item is the fleet's to fix, and triage asks the human
-# once when the fix does not hold). $DIR/stuck/<slug> holds "<first epoch> <filed 0|1>" and the title; each pass rewrites it, so
+# once when the fix does not hold). A refused row is filed again on the next pass (file_row says each
+# refusal on stderr). $DIR/stuck/<slug> holds "<first epoch> <filed 0|1>" and the title; each pass rewrites it, so
 # a marker no pass has seen in a day is pruned by cmd_reap. reap_unstuck clears it once the item settles.
 reap_stuck() {
   local f="$DIR/stuck/$1" first='' filed=0 was='' now where
@@ -923,8 +924,8 @@ reap_stuck() {
   { read -r first filed && IFS= read -r was; } 2>/dev/null < "$f"
   if [ "$was" != "$5" ] || [ -z "$first" ]; then first=$now filed=0; logline "$4"; fi
   if [ "$filed" != 1 ] && [ $(( now - first )) -ge $(( $3 * 3600 )) ]; then
-    filed=1 where=$(file_row agent "$2" "$5 (queue item $1) #red #size/s")
-    logline "queue item $1: $where: $5"
+    where=$(file_row agent "$2" "$5 (queue item $1) #red #size/s")
+    case "$where" in "not filed"*) ;; *) filed=1; logline "queue item $1: $where: $5" ;; esac
     echo "agent row for queue item $1 ($where)"
   fi
   mkdir -p "${f%/*}" && printf '%s %s\n%s\n' "$first" "$filed" "$5" > "$f"
@@ -947,7 +948,7 @@ file_row() {
     0) echo "on the $sheet $what" ;;
     3) echo "joined its twin on the $sheet $what" ;;
     4) echo "in the outbox for the $sheet $what" ;;
-    *) echo "not filed: the $sheet $what refused the row"; say "the $sheet $what refused: $3" ;;
+    *) echo "not filed: the $sheet $what refused the row (notes exit $rc)"; say "the $sheet $what refused (notes exit $rc): $3" ;;
   esac
 }
 
@@ -4850,12 +4851,14 @@ own_parked_pr() {
     return 0
   fi
   # The agent row (file_row): the stamp goes first, so a failed write never files the row twice; a
-  # board that refuses the row is said on stderr (file_row) and in the item's note.
+  # board that refuses the row is said on stderr (file_row) and in the item's note, and the stamp goes
+  # back to what it was, so the next pass files it again.
   agent-queue set "$slug" "fix_human=$head${howners:+ $howners} $owner" >/dev/null || return 0
   local title="fix(ci): PR $pr is $color at ${head:0:12} after $tries fix-ci tries; fix it"
   [ "$owner" = fix ] || title="chore(review): PR $pr is $color at ${head:0:12} after $tries land tries; land it"
   where=$(file_row agent "$it" "$title or close it (queue item $slug) #red #escalate #size/s")
   agent-queue set "$slug" "note=PR $pr $color at ${head:0:12} after $tries $verb tries; $where" >/dev/null
+  case "$where" in "not filed"*) agent-queue set "$slug" "fix_human=$human" >/dev/null ;; esac
   logline "queue item $slug: PR $pr $color at ${head:0:12} after $tries $verb tries, $where"
   echo "agent row for queue item $slug (PR $pr $color after $tries $verb tries, $where)"
 }

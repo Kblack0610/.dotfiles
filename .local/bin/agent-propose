@@ -227,8 +227,11 @@ cmd_answered() {
   [ -n "$id" ] || die "no proposal waits on ask $ask"
   [ "$st" = asked ] || { echo "$id already $st"; return 0; }
   names="$("$AP_ASK_CMD" answer-names "$ask")" || die "cannot read the answer to ask $ask"
-  by="$("$AP_ASK_CMD" show "$ask" 2>/dev/null | sed -n '/^answered_by: */{s///p;q;}')"
+  by="$("$AP_ASK_CMD" show "$ask")" || die "cannot read ask $ask"
+  by="$(sed -n '/^answered_by: */{s///p;q;}' <<<"$by")"
   by=${by:-human}
+  # Only a ruling decides it: an answer a session, shepherd or hold gave leaves it asked.
+  case "$by" in human | judge) ;; *) die "ask $ask was answered by $by; $id stays asked: decide it with agent-propose accept or reject" ;; esac
   grep -qx accept <<<"$names" && acc=a || acc=
   grep -qx reject <<<"$names" && rej=r || rej=
   case "$acc$rej" in

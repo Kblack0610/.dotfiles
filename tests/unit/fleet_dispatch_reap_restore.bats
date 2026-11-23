@@ -1069,15 +1069,21 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   [ ! -e "$FLEET_DISPATCH_DIR/stuck/fix-crash" ] || fail "a settled item left its stuck marker"
 }
 
-@test "reap: a stuck item whose agent board refuses the row says so on stderr once, pages nobody, then stays quiet" {
+@test "reap: a stuck item whose agent board refuses the row says so on stderr, pages nobody, and files it once the board takes it" {
   pr_item OPEN
   : > "$NOTES_FIXTURE/pr.state"
   touch "$NOTES_FIXTURE/refuse.game"
   run cmd_reap
   printf '%s 0\n%s\n' "$(( $(date +%s) - DISPATCH_ORPHAN_HOURS * 3600 ))" "$(sed -n 2p "$FLEET_DISPATCH_DIR/stuck/fix-crash")" > "$FLEET_DISPATCH_DIR/stuck/fix-crash"
   run cmd_reap
-  assert_output --partial 'agent row for queue item fix-crash (not filed: the game board refused the row)'
-  assert_output --partial 'fleet-dispatch: the game board refused: chore(review): reap has not read PR o/game#12'
+  assert_output --partial 'agent row for queue item fix-crash (not filed: the game board refused the row (notes exit 1))'
+  assert_output --partial 'fleet-dispatch: the game board refused (notes exit 1): chore(review): reap has not read PR o/game#12'
+  # NEGATIVE CONTROL: a refused row is not marked filed, so the next pass tries again
+  run cmd_reap
+  assert_output --partial 'not filed: the game board refused the row'
+  rm "$NOTES_FIXTURE/refuse.game"
+  run cmd_reap
+  assert_output --partial 'agent row for queue item fix-crash (on the game board)'
   run cmd_reap
   refute_output --partial 'agent row'
   assert_equal "$(grep -c 'agent-notify' "$NOTES_FIXTURE/calls.log")" 0

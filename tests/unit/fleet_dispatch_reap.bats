@@ -776,17 +776,17 @@ OUT
   run close_row fix-crash
   run close_row fix-crash
   assert_equal "$(grep -c 'closing game row fix crash failed' "$FLEET_DISPATCH_DIR"/log.md)" 1
-  assert_not_called 'notes --profile bnb ptask game add'
+  assert_not_called 'notes --profile bnb ptask game --agent add'
   grep -qF -- '- [/] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail "row moved"
   # The error changing (a child closed) is the same fact: no new line.
   echo 'error: fix crash has 1 open child row(s) (gm-8); finish them first' > "$NOTES_FIXTURE/ptask.done.fail"
   run close_row fix-crash
   assert_equal "$(grep -c 'closing game row fix crash failed' "$FLEET_DISPATCH_DIR"/log.md)" 1
-  # Past the orphan window it reaches the human sheet once.
+  # Past the orphan window it reaches the agent board as a red once.
   DISPATCH_ORPHAN_HOURS=0
   run close_row fix-crash
   run close_row fix-crash
-  assert_equal "$(grep -c 'ptask game add chore(board): dispatch cannot close game row fix crash' "$NOTES_FIXTURE/calls.log")" 1
+  assert_equal "$(grep -c 'ptask game --agent add chore(board): dispatch cannot close game row fix crash' "$NOTES_FIXTURE/calls.log")" 1
   # Once notes accepts the close, the row closes and the stuck marker goes.
   assert [ -e "$FLEET_DISPATCH_DIR/stuck/fix-crash" ]
   rm "$NOTES_FIXTURE/ptask.done.fail"
@@ -914,6 +914,22 @@ OUT
   run cmd_reap
   assert_output --partial 'try 1 of 2'
   assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_human // ""] | join("|")')" "queued|"
+}
+
+@test "reap: a spent PR whose agent board refuses the row keeps its old stamp, so the next pass files it" {
+  local h1=1111111111111111111111111111111111111111
+  pr_item OPEN
+  run cmd_reap
+  touch "$NOTES_FIXTURE/refuse.game"
+  for _ in 1 2 3; do fix_ended "$h1" FAIL; run cmd_reap; done
+  assert_output --partial 'agent row for queue item fix-crash (PR o/game#12 red after 2 fix-ci tries, not filed: the game board refused the row (notes exit 1))'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '.fix_human // ""')" ""
+  rm "$NOTES_FIXTURE/refuse.game"
+  fix_ended "$h1" FAIL; run cmd_reap
+  assert_output --partial 'agent row for queue item fix-crash (PR o/game#12 red after 2 fix-ci tries, on the game board)'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .fix_human)" "$h1 fix"
+  fix_ended "$h1" FAIL; run cmd_reap
+  refute_output --partial 'fix-crash'
 }
 
 # ar-2589: #2182's fix-ci tries were spent on a superseded red at 4bbda5c; that head read green and sat in review, ownerless.
