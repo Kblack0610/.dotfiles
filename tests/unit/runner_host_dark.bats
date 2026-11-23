@@ -176,3 +176,23 @@ online() {
   run "$RHD" --for 10min
   assert_failure 2
 }
+
+@test "a reading the judging cannot parse is unreadable, never a quiet OK" {
+  online mac-mini -3600 0
+  online ms-a2 -3600 3
+  echo 'mac-mini two' > "$FIX/reg"
+  run "$RHD" --for 10m --at "$END"
+  assert_failure 1
+  assert_line 'unreadable: runner-host-dark could not judge the readings Prometheus gave'
+}
+
+@test "an option missing its value, or -h, prints the usage and exits 2" {
+  run timeout 5 "$RHD" --for
+  assert_failure 2
+  assert_output --partial 'runner-host-dark [--for 10m]'
+  run timeout 5 "$RHD" --at
+  assert_failure 2
+  run "$RHD" -h
+  assert_failure 2
+  assert_output 'runner-host-dark [--for 10m] [--at <epoch|date>]'
+}
