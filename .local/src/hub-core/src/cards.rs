@@ -698,9 +698,14 @@ pub fn ci(i: &crate::infra::Infra) -> Card {
         i.ci.red
             .iter()
             .map(|r| row(r.clone(), "no runner takes it", Level::Red, None));
-    let runners = down
-        .iter()
-        .map(|s| row(format!("{} down", s.label("runner")), "CI runner", Level::Red, None));
+    let runners = down.iter().map(|s| {
+        row(
+            format!("{} down", s.label("runner")),
+            "CI runner",
+            Level::Red,
+            None,
+        )
+    });
     let stuck = runs.iter().map(|s| {
         row(
             s.name(),
@@ -2088,7 +2093,10 @@ mod tests {
             ("ci", "4", "CI running", "#ci".into())
         );
         let part = |l: &str| c.parts.iter().find(|p| p.label == l).unwrap().value.clone();
-        assert_eq!((part("Queued"), part("Runners up")), ("23".into(), "5/5".into()));
+        assert_eq!(
+            (part("Queued"), part("Runners up")),
+            ("23".into(), "5/5".into())
+        );
         // A deep queue is information: green, with the oldest queued job as the one row.
         assert_eq!(c.level, Level::Ok);
         assert_eq!(c.lists[0].rows[0].text, "app build");
