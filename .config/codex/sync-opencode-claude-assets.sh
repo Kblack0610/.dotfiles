@@ -21,7 +21,9 @@
 # without touching natively-authored OpenCode agents/commands.
 set -euo pipefail
 
-CLAUDE_SRC="${CLAUDE_SRC:-$HOME/.dotfiles/.claude}"
+# The deployed tree, where stow merges the public and private agents and commands: the public
+# checkout alone left out the private ones (Explore, general-purpose, kb-*, remember).
+CLAUDE_SRC="${CLAUDE_SRC:-$HOME/.claude}"
 OPENCODE_HOME="${OPENCODE_HOME:-$HOME/.config/opencode}"
 MANIFEST="$OPENCODE_HOME/.claude-assets-manifest"
 
