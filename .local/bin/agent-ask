@@ -1367,8 +1367,10 @@ told_at_post() {
 }
 
 # judge_guarded <file> <reason>: judge the ask behind AGENT_ASK_JUDGE_TIMEOUT. A call the guard
-# ends leaves the ask an error verdict with <reason>, unless the judge wrote one first.
+# ends leaves the ask an error verdict with <reason>, unless the judge wrote one first. The old
+# verdict goes first, since cmd_judge keeps `judge` until it writes the next one.
 judge_guarded() {
+  drop_field "$1" judge judge_reason judged_at
   timeout --kill-after=5 "$AGENT_ASK_JUDGE_TIMEOUT" "${BASH_SOURCE[0]}" judge "$(field "$1" id)" >/dev/null 2>&1 < /dev/null
   case $? in
     124|137) [ -n "$(field "$1" judge)" ] || judge_record "$1" error "" "$2" "" ;;
@@ -1376,10 +1378,11 @@ judge_guarded() {
 }
 
 # timed_out_reason [again]: the judge_reason of a call the guard ended, at post or (again) on the
-# pass that judged it once more (rejudge_timed_out), which tries only the first.
-timed_out_reason() {
-  printf 'the judge call timed out after %ss%s' "$AGENT_ASK_JUDGE_TIMEOUT" "${1:+, at post and again on the next pass}"
-}
+# pass that judged it once more (rejudge_timed_out), which tries only the first, matched up to the
+# guard's seconds so a changed AGENT_ASK_JUDGE_TIMEOUT still finds it.
+TIMED_OUT='the judge call timed out after '
+AGAIN=', at post and again on the next pass'
+timed_out_reason() { printf '%s%ss%s' "$TIMED_OUT" "$AGENT_ASK_JUDGE_TIMEOUT" "${1:+$AGAIN}"; }
 
 # rejudge <file> [guard reason]: judge the pending ask again (behind the guard when a reason is
 # given) and act on the verdict: settled by a hold or an older ask, else a live answer through
@@ -1405,9 +1408,10 @@ rejudge() {
 # One ask a pass: each call can take the guard plus its kill wait, inside fleet-state's
 # TimeoutStartSec, and the pass runs every minute.
 rejudge_timed_out() {
-  local f want; want="$(timed_out_reason)"
+  local f why
   while IFS= read -r f; do
-    [ "$(field "$f" judge_reason)" = "$want" ] && ! is_parked "$f" || continue
+    why="$(field "$f" judge_reason)"
+    [[ "$why" == "$TIMED_OUT"* && "$why" != *"$AGAIN" ]] && ! is_parked "$f" || continue
     rejudge "$f" "$(timed_out_reason again)" >/dev/null
     return 0
   done < <(ask_files --all | xargs -r -d '\n' grep -lx 'judge: error' 2>/dev/null |
@@ -1453,9 +1457,10 @@ cmd_assume_due() {
     cmd_answer --by judge "${ASK[id]}" "$ans"
   done < <(ask_files --all | xargs -r -d '\n' grep -l '^assume_at: .' 2>/dev/null |
     xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null)
-  rejudge_timed_out
   cmd_expire
   sweep_on_new_hold
+  # Last, so a stalled call never holds expiry or a hold's sweep.
+  rejudge_timed_out
 }
 
 # sweep_on_new_hold: a hold the human set since the last pass can settle asks posted before it
