@@ -5209,3 +5209,20 @@ row_item() {
   run grep -c ' tag ' "$NOTES_FIXTURE/calls.log"
   assert_output 0
 }
+
+@test "a landing follow-up from an item that waits on a blocker is gated on it; any other follow-up keeps its own timing (ar-4451)" {
+  story_notes
+  "$AQ" add --project level --running --slug par "parent" >/dev/null
+  legacy mine "after: par" --project level "the item"
+  unset AGENT_QUEUE_PULL
+  run env AGENT_QUEUE_ITEM=mine "$AQ" add --project level --priority low --slug l1 "land mine: agent-land 12 --item mine"
+  assert_failure 5
+  assert_output --partial "held l1 -> level:lv-9 (#after/lv-9)"
+  # NEGATIVE CONTROLS: a follow-up that is not the landing, one naming another item, one that names its own gate.
+  run env AGENT_QUEUE_ITEM=mine "$AQ" add --project level --priority low --slug l2 "fix(x): a gap mine left"
+  assert_failure 5
+  refute_output --partial "#after/"
+  run env AGENT_QUEUE_ITEM=mine "$AQ" add --project level --priority low --slug l3 "land other: agent-land 13"
+  assert_failure 5
+  refute_output --partial "#after/"
+}
