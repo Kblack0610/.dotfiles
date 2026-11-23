@@ -404,11 +404,12 @@ now() { printf '%s' "${BENCH_NOW:-$(date +%s)}"; }
 # open one. The concurrent sections of par_go keep their output in it too.
 with_reads() {
   [ -z "${BENCH_READ_CACHE:-}" ] || { "$@"; return; }
-  local BENCH_READ_CACHE rc
+  local BENCH_READ_CACHE rc traps
+  traps=$(trap -p TERM INT HUP)
   BENCH_READ_CACHE=$(mktemp -d "${TMPDIR:-/tmp}/fleet-bench-reads.XXXXXX") || return 1
   trap 'rm -rf -- "$BENCH_READ_CACHE"; exit 143' TERM INT HUP
   "$@"; rc=$?
-  trap - TERM INT HUP
+  trap - TERM INT HUP; eval "$traps"
   rm -rf -- "$BENCH_READ_CACHE"
   return "$rc"
 }
@@ -1193,14 +1194,19 @@ cmd_stats() {
 }
 
 cmd_scorecard() {
-  local t day out counts kpis SOURCE_ATTR_JSON=""
+  [ -n "${BENCH_READ_CACHE:-}" ] || { with_reads cmd_scorecard "$@"; return; }
+  local t day out counts kpis PAR PAR_PIDS SOURCE_ATTR_JSON=""
   t=$(now); day=$(date -d "@$t" +%F)
   [ -s "$PROGRESS" ] || { say "no samples yet"; return 1; }
   mkdir -p "$BENCH_SCORECARD_DIR" || return 1
   out="$BENCH_SCORECARD_DIR/$day.md"
   SOURCE_ATTR_JSON=$(source_attr "$t")   # counts, models and sources all read it: one status probe, one Prometheus read
-  counts=$(ledger_counts)
-  kpis=$(kpi_json "$t" "$counts")
+  par_open || return 1
+  par_go counts ledger_counts
+  par_go live kpi_live "$t"
+  par_wait
+  counts=$(cat "$PAR/counts")
+  kpis=$(kpi_json "$t" "$counts" "$(cat "$PAR/live")")
   {
     echo "# Fleet bench, $day"
     echo
