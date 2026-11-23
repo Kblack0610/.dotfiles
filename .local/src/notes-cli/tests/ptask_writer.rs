@@ -1518,7 +1518,7 @@ fn a_hand_session_files_no_row_without_a_priority_and_no_standing_epic() {
     h.systems(Some(SYSTEMS));
     let o = add_as(&h, &[HAND], &[], "fix(ui): the pause menu flickers #size/s");
     assert_eq!(o.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&o.stderr).contains("priority_rule"));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("rules/priority.md"));
     let o = add_human(&h, &[HAND], "epic(ui): ui to standard #low");
     assert_eq!(o.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&o.stderr).contains("standing epic"));

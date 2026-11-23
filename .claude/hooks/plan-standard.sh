@@ -109,7 +109,7 @@ epic_new_gaps() {
   grep -qiE '^epic\([^)]*\):.* to standard([[:space:]]+#[^[:space:]]+)*$' <<<"$t" &&
     echo "epic: new $t is a standing \"to standard\" title, which notes and project-stage-check file, never a plan"
   grep -qE '(^|[[:space:]])#(urgent|high|low)([[:space:]]|$)' <<<"$t" ||
-    echo "epic: new $t carries no priority: end it with #urgent, #high or #low (priority_rule in agentctl-inbox-triage)"
+    echo "epic: new $t carries no priority: end it with #urgent, #high or #low (the rubric in ~/.config/inbox-triage/rules/priority.md)"
   if ! ids=$(project-stage-check "$board" --list --json 2>/dev/null | jq -er '.[].id' 2>/dev/null); then
     echo "epic: new: project-stage-check $board --list --json printed no system list, so epic($sys) cannot be checked"
   elif ! grep -qxF -- "$sys" <<<"$ids"; then

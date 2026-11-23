@@ -1,0 +1,1 @@
+When the work is a new capability the person could check by using it and no open epic covers it, the answer may carry "epic": "epic(<system>): <that outcome, in the person's words>", <system> being one of the project's systems; that epic is filed first, tagged #new, and the rows go under it. Never an epic for a fix, a chore or one small change.
