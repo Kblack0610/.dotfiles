@@ -1,4 +1,4 @@
-//! The Projects tab: its inner tabs (`layout` Projects: the list, Board, Deliverables, Coverage,
+//! The Projects tab: its inner tabs (`layout` Projects: the list, Board, Sprints, Deliverables, Coverage,
 //! Ladder; Left/Right switch them, as agent-web's strip), the list one table row per lab project
 //! with its open version's progress, built by `hub_core::projects` (the same rows and words as
 //! agent-web's), in flight first, on the shared `DataTable`. j/k pick a project, Enter opens its
@@ -74,6 +74,8 @@ pub struct ProjView {
     /// Requirements table has the keys (`t`) rather than Projects by stage.
     pub lfocus: bool,
     pub lreqs: bool,
+    /// The Sprints inner tab is shown (Left/Right only): every project's windows.
+    pub sfocus: bool,
     pub lv: DataTable,
     pub rv: DataTable,
 }
@@ -96,6 +98,7 @@ impl Default for ProjView {
             cv: DataTable::default(),
             lfocus: false,
             lreqs: false,
+            sfocus: false,
             lv: DataTable::default(),
             rv: DataTable::default(),
         }
@@ -155,6 +158,7 @@ impl ProjView {
         match (self.open, tv.project.is_some()) {
             (true, true) => None,
             (true, false) => Some(ALL),
+            _ if self.sfocus => Some(SPRINTS),
             _ if self.dfocus => Some(DELIVERABLES),
             _ if self.cfocus => Some(COVERAGE),
             _ if self.lfocus => Some(LADDER),
@@ -164,6 +168,7 @@ impl ProjView {
 
     /// Show the tab's inner tab `id`: Board opens every project's rows, searched afresh.
     pub fn set_top(&mut self, tv: &mut TaskView, id: &str) {
+        self.sfocus = id == SPRINTS;
         self.dfocus = id == DELIVERABLES;
         self.cfocus = id == COVERAGE;
         self.lfocus = id == LADDER;
@@ -408,11 +413,13 @@ fn warn_if(b: bool, p: Palette) -> ratatui::style::Style {
 
 const LIST: &str = "list";
 const ALL: &str = "all";
+const SPRINTS: &str = "sprints";
+const SPRINT: &str = "sprint";
 const DELIVERABLES: &str = "deliverables";
 const LADDER: &str = "ladder";
 const COVERAGE: &str = "coverage";
 
-/// Projects in `layout`, whose `inner` is the list, Board, Deliverables, Coverage and Ladder.
+/// Projects in `layout`, whose `inner` is the list, Board, Sprints, Deliverables, Coverage and Ladder.
 fn projects_tab() -> &'static Tab {
     layout::resolve("projects").expect("layout has Projects")
 }
@@ -434,6 +441,10 @@ pub fn top_strip(
 ) -> Line<'static> {
     let total = |i: &layout::Inner| match i.id {
         ALL => feed.and_then(|f| f.totals).map(|t| t.agent),
+        SPRINTS => feed.map(|f| {
+            f.sprint_rows(None, chrono::Local::now().naive_local())
+                .len()
+        }),
         DELIVERABLES => dl.and_then(|d| d.as_ref().ok()).map(|d| d.rows.len()),
         COVERAGE => cov.map(Coverage::failing),
         LADDER => ladder.map(|l| l.failing),
@@ -871,6 +882,119 @@ fn activity(c: &Card, pg: &Page, p: Palette, w: usize) -> Vec<Line<'static>> {
     out
 }
 
+/// The Sprint inner tab of an opened project (`hub_core::tasks::SprintRow`, `hub_core::project_sprints`):
+/// its open window with its tasks, the ones queued behind it, then its scored past, newest first.
+/// The windows come from the board feed, the past from the page (`notes projects --sprints`).
+fn sprint(c: &Card, pg: &Page, feed: Option<&Feed>, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let (open, queued): (Vec<_>, Vec<_>) = match feed {
+        Some(f) => f
+            .sprint_rows(
+                Some((&c.profile, &c.name)),
+                chrono::Local::now().naive_local(),
+            )
+            .into_iter()
+            .partition(|r| !r.queued),
+        None => (vec![], vec![]),
+    };
+    let none = |what: &str| Line::styled(format!("  {what}"), p.dim());
+    let mut out = vec![sec_head("SPRINT", &open.len().to_string(), "", p, w)];
+    match (feed, open.is_empty()) {
+        (None, _) => out.push(none("reading the board...")),
+        (_, true) => out.push(none("No window is open.")),
+        _ => out.extend(crate::tasktab::sprint_lines(&open, true, p, w)),
+    }
+    out.push(sec_head("QUEUED", &queued.len().to_string(), "", p, w));
+    if queued.is_empty() {
+        out.push(none("No window is queued."));
+    } else {
+        out.extend(crate::tasktab::sprint_lines(&queued, true, p, w));
+    }
+    out.push(sec_head(
+        "PAST",
+        &pg.sprint_past.len().to_string(),
+        "  newest first; each is sprints/<version>.md in the lab directory",
+        p,
+        w,
+    ));
+    if pg.sprint_past.is_empty() {
+        out.push(none("No window has been cut with a score yet."));
+        return out;
+    }
+    let dash = |o: &Option<String>| o.clone().unwrap_or_else(|| "-".into());
+    let cells = pg
+        .sprint_past
+        .iter()
+        .map(|s| {
+            vec![
+                s.version.clone().into(),
+                dash(&s.opened).into(),
+                dash(&s.cut).into(),
+                s.committed.to_string().into(),
+                s.delivered.to_string().into(),
+                s.carried.to_string().into(),
+                s.dropped.to_string().into(),
+                s.interrupted.to_string().into(),
+                cell(
+                    dash(&s.timing),
+                    warn_if(s.timing.as_deref().is_some_and(|t| t != "on time"), p),
+                ),
+            ]
+        })
+        .collect();
+    out.extend(
+        Table {
+            header: vec![
+                "VERSION",
+                "OPENED",
+                "CUT",
+                "COMMITTED",
+                "DELIVERED",
+                "CARRIED",
+                "DROPPED",
+                "INTERRUPTED",
+                "TIMING",
+            ],
+            rows: cells,
+            keep: vec![0, 4, 8, 3, 5, 6, 7, 2, 1],
+            right: vec![3, 4, 5, 6, 7],
+            ..Default::default()
+        }
+        .fit(w, p.head()),
+    );
+    out
+}
+
+/// Projects' Sprints inner tab: every project's open and queued windows (LEFT reads `queued`
+/// for the next one), then each project's last scored window from its card (`last_window`).
+fn sprints(pr: &Projects, feed: Option<&Feed>, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let none = |what: &str| Line::styled(format!("  {what}"), p.dim());
+    let Some(f) = feed else {
+        return vec![none("reading the board...")];
+    };
+    let rows = f.sprint_rows(None, chrono::Local::now().naive_local());
+    let mut out = vec![sec_head("SPRINTS", &rows.len().to_string(), "", p, w)];
+    if rows.is_empty() {
+        out.push(none("No window is open or queued."));
+    } else {
+        out.extend(crate::tasktab::sprint_lines(&rows, false, p, w));
+    }
+    let last = hub_core::project_sprints::last_scores(&pr.cards);
+    out.push(sec_head("LAST SCORE", &last.len().to_string(), "", p, w));
+    if last.is_empty() {
+        out.push(none("No project has a scored window."));
+    }
+    for l in &last {
+        out.extend(wrapped(
+            &format!("  {:<14} {:<8} ", l.project, l.version),
+            &l.line,
+            p.dim(),
+            p,
+            w,
+        ));
+    }
+    out
+}
+
 /// The number beside an inner tab: Needs you's items on Overview, failing checks on Stage, and
 /// a department's needs that are not ok.
 fn inner_count(pg: Option<&Page>, prod: Option<&departments::Product>, id: &str) -> usize {
@@ -895,6 +1019,7 @@ pub fn open_lines(
     c: &Card,
     page: Option<&Page>,
     cov: Option<&Coverage>,
+    feed: Option<&Feed>,
     pv: &ProjView,
     p: Palette,
     w: usize,
@@ -988,6 +1113,7 @@ pub fn open_lines(
             p,
             w,
         ),
+        SPRINT => (sprint(c, pg, feed, p, w), None),
         "releases" => (releases(pg, pv, p, w), None),
         "stage" => (stage(pg, p, w), None),
         _ => (activity(c, pg, p, w), None),
@@ -1151,7 +1277,9 @@ pub fn page(
     p: Palette,
     w: usize,
 ) -> (Vec<Line<'static>>, Option<usize>) {
-    let on = if pv.dfocus {
+    let on = if pv.sfocus {
+        SPRINTS
+    } else if pv.dfocus {
         DELIVERABLES
     } else if pv.cfocus {
         COVERAGE
@@ -1161,7 +1289,9 @@ pub fn page(
         LIST
     };
     let mut out = vec![top_strip(feed, dl, cov, ladder, on, p, w), Line::raw("")];
-    let (mut body, at) = if pv.lfocus {
+    let (mut body, at) = if pv.sfocus {
+        (sprints(pr, feed, p, w), None)
+    } else if pv.lfocus {
         crate::laddertab::page(ladder, pv, p, w)
     } else if pv.cfocus {
         crate::coveragetab::page(cov, pv, p, w)
@@ -1318,6 +1448,7 @@ pub(crate) mod tests {
             project: "garden".into(),
             releases: None,
             release_tab: Default::default(),
+            sprint_past: vec![],
             alerts: None,
             checks: None,
             check_groups: vec![],
@@ -1377,7 +1508,7 @@ pub(crate) mod tests {
     }
 
     fn draw(c: &Card, pg: Option<&Page>, pv: &ProjView) -> Vec<String> {
-        open_lines(c, pg, None, pv, Palette { no_color: true }, 200)
+        open_lines(c, pg, None, None, pv, Palette { no_color: true }, 200)
             .0
             .iter()
             .map(plain)
@@ -1399,7 +1530,7 @@ pub(crate) mod tests {
         // An untyped project has no department tabs, so its strip has no break.
         assert_eq!(
             l[7],
-            "[Overview 1] Rows  Deliverables  Releases  Stage  Activity   <- -> switch"
+            "[Overview 1] Sprint  Rows  Deliverables  Releases  Stage  Activity   <- -> switch"
         );
         let body = l[9..].join("\n");
         assert!(
@@ -1577,7 +1708,10 @@ pub(crate) mod tests {
         );
         let k = |c| KeyEvent::from(c);
         assert!(pv.page_key(&mut tv, k(KeyCode::Right), Some(&pg), 10));
+        assert_eq!(pv.inner, SPRINT, "Sprint follows Overview");
+        assert!(pv.page_key(&mut tv, k(KeyCode::Right), Some(&pg), 10));
         assert!(pv.rows_shown(&tv));
+        assert!(pv.page_key(&mut tv, k(KeyCode::Left), Some(&pg), 10));
         assert!(pv.page_key(&mut tv, k(KeyCode::Left), Some(&pg), 10));
         assert!(pv.page_key(&mut tv, k(KeyCode::Left), Some(&pg), 10));
         assert_eq!(
@@ -1593,6 +1727,7 @@ pub(crate) mod tests {
         let (_, sel) = open_lines(
             &pr.cards[0],
             Some(&pg),
+            None,
             None,
             &pv,
             Palette { no_color: true },
@@ -1852,7 +1987,7 @@ pub(crate) mod tests {
         // The strip is on top, nothing counted before its read; the list follows it.
         assert_eq!(
             s[0],
-            "[Projects] Board  Deliverables  Coverage  Ladder   <- -> switch"
+            "[Projects] Board  Sprints  Deliverables  Coverage  Ladder   <- -> switch"
         );
         let s = s[2..].to_vec();
         assert!(
@@ -1953,7 +2088,7 @@ pub(crate) mod tests {
         );
         let s = lines(&l);
         assert_eq!(
-            s[0], " Projects  Board [Deliverables 2] Coverage  Ladder   <- -> switch",
+            s[0], " Projects  Board  Sprints [Deliverables 2] Coverage  Ladder   <- -> switch",
             "{s:?}"
         );
         let s = s[2..].to_vec();
@@ -2173,7 +2308,7 @@ pub(crate) mod tests {
         let (mut pv, mut tv) = (ProjView::default(), TaskView::default());
         pv.open(&mut tv, Some(&pr.cards[0]));
         assert_eq!(pv.tabs.len(), 9);
-        let (l, _) = open_lines(&pr.cards[0], None, None, &pv, p, 80);
+        let (l, _) = open_lines(&pr.cards[0], None, None, None, &pv, p, 80);
         let t = lines(&l);
         assert!(t.iter().all(|s| crate::fit::len(s) <= 80), "{t:#?}");
         let s = t.iter().position(|s| s.starts_with("[Overview]")).unwrap();
@@ -2181,7 +2316,7 @@ pub(crate) mod tests {
         // strip wraps, and none is clipped.
         assert_eq!(
             t[s],
-            "[Overview] Rows  Deliverables  Releases  Stage  Activity "
+            "[Overview] Sprint  Rows  Deliverables  Releases  Stage  Activity "
         );
         assert_eq!(
             t[s + 1],
@@ -2189,23 +2324,25 @@ pub(crate) mod tests {
         );
         assert_eq!(t[s + 2], " Money   <- -> switch");
         let titles = layout::project_page(&pv.tabs);
-        assert_eq!(titles.len(), 15);
+        assert_eq!(titles.len(), 16);
         let strip = t[s..s + 3].join("");
         assert!(titles.iter().all(|i| strip.contains(i.title)), "{strip}");
 
         // Right walks to the work first; a department shows "reading" until Coverage arrives,
         // then its parts.
         assert!(pv.page_key(&mut tv, KeyEvent::from(KeyCode::Right), None, 10));
+        assert_eq!((pv.inner, pv.dept()), (SPRINT, None));
+        assert!(pv.page_key(&mut tv, KeyEvent::from(KeyCode::Right), None, 10));
         assert_eq!((pv.inner, pv.dept()), (ROWS, None));
         pv.go(&mut tv, &pr.cards, "garden/legal");
         assert_eq!(pv.inner, "legal");
-        let t = lines(&open_lines(&pr.cards[0], None, None, &pv, p, 80).0);
+        let t = lines(&open_lines(&pr.cards[0], None, None, None, &pv, p, 80).0);
         assert!(
             t.contains(&"  reading the departments...".to_string()),
             "{t:#?}"
         );
         let c = crate::coveragetab::tests::coverage();
-        let t = lines(&open_lines(&pr.cards[0], None, Some(&c), &pv, p, 80).0);
+        let t = lines(&open_lines(&pr.cards[0], None, Some(&c), None, &pv, p, 80).0);
         assert!(
             t.iter().any(|s| s == "LEGAL  red  required from beta"),
             "{t:#?}"
@@ -2214,7 +2351,7 @@ pub(crate) mod tests {
         // Overview lists each department's needs after the work's, naming the tab that acts.
         pv.inner = OVERVIEW;
         let pg = Page::default();
-        let t = lines(&open_lines(&pr.cards[0], Some(&pg), Some(&c), &pv, p, 80).0);
+        let t = lines(&open_lines(&pr.cards[0], Some(&pg), Some(&c), None, &pv, p, 80).0);
         assert!(
             t.iter()
                 .any(|s| s.starts_with("  Legal: ") && s.ends_with("(Legal)")),
@@ -2223,7 +2360,7 @@ pub(crate) mod tests {
         assert!(!t.iter().any(|s| s.contains("departments")), "{t:#?}");
         // A typed Overview reads Coverage, and until it arrives says so instead of a clean list.
         assert!(pv.coverage_shown(&tv));
-        let t = lines(&open_lines(&pr.cards[0], Some(&pg), None, &pv, p, 80).0);
+        let t = lines(&open_lines(&pr.cards[0], Some(&pg), None, None, &pv, p, 80).0);
         assert!(
             t.iter().any(|s| s.starts_with("NEEDS YOU  nothing")),
             "{t:#?}"
@@ -2237,7 +2374,7 @@ pub(crate) mod tests {
             says: vec!["catalog not read".into()],
             ..Default::default()
         };
-        let t = lines(&open_lines(&pr.cards[0], Some(&pg), Some(&none), &pv, p, 80).0);
+        let t = lines(&open_lines(&pr.cards[0], Some(&pg), Some(&none), None, &pv, p, 80).0);
         assert!(
             t.contains(&"  departments not read: catalog not read".to_string()),
             "{t:#?}"
@@ -2250,23 +2387,179 @@ pub(crate) mod tests {
         let (mut pv, mut tv) = (ProjView::default(), TaskView::default());
         pv.open(&mut tv, Some(&pr.cards[1]));
         assert_eq!(pv.tabs, ["engineering", "ops"]);
-        let t = lines(&open_lines(&pr.cards[1], None, None, &pv, p, 80).0);
+        let t = lines(&open_lines(&pr.cards[1], None, None, None, &pv, p, 80).0);
         let s = t.iter().position(|s| s.starts_with("[Overview]")).unwrap();
         assert_eq!(
             t[s..s + 2],
             [
-                "[Overview] Rows  Deliverables  Releases  Stage  Activity ",
+                "[Overview] Sprint  Rows  Deliverables  Releases  Stage  Activity ",
                 " | Engineering  Ops   <- -> switch"
             ]
         );
-        assert_eq!(pv.page_tabs().len(), 8);
+        assert_eq!(pv.page_tabs().len(), 9);
         pv.go(&mut tv, &pr.cards, "demo/legal");
         assert_eq!((pv.inner, pv.dept()), (OVERVIEW, None));
 
         // The retired `build` opens Deliverables, as an old `#projects/<p>/build` link does.
         pv.go(&mut tv, &pr.cards, "demo/build");
         assert_eq!(pv.inner, DELIVERABLES);
-        let t = lines(&open_lines(&pr.cards[1], None, None, &pv, p, 80).0);
+        let t = lines(&open_lines(&pr.cards[1], None, None, None, &pv, p, 80).0);
         assert!(t.iter().any(|s| s.contains("[Deliverables]")), "{t:#?}");
+    }
+
+    /// A feed with `garden`'s open window (two tasks) and the next one queued behind it, and
+    /// `demo`'s own window.
+    fn windowed() -> Feed {
+        use hub_core::tasks::{SprintLine, SprintTask};
+        let task = |id: &str, text: &str, state: &str| SprintTask {
+            id: Some(id.into()),
+            text: text.into(),
+            title: text.into(),
+            state: state.into(),
+            weight: 1,
+            ..Default::default()
+        };
+        let line = |project: &str, version: &str, queued: bool| SprintLine {
+            profile: "personal".into(),
+            project: project.into(),
+            version: version.into(),
+            done: 1,
+            committed: 2,
+            opened: "2026-01-01".into(),
+            locked: Some("2026-01-01T09:30".into()),
+            cut: Some("2026-01-01T14:00".into()),
+            build: "held".into(),
+            queued,
+            ..Default::default()
+        };
+        Feed {
+            sprints: vec![
+                SprintLine {
+                    tasks: vec![
+                        task("db-1", "ship the menu", "done"),
+                        SprintTask {
+                            queue: Some("running".into()),
+                            ..task("db-2", "fix the back button", "open")
+                        },
+                    ],
+                    ..line("garden", "v0.3.0", false)
+                },
+                line("garden", "v0.4.0", true),
+                line("demo", "v1.0.0", false),
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_sprints_tab_lists_every_open_and_queued_window_then_each_projects_last_score() {
+        let mut pr = fixture();
+        pr.cards[0].last_window = Some(projects::LastWindow {
+            version: "v0.2.0".into(),
+            line: "delivered 3 of 4".into(),
+        });
+        let pv = ProjView {
+            sfocus: true,
+            ..Default::default()
+        };
+        assert_eq!(pv.top(&TaskView::default()), Some(SPRINTS));
+        let p = Palette { no_color: true };
+        let f = windowed();
+        let t = lines(&page(&pr, Some(&f), None, None, None, &pv, p, 100).0).join("\n");
+        for want in [
+            "Sprints 3",
+            "SPRINTS  3",
+            "v0.3.0",
+            "v0.4.0",
+            "v1.0.0",
+            "queued",
+            "01-01 09:30",
+            "FINISH (7d rate)",
+            "LAST SCORE  1",
+            "garden",
+            "v0.2.0",
+            "delivered 3 of 4",
+        ] {
+            assert!(t.contains(want), "{want:?} in:\n{t}");
+        }
+        assert!(
+            !t.contains("db-1"),
+            "the tasks are the project's page's:\n{t}"
+        );
+        let t = lines(&page(&pr, None, None, None, None, &pv, p, 100).0).join("\n");
+        assert!(t.contains("reading the board"), "{t}");
+    }
+
+    #[test]
+    fn a_projects_sprint_tab_has_its_open_window_with_tasks_the_queued_one_and_the_scored_past() {
+        use hub_core::project_sprints::Past;
+        let pr = fixture();
+        let mut pg = a_page();
+        pg.sprint_past = vec![
+            Past {
+                version: "v0.2.0".into(),
+                committed: 5,
+                delivered: 4,
+                carried: 1,
+                timing: Some("1d late".into()),
+                line: "delivered 4 of 5".into(),
+                ..Default::default()
+            },
+            Past {
+                version: "v0.1.0".into(),
+                committed: 3,
+                delivered: 3,
+                ..Default::default()
+            },
+        ];
+        let pv = ProjView {
+            inner: SPRINT,
+            ..Default::default()
+        };
+        let p = Palette { no_color: true };
+        let f = windowed();
+        let t = lines(&open_lines(&pr.cards[0], Some(&pg), None, Some(&f), &pv, p, 120).0);
+        let at = |w: &str| {
+            t.iter()
+                .position(|l| l.starts_with(w))
+                .unwrap_or_else(|| panic!("{w:?} in {t:#?}"))
+        };
+        let (open, queued, past) = (at("SPRINT  1"), at("QUEUED  1"), at("PAST  2"));
+        assert!(open < queued && queued < past, "{t:#?}");
+        assert!(
+            t[open..queued].iter().any(|l| l.contains("v0.3.0"))
+                && !t[open..queued].iter().any(|l| l.contains("v0.4.0")),
+            "the open window is not the queued one:\n{t:#?}"
+        );
+        assert!(
+            t[open..queued]
+                .iter()
+                .any(|l| l.contains("db-1") && l.contains("ship the menu") && l.contains("done")),
+            "its tasks follow, each with its state:\n{t:#?}"
+        );
+        assert!(
+            t[open..queued]
+                .iter()
+                .any(|l| l.contains("db-2") && l.contains("running")),
+            "the queue state wins over the row's own:\n{t:#?}"
+        );
+        assert!(
+            t[queued..past]
+                .iter()
+                .any(|l| l.contains("v0.4.0") && l.contains("queued")),
+            "{t:#?}"
+        );
+        let past_rows = &t[past..];
+        let (a, b) = (
+            past_rows.iter().position(|l| l.contains("v0.2.0")),
+            past_rows.iter().position(|l| l.contains("v0.1.0")),
+        );
+        assert!(a < b && a.is_some(), "newest first:\n{t:#?}");
+        assert!(
+            !t.iter().any(|l| l.contains("v1.0.0")),
+            "another project's window:\n{t:#?}"
+        );
+        let t = lines(&open_lines(&pr.cards[0], Some(&pg), None, None, &pv, p, 120).0);
+        assert!(t.iter().any(|l| l.contains("reading the board")), "{t:#?}");
     }
 }

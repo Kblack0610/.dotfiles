@@ -142,13 +142,15 @@ pub const TABS: [Tab; 12] = [
         sections: &[
             "cards",
             "board",
+            "sprints",
             "deliverables",
             "coverage",
             "stages",
             "requirements",
         ],
         // The project list, every project's rows on one board (the Board tab until 2026-11-12),
-        // the deliverables, every product's departments (`hub_core::departments`), and the stage
+        // every project's open and queued sprints with its last score (once Board's table,
+        // `hub_core::tasks::SprintRow`), the deliverables, every product's departments (`hub_core::departments`), and the stage
         // ladder (`hub_core::stages`). A bare inner id or section after `#projects/` is the inner tab;
         // anything else is a project, and a project with such a name opens as `<profile>/<name>`.
         inner: &[
@@ -161,6 +163,11 @@ pub const TABS: [Tab; 12] = [
                 id: "all",
                 title: "Board",
                 sections: &["board"],
+            },
+            Inner {
+                id: "sprints",
+                title: "Sprints",
+                sections: &["sprints"],
             },
             Inner {
                 id: "deliverables",
@@ -524,14 +531,21 @@ pub fn moved_chip(tab: &str, sec: &str) -> Option<(&'static str, &'static str)> 
 
 /// An opened project's page, as inner tabs (`#projects/<profile>/<name>/<id>`): what needs the
 /// human (the work's and every department's) and the systems at a glance first, then the work:
-/// its rows, its epics, the next stage's checklist and what happened, then the project's
+/// its sprints, its rows, its epics, the next stage's checklist and what happened, then the project's
 /// departments (`hub_core::departments`). Overview is the default; a section id opens the inner
 /// tab holding it.
-pub const PROJECT_PAGE: [Inner; 15] = [
+pub const PROJECT_PAGE: [Inner; 16] = [
     Inner {
         id: "overview",
         title: "Overview",
         sections: &["p-needs", "p-flight", "p-systems"],
+    },
+    // The project's sprints: the open window with its committed rows, the ones queued behind it,
+    // and the scored past (`hub_core::project_sprints`); the open and queued rows were Board's table.
+    Inner {
+        id: "sprint",
+        title: "Sprint",
+        sections: &["p-sprint", "p-sprint-queued", "p-sprint-past"],
     },
     Inner {
         id: "rows",
@@ -1129,6 +1143,7 @@ mod tests {
         assert!(dept_tabs(None).is_empty());
         let mut page = vec![
             "overview",
+            "sprint",
             "rows",
             "deliverables",
             "releases",
@@ -1141,6 +1156,7 @@ mod tests {
             ids(project_page(&dept_tabs(Some("infra")))),
             [
                 "overview",
+                "sprint",
                 "rows",
                 "deliverables",
                 "releases",
@@ -1154,6 +1170,7 @@ mod tests {
             ids(project_page::<&str>(&[])),
             [
                 "overview",
+                "sprint",
                 "rows",
                 "deliverables",
                 "releases",
@@ -1201,12 +1218,20 @@ mod tests {
         assert_eq!(at(section("board")), Some("all"));
         assert_eq!(at(Some("all")), Some("all"));
         assert_eq!(at(Some("deliverables")), Some("deliverables"));
+        assert_eq!(at(Some("sprints")), Some("sprints"));
         assert_eq!(at(Some("requirements")), Some("ladder"));
         assert_eq!(at(Some("ladder")), Some("ladder"));
         let titles: Vec<&str> = projects.inner.iter().map(|i| i.title).collect();
         assert_eq!(
             titles,
-            ["Projects", "Board", "Deliverables", "Coverage", "Ladder"]
+            [
+                "Projects",
+                "Board",
+                "Sprints",
+                "Deliverables",
+                "Coverage",
+                "Ladder"
+            ]
         );
         assert_eq!(at(Some("coverage")), Some("coverage"));
         assert!(!OFF_BAR.contains(&"board"), "no Board tab to leave off");

@@ -132,7 +132,7 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   assert_output --regexp 'started queue item trainee-batch-[0-9-]+ on the trainee floor: a batch review of the waiting trainee diffs'
 }
 
-@test "trainee floor: with no queued row it takes, it promotes and starts the top board row naming only tracked shell, bats or docs files; a cargo-tree, untracked, unnamed or sensitive row stays" {
+@test "trainee floor: with no queued row it takes, it promotes and starts the top board row naming only tracked shell, bats or docs files; a cargo-tree, untracked or sensitive row stays" {
   trainee_ready
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_LOW_WATER=0
   fleet_state 8
@@ -143,7 +143,7 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   mkdir -p "$r/web"; printf "{}\n" > "$r/web/package.json"; printf "# web\n" > "$r/web/README.md"; printf "x\n" > "$r/web/index.js"
   git -C "$r" add -A && git -C "$r" -c user.name=t -c user.email=t@t commit -qm base
   local k
-  for k in rs:crate/src/main.rs crate:crate/build.sh gone:scripts/gone.sh word:'scripts/setup secretword' none:'the menu'; do
+  for k in rs:crate/src/main.rs crate:crate/build.sh gone:scripts/gone.sh word:'scripts/setup secretword'; do
     row game agent "tr-${k%%:*}" "- [ ] fix(menu): fix ${k#*:} #pts/1 #high $T <!-- id:tr-${k%%:*} -->"
     verdict game agent "tr-${k%%:*}" dispatch
   done
@@ -154,11 +154,11 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   assert_output --partial 'trainee floor: promoted row tr-ok to queue item tr-ok for gotrain'
   assert_output --regexp 'started queue item tr-ok on gotrain \((glm|kimi)\), a trainee run .*, on the trainee floor'
   assert_equal "$(qfield "$(qitem running tr-ok)" from)" 'board:game:tr-ok'
-  for k in rs crate gone word none; do
+  for k in rs crate gone word; do
     [ -z "$(agent-queue show "tr-$k" --json 2>/dev/null)" ] || fail "the trainee floor promoted tr-$k"
   done
   # Each refusal is the public check's own.
-  pub() { run trainee_public_why "{\"project\":\"game\",\"title\":\"fix $1\",\"task\":\"fix $1\"}" names; }
+  pub() { run trainee_public_why "{\"project\":\"game\",\"title\":\"fix $1\",\"task\":\"fix $1\"}"; }
   pub crate/src/main.rs; assert_failure; assert_output 'it names crate/src/main.rs, which is no markdown file, nor a shell or bats file outside a cargo or npm tree'
   pub crate/build.sh; assert_failure; assert_output 'it names crate/build.sh, which is no markdown file, nor a shell or bats file outside a cargo or npm tree'
   # Editing markdown needs no cargo or npm, so a crate's or a package's README passes, and naming it
@@ -171,13 +171,14 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   assert_output 'it names web/index.js, which is no markdown file, nor a shell or bats file outside a cargo or npm tree'
   pub scripts/gone.sh; assert_failure; assert_output "it names scripts/gone.sh, which $r does not track"
   pub 'scripts/setup secretword'; assert_failure; assert_output "its words match $r/.githooks/sensitive-tokens.txt"
-  pub 'the menu'; assert_failure; assert_output "it names no file, so nothing shows its work stays in $r"
+  # A row that names no file passes: the lane sandbox keeps the work in the repo, and the diff's files are checked (ar-4739).
+  pub 'the menu'; assert_success
   pub scripts/setup; assert_success
   # A bare word the repo does not track (a jq field, a runtime file) and a template path are no file
-  # the row names, so they neither refuse it nor count as its one name (ar-71, ar-77 on 2026-11-18).
+  # the row names, so they do not refuse it (ar-71, ar-77 on 2026-11-18).
   pub 'scripts/setup when .fact in state.json differs'; assert_success
   pub 'scripts/setup and its unit@<name>.service.d/x.conf'; assert_success
-  pub 'the .fact in state.json'; assert_failure; assert_output "it names no file, so nothing shows its work stays in $r"
+  pub 'the .fact in state.json'; assert_success
   # A repo not in DISPATCH_TRAINEE_REPOS is refused whatever the row says.
   DISPATCH_TRAINEE_REPOS=/elsewhere pub scripts/setup; assert_failure
   assert_output "its repo $r is not one a trainee may see (DISPATCH_TRAINEE_REPOS)"
@@ -191,19 +192,19 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   mkdir -p "$r/scripts"
   printf '#!/usr/bin/env bash\necho hi\n' > "$r/scripts/setup"
   git -C "$r" add -A && git -C "$r" -c user.name=t -c user.email=t@t commit -qm base
-  # One area (menu): the top row names no file, the one behind it does.
-  row game agent tr-top "- [ ] fix(menu): fix the menu #pts/1 #high $T <!-- id:tr-top -->"
+  # One area (menu): the top row names a file the repo does not track, the one behind it a tracked one.
+  row game agent tr-top "- [ ] fix(menu): fix scripts/gone.sh #pts/1 #high $T <!-- id:tr-top -->"
   verdict game agent tr-top dispatch S 1 menu
   row game agent tr-ok "- [ ] fix(menu): fix scripts/setup #pts/1 #low $T <!-- id:tr-ok -->"
   verdict game agent tr-ok dispatch S 1 menu
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'trainee floor: promoted row tr-ok to queue item tr-ok for gotrain'
-  [ -z "$(agent-queue show tr-top --json 2>/dev/null)" ] || fail "the trainee floor promoted tr-top, which names no file"
+  [ -z "$(agent-queue show tr-top --json 2>/dev/null)" ] || fail "the trainee floor promoted tr-top, which names an untracked file"
 }
 
 # 2026-11-19: the floor read only judged day_picks rows, about 9 a day, while 653 open rows were #pts/1-3 (ar-3727).
-@test "trainee floor: it draws from every open agent row, unjudged and backlog-tier ones too; a row a failed or skip verdict holds, or a human row, stays out; a tier-3 row keeps the tier-3 gate" {
+@test "trainee floor: it draws from every open agent row, unjudged ones too; a row a failed or skip verdict holds, or a human row, stays out; a tier-3 row keeps the tier-3 gate" {
   trainee_ready
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_LOW_WATER=0
   fleet_state 8
@@ -221,7 +222,7 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   pr_lane_ready
   row agent-runtime agent t3-a '- [ ] wt done never reaps (worktree.sh:213) #tier/3 #high'
   pr_lane_verdict t3-a wt
-  # No verdict, and past the board budget: no claude session pulls it, a trainee does.
+  # No verdict: no claude session pulls it, a trainee does.
   row game agent tr-ok "- [ ] fix(menu): fix scripts/setup #pts/1 #low $T <!-- id:tr-ok tier:backlog -->"
   run trainee_rows
   assert_success
@@ -232,10 +233,10 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool --json
   assert_success
   assert_equal "$(jq -r .eligible <<<"$output")" 1
-  # Negative control: the claude fill still leaves the unjudged backlog row alone.
+  # Negative control: the claude fill lists the backlog row but starts no unjudged row; it waits on the judge.
   run "$REPO_ROOT/.local/bin/fleet-dispatch" fill --dry-run --json
   assert_success
-  refute_output --partial '"key":"tr-ok"'
+  assert_equal "$(jq -r 'select(.key == "tr-ok") | .state' <<<"$output")" unjudged
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'trainee floor: promoted row tr-ok to queue item tr-ok for gotrain'
@@ -267,15 +268,16 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool --json
   assert_success
   # The fixture board holds one more row of its own, so count by reason, and the rows by their sum.
-  assert_equal "$(jq -r '.eligible' <<<"$output")" 2
+  # A row that names no file is one a trainee takes (ar-4739).
+  assert_equal "$(jq -r '.eligible' <<<"$output")" 4
   assert_equal "$(jq -r '.rows - .eligible - ([.refused[].count] | add)' <<<"$output")" 0
-  assert_equal "$(jq -r '.refused[] | select(.why | test("names no file")) | .count' <<<"$output")" 2
+  assert_equal "$(jq -r '[.refused[] | select(.why | test("names no file"))] | length' <<<"$output")" 0
   assert_equal "$(jq -r '.refused[] | select(.why | test("points")) | "\(.count) \(.why)"' <<<"$output")" "1 it is N points, and a trainee takes N at most"
   assert_equal "$(jq -r '.refused[] | select(.why | test("no #pts")) | .why' <<<"$output")" "it carries no #pts/N"
   # The text form leads with the count a pass would draw from.
   run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool
   assert_success
-  assert_line --index 0 --partial 'trainee pool: 2 of '
+  assert_line --index 0 --partial 'trainee pool: 4 of '
   assert_line --partial 'trainee floor: '
   # Per source (trainee-steady-queue P3): its slots and their basis, busy, and the next board row its harness takes.
   jq -c '.[0] += {max_live: 3, max_live_basis: "40 rpm over 13 a run", live: 1}' "$NOTES_FIXTURE/sources.json" > "$SANDBOX/s.tmp" &&
@@ -284,7 +286,7 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   assert_success
   assert_equal "$(jq -c '.sources[] | [.name, .slots, .basis, .busy, .room, .next[0].harness, .next[0].from]' <<<"$output")" \
     '["go",3,"40 rpm over 13 a run",1,true,"gotrain","board"]'
-  [[ "$(jq -r '.sources[0].next[0].id' <<<"$output")" =~ ^tp-ok[12]$ ]] || fail "next row: $output"
+  [[ "$(jq -r '.sources[0].next[0].id' <<<"$output")" =~ ^tp-(ok|nofile)[12]$ ]] || fail "next row: $output"
   # A queued item it takes comes first, as the floor's own pick does.
   agent-queue add --project game --slug tp-q --priority low --tags tier1 "Fix scripts/setup once more #pts/1" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool
@@ -574,4 +576,75 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool --json
   assert_equal "$(jq -c '.floor.state' <<<"$output")" '"open"'
   assert_equal "$(jq -r '.floor.why' <<<"$output")" 'the cluster is red and the gateway answers, so only gateway trainees start'
+}
+
+@test "trainee floor: a board row that names no file is promoted and started; its diff's files are checked instead (ar-4739)" {
+  trainee_ready
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_LOW_WATER=0
+  fleet_state 8
+  r="$SANDBOX/repos/game"
+  mkdir -p "$r/scripts" "$r/crate/src" "$r/web"
+  printf '#!/usr/bin/env bash\necho hi\n' > "$r/scripts/setup"
+  printf '[package]\n' > "$r/crate/Cargo.toml"; printf 'fn main() {}\n' > "$r/crate/src/main.rs"; printf "# crate\n" > "$r/crate/README.md"
+  git -C "$r" add -A && git -C "$r" -c user.name=t -c user.email=t@t commit -qm base
+  row game agent tr-vague "- [ ] fix(menu): the pause menu title is wrong #pts/1 #high $T <!-- id:tr-vague -->"
+  verdict game agent tr-vague dispatch
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'trainee floor: promoted row tr-vague to queue item tr-vague for gotrain'
+  # The diff is where the sandbox's limit holds: markdown anywhere and shell outside a cargo or npm tree pass.
+  base=$(git -C "$r" rev-parse HEAD)
+  echo 'echo there' >> "$r/scripts/setup"; echo more >> "$r/crate/README.md"; git -C "$r" add -A
+  run trainee_diff_why "$r" "$base"; assert_success; assert_output ''
+  echo '// x' >> "$r/crate/src/main.rs"; git -C "$r" add -A
+  run trainee_diff_why "$r" "$base"; assert_failure
+  assert_output 'its diff touches crate/src/main.rs, which is no markdown file, nor a shell or bats file outside a cargo or npm tree, so the sandbox could not build it'
+  # A manifest the diff adds puts its own tree out of reach too.
+  git -C "$r" reset -q --hard "$base"
+  printf '{}\n' > "$r/web/package.json"; printf '#!/bin/sh\n' > "$r/web/build.sh"; git -C "$r" add -A
+  run trainee_diff_why "$r" "$base"; assert_failure
+  assert_output --regexp '^its diff touches web/(build.sh|package.json), '
+}
+
+@test "trainee floor: a harness with a slot and no row it takes marks the pool dry, starved names it past DISPATCH_STARVED_MIN, and a start clears it (ar-4739)" {
+  trainee_ready
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_LOW_WATER=0
+  fleet_state 8
+  r="$SANDBOX/repos/game"
+  mkdir -p "$r/scripts"
+  printf '#!/usr/bin/env bash\necho hi\n' > "$r/scripts/setup"
+  git -C "$r" add -A && git -C "$r" -c user.name=t -c user.email=t@t commit -qm base
+  # Only a row over the trainee's points: the slot finds nothing.
+  row game agent tr-big "- [ ] fix(menu): fix scripts/setup #pts/8 #high $T <!-- id:tr-big -->"
+  verdict game agent tr-big dispatch
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'gotrain has a slot, and no queued or board row is one it takes'
+  [ -s "$TRAINEE_DRY" ] || fail "the dry pool was not marked"
+  assert_equal "$(cut -f1 "$TRAINEE_DRY")" gotrain
+  # A second dry pass keeps the harness's first mark, so the age counts from when it ran dry; a
+  # harness this pass did not find dry loses its line.
+  printf 'gotrain\t%s\nother\t1\n' "$(( $(date +%s) - DISPATCH_STARVED_MIN * 60 - 60 ))" > "$TRAINEE_DRY"
+  since=$(awk -F'\t' '$1 == "gotrain" { print $2 }' "$TRAINEE_DRY")
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_equal "$(cat "$TRAINEE_DRY")" "gotrain	$since"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" starved
+  assert_failure
+  assert_output --partial 'trainee pool dry since '
+  assert_output --partial ': gotrain had a slot and no queued or board row a trainee takes'
+  # Younger than the window: not starved for it.
+  run trainee_dry "$(( $(date +%s) - DISPATCH_STARVED_MIN * 60 - 120 ))"
+  assert_output ''
+  # A row it takes starts, and the mark goes.
+  row game agent tr-ok "- [ ] fix(menu): fix scripts/setup #pts/1 #low $T <!-- id:tr-ok -->"
+  verdict game agent tr-ok dispatch
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'trainee floor: promoted row tr-ok to queue item tr-ok for gotrain'
+  [ ! -e "$TRAINEE_DRY" ] || fail "a start left the dry mark: $(cat "$TRAINEE_DRY")"
+  # A shut floor is no dry pool: its gate is what starved names.
+  printf 'gotrain\t1\n' > "$TRAINEE_DRY"
+  stub fleet-shepherd 'echo "infra: k3s domain red"'
+  stub curl 'exit 7'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'trainee floor: shut, infra: k3s domain red'
+  [ ! -e "$TRAINEE_DRY" ] || fail "a shut floor left the dry mark: $(cat "$TRAINEE_DRY")"
 }

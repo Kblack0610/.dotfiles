@@ -62,7 +62,7 @@ A skip does not park a row: `fleet-dispatch` gives each agent-lane skip the exit
 ## Fields
 
 - `tier`: your own reading of the row's tier, 1, 2 or 3, from what the change touches.
-- `area`: the one game or system the change stays in, as one lowercase word, so two sessions never work on the same one. Use the row's own prefix when it names one (`wilds`, `dodginballs`, `skyline`, `fx`, `perf`), otherwise the game or system it names, spelled as the directory under `Assets/Games` (`shapecity`, `apociseum`). Empty when it spans several.
+- `area`: the one game or system the change stays in, as one lowercase word, so two sessions never work on the same one. The game the row names, spelled as the directory under `Assets/Games` (`shapecity`, `apociseum`), else the system its prefix names (`fx`, `perf`). Empty when it spans several. fleet-dispatch locks a game the row's text names whatever you write here (row_area).
 - `clear`: true only if the row says what done looks like, so the session would not need to ask anything.
 - `agent_only`: true only if no step needs the human (see Always skip).
 - `verdict`: `dispatch` only when size is `S` or `M`, clear is true, agent_only is true, area is one word and your tier is no higher than the row's `tier`. Otherwise `skip`.

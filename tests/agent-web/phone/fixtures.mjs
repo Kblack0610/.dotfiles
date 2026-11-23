@@ -187,6 +187,17 @@ const board = {
   focus: [{ profile: "personal", open: 12 }],
 };
 
+// Projects > Sprints: /api/sprints, hub_core::tasks::SprintRow per open or queued window, then each
+// project's last score (hub_core::project_sprints::LastScore).
+const SPRINT_COLS = ["project", "version", "started", "cut", "left", "done", "finish", "build"];
+const sprintTasks = (n) => Array.from({ length: n }, (_, i) => ({ id: `t-${i}`, text: TEXT[i % TEXT.length], title: TEXT[i % TEXT.length], summary: "", state: i % 3 ? "open" : "done", queue: i % 2 ? "running" : null, interrupt: false, priority: pick(["urgent", "high", "low"], i), href: null }));
+const sprints = {
+  rows: PROJECTS.slice(0, 6).map((project, i) => ({ profile: "personal", project, version: `v0.${i + 1}.0`, queued: i % 3 === 2, started: "11-19 14:25", cut: "11-20 15:59", left: i % 3 === 2 ? "queued" : "6h", done: `${i}/5`, finish: "~15:40", late: false, build: "none", tasks: sprintTasks(5) })),
+  table: { columns: SPRINT_COLS.map((key) => ({ key, role: key === "project" ? "lead" : "" })) },
+  heads: Object.fromEntries(SPRINT_COLS.map((k) => [k, k.toUpperCase()])),
+  last: PROJECTS.slice(0, 4).map((project, i) => ({ profile: "personal", project, version: `v0.${i}.0`, line: "delivered 4 of 5" })),
+};
+
 // Sessions: hub_core::session_table, live-sized: 342 rows on 2026-11-12, of which the server sends
 // the first page, and a lane a session under the table.
 const BUCKET = ["WORKING", "STALLED", "NEEDS", "WORKING", "LANDED", "DONE"];
@@ -515,7 +526,7 @@ export const FIXTURES = {
   "/api/agents": [], "/api/asks/parked": [], "/api/home/waiting": { count: home.needs.length, sessions: 0, href: "#home" }, "/api/session-options": { describe: {}, accounts: [] },
   "/api/home": home, "/api/home/cards": homeCards, "/api/briefing": briefing, "/api/home/proposals": { proposals: home.proposals, proposals_head: home.proposals_head, proposals_table: home.proposals_table, proposals_failed: false },
   "/api/queue": queue, "/api/queue/stats": queueStats, "/api/flow": flow, "/api/queue/candidates": candidates, "/api/queue/candidates?counts=1": candCounts, "/api/queue/projects": PROJECTS.slice(0, 5),
-  "/api/projects": projects, "/api/deliverables": deliverables, "/api/coverage": coverage, "/api/stages": stages, "/api/stages/requirements": stageReqs, "/api/board": board, [`/api/projects/${BIG_PROJECT.name}/page`]: bigPage,
+  "/api/projects": projects, "/api/deliverables": deliverables, "/api/coverage": coverage, "/api/stages": stages, "/api/stages/requirements": stageReqs, "/api/board": board, "/api/sprints": sprints, [`/api/projects/${BIG_PROJECT.name}/page`]: bigPage,
   "/api/sessions/table": sessions, "/api/sessions/capacity": capacity, "/api/watch": watch, "/api/shepherd": shepherd, "/api/outcomes": [],
   "/api/alerts": alerts, "/api/infra": infra, "/api/jobs": jobs,
   "/api/log": log, "/api/log/work": logWork, "/api/log/history": logHistory, "/api/actions": actions,
