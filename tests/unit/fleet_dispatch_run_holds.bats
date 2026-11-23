@@ -855,10 +855,14 @@ share_history() {
 @test "fleet share: a full share's fill passes over a #requested fleet row an agent filed, by notes' ingest record" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
-  export DISPATCH_NOTES_INGEST="$SANDBOX/ingest.jsonl" DISPATCH_LOW_WATER=3
+  export DISPATCH_NOTES_INGEST="$SANDBOX/ingest.jsonl" DISPATCH_LOW_WATER=4
   # A session's `--want human` (wind-down) is the agent's; a voice note is the human's.
   jq -cn '{id: "tidy the hook", action: "added", want: "human", by: "agent", session_id: "s-1"}' > "$DISPATCH_NOTES_INGEST"
   jq -cn '{id: "fix crash on load", action: "added", want: "voice"}' >> "$DISPATCH_NOTES_INGEST"
+  # A script logs no session either, so a sessionless `--want human` is the human's only with no named tool.
+  jq -cn '{id: "retry the probe", action: "added", want: "human", by: "fleet-dispatch"}' >> "$DISPATCH_NOTES_INGEST"
+  row game human 'retry the probe' "- [ ] retry the probe #high #requested $T"
+  verdict game human 'retry the probe' dispatch
   row game human 'tidy the hook' "- [ ] tidy the hook #high #requested $T"
   verdict game human 'tidy the hook' dispatch
   row game human 'fix crash on load' "- [ ] fix crash on load #high #requested $T"
@@ -870,6 +874,7 @@ share_history() {
   assert_success
   assert_output --partial "so the board fills from other projects"
   [ -z "$(grep -rl 'tidy the hook' "$AGENT_QUEUE_DIR" 2>/dev/null)" ] || fail "the agent's #requested fleet row was promoted past the cap"
+  [ -z "$(grep -rl 'retry the probe' "$AGENT_QUEUE_DIR" 2>/dev/null)" ] || fail "a script's sessionless #requested row was read as the human's"
   local f; f=$(grep -rl 'fix crash on load' "$AGENT_QUEUE_DIR" 2>/dev/null | head -n1)
   [ -n "$f" ] || fail "the human's #requested fleet row was left out of the fill: $output"
   grep -q '^asker: human$' "$f" || fail "promote did not stamp the row's asker: $(cat "$f")"

@@ -1193,8 +1193,9 @@ HUMAN_ASK_JQ='def human_ask: ((" " + (.tags // "") + " ") | test(" #?requested "
 
 # asker_map -- ASKER_MAP, read once a process: {<row id>: "human" | "agent"} for each row notes' ingest
 # record ($NOTES_INGEST) holds. human: an event in the human's words, a `want` of focus, voice, request or
-# meeting (their own surfaces, whoever relays them), `--want human` added outside any agent session (a
-# terminal, the human's Start), or #requested written by the human's own hand. agent: the row was added or
+# meeting (their own surfaces, whoever relays them), `--want human` added outside any agent session by
+# no named tool (a terminal, the human's Start; fleet-dispatch writes sessionless rows too), or
+# #requested written by the human's own hand. agent: the row was added or
 # filed and none of those: a session's or queue item's `--want human` (its follow-up: wind-down files
 # leftovers that way), one filed from the outbox, or the machine channels notes names (outbox, ask). A row
 # the record does not reach is in neither, so its #requested keeps its word. Unreadable, the map is empty.
@@ -1205,7 +1206,7 @@ asker_map() {
   [ -r "$NOTES_INGEST" ] || return 0
   # shellcheck disable=SC2016
   ASKER_MAP=$({ grep -E '"action":"(added|filed)"|"want":"|"by":"human"' "$NOTES_INGEST" || true; } | jq -sc '
-    def human_words: (.want // "") as $w | ((.session_id // "") == "") as $hand
+    def human_words: (.want // "") as $w | ((.session_id // "") == "" and ((.by // "") | IN("", "human"))) as $hand
       | ($w | IN("focus", "voice", "request", "meeting")) or ($w == "human" and .action == "added" and $hand)
         or ((.by // "") == "human" and $hand and ((.text // .row // .why // "") | test("#requested")));
     [.[] | select((.id // "") != "")] | group_by(.id)
@@ -8095,7 +8096,7 @@ promote() {
   if [[ " $tags " == *" requested "* ]]; then
     asked=$(jq -r --arg p "$project" --arg k "$id" \
       'first(.rows[]? | select(.project == $p and .id == $k) | .since // empty) // empty' <<<"$board" 2>/dev/null)
-    asker=$(row_asker "$id")
+    asker_map; asker=$(row_asker "$id")   # the map read here, so the subshell inherits it
   fi
   if [ -n "$brief" ] && [[ "$task" != *"$brief"* ]]; then
     [[ "$task" != *$'\n'* ]] || rest=$'\n'"${task#*$'\n'}"
