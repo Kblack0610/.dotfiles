@@ -1119,13 +1119,14 @@ pace_target() {
 # way while the fleet held 79% of them (plan swhow-me-asll-data-modular-otter P3). A canary pinned to a
 # harness with its own source ($s.sourced, harnesses.json `source`) passes, as a trainee start does: it
 # spends no Claude session, and held, the week's set never ran while the fleet sat over its share (ask
-# GDUmQQ, ar-4554). An item that lands or fixes its own open PR (`pr` and `pr_owner`, stamped by the
-# land and fix-ci requeue) passes too: its work is done and paid for, and held, share_return sent it back
-# to its row and stranded the green PR (hc-857, home-config#1406, 2026-11-23). The one test share_why
-# and queue_depth apply.
+# GDUmQQ, ar-4554). A land or fix-ci requeue of an item's own PR (`pr`, `pr_owner` and its
+# `<owner>_tries` stamp, the test item_brief reads) passes too: it starts a Claude session, but a stranded
+# PR costs more than one, and DISPATCH_FIX_TRIES bounds the tries; held, share_return sent hc-857 back to
+# its row and left home-config#1406 green and unmerged (2026-11-23). The one test share_why and
+# queue_depth apply.
 # shellcheck disable=SC2016
 SHARE_JQ='def share_held($s): (.project // "") as $p | (.agent // "claude") as $a | $s.full and any($s.projects[]; . == $p)
-  and (((.pr // "") != "" and (.pr_owner // "") != "") | not)
+  and (((.pr // "") != "" and (.pr_owner // "") != "" and (.[.pr_owner + "_tries"] // "") != "") | not)
   and ((.priority == "urgent" and (.from // "human") == "human") | not)
   and ((" " + (.tags // "") + " ") | test(" #?(red|requested) ") | not)
   and (((" " + (.tags // "") + " ") | contains(" canary ")) and any(($s.sourced // [])[]; . == $a) | not);'
@@ -1174,8 +1175,8 @@ share_count() {
 # share_full -- rc 0 while the fleet share is at or over its cap.
 share_full() { share_state; [ "$(jq -r .full <<<"$SHARE_STATE")" = true ]; }
 
-# share_why <item json> -> why the fleet share cap holds the item, or nothing: share_held, outside the
-# human and sprint floors (HUMAN_PASS), which are the human's own work and never cut off, and outside the
+# share_why <item json> -> why the fleet share cap holds the item, or nothing: share_held (which passes a
+# land or fix-ci requeue of the item's own PR, SHARE_JQ), outside the human and sprint floors (HUMAN_PASS), which are the human's own work and never cut off, and outside the
 # trainee floor (TRAINEE_PASS), whose start runs on a free trainee key and spends no session the cap
 # guards. A Claude canary waits like any fleet item. pick_item lets the first held item go when nothing
 # else can start, so the cap never leaves a slot idle.
