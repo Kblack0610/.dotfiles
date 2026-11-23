@@ -228,7 +228,7 @@ off_project() {
   [[ " $DISPATCH_OFF_PROJECTS " != *" $1 "* ]] || echo "no worker covers $1: it is on DISPATCH_OFF_PROJECTS, so its rows stay with the human"
 }
 
-# Row helpers the board walks (cmd_candidates, t3_rows) call once a row have a `_set` form that sets a
+# Each row helper a board walk (cmd_candidates, t3_rows) calls once a row has a `_set` form that sets a
 # global, as tag_of sets TAG, and the plain form prints it. A walk calls the `_set` form, so a row costs
 # no fork: a fat process forking about 37 subshells a row held a dispatch pass at 10 to 17 min of CPU
 # (ar-4512).
@@ -381,6 +381,8 @@ load_kinds() {
 # bare or unknown row. ROW_KIND holds the rows a pass has loaded (row_kinds_load), so a lookup in a
 # lookup costs no parse; a row not in it is parsed on the spot, and kept. row_kind_set sets KIND.
 declare -gA ROW_KIND=()
+# The board extras' names (load_extras): a walk takes them as loaded when one is declared (trainee_rows), so none comes in from the environment.
+unset DET PLN PAR RNK GAT RLD
 row_kind_set() {
   KIND=''
   [ -n "$1" ] || return 0
@@ -1747,8 +1749,8 @@ cmd_candidates() {
   table=$(workers)
   [ -n "$table" ] || return 0
   held_load "$judged"
-  # A caller that walks many times (trainee_rows) loads the extras once for every walk.
-  if [ -z "${EXTRAS_LOADED:-}" ]; then
+  # A caller that walks many times (trainee_rows) declares and loads the extras once for every walk.
+  if ! declare -p DET >/dev/null 2>&1; then
     local -A DET=() PLN=() PAR=() RNK=() GAT=() RLD=()
     load_extras
   fi
@@ -5303,10 +5305,9 @@ trainee_rows() {
   # The gates are read once, before the walks fork: each walk read them itself, about 18 s each.
   # Each walk writes its own file: a row line can pass PIPE_BUF, so one pipe could tear it.
   # The board extras too (load_extras, and with them the gates): each walk read the whole board again
-  # for them, 36 reads a pass (ar-4512). The forked walks see these locals.
+  # for them, 36 reads a pass (ar-4512). The forked walks see these locals, and so load none.
   local -A DET=() PLN=() PAR=() RNK=() GAT=() RLD=()
   load_extras
-  local EXTRAS_LOADED=1
   mapfile -t projects < <(for prof in $DISPATCH_PROFILES; do notes --profile "$prof" projects 2>/dev/null | cut -f1; done | awk 'NF && !seen[$0]++')
   order=$(jq -r '[.rows[]? | select(.state == "open") | .project] as $r
     | $ARGS.positional | to_entries | sort_by(.value as $p | [-($r | map(select(. == $p)) | length), .key]) | .[].value' "$d/board" --args "${projects[@]}" 2>/dev/null) &&
@@ -7810,7 +7811,8 @@ floor_project() {
 # floor_row <project> <row> [gates] [id] -> 0 for a row a floor pass may read: a `#requested` row when the
 # requested floor is under, a cleanup row of DISPATCH_CLEANUP_PROJECTS when the cleanup floor is, an
 # agent row whose gates all cleared (<gates>, cmd_candidates' `gated`) under GATED_ONLY, and a row an
-# open sprint holds (row_sprint on <id>) under SPRINT_ONLY.
+# open sprint holds (row_sprint on <id>) under SPRINT_ONLY. It sets SPRINT, CLEANUP and KIND (row_sprint_set,
+# cleanup_row_set), so a walk copies its own before it calls this.
 floor_row() {
   [ -n "${GATED_ONLY:-}" ] && [ -n "${3:-}" ] && return 0
   [ -n "${REQUESTED_ONLY:-}" ] && [[ "${2%%<!--*}" =~ (^|[[:space:]])#requested([[:space:]]|$) ]] && return 0
@@ -8153,7 +8155,7 @@ t3_rows() {
   local judged="$1" prof name sheet _v stage repo key text body t line n x planned dj dsig board gates pidle pprio
   local prio priority cleanup sprint uncommitted rsize
   held_load "$judged"
-  if [ -z "${EXTRAS_LOADED:-}" ]; then
+  if ! declare -p DET >/dev/null 2>&1; then
     local -A DET=() PLN=() PAR=() RNK=() GAT=() RLD=()
     load_extras
   fi

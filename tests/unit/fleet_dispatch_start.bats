@@ -516,7 +516,7 @@ load 'fleet_dispatch/common'
 }
 
 # ar-617: the Queue table's SIZE column reads the item, not the board, so start writes the size the
-# task's #size/ tag gives next to account= and model=, in any case as row_size reads it; an
+# task's #size/ tag gives next to account= and model=, in any case as row_size_set reads it; an
 # unsized item gets no size line.
 @test "start --item writes size= from the task's #size/ tag, and none for an unsized item" {
   game_ready
