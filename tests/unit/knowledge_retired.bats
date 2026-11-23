@@ -64,3 +64,19 @@ setup() {
   assert_line "$(printf 'host\tM3 Ultra\tis the hardware of mac-studio, which left the home-config inventory')"
   refute_output --partial 'M4 Pro'
 }
+
+@test "an alias file that is missing or has a malformed row is a failure, not a shorter list" {
+  KNOWLEDGE_RETIRED_ALIASES="$T/none.tsv" run "$SCRIPT"
+  assert_failure
+  assert_output --partial 'cannot read the alias file'
+  printf 'mac-studio M3 Ultra\n' > "$T/bad.tsv"
+  KNOWLEDGE_RETIRED_ALIASES="$T/bad.tsv" run "$SCRIPT"
+  assert_failure
+  assert_output --partial 'wants `host<TAB>alias`'
+}
+
+@test "the committed alias file is read by default and retires M3 Ultra with mac-studio" {
+  run "$SCRIPT"
+  assert_success
+  assert_line --partial "$(printf 'host\tM3 Ultra\t')"
+}

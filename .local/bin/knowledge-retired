@@ -31,6 +31,9 @@ fleet_roster_fresh "$hc"
 # Every revision of the inventory on that ref, newest first; the first is the current one. An
 # alias is read only for a host that is retired, so a name outlives its host by no more.
 ALIASES="${KNOWLEDGE_RETIRED_ALIASES:-$(dirname "$(readlink -f "$0")")/../../.config/notes/retired-aliases.tsv}"
+[ -r "$ALIASES" ] || { echo "knowledge-retired: cannot read the alias file $ALIASES" >&2; exit 1; }
+bad=$(awk -F'\t' '/^#/ || /^[[:space:]]*$/ { next } NF != 2 || $1 == "" || $2 == "" || /\r/ { print NR ": " $0 }' "$ALIASES")
+[ -z "$bad" ] || { printf 'knowledge-retired: %s wants `host<TAB>alias` per line, not:\n%s\n' "$ALIASES" "$bad" >&2; exit 1; }
 { python3 -I - "$hc" "$ref" "$INV" <<'PY'
 import subprocess, sys
 try:
