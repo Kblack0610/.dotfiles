@@ -57,7 +57,7 @@ if [ -f "$PLAN" ] && OPEN=$(coord-watch ids "$PLAN" 2>/dev/null) && [ -z "$OPEN"
   # gate: hook-stop-coord-watch
   jq -n --arg plan "$PLAN" '{decision: "block", reason: (
     "coord-watch: every line in " + $plan + "'"'"'s ledger is ticked, so there is nothing to watch. Coordinate step 6: "
-    + "fleet-sessions label self -coordinator (keep manual), post the validation ask and run agent-ask reopen-on-answer <id>; do not re-arm.")}'
+    + "fleet-sessions label self -coordinator (keep stay), post the validation ask and run agent-ask reopen-on-answer <id>; do not re-arm.")}'
   exit 0
 fi
 
@@ -66,5 +66,5 @@ jq -n --arg plan "$PLAN" '{decision: "block", reason: (
   + (if $plan == "" then "Write the `## Follow-through` ledger in the plan (coordinate skill, step 2), then run `coord-watch --until <that plan>`"
      else "Run `coord-watch --until " + $plan + "`" end)
   + " with Bash run_in_background, never Monitor (step 3): it wakes you once, on an event, with no 30 minute expiry. "
-  + "Every line ticked: step 6, not a re-arm. Coordinating is over: step 7 (fleet-sessions label self -manual -coordinator).")}'
+  + "Every line ticked: step 6, not a re-arm. Coordinating is over: step 7 (fleet-sessions label self -stay -coordinator).")}'
 exit 0
