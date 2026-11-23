@@ -2399,7 +2399,7 @@ mod tests {
             .map(|i| serde_json::json!({"bucket": "NEEDS", "target": format!("hub/s{i}:1"), "project": "p", "idle_min": 100 - i}))
             .collect();
         let state = serde_json::json!({ "sessions": sessions });
-        let mut home = hub_core::home::build(Some(&state), None, None, None, hub_core::jobs::now());
+        let home = hub_core::home::build(Some(&state), None, None, None, hub_core::jobs::now());
         assert_eq!(home.needs.len(), n);
         let ids = |v: &serde_json::Value| -> Vec<String> {
             v.as_array()

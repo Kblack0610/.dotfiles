@@ -31,9 +31,10 @@ pub struct Part {
 }
 
 impl Part {
-    /// A count of none: a surface draws no chip for it (`Card::drawn`).
+    /// A counted zero: a surface draws no chip for it (`Card::drawn`). A part whose source was
+    /// not read says so in `reading` words at `Level::Nodata` and is never a zero (rule 6).
     pub fn is_zero(&self) -> bool {
-        self.value == "0"
+        self.value == "0" && self.level != Level::Nodata
     }
 }
 
@@ -2329,5 +2330,20 @@ mod tests {
             .map(|c| c.tab)
             .collect();
         assert_eq!(got, ["alerts", "sessions"]);
+    }
+    #[test]
+    fn a_drawn_card_leaves_out_a_counted_zero_but_never_an_unread_part() {
+        let c = Card::new("queue", "Queue", "items")
+            .part("Held", 0, Level::Ok)
+            .part("Ready", 3, Level::Ok)
+            .part("Shipped", crate::reading::NOT_READ, Level::Nodata)
+            .part("Checks", 0, Level::Nodata);
+        let mut c = c;
+        c.big = "0".into();
+        let d = c.drawn();
+        let labels: Vec<&str> = d.parts.iter().map(|p| p.label.as_str()).collect();
+        assert_eq!(labels, ["Ready", "Shipped", "Checks"]);
+        assert_eq!(d.big, "0", "the headline stays at zero");
+        assert_eq!(d.parts[1].value, crate::reading::NOT_READ);
     }
 }
