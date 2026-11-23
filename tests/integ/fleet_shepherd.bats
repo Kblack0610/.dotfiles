@@ -2687,8 +2687,7 @@ esac'
   run grep -c 'cancel' "$HOME/gh.calls"
   assert_output 0
   # A verdict is no act: the rundown gets nothing from a dry run.
-  run grep -c 'ghost run' "$FLEET_SHEPHERD_DIR/log.md"
-  assert_output 0
+  [ ! -e "$FLEET_SHEPHERD_DIR/log.md" ] || ! grep -q 'ghost run' "$FLEET_SHEPHERD_DIR/log.md"
   assert_equal "$(cut -f2,3 "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" | sort | tr '\t\n' ' |')" \
     'kept https://github.com/o/r/actions/runs/2|kept https://github.com/o/r/actions/runs/3|would-cancel https://github.com/o/r/actions/runs/1|'
   # Judged runs are not asked about again inside the age.
