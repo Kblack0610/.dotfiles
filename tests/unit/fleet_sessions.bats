@@ -5003,9 +5003,6 @@ agent_session_behind{target="lab/game-agent-2:1",project="game-agent-2",bucket="
 # TYPE agent_session_dirty gauge
 agent_session_dirty{target="hub/dot\"files:1",project="dotfiles",bucket="NEEDS"} 0
 agent_session_dirty{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 5
-# HELP agent_session_conflicts 1 when the branch of the session conflicts with its base.
-# TYPE agent_session_conflicts gauge
-agent_session_conflicts{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 1
 # HELP agent_session_info Joins a session target to its Claude Code session_id; always 1.
 # TYPE agent_session_info gauge
 agent_session_info{target="lab/game-agent-2:1",project="game-agent-2",session_id="s-123"} 1
