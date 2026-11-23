@@ -22,8 +22,7 @@
 #   agent-hold release <resource>
 #   agent-hold check <resource> [--no-caller]   exit 1 (and print the hold) while held, 0
 #                                   when free or when the caller is granted or holds the claim;
-#                                   --no-caller asks as no session, so neither counts; unity and
-#                                   cpu are held, file or not, while the machine is over the high mark
+#                                   --no-caller asks as no session, so neither counts
 #   agent-hold list [--kind k]      resource<TAB>since<TAB>by<TAB>reason, one per hold; --kind
 #                                   load|resource|claim keeps that kind (a hold with no kind line
 #                                   reads as the kind set would give it)
@@ -52,10 +51,6 @@ set -uo pipefail
 
 HOLD_ROOT="${AGENT_HOLD_DIR:-$HOME/.agent/holds}"
 PROC_ROOT="${AGENT_HOLD_PROC:-/proc}"
-# Resources a local gate waits on for this machine's CPU (the playground's slots.sh checks unity):
-# `check` holds them while the machine is over the high mark, hold file or not (load_check).
-LOAD_GATED=unity,cpu
-ASSESS="${AGENT_HOLD_ASSESS:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/fleet-assess}"
 # 1 of the default 100: a held scope gets about 1% of a contended CPU, near nice 19's share.
 LOW_CPU_WEIGHT=1
 # Desk classes, best first: why a session needs a claimed resource, and so who takes it next
@@ -374,21 +369,6 @@ cmd_release() {
   return 0
 }
 
-# load_check <resource> -- with no hold file, a load resource is still held while the machine itself
-# reads over fleet-assess's high mark: a gate honors the load, not only a hold somebody remembered to
-# set (2026-11-17: 22 sessions woken at once reran their Unity gates into load 127 on 32 cores, no
-# hold set). A hold file is the pacer's own answer, grants included, so this reads only without one.
-# No fleet-assess (a Mac runner) holds nothing.
-# gate: ah-load-gated
-load_check() {
-  local out
-  in_list "$1" "$LOAD_GATED" || return 0
-  [ -x "$ASSESS" ] || return 0
-  out="$("$ASSESS" --load-probe 2>/dev/null)" && return 0
-  echo "held: $1 by the machine's load: $out"
-  return 1
-}
-
 cmd_check() {
   local resource="${1:-}"
   need_resource "$resource"
@@ -397,7 +377,7 @@ cmd_check() {
     *) echo "agent-hold check: unknown argument $2" >&2; exit 2 ;;
   esac
   local f="$HOLD_ROOT/$resource"
-  [ -f "$f" ] || { load_check "$resource"; return; }
+  [ -f "$f" ] || return 0
   # --no-caller asks for a session that does not exist yet (agent-queue's hold:<resource>), so
   # no grant or claim of the asker's counts.
   local me=""

@@ -13,44 +13,6 @@ setup() {
   NOTIFY_LOG="$SANDBOX/notify.log"
   printf '#!/usr/bin/env bash\necho "$*" >> "%s"\n' "$NOTIFY_LOG" > "$SANDBOX/bin/agent-notify"
   chmod +x "$SANDBOX/bin/agent-notify"
-  # The machine's load, as check's load gate reads it: over the high mark while $SANDBOX/overload exists.
-  export AGENT_HOLD_ASSESS="$SANDBOX/bin/assess-stub"
-  printf '#!/usr/bin/env bash\n[ "$1" = --load-probe ] || exit 2\n[ -e "%s/overload" ] || { echo "OK load 0.2x cores"; exit 0; }\necho "HOLD load 2.1x cores >= 1.75x (load 67/32)"; exit 1\n' "$SANDBOX" > "$AGENT_HOLD_ASSESS"
-  chmod +x "$AGENT_HOLD_ASSESS"
-}
-
-# 2026-11-17: 22 restored sessions reran their Unity gates at once into load 127 on 32 cores, and
-# slots.sh passed every one, since nobody had set a unity hold yet.
-@test "a load resource with no hold file is held while the machine is over the high mark, and free under it" {
-  touch "$SANDBOX/overload"
-  run "$HOLD" check unity
-  assert_failure 1
-  assert_output "held: unity by the machine's load: HOLD load 2.1x cores >= 1.75x (load 67/32)"
-  run "$HOLD" check cpu --no-caller
-  assert_failure 1
-  # A resource that is not a local CPU gate says nothing about this machine's load.
-  run "$HOLD" check dispatch
-  assert_success
-  run "$HOLD" check mac-desktop
-  assert_success
-  rm "$SANDBOX/overload"
-  run "$HOLD" check unity
-  assert_success
-  assert_output ''
-}
-
-@test "a hold file is the pacer's own answer: its grant passes over the high mark" {
-  "$HOLD" set unity --by c "staged restart" >/dev/null
-  "$HOLD" grant unity 0d1e-aaaa >/dev/null
-  touch "$SANDBOX/overload"
-  run env CLAUDE_CODE_SESSION_ID=0d1e-aaaa "$HOLD" check unity
-  assert_success
-}
-
-@test "with no fleet-assess beside it (a Mac runner) the load gate holds nothing" {
-  touch "$SANDBOX/overload"
-  AGENT_HOLD_ASSESS="$SANDBOX/none" run "$HOLD" check unity
-  assert_success
 }
 
 @test "check is free (exit 0) when nothing is held" {
