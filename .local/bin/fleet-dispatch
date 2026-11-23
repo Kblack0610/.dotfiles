@@ -5183,7 +5183,7 @@ trainee_reason_key() {
   sed -E 's#^its repo .* is not one a trainee#its repo is not one a trainee#
     s#^.* has no \.githooks/sensitive-tokens\.txt.*#its repo has no .githooks/sensitive-tokens.txt#
     s#^its words match .*#its words match the repo sensitive-tokens.txt#
-    s#^it names [^,]*, which [^ ]+ does not track#it names a file which the repo does not track#
+    s#^it names [^,]*, which .* does not track$#it names a file which the repo does not track#
     s#^it names [^,]*, which (.*)#it names a file which \1#
     s#^its kind .* opens no PR#its kind opens no PR#
     s#^a ladder run took it once already .*#a ladder run took it once already#
@@ -5201,6 +5201,10 @@ trainee_reason_key() {
 trainee_rows() {
   local d prof w i k projects=() order
   d=$(mktemp -d) || return 1
+  # One board read: the projects' order, and each row's full brief (row_item), which a row's own
+  # .details carries only up to DISPATCH_DETAIL_CHARS. Without it no row can be judged as promote
+  # would queue it, so a failed read fails the walk.
+  notes board --json >"$d/board" 2>/dev/null || { echo "fleet-dispatch: trainee_rows: notes board --json failed" >&2; rm -rf "$d"; return 1; }
   # Both walks go one row at a time, so each runs once per project (ONLY_PROJECT), up to 8 at once,
   # the biggest board first. Whole-board, the two took 157 of trainee-pool's 172 s, past fleet-bench's
   # BENCH_TRAINEE_CMD timeout, agent-runtime's 1,409 agent rows the long pole (2026-11-23, ar-3988).
@@ -5208,8 +5212,8 @@ trainee_rows() {
   # Each walk writes its own file: a row line can pass PIPE_BUF, so one pipe could tear it.
   load_gates
   mapfile -t projects < <(for prof in $DISPATCH_PROFILES; do notes --profile "$prof" projects 2>/dev/null | cut -f1; done | awk 'NF && !seen[$0]++')
-  order=$(notes board --json 2>/dev/null | jq -r --args '[.rows[]? | select(.state == "open") | .project] as $r
-    | $ARGS.positional | to_entries | sort_by(.value as $p | [-($r | map(select(. == $p)) | length), .key]) | .[].value' "${projects[@]}" 2>/dev/null) &&
+  order=$(jq -r '[.rows[]? | select(.state == "open") | .project] as $r
+    | $ARGS.positional | to_entries | sort_by(.value as $p | [-($r | map(select(. == $p)) | length), .key]) | .[].value' "$d/board" --args "${projects[@]}" 2>/dev/null) &&
     [ -n "$order" ] || order=$(printf '%s\n' "${projects[@]}")
   mapfile -t projects <<<"$order"
   w=$(nproc 2>/dev/null || echo 1); [ "$w" -le 8 ] || w=8
@@ -5236,12 +5240,13 @@ trainee_rows() {
   # t3 first: unique_by keeps a row's first copy, and a tier-3 row's copy carries its worker.
   jq -sc --arg today "${DISPATCH_TODAY:-$(date +%F)}" --argjson prules "$(policy_rules)" --argjson games "$(cat "$d/t3" "$d/open" | game_areas)" \
     --argjson busy "$(queue_areas | jq -Rsc 'split("\n") | map(select(length > 0) | ascii_downcase)')" \
-    --slurpfile v <(latest_verdicts) "$RANK_JQ$ROW_JQ"'
+    --slurpfile v <(latest_verdicts) --slurpfile b "$d/board" "$RANK_JQ$ROW_JQ"'
     ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
+    | ($b[0].rows // [] | map(select(.id != null) | {key: ([.project, .lane, .id] | tostring), value: ((.details // []) | join("\n"))}) | from_entries) as $briefs
     | map(select(.lane == "agent") | . as $c | $by[[.project, .lane, .key] | tostring] as $d
       | select($d == null or ($d.verdict != "failed" and ($c.gated == true or $d.verdict != "skip"
           or (($d | usable($prules)) and ($d | holds($c))) == false)))
-      | . + {area: row_area($d; $games)}
+      | . + {area: row_area($d; $games), brief: ($briefs[[.project, .lane, .key] | tostring] // "")}
       | select(.area == "" or .worker == "tier3" or ("\(.project | ascii_downcase)/\(.area)" as $a | $busy | index($a) | not))
       | if .pprio == null then rank_fields($today; .project_prio // "") else . end)
     | unique_by([.project, .key]) | rank | .[]' "$d/t3" "$d/open"
@@ -5320,9 +5325,13 @@ cmd_trainee_pool() {
 }
 
 # row_item <candidate row> -> the queue item promote would make of it, as trainee_why reads one: its id
-# the slug, its words the task, and fill_day's cleanup and tier<N> tags.
+# the slug, its words then its full brief (trainee_rows' .brief, the detail lines promote copies) the
+# task, and fill_day's cleanup and tier<N> tags. Judged on the words alone, a row whose brief named
+# ~/.agent/outcomes was promoted for ocfree and then refused at start (ar-2488, 2026-11-23). A plan
+# row's brief names its plan, outside the repo, so it is refused too: promote would queue its phase
+# chain under other slugs, never the one item the floor starts. A row with no id gets no brief, as in promote.
 row_item() {
-  jq -c '(.text | sub("^- \\[.\\] "; "")) as $t | {slug: .key, project, title: $t, task: $t, mode: "",
+  jq -c '(.text | sub("^- \\[.\\] "; "")) as $t | {slug: .key, project, title: $t, task: ($t + (if (.brief // "") != "" then "\n" + .brief else "" end)), mode: "",
     tags: ([if .cleanup == 0 then "cleanup" else empty end, if .tier then "tier\(.tier)" else empty end] | join(" "))}' <<<"$1"
 }
 
