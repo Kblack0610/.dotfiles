@@ -1077,7 +1077,10 @@ gate_rbw() {
           elsewhere: [{id: "ar-4", state: "done", marker: "id:ar-4 filed:2026-11-01 dropped: on the game sheet"},
                       {id: "ar-5", state: "open", version: "v0.9.0", marker: "id:ar-5"},
                       {id: "ar-6", state: "done", marker: "id:ar-6 dup:ar-5", dup: "ar-5"},
-                      {id: "ar-12", state: "done", marker: "id:ar-12 dup:ar-3", dup: "ar-3"}]}' > "$NOTES_FIXTURE/board.json"
+                      {id: "ar-12", state: "done", marker: "id:ar-12 dup:ar-13", dup: "ar-13"},
+                      {id: "ar-13", state: "done", marker: "id:ar-13 dup:ar-3", dup: "ar-3"},
+                      {id: "ar-14", state: "done", marker: "id:ar-14 dup:ar-15", dup: "ar-15"},
+                      {id: "ar-15", state: "done", marker: "id:ar-15 dup:ar-14", dup: "ar-14"}]}' > "$NOTES_FIXTURE/board.json"
   run "$AQ" gate --json after/ar-2 after/ar-3 after/ar-4 after/ar-5 after/ar-6 after/ar-404
   assert_failure 3
   st() { jq -r --arg t "$1" 'select(.tag == $t) | "\(.state)|\(.why)"' <<<"$output"; }
@@ -1090,11 +1093,22 @@ gate_rbw() {
   # Every id in one read: ar-6's dup target was asked for already.
   [ "$(grep -c '^notes board' "$NOTES_FIXTURE/calls.log")" = 1 ]
   grep -qx 'notes board --json --id ar-2 --id ar-3 --id ar-4 --id ar-5 --id ar-6 --id ar-404' "$NOTES_FIXTURE/calls.log"
-  # A dup target no tag names is read once more, and its state is the gate's.
+  # A dup target no tag names is read too, hop by hop, and the last row's state is the gate's.
   : > "$NOTES_FIXTURE/calls.log"
   run "$AQ" gate --json after/ar-12
   assert_success
-  [ "$(grep -c '^notes board --json --id' "$NOTES_FIXTURE/calls.log")" = 2 ]
+  [ "$(st after/ar-12)" = "clear|" ]
+  [ "$(grep -c '^notes board --json --id' "$NOTES_FIXTURE/calls.log")" = 3 ]
+  # A dup cycle ends at the hop cap, dead, never in a loop.
+  run "$AQ" gate --json after/ar-14
+  assert_failure 3
+  [[ "$(st after/ar-14)" == "dead|after ar-14 (folded into ar-15) (folded into ar-14)"*"folded more than"* ]]
+  # A feed jq cannot read is an unread board, so the gate holds pending, never dead.
+  cp "$NOTES_FIXTURE/board.json" "$SANDBOX/good.json"; echo 'not json' > "$NOTES_FIXTURE/board.json"
+  run "$AQ" gate after/ar-2
+  assert_failure 3
+  assert_output --partial "pending  after/ar-2: after ar-2 (notes board --json failed)"
+  mv "$SANDBOX/good.json" "$NOTES_FIXTURE/board.json"
   # --all: the open rows' gates only, no other tag and no closed row's: the open board, then one --id read.
   : > "$NOTES_FIXTURE/calls.log"
   run "$AQ" gate --json --all

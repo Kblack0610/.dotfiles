@@ -832,27 +832,32 @@ after_fix() {
 }
 
 # rows_state <id>... -- RS[<id>] for each row `notes board --json --id` finds: open (open or doing),
-# done, dropped, or dup:<row> when it was folded into another row, whose state it reads too (one hop).
-# An id listed twice (a sheet and a version note) reads open, then done, then dup, then dropped. An id
-# it does not find gets no entry. Fails when the board cannot be read.
+# done, dropped, or dup:<row> when it was folded into another row, whose state it reads too, up to
+# AQ_GATE_DUP_HOPS reads. An id listed twice (a sheet and a version note) reads open, then done, then
+# dup, then dropped. An id it does not find gets no entry. Fails when the board cannot be read.
+AQ_GATE_DUP_HOPS=4
 rows_state() {
-  local -a more=()
-  local i st
-  rows_state_read "$@" || return 1
-  for i in "${RS[@]}"; do [[ "$i" != dup:?* ]] || [ -n "${RS[${i#dup:}]-}" ] || more+=("${i#dup:}"); done
-  [ "${#more[@]}" -eq 0 ] || rows_state_read "${more[@]}"
+  local -a more=("$@")
+  local i hop
+  for ((hop = 0; hop < AQ_GATE_DUP_HOPS && ${#more[@]} > 0; hop++)); do
+    rows_state_read "${more[@]}" || return 1
+    more=()
+    for i in "${RS[@]}"; do [[ "$i" != dup:?* ]] || [ -n "${RS[${i#dup:}]-}" ] || more+=("${i#dup:}"); done
+  done
 }
+# A marker reads dropped by the token notes writes (md::is_dropped): `dropped:`.
 rows_state_read() {
   local -a args=()
-  local i st feed
+  local i st feed lines
   for i in "$@"; do args+=(--id "$i"); done
   feed="$(notes board --json "${args[@]}" 2>/dev/null)" && [ -n "$feed" ] || return 1
-  while IFS=$'\t' read -r i st; do RS[$i]=$st; done < <(jq -r '[.rows[]? | select(.id != null)] | group_by(.id)[]
+  lines="$(jq -r '[.rows[]? | select(.id != null)] | group_by(.id)[]
     | map(if .state == "open" or .state == "doing" then "open"
           elif ((.marker // "") | test("(^| )dropped:")) then "dropped"
           elif .dup != null then "dup:\(.dup)" else "done" end) as $s
     | "\(.[0].id)\t\(if any($s[]; . == "open") then "open" elif any($s[]; . == "done") then "done"
-        else (($s | map(select(startswith("dup:"))))[0] // "dropped") end)"' <<<"$feed")
+        else (($s | map(select(startswith("dup:"))))[0] // "dropped") end)"' <<<"$feed")" || return 1
+  while IFS=$'\t' read -r i st; do [ -z "$i" ] || RS[$i]=$st; done <<<"$lines"
 }
 
 # gate [--json] (--all | <tag>...) -- each board gate tag clear, pending (why, in hold_for's words) or
@@ -866,7 +871,7 @@ rows_state_read() {
 # promote puts on the row's item. Exit 0 when every gate is clear, else 3.
 cmd_gate() {
   local usage="usage: agent-queue gate [--json] (--all | <tag>...)"
-  local json="" all="" board="" unread="" t q st why id r via rc=0 GQ HOLD HOLD_DEAD stack STK STK_SLUG
+  local json="" all="" board="" unread="" t q st why id r via hop rc=0 GQ HOLD HOLD_DEAD stack STK STK_SLUG
   local -a tags=() ids=()
   local -A RS=()
   while [ $# -gt 0 ]; do
@@ -894,9 +899,13 @@ cmd_gate() {
     t="${t#\#}" q="" why="" stack=""
     if [[ "$t" == after/?* ]]; then
       id="${t#after/}" r="${RS[$id]-}" via=""
-      # A dup-closed row is the row it was folded into, one hop.
-      if [[ "$r" == dup:?* ]]; then via=" (folded into ${r#dup:})" id="${r#dup:}" r="${RS[${r#dup:}]-}"; fi
+      # A dup-closed row is the row it was folded into, through every hop rows_state read.
+      for ((hop = 0; hop < AQ_GATE_DUP_HOPS; hop++)); do
+        [[ "$r" == dup:?* ]] || break
+        via+=" (folded into ${r#dup:})" id="${r#dup:}" r="${RS[${r#dup:}]-}"
+      done
       case "$r" in
+        dup:*) st=dead why="after ${t#after/}$via: folded more than $AQ_GATE_DUP_HOPS times; gate on the row that owns the work" ;;
         done) st=clear ;;
         dropped) st=dead why="after ${t#after/}$via: that row was dropped, so it never closes done; take the tag off the row" ;;
         open) st=pending why="after ${t#after/}$via (open)"
