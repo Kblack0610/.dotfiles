@@ -44,13 +44,42 @@ guard() {
   assert_output deny
   run guard '"$U" -batchmode -quit -executeMethod A.B.C'
   assert_output deny
-  run guard 'scripts/test/run.sh --filter A.B'
+  run guard 'gh workflow run test.yml --ref feat/x -f classes=affected -f only=A.B'
   assert_output ""
   run guard 'scripts/authoring/unity-method.sh A.B.C'
   assert_output ""
   run guard 'rg -n "runTests" scripts/test/run.sh'
   assert_output ""
   run guard 'grep -n -- -runTests scripts/test/run.sh'
+  assert_output ""
+}
+
+@test "an agent's local Unity test run is denied: run.sh, a suite that stays here, in-docker.sh (ar-4849)" {
+  # Negative control: delete the run.sh, suite.sh and in-docker.sh rows from the skill and every
+  # deny here reads "".
+  for c in 'scripts/test/run.sh --filter A.B' './scripts/test/run.sh --platform EditMode' \
+           'cd x && FOO=1 timeout -k 5 600 scripts/test/run.sh --filter A | tail -n 40' \
+           '"$ROOT"/scripts/test/run.sh --filter A' 'bash -c "scripts/test/run.sh --filter A"' \
+           'for c in A B; do scripts/test/run.sh --filter $c; done' \
+           'scripts/test/suite.sh' 'scripts/test/suite.sh --only PlayMode --classes f' \
+           'nohup scripts/test/suite.sh --classes f --all-red &' \
+           'scripts/test/in-docker.sh --filter A' 'sh scripts/test/in-docker.sh --suite'; do
+    run guard "$c"
+    assert_output deny
+  done
+  # the pool forms, an editor method or build in docker, and reading or linting the scripts
+  for c in 'scripts/test/suite.sh --classes f.txt' 'scripts/test/suite.sh --editmode-classes e --classes f' \
+           'scripts/test/in-docker.sh --method A.B.C' 'scripts/test/gate-and-land.sh --title t --item s' \
+           'cat a.sh scripts/test/run.sh' 'rg -n x scripts/test/run.sh' 'git diff scripts/test/suite.sh' \
+           'shellcheck scripts/test/run.sh scripts/test/suite.sh' 'bash -n scripts/test/run.sh' \
+           'git commit -m "scripts/test/run.sh refuses"'; do
+    run guard "$c"
+    assert_output ""
+  done
+  # another repo's run.sh and the asset-library project are not the playground's (a person's shell runs no hook)
+  run guard 'scripts/test/run.sh --filter A.B' /home/u/src/other-game
+  assert_output ""
+  run guard 'scripts/test/run.sh --filter A.B' "$PG/External/asset-library"
   assert_output ""
 }
 
