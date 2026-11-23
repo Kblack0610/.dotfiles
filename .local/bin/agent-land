@@ -34,8 +34,8 @@
 # The item is --item, else $AGENT_QUEUE_ITEM (set in a session fleet-dispatch started), else the
 # one this session added or claimed (`agent-queue mine`). No item, no landing: every merged PR
 # is a unit of work on the work ledger, so add one first (`agent-queue add --running`). An item
-# taken from the session, not named by --item, takes only a PR in its project's repo (own_project), and
-# only one it records or whose body names it on an "Item: <slug>" line (own_item).
+# taken from the session, not named by --item, takes only a PR in its project's repo, and only one it
+# records or whose body names it on an "Item: <slug>" line (own_item).
 # Exit 0 landed, 1 a step failed, 2 usage, 3 a catch-up merge of origin/<base> that conflicts
 # (before or after the checks): resolve it and re-run, 4 an item stacked on an item that has not closed ok (stack_gate), 5 critical work waiting on its validate item (validate_gate): that session lands it on a pass, so the author winds down. A head pushed after the checks waits on its own
 # checks before it merges; the local gate script runs again on a merge of <base> only when the repo's CI
@@ -816,36 +816,35 @@ own_repo() {
 . "${PROJECT_NAME_LIB:-$(dirname "$(readlink -f "$0")")/../../.config/shared-hooks/project-name.sh}"
 PROJECT_MAP_FILE="${AGENT_QUEUE_PROJECT_MAP:-$(project_map_file)}"
 
-# own_project: an item this run did not name is the session's own ($AGENT_QUEUE_ITEM, or agent-queue
-# mine), and a session also lands side PRs in other repos. A PR outside the item project's repo
-# (its tracker `repo`, else the project) is refused before anything is touched: it would close the
-# item and its row with a PR that is not their work (2026-11-07: dotfiles-private#652, a
-# store-console skill fix, closed shape-city-steam-console and row ucp-1207). --item claims it.
-own_project() {
-  [ -n "$implied" ] && [[ "$pr_ref" == */*#* ]] && [ -f "$PROJECT_MAP_FILE" ] || return 0
-  local project want got name=${pr_ref%#*}
-  name=${name#*/}
-  project=$(jq -r '.project // ""' <<<"$it")
-  [ -n "$project" ] || return 0
-  want=$(project_repo_name "$project")
-  got=$(project_of_repos_json "$name" | jq -r --arg n "$name" '.[$n] // ""')
-  [ "${got,,}" != "${want,,}" ] || return 0
-  die "#$pr is in ${pr_ref%#*} ($got), and $item, taken from $implied, is a $project item in $want: a PR outside the item's repo names its item. Pass --item $item if this PR is that item's work (with --partial while its own PR is still to land), or give it its own item (agent-queue add --running --project $got \"<type(area): title>\") and pass --item <that slug>"
-}
-
-# own_item: an item this run did not name is only the session's guess: a session lands side fixes in
-# its item's repo too, and parallel subagents of one coordinator share its Claude session id, so
-# `agent-queue mine` can return a sibling's item. Before anything is touched, such an item takes only
-# a PR it records (pr:, open_pr:) or whose body names it on an "Item: <slug>" line; any other PR is
-# refused, a body naming another queue item with that item in the message, so stamp_item only adds the
-# line for an item --item named or one that records the PR. Not the branch: `branch:` is the last push the Stop hook saw, and a
-# run that re-cuts its branch lands from the new one in the same turn. Why: home-config #1195 got a
-# sibling subagent's "Item:" line on 2026-11-18 (ar-3047), and unity-core-playground#2985, an iOS
-# side fix with no "Item:" line, closed its session's overnight release watch on 2026-11-20 (ar-3970).
+# own_item: an item this run did not name is only the session's guess ($AGENT_QUEUE_ITEM, or agent-queue
+# mine), so before anything is touched it takes only a PR that is its work. First the repo: a session
+# lands side PRs in other repos, and one outside the item project's repo (its tracker `repo`, else the
+# project) would close the item and its row with a PR that is not their work (2026-11-07:
+# dotfiles-private#652, a store-console skill fix, closed shape-city-steam-console and row ucp-1207).
+# Then the PR itself: a session lands side fixes in its item's repo too, and parallel subagents of one
+# coordinator share its Claude session id, so `agent-queue mine` can return a sibling's item. Such an
+# item takes only a PR it records (pr:, open_pr:) or whose body names it on an "Item: <slug>" line; any
+# other PR is refused, a body naming another queue item with that item in the message, so stamp_item
+# only adds the line for an item --item named or one that records the PR. Not the branch: `branch:` is
+# the last push the Stop hook saw, and a run that re-cuts its branch lands from the new one in the same
+# turn. Why: home-config #1195 got a sibling subagent's "Item:" line on 2026-11-18 (ar-3047), and
+# unity-core-playground#2985, an iOS side fix with no "Item:" line, closed its session's overnight
+# release watch on 2026-11-20 (ar-3970). --item claims either.
 # gate: al-own-item
 own_item() {
   [ -n "$implied" ] || return 0
-  local ref refs named rc=1
+  local ref refs named rc=1 project want got name=${pr_ref%#*}
+  if [[ "$pr_ref" == */*#* ]] && [ -f "$PROJECT_MAP_FILE" ]; then
+    name=${name#*/}
+    project=$(jq -r '.project // ""' <<<"$it")
+    if [ -n "$project" ]; then
+      want=$(project_repo_name "$project")
+      got=$(project_of_repos_json "$name" | jq -r --arg n "$name" '.[$n] // ""')
+      # gate: al-own-item
+      [ "${got,,}" = "${want,,}" ] ||
+        die "#$pr is in ${pr_ref%#*} ($got), and $item, taken from $implied, is a $project item in $want: a PR outside the item's repo names its item. Pass --item $item if this PR is that item's work (with --partial while its own PR is still to land), or give it its own item (agent-queue add --running --project $got \"<type(area): title>\") and pass --item <that slug>"
+    fi
+  fi
   read -ra refs <<<"$it_pr"
   for ref in "${refs[@]}" $(jq -r '.open_pr // ""' <<<"$it"); do
     [ "$ref" = "$pr_ref" ] || { [[ "$ref" != */*#* || "$pr_ref" != */*#* ]] && [ "${ref##*#}" = "$pr" ]; } || continue
@@ -1278,7 +1277,6 @@ pr_ref=$(sed -E 's#^https?://[^/]+/([^/]+/[^/]+)/pulls?/([0-9]+).*#\1\#\2#' <<<"
 done_as=''
 it_pr=$(jq -r '.pr // ""' <<<"$it")
 own_repo
-own_project
 own_item
 done_as=$(item_pr_gate) || exit $?
 # settle_prior: pr: and merged: are lists in step, so each earlier PR an open item records needs its
