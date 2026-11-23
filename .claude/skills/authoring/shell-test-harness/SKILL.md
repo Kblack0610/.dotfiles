@@ -20,7 +20,7 @@ metadata:
     - match: |-
         (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:\S*/)?(?:bats|run-bats\.sh|docker\.sh|rust\.sh|rust-crates\.sh|lint\.sh|lint-files\.sh|fleet-agent-smoke\.sh)(?=[\s;&|)]|$)
       use: *ci
-      mode: deny
+      mode: report
       where: *dotfiles
       why: *load
     - match: |-
