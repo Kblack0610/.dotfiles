@@ -911,9 +911,9 @@ nudge_ago() { printf 'fact: STALLED f-%s\nat: %s\n' "$2" "$(date -Iseconds -d "$
   assert_equal "$("$SH" stats | jq -c '[.takeovers_24h, .takeovers_failed_24h]')" '[0,0]'
 }
 
-@test "takeover leaves a row alone that is not its to move: manual, plan mode, another host, an ask, not yet old enough, a draft in the prompt" {
+@test "takeover leaves a row alone that is not its to move: manual, stay, plan mode, an ask, not yet old enough, a draft in the prompt" {
   takeover_checkout "$HOME/wt"; nudge_ago 120 1; nudge_ago 120 2; nudge_ago 120 3; nudge_ago 120 4; nudge_ago 30 5; nudge_ago 120 6
-  doc "[$(trow 1 '{"labels":["manual"]}'), $(trow 2 '{"in_plan_mode":true}'), $(trow 3 '{"host":"razer"}'), $(trow 4 '{"own_asks":1}'),
+  doc "[$(trow 1 '{"labels":["manual"]}'), $(trow 2 '{"in_plan_mode":true}'), $(trow 3 '{"labels":["stay"]}'), $(trow 4 '{"own_asks":1}'),
         $(trow 5), $(trow 6 '{"idle_min":20}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   [ -z "$(closes)" ]
@@ -924,6 +924,38 @@ nudge_ago() { printf 'fact: STALLED f-%s\nat: %s\n' "$2" "$(date -Iseconds -d "$
   STUB_PANE=$'───────────── name ─\n\xe2\x9d\xaf\xc2\xa0half a sentence\n─────────────' "$SH" check >/dev/null || true
   [ -z "$(closes)" ]
   run grep -q 'not taken over' "$HOME/pages"; assert_failure
+}
+
+@test "takeover reaches a fleet worker's STALLED row over ssh, closing it with the worker's wind-down.sh, and an ssh failure neither closes nor pages (ar-4973)" {
+  # fleet_host_run stand-in: logs the host, runs the command here; a call matching STUB_SSH_FAIL exits 255 as ssh does.
+  printf '%s\n' 'fleet_hosts() { :; }' 'fleet_host_run() { local h="$1"; shift; echo "$h $*" >> "$HOME/ssh.calls"' \
+    '  [ -n "${STUB_SSH_FAIL:-}" ] && [[ "$*" =~ $STUB_SSH_FAIL ]] && return 255; "$@"; }' > "$SANDBOX/fleet-hosts.sh"
+  export FLEET_HOSTS_LIB="$SANDBOX/fleet-hosts.sh"
+  mkdir -p "$HOME/.local/src/tmux"
+  printf '#!/usr/bin/env bash\necho "worker $*" >> "$HOME/wind-down.calls"\n' > "$HOME/.local/src/tmux/wind-down.sh"
+  chmod +x "$HOME/.local/src/tmux/wind-down.sh"
+  takeover_checkout "$HOME/wt"; nudge_ago 120 7
+  doc "[$(trow 7 '{"target":"razer@lab/7:1","host":"razer"}')]"
+  # The worker does not answer, at the checkout read and then at the close: nothing closed, nothing paged, no try counted.
+  STUB_SSH_FAIL=rev-parse STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  STUB_SSH_FAIL=wind-down STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  run grep -q 'not taken over' "$HOME/pages"; assert_failure
+  run grep -c '^close' "$FLEET_SHEPHERD_DIR/.takeover"; assert_output 0
+  # It answers: its checkout is read there and its own wind-down.sh closes the window.
+  : > "$HOME/ssh.calls"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  run closes
+  assert_output 'worker close --server lab --pane %7 --sid 7'
+  grep -q "^razer git -C $HOME/wt branch -r --contains HEAD" "$HOME/ssh.calls"
+  grep -q '^razer tmux -L lab capture-pane' "$HOME/ssh.calls"
+  grep -q 'takeover: razer@lab/7:1: closed its window, quiet 400m past its nudge; item it-1 takes branch agent-9-x over (try 1 of 2)' "$FLEET_SHEPHERD_DIR/log.md"
+  # A worker's checkout with unpushed commits is paged, not closed, like a local one.
+  rm -rf "$HOME/wt" "$HOME/remote.git" "$HOME/wind-down.calls"; takeover_checkout "$HOME/wt" unpushed; nudge_ago 120 8
+  doc "[$(trow 8 '{"target":"razer@lab/8:1","host":"razer"}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  grep -q 'razer@lab/8:1 has sat STALLED 400m past its nudge and no fresh agent can take it over: its commits are not pushed' "$HOME/pages"
 }
 
 @test "takeover pages once, and closes nothing, for a row no agent can take over, naming why" {
