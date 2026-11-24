@@ -2505,16 +2505,11 @@ collect() {
     [ "$host" = - ] || planf=-
     edited="$(jq -r '.edited_files // [] | .[]' <<<"$line")"
     # read splits on tabs and collapses an empty field, so every text field here is - when empty.
-    # model: the one running, from the transcript's last assistant turn (agent-panel), as its family word
-    # (claude-opus-5-5 is opus); `-` until the first turn, never guessed. A codex or agy run keeps no
-    # Claude transcript, so its row has none and hub-core takes the queue item's model.
     IFS=$'\t' read -r transcript work jobs human parked compactions topic doing said gate test ojob acct mdl harn < <(jq -r '
       def text: (. // "") | if . == "" then "-" else gsub("[\t\n]"; " ") end;
       [(.transcript | text), (.time_use.work_min // 0), (.time_use.jobs_min // 0), (.time_use.human_min // 0),
        (.time_use.parked_min // 0), (.compactions // 0), (.summary | text), (.doing | text), (.said | text),
-       (.time_use.gate_min // 0), (.time_use.test_min // 0), (.open_job | text), (.account | text),
-       (.model // "" | if startswith("claude-") then sub("^claude-"; "") | sub("-[0-9].*$"; "") else . end | text),
-       (.harness | text)]
+       (.time_use.gate_min // 0), (.time_use.test_min // 0), (.open_job | text), (.account | text), (.model | text), (.harness | text)]
       | map(tostring) | join("\t")' <<<"$line")
     # plan_mode alone is only a mode: an idle session in it with no plan written is not waiting
     # on anyone (2026-11-06 hub/dotfiles:1 read NEEDS for an unsent draft). An approval is open
@@ -3368,8 +3363,9 @@ json_rows() {
       # The repo and PR the queue gate of the session lands, where its lander runs in another worktree (queue_gate_of).
       wait_repo: (if (.[67] // "-") == "-" then null else .[67] end),
       wait_pr: (if (.[68] // "-") == "-" then null else .[68] end),
-      # The model running (agent-panel, from the last turn of the transcript), its family word; null before the first turn.
-      model: (if (.[69] // "-") == "-" then null else .[69] end),
+      # The model running (agent-panel, from the last turn of the transcript) as its family word, claude-opus-5-5 is opus;
+      # null before the first turn, never guessed. A codex or agy run keeps no Claude transcript: hub-core takes the model of its queue item.
+      model: (if (.[69] // "-") == "-" then null else .[69] | if startswith("claude-") then sub("^claude-"; "") | sub("-[0-9].*$"; "") else . end end),
       # The harness agent-panel found running (claude, codex, opencode, agy); hub-core prefers the one of the queue item.
       harness: (if (.[70] // "-") == "-" then null else .[70] end)} | '"$CLOSE_JQ"
 }
