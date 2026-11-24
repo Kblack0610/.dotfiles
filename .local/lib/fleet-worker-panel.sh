@@ -12,11 +12,12 @@
 # print; any other failure prints nothing. A row jq cannot read goes through as it came.
 #
 # git is {in: "gone"} when the cwd is missing, {in: 0} outside git, else {in: 1, main, origin, branch,
-# head, upstream, unpushed, ahead, based, ahead_paths, dirty}: main is the repo's main checkout (a worker clones each repo at
+# head, upstream, unpushed, ahead, based, head_at, ahead_paths, dirty}: main is the repo's main checkout (a worker clones each repo at
 # the path the workstation has it, so it names the clone there), unpushed the commits on HEAD that no
 # remote ref holds, ahead and dirty as ahead_files and dirty_paths count them against origin's default
 # branch (unlanded_files: in a submodule, off both its default branch and the superproject's pin), and
-# ahead_paths names ahead_files' files (superseded_here in fleet-sessions reads them).
+# ahead_paths names ahead_files' files and head_at is HEAD's committer epoch (superseded_here in fleet-sessions
+# reads both).
 #
 # wp_base needs merge_proof_ref (agent-merge-proof.sh) defined first: fleet-sessions sources both
 # files, and fleet_host_panel sends both texts.
@@ -163,7 +164,9 @@ wp_git() {
   base="$(wp_base "$d")"
   up="$(git -C "$d" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)"
   ahead="$(unlanded_files "$d" "$base")"
-  [ "${ahead:-0}" = 0 ] || apaths="$(ahead_paths "$d" "$base")"
+  # The names only for a short list: superseded_here needs them for a draft branch, and a stale clone far
+  # behind its base would ship thousands per row. Past the cap the list is empty, which holds the branch.
+  [ "${ahead:-0}" = 0 ] || [ "$ahead" -gt "${WP_AHEAD_PATHS_MAX:-100}" ] || apaths="$(ahead_paths "$d" "$base")"
   dirty_paths "$d" "$edited" | jq -Rsc \
     --arg main "$main" \
     --arg origin "$origin" \
@@ -174,8 +177,9 @@ wp_git() {
     --arg ahead "$ahead" \
     --arg based "$(git -C "$d" merge-base HEAD "$base" >/dev/null 2>&1 && echo 1)" \
     --arg apaths "$apaths" \
+    --arg hat "$(git -C "$d" log -1 --format=%ct HEAD 2>/dev/null)" \
     '{in: 1, $main, $origin, $branch, $head, upstream: $up, unpushed: ($unpushed | tonumber? // 0),
-      ahead: ($ahead | tonumber? // 0), based: ($based == "1"),
+      ahead: ($ahead | tonumber? // 0), based: ($based == "1"), head_at: ($hat | tonumber? // null),
       ahead_paths: ($apaths | split("\n") | map(select(. != ""))), dirty: (split("\n") | map(select(. != "")))}'
 }
 

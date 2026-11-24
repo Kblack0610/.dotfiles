@@ -827,22 +827,27 @@ salvaged_here() {
   [ -n "$sv" ] && git -C "$3" merge-base --is-ancestor HEAD "${sv##*@}" 2>/dev/null
 }
 
-# superseded_here <qall> <slug> <clone> <ahead paths> -> exit 0 when the item that moved on from this session
-# closed done ok with merged commits (another run of it landed the work) and every file this branch holds
-# ahead of the base is one those commits changed: the commits here were a draft of the landed work, so
-# nothing is left to land. A merged commit <clone> lacks, or a path it did not change, holds the branch.
-# ar-5157: razer-laptop dotfiles-agent-20 kept two unpushed commits of ar-2751 after #3349 landed it from
-# another session, read STALLED four days, and takeover refused it ("its commits are not pushed").
+# superseded_here <qall> <slug> <clone> <ahead paths> <head epoch> -> exit 0 when the item that moved on from
+# this session closed done ok with merged commits (another run of it landed the work), every file this branch
+# holds ahead of the base is one those commits changed, and HEAD (committer time) is no newer than the newest
+# of them: the commits here were a draft the landing came after, so nothing is left to land. An edit made
+# after the merge, a merged commit <clone> lacks, or a path no merge changed holds the branch. Each merge
+# counts by its first-parent diff, so a rebase-merged PR shows only its last commit's files: that fails
+# closed, never open. ar-5157: razer-laptop dotfiles-agent-20 kept two unpushed commits of ar-2751 after
+# #3349 landed it from another session, read STALLED four days, and takeover refused it ("its commits are
+# not pushed").
 superseded_here() {
-  local d="$3" paths="$4" m c changed=""
-  [ -n "$paths" ] && [ "$d" != - ] || return 1
+  local d="$3" paths="$4" head_at="${5:-}" m c t newest=0 changed=""
+  [ -n "$paths" ] && [ "$d" != - ] && [[ "$head_at" =~ ^[0-9]+$ ]] || return 1
   m="$(jq -nr --arg s "$2" 'first(inputs | select(.slug == $s and .state == "done" and (.status // "") == "ok")
     | .merged // empty)' <<<"$1" 2>/dev/null)"
   [ -n "$m" ] || return 1
   for c in $m; do
-    git -C "$d" cat-file -e "$c^{commit}" 2>/dev/null || return 1
+    t="$(git -C "$d" log -1 --format=%ct "$c^{commit}" 2>/dev/null)" && [ -n "$t" ] || return 1
+    [ "$t" -gt "$newest" ] && newest="$t"
     changed+="$(git -C "$d" diff --name-only "$c^1" "$c" 2>/dev/null)"$'\n'
   done
+  [ "$head_at" -le "$newest" ] || return 1
   [ -z "$(grep -vxFf <(grep . <<<"$changed") <<<"$paths")" ]
 }
 
@@ -2641,8 +2646,11 @@ collect() {
     if [ "$g" = 1 ] && [ "$irel" = moved ] && [ "$dirty" = 0 ] && [ "$ahead" -gt 0 ] && [ "$pr" = - ]; then
       if [ "$host" = - ]; then
         if salvaged_here "$qall" "$islug" "$cwd" \
-           || superseded_here "$qall" "$islug" "$cwd" "$(ahead_paths "$cwd" "$(default_base "$cwd")")"; then ahead=0; fi
-      elif superseded_here "$qall" "$islug" "$gd" "$(jq -r '.git.ahead_paths // [] | .[]' <<<"$line" 2>/dev/null)"; then
+           || superseded_here "$qall" "$islug" "$cwd" "$(ahead_paths "$cwd" "$(default_base "$cwd")")" \
+                "$(git -C "$cwd" log -1 --format=%ct HEAD 2>/dev/null)"; then ahead=0; fi
+      elif [ "$gd" != - ] && { fetch_once "$gd" || :; } \
+           && superseded_here "$qall" "$islug" "$gd" "$(jq -r '.git.ahead_paths // [] | .[]' <<<"$line" 2>/dev/null)" \
+                "$(jq -r '.git.head_at // empty' <<<"$line" 2>/dev/null)"; then
         ahead=0
       fi
     fi
