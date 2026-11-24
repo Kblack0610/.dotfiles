@@ -2262,6 +2262,26 @@ ASK-JUDGE-END'
   check ship_deploy take-recommend engineering_design
 }
 
+@test "judge: the picked act is scored, so a park or a wait is answerable and an outside act stays human-only" {
+  # act <type> <criterion> <act>: a reply scoring one decision, the act the picked answer commits to (policy, How to score)
+  act() { SCORE_TYPE=$1 score "$2" | jq -c --arg a "$3" '.decisions[0].decision = $a'; }
+  check() {
+    fake_judge "$1"
+    local id; id="$("$AGENT_ASK" post --project demo --options "$2" --recommend "${2%%|*}" "$3")"
+    "$AGENT_ASK" judge "$id"
+    run "$AGENT_ASK" show "$id"
+    assert_line "judge: $4"
+    if [ "$4" = human ]; then assert_line 'judge_human_only: true'; else refute_line --partial 'judge_human_only'; fi
+  }
+  # rBINiU: park 611 rows, each kept with its links, is not bulk
+  check "$(act cleanup_restructure cleanup_restructure 'park 611 rows, every row kept')" 'park|pick|keep' 'what of the 611 old low rows?' take-recommend
+  # fPyHyd: wait for the stuck check; the merge past it is the option turned down
+  check "$(act proceed_or_hold proceed_or_hold 'wait for the queued DB job')" 'wait|admin' 'wait for the stuck check or merge past it?' take-recommend
+  # negative controls: the merge past red picked, and a public post, are outside acts
+  check "$(act ship_deploy external 'merge PR 1661 past the unrun check')" 'admin|wait' 'merge past the stuck check?' human
+  check "$(act other external 'post the release note publicly')" 'post|hold' 'post the release note?' human
+}
+
 @test "judge: its own answer wins over the recommendation, and judge_met lists what held" {
   fake_judge "$(score engineering_design no)"
   local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes 'which?')"
