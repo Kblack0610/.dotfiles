@@ -1,6 +1,6 @@
 "use strict";
 // Sessions' Sessions inner tab, with no session open: the overview tiles, the capacity header, the
-// table and the folds under it. Rows, counts, spend and the header come from hub-core (`session_table`, `capacity`)
+// table and the folds under it. Rows, counts and the header come from hub-core (`session_table`, `capacity`)
 // through /api/sessions/*, and the server filters and sorts by the view in the URL (table.js). Any
 // row opens that session's conversation, `#sessions/sessions/<id>` (hub_core::links Kind::Session); its Details page is hub-core's
 // `session_page` through /api/sessions/page, and a session on a pane here also has its Screen.
@@ -11,7 +11,7 @@ const sst = tblTab({
   // With a session open beside the list and no page asked for, the server sends the page holding it.
   params: (p) => { if (st.sel && SPLIT.matches && !p.has("pg")) p.set("sel", sessionId(st.sel)); },
   shown: () => !st.sel && sessShows("sessions"), got: (t) => setBuckets(t.data.buckets), after: () => renderSide(), open: () => wst.open,
-  tiles: (t) => tile("SPEND", usd(t.data.spend_usd), "var(--accent)", `${t.data.table.shown} shown`), head: () => sessionsHead(), body: (t) => sessionsBody(t.data), tail: () => overviewFolds(),
+  head: () => sessionsHead(), body: (t) => sessionsBody(t.data), tail: () => overviewFolds(),
 });
 
 const SESSION_COLS = { bucket: ["bucket"], activity: ["activity"], project: ["project"], task: ["task"], by: ["started by"], pr: ["PR/CI"], phases: ["phases", "n"], idle: ["idle", "n"], ctx: ["ctx", "n"], cost: ["cost", "n"], acct: ["acct"], harness: ["harness"], close: ["close"] };

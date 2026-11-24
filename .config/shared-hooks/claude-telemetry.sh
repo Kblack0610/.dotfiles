@@ -150,7 +150,8 @@ if timeout 0.3 getent hosts hp-victus >/dev/null 2>&1; then
 fi
 
 # claude_launch_env -> the launch-line prefix for a claude started as a tmux pane command
-# (fleet-dispatch): `env` dropping a parent Claude session's identity, then every variable this file
+# (fleet-dispatch): `claude-acct scope`, which runs it in its own systemd user scope named for its
+# project and queue item, `env` dropping a parent Claude session's identity, then every variable this file
 # exports, shell-quoted, with OTEL_RESOURCE_ATTRIBUTES from claude_telemetry_launch. No rc file runs in
 # such a pane, and it gets the tmux server's environment; a server started from inside a Claude
 # session holds that session's id, CHILD_SESSION and ATTENDED flags and messaging socket, and no
@@ -158,7 +159,7 @@ fi
 # tests/unit/claude_telemetry.bats checks this list against every `export` above.
 claude_launch_env() {
     local v val
-    printf 'env -u CLAUDECODE -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_BRIDGE_SESSION_ID -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN '
+    printf 'claude-acct scope env -u CLAUDECODE -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_BRIDGE_SESSION_ID -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN '
     # CLAUDE_AUTO_DROP_TOOLS is read by the launcher (as --disallowedTools), never by claude.
     for v in ENABLE_CLAUDEAI_MCP_SERVERS CLAUDE_CODE_ARTIFACT; do
         val=$(printenv "$v") && printf '%s=%q ' "$v" "$val"

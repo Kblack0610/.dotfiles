@@ -159,7 +159,7 @@ lead_fixture() {
   run "$SUBJECT" pipeline --json
   assert_success
   run jq -c '[.steps[] | [.step, .wip, .age_p90_min, .in_1h, .out_24h, .ratio]], .drift, .bottleneck' <<<"$output"
-  assert_output "$(printf '%s\n' '[["inbox",3,null,2,4,null],["backlog",1,4560,0,1,null],["queued",1,120,1,1,0.67],["running",1,60,1,1,0.5],["review",1,30,1,0,null],["waiting",1,10,1,0,null],["done",1,null,1,0,null]]' 0 null)"
+  assert_output "$(printf '%s\n' '[["inbox",3,null,2,4,null],["backlog",2,4560,0,1,null],["queued",1,120,1,1,0.67],["running",1,60,1,1,0.5],["review",1,30,1,0,null],["waiting",1,10,1,0,null],["done",1,null,1,0,null]]' 0 null)"
   run "$SUBJECT" pipeline
   assert_success
   assert_line 'queued       1        2h    2h      2h         1/0         2/1        16m   20m      3h'
@@ -219,7 +219,7 @@ lead_fixture() {
   run "$SUBJECT" pipeline --json
   assert_success
   run jq -c '[.drift, .since, (.steps[] | [.wip, .in_1h])]' <<<"$output"
-  assert_output '[null,null,[3,null],[1,null],[1,null],[1,null],[1,null],[1,null],[1,null]]'
+  assert_output '[null,null,[3,null],[2,null],[1,null],[1,null],[1,null],[1,null],[1,null]]'
   run "$SUBJECT" chain --check
   assert_success
   # the line-per-step shape notes printed before items_since is not a record either
@@ -227,6 +227,70 @@ lead_fixture() {
   export BENCH_STEPS_CMD=steps-stub
   run "$SUBJECT" pipeline --json
   [ "$(jq '.drift' <<<"$output")" = null ]
+}
+
+@test "pipeline: backlog counts the agent board rows of the profile with automation on that no live item holds, as room does (ar-4991)" {
+  pipeline_fixture
+  run "$SUBJECT" pipeline --json
+  assert_success
+  # g-1 and the doing g-3; g-2 is q1's, and the human-lane, automation-off, work-profile and backlog-token rows are not the board's
+  assert_equal "$(jq -c '.steps[] | select(.step == "backlog") | .wip' <<<"$output")" 2
+  # room counts the same rows with g-2 in them, and g-5 beside them on the backlog tier
+  run "$SUBJECT" room
+  assert_output --partial 'board_open 3 (backlog 1)'
+  # NEGATIVE CONTROL: with no profile the backlog cannot be counted, so it reads null, never every profile
+  run env BENCH_PROFILE= "$SUBJECT" pipeline --json
+  assert_success
+  assert_equal "$(jq -c '.steps[] | select(.step == "backlog") | .wip' <<<"$output")" null
+}
+
+@test "pipeline: doors_24h counts rows and inbox lines per writer, out_24h splits moves from drops (ar-4991)" {
+  pipeline_fixture
+  : > "$LEDGER_CONF_DIR/inbox-triage.conf"
+  ev() { jq -cn --arg ts "$(date -d "@$((T0 - $1))" +%FT%T.123456789%:z)" "{ts: \$ts} + $2"; }
+  {
+    ev 3600 '{action: "added", stage: "backlog", by: "human", from: "game", text: "fix(a): one"}'
+    ev 3500 '{action: "filed", from: "game", text: "fix(a): two, no writer"}'
+    ev 3400 '{action: "filed", by: "inbox-triage", from: "game", text: "fix(a): three"}'
+    ev 3300 '{action: "filed", by: "inbox-triage", from: "game", text: "fix(a): four"}'
+    ev 3200 '{action: "added", stage: "intake", by: "3ab9facc", from: "outbox", text: "a line a session put in the outbox"}'
+    ev 3100 '{action: "added", stage: "backlog", by: "ar-4071", from: "game", text: "fix(a): a follow-up"}'
+    ev 3000 '{action: "filed", by: "ladder-scout", from: "game", text: "fix(a): a session slug"}'
+    ev 2900 '{action: "merged", stage: "land", id: "g-1"}'
+    ev 2800 '{action: "done", id: "g-2"}'
+    ev 2700 '{action: "dropped", id: "g-3", why: "dup:ar-1"}'
+    ev 2600 '{action: "improvement", id: "g-4"}'
+    ev 2600 '{action: "dropped", id: "g-4", why: "dropped: kept in game improvements.md: dispatch skipped it"}'
+    ev 2500 '{action: "dropped", id: "g-5", why: "dropped: moved: ideas.md"}'
+    ev 2400 '{action: "dropped", id: "g-6", why: "dropped: stale"}'
+    ev 2300 '{action: "dup", id: "g-7"}'
+    ev 2200 '{action: "filed", by: 7, from: "game", text: "a writer that is not a string is a session"}'
+    ev 172000 '{action: "added", stage: "backlog", by: "human", from: "game", text: "fix(a): two days old"}'
+    echo 'not json'
+    echo '{"ts": 5, "action": "added", "by": "human"}'
+  } > "$BENCH_INGEST"
+  run "$SUBJECT" pipeline --json
+  assert_success
+  assert_equal "$(jq -c '.doors_24h' <<<"$output")" '[{"door":"session","rows":3,"lines":1},{"door":"human","rows":2,"lines":0},{"door":"inbox-triage","rows":2,"lines":0}]'
+  assert_equal "$(jq -c '.out_24h' <<<"$output")" '{"merged":1,"done":1,"dup":2,"moved":2,"dropped":1}'
+  run "$SUBJECT" pipeline
+  assert_line 'doors 24h (rows filed, + inbox lines): session 3 +1, human 2, inbox-triage 2'
+  assert_line 'out 24h: merged 1, done 1, dup 2, moved 2, dropped 1'
+  # a conf names its runner by NAME, else by its file name
+  rm "$LEDGER_CONF_DIR/inbox-triage.conf"; echo NAME=inbox-triage > "$LEDGER_CONF_DIR/triage.conf"
+  run "$SUBJECT" pipeline --json
+  assert_equal "$(jq -c '.doors_24h[2]' <<<"$output")" '{"door":"inbox-triage","rows":2,"lines":0}'
+  # NEGATIVE CONTROL: with no conf named for it, inbox-triage is a session writer
+  rm "$LEDGER_CONF_DIR/triage.conf"
+  run "$SUBJECT" pipeline --json
+  assert_equal "$(jq -c '.doors_24h' <<<"$output")" '[{"door":"session","rows":5,"lines":1},{"door":"human","rows":2,"lines":0}]'
+  # an unreadable record leaves both null and says so
+  rm "$BENCH_INGEST"
+  run "$SUBJECT" pipeline --json
+  assert_equal "$(jq -c '[.doors_24h, .out_24h]' <<<"$output")" '[null,null]'
+  run "$SUBJECT" pipeline
+  assert_line 'doors 24h: the ingest record is unreadable'
+  refute_line --regexp '^out 24h'
 }
 
 # pipeline_flow_fixture: pipeline_fixture plus the admission cap and the class mix, canned in $ADM
@@ -615,7 +679,7 @@ STUB
   source "$SUBJECT"
   run bench_prom "$T0" "$(pipeline_json "$T0")"
   assert_success
-  assert_line 'agent_chain_wip{step="backlog"} 1'
+  assert_line 'agent_chain_wip{step="backlog"} 2'
   assert_line 'agent_chain_age_ratio{step="running"} 0.5'
   assert_line 'agent_chain_moves{step="inbox",dir="in"} 2'
   assert_line 'agent_chain_drift 0'
@@ -1778,9 +1842,51 @@ rowp() {
   rowp a lab/game-agent-1:1 0 3 pc > "$SNAP"; sample_at 1800
   run env BENCH_NOW=$((T0 + 1800)) "$SUBJECT" flow --from $((T0 + 1)) --json
   assert_success
-  run jq -c '{ticked, added, removed, started, started_open, in, open_start, open_end, dropped}' <<<"$output"
-  # open at T0 is 4 (first sample at T0 is the window edge, outside it)
-  assert_output '{"ticked":3,"added":2,"removed":1,"started":2,"started_open":6,"in":8,"open_start":4,"open_end":3,"dropped":5}'
+  run jq -c '{ticked, added, removed, started, started_open, abandoned, resumed, in, open_start, open_end, dropped}' <<<"$output"
+  # open at T0 is 4 (first sample at T0 is the window edge, outside it); pb came in inside the window
+  # and ended with 2 open, so its 2 are abandoned and kept out of in; pa came in before it
+  assert_output '{"ticked":3,"added":2,"removed":1,"started":2,"started_open":6,"abandoned":2,"resumed":0,"in":6,"open_start":4,"open_end":3,"dropped":5}'
+  run env BENCH_NOW=$((T0 + 1800)) "$SUBJECT" flow --from $((T0 + 1))
+  assert_line '  abandoned: 2 phases came in with plans that ended or were switched away from unfinished, kept out of in'
+  refute_line --partial 'resumed:'
+}
+
+@test "flow: a plan another session takes up resumes its open phases, never counting them in twice (ar-4991)" {
+  # a and b sample one plan through two account plan dirs: b resumes the 2 phases a left
+  rowp a lab/game-agent-1:1 0 3 /x/plans/pa.md > "$SNAP"; sample_at 0
+  rowp a lab/game-agent-1:1 1 3 /x/plans/pa.md > "$SNAP"; sample_at 600
+  rowp b lab/game-agent-2:1 1 3 /y/plans/pa.md > "$SNAP"; sample_at 1200
+  rowp b lab/game-agent-2:1 2 3 /y/plans/pa.md > "$SNAP"; sample_at 1800
+  run env BENCH_NOW=$((T0 + 1800)) "$SUBJECT" flow --from $((T0 + 1)) --json
+  assert_success
+  # a was sampled inside the window, so the 2 it left are handed to b, not dropped
+  run jq -c '{started, resumed, resumed_plans, handed, abandoned, in, ticked, open_start, open_end, dropped}' <<<"$output"
+  assert_output '{"started":1,"resumed":2,"resumed_plans":1,"handed":2,"abandoned":0,"in":0,"ticked":2,"open_start":3,"open_end":1,"dropped":0}'
+  run env BENCH_NOW=$((T0 + 1800)) "$SUBJECT" flow --from $((T0 + 1))
+  assert_line --partial 'in:  0 phases'
+  assert_line --partial '0 plans started with 0 open'
+  assert_line '  resumed: 2 phases in 1 plans another session left, taken up again and not counted in again'
+  refute_line --partial 'left open by sessions'
+  # NEGATIVE CONTROL: b on a plan of its own brings its 2 open phases in as new
+  : > "$FLEET_BENCH_DIR/progress.jsonl"
+  rowp a lab/game-agent-1:1 0 3 /x/plans/pa.md > "$SNAP"; sample_at 0
+  rowp a lab/game-agent-1:1 1 3 /x/plans/pa.md > "$SNAP"; sample_at 600
+  rowp b lab/game-agent-2:1 1 3 /y/plans/pb.md > "$SNAP"; sample_at 1200
+  rowp b lab/game-agent-2:1 2 3 /y/plans/pb.md > "$SNAP"; sample_at 1800
+  run env BENCH_NOW=$((T0 + 1800)) "$SUBJECT" flow --from $((T0 + 1)) --json
+  run jq -c '{resumed, in}' <<<"$output"
+  assert_output '{"resumed":0,"in":2}'
+  # a left before the window began (the start sample holds only c, with nothing open): b brings a's 2 back, so
+  # they are resumed but not handed, and nothing drops
+  : > "$FLEET_BENCH_DIR/progress.jsonl"
+  rowp a lab/game-agent-1:1 0 3 /x/plans/pa.md > "$SNAP"; sample_at 0
+  rowp a lab/game-agent-1:1 1 3 /x/plans/pa.md > "$SNAP"; sample_at 600
+  rowp c lab/game-agent-3:1 1 1 /z/plans/pz.md > "$SNAP"; sample_at 900
+  rowp b lab/game-agent-2:1 1 3 /y/plans/pa.md > "$SNAP"; sample_at 1200
+  rowp b lab/game-agent-2:1 2 3 /y/plans/pa.md > "$SNAP"; sample_at 1800
+  run env BENCH_NOW=$((T0 + 1800)) "$SUBJECT" flow --from $((T0 + 900)) --json
+  run jq -c '{resumed, handed, in, open_start, open_end, dropped}' <<<"$output"
+  assert_output '{"resumed":2,"handed":0,"in":0,"open_start":0,"open_end":1,"dropped":0}'
 }
 
 @test "flow says not draining when phases come in faster than they tick, and draining otherwise" {

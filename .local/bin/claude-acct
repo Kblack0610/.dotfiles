@@ -8,6 +8,9 @@
 #   claude-acct run [--acct <name>] [claude args]
 #                             # exec claude on the account pick returns: the one launcher for a
 #                             # human start (`cl`, `sessions` resume, the fzf picker, the hub)
+#   claude-acct scope <command...>
+#                             # exec the command in its own systemd user scope, agent-<project>-<item>-<pid>.scope;
+#                             # run and every pane launch line (claude-telemetry.sh) start claude through it
 #   claude-acct setup-token [--renew] [name]
 #                        # walk each account (or the one named): say which email to sign in as, run
 #                        # `claude setup-token`, verify the printed token with one tiny call, and store
@@ -719,13 +722,14 @@ plans_store() {
         mkdir -p "${main%/*}" && ln -sfn "$live" "$main" || return 1
     fi
     # A project's own copy of a _live plan becomes the link; a newer copy is the one kept, the
-    # older text stays in ~/.agent git.
+    # older text stays in ~/.agent git. The reserved project keys (_unscoped, _runner) are
+    # projects too; only the store and the archive are skipped (ar-3294: 25 _unscoped twins).
     while IFS= read -r f; do
         n=${f##*/}
         [[ -f "$live/$n" && ! -L "$live/$n" ]] || continue
         [[ "$f" -nt "$live/$n" ]] && { cp -p "$f" "$live/$n" || continue; }
         ln -sfn "../_live/$n" "$f"
-    done < <(find "$root" -maxdepth 2 -path "$root/_*" -prune -o -path "$root/*/*" -type f -name '*.md' -print 2>/dev/null)
+    done < <(find "$root" -maxdepth 2 \( -path "$live" -o -path "$root/_archive" \) -prune -o -path "$root/*/*" -type f -name '*.md' -print 2>/dev/null)
 }
 # best -> "score US name US dir US note" of the account whose week is cheapest to spend from,
 # nothing without data
@@ -808,6 +812,15 @@ cmd_token() {
     acct_token "$name"
 }
 
+# push_shell <host> <cmd>: run cmd (stdin passed through) on host: here for localhost or this
+# machine's own name, else over ssh with no prompt
+push_shell() {
+    case "$1" in
+        localhost|127.0.0.1|"$(hostname -s 2>/dev/null)"|"$(hostname 2>/dev/null)") bash -c "$2" ;;
+        *) ssh -T -o BatchMode=yes -o ConnectTimeout=10 "$1" "$2" ;;
+    esac
+}
+
 # token push <host...>: copy every account's token from this machine's unlocked rbw to each host's
 # TOKEN_DIR (0600), over ssh stdin: never an argument, never a pane. Then ask the host's own
 # claude-acct for each, so a host whose dotfiles predate the copy reads as failed. Exit 1 when any
@@ -831,8 +844,9 @@ cmd_token_push() {
             t=$(rbw get "$TOKEN_ENTRY$n" 2>/dev/null) || t=''
             sum=$(printf '%s' "$t" | cksum)
             # one ssh: write the copy from stdin, compare its bytes with ours, then check that the
-            # host's claude-acct is new enough to read a copy
-            if printf '%s' "$t" | ssh -T -o BatchMode=yes -o ConnectTimeout=10 "$host" \
+            # host's claude-acct is new enough to read a copy. This machine (localhost or its own
+            # name) runs the same command here: ssh to itself needs a host key nobody accepted.
+            if printf '%s' "$t" | push_shell "$host" \
                 "umask 077 && d=$rdir && mkdir -p \"\$d\" && cat > \"\$d/.$n.tmp\" && mv -f \"\$d/.$n.tmp\" \"\$d/$n\" && [ \"\$(cksum < \"\$d/$n\")\" = '$sum' ] && PATH=\$HOME/.local/bin:\$PATH claude-acct token $n >/dev/null 2>&1"; then
                 ok+=("$n")
             else
@@ -1321,7 +1335,50 @@ cmd_run() {
     if declare -F claude_telemetry_launch >/dev/null; then
         OTEL_RESOURCE_ATTRIBUTES="$(claude_telemetry_launch)"; export OTEL_RESOURCE_ATTRIBUTES
     fi
-    exec claude "$@"
+    cmd_scope claude "$@"
+}
+
+# cmd_scope <command...>: move this process into its own systemd user scope, named
+# agent-<project>-<item>-<pid>.scope (each part systemd-escaped, so a literal '-' only separates them;
+# the item is empty for a hand start), then exec the command, so its pid (a dispatch pane's pid) stays
+# the same. node-inventory-metrics (home-config) reports each scope's CPU and memory with its project
+# and queue item, and agent-host-budget's agent-.scope drop-in holds it to the agent CPUs. In a tmux
+# pane the description reads as tmux's own, "tmux child pane <pid> ... launched by process <server
+# pid>", so `wt orphans` ends what the session left once the pane closes (worktree.sh
+# wt_closed_pane_scopes reads both pids by word position: keep the shape).
+# A hand start outside tmux is the human's own terminal session: it stays in that terminal's scope,
+# which agent-hold never lowers and the agent CPU cap never holds. With no user manager (macOS, a
+# shell with no XDG_RUNTIME_DIR), or when the manager refuses the scope, the command runs unscoped,
+# and on Linux says so.
+cmd_scope() {
+    [[ $# -gt 0 ]] || { echo "claude-acct scope: name a command" >&2; return 2; }
+    [[ "$(uname -s)" == Linux ]] || exec "$@"
+    local p i u d spid pane pp
+    i=${AGENT_QUEUE_ITEM:-}
+    if [[ -n "${TMUX:-}" ]]; then
+        # TMUX is "<socket>,<server pid>,<session>"; the pane's pid is the ancestor the server started.
+        spid=${TMUX#*,}; spid=${spid%%,*}; pane=$$
+        while pp=$(awk '/^PPid:/ { print $2 }' "/proc/$pane/status" 2>/dev/null) && [[ -n "$pp" && "$pp" != "$spid" && "$pp" -gt 1 ]]; do
+            pane=$pp
+        done
+    fi
+    [[ -n "$i" || "${pp:-}" == "${spid:-x}" ]] || exec "$@"
+    if ! command -v busctl >/dev/null || [[ ! -S "${XDG_RUNTIME_DIR:-/nonexistent}/systemd/private" ]]; then
+        echo "claude-acct scope: no systemd user manager here, so this session runs in no agent scope" >&2
+        exec "$@"
+    fi
+    # shellcheck disable=SC2016
+    p=$(bash -c '. "$1" && resolve_project_name "$2"' _ "${PROJECT_NAME_LIB:-$HOME/.config/shared-hooks/project-name.sh}" "$PWD" 2>/dev/null)
+    u="agent-$(systemd-escape -- "$p")-$(systemd-escape -- "$i")-$$.scope"
+    d="agent session for ${p:-no project}${i:+ item $i}"
+    [[ "${pp:-}" != "${spid:-x}" ]] || d="tmux child pane $pane runs $d launched by process $spid"
+    # systemd-run --scope would exec the command itself, and a scope it fails to start (a name a
+    # leftover scope still holds, a manager that refuses it) would then start no session at all.
+    busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager \
+        StartTransientUnit 'ssa(sv)a(sa(sv))' "$u" fail 3 PIDs au 1 "$$" Description s "$d" \
+        CollectMode s inactive-or-failed 0 >/dev/null ||
+        echo "claude-acct scope: the user manager did not start $u, so this session runs in no agent scope" >&2
+    exec "$@"
 }
 
 cmd_status() {
@@ -2554,6 +2611,7 @@ cmd_unpark() {
 case "${1:-}" in
     pick)   shift; cmd_pick "$@" ;;
     run)    shift; cmd_run "$@" ;;
+    scope)  shift; cmd_scope "$@" ;;
     status) shift; cmd_status "$@" ;;
     textfile) shift; cmd_textfile "$@" ;;
     gateway) shift; cmd_gateway "$@" ;;

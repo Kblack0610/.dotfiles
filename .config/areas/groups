@@ -1,0 +1,28 @@
+# areas: the one scope -> group map. day-log reads it for a merged PR's title, and hub-core
+# (hub_core::areas) for a sprint row's `type(scope):` prefix, so both group the same work the same way.
+#   <scope>[,<scope>...]  <group>   a scope not listed is a group of its own
+#   @<repo>  <area>                 a repo not listed is an area of its own; a sprint row whose scope
+#                                   is a repo's name (feat(unity-core-playground): ...) or that has
+#                                   no scope is Unsorted, since the repo says nothing about the work
+
+@unity-core             Games
+@unity-core-playground  Games
+@.dotfiles              Fleet tooling
+@.dotfiles-private      Fleet tooling
+
+barrage,shape-city,shapecity                Shape City
+raiders,story                               Raiders
+dodginballs,hometown,townsfolk              DodginBalls and Hometown
+animation,movement,combat,loadout,holds,camera,view,dodgeball,vehicles,ai,ai3d,levelgen,levels,venues,net,diagnostics,anim,melee,weapons,throwables,online,server,burst,gameplay,netcode,input,save,shop,audio,mobility  Engine
+test,tests,ci,bench,scaling,game-eval,eval  Tests, CI and benches
+runners,store,steam,release,registry,build,deploy,perf  Ops
+
+look,ui                                     Look and UI
+
+tmux,fleet-sessions,fleet,fleet-shepherd,fleet-dispatch,agent-mqtt   Fleet boards and shepherd
+fleet-bench,briefing,agent-ask              Metrics, asks and briefing
+agentctl,agent-run,agent-proof,meeting-ingest  agentctl runners
+session-outcomes,hooks,stop-hook,dream,agent  Hooks, outcomes and dream
+skills,rules,claude,kb                      Skills and rules
+waybar,hypr                                 Desktop
+docs                                        Docs

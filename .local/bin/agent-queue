@@ -38,7 +38,7 @@
 #       cancel records cancelled_by: (the session id, else the item slug the caller works) and cancel_why:;
 #       --why is required from a session or script ($CLAUDE_CODE_SESSION_ID or $AGENT_QUEUE_ITEM set)
 #       work the human asked for (from: human, or a #requested row) cancels, returns with --drop, or returns with no
-#       board row, from a session or script only with --ask <id>, an ask the human answered (not the judge); the ask joins cancel_why:
+#       board row, from a session or script only with --ask <id>, an answered ask naming the item; the ask joins cancel_why:
 #       cancel of an item whose after: closed dead also records cancel_cause: (that item's own cause, else who closed it and why)
 #       cancel of a slug with no file but still active in the chain record closes it in the record
 #       bump to urgent never lifts an after: hold; it names the hold and the `set <slug> after=` that does
@@ -76,8 +76,6 @@
 #   start <slug>   start a queued item's session now, through add's start guards (a low one, a desk wait or the dispatch hold keep it queued)
 #   ask-holds [<id>]   `<slug or row id><TAB><ask id><TAB><releasing options>` per active item, and per open board row gated
 #       #ask/<id>, held on an ask (that ask only, given one)
-#   human-work    the active items the human asked for (from: human, or #requested), one slug per line: agent-ask
-#       sends an ask that would cancel one to the human, since cancel takes only the human's answer
 #   reopen <slug> [--to running|waiting] [--why text] [--unland <owner>/<repo>#<N>]   a falsely-done item back to running (or waiting),
 #       its row started again. A failed close reopens as it is; an ok close only with --unland naming the PR it
 #       closed on that was not its work, which comes off pr:, merged: and closing_pr:, and its row reopens through
@@ -728,7 +726,7 @@ hold_for() {
       # list and the hub show a dead hold apart from a live one.
       *) HOLD_DEAD=1 HOLD="after $s closed $AST, dead: it never releases (queue $s again, or set after= without it); who closed it and why: agent-queue show $s"
         # The human's own work is theirs to drop: say so before a cleanup loop tries (cancel_guard).
-        [ -z "${3-}" ] || ! human_work "$(fm_get "$3" from)" "$tags" || HOLD+="; a cancel by hand takes --why and --ask <an ask the human answered>"
+        [ -z "${3-}" ] || ! human_work "$(fm_get "$3" from)" "$tags" || HOLD+="; a cancel by hand takes --why and --ask <an answered ask naming it>"
         return ;;
     esac
   done
@@ -1502,7 +1500,8 @@ mix_json() {
   class_started "$cfg" 2>/dev/null | jq -c --argjson cfg "$cfg" '$cfg + {done: .window, live: .live}' 2>/dev/null || echo null
 }
 
-# mix [--json] -> each class of service (AQ_CLASSES, on or off): its share, its runnable items (queued,
+# mix [--json] -> each class of service (AQ_CLASSES, on or off): its share, its `projects` (fleet-dispatch's
+# project floor reads them), its runnable items (queued,
 # no hold: what admission counts), its items started in window_days (class_started, what the mix
 # balances on) and that as a percent of every class's, and `starved`, each class with runnable items
 # and none started in starve_days. fleet-bench pipeline shows it; `pipeline --check mix` trips on a starved class.
@@ -1516,7 +1515,7 @@ cmd_mix() {
   out="$(jq -nc --argjson cfg "$cfg" --argjson q "$q" --argjson s "$s" '([$s.window[]] | add // 0) as $total
     | {on: ($cfg.on == true), window_days: ($cfg.window_days // 7), starve_days: ($cfg.starve_days // 3),
        classes: [$cfg.classes[] | .name as $n
-         | {name: $n, share: (.share // 0), runnable: ($q[$n] // 0), live: ($s.live[$n] // 0), min_live: (.min_live // 0), started: ($s.window[$n] // 0), recent: ($s.recent[$n] // 0),
+         | {name: $n, share: (.share // 0), projects: (.projects // []), runnable: ($q[$n] // 0), live: ($s.live[$n] // 0), min_live: (.min_live // 0), started: ($s.window[$n] // 0), recent: ($s.recent[$n] // 0),
             pct: (if $total > 0 then ($s.window[$n] // 0) * 100 / $total | round else null end)}]}
     | .starved = [.classes[] | select(.runnable > 0 and .recent == 0) | .name]')"
   [ -z "$json" ] || { printf '%s\n' "$out"; return 0; }
@@ -2937,7 +2936,7 @@ cmd_bump() {
 # settable: they are what the item is. `from` is, so a project rename can move a board origin, and
 # `title` is, so an item whose plan changed stops showing its old title (one line, as add --title
 # writes it). The board row's own words are its sheet's: `notes ptask edit`.
-SETTABLE=" asked title project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage branch lost plan phases pr open_pr merged landed_by partial closing_pr fix_tries land_tries takeover_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee direct review_fix proves_at validate verdict verdict_head "
+SETTABLE=" asked asker title project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage branch lost plan phases pr open_pr merged landed_by partial closing_pr fix_tries land_tries takeover_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee direct review_fix proves_at validate verdict verdict_head "
 
 # One landed_by pair, <session id>=<owner>/<repo>#<N> (cmd_set).
 LANDED_PAIR='[^= ]+=[^# ]+/[^# ]+#[0-9]+'
@@ -3256,30 +3255,31 @@ cancel_check() {
   [ -n "$1" ] || [ -z "$(cancel_who)" ] || die "a cancel from a session or script needs --why \"<reason>\": who cancelled it and why stay on the item"
 }
 # cancel_guard <file> <ask> -> die when a session or script cancels work the human asked for (human_work)
-# without an ask the human answered that names the item: a judge's or shepherd's answer is not their
-# decision, and an answer about other work is not one about this. Any --ask is checked so, since the
-# item records it as the decision. The human at a terminal or the Queue tab's button is not held.
-# 2026-11-12: two cleanups cancelled 220 from: human items, one on an ask the judge answered in 20 s,
-# the other by looping a dead chain.
-# gate: aq-cancel-guard
+# without an answered ask that names the item: an answer about other work is not one about this. Any
+# --ask is checked so, since the item records it as the decision. The judge answers such an ask like
+# any other, and its policy sends a bulk one (10 or more records) to the human (ar-4765); a session's
+# or shepherd's own answer is no ruling, so only the judge's or the human's counts. The human at
+# a terminal or the Queue tab's button is not held. 2026-11-12: two cleanups cancelled 220 from: human
+# items, one by looping a dead chain.
 cancel_guard() {
-  local slug pend
+  local slug pend f by
   slug="$(fm_get "$1" slug)"
   if [ -n "$2" ]; then
     [[ "$2" =~ ^[A-Za-z0-9_-]+$ ]] || die "--ask takes an ask id, not $2"
     pend="$(ask_pending "$2")"
-    [ -z "$pend" ] || die "$slug: ask $2 is $pend: --ask names an ask the human answered"
-    # ask_pending takes any answer; cancelling the human's work takes theirs (an empty by is legacy).
-    local f by; f="$(compgen -G "$AQ_ASKS/*/$2.md" | awk 'NR == 1')"
+    # gate: aq-cancel-guard
+    [ -z "$pend" ] || die "$slug: ask $2 is $pend: --ask names an answered ask"
+    # An empty by is legacy (before answered_by), when every answer was the human's.
+    f="$(compgen -G "$AQ_ASKS/*/$2.md" | awk 'NR == 1')"
     by="$(sed -n '/^answered_by: */{s///p;q;}' "$f")"
-    [ -z "$by" ] || [ "$by" = human ] || die "$slug: ask $2 is answered by $by, not the human: --ask names an ask the human answered"
-    grep -qwF -- "$slug" "$f" ||
-      die "$slug: ask $2 does not name $slug: --ask names the human's answer about this item"
+    case "$by" in '' | human | judge) ;; *) die "$slug: ask $2 is answered by $by: --ask names an ask the judge or the human answered" ;; esac
+    grep -qwF -- "$slug" "$f" || die "$slug: ask $2 does not name $slug: --ask names the answer about this item"
     return 0
   fi
+  # gate: aq-cancel-guard
   [ -n "$(cancel_who)" ] || return 0
   human_work "$(fm_get "$1" from)" "$(fm_get "$1" tags)" || return 0
-  die "$slug is work the human asked for: a session or script cancels it only with --ask <id>, an ask naming it that the human answered (agent-ask post), or the human cancels it from a terminal or the Queue tab"
+  die "$slug is work the human asked for: a session or script cancels it only with --ask <id>, an answered ask naming it (agent-ask post), or the human cancels it from a terminal or the Queue tab"
 }
 # cancel_why <why> <ask> -> the reason with the ask that settled it, so the item names the decision.
 cancel_why() { printf '%s' "$1${2:+${1:+ }(ask $2)}"; }
@@ -3665,29 +3665,6 @@ cmd_ask_holds() {
     /^slug: / { slug = substr($0, 7) }
     /^tags: / { tags = substr($0, 7) }
     END { flush() }' "${FILES[@]}"
-}
-
-# human-work -- each active item the human asked for (human_work), one slug per line, from the header
-# lines alone, as ask-holds reads them. agent-ask reads it on an ask that proposes a cancel: cancel_guard
-# takes only the human's answer for these, so the judge must not answer that ask (ar-3917).
-cmd_human_work() {
-  local FILES=() slug from tags
-  lock_read
-  list_files waiting review running queued
-  ((${#FILES[@]})) || return 0
-  while IFS=$'\t' read -r slug from tags; do
-    [ -n "$slug" ] && human_work "$from" "$tags" && printf '%s\n' "$slug"
-  done < <(awk -v OFS='\t' '
-    # A tab is IFS whitespace, so an empty from would hand the tags to read as from.
-    function flush() { if (slug != "") print slug, (from == "" ? "-" : from), tags }
-    FNR == 1 { flush(); slug = ""; from = ""; tags = ""; head = 1 }
-    !head { next }
-    $0 == "---" { head = 0; next }
-    /^slug: / { slug = substr($0, 7) }
-    /^from: / { from = substr($0, 7) }
-    /^tags: / { tags = substr($0, 7) }
-    END { flush() }' "${FILES[@]}")
-  return 0
 }
 
 # reopen <slug> [--to running|waiting] [--why <text>] -- put back an item a false close finished,
@@ -4081,7 +4058,6 @@ case "${1:-}" in
   lock-miss) shift; cmd_lock_miss "$@" ;;
   credit-of) shift; cmd_credit_of "$@" ;;
   ask-holds) shift; cmd_ask_holds "$@" ;;
-  human-work) shift; cmd_human_work "$@" ;;
   backfill-briefs) shift; cmd_backfill_briefs "$@" ;;
   -h | --help | '') sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
   *) die "unknown verb: $1 (try --help)" ;;

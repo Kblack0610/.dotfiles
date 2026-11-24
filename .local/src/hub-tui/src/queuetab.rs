@@ -50,6 +50,8 @@ pub struct QueueView {
     /// Enter opens it. A refresh that puts another item under the selection drops the mark.
     pub link: Option<(String, usize)>,
     pub cands_open: bool,
+    /// The state words' meanings (`Row::LEGEND`) under the chips, shown while `?` holds them open.
+    pub legend: bool,
     /// The step and problem picked on the pipeline line.
     pub line: LineView,
     /// The slug a cancel waits on y for.
@@ -76,6 +78,7 @@ impl Default for QueueView {
             detail: false,
             link: None,
             cands_open: true,
+            legend: false,
             line: LineView::default(),
             confirm: None,
             running: None,
@@ -246,6 +249,7 @@ impl QueueView {
             }
             KeyCode::Esc if self.detail => (self.detail, self.link) = (false, None),
             KeyCode::Esc if !self.table.is_default() => self.table.clear(),
+            KeyCode::Char('?') => self.legend = !self.legend,
             KeyCode::Char('C') => {
                 self.cands_open = !self.cands_open;
                 self.reselect(None, q, c, now);
@@ -624,7 +628,9 @@ pub fn page(
         p.dim(),
     ));
     out.push(clip_line(Line::from(chips), w));
-    out.extend(DataTable::legend::<QueueRow>(p, w));
+    if v.legend {
+        out.extend(DataTable::legend::<QueueRow>(p, w));
+    }
     let (more, cand_at) = candidates(rows.len(), v, cands, p, w);
     let mut at_line = None;
     if let (true, Some(r)) = (v.detail, rows.get(v.table.sel)) {
@@ -1526,6 +1532,27 @@ pub(crate) mod tests {
         );
         v.reselect(Some("gone".into()), &Queue::default(), &[], now());
         assert_eq!(v.table.sel, 0);
+    }
+
+    #[test]
+    fn the_state_legend_is_behind_question_mark_not_on_the_page() {
+        let q = fixture();
+        let mut v = QueueView::default();
+        let said = |v: &QueueView| text_with(&q, v, None, 200);
+        assert!(
+            !said(&v).contains("starts when dispatch has a slot"),
+            "off by default"
+        );
+        press(&mut v, &q, &[], '?');
+        assert!(
+            said(&v).contains("starts when dispatch has a slot"),
+            "? opens it"
+        );
+        press(&mut v, &q, &[], '?');
+        assert!(
+            !said(&v).contains("starts when dispatch has a slot"),
+            "? again shuts it"
+        );
     }
 
     #[test]

@@ -679,7 +679,7 @@ real_epic_board() {
 
 @test "tier3 gate: a tier-3 cleanup pick ranks with its project's #prio, as a day pick does" {
   pr_lane_ready
-  sed -i '1s/$/ #prio\/focus/' "$SANDBOX/sheets/agent-runtime/README.md"
+  focus_on agent-runtime
   row agent-runtime agent 'drop the dead timer' '- [ ] chore(timer): drop the dead timer #tier/3'
   pr_lane_verdict 'drop the dead timer' timer
   run t3_picks "$(t3_rows '')"
@@ -757,11 +757,11 @@ OUT
   run grep -c 'ptask .* done ' "$NOTES_FIXTURE/calls.log"
   assert_output 0
   grep -q 'row left started, no merge proof' "$FLEET_DISPATCH_DIR"/log.md || fail "no reason logged"
-  # ar-2897: every later pass found the same and logged it again; now once, and no human row yet
+  # ar-2897: every later pass found the same and logged it again; now once, and no row yet
   run close_row fix-crash
   run close_row fix-crash
   assert_equal "$(grep -c 'row left started, no merge proof' "$FLEET_DISPATCH_DIR"/log.md)" 1
-  assert_not_called 'notes --profile bnb ptask game add'
+  assert_not_called 'notes --profile bnb ptask game --agent add'
 }
 
 # A close notes refuses was a bare "failed" line on every pass that never said why (ucp-2587).
@@ -776,17 +776,17 @@ OUT
   run close_row fix-crash
   run close_row fix-crash
   assert_equal "$(grep -c 'closing game row fix crash failed' "$FLEET_DISPATCH_DIR"/log.md)" 1
-  assert_not_called 'notes --profile bnb ptask game add'
+  assert_not_called 'notes --profile bnb ptask game --agent add'
   grep -qF -- '- [/] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail "row moved"
   # The error changing (a child closed) is the same fact: no new line.
   echo 'error: fix crash has 1 open child row(s) (gm-8); finish them first' > "$NOTES_FIXTURE/ptask.done.fail"
   run close_row fix-crash
   assert_equal "$(grep -c 'closing game row fix crash failed' "$FLEET_DISPATCH_DIR"/log.md)" 1
-  # Past the orphan window it reaches the human sheet once.
+  # Past the orphan window it reaches the agent board as a red once.
   DISPATCH_ORPHAN_HOURS=0
   run close_row fix-crash
   run close_row fix-crash
-  assert_equal "$(grep -c 'ptask game add chore(board): dispatch cannot close game row fix crash' "$NOTES_FIXTURE/calls.log")" 1
+  assert_equal "$(grep -c 'ptask game --agent add chore(board): dispatch cannot close game row fix crash' "$NOTES_FIXTURE/calls.log")" 1
   # Once notes accepts the close, the row closes and the stuck marker goes.
   assert [ -e "$FLEET_DISPATCH_DIR/stuck/fix-crash" ]
   rm "$NOTES_FIXTURE/ptask.done.fail"
@@ -865,7 +865,7 @@ OUT
 }
 
 # 2026-11-09: 16 of 20 PRs parked in review were red and nothing restarted them.
-@test "reap: a red PR parked in review gets a fix-ci owner twice per head, then one human-sheet row; a new head starts again" {
+@test "reap: a red PR parked in review gets a fix-ci owner twice per head, then one agent row, no page (ar-4765); a new head starts again" {
   local h1=1111111111111111111111111111111111111111 h2=2222222222222222222222222222222222222222
   pr_item OPEN
   run cmd_reap
@@ -897,30 +897,48 @@ OUT
   fix_ended "$h2" FAIL
   run cmd_reap
   assert_output --partial 'try 2 of 2'
-  # spent: one row on the project's human sheet and one page, the item left parked on its PR
+  # spent: one #red #escalate row on the project's agent board, the item left parked on its PR.
+  # NEGATIVE CONTROL: before ar-4765 this was a human-sheet row and a page.
   fix_ended "$h2" FAIL
   run cmd_reap
-  assert_output --partial 'human row for queue item fix-crash (PR o/game#12 red after 2 fix-ci tries, on the game sheet)'
+  assert_output --partial 'agent row for queue item fix-crash (PR o/game#12 red after 2 fix-ci tries, on the game board)'
   assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_human] | join("|")')" "review|$h2 fix"
-  assert_called "notes --profile bnb ptask game add fix(ci): PR o/game#12 is red at ${h2:0:12} after 2 fix-ci tries"
+  assert_called "notes --profile bnb ptask game --agent add fix(ci): PR o/game#12 is red at ${h2:0:12} after 2 fix-ci tries; fix it or close it (queue item fix-crash) #red #escalate #size/s"
   run cmd_reap
   refute_output --partial 'fix-crash'
-  assert_equal "$(grep -c 'ptask game add fix(ci)' "$NOTES_FIXTURE/calls.log")" 1
-  assert_equal "$(grep -c "agent-notify -t Needs you -d needs:dispatch:pr:o/game#12:fix:${h2:0:12} PR o/game#12 red" "$NOTES_FIXTURE/calls.log")" 1
-  # the human pushed a new head and it is red: the count starts again
+  assert_equal "$(grep -c 'ptask game --agent add fix(ci)' "$NOTES_FIXTURE/calls.log")" 1
+  assert_equal "$(grep -c 'ptask game add' "$NOTES_FIXTURE/calls.log")" 0
+  assert_equal "$(grep -c 'agent-notify' "$NOTES_FIXTURE/calls.log")" 0
+  # a push moved the head and it is red: the count starts again
   fix_ended "$h1" FAIL
   run cmd_reap
   assert_output --partial 'try 1 of 2'
   assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_human // ""] | join("|")')" "queued|"
 }
 
+@test "reap: a spent PR whose agent board refuses the row keeps its old stamp, so the next pass files it" {
+  local h1=1111111111111111111111111111111111111111
+  pr_item OPEN
+  run cmd_reap
+  touch "$NOTES_FIXTURE/refuse.game"
+  for _ in 1 2 3; do fix_ended "$h1" FAIL; run cmd_reap; done
+  assert_output --partial 'agent row for queue item fix-crash (PR o/game#12 red after 2 fix-ci tries, not filed: the game board did not take the row (notes exit 1))'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '.fix_human // ""')" ""
+  rm "$NOTES_FIXTURE/refuse.game"
+  fix_ended "$h1" FAIL; run cmd_reap
+  assert_output --partial 'agent row for queue item fix-crash (PR o/game#12 red after 2 fix-ci tries, on the game board)'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .fix_human)" "$h1 fix"
+  fix_ended "$h1" FAIL; run cmd_reap
+  refute_output --partial 'fix-crash'
+}
+
 # ar-2589: #2182's fix-ci tries were spent on a superseded red at 4bbda5c; that head read green and sat in review, ownerless.
-@test "reap: a head whose fix-ci tries went to the human sheet and then reads green gets a lander, once its land tries are its own" {
+@test "reap: a head whose fix-ci tries were escalated and then reads green gets a lander, once its land tries are its own" {
   local h1=1111111111111111111111111111111111111111
   pr_item OPEN
   run cmd_reap
   for _ in 1 2 3; do fix_ended "$h1" FAIL; run cmd_reap; done
-  assert_output --partial 'human row for queue item fix-crash (PR o/game#12 red after 2 fix-ci tries'
+  assert_output --partial 'agent row for queue item fix-crash (PR o/game#12 red after 2 fix-ci tries'
   fix_ended "$h1" PASS
   run cmd_reap
   assert_output --partial "land queue item fix-crash (PR o/game#12 green at ${h1:0:12}, try 1 of 2)"
@@ -930,7 +948,7 @@ OUT
   # its lands spent at that head too: one more row, then quiet on either color
   fix_ended "$h1" PASS; run cmd_reap
   fix_ended "$h1" PASS; run cmd_reap
-  assert_output --partial 'human row for queue item fix-crash (PR o/game#12 green after 2 land tries'
+  assert_output --partial 'agent row for queue item fix-crash (PR o/game#12 green after 2 land tries'
   assert_equal "$(agent-queue show fix-crash --json | jq -r .fix_human)" "$h1 fix land"
   for ci in PASS FAIL; do
     fix_ended "$h1" "$ci"; run cmd_reap
@@ -943,16 +961,16 @@ OUT
   refute_output --partial 'fix-crash'
   fix_ended "$h2" PASS; run cmd_reap
   assert_output --partial "land queue item fix-crash (PR o/game#12 green at ${h2:0:12}, try 1 of 2)"
-  # its lander carries the stamp written out, so the hub reads it as dispatch's, not the human's
+  # its lander carries the stamp written out, so the hub reads its owners as this pass did
   assert_equal "$(agent-queue show fix-crash --json | jq -r .fix_human)" "$h2 fix"
   fix_ended "$h2" PASS; run cmd_reap
   fix_ended "$h2" PASS; run cmd_reap
-  assert_output --partial 'human row for queue item fix-crash (PR o/game#12 green after 2 land tries'
+  assert_output --partial 'agent row for queue item fix-crash (PR o/game#12 green after 2 land tries'
   assert_equal "$(agent-queue show fix-crash --json | jq -r .fix_human)" "$h2 fix land"
 }
 
 # 2026-11-12: 26 items sat in review, 11 of them on green PRs nobody was asked to merge.
-@test "reap: a green PR parked in review gets a lander twice per head, then one human-sheet row; red and green keep their own counts" {
+@test "reap: a green PR parked in review gets a lander twice per head, then one agent row; red and green keep their own counts" {
   local h1=1111111111111111111111111111111111111111 h2=2222222222222222222222222222222222222222
   pr_item OPEN
   run cmd_reap
@@ -977,18 +995,18 @@ OUT
   assert_equal "$(agent-queue show fix-crash --json | jq -r '[.pr_owner, .land_tries] | join("|")')" "fix|1 $h1"
   run item_brief "$(agent-queue show fix-crash --json)"
   assert_line --index 0 '/fix-ci o/game#12'
-  # green again and the lander ended without landing, twice: one human row, then quiet
+  # green again and the lander ended without landing, twice: one agent row, then quiet
   fix_ended "$h2" PASS
   run cmd_reap
   assert_output --partial 'land queue item fix-crash (PR o/game#12 green at 222222222222, try 2 of 2)'
   fix_ended "$h2" PASS
   run cmd_reap
-  assert_output --partial 'human row for queue item fix-crash (PR o/game#12 green after 2 land tries, on the game sheet)'
-  assert_called "notes --profile bnb ptask game add chore(review): PR o/game#12 is green at ${h2:0:12} after 2 land tries; land it"
+  assert_output --partial 'agent row for queue item fix-crash (PR o/game#12 green after 2 land tries, on the game board)'
+  assert_called "notes --profile bnb ptask game --agent add chore(review): PR o/game#12 is green at ${h2:0:12} after 2 land tries; land it"
   run cmd_reap
   refute_output --partial 'fix-crash'
   assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
-  # the human pushed a red head: both counts start again, so its green after fix-ci gets a lander, not a second row
+  # a pushed red head: both counts start again, so its green after fix-ci gets a lander, not a second row
   fix_ended 3333333333333333333333333333333333333333 FAIL
   run cmd_reap
   assert_output --partial 'fix-ci queue item fix-crash (PR o/game#12 red at 333333333333, try 1 of 2)'
@@ -1026,8 +1044,8 @@ OUT
   assert_output --partial "land queue item fix-crash (PR o/game#12 in conflict with its base at ${h1:0:12}, try 2 of 2)"
   fix_ended "$h1" "FAIL CONFLICTING"
   run cmd_reap
-  assert_output --partial 'human row for queue item fix-crash (PR o/game#12 in conflict with its base after 2 land tries'
-  assert_called "notes --profile bnb ptask game add chore(review): PR o/game#12 is in conflict with its base at ${h1:0:12} after 2 land tries; land it"
+  assert_output --partial 'agent row for queue item fix-crash (PR o/game#12 in conflict with its base after 2 land tries'
+  assert_called "notes --profile bnb ptask game --agent add chore(review): PR o/game#12 is in conflict with its base at ${h1:0:12} after 2 land tries; land it"
 }
 
 # takeover_item -- a running item on a gone session with no PR, whose Stop hook pushed branch work to

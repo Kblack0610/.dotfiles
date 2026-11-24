@@ -254,6 +254,30 @@ impl Item {
         self.tags.split_whitespace()
     }
 
+    /// The Claude session ids it ran in, oldest first (its `sessions:` header, space- or
+    /// comma-separated): an ask's `claude_session` names one, which ties the ask to this item
+    /// after that session ends.
+    pub fn session_ids(&self) -> impl Iterator<Item = &str> {
+        self.extra_str("sessions")
+            .unwrap_or("")
+            .split([',', ' '])
+            .filter(|s| !s.is_empty())
+    }
+
+    /// The Claude session it ran in last: the one whose end left it waiting.
+    pub fn last_session(&self) -> Option<&str> {
+        self.session_ids().last()
+    }
+
+    /// Whether it is held on ask `id` (an `ask:<id>` or `ask:<id>=<options>` tag, agent-queue's hold).
+    pub fn held_on(&self, id: &str) -> bool {
+        !id.is_empty()
+            && self.tag_list().any(|t| {
+                t.strip_prefix("ask:")
+                    .is_some_and(|a| a.split('=').next() == Some(id))
+            })
+    }
+
     /// The item's stages in order, each with the minutes since the one before it: queued, ready,
     /// started, waiting, finished, then `merged` (the ledger keeps a sha, so no time or gap).
     /// A stage the item has not reached is left out. The one reader of this for both surfaces.
@@ -1176,7 +1200,8 @@ pub enum Stuck {
     Stalled,
     /// No session of a fresh, full fleet pass works it, `NO_SESSION_GRACE_MIN` after it started.
     NoSession,
-    /// fleet-dispatch spent its fix-ci tries on the PR and handed it to the human (`fix_human`).
+    /// fleet-dispatch spent its fix-ci tries on the PR and filed an agent row (#red #escalate) for it
+    /// (`fix_human`, a name from when the row went to the human).
     PrRed,
     /// As `PrRed`, but the tries were a lander's (`pr_owner: land`): green, and not merging.
     PrGreen,
@@ -1187,8 +1212,8 @@ impl Stuck {
         match self {
             Stuck::Stalled => "stalled",
             Stuck::NoSession => "no session",
-            Stuck::PrRed => "PR red, yours",
-            Stuck::PrGreen => "PR green, yours",
+            Stuck::PrRed => "PR red, escalated",
+            Stuck::PrGreen => "PR green, escalated",
         }
     }
 }
@@ -1203,7 +1228,7 @@ pub fn stuck_on(item: &Item, session: Seen<'_>, timing: &Timing) -> Option<Stuck
             }
             _ => None,
         },
-        // `fix_human: <head> <owner>...` names the owners whose tries went to the human; one that
+        // `fix_human: <head> <owner>...` names the owners whose tries were escalated; one that
         // names others (fix-ci's row, then a green head's lander) is still dispatch's to work.
         State::Review => {
             let mut stamp = item
@@ -2911,10 +2936,10 @@ mod tests {
         };
         assert_eq!(word("stuck"), "stalled");
         assert_eq!(word("gone"), "no session");
-        assert_eq!(word("red"), "PR red, yours");
-        assert_eq!(word("green"), "PR green, yours");
-        assert_eq!(word("handed"), "PR green, yours");
-        // a green head after fix-ci went to the human: its lander is dispatch's, not the human's
+        assert_eq!(word("red"), "PR red, escalated");
+        assert_eq!(word("green"), "PR green, escalated");
+        assert_eq!(word("handed"), "PR green, escalated");
+        // a green head after fix-ci was escalated: its lander is dispatch's own try
         assert_eq!(word("landing"), "on a PR");
         // NEGATIVE CONTROLS: a WORKING session, a run younger than the grace, a plain PR.
         assert_eq!(word("ok"), "running");

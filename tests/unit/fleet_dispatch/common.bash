@@ -136,13 +136,15 @@ setup() {
   source "$REPO_ROOT/.local/bin/fleet-dispatch"
 }
 
-# class_floors <requested min_live> <cleanup min_live> -> a classes.json mix with those minimums: the board
-# top-up above the low water reads them (class_gap). A case that never calls it has no mix, so no floor.
+# class_floors <requested min_live> <cleanup min_live> [game min_live] -> a classes.json mix with those
+# minimums: the board top-up above the low water reads them (class_gap, and project_gaps for the third, a
+# `game` project class). A case that never calls it has no mix, so no floor.
 class_floors() {
   export AGENT_QUEUE_CLASSES="$SANDBOX/classes.json"
-  jq -n --argjson r "$1" --argjson c "$2" '{on: true, window_days: 7, classes: [
+  jq -n --argjson r "$1" --argjson c "$2" --argjson g "${3:-null}" '{on: true, window_days: 7, classes: [
     {name: "requested", share: 60, tags: ["requested"], min_live: $r},
     {name: "cleanup", share: 10, tags: ["cleanup"], min_live: $c},
+    (if $g == null then empty else {name: "game", share: 10, projects: ["game"], min_live: $g} end),
     {name: "rest", share: 30, default: true}]}' > "$AGENT_QUEUE_CLASSES"
 }
 
@@ -946,12 +948,11 @@ remote_item() {
 # --- focus: #prio/focus ------------------------------------------------------------------
 
 # focus_on <project>... -- the human put each on `#prio/focus`: the `notes projects --prios` line agent-queue
-# and fleet-dispatch read, and the front-page head tag prio_of reads (the one store both come from).
+# and fleet-dispatch read (notes is the one reader of the front-page tag, and of its expiry).
 focus_on() {
   local p
   for p; do
     printf '%s\tfocus\n' "$p" >> "$NOTES_FIXTURE/prios"
-    sed -i '1s/$/ #prio\/focus/' "$SANDBOX/sheets/$p/README.md"
   done
 }
 

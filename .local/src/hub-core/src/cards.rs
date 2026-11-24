@@ -30,6 +30,14 @@ pub struct Part {
     pub link: Option<Link>,
 }
 
+impl Part {
+    /// A counted zero: a surface draws no chip for it (`Card::drawn`). A part whose source was
+    /// not read says so in `reading` words at `Level::Nodata` and is never a zero (rule 6).
+    pub fn is_zero(&self) -> bool {
+        self.value == "0" && self.level != Level::Nodata
+    }
+}
+
 /// A "where to look first" row: what it is, a line under it, and the record it opens.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct First {
@@ -88,6 +96,15 @@ impl Card {
             error: None,
             link: Link::tab(opens(tab)),
         }
+    }
+
+    /// The card as Home's grid draws it: a chip counting none is left out, since a count of zero
+    /// says nothing is there, and only the headline (`big`) stays when it is zero. Every reader
+    /// that looks a part up by its label (the widget, the phone, the waybar chips) takes the
+    /// whole card, so this is applied only where a grid is drawn.
+    pub fn drawn(mut self) -> Card {
+        self.parts.retain(|p| !p.is_zero());
+        self
     }
 
     /// The card of a reader that did not answer.
@@ -895,8 +912,27 @@ pub fn schedules(s: &crate::schedules::Schedules) -> Card {
     c.big = s.rows.len().to_string();
     c.unit = "scheduled things".into();
     c.counted = s.summary.clone();
-    if !s.errors.is_empty() {
-        c.error = Some(s.errors.join("; "));
+    // The fleet-bench red is Alerts' fact (dashboards rule 2): here it is a count that opens
+    // Alerts, never the card's error line.
+    let (reds, own): (Vec<&String>, Vec<&String>) = s
+        .errors
+        .iter()
+        .partition(|e| e.starts_with(crate::reds::SOURCE));
+    if !reds.is_empty() {
+        c = c.part_to(
+            "Reds not read",
+            reds.len(),
+            Level::Warn,
+            Some(Link::tab("alerts")),
+        );
+    }
+    if !own.is_empty() {
+        c.error = Some(
+            own.iter()
+                .map(|e| e.as_str())
+                .collect::<Vec<_>>()
+                .join("; "),
+        );
     }
     // The rows come ranked failing, stale, never, then no purpose (schedules::rank); the last are
     // not listed.
@@ -1171,8 +1207,9 @@ pub fn main_red(home: &crate::home::Home) -> Card {
     )
 }
 
-/// Home's card order on every surface. Needs you and Main red lead the widgets; on the web and the TUI
-/// Home they are the Needs you list under the grid, so those draw `grid`, the rest of this list.
+/// Home's card order on every surface. Needs you and Main red lead the widgets, and Needs you the
+/// web Home (agent-web `cards::page`, where Main red is Needs you's red rows); the TUI Home has
+/// both as its Needs you list, so it draws `grid`, the rest of this list.
 pub const ORDER: &[&str] = &[
     "needs",
     "red",
@@ -1216,7 +1253,7 @@ pub fn pick(cards: Vec<Card>, names: &[&str]) -> Vec<Card> {
         .collect()
 }
 
-/// The grid, `ORDER` after Needs you and Main red, on both surfaces: a card per tab, `reading` until its read
+/// The grid, `ORDER` after Needs you and Main red: a card per tab, `reading` until its read
 /// answers and `failed` when it could not.
 pub fn grid(r: &Reads) -> Vec<Card> {
     fn one<T: ?Sized>(
@@ -1956,6 +1993,32 @@ mod tests {
     }
 
     #[test]
+    fn schedules_say_an_unread_fleet_bench_red_as_a_count_that_opens_alerts() {
+        let sch = crate::schedules::Schedules {
+            errors: vec![
+                "fleet-bench reds: exit status: 1".into(),
+                "k8s: prometheus down".into(),
+            ],
+            ..Default::default()
+        };
+        let c = schedules(&sch);
+        let p = c
+            .parts
+            .iter()
+            .find(|p| p.label == "Reds not read")
+            .expect("the reds part");
+        assert_eq!(
+            (p.value.as_str(), p.link.clone()),
+            ("1", Some(Link::tab("alerts")))
+        );
+        // Negative control: the card's own source stays its error line; Alerts' red is not copied.
+        assert_eq!(c.error.as_deref(), Some("k8s: prometheus down"));
+        let c = schedules(&crate::schedules::Schedules::default());
+        assert!(c.parts.iter().all(|p| p.label != "Reds not read"));
+        assert_eq!(c.error, None);
+    }
+
+    #[test]
     fn projects_list_who_has_work_in_flight_and_count_nobody_waiting_or_hot() {
         let p = |name: &str, waiting: usize, hot: usize, running: usize| crate::projects::Card {
             name: name.into(),
@@ -2015,19 +2078,18 @@ mod tests {
             s("hub/shepherd:1", "NEEDS", &["shepherd"]),
             s("hub/c:1", "WORKING", &[]),
         ];
-        let counts = json!({"WORKING": 1, "NEEDS": 2, "STALLED": 0});
-        let state = json!({"sessions": doc, "counts": counts, "generated_epoch": 1000});
         let rows = crate::session_table::rows(&doc, &Default::default(), &Default::default(), &[]);
         let c = sessions(&rows);
         let pill = c.parts.iter().find(|p| p.label == "Need you").unwrap();
-        let home = crate::home::build(Some(&state), None, None, None, 1000);
-        assert_eq!(home.sessions, "1 working, 2 need you, 0 stalled");
-        assert_eq!(pill.value, "2", "the card reads Home's count");
+        assert_eq!(
+            pill.value, "2",
+            "the card counts the sessions that need you"
+        );
         assert_eq!(c.big, "3", "the shepherd is no live session of the card");
     }
 
     #[test]
-    fn ci_stuck_is_alerts_stuck_runs_one_per_branch() {
+    fn ci_stuck_is_alerts_stuck_runs_one_per_repo() {
         use crate::prom::Series;
         let run = |branch: &str, wf: &str| Series {
             labels: [
@@ -2046,7 +2108,7 @@ mod tests {
             ok: true,
             ..Default::default()
         };
-        // Three runs on two branches: Alerts has two rows, so CI says two, never three or 0.
+        // Three runs on two branches of one repo: Alerts has one row, so CI says one, never 2, 3 or 0.
         i.instant.insert(
             "waiting",
             vec![run("main", "CI"), run("main", "Checks"), run("feat", "CI")],
@@ -2057,7 +2119,7 @@ mod tests {
             .iter()
             .filter(|l| l.starts_with("stuck run"))
             .count();
-        assert_eq!((pill.value.as_str(), rows), ("2", 2));
+        assert_eq!((pill.value.as_str(), rows), ("1", 1));
         assert_eq!(c.level, Level::Red);
         // The stuck runs are CI's, not Health's: Health stays machines, domains and vitals.
         let h = health(&i);
@@ -2314,5 +2376,20 @@ mod tests {
             .map(|c| c.tab)
             .collect();
         assert_eq!(got, ["alerts", "sessions"]);
+    }
+    #[test]
+    fn a_drawn_card_leaves_out_a_counted_zero_but_never_an_unread_part() {
+        let c = Card::new("queue", "Queue", "items")
+            .part("Held", 0, Level::Ok)
+            .part("Ready", 3, Level::Ok)
+            .part("Shipped", crate::reading::NOT_READ, Level::Nodata)
+            .part("Checks", 0, Level::Nodata);
+        let mut c = c;
+        c.big = "0".into();
+        let d = c.drawn();
+        let labels: Vec<&str> = d.parts.iter().map(|p| p.label.as_str()).collect();
+        assert_eq!(labels, ["Ready", "Shipped", "Checks"]);
+        assert_eq!(d.big, "0", "the headline stays at zero");
+        assert_eq!(d.parts[1].value, crate::reading::NOT_READ);
     }
 }

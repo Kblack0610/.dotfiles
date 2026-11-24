@@ -14,7 +14,7 @@ Every view of the agent fleet (phone and Home Assistant, the shepherd, fleet-ben
 | `fleet-state.path` | `tick` when `agent-ask` posts, answers or cancels an ask (it rewrites `~/.agent/asks/.changed`) | A new ask shows as NEEDS within seconds |
 | `fleet-bench sample`, `fleet-shepherd` | `--write`, every 10 minutes and on each shepherd pass | Each needs a pass of its own to act on |
 
-The document is built beside the target and renamed into place, so a reader never sees half of one. A pass that started before the document on disk was generated leaves it alone, so a slow pass cannot overwrite a newer one. After each pass `fleet-state.service` starts `agent-mqtt-sessions.service`, which republishes to Home Assistant.
+The document is built beside the target and renamed into place, so a reader never sees half of one. A pass that started before the document on disk was generated leaves it alone, so a slow pass cannot overwrite a newer one. Home Assistant gets the document from `agent-mqtt-publish.timer` (`--full`, every 5 minutes), not from each pass.
 
 ## Two fields, never one word
 
@@ -136,7 +136,7 @@ Adding a field does not bump `schema`. Readers ignore fields they do not know.
 | `session-preflight.sh` (SessionStart, the "N other session(s) open on <project>" line, its "(M in this checkout)" part from `cwd`) | `generated_epoch` (over 10 minutes old shows nothing), `vocab` (`finished` left out), and per session `session_id`, `cwd`, `project` (the project of its cwd; a sibling worktree counts by it), `host`, `bucket` |
 | `hub` and agent-web Sessions tab | The whole document (`vocab` orders the rows and colours the lanes, `project` names each row), plus `~/.agent/shepherd/watch.log` for the change feed |
 | agent-panel `rows --sort` (the Stage key), the phone widget (`in_progress` for its ETAs) | `vocab` |
-| `fleet-shepherd due` (the overdue lines), hub Home Running (the Overdue chip and its ETA cell), agent-web `etaText` (every ETA it draws), the phone's agents line (`N overdue`) | `overdue` per session; `unreadable` naming `fleet-bench eta` or `overdue verdicts` |
+| `fleet-shepherd due` (the overdue lines), a project's In flight (hub and agent-web: the Overdue chip and its ETA cell), agent-web `etaText` (every ETA it draws), the phone's agents line (`N overdue`) | `overdue` per session; `unreadable` naming `fleet-bench eta` or `overdue verdicts` |
 | hub Sessions (the BY column of a live row), hub `capacity` (runner slots), hub Fleet `who` | `by` per session |
 | tmux status line (`.local/src/tmux/claude-status.sh`) | `!N` is `questions.sh count`, Home's Needs you figure through `hub-figure` (questions, your turn, blocked, to do), fleet-wide whatever session the bar is in, and `!?` when Home cannot be read. The Prefix y panel lists only the asks and dialogs it can answer, so its header is the smaller number. `~` working and the check mark idle count the current session's rows of `agent-panel list` by glyph. The same refresh copies each row's glyph onto its window as `@agent_glyph` (`project_glyphs`), which the window list draws before the window number: `!` red, `~` amber, the check green; two agents in one window show `!` over `~` over the check. It reads no pane text and not the document |
 | tmux fleet view (`.local/src/tmux/fleet.sh`, agents section) | agent-panel's glyph and `bucket` by `target`, the same join |

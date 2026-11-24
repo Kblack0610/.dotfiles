@@ -1049,9 +1049,8 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app: it i
 @test "rank: project priority, then the feed rank (due, priority, age), each named in why" {
   export DISPATCH_TODAY=2026-11-05
   project game beta "$SANDBOX/repos/game"
-  sed -i '1s/$/ #prio\/focus/' "$SANDBOX/sheets/game/README.md"
+  focus_on game
   project app alpha "$SANDBOX/repos/app"
-  printf '## Inbox\n- [ ] a row that says #prio/high is not the head\n' >> "$SANDBOX/sheets/app/README.md"
   row app agent 'app urgent' "- [ ] app urgent #urgent $T"
   row app agent 'app due' "- [ ] app due #due1105 $T"
   row game agent 'game low' "- [ ] game low #low $T #c1101"

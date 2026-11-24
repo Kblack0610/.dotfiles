@@ -7,11 +7,12 @@
 #   show <id> | count
 #   accept [--by who] <id>            run its verb, then record the decision
 #   reject [--by who] <id>            record the decision; the verb never runs
-#   expire                            ask about what passed its expiry, prune decided records
+#   expire [--by who] [<id>]          with an id: close it unasked, as a merged fix did (--by pr:N);
+#                                     with none: close what passed its window, ask about what passed its expiry, prune
 #   answered <ask-id>                 decide an expiring proposal by its ask's answer (its run: resume)
 #
-# A proposal is a decision for the human, so nothing here runs without an accept and no model
-# reads it: the verb is one of the fixed set below, applied by this script. It is not an
+# A proposal is a decision for the human, or for the judge once it goes its TTL unread, so nothing
+# here runs without an accept and no model reads it: the verb is one of the fixed set below, applied by this script. It is not an
 # agent-ask, whose `resume` is a model prompt that runs whatever the answer was.
 set -uo pipefail
 
@@ -19,12 +20,24 @@ AP_DIR="${AGENT_PROPOSE_DIR:-$HOME/.agent/proposals}"
 AP_TTL_DAYS="${AGENT_PROPOSE_TTL_DAYS:-30}"   # an unread proposal is stale: dream's block expiry
 AP_KEEP_DAYS="${AGENT_PROPOSE_KEEP_DAYS:-90}" # a decided record, long enough to stop a repeat
 AP_MAX="${AGENT_PROPOSE_MAX:-12}"             # open per stream and project, above the largest real backlog (11)
+# A stream whose evidence goes stale before the TTL, as "stream=days ...": an open proposal of it filed
+# longer ago reads as expired and closes with no ask. A ci-failures proposal cites runs, and past the
+# window ci-failures.py counts (3 days) they no longer say what CI does; a cause still red is filed
+# again from a newer run, since an expired key may come back.
+AP_WINDOWS="${AGENT_PROPOSE_WINDOWS:-ci-failures=3}"
 AP_ASK_CMD="${AGENT_PROPOSE_ASK_CMD:-agent-ask}"   # where an expiring proposal is asked
 # Where the mem0 verb posts: MEM0_BASE_URL, MEM0_USER_ID and MEM0_SECRET (the sops file holding the
 # key), from the private overlay, since the URL may not enter this repo.
 AP_MEM0_LIB="${AGENT_PROPOSE_MEM0_LIB:-$HOME/.local/lib/mem0.sh}"
 
 die() { echo "agent-propose: $*" >&2; exit 1; }
+AP_W="$(jq -cn --arg w "$AP_WINDOWS" '[$w | splits(" +") | select(. != "") | split("=")
+  | {(.[0]): (.[1] | tonumber | if . > 0 then . else error("\(.) days") end)}] | add // {}' 2>&1)" \
+  || die "AGENT_PROPOSE_WINDOWS is not stream=days ... with days above 0: $AP_WINDOWS ($AP_W)"
+# state: the status a reader sees, so a windowed proposal is expired the moment it passes, before
+# any sweep has written it. jq runs it with --argjson w "$AP_W".
+AP_STATE='def state: $w[.stream // ""] as $d | if .status == "open" and $d != null
+  and .created < (now - $d * 86400 | todate) then "expired" else .status end;'
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 records() { find "$AP_DIR" -maxdepth 1 -name '*.json' -print0 2>/dev/null | xargs -0 -r cat; }
 
@@ -97,8 +110,9 @@ cmd_list() {
   done
   case "$status" in open|asked|accepted|rejected|expired|all) ;; *) die "list: no status $status" ;; esac
   local rows
-  rows="$(records | jq -cs --arg st "$status" --arg s "$stream" "$AP_DOES"'
-    map(select(($st == "all" or .status == $st) and ($s == "" or .stream == $s)) | .does = does) | sort_by(.created)')"
+  rows="$(records | jq -cs --arg st "$status" --arg s "$stream" --argjson w "$AP_W" "$AP_STATE$AP_DOES"'
+    map(.status = state | select(($st == "all" or .status == $st) and ($s == "" or .stream == $s)) | .does = does)
+    | sort_by(.created)')"
   if [ -n "$json" ]; then printf '%s\n' "$rows"; return 0; fi
   jq -r '.[] | [.id, .status, .stream, .project, .created[0:10], .title] | @tsv' <<<"$rows"
 }
@@ -145,15 +159,18 @@ apply() {
   [ "${#cmd[@]}" -eq 0 ] || "${cmd[@]}"
 }
 
-decide() { # <accepted|rejected> [--by who] <id>
+decide() { # <accepted|rejected|expired> [--by who] <id>
   local status="$1" by=human; shift
   if [ "${1:-}" = --by ]; then by="${2:?}"; shift 2; fi
   local id="${1:-}" f result="" st
-  [ -n "$id" ] || die "${status%ed} needs an id"
+  [ -n "$id" ] || die "$status: which proposal? give its id"
   f="$(record "$id")" || exit 1
   lock
-  st="$(jq -r .status "$f")"
-  case "$st" in open | asked) ;; *) die "$id is already $st" ;; esac
+  # One past its window is already expired, but expire by hand may still record its fix (--by pr:N).
+  # expire takes an open one only: an asked one waits on the human's answer to its ask.
+  if [ "$status" = expired ]; then st="$(jq -r .status "$f")"; else st="$(jq -r --argjson w "$AP_W" "$AP_STATE"'state' "$f")"; fi
+  case "$status $st" in "expired open" | "accepted open" | "accepted asked" | "rejected open" | "rejected asked") ;;
+    *) die "$id is already $st" ;; esac
   if [ "$status" = accepted ]; then
     # A failed verb leaves it open with the reason, so the accept can be tried again.
     if ! result="$(apply "$f" 2>&1 9>&-)"; then  # 9>&-: a child must not keep the store lock
@@ -166,9 +183,10 @@ decide() { # <accepted|rejected> [--by who] <id>
   echo "$id $status"
 }
 
-# ask_expiring <record file>: one approval ask for a proposal that went its TTL unread, whose answer
-# comes back through `answered` (ask-resume runs the `run:` resume with the ask id). Not this
-# caller's session or pane: the ask is the proposal's, and a sweep may post several. Prints the id.
+# ask_expiring <record file>: one gate ask for a proposal that went its TTL unread, which the judge
+# accepts or declines under its policy like any gate (ar-4765). Its answer comes back through
+# `answered` (ask-resume runs the `run:` resume with the ask id). Not this caller's session or pane:
+# the ask is the proposal's, and a sweep may post several. Prints the id.
 ask_expiring() {
   local f="$1" title does q context
   title="$(jq -r .title "$f")"
@@ -181,8 +199,7 @@ ask_expiring() {
   # caller (dream's add) is not that session, so only a failure's reason is shown.
   local out err rc
   err="$(mktemp)"
-  # gate: ap-approval
-  out="$(env -u CLAUDE_CODE_SESSION_ID -u TMUX -u TMUX_PANE -u AGENTCTL_NAME "$AP_ASK_CMD" post --kind approval \
+  out="$(env -u CLAUDE_CODE_SESSION_ID -u TMUX -u TMUX_PANE -u AGENTCTL_NAME "$AP_ASK_CMD" post --kind gate \
     --project "$(jq -r .project "$f")" --options "accept=$does|reject=drop it, it is not proposed again" \
     --context "$context" --resume 'run: agent-propose answered' -- "$q" 2>"$err" 9>&-)"
   rc=$?
@@ -195,13 +212,18 @@ ask_expiring() {
 # proposals and they stop counting against the cap. A past-due one is asked, never dropped unseen
 # (penguin P4, ar-4155): `asked` holds the ask id until the answer decides it, and is kept until
 # then, so a late answer still finds it. An ask that does not post leaves it open and past due, so
-# the next sweep tries again.
+# the next sweep tries again. A windowed stream's proposal past its window is the exception: its
+# evidence went stale, not its question, so it is written expired with no ask (AP_WINDOWS).
 sweep() {
   local ts cut f id ask n=0
   ts="$(now)"
   cut="$(date -u -d "-$AP_KEEP_DAYS days" +%Y-%m-%dT%H:%M:%SZ)"
   while IFS= read -r -d '' f; do
-    if jq -e --arg t "$ts" '.status == "open" and .expires < $t' "$f" >/dev/null; then
+    if jq -e --argjson w "$AP_W" "$AP_STATE"'.status == "open" and state == "expired"' "$f" >/dev/null; then
+      write "$(jq -r .id "$f")" "$(jq -c --arg t "$ts" --argjson w "$AP_W" \
+        '.status = "expired" | .decided_by = "window" | .decided_at = $t
+         | .result = "past the \(.stream) window of \($w[.stream]) days"' "$f")"
+    elif jq -e --arg t "$ts" '.status == "open" and .expires < $t' "$f" >/dev/null; then
       id="$(jq -r .id "$f")"
       if ask="$(ask_expiring "$f")" && [ -n "$ask" ]; then
         write "$id" "$(jq -c --arg t "$ts" --arg a "$ask" '.status = "asked" | .ask = $a | .asked_at = $t' "$f")"
@@ -217,35 +239,42 @@ sweep() {
 }
 
 # answered <ask id>: the `run:` resume of an expiring proposal's ask. accept or reject decides it as
-# the human's; an answer naming neither or both leaves it asked and says so. One already decided
-# another way (accept or reject by hand) is a no-op.
+# whoever answered it, the judge or the human (an ask with no answered_by is the human's); an answer
+# naming neither or both leaves it asked and says so. One already decided another way (accept or
+# reject by hand) is a no-op.
 cmd_answered() {
-  local ask="${1:-}" id st names acc rej
+  local ask="${1:-}" id st names acc rej by
   [ -n "$ask" ] || die "answered needs an ask id"
   read -r id st < <(records | jq -rs --arg a "$ask" 'map(select(.ask == $a)) | (map(select(.status == "asked")) + .) | first | "\(.id // "") \(.status // "")"')
   [ -n "$id" ] || die "no proposal waits on ask $ask"
   [ "$st" = asked ] || { echo "$id already $st"; return 0; }
   names="$("$AP_ASK_CMD" answer-names "$ask")" || die "cannot read the answer to ask $ask"
+  # gate: ap-ruling
+  by="$("$AP_ASK_CMD" show "$ask")" || die "cannot read ask $ask"
+  by="$(sed -n '/^answered_by: */{s///p;q;}' <<<"$by")"
+  by=${by:-human}
+  # Only a ruling decides it: an answer a session, shepherd or hold gave leaves it asked.
+  case "$by" in human | judge) ;; *) die "ask $ask was answered by $by; $id stays asked: decide it with agent-propose accept or reject" ;; esac
   grep -qx accept <<<"$names" && acc=a || acc=
   grep -qx reject <<<"$names" && rej=r || rej=
   case "$acc$rej" in
-    a) decide accepted --by human "$id" ;;
-    r) decide rejected --by human "$id" ;;
+    a) decide accepted --by "$by" "$id" ;;
+    r) decide rejected --by "$by" "$id" ;;
     ar) die "ask $ask names both accept and reject; $id stays asked: decide it with agent-propose accept or reject" ;;
     *) die "ask $ask names neither accept nor reject; $id stays asked: decide it with agent-propose accept or reject" ;;
   esac
 }
 
-cmd_expire() { lock; sweep; }
+cmd_expire() { if [ $# -gt 0 ]; then decide expired "$@"; else lock; sweep; fi; }
 
 case "${1:-}" in
   add)    shift; cmd_add "$@" ;;
   list)   shift; cmd_list "$@" ;;
   show)   f="$(record "${2:-}")" || exit 1; jq . "$f" ;;
-  count)  records | jq -s 'map(select(.status == "open")) | length' ;;
+  count)  records | jq -s --argjson w "$AP_W" "$AP_STATE"'map(select(state == "open")) | length' ;;
   accept) shift; decide accepted "$@" ;;
   reject) shift; decide rejected "$@" ;;
-  expire) cmd_expire ;;
+  expire) shift; cmd_expire "$@" ;;
   answered) shift; cmd_answered "$@" ;;
-  *) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac
