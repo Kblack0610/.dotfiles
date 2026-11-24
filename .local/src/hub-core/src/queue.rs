@@ -1587,7 +1587,7 @@ pub struct Candidate {
     pub text: String,
     pub stage: String,
     pub priority: String,
-    /// Why it ranks where it does, e.g. "focus project, due today, #high, beta".
+    /// Why it ranks where it does, e.g. "due today, #high, beta".
     pub why: String,
     /// A dispatch worker takes it.
     pub auto: bool,
@@ -2347,7 +2347,7 @@ mod tests {
     }
 
     const SUGGEST: &str = concat!(
-        r##"{"profile":"bnb","project":"shape-city","stage":"beta","lane":"agent","key":"bar-17","text":"- [ ] fix the jump arc #high #size/s <!-- id:bar-17 -->","repo":"/r","prio":1,"priority":"high","tier":2,"line":"f508","worker":"requested","wrank":0,"pprio":0,"due":0,"due_in":0,"age":5,"why":"focus project, due today, #high, beta","auto":true,"area":"","verdict":"dispatch","held":false}"##,
+        r##"{"profile":"bnb","project":"shape-city","stage":"beta","lane":"agent","key":"bar-17","text":"- [ ] fix the jump arc #high #size/s <!-- id:bar-17 -->","repo":"/r","prio":1,"priority":"high","tier":2,"line":"f508","worker":"requested","wrank":0,"due":0,"due_in":0,"age":5,"why":"due today, #high, beta","auto":true,"area":"","verdict":"dispatch","held":false}"##,
         "\n",
         "not json\n",
         r##"{"profile":"personal","project":"trader","stage":"alpha","lane":"human","key":"backtest report","text":"- [ ] backtest report","why":"#high, alpha, 9d old","auto":false,"verdict":"unjudged","held":true,"area":"unity"}"##,

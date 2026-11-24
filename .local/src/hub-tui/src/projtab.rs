@@ -5,8 +5,8 @@
 //! page (`layout::project_page`: its work tabs, then Departments with a chip per department, Rows being tasktab.rs),
 //! `a` opens Board, `d` Deliverables (Coverage and the department tabs are coveragetab.rs,
 //! Ladder laddertab.rs); in the rows Esc clears the view first and then comes back here, as
-//! Backspace does at once. `P` steps the selected project's priority (normal, focus, high, low;
-//! from `only` it clears it); app.rs runs the write. This file reads and writes nothing.
+//! Backspace does at once. `P` toggles the selected project's focus, the sprint switch; app.rs
+//! runs the write. This file reads and writes nothing.
 
 use hub_core::deliverables::{Deliverable, Deliverables};
 use hub_core::departments::{self, Coverage};

@@ -1727,10 +1727,11 @@ fn a_new_game_row_from_a_session_waits_for_the_next_window_of_a_focus_parent() {
 }
 
 /// A focus is a short push: `--set focus` records its end on a `Focus until:` head line
-/// (`--hours`, default 4, at most 24), any other prio drops the line, and a focus whose end has
-/// passed, or that has none, reads as high in `--prios`.
+/// (`--hours`, default 4, at most 24), `--set normal` drops the tag and the line, and a focus
+/// whose end has passed, or that has none, is not listed by `--prios`. The retired ladder words
+/// are refused.
 #[test]
-fn a_focus_ends_on_its_hours_and_then_reads_as_high() {
+fn a_focus_ends_on_its_hours_and_then_reads_as_none() {
     let h = Home::new("focus-until");
     let readme = h.0.join("notes/projects/current/demo/README.md");
     ok(&h.run(&[
@@ -1743,7 +1744,7 @@ fn a_focus_ends_on_its_hours_and_then_reads_as_high() {
     );
     let prios = String::from_utf8(h.run(&["projects", "--prios"]).stdout).unwrap();
     assert!(prios.contains("demo\tfocus"), "{prios}");
-    // Its end passed: the tag stays on the page, the read says high.
+    // Its end passed: the tag stays on the page, the read lists nothing.
     let line = sheet
         .lines()
         .find(|l| l.starts_with("Focus until:"))
@@ -1754,7 +1755,7 @@ fn a_focus_ends_on_its_hours_and_then_reads_as_high() {
     )
     .unwrap();
     let prios = String::from_utf8(h.run(&["projects", "--prios"]).stdout).unwrap();
-    assert!(prios.contains("demo\thigh"), "{prios}");
+    assert!(!prios.contains("demo"), "{prios}");
     // NEGATIVE CONTROL: a bare tag with no end is no focus either.
     fs::write(
         &readme,
@@ -1762,13 +1763,19 @@ fn a_focus_ends_on_its_hours_and_then_reads_as_high() {
     )
     .unwrap();
     let prios = String::from_utf8(h.run(&["projects", "--prios"]).stdout).unwrap();
-    assert!(prios.contains("demo\thigh"), "{prios}");
-    // Any other prio drops the end; hours past the cap, or on another prio, are refused.
+    assert!(!prios.contains("demo"), "{prios}");
+    // normal drops the tag and the end; the retired ladder words write nothing.
     ok(&h.run(&["projects", "--prio", "demo", "--set", "focus"]));
-    ok(&h.run(&["projects", "--prio", "demo", "--set", "low"]));
+    for retired in ["high", "low"] {
+        let o = h.run(&["projects", "--prio", "demo", "--set", retired]);
+        assert!(!o.status.success(), "--set {retired} is refused");
+        assert!(String::from_utf8_lossy(&o.stderr).contains("retired"));
+    }
+    assert!(fs::read_to_string(&readme).unwrap().contains("#prio/focus"));
+    ok(&h.run(&["projects", "--prio", "demo", "--set", "normal"]));
     let sheet = fs::read_to_string(&readme).unwrap();
     assert!(
-        !sheet.contains("Focus until:") && sheet.contains("#prio/low"),
+        !sheet.contains("Focus until:") && !sheet.contains("#prio/"),
         "{sheet}"
     );
     assert!(!h
@@ -1776,7 +1783,7 @@ fn a_focus_ends_on_its_hours_and_then_reads_as_high() {
         .status
         .success());
     assert!(!h
-        .run(&["projects", "--prio", "demo", "--set", "high", "--hours", "2"])
+        .run(&["projects", "--prio", "demo", "--set", "normal", "--hours", "2"])
         .status
         .success());
     assert!(!h.run(&["projects", "--hours", "2"]).status.success());

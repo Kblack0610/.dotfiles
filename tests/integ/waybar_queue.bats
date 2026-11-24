@@ -294,14 +294,14 @@ As of 03:45, as the hub Queue tab read it then."
 }
 
 @test "a focus project reads in amber on the Up next line; no part, no words" {
-  cardfeed 'pill=queue.Focus first=2:warn'
+  cardfeed 'pill=queue.On focus=2:warn'
   run "$MODULE"
   run tip
-  assert_line "<b>Up next</b>  39 ready (32 urgent, 7 high; $(y '2 focus project(s) first'))"
+  assert_line "<b>Up next</b>  39 ready (32 urgent, 7 high; $(y '2 project(s) on focus, running sprints'))"
   cardfeed
   run "$MODULE"
   run tip
-  refute_output --partial "focus project"
+  refute_output --partial "on focus"
 }
 
 @test "failed in 24h is in its part's level: amber above 0, plain at 0" {

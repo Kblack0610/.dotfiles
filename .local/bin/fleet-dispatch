@@ -83,7 +83,7 @@ DISPATCH_CONF_KEYS=(
   DISPATCH_TARGET_PRESENT DISPATCH_TARGET_AWAY DISPATCH_STATE_FRESH_MIN DISPATCH_MAX_LOAD
   DISPATCH_HOST_MEM_MIN_PCT DISPATCH_START_LOAD DISPATCH_START_LOAD_MIN
   DISPATCH_RED_FLOOR DISPATCH_PLAN_LOAD_FLOOR DISPATCH_FIX_TRIES DISPATCH_TRAINEE_REVIEW_HOURS
-  DISPATCH_FLEET_SHARE DISPATCH_FLEET_SHARE_H
+  DISPATCH_FLEET_SHARE DISPATCH_FLEET_SHARE_H DISPATCH_FLEET_PROJECTS
   DISPATCH_ROLLUP_DAYS DISPATCH_ROLLUP_MIN DISPATCH_ROLLUP_BOARD
   DISPATCH_ROLLUP_TAGS DISPATCH_PROVIDER_HOLD_MIN
   DISPATCH_SPRINT_FLOOR DISPATCH_RUN_FLOOR DISPATCH_STARVED_MIN
@@ -253,22 +253,9 @@ prio_rank_set() {
 }
 prio_rank() { prio_rank_set "$1"; echo "$PRIO"; }
 
-# load_prios -- PRIO_BY[<project>]: focus|high|low, as `notes projects --prios` reads the `#prio/<word>` the
-# human set (`notes projects --prio`), read once per process; a normal project has no key. notes is the one
-# reader of the tag: a focus past its `Focus until:` reads as high there, so no focus outlives its hours.
-# A failed read leaves every project normal, the safe default: it ranks them all the same.
-load_prios() {
-  declare -p PRIO_BY >/dev/null 2>&1 && return 0
-  declare -gA PRIO_BY=()
-  local n p
-  while IFS=$'\t' read -r n p _; do
-    [ -z "$n" ] || PRIO_BY[$n]=$p
-  done < <(notes projects --prios 2>/dev/null)
-}
-
 # The one rank every caller sorts by (the judge's cap, picks, fill --dry-run): a row an open sprint holds
 # (`sprint` 0, row_sprint), its committed rows before the open version's rows it did not commit (`uncommitted`
-# 1, UNCOMMITTED, row_sprint_set), then cleanup of an AI system (cleanup_row), then the project's #prio, then, while
+# 1, UNCOMMITTED, row_sprint_set), then cleanup of an AI system (cleanup_row), then, while
 # any row's repo gates on an idle pool (`pool_idle`, load_pool_idle), the head of the feed rank (frank's
 # millions: due bucket, priority, #requested, notes-cli Rank::key) and then such a row (pool_term, a
 # tie-breaker below every human rank and above age; with no pool idle it orders nothing), then the row's
@@ -288,7 +275,7 @@ def day0($s): "\($s)T00:00:00Z" | fromdateiso8601;
 def offset($x; $today): if $x == null then null
   else (try (((day0("\($today[0:4])-\($x.m)-\($x.d)") - day0($today)) / 86400) | floor) catch null) end;
 def tagdate($b; $tag): [$b | capture("(^|\\s)#" + $tag + "(?<m>[01][0-9])(?<d>[0-3][0-9])(\\s|$)")] | first;
-def rank_fields($today; $pprio):
+def rank_fields($today):
   ((.text // "") | split("<!--")[0] // "") as $b
   | (offset(tagdate($b; "due"); $today) | if . != null and . < -180 then . + 365 else . end) as $own
   | (if .release_due == null then null
@@ -296,13 +283,11 @@ def rank_fields($today; $pprio):
   | ([$own, $rd] | map(select(. != null)) | min) as $dd
   | (if $rd != null and ($own == null or $rd < $own) then "release " else "" end) as $rel
   | (offset(tagdate($b; "c"); $today) | if . != null and . > 0 then . - 365 else . end) as $cd
-  | . + {pprio: ({"focus": 0, "high": 1, "low": 3}[$pprio] // 2),
-         due: (if $dd == null then 3 elif $dd < 0 then 0 elif $dd == 0 then 1 elif $dd <= 3 then 2 else 3 end),
+  | . + {due: (if $dd == null then 3 elif $dd < 0 then 0 elif $dd == 0 then 1 elif $dd <= 3 then 2 else 3 end),
          due_in: $dd, age: (if $cd == null then 0 else -$cd end),
          req: (if $b | test("(^|\\s)#requested(\\s|$)") then 0 else 1 end)}
   | . + {why: ([(if .sprint != 0 then empty elif (.uncommitted // 0) == 1 then "open sprint, uncommitted" else "open sprint" end),
                 (if .cleanup == 0 then "cleanup" else empty end),
-                (if $pprio != "" then "\($pprio) project" else empty end),
                 (if (.pool_idle // "") != "" then "idle pool \(.pool_idle)" else empty end),
                 (if .due_in == null or .due_in > 3 then empty elif .due_in < 0 then "\($rel)overdue \(-.due_in)d"
                  elif .due_in == 0 then "\($rel)due today" else "\($rel)due in \(.due_in)d" end),
@@ -317,7 +302,7 @@ def rank_fields($today; $pprio):
 def area_key: if (.area // "") == "" or .worker == "tier3" then "row:\(.key)" else .area end;
 def pool_term($pi): if $pi then [((.frank // 1e15) / 1000000 | floor), (if (.pool_idle // "") != "" then 0 else 1 end)] else [] end;
 def rank: any(.[]; (.pool_idle // "") != "") as $pi
-  | sort_by((.sprint // 1), (.uncommitted // 0), (.cleanup // 1), (.pprio // 2), pool_term($pi), (.frank // 1e15), (.wrank // 0), (.krank // 1), ({"prod": 0, "beta": 1}[.stage] // 2), (.t3rank // []));
+  | sort_by((.sprint // 1), (.uncommitted // 0), (.cleanup // 1), pool_term($pi), (.frank // 1e15), (.wrank // 0), (.krank // 1), ({"prod": 0, "beta": 1}[.stage] // 2), (.t3rank // []));
 '
 
 # repo_dir <project> -> the checkout its code lives in; nothing for a notes-only project.
@@ -774,8 +759,8 @@ pool_idle_of() {
 }
 
 # load_focus -- FOCUS_PROJECTS: the projects the human put on `#prio/focus` (`notes projects --prio <p> --set focus`),
-# space-separated, read once per process. Only what stats and headroom report: a focus is a rank (RANK_JQ
-# and agent-queue's ORDER put its work first), and nothing is held or skipped for it.
+# space-separated, read once per process. Only what stats and headroom report: a focus turns a project's
+# release windows into sprints (window::runs_sprints), it ranks nothing, and nothing is held or skipped for it.
 load_focus() {
   [ -n "${FOCUS_PROJECTS+x}" ] && return 0
   FOCUS_PROJECTS=$(notes projects --prios 2>/dev/null | awk -F '\t' '$2 == "focus" { printf "%s%s", (n++ ? " " : ""), $1 }')
@@ -1289,12 +1274,7 @@ share_state() {
   [ -z "${SHARE_STATE:-}" ] || return 0
   SHARE_STATE='{"full":false,"fleet":0,"total":0,"projects":[]}'
   [ "${DISPATCH_FLEET_SHARE:-0}" -gt 0 ] 2>/dev/null || return 0
-  local s prios ps=${DISPATCH_FLEET_PROJECTS-}
-  if [ -z "${DISPATCH_FLEET_PROJECTS+x}" ]; then
-    # A failed read is `unread`, which headroom names, so the cap is never off without a word.
-    prios=$(notes projects --prios 2>/dev/null) || { SHARE_STATE='{"full":false,"fleet":0,"total":0,"projects":[],"unread":true}'; return 0; }
-    ps=$(awk -F '\t' '$2 == "low" { printf "%s%s", (n++ ? " " : ""), $1 }' <<<"$prios")
-  fi
+  local s ps=$DISPATCH_FLEET_PROJECTS
   [ -n "${ps// }" ] || return 0
   s=$({ agent-queue list --json --state done --since "$(( (DISPATCH_FLEET_SHARE_H + 23) / 24 ))d" &&
     agent-queue list --json --state active; } 2>/dev/null |
@@ -1907,7 +1887,7 @@ judged_keys() {
 # that can hold one (floor_project); ONLY_PROJECT reads that one project alone (trainee_rows' split). A project off_project names is no candidate: it says why under OFF_SAY (the `candidates`
 # command, and a pass's one judge read, so not once per read), and suggest lists its agent rows with that reason.
 cmd_candidates() {
-  local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today nobody active poff recs
+  local judged table prof name sheet _v stage repo lane key text rank worker tier line today nobody active poff recs
   local x planned dj dsig plan off kind board gates gwait pidle fgates prio priority cleanup sprint uncommitted rsize
   today=${DISPATCH_TODAY:-$(date +%F)}
   judged=$(judged_keys)
@@ -1921,7 +1901,6 @@ cmd_candidates() {
   fi
   [ -z "${GATES_FAILED:-}" ] || [ "${SUGGEST:-0}" = 1 ] || return 0
   load_kinds
-  load_prios
   for prof in $DISPATCH_PROFILES; do
     while IFS=$'\t' read -r name sheet _v _; do
       [ -n "$name" ] || continue
@@ -1931,7 +1910,6 @@ cmd_candidates() {
       dispatchable "$stage" || continue
       poff=$(off_project "$name")
       [ -z "$poff" ] || [ "${SUGGEST:-0}" = 1 ] || { [ "${OFF_SAY:-0}" != 1 ] || say "$poff"; continue; }
-      pprio=${PRIO_BY[$name]:-}
       repo=$(repo_dir "$name")
       [ -n "$repo" ] && [ -d "$repo" ] || continue
       pidle=$(pool_idle_of "$name")
@@ -1983,7 +1961,7 @@ cmd_candidates() {
           recs+="${RNK["$name"$'\t'"$lane"$'\t'"$key"]:-null}$ROW_US$gates$ROW_US$gwait$ROW_US${RLD["$name"$'\t'"$lane"$'\t'"$key"]:-}$ROW_RS"
         done <<<"$board"
         [ -z "$recs" ] || jq -Rsc --arg profile "$prof" --arg project "$name" --arg stage "$stage" \
-          --arg lane "$lane" --arg repo "$repo" --arg today "$today" --arg pprio "$pprio" \
+          --arg lane "$lane" --arg repo "$repo" --arg today "$today" \
           --argjson active "$active" --arg pidle "$pidle" "$RANK_JQ$ROW_RECS_JQ"'rows_recs(
             .[0] as $key | .[1] as $text | (.[2] | fromjson) as $details | .[3] as $dsig
             | (.[4] | fromjson) as $planned | (.[5] | fromjson) as $plan | .[6] as $line | (.[7] | fromjson) as $prio
@@ -2000,7 +1978,7 @@ cmd_candidates() {
               + (if $rdue != "" then {release_due: $rdue} else {} end)
               + (if $pidle != "" then {pool_idle: $pidle} else {} end)
               + (if $gwait != "" then {gate_wait: $gwait} elif $gates != "" and $lane == "agent" then {gated: true, gates: $gates} else {} end)
-              + (if $nobody != "" then {nobody: $nobody, active: $active} else {} end) | rank_fields($today; $pprio))' <<<"$recs"
+              + (if $nobody != "" then {nobody: $nobody, active: $active} else {} end) | rank_fields($today))' <<<"$recs"
       done
     done < <(notes --profile "$prof" projects 2>/dev/null)
   done
@@ -5646,7 +5624,7 @@ trainee_rows() {
           or (($d | usable($prules)) and ($d | holds($c))) == false)))
       | . + {area: row_area($d; $games), brief: ($briefs[[.project, .lane, .key] | tostring] // "")}
       | select(.area == "" or .worker == "tier3" or ("\(.project | ascii_downcase)/\(.area)" as $a | $busy | index($a) | not))
-      | if .pprio == null then rank_fields($today; .project_prio // "") else . end)
+      | if .why == null then rank_fields($today) else . end)
     | unique_by([.project, .key]) | rank | .[]' "$d/t3" "$d/open"
   rm -rf "$d"
 }
@@ -5946,7 +5924,7 @@ start_items() {
   return 0
 }
 
-# next_items -> the queued items a pass may try, in agent-queue's order (red, urgent, project rank, priority, then the class mix and age),
+# next_items -> the queued items a pass may try, in agent-queue's order (red, urgent, sprint, priority, then the class mix and age),
 # one JSON object a line, whatever harness each runs on: start_item routes it to a source with room.
 # With --points each carries its board row's points, which a trainee reads (item_points): every caller
 # that feeds a start passes it, and a count does not, so it pays no board read.
@@ -7141,8 +7119,8 @@ cmd_headroom() {
         "  load:      \(.load // "?")\(if .cpu_busy != null then " (1-min load \(.load1), \(.cpu_busy) cores busy; the pace reads the lower)" else "" end)\(if .starting > 0 then " plus \(.load_pending) for \(.starting) started in the last '"$DISPATCH_START_LOAD_MIN"' min" else "" end) of a \(.load_cap) cap, \(.load_room // "?") room",
         "  run floor: \(.floor_live) of \(.run_floor) run sessions live; under it the weekly pace of an account refused for its pace alone does not hold a start (committed burn, the reserve and the 5h window still do)",
         "  red floor: \(.red_live) of \(if .red_floor > 0 then .red_floor + .red_watch else 0 end) red sessions live (\(.red_floor), plus \(.red_watch) for tripped watches); under it the pace target, weekly pace, load and fleet-assess do not hold a red",
-        (if .fleet_share.cap > 0 and .fleet_share.unread == true then "  fleet share: off, as `notes projects --prios` failed and no #prio/low project could be read" elif .fleet_share.cap > 0 and (.fleet_share.projects | length) > 0 then "  fleet share: \(.fleet_share.fleet) of \(.fleet_share.total) items started in '"$DISPATCH_FLEET_SHARE_H"'h are fleet work (\(.fleet_share.projects | join(", "))), \(.fleet_share.pct // 0)% against a \(.fleet_share.cap)% cap\(if .fleet_share.full then ": full, so only reds and work the human asked for start their items until nothing else can" else "" end)" else empty end),
-        (if (.focus | length) > 0 then "  focus:     \(.focus | join(" ")) first; \(.focus_runnable) runnable item(s) of it start ahead of the other projects (reds and urgent items still go first)" else empty end)'
+        (if .fleet_share.cap > 0 and (.fleet_share.projects | length) > 0 then "  fleet share: \(.fleet_share.fleet) of \(.fleet_share.total) items started in '"$DISPATCH_FLEET_SHARE_H"'h are fleet work (\(.fleet_share.projects | join(", "))), \(.fleet_share.pct // 0)% against a \(.fleet_share.cap)% cap\(if .fleet_share.full then ": full, so only reds and work the human asked for start their items until nothing else can" else "" end)" else empty end),
+        (if (.focus | length) > 0 then "  focus:     \(.focus | join(" ")), whose release windows run as sprints; \(.focus_runnable) runnable item(s) of it" else empty end)'
     fi
 }
 
@@ -8720,7 +8698,7 @@ cmd_fill() {
 # A row with a gate not yet clear is left out, as a #plan row is, and one whose gates all cleared is
 # `gated` (cmd_candidates); none when the gates could not be read (GATES_FAILED). ONLY_PROJECT: that project alone.
 t3_rows() {
-  local judged="$1" prof name sheet _v stage repo key text body t line n x planned dj dsig board gates pidle pprio recs
+  local judged="$1" prof name sheet _v stage repo key text body t line n x planned dj dsig board gates pidle recs
   local prio priority cleanup sprint uncommitted rsize
   held_load "$judged"
   if ! declare -p DET >/dev/null 2>&1; then
@@ -8729,7 +8707,6 @@ t3_rows() {
   fi
   [ -z "${GATES_FAILED:-}" ] || return 0
   load_kinds
-  load_prios
   for prof in $DISPATCH_PROFILES; do
     while IFS=$'\t' read -r name sheet _v _; do
       [ -n "$name" ] || continue
@@ -8741,7 +8718,6 @@ t3_rows() {
       repo=$(repo_dir "$name")
       [ -n "$repo" ] && [ -d "$repo" ] || continue
       pidle=$(pool_idle_of "$name")
-      pprio=${PRIO_BY[$name]:-}
       n=0
       board=$(rows "$prof" "$name" agent)
       row_kinds_load <<<"$board"
@@ -8777,7 +8753,7 @@ t3_rows() {
         recs+="$n$ROW_US$rsize$ROW_US$cleanup$ROW_US${RNK["$name"$'\t'agent$'\t'"$key"]:-null}$ROW_US$sprint$ROW_US$uncommitted$ROW_US$gates$ROW_RS"
       done <<<"$board"
       [ -z "$recs" ] || jq -Rsc --arg project "$name" --arg stage "$stage" --arg repo "$repo" \
-        --arg obs "$DISPATCH_T3_OBSERVER" --arg profile "$prof" --arg pprio "$pprio" --arg pidle "$pidle" \
+        --arg obs "$DISPATCH_T3_OBSERVER" --arg profile "$prof" --arg pidle "$pidle" \
         "$ROW_RECS_JQ"'rows_recs(
           .[0] as $key | .[1] as $text | (.[2] | fromjson) as $details | .[3] as $dsig | (.[4] | fromjson) as $planned
           | .[5] as $body | .[6] as $line | (.[7] | fromjson) as $prio | .[8] as $priority | (.[9] | fromjson) as $order
@@ -8785,7 +8761,7 @@ t3_rows() {
           | (.[14] | fromjson) as $uncommitted | .[15] as $gates
           | {profile: $profile, project: $project, stage: $stage, lane: "agent", key: $key,
             text: $text, repo: $repo, prio: $prio, priority: $priority, tier: 3, line: $line, order: $order, wrank: 0, frank: $frank, row_size: $rsize,
-            cleanup: $cleanup, sprint: $sprint, uncommitted: $uncommitted, project_prio: $pprio,
+            cleanup: $cleanup, sprint: $sprint, uncommitted: $uncommitted,
             details: $details, dsig: $dsig, planned: ($planned == 1),
             rank: (if ($body | test("(^| )#requested( |$)")) then -1 elif ($body | test($obs; "i")) then 0 else 1 end)}
             + (if $pidle != "" then {pool_idle: $pidle} else {} end)
@@ -8812,14 +8788,14 @@ t3_ready() {
         | . + {area: row_area($d; $games)} end' <<<"$1"
 }
 
-# t3_picks <rows> -> the t3_ready rows a session may take, in RANK_JQ order with the project's #prio
-# (t3_rows' project_prio), as picks ranks the day rows they merge with (cleanup first). Each (worker
+# t3_picks <rows> -> the t3_ready rows a session may take, in RANK_JQ order, as picks ranks the day
+# rows they merge with (cleanup first). Each (worker
 # tier3) merges behind the red-fix gate (policy.md "Tier"), which item_brief names and agent-land
 # enforces. No area holds a tier-3 row: the one-an-area cap had no number on record (plan
 # vast-soaring-prism P4, ar-4446).
 t3_picks() {
   t3_ready "$1" | jq -sc --arg today "${DISPATCH_TODAY:-$(date +%F)}" "$RANK_JQ"'
-    map(. + {worker: "tier3", t3rank: [.rank, .prio, (0 - .order)]} | rank_fields($today; .project_prio // ""))
+    map(. + {worker: "tier3", t3rank: [.rank, .prio, (0 - .order)]} | rank_fields($today))
     | rank | .[]'
 }
 
