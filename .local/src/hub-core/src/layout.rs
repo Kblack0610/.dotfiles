@@ -34,7 +34,7 @@ pub const TABS: [Tab; 12] = [
         group: "Today",
         title: "Home",
         question: "What needs me, and is everything OK?",
-        sections: &["needs", "proposals", "running", "spend", "vitals", "health"],
+        sections: &["needs", "proposals", "spend", "vitals", "health"],
         inner: &[],
     },
     // The daily note behind its nav (the places, Daily first, then the note's parts); the outbox
@@ -510,6 +510,9 @@ pub const MOVED: &[(&str, &str, &str, &str)] = &[
     // better-release-data-need-polished-dragonfly.md).
     ("releases", "builds", "infra", "runs"),
     ("releases", "tests", "infra", "tests"),
+    // Home's Running list: the Queue tab's table holds every running item, with its session
+    // (2026-11-23, p1 of waht-noise-would-you-jolly-cosmos.md).
+    ("home", "running", "queue", "table"),
 ];
 
 /// A moved name that opens its new table under a state chip, on both surfaces: (tab, old
@@ -955,6 +958,11 @@ mod tests {
             );
         }
         assert_eq!(moved("infra", "machines"), None, "machines stayed");
+        assert_eq!(
+            moved("home", "running").map(|(t, s)| (t.id, s)),
+            Some(("queue", "table")),
+            "Home's Running list is the Queue table"
+        );
         for old in ["governor", "cloud"] {
             assert_eq!(
                 moved("infra", old).map(|(t, s)| (t.id, s)),

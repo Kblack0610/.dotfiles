@@ -754,7 +754,7 @@ fn overview(
     out.push(Line::raw(""));
     out.push(sec_head("IN FLIGHT", &projects::counts(c), "", p, w));
     if !c.running.is_empty() {
-        // Home's Running table scoped to the project, so a phase reads the same in both.
+        // The Running table scoped to the project, so a phase reads the same in both.
         let rows: Vec<&Running> = c.running.iter().collect();
         let t = crate::hometab::running_table(&rows, p, hub_core::jobs::now(), None, true);
         out.extend(t.fit_wrapped(w, p.dim()).0);
@@ -1639,7 +1639,7 @@ pub(crate) mod tests {
             t.contains("IN FLIGHT  0 running, 0 waiting, 0 queued; 0 rows #requested, 0 in the inbox; Sprint 12/71 | Today 75 | Backlog 12 | Epics 2 | Epic backlog 5"),
             "{t}"
         );
-        // In flight is Home's Running table scoped to the project: the phase as `Phases::shown`
+        // In flight is the Running table scoped to the project: the phase as `Phases::shown`
         // words it, the next phase its own column, and no PROJECT column or sentence.
         let mut busy = pr.cards[0].clone();
         busy.running = vec![hub_core::home::Running {

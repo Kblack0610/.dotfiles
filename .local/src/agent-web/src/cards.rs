@@ -31,7 +31,7 @@ fn got<T: ?Sized, P: std::ops::Deref<Target = T>>(r: &Result<P, String>) -> card
 const PAGE_SKIPS: &[&str] = &["red"];
 
 pub async fn get(State(s): State<Shared>) -> Json<Vec<Card>> {
-    Json(page(read(&s).await))
+    Json(page(read(&s).await).into_iter().map(Card::drawn).collect())
 }
 
 /// The cards Home's page draws: every card but `PAGE_SKIPS`, in order.
