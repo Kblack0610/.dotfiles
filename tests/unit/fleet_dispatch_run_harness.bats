@@ -609,23 +609,23 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   assert_output --regexp 'started queue item t-two on gotrain \((glm|kimi)\), a trainee run .*, on the trainee floor'
 }
 
-# 2026-11-19: "trainee floor: shut, infra: k3s domain red" on every pass while the gateway, the trainee's
+# 2026-11-19: "trainee floor: shut, infra: k3s nodes red" on every pass while the gateway, the trainee's
 # only cluster dependency, answered (ar-3699).
 @test "trainee floor: a red k3s domain does not shut it while the gateway answers; a down gateway does; a plain start goes on, cluster work waits" {
   trainee_ready
   srcs go:ok:0.1 codex:reserve:5
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0
   fleet_state 8
-  stub fleet-shepherd 'echo "infra: k3s domain red"'
+  stub fleet-shepherd 'echo "infra: k3s nodes red"'
   agent-queue add --project game --slug t-one --priority low --tags tier1 "Fix the menu title #pts/1" >/dev/null
   # Negative control first: the gateway is not ready, so the floor is shut on both, and says so.
   stub curl 'echo "{\"status\":\"unhealthy\",\"db\":\"Not connected\"}"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'trainee floor: shut, infra: k3s domain red, and the gateway is not ready (https://gw.test/health/readiness: unhealthy, Not connected)'
+  assert_output --partial 'trainee floor: shut, infra: k3s nodes red, and the gateway is not ready (https://gw.test/health/readiness: unhealthy, Not connected)'
   assert_not_called 'opencode run'
   stub curl 'exit 7'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'trainee floor: shut, infra: k3s domain red, and the gateway is not ready (https://gw.test/health/readiness: no answer)'
+  assert_output --partial 'trainee floor: shut, infra: k3s nodes red, and the gateway is not ready (https://gw.test/health/readiness: no answer)'
   # The gateway answers: the trainee starts; with no diff waiting, the batch-review line stays quiet.
   gateway_up
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -640,8 +640,8 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   agent-queue add --project home-config --slug hc --priority high "fix the cluster janitor" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'queue item fix-menu has no source with room it may run on'
-  assert_output --partial 'cluster: hc (infra: k3s domain red, and this is cluster work (DISPATCH_CLUSTER_PROJECTS))'
-  refute_output --partial 'fix-menu (infra: k3s domain red'
+  assert_output --partial 'cluster: hc (infra: k3s nodes red, and this is cluster work (DISPATCH_CLUSTER_PROJECTS))'
+  refute_output --partial 'fix-menu (infra: k3s nodes red'
   refute_output --partial 'started queue item hc'
   [ -n "$(qitem queued hc)" ] || fail "the home-config item left the queue on a red cluster"
 }

@@ -51,7 +51,7 @@
 #                          was given (.handed) and neither moved nor skipped. A line that is not
 #                          due now is refused (exit 2) naming the nearest due lines, so a
 #                          shortened line never lands in .skipped; copy it as check printed it
-#   fleet-shepherd infra   print what is wrong with the cluster right now, live: red k3s domain,
+#   fleet-shepherd infra   print what is wrong with the cluster right now, live: a red k3s node or other non-watch component,
 #                          or Prometheus not answering; exit 0 if anything, 1 if not. Read by
 #                          fleet-dispatch's gate
 #   fleet-shepherd sweep-cancel '<starved pool:<p> @<episode>>'
@@ -612,17 +612,25 @@ blocked_due() {
     "$BLOCKED.prev" "$BLOCKED"
 }
 
-# infra_now -> a line when the cluster is red or cannot be read. Unreadable counts: Prometheus
-# ran on the node that filled, so silence here is what the outage looked like.
+# infra_now -> a line when the cluster itself is red or cannot be read: any k3s component but
+# `watches` above 0 (`nodes` is 1 for a NotReady node). Unreadable counts: Prometheus ran on the
+# node that filled, so silence here is what the outage looked like. The watches component is left
+# out: a watch alone (trivy criticals, a failing cluster-janitor) turned the domain red and held
+# cluster work while every node answered (ar-1608), and a high or urgent trip reaches the shepherd
+# as its own `watch:` line (infra_sample).
 infra_now() {
-  local json status
+  local json red
   # shellcheck source=/dev/null
   . "${PROM_LIB:-$HOME/.local/lib/prom.sh}" 2>/dev/null || { echo "infra: no Prometheus reader"; return 0; }
-  json="$(prom_q 'cc:domain_status{domain="k3s"}')" || { echo "infra: Prometheus not answering"; return 0; }
-  status="$(jq -r '.data.result[0].value[1] // "none"' <<< "$json")"
-  case "${status%%.*}" in
-    2) echo "infra: k3s domain red" ;;
-    none) echo "infra: no k3s status series" ;;
+  json="$(prom_q 'cc:component_status{domain="k3s"}')" || { echo "infra: Prometheus not answering"; return 0; }
+  red="$(jq -r '[.data.result[] | select(.metric.component != "watches")]
+    | if length == 0 then "none"
+      else map(select((.value[1] | tonumber? // 1) > 0) | .metric.component // "unnamed") | unique | join(", ") end' <<< "$json")" \
+    || { echo "infra: Prometheus answer unreadable"; return 0; }
+  case "$red" in
+    '') ;;
+    none) echo "infra: no k3s component series" ;;
+    *) echo "infra: k3s $red red" ;;
   esac
 }
 

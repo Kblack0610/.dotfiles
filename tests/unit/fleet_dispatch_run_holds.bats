@@ -10,10 +10,10 @@ load 'fleet_dispatch/common'
 @test "a red or unreadable k3s domain holds only cluster work: a home-config item waits and says why, a game item starts" {
   project game beta "$SANDBOX/repos/game"
   project home-config beta "$SANDBOX/repos/home-config"
-  stub fleet-shepherd 'echo "infra: k3s domain red"'
+  stub fleet-shepherd 'echo "infra: k3s nodes red"'
   agent-queue add --project home-config --slug fix-hc --priority high "fix the cluster janitor" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'cluster: fix-hc (infra: k3s domain red, and this is cluster work (DISPATCH_CLUSTER_PROJECTS))'
+  assert_output --partial 'cluster: fix-hc (infra: k3s nodes red, and this is cluster work (DISPATCH_CLUSTER_PROJECTS))'
   assert_not_called 'wt new'
   agent-queue add --project game --slug fix-game --priority low "fix the game" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
