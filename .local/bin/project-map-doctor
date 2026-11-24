@@ -500,10 +500,13 @@ elif declare -F lab_roots >/dev/null 2>&1; then
       [ -f "$d/summary.md" ] || continue
       name="$(basename "$d")"
       n=$((n + 1))
-      if declare -F lab_head_tag >/dev/null 2>&1; then
-        stage="$(lab_head_tag "$(lab_front_page "$d")" $STAGE_VOCAB)"
-      else
+      if ! declare -F lab_head_tag >/dev/null 2>&1; then
         skip "lab-feed.sh unavailable; cannot read \"$name\" stage tag"
+        unchecked=$((unchecked + 1)); continue
+      elif page="$(lab_front_page "$d" 2>/dev/null)"; then
+        stage="$(lab_head_tag "$page" $STAGE_VOCAB)"
+      else
+        skip "notes projects --front-page printed no path; cannot read \"$name\" stage tag"
         unchecked=$((unchecked + 1)); continue
       fi
 
@@ -555,8 +558,9 @@ if [ -n "$STAGE_VOCAB" ] && declare -F lab_roots >/dev/null 2>&1 && declare -F l
       [ -f "$root/$name/summary.md" ] && { labdir="$root/$name"; break; }
     done < <(lab_roots)
     [ -n "$labdir" ] || continue
+    page="$(lab_front_page "$labdir" 2>/dev/null)" || { skip "notes projects --front-page printed no path; cannot check \"$name\" game status"; continue; }
     # shellcheck disable=SC2086 # the ladder is a word list on purpose
-    stage="$(lab_head_tag "$(lab_front_page "$labdir")" $STAGE_VOCAB)"
+    stage="$(lab_head_tag "$page" $STAGE_VOCAB)"
     ref="origin/${branch:-main}"
     statuses="$(git -C "$repo" ls-tree -r --name-only "$ref" -- "$path" 2>/dev/null \
       | grep '/Resources/Games/[^/]*\.json$' \

@@ -220,8 +220,10 @@ logline() { mkdir -p "$DIR"; printf -- '- %s %s\n' "$(date '+%Y-%m-%d %H:%M')" "
 [ "${BASH_SOURCE[0]}" = "$0" ] && [ "${1:-}" = item-tier ] || LAB_STAGES="${LAB_STAGES:-$(notes projects --stages 2>/dev/null || true)}"
 stage_of() {
   [ -n "$LAB_STAGES" ] || { say "notes projects --stages printed nothing: no project stage can be read"; return 1; }
+  local page
+  page=$(lab_front_page "$(dirname "$1")") || return 1
   # shellcheck disable=SC2086 # the ladder is a word list on purpose
-  lab_head_tag "$(lab_front_page "$(dirname "$1")")" $LAB_STAGES
+  lab_head_tag "$page" $LAB_STAGES
 }
 
 # dispatchable <stage>: agents build from dev on; a draft is still a concept, and no stage is

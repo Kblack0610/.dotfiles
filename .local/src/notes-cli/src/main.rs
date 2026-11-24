@@ -430,6 +430,11 @@ enum Cmd {
         /// the vocabulary from here instead of keeping a copy
         #[arg(long)]
         stages: bool,
+        /// Print the file the project in DIR declares its stage and priority on: its working
+        /// sheet, else, for a game its parent versions, its README, else its summary.md. The
+        /// shell's head-tag readers (lab-feed.sh `lab_front_page`) take the path from here
+        #[arg(long, value_name = "DIR")]
+        front_page: Option<std::path::PathBuf>,
         /// Print a project's index group; with --set, declare it. Unset means the
         /// project's own profile (bnb, personal); `tooling` is the tooling lane.
         #[arg(long, value_name = "NAME")]
@@ -1965,6 +1970,7 @@ fn main() -> Result<()> {
             version,
             stage,
             stages,
+            front_page,
             group,
             prio,
             prios,
@@ -2013,8 +2019,7 @@ fn main() -> Result<()> {
             }
             // Handled before the match below because both take a VALUE (`--set`), which the
             // name-keyed tuple has no room for.
-            if stages {
-                projects::stages();
+            if projects::ladder_read(stages, front_page.as_deref())? {
                 std::process::exit(0);
             }
             if let Some(n) = stage {

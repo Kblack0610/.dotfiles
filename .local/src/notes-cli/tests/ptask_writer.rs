@@ -1662,6 +1662,29 @@ fn a_game_with_no_version_of_its_own_is_on_its_parents_version_and_window() {
 }
 
 #[test]
+fn a_game_its_parent_versions_declares_itself_on_its_readme() {
+    let h = Home::new("front-page");
+    // notes prints the canonical path, so compare against it.
+    let game = fs::canonicalize(with_game(&h, "")).unwrap();
+    let front = |h: &Home| {
+        let out = h.run(&["projects", "--front-page", game.to_str().unwrap()]);
+        ok(&out);
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    // The README has no `Version:` line, and its stage tag is still the one the shell reads.
+    assert_eq!(front(&h), game.join("README.md").display().to_string());
+    // NEGATIVE CONTROL: with no version parent in the registry, the same README is no sheet,
+    // and the project declares itself on its summary.
+    fs::write(
+        h.0.join("map.json"),
+        r#"{"trackers": {"demo": {"type": "game", "code": "dm", "tagGlob": "v*"},
+            "game": {"type": "game", "code": "gm"}}}"#,
+    )
+    .unwrap();
+    assert_eq!(front(&h), game.join("summary.md").display().to_string());
+}
+
+#[test]
 fn a_game_that_keeps_its_own_version_stays_out_of_its_parents_window() {
     // NEGATIVE CONTROL for the test above: a game sheet still carrying a `Version:` line is
     // its own number until it is migrated, so nothing reads it twice.
