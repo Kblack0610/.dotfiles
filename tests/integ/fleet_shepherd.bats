@@ -2650,6 +2650,119 @@ STUB
   [ ! -e "$HOME/gh.calls" ]
 }
 
+# ghost_setup: the exporter lists runs 1 (a ghost: queued 48h, no job), 2 (queued 1h by GitHub's clock)
+# and 3 (queued 48h, one job) as stuck, run 1 under two job names. gh answers a run and its jobs from
+# those facts and records every call. STUB_CANCEL_REFUSED refuses /cancel with HTTP 409 (not
+# cancellable), STUB_CANCEL_DENIED with 403 and refuses force-cancel too, and STUB_GH_DOWN fails every
+# run read.
+ghost_setup() {
+  cat > "$PROM_LIB" <<'STUB'
+prom_q() {
+  [ -z "${STUB_PROM_FAIL:-}" ] || return 1
+  echo "$1" >> "$HOME/prom.calls"
+  local u='https://github.com/o/r/actions/runs/'
+  printf '{"status":"success","data":{"result":[%s]}}' \
+    "{\"metric\":{\"url\":\"${u}1\",\"job_name\":\"a\"}},{\"metric\":{\"url\":\"${u}1\",\"job_name\":\"b\"}},{\"metric\":{\"url\":\"${u}2\"}},{\"metric\":{\"url\":\"${u}3\"}}"
+}
+STUB
+  gh_script 'echo "$*" >> "$HOME/gh.calls"
+old="$(date -u -d "48 hours ago" +%FT%TZ)" new="$(date -u -d "1 hour ago" +%FT%TZ)"
+[ -z "${STUB_GH_DOWN:-}" ] || { echo "gh: HTTP 502" >&2; exit 1; }
+case "$*" in
+  "api repos/o/r/actions/runs/1 "*|"api repos/o/r/actions/runs/3 "*) printf "queued\t%s\n" "$old" ;;
+  "api repos/o/r/actions/runs/2 "*) printf "queued\t%s\n" "$new" ;;
+  "api repos/o/r/actions/runs/1/jobs "*|"api repos/o/r/actions/runs/2/jobs "*) echo 0 ;;
+  "api repos/o/r/actions/runs/3/jobs "*) echo 1 ;;
+  *"/cancel") [ -z "${STUB_CANCEL_DENIED:-}" ] || { echo "gh: Forbidden (HTTP 403)" >&2; exit 1; }
+              [ -z "${STUB_CANCEL_REFUSED:-}" ] || { echo "gh: Cannot cancel a workflow run that is completed. (HTTP 409)" >&2; exit 1; } ;;
+  *"/force-cancel") [ -z "${STUB_CANCEL_DENIED:-}" ] ;;
+esac'
+}
+
+@test "ghost-runs: a dry run logs the ghost it would cancel, keeps a young run and one with a job, and asks once" {
+  ghost_setup
+  run "$SH" ghost-runs
+  assert_success
+  assert_line 'ghost-runs: would-cancel https://github.com/o/r/actions/runs/1 (48h)'
+  # Negative controls: queued an hour, and queued two days with a job, are no ghosts.
+  assert_line 'ghost-runs: kept https://github.com/o/r/actions/runs/2 (queued 1h)'
+  assert_line 'ghost-runs: kept https://github.com/o/r/actions/runs/3 (1 jobs)'
+  assert_equal "$(grep -c . <<<"$output")" 3
+  run grep -c 'stuck="true",forge="github"} >= 86400' "$HOME/prom.calls"
+  assert_output 1
+  run grep -c 'cancel' "$HOME/gh.calls"
+  assert_output 0
+  # A verdict is no act: the rundown gets nothing from a dry run.
+  [ ! -e "$FLEET_SHEPHERD_DIR/log.md" ] || ! grep -q 'ghost run' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_equal "$(cut -f2,3 "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" | sort | tr '\t\n' ' |')" \
+    'kept https://github.com/o/r/actions/runs/2|kept https://github.com/o/r/actions/runs/3|would-cancel https://github.com/o/r/actions/runs/1|'
+  # Judged runs are not asked about again inside the age.
+  rm -f "$HOME/gh.calls"
+  run "$SH" ghost-runs
+  assert_success
+  assert_output ''
+  [ ! -e "$HOME/gh.calls" ]
+}
+
+@test "ghost-runs: with cancels on, the dry run's ghost is cancelled, force-cancelled when cancel is refused, and kept runs stay" {
+  ghost_setup
+  run "$SH" ghost-runs
+  export FLEET_SHEPHERD_GHOST_CANCEL=1
+  rm -f "$HOME/gh.calls"
+  run "$SH" ghost-runs
+  assert_success
+  assert_output 'ghost-runs: cancelled https://github.com/o/r/actions/runs/1 (48h)'
+  run grep -x 'api -X POST repos/o/r/actions/runs/1/cancel' "$HOME/gh.calls"
+  assert_success
+  run grep -c 'ghost run https://github.com/o/r/actions/runs/1: cancelled, queued 48h with no jobs' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output 1
+  run grep -c 'runs/[23]' "$HOME/gh.calls"
+  assert_output 0
+  # A run cancel refuses gets force-cancel.
+  rm -f "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" "$HOME/gh.calls"
+  STUB_CANCEL_REFUSED=1 run "$SH" ghost-runs
+  assert_line 'ghost-runs: force-cancelled https://github.com/o/r/actions/runs/1 (48h)'
+  run grep -x 'api -X POST repos/o/r/actions/runs/1/force-cancel' "$HOME/gh.calls"
+  assert_success
+  run grep -c 'runs/[23]/.*cancel' "$HOME/gh.calls"
+  assert_output 0
+}
+
+@test "ghost-runs: a cancel refused for another reason is cancel-failed, logged once and tried again; GitHub down judges nothing" {
+  ghost_setup
+  export FLEET_SHEPHERD_GHOST_CANCEL=1 STUB_CANCEL_DENIED=1
+  run "$SH" ghost-runs
+  assert_line 'ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h)'
+  # A 403 is no "not cancellable": force-cancel is for a run that ignores cancel.
+  run grep -c 'force-cancel' "$HOME/gh.calls"
+  assert_output 0
+  run "$SH" ghost-runs
+  assert_line 'ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h)'
+  run grep -c 'ghost run https://github.com/o/r/actions/runs/1: cancel-failed' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output 1
+  # GitHub not answering writes no verdict, and one line names every run asked again.
+  rm -f "$FLEET_SHEPHERD_DIR/ghost-runs.tsv"
+  STUB_GH_DOWN=1 run "$SH" ghost-runs
+  assert_success
+  assert_output 'ghost-runs: GitHub did not answer, asked again next run: https://github.com/o/r/actions/runs/1 (run unreadable) https://github.com/o/r/actions/runs/2 (run unreadable) https://github.com/o/r/actions/runs/3 (run unreadable)'
+  [ ! -s "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" ]
+  # A value that is not 0 or 1 says so and runs dry.
+  FLEET_SHEPHERD_GHOST_CANCEL=yes run "$SH" ghost-runs
+  assert_line "ghost-runs: FLEET_SHEPHERD_GHOST_CANCEL is 'yes', not 0 or 1, so this is a dry run"
+  assert_line 'ghost-runs: would-cancel https://github.com/o/r/actions/runs/1 (48h)'
+}
+
+@test "ghost-runs: an unreadable exporter judges nothing, and every shepherd run calls it" {
+  ghost_setup
+  STUB_PROM_FAIL=1 run "$SH" ghost-runs
+  assert_failure 1
+  assert_output 'ghost-runs: the runner exporter is unreadable, so no run was judged'
+  [ ! -e "$HOME/gh.calls" ]
+  doc '[]'
+  run "$SH" run
+  assert_line 'ghost-runs: would-cancel https://github.com/o/r/actions/runs/1 (48h)'
+}
+
 # --- session budgets: checkpoints, not walls ---------------------------------------------------
 # budget_setup: claude-acct answers cost from STUB_COST and records parks (STUB_PARK_BUSY refuses
 # one as mid-turn); agent-queue shows item q1 with STUB_TASK and two earlier sessions.
