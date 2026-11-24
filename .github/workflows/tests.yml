@@ -2,16 +2,16 @@ name: shell tests
 
 # The jobs, by what they can catch:
 #
-#   fast   the tmux-free tiers (unit + integ), in shards. Runs directly on the runner because
-#          it never starts a tmux server. On a pull request only the files the change can
+#   fast   the tmux-free tiers (unit + integ), in shards, in the test image with tmux and fzf off
+#          PATH (tests/Dockerfile). On a pull request only the files the change can
 #          affect plus tests/broad.txt (tests/pick.sh, the picker the Stop hook uses); on main,
 #          the schedule and a manual run, every file.
 #   ui     the tmux ui tier, inside the SAME container a developer uses locally
 #          (tests/docker.sh). Dev/CI parity is the point: if the image or the entry script
 #          breaks, this job goes red rather than only the developer's laptop.
 #          The schedule and a manual run sweep five tmux versions (the drift sweep).
-#   rust   the tracked crates (tests/rust-crates.sh). Runs on the bare runner, NOT in the test
-#          image, which has no Rust toolchain. On a pull request only the crates the change can
+#   rust   the tracked crates (tests/rust-crates.sh), in the test image, which pins the toolchain
+#          (tests/rust-toolchain). On a pull request only the crates the change can
 #          affect (tests/pick.sh rust). Testing and linting all six took 212-248 s cold, the critical
 #          path of most PRs, so the job restores main's build output (Restore cargo).
 #          Added 2026-08-09:
@@ -21,6 +21,10 @@ name: shell tests
 #          behaving like an older version.
 #   notes  the bats cases that need a built notes binary, beside the rust job, not behind it.
 #   lint   shellcheck + house rules, in the pinned image.
+#
+# Every job's tools come from one place, the tests/Dockerfile image (.github/actions/test-image
+# loads it, tests/docker.sh runs in it), so a runner needs only docker and a label. No step
+# installs a tool on the runner (~/.local/src/docs/ci.md, Runners; tests/unit/ci_gate.bats).
 #   gate   the one required check: red unless every gating job ran and passed.
 #   report the fast and ui tiers' JUnit, drawn on the run's Summary page: a row per file
 #          and every failed test, so a red reads without opening the logs.
@@ -41,6 +45,11 @@ concurrency:
   group: shell-tests-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
+# Where every job runs: `&pool` on the first job, `*pool` on the rest. The repo variable
+# LINUX_RUNNER_LIGHT is the switch (set: the home pool; deleted: GitHub-hosted, free on this public
+# repo; the shell-test-harness skill, section 5). A fork's pull request always runs hosted, so a stranger's code
+# never runs on the home LAN. fleet-agent.yml stays hosted: its 5 GB image build frees disk with sudo.
+# tests/unit/ci_gate.bats fails on a job with any other runs-on.
 jobs:
   # The PR budget is a p90 of 5 minutes (~/.local/src/docs/ci.md); each job's timeout-minutes is
   # its hang guard (fast's is 2x the budget), never a lever. tests/pick.sh lists the files, and
@@ -58,10 +67,12 @@ jobs:
   # bats time per unit shard, and the gate read p90 6.3 min (ar-3036). Twelve unit shards put
   # about 360 s of bats time in each, and four integ shards about 310 s, about 250 s of wall on
   # a slow runner. The fixed cost per shard (job start to the bats step: checkout, bats, cached
-  # debs) was 8-9 s in run 44887277102, small beside that, so splitting wins over trimming it.
-  # Hosted minutes are free on this public repo, and on 2026-11-21 the repo ran 43 jobs at once
-  # with under a minute of queue, so a shard costs neither; queue time rising is the sign to stop
-  # adding them. unit/shard.bats checks that --matrix lists every shard of each tier it sizes.
+  # debs) was 8-9 s in run 44887277102, before the shards ran in the test image, which adds its
+  # load from the Actions cache to that.
+  # On 2026-11-23 the account sat at its hosted parallel-job cap (36 running, 105 queued), so a
+  # shard costs queue time wherever it runs: the pool has fewer slots than hosted, and queue time
+  # rising is the sign to stop adding them. unit/shard.bats checks that --matrix lists every shard
+  # of each tier it sizes.
   #
   # The table and the pick are computed once, here, because two shards splitting by two tables
   # or two picks can each leave a file out. No table (no green main run within the artifacts' 14
@@ -73,7 +84,7 @@ jobs:
   # A pick that fails fails this job, and fast, which needs it, skips, so the gate reads red.
   weights:
     name: shard weights
-    runs-on: ubuntu-24.04
+    runs-on: &pool ${{ fromJSON((github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.LINUX_RUNNER_LIGHT || '"ubuntu-24.04"') }}
     timeout-minutes: 3
     permissions:
       contents: read
@@ -127,10 +138,8 @@ jobs:
   fast:
     name: fast tier (${{ matrix.tier }} ${{ matrix.shard }})
     needs: weights
-    runs-on: ubuntu-24.04
+    runs-on: *pool
     timeout-minutes: 10
-    env:
-      APT_PKGS: lua5.4 parallel inotify-tools sqlite3 stow   # the one list: install, check, cache key
     strategy:
       fail-fast: false
       matrix:
@@ -138,48 +147,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/bats-vendor
-      # The .debs are cached per runner image, so a hit installs them with dpkg and no network.
-      # A miss goes to the mirror with bounded Acquire timeouts, and the step has its own cap:
-      # a hung mirror (10 min on 2026-11-10, run 42763517511) fails here by name in 3 minutes
-      # instead of eating the job's cap before any test runs. The step takes about 10 s.
-      # The save is its own step so a red test run still keeps the debs.
-      - name: Runner image
-        id: image
-        run: echo "version=${ImageOS:?}-${ImageVersion:?}" >>"$GITHUB_OUTPUT"
-      - name: Restore apt debs
-        id: apt-debs
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/apt-debs
-          key: apt-debs-${{ steps.image.outputs.version }}-${{ env.APT_PKGS }}
-      # GNU parallel lets the unit and integ tiers run with bats --jobs (tests/Makefile FAST_PAR).
-      # inotify-tools: waybar_webcam.bats drives webcam.sh on real kernel inotify events.
-      # sqlite3: session_outcomes.bats builds a fixture opencode DB.
-      # stow: dotfiles_deploy.bats checks its links against stow itself.
-      - name: GNU parallel, inotify-tools, sqlite3, stow
-        timeout-minutes: 3
-        run: |
-          have() { dpkg -s $APT_PKGS >/dev/null 2>&1; }
-          have && exit 0
-          debs=~/apt-debs
-          if compgen -G "$debs/*.deb" >/dev/null; then
-            sudo dpkg -i "$debs"/*.deb >/dev/null && have && exit 0
-            echo "::warning::the cached apt debs did not install on this image; fetching from the mirror"
-          fi
-          net=(-o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
-          mkdir -p "$debs"
-          sudo apt-get update -qq "${net[@]}"
-          sudo apt-get install -y -qq -f "${net[@]}" -o Dir::Cache::archives="$debs" $APT_PKGS
-          sudo chown -R "$USER" "$debs"   # apt wrote it as root; the save runs as the runner user
-      - name: Save apt debs
-        if: steps.apt-debs.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ~/apt-debs
-          key: ${{ steps.apt-debs.outputs.cache-primary-key }}
-      # No tmux or fzf installed on purpose. These tiers must not need either: the contract
-      # tier drives the subjects through the fake tmux stub, and if a test ever starts
-      # reaching for a real binary, this job is where that shows up.
       # The list is taken in its own step so a failed split stops the job (bash -e) before any
       # test runs. A tier that picked nothing gets one empty shard, not a failure; every shard
       # puts its predicted seconds beside the actual ones on the Summary page, so a skewed split
@@ -198,29 +165,10 @@ jobs:
           tests/shard.sh ${{ matrix.tier }} ${{ matrix.shard }} "$RUNNER_TEMP/picked" >"$RUNNER_TEMP/files" 2>"$RUNNER_TEMP/split" ||
             { cat "$RUNNER_TEMP/split"; exit 2; }
           cat "$RUNNER_TEMP/split"
-          # Only a shard holding a file that runs `bun test` downloads bun.
-          if [ -s "$RUNNER_TEMP/files" ] && (cd tests && grep -lq 'bun test' $(<"$RUNNER_TEMP/files")); then
-            echo bun=true >>"$GITHUB_OUTPUT"
-          fi
-      # bun runs the hunk extensions' TypeScript tests (unit/hunk_*.bats), which skip without it
-      # off CI and fail without it on CI. From the release CDN, pinned by version and the zip's
-      # sha256 (bump both), so a new bun cannot turn the gate red on a repo nobody touched; the
-      # step is capped like the apt one, so a hung download fails here by name. The retries match
-      # tests/Dockerfile's curlrc: the CDN answers a 504 now and then, and 8 x 15 s fits the cap.
-      - name: bun
-        if: steps.pick.outputs.bun == 'true'
-        timeout-minutes: 3
-        env:
-          BUN_VERSION: 1.4.5
-          BUN_SHA256: 94559b3b528995a49452f9f2404cec74f2efd7d06e0a000a8cd214b02c3666eb   # bun-linux-x64.zip
-        run: |
-          zip=$RUNNER_TEMP/bun.zip
-          curl -fsSL --retry 8 --retry-delay 15 --retry-all-errors -o "$zip" \
-            "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip"
-          echo "$BUN_SHA256  $zip" | sha256sum -c -
-          unzip -q "$zip" -d "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/bun-linux-x64" >>"$GITHUB_PATH"
-          "$RUNNER_TEMP/bun-linux-x64/bun" --version
+          [ ! -s "$RUNNER_TEMP/files" ] || echo run=true >>"$GITHUB_OUTPUT"
+      # The image (tests/Dockerfile), only for a shard with files to run.
+      - if: steps.pick.outputs.run == 'true'
+        uses: ./.github/actions/test-image
       - name: Fast tier shard
         env:
           JUNIT: 1
@@ -229,7 +177,7 @@ jobs:
           files=$(<"$RUNNER_TEMP/files")
           [ -n "$files" ] || { echo "nothing picked for $TAG"; exit 0; }
           start=$SECONDS rc=0
-          make -C tests test-files FILES="$(tr '\n' ' ' <<<"$files")" || rc=$?
+          tests/docker.sh test-files FILES="$(tr '\n' ' ' <<<"$files")" || rc=$?
           actual=$(tests/shard.sh --junit ${{ matrix.tier }} tests/artifacts/junit |
             awk '!/^#/ { s += $1 } END { printf "%.0f", s }') || actual='?'
           median=$(grep -c 'weighs the median' "$RUNNER_TEMP/split" || true) note=
@@ -247,7 +195,7 @@ jobs:
 
   ui:
     name: ui tier (tmux ${{ matrix.tmux }}, container)
-    runs-on: ubuntu-24.04
+    runs-on: *pool
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -267,15 +215,18 @@ jobs:
       # nothing here exercises one (the popup is a single .tmux.conf binding; the script is
       # the testable surface). If a future test ever needs a client, the idiom is bats-core's
       # own workflow: shell: 'script -q -e -c "bash {0}"' with TERM=linux.
-      # tests/ui/session_send.bats drives the real agent-panel binary; the image has no Rust,
-      # so it is built here (the runner's glibc is older than trixie's) and read via the mount.
-      - name: Build agent-panel for the ui tier
-        run: cargo build --locked --manifest-path .local/src/agent-panel/Cargo.toml
       # The image comes from the Actions cache when nothing it is built from changed.
       - uses: ./.github/actions/test-image
         with:
           tmux: ${{ matrix.tmux }}
       - uses: ./.github/actions/bats-vendor
+      # tests/ui/session_send.bats drives the real agent-panel binary, built in the same image it
+      # runs in and read via the mount. Cold, with the network for its crates: about a minute.
+      - name: Build agent-panel for the ui tier
+        env:
+          TMUX_REF: ${{ matrix.tmux }}
+          DOCKER_NETWORK: bridge
+        run: tests/docker.sh --run cargo build --locked --manifest-path .local/src/agent-panel/Cargo.toml
       - name: UI tier in the disposable container
         env:
           TMUX_REF: ${{ matrix.tmux }}
@@ -308,7 +259,7 @@ jobs:
     name: gate
     needs: [fast, ui, rust, notes, skills, lint]
     if: ${{ always() }}
-    runs-on: ubuntu-24.04
+    runs-on: *pool
     timeout-minutes: 2
     steps:
       - name: Every gating job passed
@@ -325,7 +276,7 @@ jobs:
     name: test report
     needs: [fast, ui]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
+    runs-on: *pool
     timeout-minutes: 5
     permissions:
       contents: read
@@ -355,73 +306,66 @@ jobs:
 
   rust:
     name: rust crates (test + fmt + clippy)
-    runs-on: ubuntu-24.04
+    runs-on: *pool
     timeout-minutes: 20
     env:
       CARGO_INCREMENTAL: 0   # incremental state only helps a rebuild in place, and it bloats the cache
       RUST_JOBS: 4           # crates rust.sh gates at once, the runner's vCPU count (tests/rust.sh)
+      DOCKER_NETWORK: bridge # every step here fetches: crates, the Tilecast checker (tests/docker.sh)
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
-      # The ubuntu-24.04 image ships a stable Rust toolchain, so no third-party setup
-      # action is needed -- consistent with this repo running zero tmux plugins by policy.
-      # The version is tests/rust-toolchain, the same one rust.sh pins locally, so a runner image
-      # bump cannot change which clippy lints a run checks.
-      - name: Toolchain
-        id: toolchain
-        run: |
-          tc=$(<tests/rust-toolchain)
-          rustup toolchain install "$tc" --profile minimal -c clippy,rustfmt
-          echo "RUSTUP_TOOLCHAIN=$tc" >>"$GITHUB_ENV"
-          export RUSTUP_TOOLCHAIN=$tc
-          cargo --version && cargo clippy --version && cargo fmt --version
-          echo "rustc=$(rustc -V | tr -c 'A-Za-z0-9.\n' -)" >>"$GITHUB_OUTPUT"
-      # The registry and every crate's target/ in one cache. Cold, the Rust gate compiled six
-      # crates and their dependencies from scratch: 248 s of a 292 s job, the critical path of a
-      # full-tier run (43014231625, 312 s). Keyed on the toolchain and the lockfiles, which ARE
-      # tracked here (rust.sh passes --locked): those fix every dependency build, and a fresh
-      # checkout's mtimes make cargo rebuild this repo's own crates, so a cache never serves stale
-      # code. Only main pushes, the schedule and a manual run save it; a pull request restores
-      # main's and writes none, so a PR never queues its own copy of a GB-sized cache.
-      - name: Restore cargo
-        id: cargo
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            .local/src/*/target
-          key: cargo-target-${{ runner.os }}-${{ steps.toolchain.outputs.rustc }}-${{ hashFiles('.local/src/*/Cargo.lock') }}
-          restore-keys: cargo-target-${{ runner.os }}-${{ steps.toolchain.outputs.rustc }}-
-      # The pick line ("picked N of M crates" or "full: <why>") goes on the Summary page.
-      # Clippy runs on every run, pull requests included: a lint that only main checked reached main
-      # red first (2026-11-13 #2086, 2026-11-20 sort_by_key and WAITING_JS).
-      - name: Rust gate
+      # The pick comes first, so a run that picked no crate loads neither the image nor the cache.
+      # Its line ("picked N of M crates" or "full: <why>") goes on the Summary page.
+      - name: Pick the crates
+        id: pick
         env:
           BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
         run: |
           crates=$(tests/pick.sh rust $BASE 2>"$RUNNER_TEMP/why") || { cat "$RUNNER_TEMP/why"; exit 1; }
           tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/why"
           printf '%s\n' "$crates" >"$RUNNER_TEMP/crates"
-          [ -n "$crates" ] || { echo "no crate picked"; exit 0; }
-          make -C tests test-rust CRATES="$(tr '\n' ' ' <<<"$crates")"
+          [ -z "$crates" ] || echo run=true >>"$GITHUB_OUTPUT"
+      # The toolchain is the image's (tests/rust-toolchain), so a runner image bump cannot change
+      # which clippy lints a run checks.
+      - if: steps.pick.outputs.run == 'true'
+        uses: ./.github/actions/test-image
+      - if: steps.pick.outputs.run == 'true'
+        uses: ./.github/actions/bats-vendor
+      # The registry (tests/docker.sh's CARGO_HOME, .cargo-ci in the checkout) and every crate's
+      # target/ in one cache. Cold, the Rust gate compiled six crates and their dependencies from
+      # scratch: 248 s of a 292 s job (43014231625). Keyed on the toolchain and the lockfiles
+      # (rust.sh passes --locked), and a fresh checkout's mtimes make cargo rebuild this repo's own
+      # crates, so a cache never serves stale code. Only main saves it; a pull request restores
+      # main's. The notes job restores the same key (tests/unit/ci_gate.bats).
+      - name: Restore cargo
+        id: cargo
+        if: steps.pick.outputs.run == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .cargo-ci/registry
+            .cargo-ci/git
+            .local/src/*/target
+          key: cargo-target-${{ runner.os }}-${{ hashFiles('tests/rust-toolchain') }}-${{ hashFiles('.local/src/*/Cargo.lock') }}
+          restore-keys: cargo-target-${{ runner.os }}-${{ hashFiles('tests/rust-toolchain') }}-
+      # Clippy runs on every run, pull requests included: a lint that only main checked reached main
+      # red first (2026-11-13 #2086, 2026-11-20 sort_by_key and WAITING_JS).
+      - name: Rust gate
+        if: steps.pick.outputs.run == 'true'
+        run: tests/docker.sh test-rust CRATES="$(tr '\n' ' ' <"$RUNNER_TEMP/crates")"
       # agent-web's tabs drawn at phone width from fixtures (tests/agent-web/phone/render.mjs): a lead
       # cell off screen, a pageerror, an "undefined" cell, a fixture table that no longer matches
       # hub-core's columns, or a tab, inner tab or project inner tab taller than three screens at
       # 1400x900 fails it. It runs when agent-web is picked (hub-core and web-kit pick it, and so
-      # does the harness, tests/rust-inputs.txt). playwright-core is pinned here and installs its
-      # own chromium; the dump reuses the target the gate just built. About 30 s, plus the download.
+      # does the harness, tests/rust-inputs.txt). playwright-core and its chromium are the image's
+      # (tests/docker.sh pins the version); the dump reuses the target the gate just built. About 30 s.
       - name: Phone render harness
-        env:
-          PLAYWRIGHT_CORE: 1.62.1
-          CARGO_TARGET_DIR: ${{ github.workspace }}/.local/src/agent-web/target
         run: |
           grep -qx '.local/src/agent-web' "$RUNNER_TEMP/crates" || { echo "phone render harness: skipped, agent-web not picked" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; }
-          node_dir=~/.cache/agent-web-phone/node
-          npm install --no-save --no-package-lock --no-audit --no-fund --prefix "$node_dir" "playwright-core@$PLAYWRIGHT_CORE"
-          node "$node_dir/node_modules/playwright-core/cli.js" install chromium
-          node tests/agent-web/phone/render.mjs --out "$RUNNER_TEMP/phone"
+          tests/docker.sh --run env CARGO_TARGET_DIR=/work/.local/src/agent-web/target \
+            node tests/agent-web/phone/render.mjs --out tests/artifacts/phone
       # /widget.json's document (hub_core::widget_doc) checked against the Tilecast format's schema
       # at the commit the script pins, with that repo's own checker. Runs when hub-core is picked
       # (the script picks it, tests/rust-inputs.txt). About 10 s.
@@ -430,23 +374,25 @@ jobs:
           TILECAST_READ_TOKEN: ${{ secrets.TILECAST_READ_TOKEN }}
         run: |
           grep -qx '.local/src/hub-core' "$RUNNER_TEMP/crates" || { echo "tilecast schema: skipped, hub-core not picked" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; }
-          tests/agent-web/tilecast-schema.sh
+          tests/docker.sh --run tests/agent-web/tilecast-schema.sh
       - name: Phone screenshots
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
         with:
           name: agent-web-phone
-          path: ${{ runner.temp }}/phone
+          path: tests/artifacts/phone
           if-no-files-found: ignore
           retention-days: 7
       # Right after the gate and on a red too: a red main must not leave every later run cold.
+      # Only main pushes, the schedule and a manual run save; a pull request never queues its own
+      # copy of a GB-sized cache.
       - name: Save cargo
-        if: ${{ !cancelled() && github.event_name != 'pull_request' && steps.cargo.outputs.cache-hit != 'true' }}
+        if: ${{ !cancelled() && github.event_name != 'pull_request' && steps.cargo.outcome == 'success' && steps.cargo.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            .cargo-ci/registry
+            .cargo-ci/git
             .local/src/*/target
           key: ${{ steps.cargo.outputs.cache-primary-key }}
 
@@ -456,47 +402,45 @@ jobs:
   # (274-296 s of a 5.0-6.0 min run, 2026-11-19), and here they run beside it.
   notes:
     name: notes bats (real notes binary)
-    runs-on: ubuntu-24.04
+    runs-on: *pool
     timeout-minutes: 10
     env:
       CARGO_INCREMENTAL: 0
     steps:
       - uses: actions/checkout@v4
-      - name: Toolchain
-        id: toolchain
-        run: |
-          tc=$(<tests/rust-toolchain)
-          rustup toolchain install "$tc" --profile minimal
-          echo "RUSTUP_TOOLCHAIN=$tc" >>"$GITHUB_ENV"
-          export RUSTUP_TOOLCHAIN=$tc
-          echo "rustc=$(rustc -V | tr -c 'A-Za-z0-9.\n' -)" >>"$GITHUB_OUTPUT"
+      - uses: ./.github/actions/test-image
       # The rust job's key: main saves one cache, and this job only restores it.
       - name: Restore cargo
         uses: actions/cache/restore@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            .cargo-ci/registry
+            .cargo-ci/git
             .local/src/*/target
-          key: cargo-target-${{ runner.os }}-${{ steps.toolchain.outputs.rustc }}-${{ hashFiles('.local/src/*/Cargo.lock') }}
-          restore-keys: cargo-target-${{ runner.os }}-${{ steps.toolchain.outputs.rustc }}-
+          key: cargo-target-${{ runner.os }}-${{ hashFiles('tests/rust-toolchain') }}-${{ hashFiles('.local/src/*/Cargo.lock') }}
+          restore-keys: cargo-target-${{ runner.os }}-${{ hashFiles('tests/rust-toolchain') }}-
       - uses: ./.github/actions/bats-vendor
+      # The build and every run in the image; NOTES_BIN is the binary's path in there (/work).
+      - name: Build notes
+        env:
+          DOCKER_NETWORK: bridge
+        run: tests/docker.sh --run cargo build --locked --manifest-path .local/src/notes-cli/Cargo.toml
       - name: Board to queue join, on the real notes
-        run: |
-          cargo build --locked --manifest-path .local/src/notes-cli/Cargo.toml
-          NOTES_BIN="$PWD/.local/src/notes-cli/target/debug/notes" make -C tests test-files FILES="unit/agent_land.bats unit/fleet_dispatch_reap.bats integ/research_pick.bats" BATS_FLAGS="--print-output-on-failure --filter 'end to end'"
+        run: tests/docker.sh test-files NOTES_BIN=/work/.local/src/notes-cli/target/debug/notes FILES="unit/agent_land.bats unit/fleet_dispatch_reap.bats integ/research_pick.bats" BATS_FLAGS="--print-output-on-failure --filter 'end to end'"
       - name: Inbox triager and planner, on the real notes
-        run: NOTES_BIN="$PWD/.local/src/notes-cli/target/debug/notes" make -C tests test-files FILES="integ/inbox_triage.bats integ/inbox_plan.bats" BATS_FLAGS="--print-output-on-failure"
+        run: tests/docker.sh test-files NOTES_BIN=/work/.local/src/notes-cli/target/debug/notes FILES="integ/inbox_triage.bats integ/inbox_plan.bats" BATS_FLAGS="--print-output-on-failure"
       - name: Brief backfill, on the real notes
-        run: NOTES_BIN="$PWD/.local/src/notes-cli/target/debug/notes" make -C tests test-files FILES="integ/agent_queue_backfill.bats" BATS_FLAGS="--print-output-on-failure"
+        run: tests/docker.sh test-files NOTES_BIN=/work/.local/src/notes-cli/target/debug/notes FILES="integ/agent_queue_backfill.bats" BATS_FLAGS="--print-output-on-failure"
 
   skills:
     name: skill lint (frontmatter + house rules)
     uses: ./.github/workflows/skill-lint.yml
+    with:
+      runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.LINUX_RUNNER_LIGHT || 'ubuntu-24.04' }}
 
   lint:
     name: shellcheck + house rules
-    runs-on: ubuntu-24.04
+    runs-on: *pool
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
