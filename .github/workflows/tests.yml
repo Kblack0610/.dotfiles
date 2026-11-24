@@ -426,6 +426,8 @@ jobs:
       # at the commit the script pins, with that repo's own checker. Runs when hub-core is picked
       # (the script picks it, tests/rust-inputs.txt). About 10 s.
       - name: Tilecast schema
+        env:
+          TILECAST_READ_TOKEN: ${{ secrets.TILECAST_READ_TOKEN }}
         run: |
           grep -qx '.local/src/hub-core' "$RUNNER_TEMP/crates" || { echo "tilecast schema: skipped, hub-core not picked" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; }
           tests/agent-web/tilecast-schema.sh
