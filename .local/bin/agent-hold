@@ -6,17 +6,21 @@
 #                                   --kind: load (the default) is the fleet pacing itself, which
 #                                   the shepherd lifts once the machine reads CLEAR; resource is
 #                                   anything else (bad RAM, a maintenance pause), released by hand
-#                                   (the default for dispatch). A re-set writes the kind afresh
+#                                   (the default for dispatch). A re-set writes the kind,
+#                                   roster and reason afresh, drops the grants and keeps since
 #   agent-hold claim <resource> [--by name] [--class c] "<what>"   one session's exclusive
 #                                   use: fails while another session holds it, and the
 #                                   holder's own `check` passes (the agent machine's desktop:
 #                                   mac-desktop); --class says why it needs it (`classes`)
 #   agent-hold classes              class<TAB>rank<TAB>meaning, best first: who takes a
 #                                   claimed resource next (agent-queue desk:<class>)
-#   agent-hold grant <resource> <session>...   GO for those sessions while the hold stays: name a
-#                                   session by its Claude session id (stable), or its fleet-sessions
-#                                   target (hub/dotfiles:3, or dotfiles:3) until windows renumber; a
-#                                   bare tmux session name matches only a one-window session
+#   agent-hold grant <resource> <name>...   GO for those names while the hold stays, keeping since:
+#                                   a session by its Claude session id (stable), or its fleet-sessions
+#                                   target (hub/dotfiles:3, or dotfiles:3) until windows renumber (a
+#                                   bare tmux session name matches only a one-window session); or a
+#                                   board row, epic or plan id (hc-952, ar-4938, a plan's slug), which
+#                                   the gates read for the rows they cover. A human's narrowing of
+#                                   its own hold is a grant, never more reason text
 #   agent-hold lower <resource> <pid>...   CPUWeight=1 on each pid's tmux pane scope or
 #                                   agentctl unit, recorded on the hold; release restores it
 #   agent-hold release <resource>
@@ -36,8 +40,11 @@
 # how to use it: the fleet-comms and fleet-pace skills.
 #
 # A grant is GO as state: a staged restart lets a few sessions back in while the hold stays
-# set for the rest. It lives in the hold file, so it ends with the hold, and a new `set`
-# starts with no grants. Before this, GO was a message telling a session to run with
+# set for the rest, and a human's narrowing lets the rows of a plan they approved run. It lives in
+# the hold file, so it ends with the hold, and a new `set` starts with no grants. Before grants took
+# row, epic and plan ids, a narrowing was a re-set with more reason text: each re-set restarted
+# since, so hold-age never saw the critical lockdown age, and every reader had to interpret the
+# prose (2026-11-20 to 11-24, ar-5235). Before this, GO was a message telling a session to run with
 # UNITY_TEST_IGNORE_HOLD=1, a flag that never expired: on 2026-10-28 all 6 Unity runs live
 # under a hold carried it.
 #
@@ -174,21 +181,24 @@ cmd_set() {
   [ -n "$by" ] || by="$(default_by)"
   mkdir -p "$HOLD_ROOT" || { echo "agent-hold: cannot mkdir $HOLD_ROOT" >&2; exit 1; }
 
-  local f="$HOLD_ROOT/$resource" tmp lowered
-  # A re-set keeps what `lower` changed, so the release that ends it still restores it.
+  local f="$HOLD_ROOT/$resource" tmp lowered since=""
+  # A re-set keeps what `lower` changed, so the release that ends it still restores it, and its
+  # since: the hold has stood since it was first set, which is what hold-age ages. A claim's since
+  # is its holder's, not this hold's.
   lowered="$(field "$f" lowered)"
+  [ "$(field "$f" kind)" = claim ] || since="$(field "$f" since)"
   tmp="$(mktemp "$HOLD_ROOT/.${resource}.XXXXXX")" || exit 1
   {
     printf 'resource: %s\n' "$resource"
     printf 'kind: %s\n'     "$kind"
-    printf 'since: %s\n'    "$(now_iso)"
+    printf 'since: %s\n'    "${since:-$(now_iso)}"
     printf 'by: %s\n'       "$(oneline "$by")"
     printf 'roster: %s\n'   "$(oneline "$roster")"
     printf 'granted: \n'
     [ -n "$lowered" ] && printf 'lowered: %s\n' "$lowered"
     printf 'reason: %s\n'   "$(oneline "$reason")"
   } > "$tmp"
-  # Re-setting an existing hold replaces it (new reason, new roster, no grants),
+  # Re-setting an existing hold replaces it (new reason, new roster, no grants, the same since),
   # atomically, so a reader never sees half a file.
   mv "$tmp" "$f"
   # Low on set and on release: fleet-pace sets and lifts holds itself, so a hold is the
@@ -259,7 +269,7 @@ in_list() { case ",$2," in *",$1,"*) return 0 ;; esac; return 1; }
 cmd_grant() {
   local resource="${1:-}"; shift || true
   need_resource "$resource"
-  [ $# -gt 0 ] || { echo "agent-hold grant: name at least one session" >&2; exit 2; }
+  [ $# -gt 0 ] || { echo "agent-hold grant: name at least one session, row, epic or plan" >&2; exit 2; }
   local f="$HOLD_ROOT/$resource"
   [ -f "$f" ] || { echo "agent-hold: $resource is not held, nothing to grant" >&2; exit 1; }
   local granted name
@@ -267,7 +277,7 @@ cmd_grant() {
   for name in "$@"; do
     name="$(oneline "$name")"
     [ -n "$name" ] || continue
-    case "$name" in *,*) echo "agent-hold grant: bad session name '$name'" >&2; exit 2 ;; esac
+    case "$name" in *,*|*' '*) echo "agent-hold grant: bad name '$name' (one session, row, epic or plan id, no comma or space)" >&2; exit 2 ;; esac
     in_list "$name" "$granted" || granted="${granted:+$granted,}$name"
   done
   set_field "$f" granted "$granted" || exit 1
@@ -460,7 +470,7 @@ cmd_show() {
 
 cmd_classes() { printf '%s\n' "$DESK_CLASSES"; }
 
-usage() { sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'; }
 
 verb="${1:-}"; shift || true
 case "$verb" in
