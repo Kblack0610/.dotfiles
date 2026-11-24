@@ -20,7 +20,7 @@ pace-conf end BURN_OVER_PCT @1795586400            # end the window that starts 
 pace-conf end BURN_OVER_PCT                        # end the standing override
 ```
 
-Times are anything `date -d` reads. A key is editable only when pace.conf has a `<KEY>_MAX` line, and its value must be a number from 0 to that max: `BURN_OVER_PCT_MAX=1000` makes the burn allowance the first one, and a later key needs only its own `_MAX` line. A window lasts at most `PACE_WINDOW_MAX_DAYS` (7), so a forgotten one ends by itself, and two windows of one key may not overlap. Ending a window in force ends it now, and ending one that has not started removes it.
+Times are anything `date -d` reads. A key is editable only when pace.conf has a `<KEY>_MAX` line, and its value must be a number from 0 to that max: `BURN_OVER_PCT_MAX=1000` makes the burn allowance one and `WAKE_BUDGET_MAX=6` the bulk-wake batch another (raise it for a large restore after a reboot), and a later key needs only its own `_MAX` line. A key whose pace.conf default is a whole number takes only whole values. A window lasts at most `PACE_WINDOW_MAX_DAYS` (7), so a forgotten one ends by itself, and two windows of one key may not overlap. Ending a window in force ends it now, and ending one that has not started removes it.
 
 The overrides live in `~/.agent/pace-overrides`, machine-local state, one `key|value|from|until|by` row each (epoch seconds; an empty `until` is a standing override). `by` is `agent-web` when the hub's audited route ran the command (`AGENT_AUDITED` is its pid, the test `lib/audit.sh` makes) and `hand` otherwise. Only `pace-conf` writes the file, under a lock, replacing it whole, and dropping ended windows as it writes.
 
