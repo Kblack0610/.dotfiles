@@ -139,12 +139,11 @@ if [ -n "$BAR" ]; then
   | def row: ("  " + (.project | fit($pw) | pad($pw)) + "  " + (.task | fit($tw) | pad($tw)) + "  "
       + (.why | fit($rw) | pad($rw)) + "  " + (.idle_min | mins | pad(6)) + "  " + (.on | fit($mw) | pad($mw))
       + "  " + (.at | fit($hw))) | sub(" +$"; "") | esc;
-    def lpad($n): (" " * ([$n - length, 0] | max)) + .;
     ([$hosts[].name | length] + [0] | max | [., 20] | min) as $nw
   | ([$hosts[].where | length] + [0] | max | [., 24] | min) as $ww
   | ([$hosts[] | select(.stuck > 0) | "\(.stuck) stuck" | length + 2] + [0] | max) as $sw
   | ([$hosts[].on | length] + [0] | max | [., ([$width - 2 - $nw - 2 - 3 - 2 - $ww - 2 - $sw, 12] | max)] | min) as $ow
-  | def mrow: . as $h | ("  " + (.name | fit($nw) | pad($nw)) + "  " + ("\(.live)" | lpad(3)) + "  "
+  | def mrow: . as $h | ("  " + (.name | fit($nw) | pad($nw)) + "  " + (.live | lpad(3)) + "  "
       + (.where | fit($ww) | pad($ww)) + "  " + (.on | fit($ow) | pad($ow))
       | if $h.stuck > 0 then esc + "  <span color=\($sq)\($yel)\($sq)>\($h.stuck) stuck</span>" else sub(" +$"; "") | esc end);
     (if ($hosts | length) > 0 then ["", "<b>Machines</b>", "<tt>" + ($hosts | map(mrow) | join("\n")) + "</tt>"] else [] end)
