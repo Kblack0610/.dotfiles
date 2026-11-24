@@ -2,9 +2,10 @@
 # Tier 3: `agent-panel send`, the one way anything types into a Claude pane, against a real tmux
 # pane running a reader that behaves like Claude Code's input box: bracketed paste on, a paste
 # drawn only once its input has gone idle, and an Enter that lands before that draw dropped,
-# leaving the text in the box. The reader's state decides the drop, never a clock window on the
-# Enter, so send's first Enter, pressed once it sees the paste drawn, is taken on any load
-# (2026-11-09: a busy run exited 3 when both Enters missed a 300ms window, ar-1251).
+# leaving the text in the box. Whether an Enter is dropped is the reader's held state, not a
+# clock window on the Enter (the 300ms idle clock gates only the draw), so send's first Enter,
+# pressed once it sees the paste drawn, is taken on any load (2026-11-09: a busy run exited 3
+# when both Enters missed a 300ms window, ar-1251).
 # READER_DEAF=1 never takes an Enter.
 # READER_BUSY=1 draws it as a busy Claude pane does: a spinner whose timer redraws every 100ms
 # above a ruled box. 2026-10-30: a board answer sat unsent in a busy pane, because send judged
@@ -31,8 +32,9 @@ setup() {
   # The reader draws its input box as `> <text>` and appends each submitted line to $LOG.
   cat > "$READER" <<'SH'
 #!/usr/bin/env bash
-# A paste is held (in buf, not drawn) until no input has come for draw_us; ticks of the read
-# timeout notice that. An Enter while held, or any Enter with READER_DEAF, is dropped.
+# A paste is held (in buf, not drawn) until no input but dropped Enters has come for draw_us and
+# no paste is still arriving; ticks of the read timeout notice that. An Enter while held, or any
+# Enter with READER_DEAF, is dropped.
 log="$1" busy="${READER_BUSY:-}" deaf="${READER_DEAF:-}" draw_us=300000 tick=0
 stty -icanon -echo
 printf '\e[?2004h'
@@ -54,10 +56,10 @@ while :; do
   # partial input on a timeout), so a timeout is a tick and that byte is still input.
   if [ "$rc" -gt 128 ]; then
     tick=$((tick + 1))
-    if [ "$held" = 1 ] && [ $(( $(now_us) - last_at )) -ge "$draw_us" ]; then held=0; shown="$buf"; fi
+    if [ "$held" = 1 ] && [ "$pasting" = 0 ] && [ $(( $(now_us) - last_at )) -ge "$draw_us" ]; then held=0; shown="$buf"; fi
     draw; [ -n "$c" ] || continue
   elif [ "$rc" != 0 ]; then break; fi
-  last_at="$(now_us)"
+  { [ "$held" = 1 ] && [ "$pasting" = 0 ] && [[ "$c" == $'\r' || "$c" == $'\n' ]]; } || last_at="$(now_us)"
   if [ -n "$seq" ] || [ "$c" = $'\e' ]; then
     seq+="$c"
     case "$seq" in
