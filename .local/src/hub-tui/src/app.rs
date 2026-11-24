@@ -2085,7 +2085,7 @@ impl App {
         let tx = self.tx.clone();
         let runner = self.runner.clone();
         std::thread::spawn(move || {
-            let r = hub_core::projects::set_prio(runner.as_ref(), &profile, &name, value);
+            let r = hub_core::projects::set_prio(runner.as_ref(), &profile, &name, value, None);
             audited(
                 entry("project.prio-set", &name).to(serde_json::json!({ "prio": value })),
                 &r,

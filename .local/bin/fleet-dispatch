@@ -245,10 +245,17 @@ prio_rank_set() {
 }
 prio_rank() { prio_rank_set "$1"; echo "$PRIO"; }
 
-# prio_of <listed path> -> focus|high|low from the `#prio/<word>` the human set in the front page's
-# head (`notes projects --prio`), nothing for a normal project. The head is above the first `## `.
-prio_of() {
-  sed -n '/^## /q; p' "$(lab_front_page "$(dirname "$1")")" 2>/dev/null | grep -oE '(^|[[:space:]])#prio/(focus|high|low)\b' | awk 'NR==1' | sed 's|.*#prio/||'
+# load_prios -- PRIO_BY[<project>]: focus|high|low, as `notes projects --prios` reads the `#prio/<word>` the
+# human set (`notes projects --prio`), read once per process; a normal project has no key. notes is the one
+# reader of the tag: a focus past its `Focus until:` reads as high there, so no focus outlives its hours.
+# A failed read leaves every project normal, the safe default: it ranks them all the same.
+load_prios() {
+  declare -p PRIO_BY >/dev/null 2>&1 && return 0
+  declare -gA PRIO_BY=()
+  local n p
+  while IFS=$'\t' read -r n p _; do
+    [ -z "$n" ] || PRIO_BY[$n]=$p
+  done < <(notes projects --prios 2>/dev/null)
 }
 
 # The one rank every caller sorts by (the judge's cap, picks, fill --dry-run): a row an open sprint holds
@@ -1803,6 +1810,7 @@ cmd_candidates() {
   fi
   [ -z "${GATES_FAILED:-}" ] || [ "${SUGGEST:-0}" = 1 ] || return 0
   load_kinds
+  load_prios
   for prof in $DISPATCH_PROFILES; do
     while IFS=$'\t' read -r name sheet _v _; do
       [ -n "$name" ] || continue
@@ -1812,7 +1820,7 @@ cmd_candidates() {
       dispatchable "$stage" || continue
       poff=$(off_project "$name")
       [ -z "$poff" ] || [ "${SUGGEST:-0}" = 1 ] || { [ "${OFF_SAY:-0}" != 1 ] || say "$poff"; continue; }
-      pprio=$(prio_of "$sheet")
+      pprio=${PRIO_BY[$name]:-}
       repo=$(repo_dir "$name")
       [ -n "$repo" ] && [ -d "$repo" ] || continue
       pidle=$(pool_idle_of "$name")
@@ -8319,6 +8327,7 @@ t3_rows() {
   fi
   [ -z "${GATES_FAILED:-}" ] || return 0
   load_kinds
+  load_prios
   for prof in $DISPATCH_PROFILES; do
     while IFS=$'\t' read -r name sheet _v _; do
       [ -n "$name" ] || continue
@@ -8330,7 +8339,7 @@ t3_rows() {
       repo=$(repo_dir "$name")
       [ -n "$repo" ] && [ -d "$repo" ] || continue
       pidle=$(pool_idle_of "$name")
-      pprio=$(prio_of "$sheet")
+      pprio=${PRIO_BY[$name]:-}
       n=0
       board=$(rows "$prof" "$name" agent)
       row_kinds_load <<<"$board"

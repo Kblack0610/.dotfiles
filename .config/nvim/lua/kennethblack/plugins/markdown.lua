@@ -110,11 +110,11 @@ return {
       -- line, so the `notes` CLI indexes them (discoverable via `notes tags` /
       -- <leader>nt, greppable via `notes tags urgent`) and they never collide
       -- with markdown `# headings` (which are line-start only).
-      --   Levels:  #low  #high  #urgent
+      --   Levels:  #low  #normal  #high  #urgent
       --   Keymaps: <leader>tP raise / <leader>tp lower (cursor follows the task),
-      --            stopping at either end of low -> high -> urgent
-      local PRIORITIES = { "low", "high", "urgent" }
-      local PRIORITY_RANK = { low = 1, high = 2, urgent = 3 }
+      --            stopping at either end of low -> normal -> high -> urgent
+      local PRIORITIES = { "low", "normal", "high", "urgent" }
+      local PRIORITY_RANK = { low = 1, normal = 2, high = 3, urgent = 4 }
 
       -- Every inline hashtag on `line`, plus where the scan began. Mirrors md::for_each_tag and
       -- md::tag_span, the one tag grammar, so this file and the `notes` CLI agree on where a tag
@@ -196,7 +196,7 @@ return {
         return (table.concat(out):gsub("%s+$", "")), level
       end
 
-      -- Set the priority tag on a range to `level` ("urgent"/"high"/"low"), or clear it
+      -- Set the priority tag on a range to `level` ("urgent"/"high"/"normal"/"low"), or clear it
       -- when `level` is nil. Non-task lines are left alone.
       local function set_priority(line1, line2, level)
         for lnum = line1, line2 do
@@ -215,7 +215,7 @@ return {
 
       -- The level a task has when nobody has said otherwise. Mirrors md::DEFAULT_PRIORITY.
       -- Every task carries a priority, so there is no "no tag" state to cycle through.
-      local DEFAULT_PRIORITY = "high"
+      local DEFAULT_PRIORITY = "normal"
       -- The level of a `## Focus` task nobody placed in a lane. Mirrors md::FOCUS_DEFAULT_PRIORITY.
       local FOCUS_DEFAULT_PRIORITY = "low"
 
@@ -224,17 +224,16 @@ return {
       -- wrapping: one press too many should not flip a task from most-urgent to least. The
       -- old ring had a `false` slot for "clear the tag"; clearing now means "default", which
       -- is a real level, so the slot is gone. Matches the tW/tw release ladder.
-      local PRIORITY_RING = { "low", "high", "urgent" }
       local function step_priority(current, dir)
         local idx
-        for i, lvl in ipairs(PRIORITY_RING) do
+        for i, lvl in ipairs(PRIORITIES) do
           if lvl == current then
             idx = i
             break
           end
         end
         idx = idx or (function()
-          for i, lvl in ipairs(PRIORITY_RING) do
+          for i, lvl in ipairs(PRIORITIES) do
             if lvl == DEFAULT_PRIORITY then
               return i
             end
@@ -242,16 +241,17 @@ return {
           return 1
         end)()
         local nxt = idx + dir
-        if nxt < 1 or nxt > #PRIORITY_RING then
+        if nxt < 1 or nxt > #PRIORITIES then
           return current or DEFAULT_PRIORITY -- clamped: stay put
         end
-        return PRIORITY_RING[nxt]
+        return PRIORITIES[nxt]
       end
 
       -- Overlay colors for the priority tags (matchadd draws above treesitter).
       -- `default = true` yields to any user/colorscheme override.
       vim.api.nvim_set_hl(0, "TaskPriorityUrgent", { link = "DiagnosticError", default = true })
       vim.api.nvim_set_hl(0, "TaskPriorityHigh", { link = "DiagnosticWarn", default = true })
+      vim.api.nvim_set_hl(0, "TaskPriorityNormal", { link = "DiagnosticInfo", default = true })
       vim.api.nvim_set_hl(0, "TaskPriorityLow", { link = "Comment", default = true })
       -- The project tag `#p:<name>` (tag_source.lua): green, a colour no priority uses.
       vim.api.nvim_set_hl(0, "TaskProjectTag", { link = "DiagnosticOk", default = true })
@@ -269,10 +269,11 @@ return {
 
       -- Priority lanes, most-urgent first. Mirrors the `notes` CLI (md::PRIORITIES, the
       -- shared source of truth) so the on-save sweep here and `notes focus sweep` produce
-      -- identical output. Same set as the cycle keymap: low -> high -> urgent.
+      -- identical output. Same set as the cycle keymap: low -> normal -> high -> urgent.
       local LANES = {
         { "urgent", "### Urgent" },
         { "high", "### High" },
+        { "normal", "### Normal" },
         { "low", "### Low" },
       }
 
@@ -374,7 +375,7 @@ return {
       end
 
       -- Pure rebuild of the `## Focus` body, grouped by priority + status:
-      -- `### Urgent`/`### High`/`### Low` (open tasks), finished (`[x]`) under `--- / ### Done`;
+      -- `### Urgent`/`### High`/`### Normal`/`### Low` (open tasks), finished (`[x]`) under `--- / ### Done`;
       -- an in-progress `[/]` keeps its mark and sorts below the open rows of its lane. ALL lane headers + Done are emitted
       -- even when empty, so the columns stay put as stable drop targets, and the empty `- [ ]`
       -- slot goes. A task's #tag is the source of truth, but an untagged task sitting under a
@@ -1168,8 +1169,9 @@ return {
           -- each_tag's glue and run-on rules, any case: no `#` glued to a word, and no tag
           -- that runs on (`#high-priority` is not `#high`, a sentence-final `#high.` is).
           -- A regex cannot see code spans, so `` `#high` `` still colours.
-          for _, m in ipairs { { "TaskPriorityUrgent", "urgent" }, { "TaskPriorityHigh", "high" }, { "TaskPriorityLow", "low" } } do
-            vim.fn.matchadd(m[1], [[\c\%([[:alnum:]_/.[#]\)\@<!#]] .. m[2] .. [[\%([-/.]*[[:alnum:]_]\)\@!]])
+          for _, lvl in ipairs(PRIORITIES) do
+            local group = "TaskPriority" .. lvl:sub(1, 1):upper() .. lvl:sub(2)
+            vim.fn.matchadd(group, [[\c\%([[:alnum:]_/.[#]\)\@<!#]] .. lvl .. [[\%([-/.]*[[:alnum:]_]\)\@!]])
           end
           -- `#p:<name>`, the same glue and run-on rules; the name is a project word (letters, digits, `-`, `_`).
           vim.fn.matchadd("TaskProjectTag", [[\c\%([[:alnum:]_/.[#]\)\@<!#p:[[:alnum:]_-]\+\%([-/.]*[[:alnum:]_]\)\@!]])
