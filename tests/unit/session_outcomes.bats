@@ -354,6 +354,14 @@ EOF
   assert_equal "$(cmd "rg -n 'gh pr create|pull/' tests/unit/session_outcomes.bats")" false
   assert_equal "$(cmd 'grep -c "gh pr merge" x')" false
   assert_equal "$(cmd 'echo gh pr create')" false
+  # an assignment's value is matched one way, so 60 quoted and $(...) values do not hit jq's retry limit (ar-920)
+  local i many=""
+  for i in $(seq 20); do many+="A$i=\"x\" B$i=\$(y) C$i='z' "; done
+  assert_equal "$(cmd "${many}gh pr view 9" 2>&1)" false
+  assert_equal "$(cmd "${many}gh pr create" 2>&1)" true
+  assert_equal "$(cmd 'X="a"b Y=a"b c" Z= gh pr merge 3')" true
+  assert_equal "$(cmd "MSG=don't gh pr create")" true
+  assert_equal "$(cmd 'X=$(a P=$HOME gh pr merge 3')" true
   refs() { jq -cn --arg t "$1" "$SO_PR_JQ"'$t | pr_refs'; }
   assert_equal "$(refs 'https://github.com/o/r/pull/10')" '[{"repo":"o/r","number":10}]'
   assert_equal "$(refs 'Squashed and merged pull request o/r#11 (x)')" '[{"repo":"o/r","number":11}]'
