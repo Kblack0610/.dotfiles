@@ -2116,6 +2116,11 @@ verdict_errors() {
 #    row with no verdict. Any other waits skip takes the plan exit.
 #  - kind: a row of a kind kinds.json turns off (epic aside, and not a parent) never reaches the judge,
 #    so with no verdict it takes the human exit, as rule `kind`: no worker or judge reads it on the lane.
+#  - size: a row sized L or XL (`#size/`) takes the plan exit as rule `too-big` whatever the judge has
+#    said or not yet said (it judges only the rows a pass reaches, and one no worker takes never gets there):
+#    a skip that names a human rule or a gate keeps its own exit. Not an epic, a parent, a row gated
+#    #after/ or #pr/, one whose session failed, or one whose verdict already carries another exit. A sized
+#    row inbox-plan planned that is still L takes the human exit, as a planned too-big skip does.
 # Each exit taken appends the verdict again with `exit` (and `exit_at`) to verdicts.jsonl, so counting
 # exits is a jq query, and that latest verdict, carrying its exit, is not taken again. At most
 # DISPATCH_EXIT_MAX exits a pass (0 is no cap), so a backlog of skips drains over passes, not in one. A
@@ -2155,6 +2160,10 @@ skip_exits() {
        | map({key: "\(.project)\t\(.key)", value: .}) | from_entries) as $by
     | ($v | map(select(.lane == "agent" and .exit != null))
        | map({key: "\(.project)\t\(.key)", value: true}) | from_entries) as $gone
+    | ($v | map(select(.lane == "agent" and .exit != null))
+       | map({key: "\(.project)\t\(.key)", value: .exit}) | from_entries) as $exited
+    | ($v | map(select(.lane == "agent" and .verdict == "failed"))
+       | map({key: "\(.project)\t\(.key)", value: true}) | from_entries) as $failed
     | ($kinds | to_entries | map(select(.value.enabled == false and .key != "epic") | {key, value: true}) | from_entries) as $off
     | ([.rows[]? | select(.state == "open") | .tags[]? | select(startswith("of/")) | {key: .[3:], value: true}] | from_entries) as $parents
     | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and (plan_tagged | not))
@@ -2163,13 +2172,18 @@ skip_exits() {
         "\(.profile)\t\(.project)\t\(.id)\t\($d.line)\t\($d.dsig // "-")\t\(details_json($n))\t\($d.rule)\t\(.requested == true)\t\(planned)\t\($d | tojson)\t\(.raw)"
       elif $off[.type // ""] and ($parents[.id] | not) and ($gone["\(.project)\t\(.id)"] | not) then
         "\(.profile)\t\(.project)\t\(.id)\t-\t-\t\(details_json($n))\tkind\t\(.requested == true)\tfalse\t\({project, lane: "agent", key: .id, verdict: "skip", rule: "kind", reason: "kind \(.type) is off", at: $at, policy: $sig} | tojson)\t\(.raw)"
+      elif ((.size // "") | ascii_downcase | IN("l", "xl")) and (.type // "") != "epic" and ($parents[.id] | not)
+          and ($failed["\(.project)\t\(.id)"] | not)
+          and (any((.tags_cased // .tags // [])[]?; startswith("after/") or startswith("pr/")) | not)
+          and (($exited["\(.project)\t\(.id)"] == null) or ($exited["\(.project)\t\(.id)"] == "plan" and planned)) then
+        "\(.profile)\t\(.project)\t\(.id)\t-\t-\t\(details_json($n))\ttoo-big\t\(.requested == true)\t\(planned)\t\({project, lane: "agent", key: .id, verdict: "skip", size: (.size | ascii_upcase), rule: "too-big", reason: "row is size \(.size | ascii_upcase)", at: $at, policy: $sig} | tojson)\t\(.raw)"
       else empty end' <<<"$board")
   # raw last: read hands it the rest of the line; details_json and the verdict are JSON, with no bare
   # tab. No field is empty: a tab is IFS whitespace, so read would fold an empty one into its neighbour
   while IFS=$'\t' read -r prof p id line dsig dj rule req planned d raw; do
     [ -n "$id" ] || continue
     # the verdict must still hold for the row as it reads now (ROW_JQ holds)
-    [ "$rule" = kind ] || [ "$(row_sig "$raw")" = "$line" ] || continue
+    [ "$line" = - ] || [ "$(row_sig "$raw")" = "$line" ] || continue
     [ "$dsig" = - ] || [ "$(detail_sig "$dj")" = "$dsig" ] || continue
     body=${raw#- \[?\] }; body=${body%%<!--*}; body=${body%"${body##*[![:space:]]}"}
     e='' gate=''
@@ -2183,8 +2197,9 @@ skip_exits() {
     fi
     [ -n "$e" ] || continue
     if [ "$e" = plan ] && [ "$planned" = true ]; then
-      # a plan made before the verdict that dsig cannot date: the judge may not have read it yet
-      [ "$dsig" != - ] || continue
+      # a plan made before the verdict that dsig cannot date: the judge may not have read it yet (a
+      # sized row has no verdict to read it: its plan is made and the row is still L)
+      [ "$dsig" != - ] || [ "$line" = - ] || continue
       e=human
     fi
     if [ "$e" = human ]; then
