@@ -68,6 +68,8 @@ pub struct Window {
     pub committed: u32,
     pub delivered: u32,
     pub open: u32,
+    /// The `open` rows' `#size/` weight, 1 unsized: what [`state`] holds against the net rate.
+    pub open_weight: u32,
     /// Committed rows closed as dropped or duplicate, or gone from both lanes.
     pub dropped: u32,
     /// Rows tagged `#interrupt` that entered after the snapshot.
@@ -588,8 +590,8 @@ pub fn state_says(c: &Card) -> String {
 
 /// Where `c`'s current release is on `today`, by the rule table in `docs/stages.md`, "Project
 /// state": the first of [`STATES`] whose rule matches. Every input is counted: the window and
-/// its due day, the 28-day close rate, the target's on-time check, the newest close, and the
-/// queue's running and waiting items.
+/// its due day, the net weight rate ([`net_rate`]), the target's on-time check, the newest close,
+/// and the queue's running and waiting items.
 pub fn state(c: &Card, today: chrono::NaiveDate) -> &'static str {
     let day = |d: &str| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok();
     let target_past = c
@@ -603,10 +605,11 @@ pub fn state(c: &Card, today: chrono::NaiveDate) -> &'static str {
     if !delivered && (target_past || w.and_then(|w| w.days_left).is_some_and(|d| d < 0)) {
         return LATE;
     }
-    // The rows the 28-day close rate closes in the days left, against the committed rows open.
+    // The weight the net rate closes in the days left, against the committed rows' open weight.
+    let net = net_rate(c.progress.closed_weight_28d, c.progress.filed_weight_28d).unwrap_or(0);
     let short = w.is_some_and(|w| {
         w.days_left
-            .is_some_and(|d| i64::from(c.progress.closed_28d) * d.max(0) / 28 < i64::from(w.open))
+            .is_some_and(|d| i64::from(net) * d.max(0) / 28 < i64::from(w.open_weight))
     });
     let miss = c
         .on_time
@@ -817,33 +820,36 @@ fn net_eta(open: u32, closed_28d: u32, filed_28d: u32) -> Option<u32> {
     if open == 0 {
         return Some(0);
     }
-    let net = closed_28d.checked_sub(filed_28d).filter(|n| *n > 0)?;
-    Some(days_at(open, net))
+    Some(days_at(open, net_rate(closed_28d, filed_28d)?))
+}
+
+/// The net weight rate, weight closed minus weight filed per 28 days; None at or below zero. The
+/// one rate the version ETA ([`net_eta`]), its room ([`net_room`]), the row forecast
+/// ([`forecast`]) and the project state ([`state`]) read, so a project filing as fast as it
+/// closes reads never on each of them.
+fn net_rate(closed_28d: u32, filed_28d: u32) -> Option<u32> {
+    closed_28d.checked_sub(filed_28d).filter(|n| *n > 0)
 }
 
 /// The weight the net rate closes in `days_left` days (none when past), less what `w` already
 /// has open, rounded down; None when the net rate is at or below zero, as [`net_eta`] reads it.
 fn net_room(w: &TargetWork, days_left: i64) -> Option<i64> {
-    let net = w
-        .closed_weight_28d
-        .checked_sub(w.filed_weight_28d)
-        .filter(|n| *n > 0)?;
+    let net = net_rate(w.closed_weight_28d, w.filed_weight_28d)?;
     Some(i64::from(net) * days_left.max(0) / 28 - i64::from(w.open_weight))
 }
 
-/// Days to close `weight` at `closed_weight_28d` per 28 days, rounded up. A row's forecast uses
-/// the close rate alone: its day assumes nothing new is filed ahead of it, where the version
-/// ETA ([`net_eta`]) nets out everything filed into the version. `closed_weight_28d` is above 0.
-fn days_at(weight: u32, closed_weight_28d: u32) -> u32 {
-    (weight * 28).div_ceil(closed_weight_28d)
+/// Days to close `weight` at `rate` weight per 28 days, rounded up. `rate` is above 0.
+fn days_at(weight: u32, rate: u32) -> u32 {
+    (weight * 28).div_ceil(rate)
 }
 
 /// Put a forecast day on each open leaf row of the projects `stats` covers: the day it should
-/// close at the project's 28-day close rate (`days_at`), after every row ranked ahead of
-/// it, in the sheet's order (section, then rank). `ceil(weight ahead and its own * 28 /
-/// closed_weight_28d)` days from `today`. An epic or a row another row names in `#of/` weighs
-/// what its children weigh, so it adds nothing and gets no day; a playtest check is no work
-/// item. A project with no closes in 28 days gets no day, never a guess.
+/// close at the project's net weight rate ([`net_rate`], the version ETA's), after every row
+/// ranked ahead of it, in the sheet's order (section, then rank). `ceil(weight ahead and its own
+/// * 28 / net rate)` days from `today`. An epic or a row another row names in `#of/` weighs what
+/// its children weigh, so it adds nothing and gets no day; a playtest check is no work item. A
+/// project whose net rate is at or below zero gets no day, never a guess: its version ETA reads
+/// never too.
 pub fn forecast(feed: &mut Feed, stats: &[Stats], today: chrono::NaiveDate) {
     let parents: std::collections::HashSet<String> =
         feed.rows.iter().filter_map(|r| r.parent.clone()).collect();
@@ -866,8 +872,7 @@ pub fn forecast(feed: &mut Feed, stats: &[Stats], today: chrono::NaiveDate) {
         let Some(rate) = stats
             .iter()
             .find(|s| s.name == project && s.profile == r.profile)
-            .map(|s| s.progress.closed_weight_28d)
-            .filter(|w| *w > 0)
+            .and_then(|s| net_rate(s.progress.closed_weight_28d, s.progress.filed_weight_28d))
         else {
             continue;
         };
@@ -1622,6 +1627,7 @@ mod tests {
             committed: 20,
             delivered: 20 - open,
             open,
+            open_weight: open,
             ..Window::default()
         }
     }
@@ -1666,7 +1672,7 @@ mod tests {
             280,
             TEN_DAYS_AGO,
         );
-        // 28 closes in 28 days close 3 rows in the 3 days left: 4 open is at risk, 3 is not.
+        // 28 weight closed in 28 days closes 3 in the 3 days left: 4 open is at risk, 3 is not.
         let short = state_card(
             "alpha",
             Some(state_window("2026-11-22", 4)),
@@ -1712,6 +1718,30 @@ mod tests {
             IDLE,
             "idle_days 0 reads every quiet project idle"
         );
+        // The rate is net of filings: 14 of the 28 refilled closes 1 in 3 days, short of 3.
+        let mut filing = on_track.clone();
+        filing.progress.filed_weight_28d = 14;
+        assert_eq!(state(&filing, today), AT_RISK, "filings slow the rate");
+        filing.progress.filed_weight_28d = 28;
+        assert_eq!(
+            state(&filing, today),
+            AT_RISK,
+            "filing as fast as closing closes none"
+        );
+        // It is weight against weight: one open row of 8 points outweighs the 3 that 3 days close.
+        let mut heavy = state_card(
+            "alpha",
+            Some(state_window("2026-11-22", 1)),
+            28,
+            TEN_DAYS_AGO,
+        );
+        assert_eq!(
+            state(&heavy, today),
+            ON_TRACK,
+            "NEGATIVE CONTROL: one unsized row fits"
+        );
+        heavy.window.as_mut().unwrap().open_weight = 8;
+        assert_eq!(state(&heavy, today), AT_RISK, "an 8-point row does not");
         assert_eq!(state_level(PARKED), None, "parked draws grey");
         assert_eq!(state_level(FLOW), None, "flow is no warning");
         let short = Card {
@@ -1824,14 +1854,21 @@ mod tests {
         let s: Vec<Stats> = serde_json::from_value(json!([{
             "name": "trader",
             "window": {"version": "v0.1.3", "opened": "2026-11-18", "due": "2026-11-22",
-                       "committed": 105, "delivered": 2, "open": 103, "dropped": 0, "interrupted": 1},
+                       "committed": 105, "delivered": 2, "open": 103, "open_weight": 160,
+                       "dropped": 0, "interrupted": 1},
             "last_window": {"version": "v0.1.2", "line": "delivered 3 of 4"}
         }, {"name": "bare", "window": null, "last_window": null}]))
         .unwrap();
         let w = s[0].window.as_ref().unwrap();
         assert_eq!(
-            (w.committed, w.delivered, w.open, w.interrupted),
-            (105, 2, 103, 1)
+            (
+                w.committed,
+                w.delivered,
+                w.open,
+                w.open_weight,
+                w.interrupted
+            ),
+            (105, 2, 103, 160, 1)
         );
         assert_eq!(w.days_left, None, "the card dates it, notes does not");
         assert_eq!(s[0].last_window.as_ref().unwrap().line, "delivered 3 of 4");

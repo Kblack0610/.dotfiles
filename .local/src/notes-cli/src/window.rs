@@ -776,6 +776,9 @@ pub(crate) struct Tally {
     pub committed: usize,
     pub delivered: usize,
     pub open: usize,
+    /// The `#size/` weight of the `open` rows, 1 unsized: what the hub's project state divides
+    /// by the net weight rate.
+    pub open_weight: u32,
     /// Committed rows closed as dropped or duplicate, or gone from both lanes.
     pub dropped: usize,
     /// Rows tagged `#interrupt` in the version that the snapshot does not hold.
@@ -835,10 +838,22 @@ impl Classes {
 fn tally(snap: &Snapshot, rows: &Rows) -> Tally {
     let c = Classes::of(snap, rows);
     let count = |o: Outcome| snap.keys.iter().filter(|k| c.committed(k) == o).count();
+    let mut weighed = HashSet::new();
+    let open_weight = rows
+        .open
+        .iter()
+        .chain(&rows.later)
+        .filter(|l| {
+            let k = key(l);
+            snap.keys.contains(&k) && c.committed(&k) == Outcome::Open && weighed.insert(k)
+        })
+        .map(|l| projects::size_weight(l))
+        .sum();
     Tally {
         committed: snap.keys.len(),
         delivered: count(Outcome::Delivered),
         open: count(Outcome::Open),
+        open_weight,
         dropped: count(Outcome::Dropped),
         interrupted: c.interrupted.len(),
     }
@@ -2176,7 +2191,8 @@ mod tests {
     }
 
     /// A bullet added under the snapshot is not committed, a committed row deferred to a later
-    /// version is carried, and an id-less row tagged `#interrupt` by hand keeps its identity.
+    /// version is carried (and weighed), and an id-less row tagged `#interrupt` by hand keeps its
+    /// identity.
     #[test]
     fn a_snapshot_reads_only_its_rows_and_follows_a_row_that_moved() {
         let dir = project("moved", "", HUMAN, BOARD);
@@ -2189,7 +2205,7 @@ mod tests {
         assert_eq!(snap.keys.len(), 3, "{:?}", snap.keys);
         fs::write(
             dir.join("README.md"),
-            "# demo\nVersion: v0.2.0\n\n## Tasks\n- [ ] feat(ui): menu #v0.3.0 <!-- id:db-1 -->\n",
+            "# demo\nVersion: v0.2.0\n\n## Tasks\n- [ ] feat(ui): menu #v0.3.0 #size/m <!-- id:db-1 -->\n",
         )
         .unwrap();
         fs::write(
@@ -2205,6 +2221,8 @@ mod tests {
                 committed: 3,
                 delivered: 1,
                 open: 2,
+                // The carried row weighs its size, the unsized one 1.
+                open_weight: projects::size_weight("#size/m") + 1,
                 dropped: 0,
                 interrupted: 0
             }
@@ -2253,6 +2271,7 @@ mod tests {
                 committed: 3,
                 delivered: 1,
                 open: 1,
+                open_weight: 1,
                 dropped: 1,
                 interrupted: 2
             }
@@ -2690,6 +2709,7 @@ mod tests {
                 committed: 20,
                 delivered: 8,
                 open: 12,
+                open_weight: 12,
                 dropped: 0,
                 interrupted: 1,
             },
