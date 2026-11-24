@@ -48,6 +48,28 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_output "Menu: pick sides and add people"
 }
 
+@test "a work machine queues nothing: plain and --plan adds are refused, --running and a plan --check pass" {
+  jq '. + {clients: {acme: {profile: "acmework"}}}' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$AGENT_QUEUE_PROJECT_MAP"
+  printf '# P\n\n## Phases\n\n- [ ] one\n' > "$SANDBOX/plan.md"
+  export PROJECT_MACHINE_PROFILE=acmework
+  run "$AQ" add --project game --slug work-plain "plain"
+  assert_failure
+  assert_output --partial "this is a work machine (acmework)"
+  run "$AQ" add --project game --plan "$SANDBOX/plan.md"
+  assert_failure
+  assert_output --partial "this is a work machine"
+  [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ]
+  run "$AQ" add --project game --plan "$SANDBOX/plan.md" --check
+  assert_success
+  refute_output --partial "this is a work machine"
+  run "$AQ" add --running --project game --session hub:game-agent-1 --slug work-own "own work"
+  assert_success
+  # Negative control: the personal profile, same map, queues as before.
+  PROJECT_MACHINE_PROFILE=personal run "$AQ" add --project game --slug home-plain "plain"
+  assert_success
+  assert_output --partial "queued home-plain"
+}
+
 @test "add sets weight: light by default, heavy for a Unity checkout or a plan item, and --weight wins" {
   "$AQ" add --project game --slug plain "plain"
   [ "$(field "$(item queued plain)" weight)" = light ]
