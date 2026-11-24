@@ -2807,6 +2807,19 @@ red_item() {
   assert_line 'reds_unfixed=?'
 }
 
+@test "reds: red titles past the 128 KB one argument can carry still parse, read as a file" {
+  log_triage_setup
+  local pad i
+  pad=$(printf 'x%.0s' {1..1000})
+  for i in $(seq 1 140); do
+    printf '{"slug":"s%s","state":"running","title":"fix(watch): w%s %s","queued":null,"tags":"red"}\n' "$i" "$i" "$pad"
+  done >> "$ITEMS"
+  parses "fix(watch): w7 $pad" fix watch "w7 $pad"
+  run "$SUBJECT" reds --json
+  assert_success
+  assert_equal "$(jq -rs 'map(select(.slug == "s7")) | .[0].red' <<<"$output")" 'watch w7'
+}
+
 @test "reds: an unreadable queue fails and says so, and its KPIs read ? instead of 0" {
   log_triage_setup
   TRIAGE_ITEMS_CMD=false run "$SUBJECT" reds
