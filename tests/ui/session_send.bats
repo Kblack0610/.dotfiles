@@ -16,10 +16,11 @@ setup() {
   sandbox_init basic
   require_tmux || return 1
   tmux_shim
-  BIN="$REPO_ROOT/.local/src/agent-panel/target/debug/agent-panel"
+  # Static, so a build from any host's glibc starts in the container.
+  BIN="$REPO_ROOT/.local/src/agent-panel/target/x86_64-unknown-linux-musl/debug/agent-panel"
   if [ ! -x "$BIN" ]; then
     [ -n "${CI:-}" ] && { echo "agent-panel is not built at $BIN" >&2; return 1; }
-    skip "build agent-panel first (cargo build in .local/src/agent-panel)"
+    skip "build agent-panel first (cargo build --target x86_64-unknown-linux-musl in .local/src/agent-panel)"
   fi
   LOG="$SANDBOX/submitted.log"
   READER="$SANDBOX/reader.sh"

@@ -1,0 +1,49 @@
+name: rust
+description: >-
+  The pinned toolchain (tests/rust-toolchain, the one rust.sh uses locally) and main's cargo cache,
+  the same on a GitHub-hosted and a pool runner. CARGO_HOME is the runner's own, outside the
+  checkout: pool runners on one host share a user, so two jobs restoring into one ~/.cargo at once
+  would collide, and on a pool runner it stays warm between jobs. The rust job saves the cache
+  with the same paths and the key this prints.
+inputs:
+  components:
+    description: rustup components beyond the minimal profile, comma-separated
+    default: ''
+  targets:
+    description: rustup targets to add, comma-separated
+    default: ''
+outputs:
+  key:
+    description: the cache key (toolchain plus every crate's lockfile)
+    value: ${{ steps.restore.outputs.cache-primary-key }}
+  cache-hit:
+    value: ${{ steps.restore.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - id: toolchain
+      shell: bash
+      env:
+        COMPONENTS: ${{ inputs.components }}
+        TARGETS: ${{ inputs.targets }}
+      run: |
+        tc=$(<tests/rust-toolchain)
+        rustup toolchain install "$tc" --profile minimal ${COMPONENTS:+-c "$COMPONENTS"} ${TARGETS:+-t "$TARGETS"}
+        { echo "RUSTUP_TOOLCHAIN=$tc"; echo "CARGO_HOME=$RUNNER_WORKSPACE/.cargo-home"; } >>"$GITHUB_ENV"
+        export RUSTUP_TOOLCHAIN=$tc
+        cargo --version
+        echo "rustc=$(rustc -V | tr -c 'A-Za-z0-9.\n' -)" >>"$GITHUB_OUTPUT"
+    # The registry and every crate's target/ in one cache. Cold, the Rust gate compiled six
+    # crates and their dependencies from scratch: 248 s of a 292 s job (43014231625). Keyed on
+    # the toolchain and the lockfiles (rust.sh passes --locked), and a fresh checkout's mtimes
+    # make cargo rebuild this repo's own crates, so a cache never serves stale code. Only main
+    # saves it (the rust job); a pull request restores main's.
+    - id: restore
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          ${{ env.CARGO_HOME }}/registry
+          ${{ env.CARGO_HOME }}/git
+          .local/src/*/target
+        key: cargo-target-${{ runner.os }}-${{ steps.toolchain.outputs.rustc }}-${{ hashFiles('.local/src/*/Cargo.lock') }}
+        restore-keys: cargo-target-${{ runner.os }}-${{ steps.toolchain.outputs.rustc }}-
