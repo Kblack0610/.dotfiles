@@ -510,15 +510,63 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   assert_output --partial 'razer-laptop is at its fleet_max_live'
 }
 
-@test "a heavy item stays here: a worker takes light claude work only" {
+# ar-2891: on 2026-11-24 razer-laptop sat at 1 live item while 92 heavy or plan items could only run here.
+@test "a heavy item goes to a worker that clones its repo and holds 2 of its units; with 1 free the worker refuses it" {
   project game beta "$SANDBOX/repos/game"
-  worker '2.0 16 1 50'
+  export DISPATCH_PER_PASS=2
+  WORKER_MAX_LIVE=2 worker '2.0 16 1 50'
   echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   agent-queue add --project game --slug bake --priority high --weight heavy "Bake the lights" >/dev/null
+  # Negative control: a light run holds 1 of the worker's 2 units, so the heavy item has no place.
+  remote_item busy
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'machine pace: bake'
   assert_output --partial 'no fleet worker takes it'
   assert_not_called 'wt new'
+  # With both units free it goes there, and takes both: the light item behind it finds the worker full.
+  rm "$(qitem running busy)" "$NOTES_FIXTURE/tmux.sessions.lab"
+  agent-queue add --project game --slug fix-menu --priority low "Fix the menu sides" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item bake on razer-laptop'
+  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: "
+  [ -n "$(qitem queued fix-menu)" ] || fail "a light item started on a worker the heavy start filled: $output"
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'razer-laptop is at its fleet_max_live'
+}
+
+@test "a plan item goes to a worker, which reads the plan from its store peer clone" {
+  project game beta "$SANDBOX/repos/game"
+  worker '2.0 16 1 50'
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  agent-queue add --project game --slug phase --priority high "Phase 2 of the plan" >/dev/null
+  printf '# p\n\n## Phases\n\n- [ ] Phase 2\n' > "$SANDBOX/p.md"
+  sed -i "s|^mode: oneshot\$|&\\nplan: $SANDBOX/p.md|" "$(qitem queued phase)"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item phase on razer-laptop'
+  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: "
+}
+
+# A stacked item's worktree is cut here from its dependency's open PR head (stack_base), and a --host
+# start refuses it with rc 2, which would fail the pass: plan phases chain through after:, so it stays here.
+@test "a plan phase stacked on an open PR stays here; the same item unstacked goes to a worker" {
+  run host_agent '{"slug": "p2", "plan": "p.md", "weight": "heavy", "stacked_on": "p1=o/r#7"}'
+  assert_success
+  assert_output ''
+  run host_agent '{"slug": "p2", "plan": "p.md", "weight": "heavy"}'
+  assert_output claude
+}
+
+@test "hosts names a heavy item no worker's fleet_max_live can hold as unplaceable; at 2 it is placeable" {
+  project game beta "$SANDBOX/repos/game"
+  worker '2.0 16 1 50'
+  agent-queue add --project game --slug bake --priority high --weight heavy "Bake the lights" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'unplaceable: game, 1 queued item: no worker that clones it has a fleet_max_live of 2'
+  WORKER_MAX_LIVE=2 worker '2.0 16 1 50'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  refute_output --partial 'unplaceable: game'
 }
 
 @test "with room here a pass starts here first, and with no roster nothing asks a worker" {
