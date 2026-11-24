@@ -181,7 +181,7 @@ not profile-aware; never prefer it when the binary exists.
 ## Related
 
 - CLI source + full docs: `~/.dotfiles/.local/src/notes-cli/README.md`.
-- Profile config: `~/.config/notes/config.toml` (-> `~/.dotfiles/.config/notes/config.toml`).
+- Profile config: `~/.config/notes/config.toml`, machine-local and git-ignored; `~/.dotfiles/.config/notes/config.toml.example` is the tracked template.
 - Memory index: `~/.claude/projects/-home-kblack0610--dotfiles/memory/user_notes_system.md` (may or may not exist - the MEMORY.md index references it).
 - Systemd units: `~/.config/systemd/user/git-sync-notes.{service,timer}`, `journal-daily-summarize.{service,timer}`, `journal-monthly-archive.{service,timer}`, `journal-refs-archive.{service,timer}`.
 - Core sync logic: `~/.local/bin/store-sync --store notes` (runbook: `~/.local/src/git/NOTES_SYNC_SETUP.md`, "The sync engine").

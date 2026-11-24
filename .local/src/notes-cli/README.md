@@ -25,7 +25,7 @@ It runs `cargo build --release`, copies the binary to `~/.local/lib/notes/notes`
 
 ## Configuration
 
-`~/.config/notes/config.toml` (symlinked from `~/.dotfiles/.config/notes/`). The
+`~/.config/notes/config.toml`, machine-local and git-ignored (`~/.dotfiles/.config/notes/config.toml.example` is the tracked template). The
 binary also falls back to `$NOTES_CONFIG` and `~/.dotfiles/.config/notes/config.toml`,
 and to a built-in `personal` default if none exist.
 
