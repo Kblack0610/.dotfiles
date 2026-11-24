@@ -4101,10 +4101,9 @@ impl TargetWork {
         self.filed_weight_28d += p.filed_weight_28d;
     }
 
-    /// `progress` (the open version's) plus every later version of `dir` at or below `to`
-    /// that a row on either lane is aimed at. The 28-day rates also read every shipped
-    /// version's frozen notes: a cut moves its closed rows there, and without them the close
-    /// rate would fall each time the project cuts.
+    /// `progress` (the project's, [`project_progress`]: the open version's and every shipped
+    /// version's closes) plus every later version of `dir` at or below `to` that a row on either lane
+    /// is aimed at.
     fn of(
         dir: &Path,
         human: &str,
@@ -4122,9 +4121,6 @@ impl TargetWork {
             .filter(|&(v, _)| v <= to)
         {
             w.add(&progress_of(dir, cur, Some(v), ix, today));
-        }
-        for v in cur.map(|c| shipped_versions(dir, c)).unwrap_or_default() {
-            w.add(&shipped_progress(&shipped_notes(dir, v), ix, today));
         }
         w
     }
@@ -4246,6 +4242,25 @@ fn in_version(line: &str, cur: Option<V>, ver: Option<V>) -> bool {
 }
 
 impl Progress {
+    /// Add `other`'s closes and filings to the rates and the newest close day; its row counts
+    /// (`done`, `open`) stay out, so a rate may exceed the counts of the rows it sits beside.
+    fn add_closes(&mut self, other: &Progress) {
+        self.filed_weight_28d += other.filed_weight_28d;
+        self.closed_7d += other.closed_7d;
+        self.closed_28d += other.closed_28d;
+        self.closed_weight_7d += other.closed_weight_7d;
+        self.closed_weight_28d += other.closed_weight_28d;
+        if other.last_closed > self.last_closed {
+            self.last_closed.clone_from(&other.last_closed);
+        }
+        for (kind, k) in &other.by_kind {
+            let mine = self.kind(kind);
+            mine.closed_28d += k.closed_28d;
+            mine.closed_weight_28d += k.closed_weight_28d;
+            mine.filed_28d += k.filed_28d;
+        }
+    }
+
     fn kind(&mut self, kind: &str) -> &mut KindCount {
         self.by_kind.entry(kind.to_string()).or_default()
     }
@@ -4428,6 +4443,23 @@ pub(crate) fn progress_of(
     pr
 }
 
+/// The project's [`Progress`]: the open version's, plus the closes and filings of every shipped
+/// version's frozen notes. A cut moves its closed rows there, and without them every rate would
+/// fall each time the project cuts. The one close set that `--stats`, [`TargetWork`] and the
+/// hub's pace, forecast and state read; a per-release view reads [`progress_of`].
+fn project_progress(
+    dir: &Path,
+    cur: Option<V>,
+    ix: &crate::epics::Index,
+    today: chrono::NaiveDate,
+) -> Progress {
+    let mut pr = progress_of(dir, cur, cur, ix, today);
+    for v in cur.map(|c| shipped_versions(dir, c)).unwrap_or_default() {
+        pr.add_closes(&shipped_progress(&shipped_notes(dir, v), ix, today));
+    }
+    pr
+}
+
 /// The closed rows of a shipped version, from its frozen notes, with their `## Proof` dates.
 /// A row in both counts once.
 fn shipped_progress(
@@ -4468,7 +4500,7 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
     let (status_date, status) = split_status_date(&note.headline);
     let today = chrono::Local::now().date_naive();
     let stage = stage_of(dir).unwrap_or_default();
-    let progress = progress_of(dir, cur, cur, &ix, today);
+    let progress = project_progress(dir, cur, &ix, today);
     let cadence = cadence_for_dir(dir, &stage);
     let release = release_due(dir, cadence, progress.done, &ix, cur, today);
     let target = target_of(&content);
@@ -8154,7 +8186,8 @@ mod shape_tests {
                  | fix(f): closed before done stamps #size/m | pr:2 | {today} |\n\n\
                  ## Done rows\n\n\
                  - [x] fix(d): closed before the cut #size/m <!-- filed:{old} done:{today} -->\n\
-                 - [x] fix(e): closed long ago #size/xl <!-- filed:{old} done:{old} -->\n"
+                 - [x] fix(e): closed long ago #size/xl <!-- filed:{old} done:{old} -->\n\
+                 - [x] fix(g): filed and closed this month #size/m <!-- filed:{today} done:{today} -->\n"
             ),
         )
         .unwrap();
@@ -8163,12 +8196,12 @@ mod shape_tests {
         // sum, and fix(e) closed 40 days ago adds nothing to the 28-day rates.
         assert_eq!(
             json["target_work"],
-            serde_json::json!({"open_weight": 6, "closed_weight_28d": 14, "filed_weight_28d": 6})
+            serde_json::json!({"open_weight": 6, "closed_weight_28d": 17, "filed_weight_28d": 9})
         );
         assert_eq!(json["progress"]["open_weight"], 3, "the open version alone");
         assert_eq!(
-            json["progress"]["closed_weight_28d"], 8,
-            "the open version's own rate keeps only its rows"
+            json["progress"]["closed_weight_28d"], 17,
+            "the open version's rate holds the shipped closes too: the one close rate"
         );
         assert_eq!(
             json["target_backlog"],
