@@ -1677,6 +1677,16 @@ EOF2
   refute_output --partial 'row:'
   run board_calls
   assert_output 'notes --profile bnb ptask db --agent done db-13 --proof pr:o/r#42 commit:fedcba987654'
+  # A row on a lane with no ptask flag of its own (playtest) is not followed: the recorded board answers.
+  jq -n '{rows: [{profile: "bnb", project: "db", lane: "playtest", id: "db-15", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
+  item stock human agent bnb
+  agent-queue set stock row=db:db-15
+  : >"$LOG"
+  run "$LAND" 42 --item stock
+  assert_success
+  refute_output --partial 'row:'
+  run board_calls
+  assert_output 'notes --profile bnb ptask db --agent done db-15 --proof pr:o/r#42 commit:fedcba987654'
 }
 
 @test "a row moved to the human lane of its own board closes there, and the item takes the lane (ar-2751)" {

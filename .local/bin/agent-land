@@ -1151,15 +1151,17 @@ credit() {
 board_cmd() { [ -z "$row" ] || printf '%s\n' "$row" "pr:${pr_ref:-$pr}${merged:+ commit:${merged:0:12}}"; }
 # row_at <id> <feed> -> "<profile>US<project>US<lane>" (US the \x1f unit separator, so an empty field keeps
 # its place) of the one open or started row with this id on any board of a `notes board --json` feed;
-# nothing when no row or two carry it, rc 1 on a feed that is not JSON.
+# nothing when no row or two carry it, or the feed is not JSON.
 row_at() {
   jq -r --arg id "$1" '[.rows[]? | select(.id == $id and (.state == "open" or .state == "doing"))]
     | if length == 1 then .[0] | [.profile // "", .project // "", .lane // ""] | join("\u001f") else empty end' <<<"$2" 2>/dev/null
 }
 # locate_row: the item's recorded row (`row`, "<board>:<key>") pointed at where it sits now. A row moved
-# to another board or lane (`notes ptask move`) keeps its id, so the one open row carrying an id-shaped
-# key wins, and row_board, row_lane, row_prof and row_moved (the recorded place) say where; the recorded
-# board answers when none does (a text key, a row already closed, a feed that does not read). Why:
+# to another board or to the other lane (`notes ptask move`) keeps its id, so the one open agent or human
+# lane row carrying an id-shaped key wins, and row_board, row_lane, row_prof and row_moved (the
+# recorded place) say where; the recorded board answers when none does (a text key, a row already
+# closed, a feed that does not read). Ids are minted per board prefix, so a second open row with the
+# id is the moved one. Why:
 # ucp-1594 moved to the shape-city board after dispatch promoted it from unity-core-playground's, so
 # #2836's landing exited 1 "no open task matches" (2026-11-17, ar-2751).
 row_board='' row_lane='' row_prof='' row_key='' row_moved=''
@@ -1169,10 +1171,10 @@ locate_row() {
   IFS=$'\x1f' read -r row_key row_prof row_lane <<<"$rec"
   [ -n "$row_key" ] || return 0
   row_board=${row_key%%:*} row_key=${row_key#*:}
-  [[ "$row_key" =~ ^[A-Za-z][A-Za-z0-9]*-[0-9]+$ ]] || return 0
+  [[ "$row_key" =~ ^[A-Za-z][A-Za-z0-9_-]*-[0-9]+$ ]] || return 0
   hit=$(row_at "$row_key" "$(notes board --json 2>/dev/null)") && [ -n "$hit" ] || return 0
   IFS=$'\x1f' read -r p b l <<<"$hit"
-  [ -n "$b" ] || return 0
+  [ -n "$b" ] && { [ "$l" = agent ] || [ "$l" = human ]; } || return 0
   [ "$b" = "$row_board" ] && [ "$l" = "$row_lane" ] && { [ -z "$row_prof" ] || [ "$p" = "$row_prof" ]; } && return 0
   row_moved="$row_board, $row_lane lane${row_prof:+, profile $row_prof}"
   row_prof=$p row_board=$b row_lane=$l
@@ -1481,7 +1483,7 @@ elif [ "${#b[@]}" -gt 0 ]; then
     echo "board: left \"${b[-3]}\" open, $other still works it (its landing closes it; if it is dropped: notes ${b[*]})"
   else
     locate_row
-    mapfile -t b < <(board_cmd)
+    [ -z "$row_moved" ] || mapfile -t b < <(board_cmd)
     if out=$(notes "${b[@]}" 2>&1); then
       echo "board: closed \"${b[-3]}\" with ${b[-1]}${row_moved:+, on $row_board, $row_lane lane (recorded on $row_moved)}"
       # The item follows its row, so each later reader of its row finds it. The row is closed by now, so a
