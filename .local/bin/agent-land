@@ -695,6 +695,7 @@ pr_view() {
           baseRefName: .base.ref, url: .html_url, headRefOid: .head.sha, headRefName: .head.ref,
           isCrossRepository: (.head.repo.full_name != .base.repo.full_name), body: (.body // ""),
           mergeable: (if .mergeable then "MERGEABLE" else "UNKNOWN" end),
+          createdAt: .created_at, mergedAt: .merged_at,
           mergeCommit: {oid: (.merge_commit_sha // "")}} | '"$2" <<<"$raw"
 }
 # pr_edit_body: stdin becomes the PR body.
@@ -903,23 +904,29 @@ own_merged() {
 
 # supersedes_mine: --supersedes <n> says merged #pr replaced the item's own PR #n, closed unmerged, so #pr
 # lands the item though its body names its own session's item and its head is not in this checkout. #n
-# must be in #pr's repo, CLOSED, and the item's by own_merged's ties (its body's "Item: <slug>", its head
-# in this checkout's HEAD, or the item's pr: or open_pr:). The item drops a recorded #n from pr: before
-# anything else reads it: settle_prior refuses a closed one, and once_done one more in the same repo. Sets
-# sup_ref. Why: 2026-11-11 unity-core-playground agent-17 closed #2271 for agent-5's merged #2276, and
-# nothing tied #2276 to its item, so the item stayed open and the session read closed without merging (bk-3).
+# must be in #pr's repo (a bare number, read there), CLOSED, opened before #pr merged (an older merged PR
+# replaced nothing), and the item's by own_merged's ties (its body's "Item: <slug>", its head in this
+# checkout's HEAD, or the item's pr: or open_pr:). Sets sup_ref, and takes a recorded #n off the item read
+# here (drop_sup), since settle_prior refuses a closed one and once_done a second in the same repo; the
+# queue keeps it until the record step writes the lists, so a refusal before then leaves the item as it was.
+# Why: 2026-11-11 unity-core-playground agent-17 closed #2271 for agent-5's merged #2276, and nothing tied
+# #2276 to its item, so the item stayed open and the session read closed without merging (bk-3).
 supersedes_mine() {
-  local out st sh ref refs oids i keep_r=() keep_o=()
+  local out st sh opened merged_at ref refs
   [ "$state" = MERGED ] || die "--supersedes takes a merged PR, and #$pr is $state: let the session that made it land it, then re-run"
   ref="${pr_ref%#*}#$sup"; [[ "$pr_ref" == */*#* ]] || ref=$sup
-  out=$(pr=$sup; pr_view state,headRefOid,body '{state, headRefOid, body} | tojson' 2>&1) ||
-    die "--supersedes $sup: $api pr view $sup: $(lastline "$out")"
-  read -r st sh < <(jq -r '"\(.state) \(.headRefOid)"' <<<"$out")
+  out=$(pr=$sup; pr_view state,headRefOid,body,createdAt '{state, headRefOid, body, createdAt} | tojson' 2>&1) ||
+    die "--supersedes $sup: $api pr view $sup in ${pr_ref%#*}: $(lastline "$out")"
+  read -r st sh opened < <(jq -r '"\(.state) \(.headRefOid) \(.createdAt)"' <<<"$out")
   case "$st" in
   CLOSED) ;;
   MERGED) die "--supersedes $sup: #$sup merged, so nothing replaced it: land it with agent-land $sup" ;;
-  *) die "--supersedes $sup: #$sup is ${st:-unreadable}, not closed: close it first (gh pr close $sup --comment \"superseded by #$pr\"), then re-run" ;;
+  *) die "--supersedes $sup: #$sup in ${pr_ref%#*} is ${st:-unreadable}, not closed: close it first (gh pr close $sup --comment \"superseded by #$pr\"), then re-run" ;;
   esac
+  merged_at=$(pr_view mergedAt .mergedAt 2>&1) || die "--supersedes $sup: $api pr view $pr: $(lastline "$merged_at")"
+  opened=$(date -d "$opened" +%s 2>/dev/null) && merged_at=$(date -d "$merged_at" +%s 2>/dev/null) ||
+    die "--supersedes $sup: cannot read when #$sup opened or #$pr merged"
+  [ "$merged_at" -ge "$opened" ] || die "--supersedes $sup: #$pr merged before #$sup was opened, so it did not replace it"
   read -ra refs <<<"$it_pr"
   # Here-strings, not pipes into grep -q: under pipefail a writer cut off by grep's early exit reads as no match.
   if ! grep -qxF "Item: $item" <<<"$(jq -r '.body // ""' <<<"$out" | tr -d '\r')" &&
@@ -929,16 +936,19 @@ supersedes_mine() {
   fi
   sup_ref=$ref
   echo "supersedes: #$sup closed, replaced by #$pr"
-  grep -qxF -e "$ref" -e "$sup" <<<"$(printf '%s\n' "${refs[@]}")" || return 0
-  read -ra oids <<<"$(jq -r '.merged // ""' <<<"$it")"
-  for i in "${!refs[@]}"; do
-    [ "${refs[i]}" = "$ref" ] || [ "${refs[i]}" = "$sup" ] && continue
-    keep_r+=("${refs[i]}"); [ -z "${oids[i]:-}" ] || keep_o+=("${oids[i]}")
-  done
-  out=$(aq_retry set "$item" "pr=${keep_r[*]}" "merged=${keep_o[*]}" 2>&1) || die "--supersedes $sup: dropping $ref from $item's pr: $(lastline "$out")"
-  it=$(aq_retry show "$item" --json 2>&1) || die "agent-queue show: $(lastline "$it")"
+  it=$(drop_sup <<<"$it")
   it_pr=$(jq -r '.pr // ""' <<<"$it")
-  echo "supersedes: dropped $ref from $item's pr:"
+}
+
+# drop_sup: stdin's item JSON without the superseded PR in pr:, and its merge commit out of merged: at the same
+# place. Lists out of step (a merged: neither empty nor as long as pr:) are left as they are, for settle_prior
+# to refuse.
+drop_sup() {
+  jq -c --arg a "$sup_ref" --arg b "$sup" '
+    (.pr // "" | split(" ") | map(select(. != ""))) as $p | (.merged // "" | split(" ") | map(select(. != ""))) as $m
+    | if ($p | any(. == $a or . == $b) | not) or (($m | length) != 0 and ($m | length) != ($p | length)) then .
+      else [range($p | length) | select($p[.] != $a and $p[.] != $b)] as $k
+        | .pr = ([$k[] | $p[.]] | join(" ")) | .merged = ([$k[] | $m[.] // empty] | join(" ")) end'
 }
 
 # landed_by: sets lb to the set argument that adds "<this session>=<pr_ref>" to the item's landed_by:
@@ -1330,7 +1340,7 @@ if [ "$dry" -eq 1 ]; then
   fi
   [ -z "$fj" ] || echo "forge: Forgejo $fj on remote $remote: each gh pr call below is that API (pulls/$pr, PATCH for the body, commits/<head>/status for the checks, POST pulls/$pr/merge {Do, head_commit_id}, pulls/$pr/files), and each git step reads $remote, not origin"
   echo "item-line: gh pr view $pr${repo:+ -R $repo} --json body, then gh pr edit $pr --body-file -  (unless it has \"Item: $item\")"
-  echo "head: git rev-parse HEAD must equal the PR's headRefOid (when it is git ls-remote origin's tip of the PR branch, poll gh pr view $pr --json headRefOid until it does), else exit 1 naming the PR's checkout (git worktree list); the PR's repo must be origin's; a MERGED PR must name the item, have its head in HEAD, or be on the item; an item not named by --item takes only a PR in its project's repo that it records or whose body has \"Item: $item\""
+  echo "head: git rev-parse HEAD must equal the PR's headRefOid (when it is git ls-remote origin's tip of the PR branch, poll gh pr view $pr --json headRefOid until it does), else exit 1 naming the PR's checkout (git worktree list); the PR's repo must be origin's; a MERGED PR must name the item, have its head in HEAD, or be on the item${sup:+, or replace closed #$sup (--supersedes: #$sup is the item's and opened before #$pr merged; the record drops it from the item's pr:)}; an item not named by --item takes only a PR in its project's repo that it records or whose body has \"Item: $item\""
   echo "review: fleet-dispatch item-tier $item  (tier 3: the body needs a \"Review: \" line and the checks must run)"
   echo "shape: shape-grow \$(git merge-base HEAD origin/<base>) HEAD  (no function over 150 lines gets longer, unless the body has a \"Split: <row id>\" line naming an open row that names each function)"
   echo "checks: gh pr checks $pr${repo:+ -R $repo} --watch --fail-fast -i $CHECKS_WATCH_INTERVAL  (must pass, or report none on a tier 1 or 2 item; a land that would refuse none, on a head with workflow files, first waits up to $CHECKS_FIRST_RUN_TRIES x ${CHECKS_QUEUED_POLL}s for its first run, AGENT_LAND_CHECKS_FIRST_RUN_TRIES)"
@@ -1480,6 +1490,7 @@ case "$done_as" in
   # Re-read so earlier partial landings survive, including a re-run of this PR.
   # closing_pr owns a failed board step even when it is the second PR in the list.
   it=$(aq_retry show "$item" --json 2>&1) || fail item "agent-queue show: $(lastline "$it")"
+  [ -z "$sup_ref" ] || it=$(drop_sup <<<"$it")
   read -ra refs <<<"$(jq -r '.pr // ""' <<<"$it")"
   read -ra oids <<<"$(jq -r '.merged // ""' <<<"$it")"
   found=0
