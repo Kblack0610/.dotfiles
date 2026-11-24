@@ -117,7 +117,9 @@
 #                                each key (watch X, runner X, unit X) with its route, skill and
 #                                tags, filing nothing, and exits 2 when TRIAGE_ROUTES cannot be read; --causes prints, for each red it would queue, the
 #                                tags it files the fix with and its key (fix-red step 5 tags a fix
-#                                queued by hand with them)
+#                                queued by hand with them); --coverage lists each standing watch,
+#                                runner and the hold row no line resolves, each owned:<row> route
+#                                whose row is not open, and each runner whose SKILL names nothing
 #   fleet-bench health [--coverage]
 #                                one row for each part of the fleet (the sections above the
 #                                ARCHITECTURE Flows table and its rows): the Sentinel watches whose
@@ -2086,7 +2088,7 @@ ledger_systems() {
 # naming its channel, `want` from `ptask --want`, whichever runner wrote it; only an agent row can
 # carry #requested), the share that carry no #requested. A `want` event was stamped by the writer.
 # A runner's own row is not a channel: `notes` names its writer (AGENTCTL_NAME) since #1688.
-# routes_unresolved: standing watches, runners and the hold row no triage-routes line resolves, and runners whose SKILL= names nothing (triage_coverage).
+# routes_unresolved: standing watches, runners and the hold row no triage-routes line resolves, owned:<row> routes whose row is not open, and runners whose SKILL= names nothing (triage_coverage).
 # reds_spent: causes red now whose TRIAGE_FIX_TRIES and escalation are spent (triage_spent_write), each carried by one ask, so a red no try is left for shows on the scorecard.
 # reds_unfixed: red fixes merged in the last REDS_DAYS whose red is still or again red (reds_json),
 # leaving out a red TRIAGE_ROUTES sends to alert, which no merge can clear.
@@ -5099,9 +5101,11 @@ reds_spent() {
 # It builds the row each would file, so a line that stops matching the real row text counts too. A
 # watch with an expiry is a bake or a one-off: it pages and goes, so it needs no line. A watch counts
 # as routed only by a line that names it: each watch's fix is its own, so a generic line such as
-# `check(watch): ([a-z-]+) tripped` would read every new watch as covered (penguin P4, ar-4155).
+# `check(watch): ([a-z-]+) tripped` would read every new watch as covered (penguin P4, ar-4155). An
+# owned:<row> route counts too when that row is not open (triage_owned_closed): its red would be
+# sent to chase a closed row (ar-2571: playground-gate-budget owned by the closed ucp-2115).
 triage_coverage() {
-  local f n text out key route re skill fix tags rows=
+  local f n text out key route re skill fix tags rows= routed owned=
   # Exit 1 is the answer "some are dangling"; any other failure means the check did not run, which
   # counts too, so a missing agentctl cannot read as clean.
   out=$(AGENTCTL_CONF_DIR="$LEDGER_CONF_DIR" $BENCH_SKILL_CMD 2>&1) || [ $? -eq 1 ] || out="the SKILL check failed: $out"
@@ -5125,13 +5129,35 @@ triage_coverage() {
   [ -n "$rows" ] || return 0
   triage_shape hold ci-0
   rows+="hold"$'\t'"$text"$'\t-\n'
-  triage_route "${rows%$'\n'}" | while IFS=$'\t' read -r key _ _ route _; do
+  routed=$(triage_route "${rows%$'\n'}")
+  while IFS=$'\t' read -r key _ _ route _; do
     [ "$route" != - ] || { echo "$key"; continue; }
+    [[ "$route" != owned:?* ]] || owned+="$key"$'\t'"${route#owned:}"$'\n'
     [[ "$key" == 'watch '* ]] || continue
     n=${key#watch }
     triage_shape watch "$n"
     triage_line "$text" && [[ "$re" =~ (^|[^a-z0-9_-])$n([^a-z0-9_-]|$) ]] || echo "$key"
-  done
+  done <<<"$routed"
+  [ -z "$owned" ] || triage_owned_closed "${owned%$'\n'}"
+}
+
+# triage_owned_closed <key TAB row lines> -> "<key> owned:<row> <why>" for each owned route whose row
+# is not open: closed, folded into another row, or on no board. One `notes board --json --id` read
+# finds a row wherever it sits, any version, open or closed. An unreadable feed prints one line, so
+# a check that did not run cannot read as clean.
+triage_owned_closed() {
+  local key id feed
+  local -a ids=()
+  while IFS=$'\t' read -r key id; do ids+=(--id "$id"); done <<<"$1"
+  feed=$($BENCH_NOTES_CMD board --json "${ids[@]}" 2>/dev/null </dev/null) && jq -e '.rows | type == "array"' >/dev/null 2>&1 <<<"$feed" \
+    || { echo "owned the board feed (notes board --json --id) cannot be read"; return 0; }
+  jq -r --arg want "$1" '.rows as $rows
+    | $want | split("\n")[] | split("\t") as [$key, $id]
+    | [$rows[] | select(.id == $id)] as $r | ([$r[] | .dup // empty] | first) as $dup
+    | if $r == [] then "\($key) owned:\($id) is on no board"
+      elif any($r[]; .state != "done") then empty
+      elif $dup != null then "\($key) owned:\($id) is closed, folded into \($dup)"
+      else "\($key) owned:\($id) is closed" end' <<<"$feed"
 }
 
 # A cleanup item merges itself at any hour behind the red-fix gate (policy.md), so nobody is there

@@ -76,7 +76,7 @@ Triage counts a cause as owned while an item tagged with its `cause:` is queued,
 - The fix is a decision or needs hands: file an ask (`fleet-asks`), never a sheet row.
 - The fix is larger than this session: a board row with its size, and leave the red open.
 - The red waits on something outside the fleet with an owner already on it (an ask, a hold, a provider outage, hardware, an upstream release): quarantine it, `watch-companion-loop quarantine <watch> --owner <ask, item or hold> --until <date, at most 7d> --why "<what it waits for>"`, and the rollup counts it yellow, never green; triage files no row for it; the probe and pages go on; it lifts itself when the watch reads OK and pages again if it ends still red. For one alert inside `alertmanager-fleet` add `--alert alertname=<a>,<one more label>=<v>` instead: an Alertmanager silence with that owner and expiry, so the alert drops out of the watch and sends no page until it ends, then counts again if it still fires. A renewal keeps the first start, and past 7d from it the red stays red: file a human-sheet row. `watch-companion-loop quarantined` lists each one. Never quarantine a red this session could fix, and never renew one without new evidence of its wait.
-- The route is wrong: the fix is a line in `~/.config/agentctl/triage-routes`, whose header lists the routes. Every standing watch and runner must keep a line: `fleet-bench triage --coverage` lists any that lost one.
+- The route is wrong: the fix is a line in `~/.config/agentctl/triage-routes`, whose header lists the routes. Every standing watch and runner must keep a line: `fleet-bench triage --coverage` lists any that lost one, and any `owned:<row>` route whose row is not open.
 
 ## 7. Coordinate every red
 
