@@ -10,9 +10,9 @@ runs:
   using: composite
   steps:
     # The .debs are cached per runner image, so a hit installs them with dpkg and no network.
-    # A miss goes to the mirror with bounded Acquire timeouts, and the step has its own cap:
-    # a hung mirror (10 min on 2026-11-10, run 42763517511) fails here by name in 3 minutes
-    # instead of eating the job's cap before any test runs. The step takes about 10 s.
+    # A miss goes to the mirror with bounded Acquire timeouts and one 3-minute deadline over the
+    # whole install (a composite step takes no timeout-minutes): a hung mirror (10 min on
+    # 2026-11-10, run 42763517511) fails here by name instead of eating the job's cap. It takes about 10 s.
     # The save is its own step so a red test run still keeps the debs.
     - id: image
       shell: bash
@@ -27,16 +27,18 @@ runs:
         APT_PKGS: ${{ inputs.packages }}
       run: |
         have() { dpkg -s $APT_PKGS >/dev/null 2>&1; }
+        # One deadline over every call below; at least 1 s, since timeout 0 means none.
+        left() { local n=$((180 - SECONDS)); echo $((n > 0 ? n : 1)); }
         have && exit 0
         debs=~/apt-debs
         if compgen -G "$debs/*.deb" >/dev/null; then
-          sudo dpkg -i "$debs"/*.deb >/dev/null && have && exit 0
+          timeout "$(left)" sudo dpkg -i "$debs"/*.deb >/dev/null && have && exit 0
           echo "::warning::the cached apt debs did not install on this image; fetching from the mirror"
         fi
         net=(-o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
         mkdir -p "$debs"
-        timeout 180 sudo apt-get update -qq "${net[@]}"
-        timeout 180 sudo apt-get install -y -qq -f "${net[@]}" -o Dir::Cache::archives="$debs" $APT_PKGS
+        timeout "$(left)" sudo apt-get update -qq "${net[@]}"
+        timeout "$(left)" sudo apt-get install -y -qq -f "${net[@]}" -o Dir::Cache::archives="$debs" $APT_PKGS
         sudo chown -R "$USER" "$debs"   # apt wrote it as root; the save runs as the runner user
     - if: steps.restore.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4

@@ -252,6 +252,7 @@ jobs:
         uses: ./.github/actions/rust
         with:
           targets: x86_64-unknown-linux-musl
+          cache: false   # the rust job saves host-target builds only; musl deps build in about a minute
       - name: Build agent-panel for the ui tier
         run: cargo build --locked --target x86_64-unknown-linux-musl --manifest-path .local/src/agent-panel/Cargo.toml
       # The image comes from the Actions cache when nothing it is built from changed.
@@ -377,7 +378,9 @@ jobs:
           CARGO_TARGET_DIR: ${{ github.workspace }}/.local/src/agent-web/target
         run: |
           grep -qx '.local/src/agent-web' "$RUNNER_TEMP/crates" || { echo "phone render harness: skipped, agent-web not picked" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; }
-          node_dir=~/.cache/agent-web-phone/node
+          # The runner's own dirs: pool runners on one host share a user and its ~/.cache.
+          node_dir=$RUNNER_WORKSPACE/.phone-node
+          export PLAYWRIGHT_BROWSERS_PATH=$RUNNER_WORKSPACE/.ms-playwright
           npm install --no-save --no-package-lock --no-audit --no-fund --prefix "$node_dir" "playwright-core@$PLAYWRIGHT_CORE"
           node "$node_dir/node_modules/playwright-core/cli.js" install chromium
           node tests/agent-web/phone/render.mjs --out "$RUNNER_TEMP/phone"
