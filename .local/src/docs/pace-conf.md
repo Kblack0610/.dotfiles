@@ -16,13 +16,13 @@ pace-conf --json                                   # the same for the hub, plus 
 pace-conf set BURN_OVER_PCT 300 --until 'tue 22:00'           # a window from now
 pace-conf set BURN_OVER_PCT 50 --from 'tomorrow 09:00' --until 'tomorrow 18:00'
 pace-conf set BURN_OVER_PCT 200                    # a standing override, in place of the last one
-pace-conf end BURN_OVER_PCT @1795586400            # end the window that starts then (pace-conf lists the starts)
+pace-conf end BURN_OVER_PCT @1795586400            # end the window that starts then (pace-conf lists each one's)
 pace-conf end BURN_OVER_PCT                        # end the standing override
 ```
 
 Times are anything `date -d` reads. A key is editable only when pace.conf has a `<KEY>_MAX` line, and its value must be a number from 0 to that max: `BURN_OVER_PCT_MAX=1000` makes the burn allowance the first one, and a later key needs only its own `_MAX` line. A window lasts at most `PACE_WINDOW_MAX_DAYS` (7), so a forgotten one ends by itself, and two windows of one key may not overlap. Ending a window in force ends it now, and ending one that has not started removes it.
 
-The overrides live in `~/.agent/pace-overrides`, machine-local state, one `key|value|from|until|by` row each (epoch seconds; an empty `until` is a standing override). `by` is `agent-web` when the hub's audited route ran the command (`AGENT_AUDITED`) and `hand` otherwise. Only `pace-conf` writes the file, under a lock, replacing it whole, and dropping ended windows as it writes.
+The overrides live in `~/.agent/pace-overrides`, machine-local state, one `key|value|from|until|by` row each (epoch seconds; an empty `until` is a standing override). `by` is `agent-web` when the hub's audited route ran the command (`AGENT_AUDITED` is its pid, the test `lib/audit.sh` makes) and `hand` otherwise. Only `pace-conf` writes the file, under a lock, replacing it whole, and dropping ended windows as it writes.
 
 `claude-acct status` names the allowance in force on its fleet line ("allowance 400% (default)", "allowance 300% to Tue 22:00"). The textfile publishes `claude_fleet_allowed_points_per_hour` (what the pool sustains times the allowance) and `claude_fleet_spare_sessions` (dispatch's pace target, which dispatch itself reads live from `claude-acct room --json`), so a surface reads them with no second formula. The allowance loosens only room's `committed` check: pace, reserve, five_hour and capped still refuse on their own.
 

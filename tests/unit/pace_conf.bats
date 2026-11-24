@@ -148,6 +148,8 @@ H=3600
   assert_success
   assert_line --regexp '^BURN_OVER_PCT +300 +window to [A-Z][a-z]{2} 15 09:00 +'"$DEFAULT"' +editable, 0 to 1000$'
   assert_line --regexp '^RESERVE_PCT +[0-9]+ +default '
+  # each window names the start that end takes, since the minute alone does not match one set from now
+  assert_line "  BURN_OVER_PCT 50 from $(date -d "@$((PACE_NOW + 2 * H))" '+%a %d %H:%M') until $(date -d "@$((PACE_NOW + 3 * H))" '+%a %d %H:%M'), by hand; pace-conf end BURN_OVER_PCT @$((PACE_NOW + 2 * H))"
   # past the window the standing row is in force again, and the ended one is out of the schedule
   PACE_NOW=$((PACE_NOW + H)) run --separate-stderr "$PC" --json
   assert_equal "$(jq -c '[.schedule[] | .state]' <<<"$output")" '["in_force","upcoming"]'
@@ -161,12 +163,20 @@ H=3600
   run --separate-stderr "$PC" --json
   assert_failure 1
   assert_equal "$(jq -c '.keys[] | select(.key == "BURN_OVER_PCT") | [.value, .source]' <<<"$output")" '[null,"malformed"]'
+  # the text list keeps its columns with the value empty
+  run "$PC"
+  assert_failure 1
+  assert_line --regexp '^BURN_OVER_PCT +- +malformed +'"$DEFAULT"' +editable'
   run "$PC" end BURN_OVER_PCT
   assert_success
   assert_output --partial 'dropped a malformed BURN_OVER_PCT row'
   assert_equal "$(pace_get BURN_OVER_PCT)" "$DEFAULT"
-  # the hub's audited routes set AGENT_AUDITED; a hand run does not
-  AGENT_AUDITED=1 "$PC" set BURN_OVER_PCT 200
+  # the hub's runner sets AGENT_AUDITED to its own pid, the tool's parent; one inherited from
+  # further up is a hand run
+  AGENT_AUDITED=1 "$PC" set BURN_OVER_PCT 100
+  run cat "$PACE_OVERRIDES"
+  assert_output "BURN_OVER_PCT|100|$PACE_NOW||hand"
+  AGENT_AUDITED=$BASHPID "$PC" set BURN_OVER_PCT 200
   run cat "$PACE_OVERRIDES"
   assert_output "BURN_OVER_PCT|200|$PACE_NOW||agent-web"
 }

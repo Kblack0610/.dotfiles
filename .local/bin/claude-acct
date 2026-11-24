@@ -1496,10 +1496,11 @@ fleet_line() {
         "fleet: \(.live) live (\(.working) working"
         + (if (.working_cost * 10 | round) != .working * 10 then ", \(.working_cost * 10 | round / 10) at Opus cost" else "" end)
         + "), burn \(.burn * 10 | round / 10)/h vs \(.keeps * 10 | round / 10)/h sustainable"
-        + (if .keeps > 0 then " (\(.burn / .keeps * 10 | round / 10)x" else " (" end)
-        + (if .rate != null and .rate > 0 then ", carries ~\(.keeps / .rate | floor) Opus" else "" end)
-        + ", allowance \($allow)"
-        + (if .spare == null then ")" elif .spare > 0 then ", room for ~\(.spare) more)" else ", no room)" end)
+        + " (" + ([if .keeps > 0 then "\(.burn / .keeps * 10 | round / 10)x" else empty end,
+                  if .rate != null and .rate > 0 then "carries ~\(.keeps / .rate | floor) Opus" else empty end,
+                  "allowance \($allow)",
+                  if .spare == null then empty elif .spare > 0 then "room for ~\(.spare) more" else "no room" end]
+                 | join(", ")) + ")"
         + (if .runs_out != null then ", into the reserve \(.runs_out | strflocaltime("%a %H:%M")) before the resets"
            else ", lasts to the resets" end)
         + ", back on pace: "
