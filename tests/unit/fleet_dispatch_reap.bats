@@ -731,6 +731,20 @@ real_epic_board() {
   assert_not_called 'model-lane'
 }
 
+# 2026-11-13 (ar-2267): consoles-p3 was closed status:failed while queued on an unanswered ask (OBAJTo);
+# an item already queued must stay queued, not fail when its former session ends.
+@test "reap: a queue item held on an unanswered ask stays queued, not failed (ar-2267)" {
+  project game beta "$SANDBOX/repos/game"
+  id=$(agent-ask post --project game --options 'a=yes|b=no' 'ship it?')
+  started_item held lab:game-agent-1 '' '' human queued
+  agent-queue set held ask="$id" >/dev/null
+
+  run settle_item held game-agent-1
+  assert_success
+  refute_output --partial 'failed queue item'
+  assert_equal "$(agent-queue show held --json | jq -r .state)" queued
+}
+
 @test "reap: a gone session's merged PR closes the item ok with merged:, and its started row on merge proof" {
   pr_item MERGED
   run cmd_reap
