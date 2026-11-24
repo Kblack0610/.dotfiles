@@ -3765,8 +3765,9 @@ picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | 
   assert_called 'ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 kb@192.0.2.26'
 }
 
-@test "hosts names the queued light items no worker could take, and why" {
-  # 2026-11-19: Razer sat idle while the board's light work was in repos it had not cloned.
+@test "hosts names the queued items no worker could take, heavy and plan ones too, and why" {
+  # 2026-11-19: Razer sat idle while the board's work was in repos it had not cloned. A heavy
+  # item and a plan item are placeable since ar-2891, so a repo no worker clones is their gap too.
   mkdir -p "$SANDBOX/repos/game" "$SANDBOX/repos/site"
   project game beta "$SANDBOX/repos/game"
   project site beta "$SANDBOX/repos/site"
@@ -3780,13 +3781,13 @@ picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | 
   sed -i 's/^mode: oneshot$/&\nplan: p.md/' "$(qitem queued site-plan)"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
   assert_success
-  assert_output --partial "unplaceable: site, 2 queued light items: no worker clones $SANDBOX/repos/site"
+  assert_output --partial "unplaceable: site, 4 queued items: no worker clones $SANDBOX/repos/site"
   # Negative control: the item in a repo the worker clones is placeable, so no line names game.
   refute_output --partial 'unplaceable: game'
   # A harness no worker runs is the other reason; --json stays one row per worker.
   sed -i 's/^agent: claude$/agent: codex/' "$(qitem queued in-game)"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
-  assert_output --partial 'unplaceable: game, 1 queued light item: no worker runs codex ready'
+  assert_output --partial 'unplaceable: game, 1 queued item: no worker runs codex ready'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts --json
   refute_output --partial unplaceable
   # A codex item that resumes its thread here (its rollout is in this machine's ~/.codex) stays
