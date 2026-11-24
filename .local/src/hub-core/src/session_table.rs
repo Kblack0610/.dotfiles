@@ -125,9 +125,9 @@ pub struct SessionRow {
     pub harness: String,
     /// The fleet worker a live row runs on (fleet-sessions `host`), empty for this machine.
     pub host: String,
-    /// The model a live row runs: the one its transcript names (fleet-sessions `model`, opus or
-    /// sonnet), else its queue item's (a codex or agy run keeps no Claude transcript); empty before
-    /// the first turn of a session with no item model, never guessed.
+    /// The model a live row runs, as fleet-bench keys it (`costs::alias`: opus, sonnet): the one its
+    /// transcript names (fleet-sessions `model`), else its queue item's (a codex or agy run keeps no
+    /// Claude transcript); empty before the first turn of a session with no item model, never guessed.
     pub model: String,
     /// A live row's queue item was started as a trainee run (its `trainee:` header, harness:model).
     pub trainee: bool,
@@ -405,8 +405,8 @@ fn live_row(s: &Value, feed: &Feed, items: &HashMap<&str, &Item>) -> SessionRow 
         model: Some(str_of(s, "model"))
             .filter(|m| !m.is_empty())
             .or_else(|| item.and_then(|i| i.model.as_deref()).map(str::trim))
-            .unwrap_or_default()
-            .to_string(),
+            .map(crate::costs::alias)
+            .unwrap_or_default(),
         trainee: item.is_some_and(|i| !extra_str(i, "trainee").trim().is_empty()),
         close: s["close"]["verdict"].as_str().unwrap_or("").to_string(),
         unlinked: is_live(s) && is_unlinked(s),

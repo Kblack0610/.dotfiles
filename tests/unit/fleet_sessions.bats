@@ -1925,13 +1925,13 @@ SH
   [ "$(jq -r '"\(.context_tokens) \(.context_window)"' <<<"$output")" = "5 null" ]
 }
 
-@test "end to end: a row carries the model running as its family word, and null before the first turn" {
+@test "end to end: a row carries the model id running, and null before the first turn" {
   landed_fixture
   PANEL_MODEL=claude-sonnet-5-5 PANEL_HARNESS=claude panel "$SANDBOX/wt" "$SANDBOX/plan.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
-  [ "$(jq -r '"\(.model) \(.harness)"' <<<"$output")" = "sonnet claude" ]
-  # A model that is not a Claude id is kept whole: only claude-<family>-<version> is shortened.
+  [ "$(jq -r '"\(.model) \(.harness)"' <<<"$output")" = "claude-sonnet-5-5 claude" ]
+  # Another harness model id passes through too.
   PANEL_MODEL=gpt-5.1-codex PANEL_HARNESS=codex panel "$SANDBOX/wt" "$SANDBOX/plan.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success

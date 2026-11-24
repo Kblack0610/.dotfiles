@@ -270,7 +270,7 @@ pub fn build(
 
     bar.ready = ready(&queue, now);
     match candidates {
-        Ok(c) if stale(&c, now) => bar.errors.push(format!(
+        Ok(c) if stale(c.written_epoch(), now) => bar.errors.push(format!(
             "dispatch candidates: the snapshot was written {} ago, so its rows are not shown",
             crate::display::fmt::age(now - c.written_epoch().unwrap_or(0))
         )),
@@ -291,10 +291,7 @@ pub fn build(
         Err(e) => bar.errors.push(format!("dispatch candidates: {e}")),
     }
     let slots = match workers {
-        Ok(w)
-            if w.written_epoch()
-                .is_some_and(|t| now - t > SNAPSHOT_STALE_SECS) =>
-        {
+        Ok(w) if stale(w.written_epoch(), now) => {
             bar.errors.push(format!(
                 "dispatch hosts: the snapshot was written {} ago, so the workers' slots are not shown",
                 crate::display::fmt::age(now - w.written_epoch().unwrap_or(0))
@@ -363,9 +360,8 @@ fn hosts(sessions: &[BarSession], slots: &[(String, Option<i64>, Option<i64>)]) 
 
 /// A snapshot older than `SNAPSHOT_STALE_SECS` at `now`; one with no mtime counts as current, since
 /// its rows came from no file.
-fn stale(c: &Candidates, now: i64) -> bool {
-    c.written_epoch()
-        .is_some_and(|t| now - t > SNAPSHOT_STALE_SECS)
+fn stale(written: Option<i64>, now: i64) -> bool {
+    written.is_some_and(|t| now - t > SNAPSHOT_STALE_SECS)
 }
 
 fn sessions(state: &Value, queue: &Queue) -> Vec<BarSession> {
@@ -579,14 +575,14 @@ mod tests {
     #[test]
     fn a_session_carries_its_host_harness_model_and_trainee() {
         let mut here = sess("lab/a:1", "WORKING", 1, "");
-        here["model"] = json!("opus");
+        here["model"] = json!("claude-opus-5-5");
         let mut codex = sess("razer-laptop@lab/b:1", "WORKING", 2, "");
         codex["host"] = json!("razer-laptop");
         codex["item"] = json!({"slug": "cx", "is": "own"});
         let mut trn = sess("hub/c:1", "WORKING", 3, "");
         trn["item"] = json!({"slug": "tr", "is": "own"});
         let mut ran = sess("lab/d:1", "WORKING", 4, "");
-        ran["model"] = json!("sonnet");
+        ran["model"] = json!("claude-sonnet-5-5[1m]");
         ran["item"] = json!({"slug": "op", "is": "own"});
         let fresh = sess("lab/e:1", "WORKING", 5, "");
         let mut st = state(json!([here, codex, trn, ran, fresh]));
