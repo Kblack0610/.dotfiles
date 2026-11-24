@@ -100,7 +100,8 @@ fi
 # --init              reap orphans. A crashed test can leave fzf/tmux children behind, and
 #                     without an init as PID 1 they survive as zombies inside the run.
 # --user host:uid     artifacts land owned by the developer instead of root. That UID has no
-#                     passwd entry in the image, so USER is passed for the tests that read it.
+#                     passwd entry in the image, so USER is passed and the image's entrypoint
+#                     adds one under that name (tests/Dockerfile).
 # --rm                nothing persists but what is written into the bind mount
 # --shm-size          chromium (the phone render harness) runs out of docker's 64 MB /dev/shm
 run_args=(
@@ -133,10 +134,13 @@ fi
 # variable as a definition -- silently dropping --print-output-on-failure.
 # CI turns a missing prerequisite (the agent-panel build session_send.bats drives) from a skip
 # into a failure, so a red cannot hide as a skip there. JUNIT=1 writes the JUnit reports CI
-# uploads (tests/Makefile). RUST_JOBS and CARGO_INCREMENTAL are the rust job's (tests/rust.sh).
+# uploads (tests/Makefile). RUST_JOBS and CARGO_INCREMENTAL are the rust job's (tests/rust.sh),
+# TILECAST_READ_TOKEN the Tilecast schema check's (tests/agent-web/tilecast-schema.sh).
 # No path goes through: the checkout is /work in here, so a path is passed as /work/...
-for v in BATS_FLAGS CI JUNIT RUST_JOBS CARGO_INCREMENTAL; do
-  [ -n "${!v:-}" ] && run_args+=(--env "$v=${!v}")
+# Each goes by name alone, so docker reads the value from this environment and a token never
+# sits in the docker command line.
+for v in BATS_FLAGS CI JUNIT RUST_JOBS CARGO_INCREMENTAL TILECAST_READ_TOKEN; do
+  [ -n "${!v:-}" ] && export "${v?}" && run_args+=(--env "$v")
 done
 
 if [ "${1:-}" = "--shell" ]; then
