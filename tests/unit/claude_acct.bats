@@ -3155,6 +3155,7 @@ STUB
   touch "$SANDBOX/vault/locked"
   run "$ACCT" check tokens
   assert_failure 2
+  assert_output --regexp '^unreadable: rbw is missing or locked'
 }
 
 # A claude stub for setup-token: `setup-token` prints a token, `-p` answers ok. TOKEN_OUT empty
