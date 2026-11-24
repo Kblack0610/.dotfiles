@@ -327,7 +327,7 @@ function pSprint(c, pg) {
   return secHead("p-sprint", "Sprint", open.length) + (open.length ? sprTable(d, open) : none("No window is open.")) +
     secHead("p-sprint-queued", "Queued", queued.length) + (queued.length ? sprTable(d, queued) : none("No window is queued.")) +
     secHead("p-sprint-past", "Past", past ? past.length : null) + (past ? sprPast(past) : `<div class="muted">Reading the page...</div>`) +
-    secHead("p-sprint-across", "By area across sprints", d.areas ? d.areas.lines.length : null) + sprAcross(d.areas);
+    secHead("p-sprint-across", "By area across sprints", sprAcrossData() ? sprAcrossData().lines.length : null) + sprAcross(sprAcrossData());
 }
 
 // Departments: one chip per department the project's type gets (the count on a chip is its

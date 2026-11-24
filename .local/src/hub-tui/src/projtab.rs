@@ -90,10 +90,10 @@ pub struct ProjView {
 }
 
 /// A project's By area across sprints read (`hub_core::sprint_page::read_across`): asked for
-/// `project`, its table `None` until the worker answers.
+/// `scope` (`<profile>/<project>`), its table `None` until the worker answers.
 #[derive(Debug, Default)]
 pub struct AcrossRead {
-    pub project: String,
+    pub scope: String,
     pub table: Option<sprint_page::Across>,
 }
 
@@ -3027,7 +3027,7 @@ pub(crate) mod tests {
         let mut pv = ProjView {
             inner: SPRINT,
             across: Some(AcrossRead {
-                project: "garden".into(),
+                scope: "home/garden".into(),
                 table: None,
             }),
             ..Default::default()

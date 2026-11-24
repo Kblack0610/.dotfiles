@@ -264,6 +264,7 @@ fn router(state: Shared) -> Router {
         .route("/api/board", get(board::feed).post(board::write))
         .route("/api/sprints", get(sprints::get))
         .route("/api/sprints/page", get(sprints::page))
+        .route("/api/sprints/across", get(sprints::across))
         .route("/api/deliverables", get(deliverables::get))
         .route("/api/stages", get(stages::get))
         .route("/api/stages/requirements", get(stages::get_requirements))

@@ -425,7 +425,7 @@ pub enum Msg {
     /// or why it failed.
     SprintPage(String, Box<Result<hub_core::sprint_page::Page, String>>),
     /// An opened project's By area across sprints (hub_core::sprint_page::read_across): the
-    /// project it was asked for, then the table.
+    /// `<profile>/<project>` it was asked for, then the table.
     SprintAcross(String, Box<hub_core::sprint_page::Across>),
     /// The Costs tab's one read of every source it cuts (hub_core::costs::read).
     Costs(Box<hub_core::costs::Costs>),
@@ -1062,38 +1062,44 @@ impl App {
     }
 
     /// The Sprint tab's By area across sprints reads once per opened project, once the board
-    /// feed says which window is open: as with a page, the notes reads behind it have no file to
-    /// watch.
+    /// feed has answered which window is open (a feed that failed is said in its errors): as with
+    /// a page, the notes reads behind it have no file to watch.
     fn read_across_due(&mut self, profile: String, project: String) {
         if self.pv.across.is_some() {
             return;
         }
-        let Some(feed) = self.feed() else {
-            return;
-        };
         let now = chrono::Local::now().naive_local();
-        let open = hub_core::sprint_page::open_windows(feed, &profile, &project, now);
+        let (open, note) = match &self.tasks {
+            None => return,
+            Some(Ok(f)) => (
+                hub_core::sprint_page::open_windows(f, &profile, &project, now),
+                None,
+            ),
+            Some(Err(e)) => (Vec::new(), Some(format!("board: {e}"))),
+        };
+        let scope = format!("{profile}/{project}");
         self.pv.across = Some(crate::projtab::AcrossRead {
-            project: project.clone(),
+            scope: scope.clone(),
             table: None,
         });
         let (tx, runner) = (self.tx.clone(), self.runner.clone());
         std::thread::spawn(move || {
-            let a = hub_core::sprint_page::read_across(
+            let mut a = hub_core::sprint_page::read_across(
                 runner.as_ref(),
                 hub_core::areas::Areas::load(),
                 &profile,
                 &project,
                 &open,
             );
-            let _ = tx.send(Msg::SprintAcross(project, Box::new(a)));
+            a.errors.extend(note);
+            let _ = tx.send(Msg::SprintAcross(scope, Box::new(a)));
         });
     }
 
-    /// A By area across sprints read came back: kept only for the project it was asked for,
-    /// since one opened after it starts its own.
-    fn sprint_across_in(&mut self, project: &str, a: hub_core::sprint_page::Across) {
-        if let Some(r) = self.pv.across.as_mut().filter(|r| r.project == project) {
+    /// A By area across sprints read came back: kept only for the `<profile>/<project>` it was
+    /// asked for, since one opened after it starts its own.
+    fn sprint_across_in(&mut self, scope: &str, a: hub_core::sprint_page::Across) {
+        if let Some(r) = self.pv.across.as_mut().filter(|r| r.scope == scope) {
             r.table = Some(a);
         }
     }
@@ -2420,7 +2426,7 @@ impl App {
                 }
             }
             Msg::SprintPage(version, r) => self.sprint_page_in(version, *r),
-            Msg::SprintAcross(project, a) => self.sprint_across_in(&project, *a),
+            Msg::SprintAcross(scope, a) => self.sprint_across_in(&scope, *a),
             Msg::StagesFile if self.ladder_shown() => self.read_ladder(),
             Msg::StagesFile => {}
             Msg::Deliverables(r) => {

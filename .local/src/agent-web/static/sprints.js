@@ -3,14 +3,14 @@
 // and hub_core::project_sprints for the scored past), on two surfaces that share this table:
 // Projects' Sprints inner tab (every project's open and queued windows, then each project's last
 // score) and an opened project's Sprint inner tab (its open window, the ones queued behind it,
-// its Past sprints and By area across sprints). A version in any of them links to that window's own page (/api/sprints/page,
+// its Past sprints and By area across sprints, read on its own from /api/sprints/across). A version in any of them links to that window's own page (/api/sprints/page,
 // hub_core::sprint_page): its dates and score, a By area rollup and every row with its outcome on
 // the shared table, shown in place of the list while `pst.sprint` names it. Read only while
 // shown, on resync and on a queue change.
 
 const sprShown = () => st.tab === "projects" && (pst.open ? pst.inner === "sprint" && !pst.sprint : pTab() === "sprints");
 const sprScope = () => pst.open || "";
-const sprst = { data: null, err: null, scope: null };
+const sprst = { data: null, err: null, scope: null, across: null, acrossScope: null };
 
 // One window's page: its view keys carry the `sp` prefix, so they never read the Rows tab's.
 const spgShown = () => st.tab === "projects" && !!pst.open && pst.inner === "sprint" && !!pst.sprint;
@@ -69,6 +69,7 @@ const refreshSprints = coalesce(async () => {
   if (spgShown()) { await spg.refresh(); return; }
   if (!sprShown()) return;
   const scope = sprScope();
+  if (scope) sprAcrossRead(scope);
   try {
     const got = await api("/api/sprints" + (scope ? "?scope=" + encodeURIComponent(scope) : ""));
     if (scope === sprScope()) {
@@ -81,6 +82,17 @@ const refreshSprints = coalesce(async () => {
 
 // What the pane draws is the read for its own scope; another's is stale and waits for the next.
 const sprData = () => (sprst.data && sprst.scope === sprScope() ? sprst.data : null);
+
+// By area across sprints reads every window, so it is its own read (/api/sprints/across) and the
+// open window never waits on it; a failed read is the table's one error.
+async function sprAcrossRead(scope) {
+  let got;
+  try { got = await api("/api/sprints/across?scope=" + encodeURIComponent(scope)); } catch (e) { got = { heads: [], lines: [], errors: [e.message] }; }
+  if (scope !== sprScope()) return;
+  sprst.across = got; sprst.acrossScope = scope;
+  if (st.tab === "projects") renderProjects();
+}
+const sprAcrossData = () => (sprst.across && sprst.acrossScope === sprScope() ? sprst.across : null);
 
 // The windows `rows` as one table; a version is the link to its page.
 function sprTable(d, rows) {

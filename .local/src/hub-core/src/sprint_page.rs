@@ -249,6 +249,9 @@ pub fn open_windows(
         .collect()
 }
 
+/// How many window reads `read_across` runs at once.
+const READS_AT_ONCE: usize = 4;
+
 /// Read a project's By area across sprints table: every scored window plus the `windows` the
 /// caller knows of beside them (the open one), each read as its page is. A window that fails to
 /// read is said in `errors` and left out, never drawn as an empty column.
@@ -269,26 +272,32 @@ pub fn read_across(
     let mut versions = known(runner, project, windows, &mut errors);
     in_order(&mut versions);
     let groups = groups_or_none(areas, &mut errors);
-    // One notes read per window, side by side: they are independent and each is a process.
-    let reads: Vec<Result<Page, String>> = std::thread::scope(|s| {
-        let jobs: Vec<_> = versions
-            .iter()
-            .map(|v| {
-                let groups = &groups;
-                s.spawn(move || {
-                    fetch(runner, project, v)
-                        .and_then(|json| build(&json, groups, profile, project, vec![]))
-                        .map_err(|e| format!("{v}: {e}"))
-                })
+    // One notes read per window, a few side by side: they are independent and each is a process,
+    // and a long history must not start one per window at once on a shared machine.
+    let reads: Vec<Result<Page, String>> = versions
+        .chunks(READS_AT_ONCE)
+        .flat_map(|batch| {
+            std::thread::scope(|s| {
+                let jobs: Vec<_> = batch
+                    .iter()
+                    .map(|v| {
+                        let groups = &groups;
+                        s.spawn(move || {
+                            fetch(runner, project, v)
+                                .and_then(|json| build(&json, groups, profile, project, vec![]))
+                                .map_err(|e| format!("{v}: {e}"))
+                        })
+                    })
+                    .collect();
+                jobs.into_iter()
+                    .map(|j| {
+                        j.join()
+                            .unwrap_or_else(|_| Err("a window read panicked".into()))
+                    })
+                    .collect::<Vec<_>>()
             })
-            .collect();
-        jobs.into_iter()
-            .map(|j| {
-                j.join()
-                    .unwrap_or_else(|_| Err("a window read panicked".into()))
-            })
-            .collect()
-    });
+        })
+        .collect();
     let pages: Vec<Page> = reads
         .into_iter()
         .filter_map(|r| r.map_err(|e| errors.push(e)).ok())
@@ -337,7 +346,11 @@ fn head_lines(p: &Page) -> Vec<String> {
 /// The version names a read may pass to notes, oldest first, each once.
 fn in_order(all: &mut Vec<String>) {
     all.retain(|v| safe_version(v));
-    all.sort_by_key(|v| crate::tasks::release_order(v));
+    // Ties on the release order break on the name, so a name listed twice sits together for dedup.
+    all.sort_by(|a, b| {
+        let key = crate::tasks::release_order;
+        key(a).cmp(&key(b)).then_with(|| a.cmp(b))
+    });
     all.dedup();
 }
 
