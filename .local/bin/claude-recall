@@ -13,7 +13,7 @@ standing MCP server, so it costs zero session context until invoked.
 Usage:
   claude-recall search TERM [--project P] [--branch B] [--since YYYY-MM-DD]
                            [--role user|assistant] [--regex] [--thinking]
-                           [--context N] [--limit N] [--ignore-case/-i]
+                           [--context N] [--limit N] [--all-files] [--ignore-case/-i]
   claude-recall list [--project P] [--limit N]
   claude-recall show SESSION_ID_OR_PREFIX [--thinking]
   claude-recall stats [--days N | --since DATE|ISO] [--kind slash,skill,agent,intent,prompt,
@@ -39,6 +39,7 @@ Examples:
 """
 import argparse
 import functools
+import heapq
 import json
 import math
 import os
@@ -200,25 +201,69 @@ def snippet(text, matcher, context):
     return f"{pre}{body}{post}"
 
 
+# A record is written before its file's mtime is set, so no record is newer than its file; this
+# slack covers clock skew between the writer and the filesystem.
+MTIME_SLACK = 60
+
+
+def iso_utc(epoch):
+    """An epoch as UTC "2026-11-24T08:43:24": its first 19 characters are all a transcript
+    timestamp is compared on, so a timestamp with or without fractional seconds orders the same."""
+    return datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def raw_words(term, ignore_case):
+    """The runs of TERM that JSON stores unescaped and the renderer does not synthesize around:
+    every one must appear in the raw line of any record whose rendered text holds TERM. Spaces,
+    brackets, quotes, slashes and non-ASCII split the term, since blocks_to_text adds its own
+    "[tool_use X] " framing and JSON may escape those."""
+    words = re.findall(r"[A-Za-z0-9_.@#%=+~-]+", term)
+    return [w.casefold() for w in words] if ignore_case else words
+
+
 def cmd_search(a):
     flags = re.IGNORECASE if a.ignore_case else 0
     if a.regex:
         matcher = re.compile(a.term, flags)
     else:
         matcher = re.compile(re.escape(a.term), flags)
+    words = [] if a.regex else raw_words(a.term, a.ignore_case)
 
     candidates = rg_prefilter(a.term, a.regex, a.ignore_case)
     files = (sorted(first_copies(sorted(candidates, key=lambda f: next(
         (i for i, r in enumerate(ROOTS) if f.is_relative_to(r)), len(ROOTS)))))
         if candidates is not None else list(iter_files()))
 
-    results = []
+    # Newest file first: with --since a file last written before it holds no hit, and with
+    # --limit the scan stops once every unread file is older than the oldest kept hit.
+    stamped = []
     for path in files:
+        try:
+            stamped.append((path.stat().st_mtime, path))
+        except OSError:
+            continue
+    stamped.sort(key=lambda m: m[0], reverse=True)
+
+    results = []
+    newest_kept = []   # min-heap of the --limit newest hit timestamps
+    stopped = ""   # what ended the scan early: "since" or "limit"
+    for mtime, path in stamped:
+        if not a.all_files:
+            if a.since and iso_utc(mtime + MTIME_SLACK)[:10] < a.since:
+                stopped = "since"
+                break
+            if a.limit and len(newest_kept) >= a.limit and iso_utc(mtime + MTIME_SLACK) < newest_kept[0][:19]:
+                stopped = "limit"
+                break
         try:
             lines = path.read_text(errors="replace").splitlines()
         except OSError:
             continue
         for line in lines:
+            if words:
+                hay = line.casefold() if a.ignore_case else line
+                if not all(w in hay for w in words):
+                    continue
             rec = parse_line(line)
             if not rec or rec.get("type") not in ("user", "assistant"):
                 continue
@@ -240,8 +285,12 @@ def cmd_search(a):
             if not matcher.search(text):
                 continue
             results.append((ts, proj, role, path.stem, text))
+            if a.limit:
+                heapq.heappush(newest_kept, ts)
+                if len(newest_kept) > a.limit:
+                    heapq.heappop(newest_kept)
 
-    results.sort(key=lambda r: r[0])
+    results.sort(key=lambda r: (r[0], r[3]))
     total = len(results)
     if a.limit and total > a.limit:
         results = results[-a.limit :]
@@ -261,6 +310,9 @@ def cmd_search(a):
     note = f"{shown} match(es)"
     if shown < total:
         note += f" (of {total}; use --limit to widen)"
+    if stopped:
+        note += (" (files last written before --since not read; --all-files reads them)" if stopped == "since"
+                 else " (older files not read; a larger --limit or --all-files reads them)")
     if candidates is not None:
         note += "  [rg prefilter]"
     print(c(DIM, note))
@@ -2301,7 +2353,10 @@ def main():
     s.add_argument("--thinking", action="store_true", help="include thinking blocks")
     s.add_argument("--ignore-case", "-i", action="store_true")
     s.add_argument("--context", type=int, default=120, help="chars of snippet context")
-    s.add_argument("--limit", type=int, default=40, help="max matches (0 = all)")
+    s.add_argument("--limit", type=int, default=20, help="max matches, newest first; the scan stops "
+                   "once older files cannot beat them (0 = all)")
+    s.add_argument("--all-files", action="store_true",
+                   help="read every candidate file: no mtime skip for --since, no early stop at --limit")
     s.set_defaults(func=cmd_search)
 
     ls = sub.add_parser("list", help="recent sessions with titles")
