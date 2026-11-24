@@ -566,6 +566,7 @@ SH
   local opts='go=run it now|later=run it later' a b c
   a="$("$AGENT_ASK" post --project demo --options "$opts" 'held?')"
   AQ="$AGENT_ASK_QUEUE_CMD" legacy held "tags: ask:$a=go+later" --project demo "the next phase" >/dev/null
+  rm -f "$wake"   # the add of the held item is itself a wake
   "$AGENT_ASK" answer "$a" go 2>/dev/null
   [ ! -e "$wake" ] || fail "an answer alone woke a kick before its delivery"
   "$AGENT_ASK" deliver --all 2>/dev/null
@@ -580,6 +581,7 @@ SH
   # Negative control: an answer the held item does not wait for releases nothing, so it is filed too.
   c="$("$AGENT_ASK" post --project demo --options "$opts" 'only on go?')"
   AQ="$AGENT_ASK_QUEUE_CMD" legacy picky "tags: ask:$c=go" --project demo "the go phase" >/dev/null
+  rm -f "$wake"
   "$AGENT_ASK" answer "$c" later 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
   assert_called "chore(ask): only on go? -> answered: later (ask $c)"
   [ ! -e "$wake" ] || fail "an answer the held item does not wait for wrote a wake"

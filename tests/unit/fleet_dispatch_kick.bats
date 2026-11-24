@@ -136,7 +136,7 @@ bats_require_minimum_version 1.5.0
   agent-queue add --project game --slug mine "mine"
   export KICK_ROUNDS=3
   # agent-hold is read once a round: the first read is the write that lands mid-run.
-  stub agent-hold 'echo "$*" >> "$SANDBOX/hold.calls"; [ "$(wc -l < "$SANDBOX/hold.calls")" -ne 1 ] || { echo mid-run > "$FLEET_DISPATCH_DIR/.wake"; }; exit 0'
+  stub agent-hold "echo \"\$*\" >> '$SANDBOX/hold.calls'; [ \"\$(wc -l < '$SANDBOX/hold.calls')\" -ne 1 ] || echo mid-run > '$FLEET_DISPATCH_DIR/.wake'; exit 0"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" kick
   assert_success
   assert_equal "$(grep -c 'check dispatch' "$SANDBOX/hold.calls")" 2
