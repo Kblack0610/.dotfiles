@@ -6190,7 +6190,7 @@ mod inbox_tests {
         .unwrap();
         assert_eq!(rc, 0);
         let s = v.read();
-        assert_eq!(s.matches("- [ ] ").count(), 1, "no second row:\n{s}");
+        assert_eq!(s.matches("<!-- id:").count(), 1, "no second row:\n{s}");
         assert!(
             s.contains("<!-- id:sc-4 -->\n  was: the gun sound plays late #from/s1\n"),
             "the words joined the open row:\n{s}"
@@ -6217,7 +6217,7 @@ mod inbox_tests {
             Lane::Human,
         )
         .unwrap();
-        assert_eq!(v.read().matches("- [ ] ").count(), 2, "{}", v.read());
+        assert_eq!(v.read().matches("<!-- id:").count(), 2, "{}", v.read());
     }
 
     #[test]

@@ -1672,7 +1672,7 @@ ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)"
   grep -q '  was: the pause menu still flickers on resume' "$SHEET" || fail "a repeat of the joined line was left: $(cat "$SHEET")"
   refute_output --partial 'filed no row'
   [ -z "$(inbox | grep -v '^## ' | grep .)" ] || fail "a line stayed in the inbox: $(inbox)"
-  [ "$(tasks | grep -c '^- \[ \] ')" = 2 ] || fail "the twin was filed as a second row: $(cat "$SHEET")"
+  [ "$(tasks | grep -c '<!-- id:')" = 2 ] || fail "the twin was filed as a second row: $(cat "$SHEET")"
   grep -q '  was: the pause menu flickers on resume' "$SHEET" || fail "$(cat "$SHEET")"
   grep -q 'gun sound plays late' "$SHEET" || fail "the different row was not filed: $(cat "$SHEET")"
   [ "$(jq -r 'select(.action == "dup") | .id' "$HOME/.local/state/notes/ingest.jsonl")" = sc-4 ] || fail "no dup record: $(cat "$HOME/.local/state/notes/ingest.jsonl")"
