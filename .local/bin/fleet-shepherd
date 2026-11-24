@@ -145,7 +145,7 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 # (critical_due): an hour is more than a slot turn's 45m plus the merge. Confidence low, from one incident (2026-11-19:
 # ucp-2712 waited 5h on P1 #2935 in the slot); revisit when SLOT_MINUTES moves or critical lines are mostly skipped.
 : "${FLEET_SHEPHERD_CRITICAL_MIN:=60}"
-# A NEEDS row on its own pending ask, its session idle this long since it asked, gets one nudge (needs_nudge): the
+# A NEEDS row on its own pending ask, its session idle this long, gets one nudge (needs_nudge): the
 # escalation pages the human and tells the session nothing, so a session whose ask had an agent route sat on it
 # (bd-35, 2026-11-19: personal-sites-agent-1 waited 18h on ask 62HFZu, "fix GitHub billing or merge without CI";
 # the route was the repo's home runners, ar-3971, taken only after the human asked why it was never nudged).
@@ -333,10 +333,12 @@ TAKEOVER_JQ="$KEPT_JQ"'def takeover_row:
 # named hub/dotfiles:6/7/9 while the pass before had handled :5/6/8; the pane id stays. due_key keys
 # the line by it, and the target stays for a reader to act on. A row with no pane gets no tag.
 PANE_TAG_JQ='def ptag: if (.pane // "") != "" then " [\(.pane)]" else "" end;'
-# NEEDS_NUDGE_JQ: needs_nudge -> true for a NEEDS row already escalated, not yet nudged for its fact, whose session
-# filed the ask it waits on and has sat idle FLEET_SHEPHERD_NEEDS_NUDGE_MIN since (needs $needs_min). A dialog or
-# plan approval holds no ask of its own, and one carrying on past its ask is busy, so neither reads true.
+# NEEDS_NUDGE_JQ (after KEPT_JQ and CLOSE_NUDGE_JQ): needs_nudge -> true for a NEEDS row already escalated, not
+# yet nudged for its fact, not the human's and not the close flow's, holding an ask its session filed, the session
+# idle FLEET_SHEPHERD_NEEDS_NUDGE_MIN or more (needs $needs_min; idle time, not the ask's age). A dialog or plan
+# approval holds no ask of its own; one carrying on past its ask is overdue_due's, which keys the same fact slot.
 NEEDS_NUDGE_JQ='def needs_nudge: .bucket == "NEEDS" and .escalated and (.nudged | not) and (.close_sent | not)
+  and (kept | not) and (close_nudge | not) and ((.reason // "") | endswith("carrying on") | not)
   and (.own_asks // 0) > 0 and (.activity // "") == "idle" and (.idle_min // 0) >= $needs_min;'
 # HELD_JQ: held -> true for a DONE or LANDED row the close flow keeps for work left here
 # (`close.left`, set by CLOSE_JQ's unlanded, only-item and held steps), so it is nudged though its

@@ -206,12 +206,15 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   needs() { row "$1" NEEDS "$2" true | jq -c --argjson x "$3" '. + {own_asks: 1, activity: "idle", idle_min: 300} + $x'; }
   doc "[$(needs a false '{}'), $(needs b false '{"idle_min": 60}'), $(needs c false '{"activity": "busy"}'),
         $(needs d false '{"own_asks": 0}'), $(needs e true '{}'), $(needs f false '{"labels": ["manual"]}'),
-        $(row g NEEDS false false | jq -c '. + {own_asks: 1, activity: "idle", idle_min: 300}'), $(needs h false '{}')]"
+        $(row g NEEDS false false | jq -c '. + {own_asks: 1, activity: "idle", idle_min: 300}'), $(needs h false '{}'),
+        $(needs i false '{}'), $(needs j false '{"reason": "1 pending ask(s), carrying on"}')]"
   said h human "$(ago 10)" "still here"
+  jq -nc --arg at "$(date -d '20 minutes ago' -Iseconds)" '{at:$at, sid:"i", kind:"nudge", fact:"x"}' > "$FLEET_SHEPHERD_DIR/nudges.jsonl"
   run "$SH" due
   assert_success
   # a: idle 5h on its own escalated ask. b: under the threshold; c: carrying on; d: a dialog, no ask of its own;
-  # e: already nudged for this fact; f: the human's; g: not escalated yet, so it escalates first; h: the human just typed.
+  # e: already nudged for this fact; f: the human's; g: not escalated yet, so it escalates first; h: the human just typed;
+  # i: nudged 20m ago, inside the gap; j: carrying on, which overdue_due owns.
   assert_line 'nudge NEEDS: a f-a'
   assert_line 'escalate NEEDS: g r-g; then: fleet-sessions escalate g "f-g"'
   assert_equal "$(grep -c '^nudge NEEDS' <<<"$output")" 1

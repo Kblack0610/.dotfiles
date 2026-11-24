@@ -1123,14 +1123,15 @@ mark() {
   ) 8>"$LEDGER/mark.lock"
 }
 
-# release_left <rows>: a session that left NEEDS drops its NEEDS escalation and its NEEDS nudge, so its
-# next ask or dialog pages once and, still unanswered, is nudged once (fleet-shepherd needs_nudge). A session that left DONE keeps its entry, and its close claim in $CLOSED is
+# release_left <rows>: a session that left NEEDS drops its NEEDS escalation, so its next ask or
+# dialog pages once. Its NEEDS nudge stays: a session the nudge woke flips WORKING and back, and the
+# same ask is nudged once (fleet-shepherd needs_nudge); any later nudge replaces it. A session that left DONE keeps its entry, and its close claim in $CLOSED is
 # never released: one typed close per session.
 release_left() {
   local b sid _
   while IFS=$'\t' read -r b _ sid _; do
     [ -n "$sid" ] && [ -f "$LEDGER/$sid" ] || continue
-    if [ "$b" != NEEDS ] && grep -qE '^(escalated|fact): NEEDS ' "$LEDGER/$sid"; then sed -i -E '/^(escalated|fact): NEEDS /d' "$LEDGER/$sid"; fi
+    if [ "$b" != NEEDS ] && grep -q '^escalated: NEEDS ' "$LEDGER/$sid"; then sed -i '/^escalated: NEEDS /d' "$LEDGER/$sid"; fi
   done <<<"$1"
 }
 escalate() { ledger_write "$1" escalated "$2" && finding_paged "$1" "$2"; }

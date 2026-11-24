@@ -1625,14 +1625,14 @@ MD
   assert_failure
   run nudged sid-10 'overdue Phase 2: rollout'
   assert_success
-  # a NEEDS nudge (fleet-shepherd needs_nudge) keeps the escalation, and leaving NEEDS drops both (bd-35)
+  # a NEEDS nudge (fleet-shepherd needs_nudge) keeps the escalation; leaving NEEDS drops only the escalation (bd-35)
   escalate sid-11 'NEEDS 1 pending ask(s)'
   mark sid-11 'NEEDS 1 pending ask(s) @feat/y'
   run escalated sid-11 'NEEDS 1 pending ask(s)'
   assert_success
   release_left "$(printf 'WORKING\tt1\tsid-11\n')"
   run nudged sid-11 'NEEDS 1 pending ask(s)'
-  assert_failure
+  assert_success
   run escalated sid-11 'NEEDS 1 pending ask(s)'
   assert_failure
   # any other escalation is cleared by a new nudge, so a fact that comes back pages again
