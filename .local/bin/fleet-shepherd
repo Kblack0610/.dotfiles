@@ -43,7 +43,8 @@
 #                          table .config/fleet-lead/functions.tsv
 #   fleet-shepherd due     print what a pass would move, one line each; exit 0 if anything,
 #                          1 if nothing. Reads the document and the blocked sample as they
-#                          are, writes nothing
+#                          are, writes nothing. A session's nudge line waits while the human
+#                          typed into it in the last LEASE_MIN or it was nudged in the last NUDGE_GAP_MIN
 #   fleet-shepherd skip "<due line>" "<why>"
 #                          answer a due line by leaving it: it stays out of check while it is
 #                          due. check leads with `unhandled: <line>` for any line the last pass
@@ -98,6 +99,7 @@
 set -uo pipefail
 
 : "${FLEET_SHEPHERD_LEASE_MIN:=30}" # how long a human turn reads as talking and a pane's tag stays live
+: "${FLEET_SHEPHERD_NUDGE_GAP_MIN:=60}" # no nudge line for a session sent one this recently, whatever the fact (ar-1576)
 : "${FLEET_SHEPHERD_CHECK_WAIT:=120}" # seconds a check waits for a run that holds the run lock; past it the check exits 75
 : "${FLEET_SHEPHERD_USAGE_WAIT:=20}" # seconds pass_cost waits on `agent-usage session` (Prometheus), so a hung query never holds the run lock
 # Set only for the child the run-lock holder starts (run_locked). Unset at once, so nothing that
@@ -333,7 +335,7 @@ HELD_JQ='def held: (.bucket | IN("DONE","LANDED")) and (.close.left // null) != 
 cmd_due() {
   [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
   local out
-  out="$(jq -r --argjson items "$(shared_items)" "$KEPT_JQ$CLOSE_NUDGE_JQ$PANE_TAG_JQ$HELD_JQ"'
+  out="$(jq -r --argjson items "$(shared_items)" --argjson off "$(nudge_held_off)" "$KEPT_JQ$CLOSE_NUDGE_JQ$PANE_TAG_JQ$HELD_JQ"'
     ( (.main // [])[] | select((.escalated | not) and (.owners // []) == [])
       | "nightly red: \(.repo) (\(.reason // "-"))" )
   , ( (.shared // [])[] | select(.escalated | not) | . as $r
@@ -353,7 +355,7 @@ cmd_due() {
       | ((.own_asks // 0) > 0) as $ask
       | if close_nudge then empty
         elif (.bucket | IN("DONE","LANDED","STALLED","CHAT")) and (.nudged | not) then
-          if ($ask | not) and (.bucket == "STALLED" or held)
+          if ($ask | not) and (.bucket == "STALLED" or held) and (.session_id as $sid | $off | index($sid) | not)
           then "nudge \(.bucket): \(.target)\(ptag) \(.fact // "")" else empty end
         elif .bucket == "NEEDS" and (.escalated | not) then
           "escalate \(.bucket): \(.target)\(ptag) \(.reason // ""); then: fleet-sessions escalate \(.session_id) \"\(.fact)\""
@@ -1598,13 +1600,37 @@ JQ_TURNS='def said: (.message.content? // "") | if type == "string" then . else 
 # talking <id> -> 0 when the human typed into the pass in the last lease window. The pass's own
 # prompt is the first human-origin entry, so it never counts; tool results carry no origin.
 talking() {
+  local at
+  at="$(last_human_epoch "$1" 2)" || return 1
+  [ $(( $(date +%s) - at )) -lt $(( FLEET_SHEPHERD_LEASE_MIN * 60 )) ]
+}
+
+# last_human_epoch <id> <first entry to count> -> the epoch of the human's last turn in the session's
+# transcript, exit 1 with none. A pass skips entry 1 (its own prompt); a hand-started session counts it.
+last_human_epoch() {
   local tp at
   tp="$(pass_transcript "$1")"
   [ -n "$tp" ] || return 1
-  at="$(jq -r "$JQ_TURNS"' select(human) | .timestamp' "$tp" 2>/dev/null | tail -n +2 | grep . | tail -n 1)"
+  at="$(jq -r "$JQ_TURNS"' select(human) | .timestamp' "$tp" 2>/dev/null | tail -n +"$2" | grep . | tail -n 1)"
   # Checked first: `date -d ""` is midnight today, which read as talking for a lease after it.
-  [ -n "$at" ] && at="$(date -d "$at" +%s 2>/dev/null)" || return 1
-  [ $(( $(date +%s) - at )) -lt $(( FLEET_SHEPHERD_LEASE_MIN * 60 )) ]
+  [ -n "$at" ] && date -d "$at" +%s 2>/dev/null
+}
+
+# nudge_held_off -> the JSON array of session ids a nudge line waits on (ar-1576, 2026-11-10: three
+# passes sent one hand-started session the plan-finished nudge in minutes, the human still in it):
+# the human typed into the session in the last FLEET_SHEPHERD_LEASE_MIN, or it was sent any nudge in
+# the last FLEET_SHEPHERD_NUDGE_GAP_MIN. Only a row a nudge line could name is read; a remote
+# session has no local transcript, so only the gap holds it.
+nudge_held_off() {
+  local sid at now held=""
+  now="$(date +%s)"
+  while read -r sid; do
+    [ -n "$sid" ] || continue
+    at="$(last_human_epoch "$sid" 1)" && [ $((now - at)) -lt $((FLEET_SHEPHERD_LEASE_MIN * 60)) ] && { held+="$sid"$'\n'; continue; }
+    at="$([ -r "$LEDGER/nudges.jsonl" ] && jq -r --arg s "$sid" 'select(.kind == "nudge" and .sid == $s) | .at' "$LEDGER/nudges.jsonl" 2>/dev/null | tail -n 1)"
+    [ -n "$at" ] && at="$(date -d "$at" +%s 2>/dev/null)" && [ $((now - at)) -lt $((FLEET_SHEPHERD_NUDGE_GAP_MIN * 60)) ] && held+="$sid"$'\n'
+  done < <(jq -r '(.sessions // [])[] | select((.bucket | IN("DONE","LANDED","STALLED","CHAT")) and (.nudged | not)) | .session_id' "$STATE_FILE" 2>/dev/null)
+  printf '%s' "$held" | jq -Rsc 'split("\n") | map(select(. != ""))'
 }
 
 # conversation <id> <since epoch> -> what the human said to the pass after <since> and what it

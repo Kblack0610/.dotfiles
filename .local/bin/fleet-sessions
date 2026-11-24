@@ -996,8 +996,9 @@ plan_done() {
 # items start, and each change drew a fresh wind-down nudge to the same session (2026-11-07:
 # dotfiles-agent-6 got three, from three passes). Whether the nudge moved it is the escalation's
 # question, not a reason to send it again. A NEEDS fact is what the human owes, so it drops the
-# branch and head: a session holding an ask that switched branch or pushed paged again (ar-233).
-fact_key() { case "$1" in DONE\ *) echo DONE ;; NEEDS\ *) printf '%s\n' "${1%% @*}" ;; *) printf '%s\n' "$1" ;; esac; }
+# branch and head: a session holding an ask that switched branch or pushed paged again (ar-233). A
+# LANDED fact is the same: its "next phase: queued:<slugs>" tail shrinks as the items start (ar-1576).
+fact_key() { case "$1" in DONE\ *) echo DONE ;; LANDED\ *) echo LANDED ;; NEEDS\ *) printf '%s\n' "${1%% @*}" ;; *) printf '%s\n' "$1" ;; esac; }
 
 # nudged <sid> <fact> -> exit 0 when this fact was already nudged for this session.
 nudged() { [ "$(fact_key "$(sed -n 's/^fact: //p' "$LEDGER/$1" 2>/dev/null)")" = "$(fact_key "$2")" ]; }

@@ -184,6 +184,23 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   assert_output ''
 }
 
+@test "due holds a nudge line while the human typed into the session in the lease window or it was sent a nudge in the gap (ar-1576)" {
+  export FLEET_SHEPHERD_LEASE_MIN=30 FLEET_SHEPHERD_NUDGE_GAP_MIN=60
+  doc "[$(row a STALLED false false), $(row b STALLED false false), $(row c STALLED false false), $(row d STALLED false false)]"
+  said a human "$(ago 10)" "still here"
+  said a assistant "$(ago 5)" "ok"
+  said b human "$(ago 90)" "long ago"
+  jq -nc --arg at "$(date -d '20 minutes ago' -Iseconds)" '{at:$at, sid:"c", kind:"nudge", fact:"x"}' > "$FLEET_SHEPHERD_DIR/nudges.jsonl"
+  jq -nc --arg at "$(date -d '3 hours ago' -Iseconds)" '{at:$at, sid:"d", kind:"nudge", fact:"x"}' >> "$FLEET_SHEPHERD_DIR/nudges.jsonl"
+  run "$SH" due
+  assert_success
+  # the human's turn 10m ago (a) and a nudge 20m ago (c) hold their lines; an old turn (b) and an old nudge (d) do not
+  refute_output --partial 'nudge STALLED: a '
+  refute_output --partial 'nudge STALLED: c '
+  assert_line 'nudge STALLED: b f-b'
+  assert_line 'nudge STALLED: d f-d'
+}
+
 @test "due lists an unescalated shared red with no owner item with the escalate call that answers it" {
   # no item could be filed (the add fails), so the red is the human's, as before ar-623
   stub agent-queue '[ "$1" = add ] && { echo "agent-queue: unknown project: x" >&2; exit 2; }; exit 0'

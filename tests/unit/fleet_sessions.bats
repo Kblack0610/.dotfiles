@@ -1488,9 +1488,13 @@ MD
   mark sid-3 'LANDED PR #9 merged, tree clean @feat/x'
   run escalated sid-3 'LANDED PR #9 merged, tree clean @feat/x'
   assert_failure
-  # a non-DONE fact stays exact
-  run mark sid-3 'LANDED PR #9 merged, tree clean @feat/x'
+  # a LANDED fact is one fact too: its queued tail shrinks as the items start (ar-1576)
+  run mark sid-3 'LANDED PR #9 merged, next phase: queued:p4'
   assert_failure 1
+  # a STALLED fact stays exact
+  mark sid-3 'STALLED PR #9 CI red @feat/x'
+  run mark sid-3 'STALLED PR #9 CI red @feat/y'
+  assert_success
 }
 
 @test "a session that left DONE keeps its entry, and its close claim is one per session for good (ar-1863)" {
