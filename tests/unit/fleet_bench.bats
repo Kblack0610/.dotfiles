@@ -2638,14 +2638,14 @@ fix_item() {
   feed '[{"id": "ar-9", "state": "open", "dup": null}]'
   run "$SUBJECT" triage --coverage
   assert_failure
-  assert_output 'watch standing owned:ar-1 is on no board'
+  assert_output 'watch standing owned:ar-1 is on no board here'
   # the routes_unresolved KPI counts it
   run bash -c 'source "$1"; chain_routes' _ "$SUBJECT"
   assert_output 'routes_unresolved=1'
   # a feed that cannot be read is not a clean one
   BENCH_NOTES_CMD=false run "$SUBJECT" triage --coverage
   assert_failure
-  assert_output --partial 'cannot be read'
+  assert_output 'watch standing owned:ar-1 unchecked: notes board --json --id cannot be read'
 }
 
 @test "triage --route: each key gets the first line its row matches, and no line is a dash" {
