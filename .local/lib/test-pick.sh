@@ -47,9 +47,40 @@ _test_pick_aliases() {
   _TEST_PICK_ALIAS_RE="$(awk 'NF {o=o (o==""?"":"|") $1} END {if (o!="") printf "\\$\\{?(%s)([^A-Za-z0-9_]|$)", o}' <<<"$_TEST_PICK_ALIASES")"
 }
 
+# _test_pick_expand <changed paths>: the list with the scripts that source a changed
+# .local/lib/*.sh added, to any depth (a lib that sources a lib): a test names release-state, not
+# store-auth.sh, so a change to .local/lib/store-auth.sh picked none of store_sales, release_state
+# or store_reviews (ar-2508). A source line is an uncommented `. <path>` or `source <path>` that
+# names the lib's basename; the result is _TEST_PICK_EXT, built once per change list.
+_test_pick_expand() {
+  [ "${_TEST_PICK_EXT_FOR-}" = "$1" ] && return 0
+  _TEST_PICK_EXT_FOR="$1" _TEST_PICK_EXT="$1"
+  local libs seen="" new f
+  new="$(grep -E '^\.local/lib/[^/]+\.sh$' <<<"$1" | sed 's#.*/##')" || true
+  while [ -n "$new" ]; do
+    seen+="$new"$'\n'
+    local -a args=()
+    while read -r f; do args+=(-e "$f"); done <<<"$new"
+    libs="$(git -C "$_TEST_PICK_REPO" grep -nIF "${args[@]}" 2>/dev/null |
+      awk -F: -v names="$(tr '\n' '|' <<<"$new")" '
+        BEGIN { n = split(names, nm, "|") }
+        { f = $1; t = substr($0, length($1 ) + length($2) + 3)
+          if (t ~ /^[[:space:]]*#/ || t !~ /(^|[[:space:];&|({])(\.|source)[[:space:]]/) next
+          for (i = 1; i <= n; i++) {
+            if (nm[i] == "") continue
+            j = index(t, nm[i]); post = substr(t, j + length(nm[i]), 1)
+            if (j > 0 && post !~ /[A-Za-z0-9_.-]/) { print f; break }
+          } }' | sort -u)" || true
+    _TEST_PICK_EXT="$(printf '%s\n%s\n' "$_TEST_PICK_EXT" "$libs" | grep -v '^$' | sort -u)"
+    # The next round: dependents that are libs themselves and were not looked up yet.
+    new="$(grep -E '^\.local/lib/[^/]+\.sh$' <<<"$libs" | sed 's#.*/##' | { grep -vxFf <(printf '%s' "$seen") || true; })" || true
+  done
+}
+
 # test_picked <changed paths, one a line> <test path, repo-relative>, the test's text on stdin:
 # status 0 when that test is picked. A test is picked when it or a file it loads from beside it
-# changed, or its text with what it loads names a changed file's basename (not as a stub or a
+# changed, (a script that sources a changed
+# .local/lib/*.sh counts as changed: _test_pick_expand), or its text with what it loads names a changed file's basename (not as a stub or a
 # directory) or a directory a changed file sits under as `<dir>/` or `<dir>/*...` (a glob such as
 # `.claude/hooks/stop-post.d/*.sh`), or a script it runs as `$REPO_ROOT/<path>` (or through a
 # helper's variable for one) names a changed path in its code, or a test-side file it runs as
@@ -155,6 +186,8 @@ _test_pick_path_named() {
 
 test_picked() {
   grep -qE '^tests/(helpers|vendor|fixtures/basic)/|^tests/(Makefile|run-bats\.sh)$' <<<"$1" && return 0
+  _test_pick_expand "$1"
+  set -- "$_TEST_PICK_EXT" "$2"
   grep -qxF "$2" <<<"$1" && return 0
   local text rel inc new more seen=$'\n'
   text="$(cat)" new=$text

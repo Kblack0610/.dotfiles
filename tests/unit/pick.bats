@@ -45,6 +45,25 @@ setup() {
   [[ "$stderr" == *"full: git diff no-such-rev failed"* ]]
 }
 
+# A test names release-state, not the store-auth.sh it sources (ar-2508).
+@test "a changed .local/lib script picks the tests of the scripts that source it, to any depth" {
+  local f
+  for f in store_sales release_state store_reviews sentry_issues; do
+    PICK_CHANGED=.local/lib/store-auth.sh run --separate-stderr "$SUBJECT" unit HEAD
+    assert_line "unit/$f.bats"
+  done
+  # A lib a lib sources: agent-queue sources session-outcomes.sh, which sources origin-repo.sh,
+  # and agent_queue_admission.bats names agent-queue only.
+  run grep -c origin-repo "$BATS_TEST_DIRNAME/agent_queue_admission.bats"
+  assert_output 0
+  PICK_CHANGED=.local/lib/origin-repo.sh run --separate-stderr "$SUBJECT" unit HEAD
+  assert_success
+  assert_line unit/agent_queue_admission.bats
+  # A test that names neither the lib nor a script that sources it stays out.
+  PICK_CHANGED=.local/lib/store-auth.sh run --separate-stderr "$SUBJECT" unit HEAD
+  refute_line unit/fleet_dispatch.bats
+}
+
 @test "rust: main runs every crate; a pull request runs the crates it touches and their path dependents" {
   local all n
   all=$(cd "$BATS_TEST_DIRNAME/../.." && tests/rust-crates.sh)
