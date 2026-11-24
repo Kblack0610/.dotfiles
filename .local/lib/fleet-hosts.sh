@@ -179,7 +179,7 @@ for h in members.get(group, []):
     v.update(hmerged.get(h, {}))
     user = v.get("ansible_user")
     host = v.get("fleet_ssh_host") or v.get("ansible_host", h)
-    repos = [os.path.expanduser(str(r.get("dest") if isinstance(r, dict) else r)) for r in (v.get("fleet_repos") or [])]
+    repos = [os.path.expanduser(str(r.get("dest") if isinstance(r, dict) else r)) for r in (v.get("fleet_repos") or []) + (v.get("fleet_repos_extra") or [])]
     print(json.dumps({
         "name": h,
         "dest": f"{user}@{host}" if user else str(host),
