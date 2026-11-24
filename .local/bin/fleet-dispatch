@@ -7747,6 +7747,8 @@ pass_mark() { PASS_TIMES+="${PASS_TIMES:+, }$1 $(( SECONDS - ${PASS_MARK:-0} ))s
 
 # The longest a timed pass waits for a kick's lock: a kick starts a session or two, so well under it.
 KICK_WAIT_S=${KICK_WAIT_S:-120}
+# The most times one kick reads the queue again because its wake file moved during the run.
+KICK_ROUNDS=${KICK_ROUNDS:-3}
 
 # pass_reset -- the per-pass state a `run` pass and a `kick` start from.
 pass_reset() {
@@ -7790,7 +7792,14 @@ cmd_kick() {
   # The mark tells a timed pass that the lock is a kick's, held for seconds: it waits (cmd_run), where a
   # pass holding the lock is waited on by nobody. Burst kicks would otherwise leave every timed pass a NOOP.
   : > "$DIR/.kick"
-  local rc; kick_start; rc=$?
+  # A wake that lands while this runs is lost to systemd (the .path finds its unit already running), and
+  # this run may have read the queue before the write: look again while the wake file moved, KICK_ROUNDS at most.
+  local rc round seen
+  for ((round = 0; round < KICK_ROUNDS; round++)); do
+    seen=$(stat -c %y "$DIR/.wake" 2>/dev/null)
+    kick_start; rc=$?
+    [ "$(stat -c %y "$DIR/.wake" 2>/dev/null)" != "$seen" ] || break
+  done
   rm -f "$DIR/.kick"
   return "$rc"
 }
@@ -7817,7 +7826,11 @@ kick_start() {
   local items; items=$(next_items --points)
   [ -n "$items" ] || { settle NOOP "kick: nothing queued to start"; return 0; }
   run_queue "$items" "$room"; local rc=$?
-  [ "${STARTED:-0}" -eq 0 ] || say "kick: started $STARTED"
+  # run_queue settles only a stop of its own (BLOCKED, a held floor): a clean end is settled here, so the
+  # unit declares an outcome and agentctl does not read the silent run as STALLED.
+  if [ "$rc" -ne 0 ]; then :
+  elif [ "${STARTED:-0}" -gt 0 ]; then settle WORKED "kick: started $STARTED"
+  else settle NOOP "kick: started nothing"; fi
   return "$rc"
 }
 

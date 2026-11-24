@@ -1090,6 +1090,15 @@ lose_head_tree() {
   run on a
   assert_success
   [ -s "$FLEET_DISPATCH_DIR/.wake" ] || fail "the lease holder's pull of a done item wrote no wake"
+  # A close is a move of a queued file into done with its status edited: git reads that as a rename.
+  rm -f "$FLEET_DISPATCH_DIR/.wake"
+  mkdir -p "$SANDBOX/b/queue/done/2026-11-24"
+  mv "$SANDBOX/b/queue/queued/one.md" "$SANDBOX/b/queue/done/2026-11-24/one.md"
+  echo 'status: ok' >> "$SANDBOX/b/queue/done/2026-11-24/one.md"
+  run on b
+  run on a
+  assert_success
+  [ -s "$FLEET_DISPATCH_DIR/.wake" ] || fail "the lease holder's pull of a closed (moved) item wrote no wake"
 }
 
 @test "a sync keeps the machine-local dispatch files out of the shared store (dispatch-event-wake)" {

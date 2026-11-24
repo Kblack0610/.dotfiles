@@ -405,6 +405,7 @@ heal_head() {
 LOCAL_ONLY=(dispatch/.wake dispatch/.kick)
 apply_local_excludes() {
   local ex a
+  [ "$STORE_NAME" = agent ] || return 0
   ex=$(g rev-parse --path-format=absolute --git-path info/exclude) && mkdir -p "$(dirname "$ex")" || return 0
   for a in "${LOCAL_ONLY[@]}"; do
     grep -qxF "$a" "$ex" 2>/dev/null || printf '%s\n' "$a" >> "$ex"
@@ -415,10 +416,12 @@ apply_local_excludes() {
 # the lease holder, which is where a kick runs: an add or close made in a worker's store clone reaches the
 # holder only through this pull, and the holder's own writers touch .wake themselves (plan
 # dispatch-event-wake, step 5). SYNC_BASE is HEAD with this machine's own writes committed, so only
-# what came in differs from it.
+# what came in differs from it. A close arrives as a move into queue/done and a release of a held item as
+# an edit of a queued file, so renames are off and an edit counts with an add. No pipe into grep -q: its
+# early exit would SIGPIPE a long diff, and pipefail would read the match as none.
 wake_on_pull() {
   [ "$STORE_NAME" = agent ] && [ -n "${SYNC_BASE:-}" ] || return 0
-  g diff --diff-filter=A --name-only "$SYNC_BASE" HEAD -- queue/queued queue/done 2>/dev/null | grep -q . || return 0
+  [ -n "$(g diff --no-renames --diff-filter=AM --name-only "$SYNC_BASE" HEAD -- queue/queued queue/done 2>/dev/null)" ] || return 0
   fleet-lease held >/dev/null 2>&1 || return 0
   dispatch_wake "store-sync pulled a change in queue/"
 }

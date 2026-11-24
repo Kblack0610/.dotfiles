@@ -4,7 +4,7 @@
 #
 # Rewrites ~/.agent/dispatch/.wake, which fleet-dispatch-kick.path watches: each write starts one
 # `fleet-dispatch kick` (agentctl@fleet-dispatch-kick.service), the fast start-only path, and systemd
-# coalesces writes that land while it runs. A writer is anything that frees a slot or adds something to
+# drops writes that land while it runs (the kick reads the queue again when .wake moved during its run). A writer is anything that frees a slot or adds something to
 # start: agent-queue (an add, an item closed), agent-hold (a release), agent-ask (an answer that
 # releases held items), store-sync (a pull that changed queue/ on the lease holder). The 15-minute
 # `fleet-dispatch run` stays the resync that catches a wake systemd merged away.
