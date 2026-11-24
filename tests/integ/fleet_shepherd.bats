@@ -201,6 +201,18 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   assert_line 'nudge STALLED: d f-d'
 }
 
+@test "due holds a held DONE or LANDED row's nudge for a hand-started session whose only human turn is its first, and frees it once the lease passes (ar-1576)" {
+  export FLEET_SHEPHERD_LEASE_MIN=30
+  held='{"close":{"verdict":"keep","why":"work left here: its item s is running here","left":"its item s is running here"}}'
+  doc "[$(crow 1 LANDED keep "$held"), $(crow 2 DONE keep "$held")]"
+  said 1 human "$(ago 5)" "my first prompt"
+  said 2 human "$(ago 45)" "my first prompt"
+  run "$SH" due
+  assert_success
+  refute_output --partial 'lab/1:1'
+  assert_line 'nudge DONE: lab/2:1 [%2] DONE f-2'
+}
+
 @test "due lists an unescalated shared red with no owner item with the escalate call that answers it" {
   # no item could be filed (the add fails), so the red is the human's, as before ar-623
   stub agent-queue '[ "$1" = add ] && { echo "agent-queue: unknown project: x" >&2; exit 2; }; exit 0'

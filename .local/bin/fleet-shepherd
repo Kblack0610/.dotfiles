@@ -1622,15 +1622,22 @@ last_human_epoch() {
 # the last FLEET_SHEPHERD_NUDGE_GAP_MIN. Only a row a nudge line could name is read; a remote
 # session has no local transcript, so only the gap holds it.
 nudge_held_off() {
-  local sid at now held=""
+  local sid at t now held=""
   now="$(date +%s)"
   while read -r sid; do
     [ -n "$sid" ] || continue
     at="$(last_human_epoch "$sid" 1)" && [ $((now - at)) -lt $((FLEET_SHEPHERD_LEASE_MIN * 60)) ] && { held+="$sid"$'\n'; continue; }
-    at="$([ -r "$LEDGER/nudges.jsonl" ] && jq -r --arg s "$sid" 'select(.kind == "nudge" and .sid == $s) | .at' "$LEDGER/nudges.jsonl" 2>/dev/null | tail -n 1)"
-    [ -n "$at" ] && at="$(date -d "$at" +%s 2>/dev/null)" && [ $((now - at)) -lt $((FLEET_SHEPHERD_NUDGE_GAP_MIN * 60)) ] && held+="$sid"$'\n'
-  done < <(jq -r '(.sessions // [])[] | select((.bucket | IN("DONE","LANDED","STALLED","CHAT")) and (.nudged | not)) | .session_id' "$STATE_FILE" 2>/dev/null)
-  printf '%s' "$held" | jq -Rsc 'split("\n") | map(select(. != ""))'
+    # The newest claim, not the last line: store-sync merges two machines' lines as a union, so order is not time.
+    at=0
+    while read -r t; do
+      t="$(date -d "$t" +%s 2>/dev/null)" && [ "$t" -gt "$at" ] && at="$t"
+    done < <([ -r "$LEDGER/nudges.jsonl" ] && jq -R --arg s "$sid" 'fromjson? | select(.kind == "nudge" and .sid == $s) | .at' -r "$LEDGER/nudges.jsonl" 2>/dev/null)
+    [ "$at" -gt 0 ] && [ $((now - at)) -lt $((FLEET_SHEPHERD_NUDGE_GAP_MIN * 60)) ] && held+="$sid"$'\n'
+  done < <(jq -r "$KEPT_JQ$CLOSE_NUDGE_JQ$HELD_JQ"'(.sessions // [])[]
+    | select(kept | not) | select(.bucket | IN("DONE","LANDED","STALLED","CHAT")) | select(.nudged | not)
+    | select((.own_asks // 0) == 0 and (.bucket == "STALLED" or held) and (close_nudge | not))
+    | .session_id' "$STATE_FILE" 2>/dev/null)
+printf '%s' "$held" | jq -Rsc 'split("\n") | map(select(. != ""))'
 }
 
 # conversation <id> <since epoch> -> what the human said to the pass after <since> and what it
