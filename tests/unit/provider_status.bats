@@ -48,18 +48,23 @@ inc() { printf '{"name":"%s","impact":"%s","components":[%s]}' "$1" "$2" "$3"; }
   assert_line 'Cloudflare: Network issues (major)'
 }
 
-@test "a major Cloudflare incident trips only when it names no component or one we use" {
+@test "a major Cloudflare incident trips unless it names only products we do not run" {
   feed www.cloudflarestatus.com "[$(inc 'Magic Transit degraded' major '{"name":"Magic Transit"}')]"
   run "$REPO_ROOT/.local/bin/provider-status"
   assert_success
   assert_output ''
 
-  feed www.cloudflarestatus.com "[$(inc 'Magic Transit degraded' major '{"name":"Magic Transit"}'),$(inc 'Cache errors' major '{"name":"CDN/Cache"}'),$(inc 'Tunnel flaps' minor '{"name":"Tunnel"}')]"
+  feed www.cloudflarestatus.com "[$(inc 'Spectrum down' critical '{"name":"Spectrum"},{"name":"Magic Transit"}')]"
+  run "$REPO_ROOT/.local/bin/provider-status"
+  assert_success
+
+  feed www.cloudflarestatus.com "[$(inc 'Magic Transit degraded' major '{"name":"Magic Transit"}'),$(inc 'Edge errors' major '{"name":"Magic Transit"},{"name":"CDN/Cache"}'),$(inc 'Workers down' critical '{"name":"Workers"}'),$(inc 'Tunnel flaps' minor '{"name":"Tunnel"}')]"
   run "$REPO_ROOT/.local/bin/provider-status"
   assert_failure 1
-  assert_line 'Cloudflare: Cache errors (major)'
+  assert_line 'Cloudflare: Edge errors (major)'
+  assert_line 'Cloudflare: Workers down (critical)'
   assert_line 'Cloudflare: Tunnel flaps (minor)'
-  refute_line --partial 'Magic Transit'
+  refute_line --partial 'Magic Transit degraded'
 }
 
 @test "an unreadable page is UNREACHABLE, never clear, and an incident outranks it" {
