@@ -117,6 +117,7 @@ esac
 
 : "${FLEET_STATE_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 : "${DISPATCH_PROC_STAT:=/proc/stat}"   # the CPU busy the load pace reads (cpu_busy)
+: "${DISPATCH_PROC_MEMINFO:=/proc/meminfo}"   # the MemAvailable this machine's free share reads (mem_avail_pct)
 : "${DISPATCH_CPU_SAMPLES:=$HOME/.cache/fleet-dispatch/cpu-samples}"   # this machine's, never ~/.agent, which syncs: the minute record's /proc/stat samples (cpu_sample)
 : "${DISPATCH_TRAINEE_REPOS:=$HOME/.dotfiles}"   # the checkouts a trainee may work in, space-separated: its provider is a free one that sees the row and the repo, so public repos only (trainee_public_why)
 : "${PLANNED_REBOOT_WINDOW_S:=1800}"   # a lost server this soon after a planned reboot's boot does not page (planned_reboot)
@@ -5899,7 +5900,9 @@ start_items() {
       [ -z "$plan" ] || PLANS_STARTED="${PLANS_STARTED:+$PLANS_STARTED$'\n'}$plan"
     fi
     if [ "$rc" -eq 0 ] && [ -n "$PLACE_HOST" ]; then HOST_FREE[$PLACE_HOST]=$(( HOST_FREE[$PLACE_HOST] - $(weight_units "$(jq -r '.weight // "light"' <<<"$PICKED")") ))
-    elif [ "$rc" -eq 0 ]; then UNITS_FREE=$(( UNITS_FREE - $(weight_units "$(jq -r '.weight // "light"' <<<"$PICKED")") ))
+    elif [ "$rc" -eq 0 ]; then
+      UNITS_FREE=$(( UNITS_FREE - $(weight_units "$(jq -r '.weight // "light"' <<<"$PICKED")") ))
+      LOCAL_FREE=$(( ${LOCAL_FREE:-$TARGET} - $(weight_units "$(jq -r '.weight // "light"' <<<"$PICKED")") ))
     fi
     [ "$rc" -eq 4 ] && taken=$((taken + 1)) || n=$((n + 1))
   done
@@ -5948,9 +5951,11 @@ load_findings() {
 # PICK_NOTE names the items ahead of PICKED that the fleet share cap held (share_why), so the start's
 # activity.log line shows the hold firing, or that the cap let PICKED go. The cap never lets go onto
 # this machine's units while an item it does not hold waits on them (uheld).
-# The place is this machine while the item fits in UNITS_FREE and, when there are fleet workers to
-# go to, its own pace is open (machine_why); else the first worker that takes it (place_host), in
-# PLACE_HOST. A canary item goes to a worker whose fleet_first names its class ahead of
+# The place is the host with the most free room (room_share) among this machine, while the item fits in
+# UNITS_FREE and, when there are fleet workers to go to, its own pace is open (machine_why), and every
+# worker that takes it (place_host): a tie stays here, and a worker gets a start while this machine
+# still has room, once it has more. With this machine held or full, the roomiest worker that takes it;
+# the worker's place is in PLACE_HOST. A canary item goes to a worker whose fleet_first names its class ahead of
 # this machine (place_host first): the dispatcher keeps its own units for the human and plain work.
 # PICK_FULL is 1 when units alone held them all. On a floor pass the items are only the
 # floor's, so PICK_WHY says so and names the gate (FLOOR_GATE) the rest of the queue waits on: on
@@ -5958,7 +5963,7 @@ load_findings() {
 # project while the other 40 waited on account pace, which the message never named.
 pick_item() {
   local items="$1" it why need free host mwhy='' mread=0 fhit=0 uwait=0 held=() waits="every queue item waits" reserved='' kept=''
-  local shold=0 sfirst='' shost='' swhy='' mhit=0 ppass='' uheld='' uneed=0 chit=0 cread=0 cwords=''
+  local shold=0 sfirst='' shost='' swhy='' mhit=0 ppass='' uheld='' uneed=0 chit=0 cread=0 cwords='' lshare=''
   share_state   # in this shell, so every share_why reads one count
   if [ "${RED_PASS:-0}" = 1 ]; then waits="every red item waits; the rest wait on ${FLOOR_GATE:-the gate}"
   elif [ "${TRAINEE_PASS:-0}${BATCH_PASS:-0}" != 00 ]; then waits="the trainee floor's item waits"; fi
@@ -5972,7 +5977,13 @@ pick_item() {
     # With no fleet worker the gate read this machine's pace, except the trainee floor's (TRAINEE_GATE),
     # so a trainee start reads it here either way.
     if host=$(place_host "$it" first); then :
-    elif [ "$need" -le "$free" ] && { { [ ${#HOST_PROBE[@]} -eq 0 ] && [ "${TRAINEE_PASS:-0}" = 0 ]; } || { [ "$mread" = 1 ] || { mwhy=$(machine_why); mread=1; }; [ -z "$mwhy" ]; }; }; then :
+    elif [ "$need" -le "$free" ] && { { [ ${#HOST_PROBE[@]} -eq 0 ] && [ "${TRAINEE_PASS:-0}" = 0 ]; } || { [ "$mread" = 1 ] || { mwhy=$(machine_why); mread=1; }; [ -z "$mwhy" ]; }; }; then
+      # Here has room: a worker takes the start only when it has more (place_host's third word).
+      host=''
+      if [ ${#HOST_PROBE[@]} -gt 0 ]; then
+        [ -n "$lshare" ] || lshare=$(local_share)
+        host=$(place_host "$it" '' "$lshare") || host=''
+      fi
     elif host=$(place_host "$it"); then :
     elif [ "$need" -gt "$free" ]; then uwait=1; why="$([ "$need" -gt 1 ] && echo heavy || echo light) needs $need run units, $free free"
     else why="$mwhy, and no fleet worker takes it"; PICK_FULL=0 mhit=1
@@ -6115,7 +6126,7 @@ preempt_pick() {
   # open worker) it would interrupt a session for a start that cannot run here.
   [ "${OTHER_PASS:-0}" = 0 ] && [ -n "${PICK_RESERVED:-}" ] && [ -z "$(machine_why)" ] && preempt_for "$PICK_RESERVED" || return 1
   PREEMPT_PARKED=1
-  UNITS_FREE=$(( TARGET - $(live_units) ))
+  UNITS_FREE=$(( TARGET - $(live_units) )) LOCAL_FREE=$UNITS_FREE
   pick_item "$PICK_RESERVED"
 }
 
@@ -6182,7 +6193,7 @@ unpark_preempted() {
 # board command fails and git-sync-notes.service fails CHDIR: razer-laptop, 2026-11-19, ar-3784), and after a "kit" line its
 # `fleet-dispatch kit` (claude, codex, opencode, srt), so a worker with no claude still takes an item
 # on a harness it has: HOST_PROBE[<name>] is "<load> <cores> <ready 0|1> <mem %> <conflict 0|1> <notes 0|1>", or "unreachable",
-# and HOST_KIT[<name>] the kit, empty from an older fleet-dispatch there (no kit verb). HOST_FREE[<name>] is its fleet_max_live less the run units its live sessions hold,
+# and HOST_KIT[<name>] the kit, empty from an older fleet-dispatch there (no kit verb). HOST_MAX[<name>] is its fleet_max_live and HOST_FREE[<name>] that less the run units its live sessions hold,
 # and start_items takes each start there off it; HOST_RUNS is the runs that count, the given ones and
 # each gateway run on a worker (live_runs --gateway). For a worker that lists fleet_harnesses, the same ssh runs
 # `fleet-dispatch harness-ready` on them after a "harnesses" line: HOST_HARN[<name>] is the ones it
@@ -6190,13 +6201,14 @@ unpark_preempted() {
 # pass, before the gates, so every gate and pick in it reads the same numbers: a gate runs in a
 # subshell and cannot write back.
 HOST_RUNS=''
-declare -gA HOST_PROBE=() HOST_FREE=() HOST_HARN=() HOST_HARN_WHY=() HOST_KIT=()   # -g: global when a test sources this inside a function
+declare -gA HOST_PROBE=() HOST_FREE=() HOST_MAX=() HOST_HARN=() HOST_HARN_WHY=() HOST_KIT=()   # -g: global when a test sources this inside a function
 probe_hosts() {
   local name place max listed bad out h ready why answers
-  HOST_PROBE=() HOST_FREE=() HOST_HARN=() HOST_HARN_WHY=() HOST_KIT=() HOST_RUNS="$1"$'\n'"$(live_runs --gateway)"
+  HOST_PROBE=() HOST_FREE=() HOST_MAX=() HOST_HARN=() HOST_HARN_WHY=() HOST_KIT=() HOST_RUNS="$1"$'\n'"$(live_runs --gateway)"
   fleet_hosts >/dev/null
   while IFS='|' read -r name place max listed bad; do
     [ "$place" = true ] || continue
+    HOST_MAX[$name]=$max
     HOST_FREE[$name]=$(( max - $(units_on "$name" <<<"$HOST_RUNS") ))
     # shellcheck disable=SC2016,SC2086 # the worker's shell expands these, not this one; listed splits into names
     if out=$(fleet_host_run "$name" sh -c 'cut -d" " -f1 /proc/loadavg; nproc; command -v wt >/dev/null && test -f "$HOME/.agent/.sync/peer" && echo 1 || echo 0; awk '\''/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {print t ? int(a * 100 / t) : -1}'\'' /proc/meminfo; test -e "$HOME/.agent/.sync/conflict" && echo 1 || echo 0; test -e "$HOME/.notes/.git" && echo 1 || echo 0; echo kit; fleet-dispatch kit 2>/dev/null || :; [ $# -eq 0 ] || { echo harnesses; fleet-dispatch harness-ready "$@" 2>/dev/null || :; }' _ $listed 2>/dev/null); then
@@ -6304,16 +6316,63 @@ host_takers() {
     | select($c == null or any(.first[]?; . as $x | $c | index($x)))) | .[].name')
 }
 
-# place_host <item json> [first] -> the first worker host_takers names that takes a session of the
-# item's run units (weight_units) now.
+# room_share <free units> <max units> <load> <cores> <mem avail %> [pending load] -> the free share of a
+# host, a whole percent (rounded, so a float sum such as 24.99 reads 25): the least of its free units over its max, the pace's CPU headroom
+# (MAX_LOAD x cores less load) over that capacity, and its MemAvailable above the DISPATCH_HOST_MEM_MIN_PCT
+# floor over what the floor leaves. A host is as full as its fullest resource (least-loaded scheduling).
+# Memory -1 is a reading this host cannot give, so it does not count. One formula for this machine
+# (local_share) and every worker (host_share), so pick_item compares like with like.
+room_share() {
+  awk -v f="$1" -v x="$2" -v l="$3" -v c="$4" -v m="$5" -v p="${6:-0}" -v mx="$MAX_LOAD" -v mm="$DISPATCH_HOST_MEM_MIN_PCT" 'BEGIN {
+    u = x > 0 ? f * 100 / x : 0
+    cap = c * mx; cpu = cap > 0 ? (cap - l - p) * 100 / cap : 0
+    s = u < cpu ? u : cpu
+    if (m >= 0) { mem = (m - mm) * 100 / (100 - mm); if (mem < s) s = mem }
+    printf "%.0f\n", s < 0 ? 0 : s }'
+}
+
+# mem_avail_pct -> this machine's MemAvailable as a whole percent of MemTotal, -1 when unread.
+mem_avail_pct() {
+  local out
+  out=$(awk '/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {print t ? int(a * 100 / t) : -1}' "$DISPATCH_PROC_MEMINFO" 2>/dev/null)
+  echo "${out:--1}"
+}
+
+# local_share -> this machine's free share (room_share): its LOCAL_FREE units of the pace TARGET, the pace load
+# and the starts still loading (pace_load, pending_load), and its MemAvailable. LOCAL_FREE is the pass's real
+# free count, set by pass_room and spent by each local start: UNITS_FREE is overridden to a made-up count on
+# a floor's start_items, so it cannot say how much room this machine has. A worker's own load has no
+# pending term (its probe is the only reading), so a worker just given starts reads emptier than it is
+# until its units, which each start spends, catch up.
+local_share() {
+  local cores load pend
+  cores=$(nproc 2>/dev/null || echo 1)
+  read -r load _ < <(pace_load "$cores")
+  read -r _ pend < <(pending_load)
+  room_share "${LOCAL_FREE:-$TARGET}" "$TARGET" "$load" "$cores" "$(mem_avail_pct)" "$pend"
+}
+
+# host_share <name> -> that worker's free share (room_share), from the probe probe_hosts made.
+host_share() {
+  local load cores ready mem
+  read -r load cores ready mem _ <<<"${HOST_PROBE[$1]:-}"
+  room_share "${HOST_FREE[$1]:-0}" "${HOST_MAX[$1]:-0}" "${load:-0}" "${cores:-1}" "${mem:--1}"
+}
+
+# place_host <item json> [first] [beat] -> the worker host_takers names that takes a session of the
+# item's run units (weight_units) now and has the most free room (host_share); the first in roster order
+# on a tie. With <beat>, a share, only a worker whose share is above it.
 place_host() {
-  local name need
+  local name need share best='' top=-1
   [ ${#HOST_PROBE[@]} -gt 0 ] || return 1
   need=$(weight_units "$(jq -r '.weight // "light"' <<<"$1")")
   while IFS= read -r name; do
-    [ -n "${HOST_PROBE[$name]:-}" ] && [ -z "$(host_why "$name" "$need")" ] && { echo "$name"; return 0; }
+    [ -n "${HOST_PROBE[$name]:-}" ] && [ -z "$(host_why "$name" "$need")" ] || continue
+    share=$(host_share "$name")
+    [ "$share" -gt "$top" ] && { best=$name top=$share; }
   done < <(host_takers "$1" "${2:-}")
-  return 1
+  [ -n "$best" ] && { [ -z "${3:-}" ] || [ "$top" -gt "$3" ]; } || return 1
+  echo "$best"
 }
 
 # lease_guard <verb> -- rc 0 on the machine that holds the fleet lease. A run pass or a kick goes through the
@@ -7986,6 +8045,7 @@ pass_room() {
   # The target counts every live session, hand starts too. At it no unit is free, so only an urgent item or
   # fresh ask that parks a runner session for itself starts (preempt_pick): the total stays where it is.
   gap=$(( TARGET - TOTAL_LIVE )); [ "$gap" -gt 0 ] || { gap=0; UNITS_FREE=0; }
+  LOCAL_FREE=$UNITS_FREE
   [ "$room" -le "$gap" ] || room=$gap
   # Read once, here: floors and the queue take starts off room before a later start_items, so its own room says nothing about the cap.
   PASS_AT_CAP=0; [ "$PER_PASS" -gt 0 ] && [ "$room" -ge "$PER_PASS" ] && PASS_AT_CAP=1

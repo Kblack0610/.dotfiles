@@ -569,15 +569,67 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   refute_output --partial 'unplaceable: game'
 }
 
-@test "with room here a pass starts here first, and with no roster nothing asks a worker" {
+# ar-5198: on 2026-11-24 razer-laptop sat idle while the workstation ran about 100 sessions, because a pass
+# placed a start here first and sent it to a worker only when this machine's own gate refused it.
+@test "with room here and on the worker, a tie stays here, and the worker takes the start once it has more free room" {
   game_ready
-  worker '2.0 16 1 50'
+  WORKER_MAX_LIVE=4 worker '0.5 16 1 90'
   agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  # Here: 25 of 25 units free, memory 90% free. The worker: 4 of 4 units, memory 90%. Both are 87 (memory above the floor), so it stays here.
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_called "wt new --server lab --detach -c $SANDBOX/repos/game"
   assert_not_called 'wt new --host'
   assert_equal "$(qfield "$(qitem running fix-menu)" host)" ''
+}
+
+@test "with this machine's memory down to 40% free, the worker with more free room takes the start" {
+  game_ready
+  WORKER_MAX_LIVE=4 worker '0.5 16 1 90'
+  printf 'MemTotal: 1000 kB\nMemAvailable: 400 kB\n' > "$DISPATCH_PROC_MEMINFO"
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item fix-menu on razer-laptop'
+  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game"
+}
+
+@test "with room here and no roster, a pass starts here and asks no worker" {
+  game_ready
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_called "wt new --server lab --detach -c $SANDBOX/repos/game"
+  assert_not_called 'wt new --host'
+  assert_not_called 'ssh'
+}
+
+@test "local_share reads the pass's real free units (LOCAL_FREE), never the UNITS_FREE a floor's start overrides" {
+  TARGET=25 LOCAL_FREE=25 UNITS_FREE=2 run local_share
+  full=$output
+  TARGET=25 LOCAL_FREE=25 UNITS_FREE=25 run local_share
+  assert_output "$full"
+  # NEGATIVE CONTROL: spent units lower it.
+  TARGET=25 LOCAL_FREE=5 UNITS_FREE=25 run local_share
+  [ "$output" -lt "$full" ] || fail "5 of 25 free units read $output, not under $full"
+}
+
+@test "room_share is the least of free units, CPU headroom and memory above the floor; an unread memory does not count" {
+  export MAX_LOAD=0.7 DISPATCH_HOST_MEM_MIN_PCT=20
+  # 4 of 8 units free is 50; 16 cores x 0.7 = 11.2 of capacity, load 2.8 leaves 75; memory 60% is 50 of the 80 above the 20 floor.
+  run room_share 4 8 2.8 16 60
+  assert_output 50
+  # CPU headroom is the least: load 8.4 of 11.2 leaves 25.
+  run room_share 8 8 8.4 16 90
+  assert_output 25
+  # Memory at the floor leaves none, however many units are free.
+  run room_share 8 8 0 16 20
+  assert_output 0
+  # Pending load from recent starts counts against the CPU headroom: 2.8 + 5.6 is 8.4.
+  run room_share 8 8 2.8 16 90 5.6
+  assert_output 25
+  run room_share 8 8 0 16 -1
+  assert_output 100
 }
 
 # 2026-11-12: the classifier's key sat in an over-budget gateway team, every verdict fell back to opus,

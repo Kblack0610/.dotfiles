@@ -94,6 +94,9 @@ setup() {
   # runner's own /proc/stat would otherwise decide the load cases.
   export DISPATCH_CPU_SAMPLES="$SANDBOX/cpu.samples" DISPATCH_PROC_STAT="$SANDBOX/stat"
   echo 'cpu  0 0 0 0 0 0 0 0 0 0' > "$DISPATCH_PROC_STAT"
+  # This machine's MemAvailable for its free share (local_share): 90% free unless a test is about it.
+  export DISPATCH_PROC_MEMINFO="$SANDBOX/meminfo"
+  printf 'MemTotal: 1000 kB\nMemAvailable: 900 kB\n' > "$DISPATCH_PROC_MEMINFO"
   export DISPATCH_CANARY_KEEP=0   # off unless a test is about it ("canary top-up:"), so no pass asks fleet-bench for canaries
   export DISPATCH_FLEET_SHARE=0   # off unless a test is about it ("fleet share:"), so a fleet project's item starts in queue order
   export DISPATCH_START_LOAD=0   # a start adds no pending load unless a test is about it, whatever the runner's cores
