@@ -424,9 +424,9 @@ pub const FOLD_ROWS: usize = 50;
 /// - Stack's rule text wraps to two lines on a phone: 120 rules drew 6,944 px (2026-11-18).
 /// - Board's 30 rows drew 1,824 px (2026-11-12); Sessions' 342 live rows measured 2,180 px at 20.
 /// - Queue's two-line items measured 2,683 px at 30 of 637 (2026-11-12). The tab is now five
-///   sections: Needs you, Stuck and Running page at 10 and On a PR and Up next at 8, so the fixture's
-///   36 rows (6, 5, 9, 8, 8) stay under what 30 measured and a live queue's first screen holds
-///   Needs you and Stuck. Candidates page at the TUI fold, `queue::CANDIDATES_SHOWN` (30).
+///   sections: Needs you and Stuck page at 8 and Running, On a PR and Up next at 6, so the fixture's
+///   36 rows (6, 5, 9, 8, 8) draw under the 2,700 px budget (10 and 8 drew 2,781 px, 2026-11-24) and
+///   a live queue's first screen holds Needs you and Stuck. Candidates page at the TUI fold, `queue::CANDIDATES_SHOWN` (30).
 /// - Jobs' rows are one line and Unity gates alone finish about a thousand runs a day: 200.
 /// - Infra's CI runs, a run's suites and the quarantine are one line a row: 100; an opened
 ///   suite's tests page as its suites.
@@ -441,11 +441,11 @@ pub const PAGE_ROWS: &[(&str, usize)] = &[
     ("rules", 30),
     ("board", 30),
     ("sessions/sessions", 20),
-    ("queue/needs", 10),
-    ("queue/stuck", 10),
-    ("queue/running", 10),
-    ("queue/pr", 8),
-    ("queue/next", 8),
+    ("queue/needs", 8),
+    ("queue/stuck", 8),
+    ("queue/running", 6),
+    ("queue/pr", 6),
+    ("queue/next", 6),
     ("candidates", 30),
     ("jobs", 200),
     ("runs", 100),
