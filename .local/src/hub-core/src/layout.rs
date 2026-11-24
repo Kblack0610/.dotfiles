@@ -660,10 +660,13 @@ pub const PROJECT_DEPTS: [Inner; 9] = [
 ];
 
 /// Retired project-page inner ids and where they went (an inner id, or `departments/<dept>` for a
-/// chip), so an old `#projects/<p>/build` or `#projects/<p>/legal` still lands. Keep a name here
+/// chip), so an old `#projects/<p>/build`, `#projects/<p>/legal` or `#projects/<p>/past` (the
+/// Sprint tab's folds, now a sprint's own page) still lands. Keep a name here
 /// for good once it has shipped.
 pub const PROJECT_RETIRED: &[(&str, &str)] = &[
     ("build", "deliverables"),
+    ("sprints", "sprint"),
+    ("past", "sprint"),
     ("product", "departments/product"),
     ("engineering", "departments/engineering"),
     ("ops", "departments/ops"),
@@ -1227,6 +1230,9 @@ mod tests {
         let at = |w: &str| project_target(w).map(|(i, c)| (i.id, c));
         assert_eq!(at("build"), Some(("deliverables", None)));
         assert_eq!(at("p-build"), Some(("deliverables", None)));
+        for old in ["sprints", "past", "p-sprint-past"] {
+            assert_eq!(at(old), Some(("sprint", None)), "{old}");
+        }
         assert_eq!(at("departments"), Some(("departments", None)));
         assert_eq!(
             at("departments/legal"),

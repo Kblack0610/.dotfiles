@@ -189,10 +189,9 @@ const board = {
 // Projects > Sprints: /api/sprints, hub_core::tasks::SprintRow per open or queued window, then each
 // project's last score (hub_core::project_sprints::LastScore).
 const SPRINT_COLS = ["project", "version", "started", "cut", "left", "done", "finish", "build"];
-const sprintTasks = (n) => Array.from({ length: n }, (_, i) => ({ id: `t-${i}`, text: TEXT[i % TEXT.length], title: TEXT[i % TEXT.length], summary: "", state: i % 3 ? "open" : "done", queue: i % 2 ? "running" : null, interrupt: false, priority: pick(["urgent", "high", "low"], i), href: null }));
 const sprints = {
-  rows: PROJECTS.slice(0, 6).map((project, i) => ({ profile: "personal", project, version: `v0.${i + 1}.0`, queued: i % 3 === 2, started: "11-19 14:25", cut: "11-20 15:59", left: i % 3 === 2 ? "queued" : "6h", done: `${i}/5`, finish: "~15:40", late: false, build: "none", tasks: sprintTasks(5) })),
-  table: { columns: SPRINT_COLS.map((key) => ({ key, role: key === "project" ? "lead" : "" })) },
+  rows: PROJECTS.slice(0, 6).map((project, i) => ({ profile: "personal", project, version: `v0.${i + 1}.0`, queued: i % 3 === 2, started: "11-19 14:25", cut: "11-20 15:59", left: i % 3 === 2 ? "queued" : "6h", done: `${i}/5`, finish: "~15:40", late: false, build: "none" })),
+  table: { columns: SPRINT_COLS.map((key) => ({ key, role: key === "project" ? "lead" : "" })), links: PROJECTS.slice(0, 6).map((project, i) => ({ version: `#projects/personal%2F${project}/sprint/v0.${i + 1}.0` })) },
   heads: Object.fromEntries(SPRINT_COLS.map((k) => [k, k.toUpperCase()])),
   last: PROJECTS.slice(0, 4).map((project, i) => ({ profile: "personal", project, version: `v0.${i}.0`, line: "delivered 4 of 5" })),
 };

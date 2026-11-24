@@ -65,7 +65,7 @@ Inputs: the window ("yesterday" or a date is one day; "last week" or N days, def
 
 ## Do NOT
 
-- Do not call `gh` yourself to count the day. Two producers drift; a scope or bound fix belongs in `day-log`, and grouping belongs in `~/.config/day-log/groups`.
+- Do not call `gh` yourself to count the day. Two producers drift; a scope or bound fix belongs in `day-log`, and grouping belongs in `~/.config/areas/groups`.
 - Do not read `usage` cost as the day's spend. It is the whole-session spend of every session active that day, so a session that ran for three days counts in full on each. The same goes for `agents.cost_usd`: for a week use `day-log week`.
 - Do not recompute scorecard numbers. `bench` is `fleet-bench`'s own output, copied.
 - Do not report a P0 you did not verify first-hand, a raw count you did not check for an artifact, or a raw commit dump in place of a workstream narrative; do not commit a Review's cleanup onto a docs or throwaway branch.
