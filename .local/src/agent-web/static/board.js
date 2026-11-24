@@ -20,7 +20,7 @@ const bScope = () => (bOnBoard() ? "all" : pst.open);
 const bst = tblTab({
   tab: "projects", scroller: "projects",
   id: "board", el: "b-tbl", on: "b-root", refresh: () => refreshBoard(), table: (t) => t.feed?.table,
-  shown: () => bOnBoard() || (st.tab === "projects" && !!pst.open), hint: "search, or lane:agent priority:high size:s -tag:ai",
+  shown: () => bOnBoard() || (st.tab === "projects" && !!pst.open), hint: "search, or area:ui type:fix lane:agent priority:high -tag:ai",
   state: {
     feed: null, busy: false, msg: "",
     draft: { key: "", lane: "human", priority: "normal", to: "", game: "", text: "" },
@@ -146,31 +146,31 @@ function bRow(r, i) {
     `<div class="q">${esc(r.text)}</div>${acts}</div>`;
 }
 
-// What a row is leads, then the epic it serves, then what to do about it. Version, size, tier,
-// since and the whole line are the opened row's (bRow), so the table fits the screen.
-const B_COLS = { section: ["section"], title: ["title"], epic: ["epic"], priority: ["priority"], state: ["state"], when: ["when"], project: ["project"], lane: ["lane"], id: ["id"] };
+// What a row is leads (its type and area, each its own filterable column), then the epic it
+// serves, then what to do about it. Version, size, tier, since and the whole line are the opened
+// row's (bRow), so the table fits the screen. Cells run in hub-core's COLUMNS order, as tblHead draws.
+const B_COLS = { section: ["section"], type: ["type"], area: ["area"], title: ["title"], epic: ["epic"], priority: ["priority"], state: ["state"], when: ["when"], project: ["project"], lane: ["lane"], id: ["id"], pts: ["pts", "n"] };
 const B_SPAN = Object.keys(B_COLS).length;
 const bDash = (v) => esc(v == null || v === "" ? "-" : v);
 // The row's epic as a link to that row, its parent's id when that row is not on the board,
 // or "" when it is under none.
 const bEpic = (r, i) => r.epic || r.parent ? tblLink(tblLinks(bst.feed.table, i).epic, r.epic || r.parent) : "";
 
-// One line of the table, and the opened record under it. The title cell holds the row's area,
-// its title and what the title leaves out (hub_core::text::title); the epic cell opens
-// the epic. The opened row has the whole line.
+// One line of the table, and the opened record under it. The title cell holds the row's title
+// and what the title leaves out (hub_core::text::title); the epic cell opens the epic. The
+// opened row has the whole line.
 function bLine(r, i) {
   const open = bSel(r) === bst.sel;
-  const area = r.area ? `<span class="qtag">${esc(r.area)}</span> ` : "";
   const sum = r.summary ? `<div class="bsum muted">${esc(r.summary)}</div>` : "";
   // An epic is the deliverable itself; any other row under none says so, for triage.
   const epic = bEpic(r, i) || (r.section === "epics" ? "" : `<span class="muted">no epic</span>`);
   const line = `<tr class="jr${open ? " sel" : ""}" data-row="${i}">` +
-    `<td><b>${esc(r.label || "")}</b></td>` +
-    `<td class="btitle"><div class="bt">${area}${esc(r.title)}</div>${sum}</td>` +
+    `<td><b>${esc(r.label || "")}</b></td><td>${bDash(r.type)}</td><td>${bDash(r.area)}</td>` +
+    `<td class="btitle"><div class="bt">${esc(r.title)}</div>${sum}</td>` +
     `<td class="bepic">${epic}</td>` +
     `<td><span class="qprio ${esc(r.priority)}">${esc(r.priority)}</span></td>` +
     `<td>${r.state === "doing" ? "<b>doing</b>" : esc(r.state)}</td><td class="bwhen">${bDash(r.when)}</td>` +
-    `<td>${bDash(r.project)}</td><td>${esc(r.lane)}</td><td><code>${bDash(r.id)}</code></td></tr>`;
+    `<td>${bDash(r.project)}</td><td>${esc(r.lane)}</td><td><code>${bDash(r.id)}</code></td><td class="n">${bDash(r.points)}</td></tr>`;
   return open ? line + `<tr class="bopen"><td colspan="${B_SPAN}">${bRow(r, i)}</td></tr>` : line;
 }
 

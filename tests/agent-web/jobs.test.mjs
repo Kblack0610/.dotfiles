@@ -44,8 +44,8 @@ const table = {
   states: [{ name: "all", n: 2 }, { name: "running", n: 1 }, { name: "waiting", n: 0 }, { name: "done", n: 1 }, { name: "failed", n: 1 }],
   columns: [col("state"), col("source"), col("name"), col("started", "asc", ["", "desc"]), col("took"), col("result"), col("detail")],
   facets: [
-    { key: "source", on: ["ci"], clear: "", values: [{ value: "agentctl", n: 1, on: false, q: "source:ci source:agentctl" }, { value: "ci", n: 2, on: true, q: "" }] },
-    { key: "result", on: [], clear: "source:ci", values: [{ value: "failure", n: 1, on: false, q: "source:ci result:failure" }] },
+    { key: "source", on: ["ci"], clear: "", values: [{ value: "agentctl", n: 1, pct: 50, on: false, q: "source:ci source:agentctl" }, { value: "ci", n: 2, pct: 50, on: true, q: "" }] },
+    { key: "result", on: [], clear: "source:ci", values: [{ value: "failure", n: 1, pct: 50, on: false, q: "source:ci result:failure" }] },
   ],
 };
 const job = (name, o = {}) => ({ source: "ci", name, state: "done", ok: true, result: "success", started: 1793942659, finished: null, secs: 60, detail: "", runs: 1, ...o });
@@ -69,7 +69,7 @@ test("the table draws the server's rows, sort, chips and dropdowns", () => {
   assert.match(h, /<tr class="tfilters" data-phone="filters"><td><\/td><th><details class="tfacet on" data-fkey="source" data-fq="source:ci">/, "the filter row sits under the headers, a cell per column");
   assert.match(h, /<details class="tfacet on" data-fkey="source"[^>]*><summary[^>]*>source: ci<\/summary>/, "a filtering column's pill is tinted and names its pick");
   assert.match(h, /<button type="button" class="tfclear" data-tqc="">clear source<\/button>/, "a filtering column can be cleared");
-  assert.match(h, /<input type="checkbox" data-tq data-fv="ci" value="" checked> <span>ci<\/span> <span class="n">2<\/span>/, "the picked value is ticked and unticking it is the query without it");
+  assert.match(h, /<input type="checkbox" data-tq data-fv="ci" value="" checked> <span>ci<\/span> <span class="n">2 \(50%\)<\/span>/, "the picked value is ticked and unticking it is the query without it");
   assert.match(h, /<input type="checkbox" data-tq data-fv="agentctl" value="source:ci source:agentctl"> /, "ticking another adds it to the column's picks");
   assert.match(h, /<details class="tfacet" data-fkey="result" data-fq="source:ci"><summary[^>]*>result<\/summary><div class="tfmenu"><label>/, "a column not filtering has no clear item");
   assert.doesNotMatch(parts["jobs-facets"]?.innerHTML ?? "", /tfacet/);

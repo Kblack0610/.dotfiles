@@ -59,9 +59,9 @@ pub struct Prompt {
 
 /// The table's columns, in `tasks::Row`'s COLUMNS order so the sort mark lands on its header.
 /// The row's whole text is the preview's, under the rows.
-const HEADER: [&str; 13] = [
-    "SECTION", "TITLE", "EPIC", "PRIORITY", "STATE", "WHEN", "PROJECT", "LANE", "ID", "VERSION",
-    "SIZE", "TIER", "SINCE",
+const HEADER: [&str; 16] = [
+    "SECTION", "TYPE", "AREA", "TITLE", "EPIC", "PRIORITY", "STATE", "WHEN", "PROJECT", "LANE",
+    "ID", "VERSION", "SIZE", "PTS", "TIER", "SINCE",
 ];
 
 #[derive(Debug, Default)]
@@ -459,6 +459,8 @@ fn row(r: &Row, section: String, p: Palette) -> Vec<Cell> {
     let when = r.when();
     vec![
         cell(section, p.head()),
+        or_dash(r.r#type.as_deref()),
+        or_dash(r.area.as_deref()),
         title.into(),
         or_dash(r.epic.as_deref().or(r.parent.as_deref())),
         cell(r.priority.clone(), prio),
@@ -469,6 +471,7 @@ fn row(r: &Row, section: String, p: Palette) -> Vec<Cell> {
         or_dash(r.id.as_deref()),
         or_dash(r.release()),
         or_dash(r.size.as_deref()),
+        r.points.map_or("-".to_string(), |n| n.to_string()).into(),
         r.tier.map_or("-".to_string(), |t| t.to_string()).into(),
         or_dash(r.since.as_deref().map(|d| d.get(5..).unwrap_or(d))),
     ]
@@ -837,6 +840,10 @@ pub(crate) mod tests {
             assert!(!["profile", "tag"].contains(&v.table.view.sort.as_str()));
         }
         assert_eq!(v.table.view.sort, "section", "c comes back round");
+        v.key(key('c'), Some(&f), 10);
+        assert_eq!(v.table.view.sort, "type");
+        v.key(key('c'), Some(&f), 10);
+        assert_eq!(v.table.view.sort, "area");
         v.key(key('c'), Some(&f), 10);
         assert_eq!(v.table.view.sort, "title");
         v.key(key('c'), Some(&f), 10);
