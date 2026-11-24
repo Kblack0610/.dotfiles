@@ -354,8 +354,11 @@ BENCH_HUB_TIMEOUT_S=30                               # hub projects --json takes
 : "${BENCH_DOCS_CLEANUP_DIR:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/docs-cleanup}"   # the nightly docs-cleanup baselines, one dated dir each
 : "${BENCH_DOCTOR_LAST:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/project-index/doctor.last}"   # the nightly notes doctor
 : "${BENCH_STEPS_CMD:=notes log --steps --json}"   # the record replayed per step: flows, dwell, the items it holds
-: "${BENCH_INBOX_CMD:=inbox_lines}"                # how many lines wait untriaged
+: "${BENCH_INBOX_CMD:=inbox_lines}"                # a JSON array of the line texts waiting untriaged
 : "${BENCH_STOPPED_CMD:=fleet-dispatch stopped --json}"   # why nothing is leaving the queue, when dispatch has stopped
+: "${BENCH_HEADROOM:=${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}/headroom.json}"   # the last dispatch pass's gate and its standing hold
+: "${BENCH_DISPATCH_LOG:=${AGENTCTL_STATE_DIR:-${AGENTCTL_STATE:-$HOME/.local/state/agentctl}}/fleet-dispatch/activity.log}"   # one line per dispatch pass: how it ended
+BENCH_RECORD_TAIL=5000   # lines of the dispatch record pipeline_json reads: more than a day of passes (about 1000 a day, 2026-11-23)
 : "${PIPELINE_SNAPSHOT:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/pipeline/pipeline.json}"   # what the Queue tab's pipeline line reads
 : "${CHAIN_DAYS:=7}"                 # the merged PRs ledger_coverage counts
 # A Sentinel probe's fix watermark (SENTINEL_SINCE, set by watch-companion-loop resolve), an epoch, 0 for
@@ -1054,6 +1057,8 @@ bench_prom() {
         $pl.steps[] | [{step}, .wip]),
       gauge("agent_chain_age_ratio"; "Each step'"'"'s age p90 over its bound in kpi-thresholds; past 1 is a bottleneck.";
         $pl.steps[] | [{step}, .ratio]),
+      gauge("agent_chain_score"; "Each step'"'"'s measure over its bound (fleet-bench pipeline): an age p90, the rows admission held in 24h, or the minutes dispatch has been held; 1 or more is over.";
+        $pl.steps[] | [{step}, .score]),
       gauge("agent_chain_moves"; "Items each step took in and let out over the last hour, from the record.";
         $pl.steps[] | {step} as $l | (["in", .in_1h], ["out", .out_1h]) | [$l + {dir: .[0]}, .[1]]),
       gauge("agent_chain_drift"; "Queue items the record and the queue folders place at different steps.";
@@ -2417,7 +2422,7 @@ chain_routes() { echo "routes_unresolved=$(triage_coverage | grep -c .)"; }
 chain_queue() {
   local t=$1 wants held
   if wants=$(wants_stats "$t"); then jq -r '"wants_unstamped=\(if .total == 0 then 0 else (.unstamped / .total * 1000 | round) / 1000 end)"' <<<"$wants"; else echo "wants_unstamped=?"; fi
-  held=$($BENCH_ADMISSION_CMD 2>/dev/null | jq -er '.held_7d | numbers' 2>/dev/null) || held='?'
+  held=$(bench_read $BENCH_ADMISSION_CMD 2>/dev/null | jq -er '.held_7d | numbers' 2>/dev/null) || held='?'
   echo "admission_held=$held"
 }
 
@@ -2429,17 +2434,19 @@ chain_pipeline() {
     (.steps[] | select(.step == "queued") | "queue_net_24h=\(if .in_24h == null or .out_24h == null then "?" else .in_24h - .out_24h end)")'
 }
 
-# The work chain's steps, in order: an untriaged line, an open agent-board row, a queue item
-# queued, running, on its PR (review) or waiting on the human, and done.
-PIPELINE_STEPS="inbox backlog queued running review waiting done"
+# The work chain's steps, in order: an untriaged line, an open agent-board row, a row held out of
+# the queue (admission), a queue item queued, the start dispatch makes (dispatch), running, on its PR
+# (review) or waiting on the human, and done.
+PIPELINE_STEPS="inbox backlog admission queued dispatch running review waiting done"
 
-# inbox_lines -> how many lines wait untriaged: the outbox plus every project's `## Inbox`
+# inbox_lines -> the lines that wait untriaged, one JSON array of their texts: the outbox plus every
+# project's `## Inbox`. pipeline_json counts them and ages each from the intake record.
 inbox_lines() {
   local out p
   out=$($BENCH_NOTES_CMD outbox list) || return 1
   for p in $(bench_read $BENCH_PROJECTS_CMD | jq -r '.[].name'); do
-    $BENCH_NOTES_CMD ptask "$p" inbox --json 2>/dev/null || echo '[]'
-  done | jq -s --argjson n "$(grep -c . <<<"$out")" '$n + (map(length) | add // 0)'
+    $BENCH_NOTES_CMD ptask "$p" inbox --json 2>/dev/null || :
+  done | jq -sc --arg out "$out" '($out | split("\n") | map(sub("^[^\t]*\t"; "") | select(. != ""))) + [.[][] | .text // empty]'
 }
 
 # ingest_flow <now> -> {doors, out} over the 24h of the notes ingest record before <now>; fails when
@@ -2466,65 +2473,145 @@ ingest_flow() {
        out: (reduce ($ev[] | out_kind) as $k ({merged: 0, done: 0, dup: 0, moved: 0, dropped: 0}; .[$k] += 1))}' "$BENCH_INGEST"
 }
 
-# pipeline_json <now> -> where every item sits: {since, drift, doors_24h, out_24h, bottleneck,
-# steps}, one step object each in PIPELINE_STEPS order. WIP and the age of what sits in a step (p50,
-# p90, oldest, minutes) come from the state files: the inbox count, the rows on the active profile's
-# agent boards (on_board, the rows board_open counts) no active item has started (aged from the day
-# they were filed), the queue items by state (aged from ready, started, waiting; a held
-# queued item has no ready, so it counts in WIP but not in the age: agent-queue's one rule), and
-# the items finished in the last 24h. In, out and dwell come from the record (`notes log --steps`),
-# which cannot see work older than its start (since). drift counts the queue items the record and
-# the queue folders place apart: at another step, held by the record but gone from the queue, or
-# queued after the record began with no event of it. A fleet worker's closes reach the record through
-# fleet-dispatch's worker_records, so a gap that stays is an event no writer sent. The bottleneck is the step whose age p90 is
-# furthest past its step_age_p90_<step>_max in kpi-thresholds, null while every step is inside its
-# bound. doors_24h and out_24h are ingest_flow's doors and out. A source that cannot be read leaves
-# its numbers null.
+# pipeline_json <now> -> where every item sits and how each step scores: {since, drift, doors_24h,
+# out_24h, bottleneck, headline, steps}, one step object each in PIPELINE_STEPS order. WIP and the age of what sits in a
+# step (p50, p90, oldest, minutes) come from the state files: the inbox lines (aged from the intake
+# record's first event of the same text; a line it never saw counts in WIP, not in the age), the rows
+# on the active profile's agent boards (on_board, the rows board_open counts) no active item has
+# started (aged from the day they were filed), the queue items by
+# state (aged from ready, started, waiting; a held queued item has no ready, so it counts in WIP but
+# not in the age: agent-queue's one rule), and the items finished in the last 24h. In, out and dwell
+# come from the record (`notes log --steps`), which cannot see work older than its start (since).
+# drift counts the queue items the record and the queue folders place apart: at another step, held
+# by the record but gone from the queue, or queued after the record began with no event of it. A fleet
+# worker's closes reach the record through fleet-dispatch's worker_records, so a gap that stays is an
+# event no writer sent.
+#
+# Each step also carries score (its measure over its bound), verdict (stopped, over at 1 or more,
+# near at 0.8 or more, ok; "-" with no bound or no measure, never ok), why (the top 3 reasons as
+# {reason, n}, counted from the step's own record) and clears (what ends a stop, in the words of the
+# gate that holds; dispatch only). The measure is the age p90 against step_age_p90_<step>_max in
+# kpi-thresholds (an empty step measures 0), for admission the items the queue cap held in 24h (agent-queue admission --json day)
+# against admission_held_24h_max, and for dispatch the minutes the runner's hold has stood
+# (`fleet-dispatch stopped`, which reads the live hold; none is 0) against DISPATCH_STARVED_MIN. Dispatch is stopped when
+# `fleet-dispatch stopped` says so and no floor started an item under the hold; with floor starts it
+# is held, not stopped, and floor_starts counts them. headline names the worst step, stopped first,
+# then the largest score past 1, in one sentence; null while none is. The bottleneck is the step
+# whose age p90 is furthest past its bound, null while every step is inside it. A source that cannot
+# be read leaves its numbers null. doors_24h and out_24h are ingest_flow's doors and out. Why each stage reads its record: plan can-we-update-our-gleaming-axolotl.
 pipeline_json() {
-  local t=$1 items fin board rec inbox stopped lim='{}' ev=null prof=''
-  stopped=$($BENCH_STOPPED_CMD 2>/dev/null | jq -r '.line // empty' 2>/dev/null)
+  local t=$1 items fin board rec inbox stop hr ing adm acts verdicts lim='{}' ev=null prof=''
+  stop=$({ $BENCH_STOPPED_CMD 2>/dev/null || :; } | jq -ce 'objects' 2>/dev/null) || stop=null
   items=$(bench_read $BENCH_ITEMS_CMD 2>/dev/null | jq -sc .) || items=null
   fin=$(bench_read $BENCH_DONE_ITEMS_CMD --since "$(date -d "@$((t - 86400))" +%F)" 2>/dev/null | jq -sc .) || fin=null
   board=$(bench_read $BENCH_BOARD_CMD 2>/dev/null | jq -ce '.rows | arrays') || board=null
   rec=$($BENCH_STEPS_CMD 2>/dev/null | jq -ce 'select(.steps | arrays)') || rec=null
-  inbox=$($BENCH_INBOX_CMD 2>/dev/null | jq -e 'numbers') || inbox=null
+  inbox=$($BENCH_INBOX_CMD 2>/dev/null | jq -ce 'arrays') || inbox=null
+  verdicts=$(bench_read $BENCH_VERDICTS_CMD 2>/dev/null | jq -sc .) || verdicts=null
+  adm=$(bench_read $BENCH_ADMISSION_CMD 2>/dev/null | jq -ce '.day | objects') || adm=null
+  # A headroom.json older than a pass's 45 minutes is no answer (hub_core::capacity::headroom).
+  hr=null; [ -n "$(find "$BENCH_HEADROOM" -mmin -45 2>/dev/null)" ] && { hr=$(jq -ce 'objects' "$BENCH_HEADROOM" 2>/dev/null) || hr=null; }
+  # Reads of the records that already exist: the intake and land-failed events and the dispatch
+  # passes; each is cut to its window in the jq below.
+  ing=null; [ -r "$BENCH_INGEST" ] && ing=$({ grep -hE '"action":"(added|filed|moved|dup|dropped|refused|left|sweep-stopped|land-failed)"' "$BENCH_INGEST" || :; } \
+    | jq -sc 'map(select(.stage == "intake" or .action == "land-failed") | {ts, action, text, why})')
+  acts=null; [ -r "$BENCH_DISPATCH_LOG" ] && acts=$(tail -n "$BENCH_RECORD_TAIL" "$BENCH_DISPATCH_LOG" \
+    | jq -Rnc '[inputs | capture("^\\[(?<ts>[^]]+)\\] outcome=(?<o>[A-Z]+) ?(?<rest>.*)$")]')
   [ -r "$KPI_THRESHOLDS" ] && lim=$(grep -E '^[a-z0-9_]+=' "$KPI_THRESHOLDS" | kv_json)
   bench_profile && prof=$BENCH_PROFILE
   ev=$(ingest_flow "$t") || ev=null
-  jq -cn --argjson t "$t" --arg steps "$PIPELINE_STEPS" --argjson lim "$lim" --argjson inbox "$inbox" --arg stopped "$stopped" \
+  jq -cn --argjson t "$t" --arg steps "$PIPELINE_STEPS" --argjson lim "$lim" --argjson stop "${stop:-null}" --argjson hr "${hr:-null}" \
      --arg prof "$prof" --argjson ev "$ev" \
-     --slurpfile a <(printf '%s' "$items") --slurpfile d <(printf '%s' "$fin") \
-     --slurpfile b <(printf '%s' "$board") --slurpfile r <(printf '%s' "$rec") "$JQ_LIB"'
-    def epoch: strings | sub("\\.[0-9]+"; "") | fromdateiso8601? // empty;
+     --slurpfile a <(printf '%s' "$items") --slurpfile d <(printf '%s' "$fin") --slurpfile i <(printf '%s' "$inbox") \
+     --slurpfile b <(printf '%s' "$board") --slurpfile r <(printf '%s' "$rec") --slurpfile v <(printf '%s' "${verdicts:-null}") \
+     --slurpfile g <(printf '%s' "${ing:-null}") --slurpfile q <(printf '%s' "${adm:-null}") --slurpfile p <(printf '%s' "${acts:-null}") "$JQ_LIB"'
+    def epoch: strings | sub("\\.[0-9]+"; "") | try iso_epoch catch empty;   # Z or a local offset
     def mins: ($t - .) / 60 | floor;
     def pct($p): sort | if length == 0 then null else .[([length * $p / 100 | ceil, 1] | max) - 1] end;
-    $a[0] as $a | $d[0] as $d | $b[0] as $b | $r[0] as $r
+    def top: group_by(.reason) | map({reason: .[0].reason, n: (map(.n) | add)}) | sort_by(-.n, .reason) | .[:3];
+    def tally: map({reason: ., n: 1}) | top;
+    def mdur: floor | if . >= 1440 then "\(. / 1440 | floor)d\(. % 1440 / 60 | floor)h"
+      elif . >= 60 then "\(. / 60 | floor)h\(. % 60 | if . < 10 then "0\(.)" else tostring end)m" else "\(.)m" end;
+    # A dispatch pass in a few words: its outcome, past the pass notes ahead of the gate. A start while
+    # the hold stood ($since) kept it standing, so it went past a closed gate on a floor.
+    def pass_why($since): .o as $o | .e as $e | .rest | sub("^why: "; "")
+      | gsub("(tagged [0-9]+ for a plan|could not judge the new rows( \\([^)]*\\))?); "; "") as $r
+      | if $o == "WORKED" then (if $since != null and $e >= $since then "started on a floor, the main lane held" else "started" end)
+        elif $o == "FAILED" and ($r | test("could not start")) then "a start failed"
+        elif $r | test("pace target is") then "at the pace target"
+        elif $r | test("^held \\(agent-hold") then "held by agent-hold"
+        elif $r | test("human is not away") then "the human is here"
+        else $r | sub("^queue item [^ ]+ waits: "; "") | split(";")[0] | split(":")[0] | gsub(" \\([^)]*\\)"; "") | gsub("[0-9]+"; "N") | .[0:60] end;
+    $a[0] as $a | $d[0] as $d | $b[0] as $b | $r[0] as $r | $i[0] as $i | $v[0] as $v
+    | ($g[0] | if . == null then null else map(. + {e: (.ts | epoch)}) end) as $g
+    | $q[0] as $q
+    | ($p[0] | if . == null then null else map(. + {e: (.ts | epoch)} | select(.e > $t - 86400)) end) as $p
     | def held($s; $f): if $a == null then null else $a | map(select(.state == $s)) | {n: length, ages: map(.[$f] | epoch | mins)} end;
     ($a // [] | map(rowkey | strings) | INDEX(.)) as $live
-    | {inbox: (if $inbox == null then null else {n: $inbox, ages: []} end),
+    | ($b // [] | map(select(on_board($prof) and ($live["\(.project):\(.id)"] | not)))) as $open
+    | $stop.since as $since
+    | (if $since != null then ($t - $since) / 60 | floor elif $hr != null then 0 else null end) as $held_min
+    # Items started while the hold stood: each kept it standing, so each went past a closed gate on a floor.
+    | (if $p == null then null else $p | map(select($since != null and .e >= $since and .o == "WORKED")
+         | .rest | (capture("started (?<n>[0-9]+)").n | tonumber) // (if test("started queue item") then 1 else 0 end)) | add // 0 end) as $floors
+    | {inbox: (if $i == null then null
+               else ($g // [] | map(select((.action | IN("added", "filed", "moved")) and (.text | type) == "string")) | group_by(.text) | map({key: .[0].text, value: (map(.e) | min)}) | from_entries) as $first
+                 | {n: ($i | length), ages: [$i[] | $first[.] | numbers | mins],
+                    why: (if $g == null then null else [$g[] | select(.e > $t - 86400 and (.action | IN("dup", "dropped", "refused", "left", "sweep-stopped"))) | .action] | tally end)} end),
        backlog: (if $b == null or $a == null or $prof == "" then null
-                 else $b | map(select(on_board($prof) and ($live["\(.project):\(.id)"] | not)))
-                   | {n: length, ages: map((.since // "") + "T00:00:00Z" | epoch | mins)} end),
-       queued: held("queued"; "ready"), running: held("running"; "started"), review: held("review"; "review"),
+                 else ($v // [] | map(select(.lane == "agent")) | map({key: "\(.project):\(.key)", value: .}) | from_entries) as $vk
+                   | $open | {n: length, ages: map((.since // "") + "T00:00:00Z" | epoch | mins),
+                       why: (if $v == null then null else map($vk["\(.project):\(.id)"] | if . then "\(.verdict): \(.rule)" else "no verdict yet" end) | tally end)} end),
+       admission: (if $q == null then null else {n: $q.held, ages: [], why: ($q.why | to_entries | map({reason: .key, n: .value}) | top)} end),
+       queued: (held("queued"; "ready") | if . == null then . else . + {why: ($a | map(select(.state == "queued")
+                  | .hold // "" | if . == "" then "runnable" else capture("^(hold:)?(?<k>[^ :(]+)").k // "held" end) | tally)} end),
+       dispatch: (if $hr == null then null
+                  else {n: $hr.runnable, ages: [],
+                        why: (if $p == null then null else ($p | map(select(.e > $t - 3600) | pass_why($since)))
+                              | if length == 0 then [{reason: "no pass in the last hour", n: 0}] else tally end end)} end),
+       running: (held("running"; "started") | if . == null or $d == null then . else . + {why: ($d | map(select((.finished | epoch) > $t - 86400) | .end_reason | strings) | tally)} end),
+       review: (held("review"; "review") | if . == null or $g == null then . else . + {why: ([$g[] | select(.e > $t - 86400 and .action == "land-failed")
+                  | "land failed, " + (.why // "" | split(" (")[0] | gsub("[0-9]+"; "N") | .[0:60])] | tally)} end),
        waiting: held("waiting"; "waiting"),
        done: (if $d == null then null else {n: ($d | map(select((.finished | epoch) > $t - 86400)) | length), ages: []} end)} as $now
     | ($r.steps // [] | INDEX(.step)) as $flow
     | [$steps | split(" ")[] | . as $s | $now[$s] as $w | ($flow[$s] // {}) as $f
        | (($lim["step_age_p90_\($s)_max"] | numbers) // null) as $bound | ($w.ages // [] | pct(90)) as $p90
+       | (if $s == "admission" then {m: $w.n, b: (($lim.admission_held_24h_max | numbers) // null)}
+          elif $s == "dispatch" then {m: $held_min, b: $hr.starved_min}
+          else {m: ($p90 // (if $w.n == 0 then 0 else null end)), b: $bound} end) as $mb
+       | (if $mb.m == null or $mb.b == null or $mb.b <= 0 then null else $mb.m / $mb.b * 100 | round / 100 end) as $score
        | {step: $s, wip: $w.n, age_p50_min: ($w.ages // [] | pct(50)), age_p90_min: $p90, oldest_min: ($w.ages // [] | max),
           in_1h: $f.in_1h, out_1h: $f.out_1h, in_24h: $f.in_24h, out_24h: $f.out_24h,
           dwell_p50_min: $f.dwell_p50_min, dwell_p90_min: $f.dwell_p90_min, bound: $bound,
           ratio: (if $bound == null or $bound <= 0 or $p90 == null then null else $p90 / $bound * 100 | round / 100 end),
+          measure: $mb.m, measure_bound: $mb.b, score: $score,
+          verdict: (if $s == "dispatch" and $stop != null and $floors == 0 then "stopped" elif $score == null then "-"
+                    elif $score >= 1 then "over" elif $score >= 0.8 then "near" else "ok" end),
+          why: $w.why, clears: (if $s == "dispatch" then $stop.clears else null end),
           problems_n: $f.problems_n, problems: ($f.problems // []),
-          blocked: (if $s == "queued" and $stopped != "" then $stopped else null end)}] as $rows
+          blocked: (if $s == "queued" and $stop != null then $stop.line else null end)}
+       + (if $s == "dispatch" then {held: ($stop.why // $hr.held), held_kind: $hr.held_kind, floor_starts: $floors} else {} end)] as $rows
     | (if $a == null or $r == null then null
        else ($r.steps | map(.step as $s | (.items // [])[] | {key: ., value: $s}) | from_entries) as $rec
          | ($a | map({key: .slug, value: .state}) | from_entries) as $st
          | ([$a[] | select(if $rec[.slug] then $rec[.slug] != .state else (.queued // "") >= ($r.items_since // "~") end)] | length)
            + ([$rec | keys[] | select($st[.] == null)] | length) end) as $drift
+    | ([$rows[] | select(.verdict == "stopped")] + ([$rows[] | select(.verdict == "over")] | sort_by(-.score)) | first) as $worst
     | {as_of: $t, since: $r.since, items_since: $r.items_since, drift: $drift,
        doors_24h: $ev.doors, out_24h: $ev.out,
        bottleneck: ($rows | map(select((.ratio // 0) > 1)) | max_by(.ratio) | if . then {step, age_p90_min, bound, ratio} else null end),
+       headline: ($worst | if . == null then null else
+         (if .score == null then "" elif .step == "admission" then " (\(.score * 100 | round)% of \(.measure_bound))"
+          else " (\(.score * 100 | round)% of \(.measure_bound | mdur))" end) as $of
+         | (if .step == "dispatch" then (if .measure == null then "stopped"
+                                         elif .verdict == "stopped" then "stopped \(.measure | mdur)"
+                                         elif .floor_starts > 0 then "main lane held \(.measure | mdur), floors started \(.floor_starts)"
+                                         else "held \(.measure | mdur)" end) + $of
+            elif .step == "admission" then "\(.measure) rows held in 24h\($of)"
+            else "age p90 \(.measure | mdur)\($of)" end) as $m
+         | ((if .step == "dispatch" then .held else null end) // (.why // [] | first | if . then "\(.reason) (\(.n))" else null end)) as $y
+         | {step, verdict, score, text: "\(.step), \($m)\(if $y then ": \($y)" else "" end).\(if .clears then " \(.clears)." else "" end)"} end),
        steps: $rows}'
 }
 
@@ -2574,7 +2661,7 @@ cmd_pipeline() {
     *) say "usage: fleet-bench pipeline [--json | --check cap|age|mix|held|owner|chain-lag]"; return 2 ;;
   esac
   json=$(pipeline_json "$(now)") || return 1
-  adm=$($BENCH_ADMISSION_CMD 2>/dev/null | jq -ce 'objects') || adm=null
+  adm=$(bench_read $BENCH_ADMISSION_CMD 2>/dev/null | jq -ce 'objects') || adm=null
   mix=$($BENCH_MIX_CMD 2>/dev/null | jq -ce 'objects') || mix=null
   json=$(jq -c --argjson a "$adm" --argjson m "$mix" '. + {admission: $a, mix: $m}' <<<"$json")
   [ "${1:-}" = --json ] && { printf '%s\n' "$json"; return 0; }
@@ -2585,6 +2672,8 @@ cmd_pipeline() {
     "",
     (.bottleneck | if . then "bottleneck: \(.step), age p90 \(.age_p90_min | m) against a bound of \(.bound | m) (\(.ratio)x)"
                    else "bottleneck: none, every step with a bound is inside it" end),
+    (.headline | if . then "headline: \(.text)" else "headline: none, no step is stopped or past its bound" end),
+    "score: \([.steps[] | if .verdict == "-" then "\(.step) -" else "\(.step) \(if .score == null then "" else "\(.score * 100 | round)% " end)\(.verdict)" end] | join(", "))",
     (.steps[] | select(.blocked) | "blocked at \(.step): \(.blocked)"),
     ([.steps[] | select(.in_24h != null and .step != "done" and .in_24h > .out_24h) | "\(.step) +\(.in_24h - .out_24h)"]
       | if length > 0 then "growing over 24h: \(join(", "))" else empty end),

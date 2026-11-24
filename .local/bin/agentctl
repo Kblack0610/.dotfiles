@@ -1043,23 +1043,31 @@ EOF
 }
 
 # timers_lag -> one runner per line whose timer file lags its conf: an enabled scheduled oneshot
-# with no timer or one older than its conf, or a timer reload would remove. An invalid conf is not
-# listed (reload arms it no timer either, and liveness names it), so a reload clears every line.
+# with no timer or one older than its conf, or a timer reload would remove. An unscheduled oneshot
+# (an event runner a .path unit starts) has no timer, so its generated drop-in stands in: one missing
+# or older than the conf lags too, else its START_LIMIT=off never lands and the fifth wake in 5
+# minutes fails the unit and stops its .path (fleet-dispatch-kick, 2026-11-23). An invalid conf is not
+# listed (reload writes it nothing either, and liveness names it), so a reload clears every line.
 timers_lag() {
-    local n conf t armed=" "
+    local n conf t d armed=" " listed=" " lag
     for n in $(list_agent_names); do
         conf=$(load_agent "$n" 2>/dev/null) || continue
-        [ "$(kv_get KIND <<<"$conf")" = oneshot ] && [ -n "$(kv_get SCHEDULE <<<"$conf")" ] \
-            && [ "$(kv_get ENABLED <<<"$conf")" != no ] || continue
-        armed+="$n "
-        t="$SYSTEMD_USER_DIR/agentctl-$n.timer"
-        [ -f "$t" ] && [ ! "$CONFIG_DIR/$n.conf" -nt "$t" ] || printf '%s\n' "$n"
+        [ "$(kv_get KIND <<<"$conf")" = oneshot ] || continue
+        lag=0
+        d="$SYSTEMD_USER_DIR/agentctl@$n.service.d/agentctl-oneshot.conf"
+        { [ -f "$d" ] && [ ! "$CONFIG_DIR/$n.conf" -nt "$d" ]; } || lag=1
+        if [ -n "$(kv_get SCHEDULE <<<"$conf")" ] && [ "$(kv_get ENABLED <<<"$conf")" != no ]; then
+            armed+="$n "
+            t="$SYSTEMD_USER_DIR/agentctl-$n.timer"
+            { [ -f "$t" ] && [ ! "$CONFIG_DIR/$n.conf" -nt "$t" ]; } || lag=1
+        fi
+        [ "$lag" = 0 ] || { printf '%s\n' "$n"; listed+="$n "; }
     done
     for t in "$SYSTEMD_USER_DIR"/agentctl-*.timer; do
         [ -f "$t" ] || continue
         n=${t##*/agentctl-}
         n=${n%.timer}
-        case "$armed" in *" $n "*) ;; *) printf '%s\n' "$n" ;; esac
+        case "$armed$listed" in *" $n "*) ;; *) printf '%s\n' "$n" ;; esac
     done
 }
 
