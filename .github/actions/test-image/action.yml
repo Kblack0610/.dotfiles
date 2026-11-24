@@ -1,6 +1,6 @@
 name: test image
 description: >-
-  Load the tests/Dockerfile image from the Actions cache, or build it once and cache it, so a
+  Load the tests/Dockerfile image (every tests.yml job's one toolchain) from the Actions cache, or build it once and cache it, so a
   later tests/docker.sh finds it present and does not rebuild. The cache key is the image tag,
   which ends in a hash of everything the image is built from (tests/docker.sh --image).
 inputs:
@@ -16,10 +16,14 @@ runs:
         TMUX_REF: ${{ inputs.tmux }}
       # The week is in the key because the image also takes in what the hash cannot see: the
       # debian base tag and unpinned apt packages. A gate never tests an image over a week old.
+      # A pool runner keeps its images between jobs, so one already present skips the restore.
       run: |
-        echo "tag=$(tests/docker.sh --image)" >> "$GITHUB_OUTPUT"
+        tag=$(tests/docker.sh --image)
+        echo "tag=$tag" >> "$GITHUB_OUTPUT"
         echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+        if docker image inspect "$tag" >/dev/null 2>&1; then echo present=true >> "$GITHUB_OUTPUT"; fi
     - id: cache
+      if: steps.tag.outputs.present != 'true'
       uses: actions/cache/restore@v4
       with:
         path: ${{ runner.temp }}/test-image.tar
@@ -33,7 +37,7 @@ runs:
         docker load -q -i "$RUNNER_TEMP/test-image.tar"
         docker image inspect "$TAG" >/dev/null
     # A miss builds and saves before the tests run, so a red test still leaves the image cached.
-    - if: steps.cache.outputs.cache-hit != 'true'
+    - if: steps.tag.outputs.present != 'true' && steps.cache.outputs.cache-hit != 'true'
       shell: bash
       env:
         TMUX_REF: ${{ inputs.tmux }}
@@ -41,7 +45,7 @@ runs:
       run: |
         tests/docker.sh --build
         docker save -o "$RUNNER_TEMP/test-image.tar" "$TAG"
-    - if: steps.cache.outputs.cache-hit != 'true'
+    - if: steps.tag.outputs.present != 'true' && steps.cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4
       with:
         path: ${{ runner.temp }}/test-image.tar

@@ -100,14 +100,15 @@ const out = outAt >= 0 ? args[outAt + 1] : join(SCRATCH, (control ? "control" : 
 // The versions npx pins do not match the cached browser, so both are named outright.
 function playwright() {
   const npx = join(homedir(), ".npm/_npx");
-  const roots = [join(SCRATCH, "node/node_modules/playwright-core"), ...(existsSync(npx) ? readdirSync(npx).map((d) => join(npx, d, "node_modules/playwright-core")) : [])].filter(existsSync);
+  // PLAYWRIGHT_CORE_DIR: the one tests/Dockerfile installs, which CI runs this in.
+  const roots = [process.env.PLAYWRIGHT_CORE_DIR, join(SCRATCH, "node/node_modules/playwright-core"), ...(existsSync(npx) ? readdirSync(npx).map((d) => join(npx, d, "node_modules/playwright-core")) : [])].filter((p) => p && existsSync(p));
   const version = (p) => JSON.parse(readFileSync(join(p, "package.json"), "utf8")).version;
   const root = roots.sort((a, b) => version(b).localeCompare(version(a), undefined, { numeric: true }))[0];
   if (!root) throw new Error(`no playwright-core under ${npx} or ${SCRATCH}/node`);
   return createRequire(join(root, "package.json"))("playwright-core");
 }
-// CI installs the browser its pinned playwright-core names (tests.yml, Phone render harness), so that
-// one wins when it is there.
+// The test image installs the browser its pinned playwright-core names (tests/Dockerfile, under
+// PLAYWRIGHT_BROWSERS_PATH), so that one wins when it is there.
 function chromium(pw) {
   const own = pw.chromium.executablePath();
   if (own && existsSync(own)) return own;

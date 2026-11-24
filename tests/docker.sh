@@ -14,6 +14,8 @@
 #   TMUX_STOCK=1 ./docker.sh ...    # 3.8 without .local/src/tmux/patched: a negative control
 #   ./docker.sh --image             # print the image tag and exit (CI keys its image cache on it)
 #   ./docker.sh --build             # build the image if it is missing, and exit
+#   ./docker.sh --run <cmd> [args]  # one command in the image, from the repo root (CI's cargo builds)
+#   DOCKER_NETWORK=bridge ./docker.sh test-rust   # a run that needs the network (crates, npm)
 #
 # The argument is a make target run INSIDE the container, so it must be an -inner
 # target. `./docker.sh test-ui` looks right and is not: the Makefile's test-ui is the
@@ -27,8 +29,13 @@ REPO="$(cd "$HERE/.." && pwd)"
 TMUX_REF="${TMUX_REF:-3.8}"
 TMUX_STOCK="${TMUX_STOCK:-}"
 FZF_REF="${FZF_REF:-0.74.1}"
+RUST_TOOLCHAIN="$(<"$HERE/rust-toolchain")"
+# The phone render harness's playwright-core (tests/agent-web/phone/render.mjs). Bump it here.
+PLAYWRIGHT_CORE=1.62.1
 CONTEXT="$REPO/.local/src/tmux/patched"
 DOCKER="${DOCKER:-docker}"
+# The suite needs no network; a run that fetches crates or npm packages asks for it by name.
+DOCKER_NETWORK="${DOCKER_NETWORK:-none}"
 
 # One build identity: the default tag ends in a hash of everything the image is built from
 # (the Dockerfile, the context and the build args), so an image already present under that
@@ -39,7 +46,7 @@ build_hash() {
   {
     cat "$HERE/Dockerfile"
     (cd "$CONTEXT" && find -L . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum)
-    printf '%s\n' "$TMUX_REF" "$TMUX_STOCK" "$FZF_REF"
+    printf '%s\n' "$TMUX_REF" "$TMUX_STOCK" "$FZF_REF" "$RUST_TOOLCHAIN" "$PLAYWRIGHT_CORE"
   } | sha256sum | cut -c1-12
 }
 if [ -n "${COCKPIT_TEST_IMAGE:-}" ]; then
@@ -75,6 +82,8 @@ else
     --build-arg "TMUX_REF=$TMUX_REF" \
     --build-arg "TMUX_STOCK=$TMUX_STOCK" \
     --build-arg "FZF_REF=$FZF_REF" \
+    --build-arg "RUST_TOOLCHAIN=$RUST_TOOLCHAIN" \
+    --build-arg "PLAYWRIGHT_CORE=$PLAYWRIGHT_CORE" \
     -t "$IMAGE" -f "$HERE/Dockerfile" "$CONTEXT" >/dev/null
   # A new hash leaves the old image tagged, and prune skips tagged images, so drop this
   # tmux/fzf pair's older builds here. One another run is still using stays.
@@ -85,15 +94,21 @@ else
 fi
 [ "${1:-}" = "--build" ] && exit 0
 
-# --network none      the suite needs no network; nothing can phone home
+# --network none      the default (DOCKER_NETWORK above): nothing can phone home
 # --init              reap orphans. A crashed test can leave fzf/tmux children behind, and
 #                     without an init as PID 1 they survive as zombies inside the run.
-# --user host:uid     artifacts land owned by the developer instead of root
+# --user host:uid     artifacts land owned by the developer instead of root. That UID has no
+#                     passwd entry in the image, so USER is passed for the tests that read it.
 # --rm                nothing persists but what is written into the bind mount
+# --shm-size          chromium (the phone render harness) runs out of docker's 64 MB /dev/shm
+# CARGO_HOME          in the checkout, so the registry outlives the container and CI caches it
 run_args=(
   --rm --init
-  --network none
+  --network "$DOCKER_NETWORK"
   --user "$(id -u):$(id -g)"
+  --env "USER=$(id -un)"
+  --env CARGO_HOME=/work/.cargo-ci
+  --shm-size 1g
   --volume "$REPO:/work"
   --workdir /work
 )
@@ -123,6 +138,10 @@ fi
 if [ "${1:-}" = "--shell" ]; then
   shift
   exec "$DOCKER" run -it "${run_args[@]}" "$IMAGE" bash "$@"
+fi
+if [ "${1:-}" = "--run" ]; then
+  shift
+  exec "$DOCKER" run "${run_args[@]}" "$IMAGE" "$@"
 fi
 
 targets=("${@:-test-container}")

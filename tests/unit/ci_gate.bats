@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
 # .github/workflows/tests.yml's gate job, the one check branch protection requires: its `needs`
 # names every job but the ones that are not gates, and its step is red on any result but success.
+# Also the one-toolchain rule: every job on the &pool runner, and no step installing a tool.
 
 bats_require_minimum_version 1.5.0
 
@@ -85,4 +86,60 @@ rust_job() { sed -n '/^  rust:$/,/^  [a-z][a-z-]*:$/p' "$1"; }
   sed "s/^          BASE: /          CLIPPY: \${{ github.event_name == 'pull_request' \&\& '0' || '1' }}\n          BASE: /" "$WF" >"$BATS_TEST_TMPDIR/skip.yml"
   run rust_job "$BATS_TEST_TMPDIR/skip.yml"
   [[ "$output" == *CLIPPY* ]]
+}
+
+# runs_on <wf>: "<job> <runs-on>" for every job; "-" for a job with none (a reusable workflow call)
+runs_on() {
+  awk '/^jobs:$/ { on = 1; next }
+    on && /^  [A-Za-z0-9_][A-Za-z0-9_-]*:$/ { if (job) print job, (r == "" ? "-" : r); job = substr($1, 1, length($1) - 1); r = ""; next }
+    on && /^    runs-on: / { sub(/^    runs-on: */, ""); r = $0 }
+    END { if (job) print job, (r == "" ? "-" : r) }' "$1"
+}
+
+# off_pool <wf>: jobs whose runner is not the pool anchor, one a line (a literal label, a second
+# definition of the anchor, a pasted expression)
+off_pool() {
+  runs_on "$1" | awk '$2 == "*pool" || $2 == "-" { next } $2 == "&pool" && !seen++ { next } { print $1 }'
+}
+
+@test "every tests.yml job runs where the one &pool anchor says" {
+  run runs_on "$WF"
+  assert_success
+  [[ "$output" == *"&pool "* ]] || fail "no job defines the &pool anchor: $output"
+  run off_pool "$WF"
+  assert_success
+  assert_output ''
+  # Negative control: a job with a literal label is named.
+  sed '/^  lint:$/,/^  [a-z]/ s/^    runs-on: \*pool$/    runs-on: ubuntu-24.04/' "$WF" >"$BATS_TEST_TMPDIR/literal.yml"
+  run off_pool "$BATS_TEST_TMPDIR/literal.yml"
+  assert_output 'lint'
+}
+
+@test "the skills call passes the anchor's runner choice, fork rule included" {
+  local cond
+  cond=$(sed -nE 's/^    runs-on: &pool \$\{\{ fromJSON\((.*) && vars\.LINUX_RUNNER_LIGHT \|\| .*$/\1/p' "$WF")
+  [ -n "$cond" ] || fail "no fork condition read from the &pool anchor"
+  run sed -n '/^  skills:$/,/^  [a-z]/{/^      runs-on: /p}' "$WF"
+  assert_success
+  [[ "$output" == *"$cond && vars.LINUX_RUNNER_LIGHT"* ]] || fail "skills runs-on is not the anchor's choice ($cond): $output"
+}
+
+# host_installs <dir>: workflow and action lines that put a tool on the runner itself, outside a
+# comment. A job's tools come from tests/Dockerfile, so a runner needs only docker (~/.local/src/docs/ci.md).
+host_installs() {
+  grep -rnE '(^|[^A-Za-z0-9_-])(apt-get|apt install|dpkg -i|rustup|npm (install|ci)|uses: [^ ]*setup-)([^A-Za-z0-9_-]|$)' "$1" |
+    grep -vE '^[^:]+:[0-9]+: *#' || true
+}
+
+@test "no workflow or action installs a tool on the runner" {
+  local gh="$BATS_TEST_DIRNAME/../../.github"
+  run host_installs "$gh"
+  assert_success
+  assert_output ''
+  # Negative control: an apt step and a rustup step in a copy are both named; a comment is not.
+  cp -r "$gh" "$BATS_TEST_TMPDIR/gh"
+  printf '      # rustup is not here\n      - run: sudo apt-get install -y stow\n      - run: rustup toolchain install 1.99.1\n' >>"$BATS_TEST_TMPDIR/gh/workflows/tests.yml"
+  run host_installs "$BATS_TEST_TMPDIR/gh"
+  [ "${#lines[@]}" -eq 2 ] || fail "want the apt and rustup lines named: $output"
+  [[ "$output" == *apt-get* && "$output" == *"rustup toolchain"* ]]
 }
