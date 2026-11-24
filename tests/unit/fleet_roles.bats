@@ -30,7 +30,7 @@ fleet-pace\tblocked: pid 1 d, 3 threads on I/O
 fleet-dispatch\twatch: queue-starved tripped (high)
 fleet-lead\tfinding x; then: fleet-sessions escalate id "k"
 fleet-lead\timprove: kpi past bound 1, no live row
-fleet-lead\tinfra: k3s domain red
+fleet-lead\tinfra: k3s nodes red
 fleet-lead\twatch: home-k3s-node-disk tripped (urgent)'
 }
 
