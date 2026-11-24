@@ -190,3 +190,17 @@ H=3600
   run find "$SANDBOX" -maxdepth 1 -name 'pace-overrides.?*' ! -name 'pace-overrides.lock'
   assert_output ''
 }
+
+@test "pace-conf set WAKE_BUDGET takes a whole number up to its max, never a decimal its readers would refuse" {
+  run "$PC" set WAKE_BUDGET 2.5
+  assert_failure 1
+  assert_output --partial "WAKE_BUDGET takes a whole number, not '2.5'"
+  run "$PC" set WAKE_BUDGET 7
+  assert_failure 1
+  assert_output --partial "over WAKE_BUDGET's max of 6"
+  # negative control: the refusals wrote nothing; a whole value in range is taken
+  [ ! -s "$PACE_OVERRIDES" ]
+  run "$PC" set WAKE_BUDGET 6
+  assert_success
+  assert_equal "$(pace_get WAKE_BUDGET)" 6
+}

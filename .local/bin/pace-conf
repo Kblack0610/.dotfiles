@@ -178,6 +178,9 @@ cmd_set() {
     done
     max=$(editable "$key")
     [[ "$value" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "'$value' is not a plain number"
+    # a key whose pace.conf default is whole takes only a whole value: its readers (wake-pace.sh)
+    # refuse a decimal and wake nobody
+    [[ ! "$(pace_default "$key")" =~ ^[0-9]+$ || "$value" =~ ^[0-9]+$ ]] || die "$key takes a whole number, not '$value'"
     awk -v v="$value" -v m="$max" 'BEGIN {exit !(v + 0 <= m + 0)}' || die "$value is over $key's max of $max (${key}_MAX in pace.conf)"
     # a run by the hub's audited routes: AGENT_AUDITED is the runner's pid, this tool's parent
     # (the same test as audit_append, lib/audit.sh); an inherited one is a hand run
