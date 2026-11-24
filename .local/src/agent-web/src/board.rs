@@ -155,7 +155,7 @@ fn to_write(b: WriteBody) -> Result<Write, &'static str> {
         "add" => Verb::Add {
             text: b.text,
             priority: if b.priority.is_empty() {
-                "high".into()
+                tasks::DEFAULT_PRIORITY.into()
             } else {
                 b.priority
             },
@@ -369,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn an_add_defaults_to_high_and_blank_fields_are_absent() {
+    fn an_add_defaults_to_normal_and_blank_fields_are_absent() {
         let w = to_write(body(
             r#"{"verb":"add","profile":"bnb","project":"demo","lane":"human","text":"x","to":" ","game":""}"#,
         ))
@@ -378,7 +378,7 @@ mod tests {
             w.verb,
             Verb::Add {
                 text: "x".into(),
-                priority: "high".into(),
+                priority: "normal".into(),
                 to: None,
                 game: None
             }

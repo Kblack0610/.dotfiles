@@ -295,6 +295,7 @@ enum Cmd {
     /// List the indexed projects behind the board and the daily note's footer link.
     /// No arg lists each as `name<TAB>summary-path<TAB>status`; `<name>` lists that
     /// project's note files as `path<TAB>label` (summary first).
+    #[command(group(clap::ArgGroup::new("hours_with").args(["commit", "prio"]).multiple(true)))]
     Projects {
         /// Project to list files for. Omit to list all indexed projects.
         name: Option<String>,
@@ -459,8 +460,10 @@ enum Cmd {
         commit: Option<String>,
         /// With --commit: lock the window as a sprint of this many hours from now. It replaces an
         /// earlier snapshot with the rows that fit that many hours of the agent lane's shipped
-        /// weight, #urgent and in-progress rows first, and records the cut (`cut=` in the head)
-        #[arg(long, value_name = "H", requires = "commit")]
+        /// weight, #urgent and in-progress rows first, and records the cut (`cut=` in the head).
+        /// With --prio --set focus: how long the focus lasts (default 4, at most 24); past its
+        /// end the project reads as high
+        #[arg(long, value_name = "H", requires = "hours_with")]
         hours: Option<f64>,
         /// With --commit --hours: queue a sprint behind the open one while it runs: the patch after
         /// the last sprint already queued, so any number chain, or the version named
@@ -2035,7 +2038,7 @@ fn main() -> Result<()> {
                 std::process::exit(0);
             }
             if let Some(n) = prio {
-                projects::prio(&prof, &log, &n, set.as_deref())?;
+                projects::prio(&prof, &log, &n, set.as_deref(), hours)?;
                 if set.is_some() {
                     lab_refresh::kick();
                 }

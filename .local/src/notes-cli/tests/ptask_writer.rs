@@ -1711,7 +1711,7 @@ fn a_new_game_row_from_a_session_waits_for_the_next_window_of_a_focus_parent() {
     let game = with_game(&h, "");
     fs::write(
         h.0.join("notes/projects/current/demo/README.md"),
-        "# demo\nVersion: v0.1.0 #prio/focus\n\n## Inbox\n\n## Tasks\n",
+        "# demo\nVersion: v0.1.0 #prio/focus\nFocus until: 2099-01-01 00:00 +0000\n\n## Inbox\n\n## Tasks\n",
     )
     .unwrap();
     ok(&h.run(&["projects", "--commit", "demo"]));
@@ -1724,4 +1724,69 @@ fn a_new_game_row_from_a_session_waits_for_the_next_window_of_a_focus_parent() {
         .find(|l| l.contains("a later game bug"))
         .unwrap_or_default();
     assert!(row.contains("#v0.1.1"), "{sheet}");
+}
+
+/// A focus is a short push: `--set focus` records its end on a `Focus until:` head line
+/// (`--hours`, default 4, at most 24), any other prio drops the line, and a focus whose end has
+/// passed, or that has none, reads as high in `--prios`.
+#[test]
+fn a_focus_ends_on_its_hours_and_then_reads_as_high() {
+    let h = Home::new("focus-until");
+    let readme = h.0.join("notes/projects/current/demo/README.md");
+    ok(&h.run(&[
+        "projects", "--prio", "demo", "--set", "focus", "--hours", "2",
+    ]));
+    let sheet = fs::read_to_string(&readme).unwrap();
+    assert!(
+        sheet.contains("Version: v0.1.0 #prio/focus\nFocus until: "),
+        "{sheet}"
+    );
+    let prios = String::from_utf8(h.run(&["projects", "--prios"]).stdout).unwrap();
+    assert!(prios.contains("demo\tfocus"), "{prios}");
+    // Its end passed: the tag stays on the page, the read says high.
+    let line = sheet
+        .lines()
+        .find(|l| l.starts_with("Focus until:"))
+        .unwrap();
+    fs::write(
+        &readme,
+        sheet.replace(line, "Focus until: 2020-01-01 00:00 +0000"),
+    )
+    .unwrap();
+    let prios = String::from_utf8(h.run(&["projects", "--prios"]).stdout).unwrap();
+    assert!(prios.contains("demo\thigh"), "{prios}");
+    // NEGATIVE CONTROL: a bare tag with no end is no focus either.
+    fs::write(
+        &readme,
+        "# demo\nVersion: v0.1.0 #prio/focus\n\n## Inbox\n\n## Tasks\n",
+    )
+    .unwrap();
+    let prios = String::from_utf8(h.run(&["projects", "--prios"]).stdout).unwrap();
+    assert!(prios.contains("demo\thigh"), "{prios}");
+    // Any other prio drops the end; hours past the cap, or on another prio, are refused.
+    ok(&h.run(&["projects", "--prio", "demo", "--set", "focus"]));
+    ok(&h.run(&["projects", "--prio", "demo", "--set", "low"]));
+    let sheet = fs::read_to_string(&readme).unwrap();
+    assert!(
+        !sheet.contains("Focus until:") && sheet.contains("#prio/low"),
+        "{sheet}"
+    );
+    assert!(!h
+        .run(&["projects", "--prio", "demo", "--set", "focus", "--hours", "30"])
+        .status
+        .success());
+    assert!(!h
+        .run(&["projects", "--prio", "demo", "--set", "high", "--hours", "2"])
+        .status
+        .success());
+    assert!(!h.run(&["projects", "--hours", "2"]).status.success());
+    // A read with hours is no write, and a focus shorter than a minute is none.
+    assert!(!h
+        .run(&["projects", "--prio", "demo", "--hours", "2"])
+        .status
+        .success());
+    assert!(!h
+        .run(&["projects", "--prio", "demo", "--set", "focus", "--hours", "0.001"])
+        .status
+        .success());
 }

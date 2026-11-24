@@ -279,7 +279,7 @@ pub fn stages() {
 /// Unset is normal. `fleet-dispatch` and `agent-queue` rank a project's work by it, focus
 /// first, then high, normal, low, and start a lower tier only when no higher one can; nothing
 /// is held back. The `prio/` prefix keeps it apart from a row's
-/// `#high` / `#low` priority words.
+/// `#high` / `#normal` / `#low` priority words.
 pub(crate) const PRIOS: [&str; 3] = ["prio/focus", "prio/high", "prio/low"];
 
 // -- stage and group: hashtags on the project's front page --------------------
@@ -521,14 +521,70 @@ pub fn group(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Resu
     tag_verb(p, log, name, &refs, value)
 }
 
-/// `notes projects --prio <name> [--set focus|high|low|normal]`: read or set a project's
-/// priority. `normal` clears the tag. Reading prints the bare word, empty for normal.
-pub fn prio(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Result<()> {
+/// The head line a focus ends on: `Focus until: YYYY-MM-DD HH:MM +ZZZZ`, local time with its
+/// offset, so a host in another zone reading the synced vault sees the same end.
+const FOCUS_UNTIL: &str = "Focus until:";
+/// How long a focus lasts when `--hours` is not given, and the most it may be set for. A focus
+/// is a short push, never a standing state: past its end it reads as high.
+const FOCUS_HOURS: f64 = 4.0;
+const FOCUS_MAX_HOURS: f64 = 24.0;
+const FOCUS_FMT: &str = "%Y-%m-%d %H:%M %z";
+
+/// When the head's focus ends; `None` with no line or a malformed one, which reads as ended.
+fn focus_until_of(content: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    head_field(content, FOCUS_UNTIL)
+        .and_then(|t| chrono::DateTime::parse_from_str(t, FOCUS_FMT).ok())
+        .map(|t| t.with_timezone(&chrono::Utc))
+}
+
+/// `end` as a `Focus until:` value, in this host's zone.
+fn fmt_focus(end: chrono::DateTime<chrono::Utc>) -> String {
+    end.with_timezone(&chrono::Local)
+        .format(FOCUS_FMT)
+        .to_string()
+}
+
+/// A locked sprint on a focus project keeps the focus at least to its cut: a sprint is a time box
+/// the human set, and its row freeze reads the focus (`window::runs_sprints`). A project whose tag
+/// is not focus is left alone; the caller warns that it runs no sprint.
+fn extend_focus(dir: &Path, cut: chrono::NaiveDateTime) -> Result<()> {
+    let page = front_page(dir);
+    let content = fs::read_to_string(&page)?;
+    let Some(cut) = cut.and_local_timezone(chrono::Local).earliest() else {
+        return Ok(());
+    };
+    let cut = cut.with_timezone(&chrono::Utc);
+    if head_tag(&content, &PRIOS).as_deref() != Some("prio/focus")
+        || focus_until_of(&content).is_some_and(|end| end >= cut)
+    {
+        return Ok(());
+    }
+    md::write_atomic(
+        &page,
+        &set_head_line(&content, FOCUS_UNTIL, Some(fmt_focus(cut)))?,
+    )?;
+    Ok(())
+}
+
+/// `notes projects --prio <name> [--set focus|high|low|normal] [--hours H]`: read or set a
+/// project's priority. `normal` clears the tag. Focus lasts `--hours` (default
+/// [`FOCUS_HOURS`], at most [`FOCUS_MAX_HOURS`]) and records its end on a `Focus until:` head
+/// line; any other prio drops the line. Reading prints the bare word, empty for normal.
+pub fn prio(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    value: Option<&str>,
+    hours: Option<f64>,
+) -> Result<()> {
     let dir = project_dir(p, name)?;
     let page = front_page(&dir);
     let content =
         fs::read_to_string(&page).map_err(|e| anyhow::anyhow!("{}: {e}", page.display()))?;
     let Some(v) = value else {
+        if hours.is_some() {
+            bail!("--hours goes with --set focus only");
+        }
         println!("{}", prio_of_str(&content));
         return Ok(());
     };
@@ -537,12 +593,31 @@ pub fn prio(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Resul
         "normal" => None,
         _ => bail!("unknown priority '{v}' (want: focus, high, low, normal)"),
     };
-    let updated = replace_head_tag(&content, &PRIOS, tag.as_deref())?;
+    let until = if v == "focus" {
+        let h = hours.unwrap_or(FOCUS_HOURS);
+        let minutes = (h * 60.0).round();
+        if !(minutes >= 1.0 && h <= FOCUS_MAX_HOURS) {
+            bail!("a focus lasts at least a minute and at most {FOCUS_MAX_HOURS} hours, not {h}");
+        }
+        Some(fmt_focus(
+            chrono::Utc::now() + chrono::Duration::minutes(minutes as i64),
+        ))
+    } else {
+        if hours.is_some() {
+            bail!("--hours goes with --set focus only");
+        }
+        None
+    };
+    let tagged = replace_head_tag(&content, &PRIOS, tag.as_deref())?;
+    let updated = set_head_line(&tagged, FOCUS_UNTIL, until.clone())?;
     if updated != content {
-        fs::write(&page, &updated)?;
+        md::write_atomic(&page, &updated)?;
         log.info("projects", &format!("{name}: prio {v}"));
     }
-    println!("{} prio {v}", page.display());
+    match until {
+        Some(u) => println!("{} prio focus until {u}", page.display()),
+        None => println!("{} prio {v}", page.display()),
+    }
     Ok(())
 }
 
@@ -567,11 +642,29 @@ pub fn prios() -> Result<()> {
     Ok(())
 }
 
-/// The priority word a head declares (`focus`, `high`, `low`), empty for normal.
+/// The priority word a head declares (`focus`, `high`, `low`), empty for normal. A focus whose
+/// `Focus until:` has passed, or that has none, reads as high: focus never stays on by itself.
 fn prio_of_str(content: &str) -> String {
-    head_tag(content, &PRIOS)
+    prio_at(content, chrono::Utc::now())
+}
+
+fn prio_at(content: &str, now: chrono::DateTime<chrono::Utc>) -> String {
+    let word = head_tag(content, &PRIOS)
         .and_then(|t| t.strip_prefix("prio/").map(str::to_string))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if word == "focus" && focus_until_of(content).is_none_or(|end| end <= now) {
+        return "high".into();
+    }
+    word
+}
+
+/// When a live focus ends (`YYYY-MM-DD HH:MM +ZZZZ`, this host's zone), `None` when the
+/// project is not on focus now.
+pub(crate) fn focus_until(dir: &Path) -> Option<String> {
+    let content = fs::read_to_string(front_page(dir)).ok()?;
+    (prio_of_str(&content) == "focus")
+        .then(|| focus_until_of(&content).map(fmt_focus))
+        .flatten()
 }
 
 /// A project's declared priority word, empty for normal.
@@ -631,36 +724,37 @@ pub(crate) fn target_of(content: &str) -> Option<Target> {
 /// Replace the head's `Target:` line with `target`, or drop it for `None`. It goes directly
 /// under `Version:`, so a sheet never carries two and the promise sits beside the version.
 fn set_target_line(content: &str, target: Option<Target>) -> Result<String> {
+    set_head_line(content, TARGET, target.map(fmt_target))
+}
+
+/// Replace the head line that starts with `key` with `key value`, or drop it for `None`. A new
+/// line goes directly under `Version:`, else under the title; one already set keeps its slot.
+fn set_head_line(content: &str, key: &str, value: Option<String>) -> Result<String> {
     let head_len = head_lines(content).count();
-    let is_target = |i: usize, l: &str| i < head_len && l.trim_start().starts_with(TARGET);
+    let is_key = |i: usize, l: &str| i < head_len && l.trim_start().starts_with(key);
     // A line already set keeps its slot: the board's `Agents:` and `Docs:` lines also go
     // under `Version:` (`agent_sheet::with_head`), so re-inserting at `Version:`+1 would
     // swap the two writers' lines on every call.
-    let kept = content
-        .lines()
-        .enumerate()
-        .position(|(i, l)| is_target(i, l));
+    let kept = content.lines().enumerate().position(|(i, l)| is_key(i, l));
     let mut lines: Vec<String> = content
         .lines()
         .enumerate()
-        .filter(|(i, l)| !is_target(*i, l))
+        .filter(|(i, l)| !is_key(*i, l))
         .map(|(_, l)| l.to_string())
         .collect();
-    if let Some(t) = target {
+    if let Some(v) = value {
         let at = match kept {
             Some(at) => at,
             None => {
-                let Some(v) = lines
+                lines
                     .iter()
                     .take(head_len)
                     .position(|l| l.trim_start().starts_with("Version:"))
-                else {
-                    bail!("no `Version:` line in the sheet's head to set a target beside");
-                };
-                v + 1
+                    .unwrap_or(0)
+                    + 1
             }
         };
-        lines.insert(at, format!("{TARGET} {}", fmt_target(t)));
+        lines.insert(at, format!("{key} {v}"));
     }
     let mut out = lines.join("\n");
     if content.ends_with('\n') {
@@ -1247,9 +1341,9 @@ fn summary_findings(content: &str) -> Vec<String> {
     out
 }
 
-/// Priority words no reader knows. A row carrying one sorts as untagged (high), so the
+/// Priority words no reader knows. A row carrying one sorts as untagged (normal), so the
 /// word looks meaningful and is not.
-const RETIRED_PRIORITIES: &[&str] = &["normal", "medium", "p0", "p1", "p2", "p3"];
+const RETIRED_PRIORITIES: &[&str] = &["medium", "p0", "p1", "p2", "p3"];
 
 /// Why an edit from `old` to `new` is refused: `new` carries a [`RETIRED_PRIORITIES`] word,
 /// before its marker, that `old` did not. A row that already had one still takes an edit, so
@@ -1265,7 +1359,7 @@ pub(crate) fn refuse_retired_priority(old: &str, new: &str) -> anyhow::Result<()
     let had = retired(old);
     match retired(new).into_iter().find(|t| !had.contains(t)) {
         Some(t) => anyhow::bail!(
-            "#{t} is not a priority (urgent, high or low; quote it in backticks to mean the word), so nothing was written"
+            "#{t} is not a priority (urgent, high, normal or low; quote it in backticks to mean the word), so nothing was written"
         ),
         None => Ok(()),
     }
@@ -1409,7 +1503,7 @@ pub(crate) fn row_findings(content: &str, agent: bool) -> Vec<String> {
         for t in &tags {
             if RETIRED_PRIORITIES.contains(&t.as_str()) {
                 out.push(format!(
-                    "line {n}: #{t} is not a priority (urgent, high or low)"
+                    "line {n}: #{t} is not a priority (urgent, high, normal or low)"
                 ));
             } else if RETIRED_TAGS.contains(&t.as_str()) {
                 out.push(format!("line {n}: #{t} is retired (nothing reads it)"));
@@ -1517,7 +1611,7 @@ pub(crate) fn untriaged_finding(content: &str, today: chrono::NaiveDate) -> Opti
     }
     let first = rows.first()?;
     Some(format!(
-        "{} untriaged open row(s) with no #urgent, #high or #low, {old} older than a day (first: line {first}; `agentctl-inbox-triage --backlog --priority` ranks them)",
+        "{} untriaged open row(s) with no #urgent, #high, #normal or #low, {old} older than a day (first: line {first}; `agentctl-inbox-triage --backlog --priority` ranks them)",
         rows.len()
     ))
 }
@@ -2932,9 +3026,10 @@ pub fn commit_window(
         );
         log.info("projects", &msg);
         println!("{msg}");
+        extend_focus(&dir, l.cut)?;
         if !crate::window::runs_sprints(&dir) {
             let w = format!(
-                "{name} is not #prio/focus, so the board shows no sprint for it; \
+                "{name} is not on focus now, so the board shows no sprint for it; \
                  `notes projects --prio {name} --set focus` makes it one"
             );
             log.warn("projects", &w);
@@ -3717,6 +3812,7 @@ struct SheetCounts {
     done: usize,
     urgent: usize,
     high: usize,
+    normal: usize,
     low: usize,
     planned: usize,
 }
@@ -3738,6 +3834,7 @@ fn sheet_counts(content: &str, cur: Option<V>) -> SheetCounts {
             match md::task_priority(l) {
                 Some("#urgent") => c.urgent += 1,
                 Some("#high") => c.high += 1,
+                Some("#normal") => c.normal += 1,
                 Some("#low") => c.low += 1,
                 _ => {}
             }
@@ -3761,6 +3858,8 @@ struct ProjectStats {
     /// The head's `#prio/<word>` (`focus`, `high`, `low`), empty for normal. JSON only: the
     /// TSV keeps its columns, which several scripts read by position.
     prio: String,
+    /// When the focus ends (`YYYY-MM-DD HH:MM`, local), while `prio` is focus; null otherwise.
+    focus_until: Option<String>,
     version: String,
     /// The project whose open version this is, for a game with no number of its own
     /// ([`version_parent_dir`]); null otherwise. JSON only: `project_version_owner` reads it.
@@ -3769,6 +3868,8 @@ struct ProjectStats {
     done: usize,
     urgent: usize,
     high: usize,
+    /// JSON only: the TSV keeps its columns.
+    normal: usize,
     low: usize,
     planned: usize,
     agent: usize,
@@ -4043,6 +4144,7 @@ pub(crate) struct KindCount {
     /// Open rows per priority tag; a row with none counts in no bucket.
     pub urgent: usize,
     pub high: usize,
+    pub normal: usize,
     pub low: usize,
     pub done: usize,
     pub closed_28d: usize,
@@ -4185,6 +4287,7 @@ impl Progress {
             match prio {
                 Some("#urgent") => k.urgent += 1,
                 Some("#high") => k.high += 1,
+                Some("#normal") => k.normal += 1,
                 Some("#low") => k.low += 1,
                 _ => {}
             }
@@ -4334,6 +4437,7 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
         dir: dir.to_path_buf(),
         stage,
         prio: prio_of(dir),
+        focus_until: focus_until(dir),
         version: version_str(dir),
         version_parent: version_parent_dir(dir)
             .and_then(|p| Some(p.file_name()?.to_str()?.to_string())),
@@ -4341,6 +4445,7 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
         done: c.done,
         urgent: c.urgent,
         high: c.high,
+        normal: c.normal,
         low: c.low,
         planned: c.planned,
         agent: sheet_counts(
@@ -5104,7 +5209,12 @@ mod stage_tag_tests {
             one.contains("Version: v1.0.0 #alpha #tooling #prio/focus\n"),
             "{one}"
         );
-        assert_eq!(prio_of_str(&one), "focus");
+        assert_eq!(head_tag(&one, &PRIOS).as_deref(), Some("prio/focus"));
+        assert_eq!(
+            prio_of_str(&one),
+            "high",
+            "a focus with no end reads as high"
+        );
         let two = replace_head_tag(&one, &PRIOS, Some("prio/low")).unwrap();
         assert_eq!(two.matches("#prio/").count(), 1, "{two}");
         assert_eq!(prio_of_str(&two), "low");
@@ -5490,6 +5600,7 @@ Version: v0.2.0
                 open_weight: 4,
                 urgent: 1,
                 high: 0,
+                normal: 0,
                 low: 1,
                 done: 1,
                 closed_28d: 1,
@@ -6656,7 +6767,8 @@ mod move_layout_tests {
     fn row_lint_flags_retired_priorities_bad_tiers_and_unproven_agent_done_rows() {
         let sheet = "## Tasks\n\
             - [ ] fine #urgent #tier/3 #tierlist\n\
-            - [ ] old word #normal\n\
+            - [ ] old word #medium\n\
+            - [ ] four levels #normal\n\
             - [ ] squashed #tier3\n\
             - [ ] too high #tier/4\n\
             - [x] closed by hand <!-- carried:2 -->\n\
@@ -6668,12 +6780,12 @@ mod move_layout_tests {
         assert_eq!(
             got,
             [
-                "line 3: #normal is not a priority (urgent, high or low)",
-                "line 4: #tier3 is not a tier (#tier/1, 2 or 3)",
-                "line 5: #tier/4 is not a tier (#tier/1, 2 or 3)",
-                "line 6: done with no proof marker (<!-- pr:N -->)",
-                "4 open row(s) not in `type(area): title` form (first: line 2; `notes doctor --projects --untyped` proposes each)",
-                "4 open row(s) with no id (<!-- id:<code>-<n> -->; `ptask add` stamps one) (first: line 2)",
+                "line 3: #medium is not a priority (urgent, high, normal or low)",
+                "line 5: #tier3 is not a tier (#tier/1, 2 or 3)",
+                "line 6: #tier/4 is not a tier (#tier/1, 2 or 3)",
+                "line 7: done with no proof marker (<!-- pr:N -->)",
+                "5 open row(s) not in `type(area): title` form (first: line 2; `notes doctor --projects --untyped` proposes each)",
+                "5 open row(s) with no id (<!-- id:<code>-<n> -->; `ptask add` stamps one) (first: line 2)",
             ]
         );
         assert_eq!(
@@ -6698,7 +6810,7 @@ mod move_layout_tests {
             \x20 - [ ] a child row is not a row\n";
         assert_eq!(
             untriaged_finding(sheet, today).unwrap(),
-            "3 untriaged open row(s) with no #urgent, #high or #low, 2 older than a day (first: line 3; `agentctl-inbox-triage --backlog --priority` ranks them)"
+            "3 untriaged open row(s) with no #urgent, #high, #normal or #low, 2 older than a day (first: line 3; `agentctl-inbox-triage --backlog --priority` ranks them)"
         );
         assert_eq!(untriaged_finding("- [ ] fine #high\n", today), None);
     }
@@ -6938,6 +7050,7 @@ mod stats_tests {
                 done: 1,
                 urgent: 1,
                 high: 1,
+                normal: 0,
                 low: 1,
                 planned: 2,
             }
@@ -7809,6 +7922,60 @@ mod shape_tests {
             "prod is 14 days"
         );
         let _ = fs::remove_dir_all(&s.root);
+    }
+
+    #[test]
+    fn a_focus_reads_by_its_end_in_any_zone_and_only_from_the_head() {
+        let at = |s: &str| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .unwrap()
+                .with_timezone(&chrono::Utc)
+        };
+        let page = "# demo\nVersion: v0.1.0 #prio/focus\nFocus until: 2026-11-23 18:00 -0800\n\n## Tasks\n";
+        // 18:00 at -0800 is 02:00 UTC the next day, whatever zone reads it.
+        assert_eq!(prio_at(page, at("2026-11-24T01:59:00Z")), "focus");
+        assert_eq!(prio_at(page, at("2026-11-24T02:00:00Z")), "high");
+        // NEGATIVE CONTROLS: no end, an end with no zone, and a tag below the head.
+        let bare = "# demo\nVersion: v0.1.0 #prio/focus\n\n## Tasks\n";
+        assert_eq!(prio_at(bare, at("2000-01-01T00:00:00Z")), "high");
+        let naive = page.replace(" -0800", "");
+        assert_eq!(prio_at(&naive, at("2000-01-01T00:00:00Z")), "high");
+        let row = "# demo\nVersion: v0.1.0\n\n## Tasks\n- [ ] says #prio/high\n";
+        assert_eq!(prio_at(row, at("2000-01-01T00:00:00Z")), "");
+        // A head with no Version: line takes the end under its title.
+        let titled = set_head_line(
+            "# demo #prio/focus\nGoal: g\n\n## Tasks\n",
+            FOCUS_UNTIL,
+            Some("x".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            titled,
+            "# demo #prio/focus\nFocus until: x\nGoal: g\n\n## Tasks\n"
+        );
+    }
+
+    #[test]
+    fn a_sprint_keeps_its_focus_to_the_cut_and_never_starts_one() {
+        let dir = std::env::temp_dir().join(format!("focus-sprint-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let readme = dir.join("README.md");
+        let cut = chrono::NaiveDate::from_ymd_opt(2099, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        fs::write(&readme, "# demo\nVersion: v0.1.0 #prio/focus\nFocus until: 2000-01-01 00:00 +0000\n\n## Tasks\n").unwrap();
+        extend_focus(&dir, cut).unwrap();
+        let s = fs::read_to_string(&readme).unwrap();
+        assert!(s.contains("Focus until: 2099-06-01 12:00 "), "{s}");
+        assert_eq!(s.matches("Focus until:").count(), 1, "{s}");
+        // NEGATIVE CONTROL: a project not on focus gets no focus from a sprint.
+        fs::write(&readme, "# demo\nVersion: v0.1.0 #prio/high\n\n## Tasks\n").unwrap();
+        extend_focus(&dir, cut).unwrap();
+        assert!(!fs::read_to_string(&readme)
+            .unwrap()
+            .contains("Focus until:"));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

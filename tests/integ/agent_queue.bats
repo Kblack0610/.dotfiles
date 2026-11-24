@@ -507,7 +507,7 @@ mix_classes() { jq --argjson on "$1" '.on = $on | del(.classes[].min_live)' "$RE
   assert_success
   run jq -c '[.on, .starve_days, (.classes[] | [.name, .runnable, .started, .recent, .pct]), .starved]' <<<"$output"
   # The held chore is no runnable cleanup, so cleanup is not starved; bug's only start is 5 days old.
-  assert_output '[false,3,["bug",1,1,0,25],["requested",1,2,2,50],["cleanup",0,0,0,0],["unity",0,0,0,0],["research",1,0,0,0],["feature",1,1,1,25],["bug","research"]]'
+  assert_output '[false,3,["bug",1,1,0,25],["requested",1,2,2,50],["cleanup",0,0,0,0],["unity",0,0,0,0],["trader",0,0,0,0],["research",1,0,0,0],["feature",1,1,1,25],["bug","research"]]'
   run "$AQ" mix
   assert_success
   assert_line 'mix (off): items started in 7d against each class share'
@@ -5230,6 +5230,16 @@ row_item() {
   rm "$NOTES_FIXTURE/board.json"
   run bash -c "'$AQ' list --json | jq -r '\"\(.slug) \(.priority)\"'"
   assert_output $'red low\nretagged-down high\ncleanup high\ngone high\nretagged-up low'
+}
+
+@test "ar-4884: an item on a #normal row, or an untagged one the feed reads normal, ranks high until the queue has a normal word" {
+  story_notes
+  row_item on-normal level:lv-1 low
+  jq -n '{rows: [{project: "level", id: "lv-1", state: "open", priority: "normal"}]}' > "$NOTES_FIXTURE/board.json"
+  run bash -c "'$AQ' list --json | jq -r '\"\(.slug) \(.priority)\"'"
+  assert_success
+  # NEGATIVE CONTROL: a filter of urgent, high and low drops the row, and the item keeps its own low.
+  assert_output 'on-normal high'
 }
 
 @test "ar-3011: bump and set priority= write the item's row, which the order reads; an item with no row writes none" {
