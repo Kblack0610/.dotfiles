@@ -517,3 +517,15 @@ systemctl_calls() { grep '^systemctl ' "$NOTES_FIXTURE/calls.log" 2>/dev/null | 
   run wc -l < "$log"
   assert_output 3
 }
+
+@test "release wakes a dispatch kick; set and a refused release do not (dispatch-event-wake)" {
+  export FLEET_DISPATCH_DIR="$SANDBOX/dispatch"
+  "$HOLD" set dispatch --by c "hot"
+  [ ! -e "$FLEET_DISPATCH_DIR/.wake" ] || fail "a hold wrote a wake"
+  run "$HOLD" release nothing-held
+  assert_failure 1
+  [ ! -e "$FLEET_DISPATCH_DIR/.wake" ] || fail "a release of nothing wrote a wake"
+  "$HOLD" release dispatch
+  [ -s "$FLEET_DISPATCH_DIR/.wake" ] || fail "a lifted hold wrote no wake"
+  grep -q 'agent-hold release dispatch' "$FLEET_DISPATCH_DIR/.wake"
+}
