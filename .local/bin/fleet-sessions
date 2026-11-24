@@ -1124,7 +1124,8 @@ mark() {
 }
 
 # release_left <rows>: a session that left NEEDS drops its NEEDS escalation, so its next ask or
-# dialog pages once. A session that left DONE keeps its entry, and its close claim in $CLOSED is
+# dialog pages once. Its NEEDS nudge stays: a session the nudge woke flips WORKING and back, and the
+# same ask is nudged once (fleet-shepherd needs_nudge); any later nudge replaces it. A session that left DONE keeps its entry, and its close claim in $CLOSED is
 # never released: one typed close per session.
 release_left() {
   local b sid _
