@@ -152,22 +152,26 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   refute_output --partial 'nudge'
   # One typed its close (close_sent, read as nudged) whose verdict held is close_sample's window close
   # (close_refused); its ask is the human's on the asks board, so the pass gets no line either (ar-2763).
-  doc "[$(row e NEEDS true false '[]' now | jq -c '. + {own_asks: 1, close_sent: true}')]"
+  doc "[$(row e NEEDS true false '[]' now | jq -c '. + {own_asks: 1, close_sent: true, reason: "1 pending ask(s)"}')]"
   run "$SH" due
   assert_failure 1
   assert_output ''
 }
 
 @test "due escalates no NEEDS row on its own pending ask: the asks board holds it, the shepherd cannot clear it (ar-2763)" {
-  doc "[$(row a NEEDS false false | jq -c '. + {own_asks: 1, activity: "idle", idle_min: 5}'),
+  doc "[$(row a NEEDS false false | jq -c '. + {own_asks: 1, activity: "idle", idle_min: 5, reason: "1 pending ask(s)"}'),
         $(row b NEEDS false false | jq -c '. + {own_asks: 2, activity: "busy", reason: "2 pending ask(s), carrying on"}'),
-        $(row c NEEDS false false)]"
+        $(row c NEEDS false false),
+        $(row d NEEDS false false | jq -c '. + {own_asks: 1, activity: "waiting", reason: "waiting on a prompt or permission"}')]"
   run "$SH" due
   assert_success
-  # c waits on a dialog or plan approval, which has no other home, so it still goes to the human.
-  assert_output 'escalate NEEDS: c r-c; then: fleet-sessions escalate c "f-c"'
+  # c waits on a dialog or plan approval, which has no other home, so it still goes to the human; so does d,
+  # in a dialog while it also holds an ask: the reason decides, not the ask count.
+  assert_line 'escalate NEEDS: c r-c; then: fleet-sessions escalate c "f-c"'
+  assert_line 'escalate NEEDS: d waiting on a prompt or permission; then: fleet-sessions escalate d "f-d"'
+  assert_equal "$(grep -c . <<<"$output")" 2
   # Only ask rows due: nothing for a pass, so the check counts nothing and starts none.
-  doc "[$(row a NEEDS false false | jq -c '. + {own_asks: 1, activity: "idle", idle_min: 5}')]"
+  doc "[$(row a NEEDS false false | jq -c '. + {own_asks: 1, activity: "idle", idle_min: 5, reason: "1 pending ask(s)"}')]"
   run "$SH" due
   assert_failure 1
   assert_output ''
@@ -223,13 +227,13 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   needs() { row "$1" NEEDS "$2" true | jq -c --argjson x "$3" '. + {own_asks: 1, activity: "idle", idle_min: 300} + $x'; }
   doc "[$(needs a false '{}'), $(needs b false '{"idle_min": 60}'), $(needs c false '{"activity": "busy"}'),
         $(needs d false '{"own_asks": 0}'), $(needs e true '{}'), $(needs f false '{"labels": ["manual"]}'),
-        $(row g NEEDS false false | jq -c '. + {own_asks: 1, activity: "idle", idle_min: 300}'), $(needs h false '{}'),
+        $(row g NEEDS false false | jq -c '. + {own_asks: 1, activity: "idle", idle_min: 300, reason: "1 pending ask(s)"}'), $(needs h false '{}'),
         $(needs i false '{}'), $(needs j false '{"reason": "1 pending ask(s), carrying on"}')]"
   said h human "$(ago 10)" "still here"
   jq -nc --arg at "$(date -d '20 minutes ago' -Iseconds)" '{at:$at, sid:"i", kind:"nudge", fact:"x"}' > "$FLEET_SHEPHERD_DIR/nudges.jsonl"
   run "$SH" due
   assert_success
-  # a: idle 5h on its own escalated ask. b: under the threshold; c: carrying on; d: a dialog, no ask of its own;
+  # a: idle 5h on its own ask. b: under the threshold; c: carrying on; d: a dialog, no ask of its own;
   # e: already nudged for this fact; f: the human's; g: never escalated, which an ask row
   # never is (ar-2763), so it is nudged the same; h: the human just typed; i: nudged 20m ago, inside the gap;
   # j: carrying on, which overdue_due owns.
