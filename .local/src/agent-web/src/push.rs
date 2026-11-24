@@ -389,7 +389,7 @@ pub async fn run(s: Shared) {
         if Endpoints::load(&endpoints_file()).endpoints.is_empty() {
             continue;
         }
-        let cards = widget::all_cards(&s).await;
+        let cards = crate::cards::read(&s).await;
         let key = hub_core::widget_doc::document(&cards, &[], 0, None).content_key();
         if last_key.as_deref() == Some(key.as_str()) {
             continue;

@@ -946,12 +946,11 @@ remote_item() {
 # --- focus: #prio/focus ------------------------------------------------------------------
 
 # focus_on <project>... -- the human put each on `#prio/focus`: the `notes projects --prios` line agent-queue
-# and fleet-dispatch read, and the front-page head tag prio_of reads (the one store both come from).
+# and fleet-dispatch read (notes is the one reader of the front-page tag, and of its expiry).
 focus_on() {
   local p
   for p; do
     printf '%s\tfocus\n' "$p" >> "$NOTES_FIXTURE/prios"
-    sed -i '1s/$/ #prio\/focus/' "$SANDBOX/sheets/$p/README.md"
   done
 }
 

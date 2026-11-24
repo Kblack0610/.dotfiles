@@ -484,6 +484,16 @@ const PROC_CELLS = {
   count: (r) => td("n", r.count == null ? "-" : String(r.count)),
 };
 
+// An agent session (hub_core::host_now::Session): its scope's project and item, then its test runs.
+const SCOPE_COLS = { project: ["project"], item: ["item"], cpu: ["cpu cores", "n"], mem: ["mem", "n"], tests: ["tests"] };
+const SCOPE_CELLS = {
+  project: (r) => td("wrap", esc(r.project)),
+  item: (r) => td("wrap", r.item ? esc(r.item) : "-"),
+  cpu: (r) => td("n", cpuCores(r.cpu)),
+  mem: (r) => td("n", bytes(r.mem)),
+  tests: (r) => td("muted wrap", r.tests ? esc(r.tests) : "-"),
+};
+
 // One column per hour: the CPU's hottest sensor, amber from HOT_C.
 function tempChart(h) {
   if (!h.hours.some((x) => x.temp != null)) return "";
@@ -501,11 +511,12 @@ function liveBody(d) {
   const l = d.live, t = d.tables;
   let h = secHead("", "Pods", t.pods.rows.length, "", "h3") + (unread(l, "pods") || pageTable(t.pods, POD_COLS, POD_CELLS, "No Kubernetes pod runs here."));
   const inv = unread(l, "inventory");
-  if (inv) return h + secHead("", "Containers, processes, services", null, "", "h3") + inv;
-  if (!l.inventory) return h + secHead("", "Containers, processes, services", null, "", "h3") + `<div class="empty">Not collected: no node_inventory.prom on it (home-config role node-inventory-metrics).</div>`;
+  if (inv) return h + secHead("", "Containers, processes, agent sessions, services", null, "", "h3") + inv;
+  if (!l.inventory) return h + secHead("", "Containers, processes, agent sessions, services", null, "", "h3") + `<div class="empty">Not collected: no node_inventory.prom on it (home-config role node-inventory-metrics).</div>`;
   h += secHead("", "Containers", t.containers.rows.length, "", "h3") + pageTable(t.containers, PROC_COLS, PROC_CELLS, "No Docker container runs here.");
   const of = l.processes_total == null ? "" : ` of ${l.processes_total}`;
   h += secHead("", "Processes", `busiest ${t.processes.rows.length}${of}`, "", "h3") + pageTable(t.processes, PROC_COLS, PROC_CELLS, "No process reading.");
+  h += secHead("", "Agent sessions", t.sessions.rows.length, "", "h3") + pageTable(t.sessions, SCOPE_COLS, SCOPE_CELLS, "No agent session runs in its own scope here.");
   return h + secHead("", "Services", l.services.length, "", "h3") + `<div class="panel">${esc(l.services.join("   ")) || "none running"}</div>`;
 }
 

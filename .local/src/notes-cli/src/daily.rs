@@ -1356,7 +1356,7 @@ fn decisions(dirs: &[(String, PathBuf)], name: &dyn Fn(&str, &str) -> String) ->
                 let rank = md::PRIORITIES
                     .iter()
                     .position(|(_, t, _)| *t == tag)
-                    .unwrap_or(1);
+                    .unwrap_or(md::DEFAULT_PRIORITY);
                 let since = md::find_since(l, today).unwrap_or(today);
                 let tags: Vec<String> = md::find_hashtags(l)
                     .into_iter()
@@ -2592,7 +2592,9 @@ mod tests {
         run(&p, &log).unwrap();
         let out = std::fs::read_to_string(today_path(&p)).unwrap();
         assert!(
-            out.contains("## Focus\n### Urgent\n\n### High\n\n### Low\n\n---\n### Done\n"),
+            out.contains(
+                "## Focus\n### Urgent\n\n### High\n\n### Normal\n\n### Low\n\n---\n### Done\n"
+            ),
             "{out}"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -3106,7 +3108,7 @@ mod tests {
             decisions(&dirs, &bare),
             vec![
                 "dm-4 demo: run a home server or not (urgent, 0d)",
-                "dm-9 demo (agent board): which lane a game takes (high, 0d)",
+                "dm-9 demo (agent board): which lane a game takes (normal, 0d)",
                 "dm-1 demo: followers that fight with you (low, 0d)",
             ]
         );

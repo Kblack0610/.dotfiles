@@ -11,6 +11,7 @@
 use crate::config::Profile;
 use crate::ingest::{self, Event};
 use crate::logging::Logger;
+use crate::md;
 use crate::projects;
 use anyhow::{bail, Context, Result};
 use std::fs;
@@ -29,20 +30,14 @@ fn template(name: &str) -> String {
 /// `#from/<writer>`, priority, size, routing and plan words) dropped: the file is read by a
 /// person, and a line copied from it into `ptask add` must not carry a stale route or plan.
 fn one_line(text: &str) -> String {
-    const WORDS: [&str; 7] = [
-        "#agent",
-        "#urgent",
-        "#high",
-        "#low",
-        "#plan",
-        "#go",
-        "#requested",
-    ];
+    const WORDS: [&str; 4] = ["#agent", "#plan", "#go", "#requested"];
     const PREFIXES: [&str; 5] = ["#from/", "#size/", "#pts/", "#of/", "#p:"];
     text.split_whitespace()
         .filter(|w| {
             let w = w.to_ascii_lowercase();
-            !(WORDS.contains(&w.as_str()) || PREFIXES.iter().any(|p| w.starts_with(p)))
+            !(WORDS.contains(&w.as_str())
+                || md::PRIORITIES.iter().any(|(_, tag, _)| w == *tag)
+                || PREFIXES.iter().any(|p| w.starts_with(p)))
         })
         .collect::<Vec<_>>()
         .join(" ")
@@ -186,7 +181,7 @@ mod tests {
                 &log,
                 "demo",
                 Some("polish"),
-                "a nicer empty state #agent #from/sess1 #low"
+                "a nicer empty state #agent #from/sess1 #low #normal"
             )
             .unwrap(),
             0
@@ -197,7 +192,10 @@ mod tests {
             "{got}"
         );
         assert!(got.contains("\n- a nicer empty state ("), "{got}");
-        assert!(!got.contains("#from/") && !got.contains("#low"), "{got}");
+        assert!(
+            !got.contains("#from/") && !got.contains("#low") && !got.contains("#normal"),
+            "{got}"
+        );
         assert_eq!(
             fs::read(dir.join("ideas.md")).unwrap(),
             before,
