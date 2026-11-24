@@ -536,7 +536,7 @@ def on_board($p): agent_row($p) and (.state == "open" or .state == "doing") and 
 # who wrote an ingest.jsonl event, the one rule for it: the human by hand (writer "human" or none),
 # a runner by its conf name ($runners: {<name>: true}), else a session (its item, slug or session id)
 def human_writer: (.by // "") | IN("", "human");
-def door($runners): if human_writer then "human" elif $runners[.by] then .by else "session" end;
+def door($runners): if human_writer then "human" elif (.by | type) == "string" and $runners[.by] then .by else "session" end;
 # how an ingest.jsonl event takes work off the chain, else empty: merged, done, or a drop split into
 # dup (dup:<id>), moved (sent to its home: `moved:`, improvements.md, a sheet, another board) and
 # dropped. An `improvement` event is the write at the home, paired with its drop, so it is no exit.
@@ -645,17 +645,20 @@ def open_at($t): map(select(.epoch <= $t)) | (map(.epoch) | max) as $s
 # alone). Only the session that sampled a plan first brings its phases in (open); a later session
 # starting it resumes phases another session left (resumed, resume 1), counted when they came in, so
 # they never count twice.
-# A session gone from the newest sample whose plan no later session took up ends with an end step:
+# A resume step carries prev_end, the last sample of the session that had the plan before it. A
+# session gone from the newest sample whose plan no later session took up ends with an end step:
 # left, the phases it left open, and began, when its plan first came in.
 def flow_steps: map(select(.phases_total != null and .phases_done != null) | . + {plan: (if (.plan_file // "-") | IN("", "-") then "session \(.session_id)" else .plan_file | split("/") | last end)})
   | (map(.epoch) | max) as $last
   | [group_by([.session_id, .plan_file])[] | sort_by(.epoch)]
-  | (map(.[0]) | group_by(.plan) | map({key: .[0].plan, value: (sort_by([.epoch, .session_id]) | map({epoch, session_id}))}) | from_entries) as $starts
+  | (map({epoch: .[0].epoch, session_id: .[0].session_id, plan: .[0].plan, last: .[-1].epoch}) | group_by(.plan)
+     | map({key: .[0].plan, value: sort_by([.epoch, .session_id])}) | from_entries) as $starts
   | map(. as $r | $starts[$r[0].plan] as $s | ([$r[0].phases_total - $r[0].phases_done, 0] | max) as $o
       | ($s[0].session_id == $r[0].session_id and $s[0].epoch == $r[0].epoch) as $new
       | {epoch: 0, session_id: $r[0].session_id, project: $r[0].project, start: 0, open: 0, resumed: 0, resume: 0,
-         ticked: 0, added: 0, removed: 0, end: 0, left: 0, began: $s[0].epoch} as $z
-      | [$z + {epoch: $r[0].epoch, start: 1, open: (if $new then $o else 0 end), resumed: (if $new then 0 else $o end), resume: (if $new then 0 else 1 end)}]
+         ticked: 0, added: 0, removed: 0, end: 0, left: 0, began: $s[0].epoch, prev_end: null} as $z
+      | [$z + {epoch: $r[0].epoch, start: 1, open: (if $new then $o else 0 end), resumed: (if $new then 0 else $o end), resume: (if $new then 0 else 1 end),
+               prev_end: (if $new then null else [$s[] | select(.epoch < $r[0].epoch or (.epoch == $r[0].epoch and .session_id < $r[0].session_id)) | .last] | max end)}]
         + [range(1; length) | $z + {epoch: $r[.].epoch,
           ticked: ([$r[.].phases_done - $r[. - 1].phases_done, 0] | max),
           added: ([$r[.].phases_total - $r[. - 1].phases_total, 0] | max),
@@ -671,17 +674,20 @@ def flow_sum($a): {ticked: (map(.ticked) | add // 0), added: (map(.added) | add 
   | . + {in: (.started_open + .added - .abandoned)};
 # progress rows in -> what came in and what went out between $a and $b. dropped is the open
 # phases that left with a session that ended unfinished or switched plans: the remainder of the
-# balance, where resumed phases are open phases another session took up again and abandoned ones
-# (flow_sum) are already out of in.
+# balance, where abandoned ones (flow_sum) are already out of in, and resumed phases are open
+# phases another session took up again. handed is the resumed phases whose earlier session was
+# still sampled at the window start or later, so they were in the balance already and no drop.
 def flow($a; $b): . as $p | (($b - $a) / 3600) as $h
   | def per($x): if $h > 0 then $x / $h | round2 else null end;
   ($p | flow_steps | map(select(.epoch > $a and .epoch <= $b))) as $st
   | ($p | open_at($a)) as $o0 | ($p | open_at($b)) as $o1
   | ($st | flow_sum($a)) as $f
+  | ($p | map(select(.epoch <= $a)) | map(.epoch) | max // -1) as $s0
+  | ($st | map(select(.resume == 1 and (.prev_end // -2) >= $s0) | .resumed) | add // 0) as $handed
   | {from: $a, to: $b, hours: ($h | round2)} + $f
   + {net_in: ($f.in - $f.removed), in_per_h: per($f.in), out_per_h: per($f.ticked),
-     net_in_per_h: per($f.in - $f.removed), open_start: $o0, open_end: $o1,
-     dropped: ($o0 + $f.in + $f.abandoned + $f.resumed - $f.removed - $f.ticked - $o1),
+     net_in_per_h: per($f.in - $f.removed), open_start: $o0, open_end: $o1, handed: $handed,
+     dropped: ($o0 + $f.in + $f.abandoned + $f.resumed - $handed - $f.removed - $f.ticked - $o1),
      by_project: ($st | group_by(.project) | map({project: .[0].project} + flow_sum($a)) | sort_by(-.ticked)),
      hourly: ($st | group_by(.epoch / 3600 | floor) | map({hour: ((.[0].epoch / 3600 | floor) * 3600)} + flow_sum($a))
        | reduce .[] as $x ({scope: $o0, done: 0, rows: []};
@@ -2438,13 +2444,17 @@ inbox_lines() {
 
 # ingest_flow <now> -> {doors, out} over the 24h of the notes ingest record before <now>; fails when
 # the record cannot be read. doors: one {door, rows, lines} per writer (door: human, a runner by its
-# conf name in LEDGER_CONF_DIR, else session), most first. rows are the rows it put on a board (an
+# conf NAME in LEDGER_CONF_DIR, else session), most first. rows are the rows it put on a board (an
 # added row, or an inbox line it filed); lines are what it put in an inbox, which triage later files
 # under its own door. out: {merged, done, dup, moved, dropped}, each event counted by out_kind.
 ingest_flow() {
-  local runners c
+  local runners c n
   [ -r "$BENCH_INGEST" ] || return 1
-  runners=$(for c in "$LEDGER_CONF_DIR"/*.conf; do [ -e "$c" ] && basename "$c" .conf; done \
+  # every conf, a hand-fired or switched-off one too: it may have written in the window; named as scheduled_runner names it
+  runners=$(for c in "$LEDGER_CONF_DIR"/*.conf; do
+      [ -e "$c" ] || continue
+      n=$(sed -n '/^NAME=/{s///p;q;}' "$c"); printf '%s\n' "${n:-$(basename "$c" .conf)}"
+    done \
     | jq -Rnc '[inputs | {key: ., value: true}] | from_entries')
   # the date prefix is a cheap first cut, two days back so no time zone loses an event; the epoch decides
   jq -Rnc --argjson t "$1" --arg day "$(date -d "@$(($1 - 172800))" +%F)" --argjson runners "$runners" "$JQ_LIB"'

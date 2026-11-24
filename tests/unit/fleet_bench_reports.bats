@@ -264,21 +264,26 @@ lead_fixture() {
     ev 2500 '{action: "dropped", id: "g-5", why: "dropped: moved: ideas.md"}'
     ev 2400 '{action: "dropped", id: "g-6", why: "dropped: stale"}'
     ev 2300 '{action: "dup", id: "g-7"}'
+    ev 2200 '{action: "filed", by: 7, from: "game", text: "a writer that is not a string is a session"}'
     ev 172000 '{action: "added", stage: "backlog", by: "human", from: "game", text: "fix(a): two days old"}'
     echo 'not json'
     echo '{"ts": 5, "action": "added", "by": "human"}'
   } > "$BENCH_INGEST"
   run "$SUBJECT" pipeline --json
   assert_success
-  assert_equal "$(jq -c '.doors_24h' <<<"$output")" '[{"door":"session","rows":2,"lines":1},{"door":"human","rows":2,"lines":0},{"door":"inbox-triage","rows":2,"lines":0}]'
+  assert_equal "$(jq -c '.doors_24h' <<<"$output")" '[{"door":"session","rows":3,"lines":1},{"door":"human","rows":2,"lines":0},{"door":"inbox-triage","rows":2,"lines":0}]'
   assert_equal "$(jq -c '.out_24h' <<<"$output")" '{"merged":1,"done":1,"dup":2,"moved":2,"dropped":1}'
   run "$SUBJECT" pipeline
-  assert_line 'doors 24h (rows filed, + inbox lines): session 2 +1, human 2, inbox-triage 2'
+  assert_line 'doors 24h (rows filed, + inbox lines): session 3 +1, human 2, inbox-triage 2'
   assert_line 'out 24h: merged 1, done 1, dup 2, moved 2, dropped 1'
-  # NEGATIVE CONTROL: with no conf named for it, inbox-triage is a session writer
-  rm "$LEDGER_CONF_DIR/inbox-triage.conf"
+  # a conf names its runner by NAME, else by its file name
+  rm "$LEDGER_CONF_DIR/inbox-triage.conf"; echo NAME=inbox-triage > "$LEDGER_CONF_DIR/triage.conf"
   run "$SUBJECT" pipeline --json
-  assert_equal "$(jq -c '.doors_24h' <<<"$output")" '[{"door":"session","rows":4,"lines":1},{"door":"human","rows":2,"lines":0}]'
+  assert_equal "$(jq -c '.doors_24h[2]' <<<"$output")" '{"door":"inbox-triage","rows":2,"lines":0}'
+  # NEGATIVE CONTROL: with no conf named for it, inbox-triage is a session writer
+  rm "$LEDGER_CONF_DIR/triage.conf"
+  run "$SUBJECT" pipeline --json
+  assert_equal "$(jq -c '.doors_24h' <<<"$output")" '[{"door":"session","rows":5,"lines":1},{"door":"human","rows":2,"lines":0}]'
   # an unreadable record leaves both null and says so
   rm "$BENCH_INGEST"
   run "$SUBJECT" pipeline --json
@@ -1854,12 +1859,14 @@ rowp() {
   rowp b lab/game-agent-2:1 2 3 /y/plans/pa.md > "$SNAP"; sample_at 1800
   run env BENCH_NOW=$((T0 + 1800)) "$SUBJECT" flow --from $((T0 + 1)) --json
   assert_success
-  run jq -c '{started, resumed, resumed_plans, abandoned, in, ticked, open_start, open_end, dropped}' <<<"$output"
-  assert_output '{"started":1,"resumed":2,"resumed_plans":1,"abandoned":0,"in":0,"ticked":2,"open_start":3,"open_end":1,"dropped":2}'
+  # a was sampled inside the window, so the 2 it left are handed to b, not dropped
+  run jq -c '{started, resumed, resumed_plans, handed, abandoned, in, ticked, open_start, open_end, dropped}' <<<"$output"
+  assert_output '{"started":1,"resumed":2,"resumed_plans":1,"handed":2,"abandoned":0,"in":0,"ticked":2,"open_start":3,"open_end":1,"dropped":0}'
   run env BENCH_NOW=$((T0 + 1800)) "$SUBJECT" flow --from $((T0 + 1))
   assert_line --partial 'in:  0 phases'
   assert_line --partial '0 plans started with 0 open'
   assert_line '  resumed: 2 phases in 1 plans another session left, taken up again and not counted in again'
+  refute_line --partial 'left open by sessions'
   # NEGATIVE CONTROL: b on a plan of its own brings its 2 open phases in as new
   : > "$FLEET_BENCH_DIR/progress.jsonl"
   rowp a lab/game-agent-1:1 0 3 /x/plans/pa.md > "$SNAP"; sample_at 0
@@ -1869,6 +1876,17 @@ rowp() {
   run env BENCH_NOW=$((T0 + 1800)) "$SUBJECT" flow --from $((T0 + 1)) --json
   run jq -c '{resumed, in}' <<<"$output"
   assert_output '{"resumed":0,"in":2}'
+  # a left before the window began (the start sample holds only c, with nothing open): b brings a's 2 back, so
+  # they are resumed but not handed, and nothing drops
+  : > "$FLEET_BENCH_DIR/progress.jsonl"
+  rowp a lab/game-agent-1:1 0 3 /x/plans/pa.md > "$SNAP"; sample_at 0
+  rowp a lab/game-agent-1:1 1 3 /x/plans/pa.md > "$SNAP"; sample_at 600
+  rowp c lab/game-agent-3:1 1 1 /z/plans/pz.md > "$SNAP"; sample_at 900
+  rowp b lab/game-agent-2:1 1 3 /y/plans/pa.md > "$SNAP"; sample_at 1200
+  rowp b lab/game-agent-2:1 2 3 /y/plans/pa.md > "$SNAP"; sample_at 1800
+  run env BENCH_NOW=$((T0 + 1800)) "$SUBJECT" flow --from $((T0 + 900)) --json
+  run jq -c '{resumed, handed, in, open_start, open_end, dropped}' <<<"$output"
+  assert_output '{"resumed":2,"handed":0,"in":0,"open_start":0,"open_end":1,"dropped":0}'
 }
 
 @test "flow says not draining when phases come in faster than they tick, and draining otherwise" {
