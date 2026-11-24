@@ -245,10 +245,18 @@ launch_env() {
   assert_output --partial '-u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_SESSION_ATTENDED'
 }
 
+@test "claude_launch_env starts with claude-acct scope, so the session gets its own systemd scope" {
+  run launch_env 1
+  assert_success
+  assert_output --regexp '^claude-acct scope env -u CLAUDECODE '
+}
+
 @test "claude_launch_env's prefix runs a command with the parent's identity gone and the export set" {
   printf '#!/bin/sh\nexit 0\n' > "$FAKEBIN/getent"
-  chmod +x "$FAKEBIN/getent"
-  run env CLAUDE_CODE_SESSION_ID=parent CLAUDE_CODE_CHILD_SESSION=1 bash -c "eval \"\$(env -i HOME='$HOME' PATH='$FAKEBIN:$TIMEOUT_DIR:/usr/bin:/bin' bash -c \". '$SNIP' >/dev/null 2>&1; claude_launch_env\") printenv\""
+  # claude-acct scope (claude_acct.bats) is stubbed to run its command unscoped.
+  printf '#!/bin/sh\nshift; exec "$@"\n' > "$FAKEBIN/claude-acct"
+  chmod +x "$FAKEBIN/getent" "$FAKEBIN/claude-acct"
+  run env PATH="$FAKEBIN:$PATH" CLAUDE_CODE_SESSION_ID=parent CLAUDE_CODE_CHILD_SESSION=1 bash -c "eval \"\$(env -i HOME='$HOME' PATH='$FAKEBIN:$TIMEOUT_DIR:/usr/bin:/bin' bash -c \". '$SNIP' >/dev/null 2>&1; claude_launch_env\") printenv\""
   assert_success
   refute_output --partial 'CLAUDE_CODE_SESSION_ID='
   refute_output --partial 'CLAUDE_CODE_CHILD_SESSION='

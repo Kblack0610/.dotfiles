@@ -268,6 +268,7 @@ fn router(state: Shared) -> Router {
         .route("/api/stages", get(stages::get))
         .route("/api/stages/requirements", get(stages::get_requirements))
         .route("/api/projects", get(projects::get))
+        .route("/api/projects/prio", post(projects::set_prio))
         .route("/api/projects/{name}/page", get(projects::page))
         .route(
             "/api/projects/{name}/departments",

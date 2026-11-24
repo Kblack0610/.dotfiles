@@ -155,13 +155,14 @@ fn page_json(p: &MachinePage) -> String {
             ("pods", shown(&live.pods, &none, "")),
             ("containers", shown(&live.containers, &none, "")),
             ("processes", shown(&live.processes, &none, "")),
+            ("sessions", shown(&live.sessions, &none, "")),
         ],
         |o| {
             if let Some(h) = o.get_mut("history").and_then(Value::as_object_mut) {
                 h.remove("down");
             }
             if let Some(l) = o.get_mut("live").and_then(Value::as_object_mut) {
-                for k in ["devices", "pods", "containers", "processes"] {
+                for k in ["devices", "pods", "containers", "processes", "sessions"] {
                     l.remove(k);
                 }
             }
@@ -303,7 +304,7 @@ mod tests {
         assert!(v["tables"]["pods"]["rows"].as_array().unwrap().is_empty());
     }
 
-    /// Its sensors, pods, containers and processes ride once, as tables; services stay in `live`.
+    /// Its sensors, pods, containers, processes and sessions ride once, as tables; services stay in `live`.
     #[test]
     fn a_machine_pages_live_lists_ride_as_tables() {
         let p = MachinePage {
@@ -313,6 +314,11 @@ mod tests {
                     ..Default::default()
                 }],
                 services: vec!["nfs-server".into()],
+                sessions: vec![hub_core::host_now::Session {
+                    project: "dotfiles".into(),
+                    tests: "bats 1.20".into(),
+                    ..Default::default()
+                }],
                 inventory: true,
                 ..Default::default()
             }),
@@ -320,6 +326,8 @@ mod tests {
         };
         let v: Value = serde_json::from_str(&page_json(&p)).unwrap();
         assert!(v["live"].get("pods").is_none() && v["live"]["services"][0] == "nfs-server");
+        assert!(v["live"].get("sessions").is_none());
+        assert_eq!(v["tables"]["sessions"]["rows"][0]["project"], "dotfiles");
         assert_eq!(v["tables"]["pods"]["rows"][0]["pod"], "frigate-0");
         assert!(v["tables"]["devices"]["rows"].is_array());
     }
