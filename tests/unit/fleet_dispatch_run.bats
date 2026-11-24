@@ -544,12 +544,32 @@ bats_require_minimum_version 1.5.0
   five_of_six_units
   export DISPATCH_PER_PASS=0
   fleet_state 3
-  jq -c '.sessions += [{target: "lab/h1", bucket: "NEEDS", reason: "1 pending ask(s)", item: "h1"}]' "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+  # fleet-sessions writes .item as {slug, is, row}: the shape the read must match (a bare string matched in tests only, ar-4554).
+  add_sessions '[{target: "lab/h1", bucket: "NEEDS", reason: "1 pending ask(s)", item: {slug: "h1", is: "own", row: null}}]'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r '[.live_runs, .slots_free, .needs] | @tsv' <<<"$output")" $'3\t3\t1'
-  jq -c '(.sessions[] | select(.item == "h1") | .reason) = "1 pending ask(s), carrying on"' "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+  jq -c '(.sessions[] | select(.item.slug == "h1") | .reason) = "1 pending ask(s), carrying on"' "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r '[.live_runs, .needs] | @tsv' <<<"$output")" $'5\t0'
+}
+
+@test "a runner-started session waiting its landing turn frees its run units, one at its gate keeps them" {
+  two_items
+  five_of_six_units
+  export DISPATCH_PER_PASS=0
+  fleet_state 3
+  add_sessions '[{target: "lab/h2", bucket: "WORKING", open_job: "queue", item: {slug: "h2", is: "own", row: null}},
+    {target: "lab/l1", bucket: "WORKING", open_job: "gate", item: {slug: "l1", is: "own", row: null}}]'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.live_runs, .slots_free] | @tsv' <<<"$output")" $'3\t3'
+  jq -c '(.sessions[] | select(.item.slug == "h2") | .open_job) = "gate"' "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.live_runs, .slots_free] | @tsv' <<<"$output")" $'5\t1'
+
+  # A row whose item moved on to another session frees nothing: the slug is that other session's now.
+  jq -c '(.sessions[] | select(.item.slug == "h2")) |= (.open_job = "queue" | .item.is = "moved")' "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.live_runs, .slots_free] | @tsv' <<<"$output")" $'5\t1'
 }
 
 # add_sessions <jq array>: more sessions on the fleet state document fleet_state wrote.
