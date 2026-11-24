@@ -5269,10 +5269,12 @@ red_titles() {
   titles=$(jq -c "$JQ_LIB"'[.[] | select(tagged("red")) | .title // .task // "" | gsub("\n"; " ")] | unique' <<<"$1") || return 1
   [ "$titles" != '[]' ] || { echo '{}'; return 0; }
   parsed=$(jq -r '.[]' <<<"$titles" | notes row parse) &&
-    jq -cRn --argjson t "$titles" '[inputs | split("\t")] as $p | if ($p | length) != ($t | length) then error("short") else . end
+    # titles grows with the queue, past the 128 KB one argument can carry (reds_json): it comes in as a file
+    jq -cRn --slurpfile t <(printf '%s\n' "$titles") '$t[0] as $t | [inputs | split("\t")] as $p
+      | if ($p | length) != ($t | length) then error("short") else . end
       | [range($t | length) as $i | select($p[$i][3] == "1")
          | {key: $t[$i], value: {area: $p[$i][1], name: ([$p[$i][2] | capture("^(?<n>[^ ,;]+)").n][0])}}
-         | select(.value.name != null)] | from_entries' <<<"$parsed" 2>/dev/null ||
+         | select(.value.name != null)] | from_entries' <<<"$parsed" ||
     { say "reds: notes row parse failed or answered short (an old notes? notes-bootstrap --build-only)"; return 1; }
 }
 

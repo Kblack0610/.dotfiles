@@ -1,0 +1,12 @@
+#!/bin/sh
+# judge-eval's stand-in for the runner page tests (src/fleet/runner.rs): `prompts <lane>` as the
+# real one answers it. Checked in, never written by a test, so no test races an exec of it.
+[ "$1" = prompts ] || { echo "fake judge-eval: only prompts" >&2; exit 2; }
+case "$2" in
+  broken)
+    printf 'model: sonnet\n'
+    echo "broken: PROMPT=/gone.md is not a readable file" >&2
+    exit 1 ;;
+  silent) exit 3 ;;
+  *) printf 'instructions for %s from %s\n' "$2" "$AGENTCTL_CONF_DIR" ;;
+esac

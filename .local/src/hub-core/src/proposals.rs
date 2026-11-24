@@ -88,6 +88,63 @@ pub fn heading(rows: &[Proposal]) -> String {
     format!("{} from {} {word}", rows.len(), streams.len())
 }
 
+/// One stream of the open proposals as Home draws it: its count and how old they are, so a wall
+/// of one stream's proposals is one row and the records open from it.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct StreamRow {
+    pub stream: String,
+    /// The one project its proposals name, else "N projects".
+    pub project: String,
+    pub count: usize,
+    /// When the newest and the oldest were filed, in epoch seconds; None when none parses.
+    pub newest: Option<i64>,
+    pub oldest: Option<i64>,
+}
+
+/// The open proposals one row per stream, the stream with the newest proposal first.
+pub fn by_stream(rows: &[Proposal]) -> Vec<StreamRow> {
+    let mut out: Vec<(StreamRow, Vec<&str>)> = vec![];
+    for p in rows {
+        let at = p.at();
+        let i = out
+            .iter()
+            .position(|(r, _)| r.stream == p.stream)
+            .unwrap_or_else(|| {
+                let row = StreamRow {
+                    stream: p.stream.clone(),
+                    project: String::new(),
+                    count: 0,
+                    newest: None,
+                    oldest: None,
+                };
+                out.push((row, vec![]));
+                out.len() - 1
+            });
+        let (r, projects) = &mut out[i];
+        r.count += 1;
+        r.newest = r.newest.max(at);
+        r.oldest = match (r.oldest, at) {
+            (Some(o), Some(t)) => Some(o.min(t)),
+            (o, t) => o.or(t),
+        };
+        if !projects.contains(&p.project.as_str()) {
+            projects.push(&p.project);
+        }
+    }
+    let mut out: Vec<StreamRow> = out
+        .into_iter()
+        .map(|(mut r, projects)| {
+            r.project = match projects[..] {
+                [one] => one.to_string(),
+                _ => format!("{} projects", projects.len()),
+            };
+            r
+        })
+        .collect();
+    out.sort_by_key(|r| std::cmp::Reverse(r.newest));
+    out
+}
+
 fn is_id(id: &str) -> bool {
     !id.is_empty()
         && id
@@ -166,6 +223,37 @@ mod tests {
         let rows = read(&fake(Ok(LIST))).unwrap();
         assert_eq!(heading(&rows), "2 from 2 streams");
         assert_eq!(heading(&rows[..1]), "1 from 1 stream");
+    }
+
+    #[test]
+    fn a_stream_is_one_row_with_its_count_and_ages_and_the_newest_stream_leads() {
+        let p = |stream: &str, project: &str, created: &str| Proposal {
+            stream: stream.into(),
+            project: project.into(),
+            created: created.into(),
+            ..Default::default()
+        };
+        let rows = [
+            p("ci-failures", "unity", "2026-11-15T10:00:00Z"),
+            p("dream", "dotfiles", "2026-11-22T10:00:00Z"),
+            p("ci-failures", "unity", "2026-11-21T10:00:00Z"),
+            p("ci-failures", "other", "not a time"),
+        ];
+        let got = by_stream(&rows);
+        let at = |c: &str| p("", "", c).at();
+        assert_eq!(
+            got.iter()
+                .map(|r| (r.stream.as_str(), r.count))
+                .collect::<Vec<_>>(),
+            [("dream", 1), ("ci-failures", 3)]
+        );
+        assert_eq!(got[0].project, "dotfiles");
+        assert_eq!(got[1].project, "2 projects");
+        assert_eq!(
+            (got[1].newest, got[1].oldest),
+            (at("2026-11-21T10:00:00Z"), at("2026-11-15T10:00:00Z"))
+        );
+        assert!(by_stream(&[]).is_empty());
     }
 
     #[test]

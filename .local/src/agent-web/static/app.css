@@ -136,6 +136,7 @@ a.tl { color: inherit; text-decoration: none; } a.tl:hover, a.tl:focus-visible {
 a.wl { color: var(--accent); text-decoration: none; border-bottom: 1px dotted var(--accent); }
 a.ptag, .md a.ptag { color: var(--c5); text-decoration: none; border-bottom: 1px dotted var(--c5); }
 a.wl.missing { color: var(--muted); border-bottom-style: dashed; border-color: var(--muted); }
+pre.instr { margin: 6px 0 0; font: var(--fs-xs)/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 #daily pre.raw { font: var(--fs-sm)/1.45 var(--mono); background: var(--fill); padding: 8px 10px; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
 #daily #f-edit { display: block; width: 100%; box-sizing: border-box; min-height: 60vh; max-height: none; margin: 8px 0; font: var(--fs-sm)/1.45 var(--mono); }
 .brow .q { white-space: pre-wrap; overflow-wrap: anywhere; }
