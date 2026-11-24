@@ -134,6 +134,21 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
 }
 
 
+@test "a plan whose every open phase takes a row still open on some board gets no row; closed rows or an unmarked phase file it" {
+  plan held '1 day ago 1 hour ago' '## Phases\n\n- [x] one\n- [ ] two (takes ucp-7, takes ucp-8)\n'
+  plan closed '1 day ago 1 hour ago' '## Phases\n\n- [x] one\n- [ ] two (takes ucp-9)\n'
+  plan unmarked '1 day ago 1 hour ago' '## Phases\n\n- [ ] one (takes ucp-7)\n- [ ] two\n'
+  # ucp-8 is started, ucp-9 is done; the feed lists both lanes of every board.
+  jq -cn '{rows: [{id: "ucp-8", state: "doing"}, {id: "ucp-9", state: "done"}, {id: "ucp-7", state: "open"}]}' > "$NOTES_FIXTURE/board.json"
+  stub notes 'printf "notes %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; [ "$1 $2" = "board --json" ] && cat "$NOTES_FIXTURE/board.json"; exit 0'
+  run "$SWEEP" run
+  assert_success
+  assert_not_called 'held.md'
+  assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/closed.md --project board --priority low --from auto:ask-sweep"
+  assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/unmarked.md --project board --priority low --from auto:ask-sweep"
+  [ "$(grep -c 'notes board --json' "$NOTES_FIXTURE/calls.log")" -eq 1 ] || fail "the board feed was read more than once a run"
+}
+
 @test "a linked plans dir is swept, a plan named through another link counts as live, and _live is no project" {
   rm -rf "$ASK_SWEEP_PLANS"; mkdir -p "$SANDBOX/store" "$ASK_SWEEP_PLAN_CACHE/_live"
   ln -s "$SANDBOX/store" "$ASK_SWEEP_PLANS"          # ~/.claude/plans -> ~/.agent/plans/_live
