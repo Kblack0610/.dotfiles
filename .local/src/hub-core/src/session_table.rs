@@ -135,20 +135,21 @@ pub struct SessionRow {
     pub machine: bool,
 }
 
-/// What the given rows cost, summed: the overview's spend for the rows a view shows. A row with
-/// no cost adds nothing.
-pub fn spend<'a>(rows: impl IntoIterator<Item = &'a SessionRow>) -> f64 {
-    rows.into_iter().filter_map(|r| r.cost_usd).sum()
-}
-
 impl Row for SessionRow {
     const COLUMNS: &'static [&'static str] = &[
         "bucket", "activity", "project", "task", "by", "pr", "phases", "idle", "ctx", "cost",
         "acct", "harness", "close", "item", "source", "session",
     ];
-    /// `all` comes first because the first chip keeps every row.
-    const STATES: &'static [&'static str] =
-        &["all", "running", "needs you", "stalled", "ended today"];
+    /// `live` first, the view the table opens on: every row not done (`in_default`). The ended
+    /// rows are one chip away, and `all` last keeps every row. Spend is Costs', not this table's.
+    const STATES: &'static [&'static str] = &[
+        "live",
+        "running",
+        "needs you",
+        "stalled",
+        "ended today",
+        "all",
+    ];
     const FACETS: &'static [&'static str] =
         &["bucket", "project", "by", "acct", "harness", "close"];
     const LEAD: &'static str = "task";
@@ -188,8 +189,13 @@ impl Row for SessionRow {
         }
     }
 
+    fn in_default(&self) -> bool {
+        !self.done
+    }
+
     fn in_state(&self, s: &str) -> bool {
         match s {
+            "all" => true,
             "running" => {
                 self.source == Source::Live
                     && !self.done
@@ -908,19 +914,6 @@ mod tests {
     }
 
     #[test]
-    fn spend_sums_only_the_rows_the_view_shows() {
-        let row = |project: &str, cost| SessionRow {
-            project: project.into(),
-            cost_usd: cost,
-            ..Default::default()
-        };
-        let r = vec![row("a", Some(1.5)), row("b", Some(2.0)), row("a", None)];
-        assert_eq!(spend(&r), 3.5);
-        let v = View::new::<SessionRow>("project:a", "", "", "");
-        assert_eq!(spend(v.apply(&r)), 1.5);
-    }
-
-    #[test]
     fn the_chips_split_the_rows() {
         let r = rows(&state(), &vocab(), &feed(), &[]);
         let v = View::new::<SessionRow>("", "", "", "");
@@ -928,11 +921,12 @@ mod tests {
         assert_eq!(
             n,
             [
-                ("all", 6),
+                ("live", 3),
                 ("running", 2),
                 ("needs you", 1),
                 ("stalled", 0),
-                ("ended today", 3)
+                ("ended today", 3),
+                ("all", 6)
             ]
         );
         let tone = |name| v.states(&r).iter().find(|c| c.name == name).map(|c| c.tone);
@@ -994,7 +988,11 @@ mod tests {
         };
         assert_eq!(keys("item:none"), ["lab/d:2"]);
         assert_eq!(keys("pr:open project:dotfiles"), ["lab/d:2"]);
-        assert_eq!(keys("source:outcome"), ["h1"]);
+        // An ended row is under `all`; the opening view is the live rows.
+        let all = View::new::<SessionRow>("source:outcome", "all", "", "");
+        let ended: Vec<_> = all.apply(&r).iter().map(|x| x.key.clone()).collect();
+        assert_eq!(ended, ["h1"]);
+        assert!(keys("source:outcome").is_empty());
         assert_eq!(keys("item:own"), ["lab/d:1"]);
     }
 

@@ -4822,7 +4822,7 @@ impl App {
                 "j/k another row  l link, Enter opens it  c cancel  +/- priority  Esc close  o Grafana  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Queue => format!(
-                "j/k PgUp/PgDn ^d/^u pick  Enter detail  [ ] step  {{ }} problem  / f s S x table  c cancel  +/- priority  C candidates  p promote  o Grafana  r refresh  {tabs} tabs  q quit"
+                "j/k PgUp/PgDn ^d/^u pick  Enter detail  [ ] step  {{ }} problem  / f s S x table  c cancel  +/- priority  C candidates  p promote  ? legend  o Grafana  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Projects => self.projects_hint(),
             Tab::Home if self.hv.on_running && !self.home_build().running.is_empty() => format!(
@@ -6198,7 +6198,7 @@ mod tests {
         assert!(lines[0].contains("4 Sessions"), "{s}");
         assert!(lines[1].starts_with("[Sessions] Runners  Shepherd"), "{s}");
         assert!(lines[2].contains("Reading the board files..."), "{s}");
-        assert!(lines[3].starts_with("all 2  running"), "{s}");
+        assert!(lines[3].starts_with("live 2  running"), "{s}");
         assert!(
             lines[4].starts_with("STAGE") && lines[4].contains("ACCOUNT"),
             "{s}"
