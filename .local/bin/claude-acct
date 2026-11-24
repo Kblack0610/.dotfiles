@@ -811,6 +811,15 @@ cmd_token() {
     acct_token "$name"
 }
 
+# push_shell <host> <cmd>: run cmd (stdin passed through) on host: here for localhost or this
+# machine's own name, else over ssh with no prompt
+push_shell() {
+    case "$1" in
+        localhost|127.0.0.1|"$(hostname -s 2>/dev/null)"|"$(hostname 2>/dev/null)") bash -c "$2" ;;
+        *) ssh -T -o BatchMode=yes -o ConnectTimeout=10 "$1" "$2" ;;
+    esac
+}
+
 # token push <host...>: copy every account's token from this machine's unlocked rbw to each host's
 # TOKEN_DIR (0600), over ssh stdin: never an argument, never a pane. Then ask the host's own
 # claude-acct for each, so a host whose dotfiles predate the copy reads as failed. Exit 1 when any
@@ -834,8 +843,9 @@ cmd_token_push() {
             t=$(rbw get "$TOKEN_ENTRY$n" 2>/dev/null) || t=''
             sum=$(printf '%s' "$t" | cksum)
             # one ssh: write the copy from stdin, compare its bytes with ours, then check that the
-            # host's claude-acct is new enough to read a copy
-            if printf '%s' "$t" | ssh -T -o BatchMode=yes -o ConnectTimeout=10 "$host" \
+            # host's claude-acct is new enough to read a copy. This machine (localhost or its own
+            # name) runs the same command here: ssh to itself needs a host key nobody accepted.
+            if printf '%s' "$t" | push_shell "$host" \
                 "umask 077 && d=$rdir && mkdir -p \"\$d\" && cat > \"\$d/.$n.tmp\" && mv -f \"\$d/.$n.tmp\" \"\$d/$n\" && [ \"\$(cksum < \"\$d/$n\")\" = '$sum' ] && PATH=\$HOME/.local/bin:\$PATH claude-acct token $n >/dev/null 2>&1"; then
                 ok+=("$n")
             else

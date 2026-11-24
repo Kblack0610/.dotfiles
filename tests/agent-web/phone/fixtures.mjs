@@ -45,28 +45,27 @@ const NEED = ["plan", "ask", "perm", "turn", "blocked", "red"];
 // The wording the server sends beside each kind (hub_core::home NeedKind::label).
 const NEED_LABELS = ["Plan to approve", "Question", "Permission", "Your turn", "Blocked", "Failing"];
 // Every capped Home list holds more rows than the page draws (hub_core::home SHOWN), the Needs you list at the 83 that read 2783 px live (ar-2038): Home must stay under budget however long they run.
-const NEEDS = 83, RUNNING = 12, PROPOSALS = 12;
+const NEEDS = 83, PROPOSALS = 12;
 // The page size the server sends, read from hub-core so a change to it moves the fixture too.
 const HOME_SHOWN = Number(readFileSync(new URL("../../../.local/src/hub-core/src/home.rs", import.meta.url), "utf8").match(/pub const SHOWN: usize = (\d+);/)[1]);
 const home = {
-  errors: [], grafana: "https://grafana.example", sessions: "39 live, 3 need you, 2 stalled",
+  errors: [], grafana: "https://grafana.example",
   health: [{ name: "dispatch", level: "ok" }, { name: "shepherd", level: "warn" }, { name: "sentinel", level: "ok" }],
   vitals: null,
-  running: rows(RUNNING, (i) => ({ project: pick(PROJECTS, i), title: pick(TEXT, i), slug: `${pick(SLUGS, i)}-${i}`, started: iso(ago(40 + i * 10)), phases: { done: 1 + (i % 4), total: 4, next: "wire the renderer", eta: "20m", eta_epoch: NOW + 1200 }, target: i ? undefined : `lab/dotfiles-agent-${i}:1`, row: `ar-${1400 + i}`, epic: "ar-1292", pr: `#${1870 + i}`, pr_url: `https://github.com/${pick(REPOS, i)}/pull/${1870 + i}`, pr_state: "open", ci: pick(["fail", "pass"], i), ci_url: `https://github.com/${pick(REPOS, i)}/pull/${1870 + i}/checks` })),
-  running_table: table(RUNNING, ["item", "project", "row", "epic", "phase", "eta", "pr", "ci", "since"], ["all", "Overdue", "CI failing", "No session"], { project: PROJECTS.slice(0, 2), epic: ["ar-1292"], ci: ["fail", "pass"] }),
   table: table(NEEDS, ["rank", "kind", "project", "waited", "holds", "what"], ["all", "Plan to approve", "Question", "Permission", "Your turn", "Blocked", "To do", "Failing", "Stopped"], { project: PROJECTS.slice(0, 3) }),
   needs: rows(NEEDS, (i) => ({ kind: i % 2 ? "ask" : "session", id: `need-${i}`, need: pick(NEED, i), label: pick(NEED_LABELS, i), holds: `${3 - (i % 3)} waiting`, holds_line: `holds ${3 - (i % 3)}, ${i % 2 ? "high" : "normal"}`, what: "", rank: i + 1, project: pick(PROJECTS, i), since: ago(25 + i * 37), score: { holds: 3 - (i % 3), priority: i % 2 ? "high" : "normal" }, text: pick(TEXT, i), target: `agent-${i}` })),
   proposals: rows(PROPOSALS, (i) => ({ id: `prop-${i}`, stream: pick(["dream", "skill-refine", "sentinel"], i), project: pick(PROJECTS, i), title: pick(TEXT, i + 2), created: iso(ago(120 + i * 60)), error: null, why: pick(TEXT, i), evidence: "", does: "queue", expires: null, verb: "queue" })),
+  // One row per stream (hub_core::proposals::by_stream), what the page draws of the proposals.
+  streams: ["dream", "skill-refine", "sentinel"].map((stream, i) => ({ stream, project: pick(PROJECTS, i), count: PROPOSALS / 3, newest: NOW - 600 * (i + 1), oldest: NOW - 86400 * (i + 1) })),
   proposals_head: `${PROPOSALS} from 3 streams`, proposals_failed: false,
   proposals_table: table(PROPOSALS, ["stream", "project", "proposal", "created", "verb"], ["all", "queue", "row", "mem0", "none"], { stream: ["dream", "skill-refine"], project: PROJECTS.slice(0, 2) }),
 };
 // What the server sends of them (agent-web main.rs home_shown): Needs you and Proposals page 1 at
-// SHOWN, Running its first SHOWN (the page links the rest on Queue).
+// SHOWN.
 for (const [k, t] of [["needs", "table"], ["proposals", "proposals_table"]]) {
   home[t] = { ...home[t], pager: { page: 1, pages: Math.ceil(home[k].length / HOME_SHOWN), per: HOME_SHOWN } };
   home[k] = home[k].slice(0, HOME_SHOWN);
 }
-home.running = home.running.slice(0, HOME_SHOWN);
 const briefing = {
   since: iso(ago(600)), since_label: "since last night", errors: [], ok_line: "4 more lanes green",
   rows: rows(3, (i) => ({ name: pick(["dispatch", "ci", "spend"], i), link: "", level: pick(["warn", "bad", "ok"], i), line: TEXT[i + 3], details: [], fix: null })),
@@ -190,10 +189,9 @@ const board = {
 // Projects > Sprints: /api/sprints, hub_core::tasks::SprintRow per open or queued window, then each
 // project's last score (hub_core::project_sprints::LastScore).
 const SPRINT_COLS = ["project", "version", "started", "cut", "left", "done", "finish", "build"];
-const sprintTasks = (n) => Array.from({ length: n }, (_, i) => ({ id: `t-${i}`, text: TEXT[i % TEXT.length], title: TEXT[i % TEXT.length], summary: "", state: i % 3 ? "open" : "done", queue: i % 2 ? "running" : null, interrupt: false, priority: pick(["urgent", "high", "low"], i), href: null }));
 const sprints = {
-  rows: PROJECTS.slice(0, 6).map((project, i) => ({ profile: "personal", project, version: `v0.${i + 1}.0`, queued: i % 3 === 2, started: "11-19 14:25", cut: "11-20 15:59", left: i % 3 === 2 ? "queued" : "6h", done: `${i}/5`, finish: "~15:40", late: false, build: "none", tasks: sprintTasks(5) })),
-  table: { columns: SPRINT_COLS.map((key) => ({ key, role: key === "project" ? "lead" : "" })) },
+  rows: PROJECTS.slice(0, 6).map((project, i) => ({ profile: "personal", project, version: `v0.${i + 1}.0`, queued: i % 3 === 2, started: "11-19 14:25", cut: "11-20 15:59", left: i % 3 === 2 ? "queued" : "6h", done: `${i}/5`, finish: "~15:40", late: false, build: "none" })),
+  table: { columns: SPRINT_COLS.map((key) => ({ key, role: key === "project" ? "lead" : "" })), links: PROJECTS.slice(0, 6).map((project, i) => ({ version: `#projects/personal%2F${project}/sprint/v0.${i + 1}.0` })) },
   heads: Object.fromEntries(SPRINT_COLS.map((k) => [k, k.toUpperCase()])),
   last: PROJECTS.slice(0, 4).map((project, i) => ({ profile: "personal", project, version: `v0.${i}.0`, line: "delivered 4 of 5" })),
 };
@@ -303,7 +301,9 @@ const fleet = {
 const RUNNER_ROWS = Number(readFileSync(new URL("../../../.local/src/agent-web/src/fleet.rs", import.meta.url), "utf8").match(/pub const RUNNER_ROWS: usize = (\d+);/)[1]);
 const ACTIVITY = ["moved 0 from the outbox, filed 0, left 0, refused 0, answered 0, asked you 0, batch 40", "2 due, none urgent, last pass 30m ago: no new pass"];
 const score = (rule, i) => ({ rule, verdicts: 6 + i, errors: 0, scored: i, precision: i ? 80 + i : null, false_defer_pct: null, live: i % 2 === 0 });
-const runnerPage = (name, { running, runs, older, calls, conf, rules = 0, extras = { kind: "none" } }) => ({
+// A lane's instructions at the live length (`judge-eval prompts ask-judge`, 360 lines on 2026-11-23); the page folds them.
+const instructions = (name) => `=== ${name} ===\nmodel: claude-opus-5-5\n\n--- PROMPT policy.md ---\n` + rows(120, (i) => `## Rule ${i}\n\n${TEXT[i % TEXT.length]}\n`).join("\n");
+const runnerPage = (name, { running, runs, older, calls, conf, rules = 0, extras = { kind: "none" }, instructed = false }) => ({
   at: NOW, name, shown: RUNNER_ROWS, errors: [], lane: "agent", description: TEXT[7], enabled: true, state: running ? "running" : "idle", running_since: running ? ago(480) : null, next: null,
   registry: { kind: "persistent", trigger: "always on", role: "distill", role_desc: "reads and returns data", caps: "write no, task no, bash no, mcp none", model: "claude-opus-5-5", effect: "acts", prompt: "", calls: { n_24h: calls, errors_24h: 0, cost_24h: 4.86, tokens_24h: 634602, p95_ms: 12568, prompt_sha: "", recent: [] },
     eval: rules ? { prompt_sha: "3fa1c2d", live: [], total: score("", rules), rules: rows(rules, (i) => score(pick(["proceed_or_hold", "credential_or_account", "scope", "agent_policy"], i) + (i >= 4 ? `_${i}` : ""), i)) } : null },
@@ -316,6 +316,7 @@ const runnerPage = (name, { running, runs, older, calls, conf, rules = 0, extras
   calls: { day: { calls, errors: 0, tokens: 634602, cost: calls ? 4.86 : null, p50_ms: 9000 }, week: { calls: calls * 5, errors: 0, tokens: 3e6, cost: calls ? 24.3 : null, p50_ms: 9000 }, partial: false,
     recent: rows(calls, (i) => ({ id: `fac8221${i}`, at: ago(30 + i * 60), ms: 12568, ok: true, model: "claude-opus-5-5", cost: 0.73, tokens: 89929, link: `https://langfuse.example/sessions/${i}` })) },
   extras,
+  instructions: instructed ? instructions(name) : "",
 });
 const ingest = { kind: "ingest", partial: false, counts_7d: { moved: 40, filed: 12, planned: 9, refused: 30 },
   steps: rows(10, (i) => ({ ts: iso(ago(20 + i * 5)), action: pick(["refused", "planned"], i), from: "unity-core-playground", to: "", lane: "", text: `${TEXT[i % TEXT.length]} #size/m #plan`, id: i % 2 ? `ucp-${2277 + i}` : null, why: i % 2 ? "12 plan lines" : `no open task matches '- [ ] ${TEXT[i % TEXT.length]}'`, row: null, by: "inbox-plan" })) };
@@ -329,8 +330,8 @@ const askJudge = { kind: "ask-judge", judge: { ...fleet.judge, verdicts: fleet.j
 export const RUNNER_PAGES = {
   "inbox-triage": runnerPage("inbox-triage", { running: true, runs: 20, older: 12, calls: 20, conf: 20, extras: ingest }),
   shepherd: runnerPage("shepherd", { runs: 20, older: 1118, calls: 0, conf: 22 }),
-  "dispatch-judge": runnerPage("dispatch-judge", { runs: 0, older: 0, calls: 20, conf: 19, rules: 12, extras: dispatchVerdicts }),
-  "ask-judge": runnerPage("ask-judge", { runs: 0, older: 0, calls: 20, conf: 23, rules: 6, extras: askJudge }),
+  "dispatch-judge": runnerPage("dispatch-judge", { runs: 0, older: 0, calls: 20, conf: 19, rules: 12, extras: dispatchVerdicts, instructed: true }),
+  "ask-judge": runnerPage("ask-judge", { runs: 0, older: 0, calls: 20, conf: 23, rules: 6, extras: askJudge, instructed: true }),
 };
 
 // Alerts: hub_core::alerts, the firing rows a hub_core::table view of Alert.

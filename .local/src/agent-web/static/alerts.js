@@ -75,14 +75,14 @@ function alertsHead(d) {
   return html + innerWrap("alerts", "health", alertsFold("health", "Health", chips.length || null, worst, alertsHealthChips(d)));
 }
 
-// Every domain with its hue, the not-green ones first, then why: each component that is not green.
+// Every domain with its hue, the not-green ones first, on one line: it says what is not green, so
+// no row per component repeats it.
 function alertsHealthChips(d) {
   const chips = d.health || [], read = `<div class="cline"><b>read</b> ${d.at ? clock(d.at * 1e3) : "-"}</div>`;
   if (!chips.length) return `<div class="panel muted">No health: Prometheus did not answer.${read}</div>`;
   const rank = { red: 0, warn: 1, nodata: 2, ok: 3 };
   const line = [...chips].sort((a, b) => rank[a.level] - rank[b.level]).map((c) => cchip(ALERT_HUE[c.level], `${esc(c.name)} ${HEALTH_WORD[c.level]}`)).join(" ");
-  const why = (d.components || []).map((c) => `<div>${cchip(ALERT_HUE[c.level], HEALTH_WORD[c.level])} ${esc(c.domain)}/${esc(c.name)}</div>`).join("");
-  return `<div class="panel"><div class="cline">${line}</div>${why}${read}</div>`;
+  return `<div class="panel"><div class="cline">${line}</div>${read}</div>`;
 }
 
 function alertRow(a) {

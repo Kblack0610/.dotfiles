@@ -566,7 +566,7 @@ mod tests {
             ..Default::default()
         };
         let home = crate::home::Home {
-            running: vec![crate::home::Running {
+            proposals: vec![crate::proposals::Proposal {
                 title: Shown::title(PHASE_ROW).text().into(),
                 ..Default::default()
             }],

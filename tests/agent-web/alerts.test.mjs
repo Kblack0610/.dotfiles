@@ -57,7 +57,7 @@ const watchesTable = { q: "", state: "", sort: "", dir: "", total: 3, shown: 3,
 const historyTable = { q: "", state: "", sort: "", dir: "", total: 1, shown: 1, states: [{ name: "all", n: 1 }, { name: "loud", n: 0 }, { name: "failed", n: 0 }],
   columns: ["when", "actor", "verb", "prio", "source", "text"].map(col), facets: [] };
 const data = (o = {}) => ({
-  at: NOW, level: "red", health: [{ name: "ci", level: "ok" }, { name: "k3s", level: "red" }], components: [{ domain: "k3s", name: "nodes", level: "red" }],
+  at: NOW, level: "red", health: [{ name: "ci", level: "ok" }, { name: "k3s", level: "red" }],
   firing, rows: firing, table, fixes, history: [{ at: NOW - 600, actor: "sentinel", verb: "tripped", text: "Sentinel: playground-nightly", source: "agent-notify" }],
   watches: [watch("playground-nightly", "TRIP"), watch("dream", "ERROR"), watch("disk", "OK")], counts, strip, errors: [],
   watches_table: watchesTable, history_table: historyTable, ...o,
@@ -132,14 +132,14 @@ test("a firing row names its project, a fleet-wide one a dash, and the watches l
   assert.match(h, /<td>playground-nightly<\/td><td class="bad">TRIP<\/td><td class="muted">normal<\/td><td class="muted">unity-core-playground<\/td>/);
 });
 
-test("health names every domain, the red first, then each component that is not green", () => {
+test("health names every domain, the red first, and lists no component row", () => {
   const h = show(data());
   assert.ok(h.indexOf("k3s RED") < h.indexOf("ci OK"), h);
   assert.match(h, /<h2 class="sec bad">Health <span class="n">2<\/span><\/h2>/, "a red domain tones the head");
   assert.match(show(data({ health: [{ name: "ci", level: "ok" }] })), /<h2 class="sec">Health <span class="n">1<\/span><\/h2>/);
   const read = new RegExp(`<div class="cline"><b>read</b> ${run(`clock(${NOW} * 1e3)`)}</div></div>`);
   assert.match(h, read, "when it was read is a fact in Health's box");
-  assert.match(h, /<div><span class="cchip bad">RED<\/span> k3s\/nodes<\/div>/);
+  assert.ok(!h.includes("k3s/nodes"), "the domain chip says it; a component row repeated it");
   const none = show(data({ health: [] }));
   assert.match(none, /No health: Prometheus did not answer\./);
   assert.match(none, /<h2 class="sec">Health<\/h2>/);
