@@ -1472,23 +1472,12 @@ fn file_via(
     } else {
         fs::read_to_string(&dest)?
     };
-    // A model-written row that twins an open row of the board joins that row (as `--dup` does) and
-    // files nothing: the check `ptask add` runs on every row, which this path never ran.
-    let twins: Vec<Option<String>> = match &how.how {
-        How::Rows { texts, .. } if !as_is && linked.is_none() => texts
-            .iter()
-            .map(|t| twin_id(&base, &md::without_agent_tag(t)))
-            .collect(),
-        _ => Vec::new(),
+    // A model-written row that twins an open row of the board joins that row, as `--dup` does.
+    let joined = match &how.how {
+        How::Rows { texts, .. } if !as_is && linked.is_none() => joined_twin(&base, texts),
+        _ => None,
     };
-    // Only when every row twins the one same row: a mixed line files as the model wrote it, so no
-    // row's words are dropped with no row to hold them.
-    let joined: Option<String> = twins
-        .first()
-        .cloned()
-        .flatten()
-        .filter(|first| twins.iter().all(|t| t.as_deref() == Some(first.as_str())));
-    let dup_id: Option<&str> = match &how.how {
+    let dup_id = match &how.how {
         How::Dup(id) => Some(id.as_str()),
         _ => joined.as_deref(),
     };
@@ -1552,21 +1541,12 @@ fn file_via(
             let block = crate::window::admit(&dest_proj, cur, block, interrupt);
             (md::insert_under_heading(&base, sheet::TASKS, &block), block)
         }
-        How::Rows { .. } | How::Dup(_) => {
-            let id = dup_id.expect("a row arm without a dup id was taken above");
-            if !md::is_row_id(id) {
-                bail!("--dup takes the id of an open row (like ar-142), not '{id}'");
-            }
-            let hit = Pick::Id(id.to_string());
-            let Some(new) = md::append_details(&base, sheet::TASKS, |l| hit.hits(l), &details)
-            else {
-                bail!(
-                    "no open row {id} on {}, so nothing was filed",
-                    dest.display()
-                );
-            };
-            (new, details.iter().map(|d| format!("  {d}")).collect())
-        }
+        How::Rows { .. } | How::Dup(_) => join_row(
+            &base,
+            &dest,
+            dup_id.expect("a row arm without a dup id was taken above"),
+            &details,
+        )?,
         How::Skip => unreachable!("a skip returns before a destination is chosen"),
     };
     write_sheet(&dest, &new_dest)?;
@@ -1597,20 +1577,7 @@ fn file_via(
     ev.lane = dest_lane.name().into();
     ev.want = how.want.map(str::to_string);
     ev.why = crate::ingest::set(how.why.as_deref());
-    ev.id = match &how.how {
-        _ if dup_id.is_some() => dup_id.map(str::to_string),
-        How::Skip => None,
-        How::Rows { .. } | How::Dup(_) => written
-            .iter()
-            .find_map(|l| md::marker_token(l, "id:"))
-            .map(str::to_string),
-    };
-    if matches!(how.how, How::Rows { .. }) && dup_id.is_none() {
-        ev.row = written
-            .iter()
-            .find(|l| md::row_id(l).is_some())
-            .map(|l| crate::ingest::row_words(l));
-    }
+    record_filed(&mut ev, dup_id, &written);
     crate::ingest::record(p, &ev);
     println!("filed {}", line.text);
     if joined.is_some() {
@@ -1621,6 +1588,59 @@ fn file_via(
         println!("  {l}");
     }
     Ok(0)
+}
+
+/// The open row every text of a model-written filing twins ([`twin_id`]), when it is one and the
+/// same row: a mixed line files as the model wrote it, so no row's words are dropped with no row
+/// to hold them.
+fn joined_twin(base: &str, texts: &[String]) -> Option<String> {
+    let twins: Vec<Option<String>> = texts
+        .iter()
+        .map(|t| twin_id(base, &md::without_agent_tag(t)))
+        .collect();
+    twins
+        .first()
+        .cloned()
+        .flatten()
+        .filter(|first| twins.iter().all(|t| t.as_deref() == Some(first.as_str())))
+}
+
+/// `base` with `details` added under the open row `id` (the `--dup` write), and those detail
+/// lines as written. Refuses a bad id or a row that is not open on `dest`, before any write.
+fn join_row(
+    base: &str,
+    dest: &Path,
+    id: &str,
+    details: &[String],
+) -> Result<(String, Vec<String>)> {
+    if !md::is_row_id(id) {
+        bail!("--dup takes the id of an open row (like ar-142), not '{id}'");
+    }
+    let hit = Pick::Id(id.to_string());
+    let Some(new) = md::append_details(base, sheet::TASKS, |l| hit.hits(l), details) else {
+        bail!(
+            "no open row {id} on {}, so nothing was filed",
+            dest.display()
+        );
+    };
+    Ok((new, details.iter().map(|d| format!("  {d}")).collect()))
+}
+
+/// What the filing's event names: the row it joined (`dup_id`), else the first id and the words of
+/// the rows it wrote.
+fn record_filed(ev: &mut crate::ingest::Event, dup_id: Option<&str>, written: &[String]) {
+    if let Some(id) = dup_id {
+        ev.id = Some(id.to_string());
+        return;
+    }
+    ev.id = written
+        .iter()
+        .find_map(|l| md::marker_token(l, "id:"))
+        .map(str::to_string);
+    ev.row = written
+        .iter()
+        .find(|l| md::row_id(l).is_some())
+        .map(|l| crate::ingest::row_words(l));
 }
 
 /// `texts` with each leaf that has no `#of/`, and whose area is one of `name`'s systems
