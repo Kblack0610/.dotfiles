@@ -42,6 +42,8 @@ case "$1 $2" in
     if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else echo '0123456789abcdef MERGEABLE'; fi ;;
   # the base...head pair pr_files diffs when GitHub cannot render the diff
   *baseRefOid,headRefOid*) printf '{"baseRefOid":"5eedbase5eedbase","headRefOid":"0123456789abcdef"}' | jq -r "${@: -1}" || exit 1 ;;
+  # sup.json: the PR --supersedes names, its state, head and body (closed, its body naming ship, by default)
+  *state,headRefOid,body*) { cat "$NOTES_FIXTURE/sup.json" 2>/dev/null || echo '{"state":"CLOSED","headRefOid":"5eed","body":"Item: ship"}'; } | jq -r "${@: -1}" || exit 1 ;;
   *headRefOid*)
     # head.seq: the PR's head on each poll after a fresh push, popped as read; then head.oid. head.fail: the call fails
     [ ! -f "$NOTES_FIXTURE/head.fail" ] || { echo 'gh: API rate limit exceeded (HTTP 403)' >&2; exit 1; }
@@ -1972,6 +1974,59 @@ untouched() {
   run grep -c '^gh pr edit\|^notes\|^dotfiles-autopull' <(not_recorded)
   assert_output 0
   run agent-queue show p3 --json
+  assert_equal "$(jq -r '"\(.state) \(.pr // "-")"' <<<"$output")" 'running -'
+}
+
+@test "--supersedes: another session's merged PR lands the item whose own PR it replaced, which leaves pr: (bk-3)" {
+  # 2026-11-11 unity-core-playground agent-17 closed #2271 for agent-5's merged #2276, whose body named agent-5's item.
+  item other 'board:dotfiles:the other item'
+  printf 'MERGED\n' >"$NOTES_FIXTURE/state"
+  touch "$NOTES_FIXTURE/head.foreign"
+  printf 'The change.\nItem: other\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'If #42 replaced ship'"'"'s own PR and you closed that one: --supersedes <its number>'
+  run "$LAND" 42 --item ship --supersedes 41
+  assert_success
+  assert_line 'supersedes: #41 closed, replaced by #42'
+  assert_line 'landed #42'
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '"\(.state) \(.status) \(.pr)"' <<<"$output")" 'done ok o/r#42'
+  run grep -c 'pr edit' "$LOG"
+  assert_output 0
+  # an item that records its closed PR (a --pr-only run) drops it, so settle_prior does not refuse it
+  item ship2 'board:dotfiles:ship it too' agent
+  agent-queue set ship2 pr=o/r#41 >/dev/null
+  printf '{"state":"CLOSED","headRefOid":"5eed","body":"no item line"}\n' >"$NOTES_FIXTURE/sup.json"
+  run "$LAND" 42 --item ship2 --supersedes 41
+  assert_success
+  assert_line 'supersedes: dropped o/r#41 from ship2'"'"'s pr:'
+  run agent-queue show ship2 --json
+  assert_equal "$(jq -r '"\(.state) \(.pr) \(.merged | length)"' <<<"$output")" 'done o/r#42 40'
+}
+
+@test "--supersedes refuses an open PR to land, and a superseded PR that is open, merged or not the item's, touching nothing (bk-3)" {
+  # NEGATIVE CONTROL: each would record #42 on ship with no tie between them.
+  printf 'MERGED\n' >"$NOTES_FIXTURE/state"
+  touch "$NOTES_FIXTURE/head.foreign"
+  printf 'Item: other\n' >"$NOTES_FIXTURE/body"
+  local args
+  for args in 'OPEN|Item: ship|--supersedes 41: #41 is OPEN, not closed' 'MERGED|Item: ship|#41 merged, so nothing replaced it' \
+              'CLOSED|Item: other|nothing ties #41 to ship'; do
+    IFS='|' read -r st b want <<<"$args"
+    jq -nc --arg s "$st" --arg b "$b" '{state: $s, headRefOid: "5eed", body: $b}' >"$NOTES_FIXTURE/sup.json"
+    run "$LAND" 42 --item ship --supersedes 41
+    assert_failure
+    assert_output --partial "$want"
+  done
+  printf 'OPEN\n' >"$NOTES_FIXTURE/state"
+  rm "$NOTES_FIXTURE/sup.json"
+  run "$LAND" 42 --item ship --supersedes 41
+  assert_failure
+  assert_output --partial '--supersedes takes a merged PR, and #42 is OPEN'
+  run grep -c 'pr merge\|pr edit\|^notes' "$LOG"
+  assert_output 0
+  run agent-queue show ship --json
   assert_equal "$(jq -r '"\(.state) \(.pr // "-")"' <<<"$output")" 'running -'
 }
 

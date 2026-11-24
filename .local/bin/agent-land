@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # agent-land - land a gated PR and record it in one call, so a green gate costs no model call.
 #
-#   agent-land <pr> [--repo <owner>/<repo>] [--item <slug>] [--plan <file> --phase "<text>"] [--partial] [--merge-commit] [--admin] [--ran-checks] [--dry-run]
+#   agent-land <pr> [--repo <owner>/<repo>] [--item <slug>] [--supersedes <n>] [--plan <file> --phase "<text>"] [--partial] [--merge-commit] [--admin] [--ran-checks] [--dry-run]
 #
 # Which repo <pr> is in: --repo, else the repo of the item's own pr:<owner>/<repo>#<pr>, else gh's
 # default for this checkout. Either way the PR must be in this checkout's origin repo (git, the merge
 # proof and autopull all read it), and a MERGED PR, which skips the head step, must be the item's:
 # its body has "Item: <slug>", its head commit is in this checkout's HEAD, or the item records it.
 # Why: a bare number run from a worktree of the public repo recorded an unrelated public #595 for a
-# private-repo PR (2026-11-07).
+# private-repo PR (2026-11-07). --supersedes <n> ties a merged <pr> another session made to the item
+# instead: #<n>, in the same repo, is the item's own PR, closed unmerged because <pr> replaced it
+# (supersedes_mine); the item drops #<n> from its pr: and records <pr>.
 #
 # Steps, stopping at the first failure: head (HEAD must be the PR's head commit, before the body is
 # touched; else the merge would be refused as "Head branch was modified": run from the PR's own
@@ -570,7 +572,7 @@ catch_up() {
   return 1
 }
 
-stub='' canon='' pr='' repo='' repo_from='' merged='' plan='' phase='' item="${AGENT_QUEUE_ITEM:-}" dry=0 partial=0 method=--squash admin=() ran_checks=''
+stub='' canon='' pr='' sup='' sup_ref='' repo='' repo_from='' merged='' plan='' phase='' item="${AGENT_QUEUE_ITEM:-}" dry=0 partial=0 method=--squash admin=() ran_checks=''
 implied=${item:+'$AGENT_QUEUE_ITEM'}
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -579,6 +581,7 @@ while [ $# -gt 0 ]; do
   --phase) phase="${2:?--phase needs a value}" && shift ;;
   --item) item="${2:?--item needs a value}" implied='' && shift ;;
   --repo) repo="${2:?--repo needs a value}" repo_from=--repo && shift ;;
+  --supersedes) sup="${2:?--supersedes needs a value}" && shift ;;
   --partial) partial=1 ;;
   --merge-commit) method=--merge ;;
   --admin) admin=(--admin) ;;
@@ -591,6 +594,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 [[ "$pr" =~ ^[0-9]+$ ]] || die "a PR number is required (try --help)"
+[ -z "$sup" ] || { [[ "$sup" =~ ^[0-9]+$ ]] && [ "$sup" != "$pr" ]; } || die "--supersedes takes the number of the closed PR #$pr replaced, in its repo, not $sup"
 [ -z "$repo" ] || [[ "$repo" =~ ^[^/[:space:]]+/[^/#[:space:]]+$ ]] || die "--repo takes <owner>/<repo>, not $repo"
 [ "$partial" -eq 0 ] || [ -z "$plan$phase" ] || die "--partial cannot finish a plan phase; pass --plan and --phase on the final landing"
 row=''
@@ -859,6 +863,7 @@ own_item() {
         die "#$pr is in ${pr_ref%#*} ($got), and $item, taken from $implied, is a $project item in $want: a PR outside the item's repo names its item. Pass --item $item if this PR is that item's work (with --partial while its own PR is still to land), or give it its own item (agent-queue add --running --project $got \"<type(area): title>\") and pass --item <that slug>"
     fi
   fi
+  [ -z "$sup_ref" ] || return 0
   read -ra refs <<<"$it_pr"
   for ref in "${refs[@]}" $(jq -r '.open_pr // ""' <<<"$it"); do
     [ "$ref" = "$pr_ref" ] || { [[ "$ref" != */*#* || "$pr_ref" != */*#* ]] && [ "${ref##*#}" = "$pr" ]; } || continue
@@ -892,7 +897,48 @@ own_merged() {
   body=$(pr_view body .body 2>&1) || fail item-line "$api pr view: $(lastline "$body")"
   ! tr -d '\r' <<<"$body" | grep -qxF "Item: $item" || return 0
   ! git merge-base --is-ancestor "$head_oid" HEAD 2>/dev/null || return 0
-  fail match "#$pr ($pr_ref, from $head_ref) is merged, and nothing ties it to $item: its body has no \"Item: $item\" line, its head ${head_oid:0:8} is not in this checkout's HEAD, and the item records ${it_pr:-no PR}. A PR in another repo: run from a checkout of it, with --repo <owner>/<repo>"
+  [ -z "$sup_ref" ] || return 0
+  fail match "#$pr ($pr_ref, from $head_ref) is merged, and nothing ties it to $item: its body has no \"Item: $item\" line, its head ${head_oid:0:8} is not in this checkout's HEAD, and the item records ${it_pr:-no PR}. A PR in another repo: run from a checkout of it, with --repo <owner>/<repo>. If #$pr replaced $item's own PR and you closed that one: --supersedes <its number>"
+}
+
+# supersedes_mine: --supersedes <n> says merged #pr replaced the item's own PR #n, closed unmerged, so #pr
+# lands the item though its body names its own session's item and its head is not in this checkout. #n
+# must be in #pr's repo, CLOSED, and the item's by own_merged's ties (its body's "Item: <slug>", its head
+# in this checkout's HEAD, or the item's pr: or open_pr:). The item drops a recorded #n from pr: before
+# anything else reads it: settle_prior refuses a closed one, and once_done one more in the same repo. Sets
+# sup_ref. Why: 2026-11-11 unity-core-playground agent-17 closed #2271 for agent-5's merged #2276, and
+# nothing tied #2276 to its item, so the item stayed open and the session read closed without merging (bk-3).
+supersedes_mine() {
+  local out st sh ref refs oids i keep_r=() keep_o=()
+  [ "$state" = MERGED ] || die "--supersedes takes a merged PR, and #$pr is $state: let the session that made it land it, then re-run"
+  ref="${pr_ref%#*}#$sup"; [[ "$pr_ref" == */*#* ]] || ref=$sup
+  out=$(pr=$sup; pr_view state,headRefOid,body '{state, headRefOid, body} | tojson' 2>&1) ||
+    die "--supersedes $sup: $api pr view $sup: $(lastline "$out")"
+  read -r st sh < <(jq -r '"\(.state) \(.headRefOid)"' <<<"$out")
+  case "$st" in
+  CLOSED) ;;
+  MERGED) die "--supersedes $sup: #$sup merged, so nothing replaced it: land it with agent-land $sup" ;;
+  *) die "--supersedes $sup: #$sup is ${st:-unreadable}, not closed: close it first (gh pr close $sup --comment \"superseded by #$pr\"), then re-run" ;;
+  esac
+  read -ra refs <<<"$it_pr"
+  # Here-strings, not pipes into grep -q: under pipefail a writer cut off by grep's early exit reads as no match.
+  if ! grep -qxF "Item: $item" <<<"$(jq -r '.body // ""' <<<"$out" | tr -d '\r')" &&
+    ! git merge-base --is-ancestor "$sh" HEAD 2>/dev/null &&
+    ! grep -qxF -e "$ref" -e "$sup" <<<"$(printf '%s\n' "${refs[@]}" $(jq -r '.open_pr // ""' <<<"$it"))"; then
+    die "--supersedes $sup: nothing ties #$sup to $item: its body has no \"Item: $item\" line, its head ${sh:0:8} is not in this checkout's HEAD, and the item does not record it"
+  fi
+  sup_ref=$ref
+  echo "supersedes: #$sup closed, replaced by #$pr"
+  grep -qxF -e "$ref" -e "$sup" <<<"$(printf '%s\n' "${refs[@]}")" || return 0
+  read -ra oids <<<"$(jq -r '.merged // ""' <<<"$it")"
+  for i in "${!refs[@]}"; do
+    [ "${refs[i]}" = "$ref" ] || [ "${refs[i]}" = "$sup" ] && continue
+    keep_r+=("${refs[i]}"); [ -z "${oids[i]:-}" ] || keep_o+=("${oids[i]}")
+  done
+  out=$(aq_retry set "$item" "pr=${keep_r[*]}" "merged=${keep_o[*]}" 2>&1) || die "--supersedes $sup: dropping $ref from $item's pr: $(lastline "$out")"
+  it=$(aq_retry show "$item" --json 2>&1) || die "agent-queue show: $(lastline "$it")"
+  it_pr=$(jq -r '.pr // ""' <<<"$it")
+  echo "supersedes: dropped $ref from $item's pr:"
 }
 
 # landed_by: sets lb to the set argument that adds "<this session>=<pr_ref>" to the item's landed_by:
@@ -1324,6 +1370,7 @@ pr_ref=$(sed -E 's#^https?://[^/]+/([^/]+/[^/]+)/pulls?/([0-9]+).*#\1\#\2#' <<<"
 done_as=''
 it_pr=$(jq -r '.pr // ""' <<<"$it")
 own_repo
+[ -z "$sup" ] || supersedes_mine
 own_item
 done_as=$(item_pr_gate) || exit $?
 # settle_prior: pr: and merged: are lists in step, so each earlier PR an open item records needs its
