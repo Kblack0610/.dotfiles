@@ -355,13 +355,10 @@ impl Verdict {
         if self.get("dispatch.runnable").is_some() && (self.held() > 0 || starved || self.blocked())
         {
             let level = if starved { Level::Red } else { Level::Warn };
-            out.extend(
-                self.waiting(ready().borrow(), starved)
-                    .map(|text| Line {
-                        to: "#queue/next".into(),
-                        ..Line::plain(level, text)
-                    }),
-            );
+            out.extend(self.waiting(ready().borrow(), starved).map(|text| Line {
+                to: "#queue/next".into(),
+                ..Line::plain(level, text)
+            }));
         }
         out.extend(
             self.exceptions
@@ -380,14 +377,10 @@ impl Verdict {
             }
         }
         // An account name stays as it is written.
-        out.extend(
-            self.accounts
-                .iter()
-                .map(|(a, why)| Line {
-                    to: "#costs/limits".into(),
-                    ..Line::plain(Level::Nodata, format!("{a}: no room, {why}"))
-                }),
-        );
+        out.extend(self.accounts.iter().map(|(a, why)| Line {
+            to: "#costs/limits".into(),
+            ..Line::plain(Level::Nodata, format!("{a}: no room, {why}"))
+        }));
         out
     }
 

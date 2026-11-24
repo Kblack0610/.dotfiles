@@ -866,6 +866,7 @@ pub(crate) mod tests {
                     level: Level::Warn,
                     text: "Dispatch paused 2h00m: load 31 is over its cap of 24".into(),
                     act: "See the fleet-pace skill".into(),
+                    to: String::new(),
                 }],
                 ..Default::default()
             }),

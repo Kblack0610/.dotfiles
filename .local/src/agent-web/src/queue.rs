@@ -695,7 +695,8 @@ mod tests {
         assert_eq!(slugs(&v, "pr"), ["p1"]);
         assert_eq!(slugs(&v, "next"), ["q1"]);
         assert_eq!(
-            section(&v, "next")["items"][0]["start"], 1,
+            section(&v, "next")["items"][0]["start"],
+            1,
             "q1 starts first"
         );
         assert!(
@@ -703,20 +704,31 @@ mod tests {
             "only a ready item has a place"
         );
         assert_eq!(
-            section(&v, "running")["items"][0]["timing"]["run"], 150,
+            section(&v, "running")["items"][0]["timing"]["run"],
+            150,
             "the page draws hub-core's minutes"
         );
         // Done leaves the sections for a count, split from the cancelled ones.
         for id in ["needs", "stuck", "running", "pr", "next"] {
-            assert!(!slugs(&v, id).iter().any(|s| s == "d1" || s == "c1"), "{id}");
+            assert!(
+                !slugs(&v, id).iter().any(|s| s == "d1" || s == "c1"),
+                "{id}"
+            );
         }
-        assert_eq!((&v["done_today"], &v["cancelled_today"]), (&1.into(), &1.into()));
+        assert_eq!(
+            (&v["done_today"], &v["cancelled_today"]),
+            (&1.into(), &1.into())
+        );
         assert_eq!(v["needs_you"], 1);
         assert!(v.get("section_aliases").is_none() && v["sel"].is_null());
         // The sections are the states: the bar keeps search and facets, no chips or sort of its own.
         assert!(v["table"]["states"].as_array().unwrap().is_empty());
         assert!(!v["table"]["facets"].as_array().unwrap().is_empty());
-        assert!(v["table"].get("legend").is_none() && section(&v, "next")["table"].get("legend").is_none(), "no chip, so no legend of chips");
+        assert!(
+            v["table"].get("legend").is_none()
+                && section(&v, "next")["table"].get("legend").is_none(),
+            "no chip, so no legend of chips"
+        );
         // NEGATIVE CONTROL: a section with no rows is still sent, with its head's zero and no pager.
         let none = render(vec![], &QueueQuery::default(), now);
         assert_eq!(section(&none, "stuck")["table"]["shown"], 0);
@@ -734,13 +746,21 @@ mod tests {
         let v = render(mixed(), &by("project:playground"), now);
         assert_eq!(slugs(&v, "needs"), ["w1"]);
         assert!(slugs(&v, "running").is_empty() && slugs(&v, "next").is_empty());
-        assert_eq!(section(&v, "next")["table"]["total"], 1, "the head counts the section's rows");
+        assert_eq!(
+            section(&v, "next")["table"]["total"],
+            1,
+            "the head counts the section's rows"
+        );
         let chip = QueueQuery {
             s: "running".into(),
             ..Default::default()
         };
         let v = render(mixed(), &chip, now);
-        assert_eq!(slugs(&v, "running"), ["r1"], "an old ?s= chip still narrows");
+        assert_eq!(
+            slugs(&v, "running"),
+            ["r1"],
+            "an old ?s= chip still narrows"
+        );
         assert!(slugs(&v, "needs").is_empty());
         let items = hub_queue::parse(concat!(
             r#"{"slug":"a","state":"queued","project":"x","queued":"2026-11-06T09:00:00Z","task":"feat: a"}"#,
@@ -757,7 +777,8 @@ mod tests {
         assert_eq!(slugs(&sorted("asc"), "next"), ["a", "b"]);
         assert_eq!(section(&sorted("desc"), "next")["table"]["sort"], "project");
         assert_eq!(
-            section(&sorted("desc"), "running")["table"]["sort"], "",
+            section(&sorted("desc"), "running")["table"]["sort"],
+            "",
             "NEGATIVE CONTROL: another section's sort key leaves this one alone"
         );
     }
@@ -778,25 +799,32 @@ mod tests {
         let last = slugs(&one, "next")[0].clone();
         let get = |text: &str| render(items.clone(), &qs(text), now);
         let v = get("nxpg=2");
-        assert_eq!((n(&v), &section(&v, "next")["table"]["pager"]["page"]), (4, &2.into()));
+        assert_eq!(
+            (n(&v), &section(&v, "next")["table"]["pager"]["page"]),
+            (4, &2.into())
+        );
         let tail = slugs(&v, "next")[3].clone();
         let v = get(&format!("sel={tail}"));
-        assert_eq!(section(&v, "next")["table"]["pager"]["page"], 2, "the page that holds it");
+        assert_eq!(
+            section(&v, "next")["table"]["pager"]["page"],
+            2,
+            "the page that holds it"
+        );
         assert!(slugs(&v, "next").contains(&tail));
         assert_eq!(v["sel"]["slug"], tail.as_str());
         let v = get(&format!("sel={tail}&nxpg=1"));
-        assert_eq!(section(&v, "next")["table"]["pager"]["page"], 1, "a page asked for wins");
+        assert_eq!(
+            section(&v, "next")["table"]["pager"]["page"],
+            1,
+            "a page asked for wins"
+        );
         let v = get(&format!("sel={last}"));
         assert_eq!(section(&v, "next")["table"]["pager"]["page"], 1);
     }
 
     #[test]
     fn a_linked_finished_item_comes_back_as_sel_though_no_section_holds_it() {
-        let v = render(
-            mixed(),
-            &qs("sel=d1"),
-            at("2026-11-06T12:00:00Z"),
-        );
+        let v = render(mixed(), &qs("sel=d1"), at("2026-11-06T12:00:00Z"));
         assert_eq!(v["sel"]["slug"], "d1");
         assert_eq!(v["sel"]["state"], "done");
         for id in ["needs", "stuck", "running", "pr", "next"] {

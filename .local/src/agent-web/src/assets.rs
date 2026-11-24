@@ -451,11 +451,17 @@ mod tests {
         assert_eq!(got, serde_json::Value::Object(want));
         let tab = hub_core::layout::resolve("queue").expect("queue");
         let ids: Vec<&str> = Section::ALL.iter().map(|s| s.id()).collect();
-        let at = tab.sections.iter().position(|s| *s == ids[0]).expect("needs");
+        let at = tab
+            .sections
+            .iter()
+            .position(|s| *s == ids[0])
+            .expect("needs");
         assert_eq!(tab.sections[at..at + ids.len()], ids[..]);
         for id in ids {
             assert!(
-                hub_core::layout::PAGE_ROWS.iter().any(|(s, _)| *s == format!("queue/{id}")),
+                hub_core::layout::PAGE_ROWS
+                    .iter()
+                    .any(|(s, _)| *s == format!("queue/{id}")),
                 "{id} has its own page size"
             );
         }
@@ -476,7 +482,10 @@ mod tests {
             assert!(keys.contains(&"title"), "{sec}: {keys:?}");
             for key in keys {
                 assert!(
-                    hub_core::queue::QueueRow::<'static>::COLUMNS.iter().any(|c| *c == key),
+                    hub_core::queue::QueueRow::<'static>::COLUMNS
+                        .iter()
+                        .copied()
+                        .any(|c| c == key),
                     "{sec}: {key}"
                 );
             }

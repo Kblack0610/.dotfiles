@@ -1431,7 +1431,11 @@ mod tests {
             ("queued", "queue", "next"),
             ("done", "log", "work"),
         ] {
-            assert_eq!(moved("queue", old).map(|(t, s)| (t.id, s)), Some((tab, sec)), "{old}");
+            assert_eq!(
+                moved("queue", old).map(|(t, s)| (t.id, s)),
+                Some((tab, sec)),
+                "{old}"
+            );
         }
         // Releases: the apps and an opened one, then Release runs, then Flow.
         let rel = resolve("releases").unwrap();
