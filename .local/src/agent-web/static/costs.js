@@ -400,7 +400,7 @@ function langfuseSection(d) {
   if (!f) {
     return lfFold(true, `<div class="cline warn">no figures in snapshot ${esc(t.date)}</div>` +
       `<div class="panel"><div class="warn">${esc(lf?.why || "the snapshot has no langfuse section: written before the reader, or the run stopped")}</div>` +
-      `<div class="muted more">read nightly by agent-usage langfuse; the Sentinel watch langfuse-read trips after two nights</div></div>`);
+      `<div class="muted more">read nightly by agent-usage langfuse; the Sentinel watch gateway-errors trips after two nights</div></div>`);
   }
   const shares = `<div><b>tool errors</b> ${pct(f.tool_error_share)}, <b>gateway errors</b> ${pct(f.gateway_error_share)}, <b>gateway cost</b> ${usd(f.gateway_cost_usd)}</div>`;
   // A tool the tokens table opens links to its rows there, where each carries its own time.
