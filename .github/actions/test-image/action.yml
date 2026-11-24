@@ -16,12 +16,16 @@ runs:
         TMUX_REF: ${{ inputs.tmux }}
       # The week is in the key because the image also takes in what the hash cannot see: the
       # debian base tag and unpinned apt packages. A gate never tests an image over a week old.
-      # A pool runner keeps its images between jobs, so one already present skips the restore.
+      # A pool runner keeps its images between jobs, so one already present and built this week
+      # skips the restore; an older one is replaced by this week's, as on a hosted runner.
       run: |
-        tag=$(tests/docker.sh --image)
+        tag=$(tests/docker.sh --image) week=$(date -u +%G-W%V)
         echo "tag=$tag" >> "$GITHUB_OUTPUT"
-        echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
-        if docker image inspect "$tag" >/dev/null 2>&1; then echo present=true >> "$GITHUB_OUTPUT"; fi
+        echo "week=$week" >> "$GITHUB_OUTPUT"
+        if created=$(docker image inspect -f '{{.Created}}' "$tag" 2>/dev/null) &&
+          [ "$(date -u -d "$created" +%G-W%V)" = "$week" ]; then
+          echo present=true >> "$GITHUB_OUTPUT"
+        fi
     - id: cache
       if: steps.tag.outputs.present != 'true'
       uses: actions/cache/restore@v4
@@ -37,12 +41,14 @@ runs:
         docker load -q -i "$RUNNER_TEMP/test-image.tar"
         docker image inspect "$TAG" >/dev/null
     # A miss builds and saves before the tests run, so a red test still leaves the image cached.
+    # A last week's image still under the tag is dropped first, or --build would keep it.
     - if: steps.tag.outputs.present != 'true' && steps.cache.outputs.cache-hit != 'true'
       shell: bash
       env:
         TMUX_REF: ${{ inputs.tmux }}
         TAG: ${{ steps.tag.outputs.tag }}
       run: |
+        docker rmi "$TAG" >/dev/null 2>&1 || true
         tests/docker.sh --build
         docker save -o "$RUNNER_TEMP/test-image.tar" "$TAG"
     - if: steps.tag.outputs.present != 'true' && steps.cache.outputs.cache-hit != 'true'

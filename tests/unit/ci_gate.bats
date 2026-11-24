@@ -127,7 +127,8 @@ off_pool() {
 # host_installs <dir>: workflow and action lines that put a tool on the runner itself, outside a
 # comment. A job's tools come from tests/Dockerfile, so a runner needs only docker (~/.local/src/docs/ci.md).
 host_installs() {
-  grep -rnE '(^|[^A-Za-z0-9_-])(apt-get|apt install|dpkg -i|rustup|npm (install|ci)|uses: [^ ]*setup-)([^A-Za-z0-9_-]|$)' "$1" |
+  # GITHUB_PATH: a download put on PATH, as the bun step did before the image carried bun.
+  grep -rnE '(^|[^A-Za-z0-9_-])(apt-get|apt install|dpkg -i|rustup|npm (install|ci)|pip3? install|cargo install|go install|brew install|curl [^#]*\| *(ba)?sh|GITHUB_PATH|uses: [^ ]*setup-)([^A-Za-z0-9_-]|$)' "$1" |
     grep -vE '^[^:]+:[0-9]+: *#' || true
 }
 
@@ -136,10 +137,11 @@ host_installs() {
   run host_installs "$gh"
   assert_success
   assert_output ''
-  # Negative control: an apt step and a rustup step in a copy are both named; a comment is not.
+  # Negative control: an apt step, a rustup step and a download put on PATH in a copy are all
+  # named; a comment is not.
   cp -r "$gh" "$BATS_TEST_TMPDIR/gh"
-  printf '      # rustup is not here\n      - run: sudo apt-get install -y stow\n      - run: rustup toolchain install 1.99.1\n' >>"$BATS_TEST_TMPDIR/gh/workflows/tests.yml"
+  printf '      # rustup is not here\n      - run: sudo apt-get install -y stow\n      - run: rustup toolchain install 1.99.1\n      - run: echo "$RUNNER_TEMP/bun/bin" >>"$GITHUB_PATH"\n' >>"$BATS_TEST_TMPDIR/gh/workflows/tests.yml"
   run host_installs "$BATS_TEST_TMPDIR/gh"
-  [ "${#lines[@]}" -eq 2 ] || fail "want the apt and rustup lines named: $output"
-  [[ "$output" == *apt-get* && "$output" == *"rustup toolchain"* ]]
+  [ "${#lines[@]}" -eq 3 ] || fail "want the apt, rustup and GITHUB_PATH lines named: $output"
+  [[ "$output" == *apt-get* && "$output" == *"rustup toolchain"* && "$output" == *GITHUB_PATH* ]]
 }

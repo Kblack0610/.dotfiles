@@ -78,7 +78,9 @@ if [ -z "${COCKPIT_TEST_IMAGE:-}" ] && "$DOCKER" image inspect "$IMAGE" >/dev/nu
 else
   echo "==> image $IMAGE (tmux $TMUX_REF, fzf $FZF_REF)"
   # The context is the patch directory: the one thing the image copies.
-  "$DOCKER" build \
+  # --pull: a newer debian base under the same tag rebuilds every layer, apt included, so a
+  # host's layer cache cannot carry last week's packages into this week's image.
+  "$DOCKER" build --pull \
     --build-arg "TMUX_REF=$TMUX_REF" \
     --build-arg "TMUX_STOCK=$TMUX_STOCK" \
     --build-arg "FZF_REF=$FZF_REF" \
@@ -101,17 +103,18 @@ fi
 #                     passwd entry in the image, so USER is passed for the tests that read it.
 # --rm                nothing persists but what is written into the bind mount
 # --shm-size          chromium (the phone render harness) runs out of docker's 64 MB /dev/shm
-# CARGO_HOME          in the checkout, so the registry outlives the container and CI caches it
 run_args=(
   --rm --init
   --network "$DOCKER_NETWORK"
   --user "$(id -u):$(id -g)"
   --env "USER=$(id -un)"
-  --env CARGO_HOME=/work/.cargo-ci
   --shm-size 1g
   --volume "$REPO:/work"
   --workdir /work
 )
+# In CI the cargo registry goes in the checkout, so it outlives the container and actions/cache
+# keeps it. A local run leaves it in the container, so no worktree grows a registry of its own.
+[ -n "${CI:-}" ] && run_args+=(--env CARGO_HOME=/work/.cargo-ci)
 
 # Git WORKTREE support. In a worktree, `.git` is a FILE containing
 # `gitdir: /path/to/main/.git/worktrees/<name>`, which lives OUTSIDE this bind mount - so
@@ -142,6 +145,8 @@ if [ "${1:-}" = "--shell" ]; then
 fi
 if [ "${1:-}" = "--run" ]; then
   shift
+  # With no command, docker would run the image's CMD: the whole container suite.
+  [ $# -gt 0 ] || { echo "docker.sh: --run needs a command" >&2; exit 2; }
   exec "$DOCKER" run "${run_args[@]}" "$IMAGE" "$@"
 fi
 
