@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # fleet-sessions - where is each live Claude session in its delivery, and does it need anyone?
 #
-#   fleet-sessions                    one row per session, grouped by bucket
+#   fleet-sessions                    one row per session, grouped by bucket, from the state document
+#                                     (under a second); its age is the first line, and one older than
+#                                     FLEET_STATE_STALE_SECS exits 1 naming --fresh. On a fleet worker
+#                                     it reads the lease holder's pushed rows: this host's sessions only
+#   fleet-sessions --fresh            the same table from a full pass (about a minute)
 #   fleet-sessions --json             the same, one JSON object per line (for the shepherd)
 #   fleet-sessions --write            --json, and the fleet state document every view renders
 #                                     ($FLEET_STATE_FILE; schema and vocabulary in
@@ -3512,6 +3516,36 @@ sessions_prom() {
       if (.unreadable | index("agent-ask")) then empty else [{}, (.asks | length)] end)' "$1"
 }
 
+# list_view: the bare table (a row per session, grouped by bucket) from the state document, the one
+# every view reads, so it costs no pass. On a worker the document is the lease holder's push, this
+# host's sessions only. Its age is the first line; one older than FLEET_STATE_STALE_SECS, or none, exits 1
+# naming --fresh (a full pass) and the timer, and never runs a pass of its own.
+list_view() {
+  local f=$STATE_FILE host=""
+  if on_worker; then f="$(holder_state_file)"; host=" (the lease holder's rows for this host only)"; fi
+  [ -r "$f" ] || { echo "fleet-sessions: no state document at $f: run \`fleet-sessions --fresh\` or check fleet-state.timer" >&2; return 1; }
+  local age
+  age=$(( $(date +%s) - $(jq -r '.generated_epoch // 0' "$f") )) || return 1
+  if [ "$age" -gt "$(state_stale_secs)" ]; then
+    echo "fleet-sessions: the state document $f is $((age / 60))m old: run \`fleet-sessions --fresh\` or check fleet-state.timer" >&2
+    return 1
+  fi
+  echo "state document $((age / 60))m old$host; \`fleet-sessions --fresh\` runs a full pass"
+  jq -r '(.vocab.buckets // ["NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED"]) as $order
+    | [(.main // [] | .[] | [(.fact | split(" ")[0]), .repo, "-", "-", 0, .reason, .nudged, "-", "-"]),
+       (.shared // [] | .[] | ["SHARED", .test, "-", "-", 0, .reason, .nudged, "-", "-"]),
+       (.sessions[] | [.bucket, (.target | sub("^[^/]*/"; "")), .branch, .pr, (.idle_min // 0), .reason, .nudged,
+                       (.dispatch // "-"), ((.labels // []) | if length == 0 then "-" else join(",") end)])]
+    | . as $rows
+    | (["NIGHTLY", "CHECKOUT", "SHARED"] + $order)[] as $b
+    | ($rows | map(select(.[0] == $b)) | sort_by(.[1])) as $g
+    | select($g | length > 0)
+    | (["H", $b] | @tsv), ($g[] | ["R"] + (.[1:] | map(tostring | gsub("[\t\n]"; " "))) | @tsv)' "$f" \
+    | awk -F'\t' '$1 == "H" { print $2; next }
+        { printf "  %-44s %-28s %-6s %4sm  %s%s%s%s\n", $2, $3, $4, $5, $6, ($7 == "true" ? "  (nudged)" : ""),
+            ($8 != "-" ? "  [dispatch: " $8 "]" : ""), ($9 != "-" ? "  [labels: " $9 "]" : "") }'
+}
+
 # holds: the sibling fleet-shepherd's lease check, by path, so a test runs this checkout's.
 holds() { "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/fleet-shepherd" holds; }
 
@@ -3539,9 +3573,11 @@ main() {
         CLOSE_SELF="$(resolve_sid "${3:-self}")" || return 2
         if on_worker; then close_self_held; return; fi
       else shift; close_view "$@"; return; fi ;;
-    -h|--help) sed -n '2,29p' "$0"; return ;;
+    "") list_view; return ;;
+    -h|--help) sed -n '2,/^# Buckets:/{/^# Buckets:/!p}' "$0"; return ;;
   esac
   local rows t0
+  [ "${1:-}" != --fresh ] || shift
   t0="$(date +%s)"
   pass; rows="$PASS_ROWS"
   case "${1:-}" in

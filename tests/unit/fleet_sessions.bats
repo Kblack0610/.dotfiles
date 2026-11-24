@@ -1877,8 +1877,8 @@ SH
   [ "$(jq -r .nudged <<<"$output")" = false ]
   [ "$(jq -r .pane <<<"$output")" = %7 ]
 
-  # The table: bucket heading, then the reason as the last column with no pane glued on.
-  run "$REPO_ROOT/.local/bin/fleet-sessions"
+  # The table of a full pass (--fresh): bucket heading, then the reason as the last column with no pane glued on.
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --fresh
   assert_line --index 0 LANDED
   assert_line --index 1 --regexp '^  s1:1 +feat/x +875 +60m  PR #875 merged, tree clean, next phase: Phase 2: rollout$'
 
@@ -6339,6 +6339,65 @@ verdict() {
   [[ "$stderr" == *"m old: is fleet-state.timer running?"* ]]
   [[ "$stderr" == *"1 session(s) carry no verdict"* ]]
   assert_line --index 0 "now 0, after 0, keep 0"
+}
+
+# list_doc <age seconds>: a state document of that age with a NIGHTLY row, a nudged and labelled session, two buckets.
+list_doc() {
+  jq -n --argjson t "$(( $(date +%s) - $1 ))" '{generated_epoch: $t,
+    vocab: {buckets: ["NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED"]},
+    main: [{repo: "dots", reason: "main CI red", fact: "NIGHTLY main CI red", nudged: false}], shared: [],
+    sessions: [
+      {target: "lab/w2:1", bucket: "WORKING", branch: "feat/b", pr: "-", idle_min: 3, reason: "busy", nudged: false, dispatch: null, labels: []},
+      {target: "lab/w1:1", bucket: "WORKING", branch: "feat/a", pr: "12", idle_min: 1, reason: "idle 1m", nudged: true, dispatch: "run", labels: ["stay"]},
+      {target: "lab/n1:2", bucket: "NEEDS", branch: "feat/c", pr: "-", idle_min: 40, reason: "1 pending ask(s)", nudged: false, labels: []}]}'
+}
+
+@test "bare fleet-sessions renders the state document: age first, buckets in order, rows by target, no pass" {
+  bats_require_minimum_version 1.5.0
+  export FLEET_STATE_FILE="$SANDBOX/state.json"
+  list_doc 125 > "$FLEET_STATE_FILE"
+  # a pass would read agent-panel, which this sandbox lacks: the view must not start one
+  printf '#!/usr/bin/env bash\necho pass-ran >&2; exit 9\n' > "$SANDBOX/bin/agent-panel"
+  chmod +x "$SANDBOX/bin/agent-panel"
+  AGENT_PANEL="$SANDBOX/bin/agent-panel" run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions"
+  assert_success
+  [ -z "$stderr" ]
+  assert_line --index 0 --regexp '^state document 2m old.*--fresh'
+  assert_line --index 1 NIGHTLY
+  assert_line --index 2 --regexp '^  dots +- +- +0m  main CI red$'
+  assert_line --index 3 NEEDS
+  assert_line --index 4 --regexp '^  n1:2 +feat/c +- +40m  1 pending ask\(s\)$'
+  assert_line --index 5 WORKING
+  assert_line --index 6 --regexp '^  w1:1 +feat/a +12 +1m  idle 1m  \(nudged\)  \[dispatch: run\]  \[labels: stay\]$'
+  assert_line --index 7 --regexp '^  w2:1 +feat/b +- +3m  busy$'
+  [ "${#lines[@]}" = 8 ]
+}
+
+@test "bare fleet-sessions on a stale or missing document exits 1 naming --fresh and the timer, and runs no pass" {
+  bats_require_minimum_version 1.5.0
+  export FLEET_STATE_FILE="$SANDBOX/state.json"
+  run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions"
+  assert_failure 1
+  [[ "$stderr" == *"no state document"*"--fresh"*"fleet-state.timer"* ]]
+  list_doc 400 > "$FLEET_STATE_FILE"
+  run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions"
+  assert_failure 1
+  [[ "$stderr" == *"is 6m old"*"--fresh"*"fleet-state.timer"* ]]
+  [ -z "$output" ]
+}
+
+@test "bare fleet-sessions on a worker reads the lease holder's pushed rows, not the old local document" {
+  bats_require_minimum_version 1.5.0
+  export FLEET_STATE_FILE="$SANDBOX/state/state.json"
+  mkdir -p "$SANDBOX/state"
+  rm -f "$SANDBOX/lease-held"
+  list_doc 5000 > "$FLEET_STATE_FILE"
+  list_doc 30 | jq '.sessions |= map(select(.target == "lab/w2:1")) | .main = []' > "$SANDBOX/state/holder-state.json"
+  run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions"
+  assert_success
+  assert_line --index 0 --regexp "^state document 0m old \(the lease holder's rows for this host only\)"
+  assert_line --index 1 WORKING
+  [ "${#lines[@]}" = 3 ]
 }
 
 # api_error_transcript <file> [after]: the tail of a session that a transient Cloudflare 403 stopped
