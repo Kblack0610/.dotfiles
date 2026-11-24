@@ -228,7 +228,7 @@ JQ_EVAL="$JQ_EPOCH"'
       | bykey(.p)) as $kids
    # A re-tag that only changes the priority is a call of the priority pass, scored on its own lane,
    # so it touches nothing the triager or planner wrote.
-   | def prios: (.why // "") | split(" ") | map(select(test("^[+-]#(urgent|high|low)$")));
+   | def prios: (.why // "") | split(" ") | map(select(test("^[+-]#(urgent|high|normal|low)$")));
    def prio_only: .action == "tagged" and (((.why // "") | split(" ") | map(select(length > 0))) as $w
        | ($w | length) > 0 and ($w | length) == (prios | length));
    # Likewise a re-tag by a pass or session of only size, plan, hold, ask or after words (#pts/N from inbox-size,
@@ -236,7 +236,7 @@ JQ_EVAL="$JQ_EPOCH"'
    # A human re-tag (by human) stays a touch: the triager files a size, and a person changing it corrects it.
    def pass_only: prio_only or (.action == "tagged" and ((.by // "") | IN("", "human") | not)
        and (((.why // "") | split(" ") | map(select(length > 0))) as $w
-       | ($w | length) > 0 and ($w | all(test("^[+-]#(urgent|high|low|pts/[0-9]+|size/[sml]|plan|go|hold/[^ ]+|after/[^ ]+|ask/[^ ]+|desk/[^ ]+)$")))));
+       | ($w | length) > 0 and ($w | all(test("^[+-]#(urgent|high|normal|low|pts/[0-9]+|size/[sml]|plan|go|hold/[^ ]+|after/[^ ]+|ask/[^ ]+|desk/[^ ]+)$")))));
    # A dup is a later line joined to the row: it repeats the row, so it corrects nothing.
    ($ev | map(select((.action | IN("edited", "dropped", "rehomed", "tagged")) and (pass_only | not))) | bykey(.id)) as $touch
    # Priority: each priority the priority pass set (`by` inbox-priority, or inbox-triage on a

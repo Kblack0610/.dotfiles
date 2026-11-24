@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # agent-queue - the one intake for agent work, and the only writer of its store.
 #
-#   add [--project p] [--mode oneshot|plan] [--priority urgent|high|low] [--tags "t1 t2"]
+#   add [--project p] [--mode oneshot|plan] [--priority urgent|high|normal|low] [--tags "t1 t2"]
 #       [--weight heavy|light] [--after slug|row-id[,...]] [--from human|session|shepherd|canary|trainee|research:<facet>|auto:<filer>|item:<slug>|ask:<id>|board:<project>:<key>] [--agent claude] [--slug s] [--title t]
 #       [--row <code>-<N>] [--epic <code>-<N>] [--want <channel>] [--running [--session s]] [--repeat] [task...]    the task from args, or stdin when there are none
 #       --running with no --from or --want is from item:<$AGENT_QUEUE_ITEM> in a queue item's session, from session in any
@@ -250,8 +250,8 @@ slugify() {
     | sed 's/^-//; s/-$//' | cut -c1-40 | sed 's/-$//'
 }
 
-# urgent|high|low, as on the sheets. A bare add is high: nobody decided, so it is not demoted.
-prio_rank() { case "$1" in urgent) echo 0 ;; high) echo 1 ;; low) echo 2 ;; *) return 1 ;; esac; }
+# urgent|high|normal|low, as on the sheets (priority.md). A bare add by hand is high: the human's own, so it is not demoted.
+prio_rank() { case "$1" in urgent) echo 0 ;; high) echo 1 ;; normal) echo 2 ;; low) echo 3 ;; *) return 1 ;; esac; }
 
 # Mutations take one lock, so the web page, the shepherd and the dispatcher never interleave.
 # The wait is a timeout guard, not a delay: a writer holds it for milliseconds.
@@ -513,7 +513,7 @@ make_room() {
     | [.[] | select(.priority != "urgent" and (.row // "") != "")
         | select((" " + (.tags // "") + " ") | test(" (red|requested|#requested) ") | not)
         | select(.from != "human")
-        | select(({"urgent":0,"high":1,"low":2}[.priority] // 1) >= $pr)
+        | select(({"urgent":0,"high":1,"normal":2,"low":3}[.priority] // 1) >= $pr)
         | select(.slug as $s | $keep | contains(" \($s) ") | not)
         | select(.slug as $s | $heads | index($s) | not)] | last | .slug // empty')" || return 0
   [ -n "$victim" ] || return 0
@@ -1072,7 +1072,7 @@ desk_head() {
     HOLD=""; hold_for "$after" "$tags" "" "$f"
     [ -z "$HOLD" ] || continue
     rank="$(awk -F'\t' -v c="$cls" '$1 == c { print $2 }' <<<"$ranks")"
-    case "$pri" in urgent) p=0 ;; low) p=2 ;; *) p=1 ;; esac
+    case "$pri" in urgent) p=0 ;; normal) p=2 ;; low) p=3 ;; *) p=1 ;; esac
     printf '%s\t%s\t%s\t%s\t%s\n' "${rank:-9}" "$p" "$f" "$slug" "$cls"
   done < <([ ! -d "$AQ_DIR/queued" ] || find "$AQ_DIR/queued" -maxdepth 1 -name '*.md' ! -name '.*' -printf '%T@\t%p\n' | header_rows) |
     sort -t$'\t' -k1,1n -k2,2n -k3,3 | awk -F'\t' -v OFS='\t' 'NR == 1 { print $3, $4, $5 }'
@@ -1411,7 +1411,7 @@ ORDER='def untagged($t): ((.tags // "") | if type == "array" then join(" ") else
       elif $r == "low" and (untagged("cleanup") | not) then .priority = "high"
       else .priority = $r end;
   def bucket: [untagged("red"), (.priority != "urgent"), untagged("sprint"), ($rank[.project // ""] // 2),
-    ({"urgent":0,"high":1,"low":2}[.priority] // 1)];
+    ({"urgent":0,"high":1,"normal":2,"low":3}[.priority] // 1)];
   (if $rowprio == null then . else map(row_prio) end)
   | if $mix == null then sort_by(bucket, .queued) else mix($mix; bucket) end'
 
@@ -1561,9 +1561,8 @@ order_filter() {
 # or nothing when no item works a row or notes cannot answer (each item then keeps its own line). The
 # row is where an item's priority lives (ar-3011): ORDER's row_prio reads it, so a retag re-ranks the
 # item. Only the rows items work: the map is bound into the jq program text, and the whole board's
-# (4,700 rows) was past the kernel's argument limit, so every ordered list failed. A #normal row, and an
-# untagged one (the feed reads it normal), gives high: the queue has no normal word yet, as fleet-dispatch
-# row_priority maps it.
+# (4,700 rows) was past the kernel's argument limit, so every ordered list failed. An untagged row reads
+# normal in the feed, as fleet-dispatch row_priority maps it.
 row_prios() {
   local keys s f files=()
   for s in "$@"; do
@@ -1576,7 +1575,7 @@ row_prios() {
   notes board --json 2>/dev/null | jq -c --arg keys "$keys" '($keys | split("\n") | map({(.): true}) | add) as $want
     | [.rows[]? | select((.state == "open" or .state == "doing") and .project != null and .id != null
       and (.priority == "urgent" or .priority == "high" or .priority == "normal" or .priority == "low"))
-      | {key: "\(.project):\(.id)", value: (if .priority == "normal" then "high" else .priority end)}
+      | {key: "\(.project):\(.id)", value: .priority}
       | select($want[.key])] | from_entries' 2>/dev/null
 }
 
@@ -1932,7 +1931,7 @@ prior_story() {
 add_priority() {
   local session="${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}"
   [ -n "$2" ] || [ -z "$session" ] ||
-    die "a session's add passes --priority: urgent for what the human needs now, high when it blocks a release or a red on main, else low"
+    die "a session's add passes --priority: urgent for what the human needs now, high when it blocks a release or a red on main, normal for real work in its turn, low for upkeep or cleanup"
   if [ -n "$3" ] && [ "$1" = urgent ] && [ -n "$session" ] && [[ " $4 " != *" red "* && "$5" != board:* ]]; then
     echo "agent-queue: a session's plan queues at high at most; urgent is the human's own add or a red" >&2
     echo high
@@ -2032,7 +2031,7 @@ cmd_add() {
   if [ "${#task[@]}" -gt 0 ]; then text="${task[*]}"; elif [ ! -t 0 ]; then text="$(cat)"; fi
   [ -n "$(printf '%s' "${text:-}" | tr -d '[:space:]')" ] || die "no task: pass it as arguments or on stdin"
   case "$mode" in oneshot | plan) ;; *) die "--mode is oneshot or plan, not $mode" ;; esac
-  prio_rank "$priority" >/dev/null || die "--priority is urgent, high or low, not $priority"
+  prio_rank "$priority" >/dev/null || die "--priority is urgent, high, normal or low, not $priority"
   case "$weight" in '' | heavy | light) ;; *) die "--weight is heavy or light, not $weight" ;; esac
   [ -z "$running" ] || [ -n "$from_given$want" ] || from="$(running_from)"
   case "$from" in human | session | shepherd | canary | trainee | research:?* | auto:?* | item:?* | ask:?* | board:?*:?*) ;; *) die "--from is human, session, shepherd, canary, trainee, research:<facet>, auto:<filer>, item:<slug>, ask:<id> or board:<project>:<key>, not $from" ;; esac
@@ -2218,8 +2217,8 @@ dispatch_log() {
 
 # start_at_add <file> <slug> <priority> -- start a just-queued item now: a plan session, the human's
 # urgent ask (it waited up to a dispatch pass, ar-2944), what the human adds from their own interactive
-# session or with --want (a low one still waits its turn), and each queued phase of the human's urgent or
-# high --plan (the queue holds no gated one). Not a low one (waits_turn), not under the dispatch hold.
+# session or with --want (a normal or low one still waits its turn), and each queued phase of the human's urgent or
+# high --plan (the queue holds no gated one). Not a normal or low one (waits_turn), not under the dispatch hold.
 # Every outcome but a start is logged here; fleet-dispatch start logs the start itself.
 start_at_add() {
   local h w
@@ -2928,7 +2927,7 @@ record_active() {
 
 cmd_bump() {
   local slug="${1:?usage: agent-queue bump <slug> <priority>}" prio="${2:?usage: agent-queue bump <slug> <priority>}" f
-  prio_rank "$prio" >/dev/null || die "priority is urgent, high or low, not $prio"
+  prio_rank "$prio" >/dev/null || die "priority is urgent, high, normal or low, not $prio"
   lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
   header_set "$f" priority "$prio"
@@ -2966,7 +2965,7 @@ cmd_set() {
     [ "$k" != "$kv" ] || die "not key=value: $kv"
     case "$SETTABLE" in *" $k "*) ;; *) die "not a settable field: $k" ;; esac
     [ "$k" != tags ] || check_tags "${kv#*=}"
-    [ "$k" != priority ] || prio_rank "${kv#*=}" >/dev/null || die "priority is urgent, high or low, not ${kv#*=}"
+    [ "$k" != priority ] || prio_rank "${kv#*=}" >/dev/null || die "priority is urgent, high, normal or low, not ${kv#*=}"
     [ "$k" != after ] || check_after "$(word_list "${kv#*=}")" "$slug"
     # phases: the plan checklist numbers the item holds, as add --plan writes them (ar-2905).
     [ "$k" != phases ] || [[ "$(word_list "${kv#*=}")" =~ ^([0-9]+( [0-9]+)*)?$ ]] || die "phases is plan checklist numbers such as 3 4, not ${kv#*=}"
@@ -3789,11 +3788,12 @@ waits_on() {
 }
 
 # waits_turn <slug> <priority> -- exit 0, and say so, when agent-queue must not start the item itself:
-# a low one waits for a dispatch pass, which starts the queue in priority order, so low work never
-# jumps it (the human, 2026-11-12). Urgent and high start at once. The one place this rule lives.
+# a normal or low one waits for a dispatch pass, which starts the queue in priority order, so such work
+# never jumps it (the human, 2026-11-12; normal "waits its turn", priority.md). Urgent and high start at
+# once. The one place this rule lives.
 waits_turn() {
-  [ "$2" = low ] || return 1
-  echo "agent-queue: $1 is low priority, so a dispatch pass starts it in its turn"
+  [ "$2" = normal ] || [ "$2" = low ] || return 1
+  echo "agent-queue: $1 is $2 priority, so a dispatch pass starts it in its turn"
 }
 
 # dispatch_held <slugs> -- exit 0, and say so, when the dispatch hold (hold_pending, asked as no session)
@@ -3926,7 +3926,7 @@ cmd_stats() {
   if [ -n "$json" ]; then printf '%s\n' "$stats"; return 0; fi
   jq -r 'def dur: if . == null then "-" elif . >= 120 then "\(. / 60 | floor)h" else "\(.)m" end;
     def pairs: to_entries | map("\(.key) \(.value)") | join(", ");
-    def chain_line: if . == {} then "none" else to_entries | sort_by(.key | {urgent: 0, high: 1, low: 2}[.] // 3)
+    def chain_line: if . == {} then "none" else to_entries | sort_by(.key | {urgent: 0, high: 1, normal: 2, low: 3}[.] // 4)
       | map("\(.key) \(.value.p50)/\(.value.p90) (\(.value.n))") | join(", ") end;
     "since \(.since)",
     "active:  \(.active | pairs | if . == "" then "none" else . end)",

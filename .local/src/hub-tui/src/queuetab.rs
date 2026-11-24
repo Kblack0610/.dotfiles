@@ -1486,9 +1486,10 @@ pub(crate) mod tests {
             "{:?}",
             v.said
         );
+        // One step up the four words: low -> normal (queue::PRIORITIES).
         assert_eq!(
             press(&mut v, &q, &[], '+'),
-            Ask::Bump("night-sweep".into(), "high")
+            Ask::Bump("night-sweep".into(), "normal")
         );
         press(&mut v, &q, &[], 'k');
         assert_eq!(at(&v), "next-up");
