@@ -889,7 +889,7 @@ check_tokens() {
     local warn now="${CLAUDE_ACCT_NOW:-$(date +%s)}" name dir exp end days ok=0 out=''
     local -a none=() soon=()
     warn=$(pace_get TOKEN_WARN_DAYS)
-    [[ -n "$warn" ]] || return 2
+    [[ -n "$warn" ]] || { echo "unreadable: TOKEN_WARN_DAYS is not set in pace.conf"; return 2; }
     if ! command -v rbw >/dev/null 2>&1 || ! rbw unlocked >/dev/null 2>&1; then
         echo "unreadable: rbw is missing or locked, so no token was checked (rbw unlock)"; return 2
     fi
@@ -901,6 +901,10 @@ check_tokens() {
         elif (( days <= ${warn%.*} )); then soon+=("$name expires $exp, in ${days}d")
         else ok=$((ok + 1)); fi
     done < <(accounts)
+    # A read that failed because rbw locked mid-loop is no missing token.
+    if (( ${#none[@]} )) && ! rbw unlocked >/dev/null 2>&1; then
+        echo "unreadable: rbw locked while tokens were read (rbw unlock)"; return 2
+    fi
     if (( ${#soon[@]} )); then out="token: $(printf '%s; ' "${soon[@]}")"; out="${out%; }"; fi
     if (( ${#none[@]} )); then out+="${out:+; }no token: ${none[*]} (claude-acct setup-token <name>)"; fi
     echo "${out:-$ok tokens good}"
