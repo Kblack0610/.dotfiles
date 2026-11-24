@@ -317,6 +317,8 @@ chain_fixture() {
 # pipeline_fixture: one item at each queue step, one open agent row waiting and one the queued item
 # started, three inbox lines, two items finished (one inside 24h), and a record that holds each
 # item where the queue folders do. Ages: queued 2h, running 1h, on a PR 30m, waiting 10m, the row 3 days and 4h.
+# The board also holds rows the backlog must not count: a human-lane row, one with automation off,
+# one of another profile and one parked behind a backlog token.
 pipeline_fixture() {
   kpi_setup
   at() { date -u -d "@$((T0 - $1))" +%Y-%m-%dT%H:%M:%SZ; }
@@ -333,10 +335,13 @@ pipeline_fixture() {
   DONE="$SANDBOX/done.jsonl" BJSON="$SANDBOX/board.json" RJSON="$SANDBOX/steps.json"
   { item d1 done high human "{\"finished\":\"$(at 1800)\"}"; item d0 done high human "{\"finished\":\"$(at 90000)\"}"; } > "$DONE"
   jq -cn --arg d "$(date -u -d "@$((T0 - 3 * 86400))" +%F)" '{rows: [
-    {project: "game", lane: "agent", state: "open", id: "g-1", since: $d},
-    {project: "game", lane: "agent", state: "open", id: "g-2", since: $d},
-    {project: "game", lane: "agent", state: "doing", id: "g-3", since: $d},
-    {project: "game", lane: "human", state: "open", id: "g-4", since: $d}]}' > "$BJSON"
+    {profile: "personal", project: "game", lane: "agent", state: "open", id: "g-1", since: $d},
+    {profile: "personal", project: "game", lane: "agent", state: "open", id: "g-2", since: $d},
+    {profile: "personal", project: "game", lane: "agent", state: "doing", id: "g-3", since: $d},
+    {profile: "personal", project: "game", lane: "human", state: "open", id: "g-4", since: $d},
+    {profile: "personal", project: "off", lane: "agent", state: "open", id: "o-1", since: $d, automation: false},
+    {profile: "work", project: "client", lane: "agent", state: "open", id: "c-1", since: $d},
+    {profile: "personal", project: "game", lane: "agent", state: "open", id: "g-5", since: $d, backlog: true}]}' > "$BJSON"
   jq -cn --arg s "$(at 172800)" --arg i "$(at 86400)" '{since: $s, items_since: $i, steps: [
     {step: "inbox", in_1h: 2, out_1h: 1, in_24h: 5, out_24h: 4, dwell_p50_min: 0, dwell_p90_min: 3, items: []},
     {step: "backlog", in_1h: 0, out_1h: 1, in_24h: 3, out_24h: 1, items: []},

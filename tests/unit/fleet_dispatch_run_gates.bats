@@ -299,7 +299,7 @@ load 'fleet_dispatch/common'
   assert_equal "$(jq -r '[.could_start, .runnable] | @tsv' "$FLEET_DISPATCH_DIR/headroom.json")" $'1\t1'
   run cmd_stats
   assert_equal "$(jq -r .could_start <<<"$output")" 1
-  assert_equal "$(jq -c '[.room_live_runs, .room_max_live, .room_live_hand, .room_held_slots, .room_held_load, .room_total_live]' <<<"$output")" '[0,25,0,0,0,0]'
+  assert_equal "$(jq -c '[.room_live_runs, .room_max_live, .room_live_hand, .room_held_slots, .room_held_load, .room_total_live, .room_load_at_hold]' <<<"$output")" '[0,25,0,0,0,0,null]'
   touch -d '-46 minutes' "$FLEET_DISPATCH_DIR/headroom.json"
   run cmd_stats
   assert_equal "$(jq -c '[.could_start, .room_max_live]' <<<"$output")" '[null,null]'
