@@ -2012,10 +2012,12 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
 
 @test "headroom counts what could start now against each limit" {
   two_items
-  export DISPATCH_PER_PASS=1 DISPATCH_TARGET_AWAY=6
+  export DISPATCH_PER_PASS=1 DISPATCH_TARGET_AWAY=6 DISPATCH_STARVED_MIN=45
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_success
   assert_equal "$(jq -r '[.could_start, .per_pass_limited, .runnable, .slots_free, .held] | @tsv' <<<"$output")" $'2\ttrue\t2\t6\t'
+  # The dispatch step's bound in the pipeline snapshot; the hold's start is read live from `stopped`, never here
+  assert_equal "$(jq -c '[.starved_min, has("held_since")]' <<<"$output")" '[45,false]'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
   assert_output --partial 'could start now: 2 of 2 runnable (a pass starts up to 1, level mid)'
   assert_not_called 'wt new'
@@ -3095,7 +3097,7 @@ picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | 
   assert_success
 }
 
-@test "stopped: a finding names its items without their pools, a long reason is cut at a clause, --json carries the line" {
+@test "stopped: a finding names its items without their pools, a long reason is cut at a clause, --json carries the line and the whole reason" {
   hold_for 90 'finding firing: dbs-7-boss (starved pool:other), house-sleep-dinner (starved pool:other), 5 more, every queue item waits'
   run cmd_stopped
   assert_failure
@@ -3107,6 +3109,10 @@ picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | 
   assert_output --partial 'Dispatch stopped 2d2h: no account has room; bnb is the closest, 98% of its week used'
   run cmd_stopped --json
   jq -e '.runner == "fleet-dispatch" and (.line | startswith("Dispatch stopped 2d2h")) and (.since | type == "number")' <<<"$output"
+  # NEGATIVE CONTROL for the cut: the line is cut to 160, why is the whole reason, past the cut (ar-4985)
+  run jq -r '.why, .clears' <<<"$output"
+  assert_line 'no account has room; bnb is the closest, 98% of its week used, inside the last 15% kept for the human, and a great many more words that will not fit'
+  assert_line 'Clears when an account is back under its pace'
 }
 
 @test "stopped: the human's agent-hold reads as held with its own reason and how to release it" {

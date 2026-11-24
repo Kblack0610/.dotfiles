@@ -4528,6 +4528,7 @@ second line of the brief
   assert_output "h,head,r1,req,tail,u1"
   run "$AQ" admission --json
   assert_equal "$(jq -c '[.held_7d, .returned_7d]' <<<"$output")" '[1,2]'
+  assert_equal "$(jq -c '[.day.held, .day.why.cap, .day.why.returned]' <<<"$output")" '[1,1,null]'
   run jq -r 'select(.why == "returned") | .slug' "$AGENT_QUEUE_DIR/admission.jsonl"
   assert_output "b
 a"
@@ -4792,6 +4793,10 @@ a"
   assert_equal "$(jq .held_7d <<<"$output")" 1
   run jq -r .slug "$AGENT_QUEUE_DIR/admission.jsonl"
   assert_output "$(printf 'held\nheld')"
+  # day is the last 24h of the same count: a hold two days old is in held_7d and not in day (ar-4985)
+  printf '{"at":"%s","project":"game","slug":"old2","why":"cap"}\n' "$(date -u -d '2 days ago' +%Y-%m-%dT%H:%M:%SZ)" >> "$AGENT_QUEUE_DIR/admission.jsonl"
+  run "$AQ" admission --json
+  assert_equal "$(jq -c '[.held_7d, .day.held, .day.why]' <<<"$output")" '[2,1,{"cap":1}]'
 }
 
 @test "at the cap, an add of a slug already queued says so, not that admission held it" {
