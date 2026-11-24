@@ -23,7 +23,7 @@ Why: nine scales grew apart, so "high" meant a page on one, a default on another
 
 | Scale | Where | Levels | Maps to the four | Set by | Reader and effect |
 | --- | --- | --- | --- | --- | --- |
-| Queue item priority | `priority:` in an `agent-queue` item (`~/.config/agentctl/QUEUE.md`) | urgent, high, normal, low; default high for the human's add by hand | identical | `agent-queue add --priority`, `bump`; a session names its own; dispatch's promote takes the row's (an untagged row gives normal) | `agent-queue` order (`ORDER` in `.local/bin/agent-queue`): red, urgent, sprint, project `#prio`, then high, normal, low; urgent runs now past the cap and the pace; urgent and high start at add, normal and low wait for a dispatch pass |
+| Queue item priority | `priority:` in an `agent-queue` item (`~/.config/agentctl/QUEUE.md`) | urgent, high, normal, low; default high for the human's add by hand | identical | `agent-queue add --priority`, `bump`; a session names its own; dispatch's promote takes the row's (an untagged row gives normal) | `agent-queue` order (`ORDER` in `.local/bin/agent-queue`): red, urgent, sprint, then high, normal, low; urgent runs now past the cap and the pace; urgent and high start at add, normal and low wait for a dispatch pass |
 | Board row tag | `#urgent`, `#high`, `#normal` or `#low` on a row, exactly one (`notes-cli` README, "Row format") | urgent, high, normal, low; untagged is untriaged and ranks as normal | identical | the writer of the row; `agentctl-inbox-triage --backlog --priority` tags the rest by the rubric `.config/inbox-triage/rules/priority.md`, and `--retag <word>` re-judges the open rows carrying one word (a started row is never asked: its tag ranks the live item) | `notes-cli/src/rank.rs`: the one order rows are worked in, after a row due soon and before `#requested` |
 | Retired row words | `#medium`, `#p0`..`#p3` | none | none | nobody: every `ptask` edit refuses to write one | no reader: a row carrying one ranks as untagged (`RETIRED_PRIORITIES` in `projects.rs`), and `notes doctor --projects` names it |
 | Epic row | the same row tag on an epic row | as the board row | as the board row | as the board row | as the board row; no separate epic field exists |
@@ -63,6 +63,10 @@ DRAFT. The rows are proposed from the watches and routes that exist today, keyed
 | save | player data lost or corrupted on update | a save migration blocking a release | none |
 | netcode | the dedicated server down during a live playtest | a sync bug blocking a playtest date | none |
 | gameplay, ui, input, audio, look, onboarding, perf | never | blocks a focus-project epic or a playtest date | everything else |
+| dispatch | nothing starts on any lane, or a landing merges a red head or loses work | a fault that happens now or recurs and starts the wrong item, strands an item, a worktree or a PR, or holds a landing | a runner conf tidy-up; a queue label nobody acts on |
+| sessions | every session stuck (one stuck session is the sessions plane row below) | a session read in the wrong state, a false nudge or page, or an ask or answer lost | wind-down wording |
+| views | never | the hub, agent-web, waybar or the wall shows a wrong state or number the human acts on | layout, colour or wording |
+| notes | a board, note or memory write lost or corrupted | a row or tag dropped or filed to the wrong board, or a count the board, pace or forecast reads that is wrong | stale skill or rule wording; a missing doctor check |
 
 Fleet planes, by the same four words:
 
@@ -72,9 +76,10 @@ Fleet planes, by the same four words:
 | sessions and shepherd | a session holding a prod fix is stuck | a session another is waiting on is stuck | a session closing its own housekeeping |
 | pages | prod down, overnight tests red, the workstation at 3x its cores over 5 minutes (`fleet-thermal`) | only the human can unblock it and waiting costs within the hour | recoveries and all-clears |
 | asks | a human-stop ask on prod, money, data or secrets | a fleet-level rule change | a self-level choice the judge answers |
-| runtime (dispatch, queue, sessions, boards and notes, telemetry, CI gates) | every session stuck, or work lost now | a fault that happens now or recurs and gives a wrong state, a false page or nudge, or lost or stuck work (the human's ask 2026-11-24: runtime stability first; it ends when the human says so) | a wrong label nobody acts on; upkeep |
 
-A fault or a feature with a named benefit is normal at least, under a "to standard" epic too; only the faults these tables list as low stay low (on 2026-11-24, 579 fix and 609 feat rows sat at low, filed so by their sessions).
+The dispatch, sessions, views and notes rows are agent-runtime's own systems (its `systems` in `project-map.json`). Their high cell, and a fault in the runtime's own telemetry or CI gates that recurs or gives a wrong state, a false page or lost work, hold until the human ends their ask of 2026-11-24, runtime stability first (its switch was agent-runtime's `#prio/high`, retired in ar-5207); then such a fault is normal. Its telemetry, ci and tests otherwise take the base rows above.
+
+A fault or a feature with a named benefit is normal at least, under a "to standard" epic too; only the faults these tables list as low stay low (on 2026-11-24, 579 fix and 609 feat rows sat at low, filed so by their sessions). `project-stage-check --file` files its gap rows untagged for that rubric to judge, no longer `#low` by origin.
 
 ## Where the scales fall short today
 
