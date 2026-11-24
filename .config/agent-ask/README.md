@@ -56,8 +56,8 @@ On 2026-11-19, 25 of 44 open asks needed no human. Six closers handle those case
 - An ask whose question says today or tonight (also this morning, afternoon or evening) is cancelled by `expire` when the day it was posted on is over and at least `DATED_HOURS` (park.conf, 12) have passed since it was posted. The closer skips an ask a queue item waits on.
 - An audit nobody reviewed within `AUDIT_HOURS` (park.conf, 24) is cancelled by `expire`. It counts as silence, the same as an unanswered audit did before.
 - `expire` parks an ask older than `IDLE_DAYS` (park.conf, 3) when no live session waits on it, no queue item holds it, it has no resume command of its own, and it is not a gh-login ask. A parked audit waits out its park too. The park runs for the ask's PARK_DAYS and writes `parked_by: idle`. If the ask comes back from that park still idle, it is cancelled. A park or unpark by hand clears the mark.
-- The judge sees the holds the human set and the older pending asks. A hold counts as the human's only when it was set with `agent-hold set <name> --by human`; with no `--by`, the window name is recorded. When its `settled_by` names `hold:<name>` and that hold is still set, the ask is answered `answered_by: hold`, with the hold quoted in `answer_note`. With options, the judge must name the option the hold picks: an empty pick is never the recommendation (a hold can forbid it), so the ask stays pending for the human. When `settled_by` names `ask:<id>` for an older pending question, this ask's sessions and reopen lines move to that ask, and this ask is cancelled `joined <id>`. At `post` the asker gets that id back, the same way a shared blocker works, and a `post --wait` already waiting follows the join. A human answer given after a hold answer stands beside it, as it does after a judge answer. None of this applies to an approval, an audit, an ask a queue item holds, an ask with a resume command of its own, or, for a join, an ask with no session or with a `blocker:` key. When the queue's holds cannot be read, nothing closes.
-- `assume-due` runs `expire` on every pass. When the human sets a hold that was not there on the last pass, it also starts one detached `sweep --all`, so asks posted before the hold are judged against it. The hold names it last saw are in `~/.local/state/agent-ask/holds-seen`.
+- The judge sees the older pending asks, never the holds: a hold the human set narrows by `agent-hold grant` (rows, epics, plans or sessions), which the queue's gate reads, not by its reason text. When `settled_by` names `ask:<id>` for an older pending question, this ask's sessions and reopen lines move to that ask, and this ask is cancelled `joined <id>`. At `post` the asker gets that id back, the same way a shared blocker works, and a `post --wait` already waiting follows the join. None of this applies to an approval, an audit, an ask a queue item holds, an ask with a resume command of its own, or, for a join, an ask with no session or with a `blocker:` key. When the queue's holds cannot be read, nothing closes.
+- `assume-due` runs `expire` on every pass.
 
 ## A gh-login ask is checked against the live login
 
@@ -96,7 +96,7 @@ agent-ask delivery-seen <id>                 the human read a failed delivery's 
 agent-ask wait-delivered <id>                block (inotify) until the delivery leaves queued and delivering, then print it; AGENT_ASK_WAIT_TIMEOUT (120 s) is the guard
 agent-ask judge <id>                         the answer judge's call on one pending ask, replacing any older verdict (post runs it in the foreground); an answered ask is refused
 agent-ask sweep [project|--all]              judge every pending ask again and answer each live one as the judge through `answer`'s delivery, or arm it when its type has a wait; prints `<project> <id> answered <x>|armed <x>|yours <rule> <reason>` per ask. Run after a policy or DELAY_RULES change
-agent-ask assume-due                         answer every armed ask whose wait has passed, after reading its verdict again, judge once more one pending ask whose judge call timed out at post, run `expire`, and sweep once on a new human hold; `fleet-state.service` runs it each pass
+agent-ask assume-due                         answer every armed ask whose wait has passed, after reading its verdict again, judge once more one pending ask whose judge call timed out at post, and run `expire`; `fleet-state.service` runs it each pass
 agent-ask expire [--dry-run]                 cancel same-row duplicates of a human answer, past today/tonight asks and stale audits, park then cancel idle asks ("Asks that settle themselves"); prints `<project> <id> cancel|park <why>` per ask it acts on
 agent-ask cancel <id>                        status->cancelled
 agent-ask park <id> [--until <date>]         keep a pending ask off the boards until <date> (any `date -d` string); with no --until, PARK_DAYS of park.conf by the held item's priority. Drops a judge arm
@@ -125,8 +125,8 @@ recommend: oauth          # optional, one of options
 recommend_why: SSO is on the roadmap and oauth gets it free     # optional, the card's because: line
 answer:                   # filled by `answer`
 answered_at:
-answered_by:              # human | judge | shepherd | agent | hold
-answer_note:              # how it was answered: the session's words, or the hold that settled it
+answered_by:              # human | judge | shepherd | agent (hold on a record written before 2026-11-24)
+answer_note:              # how it was answered: the session's words (or, on an older record, the hold that settled it)
 judge:                    # the answer judge: human | take-recommend | answer:<text> | error
 judge_rule:               # what decided it: the criterion that sent it to the human, else its type
 judge_type:               # the kind of question, from the policy's list, on every model verdict
@@ -139,7 +139,7 @@ judge_level_evidence:     # the quote behind it, or the floor name the ask carri
 judge_level_raised:       # true when judge_level is above what the judge rated
 judge_human_only:         # true when external is met or reversible is not: a human-stop rule, never a level; absent otherwise
 judge_human_only_evidence: # the quote behind it
-judge_settled_by:         # hold:<name> or ask:<id> when the judge says one settles it; judge_settled_answer, the option
+judge_settled_by:         # ask:<id> when the judge says an older ask asks the same
 judged_at:
 judge_override:           # on a live answer: kept (the human named the judge's option), the other option they named, or none (silence)
 judge_override_note:      # that message

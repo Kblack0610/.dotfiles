@@ -266,6 +266,23 @@ as_session() { mkdir -p "$SANDBOX/$1" && cd "$SANDBOX/$1"; }
   assert_failure 1
 }
 
+@test "check --for passes on a granted row, epic or plan and names each; ungranted ids and --no-caller stay held" {
+  "$HOLD" set critical --kind resource --by human "lockdown"
+  "$HOLD" grant critical hc-1 ar-5235 plan-x
+  run "$HOLD" check critical --no-caller --for hc-2 plan-x hc-1
+  assert_success
+  assert_output --partial 'granted: critical for hc-1 plan-x'
+  run "$HOLD" check critical --no-caller --for hc-2 ar-9
+  assert_failure 1
+  # --no-caller: a granted session id is not asked about, only the ids named.
+  as_session agent-1
+  "$HOLD" grant critical agent-1
+  run "$HOLD" check critical --no-caller --for hc-2
+  assert_failure 1
+  run "$HOLD" check critical
+  assert_success
+}
+
 # A tmux pane, faked: the stub answers display-message only when asked of $STUB_PANE, so a
 # caller that asks without -t "$TMUX_PANE" gets no name.
 in_pane() { # <session> <window index> <windows in the session>

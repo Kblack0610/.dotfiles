@@ -18,16 +18,18 @@
 #                                   a session by its Claude session id (stable), or its fleet-sessions
 #                                   target (hub/dotfiles:3, or dotfiles:3) until windows renumber (a
 #                                   bare tmux session name matches only a one-window session); or a
-#                                   board row, epic or plan id (hc-952, ar-4938, a plan's slug). check
-#                                   matches only session names; no gate reads a row, epic or plan
-#                                   grant yet (ar-5235 phase 2), list and the preflight show it. A
-#                                   human's narrowing of its own hold is a grant, not reason text
+#                                   board row, epic or plan id (hc-952, ar-4938, a plan's slug), which
+#                                   check --for reads: agent-queue lets a granted #hold/ row and its
+#                                   item start. A human's narrowing of its own hold is a grant, not
+#                                   reason text
 #   agent-hold lower <resource> <pid>...   CPUWeight=1 on each pid's tmux pane scope or
 #                                   agentctl unit, recorded on the hold; release restores it
 #   agent-hold release <resource>
-#   agent-hold check <resource> [--no-caller]   exit 1 (and print the hold) while held, 0
-#                                   when free or when the caller is granted or holds the claim;
-#                                   --no-caller asks as no session, so neither counts
+#   agent-hold check <resource> [--no-caller] [--for <id>...]   exit 1 (and print the hold) while
+#                                   held, 0 when free or when the caller is granted or holds the
+#                                   claim; --no-caller asks as no session, so neither counts; --for
+#                                   names the work asked about (its row, epic and plan ids), and a
+#                                   grant naming any passes, every granted one named on stderr
 #   agent-hold list [--kind k]      resource<TAB>since<TAB>by<TAB>reason, one per hold; --kind
 #                                   load|resource|claim keeps that kind (a hold with no kind line
 #                                   reads as the kind set would give it)
@@ -389,27 +391,36 @@ cmd_release() {
 }
 
 cmd_check() {
-  local resource="${1:-}"
+  local resource="${1:-}" nocaller="" work=""
   need_resource "$resource"
-  case "${2:-}" in
-    ''|--no-caller) ;;
-    *) echo "agent-hold check: unknown argument $2" >&2; exit 2 ;;
-  esac
+  shift || true
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --no-caller) nocaller=1; shift ;;
+      --for) shift; while [ $# -gt 0 ] && [[ "$1" != --* ]]; do work+="$1"$'\n'; shift; done ;;
+      *) echo "agent-hold check: unknown argument $1" >&2; exit 2 ;;
+    esac
+  done
   local f="$HOLD_ROOT/$resource"
   [ -f "$f" ] || return 0
   # --no-caller asks for a session that does not exist yet (agent-queue's hold:<resource>), so
   # no grant or claim of the asker's counts.
   local me=""
-  [ "${2:-}" = --no-caller ] || me="$(callers)"
+  [ -n "$nocaller" ] || me="$(callers)"
   if [ "$(field "$f" kind)" = claim ] && owns_claim "$f" "$me"; then
     echo "claimed: $resource by $(field "$f" by)" >&2
     return 0
   fi
-  local name names
+  # A grant names a session (matched against the caller's names) or a row, epic or plan id
+  # (matched against --for, the work asked about). Every --for name granted is said, so one call
+  # can answer a batch of rows (agent-queue gate --all).
+  local name names hit=""
   IFS=, read -ra names <<<"$(field "$f" granted)"
   for name in "${names[@]}"; do
     in_names "$name" "$me" && { echo "granted: $resource for $name" >&2; return 0; }
+    in_names "$name" "$work" && hit+="${hit:+ }$name"
   done
+  [ -z "$hit" ] || { echo "granted: $resource for $hit" >&2; return 0; }
   echo "held: $resource since $(field "$f" since) by $(field "$f" by): $(field "$f" reason)"
   return 1
 }
@@ -475,7 +486,7 @@ cmd_show() {
 
 cmd_classes() { printf '%s\n' "$DESK_CLASSES"; }
 
-usage() { sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; }
 
 verb="${1:-}"; shift || true
 case "$verb" in

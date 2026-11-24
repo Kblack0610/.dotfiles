@@ -51,7 +51,8 @@
 #   gate [--json] (--all | <tag>...)   each board gate tag clear, pending (why) or dead; exit 3 unless all clear.
 #       Board forms: after/<row-id> at/[<YYYY-MM-DD>/]<HHMM> rbw/<folder>/<name> ask/<id>[/<option>...] pr/<owner>/<repo>/<N>
 #       hold/<resource> nightly/<repo>[/<YYYY-MM-DD>]; any other tag is "none". --all: every gate tag on the board's open rows
-#       (fleet-dispatch, once a pass)
+#       (fleet-dispatch, once a pass), and a clear line naming the row (`row` in --json) for each row a held hold/ grants
+#       by its row, epic or plan id (agent-hold grant), which the item it is promoted to passes the same way (grant_names)
 #   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID; that own claim starts a queued item)
 #   mine [--session s | --sid id] [--newest]  the slug of the running, waiting or review item this session records;
 #       exit 2 when more than one does, unless --newest: a running one before the rest, then the one whose file changed last
@@ -531,9 +532,32 @@ make_room() {
 # backlog tier (retired, ar-4626) was never pulled again, since a pass skipped that tier and a pass's fill stops at the cap
 # (2026-11-18: six plan phases sat behind closed rows, chain-after-stuck). add_plan writes the path
 # through realpath, so it is absolute; the test files its brief through add_plan itself.
-plan_phase_task() {
-  local re='(^|[[:space:]])Phases? [0-9]+( and [0-9]+)* of the plan (/[^:]+\.md):'
-  [[ "$1" =~ $re ]] && [ -f "${BASH_REMATCH[3]}" ]
+PHASE_BRIEF_RE='(^|[[:space:]])Phases? [0-9]+( and [0-9]+)* of the plan (/[^:]+\.md):'
+plan_phase_task() { [[ "$1" =~ $PHASE_BRIEF_RE ]] && [ -f "${BASH_REMATCH[3]}" ]; }
+
+# grant_names <id> <text> [<plan>] -> the names an agent-hold grant can give this work, space-separated:
+# its row id (or slug), each epic its text names (#of/<id>), and the slug of its plan: <plan> (an item's
+# plan: line), else the plan its brief names (a phase brief, PHASE_BRIEF_RE, or a plan row's,
+# plan_row_plan). A hold:/#hold/ gate clears for a granted name while the hold stays (agent-hold check
+# --for), so a human's narrowing lets the rows of a plan they approved run (ar-5235).
+grant_names() {
+  local out="$1" p="${3-}" e
+  for e in $(grep -oE '(^|[[:space:]])#of/[A-Za-z0-9_.-]+' <<<"$2" | sed 's/.*#of\///'); do
+    [[ " $out " == *" $e "* ]] || out+=" $e"
+  done
+  if [ -z "$p" ]; then
+    if [[ "$2" =~ $PHASE_BRIEF_RE ]]; then p="${BASH_REMATCH[3]}"; else p="$(plan_row_plan "$2")"; fi
+  fi
+  [ -z "$p" ] || out+=" $(basename "$p" .md)"
+  printf '%s' "$out"
+}
+
+# item_grant_names <item file> -> grant_names of a queue item: its row's id (else its slug), its title
+# and brief, its plan: line.
+item_grant_names() {
+  local f="$1" row
+  row="$(item_row "$f")"
+  grant_names "${row:+${row#*:}}$( [ -n "$row" ] || fm_get "$f" slug)" "$(fm_get "$f" title)"$'\n'"$(fm_body "$f")" "$(fm_get "$f" plan)"
 }
 
 # admission_since -> the UTC start of the window the log and the held count keep.
@@ -720,7 +744,7 @@ add_stacks() {
 # work in a dead hold; <item file> names it for the stack check alone.
 # gate: aq-hold-for
 hold_for() {
-  local after="$1" tags="$2" dep="${4:-${3-}}" tag now stamp nday MEMO_V AST s live=""
+  local after="$1" tags="$2" dep="${4:-${3-}}" tag now stamp nday MEMO_V AST s live="" gnames
   local -a afters
   HOLD="" HOLD_DEAD="" HOLD_STACK=""
   # Every slug in after: must have closed ok. The hold names the slugs still live; a dead one wins,
@@ -776,6 +800,13 @@ hold_for() {
         [ -z "$MEMO_V" ] || { HOLD="$tag ($MEMO_V)"; return; } ;;
       hold:?*)
         memo "$tag" hold_pending "${tag#hold:}"
+        # Held, an item still passes on a grant to its row, epic or plan (item_grant_names): the
+        # hold stands for the rest, so no desk turn is taken either.
+        if [ -n "$MEMO_V" ] && [ -n "${3:-${4-}}" ]; then
+          gnames="$(item_grant_names "${3:-${4-}}")"
+          memo "$tag@$gnames" hold_pending "${tag#hold:}" "$gnames"
+          [ -n "$MEMO_V" ] || continue
+        fi
         [ -z "$MEMO_V" ] || { HOLD="$tag ($MEMO_V)"; return; }
         [ -n "${DESK_SCAN-}" ] || desk_wait "${tag#hold:}" "$tags" "${3-}"
         [ -z "$HOLD" ] || return 0 ;;
@@ -937,11 +968,12 @@ rows_state_read() {
 # also reads the open board for its tags. --all answers every gate tag on the board's open rows, and
 # only those: fleet-dispatch's one call a pass (a board it cannot read fails it). --json: one {tag,
 # state, why, queue} line per tag, queue the hold tags it means (gate_queue_tag), which fleet-dispatch
-# promote puts on the row's item. Exit 0 when every gate is clear, else 3.
+# promote puts on the row's item. With --all, a held hold/ tag also gets a clear line with `row` for each
+# open row carrying it that the hold grants (gate_grants). Exit 0 when every gate is clear, else 3.
 cmd_gate() {
   local usage="usage: agent-queue gate [--json] (--all | <tag>...)"
   local json="" all="" board="" unread="" t q st why id r via hop rc=0 GQ HOLD HOLD_DEAD stack STK STK_SLUG
-  local -a tags=() ids=()
+  local -a tags=() ids=() held=()
   local -A RS=() NOPHASE=() ROW_LIVE=()
   local ROW_LIVE_READ=''
   while [ $# -gt 0 ]; do
@@ -1017,13 +1049,56 @@ cmd_gate() {
       st=none
     fi
     case "$st" in pending | dead) rc=3 ;; esac
-    if [ -n "$json" ]; then
-      jq -cn --arg tag "$t" --arg state "$st" --arg why "$why" --arg queue "$q" --arg stack "$stack" '{tag: $tag, state: $state, why: $why, queue: $queue, stack: $stack}'
-    else
-      printf '%-8s %s%s\n' "$st" "$t" "${why:+: $why}"
-    fi
+    [[ "$t" != hold/?* || "$st" != pending ]] || held+=("$t")
+    gate_line "$t" "$st" "$why" "$q" "$stack" ""
   done
+  [ -z "$all" ] || [ "${#held[@]}" -eq 0 ] || gate_grants "$board" "${held[@]}"
   return "$rc"
+}
+
+# gate_line <tag> <state> <why> <queue> <stack> <row> -- one line of cmd_gate's answer (its locals: json).
+gate_line() {
+  if [ -n "$json" ]; then
+    jq -cn --arg tag "$1" --arg state "$2" --arg why "$3" --arg queue "$4" --arg stack "$5" --arg row "$6" \
+      '{tag: $tag, state: $state, why: $why, queue: $queue, stack: $stack} + (if $row == "" then {} else {row: $row} end)'
+  else
+    printf '%-8s %s%s%s\n' "$2" "$1" "${6:+ (row $6)}" "${3:+: $3}"
+  fi
+}
+
+# gate_grants <board json> <hold tag>... -- for each held #hold/<res> tag, a clear line naming the row
+# for every open row carrying it that the hold grants by its row, epic or plan (grant_names): one
+# agent-hold check --for a tag with every such row's names, its answer mapped back to the rows. The
+# tag's own line stays pending, so every other row carrying it still waits; fleet-dispatch reads the
+# row's line first (gate_wait). Why: a narrowing the human made was reason text no gate read, and the
+# rows of a plan they approved sat behind #hold/critical (2026-11-24, ar-5235).
+gate_grants() {
+  local board="$1" t id rt text names all hit q n GQ
+  shift
+  local -A NAMES=()
+  for t in "$@"; do
+    NAMES=() all=""
+    while IFS=$'\x1f' read -r id rt text; do
+      [ -n "$id" ] || continue
+      names="$(grant_names "$id" "$text $rt")"
+      NAMES[$id]="$names" all+=" $names"
+    done < <(jq -r --arg t "$t" "$ROW_TAGS_JQ"'.rows[]? | select((.state == "open" or .state == "doing") and .id != null)
+      | select(row_tags | index($t)) | [row_tags[] | select(startswith("of/")) | "#" + .] as $of
+      | "\(.id)\u001f\($of | join(" "))\u001f\([.text // "", (.details // [])[]] | join(" ") | gsub("[\n\u001f]"; " "))"' <<<"$board")
+    [ -n "$all" ] || continue
+    # shellcheck disable=SC2086 # a word list: one --for name each
+    hit="$("$AQ_HOLD" check "${t#hold/}" --no-caller --for $all 2>&1 >/dev/null)" || continue
+    [[ "$hit" == "granted: "*" for "* ]] || continue
+    hit=" ${hit#* for } "
+    gate_queue_tag "$t"; q="$GQ"
+    for id in "${!NAMES[@]}"; do
+      for n in ${NAMES[$id]}; do
+        [[ "$hit" == *" $n "* ]] || continue
+        gate_line "$t" clear "granted $n by the ${t#hold/} hold" "$q" "" "$id"
+        break
+      done
+    done
+  done
 }
 
 # desk_class <tags> -> the item's desk:<class>, other when it names none.
@@ -1093,7 +1168,8 @@ desk_wait() {
 # hold_resource <name> -- an agent-hold resource name: one path segment of letters, digits, . _ -.
 hold_resource() { [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]] && [ "$1" != . ] && [ "$1" != .. ]; }
 
-# hold_pending <resource> -> who holds that agent-hold resource and why, or nothing once it is free.
+# hold_pending <resource> [<names>] -> who holds that agent-hold resource and why, or nothing once it is
+# free or grants one of <names> (grant_names: the work's row, epic and plan ids).
 # Asked as no session (check --no-caller): the session the item will start does not exist yet,
 # so the asker's own claim or grant is not one it would have. A resource a session needs (the
 # mac-mini desktop, claimed by another) is waited on here instead of by a session polling or
@@ -1101,7 +1177,8 @@ hold_resource() { [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]] && [ "$1" != . ] && [ "$1" != 
 # no queue item held it, so there was nothing to put it after:. A failing agent-hold holds.
 hold_pending() {
   local out rc
-  out="$("$AQ_HOLD" check "$1" --no-caller 2>/dev/null)"; rc=$?
+  # shellcheck disable=SC2086 # <names> is a word list: one --for name each
+  out="$("$AQ_HOLD" check "$1" --no-caller ${2:+--for $2} 2>/dev/null)"; rc=$?
   [ "$rc" -ne 0 ] || return 0
   [ "$rc" -eq 1 ] && [ -n "$out" ] || { echo "agent-hold check failed, exit $rc"; return; }
   printf '%s\n' "${out#held: "$1" }"
