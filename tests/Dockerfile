@@ -167,8 +167,8 @@ RUN arch="$(dpkg --print-architecture)" \
 # phone launcher switches its running editor to today. The release tarball, not trixie's 0.10.4:
 # 0.10's vim.system closes stdout at process exit before reading it (neovim #30846, fixed in 0.11),
 # so one of three concurrent `notes` calls came back empty now and then (ar-5107). Pinned to the
-# version the workstation runs, by version and each tarball's sha256 (bump all three).
-# Last of the downloads, so a bump rebuilds no other layer.
+# version the workstation runs, by version and each tarball's sha256 (bump all three, here: like
+# BUN_VERSION it is not a tests/docker.sh build arg, since a bump needs new sha256s anyway).
 ARG NVIM_VERSION=0.12.6
 RUN case "$(dpkg --print-architecture)" in \
       amd64) t=nvim-linux-x86_64 sha=474430d53e6264f6d6dd18db42d6dc9df3a1b56ca9e88a325bbf860e1a811d87 ;; \
