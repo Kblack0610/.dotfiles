@@ -1485,7 +1485,7 @@ bottleneck_check() {
   [ $((t - ${last:-0})) -le $((BENCH_GAP_CAP_MIN * 60)) ] || { say "bottleneck --check stalled: the newest session sample in $PROGRESS is older than $BENCH_GAP_CAP_MIN minutes"; return 2; }
   out=$(bottleneck_data "$t" sessions | jq -r --argjson max "$max" "$JQ_LIB"'
     .rows[] | select(.key == "stalled") | select(.h > $max)
-    | "\(.h | round1) session-hours stalled over the last '"$BENCH_WINDOW_H"'h, past \($max): \(.detail)"') || { say "bottleneck --check stalled: its source cannot be read"; return 2; }
+    | "\(.h * 100 | round / 100) session-hours stalled over the last '"$BENCH_WINDOW_H"'h, past \($max): \(.detail)"') || { say "bottleneck --check stalled: its source cannot be read"; return 2; }
   [ -z "$out" ] || { printf '%s\n' "$out"; return 1; }
 }
 

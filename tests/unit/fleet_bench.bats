@@ -499,7 +499,7 @@ stalled_fixture() {
   printf '%s\n' stalled_session_hours_max=1 > "$KPI_THRESHOLDS"
   BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --check stalled
   assert_failure 1
-  assert_output '1.7 session-hours stalled over the last 24h, past 1: t/a 0.7h, t/b 0.5h, t/c 0.3h'
+  assert_output '1.67 session-hours stalled over the last 24h, past 1: t/a 0.7h, t/b 0.5h, t/c 0.3h'
   # NEGATIVE CONTROL: the same samples inside the bound pass quietly
   printf '%s\n' stalled_session_hours_max=2 > "$KPI_THRESHOLDS"
   BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --check stalled
