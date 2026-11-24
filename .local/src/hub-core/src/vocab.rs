@@ -20,8 +20,8 @@ pub const QUEUE: &[(&str, &str)] = &[
     ),
     ("stalled", "its session is STALLED"),
     ("no session", "running 10m+, and no session works it"),
-    ("PR red, yours", "its fix-ci tries are spent; yours now"),
-    ("PR green, yours", "its land tries are spent; yours now"),
+    ("PR red, escalated", "its fix-ci tries are spent; an agent row (#red #escalate) on its board owns it"),
+    ("PR green, escalated", "its land tries are spent; an agent row (#red #escalate) on its board owns it"),
 ];
 
 /// A job that has not started (`jobs::State::Queued`), the Jobs table's STATE.
