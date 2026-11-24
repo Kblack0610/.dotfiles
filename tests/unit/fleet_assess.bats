@@ -176,6 +176,37 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   assert_output --partial 'CLEAR'
 }
 
+@test "thermal_page: a 5-min load at 3x cores pages urgent with its reason, just under pages low" {
+  run thermal_page 72 24
+  assert_line 'page: urgent'
+  assert_line 'reason: 5-min load 3.0x cores, past the 3x extreme mark'
+  run thermal_page 71.9 24
+  assert_output 'page: low'
+}
+
+@test "--thermal-probe: a HOLD carries its page: level, an OK and dispatch's --watch-probe carry none" {
+  export AGENT_HOLD_DIR="$BATS_TEST_TMPDIR/holds" SENTINEL_STATE="$BATS_TEST_TMPDIR/watch" FLEET_LOADAVG="$BATS_TEST_TMPDIR/loadavg"
+  mkdir -p "$AGENT_HOLD_DIR" "$SENTINEL_STATE"
+  # load1 is the HOLD (FLEET_HOLD_LOAD_X), load5 the extreme mark: nproc differs per runner, so the marks are set relative to it.
+  local n; n="$(nproc)"
+  echo "$(( n * 2 )) $(( n * 4 )) 1.00 1/1 1" > "$FLEET_LOADAVG"
+  run env FLEET_HOLD_LOAD_X=1.75 "$REPO_ROOT/.local/bin/fleet-assess" --thermal-probe
+  assert_failure 1
+  assert_line 'page: urgent'
+  assert_line --partial 'reason: 5-min load 4.0x cores'
+  run env FLEET_HOLD_LOAD_X=1.75 FLEET_EXTREME_LOAD_X=5 "$REPO_ROOT/.local/bin/fleet-assess" --thermal-probe
+  assert_failure 1
+  assert_line 'page: low'
+  refute_output --partial 'reason:'
+  run env FLEET_HOLD_LOAD_X=1.75 "$REPO_ROOT/.local/bin/fleet-assess" --watch-probe
+  assert_failure 1
+  refute_output --partial 'page:'
+  echo "0.00 $(( n * 4 )) 1.00 1/1 1" > "$FLEET_LOADAVG"
+  run env FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 "$REPO_ROOT/.local/bin/fleet-assess" --thermal-probe
+  assert_success
+  refute_output --partial 'page:'
+}
+
 @test "gate_rows: a run says what it is from its own arguments, and only a build reads as one" {
   ps() {
     cat <<'EOF'
