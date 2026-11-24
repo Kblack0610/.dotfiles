@@ -185,6 +185,54 @@ bats_require_minimum_version 1.5.0
   [ -z "$(qitem queued gm-2)" ] || fail "the floor promoted a row nobody requested"
 }
 
+# Plan fleet-product-work-first P4: at 14:03 on 2026-11-23 the queue held 34 Unity items and no trader
+# one, so no floor could start trader work; the project class's min_live now reads the board for its rows.
+@test "run over DISPATCH_LOW_WATER still tops a project class under its min_live up from the board, its project's rows only, counting its items of any class" {
+  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=2
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  row game human 'new map' "- [ ] feat(game): a new map #high $T"
+  row app human 'crash' "- [ ] fix(app): crash on load #high $T"
+  verdict game human 'new map' dispatch S 1 maps
+  verdict app human 'crash' dispatch S 1 crash
+  for s in a1 a2 a3 a4 a5 a6; do agent-queue add --project app --slug "$s" "$s"; done
+  # Negative control: a game class with no minimum reads no board above the low water.
+  class_floors 0 0 0
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  refute_output --partial 'under its min_live'
+  assert_not_called 'judge called'
+  [ -z "$(grep -l 'a new map' "$AGENT_QUEUE_DIR"/queued/*.md 2>/dev/null)" ] || fail "min_live 0 read the board"
+  # A game item of another class (requested) counts toward the game floor, so a minimum of 1 is met.
+  agent-queue add --project game --slug g1 --tags requested "g1"
+  class_floors 0 0 1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  refute_output --partial 'game is 1 under its min_live'
+  [ -z "$(grep -l 'a new map' "$AGENT_QUEUE_DIR"/queued/*.md 2>/dev/null)" ] || fail "the floor read the board with the game minimum met"
+  # Under it: the pass above started g1 in a sandbox session that does not live on, so this pass's
+  # reap fails it and the game class counts 0 of 2. The floor promotes the game row and not the app one.
+  class_floors 0 0 2
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'failed queue item g1'
+  assert_output --partial 'game is 2 under its min_live, topping game rows up from the board'
+  f=$(grep -l 'a new map' "$AGENT_QUEUE_DIR"/queued/*.md 2>/dev/null)
+  [ -n "$f" ] || fail "the project floor did not promote the game row: $(ls "$AGENT_QUEUE_DIR"/*/)"
+  assert_equal "$(qfield "$f" project)" game
+  [ -z "$(grep -l 'crash on load' "$AGENT_QUEUE_DIR"/queued/*.md 2>/dev/null)" ] || fail "the game floor promoted an app row"
+}
+
+@test "share_let_go: a project floor counts as gated, so the share cap lets go only for a requested or cleanup floor" {
+  run -1 share_let_go "project:game gated" 0
+  run share_let_go "project:game gated" 1
+  assert_output 0
+  run share_let_go "requested project:game gated" 0
+  assert_output 1
+  run share_let_go "gated" 1
+  assert_output 0
+}
+
 @test "run with the cleanup class at its min_live does not read the board, so a fresh cleanup row waits" {
   export DISPATCH_CLEANUP_PROJECTS=game DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=1
   class_floors 0 2
