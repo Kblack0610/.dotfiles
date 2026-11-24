@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # projects.sh: the waybar projects chip. The bar is the icon and the count of projects in flight;
-# the hover is one row per project with open work, in flight first, then by stage, and one fold
-# line for the rest. What these pin: the chip prints hub's numbers and computes none; a stalled
+# the hover is a Sprint block when one runs, one row per project in flight (or with a window) with
+# its running work by category under it, and one line naming the rest. What these pin: the chip prints hub's numbers and computes none; a stalled
 # read reads ? in amber, never blank; a name is escaped; hub's errors show amber on the hover.
 
 setup() {
@@ -22,19 +22,23 @@ STUB
   chmod +x "$HUB"
 }
 
-# card <name> <stage> <delivered/committed|-> <open> <running> <waiting> [state] [level]: "-" is
-# no open window; the state defaults to hub's words for a window or none, "none" is no state, "null" level is grey.
+# card <name> <stage> <delivered/committed|-> <open> <running> <waiting> [state] [level] [areas]:
+# "-" is no open window; the state defaults to hub's words for a window (on track) or none (flow,
+# no hue), "none" is no state, "null" level is grey; areas is hub's running_areas JSON.
 card() {
   jq -cn --arg n "$1" --arg s "$2" --arg w "$3" --argjson o "$4" \
-    --argjson r "$5" --argjson q "$6" --arg st "${7:-}" --arg lv "${8:-}" \
+    --argjson r "$5" --argjson q "$6" --arg st "${7:-}" --arg lv "${8:-}" --argjson a "${9:-[]}" \
     '(if $w == "-" then [0, 0] else $w | split("/") | map(tonumber) end) as [$d, $c]
      | {name: $n, stage: $s, progress: {open: $o},
-      state: (if $st == "none" then "" elif $st != "" then $st elif $w == "-" then "no window" else "on track" end),
-      state_level: (if $lv == "null" then null elif $lv != "" then $lv elif $w == "-" then "warn" else "ok" end),
+      state: (if $st == "none" then "" elif $st != "" then $st elif $w == "-" then "flow" else "on track" end),
+      state_level: (if $lv == "null" then null elif $lv != "" then $lv elif $w == "-" then null else "ok" end),
+      window: (if $w == "-" then null else {delivered: $d, committed: $c} end),
       window_says: (if $w == "-" then "no window" else "\($w) due 11-22" end),
       window_share: (if $w == "-" then null else ($d * 100 / $c | floor) end),
-      running: [range($r) | {slug: "x"}], waiting: $q, in_flight: ($r > 0 or $q > 0)}'
+      running: [range($r) | {slug: "x"}], running_areas: $a, waiting: $q, in_flight: ($r > 0 or $q > 0)}'
 }
+
+sp() { printf '%*s' "$1" ''; }
 
 # feed <errors-json> <card...>: hub's answer, cards in hub's order, with the Projects card figures
 # hub-core sends with them (none on a partial read, as widget_doc::figures drops a failed card's).
@@ -50,24 +54,41 @@ feed() {
 text() { jq -r .text <<< "$output"; }
 class() { jq -r .class <<< "$output"; }
 
-@test "in flight first in hub's order, then open work by stage, the rest folded; hub's state in its hue (grey with no level); the state and window columns are as wide as their widest" {
+@test "a row per project in flight in hub's order, its areas under it; a window keeps a row and says its state in its hue; the rest are one line" {
   feed '[]' \
-    "$(card zeta draft 1/10 3 0 0 parked null)" \
-    "$(card web alpha 21/60 5 2 1)" \
-    "$(card done prod - 0 0 0)" \
+    "$(card web alpha 21/60 5 2 1 '' '' '[{"area":"dispatch","n":1},{"area":"no epic","n":1}]')" \
+    "$(card game dev - 9 0 1)" \
     "$(card shop prod 130/250 4 0 0 late bad)" \
-    "$(card game dev - 9 0 1)"
+    "$(card zeta draft 1/10 3 0 0 parked null)" \
+    "$(card done prod - 0 0 0)" \
+    "$(card base dev - 2 0 0 idle warn)" \
+    "$(card ship beta - 2 0 0 late bad)"
   run "$MODULE"
   assert_success
   assert_equal "$(text)" "$ICON 2"
   assert_equal "$(class)" ok
+  local want
+  want="<b>Projects</b>  2 in flight, 7 total
+
+<tt>web   <span color=\"$G\">2 running</span>  <span color=\"$Y\">1 waiting</span>  <span color=\"$G\">on track</span> 21/60 due 11-22
+  dispatch 1, <span color=\"$D\">no epic 1</span>
+game$(sp 13)<span color=\"$Y\">1 waiting</span>
+shop$(sp 24)<span color=\"$R\">late</span> 130/250 due 11-22
+zeta$(sp 24)<span color=\"$D\">parked</span> 1/10 due 11-22
+ship$(sp 24)<span color=\"$R\">late</span> no window
+Not running: done, base</tt>"
+  assert_equal "$(jq -r .tooltip <<< "$output")" "$want"
+  # NEGATIVE CONTROL: a project in flow says no state and no window; only the late one with no
+  # window says it, as the cause.
+  assert_equal "$(grep -o 'no window' <<< "$output" | wc -l)" 1
+  refute_output --partial "flow"
+}
+
+@test "past four systems the areas line says +N more, and no epic stays last" {
+  feed '[]' "$(card web alpha - 5 9 0 '' '' '[{"area":"a","n":3},{"area":"b","n":2},{"area":"c","n":1},{"area":"d","n":1},{"area":"e","n":1},{"area":"no epic","n":1}]')"
+  run "$MODULE"
   run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
-  assert_line --index 0 "<b>Projects</b>  2 in flight, 5 total"
-  assert_line --index 1 "<tt>web   <span color=\"$G\">on track </span>  alpha  [###.......]  21/60 due 11-22    <span color=\"$G\">2 running</span>, <span color=\"$Y\">1 waiting</span>"
-  assert_line --index 2 "game  <span color=\"$Y\">no window</span>  dev                  no window          <span color=\"$Y\">1 waiting</span>"
-  assert_line --index 3 "shop  <span color=\"$R\">late     </span>  prod   [#####.....]  130/250 due 11-22"
-  assert_line --index 4 "zeta  <span color=\"$D\">parked   </span>  draft  [#.........]  1/10 due 11-22"
-  assert_line --index 5 "+1 more with nothing open</tt>"
+  assert_line "  a 3, b 2, c 1, d 1, +1 more, <span color=\"$D\">no epic 1</span></tt>"
 }
 
 @test "nothing in flight: the icon alone, no count" {
@@ -80,7 +101,7 @@ class() { jq -r .class <<< "$output"; }
   feed '[]' "$(card 'a<b&c' alpha - 1 1 0)"
   run "$MODULE"
   run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
-  assert_output --partial "<tt>a&lt;b&amp;c  <span color=\"$Y\">no window</span>  alpha"
+  assert_output --partial "<tt>a&lt;b&amp;c  <span color=\"$G\">1 running</span>"
 }
 
 # Negative control for a chip that recounts: the numbers are hub-core's figures as sent, so
@@ -104,9 +125,9 @@ class() { jq -r .class <<< "$output"; }
   assert_equal "$(text)" "$ICON <span color='$Y'>?</span>  <span color='#123456'>S:</span><span color='$Y'>?</span>"
   run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
   assert_line --index 0 "<b>Projects</b>  - in flight, - total"
-  assert_line --index 2 "  shop v1 4/15"
+  assert_line "  shop  v1 4/15  <span color=\"$D\">-</span>"
   assert_output --partial "<span color=\"$Y\">error: agent-queue list: gone</span>"
-  assert_output --partial "shop  <span color=\"$D\">-</span>  prod"
+  assert_output --partial "shop  <span color=\"$G\">1 running</span>  <span color=\"$D\">-</span> 13/25 due 11-22"
 }
 
 @test "hub failing reads ? in amber with its error, never blank" {
@@ -138,8 +159,8 @@ class() { jq -r .class <<< "$output"; }
   run "$MODULE"
   assert_equal "$(text)" "$ICON 1  ${S}v0.5.4 4/15"
   run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
-  assert_line --index 1 "running sprints:"
-  assert_line --index 2 "  game v0.5.4 4/15 due 11-22, locked 18:05"
+  assert_line "<b>Sprint</b>"
+  assert_line "  game  v0.5.4 4/15 due 11-22, locked 18:05  <span color=\"$G\">on track</span>"
   feed '[]' "$(card game beta 4/15 9 1 0 'at risk' warn | sprint v0.5.4)"
   run "$MODULE"
   assert_equal "$(text)" "$ICON 1  ${S}<span color='$Y'>v0.5.4 4/15</span>"
@@ -154,5 +175,5 @@ class() { jq -r .class <<< "$output"; }
   feed '[]' "$(card game beta 4/15 9 1 0)"
   run "$MODULE"
   assert_equal "$(text)" "$ICON 1"
-  refute_output --partial "running sprints"
+  refute_output --partial "Sprint"
 }

@@ -7757,15 +7757,18 @@ settle() {
     *) set -- "$1" "$(judge_failed); $2" ;;
   esac
   say "$2"
-  # A kick is no pass: its stops are said, never published as fleet-dispatch's outcome, which would end or
-  # set the hold and the liveness proof of the pass that reads the whole fleet (KICK, cmd_kick).
-  [ "$DRY" = 0 ] && [ "${KICK:-0}" = 0 ] || return 0
+  [ "$DRY" = 0 ] || return 0
   # A pass that started an item past a closed gate (start_item sets FLOOR_HELD) leaves the hold
   # standing (held_since): its WORKED and any later NOOP prove no gate open.
   [ "${FLOOR_HELD:-0}" = 1 ] && local PROOF_HELD_KEEP=1
+  # A kick is no pass: its outcome is its own unit's (fleet-dispatch-kick), never fleet-dispatch's, which
+  # would end or set the hold and the liveness proof of the pass that reads the whole fleet (KICK, cmd_kick).
+  # Run by hand it has no unit and publishes nothing (proof_runner_outcome). The unit's own outcome keeps
+  # agentctl from reading a run that said nothing as STALLED.
   # shellcheck source=/dev/null
   . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null || return 0
-  proof_outcome fleet-dispatch "$1" "$2" 2>/dev/null || true
+  if [ "${KICK:-0}" = 0 ]; then proof_outcome fleet-dispatch "$1" "$2" 2>/dev/null || true
+  else proof_runner_outcome "$1" "$2" 2>/dev/null || true; fi
 }
 
 # settle_board <outcome> <why> -- settle a pass on its board step. A pass that came here past held
@@ -7791,6 +7794,8 @@ pass_mark() { PASS_TIMES+="${PASS_TIMES:+, }$1 $(( SECONDS - ${PASS_MARK:-0} ))s
 
 # The longest a timed pass waits for a kick's lock: a kick starts a session or two, so well under it.
 KICK_WAIT_S=${KICK_WAIT_S:-120}
+# The most times one kick reads the queue again because its wake file moved during the run.
+KICK_ROUNDS=${KICK_ROUNDS:-3}
 
 # pass_reset -- the per-pass state a `run` pass and a `kick` start from.
 pass_reset() {
@@ -7834,7 +7839,14 @@ cmd_kick() {
   # The mark tells a timed pass that the lock is a kick's, held for seconds: it waits (cmd_run), where a
   # pass holding the lock is waited on by nobody. Burst kicks would otherwise leave every timed pass a NOOP.
   : > "$DIR/.kick"
-  local rc; kick_start; rc=$?
+  # A wake that lands while this runs is lost to systemd (the .path finds its unit already running), and
+  # this run may have read the queue before the write: look again while the wake file moved, KICK_ROUNDS at most.
+  local rc round seen
+  for ((round = 0; round < KICK_ROUNDS; round++)); do
+    seen=$(stat -c %y "$DIR/.wake" 2>/dev/null)
+    kick_start; rc=$?
+    [ "$(stat -c %y "$DIR/.wake" 2>/dev/null)" != "$seen" ] || break
+  done
   rm -f "$DIR/.kick"
   return "$rc"
 }
@@ -7861,7 +7873,11 @@ kick_start() {
   local items; items=$(next_items --points)
   [ -n "$items" ] || { settle NOOP "kick: nothing queued to start"; return 0; }
   run_queue "$items" "$room"; local rc=$?
-  [ "${STARTED:-0}" -eq 0 ] || say "kick: started $STARTED"
+  # run_queue settles only a stop of its own (BLOCKED, a held floor): a clean end is settled here, so the
+  # unit declares an outcome and agentctl does not read the silent run as STALLED.
+  if [ "$rc" -ne 0 ]; then :
+  elif [ "${STARTED:-0}" -gt 0 ]; then settle WORKED "kick: started $STARTED"
+  else settle NOOP "kick: started nothing"; fi
   return "$rc"
 }
 
