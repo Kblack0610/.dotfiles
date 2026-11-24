@@ -384,8 +384,8 @@ fn is_new_project(kind: &EventKind, p: &Path, projects: &Path) -> bool {
 }
 
 /// How long a failed watch waits before it is tried again, doubling up to the cap. The usual
-/// failure is the per-user inotify limit (another program holds the watches), and nothing sends
-/// an event when it frees some, so this is a retry with backoff.
+/// failure is a per-user inotify limit (another program holds the watches or the instances), and
+/// nothing sends an event when it frees some, so this is a retry with backoff.
 const WATCH_RETRY_FIRST: Duration = Duration::from_secs(10);
 const WATCH_RETRY_MAX: Duration = Duration::from_secs(300);
 
@@ -405,6 +405,26 @@ fn add_watches(w: &mut impl Watcher, targets: Vec<Target>) -> Vec<Target> {
             }
         })
         .collect()
+}
+
+/// Make the watcher if it is not up, then watch each target; return the ones still unwatched.
+/// Making it fails at the per-user inotify instance limit (`fs.inotify.max_user_instances`), and
+/// then every target stays failed for the next retry, so the server answers with live updates off.
+fn connect<W: Watcher>(
+    w: &mut Option<W>,
+    make: impl FnOnce() -> notify::Result<W>,
+    targets: Vec<Target>,
+) -> Vec<Target> {
+    if w.is_none() {
+        match make() {
+            Ok(new) => *w = Some(new),
+            Err(e) => eprintln!("agent-web: cannot start the file watcher: {e}"),
+        }
+    }
+    match w {
+        Some(w) => add_watches(w, targets),
+        None => targets,
+    }
 }
 
 /// The SSE message that tells the page which paths are not watched (none: live updates on).
@@ -436,7 +456,8 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     let (cached_events, mut cached_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let watched = projects.clone();
     let events = tx.clone();
-    let mut w = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+    // Cloned for each watcher made, since the first may fail and a retry makes another.
+    let handler = move |res: notify::Result<notify::Event>| {
         let Ok(ev) = res else { return };
         if matches!(ev.kind, EventKind::Access(_)) {
             return;
@@ -460,7 +481,7 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
                 None => {}
             }
         }
-    })?;
+    };
     let flat = RecursiveMode::NonRecursive;
     let mut targets: Vec<Target> = vec![(claude.join("sessions"), flat), (projects.clone(), flat)];
     if let Ok(dirs) = std::fs::read_dir(&projects) {
@@ -563,7 +584,9 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     if sentinel.is_dir() {
         targets.push((sentinel, flat));
     }
-    let mut failed = add_watches(&mut w, targets);
+    let make = move || notify::recommended_watcher(handler.clone());
+    let mut w = None;
+    let mut failed = connect(&mut w, &make, targets);
     publish_off(&off, &tx, &failed);
     // The task owns the watcher, so it lives as long as the server. The watch calls happen here
     // because notify must not be called from inside its own event handler.
@@ -574,7 +597,7 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
             tokio::select! {
                 dir = new_dirs_rx.recv() => {
                     let Some(dir) = dir else { break };
-                    failed.extend(add_watches(&mut w, vec![(dir, flat)]));
+                    failed.extend(connect(&mut w, &make, vec![(dir, flat)]));
                 }
                 Some(msg) = cached_rx.recv() => {
                     if msg == BUILDS_EVENT {
@@ -591,7 +614,7 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
                 () = tokio::time::sleep(delay), if retry => {
                     // A project dir removed since needs no watch; anything else waits to exist.
                     failed.retain(|(p, _)| p.exists() || p.parent() != Some(projects.as_path()));
-                    failed = add_watches(&mut w, std::mem::take(&mut failed));
+                    failed = connect(&mut w, &make, std::mem::take(&mut failed));
                     delay = if failed.is_empty() { WATCH_RETRY_FIRST } else { (delay * 2).min(WATCH_RETRY_MAX) };
                 }
             }
@@ -2489,6 +2512,30 @@ mod tests {
         publish_off(&off, &tx, &[]);
         let msg: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
         assert_eq!(msg["off"], serde_json::json!([]));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A watcher that cannot be made (the inotify instance limit) leaves every target failed
+    /// instead of stopping the server, and the next retry makes it and watches them.
+    #[test]
+    fn a_watcher_that_cannot_start_is_retried() {
+        let dir = std::env::temp_dir().join(format!("agent-web-start-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let flat = RecursiveMode::NonRecursive;
+        let mut w: Option<notify::RecommendedWatcher> = None;
+        let failed = connect(
+            &mut w,
+            || Err(notify::Error::generic("too many inotify instances")),
+            vec![(dir.clone(), flat)],
+        );
+        assert!(w.is_none());
+        assert_eq!(failed.len(), 1);
+        let failed = connect(
+            &mut w,
+            || notify::recommended_watcher(|_: notify::Result<notify::Event>| {}),
+            failed,
+        );
+        assert!(w.is_some() && failed.is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
