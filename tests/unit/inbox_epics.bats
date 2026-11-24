@@ -42,3 +42,27 @@ setup() {
   run epic_known '' game "$EPICS"
   assert_failure
 }
+
+@test "reparent_args: tag re-parents only an unparented row or one under its standing epic, onto a feature epic" {
+  local epics
+  epics="$(printf 'gm-1\tgame\tepic(ui): menus\ngm-5\tgame\tepic(ui): ui to standard\ngm-6\tgame\tepic(ci): ci to standard\nap-1\tapp\tepic(api): auth')"
+  run reparent_args game '' gm-1 "$epics"
+  assert_output $'--add\nof/gm-1'
+  run reparent_args game '' gm-5 "$epics"
+  assert_output $'--add\nof/gm-5'
+  run reparent_args game gm-5 gm-1 "$epics"
+  assert_output $'--remove\nof/gm-5\n--add\nof/gm-1'
+  # negative controls: the same parent, a standing pick over a standing parent, a chosen parent
+  # (a feature epic, or a split's row that is no epic), a pick that is no open epic of the project
+  for args in 'gm-1 gm-1' 'gm-5 gm-6' 'gm-1 gm-5' 'gm-3 gm-1' ' gm-404' ' ap-1' 'gm-5 '; do
+    run reparent_args game "${args%% *}" "${args#* }" "$epics"
+    assert_failure
+    assert_output ''
+  done
+}
+
+@test "parent_word and no_parent read and strip the #of/ words, other tags in place" {
+  assert_equal "$(parent_word 'fix(ui): a bug #of/gm-1 #size/s #of/gm-5')" gm-5
+  assert_equal "$(parent_word 'fix(ui): a bug #size/s')" ''
+  assert_equal "$(no_parent 'fix(ui): a bug #of/gm-1 #size/s #of/gm-5')" 'fix(ui): a bug #size/s'
+}

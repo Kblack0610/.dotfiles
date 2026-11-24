@@ -6917,7 +6917,10 @@ cmd_headroom() {
     | .held_kind = (.held // "" | if . == "" or . == "nothing runnable" then null
         elif startswith("pace target") or startswith("run units") then "slots" elif startswith("load ") then "load"
         elif test("account") then "account"
-        elif startswith("fleet-assess") then "assess" else "other" end)' |
+        elif startswith("fleet-assess") then "assess" else "other" end)
+    # The load the gate judged when it held on load (over_pace: the pace reading plus what the
+    # recent starts will add), so the pause line never prints a lower live reading beside it.
+    | .load_at_hold = (if .held_kind == "load" and .load != null then (.load + .load_pending) * 100 | round / 100 else null end)' |
     if [ "${1:-}" = --json ]; then cat; else
       jq -r '"could start now: \(.could_start) of \(.runnable) runnable (a pass starts \(if .per_pass > 0 then "up to \(.per_pass)" else "what the gates allow" end), level \(.level))" +
         (if .held then ", held: \(.held)" else "" end),
@@ -7029,7 +7032,7 @@ cmd_stats() {
       # The room the last pass had, with why it was held as a 0/1 per kind.
       + (if $hr == null then {} else
           {room_live_runs: $hr.live_runs, room_max_live: $hr.max_live, room_live_hand: ($hr.live_hand // null),
-           room_load: $hr.load, room_load_cap: $hr.load_cap, room_load1: ($hr.load1 // null), room_cpu_busy: ($hr.cpu_busy // null),
+           room_load: $hr.load, room_load_cap: $hr.load_cap, room_load_at_hold: ($hr.load_at_hold // null), room_load1: ($hr.load1 // null), room_cpu_busy: ($hr.cpu_busy // null),
            room_run_floor: ($hr.run_floor // null), room_floor_live: ($hr.floor_live // null), room_total_live: ($hr.total_live // null)}
           + (["slots", "load", "account", "assess", "other"]
              | map({key: "room_held_\(.)", value: (if $hr.held_kind == . then 1 else 0 end)}) | from_entries) end)'
