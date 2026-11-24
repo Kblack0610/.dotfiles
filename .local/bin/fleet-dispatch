@@ -1103,15 +1103,24 @@ restoring() {
 # claude exited on purpose, so reap keeps it and it holds no run unit and adds no load.
 parked() { [ -e "$PARKED_DIR/$1" ] || compgen -G "$PARKED_DIR/$1:*" >/dev/null; }
 
-# WAITS_JQ -- a jq def: a session waiting on the human, which holds no slot. NEEDS whose reason does not end in
-# `carrying on` (fleet-sessions' own test: one carrying on past its ask is busy). pace_target and waiting_item both read it.
-WAITS_JQ='def waits: .bucket == "NEEDS" and ((.reason // "") | endswith("carrying on") | not);'
+# WAITS_JQ -- jq defs. waits: a session waiting on the human, which holds no slot: NEEDS whose reason does not end in
+# `carrying on` (fleet-sessions' own test: one carrying on past its ask is busy). frees: waits, or waiting its
+# landing turn behind another PR (open_job queue): neither counts as a live session in pace_target nor holds a run
+# unit (freed_item), so the two read one rule.
+WAITS_JQ='def waits: .bucket == "NEEDS" and ((.reason // "") | endswith("carrying on") | not); def frees: waits or .open_job == "queue";'
 
-# waiting_item <slug> -- exit 0 when the queue item's session waits on the human in the fleet state document
-# (WAITS_JQ). One read a process; a missing or unreadable document names none.
-waiting_item() {
-  [ -n "${WAITING_ITEMS+set}" ] || WAITING_ITEMS=$(jq -r "$WAITS_JQ"'.sessions[] | select(waits) | .item // empty' "$FLEET_STATE_FILE" 2>/dev/null)
-  [ -n "$1" ] && grep -qxF -- "$1" <<<"$WAITING_ITEMS"
+# freed_item <slug> -- exit 0 when the fleet state document shows the queue item's session as freed (WAITS_JQ frees).
+# fleet-sessions writes `.item` as {slug, is, row, also}: the slugs are slug and also while the item runs or waits
+# there (is own or here), never one that moved on to another session; a bare string is read too. A document older
+# than DISPATCH_STATE_FRESH_MIN, missing or unreadable names none, as pace_target reads it. One read a process.
+# Why: read as a string, it matched nobody, and 11 heavy landing waiters plus a NEEDS one held 24 of 25 units
+# while 49 items waited (queue-age red, ar-4554).
+freed_item() {
+  [ -n "${FREED_ITEMS+set}" ] || FREED_ITEMS=$(jq -r --argjson now "$(date +%s)" --argjson fresh "$(( DISPATCH_STATE_FRESH_MIN * 60 ))" "$WAITS_JQ"'
+    select($now - (.generated_epoch // 0) <= $fresh) | .sessions[] | select(frees) | .item
+    | if type == "object" then select((.is // "own") | IN("own", "here")) | (.slug, (.also // [])[]) else . end
+    | strings' "$FLEET_STATE_FILE" 2>/dev/null)
+  [ -n "$1" ] && grep -qxF -- "$1" <<<"$FREED_ITEMS"
 }
 
 # live_runs -> "<project>/<area> <weight>[ <host>]" for every running Claude session (panel_lists) this runner started
@@ -1130,8 +1139,8 @@ live_runs() {
     else panel_lists "$_agent" || continue   # the target is Claude's (pace_target): a codex or gateway run holds its own source's room, not a unit of it
     fi
     [ -n "$host" ] || ! parked "$sess" || continue
-    # A session here waiting on the human holds no unit, as pace_target counts it no live session (a worker's row is a pass behind: it keeps its unit).
-    [ -n "$host" ] || [ "$gw" = --gateway ] || ! waiting_item "$slug" || continue
+    # A session here waiting on the human or its landing turn holds no unit, as pace_target counts it no live session (a worker's row is a pass behind: it keeps its unit).
+    [ -n "$host" ] || [ "$gw" = --gateway ] || ! freed_item "$slug" || continue
     session_live "$sess" "$server" "$host" && printf '%s/%s %s%s\n' "$project" "$area" "$weight" "${host:+ $host}"
   done < <(item_sessions)
   return 0
@@ -1187,7 +1196,7 @@ pace_target() {
     | '"$WAITS_JQ"'
     [.sessions[] | select(.bucket != "PARKED" and (.bucket | IN($done[]) | not) and ((.labels // []) | index("shepherd") | not)
         and ((.account // "") | IN("codex", "opencode") | not))]
-    | (map(select(.open_job != "queue" and (waits | not)))) as $live
+    | (map(select(frees | not))) as $live
     | {live: ($live | length),
        needs: map(select(.open_job != "queue" and waits)) | length,
        working: ($live | map(select(.bucket == "WORKING" or .bucket == "NEEDS")) | length),
