@@ -6282,14 +6282,15 @@ remote_open() {
 }
 
 # host_agent <item json> -> the harness a worker would run the item on, or nothing when the item
-# stays on this machine by design: a red, a cloud-ok or trainee-batch tag, or a thread it resumes here.
+# stays on this machine by design: a red, a cloud-ok or trainee-batch tag, a thread it resumes here, or
+# a stack on an open PR (stacked_on: only a worktree here builds on it, stack_base, so a --host start refuses it).
 # A heavy item and a plan item go too: a worker runs no Unity editor (tests run on the runner pool),
 # and it reads the plan file from its store peer clone, which carries ~/.agent/plans (ar-2891).
 # host_takers and unplaced both read it, so the gap report never drifts from placement.
 host_agent() {
   local agent
   ! is_red "$1" || return 0
-  agent=$(jq -r 'select((" " + (.tags // "") + " ") | (contains(" cloud-ok ") or contains(" trainee-batch ")) | not) | .agent // "claude"' <<<"$1")
+  agent=$(jq -r 'select((.stacked_on // "") == "" and ((" " + (.tags // "") + " ") | (contains(" cloud-ok ") or contains(" trainee-batch ")) | not)) | .agent // "claude"' <<<"$1")
   [ -n "$agent" ] || return 0
   # A trainee floor start runs on the harness the floor chose for it, so the worker must run that one.
   [ "${TRAINEE_PASS:-0}" != 1 ] || [ -z "${TRAINEE_HARNESS:-}" ] || agent=$TRAINEE_HARNESS
@@ -6299,7 +6300,8 @@ host_agent() {
 
 # host_takers <item json> -> the roster's workers provisioned for this item, one name a line: an
 # item with no cloud route, heavy or light, plan or none (host_agent), in a repo the worker has cloned (fleet_repos,
-# fleet_repos_extra), on a harness the worker runs (host_runs: its kit, and past claude fleet_harnesses, probed ready).
+# fleet_repos_extra), on a harness the worker runs (host_runs: its kit, and past claude fleet_harnesses, probed ready),
+# whose fleet_max_live holds the item's run units (a heavy item's 2 never fit a worker placed at 1).
 # A codex item that resumes its thread (the rollout is in this machine's ~/.codex, item_rollout),
 # a trainee batch review (it reads the diffs in this machine's TRAINEE_DIR), a red (its watch state,
 # runner logs and units are this lease holder's, and its probe needs this machine's mounts and
@@ -6308,7 +6310,7 @@ host_agent() {
 # "first", only the workers whose fleet_first names a class of the item, the item's own tags
 # canary (is_canary), and trainee for a trainee floor start (TRAINEE_PASS); an item with neither has none.
 host_takers() {
-  local dir classes=null agent name
+  local dir classes=null agent name need
   if [ "${2:-}" = first ]; then
     classes=$(jq -c --arg tr "${TRAINEE_PASS:-0}" '(" " + (.tags // "") + " ") as $t
       | [if ($t | contains(" canary ")) then "canary" else empty end, if $tr == "1" then "trainee" else empty end]' <<<"$1")
@@ -6316,10 +6318,11 @@ host_takers() {
   fi
   agent=$(host_agent "$1"); [ -n "$agent" ] || return 0
   dir=$(repo_dir "$(jq -r .project <<<"$1")"); [ -n "$dir" ] || return 0
+  need=$(weight_units "$(jq -r '.weight // "light"' <<<"$1")")
   while IFS= read -r name; do
     host_runs "$name" "$agent" || continue
     echo "$name"
-  done < <(fleet_hosts | jq -sr --arg d "$dir" --argjson c "$classes" 'map(select(.repos | index($d))
+  done < <(fleet_hosts | jq -sr --arg d "$dir" --argjson c "$classes" --argjson n "$need" 'map(select(.repos | index($d)) | select((.max_live | tonumber? // 0) >= $n)
     | select($c == null or any(.first[]?; . as $x | $c | index($x)))) | .[].name')
 }
 
@@ -6429,16 +6432,19 @@ cmd_hosts() {
 # still takes the item later, so capacity is not a reason. stdin: the active queue as
 # `agent-queue list --json`. After probe_hosts, which host_takers reads.
 unplaced() {
-  local it agent dir why roster
+  local it agent dir why roster need
   roster=$(fleet_hosts | jq -sc .)
   while IFS= read -r it; do
     agent=$(host_agent "$it"); [ -n "$agent" ] || continue
     [ -z "$(host_takers "$it")" ] || continue
     dir=$(repo_dir "$(jq -r .project <<<"$it")"); [ -n "$dir" ] || continue
-    if jq -e --arg d "$dir" 'any(.[]; .repos | index($d))' <<<"$roster" >/dev/null; then
-      why="no worker runs $agent ready"
-    else
+    need=$(weight_units "$(jq -r '.weight // "light"' <<<"$it")")
+    if ! jq -e --arg d "$dir" 'any(.[]; .repos | index($d))' <<<"$roster" >/dev/null; then
       why="no worker clones $dir"
+    elif ! jq -e --arg d "$dir" --argjson n "$need" 'any(.[]; (.repos | index($d)) and (.max_live | tonumber? // 0) >= $n)' <<<"$roster" >/dev/null; then
+      why="no worker that clones it has a fleet_max_live of $need, the run units a heavy item holds"
+    else
+      why="no worker runs $agent ready"
     fi
     printf '%s\t%s\n' "$(jq -r .project <<<"$it")" "$why"
   done < <(jq -c 'select(.state == "queued")' 2>/dev/null) |
