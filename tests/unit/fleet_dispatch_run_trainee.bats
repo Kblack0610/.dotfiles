@@ -6,7 +6,7 @@
 load 'fleet_dispatch/common'
 bats_require_minimum_version 1.5.0
 
-@test "trainee floor: a trainee harness that does not spend the gateway still waits on a red cluster" {
+@test "trainee floor: a trainee harness that does not spend the gateway starts on a red cluster (ar-4889)" {
   trainee_ready
   srcs go:ok:0.1 codex:reserve:5
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0
@@ -20,8 +20,10 @@ bats_require_minimum_version 1.5.0
   run harness_spends_gateway lazer-reserve; assert_success
   harness_set '.harnesses.gotrain.launcher = "codex"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'gotrain does not spend the gateway, and the cluster is red'
-  refute_output --partial 'started queue item t-one'
+  # The floor and route let t-one through to the start; what refuses it there is the launcher's own allowlist guard.
+  refute_output --partial 'the cluster is red'
+  refute_output --partial 'trainee floor: shut'
+  assert_output --partial 'start: gotrain has a projects allowlist'
 }
 
 @test "trainee floor: the fleet share cap does not hold its start, which runs on a free trainee key, not a session the cap counts" {
@@ -575,7 +577,7 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   gateway_up
   run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool --json
   assert_equal "$(jq -c '.floor.state' <<<"$output")" '"open"'
-  assert_equal "$(jq -r '.floor.why' <<<"$output")" 'the cluster is red and the gateway answers, so only gateway trainees start'
+  assert_equal "$(jq -r '.floor.why' <<<"$output")" ''
 }
 
 @test "trainee floor: a board row that names no file is promoted and started; its diff's files are checked instead (ar-4739)" {

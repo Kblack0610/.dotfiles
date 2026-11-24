@@ -23,9 +23,9 @@ Use for "add a rule", "from now on always X", "update CLAUDE.md", "register a ne
 
 **The rule CONTENT lives in the PRIVATE overlay. This SKILL lives in the PUBLIC repo.**
 
-`~/.dotfiles-private` holds every rule file - `CLAUDE.md`, `AGENTS.md`, and the whole rulesync tree. `~/.dotfiles` holds this skill and the sync script. If you go looking for a rule file under `~/.dotfiles/`, you will not find it.
+`~/.dotfiles-private` holds every global rule file - `CLAUDE.md`, `AGENTS.md`, and the whole rulesync tree. `~/.dotfiles` holds this skill and the sync script. Under `~/.dotfiles/` there are only this repo's own rules: `AGENTS.md`, which `CLAUDE.md` imports.
 
-There is no `~/.dotfiles/.claude/CLAUDE.md`, no `~/.dotfiles/AGENTS.md`, and no `~/.dotfiles/.config/rulesync-global/`. <!-- skill-drift: ignore (this line asserts these paths are ABSENT) -->
+There is no `~/.dotfiles/.claude/CLAUDE.md` and no `~/.dotfiles/.config/rulesync-global/`. <!-- skill-drift: ignore (this line asserts these paths are ABSENT) -->
 
 Practical consequence: **a rule change plus a skill change is a cross-repo change = two PRs.** Use `dotfiles-land` to route it.
 
@@ -35,14 +35,14 @@ Ask first: **which repos does this rule apply in, and which tools should obey it
 
 | Scope | Edit | Affects |
 |---|---|---|
-| All AI tools (Claude + Codex + Gemini + OpenCode) | a section of `~/.dotfiles-private/.claude/CLAUDE.md` that `overview.md` names with a `<!-- shared: <section> -->` marker | Everything: the sync splices the section into its staged copy of `overview.md` |
-| Non-Claude tools only | `~/.dotfiles-private/.config/rulesync-global/.rulesync/rules/overview.md` + run sync | Codex, Gemini, OpenCode |
+| All AI tools (Claude + Codex + Gemini + OpenCode + agy) | a section of `~/.dotfiles-private/.claude/CLAUDE.md` that `overview.md` names with a `<!-- shared: <section> -->` marker | Everything: the sync splices the section into its staged copy of `overview.md` |
+| Non-Claude tools only | `~/.dotfiles-private/.config/rulesync-global/.rulesync/rules/overview.md` + run sync | Codex, Gemini, OpenCode, agy |
 | Claude-only (user-global) | `~/.dotfiles-private/.claude/CLAUDE.md` | Claude Code (symlinked to `~/.claude/CLAUDE.md`) |
 | Codex-only (repo root) | `~/.dotfiles-private/AGENTS.md` | Codex CLI (auto-loaded from repo root) |
 | One project | `<project>/CLAUDE.md` (or `@AGENTS.md` plus Claude-only lines when the repo has an AGENTS.md) | Only that repo |
-| This dotfiles repo | `~/.dotfiles/CLAUDE.md` (public, excluded from stow) | Sessions in `~/.dotfiles` |
+| This dotfiles repo | `~/.dotfiles/AGENTS.md` (public, excluded from stow; Claude-only lines in its `CLAUDE.md`) | Sessions of every CLI in `~/.dotfiles` |
 | MCP server for Claude | the committed `.mcp.json` of the repo that uses it, or `~/.dotfiles-private/.claude/mcp-optional/<name>.json` for on-demand use (`claude-mcp <name>`) | That repo / sessions that ask for it |
-| MCP server for Codex / Gemini / OpenCode | `~/.dotfiles-private/.config/rulesync-global/.rulesync/mcp.json` + run sync | Those tools' MCP configs |
+| MCP server for Codex / Gemini / OpenCode / agy | `~/.dotfiles-private/.config/rulesync-global/.rulesync/mcp.json` + run sync | Those tools' MCP configs |
 
 If the user just says "add this rule" without specifying scope, **ask** before editing - the wrong layer creates drift.
 
@@ -67,7 +67,7 @@ The sync script reads `$RULESYNC_ROOT` (default `~/.config/rulesync-global`, the
 
 What it writes, and what it explicitly does NOT:
 
-- Writes: `~/.codex/AGENTS.md`, `~/.codex/config.toml` (managed block only), `~/.gemini/GEMINI.md`, `~/.gemini/settings.json`, `~/.config/opencode/AGENTS.md`, `~/.config/opencode/opencode.json`
+- Writes: `~/.codex/AGENTS.md`, `~/.codex/config.toml` (managed block only), `~/.gemini/GEMINI.md`, `~/.gemini/settings.json`, `~/.config/opencode/AGENTS.md`, `~/.config/opencode/opencode.json`, and for agy `~/.gemini/config/rules/fleet.md`, `~/.gemini/config/skills.json` (the Claude skill corpus by path) and `~/.gemini/config/mcp_config.json`
 - `~/.config/opencode/` is stowed from `~/.dotfiles-private`, so the opencode output is tracked: commit it in the PR that changes the rule. From a worktree, point the sync at it: `RULESYNC_ROOT=<wt>/.config/rulesync-global OPENCODE_HOME=<wt>/.config/opencode`. Why: left uncommitted from 2026-09-25 to 2026-11-02, it sat stale in git and dirty in the main checkout.
 - Does NOT write: `~/.claude/CLAUDE.md` (a symlink into `~/.dotfiles-private/.claude/`; editing the private file IS the deploy) or any Claude MCP config.
 - `CLAUDE.md` is the one source of the shared sections: never copy one into `overview.md`, add a marker (`tests/unit/rules_shared_block.bats`). From a worktree also set `RULES_CLAUDE_MD=<wt>/.claude/CLAUDE.md`, and commit the regenerated opencode `AGENTS.md` with any change to a shared section: the private pre-commit runs `splice-shared-rules.py --check` on the staged files and blocks the commit until it does.

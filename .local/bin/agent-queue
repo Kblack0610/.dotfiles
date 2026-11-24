@@ -1510,7 +1510,8 @@ mix_json() {
   class_started "$cfg" 2>/dev/null | jq -c --argjson cfg "$cfg" '$cfg + {done: .window, live: .live}' 2>/dev/null || echo null
 }
 
-# mix [--json] -> each class of service (AQ_CLASSES, on or off): its share, its runnable items (queued,
+# mix [--json] -> each class of service (AQ_CLASSES, on or off): its share, its `projects` (fleet-dispatch's
+# project floor reads them), its runnable items (queued,
 # no hold: what admission counts), its items started in window_days (class_started, what the mix
 # balances on) and that as a percent of every class's, and `starved`, each class with runnable items
 # and none started in starve_days. fleet-bench pipeline shows it; `pipeline --check mix` trips on a starved class.
@@ -1524,7 +1525,7 @@ cmd_mix() {
   out="$(jq -nc --argjson cfg "$cfg" --argjson q "$q" --argjson s "$s" '([$s.window[]] | add // 0) as $total
     | {on: ($cfg.on == true), window_days: ($cfg.window_days // 7), starve_days: ($cfg.starve_days // 3),
        classes: [$cfg.classes[] | .name as $n
-         | {name: $n, share: (.share // 0), runnable: ($q[$n] // 0), live: ($s.live[$n] // 0), min_live: (.min_live // 0), started: ($s.window[$n] // 0), recent: ($s.recent[$n] // 0),
+         | {name: $n, share: (.share // 0), projects: (.projects // []), runnable: ($q[$n] // 0), live: ($s.live[$n] // 0), min_live: (.min_live // 0), started: ($s.window[$n] // 0), recent: ($s.recent[$n] // 0),
             pct: (if $total > 0 then ($s.window[$n] // 0) * 100 / $total | round else null end)}]}
     | .starved = [.classes[] | select(.runnable > 0 and .recent == 0) | .name]')"
   [ -z "$json" ] || { printf '%s\n' "$out"; return 0; }
@@ -2946,7 +2947,7 @@ cmd_bump() {
 # settable: they are what the item is. `from` is, so a project rename can move a board origin, and
 # `title` is, so an item whose plan changed stops showing its old title (one line, as add --title
 # writes it). The board row's own words are its sheet's: `notes ptask edit`.
-SETTABLE=" asked title project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage branch lost plan phases pr open_pr merged landed_by partial closing_pr fix_tries land_tries takeover_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee direct review_fix proves_at validate verdict verdict_head "
+SETTABLE=" asked asker title project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage branch lost plan phases pr open_pr merged landed_by partial closing_pr fix_tries land_tries takeover_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee direct review_fix proves_at validate verdict verdict_head "
 
 # One landed_by pair, <session id>=<owner>/<repo>#<N> (cmd_set).
 LANDED_PAIR='[^= ]+=[^# ]+/[^# ]+#[0-9]+'
