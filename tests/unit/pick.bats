@@ -62,6 +62,9 @@ setup() {
   # A test that names neither the lib nor a script that sources it stays out.
   PICK_CHANGED=.local/lib/store-auth.sh run --separate-stderr "$SUBJECT" unit HEAD
   refute_line unit/fleet_dispatch.bats
+  # The scripts count as changed files, not as changed .local/bin/ directories: fleet_lease.bats
+  # names that directory and no store script.
+  refute_line unit/fleet_lease.bats
 }
 
 @test "rust: main runs every crate; a pull request runs the crates it touches and their path dependents" {

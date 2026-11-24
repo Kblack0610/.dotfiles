@@ -51,9 +51,10 @@ _test_pick_aliases() {
 # .local/lib/*.sh added, to any depth (a lib that sources a lib): a test names release-state, not
 # store-auth.sh, so a change to .local/lib/store-auth.sh picked none of store_sales, release_state
 # or store_reviews (ar-2508). A source line is an uncommented `. <path>` or `source <path>` that
-# names the lib's basename; the result is _TEST_PICK_EXT, built once per change list.
+# names the lib's basename; the result is _TEST_PICK_EXT, built once per change list. Limits: it
+# reads the working tree, and a lib sourced through a variable or a glob is not seen.
 _test_pick_expand() {
-  [ "${_TEST_PICK_EXT_FOR-}" = "$1" ] && return 0
+  [ -n "${_TEST_PICK_EXT_FOR+x}" ] && [ "$_TEST_PICK_EXT_FOR" = "$1" ] && return 0
   _TEST_PICK_EXT_FOR="$1" _TEST_PICK_EXT="$1"
   local libs seen="" new f
   new="$(grep -E '^\.local/lib/[^/]+\.sh$' <<<"$1" | sed 's#.*/##')" || true
@@ -68,8 +69,13 @@ _test_pick_expand() {
           if (t ~ /^[[:space:]]*#/ || t !~ /(^|[[:space:];&|({])(\.|source)[[:space:]]/) next
           for (i = 1; i <= n; i++) {
             if (nm[i] == "") continue
-            j = index(t, nm[i]); post = substr(t, j + length(nm[i]), 1)
-            if (j > 0 && post !~ /[A-Za-z0-9_.-]/) { print f; break }
+            # Every occurrence, bounded by a non-name character on both sides (the line is padded).
+            u = " " t " "; off = 0
+            while ((j = index(substr(u, off + 1), nm[i])) > 0) {
+              k = off + j
+              if (substr(u, k - 1, 1) !~ /[A-Za-z0-9_.-]/ && substr(u, k + length(nm[i]), 1) !~ /[A-Za-z0-9_.-]/) { print f; next }
+              off = k
+            }
           } }' | sort -u)" || true
     _TEST_PICK_EXT="$(printf '%s\n%s\n' "$_TEST_PICK_EXT" "$libs" | grep -v '^$' | sort -u)"
     # The next round: dependents that are libs themselves and were not looked up yet.
@@ -79,8 +85,7 @@ _test_pick_expand() {
 
 # test_picked <changed paths, one a line> <test path, repo-relative>, the test's text on stdin:
 # status 0 when that test is picked. A test is picked when it or a file it loads from beside it
-# changed, (a script that sources a changed
-# .local/lib/*.sh counts as changed: _test_pick_expand), or its text with what it loads names a changed file's basename (not as a stub or a
+# changed, or it names a script that sources a changed .local/lib/*.sh (_test_pick_expand), or its text with what it loads names a changed file's basename (not as a stub or a
 # directory) or a directory a changed file sits under as `<dir>/` or `<dir>/*...` (a glob such as
 # `.claude/hooks/stop-post.d/*.sh`), or a script it runs as `$REPO_ROOT/<path>` (or through a
 # helper's variable for one) names a changed path in its code, or a test-side file it runs as
@@ -186,6 +191,10 @@ _test_pick_path_named() {
 
 test_picked() {
   grep -qE '^tests/(helpers|vendor|fixtures/basic)/|^tests/(Makefile|run-bats\.sh)$' <<<"$1" && return 0
+  # The scripts that source a changed lib count as changed files, not as changed directories: the
+  # ancestor-directory check at the end keeps the list as given, or `.local/bin/` in a test would
+  # pick it for every lib change.
+  local given=$1
   _test_pick_expand "$1"
   set -- "$_TEST_PICK_EXT" "$2"
   grep -qxF "$2" <<<"$1" && return 0
@@ -273,11 +282,11 @@ test_picked() {
   [ -n "$_TEST_PICK_FIXTURES" ] && grep -qE "$_TEST_PICK_FIXTURES" <<<"$text" && return 0
   # Every ancestor directory of a changed path, regex-escaped, as one alternation; a caller
   # loops over every test file with one change list, so it is built once per list.
-  if [ "${_TEST_PICK_FOR-}" != "$1" ]; then
-    _TEST_PICK_FOR="$1"
+  if [ "${_TEST_PICK_FOR-}" != "$given" ]; then
+    _TEST_PICK_FOR="$given"
     _TEST_PICK_DIRS="$(awk -F/ '{p=$1; for (i=2; i<=NF; i++) {if (!(p in s)) {s[p]; e=p
           gsub(/[][\\.*^$+?(){}|]/, "\\\\&", e); o=o (o==""?"":"|") e}; p=p "/" $i}}
-          END {printf "%s", o}' <<<"$1")"
+          END {printf "%s", o}' <<<"$given")"
   fi
   [ -n "$_TEST_PICK_DIRS" ] || return 1
   # A reference starts the path or follows a root: `$VAR/`, `"$VAR"/`, `${VAR}/`, `~/`, `./`,
