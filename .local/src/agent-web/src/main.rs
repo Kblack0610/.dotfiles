@@ -427,6 +427,17 @@ fn connect<W: Watcher>(
     }
 }
 
+/// Each project dir under `projects`, as a flat watch target: its transcripts sit directly in it.
+fn project_dirs(projects: &Path) -> impl Iterator<Item = Target> {
+    std::fs::read_dir(projects)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .map(|p| (p, RecursiveMode::NonRecursive))
+}
+
 /// The SSE message that tells the page which paths are not watched (none: live updates on).
 fn live_msg(off: &[String]) -> String {
     serde_json::json!({"kind": "live", "off": off}).to_string()
@@ -484,14 +495,7 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     };
     let flat = RecursiveMode::NonRecursive;
     let mut targets: Vec<Target> = vec![(claude.join("sessions"), flat), (projects.clone(), flat)];
-    if let Ok(dirs) = std::fs::read_dir(&projects) {
-        targets.extend(
-            dirs.flatten()
-                .map(|e| e.path())
-                .filter(|p| p.is_dir())
-                .map(|p| (p, flat)),
-        );
-    }
+    targets.extend(project_dirs(&projects));
     let asks = boards::asks_dir();
     if asks.is_dir() {
         targets.push((asks, RecursiveMode::Recursive));
@@ -612,9 +616,22 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
                     let _ = tx.send(msg);
                 }
                 () = tokio::time::sleep(delay), if retry => {
+                    let down = w.is_none();
+                    if down {
+                        // No watcher sent a create, so a project made since has no target yet.
+                        let new: Vec<Target> = project_dirs(&projects).filter(|t| !failed.contains(t)).collect();
+                        failed.extend(new);
+                    }
                     // A project dir removed since needs no watch; anything else waits to exist.
                     failed.retain(|(p, _)| p.exists() || p.parent() != Some(projects.as_path()));
                     failed = connect(&mut w, &make, std::mem::take(&mut failed));
+                    if down && w.is_some() {
+                        // Every change while it was down went unsent: drop each read and refetch.
+                        for outdate in [costs::outdate, builds::outdate, pipelines::outdate, stages::outdate] {
+                            outdate();
+                        }
+                        let _ = tx.send(RESYNC_EVENT.to_string());
+                    }
                     delay = if failed.is_empty() { WATCH_RETRY_FIRST } else { (delay * 2).min(WATCH_RETRY_MAX) };
                 }
             }
@@ -624,6 +641,8 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     Ok(())
 }
 
+/// Events may have been missed: every page refetches and every event cache reads afresh.
+const RESYNC_EVENT: &str = r#"{"kind":"resync"}"#;
 /// A new token snapshot: the Costs tab reads afresh.
 const COSTS_EVENT: &str = r#"{"kind":"costs"}"#;
 const BUILDS_EVENT: &str = r#"{"kind":"builds"}"#;
@@ -2089,7 +2108,7 @@ async fn events_stream(
     let off = live_msg(&s.watch_off.lock().unwrap_or_else(|e| e.into_inner()));
     let changes = BroadcastStream::new(s.events.subscribe()).map(|m| {
         // A lagged receiver skipped messages; tell the page to refetch everything.
-        m.unwrap_or_else(|_| r#"{"kind":"resync"}"#.to_string())
+        m.unwrap_or_else(|_| RESYNC_EVENT.to_string())
     });
     // A stop ends the stream, so the drain is not held open by a page that is only listening.
     let stream = until_stopped(tokio_stream::once(off).chain(changes), s.stopping.clone())
