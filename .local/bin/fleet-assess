@@ -3,7 +3,8 @@
 #
 #   fleet-assess                 headroom, GitHub API budget, holds, verdict, one row per heavy process
 #   fleet-assess --watch-probe   one line; exit 1 on HOLD (fleet-dispatch's load gate)
-#   fleet-assess --thermal-probe the same, and a tripped `fleet-thermal` counts as a hold (that watch's probe)
+#   fleet-assess --thermal-probe the same, and a tripped `fleet-thermal` counts as a hold (that watch's probe); a HOLD adds a
+#                                `page:` line, urgent at FLEET_EXTREME_LOAD_X
 #   fleet-assess --github        one line: the GitHub budget, with LOW when it is
 #   fleet-assess --gate          one line: slots busy and queued, recent results, branches the gate keeps re-running unmerged
 #   fleet-assess --fleet         every host's busy share and whether each agent host's CPU cap is live, over Prometheus and ssh
@@ -29,6 +30,9 @@ set -uo pipefail
 : "${FLEET_CLEAR_STALL_PCT:=5}"  # stall under this -> may CLEAR
 # FLEET_HOT_TCTL, Tctl at the throttle point ..., is set in .local/lib/cpu-temp.sh, shared with boot-cause
 : "${FLEET_HOT_LOAD_X:=1.5}"     # ... with load at least this -> HOLD
+: "${FLEET_EXTREME_LOAD_X:=3}"   # 5-min load / cores at or above this on a HOLD -> the thermal probe pages urgent: the human
+                                 # asked to hear of extreme load (2026-11-19, ar-3424); 2026-10-23 sat at 4x. The 5-min
+                                 # average is the "stays extreme" part: a mid-trip rise pages at once, with no confirm.
 # roots whose subtree sum alone never earns a row (comm of tmux's server is "tmux:")
 : "${FLEET_ROW_TREE_SKIP:=systemd init tmux: kthreadd}"
 : "${FLEET_ROW_CPU:=50}"         # a process at or above this %CPU gets a row
@@ -44,6 +48,7 @@ set -uo pipefail
                                  # Provisional: revisit if a capped host reads OVER with every unit inside its cap.
 : "${FLEET_RUN_UNITS_FRESH_MIN:=45}" # a headroom.json (the last dispatch pass's) older than this is no reading; fleet-dispatch's own freshness check on it is HEADROOM's -mmin
 PSI_MEM="${FLEET_PSI_MEM:-/proc/pressure/memory}"
+LOADAVG="${FLEET_LOADAVG:-/proc/loadavg}"
 _fa_lib="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib"
 # shellcheck source=../lib/prom-textfile.sh
 . "$_fa_lib/prom-textfile.sh"
@@ -78,8 +83,20 @@ fleet_verdict() {
   }'
 }
 
+# thermal_page <load5> <cores> -> the `page:` line of a fleet-thermal trip (SENTINEL.md, "A trip's
+# level"): urgent with a `reason:` at FLEET_EXTREME_LOAD_X, else low, which brings a trip that was
+# extreme back to the watch's own level so its reminders and the shepherd stop reading urgent.
+thermal_page() {
+  awk -v l="$1" -v c="$2" -v ex="$FLEET_EXTREME_LOAD_X" 'BEGIN {
+    x = (c > 0) ? l / c : 0
+    if (x >= ex) printf "page: urgent\nreason: 5-min load %.1fx cores, past the %sx extreme mark\n", x, ex
+    else print "page: low"
+  }'
+}
+
 # --- readings ---------------------------------------------------------------------------
-read_load()  { cut -d' ' -f1 /proc/loadavg 2>/dev/null || echo 0; }
+read_load()  { cut -d' ' -f1 "$LOADAVG" 2>/dev/null || echo 0; }
+read_load5() { cut -d' ' -f2 "$LOADAVG" 2>/dev/null || echo 0; }
 read_cores() { nproc 2>/dev/null || echo 1; }
 
 read_mem_pct() {
@@ -628,7 +645,9 @@ main() {
 
   if [ "${1:-}" = --watch-probe ] || [ "${1:-}" = --thermal-probe ]; then
     echo "$verdict (load $load/$cores, tctl ${tctl} C, mem ${mem}% free, stall ${stall}%)"
-    case "$verdict" in HOLD*) return 1 ;; *) return 0 ;; esac
+    case "$verdict" in HOLD*) ;; *) return 0 ;; esac
+    [ "${1:-}" != --thermal-probe ] || thermal_page "$(read_load5)" "$cores"
+    return 1
   fi
 
   echo "headroom: load $load / $cores cores, tctl ${tctl} C, memory ${mem}% free (stall ${stall}%, swap $(read_swap_used_gb)G used), $(d_sample | d_threads) threads blocked on I/O"
