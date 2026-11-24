@@ -85,6 +85,7 @@ export const pageRows = (section) => {
 const QUEUE_COLS = ["#", "title", "project", "priority", "state", "hold", "from", "in", "wait", "run", "pr", "row", "kind", "size", "pts", "acct", "mode", "plan"];
 const QUEUE_BAR = table(637, [], [], { project: PROJECTS.slice(0, 3), priority: ["urgent", "high"], from: ["human", "board"], kind: ["fix", "feat"], acct: ["main", "bnb"] });
 QUEUE_BAR.states = [];
+const qTitle = (i) => (i % 3 ? TEXT[i % TEXT.length] : `${TEXT[i % TEXT.length]}, and ${TEXT[(i + 1) % TEXT.length]}`);
 const qItem = (i, state, o = {}) => ({ slug: `${pick(SLUGS, i)}-${i}`, title: qTitle(i), project: pick(PROJECTS, i), state, status: "ok", priority: pick(["urgent", "high", "normal"], i), start: null, hold: "", waits_for: "", source: pick(["human", "board"], i), row_id: i % 2 ? `ar-${1100 + i}` : "", mode: "oneshot", plan_label: "", type: pick(["fix", "feat", "chore"], i), size: pick(["s", "m", "l"], i), account: pick(["main", "bnb", "alt"], i), pr: i > 3 ? `#${1590 + i}` : "", pr_label: i > 3 ? `#${1590 + i}` : "", pr_url: i > 3 ? `https://github.com/Kblack0610/.dotfiles/pull/${1590 + i}` : "", pr_merged: false, note: i % 4 ? "" : TEXT[(i + 3) % TEXT.length], unproven: false, timing: { in_state: 14 + i * 9, wait: 3 + i, run: 22 + i * 6 }, ...o });
 // [id, title, prefix, count, the item's state, what each row adds]
 const QUEUE_SECTIONS = [
@@ -95,7 +96,7 @@ const QUEUE_SECTIONS = [
   ["next", "Up next", "nx", 582, "queued", (i) => ({ start: i + 1 })],
 ];
 const queue = {
-  at: NOW, table: QUEUE_BAR, needs_you: 6, done_today: 38, cancelled_today: 5, sel: null, flow: [],
+  at: NOW, table: QUEUE_BAR, needs_you: 6, done_today: 38, cancelled_today: 5, finished_at: "#log/work", sel: null, flow: [],
   sections: QUEUE_SECTIONS.map(([id, title, pre, n, state, extra]) => {
     const all = rows(n, (i) => qItem(i, state, extra(i)));
     const t = { ...table(n, QUEUE_COLS), states: [] };

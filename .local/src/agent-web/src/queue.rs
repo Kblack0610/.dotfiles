@@ -260,6 +260,7 @@ fn render(
         "needs_you": needs_you,
         "done_today": done_today,
         "cancelled_today": cancelled_today,
+        "finished_at": "#log/work",
         "sel": sel.map(|r| row_view(r, now)),
     })
 }
@@ -729,6 +730,10 @@ mod tests {
             (&1.into(), &1.into())
         );
         assert_eq!(v["needs_you"], 1);
+        assert_eq!(
+            v["finished_at"], "#log/work",
+            "where the finished count links"
+        );
         assert!(v.get("section_aliases").is_none() && v["sel"].is_null());
         // The sections are the states: the bar keeps search and facets, no chips or sort of its own.
         assert!(v["table"]["states"].as_array().unwrap().is_empty());

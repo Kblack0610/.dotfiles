@@ -36,7 +36,7 @@ const qst = tblTab({
   tab: "queue", id: "qt", el: "q-list", on: "queue", scroller: "queue", refresh: () => refreshQueue(), table: (t) => t.table,
   hint: "search, or project:dotfiles kind:fix -acct:k1",
   state: {
-    sections: null, table: null, selRow: null, needs: 0, done: null, cancelled: 0, sel: "", flow: [],
+    sections: null, table: null, selRow: null, needs: 0, done: null, cancelled: 0, finishedAt: "", sel: "", flow: [],
     stats: null, projects: [], busy: false, msg: "", draft: null,
     // candCounts: the Candidates heading's counts, read whether the fold is open or shut.
     candCounts: null, candErr: null,
@@ -143,7 +143,7 @@ const refreshQueue = coalesce(async () => {
     if (st.tab === "queue" && st.arg && !qIsSection(st.arg)) p.set("sel", st.arg);
     const q = p.toString();
     d = await api("/api/queue" + (q ? "?" + q : ""));
-    Object.assign(qst, { sections: d.sections, table: d.table, needs: d.needs_you, done: d.done_today, cancelled: d.cancelled_today, flow: d.flow || [], err: null });
+    Object.assign(qst, { sections: d.sections, table: d.table, needs: d.needs_you, done: d.done_today, cancelled: d.cancelled_today, finishedAt: d.finished_at, flow: d.flow || [], err: null });
     if (d.sel) qst.selRow = d.sel;
   } catch (e) { qst.err = e.message; }
   // A section id (`#queue/stuck`) scrolls there; an old state id was already moved to its section by app.js MOVED.
@@ -310,7 +310,7 @@ function qOpened() {
 }
 
 // Today's finished work, a count linked to Log, which owns it (dashboards rule 2).
-const qDoneLine = () => (qst.done == null ? "" : `<div class="cline qdone">Done ${qst.done}, cancelled ${qst.cancelled} today <a class="glink" href="#log/work">open in Log</a></div>`);
+const qDoneLine = () => (qst.done == null ? "" : `<div class="cline qdone">Done ${qst.done}, cancelled ${qst.cancelled} today <a class="glink" href="${esc(qst.finishedAt)}">open in Log</a></div>`);
 
 // The sections in the server's order, then the finished count; the search and its facets reach every row.
 function qBody() {

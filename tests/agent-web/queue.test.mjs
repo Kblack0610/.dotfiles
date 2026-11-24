@@ -128,13 +128,13 @@ const items = [
   item("r1", { state: "running", pr: "o/r#7", pr_label: "r#7", pr_url: "https://github.com/o/r/pull/7", timing: { in_state: 42, wait: 3, run: 42 } }),
   item("q1", { timing: { in_state: 10 } }),
 ];
-const data = { at: 1793942700, sections: sections(items), table, needs_you: 1, done_today: 9, cancelled_today: 2, sel: null };
+const data = { at: 1793942700, sections: sections(items), table, needs_you: 1, done_today: 9, cancelled_today: 2, finished_at: "#log/work", sel: null };
 // The server's answer for these rows; `rest` adds to the answer, `over` to a section's summary.
 const answer = (list, { over, rest } = {}) => ({ ...data, sections: sections(list, over), ...rest });
 // `load({ items })` seats the sections these rows fall in; a finished row a link opened is `opened`.
 const load = (d = data, over = {}) => {
   run("st.tab = 'queue'; st.arg = ''; st.views.queue = ''; Object.assign(qcd, { data: null, err: null, msg: '', promoting: null })");
-  Object.assign(run("qst"), { sections: d.items ? sections(d.items, d.over) : d.sections, table: d.table || table, needs: d.needs_you ?? 1, done: d.done_today ?? 9, cancelled: d.cancelled_today ?? 2, sel: "", selRow: null, err: null, stats: {}, flow: [], open: {}, hist: {}, candCounts: null, candErr: null, ...over });
+  Object.assign(run("qst"), { sections: d.items ? sections(d.items, d.over) : d.sections, table: d.table || table, needs: d.needs_you ?? 1, done: d.done_today ?? 9, cancelled: d.cancelled_today ?? 2, finishedAt: "#log/work", sel: "", selRow: null, err: null, stats: {}, flow: [], open: {}, hist: {}, candCounts: null, candErr: null, ...over });
 };
 const opened = (i) => load({ items: [] }, { sel: i.slug, selRow: i });
 const draw = () => { run("qst.render()"); return parts["q-list"].innerHTML; };
@@ -477,7 +477,7 @@ test("an item's slug opens that item; one outside the view is searched for once"
 });
 
 test("a link to a finished item opens it as its own card, since no section holds it", async () => {
-  const d = item("d1", { state: "done", status: "ok", pr: "o/r#7", pr_label: "r#7", pr_merged: true, cost_label: "$6.10" });
+  const d = item("d1", { state: "done", status: "ok", pr: "o/r#7", pr_label: "r#7", pr_url: "https://github.com/o/r/pull/7", pr_merged: true, cost_label: "$6.10" });
   load();
   reply = answer([], { rest: { sel: d } });
   run("st.tab = 'queue'; st.arg = 'd1'; st.views.queue = ''; refreshQueue()");
