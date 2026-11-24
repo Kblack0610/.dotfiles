@@ -1090,6 +1090,14 @@ impl App {
         });
     }
 
+    /// A By area across sprints read came back: kept only for the project it was asked for,
+    /// since one opened after it starts its own.
+    fn sprint_across_in(&mut self, project: &str, a: hub_core::sprint_page::Across) {
+        if let Some(r) = self.pv.across.as_mut().filter(|r| r.project == project) {
+            r.table = Some(a);
+        }
+    }
+
     /// A sprint page's read came back: kept only when it is still the version the view wants. A
     /// stale answer leaves `busy` alone, since the read for the version now shown is still out.
     fn sprint_page_in(&mut self, version: String, r: Result<hub_core::sprint_page::Page, String>) {
@@ -1937,6 +1945,23 @@ impl App {
     /// the Projects tab, on `r`, after a write, and on the tick while shown. Home reads the rows
     /// too, for NEEDS YOU's sheet rows. The vault has no
     /// watch here; `notes` is its writer.
+    /// The board feed came back: the selection follows its row, and a Sprint tab opened before
+    /// the first feed reads its across table now that the open window is known.
+    fn tasks_in(&mut self, f: Result<Feed, String>) {
+        if let Ok(new) = f.as_ref() {
+            let was = match &self.tasks {
+                Some(Ok(old)) => self.tv.selected(old).cloned(),
+                _ => None,
+            };
+            self.tv.reselect(was, new);
+        }
+        self.tasks = Some(f);
+        if self.tasks_read.done() {
+            self.read_tasks();
+        }
+        self.read_sprint_due();
+    }
+
     pub fn read_tasks(&mut self) {
         if self.tasks_read.want() {
             let tx = self.tx.clone();
@@ -2395,12 +2420,7 @@ impl App {
                 }
             }
             Msg::SprintPage(version, r) => self.sprint_page_in(version, *r),
-            Msg::SprintAcross(project, a) => {
-                // Kept only for the project it was asked for: another opened since starts its own.
-                if let Some(r) = self.pv.across.as_mut().filter(|r| r.project == project) {
-                    r.table = Some(*a);
-                }
-            }
+            Msg::SprintAcross(project, a) => self.sprint_across_in(&project, *a),
             Msg::StagesFile if self.ladder_shown() => self.read_ladder(),
             Msg::StagesFile => {}
             Msg::Deliverables(r) => {
@@ -2639,21 +2659,7 @@ impl App {
                     self.read_candidates();
                 }
             }
-            Msg::Tasks(f) => {
-                if let Ok(new) = f.as_ref() {
-                    let was = match &self.tasks {
-                        Some(Ok(old)) => self.tv.selected(old).cloned(),
-                        _ => None,
-                    };
-                    self.tv.reselect(was, new);
-                }
-                self.tasks = Some(*f);
-                if self.tasks_read.done() {
-                    self.read_tasks();
-                }
-                // A Sprint tab opened before the first feed waits on it for its open window.
-                self.read_sprint_due();
-            }
+            Msg::Tasks(f) => self.tasks_in(*f),
             Msg::Proposals(r) => {
                 self.proposals = Some(*r);
                 let n = self.prv.shown(open_rows(&self.proposals)).len();
