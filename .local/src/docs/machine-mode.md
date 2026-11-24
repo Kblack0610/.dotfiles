@@ -88,6 +88,8 @@ machine-mode release-lane                              # list them; an ended one
 
 It writes only the `<host>.reserve` key, `{"until": <epoch>}`, in the same ConfigMap. The governor holds that host at 0 until then, and ignores the key after, so a forgotten one ends by itself. It refuses a host the governor does not report on (`ci_governor_registered`), and only warns when Prometheus does not answer. It works from any machine with `CC_KUBE_CONTEXT`, pool runners or not, and does not change this machine's mode. When and why a cut uses it: the playground's `docs/operations/steam.md#the-release-lane` and the `release` skill.
 
+The pace numbers use the same read-time expiry for a timed value: `pace-conf set <KEY> <value> --until <time>` lays a window over a pace.conf key, and it ends by itself with no timer ([pace-conf.md](pace-conf.md)).
+
 ## Troubleshooting
 
 | What you see | Why | What to do |
