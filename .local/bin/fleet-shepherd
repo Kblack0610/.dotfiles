@@ -874,7 +874,7 @@ budget_page() { agent-notify -p high -t "$1" -r "file:$LEDGER/log.md" "$2" >/dev
 # by its own stowed wind-down.sh as close_sample does; a worker that does not answer (ssh's 255) is
 # neither closed nor paged, and the next check tries again.
 # takeover_blocker <branch> <cwd> <dirty> <item> <host|-> -> why no fresh agent can take the row over,
-# nothing when one can, or "-" when its worker did not answer over ssh.
+# nothing when one can; exit 2, nothing printed, when its worker did not answer over ssh.
 takeover_blocker() {
   local branch="$1" cwd="$2" dirty="$3" item="$4" host="$5" n out rc=0
   [ "$item" != - ] || { echo "no queue item owns it, so no agent would take it over"; return; }
@@ -882,10 +882,10 @@ takeover_blocker() {
   [ "$dirty" != x ] || { echo "its tree state could not be read"; return; }
   [ "$dirty" = 0 ] || { echo "its tree has uncommitted changes"; return; }
   pane_run "$host" git -C "$cwd" rev-parse -q --verify HEAD >/dev/null 2>&1 || rc=$?
-  [ "$host" = - ] || [ "$rc" != 255 ] || { echo -; return; }
+  [ "$host" = - ] || [ "$rc" != 255 ] || return 2
   [ "$rc" = 0 ] || { echo "its checkout cannot be read"; return; }
-  out="$(pane_run "$host" git -C "$cwd" branch -r --contains HEAD 2>/dev/null)" || rc=$?
-  [ "$host" = - ] || [ "$rc" != 255 ] || { echo -; return; }
+  rc=0; out="$(pane_run "$host" git -C "$cwd" branch -r --contains HEAD 2>/dev/null)" || rc=$?
+  [ "$host" = - ] || [ "$rc" != 255 ] || return 2
   [ -n "$(grep -m 1 . <<<"$out")" ] || { echo "its commits are not pushed"; return; }
   n="$(awk -F'\t' -v b="$branch" '$1 == "close" && $2 == b { n++ } END { print n + 0 }' "$TAKEOVERS")"
   [ "$n" -lt "$FLEET_SHEPHERD_TAKEOVER_TRIES" ] || echo "branch $branch was taken over $n times and stalled again"
@@ -905,8 +905,8 @@ takeover_sample() {
     awk -F'\t' -v s="$sid" -v f="$fact" '$1 == "page" && $2 == s && $3 == f { found = 1 } END { exit !found }' "$TAKEOVERS" && continue
     host="$(pane_host "$target")"
     [ "$host" = - ] || pane_lib || continue
-    why="$(takeover_blocker "$branch" "$cwd" "$dirty" "$item" "$host")"
-    [ "$why" != - ] || continue
+    rc=0; why="$(takeover_blocker "$branch" "$cwd" "$dirty" "$item" "$host")" || rc=$?
+    [ "$rc" != 2 ] || continue
     if [ -z "$why" ]; then
       pane_takes_keys "$host" "$srv" "$pane" || continue
       wdc=("$wd"); [ "$host" = - ] || wdc=(sh -c 'exec "$HOME/.local/src/tmux/wind-down.sh" "$@"' wind-down)
