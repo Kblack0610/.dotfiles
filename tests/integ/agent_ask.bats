@@ -557,29 +557,32 @@ SH
 }
 
 # 2026-11-10 audit: an answer to a held ask filed a board row for work the queue already held, and the
-# item waited up to 15 minutes for the timer's dispatch pass.
-@test "answer: the human's answer to an ask queue items hold files no board row and starts a dispatch pass; a dead-end ask files one row" {
+# item waited up to 15 minutes for the timer's dispatch pass. Now the answer is a wake (dispatch-event-wake).
+@test "answer: the human's answer to an ask queue items hold files no board row and wakes a dispatch kick; a dead-end ask files one row" {
   unset AGENT_ASK_NO_RESUME
+  export FLEET_DISPATCH_DIR="$SANDBOX/dispatch"
+  wake="$FLEET_DISPATCH_DIR/.wake"
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   local opts='go=run it now|later=run it later' a b c
   a="$("$AGENT_ASK" post --project demo --options "$opts" 'held?')"
   AQ="$AGENT_ASK_QUEUE_CMD" legacy held "tags: ask:$a=go+later" --project demo "the next phase" >/dev/null
   "$AGENT_ASK" answer "$a" go 2>/dev/null
-  assert_not_called 'agentctl start'
+  [ ! -e "$wake" ] || fail "an answer alone woke a kick before its delivery"
   "$AGENT_ASK" deliver --all 2>/dev/null
   assert_not_called 'chore(ask)'
-  assert_called 'agentctl start fleet-dispatch --no-block'
+  [ -s "$wake" ] || fail "the release of held items wrote no wake"
+  rm -f "$wake"
   # Negative control: no item waits on it and it has no resume, so the answer is filed where work is picked up.
   b="$("$AGENT_ASK" post --project demo --options "$opts" 'free?')"
   "$AGENT_ASK" answer "$b" later 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
   assert_called "chore(ask): free? -> answered: later (ask $b)"
-  assert_equal "$(grep -c 'agentctl start' "$NOTES_FIXTURE/calls.log")" 1
+  [ ! -e "$wake" ] || fail "an answer that released nothing wrote a wake"
   # Negative control: an answer the held item does not wait for releases nothing, so it is filed too.
   c="$("$AGENT_ASK" post --project demo --options "$opts" 'only on go?')"
   AQ="$AGENT_ASK_QUEUE_CMD" legacy picky "tags: ask:$c=go" --project demo "the go phase" >/dev/null
   "$AGENT_ASK" answer "$c" later 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
   assert_called "chore(ask): only on go? -> answered: later (ask $c)"
-  assert_equal "$(grep -c 'agentctl start' "$NOTES_FIXTURE/calls.log")" 1
+  [ ! -e "$wake" ] || fail "an answer the held item does not wait for wrote a wake"
 }
 
 @test "answer: the judge's answer to an ask queue items hold releases them like the human's" {

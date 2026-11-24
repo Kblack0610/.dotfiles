@@ -69,6 +69,8 @@ BRANCH=master
 # and SSH_KEY set above; its own defaults are the agent store's.
 # shellcheck source=../lib/store-remote.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/store-remote.sh"
+# shellcheck source=../lib/dispatch-wake.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/dispatch-wake.sh"
 TRIES=3
 # A sync waits this long for another one on this machine to finish; past it the write stays
 # committed or on disk, and the next sync pushes it.
@@ -397,6 +399,30 @@ heal_head() {
 }
 
 
+# This machine's own state in the store's tree: written here, read here, never shared. A shared copy
+# is rewritten by every wake, so two peers' commits of it conflict and stop the sync (the panes file,
+# ar-3327). They go in this clone's info/exclude, as the merge attributes go in info/attributes.
+LOCAL_ONLY=(dispatch/.wake dispatch/.kick)
+apply_local_excludes() {
+  local ex a
+  ex=$(g rev-parse --path-format=absolute --git-path info/exclude) && mkdir -p "$(dirname "$ex")" || return 0
+  for a in "${LOCAL_ONLY[@]}"; do
+    grep -qxF "$a" "$ex" 2>/dev/null || printf '%s\n' "$a" >> "$ex"
+  done
+}
+
+# wake_on_pull -- a sync that pulled an item queued or closed wakes a fleet-dispatch kick (dispatch_wake) on
+# the lease holder, which is where a kick runs: an add or close made in a worker's store clone reaches the
+# holder only through this pull, and the holder's own writers touch .wake themselves (plan
+# dispatch-event-wake, step 5). SYNC_BASE is HEAD with this machine's own writes committed, so only
+# what came in differs from it.
+wake_on_pull() {
+  [ "$STORE_NAME" = agent ] && [ -n "${SYNC_BASE:-}" ] || return 0
+  g diff --diff-filter=A --name-only "$SYNC_BASE" HEAD -- queue/queued queue/done 2>/dev/null | grep -q . || return 0
+  fleet-lease held >/dev/null 2>&1 || return 0
+  dispatch_wake "store-sync pulled a change in queue/"
+}
+
 # sync_one <remote>: fetch it, merge it into HEAD, push HEAD to it.
 # 0 the remote holds HEAD, 1 unreachable (FETCH_ERR says why), 2 a merge conflict, 3 the push
 # failed (rejected because another machine pushed first, or a transient error).
@@ -533,6 +559,7 @@ cmd_sync() {
   load_conf
   apply_remotes
   apply_merge_drivers
+  apply_local_excludes
   # An interrupted fetch leaves .git/objects/pack/tmp_pack_*, which only gc removes: on 2026-09-14
   # a flapping notes remote left 4 GB of them in 21 minutes. The age floor spares a live transfer.
   find "$STORE/.git/objects/pack" -maxdepth 1 -name 'tmp_pack_*' -mmin +60 -delete 2>/dev/null
@@ -540,6 +567,8 @@ cmd_sync() {
   heal_head
   commit_paths "$HOST_TAG store-sync $mode $(date '+%Y-%m-%d_%H:%M:%S')" "${paths[@]}" \
     || { log "ERROR: could not commit ${paths[*]}"; exit "$EXIT_NO_COMMIT"; }
+  SYNC_BASE=$(g rev-parse HEAD 2>/dev/null)
+  trap wake_on_pull EXIT
 
   local round=0 again r rc rs=() conflict=""
   declare -A down=() why=()

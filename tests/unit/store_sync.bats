@@ -1061,3 +1061,47 @@ lose_head_tree() {
   refute_output --partial "trees missing"
   git -C "$SANDBOX/a" cat-file -e 'HEAD:new.md'
 }
+
+# plan dispatch-event-wake, step 5: an add or close made in a worker's clone reaches the lease holder only
+# through its pull, so the holder's sync is what wakes the kick; the holder's own writers touch .wake.
+@test "a pull that brings in a queued or done item wakes a dispatch kick on the lease holder only (dispatch-event-wake)" {
+  export FLEET_DISPATCH_DIR="$SANDBOX/dispatch"
+  printf '#!/bin/sh\nexit "${LEASE_RC:-0}"\n' > "$SANDBOX/bin/fleet-lease"; chmod +x "$SANDBOX/bin/fleet-lease"
+  peer a; peer b
+  mkdir -p "$SANDBOX/b/queue/queued"
+  echo 'state: queued' > "$SANDBOX/b/queue/queued/one.md"
+  run on b
+  assert_success
+  [ ! -e "$FLEET_DISPATCH_DIR/.wake" ] || fail "the clone that wrote the item woke a kick for its own write"
+  # A peer that does not hold the lease runs no kick, so it writes no wake.
+  LEASE_RC=1 run on a
+  assert_success
+  [ -e "$SANDBOX/a/queue/queued/one.md" ] || fail "the pull did not bring the item in"
+  [ ! -e "$FLEET_DISPATCH_DIR/.wake" ] || fail "a peer without the lease wrote a wake"
+  # Negative control: a pull that changed nothing under queue/queued or queue/done wakes nothing.
+  echo 'state: other' > "$SANDBOX/b/queue/item.md"
+  run on b
+  run on a
+  [ ! -e "$FLEET_DISPATCH_DIR/.wake" ] || fail "a pull of another path wrote a wake"
+  # The holder: the next arrival wakes it.
+  mkdir -p "$SANDBOX/b/queue/done/2026-11-23"
+  echo 'state: done' > "$SANDBOX/b/queue/done/2026-11-23/two.md"
+  run on b
+  run on a
+  assert_success
+  [ -s "$FLEET_DISPATCH_DIR/.wake" ] || fail "the lease holder's pull of a done item wrote no wake"
+}
+
+@test "a sync keeps the machine-local dispatch files out of the shared store (dispatch-event-wake)" {
+  export FLEET_DISPATCH_DIR="$SANDBOX/a/dispatch"
+  peer a
+  run on a
+  grep -qxF 'dispatch/.wake' "$SANDBOX/a/.git/info/exclude"
+  grep -qxF 'dispatch/.kick' "$SANDBOX/a/.git/info/exclude"
+  mkdir -p "$SANDBOX/a/dispatch"
+  echo 1 > "$SANDBOX/a/dispatch/.wake"; : > "$SANDBOX/a/dispatch/.kick"; echo 1 > "$SANDBOX/a/dispatch/log.md"
+  run on a
+  assert_success
+  run git -C "$SANDBOX/a" ls-files dispatch
+  assert_output 'dispatch/log.md'
+}

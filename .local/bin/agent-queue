@@ -124,6 +124,8 @@ PROJECT_MAP_FILE="$AQ_MAP"
 . "${MACHINE_MODE_LIB:-$AQ_BIN/../lib/machine-mode.sh}"
 # shellcheck source=../lib/end-reasons.sh
 . "$AQ_BIN/../lib/end-reasons.sh"
+# shellcheck source=../lib/dispatch-wake.sh
+. "$AQ_BIN/../lib/dispatch-wake.sh"
 # so_pr_view: the one forge rule pr_state reads a pr: hold's PR by.
 # shellcheck source=../lib/session-outcomes.sh
 . "$AQ_BIN/../lib/session-outcomes.sh"
@@ -231,8 +233,14 @@ item_row() {
 # item_event <action> <file> [record flags...] -> the item's write on the chain log (stage queue),
 # naming the item, its project, its row's key (item_row), its PR and merge commit.
 item_event() {
-  local action=$1 f=$2 row title
+  local action=$1 f=$2 row title to="" i
   shift 2
+  # One wake for the fleet-dispatch kick (dispatch_wake) on the two transitions an event should act on:
+  # an item queued (an add) and an item closed (its slot is free). An item started, set or claimed
+  # is no event, so a kick's own starts never wake the next kick.
+  local -a rec=("$@")
+  for ((i = 0; i + 1 < ${#rec[@]}; i++)); do [ "${rec[i]}" = --to ] && to=${rec[i + 1]}; done
+  case "$action:$to" in item-added:queued | *:done) dispatch_wake "$action $(fm_get "$f" slug)" ;; esac
   row="$(item_row "$f")" title="$(fm_get "$f" title)"
   chain_event queue "$action" "$(fm_get "$f" project)" "${title:-$(fm_body "$f" | awk 'NR==1')}" \
     --item "$(fm_get "$f" slug)" --id "${row:+${row#*:}}" --pr "$(fm_get "$f" pr)" \
