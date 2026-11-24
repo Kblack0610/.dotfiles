@@ -229,6 +229,18 @@ as_session() { mkdir -p "$SANDBOX/$1" && cd "$SANDBOX/$1"; }
   refute_output --partial "since: $first"
 }
 
+@test "a re-set as another kind, or over a since no date reads, starts since afresh" {
+  "$HOLD" set unity --by fleet-pace "hot"
+  sed -i 's/^since: .*/since: 2026-11-01T00:00:00-0800/' "$AGENT_HOLD_DIR/unity"
+  "$HOLD" set unity --kind resource --by human "maintenance"
+  run "$HOLD" show unity
+  refute_output --partial 'since: 2026-11-01T00:00:00-0800'
+  sed -i 's/^since: .*/since: /' "$AGENT_HOLD_DIR/unity"
+  "$HOLD" set unity --kind resource --by human "maintenance, longer"
+  run "$HOLD" show unity
+  assert_output --regexp 'since: [0-9]{4}-'
+}
+
 @test "a set over a claim starts its own since, not the claim's" {
   "$HOLD" claim mac-desktop --by agent-1 "store forms"
   sed -i 's/^since: .*/since: 2026-11-01T00:00:00-0800/' "$AGENT_HOLD_DIR/mac-desktop"

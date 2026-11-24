@@ -18,9 +18,10 @@
 #                                   a session by its Claude session id (stable), or its fleet-sessions
 #                                   target (hub/dotfiles:3, or dotfiles:3) until windows renumber (a
 #                                   bare tmux session name matches only a one-window session); or a
-#                                   board row, epic or plan id (hc-952, ar-4938, a plan's slug), which
-#                                   the gates read for the rows they cover. A human's narrowing of
-#                                   its own hold is a grant, never more reason text
+#                                   board row, epic or plan id (hc-952, ar-4938, a plan's slug). check
+#                                   matches only session names; no gate reads a row, epic or plan
+#                                   grant yet (ar-5235 phase 2), list and the preflight show it. A
+#                                   human's narrowing of its own hold is a grant, not reason text
 #   agent-hold lower <resource> <pid>...   CPUWeight=1 on each pid's tmux pane scope or
 #                                   agentctl unit, recorded on the hold; release restores it
 #   agent-hold release <resource>
@@ -183,10 +184,14 @@ cmd_set() {
 
   local f="$HOLD_ROOT/$resource" tmp lowered since=""
   # A re-set keeps what `lower` changed, so the release that ends it still restores it, and its
-  # since: the hold has stood since it was first set, which is what hold-age ages. A claim's since
-  # is its holder's, not this hold's.
+  # since, while it stays the same kind of hold: it has stood since it was first set, which is what
+  # hold-age ages. A new kind is a new hold (a load hold re-set as a human's lockdown, a set over a
+  # claim), and a since no date reads is repaired, not carried forward.
   lowered="$(field "$f" lowered)"
-  [ "$(field "$f" kind)" = claim ] || since="$(field "$f" since)"
+  if [ -f "$f" ] && [ "$(hold_kind "$f")" = "$kind" ]; then
+    since="$(field "$f" since)"
+    { [ -n "$since" ] && date -d "$since" +%s >/dev/null 2>&1; } || since=""
+  fi
   tmp="$(mktemp "$HOLD_ROOT/.${resource}.XXXXXX")" || exit 1
   {
     printf 'resource: %s\n' "$resource"
@@ -470,7 +475,7 @@ cmd_show() {
 
 cmd_classes() { printf '%s\n' "$DESK_CLASSES"; }
 
-usage() { sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; }
 
 verb="${1:-}"; shift || true
 case "$verb" in
