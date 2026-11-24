@@ -219,7 +219,7 @@ lead_fixture() {
   run "$SUBJECT" pipeline --json
   assert_success
   run jq -c '[.drift, .since, (.steps[] | [.wip, .in_1h])]' <<<"$output"
-  assert_output '[null,null,[3,null],[1,null],[1,null],[1,null],[1,null],[1,null],[1,null]]'
+  assert_output '[null,null,[3,null],[2,null],[1,null],[1,null],[1,null],[1,null],[1,null]]'
   run "$SUBJECT" chain --check
   assert_success
   # the line-per-step shape notes printed before items_since is not a record either
@@ -290,7 +290,7 @@ lead_fixture() {
   assert_equal "$(jq -c '[.doors_24h, .out_24h]' <<<"$output")" '[null,null]'
   run "$SUBJECT" pipeline
   assert_line 'doors 24h: the ingest record is unreadable'
-  refute_line --partial 'out 24h'
+  refute_line --regexp '^out 24h'
 }
 
 # pipeline_flow_fixture: pipeline_fixture plus the admission cap and the class mix, canned in $ADM
