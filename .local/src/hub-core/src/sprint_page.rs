@@ -12,6 +12,7 @@ use crate::links::{Kind, Link};
 use crate::project_sprints::{self, Past};
 use crate::session_actions::Runner;
 use crate::table::{Row, Val};
+use crate::tasks::Feed;
 
 /// One row of the window with its outcome, as notes-cli prints it, plus its group.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -164,11 +165,18 @@ fn by_weight(lines: &mut [AreaLine]) {
 }
 
 /// One group's line of the By area across sprints table: its By area `pts` cell in each
-/// version, `-` where the window had no row of the group.
+/// version, None where the window had no row of the group.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct AcrossLine {
     pub group: String,
-    pub cells: Vec<String>,
+    pub cells: Vec<Option<String>>,
+}
+
+/// A column of the By area across sprints table: its window and that window's page.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct AcrossHead {
+    pub version: String,
+    pub link: Link,
 }
 
 /// A project's By area across sprints table, under its Sprint tab's Past: one line per group,
@@ -176,9 +184,7 @@ pub struct AcrossLine {
 /// table and the window's page say the same numbers.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Across {
-    pub versions: Vec<String>,
-    /// Each version's page, its column head's link.
-    pub links: Vec<Link>,
+    pub heads: Vec<AcrossHead>,
     pub lines: Vec<AcrossLine>,
     /// What could not be read: the history, the groups file, or a window.
     pub errors: Vec<String>,
@@ -207,13 +213,15 @@ pub fn across(pages: &[Page], profile: &str, project: &str) -> Across {
         p.by_area
             .iter()
             .find(|a| a.group == group)
-            .map_or_else(|| "-".to_string(), |a| a.pts.clone())
+            .map(|a| a.pts.clone())
     };
     Across {
-        versions: pages.iter().map(|p| p.version.clone()).collect(),
-        links: pages
+        heads: pages
             .iter()
-            .map(|p| link(profile, project, &p.version))
+            .map(|p| AcrossHead {
+                version: p.version.clone(),
+                link: link(profile, project, &p.version),
+            })
             .collect(),
         lines: total
             .iter()
@@ -229,7 +237,7 @@ pub fn across(pages: &[Page], profile: &str, project: &str) -> Across {
 /// The project's open windows in the board feed: the column a scored history lacks (a queued
 /// window has no row done yet, so it has none).
 pub fn open_windows(
-    f: &crate::tasks::Feed,
+    f: &Feed,
     profile: &str,
     project: &str,
     now: chrono::NaiveDateTime,
@@ -245,7 +253,7 @@ pub fn open_windows(
 /// caller knows of beside them (the open one), each read as its page is. A window that fails to
 /// read is said in `errors` and left out, never drawn as an empty column.
 pub fn read_across(
-    runner: &dyn Runner,
+    runner: &(dyn Runner + Sync),
     areas: Result<Areas, String>,
     profile: &str,
     project: &str,
@@ -258,24 +266,32 @@ pub fn read_across(
         };
     }
     let mut errors = Vec::new();
-    let mut versions = windows.to_vec();
-    match project_sprints::past(runner, project) {
-        Ok(h) => versions.extend(h.into_iter().map(|p| p.version)),
-        Err(e) => errors.push(e),
-    }
+    let mut versions = known(runner, project, windows, &mut errors);
     in_order(&mut versions);
-    let groups = areas.unwrap_or_else(|e| {
-        errors.push(e);
-        Areas::default()
+    let groups = groups_or_none(areas, &mut errors);
+    // One notes read per window, side by side: they are independent and each is a process.
+    let reads: Vec<Result<Page, String>> = std::thread::scope(|s| {
+        let jobs: Vec<_> = versions
+            .iter()
+            .map(|v| {
+                let groups = &groups;
+                s.spawn(move || {
+                    fetch(runner, project, v)
+                        .and_then(|json| build(&json, groups, profile, project, vec![]))
+                        .map_err(|e| format!("{v}: {e}"))
+                })
+            })
+            .collect();
+        jobs.into_iter()
+            .map(|j| {
+                j.join()
+                    .unwrap_or_else(|_| Err("a window read panicked".into()))
+            })
+            .collect()
     });
-    let pages: Vec<Page> = versions
-        .iter()
-        .filter_map(|v| {
-            fetch(runner, project, v)
-                .and_then(|json| build(&json, &groups, profile, project, vec![]))
-                .map_err(|e| errors.push(format!("{v}: {e}")))
-                .ok()
-        })
+    let pages: Vec<Page> = reads
+        .into_iter()
+        .filter_map(|r| r.map_err(|e| errors.push(e)).ok())
         .collect();
     let mut out = across(&pages, profile, project);
     out.errors = errors;
@@ -373,6 +389,29 @@ fn fetch(runner: &dyn Runner, project: &str, version: &str) -> Result<String, St
     ])
 }
 
+/// The scored versions notes lists beside `windows`; a history that fails to read is said.
+fn known(
+    runner: &dyn Runner,
+    project: &str,
+    windows: &[String],
+    errors: &mut Vec<String>,
+) -> Vec<String> {
+    let mut all = windows.to_vec();
+    match project_sprints::past(runner, project) {
+        Ok(h) => all.extend(h.into_iter().map(|p| p.version)),
+        Err(e) => errors.push(e),
+    }
+    all
+}
+
+/// The groups map, or none (each scope stands alone) with why it could not be read.
+fn groups_or_none(areas: Result<Areas, String>, errors: &mut Vec<String>) -> Areas {
+    areas.unwrap_or_else(|e| {
+        errors.push(e);
+        Areas::default()
+    })
+}
+
 /// Read one sprint's page. `windows` are the versions the caller knows of beside the scored
 /// ones (the open and queued windows), for the links to the next and the previous.
 pub fn read(
@@ -391,15 +430,8 @@ pub fn read(
     }
     let out = fetch(runner, project, version)?;
     let mut errors = Vec::new();
-    let mut known = windows.to_vec();
-    match project_sprints::past(runner, project) {
-        Ok(h) => known.extend(h.into_iter().map(|p| p.version)),
-        Err(e) => errors.push(e),
-    }
-    let groups = areas.unwrap_or_else(|e| {
-        errors.push(e);
-        Areas::default()
-    });
+    let known = known(runner, project, windows, &mut errors);
+    let groups = groups_or_none(areas, &mut errors);
     let mut p = build(&out, &groups, profile, project, known)?;
     p.errors = errors;
     Ok(p)
@@ -657,15 +689,22 @@ mod tests {
         )
         .unwrap();
         let a = across(&[p4.clone(), p5.clone()], "bnb", "unity");
-        assert_eq!(a.versions, ["v0.5.4", "v0.5.5"]);
-        assert_eq!(a.links[1].href(), "#projects/bnb%2Funity/sprint/v0.5.5");
+        let versions: Vec<&str> = a.heads.iter().map(|h| h.version.as_str()).collect();
+        assert_eq!(versions, ["v0.5.4", "v0.5.5"]);
+        assert_eq!(
+            a.heads[1].link.href(),
+            "#projects/bnb%2Funity/sprint/v0.5.5"
+        );
         let lines: Vec<(&str, Vec<&str>)> = a
             .lines
             .iter()
             .map(|l| {
                 (
                     l.group.as_str(),
-                    l.cells.iter().map(String::as_str).collect(),
+                    l.cells
+                        .iter()
+                        .map(|c| c.as_deref().unwrap_or("-"))
+                        .collect(),
                 )
             })
             .collect();
@@ -682,8 +721,8 @@ mod tests {
             for l in &a.lines {
                 let on_page = p.by_area.iter().find(|x| x.group == l.group);
                 assert_eq!(
-                    on_page.map_or("-", |x| x.pts.as_str()),
-                    l.cells[col],
+                    on_page.map(|x| x.pts.as_str()),
+                    l.cells[col].as_deref(),
                     "the table and the page agree"
                 );
             }
@@ -719,12 +758,15 @@ mod tests {
             &["v0.5.6".into(), "latest".into(), "v0.5.5".into()],
         );
         assert_eq!(
-            a.versions,
+            a.heads
+                .iter()
+                .map(|h| h.version.as_str())
+                .collect::<Vec<_>>(),
             ["v0.5.5", "v0.5.6"],
             "once each, in version order, never a name notes would refuse"
         );
         assert_eq!(a.errors, ["v0.5.4: no sprints/v0.5.4.md"]);
-        assert_eq!(a.lines[0].cells, ["3/5", "3/5"]);
+        assert_eq!(a.lines[0].cells, [Some("3/5".into()), Some("3/5".into())]);
         struct Never;
         impl Runner for Never {
             fn run(&self, _: &[String]) -> Result<String, String> {

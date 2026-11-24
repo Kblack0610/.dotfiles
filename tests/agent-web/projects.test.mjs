@@ -362,8 +362,8 @@ test("Projects > Sprints is one row per window, its version a link to its page, 
 
 test("a project's Sprint tab has its open window, the queued one, and the scored past newest first, each version a link", async () => {
   const past = [{ version: "v0.2.0", link: "#projects/bnb%2Fdemo/sprint/v0.2.0", opened: "11-10", cut: "11-17", committed: 5, delivered: 4, carried: 1, dropped: 0, interrupted: 2, timing: "1d late", line: "delivered 4 of 5" }, { version: "v0.1.0", link: "#projects/bnb%2Fdemo/sprint/v0.1.0", opened: null, cut: null, committed: 3, delivered: 3, carried: 0, dropped: 0, interrupted: 0, timing: null, line: "delivered 3 of 3" }];
-  const areas = { versions: ["v0.1.0", "v0.2.0"], links: ["#projects/bnb%2Fdemo/sprint/v0.1.0", "#projects/bnb%2Fdemo/sprint/v0.2.0"],
-    lines: [{ group: "Tests, CI and benches", cells: ["3/8", "48/80"] }, { group: "Engine", cells: ["-", "40/90"] }], errors: ["v0.0.9: no sprints/v0.0.9.md"] };
+  const areas = { heads: ["v0.1.0", "v0.2.0"].map((version) => ({ version, link: `#projects/bnb%2Fdemo/sprint/${version}` })),
+    lines: [{ group: "Tests, CI and benches", cells: ["3/8", "48/80"] }, { group: "Engine", cells: [null, "40/90"] }], errors: ["v0.0.9: no sprints/v0.0.9.md"] };
   ctx.answers = { "/api/projects/demo/page": { ...page, sprint_past: past }, "/api/sprints?scope=bnb%2Fdemo": sprAnswer([sprRow({}), sprQueued()], { areas }) };
   vm.runInContext("sprst.data = null", ctx);
   draw(list([card({})]), "bnb/demo");

@@ -1167,32 +1167,9 @@ fn sprint(
     ));
     if pg.sprint_past.is_empty() {
         out.push(none("No window has been cut with a score yet."));
-    } else {
-        past(pg, p, w, &mut out, &mut pick);
+        out.extend(across_section(pv, p, w));
+        return (out, at);
     }
-    let across = pv.across.as_ref().and_then(|r| r.table.as_ref());
-    out.push(sec_head(
-        "BY AREA ACROSS SPRINTS",
-        &across.map_or(String::new(), |a| a.lines.len().to_string()),
-        "  points delivered of the area's, per window",
-        p,
-        w,
-    ));
-    match across {
-        None => out.push(none("reading the sprints...")),
-        Some(a) => out.extend(across_lines(a, p, w)),
-    }
-    (out, at)
-}
-
-/// The scored past, newest first, with the picked window's line styled.
-fn past(
-    pg: &Page,
-    p: Palette,
-    w: usize,
-    out: &mut Vec<Line<'static>>,
-    pick: &mut impl FnMut(&mut Vec<Line<'static>>, usize, Vec<&str>),
-) {
     let dash = opt_dash;
     let cells = pg
         .sprint_past
@@ -1236,10 +1213,29 @@ fn past(
         .fit(w, p.head()),
     );
     pick(
-        out,
+        &mut out,
         from,
         pg.sprint_past.iter().map(|s| s.version.as_str()).collect(),
     );
+    out.extend(across_section(pv, p, w));
+    (out, at)
+}
+
+/// The Sprint tab's last section, By area across sprints, once its worker read lands.
+fn across_section(pv: &ProjView, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let across = pv.across.as_ref().and_then(|r| r.table.as_ref());
+    let mut out = vec![sec_head(
+        "BY AREA ACROSS SPRINTS",
+        &across.map_or(String::new(), |a| a.lines.len().to_string()),
+        "  points delivered of the area's, per window",
+        p,
+        w,
+    )];
+    match across {
+        None => out.push(Line::styled("  reading the sprints...", p.dim())),
+        Some(a) => out.extend(across_lines(a, p, w)),
+    }
+    out
 }
 
 /// By area across sprints: one line per area group, one column per window, oldest first, each
@@ -1255,16 +1251,16 @@ fn across_lines(a: &sprint_page::Across, p: Palette, w: usize) -> Vec<Line<'stat
         out.push(Line::styled("  No window has a row yet.", p.dim()));
         return out;
     }
-    let n = a.versions.len();
+    let n = a.heads.len();
     let head: Vec<Cell> = std::iter::once("AREA")
-        .chain(a.versions.iter().map(String::as_str))
+        .chain(a.heads.iter().map(|h| h.version.as_str()))
         .map(|h| cell(h, p.head()))
         .collect();
     let rows = a.lines.iter().map(|l| {
         std::iter::once(Cell::from(l.group.clone()))
-            .chain(l.cells.iter().map(|c| match c.as_str() {
-                "-" => cell("-", p.dim()),
-                _ => c.clone().into(),
+            .chain(l.cells.iter().map(|c| match c {
+                Some(pts) => pts.clone().into(),
+                None => cell("-", p.dim()),
             }))
             .collect()
     });

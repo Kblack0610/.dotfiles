@@ -127,8 +127,8 @@ function sprAcross(a) {
   if (!a) return `<div class="muted">Reading the sprints...</div>`;
   const errs = a.errors.map((e) => `<div class="panel down">${esc(e)}</div>`).join("");
   if (!a.lines.length) return errs + `<div class="card muted">No window has a row yet.</div>`;
-  const head = `<tr><th data-role="lead" data-label="AREA">AREA</th>${a.versions.map((v, i) => `<th class="n" data-label="${esc(v)}">${tblLink(a.links[i], v)}</th>`).join("")}</tr>`;
-  const row = (l) => `<tr><td>${esc(l.group)}</td>${l.cells.map((c) => `<td class="n${c === "-" ? " muted" : ""}">${esc(c)}</td>`).join("")}</tr>`;
+  const head = `<tr><th data-role="lead" data-label="AREA">AREA</th>${a.heads.map((h) => `<th class="n" data-label="${esc(h.version)}">${tblLink(h.link, h.version)}</th>`).join("")}</tr>`;
+  const row = (l) => `<tr><td>${esc(l.group)}</td>${l.cells.map((c) => (c == null ? `<td class="n muted">-</td>` : `<td class="n">${esc(c)}</td>`)).join("")}</tr>`;
   return errs + `<div class="panel scroll"><table class="tbl">${head}${a.lines.map(row).join("")}</table></div>`;
 }
 
