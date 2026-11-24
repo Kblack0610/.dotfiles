@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # quarantine-expiry: each open owner row whose quarantine entries end soon gets one detail line,
 # once per end date, the row a dup-closed owner was folded into included; an owner with no open
-# row is listed, not noted; nothing ending is quiet;
+# row is listed, not noted, and trips; every row noted reads OK; nothing ending is quiet;
 # and a quarantine or board that cannot be read is never read as all clear.
 
 setup() {
@@ -53,6 +53,11 @@ soon() { printf '%s\n' "$@" > "$SANDBOX/soon.tsv"; }
   assert_line --index 1 'ucp-2: 2 entries end 2026-11-24 (3d) in Org/play; noted'
   assert_line --index 2 'ucp-3: 1 entry ends 2026-11-24 (3d) in Org/play; the row is on no sheet, so no open row owns them'
   assert_line --index -1 '6 quarantine entries over 3 owner rows end soon (next 2026-11-24, 3d): 2 noted, 1 with no open owner row'
+  # the same rows once ucp-3 is gone: both open rows noted, nothing unowned, so OK
+  soon $'Org/play\tucp-2\t2\t2026-11-24\t3'
+  run "$REPO_ROOT/.local/bin/quarantine-expiry"
+  assert_success
+  assert_line --index -1 '2 quarantine entries over 1 owner row end soon (next 2026-11-24, 3d): 1 noted'
   run cat "$SANDBOX/notes.log"
   assert_line --index 0 --profile
   assert_line --index 1 bnb
@@ -118,7 +123,7 @@ soon() { printf '%s\n' "$@" > "$SANDBOX/soon.tsv"; }
     && mv "$SANDBOX/b" "$SANDBOX/board.json"
   soon $'Org/play\tucp-60\t1\t2026-11-24\t3'
   run "$REPO_ROOT/.local/bin/quarantine-expiry"
-  assert_failure 1
+  assert_success
   assert_line --index 0 'ucp-60: 1 entry ends 2026-11-24 (3d) in Org/play; noted on the row now'
   run cat "$SANDBOX/notes.log"
   assert_line -- '- [ ] fix(tests): later #v0.5.6 <!-- id:ucp-60 -->'
@@ -127,7 +132,7 @@ soon() { printf '%s\n' "$@" > "$SANDBOX/soon.tsv"; }
 @test "a row already noted for a later end date is noted again for the new one" {
   soon $'Org/play\tucp-2\t2\t2026-12-08\t2'
   run "$REPO_ROOT/.local/bin/quarantine-expiry"
-  assert_failure 1
+  assert_success
   assert_line --index 0 'ucp-2: 2 entries end 2026-12-08 (2d) in Org/play; noted on the row now'
   run cat "$SANDBOX/notes.log"
   assert_line --partial 'quarantine ends 2026-12-08:'
@@ -149,7 +154,7 @@ soon() { printf '%s\n' "$@" > "$SANDBOX/soon.tsv"; }
     $'Org/play\tucp-74\t1\t2026-11-24\t3' $'Org/play\tucp-75\t1\t2026-11-24\t3' $'Org/play\tucp-76\t1\t2026-11-24\t3' \
     $'Org/play\tucp-77\t1\t2026-11-24\t3'
   run "$REPO_ROOT/.local/bin/quarantine-expiry"
-  assert_failure 1
+  assert_success
   assert_line --index -1 '7 quarantine entries over 7 owner rows end soon (next 2026-11-24, 3d): 7 noted'
   run cat "$SANDBOX/notes.log"
   assert_line --partial '7 entries of this row and of the rows closed into it as dups (ucp-71, ucp-72, ucp-73, ucp-74, ucp-75 and 2 more) stop'
