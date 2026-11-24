@@ -604,6 +604,16 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   assert_not_called 'ssh'
 }
 
+@test "local_share reads the pass's real free units (LOCAL_FREE), never the UNITS_FREE a floor's start overrides" {
+  TARGET=25 LOCAL_FREE=25 UNITS_FREE=2 run local_share
+  full=$output
+  TARGET=25 LOCAL_FREE=25 UNITS_FREE=25 run local_share
+  assert_output "$full"
+  # NEGATIVE CONTROL: spent units lower it.
+  TARGET=25 LOCAL_FREE=5 UNITS_FREE=25 run local_share
+  [ "$output" -lt "$full" ] || fail "5 of 25 free units read $output, not under $full"
+}
+
 @test "room_share is the least of free units, CPU headroom and memory above the floor; an unread memory does not count" {
   export MAX_LOAD=0.7 DISPATCH_HOST_MEM_MIN_PCT=20
   # 4 of 8 units free is 50; 16 cores x 0.7 = 11.2 of capacity, load 2.8 leaves 75; memory 60% is 50 of the 80 above the 20 floor.

@@ -5900,7 +5900,9 @@ start_items() {
       [ -z "$plan" ] || PLANS_STARTED="${PLANS_STARTED:+$PLANS_STARTED$'\n'}$plan"
     fi
     if [ "$rc" -eq 0 ] && [ -n "$PLACE_HOST" ]; then HOST_FREE[$PLACE_HOST]=$(( HOST_FREE[$PLACE_HOST] - $(weight_units "$(jq -r '.weight // "light"' <<<"$PICKED")") ))
-    elif [ "$rc" -eq 0 ]; then UNITS_FREE=$(( UNITS_FREE - $(weight_units "$(jq -r '.weight // "light"' <<<"$PICKED")") ))
+    elif [ "$rc" -eq 0 ]; then
+      UNITS_FREE=$(( UNITS_FREE - $(weight_units "$(jq -r '.weight // "light"' <<<"$PICKED")") ))
+      LOCAL_FREE=$(( ${LOCAL_FREE:-$TARGET} - $(weight_units "$(jq -r '.weight // "light"' <<<"$PICKED")") ))
     fi
     [ "$rc" -eq 4 ] && taken=$((taken + 1)) || n=$((n + 1))
   done
@@ -6124,7 +6126,7 @@ preempt_pick() {
   # open worker) it would interrupt a session for a start that cannot run here.
   [ "${OTHER_PASS:-0}" = 0 ] && [ -n "${PICK_RESERVED:-}" ] && [ -z "$(machine_why)" ] && preempt_for "$PICK_RESERVED" || return 1
   PREEMPT_PARKED=1
-  UNITS_FREE=$(( TARGET - $(live_units) ))
+  UNITS_FREE=$(( TARGET - $(live_units) )) LOCAL_FREE=$UNITS_FREE
   pick_item "$PICK_RESERVED"
 }
 
@@ -6331,17 +6333,23 @@ room_share() {
 
 # mem_avail_pct -> this machine's MemAvailable as a whole percent of MemTotal, -1 when unread.
 mem_avail_pct() {
-  awk '/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {print t ? int(a * 100 / t) : -1}' "$DISPATCH_PROC_MEMINFO" 2>/dev/null || echo -1
+  local out
+  out=$(awk '/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {print t ? int(a * 100 / t) : -1}' "$DISPATCH_PROC_MEMINFO" 2>/dev/null)
+  echo "${out:--1}"
 }
 
-# local_share -> this machine's free share (room_share): its UNITS_FREE of the pace TARGET, the pace load
-# and the starts still loading (pace_load, pending_load), and its MemAvailable.
+# local_share -> this machine's free share (room_share): its LOCAL_FREE units of the pace TARGET, the pace load
+# and the starts still loading (pace_load, pending_load), and its MemAvailable. LOCAL_FREE is the pass's real
+# free count, set by pass_room and spent by each local start: UNITS_FREE is overridden to a made-up count on
+# a floor's start_items, so it cannot say how much room this machine has. A worker's own load has no
+# pending term (its probe is the only reading), so a worker just given starts reads emptier than it is
+# until its units, which each start spends, catch up.
 local_share() {
   local cores load pend
   cores=$(nproc 2>/dev/null || echo 1)
   read -r load _ < <(pace_load "$cores")
   read -r _ pend < <(pending_load)
-  room_share "${UNITS_FREE:-$TARGET}" "$TARGET" "$load" "$cores" "$(mem_avail_pct)" "$pend"
+  room_share "${LOCAL_FREE:-$TARGET}" "$TARGET" "$load" "$cores" "$(mem_avail_pct)" "$pend"
 }
 
 # host_share <name> -> that worker's free share (room_share), from the probe probe_hosts made.
@@ -8037,6 +8045,7 @@ pass_room() {
   # The target counts every live session, hand starts too. At it no unit is free, so only an urgent item or
   # fresh ask that parks a runner session for itself starts (preempt_pick): the total stays where it is.
   gap=$(( TARGET - TOTAL_LIVE )); [ "$gap" -gt 0 ] || { gap=0; UNITS_FREE=0; }
+  LOCAL_FREE=$UNITS_FREE
   [ "$room" -le "$gap" ] || room=$gap
   # Read once, here: floors and the queue take starts off room before a later start_items, so its own room says nothing about the cap.
   PASS_AT_CAP=0; [ "$PER_PASS" -gt 0 ] && [ "$room" -ge "$PER_PASS" ] && PASS_AT_CAP=1
