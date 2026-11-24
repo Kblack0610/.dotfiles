@@ -145,6 +145,13 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 # (critical_due): an hour is more than a slot turn's 45m plus the merge. Confidence low, from one incident (2026-11-19:
 # ucp-2712 waited 5h on P1 #2935 in the slot); revisit when SLOT_MINUTES moves or critical lines are mostly skipped.
 : "${FLEET_SHEPHERD_CRITICAL_MIN:=60}"
+# A NEEDS row on its own pending ask, its session idle this long since it asked, gets one nudge (needs_nudge): the
+# escalation pages the human and tells the session nothing, so a session whose ask had an agent route sat on it
+# (bd-35, 2026-11-19: personal-sites-agent-1 waited 18h on ask 62HFZu, "fix GitHub billing or merge without CI";
+# the route was the repo's home runners, ar-3971, taken only after the human asked why it was never nudged).
+# Provisional, 2026-11-24: two hours is past a judge's answer and the human's first page; revisit when most
+# NEEDS nudges are answered "no route".
+: "${FLEET_SHEPHERD_NEEDS_NUDGE_MIN:=120}"
 # A run GitHub lists as queued with no job this long is a ghost: no runner will ever take it, and
 # each one is a high row on Alerts (plan waht-noise-would-you-jolly-cosmos p2: 23 runs 10 to 12 days
 # old on 2026-11-23, every one made 2026-11-11 or 11-13 and still on GitHub, so the exporter was right).
@@ -326,6 +333,11 @@ TAKEOVER_JQ="$KEPT_JQ"'def takeover_row:
 # named hub/dotfiles:6/7/9 while the pass before had handled :5/6/8; the pane id stays. due_key keys
 # the line by it, and the target stays for a reader to act on. A row with no pane gets no tag.
 PANE_TAG_JQ='def ptag: if (.pane // "") != "" then " [\(.pane)]" else "" end;'
+# NEEDS_NUDGE_JQ: needs_nudge -> true for a NEEDS row already escalated, not yet nudged for its fact, whose session
+# filed the ask it waits on and has sat idle FLEET_SHEPHERD_NEEDS_NUDGE_MIN since (needs $needs_min). A dialog or
+# plan approval holds no ask of its own, and one carrying on past its ask is busy, so neither reads true.
+NEEDS_NUDGE_JQ='def needs_nudge: .bucket == "NEEDS" and .escalated and (.nudged | not) and (.close_sent | not)
+  and (.own_asks // 0) > 0 and (.activity // "") == "idle" and (.idle_min // 0) >= $needs_min;'
 # HELD_JQ: held -> true for a DONE or LANDED row the close flow keeps for work left here
 # (`close.left`, set by CLOSE_JQ's unlanded, only-item and held steps), so it is nudged though its
 # bucket reason names the plan, not the item that keeps it open (2026-11-19: agent-29 sat LANDED on
@@ -335,7 +347,8 @@ HELD_JQ='def held: (.bucket | IN("DONE","LANDED")) and (.close.left // null) != 
 cmd_due() {
   [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
   local out
-  out="$(jq -r --argjson items "$(shared_items)" --argjson off "$(nudge_held_off)" "$KEPT_JQ$CLOSE_NUDGE_JQ$PANE_TAG_JQ$HELD_JQ"'
+  out="$(jq -r --argjson items "$(shared_items)" --argjson off "$(nudge_held_off)" --argjson needs_min "$FLEET_SHEPHERD_NEEDS_NUDGE_MIN" \
+    "$KEPT_JQ$CLOSE_NUDGE_JQ$PANE_TAG_JQ$HELD_JQ$NEEDS_NUDGE_JQ"'
     ( (.main // [])[] | select((.escalated | not) and (.owners // []) == [])
       | "nightly red: \(.repo) (\(.reason // "-"))" )
   , ( (.shared // [])[] | select(.escalated | not) | . as $r
@@ -359,6 +372,8 @@ cmd_due() {
           then "nudge \(.bucket): \(.target)\(ptag) \(.fact // "")" else empty end
         elif .bucket == "NEEDS" and (.escalated | not) then
           "escalate \(.bucket): \(.target)\(ptag) \(.reason // ""); then: fleet-sessions escalate \(.session_id) \"\(.fact)\""
+        elif needs_nudge and (.session_id as $sid | $off | index($sid) | not) then
+          "nudge NEEDS: \(.target)\(ptag) \(.fact // "")"
         else empty end )
   ' "$STATE_FILE")" || die "unreadable state document $STATE_FILE"
   # A hold the machine no longer needs is a GO decision, and a machine over budget with no
@@ -1656,9 +1671,10 @@ nudge_held_off() {
       t="$(date -d "$t" +%s 2>/dev/null)" && [ "$t" -gt "$at" ] && at="$t"
     done < <([ -r "$LEDGER/nudges.jsonl" ] && jq -R --arg s "$sid" 'fromjson? | select(.kind == "nudge" and .sid == $s) | .at' -r "$LEDGER/nudges.jsonl" 2>/dev/null)
     [ "$at" -gt 0 ] && [ $((now - at)) -lt $((FLEET_SHEPHERD_NUDGE_GAP_MIN * 60)) ] && held+="$sid"$'\n'
-  done < <(jq -r "$KEPT_JQ$CLOSE_NUDGE_JQ$HELD_JQ"'(.sessions // [])[]
-    | select(kept | not) | select(.bucket | IN("DONE","LANDED","STALLED","CHAT")) | select(.nudged | not)
-    | select((.own_asks // 0) == 0 and (.bucket == "STALLED" or held) and (close_nudge | not))
+  done < <(jq -r --argjson needs_min "$FLEET_SHEPHERD_NEEDS_NUDGE_MIN" "$KEPT_JQ$CLOSE_NUDGE_JQ$HELD_JQ$NEEDS_NUDGE_JQ"'(.sessions // [])[]
+    | select(kept | not) | select(close_nudge | not)
+    | select(needs_nudge or ((.bucket | IN("DONE","LANDED","STALLED","CHAT")) and (.nudged | not)
+        and (.own_asks // 0) == 0 and (.bucket == "STALLED" or held)))
     | .session_id' "$STATE_FILE" 2>/dev/null)
 printf '%s' "$held" | jq -Rsc 'split("\n") | map(select(. != ""))'
 }
