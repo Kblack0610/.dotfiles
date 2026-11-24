@@ -1492,6 +1492,17 @@ train_landing() {
   [[ "$pid" =~ ^[0-9]+$ ]] && grep -qaF train.py "/proc/$pid/cmdline" 2>/dev/null
 }
 
+# train_lapse <wait_on> <land_wait> <host> <queue gate minutes> <open job> <dir> -> <wait_on>, or "lapsed <wait_on>" for
+# a train wait with no gate of the session's own and nobody landing the train (train_landing): its gate-and-land
+# exited and the train sits, so the session restarts it (ar-5089). Any live gate, test or build of its own keeps the
+# wait. A host row's processes and train.py's lander are not readable here, so it keeps the wait too.
+train_lapse() {
+  if [[ "$1" == "train #"* ]] && [ "$1" = "$2" ] && [ "$3" = - ] && [ "$4" = - ] \
+     && ! [[ "$5" =~ ^(queue|gate|test|build)$ ]] && ! train_landing "$6" "${1#train #}"; then
+    printf 'lapsed %s\n' "$1"
+  else printf '%s\n' "$1"; fi
+}
+
 # queued_in <dir> <pr> -> true when PR #<pr> of <dir>'s repo carries FLEET_QUEUE_LABEL in the PR store.
 queued_in() {
   local key
@@ -2809,13 +2820,7 @@ collect() {
     if [ "$g" = 1 ] && [ "$gd" != - ] && [ -n "$FLEET_QUEUE_LABEL" ] && { [ "$ojob" = queue ] || [ -n "$land_wait" ]; }; then
       qdepth="$(queue_depth "$gd")"; qdepth="${qdepth:--}"
     fi
-    # A train wait with no gate of the session's own and nobody landing the train is the session's to restart:
-    # its gate-and-land exited and the train sits (ar-5089). Any live gate, test or build of its own keeps the wait.
-    # A host row's processes and train.py's lander are not readable here, so it keeps the wait too.
-    if [[ "$wait_on" == "train #"* ]] && [ "$wait_on" = "$land_wait" ] && [ "$host" = - ] && [ "$qwait" = - ] \
-       && ! [[ "$ojob" =~ ^(queue|gate|test|build)$ ]] && ! train_landing "$gd" "${wait_on#train #}"; then
-      wait_on="lapsed $wait_on"
-    fi
+    wait_on="$(train_lapse "$wait_on" "$land_wait" "$host" "$qwait" "$ojob" "$gd")"
     # The transcript can be 40 MB, so it is read only for an idle session, or the one asking about itself (wake_facts).
     local cron=- wake=-
     if [ "$host" = - ] && { [ "$idle" -ge "$FLEET_IDLE_MIN" ] || [ "$sid" = "${CLOSE_SELF:-}" ]; }; then
