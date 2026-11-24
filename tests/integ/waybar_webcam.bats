@@ -52,7 +52,11 @@ start() {
 next_line() { read -r -t 10 -u 4 LINE || LINE=TIMEOUT; }
 
 hold() { # hold <node>: a process with the node open, like a camera app
-  "${DIE_WITH_RUN[@]}" sleep 1000 3< "$DEV/$1" &
+  # The fd is opened by bash itself, after the exec of setpriv into it, so the holder's name is
+  # `bash` from the open on. A `3<` on `setpriv ... sleep` opened it before the exec, and the
+  # module's comm read raced it: it named `setpriv` on a loaded runner (PR 3431, integ 3/4).
+  # Its sleep child has the fd closed and ends on the TERM that ends the holder.
+  "${DIE_WITH_RUN[@]}" bash -c 'exec 3< "$1"; sleep 1000 3<&- & trap "kill \$!" TERM; wait' _ "$DEV/$1" &
   HOLDER=$!
 }
 
@@ -76,7 +80,7 @@ hold() { # hold <node>: a process with the node open, like a camera app
   hold video0
   next_line
   assert_equal "$(jq -r .text <<< "$LINE")" CAM
-  assert_equal "$(jq -r .tooltip <<< "$LINE")" "Webcam in use by:"$'\n'"sleep ($HOLDER)"
+  assert_equal "$(jq -r .tooltip <<< "$LINE")" "Webcam in use by:"$'\n'"bash ($HOLDER)"
   kill "$HOLDER"
   next_line
   assert_equal "$LINE" '{"text":""}'
