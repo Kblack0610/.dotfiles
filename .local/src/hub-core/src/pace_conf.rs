@@ -339,7 +339,7 @@ fn schedule(conf: &Conf, k: &Key) -> Vec<Schedule> {
         value: num(k.default),
         from: "-".into(),
         until: "-".into(),
-        by: "pace.conf".into(),
+        by: "config file".into(),
         state: if k.source == "default" {
             "In force"
         } else {
@@ -492,7 +492,7 @@ mod tests {
 
     impl Runner for Dies {
         fn run(&self, _: &[String]) -> Result<String, String> {
-            Err("pace-conf: no BURN_OVER_PCT in pace.conf".into())
+            Err("pace-conf: no BURN_OVER_PCT in the config".into())
         }
         fn output(&self, _: &[String]) -> Result<(i32, String), String> {
             Ok((1, String::new()))
@@ -503,7 +503,7 @@ mod tests {
     fn a_read_that_dies_with_no_list_says_what_the_cli_said() {
         assert_eq!(
             read(&Dies).unwrap_err(),
-            "pace-conf: no BURN_OVER_PCT in pace.conf"
+            "pace-conf: no BURN_OVER_PCT in the config"
         );
         assert!(set(&Dies, &set_of("BURN_OVER_PCT", "300", "", "")).is_err());
     }
@@ -655,7 +655,7 @@ mod tests {
         assert_eq!(a.rows.len(), 1);
         assert_eq!(
             (a.rows[0].state, a.rows[0].by.as_str()),
-            ("In force", "pace.conf")
+            ("In force", "config file")
         );
         let n = c.named().unwrap();
         assert_eq!((n.pct, n.source.as_str()), (400.0, "default"));

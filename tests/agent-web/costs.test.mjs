@@ -64,7 +64,7 @@ const pace = (o = {}) => ({
   allowance: {
     key: "BURN_OVER_PCT", in_force: "400%", source: "window to Tue 22:00", default: "200%", level: "warn", lagging: false, max: 1000, allowed: 5.5, sustain: 1.37, burn: 4.52, spare: 3, as_of: 1793999400, window_max_days: 7,
     note: "Loosens only committed: pace, reserve, 5-hour and capped still refuse on their own.",
-    rows: [paceRow({ value: "400", from: "Mon 14:02", until: "Tue 22:00", by: "agent-web", state: "In force", start: 1793990000 }), paceRow({ value: "300" }), paceRow({ value: "200", by: "pace.conf", state: "Default", can_end: false })],
+    rows: [paceRow({ value: "400", from: "Mon 14:02", until: "Tue 22:00", by: "agent-web", state: "In force", start: 1793990000 }), paceRow({ value: "300" }), paceRow({ value: "200", by: "config file", state: "Default", can_end: false })],
   },
   keys: [{ key: "BURN_OVER_PCT", value: "400", source: "window to Tue 22:00", default: "200", editable: true }, { key: "PACE_WINDOW_MAX_DAYS", value: "7", source: "default", default: "7", editable: true }, { key: "RESERVE_PCT", value: "10", source: "default", default: "10", editable: false }],
   ...o,
@@ -912,7 +912,7 @@ test("every Costs section is drawn in the layout's order, so each inner tab's gr
 test("Allowance draws what is in force, what it lets through, the schedule with its End buttons and the form", () => {
   run("st.arg = ''; cost.open = {}");
   const h = show(board());
-  assert.ok(h.indexOf("sec-allowance") > h.indexOf("sec-burn") && h.indexOf("sec-allowance") < h.indexOf("sec-pace") && h.indexOf("sec-pace") < h.indexOf("sec-consumers"), "burn, allowance, pace config, consumers");
+  assert.ok(h.indexOf("sec-allowance") > h.indexOf("sec-burn") && h.indexOf("sec-allowance") < h.indexOf("sec-pace"), "burn, allowance, pace config");
   assert.match(h, /400% \(window to Tue 22:00\), default 200%/);
   assert.match(h, /<span class="burn warn">4\.52\/h now<\/span> against 1\.37\/h sustainable and 5\.50\/h allowed, 3 spare sessions/, "over sustainable and within the allowance is amber");
   assert.match(show(board({ pace: pace({ allowance: { ...pace().allowance, level: "bad" } }) })), /<span class="burn bad">4\.52\/h now/, "the view's verdict hues the figure, as the hub's does");

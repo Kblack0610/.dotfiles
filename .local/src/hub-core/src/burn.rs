@@ -867,9 +867,10 @@ mod tests {
         let mut b = build(&allowing(2.74, 3.0), quiet(), NOW);
         b.set_allowance(named(400.0, "override"));
         assert!(b.allowance.as_ref().unwrap().lagging);
+        // the old figure still reads red (claude-acct's last verdict), and the clause says whose it is
         assert_eq!(
             b.head,
-            "4.5 pts/h vs 1.4 sustainable, 2.7 allowed (claude-acct, before 400% override), 3.3x, 39 live, carries ~11"
+            "4.5 pts/h vs 1.4 sustainable, 2.7 allowed (claude-acct, before 400% override), 3.3x OVER, 39 live, carries ~11"
         );
         // no clause without the figure, whatever the config says
         let mut old = build(&fixture(), quiet(), NOW);

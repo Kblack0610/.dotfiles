@@ -2727,7 +2727,7 @@ mod tests {
                 note: "Loosens only committed.",
                 rows: vec![
                     row("400", "In force", "agent-web", true),
-                    row("200", "Default", "pace.conf", false),
+                    row("200", "Default", "config file", false),
                 ],
             }),
             keys: vec![

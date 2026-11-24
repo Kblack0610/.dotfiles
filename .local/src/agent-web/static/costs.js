@@ -358,7 +358,7 @@ function paceSchedule(a) {
     return `<tr><td class="n">${esc(r.value)}%</td><td>${esc(r.from)}</td><td>${esc(r.until)}</td><td>${esc(r.by)}</td>` +
       `<td class="${PACE_STATE[r.state] || "muted"}">${esc(r.state)}</td><td>${end}</td></tr>`;
   }).join("");
-  return `<div class="panel scroll"><table class="tbl"><tr><th class="n">allowance</th><th>from</th><th>until</th><th>by</th><th>state</th><th></th></tr>${rows}</table></div>`;
+  return `<div class="panel scroll"><table class="tbl"><tr><th class="n" data-role="lead">allowance</th><th data-role="glance">from</th><th data-role="glance">until</th><th>by</th><th data-role="glance">state</th><th></th></tr>${rows}</table></div>`;
 }
 function paceForm(a) {
   // datetime-local is the browser's clock; the hint says so, since the server's may differ.
@@ -370,7 +370,7 @@ function paceForm(a) {
     `<label class="muted">from <input id="pace-from" type="datetime-local" value="${esc(f.from)}"></label>` +
     `<label class="muted">until <input id="pace-until" type="datetime-local" value="${esc(f.until)}"></label>` +
     `<button class="btn primary" id="pace-set"${cost.paceBusy ? " disabled" : ""}>${cost.paceBusy ? "Setting..." : "Set"}</button></div>` +
-    `<div class="err" id="pace-msg">${esc(cost.paceMsg)}</div>` +
+    errPanel(cost.paceMsg, { id: "pace-msg" }) +
     `<div class="muted fold">Times are on this browser's clock${zone ? ` (${esc(zone)})` : ""}. Empty from is now; empty until is a standing override that lasts until it is ended.${days}</div></div>`;
 }
 function costsAllowance(d) {
@@ -394,7 +394,7 @@ function costsPace(d) {
   if (!p.keys.length) return secHead("pace", "Pace config") + paceErr(p.error || "no pace config");
   const rows = p.keys.map((k) => `<tr><td>${esc(k.key)}</td><td class="n">${esc(k.value)}</td><td class="${k.source === "default" ? "muted" : ""}">${esc(k.source)}</td>` +
     `<td class="n muted">${esc(k.default)}</td><td class="muted">${k.editable ? "yes" : ""}</td></tr>`).join("");
-  return fold("csec", secHead("", "Pace config", p.keys.length), `<div class="panel scroll"><table class="tbl"><tr><th>key</th><th class="n">value</th><th>source</th><th class="n">default</th><th>settable</th></tr>${rows}</table></div>` +
+  return fold("csec", secHead("", "Pace config", p.keys.length), `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">key</th><th class="n" data-role="glance">value</th><th data-role="glance">source</th><th class="n">default</th><th>settable</th></tr>${rows}</table></div>` +
     `<div class="muted fold">pace.conf holds the defaults; <code>pace-conf set KEY VALUE</code> overrides one, and only a key with a maximum can be set.</div>`,
     { k: "pace", id: "sec-pace", open: secOpen(cost.open, "pace") });
 }
