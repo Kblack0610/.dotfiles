@@ -35,7 +35,7 @@ schedules.rs	1
 session_table.rs	1
 stack.rs	1
 stages.rs	2
-tasks.rs	4
+tasks.rs	2
 text.rs	2
 timeline.rs	2
 version_page.rs	1

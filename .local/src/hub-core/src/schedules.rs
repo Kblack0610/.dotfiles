@@ -1350,7 +1350,11 @@ pub fn read_with(
         .flat_map(|(r, m)| red_keys(r, m))
         .collect();
     let routes = noted(reds::routes(runner, keys), "triage routes", &mut errors);
-    let reds = noted(reds, "reds", &mut errors);
+    // reds::read words its own error (`fleet-bench reds: ...`).
+    let reds = reds.unwrap_or_else(|e| {
+        errors.push(e);
+        vec![]
+    });
     let queued = noted(queued, "queue", &mut errors);
     let mut held: HashMap<String, usize> = HashMap::new();
     for t in queued.iter().flat_map(|i| i.tag_list()) {

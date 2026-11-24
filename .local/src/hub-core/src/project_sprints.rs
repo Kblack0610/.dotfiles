@@ -27,6 +27,10 @@ pub struct Past {
     pub timing: Option<String>,
     /// The whole `## Score` line.
     pub line: String,
+    /// The window's page (`crate::sprint_page::link`), set by the page read that knows the
+    /// project's profile; a row of the table links to it.
+    #[serde(skip_deserializing)]
+    pub link: Option<crate::links::Link>,
 }
 
 impl Past {

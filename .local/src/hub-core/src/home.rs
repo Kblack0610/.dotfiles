@@ -1,5 +1,5 @@
-//! The Home tab for both surfaces: what needs the human, what is running
-//! (with the session counts), the vitals and the health chips the briefing reads; the status
+//! The Home tab for both surfaces: what needs the human, the vitals and the health chips the
+//! briefing reads; the running items are `running`, the Queue's and a project's In flight; the status
 //! grid over it is `cards`, one card per tab. It joins what the other readers already read (fleet-sessions'
 //! `state.json`, `queue::Queue`, `infra::Infra`, read by `gather`), and `build` reads nothing
 //! itself, so it is pure and both surfaces get the same rows in the same order.
@@ -697,10 +697,6 @@ pub struct Home {
     pub proposals_failed: bool,
     /// No read has answered yet, so nothing can be said about what is open.
     pub proposals_unread: bool,
-    pub running: Vec<Running>,
-    /// The session counts that head Running (`12 working, 2 need you, 2 stalled`); empty when
-    /// fleet-sessions' state has no counts.
-    pub sessions: String,
     /// The fleet's front page, one row per question; None when Prometheus did not answer.
     pub vitals: Option<crate::vitals::Vitals>,
     /// The `cc:domain_status` chips: the briefing's overnight line reads them; the pages show
@@ -877,7 +873,7 @@ fn said_lower(live: Option<&Value>, k: &str) -> Option<String> {
 }
 
 /// The running queue items, each with its session's plan progress when it has a checklist and
-/// the links a row opens: Home's running section and each Projects card's in-flight list. `board`
+/// the links a row opens: the Queue's running state and each Projects card's in-flight list. `board`
 /// gives each row's epic; without it the epic is left blank, never guessed.
 pub fn running(state: &Value, q: &Queue, board: Option<&Feed>) -> Vec<Running> {
     let sessions: Vec<&Value> = state["sessions"]
@@ -1421,7 +1417,7 @@ fn hold_needs(state: &Value) -> Vec<Need> {
 }
 
 /// Home from fleet-sessions' `state.json` (null when missing), the queue, the board feed,
-/// and infra: NEEDS YOU in `needs` order, the running items, the session counts, the vitals and the chips.
+/// and infra: NEEDS YOU in `needs` order, the vitals and the chips.
 pub fn build(
     state: Option<&Value>,
     queue: Option<&Queue>,
@@ -1471,16 +1467,6 @@ pub fn build(
     ));
     if let Some(q) = queue {
         h.errors.extend(q.errors.iter().cloned());
-        h.running = running(state, q, board.and_then(|b| b.as_ref().ok()));
-    }
-    if let Some(c) = state["counts"].as_object() {
-        let n = |k: &str| c.get(k).and_then(Value::as_u64).unwrap_or(0);
-        h.sessions = format!(
-            "{} working, {} need you, {} stalled",
-            n("WORKING"),
-            n("NEEDS"),
-            n("STALLED")
-        );
     }
 
     match infra {
@@ -1938,11 +1924,10 @@ mod tests {
         // The session row takes its queue item's words, and its age from the idle minutes.
         assert_eq!(h.needs[1].text, "Do dialog");
         assert_eq!(h.needs[1].since, Some(NOW - 180));
-        assert_eq!(h.running.len(), 1);
-        let p = h.running[0].phases.as_ref().unwrap();
+        let run = running(&state(), &q, None);
+        assert_eq!(run.len(), 1);
+        let p = run[0].phases.as_ref().unwrap();
         assert_eq!((p.done, p.total), (2, 4));
-        // The session counts head Running.
-        assert_eq!(h.sessions, "2 working, 2 need you, 0 stalled");
         assert_eq!(h.errors, ["Prometheus: reading"]);
     }
 
@@ -1977,8 +1962,8 @@ mod tests {
         let mut epic = sheet("tr-1", "agent", "epic", "high", "2026-11-01");
         epic.area = Some("data".into());
         feed.rows.push(epic);
-        let h = build(Some(&st), Some(&q), Some(&Ok(feed)), None, NOW);
-        let r = &h.running[0];
+        let run = running(&st, &q, Some(&feed));
+        let r = &run[0];
         assert_eq!(r.area.as_deref(), Some("data"));
         assert_eq!(
             (
@@ -2008,7 +1993,7 @@ mod tests {
                 true
             )
         );
-        let l = &h.running[1];
+        let l = &run[1];
         assert_eq!(
             (l.row.as_deref(), l.epic.as_deref(), l.area.as_deref()),
             (Some("tr-50"), None, None),
@@ -2049,7 +2034,7 @@ mod tests {
         );
         let shown = |q: &str, s: &str| -> Vec<String> {
             crate::table::View::new::<Running>(q, s, "", "")
-                .apply(&h.running)
+                .apply(&run)
                 .iter()
                 .map(|r| r.slug.clone())
                 .collect()
@@ -2060,7 +2045,7 @@ mod tests {
         assert_eq!(shown("epic:tr-1", ""), ["busy"]);
         assert_eq!(shown("tr-50", ""), ["lone"]);
         // Each cell that names a record links its one page (hub_core::links), sent beside the rows.
-        let (_, t) = crate::table::View::default().summary(&h.running);
+        let (_, t) = crate::table::View::default().summary(&run);
         let at = |i: usize, c: &str| t.links[i].get(c).map(String::as_str);
         assert_eq!(
             (at(0, "item"), at(0, "project"), at(0, "row"), at(0, "epic")),
@@ -2424,18 +2409,6 @@ mod tests {
             .iter()
             .any(|e| e.starts_with("notes board --json: boom")));
         assert!(h.needs.iter().all(|n| n.kind != Kind::Sheet));
-    }
-
-    #[test]
-    fn no_state_reads_as_no_session_counts() {
-        let none = build(
-            Some(&Value::Null),
-            None,
-            None,
-            Some(&infra(vec![], &[])),
-            NOW,
-        );
-        assert_eq!(none.sessions, "", "no state, no counts");
     }
 
     #[test]
