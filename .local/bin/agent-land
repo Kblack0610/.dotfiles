@@ -236,7 +236,7 @@ checks_by_conclusion() {
 had_checks=''
 wait_checks() {
   [ -z "$fj" ] || { fj_wait_checks; return; }
-  local try out rc left failed cancelled names queued rollup read_err stale deadline=$((SECONDS + CHECKS_WAIT_TIMEOUT))
+  local try out rc left failed cancelled names queued rollup read_err stale skipping deadline=$((SECONDS + CHECKS_WAIT_TIMEOUT))
   for ((try = 1; ; try++)); do
     left=$((deadline - SECONDS))
     [ "$left" -gt 0 ] || fail checks "timed out waiting for checks after ${CHECKS_WAIT_TIMEOUT}s"
@@ -308,32 +308,44 @@ wait_checks() {
       if [ -z "$failed" ]; then
         if ! net_error "$out" && ! net_error "$read_err"; then
           [ -z "$read_err" ] || fail checks "reading the failed checks: $(lastline "$read_err")"
-          fail checks "the watch ended with no failed check to name: $(lastline "$out")"
-        fi
-        net_retry "${read_err:-$out}"
-        try=0
-        continue
-      fi
-      # A failed check whose workflow has a run on HEAD started after it, or with a higher run id (newer_runs), is superseded: the edit
-      # that adds the gate line re-runs Checks, and a watch read seconds later still sees the old
-      # red (unity-core-playground#2492 lost the landing slot that way, 2026-11-21). Wait on the
-      # newer run; a failed or unreadable look leaves the red as the verdict.
-      # gh exits non-zero while a check fails, so a read that printed JSON still has its answer.
-      gh_read stale pr checks "$pr" "${R[@]}" --json name,bucket,workflow,event,completedAt,link -q 'map(select(.bucket == "fail"))' || true
-      if [ -n "$stale" ] && [ "$stale" != '[]' ]; then
-        queued=$(newer_runs "$stale") || {
-          net_error "$queued" || fail checks "$failed (reading the runs on the head: $(lastline "$queued"))"
-          net_retry "$queued"
-          continue
-        }
-        if [[ $queued =~ ^[1-9][0-9]*$ ]]; then
-          echo "checks: failed: $(jq -r 'map(.name) | join(", ")' <<<"$stale"); waiting on the newer run of its workflow on the head"
+          # Only skipping checks is no verdict: the run that reports the real check may not have a
+          # check yet (playground #2682, 2026-11-15). Read as none reported, so the queued-runs count
+          # below waits on it. A read that exits non-zero but printed its answer still has it.
+          gh_read skipping pr checks "$pr" "${R[@]}" --json bucket -q 'length > 0 and all(.bucket == "skipping")' || [ -n "$skipping" ] || {
+            net_error "$gh_err" || fail checks "reading the checks: $(lastline "$gh_err")"
+            net_retry "$gh_err"
+            try=0
+            continue
+          }
+          [ "$skipping" = true ] || fail checks "the watch ended with no failed check to name: $(lastline "$out")"
+          echo "checks: only skipping reported; waiting"
+        else
+          net_retry "${read_err:-$out}"
           try=0
-          sleep "$CHECKS_QUEUED_POLL"
           continue
         fi
+      else
+        # A failed check whose workflow has a run on HEAD started after it, or with a higher run id (newer_runs), is superseded: the edit
+        # that adds the gate line re-runs Checks, and a watch read seconds later still sees the old
+        # red (unity-core-playground#2492 lost the landing slot that way, 2026-11-21). Wait on the
+        # newer run; a failed or unreadable look leaves the red as the verdict.
+        # gh exits non-zero while a check fails, so a read that printed JSON still has its answer.
+        gh_read stale pr checks "$pr" "${R[@]}" --json name,bucket,workflow,event,completedAt,link -q 'map(select(.bucket == "fail"))' || true
+        if [ -n "$stale" ] && [ "$stale" != '[]' ]; then
+          queued=$(newer_runs "$stale") || {
+            net_error "$queued" || fail checks "$failed (reading the runs on the head: $(lastline "$queued"))"
+            net_retry "$queued"
+            continue
+          }
+          if [[ $queued =~ ^[1-9][0-9]*$ ]]; then
+            echo "checks: failed: $(jq -r 'map(.name) | join(", ")' <<<"$stale"); waiting on the newer run of its workflow on the head"
+            try=0
+            sleep "$CHECKS_QUEUED_POLL"
+            continue
+          fi
+        fi
+        fail checks "$failed"
       fi
-      fail checks "$failed"
       ;;
     esac
     # A failed read is not "0 queued": it would reach no_checks and land on the local gate with a run
