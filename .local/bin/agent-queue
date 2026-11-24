@@ -1998,6 +1998,10 @@ cmd_add() {
       *) task+=("$1"); shift ;;
     esac
   done
+  # A work machine queues nothing: no dispatcher runs there and home runners never take work, so an
+  # item filed there never starts. Its own --running record and a plan --check write no work.
+  [ -n "$running$dry" ] || ! project_work_machine ||
+    die "this is a work machine ($PROJECT_MACHINE_PROFILE): no dispatcher runs here and home runners never take work. Put the follow-up in the project's tracker (ticket), or work it in this session"
   after="$(word_list "$after")"
   priority="$(add_priority "$priority" "$priority_given$running$want$dry" "$planf" "$tags" "$from")" || exit 1
   if [ -n "$planf" ]; then

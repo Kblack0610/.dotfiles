@@ -65,3 +65,14 @@ setup() {
   project_keys >/dev/null
   [ "$(wc -l < "$calls")" -eq 1 ] || fail "notes ran $(wc -l < "$calls") times"
 }
+
+@test "project_work_machine: a client's profile is a work machine; personal and an unknown profile are not" {
+  PROJECT_MACHINE_PROFILE=acmework run project_work_machine
+  assert_success
+  PROJECT_MACHINE_PROFILE=globex run project_work_machine
+  assert_success
+  PROJECT_MACHINE_PROFILE=personal run project_work_machine
+  assert_failure
+  PROJECT_MACHINE_PROFILE=nobody run project_work_machine
+  assert_failure
+}

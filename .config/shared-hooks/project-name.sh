@@ -448,6 +448,16 @@ project_machine_profile() {
   printf '%s' "$PROJECT_MACHINE_PROFILE"
 }
 
+# project_work_machine -> exit 0 when this machine's own notes profile is a project-map client's
+# profile: a work machine, which runs no dispatcher and whose work no home runner takes.
+project_work_machine() {
+  local map_file; map_file="$(project_map_file)"
+  [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 1
+  project_machine_profile >/dev/null
+  jq -e --arg m "$PROJECT_MACHINE_PROFILE" \
+    '[(.clients | objects // {})[] | objects | .profile] | index($m) != null' "$map_file" >/dev/null
+}
+
 # project_visible <key> -> exit 0 when this machine lists the project (see PROJECT_VISIBLE_JQ).
 project_visible() {
   local map_file; map_file="$(project_map_file)"
