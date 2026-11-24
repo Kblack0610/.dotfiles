@@ -889,7 +889,7 @@ check_tokens() {
     local warn now="${CLAUDE_ACCT_NOW:-$(date +%s)}" name dir exp end days ok=0 out=''
     local -a none=() soon=()
     warn=$(pace_get TOKEN_WARN_DAYS)
-    [[ -n "$warn" ]] || { echo "unreadable: TOKEN_WARN_DAYS is not set in pace.conf"; return 2; }
+    [[ -n "$warn" ]] || { echo "unreadable: TOKEN_WARN_DAYS is not set"; return 2; }
     if ! command -v rbw >/dev/null 2>&1 || ! rbw unlocked >/dev/null 2>&1; then
         echo "unreadable: rbw is missing or locked, so no token was checked (rbw unlock)"; return 2
     fi
