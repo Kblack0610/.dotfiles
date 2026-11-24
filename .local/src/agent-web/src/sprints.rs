@@ -1,7 +1,8 @@
 //! Projects' Sprints inner tab and an opened project's Sprint inner tab (`/api/sprints`): the
 //! open and queued release windows with their times worked out now (`hub_core::tasks::SprintRow`,
 //! once Board's table) and, unscoped, each project's last score from the kept projects read. A
-//! project's scored past rides its page (`hub_core::page::Page::sprint_past`). `/api/sprints/page`
+//! project's scored past rides its page (`hub_core::page::Page::sprint_past`); a scoped read adds its
+//! By area across sprints table (`hub_core::sprint_page::read_across`). `/api/sprints/page`
 //! is one window's own page (`hub_core::sprint_page`), its rows under the table's `sp`-prefixed
 //! view. The words are hub-core's, so the TUI's tab says the same.
 
@@ -46,7 +47,15 @@ pub async fn get(State(s): State<Shared>, Query(q): Query<SprintsQuery>) -> ApiR
     let read = move || {
         let f = hub_core::sheet_view::feed_with(&System, &queue)?;
         let one = scope.split_once('/');
-        Ok::<_, String>(shown(&f, one, chrono::Local::now().naive_local()))
+        let now = chrono::Local::now().naive_local();
+        let mut out = shown(&f, one, now);
+        if let Some((profile, project)) = one {
+            let open = sprint_page::open_windows(&f, profile, project, now);
+            let areas = hub_core::areas::Areas::load();
+            let across = sprint_page::read_across(&System, areas, profile, project, &open);
+            out["areas"] = json!(across);
+        }
+        Ok::<_, String>(out)
     };
     let mut out = tokio::task::spawn_blocking(read)
         .await
@@ -194,6 +203,21 @@ mod tests {
             shown(&windowed(), Some(("bnb", "demo")), at(2))["rows"][0]["version"],
             "v0.3.0"
         );
+    }
+
+    #[test]
+    fn the_across_table_reads_only_the_scopes_open_window() {
+        let mut f = windowed();
+        let mut queued = f.sprints[0].clone();
+        queued.version = "v0.3.1".into();
+        queued.queued = true;
+        f.sprints.push(queued);
+        assert_eq!(
+            sprint_page::open_windows(&f, "bnb", "demo", at(2)),
+            ["v0.3.0"],
+            "a queued window has no row done yet"
+        );
+        assert!(sprint_page::open_windows(&f, "bnb", "other", at(2)).is_empty());
     }
 
     #[test]

@@ -3,7 +3,7 @@
 // and hub_core::project_sprints for the scored past), on two surfaces that share this table:
 // Projects' Sprints inner tab (every project's open and queued windows, then each project's last
 // score) and an opened project's Sprint inner tab (its open window, the ones queued behind it,
-// its Past sprints). A version in either table links to that window's own page (/api/sprints/page,
+// its Past sprints and By area across sprints). A version in any of them links to that window's own page (/api/sprints/page,
 // hub_core::sprint_page): its dates and score, a By area rollup and every row with its outcome on
 // the shared table, shown in place of the list while `pst.sprint` names it. Read only while
 // shown, on resync and on a queue change.
@@ -119,6 +119,17 @@ function sprPast(past) {
   const body = past.map((p) => `<tr>${SPR_PAST.map(([k]) => k === "version" ? `<td>${tblLink(p.link, p.version)}</td>` :
     `<td${p.timing && p.timing !== "on time" && k === "timing" ? ` class="warn"` : ""}>${pDash(p[k])}</td>`).join("")}</tr>`).join("");
   return `<div class="panel scroll"><table class="tbl"><tr>${SPR_PAST.map(([, h, r]) => `<th data-role="${r}" data-label="${h}">${h}</th>`).join("")}</tr>${body}</table></div>`;
+}
+
+// By area across sprints (hub_core::sprint_page::Across): one row per area, one column per window,
+// oldest first; a cell is the PTS of that window's own By area table, points delivered of the area's.
+function sprAcross(a) {
+  if (!a) return `<div class="muted">Reading the sprints...</div>`;
+  const errs = a.errors.map((e) => `<div class="panel down">${esc(e)}</div>`).join("");
+  if (!a.lines.length) return errs + `<div class="card muted">No window has a row yet.</div>`;
+  const head = `<tr><th data-role="lead" data-label="AREA">AREA</th>${a.versions.map((v, i) => `<th class="n" data-label="${esc(v)}">${tblLink(a.links[i], v)}</th>`).join("")}</tr>`;
+  const row = (l) => `<tr><td>${esc(l.group)}</td>${l.cells.map((c) => `<td class="n${c === "-" ? " muted" : ""}">${esc(c)}</td>`).join("")}</tr>`;
+  return errs + `<div class="panel scroll"><table class="tbl">${head}${a.lines.map(row).join("")}</table></div>`;
 }
 
 $("projects").addEventListener("click", (e) => {

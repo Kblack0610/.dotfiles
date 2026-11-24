@@ -424,6 +424,9 @@ pub enum Msg {
     /// An opened project's sprint page (hub_core::sprint_page::read): its version, then the page
     /// or why it failed.
     SprintPage(String, Box<Result<hub_core::sprint_page::Page, String>>),
+    /// An opened project's By area across sprints (hub_core::sprint_page::read_across): the
+    /// project it was asked for, then the table.
+    SprintAcross(String, Box<hub_core::sprint_page::Across>),
     /// The Costs tab's one read of every source it cuts (hub_core::costs::read).
     Costs(Box<hub_core::costs::Costs>),
     /// The Stack tab's read of what the agent system is made of (hub_core::stack::read).
@@ -1024,6 +1027,7 @@ impl App {
             return;
         }
         let Some(so) = self.pv.sprint.as_mut() else {
+            self.read_across_due(profile, project);
             return;
         };
         if so.page.is_some() || so.busy {
@@ -1054,6 +1058,35 @@ impl App {
                 &windows,
             );
             let _ = tx.send(Msg::SprintPage(version, Box::new(r)));
+        });
+    }
+
+    /// The Sprint tab's By area across sprints reads once per opened project, once the board
+    /// feed says which window is open: as with a page, the notes reads behind it have no file to
+    /// watch.
+    fn read_across_due(&mut self, profile: String, project: String) {
+        if self.pv.across.is_some() {
+            return;
+        }
+        let Some(feed) = self.feed() else {
+            return;
+        };
+        let now = chrono::Local::now().naive_local();
+        let open = hub_core::sprint_page::open_windows(feed, &profile, &project, now);
+        self.pv.across = Some(crate::projtab::AcrossRead {
+            project: project.clone(),
+            table: None,
+        });
+        let (tx, runner) = (self.tx.clone(), self.runner.clone());
+        std::thread::spawn(move || {
+            let a = hub_core::sprint_page::read_across(
+                runner.as_ref(),
+                hub_core::areas::Areas::load(),
+                &profile,
+                &project,
+                &open,
+            );
+            let _ = tx.send(Msg::SprintAcross(project, Box::new(a)));
         });
     }
 
@@ -2362,6 +2395,12 @@ impl App {
                 }
             }
             Msg::SprintPage(version, r) => self.sprint_page_in(version, *r),
+            Msg::SprintAcross(project, a) => {
+                // Kept only for the project it was asked for: another opened since starts its own.
+                if let Some(r) = self.pv.across.as_mut().filter(|r| r.project == project) {
+                    r.table = Some(*a);
+                }
+            }
             Msg::StagesFile if self.ladder_shown() => self.read_ladder(),
             Msg::StagesFile => {}
             Msg::Deliverables(r) => {
@@ -2612,6 +2651,8 @@ impl App {
                 if self.tasks_read.done() {
                     self.read_tasks();
                 }
+                // A Sprint tab opened before the first feed waits on it for its open window.
+                self.read_sprint_due();
             }
             Msg::Proposals(r) => {
                 self.proposals = Some(*r);
