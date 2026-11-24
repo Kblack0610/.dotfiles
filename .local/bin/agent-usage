@@ -712,11 +712,11 @@ cmd_export() {
   got=$(prom_q "count by (session_id, __name__) (last_over_time({__name__=~\"claude_code_cost_usage_USD_total|claude_code_session_count_total\", session_id=~\"$sids\"}[$age]))" |
     jq -er "$vec | (map(select(.metric.__name__ == \"claude_code_cost_usage_USD_total\") | .metric.session_id) | join(\" \")),
       (map(select(.metric.__name__ == \"claude_code_session_count_total\") | .metric.session_id) | join(\" \"))" 2>/dev/null) ||
-    { echo "unreadable: Prometheus export series (no answer, or not a vector)" >&2; return 2; }
+    { echo "unreadable: Prometheus session series (no answer, or not a vector)" >&2; return 2; }
   { IFS= read -r have; IFS= read -r beat; } <<<"$got"
   runner=$(prom_q 'count(cc:claude_code_cost_24h_usd:by_runner{agentctl_runner="fleet-dispatch"})' |
     jq -er "$vec | length" 2>/dev/null) ||
-    { echo "unreadable: Prometheus export series (no answer, or not a vector)" >&2; return 2; }
+    { echo "unreadable: Prometheus by_runner rule (no answer, or not a vector)" >&2; return 2; }
   for f in "${live[@]}"; do
     IFS="$TAB" read -r sid item pid started d <<<"$f"
     case " $have " in *" $sid "*) continue ;; esac

@@ -732,11 +732,11 @@ turn() {
   printf '#!/usr/bin/env bash\nexit 7\n' > "$SANDBOX/bin/curl"; chmod +x "$SANDBOX/bin/curl"
   AGENT_USAGE_PROC="$SANDBOX/proc" run "$AU" export check
   assert_failure 2
-  assert_line 'unreadable: Prometheus export series (no answer, or not a vector)'
+  assert_line 'unreadable: Prometheus session series (no answer, or not a vector)'
   spend_curl '{"status":"success","data":{"result":"x"}}'
   AGENT_USAGE_PROC="$SANDBOX/proc" run "$AU" export check
   assert_failure 2
-  assert_line 'unreadable: Prometheus export series (no answer, or not a vector)'
+  assert_line 'unreadable: Prometheus session series (no answer, or not a vector)'
   CC_PROM_URL='' AGENT_USAGE_PROC="$SANDBOX/proc" run "$AU" export check
   assert_failure 2
   assert_line --regexp '^unreadable: no CC_PROM_URL'
