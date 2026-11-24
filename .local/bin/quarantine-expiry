@@ -13,8 +13,11 @@
 #
 # Usage: quarantine-expiry [--dry-run]     --dry-run: print, note nothing
 # Prints one line per ending owner row, then the totals as the last line.
-# Exit: 0 no entry ends soon, 1 one does or an end is not a date, 2 the quarantine or board
-# could not be read (an `unreadable:` line).
+# Exit: 0 no entry ends soon, or every one that does has an open owner row holding its note; 1 an
+# entry with no open owner row, a row not noted yet (--dry-run) or that could not be noted, or an
+# end that is not a date; 2 the quarantine or board could not be read (an `unreadable:` line).
+# A noted row is the warning delivered: with entries ending on most days of a 14-day window, a red
+# for every owned entry never cleared (ar-4494, 2026-11-24).
 set -uo pipefail
 
 dry=0
@@ -97,7 +100,7 @@ while IFS=$'\037' read -r repo row n ends left; do
   [ "${via_n["$oid|$ends"]}" -gt "$VIA_SHOWN" ] || via_ids["$oid|$ends"]+="${via_ids["$oid|$ends"]:+, }$row"
 done < <(tr '\t' '\037' <<<"$soon")
 
-rows=0 entries=0 noted=0 closed=0 failed=0 next=""
+rows=0 entries=0 noted=0 pending=0 closed=0 failed=0 next=""
 for i in "${!lines[@]}"; do
   IFS=$'\037' read -r repo row n ends left <<<"${lines[$i]}"
   res="${owners[$i]}"
@@ -134,7 +137,7 @@ for i in "${!lines[@]}"; do
   elif [ -n "$via" ]; then owned="; $oid owns them (closed into it: $via -> $oid)"; fi
   key="$oid|$ends"
   if [ -n "${outcome[$key]:-}" ]; then
-    case "${outcome[$key]}" in noted*) noted=$((noted + 1)) ;; would*) ;; *) failed=$((failed + 1)) ;; esac
+    case "${outcome[$key]}" in noted*) noted=$((noted + 1)) ;; would*) pending=$((pending + 1)) ;; *) failed=$((failed + 1)) ;; esac
     echo "$what$owned; ${outcome[$key]}"
     continue
   fi
@@ -152,7 +155,7 @@ for i in "${!lines[@]}"; do
   if [ "$t" = 1 ]; then its+=" stops being quarantined then and counts"; else its+=" stop being quarantined then and count"; fi
   note="$mark $its as red in every gate and nightly again. Lift each that meets the bar (quarantine.py lift) or fix it before then; an entry is never renewed (Sentinel quarantine-expiry, $today)"
   if [ "$dry" = 1 ]; then
-    outcome[$key]="would note"
+    outcome[$key]="would note" pending=$((pending + 1))
     echo "$what$owned; would note"
     continue
   fi
@@ -178,4 +181,6 @@ else line="$entries quarantine entries over $(n_rows "$rows") end soon (next $ne
 [ "$failed" = 0 ] || line+=", $failed could not be noted"
 [ "$undated" = 0 ] || line+="; $(n_rows "$undated") with an end that is not a date"
 echo "$line"
+# hub's own exit too: an undated end it reported with no stderr line is still not a clear
+[ "$rc$closed$failed$undated$pending" = 00000 ] && exit 0
 exit 1
