@@ -1087,7 +1087,10 @@ mod tests {
         let shares = |v: &View| -> Vec<(String, usize, u32)> {
             let fs = v.facets(&rows());
             let f = fs.iter().find(|f| f.key == "kind").unwrap();
-            f.values.iter().map(|x| (x.value.clone(), x.n, x.pct)).collect()
+            f.values
+                .iter()
+                .map(|x| (x.value.clone(), x.n, x.pct))
+                .collect()
         };
         let s = |v: &str, n, p| (v.to_string(), n, p);
         assert_eq!(

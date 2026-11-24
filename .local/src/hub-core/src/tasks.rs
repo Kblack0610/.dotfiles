@@ -258,8 +258,9 @@ impl crate::table::Row for Row {
         "requested",
         "done",
     ];
-    const FACETS: &'static [&'static str] =
-        &["section", "type", "area", "epic", "project", "lane", "priority", "state"];
+    const FACETS: &'static [&'static str] = &[
+        "section", "type", "area", "epic", "project", "lane", "priority", "state",
+    ];
     const LEAD: &'static str = "title";
     const GLANCE: &'static [&'static str] = &["epic", "priority", "state"];
 
