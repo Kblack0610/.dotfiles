@@ -285,3 +285,66 @@ add_mem0() { "$AP" add --stream dream --project dotfiles --verb mem0 --arg "Pref
   assert_equal "$(jq -r '.status' "$AGENT_PROPOSE_DIR/$id.json")" open
   grep -c curl "$CALLS" | grep -qx 1
 }
+
+# aged <id> <days>: the record was filed that many days ago.
+aged() { jq -c --arg c "$(date -u -d "-$2 days" +%Y-%m-%dT%H:%M:%SZ)" '.created = $c' "$AGENT_PROPOSE_DIR/$1.json" > "$BATS_TEST_TMPDIR/r" && cp "$BATS_TEST_TMPDIR/r" "$AGENT_PROPOSE_DIR/$1.json"; }
+add_ci() { "$AP" add --stream ci-failures --project p --verb row --arg "ci(infra): run ${1:-1}" "run ${1:-1}"; }
+
+@test "a ci-failures proposal past its window reads expired before any sweep, and the sweep closes it unasked (ar-4966)" {
+  old="$(add_ci 1)"; fresh="$(add_ci 2)"
+  other="$("$AP" add --stream dream --project p --verb none "same age, no window")"
+  aged "$old" 4; aged "$fresh" 1; aged "$other" 4
+  assert_equal "$("$AP" list --json | jq -r '[.[].id] | sort | join(" ")')" "$(printf '%s\n' "$fresh" "$other" | sort | paste -sd' ')"
+  assert_equal "$("$AP" count)" 2
+  assert_equal "$("$AP" list --json --status expired | jq -r '.[].id')" "$old"
+  run "$AP" accept "$old"
+  assert_failure
+  assert_output --partial "already expired"
+  run "$AP" expire
+  assert_output "0 asked"
+  [ ! -e "$CALLS" ]
+  assert_equal "$(jq -r '.status + " " + .decided_by + " " + .result' "$AGENT_PROPOSE_DIR/$old.json")" "expired window past the ci-failures window of 3 days"
+  assert_equal "$(jq -r .status "$AGENT_PROPOSE_DIR/$fresh.json")" open
+  # an expired key may come back, filed fresh
+  assert_equal "$(add_ci 1)" "$old"
+  assert_equal "$(jq -r .status "$AGENT_PROPOSE_DIR/$old.json")" open
+}
+
+@test "expire with an id closes a proposal a merged fix answered: no verb, no ask (ar-4966)" {
+  id="$(add_ci 3)"
+  run "$AP" expire --by pr:42 "$id"
+  assert_success
+  assert_output "$id expired"
+  [ ! -e "$CALLS" ]
+  assert_equal "$(jq -r '.status + " " + .decided_by' "$AGENT_PROPOSE_DIR/$id.json")" "expired pr:42"
+  run "$AP" expire --by pr:42
+  assert_failure
+  assert_output --partial "give its id"
+  # one already past its window, not yet swept, still records its fix
+  old="$(add_ci 4)"; aged "$old" 4
+  run "$AP" expire --by pr:43 "$old"
+  assert_success
+  assert_equal "$(jq -r '.status + " " + .decided_by' "$AGENT_PROPOSE_DIR/$old.json")" "expired pr:43"
+  # an asked one waits on its ask's answer
+  asked="$(add_queue)"; past_due "$asked"; "$AP" expire
+  run "$AP" expire --by pr:44 "$asked"
+  assert_failure
+  assert_output --partial "already asked"
+}
+
+@test "a window that is not stream=days, or not above 0 days, is refused" {
+  AGENT_PROPOSE_WINDOWS="ci-failures" run "$AP" count
+  assert_failure
+  assert_output --partial "AGENT_PROPOSE_WINDOWS is not stream=days"
+  AGENT_PROPOSE_WINDOWS="ci-failures=0" run "$AP" count
+  assert_failure
+  assert_output --partial "0 days"
+}
+
+@test "a record with no stream does not break list or count" {
+  id="$(add_ci 5)"
+  jq -c 'del(.stream)' "$AGENT_PROPOSE_DIR/$id.json" > "$BATS_TEST_TMPDIR/r" && cp "$BATS_TEST_TMPDIR/r" "$AGENT_PROPOSE_DIR/$id.json"
+  assert_equal "$("$AP" count)" 1
+  run "$AP" list --json
+  assert_success
+}

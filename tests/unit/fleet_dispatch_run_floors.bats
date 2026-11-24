@@ -110,6 +110,23 @@ load 'fleet_dispatch/common'
   refute_output --partial 'on the human floor'
 }
 
+# ar-4912: every `--want` stamps #requested, so an agent's follow-up (asker=agent) is no fresh ask.
+@test "human floor: a fresh ask an agent filed (asker=agent) waits on the weekly pace; the human's starts" {
+  project game beta "$SANDBOX/repos/game"
+  acct alt:pace:/home/u/.claude-personal
+  export DISPATCH_RUN_FLOOR=0 DISPATCH_PER_PASS=3
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  agent-queue add --project game --slug follow-up --priority high --tags requested "an agent's follow-up" >/dev/null
+  agent-queue set follow-up "asked=$(date +%F)" asker=agent >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'over its weekly pace'
+  assert_not_called 'wt new'
+  agent-queue set follow-up asker=human >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item follow-up on the human floor, past the weekly pace'
+}
+
 # Review of #2589: the requested floor promotes week-old #requested rows, so a fresh ask is measured
 # from the row's own created date (the feed's `since`), which promote stamps as `asked:`, never `queued`.
 @test "human floor: a #requested row promote moves carries its row's date as asked:, which fresh_ask reads" {
