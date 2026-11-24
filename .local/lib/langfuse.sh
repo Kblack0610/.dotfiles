@@ -55,6 +55,7 @@ lf_delete() {
   LF_DELETED=0 LF_STATUS=""
   while IFS= read -r id; do
     [ -n "$id" ] || continue
+    : > "$work/lf.del.resp"
     code="$(printf 'user = "%s"\n' "$key" | "$curl" -sS -K - -X DELETE -o "$work/lf.del.resp" -w '%{http_code}' \
       --max-time 30 "$url/api/public/scores/$id" 2>"$work/lf.del.err")" || code=000
     LF_STATUS="$code"

@@ -845,7 +845,7 @@ cmd_ended() {
              account: ((.transcript // "" | capture("/\\.(?<a>claude[^/]*)/projects/").a) // $p.account // null),
              cost_usd: (.cost_usd // $p.cost_usd // null),
              updated_epoch: ([.updated, ($p.updated_epoch // 0)] | max),
-             prs_merged: ($p.prs_merged // 0), prs_open: ($p.prs_open // 0), _runner: ($p.project == "_runner")}),
+             prs_merged: $p.prs_merged, prs_open: $p.prs_open, _runner: ($p.project == "_runner")}),
         ($latest[] | select(.updated_epoch >= $since and ($inreg[.session_id] | not))
           | {session_id, project, title, harness, account, cost_usd, updated_epoch, prs_merged, prs_open, _runner: (.project == "_runner")}) ]
     | map(select(._runner | not) | del(._runner)) | sort_by(-.updated_epoch)[]'

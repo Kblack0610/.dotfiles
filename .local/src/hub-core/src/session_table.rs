@@ -997,6 +997,14 @@ mod tests {
     }
 
     #[test]
+    fn an_ended_rows_pr_state_reads_null_counts_as_none_and_an_open_pr_as_open() {
+        let ended = |l: &str| outcome_row(&serde_json::from_str::<Ended>(l).unwrap()).pr_state;
+        assert_eq!(ended(r#"{"session_id":"p","prs_merged":null,"prs_open":null}"#), "");
+        assert_eq!(ended(r#"{"session_id":"o","prs_merged":0,"prs_open":1}"#), "open");
+        assert_eq!(ended(r#"{"session_id":"m","prs_merged":2,"prs_open":1}"#), "merged");
+    }
+
+    #[test]
     fn the_query_finds_unlinked_sessions_open_prs_and_sources() {
         let r = rows(&state(), &vocab(), &feed(), &[]);
         let keys = |q: &str| -> Vec<String> {
