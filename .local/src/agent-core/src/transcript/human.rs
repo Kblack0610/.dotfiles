@@ -121,8 +121,8 @@ fn shown_blocks(v: &Value) -> Vec<String> {
     out
 }
 
-/// The (question, answer) pairs of a user entry that carries a dialog's answers, in the order
-/// the harness lists them. Empty for any other entry, a subagent's included.
+/// The (question, answer) pairs of a user entry that carries a dialog's answers, sorted by
+/// question text. Empty for any other entry, a subagent's included.
 fn dialog_answers(line: &str) -> Vec<(String, String)> {
     let Ok(v) = serde_json::from_str::<Value>(line) else {
         return Vec::new();
@@ -256,8 +256,8 @@ mod tests {
         assert_eq!(
             dialog_answers(&line),
             [
-                ("Which?".to_string(), "Park, Hold".to_string()),
-                ("Also?".to_string(), "Yes".to_string())
+                ("Also?".to_string(), "Yes".to_string()),
+                ("Which?".to_string(), "Park, Hold".to_string())
             ]
         );
     }
