@@ -124,8 +124,10 @@ if [ -n "$BAR" ]; then
       where: (if .max_live != null and .free != null then "\(.free) of \(.max_live) slots free"
         else .spaces | map("\(.name | clean) \(.n)") | join(", ") end),
       on: (.models | map("\(.name | clean) \(.n)") | join("  "))}] as $hosts
-  | ($hosts | if length > 0 then 2 + length else 0 end) as $mlines
-  | ($lines - 2 * ($secs | length) - (if $tail == "" then 0 else 2 end) - 1 - $mlines) as $room
+  | ($lines - 2 * ($secs | length) - (if $tail == "" then 0 else 2 end) - 1) as $left
+  | ([([($hosts | length), $left - 2] | min), 0] | max) as $hn
+  | ($hosts | {shown: .[:$hn], cut: (length - $hn)}) as $mach
+  | ($left - (if $hn > 0 then 2 + $hn else 0 end)) as $room
   | (reduce $secs[] as $sec ({left: ([$room, 0] | max), out: []};
       ([($sec.rows | length), .left] | min) as $n
       | .out += [$sec + {shown: $sec.rows[:$n], cut: (($sec.rows | length) - $n)}] | .left -= $n)
@@ -139,17 +141,18 @@ if [ -n "$BAR" ]; then
   | def row: ("  " + (.project | fit($pw) | pad($pw)) + "  " + (.task | fit($tw) | pad($tw)) + "  "
       + (.why | fit($rw) | pad($rw)) + "  " + (.idle_min | mins | pad(6)) + "  " + (.on | fit($mw) | pad($mw))
       + "  " + (.at | fit($hw))) | sub(" +$"; "") | esc;
-    ([$hosts[].name | length] + [0] | max | [., 20] | min) as $nw
-  | ([$hosts[].where | length] + [0] | max | [., 24] | min) as $ww
-  | ([$hosts[] | select(.stuck > 0) | "\(.stuck) stuck" | length + 2] + [0] | max) as $sw
-  | ([$hosts[].on | length] + [0] | max | [., ([$width - 2 - $nw - 2 - 3 - 2 - $ww - 2 - $sw, 12] | max)] | min) as $ow
+    ([$mach.shown[].name | length] + [0] | max | [., 20] | min) as $nw
+  | ([$mach.shown[].where | length] + [0] | max | [., 24] | min) as $ww
+  | ([$mach.shown[] | select(.stuck > 0) | "\(.stuck) stuck" | length + 2] + [0] | max) as $sw
+  | ([$mach.shown[].on | length] + [0] | max | [., ([$width - 2 - $nw - 2 - 3 - 2 - $ww - 2 - $sw, 12] | max)] | min) as $ow
   | def mrow: . as $h | ("  " + (.name | fit($nw) | pad($nw)) + "  " + (.live | lpad(3)) + "  "
       + (.where | fit($ww) | pad($ww)) + "  " + (.on | fit($ow) | pad($ow))
       | if $h.stuck > 0 then esc + "  <span color=\($sq)\($yel)\($sq)>\($h.stuck) stuck</span>" else sub(" +$"; "") | esc end);
-    (if ($hosts | length) > 0 then ["", "<b>Machines</b>", "<tt>" + ($hosts | map(mrow) | join("\n")) + "</tt>"] else [] end)
+    (if $hn > 0 then ["", "<b>Machines</b>", "<tt>" + ($mach.shown | map(mrow) | join("\n")) + "</tt>"] else [] end)
     + [$alloc[] | "", "<b>" + (if .c == "" then .name else "<span color=\($sq)\(.c)\($sq)>\(.name)</span>" end) + "</b>  \(.rows | length)",
       (if (.shown | length) > 0 then "<tt>" + (.shown | map(row) | join("\n")) + "</tt>" else empty end)]
-    + ([$alloc[] | select(.cut > 0) | "\(.cut) more \(.name | ascii_downcase)"] | if length > 0 then ["+" + join(", ") + ": click for every session (agent-panel)"] else [] end)
+    + ((if $mach.cut > 0 then ["\($mach.cut) more machine\(if $mach.cut == 1 then "" else "s" end)"] else [] end)
+      + [$alloc[] | select(.cut > 0) | "\(.cut) more \(.name | ascii_downcase)"] | if length > 0 then ["+" + join(", ") + ": click for every session (agent-panel)"] else [] end)
     + (if $tail == "" then [] else ["", $tail] end)
   | map("\n" + .) | join("")' <<< "$BAR")"
 fi

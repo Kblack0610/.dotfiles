@@ -228,6 +228,21 @@ Ready to close 1 (1 done); also 1 chat"
   assert_line "+19 more working: click for every session (agent-panel)"
 }
 
+# Review finding: more machines than the cap leaves are cut too, and the cut line counts them.
+@test "more machines than the cap leaves are cut, and the cut line counts them beside the stage rows" {
+  printf '[channel.bar]\nmax_lines = 8\nmax_line = 120\n' > "$BATS_TEST_TMPDIR/channels.toml"
+  local hosts=() i
+  for i in $(seq 1 9); do hosts+=("host={\"name\":\"m$i\",\"live\":1,\"models\":[{\"name\":\"opus\",\"n\":1}]}"); done
+  feed hub/w1:1=WORKING:5
+  barfeed "${hosts[@]}" 'WORKING|dotfiles|work 1|busy|1|hub/w1:1|m1|opus'
+  COMMS_CHANNELS="$BATS_TEST_TMPDIR/channels.toml" run "$MODULE"
+  run tip
+  assert_equal "$(printf '%s\n' "$output" | wc -l)" 8
+  assert_output --partial "  m2    1    opus 1"
+  refute_output --partial "  m3 "
+  assert_line "+7 more machines, 1 more working: click for every session (agent-panel)"
+}
+
 @test "a stage cut to no rows keeps its heading and count, and the cut line names each stage" {
   printf '[channel.bar]\nmax_lines = 8\nmax_line = 120\n' > "$BATS_TEST_TMPDIR/channels.toml"
   local rows=() i
