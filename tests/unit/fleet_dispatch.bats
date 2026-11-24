@@ -741,6 +741,7 @@ ptask game --agent tag --add plan --add go ga-7'
   grep -q 'id:gx-2 dropped: on the game sheet' "$NOTES_FIXTURE/rows.game.agent"
   # NEGATIVE CONTROL: before ar-3172 gx-8 kept #after/gx-2 until the next pass's reap
   grep -q '^- \[ \] row gx-8 .*#after/hm-2 <!-- id:gx-8 -->' <(cut -f2 "$NOTES_FIXTURE/rows.game.agent")
+  GATES_LOADED=''
   run dead_holds
   assert_output ''
 }

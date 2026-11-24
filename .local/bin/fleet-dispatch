@@ -7,7 +7,7 @@
 #   fleet-dispatch covered           the projects an untagged worker takes: stage dev or later, a repo, not on DISPATCH_OFF_PROJECTS
 #   fleet-dispatch report            latest verdict per row: picked or skipped, and why
 #   fleet-dispatch verdicts          the same as JSON lines, each with plan: true for a skip by a DISPATCH_PLAN_RULES rule
-#   fleet-dispatch exits [--dry-run] give each skipped agent row its rule's exit (skip_exits; each run pass does); --dry-run lists them
+#   fleet-dispatch exits [--dry-run] give each skipped agent row its rule's exit, and move the #after/ gates on a row sent to the sheet (skip_exits; each run pass does); --dry-run lists them
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
 #   fleet-dispatch promote --project P [--profile X] [--agent] [--dispatch] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item; --dispatch makes it a capped pull like dispatch's own
 #   fleet-dispatch pull-after [--queue-only] ID  promote, and start unless low or --queue-only, the open rows gated #after/ID: agent-queue runs it when ID's item closes ok
@@ -2223,8 +2223,9 @@ skip_exits() {
   [ "$EXITS_TAKEN" = 0 ] || say "gave $EXITS_TAKEN skipped row(s) their exit"
   # The reap's follow_moved_gates ran before this, so a gate on a row sent to the sheet here would read
   # dead until the next pass, and queue-starved trips on it (ar-3172: ucp-3100 on ucp-3099, 2026-11-23).
-  # The gates are read again first: the pass's copy predates the drop, and the picks after read the new one.
-  [ -z "$follow" ] || { GATES_LOADED=''; follow_moved_gates; }
+  # It reads the gates again in a subshell: the pass's copy predates the drop, and a failed read there
+  # must not blank the copy the pass's picks use (a moved gate missing from it reads as waiting).
+  [ -z "$follow" ] || ( GATES_LOADED=''; follow_moved_gates )
   [ "$PLAN_TAGGED" = 0 ] && return 0
   say "tagged $PLAN_TAGGED for a plan"
   "$HERE/agentctl-inbox-plan" --kick || say "skip_exits: could not start inbox-plan"
