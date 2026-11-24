@@ -201,7 +201,7 @@ parked_files() { ls -A "$HOME/.agent/parked" | grep -v "^\.lock\." || true; }
   run "$ACCT" move agent-2 --server lab
   assert_success
   run tmux_calls
-  assert_line --partial "respawn-pane -t %7 -c $HOME/wt CLAUDE_CONFIG_DIR=$(q "$ALT") AGENT_QUEUE_ITEM=fix-menu env -u CLAUDECODE"
+  assert_line --partial "respawn-pane -t %7 -c $HOME/wt CLAUDE_CONFIG_DIR=$(q "$ALT") AGENT_QUEUE_ITEM=fix-menu claude-acct scope env -u CLAUDECODE"
   assert_line --partial 'OTEL_EXPORTER_OTLP_ENDPOINT=http://hp-victus:4318'
   assert_line --partial 'queue.item=fix-menu'
   assert_line --partial 'claude --model opus --resume sid-1'
@@ -221,7 +221,7 @@ parked_files() { ls -A "$HOME/.agent/parked" | grep -v "^\.lock\." || true; }
   run "$ACCT" unpark agent-2
   assert_success
   run tmux_calls
-  assert_line --partial "respawn-pane -t %7 -c $HOME/wt CLAUDE_CONFIG_DIR=$(q "$ALT") AGENT_QUEUE_ITEM=fix-menu env -u CLAUDECODE"
+  assert_line --partial "respawn-pane -t %7 -c $HOME/wt CLAUDE_CONFIG_DIR=$(q "$ALT") AGENT_QUEUE_ITEM=fix-menu claude-acct scope env -u CLAUDECODE"
   assert_line --partial 'OTEL_EXPORTER_OTLP_ENDPOINT=http://hp-victus:4318'
 }
 

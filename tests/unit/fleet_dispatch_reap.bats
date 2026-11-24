@@ -679,7 +679,7 @@ real_epic_board() {
 
 @test "tier3 gate: a tier-3 cleanup pick ranks with its project's #prio, as a day pick does" {
   pr_lane_ready
-  sed -i '1s/$/ #prio\/focus/' "$SANDBOX/sheets/agent-runtime/README.md"
+  focus_on agent-runtime
   row agent-runtime agent 'drop the dead timer' '- [ ] chore(timer): drop the dead timer #tier/3'
   pr_lane_verdict 'drop the dead timer' timer
   run t3_picks "$(t3_rows '')"

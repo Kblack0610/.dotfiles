@@ -17,6 +17,7 @@ use crate::release_graph::pr_ref;
 use crate::session_actions::Runner;
 use crate::text::{cap, headline, TITLE_MAX};
 
+/// A queue item's priorities, as `agent-queue` takes them. A board row's are `tasks::PRIORITIES`.
 pub const PRIORITIES: [&str; 3] = ["urgent", "high", "low"];
 
 /// The harness of an item, or a session, that names none.
@@ -251,6 +252,30 @@ pub struct Step {
 impl Item {
     pub fn tag_list(&self) -> impl Iterator<Item = &str> {
         self.tags.split_whitespace()
+    }
+
+    /// The Claude session ids it ran in, oldest first (its `sessions:` header, space- or
+    /// comma-separated): an ask's `claude_session` names one, which ties the ask to this item
+    /// after that session ends.
+    pub fn session_ids(&self) -> impl Iterator<Item = &str> {
+        self.extra_str("sessions")
+            .unwrap_or("")
+            .split([',', ' '])
+            .filter(|s| !s.is_empty())
+    }
+
+    /// The Claude session it ran in last: the one whose end left it waiting.
+    pub fn last_session(&self) -> Option<&str> {
+        self.session_ids().last()
+    }
+
+    /// Whether it is held on ask `id` (an `ask:<id>` or `ask:<id>=<options>` tag, agent-queue's hold).
+    pub fn held_on(&self, id: &str) -> bool {
+        !id.is_empty()
+            && self.tag_list().any(|t| {
+                t.strip_prefix("ask:")
+                    .is_some_and(|a| a.split('=').next() == Some(id))
+            })
     }
 
     /// The item's stages in order, each with the minutes since the one before it: queued, ready,
