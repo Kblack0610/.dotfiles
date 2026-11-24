@@ -10,9 +10,9 @@
 # matters: run-shell is the context that supplies $TMUX and $TMUX_PANE, so calling the
 # script directly from the test shell would exercise a path the keybinding never takes.
 #
-# EDITOR_WINDOW_CMD is overridden per call. The container has no nvim, and more importantly
-# a test must not depend on one: the subject's contract is "run the configured command in a
-# window that survives it", and `sleep` proves that as well as an editor does.
+# EDITOR_WINDOW_CMD is overridden per call, because a test must not depend on an editor: the
+# subject's contract is "run the configured command in a window that survives it", and `sleep`
+# proves that as well as an editor does.
 
 setup() {
   load '../vendor/bats-support/load'
