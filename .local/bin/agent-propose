@@ -11,8 +11,8 @@
 #                                     with none: close what passed its window, ask about what passed its expiry, prune
 #   answered <ask-id>                 decide an expiring proposal by its ask's answer (its run: resume)
 #
-# A proposal is a decision for the human, so nothing here runs without an accept and no model
-# reads it: the verb is one of the fixed set below, applied by this script. It is not an
+# A proposal is a decision for the human, or for the judge once it goes its TTL unread, so nothing
+# here runs without an accept and no model reads it: the verb is one of the fixed set below, applied by this script. It is not an
 # agent-ask, whose `resume` is a model prompt that runs whatever the answer was.
 set -uo pipefail
 
@@ -183,9 +183,10 @@ decide() { # <accepted|rejected|expired> [--by who] <id>
   echo "$id $status"
 }
 
-# ask_expiring <record file>: one approval ask for a proposal that went its TTL unread, whose answer
-# comes back through `answered` (ask-resume runs the `run:` resume with the ask id). Not this
-# caller's session or pane: the ask is the proposal's, and a sweep may post several. Prints the id.
+# ask_expiring <record file>: one gate ask for a proposal that went its TTL unread, which the judge
+# accepts or declines under its policy like any gate (ar-4765). Its answer comes back through
+# `answered` (ask-resume runs the `run:` resume with the ask id). Not this caller's session or pane:
+# the ask is the proposal's, and a sweep may post several. Prints the id.
 ask_expiring() {
   local f="$1" title does q context
   title="$(jq -r .title "$f")"
@@ -198,8 +199,7 @@ ask_expiring() {
   # caller (dream's add) is not that session, so only a failure's reason is shown.
   local out err rc
   err="$(mktemp)"
-  # gate: ap-approval
-  out="$(env -u CLAUDE_CODE_SESSION_ID -u TMUX -u TMUX_PANE -u AGENTCTL_NAME "$AP_ASK_CMD" post --kind approval \
+  out="$(env -u CLAUDE_CODE_SESSION_ID -u TMUX -u TMUX_PANE -u AGENTCTL_NAME "$AP_ASK_CMD" post --kind gate \
     --project "$(jq -r .project "$f")" --options "accept=$does|reject=drop it, it is not proposed again" \
     --context "$context" --resume 'run: agent-propose answered' -- "$q" 2>"$err" 9>&-)"
   rc=$?
@@ -239,20 +239,27 @@ sweep() {
 }
 
 # answered <ask id>: the `run:` resume of an expiring proposal's ask. accept or reject decides it as
-# the human's; an answer naming neither or both leaves it asked and says so. One already decided
-# another way (accept or reject by hand) is a no-op.
+# whoever answered it, the judge or the human (an ask with no answered_by is the human's); an answer
+# naming neither or both leaves it asked and says so. One already decided another way (accept or
+# reject by hand) is a no-op.
 cmd_answered() {
-  local ask="${1:-}" id st names acc rej
+  local ask="${1:-}" id st names acc rej by
   [ -n "$ask" ] || die "answered needs an ask id"
   read -r id st < <(records | jq -rs --arg a "$ask" 'map(select(.ask == $a)) | (map(select(.status == "asked")) + .) | first | "\(.id // "") \(.status // "")"')
   [ -n "$id" ] || die "no proposal waits on ask $ask"
   [ "$st" = asked ] || { echo "$id already $st"; return 0; }
   names="$("$AP_ASK_CMD" answer-names "$ask")" || die "cannot read the answer to ask $ask"
+  # gate: ap-ruling
+  by="$("$AP_ASK_CMD" show "$ask")" || die "cannot read ask $ask"
+  by="$(sed -n '/^answered_by: */{s///p;q;}' <<<"$by")"
+  by=${by:-human}
+  # Only a ruling decides it: an answer a session, shepherd or hold gave leaves it asked.
+  case "$by" in human | judge) ;; *) die "ask $ask was answered by $by; $id stays asked: decide it with agent-propose accept or reject" ;; esac
   grep -qx accept <<<"$names" && acc=a || acc=
   grep -qx reject <<<"$names" && rej=r || rej=
   case "$acc$rej" in
-    a) decide accepted --by human "$id" ;;
-    r) decide rejected --by human "$id" ;;
+    a) decide accepted --by "$by" "$id" ;;
+    r) decide rejected --by "$by" "$id" ;;
     ar) die "ask $ask names both accept and reject; $id stays asked: decide it with agent-propose accept or reject" ;;
     *) die "ask $ask names neither accept nor reject; $id stays asked: decide it with agent-propose accept or reject" ;;
   esac
