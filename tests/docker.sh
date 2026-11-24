@@ -125,15 +125,16 @@ if [ -f "$REPO/.git" ]; then
     echo "==> worktree detected; also mounting $main_gitdir (ro) so git resolves"
   fi
 fi
-# Only forward BATS_FLAGS when the caller actually set it. Passing it through empty would
+# The host's settings a run reads, each only when set. Passed through empty, BATS_FLAGS would
 # override the Makefile's `BATS_FLAGS ?=` default -- make treats a set-but-empty environment
 # variable as a definition -- silently dropping --print-output-on-failure.
-[ -n "${BATS_FLAGS:-}" ] && run_args+=(--env "BATS_FLAGS=$BATS_FLAGS")
 # CI turns a missing prerequisite (the agent-panel build session_send.bats drives) from a skip
-# into a failure, so a red cannot hide as a skip there.
-[ -n "${CI:-}" ] && run_args+=(--env "CI=$CI")
-# JUNIT=1 writes the JUnit reports CI uploads (tests/Makefile).
-[ -n "${JUNIT:-}" ] && run_args+=(--env "JUNIT=$JUNIT")
+# into a failure, so a red cannot hide as a skip there. JUNIT=1 writes the JUnit reports CI
+# uploads (tests/Makefile). RUST_JOBS and CARGO_INCREMENTAL are the rust job's (tests/rust.sh).
+# No path goes through: the checkout is /work in here, so a path is passed as /work/...
+for v in BATS_FLAGS CI JUNIT RUST_JOBS CARGO_INCREMENTAL; do
+  [ -n "${!v:-}" ] && run_args+=(--env "$v=${!v}")
+done
 
 if [ "${1:-}" = "--shell" ]; then
   shift
