@@ -2006,17 +2006,7 @@ fn main() -> Result<()> {
             }
             // Handled before the match below because both take a VALUE (`--set`), which the
             // name-keyed tuple has no room for.
-            if stages {
-                projects::stages();
-                std::process::exit(0);
-            }
-            if let Some(d) = front_page {
-                // Absolute, so `.` or a trailing slash still names the project dir the
-                // registry looks up by name.
-                let Ok(d) = std::fs::canonicalize(&d) else {
-                    bail!("--front-page: no project dir {}", d.display());
-                };
-                println!("{}", projects::front_page(&d).display());
+            if projects::ladder_read(stages, front_page.as_deref())? {
                 std::process::exit(0);
             }
             if let Some(n) = stage {

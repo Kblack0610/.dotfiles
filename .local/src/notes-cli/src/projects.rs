@@ -320,6 +320,24 @@ pub(crate) fn front_page(dir: &Path) -> PathBuf {
     editable_sheet(dir).unwrap_or_else(|| dir.join("summary.md"))
 }
 
+/// `notes projects --stages` or `--front-page <dir>`, the reads that print one answer and end the
+/// command; false when neither was asked. The dir is made absolute first, so `.` or a trailing
+/// slash still names the project dir the registry looks up by name.
+pub fn ladder_read(stages: bool, front: Option<&Path>) -> Result<bool> {
+    if stages {
+        self::stages();
+        return Ok(true);
+    }
+    let Some(d) = front else {
+        return Ok(false);
+    };
+    let Ok(dir) = fs::canonicalize(d) else {
+        bail!("--front-page: no project dir {}", d.display());
+    };
+    println!("{}", front_page(&dir).display());
+    Ok(true)
+}
+
 /// A project's declared maturity, or `None` when it has not declared one.
 pub(crate) fn stage_of(dir: &Path) -> Option<String> {
     let content = fs::read_to_string(front_page(dir)).ok()?;
