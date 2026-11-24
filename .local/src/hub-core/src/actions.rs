@@ -256,7 +256,7 @@ pub fn triaged(g: &mut Gathered, reds: Option<Result<Vec<Red>, String>>, items: 
     let reds = reds.unwrap_or_else(|| all_reds(crate::reds::read(runner)));
     let routes = crate::reds::routes(runner, keys);
     if let Err(e) = &reds {
-        g.errors.push(format!("fleet-bench reds: {e}"));
+        g.errors.push(e.clone());
     }
     if let Err(e) = &routes {
         g.errors.push(format!("triage routes: {e}"));

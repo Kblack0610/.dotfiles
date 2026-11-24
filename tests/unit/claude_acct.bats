@@ -3022,6 +3022,22 @@ STUB
   assert_output 0
 }
 
+@test "token push: localhost writes the copy here with no ssh, so no host key is needed" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  vault_put claude-oauth-alt "$TOK_ALT"
+  mkdir -p "$HOME/.local/bin"
+  ln -s "$ACCT" "$HOME/.local/bin/claude-acct"
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s/ssh.argv"; exit 255\n' "$SANDBOX" > "$SANDBOX/bin/ssh"; chmod +x "$SANDBOX/bin/ssh"
+  run "$ACCT" token push localhost
+  assert_success
+  assert_output 'localhost: main alt read back'
+  local d="${XDG_CONFIG_HOME:-$HOME/.config}/claude-acct/tokens"
+  [[ "$(cat "$d/alt")" == "$TOK_ALT" ]]
+  [[ "$(stat -c %a "$d/alt")" == 600 ]]
+  [[ ! -e "$SANDBOX/ssh.argv" ]]   # negative control: the failing ssh stub was never called
+}
+
 @test "token push: refuses with rbw locked here, and names an account the host cannot read" {
   rbw_stub
   vault_put claude-oauth-alt "$TOK_ALT"
@@ -3254,16 +3270,23 @@ STUB
 
 @test "plans-store turns a project's copy into a relative link and keeps a newer copy's text" {
   root="$HOME/.agent/plans" live="$HOME/.agent/plans/_live"
-  mkdir -p "$live" "$root/proj" "$root/other" "$root/_archive"
-  echo source > "$live/a.md"; echo source > "$live/b.md"
+  mkdir -p "$live" "$root/proj" "$root/other" "$root/_archive" "$root/_unscoped" "$root/_runner"
+  echo source > "$live/a.md"; echo source > "$live/b.md"; echo source > "$live/c.md"; echo source > "$live/d.md"
   echo copy > "$root/proj/a.md"; touch -d '2020-01-01' "$root/proj/a.md"
   echo edited > "$root/other/b.md"; touch -d '2030-01-01' "$root/other/b.md"
+  echo copy > "$root/_unscoped/c.md"; touch -d '2020-01-01' "$root/_unscoped/c.md"
+  echo copy > "$root/_runner/d.md"; touch -d '2020-01-01' "$root/_runner/d.md"
   echo own > "$root/proj/own.md"
   echo archived > "$root/_archive/a.md"
   run "$ACCT" plans-store
   assert_success
   [[ "$(readlink "$root/proj/a.md")" == ../_live/a.md && "$(cat "$root/proj/a.md")" == source ]]
   [[ "$(readlink "$root/other/b.md")" == ../_live/b.md && "$(cat "$live/b.md")" == edited ]]
+  # the reserved project keys are projects: their twins become the link too (ar-3294)
+  [[ "$(readlink "$root/_unscoped/c.md")" == ../_live/c.md && "$(cat "$live/c.md")" == source ]]
+  [[ "$(readlink "$root/_runner/d.md")" == ../_live/d.md && "$(cat "$live/d.md")" == source ]]
+  # the store itself is never turned into a link
+  [[ -z "$(find "$live" -maxdepth 1 -type l)" ]]
   # a plan only a project holds, and an archived copy, stay files
   [[ -f "$root/proj/own.md" && ! -L "$root/proj/own.md" ]]
   [[ -f "$root/_archive/a.md" && ! -L "$root/_archive/a.md" ]]
