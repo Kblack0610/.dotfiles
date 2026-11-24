@@ -1504,7 +1504,8 @@ bottleneck_check_stalled() {
 
 # bottleneck_check_pools <now>: every pool's waited job-hours (cc:pool_waiting over the window) against
 # the one bound pool_wait_hours_max. One line naming each pool past it, the longest first, and exit 1;
-# exit 2 when the bound is unset or Prometheus gave no pool series.
+# exit 2 when the bound is unset or Prometheus gave no pool series. A pool under 0.1 job-hours has no row, so a
+# bound under 0.1 would never trip for it.
 bottleneck_check_pools() {
   local t="$1" max data out
   max=$(bottleneck_bound pool_wait_hours_max) || { say "bottleneck --check pools: no pool_wait_hours_max in $KPI_THRESHOLDS"; return 2; }
