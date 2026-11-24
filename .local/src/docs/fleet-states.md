@@ -131,6 +131,7 @@ Adding a field does not bump `schema`. Readers ignore fields they do not know.
 
 | Reader | Reads |
 | --- | --- |
+| bare `fleet-sessions` (`list_view`; `--fresh` is the full pass instead) | `generated_epoch` (over `FLEET_STATE_STALE_SECS` old exits 1 naming `--fresh`), `vocab.buckets`, `main`, `shared`, and per session `target`, `bucket`, `branch`, `pr`, `idle_min`, `reason`, `nudged`, `dispatch`, `labels`; on a worker the lease holder's `holder-state.json` (this host's sessions only) |
 | `agent-mqtt-publish` | `bucket` per session (joined to agent-panel's live list by `target`), `generated_at`, and `counts` for the bucket names, so `buckets` publishes an empty one as 0 |
 | `fleet-bench sample` | Writes the document itself and records the same rows as progress lines |
 | `session-preflight.sh` (SessionStart, the "N other session(s) open on <project>" line, its "(M in this checkout)" part from `cwd`) | `generated_epoch` (over 10 minutes old shows nothing), `vocab` (`finished` left out), and per session `session_id`, `cwd`, `project` (the project of its cwd; a sibling worktree counts by it), `host`, `bucket` |
