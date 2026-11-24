@@ -4050,17 +4050,32 @@ on_workers() {
 # lines for the next read. Always rc 0: the record is best effort, as every chain_event is.
 : "${WORKER_RECORD_SECS:=20}"   # one worker's read; ssh answers or the next minute asks again
 worker_records() {
-  local name cur at lines dir="${WORKER_RECORD_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/worker-record}"
+  local name dir="${WORKER_RECORD_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/worker-record}" pids=()
   fleet_hosts >/dev/null
   mkdir -p "$dir" || return 0
+  # One read at a time per cursor: a hand-run record beside the minute tick would import twice.
+  exec 6>"$dir/.lock"
+  flock -n 6 || return 0
+  # All workers at once, as on_workers does, so a sleeping laptop's ssh timeout is not added up.
   while read -r name; do
-    cur=$(cat "$dir/$name" 2>/dev/null)
-    lines=$(fleet_host_run "$name" timeout "$WORKER_RECORD_SECS" sh -c \
-      'f="$HOME/.local/state/notes/ingest.jsonl"; [ -r "$f" ] && awk -v c="$1" '\''substr($0, 8, length(c)) >= c'\'' "$f"' _ "$cur" 2>/dev/null) || continue
-    at=$(notes ingest import <<<"$lines" 2>/dev/null) || continue
-    [ -z "$at" ] || printf '%s\n' "$at" > "$dir/$name"
+    worker_record_one "$name" "$dir" &
+    pids+=("$!")
   done < <(fleet_peers)
+  [ "${#pids[@]}" -eq 0 ] || wait "${pids[@]}"
+  exec 6>&-
   return 0
+}
+
+# worker_record_one <worker> <cursor dir> -- one worker's read. A worker that does not answer (ssh
+# 255, or no record yet) is quiet, its lines wait for the next read; a failed `notes ingest import`
+# is said, since it is the fault that would leave the drift where it was.
+worker_record_one() {
+  local name=$1 dir=$2 cur at lines
+  cur=$(cat "$dir/$name" 2>/dev/null)
+  lines=$(fleet_host_run "$name" timeout "$WORKER_RECORD_SECS" sh -c \
+    'f="$HOME/.local/state/notes/ingest.jsonl"; [ -r "$f" ] && awk -v c="$1" '\''substr($0, 8, length(c)) >= c'\'' "$f"' _ "$cur" 2>/dev/null) || return 0
+  at=$(notes ingest import <<<"$lines" 2>/dev/null) || { say "record: $name: notes ingest import failed"; return 0; }
+  [ -z "$at" ] || printf '%s\n' "$at" > "$dir/$name"
 }
 
 # fans_out -> rc 0 when this machine holds the fleet lease (`fleet-lease held`), so it asks every

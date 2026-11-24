@@ -230,7 +230,8 @@ pub fn record(p: &Profile, ev: &Event) {
 }
 
 /// The lines of a fleet worker's record (`input`) this record should take: those of a queue item
-/// that `have` does not hold word for word, and the newest instant any line of `input` carries.
+/// that `have` does not hold word for word, and the instant the next read starts from (two hours
+/// before the newest any line of `input` carries).
 /// A line that does not read as an event is skipped; one with no item is the worker's own
 /// intake or board write, which its own notes sync carries.
 fn lines_to_import<'a>(
@@ -238,7 +239,7 @@ fn lines_to_import<'a>(
     input: &'a str,
 ) -> (Vec<&'a str>, Option<String>) {
     let mut newest: Option<(chrono::DateTime<chrono::FixedOffset>, String)> = None;
-    let mut take = vec![];
+    let mut take: Vec<&str> = vec![];
     for l in input.lines() {
         let Ok(e) = serde_json::from_str::<Event>(l) else {
             continue;
@@ -248,17 +249,26 @@ fn lines_to_import<'a>(
                 newest = Some((at, e.ts.clone()));
             }
         }
-        if e.item.as_deref().is_some_and(|i| !i.is_empty()) && !have.contains(l) {
+        if e.item.as_deref().is_some_and(|i| !i.is_empty())
+            && !have.contains(l)
+            && !take.contains(&l)
+        {
             take.push(l);
         }
     }
-    (take, newest.map(|(_, ts)| ts))
+    // Two hours behind the newest line read: the reader compares instants as text, which misorders
+    // lines across a DST change (one hour) and a line stamped just before the cursor but written
+    // after it. The overlap is re-read and dropped as already held.
+    let cursor = newest.map(|(at, _)| {
+        (at - chrono::Duration::hours(2)).to_rfc3339_opts(chrono::SecondsFormat::Nanos, false)
+    });
+    (take, cursor)
 }
 
 /// Append the queue-item events of a fleet worker's record that this one lacks: a worker keeps
 /// its own `ingest.jsonl`, so what its sessions did to an item (moved it to done, merged it)
-/// never reached the record the pipeline reads. Returns how many lines it took and the newest
-/// instant it read, which the caller hands back as the next read's start.
+/// never reached the record the pipeline reads. Returns how many lines it took and the instant the
+/// next read starts from, which the caller hands back to the worker's reader.
 pub fn import(p: &Profile, input: &str) -> std::io::Result<(usize, Option<String>)> {
     let path = path(p);
     let have_text = fs::read_to_string(&path).unwrap_or_default();
@@ -313,12 +323,9 @@ fn read_day(p: &Profile, day: &str) -> (Vec<Event>, Vec<Reject>) {
     read(p, |l| l.starts_with(&head))
 }
 
-/// Every event the record holds, oldest first by instant: an imported worker event lands at the
-/// end of the file, after newer local ones, so the file order alone is not the time order.
+/// Every event the record holds, oldest first.
 pub fn all(p: &Profile) -> Vec<Event> {
-    let mut events = read(p, |_| true).0;
-    events.sort_by_key(|e| chrono::DateTime::parse_from_rfc3339(&e.ts).ok());
-    events
+    read(p, |_| true).0
 }
 
 fn read_since(p: &Profile, days: i64) -> (Vec<Event>, Vec<Reject>) {
@@ -354,6 +361,9 @@ fn read(p: &Profile, keep: impl Fn(&str) -> bool) -> (Vec<Event>, Vec<Reject>) {
             }),
         }
     }
+    // Oldest first by instant, whatever order the lines came in: an imported worker event is
+    // appended after newer local ones.
+    events.sort_by_key(|e| chrono::DateTime::parse_from_rfc3339(&e.ts).ok());
     (events, rejects)
 }
 
@@ -560,12 +570,19 @@ mod tests {
         let have = std::collections::HashSet::from([held.as_str()]);
         let (take, newest) = lines_to_import(&have, &input);
         assert_eq!(take, vec![new.as_str()]);
-        assert_eq!(newest.as_deref(), Some("2026-11-23T12:09:00-08:00"));
+        assert_eq!(
+            newest.as_deref(),
+            Some("2026-11-23T10:09:00.000000000-08:00")
+        );
         let (again, _) = lines_to_import(
             &std::collections::HashSet::from([held.as_str(), new.as_str()]),
             &input,
         );
         assert!(again.is_empty());
+        // The same line twice in one input is taken once.
+        let doubled = format!("{new}\n{new}\n");
+        let (twice, _) = lines_to_import(&Default::default(), &doubled);
+        assert_eq!(twice.len(), 1);
     }
 
     #[test]
