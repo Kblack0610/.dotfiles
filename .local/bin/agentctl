@@ -1049,7 +1049,7 @@ EOF
 # minutes fails the unit and stops its .path (fleet-dispatch-kick, 2026-11-23). An invalid conf is not
 # listed (reload writes it nothing either, and liveness names it), so a reload clears every line.
 timers_lag() {
-    local n conf t d armed=" " lag
+    local n conf t d armed=" " listed=" " lag
     for n in $(list_agent_names); do
         conf=$(load_agent "$n" 2>/dev/null) || continue
         [ "$(kv_get KIND <<<"$conf")" = oneshot ] || continue
@@ -1061,13 +1061,13 @@ timers_lag() {
             t="$SYSTEMD_USER_DIR/agentctl-$n.timer"
             { [ -f "$t" ] && [ ! "$CONFIG_DIR/$n.conf" -nt "$t" ]; } || lag=1
         fi
-        [ "$lag" = 0 ] || printf '%s\n' "$n"
+        [ "$lag" = 0 ] || { printf '%s\n' "$n"; listed+="$n "; }
     done
     for t in "$SYSTEMD_USER_DIR"/agentctl-*.timer; do
         [ -f "$t" ] || continue
         n=${t##*/agentctl-}
         n=${n%.timer}
-        case "$armed" in *" $n "*) ;; *) printf '%s\n' "$n" ;; esac
+        case "$armed$listed" in *" $n "*) ;; *) printf '%s\n' "$n" ;; esac
     done
 }
 
