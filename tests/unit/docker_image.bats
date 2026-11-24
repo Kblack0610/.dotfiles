@@ -9,6 +9,7 @@ setup() {
   mkdir -p "$T/tests/vendor/bats-core/bin" "$T/.local/src/tmux/patched" "$T/bin"
   cp "$BATS_TEST_DIRNAME/../docker.sh" "$T/tests/docker.sh"
   echo 'FROM scratch' > "$T/tests/Dockerfile"
+  echo 1.99.1 > "$T/tests/rust-toolchain"
   echo 'patch' > "$T/.local/src/tmux/patched/a.patch"
   printf '#!/bin/sh\n' > "$T/tests/vendor/bats-core/bin/bats"
   chmod +x "$T/tests/vendor/bats-core/bin/bats"

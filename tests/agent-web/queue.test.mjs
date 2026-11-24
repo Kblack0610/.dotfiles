@@ -328,14 +328,14 @@ test("a stuck running or review row is amber with the server's word and its why 
   load({ ...data, items: [
     item("s", { state: "running", state_word: "stalled", stuck: true, state_why: "STALLED 42m idle: PR #7 CI red" }),
     item("n", { state: "running", state_word: "no session", stuck: true, state_why: "no session works it" }),
-    item("p", { state: "review", state_word: "PR red, yours", stuck: true }),
+    item("p", { state: "review", state_word: "PR red, escalated", stuck: true }),
     item("w", { state: "running", state_word: "running", state_why: "WORKING 1m idle: idle 1m" }),
     item("o", { state: "review", state_word: "on a PR" }),
   ] });
   const h = draw();
   assert.match(h, /<td class="warn" title="STALLED 42m idle: PR #7 CI red">stalled<\/td>/);
   assert.match(h, /<td class="warn" title="no session works it">no session<\/td>/);
-  assert.match(h, /<td class="warn">PR red, yours<\/td>/);
+  assert.match(h, /<td class="warn">PR red, escalated<\/td>/);
   // Negative controls: a working session and a plain PR are not amber.
   assert.match(h, /<td title="WORKING 1m idle: idle 1m">running<\/td>/);
   assert.match(h, /<td>on a PR<\/td>/);
@@ -623,7 +623,7 @@ test("a row opens its detail: every header, the stages with gaps, the task folde
 test("an opened row's History fold starts shut, reads on opening, once, and drops what it read on shutting", async () => {
   load({ ...data, items: [item("w1", { state: "review" })] }, { sel: "w1" });
   asked = [];
-  const hist = { attempts: 3, steps: 54, lines: [{ at: "2026-11-12T07:04:21-08:00", text: "started on lab:ucp-agent-10, sol on codex" }, { at: "2026-11-12T07:16:54-08:00", text: "PR still red after fix-ci, yours" }] };
+  const hist = { attempts: 3, steps: 54, lines: [{ at: "2026-11-12T07:04:21-08:00", text: "started on lab:ucp-agent-10, sol on codex" }, { at: "2026-11-12T07:16:54-08:00", text: "PR tries spent, escalated" }] };
   let land;
   reply = (url) => url.startsWith("/api/queue/history") ? new Promise((r) => { land = r; }) : data;
   assert.match(draw(), /<details class="cfold" data-k="hist:w1"><summary>History<\/summary><\/details>/);
@@ -637,7 +637,7 @@ test("an opened row's History fold starts shut, reads on opening, once, and drop
   land(hist);
   await settle(); await settle();
   const h = parts["q-list"].innerHTML;
-  assert.match(h, /<summary>History, 3 attempts \(54 steps, last 2\)<\/summary><div class="cline"><span class="muted">[^<]+<\/span> started on lab:ucp-agent-10, sol on codex<\/div><div class="cline">.*PR still red after fix-ci, yours/);
+  assert.match(h, /<summary>History, 3 attempts \(54 steps, last 2\)<\/summary><div class="cline"><span class="muted">[^<]+<\/span> started on lab:ucp-agent-10, sol on codex<\/div><div class="cline">.*PR tries spent, escalated/);
   fold(false);
   assert.equal(run("qst.hist.w1"), undefined, "a shut fold holds nothing");
   assert.match(parts["q-list"].innerHTML, /data-k="hist:w1"><summary>History<\/summary><\/details>/);

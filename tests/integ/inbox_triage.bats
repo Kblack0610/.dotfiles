@@ -459,6 +459,31 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   grep -q 'sc-9	scratch	epic(audio): the sound pass' "$NOTES_FIXTURE/prompt.txt" || fail "the epics never reached the model"
 }
 
+@test "--backlog: a rewrite moves a row off its standing epic onto the feature epic it names, through tag" {
+  # edit keeps a row's parent and refuses an #of/ naming another (#3267), so the parent goes on with tag
+  sheet '' '- [ ] epic(audio): audio to standard <!-- id:sc-5 -->\n- [ ] epic(audio): the sound pass #size/l <!-- id:sc-9 -->\n- [ ] gun sound is off #low #of/sc-5 <!-- id:sc-1 -->\n'
+  answer '{"n": 1, "action": "keep"}' '{"n": 2, "action": "keep"}' \
+    '{"n": 3, "action": "rewrite", "row": "fix(audio): the gun sound is off #size/s #of/sc-9"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_success
+  refute_output --partial 'refused:'
+  run tasks
+  assert_output --regexp 'fix\(audio\): the gun sound is off .*#of/sc-9 .*id:sc-1'
+  refute_line --regexp 'gun sound is off .*#of/sc-5'
+}
+
+@test "--backlog: negative control: a rewrite of a row under a feature epic keeps its parent" {
+  sheet '' '- [ ] epic(audio): the sound pass #size/l <!-- id:sc-9 -->\n- [ ] epic(audio): the gun pass #size/l <!-- id:sc-8 -->\n- [ ] gun sound is off #low #of/sc-8 <!-- id:sc-1 -->\n'
+  answer '{"n": 1, "action": "keep"}' '{"n": 2, "action": "keep"}' \
+    '{"n": 3, "action": "rewrite", "row": "fix(audio): the gun sound is off #size/s #of/sc-9"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_success
+  refute_output --partial 'refused:'
+  run tasks
+  assert_output --regexp 'fix\(audio\): the gun sound is off .*#of/sc-8 .*id:sc-1'
+  refute_output --partial '#of/sc-9'
+}
+
 @test "--backlog: a plan's finish row stays on its board, and a rewrite must keep its plan slug, which ask-sweep finds it by" {
   sheet '' '- [ ] finish alpha-plan-lazy-otter: 2 phases left, next: p3 the gate #requested <!-- id:sc-1 -->\n- [ ] finish beta-plan-tidy-crow: 1 phases left, next: p2 docs #requested <!-- id:sc-2 -->\n- [ ] finish gamma_plan.v2: 3 phases left, next: p1 #requested <!-- id:sc-3 -->\n'
   # sorted by text: alpha (sc-1), beta (sc-2), gamma (sc-3)
@@ -1658,6 +1683,24 @@ ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)"
   assert_success
   grep -qx 'sc-5	scratch	human	fix(audio): the volume slider is stuck' "$NOTES_FIXTURE/prompt.txt" || fail "the outbox line lost the newest rows: $(cat "$NOTES_FIXTURE/prompt.txt")"
   grep -qE '^[0-9]+	sc-4	[0-9]+	human	fix\(ui\): the pause menu flickers when resuming' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+}
+
+# The route call shows the model the closest rows, but the row it writes is checked by the writer: `ptask file --as`
+# runs the twin check `ptask add` runs, so a reworded repeat joins the open row whatever the model said (ar-4182, ar-4992).
+@test "a row the model words afresh that twins an open row joins it as a dup and files nothing; a different row beside it still files" {
+  sheet '- the pause menu flickers on resume\n- the gun sound is off\n- the pause menu still flickers on resume\n' '- [ ] fix(ui): the pause menu flickers when resuming <!-- id:sc-4 -->\n'
+  answer '{"n": 1, "action": "file", "rows": ["fix(ui): the pause menu flickers when resuming #high #size/s"]}' \
+    '{"n": 2, "action": "file", "rows": ["fix(audio): the gun sound plays late #high #size/s"]}' \
+    '{"n": 3, "action": "dup", "line": 1}'
+  run "$TRIAGE"
+  assert_success
+  grep -q '  was: the pause menu still flickers on resume' "$SHEET" || fail "a repeat of the joined line was left: $(cat "$SHEET")"
+  refute_output --partial 'filed no row'
+  [ -z "$(inbox | grep -v '^## ' | grep .)" ] || fail "a line stayed in the inbox: $(inbox)"
+  [ "$(tasks | grep -c '<!-- id:')" = 2 ] || fail "the twin was filed as a second row: $(cat "$SHEET")"
+  grep -q '  was: the pause menu flickers on resume' "$SHEET" || fail "$(cat "$SHEET")"
+  grep -q 'gun sound plays late' "$SHEET" || fail "the different row was not filed: $(cat "$SHEET")"
+  [ "$(jq -r 'select(.action == "dup") | .id' "$HOME/.local/state/notes/ingest.jsonl" | uniq -c | tr -s ' ')" = ' 2 sc-4' ] || fail "no dup record: $(cat "$HOME/.local/state/notes/ingest.jsonl")"
 }
 
 @test "session line: with no twin it files on the agent board without #requested, while a human line beside it still gets it" {

@@ -262,6 +262,8 @@ file_line() {
     printf '%s\n' "$out"
     # A written row's marker, never the echoed `filed <words>` line, which holds the person's words.
     FILED_ID="$(sed -n '/^  - \[ \] .*<!-- id:\([a-z][a-z0-9]*-[0-9][0-9]*\).*/{s//\1/p;q;}' <<<"$out")"
+    # A row that twinned an open one was joined to it, not written: the open row's id stands for it.
+    [ -n "$FILED_ID" ] || FILED_ID="$(sed -n 's/^  twin of open row \([a-z][a-z0-9]*-[0-9][0-9]*\)$/\1/p' <<<"$out")"
     FILED=$((FILED + 1))
   else
     err="$(<"$errf")"; rm -f -- "$errf"
@@ -823,14 +825,25 @@ backlog_row() {
   [ "$nkids" -gt 0 ] && [[ $action =~ ^(drop|dup|done|improvement)$ ]] && action=keep
   case "$action" in
     rewrite)
+      # The parent the rewrite names (an open epic it kept, else a new one it proposed) goes on with
+      # `tag` after the edit and any move (reparent_args): edit refuses an #of/ naming another parent.
+      local of cur tags=()
       row="$(epic_checked "$(clean 150 <<<"$row")" "${dest:-$p}" "$epics")"
+      of="$(parent_word "$row")" row="$(no_parent "$row")"
       if [ -n "$row" ] && [ -n "$epic" ] && eid="$(epic_new "${dest:-$p}" "$(clean 150 <<<"$epic")")"; then
-        row="$(under_epic "$row" "$eid")"
+        # the board read before the epic was filed lacks it, and reparent_args checks against it
+        [ -n "$of" ] || { of="$eid"; epics+=$'\n'"$eid"$'\t'"${dest:-$p}"$'\t'"$(untagged "$epic")"; }
       fi
       if [ -n "$row" ] && pt "$p" "$lane" --exact edit --was --text "$row" -- "$raw"; then
         REWROTE=$((REWROTE + 1)) VERDICT=rewrite
         # the row's line changed, so the move names it by its id
         [ -n "$dest" ] && pt "$p" "$lane" move --project "$dest" "$own" && MOVED=$((MOVED + 1)) VDEST="$dest"
+        # A move drops a parent that names no row in the new project, so a moved row has none.
+        cur="$(parent_word "$raw")"; [ -n "$VDEST" ] && cur=""
+        if [ -n "$of" ] && [ -n "$own" ] && { [ -z "$dest" ] || [ -n "$VDEST" ]; } &&
+          mapfile -t tags < <(reparent_args "${VDEST:-$p}" "$cur" "$of" "$epics") && [ "${#tags[@]}" -gt 0 ]; then
+          pt "${VDEST:-$p}" "$lane" tag "${tags[@]}" "$own"
+        fi
       else
         KEPT=$((KEPT + 1))
       fi

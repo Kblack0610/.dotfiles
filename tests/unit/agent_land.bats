@@ -1640,6 +1640,68 @@ EOF2
   assert_output 'notes --profile bnb ptask db --agent done db-12 --proof pr:o/r#42 commit:fedcba987654'
 }
 
+@test "a row moved to another project's board closes where it sits by id, and the item follows it (ar-2751)" {
+  # NEGATIVE CONTROL: agent-land closed on the recorded board only, so ucp-1594, moved to shape-city
+  # after its promotion, failed the landing with "no open task matches" (#2836).
+  # A closed copy of the id on the old board and a longer id beside it do not count.
+  jq -n '{rows: [{profile: "personal", project: "shape-city", lane: "agent", id: "ucp-1594", state: "doing"},
+    {profile: "personal", project: "unity-core-playground", lane: "agent", id: "ucp-1594", state: "done"},
+    {profile: "personal", project: "unity-core-playground", lane: "agent", id: "ucp-15940", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
+  item cyl 'board:unity-core-playground:ucp-1594'
+  run "$LAND" 42 --item cyl
+  assert_success
+  assert_line 'board: closed "ucp-1594" with pr:o/r#42 commit:fedcba987654, on shape-city, agent lane (recorded on unity-core-playground, agent lane)'
+  assert_line 'item: cyl row: shape-city:ucp-1594'
+  assert_line --index -1 'landed #42'
+  run board_calls
+  assert_output 'notes --profile personal ptask shape-city --agent done ucp-1594 --proof pr:o/r#42 commit:fedcba987654'
+  run agent-queue show cyl --json
+  assert_equal "$(jq -r '"\(.state) \(.row) \(.lane) \(.profile)"' <<<"$output")" 'done shape-city:ucp-1594 agent personal'
+}
+
+@test "a row on its recorded board, or on none, closes as recorded and leaves the item's row alone (ar-2751)" {
+  jq -n '{rows: [{profile: "bnb", project: "db", lane: "agent", id: "db-12", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
+  item menus human agent bnb
+  agent-queue set menus row=db:db-12
+  run "$LAND" 42 --item menus
+  assert_success
+  assert_line 'board: closed "db-12" with pr:o/r#42 commit:fedcba987654'
+  refute_output --partial 'row:'
+  # No one open row carries the id (two boards do): the recorded board answers, as before.
+  jq -n '{rows: [{profile: "bnb", project: "a", lane: "agent", id: "db-13", state: "open"}, {profile: "bnb", project: "b", lane: "agent", id: "db-13", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
+  item soup human agent bnb
+  agent-queue set soup row=db:db-13
+  : >"$LOG"
+  run "$LAND" 42 --item soup
+  assert_success
+  refute_output --partial 'row:'
+  run board_calls
+  assert_output 'notes --profile bnb ptask db --agent done db-13 --proof pr:o/r#42 commit:fedcba987654'
+  # A row on a lane with no ptask flag of its own (playtest) is not followed: the recorded board answers.
+  jq -n '{rows: [{profile: "bnb", project: "db", lane: "playtest", id: "db-15", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
+  item stock human agent bnb
+  agent-queue set stock row=db:db-15
+  : >"$LOG"
+  run "$LAND" 42 --item stock
+  assert_success
+  refute_output --partial 'row:'
+  run board_calls
+  assert_output 'notes --profile bnb ptask db --agent done db-15 --proof pr:o/r#42 commit:fedcba987654'
+}
+
+@test "a row moved to the human lane of its own board closes there, and the item takes the lane (ar-2751)" {
+  jq -n '{rows: [{profile: "bnb", project: "db", lane: "human", id: "db-14", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
+  item stew human agent bnb
+  agent-queue set stew row=db:db-14
+  run "$LAND" 42 --item stew
+  assert_success
+  assert_line 'board: closed "db-14" with pr:o/r#42 commit:fedcba987654, on db, human lane (recorded on db, agent lane, profile bnb)'
+  run board_calls
+  assert_output 'notes --profile bnb ptask db done db-14 --proof pr:o/r#42 commit:fedcba987654'
+  run agent-queue show stew --json
+  assert_equal "$(jq -r '"\(.row) \(.lane)"' <<<"$output")" 'db:db-14 human'
+}
+
 @test "a hand-started session's own item is the record: no --item needed" {
   printf 'dotfiles-agent-9\n' >"$NOTES_FIXTURE/tmux.session"
   export TMUX="$SANDBOX/tmp/tmux-1000/default,123,0"

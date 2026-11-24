@@ -528,6 +528,24 @@ def prkeys: [.pr, .prs] | map(strings) | join(" ") | ascii_downcase
   | [scan("([a-z0-9_.-]+/[a-z0-9_.-]+)(?:#|/pulls?/)([0-9]+)") | "\(.[0])#\(.[1])"];
 # the "<project>:<id>" board row a queue item works: its row, else the board: it came from
 def rowkey: .row // ((.from // "") | select(startswith("board:")) | ltrimstr("board:"));
+# a board feed row on the agent boards of profile $p in a project with automation on: the unit
+# dispatch pulls from. on_board is the open or started one still on the board (a row with the retired
+# backlog token is off it). board_open (board_reading) and the pipeline backlog step both count these.
+def agent_row($p): .profile == $p and .lane == "agent" and .automation != false;
+def on_board($p): agent_row($p) and (.state == "open" or .state == "doing") and .backlog != true;
+# who wrote an ingest.jsonl event, the one rule for it: the human by hand (writer "human" or none),
+# a runner by its conf name ($runners: {<name>: true}), else a session (its item, slug or session id)
+def human_writer: (.by // "") | IN("", "human");
+def door($runners): if human_writer then "human" elif (.by | type) == "string" and $runners[.by] then .by else "session" end;
+# how an ingest.jsonl event takes work off the chain, else empty: merged, done, or a drop split into
+# dup (dup:<id>), moved (sent to its home: `moved:`, improvements.md, a sheet, another board) and
+# dropped. An `improvement` event is the write at the home, paired with its drop, so it is no exit.
+def out_kind: if .action == "merged" or .action == "done" then .action
+  elif .action == "dup" then "dup"
+  elif .action != "dropped" then empty
+  elif (.why // "") | test("^dup:") then "dup"
+  elif (.why // "") | test("^dropped: (moved\\b|kept in .*improvements\\.md|on the .* sheet|.*\\bsent to the )") then "moved"
+  else "dropped" end;
 # board rows -> the oldest open #requested agent row as {project, id, since, h}, ties by key so the
 # named row is stable; the one source of requested_unstarted_h and the row it names
 def oldest_request($t): [.[] | select(.lane == "agent" and .requested and .state == "open" and ((.since // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")))]
@@ -622,31 +640,56 @@ def open_at($t): map(select(.epoch <= $t)) | (map(.epoch) | max) as $s
       map(select(.epoch == $s and (.finished | not) and .phases_total != null and .phases_done != null)
           | .phases_total - .phases_done | select(. > 0)) | add // 0 end;
 # progress rows in -> one step per sample of each (session, plan): the first sample of a plan
-# starts it with its open phases; every later one ticks, adds or removes phases against the one before
-def flow_steps: map(select(.phases_total != null and .phases_done != null))
-  | group_by([.session_id, .plan_file]) | map(sort_by(.epoch) | . as $r
-      | [{epoch: $r[0].epoch, session_id: $r[0].session_id, project: $r[0].project, start: 1, open: ([$r[0].phases_total - $r[0].phases_done, 0] | max),
-          ticked: 0, added: 0, removed: 0}]
-        + [range(1; length) | {epoch: $r[.].epoch, session_id: $r[.].session_id, project: $r[.].project, start: 0, open: 0,
+# starts it with its open phases; every later one ticks, adds or removes phases against the one before.
+# A plan is its file name, since every account plan dir links to one tree (no file: the session
+# alone). Only the session that sampled a plan first brings its phases in (open); a later session
+# starting it resumes phases another session left (resumed, resume 1), counted when they came in, so
+# they never count twice.
+# A resume step carries prev_end, the last sample of the session that had the plan before it. A
+# session gone from the newest sample whose plan no later session took up ends with an end step:
+# left, the phases it left open, and began, when its plan first came in.
+def flow_steps: map(select(.phases_total != null and .phases_done != null) | . + {plan: (if (.plan_file // "-") | IN("", "-") then "session \(.session_id)" else .plan_file | split("/") | last end)})
+  | (map(.epoch) | max) as $last
+  | [group_by([.session_id, .plan_file])[] | sort_by(.epoch)]
+  | (map({epoch: .[0].epoch, session_id: .[0].session_id, plan: .[0].plan, last: .[-1].epoch}) | group_by(.plan)
+     | map({key: .[0].plan, value: sort_by([.epoch, .session_id])}) | from_entries) as $starts
+  | map(. as $r | $starts[$r[0].plan] as $s | ([$r[0].phases_total - $r[0].phases_done, 0] | max) as $o
+      | ($s[0].session_id == $r[0].session_id and $s[0].epoch == $r[0].epoch) as $new
+      | {epoch: 0, session_id: $r[0].session_id, project: $r[0].project, start: 0, open: 0, resumed: 0, resume: 0,
+         ticked: 0, added: 0, removed: 0, end: 0, left: 0, began: $s[0].epoch, prev_end: null} as $z
+      | [$z + {epoch: $r[0].epoch, start: 1, open: (if $new then $o else 0 end), resumed: (if $new then 0 else $o end), resume: (if $new then 0 else 1 end),
+               prev_end: (if $new then null else [$s[] | select(.epoch < $r[0].epoch or (.epoch == $r[0].epoch and .session_id < $r[0].session_id)) | .last] | max end)}]
+        + [range(1; length) | $z + {epoch: $r[.].epoch,
           ticked: ([$r[.].phases_done - $r[. - 1].phases_done, 0] | max),
           added: ([$r[.].phases_total - $r[. - 1].phases_total, 0] | max),
-          removed: ([$r[. - 1].phases_total - $r[.].phases_total, 0] | max)}]) | add // [];
-def flow_sum: {ticked: (map(.ticked) | add // 0), added: (map(.added) | add // 0),
-  removed: (map(.removed) | add // 0), started: (map(.start) | add // 0), started_open: (map(.open) | add // 0)}
-  | . + {in: (.started_open + .added)};
+          removed: ([$r[. - 1].phases_total - $r[.].phases_total, 0] | max)}]
+        + (if $r[-1].epoch < $last and ($s | any(.epoch > $r[0].epoch) | not)
+           then [$z + {epoch: $r[-1].epoch, end: 1, left: ([$r[-1].phases_total - $r[-1].phases_done, 0] | max)}] else [] end)) | add // [];
+# steps in -> their sums over a window from $a. abandoned is the phases left by plans that ended or
+# were switched away from unfinished and came in after $a: they count apart, never in in.
+def flow_sum($a): {ticked: (map(.ticked) | add // 0), added: (map(.added) | add // 0),
+  removed: (map(.removed) | add // 0), started: (map(.start) | add // 0), started_open: (map(.open) | add // 0),
+  resumed: (map(.resumed) | add // 0), resumed_plans: (map(.resume) | add // 0),
+  abandoned: (map(select(.began > $a) | .left) | add // 0)}
+  | . + {in: (.started_open + .added - .abandoned)};
 # progress rows in -> what came in and what went out between $a and $b. dropped is the open
-# phases that left with a session that ended unfinished: the remainder of the balance.
+# phases that left with a session that ended unfinished or switched plans: the remainder of the
+# balance, where abandoned ones (flow_sum) are already out of in, and resumed phases are open
+# phases another session took up again. handed is the resumed phases whose earlier session was
+# still sampled at the window start or later, so they were in the balance already and no drop.
 def flow($a; $b): . as $p | (($b - $a) / 3600) as $h
   | def per($x): if $h > 0 then $x / $h | round2 else null end;
   ($p | flow_steps | map(select(.epoch > $a and .epoch <= $b))) as $st
   | ($p | open_at($a)) as $o0 | ($p | open_at($b)) as $o1
-  | ($st | flow_sum) as $f
+  | ($st | flow_sum($a)) as $f
+  | ($p | map(select(.epoch <= $a)) | map(.epoch) | max // -1) as $s0
+  | ($st | map(select(.resume == 1 and (.prev_end // -2) >= $s0) | .resumed) | add // 0) as $handed
   | {from: $a, to: $b, hours: ($h | round2)} + $f
   + {net_in: ($f.in - $f.removed), in_per_h: per($f.in), out_per_h: per($f.ticked),
-     net_in_per_h: per($f.in - $f.removed), open_start: $o0, open_end: $o1,
-     dropped: ($o0 + $f.in - $f.removed - $f.ticked - $o1),
-     by_project: ($st | group_by(.project) | map({project: .[0].project} + flow_sum) | sort_by(-.ticked)),
-     hourly: ($st | group_by(.epoch / 3600 | floor) | map({hour: ((.[0].epoch / 3600 | floor) * 3600)} + flow_sum)
+     net_in_per_h: per($f.in - $f.removed), open_start: $o0, open_end: $o1, handed: $handed,
+     dropped: ($o0 + $f.in + $f.abandoned + $f.resumed - $handed - $f.removed - $f.ticked - $o1),
+     by_project: ($st | group_by(.project) | map({project: .[0].project} + flow_sum($a)) | sort_by(-.ticked)),
+     hourly: ($st | group_by(.epoch / 3600 | floor) | map({hour: ((.[0].epoch / 3600 | floor) * 3600)} + flow_sum($a))
        | reduce .[] as $x ({scope: $o0, done: 0, rows: []};
            .scope += ($x.in - $x.removed) | .done += $x.ticked
            | .rows += [$x + {scope: .scope, done: .done}]) | .rows)};
@@ -1850,6 +1893,12 @@ scheduled_runner() {
   printf '%s\n' "${name:-$(basename "$1" .conf)}"
 }
 
+# bench_profile -> sets BENCH_PROFILE to the profile `notes config` names unless it is set; fails with none
+bench_profile() {
+  [ -n "${BENCH_PROFILE:-}" ] || BENCH_PROFILE=$(notes config 2>/dev/null | awk '$1 == "profile" { print $2; exit }')
+  [ -n "$BENCH_PROFILE" ]
+}
+
 # board_reading -> "<open> <backlog> <days>" for the active profile's agent boards (BENCH_BOARD_CMD
 # feeds every profile; BENCH_PROFILE overrides the profile `notes config` names). One profile is the
 # unit dispatch pulls from, so a second profile's boards do not add to it, and a project with
@@ -1861,16 +1910,14 @@ scheduled_runner() {
 # that shipped nothing in the window reads its whole weight in days and trips, not a quiet ?. ? for
 # a field that cannot be read.
 board_reading() {
-  [ -n "${BENCH_PROFILE:-}" ] || BENCH_PROFILE=$(notes config 2>/dev/null | awk '$1 == "profile" { print $2; exit }')
-  [ -n "$BENCH_PROFILE" ] || { echo '? ? ?'; return; }
+  bench_profile || { echo '? ? ?'; return; }
   bench_read $BENCH_BOARD_CMD 2>/dev/null | jq -er --arg p "$BENCH_PROFILE" --argjson days "$BOARD_SHIP_DAYS" "$JQ_LIB"'
-    def mine: select(.profile == $p and .lane == "agent" and .automation != false);
     (.done // []) as $done
     | .rows | if type == "array" then . else error("no rows") end
-    | map(mine | select(.state == "open" or .state == "doing")) as $r
-    | ($r | map(select(.backlog != true))) as $on
+    | map(select(agent_row($p) and (.state == "open" or .state == "doing"))) as $r
+    | ($r | map(select(on_board($p)))) as $on
     | ([$on[].weight // 0] | add // 0) as $w
-    | ([$done[] | mine | select((.prs // []) | length > 0) | .weight // 0] | add // 0) as $s
+    | ([$done[] | select(agent_row($p) and ((.prs // []) | length > 0)) | .weight // 0] | add // 0) as $s
     | "\($on | length) \(($r | length) - ($on | length)) \($w / ([$s / $days, 1] | max) | round1)"' \
     2>/dev/null || echo '? ? ?'
 }
@@ -2046,7 +2093,7 @@ KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open
 wants_stats() {
   [ -r "$BENCH_INGEST" ] || return 1
   jq -Rnc --arg since "$(date -d "@$(( $1 - CHAIN_DAYS * 86400 ))" +%F)" --argjson fix "$FIX_SINCE" "$JQ_LIB"'
-    [inputs | fromjson? | ((.want // "") != "") as $want | select((.ts // "")[0:10] >= $since and ($fix == 0 or ((try ((.ts // "") | sub("\\.[0-9]+"; "") | iso_epoch) catch $fix) >= $fix)) and .lane == "agent" and (.action | IN("added", "filed")) and (((.by // "") | IN("", "human")) or $want))
+    [inputs | fromjson? | ((.want // "") != "") as $want | select((.ts // "")[0:10] >= $since and ($fix == 0 or ((try ((.ts // "") | sub("\\.[0-9]+"; "") | iso_epoch) catch $fix) >= $fix)) and .lane == "agent" and (.action | IN("added", "filed")) and (human_writer or $want))
          | {from: (.from // "?"), stamped: ($want or ((.text // "") | test("#requested")))}] as $w
     | {total: ($w | length), unstamped: ($w | map(select(.stamped | not)) | length),
        by_project: ($w | group_by(.from) | map({key: .[0].from, value: {total: length, unstamped: map(select(.stamped | not)) | length}}) | from_entries)}' "$BENCH_INGEST"
@@ -2395,19 +2442,46 @@ inbox_lines() {
   done | jq -s --argjson n "$(grep -c . <<<"$out")" '$n + (map(length) | add // 0)'
 }
 
-# pipeline_json <now> -> where every item sits: {since, drift, bottleneck, steps}, one step object
-# each in PIPELINE_STEPS order. WIP and the age of what sits in a step (p50, p90, oldest, minutes)
-# come from the state files: the inbox count, open agent rows no active item has started (aged
-# from the day they were filed), the queue items by state (aged from ready, started, waiting; a held
+# ingest_flow <now> -> {doors, out} over the 24h of the notes ingest record before <now>; fails when
+# the record cannot be read. doors: one {door, rows, lines} per writer (door: human, a runner by its
+# conf NAME in LEDGER_CONF_DIR, else session), most first. rows are the rows it put on a board (an
+# added row, or an inbox line it filed); lines are what it put in an inbox, which triage later files
+# under its own door. out: {merged, done, dup, moved, dropped}, each event counted by out_kind.
+ingest_flow() {
+  local runners c n
+  [ -r "$BENCH_INGEST" ] || return 1
+  # every conf, a hand-fired or switched-off one too: it may have written in the window; named as scheduled_runner names it
+  runners=$(for c in "$LEDGER_CONF_DIR"/*.conf; do
+      [ -e "$c" ] || continue
+      n=$(sed -n '/^NAME=/{s///p;q;}' "$c"); printf '%s\n' "${n:-$(basename "$c" .conf)}"
+    done \
+    | jq -Rnc '[inputs | {key: ., value: true}] | from_entries')
+  # the date prefix is a cheap first cut, two days back so no time zone loses an event; the epoch decides
+  jq -Rnc --argjson t "$1" --arg day "$(date -d "@$(($1 - 172800))" +%F)" --argjson runners "$runners" "$JQ_LIB"'
+    [inputs | fromjson? | objects | select((.ts | type) == "string" and .ts[0:10] >= $day)
+     | select((.ts | sub("\\.[0-9]+"; "") | try iso_epoch catch 0) as $e | $e > $t - 86400 and $e <= $t)] as $ev
+    | {doors: ([$ev[] | select(.action | IN("added", "filed")) | {door: door($runners), line: (.action == "added" and .stage == "intake")}]
+               | group_by(.door) | map({door: .[0].door, rows: map(select(.line | not)) | length, lines: map(select(.line)) | length})
+               | sort_by([-(.rows + .lines), .door])),
+       out: (reduce ($ev[] | out_kind) as $k ({merged: 0, done: 0, dup: 0, moved: 0, dropped: 0}; .[$k] += 1))}' "$BENCH_INGEST"
+}
+
+# pipeline_json <now> -> where every item sits: {since, drift, doors_24h, out_24h, bottleneck,
+# steps}, one step object each in PIPELINE_STEPS order. WIP and the age of what sits in a step (p50,
+# p90, oldest, minutes) come from the state files: the inbox count, the rows on the active profile's
+# agent boards (on_board, the rows board_open counts) no active item has started (aged from the day
+# they were filed), the queue items by state (aged from ready, started, waiting; a held
 # queued item has no ready, so it counts in WIP but not in the age: agent-queue's one rule), and
 # the items finished in the last 24h. In, out and dwell come from the record (`notes log --steps`),
 # which cannot see work older than its start (since). drift counts the queue items the record and
 # the queue folders place apart: at another step, held by the record but gone from the queue, or
-# queued after the record began with no event of it. The bottleneck is the step whose age p90 is
+# queued after the record began with no event of it. A fleet worker's closes reach the record through
+# fleet-dispatch's worker_records, so a gap that stays is an event no writer sent. The bottleneck is the step whose age p90 is
 # furthest past its step_age_p90_<step>_max in kpi-thresholds, null while every step is inside its
-# bound. A source that cannot be read leaves its numbers null.
+# bound. doors_24h and out_24h are ingest_flow's doors and out. A source that cannot be read leaves
+# its numbers null.
 pipeline_json() {
-  local t=$1 items fin board rec inbox stopped lim='{}'
+  local t=$1 items fin board rec inbox stopped lim='{}' ev=null prof=''
   stopped=$($BENCH_STOPPED_CMD 2>/dev/null | jq -r '.line // empty' 2>/dev/null)
   items=$(bench_read $BENCH_ITEMS_CMD 2>/dev/null | jq -sc .) || items=null
   fin=$(bench_read $BENCH_DONE_ITEMS_CMD --since "$(date -d "@$((t - 86400))" +%F)" 2>/dev/null | jq -sc .) || fin=null
@@ -2415,7 +2489,10 @@ pipeline_json() {
   rec=$($BENCH_STEPS_CMD 2>/dev/null | jq -ce 'select(.steps | arrays)') || rec=null
   inbox=$($BENCH_INBOX_CMD 2>/dev/null | jq -e 'numbers') || inbox=null
   [ -r "$KPI_THRESHOLDS" ] && lim=$(grep -E '^[a-z0-9_]+=' "$KPI_THRESHOLDS" | kv_json)
+  bench_profile && prof=$BENCH_PROFILE
+  ev=$(ingest_flow "$t") || ev=null
   jq -cn --argjson t "$t" --arg steps "$PIPELINE_STEPS" --argjson lim "$lim" --argjson inbox "$inbox" --arg stopped "$stopped" \
+     --arg prof "$prof" --argjson ev "$ev" \
      --slurpfile a <(printf '%s' "$items") --slurpfile d <(printf '%s' "$fin") \
      --slurpfile b <(printf '%s' "$board") --slurpfile r <(printf '%s' "$rec") "$JQ_LIB"'
     def epoch: strings | sub("\\.[0-9]+"; "") | fromdateiso8601? // empty;
@@ -2425,8 +2502,8 @@ pipeline_json() {
     | def held($s; $f): if $a == null then null else $a | map(select(.state == $s)) | {n: length, ages: map(.[$f] | epoch | mins)} end;
     ($a // [] | map(rowkey | strings) | INDEX(.)) as $live
     | {inbox: (if $inbox == null then null else {n: $inbox, ages: []} end),
-       backlog: (if $b == null or $a == null then null
-                 else $b | map(select(.lane == "agent" and .state == "open" and ($live["\(.project):\(.id)"] | not)))
+       backlog: (if $b == null or $a == null or $prof == "" then null
+                 else $b | map(select(on_board($prof) and ($live["\(.project):\(.id)"] | not)))
                    | {n: length, ages: map((.since // "") + "T00:00:00Z" | epoch | mins)} end),
        queued: held("queued"; "ready"), running: held("running"; "started"), review: held("review"; "review"),
        waiting: held("waiting"; "waiting"),
@@ -2446,6 +2523,7 @@ pipeline_json() {
          | ([$a[] | select(if $rec[.slug] then $rec[.slug] != .state else (.queued // "") >= ($r.items_since // "~") end)] | length)
            + ([$rec | keys[] | select($st[.] == null)] | length) end) as $drift
     | {as_of: $t, since: $r.since, items_since: $r.items_since, drift: $drift,
+       doors_24h: $ev.doors, out_24h: $ev.out,
        bottleneck: ($rows | map(select((.ratio // 0) > 1)) | max_by(.ratio) | if . then {step, age_p90_min, bound, ratio} else null end),
        steps: $rows}'
 }
@@ -2486,7 +2564,8 @@ pipeline_check() {
 
 # pipeline [--json | --check cap|age|mix|held|owner|chain-lag] -- pipeline_json with the admission cap and the class mix
 # (agent-queue mix), or a table of it with the bottleneck, the steps taking in more than they let out
-# over 24h, the drift, the cap and each class's starts against its share; --check is pipeline_check.
+# over 24h, the drift, the doors and the out line, the cap and each class's starts against its share;
+# --check is pipeline_check.
 cmd_pipeline() {
   local json adm mix
   case "${1:-}" in
@@ -2512,6 +2591,11 @@ cmd_pipeline() {
     ([.steps[] | select((.problems_n // 0) > 0) | "\(.step) \(.problems_n)"]
       | if length > 0 then "problems over 24h: \(join(", "))" else empty end),
     "drift: \(.drift | c) queue items the record and the queue folders place apart (it sees queue items from \(.items_since // "-"))",
+    (.doors_24h | if . == null then "doors 24h: the ingest record is unreadable"
+      elif length == 0 then "doors 24h: nothing filed"
+      else "doors 24h (rows filed, + inbox lines): \(map("\(.door) \(.rows)\(if .lines > 0 then " +\(.lines)" else "" end)") | join(", "))" end),
+    (.out_24h | if . == null then empty
+      else "out 24h: merged \(.merged), done \(.done), dup \(.dup), moved \(.moved), dropped \(.dropped)" end),
     (.admission | if . == null then "cap: unreadable" elif .on | not then "cap: off, \(.runnable) runnable"
       else "cap: \(.runnable) runnable against a cap of \(.limit)\(if .runnable > .limit then ", over by \(.runnable - .limit)" else "" end)" end),
     (.mix | if . == null then "mix: unreadable"
@@ -4339,7 +4423,7 @@ board_upsert() {
 # BOARD_SHIP_DAYS), newest first. Nothing when the feed cannot be read, so board_upsert then files a
 # new row as it did before reopening existed.
 upsert_closed() {
-  [ -n "${BENCH_PROFILE:-}" ] || BENCH_PROFILE=$(notes config 2>/dev/null | awk '$1 == "profile" { print $2; exit }')
+  bench_profile
   bench_read $BENCH_BOARD_CMD 2>/dev/null | jq -r --arg p "$KPI_BOARD" --arg prof "$BENCH_PROFILE" '[(.done // []) | .[]
     | select(.project == $p and .lane == "agent" and .profile == $prof and (.id // "") != "")]
     | sort_by(.closed // "") | reverse | .[] | [.id, (.text | ascii_downcase)] | @tsv' 2>/dev/null
@@ -5185,14 +5269,15 @@ red_titles() {
   local titles parsed
   titles=$(jq -c "$JQ_LIB"'[.[] | select(tagged("red")) | .title // .task // "" | gsub("\n"; " ")] | unique' <<<"$1") || return 1
   [ "$titles" != '[]' ] || { echo '{}'; return 0; }
-  parsed=$(jq -r '.[]' <<<"$titles" | notes row parse) &&
-    # titles grows with the queue, past the 128 KB one argument can carry (reds_json): it comes in as a file
-    jq -cRn --slurpfile t <(printf '%s\n' "$titles") '$t[0] as $t | [inputs | split("\t")] as $p
+  parsed=$(jq -r '.[]' <<<"$titles" | notes row parse) ||
+    { say "reds: notes row parse failed (an old notes? notes-bootstrap --build-only)"; return 1; }
+  # titles grows with the queue, past the 128 KB one argument can carry (reds_json): it comes in as a file
+  jq -cRn --slurpfile t <(printf '%s\n' "$titles") '$t[0] as $t | [inputs | split("\t")] as $p
       | if ($p | length) != ($t | length) then error("short") else . end
       | [range($t | length) as $i | select($p[$i][3] == "1")
          | {key: $t[$i], value: {area: $p[$i][1], name: ([$p[$i][2] | capture("^(?<n>[^ ,;]+)").n][0])}}
          | select(.value.name != null)] | from_entries' <<<"$parsed" ||
-    { say "reds: notes row parse failed or answered short (an old notes? notes-bootstrap --build-only)"; return 1; }
+    { say "reds: notes row parse answered short, or jq failed (its error is above)"; return 1; }
 }
 
 # alert_titles <items> -> the titles of the red items whose row TRIAGE_ROUTES sends to alert, as a
@@ -5224,11 +5309,12 @@ reds_json() {
     n=${f##*/} n=${n%.since}
     watches=$(jq -c --arg n "$n" --arg s "$(cat "$f")" '. + {($n): ($s | tonumber? // 0)}' <<<"$watches")
   done
-  jq -c --argjson live "$live" --argjson w "$watches" --argjson holds "$holds" --argjson clock "$t" \
+  jq -c --slurpfile live <(printf '%s\n' "$live") --slurpfile w <(printf '%s\n' "$watches") \
+    --slurpfile holds <(printf '%s\n' "$holds") --argjson clock "$t" \
     --slurpfile parsed <(printf '%s\n' "$parsed") --slurpfile alerted <(printf '%s\n' "$alerted") \
     --argjson h "$((HOLD_HOURS * 3600))" --argjson n "$REDS_ETA_SAMPLES" "$JQ_LIB"'
-    # parsed and alerted grow with the queue, past the 128 KB one argument can carry: they come in as files
-    $parsed[0] as $parsed | $alerted[0] as $alerted
+    # each grows with the queue or the watches, past the 128 KB one argument can carry: they come in as files
+    $live[0] as $live | $w[0] as $w | $holds[0] as $holds | $parsed[0] as $parsed | $alerted[0] as $alerted
     | def title: .title // .task // "";
     ([$holds[].merges[].slug]) as $went
     | ([.[] | select(tagged("red")) | title | select(startswith("fix(hold): "))]) as $held
@@ -6090,8 +6176,10 @@ cmd_flow() {
     flow($a; $b) as $f
     | "flow \($a | hm) -> \($b | hm) (\($f.hours | round1)h)",
       "  out: \($f.ticked) phases ticked (\($f.out_per_h)/h)",
-      "  in:  \($f.in) phases (\($f.in_per_h)/h): \($f.started) plans started with \($f.started_open) open, \($f.added) added to running plans; \($f.removed) removed by rewrites",
-      "  open: \($f.open_start) at start, \($f.open_end) at end\(if $f.dropped > 0 then "; \($f.dropped) left open by plans that ended or were switched away from" else "" end)",
+      "  in:  \($f.in) phases (\($f.in_per_h)/h): \($f.started - $f.resumed_plans) plans started with \($f.started_open) open, \($f.added) added to running plans\(if $f.abandoned > 0 then ", less \($f.abandoned) abandoned" else "" end); \($f.removed) removed by rewrites",
+      "  open: \($f.open_start) at start, \($f.open_end) at end\(if $f.dropped > 0 then "; \($f.dropped) left open by sessions that ended or switched plans" else "" end)",
+      (if $f.abandoned > 0 then "  abandoned: \($f.abandoned) phases came in with plans that ended or were switched away from unfinished, kept out of in" else empty end),
+      (if $f.resumed_plans > 0 then "  resumed: \($f.resumed) phases in \($f.resumed_plans) plans another session left, taken up again and not counted in again" else empty end),
       "  net: " + (($f.out_per_h - $f.net_in_per_h) as $d
         | if $d > 0 then "draining \($d | round2)/h" else "not draining (in \($f.net_in_per_h)/h, out \($f.out_per_h)/h)" end),
       ($f.by_project[] | "  \(.project): \(.ticked) out, \(.in) in, \(.removed) removed"),

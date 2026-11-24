@@ -683,9 +683,9 @@ mix_classes() { jq --argjson on "$1" '.on = $on | del(.classes[].min_live)' "$RE
   legacy second "after: first" --project game "b"
   "$AQ" move first done --status cancelled
   run bash -c "'$AQ' show second --json | jq -r .hold"
-  assert_output "after first closed cancelled, dead: it never releases (queue first again, or set after= without it); who closed it and why: agent-queue show first; a cancel by hand takes --why and --ask <an ask the human answered>"
+  assert_output "after first closed cancelled, dead: it never releases (queue first again, or set after= without it); who closed it and why: agent-queue show first; a cancel by hand takes --why and --ask <an answered ask naming it>"
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
-  assert_output "after first closed cancelled, dead: it never releases (queue first again, or set after= without it); who closed it and why: agent-queue show first; a cancel by hand takes --why and --ask <an ask the human answered>"
+  assert_output "after first closed cancelled, dead: it never releases (queue first again, or set after= without it); who closed it and why: agent-queue show first; a cancel by hand takes --why and --ask <an answered ask naming it>"
 }
 
 # ar-39: after: is a list of slugs.
@@ -843,9 +843,8 @@ mix_classes() { jq --argjson on "$1" '.on = $on | del(.classes[].min_live)' "$RE
   assert_failure
 }
 
-# agent-ask sends an ask that would cancel one of these to the human (ar-3917): the list must be
-# exactly what cancel_guard holds, the active items from the human or a #requested row.
-@test "human-work lists the active items the human asked for, and no other" {
+# cancel_guard holds exactly the active items from the human or a #requested row.
+@test "cancel_guard holds the items the human asked for, and no other" {
   "$AQ" add --project game --slug typed --from human "chore(x): the human typed it" >/dev/null
   "$AQ" add --project game --from board:game:g2-9 --slug asked --tags "ui requested" "chore(x): a #requested row" >/dev/null
   "$AQ" add --project game --from shepherd --slug agents "chore(x): an agent's own" >/dev/null
@@ -854,12 +853,11 @@ mix_classes() { jq --argjson on "$1" '.on = $on | del(.classes[].min_live)' "$RE
   sed -i 's/^from: .*/from: /' "$(ls "${AGENT_QUEUE_DIR:-$HOME/.agent/queue}"/queued/*-nofrom.md)"
   "$AQ" add --project game --slug closed --from human "chore(x): closed by the human" >/dev/null
   "$AQ" move closed done --status ok >/dev/null
-  run "$AQ" human-work
-  assert_success
-  assert_equal "$(sort <<<"$output")" "$(printf 'asked\nnofrom\ntyped')"
-  # it names exactly the items cancel_guard refuses a session
-  run env CLAUDE_CODE_SESSION_ID=sid-1 "$AQ" cancel typed --why "a test"
-  assert_failure; assert_output --partial "typed is work the human asked for"
+  local s
+  for s in typed asked nofrom; do
+    run env CLAUDE_CODE_SESSION_ID=sid-1 "$AQ" cancel "$s" --why "a test"
+    assert_failure; assert_output --partial "$s is work the human asked for"
+  done
   run env CLAUDE_CODE_SESSION_ID=sid-1 "$AQ" cancel agents --why "a test"
   assert_success
 }
@@ -3047,7 +3045,7 @@ EOF
   assert_called "ptask game --agent unstart gm-7"
 }
 
-@test "a session drops the human's work only on an ask the human answered that names the whole chain, and closes nothing otherwise" {
+@test "a session drops the human's work only on an answered ask that names the whole chain, and closes nothing otherwise" {
   export AGENT_ASK_ROOT="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_ROOT/game"
   ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n%s\n' "$1" "$2" "${3:-}" "${4:-}" "${5:-}" > "$AGENT_ASK_ROOT/game/$1.md"; }
   "$AQ" add --project game --from shepherd --slug ga "a"
@@ -3159,9 +3157,10 @@ chain_plan() {  # <name>: a four-phase plan, each phase after the one before
   [ "$(field "$(item queued rf)" review_fix)" = "small" ]
 }
 
-# 2026-11-12: a cleanup cancelled 220 from: human items, one batch on an ask the judge answered in 20 s,
-# the next by looping a dead chain (mkt-17 after mkt-16, then 18, 19, 20).
-@test "a session cancels the human's work only on an ask the human answered; the human and other work are not held" {
+# 2026-11-12: a cleanup cancelled 220 from: human items by looping a dead chain (mkt-17 after
+# mkt-16, then 18, 19, 20). The judge's answer counts as any answer does (ar-4765): its policy keeps a
+# bulk cancel (10 or more records) with the human.
+@test "a session cancels the human's work only on an answered ask naming it; the human and other work are not held" {
   export AGENT_ASK_ROOT="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_ROOT/game"
   ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_ROOT/game/$1.md"; }
   "$AQ" add --project game --slug mkt-16 "mkt-16" >/dev/null
@@ -3171,7 +3170,7 @@ chain_plan() {  # <name>: a four-phase plan, each phase after the one before
   # The terminal cancel (no session env) is the human's: mkt-16 goes, and its chain is dead.
   "$AQ" cancel mkt-16 >/dev/null
   run bash -c "'$AQ' show mkt-17 --json | jq -r .hold"
-  assert_output --partial "a cancel by hand takes --why and --ask <an ask the human answered>"
+  assert_output --partial "a cancel by hand takes --why and --ask <an answered ask naming it>"
   # The replay: the dead-chain loop refuses every from: human item and the #requested one.
   for s in mkt-17 mkt-18 mkt-19 mkt-20 asked; do
     CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel "$s" --why "dead chain"
@@ -3180,19 +3179,16 @@ chain_plan() {  # <name>: a four-phase plan, each phase after the one before
   done
   AGENT_QUEUE_ITEM=sweeper run "$AQ" move mkt-17 done --status cancelled --why "dead chain"
   assert_failure; assert_output --partial "work the human asked for"
-  # An ask the human has not answered, or the judge answered, is not their decision.
+  # An ask nobody has answered is no decision.
   ask p1 pending
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask p1
   assert_failure; assert_output --partial "ask p1 is pending"
-  ask j1 answered a judge
-  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask j1
-  assert_failure; assert_output --partial "ask j1 is answered by judge, not the human"
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask nope
   assert_failure; assert_output --partial "no such ask"
   [ -n "$(item queued mkt-17)" ]
   run "$AQ" cancel mkt-17 --ask "h1=a"
   assert_failure; assert_output --partial "--ask takes an ask id"
-  # The human's answer about other work is not about this item.
+  # An answer about other work is not about this item.
   ask h0 answered a human
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask h0
   assert_failure; assert_output --partial "ask h0 does not name mkt-17"
@@ -3210,12 +3206,24 @@ chain_plan() {  # <name>: a four-phase plan, each phase after the one before
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" move mkt-18 done --status cancelled --why "dead chain" --ask h1
   assert_success
   [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-mkt-18.md)" cancel_why)" = "dead chain (ask h1)" ]
+  # A session's own answer is no ruling, even on an ask naming the item.
+  ask a1 answered a agent
+  echo "question: drop mkt-19? it waits on mkt-16, which you cancelled" >> "$AGENT_ASK_ROOT/game/a1.md"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-19 --why "dead chain" --ask a1
+  assert_failure; assert_output --partial "ask a1 is answered by agent"
+  [ -n "$(item queued mkt-19)" ]
+  # The judge's answer to an ask naming the item lets it go the same way (ar-4765).
+  ask j1 answered a judge
+  echo "question: drop mkt-19? it waits on mkt-16, which you cancelled" >> "$AGENT_ASK_ROOT/game/j1.md"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-19 --why "dead chain" --ask j1
+  assert_success
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-mkt-19.md)" cancel_why)" = "dead chain (ask j1)" ]
   # Negative controls: other work cancels from a session with a reason, and --ask is cancel's alone.
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel chore --why "dup" --ask nope
   assert_failure; assert_output --partial "no such ask"
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel chore --why "dup"
   assert_success
-  run "$AQ" move mkt-19 done --status failed --ask h1
+  run "$AQ" move mkt-20 done --status failed --ask h1
   assert_failure; assert_output --partial "--ask record a cancel"
   # The human at a terminal is never held.
   run "$AQ" cancel asked
@@ -4888,19 +4896,23 @@ already"
 # 108 dispatch starts failed with no holder on record.
 @test "a lock timeout appends one lock-miss line naming the holder, the taker and its mode" {
   "$AQ" add --project game "one item" >/dev/null
-  exec 9> "$AGENT_QUEUE_DIR/.lock"
-  flock 9
-  # 9>&-: the taker is not the holder's child here, so it must not inherit the holder's fd.
-  AGENT_QUEUE_LOCK_WAIT=1 run "$AQ" add --project game "two item" 9>&-
+  # The holder stays alive while it holds: in a container's pid namespace the kernel hides a
+  # /proc/locks entry whose taker has exited, as a bare `flock 9` does. cat opens the fifo only
+  # after flock has the lock, so opening its write end here is the signal that the lock is held.
+  mkfifo "$BATS_TEST_TMPDIR/hold"
+  flock "$AGENT_QUEUE_DIR/.lock" cat "$BATS_TEST_TMPDIR/hold" &
+  holder=$!
+  exec 7> "$BATS_TEST_TMPDIR/hold"
+  AGENT_QUEUE_LOCK_WAIT=1 run "$AQ" add --project game "two item" 7>&-
   assert_failure 75
   assert_output --partial "lock-miss.jsonl"
-  AGENT_QUEUE_LOCK_WAIT=1 run "$AQ" show one-item --json 9>&-
+  AGENT_QUEUE_LOCK_WAIT=1 run "$AQ" show one-item --json 7>&-
   assert_failure 75
-  flock -u 9
-  exec 9>&-
+  exec 7>&-
+  wait "$holder"
   log="$AGENT_QUEUE_DIR/lock-miss.jsonl"
   [ "$(wc -l < "$log")" = 2 ]
-  run jq -r --argjson me "$BASHPID" -s '.[] | [.mode, (.cmd | test("agent-queue (add|show)")),
+  run jq -r --argjson me "$holder" -s '.[] | [.mode, (.cmd | test("agent-queue (add|show)")),
     (.locks | index(".lock holds WRITE") != null), (.procs | any(.pid == $me and .file == ".lock")),
     (.procs | all(.cmd | test("agent-queue") | not))] | map(tostring) | join(" ")' "$log"
   assert_line --index 0 "exclusive true true true true"
@@ -5337,4 +5349,28 @@ row_item() {
   run env AGENT_QUEUE_ITEM=phase CLAUDE_CODE_ENTRYPOINT= "$AQ" add --project level --priority low --slug l1 "land PR 8"
   assert_failure 5
   assert_output --partial "(#after/lv-1)"
+}
+
+# plan dispatch-event-wake: the wake file is what fleet-dispatch-kick.path watches. One write in item_event
+# covers every transition, so a start (queued -> running) is no event and a kick's own starts wake nothing.
+@test "an item added to the queue or closed wakes a dispatch kick; a start, a set and a running add do not (dispatch-event-wake)" {
+  export FLEET_DISPATCH_DIR="$SANDBOX/dispatch"
+  wake="$FLEET_DISPATCH_DIR/.wake"
+  "$AQ" add --project game --slug w1 "w1"
+  grep -q 'item-added w1' "$wake" || fail "an add wrote no wake: $(cat "$wake" 2>/dev/null)"
+  rm -f "$wake"
+  "$AQ" set w1 session=game-agent-1 account=main
+  "$AQ" move w1 running
+  "$AQ" move w1 waiting
+  "$AQ" move w1 review
+  [ ! -e "$wake" ] || fail "a set or a move to running, waiting or review wrote a wake"
+  "$AQ" move w1 done --status ok
+  grep -q 'item-moved w1' "$wake" || fail "a close wrote no wake"
+  rm -f "$wake"
+  "$AQ" add --running --project game --slug w2 "w2"
+  [ ! -e "$wake" ] || fail "an add of a running item wrote a wake"
+  "$AQ" add --project game --slug w3 "w3"
+  rm -f "$wake"
+  "$AQ" cancel w3 --why "not wanted"
+  grep -q 'w3' "$wake" || fail "a cancel wrote no wake"
 }

@@ -1006,8 +1006,54 @@ enum IngestCmd {
     /// made (agent-queue's `item-*`, fleet-dispatch's `started`, `reaped`, `settled`,
     /// agent-land's `merged`, claude-acct's `parked` and `unparked`). An empty flag value is no value.
     Record(Box<RecordArgs>),
+    /// Append the queue-item events of a fleet worker's record (JSONL on stdin) this record lacks,
+    /// word for word once, then print the newest instant the input carried (fleet-dispatch's
+    /// next read of that worker starts there)
+    Import,
     /// Publish the inbox status page from the record and the outbox (the sweep runs it)
     Page,
+}
+
+/// `notes ingest record`: one chain event a shell writer made, appended to the record.
+fn ingest_record(prof: &config::Profile, r: RecordArgs) -> i32 {
+    let RecordArgs {
+        action,
+        from,
+        to,
+        stage,
+        why,
+        id,
+        item,
+        by,
+        pr,
+        sha,
+        near,
+        text,
+    } = r;
+    let set = |v: Option<String>| ingest::set(v.as_deref());
+    let mut ev = ingest::Event::new(&action, &from, to.as_deref().unwrap_or(""), &text.join(" "));
+    ev.stage = Some(stage);
+    ev.why = set(why);
+    ev.id = set(id);
+    ev.item = set(item).or(ev.item);
+    if let Some(b) = set(by) {
+        ev.by = b;
+    }
+    ev.pr = set(pr);
+    ev.sha = set(sha);
+    ev.near = set(near);
+    ingest::record(prof, &ev);
+    0
+}
+
+/// `notes ingest import`: a worker's record on stdin; prints where its next read starts.
+fn ingest_import(prof: &config::Profile) -> anyhow::Result<i32> {
+    let mut input = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
+    let (n, next) = ingest::import(prof, &input)?;
+    eprintln!("ingest import: {n} line(s) taken");
+    println!("{}", next.unwrap_or_default());
+    Ok(0)
 }
 
 /// `notes ingest record`: boxed, so the enum stays small.
@@ -1832,41 +1878,8 @@ fn main() -> Result<()> {
         }
         Cmd::Improve(a) => improve::run(&prof, &log, a)?,
         Cmd::Ingest { sub } => match sub {
-            IngestCmd::Record(r) => {
-                let RecordArgs {
-                    action,
-                    from,
-                    to,
-                    stage,
-                    why,
-                    id,
-                    item,
-                    by,
-                    pr,
-                    sha,
-                    near,
-                    text,
-                } = *r;
-                let set = |v: Option<String>| ingest::set(v.as_deref());
-                let mut ev = ingest::Event::new(
-                    &action,
-                    &from,
-                    to.as_deref().unwrap_or(""),
-                    &text.join(" "),
-                );
-                ev.stage = Some(stage);
-                ev.why = set(why);
-                ev.id = set(id);
-                ev.item = set(item).or(ev.item);
-                if let Some(b) = set(by) {
-                    ev.by = b;
-                }
-                ev.pr = set(pr);
-                ev.sha = set(sha);
-                ev.near = set(near);
-                ingest::record(&prof, &ev);
-                0
-            }
+            IngestCmd::Record(r) => ingest_record(&prof, *r),
+            IngestCmd::Import => ingest_import(&prof)?,
             IngestCmd::Page => daily::publish_inbox_page(&prof, &log)?,
         },
         Cmd::Inbox { sub } => {

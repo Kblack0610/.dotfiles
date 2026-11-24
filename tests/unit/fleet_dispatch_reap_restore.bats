@@ -928,6 +928,36 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   assert_output --partial 'record: hp exited 4'
 }
 
+@test "record on the lease holder takes each worker's queue-item events into this record from that worker's cursor, and a worker that does not answer keeps its cursor (ar-4993)" {
+  record_setup
+  world '10 1000' "$PANE1"
+  sandbox_fleet --self hp 0
+  # hp reads its record for the awk call and does its own pane record for the rest; idle-worker is not reached.
+  stub ssh 'echo "ssh $*" >> "$NOTES_FIXTURE/calls.log"; [[ "$*" == *192.0.2.40* ]] || exit 255
+case "${@: -1}" in *awk*) eval "${@: -1}" ;; *) echo "did its own" ;; esac'
+  export WORKER_RECORD_DIR="$SANDBOX/cursors"
+  # What `notes ingest import` is told: the stub keeps its stdin and answers with the newest instant it saw.
+  stub notes 'cat > "$NOTES_FIXTURE/imported.log"; echo 2026-11-23T12:05:00.000000000-08:00'
+  mkdir -p "$HOME/.local/state/notes"
+  printf '%s\n' '{"ts":"2026-11-23T12:00:00.000000000-08:00","item":"a"}' \
+    '{"ts":"2026-11-23T12:05:00.000000000-08:00","item":"b"}' > "$HOME/.local/state/notes/ingest.jsonl"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_success
+  assert_equal "$(jq -r .item "$NOTES_FIXTURE/imported.log" | paste -sd,)" "a,b"
+  assert_equal "$(cat "$WORKER_RECORD_DIR/hp")" "2026-11-23T12:05:00.000000000-08:00"
+  [ ! -e "$WORKER_RECORD_DIR/idle-worker" ] || fail "a worker that did not answer got a cursor"
+  # The next read starts at the cursor: the line before it is not asked for again.
+  printf '%s\n' '{"ts":"2026-11-23T12:07:00.000000000-08:00","item":"c"}' >> "$HOME/.local/state/notes/ingest.jsonl"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_success
+  assert_equal "$(jq -r .item "$NOTES_FIXTURE/imported.log" | paste -sd,)" "b,c"
+  # --here, the call a worker gets, reads nothing; neither does a machine without the lease.
+  : > "$NOTES_FIXTURE/imported.log"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" record --here
+  FLEET_LEASE_STUB_RC=1 run "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  [ ! -s "$NOTES_FIXTURE/imported.log" ] || fail "read a worker's record without the lease"
+}
+
 @test "restore reopens each worker's own sessions there with its flags, and a worker that does not answer is said, not failed" {
   restore_setup
   sandbox_fleet --self hp 0
@@ -1040,34 +1070,35 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   agent-queue set fix-crash session=lab:game-agent-1 >/dev/null
   run cmd_reap
   assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
-  assert_output --partial 'human row for queue item fix-crash (on the game sheet)'
-  assert_called 'notes --profile bnb ptask game add chore(land): o/game#12 merged as a partial and two runs ended without the final landing'
+  assert_output --partial 'agent row for queue item fix-crash (on the game board)'
+  assert_called 'notes --profile bnb ptask game --agent add chore(land): o/game#12 merged as a partial and two runs ended without the final landing'
   # ar-2897: parked, it is settled. NEGATIVE CONTROL: before reap_stuck every later pass logged it again
-  # (526 lines in two days) and nothing ever asked the human.
+  # (526 lines in two days) and nothing ever filed a row.
   run cmd_reap
   run cmd_reap
   refute_output --partial 'fix-crash'
   assert_equal "$(grep -c 'its requeued run ended without it' "$FLEET_DISPATCH_DIR/log.md")" 1
-  assert_equal "$(grep -c 'ptask game add chore(land)' "$NOTES_FIXTURE/calls.log")" 1
+  assert_equal "$(grep -c 'ptask game --agent add chore(land)' "$NOTES_FIXTURE/calls.log")" 1
 }
 
 # ar-2897: kblack0610/asset-library-hd#4, a repo gh does not know, logged "could not read PR" on every pass.
-@test "reap: a gone item whose PR cannot be read is logged once, and goes to the human sheet once it has stood DISPATCH_ORPHAN_HOURS" {
+@test "reap: a gone item whose PR cannot be read is logged once, and goes to the agent board as a red once it has stood DISPATCH_ORPHAN_HOURS" {
   pr_item OPEN
   : > "$NOTES_FIXTURE/pr.state"   # gh cannot read the PR
   run cmd_reap
-  refute_output --partial 'human row'
+  refute_output --partial 'agent row'
   run cmd_reap
   assert_equal "$(grep -c 'could not read PR o/game#12' "$FLEET_DISPATCH_DIR/log.md")" 1
   assert_equal "$(grep -c 'session game-agent-1 gone' "$NOTES_FIXTURE/calls.log")" 0
   assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" running
-  # it has stood DISPATCH_ORPHAN_HOURS: one human row, then nothing more
+  # it has stood DISPATCH_ORPHAN_HOURS: one #red agent row, no page, then nothing more
   sed -i "1s/^[0-9]*/$(( $(date +%s) - DISPATCH_ORPHAN_HOURS * 3600 ))/" "$FLEET_DISPATCH_DIR/stuck/fix-crash"
   run cmd_reap
-  assert_output --partial 'human row for queue item fix-crash (on the game sheet)'
+  assert_output --partial 'agent row for queue item fix-crash (on the game board)'
   run cmd_reap
-  refute_output --partial 'human row'
-  assert_equal "$(grep -c 'ptask game add chore(review): reap has not read PR o/game#12' "$NOTES_FIXTURE/calls.log")" 1
+  refute_output --partial 'agent row'
+  assert_equal "$(grep -c 'ptask game --agent add chore(review): reap has not read PR o/game#12.* (queue item fix-crash) #red #size/s' "$NOTES_FIXTURE/calls.log")" 1
+  assert_equal "$(grep -c 'agent-notify' "$NOTES_FIXTURE/calls.log")" 0
   # read again, it settles as usual
   printf 'OPEN - 1111111111111111111111111111111111111111 PENDING\n' > "$NOTES_FIXTURE/pr.state"
   run cmd_reap
@@ -1087,17 +1118,24 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   [ ! -e "$FLEET_DISPATCH_DIR/stuck/fix-crash" ] || fail "a settled item left its stuck marker"
 }
 
-@test "reap: a stuck item whose human sheet refuses the row pages once instead, then stays quiet" {
+@test "reap: a stuck item whose agent board refuses the row says so on stderr, pages nobody, and files it once the board takes it" {
   pr_item OPEN
   : > "$NOTES_FIXTURE/pr.state"
   touch "$NOTES_FIXTURE/refuse.game"
   run cmd_reap
   printf '%s 0\n%s\n' "$(( $(date +%s) - DISPATCH_ORPHAN_HOURS * 3600 ))" "$(sed -n 2p "$FLEET_DISPATCH_DIR/stuck/fix-crash")" > "$FLEET_DISPATCH_DIR/stuck/fix-crash"
   run cmd_reap
-  assert_output --partial 'human row for queue item fix-crash (not filed: the game sheet refused the row)'
+  assert_output --partial 'agent row for queue item fix-crash (not filed: the game board did not take the row (notes exit 1))'
+  assert_output --partial 'fleet-dispatch: the game board did not take the row (notes exit 1): chore(review): reap has not read PR o/game#12'
+  # NEGATIVE CONTROL: a refused row is not marked filed, so the next pass tries again
   run cmd_reap
-  refute_output --partial 'human row'
-  assert_equal "$(grep -cE 'agent-notify -t Needs you -d needs:dispatch:stuck:fix-crash:[0-9]+ chore\(review\): reap has not read PR o/game#12' "$NOTES_FIXTURE/calls.log")" 1
+  assert_output --partial 'not filed: the game board did not take the row'
+  rm "$NOTES_FIXTURE/refuse.game"
+  run cmd_reap
+  assert_output --partial 'agent row for queue item fix-crash (on the game board)'
+  run cmd_reap
+  refute_output --partial 'agent row'
+  assert_equal "$(grep -c 'agent-notify' "$NOTES_FIXTURE/calls.log")" 0
 }
 
 # ar-2897: make-logical-possum-p4b's row failed merge proof on every pass: home-config has no origin, only forgejo.
