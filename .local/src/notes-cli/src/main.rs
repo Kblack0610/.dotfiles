@@ -1009,6 +1009,48 @@ enum IngestCmd {
     Page,
 }
 
+/// `notes ingest record`: one chain event a shell writer made, appended to the record.
+fn ingest_record(prof: &config::Profile, r: RecordArgs) -> i32 {
+    let RecordArgs {
+        action,
+        from,
+        to,
+        stage,
+        why,
+        id,
+        item,
+        by,
+        pr,
+        sha,
+        near,
+        text,
+    } = r;
+    let set = |v: Option<String>| ingest::set(v.as_deref());
+    let mut ev = ingest::Event::new(&action, &from, to.as_deref().unwrap_or(""), &text.join(" "));
+    ev.stage = Some(stage);
+    ev.why = set(why);
+    ev.id = set(id);
+    ev.item = set(item).or(ev.item);
+    if let Some(b) = set(by) {
+        ev.by = b;
+    }
+    ev.pr = set(pr);
+    ev.sha = set(sha);
+    ev.near = set(near);
+    ingest::record(prof, &ev);
+    0
+}
+
+/// `notes ingest import`: a worker's record on stdin; prints where its next read starts.
+fn ingest_import(prof: &config::Profile) -> anyhow::Result<i32> {
+    let mut input = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
+    let (n, next) = ingest::import(prof, &input)?;
+    eprintln!("ingest import: {n} line(s) taken");
+    println!("{}", next.unwrap_or_default());
+    Ok(0)
+}
+
 /// `notes ingest record`: boxed, so the enum stays small.
 #[derive(clap::Args)]
 struct RecordArgs {
@@ -1831,49 +1873,8 @@ fn main() -> Result<()> {
         }
         Cmd::Improve(a) => improve::run(&prof, &log, a)?,
         Cmd::Ingest { sub } => match sub {
-            IngestCmd::Record(r) => {
-                let RecordArgs {
-                    action,
-                    from,
-                    to,
-                    stage,
-                    why,
-                    id,
-                    item,
-                    by,
-                    pr,
-                    sha,
-                    near,
-                    text,
-                } = *r;
-                let set = |v: Option<String>| ingest::set(v.as_deref());
-                let mut ev = ingest::Event::new(
-                    &action,
-                    &from,
-                    to.as_deref().unwrap_or(""),
-                    &text.join(" "),
-                );
-                ev.stage = Some(stage);
-                ev.why = set(why);
-                ev.id = set(id);
-                ev.item = set(item).or(ev.item);
-                if let Some(b) = set(by) {
-                    ev.by = b;
-                }
-                ev.pr = set(pr);
-                ev.sha = set(sha);
-                ev.near = set(near);
-                ingest::record(&prof, &ev);
-                0
-            }
-            IngestCmd::Import => {
-                let mut input = String::new();
-                std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
-                let (n, newest) = ingest::import(&prof, &input)?;
-                eprintln!("ingest import: {n} line(s) taken");
-                println!("{}", newest.unwrap_or_default());
-                0
-            }
+            IngestCmd::Record(r) => ingest_record(&prof, *r),
+            IngestCmd::Import => ingest_import(&prof)?,
             IngestCmd::Page => daily::publish_inbox_page(&prof, &log)?,
         },
         Cmd::Inbox { sub } => {
