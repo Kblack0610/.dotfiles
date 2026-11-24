@@ -144,14 +144,14 @@ const td = (cls, html) => `<td${cls ? ` class="${cls}"` : ""}>${html}</td>`;
 const ACTION_COLOR = { withhold: "var(--b-stalled)", stop: "var(--b-stalled)", admit: "var(--b-working)", start: "var(--b-working)" };
 function governorCell(g) {
   if (!g) return td("muted", "-");
-  const act = g.action ? `<span class="chip sm" style="--c:${ACTION_COLOR[g.action] || "var(--c-other)"}">${esc(g.action.toUpperCase())}</span>` : "";
+  const act = g.action ? `<span class="chip sm" style="--c:${ACTION_COLOR[g.action] || "var(--c-other)"}">${esc(pillWord(g.action))}</span>` : "";
   return `<td title="${esc(`verdict: ${g.verdict || "-"}; admits ${g.admitted ?? "-"}`)}">${act || "-"}</td>`;
 }
 
 // A cloud host's power, which the governor starts for a deep queue: its state, today's hours
 // against the cap and where its rule stands.
 const POWER_COLOR = { running: "var(--b-working)", starting: "var(--b-working)", draining: "var(--b-stalled)", stopping: "var(--b-stalled)" };
-const powerChip = (state) => `<span class="chip sm" style="--c:${POWER_COLOR[state] || "var(--c-other)"}">${esc((state || "?").toUpperCase())}</span>`;
+const powerChip = (state) => `<span class="chip sm" style="--c:${POWER_COLOR[state] || "var(--c-other)"}">${esc(pillWord(state || "?"))}</span>`;
 
 function powerCell(m) {
   const p = m.power;

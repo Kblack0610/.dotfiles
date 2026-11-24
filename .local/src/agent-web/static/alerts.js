@@ -135,7 +135,7 @@ const ALERTS_FIX_COLOR = { "came back": "var(--b-needs)", "still red": "var(--b-
   fixing: "var(--b-working)", queued: "var(--b-working)", fixed: "var(--b-done)", cleared: "var(--b-done)" };
 function alertsFixRow(r) {
   const pr = !r.pr ? "" : r.pr_url ? `<a href="${esc(r.pr_url)}" target="_blank" rel="noopener">PR ${esc(r.pr)}</a>` : `<span class="by">PR ${esc(r.pr)}</span>`;
-  return `<div class="pr"><span class="chip sm" style="--c:${ALERTS_FIX_COLOR[r.outcome] || "var(--c-other)"}">${esc(r.outcome.toUpperCase())}</span>` +
+  return `<div class="pr"><span class="chip sm" style="--c:${ALERTS_FIX_COLOR[r.outcome] || "var(--c-other)"}">${esc(pillWord(r.outcome))}</span>` +
     `<span class="pt">${esc(r.red)}</span>${r.project ? `<span class="by">${esc(r.project)}</span>` : ""}<span class="by">${esc(r.slug)}</span>${pr}<span class="by">${r.queued ? ago(r.queued) : "-"}</span></div>`;
 }
 

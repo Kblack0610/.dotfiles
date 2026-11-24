@@ -109,7 +109,7 @@ function sessionRow(r) {
   const a = sessionAgent(r), tags = sessionTags(r, a);
   const idle = r.ended ? esc(r.ended) : r.idle_min == null ? "-" : dur(r.idle_min);
   const phases = r.phases_total ? `${r.phases_done}/${r.phases_total}` : "-";
-  return `<tr class="click" data-key="${esc(r.key)}"><td>${newDot(a)}<span class="chip sm" style="--c:${bucketColor(r.bucket)}">${esc(r.bucket)}</span></td><td class="muted">${esc(r.activity || "-")}</td>` +
+  return `<tr class="click" data-key="${esc(r.key)}"><td>${newDot(a)}<span class="chip sm" style="--c:${bucketColor(r.bucket)}">${esc(pillWord(r.bucket))}</span></td><td class="muted">${esc(r.activity || "-")}</td>` +
     `<td>${esc(r.project)}</td><td class="wrap">${clamp2(`${tags ? tags + " " : ""}${esc(r.task)}`, r.task)}</td><td class="muted">${esc(r.by || "-")}</td><td>${sessionPr(r)}</td><td class="n">${phases}</td>` +
     `<td class="n">${idle}</td>${ctxCell(r)}<td class="n">${usd(r.cost_usd)}</td><td>${esc(r.account || "-")}</td><td>${esc(r.harness || "-")}</td><td>${esc(r.close || "-")}</td></tr>`;
 }
@@ -170,7 +170,7 @@ function sideRow(r) {
   const idle = r.ended ? esc(r.ended) : r.idle_min == null ? "" : dur(r.idle_min);
   const pr = r.pr ? sessionPr(r) : "";
   const host = sessionAgent(r)?.host || "";
-  return `<button class="srow${isSel(r) ? " on" : ""}" data-key="${esc(r.key)}"><span class="chip sm" style="--c:${bucketColor(r.bucket)}">${esc(r.bucket)}</span>` +
+  return `<button class="srow${isSel(r) ? " on" : ""}" data-key="${esc(r.key)}"><span class="chip sm" style="--c:${bucketColor(r.bucket)}">${esc(pillWord(r.bucket))}</span>` +
     `<span class="sn">${newDot(sessionAgent(r))}${esc(r.task || r.target)}</span><span class="sx">${esc(r.project)}${host ? " @" + esc(host) : ""}${pr ? " " + pr : ""}${idle ? " | " + idle : ""}</span></button>`;
 }
 
@@ -207,7 +207,7 @@ $("side").addEventListener("click", (e) => {
 function pageHtml(p) {
   const s = sessionsOf().find((x) => (p.session_id && x.session_id === p.session_id) || (p.target && x.target === p.target));
   const outcome = p.outcome ? ovFold("page-outcome", "Outcome card", `<pre class="joblog">${esc(p.outcome)}</pre>`) : pageRow("Outcome card", "after it ends");
-  return `<div class="pghead"><span class="chip" style="--c:${bucketColor(p.bucket)}">${esc(p.bucket)}</span> <span class="muted">${esc(p.idle)}</span> ${esc(p.task)}</div>` +
+  return `<div class="pghead"><span class="chip" style="--c:${bucketColor(p.bucket)}">${esc(pillWord(p.bucket))}</span> <span class="muted">${esc(p.idle)}</span> ${esc(p.task)}</div>` +
     p.errors.map((e) => errPanel(e, { card: true })).join("") +
     p.parts.map(pagePart).join("") +
     outcome + (s ? ovFold("page-state", "Fleet state", card(s, Date.now())) : "");

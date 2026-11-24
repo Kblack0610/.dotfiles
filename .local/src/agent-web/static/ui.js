@@ -193,6 +193,8 @@ const cchip = (cls, html, tip) => `<span class="cchip ${cls}"${tip ? ` title="${
 const statePill = (word, level) => word
   ? cchip(`state${level ? ` ${level}` : ""}`, esc(word[0].toUpperCase() + word.slice(1)))
   : "-";
+// A word in a status pill (ui.md rule 6): sentence case, whatever case the vocabulary sends it in.
+const pillWord = (w) => { const t = String(w ?? "").toLowerCase(); return t[0] ? t[0].toUpperCase() + t.slice(1) : t; };
 // The card's title (text) and its chips (html); tip is the title's tooltip.
 const cardHead = (title, chips, tip) =>
   `<div class="chead"><span class="ctitle"${tip ? ` title="${esc(tip)}"` : ""}>${esc(title)}</span>${chips.join("")}</div>`;

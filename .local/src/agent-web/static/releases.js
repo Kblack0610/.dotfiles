@@ -55,13 +55,16 @@ const chKey = (r) => `${r.project}|${r.id}`;
 
 const REL_COLS = { project: ["app"], stage: ["stage"], live: ["deployed"], status: ["status"], checks: ["checks"], channels: ["channels"], released: ["released"], last_deploy: ["last deploy"] };
 
+// A hub level as statePill takes it (ok, warn, bad), "" for the rest: a word with no hue is a grey pill.
+const relPill = (level) => (["ok", "warn", "bad"].includes(level) ? level : "");
+
 // One app; the name goes to its Projects card, the rest of the row to its page.
 function releaseRow(a, i) {
   const project = tblLinks(relst.data?.table, i).project;
   return `<tr class="jr" data-key="${esc(relKey(a))}"><td>${tblLink(project, a.project)}</td>` +
-    `<td class="${levelClass(a.stage_level) || "muted"}" title="${esc(a.stage_text)}">${esc(a.stage || "-")}</td>` +
-    `<td class="${relDim(a.live_text, "wrap")}">${esc(a.live_text)}</td><td class="${levelClass(a.level)}">${esc(a.status_text)}</td>` +
-    `<td class="${a.checks.says === "no check" ? "muted" : levelClass(a.checks.level)}">${esc(a.checks.says)}</td>` +
+    `<td${a.stage && relPill(a.stage_level) ? "" : ` class="muted"`} title="${esc(a.stage_text)}">${a.stage && relPill(a.stage_level) ? statePill(a.stage, a.stage_level) : esc(a.stage || "-")}</td>` +
+    `<td class="${relDim(a.live_text, "wrap")}">${esc(a.live_text)}</td><td>${statePill(a.status_text, relPill(a.level))}</td>` +
+    `<td${a.checks.says === "no check" ? ` class="muted"` : ""}>${a.checks.says === "no check" ? esc(a.checks.says) : statePill(a.checks.says, relPill(a.checks.level))}</td>` +
     `<td class="wrap${a.unread ? " warn" : ""}">${esc(a.channels_text)}</td><td class="${relDim(a.released_text)}">${esc(a.released_text)}</td>` +
     `<td class="${relDim(a.last_deploy_text, levelClass(a.deploy_level))}">${esc(a.last_deploy_text)}</td></tr>`;
 }
@@ -420,7 +423,7 @@ function latencyBars(pts, now) {
 function appCheck(c, now) {
   const up = c.uptime.map(([w, v]) => `<span class="appup"><span class="muted">${esc(w)}</span> ${esc(v)}</span>`).join("");
   return `<div class="panel appchk"><div class="bhead"><span><b>${esc(c.name)}</b> <span class="muted">${esc(c.group)}</span></span>` +
-    `<span class="chip sm" style="--c:${LEVEL_COLOR[c.level] || APP_DAY_COLOR.none}">${esc(c.state.toUpperCase())}</span></div>` +
+    `<span class="chip sm" style="--c:${LEVEL_COLOR[c.level] || APP_DAY_COLOR.none}">${esc(pillWord(c.state))}</span></div>` +
     `<div class="cline appups">${up}<span class="appup"><span class="muted">latency</span> ${esc(c.latency_text)}</span></div>` +
     dayBars(c.days) + `<div class="cline muted">Response time, hourly average, 24 hours</div>` + latencyBars(c.latency, now) + `</div>`;
 }

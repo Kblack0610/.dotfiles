@@ -39,7 +39,7 @@ function renderBadge() {
 }
 
 // The band a Needs you card opens with: its kind label (hub_core::home::NeedKind::label, sent on
-// the row and on a session's `need`), then where and how long, as quiet text. The card's stripe
+// the row and on a session's `need`), then where and how long, as quiet text. The card's kind
 // class comes from the kind (status hues stay status, dashboards rule 5).
 const needBand = (label, meta) =>
   `<div class="nband"><span class="nkind">${esc(label)}</span>${meta.filter(Boolean).map((m) => `<span>${m}</span>`).join("")}</div>`;
