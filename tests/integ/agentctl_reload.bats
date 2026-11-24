@@ -57,3 +57,17 @@ setup() {
   assert_success
   assert_called 'systemctl --user start agentctl@pers.service'
 }
+
+@test "--if-stale writes the drop-in of an event runner with no SCHEDULE, so START_LIMIT=off lands on deploy" {
+  "$AGENTCTL_BIN" reload
+  printf 'NAME=evt\nKIND=oneshot\nSCOPE=singleton\nLANE=maintain\nDESCRIPTION=\047event runner\047\nEFFECT=none\nCOMMAND=/bin/true\nSTART_LIMIT=off\n' > "$AGENTCTL_CONF_DIR/evt.conf"
+  run "$AGENTCTL_BIN" reload --if-stale
+  assert_success
+  assert_line 'agentctl: timers lag their confs: evt'
+  grep -q '^StartLimitIntervalSec=0' "$TIMERS/agentctl@evt.service.d/agentctl-oneshot.conf"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AGENTCTL_BIN" reload --if-stale
+  assert_success
+  assert_output ''
+  assert_not_called 'daemon-reload'
+}
