@@ -827,6 +827,48 @@ salvaged_here() {
   [ -n "$sv" ] && git -C "$3" merge-base --is-ancestor HEAD "${sv##*@}" 2>/dev/null
 }
 
+# superseded_here <qall> <slug> <clone> <ahead paths> <head epoch> -> exit 0 when the item that moved on from
+# this session closed done ok with merged commits (another run of it landed the work), every file this branch
+# holds ahead of the base is one those commits changed, and HEAD (committer time) is no newer than the newest
+# of them: the commits here were a draft the landing came after, so nothing is left to land. An edit made
+# after the merge, a merged commit <clone> lacks, or a path no merge changed holds the branch. Each merge
+# counts by its first-parent diff, so a rebase-merged PR shows only its last commit's files: that fails
+# closed, never open. ar-5157: razer-laptop dotfiles-agent-20 kept two unpushed commits of ar-2751 after
+# #3349 landed it from another session, read STALLED four days, and takeover refused it ("its commits are
+# not pushed").
+superseded_here() {
+  local d="$3" paths="$4" head_at="${5:-}" m c t newest=0 changed=""
+  [ -n "$paths" ] && [ "$d" != - ] && [[ "$head_at" =~ ^[0-9]+$ ]] || return 1
+  m="$(jq -nr --arg s "$2" 'first(inputs | select(.slug == $s and .state == "done" and (.status // "") == "ok")
+    | .merged // empty)' <<<"$1" 2>/dev/null)"
+  [ -n "$m" ] || return 1
+  for c in $m; do
+    t="$(git -C "$d" log -1 --format=%ct "$c^{commit}" 2>/dev/null)" && [ -n "$t" ] || return 1
+    [ "$t" -gt "$newest" ] && newest="$t"
+    changed+="$(git -C "$d" diff --name-only "$c^1" "$c" 2>/dev/null)"$'\n'
+  done
+  [ "$head_at" -le "$newest" ] || return 1
+  [ -z "$(grep -vxFf <(grep . <<<"$changed") <<<"$paths")" ]
+}
+
+# handed_on <host|-> <qall> <slug> <cwd> <clone|-> <worker row> -> exit 0 when a clean, PR-less branch whose item
+# moved on holds nothing to land: on this machine its HEAD is the item's salvage (salvaged_here), or here or
+# on a worker it only drafts what the item's merged commits landed (superseded_here; a worker's row carries
+# ahead_paths and head_at, read against this machine's clone of its repo).
+handed_on() {
+  local host="$1" q="$2" slug="$3" cwd="$4" gd="$5" row="$6"
+  if [ "$host" = - ]; then
+    salvaged_here "$q" "$slug" "$cwd" \
+      || superseded_here "$q" "$slug" "$cwd" "$(ahead_paths "$cwd" "$(default_base "$cwd")")" \
+           "$(git -C "$cwd" log -1 --format=%ct HEAD 2>/dev/null)"
+  else
+    [ "$gd" != - ] || return 1
+    fetch_once "$gd" || :
+    superseded_here "$q" "$slug" "$gd" "$(jq -r '.git.ahead_paths // [] | .[]' <<<"$row" 2>/dev/null)" \
+      "$(jq -r '.git.head_at // empty' <<<"$row" 2>/dev/null)"
+  fi
+}
+
 # session_finished: session_bucket's arguments -> exit 0 when the work half of DONE holds
 # (phases all ticked, no ask, nothing unlanded, not a red-main suspect). It skips status,
 # plan mode, a heavy child and the idle threshold, so a session can check its own row mid-turn, when that row always reads WORKING busy.
@@ -2616,10 +2658,9 @@ collect() {
     # What a deployed checkout off its default branch holds is one fault, its CHECKOUT row, and no
     # session's work: 2026-11-06 it read 9 files ahead on all 16 sessions there, each one STALLED.
     if [ "$host" = - ] && [ "$g" = 1 ] && in_checkout "$cwd" "$off"; then ahead=0 pr=- state=- ci=- oid=- inpr=1; fi
-    # A run that handed its item off left its pushed branch to the item's next start: a clean tree whose
-    # HEAD is that item's salvage: has nothing left here to land.
-    if [ "$host" = - ] && [ "$g" = 1 ] && [ "$irel" = moved ] && [ "$dirty" = 0 ] && [ "$ahead" -gt 0 ] && [ "$pr" = - ] \
-       && salvaged_here "$qall" "$islug" "$cwd"; then ahead=0; fi
+    # A run that handed its item off, or another run that landed it, left nothing here to land (handed_on).
+    if [ "$g" = 1 ] && [ "$irel" = moved ] && [ "$dirty" = 0 ] && [ "$ahead" -gt 0 ] && [ "$pr" = - ] \
+       && handed_on "$host" "$qall" "$islug" "$cwd" "$gd" "$line"; then ahead=0; fi
     # A finished branch PR this session did not make is another session's (pr_made_here): drop it,
     # and the commits it holds with it. An open one stays: it is unlanded work in this tree either way.
     if [ "$host" = - ] && [ "$g" = 1 ] && { [ "$state" = MERGED ] || [ "$state" = CLOSED ]; } && [ -s "$transcript" ] \
