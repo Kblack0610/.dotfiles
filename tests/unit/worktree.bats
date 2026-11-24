@@ -730,6 +730,42 @@ EOF
   assert_output 'develop'
 }
 
+@test "a Forgejo-canonical repo's trunk remote is its forge, any other repo's is origin (ar-3218)" {
+  make_repo
+  git -C "$MAIN" remote add forgejo https://git.example.test/me/repo.git
+  export SO_FORGEJO_HOSTS=git.example.test
+  # NEGATIVE CONTROL: no mirror marker, so the forge remote is not where it lands
+  run wt_trunk_remote "$MAIN"
+  assert_output origin
+  mkdir -p "$MAIN/.forgejo/workflows"
+  : > "$MAIN/.forgejo/workflows/mirror-to-github.yaml"
+  run wt_trunk_remote "$MAIN"
+  assert_output forgejo
+}
+
+@test "wt_prepare fetches the forge and cuts off its tip in a clone with no origin (ar-3218)" {
+  # razer-laptop's home-config clone has only a `forgejo` remote: `fetch origin` failed every
+  # dispatch start there, and the cut went off a local master 414 commits behind the forge.
+  FORGE="$SANDBOX/forge.git"
+  MAIN="$SANDBOX/repo"
+  git init --quiet --bare -b main "$FORGE"
+  git init --quiet -b main "$MAIN"
+  git -C "$MAIN" commit --quiet --allow-empty -m seed
+  git -C "$MAIN" remote add forgejo "$FORGE"
+  git -C "$MAIN" push --quiet -u forgejo main
+  git clone --quiet "$FORGE" "$SANDBOX/other"
+  git -C "$SANDBOX/other" commit --quiet --allow-empty -m landed-elsewhere
+  git -C "$SANDBOX/other" push --quiet origin main
+  tip=$(git -C "$FORGE" rev-parse main)
+  # so_forge_remote reads a forge host off the URL, which a bare path has none of; the test above
+  # covers that half.
+  so_forge_remote() { printf 'forgejo git.example.test/me/repo\n'; }
+  run wt_prepare "$MAIN" "$WT_ROOT/repo-agent-1" 1 fresh
+  assert_success
+  refute_output --partial 'fetch failed'
+  assert_equal "$(git -C "$WT_ROOT/repo-agent-1" rev-parse HEAD)" "$tip"
+}
+
 # ── Squash merges, editors, submodule worktrees, and reaping with submodules ─
 
 # A worktree with one local commit and no upstream, its origin renamed to a GitHub URL so
