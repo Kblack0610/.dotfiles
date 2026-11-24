@@ -374,14 +374,9 @@ impl TaskView {
 }
 
 /// Sprint windows as a table (`hub_core::tasks::SprintRow`, the same columns as the web's; LEFT
-/// reads `queued`, dim); with `tasks`, each window's tasks follow it. Board shows rows only: the
-/// windows are Projects' Sprints tab's and an opened project's Sprint tab's (projtab.rs).
-pub fn sprint_lines(
-    rows: &[tasks::SprintRow],
-    with_tasks: bool,
-    p: Palette,
-    w: usize,
-) -> Vec<Line<'static>> {
+/// reads `queued`, dim). A window's rows are its page's (`hub_core::sprint_page`), opened from
+/// Projects' Sprint tab (projtab.rs), not folded under it.
+pub fn sprint_lines(rows: &[tasks::SprintRow], p: Palette, w: usize) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     let warn_if = |t: &str, bad: bool| {
         cell(
@@ -431,47 +426,6 @@ pub fn sprint_lines(
         }
         .fit(w, p.head()),
     );
-    if with_tasks {
-        for r in rows {
-            let cells = r
-                .tasks
-                .iter()
-                .map(|t| {
-                    let st = t.shown_state();
-                    let text = if t.interrupt {
-                        format!("{} (interrupt)", t.title)
-                    } else {
-                        t.title.clone()
-                    };
-                    vec![
-                        t.id.clone().unwrap_or_else(|| "-".into()).into(),
-                        text.into(),
-                        cell(t.priority.clone(), prio_style(&t.priority, p)),
-                        cell(
-                            st.to_string(),
-                            if matches!(st, "running" | "doing") {
-                                p.head()
-                            } else {
-                                ratatui::style::Style::new()
-                            },
-                        ),
-                    ]
-                })
-                .collect();
-            out.extend(
-                Table {
-                    header: vec!["ID", "TASK", "PRIORITY", "STATE"],
-                    rows: cells,
-                    keep: vec![1, 3, 2, 0],
-                    flex: Some(1),
-                    flexmin: 12,
-                    flexkeep: true,
-                    ..Default::default()
-                }
-                .fit(w, p.head()),
-            );
-        }
-    }
     out
 }
 
