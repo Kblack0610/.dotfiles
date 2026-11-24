@@ -517,7 +517,58 @@ stalled_fixture() {
   BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --check stalled
   assert_failure 2
   assert_output --partial 'no stalled_session_hours_max'
-  BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --check pools
+  BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --check nonsense
+  assert_failure 2
+  assert_output --partial 'usage'
+}
+
+# stub_pools <name value>...: Prometheus answers the pool wait query with those pools' job-hours
+stub_pools() {
+  local r="" a
+  for a in "$@"; do r+="{\"metric\":{\"pool\":\"${a% *}\"},\"value\":[1,\"${a#* }\"]},"; done
+  stub_prom "echo '{\"status\":\"success\",\"data\":{\"result\":[${r%,}]}}'"
+}
+
+@test "bottleneck --check pools: every pool past pool_wait_hours_max is named, the longest first; a pool inside it is not (ar-5153)" {
+  stub_pools "unity 30.5" "macos 26" "light 12" "heavy 0"
+  printf '%s\n' pool_wait_hours_max=24 > "$KPI_THRESHOLDS"
+  run "$SUBJECT" bottleneck --check pools
+  assert_failure 1
+  assert_output 'pool waits past 24 job-hours over the last 24h: unity 30.5h, macos 26h'
+  # NEGATIVE CONTROL: the same waits inside the bound pass quietly
+  printf '%s\n' pool_wait_hours_max=31 > "$KPI_THRESHOLDS"
+  run "$SUBJECT" bottleneck --check pools
+  assert_success
+  assert_output ''
+}
+
+@test "bottleneck --check pools: no bound, an unreadable Prometheus or no pool series exits 2, never a quiet pass (ar-5153)" {
+  stub_pools "unity 30.5"
+  : > "$KPI_THRESHOLDS"
+  run "$SUBJECT" bottleneck --check pools
+  assert_failure 2
+  assert_output --partial 'no pool_wait_hours_max'
+  printf '%s\n' pool_wait_hours_max=24 > "$KPI_THRESHOLDS"
+  stub_prom 'exit 22'
+  run "$SUBJECT" bottleneck --check pools
+  assert_failure 2
+  assert_output --partial 'no pool series'
+  stub_pools
+  run "$SUBJECT" bottleneck --check pools
+  assert_failure 2
+}
+
+@test "bottleneck --check with no name runs the stall and the pool checks, one line each, the worse exit code (ar-5153)" {
+  stalled_fixture
+  stub_pools "unity 30.5"
+  printf '%s\n' stalled_session_hours_max=1 pool_wait_hours_max=24 > "$KPI_THRESHOLDS"
+  BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --check
+  assert_failure 1
+  assert_line '1.67 session-hours stalled over the last 24h, past 1: t/a 0.7h, t/b 0.5h, t/c 0.3h'
+  assert_line 'pool waits past 24 job-hours over the last 24h: unity 30.5h'
+  # one check unreadable beats the other tripping
+  printf '%s\n' stalled_session_hours_max=1 > "$KPI_THRESHOLDS"
+  BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --check
   assert_failure 2
 }
 
