@@ -4760,51 +4760,77 @@ row_done_items() {
   ROW_DONE_READ=1
 }
 
-# unstart_orphans -- an agent-lane row started with no active queue item naming it (its `row`)
-# is an orphan: its session never filed an item, or died before reap could see one. If an item done ok
+# unstart_orphans -- a row started with no active queue item naming it (its `row`, on its lane) is an
+# orphan: its session never filed an item, or died before reap could see one. If an item done ok
 # in the last DISPATCH_ORPHAN_HOURS plus a day names it, its PR decides first (land_orphan); a PR open
 # longer than that falls to the timer. A row seen orphaned on every pass for DISPATCH_ORPHAN_HOURS is un-started and given a failed verdict, as
 # settle_row does, so it is judged again, or held and asked about at DISPATCH_FIX_TRIES failures; the grace keeps a
-# session that started a row a minute ago from losing it. First sightings live in $DIR/orphans.tsv;
-# a row that stops being one drops out. Human-lane rows are the human's own and never touched. A
-# queue or board it cannot read changes nothing. The board feed covers every profile, as the KPI does.
+# session that started a row a minute ago from losing it. First sightings live in $DIR/orphans.tsv
+# (profile, project, key, first seen, and `human` for a human-sheet row); a row that stops being one drops out.
+# A human-sheet row is the fleet's only when the fleet marked it (human_row_fleets): the human flips
+# their own `[/]` in nvim, and that one is never touched; nor is any human row of a profile with
+# automation off. A queue or board it cannot read changes nothing. The board feed covers every profile, as the KPI does.
 unstart_orphans() {
-  local items landed linked board feed chains brief plan prof name key first now slug seen=''
+  local items landed linked board feed chains brief plan prof name key lane first now slug marker tag flag=() seen='' NAMED_READ='' NAMED_ROWS=''
   feed=$(notes board --json 2>/dev/null) && board=$(jq -ce '.rows | arrays' <<<"$feed") || return 0
   items=$(agent-queue list --json 2>/dev/null) || return 0
   # A plan row promote queued as its chain (plan_row_plan) is its plan's while the chain lives: an active
   # item or a gated board row names that plan (PLAN_ITEMS_JQ). agent-land closes it with the last phase.
   chains=$({ printf '%s\n' "$items"; plan_gated_rows "$feed"; } | jq -cs .) || chains='[]'
   landed=$(agent-queue list --json --state done --since "$(date -d "-$((DISPATCH_ORPHAN_HOURS / 24 + 1)) days" +%F)" 2>/dev/null) || return 0
-  landed=$(jq -rs 'map(select(.status == "ok" and (.row // "") != "" and (.lane // "agent") == "agent")) | sort_by(.finished)
-    | .[] | "\(.row | sub(":"; "\t"))\t\(.slug)"' <<<"$landed")
+  landed=$(jq -rs 'map(select(.status == "ok" and (.row // "") != "")) | sort_by(.finished)
+    | .[] | "\(.lane // "agent")\t\(.row | sub(":"; "\t"))\t\(.slug)"' <<<"$landed")
   mkdir -p "$DIR"
-  linked=$(jq -r 'select(.state != "done" and (.row // "") != "" and (.lane // "agent") == "agent")
-    | .row | sub(":"; "\t")' <<<"$items")
+  linked=$(jq -r 'select(.state != "done" and (.row // "") != "") | "\(.lane // "agent")\t\(.row | sub(":"; "\t"))"' <<<"$items")
   now=$(date +%s)
-  while IFS=$'\t' read -r prof name key brief; do
+  while IFS=$'\t' read -r prof lane name key marker brief; do
     [ "$prof" != - ] || prof=''
-    grep -qxF "$name"$'\t'"$key" <<<"$linked" && continue
+    grep -qxF "$lane"$'\t'"$name"$'\t'"$key" <<<"$linked" && continue
+    if [ "$lane" = human ]; then
+      human_row_fleets "$name" "$key" "$marker" || continue
+      flag=() tag=$'\thuman'
+    else
+      flag=(--agent) tag=''
+    fi
     plan=$(plan_row_plan "$brief") || plan=''
     [ -z "$plan" ] || ! jq -e --arg p "$plan" "$PLAN_ITEMS_JQ"' any(.[]; names_plan($p))' <<<"$chains" >/dev/null || continue
-    slug=$(K="$name"$'\t'"$key" awk -F'\t' '$1"\t"$2 == ENVIRON["K"] { s = $3 } END { print s }' <<<"$landed")
+    slug=$(K="$lane"$'\t'"$name"$'\t'"$key" awk -F'\t' '$1"\t"$2"\t"$3 == ENVIRON["K"] { s = $4 } END { print s }' <<<"$landed")
     [ -n "$slug" ] && land_orphan "$slug" && continue
-    first=$(K="${prof:--}"$'\t'"$name"$'\t'"$key" awk -F'\t' '$1"\t"$2"\t"$3 == ENVIRON["K"] { print $4; exit }' "$DIR/orphans.tsv" 2>/dev/null)
+    # An agent row's sighting has four columns (the form before human rows were swept), a human row's a fifth.
+    first=$(K="${prof:--}"$'\t'"$name"$'\t'"$key" L="$lane" awk -F'\t' \
+      '$1"\t"$2"\t"$3 == ENVIRON["K"] && ($5 == "" ? "agent" : $5) == ENVIRON["L"] { print $4; exit }' "$DIR/orphans.tsv" 2>/dev/null)
     first=${first:-$now}
     if [ $(( now - first )) -lt $(( DISPATCH_ORPHAN_HOURS * 3600 )) ]; then
-      seen+="${prof:--}"$'\t'"$name"$'\t'"$key"$'\t'"$first"$'\n'
+      seen+="${prof:--}"$'\t'"$name"$'\t'"$key"$'\t'"$first$tag"$'\n'
       continue
     fi
-    np "$prof" ptask "$name" --agent unstart "$key" >/dev/null 2>&1 ||
-      { logline "orphan $name agent row $key: un-start failed"; continue; }
-    jq -cn --arg p "$name" --arg k "$key" --arg at "$(date -Iseconds)" --arg h "$DISPATCH_ORPHAN_HOURS" \
-      '{project: $p, lane: "agent", key: $k, verdict: "failed", reason: "started \($h)h with no queue item", at: $at}' >> "$VERDICTS"
-    logline "un-started orphan $name agent row (started ${DISPATCH_ORPHAN_HOURS}h with no queue item): $key"
+    np "$prof" ptask "$name" "${flag[@]}" unstart "$key" >/dev/null 2>&1 ||
+      { logline "orphan $name $lane row $key: un-start failed"; continue; }
+    jq -cn --arg p "$name" --arg l "$lane" --arg k "$key" --arg at "$(date -Iseconds)" --arg h "$DISPATCH_ORPHAN_HOURS" \
+      '{project: $p, lane: $l, key: $k, verdict: "failed", reason: "started \($h)h with no queue item", at: $at}' >> "$VERDICTS"
+    logline "un-started orphan $name $lane row (started ${DISPATCH_ORPHAN_HOURS}h with no queue item): $key"
     dispatch_event settled "$name" "orphan row un-started: ${DISPATCH_ORPHAN_HOURS}h with no queue item" --id "$key"
     echo "un-started $name: $key (started with no queue item)"
-  done < <(jq -r '.[] | select(.lane == "agent" and .state == "doing")
-    | [(if (.profile // "") == "" then "-" else .profile end), .project, (.id // (.text | ascii_downcase)), ((.details // []) | if type == "array" then join(" ") else tostring end)] | @tsv' <<<"$board")
+  done < <(jq -r '.[] | select(.state == "doing" and (.lane == "agent" or (.lane == "human" and .automation != false)))
+    | [(if (.profile // "") == "" then "-" else .profile end), .lane, .project, (.id // (.text | ascii_downcase)),
+       ((((.raw // "") | capture("<!--(?<m>[^>]*)-->") | .m) // "") | gsub("\t"; " ")),
+       ((.details // []) | if type == "array" then join(" ") else tostring end)] | @tsv' <<<"$board")
   printf '%s' "$seen" > "$DIR/orphans.tsv.new" && mv "$DIR/orphans.tsv.new" "$DIR/orphans.tsv"
+}
+
+# human_row_fleets <project> <key> <marker> -- exit 0 when the fleet started this human-sheet row: its
+# marker carries the `run:` agent-queue writes when its item runs, or a queue item, in any state, names
+# it (`row`, lane human). A `[/]` with neither is the human's own, flipped by hand. The done items are
+# read once a pass into unstart_orphans' NAMED_ROWS, and only when a human row needs them; a list that
+# cannot be read proves nothing, so the row is left alone.
+human_row_fleets() {
+  [[ " $3 " =~ [[:space:]]run:[0-9] ]] && return 0
+  if [ -z "${NAMED_READ:-}" ]; then
+    NAMED_ROWS=$({ printf '%s\n' "$items"; agent-queue list --json --state done --since 3650d 2>/dev/null; } |
+      jq -r 'select((.lane // "agent") == "human" and (.row // "") != "") | .row | sub(":"; "\t")') || NAMED_ROWS=''
+    NAMED_READ=1
+  fi
+  grep -qxF "$1"$'\t'"$2" <<<"$NAMED_ROWS"
 }
 
 # item_end <item json> -> why an item's run ended (end_reason), from its harness's own record: a Codex
