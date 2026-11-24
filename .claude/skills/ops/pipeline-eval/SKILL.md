@@ -57,6 +57,6 @@ Siblings: token spend is `usage-cleanup`; CI pass rate and CI time are `ci-clean
 
 - Do not score transcripts with a model, and do not start a live claude probe to measure anything.
 - Do not read `agent-queue stats` wait as dispatch latency without the `after:` split: a held item waits by design.
-- Do not read `fleet-bench pipeline` in, out or dwell for the running step while its `drift:` line is not 0: the drift has several causes (`pipeline_json` in `fleet-bench` lists them), and the one that corrupts the running step is a finished item (cancel, canary) with no `item-moved -> done` event, which stays running there. Take counts from `agent-queue stats --flow`.
+- Do not read `fleet-bench pipeline` in, out or dwell for the running step while its `drift:` line is not 0: the drift has several causes (`pipeline_json` in `fleet-bench` lists them), and the one that corrupts the running step is a finished item with no `item-moved -> done` event, which stays running there: a worker's close landed in the worker's own record until `worker_records` (fleet-dispatch `record`) carried it over (ar-4993); one still counted after that is a close no event reached. Take counts from `agent-queue stats --flow`.
 - Do not count `no_pr` sessions as lost work before splitting off the runner rows (`runner: true` or `project: _runner`); the `day-log` skill owns the rule.
 - Do not restate fleet-bench, day-log, shepherd, usage-cleanup or ci-cleanup here; name them.
