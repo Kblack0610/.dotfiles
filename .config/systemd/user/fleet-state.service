@@ -19,11 +19,8 @@ ExecStart=%h/.local/bin/fleet-sessions tick
 # Then one page for what is new on hub Home's NEEDS YOU list, under the bar and cap in
 # channels.toml [pager.needs]. Allowed to fail: a missed page leaves the list on Home and in the journal.
 ExecStartPost=-%h/.local/bin/hub needs --page
-# Then Home Assistant gets what changed: agent-mqtt-sessions.service, started without waiting, so
-# a slow broker or the --full run's lock never holds this pass or the next. A start while one
-# runs folds into it. This replaces a .path unit on state.json, which this pass rewrites every
-# minute, so it fired every minute anyway (2026-11-07).
-ExecStartPost=-/usr/bin/systemctl --user start --no-block agent-mqtt-sessions.service
+# Home Assistant hears from agent-mqtt-publish.timer (--full, every 5 minutes) and the agentctl
+# and sentinel triggers, not from this pass: a publish per pass cost about 15 CPU-hours a day.
 StandardOutput=null
 TimeoutStartSec=120
 # Every scratch dir of the pass (fleet-sessions' $CACHE) lives here, and systemd removes it when the
