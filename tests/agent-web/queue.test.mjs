@@ -43,41 +43,52 @@ const node = (key, label, o = {}) => ({ key, label, count: "4", sub: "p90 2h", h
 const nodes = (over = {}) => [
   node("inbox", "inbox", { count: "1", sub: "ok" }),
   node("backlog", "agent backlog", { count: "312" }),
-  node("queued", "queued", { count: "272", hot: true, stopped: true, stop: "Dispatch stopped 9h50m", facts: ["272 items, bound 12h (5.7x)"], to: { tab: "queue", state: "ready" } }),
-  node("running", "running", { count: "9", problems_n: 11, problems: [{ text: "01:16  ucp-412  failed  died", item: "ucp-412" }, { text: "00:01  a line  refused  no", item: null }], to: { tab: "queue", state: "running" } }),
+  node("queued", "queued", { count: "272", hot: true, stopped: true, stop: "Dispatch stopped 9h50m", facts: ["272 items, bound 12h (5.7x)"], to: { tab: "queue", state: "ready", section: "next" } }),
+  node("running", "running", { count: "9", problems_n: 11, problems: [{ text: "01:16  ucp-412  failed  died", item: "ucp-412" }, { text: "00:01  a line  refused  no", item: null }], to: { tab: "queue", state: "running", section: "running" } }),
   node("needs", "needs you", { count: "2", hot: true }),
   node("done", "done 24h", { count: "9" }),
 ].map((n) => ({ ...n, ...(over[n.key] || {}) }));
 const rail = ({ nodes: over, ...o } = {}) => ({ nodes: nodes(over), worst: 2, as_of: "10:20", stale: false, reading: false, error: null, absent: false, ...o });
 const drawStrip = (line, grafana = null, picked = "") => vm.runInContext(`qfl.data = ${JSON.stringify(line && { line, grafana })}; qfl.err = null; qfl.node = ${JSON.stringify(picked)}; qStrip()`, ctx);
 
-test("the line draws a point per step with the worst step's detail open", () => {
+test("the line draws a point per step and opens no detail until one is picked", () => {
   const html = drawStrip(rail(), "https://g.example");
   assert.equal((html.match(/data-rail="/g) || []).length, 6);
-  assert.match(html, /class="rnode stopped sel" data-rail="queued"/);
-  assert.match(html, /<div class="rstop">Stopped: Dispatch stopped 9h50m<\/div>/);
-  assert.match(html, /272 items, bound 12h \(5\.7x\)/);
+  assert.match(html, /class="rnode stopped" data-rail="queued"/);
+  assert.equal((html.match(/rdetail/g) || []).length, 0, "the line is one row");
   assert.match(html, /as of 10:20/);
   assert.match(html, /href="https:\/\/g\.example\/d\/kb-agents-overview"/);
-  assert.equal((html.match(/rdetail/g) || []).length, 1);
+  const open = drawStrip(rail(), null, "queued");
+  assert.match(open, /class="rnode stopped sel" data-rail="queued"/);
+  assert.match(open, /<div class="rstop">Stopped: Dispatch stopped 9h50m<\/div>/);
+  assert.match(open, /272 items, bound 12h \(5\.7x\)/);
+  assert.match(open, /<a class="glink" href="#queue\/next">open<\/a>/, "a step with no problems links its section");
+  assert.equal((open.match(/rdetail/g) || []).length, 1);
 });
 
 test("amber is a step past its bound, red one nothing can leave, and a problem alone is neither", () => {
   const html = drawStrip(rail());
   assert.match(html, /class="rnode hot" data-rail="needs"/);
-  assert.match(html, /class="rnode stopped sel" data-rail="queued"/);
+  assert.match(html, /class="rnode stopped" data-rail="queued"/);
   assert.match(html, /class="rnode" data-rail="running"/);
 });
 
-test("a picked step opens its problems, and one that names an item links it", () => {
+test("a picked step opens its problems, five at most behind a count, and one that names an item links it", () => {
   const html = drawStrip(rail(), null, "running");
   assert.match(html, /class="rnode sel" data-rail="running"/);
-  assert.match(html, /Problems, 24h: 11/);
+  assert.match(html, /Problems, 24h: 11 <a class="glink" href="#queue\/running">open<\/a>/);
   assert.match(html, /<a class="rprob" href="#queue\?q=ucp-412">01:16  ucp-412  failed  died<\/a>/);
   assert.match(html, /<span class="rprob">00:01  a line  refused  no<\/span>/);
+  const long = Array.from({ length: 8 }, (_, i) => ({ text: `p${i}`, item: null }));
+  const many = drawStrip(rail({ nodes: { running: { problems_n: 8, problems: long } } }), null, "running");
+  assert.equal((many.match(/class="rprob"/g) || []).length, 5);
+  assert.match(many, /and 3 more/);
+  assert.doesNotMatch(drawStrip(rail({ nodes: { running: { problems_n: 5, problems: long.slice(0, 5) } } }), null, "running"), /more</, "the control: five problems say nothing more");
   fire("click", { target: { id: "", closest: (q) => (q === "[data-rail]" ? { dataset: { rail: "needs" } } : null) } });
   assert.equal(run("qfl.node"), "needs");
-  assert.match(drawStrip(rail(), null, "gone"), /class="rnode stopped sel" data-rail="queued"/, "a step no longer there falls back to the worst");
+  fire("click", { target: { id: "", closest: (q) => (q === "[data-rail]" ? { dataset: { rail: "needs" } } : null) } });
+  assert.equal(run("qfl.node"), "", "the same step again shuts it");
+  assert.equal((drawStrip(rail(), null, "gone").match(/rdetail/g) || []).length, 0, "a step no longer there opens nothing");
 });
 
 test("negative control: no snapshot draws inbox - and agent backlog -, never 0, and says so", () => {
@@ -95,28 +106,37 @@ test("a stale or ageless snapshot is red, a failed read says why, and no data ye
   assert.match(drawStrip(null), /class="flow muted">reading</);
 });
 
-// hub_core::queue's COLUMNS, title first; the web draws them all, in this order.
+// hub_core::queue's COLUMNS, title first. The server sends them all with every section; the page
+// draws the ones its section labels (queue.js Q_COLS).
 const QCOLS = ["#", "title", "project", "priority", "state", "hold", "from", "in", "wait", "run", "pr", "row", "kind", "size", "pts", "acct", "mode", "plan"];
 const col = (key, sort = null, next = [key, "desc"]) => ({ key, sort, next_sort: next[0], next_dir: next[1] });
-// The shape hub_core::table::Summary serializes to for the Queue table: opened in its own order
-// (no sort key marked), chips from the states, every column sortable.
-const table = {
-  q: "", state: "", sort: "", dir: "", total: 4, shown: 3,
-  states: [{ name: "active", n: 3 }, { name: "needs you", n: 1 }, { name: "running", n: 1 }, { name: "on a PR", n: 0 }, { name: "ready", n: 1 }, { name: "done", n: 0 }, { name: "all", n: 3 }],
-  columns: QCOLS.map((k) => col(k)),
-  facets: [],
-};
+// The shape hub_core::table::Summary serializes to for one section: its own sort and page, no
+// chips, no facets (the bar holds them).
+const tab = (n, o = {}) => ({ q: "", state: "", sort: "", dir: "", total: n, shown: n, states: [], columns: QCOLS.map((k) => col(k)), facets: [], ...o });
+// The one search bar's summary: the search and the facets, no chips and no columns.
+const table = { q: "", state: "", sort: "", dir: "", total: 4, shown: 3, states: [], columns: [], facets: [] };
 const item = (slug, o = {}) => ({ state: "queued", project: "dotfiles", slug, title: `title ${slug}`, priority: "high", ...o });
+// The section that holds an item (hub_core::queue::Section), worst first.
+const SECS = [["needs", "Needs you", "nd"], ["stuck", "Stuck", "sk"], ["running", "Running", "rn"], ["pr", "On a PR", "pr"], ["next", "Up next", "nx"]];
+const secOf = (i) => (i.state === "waiting" ? "needs" : i.stuck ? "stuck" : i.state === "running" ? "running" : i.state === "review" ? "pr" : i.state === "queued" ? "next" : null);
+const sections = (list, over = {}) => SECS.map(([id, title, pre]) => {
+  const its = list.filter((i) => secOf(i) === id);
+  return { id, title, pre, items: its, table: tab(its.length, over[id]) };
+});
 const items = [
-  item("w1", { state: "waiting", type: "feat", size: "m", account: "k1", timing: { in_state: 130, wait: 5, run: 70 } }),
+  item("w1", { state: "waiting", type: "feat", size: "m", account: "k1", waits_for: "ask OBAJTo", timing: { in_state: 130, wait: 5, run: 70 } }),
   item("r1", { state: "running", pr: "o/r#7", pr_label: "r#7", pr_url: "https://github.com/o/r/pull/7", timing: { in_state: 42, wait: 3, run: 42 } }),
   item("q1", { timing: { in_state: 10 } }),
 ];
-const data = { at: 1793942700, items, table, needs_you: 1, section_aliases: { waiting: "needs you", running: "running", queued: "ready", done: "done" } };
+const data = { at: 1793942700, sections: sections(items), table, needs_you: 1, done_today: 9, cancelled_today: 2, finished_at: "#log/work", sel: null };
+// The server's answer for these rows; `rest` adds to the answer, `over` to a section's summary.
+const answer = (list, { over, rest } = {}) => ({ ...data, sections: sections(list, over), ...rest });
+// `load({ items })` seats the sections these rows fall in; a finished row a link opened is `opened`.
 const load = (d = data, over = {}) => {
   run("st.tab = 'queue'; st.arg = ''; st.views.queue = ''; Object.assign(qcd, { data: null, err: null, msg: '', promoting: null })");
-  Object.assign(run("qst"), { items: d.items, table: d.table, aliases: d.section_aliases, needs: d.needs_you, sel: "", err: null, stats: {}, open: {}, hist: {}, candCounts: null, candErr: null, ...over });
+  Object.assign(run("qst"), { sections: d.items ? sections(d.items, d.over) : d.sections, table: d.table || table, needs: d.needs_you ?? 1, done: d.done_today ?? 9, cancelled: d.cancelled_today ?? 2, finishedAt: "#log/work", sel: "", selRow: null, err: null, stats: {}, flow: [], open: {}, hist: {}, candCounts: null, candErr: null, ...over });
 };
+const opened = (i) => load({ items: [] }, { sel: i.slug, selRow: i });
 const draw = () => { run("qst.render()"); return parts["q-list"].innerHTML; };
 test("Queue search keeps focus, text and selection across queue, candidates and flow refreshes", async () => {
   await settle();
@@ -132,8 +152,8 @@ test("Queue search keeps focus, text and selection across queue, candidates and 
   const search = { id: "qt-q", dataset: { tsearch: "" }, value: "title", selectionStart: 1, selectionEnd: 4, closest: () => null };
   doc.activeElement = search;
   reply = (url) => url.startsWith("/api/queue/candidates") ? cands()
-    : url.startsWith("/api/queue/stats") ? { week: "updated stats" }
-    : { ...data, items: [item("fresh")], table: { ...table, q: "title" } };
+    : url.startsWith("/api/queue/stats") ? { line: "updated stats" }
+    : answer([item("fresh")], { rest: { table: { ...table, q: "title" } } });
   try {
     fire("input", { type: "input", target: search });
     await settle();
@@ -161,21 +181,35 @@ const target = (attrs, row) => ({
     : sel === "tr.qr" && row ? { dataset: { slug: row } } : null,
 });
 
-test("the Queue is one table with the server's chips and every header a sort button", () => {
+test("the Queue is a section per state, worst first, each with only its own columns, and no chip", () => {
   load();
   const h = draw();
-  assert.doesNotMatch(h, /data-ts="active"|>ACTIVE</, "no tile is the default view");
-  assert.match(h, /<button class="tile" data-ts="needs you"><span class="tl">NEEDS YOU<\/span><span class="tv">1<\/span><\/button>/);
-  assert.match(h, /<button class="tile" data-ts="ready"><span class="tl">READY<\/span><span class="tv">1<\/span><\/button>/);
-  assert.match(h, /<button class="tile zero" data-ts="done">/, "done is one tile away");
-  assert.match(h, /<button class="tile" data-ts="all"><span class="tl">ALL<\/span>/);
-  for (const c of QCOLS) {
-    assert.match(h, new RegExp(`<th[^>]*><button class="thsort" data-tsort="${c}" data-tdir="desc" title="sort by ${c}">`), `${c} sorts`);
-  }
-  assert.ok(h.indexOf("title w1") < h.indexOf("title r1") && h.indexOf("title r1") < h.indexOf("title q1"), "the server's order is kept");
-  assert.match(h, /id="sec-flow"/);
-  assert.match(h, /<h2 class="sec" id="sec-table">Queue <span class="n">3 of 4<\/span><\/h2>/);
+  assert.doesNotMatch(h, /class="tile|data-ts=|id="sec-table"/, "the sections are the states: no chip, no one table");
+  assert.equal((h.match(/id="qt-q"/g) || []).length, 1, "one search over every section");
+  const at = SECS.map(([id]) => h.indexOf(`id="sec-${id}"`));
+  assert.ok(at.every((x, i) => x > 0 && (!i || x > at[i - 1])), `worst first: ${at}`);
+  assert.match(h, /<h2 class="sec warn" id="sec-needs">Needs you <span class="n">1<\/span><\/h2>/);
+  assert.match(h, /<h2 class="sec" id="sec-running">Running <span class="n">1<\/span><\/h2>/);
+  assert.match(h, /<h2 class="sec" id="sec-next">Up next <span class="n">1<\/span><\/h2>/);
+  const sec = (id) => { const from = h.indexOf(`id="sec-${id}"`), to = h.indexOf("<h2", from + 1); return h.slice(from, to < 0 ? undefined : to); };
+  const heads = (id) => [...sec(id).matchAll(/data-label="([^"]*)"/g)].map((m) => m[1]);
+  assert.deepEqual(heads("needs"), ["title", "project", "waited", "pr"]);
+  assert.deepEqual(heads("running"), ["title", "project", "run", "pr"]);
+  assert.deepEqual(heads("next"), ["#", "title", "project", "priority", "waited"]);
+  assert.match(sec("running"), /<button class="thsort" data-tsort="run" data-tdir="desc" title="sort by run">/, "a header sorts its section");
+  assert.match(sec("next"), /<div data-tbl="nx">/, "a section is its own view, apart from the search");
   assert.match(h, /id="sec-candidates"/);
+  // NEGATIVE CONTROL: a state with no row draws its head with 0 and no table.
+  assert.match(h, /<h2 class="sec" id="sec-stuck">Stuck <span class="n">0<\/span><\/h2>/);
+  assert.ok(!sec("stuck").includes("<table"), "no table for no rows");
+});
+
+test("finished work is a count linked to Log, never a section; a count not read draws nothing", () => {
+  load();
+  assert.match(draw(), /<div class="cline qdone">Done 9, cancelled 2 today <a class="glink" href="#log\/work">open in Log<\/a><\/div>/);
+  assert.doesNotMatch(draw(), /id="sec-(done|log)"/);
+  load(data, { done: null });
+  assert.doesNotMatch(draw(), /qdone|Done \d/, "unread says nothing, never 0");
 });
 
 // The shape agent-web's /api/queue/candidates sends: hub_core::table's Summary over every
@@ -283,49 +317,27 @@ test("Pipeline is said once: the worst step hues the head and is a warn line und
 });
 
 test("a sorted header says its direction, and the number columns are n", () => {
-  load({ ...data, table: { ...table, sort: "run", dir: "desc", columns: table.columns.map((c) => (c.key === "run" ? { ...c, sort: "desc", next_dir: "asc", next_sort: "run" } : c)) } });
+  const sorted = (c) => ({ ...c, sort: "desc", next_dir: "asc", next_sort: "run" });
+  load({ items, over: { running: { sort: "run", dir: "desc", columns: QCOLS.map((k) => (k === "run" ? sorted(col(k)) : col(k))) } } });
   const h = draw();
   assert.match(h, /<th class="n" aria-sort="descending" data-role="" data-label="run"><button class="thsort" data-tsort="run" data-tdir="asc" title="sort by run">run v<\/button><\/th>/);
-  assert.match(h, /<th class="n"[^>]*><button[^>]*>in<\/button><\/th>/);
+  assert.match(h, /<th class="n"[^>]*><button[^>]*>waited<\/button><\/th>/);
 });
 
-test("in, wait and run are the server's timing minutes, and no timing reads -", () => {
+test("in and run are the server's timing minutes, and no timing reads -", () => {
   load();
   let h = draw();
-  assert.match(h, /<td class="n">2h10<\/td><td class="n">5m<\/td><td class="n">1h10<\/td>/);
-  assert.match(h, /<td class="n">42m<\/td><td class="n">3m<\/td><td class="n">42m<\/td>/);
+  assert.match(h, /data-slug="w1">.*?<td class="n">2h10<\/td>/, "needs you: the time it has waited");
+  assert.match(h, /data-slug="r1">.*?<td class="n">42m<\/td>/, "running: its run");
   // Negative control: a running item with only stamps, no timing, works out nothing.
-  load({ ...data, items: [item("n1", { state: "running", started: "2026-11-06T11:00:00Z", queued: "2026-11-06T10:00:00Z" })] });
+  load({ items: [item("n1", { state: "running", started: "2026-11-06T11:00:00Z", queued: "2026-11-06T10:00:00Z" })] });
   h = draw();
-  assert.match(h, /<td class="n">-<\/td><td class="n">-<\/td><td class="n">-<\/td>/);
+  assert.match(h, /data-slug="n1">.*?<td class="n">-<\/td>/);
   assert.doesNotMatch(h, /<td class="n">\d/);
 });
 
-test("a state cell says what the item is, and how a done one ended", () => {
-  load({ ...data, items: [item("a", { state: "waiting" }), item("b", { state: "done", status: "failed" }), item("c", { state: "done", status: "cancelled" }), item("d", { state: "done", status: "ok" })] });
-  const h = draw();
-  assert.match(h, /<td class="warn">needs<\/td>/);
-  assert.match(h, /<td class="bad">failed<\/td>/);
-  assert.match(h, /<td class="muted">cancelled<\/td>/);
-  assert.match(h, /<td>done<\/td>/);
-});
-
-test("a cancelled row's state cell and its opened detail say who cancelled it and why", () => {
-  const why = "cancelled by 9fd0d2fd: dead chain";
-  const c = item("c", { state: "done", status: "cancelled", state_word: "cancelled", state_why: why, cancelled_by: "9fd0d2fd", cancel_why: "dead chain" });
-  load({ ...data, items: [c] });
-  assert.match(draw(), /<td class="muted" title="cancelled by 9fd0d2fd: dead chain">cancelled<\/td>/);
-  load({ ...data, items: [c] }, { sel: "c" });
-  const h = draw();
-  assert.match(h, /cancelled by<\/[^>]+>[^]*9fd0d2fd/);
-  assert.match(h, /cancel reason<\/[^>]+>[^]*dead chain/);
-  // negative control: a finish that ran has no such line
-  load({ ...data, items: [item("d", { state: "done", status: "ok" })] }, { sel: "d" });
-  assert.doesNotMatch(draw(), /cancelled by/);
-});
-
-test("a stuck running or review row is amber with the server's word and its why on hover; a fine one is plain", () => {
-  load({ ...data, items: [
+test("a stuck row is amber with the server's word, its why under the title and on hover; a fine one has no state cell", () => {
+  load({ items: [
     item("s", { state: "running", state_word: "stalled", stuck: true, state_why: "STALLED 42m idle: PR #7 CI red" }),
     item("n", { state: "running", state_word: "no session", stuck: true, state_why: "no session works it" }),
     item("p", { state: "review", state_word: "PR red, escalated", stuck: true }),
@@ -336,82 +348,106 @@ test("a stuck running or review row is amber with the server's word and its why 
   assert.match(h, /<td class="warn" title="STALLED 42m idle: PR #7 CI red">stalled<\/td>/);
   assert.match(h, /<td class="warn" title="no session works it">no session<\/td>/);
   assert.match(h, /<td class="warn">PR red, escalated<\/td>/);
-  // Negative controls: a working session and a plain PR are not amber.
-  assert.match(h, /<td title="WORKING 1m idle: idle 1m">running<\/td>/);
-  assert.match(h, /<td>on a PR<\/td>/);
+  assert.match(h, /<div class="c1 muted" title="STALLED 42m idle: PR #7 CI red">STALLED 42m idle: PR #7 CI red<\/div>/, "the why is the title's second line");
+  // Negative controls: a working session and a plain PR leave the stuck section and draw no amber.
+  assert.equal((h.match(/<td class="warn"/g) || []).length, 3);
+  assert.doesNotMatch(h, /WORKING|>on a PR<\/td>/);
 });
 
-test("an item not started is ready, an old hold line changes nothing, and the legend says what ready means", () => {
-  const legend = "ready: starts when dispatch has a slot for it";
-  load({ ...data, table: { ...table, legend }, items: [item("r", { state: "queued" }), item("h", { state: "queued", hold: "after r" })] });
+test("a finished item a link opened says how it ended, and who cancelled it and why", () => {
+  const why = "cancelled by 9fd0d2fd: dead chain";
+  opened(item("c", { state: "done", status: "cancelled", state_word: "cancelled", state_why: why, cancelled_by: "9fd0d2fd", cancel_why: "dead chain" }));
   const h = draw();
-  assert.doesNotMatch(h, /held/, "an old hold line is not read");
-  assert.equal((h.match(/<td>ready<\/td>/g) || []).length, 2);
-  assert.match(h, /<summary>Legend<\/summary><div class="muted">ready: starts when dispatch has a slot for it<\/div>/, "the legend is a fold under the table");
-  assert.doesNotMatch(h, /<td>queued<\/td>/);
-  // Negative control: a table with no legend draws no legend line.
+  assert.match(h, /<h2 class="sec">Opened<\/h2>/);
+  assert.match(h, /done, cancelled/);
+  assert.match(h, /cancelled by<\/[^>]+>[^]*9fd0d2fd/);
+  assert.match(h, /cancel reason<\/[^>]+>[^]*dead chain/);
+  // negative control: a finish that ran has no such line
+  opened(item("d", { state: "done", status: "ok" }));
+  assert.doesNotMatch(draw(), /cancelled by/);
+  // a finished item a section holds is not drawn twice, and none is opened with no link
   load();
-  assert.doesNotMatch(draw(), /ready: starts/);
+  assert.doesNotMatch(draw(), />Opened</);
 });
 
-test("the table draws the page the server sends, with its pager and no more button", () => {
-  load({ ...data, items: items.slice(0, 2), table: { ...table, shown: 3, pager: { page: 1, pages: 2, per: 2 } } });
+test("an up-next row has its start place, priority and wait; an old hold line changes nothing", () => {
+  load({ items: [item("r", { state: "queued", start: 1, priority: "urgent", timing: { in_state: 65 } }), item("h", { state: "queued", hold: "after r" })] });
   const h = draw();
-  assert.match(h, /title w1.*title r1/s);
-  assert.doesNotMatch(h, /title q1/, "a row on the next page is not drawn");
-  assert.match(h, /data-tpg="2"[^>]*>next<\/button><span class="muted" aria-live="polite">rows 1-2 of 3<\/span>/);
+  assert.match(h, /<tr class="qr" data-slug="r"><td class="n">1<\/td><td class="btitle"><div class="c12" title="title r"><span class="bt">title r<\/span><\/div><\/td><td>[^]*?<\/td><td class="warn">urgent<\/td><td class="n">1h05<\/td><\/tr>/);
+  assert.match(h, /<tr class="qr" data-slug="h"><td class="n"><\/td>/, "negative control: no start place, no number");
+  assert.doesNotMatch(h, /held|after r|Legend|<td>ready<\/td>/, "no chip, so no legend and no state cell");
+});
+
+test("a section draws the page the server sends with its own pager, and a table that fits draws none", () => {
+  load({ items: items.slice(2), over: { next: { total: 3, shown: 3, pager: { page: 1, pages: 2, per: 1 } } } });
+  const h = draw();
+  assert.match(h, /<div data-tbl="nx">.*data-tpg="2"[^>]*>next<\/button><span class="muted" aria-live="polite">rows 1-1 of 3<\/span>/);
   assert.doesNotMatch(h, /data-all/);
   // Negative control: one page draws no pager.
   load();
   assert.doesNotMatch(draw(), /tpager/);
 });
 
-test("a link to an item asks for the page that holds it, and the URL keeps that page", async () => {
+test("a link to an item asks for the page that holds it, and the URL keeps that page of its section", async () => {
   load();
   asked = [];
-  reply = { ...data, table: { ...table, pager: { page: 3, pages: 3, per: 1 } } };
+  reply = answer(items, { over: { next: { pager: { page: 3, pages: 3, per: 1 } } } });
   try {
     run("st.tab = 'queue'; st.arg = 'q1'; st.views.queue = ''; refreshQueue()");
     await settle();
     assert.ok(asked.includes("/api/queue?sel=q1"), asked.join(" "));
     assert.equal(run("qst.sel"), "q1");
-    assert.equal(run("st.views.queue"), "pg=3", "a re-read stays on the item's page");
+    assert.equal(run("st.views.queue"), "nxpg=3", "a re-read stays on the item's page of its own section");
     asked = [];
     run("refreshQueue()");
     await settle();
-    assert.ok(asked.includes("/api/queue?pg=3"), "with no link the view's page is read, no sel: " + asked.join(" "));
+    assert.ok(asked.includes("/api/queue?nxpg=3"), "with no link the view's page is read, no sel: " + asked.join(" "));
   } finally { reply = {}; run("st.arg = ''; st.views.queue = ''"); }
 });
 
-test("a click on a chip or a header asks the server for that view, and the URL carries it", async () => {
+test("a header sorts its own section and a page pick pages it, under its prefix; a search is the tab's and restarts every page", async () => {
   load();
   asked = [];
   reply = data;
-  run("st.views.queue = 'q=dotfiles&sort=run'");
-  fire("click", { type: "click", target: target({ ts: "running" }) });
+  run("st.views.queue = 'q=dotfiles'");
+  const inTbl = (pre, own) => ({ dataset: own, closest: (q) => (q === "[data-tbl]" ? { dataset: { tbl: pre } } : q === "[data-tsort]" && "tsort" in own ? { dataset: own } : q === "[data-tpg]" && "tpg" in own ? { dataset: own } : null) });
+  fire("click", { type: "click", target: inTbl("rn", { tsort: "run", tdir: "desc" }) });
   await settle();
-  assert.equal(ctx.history.url, "#queue?q=dotfiles&sort=run&s=running");
-  assert.equal(asked.find((u) => u.startsWith("/api/queue?")), "/api/queue?q=dotfiles&s=running&sort=run");
-  fire("click", { type: "click", target: target({ tsort: "", tdir: "desc" }) });
+  assert.equal(ctx.history.url, "#queue?q=dotfiles&rnsort=run");
+  assert.equal(asked.find((u) => u.startsWith("/api/queue?")), "/api/queue?q=dotfiles&rnsort=run");
+  fire("click", { type: "click", target: inTbl("nx", { tpg: "2" }) });
   await settle();
-  assert.equal(ctx.history.url, "#queue?q=dotfiles&s=running", "the plain sort is a bare URL");
+  assert.equal(ctx.history.url, "#queue?q=dotfiles&rnsort=run&nxpg=2");
+  assert.equal(asked.filter((u) => u.startsWith("/api/queue?")).pop(), "/api/queue?q=dotfiles&rnsort=run&nxpg=2", "the read carries every section's keys");
+  // A new search starts every section at its first page and keeps the sorts.
+  fire("input", { type: "input", target: { id: "qt-q", dataset: { tsearch: "" }, value: "x", closest: () => null } });
+  await settle();
+  assert.equal(ctx.history.url, "#queue?q=x&rnsort=run");
+  // The plain sort is a bare key.
+  fire("click", { type: "click", target: inTbl("rn", { tsort: "", tdir: "desc" }) });
+  await settle();
+  assert.equal(ctx.history.url, "#queue?q=x");
+  reply = {}; run("st.views.queue = ''");
 });
 
-test("an old section id opens the table on its chip, once", async () => {
+test("a state id scrolls to its section, once, and sets no filter", async () => {
   load();
-  asked = [];
   reply = data;
-  run("st.tab = 'queue'; st.arg = 'running'; st.views.queue = ''");
+  for (const id of ["stuck", "needs"]) {
+    run(`st.tab = 'queue'; st.arg = '${id}'; st.views.queue = ''; st.section = null`);
+    run("refreshQueue()");
+    await settle(); await settle();
+    assert.equal(run("st.section"), id, "the section to scroll to");
+    assert.equal(run("st.arg"), "");
+    assert.equal(run("st.views.queue"), "", "a section id is not a chip");
+  }
+  // A chip in the URL still narrows what the sections hold.
+  asked = [];
+  run("st.arg = ''; st.views.queue = 's=ready'");
   run("refreshQueue()");
-  await settle(); await settle();
-  assert.equal(ctx.history.url, "#queue?s=running");
-  assert.ok(asked.includes("/api/queue?s=running"), "the pre-filtered table is asked for");
-  assert.equal(run("st.arg"), "");
-  // A view that already names a chip keeps it: the old id does not overwrite what the link said.
-  run("st.arg = 'waiting'; st.views.queue = 's=done'");
-  run("refreshQueue()");
-  await settle(); await settle();
-  assert.equal(ctx.history.url, "#queue?s=done");
+  await settle();
+  assert.ok(asked.includes("/api/queue?s=ready"), asked.join(" "));
+  reply = {}; run("st.views.queue = ''");
 });
 
 test("an item's slug opens that item; one outside the view is searched for once", async () => {
@@ -424,20 +460,34 @@ test("an item's slug opens that item; one outside the view is searched for once"
   await settle(); await settle();
   assert.equal(run("qst.sel"), slug, "the item's record opens");
   assert.equal(run("st.arg"), "");
-  // Not in this view: the table searches for it, and the read that has it opens it.
-  reply = (url) => (url.includes("q=gone") ? { ...data, items: [{ ...items[0], slug: "gone" }] } : { ...data, items: [] });
+  // Not in this view: the tab searches for it, and the read that has it opens it.
+  reply = (url) => (url.includes("q=gone") ? answer([{ ...items[0], slug: "gone" }]) : answer([]));
   run("qst.sel = ''; st.arg = 'gone'; st.views.queue = 's=done'");
   run("refreshQueue()");
   await settle(); await settle(); await settle();
   assert.ok(asked.some((u) => u.startsWith("/api/queue?q=gone")), asked.join(" "));
   assert.equal(run("qst.sel"), "gone");
-  // An unknown slug searches once and then gives up, with the table still drawn.
-  reply = { ...data, items: [] };
+  // An unknown slug searches once and then gives up, with the sections still drawn.
+  reply = answer([]);
   run("qst.sel = ''; st.arg = 'nowhere'; st.views.queue = ''");
   run("refreshQueue()");
   await settle(); await settle(); await settle();
   assert.equal(run("st.arg"), "");
   assert.equal(run("qst.sel"), "");
+});
+
+test("a link to a finished item opens it as its own card, since no section holds it", async () => {
+  const d = item("d1", { state: "done", status: "ok", pr: "o/r#7", pr_label: "r#7", pr_url: "https://github.com/o/r/pull/7", pr_merged: true, cost_label: "$6.10" });
+  load();
+  reply = answer([], { rest: { sel: d } });
+  run("st.tab = 'queue'; st.arg = 'd1'; st.views.queue = ''; refreshQueue()");
+  await settle(); await settle(); await settle();
+  assert.equal(run("qst.sel"), "d1");
+  const h = parts["q-list"].innerHTML;
+  assert.match(h, /<h2 class="sec">Opened<\/h2>/);
+  assert.match(h, /PR <a[^>]*>r#7<\/a> merged/);
+  assert.doesNotMatch(h, /data-cancel|data-bump/, "a finished item has no actions");
+  reply = {}; run("st.arg = ''; st.views.queue = ''");
 });
 
 test("a new section id scrolls to its section, not into the filter", async () => {
@@ -578,28 +628,32 @@ test("on a phone the pipeline is read only while its fold is open", async () => 
 
 test("the badge counts everything waiting on the human, whatever the view keeps", async () => {
   load();
-  reply = { ...data, items: [items[1]], needs_you: 3 };
+  reply = answer([items[1]], { rest: { needs_you: 3 } });
   run("refreshQueue()");
   await settle();
   assert.equal(run("qst.needs"), 3);
 });
 
-test("the title cell is a record cell: the title over its muted note, each one line, the whole on hover and on the opened row", () => {
+test("the title cell is a record cell where a second fact helps: the title over what it needs or why it is stuck, each one line, the whole on hover", () => {
   const long = "x".repeat(400);
-  load({ ...data, items: [item("n1", { title: long, note: "held for the release" }), item("n2"), item("n3", { title: "" })] });
+  load({ items: [item("n1", { state: "waiting", title: long, waits_for: "ask OBAJTo" }), item("n2", { state: "waiting" }), item("n3", { state: "waiting", title: "" })] });
   let h = draw();
-  assert.match(h, new RegExp(`<td class="btitle"><div class="c1" title="${long}"><span class="bt">${long}</span></div><div class="c1 muted" title="held for the release">held for the release</div></td>`));
-  assert.match(h, /data-slug="n2">.*?<div class="c1 muted" title="n2">n2<\/div>/, "no note: the slug says which item");
-  assert.match(h, /data-slug="n3">.*?<div class="c1" title="n3"><span class="bt">n3<\/span><\/div><div class="c1 muted" title="">&nbsp;<\/div>/, "the slug as the title is not said twice, and the row keeps two lines");
+  assert.match(h, new RegExp(`<td class="btitle"><div class="c1" title="${long}"><span class="bt">${long}</span></div><div class="c1 muted" title="ask OBAJTo">ask OBAJTo</div></td>`));
+  assert.match(h, /data-slug="n2">.*?<div class="c1 muted" title="">&nbsp;<\/div>/, "no fact: the row keeps its two lines");
+  assert.match(h, /data-slug="n3">.*?<div class="c1" title="n3"><span class="bt">n3<\/span><\/div>/, "the slug stands for a title that is not there");
   assert.doesNotMatch(h, /class="(bsum|c2)/, "no clamped block in the queue's cells");
-  load({ ...data, items: [item("n1", { title: long, note: "held for the release" })] }, { sel: "n1" });
+  // Up next says nothing under the title: one line.
+  load({ items: [item("u1", { title: long, note: "held for the release" })] });
   h = draw();
-  assert.match(h, /<tr class="wdet">.*held for the release/s, "the opened row says the note in full");
+  assert.match(h, new RegExp(`<td class="btitle"><div class="c12" title="${long}"><span class="bt">${long}</span></div></td>`));
+  // The opened row says the note in full.
+  load({ items: [item("u1", { title: long, note: "held for the release" })] }, { sel: "u1" });
+  assert.match(draw(), /<tr class="wdet">.*held for the release/s);
 });
 
-test("the removed card, day-heading and tile code is gone", () => {
-  for (const k of ["cands", "candReason", "candQ", "candMsg", "promoting"]) assert.ok(!(k in run("qst")), `qst.${k}`);
-  for (const n of ["qItem", "qDoneDays", "qTiles", "qSorted", "qChip", "qEta", "Q_SECTIONS", "Q_STATE", "qCandShown", "qCandAll", "refreshCands", "CAND_SHOWN"]) assert.equal(run(`typeof ${n}`), "undefined", n);
+test("the removed one-table, card, day-heading and tile code is gone", () => {
+  for (const k of ["cands", "candReason", "candQ", "candMsg", "promoting", "items", "aliases"]) assert.ok(!(k in run("qst")), `qst.${k}`);
+  for (const n of ["qItem", "qDoneDays", "qTiles", "qSorted", "qChip", "qEta", "Q_SECTIONS", "Q_STATE", "qCandShown", "qCandAll", "refreshCands", "CAND_SHOWN", "qAliases"]) assert.equal(run(`typeof ${n}`), "undefined", n);
 });
 
 test("a row opens its detail: every header, the stages with gaps, the task folded", () => {
@@ -607,10 +661,10 @@ test("a row opens its detail: every header, the stages with gaps, the task folde
     state: "waiting", type: "feat", size: "m", account: "k1", task: "do the thing", timing: { in_state: 130, wait: 5, run: 70 },
     timeline: [{ step: "queued", at: "2026-11-06T10:00:00Z", gap_min: null }, { step: "started", at: "2026-11-06T10:05:00Z", gap_min: 5 }, { step: "merged", at: null, gap_min: null, sha: "abcdef0123456" }],
   });
-  load({ ...data, items: [w] });
+  load({ items: [w] });
   fire("click", { type: "click", target: target({}, "w1") });
   const h = parts["q-list"].innerHTML;
-  assert.match(h, /<tr class="qr sel" data-slug="w1">.*?<\/tr><tr class="wdet"><td colspan="18"><div class="card qitem waiting">/, "the detail opens right under its row, across the table");
+  assert.match(h, /<tr class="qr sel" data-slug="w1">.*?<\/tr><tr class="wdet"><td colspan="4"><div class="card qitem waiting">/, "the detail opens right under its row, across its section's table");
   assert.match(h, /queued [^>]*? -> started [^>]*? \(\+5m\) -> merged abcdef01/);
   assert.match(h, /<details class="cfold" data-k="task:w1"><summary>Full task and details<\/summary><dl>/);
   for (const k of ["state", "in state", "wait", "run", "project", "kind", "size", "acct"]) assert.match(h, new RegExp(`<dt>${k}</dt>`), k);
@@ -621,7 +675,7 @@ test("a row opens its detail: every header, the stages with gaps, the task folde
 });
 
 test("an opened row's History fold starts shut, reads on opening, once, and drops what it read on shutting", async () => {
-  load({ ...data, items: [item("w1", { state: "review" })] }, { sel: "w1" });
+  load({ items: [item("w1", { state: "review" })] }, { sel: "w1" });
   asked = [];
   const hist = { attempts: 3, steps: 54, lines: [{ at: "2026-11-12T07:04:21-08:00", text: "started on lab:ucp-agent-10, sol on codex" }, { at: "2026-11-12T07:16:54-08:00", text: "PR tries spent, escalated" }] };
   let land;
@@ -668,7 +722,7 @@ test("an opened row on the page shows with its detail", () => {
 
 test("a waiting row links the server's count of what waits on you; it draws no answer card of its own", () => {
   run(`st.agents = [{ target: "lab:w-1", session: "sid-1", items: ["w1"], short: "agent-1", question: { kind: "tool", text: "Run it?" } }]; st.waiting = { count: 2, href: "#home" }`);
-  load({ ...data, items: [item("w1", { state: "waiting", session: "lab:w-1" }), item("r1", { state: "running" })] }, { sel: "w1" });
+  load({ items: [item("w1", { state: "waiting", session: "lab:w-1" }), item("r1", { state: "running" })] }, { sel: "w1" });
   let h = draw();
   assert.match(h, /<div class="qhold" title="tmux session lab:w-1">Waiting on you: <a href="#home">2 on Home<\/a><\/div>/);
   assert.doesNotMatch(h, /class="card need|data-id="A1"|data-k="1"/, "the answers are Home's, not a second set here");
@@ -683,12 +737,13 @@ test("a waiting row links the server's count of what waits on you; it draws no a
 });
 
 test("cancel and the priority select are for an active item only, cancel asks twice", async () => {
-  load({ ...data, items: [item("a1", { state: "running" }), item("d1", { state: "done", status: "ok", pr: "o/r#7", pr_label: "r#7", pr_merged: true, cost_label: "$6.10" })] });
+  const d1 = item("d1", { state: "done", status: "ok", pr: "o/r#7", pr_label: "r#7", pr_merged: true, cost_label: "$6.10" });
+  load({ items: [item("a1", { state: "running" })] });
   run("qst.sel = 'a1'");
   let h = draw();
   assert.match(h, /data-cancel="a1">Stop and cancel</);
   assert.match(h, /data-bump="a1"/);
-  run("qst.sel = 'd1'");
+  opened(d1);
   h = draw();
   assert.doesNotMatch(h, /data-cancel|data-bump/);
   assert.match(h, /PR r#7 merged/);
@@ -705,7 +760,7 @@ test("cancel and the priority select are for an active item only, cancel asks tw
 });
 
 test("negative control: an item with no PR and no report is flagged, and an unknown cost reads -", () => {
-  load({ ...data, items: [item("u1", { state: "done", status: "ok", unproven: true })] }, { sel: "u1" });
+  opened(item("u1", { state: "done", status: "ok", unproven: true }));
   const h = draw();
   assert.match(h, /class="qbad"[^>]*>! no PR, no proof</);
   assert.match(h, /<span title="dollars[^>]*>-<\/span>/);
@@ -713,9 +768,9 @@ test("negative control: an item with no PR and no report is flagged, and an unkn
 });
 
 test("a PR with no recorded merge says so, and a bare older number keeps its words", () => {
-  load({ ...data, items: [item("m1", { state: "done", pr: "o/r#7", pr_label: "r#7", pr_url: "u", pr_merged: false }), item("m2", { state: "done", pr: "1796", pr_label: "#1796", pr_url: null })] }, { sel: "m1" });
+  opened(item("m1", { state: "done", pr: "o/r#7", pr_label: "r#7", pr_url: "u", pr_merged: false }));
   assert.match(draw(), /PR <a href="u"[^>]*>r#7<\/a> merge not recorded/);
-  run("qst.sel = 'm2'");
+  opened(item("m2", { state: "done", pr: "1796", pr_label: "#1796", pr_url: null }));
   assert.match(draw(), /PR #1796 merge not recorded/);
 });
 
@@ -732,35 +787,35 @@ test("an opened item links its session, project, row, PR and the PR's CI runs; t
     { what: "pr", text: "o/r#7", href: "https://github.com/o/r/pull/7" },
     { what: "ci", text: "CI runs of o/r#7", href: "#infra/runs?bq=pr:=o%2Fr%237" },
   ];
-  load({ ...data, items: [item("w1", { links })], table: { ...table, links: [{ project: "#projects/dotfiles" }] } });
+  load({ items: [item("w1", { links })], over: { next: { links: [{ project: "#projects/dotfiles" }] } } });
   assert.match(draw(), /<td><a class="tl" href="#projects\/dotfiles">dotfiles<\/a><\/td>/, "the project cell is its page");
   fire("click", { type: "click", target: target({}, "w1") });
   const h = parts["q-list"].innerHTML;
   assert.match(h, /<div class="cline qlinks">session <a class="tl" href="#sessions\/sessions\/w1">agent-3<\/a>, project <a class="tl" href="#projects\/dotfiles">dotfiles<\/a>, row <a class="tl" href="#projects\/agent-runtime\?row=ar-1726">ar-1726<\/a>, pr <a class="tl" href="https:\/\/github.com\/o\/r\/pull\/7" target="_blank" rel="noopener">o\/r#7<\/a>, <a class="tl" href="#infra\/runs\?bq=pr:=o%2Fr%237">CI runs of o\/r#7<\/a><\/div>/);
   fire("click", { type: "click", target: target({}, "w1") });
-  load({ ...data, items: [item("w1")] });
+  load({ items: [item("w1")] });
   fire("click", { type: "click", target: target({}, "w1") });
   assert.doesNotMatch(parts["q-list"].innerHTML, /qlinks/, "an item that names nothing draws no line");
   fire("click", { type: "click", target: target({}, "w1") });
 });
 
-test("a row carries its start place, hold, source and board row, and the head carries the flow verdict lines in their hues", () => {
+test("a row carries its start place and priority, a needs-you row its need, and the head carries the flow verdict lines, each linked", () => {
   const rows = [
-    item("q1", { priority: "urgent", start: 1, source: "board", row_id: "apo-120", timing: { in_state: 10 } }),
+    item("q1", { priority: "urgent", start: 1, timing: { in_state: 10 } }),
     item("q2", { priority: "low", state: "waiting", waits_for: "ask OBAJTo", source: "human" }),
   ];
-  const links = [{ row: "#board/apo-120" }, {}];
-  load({ ...data, items: rows, table: { ...table, links } }, { flow: [{ line: "Dispatch paused 2h00m: load 31 is over its cap of 24. See the fleet-pace skill.", level: "warn" }, { line: "Dispatch hold 3h00m: urgent work waits on it. Run fleet-dispatch run --dry-run.", level: "red" }] });
+  const lines = [
+    { line: "Dispatch paused 2h00m: load 31 is over its cap of 24. See the fleet-pace skill.", level: "warn", to: "#queue/next" },
+    { line: "Dispatch hold 3h00m: urgent work waits on it. Run fleet-dispatch run --dry-run.", level: "red" },
+  ];
+  load({ items: rows }, { flow: lines });
   const h = draw();
-  assert.match(h, /<tr class="qr" data-slug="q1"><td class="n">1<\/td><td class="btitle"><div class="c1" title="title q1"><span class="bt">title q1<\/span><\/div><div class="c1 muted" title="q1">q1<\/div><\/td>/, "# then the title over its slug");
+  assert.match(h, /<tr class="qr" data-slug="q1"><td class="n">1<\/td><td class="btitle"><div class="c12" title="title q1"><span class="bt">title q1<\/span><\/div><\/td>/, "# then the title, one line");
   assert.match(h, /data-slug="q1">.*?<td class="warn">urgent<\/td>/, "urgent reads amber");
-  assert.match(h, /data-slug="q1">.*?<td>board<\/td>/);
-  assert.match(h, /<a class="tl" href="#board\/apo-120">apo-120<\/a>/, "the row links to the board");
-  // NEGATIVE CONTROL: a waiting item has no start place, and its hold cell says its wait.
-  assert.match(h, /<tr class="qr" data-slug="q2"><td class="n"><\/td>/);
-  assert.match(h, /<td title="ask OBAJTo">ask OBAJTo<\/td>/);
-  assert.match(h, /<div class="cline qverdict warn">Dispatch paused 2h00m: load 31 is over its cap of 24\. See the fleet-pace skill\.<\/div><div class="cline qverdict bad">Dispatch hold/);
-  load({ ...data, items: rows }, { flow: [{ line: "Flowing.", level: "ok" }] });
+  // NEGATIVE CONTROL: a waiting item has no start place, and its title says what it needs.
+  assert.match(h, /data-slug="q2"><td class="btitle"><div class="c1" title="title q2"><span class="bt">title q2<\/span><\/div><div class="c1 muted" title="ask OBAJTo">ask OBAJTo<\/div>/);
+  assert.match(h, /<div class="cline qverdict warn">Dispatch paused 2h00m: load 31 is over its cap of 24\. See the fleet-pace skill\. <a class="glink" href="#queue\/next">open<\/a><\/div><div class="cline qverdict bad">Dispatch hold 3h00m[^<]*<\/div>/, "a line with a page links it; one without says only itself");
+  load({ items: rows }, { flow: [{ line: "Flowing.", level: "ok" }] });
   assert.match(draw(), /<div class="cline qverdict ">Flowing\.<\/div>/, "a flowing line wears no warn hue");
 });
 

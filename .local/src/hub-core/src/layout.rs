@@ -103,7 +103,15 @@ pub const TABS: [Tab; 12] = [
         group: "Agents",
         title: "Queue",
         question: "What will agents do next?",
-        sections: &["flow", "table", "candidates"],
+        sections: &[
+            "flow",
+            "needs",
+            "stuck",
+            "running",
+            "pr",
+            "next",
+            "candidates",
+        ],
         inner: &[],
     },
     // Every agent at work: the sessions (one row each, an opened one's page), the runners that
@@ -415,9 +423,10 @@ pub const FOLD_ROWS: usize = 50;
 ///   paged here: at 20 each the fixture drew 2,707 px (2026-11-18), so 18.
 /// - Stack's rule text wraps to two lines on a phone: 120 rules drew 6,944 px (2026-11-18).
 /// - Board's 30 rows drew 1,824 px (2026-11-12); Sessions' 342 live rows measured 2,180 px at 20.
-/// - Queue's two-line items measured 2,683 px at 30 of 637 (2026-11-12), too close to 2,700 to
-///   survive a wrapped dispatch line, so its `table` pages at 25. Candidates page at the TUI
-///   fold, `queue::CANDIDATES_SHOWN` (30).
+/// - Queue's two-line items measured 2,683 px at 30 of 637 (2026-11-12). The tab is now five
+///   sections: Needs you and Stuck page at 8 and Running, On a PR and Up next at 6, so the fixture's
+///   36 rows (6, 5, 9, 8, 8) draw under the 2,700 px budget (10 and 8 drew 2,781 px, 2026-11-24) and
+///   a live queue's first screen holds Needs you and Stuck. Candidates page at the TUI fold, `queue::CANDIDATES_SHOWN` (30).
 /// - Jobs' rows are one line and Unity gates alone finish about a thousand runs a day: 200.
 /// - Infra's CI runs, a run's suites and the quarantine are one line a row: 100; an opened
 ///   suite's tests page as its suites.
@@ -432,7 +441,11 @@ pub const PAGE_ROWS: &[(&str, usize)] = &[
     ("rules", 30),
     ("board", 30),
     ("sessions/sessions", 20),
-    ("queue/table", 25),
+    ("queue/needs", 8),
+    ("queue/stuck", 8),
+    ("queue/running", 6),
+    ("queue/pr", 6),
+    ("queue/next", 6),
     ("candidates", 30),
     ("jobs", 200),
     ("runs", 100),
@@ -510,9 +523,17 @@ pub const MOVED: &[(&str, &str, &str, &str)] = &[
     // better-release-data-need-polished-dragonfly.md).
     ("releases", "builds", "infra", "runs"),
     ("releases", "tests", "infra", "tests"),
-    // Home's Running list: the Queue tab's table holds every running item, with its session
-    // (2026-11-23, p1 of waht-noise-would-you-jolly-cosmos.md).
-    ("home", "running", "queue", "table"),
+    // Home's Running list: the Queue tab's Running section holds every running item, with its
+    // session (2026-11-23, p1 of waht-noise-would-you-jolly-cosmos.md; the section is q2 of
+    // abundant-diffie, 2026-11-24).
+    ("home", "running", "queue", "running"),
+    // The Queue's one table became a section per state (2026-11-24, q2 of abundant-diffie):
+    // `table` opens the first, an old state id its own, and Done left for Log.
+    ("queue", "table", "queue", "needs"),
+    ("queue", "waiting", "queue", "needs"),
+    ("queue", "review", "queue", "pr"),
+    ("queue", "queued", "queue", "next"),
+    ("queue", "done", "log", "work"),
 ];
 
 /// A moved name that opens its new table under a state chip, on both surfaces: (tab, old
@@ -963,8 +984,8 @@ mod tests {
         assert_eq!(moved("infra", "machines"), None, "machines stayed");
         assert_eq!(
             moved("home", "running").map(|(t, s)| (t.id, s)),
-            Some(("queue", "table")),
-            "Home's Running list is the Queue table"
+            Some(("queue", "running")),
+            "Home's Running list is the Queue's Running section"
         );
         for old in ["governor", "cloud"] {
             assert_eq!(
@@ -1401,7 +1422,21 @@ mod tests {
         let (tab, sec) = moved("fleet", "tokens").unwrap();
         assert_eq!(inner_tab(tab, Some(sec)).map(|i| i.id), Some("models"));
         // a tab with no inner tabs has none
-        assert_eq!(inner_tab(resolve("queue").unwrap(), Some("table")), None);
+        assert_eq!(inner_tab(resolve("queue").unwrap(), Some("needs")), None);
+        // the Queue's old table and state ids still land on a section
+        for (old, tab, sec) in [
+            ("table", "queue", "needs"),
+            ("waiting", "queue", "needs"),
+            ("review", "queue", "pr"),
+            ("queued", "queue", "next"),
+            ("done", "log", "work"),
+        ] {
+            assert_eq!(
+                moved("queue", old).map(|(t, s)| (t.id, s)),
+                Some((tab, sec)),
+                "{old}"
+            );
+        }
         // Releases: the apps and an opened one, then Release runs, then Flow.
         let rel = resolve("releases").unwrap();
         let at = |w: Option<&str>| inner_tab(rel, w).map(|i| i.id);

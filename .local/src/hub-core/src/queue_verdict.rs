@@ -56,6 +56,19 @@ fn act(key: &str) -> &'static str {
     }
 }
 
+/// Where each exception's cause shows, for the Queue tab's banner link: the held work, the runner
+/// that failed, the shepherd. Content, like `act`.
+fn to(key: &str) -> &'static str {
+    match key {
+        "slots" | "other" | "could" | "load" | "assess" | "account" | "blocked" | "starved" => {
+            "#queue/next"
+        }
+        "flapping" | "failed" | "late" | "nofeed" => "#sessions/runners",
+        "shepherd" => "#sessions/shepherd",
+        _ => "",
+    }
+}
+
 /// The one instant query: the live topics' series, and the accounts' room reasons from a textfile
 /// written in the last `ROOM_LATE_SECS`.
 pub fn query() -> String {
@@ -89,6 +102,8 @@ pub struct Line {
     pub level: Level,
     pub text: String,
     pub act: String,
+    /// The page that shows the cause, a `#tab/section` link; empty for none.
+    pub to: String,
 }
 
 /// Red over amber over the rest, for picking the worst of some levels.
@@ -107,6 +122,7 @@ impl Line {
             level,
             text,
             act: String::new(),
+            to: String::new(),
         }
     }
 
@@ -117,6 +133,18 @@ impl Line {
             act => format!("{}. {act}.", self.text),
         }
     }
+}
+
+/// How many banners a tab with one line per banner draws (agent-web's Queue and the hub's).
+pub const BANNER_LINES: usize = 3;
+
+/// At most `n` of the verdict's lines, red over amber over the rest, each group in the order
+/// raised: what a tab with one line per banner draws, so a long verdict does not push the rows
+/// down.
+pub fn worst_first(mut lines: Vec<Line>, n: usize) -> Vec<Line> {
+    lines.sort_by_key(|l| std::cmp::Reverse(rank(l.level)));
+    lines.truncate(n);
+    lines
 }
 
 impl Verdict {
@@ -172,6 +200,7 @@ impl Verdict {
                 level,
                 text: what,
                 act: act(key).into(),
+                to: to(key).into(),
             })
         };
         let (starved, blocked, held) = (v.starved(), v.blocked(), v.held());
@@ -326,10 +355,10 @@ impl Verdict {
         if self.get("dispatch.runnable").is_some() && (self.held() > 0 || starved || self.blocked())
         {
             let level = if starved { Level::Red } else { Level::Warn };
-            out.extend(
-                self.waiting(ready().borrow(), starved)
-                    .map(|text| Line::plain(level, text)),
-            );
+            out.extend(self.waiting(ready().borrow(), starved).map(|text| Line {
+                to: "#queue/next".into(),
+                ..Line::plain(level, text)
+            }));
         }
         out.extend(
             self.exceptions
@@ -341,15 +370,17 @@ impl Verdict {
         if let Some(p) = &self.paused {
             // A hold or a BLOCKED pass already said its gate.
             if self.held() == 0 && !self.blocked() {
-                out.push(Line::plain(Level::Warn, format!("Paused: {p}")));
+                out.push(Line {
+                    to: "#queue/next".into(),
+                    ..Line::plain(Level::Warn, format!("Paused: {p}"))
+                });
             }
         }
         // An account name stays as it is written.
-        out.extend(
-            self.accounts
-                .iter()
-                .map(|(a, why)| Line::plain(Level::Nodata, format!("{a}: no room, {why}"))),
-        );
+        out.extend(self.accounts.iter().map(|(a, why)| Line {
+            to: "#costs/limits".into(),
+            ..Line::plain(Level::Nodata, format!("{a}: no room, {why}"))
+        }));
         out
     }
 
@@ -732,5 +763,23 @@ mod tests {
         ] {
             assert!(q.contains(t), "{t} not in {q}");
         }
+    }
+
+    #[test]
+    fn worst_first_keeps_red_over_amber_over_the_rest_and_cuts_to_n() {
+        let l = |level, t: &str| Line::plain(level, t.into());
+        let got = worst_first(
+            vec![
+                l(Level::Nodata, "a: no room"),
+                l(Level::Warn, "paused"),
+                l(Level::Red, "failed"),
+                l(Level::Warn, "held"),
+            ],
+            3,
+        );
+        let said: Vec<&str> = got.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(said, ["failed", "paused", "held"]);
+        // NEGATIVE CONTROL: fewer lines than n are all kept, a lone line stays.
+        assert_eq!(worst_first(vec![l(Level::Ok, "Flowing")], 3).len(), 1);
     }
 }

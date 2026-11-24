@@ -1930,7 +1930,8 @@ story_telemetry() {
         + (if (.why // "") != "" then ": \(.why)" else "" end),
       (if .cost_usd then (.cost_usd | money) else empty end),
       (.duration_s | dur),
-      "\(.prs_merged // 0) PRs merged" + (if (.prs_open // 0) > 0 then ", \(.prs_open) open" else "" end),
+      (if .prs_merged == null then "PRs unknown"
+       else "\(.prs_merged) PRs merged" + (if (.prs_open // 0) > 0 then ", \(.prs_open) open" else "" end) end),
       (if $seen != "" then "seen \($seen) ago" else empty end)
     ] | join(" . ")' <<<"$row"
 }

@@ -433,6 +433,66 @@ mod tests {
     }
 
     #[test]
+    fn queue_sections_are_the_layout() {
+        // queue.js keeps each section's view-key prefix (`Section::pre`), and every section is a
+        // layout section of the tab, in the same order, with its own page size.
+        use hub_core::queue::Section;
+        let js = include_str!("../static/queue.js");
+        let line = js
+            .lines()
+            .find_map(|l| l.strip_prefix("const Q_PRE = "))
+            .expect("queue.js has Q_PRE");
+        let got: serde_json::Value =
+            serde_json::from_str(line.trim_end_matches(';')).expect("Q_PRE is JSON");
+        let want: serde_json::Map<String, serde_json::Value> = Section::ALL
+            .iter()
+            .map(|s| (s.id().to_string(), s.pre().into()))
+            .collect();
+        assert_eq!(got, serde_json::Value::Object(want));
+        let tab = hub_core::layout::resolve("queue").expect("queue");
+        let ids: Vec<&str> = Section::ALL.iter().map(|s| s.id()).collect();
+        let at = tab
+            .sections
+            .iter()
+            .position(|s| *s == ids[0])
+            .expect("needs");
+        assert_eq!(tab.sections[at..at + ids.len()], ids[..]);
+        for id in ids {
+            assert!(
+                hub_core::layout::PAGE_ROWS
+                    .iter()
+                    .any(|(s, _)| *s == format!("queue/{id}")),
+                "{id} has its own page size"
+            );
+        }
+        // Each section's columns are real queue columns (`#` is quoted in the map).
+        use hub_core::table::Row;
+        for sec in ["needs", "stuck", "running", "pr", "next"] {
+            let head = format!("  {sec}: {{");
+            let line = js
+                .lines()
+                .find(|l| l.starts_with(&head))
+                .unwrap_or_else(|| panic!("no Q_COLS row for {sec}"));
+            let keys: Vec<&str> = line
+                .split(": [")
+                .filter_map(|p| p.rsplit([' ', '{']).next())
+                .map(|k| k.trim_matches('"'))
+                .filter(|k| !k.is_empty() && !k.contains(']') && !k.contains('}'))
+                .collect();
+            assert!(keys.contains(&"title"), "{sec}: {keys:?}");
+            for key in keys {
+                assert!(
+                    hub_core::queue::QueueRow::<'static>::COLUMNS
+                        .iter()
+                        .copied()
+                        .any(|c| c == key),
+                    "{sec}: {key}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn the_nav_is_the_layout() {
         // docs/dashboards.md rule 8: every tab, in the layout's order, under its own heading.
         let page = index();
