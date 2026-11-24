@@ -565,11 +565,6 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
         std::fs::create_dir_all(dir)?;
         targets.push((dir.to_path_buf(), flat));
     }
-    // pace-conf's overrides file, replaced by a rename: Costs' Limits.
-    if let Some(dir) = pace_overrides().parent() {
-        std::fs::create_dir_all(dir)?;
-        targets.push((dir.to_path_buf(), flat));
-    }
     // schedules-sync's state.json, replaced by a rename: Infra's Pipelines.
     if let Some(dir) = schedules_state().parent() {
         std::fs::create_dir_all(dir)?;
@@ -583,6 +578,8 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
         // Sessions' Runners run ledger, and fleet-dispatch's verdicts and log.
         Some(hub_core::jobs::Paths::from_env().agentctl),
         Some(boards::dispatch_dir()),
+        // pace-conf's overrides file, replaced by a rename: Costs' Limits.
+        pace_overrides().parent().map(Path::to_path_buf),
         // agent-notify's ledger, for Log's Actions section.
         hub_core::actions::Paths::from_env()
             .notify_log
@@ -2633,6 +2630,12 @@ mod tests {
     }
 
     #[test]
+    fn pace_overrides_is_costs_and_its_temp_file_is_nothing() {
+        assert_eq!(classify(&pace_overrides()).as_deref(), Some(COSTS_EVENT));
+        assert_eq!(classify(&pace_overrides().with_extension("tmp")), None);
+    }
+
+    #[test]
     fn classifies_watched_paths() {
         assert_eq!(
             classify(Path::new("/h/.claude/sessions/123.json")).as_deref(),
@@ -2689,9 +2692,6 @@ mod tests {
             None
         );
         assert_eq!(classify(Path::new("/h/.agent/daylog/.lock")), None);
-        // pace-conf's overrides file is Costs' Limits; its temp file and the dir's other files are not.
-        assert_eq!(classify(&pace_overrides()).as_deref(), Some(COSTS_EVENT));
-        assert_eq!(classify(&pace_overrides().with_extension("tmp")), None);
         // A token snapshot is named by day, but it is Costs', never a Log or Runners refresh.
         assert_eq!(
             classify(&boards::token_usage_dir().join("2026-11-05.json")).as_deref(),
