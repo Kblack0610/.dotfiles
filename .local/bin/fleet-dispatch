@@ -5754,8 +5754,6 @@ short_floor_start() {
 # is settled; a later one is said, so a pass that started a session still publishes WORKED.
 start_items() {
   local items="$1" room="$2" n=0 taken=0 why rc
-  # The pass's room as pass_room capped it: floors and the queue take starts off <room> before a later call, so the cap is read from it plus those starts.
-  local pass_room=$(( room + ${STARTED:-0} ))
   while [ "$n" -lt "$room" ] && [ -n "$items" ]; do
     if [ "$n" -gt 0 ]; then
       why=$(gate)
@@ -5807,7 +5805,7 @@ start_items() {
   [ "${FLOOR_QUIET:-0}" = 0 ] || return 0
   why=$(gate)
   [ -z "$why" ] || return 0
-  local limit="the $TARGET_WHEN pace target $TARGET"; [ "$PER_PASS" -gt 0 ] && [ "$pass_room" -ge "$PER_PASS" ] && limit=DISPATCH_PER_PASS
+  local limit="the $TARGET_WHEN pace target $TARGET"; [ "$PER_PASS" -gt 0 ] && [ "${PASS_AT_CAP:-0}" = 1 ] && limit=DISPATCH_PER_PASS
   settle WORKED "under-used: started $n, $limit is the limit while $(grep -c . <<<"$items") runnable wait and the gates are open (fleet-dispatch headroom)"
   [ "$DRY" = 1 ] || logline "under-used: started $n, $limit is the limit, $(grep -c . <<<"$items") runnable left"
   return 0
@@ -7843,6 +7841,8 @@ pass_room() {
   # fresh ask that parks a runner session for itself starts (preempt_pick): the total stays where it is.
   gap=$(( TARGET - TOTAL_LIVE )); [ "$gap" -gt 0 ] || { gap=0; UNITS_FREE=0; }
   [ "$room" -le "$gap" ] || room=$gap
+  # Read once, here: floors and the queue take starts off room before a later start_items, so its own room says nothing about the cap.
+  PASS_AT_CAP=0; [ "$PER_PASS" -gt 0 ] && [ "$room" -ge "$PER_PASS" ] && PASS_AT_CAP=1
   [ "$PER_PASS" -gt 0 ] && [ "$room" -gt "$PER_PASS" ] && room=$PER_PASS
   return 0
 }

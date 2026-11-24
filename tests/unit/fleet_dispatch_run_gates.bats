@@ -198,7 +198,7 @@ load 'fleet_dispatch/common'
   agent-queue add --project app --slug fix-app-2 "fix the app again"
   jq -nc '[{project: "game", queued: false, tasks: [{id: "sp-urg", state: "open"}]}]' > "$NOTES_FIXTURE/board.sprints"
   agent-queue add --project game --slug sp-urg --priority urgent --tags sprint --from board:game:sp-urg "sprint, urgent" >/dev/null
-  export DISPATCH_PER_PASS=2
+  export DISPATCH_PER_PASS=2 DISPATCH_SPRINT_FLOOR=1
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'started queue item sp-urg on the sprint floor'
