@@ -1431,6 +1431,38 @@ paced_restore() {
   assert_called 'systemctl --user start --no-block fleet-restore.service'
 }
 
+@test "a dotfiles PR a worker landed is pulled into the stowed checkout here, once, though the read repeats the line for two hours (ar-2453)" {
+  local pub="$SANDBOX/dot" priv="$SANDBOX/dot-private" seen="$SANDBOX/razer.pulled" d
+  for d in "$pub" "$priv"; do git init -q "$d"; done
+  git -C "$pub" remote add origin git@github.com:Me/.dotfiles.git
+  git -C "$priv" remote add origin https://github.com/Me/.dotfiles-private
+  stub autopull 'echo "autopull $*" >> "$NOTES_FIXTURE/calls.log"; [ ! -e "$NOTES_FIXTURE/down" ]'
+  export DOTFILES_DIR=$pub DOTFILES_PRIVATE=$priv DOTFILES_AUTOPULL="$SANDBOX/bin/autopull"
+  unset INVOCATION_ID
+  local done_priv='{"ts":"2026-11-23T21:03:17-08:00","action":"done","pr":"me/.dotfiles-private#1312"}'
+  local set_pub='{"ts":"2026-11-23T21:04:00-08:00","action":"item-set","pr":"Me/.dotfiles#4"}'
+  local other='{"ts":"2026-11-23T21:05:00-08:00","action":"done","pr":"Me/home-config#9 1080"}'
+  # A failed start is said and leaves the refs unrecorded, so the next read tries again.
+  touch "$NOTES_FIXTURE/down"
+  run worker_pull_live razer "$done_priv"$'\n'"$set_pub"$'\n'"$other" "$seen"
+  assert_success
+  assert_output --partial "record: razer: dotfiles-autopull --now $priv failed to start"
+  rm "$NOTES_FIXTURE/down"; : > "$NOTES_FIXTURE/calls.log"
+  run worker_pull_live razer "$done_priv"$'\n'"$set_pub"$'\n'"$other" "$seen"
+  assert_success
+  assert_called "autopull --now $priv --bg"
+  # An item-set naming a PR pulls nothing, nor does a repo with no stowed checkout.
+  assert_not_called "autopull --now $pub --bg"
+  # The next read carries the same lines (the import cursor sits two hours back): no second pull,
+  # while a new public landing pulls the public checkout alone.
+  : > "$NOTES_FIXTURE/calls.log"
+  run worker_pull_live razer "$done_priv"$'\n'"$other" "$seen"
+  assert_not_called 'autopull'
+  run worker_pull_live razer "$done_priv"$'\n''{"ts":"2026-11-23T22:00:00-08:00","action":"done","pr":"Me/.dotfiles#5"}' "$seen"
+  assert_called "autopull --now $pub --bg"
+  assert_not_called "autopull --now $priv --bg"
+}
+
 # settle_fixture -- asks and stubs for the settle_answered_gates tests: agent-ask show reads the ask
 # file, agent-hold logs each call and `show` succeeds only for a hold named in $HELD.
 settle_fixture() {
