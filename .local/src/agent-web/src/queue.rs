@@ -214,13 +214,22 @@ fn render(
     let sel = rows
         .iter()
         .find(|r| !q.sel.is_empty() && r.item.slug == q.sel);
-    let (_, mut bar) = View::new::<QueueRow>(&q.q, &q.s, "", "").summary(&rows);
+    // No section holds finished work, so an old `?s=done` link narrows nothing.
+    let s = if ["done", "cancelled"]
+        .iter()
+        .any(|f| q.s.eq_ignore_ascii_case(f))
+    {
+        ""
+    } else {
+        q.s.as_str()
+    };
+    let (_, mut bar) = View::new::<QueueRow>(&q.q, s, "", "").summary(&rows);
     // The sections are the states and sort apart, so the bar keeps the search and the facets.
     (bar.states, bar.columns, bar.links, bar.legend) = Default::default();
     let sections: Vec<serde_json::Value> = Section::ALL
         .iter()
         .map(|&sec| {
-            let view = View::new::<QueueRow>(&q.q, &q.s, q.key(sec, "sort"), q.key(sec, "dir"));
+            let view = View::new::<QueueRow>(&q.q, s, q.key(sec, "sort"), q.key(sec, "dir"));
             let (mut shown, mut table) = view.summary(&rows);
             shown.retain(|r| r.section() == Some(sec));
             table.total = rows.iter().filter(|r| r.section() == Some(sec)).count();
@@ -729,6 +738,10 @@ mod tests {
                 && section(&v, "next")["table"].get("legend").is_none(),
             "no chip, so no legend of chips"
         );
+        // An old `?s=done` link narrows nothing: no section holds finished work.
+        let old = render(mixed(), &qs("s=done"), now);
+        assert_eq!(slugs(&old, "needs"), ["w1"]);
+        assert_eq!(slugs(&old, "next"), ["q1"]);
         // NEGATIVE CONTROL: a section with no rows is still sent, with its head's zero and no pager.
         let none = render(vec![], &QueueQuery::default(), now);
         assert_eq!(section(&none, "stuck")["table"]["shown"], 0);

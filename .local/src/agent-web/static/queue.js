@@ -146,7 +146,7 @@ const refreshQueue = coalesce(async () => {
     Object.assign(qst, { sections: d.sections, table: d.table, needs: d.needs_you, done: d.done_today, cancelled: d.cancelled_today, flow: d.flow || [], err: null });
     if (d.sel) qst.selRow = d.sel;
   } catch (e) { qst.err = e.message; }
-  // A section id (`#queue/stuck`, and what an old state id lands on) scrolls there.
+  // A section id (`#queue/stuck`) scrolls there; an old state id was already moved to its section by app.js MOVED.
   if (st.tab === "queue" && st.arg) {
     const arg = st.arg, key = arg.toLowerCase();
     if (qIsSection(arg)) {

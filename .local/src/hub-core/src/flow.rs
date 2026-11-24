@@ -4,7 +4,7 @@
 //! this one builder, so the hub TUI and agent-web cannot word or count it differently.
 //!
 //! Where each number comes from: the queue's own chips (up next, running, on a PR, needs you) are the live
-//! queue, the same count the section under a chip shows (done 24h is agent-queue's rolling count,
+//! queue, the count of the state (the Home and waybar number), so the section under running or on a PR can hold fewer: its stuck rows sit under Stuck (done 24h is agent-queue's rolling count,
 //! and its chip opens Log, which owns finished work); inbox and agent backlog are fleet-bench's
 //! snapshot (`pipeline`), the only owner of those two; done 24h and the drain are
 //! agent-queue's `stats.recent`. A number its source did not give reads `-`, never 0. A step
