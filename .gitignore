@@ -243,7 +243,7 @@ test_notifications.sh
 # ── Private overlay — moved to the standalone ~/.dotfiles-private repo ──────────
 # These carry client/employer names, infra hosts, or machine-local secrets. They
 # are deployed via the private overlay (stowed on top). Never track here.
-/AGENTS.md
+# (/AGENTS.md here is this repo's own public rules; the private overlay's AGENTS.md is its own.)
 .k8s-rc
 .ssh/config
 .ssh/README.md
