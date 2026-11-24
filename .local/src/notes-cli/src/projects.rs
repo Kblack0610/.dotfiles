@@ -4101,10 +4101,9 @@ impl TargetWork {
         self.filed_weight_28d += p.filed_weight_28d;
     }
 
-    /// `progress` (the open version's) plus every later version of `dir` at or below `to`
-    /// that a row on either lane is aimed at. The 28-day rates also read every shipped
-    /// version's frozen notes: a cut moves its closed rows there, and without them the close
-    /// rate would fall each time the project cuts.
+    /// `progress` (the open version's, whose close rate already holds the shipped versions'
+    /// closes) plus every later version of `dir` at or below `to` that a row on either lane
+    /// is aimed at.
     fn of(
         dir: &Path,
         human: &str,
@@ -4122,9 +4121,6 @@ impl TargetWork {
             .filter(|&(v, _)| v <= to)
         {
             w.add(&progress_of(dir, cur, Some(v), ix, today));
-        }
-        for v in cur.map(|c| shipped_versions(dir, c)).unwrap_or_default() {
-            w.add(&shipped_progress(&shipped_notes(dir, v), ix, today));
         }
         w
     }
@@ -4246,6 +4242,22 @@ fn in_version(line: &str, cur: Option<V>, ver: Option<V>) -> bool {
 }
 
 impl Progress {
+    /// Add `other`'s closes to the rates and the newest close day; its row counts stay out.
+    fn add_closes(&mut self, other: &Progress) {
+        self.closed_7d += other.closed_7d;
+        self.closed_28d += other.closed_28d;
+        self.closed_weight_7d += other.closed_weight_7d;
+        self.closed_weight_28d += other.closed_weight_28d;
+        if other.last_closed > self.last_closed {
+            self.last_closed.clone_from(&other.last_closed);
+        }
+        for (kind, k) in &other.by_kind {
+            let mine = self.kind(kind);
+            mine.closed_28d += k.closed_28d;
+            mine.closed_weight_28d += k.closed_weight_28d;
+        }
+    }
+
     fn kind(&mut self, kind: &str) -> &mut KindCount {
         self.by_kind.entry(kind.to_string()).or_default()
     }
@@ -4424,6 +4436,13 @@ pub(crate) fn progress_of(
             ix,
             today,
         );
+    }
+    // The open version's close rate is the project's: a cut moves its closed rows into the
+    // shipped notes, and without them every rate would fall each time the project cuts.
+    if let Some(c) = cur.filter(|_| ver == cur) {
+        for v in shipped_versions(dir, c) {
+            pr.add_closes(&shipped_progress(&shipped_notes(dir, v), ix, today));
+        }
     }
     pr
 }
@@ -8167,8 +8186,8 @@ mod shape_tests {
         );
         assert_eq!(json["progress"]["open_weight"], 3, "the open version alone");
         assert_eq!(
-            json["progress"]["closed_weight_28d"], 8,
-            "the open version's own rate keeps only its rows"
+            json["progress"]["closed_weight_28d"], 14,
+            "the open version's rate holds the shipped closes too: the one close rate"
         );
         assert_eq!(
             json["target_backlog"],
