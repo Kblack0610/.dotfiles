@@ -328,14 +328,11 @@ pub fn read(runner: &dyn Runner, paths: &Paths, now: i64) -> Costs {
     c.burn = read_burn(base.as_deref().ok(), paths, now, &mut c.errors);
     // The allowance in force is named on the Burn headline, and the same read is the Limits
     // sections', so one `pace-conf` run feeds both.
+    // A failed read is the view's own `error`, which the two sections show: it is not a read error
+    // of the page, so it neither joins `errors` nor keeps the kept read from being kept.
     let conf = crate::pace_conf::read(runner);
-    match &conf {
-        Ok(conf) => {
-            if let Some(a) = conf.named() {
-                c.burn.set_allowance(a);
-            }
-        }
-        Err(e) => c.errors.push(format!("pace config: {e}")),
+    if let Some(a) = conf.as_ref().ok().and_then(|c| c.named()) {
+        c.burn.set_allowance(a);
     }
     c.pace = crate::pace_conf::view(conf, &c.burn);
     c.consumers = crate::gateway::read(runner, &paths.gateway);

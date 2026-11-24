@@ -630,7 +630,7 @@ fn allowance(v: &pace_conf::View, b: &Burn, p: Palette, w: usize) -> Vec<Line<'s
         ];
     };
     let rate = |n: Option<f64>| n.map_or("-".to_string(), |n| format!("{n:.2}"));
-    let style = match b.level {
+    let style = match a.level {
         "bad" => p.bad(),
         "warn" => p.warn(),
         _ => p.good(),
@@ -639,7 +639,7 @@ fn allowance(v: &pace_conf::View, b: &Burn, p: Palette, w: usize) -> Vec<Line<'s
         Line::from(vec![
             dim("ALLOWANCE  "),
             Span::raw(format!(
-                "{}% ({}), default {}%",
+                "{} ({}), default {}",
                 a.in_force, a.source, a.default
             )),
         ]),
@@ -660,15 +660,17 @@ fn allowance(v: &pace_conf::View, b: &Burn, p: Palette, w: usize) -> Vec<Line<'s
         ]),
         w,
     ));
-    let lag = a.as_of.map_or(
+    let wrote = a.as_of.map_or(
         format!("{} from claude-acct", hub_core::reading::NO_DATA),
-        |t| {
-            format!(
-                "claude-acct wrote the figures {}; a change shows there on its next run",
-                clock(t, b.at)
-            )
-        },
+        |t| clock(t, b.at),
     );
+    let lag = if a.lagging {
+        format!("claude-acct's figures are for the allowance before this one (wrote them {wrote}); they catch up on its next run")
+    } else if a.as_of.is_some() {
+        format!("claude-acct wrote the figures {wrote}; a change shows there on its next run")
+    } else {
+        wrote
+    };
     for l in wrap(&[format!("{lag}."), a.note.to_string()], " ", w) {
         out.push(clip_line(Line::styled(l, p.dim()), w));
     }
@@ -2710,9 +2712,11 @@ mod tests {
             error: None,
             allowance: Some(Allowance {
                 key: "BURN_OVER_PCT",
-                in_force: "400".into(),
+                in_force: "400%".into(),
                 source: "window to Tue 22:00".into(),
-                default: "200".into(),
+                default: "200%".into(),
+                level: "warn",
+                lagging: false,
                 max: Some(1000.0),
                 allowed: Some(5.5),
                 sustain: Some(1.37),
@@ -2766,6 +2770,23 @@ mod tests {
         assert!(s.contains("In force") && s.contains("agent-web"), "{s}");
         assert!(s.contains("RESERVE_PCT") && s.contains("SETTABLE"), "{s}");
         assert!(s.contains("Set or end a window in agent-web"), "{s}");
+    }
+
+    #[test]
+    fn a_figure_from_before_the_change_says_so_and_the_verdict_is_the_views_not_the_burns() {
+        let mut c = paced();
+        if let Some(a) = c.pace.allowance.as_mut() {
+            a.lagging = true;
+        }
+        let s = screen_of(&c, &on("limits"), 200);
+        assert!(
+            s.contains("figures are for the allowance before this one"),
+            "{s}"
+        );
+        // the control: in step, the plain line
+        let s = screen_of(&paced(), &on("limits"), 200);
+        assert!(s.contains("claude-acct wrote the figures"), "{s}");
+        assert!(!s.contains("before this one"), "{s}");
     }
 
     #[test]

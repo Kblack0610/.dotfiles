@@ -62,11 +62,19 @@ pub struct Conf {
 /// Read the config. `pace-conf` exits 1 when a value cannot be read yet still prints the list, so
 /// that list is parsed; a start failure or any other exit is the error.
 pub fn read(runner: &dyn Runner) -> Result<Conf, String> {
-    let (code, out) = runner.output(&argv_of(&[CLI, "--json"]))?;
+    let argv = argv_of(&[CLI, "--json"]);
+    let (code, out) = runner.output(&argv)?;
     if !matches!(code, 0 | 1) {
         return Err(format!("{CLI} exited {code}"));
     }
-    serde_json::from_str(out.trim()).map_err(|e| format!("{CLI} --json: {e}"))
+    serde_json::from_str(out.trim()).map_err(|e| {
+        // An exit 1 with no list is `die`'s: its words are on stderr, which `output` drops, so
+        // the same call through `run` brings them back.
+        runner
+            .run(&argv)
+            .err()
+            .unwrap_or_else(|| format!("{CLI} --json: {e}"))
+    })
 }
 
 /// A number as the page words it: `400`, `0.07`.
@@ -74,12 +82,17 @@ fn num(v: Option<f64>) -> String {
     v.map_or("-".into(), |v| format!("{v}"))
 }
 
-/// An epoch as `Tue 22:00`, local.
+/// An epoch as `Tue 24 Nov 22:00`, local: a window runs up to a week, so the day is named.
 pub fn at(epoch: i64) -> String {
     Local
         .timestamp_opt(epoch, 0)
         .single()
-        .map_or("?".into(), |t| t.format("%a %H:%M").to_string())
+        .map_or("?".into(), |t| t.format("%a %d %b %H:%M").to_string())
+}
+
+/// A percent as the page words it: `400%`, or `-` when the value could not be read.
+fn pct_text(v: Option<f64>) -> String {
+    v.map_or("-".into(), |v| format!("{v}%"))
 }
 
 /// `window to Tue 22:00`, `override` or `default`: where a value came from.
@@ -97,10 +110,10 @@ fn source_text(k: &Key) -> String {
 pub struct Set {
     pub key: String,
     pub value: String,
-    /// `YYYY-MM-DDTHH:MM` local, or empty for now.
+    /// `@<epoch>` or `YYYY-MM-DDTHH:MM` local, or empty for now.
     #[serde(default)]
     pub from: String,
-    /// `YYYY-MM-DDTHH:MM` local, or empty for a standing override.
+    /// `@<epoch>` or `YYYY-MM-DDTHH:MM` local, or empty for a standing override.
     #[serde(default)]
     pub until: String,
 }
@@ -115,9 +128,14 @@ pub struct End {
     pub from: Option<i64>,
 }
 
-/// A minute as a form sends it, `2026-11-24T22:00`; nothing else reaches `date -d`.
-fn is_minute(s: &str) -> bool {
-    s.len() == 16 && NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M").is_ok()
+/// A time as a form sends it: `@1795586400`, the epoch the browser worked out from its own clock
+/// (the server's zone is not the browser's), or a local minute `2026-11-24T22:00`; nothing else
+/// reaches `date -d`.
+fn is_time(s: &str) -> bool {
+    match s.strip_prefix('@') {
+        Some(n) => (1..=11).contains(&n.len()) && n.bytes().all(|b| b.is_ascii_digit()),
+        None => s.len() == 16 && NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M").is_ok(),
+    }
 }
 
 fn editable<'a>(conf: &'a Conf, key: &str) -> Result<&'a Key, String> {
@@ -135,7 +153,7 @@ fn editable<'a>(conf: &'a Conf, key: &str) -> Result<&'a Key, String> {
 }
 
 /// The argv of `pace-conf set`, after the key is one the list marks editable, the value a plain
-/// number within its max and the times minutes. The CLI checks the rest (the end in the future,
+/// number within its max and the times epochs or minutes. The CLI checks the rest (the end in the future,
 /// the span, an overlap) and its words come back as the answer.
 pub fn set_argv(conf: &Conf, s: &Set) -> Result<Vec<String>, String> {
     let k = editable(conf, &s.key)?;
@@ -154,8 +172,10 @@ pub fn set_argv(conf: &Conf, s: &Set) -> Result<Vec<String>, String> {
         return Err(format!("{v} is over {}'s max of {max}", s.key));
     }
     for (what, t) in [("from", &s.from), ("until", &s.until)] {
-        if !t.is_empty() && !is_minute(t) {
-            return Err(format!("{what} is not a time like 2026-11-24T22:00"));
+        if !t.is_empty() && !is_time(t) {
+            return Err(format!(
+                "{what} is not a time like @1795586400 or 2026-11-24T22:00"
+            ));
         }
     }
     if s.until.is_empty() && !s.from.is_empty() {
@@ -227,11 +247,16 @@ pub struct Schedule {
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Allowance {
     pub key: &'static str,
-    /// `300`, in percent.
+    /// `300%`, or `-` when unreadable.
     pub in_force: String,
     /// `default`, `override` or `window to Tue 22:00`.
     pub source: String,
     pub default: String,
+    /// `ok`, `warn` (burning over the sustainable rate, within the allowance) or `bad` (over the
+    /// allowance): the one verdict both surfaces draw for the burn figure beside it.
+    pub level: &'static str,
+    /// claude-acct's figures predate the value in force (`burn::Allowance::lagging`).
+    pub lagging: bool,
     pub max: Option<f64>,
     pub allowed: Option<f64>,
     pub sustain: Option<f64>,
@@ -262,6 +287,14 @@ pub struct View {
     pub keys: Vec<KeyRow>,
 }
 
+fn level(allowed: Option<f64>, sustain: f64, burn: Option<f64>) -> &'static str {
+    match burn {
+        Some(b) if allowed.is_some_and(|a| b > a) => "bad",
+        Some(b) if sustain > 0.0 && b > sustain => "warn",
+        _ => "ok",
+    }
+}
+
 impl Conf {
     fn key(&self, k: &str) -> Option<&Key> {
         self.keys.iter().find(|x| x.key == k)
@@ -275,7 +308,11 @@ impl Conf {
             ("window", Some(u)) => format!("to {}", at(u)),
             (s, _) => s.to_string(),
         };
-        Some(Named { pct, source })
+        Some(Named {
+            pct,
+            source,
+            lagging: false,
+        })
     }
 }
 
@@ -328,9 +365,11 @@ pub fn view(conf: Result<Conf, String>, burn: &Burn) -> View {
     let f = &burn.fleet;
     let allowance = conf.key(ALLOWANCE_KEY).map(|k| Allowance {
         key: ALLOWANCE_KEY,
-        in_force: num(k.value),
+        in_force: pct_text(k.value),
         source: source_text(k),
-        default: num(k.default),
+        default: pct_text(k.default),
+        level: level(f.allowed, f.sustain, burn.stale.is_none().then_some(f.burn)),
+        lagging: burn.allowance.as_ref().is_some_and(|a| a.lagging),
         max: k.max,
         allowed: f.allowed,
         sustain: (f.sustain > 0.0).then_some(f.sustain),
@@ -429,6 +468,61 @@ mod tests {
         assert_eq!(w.len(), 8);
         let s = set_argv(&c, &set_of("BURN_OVER_PCT", "200", "", "")).unwrap();
         assert_eq!(s, ["pace-conf", "set", "BURN_OVER_PCT", "200"]);
+    }
+
+    #[test]
+    fn a_time_may_be_the_epoch_the_browser_worked_out_from_its_own_clock() {
+        let c = conf();
+        let w = set_argv(
+            &c,
+            &set_of("BURN_OVER_PCT", "300", "@1795516000", "@1795586400"),
+        )
+        .unwrap();
+        assert_eq!(w[4..], ["--from", "@1795516000", "--until", "@1795586400"]);
+        for bad in ["@", "@-5", "@12x", "@123456789012", "@ 5"] {
+            assert!(
+                set_argv(&c, &set_of("BURN_OVER_PCT", "300", "", bad)).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    /// `pace-conf --json` that dies with no list: exit 1, its words on stderr only.
+    struct Dies;
+
+    impl Runner for Dies {
+        fn run(&self, _: &[String]) -> Result<String, String> {
+            Err("pace-conf: no BURN_OVER_PCT in pace.conf".into())
+        }
+        fn output(&self, _: &[String]) -> Result<(i32, String), String> {
+            Ok((1, String::new()))
+        }
+    }
+
+    #[test]
+    fn a_read_that_dies_with_no_list_says_what_the_cli_said() {
+        assert_eq!(
+            read(&Dies).unwrap_err(),
+            "pace-conf: no BURN_OVER_PCT in pace.conf"
+        );
+        assert!(set(&Dies, &set_of("BURN_OVER_PCT", "300", "", "")).is_err());
+    }
+
+    #[test]
+    fn the_allowance_level_is_one_verdict_over_the_allowed_and_sustainable_rates() {
+        assert_eq!(level(Some(5.5), 1.37, Some(4.5)), "warn");
+        assert_eq!(level(Some(4.0), 1.37, Some(4.5)), "bad");
+        assert_eq!(level(Some(5.5), 1.37, Some(1.0)), "ok");
+        assert_eq!(
+            level(None, 1.37, Some(4.5)),
+            "warn",
+            "no allowed figure: the sustainable line"
+        );
+        assert_eq!(
+            level(Some(4.0), 1.37, None),
+            "ok",
+            "a stale textfile has no burn to judge"
+        );
     }
 
     #[test]
@@ -542,7 +636,8 @@ mod tests {
         assert_eq!(v.keys[1].source, format!("window to {}", at(1795586400)));
         assert!(v.keys[1].editable && !v.keys[0].editable);
         let a = v.allowance.unwrap();
-        assert_eq!((a.in_force.as_str(), a.default.as_str()), ("300", "400"));
+        assert_eq!((a.in_force.as_str(), a.default.as_str()), ("300%", "400%"));
+        assert_eq!((a.level, a.lagging), ("warn", false));
         assert_eq!((a.allowed, a.spare), (Some(6.3), Some(3)));
         let states: Vec<_> = a.rows.iter().map(|r| r.state).collect();
         assert_eq!(states, ["In force", "Upcoming", "Default"]);

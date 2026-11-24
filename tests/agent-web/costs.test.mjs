@@ -62,7 +62,7 @@ const paceRow = (o) => ({ value: "300", from: "-", until: "-", by: "hand", state
 const pace = (o = {}) => ({
   error: null,
   allowance: {
-    key: "BURN_OVER_PCT", in_force: "400", source: "window to Tue 22:00", default: "200", max: 1000, allowed: 5.5, sustain: 1.37, burn: 4.52, spare: 3, as_of: 1793999400, window_max_days: 7,
+    key: "BURN_OVER_PCT", in_force: "400%", source: "window to Tue 22:00", default: "200%", level: "warn", lagging: false, max: 1000, allowed: 5.5, sustain: 1.37, burn: 4.52, spare: 3, as_of: 1793999400, window_max_days: 7,
     note: "Loosens only committed: pace, reserve, 5-hour and capped still refuse on their own.",
     rows: [paceRow({ value: "400", from: "Mon 14:02", until: "Tue 22:00", by: "agent-web", state: "In force", start: 1793990000 }), paceRow({ value: "300" }), paceRow({ value: "200", by: "pace.conf", state: "Default", can_end: false })],
   },
@@ -915,9 +915,11 @@ test("Allowance draws what is in force, what it lets through, the schedule with 
   assert.ok(h.indexOf("sec-allowance") > h.indexOf("sec-burn") && h.indexOf("sec-allowance") < h.indexOf("sec-pace") && h.indexOf("sec-pace") < h.indexOf("sec-consumers"), "burn, allowance, pace config, consumers");
   assert.match(h, /400% \(window to Tue 22:00\), default 200%/);
   assert.match(h, /<span class="burn warn">4\.52\/h now<\/span> against 1\.37\/h sustainable and 5\.50\/h allowed, 3 spare sessions/, "over sustainable and within the allowance is amber");
-  assert.match(show(board({ pace: pace({ allowance: { ...pace().allowance, allowed: 4 } }) })), /<span class="burn bad">4\.52\/h now/, "over the allowance is red");
+  assert.match(show(board({ pace: pace({ allowance: { ...pace().allowance, level: "bad" } }) })), /<span class="burn bad">4\.52\/h now/, "the view's verdict hues the figure, as the hub's does");
+  assert.match(show(board({ pace: pace({ allowance: { ...pace().allowance, lagging: true } }) })), /<span class="warn">claude-acct's figures are for the allowance before this one/, "a figure from before the change says so");
   show(board());
   assert.match(h, /claude-acct wrote the figures .*a change shows there on its next run\. Loosens only committed/);
+  assert.match(h, /Times are on this browser's clock/);
   assert.match(h, /<td class="n">400%<\/td><td>Mon 14:02<\/td><td>Tue 22:00<\/td><td>agent-web<\/td><td class="ok">In force<\/td><td><button class="btn" data-pace-end="BURN_OVER_PCT" data-from="1793990000">End<\/button>/, "a window ends by its start");
   assert.match(h, /<td class="n">300%<\/td>.*?<button class="btn" data-pace-end="BURN_OVER_PCT">End<\/button>/, "the standing override ends with no start");
   assert.match(h, /<td>pace\.conf<\/td><td class="muted">Default<\/td><td><\/td>/, "the default has no End");
@@ -953,7 +955,9 @@ test("Set posts the form's allowance and times for the allowance key, and the dr
   ctx.fetch = async (url, init) => { sent.push([url, init?.body]); return reply(url, init); };
   fire("click", { type: "click", target: { id: "pace-set", closest: () => null } });
   await tick(); await tick(); await tick();
-  assert.deepEqual(sent[0], ["/api/pace/set", JSON.stringify({ key: "BURN_OVER_PCT", value: "600", from: "2026-11-24T22:00", until: "2026-11-25T06:00" })]);
+  // the browser's minutes go as the epochs its own clock makes of them, whatever zone the server is in
+  const epoch = (m) => `@${new Date(m).getTime() / 1000}`;
+  assert.deepEqual(sent[0], ["/api/pace/set", JSON.stringify({ key: "BURN_OVER_PCT", value: "600", from: epoch("2026-11-24T22:00"), until: epoch("2026-11-25T06:00") })]);
   assert.deepEqual({ ...cost.paceDraft }, { value: "", from: "", until: "" });
   assert.match(sent.at(-1)[0], /^\/api\/costs/, "the page reads the config again");
   doc.getElementById = get;
@@ -995,13 +999,16 @@ test("End posts the window's start, or no start for the standing override, and a
   cost.paceMsg = "";
 });
 
-test("a poll while the allowance form has focus leaves the tab and the typing alone", () => {
+test("a poll while the allowance form has focus repaints the tab and gives the field its focus back", () => {
   show(board());
-  box.innerHTML = "whole tab";
+  const get = doc.getElementById;
+  let focused = "";
+  doc.getElementById = (id) => (id === "pace-value" ? { focus: () => { focused = id; } } : get(id));
+  box.innerHTML = "stale tab";
   doc.activeElement = { id: "pace-value", closest: (sel) => (sel === ".pace-form" ? {} : null) };
   run("cost.render()");
-  assert.equal(box.innerHTML, "whole tab");
+  assert.match(box.innerHTML, /id="sec-allowance"/, "the tab is not held at its old data while a field has focus");
+  assert.equal(focused, "pace-value");
+  doc.getElementById = get;
   doc.activeElement = null;
-  run("cost.render()");
-  assert.match(box.innerHTML, /id="sec-allowance"/, "the control: with focus elsewhere the poll redraws");
 });

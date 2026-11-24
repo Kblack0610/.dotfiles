@@ -26,8 +26,10 @@ const cost = tblTab({
   // A poll repaints the whole tab, unless a section table's search or dropdown is in use: then only
   // that table's rows repaint around it.
   draw: (html) => {
-    if (paceTyping()) { const m = $("pace-msg"); if (m) m.textContent = cost.paceMsg; return; }
-    if (!Object.values(COST_TABLES).some((t) => t.repaint())) paint($("costs"), html, cost.open);
+    if (Object.values(COST_TABLES).some((t) => t.repaint())) return;
+    const field = paceFocus();
+    paint($("costs"), html, cost.open);
+    if (field && $(field)) $(field).focus();
   },
 });
 
@@ -359,6 +361,8 @@ function paceSchedule(a) {
   return `<div class="panel scroll"><table class="tbl"><tr><th class="n">allowance</th><th>from</th><th>until</th><th>by</th><th>state</th><th></th></tr>${rows}</table></div>`;
 }
 function paceForm(a) {
+  // datetime-local is the browser's clock; the hint says so, since the server's may differ.
+  const zone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch { return ""; } })();
   const f = cost.paceDraft, max = a.max != null ? ` max="${a.max}"` : "";
   const days = a.window_max_days ? ` A window is at most ${a.window_max_days} days.` : "";
   return `<div class="panel pace-form"><div class="qadd">` +
@@ -367,18 +371,19 @@ function paceForm(a) {
     `<label class="muted">until <input id="pace-until" type="datetime-local" value="${esc(f.until)}"></label>` +
     `<button class="btn primary" id="pace-set"${cost.paceBusy ? " disabled" : ""}>${cost.paceBusy ? "Setting..." : "Set"}</button></div>` +
     `<div class="err" id="pace-msg">${esc(cost.paceMsg)}</div>` +
-    `<div class="muted fold">Empty from is now; empty until is a standing override that lasts until it is ended.${days}</div></div>`;
+    `<div class="muted fold">Times are on this browser's clock${zone ? ` (${esc(zone)})` : ""}. Empty from is now; empty until is a standing override that lasts until it is ended.${days}</div></div>`;
 }
 function costsAllowance(d) {
   const p = d.pace;
   if (!p) return "";
   const a = p.allowance;
   if (!a) return secHead("allowance", "Allowance") + paceErr(p.error || "no pace config");
-  const lag = a.as_of ? `claude-acct wrote the figures ${when(a.as_of)}; a change shows there on its next run` : `${NO_DATA} from claude-acct`;
-  const over = a.allowed != null && a.burn != null && a.burn > a.allowed ? "bad" : a.sustain != null && a.burn != null && a.burn > a.sustain ? "warn" : "ok";
-  const lines = `<div class="panel"><div><span class="muted">ALLOWANCE</span> ${esc(a.in_force)}% (${esc(a.source)}), default ${esc(a.default)}%</div>` +
+  const lag = a.lagging ? `<span class="warn">claude-acct's figures are for the allowance before this one (wrote them ${when(a.as_of)}); they catch up on its next run</span>`
+    : a.as_of ? esc(`claude-acct wrote the figures ${when(a.as_of)}; a change shows there on its next run`) : esc(`${NO_DATA} from claude-acct`);
+  const over = a.level;
+  const lines = `<div class="panel"><div><span class="muted">ALLOWANCE</span> ${esc(a.in_force)} (${esc(a.source)}), default ${esc(a.default)}</div>` +
     `<div><span class="muted">LETS THROUGH</span> <span class="burn ${over}">${paceRate(a.burn)}/h now</span> against ${paceRate(a.sustain)}/h sustainable and ${paceRate(a.allowed)}/h allowed` +
-    `${a.spare != null ? `, ${a.spare} spare sessions` : ""}</div><div class="muted fold">${esc(lag)}. ${esc(a.note)}</div></div>`;
+    `${a.spare != null ? `, ${a.spare} spare sessions` : ""}</div><div class="muted fold">${lag}. ${esc(a.note)}</div></div>`;
   const key = isPhone() ? "allowance-phone" : "allowance", open = isPhone() ? !!cost.open[key] : secOpen(cost.open, key);
   return fold("csec", secHead("", "Allowance", null, over === "ok" ? null : over), (p.error ? paceErr(p.error) : "") + lines + paceSchedule(a) + paceForm(a),
     { k: key, id: "sec-allowance", open });
@@ -393,9 +398,11 @@ function costsPace(d) {
     `<div class="muted fold">pace.conf holds the defaults; <code>pace-conf set KEY VALUE</code> overrides one, and only a key with a maximum can be set.</div>`,
     { k: "pace", id: "sec-pace", open: secOpen(cost.open, "pace") });
 }
-// The form's typing and its buttons. A poll repaints the tab, so a field in use holds the repaint
-// (paceTyping), and the draft survives the one after.
-const paceTyping = () => !!document.activeElement?.closest?.(".pace-form");
+// The form's typing and its buttons. A poll repaints the tab, so the draft is kept as it is typed
+// and the field in use takes focus back after the repaint (paceFocus).
+// A field in use is put back in focus after the repaint (the draft is kept as it is typed).
+const paceFocus = () => (document.activeElement?.closest?.(".pace-form") ? document.activeElement.id || "" : "");
+const paceEpoch = (minute) => (minute ? `@${Math.floor(new Date(minute).getTime() / 1000)}` : "");
 async function paceAct(path, body) {
   cost.paceBusy = true; cost.paceMsg = "";
   if (document.activeElement) document.activeElement.blur();
@@ -562,7 +569,9 @@ $("costs").addEventListener("click", (e) => {
     const v = (id) => ($(id).value || "").trim();
     cost.paceDraft = { value: v("pace-value"), from: v("pace-from"), until: v("pace-until") };
     if (!cost.paceDraft.value) { cost.paceMsg = "Type the allowance in percent."; cost.render(); return; }
-    paceAct("/api/pace/set", { key: "BURN_OVER_PCT", ...cost.paceDraft });
+    // The field is a minute on this browser's clock; the server reads in its own zone, so it gets the epoch.
+    const { value, from, until } = cost.paceDraft;
+    paceAct("/api/pace/set", { key: "BURN_OVER_PCT", value, from: paceEpoch(from), until: paceEpoch(until) });
     return;
   }
   const end = t.closest && t.closest("[data-pace-end]");
