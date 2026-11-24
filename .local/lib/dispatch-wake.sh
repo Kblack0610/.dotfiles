@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # dispatch-wake.sh - the one wake signal for fleet-dispatch (plan dispatch-event-wake, phase 2).
 #
 #   . dispatch-wake.sh; dispatch_wake <why>
