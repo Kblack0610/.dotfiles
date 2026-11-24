@@ -452,10 +452,13 @@ project_machine_profile() {
 # profile: a work machine, which runs no dispatcher and whose work no home runner takes.
 project_work_machine() {
   local map_file; map_file="$(project_map_file)"
+  local profiles
   [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 1
+  profiles="$(jq -c '[(.clients | objects // {})[] | objects | .profile | strings]' "$map_file" 2>/dev/null)" || return 1
+  # A map with no client names no work machine: no notes call, so no warning, where none can match.
+  [ "$profiles" != '[]' ] || return 1
   project_machine_profile >/dev/null
-  jq -e --arg m "$PROJECT_MACHINE_PROFILE" \
-    '[(.clients | objects // {})[] | objects | .profile] | index($m) != null' "$map_file" >/dev/null
+  jq -en --arg m "$PROJECT_MACHINE_PROFILE" --argjson p "$profiles" '$p | index($m) != null' >/dev/null
 }
 
 # project_visible <key> -> exit 0 when this machine lists the project (see PROJECT_VISIBLE_JQ).
