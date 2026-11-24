@@ -673,3 +673,45 @@ echo "OK load 2.0x cores"'
   assert_success
   assert_output --partial 'started queue item ca-cx on codex (sol)'
 }
+
+# ar-3471: the human floor and the preempt only saw a QUEUED fresh ask, and the board fill does not run behind
+# a gate or a full target, so a #requested row asked today sat on the board. ask_top_up queues it first.
+@test "ask floor: a #requested row asked inside DISPATCH_ASK_FRESH_H is queued and starts past the weekly pace; an old one, an agent's and a plain one wait" {
+  pace_shut
+  export DISPATCH_NOTES_INGEST="$SANDBOX/ingest.jsonl" DISPATCH_ASK_FRESH_H=24
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  row game human old-ask "- [ ] fix(game): an old ask #requested since:$(date -d '-3 days' +%F) $T <!-- id:old-ask -->"
+  row game human agent-ask "- [ ] fix(game): an agent follow-up #requested since:$(date +%F) $T <!-- id:agent-ask -->"
+  row game human plain "- [ ] fix(game): no ask since:$(date +%F) $T <!-- id:plain -->"
+  jq -cn '{id: "agent-ask", action: "added", want: "human", by: "agent", session_id: "s-1"}' > "$DISPATCH_NOTES_INGEST"
+  for k in old-ask agent-ask plain; do verdict game human "$k" dispatch S 1 "$k"; done
+  # Negative control: none is a fresh ask of the human's, so the weekly pace holds the pass and queues nothing.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'fresh ask row'
+  assert_not_called 'wt new'
+  [ -z "$(qitem queued old-ask)$(qitem queued agent-ask)" ] || fail "an ask outside the window or an agent's was queued by the ask floor"
+  row game human new-ask "- [ ] fix(game): a new ask #requested since:$(date +%F) $T <!-- id:new-ask -->"
+  verdict game human new-ask dispatch S 1 new-ask
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'queued 1 fresh ask row(s)'
+  assert_output --partial 'started queue item new-ask on the human floor, past the weekly pace'
+  refute_output --partial 'started queue item old-ask'
+  refute_output --partial 'started queue item agent-ask'
+  refute_output --partial 'started queue item plain'
+}
+
+@test "ask floor: a fresh ask row is queued behind a full pace target; DISPATCH_ASK_FRESH_H=0 turns it off" {
+  full_fleet
+  export DISPATCH_ASK_FRESH_H=0
+  row game human new-ask "- [ ] fix(game): a new ask #requested since:$(date +%F) $T <!-- id:new-ask -->"
+  verdict game human new-ask dispatch S 1 new-ask
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  refute_output --partial 'fresh ask row'
+  [ -z "$(qitem queued new-ask)" ] || fail "the ask floor queued a row with DISPATCH_ASK_FRESH_H=0"
+  export DISPATCH_ASK_FRESH_H=24
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'queued 1 fresh ask row(s)'
+}

@@ -1605,6 +1605,55 @@ sprint_floor_start() {
   HUMAN_PASS=1 SPRINT_PASS=1 FLOOR_QUIET=1 UNITS_FREE=$(( n * 2 )) start_items "$items" "$n"
 }
 
+# ASK_ROW[<project> TAB <id>]: an open board row that is a fresh ask: `#requested`, in the human's words
+# (asker_map; an agent's `--want` row is no ask) and created in the last DISPATCH_ASK_FRESH_H hours by
+# the same arithmetic as ASK_JQ's fresh_ask, on the board feed's own `since`, not on a promotion stamp
+# (the requested floor promotes week-old rows). The rows ask_top_up's `ask` floor reads (floor_row).
+declare -gA ASK_ROW=()
+ask_rows_load() {
+  local p i b
+  ASK_ROW=()
+  [ "${DISPATCH_ASK_FRESH_H:-0}" -gt 0 ] 2>/dev/null || return 0
+  b=$(notes board --json 2>/dev/null) || return 0
+  asker_map
+  while IFS=$'\t' read -r p i; do
+    [ -n "$p" ] && [ -n "$i" ] || continue
+    ASK_ROW["$p"$'\t'"$i"]=1
+  done < <(jq -r --argjson now "$(date +%s)" --argjson h "$DISPATCH_ASK_FRESH_H" --argjson askers "$ASKER_MAP" '
+    .rows[]? | select(.id != null and any(.tags[]?; . == "requested") and (($askers[.id] // "") != "agent"))
+    | select(((.since // "") | try ("\(.)T00:00:00Z" | fromdateiso8601) catch null) as $t
+        | $t != null and ($t + 86400) > ($now - $h * 3600))
+    | "\(.project)\t\(.id)"' <<<"$b" 2>/dev/null)
+}
+
+# ask_top_up -- queue the human's fresh asks still on the board (fill_day's `ask` floor) on every run pass,
+# before the pass reads the queue, so a full pace target or the weekly pace no longer leaves them unqueued:
+# the human floor and the preempt only ever saw a QUEUED fresh ask, and the board fill does not run at a full
+# target or past a gate, so a row asked today sat as a row until the pace cleared (ar-3471, as sprint_top_up
+# for ar-3816). It only queues: what starts is the human floor's and the preempt's, past the same gates.
+# Nothing to do with no fresh ask row, under a gate the human floor's start would stop at (gate under
+# HUMAN_PASS), at the queue cap, or in a dry run. Like sprint_top_up, its judge call keeps its JUDGE_RC to itself;
+# a judge that fails rc 1 with ASK_JUDGE_RC and ASK_JUDGE_WHY set, which cmd_run makes the pass's.
+ask_top_up() {
+  local want qroom JUDGE_RC='' JUDGE_WHY='' FILLED=0
+  [ "$DRY" = 0 ] || return 0
+  ask_rows_load
+  want=${#ASK_ROW[@]}
+  [ "$want" -gt 0 ] || return 0
+  [ -z "$(HUMAN_PASS=1 gate)" ] || return 0
+  qroom=$(queue_headroom); [ "$want" -le "$qroom" ] || want=$qroom
+  [ "$want" -gt 0 ] || return 0
+  load_findings || return 0
+  if ! fill_day "$want" ask; then
+    ASK_JUDGE_RC=$JUDGE_RC ASK_JUDGE_WHY=$JUDGE_WHY
+    say "ask: $(judge_failed), so no fresh ask row was queued ahead of the queue pass"
+    return 1
+  fi
+  [ "$FILLED" = 0 ] && return 0
+  say "queued $FILLED fresh ask row(s) (asked in the last ${DISPATCH_ASK_FRESH_H}h, DISPATCH_ASK_FRESH_H) ahead of the queue pass"
+  unset NEXT_QUEUED
+}
+
 # human_floor_open -- HUMAN_PASS says the start is the human's urgent item or fresh ask (human_floor_start): an account
 # refused for its weekly pace alone takes it, as on a floor (acct_room); PLAN_PASS adds the plan load floor (plan_load_floor_open). The reserve, the 5h window,
 # committed burn, load, fleet-assess, agent-hold and the github budget still hold it.
@@ -1850,7 +1899,7 @@ judged_keys() {
 # an agent-lane row whose gates all cleared is `gated`: committed work, which picks takes with no verdict
 # (a human-lane row is still judged, since only the verdict says the human's row is agent work). When the
 # gates could not be read (GATES_FAILED) it lists no row but under suggest. CLEANUP_ONLY,
-# REQUESTED_ONLY, GATED_ONLY, SPRINT_ONLY and FLOOR_PROJECTS (fill_day's floors) read only their rows (floor_row), in the projects
+# REQUESTED_ONLY, GATED_ONLY, SPRINT_ONLY, ASK_ONLY and FLOOR_PROJECTS (fill_day's floors) read only their rows (floor_row), in the projects
 # that can hold one (floor_project); ONLY_PROJECT reads that one project alone (trainee_rows' split). A project off_project names is no candidate: it says why under OFF_SAY (the `candidates`
 # command, and a pass's one judge read, so not once per read), and suggest lists its agent rows with that reason.
 cmd_candidates() {
@@ -7949,6 +7998,7 @@ cmd_run() {
   pass_room
   # A full fleet is working, not blocked: NOOP, unless an urgent item or fresh ask may preempt a runner session
   # (preempt_pick); then the pass, past the gate, picks among those (preempt_items) and starts at most one.
+  ask_top_up || JUDGE_RC=$ASK_JUDGE_RC JUDGE_WHY=$ASK_JUDGE_WHY
   local urgent=''; [ "$room" -gt 0 ] || urgent=$(preempt_items)
   # An urgent item or fresh ask that waits on run units alone, with no runner session to park for it, goes on to
   # the red floor: returning there held every red for a day behind three heavy urgent items (11-13).
@@ -8134,6 +8184,8 @@ fill_day() {
   [[ " ${2:-} " != *" gated "* ]] || GATED_ONLY=1
   for f in ${2:-}; do [[ "$f" != project:* ]] || FLOOR_PROJECTS="${FLOOR_PROJECTS:+$FLOOR_PROJECTS }${f#project:}"; done
   [[ " ${2:-} " != *" sprint "* ]] || SPRINT_ONLY=1
+  local ASK_ONLY=${ASK_ONLY:-}
+  [[ " ${2:-} " != *" ask "* ]] || ASK_ONLY=1
   FILLED=0
   # Committed rows alone want no judge: a gated row is never judged (unjudged_rows).
   load_pool_idle   # once, before the judge's and the picks' subshells
@@ -8213,13 +8265,13 @@ class_gap() {
 
 # floor_pass -> 0 when fill_day reads the board for its floors' rows alone (CLEANUP_ONLY, REQUESTED_ONLY,
 # GATED_ONLY, SPRINT_ONLY, FLOOR_PROJECTS), which every scan under it then filters by floor_project and floor_row.
-floor_pass() { [ -n "${CLEANUP_ONLY:-}${REQUESTED_ONLY:-}${GATED_ONLY:-}${SPRINT_ONLY:-}${FLOOR_PROJECTS:-}" ]; }
+floor_pass() { [ -n "${CLEANUP_ONLY:-}${REQUESTED_ONLY:-}${GATED_ONLY:-}${SPRINT_ONLY:-}${ASK_ONLY:-}${FLOOR_PROJECTS:-}" ]; }
 
 # floor_project <project> -> 0 for a project a floor pass may find a row in: any under the requested or
 # gated floor, one of DISPATCH_CLEANUP_PROJECTS under the cleanup floor, one of FLOOR_PROJECTS under its
 # project floor, one with an unstarted open sprint row (SPRINT_PROJECT) under the sprint floor.
 floor_project() {
-  [ -n "${REQUESTED_ONLY:-}${GATED_ONLY:-}" ] && return 0
+  [ -n "${REQUESTED_ONLY:-}${GATED_ONLY:-}${ASK_ONLY:-}" ] && return 0
   [ -n "${CLEANUP_ONLY:-}" ] && [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $1 "* ]] && return 0
   [ -n "${FLOOR_PROJECTS:-}" ] && [[ " $FLOOR_PROJECTS " == *" $1 "* ]] && return 0
   [ -n "${SPRINT_ONLY:-}" ] && [ -n "${SPRINT_PROJECT[$1]:-}" ]
@@ -8228,11 +8280,12 @@ floor_project() {
 # floor_row <project> <row> [gates] [id] -> 0 for a row a floor pass may read: a `#requested` row when the
 # requested floor is under, a cleanup row of DISPATCH_CLEANUP_PROJECTS when the cleanup floor is, an
 # agent row whose gates all cleared (<gates>, cmd_candidates' `gated`) under GATED_ONLY, any row of a
-# FLOOR_PROJECTS project under its project floor, and a row an open sprint holds (row_sprint on <id>) under SPRINT_ONLY. It sets SPRINT, CLEANUP and KIND (row_sprint_set,
+# FLOOR_PROJECTS project under its project floor, a row an open sprint holds (row_sprint on <id>) under SPRINT_ONLY, and a fresh ask row (ASK_ROW) under ASK_ONLY. It sets SPRINT, CLEANUP and KIND (row_sprint_set,
 # cleanup_row_set), so a walk copies its own before it calls this.
 floor_row() {
   [ -n "${GATED_ONLY:-}" ] && [ -n "${3:-}" ] && return 0
   [ -n "${REQUESTED_ONLY:-}" ] && [[ "${2%%<!--*}" =~ (^|[[:space:]])#requested([[:space:]]|$) ]] && return 0
+  [ -n "${ASK_ONLY:-}" ] && [ -n "${ASK_ROW["$1"$'\t'"${4:-}"]:-}" ] && return 0
   [ -n "${FLOOR_PROJECTS:-}" ] && [[ " $FLOOR_PROJECTS " == *" $1 "* ]] && return 0
   [ -n "${SPRINT_ONLY:-}" ] && [ -n "${4:-}" ] && row_sprint_set "$1" "$4" && [ "$SPRINT" = 0 ] && return 0
   [ -n "${CLEANUP_ONLY:-}" ] && [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $1 "* ]] && cleanup_row_set "$1" "$2" && [ "$CLEANUP" = 0 ]
