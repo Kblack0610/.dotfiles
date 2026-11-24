@@ -438,6 +438,43 @@ fn project_dirs(projects: &Path) -> impl Iterator<Item = Target> {
         .map(|p| (p, RecursiveMode::NonRecursive))
 }
 
+/// What a retry tries: the failed targets less any project dir gone since (`now` is the project
+/// dirs there are), and, when the watcher was `down`, each project in `now` not yet a target, since
+/// no watcher sent its create. Anything else failed waits to exist.
+fn retry_targets(
+    failed: Vec<Target>,
+    projects: &Path,
+    now: Vec<Target>,
+    down: bool,
+) -> Vec<Target> {
+    let mut out: Vec<Target> = failed
+        .into_iter()
+        .filter(|t| t.0.parent() != Some(projects) || now.contains(t))
+        .collect();
+    if down {
+        for t in now {
+            if !out.contains(&t) {
+                out.push(t);
+            }
+        }
+    }
+    out
+}
+
+/// The watcher started late, so every change while it was down went unsent: drop each kept read
+/// and tell the pages and the event caches to read afresh.
+fn resync(tx: &broadcast::Sender<String>) {
+    for outdate in [
+        costs::outdate,
+        builds::outdate,
+        pipelines::outdate,
+        stages::outdate,
+    ] {
+        outdate();
+    }
+    let _ = tx.send(RESYNC_EVENT.to_string());
+}
+
 /// The SSE message that tells the page which paths are not watched (none: live updates on).
 fn live_msg(off: &[String]) -> String {
     serde_json::json!({"kind": "live", "off": off}).to_string()
@@ -617,20 +654,11 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
                 }
                 () = tokio::time::sleep(delay), if retry => {
                     let down = w.is_none();
-                    if down {
-                        // No watcher sent a create, so a project made since has no target yet.
-                        let new: Vec<Target> = project_dirs(&projects).filter(|t| !failed.contains(t)).collect();
-                        failed.extend(new);
-                    }
-                    // A project dir removed since needs no watch; anything else waits to exist.
-                    failed.retain(|(p, _)| p.exists() || p.parent() != Some(projects.as_path()));
-                    failed = connect(&mut w, &make, std::mem::take(&mut failed));
+                    let now = project_dirs(&projects).collect();
+                    let targets = retry_targets(std::mem::take(&mut failed), &projects, now, down);
+                    failed = connect(&mut w, &make, targets);
                     if down && w.is_some() {
-                        // Every change while it was down went unsent: drop each read and refetch.
-                        for outdate in [costs::outdate, builds::outdate, pipelines::outdate, stages::outdate] {
-                            outdate();
-                        }
-                        let _ = tx.send(RESYNC_EVENT.to_string());
+                        resync(&tx);
                     }
                     delay = if failed.is_empty() { WATCH_RETRY_FIRST } else { (delay * 2).min(WATCH_RETRY_MAX) };
                 }
@@ -2556,6 +2584,33 @@ mod tests {
         );
         assert!(w.is_some() && failed.is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A retry drops a project dir gone since and keeps any other failed target; a watcher that was
+    /// down also takes each project made since, once.
+    #[test]
+    fn a_retry_drops_gone_projects_and_a_late_start_adds_new_ones() {
+        let flat = RecursiveMode::NonRecursive;
+        let projects = Path::new("/h/.claude/projects");
+        let t = |p: &str| (PathBuf::from(p), flat);
+        let failed = vec![
+            t("/h/.agent/asks"),
+            t("/h/.claude/projects/-gone"),
+            t("/h/.claude/projects/-a"),
+        ];
+        let now = vec![t("/h/.claude/projects/-a"), t("/h/.claude/projects/-new")];
+        assert_eq!(
+            retry_targets(failed.clone(), projects, now.clone(), false),
+            vec![t("/h/.agent/asks"), t("/h/.claude/projects/-a")]
+        );
+        assert_eq!(
+            retry_targets(failed, projects, now, true),
+            vec![
+                t("/h/.agent/asks"),
+                t("/h/.claude/projects/-a"),
+                t("/h/.claude/projects/-new")
+            ]
+        );
     }
 
     #[test]
