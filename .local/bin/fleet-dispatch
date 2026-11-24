@@ -6317,7 +6317,7 @@ host_takers() {
 }
 
 # room_share <free units> <max units> <load> <cores> <mem avail %> [pending load] -> the free share of a
-# host, a whole percent: the least of its free units over its max, the pace's CPU headroom
+# host, a whole percent (rounded, so a float sum such as 24.99 reads 25): the least of its free units over its max, the pace's CPU headroom
 # (MAX_LOAD x cores less load) over that capacity, and its MemAvailable above the DISPATCH_HOST_MEM_MIN_PCT
 # floor over what the floor leaves. A host is as full as its fullest resource (least-loaded scheduling).
 # Memory -1 is a reading this host cannot give, so it does not count. One formula for this machine
@@ -6328,7 +6328,7 @@ room_share() {
     cap = c * mx; cpu = cap > 0 ? (cap - l - p) * 100 / cap : 0
     s = u < cpu ? u : cpu
     if (m >= 0) { mem = (m - mm) * 100 / (100 - mm); if (mem < s) s = mem }
-    printf "%d\n", s < 0 ? 0 : s }'
+    printf "%.0f\n", s < 0 ? 0 : s }'
 }
 
 # mem_avail_pct -> this machine's MemAvailable as a whole percent of MemTotal, -1 when unread.
