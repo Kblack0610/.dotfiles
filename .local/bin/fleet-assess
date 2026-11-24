@@ -439,7 +439,7 @@ busy_line() {
 # worker. EffectiveCPUs is the kernel's cpuset; AllowedCPUs is recorded even where the user
 # manager has no cpuset controller and nothing is pinned (razer-laptop, 2026-11-18). A user
 # manager it cannot reach (no user bus over ssh) exits 1, so the host reads unconfirmed.
-CAP_PROBE='set -o pipefail; units=$(systemctl --user list-units --no-legend --plain --state=active "tmux-spawn-*.scope" app-agentctl.slice "fleet-*.service" "agent-*.service" "claude-acct-*.service" schedules-sync.service store-sync.service | awk "{print \$1}") || exit 1; for u in $units; do printf "%s %s\n" "$u" "$(systemctl --user show "$u" -p EffectiveCPUs --value)"; done'
+CAP_PROBE='set -o pipefail; units=$(systemctl --user list-units --no-legend --plain --state=active "tmux-spawn-*.scope" "agent-*.scope" app-agentctl.slice "fleet-*.service" "agent-*.service" "claude-acct-*.service" schedules-sync.service store-sync.service | awk "{print \$1}") || exit 1; for u in $units; do printf "%s %s\n" "$u" "$(systemctl --user show "$u" -p EffectiveCPUs --value)"; done'
 
 # cap_units <cap host line> -> that host's CAP_PROBE lines; rc non-zero when it cannot be read.
 # This machine is the host named FLEET_HOST, or one the inventory reaches with ansible_connection local.
