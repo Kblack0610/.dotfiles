@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # agentctl-inbox-triage: route the outbox and file every project sheet's `## Inbox`, in one sweep.
 #
-#   agentctl-inbox-triage [--dry-run] [--project <name>] [--backlog [--priority [--retag-high] | --link | --size | --report]] [--watch]
+#   agentctl-inbox-triage [--dry-run] [--project <name>] [--backlog [--priority [--retag <word>] | --link | --size | --report]] [--watch]
 #   agentctl-inbox-triage --answer <ask id>
 #
 # A pass starts by splitting lists (`notes outbox split`, `notes ptask <p> split`): two or more checkboxes under a line become one line per ask.
@@ -24,9 +24,9 @@
 # changes). --watch is the runner: a sweep after each save,
 # once INBOX_SWEEP_QUIET seconds pass with no other. --backlog re-triages the rows already on the
 # boards as the inbox-backlog agent: its own budget, outcome and batch size, so a cleanup never
-# stops the intake sweep. --backlog --priority gives each open row with no priority tag one, #urgent, #high or
-# #low, from one Sonnet call per batch (the inbox-priority agent); --retag-high also re-judges the
-# #high rows. --backlog --link puts each open typed row with no #of/ under an epic, one Sonnet
+# stops the intake sweep. --backlog --priority gives each open row with no priority tag one, #urgent, #high,
+# #normal or #low, from one Sonnet call per batch (the inbox-priority agent); --retag <word> also re-judges
+# the rows tagged #<word>. --backlog --link puts each open typed row with no #of/ under an epic, one Sonnet
 # call per batch on the same lane: the model names the row's system and, when one fits, an open
 # feature epic or a new #new one; a row with neither goes under its system's standing epic
 # (`notes ptask edit --link`). --backlog --size gives each open row with no `#pts/<n>` its
@@ -90,7 +90,7 @@ PRIORITY_PROMPT="$PROMPTS/inbox-priority/priority.md" # inbox-priority
 LINK_PROMPT="$PROMPTS/inbox-priority/area.md"        # inbox-priority, the --link pass
 SIZE_PROMPT="$PROMPTS/inbox-size/prompt.md"          # inbox-size
 
-DRY=0; ONLY=""; BACKLOG=0; PRIORITY=0; SIZE=0; SCORED=0; RETAG_HIGH=0; LINK=0; LINKED=0; STANDING=0; NEW_EPICS=0; declare -A NEW_SEEN=(); TAGGED=0; WATCH=0; WAIT=0; SUMMARY=""; FILED=0; KEPT=0; FAILED=0; ROUTED=0; OVER=0
+DRY=0; ONLY=""; BACKLOG=0; PRIORITY=0; SIZE=0; SCORED=0; RETAG=""; LINK=0; LINKED=0; STANDING=0; NEW_EPICS=0; declare -A NEW_SEEN=(); TAGGED=0; WATCH=0; WAIT=0; SUMMARY=""; FILED=0; KEPT=0; FAILED=0; ROUTED=0; OVER=0
 REWROTE=0; MOVED=0; DROPPED=0; RAISED=0; CLOSED_DONE=0; REPORT=0; IMPROVED=0; CAPPED=0; BUDGET_STOP=0; ANSWERED=0; ASKED=0; VERDICT=keep; VDEST=""; VPRIO=""
 OUT=""; ANSWER_ID=""; DEFERRED='[]'; LINES_DROPPED=0
 FLAG=""; RECORD=""; OUTBOX=""
@@ -773,10 +773,10 @@ backlog_batch() {
   return 0
 }
 
-# row_priority <raw>: the row's own priority tag (urgent, high, low), or empty when it has none.
-row_priority() { [[ " $1 " =~ [[:space:]]#(urgent|high|low)[[:space:]] ]] && echo "${BASH_REMATCH[1]}"; return 0; }
+# row_priority <raw>: the row's own priority tag (urgent, high, normal, low), or empty when it has none.
+row_priority() { [[ " $1 " =~ [[:space:]]#(urgent|high|normal|low)[[:space:]] ]] && echo "${BASH_REMATCH[1]}"; return 0; }
 # prio_rank <priority>: the rubric's order, an untagged or unknown priority lowest.
-prio_rank() { case "$1" in urgent) echo 3 ;; high) echo 2 ;; low) echo 1 ;; *) echo 0 ;; esac; }
+prio_rank() { case "$1" in urgent) echo 4 ;; high) echo 3 ;; normal) echo 2 ;; low) echo 1 ;; *) echo 0 ;; esac; }
 
 # improve_row <project> <raw> <why>: a backlog row's words (no checkbox, tags or marker) kept in the
 # project's improvements.md by `notes improve`, the one writer, which never touches ideas.md and
@@ -1039,7 +1039,7 @@ priority_batch() {
     [ "$n" -ge 1 ] 2>/dev/null && [ "$n" -le "${#ids[@]}" ] || continue
     [ -z "${seen[n]:-}" ] || continue   # one answer per row
     seen[n]=1
-    case "$prio" in urgent|high|low) ;; *) continue ;; esac
+    case "$prio" in urgent|high|normal|low) ;; *) continue ;; esac
     [ "$prio" = "${cur[n - 1]}" ] && continue
     # The ingest record names the writer inbox-priority, whoever ran the pass: judge-eval scores
     # these tags as that lane's verdicts (SCORE=priority-kept), so a session or queue item must not
@@ -1052,15 +1052,15 @@ priority_batch() {
 }
 
 # The --priority pass: every managed board's open rows with no priority tag (and with
-# --retag-high its #high rows), in batches, the boards with the most such rows first.
+# --retag <word> its rows tagged #<word>), in batches, the boards with the most such rows first.
 priority_pass() {
   local board rows p lane total off size r rc=0
   read_board || return 1
   board="$(managed_board <<<"$BOARD")"
   # shellcheck disable=SC2016 # jq source, not shell
-  rows="$(jq -c --argjson hi "$RETAG_HIGH" --arg only "$ONLY" '[.rows[]
+  rows="$(jq -c --arg retag "$RETAG" --arg only "$ONLY" '[.rows[]
     | select((.lane == "human" or .lane == "agent") and .id != null and (.state == "open" or .state == "doing")
-             and ($only == "" or .project == $only) and (.untriaged or ($hi == 1 and .priority == "high")))]' <<<"$board")"
+             and ($only == "" or .project == $only) and (.untriaged or ($retag != "" and .priority == $retag)))]' <<<"$board")"
   while IFS=$'\t' read -r p lane; do
     [ -n "$p" ] || continue
     local mine; mine="$(jq -c --arg p "$p" --arg l "$lane" '[.[] | select(.project == $p and .lane == $l)] | sort_by(.line)' <<<"$rows")"
@@ -1542,7 +1542,7 @@ main() {
       --project) ONLY="${2:-}"; shift 2 ;;
       --backlog) BACKLOG=1; shift ;;
       --priority) PRIORITY=1; shift ;;
-      --retag-high) RETAG_HIGH=1; shift ;;
+      --retag) case "${2:-}" in urgent|high|normal|low) RETAG="$2"; shift 2 ;; *) say "--retag takes urgent, high, normal or low"; return 2 ;; esac ;;
       --link) LINK=1; shift ;;
       --size) SIZE=1; shift ;;
       --report) REPORT=1; shift ;;
@@ -1554,7 +1554,7 @@ main() {
   done
   local rc=0 summary verdict cfg dir
   [ "$PRIORITY" = 0 ] || [ "$BACKLOG" = 1 ] || { say "--priority goes with --backlog"; return 2; }
-  [ "$RETAG_HIGH" = 0 ] || [ "$PRIORITY" = 1 ] || { say "--retag-high goes with --priority"; return 2; }
+  [ -z "$RETAG" ] || [ "$PRIORITY" = 1 ] || { say "--retag goes with --priority"; return 2; }
   [ "$LINK" = 0 ] || { [ "$BACKLOG" = 1 ] && [ "$PRIORITY" = 0 ]; } || { say "--link goes with --backlog, without --priority"; return 2; }
   [ "$SIZE" = 0 ] || { [ "$BACKLOG" = 1 ] && [ "$PRIORITY" = 0 ] && [ "$LINK" = 0 ]; } || { say "--size goes with --backlog, without --priority or --link"; return 2; }
   [ "$REPORT" = 0 ] || { [ "$BACKLOG" = 1 ] && [ "$PRIORITY$LINK$SIZE" = 000 ]; } || { say "--report goes with --backlog, without --priority, --link or --size"; return 2; }

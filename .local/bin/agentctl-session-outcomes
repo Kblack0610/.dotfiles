@@ -381,7 +381,7 @@ cmd_run() {
         | ([.[].merged | select(.) | fromdateiso8601] | max) as $last
         | select($last != null and ($all or ($now - $last) < $band))
         | {session_id: .[0].l, project: null, harness: "claude-cloud", title: "",
-           updated: $last, edits: 0, prs: (map(.pr) | unique)}' "$work/linked.json" |
+           updated: $last, edits: null, prs: (map(.pr) | unique)}' "$work/linked.json" |
       due_rows "$work/seen.jsonl" "$all" > "$work/cloud.jsonl" || die_stalled "could not read the cloud sessions"
     while IFS= read -r sid; do null_metrics "$work" "$sid"; done < <(jq -r .session_id "$work/cloud.jsonl")
     n=$((n + $(wc -l < "$work/cloud.jsonl")))
@@ -506,7 +506,7 @@ cmd_run() {
           observed: $observed,
           final: $row.final,
           transcript: ($m != null),
-          edits: ($row.edits // 0),
+          edits: $row.edits,
           cost_usd: ($row.cost_usd // null),
           cost_by_model: ($row.cost_by_model // null),
           cost_src: ($row.cost_src // null),

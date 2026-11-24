@@ -684,7 +684,7 @@ real_epic_board() {
   pr_lane_verdict 'drop the dead timer' timer
   run t3_picks "$(t3_rows '')"
   assert_success
-  assert_equal "$(jq -r '"\(.pprio) \(.why)"' <<<"$output")" '0 cleanup, focus project, tier3, #high, alpha'
+  assert_equal "$(jq -r '"\(.pprio) \(.why)"' <<<"$output")" '0 cleanup, focus project, tier3, #normal, alpha'
 }
 
 @test "reap closes a queue item whose session ended: ok with a PR, failed without; a closed one is left alone" {

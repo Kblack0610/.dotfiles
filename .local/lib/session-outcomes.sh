@@ -305,7 +305,7 @@ so_opencode_rows() {
     | ((.model // "{}") | fromjson) as $model
     | { session_id, harness: "opencode", project: $p[0][.directory], title,
         updated: (.updated_ms / 1000 | floor), duration_s: ((.updated_ms - .created_ms) / 1000 | floor),
-        edits: (.edits // 0), cost_usd, models: [$model.id // empty],
+        edits: .edits, cost_usd, models: [$model.id // empty],
         provider: $model.providerID,
         tokens: {input, output, cacheCreation: .cache_write, cacheRead: .cache_read,
                  total: (.input + .output + .reasoning + .cache_read + .cache_write)},
@@ -346,7 +346,7 @@ so_codex_rows() {
           .metrics.activity[$k] = nadd(.metrics.activity[$k]; $c.metrics.activity[$k]));
     (map(select(.parent == null) | {key: .session_id, value: .}) | from_entries) as $roots
     | reduce (.[] | select(.parent != null and $roots[.parent] != null)) as $c ($roots;
-        .[$c.parent] |= (.edits += $c.edits | .tokens = add_tok(.tokens; $c.tokens)
+        .[$c.parent] |= (.edits = nadd(.edits; $c.edits) | .tokens = add_tok(.tokens; $c.tokens)
                          | .cost_by_model = add_tok(.cost_by_model; $c.cost_by_model) | .unpriced = (.unpriced or $c.unpriced)
                          | .models = (.models + $c.models | unique) | .prs = (.prs + $c.prs | unique)
                          | sum_into($c)
