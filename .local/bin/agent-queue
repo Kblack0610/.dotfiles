@@ -1075,6 +1075,8 @@ gate_line() {
 gate_grants() {
   local board="$1" t id rt text names all hit q n GQ
   shift
+  # The names are split into one --for word each, never globbed (a plan path is free text).
+  local -; set -f
   local -A NAMES=()
   for t in "$@"; do
     NAMES=() all=""
@@ -1087,9 +1089,9 @@ gate_grants() {
       | "\(.id)\u001f\($of | join(" "))\u001f\([.text // "", (.details // [])[]] | join(" ") | gsub("[\n\u001f]"; " "))"' <<<"$board")
     [ -n "$all" ] || continue
     # shellcheck disable=SC2086 # a word list: one --for name each
-    hit="$("$AQ_HOLD" check "${t#hold/}" --no-caller --for $all 2>&1 >/dev/null)" || continue
-    [[ "$hit" == "granted: "*" for "* ]] || continue
-    hit=" ${hit#* for } "
+    hit="$("$AQ_HOLD" check "${t#hold/}" --no-caller --for $all 2>&1 >/dev/null | sed -n 's/^granted: [^ ]* for //p')"
+    [ -n "$hit" ] || continue
+    hit=" $hit "
     gate_queue_tag "$t"; q="$GQ"
     for id in "${!NAMES[@]}"; do
       for n in ${NAMES[$id]}; do

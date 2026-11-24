@@ -20,7 +20,10 @@ jq -nc --arg plan "$plan" --arg project "$project" --arg cwd "$cwd" \
   --arg session "$session" --argjson epoch "$(date +%s)" \
   '{epoch: $epoch, plan: $plan, project: $project, session: $session, cwd: $cwd}' >> "$ledger"
 
-say() { jq -nc --arg c "plan-approved: $1" '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $c}}'; }
+# Every notice goes out as one JSON document at exit: the hook's stdout is parsed as one.
+said=()
+say() { said+=("$1"); }
+trap '[ "${#said[@]}" -eq 0 ] || jq -nc --arg c "plan-approved: ${said[*]}" '"'"'{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $c}}'"'"'' EXIT
 here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../.."
 
 # The human approving a plan narrows each hold they set to its rows: the plan's slug goes on the
@@ -30,8 +33,8 @@ here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../.."
 if [ "${CLAUDE_CODE_SESSION_ATTENDED:-0}" = 1 ] && [ -z "${AGENT_QUEUE_ITEM:-}" ]; then
   slug=$(basename "$plan" .md) granted=()
   while IFS=$'\t' read -r res _ by _; do
-    [ "$by" = human ] && "$here/.local/bin/agent-hold" grant "$res" "$slug" >/dev/null 2>&1 && granted+=("$res")
-  done < <("$here/.local/bin/agent-hold" list 2>/dev/null)
+    [ "$by" = human ] && timeout 10 "$here/.local/bin/agent-hold" grant "$res" "$slug" >/dev/null 2>&1 && granted+=("$res")
+  done < <(timeout 10 "$here/.local/bin/agent-hold" list 2>/dev/null)
   [ "${#granted[@]}" -eq 0 ] || say "granted $slug on the human's hold(s) ${granted[*]}: its #hold/ rows may start while the rest stay held."
 fi
 
