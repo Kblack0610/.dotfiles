@@ -645,3 +645,23 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   refute_output --partial 'started queue item hc'
   [ -n "$(qitem queued hc)" ] || fail "the home-config item left the queue on a red cluster"
 }
+
+# ar-4971: the hub bar's Machines line reads each worker's slots from the pass's snapshot, never over ssh itself.
+@test "a real pass stores hosts --json as one array beside the candidates; a dry pass writes none; it runs no ssh for stuck" {
+  route_ready
+  acct main:ok
+  worker '2.0 16 1 50'
+  snap="$HOME/.local/state/agentctl/dispatch/hosts.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  [ ! -e "$snap" ] || fail "a dry pass wrote the hosts snapshot"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  [ -e "$snap" ] || fail "a real pass wrote no hosts snapshot: $output"
+  assert_equal "$(jq -c '[.[] | {name, max_live}]' "$snap")" '[{"name":"razer-laptop","max_live":1}]'
+  jq -e '.[0].free | type == "number"' "$snap" >/dev/null || fail "the worker's free slots are not a number: $(cat "$snap")"
+  # The same rows `hosts --json` prints, so a reader of the file and of the verb agree.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts --json
+  assert_equal "$(jq -c '[.name, .max_live]' <<<"$output")" "$(jq -c '.[0] | [.name, .max_live]' "$snap")"
+  # stuck_on is one ssh per worker and the bar reads no stuck, so the snapshot leaves it null.
+  jq -e '.[0].stuck == null' "$snap" >/dev/null || fail "the snapshot counted stuck items: $(cat "$snap")"
+  [ -z "$(ls "${snap%/*}" | grep '^hosts\.json\.')" ] || fail "a temp file was left behind: $(ls "${snap%/*}")"
+}
