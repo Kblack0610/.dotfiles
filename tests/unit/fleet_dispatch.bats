@@ -357,7 +357,7 @@ item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
   assert_output ''
 }
 
-@test "pull-after promotes the open rows gated #after/<id>, that row counted clear: high starts at once, low waits its turn, another pending gate holds" {
+@test "pull-after promotes the open rows gated #after/<id>, that row counted clear: high starts at once, normal and low wait their turn, another pending gate holds" {
   project game beta "$SANDBOX/repos/game"
   gate_rbw
   row game agent ga-1 "- [/] feat(game): the map first <!-- id:ga-1 -->"
@@ -365,12 +365,14 @@ item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
   row game agent ga-3 "- [ ] feat(game): the paint $T #low #after/ga-1 <!-- id:ga-3 -->"
   row game agent ga-4 "- [ ] feat(game): the keys $T #after/ga-1 #rbw/infra/x <!-- id:ga-4 -->"
   row game agent ga-5 "- [ ] feat(game): unrelated $T <!-- id:ga-5 -->"
+  row game agent ga-7 "- [ ] feat(game): the sounds $T #normal #after/ga-1 <!-- id:ga-7 -->"
   cmd_start() { echo "start $*" >> "$NOTES_FIXTURE/started"; }
   run cmd_pull_after ga-1
   assert_success
   assert_output --partial "pull-after ga-1: ga-3 is low priority, so a pass starts it in its turn"
+  assert_output --partial "pull-after ga-1: ga-7 is normal priority, so a pass starts it in its turn"
   assert_equal "$(cat "$NOTES_FIXTURE/started")" "start --item ga-2"
-  assert_equal "$(agent-queue list --state queued --json | jq -r .slug | sort | paste -sd,)" "ga-2,ga-3"
+  assert_equal "$(agent-queue list --state queued --json | jq -r .slug | sort | paste -sd,)" "ga-2,ga-3,ga-7"
   assert_output --partial "skip game: ga-4 waits on rbw infra/x"
   # The row it could not queue is in the log, which outlives the closing session's stderr; ga-2 is not.
   run grep -c 'pull-after ga-1: row ga-4 was not queued: skip game: ga-4 waits on rbw infra/x' "$LOG"
@@ -935,10 +937,10 @@ private_or_skip() {
   started_item other lab:other-1 run combat
   run cmd_suggest
   assert_success
-  assert_output "auto  unjudged  game game human  [fleet, #high, beta]
+  assert_output "auto  unjudged  game game human  [fleet, #normal, beta]
 auto  dispatch  game game judged  [fleet, #high, beta]
-auto  dispatch  game game busy  [fleet, #high, beta]  blocked: area held by a queue item
-auto  unjudged  game game new  [fleet, #high, beta]
+auto  dispatch  game game busy  [fleet, #normal, beta]  blocked: area held by a queue item
+auto  unjudged  game game new  [fleet, #normal, beta]
 man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app: it is on DISPATCH_OFF_PROJECTS, so its rows stay with the human"
   refute_output --partial 'app human'
   refute_output --partial 'sketch'
@@ -1082,7 +1084,7 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app: it i
   assert_output "game high: focus project, fleet, #high, beta, 16d old
 game high new: focus project, fleet, #high, beta, 1d old
 game low: focus project, fleet, #low, beta, 4d old
-app due: due today, fleet, #high, alpha
+app due: due today, fleet, #normal, alpha
 app urgent: fleet, #urgent, alpha"
 }
 
@@ -1132,7 +1134,7 @@ app urgent: fleet, #urgent, alpha"
   assert_equal "$(jq -r 'select(.key == "game feat") | .why' <<<"$output")" 'fleet, #high, beta, 1d old'
 }
 
-@test "rank: a row with no priority tag, which the feed ranks as #high, reads as #high in why and priority" {
+@test "rank: a row with no priority tag, which the feed ranks as #normal, reads as #normal in why and priority" {
   export DISPATCH_TODAY=2026-11-05
   project game beta "$SANDBOX/repos/game"
   row game agent 'game high' "- [ ] game high #high $T #c1104"
@@ -1144,7 +1146,7 @@ app urgent: fleet, #urgent, alpha"
   run cmd_suggest --json
   assert_success
   assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'game bare,game high,game low'
-  assert_equal "$(jq -r 'select(.key == "game bare") | "\(.why) \(.priority)"' <<<"$output")" 'fleet, #high, beta, 35d old high'
+  assert_equal "$(jq -r 'select(.key == "game bare") | "\(.why) \(.priority)"' <<<"$output")" 'fleet, #normal, beta, 35d old normal'
 }
 
 @test "rank: a row the feed aims at its project's target ranks by the feed and its why says release due; its own sooner #due wins" {
@@ -1159,7 +1161,7 @@ app urgent: fleet, #urgent, alpha"
   run cmd_suggest --json
   assert_success
   assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'game aimed,game plain'
-  assert_equal "$(jq -r 'select(.key == "game aimed") | .why' <<<"$output")" 'release due in 1d, fleet, #high, beta, 34d old'
+  assert_equal "$(jq -r 'select(.key == "game aimed") | .why' <<<"$output")" 'release due in 1d, fleet, #normal, beta, 34d old'
   # Its own #due today is sooner than the target: the why names the row's own date.
   run jq -nr "$RANK_JQ"'{text: "- [ ] x #due1105", release_due: "2026-11-06", prio: 1, stage: "beta"} | rank_fields("2026-11-05"; "") | .why'
   assert_output 'due today, #high, beta'
@@ -1665,7 +1667,10 @@ EOF
   row game human 'urgent one' '- [ ] urgent one #urgent <!-- id:gm-7 -->'
   row game human 'low one' '- [ ] low one #low <!-- id:gm-8 -->'
   row game human 'bare one' '- [ ] bare one <!-- id:gm-9 -->'
-  for k in 7:urgent 8:low 9:high; do
+  row game human 'normal one' '- [ ] normal one #normal <!-- id:gm-10 -->'
+  row game human 'high one' '- [ ] high one #high <!-- id:gm-11 -->'
+  # A bare row is the row grammar's default, normal (priority.md), as is a #normal one.
+  for k in 7:urgent 8:low 9:normal 10:normal 11:high; do
     run promote "$(jq -cn --arg k "gm-${k%:*}" '{profile: "bnb", project: "game", lane: "human", key: $k}')" "" task
     assert_success
     assert_output --partial "queued game: gm-${k%:*}"
@@ -1673,7 +1678,7 @@ EOF
     [ -n "$f" ] || fail "no item for gm-${k%:*}"
     assert_equal "$(qfield "$f" priority) $(qfield "$f" from)" "${k#*:} board:game:gm-${k%:*}"
   done
-  assert_equal "$(grep -c 'id:gm-' "$NOTES_FIXTURE/rows.game.human")" 3
+  assert_equal "$(grep -c 'id:gm-' "$NOTES_FIXTURE/rows.game.human")" 5
 }
 
 @test "promote: a row whose item already finished ok is never queued again; a human row goes back recorded failed" {
@@ -2012,10 +2017,12 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
 
 @test "headroom counts what could start now against each limit" {
   two_items
-  export DISPATCH_PER_PASS=1 DISPATCH_TARGET_AWAY=6
+  export DISPATCH_PER_PASS=1 DISPATCH_TARGET_AWAY=6 DISPATCH_STARVED_MIN=45
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_success
   assert_equal "$(jq -r '[.could_start, .per_pass_limited, .runnable, .slots_free, .held] | @tsv' <<<"$output")" $'2\ttrue\t2\t6\t'
+  # The dispatch step's bound in the pipeline snapshot; the hold's start is read live from `stopped`, never here
+  assert_equal "$(jq -c '[.starved_min, has("held_since")]' <<<"$output")" '[45,false]'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
   assert_output --partial 'could start now: 2 of 2 runnable (a pass starts up to 1, level mid)'
   assert_not_called 'wt new'
@@ -3095,7 +3102,7 @@ picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | 
   assert_success
 }
 
-@test "stopped: a finding names its items without their pools, a long reason is cut at a clause, --json carries the line" {
+@test "stopped: a finding names its items without their pools, a long reason is cut at a clause, --json carries the line and the whole reason" {
   hold_for 90 'finding firing: dbs-7-boss (starved pool:other), house-sleep-dinner (starved pool:other), 5 more, every queue item waits'
   run cmd_stopped
   assert_failure
@@ -3107,6 +3114,10 @@ picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | 
   assert_output --partial 'Dispatch stopped 2d2h: no account has room; bnb is the closest, 98% of its week used'
   run cmd_stopped --json
   jq -e '.runner == "fleet-dispatch" and (.line | startswith("Dispatch stopped 2d2h")) and (.since | type == "number")' <<<"$output"
+  # NEGATIVE CONTROL for the cut: the line is cut to 160, why is the whole reason, past the cut (ar-4985)
+  run jq -r '.why, .clears' <<<"$output"
+  assert_line 'no account has room; bnb is the closest, 98% of its week used, inside the last 15% kept for the human, and a great many more words that will not fit'
+  assert_line 'Clears when an account is back under its pace'
 }
 
 @test "stopped: the human's agent-hold reads as held with its own reason and how to release it" {

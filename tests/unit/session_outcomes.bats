@@ -1197,6 +1197,14 @@ EOF
   assert_equal "$(r '.models | join(" ")')" claude-sonnet-5
 }
 
+@test "an opencode session with no file summary carries null edits, not 0" {
+  oc_db
+  sqlite3 "$SO_OPENCODE_DB" "UPDATE session_v2 SET summary_files = NULL WHERE id = 'ses_root'"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs 'map(select(.session_id == "ses_root")) | last | .edits | tostring')" null
+}
+
 @test "an opencode session in a directory the registry does not know files under _unscoped; a known one keeps its project" {
   oc_db
   echo 'project_known() { [ "$1" = proj ]; }' >> "$SO_PROJECT_LIB"
@@ -1625,6 +1633,24 @@ cx_item_rollouts() {
   assert_equal "$(r '.hard_errors | [.api_error, .denied, .tool_errors] | tostring')" '[0,null,null]'
   assert_equal "$(r '.activity | [.tool_calls, .test_failures, .api_messages] | tostring')" '[3,null,null]'
   assert_equal "$(r '[.effort, .error, .delivery.peak_context, .edits] | tostring')" '[null,null,null,1]'
+}
+
+@test "a codex row that edited only through shell carries null edits, not 0; one with an apply_patch counts it" {
+  cx_rollouts
+  local d="$SO_CODEX_SESSIONS/2026/10/19" t0
+  t0=$(date -u -d "@$((STOP - 600))" +%Y-%m-%dT%H:%M:%S.000Z)
+  jq -cn --arg t0 "$t0" '
+    {timestamp: $t0, type: "session_meta", payload: {id: "cx-shell", cwd: "/w/proj", originator: "codex_exec", source: "exec"}},
+    {timestamp: $t0, type: "turn_context", payload: {model: "gpt-6.1-sol"}},
+    {timestamp: $t0, type: "response_item", payload: {type: "function_call", name: "exec_command", call_id: "c1", arguments: ({cmd: "python3 - <<EOF\nopen(\"a\", \"w\").write(\"x\")\nEOF"} | tojson)}},
+    {timestamp: $t0, type: "event_msg", payload: {type: "token_count", info: {total_token_usage: {input_tokens: 10, cached_input_tokens: 0, output_tokens: 5}}}}
+  ' > "$d/rollout-2026-10-19T00-02-00-cx-shell.jsonl"
+  queue_stub
+  run "$SUBJECT" run
+  assert_success
+  r() { cat "$SO_OUT"/proj/*.jsonl | jq -rs "map(select(.session_id == \"$1\")) | last | $2"; }
+  assert_equal "$(r cx-shell '.edits | tostring')" 'null'
+  assert_equal "$(r cx-root '.edits | tostring')" '1'
 }
 
 # cx_prices [MODEL...] -- a harness map pricing the named Codex models (USD per million tokens).

@@ -90,7 +90,7 @@ setup() {
   local offenders=()
   local f
   for f in .local/bin/agentctl .local/lib/agent-proof.sh \
-           .local/src/tmux/fleet.sh .local/bin/agent-mqtt-publish; do
+           .local/src/tmux/fleet.sh .local/bin/agent-mqtt-publish .local/bin/fleet-bench; do
     # the line that establishes the state dir must mention both names
     grep -qE 'AGENTCTL_STATE_DIR:-\$\{?AGENTCTL_STATE' "$REPO_ROOT/$f" || offenders+=("$f")
   done
@@ -99,7 +99,7 @@ setup() {
   # quietly honouring one name. The count is also the empty-input guard: if the
   # grep matched nothing at all, this fails rather than reading as "all fine".
   run bash -c "grep -rlE 'AGENTCTL_STATE_DIR:-\\\$\\{?AGENTCTL_STATE' '$REPO_ROOT'/.local | wc -l"
-  assert_output '4'
+  assert_output '5'
 }
 
 # The picker reads a test's dependencies from the names in it, and a directory only as

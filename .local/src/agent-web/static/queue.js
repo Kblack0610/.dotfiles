@@ -12,7 +12,7 @@
 // counts from its own counts read (`?counts=1`), made once the table has painted, amber while an
 // urgent row is blocked and red with the read's error.
 
-const Q_PRIORITIES = ["urgent", "high", "low"];
+const Q_PRIORITIES = ["urgent", "high", "normal", "low"];
 // The line's snapshot is written every 10 minutes; a minute is plenty.
 const FLOW_REFRESH_MS = 60e3;
 // The queue form's modes in the human's words; the option values stay what agent-queue takes.

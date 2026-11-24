@@ -124,6 +124,8 @@ agent_chain_wip{step="review"} 0
 agent_chain_wip{step="waiting"} 0
 # HELP agent_chain_age_ratio Each step's age p90 over its bound in kpi-thresholds; past 1 is a bottleneck.
 # TYPE agent_chain_age_ratio gauge
+# HELP agent_chain_score Each step's measure over its bound (fleet-bench pipeline): an age p90, the rows admission held in 24h, or the minutes dispatch has been held; 1 or more is over.
+# TYPE agent_chain_score gauge
 # HELP agent_chain_moves Items each step took in and let out over the last hour, from the record.
 # TYPE agent_chain_moves gauge
 # HELP agent_chain_drift Queue items the record and the queue folders place at different steps.
@@ -2023,7 +2025,7 @@ cause_of() { printf '%s' 'lock .* held by pid' | sha256sum | cut -c1-8; }
   assert_line --regexp 'check\(watch\): quoted tripped .* #high$'
   assert_line --regexp 'check\(watch\): commented tripped .* #high$'
   refute_output --partial 'med_early'
-  assert_line --regexp 'check\(watch\): med_late tripped .* #low$'
+  assert_line --regexp 'check\(watch\): med_late tripped .* #normal$'
 }
 
 # fix_item <slug> <state> <status> [pr] [merged]: one window item for the lock cause, as agent-queue lists it

@@ -241,13 +241,13 @@ off_project() {
 # no fork: a fat process forking about 37 subshells a row held a dispatch pass at 10 to 17 min of CPU
 # (ar-4512).
 
-# prio_rank <text> -> 0 urgent, 1 high, 3 low; prio_rank_set sets PRIO.
+# prio_rank <text> -> 0 urgent, 1 high, 2 normal, 3 low; prio_rank_set sets PRIO.
 prio_rank_set() {
   case "$1" in
     *'#urgent'*) PRIO=0 ;;
     *'#high'*) PRIO=1 ;;
     *'#low'*) PRIO=3 ;;
-    *) PRIO=1 ;;   # a bare row is high: the row grammar's default, and the queue priority it gets
+    *) PRIO=2 ;;   # #normal, or a bare row: the row grammar's default (priority.md), and the queue priority it gets
   esac
 }
 prio_rank() { prio_rank_set "$1"; echo "$PRIO"; }
@@ -307,7 +307,7 @@ def rank_fields($today; $pprio):
                  elif .due_in == 0 then "\($rel)due today" else "\($rel)due in \(.due_in)d" end),
                 (if .req == 0 then "requested" else empty end),
                 (if (.worker // "") != "" then .worker else empty end),
-                ({"0": "#urgent", "1": "#high", "3": "#low"}[(.prio | tostring)] // empty),
+                ({"0": "#urgent", "1": "#high", "2": "#normal", "3": "#low"}[(.prio | tostring)] // empty),
                 (.klabel // "" | select(. != "")),
                 .stage,
                 (if .age > 0 then "\(.age)d old" else empty end)] | join(", "))};
@@ -551,7 +551,7 @@ sig_set() {
 }
 
 # row_sig <row text> -> a verdict's cache key: the sig of the text the judge rules on, whitespace
-# squeezed. The trailing <!-- --> comment, #of/ links and the priority tags (#urgent #high #low) are
+# squeezed. The trailing <!-- --> comment, #of/ links and the priority tags (#urgent #high #normal #low) are
 # left out: no verdict field reads them, and triage's --backlog --link and --priority passes add them
 # to hundreds of rows at once. The type(area) prefix stays: area is judged. sig_text sets SIG_TEXT, the
 # text it hashes; row_sig_set sets SIG.
@@ -559,7 +559,7 @@ sig_text() {
   local w o="" t=()
   read -ra t <<<"${1%%<!--*}"
   for w in "${t[@]+"${t[@]}"}"; do
-    case "$w" in '#of/'*|'#urgent'|'#high'|'#low') ;; *) o+="${o:+ }$w" ;; esac
+    case "$w" in '#of/'*|'#urgent'|'#high'|'#normal'|'#low') ;; *) o+="${o:+ }$w" ;; esac
   done
   SIG_TEXT=$o
 }
@@ -1784,14 +1784,15 @@ row_lane() {
   fi
 }
 
-# row_priority <raw line> [project] -> the queue priority the row asks for: a bare row is high, the
-# default of the row grammar and of agent-queue alike, and so is a cleanup row whatever its #low.
+# row_priority <raw line> [project] -> the queue priority the row asks for: a bare row is normal, the
+# row grammar's default, and a cleanup row is high whatever its #low (agent-queue's ORDER ranks it so).
 # row_priority_set sets PRIORITY; prio_word_set <prio_rank> <cleanup_row> sets it from the two, which a walk has.
 prio_word_set() {
   case "$1" in
     0) PRIORITY=urgent ;;
+    1) PRIORITY=high ;;
     3) if [ "$2" = 0 ]; then PRIORITY=high; else PRIORITY=low; fi ;;
-    *) PRIORITY=high ;;
+    *) PRIORITY=normal ;;
   esac
 }
 row_priority_set() {
@@ -2096,7 +2097,7 @@ verdict_errors() {
 #    row, so the judge reads it again with the plan. A row the rest wait behind keeps its verdict and
 #    is tagged on a later pass. A row inbox-plan already planned (a `goal:` detail) that the judge,
 #    reading that plan, still skips by such a rule takes the human exit: a second plan would not help.
-#  - human (DISPATCH_HUMAN_RULES): an #urgent, #high, bare or #requested row is filed on the human sheet
+#  - human (DISPATCH_HUMAN_RULES): an #urgent, #high, #normal, bare or #requested row is filed on the human sheet
 #    (file_row human), a #low one kept in improvements.md (`notes improve`) unless an open row gates
 #    #after/ on it (then the sheet, whose row follow_moved_gates moves that gate to in the same pass), its #worker/ tag off
 #    so no worker takes it there; then the agent row is dropped with a --why naming where it went.
@@ -2179,7 +2180,7 @@ skip_exits() {
     fi
     if [ "$e" = human ]; then
       prio=$(prio_rank "$body")
-      if [ "$req" = true ] || [ "$prio" -le 1 ] || [ -n "${gated[$id]-}" ]; then e=sheet; else e=improve; fi
+      if [ "$req" = true ] || [ "$prio" -le 2 ] || [ -n "${gated[$id]-}" ]; then e=sheet; else e=improve; fi
     fi
     if [ "$e" = plan ] && [ "$room" -le 0 ]; then
       [ -z "$dry" ] || { printf 'plan-wait\t%s\t%s\t%s\n' "$p" "$id" "$rule"; n[plan-wait]=$(( ${n[plan-wait]:-0} + 1 )); }
@@ -5946,7 +5947,7 @@ preempt_victims() {
         and (.agent // "claude") == "claude" and (runs_now($now; $h) | not)
         and ((.session // "") | index(":")) != null))
     | sort_by([(if (.weight // "light") == "heavy" then 2 else 1 end) >= $u,
-               ({"high": 1, "low": 2}[.priority // "high"] // 1), (.started // "")]) | reverse
+               ({"high": 1, "normal": 2, "low": 3}[.priority // "high"] // 1), (.started // "")]) | reverse
     | .[] | (.session | index(":")) as $i | "\(.slug) \(.session[:$i]) \(.session[$i + 1:])"' 2>/dev/null
   return 0
 }
@@ -6621,24 +6622,27 @@ held_clears() {
 # stopped [--json] -- rc 1 and the Stopped line when a hold has stood DISPATCH_STARVED_MIN or longer:
 # "Dispatch stopped 13h05m: <why>. <what clears it>." It is the one line every surface shows (hub Home's
 # Stopped row through fleet-sessions, the briefing, queue-starved's probe), at most 160 characters;
-# --json is {runner, since, line}. A run-floor start does not end the hold, a pass past an open
-# gate does (agent-proof.sh). A hold under the threshold, or none, prints nothing and is rc 0.
+# --json is {runner, since, line, why, clears}: why is the whole held_short reason and clears what ends
+# it, uncut, for the pipeline snapshot (fleet-bench pipeline_json). A run-floor start does not end the
+# hold, a pass past an open gate does (agent-proof.sh). A hold under the threshold, or none, prints
+# nothing and is rc 0.
 cmd_stopped() {
-  local since why held clears head max line
+  local since why full held clears head max line
   read -r since why < <(held_state) || return 0
   [ -n "$since" ] || return 0
   held=$(( $(date +%s) - since ))
   [ "$held" -ge $(( DISPATCH_STARVED_MIN * 60 )) ] || return 0
-  why=$(held_short "$why"); clears=$(held_clears "$why")
+  why=$(held_short "$why"); full=$why; clears=$(held_clears "$why")
   . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom.sh"
   head="Dispatch stopped $(prom_dur "$held"): "
   max=$(( 160 - ${#head} - ${#clears} - 3 ))
-  # Too long: cut at the last clause that fits.
+  # Too long for the one line: cut at the last clause that fits. --json carries the whole reason too.
   while [ "${#why}" -gt "$max" ] && [[ "$why" == *[,\;]" "* ]]; do why=${why%[,;] *}; done
   [ "${#why}" -le "$max" ] || why="${why:0:$max}"
   line="$head$why. $clears."
   if [ "${1:-}" = --json ]; then
-    jq -nc --arg line "$line" --argjson since "$since" '{runner: "fleet-dispatch", since: $since, line: $line}'
+    jq -nc --arg line "$line" --argjson since "$since" --arg why "$full" --arg clears "$clears" \
+      '{runner: "fleet-dispatch", since: $since, line: $line, why: $why, clears: $clears}'
   else
     echo "$line"
   fi
@@ -6946,7 +6950,8 @@ cmd_headroom() {
     --argjson per_pass "$PER_PASS" --arg level "$LEVEL" --argjson could "$could" --argjson cores "$cores" \
     --arg load "${load:-}" --arg load1 "${load1#-}" --arg busy "${busy#-}" --argjson starts "$starts" --argjson pend "$pend" --arg max_load "$MAX_LOAD" --arg held "$why" \
     --argjson floor "${DISPATCH_RUN_FLOOR:-0}" --argjson floor_live "$floor_live" --argjson red_floor "${DISPATCH_RED_FLOOR:-0}" --argjson red_live "$red_live" --argjson red_watch "${red_watch:-0}" \
-    --arg focus "$FOCUS_PROJECTS" --argjson focus_runnable "${focus_runnable:-0}" --argjson share "$SHARE_STATE" --argjson share_cap "${DISPATCH_FLEET_SHARE:-0}" '
+    --arg focus "$FOCUS_PROJECTS" --argjson focus_runnable "${focus_runnable:-0}" --argjson share "$SHARE_STATE" --argjson share_cap "${DISPATCH_FLEET_SHARE:-0}" \
+    --argjson starved_min "$DISPATCH_STARVED_MIN" '
     def num: if . == "" then null else tonumber end;
     {could_start: $could, per_pass: $per_pass, level: $level, per_pass_limited: ($per_pass > 0 and $could > $per_pass),
      runnable: $runnable, live_runs: $live, live_hand: $hand, max_live: $max_live, slots_free: ($max_live - $live),
@@ -6956,6 +6961,9 @@ cmd_headroom() {
      run_floor: $floor, floor_live: $floor_live, red_floor: $red_floor, red_watch: $red_watch, red_live: $red_live,
      focus: ($focus | split(" ") | map(select(. != ""))), focus_runnable: $focus_runnable,
      fleet_share: ($share + {cap: $share_cap, pct: (if $share.total > 0 then $share.fleet * 100 / $share.total | round else null end)}),
+     # The minutes after which `stopped` calls a standing hold stopped: the dispatch step'"'"'s bound in
+     # the pipeline snapshot. The hold'"'"'s start is not here: this is written before the pass'"'"'s outcome clears it.
+     starved_min: $starved_min,
      held: (if $held != "" then $held
             elif $total_live == "" then "live sessions unreadable: the fleet state document is missing or stale"
             elif ($total_live | tonumber) >= $max_live then "pace target: \($total_live) live sessions, the \($target_when) target is \($max_live)"
@@ -8498,7 +8506,8 @@ cmd_pull_after() {
     kept="$kept $PROMOTED"
     [ -z "$queue_only" ] || continue
     pri=$(agent-queue show "$PROMOTED" --json 2>/dev/null | jq -r '.priority // empty')
-    if [ "$pri" = low ]; then say "pull-after $id: $PROMOTED is low priority, so a pass starts it in its turn"; continue; fi
+    # Normal and low wait for a pass, as at agent-queue add (waits_turn): only urgent and high jump.
+    case "$pri" in normal|low) say "pull-after $id: $PROMOTED is $pri priority, so a pass starts it in its turn"; continue ;; esac
     cmd_start --item "$PROMOTED" </dev/null 3<&- || say "pull-after $id: $PROMOTED could not start now, so it stays queued for a pass"
   done 3< <(jq -c --arg g "after/$id" '.rows[]? | select(.state == "open" and .id != null and ((.tags // []) | index($g)))
     | {profile: (.profile // ""), project, lane, key: .id, raw: (.raw // .text // "")}' <<<"$board")

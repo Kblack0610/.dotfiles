@@ -18,7 +18,7 @@ use crate::session_actions::Runner;
 use crate::text::{cap, headline, TITLE_MAX};
 
 /// A queue item's priorities, as `agent-queue` takes them. A board row's are `tasks::PRIORITIES`.
-pub const PRIORITIES: [&str; 3] = ["urgent", "high", "low"];
+pub const PRIORITIES: [&str; 4] = ["urgent", "high", "normal", "low"];
 
 /// The harness of an item, or a session, that names none.
 pub const HARNESS_DEFAULT: &str = "claude";
@@ -1442,9 +1442,10 @@ impl crate::table::Row for QueueRow<'_> {
             "priority" => match self.item.priority.trim() {
                 "urgent" => Val::Num(3.0),
                 "high" => Val::Num(2.0),
+                "normal" => Val::Num(1.0),
                 "" => Val::None,
                 "low" => Val::Num(0.0),
-                _ => Val::Num(1.0),
+                _ => Val::Num(0.5),
             },
             c => self.val(c),
         }
@@ -1789,7 +1790,7 @@ pub fn bump(runner: &dyn Runner, slug: &str, priority: &str) -> Result<String, S
         return Err("bad slug".into());
     }
     if !PRIORITIES.contains(&priority) {
-        return Err("priority is urgent, high or low".into());
+        return Err("priority is urgent, high, normal or low".into());
     }
     runner.run(&argv(&["bump", slug, priority]))
 }
@@ -1841,7 +1842,7 @@ pub fn add_argv(a: &Add) -> Result<Vec<String>, &'static str> {
         return Err("mode is oneshot or plan");
     }
     if !PRIORITIES.contains(&priority) {
-        return Err("priority is urgent, high or low");
+        return Err("priority is urgent, high, normal or low");
     }
     if !is_tags(&a.tags) {
         return Err("tags are words, or at:HH:MM");
@@ -2684,15 +2685,18 @@ mod tests {
             ..Item::default()
         };
         assert_eq!(i.bumped(true), Some("urgent"));
+        assert_eq!(i.bumped(false), Some("normal"));
+        i.priority = "normal".into();
+        assert_eq!(i.bumped(true), Some("high"));
         assert_eq!(i.bumped(false), Some("low"));
         i.priority = "urgent".into();
         assert_eq!(i.bumped(true), None);
         i.priority = "low".into();
         assert_eq!(i.bumped(false), None);
-        i.priority = "asap".into();
+        // NEGATIVE CONTROL: a word agent-queue does not take (the retired medium) does not step.
+        i.priority = "medium".into();
         assert_eq!(i.bumped(true), None);
-        // NEGATIVE CONTROL: normal is retired, so an old item carrying it does not step.
-        i.priority = "normal".into();
+        i.priority = "asap".into();
         assert_eq!(i.bumped(true), None);
     }
     fn at(s: &str) -> chrono::DateTime<chrono::Utc> {

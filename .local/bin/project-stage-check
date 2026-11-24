@@ -139,7 +139,7 @@ requirements() {
 # its notes, else `human`. Mark is `todo`, `doing` (`[/]`) or `done`; close says how a ticked row
 # closed: `dup:<id>`, `dropped`, `met` (closed with this check's own PASS proof) or `done`. Kids
 # is 1 for a row with child rows (indented under it, or naming it in `#of/`), prio its `#urgent`,
-# `#high` or `#low`, and from the rest of its `from project-stage-check <name> --file` detail
+# `#high`, `#normal` or `#low`, and from the rest of its `from project-stage-check <name> --file` detail
 # line, which a reworded row keeps. An empty field is `-`: tab is IFS whitespace, so `read` would
 # shift the rest. The roadmap leaves dropped rows out, so it cannot be this reader. Fails, saying
 # so, when the verb does or answers short.
@@ -160,7 +160,7 @@ sheet_rows() {
       m = substr($0, ind + 4, 1); mk[n] = (m == " ") ? "todo" : (m == "/") ? "doing" : (m ~ /[xX]/) ? "done" : "todo"
       id[n] = "-"; if (match($0, /id:[a-z0-9]+-[0-9]+/)) id[n] = substr($0, RSTART + 3, RLENGTH - 3)
       s = $0; while (match(s, /#of\/[a-z0-9]+-[0-9]+/)) { of[substr(s, RSTART + 4, RLENGTH - 4)] = 1; s = substr(s, RSTART + RLENGTH) }
-      pr[n] = "-"; if (match($0, /#(urgent|high|low)([ \t]|$)/)) { pr[n] = substr($0, RSTART + 1, RLENGTH - 1); sub(/[ \t]$/, "", pr[n]) }
+      pr[n] = "-"; if (match($0, /#(urgent|high|normal|low)([ \t]|$)/)) { pr[n] = substr($0, RSTART + 1, RLENGTH - 1); sub(/[ \t]$/, "", pr[n]) }
       cl[n] = "-"
       if (mk[n] == "done") {
         cl[n] = "done"

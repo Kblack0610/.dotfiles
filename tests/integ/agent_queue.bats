@@ -293,11 +293,12 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
 @test "list orders by priority, then queued time, and next is the head" {
   "$AQ" add --project game --slug b-bare "b"
   "$AQ" add --project game --slug c-low --priority low "c"
+  "$AQ" add --project game --slug f-normal --priority normal "f"
   "$AQ" add --project game --slug d-urgent --priority urgent "d"
   "$AQ" add --project game --slug e-high --priority high "e"
   run bash -c "'$AQ' list --json | jq -r .slug"
-  # A bare add is high, so it queues with the explicit high one, in queued order.
-  assert_output $'d-urgent\nb-bare\ne-high\nc-low'
+  # A bare add by hand is high, so it queues with the explicit high one, in queued order; normal sits between high and low.
+  assert_output $'d-urgent\nb-bare\ne-high\nf-normal\nc-low'
   run "$AQ" next --json
   assert_success
   [ "$(jq -r .slug <<<"$output")" = d-urgent ]
@@ -1630,10 +1631,14 @@ notes --profile bnb ptask game --agent run gm-9"
   [ "$("$AQ" next --json | jq -r .slug)" = b ]
   run "$AQ" bump b soon
   assert_failure
-  # NEGATIVE CONTROL: normal is retired; urgent|high|low is the whole set, as on the sheets.
+  # normal is a word again (priority.md): it takes, and ranks between high and low.
   run "$AQ" bump b normal
-  assert_failure; assert_output --partial "urgent, high or low"
-  run "$AQ" add --project game --priority normal "x"
+  assert_success
+  [ "$("$AQ" next --json | jq -r .slug)" = a ]
+  # NEGATIVE CONTROL: a retired word (medium) is refused; urgent|high|normal|low is the whole set, as on the sheets.
+  run "$AQ" bump b medium
+  assert_failure; assert_output --partial "urgent, high, normal or low"
+  run "$AQ" add --project game --priority medium "x"
   assert_failure
 }
 
@@ -2315,7 +2320,7 @@ handoff_repo() {
   [ -z "$(field "$(item queued cx)" account)" ]
 }
 
-@test "an urgent or high plan item starts its session at once, a low one waits its turn; a failed start leaves it queued; AGENT_QUEUE_START=0 only queues; a dispatch hold only queues" {
+@test "an urgent or high plan item starts its session at once, a normal or low one waits its turn; a failed start leaves it queued; AGENT_QUEUE_START=0 only queues; a dispatch hold only queues" {
   run "$AQ" add --project game --mode plan --slug p1 "plan this"
   assert_success
   assert_called 'fleet-dispatch start --item p1'
@@ -2334,6 +2339,11 @@ handoff_repo() {
   assert_output --partial 'lp is low priority, so a dispatch pass starts it in its turn'
   assert_not_called 'start --item lp'
   [ -f "$(item queued lp)" ]
+  # A normal one waits its turn too (priority.md: normal waits its turn).
+  run "$AQ" add --project game --mode plan --priority normal --slug np "plan, normal"
+  assert_success
+  assert_output --partial 'np is normal priority, so a dispatch pass starts it in its turn'
+  assert_not_called 'start --item np'
   run "$AQ" add --project game --mode plan --priority urgent --slug up "plan, urgent"
   assert_called 'fleet-dispatch start --item up'
   # 2026-11-12: an urgent plan item started under the human's dispatch hold.
@@ -4528,6 +4538,7 @@ second line of the brief
   assert_output "h,head,r1,req,tail,u1"
   run "$AQ" admission --json
   assert_equal "$(jq -c '[.held_7d, .returned_7d]' <<<"$output")" '[1,2]'
+  assert_equal "$(jq -c '[.day.held, .day.why.cap, .day.why.returned]' <<<"$output")" '[1,1,null]'
   run jq -r 'select(.why == "returned") | .slug' "$AGENT_QUEUE_DIR/admission.jsonl"
   assert_output "b
 a"
@@ -4792,6 +4803,10 @@ a"
   assert_equal "$(jq .held_7d <<<"$output")" 1
   run jq -r .slug "$AGENT_QUEUE_DIR/admission.jsonl"
   assert_output "$(printf 'held\nheld')"
+  # day is the last 24h of the same count: a hold two days old is in held_7d and not in day (ar-4985)
+  printf '{"at":"%s","project":"game","slug":"old2","why":"cap"}\n' "$(date -u -d '2 days ago' +%Y-%m-%dT%H:%M:%SZ)" >> "$AGENT_QUEUE_DIR/admission.jsonl"
+  run "$AQ" admission --json
+  assert_equal "$(jq -c '[.held_7d, .day.held, .day.why]' <<<"$output")" '[2,1,{"cap":1}]'
 }
 
 @test "at the cap, an add of a slug already queued says so, not that admission held it" {
@@ -5244,14 +5259,14 @@ row_item() {
   assert_output $'red low\nretagged-down high\ncleanup high\ngone high\nretagged-up low'
 }
 
-@test "ar-4884: an item on a #normal row, or an untagged one the feed reads normal, ranks high until the queue has a normal word" {
+@test "ar-4885: an item on a #normal row takes the row's normal, the queue's own word for it" {
   story_notes
   row_item on-normal level:lv-1 low
   jq -n '{rows: [{project: "level", id: "lv-1", state: "open", priority: "normal"}]}' > "$NOTES_FIXTURE/board.json"
   run bash -c "'$AQ' list --json | jq -r '\"\(.slug) \(.priority)\"'"
   assert_success
-  # NEGATIVE CONTROL: a filter of urgent, high and low drops the row, and the item keeps its own low.
-  assert_output 'on-normal high'
+  # NEGATIVE CONTROL: the item's own low is not what it reads; the row's normal is, no longer mapped to high.
+  assert_output 'on-normal normal'
 }
 
 @test "ar-3011: bump and set priority= write the item's row, which the order reads; an item with no row writes none" {
@@ -5269,7 +5284,7 @@ row_item() {
   [ "$(field "$(item queued rowed)" priority)" = low ]
   run "$AQ" set rowed priority=soon
   assert_failure
-  assert_output --partial "urgent, high or low"
+  assert_output --partial "urgent, high, normal or low"
   # NEGATIVE CONTROL: an item with no row has only its own line to change.
   : > "$NOTES_FIXTURE/calls.log"
   "$AQ" bump plain low >/dev/null

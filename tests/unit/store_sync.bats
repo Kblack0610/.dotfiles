@@ -990,6 +990,65 @@ route_item() {
   assert_line 'routed: ocfree'
 }
 
+# queued_item <machine> <slug>: a queued item as agent-queue writes it. The body is load-bearing: it
+# keeps each moved copy above git's 50% rename similarity, so both moves read as one item.
+queued_item() {
+  mkdir -p "$SANDBOX/$1/queue/queued"
+  { printf 'slug: %s\nproject: p\nagent: claude\nqueued: 2026-11-23T23:48:41Z\nlane: agent\naccount: agy\nmodel: \n' "$2"
+    printf 'sessions: agy_1\nrequeued: 2026-11-23T23:50:01Z\n---\nfix(x): a task title long enough to read as one item\n'
+    printf 'The body of the item, so a move that adds a run header is still the same file to git rename detection.\n'; } > "$SANDBOX/$1/queue/queued/$2.md"
+  on "$1" --now >/dev/null
+}
+
+# start_item <machine> <slug>: the dispatcher's running move, with its own started:.
+start_item() {
+  mkdir -p "$SANDBOX/$1/queue/running"
+  sed -e 's/^account: .*/account: claude-b/' -e 's/^model: .*/model: sonnet/' \
+    -e 's/^---$/host: b\nstarted: 2026-11-24T02:05:23Z\nlane_run: ab29\n---/' \
+    "$SANDBOX/$1/queue/queued/$2.md" > "$SANDBOX/$1/queue/running/$2.md"
+  rm "$SANDBOX/$1/queue/queued/$2.md"
+}
+
+# close_queued <machine> <slug>: a worker's session closing the item from a queued copy the running move never reached.
+close_queued() {
+  mkdir -p "$SANDBOX/$1/queue/done/2026-11-23"
+  sed 's/^---$/pr: o#7\nstarted: 2026-11-24T02:05:49Z\nstatus: ok\nfinished: 2026-11-24T02:05:52Z\n---/' \
+    "$SANDBOX/$1/queue/queued/$2.md" > "$SANDBOX/$1/queue/done/2026-11-23/$2.md"
+  rm "$SANDBOX/$1/queue/queued/$2.md"
+}
+
+@test "a close and a running move that set one key two ways keep the close and write no lost file, whichever syncs first (ar-3439)" {
+  local s
+  # razer-laptop's session closed ar-4219 while the fleet home's running move set its own started: (2026-11-23)
+  peer a; queued_item a c1; peer b
+  close_queued a c1; start_item b c1
+  on b --now; run on a --now
+  assert_success
+  peer c; queued_item c c2; peer d
+  close_queued c c2; start_item d c2
+  on c --now; run on d --now
+  assert_success
+  for s in c1 c2; do
+    run show "$ORIGIN" "queue/done/2026-11-23/$s.md"
+    assert_line 'status: ok'
+    assert_line 'started: 2026-11-24T02:05:49Z'
+    refute_output --partial '<<<<<<<'
+  done
+  run git -C "$ORIGIN" ls-tree -r --name-only master -- queue/queued queue/running
+  assert_output ''
+  [ ! -d "$SANDBOX/a/.sync/lost" ] || [ -z "$(ls -A "$SANDBOX/a/.sync/lost")" ]
+  [ ! -d "$SANDBOX/d/.sync/lost" ] || [ -z "$(ls -A "$SANDBOX/d/.sync/lost")" ]
+  # a requeue still outranks a close: a stale reaper's failed close beside a requeue writes no lost file
+  peer e; run_item e c3; peer f
+  route_item e c3; requeue_item f c3
+  mkdir -p "$SANDBOX/e/queue/done/2026-11-23"
+  sed 's/^---$/status: failed\nfinished: 2026-11-24T02:06:00Z\n---/' "$SANDBOX/e/queue/running/c3.md" > "$SANDBOX/e/queue/done/2026-11-23/c3.md"
+  rm "$SANDBOX/e/queue/running/c3.md"
+  on f --now; run on e --now
+  assert_success
+  [ ! -d "$SANDBOX/e/.sync/lost" ] || [ -z "$(ls -A "$SANDBOX/e/.sync/lost")" ]
+}
+
 @test "a clone set up with the old close driver moves to the item driver" {
   peer a
   printf 'queue/done/*/*.md merge=close\n' > "$SANDBOX/a/.git/info/attributes"
