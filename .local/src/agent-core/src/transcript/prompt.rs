@@ -21,7 +21,7 @@ pub(super) fn human_at(text: &str) -> Option<u64> {
 
 /// A typed prompt the human sent, not one our tooling typed into the pane (a resume is no typed
 /// prompt at all, a task is one but not the human's).
-fn human_typed(line: &str) -> bool {
+pub(super) fn human_typed(line: &str) -> bool {
     typed_prompt(line).is_some_and(|p| !fleet_typed(&p))
 }
 

@@ -45,14 +45,16 @@
 #                                       (park.conf PARK_DAYS)
 #   agent-ask unpark <id>               put a parked ask back on the boards now
 #   agent-ask show <id>                 print the ask file
-#   agent-ask answer [--by who] <id> <answer...>
+#   agent-ask answer [--by who] [--quote words] <id> <answer...>
 #                                       record the answer; flip to answered; queue its
 #                                       delivery (`deliver`) and return.
 #                                       --by human (default from a board) | judge | shepherd | agent
 #                                       -> answered_by. Inside an agent session
 #                                       (CLAUDE_CODE_SESSION_ID or AGENT_QUEUE_ITEM set) the
-#                                       default is agent and --by human is refused; an agent
-#                                       answer to an approval, a judge human-only ask or one at
+#                                       default is agent and --by human is refused, except
+#                                       an attended session's relay: --by human --quote
+#                                       '<their words>' (relay_proof checks the transcript);
+#                                       an agent answer to an approval, a judge human-only ask or one at
 #                                       the human floor is refused. Any answer releases what the
 #                                       ask holds (agent-queue ask_pending).
 #   agent-ask deliver <id> | --all      deliver a recorded answer: typed into its live session,
@@ -953,19 +955,62 @@ answer_row() {
   file_board_row "$1" "$(field "$1" question) -> answered: $2$how${4:+; $4}"
 }
 
-# cmd_answer_cli [--by who] <id> <answer...>: the `answer` subcommand. `human` needs the human's own
-# channel (a board, or the reply typed into the session). Called from inside an agent session
-# (CLAUDE_CODE_SESSION_ID or AGENT_QUEUE_ITEM set) the answer is the agent's: `agent` is the
-# default and the only value allowed, so no session can write `human`, `judge` or `shepherd`
-# (the judge and the sweeps call cmd_answer directly). 2026-11-20 ask 5ZRfWB read answered_by
-# human with no human answer. The boards run outside a session and strip those two variables.
+# relay_proof <id> <quote>: why an attended session may record the human's answer to <id>, or
+# what is missing (stderr, rc 1). The quote must be in one entry of the session's own transcript
+# newer than the ask (`agent-panel human`: a typed prompt or a dialog answer, never a paste or
+# what the fleet typed), and the ask's id in that entry's words or in what they were shown. The
+# transcript is the harness's record, so an agent's own "the human said yes" proves nothing.
+relay_proof() {
+  local id="$1" quote="$2" f sid t made said
+  [ -z "${AGENT_QUEUE_ITEM:-}" ] || { echo "a dispatched session (AGENT_QUEUE_ITEM set) has no human at it" >&2; return 1; }
+  sid="${CLAUDE_CODE_SESSION_ID:-}"
+  [ -n "$sid" ] || { echo "no CLAUDE_CODE_SESSION_ID to find the transcript by" >&2; return 1; }
+  f="$(find_ask "$id")"; [ -n "$f" ] || { echo "no ask '$id'" >&2; return 1; }
+  id="$(field "$f" id)"; made="$(field "$f" created)"
+  t="$(session_transcript "$sid")"
+  [ -n "$t" ] || { echo "no transcript for session $sid" >&2; return 1; }
+  command -v agent-panel >/dev/null 2>&1 || { echo "agent-panel is not installed" >&2; return 1; }
+  said="$(agent-panel human "$t" --since "$made")" || { echo "agent-panel human failed on $t" >&2; return 1; }
+  jq -e -s --arg q "$quote" '
+    def n: ascii_downcase | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "");
+    any(.[]; (.text | n) | contains($q | n))' <<<"$said" >/dev/null 2>&1 ||
+    { echo "no words of the human's in this session since the ask was posted contain: $quote" >&2; return 1; }
+  jq -e -s --arg q "$quote" --arg id "$id" '
+    def n: ascii_downcase | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "");
+    any(.[]; ((.text | n) | contains($q | n)) and
+             (((.shown | n) | contains($id | n)) or ((.text | n) | contains($id | n))))' <<<"$said" >/dev/null 2>&1 ||
+    { echo "the quote is in the transcript, but ask $id is in neither what the human was shown nor their words there" >&2; return 1; }
+}
+
+# cmd_answer_cli [--by who] [--quote words] <id> <answer...>: the `answer` subcommand. `human` needs
+# the human's own channel (a board, or the reply typed into the session). Called from inside an
+# agent session (CLAUDE_CODE_SESSION_ID or AGENT_QUEUE_ITEM set) the answer is the agent's: `agent`
+# is the default, and `human` is accepted only as a relay with proof: `--by human --quote` from an
+# attended session passes relay_proof, and the ask records the human, `relayed_by` the session and
+# their words in `answer_note`. `judge` and `shepherd` are never allowed (the judge and the sweeps
+# call cmd_answer directly), and a dispatched session never relays. 2026-11-20 ask 5ZRfWB read
+# answered_by human with no human answer; a bare `--by human` is still refused, so an agent's own
+# claim proves nothing. The boards run outside a session and strip those two variables.
 cmd_answer_cli() {
-  local by=human in_agent=""
+  local by=human in_agent="" quote="" quoted=""
   [ -z "${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}" ] || { in_agent=1; by=agent; }
-  if [ "${1:-}" = --by ]; then by="${2:-}"; shift 2 2>/dev/null || shift $#; fi
+  while [ "${1:-}" = --by ] || [ "${1:-}" = --quote ]; do
+    case "$1" in --by) by="${2:-}" ;; --quote) quote="$(oneline "${2:-}")"; quoted=1 ;; esac
+    shift 2 2>/dev/null || shift $#
+  done
   case "$by" in human|judge|shepherd|agent) ;; *) echo "agent-ask: --by is human, judge, shepherd or agent" >&2; return 2 ;; esac
+  if [ -n "$quoted" ] && { [ "$by" != human ] || [ -z "$in_agent" ] || [ -z "$quote" ]; }; then
+    echo "agent-ask: --quote is the words of the human an attended session relays, with --by human, from inside a session" >&2; return 2
+  fi
   if [ -n "$in_agent" ] && [ "$by" != agent ]; then
-    echo "agent-ask: an agent session answers as agent, not $by; the human answers from a board or in the session" >&2; return 2
+    if [ "$by" = human ] && [ -n "$quote" ]; then
+      local why f
+      why="$(relay_proof "${1:-}" "$quote" 2>&1)" || { echo "agent-ask: cannot record this as the human's answer: $why" >&2; return 1; }
+      f="$(find_ask "${1:-}")"
+      set_field "$f" relayed_by "$CLAUDE_CODE_SESSION_ID" answer_note "relayed in session $CLAUDE_CODE_SESSION_ID: $(cut -c1-300 <<<"$quote")"
+    else
+      echo "agent-ask: an agent session answers as agent, not $by; the human answers from a board or in the session, and an attended session relays their words with --by human --quote '<their words>'" >&2; return 2
+    fi
   fi
   cmd_answer --by "$by" "$@"
 }
@@ -976,7 +1021,7 @@ cmd_answer() {
   case "$by" in human|judge|shepherd|agent) ;; *) echo "agent-ask: --by is human, judge, shepherd or agent" >&2; return 2 ;; esac
   local id="${1:-}"; shift 2>/dev/null || true
   local answer; answer="$(oneline "$*")"
-  [ -n "$id" ] && [ -n "$answer" ] || { echo "usage: agent-ask answer [--by human|judge|shepherd|agent] <id> <answer...>" >&2; return 2; }
+  [ -n "$id" ] && [ -n "$answer" ] || { echo "usage: agent-ask answer [--by human|judge|shepherd|agent] [--quote words] <id> <answer...>" >&2; return 2; }
   local f; f="$(find_ask "$id")"
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
   local of; of="$(field "$f" audit_of)"

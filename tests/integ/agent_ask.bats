@@ -155,6 +155,57 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   run "$AGENT_ASK" show "$d"; assert_line 'answered_by: human'
 }
 
+# An attended session relays the human's answer with proof: its own transcript (agent-panel human,
+# stubbed from a fixture here, tested on real lines in agent-core), never the agent's say-so.
+relay_fixture() { # <kind> <text> <shown>
+  mkdir -p "$HOME/.claude/projects/p"; : > "$HOME/.claude/projects/p/sid-r.jsonl"
+  jq -nc --arg k "$1" --arg t "$2" --arg s "$3" '{at:"2026-11-24T10:00:00Z",kind:$k,text:$t,shown:$s}' > "$NOTES_FIXTURE/agent-panel.human"
+}
+
+@test "answer --quote: an attended session records the human's words as theirs, with the proof on the ask" {
+  local id; id="$(post demo 'park 611 rows?')"
+  relay_fixture answer 'Park them' "Ask $id: park the 611 rows?"
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'park  THEM' "$id" park
+  assert_success
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: answered'; assert_line 'answered_by: human'; assert_line 'answer: park'
+  assert_line 'relayed_by: sid-r'; assert_line 'answer_note: relayed in session sid-r: park THEM'
+  grep -q "agent-panel human $HOME/.claude/projects/p/sid-r.jsonl --since " "$NOTES_FIXTURE/calls.log"
+  # The id may be in their own typed words instead of what the session showed.
+  id="$(post demo 'wait for CI?')"
+  relay_fixture typed "wait on $id" "something else"
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --quote "wait on $id" --by human "$id" wait
+  assert_success
+}
+
+@test "answer --quote: refused unless the transcript proves it, and the ask stays pending" {
+  local id; id="$(post demo 'park 611 rows?')"
+  relay_fixture answer 'Park them' "Ask $id: park the 611 rows?"
+  # Their words are not in the transcript.
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'merge it' "$id" park
+  assert_failure 1; assert_output --partial 'contain: merge it'
+  # The quote is there, but about another ask: the id is in neither what they saw nor said.
+  relay_fixture answer 'Park them' 'Ask zzzzzz: park something else?'
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'park them' "$id" park
+  assert_failure 1; assert_output --partial 'is in neither what the human was shown nor their words'
+  # No human entry after the ask (agent-panel prints nothing and exits 1): refused.
+  rm "$NOTES_FIXTURE/agent-panel.human"
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'park them' "$id" park
+  assert_failure 1
+  # A dispatched session never relays, even with matching proof (#3152 stays).
+  relay_fixture answer 'Park them' "Ask $id: park?"
+  run env CLAUDE_CODE_SESSION_ID=sid-r AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer --by human --quote 'park them' "$id" park
+  assert_failure 1; assert_output --partial 'no human at it'
+  # --quote with no --by human, or from a board, is a usage error; a bare --by human stays refused.
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --quote 'park them' "$id" park
+  assert_failure 2
+  run "$AGENT_ASK" answer --by human --quote 'park them' "$id" park
+  assert_failure 2
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human "$id" park
+  assert_failure 2; assert_output --partial 'relays their words with --by human --quote'
+  run "$AGENT_ASK" show "$id"; assert_line 'status: pending'
+}
+
 # An agent answers what does not need the human, and its answer releases what the ask holds
 # (2026-11-23: routine retry asks held 40+ rows on the human's list).
 @test "answer: an agent answer releases a held ask; an approval, a human-only ask and one at the human floor stay the human's" {
