@@ -1940,11 +1940,6 @@ impl App {
         });
     }
 
-    /// The rows and the cards are read through `notes board --json` (hub_core::tasks) and
-    /// `notes projects --stats --json` (hub_core::projects), never from the sheets: on entering
-    /// the Projects tab, on `r`, after a write, and on the tick while shown. Home reads the rows
-    /// too, for NEEDS YOU's sheet rows. The vault has no
-    /// watch here; `notes` is its writer.
     /// The board feed came back: the selection follows its row, and a Sprint tab opened before
     /// the first feed reads its across table now that the open window is known.
     fn tasks_in(&mut self, f: Result<Feed, String>) {
@@ -1962,6 +1957,11 @@ impl App {
         self.read_sprint_due();
     }
 
+    /// The rows and the cards are read through `notes board --json` (hub_core::tasks) and
+    /// `notes projects --stats --json` (hub_core::projects), never from the sheets: on entering
+    /// the Projects tab, on `r`, after a write, and on the tick while shown. Home reads the rows
+    /// too, for NEEDS YOU's sheet rows. The vault has no
+    /// watch here; `notes` is its writer.
     pub fn read_tasks(&mut self) {
         if self.tasks_read.want() {
             let tx = self.tx.clone();
