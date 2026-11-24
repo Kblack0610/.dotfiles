@@ -2076,6 +2076,16 @@ pr_holding_head() {
   [ -z "$hit" ] || printf '%s\n' "$hit"
 }
 
+# merged_inpr <state> <ahead> <based> -> 1 when a HEAD past its PR head is still nothing new: the PR is
+# MERGED and the commits after it hold no file the base lacks (ahead 0: a merge of the default branch, or
+# the squashed commits a deleted PR branch no longer holds), else 0. ar-5151: dotfiles-agent-4 on
+# razer-laptop merged origin/main after #2798 and read STALLED "commits after merged PR" for four days, so
+# its wind-down never closed the window. Only a measured 0 counts: ahead_files reads 0 when HEAD has no
+# merge base with the base, so <based> (1: HEAD shares history with the base) must hold too.
+merged_inpr() {
+  [ "$1" = MERGED ] && [ "$2" = 0 ] && [ "$3" = 1 ] && echo 1 || echo 0
+}
+
 # One session's facts as the session_bucket arguments after status/plan/asks/heavy/idle,
 # plus branch, sync, the PR head and the dirty names (last: they may hold spaces):
 # "git dirty ahead pr state ci in_pr branch behind conflicts fork oid names". <shell job> is the
@@ -2104,6 +2114,7 @@ git_facts() {
        && ! git -C "$d" merge-base --is-ancestor HEAD "$oid" 2>/dev/null \
        && ! git -C "$d" merge-base --is-ancestor HEAD "$base" 2>/dev/null; then inpr=0; fi
   fi
+  [ "$inpr" = 0 ] && inpr="$(merged_inpr "${state:-}" "$ahead" "$(git -C "$d" merge-base HEAD "$base" >/dev/null 2>&1 && echo 1)")"
   echo "1 $dirty $ahead ${pr:--} ${state:--} ${ci:--} $inpr ${branch:--} $(sync_facts "$d" "$base") ${oid:--} $(dirty_names "$paths")"
 }
 
@@ -2148,18 +2159,18 @@ worker_clone() {
 # or a repo with no clone here, is a read with a gap: named unreadable and blind_row, so tick keeps the
 # row's last cells.
 worker_git_facts() {
-  local d="$2" shell="${3:--}" chain="${4:-}" f g branch head up unpushed ahead paths dirty prb pr state ci oid red inpr=1
-  # One jq: host, in, origin, branch, head, upstream, unpushed, ahead, then each dirty path on its own line.
+  local d="$2" shell="${3:--}" chain="${4:-}" f g branch head up unpushed ahead based paths dirty prb pr state ci oid red inpr=1
+  # One jq: host, in, origin, branch, head, upstream, unpushed, ahead, based, then each dirty path on its own line.
   mapfile -t f < <(jq -r '.host // "a worker", (.git // {} | (.in // "-"), .origin // "-", .branch // "-", .head // "",
-    .upstream // "", .unpushed // 0, .ahead // 0, (.dirty // [])[])' <<<"$1" 2>/dev/null)
+    .upstream // "", .unpushed // 0, .ahead // 0, (if .based == true then 1 else 0 end), (.dirty // [])[])' <<<"$1" 2>/dev/null)
   g="${f[1]:--}"
   case "$g" in
     gone|0|1) ;;
     *) unreadable "git facts on ${f[0]:-a worker}"; blind_row; g=0 ;;
   esac
   [ "$g" = 1 ] || { echo "$g 0 0 - - - 1 - - - - - -"; return; }
-  branch="${f[3]:--}" head="${f[4]:-}" up="${f[5]:-}" unpushed="${f[6]:-0}" ahead="${f[7]:-0}"
-  paths="$(printf '%s\n' "${f[@]:8}")"; dirty=$(( ${#f[@]} - 8 ))
+  branch="${f[3]:--}" head="${f[4]:-}" up="${f[5]:-}" unpushed="${f[6]:-0}" ahead="${f[7]:-0}" based="${f[8]:-0}"
+  paths="$(printf '%s\n' "${f[@]:9}")"; dirty=$(( ${#f[@]} - 9 ))
   if [ "$d" = - ]; then
     unreadable "PR store for ${f[2]} (no clone here)"; blind_row
   elif [ -n "$head" ]; then
@@ -2173,6 +2184,7 @@ worker_git_facts() {
         && ! git -C "$d" merge-base --is-ancestor "$head" "$(default_base "$d")" 2>/dev/null && inpr=0
     elif [ "$unpushed" -gt 0 ]; then inpr=0; fi
   fi
+  [ "$inpr" = 0 ] && inpr="$(merged_inpr "${state:-}" "$ahead" "$based")"
   echo "1 $dirty $ahead ${pr:--} ${state:--} ${ci:--} $inpr $branch - - - ${oid:--} $(dirty_names "$paths")"
 }
 

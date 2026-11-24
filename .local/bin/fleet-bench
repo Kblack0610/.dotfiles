@@ -763,13 +763,17 @@ def forecast_score($b; $t; $hz): . as $p | $b.made_epoch as $m
 '
 
 # sample_rows -> the live fleet-sessions rows as progress lines (NIGHTLY, CHECKOUT and SHARED rows have no session)
+# A row held open on the human's word (kept.jq, the shepherd's definition) is sampled held: true, so
+# window_stats counts its STALLED minutes as HELD, not as the fleet's stall (ar-5151: the 11-23 Stalled
+# row named dotfiles-agent-14, labelled manual by the human, at 23.7h).
 sample_rows() {
-  local t="$1"
-  $BENCH_SESSIONS_CMD | jq -c --argjson t "$t" "$JQ_LIB"'
+  local t="$1" kept
+  kept="$(grep -v '^#' "${BENCH_LIB_DIR:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib}/kept.jq")" || return 1
+  $BENCH_SESSIONS_CMD | jq -c --argjson t "$t" "$JQ_LIB$kept"'
     select(type == "object" and (.session_id // "") != "" and (.bucket | IN("NIGHTLY", "CHECKOUT", "SHARED") | not))
     | {epoch: $t, at: ($t | iso), session_id, target, project, bucket,
        phases_done, phases_total, next_phase, finished: (.finished // false), idle_min, active_min,
-       context_tokens, nudged, escalated, pr, plan_file}'
+       context_tokens, nudged, escalated, pr, plan_file, held: kept}'
 }
 
 # new_estimates <now> -> an estimate for every live, unfinished session with a phase count
@@ -1013,13 +1017,14 @@ cmd_accuracy() {
 
 # window_stats <now> [since] -> one JSON object per session seen since <since> (default: the
 # window): phases ticked, minutes per bucket (each sample owns the gap to the next one,
-# capped), nudges and escalations (a flag turning on), peak context, first and last sample.
+# capped; a STALLED sample the human held open, held: true, is HELD, never stalled_min),
+# nudges and escalations (a flag turning on), peak context, first and last sample.
 window_stats() {
   local t="$1"
   jq -cn --argjson since "${2:-$(( t - BENCH_WINDOW_H * 3600 ))}" --argjson cap $(( BENCH_GAP_CAP_MIN * 60 )) \
      --slurpfile p "$PROGRESS" '
     $p | map(select(.epoch >= $since)) | group_by(.session_id) | .[] | sort_by(.epoch) | . as $r
-    | [range(0; length - 1) | {b: $r[.].bucket,
+    | [range(0; length - 1) | {b: (if $r[.].bucket == "STALLED" and $r[.].held == true then "HELD" else $r[.].bucket end),
          m: (([($r[. + 1].epoch - $r[.].epoch), $cap] | min) / 60)}] as $gaps
     | ($gaps | group_by(.b) | map({key: .[0].b, value: (map(.m) | add | floor)}) | from_entries) as $minutes
     | {session_id: .[0].session_id, target: (last.target), project: (last.project),

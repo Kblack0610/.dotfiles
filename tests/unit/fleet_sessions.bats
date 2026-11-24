@@ -5786,6 +5786,56 @@ main_change() {
   [ "$(jq -c .blockers <<<"$output")" = '["commits after merged PR #875"]' ]
 }
 
+@test "end to end: a merge of the default branch after the merged PR is not commits after it (ar-5151)" {
+  landed_fixture
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)'
+  git clone -q -b main "$SANDBOX/origin.git" "$SANDBOX/other" 2>/dev/null
+  # main moves on, and the session merges it into its branch: a commit neither the PR head nor the base holds.
+  main_change one
+  "${g[@]}" merge -q --no-edit origin/main
+  run "${g[@]}" merge-base --is-ancestor HEAD origin/main
+  assert_failure
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .pr <<<"$output")" = 875 ]
+  [ "$(jq -r .finished <<<"$output")" = true ]
+  [ "$(jq -c .blockers <<<"$output")" = '[]' ]
+  refute_output --partial 'commits after merged PR'
+
+  # Negative control: a file of its own past the merge is unlanded, so it still flags.
+  echo work > "$SANDBOX/wt/b.txt"; "${g[@]}" add b.txt; "${g[@]}" commit -q -m 'unlanded work'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -c .blockers <<<"$output")" = '["commits after merged PR #875"]' ]
+}
+
+@test "end to end: a fleet worker's merge of the default branch after its merged PR reads DONE, not STALLED (ar-5151)" {
+  landed_fixture
+  worker_ssh
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
+  git clone -q -b main "$SANDBOX/origin.git" "$SANDBOX/other" 2>/dev/null
+  main_change one
+  "${g[@]}" merge -q --no-edit origin/main
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  local w; w="$(jq -c 'select(.host == "razer-laptop")' <<<"$output")"
+  assert_equal "$(jq -r '[.bucket, .pr, .pr_state] | join(" ")' <<<"$w")" 'DONE 875 MERGED'
+  refute_output --partial 'commits after merged PR'
+}
+
+@test "merged_inpr: commits past a merged PR are nothing new only at a measured 0 ahead (ar-5151)" {
+  run merged_inpr MERGED 0 1; assert_output 1
+  # Negative controls: a file the base lacks, an ahead 0 with no merge base (ahead_files measured
+  # nothing: an orphan HEAD, or a worker row without git.based), and a PR that is not merged.
+  run merged_inpr MERGED 1 1; assert_output 0
+  run merged_inpr MERGED 0 0; assert_output 0
+  run merged_inpr MERGED 0 ''; assert_output 0
+  run merged_inpr OPEN 0 1; assert_output 0
+  run merged_inpr - 0 1; assert_output 0
+}
+
 @test "end to end: a conflicting PR with red checks is not a conflict nudge; with green checks it is, once" {
   conflict_fixture
   local oid; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
@@ -6546,8 +6596,10 @@ JSONL
   [ "$(jq -r .bucket <<<"$output")" = STALLED ]
   [ "$(jq -r .reason <<<"$output")" = 'resume killed its background gate (gate-and-land.sh) before it finished' ]
   [ "$(jq -r .fact <<<"$output")" = 'STALLED resume killed its background gate (gate-and-land.sh) before it finished @feat/x at 2026-11-12T15:43' ]
-  # a row already STALLED for its branch (commits after the merged PR) reads the lost gate instead: rerunning it is the next step
-  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m more
+  # a row already STALLED for its branch (commits after the merged PR) reads the lost gate instead: rerunning it is the next step.
+  # The commit holds a file main lacks: an empty one is no commit after the PR (ar-5151).
+  echo more > "$SANDBOX/wt/more.txt"; git -C "$SANDBOX/wt" add more.txt
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q -m more
   PANEL_IDLE_S=1800 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'resume killed its background gate (gate-and-land.sh) before it finished' ]
