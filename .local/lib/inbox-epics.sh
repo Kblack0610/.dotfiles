@@ -80,6 +80,32 @@ under_epic() {
   printf '%s #of/%s\n' "$1" "$2"
 }
 
+# epic_standing <id> <project> <epics>: is this an open standing epic of the project, the one
+# `notes ptask` links a row to by its area (`<system> to standard`)?
+epic_standing() { epics_of "$2" "$3" | awk -F'\t' -v id="$1" '$1 == id && tolower($3) ~ / to standard$/ { f = 1 } END { exit !f }'; }
+
+# reparent_args <project> <current parent> <epic> <epics>: the `notes ptask tag` options that put a
+# row under <epic>, one a line, or nothing (exit 1) when it stays where it is. `tag` is the one verb
+# that re-parents: `edit` keeps a row's `#of/` and refuses a `--text` naming another (#3267). An
+# unparented row takes any open epic of its project. A row under its standing epic moves only to a
+# feature epic, since the area already chose the standing one. A row under a feature epic, or under a
+# row that is not an epic (a planned row's split), keeps its parent: someone chose it.
+reparent_args() {
+  local p="$1" cur="$2" new="$3" epics="$4"
+  [ -n "$new" ] && [ "$new" != "$cur" ] && epic_known "$new" "$p" "$epics" || return 1
+  if [ -n "$cur" ]; then
+    epic_standing "$cur" "$p" "$epics" && ! epic_standing "$new" "$p" "$epics" || return 1
+    printf '%s\n' --remove "of/$cur"
+  fi
+  printf '%s\n' --add "of/$new"
+}
+
+# parent_word <text>: the id of the last `#of/<id>` in the words, or nothing.
+parent_word() { grep -oE '(^| )#of/[^ ]+' <<<"$1" | tail -n 1 | sed 's/.*#of\///'; }
+
+# no_parent <text>: the words without any `#of/` tag, one space apart.
+no_parent() { sed -E 's/(^| )#of\/[^ ]+//g; s/  +/ /g; s/^ //; s/ $//' <<<"$1"; }
+
 # read_board: `notes board --json` into BOARD, which holds the board only when it returns 0. A
 # failed read puts notes' own first error line and exit code in the log (the caller's say) and the
 # pass's reason (proof_why), so the red it raises names its cause.
