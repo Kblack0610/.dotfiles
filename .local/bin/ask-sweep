@@ -94,17 +94,26 @@ plan_rows_hold() {
 # reconcile_plans files one: agent-queue add --plan from a filer puts one low row on the board, "plan
 # <slug>: run its open phases", and exits 5; dispatch's promote turns it into the plan's chain. It is
 # no human's want, so it carries no #requested. Returns 1 when not filed. A plan agent-queue refuses (a
-# phase marker it cannot read, an unknown project) takes no cap slot and is counted as a fault, so the
-# run says which plan to fix.
+# phase marker it cannot read, an unknown project) is its author's fault, not the sweep's: it gets one
+# `fix(plan)` row on its board naming its slug and agent-queue's reason, so that board owns the fix and
+# the next run, finding the slug on an open row, files nothing more. Only a row that cannot be filed is
+# a fault. Why: one plan's bad marker held the runner FAILED, and fleet-liveness red (11-23, 11-24, ar-5133).
 file_plan() {
-  local board="$1" p="$2" planf="$3" out rc=0
+  local board="$1" p="$2" planf="$3" out rc=0 slug why
   if [ "$FILED" -ge "$ASK_SWEEP_MAX" ]; then OVER=$((OVER + 1)); return 1; fi
+  slug="$(basename "$planf" .md)"
   if [ "$DRY" = 1 ]; then
-    FILED=$((FILED + 1)); printf 'would file [%s] plan %s: run its open phases\n' "$board" "$(basename "$planf" .md)"; return 0
+    FILED=$((FILED + 1)); printf 'would file [%s] plan %s: run its open phases\n' "$board" "$slug"; return 0
   fi
   out=$(agent-queue add --plan "$planf" --project "$p" --priority low --from auto:ask-sweep 2>&1 </dev/null) || rc=$?
   if [ "$rc" -eq 0 ] || [ "$rc" -eq 5 ]; then FILED=$((FILED + 1)); return 0; fi
-  FAULT=1; say "could not file the plan $planf: ${out##*$'\n'}"; proof_why "plan $(basename "$planf" .md) refused by agent-queue"
+  why="${out##*$'\n'}"; why="${why#agent-queue: }"; why="${why#--plan *: }"
+  say "agent-queue refused the plan $planf: $why"
+  rc=0
+  notes ptask "$board" --agent add "fix(plan): $slug: agent-queue refuses its Phases checklist ($(ascii 160 <<<"$why")); fix it, then agent-queue add --plan $planf #size/s" \
+    >/dev/null 2>&1 || rc=$?
+  if [ "$rc" = 0 ] || [ "$rc" = 3 ]; then FILED=$((FILED + 1)); return 0; fi
+  FAULT=1; say "could not file the fix row for the refused plan $planf (notes exit $rc)"; proof_why "plan $slug refused by agent-queue, and its fix row could not be filed"
   return 1
 }
 
