@@ -920,10 +920,10 @@ private_or_skip() {
   started_item other lab:other-1 run combat
   run cmd_suggest
   assert_success
-  assert_output "auto  unjudged  game game human  [fleet, #high, beta]
+  assert_output "auto  unjudged  game game human  [fleet, #normal, beta]
 auto  dispatch  game game judged  [fleet, #high, beta]
-auto  dispatch  game game busy  [fleet, #high, beta]  blocked: area held by a queue item
-auto  unjudged  game game new  [fleet, #high, beta]
+auto  dispatch  game game busy  [fleet, #normal, beta]  blocked: area held by a queue item
+auto  unjudged  game game new  [fleet, #normal, beta]
 man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app: it is on DISPATCH_OFF_PROJECTS, so its rows stay with the human"
   refute_output --partial 'app human'
   refute_output --partial 'sketch'
@@ -1068,7 +1068,7 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app: it i
   assert_output "game high: focus project, fleet, #high, beta, 16d old
 game high new: focus project, fleet, #high, beta, 1d old
 game low: focus project, fleet, #low, beta, 4d old
-app due: due today, fleet, #high, alpha
+app due: due today, fleet, #normal, alpha
 app urgent: fleet, #urgent, alpha"
 }
 
@@ -1145,7 +1145,7 @@ app urgent: fleet, #urgent, alpha"
   run cmd_suggest --json
   assert_success
   assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'game aimed,game plain'
-  assert_equal "$(jq -r 'select(.key == "game aimed") | .why' <<<"$output")" 'release due in 1d, fleet, #high, beta, 34d old'
+  assert_equal "$(jq -r 'select(.key == "game aimed") | .why' <<<"$output")" 'release due in 1d, fleet, #normal, beta, 34d old'
   # Its own #due today is sooner than the target: the why names the row's own date.
   run jq -nr "$RANK_JQ"'{text: "- [ ] x #due1105", release_due: "2026-11-06", prio: 1, stage: "beta"} | rank_fields("2026-11-05"; "") | .why'
   assert_output 'due today, #high, beta'

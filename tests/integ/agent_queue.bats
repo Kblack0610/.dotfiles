@@ -5242,14 +5242,14 @@ row_item() {
   assert_output $'red low\nretagged-down high\ncleanup high\ngone high\nretagged-up low'
 }
 
-@test "ar-4884: an item on a #normal row, or an untagged one the feed reads normal, ranks high until the queue has a normal word" {
+@test "ar-4885: an item on a #normal row takes the row's normal, the queue's own word for it" {
   story_notes
   row_item on-normal level:lv-1 low
   jq -n '{rows: [{project: "level", id: "lv-1", state: "open", priority: "normal"}]}' > "$NOTES_FIXTURE/board.json"
   run bash -c "'$AQ' list --json | jq -r '\"\(.slug) \(.priority)\"'"
   assert_success
-  # NEGATIVE CONTROL: a filter of urgent, high and low drops the row, and the item keeps its own low.
-  assert_output 'on-normal high'
+  # NEGATIVE CONTROL: the item's own low is not what it reads; the row's normal is, no longer mapped to high.
+  assert_output 'on-normal normal'
 }
 
 @test "ar-3011: bump and set priority= write the item's row, which the order reads; an item with no row writes none" {
