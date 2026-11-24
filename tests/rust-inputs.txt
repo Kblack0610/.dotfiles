@@ -20,6 +20,7 @@
 .local/src/hub-core    .local/src/hub-tui/src/
 .local/src/hub-core    .local/src/docs/stages.md
 .local/src/hub-core    tests/agent-web/tilecast-schema.sh
+.local/src/hub-core    .config/areas/groups
 .local/src/project-map .config/shared-hooks/project-name.sh
 .local/src/project-map tests/fixtures/project-names.json
 .local/src/project-map tests/fixtures/project-names.tsv
