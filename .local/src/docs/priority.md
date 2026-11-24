@@ -72,6 +72,9 @@ Fleet planes, by the same four words:
 | sessions and shepherd | a session holding a prod fix is stuck | a session another is waiting on is stuck | a session closing its own housekeeping |
 | pages | prod down, overnight tests red, the workstation at 3x its cores over 5 minutes (`fleet-thermal`) | only the human can unblock it and waiting costs within the hour | recoveries and all-clears |
 | asks | a human-stop ask on prod, money, data or secrets | a fleet-level rule change | a self-level choice the judge answers |
+| runtime (dispatch, queue, sessions, boards and notes, telemetry, CI gates) | every session stuck, or work lost now | while agent-runtime's project `#prio` is high or focus: a fault that happens now or recurs and gives a wrong state, a false page or nudge, or lost or stuck work (the human's ask 2026-11-24: runtime stability first; it ends when the human lowers that `#prio`) | a wrong label nobody acts on; upkeep |
+
+A fault or a feature with a named benefit is normal at least, under a "to standard" epic too; only the faults these tables list as low stay low (on 2026-11-24, 579 fix and 609 feat rows sat at low, filed so by their sessions).
 
 ## Where the scales fall short today
 
