@@ -89,6 +89,8 @@ pub struct Row {
     pub worker: Option<String>,
     /// The row's `#size/<s|m|l>`, without the prefix.
     pub size: Option<String>,
+    /// The row's `#pts/<n>` estimate, None when unscored.
+    pub points: Option<u32>,
     pub requested: bool,
     /// The row's `<code>-<n>` id, when its project has a code.
     pub id: Option<String>,
@@ -245,8 +247,8 @@ impl Row {
 /// are query keys, not drawn; `tag:` takes any of a row's tags.
 impl crate::table::Row for Row {
     const COLUMNS: &'static [&'static str] = &[
-        "section", "title", "epic", "priority", "state", "when", "project", "lane", "id",
-        "version", "size", "tier", "since", "text", "profile", "tag",
+        "section", "type", "area", "title", "epic", "priority", "state", "when", "project", "lane",
+        "id", "version", "size", "pts", "tier", "since", "text", "profile", "tag",
     ];
     const STATES: &'static [&'static str] = &[
         "all",
@@ -256,8 +258,9 @@ impl crate::table::Row for Row {
         "requested",
         "done",
     ];
-    const FACETS: &'static [&'static str] =
-        &["section", "epic", "project", "lane", "priority", "state"];
+    const FACETS: &'static [&'static str] = &[
+        "section", "type", "area", "epic", "project", "lane", "priority", "state",
+    ];
     const LEAD: &'static str = "title";
     const GLANCE: &'static [&'static str] = &["epic", "priority", "state"];
 
@@ -273,6 +276,7 @@ impl crate::table::Row for Row {
             "id" => some(self.id.as_deref()),
             "version" => some(self.release()),
             "size" => some(self.size.as_deref()),
+            "pts" => self.points.map_or(Val::None, |n| Val::Num(f64::from(n))),
             "tier" => self.tier.map_or(Val::None, |t| Val::Num(f64::from(t))),
             "since" => some(self.since.as_deref()),
             "when" => match self.when() {
@@ -281,6 +285,8 @@ impl crate::table::Row for Row {
             },
             "text" => text(&self.text),
             "title" => text(&self.title),
+            "type" => some(self.r#type.as_deref()),
+            "area" => some(self.area.as_deref()),
             "epic" => some(self.epic.as_deref()),
             "profile" => text(&self.profile),
             "tag" if self.tags.is_empty() => Val::None,

@@ -43,7 +43,7 @@ const table = {
   q: "", state: "failing", sort: "", dir: "", total: 3, shown: 2,
   states: [{ name: "all", n: 3 }, { name: "failing", n: 2 }, { name: "stale", n: 0 }, { name: "never", n: 0 }, { name: "off", n: 0 }, { name: "ok", n: 1 }, { name: "no-purpose", n: 1 }],
   columns: ["kind", "name", "state", "schedule", "next", "last", "took", "passed", "failed", "streak", "triage", "result", "repo"].map(col),
-  facets: [{ key: "kind", on: [], clear: "", values: [{ value: "ci", n: 2, on: false, q: "kind:ci" }] }],
+  facets: [{ key: "kind", on: [], clear: "", values: [{ value: "ci", n: 2, pct: 50, on: false, q: "kind:ci" }] }],
 };
 const row = (kind, name, o = {}) => ({ kind, name, state: "failing", state_level: "bad", state_why: "", repo: "", schedule: "02:00 daily", purpose: "", last: 1793942659, result: "failure", ok: false, streak: -6, streak_word: "red 6", red_since: 1793442659, ok_at: null, fail_at: 1793942659, took: 2520, every: 86400, triage: "-", next: null, inside: "", before: "", after: [], open: [], runs: [], page: "", status: "", ...o });
 const run1 = (n) => ({ at: 1793942659 - n, result: "failure", ok: false, failed: ["PlayMode 2", "PlayMode 8"], url: `https://ci/${n}`, took: 2520 });
