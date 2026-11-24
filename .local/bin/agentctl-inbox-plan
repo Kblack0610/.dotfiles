@@ -136,7 +136,10 @@ plan_row() {
     new="$(sed -E 's/(^| )#size\/[a-z]+( |$)/ /g; s/  +/ /g; s/ $//' <<<"$new") #size/$size"
   fi
   epic="$(jq -r '.epic // "" | tostring' <<<"$ans")"
-  if [[ " $new " != *" #of/"* ]] && epic_known "$epic" "$p" "$epics"; then new="$new #of/$epic"; fi
+  # A row already under an epic keeps it: its parent is a tag (the board's text drops `#of/`), and
+  # edit refuses a --text naming another one (nc-108). Re-parenting is not the planner's call.
+  if ! jq -e '[.tags[]? | strings | select(startswith("of/"))] | any' <<<"$row" >/dev/null \
+    && epic_known "$epic" "$p" "$epics"; then new="$new #of/$epic"; fi
   if [ "$DRY" = 1 ]; then
     printf 'would plan [%s] %s -> %s:' "$p" "$id" "$new"; printf ' %q' "${dets[@]}" "${rows[@]}"; echo; return 0
   fi
