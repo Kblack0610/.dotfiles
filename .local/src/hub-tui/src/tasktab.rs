@@ -535,11 +535,12 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
             ))
             .map(|(r, s)| row(r, s, p))
             .collect(),
-        keep: vec![0, 3, 4, 2, 5, 6, 8, 7, 9, 10, 12, 11],
-        flex: Some(1),
+        // Indices are HEADER's: the area stays with the title, the type and points drop first.
+        keep: vec![0, 2, 5, 6, 4, 7, 8, 10, 9, 1, 13, 11, 12, 15, 14],
+        flex: Some(3),
         flexmin: 20,
         flexkeep: true,
-        cap: vec![(2, 24), (5, 18), (9, 16)],
+        cap: vec![(2, 16), (4, 24), (7, 18), (11, 16)],
         mark: v.table.mark::<Row>(),
         ..Default::default()
     }
