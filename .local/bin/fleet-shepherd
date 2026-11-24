@@ -314,11 +314,12 @@ CLOSE_REFUSED_JQ='def close_refused:
 # FLEET_CHAT_CLOSE_H).
 KEPT_JQ='def kept: (.labels // []) | any(. == "manual" or . == "stay");'
 # TAKEOVER_JQ (after the two above): takeover_row -> true for a STALLED row whose nudge survived and that
-# is not the human's or another machine's (kept, plan mode, a fleet worker's row, an open ask) and not
-# already on the close path above. takeover_sample reads it.
+# is not the human's (kept, plan mode, an open ask) and not already on the close path above, on this
+# machine or a fleet worker (takeover_sample reaches a worker's over ssh: a worker's row left out sat
+# STALLED for days holding one of its fleet_max_live, ar-4973). takeover_sample reads it.
 TAKEOVER_JQ="$KEPT_JQ"'def takeover_row:
   .bucket == "STALLED" and .nudged and (kept | not)
-  and ((.in_plan_mode // false) | not) and .host == null and (.own_asks // 0) == 0
+  and ((.in_plan_mode // false) | not) and (.own_asks // 0) == 0
   and close_nudge == null and (close_refused | not);'
 
 # ptag: a session row's tmux pane id as " [%37]", beside its target. The target's window index
@@ -869,21 +870,29 @@ budget_page() { agent-notify -p high -t "$1" -r "file:$LEDGER/log.md" "$2" >/dev
 # closed, so a draft is left. A row it cannot hand over, a close that fails, or a branch already taken over
 # FLEET_SHEPHERD_TAKEOVER_TRIES times pages once per fact: since a STALLED row no longer escalates, that
 # page is the only one it gets. The tries are counted on the branch in $TAKEOVERS, since a taker is a
-# new session.
+# new session. A fleet worker's row is read and closed on its machine over the one ssh path (pane_run),
+# by its own stowed wind-down.sh as close_sample does; a worker that does not answer (ssh's 255) is
+# neither closed nor paged, and the next check tries again.
+# takeover_blocker <branch> <cwd> <dirty> <item> <host|-> -> why no fresh agent can take the row over,
+# nothing when one can, or "-" when its worker did not answer over ssh.
 takeover_blocker() {
-  local branch="$1" cwd="$2" dirty="$3" item="$4" n
+  local branch="$1" cwd="$2" dirty="$3" item="$4" host="$5" n out rc=0
   [ "$item" != - ] || { echo "no queue item owns it, so no agent would take it over"; return; }
   case "$branch" in -|main|master|HEAD) echo "it holds no branch of its own"; return ;; esac
   [ "$dirty" != x ] || { echo "its tree state could not be read"; return; }
   [ "$dirty" = 0 ] || { echo "its tree has uncommitted changes"; return; }
-  git -C "$cwd" rev-parse -q --verify HEAD >/dev/null 2>&1 || { echo "its checkout cannot be read"; return; }
-  [ -n "$(git -C "$cwd" branch -r --contains HEAD 2>/dev/null | grep -m 1 .)" ] || { echo "its commits are not pushed"; return; }
+  pane_run "$host" git -C "$cwd" rev-parse -q --verify HEAD >/dev/null 2>&1 || rc=$?
+  [ "$host" = - ] || [ "$rc" != 255 ] || { echo -; return; }
+  [ "$rc" = 0 ] || { echo "its checkout cannot be read"; return; }
+  out="$(pane_run "$host" git -C "$cwd" branch -r --contains HEAD 2>/dev/null)" || rc=$?
+  [ "$host" = - ] || [ "$rc" != 255 ] || { echo -; return; }
+  [ -n "$(grep -m 1 . <<<"$out")" ] || { echo "its commits are not pushed"; return; }
   n="$(awk -F'\t' -v b="$branch" '$1 == "close" && $2 == b { n++ } END { print n + 0 }' "$TAKEOVERS")"
   [ "$n" -lt "$FLEET_SHEPHERD_TAKEOVER_TRIES" ] || echo "branch $branch was taken over $n times and stalled again"
 }
 
 takeover_sample() {
-  local sid target pane fact idle branch cwd dirty item at when now why rc n srv acted=""
+  local sid target pane fact idle branch cwd dirty item at when now why rc n srv host wdc acted=""
   local wd="${FLEET_WIND_DOWN:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/wind-down.sh}"
   now="$(date +%s)"
   touch "$TAKEOVERS" 2>/dev/null || return 0
@@ -894,10 +903,15 @@ takeover_sample() {
     when="$(date -d "$at" +%s 2>/dev/null)" || continue
     [ $((now - when)) -ge $((FLEET_SHEPHERD_TAKEOVER_MIN * 60)) ] && [ "$idle" -ge "$FLEET_SHEPHERD_TAKEOVER_MIN" ] || continue
     awk -F'\t' -v s="$sid" -v f="$fact" '$1 == "page" && $2 == s && $3 == f { found = 1 } END { exit !found }' "$TAKEOVERS" && continue
-    why="$(takeover_blocker "$branch" "$cwd" "$dirty" "$item")"
+    host="$(pane_host "$target")"
+    [ "$host" = - ] || pane_lib || continue
+    why="$(takeover_blocker "$branch" "$cwd" "$dirty" "$item" "$host")"
+    [ "$why" != - ] || continue
     if [ -z "$why" ]; then
-      pane_takes_keys - "$srv" "$pane" || continue
-      rc=0; "$wd" close --server "$srv" --pane "$pane" --sid "$sid" >/dev/null 2>&1 || rc=$?
+      pane_takes_keys "$host" "$srv" "$pane" || continue
+      wdc=("$wd"); [ "$host" = - ] || wdc=(sh -c 'exec "$HOME/.local/src/tmux/wind-down.sh" "$@"' wind-down)
+      rc=0; pane_run "$host" "${wdc[@]}" close --server "$srv" --pane "$pane" --sid "$sid" >/dev/null 2>&1 || rc=$?
+      [ "$host" = - ] || [ "$rc" != 255 ] || continue
       if [ "$rc" = 0 ]; then
         n="$(awk -F'\t' -v b="$branch" '$1 == "close" && $2 == b { n++ } END { print n + 0 }' "$TAKEOVERS")"
         printf 'close\t%s\t%s\t%s\n' "$branch" "$now" "$sid" >> "$TAKEOVERS"
