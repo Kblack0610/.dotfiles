@@ -3521,27 +3521,36 @@ sessions_prom() {
 # host's sessions only. Its age is the first line; one older than FLEET_STATE_STALE_SECS, or none, exits 1
 # naming --fresh (a full pass) and the timer, and never runs a pass of its own.
 list_view() {
-  local f=$STATE_FILE host=""
-  if on_worker; then f="$(holder_state_file)"; host=" (the lease holder's rows for this host only)"; fi
-  [ -r "$f" ] || { echo "fleet-sessions: no state document at $f: run \`fleet-sessions --fresh\` or check fleet-state.timer" >&2; return 1; }
-  local age
-  age=$(( $(date +%s) - $(jq -r '.generated_epoch // 0' "$f") )) || return 1
+  local f=$STATE_FILE where="" epoch age
+  local fix="run \`fleet-sessions --fresh\` or check fleet-state.timer"
+  if on_worker; then
+    # A worker runs no timer, and its own pass is blind (on_worker): only the lease holder's push helps.
+    f="$(holder_state_file)"; where=" (the lease holder's rows for this host only)"
+    fix="the lease holder pushes this host's rows each minute: ask again shortly, or check fleet-state.timer on the lease holder"
+  fi
+  [ -r "$f" ] || { echo "fleet-sessions: no state document at $f: $fix" >&2; return 1; }
+  epoch="$(jq -r '.generated_epoch // empty' "$f" 2>/dev/null)"
+  [[ "$epoch" =~ ^[0-9]+$ ]] || { echo "fleet-sessions: $f is not a state document: $fix" >&2; return 1; }
+  age=$(( $(date +%s) - epoch ))
   if [ "$age" -gt "$(state_stale_secs)" ]; then
-    echo "fleet-sessions: the state document $f is $((age / 60))m old: run \`fleet-sessions --fresh\` or check fleet-state.timer" >&2
+    echo "fleet-sessions: the state document $f is $((age / 60))m old: $fix" >&2
     return 1
   fi
-  echo "state document $((age / 60))m old$host; \`fleet-sessions --fresh\` runs a full pass"
+  echo "state document $((age / 60))m old$where; \`fleet-sessions --fresh\` runs a full pass"
+  # Fields join on the unit separator, not @tsv, which would double a backslash in a reason. A row's
+  # target sorts as the full pass sorts it (server prefix first) and prints without that prefix.
   jq -r '(.vocab.buckets // ["NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED"]) as $order
-    | [(.main // [] | .[] | [(.fact | split(" ")[0]), .repo, "-", "-", 0, .reason, .nudged, "-", "-"]),
+    | def s: if . == null then "" else tostring | gsub("[\t\n\u001f]"; " ") end;
+    [(.main // [] | .[] | [((.fact // "NIGHTLY") | split(" ")[0]), .repo, "-", "-", 0, .reason, .nudged, "-", "-"]),
        (.shared // [] | .[] | ["SHARED", .test, "-", "-", 0, .reason, .nudged, "-", "-"]),
-       (.sessions[] | [.bucket, (.target | sub("^[^/]*/"; "")), .branch, .pr, (.idle_min // 0), .reason, .nudged,
+       (.sessions[] | [.bucket, .target, .branch, .pr, (.idle_min // 0), .reason, .nudged,
                        (.dispatch // "-"), ((.labels // []) | if length == 0 then "-" else join(",") end)])]
     | . as $rows
     | (["NIGHTLY", "CHECKOUT", "SHARED"] + $order)[] as $b
     | ($rows | map(select(.[0] == $b)) | sort_by(.[1])) as $g
     | select($g | length > 0)
-    | (["H", $b] | @tsv), ($g[] | ["R"] + (.[1:] | map(tostring | gsub("[\t\n]"; " "))) | @tsv)' "$f" \
-    | awk -F'\t' '$1 == "H" { print $2; next }
+    | "H\u001f\($b)", ($g[] | "R\u001f" + (.[1:] | .[0] |= sub("^[^/]*/"; "") | map(s) | join("\u001f")))' "$f" \
+    | awk -F'\037' '$1 == "H" { print $2; next }
         { printf "  %-44s %-28s %-6s %4sm  %s%s%s%s\n", $2, $3, $4, $5, $6, ($7 == "true" ? "  (nudged)" : ""),
             ($8 != "-" ? "  [dispatch: " $8 "]" : ""), ($9 != "-" ? "  [labels: " $9 "]" : "") }'
 }

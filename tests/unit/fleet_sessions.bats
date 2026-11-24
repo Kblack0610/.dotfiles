@@ -6400,6 +6400,39 @@ list_doc() {
   [ "${#lines[@]}" = 3 ]
 }
 
+@test "bare fleet-sessions: a worker with no pushed rows says so, a backslash and an old main row print as they are, --help lists the usage" {
+  bats_require_minimum_version 1.5.0
+  export FLEET_STATE_FILE="$SANDBOX/state/state.json"
+  mkdir -p "$SANDBOX/state"
+  rm -f "$SANDBOX/lease-held"
+  export FLEET_HOST=razer-laptop
+  worker_ssh
+  # no holder-state.json, but on the roster: a worker, told to wait for the holder and not to run --fresh
+  run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions"
+  assert_failure 1
+  [[ "$stderr" == *"no state document"*"lease holder"* ]]
+  [[ "$stderr" != *'run `fleet-sessions --fresh`'* ]]
+  # a backslash is kept once, and a main row without `fact` is still a NIGHTLY row
+  : > "$SANDBOX/lease-held"
+  unset FLEET_INVENTORY
+  jq -n --argjson t "$(date +%s)" '{generated_epoch: $t, main: [{repo: "o/dots", reason: "red"}],
+    sessions: [{target: "lab/a:1", bucket: "WORKING", branch: "b", pr: "-", idle_min: 1, reason: "C:\\x"}]}' > "$FLEET_STATE_FILE"
+  run "$REPO_ROOT/.local/bin/fleet-sessions"
+  assert_success
+  assert_line --index 1 NIGHTLY
+  assert_line --index 2 --regexp '^  dots +- +- +0m  red$'
+  assert_line --index 4 --regexp '^  a:1 +b +- +1m  C:\\x$'
+  # a document that is not one names the file and --fresh, not a bash error
+  printf '{"sessions": ' > "$FLEET_STATE_FILE"
+  run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions"
+  assert_failure 1
+  [[ "$stderr" == *"is not a state document"*"--fresh"* ]]
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --help
+  assert_success
+  assert_output --partial 'fleet-sessions --fresh'
+  assert_output --partial 'fleet-sessions stages'
+}
+
 # api_error_transcript <file> [after]: the tail of a session that a transient Cloudflare 403 stopped
 # (2026-11-13 01:51 PST, 10 main-account sessions), as Claude Code writes it; "after" appends the
 # human's next message.
