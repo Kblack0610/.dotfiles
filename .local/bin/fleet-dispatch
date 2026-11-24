@@ -6619,24 +6619,27 @@ held_clears() {
 # stopped [--json] -- rc 1 and the Stopped line when a hold has stood DISPATCH_STARVED_MIN or longer:
 # "Dispatch stopped 13h05m: <why>. <what clears it>." It is the one line every surface shows (hub Home's
 # Stopped row through fleet-sessions, the briefing, queue-starved's probe), at most 160 characters;
-# --json is {runner, since, line}. A run-floor start does not end the hold, a pass past an open
-# gate does (agent-proof.sh). A hold under the threshold, or none, prints nothing and is rc 0.
+# --json is {runner, since, line, why, clears}: why is the whole held_short reason and clears what ends
+# it, uncut, for the pipeline snapshot (fleet-bench pipeline_json). A run-floor start does not end the
+# hold, a pass past an open gate does (agent-proof.sh). A hold under the threshold, or none, prints
+# nothing and is rc 0.
 cmd_stopped() {
-  local since why held clears head max line
+  local since why full held clears head max line
   read -r since why < <(held_state) || return 0
   [ -n "$since" ] || return 0
   held=$(( $(date +%s) - since ))
   [ "$held" -ge $(( DISPATCH_STARVED_MIN * 60 )) ] || return 0
-  why=$(held_short "$why"); clears=$(held_clears "$why")
+  why=$(held_short "$why"); full=$why; clears=$(held_clears "$why")
   . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom.sh"
   head="Dispatch stopped $(prom_dur "$held"): "
   max=$(( 160 - ${#head} - ${#clears} - 3 ))
-  # Too long: cut at the last clause that fits.
+  # Too long for the one line: cut at the last clause that fits. --json carries the whole reason too.
   while [ "${#why}" -gt "$max" ] && [[ "$why" == *[,\;]" "* ]]; do why=${why%[,;] *}; done
   [ "${#why}" -le "$max" ] || why="${why:0:$max}"
   line="$head$why. $clears."
   if [ "${1:-}" = --json ]; then
-    jq -nc --arg line "$line" --argjson since "$since" '{runner: "fleet-dispatch", since: $since, line: $line}'
+    jq -nc --arg line "$line" --argjson since "$since" --arg why "$full" --arg clears "$clears" \
+      '{runner: "fleet-dispatch", since: $since, line: $line, why: $why, clears: $clears}'
   else
     echo "$line"
   fi
@@ -6944,7 +6947,8 @@ cmd_headroom() {
     --argjson per_pass "$PER_PASS" --arg level "$LEVEL" --argjson could "$could" --argjson cores "$cores" \
     --arg load "${load:-}" --arg load1 "${load1#-}" --arg busy "${busy#-}" --argjson starts "$starts" --argjson pend "$pend" --arg max_load "$MAX_LOAD" --arg held "$why" \
     --argjson floor "${DISPATCH_RUN_FLOOR:-0}" --argjson floor_live "$floor_live" --argjson red_floor "${DISPATCH_RED_FLOOR:-0}" --argjson red_live "$red_live" --argjson red_watch "${red_watch:-0}" \
-    --arg focus "$FOCUS_PROJECTS" --argjson focus_runnable "${focus_runnable:-0}" --argjson share "$SHARE_STATE" --argjson share_cap "${DISPATCH_FLEET_SHARE:-0}" '
+    --arg focus "$FOCUS_PROJECTS" --argjson focus_runnable "${focus_runnable:-0}" --argjson share "$SHARE_STATE" --argjson share_cap "${DISPATCH_FLEET_SHARE:-0}" \
+    --argjson starved_min "$DISPATCH_STARVED_MIN" '
     def num: if . == "" then null else tonumber end;
     {could_start: $could, per_pass: $per_pass, level: $level, per_pass_limited: ($per_pass > 0 and $could > $per_pass),
      runnable: $runnable, live_runs: $live, live_hand: $hand, max_live: $max_live, slots_free: ($max_live - $live),
@@ -6954,6 +6958,9 @@ cmd_headroom() {
      run_floor: $floor, floor_live: $floor_live, red_floor: $red_floor, red_watch: $red_watch, red_live: $red_live,
      focus: ($focus | split(" ") | map(select(. != ""))), focus_runnable: $focus_runnable,
      fleet_share: ($share + {cap: $share_cap, pct: (if $share.total > 0 then $share.fleet * 100 / $share.total | round else null end)}),
+     # The minutes after which `stopped` calls a standing hold stopped: the dispatch step'"'"'s bound in
+     # the pipeline snapshot. The hold'"'"'s start is not here: this is written before the pass'"'"'s outcome clears it.
+     starved_min: $starved_min,
      held: (if $held != "" then $held
             elif $total_live == "" then "live sessions unreadable: the fleet state document is missing or stale"
             elif ($total_live | tonumber) >= $max_live then "pace target: \($total_live) live sessions, the \($target_when) target is \($max_live)"
