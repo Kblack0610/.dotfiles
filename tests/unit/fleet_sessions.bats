@@ -5786,6 +5786,31 @@ main_change() {
   [ "$(jq -c .blockers <<<"$output")" = '["commits after merged PR #875"]' ]
 }
 
+@test "end to end: a merge of the default branch after the merged PR is not commits after it (ar-5151)" {
+  landed_fixture
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)'
+  git clone -q -b main "$SANDBOX/origin.git" "$SANDBOX/other" 2>/dev/null
+  # main moves on, and the session merges it into its branch: a commit neither the PR head nor the base holds.
+  main_change one
+  "${g[@]}" merge -q --no-edit origin/main
+  run "${g[@]}" merge-base --is-ancestor HEAD origin/main
+  assert_failure
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .pr <<<"$output")" = 875 ]
+  [ "$(jq -r .finished <<<"$output")" = true ]
+  [ "$(jq -c .blockers <<<"$output")" = '[]' ]
+  refute_output --partial 'commits after merged PR'
+
+  # Negative control: a file of its own past the merge is unlanded, so it still flags.
+  echo work > "$SANDBOX/wt/b.txt"; "${g[@]}" add b.txt; "${g[@]}" commit -q -m 'unlanded work'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -c .blockers <<<"$output")" = '["commits after merged PR #875"]' ]
+}
+
 @test "end to end: a conflicting PR with red checks is not a conflict nudge; with green checks it is, once" {
   conflict_fixture
   local oid; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"

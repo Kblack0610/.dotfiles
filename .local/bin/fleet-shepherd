@@ -307,12 +307,11 @@ CLOSE_NUDGE_JQ='def close_nudge:
 CLOSE_REFUSED_JQ='def close_refused:
   .close_sent and (.close.verdict // "") == "now"
   and (.bucket | IN("DONE","LANDED","STALLED","CHAT","NEEDS","PARKED"));'
-# KEPT_JQ: kept -> true for a row held open on the human's word: `manual`, set by the human, or `stay`, set
-# by a session on the human's order to stay open (wind-down step 0, the coordinate skill). The shepherd
-# sends such a row no nudge, overdue, landing, critical, limit, park or budget line, and takes none over;
-# whether it closes is its close verdict's (CLOSE_JQ in fleet-sessions: manual never, stay once quiet
-# FLEET_CHAT_CLOSE_H).
-KEPT_JQ='def kept: (.labels // []) | any(. == "manual" or . == "stay");'
+# KEPT_JQ: kept -> true for a row held open on the human's word (`manual` or `stay`; the one definition is
+# .local/lib/kept.jq, which fleet-bench reads too). The shepherd sends such a row no nudge, overdue,
+# landing, critical, limit, park or budget line, and takes none over; whether it closes is its close
+# verdict's (CLOSE_JQ in fleet-sessions: manual never, stay once quiet FLEET_CHAT_CLOSE_H).
+KEPT_JQ="$(grep -v '^#' "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/kept.jq")" || exit 1
 # TAKEOVER_JQ (after the two above): takeover_row -> true for a STALLED row whose nudge survived and that
 # is not the human's (kept, plan mode, an open ask) and not already on the close path above, on this
 # machine or a fleet worker (takeover_sample reaches a worker's over ssh: a worker's row left out sat

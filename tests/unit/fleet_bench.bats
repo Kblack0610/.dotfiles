@@ -466,6 +466,18 @@ past_scores() {
   assert_output "$(printf '10\t10\t20')"
 }
 
+@test "a STALLED session the human holds open (manual or stay) is held, not stalled (ar-5151)" {
+  rowj 'bucket: "STALLED", labels: ["manual"]' > "$SNAP"; sample_at 0
+  rowj 'bucket: "STALLED", labels: ["stay"]' > "$SNAP"; sample_at 600
+  rowj 'bucket: "WORKING", labels: ["manual"]' > "$SNAP"; sample_at 1200   # held open while working is still working
+  rowj 'bucket: "STALLED", labels: ["shepherd"]' > "$SNAP"; sample_at 1800   # negative control: no hold, a stall
+  rowj 'bucket: "WORKING"' > "$SNAP"; sample_at 2400
+  run jq -c '.held' "$FLEET_BENCH_DIR/progress.jsonl"
+  assert_output "$(printf 'true\ntrue\ntrue\nfalse\nfalse')"
+  run bash -c 'source "$1"; BENCH_NOW=$2 window_stats $2 | jq -r "[.working_min, .stalled_min, .minutes.HELD] | @tsv"' _ "$SUBJECT" $((T0 + 2400))
+  assert_output "$(printf '10\t10\t20')"
+}
+
 @test "negative control: without the cap the outage would count as 180 stalled minutes" {
   rowj 'bucket: "STALLED"' > "$SNAP"; sample_at 0
   rowj 'bucket: "WORKING"' > "$SNAP"; sample_at 10800
