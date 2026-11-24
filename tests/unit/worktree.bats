@@ -1285,6 +1285,23 @@ EOF
   assert_equal "$(cat "$WT_CGROUP_ROOT/s/gone/cgroup.procs")" $'23\n24\n25'
 }
 
+@test "orphans spares a live tmux server's run-shell jobs in a closed pane's scope" {
+  # 2026-11-23: the lab server was started from a hub pane since closed, so its scope read as a
+  # closed pane's, and orphan-gc killed wind-down's `run-shell -b` reap in `git worktree remove`
+  # (ar-5133). Here server 24 runs job 27 (sh) whose child 28 is git; bats 21 is the pane's own.
+  pane_scopes
+  mkdir -p "$WT_PROC_ROOT/27" "$WT_PROC_ROOT/28"
+  echo sh > "$WT_PROC_ROOT/27/comm"; echo git > "$WT_PROC_ROOT/28/comm"
+  printf 'Name:\tsh\nPPid:\t24\n' > "$WT_PROC_ROOT/27/status"
+  printf 'Name:\tgit\nPPid:\t27\n' > "$WT_PROC_ROOT/28/status"
+  printf 'Name:\tbats\nPPid:\t20\n' > "$WT_PROC_ROOT/21/status"
+  printf '27\n28\n' >> "$WT_CGROUP_ROOT/s/gone/cgroup.procs"
+  run cmd_orphans
+  assert_success
+  assert_line 'ended 21,22  gone (bats x1, chrome-headless x1)'
+  assert_equal "$(cat "$WT_CGROUP_ROOT/s/gone/cgroup.procs")" $'23\n24\n25\n27\n28'
+}
+
 @test "orphans never touches an open pane, or the scopes of a server that does not answer (negative control)" {
   pane_scopes
   rm "$SANDBOX/panes.hub" # server 81 is alive but silent: its open and closed panes alike are unknown
@@ -1895,6 +1912,21 @@ held_slot() {
 
 @test "a hold that outlived its directory frees the slot for the next new" {
   held_slot
+  rm -rf "$SLOT"
+  run wt_next_slot repo "$MAIN"
+  assert_success
+  assert_output "1${PANEL_TAB}fresh"
+  run wt_prepare "$MAIN" "$SLOT" 1 fresh
+  assert_success
+  [ -f "$SLOT/file.txt" ]
+}
+
+@test "an unlocked entry that outlived its directory frees the slot too" {
+  # 2026-11-24: a reap killed inside `git worktree remove`, after its unlock, left platform-agent-3
+  # registered and unlocked with no directory; unlock failing gated the remove, and every
+  # dispatch start on the slot hit "missing but already registered" (ar-5133).
+  held_slot
+  git -C "$MAIN" worktree unlock "$SLOT"
   rm -rf "$SLOT"
   run wt_next_slot repo "$MAIN"
   assert_success
