@@ -706,7 +706,7 @@ pr_merge() {
 # pr_files: the PR's changed paths, one a line, a rename's old path too (moving a file out of a
 # Judge authority name is critical, validate_gate).
 pr_files() {
-  [ -n "$fj" ] || { gh api "repos/${pr_ref%#*}/pulls/$pr/files" --paginate --jq '.[] | .filename, (.previous_filename // empty)'; return; }
+  [ -n "$fj" ] || { gh_pr_files; return; }
   local page=1 got
   while got=$(so_forgejo_get "$fj" "pulls/$pr/files?limit=$SO_FORGEJO_PAGE&page=$page"); do
     jq -r '.[] | .filename, (.previous_filename // empty)' <<<"$got"
@@ -714,6 +714,20 @@ pr_files() {
     page=$((page + 1))
   done
   return 1
+}
+# gh_pr_files: pr_files on GitHub. GitHub answers 422 "diff is taking too long to generate"
+# (code not_available) for every page of a diff too big to render, so that one answer reads the
+# same list from git: the base...head diff GitHub shows, a rename's old path too. Why: a train
+# carrying two rebuilt 1M-line scenes never landed (unity-core-playground #3231, 2026-11-24).
+gh_pr_files() {
+  local out oids base head
+  # stdout only: gh's stderr carries a hint even on success, and on a failure the API's error body is on stdout.
+  out=$(gh api "repos/${pr_ref%#*}/pulls/$pr/files" --paginate --jq '.[] | .filename, (.previous_filename // empty)') && { [ -z "$out" ] || printf '%s\n' "$out"; return 0; }
+  case $out in *not_available*) ;; *) printf '%s\n' "$out"; return 1 ;; esac
+  oids=$(gh pr view "$pr" "${R[@]}" --json baseRefOid,headRefOid -q '.baseRefOid + " " + .headRefOid') || return 1
+  read -r base head <<<"$oids"
+  git fetch -q "$remote" "$base" "$head" || return 1
+  git diff --name-status -M "$base...$head" | awk -F'\t' '{ print $NF } $1 ~ /^R/ { print $2 }'
 }
 # once_done -> how a done item takes this PR: "rerun" when it owns row closure (the first PR
 # on older items without closing_pr, a re-run after a failed board step), "again" when it is a later one, "more" when the item carries none in this

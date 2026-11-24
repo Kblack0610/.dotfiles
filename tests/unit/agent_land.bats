@@ -40,6 +40,8 @@ case "$1 $2" in
     # mergeable.seq: one answer per call, popped as read; then this head, mergeable
     q="$NOTES_FIXTURE/mergeable.seq"
     if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else echo '0123456789abcdef MERGEABLE'; fi ;;
+  # the base...head pair pr_files diffs when GitHub cannot render the diff
+  *baseRefOid,headRefOid*) printf '{"baseRefOid":"5eedbase5eedbase","headRefOid":"0123456789abcdef"}' | jq -r "${@: -1}" || exit 1 ;;
   *headRefOid*)
     # head.seq: the PR's head on each poll after a fresh push, popped as read; then head.oid. head.fail: the call fails
     [ ! -f "$NOTES_FIXTURE/head.fail" ] || { echo 'gh: API rate limit exceeded (HTTP 403)' >&2; exit 1; }
@@ -61,8 +63,10 @@ case "$1 $2" in
   [ ! -f "$NOTES_FIXTURE/protection.err" ] || { cat "$NOTES_FIXTURE/protection.err" >&2; exit 1; }
   [ -f "$NOTES_FIXTURE/protection.json" ] || { echo '{"message":"Branch not protected","status":"404"}'; echo 'gh: Branch not protected (HTTP 404)' >&2; exit 1; }
   cat "$NOTES_FIXTURE/protection.json" ;;
-# files: the PR's changed paths, one a line (none when absent); files.fail: the call fails
+# files: the PR's changed paths, one a line (none when absent); files.fail: the call fails;
+# files.toobig: GitHub cannot render the diff (422 not_available, its body on stdout)
 'api '*) [ ! -f "$NOTES_FIXTURE/files.fail" ] || { echo 'HTTP 502'; exit 1; }
+  [ ! -f "$NOTES_FIXTURE/files.toobig" ] || { echo '{"message":"Server Error: Sorry, this diff is taking too long to generate.","errors":[{"resource":"PullRequest","field":"diff","code":"not_available"}],"status":"422"}'; echo 'gh: Server Error (HTTP 422)' >&2; exit 1; }
   cat "$NOTES_FIXTURE/files" 2>/dev/null || true ;;
 'pr merge') cp "$NOTES_FIXTURE/merged.state" "$NOTES_FIXTURE/state" ;;
 # pr edit --body-file -: the new body becomes the body
@@ -132,6 +136,8 @@ merge-base) if [ "$2" != --is-ancestor ]; then echo 5eedbase5eedbase; elif [ "${
 merge) [ "$2" = --abort ] || [ ! -f "$NOTES_FIXTURE/merge.conflicts" ] || { echo 'CONFLICT (content)'; exit 1; } ;;
 # tree.conflicts: a trial merge of the base (merge-tree) conflicts, and the real merge does too from then on
 merge-tree) [ ! -f "$NOTES_FIXTURE/tree.conflicts" ] || { : >"$NOTES_FIXTURE/merge.conflicts"; exit 1; } ;;
+# diff.status: what `git diff --name-status` prints (nothing when absent)
+diff) cat "$NOTES_FIXTURE/diff.status" 2>/dev/null || true ;;
 # no.workflows: the head has no Actions workflow dir (it has .github/workflows by default)
 ls-tree) [ -f "$NOTES_FIXTURE/no.workflows" ] || echo .github/workflows ;;
 esac
@@ -2233,6 +2239,23 @@ real_notes_board() {
   assert_line 'item: hinted done with pr:o/r#42, credited to arena (touches arena)'
   assert_line 'landed #42'
   refute_output --partial 'hint:'
+}
+
+@test "a diff too big for GitHub to list is read from git (playground #3231)" {
+  export AGENT_QUEUE_PROJECT_MAP="$SANDBOX/map.json"
+  jq -n '{paths: {"/x/game": "game"}, trackers: {"arena": {repo: "game", path: "Assets/Arena"}}}' >"$AGENT_QUEUE_PROJECT_MAP"
+  item huge
+  sed -i 's/^project: dotfiles$/project: game/' "$AGENT_QUEUE_DIR/running/20261103-100000-huge.md"
+  touch "$NOTES_FIXTURE/files.toobig"
+  printf 'M\tAssets/Arena/Big.unity\nR087\tdocs/old.md\tdocs/new.md\n' >"$NOTES_FIXTURE/diff.status"
+  run "$LAND" 42 --item huge
+  assert_success
+  assert_line 'item: huge done with pr:o/r#42, credited to arena (touches arena)'
+  assert_line 'landed #42'
+  run grep -c '^git fetch -q origin 5eedbase5eedbase 0123456789abcdef$' "$LOG"
+  assert_output 1
+  run grep -c '^git diff --name-status -M 5eedbase5eedbase...0123456789abcdef$' "$LOG"
+  assert_output 1
 }
 
 @test "files that cannot be read leave the item's project and never fail the landing" {
