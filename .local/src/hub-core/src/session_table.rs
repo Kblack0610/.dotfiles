@@ -126,8 +126,8 @@ pub struct SessionRow {
     /// The fleet worker a live row runs on (fleet-sessions `host`), empty for this machine.
     pub host: String,
     /// The model a live row runs, as fleet-bench keys it (`costs::alias`: opus, sonnet): the one its
-    /// transcript names (fleet-sessions `model`), else its queue item's (a codex or agy run keeps no
-    /// Claude transcript); empty before the first turn of a session with no item model, never guessed.
+    /// transcript names (fleet-sessions `model`), else its queue item's (a run whose log agent-panel
+    /// reads no model from); empty before the first turn of a session with no item model, never guessed.
     pub model: String,
     /// A live row's queue item was started as a trainee run (its `trainee:` header, harness:model).
     pub trainee: bool,

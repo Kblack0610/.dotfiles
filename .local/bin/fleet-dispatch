@@ -6374,7 +6374,8 @@ stuck_on() {
 
 # host_rows [active queue JSON] -- one `hosts --json` line per worker in the roster, from the probe this
 # process holds (probe_hosts, and each start's HOST_FREE since): cmd_hosts prints them, hosts_write stores them.
-# With no queue, stuck is null: stuck_on is one ssh per worker, and no reader of the snapshot wants it.
+# With no queue (none given, or agent-queue did not answer), stuck is null, never a guessed 0: stuck_on is one
+# ssh per worker, and no reader of the snapshot wants it. A row that does not build stops it, status 1.
 host_rows() {
   local h name
   while IFS= read -r h; do
@@ -6383,7 +6384,7 @@ host_rows() {
     jq -c --arg p "${HOST_PROBE[$name]:-}" --arg f "${HOST_FREE[$name]:-}" --arg w "$(host_why "$name")" --arg s "$([ -z "${1:-}" ] || stuck_on "$name" <<<"$1")" \
       --arg hr "${HOST_HARN[$name]:-}" --arg hw "${HOST_HARN_WHY[$name]:-}" --arg k "${HOST_KIT[$name]:-}" \
       '{name, dest, place, max_live, free: ($f | tonumber? // null), stuck: ($s | tonumber? // null), probe: $p, kit: ($k | split(" ") | map(select(. != ""))), why: $w, repos,
-        harnesses: (.harnesses // []), harness_ready: ($hr | split(" ") | map(select(. != ""))), harness_why: $hw}' <<<"$h"
+        harnesses: (.harnesses // []), harness_ready: ($hr | split(" ") | map(select(. != ""))), harness_why: $hw}' <<<"$h" || return 1
   done < <(fleet_hosts)
 }
 
@@ -6392,9 +6393,10 @@ host_rows() {
 # view runs ssh. After the pass, from the probe it and headroom hold: a worker neither probed has a null free.
 # Written whole or not at all: rows that do not build leave the last one, whose age the bar names.
 hosts_write() {
+  local rows
   fleet_hosts >/dev/null
   mkdir -p "${HOSTS_SNAP%/*}"
-  if host_rows | jq -cs . > "$HOSTS_SNAP.$$" 2>/dev/null; then mv -f "$HOSTS_SNAP.$$" "$HOSTS_SNAP"; return 0; fi
+  if rows=$(host_rows) && jq -cs . <<<"$rows" > "$HOSTS_SNAP.$$" 2>/dev/null; then mv -f "$HOSTS_SNAP.$$" "$HOSTS_SNAP"; return 0; fi
   rm -f "$HOSTS_SNAP.$$"; say "hosts snapshot: the rows did not build, the last one is left as it was"; return 1
 }
 
