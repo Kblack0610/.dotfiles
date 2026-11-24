@@ -1653,11 +1653,12 @@ MD
 # s1 (sid-9, pane %7), open for three hours and idle for one, with status $PANEL_STATUS
 # (default idle), context window $PANEL_WINDOW (default null, a model agent-panel does not know) and
 # open job $PANEL_JOB (default none known), idle $PANEL_IDLE_S seconds (default 3600), time use
-# $PANEL_TIME (a time_use object, default none), its claude started $PANEL_AGE_S seconds ago (default 3h05m).
+# $PANEL_TIME (a time_use object, default none), its claude started $PANEL_AGE_S seconds ago (default 3h05m),
+# model $PANEL_MODEL (default none: no turn yet) on harness $PANEL_HARNESS (default claude).
 panel() {
   local since=$(( $(date +%s) - ${PANEL_IDLE_S:-3600} )) started=$(( $(date +%s) - ${PANEL_AGE_S:-11100} ))
   printf '#!/usr/bin/env bash\necho %q\n' \
-    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":${PANEL_PLAN_MODE:-false},\"doing\":\"${PANEL_DOING:-}\",\"session_id\":\"${PANEL_SID:-sid-9}\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"context_window\":${PANEL_WINDOW:-null},\"plan_file\":\"${2:-}\",\"transcript\":\"${PANEL_TRANSCRIPT:-}\",\"edited_files\":${3:-[]},\"account\":\"${PANEL_ACCOUNT:-main}\",\"open_job\":\"${PANEL_JOB:-}\",\"time_use\":${PANEL_TIME:-null},\"attached\":${PANEL_ATTACHED:-false},\"manual_mode\":${PANEL_MANUAL:-false}}" \
+    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":${PANEL_PLAN_MODE:-false},\"doing\":\"${PANEL_DOING:-}\",\"session_id\":\"${PANEL_SID:-sid-9}\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"context_window\":${PANEL_WINDOW:-null},\"plan_file\":\"${2:-}\",\"transcript\":\"${PANEL_TRANSCRIPT:-}\",\"edited_files\":${3:-[]},\"account\":\"${PANEL_ACCOUNT:-main}\",\"open_job\":\"${PANEL_JOB:-}\",\"time_use\":${PANEL_TIME:-null},\"attached\":${PANEL_ATTACHED:-false},\"manual_mode\":${PANEL_MANUAL:-false},\"model\":\"${PANEL_MODEL:-}\",\"harness\":\"${PANEL_HARNESS:-claude}\"}" \
     > "$SANDBOX/bin/agent-panel"
   chmod +x "$SANDBOX/bin/agent-panel"
 }
@@ -1922,6 +1923,24 @@ SH
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   [ "$(jq -r '"\(.context_tokens) \(.context_window)"' <<<"$output")" = "5 null" ]
+}
+
+@test "end to end: a row carries the model id running, and null before the first turn" {
+  landed_fixture
+  PANEL_MODEL=claude-sonnet-5-5 PANEL_HARNESS=claude panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r '"\(.model) \(.harness)"' <<<"$output")" = "claude-sonnet-5-5 claude" ]
+  # Another harness model id passes through too.
+  PANEL_MODEL=gpt-5.1-codex PANEL_HARNESS=codex panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r '"\(.model) \(.harness)"' <<<"$output")" = "gpt-5.1-codex codex" ]
+  # Negative control: no transcript turn yet is null, never a guessed model.
+  panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .model <<<"$output")" = null ]
 }
 
 @test "a running local gate writing Logs/gate.txt is activity, a stale log is not (ar-42)" {
@@ -4926,8 +4945,10 @@ explain_state() {
   [ ! -e "$PROM_TEXTFILE_DIR/fleet_sessions.prom" ]
   # negative control: an older document is replaced
   echo '{"schema":1,"generated_epoch":1,"sessions":[]}' > "$doc"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  FLEET_HOST=box run "$REPO_ROOT/.local/bin/fleet-sessions" --write
   [ "$(jq -r '.sessions | length' "$doc")" = 1 ]
+  # The document names the machine that wrote it, the host of every row that names none.
+  [ "$(jq -r .host "$doc")" = box ]
 }
 
 @test "--write: publishes the document to node_exporter as fleet_sessions.prom" {

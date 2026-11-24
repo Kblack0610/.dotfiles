@@ -518,6 +518,12 @@ pub fn candidates_file() -> PathBuf {
     dispatch_state_dir().join("candidates.jsonl")
 }
 
+/// The workers' slots `fleet-dispatch` writes after each real pass (`hosts_write`), which the bar's
+/// Machines roll-up reads.
+pub fn dispatch_hosts_file() -> PathBuf {
+    dispatch_state_dir().join("hosts.json")
+}
+
 /// The JSON `fleet-bench` writes each tick for the pipeline line (its `PIPELINE_SNAPSHOT`).
 pub fn pipeline_snapshot() -> PathBuf {
     env("PIPELINE_SNAPSHOT").unwrap_or_else(|| {
