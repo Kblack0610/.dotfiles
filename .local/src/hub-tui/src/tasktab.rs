@@ -777,7 +777,10 @@ pub(crate) mod tests {
             at("SECTION") < at("TITLE") && at("TITLE") < at("EPIC") && at("PROJECT") < at("LANE"),
             "{s}"
         );
-        assert!(s.contains("v0.1.0") && s.contains("demo"), "{s}");
+        assert!(s.contains("demo"), "{s}");
+        // The type, area and points outrank the version, which a wider screen shows.
+        assert!(at("TITLE") > at("AREA") && at("AREA") > at("TYPE"), "{s}");
+        assert!(text(&f, &v, 160).contains("v0.1.0"));
         // j/k follow the page's order, not the feed's.
         let order: Vec<&str> = shown(&f, &v).iter().map(|r| r.text.as_str()).collect();
         assert_eq!(

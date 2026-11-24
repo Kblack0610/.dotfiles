@@ -311,7 +311,7 @@ test("opening a card asks for its rows alone and draws them as the shared table"
 test("a row opens under itself with its actions, and a second click shuts it", async () => {
   await drawn(list(), "bnb/demo");
   click("b-root", {}, "0");
-  assert.match(read().rows, /<tr class="jr sel" data-row="0">.*<tr class="bopen"><td colspan="9">.*data-tag="0">Tags\.\.\./s);
+  assert.match(read().rows, /<tr class="jr sel" data-row="0">.*<tr class="bopen"><td colspan="12">.*data-tag="0">Tags\.\.\./s);
   click("b-root", {}, "0");
   assert.doesNotMatch(read().rows, /bopen/);
 });
