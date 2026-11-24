@@ -2211,7 +2211,8 @@ mod tests {
         fs::write(
             dir.join("agent/README.md"),
             "## Tasks\n- [x] fix(ci): flaky <!-- id:db-5 done:2026-11-20 -->\n\
-             - [ ] chore(docs): no id row #interrupt\n",
+             - [ ] chore(docs): no id row #interrupt\n\
+             - [ ] feat(ui): menu #v0.3.0 #size/m <!-- id:db-1 -->\n",
         )
         .unwrap();
         let t = tally(&snap, &rows_of(&dir, (0, 2, 0), &ix));
@@ -2221,7 +2222,7 @@ mod tests {
                 committed: 3,
                 delivered: 1,
                 open: 2,
-                // The carried row weighs its size, the unsized one 1.
+                // The carried row weighs its size once, though both lanes list it; the unsized 1.
                 open_weight: projects::size_weight("#size/m") + 1,
                 dropped: 0,
                 interrupted: 0

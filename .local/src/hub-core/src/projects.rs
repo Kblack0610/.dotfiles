@@ -69,6 +69,8 @@ pub struct Window {
     pub delivered: u32,
     pub open: u32,
     /// The `open` rows' `#size/` weight, 1 unsized: what [`state`] holds against the net rate.
+    /// Never below `open`, since a row weighs at least 1; [`Window::open_weight()`] floors it there
+    /// for a notes that sends none.
     pub open_weight: u32,
     /// Committed rows closed as dropped or duplicate, or gone from both lanes.
     pub dropped: u32,
@@ -81,6 +83,14 @@ pub struct Window {
     /// from notes.
     #[serde(skip_deserializing)]
     pub days_left: Option<i64>,
+}
+
+impl Window {
+    /// The open rows' weight, at least one per open row: a notes older than `open_weight` sends
+    /// none, and the row count is the weight's true floor, never a guess above it.
+    pub fn open_weight(&self) -> u32 {
+        self.open_weight.max(self.open)
+    }
 }
 
 /// The last cut's window score, the `## Score` line of its `sprints/` file (`window::LastWindow`).
@@ -609,7 +619,7 @@ pub fn state(c: &Card, today: chrono::NaiveDate) -> &'static str {
     let net = net_rate(c.progress.closed_weight_28d, c.progress.filed_weight_28d).unwrap_or(0);
     let short = w.is_some_and(|w| {
         w.days_left
-            .is_some_and(|d| i64::from(net) * d.max(0) / 28 < i64::from(w.open_weight))
+            .is_some_and(|d| i64::from(net) * d.max(0) / 28 < i64::from(w.open_weight()))
     });
     let miss = c
         .on_time
@@ -824,9 +834,9 @@ fn net_eta(open: u32, closed_28d: u32, filed_28d: u32) -> Option<u32> {
 }
 
 /// The net weight rate, weight closed minus weight filed per 28 days; None at or below zero. The
-/// one rate the version ETA ([`net_eta`]), its room ([`net_room`]), the row forecast
-/// ([`forecast`]) and the project state ([`state`]) read, so a project filing as fast as it
-/// closes reads never on each of them.
+/// one arithmetic the version ETA ([`net_eta`]) and its room ([`net_room`]) apply to the target's
+/// work, and the row forecast ([`forecast`]) and the project state ([`state`]) to the project's
+/// [`Progress`], so a project filing as fast as it closes reads never on each of them.
 fn net_rate(closed_28d: u32, filed_28d: u32) -> Option<u32> {
     closed_28d.checked_sub(filed_28d).filter(|n| *n > 0)
 }
@@ -844,12 +854,12 @@ fn days_at(weight: u32, rate: u32) -> u32 {
 }
 
 /// Put a forecast day on each open leaf row of the projects `stats` covers: the day it should
-/// close at the project's net weight rate ([`net_rate`], the version ETA's), after every row
-/// ranked ahead of it, in the sheet's order (section, then rank). `ceil(weight ahead and its own
-/// * 28 / net rate)` days from `today`. An epic or a row another row names in `#of/` weighs what
-/// its children weigh, so it adds nothing and gets no day; a playtest check is no work item. A
-/// project whose net rate is at or below zero gets no day, never a guess: its version ETA reads
-/// never too.
+/// close at the project's net weight rate ([`net_rate`] over its [`Progress`]), after every row
+/// ranked ahead of it, in the sheet's order (section, then rank): the weight ahead and its own,
+/// times 28, over the net rate, rounded up, in days from `today`. An epic or a row another row
+/// names in `#of/` weighs what its children weigh, so it adds nothing and gets no day; a playtest
+/// check is no work item. A project whose net rate is at or below zero gets no day, never a
+/// guess.
 pub fn forecast(feed: &mut Feed, stats: &[Stats], today: chrono::NaiveDate) {
     let parents: std::collections::HashSet<String> =
         feed.rows.iter().filter_map(|r| r.parent.clone()).collect();
@@ -1742,6 +1752,14 @@ mod tests {
         );
         heavy.window.as_mut().unwrap().open_weight = 8;
         assert_eq!(state(&heavy, today), AT_RISK, "an 8-point row does not");
+        // A notes that sends no open_weight still reads at risk: each open row weighs at least 1.
+        let mut unweighed = short.clone();
+        unweighed.window.as_mut().unwrap().open_weight = 0;
+        assert_eq!(
+            state(&unweighed, today),
+            AT_RISK,
+            "the row count floors the weight"
+        );
         assert_eq!(state_level(PARKED), None, "parked draws grey");
         assert_eq!(state_level(FLOW), None, "flow is no warning");
         let short = Card {
