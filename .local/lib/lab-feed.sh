@@ -28,6 +28,7 @@
 # Public API:
 #   lab_feed_fields <path>   one TSV line, 8 fields (below)
 #   lab_feed_gist   <path>   the joined one-line summary a project row carries
+#   lab_front_page <dir>     the file a project declares its stage on, from notes
 #   lab_head_tag <page> <vocab...>   the first head hashtag in a vocabulary
 #   lab_stages                the maturity ladder, from notes projects --stages
 #   lab_stage_at_least <s> <floor>  is stage s at floor or above
@@ -236,16 +237,18 @@ lab_feed_gist() {
 
 # lab_front_page <project-dir> -> the file the project declares ITSELF on.
 #
-# The working sheet when there is one, else the summary. Same precedence
-# `projects.rs::front_page` uses, and the pair must agree: `notes projects --stage` writes
-# to whichever file this names, and a reader looking at the other one would report a stage
-# nobody set.
+# notes answers (`notes projects --front-page`, projects.rs::front_page): the working sheet,
+# else, for a game its parent versions, its README, else the summary. `notes projects --stage`
+# writes to that file, so a reader looking at any other would report a stage nobody set. A
+# copy of the rule kept here missed the version-parent case and read summary.md for every
+# playground game, so dispatch saw no stage and took none of their rows (ar-4945).
+# Fails, saying why, when notes prints no path (missing, or a binary older than the flag):
+# a caller must not read that as "no stage declared".
 lab_front_page() {
-  local d="${1%/}" f
-  for f in README.md tasks.md; do
-    [ -f "$d/$f" ] && grep -q '^Version:' "$d/$f" 2>/dev/null && { printf '%s' "$d/$f"; return 0; }
-  done
-  printf '%s' "$d/summary.md"
+  local page
+  page="$(notes projects --front-page "${1%/}")" && [ -n "$page" ] ||
+    { echo "lab_front_page: notes projects --front-page printed no path for ${1:-}" >&2; return 1; }
+  printf '%s' "$page"
 }
 
 # lab_head_tag <file> <vocab...> -> the first hashtag from `vocab` in the file's HEAD.
