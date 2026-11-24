@@ -62,8 +62,9 @@
 #   fleet-bench bottleneck [--json | --check [stalled|pools]]
 #                                the scorecard's Bottlenecks table on its own, or its rows as JSON;
 #                                --check with no name runs both, one line each, the worse exit code;
-#                                --check pools exits 1 when any pool's waited job-hours over the window pass
-#                                pool_wait_hours_max, naming each pool, 2 on no bound or no pool series;
+#                                --check pools (the pool-wait watch) exits 1 when any pool's waited job-hours
+#                                over the window pass pool_wait_hours_max, naming each pool, 2 on no bound or
+#                                no pool series;
 #                                --check stalled exits 1 when the Sessions stalled hours over the window
 #                                pass stalled_session_hours_max (a session the human holds open is HELD,
 #                                not stalled), naming the top three, 2 on a stale sampler or no bound
@@ -1524,7 +1525,8 @@ bottleneck_check_pools() {
   [ -z "$out" ] || { printf '%s\n' "$out"; return 1; }
 }
 
-# bottleneck_check [stalled|pools]: one check, or both with no name (the fleet-bottleneck watch). Prints each
+# bottleneck_check [stalled|pools]: one check, or both with no name. The fleet-bottleneck watch runs stalled,
+# the pool-wait watch pools: two routes, since pool capacity is the human's call (ar-5157). Prints each
 # check's line; exits with the worst code (2 unreadable over 1 tripped over 0).
 bottleneck_check() {
   local t c r rc=0 names
