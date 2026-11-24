@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+# pace-conf - the pace numbers with the value in force for each, and the one way to set or end an
+# override of one without a PR. The repo's numbers stay the defaults; an override or window only
+# lays over them, and pace_get (lib/pace-conf.sh) reads all three for every caller.
+#
+#   pace-conf [--json]                           every key: value in force, source, default; --json
+#                                                adds the schedule (each override and window not ended)
+#   pace-conf set KEY VALUE                      a standing override, in place of the key's last one
+#   pace-conf set KEY VALUE [--from T] --until T a window: VALUE from T (default now) until T, at most
+#                                                PACE_WINDOW_MAX_DAYS long; windows of a key never overlap
+#   pace-conf end KEY [FROM]                     end the key's window that starts at FROM (in force: it
+#                                                ends now; ahead: it is removed); no FROM ends the standing one
+#
+# T and FROM are anything `date -d` reads ("tomorrow 22:00", "2026-11-24T22:00", "@1795586400").
+# Only a key with a <KEY>_MAX line in pace.conf is editable, from 0 to that max. A window beats the
+# standing override; when it ends, the standing one or the default is back with no timer.
+# Usage and troubleshooting: .local/src/docs/pace-conf.md.
+set -euo pipefail
+
+# shellcheck source=../lib/pace-conf.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/pace-conf.sh"
+
+die() { echo "pace-conf: $*" >&2; exit 1; }
+usage() { sed -n '/^#   pace-conf/,/^#$/{/^#$/d; s/^# //; p;}' "${BASH_SOURCE[0]}" >&2; exit 2; }
+
+NOW=$(pace_now)
+
+# at <epoch> -> a short local time, the one the fleet line prints
+at() { date -d "@$1" '+%a %d %H:%M'; }
+
+# epoch_of <time> -> epoch seconds, or die naming what could not be read
+epoch_of() { date -d "$1" +%s 2>/dev/null || die "cannot read the time '$1'"; }
+
+# max_of <key> -> its <KEY>_MAX line from pace.conf, which is what makes it editable; the caps
+# come from the repo only, never from an override
+max_of() {
+    local m; m=$(pace_default "${1}_MAX")
+    [[ "$m" =~ ^[0-9]+(\.[0-9]+)?$ ]] && printf '%s' "$m"
+}
+
+# source_text <pace_source output> -> default, override, or window to <time>
+source_text() {
+    case "$1" in
+        window\ *) echo "window to $(at "${1#window }")" ;;
+        *) echo "$1" ;;
+    esac
+}
+
+# rows -> the overrides file's rows that are not ended, one key|value|from|until|by a line
+rows() {
+    [[ -r "$PACE_OVERRIDES" ]] || return 0
+    awk -F'|' -v now="$NOW" 'NF && !($4 ~ /^[0-9]+$/ && $4 + 0 <= now)' "$PACE_OVERRIDES"
+}
+
+cmd_list() {
+    # US, not a tab: read collapses runs of a whitespace IFS, so an empty value would shift the columns
+    local json=0 k v src d m rc=0 lines="" US=$'\x1f'
+    [[ "${1:-}" == --json ]] && { json=1; shift; }
+    [[ $# -eq 0 ]] || usage
+    while IFS= read -r k; do
+        v=$(pace_get "$k") src=$(pace_source "$k") d=$(pace_default "$k") m=$(max_of "$k" || true)
+        [[ -n "$v" ]] || rc=1
+        lines+="$k$US$v$US${src:-malformed}$US$d$US$m"$'\n'
+    done < <(pace_keys)
+    [[ -n "$lines" ]] || die "no key in $PACE_CONF"
+    if ((json)); then
+        jq -Rn --argjson now "$NOW" --arg days "$(pace_default PACE_WINDOW_MAX_DAYS)" \
+            --arg file "$PACE_OVERRIDES" --rawfile rows <(rows) '
+            def num: if . == "" then null else tonumber? // null end;
+            [inputs | split("\u001f") | {key: .[0], value: (.[1] | num), default: (.[3] | num),
+                source: (.[2] | split(" ")[0]), until: (.[2] | split(" ")[1] // "" | num),
+                editable: (.[4] != ""), max: (.[4] | num)}] as $keys
+            | {now: $now, window_max_days: ($days | num), overrides: $file, keys: $keys,
+               schedule: [$rows | split("\n")[] | select(. != "") | split("|")
+                 | {key: .[0], value: (.[1] | num), from: (.[2] | num), until: (.[3] | num), by: .[4]}
+                 | . as $r
+                 | .state = (if .until == null then
+                                (if any($keys[]; .key == $r.key and .source == "window") then "shadowed" else "in_force" end)
+                             elif .from > $now then "upcoming" else "in_force" end)]
+                 | sort_by(.key, .from)}' <<< "${lines%$'\n'}"
+    else
+        printf '%-22s %-7s %-26s %-8s\n' KEY VALUE SOURCE DEFAULT
+        while IFS=$US read -r k v src d m; do
+            printf '%-22s %-7s %-26s %-8s%s\n' "$k" "${v:--}" "$(source_text "$src")" "$d" "${m:+ editable, 0 to $m}"
+        done <<< "${lines%$'\n'}"
+        local r
+        r=$(rows | sort -t'|' -k1,1 -k3,3n)
+        if [[ -n "$r" ]]; then
+            echo
+            echo "schedule ($PACE_OVERRIDES):"
+            while IFS='|' read -r k v f u by; do
+                # a window shows its start as end takes it, @epoch: the minute alone does not match one
+                # set from now
+                if [[ -z "$u" ]]; then printf '  %s %s standing, since %s, by %s\n' "$k" "$v" "$(at "$f")" "$by"
+                else printf '  %s %s from %s until %s, by %s%s; pace-conf end %s @%s\n' "$k" "$v" "$(at "$f")" "$(at "$u")" "$by" \
+                    "$( ((f <= NOW)) && echo ', in force')" "$k" "$f"
+                fi
+            done <<< "$r"
+        fi
+    fi
+    return "$rc"
+}
+
+# keep_rows KEY -> stdin rows to stdout, less a malformed row of KEY, which it names: a set or an
+# end of KEY is how a bad row is cleared. A malformed row of another key stays, and still stops
+# its readers.
+keep_rows() {
+    local k v f u by
+    while IFS='|' read -r k v f u by || [[ -n "$k" ]]; do
+        [[ -n "$k$v$f$u$by" ]] || continue
+        if [[ "$k" == "$1" ]] && ! pace_row_ok "$k" "$v" "$f" "$u"; then
+            echo "pace-conf: dropped a malformed $1 row: $k|$v|$f|$u|$by" >&2
+            continue
+        fi
+        printf '%s|%s|%s|%s|%s\n' "$k" "$v" "$f" "$u" "$by"
+    done
+}
+
+# put_standing KEY VALUE BY: the filter for a standing override, in place of the key's last one
+put_standing() {
+    keep_rows "$1" | awk -F'|' -v k="$1" '!($1 == k && $4 == "")'
+    printf '%s|%s|%s||%s\n' "$1" "$2" "$NOW" "$3"
+}
+
+# put_window KEY VALUE FROM UNTIL BY: the filter for a window; fails on one of KEY it overlaps
+put_window() {
+    local kept k v f u by
+    kept=$(keep_rows "$1")
+    while IFS='|' read -r k v f u by; do
+        [[ "$k" == "$1" && -n "$u" ]] && pace_row_ok "$k" "$v" "$f" "$u" || continue
+        ((u > NOW && f < $4 && $3 < u)) || continue
+        die "it overlaps the $1 window $v from $(at "$f") until $(at "$u"); end that one first (pace-conf end $1 @$f)"
+    done <<< "$kept"
+    [[ -z "$kept" ]] || printf '%s\n' "$kept"
+    printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5"
+}
+
+# drop_row KEY FROM: the filter for an end; FROM is a window's start, or empty for the standing
+# override. Fails when there is no such row.
+drop_row() {
+    local all kept
+    all=$(cat)
+    kept=$(keep_rows "$1" <<< "$all")
+    if [[ -z "$2" ]]; then
+        # a malformed row dropped is the end asked for: it is what stopped the key's readers, and
+        # the standing override, if there is one, stays
+        if [[ "$(grep -c . <<< "$kept")" -lt "$(grep -c . <<< "$all")" ]]; then
+            [[ -z "$kept" ]] || printf '%s\n' "$kept"
+            return
+        fi
+        awk -F'|' -v k="$1" '$1 == k && $4 == "" {f = 1} END {exit !f}' <<< "$kept" ||
+            die "$1 has no standing override (a window ends by its start: pace-conf end $1 <from>; pace-conf lists them)"
+        awk -F'|' -v k="$1" '!($1 == k && $4 == "")' <<< "$kept"
+    else
+        awk -F'|' -v k="$1" -v f="$2" -v now="$NOW" '$1 == k && $3 == f && $4 ~ /^[0-9]+$/ && $4 + 0 > now {h = 1} END {exit !h}' <<< "$kept" ||
+            die "$1 has no window that starts at $(at "$2") and has not ended"
+        awk -F'|' -v k="$1" -v f="$2" '!($1 == k && $3 == f && $4 != "")' <<< "$kept"
+    fi
+}
+
+# editable KEY -> its max, or die: the key must be in pace.conf and have a <KEY>_MAX line
+editable() {
+    [[ "$1" =~ ^[A-Z][A-Z0-9_]*$ ]] || die "'$1' is not a pace.conf key"
+    [[ -n "$(pace_default "$1")" ]] || die "$1 is not a key in $PACE_CONF"
+    max_of "$1" || die "$1 is not editable: pace.conf has no ${1}_MAX line"
+}
+
+cmd_set() {
+    [[ $# -ge 2 ]] || usage
+    local key=$1 value=$2 from="" until="" max by=hand days span
+    shift 2
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --from) [[ $# -ge 2 ]] || usage; from=$2; shift 2 ;;
+            --until) [[ $# -ge 2 ]] || usage; until=$2; shift 2 ;;
+            *) usage ;;
+        esac
+    done
+    max=$(editable "$key")
+    [[ "$value" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "'$value' is not a plain number"
+    awk -v v="$value" -v m="$max" 'BEGIN {exit !(v + 0 <= m + 0)}' || die "$value is over $key's max of $max (${key}_MAX in pace.conf)"
+    # a run by the hub's audited routes: AGENT_AUDITED is the runner's pid, this tool's parent
+    # (the same test as audit_append, lib/audit.sh); an inherited one is a hand run
+    [[ "${AGENT_AUDITED:-}" != "$PPID" ]] || by=agent-web
+    if [[ -z "$until" ]]; then
+        [[ -z "$from" ]] || die "--from needs --until: a standing override starts now"
+        pace_write put_standing "$key" "$value" "$by" || exit 1
+        echo "$key: $value, standing, until pace-conf end $key"
+        return
+    fi
+    from=$(epoch_of "${from:-@$NOW}")
+    until=$(epoch_of "$until")
+    ((until > NOW)) || die "the end $(at "$until") is not in the future (for a time tomorrow, say 'tomorrow 22:00')"
+    ((until > from)) || die "the end $(at "$until") is not after the start $(at "$from")"
+    days=$(pace_default PACE_WINDOW_MAX_DAYS)
+    [[ "$days" =~ ^[0-9]+$ ]] || die "PACE_WINDOW_MAX_DAYS is not set to a whole number in $PACE_CONF"
+    span=$((until - from))
+    ((span <= days * 86400)) || die "the window is longer than PACE_WINDOW_MAX_DAYS ($days days): a forgotten one must end by itself"
+    pace_write put_window "$key" "$value" "$from" "$until" "$by" || exit 1
+    echo "$key: $value from $(at "$from") until $(at "$until"); in force now: $(pace_get "$key") ($(source_text "$(pace_source "$key")"))"
+}
+
+cmd_end() {
+    [[ $# -ge 1 && $# -le 2 ]] || usage
+    local key=$1 from=""
+    editable "$key" > /dev/null
+    [[ -z "${2:-}" ]] || from=$(epoch_of "$2")
+    pace_write drop_row "$key" "$from" || exit 1
+    echo "$key: $(pace_get "$key") now ($(source_text "$(pace_source "$key")"))"
+}
+
+case "${1:-}" in
+    ''|--json) cmd_list "$@" ;;
+    set) shift; cmd_set "$@" ;;
+    end) shift; cmd_end "$@" ;;
+    -h|--help) usage ;;
+    *) usage ;;
+esac
