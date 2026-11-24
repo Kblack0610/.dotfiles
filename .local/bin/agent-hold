@@ -71,6 +71,8 @@ class_rank() { awk -F'\t' -v c="$1" '$1 == c { print $2 }' <<<"$DESK_CLASSES"; }
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fmt.sh"
 # shellcheck source=../lib/audit.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/audit.sh"
+# shellcheck source=../lib/dispatch-wake.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/dispatch-wake.sh"
 
 # collapse a value to a single physical line (files are one key:value per line)
 oneline() { printf '%s' "$1" | tr '\n\t' '  ' | sed -E 's/  +/ /g; s/^ +//; s/ +$//'; }
@@ -361,6 +363,8 @@ cmd_release() {
     return 1
   fi
   rm -f "$f"
+  # A lifted hold is what held starts back: wake a kick (dispatch_wake) rather than wait for the timer.
+  dispatch_wake "agent-hold release $resource"
   notify -p low -t "go: $resource" "released (was: $reason)"
   audit_append "$(default_by)" hold.released "$resource" ok "was: $reason"
   echo "released: $resource"

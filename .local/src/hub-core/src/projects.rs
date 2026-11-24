@@ -542,8 +542,7 @@ pub struct Projects {
 /// What an ETA reads when the net rate is at or below zero: rows are filed as fast as they close.
 pub const NEVER: &str = "never at this rate";
 
-/// What a card with no window snapshot says, in place of any number; also the state of an active
-/// project without one.
+/// What a card with no window snapshot says in its window cell, in place of any number.
 pub const NO_WINDOW: &str = "no window";
 
 pub const LATE: &str = "late";
@@ -551,18 +550,19 @@ pub const AT_RISK: &str = "at risk";
 pub const ON_TRACK: &str = "on track";
 pub const IDLE: &str = "idle";
 pub const PARKED: &str = "parked";
+/// An active project with no window: its rows flow as they close. Not a warning, so no hue.
+pub const FLOW: &str = "flow";
 
 /// The project states in the order [`state`] tries them, first match wins. The rule table's one
 /// home is `docs/stages.md`, "Project state"; `state_words_are_the_stages_md_table` holds the two
 /// to the same words in the same order.
-pub const STATES: [&str; 6] = [LATE, AT_RISK, ON_TRACK, NO_WINDOW, IDLE, PARKED];
+pub const STATES: [&str; 6] = [LATE, AT_RISK, ON_TRACK, FLOW, IDLE, PARKED];
 
-/// Each state's hue (dashboards.md rule 5); `parked` is in none, so it draws grey.
+/// Each state's hue (dashboards.md rule 5); `flow` and `parked` are in none, so they draw plain.
 pub const STATE_TONES: &[(&str, Level)] = &[
     (LATE, Level::Bad),
     (AT_RISK, Level::Warn),
     (ON_TRACK, Level::Ok),
-    (NO_WINDOW, Level::Warn),
     (IDLE, Level::Warn),
 ];
 
@@ -571,12 +571,16 @@ pub fn state_level(state: &str) -> Option<Level> {
     crate::vocab::tone(STATE_TONES, state)
 }
 
-/// The state, then the window unless that repeats it (`no window`): what the phone row and the
-/// anchor's Lab line say, `state_says` in `--json`. A card [`build`] has not stated is its window.
+/// The state, then the window: what the phone row and the anchor's Lab line say, `state_says` in
+/// `--json`. A quiet or flowing state with no window is said alone (`flow`, `idle`, `parked`);
+/// `late` and `at risk` keep `no window`, the cause to close. A card [`build`] has not stated is
+/// its window.
 pub fn state_says(c: &Card) -> String {
     let window = window_short(c);
-    if c.state.is_empty() || c.state == window {
+    if c.state.is_empty() {
         window
+    } else if c.window.is_none() && ![LATE, AT_RISK].contains(&c.state) {
+        c.state.to_string()
     } else {
         format!("{}, {window}", c.state)
     }
@@ -621,7 +625,7 @@ pub fn state(c: &Card, today: chrono::NaiveDate) -> &'static str {
         .and_then(day)
         .is_some_and(|d| (today - d).num_days() < c.idle_days);
     if closed_lately || c.in_flight() {
-        NO_WINDOW
+        FLOW
     } else if c.stage == "draft" {
         PARKED
     } else {
@@ -1022,6 +1026,29 @@ fn queue(c: &Card) -> String {
     )
 }
 
+/// What a running item under no epic counts as in [`running_areas`].
+pub const NO_EPIC: &str = "no epic";
+
+/// The card's running items counted by their epic's system (`Running::area`), most first, ties
+/// by name, and the items under no epic last as [`NO_EPIC`]: `running_areas` in `--json`, the
+/// categories the projects chip lists under each project.
+pub fn running_areas(c: &Card) -> Vec<(String, usize)> {
+    let mut by: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    let mut none = 0;
+    for r in &c.running {
+        match r.area.as_deref() {
+            Some(a) => *by.entry(a).or_default() += 1,
+            None => none += 1,
+        }
+    }
+    let mut v: Vec<(String, usize)> = by.into_iter().map(|(a, n)| (a.to_string(), n)).collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    if none > 0 {
+        v.push((NO_EPIC.to_string(), none));
+    }
+    v
+}
+
 /// The card's In flight as the Running table draws it, scoped to the project: the same
 /// [`Running`] row type, so the same columns and each cell's links. It is a fixed list on the
 /// project page (no query, sort or filter to give), so it sends no facets or state chips.
@@ -1159,6 +1186,10 @@ pub fn to_json(p: &Projects) -> Value {
             if !c.running.is_empty() {
                 j["running_table"] = serde_json::to_value(running_table(c)).unwrap_or_default();
             }
+            j["running_areas"] = running_areas(c)
+                .into_iter()
+                .map(|(area, n)| serde_json::json!({"area": area, "n": n}))
+                .collect();
         }
     }
     v
@@ -1274,6 +1305,41 @@ mod tests {
             "v0.10.0 is newer than v0.2.0"
         );
         assert_eq!(names("", "", "pace", "")[0], "low");
+    }
+
+    #[test]
+    fn running_areas_count_by_epic_system_most_first_and_no_epic_last() {
+        let run = |area: Option<&str>| Running {
+            area: area.map(Into::into),
+            ..Default::default()
+        };
+        let c = Card {
+            running: vec![
+                run(None),
+                run(Some("views")),
+                run(Some("dispatch")),
+                run(None),
+                run(Some("dispatch")),
+                run(Some("ci")),
+                run(None),
+            ],
+            ..Default::default()
+        };
+        // NEGATIVE CONTROL: 3 items under no epic outnumber every system, and still go last.
+        let wire = to_json(&Projects {
+            cards: vec![c],
+            ..Default::default()
+        });
+        assert_eq!(
+            wire["cards"][0]["running_areas"],
+            json!([{"area": "dispatch", "n": 2}, {"area": "ci", "n": 1},
+                   {"area": "views", "n": 1}, {"area": "no epic", "n": 3}])
+        );
+        let idle = to_json(&Projects {
+            cards: vec![Card::default()],
+            ..Default::default()
+        });
+        assert_eq!(idle["cards"][0]["running_areas"], json!([]));
     }
 
     #[test]
@@ -1636,7 +1702,7 @@ mod tests {
         .collect();
         assert_eq!(
             got,
-            [LATE, LATE, AT_RISK, AT_RISK, ON_TRACK, NO_WINDOW, NO_WINDOW, IDLE, PARKED],
+            [LATE, LATE, AT_RISK, AT_RISK, ON_TRACK, FLOW, FLOW, IDLE, PARKED],
             "the last close 28 days back is idle; a waiting item is in flight"
         );
         let mut zero = idle.clone();
@@ -1647,11 +1713,19 @@ mod tests {
             "idle_days 0 reads every quiet project idle"
         );
         assert_eq!(state_level(PARKED), None, "parked draws grey");
+        assert_eq!(state_level(FLOW), None, "flow is no warning");
         let short = Card {
             state: AT_RISK,
             ..short
         };
         assert_eq!(state_says(&short), "at risk, 16/20 due 11-22");
+        // A target past with no window keeps the cause; a flowing card says its state alone.
+        let late = Card {
+            state: LATE,
+            window: None,
+            ..short
+        };
+        assert_eq!(state_says(&late), "late, no window");
     }
 
     #[test]
@@ -1703,9 +1777,10 @@ mod tests {
     }
 
     #[test]
-    fn the_backlog_sets_no_state_and_no_window_is_said_once() {
+    fn the_backlog_sets_no_state_and_a_flowing_card_says_flow_alone() {
         // NEGATIVE CONTROL: 990 open and 30 done set no state of their own; the card with no
-        // window that closed lately is `no window`, and its JSON carries no percent.
+        // window that closed lately is `flow`, uncoloured, its JSON carries no percent, and its
+        // window cell still says `no window`.
         let no_window = state_card("alpha", None, 0, TEN_DAYS_AGO);
         let j = to_json(&Projects {
             cards: vec![Card {
@@ -1720,9 +1795,10 @@ mod tests {
                 &j["cards"][0]["state_level"],
                 &j["cards"][0]["state_says"]
             ),
-            (&json!("no window"), &json!("warn"), &json!("no window")),
-            "`no window` is said once"
+            (&json!("flow"), &Value::Null, &json!("flow")),
+            "`flow` is said alone, in no hue"
         );
+        assert_eq!(j["cards"][0]["window_cell"], "no window");
         assert!(!j.to_string().contains("percent"), "{j}");
     }
 

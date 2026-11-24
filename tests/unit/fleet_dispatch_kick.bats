@@ -108,3 +108,53 @@ bats_require_minimum_version 1.5.0
   assert_output --partial 'kick: at the pace target (6 of 6 live), starting nothing'
   [ -n "$(qitem queued fix-app)" ] || fail "the second kick started past the pace target"
 }
+
+# agentctl reads a unit that declares no outcome as STALLED, and a kick must not publish fleet-dispatch's:
+# run as its own unit it declares its own (dispatch-event-wake).
+@test "a kick run as the fleet-dispatch-kick unit publishes its outcome under that name, never fleet-dispatch's" {
+  game_ready
+  agent-queue add --project game --slug mine "mine"
+  AGENTCTL_NAME=fleet-dispatch-kick run "$REPO_ROOT/.local/bin/fleet-dispatch" kick
+  assert_success
+  [ -s "$HOME/.local/state/agentctl/fleet-dispatch-kick/last-outcome" ] || fail "the kick unit declared no outcome"
+  [ -z "$(outcome)" ] || fail "kick published fleet-dispatch's outcome: $(outcome)"
+}
+
+@test "fleet-dispatch-kick.path watches the wake file, starts the kick runner, and is enabled by default.target.wants" {
+  local u="$REPO_ROOT/.config/systemd/user"
+  grep -qxF 'PathChanged=%h/.agent/dispatch/.wake' "$u/fleet-dispatch-kick.path"
+  grep -qxF 'Unit=agentctl@fleet-dispatch-kick.service' "$u/fleet-dispatch-kick.path"
+  [ "$(readlink "$u/default.target.wants/fleet-dispatch-kick.path")" = ../fleet-dispatch-kick.path ] || fail "the .path is not wanted by default.target"
+  # The writer and the watcher agree on the file.
+  grep -qF '.agent/dispatch}' "$REPO_ROOT/.local/lib/dispatch-wake.sh"
+  grep -qF '.wake' "$REPO_ROOT/.local/lib/dispatch-wake.sh"
+}
+
+# systemd drops a wake that lands while the kick runs, so a kick reads the queue again when .wake moved.
+# agent-hold is read once a round: the stub writes the wake on the first read only (the write that lands mid-run).
+@test "a kick whose wake file moved during its run reads the queue again, once for each move" {
+  game_ready
+  agent-queue add --project game --slug mine "mine"
+  rm -f "$FLEET_DISPATCH_DIR/.wake"   # the add is a wake of its own
+  stub agent-hold "case \"\$*\" in 'check dispatch'*) echo \"\$*\" >> '$SANDBOX/hold.calls'; [ -e '$SANDBOX/hold.done' ] || { : > '$SANDBOX/hold.done'; echo mid-run > '$FLEET_DISPATCH_DIR/.wake'; };; esac; exit 0"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" kick
+  assert_success
+  # Round one starts the item (its start reads the hold again), round two finds the queue empty.
+  assert_output --partial 'kick: started 1'
+  assert_output --partial 'kick: nothing queued to start'
+  assert_equal "$(grep -c 'check dispatch' "$SANDBOX/hold.calls")" 3
+  [ -n "$(qitem running mine)" ] || fail "the item did not start"
+}
+
+@test "a kick whose wake file did not move reads the queue once, so its own starts never loop it" {
+  game_ready
+  agent-queue add --project game --slug mine "mine"
+  rm -f "$FLEET_DISPATCH_DIR/.wake"   # the add is a wake of its own
+  stub agent-hold "echo \"\$*\" >> '$SANDBOX/hold.calls'; exit 0"   # two reads: the gate, then the start's own
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" kick
+  assert_success
+  assert_output --partial 'kick: started 1'
+  refute_output --partial 'nothing queued'
+  assert_equal "$(wc -l < "$SANDBOX/hold.calls")" 2
+  [ ! -e "$FLEET_DISPATCH_DIR/.wake" ] || fail "the kick's own start wrote a wake"
+}

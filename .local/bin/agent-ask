@@ -204,6 +204,8 @@ JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/judge.sh"
 # shellcheck source=../lib/fmt.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fmt.sh"
+# shellcheck source=../lib/dispatch-wake.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/dispatch-wake.sh"
 # The panels' palette (C_*): a card reads like the panel that shows it and follows a theme swap.
 # shellcheck source=../src/tmux/panel-palette.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/panel-palette.sh"
@@ -1050,13 +1052,12 @@ released_by() {
   queue_holders "$1" | awk -F'\t' -v a="${pick,,}" '$2 == "" || index("+" tolower($2) "+", "+" a "+") { print $1 }'
 }
 
-# start_held: the human's answer released the queue items held on its ask, and a fleet-dispatch pass
-# starts them now, behind every gate a pass holds a start to (room, load, run units), not at the timer's
-# next fire. --no-block: the pass takes minutes; while one runs, systemd merges this start into it and
-# the next timer pass takes them.
+# start_held: the answer released the queue items held on its ask, and a fleet-dispatch kick starts them
+# now (dispatch_wake), behind every gate a pass holds a start to (room, load, run units), not at the
+# timer's next fire. The wake file coalesces: a kick or pass already running takes the items itself.
 start_held() {
-  [ -z "${AGENT_ASK_NO_RESUME:-}" ] && command -v agentctl >/dev/null 2>&1 || return 0
-  agentctl start fleet-dispatch --no-block >/dev/null 2>&1 || true
+  [ -z "${AGENT_ASK_NO_RESUME:-}" ] || return 0
+  dispatch_wake "agent-ask answer released held items"
 }
 
 # --- delivery --------------------------------------------------------------
