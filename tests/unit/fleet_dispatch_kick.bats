@@ -131,14 +131,23 @@ bats_require_minimum_version 1.5.0
 }
 
 # systemd drops a wake that lands while the kick runs, so a kick reads the queue again when .wake moved.
-@test "a kick whose wake file moved during its run reads the queue again, at most KICK_ROUNDS times" {
+# agent-hold is read once a round: the stub writes the wake on the first read only (the write that lands mid-run).
+@test "a kick whose wake file moved during its run reads the queue again, once for each move" {
   game_ready
   agent-queue add --project game --slug mine "mine"
-  export KICK_ROUNDS=3
-  # agent-hold is read once a round: the first read is the write that lands mid-run.
-  stub agent-hold "echo \"\$*\" >> '$SANDBOX/hold.calls'; [ \"\$(wc -l < '$SANDBOX/hold.calls')\" -ne 1 ] || echo mid-run > '$FLEET_DISPATCH_DIR/.wake'; exit 0"
+  stub agent-hold "case \"\$*\" in 'check dispatch'*) echo x >> '$SANDBOX/hold.calls'; [ -e '$SANDBOX/hold.done' ] || { : > '$SANDBOX/hold.done'; echo mid-run > '$FLEET_DISPATCH_DIR/.wake'; };; esac; exit 0"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" kick
   assert_success
-  assert_equal "$(grep -c 'check dispatch' "$SANDBOX/hold.calls")" 2
+  assert_equal "$(wc -l < "$SANDBOX/hold.calls")" 2
   [ -n "$(qitem running mine)" ] || fail "the item did not start"
+}
+
+@test "a kick whose wake file did not move reads the queue once, so its own starts never loop it" {
+  game_ready
+  agent-queue add --project game --slug mine "mine"
+  stub agent-hold "echo x >> '$SANDBOX/hold.calls'; exit 0"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" kick
+  assert_success
+  assert_equal "$(wc -l < "$SANDBOX/hold.calls")" 1
+  [ ! -e "$FLEET_DISPATCH_DIR/.wake" ] || fail "the kick's own start wrote a wake"
 }
