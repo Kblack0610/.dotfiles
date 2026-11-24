@@ -649,6 +649,29 @@ cell() {
   assert_equal "$(jq -c '.runner_score_inbox_triage' <<<"$output")" '{"7d":66.7,"28d":66.7}'
 }
 
+@test "SENTINEL_SINCE: a priority a later pass superseded stays pending for its window (runner-score, ar-2553)" {
+  local i
+  # 30 priorities set after a fix a day ago, each changed by a session, then set again by the pass
+  for i in $(seq 1 30); do
+    ev tagged "p-$i" "$(ago '-20 hours')" by=inbox-priority 'why=+#low'
+    ev tagged "p-$i" "$(ago '-6 hours')" by=ab12cd34 'why=+#high'
+    ev tagged "p-$i" "$(ago '-3 hours')" by=inbox-priority 'why=+#normal'
+  done > "$INGEST"
+  SENTINEL_SINCE="$(date -d '-1 day' +%s)" run "$JUDGE_EVAL" kpi --json
+  assert_success
+  assert_equal "$(jq -c '.runner_score_inbox_priority' <<<"$output")" '{"7d":null,"28d":null}'
+  SENTINEL_SINCE="$(date -d '-1 day' +%s)" run "$JUDGE_EVAL" inbox-priority --json
+  assert_equal "$(jq -c '.agents[0].total | [.tp, .fp, .pending]' <<<"$output")" '[0,0,60]'
+  # negative control: the same rows once settled score each first tag wrong, each second right
+  for i in $(seq 1 30); do
+    ev tagged "p-$i" "$(ago '-4 days')" by=inbox-priority 'why=+#low'
+    ev tagged "p-$i" "$(ago '-4 days +6 hours')" by=ab12cd34 'why=+#high'
+    ev tagged "p-$i" "$(ago '-4 days +9 hours')" by=inbox-priority 'why=+#normal'
+  done > "$INGEST"
+  run "$JUDGE_EVAL" kpi --json
+  assert_equal "$(jq -c '.runner_score_inbox_priority' <<<"$output")" '{"7d":50,"28d":50}'
+}
+
 @test "a lane with two PROMPT files counts calls under either as current, and an included rule changed resets both" {
   mkdir -p "$HOME/tpl/rules"
   echo 'priority rule v1' > "$HOME/tpl/rules/prio.md"

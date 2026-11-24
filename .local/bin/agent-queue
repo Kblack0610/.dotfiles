@@ -635,11 +635,6 @@ cmd_admission() {
   fi
 }
 
-# prios_read -> `name<TAB>prio` for every project whose front page declares a `#prio/<word>` (`notes
-# projects --prios`, the one reader of the tag the human sets with `notes projects --prio` or the hub's
-# P key). Nothing when notes cannot answer: no prio is the safe default, it ranks every project the same.
-prios_read() { notes projects --prios 2>/dev/null || true; }
-
 # requested_tag <tags> -> whether the item came from a row the human asked for (#requested; dispatch
 # copies it onto the item as `requested`).
 requested_tag() { [[ " $1 " == *" requested "* || " $1 " == *" #requested "* ]]; }
@@ -1391,26 +1386,24 @@ item_json() {
 }
 
 # Queue order: a `red` item first (something is broken), then an urgent one, then a `sprint` one (its row
-# is held by an open sprint, fleet-dispatch promote), then the project's `#prio`
-# (order_filter: focus, high, normal, low), then priority; inside each of those buckets the class mix
-# (MIX_JQ) when AQ_CLASSES is on; then queued time. The one queue order: every reader (next, list,
-# fleet-dispatch next_items) takes it as is, so a lower tier starts only when no item of a higher one
-# can: a pass takes the first it can place. Nothing is held for a focus (the human, 2026-11-13).
+# is held by an open sprint, fleet-dispatch promote), then priority; inside each of those buckets the
+# class mix (MIX_JQ) when AQ_CLASSES is on; then queued time. No project rank: the order comes from the
+# item and its row, and the fleet's share of starts is fleet-dispatch's DISPATCH_FLEET_PROJECTS cap.
+# The one queue order: every reader (next, list, fleet-dispatch next_items) takes it as is, so a lower
+# tier starts only when no item of a higher one can: a pass takes the first it can place.
 # `after` and other tags hold, not reorder. Cleanup gets its turns from the mix's cleanup share.
 # An item that works an open board row ranks by that row's priority (row_prio, from row_prios), so a
 # retag re-ranks it and the item's own line is only the fallback when notes cannot answer (ar-3011).
 # Two keep their own: a red, whose priority its filer set, and a cleanup item on a #low row, which
 # dispatch promotes at high (fleet-dispatch row_priority) and so still ranks high.
-# A red outranks urgent on purpose: the human's rule is that anything broken goes first. Urgent sits
-# above the project rank, so a row-level #urgent jumps every tier; the rank sits above high, normal
-# and low, so a focus project's work is not queued behind another project's (the human: games go first).
+# A red outranks urgent on purpose: the human's rule is that anything broken goes first.
 ORDER='def untagged($t): ((.tags // "") | if type == "array" then join(" ") else tostring end
     | [splits("\\s+")] | index([$t])) == null;
   def row_prio: ($rowprio[.row // ""]) as $r
     | if $r == null or (untagged("red") | not) then .
       elif $r == "low" and (untagged("cleanup") | not) then .priority = "high"
       else .priority = $r end;
-  def bucket: [untagged("red"), (.priority != "urgent"), untagged("sprint"), ($rank[.project // ""] // 2),
+  def bucket: [untagged("red"), (.priority != "urgent"), untagged("sprint"),
     ({"urgent":0,"high":1,"normal":2,"low":3}[.priority] // 1)];
   (if $rowprio == null then . else map(row_prio) end)
   | if $mix == null then sort_by(bucket, .queued) else mix($mix; bucket) end'
@@ -1542,18 +1535,13 @@ cmd_mix() {
     (if (.starved | length) > 0 then "starved: \(.starved | join(", ")) (runnable, none started in \(.starve_days)d)" else "starved: none" end)' <<<"$out"
 }
 
-# order_filter <states...> -> ORDER with each project's rank bound to $rank, from the `#prio` the human
-# set on its front page (prios_read): focus 0, high 1, normal 2, low 3. No prio, or a notes that cannot
-# answer, ranks every project the same. A listing with queued items binds $mix (mix_json); any other
-# orders without it, so a read of running or done items pays no read of done/.
+# order_filter <states...> -> ORDER with $rowprio (row_prios) bound. A listing with queued items binds
+# $mix (mix_json); any other orders without it, so a read of running or done items pays no read of done/.
 order_filter() {
-  local rank mix=null
-  rank="$(prios_read | jq -Rsc 'split("\n") | map(select(. != "") | split("\t")
-    | {(.[0]): ({"focus": 0, "high": 1, "low": 3}[.[1]] // 2)}) | add // {}' 2>/dev/null)" || rank='{}'
+  local mix=null rows
   [[ " $* " != *" queued "* ]] || mix="$(mix_json)"
-  local rows
   rows="$(row_prios "$@")"
-  printf '%s %s %s as $rank | %s as $mix | %s as $rowprio | %s' "$CLASS_JQ" "$MIX_JQ" "$rank" "${mix:-null}" "${rows:-null}" "$ORDER"
+  printf '%s %s %s as $mix | %s as $rowprio | %s' "$CLASS_JQ" "$MIX_JQ" "${mix:-null}" "${rows:-null}" "$ORDER"
 }
 
 # row_prios <states...> -> {"<board>:<id>": priority} of each open board row an item in those states

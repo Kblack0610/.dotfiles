@@ -212,6 +212,60 @@ as_session() { mkdir -p "$SANDBOX/$1" && cd "$SANDBOX/$1"; }
   assert_failure 1
 }
 
+@test "a re-set keeps since, so hold-age ages the hold from its first set; a release starts it afresh (ar-5236)" {
+  "$HOLD" set critical --kind resource --by human "lockdown"
+  first="$(date -d '-3 days' +%Y-%m-%dT%H:%M:%S%z)"
+  sed -i "s/^since: .*/since: $first/" "$AGENT_HOLD_DIR/critical"
+  "$HOLD" set critical --kind resource --by human "lockdown, reworded"
+  run "$HOLD" show critical
+  assert_output --partial "since: $first"
+  assert_output --partial 'reason: lockdown, reworded'
+  run "$HOLD" aged
+  assert_failure 1
+  assert_output --partial 'critical: held'
+  "$HOLD" release critical
+  "$HOLD" set critical --kind resource --by human "lockdown again"
+  run "$HOLD" show critical
+  refute_output --partial "since: $first"
+}
+
+@test "a re-set as another kind, or over a since no date reads, starts since afresh" {
+  "$HOLD" set unity --by fleet-pace "hot"
+  sed -i 's/^since: .*/since: 2026-11-01T00:00:00-0800/' "$AGENT_HOLD_DIR/unity"
+  "$HOLD" set unity --kind resource --by human "maintenance"
+  run "$HOLD" show unity
+  refute_output --partial 'since: 2026-11-01T00:00:00-0800'
+  sed -i 's/^since: .*/since: /' "$AGENT_HOLD_DIR/unity"
+  "$HOLD" set unity --kind resource --by human "maintenance, longer"
+  run "$HOLD" show unity
+  assert_output --regexp 'since: [0-9]{4}-'
+}
+
+@test "a set over a claim starts its own since, not the claim's" {
+  "$HOLD" claim mac-desktop --by agent-1 "store forms"
+  sed -i 's/^since: .*/since: 2026-11-01T00:00:00-0800/' "$AGENT_HOLD_DIR/mac-desktop"
+  "$HOLD" set mac-desktop --kind resource --by human "maintenance"
+  run "$HOLD" show mac-desktop
+  refute_output --partial 'since: 2026-11-01T00:00:00-0800'
+}
+
+@test "grant takes row, epic and plan ids and keeps since; a name with a space is refused (ar-5236)" {
+  "$HOLD" set critical --kind resource --by human "lockdown"
+  sed -i 's/^since: .*/since: 2026-11-20T16:10:54-0800/' "$AGENT_HOLD_DIR/critical"
+  run "$HOLD" grant critical hc-952 ar-4938 pasted-content-id-9f60-we-optimized-rossum
+  assert_success
+  run "$HOLD" show critical
+  assert_output --partial 'since: 2026-11-20T16:10:54-0800'
+  assert_output --partial 'granted: hc-952,ar-4938,pasted-content-id-9f60-we-optimized-rossum'
+  run "$HOLD" grant critical 'hc-953 hc-954'
+  assert_failure 2
+  assert_output --partial 'no comma or space'
+  # A row id is no session: a caller is still held unless it is granted by a name of its own.
+  as_session agent-1
+  run "$HOLD" check critical
+  assert_failure 1
+}
+
 # A tmux pane, faked: the stub answers display-message only when asked of $STUB_PANE, so a
 # caller that asks without -t "$TMUX_PANE" gets no name.
 in_pane() { # <session> <window index> <windows in the session>

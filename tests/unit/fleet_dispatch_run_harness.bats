@@ -510,26 +510,126 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   assert_output --partial 'razer-laptop is at its fleet_max_live'
 }
 
-@test "a heavy item stays here: a worker takes light claude work only" {
+# ar-2891: on 2026-11-24 razer-laptop sat at 1 live item while 92 heavy or plan items could only run here.
+@test "a heavy item goes to a worker that clones its repo and holds 2 of its units; with 1 free the worker refuses it" {
   project game beta "$SANDBOX/repos/game"
-  worker '2.0 16 1 50'
+  export DISPATCH_PER_PASS=2
+  WORKER_MAX_LIVE=2 worker '2.0 16 1 50'
   echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   agent-queue add --project game --slug bake --priority high --weight heavy "Bake the lights" >/dev/null
+  # Negative control: a light run holds 1 of the worker's 2 units, so the heavy item has no place.
+  remote_item busy
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'machine pace: bake'
   assert_output --partial 'no fleet worker takes it'
   assert_not_called 'wt new'
+  # With both units free it goes there, and takes both: the light item behind it finds the worker full.
+  rm "$(qitem running busy)" "$NOTES_FIXTURE/tmux.sessions.lab"
+  agent-queue add --project game --slug fix-menu --priority low "Fix the menu sides" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item bake on razer-laptop'
+  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: "
+  [ -n "$(qitem queued fix-menu)" ] || fail "a light item started on a worker the heavy start filled: $output"
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'razer-laptop is at its fleet_max_live'
 }
 
-@test "with room here a pass starts here first, and with no roster nothing asks a worker" {
-  game_ready
+@test "a plan item goes to a worker, which reads the plan from its store peer clone" {
+  project game beta "$SANDBOX/repos/game"
   worker '2.0 16 1 50'
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  agent-queue add --project game --slug phase --priority high "Phase 2 of the plan" >/dev/null
+  printf '# p\n\n## Phases\n\n- [ ] Phase 2\n' > "$SANDBOX/p.md"
+  sed -i "s|^mode: oneshot\$|&\\nplan: $SANDBOX/p.md|" "$(qitem queued phase)"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item phase on razer-laptop'
+  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: "
+}
+
+# A stacked item's worktree is cut here from its dependency's open PR head (stack_base), and a --host
+# start refuses it with rc 2, which would fail the pass: plan phases chain through after:, so it stays here.
+@test "a plan phase stacked on an open PR stays here; the same item unstacked goes to a worker" {
+  run host_agent '{"slug": "p2", "plan": "p.md", "weight": "heavy", "stacked_on": "p1=o/r#7"}'
+  assert_success
+  assert_output ''
+  run host_agent '{"slug": "p2", "plan": "p.md", "weight": "heavy"}'
+  assert_output claude
+}
+
+@test "hosts names a heavy item no worker's fleet_max_live can hold as unplaceable; at 2 it is placeable" {
+  project game beta "$SANDBOX/repos/game"
+  worker '2.0 16 1 50'
+  agent-queue add --project game --slug bake --priority high --weight heavy "Bake the lights" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'unplaceable: game, 1 queued item: no worker that clones it has a fleet_max_live of 2'
+  WORKER_MAX_LIVE=2 worker '2.0 16 1 50'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  refute_output --partial 'unplaceable: game'
+}
+
+# ar-5198: on 2026-11-24 razer-laptop sat idle while the workstation ran about 100 sessions, because a pass
+# placed a start here first and sent it to a worker only when this machine's own gate refused it.
+@test "with room here and on the worker, a tie stays here, and the worker takes the start once it has more free room" {
+  game_ready
+  WORKER_MAX_LIVE=4 worker '0.5 16 1 90'
   agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  # Here: 25 of 25 units free, memory 90% free. The worker: 4 of 4 units, memory 90%. Both are 87 (memory above the floor), so it stays here.
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_called "wt new --server lab --detach -c $SANDBOX/repos/game"
   assert_not_called 'wt new --host'
   assert_equal "$(qfield "$(qitem running fix-menu)" host)" ''
+}
+
+@test "with this machine's memory down to 40% free, the worker with more free room takes the start" {
+  game_ready
+  WORKER_MAX_LIVE=4 worker '0.5 16 1 90'
+  printf 'MemTotal: 1000 kB\nMemAvailable: 400 kB\n' > "$DISPATCH_PROC_MEMINFO"
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item fix-menu on razer-laptop'
+  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game"
+}
+
+@test "with room here and no roster, a pass starts here and asks no worker" {
+  game_ready
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_called "wt new --server lab --detach -c $SANDBOX/repos/game"
+  assert_not_called 'wt new --host'
+  assert_not_called 'ssh'
+}
+
+@test "local_share reads the pass's real free units (LOCAL_FREE), never the UNITS_FREE a floor's start overrides" {
+  TARGET=25 LOCAL_FREE=25 UNITS_FREE=2 run local_share
+  full=$output
+  TARGET=25 LOCAL_FREE=25 UNITS_FREE=25 run local_share
+  assert_output "$full"
+  # NEGATIVE CONTROL: spent units lower it.
+  TARGET=25 LOCAL_FREE=5 UNITS_FREE=25 run local_share
+  [ "$output" -lt "$full" ] || fail "5 of 25 free units read $output, not under $full"
+}
+
+@test "room_share is the least of free units, CPU headroom and memory above the floor; an unread memory does not count" {
+  export MAX_LOAD=0.7 DISPATCH_HOST_MEM_MIN_PCT=20
+  # 4 of 8 units free is 50; 16 cores x 0.7 = 11.2 of capacity, load 2.8 leaves 75; memory 60% is 50 of the 80 above the 20 floor.
+  run room_share 4 8 2.8 16 60
+  assert_output 50
+  # CPU headroom is the least: load 8.4 of 11.2 leaves 25.
+  run room_share 8 8 8.4 16 90
+  assert_output 25
+  # Memory at the floor leaves none, however many units are free.
+  run room_share 8 8 0 16 20
+  assert_output 0
+  # Pending load from recent starts counts against the CPU headroom: 2.8 + 5.6 is 8.4.
+  run room_share 8 8 2.8 16 90 5.6
+  assert_output 25
+  run room_share 8 8 0 16 -1
+  assert_output 100
 }
 
 # 2026-11-12: the classifier's key sat in an over-budget gateway team, every verdict fell back to opus,

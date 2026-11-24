@@ -446,8 +446,8 @@ pub fn queue(
 /// The room the last dispatch pass had, as parts: sessions against the target (amber once the run
 /// units fill it, the gates and not the count decide when the machine is full) and load against its
 /// cap (amber from 80%, red past it; none when the pass sent no load; held on load, the load the gate
-/// judged), and the focus projects that go
-/// first. None without a pass.
+/// judged), and how many projects are on focus (each runs its release windows as sprints). None
+/// without a pass.
 fn room(mut c: Card, v: &crate::queue_verdict::Verdict) -> Card {
     let d = |k: &str| v.get(&format!("dispatch.{k}"));
     if let Some(cap) = d("room_max_live") {
@@ -474,7 +474,7 @@ fn room(mut c: Card, v: &crate::queue_verdict::Verdict) -> Card {
         }
     }
     match d("focus_projects") {
-        Some(n) if n > 0 => c.part("Focus first", n, Level::Warn),
+        Some(n) if n > 0 => c.part("On focus", n, Level::Warn),
         _ => c,
     }
 }

@@ -723,21 +723,16 @@ share_history() {
   done
 }
 
-@test "fleet share: unset, DISPATCH_FLEET_PROJECTS is the #prio/low projects" {
+@test "fleet share: DISPATCH_FLEET_PROJECTS alone names the capped projects; a project tag moves none in, empty is off" {
   two_items
   share_history 1 1
-  unset DISPATCH_FLEET_PROJECTS
-  printf 'game\tlow\napp\thigh\n' > "$NOTES_FIXTURE/prios"
+  # A project tag (a stale ladder word on app) puts nothing under the cap: only the conf's list does.
+  printf 'app\tlow\n' > "$NOTES_FIXTURE/prios"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
   assert_output --partial 'fleet share: 1 of 2 items started in 24h are fleet work (game), 50% against a 30% cap: full'
-  # The negative control: no project on #prio/low, no cap.
-  printf 'app\thigh\n' > "$NOTES_FIXTURE/prios"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
+  # The negative control: an empty list is off, whatever the tags say.
+  DISPATCH_FLEET_PROJECTS='' run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
   refute_output --partial 'fleet share'
-  # A failed read turns the cap off out loud, never in silence.
-  rm -f "$NOTES_FIXTURE/prios"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
-  assert_output --partial 'fleet share: off, as `notes projects --prios` failed'
 }
 
 @test "fleet share: with only fleet work to start the cap lets go, and the board fills from other projects first" {

@@ -37,7 +37,7 @@
 #       (--item SLUG | --brief FILE --row KEY [--mode plan] [--now] [--cwd REPO]
 #        | --resume ID --session NAME --cwd DIR [--server S] [--window NAME] [--item SLUG] [--prompt TEXT])
 #       [--host W]                   start ONE session the way every agent must: see cmd_start
-#   fleet-dispatch hosts [--json]    who holds the fleet lease; each fleet worker: placed or not, run units, load, and why it takes no session; then (text only) each project with queued light items no worker can take, and why
+#   fleet-dispatch hosts [--json]    who holds the fleet lease; each fleet worker: placed or not, run units, load, and why it takes no session; then (text only) each project with queued items no worker can take, and why
 #   fleet-dispatch harness-ready H...  each headless harness this machine runs as a fleet worker, else "H: why" (probe_hosts asks it on each worker)
 #   fleet-dispatch kit                 the launchers this machine runs a fleet session on (claude, codex, opencode, agy) and srt when it can hold a run (probe_hosts and start --host ask it on each worker)
 #   fleet-dispatch lane-sandbox CWD    a claude session's lane sandbox env, then its --settings flags, built here under DISPATCH_SANDBOX_PROFILE (start --host asks it on the worker)
@@ -83,7 +83,7 @@ DISPATCH_CONF_KEYS=(
   DISPATCH_TARGET_PRESENT DISPATCH_TARGET_AWAY DISPATCH_STATE_FRESH_MIN DISPATCH_MAX_LOAD
   DISPATCH_HOST_MEM_MIN_PCT DISPATCH_START_LOAD DISPATCH_START_LOAD_MIN
   DISPATCH_RED_FLOOR DISPATCH_PLAN_LOAD_FLOOR DISPATCH_FIX_TRIES DISPATCH_TRAINEE_REVIEW_HOURS
-  DISPATCH_FLEET_SHARE DISPATCH_FLEET_SHARE_H
+  DISPATCH_FLEET_SHARE DISPATCH_FLEET_SHARE_H DISPATCH_FLEET_PROJECTS
   DISPATCH_ROLLUP_DAYS DISPATCH_ROLLUP_MIN DISPATCH_ROLLUP_BOARD
   DISPATCH_ROLLUP_TAGS DISPATCH_PROVIDER_HOLD_MIN
   DISPATCH_SPRINT_FLOOR DISPATCH_RUN_FLOOR DISPATCH_STARVED_MIN
@@ -117,6 +117,7 @@ esac
 
 : "${FLEET_STATE_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 : "${DISPATCH_PROC_STAT:=/proc/stat}"   # the CPU busy the load pace reads (cpu_busy)
+: "${DISPATCH_PROC_MEMINFO:=/proc/meminfo}"   # the MemAvailable this machine's free share reads (mem_avail_pct)
 : "${DISPATCH_CPU_SAMPLES:=$HOME/.cache/fleet-dispatch/cpu-samples}"   # this machine's, never ~/.agent, which syncs: the minute record's /proc/stat samples (cpu_sample)
 : "${DISPATCH_TRAINEE_REPOS:=$HOME/.dotfiles}"   # the checkouts a trainee may work in, space-separated: its provider is a free one that sees the row and the repo, so public repos only (trainee_public_why)
 : "${PLANNED_REBOOT_WINDOW_S:=1800}"   # a lost server this soon after a planned reboot's boot does not page (planned_reboot)
@@ -253,22 +254,9 @@ prio_rank_set() {
 }
 prio_rank() { prio_rank_set "$1"; echo "$PRIO"; }
 
-# load_prios -- PRIO_BY[<project>]: focus|high|low, as `notes projects --prios` reads the `#prio/<word>` the
-# human set (`notes projects --prio`), read once per process; a normal project has no key. notes is the one
-# reader of the tag: a focus past its `Focus until:` reads as high there, so no focus outlives its hours.
-# A failed read leaves every project normal, the safe default: it ranks them all the same.
-load_prios() {
-  declare -p PRIO_BY >/dev/null 2>&1 && return 0
-  declare -gA PRIO_BY=()
-  local n p
-  while IFS=$'\t' read -r n p _; do
-    [ -z "$n" ] || PRIO_BY[$n]=$p
-  done < <(notes projects --prios 2>/dev/null)
-}
-
 # The one rank every caller sorts by (the judge's cap, picks, fill --dry-run): a row an open sprint holds
 # (`sprint` 0, row_sprint), its committed rows before the open version's rows it did not commit (`uncommitted`
-# 1, UNCOMMITTED, row_sprint_set), then cleanup of an AI system (cleanup_row), then the project's #prio, then, while
+# 1, UNCOMMITTED, row_sprint_set), then cleanup of an AI system (cleanup_row), then, while
 # any row's repo gates on an idle pool (`pool_idle`, load_pool_idle), the head of the feed rank (frank's
 # millions: due bucket, priority, #requested, notes-cli Rank::key) and then such a row (pool_term, a
 # tie-breaker below every human rank and above age; with no pool idle it orders nothing), then the row's
@@ -288,7 +276,7 @@ def day0($s): "\($s)T00:00:00Z" | fromdateiso8601;
 def offset($x; $today): if $x == null then null
   else (try (((day0("\($today[0:4])-\($x.m)-\($x.d)") - day0($today)) / 86400) | floor) catch null) end;
 def tagdate($b; $tag): [$b | capture("(^|\\s)#" + $tag + "(?<m>[01][0-9])(?<d>[0-3][0-9])(\\s|$)")] | first;
-def rank_fields($today; $pprio):
+def rank_fields($today):
   ((.text // "") | split("<!--")[0] // "") as $b
   | (offset(tagdate($b; "due"); $today) | if . != null and . < -180 then . + 365 else . end) as $own
   | (if .release_due == null then null
@@ -296,13 +284,11 @@ def rank_fields($today; $pprio):
   | ([$own, $rd] | map(select(. != null)) | min) as $dd
   | (if $rd != null and ($own == null or $rd < $own) then "release " else "" end) as $rel
   | (offset(tagdate($b; "c"); $today) | if . != null and . > 0 then . - 365 else . end) as $cd
-  | . + {pprio: ({"focus": 0, "high": 1, "low": 3}[$pprio] // 2),
-         due: (if $dd == null then 3 elif $dd < 0 then 0 elif $dd == 0 then 1 elif $dd <= 3 then 2 else 3 end),
+  | . + {due: (if $dd == null then 3 elif $dd < 0 then 0 elif $dd == 0 then 1 elif $dd <= 3 then 2 else 3 end),
          due_in: $dd, age: (if $cd == null then 0 else -$cd end),
          req: (if $b | test("(^|\\s)#requested(\\s|$)") then 0 else 1 end)}
   | . + {why: ([(if .sprint != 0 then empty elif (.uncommitted // 0) == 1 then "open sprint, uncommitted" else "open sprint" end),
                 (if .cleanup == 0 then "cleanup" else empty end),
-                (if $pprio != "" then "\($pprio) project" else empty end),
                 (if (.pool_idle // "") != "" then "idle pool \(.pool_idle)" else empty end),
                 (if .due_in == null or .due_in > 3 then empty elif .due_in < 0 then "\($rel)overdue \(-.due_in)d"
                  elif .due_in == 0 then "\($rel)due today" else "\($rel)due in \(.due_in)d" end),
@@ -317,7 +303,7 @@ def rank_fields($today; $pprio):
 def area_key: if (.area // "") == "" or .worker == "tier3" then "row:\(.key)" else .area end;
 def pool_term($pi): if $pi then [((.frank // 1e15) / 1000000 | floor), (if (.pool_idle // "") != "" then 0 else 1 end)] else [] end;
 def rank: any(.[]; (.pool_idle // "") != "") as $pi
-  | sort_by((.sprint // 1), (.uncommitted // 0), (.cleanup // 1), (.pprio // 2), pool_term($pi), (.frank // 1e15), (.wrank // 0), (.krank // 1), ({"prod": 0, "beta": 1}[.stage] // 2), (.t3rank // []));
+  | sort_by((.sprint // 1), (.uncommitted // 0), (.cleanup // 1), pool_term($pi), (.frank // 1e15), (.wrank // 0), (.krank // 1), ({"prod": 0, "beta": 1}[.stage] // 2), (.t3rank // []));
 '
 
 # repo_dir <project> -> the checkout its code lives in; nothing for a notes-only project.
@@ -774,8 +760,8 @@ pool_idle_of() {
 }
 
 # load_focus -- FOCUS_PROJECTS: the projects the human put on `#prio/focus` (`notes projects --prio <p> --set focus`),
-# space-separated, read once per process. Only what stats and headroom report: a focus is a rank (RANK_JQ
-# and agent-queue's ORDER put its work first), and nothing is held or skipped for it.
+# space-separated, read once per process. Only what stats and headroom report: a focus turns a project's
+# release windows into sprints (window::runs_sprints), it ranks nothing, and nothing is held or skipped for it.
 load_focus() {
   [ -n "${FOCUS_PROJECTS+x}" ] && return 0
   FOCUS_PROJECTS=$(notes projects --prios 2>/dev/null | awk -F '\t' '$2 == "focus" { printf "%s%s", (n++ ? " " : ""), $1 }')
@@ -1289,12 +1275,7 @@ share_state() {
   [ -z "${SHARE_STATE:-}" ] || return 0
   SHARE_STATE='{"full":false,"fleet":0,"total":0,"projects":[]}'
   [ "${DISPATCH_FLEET_SHARE:-0}" -gt 0 ] 2>/dev/null || return 0
-  local s prios ps=${DISPATCH_FLEET_PROJECTS-}
-  if [ -z "${DISPATCH_FLEET_PROJECTS+x}" ]; then
-    # A failed read is `unread`, which headroom names, so the cap is never off without a word.
-    prios=$(notes projects --prios 2>/dev/null) || { SHARE_STATE='{"full":false,"fleet":0,"total":0,"projects":[],"unread":true}'; return 0; }
-    ps=$(awk -F '\t' '$2 == "low" { printf "%s%s", (n++ ? " " : ""), $1 }' <<<"$prios")
-  fi
+  local s ps=$DISPATCH_FLEET_PROJECTS
   [ -n "${ps// }" ] || return 0
   s=$({ agent-queue list --json --state done --since "$(( (DISPATCH_FLEET_SHARE_H + 23) / 24 ))d" &&
     agent-queue list --json --state active; } 2>/dev/null |
@@ -1907,7 +1888,7 @@ judged_keys() {
 # that can hold one (floor_project); ONLY_PROJECT reads that one project alone (trainee_rows' split). A project off_project names is no candidate: it says why under OFF_SAY (the `candidates`
 # command, and a pass's one judge read, so not once per read), and suggest lists its agent rows with that reason.
 cmd_candidates() {
-  local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today nobody active poff recs
+  local judged table prof name sheet _v stage repo lane key text rank worker tier line today nobody active poff recs
   local x planned dj dsig plan off kind board gates gwait pidle fgates prio priority cleanup sprint uncommitted rsize
   today=${DISPATCH_TODAY:-$(date +%F)}
   judged=$(judged_keys)
@@ -1921,7 +1902,6 @@ cmd_candidates() {
   fi
   [ -z "${GATES_FAILED:-}" ] || [ "${SUGGEST:-0}" = 1 ] || return 0
   load_kinds
-  load_prios
   for prof in $DISPATCH_PROFILES; do
     while IFS=$'\t' read -r name sheet _v _; do
       [ -n "$name" ] || continue
@@ -1931,7 +1911,6 @@ cmd_candidates() {
       dispatchable "$stage" || continue
       poff=$(off_project "$name")
       [ -z "$poff" ] || [ "${SUGGEST:-0}" = 1 ] || { [ "${OFF_SAY:-0}" != 1 ] || say "$poff"; continue; }
-      pprio=${PRIO_BY[$name]:-}
       repo=$(repo_dir "$name")
       [ -n "$repo" ] && [ -d "$repo" ] || continue
       pidle=$(pool_idle_of "$name")
@@ -1983,7 +1962,7 @@ cmd_candidates() {
           recs+="${RNK["$name"$'\t'"$lane"$'\t'"$key"]:-null}$ROW_US$gates$ROW_US$gwait$ROW_US${RLD["$name"$'\t'"$lane"$'\t'"$key"]:-}$ROW_RS"
         done <<<"$board"
         [ -z "$recs" ] || jq -Rsc --arg profile "$prof" --arg project "$name" --arg stage "$stage" \
-          --arg lane "$lane" --arg repo "$repo" --arg today "$today" --arg pprio "$pprio" \
+          --arg lane "$lane" --arg repo "$repo" --arg today "$today" \
           --argjson active "$active" --arg pidle "$pidle" "$RANK_JQ$ROW_RECS_JQ"'rows_recs(
             .[0] as $key | .[1] as $text | (.[2] | fromjson) as $details | .[3] as $dsig
             | (.[4] | fromjson) as $planned | (.[5] | fromjson) as $plan | .[6] as $line | (.[7] | fromjson) as $prio
@@ -2000,7 +1979,7 @@ cmd_candidates() {
               + (if $rdue != "" then {release_due: $rdue} else {} end)
               + (if $pidle != "" then {pool_idle: $pidle} else {} end)
               + (if $gwait != "" then {gate_wait: $gwait} elif $gates != "" and $lane == "agent" then {gated: true, gates: $gates} else {} end)
-              + (if $nobody != "" then {nobody: $nobody, active: $active} else {} end) | rank_fields($today; $pprio))' <<<"$recs"
+              + (if $nobody != "" then {nobody: $nobody, active: $active} else {} end) | rank_fields($today))' <<<"$recs"
       done
     done < <(notes --profile "$prof" projects 2>/dev/null)
   done
@@ -5646,7 +5625,7 @@ trainee_rows() {
           or (($d | usable($prules)) and ($d | holds($c))) == false)))
       | . + {area: row_area($d; $games), brief: ($briefs[[.project, .lane, .key] | tostring] // "")}
       | select(.area == "" or .worker == "tier3" or ("\(.project | ascii_downcase)/\(.area)" as $a | $busy | index($a) | not))
-      | if .pprio == null then rank_fields($today; .project_prio // "") else . end)
+      | if .why == null then rank_fields($today) else . end)
     | unique_by([.project, .key]) | rank | .[]' "$d/t3" "$d/open"
   rm -rf "$d"
 }
@@ -5920,8 +5899,10 @@ start_items() {
       local plan; plan=$(jq -r '.plan // ""' <<<"$PICKED")
       [ -z "$plan" ] || PLANS_STARTED="${PLANS_STARTED:+$PLANS_STARTED$'\n'}$plan"
     fi
-    if [ "$rc" -eq 0 ] && [ -n "$PLACE_HOST" ]; then HOST_FREE[$PLACE_HOST]=$(( HOST_FREE[$PLACE_HOST] - 1 ))
-    elif [ "$rc" -eq 0 ]; then UNITS_FREE=$(( UNITS_FREE - $(weight_units "$(jq -r '.weight // "light"' <<<"$PICKED")") ))
+    if [ "$rc" -eq 0 ] && [ -n "$PLACE_HOST" ]; then HOST_FREE[$PLACE_HOST]=$(( HOST_FREE[$PLACE_HOST] - $(weight_units "$(jq -r '.weight // "light"' <<<"$PICKED")") ))
+    elif [ "$rc" -eq 0 ]; then
+      UNITS_FREE=$(( UNITS_FREE - $(weight_units "$(jq -r '.weight // "light"' <<<"$PICKED")") ))
+      LOCAL_FREE=$(( ${LOCAL_FREE:-$TARGET} - $(weight_units "$(jq -r '.weight // "light"' <<<"$PICKED")") ))
     fi
     [ "$rc" -eq 4 ] && taken=$((taken + 1)) || n=$((n + 1))
   done
@@ -5946,7 +5927,7 @@ start_items() {
   return 0
 }
 
-# next_items -> the queued items a pass may try, in agent-queue's order (red, urgent, project rank, priority, then the class mix and age),
+# next_items -> the queued items a pass may try, in agent-queue's order (red, urgent, sprint, priority, then the class mix and age),
 # one JSON object a line, whatever harness each runs on: start_item routes it to a source with room.
 # With --points each carries its board row's points, which a trainee reads (item_points): every caller
 # that feeds a start passes it, and a count does not, so it pays no board read.
@@ -5970,9 +5951,11 @@ load_findings() {
 # PICK_NOTE names the items ahead of PICKED that the fleet share cap held (share_why), so the start's
 # activity.log line shows the hold firing, or that the cap let PICKED go. The cap never lets go onto
 # this machine's units while an item it does not hold waits on them (uheld).
-# The place is this machine while the item fits in UNITS_FREE and, when there are fleet workers to
-# go to, its own pace is open (machine_why); else the first worker that takes it (place_host), in
-# PLACE_HOST. A canary item goes to a worker whose fleet_first names its class ahead of
+# The place is the host with the most free room (room_share) among this machine, while the item fits in
+# UNITS_FREE and, when there are fleet workers to go to, its own pace is open (machine_why), and every
+# worker that takes it (place_host): a tie stays here, and a worker gets a start while this machine
+# still has room, once it has more. With this machine held or full, the roomiest worker that takes it;
+# the worker's place is in PLACE_HOST. A canary item goes to a worker whose fleet_first names its class ahead of
 # this machine (place_host first): the dispatcher keeps its own units for the human and plain work.
 # PICK_FULL is 1 when units alone held them all. On a floor pass the items are only the
 # floor's, so PICK_WHY says so and names the gate (FLOOR_GATE) the rest of the queue waits on: on
@@ -5980,7 +5963,7 @@ load_findings() {
 # project while the other 40 waited on account pace, which the message never named.
 pick_item() {
   local items="$1" it why need free host mwhy='' mread=0 fhit=0 uwait=0 held=() waits="every queue item waits" reserved='' kept=''
-  local shold=0 sfirst='' shost='' swhy='' mhit=0 ppass='' uheld='' uneed=0 chit=0 cread=0 cwords=''
+  local shold=0 sfirst='' shost='' swhy='' mhit=0 ppass='' uheld='' uneed=0 chit=0 cread=0 cwords='' lshare=''
   share_state   # in this shell, so every share_why reads one count
   if [ "${RED_PASS:-0}" = 1 ]; then waits="every red item waits; the rest wait on ${FLOOR_GATE:-the gate}"
   elif [ "${TRAINEE_PASS:-0}${BATCH_PASS:-0}" != 00 ]; then waits="the trainee floor's item waits"; fi
@@ -5994,7 +5977,13 @@ pick_item() {
     # With no fleet worker the gate read this machine's pace, except the trainee floor's (TRAINEE_GATE),
     # so a trainee start reads it here either way.
     if host=$(place_host "$it" first); then :
-    elif [ "$need" -le "$free" ] && { { [ ${#HOST_PROBE[@]} -eq 0 ] && [ "${TRAINEE_PASS:-0}" = 0 ]; } || { [ "$mread" = 1 ] || { mwhy=$(machine_why); mread=1; }; [ -z "$mwhy" ]; }; }; then :
+    elif [ "$need" -le "$free" ] && { { [ ${#HOST_PROBE[@]} -eq 0 ] && [ "${TRAINEE_PASS:-0}" = 0 ]; } || { [ "$mread" = 1 ] || { mwhy=$(machine_why); mread=1; }; [ -z "$mwhy" ]; }; }; then
+      # Here has room: a worker takes the start only when it has more (place_host's third word).
+      host=''
+      if [ ${#HOST_PROBE[@]} -gt 0 ]; then
+        [ -n "$lshare" ] || lshare=$(local_share)
+        host=$(place_host "$it" '' "$lshare") || host=''
+      fi
     elif host=$(place_host "$it"); then :
     elif [ "$need" -gt "$free" ]; then uwait=1; why="$([ "$need" -gt 1 ] && echo heavy || echo light) needs $need run units, $free free"
     else why="$mwhy, and no fleet worker takes it"; PICK_FULL=0 mhit=1
@@ -6137,7 +6126,7 @@ preempt_pick() {
   # open worker) it would interrupt a session for a start that cannot run here.
   [ "${OTHER_PASS:-0}" = 0 ] && [ -n "${PICK_RESERVED:-}" ] && [ -z "$(machine_why)" ] && preempt_for "$PICK_RESERVED" || return 1
   PREEMPT_PARKED=1
-  UNITS_FREE=$(( TARGET - $(live_units) ))
+  UNITS_FREE=$(( TARGET - $(live_units) )) LOCAL_FREE=$UNITS_FREE
   pick_item "$PICK_RESERVED"
 }
 
@@ -6204,7 +6193,7 @@ unpark_preempted() {
 # board command fails and git-sync-notes.service fails CHDIR: razer-laptop, 2026-11-19, ar-3784), and after a "kit" line its
 # `fleet-dispatch kit` (claude, codex, opencode, srt), so a worker with no claude still takes an item
 # on a harness it has: HOST_PROBE[<name>] is "<load> <cores> <ready 0|1> <mem %> <conflict 0|1> <notes 0|1>", or "unreachable",
-# and HOST_KIT[<name>] the kit, empty from an older fleet-dispatch there (no kit verb). HOST_FREE[<name>] is its fleet_max_live less the run units its live sessions hold,
+# and HOST_KIT[<name>] the kit, empty from an older fleet-dispatch there (no kit verb). HOST_MAX[<name>] is its fleet_max_live and HOST_FREE[<name>] that less the run units its live sessions hold,
 # and start_items takes each start there off it; HOST_RUNS is the runs that count, the given ones and
 # each gateway run on a worker (live_runs --gateway). For a worker that lists fleet_harnesses, the same ssh runs
 # `fleet-dispatch harness-ready` on them after a "harnesses" line: HOST_HARN[<name>] is the ones it
@@ -6212,13 +6201,14 @@ unpark_preempted() {
 # pass, before the gates, so every gate and pick in it reads the same numbers: a gate runs in a
 # subshell and cannot write back.
 HOST_RUNS=''
-declare -gA HOST_PROBE=() HOST_FREE=() HOST_HARN=() HOST_HARN_WHY=() HOST_KIT=()   # -g: global when a test sources this inside a function
+declare -gA HOST_PROBE=() HOST_FREE=() HOST_MAX=() HOST_HARN=() HOST_HARN_WHY=() HOST_KIT=()   # -g: global when a test sources this inside a function
 probe_hosts() {
   local name place max listed bad out h ready why answers
-  HOST_PROBE=() HOST_FREE=() HOST_HARN=() HOST_HARN_WHY=() HOST_KIT=() HOST_RUNS="$1"$'\n'"$(live_runs --gateway)"
+  HOST_PROBE=() HOST_FREE=() HOST_MAX=() HOST_HARN=() HOST_HARN_WHY=() HOST_KIT=() HOST_RUNS="$1"$'\n'"$(live_runs --gateway)"
   fleet_hosts >/dev/null
   while IFS='|' read -r name place max listed bad; do
     [ "$place" = true ] || continue
+    HOST_MAX[$name]=$max
     HOST_FREE[$name]=$(( max - $(units_on "$name" <<<"$HOST_RUNS") ))
     # shellcheck disable=SC2016,SC2086 # the worker's shell expands these, not this one; listed splits into names
     if out=$(fleet_host_run "$name" sh -c 'cut -d" " -f1 /proc/loadavg; nproc; command -v wt >/dev/null && test -f "$HOME/.agent/.sync/peer" && echo 1 || echo 0; awk '\''/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {print t ? int(a * 100 / t) : -1}'\'' /proc/meminfo; test -e "$HOME/.agent/.sync/conflict" && echo 1 || echo 0; test -e "$HOME/.notes/.git" && echo 1 || echo 0; echo kit; fleet-dispatch kit 2>/dev/null || :; [ $# -eq 0 ] || { echo harnesses; fleet-dispatch harness-ready "$@" 2>/dev/null || :; }' _ $listed 2>/dev/null); then
@@ -6250,16 +6240,18 @@ host_runs() {
   [ "$2" = claude ] || host_has "${HOST_HARN[$1]:-}" "$2"
 }
 
-# host_why <name> -> why that worker takes no session now, or nothing. Its pace is this runner's
-# (MAX_LOAD) over its own load and cores; its units are its own fleet_max_live.
+# host_why <name> [units] -> why that worker takes no session of <units> run units (default 1) now, or
+# nothing. Its pace is this runner's (MAX_LOAD) over its own load and cores; its units are its own
+# fleet_max_live, a heavy item holding 2 and a light one 1 (weight_units), as they do here.
 host_why() {
-  local p="${HOST_PROBE[$1]:-}" load cores ready mem conflict notes
+  local p="${HOST_PROBE[$1]:-}" need="${2:-1}" load cores ready mem conflict notes
   [ -n "$p" ] || { echo "$1 is not placed (fleet_place false, or not in $FLEET_HOSTS_GROUP)"; return; }
   if [ "$p" = unreachable ]; then
     echo "$1 did not answer over ssh"
     return
   fi
   [ "${HOST_FREE[$1]:-0}" -gt 0 ] || { echo "$1 is at its fleet_max_live"; return; }
+  [ "${HOST_FREE[$1]}" -ge "$need" ] || { echo "$1 has ${HOST_FREE[$1]} of its fleet_max_live run units free, and a heavy item needs $need"; return; }
   read -r load cores ready mem conflict notes <<<"$p"
   [ "$ready" = 1 ] || { echo "$1 has no wt, or a store that is not a peer clone (store-sync join)"; return; }
   [ "${conflict:-0}" = 0 ] || { echo "$1: its store is in a merge conflict with origin (~/.agent/.sync/conflict), so a session's queue writes cannot reach origin: resolve it there (QUEUE.md, Troubleshooting)"; return; }
@@ -6280,13 +6272,15 @@ remote_open() {
 }
 
 # host_agent <item json> -> the harness a worker would run the item on, or nothing when the item
-# stays on this machine by design: heavy, a plan, a red, a cloud-ok or trainee-batch tag, or a thread
-# it resumes here. host_takers and unplaced both read it, so the gap report never drifts from placement.
+# stays on this machine by design: a red, a cloud-ok or trainee-batch tag, a thread it resumes here, or
+# a stack on an open PR (stacked_on: only a worktree here builds on it, stack_base, so a --host start refuses it).
+# A heavy item and a plan item go too: a worker runs no Unity editor (tests run on the runner pool),
+# and it reads the plan file from its store peer clone, which carries ~/.agent/plans (ar-2891).
+# host_takers and unplaced both read it, so the gap report never drifts from placement.
 host_agent() {
   local agent
   ! is_red "$1" || return 0
-  agent=$(jq -r 'select((.weight // "light") == "light" and (.plan // "") == ""
-    and ((" " + (.tags // "") + " ") | (contains(" cloud-ok ") or contains(" trainee-batch ")) | not)) | .agent // "claude"' <<<"$1")
+  agent=$(jq -r 'select((.stacked_on // "") == "" and ((" " + (.tags // "") + " ") | (contains(" cloud-ok ") or contains(" trainee-batch ")) | not)) | .agent // "claude"' <<<"$1")
   [ -n "$agent" ] || return 0
   # A trainee floor start runs on the harness the floor chose for it, so the worker must run that one.
   [ "${TRAINEE_PASS:-0}" != 1 ] || [ -z "${TRAINEE_HARNESS:-}" ] || agent=$TRAINEE_HARNESS
@@ -6294,10 +6288,11 @@ host_agent() {
   echo "$agent"
 }
 
-# host_takers <item json> -> the roster's workers provisioned for this item, one name a line: a
-# light item with no plan and no cloud route, in a repo the worker has cloned (fleet_repos, fleet_repos_extra), on a
-# harness the worker runs (host_runs: its kit, and past claude fleet_harnesses, probed ready). Heavy work (Unity), plans,
-# a codex item that resumes its thread (the rollout is in this machine's ~/.codex, item_rollout),
+# host_takers <item json> -> the roster's workers provisioned for this item, one name a line: an
+# item with no cloud route, heavy or light, plan or none (host_agent), in a repo the worker has cloned (fleet_repos,
+# fleet_repos_extra), on a harness the worker runs (host_runs: its kit, and past claude fleet_harnesses, probed ready),
+# whose fleet_max_live holds the item's run units (a heavy item's 2 never fit a worker placed at 1).
+# A codex item that resumes its thread (the rollout is in this machine's ~/.codex, item_rollout),
 # a trainee batch review (it reads the diffs in this machine's TRAINEE_DIR), a red (its watch state,
 # runner logs and units are this lease holder's, and its probe needs this machine's mounts and
 # kubeconfig: ar-3613 reached razer-laptop, which has neither; a red canary too, and a red no floor
@@ -6305,7 +6300,7 @@ host_agent() {
 # "first", only the workers whose fleet_first names a class of the item, the item's own tags
 # canary (is_canary), and trainee for a trainee floor start (TRAINEE_PASS); an item with neither has none.
 host_takers() {
-  local dir classes=null agent name
+  local dir classes=null agent name need
   if [ "${2:-}" = first ]; then
     classes=$(jq -c --arg tr "${TRAINEE_PASS:-0}" '(" " + (.tags // "") + " ") as $t
       | [if ($t | contains(" canary ")) then "canary" else empty end, if $tr == "1" then "trainee" else empty end]' <<<"$1")
@@ -6313,21 +6308,71 @@ host_takers() {
   fi
   agent=$(host_agent "$1"); [ -n "$agent" ] || return 0
   dir=$(repo_dir "$(jq -r .project <<<"$1")"); [ -n "$dir" ] || return 0
+  need=$(weight_units "$(jq -r '.weight // "light"' <<<"$1")")
   while IFS= read -r name; do
     host_runs "$name" "$agent" || continue
     echo "$name"
-  done < <(fleet_hosts | jq -sr --arg d "$dir" --argjson c "$classes" 'map(select(.repos | index($d))
+  done < <(fleet_hosts | jq -sr --arg d "$dir" --argjson c "$classes" --argjson n "$need" 'map(select(.repos | index($d)) | select((.max_live | tonumber? // 0) >= $n)
     | select($c == null or any(.first[]?; . as $x | $c | index($x)))) | .[].name')
 }
 
-# place_host <item json> [first] -> the first worker host_takers names that takes a session now.
+# room_share <free units> <max units> <load> <cores> <mem avail %> [pending load] -> the free share of a
+# host, a whole percent (rounded, so a float sum such as 24.99 reads 25): the least of its free units over its max, the pace's CPU headroom
+# (MAX_LOAD x cores less load) over that capacity, and its MemAvailable above the DISPATCH_HOST_MEM_MIN_PCT
+# floor over what the floor leaves. A host is as full as its fullest resource (least-loaded scheduling).
+# Memory -1 is a reading this host cannot give, so it does not count. One formula for this machine
+# (local_share) and every worker (host_share), so pick_item compares like with like.
+room_share() {
+  awk -v f="$1" -v x="$2" -v l="$3" -v c="$4" -v m="$5" -v p="${6:-0}" -v mx="$MAX_LOAD" -v mm="$DISPATCH_HOST_MEM_MIN_PCT" 'BEGIN {
+    u = x > 0 ? f * 100 / x : 0
+    cap = c * mx; cpu = cap > 0 ? (cap - l - p) * 100 / cap : 0
+    s = u < cpu ? u : cpu
+    if (m >= 0) { mem = (m - mm) * 100 / (100 - mm); if (mem < s) s = mem }
+    printf "%.0f\n", s < 0 ? 0 : s }'
+}
+
+# mem_avail_pct -> this machine's MemAvailable as a whole percent of MemTotal, -1 when unread.
+mem_avail_pct() {
+  local out
+  out=$(awk '/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {print t ? int(a * 100 / t) : -1}' "$DISPATCH_PROC_MEMINFO" 2>/dev/null)
+  echo "${out:--1}"
+}
+
+# local_share -> this machine's free share (room_share): its LOCAL_FREE units of the pace TARGET, the pace load
+# and the starts still loading (pace_load, pending_load), and its MemAvailable. LOCAL_FREE is the pass's real
+# free count, set by pass_room and spent by each local start: UNITS_FREE is overridden to a made-up count on
+# a floor's start_items, so it cannot say how much room this machine has. A worker's own load has no
+# pending term (its probe is the only reading), so a worker just given starts reads emptier than it is
+# until its units, which each start spends, catch up.
+local_share() {
+  local cores load pend
+  cores=$(nproc 2>/dev/null || echo 1)
+  read -r load _ < <(pace_load "$cores")
+  read -r _ pend < <(pending_load)
+  room_share "${LOCAL_FREE:-$TARGET}" "$TARGET" "$load" "$cores" "$(mem_avail_pct)" "$pend"
+}
+
+# host_share <name> -> that worker's free share (room_share), from the probe probe_hosts made.
+host_share() {
+  local load cores ready mem
+  read -r load cores ready mem _ <<<"${HOST_PROBE[$1]:-}"
+  room_share "${HOST_FREE[$1]:-0}" "${HOST_MAX[$1]:-0}" "${load:-0}" "${cores:-1}" "${mem:--1}"
+}
+
+# place_host <item json> [first] [beat] -> the worker host_takers names that takes a session of the
+# item's run units (weight_units) now and has the most free room (host_share); the first in roster order
+# on a tie. With <beat>, a share, only a worker whose share is above it.
 place_host() {
-  local name
+  local name need share best='' top=-1
   [ ${#HOST_PROBE[@]} -gt 0 ] || return 1
+  need=$(weight_units "$(jq -r '.weight // "light"' <<<"$1")")
   while IFS= read -r name; do
-    [ -n "${HOST_PROBE[$name]:-}" ] && [ -z "$(host_why "$name")" ] && { echo "$name"; return 0; }
+    [ -n "${HOST_PROBE[$name]:-}" ] && [ -z "$(host_why "$name" "$need")" ] || continue
+    share=$(host_share "$name")
+    [ "$share" -gt "$top" ] && { best=$name top=$share; }
   done < <(host_takers "$1" "${2:-}")
-  return 1
+  [ -n "$best" ] && { [ -z "${3:-}" ] || [ "$top" -gt "$3" ]; } || return 1
+  echo "$best"
 }
 
 # lease_guard <verb> -- rc 0 on the machine that holds the fleet lease. A run pass or a kick goes through the
@@ -6418,27 +6463,30 @@ cmd_hosts() {
     unplaced <<<"$queue"; fi
 }
 
-# unplaced -> one line per project and reason for the queued light items no worker could take on
+# unplaced -> one line per project and reason for the queued items no worker could take on
 # any pass (host_takers names none), so a gap in the workers' standard repo list (home-config
 # fleet_workers fleet_repos, fleet_repos_extra) or a harness no worker runs shows here. A worker that is merely busy
 # still takes the item later, so capacity is not a reason. stdin: the active queue as
 # `agent-queue list --json`. After probe_hosts, which host_takers reads.
 unplaced() {
-  local it agent dir why roster
+  local it agent dir why roster need
   roster=$(fleet_hosts | jq -sc .)
   while IFS= read -r it; do
     agent=$(host_agent "$it"); [ -n "$agent" ] || continue
     [ -z "$(host_takers "$it")" ] || continue
     dir=$(repo_dir "$(jq -r .project <<<"$it")"); [ -n "$dir" ] || continue
-    if jq -e --arg d "$dir" 'any(.[]; .repos | index($d))' <<<"$roster" >/dev/null; then
-      why="no worker runs $agent ready"
-    else
+    need=$(weight_units "$(jq -r '.weight // "light"' <<<"$it")")
+    if ! jq -e --arg d "$dir" 'any(.[]; .repos | index($d))' <<<"$roster" >/dev/null; then
       why="no worker clones $dir"
+    elif ! jq -e --arg d "$dir" --argjson n "$need" 'any(.[]; (.repos | index($d)) and (.max_live | tonumber? // 0) >= $n)' <<<"$roster" >/dev/null; then
+      why="no worker that clones it has a fleet_max_live of $need, the run units a heavy item holds"
+    else
+      why="no worker runs $agent ready"
     fi
     printf '%s\t%s\n' "$(jq -r .project <<<"$it")" "$why"
   done < <(jq -c 'select(.state == "queued")' 2>/dev/null) |
     sort | uniq -c | while read -r n rest; do
-      printf 'unplaceable: %s, %s queued light item%s: %s\n' "${rest%%$'\t'*}" "$n" "$([ "$n" = 1 ] || echo s)" "${rest#*$'\t'}"
+      printf 'unplaceable: %s, %s queued item%s: %s\n' "${rest%%$'\t'*}" "$n" "$([ "$n" = 1 ] || echo s)" "${rest#*$'\t'}"
     done
 }
 
@@ -7141,8 +7189,8 @@ cmd_headroom() {
         "  load:      \(.load // "?")\(if .cpu_busy != null then " (1-min load \(.load1), \(.cpu_busy) cores busy; the pace reads the lower)" else "" end)\(if .starting > 0 then " plus \(.load_pending) for \(.starting) started in the last '"$DISPATCH_START_LOAD_MIN"' min" else "" end) of a \(.load_cap) cap, \(.load_room // "?") room",
         "  run floor: \(.floor_live) of \(.run_floor) run sessions live; under it the weekly pace of an account refused for its pace alone does not hold a start (committed burn, the reserve and the 5h window still do)",
         "  red floor: \(.red_live) of \(if .red_floor > 0 then .red_floor + .red_watch else 0 end) red sessions live (\(.red_floor), plus \(.red_watch) for tripped watches); under it the pace target, weekly pace, load and fleet-assess do not hold a red",
-        (if .fleet_share.cap > 0 and .fleet_share.unread == true then "  fleet share: off, as `notes projects --prios` failed and no #prio/low project could be read" elif .fleet_share.cap > 0 and (.fleet_share.projects | length) > 0 then "  fleet share: \(.fleet_share.fleet) of \(.fleet_share.total) items started in '"$DISPATCH_FLEET_SHARE_H"'h are fleet work (\(.fleet_share.projects | join(", "))), \(.fleet_share.pct // 0)% against a \(.fleet_share.cap)% cap\(if .fleet_share.full then ": full, so only reds and work the human asked for start their items until nothing else can" else "" end)" else empty end),
-        (if (.focus | length) > 0 then "  focus:     \(.focus | join(" ")) first; \(.focus_runnable) runnable item(s) of it start ahead of the other projects (reds and urgent items still go first)" else empty end)'
+        (if .fleet_share.cap > 0 and (.fleet_share.projects | length) > 0 then "  fleet share: \(.fleet_share.fleet) of \(.fleet_share.total) items started in '"$DISPATCH_FLEET_SHARE_H"'h are fleet work (\(.fleet_share.projects | join(", "))), \(.fleet_share.pct // 0)% against a \(.fleet_share.cap)% cap\(if .fleet_share.full then ": full, so only reds and work the human asked for start their items until nothing else can" else "" end)" else empty end),
+        (if (.focus | length) > 0 then "  focus:     \(.focus | join(" ")), whose release windows run as sprints; \(.focus_runnable) runnable item(s) of it" else empty end)'
     fi
 }
 
@@ -7520,13 +7568,15 @@ settle_answered_gates() {
 }
 
 # follow_moved_gates -- each open agent- or human-lane row gated #after/<id> on a row that reads dead
-# (dropped, or gone from the board) follows that row to where its work went: the open human-sheet row
-# of the same profile, on any project's sheet, whose text says "(agent row <id>)", which skip_exits
-# files on the dropped row's own sheet (a row id is unique, and a gate may cross projects: apo-181 waits
-# on ucp-2631, ar-4768). The gate becomes #after/<that row's id>, so the row waits on the work, not on a
-# closed copy. A dead gate with no such row, or whose copy has closed (whatever its marker), stays for
-# dead_holds and a person. Why: on 2026-11-22 ucp-2693 and ucp-2984 waited on ucp-2691 and ucp-2688,
-# both sent to the sheet as ucp-2983 and ucp-2988, and queue-starved paged (ar-3172).
+# (dropped, or gone from the board) follows that row to where its work went: the open human-sheet row,
+# of any profile and on any project's sheet, whose text says "(agent row <id>)", which skip_exits files
+# on the dropped row's own sheet (a row id is unique across profiles: its code is project-map's, which
+# project-map-doctor keeps unique, and notes never reuses an id; a gate may cross projects and
+# profiles: apo-181 waits on ucp-2631, ar-4768; personal ar-1298 on bnb ucp-1443, ar-3172). The gate
+# becomes #after/<that row's id>, so the row waits on the work, not on a closed copy. A dead gate with
+# no such row, or whose copy has closed (whatever its marker), stays for dead_holds and a person. Why:
+# on 2026-11-22 ucp-2693 and ucp-2984 waited on ucp-2691 and ucp-2688, both sent to the sheet as
+# ucp-2983 and ucp-2988, and queue-starved paged (ar-3172).
 follow_moved_gates() {
   local board prof p lane id t g old to
   local -a lf
@@ -7537,9 +7587,9 @@ follow_moved_gates() {
     for g in $t; do
       [[ $g == after/?* ]] && [ "${GATE_ST[$g]:-}" = dead ] || continue
       old=${g#after/}
-      to=$(jq -r --arg m "(agent row $old)" --arg self "$id" --arg pr "$prof" 'first(.rows[]?
+      to=$(jq -r --arg m "(agent row $old)" --arg self "$id" 'first(.rows[]?
         | select(.lane == "human" and .state == "open" and .id != null and .id != $self
-            and (.profile // "") == $pr and ((.raw // "") | contains($m)))) | .id' <<<"$board")
+            and ((.raw // "") | contains($m)))) | .id' <<<"$board")
       [ -n "$to" ] || continue
       lf=(); [ "$lane" != agent ] || lf=(--agent)
       if np "$prof" ptask "$p" "${lf[@]}" tag --remove "$g" --add "after/$to" "$id" </dev/null >/dev/null 2>&1; then
@@ -7997,6 +8047,7 @@ pass_room() {
   # The target counts every live session, hand starts too. At it no unit is free, so only an urgent item or
   # fresh ask that parks a runner session for itself starts (preempt_pick): the total stays where it is.
   gap=$(( TARGET - TOTAL_LIVE )); [ "$gap" -gt 0 ] || { gap=0; UNITS_FREE=0; }
+  LOCAL_FREE=$UNITS_FREE
   [ "$room" -le "$gap" ] || room=$gap
   # Read once, here: floors and the queue take starts off room before a later start_items, so its own room says nothing about the cap.
   PASS_AT_CAP=0; [ "$PER_PASS" -gt 0 ] && [ "$room" -ge "$PER_PASS" ] && PASS_AT_CAP=1
@@ -8720,7 +8771,7 @@ cmd_fill() {
 # A row with a gate not yet clear is left out, as a #plan row is, and one whose gates all cleared is
 # `gated` (cmd_candidates); none when the gates could not be read (GATES_FAILED). ONLY_PROJECT: that project alone.
 t3_rows() {
-  local judged="$1" prof name sheet _v stage repo key text body t line n x planned dj dsig board gates pidle pprio recs
+  local judged="$1" prof name sheet _v stage repo key text body t line n x planned dj dsig board gates pidle recs
   local prio priority cleanup sprint uncommitted rsize
   held_load "$judged"
   if ! declare -p DET >/dev/null 2>&1; then
@@ -8729,7 +8780,6 @@ t3_rows() {
   fi
   [ -z "${GATES_FAILED:-}" ] || return 0
   load_kinds
-  load_prios
   for prof in $DISPATCH_PROFILES; do
     while IFS=$'\t' read -r name sheet _v _; do
       [ -n "$name" ] || continue
@@ -8741,7 +8791,6 @@ t3_rows() {
       repo=$(repo_dir "$name")
       [ -n "$repo" ] && [ -d "$repo" ] || continue
       pidle=$(pool_idle_of "$name")
-      pprio=${PRIO_BY[$name]:-}
       n=0
       board=$(rows "$prof" "$name" agent)
       row_kinds_load <<<"$board"
@@ -8777,7 +8826,7 @@ t3_rows() {
         recs+="$n$ROW_US$rsize$ROW_US$cleanup$ROW_US${RNK["$name"$'\t'agent$'\t'"$key"]:-null}$ROW_US$sprint$ROW_US$uncommitted$ROW_US$gates$ROW_RS"
       done <<<"$board"
       [ -z "$recs" ] || jq -Rsc --arg project "$name" --arg stage "$stage" --arg repo "$repo" \
-        --arg obs "$DISPATCH_T3_OBSERVER" --arg profile "$prof" --arg pprio "$pprio" --arg pidle "$pidle" \
+        --arg obs "$DISPATCH_T3_OBSERVER" --arg profile "$prof" --arg pidle "$pidle" \
         "$ROW_RECS_JQ"'rows_recs(
           .[0] as $key | .[1] as $text | (.[2] | fromjson) as $details | .[3] as $dsig | (.[4] | fromjson) as $planned
           | .[5] as $body | .[6] as $line | (.[7] | fromjson) as $prio | .[8] as $priority | (.[9] | fromjson) as $order
@@ -8785,7 +8834,7 @@ t3_rows() {
           | (.[14] | fromjson) as $uncommitted | .[15] as $gates
           | {profile: $profile, project: $project, stage: $stage, lane: "agent", key: $key,
             text: $text, repo: $repo, prio: $prio, priority: $priority, tier: 3, line: $line, order: $order, wrank: 0, frank: $frank, row_size: $rsize,
-            cleanup: $cleanup, sprint: $sprint, uncommitted: $uncommitted, project_prio: $pprio,
+            cleanup: $cleanup, sprint: $sprint, uncommitted: $uncommitted,
             details: $details, dsig: $dsig, planned: ($planned == 1),
             rank: (if ($body | test("(^| )#requested( |$)")) then -1 elif ($body | test($obs; "i")) then 0 else 1 end)}
             + (if $pidle != "" then {pool_idle: $pidle} else {} end)
@@ -8812,14 +8861,14 @@ t3_ready() {
         | . + {area: row_area($d; $games)} end' <<<"$1"
 }
 
-# t3_picks <rows> -> the t3_ready rows a session may take, in RANK_JQ order with the project's #prio
-# (t3_rows' project_prio), as picks ranks the day rows they merge with (cleanup first). Each (worker
+# t3_picks <rows> -> the t3_ready rows a session may take, in RANK_JQ order, as picks ranks the day
+# rows they merge with (cleanup first). Each (worker
 # tier3) merges behind the red-fix gate (policy.md "Tier"), which item_brief names and agent-land
 # enforces. No area holds a tier-3 row: the one-an-area cap had no number on record (plan
 # vast-soaring-prism P4, ar-4446).
 t3_picks() {
   t3_ready "$1" | jq -sc --arg today "${DISPATCH_TODAY:-$(date +%F)}" "$RANK_JQ"'
-    map(. + {worker: "tier3", t3rank: [.rank, .prio, (0 - .order)]} | rank_fields($today; .project_prio // ""))
+    map(. + {worker: "tier3", t3rank: [.rank, .prio, (0 - .order)]} | rank_fields($today))
     | rank | .[]'
 }
 

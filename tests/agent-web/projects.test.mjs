@@ -57,20 +57,20 @@ const listTable = (kept, total = kept.length, o = {}) => ({
   states: [{ name: "all", n: kept.length }, { name: "in flight", n: kept.filter((c) => c.in_flight).length }, { name: "waiting", n: kept.filter((c) => c.waiting).length }],
   columns: ["project", "state", "profile", "stage", "version", "prio", "open", "doing", "hot", "done", "7d", "pts", "pts7d", "window", "due", "pace", "run", "wait", "queued", "shipped", "oldest"]
     .map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })),
-  facets: [{ key: "stage", on: [], clear: "", values: [{ value: "alpha", n: kept.length, on: false, q: "stage:alpha" }] }], ...o,
+  facets: [{ key: "stage", on: [], clear: "", values: [{ value: "alpha", n: kept.length, pct: 50, on: false, q: "stage:alpha" }] }], ...o,
 });
 const list = (cards = [card()], o = {}) => ({ cards, unlinked: [], errors: [], table: listTable(cards), ...o });
 const rows = [
-  { profile: "bnb", project: "demo", lane: "agent", state: "open", priority: "high", section: "next", label: "NEXT UP (1)", when: "", text: "fix(ui): fix the menu, so back returns", title: "fix the menu", summary: "so back returns", area: "ui", epic: "ui to standard", raw: "- [ ] fix(ui): fix the menu, so back returns", sheet: "a.md", tags: [] },
+  { profile: "bnb", project: "demo", lane: "agent", state: "open", priority: "high", section: "next", label: "NEXT UP (1)", when: "", text: "fix(ui): fix the menu, so back returns", title: "fix the menu", summary: "so back returns", type: "fix", area: "ui", points: 3, epic: "ui to standard", raw: "- [ ] fix(ui): fix the menu, so back returns", sheet: "a.md", tags: [] },
   { profile: "personal", project: "garden", lane: "human", state: "open", priority: "low", section: "backlog", label: "BACKLOG (1)", when: "queued  ~11-12", text: "water the beds", title: "water the beds", summary: "", raw: "- [ ] water the beds", sheet: "b.md", tags: [] },
 ];
 // The Summary hub_core::table sends beside the rows, for these rows.
 const tableOf = (q, total, kept) => ({
   q, state: "", sort: "", dir: "desc", total, shown: kept.length,
   states: [{ name: "all", n: kept.length }, { name: "urgent", n: 0 }],
-  columns: ["section", "title", "epic", "priority", "state", "when", "project", "lane", "id", "version", "size", "tier", "since", "text", "profile", "tag"]
+  columns: ["section", "type", "area", "title", "epic", "priority", "state", "when", "project", "lane", "id", "version", "size", "pts", "tier", "since", "text", "profile", "tag"]
     .map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })),
-  facets: [{ key: "lane", on: [], clear: "", values: [{ value: "agent", n: 1, on: false, q: "lane:agent" }] }],
+  facets: [{ key: "lane", on: [], clear: "", values: [{ value: "agent", n: 1, pct: 50, on: false, q: "lane:agent" }] }],
 });
 const projects = [{ profile: "bnb", project: "demo", inbox: 0 }, { profile: "personal", project: "garden", inbox: 0 }];
 const focus = [{ profile: "personal", open: 3 }, { profile: "bnb", open: 1 }];
@@ -297,10 +297,12 @@ test("opening a card asks for its rows alone and draws them as the shared table"
   assert.ok(ctx.sent.some((s) => s.u === "/api/board?scope=bnb%2Fdemo"), "the server scopes the rows");
   assert.match(head, /^<nav class="crumb"[^>]*><a href="#projects" id="p-back">Projects<\/a> <span class="muted">&gt;<\/span> <b>demo<\/b><\/nav>.*v0\.1\.0 window 1\/4/s, "the breadcrumb, then the card");
   assert.match(shown, /1 of 1 rows; Today 1 \| Backlog 2 \| Epics 1 \| Epic backlog 0/, "the project's agent board, backlog and epics, the hub's words");
-  assert.match(shown, /data-tsort="section".*data-tsort="title".*data-tsort="epic".*data-tsort="priority".*data-tsort="when"/s);
+  assert.match(shown, /data-tsort="section".*data-tsort="type".*data-tsort="area".*data-tsort="title".*data-tsort="epic".*data-tsort="priority".*data-tsort="when".*data-tsort="id".*data-tsort="pts"/s);
   assert.doesNotMatch(shown, /data-tsort="(profile|tag|text|version|since)"/, "a query key or a field the opened row holds is not a column");
-  // The row leads with its area and title, the whole line under it, then the epic it serves.
-  assert.match(shown, /<tr class="jr" data-row="0"><td><b>NEXT UP \(1\)<\/b><\/td><td class="btitle"><div class="bt"><span class="qtag">ui<\/span> fix the menu<\/div><div class="bsum muted">so back returns<\/div><\/td><td class="bepic">ui to standard<\/td><td><span class="qprio high">high<\/span><\/td>/);
+  // The row leads with its type and area, each its own column, then its title, the whole line
+  // under it, then the epic it serves; its points close the line.
+  assert.match(shown, /<tr class="jr" data-row="0"><td><b>NEXT UP \(1\)<\/b><\/td><td>fix<\/td><td>ui<\/td><td class="btitle"><div class="bt">fix the menu<\/div><div class="bsum muted">so back returns<\/div><\/td><td class="bepic">ui to standard<\/td><td><span class="qprio high">high<\/span><\/td>/);
+  assert.match(shown, /<code>-<\/code><\/td><td class="n">3<\/td><\/tr>/, "the row's #pts is its own cell");
   assert.doesNotMatch(shown, /water the beds/, "another project's row is not sent");
   assert.doesNotMatch(shown, /href="#daily"/, "one project's rows have no Daily count");
   assert.match(read().rows, /id="board-tiles".*id="board-q"/s);
@@ -309,7 +311,7 @@ test("opening a card asks for its rows alone and draws them as the shared table"
 test("a row opens under itself with its actions, and a second click shuts it", async () => {
   await drawn(list(), "bnb/demo");
   click("b-root", {}, "0");
-  assert.match(read().rows, /<tr class="jr sel" data-row="0">.*<tr class="bopen"><td colspan="9">.*data-tag="0">Tags\.\.\./s);
+  assert.match(read().rows, /<tr class="jr sel" data-row="0">.*<tr class="bopen"><td colspan="12">.*data-tag="0">Tags\.\.\./s);
   click("b-root", {}, "0");
   assert.doesNotMatch(read().rows, /bopen/);
 });
@@ -463,7 +465,7 @@ test("the board draws the page the server sends with its pager, a write names th
   await onBoard();
   ctx.input = Array.from({ length: 5 }, (_, i) => ({ ...rows[0], raw: "- [ ] r" + (30 + i), text: "r" + (30 + i), title: "r" + (30 + i), summary: "" }));
   vm.runInContext(`bst.feed = { ...bst.feed, rows: input, table: { ...bst.feed.table, shown: 35, total: 35, pager: { page: 2, pages: 2, per: 30 } } }; bst.render();`, ctx);
-  assert.match(read().rows, /<span class="qtag">ui<\/span> r34</);
+  assert.match(read().rows, /<td>ui<\/td><td class="btitle"><div class="bt">r34</);
   assert.match(read().rows, /<span class="muted" aria-live="polite">rows 31-35 of 35<\/span>/);
   assert.doesNotMatch(read().rows, /data-all|\+\d+ more/);
   ctx.sent = [];
@@ -594,7 +596,7 @@ const deliv = (o = {}) => {
       q: "", state: "", sort: "", dir: "desc", total: 2, shown: 2,
       states: [{ name: "all", n: 2 }, { name: "behind", n: 1 }, { name: "on track", n: 0 }, { name: "verify", n: 1 }],
       columns: ["project", "epic", "sys", "done", "eta", "track"].map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })),
-      facets: [{ key: "sys", on: [], clear: "", values: [{ value: "ui", n: 1, on: false, q: "sys:ui" }] }],
+      facets: [{ key: "sys", on: [], clear: "", values: [{ value: "ui", n: 1, pct: 50, on: false, q: "sys:ui" }] }],
     },
     ...o,
   };

@@ -94,6 +94,9 @@ setup() {
   # runner's own /proc/stat would otherwise decide the load cases.
   export DISPATCH_CPU_SAMPLES="$SANDBOX/cpu.samples" DISPATCH_PROC_STAT="$SANDBOX/stat"
   echo 'cpu  0 0 0 0 0 0 0 0 0 0' > "$DISPATCH_PROC_STAT"
+  # This machine's MemAvailable for its free share (local_share): 90% free unless a test is about it.
+  export DISPATCH_PROC_MEMINFO="$SANDBOX/meminfo"
+  printf 'MemTotal: 1000 kB\nMemAvailable: 900 kB\n' > "$DISPATCH_PROC_MEMINFO"
   export DISPATCH_CANARY_KEEP=0   # off unless a test is about it ("canary top-up:"), so no pass asks fleet-bench for canaries
   export DISPATCH_FLEET_SHARE=0   # off unless a test is about it ("fleet share:"), so a fleet project's item starts in queue order
   export DISPATCH_START_LOAD=0   # a start adds no pending load unless a test is about it, whatever the runner's cores
@@ -208,8 +211,9 @@ case "${args[0]}" in
       for f in "$F"/rows.*.*; do
         [ -f "$f" ] || continue
         p=${f#"$F/rows."}; lane=${p##*.}; p=${p%.*}
-        jq -Rn --arg p "$p" --arg l "$lane" '
-          inputs | split("\t") | {profile: "bnb", project: $p, lane: $l, id: ((.[1] | capture("<!-- id:(?<i>[^ ]+)") | .i) // .[0]), raw: .[1],
+        # profile.<project> names the project's profile (bnb when there is none)
+        jq -Rn --arg p "$p" --arg l "$lane" --arg pf "$(cat "$F/profile.$p" 2>/dev/null || echo bnb)" '
+          inputs | split("\t") | {profile: $pf, project: $p, lane: $l, id: ((.[1] | capture("<!-- id:(?<i>[^ ]+)") | .i) // .[0]), raw: .[1],
             # As notes gives them: tags lower-cased for grouping, tags_cased as written (a gate value is data).
             tags_cased: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0]],
             tags: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0] | ascii_downcase],
@@ -918,7 +922,7 @@ all:
           ansible_user: kb
     fleet_workers:
       vars:
-        fleet_max_live: 1
+        fleet_max_live: ${WORKER_MAX_LIVE:-1}
         fleet_place: ${2:-true}
       hosts:
         razer-laptop:
@@ -952,8 +956,8 @@ remote_item() {
 
 # --- focus: #prio/focus ------------------------------------------------------------------
 
-# focus_on <project>... -- the human put each on `#prio/focus`: the `notes projects --prios` line agent-queue
-# and fleet-dispatch read (notes is the one reader of the front-page tag, and of its expiry).
+# focus_on <project>... -- the human put each on `#prio/focus`: the `notes projects --prios` line fleet-dispatch
+# reads for its headroom and stats (notes is the one reader of the front-page tag, and of its expiry).
 focus_on() {
   local p
   for p; do

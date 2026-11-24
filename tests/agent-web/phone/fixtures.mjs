@@ -25,7 +25,7 @@ const pick = (list, i) => list[i % list.length];
 
 const col = (key) => ({ key, sort: null, next_sort: key, next_dir: "desc" });
 function facet(key, values) {
-  return { key, on: [], clear: "", values: values.map((value, i) => ({ value, n: values.length - i, on: false, q: `${key}:${value}` })) };
+  return { key, on: [], clear: "", values: values.map((value, i) => ({ value, n: values.length - i, pct: Math.floor(100 * (values.length - i) / values.length), on: false, q: `${key}:${value}` })) };
 }
 // A hub_core::table Summary as it serializes; the first state chip keeps every row. A few words
 // carry the tone hub_core::vocab::tone gives them, so a screenshot shows the tiles' hues.
@@ -193,7 +193,7 @@ const bigPage = {
 
 // Board: hub_core::tasks.
 const board = {
-  table: table(8, ["section", "title", "epic", "priority", "state", "when", "project", "lane", "id", "version", "size", "tier", "since", "text", "profile", "tag"], ["all", "in progress", "filed today", "urgent", "requested", "done"], { project: PROJECTS.slice(0, 3), lane: ["agent", "human"], priority: ["high", "normal"] }),
+  table: table(8, ["section", "type", "area", "title", "epic", "priority", "state", "when", "project", "lane", "id", "version", "size", "pts", "tier", "since", "text", "profile", "tag"], ["all", "in progress", "filed today", "urgent", "requested", "done"], { project: PROJECTS.slice(0, 3), lane: ["agent", "human"], priority: ["high", "normal"] }),
   rows: rows(8, (i) => ({ sheet: `~/.notes/lab/projects/current/${pick(PROJECTS, i)}/tasks.md`, raw: `- [ ] ${TEXT[i]}`, label: pick(["Now", "Next", "Later"], i), when: pick(["queued, ETA 14:10", "", "running 40m"], i), id: `ar-${1100 + i}`, priority: pick(["high", "normal", "low"], i), project: pick(PROJECTS, i), lane: pick(["agent", "human"], i), state: pick(["todo", "doing"], i), version: "0.2", game: "", size: pick(["s", "m"], i), tier: "", since: iso(ago(2000 + i * 300)), text: TEXT[i], title: TEXT[i], summary: "", epic: i % 2 ? "" : "ui to standard", tags: ["requested"], worker: i % 3 ? "" : `agent-${i}`, ask: "" })),
   projects: PROJECTS.slice(0, 5).map((project) => ({ profile: "personal", project, inbox: 2 })),
   focus: [{ profile: "personal", open: 12 }],

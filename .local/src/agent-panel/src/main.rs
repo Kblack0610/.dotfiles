@@ -76,6 +76,15 @@ enum Cmd {
         #[arg(long)]
         around: String,
     },
+    /// What the human said in a transcript after a time, as one JSON line each: {"at","kind",
+    /// "text","shown"}, kind `typed` (a prompt, pasted and reminder blocks cut) or `answer` (a
+    /// dialog answer), `shown` the text it answered. `agent-ask answer --quote` checks a relayed
+    /// answer against it. Exits 2 when `--since` is no ISO timestamp.
+    Human {
+        transcript: PathBuf,
+        #[arg(long)]
+        since: String,
+    },
     /// The plan or question dialog open in a session (`<server>/<session>:<window>`), as the
     /// questions panel's card; exits 1 when its pane shows none.
     Dialog {
@@ -203,6 +212,16 @@ fn main() -> anyhow::Result<()> {
                 }
                 None => std::process::exit(1),
             }
+        }
+        Some(Cmd::Human { transcript, since }) => {
+            let Some(said) = agent_core::transcript::human_said_at(&transcript, &since) else {
+                eprintln!("agent-panel human: --since {since} is not an ISO timestamp");
+                std::process::exit(2);
+            };
+            for h in said {
+                println!("{}", serde_json::to_string(&h)?);
+            }
+            Ok(())
         }
         Some(Cmd::Dialog { target, options }) => agent_panel::card::run_card(&target, options),
         Some(Cmd::Answer {

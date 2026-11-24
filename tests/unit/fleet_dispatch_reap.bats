@@ -677,14 +677,14 @@ real_epic_board() {
   assert_output --partial 'agent-land refuses a tier-3 PR without that line'
 }
 
-@test "tier3 gate: a tier-3 cleanup pick ranks with its project's #prio, as a day pick does" {
+@test "tier3 gate: a tier-3 cleanup pick ranks as a day pick does, and a focus project adds nothing" {
   pr_lane_ready
   focus_on agent-runtime
   row agent-runtime agent 'drop the dead timer' '- [ ] chore(timer): drop the dead timer #tier/3'
   pr_lane_verdict 'drop the dead timer' timer
   run t3_picks "$(t3_rows '')"
   assert_success
-  assert_equal "$(jq -r '"\(.pprio) \(.why)"' <<<"$output")" '0 cleanup, focus project, tier3, #normal, alpha'
+  assert_equal "$(jq -r .why <<<"$output")" 'cleanup, tier3, #normal, alpha'
 }
 
 @test "reap closes a queue item whose session ended: ok with a PR, failed without; a closed one is left alone" {

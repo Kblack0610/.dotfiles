@@ -355,7 +355,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_output --partial "could not read the queue"
 }
 
-@test "a project's #prio ranks its items within a priority, under red and urgent" {
+@test "a project's #prio, focus or a retired ladder word, reorders no item: urgent, then queued time" {
   "$AQ" add --project app --slug a-app "a"
   "$AQ" add --project app --slug b-app-cleanup --tags cleanup "b"
   "$AQ" add --project game --slug c-game "c"
@@ -364,10 +364,10 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   # With no #prio set the order is urgent, then queued time.
   run bash -c "'$AQ' list --json | jq -r .slug"
   assert_output $'d-app-urgent\na-app\nb-app-cleanup\nc-game\ne-tools'
-  printf 'game\tfocus\n' > "$NOTES_FIXTURE/prios"
+  printf 'game\tfocus\napp\tlow\ntools\thigh\n' > "$NOTES_FIXTURE/prios"
   run bash -c "'$AQ' list --json | jq -r .slug"
-  # urgent still heads; game, focused, beats the older app items.
-  assert_output $'d-app-urgent\nc-game\na-app\nb-app-cleanup\ne-tools'
+  # The same order: the queue reads no project tag (the fleet's share is DISPATCH_FLEET_PROJECTS).
+  assert_output $'d-app-urgent\na-app\nb-app-cleanup\nc-game\ne-tools'
   run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = d-app-urgent ]
 }
@@ -563,29 +563,20 @@ mix_classes() { jq --argjson on "$1" '.on = $on | del(.classes[].min_live)' "$RE
   assert_success
 }
 
-@test "#prio ranks focus first, then high, then normal, then low" {
-  "$AQ" add --project elsewhere --slug a-else "a"
-  "$AQ" add --project app --slug b-app "b"
-  "$AQ" add --project game --slug c-game "c"
-  "$AQ" add --project cockpit --slug d-cockpit "d"
-  printf 'game\thigh\nelsewhere\tlow\ncockpit\tfocus\n' > "$NOTES_FIXTURE/prios"
-  run bash -c "'$AQ' list --json | jq -r .slug"
-  assert_output $'d-cockpit\nc-game\nb-app\na-else'
-}
-
-@test "a focus project's items start before every other project's, under red and urgent, over item priority, and nothing is held" {
+@test "a focus project's items take no place ahead of another project's, and nothing is held" {
   "$AQ" add --project app --slug a-app "a"
   "$AQ" add --project app --slug b-app-red --tags red "b"
   "$AQ" add --project app --slug c-app-urgent --priority urgent "c"
   "$AQ" add --project app --slug d-app-high --priority high "d"
   "$AQ" add --project app --slug e-app-req --tags requested "e"
   "$AQ" add --project game --slug f-game-low --priority low "f"
-  # Negative control: no focus, the low game item goes last.
+  # With no focus, the low game item goes last.
   run bash -c "'$AQ' list --json | jq -r .slug"
   assert_output $'b-app-red\nc-app-urgent\na-app\nd-app-high\ne-app-req\nf-game-low'
   printf 'game\tfocus\n' > "$NOTES_FIXTURE/prios"
   run bash -c "'$AQ' list --json | jq -r '\"\\(.slug) \\(.hold // \"-\")\"'"
-  assert_output $'b-app-red -\nc-app-urgent -\nf-game-low -\na-app -\nd-app-high -\ne-app-req -'
+  # On focus, it still goes last: focus turns sprints on and ranks nothing.
+  assert_output $'b-app-red -\nc-app-urgent -\na-app -\nd-app-high -\ne-app-req -\nf-game-low -'
   run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = b-app-red ]
 }

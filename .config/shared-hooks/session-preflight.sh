@@ -169,8 +169,11 @@ HEADER=$(
           if [ "$held_s" -lt 0 ]; then age=""
           elif [ "$held_s" -ge 86400 ]; then age=" (held $((held_s / 86400))d)"; else age=" (held $((held_s / 3600))h)"; fi
         fi
-        HOLD_SHOWN+=("$(printf '  %s since %s%s by %s: %s' "$res" "$since" "$age" \
-          "$(sed -n 's/^by: //p' "$hold")" "$reason")")
+        # Its grants, as `agent-hold list` shows them: a session, row, epic or plan named there
+        # may run while the hold stays (a human's narrowing is a grant, not reason text).
+        granted="$(sed -n 's/^granted: //p' "$hold")"
+        HOLD_SHOWN+=("$(printf '  %s since %s%s by %s: %s%s' "$res" "$since" "$age" \
+          "$(sed -n 's/^by: //p' "$hold")" "$reason" "${granted:+ (granted: $granted)}")")
       else
         HOLD_OTHER=$((HOLD_OTHER + 1))
       fi

@@ -1097,7 +1097,7 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app: it i
 
 @test "rank: cleanup goes first, then the feed rank; why names due and #requested, and a lookalike tag is not #requested" {
   c() { jq -cn --arg k "$1" --argjson fr "$2" --argjson cl "$3" --arg t "$4" --argjson pr "$5" \
-    "$RANK_JQ"'{key: $k, wrank: 0, prio: $pr, frank: $fr, cleanup: $cl, stage: "beta", text: "- [ ] \($k) \($t)"} | rank_fields("2026-11-05"; "")'; }
+    "$RANK_JQ"'{key: $k, wrank: 0, prio: $pr, frank: $fr, cleanup: $cl, stage: "beta", text: "- [ ] \($k) \($t)"} | rank_fields("2026-11-05")'; }
   cands=$(c urgent "$(fk 3 0 1)" 1 '#urgent' 0; c cleanup "$(fk 3 2 1)" 0 '#low' 3; c asked "$(fk 3 2 0)" 1 '#low #requested' 3
     c due "$(fk 1 1 1)" 1 '#high #due1105' 1; c lookalike "$(fk 3 1 1)" 1 '#requested-ish' 1)
   run jq -sr "$RANK_JQ"'rank | map(.key) | join(" ")' <<<"$cands"
@@ -1135,7 +1135,7 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app: it i
   assert_output ''
 }
 
-@test "rank: project priority, then the feed rank (due, priority, age), each named in why" {
+@test "rank: the feed rank (due, priority, age) orders every project's rows, each named in why; a focus project ranks nothing" {
   export DISPATCH_TODAY=2026-11-05
   project game beta "$SANDBOX/repos/game"
   focus_on game
@@ -1153,23 +1153,19 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app: it i
   run cmd_candidates
   assert_success
   run jq -sr "$RANK_JQ"'rank[] | "\(.key): \(.why)"' <<<"$output"
-  assert_output "game high: focus project, fleet, #high, beta, 16d old
-game high new: focus project, fleet, #high, beta, 1d old
-game low: focus project, fleet, #low, beta, 4d old
-app due: due today, fleet, #normal, alpha
-app urgent: fleet, #urgent, alpha"
+  assert_output "app due: due today, fleet, #normal, alpha
+app urgent: fleet, #urgent, alpha
+game high: fleet, #high, beta, 16d old
+game high new: fleet, #high, beta, 1d old
+game low: fleet, #low, beta, 4d old"
 }
 
 @test "rank: at one feed rank, the order is worker, then stage; the row's own tags decide nothing" {
   c() { jq -cn --arg k "$1" --argjson w "$2" --argjson pr "$3" --arg st "$4" \
-    "$RANK_JQ"'{key: $k, wrank: $w, prio: $pr, frank: 21000000, stage: $st, text: "- [ ] \($k)"} | rank_fields("2026-11-05"; "")'; }
+    "$RANK_JQ"'{key: $k, wrank: $w, prio: $pr, frank: 21000000, stage: $st, text: "- [ ] \($k)"} | rank_fields("2026-11-05")'; }
   cands=$(c alpha-urgent 1 0 alpha; c prod-high 1 1 prod; c beta-high 1 1 beta; c asked 0 2 alpha)
   run jq -sr "$RANK_JQ"'rank | map(.key) | join(" ")' <<<"$cands"
   assert_output 'asked prod-high beta-high alpha-urgent'
-  # A low project's sooner row waits behind a normal project's later row: #prio comes first.
-  run jq -sr "$RANK_JQ"'[.[] | rank_fields("2026-11-05"; if .k == "l" then "low" else "" end)] | rank | map(.k) | join(" ")' \
-    <<<'{"k":"l","wrank":0,"frank":19000000,"stage":"prod"} {"k":"n","wrank":1,"frank":23000000,"stage":"alpha"}'
-  assert_output 'n l'
 }
 
 @test "kinds: kinds.json names every notes-cli row type and no other, each with rank, entry, rung, exit and enabled, and none with stages or off" {
@@ -1235,7 +1231,7 @@ app urgent: fleet, #urgent, alpha"
   assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'game aimed,game plain'
   assert_equal "$(jq -r 'select(.key == "game aimed") | .why' <<<"$output")" 'release due in 1d, fleet, #normal, beta, 34d old'
   # Its own #due today is sooner than the target: the why names the row's own date.
-  run jq -nr "$RANK_JQ"'{text: "- [ ] x #due1105", release_due: "2026-11-06", prio: 1, stage: "beta"} | rank_fields("2026-11-05"; "") | .why'
+  run jq -nr "$RANK_JQ"'{text: "- [ ] x #due1105", release_due: "2026-11-06", prio: 1, stage: "beta"} | rank_fields("2026-11-05") | .why'
   assert_output 'due today, #high, beta'
 }
 
@@ -1457,18 +1453,6 @@ app urgent: fleet, #urgent, alpha"
   assert_line --index 0 '/one-shot feat(game): a mode'
   assert_output --partial 'Merge with agent-land <N>'
   refute_output --partial 'note="<proof>"'
-}
-
-@test "picks: a focus project's row goes before a more urgent row elsewhere, one area each" {
-  c() { jq -cn --arg p "$1" --arg k "$2" --argjson pr "$3" --arg pp "$4" \
-    "$RANK_JQ"'{project: $p, stage: "beta", lane: "agent", key: $k, wrank: 1, prio: $pr, tier: 1, line: "", text: "- [ ] \($k)"} | rank_fields("2026-11-05"; $pp)'; }
-  cands=$(c app urgent 0 ""; c game later 2 focus)
-  verdict app agent urgent dispatch
-  verdict game agent later dispatch
-  run picks "$cands" 1
-  assert_equal "$(jq -r .key <<<"$output")" later
-  run picks "$cands" 2
-  assert_equal "$(jq -r .key <<<"$output" | paste -sd' ')" 'later urgent'
 }
 
 @test "judge schema requires an area and the verdict keeps it" {
@@ -3781,8 +3765,9 @@ picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | 
   assert_called 'ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 kb@192.0.2.26'
 }
 
-@test "hosts names the queued light items no worker could take, and why" {
-  # 2026-11-19: Razer sat idle while the board's light work was in repos it had not cloned.
+@test "hosts names the queued items no worker could take, heavy and plan ones too, and why" {
+  # 2026-11-19: Razer sat idle while the board's work was in repos it had not cloned. A heavy
+  # item and a plan item are placeable since ar-2891, so a repo no worker clones is their gap too.
   mkdir -p "$SANDBOX/repos/game" "$SANDBOX/repos/site"
   project game beta "$SANDBOX/repos/game"
   project site beta "$SANDBOX/repos/site"
@@ -3796,13 +3781,13 @@ picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | 
   sed -i 's/^mode: oneshot$/&\nplan: p.md/' "$(qitem queued site-plan)"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
   assert_success
-  assert_output --partial "unplaceable: site, 2 queued light items: no worker clones $SANDBOX/repos/site"
+  assert_output --partial "unplaceable: site, 4 queued items: no worker clones $SANDBOX/repos/site"
   # Negative control: the item in a repo the worker clones is placeable, so no line names game.
   refute_output --partial 'unplaceable: game'
   # A harness no worker runs is the other reason; --json stays one row per worker.
   sed -i 's/^agent: claude$/agent: codex/' "$(qitem queued in-game)"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
-  assert_output --partial 'unplaceable: game, 1 queued light item: no worker runs codex ready'
+  assert_output --partial 'unplaceable: game, 1 queued item: no worker runs codex ready'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts --json
   refute_output --partial unplaceable
   # A codex item that resumes its thread here (its rollout is in this machine's ~/.codex) stays
@@ -3874,17 +3859,20 @@ picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | 
   assert_equal "$(jq -r 'select(.key == "app row") | .off // ""' <<<"$output")" ''
 }
 
-@test "focus: a focus project ranks first, and why names it" {
+@test "focus: a focus project ranks nothing: the more urgent row elsewhere goes first, and why names no project" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
   focus_on game
   row app agent 'app asked' "- [ ] app asked #requested #urgent $T"
   row game agent 'game row' "- [ ] game row #low $T"
+  ranked app agent 'app asked' "$(fk 3 0 0)"
+  ranked game agent 'game row' "$(fk 3 2 1)"
   run cmd_candidates
   assert_success
-  run jq -sr "$RANK_JQ"'rank[] | "\(.key): \(.pprio) \(.why)"' <<<"$output"
-  assert_line --index 0 --partial 'game row: 0 focus project'
-  assert_line --index 1 --partial 'app asked: 2'
+  run jq -sr "$RANK_JQ"'rank[] | "\(.key): \(.why)"' <<<"$output"
+  assert_line --index 0 --partial 'app asked: '
+  assert_line --index 1 --partial 'game row: '
+  refute_output --partial 'project'
 }
 
 @test "focus: promote tags a #requested row's item requested, which puts it in the requested class" {
@@ -3927,7 +3915,7 @@ picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | 
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -c '[.focus, .focus_runnable, .runnable]' <<<"$output")" '[["game"],1,2]'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
-  assert_output --partial 'focus:     game first; 1 runnable item(s) of it start ahead of the other projects (reds and urgent items still go first)'
+  assert_output --partial 'focus:     game, whose release windows run as sprints; 1 runnable item(s) of it'
   run cmd_stats
   assert_equal "$(jq -c '[.focus_projects, has("held_focus")]' <<<"$output")" '[1,false]'
 }

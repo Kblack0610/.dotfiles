@@ -1238,7 +1238,7 @@ mod tests {
                     "progress":{"open":4,"done":6,"open_weight":4,"done_weight":6,"closed_weight_28d":28},
                     "target_version":"v0.2.0","target_on":"2026-11-12",
                     "target_work":{"open_weight":4,"closed_weight_28d":28,"filed_weight_28d":0},
-                    "window":{"version":"v0.2.0","opened":"2026-11-05","due":"2026-11-12","committed":5,"delivered":2,"open":3,"dropped":0,"interrupted":0}}]"#
+                    "window":{"version":"v0.2.0","opened":"2026-11-05","due":"2026-11-12","committed":5,"delivered":2,"open":3,"open_weight":3,"dropped":0,"interrupted":0}}]"#
                     .into(),
             ),
         );
@@ -1263,7 +1263,7 @@ mod tests {
              rows, due 11-12 (3 days left). On time: target v0.2.0 by 11-12: late 1 day (ETA \
              ~11-13). Gate to beta: 4 of 12 met. Playtests waiting: 3.",
             "the playtests are this profile's, the window's days are counted from the feed's day, \
-             and no close in 28 days cannot close the 3 rows open in 3 days"
+             and a target ETA a day late is at risk though the window's 3 open fit its 3 days"
         );
         assert!(line.is_ascii() && !line.contains("  "), "{line}");
     }

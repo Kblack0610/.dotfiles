@@ -166,7 +166,7 @@ const table = (o = {}) => ({
   q: "", state: "", sort: "", dir: "desc", total: 3, shown: 3,
   states: [{ name: "all", n: 3 }, { name: "lead", n: 1 }, { name: "observe", n: 2 }, { name: "failed", n: 1 }],
   columns: COLS.map((key) => ({ key, sort: null, next_sort: key, next_dir: "desc" })),
-  facets: [{ key: "kind", on: [], clear: "", values: [{ value: "lead", n: 1, on: false, q: "kind:lead" }] }],
+  facets: [{ key: "kind", on: [], clear: "", values: [{ value: "lead", n: 1, pct: 50, on: false, q: "kind:lead" }] }],
   ...o,
 });
 const people = [
@@ -235,7 +235,7 @@ test("the header draws every hub-core column and the bar is the shared one, unde
   assert.doesNotMatch(h, /class="bhead"/, "no prose head: the bar and the table count the rows");
   assert.match(h, /id="runners-q" data-tsearch/);
   assert.match(h, /<tr class="tfilters" data-phone="filters"><th><details class="tfacet" data-fkey="kind"[^>]*>/, "kind's dropdown sits under its header");
-  assert.match(h, /data-fv="lead" value="kind:lead"> <span>lead<\/span> <span class="n">1<\/span>/);
+  assert.match(h, /data-fv="lead" value="kind:lead"> <span>lead<\/span> <span class="n">1 \(50%\)<\/span>/);
 });
 
 test("KIND and FOR say what each row is and why it is deployed, under the lanes.tsv legend", () => {
