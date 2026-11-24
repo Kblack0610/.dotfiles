@@ -738,6 +738,7 @@ exits: plan 3 sheet 1'
 tag --add plan --add go gs-2
 tag --add plan gs-6'
   # the exit is on record, so a second pass over the same board (the tag not yet seen) plans nothing twice
+  jq -c 'if .id == "gs-6" then .details = [] else . end' "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b" && mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"
   run skip_exits --dry-run
   assert_output ''
   # inbox-plan planned gs-1 and left it L: the recorded plan exit now sends it to the human, once
