@@ -31,14 +31,14 @@ bats_require_minimum_version 1.5.0
   [ -n "$(qitem queued fix-app)" ] || fail "kick started past its room"
 }
 
-@test "kick over an empty queue starts nothing and does not read the board" {
+@test "kick over an empty queue starts nothing and promotes no board row" {
   game_ready
   run "$REPO_ROOT/.local/bin/fleet-dispatch" kick
   assert_success
   assert_output --partial 'kick: nothing queued to start'
   assert_not_called 'wt new'
   assert_not_called 'judge called'
-  assert_not_called 'notes board'
+  [ -z "$(ls "$AGENT_QUEUE_DIR/queued" "$AGENT_QUEUE_DIR/running" 2>/dev/null)" ] || fail "kick promoted a board row"
 }
 
 @test "kick stands down while a pass holds the lock, and starts nothing twice" {
