@@ -50,6 +50,8 @@
 # one PR per repo unless --partial lifts that limit, so a brief asking for two PRs in one repo is one
 # item (land the first with --partial, the last without). If the session ends first, reap requeues the
 # item and the next run makes that final landing.
+# A full landing is refused, before anything is touched, while another open PR on GitHub names the item
+# on its first "Item:" line, recorded on the item or not: that PR's landing closes it (split_gate).
 # A PR on Forgejo (a checkout that commits the mirror marker, forge_canonical, or whose origin is on a
 # host SO_FORGEJO_HOSTS lists: home-config, bnb-game-servers) runs the same steps through that host's
 # API instead of gh (pr_view, pr_edit_body, fj_wait_checks, pr_merge pinned by head_commit_id,
@@ -1367,6 +1369,7 @@ if [ "$dry" -eq 1 ]; then
     echo "item: agent-queue set $item partial=yes before merging; record pr=$pr merged=<sha> beside earlier PRs, leave the item open"
     echo "board: left open until the final landing"
   else
+    [ -n "$fj" ] || echo "split: gh search prs --owner <owner> --state open --match body -- \"Item: $item\"  (before anything is touched: another open PR whose first Item: line names $item refuses this full landing; land #$pr --partial)"
     dry_watch=$(item_watch "$it")
     [ -z "$dry_watch" ] || echo "watch: watch-companion-loop resolve $dry_watch --pr <owner>/<repo>#$pr  (a red item closes ok only once its probe passes)"
     echo "item: agent-queue set $item pr=$pr merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/$pr/files | agent-queue attribute $item && agent-queue move $item done --status ok"
@@ -1426,6 +1429,29 @@ settle_prior() {
   done
 }
 [ -n "$done_as" ] || settle_prior
+# split_gate: settle_prior sees only the PRs an item records, and a full landing closes the item, which frees
+# every item held after: it. So before it, an open PR in any repo of this PR's owner whose body names the item
+# (its first "Item:" line, as own_item reads it) refuses the landing as a recorded one does: the item is split,
+# so this PR lands --partial and that one closes it. A re-run that records a merged PR is refused too, since
+# recording it in full closes the item the same way. Why: ar-2653 closed on public #2278 while private #949,
+# naming it, was open and unrecorded, freeing an after: hold early (2026-11-17, ar-2665). GitHub search only:
+# Forgejo has none across repos, and a PR opened under a minute ago may not be indexed yet.
+split_gate() {
+  [ "$partial" -eq 0 ] && [ -z "$fj" ] && [[ "$pr_ref" == */*#* ]] || return 0
+  local hits open ref
+  # gate: al-split-gate
+  hits=$(gh search prs --owner "${pr_ref%%/*}" --state open --match body --limit 100 --json number,repository,body -- "Item: $item" 2>&1) ||
+    die "split: gh search prs for open PRs naming $item failed, nothing touched: $(lastline "$hits"); re-run"
+  open=$(jq -r --arg s "$item" --arg me "${pr_ref,,}" '.[]
+    | select(([(.body // "") | gsub("\r"; "") | split("\n")[] | select(startswith("Item:"))][0] // "" | capture("^Item: *(?<s>[^[:space:]]*)").s) == $s)
+    | .repository.nameWithOwner + "#" + (.number | tostring) | select(ascii_downcase != $me)' <<<"$hits" 2>&1) ||
+    die "split: reading gh search prs for $item: $(lastline "$open")"
+  [ -n "$open" ] || return 0
+  ref=${open%%$'\n'*}
+  # gate: al-split-gate
+  die "$(tr '\n' ' ' <<<"$open")is open and names $item, which a full landing would close: land #$pr --partial (agent-land $pr${repo:+ --repo $repo} --item $item --partial), then $ref with the full flags (agent-land ${ref##*#} --repo ${ref%#*} --item $item); if $ref is not $item's work, drop its \"Item: $item\" line"
+}
+[ -n "$done_as" ] || split_gate
 # Before stamp_item, so a refused run leaves the PR untouched.
 if [ "$state" = MERGED ]; then own_merged; else own_head; fi
 # Past own_merged, a merged PR is this item's: what fails from here leaves only its record (fail).
