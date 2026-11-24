@@ -654,8 +654,12 @@ pub(crate) fn wrapped(
         .collect()
 }
 
-/// A project state's hue (`projects::state_level`), grey for `parked`.
+/// A project state's hue (`projects::state_level`): plain for `flow`, which is active and
+/// warns of nothing, grey for `parked`.
 fn state_style(c: &Card, p: Palette) -> ratatui::style::Style {
+    if c.state == projects::FLOW {
+        return ratatui::style::Style::default();
+    }
     projects::state_level(c.state).map_or_else(|| p.dim(), |l| crate::releases::level(l, p))
 }
 
@@ -1789,7 +1793,7 @@ pub(crate) mod tests {
             state: if done > 0 {
                 projects::ON_TRACK
             } else {
-                projects::NO_WINDOW
+                projects::FLOW
             },
             // A window committing what the version holds, due in 7 days; `demo` has none.
             window: (done > 0).then(|| projects::Window {
@@ -2379,8 +2383,8 @@ pub(crate) mod tests {
         assert_eq!(
             s[at.unwrap() - 2].split_whitespace().collect::<Vec<_>>(),
             [
-                "demo", "no", "window", "personal", "alpha", "-", "-", "2", "0", "0", "0", "2",
-                "0", "2", "no", "window", "-", "1.0", "0", "0", "0", "0", "-"
+                "demo", "flow", "personal", "alpha", "-", "-", "2", "0", "0", "0", "2", "0", "2",
+                "no", "window", "-", "1.0", "0", "0", "0", "0", "-"
             ]
         );
         let tail = s.join("\n");

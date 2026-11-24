@@ -156,6 +156,20 @@ setup() {
   grep -qx 'Restart=on-abnormal' "$TIMERS/agentctl@alpha.service.d/agentctl-oneshot.conf"
 }
 
+@test "a oneshot with START_LIMIT=off lifts the template's start limit so an event runner is never refused; any other value is an invalid conf (dispatch-event-wake)" {
+  echo 'START_LIMIT=off' >> "$AGENTCTL_CONF_DIR/alpha.conf"
+  echo 'START_LIMIT=bogus' >> "$AGENTCTL_CONF_DIR/beta.conf"
+  run "$AGENTCTL_BIN" reload
+  assert_output --partial 'skipping invalid config beta: invalid START_LIMIT=bogus'
+  grep -qx 'StartLimitIntervalSec=0' "$TIMERS/agentctl@alpha.service.d/agentctl-oneshot.conf"
+  grep -qx 'Restart=no' "$TIMERS/agentctl@alpha.service.d/agentctl-oneshot.conf"
+  # Negative control: a runner without the key keeps the template's limit.
+  sed -e 's/^NAME=.*/NAME=eps/' -e '/^START_LIMIT=/d' "$AGENTCTL_CONF_DIR/alpha.conf" > "$AGENTCTL_CONF_DIR/eps.conf"
+  run "$AGENTCTL_BIN" reload
+  assert_success
+  ! grep -q 'StartLimit' "$TIMERS/agentctl@eps.service.d/agentctl-oneshot.conf"
+}
+
 @test "reload removes the generated drop-in of a runner whose conf is gone, and keeps a hand-written one" {
   "$AGENTCTL_BIN" reload
   [ -f "$TIMERS/agentctl@beta.service.d/agentctl-oneshot.conf" ]

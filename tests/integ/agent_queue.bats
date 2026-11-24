@@ -5351,3 +5351,27 @@ row_item() {
   assert_failure 5
   assert_output --partial "(#after/lv-1)"
 }
+
+# plan dispatch-event-wake: the wake file is what fleet-dispatch-kick.path watches. One write in item_event
+# covers every transition, so a start (queued -> running) is no event and a kick's own starts wake nothing.
+@test "an item added to the queue or closed wakes a dispatch kick; a start, a set and a running add do not (dispatch-event-wake)" {
+  export FLEET_DISPATCH_DIR="$SANDBOX/dispatch"
+  wake="$FLEET_DISPATCH_DIR/.wake"
+  "$AQ" add --project game --slug w1 "w1"
+  grep -q 'item-added w1' "$wake" || fail "an add wrote no wake: $(cat "$wake" 2>/dev/null)"
+  rm -f "$wake"
+  "$AQ" set w1 session=game-agent-1 account=main
+  "$AQ" move w1 running
+  "$AQ" move w1 waiting
+  "$AQ" move w1 review
+  [ ! -e "$wake" ] || fail "a set or a move to running, waiting or review wrote a wake"
+  "$AQ" move w1 done --status ok
+  grep -q 'item-moved w1' "$wake" || fail "a close wrote no wake"
+  rm -f "$wake"
+  "$AQ" add --running --project game --slug w2 "w2"
+  [ ! -e "$wake" ] || fail "an add of a running item wrote a wake"
+  "$AQ" add --project game --slug w3 "w3"
+  rm -f "$wake"
+  "$AQ" cancel w3 --why "not wanted"
+  grep -q 'w3' "$wake" || fail "a cancel wrote no wake"
+}
