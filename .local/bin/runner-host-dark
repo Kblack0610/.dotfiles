@@ -67,7 +67,7 @@ gov=$(prom_q "$(known 'ci_governor_rate_usd_per_hour{basis="owned"}') or $(known
 stop=$(prom_q "$(known 'ci_governor_power_state{state!="running"}') == 1" "$end") \
   || { echo "unreadable: Prometheus did not answer the governor's power states"; exit 1; }
 slots='ci_governor_effective_slots{source="slots"}'
-pin=$(prom_q "max by (host) (min_over_time($slots[$win])) == 0 or (max by (host) (last_over_time($slots[$KNOWN])) == 0 unless on () (max(ci_governor_ok) == 1))" "$end") \
+pin=$(prom_q "max by (host) (min_over_time(${slots}[$win])) == 0 or (max by (host) (last_over_time(${slots}[$KNOWN])) == 0 unless on () (max(ci_governor_ok) == 1))" "$end") \
   || { echo "unreadable: Prometheus did not answer the governor's slot pins"; exit 1; }
 
 out=$(jq -rn --argjson r "$online" --argjson reg "$reg" --argjson gov "$gov" --argjson stop "$stop" --argjson pin "$pin" \
