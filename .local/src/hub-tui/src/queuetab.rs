@@ -102,10 +102,19 @@ impl QueueView {
             Some(chip) => self.table.view.state = chip.into(),
             None if q.eq_ignore_ascii_case("candidates") => self.cands_open = true,
             None if ["flow", "table"].iter().any(|s| q.eq_ignore_ascii_case(s)) => {}
-            None => {
-                self.table.view.q = q.into();
-                self.table.view.state = "all".into();
-            }
+            // A section id of agent-web's Queue (`needs`, `stuck`, `pr`, `next`): its state chip,
+            // or the page as it is for Stuck, which the one table shows by the state word.
+            None => match hub_core::queue::Section::of_word(q) {
+                Some(sec) => {
+                    if let Some(chip) = sec.chip() {
+                        self.table.view.state = chip.into();
+                    }
+                }
+                None => {
+                    self.table.view.q = q.into();
+                    self.table.view.state = "all".into();
+                }
+            },
         }
     }
 
@@ -608,13 +617,14 @@ pub fn page(
     let rest = q
         .stats
         .as_ref()
-        .map_or(String::new(), |s| format!("  {}", s.week()));
+        .map_or(String::new(), |s| format!("  {}", s.line()));
     out.push(clip_line(heading("AGENT QUEUE", rest, p), w));
-    if let Some(l) = q.stats.as_ref().and_then(|s| s.sitting_line()) {
-        out.push(clip_line(Line::raw(l), w));
-    }
     if let Some(v) = &q.verdict {
-        for l in v.lines(|| hub_core::bar::ready(q, now)) {
+        let lines = hub_core::queue_verdict::worst_first(
+            v.lines(|| hub_core::bar::ready(q, now)),
+            hub_core::queue_verdict::BANNER_LINES,
+        );
+        for l in lines {
             let style = crate::hometab::level_style(l.level, p);
             out.push(clip_line(Line::styled(l.said(), style), w));
         }
@@ -1001,7 +1011,7 @@ pub(crate) mod tests {
             "it opens on active work, done one chip away\n{open}"
         );
         assert!(
-            s.contains("4 done (3 ok, 0 failed, 1 cancelled)") && s.contains("to PR median 1h35m"),
+            s.contains("4 done since") && s.contains("to PR median 1h35m"),
             "{s}"
         );
         let empty = text(&Queue::default(), &QueueView::default(), 120);
@@ -1272,6 +1282,13 @@ pub(crate) mod tests {
             v.table.view.state, "all",
             "a new request starts from the table's own view, over every row"
         );
+        // agent-web's section ids open their chip; Stuck has none and shows the page as it is.
+        for (id, chip) in [("needs", "needs you"), ("pr", "on a PR"), ("next", "ready")] {
+            v.open(id);
+            assert_eq!(v.table.view.state, chip, "{id}");
+        }
+        v.open("stuck");
+        assert!(v.table.is_default());
         v.open("candidates");
         assert!(v.cands_open && v.table.is_default());
         v.open("table");

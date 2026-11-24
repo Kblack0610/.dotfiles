@@ -10,7 +10,8 @@ use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use hub_core::layout;
-use hub_core::queue::{self as hub_queue, Candidate, Candidates, Item, QueueRow, Stats};
+use hub_core::queue::{self as hub_queue, Candidate, Candidates, Item, QueueRow, Section, Stats};
+use hub_core::queue_verdict::{worst_first, BANNER_LINES};
 use hub_core::session_actions::System;
 use hub_core::table::{self, View};
 use serde::Deserialize;
@@ -21,7 +22,7 @@ use tokio::sync::broadcast;
 use crate::cache::{EventCache, ReadCache};
 use crate::{bad, ApiResult, Shared};
 
-/// How many days back, today included, the page's Done section reaches.
+/// How many days back, today included, the list reads finished items (a link to one opens it).
 const DONE_DAYS: i64 = 7;
 /// A queue change is an event, so this only bounds a read kept while the watcher is down.
 const QUEUE_SECS: u64 = 60;
@@ -118,18 +119,27 @@ impl Cache {
     }
 }
 
-/// The table view over the list: the same keys the page keeps in its URL
-/// (`#queue?q=&s=&sort=&dir=&pg=`), and `sel`, an item a link opens: with no `pg`, the page that
+/// The view over the list: the keys the page keeps in its URL (`#queue?q=&s=`) filter every
+/// section alike, each section sorts and pages on its own prefixed keys (`Section::pre`: `nxsort`,
+/// `nxdir`, `nxpg`), and `sel`, an item a link opens: with no `pg` for its section, the page that
 /// holds it is the one served.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 pub struct QueueQuery {
     pub q: String,
     pub s: String,
-    pub sort: String,
-    pub dir: String,
-    pub pg: String,
     pub sel: String,
+    #[serde(flatten)]
+    keys: std::collections::HashMap<String, String>,
+}
+
+impl QueueQuery {
+    /// A section's own view key (`sort`, `dir` or `pg`), blank when the URL has none.
+    fn key(&self, sec: Section, k: &str) -> &str {
+        self.keys
+            .get(&format!("{}{k}", sec.pre()))
+            .map_or("", String::as_str)
+    }
 }
 
 /// The flow verdict now, off the async workers and beside the items' read (a Prometheus call); a
@@ -145,10 +155,10 @@ pub(crate) async fn verdict() -> hub_core::queue_verdict::Verdict {
 }
 
 /// Every active item plus those finished in the last `DONE_DAYS` days, read through hub-core,
-/// then filtered and sorted by `hub_core::table` so the page only draws (`render`), and the last
-/// flow verdict (`flow`: hub-core `queue_verdict` lines, each its sentence and level, the lines the
-/// Queue card and the waybar chip carry) over the table. The Candidates counts are their own read (`candidates?counts=1`), so the items never
-/// wait on the snapshot's parse.
+/// then filtered, sorted and cut into sections by `hub_core::table` so the page only draws
+/// (`render`), and the flow verdict's worst three lines (`flow`: each its sentence, level and the
+/// page that shows the cause) over them. The Candidates counts are their own read
+/// (`candidates?counts=1`), so the items never wait on the snapshot's parse.
 pub async fn list(
     State(s): State<Shared>,
     Query(q): Query<QueueQuery>,
@@ -159,20 +169,22 @@ pub async fn list(
         items: items.map_err(|e| bad(StatusCode::BAD_REQUEST, e))?,
         ..Default::default()
     };
-    let flow: serde_json::Value = verdict
-        .lines(|| hub_core::bar::ready(&hq, now.timestamp()))
+    let lines = verdict.lines(|| hub_core::bar::ready(&hq, now.timestamp()));
+    let flow: Vec<serde_json::Value> = worst_first(lines, BANNER_LINES)
         .iter()
-        .map(|l| serde_json::json!({ "line": l.said(), "level": l.level }))
+        .map(|l| serde_json::json!({ "line": l.said(), "level": l.level, "to": l.to }))
         .collect();
     let mut v = render(hq.items, &q, now);
-    v["flow"] = flow;
+    v["flow"] = flow.into();
     Ok(Json(v))
 }
 
-/// One page of the rows the view keeps (`layout`'s Queue `table` size, the page `pg` names or the
-/// one holding `sel`), each worded by `item_view`, and the controls that drew them (`table`).
-/// `needs_you` counts every item whatever the view, for the tab's badge; `section_aliases` maps
-/// an old section id (`#queue/running`) to the state chip it opens.
+/// The tab's rows in sections (`Section::ALL`, worst first): each the rows its state holds under
+/// the shared view, sorted and paged on its own keys, with the controls that drew them (`table`).
+/// `table` is the one search bar over them all (its states and sort are the sections' own).
+/// `needs_you` counts every item whatever the view, for the tab's badge; `done_today` and
+/// `cancelled_today` are the line that links to Log, where finished work lives; `sel` is the item a
+/// link opened, a finished one included.
 fn render(
     items: Vec<Item>,
     q: &QueueQuery,
@@ -182,32 +194,64 @@ fn render(
         .iter()
         .filter(|i| i.state == hub_queue::State::Waiting)
         .count();
+    let midnight = hub_core::text::local_day_start(now.timestamp());
+    let (mut done_today, mut cancelled_today) = (0, 0);
+    for i in items.iter().filter(|i| i.state == hub_queue::State::Done) {
+        if i.finished_at().is_some_and(|f| f.timestamp() >= midnight) {
+            if i.cancelled() {
+                cancelled_today += 1;
+            } else {
+                done_today += 1;
+            }
+        }
+    }
     let queue = hub_queue::Queue {
         items,
         sessions: hub_queue::sessions(&hub_core::boards::fleet_state(), now.timestamp()),
         ..Default::default()
     };
     let rows = queue.rows(now);
-    let view = View::new::<QueueRow>(&q.q, &q.s, &q.sort, &q.dir);
-    let (mut shown, mut table) = view.summary(&rows);
-    let per = layout::page_rows("queue/table");
-    let page = q.pg.parse().unwrap_or_else(|_| {
-        let at = shown
-            .iter()
-            .position(|r| !q.sel.is_empty() && r.item.slug == q.sel);
-        at.map_or(1, |at| at / per + 1)
-    });
-    table::page(&mut shown, &mut table, page, per);
-    let aliases: serde_json::Map<String, serde_json::Value> = hub_queue::SECTION_ALIASES
+    let sel = rows
         .iter()
-        .map(|(old, chip)| (old.to_string(), (*chip).into()))
+        .find(|r| !q.sel.is_empty() && r.item.slug == q.sel);
+    let (_, mut bar) = View::new::<QueueRow>(&q.q, &q.s, "", "").summary(&rows);
+    // The sections are the states and sort apart, so the bar keeps the search and the facets.
+    (bar.states, bar.columns, bar.links, bar.legend) = Default::default();
+    let sections: Vec<serde_json::Value> = Section::ALL
+        .iter()
+        .map(|&sec| {
+            let view = View::new::<QueueRow>(&q.q, &q.s, q.key(sec, "sort"), q.key(sec, "dir"));
+            let (mut shown, mut table) = view.summary(&rows);
+            shown.retain(|r| r.section() == Some(sec));
+            table.total = rows.iter().filter(|r| r.section() == Some(sec)).count();
+            table.shown = shown.len();
+            table.states.clear();
+            table.facets.clear();
+            table.legend = None;
+            table.links = table::links(&shown);
+            let per = layout::page_rows(&format!("queue/{}", sec.id()));
+            let page = q.key(sec, "pg").parse().unwrap_or_else(|_| {
+                let at = shown
+                    .iter()
+                    .position(|r| !q.sel.is_empty() && r.item.slug == q.sel);
+                at.map_or(1, |at| at / per + 1)
+            });
+            table::page(&mut shown, &mut table, page, per);
+            serde_json::json!({
+                "id": sec.id(), "title": sec.title(), "pre": sec.pre(),
+                "items": shown.iter().map(|r| row_view(r, now)).collect::<Vec<_>>(),
+                "table": table,
+            })
+        })
         .collect();
     serde_json::json!({
         "at": now.timestamp(),
-        "items": shown.iter().map(|r| row_view(r, now)).collect::<Vec<_>>(),
-        "table": table,
+        "table": bar,
+        "sections": sections,
         "needs_you": needs_you,
-        "section_aliases": aliases,
+        "done_today": done_today,
+        "cancelled_today": cancelled_today,
+        "sel": sel.map(|r| row_view(r, now)),
     })
 }
 
@@ -261,22 +305,14 @@ fn item_view(i: &Item, now: chrono::DateTime<chrono::Utc>) -> serde_json::Value 
     v
 }
 
-/// The window's line and what sits now, worded by hub-core as the hub TUI words them.
+/// The window as the one line the Pipeline head carries, worded by hub-core as the hub TUI words it.
 pub async fn stats(State(s): State<Shared>) -> ApiResult<Json<serde_json::Value>> {
     let s = s
         .queue
         .stats()
         .await
         .map_err(|e| bad(StatusCode::BAD_REQUEST, e))?;
-    // The prose lines for the folded detail, and the typical times for the page's folded
-    // detail.
-    Ok(Json(serde_json::json!({
-        "week": s.week(),
-        "sitting": s.sitting_line(),
-        "wait_minutes_median": s.wait_minutes_median,
-        "run_minutes_median": s.run_minutes_median,
-        "to_pr_minutes_median": s.to_pr_minutes_median,
-    })))
+    Ok(Json(serde_json::json!({ "line": s.line() })))
 }
 
 /// One page of the rows the view keeps (`layout`'s `candidates` size; a search narrows on the
@@ -586,116 +622,186 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_list_is_the_shared_table_in_hub_cores_order_with_its_controls() {
-        let items = hub_queue::parse(concat!(
+    /// A query string as the page sends it, the way axum's `Query` reads it.
+    fn qs(text: &str) -> QueueQuery {
+        let mut q = QueueQuery::default();
+        for (k, v) in text.split('&').filter_map(|p| p.split_once('=')) {
+            match k {
+                "q" => q.q = v.into(),
+                "s" => q.s = v.into(),
+                "sel" => q.sel = v.into(),
+                _ => {
+                    q.keys.insert(k.into(), v.into());
+                }
+            }
+        }
+        q
+    }
+
+    fn at(t: &str) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(t)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    /// The slugs of one section's rows, and the section itself.
+    fn section<'a>(v: &'a serde_json::Value, id: &str) -> &'a serde_json::Value {
+        v["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == id)
+            .unwrap_or_else(|| panic!("no section {id}"))
+    }
+
+    fn slugs(v: &serde_json::Value, id: &str) -> Vec<String> {
+        section(v, id)["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["slug"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    fn mixed() -> Vec<Item> {
+        hub_queue::parse(concat!(
             r#"{"slug":"d1","state":"done","status":"ok","project":"dotfiles","finished":"2026-11-06T10:00:00Z","task":"fix(a): done"}"#,
+            "\n",
+            r#"{"slug":"c1","state":"done","status":"cancelled","project":"dotfiles","finished":"2026-11-06T10:30:00Z","task":"fix(a): dropped"}"#,
             "\n",
             r#"{"slug":"q1","state":"queued","project":"dotfiles","queued":"2026-11-06T09:00:00Z","task":"feat(b): up"}"#,
             "\n",
             r#"{"slug":"w1","state":"waiting","project":"playground","waiting":"2026-11-06T10:00:00Z","task":"fix(c): ask"}"#,
             "\n",
             r#"{"slug":"r1","state":"running","project":"dotfiles","started":"2026-11-06T09:30:00Z","task":"fix(d): run"}"#,
-        ));
-        let now = chrono::DateTime::parse_from_rfc3339("2026-11-06T12:00:00Z")
+            "\n",
+            r#"{"slug":"p1","state":"review","project":"dotfiles","started":"2026-11-06T08:30:00Z","pr":"o/r#4","task":"fix(e): pr"}"#,
+        ))
+    }
+
+    #[test]
+    fn the_list_is_one_section_per_state_worst_first_with_finished_work_as_a_count() {
+        let now = at("2026-11-06T12:00:00Z");
+        let v = render(mixed(), &QueueQuery::default(), now);
+        let ids: Vec<&str> = v["sections"]
+            .as_array()
             .unwrap()
-            .with_timezone(&chrono::Utc);
-        let slugs = |v: &serde_json::Value| -> Vec<String> {
-            v["items"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|i| i["slug"].as_str().unwrap().to_string())
-                .collect()
-        };
-        let v = render(items.clone(), &QueueQuery::default(), now);
+            .iter()
+            .map(|s| s["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["needs", "stuck", "running", "pr", "next"]);
+        assert_eq!(slugs(&v, "needs"), ["w1"]);
+        assert_eq!(slugs(&v, "running"), ["r1"]);
+        assert_eq!(slugs(&v, "pr"), ["p1"]);
+        assert_eq!(slugs(&v, "next"), ["q1"]);
         assert_eq!(
-            slugs(&v),
-            ["w1", "r1", "q1"],
-            "needs you, running, ready; done is one chip away"
+            section(&v, "next")["items"][0]["start"], 1,
+            "q1 starts first"
         );
-        assert_eq!(v["items"][2]["start"], 1, "q1 starts first");
         assert!(
-            v["items"][0]["start"].is_null(),
+            section(&v, "running")["items"][0]["start"].is_null(),
             "only a ready item has a place"
         );
-        assert_eq!(v["section_aliases"]["queued"], "ready");
-        let every = QueueQuery {
-            s: "all".into(),
-            ..Default::default()
-        };
         assert_eq!(
-            slugs(&render(items.clone(), &every, now)),
-            ["w1", "r1", "q1", "d1"]
-        );
-        assert_eq!(v["table"]["total"], 4);
-        assert_eq!(v["needs_you"], 1);
-        assert!(v["table"].get("pager").is_none(), "one page is unpaged");
-        assert_eq!(v["section_aliases"]["running"], "running");
-        assert_eq!(v["section_aliases"]["waiting"], "needs you");
-        assert_eq!(
-            v["items"][1]["timing"]["run"], 150,
+            section(&v, "running")["items"][0]["timing"]["run"], 150,
             "the page draws hub-core's minutes"
         );
-        let q = QueueQuery {
-            q: "project:dotfiles".into(),
+        // Done leaves the sections for a count, split from the cancelled ones.
+        for id in ["needs", "stuck", "running", "pr", "next"] {
+            assert!(!slugs(&v, id).iter().any(|s| s == "d1" || s == "c1"), "{id}");
+        }
+        assert_eq!((&v["done_today"], &v["cancelled_today"]), (&1.into(), &1.into()));
+        assert_eq!(v["needs_you"], 1);
+        assert!(v.get("section_aliases").is_none() && v["sel"].is_null());
+        // The sections are the states: the bar keeps search and facets, no chips or sort of its own.
+        assert!(v["table"]["states"].as_array().unwrap().is_empty());
+        assert!(!v["table"]["facets"].as_array().unwrap().is_empty());
+        assert!(v["table"].get("legend").is_none() && section(&v, "next")["table"].get("legend").is_none(), "no chip, so no legend of chips");
+        // NEGATIVE CONTROL: a section with no rows is still sent, with its head's zero and no pager.
+        let none = render(vec![], &QueueQuery::default(), now);
+        assert_eq!(section(&none, "stuck")["table"]["shown"], 0);
+        assert!(section(&none, "stuck")["table"].get("pager").is_none());
+        assert_eq!(none["needs_you"], 0);
+    }
+
+    #[test]
+    fn a_filter_reaches_every_section_and_a_sort_only_its_own() {
+        let now = at("2026-11-06T12:00:00Z");
+        let by = |q: &str| QueueQuery {
+            q: q.into(),
+            ..Default::default()
+        };
+        let v = render(mixed(), &by("project:playground"), now);
+        assert_eq!(slugs(&v, "needs"), ["w1"]);
+        assert!(slugs(&v, "running").is_empty() && slugs(&v, "next").is_empty());
+        assert_eq!(section(&v, "next")["table"]["total"], 1, "the head counts the section's rows");
+        let chip = QueueQuery {
             s: "running".into(),
             ..Default::default()
         };
-        let v = render(items.clone(), &q, now);
-        assert_eq!(slugs(&v), ["r1"]);
-        assert_eq!(v["table"]["total"], 4, "the chips count every row");
-        assert_eq!(v["needs_you"], 1, "the badge ignores the view");
-        let by_in = QueueQuery {
-            sort: "in".into(),
-            dir: "asc".into(),
-            ..Default::default()
+        let v = render(mixed(), &chip, now);
+        assert_eq!(slugs(&v, "running"), ["r1"], "an old ?s= chip still narrows");
+        assert!(slugs(&v, "needs").is_empty());
+        let items = hub_queue::parse(concat!(
+            r#"{"slug":"a","state":"queued","project":"x","queued":"2026-11-06T09:00:00Z","task":"feat: a"}"#,
+            "\n",
+            r#"{"slug":"b","state":"queued","project":"y","queued":"2026-11-06T09:05:00Z","task":"feat: b"}"#,
+            "\n",
+            r#"{"slug":"r","state":"running","project":"y","started":"2026-11-06T09:05:00Z","task":"feat: r"}"#,
+        ));
+        let sorted = |dir: &str| {
+            let q = qs(&format!("nxsort=project&nxdir={dir}"));
+            render(items.clone(), &q, now)
         };
+        assert_eq!(slugs(&sorted("desc"), "next"), ["b", "a"]);
+        assert_eq!(slugs(&sorted("asc"), "next"), ["a", "b"]);
+        assert_eq!(section(&sorted("desc"), "next")["table"]["sort"], "project");
         assert_eq!(
-            slugs(&render(items, &by_in, now))[..3],
-            ["w1", "r1", "q1"].map(String::from),
-            "asc, none last"
+            section(&sorted("desc"), "running")["table"]["sort"], "",
+            "NEGATIVE CONTROL: another section's sort key leaves this one alone"
         );
     }
 
     #[test]
-    fn the_list_pages_at_its_layout_size_and_a_linked_item_opens_on_its_page() {
-        let per = layout::page_rows("queue/table");
+    fn a_section_pages_at_its_layout_size_and_a_linked_item_opens_on_its_page() {
+        let per = layout::page_rows("queue/next");
         let lines: Vec<String> = (0..per + 4)
             .map(|i| format!(r#"{{"slug":"q{i}","state":"queued","project":"dotfiles","queued":"2026-11-06T09:{:02}:00Z","task":"feat(b): up"}}"#, i % 60))
             .collect();
         let items = hub_queue::parse(&lines.join("\n"));
-        let now = chrono::DateTime::parse_from_rfc3339("2026-11-06T12:00:00Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
-        let n = |v: &serde_json::Value| v["items"].as_array().unwrap().len();
+        let now = at("2026-11-06T12:00:00Z");
+        let n = |v: &serde_json::Value| slugs(v, "next").len();
         let one = render(items.clone(), &QueueQuery::default(), now);
-        assert_eq!((n(&one), &one["table"]["pager"]["page"]), (per, &1.into()));
-        assert_eq!(one["table"]["shown"], per + 4, "the count is every page's");
-        let last = one["items"][0]["slug"].as_str().unwrap().to_string();
-        let two = QueueQuery {
-            pg: "2".into(),
-            ..Default::default()
-        };
-        let v = render(items.clone(), &two, now);
-        assert_eq!((n(&v), &v["table"]["pager"]["page"]), (4, &2.into()));
-        let tail = v["items"][3]["slug"].as_str().unwrap().to_string();
-        let sel = |sel: &str, pg: &str| QueueQuery {
-            sel: sel.into(),
-            pg: pg.into(),
-            ..Default::default()
-        };
-        let v = render(items.clone(), &sel(&tail, ""), now);
-        assert_eq!(v["table"]["pager"]["page"], 2, "the page that holds it");
-        assert!(v["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|i| i["slug"] == tail.as_str()));
-        let v = render(items.clone(), &sel(&tail, "1"), now);
-        assert_eq!(v["table"]["pager"]["page"], 1, "a page asked for wins");
-        let v = render(items, &sel(&last, ""), now);
-        assert_eq!(v["table"]["pager"]["page"], 1);
+        let t = &section(&one, "next")["table"];
+        assert_eq!((n(&one), &t["pager"]["page"]), (per, &1.into()));
+        assert_eq!(t["shown"], per + 4, "the count is every page's");
+        let last = slugs(&one, "next")[0].clone();
+        let get = |text: &str| render(items.clone(), &qs(text), now);
+        let v = get("nxpg=2");
+        assert_eq!((n(&v), &section(&v, "next")["table"]["pager"]["page"]), (4, &2.into()));
+        let tail = slugs(&v, "next")[3].clone();
+        let v = get(&format!("sel={tail}"));
+        assert_eq!(section(&v, "next")["table"]["pager"]["page"], 2, "the page that holds it");
+        assert!(slugs(&v, "next").contains(&tail));
+        assert_eq!(v["sel"]["slug"], tail.as_str());
+        let v = get(&format!("sel={tail}&nxpg=1"));
+        assert_eq!(section(&v, "next")["table"]["pager"]["page"], 1, "a page asked for wins");
+        let v = get(&format!("sel={last}"));
+        assert_eq!(section(&v, "next")["table"]["pager"]["page"], 1);
+    }
+
+    #[test]
+    fn a_linked_finished_item_comes_back_as_sel_though_no_section_holds_it() {
+        let v = render(
+            mixed(),
+            &qs("sel=d1"),
+            at("2026-11-06T12:00:00Z"),
+        );
+        assert_eq!(v["sel"]["slug"], "d1");
+        assert_eq!(v["sel"]["state"], "done");
+        for id in ["needs", "stuck", "running", "pr", "next"] {
+            assert!(!slugs(&v, id).contains(&"d1".to_string()), "{id}");
+        }
     }
 
     #[test]

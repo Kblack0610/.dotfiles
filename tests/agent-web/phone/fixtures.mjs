@@ -79,28 +79,40 @@ export const pageRows = (section) => {
   if (!m) throw new Error(`hub-core layout.rs PAGE_ROWS has no ("${section}", N) entry`);
   return Number(m[1]);
 };
-// Queue: hub_core::queue, live-sized: the active view of 2026-11-12 (637 of 3,007 items, titles
-// that wrap and a note on some), of which the server sends the first page.
-const QUEUE_STATE = ["running", "waiting", "queued", "queued", "running", "done", "done"];
-const qTitle = (i) => (i % 3 ? TEXT[i % TEXT.length] : `${TEXT[i % TEXT.length]}, and ${TEXT[(i + 1) % TEXT.length]}`);
-const QUEUE_TABLE = table(637, ["#", "title", "project", "priority", "state", "hold", "from", "in", "wait", "run", "pr", "row", "kind", "size", "pts", "acct", "mode", "plan"], ["active", "needs you", "running", "on a PR", "ready", "held", "done", "all"], { project: PROJECTS.slice(0, 3), priority: ["urgent", "high"], state: ["running", "ready"], hold: ["after"], from: ["human", "board"], kind: ["fix", "feat"], acct: ["main", "bnb"] });
-QUEUE_TABLE.states = [["active", 637], ["needs you", 6], ["running", 9], ["on a PR", 40], ["ready", 582], ["done", 2370], ["all", 3007]].map(([name, n]) => ({ name, n, tone: TONE[name] }));
+// Queue: hub_core::queue, live-sized: the active items of 2026-11-12 (637), titles that wrap and a note on some.
+// The Queue tab: one search bar (facets only) over a section per state (hub_core::queue::Section),
+// each its own table with every column, its own sort and page size. Finished work is Log's.
+const QUEUE_COLS = ["#", "title", "project", "priority", "state", "hold", "from", "in", "wait", "run", "pr", "row", "kind", "size", "pts", "acct", "mode", "plan"];
+const QUEUE_BAR = table(637, [], [], { project: PROJECTS.slice(0, 3), priority: ["urgent", "high"], from: ["human", "board"], kind: ["fix", "feat"], acct: ["main", "bnb"] });
+QUEUE_BAR.states = [];
+const qItem = (i, state, o = {}) => ({ slug: `${pick(SLUGS, i)}-${i}`, title: qTitle(i), project: pick(PROJECTS, i), state, status: "ok", priority: pick(["urgent", "high", "normal"], i), start: null, hold: "", waits_for: "", source: pick(["human", "board"], i), row_id: i % 2 ? `ar-${1100 + i}` : "", mode: "oneshot", plan_label: "", type: pick(["fix", "feat", "chore"], i), size: pick(["s", "m", "l"], i), account: pick(["main", "bnb", "alt"], i), pr: i > 3 ? `#${1590 + i}` : "", pr_label: i > 3 ? `#${1590 + i}` : "", pr_url: i > 3 ? `https://github.com/Kblack0610/.dotfiles/pull/${1590 + i}` : "", pr_merged: false, note: i % 4 ? "" : TEXT[(i + 3) % TEXT.length], unproven: false, timing: { in_state: 14 + i * 9, wait: 3 + i, run: 22 + i * 6 }, ...o });
+// [id, title, prefix, count, the item's state, what each row adds]
+const QUEUE_SECTIONS = [
+  ["needs", "Needs you", "nd", 6, "waiting", (i) => ({ waits_for: `ask ${SLUGS[i % SLUGS.length]}` })],
+  ["stuck", "Stuck", "sk", 5, "running", (i) => ({ stuck: true, state_word: "stalled", state_why: `STALLED 42m idle: ${TEXT[i % TEXT.length]}` })],
+  ["running", "Running", "rn", 9, "running", () => ({ state_word: "running" })],
+  ["pr", "On a PR", "pr", 40, "review", (i) => ({ state_word: "on a PR", waits_for: i % 3 ? "CI" : "a merge" })],
+  ["next", "Up next", "nx", 582, "queued", (i) => ({ start: i + 1 })],
+];
+const queue = {
+  at: NOW, table: QUEUE_BAR, needs_you: 6, done_today: 38, cancelled_today: 5, sel: null, flow: [],
+  sections: QUEUE_SECTIONS.map(([id, title, pre, n, state, extra]) => {
+    const all = rows(n, (i) => qItem(i, state, extra(i)));
+    const t = { ...table(n, QUEUE_COLS), states: [] };
+    const p = paged({ rows: all, table: t }, `queue/${id}`);
+    return { id, title, pre, items: p.rows, table: p.table };
+  }),
+};
 // Candidates: fleet-dispatch's snapshot as /api/queue/candidates sends it (the first page of rows on
 // the shared table), and the counts its `?counts=1` read sends for the heading.
 const candRow = (i) => ({ profile: "personal", project: pick(PROJECTS, i), lane: "agent", key: `ar-${1400 + i}`, text: TEXT[i % TEXT.length], title: TEXT[i % TEXT.length], stage: "alpha", priority: pick(["urgent", "high", "normal"], i), why: `${pick(PROJECTS, i)} is behind its pace and this row unblocks ${TEXT[(i + 2) % TEXT.length]}`, auto: i % 3 === 0, verdict: i % 5 ? "start" : "hold", held: i % 5 === 0, area: "ui", prio: i % 7 ? 2 : 0, blocked: i % 4 ? [] : ["no worker covers the project", "size l over the slot"], start_label: pick(["oneshot", "plan"], i) });
 const CAND_TABLE = table(2612, ["rank", "project", "key", "task", "start", "why", "blocked"], ["all", "clear", "blocked"], { project: PROJECTS.slice(0, 3), blocked: ["no worker", "size"] });
 CAND_TABLE.states = [["all", 2612], ["clear", 2140], ["blocked", 472]].map(([name, n]) => ({ name, n, tone: name === "blocked" ? "warn" : undefined }));
 const candidates = { ...paged({ rows: rows(CAND_TABLE.total, (i) => ({ rank: i + 1, ...candRow(i) })), table: CAND_TABLE }, "candidates"), auto: 412, urgent_blocked: 3, uncovered: PROJECTS.slice(2, 4), as_of: "13:10" };
-const queue = {
-  items: rows(637, (i) => ({ slug: `${pick(SLUGS, i)}-${i}`, title: qTitle(i), project: pick(PROJECTS, i), state: pick(QUEUE_STATE, i), status: "ok", priority: pick(["urgent", "high", "normal"], i), start: i === 2 ? 1 : null, hold: i === 3 ? `after ${SLUGS[2]}` : "", waits_for: i === 3 ? `after ${SLUGS[2]}` : "", source: pick(["human", "board"], i), row_id: i % 2 ? `ar-${1100 + i}` : "", mode: "oneshot", plan_label: i === 1 ? "queue table" : "", type: pick(["fix", "feat", "chore"], i), size: pick(["s", "m", "l"], i), account: pick(["main", "bnb", "alt"], i), pr: i > 3 ? `#${1590 + i}` : "", pr_label: i > 3 ? `#${1590 + i}` : "", pr_url: i > 3 ? `https://github.com/Kblack0610/.dotfiles/pull/${1590 + i}` : "", pr_merged: i > 4, note: i % 4 ? "" : TEXT[(i + 3) % TEXT.length], unproven: false, timing: { in_state: 14 + i * 9, wait: 3 + i, run: 22 + i * 6 } })),
-  table: QUEUE_TABLE,
-  section_aliases: {}, needs_you: 6,
-};
-{ const p = paged({ rows: queue.items, table: queue.table }, "queue/table"); Object.assign(queue, { items: p.rows, table: p.table }); }
 const candCounts = { total: CAND_TABLE.total, auto: candidates.auto, urgent_blocked: candidates.urgent_blocked, as_of: candidates.as_of };
-const queueStats = { week: 212, sitting: 9, wait_minutes_median: 7, run_minutes_median: 38, to_pr_minutes_median: 52 };
+const queueStats = { line: "Done 212 in 7d, 38 today; waits 7m, runs 38m, 52m to a PR" };
 // /api/flow: hub_core::flow::Rail as `line`, the step `worst` names open (a stopped one here).
-const RAIL = [["inbox", "inbox", null], ["backlog", "agent backlog", { tab: "projects/all", state: "" }], ["queued", "queued", { tab: "queue", state: "ready" }], ["running", "running", { tab: "queue", state: "running" }], ["review", "review", null], ["needs", "needs you", { tab: "queue", state: "needs you" }], ["done", "done", { tab: "queue", state: "done" }]];
+const RAIL = [["inbox", "inbox", null], ["backlog", "agent backlog", { tab: "projects/all", state: "" }], ["queued", "queued", { tab: "queue", state: "ready", section: "next" }], ["running", "running", { tab: "queue", state: "running", section: "running" }], ["review", "review", null], ["needs", "needs you", { tab: "queue", state: "needs you", section: "needs" }], ["done", "done", { tab: "log", state: "", section: "" }]];
 const flow = {
   grafana: home.grafana,
   line: {
