@@ -80,11 +80,11 @@ setup() {
   grep -q '^StartLimitIntervalSec=0' "$drop"
 }
 
-@test "--if-stale rewrites a drop-in that predates RuntimeMaxSec even when its conf is older (ar-2022)" {
+@test "--if-stale rewrites a drop-in whose RuntimeMaxSec is not its conf's, even when its conf is older (ar-2022)" {
   "$AGENTCTL_BIN" reload
   drop="$TIMERS/agentctl@alpha.service.d/agentctl-oneshot.conf"
   grep -q '^RuntimeMaxSec=' "$drop"
-  sed -i '/^RuntimeMaxSec=/d' "$drop"
+  sed -i 's/^RuntimeMaxSec=.*/RuntimeMaxSec=1h/' "$drop"   # the cap an older default wrote
   run "$AGENTCTL_BIN" reload --if-stale
   assert_success
   assert_line --regexp '^agentctl: timers lag their confs: .*alpha'
