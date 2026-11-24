@@ -4888,19 +4888,23 @@ already"
 # 108 dispatch starts failed with no holder on record.
 @test "a lock timeout appends one lock-miss line naming the holder, the taker and its mode" {
   "$AQ" add --project game "one item" >/dev/null
-  exec 9> "$AGENT_QUEUE_DIR/.lock"
-  flock 9
-  # 9>&-: the taker is not the holder's child here, so it must not inherit the holder's fd.
-  AGENT_QUEUE_LOCK_WAIT=1 run "$AQ" add --project game "two item" 9>&-
+  # The holder stays alive while it holds: in a container's pid namespace the kernel hides a
+  # /proc/locks entry whose taker has exited, as a bare `flock 9` does. cat opens the fifo only
+  # after flock has the lock, so opening its write end here is the signal that the lock is held.
+  mkfifo "$BATS_TEST_TMPDIR/hold"
+  flock "$AGENT_QUEUE_DIR/.lock" cat "$BATS_TEST_TMPDIR/hold" &
+  holder=$!
+  exec 7> "$BATS_TEST_TMPDIR/hold"
+  AGENT_QUEUE_LOCK_WAIT=1 run "$AQ" add --project game "two item" 7>&-
   assert_failure 75
   assert_output --partial "lock-miss.jsonl"
-  AGENT_QUEUE_LOCK_WAIT=1 run "$AQ" show one-item --json 9>&-
+  AGENT_QUEUE_LOCK_WAIT=1 run "$AQ" show one-item --json 7>&-
   assert_failure 75
-  flock -u 9
-  exec 9>&-
+  exec 7>&-
+  wait "$holder"
   log="$AGENT_QUEUE_DIR/lock-miss.jsonl"
   [ "$(wc -l < "$log")" = 2 ]
-  run jq -r --argjson me "$BASHPID" -s '.[] | [.mode, (.cmd | test("agent-queue (add|show)")),
+  run jq -r --argjson me "$holder" -s '.[] | [.mode, (.cmd | test("agent-queue (add|show)")),
     (.locks | index(".lock holds WRITE") != null), (.procs | any(.pid == $me and .file == ".lock")),
     (.procs | all(.cmd | test("agent-queue") | not))] | map(tostring) | join(" ")' "$log"
   assert_line --index 0 "exclusive true true true true"
