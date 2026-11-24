@@ -47,9 +47,45 @@ _test_pick_aliases() {
   _TEST_PICK_ALIAS_RE="$(awk 'NF {o=o (o==""?"":"|") $1} END {if (o!="") printf "\\$\\{?(%s)([^A-Za-z0-9_]|$)", o}' <<<"$_TEST_PICK_ALIASES")"
 }
 
+# _test_pick_expand <changed paths>: the list with the scripts that source a changed
+# .local/lib/*.sh added, to any depth (a lib that sources a lib): a test names release-state, not
+# store-auth.sh, so a change to .local/lib/store-auth.sh picked none of store_sales, release_state
+# or store_reviews (ar-2508). A source line is an uncommented `. <path>` or `source <path>` that
+# names the lib's basename; the result is _TEST_PICK_EXT, built once per change list. Limits: it
+# reads the working tree, and a lib sourced through a variable or a glob is not seen.
+_test_pick_expand() {
+  [ -n "${_TEST_PICK_EXT_FOR+x}" ] && [ "$_TEST_PICK_EXT_FOR" = "$1" ] && return 0
+  _TEST_PICK_EXT_FOR="$1" _TEST_PICK_EXT="$1"
+  local libs seen="" new f
+  new="$(grep -E '^\.local/lib/[^/]+\.sh$' <<<"$1" | sed 's#.*/##')" || true
+  while [ -n "$new" ]; do
+    seen+="$new"$'\n'
+    local -a args=()
+    while read -r f; do args+=(-e "$f"); done <<<"$new"
+    libs="$(git -C "$_TEST_PICK_REPO" grep -nIF "${args[@]}" 2>/dev/null |
+      awk -F: -v names="$(tr '\n' '|' <<<"$new")" '
+        BEGIN { n = split(names, nm, "|") }
+        { f = $1; t = substr($0, length($1 ) + length($2) + 3)
+          if (t ~ /^[[:space:]]*#/ || t !~ /(^|[[:space:];&|({])(\.|source)[[:space:]]/) next
+          for (i = 1; i <= n; i++) {
+            if (nm[i] == "") continue
+            # Every occurrence, bounded by a non-name character on both sides (the line is padded).
+            u = " " t " "; off = 0
+            while ((j = index(substr(u, off + 1), nm[i])) > 0) {
+              k = off + j
+              if (substr(u, k - 1, 1) !~ /[A-Za-z0-9_.-]/ && substr(u, k + length(nm[i]), 1) !~ /[A-Za-z0-9_.-]/) { print f; next }
+              off = k
+            }
+          } }' | sort -u)" || true
+    _TEST_PICK_EXT="$(printf '%s\n%s\n' "$_TEST_PICK_EXT" "$libs" | grep -v '^$' | sort -u)"
+    # The next round: dependents that are libs themselves and were not looked up yet.
+    new="$(grep -E '^\.local/lib/[^/]+\.sh$' <<<"$libs" | sed 's#.*/##' | { grep -vxFf <(printf '%s' "$seen") || true; })" || true
+  done
+}
+
 # test_picked <changed paths, one a line> <test path, repo-relative>, the test's text on stdin:
 # status 0 when that test is picked. A test is picked when it or a file it loads from beside it
-# changed, or its text with what it loads names a changed file's basename (not as a stub or a
+# changed, or it names a script that sources a changed .local/lib/*.sh (_test_pick_expand), or its text with what it loads names a changed file's basename (not as a stub or a
 # directory) or a directory a changed file sits under as `<dir>/` or `<dir>/*...` (a glob such as
 # `.claude/hooks/stop-post.d/*.sh`), or a script it runs as `$REPO_ROOT/<path>` (or through a
 # helper's variable for one) names a changed path in its code, or a test-side file it runs as
@@ -155,6 +191,12 @@ _test_pick_path_named() {
 
 test_picked() {
   grep -qE '^tests/(helpers|vendor|fixtures/basic)/|^tests/(Makefile|run-bats\.sh)$' <<<"$1" && return 0
+  # The scripts that source a changed lib count as changed files, not as changed directories: the
+  # ancestor-directory check at the end keeps the list as given, or `.local/bin/` in a test would
+  # pick it for every lib change.
+  local given=$1
+  _test_pick_expand "$1"
+  set -- "$_TEST_PICK_EXT" "$2"
   grep -qxF "$2" <<<"$1" && return 0
   local text rel inc new more seen=$'\n'
   text="$(cat)" new=$text
@@ -240,11 +282,11 @@ test_picked() {
   [ -n "$_TEST_PICK_FIXTURES" ] && grep -qE "$_TEST_PICK_FIXTURES" <<<"$text" && return 0
   # Every ancestor directory of a changed path, regex-escaped, as one alternation; a caller
   # loops over every test file with one change list, so it is built once per list.
-  if [ "${_TEST_PICK_FOR-}" != "$1" ]; then
-    _TEST_PICK_FOR="$1"
+  if [ "${_TEST_PICK_FOR-}" != "$given" ]; then
+    _TEST_PICK_FOR="$given"
     _TEST_PICK_DIRS="$(awk -F/ '{p=$1; for (i=2; i<=NF; i++) {if (!(p in s)) {s[p]; e=p
           gsub(/[][\\.*^$+?(){}|]/, "\\\\&", e); o=o (o==""?"":"|") e}; p=p "/" $i}}
-          END {printf "%s", o}' <<<"$1")"
+          END {printf "%s", o}' <<<"$given")"
   fi
   [ -n "$_TEST_PICK_DIRS" ] || return 1
   # A reference starts the path or follows a root: `$VAR/`, `"$VAR"/`, `${VAR}/`, `~/`, `./`,
