@@ -29,14 +29,16 @@ case $q in
       | jq -Rn '{status:"success",data:{resultType:"matrix",result:([inputs | split(" ")] | group_by(.[0])
           | map({metric:{host:.[0][0]},values:(map([(.[1] | tonumber), .[2]]) | sort_by(.[0]))}))}}' ;;
   *github_runner_state*) inst reg ;;
-  *effective_slots*) inst pin ;;
+  # Only the slots pin, lowest across the window, ever skips a host; any other selector reads none.
+  *'min_over_time(ci_governor_effective_slots{source="slots"}['*) inst pin ;;
+  *effective_slots*) inst none ;;
   *'state!="running"'*) inst stop ;;
   *rate_usd_per_hour*) inst gov ;;
 esac
 EOF
   chmod +x "$BIN/curl"
   export FIX PATH="$BIN:$PATH" HOME="$BATS_TEST_TMPDIR"
-  : > "$FIX/gaps"; : > "$FIX/stop"; : > "$FIX/pin"
+  : > "$FIX/gaps"; : > "$FIX/stop"; : > "$FIX/pin"; : > "$FIX/none"
   printf 'mac-mini 0\nms-a2 0\n' > "$FIX/gov"
   printf 'mac-mini 2\nms-a2 3\n' > "$FIX/reg"
   # Now, for every case: the window is END-600 .. END.
