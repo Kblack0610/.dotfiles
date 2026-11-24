@@ -103,7 +103,8 @@ allowed() { assert_success; assert_output ''; }
   local c
   for c in 'gh workflow run phone-release.yml --ref main -f tag=v0.5.2 -f game=dodginballs' \
            'gh workflow run phone-release.yml -f tag=v0.5.2 -f game=dodginballs' \
-           'gh workflow run ios-release.yml -f tag=v0.5.2' 'gh workflow run ios-release.yml --ref=main -f tag=v0.5.2'; do
+           'gh workflow run ios-release.yml -f tag=v0.5.2' 'gh workflow run ios-release.yml --ref=main -f tag=v0.5.2' \
+           'gh workflow run ios-release.yml --ref v0.5.2' 'gh workflow run phone-release.yml --ref v0.5.2 --ref main -f tag=v0.5.2'; do
     run at "$T/game" "$c"
     denied
     assert_output --partial 'refuses'
@@ -111,6 +112,9 @@ allowed() { assert_success; assert_output ''; }
   run at "$T/game" 'gh workflow run phone-release.yml --ref v0.5.2 -f tag=v0.5.2 -f game=dodginballs -f track=none'
   allowed
   run at "$T/game" 'gh workflow run ios-release.yml --ref refs/tags/v0.5.2 -f tag=v0.5.2'
+  allowed
+  # gh takes the last --ref
+  run at "$T/game" 'gh workflow run phone-release.yml --ref main --ref v0.5.2 -f tag=v0.5.2'
   allowed
 }
 
