@@ -26,7 +26,7 @@ This is a stow repo: its tree mirrors `$HOME`, so the table documents the home t
 | `tests/` | The bats suites, their fixtures and helpers, one tier per folder |
 | `.bashrc`, `.zshrc`, `.zprofile`, `.commonrc`, `.tmux.conf`, `.gitconfig`, `.shellcheckrc`, `.ai-rc` | Shell and tool rc files deployed to `$HOME` |
 | `.gitattributes`, `.gitignore`, `.gitmodules`, `.stow-local-ignore` | Git and stow control files |
-| `README.md`, `CHANGELOG.md`, `CLAUDE.md` | Front-door docs; `CLAUDE.md` is excluded from stow |
+| `README.md`, `CHANGELOG.md`, `AGENTS.md`, `CLAUDE.md` | Front-door docs; `AGENTS.md` (the repo rules every CLI reads) and `CLAUDE.md` (imports it) are excluded from stow |
 
 # notes-cockpit
 
