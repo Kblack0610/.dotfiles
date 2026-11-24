@@ -2547,7 +2547,8 @@ EOF
 @test "a close leaves a queued phase alone when its plan phase is [-] and its at: tag is still ahead (ar-2413)" {
   plan_fixture
   "$AQ" add --project game --running --slug base "the work before the phase" >/dev/null
-  # 2026-11-14: start_next read the [-] box (phase 3, deferred to a date) as landed and closed the item ok.
+  # 2026-11-14: a close read the [-] box (phase 3, deferred to a date) as landed and closed the next item ok,
+  # ahead of its at: hold. That path is gone (#2485); this pins that a close never reads plan boxes again.
   # Written by hand: a gated add queues nothing now, so only an old record can hold both an after: and an at:.
   mkdir -p "$AGENT_QUEUE_DIR/queued"
   printf '%s\n' --- 'slug: my-plan-p3' 'project: game' 'mode: oneshot' 'priority: high' 'weight: light' \
@@ -2556,10 +2557,9 @@ EOF
     > "$AGENT_QUEUE_DIR/queued/20261116-105746-my-plan-p3.md"
   run "$AQ" move base done --status ok
   assert_success
-  refute_output --partial 'my-plan-p3: its plan phases'
   [ -e "$AGENT_QUEUE_DIR/queued/20261116-105746-my-plan-p3.md" ]
   [ -z "$(ls "$AGENT_QUEUE_DIR"/done/*/*-my-plan-p3.md 2>/dev/null)" ]
-  ! grep -qs 'start --item my-plan-p3' "$NOTES_FIXTURE/calls.log"
+  assert_not_called 'start --item my-plan-p3'
 }
 
 @test "add --plan queues the phase that can start and files each later one as a board row gated on the row before; --dry-run writes nothing" {
