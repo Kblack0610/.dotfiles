@@ -48,6 +48,20 @@ inc() { printf '{"name":"%s","impact":"%s","components":[%s]}' "$1" "$2" "$3"; }
   assert_line 'Cloudflare: Network issues (major)'
 }
 
+@test "a major Cloudflare incident trips only when it names no component or one we use" {
+  feed www.cloudflarestatus.com "[$(inc 'Magic Transit degraded' major '{"name":"Magic Transit"}')]"
+  run "$REPO_ROOT/.local/bin/provider-status"
+  assert_success
+  assert_output ''
+
+  feed www.cloudflarestatus.com "[$(inc 'Magic Transit degraded' major '{"name":"Magic Transit"}'),$(inc 'Cache errors' major '{"name":"CDN/Cache"}'),$(inc 'Tunnel flaps' minor '{"name":"Tunnel"}')]"
+  run "$REPO_ROOT/.local/bin/provider-status"
+  assert_failure 1
+  assert_line 'Cloudflare: Cache errors (major)'
+  assert_line 'Cloudflare: Tunnel flaps (minor)'
+  refute_line --partial 'Magic Transit'
+}
+
 @test "an unreadable page is UNREACHABLE, never clear, and an incident outranks it" {
   rm "$SANDBOX/feeds/status.claude.com.json"
   echo 'not json' > "$SANDBOX/feeds/www.cloudflarestatus.com.json"

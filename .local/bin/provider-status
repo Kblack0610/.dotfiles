@@ -4,7 +4,9 @@
 # An upstream outage reaches the fleet as its own fault (API Error passes, red CI, offline
 # runners), so the sentinel `provider-status` watch reads each Statuspage feed to name it.
 # Only incidents on components we use count: GitHub's feed is mostly Copilot, Cloudflare's
-# is mostly regional, and Claude's carries connector incidents under "Claude Code". A page
+# is mostly regional or products we do not run (Magic Transit tripped it 2026-11-24, ar-4698),
+# so a major Cloudflare one counts only when it names no component or one we use, and
+# Claude's carries connector incidents under "Claude Code". A page
 # that cannot be read is not evidence that all is well, so it never exits 0. The watch keeps
 # what it prints as the trip's evidence, so a red names its incident.
 #
@@ -17,7 +19,7 @@ set -uo pipefail
 PROVIDERS=(
   'GitHub|www.githubstatus.com|any(.components[]?.name; IN("Git Operations","API Requests","Pull Requests","Actions","Webhooks"))'
   'Claude|status.claude.com|any(.components[]?.name; startswith("Claude API"))'
-  'Cloudflare|www.cloudflarestatus.com|(.impact | IN("major","critical")) or any(.components[]?.name; test("Tunnel|DNS"))'
+  'Cloudflare|www.cloudflarestatus.com|any(.components[]?.name; test("Tunnel|DNS")) or ((.impact | IN("major","critical")) and ((.components // []) == [] or any(.components[].name; IN("CDN/Cache","Cloudflare Sites and Services","Access"))))'
   'Mistral|status.mistral.ai|any(.components[]?.name; IN("Completion API","Embedding API"))'
   'Cerebras|status.cerebras.ai|any(.components[]?.name; . != "Developer Console")'
   'SambaNova|status.sambanova.ai|any(.components[]?.name; . == "SambaCloud API Gateway")'
