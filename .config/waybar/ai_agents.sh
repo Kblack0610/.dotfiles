@@ -6,13 +6,16 @@
 # and has no number on the bar. The robot is the fleet's health: red when every fleet_sessions.prom is
 # older than STATE_LATE_SECS, amber with a STALLED session, no session numbers or a stale file beside a
 # fresh one (a former lease holder's leftover), green otherwise.
-# The hover opens with one sentence (waiting, stuck, working), then any warning, then a section per
-# stage, worst first, filled to the bar channel's line cap (summary_bar.sh); a last line counts what
-# was cut and points at the click (agent-panel, every session).
+# The hover opens with one sentence (waiting, stuck, working), then any warning, then the Machines
+# block (one line per machine: its sessions, a worker's free slots or else its tmux spaces, the count
+# per model, the stuck ones), then a section per stage, worst first, each row ending in its model and
+# a short host tag, filled to the bar channel's line cap (summary_bar.sh); a last line counts what was
+# cut and points at the click (agent-panel, every session).
 # The counts are hub-core's Sessions card figures (`hub cards --json --figures`: headline, working,
 # need_you, stalled, ready_to_close; every host, less the fleet's own), which summary/cards carries to
 # Prometheus, live topics only, as health.sh reads its Health figures; this script counts no session.
-# Rows are `hub bar --json` from the summary/bar topic, which carries the task and reason no label can.
+# Rows and the Machines lines are `hub bar --json` (`.sessions`, `.hosts`) from the summary/bar topic,
+# which carries the task and reason no label can; hub-core counts the Machines figures, not this script.
 # A missing topic is one amber line and the counts still show; counts nobody publishes read ? in amber.
 # fleet_sessions.prom is read for its age alone: the tick that writes the state the card counts.
 # Prometheus unreadable reads ? in amber.
@@ -94,22 +97,22 @@ waiting="$n_wait waiting" stuck="$n_stalled stuck"
 ((figs_ok)) && ((n_stalled > 0)) && stuck="$(paint "$C_YEL" "$stuck")"
 tip="$title $waiting, $stuck, $n_work working."
 if [ -n "$BAR" ]; then
-  hosts="$(jq '[.sessions[].target | if test("@") then split("@")[0] else "" end] | unique | length' <<< "$BAR")"
-  tip+=" As of $(date -d "@$BAR_AT" +%H:%M), $total sessions on $hosts host$( ((hosts == 1)) || printf s)."
+  tip+=" As of $(date -d "@$BAR_AT" +%H:%M), $total sessions."
 else
   tip+=" $total sessions in all."
 fi
 while IFS= read -r l; do why+=("$l"); done < <(bar_detail session)
 for w in "${why[@]}"; do tip+=$'\n'"$w"; done
 
-# The stage sections from summary/bar, in the lines the cap leaves: Waiting, Stuck, Working, each
-# worst first as hub-core sorts them, then a line for what was cut and one for the rest.
+# The Machines block and the stage sections from summary/bar, in the lines the cap leaves: Machines
+# first (a heading and one line per machine), then Waiting, Stuck, Working, each worst first as
+# hub-core sorts them, then a line for what was cut and one for the rest.
 if [ -n "$BAR" ]; then
   tip+="$(jq -r --argjson lines $((BAR_LINES - 1 - ${#why[@]})) --argjson width "$BAR_WIDTH" \
     --arg yel "$C_YEL" --arg sq "'" "$BAR_JQ"'
   [.sessions[] | . + {project: (.project | clean), task: (.task | clean),
       why: ((if .bucket == "WORKING" then .activity else .reason end) // "" | clean),
-      tgt: (.target | clean | sub("^(?<h>[^@-]+)[^@]*@[^/]*/"; "\(.h)/") | sub(":1$"; ""))}] as $s
+      on: (.runs_on // "-" | clean), at: (.host // "" | clean | split("-")[0] // "")}] as $s
   | [{name: "Waiting", b: "NEEDS", c: $yel}, {name: "Stuck", b: "STALLED", c: $yel}, {name: "Working", b: "WORKING", c: ""}] as $defs
   | ($defs | map(. as $sec | . + {rows: [$s[] | select(.bucket == $sec.b)]}) | map(select(.rows | length > 0))) as $secs
   | def counts: group_by(.bucket) | map("\(length) \(.[0].bucket | ascii_downcase)");
@@ -117,7 +120,12 @@ if [ -n "$BAR" ]; then
   | ([$s[] | select((.done | not) and (.bucket | IN($defs[].b) | not))] | counts) as $rest
   | ((if ($done | length) > 0 then ["Ready to close \($done | map(split(" ")[0] | tonumber) | add) (\($done | join(", ")))"] else [] end)
      + (if ($rest | length) > 0 then ["also \($rest | join(", "))"] else [] end) | join("; ")) as $tail
-  | ($lines - 2 * ($secs | length) - (if $tail == "" then 0 else 2 end) - 1) as $room
+  | [.hosts // [] | .[] | {name: (.name | clean), live, stuck,
+      where: (if .max_live != null and .free != null then "\(.free) of \(.max_live) slots free"
+        else .spaces | map("\(.name | clean) \(.n)") | join(", ") end),
+      on: (.models | map("\(.name | clean) \(.n)") | join("  "))}] as $hosts
+  | ($hosts | if length > 0 then 2 + length else 0 end) as $mlines
+  | ($lines - 2 * ($secs | length) - (if $tail == "" then 0 else 2 end) - 1 - $mlines) as $room
   | (reduce $secs[] as $sec ({left: ([$room, 0] | max), out: []};
       ([($sec.rows | length), .left] | min) as $n
       | .out += [$sec + {shown: $sec.rows[:$n], cut: (($sec.rows | length) - $n)}] | .left -= $n)
@@ -125,12 +133,22 @@ if [ -n "$BAR" ]; then
   | [$alloc[].shown[]] as $all
   | ([$all[].project | length] + [0] | max | [., 13] | min) as $pw
   | ([$all[].why | length] + [0] | max | [., 24] | min) as $rw
-  | ([$all[] | select(.bucket != "WORKING") | .tgt | length] + [0] | max | [., 26] | min) as $gw
-  | ([$width - 2 - $pw - 2 - 2 - $rw - 2 - 6 - (if $gw > 0 then 2 + $gw else 0 end), 12] | max) as $tw
+  | ([$all[].on | length] + [0] | max | [., 14] | min) as $mw
+  | ([$all[].at | length] + [0] | max | [., 10] | min) as $hw
+  | ([$width - 2 - $pw - 2 - 2 - $rw - 2 - 6 - 2 - $mw - (if $hw > 0 then 2 + $hw else 0 end), 12] | max) as $tw
   | def row: ("  " + (.project | fit($pw) | pad($pw)) + "  " + (.task | fit($tw) | pad($tw)) + "  "
-      + (.why | fit($rw) | pad($rw)) + "  " + (.idle_min | mins | pad(6))
-      + (if .bucket == "WORKING" then "" else "  " + (.tgt | lfit($gw)) end)) | sub(" +$"; "") | esc;
-    [$alloc[] | "", "<b>" + (if .c == "" then .name else "<span color=\($sq)\(.c)\($sq)>\(.name)</span>" end) + "</b>  \(.rows | length)",
+      + (.why | fit($rw) | pad($rw)) + "  " + (.idle_min | mins | pad(6)) + "  " + (.on | fit($mw) | pad($mw))
+      + "  " + (.at | fit($hw))) | sub(" +$"; "") | esc;
+    def lpad($n): (" " * ([$n - length, 0] | max)) + .;
+    ([$hosts[].name | length] + [0] | max | [., 20] | min) as $nw
+  | ([$hosts[].where | length] + [0] | max | [., 24] | min) as $ww
+  | ([$hosts[] | select(.stuck > 0) | "\(.stuck) stuck" | length + 2] + [0] | max) as $sw
+  | ([$hosts[].on | length] + [0] | max | [., ([$width - 2 - $nw - 2 - 3 - 2 - $ww - 2 - $sw, 12] | max)] | min) as $ow
+  | def mrow: . as $h | ("  " + (.name | fit($nw) | pad($nw)) + "  " + ("\(.live)" | lpad(3)) + "  "
+      + (.where | fit($ww) | pad($ww)) + "  " + (.on | fit($ow) | pad($ow))
+      | if $h.stuck > 0 then esc + "  <span color=\($sq)\($yel)\($sq)>\($h.stuck) stuck</span>" else sub(" +$"; "") | esc end);
+    (if ($hosts | length) > 0 then ["", "<b>Machines</b>", "<tt>" + ($hosts | map(mrow) | join("\n")) + "</tt>"] else [] end)
+    + [$alloc[] | "", "<b>" + (if .c == "" then .name else "<span color=\($sq)\(.c)\($sq)>\(.name)</span>" end) + "</b>  \(.rows | length)",
       (if (.shown | length) > 0 then "<tt>" + (.shown | map(row) | join("\n")) + "</tt>" else empty end)]
     + ([$alloc[] | select(.cut > 0) | "\(.cut) more \(.name | ascii_downcase)"] | if length > 0 then ["+" + join(", ") + ": click for every session (agent-panel)"] else [] end)
     + (if $tail == "" then [] else ["", $tail] end)
