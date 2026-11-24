@@ -491,6 +491,7 @@ cmd_run() {
            ([$prs[] | {p: (.project // $rp[0][.repo]), a: (.project != null)} | select(.p)]
             | group_by(.p) | max_by([(map(select(.a)) | length), length]) | .[0].p) // "_unscoped"
          else $row.project end) as $proj
+      | ($m == null and $row.harness != "opencode" and ($prs | length) == 0) as $no_tr
       | { session_id: $row.session_id,
           project: $proj,
           projects: ([$proj] + [$prs[].project | select(.)] + ($row.item_projects // []) | unique),
@@ -516,11 +517,11 @@ cmd_run() {
           error: ($row.error // null),
           tokens_total: ($row.tokens.total // null),
           duration_s: ($row.duration_s // null),
-          prs: $prs,
-          prs_merged: ([$prs[] | select(.state == "MERGED")] | length),
-          prs_open: ([$prs[] | select(.state == "OPEN")] | length),
-          prs_closed_unmerged: ([$prs[] | select(.state == "CLOSED")] | length),
-          reverted_7d: ([$prs[] | select(.reverted)] | length),
+          prs: (if $no_tr then null else $prs end),
+          prs_merged: (if $no_tr then null else ([$prs[] | select(.state == "MERGED")] | length) end),
+          prs_open: (if $no_tr then null else ([$prs[] | select(.state == "OPEN")] | length) end),
+          prs_closed_unmerged: (if $no_tr then null else ([$prs[] | select(.state == "CLOSED")] | length) end),
+          reverted_7d: (if $no_tr then null else ([$prs[] | select(.reverted)] | length) end),
           rework: ([$prs[] | select(.rework)] as $m
                    | if ($m | length) == 0 then null
                      else {measured: ($m | length),
@@ -656,14 +657,17 @@ lf_push() {
   }
   if [ ! -s "$work/lf.rows" ]; then
     printf 'langfuse: nothing new'
-  elif ! so_langfuse_events < "$work/lf.rows" > "$work/lf.events"; then
+  elif ! so_langfuse_events < "$work/lf.rows" > "$work/lf.events" \
+    || ! so_langfuse_deletes < "$work/lf.rows" > "$work/lf.deletes"; then
     echo "$NAME: langfuse: could not build score events" >&2
     printf 'langfuse: FAILED building events'
-  elif ! lf_ingest "$CURL" "$LF_URL" "$key" "$work/lf.events" "$work"; then
-    printf 'langfuse: FAILED (HTTP %s) after %s score(s), retried next run' "$LF_STATUS" "$LF_SENT"
+  elif { [ -s "$work/lf.events" ] && ! lf_ingest "$CURL" "$LF_URL" "$key" "$work/lf.events" "$work"; } \
+    || { [ -s "$work/lf.deletes" ] && ! lf_delete "$CURL" "$LF_URL" "$key" "$work/lf.deletes" "$work"; }; then
+    printf 'langfuse: FAILED (HTTP %s) after %s score(s), retried next run' "$LF_STATUS" "${LF_SENT:-0}"
   else
     mkdir -p "${mark_file%/*}" && jq -rs 'map(.observed) | max' "$work/lf.rows" > "$mark_file"
-    printf 'langfuse: %s score(s) for %s session(s)' "$LF_SENT" "$(wc -l < "$work/lf.rows")"
+    printf 'langfuse: %s score(s) for %s session(s)%s' "${LF_SENT:-0}" "$(wc -l < "$work/lf.rows")" \
+      "$([ "${LF_DELETED:-0}" -gt 0 ] && printf ', %s deleted' "$LF_DELETED")"
   fi
   lf_push_judge "$all" "$work" "$key" "$since"
 }
@@ -841,7 +845,7 @@ cmd_ended() {
              account: ((.transcript // "" | capture("/\\.(?<a>claude[^/]*)/projects/").a) // $p.account // null),
              cost_usd: (.cost_usd // $p.cost_usd // null),
              updated_epoch: ([.updated, ($p.updated_epoch // 0)] | max),
-             prs_merged: ($p.prs_merged // 0), prs_open: ($p.prs_open // 0), _runner: ($p.project == "_runner")}),
+             prs_merged: $p.prs_merged, prs_open: $p.prs_open, _runner: ($p.project == "_runner")}),
         ($latest[] | select(.updated_epoch >= $since and ($inreg[.session_id] | not))
           | {session_id, project, title, harness, account, cost_usd, updated_epoch, prs_merged, prs_open, _runner: (.project == "_runner")}) ]
     | map(select(._runner | not) | del(._runner)) | sort_by(-.updated_epoch)[]'
@@ -880,7 +884,7 @@ cmd_card() {
       (.time_use // {}) as $t | (.delivery // {}) as $d | (.activity // {}) as $a
       | [ "\(.title | gsub("\n"; " ") | .[0:80]) (\(.session_id[0:8])), \(.project), updated \(.updated[0:16] | sub("T"; " ")): "
           + "\(if .duration_s then .duration_s / 60 | dur else "-" end) wall, friction \(.friction), \(.cost_usd | usd), "
-          + "\(.prs_merged) of \(.prs | length) PRs merged",
+          + (if .prs == null then "PRs unknown" else "\(.prs_merged) of \(.prs | length) PRs merged" end),
           "  Time      " + (if .time_use == null then "-" else
             "work \($t.work_min | dur), gate \($t.gate_min | dur), tests \($t.test_min | dur), jobs \($t.jobs_min | dur), waiting on you \($t.human_min | dur), parked \($t.parked_min | dur)" end),
           "  Stages    " + (if .delivery == null or $d.sampled == false then "never sampled by fleet-bench" else
@@ -889,7 +893,7 @@ cmd_card() {
           "  Cost      \(.cost_usd | usd)"
             + (if .cost_by_model then ": " + (.cost_by_model | ranked(usd)) else "" end)
             + "; account \(.account // "-"); \(.tokens_total | big) tokens",
-          "  Delivery  " + (if (.prs | length) == 0 then "no PR" else
+          "  Delivery  " + (if .prs == null then "unknown (no transcript)" elif (.prs | length) == 0 then "no PR" else
             "\(.prs_merged) merged, \(.prs_open) open, \(.prs_closed_unmerged) closed unmerged, \(.reverted_7d) reverted"
             + " (" + (.prs | map("#\(.number)") | if length > 6 then .[0:6] + ["+\(length - 6) more"] else . end | join(" ")) + ")" end)
             + (if $d.merged then "; +\($d.merged.lines_added) -\($d.merged.lines_deleted) landed; CI \($d.merged.ci_runs) runs, \($d.merged.ci_reds) red before merge" else "" end)

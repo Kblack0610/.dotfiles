@@ -817,3 +817,16 @@ so_langfuse_events() {
                 name: .[0], value: .[1], dataType: "NUMERIC",
                 metadata: { project: $r.project, runner: $r.runner, agent: $r.agent, final: $r.final } } }'
 }
+
+# so_langfuse_deletes - stdin: outcome rows (so_latest lines). stdout: one Langfuse
+# score id per line for PR measures that are null (a pruned transcript with no queue/link PRs),
+# so re-observing a pruned session clears any 0 scores pushed before null was written.
+so_langfuse_deletes() {
+  jq -r '
+    . as $r
+    | [ ["prs_merged", .prs_merged],
+        ["prs_closed_unmerged", .prs_closed_unmerged],
+        ["reverted_7d", .reverted_7d] ][]
+    | select(.[1] == null)
+    | "so:\($r.session_id):\(.[0])"'
+}

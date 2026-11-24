@@ -228,8 +228,9 @@ pub struct Ended {
     pub harness: Option<String>,
     pub cost_usd: Option<f64>,
     pub updated_epoch: Option<i64>,
-    pub prs_merged: i64,
-    pub prs_open: i64,
+    /// None when the transcript was pruned and nothing else names its PRs.
+    pub prs_merged: Option<i64>,
+    pub prs_open: Option<i64>,
 }
 
 /// What the table reads beyond the state document.
@@ -489,9 +490,9 @@ fn outcome_row(e: &Ended) -> SessionRow {
         task: headline(&e.title).0,
         session_id: e.session_id.clone(),
         pr_state: match (e.prs_merged, e.prs_open) {
-            (0, 0) => String::new(),
-            (0, _) => "open".into(),
-            _ => "merged".into(),
+            (Some(m), _) if m > 0 => "merged".into(),
+            (_, Some(o)) if o > 0 => "open".into(),
+            _ => String::new(),
         },
         ended: "ended".into(),
         finished: e.updated_epoch,
@@ -649,7 +650,7 @@ mod tests {
                     title: "a hand session\nmore".into(),
                     cost_usd: Some(2.5),
                     updated_epoch: Some(1_794_000_000),
-                    prs_merged: 1,
+                    prs_merged: Some(1),
                     ..Ended::default()
                 },
             ],
@@ -993,6 +994,23 @@ mod tests {
         assert_eq!(landed.source, Source::Queue);
         assert_eq!(landed.pr.as_deref(), Some("7"));
         assert!(r.iter().all(|x| x.key != "no-session"));
+    }
+
+    #[test]
+    fn an_ended_rows_pr_state_reads_null_counts_as_none_and_an_open_pr_as_open() {
+        let ended = |l: &str| outcome_row(&serde_json::from_str::<Ended>(l).unwrap()).pr_state;
+        assert_eq!(
+            ended(r#"{"session_id":"p","prs_merged":null,"prs_open":null}"#),
+            ""
+        );
+        assert_eq!(
+            ended(r#"{"session_id":"o","prs_merged":0,"prs_open":1}"#),
+            "open"
+        );
+        assert_eq!(
+            ended(r#"{"session_id":"m","prs_merged":2,"prs_open":1}"#),
+            "merged"
+        );
     }
 
     #[test]
