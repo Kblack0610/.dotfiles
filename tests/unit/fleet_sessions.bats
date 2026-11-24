@@ -5825,23 +5825,15 @@ main_change() {
   refute_output --partial 'commits after merged PR'
 }
 
-@test "ahead_measured: a 0 ahead is proof only against a base HEAD shares history with (ar-5151)" {
-  landed_fixture
-  default_base() { echo origin/main; }
-  run ahead_measured - "$SANDBOX/wt" '{}'
-  assert_success
-  # Negative control: an orphan HEAD has no merge base, so ahead_files' 0 measured nothing.
-  git -C "$SANDBOX/wt" checkout -q --orphan lone
-  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m lone
-  run ahead_measured - "$SANDBOX/wt" '{}'
-  assert_failure
-  # A worker's row says it in git.based (wp_git); a row without it is unmeasured.
-  run ahead_measured razer-laptop - '{"git":{"ahead":0,"based":true}}'
-  assert_success
-  run ahead_measured razer-laptop - '{"git":{"ahead":0,"based":false}}'
-  assert_failure
-  run ahead_measured razer-laptop - '{"git":{"ahead":0}}'
-  assert_failure
+@test "merged_inpr: commits past a merged PR are nothing new only at a measured 0 ahead (ar-5151)" {
+  run merged_inpr MERGED 0 1; assert_output 1
+  # Negative controls: a file the base lacks, an ahead 0 with no merge base (ahead_files measured
+  # nothing: an orphan HEAD, or a worker row without git.based), and a PR that is not merged.
+  run merged_inpr MERGED 1 1; assert_output 0
+  run merged_inpr MERGED 0 0; assert_output 0
+  run merged_inpr MERGED 0 ''; assert_output 0
+  run merged_inpr OPEN 0 1; assert_output 0
+  run merged_inpr - 0 1; assert_output 0
 }
 
 @test "end to end: a conflicting PR with red checks is not a conflict nudge; with green checks it is, once" {
