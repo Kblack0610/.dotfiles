@@ -104,8 +104,13 @@ fi
 #                     adds one under that name (tests/Dockerfile).
 # --rm                nothing persists but what is written into the bind mount
 # --shm-size          chromium (the phone render harness) runs out of docker's 64 MB /dev/shm
+# --tmpfs /tmp        test scratch on a real filesystem: on the image's overlayfs, /proc/locks
+#                     names a lock by the upper layer's device and inode, which stat never shows,
+#                     so agent-queue's lock-miss report could not name the holder's file. exec,
+#                     because tests run the scripts they write there (docker's default is noexec).
 run_args=(
   --rm --init
+  --tmpfs /tmp:rw,exec,nosuid,mode=1777,size=4g
   --network "$DOCKER_NETWORK"
   --user "$(id -u):$(id -g)"
   --env "USER=$(id -un)"
