@@ -2115,10 +2115,12 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   echo '99.0 99.0 99.0 1/1 1' > "$DISPATCH_LOADAVG"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r .held_kind <<<"$output")" load
+  # the load the gate judged: the pace reading plus the recent starts, never the reading alone
+  assert_equal "$(jq -r '[.load_at_hold == ((.load + .load_pending) * 100 | round / 100), .load_at_hold > .load_cap] | @tsv' <<<"$output")" $'true\ttrue'
   echo '0.1 0.1 0.1 1/1 1' > "$DISPATCH_LOADAVG"
   stub fleet-assess '[ "$1" = --watch-probe ] && exit 1; [ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
-  assert_equal "$(jq -r '[.held, .held_kind] | @tsv' <<<"$output")" $'fleet-assess says HOLD\tassess'
+  assert_equal "$(jq -r '[.held, .held_kind, .load_at_hold] | @tsv' <<<"$output")" $'fleet-assess says HOLD\tassess\t'
 }
 
 @test "a run from a shell reads the DISPATCH_* tuning from the agentctl conf; the environment wins" {
