@@ -18,7 +18,7 @@ An ask is one question an agent files for the human, stored as `~/.agent/asks/<p
 - You are about to wait on the human, or the Stop check blocked your turn for not filing.
 - An ask you posted is answered, or the human says they answered and nothing moved.
 - An ask is pending with no live session, or the judge answered something it should not have.
-- The human wants the pending backlog gone over: what to close, answer, do themselves or park.
+- The human wants the pending backlog gone over: `answer-pass` (Review the backlog, below).
 - The human wants the open proposals (Home "Proposals", the "suggestions") gone over: what to post, queue or reject.
 
 Not for what is waiting on the human across the fleet (`fleet-bench`), or moving a stalled session (`shepherd`).
@@ -40,17 +40,7 @@ Not for what is waiting on the human across the fleet (`fleet-bench`), or moving
 
 ## Review the backlog
 
-When the human says "go over my asks", turn the pending pile into decisions they can approve in one reply.
-
-1. Read: `fleet-bench asks` (hub Home's order), `agent-ask list --all --open` (pending and parked) and `agent-ask resumable --all` (answered, nothing moved). `agent-ask show <id>` for the context of each.
-2. Check each premise now, not as filed: the PR (`gh pr view`), the held queue item (`agent-queue`), whether the asking session is alive. An ask that events settled is a close. Stale audits, idle asks, asks whose today or tonight is over, asks on a row the human has since answered, asks a human hold decides, and duplicates close on their own: `assume-due` runs `expire`, and the judge's `settled_by` handles the rest (agent-ask README, "Asks that settle themselves"). One still pending is a case the closers missed. Close it here and say which closer should have caught it.
-3. Sort into four tables, each row the id, the pick and one line of evidence:
-   - Close: `agent-ask cancel <id> '<reason>'`.
-   - Answer: the option and why. Say plainly when a pick only follows the asker's recommendation, unread. An answer releases what the ask holds (`agent-ask card <id>` prints `answer releases:`), so check that premise first. An approval, an ask the judge marked human-only, or one that cancels the human's work goes under Only the human with your pick (`agent-ask recommend`): `answer` from a session refuses it.
-   - Only the human: what they run, bare with no leading `!`, and what declining costs.
-   - Park: `agent-ask park <id> --until <date>`, for what waits on something not yet true. A parked ask leaves `--pending` and the boards until that date; with no `--until` the date comes from the held item's priority (`park.conf` PARK_DAYS).
-4. Write it per `comms-standard`. Run nothing until the human says go. Then, per ask, `agent-ask show <id>` first and act only if it is still pending; one the judge, a session or the human settled meanwhile is skipped and named in the report, since cancelling an answered ask fails the items it holds. `answer` resumes the work itself; `ask-resume <id>` is only for rows step 1 found in `resumable`.
-5. Then explain each "only the human" row in plain words: what the thing is for and what happens if they skip it.
+When the human says "go over my asks", follow the `answer-pass` skill in its `--review` mode (read `~/.claude/skills/answer-pass/SKILL.md`; it is human-invoked, so it is not listed). It fetches the facts each pending ask defers on, scores it by `policy.md`, writes the Close, Answer, Park and Only the human tables, and acts on go.
 
 ## Review proposals
 
