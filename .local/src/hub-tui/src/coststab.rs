@@ -19,6 +19,7 @@ use hub_core::display::fmt::usd_est;
 use hub_core::fleet_cost::FleetCost;
 use hub_core::gateway::Consumers;
 use hub_core::layout;
+use hub_core::pace_conf;
 use hub_core::sections::{self, Block};
 use hub_core::spend_history::{self, Bar, DayView, History};
 use hub_core::table::Val;
@@ -481,6 +482,8 @@ impl CostsView {
             at.push((*sec, out.len()));
             match *sec {
                 "burn" => out.extend(burn(&b.burn, p, w)),
+                "allowance" => out.extend(allowance(&b.pace, &b.burn, p, w)),
+                "pace" => out.extend(pace_config(&b.pace, p, w)),
                 "consumers" => {
                     let open = consumers_open(self.consumers);
                     out.extend(consumers(&b.consumers, open, p, w))
@@ -611,6 +614,154 @@ fn consumers_open(set: Option<bool>) -> bool {
 
 /// Cells of the usage bar, brackets apart.
 const BAR_CELLS: usize = 10;
+
+/// The Allowance section: the burn allowance in force, what it lets through, and its schedule.
+/// Read-only here: a window is set and ended in agent-web or with `pace-conf`.
+fn allowance(v: &pace_conf::View, b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let dim = |s: &str| Span::styled(s.to_string(), p.dim());
+    let Some(a) = &v.allowance else {
+        let why = v.error.clone().unwrap_or_else(|| "no pace config".into());
+        return vec![
+            clip_line(
+                Line::from(vec![dim("ALLOWANCE  "), Span::styled(why, p.bad())]),
+                w,
+            ),
+            Line::raw(""),
+        ];
+    };
+    let rate = |n: Option<f64>| n.map_or("-".to_string(), |n| format!("{n:.2}"));
+    let style = match a.level {
+        "bad" => p.bad(),
+        "warn" => p.warn(),
+        _ => p.good(),
+    };
+    let mut out = vec![clip_line(
+        Line::from(vec![
+            dim("ALLOWANCE  "),
+            Span::raw(format!(
+                "{} ({}), default {}",
+                a.in_force, a.source, a.default
+            )),
+        ]),
+        w,
+    )];
+    let spare = a
+        .spare
+        .map_or(String::new(), |n| format!(", {n} spare sessions"));
+    out.push(clip_line(
+        Line::from(vec![
+            dim("LETS THROUGH  "),
+            Span::styled(format!("{}/h now", rate(a.burn)), style),
+            Span::raw(format!(
+                " against {}/h sustainable and {}/h allowed{spare}",
+                rate(a.sustain),
+                rate(a.allowed)
+            )),
+        ]),
+        w,
+    ));
+    let wrote = a.as_of.map_or(
+        format!("{} from claude-acct", hub_core::reading::NO_DATA),
+        |t| clock(t, b.at),
+    );
+    let lag = if a.lagging {
+        format!("claude-acct's figures are for the allowance before this one (wrote them {wrote}); they catch up on its next run")
+    } else if a.as_of.is_some() {
+        format!("claude-acct wrote the figures {wrote}; a change shows there on its next run")
+    } else {
+        wrote
+    };
+    for l in wrap(&[format!("{lag}."), a.note.to_string()], " ", w) {
+        out.push(clip_line(Line::styled(l, p.dim()), w));
+    }
+    let rows = a
+        .rows
+        .iter()
+        .map(|r| {
+            let state = match r.state {
+                "In force" => p.good(),
+                _ => p.dim(),
+            };
+            vec![
+                format!("{}%", r.value).into(),
+                r.from.clone().into(),
+                r.until.clone().into(),
+                r.by.clone().into(),
+                cell(r.state, state),
+            ]
+        })
+        .collect();
+    out.extend(
+        Table {
+            header: vec!["ALLOWANCE", "FROM", "UNTIL", "BY", "STATE"],
+            rows,
+            keep: vec![0, 4, 1, 2, 3],
+            right: vec![0],
+            ..Default::default()
+        }
+        .fit(w, p.head()),
+    );
+    out.push(clip_line(
+        Line::styled(
+            "Set or end a window in agent-web (Costs, Limits) or with `pace-conf`.",
+            p.dim(),
+        ),
+        w,
+    ));
+    out.push(Line::raw(""));
+    out
+}
+
+/// The Pace config section: every pace.conf key, its value and where it came from.
+fn pace_config(v: &pace_conf::View, p: Palette, w: usize) -> Vec<Line<'static>> {
+    if v.keys.is_empty() {
+        let why = v.error.clone().unwrap_or_else(|| "no pace config".into());
+        return vec![
+            clip_line(
+                Line::from(vec![
+                    Span::styled("PACE CONFIG  ".to_string(), p.dim()),
+                    Span::styled(why, p.bad()),
+                ]),
+                w,
+            ),
+            Line::raw(""),
+        ];
+    }
+    let rows = v
+        .keys
+        .iter()
+        .map(|k| {
+            let source = if k.source == "default" {
+                p.dim()
+            } else {
+                Style::new()
+            };
+            vec![
+                cell(k.key.clone(), p.head()),
+                k.value.clone().into(),
+                cell(k.source.clone(), source),
+                k.default.clone().into(),
+                if k.editable { "yes" } else { "" }.to_string().into(),
+            ]
+        })
+        .collect();
+    let mut out = vec![clip_line(
+        Line::styled(format!("PACE CONFIG  {} keys", v.keys.len()), p.dim()),
+        w,
+    )];
+    out.extend(
+        Table {
+            header: vec!["KEY", "VALUE", "SOURCE", "DEFAULT", "SETTABLE"],
+            rows,
+            keep: vec![0, 1, 2, 3, 4],
+            right: vec![1, 3],
+            ..Default::default()
+        }
+        .fit(w, p.head()),
+    );
+    out.push(Line::raw(""));
+    out
+}
 
 /// The Burn section, first on the tab: the headline coloured by `level`, the drip and its hold
 /// badge, when each account is back on pace, and one row per source claude-acct reads. The keys
@@ -2543,6 +2694,108 @@ mod tests {
             .map(crate::fit::plain)
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn paced() -> Costs {
+        use hub_core::pace_conf::{Allowance, KeyRow, Schedule, View};
+        let row = |value: &str, state: &'static str, by: &str, can_end| Schedule {
+            value: value.into(),
+            from: "-".into(),
+            until: "-".into(),
+            by: by.into(),
+            state,
+            start: None,
+            can_end,
+        };
+        let mut c = burning();
+        c.pace = View {
+            error: None,
+            allowance: Some(Allowance {
+                key: "BURN_OVER_PCT",
+                in_force: "400%".into(),
+                source: "window to Tue 22:00".into(),
+                default: "200%".into(),
+                level: "warn",
+                lagging: false,
+                max: Some(1000.0),
+                allowed: Some(5.5),
+                sustain: Some(1.37),
+                burn: Some(4.52),
+                spare: Some(3),
+                as_of: Some(1_000_000 - 120),
+                window_max_days: Some(7),
+                note: "Loosens only committed.",
+                rows: vec![
+                    row("400", "In force", "agent-web", true),
+                    row("200", "Default", "config file", false),
+                ],
+            }),
+            keys: vec![
+                KeyRow {
+                    key: "BURN_OVER_PCT".into(),
+                    value: "400".into(),
+                    source: "window to Tue 22:00".into(),
+                    default: "200".into(),
+                    editable: true,
+                },
+                KeyRow {
+                    key: "RESERVE_PCT".into(),
+                    value: "10".into(),
+                    source: "default".into(),
+                    default: "10".into(),
+                    editable: false,
+                },
+            ],
+        };
+        c
+    }
+
+    #[test]
+    fn limits_shows_the_allowance_with_its_schedule_and_every_pace_key_read_only() {
+        let s = screen_of(&paced(), &on("limits"), 100);
+        assert!(s.lines().all(|l| l.chars().count() <= 100), "{s}");
+        let at = |n: &str| s.find(n).unwrap_or_else(|| panic!("{n} missing\n{s}"));
+        assert!(
+            at("BURN  ") < at("ALLOWANCE  400% (window to Tue 22:00), default 200%")
+                && at("ALLOWANCE  400%") < at("PACE CONFIG  2 keys")
+                && at("PACE CONFIG") < at("CONSUMERS"),
+            "burn, allowance, pace config, consumers\n{s}"
+        );
+        assert!(
+            s.contains(
+                "4.52/h now against 1.37/h sustainable and 5.50/h allowed, 3 spare sessions"
+            ),
+            "{s}"
+        );
+        assert!(s.contains("In force") && s.contains("agent-web"), "{s}");
+        assert!(s.contains("RESERVE_PCT") && s.contains("SETTABLE"), "{s}");
+        assert!(s.contains("Set or end a window in agent-web"), "{s}");
+    }
+
+    #[test]
+    fn a_figure_from_before_the_change_says_so_and_the_verdict_is_the_views_not_the_burns() {
+        let mut c = paced();
+        if let Some(a) = c.pace.allowance.as_mut() {
+            a.lagging = true;
+        }
+        let s = screen_of(&c, &on("limits"), 200);
+        assert!(
+            s.contains("figures are for the allowance before this one"),
+            "{s}"
+        );
+        // the control: in step, the plain line
+        let s = screen_of(&paced(), &on("limits"), 200);
+        assert!(s.contains("claude-acct wrote the figures"), "{s}");
+        assert!(!s.contains("before this one"), "{s}");
+    }
+
+    #[test]
+    fn an_unreadable_pace_config_says_why_in_both_sections() {
+        let mut c = paced();
+        c.pace = hub_core::pace_conf::view(Err("pace-conf: boom".into()), &c.burn);
+        let s = screen_of(&c, &on("limits"), 100);
+        assert!(s.contains("ALLOWANCE  pace-conf: boom"), "{s}");
+        assert!(s.contains("PACE CONFIG  pace-conf: boom"), "{s}");
     }
 
     #[test]

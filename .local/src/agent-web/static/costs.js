@@ -11,7 +11,7 @@
 // open: the folded sections' state; tokWin: the tokens section's window.
 const cost = tblTab({
   tab: "costs", id: "costs", api: "/api/costs", hint: "search, or harness:codex -model:opus project:dotfiles",
-  state: { open: {}, tokWin: "week" }, open: () => cost.open,
+  state: { open: {}, tokWin: "week", paceDraft: { value: "", from: "", until: "" }, paceMsg: "", paceBusy: false }, open: () => cost.open,
   // The view keys past the table's: the cut, the window, the picked day and session, and each
   // section table's own (COST_TABLES).
   params: (p) => {
@@ -25,7 +25,12 @@ const cost = tblTab({
   body: (t) => costsBody(t.data), tail: (t) => costsTail(t.data),
   // A poll repaints the whole tab, unless a section table's search or dropdown is in use: then only
   // that table's rows repaint around it.
-  draw: (html) => { if (!Object.values(COST_TABLES).some((t) => t.repaint())) paint($("costs"), html, cost.open); },
+  draw: (html) => {
+    if (Object.values(COST_TABLES).some((t) => t.repaint())) return;
+    const field = paceFocus();
+    paint($("costs"), html, cost.open);
+    if (field && $(field)) $(field).focus();
+  },
 });
 
 // The section tables of the one Costs read (Spend's day sessions, Consumers, Sections): each keeps
@@ -339,6 +344,76 @@ function costsBurn(d) {
     { k: key, id: "sec-burn", open });
 }
 
+// The Allowance and Pace config sections (hub_core::pace_conf, the TUI's coststab.rs): the burn
+// allowance in force, what it lets through, its schedule (windows set from here or by hand with
+// `pace-conf`), and every pace.conf key with its value and where it came from. The form posts
+// /api/pace/set; a row's End posts /api/pace/end; both answer with pace-conf's own words on a refusal.
+// claude-acct recomputes allowed and spare on its timer, so they lag a change (the as-of line).
+const PACE_STATE = { Upcoming: "muted", Shadowed: "muted", "In force": "ok", Default: "muted" };
+const paceErr = (e) => `<div class="panel down">${esc(e)}</div>`;
+const paceRate = (n) => (n == null ? "-" : n.toFixed(2));
+function paceSchedule(a) {
+  const rows = a.rows.map((r) => {
+    const end = r.can_end ? `<button class="btn" data-pace-end="${esc(a.key)}"${r.start != null ? ` data-from="${r.start}"` : ""}>End</button>` : "";
+    return `<tr><td class="n">${esc(r.value)}%</td><td>${esc(r.from)}</td><td>${esc(r.until)}</td><td>${esc(r.by)}</td>` +
+      `<td class="${PACE_STATE[r.state] || "muted"}">${esc(r.state)}</td><td>${end}</td></tr>`;
+  }).join("");
+  return `<div class="panel scroll"><table class="tbl"><tr><th class="n" data-role="lead">allowance</th><th data-role="glance">from</th><th data-role="glance">until</th><th>by</th><th data-role="glance">state</th><th></th></tr>${rows}</table></div>`;
+}
+function paceForm(a) {
+  // datetime-local is the browser's clock; the hint says so, since the server's may differ.
+  const zone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch { return ""; } })();
+  const f = cost.paceDraft, max = a.max != null ? ` max="${a.max}"` : "";
+  const days = a.window_max_days ? ` A window is at most ${a.window_max_days} days.` : "";
+  return `<div class="panel pace-form"><div class="qadd">` +
+    `<input id="pace-value" type="number" min="0"${max} step="1" placeholder="allowance %" value="${esc(f.value)}">` +
+    `<label class="muted">from <input id="pace-from" type="datetime-local" value="${esc(f.from)}"></label>` +
+    `<label class="muted">until <input id="pace-until" type="datetime-local" value="${esc(f.until)}"></label>` +
+    `<button class="btn primary" id="pace-set"${cost.paceBusy ? " disabled" : ""}>${cost.paceBusy ? "Setting..." : "Set"}</button></div>` +
+    errPanel(cost.paceMsg, { id: "pace-msg" }) +
+    `<div class="muted fold">Times are on this browser's clock${zone ? ` (${esc(zone)})` : ""}. Empty from is now; empty until is a standing override that lasts until it is ended.${days}</div></div>`;
+}
+function costsAllowance(d) {
+  const p = d.pace;
+  if (!p) return "";
+  const a = p.allowance;
+  if (!a) return secHead("allowance", "Allowance") + paceErr(p.error || "no pace config");
+  const lag = a.lagging ? `<span class="warn">claude-acct's figures are for the allowance before this one (wrote them ${when(a.as_of)}); they catch up on its next run</span>`
+    : a.as_of ? esc(`claude-acct wrote the figures ${when(a.as_of)}; a change shows there on its next run`) : esc(`${NO_DATA} from claude-acct`);
+  const over = a.level;
+  const lines = `<div class="panel"><div><span class="muted">ALLOWANCE</span> ${esc(a.in_force)} (${esc(a.source)}), default ${esc(a.default)}</div>` +
+    `<div><span class="muted">LETS THROUGH</span> <span class="burn ${over}">${paceRate(a.burn)}/h now</span> against ${paceRate(a.sustain)}/h sustainable and ${paceRate(a.allowed)}/h allowed` +
+    `${a.spare != null ? `, ${a.spare} spare sessions` : ""}</div><div class="muted fold">${lag}. ${esc(a.note)}</div></div>`;
+  const key = isPhone() ? "allowance-phone" : "allowance", open = isPhone() ? !!cost.open[key] : secOpen(cost.open, key);
+  return fold("csec", secHead("", "Allowance", null, over === "ok" ? null : over), (p.error ? paceErr(p.error) : "") + lines + paceSchedule(a) + paceForm(a),
+    { k: key, id: "sec-allowance", open });
+}
+function costsPace(d) {
+  const p = d.pace;
+  if (!p) return "";
+  if (!p.keys.length) return secHead("pace", "Pace config") + paceErr(p.error || "no pace config");
+  const rows = p.keys.map((k) => `<tr><td>${esc(k.key)}</td><td class="n">${esc(k.value)}</td><td class="${k.source === "default" ? "muted" : ""}">${esc(k.source)}</td>` +
+    `<td class="n muted">${esc(k.default)}</td><td class="muted">${k.editable ? "yes" : ""}</td></tr>`).join("");
+  return fold("csec", secHead("", "Pace config", p.keys.length), `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">key</th><th class="n" data-role="glance">value</th><th data-role="glance">source</th><th class="n">default</th><th>settable</th></tr>${rows}</table></div>` +
+    `<div class="muted fold">pace.conf holds the defaults; <code>pace-conf set KEY VALUE</code> overrides one, and only a key with a maximum can be set.</div>`,
+    { k: "pace", id: "sec-pace", open: secOpen(cost.open, "pace") });
+}
+// The form's typing and its buttons. A poll repaints the tab, so the draft is kept as it is typed
+// and the field in use takes focus back after the repaint (paceFocus).
+// A field in use is put back in focus after the repaint (the draft is kept as it is typed).
+const paceFocus = () => (document.activeElement?.closest?.(".pace-form") ? document.activeElement.id || "" : "");
+const paceEpoch = (minute) => (minute ? `@${Math.floor(new Date(minute).getTime() / 1000)}` : "");
+async function paceAct(path, body) {
+  cost.paceBusy = true; cost.paceMsg = "";
+  if (document.activeElement) document.activeElement.blur();
+  cost.render();
+  try { await post(path, body); cost.paceMsg = ""; if (path.endsWith("/set")) cost.paceDraft = { value: "", from: "", until: "" }; }
+  catch (e) { cost.paceMsg = e.message; }
+  cost.paceBusy = false;
+  cost.render();
+  cost.refresh();
+}
+
 // The tool table of a tokens window. A row with parts (Bash's commands, a tool's file types, the
 // tools Other holds) opens to every one of them under it, indented, and its click again closes it;
 // The open rows are the view key `tok`, their paths comma-joined ("Bash,Other,Other/Edit", an
@@ -435,7 +510,7 @@ function costsSections(d) {
 
 // The page is the layout's inner tabs (hub_core::layout, app.js INNER_TABS): the strip first, then
 // each section inside its inner tab's group in the layout's order (Spend: the tile row, the spend table,
-// the history chart and period rows, the outcomes table; Limits: burn, consumers; Models: tokens,
+// the history chart and period rows, the outcomes table; Limits: burn, allowance, pace config, consumers; Models: tokens,
 // langfuse, sections; Budget).
 function costsHead(d) {
   const asOf = (d.sources || []).map((s) => `<span class="${s.stale ? "warn" : "muted"}">${esc(s.name)} ${s.as_of ? when(s.as_of) : NO_DATA}</span>`).join(" &middot; ");
@@ -455,7 +530,7 @@ function costsTail(d) {
   const note = `<div class="muted fold">${d.unpriced ? `<span class="warn">${esc(d.unpriced)}.</span> ` : ""}Rows: ${esc(d.source)}.${ev} ` +
     `${d.table.shown} of ${d.table.total} rows, ${d.unpriced ? "-" : usd(d.shown_usd)}.</div>`;
   // The Limits and Models sections follow the table, as the layout lists them.
-  return innerWrap("costs", "table", note) + innerWrap("costs", "burn", costsBurn(d)) + innerWrap("costs", "consumers", costsConsumers(d)) +
+  return innerWrap("costs", "table", note) + innerWrap("costs", "burn", costsBurn(d)) + innerWrap("costs", "allowance", costsAllowance(d)) + innerWrap("costs", "pace", costsPace(d)) + innerWrap("costs", "consumers", costsConsumers(d)) +
     innerWrap("costs", "tokens", tokensSection(d)) +
     innerWrap("costs", "langfuse", langfuseSection(d)) + innerWrap("costs", "sections", costsSections(d)) +
     innerWrap("costs", "budget", budgetSection(d));
@@ -468,6 +543,13 @@ function costsView(patch) {
   if ("g" in patch) Object.assign(patch, { gv: "", sid: "" });
   cost.view(patch);
 }
+
+$("costs").addEventListener("input", (e) => {
+  const id = e.target.id;
+  if (id === "pace-value") cost.paceDraft.value = e.target.value;
+  else if (id === "pace-from") cost.paceDraft.from = e.target.value;
+  else if (id === "pace-until") cost.paceDraft.until = e.target.value;
+});
 
 $("costs").addEventListener("click", (e) => {
   const t = e.target;
@@ -483,6 +565,17 @@ $("costs").addEventListener("click", (e) => {
     cost.render();
     return;
   }
+  if (t.id === "pace-set") {
+    const v = (id) => ($(id).value || "").trim();
+    cost.paceDraft = { value: v("pace-value"), from: v("pace-from"), until: v("pace-until") };
+    if (!cost.paceDraft.value) { cost.paceMsg = "Type the allowance in percent."; cost.render(); return; }
+    // The field is a minute on this browser's clock; the server reads in its own zone, so it gets the epoch.
+    const { value, from, until } = cost.paceDraft;
+    paceAct("/api/pace/set", { key: "BURN_OVER_PCT", value, from: paceEpoch(from), until: paceEpoch(until) });
+    return;
+  }
+  const end = t.closest && t.closest("[data-pace-end]");
+  if (end) { paceAct("/api/pace/end", { key: end.dataset.paceEnd, ...(end.dataset.from ? { from: Number(end.dataset.from) } : {}) }); return; }
   const sw = t.closest && t.closest("[data-cv]");
   if (sw) { costsView({ [sw.dataset.cv]: sw.dataset.cval }); return; }
   // Spend: a day column picks the day, a group row opens its sessions, the total row goes back, and

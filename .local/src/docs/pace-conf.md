@@ -26,6 +26,10 @@ The overrides live in `~/.agent/pace-overrides`, machine-local state, one `key|v
 
 `claude-acct status` names the allowance in force on its fleet line ("allowance 400% (default)", "allowance 300% to Tue 22:00"). The textfile publishes `claude_fleet_allowed_points_per_hour` (what the pool sustains times the allowance) and `claude_fleet_spare_sessions` (dispatch's pace target, which dispatch itself reads live from `claude-acct room --json`), so a surface reads them with no second formula. The allowance loosens only room's `committed` check: pace, reserve, five_hour and capped still refuse on their own.
 
+## Where to see and set it
+
+Costs > Limits in agent-web and the hub shows the allowance in force and where it came from, what it lets through (the fleet burn against the sustainable and allowed rates, and the spare sessions), the schedule of windows, and every pace.conf key with its value, source and default (`hub_core::pace_conf`, one read of `pace-conf --json` shared by both). The Burn headline names the allowance beside "sustainable", and the fleet is red when its burn passes the allowed rate (dispatch holds there), amber over sustainable within the allowance; one `level` field from `hub_core::pace_conf` gives both surfaces that verdict. While claude-acct's allowed figure still belongs to the allowance before the last change (more than a point off the percent in force), both surfaces say so (`lagging`). agent-web alone sets and ends: the form on the Allowance section and each row's End button post to `/api/pace/set` and `/api/pace/end`, which check the key against the editable list, the value against its maximum and the times against `@<epoch>` or `YYYY-MM-DDTHH:MM` (the page sends `@<epoch>` from its own clock, so the browser's zone decides, not the server's) before building the `pace-conf` argv, and show the CLI's own words on a refusal. The hub TUI is read-only. The page repaints when `~/.agent/pace-overrides` changes; a window that ends with no write shows as ended within the 120 seconds the Costs read is kept.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
@@ -33,4 +37,5 @@ The overrides live in `~/.agent/pace-overrides`, machine-local state, one `key|v
 | claude-acct exits 1 with "a BURN_OVER_PCT row in ~/.agent/pace-overrides is not key\|value\|from\|until\|by" | a hand edit left a malformed row; it stops readers the way a bad pace.conf line does | `pace-conf end BURN_OVER_PCT` drops it; for a key that is not editable, delete the line |
 | `pace-conf set` says "it overlaps the ... window" | windows of one key never overlap | `pace-conf end <KEY> @<from>` for the old one, then set the new one |
 | The hub's spare or allowed figure lags a set or an end | those two come from the claude-acct textfile, written every 15 minutes; dispatch and room read the value in force on each call | wait for the timer (claude-acct-usage); `pace-conf` and `claude-acct status` show the new value at once |
+| The Allowance section says "pace config: ..." or shows no schedule | `pace-conf --json` failed (a malformed override row, or pace.conf missing); the error is the CLI's own | run `pace-conf` by hand and fix what it names |
 | `pace-conf set` says "is not editable" | the key has no `<KEY>_MAX` line in pace.conf | add the `_MAX` line by PR; the override path then carries the key with no code change |

@@ -56,6 +56,19 @@ const burn = (o = {}) => ({
   pace: { on_pace: false, at_burn: [["main", 1794000600]], idle_all_by: 1794003600, idle_rest_after_reset: false },
   legend: [["pts/h", "points of a weekly limit an hour"], ["GONE", "the share of the week gone"]], ...o,
 });
+// hub_core::pace_conf::View as serialized: the allowance at 400% from a window ending Tue 22:00, a
+// standing 300% under it, and the repo default under both.
+const paceRow = (o) => ({ value: "300", from: "-", until: "-", by: "hand", state: "Shadowed", start: null, can_end: true, ...o });
+const pace = (o = {}) => ({
+  error: null,
+  allowance: {
+    key: "BURN_OVER_PCT", in_force: "400%", source: "window to Tue 22:00", default: "200%", level: "warn", lagging: false, max: 1000, allowed: 5.5, sustain: 1.37, burn: 4.52, spare: 3, as_of: 1793999400, window_max_days: 7,
+    note: "Loosens only committed: pace, reserve, 5-hour and capped still refuse on their own.",
+    rows: [paceRow({ value: "400", from: "Mon 14:02", until: "Tue 22:00", by: "agent-web", state: "In force", start: 1793990000 }), paceRow({ value: "300" }), paceRow({ value: "200", by: "config file", state: "Default", can_end: false })],
+  },
+  keys: [{ key: "BURN_OVER_PCT", value: "400", source: "window to Tue 22:00", default: "200", editable: true }, { key: "PACE_WINDOW_MAX_DAYS", value: "7", source: "default", default: "7", editable: true }, { key: "RESERVE_PCT", value: "10", source: "default", default: "10", editable: false }],
+  ...o,
+});
 const board = (o = {}) => ({
   at: 1794000000, by: "model", window: "7d",
   cuts: ["session", "model", "harness", "tool", "project", "runner", "kind"], windows: ["24h", "7d", "30d"],
@@ -70,7 +83,7 @@ const board = (o = {}) => ({
   ],
   shown_usd: 40,
   table: { q: "", state: "", sort: "cost", dir: "asc", total: 2, shown: 2, states: [], columns: LINE_COLS.map((k) => (k === "cost" ? col(k, "asc", ["", "desc"]) : col(k))), facets: [{ key: "harness", on: null, clear: "", values: [{ value: "codex", n: 1, q: "harness:codex" }] }] },
-  grafana: "https://grafana.example/d/kb-agents-overview", burn: burn(), ...o,
+  grafana: "https://grafana.example/d/kb-agents-overview", burn: burn(), pace: pace(), ...o,
 });
 const show = (d) => { run("st.tab = 'costs'"); Object.assign(cost, { data: d, err: null }); run("cost.render()"); return box.innerHTML; };
 // `tbl` is the section table the target sits in (its block's data-tbl), blank for the main one.
@@ -894,4 +907,108 @@ test("every Costs section is drawn in the layout's order, so each inner tab's gr
   assert.ok(drawn.length >= 6, `most sections drawn: ${drawn}`);
   const at = drawn.map((id) => h.indexOf(`id="sec-${id}"`));
   assert.deepEqual(at, [...at].sort((a, b) => a - b), `DOM order ${drawn} at ${at}`);
+});
+
+test("Allowance draws what is in force, what it lets through, the schedule with its End buttons and the form", () => {
+  run("st.arg = ''; cost.open = {}");
+  const h = show(board());
+  assert.ok(h.indexOf("sec-allowance") > h.indexOf("sec-burn") && h.indexOf("sec-allowance") < h.indexOf("sec-pace"), "burn, allowance, pace config");
+  assert.match(h, /400% \(window to Tue 22:00\), default 200%/);
+  assert.match(h, /<span class="burn warn">4\.52\/h now<\/span> against 1\.37\/h sustainable and 5\.50\/h allowed, 3 spare sessions/, "over sustainable and within the allowance is amber");
+  assert.match(show(board({ pace: pace({ allowance: { ...pace().allowance, level: "bad" } }) })), /<span class="burn bad">4\.52\/h now/, "the view's verdict hues the figure, as the hub's does");
+  assert.match(show(board({ pace: pace({ allowance: { ...pace().allowance, lagging: true } }) })), /<span class="warn">claude-acct's figures are for the allowance before this one/, "a figure from before the change says so");
+  show(board());
+  assert.match(h, /claude-acct wrote the figures .*a change shows there on its next run\. Loosens only committed/);
+  assert.match(h, /Times are on this browser's clock/);
+  assert.match(h, /<td class="n">400%<\/td><td>Mon 14:02<\/td><td>Tue 22:00<\/td><td>agent-web<\/td><td class="ok">In force<\/td><td><button class="btn" data-pace-end="BURN_OVER_PCT" data-from="1793990000">End<\/button>/, "a window ends by its start");
+  assert.match(h, /<td class="n">300%<\/td>.*?<button class="btn" data-pace-end="BURN_OVER_PCT">End<\/button>/, "the standing override ends with no start");
+  assert.match(h, /<td>config file<\/td><td class="muted">Default<\/td><td><\/td>/, "the default has no End");
+  assert.match(h, /id="pace-value" type="number" min="0" max="1000"/);
+  assert.match(h, /A window is at most 7 days\./);
+});
+
+test("Pace config lists every key with its value and source, and marks the ones that can be set", () => {
+  const h = show(board());
+  assert.match(h, /<td>PACE_WINDOW_MAX_DAYS<\/td><td class="n">7<\/td><td class="muted">default<\/td><td class="n muted">7<\/td><td class="muted">yes<\/td>/);
+  assert.match(h, /<td>RESERVE_PCT<\/td><td class="n">10<\/td><td class="muted">default<\/td><td class="n muted">10<\/td><td class="muted"><\/td>/, "a key with no maximum is not settable");
+});
+
+test("an unreadable pace config says why in both sections, and an old server's board draws neither", () => {
+  const h = show(board({ pace: { error: "pace-conf: pace.conf not found", allowance: null, keys: [] } }));
+  assert.match(h, /id="sec-allowance">Allowance<\/h2><div class="panel down">pace-conf: pace\.conf not found/);
+  assert.match(h, /id="sec-pace">Pace config<\/h2><div class="panel down">pace-conf: pace\.conf not found/);
+  const old = show(board({ pace: undefined }));
+  assert.doesNotMatch(old, /sec-allowance|sec-pace/);
+  show(board());
+});
+
+const reply = (url, init, refuse) => {
+  if (refuse) return { ok: false, status: 400, headers: { get: () => "text/plain" }, text: async () => refuse };
+  return url.startsWith("/api/costs") ? { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => board() } : { ok: true, status: 204, headers: { get: () => "" } };
+};
+
+test("Set posts the form's allowance and times for the allowance key, and the draft is cleared", async () => {
+  show(board());
+  const sent = [], f0 = ctx.fetch, get = doc.getElementById;
+  const fields = { "pace-value": { value: "600" }, "pace-from": { value: "2026-11-24T22:00" }, "pace-until": { value: "2026-11-25T06:00" } };
+  doc.getElementById = (id) => fields[id] || get(id);
+  ctx.fetch = async (url, init) => { sent.push([url, init?.body]); return reply(url, init); };
+  fire("click", { type: "click", target: { id: "pace-set", closest: () => null } });
+  await tick(); await tick(); await tick();
+  // the browser's minutes go as the epochs its own clock makes of them, whatever zone the server is in
+  const epoch = (m) => `@${new Date(m).getTime() / 1000}`;
+  assert.deepEqual(sent[0], ["/api/pace/set", JSON.stringify({ key: "BURN_OVER_PCT", value: "600", from: epoch("2026-11-24T22:00"), until: epoch("2026-11-25T06:00") })]);
+  assert.deepEqual({ ...cost.paceDraft }, { value: "", from: "", until: "" });
+  assert.match(sent.at(-1)[0], /^\/api\/costs/, "the page reads the config again");
+  doc.getElementById = get;
+  ctx.fetch = f0;
+});
+
+test("Set with no allowance asks for it and sends nothing", async () => {
+  show(board());
+  const sent = [], f0 = ctx.fetch, get = doc.getElementById;
+  doc.getElementById = (id) => (id.startsWith("pace-") ? { value: "" } : get(id));
+  ctx.fetch = async (url, init) => { sent.push(url); return reply(url, init); };
+  fire("click", { type: "click", target: { id: "pace-set", closest: () => null } });
+  await tick();
+  assert.deepEqual(sent, []);
+  assert.equal(cost.paceMsg, "Type the allowance in percent.");
+  doc.getElementById = get;
+  ctx.fetch = f0;
+  cost.paceMsg = "";
+});
+
+test("End posts the window's start, or no start for the standing override, and a refusal shows pace-conf's words", async () => {
+  show(board());
+  const sent = [], f0 = ctx.fetch;
+  ctx.fetch = async (url, init) => { sent.push([url, init?.body]); return reply(url, init, init?.body?.includes("1793990001") ? "pace-conf: no window starts at 1793990001" : ""); };
+  const end = (dataset) => ({ id: "", closest: (sel) => (sel === "[data-pace-end]" ? { dataset } : null) });
+  fire("click", { type: "click", target: end({ paceEnd: "BURN_OVER_PCT", from: "1793990000" }) });
+  await tick(); await tick(); await tick();
+  assert.deepEqual(sent[0], ["/api/pace/end", JSON.stringify({ key: "BURN_OVER_PCT", from: 1793990000 })]);
+  sent.length = 0;
+  fire("click", { type: "click", target: end({ paceEnd: "BURN_OVER_PCT" }) });
+  await tick(); await tick(); await tick();
+  assert.deepEqual(sent[0], ["/api/pace/end", JSON.stringify({ key: "BURN_OVER_PCT" })]);
+  sent.length = 0;
+  fire("click", { type: "click", target: end({ paceEnd: "BURN_OVER_PCT", from: "1793990001" }) });
+  await tick(); await tick(); await tick();
+  assert.match(cost.paceMsg, /no window starts at 1793990001/);
+  assert.match(box.innerHTML, /id="pace-msg">Could not send to pace \(HTTP 400\): pace-conf: no window starts at 1793990001/);
+  ctx.fetch = f0;
+  cost.paceMsg = "";
+});
+
+test("a poll while the allowance form has focus repaints the tab and gives the field its focus back", () => {
+  show(board());
+  const get = doc.getElementById;
+  let focused = "";
+  doc.getElementById = (id) => (id === "pace-value" ? { focus: () => { focused = id; } } : get(id));
+  box.innerHTML = "stale tab";
+  doc.activeElement = { id: "pace-value", closest: (sel) => (sel === ".pace-form" ? {} : null) };
+  run("cost.render()");
+  assert.match(box.innerHTML, /id="sec-allowance"/, "the tab is not held at its old data while a field has focus");
+  assert.equal(focused, "pace-value");
+  doc.getElementById = get;
+  doc.activeElement = null;
 });
