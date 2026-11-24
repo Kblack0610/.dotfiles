@@ -131,6 +131,12 @@ set -uo pipefail
 # train's wait, not the session's (ar-2160: agent-7 #2415, agent-28 #2417 and agent-31 #2444 on train #2467,
 # 2026-11-13, each read STALLED CI red and was nudged while its PlayMode shard sat queued). Empty: off.
 : "${FLEET_TRAIN_BRANCH=train/}"
+# Directory where train.py land records its lander's pid, driver-<sha1 of the clone's origin URL, 10 chars>-<train
+# number> (unity-core-playground train.py drive, under gate-line.py's CACHE_DIR). A train wait is the session's only
+# while something lands the train (train_landing): its own gate, the train's own CI, or that live lander. Train #3222
+# sat green with no lander 02:21Z-04:47Z on 2026-11-24 while every member's gate-and-land had exited, and agent-8
+# (#3214) read WORKING idle 120m (ar-5089).
+: "${FLEET_TRAIN_DRIVERS:=${GATE_LINE_CACHE:-$HOME/.cache/gate-line}}"
 # Label of a PR waiting its landing turn: unity-core-playground gate-line.py labels each PR queued for the landing
 # slot, and its Checks stays red (the slot refuses it) or green-not-merged until its turn; a claim whose waiter is
 # gone rides a train or loses its label, so the label alone is the wait (ar-1285: 2026-11-10 agent-2 #2149, 4th of 9
@@ -202,7 +208,8 @@ BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 #                 requeued or running in another session, here:<slug> waiting here,
 #                 review:<slug> pr <n|-> parked here in review (<n>, the item's PR, is handed off), or ->
 #                [<landing wait: "train #T", the open landing train the OPEN PR rides (train_of), "the landing queue" (queued_in),
-#                 "slot holder #H", the PR whose slot refused it (slot_refuser), or ->]
+#                 "slot holder #H", the PR whose slot refused it (slot_refuser), "lapsed train #T" when nothing lands
+#                 that train (train_landing), or ->]
 #                [<cron: yes when a recurring cron the session scheduled is still live (wake_facts), or ->]
 #                [<merged PRs: work_blockers' 23rd, - here>]
 #                [<carried: the live items its own running items filed (carried_by), comma-separated, or ->]
@@ -787,7 +794,11 @@ bucket_facts() {
         esac
         return
       fi
-      [ "$wait_on" = - ] || { echo "WORKING PR #$pr waiting on $wait_on"; return; }
+      case "$wait_on" in
+        -) ;;
+        "lapsed "*) echo "STALLED PR #$pr rides ${wait_on#lapsed } with nobody landing it: run its gate again"; return ;;
+        *) echo "WORKING PR #$pr waiting on $wait_on"; return ;;
+      esac
       case "$ci" in
         FAIL)    echo "STALLED PR #$pr CI red" ;;
         NOSTART) echo "WORKING PR #$pr CI never started (its jobs ran no steps), waiting on billing" ;;
@@ -903,6 +914,7 @@ work_blockers() {
       [ "$dirty" -gt 0 ] && b+=("$dirty dirty file(s)$nm")
       [ "$inpr" != 1 ] && b+=("commits after merged PR #$pr") ;;
     OPEN) if handed_off "${20:--}" "$pr" "$dirty" "$inpr" "${17:--}"; then merged=1
+          elif [[ "${21:--}" == "lapsed "* ]]; then b+=("PR #$pr open, ${21#lapsed } has nobody landing it")
           elif [ "${21:--}" != - ]; then b+=("PR #$pr open, waiting on ${21}")
           else b+=("PR #$pr open, CI ${ci:--}"); fi ;;
     CLOSED) [ "$merged" = 1 ] || b+=("PR #$pr closed without merging") ;;
@@ -1463,6 +1475,19 @@ train_of() {
     [[ " $members " == *" $2 "* ]] && git -C "$1" merge-base --is-ancestor "$3" "$head" 2>/dev/null \
       && { echo "$n"; return; }
   done < "$key.trains"
+}
+
+# train_landing <dir> <train number>: true when something lands open train #<n> of <dir>'s repo: its own CI is
+# running in the PR store (its gate), or the pid train.py land recorded for it (FLEET_TRAIN_DRIVERS) is alive. A
+# member's gate-and-land exits 7 by design while another process gates or lands its train, so that wait is no stall;
+# a green train nobody lands is (ar-5089), and the member's gate-and-land lands it (train.py adopt).
+train_landing() {
+  local key url pid
+  key="$(prs_key "$1")" || return 1
+  [ "$(awk -F'\t' -v n="$2" '$2 == n { print $4; exit }' "$key" 2>/dev/null)" != PENDING ] || return 0
+  url="$(git -C "$1" config remote.origin.url 2>/dev/null)" && [ -n "$url" ] || return 1
+  pid="$(cat "$FLEET_TRAIN_DRIVERS/driver-$(printf %s "$url" | sha1sum | cut -c1-10)-$2" 2>/dev/null)" || return 1
+  [[ "$pid" =~ ^[0-9]+$ ]] && [ -d "/proc/$pid" ]
 }
 
 # queued_in <dir> <pr> -> true when PR #<pr> of <dir>'s repo carries FLEET_QUEUE_LABEL in the PR store.
@@ -2782,6 +2807,10 @@ collect() {
     if [ "$g" = 1 ] && [ "$gd" != - ] && [ -n "$FLEET_QUEUE_LABEL" ] && { [ "$ojob" = queue ] || [ -n "$land_wait" ]; }; then
       qdepth="$(queue_depth "$gd")"; qdepth="${qdepth:--}"
     fi
+    # A train wait with no gate of the session's own and nobody landing the train is the session's to restart:
+    # its gate-and-land exited and the train sits (ar-5089). A host row's processes are not readable here.
+    if [[ "$wait_on" == "train #"* ]] && [ "$wait_on" = "$land_wait" ] && [ "$host" = - ] && [ "$ojob" != queue ] \
+       && [ "$qwait" = - ] && ! train_landing "$gd" "${wait_on#train #}"; then wait_on="lapsed $wait_on"; fi
     # The transcript can be 40 MB, so it is read only for an idle session, or the one asking about itself (wake_facts).
     local cron=- wake=-
     if [ "$host" = - ] && { [ "$idle" -ge "$FLEET_IDLE_MIN" ] || [ "$sid" = "${CLOSE_SELF:-}" ]; }; then

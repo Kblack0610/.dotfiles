@@ -5442,6 +5442,63 @@ chained_item() {
   [ "$(jq -r .reason <<<"$output")" = 'PR #2415 CI red' ]
 }
 
+@test "end to end: a train nobody lands is STALLED once the session's own gate exited, WORKING while anything lands it (ar-5089)" {
+  # 2026-11-24 agent-8 #3214 read WORKING idle 120m on train #3222: the train sat green with no lander from 02:21Z
+  # to 04:47Z, and every member's gate-and-land had exited ("run this again").
+  landed_fixture
+  export FLEET_TRAIN_DRIVERS="$SANDBOX/gate-line"
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t) oid tip driver gate
+  oid="$("${g[@]}" rev-parse HEAD)"
+  "${g[@]}" checkout -q -b train/20261124T022100Z-c3d4 origin/main
+  "${g[@]}" merge -q --no-ff -m '#3214' feat/x
+  tip="$("${g[@]}" rev-parse HEAD)"
+  "${g[@]}" checkout -q feat/x
+  # store <train ci>: the member PR (its own Checks red, the slot turned it away) and its open train
+  store() {
+    printf 'train/20261124T022100Z-c3d4\t3222\tOPEN\t%s\t%s\t-\t\tchore(train): land #3214, #3212\n' "$1" "$tip" > "$LEDGER_DIR/prs.tsv"
+    printf 'feat/x\t3214\tOPEN\tFAIL\t%s\t-\n' "$oid" >> "$LEDGER_DIR/prs.tsv"
+  }
+  store PASS
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #3214 rides train #3222 with nobody landing it: run its gate again' ]
+  jq -e '.blockers | index("PR #3214 open, train #3222 has nobody landing it")' <<<"$output" >/dev/null
+
+  # the train's gate runs: its own CI is pending
+  store PENDING
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #3214 waiting on train #3222' ]
+
+  # train.py land's recorded lander is alive; a dead or unreadable one lands nothing
+  store PASS
+  mkdir -p "$FLEET_TRAIN_DRIVERS"
+  driver="$FLEET_TRAIN_DRIVERS/driver-$(printf %s "$SANDBOX/origin.git" | sha1sum | cut -c1-10)-3222"
+  [ "$(git -C "$SANDBOX/wt" config remote.origin.url)" = "$SANDBOX/origin.git" ]
+  echo "$$" > "$driver"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #3214 waiting on train #3222' ]
+  for d in 999999999 junk; do
+    echo "$d" > "$driver"
+    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+    [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  done
+  # another repo's driver for the same train number is not this train's lander
+  rm "$driver"; echo "$$" > "$FLEET_TRAIN_DRIVERS/driver-0000000000-3222"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+
+  # the session's own queue gate still runs (gate-and-land.sh waiting its turn)
+  mkdir -p "$SANDBOX/wt/scripts/test"
+  printf 'sleep 60\n' > "$SANDBOX/wt/scripts/test/gate-and-land.sh"
+  (cd "$SANDBOX/wt" && exec -a x bash scripts/test/gate-and-land.sh) >/dev/null 2>&1 3>&- &
+  gate=$!; LIVE_PIDS="$gate"   # teardown kills it, pass or fail
+  until grep -q gate-and-land.sh "/proc/$gate/cmdline" 2>/dev/null; do :; done
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #3214 waiting on train #3222' ]
+}
+
 @test "end to end: a member PR a landing train closed reads landed through its done item's merged PR (ar-1324)" {
   # 2026-11-10 ucp-342: train #2178 merged #2166's commits and closed it; agent-land recorded #2178 on the
   # item, but the transcript named only #2166, so the session read STALLED closed without merging.
