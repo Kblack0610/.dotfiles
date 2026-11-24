@@ -449,7 +449,9 @@ project_machine_profile() {
 }
 
 # project_work_machine -> exit 0 when this machine's own notes profile is a project-map client's
-# profile: a work machine, which runs no dispatcher and whose work no home runner takes.
+# profile: a work machine, which runs no dispatcher and whose work no home runner takes. When notes
+# cannot say, project_machine_profile warns and answers `personal`, so this answers no: a stale notes
+# on a work machine lifts the guard (rebuild it), and a stale one on the fleet never stops its queue.
 project_work_machine() {
   local map_file; map_file="$(project_map_file)"
   local profiles

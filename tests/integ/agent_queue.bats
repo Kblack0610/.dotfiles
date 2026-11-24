@@ -60,6 +60,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_output --partial "this is a work machine"
   [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ]
   run "$AQ" add --project game --plan "$SANDBOX/plan.md" --check
+  assert_success
   refute_output --partial "this is a work machine"
   run "$AQ" add --running --project game --session hub:game-agent-1 --slug work-own "own work"
   assert_success
