@@ -2262,7 +2262,8 @@ ASK-JUDGE-END'
   check ship_deploy take-recommend engineering_design
 }
 
-@test "judge: the picked act is scored, so a park or a wait is answerable and an outside act stays human-only" {
+@test "judge: a reply scored on the picked act derives a park or a wait answerable and an outside act human-only" {
+  # The derive layer only: the model's reading of policy.md (How to score) is checked live, by re-judging asks.
   # act <type> <criterion> <act>: a reply scoring one decision, the act the picked answer commits to (policy, How to score)
   act() { SCORE_TYPE=$1 score "$2" | jq -c --arg a "$3" '.decisions[0].decision = $a'; }
   check() {
