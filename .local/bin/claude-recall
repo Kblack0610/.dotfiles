@@ -207,8 +207,9 @@ MTIME_SLACK = 60
 
 
 def iso_utc(epoch):
-    """An epoch as a transcript timestamp ("2026-11-24T08:43:24.123456Z"), comparable as a string."""
-    return datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    """An epoch as UTC "2026-11-24T08:43:24": its first 19 characters are all a transcript
+    timestamp is compared on, so a timestamp with or without fractional seconds orders the same."""
+    return datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
 
 def raw_words(term, ignore_case):
@@ -245,14 +246,14 @@ def cmd_search(a):
 
     results = []
     newest_kept = []   # min-heap of the --limit newest hit timestamps
-    stopped = False
+    stopped = ""   # what ended the scan early: "since" or "limit"
     for mtime, path in stamped:
         if not a.all_files:
-            if a.since and iso_utc(mtime)[:10] < a.since:
-                stopped = True
+            if a.since and iso_utc(mtime + MTIME_SLACK)[:10] < a.since:
+                stopped = "since"
                 break
-            if a.limit and len(newest_kept) >= a.limit and iso_utc(mtime + MTIME_SLACK) < newest_kept[0]:
-                stopped = True
+            if a.limit and len(newest_kept) >= a.limit and iso_utc(mtime + MTIME_SLACK) < newest_kept[0][:19]:
+                stopped = "limit"
                 break
         try:
             lines = path.read_text(errors="replace").splitlines()
@@ -307,10 +308,11 @@ def cmd_search(a):
         print()
     shown = len(results)
     note = f"{shown} match(es)"
-    if stopped:
-        note += " (older files not read; use --limit or --all-files to widen)"
-    elif shown < total:
+    if shown < total:
         note += f" (of {total}; use --limit to widen)"
+    if stopped:
+        note += (" (files last written before --since not read; --all-files reads them)" if stopped == "since"
+                 else " (older files not read; a larger --limit or --all-files reads them)")
     if candidates is not None:
         note += "  [rg prefilter]"
     print(c(DIM, note))

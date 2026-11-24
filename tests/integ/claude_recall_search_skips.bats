@@ -43,7 +43,7 @@ setup() {
 @test "--since skips a file last written before it, and keeps every hit on or after" {
   run "$RECALL" search alpha --since 2026-11-20 --limit 0 --context 20
   assert_success
-  assert_output --partial "3 match(es) (older files not read"
+  assert_output --partial "3 match(es) (files last written before --since not read"
   refute_output --partial "marker 18"
   skipped=$(hits)
   run "$RECALL" search alpha --since 2026-11-20 --limit 0 --context 20 --all-files
@@ -71,7 +71,7 @@ setup() {
 @test "without rg, terms the raw-line check cannot pass through still match: framing, quotes, non-ASCII, case" {
   NORG="$BATS_TEST_TMPDIR/norg"   # a PATH with python3 and no rg, so the raw-line check is the only prefilter
   mkdir -p "$NORG"
-  ln -s "$(command -v python3)" "$NORG/python3"
+  ln -s "$(readlink -f "$(command -v python3)")" "$NORG/python3"
   printf '{"type":"assistant","cwd":"/home/u/proj","timestamp":"2026-11-23T12:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"ls x"}}]}}\n' > "$CORPUS/-home-u-proj/tool.jsonl"
   rec quoted 2026-11-23T12:01:00Z '"he said \"hi there\" twice"'
   rec utf 2026-11-23T12:02:00Z '"café au lait"'
