@@ -1773,6 +1773,13 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   STUB_K3S='[{"metric":{"component":"watches"},"value":[0,"2"]},{"metric":{"component":"nodes"},"value":[0,"1"]}]' run "$SH" infra
   assert_success
   assert_output 'infra: k3s nodes red'
+  # any other component holds only when down (2), not on a warn (1)
+  STUB_K3S='[{"metric":{"component":"nodes"},"value":[0,"0"]},{"metric":{"component":"etcd"},"value":[0,"1"]}]' run "$SH" infra
+  assert_failure
+  assert_output ''
+  STUB_K3S='[{"metric":{"component":"nodes"},"value":[0,"1"]},{"metric":{"component":"etcd"},"value":[0,"2"]}]' run "$SH" infra
+  assert_success
+  assert_output 'infra: k3s etcd, nodes red'
   STUB_PROM_FAIL=1 run "$SH" infra
   assert_success
   assert_output 'infra: Prometheus not answering'

@@ -7821,7 +7821,8 @@ gateway_why() {
 
 # floor_gate -- FLOOR_WHY, why a floor of gateway harnesses (trainees, canaries) is shut: gate's
 # answer, else the gateway when the cluster is red or unreadable (load_gateway_down). The gateway is the
-# floor's one cluster dependency: a red k3s domain shut every trainee start on 11-19 while it answered (ar-3699).
+# floor's one cluster dependency: a red k3s domain shut every trainee start on 11-19 while it answered (ar-3699);
+# `fleet-shepherd infra` reads the cluster's nodes and components now, not its watches (ar-1608).
 floor_gate() {
   FLOOR_WHY=$(gate)
   [ -n "$FLOOR_WHY" ] || { load_gateway_down; FLOOR_WHY=$GATEWAY_DOWN; }
@@ -7874,7 +7875,7 @@ gate() {
     mach=$(machine_here_why)
     [ -z "$mach" ] || why+=("$mach")
   fi
-  # The cluster is no gate here: a red k3s domain holds only cluster work (cluster_item, in pick_item)
+  # The cluster is no gate here: a red or unreadable cluster (`fleet-shepherd infra`) holds only cluster work (cluster_item, in pick_item)
   # and starts that spend the gateway (load_gateway_down, in route and floor_gate).
   github=$(fleet-assess --github 2>/dev/null)
   case "$github" in

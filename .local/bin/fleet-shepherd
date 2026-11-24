@@ -612,25 +612,27 @@ blocked_due() {
     "$BLOCKED.prev" "$BLOCKED"
 }
 
-# infra_now -> a line when the cluster itself is red or cannot be read: any k3s component but
-# `watches` above 0 (`nodes` is 1 for a NotReady node). Unreadable counts: Prometheus ran on the
-# node that filled, so silence here is what the outage looked like. The watches component is left
-# out: a watch alone (trivy criticals, a failing cluster-janitor) turned the domain red and held
-# cluster work while every node answered (ar-1608), and a high or urgent trip reaches the shepherd
-# as its own `watch:` line (infra_sample).
+# infra_now -> a line when the cluster itself is red or cannot be read: `nodes` at 1 or more (its
+# rule reports 1 for any NotReady node and never 2), or any other k3s component but `watches` at 2
+# (down; a warn holds nothing, as with the domain rollup this replaced). Unreadable counts:
+# Prometheus ran on the node that filled, so silence here is what the outage looked like.
+# The watches component is left out on purpose: a watch alone (trivy criticals, a failing
+# cluster-janitor) turned the domain red and held cluster work while every node answered (ar-1608).
+# A k3s watch trip holds no cluster work at any severity: its red item owns it (fix-red), and a high
+# or urgent one also reaches the shepherd as its own `watch:` line (infra_sample).
 infra_now() {
-  local json red
+  local json kind red
   # shellcheck source=/dev/null
   . "${PROM_LIB:-$HOME/.local/lib/prom.sh}" 2>/dev/null || { echo "infra: no Prometheus reader"; return 0; }
   json="$(prom_q 'cc:component_status{domain="k3s"}')" || { echo "infra: Prometheus not answering"; return 0; }
-  red="$(jq -r '[.data.result[] | select(.metric.component != "watches")]
-    | if length == 0 then "none"
-      else map(select((.value[1] | tonumber? // 1) > 0) | .metric.component // "unnamed") | unique | join(", ") end' <<< "$json")" \
-    || { echo "infra: Prometheus answer unreadable"; return 0; }
-  case "$red" in
-    '') ;;
+  IFS=$'\t' read -r kind red < <(jq -r '[(.data.result // [])[] | select(.metric.component != "watches")]
+    | if length == 0 then "none\t"
+      else "read\t" + (map((.metric.component // "unnamed") as $c | (.value[1] | tonumber? // 2) as $v
+          | select($v >= (if $c == "nodes" then 1 else 2 end)) | $c) | unique | join(", ")) end' <<< "$json" 2>/dev/null)
+  case "$kind" in
+    read) [ -z "$red" ] || echo "infra: k3s $red red" ;;
     none) echo "infra: no k3s component series" ;;
-    *) echo "infra: k3s $red red" ;;
+    *) echo "infra: Prometheus answer unreadable" ;;
   esac
 }
 

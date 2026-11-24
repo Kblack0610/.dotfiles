@@ -7,7 +7,7 @@ load 'fleet_dispatch/common'
 
 # 2026-11-23: a failing cluster-janitor watch turned the k3s domain red and the machine-wide gate held every
 # start, Unity included (ar-4889). Only a DISPATCH_CLUSTER_PROJECTS item waits on it now.
-@test "a red or unreadable k3s domain holds only cluster work: a home-config item waits and says why, a game item starts" {
+@test "a red or unreadable k3s cluster holds only cluster work: a home-config item waits and says why, a game item starts" {
   project game beta "$SANDBOX/repos/game"
   project home-config beta "$SANDBOX/repos/home-config"
   stub fleet-shepherd 'echo "infra: k3s nodes red"'

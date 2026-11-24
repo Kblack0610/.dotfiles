@@ -609,9 +609,9 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   assert_output --regexp 'started queue item t-two on gotrain \((glm|kimi)\), a trainee run .*, on the trainee floor'
 }
 
-# 2026-11-19: "trainee floor: shut, infra: k3s nodes red" on every pass while the gateway, the trainee's
+# 2026-11-19: "trainee floor: shut, infra: k3s domain red" on every pass while the gateway, the trainee's
 # only cluster dependency, answered (ar-3699).
-@test "trainee floor: a red k3s domain does not shut it while the gateway answers; a down gateway does; a plain start goes on, cluster work waits" {
+@test "trainee floor: a red k3s cluster does not shut it while the gateway answers; a down gateway does; a plain start goes on, cluster work waits" {
   trainee_ready
   srcs go:ok:0.1 codex:reserve:5
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0
