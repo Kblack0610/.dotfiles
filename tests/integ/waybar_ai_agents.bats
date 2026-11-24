@@ -2,11 +2,12 @@
 # ai_agents.sh: the waybar agents chip, the one overview of live agent sessions. The bar is the fleet
 # total and two counts, hub-core's Sessions card figures (~ working amber, a check mark ready green)
 # after a robot coloured by fleet health; what needs you is custom/needs, not this chip. The hover opens
-# with one sentence (waiting, stuck, working, as of when, on how many hosts), then any warning, then
+# with one sentence (waiting, stuck, working, as of when), then any warning, then the Machines block and
 # Waiting, Stuck and Working sections from the summary/bar topic (`hub bar --json`), each row named by
-# project and task, filled to the bar channel's line cap in that order, a line counting what was cut, and
-# one for what is ready to close. What these pin: the bar is three numbers whatever the fleet's size;
-# counts are the published card figures and names come from summary/bar; counts nobody publishes read ?
+# project and task and ending in its model and host, filled to the bar channel's line cap in that order, a
+# line counting what was cut, and one for what is ready to close. What these pin: the bar is three numbers
+# whatever the fleet's size; counts are the published card figures, and names and the Machines figures
+# come from summary/bar; counts nobody publishes read ?
 # and a missing or old topic is one amber line with the counts still shown; a stale textfile is named
 # once (red only when every file is stale); the hover fits the bar channel and comms-lint fails one that
 # does not.
@@ -78,10 +79,12 @@ json.dump({"status": "success", "data": {"result": res}}, open(sys.argv[1], "w")
 PY
 }
 
-# barfeed [age=<s>] [err=<text>] ['BUCKET|project|task|why|idle|target' ...] -> the retained
-# summary/bar message, `hub bar --json` built <age> seconds ago (60 by default), sessions in the order
-# given (hub-core sorts them). why is the reason, or the activity of a WORKING row; an empty idle is
-# null. `barfeed -` leaves no message on the broker.
+# barfeed [age=<s>] [err=<text>] [host=<json>] ['BUCKET|project|task|why|idle|target[|host|runs_on]' ...]
+# -> the retained summary/bar message, `hub bar --json` built <age> seconds ago (60 by default), sessions
+# in the order given (hub-core sorts them), and one `.hosts` entry per host= (a hub-core BarHost; spaces
+# and models default to []). why is the reason, or the activity of a WORKING row; an empty idle is null;
+# a row with no host or runs_on leaves the field out, as a document from before they existed. `barfeed -`
+# leaves no message on the broker.
 barfeed() {
   python3 - "$MQTT_SUB_FIXTURE" "$@" <<'PY'
 import json, os, sys
@@ -90,15 +93,20 @@ if args == ["-"]:
     os.path.exists(path) and os.remove(path)
     sys.exit()
 doc = {"as_of": 100000 - 60, "sessions": [], "ready": {"total": 0, "urgent": 0, "high": 0, "items": []},
-       "candidates": [], "drain": None, "errors": []}
+       "candidates": [], "drain": None, "hosts": [], "errors": []}
 for a in args:
     if a.startswith("age="): doc["as_of"] = 100000 - int(a[4:]); continue
     if a.startswith("err="): doc["errors"].append(a[4:]); continue
-    b, proj, task, why, idle, target = a.split("|")
-    doc["sessions"].append({"bucket": b, "project": proj, "task": task,
+    if a.startswith("host="):
+        doc["hosts"].append({"spaces": [], "models": [], "stuck": 0, "max_live": None, "free": None, **json.loads(a[5:])})
+        continue
+    b, proj, task, why, idle, target, *rest = a.split("|")
+    row = {"bucket": b, "project": proj, "task": task,
         "reason": "" if b == "WORKING" else why, "activity": why if b == "WORKING" else "idle",
         "target": target, "item": "", "pr": None, "pr_state": "", "ci": "",
-        "idle_min": int(idle) if idle else None, "done": b in ("DONE", "LANDED")})
+        "idle_min": int(idle) if idle else None, "done": b in ("DONE", "LANDED")}
+    if rest: row["host"], row["runs_on"] = rest
+    doc["sessions"].append(row)
 json.dump(doc, open(path, "w"))
 PY
 }
@@ -125,30 +133,80 @@ plain() { jq -r .tooltip <<< "$output" | (. "$REPO_ROOT/.config/waybar/pango.sh"
   assert_equal "$(text)" "$(bar "$G" 40 40 0)"
 }
 
-@test "the hover opens with waiting, stuck and working from Prometheus, then a section per stage named by task" {
+@test "the hover opens with waiting, stuck and working from Prometheus, the Machines block, then a section per stage named by task" {
   feed hub/dotfiles:1=WORKING:30:3 hub/dotfiles:2=NEEDS:90:20 lab/uc-agent-1:1=WORKING:10:4 \
     lab/uc-agent-2:1=DONE:400 lab/uc-agent-9:1=STALLED:200:80 razer@lab/dotfiles-agent-4:1=CHAT:300
-  barfeed 'NEEDS|dotfiles|retire the CI governor|1 pending ask(s)|20|hub/dotfiles:2' \
-    'STALLED|playground|chip art pass|PR #3076 CI red|80|razer-laptop@lab/unity-core-playground-agent-12:1' \
-    'WORKING|dotfiles|one export for hub cards|Bash: run bats tests|3|hub/dotfiles:1' \
-    'WORKING|playground|move SaveWrites|testing|4|lab/uc-agent-1:1' \
-    'DONE|playground|chain wiring||400|lab/uc-agent-2:1' 'CHAT|dotfiles|chat||300|razer@lab/dotfiles-agent-4:1'
+  barfeed 'host={"name":"cachyos-x8664-main","live":4,"spaces":[{"name":"lab","n":2},{"name":"hub","n":2}],"models":[{"name":"opus","n":2},{"name":"codex","n":1},{"name":"trainee:qwen","n":1}]}' \
+    'host={"name":"razer-laptop","live":2,"spaces":[{"name":"lab","n":2}],"models":[{"name":"sonnet","n":1},{"name":"-","n":1}],"stuck":1,"max_live":7,"free":5}' \
+    'NEEDS|dotfiles|retire the CI governor|1 pending ask(s)|20|hub/dotfiles:2|cachyos-x8664-main|opus' \
+    'STALLED|playground|chip art pass|PR #3076 CI red|80|razer-laptop@lab/unity-core-playground-agent-12:1|razer-laptop|sonnet' \
+    'WORKING|dotfiles|one export for hub cards|Bash: run bats tests|3|hub/dotfiles:1|cachyos-x8664-main|trainee:qwen' \
+    'WORKING|playground|move SaveWrites|testing|4|lab/uc-agent-1:1|cachyos-x8664-main|codex' \
+    'DONE|playground|chain wiring||400|lab/uc-agent-2:1|cachyos-x8664-main|opus' \
+    'CHAT|dotfiles|chat||300|razer@lab/dotfiles-agent-4:1|razer-laptop|-'
   run "$MODULE"
   assert_success
   run tip
-  assert_output "<b>Sessions:</b> <span color='$Y'>1 waiting</span>, <span color='$Y'>1 stuck</span>, 2 working. As of 03:45, 6 sessions on 3 hosts.
+  assert_output "<b>Sessions:</b> <span color='$Y'>1 waiting</span>, <span color='$Y'>1 stuck</span>, 2 working. As of 03:45, 6 sessions.
+
+<b>Machines</b>
+<tt>  cachyos-x8664-main    4  lab 2, hub 2       opus 2  codex 1  trainee:qwen 1
+  razer-laptop          2  5 of 7 slots free  sonnet 1  - 1                    <span color='$Y'>1 stuck</span></tt>
 
 <b><span color='$Y'>Waiting</span></b>  1
-<tt>  dotfiles    retire the CI governor                            1 pending ask(s)      20m     hub/dotfiles:2</tt>
+<tt>  dotfiles    retire the CI governor                                 1 pending ask(s)      20m     opus          cachyos</tt>
 
 <b><span color='$Y'>Stuck</span></b>  1
-<tt>  playground  chip art pass                                     PR #3076 CI red       1h20m   ...ore-playground-agent-12</tt>
+<tt>  playground  chip art pass                                          PR #3076 CI red       1h20m   sonnet        razer</tt>
 
 <b>Working</b>  2
-<tt>  dotfiles    one export for hub cards                          Bash: run bats tests  3m
-  playground  move SaveWrites                                   testing               4m</tt>
+<tt>  dotfiles    one export for hub cards                               Bash: run bats tests  3m      trainee:qwen  cachyos
+  playground  move SaveWrites                                        testing               4m      codex         cachyos</tt>
 
 Ready to close 1 (1 done); also 1 chat"
+}
+
+# Negative control for the slots: hub-core leaves a worker's max_live and free null when the dispatch
+# snapshot is stale and names it in errors; the line then shows the worker's spaces, never old slots.
+@test "a stale hosts snapshot drops the worker's slots for its spaces, and the hover names the snapshot" {
+  feed razer@lab/dotfiles-agent-4:1=WORKING:30:3
+  barfeed 'err=dispatch hosts: the snapshot was written 2h ago, so the workers'"'"' slots are not shown' \
+    'host={"name":"razer-laptop","live":1,"spaces":[{"name":"lab","n":1}],"models":[{"name":"opus","n":1}]}' \
+    'WORKING|dotfiles|a task|busy|3|razer-laptop@lab/dotfiles-agent-4:1|razer-laptop|opus'
+  run "$MODULE"
+  run plain
+  assert_line --index 1 --partial "Session detail incomplete: dispatch hosts: the snapshot was written 2h ago"
+  assert_line "  razer-laptop    1  lab 1  opus 1"
+  refute_output --partial "slots free"
+}
+
+# hub-core sends runs_on "-" before a session's first turn; a document from before the field existed
+# has none. Neither is ever filled in with a guess.
+@test "a session with no model yet shows -, and a row with no host or model has no host tag" {
+  feed hub/a:1=WORKING:30:3 hub/b:1=WORKING:30:4
+  barfeed 'WORKING|dotfiles|fresh session|busy|3|hub/a:1|cachyos-x8664-main|-' 'WORKING|dotfiles|old document|busy|4|hub/b:1'
+  run "$MODULE"
+  run plain
+  assert_line --regexp '^  dotfiles  fresh session +busy  3m      -  cachyos$'
+  assert_line --regexp '^  dotfiles  old document +busy  4m      -$'
+  refute_output --partial "Machines"
+}
+
+# The Machines lines are in the bar channel's cap: with a heading and two machines, four fewer stage rows.
+@test "the Machines block counts against the line cap, so the hover still fits it" {
+  printf '[channel.bar]\nmax_lines = 14\nmax_line = 120\n' > "$BATS_TEST_TMPDIR/channels.toml"
+  local rows=() args=() i
+  for i in $(seq 1 20); do rows+=("WORKING|dotfiles|task w$i|busy|$i|hub/w$i:1|cachyos-x8664-main|opus"); args+=("hub/w$i:1=WORKING:5"); done
+  feed "${args[@]}"
+  barfeed 'host={"name":"cachyos-x8664-main","live":19,"models":[{"name":"opus","n":19}]}' \
+    'host={"name":"razer-laptop","live":1,"models":[{"name":"opus","n":1}],"max_live":7,"free":6}' "${rows[@]}"
+  COMMS_CHANNELS="$BATS_TEST_TMPDIR/channels.toml" run "$MODULE"
+  run tip
+  assert_equal "$(printf '%s\n' "$output" | wc -l)" 14
+  assert_output --partial "6 of 7 slots free"
+  assert_output --partial "task w6 "
+  refute_output --partial "task w7 "
+  assert_line "+14 more working: click for every session (agent-panel)"
 }
 
 @test "rows fill to the bar channel's line cap, waiting and stuck first, and a last line counts what was cut" {
@@ -168,6 +226,21 @@ Ready to close 1 (1 done); also 1 chat"
   assert_output --partial "task w1 "
   refute_output --partial "task w2 "
   assert_line "+19 more working: click for every session (agent-panel)"
+}
+
+# Review finding: more machines than the cap leaves are cut too, and the cut line counts them.
+@test "more machines than the cap leaves are cut, and the cut line counts them beside the stage rows" {
+  printf '[channel.bar]\nmax_lines = 8\nmax_line = 120\n' > "$BATS_TEST_TMPDIR/channels.toml"
+  local hosts=() i
+  for i in $(seq 1 9); do hosts+=("host={\"name\":\"m$i\",\"live\":1,\"models\":[{\"name\":\"opus\",\"n\":1}]}"); done
+  feed hub/w1:1=WORKING:5
+  barfeed "${hosts[@]}" 'WORKING|dotfiles|work 1|busy|1|hub/w1:1|m1|opus'
+  COMMS_CHANNELS="$BATS_TEST_TMPDIR/channels.toml" run "$MODULE"
+  run tip
+  assert_equal "$(printf '%s\n' "$output" | wc -l)" 8
+  assert_output --partial "  m2    1    opus 1"
+  refute_output --partial "  m3 "
+  assert_line "+7 more machines, 1 more working: click for every session (agent-panel)"
 }
 
 @test "a stage cut to no rows keeps its heading and count, and the cut line names each stage" {
