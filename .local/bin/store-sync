@@ -197,8 +197,9 @@ apply_merge_drivers() {
 # lines, and the text merge stuck that store 35 minutes (2026-11-21, ar-3439). A key both sides set
 # differently takes the value of the side whose `requeued:` this merge changed, when only one did: a
 # requeue ends the run the other side's header edit was about (the fleet home set `routed:` on a
-# running ar-3010 while razer-laptop's requeue cleared it, 2026-11-23, ar-3439). Otherwise it still
-# conflicts. That conflict, a repeated key, a line that is not `key: value`, or a side with no `---`
+# running ar-3010 while razer-laptop's requeue cleared it, 2026-11-23, ar-3439). With no requeue, a
+# side whose `status:` this merge changed closed the item and wins the same way (ar-4219, ar-3439).
+# Otherwise it still conflicts. That conflict, a repeated key, a line that is not `key: value`, or a side with no `---`
 # (an empty base, both sides adding the item, is fine) keeps this side whole and the other as a lost
 # file (keep_ours). `requeued:` is written only by agent-queue's move back to queued after a run.
 cmd_merge_item() {
@@ -227,6 +228,10 @@ cmd_merge_item() {
                 rb = (1, "requeued") in v ? v[1, "requeued"] : SUBSEP
                 ro = (2, "requeued") in v && v[2, "requeued"] != rb
                 rt = (3, "requeued") in v && v[3, "requeued"] != rb
+                if (!ro && !rt) {
+                  sb = (1, "status") in v ? v[1, "status"] : SUBSEP
+                  ro = (2, "status") in v && v[2, "status"] != sb
+                  rt = (3, "status") in v && v[3, "status"] != sb }
                 for (j = 1; j <= n; j++) {
                   k = order[j]; b = (1, k) in v ? v[1, k] : SUBSEP
                   o = (2, k) in v ? v[2, k] : SUBSEP; t = (3, k) in v ? v[3, k] : SUBSEP
