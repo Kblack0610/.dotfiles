@@ -396,8 +396,10 @@ gap_title() { local r="${1#\#*: }"; title_of "${r%%, check: *}"; }
 
 # retag_rollup <rid> <its priority, - for none> <the gate's: high, or empty> <1 when retitled>: a gate
 # that blocks makes the rollup #high over #low, #normal or none; one that does not leaves its priority
-# to the triager's rubric, save the #high a lower stage's gate set, which a retitle clears for the
-# triager to judge again. #urgent stays, and so does a tag on a row the open sprint holds (stages.md,
+# to the triager's rubric, save a #high on a rollup it retitles to a stage that does not block yet: the
+# lower stage's gate most likely set it, and since no tag says who did, the retitle clears it for the
+# triager to judge again. Clearing #high only then, never on every pass, keeps a #high the triager
+# judged from flapping. #urgent stays, and so does a tag on a row the open sprint holds (stages.md,
 # Frozen rows): the cut carries it. Returns 1 only when the tag failed otherwise.
 retag_rollup() {
   local rid="$1" rprio="$2" prio="$3" retitled="$4" terr args

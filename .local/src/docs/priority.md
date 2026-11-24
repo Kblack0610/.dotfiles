@@ -63,10 +63,10 @@ DRAFT. The rows are proposed from the watches and routes that exist today, keyed
 | save | player data lost or corrupted on update | a save migration blocking a release | none |
 | netcode | the dedicated server down during a live playtest | a sync bug blocking a playtest date | none |
 | gameplay, ui, input, audio, look, onboarding, perf | never | blocks a focus-project epic or a playtest date | everything else |
-| dispatch | nothing starts on any lane, or a landing merges a red head or loses work | while agent-runtime's `#prio` is high or focus: a fault that happens now or recurs and starts the wrong item, strands an item, a worktree or a PR, or holds a landing | a runner conf tidy-up; a queue label nobody acts on |
-| sessions | every session stuck, or a session holding a prod fix stuck | while agent-runtime's `#prio` is high or focus: a session read in the wrong state, a false nudge or page, or an ask or answer lost | a session closing its own housekeeping; wind-down wording |
-| views | never | while agent-runtime's `#prio` is high or focus: the hub, agent-web, waybar or the wall shows a wrong state or number the human acts on | layout, colour or wording |
-| notes | a board, note or memory write lost or corrupted | while agent-runtime's `#prio` is high or focus: a row or tag dropped or filed to the wrong board, or a count the board, pace or forecast reads that is wrong | stale skill or rule wording; a missing doctor check |
+| dispatch | nothing starts on any lane, or a landing merges a red head or loses work | a fault that happens now or recurs and starts the wrong item, strands an item, a worktree or a PR, or holds a landing | a runner conf tidy-up; a queue label nobody acts on |
+| sessions | every session stuck (one stuck session is the sessions plane row below) | a session read in the wrong state, a false nudge or page, or an ask or answer lost | wind-down wording |
+| views | never | the hub, agent-web, waybar or the wall shows a wrong state or number the human acts on | layout, colour or wording |
+| notes | a board, note or memory write lost or corrupted | a row or tag dropped or filed to the wrong board, or a count the board, pace or forecast reads that is wrong | stale skill or rule wording; a missing doctor check |
 
 Fleet planes, by the same four words:
 
@@ -77,7 +77,7 @@ Fleet planes, by the same four words:
 | pages | prod down, overnight tests red, the workstation at 3x its cores over 5 minutes (`fleet-thermal`) | only the human can unblock it and waiting costs within the hour | recoveries and all-clears |
 | asks | a human-stop ask on prod, money, data or secrets | a fleet-level rule change | a self-level choice the judge answers |
 
-The dispatch, sessions, views and notes rows are agent-runtime's own systems (its `systems` in `project-map.json`); their high cell holds while that project's `#prio` is high or focus (the human's ask 2026-11-24: runtime stability first; it ends when the human lowers that `#prio`). Its telemetry, ci and tests take the base rows above, and the same high cell covers a fault in the runtime's own telemetry or CI gates.
+The dispatch, sessions, views and notes rows are agent-runtime's own systems (its `systems` in `project-map.json`). Their high cell, and a fault in the runtime's own telemetry or CI gates that recurs or gives a wrong state, a false page or lost work, hold only while that project's `#prio` is high or focus (the human's ask 2026-11-24: runtime stability first; it ends when the human lowers that `#prio`); otherwise such a fault is normal. Its telemetry, ci and tests otherwise take the base rows above.
 
 A fault or a feature with a named benefit is normal at least, under a "to standard" epic too; only the faults these tables list as low stay low (on 2026-11-24, 579 fix and 609 feat rows sat at low, filed so by their sessions). `project-stage-check --file` files its gap rows untagged for that rubric to judge, no longer `#low` by origin.
 
