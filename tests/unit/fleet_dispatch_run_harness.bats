@@ -611,7 +611,7 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
 
 # 2026-11-19: "trainee floor: shut, infra: k3s domain red" on every pass while the gateway, the trainee's
 # only cluster dependency, answered (ar-3699).
-@test "trainee floor: a red k3s domain does not shut it while the gateway answers; a down gateway does; a plain start still waits on k3s" {
+@test "trainee floor: a red k3s domain does not shut it while the gateway answers; a down gateway does; a plain start goes on, cluster work waits" {
   trainee_ready
   srcs go:ok:0.1 codex:reserve:5
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0
@@ -633,12 +633,15 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   assert_called 'curl -sS -f -m 10 https://gw.test/health/readiness'
   refute_output --partial 'the batch review (claude) waits'
   assert_output --regexp 'started queue item t-one on gotrain \((glm|kimi)\), a trainee run .*, on the trainee floor'
-  # A plain claude item with room still waits on the red cluster.
+  # A plain game item is judged on its route, not the red cluster; a home-config one, cluster work, waits on it (ar-4889).
   agent-queue move t-one done --status ok >/dev/null
   fleet_state 0
-  agent-queue add --project game --slug p --priority high "plain p" >/dev/null
+  project home-config beta "$SANDBOX/repos/home-config"
+  agent-queue add --project home-config --slug hc --priority high "fix the cluster janitor" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'infra: k3s domain red'
-  refute_output --partial 'started queue item p'
-  [ -n "$(qitem queued p)" ] || fail "the plain item left the queue on a red cluster"
+  assert_output --partial 'queue item fix-menu has no source with room it may run on'
+  assert_output --partial 'cluster: hc (infra: k3s domain red, and this is cluster work (DISPATCH_CLUSTER_PROJECTS))'
+  refute_output --partial 'fix-menu (infra: k3s domain red'
+  refute_output --partial 'started queue item hc'
+  [ -n "$(qitem queued hc)" ] || fail "the home-config item left the queue on a red cluster"
 }

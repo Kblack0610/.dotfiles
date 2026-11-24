@@ -5750,7 +5750,10 @@ mod inbox_tests {
         let s = fs::read_to_string(&sheet).unwrap();
         fs::write(
             &sheet,
-            s.replace("Version: v0.1.0", "Version: v0.1.0 #prio/focus"),
+            s.replace(
+                "Version: v0.1.0",
+                "Version: v0.1.0 #prio/focus\nFocus until: 2099-01-01 00:00 +0000",
+            ),
         )
         .unwrap();
         let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 18).unwrap();
@@ -5829,7 +5832,10 @@ mod inbox_tests {
         let s = fs::read_to_string(v.sheet()).unwrap();
         fs::write(
             v.sheet(),
-            s.replace("Version: v0.1.0", "Version: v0.1.0 #prio/focus"),
+            s.replace(
+                "Version: v0.1.0",
+                "Version: v0.1.0 #prio/focus\nFocus until: 2099-01-01 00:00 +0000",
+            ),
         )
         .unwrap();
         let (open, next) = ((0, 1, 0), (0, 1, 1));

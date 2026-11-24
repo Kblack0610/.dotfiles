@@ -45,7 +45,7 @@ manifest CRUD; the running service does the watching.
 - Runtime log: `~/.local/state/agentctl/sentinel/activity.log`; per-watch state in
   `~/.local/state/watch-companion/<name>.state`.
 - Runbook (schema, probe types, cost model): `~/.config/agentctl/SENTINEL.md`.
-- Copy-ready templates: `~/.config/agentctl/sentinel-watches.examples/`.
+- Templates: copy the nearest live manifest of the same probe kind in `~/.agent/watches/`; `~/.config/agentctl/sentinel-watches.examples/` keeps only the bake-watch (`pmp-bake.yaml`).
 - One signal per failure: a failed `agentctl@<runner>.service` is reported by `fleet-liveness` (the runner's FAILED outcome), so `systemd-user-failed` skips `agentctl@*` (and desktop `app-*` and transient `run-*` units) and watches every other user unit (`user-units-failed --exclude`).
 
 ## Hard constraints (read first, non-negotiable)
@@ -207,6 +207,6 @@ registered it. Sentinel remains the single notification voice for whatever it's 
   (`~/.dotfiles-private/.local/bin/`); the copy under `~/.dotfiles/.local/bin/` is the deployed
   mirror and is gitignored there. Its parser `sentinel-manifest` is public-repo-owned.
 - `~/.config/agentctl/SENTINEL.md` - runbook: manifest schema, probe types, cost model
-- `~/.config/agentctl/sentinel-watches.examples/` - copy-ready manifests
+- `~/.config/agentctl/sentinel-watches.examples/pmp-bake.yaml` - the bake-watch template; every other kind is copied from a live manifest
 - `agentctl` (`~/.config/agentctl/README.md`) - the service supervisor
 - `release-coordinator` - registers bake-window watches; its hard constraints are inherited here
