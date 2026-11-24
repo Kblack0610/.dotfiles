@@ -181,5 +181,6 @@ else line="$entries quarantine entries over $(n_rows "$rows") end soon (next $ne
 [ "$failed" = 0 ] || line+=", $failed could not be noted"
 [ "$undated" = 0 ] || line+="; $(n_rows "$undated") with an end that is not a date"
 echo "$line"
-[ "$closed$failed$undated$pending" = 0000 ] && [ "$rows" -gt 0 ] && exit 0
+# hub's own exit too: an undated end it reported with no stderr line is still not a clear
+[ "$rc$closed$failed$undated$pending" = 00000 ] && exit 0
 exit 1

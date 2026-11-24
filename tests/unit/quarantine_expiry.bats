@@ -18,6 +18,7 @@ setup() {
 [ "\$*" = "quarantine soon" ] || exit 2
 cat "$SANDBOX/soon.tsv" 2>/dev/null || { echo "hub quarantine soon: quarantine.json: expected value" >&2; exit 2; }
 [ ! -s "$SANDBOX/undated" ] || { cat "$SANDBOX/undated" >&2; exit 1; }
+[ ! -e "$SANDBOX/rc1" ] || exit 1
 HUB
   cat > "$SANDBOX/bin/notes" <<NOTES
 #!/usr/bin/env bash
@@ -145,6 +146,11 @@ soon() { printf '%s\n' "$@" > "$SANDBOX/soon.tsv"; }
   assert_line --index 0 'ucp-1: 3 entries end 2026-11-24 (3d) in Org/play; would note'
   assert_line --index -1 --partial ': 0 noted'
   [ ! -e "$SANDBOX/notes.log" ]
+  # a row already noted needs no note, so a dry run over it alone reads OK
+  soon $'Org/play\tucp-2\t2\t2026-11-24\t3'
+  run "$REPO_ROOT/.local/bin/quarantine-expiry" --dry-run
+  assert_success
+  assert_line --index 0 'ucp-2: 2 entries end 2026-11-24 (3d) in Org/play; noted'
 }
 
 @test "a note on a row that took many dups names the first few and counts the rest" {
@@ -208,4 +214,12 @@ soon() { printf '%s\n' "$@" > "$SANDBOX/soon.tsv"; }
   run "$REPO_ROOT/.local/bin/quarantine-expiry"
   assert_failure 1
   assert_line --index -1 'No quarantine entry with a date ends soon; 1 owner row with an end that is not a date'
+}
+
+@test "hub's exit 1 with no stderr line still trips over rows that are all noted" {
+  soon $'Org/play\tucp-2\t2\t2026-11-24\t3'
+  : > "$SANDBOX/rc1"
+  run "$REPO_ROOT/.local/bin/quarantine-expiry"
+  assert_failure 1
+  assert_line --index -1 '2 quarantine entries over 1 owner row end soon (next 2026-11-24, 3d): 1 noted'
 }
