@@ -568,7 +568,7 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   assert_equal "$(agent-queue show fix-crash --json | jq -r '.merged // "none"')" none
 }
 
-@test "reap: a row an active item names, and a human-lane row, are never orphans" {
+@test "reap: a row an active item names, and a human-lane row the human started by hand, are never orphans" {
   project game beta "$SANDBOX/repos/game"
   row game agent gm-2 '- [/] linked <!-- id:gm-2 -->'
   row game human 'mine' '- [/] the human is on it'
@@ -579,6 +579,94 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   assert_success
   grep -qF -- '- [/] linked' "$NOTES_FIXTURE/rows.game.agent" || fail "a linked row was un-started"
   grep -qF -- '- [/] the human is on it' "$NOTES_FIXTURE/rows.game.human" || fail "a human row was un-started"
+  [ ! -s "$FLEET_DISPATCH_DIR/orphans.tsv" ] || fail "tracked: $(cat "$FLEET_DISPATCH_DIR/orphans.tsv")"
+}
+
+# NEGATIVE CONTROL: before ar-1260 the sweep read the agent lane only, so this human-sheet row, started by
+# its item (run:) and left with none, sat in Next up for good (5 were un-started by hand on 2026-11-09).
+@test "reap: a human-sheet row the fleet started is un-started once it stays orphaned DISPATCH_ORPHAN_HOURS (ar-1260)" {
+  project game beta "$SANDBOX/repos/game"
+  row game human gm-7 '- [/] fix y <!-- id:gm-7 run:1109 -->'
+  run unstart_orphans
+  assert_success
+  grep -qF -- '- [/] fix y' "$NOTES_FIXTURE/rows.game.human" || fail "un-started on first sight"
+  grep -qP '^bnb\tgame\tgm-7\t[0-9]+\thuman$' "$FLEET_DISPATCH_DIR/orphans.tsv" || fail "first sighting not recorded: $(cat "$FLEET_DISPATCH_DIR/orphans.tsv")"
+  # An agent-lane sighting of the same key is another row's: it does not age this one.
+  : > "$FLEET_DISPATCH_DIR/orphans.tsv"; orphan_seen game gm-7 73
+  run unstart_orphans
+  refute_output --partial 'un-started'
+  grep -qP '^bnb\tgame\tgm-7\t[0-9]+\thuman$' "$FLEET_DISPATCH_DIR/orphans.tsv" || fail "human sighting lost"
+  printf 'bnb\tgame\tgm-7\t%s\thuman\n' "$(( $(date +%s) - 73 * 3600 ))" > "$FLEET_DISPATCH_DIR/orphans.tsv"
+  run unstart_orphans
+  assert_success
+  assert_output --partial 'un-started game: gm-7'
+  grep -qF -- '- [ ] fix y' "$NOTES_FIXTURE/rows.game.human" || fail "row still started"
+  grep -qxF 'notes --profile bnb ptask game unstart gm-7' "$NOTES_FIXTURE/calls.log" || fail "not un-started on the human sheet: $(cat "$NOTES_FIXTURE/calls.log")"
+  assert_equal "$(jq -r 'select(.key == "gm-7") | .lane + " " + .verdict + ": " + .reason' "$FLEET_DISPATCH_DIR/verdicts.jsonl")" 'human failed: started 72h with no queue item'
+  [ ! -s "$FLEET_DISPATCH_DIR/orphans.tsv" ] || fail "un-started row still tracked: $(cat "$FLEET_DISPATCH_DIR/orphans.tsv")"
+}
+
+@test "reap: a human-sheet row with no run: is the human's even when an ended item named it, and a live item holds a run: row (ar-1260)" {
+  project game beta "$SANDBOX/repos/game"
+  # The human flipped it by hand after a cancelled run: no run:, so it is theirs.
+  row game human gm-7 '- [/] fix y <!-- id:gm-7 -->'
+  started_item gone lab:game-agent-7 '' '' 'board:game:gm-7'
+  cp "$NOTES_FIXTURE/rows.game.human" "$SANDBOX/rows.kept"
+  agent-queue move gone done --status cancelled >/dev/null
+  mv "$SANDBOX/rows.kept" "$NOTES_FIXTURE/rows.game.human"
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  printf 'bnb\tgame\tgm-7\t%s\thuman\n' "$(( $(date +%s) - 73 * 3600 ))" > "$FLEET_DISPATCH_DIR/orphans.tsv"
+  run unstart_orphans
+  assert_success
+  refute_output --partial 'un-started'
+  grep -qF -- '- [/] fix y' "$NOTES_FIXTURE/rows.game.human" || fail "the human's own start was undone"
+  [ ! -s "$FLEET_DISPATCH_DIR/orphans.tsv" ] || fail "tracked: $(cat "$FLEET_DISPATCH_DIR/orphans.tsv")"
+  # A run: row a live item names keeps its start whatever its age.
+  row game human gm-8 '- [/] fix z <!-- id:gm-8 run:1109 -->'
+  started_item again lab:game-agent-8 '' '' 'board:game:gm-8' queued
+  printf 'bnb\tgame\tgm-8\t%s\thuman\n' "$(( $(date +%s) - 73 * 3600 ))" > "$FLEET_DISPATCH_DIR/orphans.tsv"
+  run unstart_orphans
+  assert_success
+  refute_output --partial 'un-started'
+  grep -qF -- '- [/] fix z' "$NOTES_FIXTURE/rows.game.human" || fail "a linked row was un-started"
+}
+
+# NEGATIVE CONTROL for the column split: with tab as the separator, an empty marker took the brief's
+# place, so this plan row lost its chain's hold.
+@test "reap: an agent plan row with no marker keeps its brief, so its live chain holds it (ar-1260)" {
+  project game beta "$SANDBOX/repos/game"
+  printf '# pp\n\n## Phases\n\n- [ ] P1 one\n' > "$SANDBOX/pp.md"
+  row game agent 'plan pp' '- [/] plan pp: run its open phases'
+  jq -cn --arg d "$(plan_row_task "$SANDBOX/pp.md")" \
+    '{rows: [{profile: "bnb", project: "game", lane: "agent", id: null, text: "plan pp", state: "doing", raw: "- [/] plan pp: run its open phases", details: [$d]}]}' > "$SANDBOX/board.json"
+  notes() {
+    if [ "$*" = 'board --json' ]; then cat "$SANDBOX/board.json"
+    else command notes "$@"; fi
+  }
+  started_item pp-p1 lab:game-agent-9 '' '' auto:plan-row queued
+  sed -i "s|^mode: oneshot\$|mode: oneshot\nplan: $SANDBOX/pp.md|" "$AGENT_QUEUE_DIR"/queued/*-pp-p1.md
+  orphan_seen game 'plan pp' 96
+  run unstart_orphans
+  assert_success
+  refute_output --partial 'un-started'
+  grep -qF -- '- [/] plan pp' "$NOTES_FIXTURE/rows.game.agent" || fail "a plan row with a live chain was un-started"
+}
+
+@test "reap: a human-sheet row on a profile with automation off is never an orphan (ar-1260)" {
+  project game beta "$SANDBOX/repos/game"
+  row game human gm-7 '- [/] fix y <!-- id:gm-7 run:1109 -->'
+  jq -cn --arg r '- [/] fix y <!-- id:gm-7 run:1109 -->' \
+    '{rows: [{profile: "work", project: "game", lane: "human", id: "gm-7", state: "doing", automation: false, raw: $r}]}' > "$SANDBOX/board.json"
+  notes() {
+    if [ "$*" = 'board --json' ]; then cat "$SANDBOX/board.json"
+    else command notes "$@"; fi
+  }
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  printf 'work\tgame\tgm-7\t%s\thuman\n' "$(( $(date +%s) - 73 * 3600 ))" > "$FLEET_DISPATCH_DIR/orphans.tsv"
+  run unstart_orphans
+  assert_success
+  refute_output --partial 'un-started'
+  grep -qF -- '- [/] fix y' "$NOTES_FIXTURE/rows.game.human" || fail "the human's tracker row was un-started"
   [ ! -s "$FLEET_DISPATCH_DIR/orphans.tsv" ] || fail "tracked: $(cat "$FLEET_DISPATCH_DIR/orphans.tsv")"
 }
 
