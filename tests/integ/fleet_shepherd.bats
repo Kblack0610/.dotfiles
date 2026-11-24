@@ -59,7 +59,7 @@ esac'
   cat > "$PROM_LIB" <<'STUB'
 prom_q() {
   [ -z "${STUB_PROM_FAIL:-}" ] || return 1
-  printf '{"status":"success","data":{"result":%s}}' "${STUB_K3S:-[{\"value\":[0,\"0\"]\}]}"
+  printf '{"status":"success","data":{"result":%s}}' "${STUB_K3S:-[{\"metric\":{\"component\":\"nodes\"\},\"value\":[0,\"0\"]\}]}"
 }
 STUB
   # What a pass's launcher execs: it records its arguments and environment, not a model run.
@@ -1278,7 +1278,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   STUB_HOLDS=$'unity\t2026\tme\twhy' run "$SH" run
   run prompt
   assert_line 'Roles due: fleet-pace'
-  STUB_K3S='[{"value":[0,"2"]}]' run "$SH" run
+  STUB_K3S='[{"metric":{"component":"nodes"},"value":[0,"1"]}]' run "$SH" run
   run prompt
   assert_line 'Roles due: none'
   # A starved queue loads fleet-dispatch for its self-heal; any other watch stays fleet-lead's own.
@@ -1762,21 +1762,34 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   assert_failure 1
 }
 
-@test "infra reads the k3s domain live: red, unreadable and missing report, green and amber do not" {
+@test "infra reads the k3s components live: a red node, unreadable and missing report; green and a watch-only red do not (ar-1608)" {
   run "$SH" infra
   assert_failure
   assert_output ''
-  STUB_K3S='[{"value":[0,"1"]}]' run "$SH" infra
+  # 2026-11: a trivy-criticals or cluster-janitor watch alone held cluster work as "k3s domain red"
+  STUB_K3S='[{"metric":{"component":"watches"},"value":[0,"2"]},{"metric":{"component":"nodes"},"value":[0,"0"]}]' run "$SH" infra
   assert_failure
-  STUB_K3S='[{"value":[0,"2"]}]' run "$SH" infra
+  assert_output ''
+  STUB_K3S='[{"metric":{"component":"watches"},"value":[0,"2"]},{"metric":{"component":"nodes"},"value":[0,"1"]}]' run "$SH" infra
   assert_success
-  assert_output 'infra: k3s domain red'
+  assert_output 'infra: k3s nodes red'
+  # any other component holds only when down (2), not on a warn (1)
+  STUB_K3S='[{"metric":{"component":"nodes"},"value":[0,"0"]},{"metric":{"component":"etcd"},"value":[0,"1"]}]' run "$SH" infra
+  assert_failure
+  assert_output ''
+  STUB_K3S='[{"metric":{"component":"nodes"},"value":[0,"1"]},{"metric":{"component":"etcd"},"value":[0,"2"]}]' run "$SH" infra
+  assert_success
+  assert_output 'infra: k3s etcd, nodes red'
   STUB_PROM_FAIL=1 run "$SH" infra
   assert_success
   assert_output 'infra: Prometheus not answering'
   STUB_K3S='[]' run "$SH" infra
   assert_success
-  assert_output 'infra: no k3s status series'
+  assert_output 'infra: no k3s component series'
+  # only the watches series answering is no node reading either
+  STUB_K3S='[{"metric":{"component":"watches"},"value":[0,"0"]}]' run "$SH" infra
+  assert_success
+  assert_output 'infra: no k3s component series'
 }
 
 @test "a watch with a live red item raises no line; a tag that only contains red still does" {
@@ -1810,9 +1823,9 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
 
 @test "a high or urgent trip and a red cluster lead the due lines, ahead of sessions" {
   doc "[$(row a STALLED false false)]"
-  export STUB_TRIPPED='home-k3s-node-disk\turgent\nqueue-starved\thigh\n' STUB_K3S='[{"value":[0,"2"]}]'
+  export STUB_TRIPPED='home-k3s-node-disk\turgent\nqueue-starved\thigh\n' STUB_K3S='[{"metric":{"component":"nodes"},"value":[0,"1"]}]'
   run "$SH" run
-  assert_output --partial $': due\ninfra: k3s domain red\nwatch: home-k3s-node-disk tripped (urgent)\nwatch: queue-starved tripped (high)\nnudge STALLED: a'
+  assert_output --partial $': due\ninfra: k3s nodes red\nwatch: home-k3s-node-disk tripped (urgent)\nwatch: queue-starved tripped (high)\nnudge STALLED: a'
   refute_output --partial 'unbound variable'
   grep -q 'watch: queue-starved tripped (high)' "$FLEET_SHEPHERD_DIR/.pass.sh"
 }

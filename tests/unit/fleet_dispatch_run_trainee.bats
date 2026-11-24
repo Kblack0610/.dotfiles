@@ -11,7 +11,7 @@ bats_require_minimum_version 1.5.0
   srcs go:ok:0.1 codex:reserve:5
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0
   fleet_state 8
-  stub fleet-shepherd 'echo "infra: k3s domain red"'
+  stub fleet-shepherd 'echo "infra: k3s nodes red"'
   gateway_up
   agent-queue add --project game --slug t-one --priority low --tags tier1 "Fix the menu title #pts/1" >/dev/null
   HARNESSES=$DISPATCH_HARNESSES   # the sourced copy read the map's path before harness_ready set it
@@ -567,13 +567,13 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
 @test "trainee-pool: the floor line is the one a pass says, shut with the gateway reason on a red cluster, open once the gateway answers" {
   trainee_ready
   fleet_state 8
-  stub fleet-shepherd 'echo "infra: k3s domain red"'
+  stub fleet-shepherd 'echo "infra: k3s nodes red"'
   stub curl 'exit 7'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool --json
   assert_success
-  assert_equal "$(jq -c '.floor' <<<"$output")" '{"state":"shut","why":"infra: k3s domain red, and the gateway is not ready (https://gw.test/health/readiness: no answer)"}'
+  assert_equal "$(jq -c '.floor' <<<"$output")" '{"state":"shut","why":"infra: k3s nodes red, and the gateway is not ready (https://gw.test/health/readiness: no answer)"}'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool
-  assert_line 'trainee floor: shut, infra: k3s domain red, and the gateway is not ready (https://gw.test/health/readiness: no answer)'
+  assert_line 'trainee floor: shut, infra: k3s nodes red, and the gateway is not ready (https://gw.test/health/readiness: no answer)'
   gateway_up
   run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool --json
   assert_equal "$(jq -c '.floor.state' <<<"$output")" '"open"'
@@ -664,9 +664,9 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   [ ! -e "$TRAINEE_DRY" ] || fail "a start left the dry mark: $(cat "$TRAINEE_DRY")"
   # A shut floor is no dry pool: its gate is what starved names.
   printf 'gotrain\t1\n' > "$TRAINEE_DRY"
-  stub fleet-shepherd 'echo "infra: k3s domain red"'
+  stub fleet-shepherd 'echo "infra: k3s nodes red"'
   stub curl 'exit 7'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'trainee floor: shut, infra: k3s domain red'
+  assert_output --partial 'trainee floor: shut, infra: k3s nodes red'
   [ ! -e "$TRAINEE_DRY" ] || fail "a shut floor left the dry mark: $(cat "$TRAINEE_DRY")"
 }
