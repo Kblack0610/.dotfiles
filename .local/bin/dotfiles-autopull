@@ -8,7 +8,8 @@
 #   dotfiles-autopull --now <path>  agent-land's post-merge step: no throttle, only the checkout whose
 #                                   repo holds <path> (a worktree of it counts), one line saying what
 #                                   happened; nothing for a repo that is not one of the checkouts
-#   dotfiles-autopull --now <path> --bg   the same pass detached, one line logged when it ends
+#   dotfiles-autopull --now <path> --bg   the same pass detached, one line logged when it ends; the
+#                                   lease holder's `fleet-dispatch record` runs it for a worker's landing
 #   dotfiles-autopull --lock-secs   print how long a --now pass waits for the pass before it, the
 #                                   grace dotfiles-drift gives a merge before it counts it as BEHIND
 #

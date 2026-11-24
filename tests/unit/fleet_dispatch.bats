@@ -681,6 +681,78 @@ ptask game --agent tag --add plan --add go ga-7'
   assert_output 1
 }
 
+# sized_fixture -- agent rows sized by their #size/ tag, none judged but gs-5: gs-1 L, gs-2 XL and #requested, gs-3 an L
+# epic, gs-4 L behind an #after/ gate, gs-5 L judged needs-person, gs-6 L with a goal: nobody planned through dispatch,
+# gs-7 M, gs-8 an L parent of gs-9 (open) and gs-14 (doing), gs-11 L behind a #pr/ gate, gs-12 L whose one verdict
+# is a failed one, gs-10 L in a draft project
+sized_fixture() {
+  project game beta "$SANDBOX/repos/game"
+  project pre draft "$SANDBOX/repos/pre"
+  local k
+  row game agent gs-1 "- [ ] feat(game): the whole store #size/l $T <!-- id:gs-1 -->"
+  row game agent gs-2 "- [ ] feat(game): the whole shop #size/xl #requested $T <!-- id:gs-2 -->"
+  row game agent gs-3 "- [ ] epic(game): the season #size/l <!-- id:gs-3 -->"
+  row game agent gs-4 "- [ ] feat(game): after the store #size/l $T #after/gs-7 <!-- id:gs-4 -->"
+  row game agent gs-5 "- [ ] feat(game): a playtest build #size/l $T <!-- id:gs-5 -->"
+  row game agent gs-6 "- [ ] feat(game): the briefed store #size/l $T <!-- id:gs-6 -->"
+  row game agent gs-7 "- [ ] fix(game): a small one #size/m $T <!-- id:gs-7 -->"
+  row game agent gs-8 "- [ ] feat(game): the parent #size/l $T <!-- id:gs-8 -->"
+  row game agent gs-9 "- [ ] fix(game): its child #size/s $T #of/gs-8 <!-- id:gs-9 -->"
+  row game agent gs-11 "- [ ] feat(game): after a pr #size/l $T #pr/o/r/5 <!-- id:gs-11 -->"
+  row game agent gs-12 "- [ ] feat(game): a failed session #size/l $T <!-- id:gs-12 -->"
+  row game agent gs-14 "- [/] fix(game): its other child #size/s $T #of/gs-8 <!-- id:gs-14 -->"
+  row pre agent gs-10 "- [ ] feat(pre): a concept #size/l $T <!-- id:gs-10 -->"
+  : > "$NOTES_FIXTURE/board.rows"
+  for k in gs-1 gs-2 gs-3 gs-5 gs-6 gs-7 gs-8 gs-12; do board_row game agent "$k" '[]' '[]'; done
+  board_row game agent gs-4 '["after/gs-7"]' '[]'; board_row game agent gs-9 '["of/gs-8"]' '[]'
+  board_row game agent gs-11 '["pr/o/r/5"]' '[]'; board_row game agent gs-14 '["of/gs-8"]' '[]'
+  board_row pre agent gs-10 '[]' '[]'
+  jq -c '.size = (.raw | capture("#size/(?<s>[a-z]+)").s) | .type = (.raw | capture("^- \\[.\\] (?<t>[a-z]+)\\(").t)
+    | if .id == "gs-2" then .requested = true else . end
+    | if .id == "gs-14" then .state = "doing" else . end
+    | if .id == "gs-6" then .details = ["goal: a person wrote this"] else . end' "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b"
+  mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"
+  verdict game agent gs-5 skip
+  jq -c 'if .key == "gs-5" then .rule = "needs-person" | .size = "L" else . end' "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" \
+    && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  # one failed record: latest_verdicts drops it, so only the raw file says the session failed
+  jq -cn '{project: "game", lane: "agent", key: "gs-12", verdict: "failed", at: "2026-11-23T00:00:00-0800"}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+}
+
+@test "skip_exits: a row sized L or XL takes the plan exit with no verdict; an epic, a parent, a gated row, a failed one, a draft project's and a human skip keep theirs, and a planned one still L goes to the human" {
+  printf '%s\n' '- (needs-person) a device run' >> "$DISPATCH_POLICY"
+  sized_fixture
+  stub systemctl 'echo "$*" >> "$NOTES_FIXTURE/systemctl.log"'
+  run skip_exits --dry-run
+  assert_success
+  assert_output 'plan	game	gs-1	too-big
+plan	game	gs-2	too-big
+sheet	game	gs-5	needs-person
+plan	game	gs-6	too-big
+exits: plan 3 sheet 1'
+  : > "$NOTES_FIXTURE/calls.log"
+  skip_exits
+  assert_equal "$PLAN_TAGGED" 3
+  run grep -o 'tag --add plan --add go gs-2\|tag --add plan gs-[16]' "$NOTES_FIXTURE/calls.log"
+  assert_output 'tag --add plan gs-1
+tag --add plan --add go gs-2
+tag --add plan gs-6'
+  # the exit is on record, so a second pass over the same board (the tag not yet seen) plans nothing twice
+  jq -c 'if .id == "gs-6" then .details = [] else . end' "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b" && mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"
+  run skip_exits --dry-run
+  assert_output --regexp '^exits: *$'
+  # inbox-plan planned gs-1 and left it L: the recorded plan exit now sends it to the human, once
+  : > "$NOTES_FIXTURE/board.rows"
+  board_row game agent gs-1 '[]' '["goal: split it"]'
+  jq -c '.size = "l" | .type = "feat"' "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b" && mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"
+  run skip_exits --dry-run
+  assert_output 'sheet	game	gs-1	too-big
+exits: sheet 1'
+  skip_exits
+  run skip_exits --dry-run
+  assert_output --regexp '^exits: *$'
+}
+
 @test "skip_exits: plan tags stop at DISPATCH_PLAN_BACKLOG open #plan rows, and the other exits go on" {
   plan_fixture
   DISPATCH_PLAN_BACKLOG=0 skip_exits
