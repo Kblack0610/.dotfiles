@@ -38,7 +38,7 @@ mkdir -p "$SHARED"
 cp -f "$daily" "$SHARED/today.md"
 
 # 2. Checkbox lines -> tasks.txt (todo.txt-ish). "- [x]" becomes a leading "x ".
-#    A trailing priority tag (#urgent/#high/#low) is preserved as-is.
+#    A trailing priority tag (#urgent/#high/#normal/#low) is preserved as-is.
 awk '
     /^[[:space:]]*- \[[ xX]\] / {
         done = ($0 ~ /^[[:space:]]*- \[[xX]\] /)

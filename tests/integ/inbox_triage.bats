@@ -1325,33 +1325,35 @@ ask_stub() {
   printf '# gp\n\nVersion: v0.1.0\n\n## Tasks\n- [ ] the gig row <!-- id:gp-1 -->\n' >"$HOME/.notes/gig/projects/current/gp/README.md"
   gig_before="$(cat "$HOME/.notes/gig/projects/current/gp/README.md")"
   # rows reach the model in sheet order: sc-4, sc-5, sc-6
-  answer '{"n": 1, "priority": "low"}' '{"n": 2, "priority": "high"}' '{"n": 3, "priority": "medium"}'
+  answer '{"n": 1, "priority": "normal"}' '{"n": 2, "priority": "high"}' '{"n": 3, "priority": "medium"}'
   # run from a session: the record still names inbox-priority, the lane judge-eval scores these by
   CLAUDE_CODE_SESSION_ID=feedface0123 run "$TRIAGE" --backlog --priority
   assert_success
   assert_output --partial 'priority: tagged 2, left 0, refused 0'
   run notes log --json --action tagged
-  assert_equal "$(jq -sc 'map([.id, .by, .why])' <<<"$output")" '[["sc-4","inbox-priority","+#low"],["sc-5","inbox-priority","+#high"]]'
+  assert_equal "$(jq -sc 'map([.id, .by, .why])' <<<"$output")" '[["sc-4","inbox-priority","+#normal"],["sc-5","inbox-priority","+#high"]]'
   grep -qx '2. \[sc-5\] the menu flickers #requested' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
   refute grep -q 'logo\|gig row' "$NOTES_FIXTURE/prompt.txt"
   grep -q "red on main" "$NOTES_FIXTURE/prompt.txt" || fail "the rubric lost its red-on-main clause"
-  grep -qF 'low: real work with a named benefit' "$NOTES_FIXTURE/prompt.txt" || fail "the priority pass lost the new low"
+  grep -qF 'normal: real work with a named benefit' "$NOTES_FIXTURE/prompt.txt" || fail "the priority pass lost normal"
+  grep -qF 'low: upkeep, cleanup' "$NOTES_FIXTURE/prompt.txt" || fail "the priority pass lost the upkeep low"
+  grep -qF 'private data (PHI, PII, secrets, keys) readable by someone who should not see it' "$NOTES_FIXTURE/prompt.txt" || fail "the priority pass lost the security line"
   grep -qF 'still tag it low here' "$NOTES_FIXTURE/prompt.txt" || fail "the priority pass does not say what to answer for a nice-to-have"
   # epic membership is no reason for high: every row has an epic, so it made most rows high (ar-2943)
   grep -q "Being filed under an open epic (#of/<epic id>) is not a reason" "$NOTES_FIXTURE/prompt.txt" || fail "the rubric lost its epic clause"
   refute grep -q "belongs to one of the open epics" "$NOTES_FIXTURE/prompt.txt"
   run tasks
-  assert_output --regexp 'the save is slow .*#low.*id:sc-4'
+  assert_output --regexp 'the save is slow .*#normal.*id:sc-4'
   assert_output --regexp 'the menu flickers .*#high.*id:sc-5'
   assert_output --regexp '\[ \] the jump is floaty <!-- id:sc-6 -->'
   assert_equal "$(cat "$HOME/.notes/gig/projects/current/gp/README.md")" "$gig_before"
 }
 
-@test "--retag-high also asks the #high rows, and a new priority replaces the old one" {
+@test "--retag high also asks the #high rows, and a new priority replaces the old one" {
   export INBOX_PRIORITY_CMD=model-stub
   sheet '' '- [ ] the save is slow #high <!-- id:sc-4 -->\n- [ ] the menu flickers #high <!-- id:sc-5 -->\n- [ ] the logo #low <!-- id:sc-7 -->\n'
   answer '{"n": 1, "priority": "high"}' '{"n": 2, "priority": "urgent"}'
-  run "$TRIAGE" --backlog --priority --retag-high --project scratch
+  run "$TRIAGE" --backlog --priority --retag high --project scratch
   assert_success
   assert_output --partial 'priority: tagged 1, left 0'
   refute grep -q 'logo' "$NOTES_FIXTURE/prompt.txt"
@@ -1359,6 +1361,32 @@ ask_stub() {
   assert_output --regexp 'the save is slow #high <!-- id:sc-4 -->'
   assert_output --regexp 'the menu flickers #urgent <!-- id:sc-5 -->'
   refute_output --partial 'flickers #high'
+}
+
+@test "--retag low asks only the #low rows and lifts one the rubric puts higher; the old --retag-high and an unknown word are refused" {
+  export INBOX_PRIORITY_CMD=model-stub
+  sheet '' '- [ ] fix(auth): the report route trusts a client-sent admin flag #low <!-- id:sc-4 -->\n- [ ] chore(git): set core.hookspath on the other machines #low <!-- id:sc-5 -->\n- [ ] the menu flickers #high <!-- id:sc-6 -->\n- [ ] feat(ui): a pause menu #normal <!-- id:sc-7 -->\n'
+  answer '{"n": 1, "priority": "high"}' '{"n": 2, "priority": "low"}'
+  run "$TRIAGE" --backlog --priority --retag low --project scratch
+  assert_success
+  assert_output --partial 'priority: tagged 1, left 0'
+  grep -qF '[sc-4] fix(auth): the report route trusts a client-sent admin flag' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  grep -q 'core.hookspath' "$NOTES_FIXTURE/prompt.txt" || fail "the second #low row was not asked"
+  # NEGATIVE CONTROL: the #high and #normal rows are not asked under --retag low.
+  refute grep -q 'flickers\|pause menu' "$NOTES_FIXTURE/prompt.txt"
+  run tasks
+  assert_output --regexp 'admin flag #high <!-- id:sc-4 -->'
+  assert_output --regexp 'core.hookspath on the other machines #low <!-- id:sc-5 -->'
+  # The flag it replaced is gone, so no caller keeps a second spelling; a word the scale lacks is refused.
+  run "$TRIAGE" --backlog --priority --retag-high --project scratch
+  assert_failure 2
+  assert_output --partial 'unknown argument: --retag-high'
+  run "$TRIAGE" --backlog --priority --retag medium --project scratch
+  assert_failure 2
+  assert_output --partial '--retag takes urgent, high, normal or low'
+  run "$TRIAGE" --backlog --retag low --project scratch
+  assert_failure 2
+  assert_output --partial '--retag goes with --priority'
 }
 
 # NEGATIVE CONTROL: --priority alone would run the inbox sweep's model call; it is refused.
@@ -1860,11 +1888,13 @@ ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)"
   [ ! -e "$PROJ/scratch/improvements.md" ] || fail "a dry run wrote improvements.md"
 }
 
-@test "the priority rubric: low is real work with a named benefit, a nice-to-have is an improvement, on the route call and the priority pass alike" {
+@test "the priority rubric: normal is real work with a named benefit, low is upkeep, a nice-to-have is an improvement, on the route call and the priority pass alike" {
   sheet '- the gun sound is off\n' ''
   answer '{"n": 1, "action": "skip"}'
   run "$TRIAGE"
-  grep -qF 'low: real work with a named benefit' "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the new low"
+  grep -qF 'normal: real work with a named benefit' "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost normal"
+  grep -qF 'low: upkeep, cleanup' "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the upkeep low"
+  grep -qF 'an auth or authority check that is missing or trusted from the client' "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the security line"
   grep -qF 'is an improvement, and it is kept in the project' "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the improvement rule"
   grep -qF 'improvement: only for a line tagged #from/' "$NOTES_FIXTURE/prompt.txt" || fail "the improvement action is not offered"
   ! grep -qF 'including ideas, polish' "$NOTES_FIXTURE/prompt.txt" || fail "the old catch-all low is back"

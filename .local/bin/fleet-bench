@@ -4642,7 +4642,7 @@ triage_alert_rows() {
   alerts=$(triage_alerts)
   [ -n "$alerts" ] || return 1
   pinned=$(triage_pinned)
-  pri=$(case "$2" in high|urgent) echo '#high' ;; *) echo '#low' ;; esac)
+  pri=$(case "$2" in high|urgent) echo '#high' ;; normal) echo '#normal' ;; *) echo '#low' ;; esac)
   while IFS=$'\t' read -r name id; do
     if grep -qxF -- "${id%%/*}" <<<"$pinned"; then say "triage: $name $id is intended: ${id%%/*} is pinned by a human"; continue; fi
     printf 'check(alert): %s %s firing\tcheck(alert): %s %s firing, %s tripped since %s, expected: no fleet=fix alert, evidence: watch-companion-loop list --long %s\t%s\n' \
@@ -4701,7 +4701,7 @@ triage_rows() {
     printf 'check(watch): %s tripped since\tcheck(watch): %s tripped since %s, expected: %s%s\t%s\n' "$n" "$n" \
       "$(date -d "@$since" +%Y-%m-%d)" "${what:-no manifest}" \
       "${why:+, why: $why, evidence: watch-companion-loop list --long $n}" \
-      "$(case "$sev" in high|urgent) echo '#high' ;; *) echo '#low' ;; esac)"
+      "$(case "$sev" in high|urgent) echo '#high' ;; normal) echo '#normal' ;; *) echo '#low' ;; esac)"
   done
 }
 

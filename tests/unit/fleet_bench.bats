@@ -2025,7 +2025,7 @@ cause_of() { printf '%s' 'lock .* held by pid' | sha256sum | cut -c1-8; }
   assert_line --regexp 'check\(watch\): quoted tripped .* #high$'
   assert_line --regexp 'check\(watch\): commented tripped .* #high$'
   refute_output --partial 'med_early'
-  assert_line --regexp 'check\(watch\): med_late tripped .* #low$'
+  assert_line --regexp 'check\(watch\): med_late tripped .* #normal$'
 }
 
 # fix_item <slug> <state> <status> [pr] [merged]: one window item for the lock cause, as agent-queue lists it

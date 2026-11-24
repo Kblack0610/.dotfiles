@@ -14,7 +14,7 @@ One action per row. keep: the row is clean already. rewrite: it is not. Either c
 dup: only when another row in this list asks for the same thing; never the row's own id.
 done: only when the row itself says it is done, answered or superseded.
 drop: only when the row is empty or is not a task. Never drop a row for being old or unclear.
-raise: the rubric under Priority gives the row a higher priority (high or urgent) than its own, shown in brackets before its text (none shown: untriaged): typically a real fault filed low. Never lower one. A row that needs both a rewrite and a raise gets the raise.
+raise: the rubric under Priority gives the row a higher priority (normal, high or urgent) than its own, shown in brackets before its text (none shown: untriaged): typically a real fault filed low. Never lower one. A row that needs both a rewrite and a raise gets the raise.
 improvement: only on the agent board, and never for a #requested row (the person asked for it): the rubric calls the row not a row at all, a nice-to-have with no named benefit. It leaves the board for the project's improvements.md, where it can be promoted later; when unsure, keep it.
 A row marked (doing) is in progress: keep, rewrite or raise it only. Indented lines under a row are its child rows: they stay with it, so a row with children is a heading for them; rewrite it as a title that covers them, and never drop it or call it a dup.
 
