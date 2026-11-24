@@ -1620,7 +1620,7 @@ ask_rows_load() {
     [ -n "$p" ] && [ -n "$i" ] || continue
     ASK_ROW["$p"$'\t'"$i"]=1
   done < <(jq -r --argjson now "$(date +%s)" --argjson h "$DISPATCH_ASK_FRESH_H" --argjson askers "$ASKER_MAP" '
-    .rows[]? | select(.id != null and any(.tags[]?; . == "requested") and (($askers[.id] // "") != "agent"))
+    .rows[]? | select(.state == "open" and .id != null and any(.tags[]?; . == "requested") and (($askers[.id] // "") != "agent"))
     | select(((.since // "") | try ("\(.)T00:00:00Z" | fromdateiso8601) catch null) as $t
         | $t != null and ($t + 86400) > ($now - $h * 3600))
     | "\(.project)\t\(.id)"' <<<"$b" 2>/dev/null)
@@ -7996,9 +7996,10 @@ cmd_run() {
   say "pace target: $TOTAL_LIVE of $TARGET live sessions (the human is $TARGET_WHEN: the live ones plus the Opus sessions the Claude spend has spare at pace, at most present $DISPATCH_TARGET_PRESENT, away $DISPATCH_TARGET_AWAY)$NEEDS_NOTE"
   unpark_preempted
   pass_room
+  # Fresh asks still on the board are queued first, so the preempt and the floors below see them (ar-3471).
+  ask_top_up || JUDGE_RC=$ASK_JUDGE_RC JUDGE_WHY=$ASK_JUDGE_WHY
   # A full fleet is working, not blocked: NOOP, unless an urgent item or fresh ask may preempt a runner session
   # (preempt_pick); then the pass, past the gate, picks among those (preempt_items) and starts at most one.
-  ask_top_up || JUDGE_RC=$ASK_JUDGE_RC JUDGE_WHY=$ASK_JUDGE_WHY
   local urgent=''; [ "$room" -gt 0 ] || urgent=$(preempt_items)
   # An urgent item or fresh ask that waits on run units alone, with no runner session to park for it, goes on to
   # the red floor: returning there held every red for a day behind three heavy urgent items (11-13).
@@ -8173,7 +8174,7 @@ row_task() { jq -r .text <<<"$1" | sed 's/^- \[.\] //'; }
 # with <cap room> (a run pass's queue headroom) every committed (`gated`) pick goes too, ahead of the
 # <room> others and up to <cap room> in all, since its gates clearing is its start. A cleanup
 # row's item is tagged `cleanup` (the floor counts them), and every item `tier<N>` (item_tier). With
-# `cleanup`, `requested`, `gated`, `sprint` or `project:<name>` (the floors: over the low water, and sprint_top_up's on every
+# `cleanup`, `requested`, `gated`, `sprint`, `ask` or `project:<name>` (the floors: over the low water, and sprint_top_up's and ask_top_up's on every
 # pass) every scan under it, the judge's included when this pass has not judged yet, reads only those rows
 # (floor_row). A full fleet share (share_full) leaves the fleet's rows out, the tier-3 gate's too.
 fill_day() {
@@ -8264,7 +8265,7 @@ class_gap() {
 }
 
 # floor_pass -> 0 when fill_day reads the board for its floors' rows alone (CLEANUP_ONLY, REQUESTED_ONLY,
-# GATED_ONLY, SPRINT_ONLY, FLOOR_PROJECTS), which every scan under it then filters by floor_project and floor_row.
+# GATED_ONLY, SPRINT_ONLY, ASK_ONLY, FLOOR_PROJECTS), which every scan under it then filters by floor_project and floor_row.
 floor_pass() { [ -n "${CLEANUP_ONLY:-}${REQUESTED_ONLY:-}${GATED_ONLY:-}${SPRINT_ONLY:-}${ASK_ONLY:-}${FLOOR_PROJECTS:-}" ]; }
 
 # floor_project <project> -> 0 for a project a floor pass may find a row in: any under the requested or
