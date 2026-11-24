@@ -17,8 +17,10 @@ setup() {
   # The host's own claude processes count as live sessions, which now move the rank.
   export CLAUDE_ACCT_PROC="$SANDBOX/proc"
   export CLAUDE_ACCT_CONFIG="$SANDBOX/accounts"
-  # the verdicts below are at a week held to its reset; pace.conf's allowance has its own test
-  export CLAUDE_ACCT_BURN_OVER_PCT=0
+  # the verdicts below are at a week held to its reset, a standing 0 over pace.conf's allowance,
+  # which has its own tests (pace_conf.bats pins the row format)
+  export PACE_OVERRIDES="$SANDBOX/pace-overrides" PACE_CONF_BIN="$REPO_ROOT/.local/bin/pace-conf"
+  echo 'BURN_OVER_PCT|0|0||test' > "$PACE_OVERRIDES"
   printf 'main -\nalt %s\n' "$ALT" > "$CLAUDE_ACCT_CONFIG"
   printf '#!/usr/bin/env bash\nexit 22\n' > "$SANDBOX/bin/curl"
   printf '#!/usr/bin/env bash\necho "2.1.0 (Claude Code)"\n' > "$SANDBOX/bin/claude"
@@ -632,8 +634,16 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   done
   run --separate-stderr "$ACCT" status --json
   [ "$(field alt .room.reason <<<"$output")" = committed ]
+  # the env pre-set is gone: only pace_get's value moves it (#3308 review)
   CLAUDE_ACCT_BURN_OVER_PCT=50 run --separate-stderr "$ACCT" status --json
+  [ "$(field alt .room.reason <<<"$output")" = committed ]
+  "$PACE_CONF_BIN" set BURN_OVER_PCT 50
+  run --separate-stderr "$ACCT" status --json
   [ "$(field alt .room.ok <<<"$output")" = true ]
+  # a window over the standing value wins while it is in force
+  "$PACE_CONF_BIN" set BURN_OVER_PCT 0 --until '+2 hours'
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field alt .room.reason <<<"$output")" = committed ]
 }
 
 @test "a busy or shell session whose status is older than ACTIVE_MIN is live but not working (ar-1018)" {
@@ -1304,7 +1314,7 @@ scoped_pid() { awk '/^bus: PIDs$/ { n = NR + 3 } NR == n { print $2 }' <<<"$outp
   assert_line --partial 'after-reset'
   # 10 points above the reserve on each, both reset in 84h: 20 over 84h is 0.24 an hour, under the
   # 90 a week each gives for good; at 2 an hour the pool is into the reserve in 10h, before the resets
-  assert_line --regexp '^fleet: 20 live \(20 working\), burn 2/h vs 0\.2/h sustainable \(8\.4x, carries ~2 Opus, no room\), into the reserve [A-Z][a-z]{2} [0-9]{2}:[0-9]{2} before the resets, back on pace: not at this burn; if idle (main|alt) '
+  assert_line --regexp '^fleet: 20 live \(20 working\), burn 2/h vs 0\.2/h sustainable \(8\.4x, carries ~2 Opus, allowance 0% \(override\), no room\), into the reserve [A-Z][a-z]{2} [0-9]{2}:[0-9]{2} before the resets, back on pace: not at this burn; if idle (main|alt) '
 }
 
 # --- the room verdict is one field of each usage row -------------------------------------------
@@ -1364,6 +1374,49 @@ scoped_pid() { awk '/^bus: PIDs$/ { n = NR + 3 } NR == n { print $2 }' <<<"$outp
   assert_line --regexp '^fleet: 3 live \(3 working\), '
 }
 
+@test "spare and the fleet line follow the allowance in force: above 0 it carries more, and the line names its source" {
+  # #3308 review: spare had no test above 0, and the fleet line did not say which allowance it used
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.025
+  week main 80 84
+  week alt 80 84
+  live "" 1
+  live "$ALT" 1 claude-sonnet-5-5
+  live "$ALT" 1 haiku
+  run --separate-stderr "$ACCT" room --json
+  assert_equal "$(jq -c '.fleet.spare' <<<"$output")" 7   # the standing 0 keeps the old figure
+  run --separate-stderr "$ACCT" status
+  assert_line --regexp '^fleet: .*, allowance 0% \(override\), room for ~7 more\)'
+  "$PACE_CONF_BIN" set BURN_OVER_PCT 200
+  run --separate-stderr "$ACCT" room --json
+  # keeps x 3 less the burn, over the rate: the pool carries more sessions at 200%
+  assert_equal "$(jq '.fleet | (((.keeps * 3 - .burn) / .rate | floor) == .spare) and .spare > 7' <<<"$output")" true
+  local spare; spare=$(jq '.fleet.spare' <<<"$output")
+  run --separate-stderr "$ACCT" status
+  assert_line --regexp "^fleet: .*, allowance 200% \\(override\\), room for ~$spare more\\)"
+  mkdir -p "$SANDBOX/prom" && "$ACCT" textfile "$SANDBOX/prom"
+  run cat "$SANDBOX/prom/claude_acct.prom"
+  assert_line "claude_fleet_spare_sessions $spare"
+  assert_line --regexp '^claude_fleet_allowed_points_per_hour 0\.7[12]'
+  # a window names its end; with no override at all the line says the default is in force
+  "$PACE_CONF_BIN" set BURN_OVER_PCT 300 --until '+2 hours'
+  run --separate-stderr "$ACCT" status
+  assert_line --regexp '^fleet: .*, allowance 300% to [A-Z][a-z]{2} [0-9]{2}:[0-9]{2}, room for ~[0-9]+ more\)'
+  rm -f "$PACE_OVERRIDES"
+  run --separate-stderr "$ACCT" status
+  assert_line --regexp "^fleet: .*, allowance $(sed -n 's/^BURN_OVER_PCT=//p' "$REPO_ROOT/.config/claude-acct/pace.conf")% \\(default\\), "
+}
+
+@test "a corrupt pace-overrides row stops claude-acct and names the file, as a bad pace.conf line does" {
+  echo 'BURN_OVER_PCT|lots|0||hand' > "$PACE_OVERRIDES"
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  [[ "$stderr" == *"a BURN_OVER_PCT row in $PACE_OVERRIDES is not key|value|from|until|by"* ]] || fail "$stderr"
+  # pace-conf end is the way out, and the default is back
+  "$PACE_CONF_BIN" end BURN_OVER_PCT
+  run --separate-stderr "$ACCT" room
+  [[ "$stderr" != *"$PACE_OVERRIDES"* ]] || fail "$stderr"
+}
+
 @test "room object: the reserve, the capped week and the live sessions each get their own reason" {
   export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
   week main 97 2
@@ -1421,7 +1474,7 @@ scoped_pid() { awk '/^bus: PIDs$/ { n = NR + 3 } NR == n { print $2 }' <<<"$outp
   assert_failure 1
   [[ "$(field main .room.slack <<< "$output")" == 5 ]]
   [[ "$(field main .room.reserve <<< "$output")" == 10 ]]
-  run grep -nE 'CLAUDE_ACCT_(PACE_SLACK|RESERVE)_PCT:-' "$ACCT"
+  run grep -nE 'CLAUDE_ACCT_(PACE_SLACK|RESERVE|BURN_OVER)_PCT:-' "$ACCT"
   assert_failure
 }
 

@@ -17,6 +17,7 @@ The front door to the agentic system is `~/.config/agentctl/ARCHITECTURE.md`: th
 | [layout.md](layout.md) | Where code, tooling, config, tests and docs go in a repo; `repo-layout-check` checks it |
 | [lifecycle.md](lifecycle.md) | Which step a piece of work is at, from idea to verified, and each step's template and check |
 | [machine-mode.md](machine-mode.md) | How much of the workstation background work may use, in four modes |
+| [pace-conf.md](pace-conf.md) | The pace numbers' defaults in pace.conf, and the overrides and windows `pace-conf` lays over them without a PR |
 | [planning.md](planning.md) | What every plan answers, per project type; `plan-standard.sh` checks only its Epic, Phases and Chain rules |
 | [priority.md](priority.md) | The four priority words, every scale that keeps its own field, and what is critical per system |
 | [release.md](release.md) | What every release is held to across repos: gates, tags and versions, proof of live, rollback, who takes each public step, per store |
