@@ -1257,8 +1257,11 @@ row_asker() { asker_map; jq -r --arg k "$1" '.[$k] // empty' <<<"$ASKER_MAP"; }
 
 # SHARE_JQ: `share_held($s)` is an item the fleet share cap holds, $s being SHARE_STATE: the share is
 # full and the item is on a fleet project, no red, no human_ask (the human's ask, ask XI2fDO) and no
-# urgent `from: human` (human_urgent's urgent test; its fresh asks and plan phases pass on the human
-# floor, HUMAN_PASS). A Claude canary or any other urgent waits like the rest, a board row's #urgent
+# urgent `from: human` (human_urgent's urgent test; its fresh asks pass on the human floor, HUMAN_PASS),
+# and no ready phase of a plan the human approved (`plan:` and `from: human`, human_plan_phases' test):
+# the human floor runs only in a pass a gate holds, so in an open pass the cap held them while the
+# let-go started low board rows; the-human-2026-11-23-this-iterat-p1, high, sat 7h and kept queued age
+# p90 past its bound (board-chain, ar-2550). A Claude canary or any other urgent waits like the rest, a board row's #urgent
 # included (`from: board:`): 180 of the 1132 starts in the 3 days to 2026-11-21 passed the cap that
 # way while the fleet held 79% of them (plan swhow-me-asll-data-modular-otter P3). A canary pinned to a
 # harness with its own source ($s.sourced, harnesses.json `source`) passes, as a trainee start does: it
@@ -1272,6 +1275,7 @@ row_asker() { asker_map; jq -r --arg k "$1" '.[$k] // empty' <<<"$ASKER_MAP"; }
 SHARE_JQ="$HUMAN_ASK_JQ"'def share_held($s): (.project // "") as $p | (.agent // "claude") as $a | $s.full and any($s.projects[]; . == $p)
   and (((.pr // "") != "" and (.pr_owner // "") != "" and (.[.pr_owner + "_tries"] // "") != "") | not)
   and ((.priority == "urgent" and (.from // "human") == "human") | not)
+  and (((.plan // "") != "" and (.from // "human") == "human") | not)
   and ((" " + (.tags // "") + " ") | test(" #?red ") | not) and (human_ask | not)
   and (((" " + (.tags // "") + " ") | contains(" canary ")) and any(($s.sourced // [])[]; . == $a) | not);'
 
