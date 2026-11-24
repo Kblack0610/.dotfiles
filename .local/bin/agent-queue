@@ -1970,6 +1970,23 @@ landing_after() {
   printf '%s' "$out"
 }
 
+# add_writes_work <add args...> -> exit 0 when the add would file work: anything but a --running
+# record or a plan --dry-run/--check, read from the args before any `--`.
+add_writes_work() {
+  local a
+  for a in "$@"; do
+    case "$a" in --) break ;; --running | --dry-run | --check) return 1 ;; esac
+  done
+  return 0
+}
+
+# work_machine_guard <add args...> -- a work machine queues nothing: no dispatcher runs there and
+# home runners never take work, so an item filed there never starts (project_work_machine).
+work_machine_guard() {
+  add_writes_work "$@" && project_work_machine || return 0
+  die "this is a work machine ($PROJECT_MACHINE_PROFILE): no dispatcher runs here and home runners never take work. Put the follow-up in the project's tracker (ticket), or work it in this session"
+}
+
 cmd_add() {
   local project="" mode=oneshot priority=high tags="" after="" from=human agent=claude slug=""
   local running="" session="" task=() tag planf="" dry="" check="" weight="" title="" epic="" repeat="" from_given="" want="" row="" priority_given=""
@@ -1998,10 +2015,6 @@ cmd_add() {
       *) task+=("$1"); shift ;;
     esac
   done
-  # A work machine queues nothing: no dispatcher runs there and home runners never take work, so an
-  # item filed there never starts. Its own --running record and a plan --check write no work.
-  [ -n "$running$dry" ] || ! project_work_machine ||
-    die "this is a work machine ($PROJECT_MACHINE_PROFILE): no dispatcher runs here and home runners never take work. Put the follow-up in the project's tracker (ticket), or work it in this session"
   after="$(word_list "$after")"
   priority="$(add_priority "$priority" "$priority_given$running$want$dry" "$planf" "$tags" "$from")" || exit 1
   if [ -n "$planf" ]; then
@@ -4074,7 +4087,8 @@ cmd_backfill_briefs() {
   trap 'AGENT_STORE_HOOK=1 store-sync --now --bg 8>&- 2>/dev/null' EXIT
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
-  add | list | next | show | mine | claim | cancel | return | bump | set | retask | attribute | move | requeue | handoff | start | reopen | stats | admission | mix | gate) v="$1"; shift; "cmd_$v" "$@" ;;
+  add) shift; work_machine_guard "$@"; cmd_add "$@" ;;
+  list | next | show | mine | claim | cancel | return | bump | set | retask | attribute | move | requeue | handoff | start | reopen | stats | admission | mix | gate) v="$1"; shift; "cmd_$v" "$@" ;;
   lock-miss) shift; cmd_lock_miss "$@" ;;
   credit-of) shift; cmd_credit_of "$@" ;;
   ask-holds) shift; cmd_ask_holds "$@" ;;
