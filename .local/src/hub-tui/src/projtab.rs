@@ -15,6 +15,7 @@ use hub_core::layout::{self, Inner, Tab};
 use hub_core::page::{NeedGroup, Page, System};
 use hub_core::projects::{self, Card, Projects, Stats};
 use hub_core::session_actions::Runner;
+use hub_core::sprint_page::{self, SprintRow};
 use hub_core::stages::Ladder;
 use hub_core::tasks::Feed;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -80,6 +81,21 @@ pub struct ProjView {
     pub sfocus: bool,
     pub lv: DataTable,
     pub rv: DataTable,
+    /// The opened project's Sprint tab: which window j/k have selected (open, queued, then
+    /// scored, `pickable`), and the window's page once Enter opened it.
+    pub ssel: usize,
+    pub sprint: Option<SprintOpen>,
+}
+
+/// One sprint's page as the tab holds it (`hub_core::sprint_page`): read in a worker, so it is
+/// `None` until it lands.
+#[derive(Debug, Default)]
+pub struct SprintOpen {
+    pub version: String,
+    pub page: Option<Result<sprint_page::Page, String>>,
+    pub busy: bool,
+    /// The rows' search, chip and sort, and the selected row.
+    pub rows: DataTable,
 }
 
 impl Default for ProjView {
@@ -104,6 +120,8 @@ impl Default for ProjView {
             sfocus: false,
             lv: DataTable::default(),
             rv: DataTable::default(),
+            ssel: 0,
+            sprint: None,
         }
     }
 }
@@ -138,6 +156,8 @@ impl ProjView {
         self.legacy = false;
         self.sys = 0;
         self.bv = DataTable::default();
+        self.ssel = 0;
+        self.sprint = None;
     }
 
     /// The opened project's inner tabs: the work, then Departments when it has a chip.
@@ -244,10 +264,13 @@ impl ProjView {
         tv: &mut TaskView,
         k: KeyEvent,
         pg: Option<&Page>,
+        feed: Option<&Feed>,
         page: usize,
     ) -> bool {
         if let KeyCode::Left | KeyCode::Right = k.code {
-            if self.bv.typing.is_none() {
+            if self.bv.typing.is_none()
+                && self.sprint.as_ref().is_none_or(|s| s.rows.typing.is_none())
+            {
                 self.inner = crate::innertabs::step_of(
                     &self.page_tabs(),
                     self.inner,
@@ -303,6 +326,70 @@ impl ProjView {
                 KeyCode::Char('F') => self.legacy = !self.legacy,
                 _ => return false,
             },
+            SPRINT => return self.sprint_key(tv, k, pg, feed, page),
+            _ => return false,
+        }
+        true
+    }
+
+    /// The Sprint tab's keys. On the list: j/k pick a window, Enter opens its page. On a page:
+    /// the shared table keys and moves over its rows, `[` and `]` the previous and next
+    /// version, Esc clears the view and then closes the page.
+    fn sprint_key(
+        &mut self,
+        tv: &TaskView,
+        k: KeyEvent,
+        pg: &Page,
+        feed: Option<&Feed>,
+        page: usize,
+    ) -> bool {
+        if let Some(so) = self.sprint.as_mut() {
+            let n = match &so.page {
+                Some(Ok(p)) => so.rows.view.apply(&p.rows).len(),
+                _ => 0,
+            };
+            // The rows hide an empty state chip, so `f` steps over the chips the page has.
+            if let (KeyCode::Char('f'), None, Some(Ok(p))) = (k.code, &so.rows.typing, &so.page) {
+                so.rows.view.cycle_shown(&p.rows);
+                return true;
+            }
+            if so.rows.key::<SprintRow>(k.code) != Took::No || so.rows.moves(k, n, page) {
+                return true;
+            }
+            let near = |p: &sprint_page::Page, back: bool| {
+                let l = if back { &p.prev } else { &p.next };
+                l.as_ref().and_then(version_of)
+            };
+            match (k.code, &so.page) {
+                (KeyCode::Char(c @ ('[' | ']')), Some(Ok(p))) => {
+                    if let Some(v) = near(p, c == '[') {
+                        self.sprint = Some(SprintOpen {
+                            version: v,
+                            ..Default::default()
+                        });
+                    }
+                }
+                (KeyCode::Esc, _) if !so.rows.is_default() => so.rows.clear(),
+                (KeyCode::Esc, _) => self.sprint = None,
+                _ => return false,
+            }
+            return true;
+        }
+        let versions = pickable(tv.project.as_ref(), pg, feed);
+        match k.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.ssel = (self.ssel + 1).min(versions.len().saturating_sub(1))
+            }
+            KeyCode::Char('k') | KeyCode::Up => self.ssel = self.ssel.saturating_sub(1),
+            KeyCode::Enter => match versions.get(self.ssel.min(versions.len().saturating_sub(1))) {
+                Some(v) => {
+                    self.sprint = Some(SprintOpen {
+                        version: v.clone(),
+                        ..Default::default()
+                    })
+                }
+                None => return false,
+            },
             _ => return false,
         }
         true
@@ -326,6 +413,12 @@ impl ProjView {
                 return;
             }
         }
+        // `<profile>/<project>/sprint/<version>` (`links::Kind::Sprint`'s `tab_args`): that
+        // project's Sprint tab with the window's page open.
+        let (name, sprint) = match name.rsplit_once("/sprint/") {
+            Some((n, v)) if sprint_page::safe_version(v) => (n, Some(v)),
+            _ => (name, None),
+        };
         let is_card = |name: &str, c: &Card| {
             c.name.eq_ignore_ascii_case(name)
                 || format!("{}/{}", c.profile, c.name).eq_ignore_ascii_case(name)
@@ -351,6 +444,13 @@ impl ProjView {
                     if let Some(d) = chip.filter(|d| self.tabs.contains(d)) {
                         self.dept = d;
                     }
+                }
+                if let Some(v) = sprint {
+                    self.inner = SPRINT;
+                    self.sprint = Some(SprintOpen {
+                        version: v.to_string(),
+                        ..Default::default()
+                    });
                 }
             }
             None => {
@@ -754,7 +854,7 @@ fn overview(
     out.push(Line::raw(""));
     out.push(sec_head("IN FLIGHT", &projects::counts(c), "", p, w));
     if !c.running.is_empty() {
-        // Home's Running table scoped to the project, so a phase reads the same in both.
+        // The Running table scoped to the project, so a phase reads the same in both.
         let rows: Vec<&Running> = c.running.iter().collect();
         let t = crate::hometab::running_table(&rows, p, hub_core::jobs::now(), None, true);
         out.extend(t.fit_wrapped(w, p.dim()).0);
@@ -941,32 +1041,110 @@ fn activity(c: &Card, pg: &Page, p: Palette, w: usize) -> Vec<Line<'static>> {
     out
 }
 
-/// The Sprint inner tab of an opened project (`hub_core::tasks::SprintRow`, `hub_core::project_sprints`):
-/// its open window with its tasks, the ones queued behind it, then its scored past, newest first.
-/// The windows come from the board feed, the past from the page (`notes projects --sprints`).
-fn sprint(c: &Card, pg: &Page, feed: Option<&Feed>, p: Palette, w: usize) -> Vec<Line<'static>> {
-    let (open, queued): (Vec<_>, Vec<_>) = match feed {
-        Some(f) => f
-            .sprint_rows(
-                Some((&c.profile, &c.name)),
-                chrono::Local::now().naive_local(),
-            )
+/// The version a sprint link names (`<profile>/<project>/<version>`).
+fn version_of(l: &hub_core::links::Link) -> Option<String> {
+    let hub_core::links::Link::To(_, id) = l else {
+        return None;
+    };
+    id.rsplit('/').next().map(str::to_string)
+}
+
+/// A project's open and its queued windows, from the board feed.
+fn windows(
+    feed: Option<&Feed>,
+    project: Option<&(String, String)>,
+) -> (
+    Vec<hub_core::tasks::SprintRow>,
+    Vec<hub_core::tasks::SprintRow>,
+) {
+    match (feed, project) {
+        (Some(f), Some((profile, name))) => f
+            .sprint_rows(Some((profile, name)), chrono::Local::now().naive_local())
             .into_iter()
             .partition(|r| !r.queued),
-        None => (vec![], vec![]),
+        _ => (vec![], vec![]),
+    }
+}
+
+/// The versions j/k pick on a project's Sprint tab, in the order it draws them: the open
+/// window, the queued ones, then the scored past, newest first.
+fn pickable(project: Option<&(String, String)>, pg: &Page, feed: Option<&Feed>) -> Vec<String> {
+    let (open, queued) = windows(feed, project);
+    let mut out: Vec<String> = open.into_iter().chain(queued).map(|r| r.version).collect();
+    for s in &pg.sprint_past {
+        if !out.contains(&s.version) {
+            out.push(s.version.clone());
+        }
+    }
+    out
+}
+
+/// A sprint field's text, a dash where it is unset.
+fn opt_dash(o: &Option<String>) -> String {
+    o.clone().unwrap_or_else(|| "-".into())
+}
+
+/// The Sprint inner tab of an opened project (`hub_core::tasks::SprintRow`, `hub_core::project_sprints`):
+/// its open window, the ones queued behind it, then its scored past, newest first; j/k pick one
+/// and Enter opens its page. The windows come from the board feed, the past from the page
+/// (`notes projects --sprints`).
+fn sprint(
+    c: &Card,
+    pg: &Page,
+    feed: Option<&Feed>,
+    pv: &ProjView,
+    p: Palette,
+    w: usize,
+) -> (Vec<Line<'static>>, Option<usize>) {
+    if let Some(so) = &pv.sprint {
+        return sprint_open(so, p, w);
+    }
+    let project = (c.profile.clone(), c.name.clone());
+    let (open, queued) = windows(feed, Some(&project));
+    let picked = pickable(Some(&project), pg, feed);
+    let picked = picked.get(pv.ssel.min(picked.len().saturating_sub(1)));
+    let mut at = None;
+    // Style the picked window's line in a drawn table (its header, then one line per window).
+    let mut pick = |lines: &mut Vec<Line<'static>>, from: usize, versions: Vec<&str>| {
+        if let Some(i) = versions.iter().position(|v| Some(&v.to_string()) == picked) {
+            if let Some(l) = lines.get_mut(from + 1 + i) {
+                l.style = p.sel();
+                at = Some(from + 1 + i);
+            }
+        }
     };
     let none = |what: &str| Line::styled(format!("  {what}"), p.dim());
-    let mut out = vec![sec_head("SPRINT", &open.len().to_string(), "", p, w)];
+    let mut out = vec![sec_head(
+        "SPRINT",
+        &open.len().to_string(),
+        "  j/k pick a window, Enter opens its rows",
+        p,
+        w,
+    )];
     match (feed, open.is_empty()) {
         (None, _) => out.push(none("reading the board...")),
         (_, true) => out.push(none("No window is open.")),
-        _ => out.extend(crate::tasktab::sprint_lines(&open, true, p, w)),
+        _ => {
+            let from = out.len();
+            out.extend(crate::tasktab::sprint_lines(&open, p, w));
+            pick(
+                &mut out,
+                from,
+                open.iter().map(|r| r.version.as_str()).collect(),
+            );
+        }
     }
     out.push(sec_head("QUEUED", &queued.len().to_string(), "", p, w));
     if queued.is_empty() {
         out.push(none("No window is queued."));
     } else {
-        out.extend(crate::tasktab::sprint_lines(&queued, true, p, w));
+        let from = out.len();
+        out.extend(crate::tasktab::sprint_lines(&queued, p, w));
+        pick(
+            &mut out,
+            from,
+            queued.iter().map(|r| r.version.as_str()).collect(),
+        );
     }
     out.push(sec_head(
         "PAST",
@@ -977,9 +1155,9 @@ fn sprint(c: &Card, pg: &Page, feed: Option<&Feed>, p: Palette, w: usize) -> Vec
     ));
     if pg.sprint_past.is_empty() {
         out.push(none("No window has been cut with a score yet."));
-        return out;
+        return (out, at);
     }
-    let dash = |o: &Option<String>| o.clone().unwrap_or_else(|| "-".into());
+    let dash = opt_dash;
     let cells = pg
         .sprint_past
         .iter()
@@ -1000,6 +1178,7 @@ fn sprint(c: &Card, pg: &Page, feed: Option<&Feed>, p: Palette, w: usize) -> Vec
             ]
         })
         .collect();
+    let from = out.len();
     out.extend(
         Table {
             header: vec![
@@ -1020,7 +1199,124 @@ fn sprint(c: &Card, pg: &Page, feed: Option<&Feed>, p: Palette, w: usize) -> Vec
         }
         .fit(w, p.head()),
     );
-    out
+    pick(
+        &mut out,
+        from,
+        pg.sprint_past.iter().map(|s| s.version.as_str()).collect(),
+    );
+    (out, at)
+}
+
+/// How many of a sprint's rows show at once; the rest scroll under the selection.
+const SPRINT_ROWS: usize = 15;
+
+/// One sprint's page: its dates and counts, the By area table, then every row with its outcome
+/// on the shared table (the same words as agent-web's page).
+fn sprint_open(so: &SprintOpen, p: Palette, w: usize) -> (Vec<Line<'static>>, Option<usize>) {
+    let mut out = vec![sec_head(
+        &format!("SPRINT {}", so.version),
+        "",
+        "  [ ] previous and next, / f s S x the table, Esc back",
+        p,
+        w,
+    )];
+    let pg = match &so.page {
+        None => {
+            out.push(Line::styled("  reading the sprint...", p.dim()));
+            return (out, None);
+        }
+        Some(Err(e)) => {
+            out.extend(wrapped("  ", e, p.warn(), p, w));
+            return (out, None);
+        }
+        Some(Ok(pg)) => pg,
+    };
+    for l in &pg.head {
+        out.extend(wrapped("  ", l, Default::default(), p, w));
+    }
+    for e in &pg.errors {
+        out.extend(wrapped("  ", e, p.warn(), p, w));
+    }
+    out.push(Line::raw(""));
+    out.push(sec_head("BY AREA", &pg.by_area.len().to_string(), "", p, w));
+    let heads = sprint_page::area_heads(&pg.state);
+    out.extend(
+        Table {
+            header: heads.iter().map(|(_, h)| *h).collect(),
+            rows: pg
+                .by_area
+                .iter()
+                .map(|a| {
+                    vec![
+                        a.group.clone().into(),
+                        a.rows.to_string().into(),
+                        a.delivered.to_string().into(),
+                        a.pending.to_string().into(),
+                        a.dropped.to_string().into(),
+                        a.pts.clone().into(),
+                    ]
+                })
+                .collect(),
+            keep: vec![0, 2, 1, 3, 4, 5],
+            right: vec![1, 2, 3, 4, 5],
+            ..Default::default()
+        }
+        .fit(w, p.head()),
+    );
+    out.push(Line::raw(""));
+    out.push(sec_head("ROWS", &pg.rows.len().to_string(), "", p, w));
+    out.push(clip_line(Line::from(so.rows.status(&pg.rows, p)), w));
+    let shown = so.rows.view.apply(&pg.rows);
+    if shown.is_empty() {
+        out.push(Line::styled("  No row matches.", p.dim()));
+        return (out, None);
+    }
+    let sel = so.rows.sel.min(shown.len() - 1);
+    let top = (sel + 1).saturating_sub(SPRINT_ROWS);
+    let seen: Vec<&&SprintRow> = shown.iter().skip(top).take(SPRINT_ROWS).collect();
+    let dash = opt_dash;
+    let mut t = Table {
+        header: vec![
+            "ID", "TYPE", "SCOPE", "GROUP", "TITLE", "PTS", "OUTCOME", "STATE", "INT",
+        ],
+        rows: seen
+            .iter()
+            .map(|r| {
+                vec![
+                    dash(&r.id).into(),
+                    dash(&r.kind).into(),
+                    dash(&r.scope).into(),
+                    r.group.clone().into(),
+                    r.name.clone().into(),
+                    r.pts.to_string().into(),
+                    cell(r.outcome.clone(), warn_if(r.outcome == "dropped", p)),
+                    r.state.clone().into(),
+                    (if r.interrupt { "yes" } else { "-" }).into(),
+                ]
+            })
+            .collect(),
+        keep: vec![4, 6, 5, 3, 0, 1, 2, 7, 8],
+        flex: Some(4),
+        flexmin: 12,
+        flexkeep: true,
+        right: vec![5],
+        mark: so.rows.mark::<SprintRow>(),
+        ..Default::default()
+    }
+    .fit(w, p.head());
+    let at = out.len() + sel - top + 1;
+    if let Some(l) = t.get_mut(sel - top + 1) {
+        l.style = p.sel();
+    }
+    out.append(&mut t);
+    let (before, after) = (top, shown.len() - top - seen.len());
+    if before + after > 0 {
+        out.push(Line::styled(
+            format!("  {before} above, {after} below"),
+            p.dim(),
+        ));
+    }
+    (out, Some(at))
 }
 
 /// Projects' Sprints inner tab: every project's open and queued windows (LEFT reads `queued`
@@ -1035,7 +1331,7 @@ fn sprints(pr: &Projects, feed: Option<&Feed>, p: Palette, w: usize) -> Vec<Line
     if rows.is_empty() {
         out.push(none("No window is open or queued."));
     } else {
-        out.extend(crate::tasktab::sprint_lines(&rows, false, p, w));
+        out.extend(crate::tasktab::sprint_lines(&rows, p, w));
     }
     let last = hub_core::project_sprints::last_scores(&pr.cards);
     out.push(sec_head("LAST SCORE", &last.len().to_string(), "", p, w));
@@ -1190,7 +1486,7 @@ pub fn open_lines(
             p,
             w,
         ),
-        SPRINT => (sprint(c, pg, feed, p, w), None),
+        SPRINT => sprint(c, pg, feed, pv, p, w),
         "releases" => (releases(pg, pv, p, w), None),
         "stage" => (stage(pg, p, w), None),
         _ => (activity(c, pg, p, w), None),
@@ -1639,7 +1935,7 @@ pub(crate) mod tests {
             t.contains("IN FLIGHT  0 running, 0 waiting, 0 queued; 0 rows #requested, 0 in the inbox; Sprint 12/71 | Today 75 | Backlog 12 | Epics 2 | Epic backlog 5"),
             "{t}"
         );
-        // In flight is Home's Running table scoped to the project: the phase as `Phases::shown`
+        // In flight is the Running table scoped to the project: the phase as `Phases::shown`
         // words it, the next phase its own column, and no PROJECT column or sentence.
         let mut busy = pr.cards[0].clone();
         busy.running = vec![hub_core::home::Running {
@@ -1784,13 +2080,13 @@ pub(crate) mod tests {
             "the rows are an inner tab of an opened project"
         );
         let k = |c| KeyEvent::from(c);
-        assert!(pv.page_key(&mut tv, k(KeyCode::Right), Some(&pg), 10));
+        assert!(pv.page_key(&mut tv, k(KeyCode::Right), Some(&pg), None, 10));
         assert_eq!(pv.inner, SPRINT, "Sprint follows Overview");
-        assert!(pv.page_key(&mut tv, k(KeyCode::Right), Some(&pg), 10));
+        assert!(pv.page_key(&mut tv, k(KeyCode::Right), Some(&pg), None, 10));
         assert!(pv.rows_shown(&tv));
-        assert!(pv.page_key(&mut tv, k(KeyCode::Left), Some(&pg), 10));
-        assert!(pv.page_key(&mut tv, k(KeyCode::Left), Some(&pg), 10));
-        assert!(pv.page_key(&mut tv, k(KeyCode::Left), Some(&pg), 10));
+        assert!(pv.page_key(&mut tv, k(KeyCode::Left), Some(&pg), None, 10));
+        assert!(pv.page_key(&mut tv, k(KeyCode::Left), Some(&pg), None, 10));
+        assert!(pv.page_key(&mut tv, k(KeyCode::Left), Some(&pg), None, 10));
         assert_eq!(
             pv.inner, "activity",
             "Left from the first wraps to the last"
@@ -1798,8 +2094,8 @@ pub(crate) mod tests {
         pv.inner = OVERVIEW;
 
         // j picks the second system; Enter opens Deliverables filtered to it.
-        assert!(pv.page_key(&mut tv, k(KeyCode::Char('j')), Some(&pg), 10));
-        assert!(pv.page_key(&mut tv, k(KeyCode::Char('j')), Some(&pg), 10));
+        assert!(pv.page_key(&mut tv, k(KeyCode::Char('j')), Some(&pg), None, 10));
+        assert!(pv.page_key(&mut tv, k(KeyCode::Char('j')), Some(&pg), None, 10));
         assert_eq!(pv.sys, 1, "j stops at the last system");
         let (_, sel) = open_lines(
             &pr.cards[0],
@@ -1812,7 +2108,7 @@ pub(crate) mod tests {
         );
         let l = draw(&pr.cards[0], Some(&pg), &pv);
         assert!(l[sel.unwrap()].starts_with("ci "), "{l:?}");
-        assert!(pv.page_key(&mut tv, k(KeyCode::Enter), Some(&pg), 10));
+        assert!(pv.page_key(&mut tv, k(KeyCode::Enter), Some(&pg), None, 10));
         assert_eq!((pv.inner, pv.bv.view.q.as_str()), (DELIVERABLES, "sys:ci"));
         assert!(
             pv.dv.is_default(),
@@ -1822,20 +2118,20 @@ pub(crate) mod tests {
         assert!(s.contains("Pipelines") && !s.contains("Menus"), "{s}");
 
         // Esc clears Deliverables' filter; Enter on an epic opens Rows searched to it.
-        assert!(pv.page_key(&mut tv, k(KeyCode::Esc), Some(&pg), 10));
+        assert!(pv.page_key(&mut tv, k(KeyCode::Esc), Some(&pg), None, 10));
         assert!(pv.bv.is_default());
         assert!(
-            !pv.page_key(&mut tv, k(KeyCode::Esc), Some(&pg), 10),
+            !pv.page_key(&mut tv, k(KeyCode::Esc), Some(&pg), None, 10),
             "then Esc goes back"
         );
-        assert!(pv.page_key(&mut tv, k(KeyCode::Enter), Some(&pg), 10));
+        assert!(pv.page_key(&mut tv, k(KeyCode::Enter), Some(&pg), None, 10));
         assert_eq!((pv.inner, tv.table.view.q.as_str()), (ROWS, "tag:=of/gm-1"));
 
         // F lists Needs you's items on Overview; with no page read the keys wait.
         pv.inner = OVERVIEW;
-        assert!(pv.page_key(&mut tv, k(KeyCode::Char('F')), Some(&pg), 10));
+        assert!(pv.page_key(&mut tv, k(KeyCode::Char('F')), Some(&pg), None, 10));
         assert!(pv.needs);
-        assert!(!pv.page_key(&mut tv, k(KeyCode::Char('F')), None, 10));
+        assert!(!pv.page_key(&mut tv, k(KeyCode::Char('F')), None, None, 10));
         pv.open(&mut tv, Some(&pr.cards[1]));
         assert_eq!((pv.inner, pv.needs, pv.sys), (OVERVIEW, false, 0));
         pv.go(&mut tv, &pr.cards, "garden/stage");
@@ -1884,7 +2180,7 @@ pub(crate) mod tests {
         );
 
         let k = |c| KeyEvent::from(c);
-        assert!(pv.page_key(&mut tv, k(KeyCode::Char('F')), Some(&pg), 10));
+        assert!(pv.page_key(&mut tv, k(KeyCode::Char('F')), Some(&pg), None, 10));
         let s = draw(&pr.cards[0], Some(&pg), &pv).join("\n");
         assert!(s.contains("v0.1.0") && s.contains("garden-old") && s.contains("F folds them"));
         pv.open(&mut tv, Some(&pr.cards[0]));
@@ -2402,9 +2698,9 @@ pub(crate) mod tests {
 
         // Right walks to the work first; a department shows "reading" until Coverage arrives,
         // then its parts.
-        assert!(pv.page_key(&mut tv, KeyEvent::from(KeyCode::Right), None, 10));
+        assert!(pv.page_key(&mut tv, KeyEvent::from(KeyCode::Right), None, None, 10));
         assert_eq!((pv.inner, pv.dept()), (SPRINT, None));
-        assert!(pv.page_key(&mut tv, KeyEvent::from(KeyCode::Right), None, 10));
+        assert!(pv.page_key(&mut tv, KeyEvent::from(KeyCode::Right), None, None, 10));
         assert_eq!((pv.inner, pv.dept()), (ROWS, None));
         // An old `garden/legal` link and the new `garden/departments/legal` both land on the
         // Legal chip of the Departments tab.
@@ -2438,9 +2734,9 @@ pub(crate) mod tests {
         );
         assert!(chips.contains("[Legal]"), "{t:#?}");
         // `]` steps to the next chip, `[` back; neither leaves Departments.
-        assert!(pv.page_key(&mut tv, KeyEvent::from(KeyCode::Char(']')), None, 10));
+        assert!(pv.page_key(&mut tv, KeyEvent::from(KeyCode::Char(']')), None, None, 10));
         assert_eq!((pv.inner, pv.dept()), (layout::DEPT_TAB, Some("support")));
-        assert!(pv.page_key(&mut tv, KeyEvent::from(KeyCode::Char('[')), None, 10));
+        assert!(pv.page_key(&mut tv, KeyEvent::from(KeyCode::Char('[')), None, None, 10));
         assert_eq!(pv.dept(), Some("legal"));
         let t = lines(&open_lines(&pr.cards[0], None, None, None, &pv, p, 80).0);
         assert!(
@@ -2528,18 +2824,10 @@ pub(crate) mod tests {
         assert!(t.iter().any(|s| s.contains("[Deliverables]")), "{t:#?}");
     }
 
-    /// A feed with `garden`'s open window (two tasks) and the next one queued behind it, and
-    /// `demo`'s own window.
+    /// A feed with `garden`'s open window and the next one queued behind it, and `demo`'s own
+    /// window.
     fn windowed() -> Feed {
-        use hub_core::tasks::{SprintLine, SprintTask};
-        let task = |id: &str, text: &str, state: &str| SprintTask {
-            id: Some(id.into()),
-            text: text.into(),
-            title: text.into(),
-            state: state.into(),
-            weight: 1,
-            ..Default::default()
-        };
+        use hub_core::tasks::SprintLine;
         let line = |project: &str, version: &str, queued: bool| SprintLine {
             profile: "personal".into(),
             project: project.into(),
@@ -2555,16 +2843,7 @@ pub(crate) mod tests {
         };
         Feed {
             sprints: vec![
-                SprintLine {
-                    tasks: vec![
-                        task("db-1", "ship the menu", "done"),
-                        SprintTask {
-                            queue: Some("running".into()),
-                            ..task("db-2", "fix the back button", "open")
-                        },
-                    ],
-                    ..line("garden", "v0.3.0", false)
-                },
+                line("garden", "v0.3.0", false),
                 line("garden", "v0.4.0", true),
                 line("demo", "v1.0.0", false),
             ],
@@ -2603,18 +2882,12 @@ pub(crate) mod tests {
         ] {
             assert!(t.contains(want), "{want:?} in:\n{t}");
         }
-        assert!(
-            !t.contains("db-1"),
-            "the tasks are the project's page's:\n{t}"
-        );
         let t = lines(&page(&pr, None, None, None, None, &pv, p, 100).0).join("\n");
         assert!(t.contains("reading the board"), "{t}");
     }
 
-    #[test]
-    fn a_projects_sprint_tab_has_its_open_window_with_tasks_the_queued_one_and_the_scored_past() {
+    fn past_pg() -> Page {
         use hub_core::project_sprints::Past;
-        let pr = fixture();
         let mut pg = a_page();
         pg.sprint_past = vec![
             Past {
@@ -2633,6 +2906,13 @@ pub(crate) mod tests {
                 ..Default::default()
             },
         ];
+        pg
+    }
+
+    #[test]
+    fn a_projects_sprint_tab_has_its_open_window_the_queued_one_and_the_scored_past() {
+        let pr = fixture();
+        let pg = past_pg();
         let pv = ProjView {
             inner: SPRINT,
             ..Default::default()
@@ -2653,18 +2933,6 @@ pub(crate) mod tests {
             "the open window is not the queued one:\n{t:#?}"
         );
         assert!(
-            t[open..queued]
-                .iter()
-                .any(|l| l.contains("db-1") && l.contains("ship the menu") && l.contains("done")),
-            "its tasks follow, each with its state:\n{t:#?}"
-        );
-        assert!(
-            t[open..queued]
-                .iter()
-                .any(|l| l.contains("db-2") && l.contains("running")),
-            "the queue state wins over the row's own:\n{t:#?}"
-        );
-        assert!(
             t[queued..past]
                 .iter()
                 .any(|l| l.contains("v0.4.0") && l.contains("queued")),
@@ -2677,10 +2945,82 @@ pub(crate) mod tests {
         );
         assert!(a < b && a.is_some(), "newest first:\n{t:#?}");
         assert!(
-            !t.iter().any(|l| l.contains("v1.0.0")),
-            "another project's window:\n{t:#?}"
+            !t.iter().any(|l| l.contains("v1.0.0") || l.contains("db-1")),
+            "another project's window, or a folded task:\n{t:#?}"
         );
         let t = lines(&open_lines(&pr.cards[0], Some(&pg), None, None, &pv, p, 120).0);
         assert!(t.iter().any(|l| l.contains("reading the board")), "{t:#?}");
+    }
+
+    fn built_sprint() -> sprint_page::Page {
+        let json = r#"{"version":"v0.2.0","state":"closed","opened":"2026-01-01","committed":2,
+            "delivered":1,"open":1,"dropped":0,"interrupted":0,
+            "rows":[{"id":"g-1","type":"fix","area":"ci","title":"red main","pts":3,"state":"done","outcome":"delivered","interrupt":false},
+                    {"id":"g-2","type":"feat","area":"gameplay","title":"dash","pts":5,"state":"open","outcome":"carried","interrupt":false}]}"#;
+        let areas = hub_core::areas::Areas::parse("ci  Tests, CI and benches\ngameplay  Engine\n");
+        sprint_page::build(json, &areas, "personal", "garden", vec!["v0.3.0".into()]).unwrap()
+    }
+
+    /// j/k pick a window across the open, queued and scored ones, Enter opens the picked one's
+    /// page, which says its rows and its By area table; Esc clears the table's view and then
+    /// closes the page.
+    #[test]
+    fn enter_on_a_window_opens_its_page_with_the_rollup_and_every_row() {
+        let pr = fixture();
+        let pg = past_pg();
+        let f = windowed();
+        let (mut pv, mut tv) = (ProjView::default(), TaskView::default());
+        pv.open(&mut tv, Some(&pr.cards[0]));
+        tv.project = Some(("personal".into(), "garden".into()));
+        pv.inner = SPRINT;
+        let k = |c| KeyEvent::from(c);
+        for _ in 0..3 {
+            assert!(pv.page_key(&mut tv, k(KeyCode::Char('j')), Some(&pg), Some(&f), 10));
+        }
+        assert_eq!(pv.ssel, 3, "open, queued, v0.2.0, v0.1.0");
+        assert!(pv.page_key(&mut tv, k(KeyCode::Char('j')), Some(&pg), Some(&f), 10));
+        assert_eq!(pv.ssel, 3, "j stops at the last window");
+        assert!(pv.page_key(&mut tv, k(KeyCode::Char('k')), Some(&pg), Some(&f), 10));
+        assert!(pv.page_key(&mut tv, k(KeyCode::Enter), Some(&pg), Some(&f), 10));
+        let so = pv.sprint.as_mut().unwrap();
+        assert_eq!(so.version, "v0.2.0");
+        let p = Palette { no_color: true };
+        let t =
+            lines(&open_lines(&pr.cards[0], Some(&pg), None, Some(&f), &pv, p, 120).0).join("\n");
+        assert!(t.contains("reading the sprint"), "{t}");
+        pv.sprint.as_mut().unwrap().page = Some(Ok(built_sprint()));
+        let t =
+            lines(&open_lines(&pr.cards[0], Some(&pg), None, Some(&f), &pv, p, 120).0).join("\n");
+        for want in [
+            "SPRINT v0.2.0",
+            "BY AREA  2",
+            "Tests, CI and benches",
+            "Engine",
+            "CARRIED",
+            "ROWS  2",
+            "red main",
+            "carried",
+        ] {
+            assert!(t.contains(want), "{want:?} in:\n{t}");
+        }
+        assert!(pv.page_key(&mut tv, k(KeyCode::Char('f')), Some(&pg), Some(&f), 10));
+        assert!(pv.sprint.is_some(), "a chip does not close the page");
+        assert!(pv.page_key(&mut tv, k(KeyCode::Esc), Some(&pg), Some(&f), 10));
+        assert!(pv.sprint.is_some(), "Esc clears the view first");
+        assert!(pv.page_key(&mut tv, k(KeyCode::Esc), Some(&pg), Some(&f), 10));
+        assert!(pv.sprint.is_none());
+    }
+
+    #[test]
+    fn a_sprint_link_opens_that_projects_sprint_page() {
+        let pr = fixture();
+        let (mut pv, mut tv) = (ProjView::default(), TaskView::default());
+        pv.go(&mut tv, &pr.cards, "personal/garden/sprint/v0.2.0");
+        assert_eq!(pv.inner, SPRINT);
+        assert_eq!(
+            pv.sprint.as_ref().map(|s| s.version.as_str()),
+            Some("v0.2.0")
+        );
+        assert_eq!(tv.project.as_ref().map(|(_, n)| n.as_str()), Some("garden"));
     }
 }
