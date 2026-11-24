@@ -928,6 +928,36 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   assert_output --partial 'record: hp exited 4'
 }
 
+@test "record on the lease holder takes each worker's queue-item events into this record from that worker's cursor, and a worker that does not answer keeps its cursor (ar-4993)" {
+  record_setup
+  world '10 1000' "$PANE1"
+  sandbox_fleet --self hp 0
+  # hp reads its record for the awk call and does its own pane record for the rest; idle-worker is not reached.
+  stub ssh 'echo "ssh $*" >> "$NOTES_FIXTURE/calls.log"; [[ "$*" == *192.0.2.40* ]] || exit 255
+case "${@: -1}" in *awk*) eval "${@: -1}" ;; *) echo "did its own" ;; esac'
+  export WORKER_RECORD_DIR="$SANDBOX/cursors"
+  # What `notes ingest import` is told: the stub keeps its stdin and answers with the newest instant it saw.
+  stub notes 'cat > "$NOTES_FIXTURE/imported.log"; echo 2026-11-23T12:05:00.000000000-08:00'
+  mkdir -p "$HOME/.local/state/notes"
+  printf '%s\n' '{"ts":"2026-11-23T12:00:00.000000000-08:00","item":"a"}' \
+    '{"ts":"2026-11-23T12:05:00.000000000-08:00","item":"b"}' > "$HOME/.local/state/notes/ingest.jsonl"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_success
+  assert_equal "$(jq -r .item "$NOTES_FIXTURE/imported.log" | paste -sd,)" "a,b"
+  assert_equal "$(cat "$WORKER_RECORD_DIR/hp")" "2026-11-23T12:05:00.000000000-08:00"
+  [ ! -e "$WORKER_RECORD_DIR/idle-worker" ] || fail "a worker that did not answer got a cursor"
+  # The next read starts at the cursor: the line before it is not asked for again.
+  printf '%s\n' '{"ts":"2026-11-23T12:07:00.000000000-08:00","item":"c"}' >> "$HOME/.local/state/notes/ingest.jsonl"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_success
+  assert_equal "$(jq -r .item "$NOTES_FIXTURE/imported.log" | paste -sd,)" "b,c"
+  # --here, the call a worker gets, reads nothing; neither does a machine without the lease.
+  : > "$NOTES_FIXTURE/imported.log"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" record --here
+  FLEET_LEASE_STUB_RC=1 run "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  [ ! -s "$NOTES_FIXTURE/imported.log" ] || fail "read a worker's record without the lease"
+}
+
 @test "restore reopens each worker's own sessions there with its flags, and a worker that does not answer is said, not failed" {
   restore_setup
   sandbox_fleet --self hp 0

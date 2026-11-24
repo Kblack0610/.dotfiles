@@ -8,7 +8,8 @@
 #
 #   chain_event <stage> <action> <from> <text> [notes ingest record flags...]
 #
-# Best effort, like the record itself: a step never fails because its log line did not land.
+# On a fleet worker the line goes to that worker's own record; the lease holder's `fleet-dispatch record`
+# reads it over ssh (worker_records). Best effort, like the record itself: a step never fails because its log line did not land.
 chain_event() {
   local stage=$1 action=$2 from=$3 text=$4
   shift 4

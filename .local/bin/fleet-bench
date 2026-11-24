@@ -2475,7 +2475,8 @@ ingest_flow() {
 # the items finished in the last 24h. In, out and dwell come from the record (`notes log --steps`),
 # which cannot see work older than its start (since). drift counts the queue items the record and
 # the queue folders place apart: at another step, held by the record but gone from the queue, or
-# queued after the record began with no event of it. The bottleneck is the step whose age p90 is
+# queued after the record began with no event of it. A fleet worker's closes reach the record through
+# fleet-dispatch's worker_records, so a gap that stays is an event no writer sent. The bottleneck is the step whose age p90 is
 # furthest past its step_age_p90_<step>_max in kpi-thresholds, null while every step is inside its
 # bound. doors_24h and out_24h are ingest_flow's doors and out. A source that cannot be read leaves
 # its numbers null.

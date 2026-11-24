@@ -34,6 +34,10 @@ The one home for CI doctrine across every repo the fleet works in. Each rule is 
 - Test the SHA you name: a PR body, a release or a nightly records the commit it tested, and a green on an older commit does not carry forward past a change it depends on. Why: playground rule 4 and its stale-green re-gate.
 - Gates never poll with `gh run watch`; share one cached run list per machine. Why: per-gate polling spent the account's API limit for the whole fleet (playground rule 8, #1194).
 
+## Runners
+
+- A CI job's tools come from one image; a runner is docker plus a label, chosen once per workflow. No step installs a tool on the runner (apt, rustup, a setup action), and the runner choice is one YAML anchor every job references. Why: dotfiles jobs got their tools three ways (runner apt, the test image, runner rustup), so a move to the home pool meant installing the same tools on every pool host, checking for them in CI and keeping three lists in step (plan ck-report-only-draws-nested-owl; dotfiles `tests/unit/ci_gate.bats` checks it there). Other repos adopt it when they next touch CI.
+
 ## Red handling
 
 One decision list. Walk it top to bottom for every red.
@@ -65,7 +69,7 @@ One decision list. Walk it top to bottom for every red.
 | --- | --- | --- | --- | --- |
 | unity-core-playground | `~/dev/bnb/games/engine/unity-core-playground/docs/operations/ci.md` (cost: `ci-cost.md`) | 15 min, `.github/ci-budgets.json` `tiers.gate`, judged by `scripts/ci/ci-cost.py --days 1` (p90 114 min on 2026-11-13) | affected classes on the pool, nightly runs every class | Sentinel `playground-gate-budget`, hourly |
 | platform | `~/dev/bnb/platform/docs/deployment/PIPELINES.md` | not declared (fleet default 10) | turbo affected plus draft tier, full on develop/main and nightly | none yet |
-| dotfiles | skill `shell-test-harness`, section 5 | 5 min, provisional (`rules.jsonl`; PR p90 was 9.0 min on 2026-11-10, before the picked gate) | picked set plus broad set, full on main; shards weighed by the last green main JUnit | Sentinel `dotfiles-gate-budget`, hourly |
+| dotfiles | skill `shell-test-harness`, section 5 | 5 min, provisional (`rules.jsonl`; PR p90 was 9.0 min on 2026-11-10, before the picked gate) | picked set plus broad set, full on main; shards weighed by the last green main JUnit; every job in the `tests/Dockerfile` image on the `&pool` runner: `gh variable set LINUX_RUNNER_LIGHT -R Kblack0610/.dotfiles -b '["self-hosted","light"]'` is the home pool, `gh variable delete LINUX_RUNNER_LIGHT -R Kblack0610/.dotfiles` is GitHub-hosted, a fork PR is always hosted | Sentinel `dotfiles-gate-budget`, hourly |
 | dotfiles-private, home-config, unity-core, unity-core-harness, bnb-game-servers, dodginballs, binks-agent-orchestrator, personal-sites, crypto-indexer | none yet | fleet default 10 | none written | none yet |
 
 A repo that adds a CI doc adds its row here in the same PR.

@@ -240,7 +240,8 @@ plan_rows() {
 
 # phase_takes <phase text> -> each board row the phase line says it takes (`takes ucp-2701`, `takes board
 # row ucp-2701`, `takes row ucp-2701`), lowercase, one a line. The one reader of that marker: agent-queue
-# add --plan ranks the phase by those rows, and agent-land closes them when the phase merges. A bare
+# add --plan ranks the phase by those rows, agent-land closes them when the phase merges, and ask-sweep
+# files no plan row while each open phase takes a row still open (plan_rows_hold). A bare
 # `takes <row-id>` in prose names no row (an id needs digits), so a plan that documents the marker is safe.
 phase_takes() {
   printf '%s\n' "$1" | { grep -oiE '(^|[^a-z])takes (board )?(row )?[a-z]{2,4}-[0-9]+' || true; } |

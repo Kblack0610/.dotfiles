@@ -4906,19 +4906,23 @@ already"
 # 108 dispatch starts failed with no holder on record.
 @test "a lock timeout appends one lock-miss line naming the holder, the taker and its mode" {
   "$AQ" add --project game "one item" >/dev/null
-  exec 9> "$AGENT_QUEUE_DIR/.lock"
-  flock 9
-  # 9>&-: the taker is not the holder's child here, so it must not inherit the holder's fd.
-  AGENT_QUEUE_LOCK_WAIT=1 run "$AQ" add --project game "two item" 9>&-
+  # The holder stays alive while it holds: in a container's pid namespace the kernel hides a
+  # /proc/locks entry whose taker has exited, as a bare `flock 9` does. cat opens the fifo only
+  # after flock has the lock, so opening its write end here is the signal that the lock is held.
+  mkfifo "$BATS_TEST_TMPDIR/hold"
+  flock "$AGENT_QUEUE_DIR/.lock" cat "$BATS_TEST_TMPDIR/hold" &
+  holder=$!
+  exec 7> "$BATS_TEST_TMPDIR/hold"
+  AGENT_QUEUE_LOCK_WAIT=1 run "$AQ" add --project game "two item" 7>&-
   assert_failure 75
   assert_output --partial "lock-miss.jsonl"
-  AGENT_QUEUE_LOCK_WAIT=1 run "$AQ" show one-item --json 9>&-
+  AGENT_QUEUE_LOCK_WAIT=1 run "$AQ" show one-item --json 7>&-
   assert_failure 75
-  flock -u 9
-  exec 9>&-
+  exec 7>&-
+  wait "$holder"
   log="$AGENT_QUEUE_DIR/lock-miss.jsonl"
   [ "$(wc -l < "$log")" = 2 ]
-  run jq -r --argjson me "$BASHPID" -s '.[] | [.mode, (.cmd | test("agent-queue (add|show)")),
+  run jq -r --argjson me "$holder" -s '.[] | [.mode, (.cmd | test("agent-queue (add|show)")),
     (.locks | index(".lock holds WRITE") != null), (.procs | any(.pid == $me and .file == ".lock")),
     (.procs | all(.cmd | test("agent-queue") | not))] | map(tostring) | join(" ")' "$log"
   assert_line --index 0 "exclusive true true true true"
@@ -5355,4 +5359,28 @@ row_item() {
   run env AGENT_QUEUE_ITEM=phase CLAUDE_CODE_ENTRYPOINT= "$AQ" add --project level --priority low --slug l1 "land PR 8"
   assert_failure 5
   assert_output --partial "(#after/lv-1)"
+}
+
+# plan dispatch-event-wake: the wake file is what fleet-dispatch-kick.path watches. One write in item_event
+# covers every transition, so a start (queued -> running) is no event and a kick's own starts wake nothing.
+@test "an item added to the queue or closed wakes a dispatch kick; a start, a set and a running add do not (dispatch-event-wake)" {
+  export FLEET_DISPATCH_DIR="$SANDBOX/dispatch"
+  wake="$FLEET_DISPATCH_DIR/.wake"
+  "$AQ" add --project game --slug w1 "w1"
+  grep -q 'item-added w1' "$wake" || fail "an add wrote no wake: $(cat "$wake" 2>/dev/null)"
+  rm -f "$wake"
+  "$AQ" set w1 session=game-agent-1 account=main
+  "$AQ" move w1 running
+  "$AQ" move w1 waiting
+  "$AQ" move w1 review
+  [ ! -e "$wake" ] || fail "a set or a move to running, waiting or review wrote a wake"
+  "$AQ" move w1 done --status ok
+  grep -q 'item-moved w1' "$wake" || fail "a close wrote no wake"
+  rm -f "$wake"
+  "$AQ" add --running --project game --slug w2 "w2"
+  [ ! -e "$wake" ] || fail "an add of a running item wrote a wake"
+  "$AQ" add --project game --slug w3 "w3"
+  rm -f "$wake"
+  "$AQ" cancel w3 --why "not wanted"
+  grep -q 'w3' "$wake" || fail "a cancel wrote no wake"
 }

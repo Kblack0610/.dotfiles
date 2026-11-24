@@ -731,6 +731,23 @@ ptask game --agent tag --add plan --add go ga-7'
   assert_equal "$(jq -r 'select(.key == "gx-3") | .exit // empty' "$FLEET_DISPATCH_DIR/verdicts.jsonl")" sheet
 }
 
+@test "skip_exits: a row sent to the sheet takes its dependents' #after/ gates along in the same pass, so queue-starved never reads them dead (ar-3172)" {
+  printf '%s\n' '- (needs-person) a device run' >> "$DISPATCH_POLICY"
+  project game beta "$SANDBOX/repos/game"
+  row game agent gx-2 "- [ ] row gx-2 $T <!-- id:gx-2 -->"
+  row game agent gx-8 "- [ ] row gx-8 $T #after/gx-2 <!-- id:gx-8 -->"
+  # the notes stand-in files no sheet row, so the copy the sheet exit writes is there from the start
+  row game human hm-2 "- [ ] row gx-2 (agent row gx-2) <!-- id:hm-2 -->"
+  skipv gx-2 needs-person
+  skip_exits
+  grep -q 'id:gx-2 dropped: on the game sheet' "$NOTES_FIXTURE/rows.game.agent"
+  # NEGATIVE CONTROL: before ar-3172 gx-8 kept #after/gx-2 until the next pass's reap
+  grep -q '^- \[ \] row gx-8 .*#after/hm-2 <!-- id:gx-8 -->' <(cut -f2 "$NOTES_FIXTURE/rows.game.agent")
+  GATES_LOADED=''
+  run dead_holds
+  assert_output ''
+}
+
 @test "skip_exits: exits takes --dry-run or nothing; any other argument is a usage error that moves no row" {
   exits_fixture
   run skip_exits --dryrun
@@ -2120,10 +2137,12 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   echo '99.0 99.0 99.0 1/1 1' > "$DISPATCH_LOADAVG"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r .held_kind <<<"$output")" load
+  # the load the gate judged: the pace reading plus the recent starts, never the reading alone
+  assert_equal "$(jq -r '[.load_at_hold == ((.load + .load_pending) * 100 | round / 100), .load_at_hold > .load_cap] | @tsv' <<<"$output")" $'true\ttrue'
   echo '0.1 0.1 0.1 1/1 1' > "$DISPATCH_LOADAVG"
   stub fleet-assess '[ "$1" = --watch-probe ] && exit 1; [ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
-  assert_equal "$(jq -r '[.held, .held_kind] | @tsv' <<<"$output")" $'fleet-assess says HOLD\tassess'
+  assert_equal "$(jq -r '[.held, .held_kind, .load_at_hold] | @tsv' <<<"$output")" $'fleet-assess says HOLD\tassess\t'
 }
 
 @test "a run from a shell reads the DISPATCH_* tuning from the agentctl conf; the environment wins" {

@@ -60,7 +60,7 @@ hook() { (cd "$W" && .githooks/pre-push </dev/null); }
 @test "the steps the hook runs are the commands tests.yml runs" {
   grep -q 'tests/docker.sh lint' "$WF"
   grep -q 'tests/pick.sh rust' "$WF"
-  grep -q 'make -C tests test-rust' "$WF"
+  grep -q 'tests/docker.sh test-rust' "$WF"
   grep -q 'tests/lint.sh --only' "$HOOK"
   grep -q 'tests/rust.sh' "$HOOK"
   grep -q 'tests/pick.sh rust HEAD' "$HOOK"

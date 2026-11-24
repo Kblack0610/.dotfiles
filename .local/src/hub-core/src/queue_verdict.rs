@@ -32,6 +32,13 @@ const KINDS: &[(&str, &str)] = &[
 /// The gates a pass can be held by, in `fleet-dispatch stats`' `room_held_<kind>` names.
 const GATES: &[&str] = &["slots", "load", "account", "assess", "other"];
 
+/// A load or cap as published, to one decimal with a whole number bare: 25.2, 30. Floored, a
+/// load just over its cap would read as equal to it.
+fn one_dp(x: f64) -> String {
+    let s = format!("{x:.1}");
+    s.strip_suffix(".0").map_or(s.clone(), str::to_string)
+}
+
 /// The Do for each exception: what shows or fixes its cause, said after the point. Content, so
 /// a renamed command is one edit here.
 fn act(key: &str) -> &'static str {
@@ -187,11 +194,19 @@ impl Verdict {
                         "the fleet is at its session target of {}",
                         dash(d("room_max_live"))
                     ),
-                    "load" => format!(
-                        "load {} is over its cap of {}",
-                        dash(d("room_load")),
-                        dash(d("room_load_cap"))
-                    ),
+                    // The load the gate judged on the pass it held (with its recent starts), never
+                    // the live reading, which can sit under the cap beside the hold.
+                    "load" => match (
+                        v.fact("dispatch.room_load_at_hold"),
+                        v.fact("dispatch.room_load_cap"),
+                    ) {
+                        (Some(l), Some(c)) => {
+                            format!("load {} is over its cap of {}", one_dp(l), one_dp(c))
+                        }
+                        (_, c) => {
+                            format!("load is over its cap of {}", c.map_or("-".into(), one_dp))
+                        }
+                    },
                     "assess" => "the fleet-assess check says the machine is too busy".into(),
                     "account" => "no account has room".into(),
                     _ => "a gate holds it".into(),
@@ -540,14 +555,30 @@ mod tests {
         let v = judge(&[
             "summary_dispatch.held_s=7200",
             "summary_dispatch.room_held_load=1",
+            "summary_dispatch.room_load_at_hold=37.6",
         ]);
         assert_eq!(v.level(), Level::Warn);
         assert_eq!(
             texts(&v, &ready(&[("high", "art", 5), ("urgent", "hovers", 20)])),
             [
-                "Dispatch paused 2h00m: load 27 is over its cap of 36 | See the fleet-pace skill",
+                "Dispatch paused 2h00m: load 37.6 is over its cap of 36 | See the fleet-pace skill",
                 "Urgent item waiting 20m: fix(waybar): hovers",
             ]
+        );
+    }
+
+    #[test]
+    fn a_load_hold_with_no_judged_load_on_the_feed_prints_no_live_reading_beside_it() {
+        // 2026-11-23: "load 11 is over its cap of 25", the live reading beside a hold on 11 plus
+        // the recent starts' load.
+        let v = judge(&[
+            "summary_dispatch.held_s=600",
+            "summary_dispatch.room_held_load=1",
+            "summary_dispatch.room_load_cap=25.2",
+        ]);
+        assert_eq!(
+            texts(&v, &Ready::default())[0],
+            "Dispatch paused 10m: load is over its cap of 25.2 | See the fleet-pace skill"
         );
     }
 

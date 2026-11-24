@@ -8,7 +8,7 @@
 #   fleet-dispatch covered           the projects an untagged worker takes: stage dev or later, a repo, not on DISPATCH_OFF_PROJECTS
 #   fleet-dispatch report            latest verdict per row: picked or skipped, and why
 #   fleet-dispatch verdicts          the same as JSON lines, each with plan: true for a skip by a DISPATCH_PLAN_RULES rule
-#   fleet-dispatch exits [--dry-run] give each skipped agent row its rule's exit (skip_exits; each run pass does); --dry-run lists them
+#   fleet-dispatch exits [--dry-run] give each skipped agent row its rule's exit, and move the #after/ gates on a row sent to the sheet (skip_exits; each run pass does); --dry-run lists them
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
 #   fleet-dispatch promote --project P [--profile X] [--agent] [--dispatch] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item; --dispatch makes it a capped pull like dispatch's own
 #   fleet-dispatch pull-after [--queue-only] ID  promote, and start unless low or --queue-only, the open rows gated #after/ID: agent-queue runs it when ID's item closes ok
@@ -46,7 +46,7 @@
 #   fleet-dispatch run-result SLUG      one line on what a headless run left (patch files and lines, else PR, note or state), for its replay's agent-panel row
 #   fleet-dispatch item-end H SID...   why the H run that claimed those ids ended, from this machine's record (a dispatcher asks the worker it ran on)
 #   (run, kick, reap, start, fill, promote, pull-after and exits do nothing on a machine that does not hold the fleet lease: lease_guard)
-#   fleet-dispatch record [--here]   keep each world's pane record, then (on the lease holder) each fleet worker's; page when a world's server died
+#   fleet-dispatch record [--here]   keep each world's pane record, then (on the lease holder) each fleet worker's, and take their queue-item events into this chain record (worker_records); page when a world's server died
 #   fleet-dispatch restore [--server S] [--dry-run] [--here]  reopen a lost server's conversations as windows, here and (on the lease holder) on each fleet worker; one a queue item prompts wakes in a batch of the wake budget (wake-pace.sh), the rest under the `restore` hold
 #
 # A pass walks the workers in workers.json in file order, and a row goes to the first that may
@@ -2097,7 +2097,7 @@ verdict_errors() {
 #    reading that plan, still skips by such a rule takes the human exit: a second plan would not help.
 #  - human (DISPATCH_HUMAN_RULES): an #urgent, #high, #normal, bare or #requested row is filed on the human sheet
 #    (file_row human), a #low one kept in improvements.md (`notes improve`) unless an open row gates
-#    #after/ on it (then the sheet, whose row follow_moved_gates moves that gate to), its #worker/ tag off
+#    #after/ on it (then the sheet, whose row follow_moved_gates moves that gate to in the same pass), its #worker/ tag off
 #    so no worker takes it there; then the agent row is dropped with a --why naming where it went.
 #  - waits: gated #after/<row> on the first open row its verdict's reason, else its text, names (its
 #    own id and #of/ links aside) or #pr/<owner>/<repo>/<N> on a PR named so, when the judge read the
@@ -2112,7 +2112,7 @@ verdict_errors() {
 # nothing and prints `<exit> TAB <project> TAB <id> TAB <rule>` per row (`plan-wait` for a plan row
 # past the room), then the counts. Sets PLAN_TAGGED and EXITS_TAKEN.
 skip_exits() {
-  local dry='' board rows room p prof id raw line dsig dj rule req prio planned d e body why where gate
+  local dry='' follow='' board rows room p prof id raw line dsig dj rule req prio planned d e body why where gate
   local -a add
   local -A ids=() n=()
   case "${1:-}" in
@@ -2211,8 +2211,11 @@ skip_exits() {
         fi
         # Filed is the exit: a drop that fails is said and its exit recorded all the same, so a later pass
         # files no second copy; the agent row stays open for a hand drop.
-        np "$prof" ptask "$p" --agent drop "$id" --why "$where: $why" >/dev/null 2>&1 ||
-          say "skip_exits: $p $id is $where, but the agent row would not drop: drop it by hand" ;;
+        if np "$prof" ptask "$p" --agent drop "$id" --why "$where: $why" >/dev/null 2>&1; then
+          [ "$e" != sheet ] || [ -z "${gated[$id]-}" ] || follow=1
+        else
+          say "skip_exits: $p $id is $where, but the agent row would not drop: drop it by hand"
+        fi ;;
     esac
     EXITS_TAKEN=$(( EXITS_TAKEN + 1 ))
     mkdir -p "$DIR"   # a kind exit can be the first verdict on record
@@ -2223,6 +2226,11 @@ skip_exits() {
     return 0
   fi
   [ "$EXITS_TAKEN" = 0 ] || say "gave $EXITS_TAKEN skipped row(s) their exit"
+  # The reap's follow_moved_gates ran before this, so a gate on a row sent to the sheet here would read
+  # dead until the next pass, and queue-starved trips on it (ar-3172: ucp-3100 on ucp-3099, 2026-11-23).
+  # It reads the gates again in a subshell: the pass's copy predates the drop, and a failed read there
+  # must not blank the copy the pass's picks use (a moved gate missing from it reads as waiting).
+  [ -z "$follow" ] || ( GATES_LOADED=''; follow_moved_gates )
   [ "$PLAN_TAGGED" = 0 ] && return 0
   say "tagged $PLAN_TAGGED for a plan"
   "$HERE/agentctl-inbox-plan" --kick || say "skip_exits: could not start inbox-plan"
@@ -4041,13 +4049,51 @@ on_workers() {
   return "$rc"
 }
 
+# worker_records -- take each fleet worker's queue-item events into this machine's chain record. A
+# worker keeps its own ingest.jsonl and no worker can reach this machine over ssh, so what its
+# sessions did to an item (the move to done, the merge) never reached the record `notes log --steps`
+# and `fleet-bench pipeline` read: 156 of the 184 items the pipeline's drift counted on 2026-11-23
+# ran on razer-laptop. Each worker's lines newer than its cursor ($WORKER_RECORD_DIR/<worker>, the
+# newest instant the last read carried) come over its ssh, and `notes ingest import` appends the ones
+# of a queue item this record lacks, word for word once. A worker that does not answer keeps its
+# lines for the next read. Always rc 0: the record is best effort, as every chain_event is.
+: "${WORKER_RECORD_SECS:=20}"   # one worker's read; ssh answers or the next minute asks again
+worker_records() {
+  local name dir="${WORKER_RECORD_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/worker-record}" pids=()
+  fleet_hosts >/dev/null
+  mkdir -p "$dir" || return 0
+  # One read at a time per cursor: a hand-run record beside the minute tick would import twice.
+  exec 6>"$dir/.lock"
+  flock -n 6 || return 0
+  # All workers at once, as on_workers does, so a sleeping laptop's ssh timeout is not added up.
+  while read -r name; do
+    worker_record_one "$name" "$dir" &
+    pids+=("$!")
+  done < <(fleet_peers)
+  [ "${#pids[@]}" -eq 0 ] || wait "${pids[@]}"
+  exec 6>&-
+  return 0
+}
+
+# worker_record_one <worker> <cursor dir> -- one worker's read. A worker that does not answer (ssh
+# 255, or no record yet) is quiet, its lines wait for the next read; a failed `notes ingest import`
+# is said, since it is the fault that would leave the drift where it was.
+worker_record_one() {
+  local name=$1 dir=$2 cur at lines
+  cur=$(cat "$dir/$name" 2>/dev/null)
+  lines=$(fleet_host_run "$name" timeout "$WORKER_RECORD_SECS" sh -c \
+    'f="$HOME/.local/state/notes/ingest.jsonl"; [ -r "$f" ] && awk -v c="$1" '\''substr($0, 8, length(c)) >= c'\'' "$f"' _ "$cur" 2>/dev/null) || return 0
+  at=$(notes ingest import <<<"$lines" 2>/dev/null) || { say "record: $name: notes ingest import failed"; return 0; }
+  [ -z "$at" ] || printf '%s\n' "$at" > "$dir/$name"
+}
+
 # fans_out -> rc 0 when this machine holds the fleet lease (`fleet-lease held`), so it asks every
 # other worker: the holder runs fleet-state.service, the one minute record, and no other machine
 # fans out, or each would ask every one.
 fans_out() { fleet-lease held >/dev/null 2>&1; }
 
 # cmd_record [--here] -- every world a manifest declares, then, on the lease holder (fans_out), each
-# fleet worker's (on_workers), unless --here. fleet-state.service runs it each minute, so a record is at
+# fleet worker's (worker_records takes their queue-item events in, on_workers has each its own pane record), unless --here. fleet-state.service runs it each minute, so a record is at
 # most that old; a world's sockets give no event to await for a pane's cwd or id. That tick is also
 # what wakes a paced restore's next batch here (restore_tick) and takes the CPU sample the load pace
 # reads (cpu_sample).
@@ -4057,7 +4103,7 @@ cmd_record() {
   [ -n "$here" ] || cpu_sample   # the lease holder's tick, on the machine whose pass reads it; a worker's pace reads load average
   record_here || return 1
   restore_tick
-  [ -n "$here" ] || ! fans_out || on_workers --quiet record
+  [ -n "$here" ] || ! fans_out || { worker_records; on_workers --quiet record; }
 }
 
 # record_here -- the pane record of every world a manifest declares on this machine, under record's lock.
@@ -6918,7 +6964,10 @@ cmd_headroom() {
     | .held_kind = (.held // "" | if . == "" or . == "nothing runnable" then null
         elif startswith("pace target") or startswith("run units") then "slots" elif startswith("load ") then "load"
         elif test("account") then "account"
-        elif startswith("fleet-assess") then "assess" else "other" end)' |
+        elif startswith("fleet-assess") then "assess" else "other" end)
+    # The load the gate judged when it held on load (over_pace: the pace reading plus what the
+    # recent starts will add), so the pause line never prints a lower live reading beside it.
+    | .load_at_hold = (if .held_kind == "load" and .load != null then (.load + .load_pending) * 100 | round / 100 else null end)' |
     if [ "${1:-}" = --json ]; then cat; else
       jq -r '"could start now: \(.could_start) of \(.runnable) runnable (a pass starts \(if .per_pass > 0 then "up to \(.per_pass)" else "what the gates allow" end), level \(.level))" +
         (if .held then ", held: \(.held)" else "" end),
@@ -7030,7 +7079,7 @@ cmd_stats() {
       # The room the last pass had, with why it was held as a 0/1 per kind.
       + (if $hr == null then {} else
           {room_live_runs: $hr.live_runs, room_max_live: $hr.max_live, room_live_hand: ($hr.live_hand // null),
-           room_load: $hr.load, room_load_cap: $hr.load_cap, room_load1: ($hr.load1 // null), room_cpu_busy: ($hr.cpu_busy // null),
+           room_load: $hr.load, room_load_cap: $hr.load_cap, room_load_at_hold: ($hr.load_at_hold // null), room_load1: ($hr.load1 // null), room_cpu_busy: ($hr.cpu_busy // null),
            room_run_floor: ($hr.run_floor // null), room_floor_live: ($hr.floor_live // null), room_total_live: ($hr.total_live // null)}
           + (["slots", "load", "account", "assess", "other"]
              | map({key: "room_held_\(.)", value: (if $hr.held_kind == . then 1 else 0 end)}) | from_entries) end)'
@@ -7717,15 +7766,18 @@ settle() {
     *) set -- "$1" "$(judge_failed); $2" ;;
   esac
   say "$2"
-  # A kick is no pass: its stops are said, never published as fleet-dispatch's outcome, which would end or
-  # set the hold and the liveness proof of the pass that reads the whole fleet (KICK, cmd_kick).
-  [ "$DRY" = 0 ] && [ "${KICK:-0}" = 0 ] || return 0
+  [ "$DRY" = 0 ] || return 0
   # A pass that started an item past a closed gate (start_item sets FLOOR_HELD) leaves the hold
   # standing (held_since): its WORKED and any later NOOP prove no gate open.
   [ "${FLOOR_HELD:-0}" = 1 ] && local PROOF_HELD_KEEP=1
+  # A kick is no pass: its outcome is its own unit's (fleet-dispatch-kick), never fleet-dispatch's, which
+  # would end or set the hold and the liveness proof of the pass that reads the whole fleet (KICK, cmd_kick).
+  # Run by hand it has no unit and publishes nothing (proof_runner_outcome). The unit's own outcome keeps
+  # agentctl from reading a run that said nothing as STALLED.
   # shellcheck source=/dev/null
   . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null || return 0
-  proof_outcome fleet-dispatch "$1" "$2" 2>/dev/null || true
+  if [ "${KICK:-0}" = 0 ]; then proof_outcome fleet-dispatch "$1" "$2" 2>/dev/null || true
+  else proof_runner_outcome "$1" "$2" 2>/dev/null || true; fi
 }
 
 # settle_board <outcome> <why> -- settle a pass on its board step. A pass that came here past held
@@ -7751,6 +7803,8 @@ pass_mark() { PASS_TIMES+="${PASS_TIMES:+, }$1 $(( SECONDS - ${PASS_MARK:-0} ))s
 
 # The longest a timed pass waits for a kick's lock: a kick starts a session or two, so well under it.
 KICK_WAIT_S=${KICK_WAIT_S:-120}
+# The most times one kick reads the queue again because its wake file moved during the run.
+KICK_ROUNDS=${KICK_ROUNDS:-3}
 
 # pass_reset -- the per-pass state a `run` pass and a `kick` start from.
 pass_reset() {
@@ -7794,7 +7848,14 @@ cmd_kick() {
   # The mark tells a timed pass that the lock is a kick's, held for seconds: it waits (cmd_run), where a
   # pass holding the lock is waited on by nobody. Burst kicks would otherwise leave every timed pass a NOOP.
   : > "$DIR/.kick"
-  local rc; kick_start; rc=$?
+  # A wake that lands while this runs is lost to systemd (the .path finds its unit already running), and
+  # this run may have read the queue before the write: look again while the wake file moved, KICK_ROUNDS at most.
+  local rc round seen
+  for ((round = 0; round < KICK_ROUNDS; round++)); do
+    seen=$(stat -c %y "$DIR/.wake" 2>/dev/null)
+    kick_start; rc=$?
+    [ "$(stat -c %y "$DIR/.wake" 2>/dev/null)" != "$seen" ] || break
+  done
   rm -f "$DIR/.kick"
   return "$rc"
 }
@@ -7821,7 +7882,11 @@ kick_start() {
   local items; items=$(next_items --points)
   [ -n "$items" ] || { settle NOOP "kick: nothing queued to start"; return 0; }
   run_queue "$items" "$room"; local rc=$?
-  [ "${STARTED:-0}" -eq 0 ] || say "kick: started $STARTED"
+  # run_queue settles only a stop of its own (BLOCKED, a held floor): a clean end is settled here, so the
+  # unit declares an outcome and agentctl does not read the silent run as STALLED.
+  if [ "$rc" -ne 0 ]; then :
+  elif [ "${STARTED:-0}" -gt 0 ]; then settle WORKED "kick: started $STARTED"
+  else settle NOOP "kick: started nothing"; fi
   return "$rc"
 }
 
