@@ -759,8 +759,9 @@ by_rows() {
   run "$SUBJECT" ended --days 1
   assert_success
   assert_equal "$(printf '%s\n' "$output" | jq -sc 'map(.session_id) | sort')" '["sess-a","sess-b","sess-c"]'
+  # no outcome row yet: its PR counts are unknown (null), not 0
   assert_equal "$(printf '%s\n' "$output" | jq -sc 'map(select(.session_id == "sess-a"))[0]')" \
-    '{"session_id":"sess-a","project":"proj","title":"title a","harness":null,"account":null,"cost_usd":1,"updated_epoch":1792368000,"prs_merged":0,"prs_open":0}'
+    '{"session_id":"sess-a","project":"proj","title":"title a","harness":null,"account":null,"cost_usd":1,"updated_epoch":1792368000,"prs_merged":null,"prs_open":null}'
   # negative control: a stop before the window is not listed
   SO_NOW=$((STOP + 86401)) run "$SUBJECT" ended --days 1
   assert_success
