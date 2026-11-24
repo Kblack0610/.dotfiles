@@ -275,12 +275,12 @@ pub fn stages() {
     println!("{}", STAGES.join(" "));
 }
 
-/// A project's priority, the human's call on which projects agents should work first.
-/// Unset is normal. `fleet-dispatch` and `agent-queue` rank a project's work by it, focus
-/// first, then high, normal, low, and start a lower tier only when no higher one can; nothing
-/// is held back. The `prio/` prefix keeps it apart from a row's
-/// `#high` / `#normal` / `#low` priority words.
-pub(crate) const PRIOS: [&str; 3] = ["prio/focus", "prio/high", "prio/low"];
+/// The one project tag left of the retired project priority ladder: `#prio/focus` turns a
+/// project's release windows into sprints (`window::runs_sprints`) for as long as its
+/// `Focus until:` says. It ranks nothing: what starts next is the row's own priority
+/// (`priority.md`), and the fleet's share of starts is the dispatch conf's
+/// `DISPATCH_FLEET_PROJECTS`. The `prio/` prefix keeps it apart from a row's priority words.
+pub(crate) const PRIOS: [&str; 1] = ["prio/focus"];
 
 // -- stage and group: hashtags on the project's front page --------------------
 //
@@ -543,7 +543,7 @@ pub fn group(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Resu
 /// offset, so a host in another zone reading the synced vault sees the same end.
 const FOCUS_UNTIL: &str = "Focus until:";
 /// How long a focus lasts when `--hours` is not given, and the most it may be set for. A focus
-/// is a short push, never a standing state: past its end it reads as high.
+/// is a short push, never a standing state: past its end the project is off focus.
 const FOCUS_HOURS: f64 = 4.0;
 const FOCUS_MAX_HOURS: f64 = 24.0;
 const FOCUS_FMT: &str = "%Y-%m-%d %H:%M %z";
@@ -584,10 +584,10 @@ fn extend_focus(dir: &Path, cut: chrono::NaiveDateTime) -> Result<()> {
     Ok(())
 }
 
-/// `notes projects --prio <name> [--set focus|high|low|normal] [--hours H]`: read or set a
-/// project's priority. `normal` clears the tag. Focus lasts `--hours` (default
-/// [`FOCUS_HOURS`], at most [`FOCUS_MAX_HOURS`]) and records its end on a `Focus until:` head
-/// line; any other prio drops the line. Reading prints the bare word, empty for normal.
+/// `notes projects --prio <name> [--set focus|normal] [--hours H]`: read, set or clear a
+/// project's focus. `normal` clears the tag and its `Focus until:` line. Focus lasts `--hours`
+/// (default [`FOCUS_HOURS`], at most [`FOCUS_MAX_HOURS`]) and records its end on that head
+/// line. Reading prints `focus` while it is live, empty otherwise.
 pub fn prio(
     p: &Profile,
     log: &Logger,
@@ -607,9 +607,13 @@ pub fn prio(
         return Ok(());
     };
     let tag = match v {
-        "focus" | "high" | "low" => Some(format!("prio/{v}")),
+        "focus" => Some("prio/focus".to_string()),
         "normal" => None,
-        _ => bail!("unknown priority '{v}' (want: focus, high, low, normal)"),
+        "high" | "low" => bail!(
+            "project priority '{v}' is retired: a row's own priority orders work (priority.md), \
+             and the fleet's share is the dispatch conf's DISPATCH_FLEET_PROJECTS (want: focus, normal)"
+        ),
+        _ => bail!("unknown value '{v}' (want: focus, normal)"),
     };
     let until = if v == "focus" {
         let h = hours.unwrap_or(FOCUS_HOURS);
@@ -639,9 +643,9 @@ pub fn prio(
     Ok(())
 }
 
-/// `notes projects --prios`: every profile's indexed projects that declare a priority, as
-/// `name<TAB>prio`, one a line. The cheap read `agent-queue` takes on every listing: it reads
-/// only each front page's head, where `--stats` counts every sheet.
+/// `notes projects --prios`: every profile's indexed projects on a live focus, as
+/// `name<TAB>focus`, one a line. The cheap read `fleet-dispatch` takes for its focus line: it
+/// reads only each front page's head, where `--stats` counts every sheet.
 pub fn prios() -> Result<()> {
     for profile in config::all_profile_names()? {
         let Ok(p) = config::resolve(Some(&profile)) else {
@@ -660,8 +664,8 @@ pub fn prios() -> Result<()> {
     Ok(())
 }
 
-/// The priority word a head declares (`focus`, `high`, `low`), empty for normal. A focus whose
-/// `Focus until:` has passed, or that has none, reads as high: focus never stays on by itself.
+/// `focus` while the head's focus is live, else empty. A focus whose `Focus until:` has
+/// passed, or that has none, reads empty: focus never stays on by itself.
 fn prio_of_str(content: &str) -> String {
     prio_at(content, chrono::Utc::now())
 }
@@ -671,7 +675,7 @@ fn prio_at(content: &str, now: chrono::DateTime<chrono::Utc>) -> String {
         .and_then(|t| t.strip_prefix("prio/").map(str::to_string))
         .unwrap_or_default();
     if word == "focus" && focus_until_of(content).is_none_or(|end| end <= now) {
-        return "high".into();
+        return String::new();
     }
     word
 }
@@ -685,7 +689,7 @@ pub(crate) fn focus_until(dir: &Path) -> Option<String> {
         .flatten()
 }
 
-/// A project's declared priority word, empty for normal.
+/// `focus` while the project's focus is live, else empty.
 pub(crate) fn prio_of(dir: &Path) -> String {
     fs::read_to_string(front_page(dir))
         .map(|c| prio_of_str(&c))
@@ -3883,8 +3887,8 @@ struct ProjectStats {
     automation: bool,
     dir: PathBuf,
     stage: String,
-    /// The head's `#prio/<word>` (`focus`, `high`, `low`), empty for normal. JSON only: the
-    /// TSV keeps its columns, which several scripts read by position.
+    /// `focus` while the head's `#prio/focus` is live, else empty. JSON only: the TSV keeps
+    /// its columns, which several scripts read by position.
     prio: String,
     /// When the focus ends (`YYYY-MM-DD HH:MM`, local), while `prio` is focus; null otherwise.
     focus_until: Option<String>,
@@ -5254,12 +5258,15 @@ mod stage_tag_tests {
         assert_eq!(head_tag(&one, &PRIOS).as_deref(), Some("prio/focus"));
         assert_eq!(
             prio_of_str(&one),
-            "high",
-            "a focus with no end reads as high"
+            "",
+            "a focus with no end reads as none"
         );
-        let two = replace_head_tag(&one, &PRIOS, Some("prio/low")).unwrap();
+        let two = replace_head_tag(&one, &PRIOS, Some("prio/focus")).unwrap();
         assert_eq!(two.matches("#prio/").count(), 1, "{two}");
-        assert_eq!(prio_of_str(&two), "low");
+        // a retired ladder word is not the project's focus
+        let retired = s.replace("#tooling", "#tooling #prio/high");
+        assert_eq!(head_tag(&retired, &PRIOS), None);
+        assert_eq!(prio_of_str(&retired), "");
         let cleared = replace_head_tag(&two, &PRIOS, None).unwrap();
         assert_eq!(cleared, s, "clearing must restore the sheet byte for byte");
         assert_eq!(prio_of_str(&cleared), "");
@@ -7976,13 +7983,13 @@ mod shape_tests {
         let page = "# demo\nVersion: v0.1.0 #prio/focus\nFocus until: 2026-11-23 18:00 -0800\n\n## Tasks\n";
         // 18:00 at -0800 is 02:00 UTC the next day, whatever zone reads it.
         assert_eq!(prio_at(page, at("2026-11-24T01:59:00Z")), "focus");
-        assert_eq!(prio_at(page, at("2026-11-24T02:00:00Z")), "high");
+        assert_eq!(prio_at(page, at("2026-11-24T02:00:00Z")), "");
         // NEGATIVE CONTROLS: no end, an end with no zone, and a tag below the head.
         let bare = "# demo\nVersion: v0.1.0 #prio/focus\n\n## Tasks\n";
-        assert_eq!(prio_at(bare, at("2000-01-01T00:00:00Z")), "high");
+        assert_eq!(prio_at(bare, at("2000-01-01T00:00:00Z")), "");
         let naive = page.replace(" -0800", "");
-        assert_eq!(prio_at(&naive, at("2000-01-01T00:00:00Z")), "high");
-        let row = "# demo\nVersion: v0.1.0\n\n## Tasks\n- [ ] says #prio/high\n";
+        assert_eq!(prio_at(&naive, at("2000-01-01T00:00:00Z")), "");
+        let row = "# demo\nVersion: v0.1.0\n\n## Tasks\n- [ ] says #prio/focus\n";
         assert_eq!(prio_at(row, at("2000-01-01T00:00:00Z")), "");
         // A head with no Version: line takes the end under its title.
         let titled = set_head_line(
@@ -8012,7 +8019,7 @@ mod shape_tests {
         assert!(s.contains("Focus until: 2099-06-01 12:00 "), "{s}");
         assert_eq!(s.matches("Focus until:").count(), 1, "{s}");
         // NEGATIVE CONTROL: a project not on focus gets no focus from a sprint.
-        fs::write(&readme, "# demo\nVersion: v0.1.0 #prio/high\n\n## Tasks\n").unwrap();
+        fs::write(&readme, "# demo\nVersion: v0.1.0\n\n## Tasks\n").unwrap();
         extend_focus(&dir, cut).unwrap();
         assert!(!fs::read_to_string(&readme)
             .unwrap()

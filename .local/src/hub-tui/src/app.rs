@@ -2137,7 +2137,7 @@ impl App {
         });
     }
 
-    /// Step one project's priority in a worker; the answer comes back like a board write.
+    /// Toggle one project's focus in a worker; the answer comes back like a board write.
     fn prio_act(&mut self, profile: String, name: String, value: &'static str) {
         let label = format!("{name} prio {value}");
         self.tv.running = Some(label.clone());
@@ -4621,7 +4621,7 @@ impl App {
             "<- -> inner tabs  j/k pick  / search  f chip  c sort  S flip  a add  s start  d done  D unverified  x drop  X dup  m move  e edit  t/T tag  +/- release  o open  Esc clear, back  r refresh  {tabs} tabs  q quit"
         ),
         _ => format!(
-            "<- -> inner tabs  j/k pick  Enter open  a board  d deliverables  / search  f chip  s sort  S flip  x clear  P priority  r refresh  {tabs} tabs  q quit"
+            "<- -> inner tabs  j/k pick  Enter open  a board  d deliverables  / search  f chip  s sort  S flip  x clear  P focus  r refresh  {tabs} tabs  q quit"
         ),
         }
     }
@@ -6964,7 +6964,7 @@ mod tests {
     }
 
     #[test]
-    fn p_on_a_row_steps_its_priority_through_the_cli_and_an_empty_view_writes_nothing() {
+    fn p_on_a_row_toggles_its_focus_through_the_cli_and_an_empty_view_writes_nothing() {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut a = with_tx(Tab::Home, tx);
         let fake = Arc::new(Fake::default());
@@ -6979,7 +6979,7 @@ mod tests {
         a.handle(Msg::Projects(Box::new(l)));
         let s = screen(&mut a, 140, 30);
         assert!(s.contains("v0.1.0   focus"), "{s}");
-        assert!(s.lines().last().unwrap().contains("P priority"), "{s}");
+        assert!(s.lines().last().unwrap().contains("P focus"), "{s}");
         fake.0.lock().unwrap().clear();
         // Typed, P is a letter of the search; with no row kept it has nothing to step.
         for c in "/P".chars() {
@@ -6991,7 +6991,7 @@ mod tests {
         assert!(fake.0.lock().unwrap().is_empty(), "no row, no write");
         a.handle(key('x'));
         a.handle(key('P'));
-        assert_eq!(a.tv.running.as_deref(), Some("demo prio high"));
+        assert_eq!(a.tv.running.as_deref(), Some("demo prio normal"));
         loop {
             if let Msg::TasksActed(r) = rx.recv().unwrap() {
                 a.handle(Msg::TasksActed(r));
@@ -7001,7 +7001,7 @@ mod tests {
         let ran = fake.0.lock().unwrap().clone();
         assert!(
             ran.iter()
-                .any(|c| c == "notes projects --prio demo --profile bnb --set high"),
+                .any(|c| c == "notes projects --prio demo --profile bnb --set normal"),
             "{ran:?}"
         );
     }

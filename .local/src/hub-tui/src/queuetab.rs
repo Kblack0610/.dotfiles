@@ -911,7 +911,7 @@ pub(crate) mod tests {
     /// Three ranked rows: an auto one with a verdict, a held auto one, a human-lane manual one.
     pub fn cands() -> Candidates {
         hub_core::queue::parse_candidates(concat!(
-            r##"{"profile":"bnb","project":"shape-city","lane":"agent","key":"bar-17","text":"- [ ] fix the jump arc #high <!-- id:bar-17 -->","why":"focus project, due today, #high, beta","auto":true,"verdict":"dispatch","held":false}"##,
+            r##"{"profile":"bnb","project":"shape-city","lane":"agent","key":"bar-17","text":"- [ ] fix the jump arc #high <!-- id:bar-17 -->","why":"due today, #high, beta","auto":true,"verdict":"dispatch","held":false}"##,
             "\n",
             r##"{"profile":"bnb","project":"unity-core-playground","lane":"agent","key":"ucp-408","text":"- [ ] fix(cutscene): smooth the blend #requested <!-- id:ucp-408 -->","why":"requested, #high, beta, 5d old","auto":true,"verdict":"unjudged","held":true,"area":"unity"}"##,
             "\n",
@@ -1629,7 +1629,7 @@ pub(crate) mod tests {
             "{a}"
         );
         assert!(
-            a.contains("auto dispatch") && a.contains("focus project, due today"),
+            a.contains("auto dispatch") && a.contains("due today, #high"),
             "{a}"
         );
         assert!(b.contains("auto held") && !b.contains("unjudged"), "{b}");

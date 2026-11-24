@@ -96,9 +96,10 @@ pub struct Stats {
     pub profile: String,
     pub name: String,
     pub stage: String,
-    /// `focus`, `high`, `low`, empty for normal: the sheet's `#prio/<word>`.
+    /// `focus` while the sheet's `#prio/focus` is live, else empty: the sprint switch, the one
+    /// project tag left (a row's own priority orders work, `priority.md`).
     pub prio: String,
-    /// When the focus ends (`YYYY-MM-DD HH:MM`), while `prio` is focus; past it notes reads high.
+    /// When the focus ends (`YYYY-MM-DD HH:MM`), while `prio` is focus; past it notes reads empty.
     pub focus_until: Option<String>,
     pub version: Option<String>,
     pub goal: String,
@@ -139,14 +140,9 @@ pub struct EpicRollup {
     pub done_weight: u32,
 }
 
-/// The priority after `cur` in the cycle a key steps through: normal, focus, high, low, normal.
+/// The value a key writes for a project at `cur`: focus toggles, on and off (`normal`).
 pub fn next_prio(cur: &str) -> &'static str {
-    match cur {
-        "" => "focus",
-        "focus" => "high",
-        "high" => "low",
-        _ => "normal",
-    }
+    if cur == "focus" { "normal" } else { "focus" }
 }
 
 /// A project or profile name safe to pass as one argument: not empty, not flag-like, and only
@@ -237,7 +233,7 @@ pub fn set_prio(
 ) -> Result<String, String> {
     if !safe_name(profile)
         || !safe_name(name)
-        || !["focus", "high", "low", "normal"].contains(&value)
+        || !["focus", "normal"].contains(&value)
         || (hours.is_some() && value != "focus")
     {
         return Err(format!("refusing prio {value} for {profile}/{name}"));
@@ -502,7 +498,7 @@ impl crate::table::Row for Card {
     fn rank(&self, col: &str) -> Val {
         match col {
             // `next_prio`'s words, normal being blank, lowest first.
-            "prio" => ["low", "", "high", "focus"]
+            "prio" => ["", "focus"]
                 .iter()
                 .position(|p| *p == self.prio)
                 .map_or(Val::None, |i| Val::Num(i as f64)),
@@ -1140,7 +1136,7 @@ pub fn focus_json(cards: &[Card]) -> Value {
             .unwrap_or_default()
     };
     let says = if on.is_empty() {
-        "No project is on focus. Each project's work ranks by its own prio.".to_string()
+        "No project is on focus, so none runs sprints.".to_string()
     } else {
         let named: Vec<String> = on
             .iter()
@@ -1151,7 +1147,7 @@ pub fn focus_json(cards: &[Card]) -> Value {
             })
             .collect();
         format!(
-            "On focus: {}. Its work starts ahead of every other project's; past its end it ranks as high.",
+            "On focus: {}. Its release windows run as sprints until its end.",
             named.join(", ")
         )
     };
@@ -1296,8 +1292,8 @@ mod tests {
         assert_eq!(names("-stage:alpha normal", "", "", ""), ["normal"]);
         assert_eq!(
             names("", "", "prio", ""),
-            ["focus", "normal", "bare", "low"],
-            "focus outranks normal outranks low, not the alphabet"
+            ["focus", "normal", "low", "bare"],
+            "focus outranks normal; a retired ladder word (low) ranks as none does, last"
         );
         assert_eq!(
             names("stage:alpha", "", "version", ""),
@@ -1449,9 +1445,7 @@ mod tests {
     #[test]
     fn the_prio_key_cycles_and_writes_through_the_cli_only() {
         assert_eq!(next_prio(""), "focus");
-        assert_eq!(next_prio("focus"), "high");
-        assert_eq!(next_prio("high"), "low");
-        assert_eq!(next_prio("low"), "normal");
+        assert_eq!(next_prio("focus"), "normal");
         let r = Argv(Default::default());
         set_prio(&r, "bnb", "shape-city", "focus", None).unwrap();
         assert_eq!(
@@ -1471,8 +1465,11 @@ mod tests {
         r.0.borrow_mut().clear();
         assert!(set_prio(&r, "bnb", "--all", "focus", None).is_err());
         assert!(set_prio(&r, "bnb", "demo", "urgent", None).is_err());
+        // the retired ladder's words are refused: focus is the one project tag left
+        assert!(set_prio(&r, "bnb", "demo", "high", None).is_err());
+        assert!(set_prio(&r, "bnb", "demo", "low", None).is_err());
         // hours go with a focus only; their range is notes' to refuse
-        assert!(set_prio(&r, "bnb", "demo", "high", Some(2)).is_err());
+        assert!(set_prio(&r, "bnb", "demo", "normal", Some(2)).is_err());
         assert!(r.0.borrow().is_empty(), "a refused write runs nothing");
         set_prio(&r, "bnb", "demo", "focus", Some(2)).unwrap();
         assert_eq!(r.0.borrow()[8..], ["--hours", "2"]);
