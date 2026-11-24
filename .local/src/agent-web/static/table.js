@@ -75,7 +75,7 @@ const tblChips = (t) => t.states.map((c, i) => {
 
 // The table's overview: each state but the first (the default view) as a tile with its count, in its hue (hub-core's
 // Chip.tone, rule 5) and with what it means on hover. A tap filters the table to it, a tap on the
-// one in force clears it. `extra` is a tab's own tiles after them (Sessions' SPEND). A table with
+// one in force clears it. `extra` is a tab's own tiles after them. A table with
 // no state but `all` and no extra draws none.
 function tblTiles(t, extra = "") {
   const tiles = t.states.slice(1).map((c) => {
