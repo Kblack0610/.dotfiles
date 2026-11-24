@@ -6604,8 +6604,10 @@ JSONL
   [ "$(jq -r .bucket <<<"$output")" = STALLED ]
   [ "$(jq -r .reason <<<"$output")" = 'resume killed its background gate (gate-and-land.sh) before it finished' ]
   [ "$(jq -r .fact <<<"$output")" = 'STALLED resume killed its background gate (gate-and-land.sh) before it finished @feat/x at 2026-11-12T15:43' ]
-  # a row already STALLED for its branch (commits after the merged PR) reads the lost gate instead: rerunning it is the next step
-  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m more
+  # a row already STALLED for its branch (commits after the merged PR) reads the lost gate instead: rerunning it is the next step.
+  # The commit holds a file main lacks: an empty one is no commit after the PR (ar-5151).
+  echo more > "$SANDBOX/wt/more.txt"; git -C "$SANDBOX/wt" add more.txt
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q -m more
   PANEL_IDLE_S=1800 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'resume killed its background gate (gate-and-land.sh) before it finished' ]
