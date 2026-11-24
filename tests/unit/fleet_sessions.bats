@@ -2783,6 +2783,63 @@ clean_fixture() {
   [ "$(jq -r .reason <<<"$output")" = '2 file(s) not on the default branch, no PR' ]
 }
 
+# superseded_fixture: on feat/x an unpushed draft of f, then another clone lands its own f on main
+# (MERGED_SHA), and the item this session (sid-9) worked is done ok with that merge recorded (ar-5157).
+superseded_fixture() {
+  clean_fixture
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t) d="$HOME/.agent/queue/done/$(date +%F)"
+  echo draft > "$SANDBOX/wt/f"; "${g[@]}" add f; "${g[@]}" commit -q -m 'add f, draft'
+  git clone -q -b main "$SANDBOX/origin.git" "$SANDBOX/other" 2>/dev/null
+  echo final > "$SANDBOX/other/f"; git -C "$SANDBOX/other" add f
+  git -C "$SANDBOX/other" -c user.email=t@t -c user.name=t commit -q -m 'add f (#3349)'
+  git -C "$SANDBOX/other" push -q origin HEAD:main 2>/dev/null
+  "${g[@]}" fetch -q origin
+  MERGED_SHA="$(git -C "$SANDBOX/other" rev-parse HEAD)"
+  mkdir -p "$d"
+  printf 'slug: fix-wave-save\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s2\nsessions: sid-1 sid-9\npr: o/r#3349\nmerged: %s\nstatus: ok\nfinished: %s\n---\nfix wave save\n' \
+    "$MERGED_SHA" "$(date -u +%FT%TZ)" > "$d/20261103-100000-fix-wave-save.md"
+}
+
+@test "end to end: a draft branch of an item another session landed has nothing to land; a file the merge lacks still does (ar-5157)" {
+  superseded_fixture
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  refute_output --partial 'not on the default branch'
+  # negative control: a file the item's merge never changed is this session's own, unlanded
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
+  echo 2 > "$SANDBOX/wt/g"; "${g[@]}" add g; "${g[@]}" commit -q -m 'add g'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = '2 file(s) not on the default branch, no PR' ]
+}
+
+@test "end to end: a fleet worker's draft branch of an item another session landed reads DONE, not STALLED (ar-5157)" {
+  superseded_fixture
+  worker_ssh
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  local w; w="$(jq -c 'select(.host == "razer-laptop")' <<<"$output")"
+  assert_equal "$(jq -r .bucket <<<"$w")" DONE
+  # negative control: a merged commit this machine's clone lacks proves nothing
+  sed -i "s|^merged: .*|merged: 4594309f2ba9124d2548aa0dd142217711275404|" "$HOME/.agent/queue/done/$(date +%F)/20261103-100000-fix-wave-save.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  w="$(jq -c 'select(.host == "razer-laptop")' <<<"$output")"
+  assert_equal "$(jq -r '[.bucket, .reason] | join(" ")' <<<"$w")" 'STALLED 1 file(s) not on the default branch, no PR'
+}
+
+@test "superseded_here: only a done-ok item whose merged commits changed every ahead path (ar-5157)" {
+  superseded_fixture
+  local q; q="$(jq -nc --arg m "$MERGED_SHA" '{slug: "s", state: "done", status: "ok", merged: $m}')"
+  run superseded_here "$q" s "$SANDBOX/wt" f; assert_success
+  run superseded_here "$q" s "$SANDBOX/wt" "$(printf 'f\ng')"; assert_failure
+  run superseded_here "$q" s "$SANDBOX/wt" ''; assert_failure
+  run superseded_here "$q" s - f; assert_failure
+  run superseded_here "$(jq -c '.status = "failed"' <<<"$q")" s "$SANDBOX/wt" f; assert_failure
+  run superseded_here "$(jq -c 'del(.merged)' <<<"$q")" s "$SANDBOX/wt" f; assert_failure
+  run superseded_here "$q" other "$SANDBOX/wt" f; assert_failure
+}
+
 @test "end to end: a clean session reads its queue item from any state, and a removed worktree is DONE" {
   clean_fixture
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json

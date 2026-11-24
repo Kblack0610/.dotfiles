@@ -827,6 +827,25 @@ salvaged_here() {
   [ -n "$sv" ] && git -C "$3" merge-base --is-ancestor HEAD "${sv##*@}" 2>/dev/null
 }
 
+# superseded_here <qall> <slug> <clone> <ahead paths> -> exit 0 when the item that moved on from this session
+# closed done ok with merged commits (another run of it landed the work) and every file this branch holds
+# ahead of the base is one those commits changed: the commits here were a draft of the landed work, so
+# nothing is left to land. A merged commit <clone> lacks, or a path it did not change, holds the branch.
+# ar-5157: razer-laptop dotfiles-agent-20 kept two unpushed commits of ar-2751 after #3349 landed it from
+# another session, read STALLED four days, and takeover refused it ("its commits are not pushed").
+superseded_here() {
+  local d="$3" paths="$4" m c changed=""
+  [ -n "$paths" ] && [ "$d" != - ] || return 1
+  m="$(jq -nr --arg s "$2" 'first(inputs | select(.slug == $s and .state == "done" and (.status // "") == "ok")
+    | .merged // empty)' <<<"$1" 2>/dev/null)"
+  [ -n "$m" ] || return 1
+  for c in $m; do
+    git -C "$d" cat-file -e "$c^{commit}" 2>/dev/null || return 1
+    changed+="$(git -C "$d" diff --name-only "$c^1" "$c" 2>/dev/null)"$'\n'
+  done
+  [ -z "$(grep -vxFf <(grep . <<<"$changed") <<<"$paths")" ]
+}
+
 # session_finished: session_bucket's arguments -> exit 0 when the work half of DONE holds
 # (phases all ticked, no ask, nothing unlanded, not a red-main suspect). It skips status,
 # plan mode, a heavy child and the idle threshold, so a session can check its own row mid-turn, when that row always reads WORKING busy.
@@ -2617,9 +2636,16 @@ collect() {
     # session's work: 2026-11-06 it read 9 files ahead on all 16 sessions there, each one STALLED.
     if [ "$host" = - ] && [ "$g" = 1 ] && in_checkout "$cwd" "$off"; then ahead=0 pr=- state=- ci=- oid=- inpr=1; fi
     # A run that handed its item off left its pushed branch to the item's next start: a clean tree whose
-    # HEAD is that item's salvage: has nothing left here to land.
-    if [ "$host" = - ] && [ "$g" = 1 ] && [ "$irel" = moved ] && [ "$dirty" = 0 ] && [ "$ahead" -gt 0 ] && [ "$pr" = - ] \
-       && salvaged_here "$qall" "$islug" "$cwd"; then ahead=0; fi
+    # HEAD is that item's salvage: has nothing left here to land. Nor does one whose branch only drafts
+    # files the moved-on item's merged commits changed (superseded_here), on this machine or a worker.
+    if [ "$g" = 1 ] && [ "$irel" = moved ] && [ "$dirty" = 0 ] && [ "$ahead" -gt 0 ] && [ "$pr" = - ]; then
+      if [ "$host" = - ]; then
+        if salvaged_here "$qall" "$islug" "$cwd" \
+           || superseded_here "$qall" "$islug" "$cwd" "$(ahead_paths "$cwd" "$(default_base "$cwd")")"; then ahead=0; fi
+      elif superseded_here "$qall" "$islug" "$gd" "$(jq -r '.git.ahead_paths // [] | .[]' <<<"$line" 2>/dev/null)"; then
+        ahead=0
+      fi
+    fi
     # A finished branch PR this session did not make is another session's (pr_made_here): drop it,
     # and the commits it holds with it. An open one stays: it is unlanded work in this tree either way.
     if [ "$host" = - ] && [ "$g" = 1 ] && { [ "$state" = MERGED ] || [ "$state" = CLOSED ]; } && [ -s "$transcript" ] \

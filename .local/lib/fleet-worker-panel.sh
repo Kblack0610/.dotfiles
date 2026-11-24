@@ -12,10 +12,11 @@
 # print; any other failure prints nothing. A row jq cannot read goes through as it came.
 #
 # git is {in: "gone"} when the cwd is missing, {in: 0} outside git, else {in: 1, main, origin, branch,
-# head, upstream, unpushed, ahead, dirty}: main is the repo's main checkout (a worker clones each repo at
+# head, upstream, unpushed, ahead, based, ahead_paths, dirty}: main is the repo's main checkout (a worker clones each repo at
 # the path the workstation has it, so it names the clone there), unpushed the commits on HEAD that no
 # remote ref holds, ahead and dirty as ahead_files and dirty_paths count them against origin's default
-# branch (unlanded_files: in a submodule, off both its default branch and the superproject's pin).
+# branch (unlanded_files: in a submodule, off both its default branch and the superproject's pin), and
+# ahead_paths names ahead_files' files (superseded_here in fleet-sessions reads them).
 #
 # wp_base needs merge_proof_ref (agent-merge-proof.sh) defined first: fleet-sessions sources both
 # files, and fleet_host_panel sends both texts.
@@ -33,14 +34,19 @@ wp_base() {
 # A branch that merged main while main merged it has two merge bases (a criss-cross); a file
 # the branch only took in from the base differs from one of them, so it must differ from all.
 ahead_files() {
+  ahead_paths "$@" | grep -c . || true
+}
+
+# ahead_paths <dir> <base>: the files ahead_files counts, one repo-relative path per line.
+ahead_paths() {
   local d="$1" base="$2" mbs mb changed
-  mbs="$(git -C "$d" merge-base --all "$base" HEAD 2>/dev/null)" && [ -n "$mbs" ] || { echo 0; return; }
+  mbs="$(git -C "$d" merge-base --all "$base" HEAD 2>/dev/null)" && [ -n "$mbs" ] || return 0
   changed="$(git -C "$d" diff --name-only "$base" HEAD 2>/dev/null | sort)"
   while read -r mb; do
     [ -n "$changed" ] || break
     changed="$(comm -12 <(git -C "$d" diff --name-only "$mb" HEAD 2>/dev/null | sort) <(printf '%s\n' "$changed"))"
   done <<<"$mbs"
-  grep -c . <<<"$changed" || true
+  [ -z "$changed" ] || printf '%s\n' "$changed"
 }
 
 # submodule_pin <dir> [<base reader>] -> the commit the superproject's default branch pins for <dir> (when
@@ -146,7 +152,7 @@ empty_submodule() {
 # wp_git <dir> <edited files> -> the row's `git` object. `based` says HEAD shares history with the base,
 # so an `ahead` of 0 was measured, not a count ahead_files could not make (no merge base reads 0).
 wp_git() {
-  local d="$1" edited="$2" common main base up origin
+  local d="$1" edited="$2" common main base up origin ahead apaths=""
   [ -n "$d" ] && [ -d "$d" ] || { echo '{"in":"gone"}'; return; }
   git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo '{"in":0}'; return; }
   # A credential in an https remote stays on the worker: the rows are published (worker-panel.json).
@@ -156,6 +162,8 @@ wp_git() {
   case "$common" in */.git) main="${common%/.git}" ;; *) main="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" ;; esac
   base="$(wp_base "$d")"
   up="$(git -C "$d" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)"
+  ahead="$(unlanded_files "$d" "$base")"
+  [ "${ahead:-0}" = 0 ] || apaths="$(ahead_paths "$d" "$base")"
   dirty_paths "$d" "$edited" | jq -Rsc \
     --arg main "$main" \
     --arg origin "$origin" \
@@ -163,10 +171,12 @@ wp_git() {
     --arg head "$(git -C "$d" rev-parse -q --verify HEAD 2>/dev/null)" \
     --arg up "${up#*/}" \
     --arg unpushed "$(git -C "$d" rev-list --count HEAD --not --remotes 2>/dev/null)" \
-    --arg ahead "$(unlanded_files "$d" "$base")" \
+    --arg ahead "$ahead" \
     --arg based "$(git -C "$d" merge-base HEAD "$base" >/dev/null 2>&1 && echo 1)" \
+    --arg apaths "$apaths" \
     '{in: 1, $main, $origin, $branch, $head, upstream: $up, unpushed: ($unpushed | tonumber? // 0),
-      ahead: ($ahead | tonumber? // 0), based: ($based == "1"), dirty: (split("\n") | map(select(. != "")))}'
+      ahead: ($ahead | tonumber? // 0), based: ($based == "1"),
+      ahead_paths: ($apaths | split("\n") | map(select(. != ""))), dirty: (split("\n") | map(select(. != "")))}'
 }
 
 # wp_main -> this machine's agent-panel rows, each with its `git` (wp_git); agent-panel's exit.
