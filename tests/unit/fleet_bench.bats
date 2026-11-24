@@ -507,6 +507,28 @@ stalled_fixture() {
   assert_output ''
 }
 
+@test "bottleneck --check stalled counts from the watch's fix watermark; the pool check keeps its whole window (ar-5157)" {
+  stalled_fixture
+  stub_pools "unity 30.5"
+  printf '%s\n' stalled_session_hours_max=0.1 pool_wait_hours_max=24 > "$KPI_THRESHOLDS"
+  # from T0+1800 only t/a still stalls, for one 10-minute sample: 0.17h, past 0.1
+  SENTINEL_SINCE=$((T0 + 1800)) BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --check
+  assert_failure 1
+  assert_line "0.17 session-hours stalled since the fix at $(date -d "@$((T0 + 1800))" '+%F %H:%M'), past 0.1: t/a 0.2h"
+  assert_line 'pool waits past 24 job-hours over the last 24h: unity 30.5h'
+  # NEGATIVE CONTROL: with no watermark the same samples count all 1.67h of the window
+  printf '%s\n' stalled_session_hours_max=1 > "$KPI_THRESHOLDS"
+  BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --check stalled
+  assert_failure 1
+  SENTINEL_SINCE=$((T0 + 1800)) BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --check stalled
+  assert_success
+  assert_output ''
+  # a watermark older than the window start changes nothing
+  SENTINEL_SINCE=$((T0 - 2 * 86400)) BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --check stalled
+  assert_failure 1
+  assert_output --partial 'over the last 24h'
+}
+
 @test "bottleneck --check stalled: a stale sampler, no bound or an unknown check exits 2, never a quiet pass (ar-5152)" {
   stalled_fixture
   printf '%s\n' stalled_session_hours_max=2 > "$KPI_THRESHOLDS"

@@ -151,7 +151,7 @@ Windows count human sessions by `updated_epoch` in session-outcomes; a line with
 | `canary_cost_per_task`, `canary_min_per_task`, `canary_turns_per_task` | `cost_usd`, `duration_s`/60 and `activity.api_messages` of the canary rows' own sessions (joined on `session_id`), per task. Those sessions are left out of every human KPI above |
 | `step_age_p90_<step>` (now) | `pipeline`'s age p90 in minutes for backlog, queued, running and waiting |
 | `admission_held_24h_max`, `step_age_p90_inbox_max` | bounds with no KPI row: `pipeline`'s admission and inbox scores |
-| `stalled_session_hours_max` | the bound in session-hours on the Sessions stalled row over the window (`bottleneck --check stalled`); provisional, ar-5152 P4 re-measures it |
+| `stalled_session_hours_max` | the bound in session-hours on the Sessions stalled row over the window, or from the watch's fix watermark when that is later (`bottleneck --check stalled`; the pool check keeps its whole window); provisional, ar-5152 P4 re-measures it |
 | `pool_wait_hours_max` | the one bound in job-hours for every pool's waiting jobs over the window (`bottleneck --check pools`); provisional, ar-5152 P4 re-measures it |
 | `chain_handoff_p90_max` (now) | the bound in minutes on an urgent or high chain's handoff p90 over 24h (`pipeline --check chain-lag`) |
 | `queue_net_24h` (now) | `pipeline`'s queued step, `in_24h` minus `out_24h`: above 0 the queue is growing |
