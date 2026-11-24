@@ -47,6 +47,6 @@ Not for filing an ask, reading one answer, or unsticking one answered ask that w
 ## Do NOT
 
 - Answer from the recommendation alone without fetching what the ask defers on: that is what the judge already did, and it is why the ask is still waiting.
-- Answer an approval, an ask the judge marked human-only, or one at the human floor, or try to get round `answer`'s refusal (`--by human` from a session is refused too). Recommend and leave it.
+- Answer an approval, an ask the judge marked human-only, or one at the human floor, or try to get round `answer`'s refusal (`--by human` from a session is refused too; only an attended session relaying the human's own typed or dialog words, `--by human --quote`, is accepted, and an answer pass has none). Recommend and leave it.
 - Ask the human again for a choice they already made: read the precedents and answered asks first, and answer or close by that choice.
 - Edit files under `~/.agent/asks/` by hand, run `agent-ask sweep` as part of the pass (it re-scores the queue on the judge's text-only view), or run `ask-resume` on an ask you just answered (`answer` already delivers; `ask-resume` is for Resume rows only).

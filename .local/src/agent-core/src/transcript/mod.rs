@@ -7,6 +7,7 @@ use std::path::Path;
 use serde_json::Value;
 
 mod ask;
+mod human;
 mod plan;
 mod prompt;
 mod read;
@@ -17,6 +18,7 @@ mod time_use;
 mod usage;
 
 pub use ask::{asks_human_at, open_dialog_at, open_plan_at, open_question_at, Question};
+pub use human::{human_said_at, HumanSaid};
 pub use read::{clip, iso_epoch, str_of, tool_input};
 pub use said::{said_around_at, Said};
 pub use time_use::{time_use_at, TimeUse};
