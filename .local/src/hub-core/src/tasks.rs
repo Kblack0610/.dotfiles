@@ -124,7 +124,7 @@ pub struct Row {
     pub closed: Option<String>,
     /// The PRs its marker names.
     pub prs: Vec<String>,
-    /// `YYYY-MM-DD` the row should close at the project's 28-day close rate, after every row
+    /// `YYYY-MM-DD` the row should close at the project's net weight rate, after every row
     /// ranked ahead of it (`projects::forecast`). Never in the sheet.
     pub forecast: Option<String>,
     /// The state of the queue item whose `row:` names it (`queued`, `running`, `waiting`,
