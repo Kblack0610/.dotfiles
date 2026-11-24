@@ -25,10 +25,10 @@ The human asked this window to stay and see its work through: this window stays 
 ### 1. Hold the window
 
 ```bash
-fleet-sessions label self +manual +coordinator
+fleet-sessions label self +stay +coordinator
 ```
 
-First quote the order in one line, `coordinating at the human's word: "<their words>"`; with no such words from the human in this conversation, do not start (close, or ask them). `manual` is the keep the close flow, the shepherd's close and park nudges and `/wind-down auto` all honour while it is quiet under `FLEET_CHAT_CLOSE_H` (`~/.local/src/docs/fleet-states.md`, "Close verdict"); `coordinator` only names the mode on the panel and the tmux window. Labels outlive a reboot and a restore.
+First quote the order in one line, `coordinating at the human's word: "<their words>"`; with no such words from the human in this conversation, do not start (close, or ask them). `stay` is the keep the close flow, the shepherd's close and park nudges and `/wind-down auto` all honour while it is quiet under `FLEET_CHAT_CLOSE_H` (`manual` is the human's own label, which never expires, and `label self` refuses it) (`~/.local/src/docs/fleet-states.md`, "Close verdict"); `coordinator` only names the mode on the panel and the tmux window. Labels outlive a reboot and a restore.
 
 If `$AGENT_QUEUE_ITEM` is set, close your own item now (`agent-land` its PR, or `agent-queue move <slug> done --proof <what landed>`): it frees its slot under the cap, and with no item owning the window, an `agent-queue cancel` or `return` cannot close it.
 
@@ -88,7 +88,7 @@ In sprint mode the version roll ends the follow-through (when the human asks whe
 Every ledger line is ticked (merged and live, or dropped with a reason the human accepted). Merged and live is not done: the human validates it. A ticked line is no longer watched (`coord-watch` reads only open lines and exits 3 on a ledger with none), so the watch ends here: stop the background `coord-watch` (TaskStop) and drop the mode label, keeping the hold:
 
 ```bash
-fleet-sessions label self -coordinator   # keep manual; the Stop check 89-coord-watch.sh reads this label
+fleet-sessions label self -coordinator   # keep stay; the Stop check 89-coord-watch.sh reads this label
 ```
 
 Write the final report (what landed and how to check each piece, what was dropped and why, what you took over), and in the same turn file the validation ask and set it to reopen this session:
@@ -102,7 +102,7 @@ agent-ask post --options 'a=validated: drop the hold and let the window close|b=
 agent-ask reopen-on-answer <id>
 ```
 
-Then end the turn and wait with nothing armed: no watch, cron or wakeup. The answer reaches this session by itself: `agent-ask deliver` types it into the live pane, and if the window closed on its quiet timer meanwhile, `reopen-on-answer` starts it again with the answer. `manual` keeps the window until quiet `FLEET_CHAT_CLOSE_H`. The ask (the `!N` count and the asks list) is what shows the wait. A re-armed watch on a ticked ledger is only a timer: 2026-11-22 one woke 58 times over 29h and repeated the question each time. `stop-post.d/86-empty-wakes.sh` blocks any session, a coordinator included, after 4 empty Monitor expiries.
+Then end the turn and wait with nothing armed: no watch, cron or wakeup. The answer reaches this session by itself: `agent-ask deliver` types it into the live pane, and if the window closed on its quiet timer meanwhile, `reopen-on-answer` starts it again with the answer. `stay` keeps the window until quiet `FLEET_CHAT_CLOSE_H`. The ask (the `!N` count and the asks list) is what shows the wait. A re-armed watch on a ticked ledger is only a timer: 2026-11-22 one woke 58 times over 29h and repeated the question each time. `stop-post.d/86-empty-wakes.sh` blocks any session, a coordinator included, after 4 empty Monitor expiries.
 
 A "not yet" adds its lines to the ledger, then `fleet-sessions label self +coordinator` and arm the watch again (step 3); steps 4 and 5 carry them.
 
@@ -111,7 +111,7 @@ A "not yet" adds its lines to the ledger, then `fleet-sessions label self +coord
 On the human's "validated", drop the hold (step 6 already stopped the watch):
 
 ```bash
-fleet-sessions label self -manual -coordinator
+fleet-sessions label self -stay -coordinator
 rm -f ~/.local/state/coord-watch/<plan basename>.ts   # the watch's cursor
 rm -f ~/.local/state/coord-watch/session-"$CLAUDE_CODE_SESSION_ID".plan   # the plan the Stop check reads
 ```
