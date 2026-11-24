@@ -566,15 +566,15 @@ pub(crate) fn add_via(
 
 /// The id of the open row on `content` that `text` twins (the same words, a near twin, or the
 /// row that already lands the PR it names): what [`refuse_twin`] refuses, as the row to join.
-/// None for an epic (`epic_new` has its own twin check) and for a twin with no id yet.
+/// None for an epic (`epic_new` has its own twin check); a twin with no id yet is skipped for the next kind.
 fn twin_id(content: &str, text: &str) -> Option<String> {
     if text.trim_start().starts_with("epic(") {
         return None;
     }
     open_twin(content, text)
-        .or_else(|| near_twin(content, text))
-        .or_else(|| pr_twin(content, text).map(|(l, _)| l))
         .and_then(md::row_id)
+        .or_else(|| near_twin(content, text).and_then(md::row_id))
+        .or_else(|| pr_twin(content, text).and_then(|(l, _)| md::row_id(l)))
 }
 
 /// Does `text` twin an open row of `content` (the sheet at `path`): the same words, a near twin, or a
@@ -1481,11 +1481,13 @@ fn file_via(
             .collect(),
         _ => Vec::new(),
     };
+    // Only when every row twins the one same row: a mixed line files as the model wrote it, so no
+    // row's words are dropped with no row to hold them.
     let joined: Option<String> = twins
-        .iter()
-        .all(Option::is_some)
-        .then(|| twins.first().cloned().flatten())
-        .flatten();
+        .first()
+        .cloned()
+        .flatten()
+        .filter(|first| twins.iter().all(|t| t.as_deref() == Some(first.as_str())));
     let dup_id: Option<&str> = match &how.how {
         How::Dup(id) => Some(id.as_str()),
         _ => joined.as_deref(),
@@ -1504,12 +1506,7 @@ fn file_via(
                 }
                 vec![line.text.clone()]
             } else {
-                texts
-                    .iter()
-                    .zip(twins.iter().chain(std::iter::repeat(&None)))
-                    .filter(|(_, twin)| twin.is_none())
-                    .map(|(t, _)| t.clone())
-                    .collect()
+                texts.clone()
             };
             let texts: Vec<String> = texts.iter().map(|t| md::without_agent_tag(t)).collect();
             if let Some(bad) = texts.iter().find(|t| !projects::is_typed(t)) {
@@ -1559,9 +1556,6 @@ fn file_via(
             let id = dup_id.expect("a row arm without a dup id was taken above");
             if !md::is_row_id(id) {
                 bail!("--dup takes the id of an open row (like ar-142), not '{id}'");
-            }
-            if joined.is_some() {
-                eprintln!("twin of open row {id}: the line joins it, nothing new is filed");
             }
             let hit = Pick::Id(id.to_string());
             let Some(new) = md::append_details(&base, sheet::TASKS, |l| hit.hits(l), &details)
@@ -1619,6 +1613,10 @@ fn file_via(
     }
     crate::ingest::record(p, &ev);
     println!("filed {}", line.text);
+    if joined.is_some() {
+        // The row the line joined, for a caller (the triager) whose later line repeats this one.
+        println!("  twin of open row {}", dup_id.unwrap_or_default());
+    }
     for l in &written {
         println!("  {l}");
     }

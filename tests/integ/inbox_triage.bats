@@ -1663,11 +1663,15 @@ ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)"
 # The route call shows the model the closest rows, but the row it writes is checked by the writer: `ptask file --as`
 # runs the twin check `ptask add` runs, so a reworded repeat joins the open row whatever the model said (ar-4182, ar-4992).
 @test "a row the model words afresh that twins an open row joins it as a dup and files nothing; a different row beside it still files" {
-  sheet '- the pause menu flickers on resume\n- the gun sound is off\n' '- [ ] fix(ui): the pause menu flickers when resuming <!-- id:sc-4 -->\n'
+  sheet '- the pause menu flickers on resume\n- the gun sound is off\n- the pause menu still flickers on resume\n' '- [ ] fix(ui): the pause menu flickers when resuming <!-- id:sc-4 -->\n'
   answer '{"n": 1, "action": "file", "rows": ["fix(ui): the pause menu flickers when resuming #high #size/s"]}' \
-    '{"n": 2, "action": "file", "rows": ["fix(audio): the gun sound plays late #high #size/s"]}'
+    '{"n": 2, "action": "file", "rows": ["fix(audio): the gun sound plays late #high #size/s"]}' \
+    '{"n": 3, "action": "dup", "line": 1}'
   run "$TRIAGE"
   assert_success
+  grep -q '  was: the pause menu still flickers on resume' "$SHEET" || fail "a repeat of the joined line was left: $(cat "$SHEET")"
+  refute_output --partial 'filed no row'
+  [ -z "$(inbox | grep -v '^## ' | grep .)" ] || fail "a line stayed in the inbox: $(inbox)"
   [ "$(tasks | grep -c '^- \[ \] ')" = 2 ] || fail "the twin was filed as a second row: $(cat "$SHEET")"
   grep -q '  was: the pause menu flickers on resume' "$SHEET" || fail "$(cat "$SHEET")"
   grep -q 'gun sound plays late' "$SHEET" || fail "the different row was not filed: $(cat "$SHEET")"
