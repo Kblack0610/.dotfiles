@@ -59,9 +59,9 @@ pub struct Prompt {
 
 /// The table's columns, in `tasks::Row`'s COLUMNS order so the sort mark lands on its header.
 /// The row's whole text is the preview's, under the rows.
-const HEADER: [&str; 13] = [
-    "SECTION", "TITLE", "EPIC", "PRIORITY", "STATE", "WHEN", "PROJECT", "LANE", "ID", "VERSION",
-    "SIZE", "TIER", "SINCE",
+const HEADER: [&str; 16] = [
+    "SECTION", "TYPE", "AREA", "TITLE", "EPIC", "PRIORITY", "STATE", "WHEN", "PROJECT", "LANE",
+    "ID", "VERSION", "SIZE", "PTS", "TIER", "SINCE",
 ];
 
 #[derive(Debug, Default)]
@@ -459,6 +459,8 @@ fn row(r: &Row, section: String, p: Palette) -> Vec<Cell> {
     let when = r.when();
     vec![
         cell(section, p.head()),
+        or_dash(r.r#type.as_deref()),
+        or_dash(r.area.as_deref()),
         title.into(),
         or_dash(r.epic.as_deref().or(r.parent.as_deref())),
         cell(r.priority.clone(), prio),
@@ -469,6 +471,7 @@ fn row(r: &Row, section: String, p: Palette) -> Vec<Cell> {
         or_dash(r.id.as_deref()),
         or_dash(r.release()),
         or_dash(r.size.as_deref()),
+        r.points.map_or("-".to_string(), |n| n.to_string()).into(),
         r.tier.map_or("-".to_string(), |t| t.to_string()).into(),
         or_dash(r.since.as_deref().map(|d| d.get(5..).unwrap_or(d))),
     ]
@@ -532,11 +535,12 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
             ))
             .map(|(r, s)| row(r, s, p))
             .collect(),
-        keep: vec![0, 3, 4, 2, 5, 6, 8, 7, 9, 10, 12, 11],
-        flex: Some(1),
+        // Indices are HEADER's: the area stays with the title, the type and points drop first.
+        keep: vec![0, 2, 5, 6, 4, 7, 8, 10, 9, 1, 13, 11, 12, 15, 14],
+        flex: Some(3),
         flexmin: 20,
         flexkeep: true,
-        cap: vec![(2, 24), (5, 18), (9, 16)],
+        cap: vec![(2, 16), (4, 24), (7, 18), (11, 16)],
         mark: v.table.mark::<Row>(),
         ..Default::default()
     }
@@ -773,7 +777,10 @@ pub(crate) mod tests {
             at("SECTION") < at("TITLE") && at("TITLE") < at("EPIC") && at("PROJECT") < at("LANE"),
             "{s}"
         );
-        assert!(s.contains("v0.1.0") && s.contains("demo"), "{s}");
+        assert!(s.contains("demo"), "{s}");
+        // The type, area and points outrank the version, which a wider screen shows.
+        assert!(at("TITLE") > at("AREA") && at("AREA") > at("TYPE"), "{s}");
+        assert!(text(&f, &v, 160).contains("v0.1.0"));
         // j/k follow the page's order, not the feed's.
         let order: Vec<&str> = shown(&f, &v).iter().map(|r| r.text.as_str()).collect();
         assert_eq!(
@@ -837,6 +844,10 @@ pub(crate) mod tests {
             assert!(!["profile", "tag"].contains(&v.table.view.sort.as_str()));
         }
         assert_eq!(v.table.view.sort, "section", "c comes back round");
+        v.key(key('c'), Some(&f), 10);
+        assert_eq!(v.table.view.sort, "type");
+        v.key(key('c'), Some(&f), 10);
+        assert_eq!(v.table.view.sort, "area");
         v.key(key('c'), Some(&f), 10);
         assert_eq!(v.table.view.sort, "title");
         v.key(key('c'), Some(&f), 10);

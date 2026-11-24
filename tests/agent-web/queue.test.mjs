@@ -220,7 +220,7 @@ const cands = (o = {}) => ({
   table: { q: "", state: "", sort: "", dir: "", total: 41, shown: 41, pager: { page: 1, pages: 2, per: 30 }, legend: "clear: a worker takes it",
     states: [{ name: "all", n: 41 }, { name: "clear", n: 30 }, { name: "blocked", n: 11, tone: "warn" }],
     columns: ["rank", "project", "key", "task", "start", "why", "blocked"].map((k) => col(k)),
-    facets: [{ key: "blocked", on: [], clear: "", values: [{ value: "judge: skip", n: 9, on: false, q: 'blocked:"judge: skip"' }] }],
+    facets: [{ key: "blocked", on: [], clear: "", values: [{ value: "judge: skip", n: 9, pct: 50, on: false, q: 'blocked:"judge: skip"' }] }],
     links: [{ project: "#projects/p" }, { project: "#projects/trader" }] },
   auto: 2, urgent_blocked: 1, uncovered: ["trader"], as_of: "10:20", ...o,
 });
